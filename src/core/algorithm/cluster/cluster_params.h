@@ -38,6 +38,9 @@ static const std::string OPTKMEANS_CLUSTER_MARKOV_CHAIN_LENGTH =
     "zvec.optkmeans.cluster.markov_chain_length";
 static const std::string OPTKMEANS_CLUSTER_ASSUMPTION_FREE =
     "zvec.optkmeans.cluster.assumption_free";
+// Internal opt-in for a temporary, pool-backed transposed training matrix.
+static const std::string OPTKMEANS_CLUSTER_BUFFERED_STORAGE_PATH =
+    "zvec.optkmeans.cluster.buffered_storage_path";
 
 //! K-means
 static const std::string KMEANS_CLUSTER_COUNT = "zvec.kmeans.cluster.count";

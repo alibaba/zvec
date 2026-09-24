@@ -84,13 +84,11 @@ class Kmc2CentroidsGenerator {
  protected:
   //! Initialize centroids randomly
   void init_centroids_random(OwnerType *owner) const {
-    RandomSelectBenches(owner->feature_cache(), owner->feature_matrix(),
-                        owner->k_value(), owner->mutable_centroids());
+    RandomSelectBenches(owner, owner->k_value(), owner->mutable_centroids());
   }
 
   //! Initialize centroids with K-MC2
   void init_centroids_kmc2(OwnerType *owner, ThreadPoolType &pool) const {
-    const auto &matrix = owner->feature_matrix();
     const auto &cache = owner->feature_cache();
     auto *centroids = owner->mutable_centroids();
 
@@ -103,13 +101,13 @@ class Kmc2CentroidsGenerator {
     std::vector<float> centroid_norms;
 
     // Sample first center uniformly
-    RandomSelectBenches(cache, matrix, 1, centroids);
+    if (!RandomSelectBenches(owner, 1, centroids)) return;
 
     // Make a thread group
     auto group = pool.make_group();
 
     for (size_t i = 1, k = owner->k_value(); i < k; ++i) {
-      RandomSelectBenches(cache, matrix, chain_length_, &benches);
+      if (!RandomSelectBenches(owner, chain_length_, &benches)) return;
       UpdateCentroidNorms(owner, &centroid_norms);
 
       // Update bench scores
@@ -138,19 +136,19 @@ class Kmc2CentroidsGenerator {
 
   //! Initialize centroids with K-MC2
   void init_centroids_afkmc2(OwnerType *owner, ThreadPoolType &pool) const {
-    const auto &matrix = owner->feature_matrix();
     const auto &cache = owner->feature_cache();
+    const size_t matrix_count = owner->feature_matrix_count();
 
     // Probability
-    std::vector<float> probs(matrix.count() + cache.count());
+    std::vector<float> probs(matrix_count + cache.count());
 
     // Sample first center uniformly
-    RandomSelectBenches(cache, matrix, 1, owner->mutable_centroids());
+    if (!RandomSelectBenches(owner, 1, owner->mutable_centroids())) return;
 
     // Make a thread group
     auto group = pool.make_group();
-    if (!matrix.empty()) {
-      size_t n = matrix.count() / BatchCount;
+    if (matrix_count != 0) {
+      size_t n = matrix_count / BatchCount;
       size_t c = std::max<size_t>(n / pool.count() / 2u, 1u);
       size_t m = n / c * c;
 
@@ -165,9 +163,10 @@ class Kmc2CentroidsGenerator {
     }
     if (!cache.empty()) {
       group->submit(Closure::New(&Kmc2CentroidsGenerator::UpdateCacheScores,
-                                 owner, &probs[matrix.count()]));
+                                 owner, &probs[matrix_count]));
     }
     group->wait_finish();
+    if (owner->matrix_status() != 0) return;
 
     // Update probabilities
     NormalizeProbabilities(&probs);
@@ -180,8 +179,9 @@ class Kmc2CentroidsGenerator {
     std::vector<float> centroid_norms;
 
     for (size_t i = 1; i < owner->k_value(); ++i) {
-      RandomSelectBenches(cache, matrix, chain_length_, probs, &benches,
-                          &bench_probs);
+      if (!RandomSelectBenches(owner, chain_length_, probs, &benches,
+                               &bench_probs))
+        return;
       UpdateCentroidNorms(owner, &centroid_norms);
 
       // Update bench scores
@@ -216,29 +216,29 @@ class Kmc2CentroidsGenerator {
   //! Update matrix score
   static void UpdateMatrixScores(const OwnerType *owner, size_t first,
                                  size_t last, float *out) {
-    const auto &matrix = owner->feature_matrix();
+    const size_t dimension = owner->feature_cache().dimension();
     const auto *bench = owner->centroids().data();
-    ContainerType rows(matrix.dimension());
+    ContainerType rows(dimension);
+    ContainerType scratch(dimension);
     float bench_norm = 0.0f;
 
     if constexpr (NeedsSphericalWeight) {
       if (owner->spherical()) {
         rows.resize(BatchCount);
-        bench_norm = ContextType::Kmc2Norm(bench, matrix.dimension());
+        bench_norm = ContextType::Kmc2Norm(bench, dimension);
       }
     }
 
     for (size_t i = first * BatchCount; i != last * BatchCount;
          i += BatchCount) {
-      ContextType::template BatchDistance<1>(matrix[i], bench,
-                                             matrix.dimension(), &out[i]);
+      const auto *block = owner->read_feature_matrix(i, &scratch);
+      if (!block) return;
+      ContextType::template BatchDistance<1>(block, bench, dimension, &out[i]);
       if constexpr (NeedsSphericalWeight) {
         if (owner->spherical()) {
-          ContextType::MatrixReverseTranspose(matrix[i], matrix.dimension(),
-                                              rows.data());
+          ContextType::MatrixReverseTranspose(block, dimension, rows.data());
           for (size_t j = 0; j < BatchCount; ++j) {
-            float feature_norm =
-                ContextType::Kmc2Norm(rows[j], matrix.dimension());
+            float feature_norm = ContextType::Kmc2Norm(rows[j], dimension);
             out[i + j] =
                 ContextType::Kmc2Weight(out[i + j], bench_norm, feature_norm);
           }
@@ -338,11 +338,12 @@ class Kmc2CentroidsGenerator {
   }
 
   //! Select k benches randomly
-  static void RandomSelectBenches(const ContainerType &cache,
-                                  const ContainerType &matrix, size_t k,
+  static bool RandomSelectBenches(const OwnerType *owner, size_t k,
                                   ContainerType *benches) {
+    const auto &cache = owner->feature_cache();
     ContainerType rows(cache.dimension());
-    size_t m = matrix.count();
+    ContainerType scratch(cache.dimension());
+    size_t m = owner->feature_matrix_count();
     size_t n = m + cache.count();
     std::mt19937 mt((std::random_device())());
 
@@ -356,19 +357,22 @@ class Kmc2CentroidsGenerator {
       }
       // Selected a feature
       if (i < m) {
-        ContextType::MatrixReverseTranspose(matrix[i / BatchCount * BatchCount],
-                                            matrix.dimension(), rows.data());
-        benches->append(rows[i & (BatchCount - 1u)], matrix.dimension());
+        const auto *block =
+            owner->read_feature_matrix(i / BatchCount * BatchCount, &scratch);
+        if (!block) return false;
+        ContextType::MatrixReverseTranspose(block, cache.dimension(),
+                                            rows.data());
+        benches->append(rows[i & (BatchCount - 1u)], cache.dimension());
       } else {
         benches->append(cache[i - m], cache.dimension());
       }
       --k;
     }  // end of for
+    return true;
   }
 
   //! Select k benches randomly
-  static void RandomSelectBenches(const ContainerType &cache,
-                                  const ContainerType &matrix, size_t k,
+  static bool RandomSelectBenches(const OwnerType *owner, size_t k,
                                   const std::vector<float> &probs,
                                   ContainerType *benches,
                                   std::vector<float> *bench_probs) {
@@ -381,8 +385,10 @@ class Kmc2CentroidsGenerator {
       samples.emplace(i, std::pow(dist(mt), 1.0 / probs[i]));
     }
 
+    const auto &cache = owner->feature_cache();
     ContainerType rows(cache.dimension());
-    size_t matrix_count = matrix.count();
+    ContainerType scratch(cache.dimension());
+    size_t matrix_count = owner->feature_matrix_count();
 
     rows.resize(BatchCount);
     benches->reset(cache.dimension());
@@ -393,15 +399,18 @@ class Kmc2CentroidsGenerator {
     for (const auto &it : samples) {
       // Selected a feature
       if (it.first < matrix_count) {
-        ContextType::MatrixReverseTranspose(
-            matrix[it.first / BatchCount * BatchCount], matrix.dimension(),
-            rows.data());
-        benches->append(rows[it.first & (BatchCount - 1u)], matrix.dimension());
+        const auto *block = owner->read_feature_matrix(
+            it.first / BatchCount * BatchCount, &scratch);
+        if (!block) return false;
+        ContextType::MatrixReverseTranspose(block, cache.dimension(),
+                                            rows.data());
+        benches->append(rows[it.first & (BatchCount - 1u)], cache.dimension());
       } else {
         benches->append(cache[it.first - matrix_count], cache.dimension());
       }
       bench_probs->push_back(probs[it.first]);
     }
+    return true;
   }
 
  private:

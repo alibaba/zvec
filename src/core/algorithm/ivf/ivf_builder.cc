@@ -43,12 +43,20 @@ class LabelFilteredIndexHolder : public IndexHolder {
 
     //! Retrieve pointer of data
     const void *data() const override {
-      return holder_->element((*elems_)[index_]);
+      const void *data = nullptr;
+      if (status_ == 0) {
+        status_ = holder_->read_element((*elems_)[index_], &buffer_, &data);
+      }
+      return data;
     }
 
     //! Test if the iterator is valid
     bool is_valid() const override {
-      return index_ < elems_->size();
+      return status_ == 0 && index_ < elems_->size();
+    }
+
+    int status() const override {
+      return status_;
     }
 
     //! Retrieve primary key
@@ -66,6 +74,8 @@ class LabelFilteredIndexHolder : public IndexHolder {
     const IVFBuilder::RandomAccessIndexHolder::Pointer holder_{nullptr};
     const std::vector<uint32_t> *elems_{nullptr};
     size_t index_{0};
+    mutable std::string buffer_{};
+    mutable int status_{0};
   };
 
   //! Constructor
@@ -194,6 +204,7 @@ int IVFBuilder::cleanup() {
   holder_.reset();
   source_reader_.reset();
   source_holder_.reset();
+  std::string().swap(read_buffer_);
   converted_meta_ = meta_;
   converter_.reset();
   quantized_meta_ = meta_;
@@ -399,6 +410,13 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
     if (!holder_) {
       return IndexError_NoMemory;
     }
+    const std::string scratch =
+        params_.get_as_string(PARAM_IVF_BUILDER_BUILD_STORAGE_PATH);
+    if (!scratch.empty()) {
+      const int ret = holder_->enable_buffered_storage(scratch + ".vectors",
+                                                       holder->count());
+      if (ret != 0) return ret;
+    }
     if (holder->count() > 0) {
       holder_->reserve(holder->count());
     }
@@ -418,11 +436,20 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
       if (!data) {
         return IndexError_ReadData;
       }
-      holder_->emplace(key, data);
+      if (holder_->count() >= holder->count()) {
+        return IndexError_Mismatch;
+      }
+      const int ret = holder_->emplace(key, data);
+      if (ret != 0) return ret;
     }
     if (iter->status() != 0) {
       return iter->status();
     }
+    if (holder_->count() != holder->count()) {
+      return IndexError_Mismatch;
+    }
+    const int ret = holder_->flush();
+    if (ret != 0) return ret;
     converted_holder = holder_;
   }
 
@@ -654,7 +681,14 @@ int IVFBuilder::prepare_trainer_params(ailego::Params &params) {
   for (size_t i = 1; i <= cluster_params_.size(); ++i) {
     std::string level_params_key =
         STRATIFIED_TRAINER_PARAMS_IN_LEVEL_PREFIX + std::to_string(i);
-    params.set(level_params_key, cluster_params_[i - 1]);
+    auto level_params = cluster_params_[i - 1];
+    const std::string scratch =
+        params_.get_as_string(PARAM_IVF_BUILDER_BUILD_STORAGE_PATH);
+    if (!scratch.empty()) {
+      level_params.set(OPTKMEANS_CLUSTER_BUFFERED_STORAGE_PATH,
+                       scratch + ".train" + std::to_string(i));
+    }
+    params.set(level_params_key, level_params);
   }
   params.set(STRATIFIED_TRAINER_CLASS_NAME, cluster_class_);
 
@@ -742,8 +776,7 @@ int IVFBuilder::read_vector(size_t id, uint64_t *key, const void **data) {
     return source_reader_->read(id, key, data);
   }
   *key = holder_->key(id);
-  *data = holder_->element(id);
-  return 0;
+  return holder_->read_element(id, &read_buffer_, data);
 }
 
 int IVFBuilder::dump_index(const IndexDumper::Pointer &dumper) {
@@ -911,12 +944,12 @@ int IVFBuilder::prepare_quantizer(IndexThreads *threads) {
     if (holder->count() == 0) {
       return;
     }
-    ret = quantizers_[idx]->train(holder);
-    if (ret != 0) {
+    const int train_ret = quantizers_[idx]->train(holder);
+    if (train_ret != 0) {
       LOG_ERROR("Failed to train converter %s for %s", quantizer_name.c_str(),
-                IndexError::What(ret));
+                IndexError::What(train_ret));
       if (!error_.exchange(true)) {
-        err_code_ = IndexError_Runtime;
+        err_code_ = train_ret;
       }
     }
   };
@@ -936,6 +969,7 @@ int IVFBuilder::prepare_quantizer(IndexThreads *threads) {
   }
 
   task_group->wait_finish();
+  if (error_) return err_code_;
   if (quantizers_.size() > 0) {
     quantized_meta_ = quantizers_[0]->meta();
   }

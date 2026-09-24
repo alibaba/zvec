@@ -153,9 +153,40 @@ class DiskAnnEntity {
     return nullptr;
   }
 
+  //! Keep paged or temporary vector data alive for the caller's whole read.
+  //! Legacy entities expose stable storage and need no owning handle.
+  virtual int read_vector(diskann_id_t id,
+                          IndexStorage::MemoryBlock &block) const {
+    block = IndexStorage::MemoryBlock();
+    const void *vector = get_vector(id);
+    if (vector == nullptr) {
+      return IndexError_ReadData;
+    }
+    block =
+        IndexStorage::MemoryBlock::MakeBorrowedView(const_cast<void *>(vector));
+    return 0;
+  }
+
   virtual std::pair<uint32_t, const diskann_id_t *> get_neighbors(
       diskann_id_t /*id*/) const {
     return std::make_pair(0, nullptr);
+  }
+
+  //! Snapshot adjacency before releasing a page or changing another node.
+  virtual int read_neighbors(diskann_id_t id,
+                             std::vector<diskann_id_t> *neighbors) const {
+    if (neighbors == nullptr) {
+      return IndexError_InvalidArgument;
+    }
+    neighbors->clear();
+    const auto view = get_neighbors(id);
+    if (view.first != 0) {
+      if (view.second == nullptr) {
+        return IndexError_ReadData;
+      }
+      neighbors->assign(view.second, view.second + view.first);
+    }
+    return 0;
   }
 
   virtual int set_neighbors(

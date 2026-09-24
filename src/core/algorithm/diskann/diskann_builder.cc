@@ -127,6 +127,24 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
     return ret;
   }
 
+  bool buffered_build = false;
+  if (params.has(PARAM_DISKANN_BUILDER_BUFFERED_BUILD)) {
+    if (!params.get<bool>(PARAM_DISKANN_BUILDER_BUFFERED_BUILD,
+                          &buffered_build)) {
+      return IndexError_InvalidArgument;
+    }
+  }
+  if (buffered_build) {
+    std::string scratch_prefix;
+    if (!params.get(PARAM_DISKANN_BUILDER_BUILD_STORAGE_PATH,
+                    &scratch_prefix) ||
+        scratch_prefix.empty()) {
+      return IndexError_InvalidArgument;
+    }
+    ret = entity_.enable_buffered_build(scratch_prefix);
+    if (ret != 0) return ret;
+  }
+
   algo_ =
       DiskAnnAlgorithm::UPointer(new DiskAnnAlgorithm(entity_, max_degree_));
 
@@ -191,7 +209,10 @@ int DiskAnnBuilder::calculate_entry_point() {
       centroid_fp32.resize(dimension);
       NumericalVectorMean<float> accumulator(dimension);
       for (size_t id = 0; id < entity_.doc_cnt(); id++) {
-        accumulator.plus(entity_.get_vector(id), dimension * sizeof(float));
+        IndexStorage::MemoryBlock block;
+        int ret = entity_.read_vector(id, block);
+        if (ret != 0) return ret;
+        accumulator.plus(block.data(), dimension * sizeof(float));
       }
       accumulator.mean(centroid_fp32.data(), dimension * sizeof(float));
       break;
@@ -200,8 +221,10 @@ int DiskAnnBuilder::calculate_entry_point() {
       centroid_fp16.resize(dimension);
       NumericalVectorMean<ailego::Float16> accumulator(dimension);
       for (size_t id = 0; id < entity_.doc_cnt(); id++) {
-        accumulator.plus(entity_.get_vector(id),
-                         dimension * sizeof(ailego::Float16));
+        IndexStorage::MemoryBlock block;
+        int ret = entity_.read_vector(id, block);
+        if (ret != 0) return ret;
+        accumulator.plus(block.data(), dimension * sizeof(ailego::Float16));
       }
       accumulator.mean(centroid_fp16.data(),
                        dimension * sizeof(ailego::Float16));
@@ -218,8 +241,10 @@ int DiskAnnBuilder::calculate_entry_point() {
   switch (build_meta_.data_type()) {
     case IndexMeta::DataType::DT_FP32:
       for (size_t id = 0; id < entity_.doc_cnt(); id++) {
-        const float *data_ptr =
-            reinterpret_cast<const float *>(entity_.get_vector(id));
+        IndexStorage::MemoryBlock block;
+        int ret = entity_.read_vector(id, block);
+        if (ret != 0) return ret;
+        const float *data_ptr = reinterpret_cast<const float *>(block.data());
 
         float dist = 0.0f;
         ailego::SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
@@ -233,8 +258,11 @@ int DiskAnnBuilder::calculate_entry_point() {
       break;
     case IndexMeta::DataType::DT_FP16:
       for (size_t id = 0; id < entity_.doc_cnt(); id++) {
+        IndexStorage::MemoryBlock block;
+        int ret = entity_.read_vector(id, block);
+        if (ret != 0) return ret;
         const ailego::Float16 *data_ptr =
-            reinterpret_cast<const ailego::Float16 *>(entity_.get_vector(id));
+            reinterpret_cast<const ailego::Float16 *>(block.data());
 
         float dist = 0.0f;
         ailego::SquaredEuclideanDistanceMatrix<ailego::Float16, 1, 1>::Compute(
@@ -316,12 +344,12 @@ int DiskAnnBuilder::build_internal(IndexThreads::Pointer threads) {
 
   {
     std::unique_lock<std::mutex> lk(mutex_);
-    while (finished.load() < entity_.doc_cnt()) {
+    while (finished.load() < entity_.doc_cnt() &&
+           !error_.load(std::memory_order_acquire)) {
       cond_.wait_until(lk, std::chrono::system_clock::now() +
                                std::chrono::seconds(check_interval_secs_));
       if (error_.load(std::memory_order_acquire)) {
-        LOG_ERROR("Failed to build index while waiting finish");
-        return errcode_;
+        break;
       }
       LOG_INFO("Built cnt %zu, finished percent %.3f%%",
                (size_t)finished.load(),
@@ -329,11 +357,13 @@ int DiskAnnBuilder::build_internal(IndexThreads::Pointer threads) {
     }
   }
 
+  // Workers still reference finished and entity_ after another worker fails.
+  // Join outside mutex_: each worker locks it before notifying cond_.
+  task_group->wait_finish();
   if (error_.load(std::memory_order_acquire)) {
     LOG_ERROR("Failed to build index while waiting finish");
     return errcode_;
   }
-  task_group->wait_finish();
 
   return 0;
 }
@@ -353,12 +383,12 @@ int DiskAnnBuilder::prune_internal(IndexThreads::Pointer threads) {
 
   {
     std::unique_lock<std::mutex> lk(mutex_);
-    while (finished.load() < entity_.doc_cnt()) {
+    while (finished.load() < entity_.doc_cnt() &&
+           !error_.load(std::memory_order_acquire)) {
       cond_.wait_until(lk, std::chrono::system_clock::now() +
                                std::chrono::seconds(check_interval_secs_));
       if (error_.load(std::memory_order_acquire)) {
-        LOG_ERROR("Failed to prune index while waiting finish");
-        return errcode_;
+        break;
       }
       LOG_INFO("Prune cnt %zu, finished percent %.3f%%",
                (size_t)finished.load(),
@@ -366,11 +396,11 @@ int DiskAnnBuilder::prune_internal(IndexThreads::Pointer threads) {
     }
   }
 
+  task_group->wait_finish();
   if (error_.load(std::memory_order_acquire)) {
     LOG_ERROR("Failed to prune index while waiting finish");
     return errcode_;
   }
-  task_group->wait_finish();
 
   return 0;
 }
@@ -390,6 +420,8 @@ int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer /*threads*/) {
   qp.set("num_chunk", pq_chunk_num_);
   qp.set("thread_count", build_thread_count_);
   qp.set("use_zero_mean", false);
+  // Graph construction uses full-precision distances, not the PQ SDC table.
+  qp.set("build_sdc_table", false);
   int ret = quantizer_->init(build_meta_, qp);
   if (ret != 0) {
     LOG_ERROR("PqInt8Quantizer init failed, ret=%d", ret);
@@ -435,8 +467,12 @@ int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer threads) {
   }
 
   size_t num_vecs = holder_->count();
-  auto &codes = entity_.block_compressed_data();
-  codes.resize(num_vecs * pq_chunk_num_);
+  if (pq_chunk_num_ == 0 ||
+      num_vecs > std::numeric_limits<size_t>::max() / pq_chunk_num_) {
+    return IndexError_InvalidArgument;
+  }
+  int ret = entity_.prepare_codes(num_vecs * pq_chunk_num_);
+  if (ret != 0) return ret;
 
   auto iter = holder_->create_iterator();
   if (!iter) {
@@ -445,12 +481,16 @@ int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer threads) {
   }
 
   const size_t elem_size = build_meta_.element_size();
+  if (elem_size == 0) return IndexError_InvalidArgument;
   const size_t thread_count =
       threads ? std::max<size_t>(1, threads->count()) : 1;
   constexpr size_t kEncodeMemoryBudget = 4u * 1024u * 1024u;
   const size_t batch_size =
       std::min(num_vecs, std::max<size_t>(1, kEncodeMemoryBudget / elem_size));
   std::vector<uint8_t> block(batch_size * elem_size);
+  // The encoded output is bounded by this batch, even for buffered builds
+  // whose complete PQ array is larger than the shared cache.
+  std::vector<uint8_t> block_codes(batch_size * pq_chunk_num_);
 
   size_t id = 0;
   while (id < num_vecs) {
@@ -459,7 +499,7 @@ int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer threads) {
          iter->next(), ++cur) {
       // The quantizer widens FP16 input internally — pass raw data directly.
       const void *data = iter->data();
-      if (!data) return IndexError_ReadData;
+      if (!data || !iter->is_valid()) return IndexError_ReadData;
       if (iter->key() != entity_.get_key(id + cur)) return IndexError_Mismatch;
       std::memcpy(block.data() + cur * elem_size, data, elem_size);
     }
@@ -483,12 +523,15 @@ int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer threads) {
         task_group->submit(
             ailego::Closure::New(this, &DiskAnnBuilder::encode_pq_batch,
                                  static_cast<const uint8_t *>(block.data()),
-                                 static_cast<uint64_t>(id), begin, end));
+                                 block_codes.data(), begin, end));
       }
       task_group->wait_finish();
     } else {
-      encode_pq_batch(block.data(), id, 0, cur);
+      encode_pq_batch(block.data(), block_codes.data(), 0, cur);
     }
+
+    ret = entity_.append_codes(block_codes.data(), cur * pq_chunk_num_);
+    if (ret != 0) return ret;
 
     id += cur;
   }
@@ -505,14 +548,12 @@ int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer threads) {
 }
 
 void DiskAnnBuilder::encode_pq_batch(const uint8_t *block_data,
-                                     uint64_t block_start_id, uint64_t begin,
+                                     uint8_t *block_codes, uint64_t begin,
                                      uint64_t end) {
   const size_t elem_size = build_meta_.element_size();
-  auto &codes = entity_.block_compressed_data();
   for (uint64_t i = begin; i < end; ++i) {
-    quantizer_->quantize_data(
-        block_data + i * elem_size,
-        codes.data() + (block_start_id + i) * pq_chunk_num_);
+    quantizer_->quantize_data(block_data + i * elem_size,
+                              block_codes + i * pq_chunk_num_);
   }
 }
 
@@ -549,7 +590,7 @@ void DiskAnnBuilder::do_build(uint64_t idx, size_t step_size,
   ctx->set_list_size(list_size_);
 
   for (uint64_t id = idx; id < entity_.doc_cnt(); id += step_size) {
-    ctx->reset_query(entity_.get_vector(id));
+    if (error_.load(std::memory_order_acquire)) return;
     ret = algo_->add_node(id, ctx);
     if (ailego_unlikely(ret != 0)) {
       if (!error_.exchange(true)) {
@@ -596,7 +637,7 @@ void DiskAnnBuilder::do_prune(uint64_t idx, size_t step_size,
   ctx->set_list_size(list_size_);
 
   for (uint64_t id = idx; id < entity_.doc_cnt(); id += step_size) {
-    ctx->reset_query(entity_.get_vector(id));
+    if (error_.load(std::memory_order_acquire)) return;
     ret = algo_->prune_node(id, ctx);
     if (ailego_unlikely(ret != 0)) {
       if (!error_.exchange(true)) {
@@ -737,7 +778,10 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
   error_ = false;
   while (iter->is_valid()) {
     if (entity_.doc_cnt() >= holder->count()) return IndexError_Mismatch;
-    ret = entity_.add_vector(iter->key(), iter->data());
+    const auto key = iter->key();
+    const void *data = iter->data();
+    if (!data || !iter->is_valid()) return IndexError_ReadData;
+    ret = entity_.add_vector(key, data);
     if (ailego_unlikely(ret != 0)) {
       return ret;
     }

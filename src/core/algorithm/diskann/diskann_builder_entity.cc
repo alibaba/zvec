@@ -13,9 +13,15 @@
 // limitations under the License.
 
 #include "diskann_builder_entity.h"
+#include <array>
+#include <chrono>
+#include <filesystem>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <ailego/pattern/defer.h>
+#include <zvec/ailego/io/file.h>
+#include <zvec/core/framework/index_factory.h>
 #include "utility/ordinal_access_holder.h"
 #include "diskann_algorithm.h"
 #include "diskann_util.h"
@@ -23,7 +29,111 @@
 namespace zvec {
 namespace core {
 
+struct DiskAnnBuilderEntity::BufferedBuildState {
+  std::string prefix;
+  std::string directory;
+  std::string vector_path;
+  std::string graph_path;
+  std::string code_path;
+  IndexStorage::Pointer vector_storage;
+  IndexStorage::Pointer graph_storage;
+  IndexStorage::Segment::Pointer vectors;
+  IndexStorage::Segment::Pointer graph;
+  mutable ailego::File codes;
+
+  int ensure_directory() {
+    if (!directory.empty()) return 0;
+    static std::atomic<uint64_t> sequence{0};
+    const auto stamp =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    for (size_t attempt = 0; attempt < 64; ++attempt) {
+      std::string candidate =
+          prefix + ".diskann-build-" + std::to_string(stamp) + "-" +
+          std::to_string(sequence.fetch_add(1, std::memory_order_relaxed));
+      // Prepare all potentially allocating strings before owning a directory.
+      std::string vectors_candidate = candidate + "/vectors";
+      std::string graph_candidate = candidate + "/graph";
+      std::string codes_candidate = candidate + "/codes";
+      std::error_code error;
+      if (std::filesystem::create_directory(candidate, error)) {
+        directory = std::move(candidate);
+        vector_path = std::move(vectors_candidate);
+        graph_path = std::move(graph_candidate);
+        code_path = std::move(codes_candidate);
+        return 0;
+      }
+      if (error && error != std::errc::file_exists) return IndexError_OpenFile;
+    }
+    return IndexError_OpenFile;
+  }
+
+  void release_vectors() {
+    vectors.reset();
+    if (vector_storage) vector_storage->close();
+    vector_storage.reset();
+    if (!vector_path.empty()) ailego::File::Delete(vector_path);
+  }
+
+  void clear_files() {
+    release_vectors();
+    graph.reset();
+    if (graph_storage) graph_storage->close();
+    graph_storage.reset();
+    codes.close();
+    if (!graph_path.empty()) ailego::File::Delete(graph_path);
+    if (!code_path.empty()) ailego::File::Delete(code_path);
+    // Never recursively remove a caller-supplied directory or unknown files.
+    if (!directory.empty()) {
+      std::error_code error;
+      std::filesystem::remove(directory, error);
+    }
+    directory.clear();
+    vector_path.clear();
+    graph_path.clear();
+    code_path.clear();
+  }
+
+  ~BufferedBuildState() {
+    clear_files();
+  }
+};
+
+DiskAnnBuilderEntity::DiskAnnBuilderEntity() = default;
+DiskAnnBuilderEntity::~DiskAnnBuilderEntity() = default;
+
+int DiskAnnBuilderEntity::enable_buffered_build(
+    const std::string &scratch_prefix) {
+  if (scratch_prefix.empty() || doc_cnt() != 0 || reserved_docs_ != 0 ||
+      buffered_state_) {
+    return IndexError_InvalidArgument;
+  }
+  try {
+    auto state = std::make_unique<BufferedBuildState>();
+    // Configuration and post-dump builder reset must not require writable
+    // scratch storage. Create it only when a build actually needs it.
+    state->prefix = scratch_prefix;
+    buffered_state_ = std::move(state);
+    return 0;
+  } catch (const std::exception &error) {
+    LOG_ERROR("Failed to configure DiskANN build scratch storage: %s",
+              error.what());
+    return IndexError_Runtime;
+  }
+}
+
+void DiskAnnBuilderEntity::observe_degree(uint32_t degree) {
+  uint32_t previous = max_observed_degree_.load(std::memory_order_relaxed);
+  while (previous < degree &&
+         !max_observed_degree_.compare_exchange_weak(
+             previous, degree, std::memory_order_relaxed)) {
+  }
+}
+
 void DiskAnnBuilderEntity::clear() {
+  buffered_state_.reset();
+  reserved_docs_ = 0;
+  code_bytes_ = 0;
+  code_bytes_written_ = 0;
   max_degree_ = 0;
   list_size_ = 0;
   memory_limit_ = 0;
@@ -57,6 +167,14 @@ int DiskAnnBuilderEntity::init(const IndexMeta &meta, uint32_t max_degree,
 
   num_threads_ = build_threads;
 
+  const double build_degree = static_cast<double>(max_degree_) *
+                              static_cast<double>(kDefaultGraphSlackFactor);
+  if (meta_.element_size() == 0 || max_degree_ == 0 ||
+      build_degree > (std::numeric_limits<uint32_t>::max() - sizeof(uint32_t)) /
+                         sizeof(diskann_id_t)) {
+    return IndexError_InvalidArgument;
+  }
+  // Preserve the original float multiplication/rounding for ordinary inputs.
   max_build_degree_ = max_degree_ * kDefaultGraphSlackFactor;
 
   neighbor_size_ = sizeof(uint32_t) + max_build_degree_ * sizeof(diskann_id_t);
@@ -66,18 +184,82 @@ int DiskAnnBuilderEntity::init(const IndexMeta &meta, uint32_t max_degree,
 
 void DiskAnnBuilderEntity::release_vectors() {
   std::string().swap(vectors_buffer_);
+  if (buffered_state_) buffered_state_->release_vectors();
 }
 
 int DiskAnnBuilderEntity::reserve_space(uint32_t docs) {
-  vectors_buffer_.reserve(meta_.element_size() * docs);
-  keys_buffer_.reserve(sizeof(diskann_key_t) * docs);
-  neighbors_buffer_.reserve(static_cast<size_t>(neighbor_size_) * docs);
-
-  return 0;
+  const size_t count = docs;
+  if (count == 0 || doc_cnt() != 0 || reserved_docs_ != 0 ||
+      meta_.element_size() == 0 || neighbor_size_ == 0 ||
+      count > std::numeric_limits<size_t>::max() / meta_.element_size() ||
+      count > std::numeric_limits<size_t>::max() / neighbor_size_ ||
+      count > std::numeric_limits<size_t>::max() / sizeof(diskann_key_t)) {
+    return IndexError_InvalidArgument;
+  }
+  try {
+    keys_buffer_.reserve(sizeof(diskann_key_t) * count);
+    if (buffered_state_) {
+      auto open = [](const std::string &path, size_t bytes,
+                     IndexStorage::Pointer *storage,
+                     IndexStorage::Segment::Pointer *segment) -> int {
+        *storage = IndexFactory::CreateStorage("BufferStorage");
+        if (!*storage) return IndexError_NoExist;
+        int ret = (*storage)->init(ailego::Params{});
+        if (ret != 0) return ret;
+        ret = (*storage)->open(path, true);
+        if (ret != 0) return ret;
+        ret = (*storage)->append("data", bytes);
+        if (ret != 0) return ret;
+        *segment = (*storage)->get("data");
+        return *segment ? 0 : IndexError_Runtime;
+      };
+      auto &state = *buffered_state_;
+      int ret = state.ensure_directory();
+      if (ret == 0) {
+        ret = open(state.vector_path, meta_.element_size() * count,
+                   &state.vector_storage, &state.vectors);
+      }
+      if (ret == 0) {
+        ret =
+            open(state.graph_path, static_cast<size_t>(neighbor_size_) * count,
+                 &state.graph_storage, &state.graph);
+      }
+      if (ret != 0) {
+        state.clear_files();
+        return ret;
+      }
+    } else {
+      vectors_buffer_.reserve(meta_.element_size() * count);
+      neighbors_buffer_.reserve(static_cast<size_t>(neighbor_size_) * count);
+    }
+    reserved_docs_ = docs;
+    return 0;
+  } catch (const std::exception &error) {
+    if (buffered_state_) buffered_state_->clear_files();
+    LOG_ERROR("Failed to reserve DiskANN build storage: %s", error.what());
+    return IndexError_Runtime;
+  }
 }
 
-int DiskAnnBuilderEntity::add_vector(diskann_key_t key, const void *vec) {
+int DiskAnnBuilderEntity::add_vector(diskann_key_t key, const void *vec) try {
   if (!vec) return IndexError_ReadData;
+  if (buffered_state_) {
+    auto &state = *buffered_state_;
+    if (doc_cnt() >= reserved_docs_ || !state.vectors || !state.graph) {
+      return IndexError_InvalidArgument;
+    }
+    const size_t vector_size = meta_.element_size();
+    const uint32_t neighbor_count = 0;
+    if (state.vectors->write(doc_cnt() * vector_size, vec, vector_size) !=
+            vector_size ||
+        state.graph->write(doc_cnt() * neighbor_size_, &neighbor_count,
+                           sizeof(neighbor_count)) != sizeof(neighbor_count)) {
+      return IndexError_WriteData;
+    }
+    keys_buffer_.append(reinterpret_cast<const char *>(&key), sizeof(key));
+    ++*mutable_doc_cnt();
+    return 0;
+  }
   vectors_buffer_.append(reinterpret_cast<const char *>(vec),
                          meta_.element_size());
   keys_buffer_.append(reinterpret_cast<const char *>(&key), sizeof(key));
@@ -90,14 +272,42 @@ int DiskAnnBuilderEntity::add_vector(diskann_key_t key, const void *vec) {
   (*mutable_doc_cnt())++;
 
   return 0;
+} catch (const std::exception &error) {
+  LOG_ERROR("Failed to stage DiskANN vector: %s", error.what());
+  return IndexError_Runtime;
 }
 
 const void *DiskAnnBuilderEntity::get_vector(diskann_id_t id) const {
+  if (buffered_state_ || id >= doc_cnt() || vectors_buffer_.empty())
+    return nullptr;
   size_t offset = (size_t)id * meta_.element_size();
   return vectors_buffer_.data() + offset;
 }
 
+int DiskAnnBuilderEntity::read_vector(diskann_id_t id,
+                                      IndexStorage::MemoryBlock &block) const
+    try {
+  block.reset();
+  if (id >= doc_cnt()) return IndexError_InvalidArgument;
+  if (!buffered_state_) return DiskAnnEntity::read_vector(id, block);
+  const auto &segment = buffered_state_->vectors;
+  const size_t size = meta_.element_size();
+  if (!segment ||
+      segment->read_immutable(static_cast<size_t>(id) * size, block, size) !=
+          size ||
+      !block.data()) {
+    block.reset();
+    return IndexError_ReadData;
+  }
+  return 0;
+} catch (const std::exception &error) {
+  block.reset();
+  LOG_ERROR("Failed to read DiskANN build vector: %s", error.what());
+  return IndexError_Runtime;
+}
+
 diskann_key_t DiskAnnBuilderEntity::get_key(diskann_id_t id) const {
+  if (id >= doc_cnt()) return kInvalidKey;
   size_t offset = (size_t)id * sizeof(diskann_key_t);
 
   return *(
@@ -112,6 +322,7 @@ diskann_id_t DiskAnnBuilderEntity::get_id(diskann_key_t /*key*/) const {
 
 std::pair<uint32_t, const diskann_id_t *> DiskAnnBuilderEntity::get_neighbors(
     diskann_id_t id) const {
+  if (buffered_state_ || id >= doc_cnt()) return {0, nullptr};
   size_t offset = (size_t)id * neighbor_size_;
 
   const uint8_t *start_ptr =
@@ -125,8 +336,64 @@ std::pair<uint32_t, const diskann_id_t *> DiskAnnBuilderEntity::get_neighbors(
   return std::make_pair(neighbor_cnt, neighbors);
 }
 
+int DiskAnnBuilderEntity::read_neighbors(
+    diskann_id_t id, std::vector<diskann_id_t> *neighbors) const try {
+  if (!neighbors || id >= doc_cnt()) return IndexError_InvalidArgument;
+  neighbors->clear();
+  if (!buffered_state_) return DiskAnnEntity::read_neighbors(id, neighbors);
+  const auto &segment = buffered_state_->graph;
+  if (!segment) return IndexError_ReadData;
+  const size_t offset = static_cast<size_t>(id) * neighbor_size_;
+  uint32_t count = 0;
+  if (segment->fetch(offset, &count, sizeof(count)) != sizeof(count)) {
+    return IndexError_ReadData;
+  }
+  if (count > max_build_degree_) return IndexError_ReadData;
+  neighbors->resize(count);
+  const size_t size = count * sizeof(diskann_id_t);
+  if (size != 0 &&
+      segment->fetch(offset + sizeof(count), neighbors->data(), size) != size) {
+    neighbors->clear();
+    return IndexError_ReadData;
+  }
+  if (std::any_of(
+          neighbors->begin(), neighbors->end(),
+          [&](diskann_id_t neighbor) { return neighbor >= doc_cnt(); })) {
+    neighbors->clear();
+    return IndexError_ReadData;
+  }
+  return 0;
+} catch (const std::exception &error) {
+  if (neighbors) neighbors->clear();
+  LOG_ERROR("Failed to read DiskANN build adjacency: %s", error.what());
+  return IndexError_Runtime;
+}
+
 int DiskAnnBuilderEntity::set_neighbors(
-    diskann_id_t id, const std::vector<diskann_id_t> &neighbor_ids) {
+    diskann_id_t id, const std::vector<diskann_id_t> &neighbor_ids) try {
+  if (id >= doc_cnt() || neighbor_ids.size() > max_build_degree_ ||
+      std::any_of(
+          neighbor_ids.begin(), neighbor_ids.end(),
+          [&](diskann_id_t neighbor) { return neighbor >= doc_cnt(); })) {
+    return IndexError_InvalidArgument;
+  }
+  if (buffered_state_) {
+    const auto &segment = buffered_state_->graph;
+    if (!segment) return IndexError_WriteData;
+    // Graph callers hold the per-node lock. Publish the count last and let
+    // the storage coalesce same-page writes without a per-update heap copy.
+    // Any partial I/O failure aborts the build; it must not be dumped.
+    const size_t offset = static_cast<size_t>(id) * neighbor_size_;
+    const uint32_t count = static_cast<uint32_t>(neighbor_ids.size());
+    const std::array<IndexStorage::SegmentData, 2> writes{
+        {{offset + sizeof(count), neighbor_ids.size() * sizeof(diskann_id_t),
+          neighbor_ids.data()},
+         {offset, sizeof(count), &count}}};
+    if (!segment->write_batch(writes.data(), writes.size()))
+      return IndexError_WriteData;
+    observe_degree(count);
+    return 0;
+  }
   size_t offset = (size_t)id * neighbor_size_;
 
   uint8_t *start_ptr =
@@ -138,21 +405,44 @@ int DiskAnnBuilderEntity::set_neighbors(
          sizeof(diskann_id_t) * neighbor_cnt);
   memcpy(start_ptr, &neighbor_cnt, sizeof(uint32_t));
 
-  if (max_observed_degree_ < neighbor_cnt) {
-    max_observed_degree_ = neighbor_cnt;
-  }
+  observe_degree(neighbor_cnt);
 
   return 0;
+} catch (const std::exception &error) {
+  LOG_ERROR("Failed to write DiskANN build adjacency: %s", error.what());
+  return IndexError_Runtime;
 }
 
 int DiskAnnBuilderEntity::add_neighbor(diskann_id_t id,
-                                       diskann_id_t neighbor_id) {
+                                       diskann_id_t neighbor_id) try {
+  if (id >= doc_cnt() || neighbor_id >= doc_cnt())
+    return IndexError_InvalidArgument;
+  if (buffered_state_) {
+    const auto &segment = buffered_state_->graph;
+    if (!segment) return IndexError_WriteData;
+    const size_t offset = static_cast<size_t>(id) * neighbor_size_;
+    uint32_t count = 0;
+    if (segment->fetch(offset, &count, sizeof(count)) != sizeof(count)) {
+      return IndexError_ReadData;
+    }
+    if (count >= max_build_degree_) return IndexError_InvalidArgument;
+    const uint32_t next_count = count + 1;
+    const std::array<IndexStorage::SegmentData, 2> writes{
+        {{offset + sizeof(count) + count * sizeof(diskann_id_t),
+          sizeof(neighbor_id), &neighbor_id},
+         {offset, sizeof(next_count), &next_count}}};
+    if (!segment->write_batch(writes.data(), writes.size()))
+      return IndexError_WriteData;
+    observe_degree(next_count);
+    return 0;
+  }
   size_t offset = (size_t)id * neighbor_size_;
 
   uint8_t *start_ptr =
       reinterpret_cast<uint8_t *>(&neighbors_buffer_[0]) + offset;
 
   uint32_t neighbor_cnt = *reinterpret_cast<uint32_t *>(start_ptr);
+  if (neighbor_cnt >= max_build_degree_) return IndexError_InvalidArgument;
 
   memcpy(start_ptr + sizeof(uint32_t) + sizeof(diskann_id_t) * neighbor_cnt,
          &neighbor_id, sizeof(diskann_id_t));
@@ -161,10 +451,56 @@ int DiskAnnBuilderEntity::add_neighbor(diskann_id_t id,
 
   memcpy(start_ptr, &neighbor_cnt, sizeof(uint32_t));
 
-  if (max_observed_degree_ < neighbor_cnt) {
-    max_observed_degree_ = neighbor_cnt;
-  }
+  observe_degree(neighbor_cnt);
 
+  return 0;
+} catch (const std::exception &error) {
+  LOG_ERROR("Failed to append DiskANN build adjacency: %s", error.what());
+  return IndexError_Runtime;
+}
+
+int DiskAnnBuilderEntity::prepare_codes(size_t bytes) {
+  if (bytes > static_cast<size_t>(std::numeric_limits<ssize_t>::max())) {
+    return IndexError_InvalidArgument;
+  }
+  code_bytes_ = 0;
+  code_bytes_written_ = 0;
+  try {
+    if (buffered_state_) {
+      auto &state = *buffered_state_;
+      const int ret = state.ensure_directory();
+      if (ret != 0) return ret;
+      state.codes.close();
+      if (!state.codes.create(state.code_path, 0)) return IndexError_OpenFile;
+      std::vector<uint8_t>().swap(block_compressed_data_);
+    } else {
+      block_compressed_data_.resize(bytes);
+    }
+    code_bytes_ = bytes;
+    return 0;
+  } catch (const std::exception &error) {
+    LOG_ERROR("Failed to prepare DiskANN PQ codes: %s", error.what());
+    return IndexError_Runtime;
+  }
+}
+
+int DiskAnnBuilderEntity::append_codes(const void *data, size_t bytes) {
+  if (code_bytes_written_ > code_bytes_ ||
+      bytes > code_bytes_ - code_bytes_written_ || (bytes != 0 && !data)) {
+    return IndexError_InvalidArgument;
+  }
+  if (bytes == 0) return 0;
+  if (buffered_state_) {
+    if (!buffered_state_->codes.is_valid() ||
+        buffered_state_->codes.write(static_cast<ssize_t>(code_bytes_written_),
+                                     data, bytes) != bytes) {
+      return IndexError_WriteData;
+    }
+  } else {
+    if (block_compressed_data_.size() < code_bytes_) return IndexError_Runtime;
+    memcpy(block_compressed_data_.data() + code_bytes_written_, data, bytes);
+  }
+  code_bytes_written_ += bytes;
   return 0;
 }
 
@@ -248,24 +584,45 @@ int DiskAnnBuilderEntity::dump_pq_meta_segment(
 }
 
 int DiskAnnBuilderEntity::dump_pq_data_segment(
-    const IndexDumper::Pointer &dumper) const {
+    const IndexDumper::Pointer &dumper) const try {
   uint64_t doc_cnt = meta_header_.doc_cnt;
   uint64_t chunk_num = pq_meta_.chunk_num;
 
-  uint32_t crc = 0U;
-
-  // write pq data
-  size_t size_total =
-      dumper->write(block_compressed_data_.data(), doc_cnt * chunk_num);
-
-  if (size_total != doc_cnt * chunk_num) {
-    LOG_ERROR("Failed to dump block compressed data, expect: %zu, actual: %zu",
-              (size_t)(doc_cnt * chunk_num), size_total);
-    return IndexError_WriteData;
+  if (chunk_num != 0 &&
+      doc_cnt > std::numeric_limits<size_t>::max() / chunk_num) {
+    return IndexError_InvalidArgument;
+  }
+  const size_t size_total = static_cast<size_t>(doc_cnt * chunk_num);
+  if ((code_bytes_ != 0 &&
+       (code_bytes_ != size_total || code_bytes_written_ != size_total)) ||
+      (buffered_state_ &&
+       (code_bytes_ != size_total || code_bytes_written_ != size_total)) ||
+      (!buffered_state_ && block_compressed_data_.size() < size_total)) {
+    return IndexError_Mismatch;
   }
 
-  crc = ailego::Crc32c::Hash(block_compressed_data_.data(), doc_cnt * chunk_num,
-                             crc);
+  uint32_t crc = 0U;
+
+  if (buffered_state_) {
+    constexpr size_t kCopyBytes = 1024UL * 1024UL;
+    std::vector<uint8_t> buffer(std::min(size_total, kCopyBytes));
+    for (size_t offset = 0; offset < size_total;) {
+      const size_t bytes = std::min(buffer.size(), size_total - offset);
+      if (buffered_state_->codes.read(static_cast<ssize_t>(offset),
+                                      buffer.data(), bytes) != bytes)
+        return IndexError_ReadData;
+      if (dumper->write(buffer.data(), bytes) != bytes)
+        return IndexError_WriteData;
+      crc = ailego::Crc32c::Hash(buffer.data(), bytes, crc);
+      offset += bytes;
+    }
+  } else {
+    if (dumper->write(block_compressed_data_.data(), size_total) !=
+        size_total) {
+      return IndexError_WriteData;
+    }
+    crc = ailego::Crc32c::Hash(block_compressed_data_.data(), size_total, crc);
+  }
 
   // write pad
   size_t padding_size = AlignSize(size_total) - size_total;
@@ -285,6 +642,9 @@ int DiskAnnBuilderEntity::dump_pq_data_segment(
   }
 
   return 0;
+} catch (const std::exception &error) {
+  LOG_ERROR("Failed to dump DiskANN PQ codes: %s", error.what());
+  return IndexError_Runtime;
 }
 
 int DiskAnnBuilderEntity::dump_dummy_segment(
@@ -383,8 +743,10 @@ int DiskAnnBuilderEntity::dump(IndexHolder::Pointer holder, IndexMeta &meta,
     return IndexError_Mismatch;
   }
   uint64_t doc_cnt = holder->count();
+  const uint32_t max_observed_degree =
+      max_observed_degree_.load(std::memory_order_relaxed);
   uint64_t max_node_size =
-      (uint64_t)max_observed_degree_ * sizeof(diskann_id_t) + sizeof(uint32_t) +
+      (uint64_t)max_observed_degree * sizeof(diskann_id_t) + sizeof(uint32_t) +
       meta_.element_size();
   uint64_t node_per_sector =
       DiskAnnUtil::kSectorSize /
@@ -401,7 +763,7 @@ int DiskAnnBuilderEntity::dump(IndexHolder::Pointer holder, IndexMeta &meta,
       "Dump Data, medoid: %zu, max node size: %zu, node per sector: %zu, "
       "max observed degree: %zu",
       (size_t)medoid(), (size_t)max_node_size, (size_t)node_per_sector,
-      (size_t)max_observed_degree_);
+      (size_t)max_observed_degree);
 
   // write a dummy segment to make data align
   int ret = dump_dummy_segment(dumper);
@@ -475,14 +837,16 @@ int DiskAnnBuilderEntity::dump(IndexHolder::Pointer holder, IndexMeta &meta,
            sector_node_id++) {
         memset(&(node_buf[0]), 0, max_node_size);
 
-        auto neighbors = get_neighbors(cur_node_id);
-        neighbor_num = neighbors.first;
+        std::vector<diskann_id_t> neighbors;
+        ret = read_neighbors(cur_node_id, &neighbors);
+        if (ret != 0) return ret;
+        neighbor_num = static_cast<uint32_t>(neighbors.size());
 
         ailego_assert(neighbor_num > 0);
-        ailego_assert(neighbor_num <= max_observed_degree_);
+        ailego_assert(neighbor_num <= max_observed_degree);
 
-        memcpy(&(neighbor_buf[0]), neighbors.second,
-               neighbors.first * sizeof(diskann_id_t));
+        memcpy(&(neighbor_buf[0]), neighbors.data(),
+               neighbors.size() * sizeof(diskann_id_t));
 
         ret = read_vector(cur_node_id, &node_buf[0]);
         if (ret != 0) return ret;
@@ -537,14 +901,16 @@ int DiskAnnBuilderEntity::dump(IndexHolder::Pointer holder, IndexMeta &meta,
              sector_num_per_node * DiskAnnUtil::kSectorSize);
       memset(&(node_buf[0]), 0, max_node_size);
 
-      auto neighbors = get_neighbors(i);
-      neighbor_num = neighbors.first;
+      std::vector<diskann_id_t> neighbors;
+      ret = read_neighbors(i, &neighbors);
+      if (ret != 0) return ret;
+      neighbor_num = static_cast<uint32_t>(neighbors.size());
 
       ailego_assert(neighbor_num > 0);
-      ailego_assert(neighbor_num <= max_observed_degree_);
+      ailego_assert(neighbor_num <= max_observed_degree);
 
       // read node's nhood
-      memcpy((char *)neighbor_buf, neighbors.second,
+      memcpy((char *)neighbor_buf, neighbors.data(),
              neighbor_num * sizeof(diskann_id_t));
 
       ret = read_vector(i, &multisector_buf[0]);
@@ -601,7 +967,7 @@ int DiskAnnBuilderEntity::dump(IndexHolder::Pointer holder, IndexMeta &meta,
   meta_header_.ndims = meta_.dimension();
   meta_header_.medoid = medoid();
   meta_header_.max_node_size = max_node_size;
-  meta_header_.max_degree = max_observed_degree_;
+  meta_header_.max_degree = max_observed_degree;
   meta_header_.node_per_sector = node_per_sector;
   meta_header_.vamana_frozen_num = 0;
   meta_header_.vamana_frozen_loc = medoid();

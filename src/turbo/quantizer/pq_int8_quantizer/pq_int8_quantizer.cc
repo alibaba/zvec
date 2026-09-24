@@ -143,6 +143,15 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   params.get("markov_chain_length", &markov_chain_length_);
   params.get("epsilon", &epsilon_);
   params.get("use_zero_mean", &use_zero_mean_);
+  build_sdc_table_ = true;
+  if (params.has("build_sdc_table") &&
+      !params.get<bool>("build_sdc_table", &build_sdc_table_)) {
+    return kErrUnsupported;
+  }
+  if (!build_sdc_table_) {
+    // Reinitialization must release a previously trained SDC table as well.
+    std::vector<float>().swap(dist_table_);
+  }
 
   int opq_ret = opq_.init(original_dim_, input_data_type_, params);
   if (opq_ret != 0) return opq_ret;
@@ -304,11 +313,17 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
 
   train_all_chunks(all_data.data(), num, data_stride, kMaxKmeansIters);
 
+  // Training tasks have joined and the codebook owns its centroids. Do not
+  // overlap the sampled vectors with the large derived SDC table below.
+  std::vector<uint8_t>().swap(all_data);
+
   // Pre-build centroid pointer cache (needed by compute_dist_table).
   build_centroid_ptrs_cache();
 
-  // Pre-compute SDC dist_table.
-  compute_dist_table();
+  // Encoding and ADC do not need centroid-to-centroid distances.
+  if (build_sdc_table_) {
+    compute_dist_table();
+  }
 
   // Pre-compute sub-centroid norms for the precomputed residual table.
   compute_sub_centroid_norms();

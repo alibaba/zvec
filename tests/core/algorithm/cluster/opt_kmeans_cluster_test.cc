@@ -12,14 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <random>
 #include <string>
 #include <vector>
 #include <ailego/algorithm/kmeans.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/container/params.h>
 #include "algorithm/cluster/cluster_params.h"
 #include "algorithm/cluster/holder_cluster.h"
@@ -54,7 +60,11 @@ class StreamingTestHolder : public IndexHolder {
       ++owner_->reads;
       if (index_ == owner_->null_at) return nullptr;
       owner_->fill(index_, buffer_.data() + 1);
+      if (index_ == owner_->error_at) error_ = IndexError_ReadData;
       return buffer_.data() + 1;
+    }
+    int status() const override {
+      return error_;
     }
     bool is_valid() const override {
       return index_ < owner_->actual_count;
@@ -65,11 +75,15 @@ class StreamingTestHolder : public IndexHolder {
     void next() override {
       std::fill(buffer_.begin(), buffer_.end(), '\xff');
       ++index_;
+      if (owner_->fail_at_end && index_ == owner_->actual_count) {
+        error_ = IndexError_ReadData;
+      }
     }
 
    private:
     StreamingTestHolder *owner_;
     mutable std::vector<char> buffer_;
+    mutable int error_{0};
     size_t index_{0};
   };
 
@@ -150,6 +164,8 @@ class StreamingTestHolder : public IndexHolder {
   size_t reads{0};
   size_t live_iterators{0};
   size_t null_at{std::numeric_limits<size_t>::max()};
+  size_t error_at{std::numeric_limits<size_t>::max()};
+  bool fail_at_end{false};
   bool fail_iterator{false};
   float offset{0};
 };
@@ -197,6 +213,24 @@ std::vector<HolderTrainingCase> HolderTrainingCases() {
 }
 
 class HolderTrainingTest : public ::testing::TestWithParam<HolderTrainingCase> {
+};
+
+class TemporaryTrainingDirectory {
+ public:
+  TemporaryTrainingDirectory() {
+    static std::atomic<size_t> sequence{0};
+    path = "opt_kmeans_buffered_" +
+           std::to_string(
+               std::chrono::steady_clock::now().time_since_epoch().count()) +
+           "_" + std::to_string(sequence.fetch_add(1));
+    EXPECT_TRUE(std::filesystem::create_directory(path));
+  }
+  ~TemporaryTrainingDirectory() {
+    std::error_code error;
+    EXPECT_TRUE(std::filesystem::is_empty(path, error));
+    EXPECT_TRUE(std::filesystem::remove(path, error));
+  }
+  std::string path;
 };
 
 }  // namespace
@@ -248,6 +282,130 @@ TEST_P(HolderTrainingTest, MatchesMountedFeatures) {
     std::weak_ptr<IndexHolder> input_lifetime = holder;
     holder.reset();
     EXPECT_TRUE(input_lifetime.expired());
+  }
+}
+
+TEST_P(HolderTrainingTest, BufferedTrainingMatchesMemoryAndCleansScratch) {
+  const auto &param = GetParam();
+  const size_t metadata =
+      VecBufferPool::metadata_bytes_for_page_count(1024, true);
+  MemoryLimitPool::get_instance().init(metadata + 64u * 1024u);
+  TemporaryTrainingDirectory directory;
+  auto holder = std::make_shared<StreamingTestHolder>(param.dimension, 259,
+                                                      param.type, param.metric);
+  auto features = Materialize(*holder);
+  auto memory = IndexFactory::CreateCluster("OptKmeansCluster");
+  auto buffered = IndexFactory::CreateCluster("OptKmeansCluster");
+  Params params;
+  params.set(OPTKMEANS_CLUSTER_BUFFERED_STORAGE_PATH,
+             directory.path + "/train");
+  ASSERT_EQ(0, memory->init(holder->meta_, Params()));
+  ASSERT_EQ(0, buffered->init(holder->meta_, params));
+  auto *memory_holder = dynamic_cast<HolderCluster *>(memory.get());
+  auto *buffered_holder = dynamic_cast<HolderCluster *>(buffered.get());
+  ASSERT_NE(nullptr, memory_holder);
+  ASSERT_NE(nullptr, buffered_holder);
+  IndexCluster::CentroidList seeds;
+  for (size_t i = 0; i < std::min<size_t>(3, param.dimension); ++i) {
+    seeds.emplace_back(features->element(i), features->element_size());
+  }
+  auto threads = std::make_shared<SingleQueueIndexThreads>(1, false);
+  auto expected = seeds;
+  ASSERT_EQ(0, memory_holder->cluster_holder(threads, holder, expected));
+  for (int repeat = 0; repeat < 2; ++repeat) {
+    auto actual = seeds;
+    ASSERT_EQ(0, buffered_holder->cluster_holder(threads, holder, actual));
+    ExpectSameCentroids(expected, actual);
+    EXPECT_TRUE(std::filesystem::is_empty(directory.path));
+  }
+}
+
+TEST(OptKmeansCluster, BufferedTrainingUnderPagePressure) {
+  const size_t metadata =
+      VecBufferPool::metadata_bytes_for_page_count(1024, true);
+  MemoryLimitPool::get_instance().init(metadata + 64u * 1024u);
+  TemporaryTrainingDirectory directory;
+  auto holder = std::make_shared<StreamingTestHolder>(768, 1027);
+  auto cluster = IndexFactory::CreateCluster("OptKmeansCluster");
+  Params params;
+  params.set(OPTKMEANS_CLUSTER_BUFFERED_STORAGE_PATH,
+             directory.path + "/train");
+  params.set(OPTKMEANS_CLUSTER_MAX_ITERATIONS, 3u);
+  ASSERT_EQ(0, cluster->init(holder->meta_, params));
+  auto *fast = dynamic_cast<HolderCluster *>(cluster.get());
+  ASSERT_NE(nullptr, fast);
+  auto threads = std::make_shared<SingleQueueIndexThreads>(2, false);
+  IndexCluster::CentroidList cents;
+  std::vector<float> row(768);
+  for (size_t i = 0; i < 3; ++i) {
+    holder->fill(i, reinterpret_cast<char *>(row.data()));
+    cents.emplace_back(row.data(), row.size() * sizeof(float));
+  }
+  ASSERT_EQ(0, fast->cluster_holder(threads, holder, cents));
+  size_t follows = 0;
+  for (const auto &centroid : cents) follows += centroid.follows();
+  EXPECT_EQ(holder->count(), follows);
+  EXPECT_TRUE(std::filesystem::is_empty(directory.path));
+}
+
+TEST(OptKmeansCluster, BufferedCreationAndDeferredReadFailuresDoNotPublish) {
+  const size_t metadata =
+      VecBufferPool::metadata_bytes_for_page_count(1024, true);
+  MemoryLimitPool::get_instance().init(metadata + 64u * 1024u);
+  TemporaryTrainingDirectory directory;
+  auto holder = std::make_shared<StreamingTestHolder>(7, 259);
+  auto threads = std::make_shared<SingleQueueIndexThreads>(1, false);
+  for (int fault = 0; fault < 3; ++fault) {
+    SCOPED_TRACE(fault);
+    const std::string blocked_parent = directory.path + "/blocked";
+    if (fault == 0) {
+      std::ofstream file(blocked_parent);
+      ASSERT_TRUE(file.good());
+    }
+    auto cluster = IndexFactory::CreateCluster("OptKmeansCluster");
+    Params params;
+    params.set(OPTKMEANS_CLUSTER_BUFFERED_STORAGE_PATH,
+               directory.path + (fault == 0 ? "/blocked/train" : "/train"));
+    ASSERT_EQ(0, cluster->init(holder->meta_, params));
+    cluster->suggest(2);
+    holder->error_at = fault == 1 ? 258 : std::numeric_limits<size_t>::max();
+    holder->fail_at_end = fault == 2;
+    auto *fast = dynamic_cast<HolderCluster *>(cluster.get());
+    ASSERT_NE(nullptr, fast);
+    IndexCluster::CentroidList cents;
+    if (fault == 0) {
+      EXPECT_NE(0, fast->cluster_holder(threads, holder, cents));
+    } else {
+      EXPECT_EQ(IndexError_ReadData,
+                fast->cluster_holder(threads, holder, cents));
+    }
+    EXPECT_TRUE(cents.empty());
+    if (fault == 0) EXPECT_TRUE(std::filesystem::remove(blocked_parent));
+    EXPECT_TRUE(std::filesystem::is_empty(directory.path));
+  }
+}
+
+TEST(OptKmeansCluster, TrainerPropagatesDeferredAndFallbackReadFailures) {
+  auto threads = std::make_shared<SingleQueueIndexThreads>(1, false);
+  for (int mode = 0; mode < 3; ++mode) {
+    for (int fault = 0; fault < 3; ++fault) {
+      SCOPED_TRACE(::testing::Message() << mode << ":" << fault);
+      auto holder = std::make_shared<StreamingTestHolder>(7, 17);
+      if (mode == 2) holder->reported_count = static_cast<size_t>(-1);
+      holder->error_at = fault == 0 ? 16 : std::numeric_limits<size_t>::max();
+      holder->fail_at_end = fault == 1;
+      holder->fail_iterator = fault == 2;
+      auto trainer = IndexFactory::CreateTrainer("StratifiedClusterTrainer");
+      Params params;
+      params.set(STRATIFIED_TRAINER_CLUSTER_COUNT, "2");
+      params.set(STRATIFIED_TRAINER_CLASS_NAME, "OptKmeansCluster");
+      if (mode == 1) params.set(STRATIFIED_TRAINER_SAMPLE_COUNT, 4u);
+      ASSERT_EQ(0, trainer->init(holder->meta_, params));
+      EXPECT_EQ(fault == 2 ? IndexError_Runtime : IndexError_ReadData,
+                trainer->train(threads, holder));
+      EXPECT_EQ(1u, holder->iterations);
+      EXPECT_EQ(0u, holder->live_iterators);
+    }
   }
 }
 

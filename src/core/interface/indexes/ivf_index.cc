@@ -18,10 +18,102 @@
 #include <zvec/core/interface/index.h>
 #include "algorithm/cluster/cluster_params.h"
 #include "algorithm/ivf/ivf_params.h"
+#include "utility/ordinal_access_holder.h"
 #include "utility/utility_params.h"
 #include "holder_builder.h"
 
 namespace zvec::core_interface {
+namespace {
+
+// Direct-add input is already owned by the index. Retain that immutable input
+// through training/dump rather than copying every vector into another holder.
+class CachedIVFHolder : public core::IndexHolder,
+                        public core::OrdinalAccessHolder {
+ public:
+  using Documents = std::vector<std::pair<uint64_t, std::string>>;
+  CachedIVFHolder(DataType type, size_t dimension,
+                  std::shared_ptr<const Documents> documents)
+      : documents_(std::move(documents)) {
+    meta_.set_meta(type, dimension);
+    for (size_t i = 0; i < documents_->size(); ++i) {
+      if ((*documents_)[i].first != kInvalidKey) ordinals_.push_back(i);
+    }
+  }
+  size_t count() const override {
+    return ordinals_.size();
+  }
+  size_t dimension() const override {
+    return meta_.dimension();
+  }
+  DataType data_type() const override {
+    return meta_.data_type();
+  }
+  size_t element_size() const override {
+    return meta_.element_size();
+  }
+  bool multipass() const override {
+    return true;
+  }
+
+  class Reader : public core::OrdinalAccessHolder::Reader {
+   public:
+    Reader(std::shared_ptr<const Documents> documents,
+           const std::vector<size_t> *ordinals)
+        : documents_(std::move(documents)), ordinals_(ordinals) {}
+    int read(size_t ordinal, uint64_t *key, const void **data) override {
+      if (!key || !data) return core::IndexError_InvalidArgument;
+      *data = nullptr;
+      if (ordinal >= ordinals_->size()) return core::IndexError_OutOfRange;
+      const auto &doc = (*documents_)[(*ordinals_)[ordinal]];
+      *key = doc.first;
+      *data = doc.second.data();
+      return 0;
+    }
+    void reset() override {}
+
+   private:
+    std::shared_ptr<const Documents> documents_;
+    const std::vector<size_t> *ordinals_;
+  };
+
+  class Iterator : public core::IndexHolder::Iterator {
+   public:
+    explicit Iterator(const CachedIVFHolder *owner) : owner_(owner) {}
+    const void *data() const override {
+      return (*owner_->documents_)[owner_->ordinals_[ordinal_]].second.data();
+    }
+    bool is_valid() const override {
+      return ordinal_ < owner_->count();
+    }
+    uint64_t key() const override {
+      return (*owner_->documents_)[owner_->ordinals_[ordinal_]].first;
+    }
+    void next() override {
+      ++ordinal_;
+    }
+
+   private:
+    const CachedIVFHolder *owner_;
+    size_t ordinal_{0};
+  };
+
+  core::IndexHolder::Iterator::Pointer create_iterator() override {
+    return std::make_unique<Iterator>(this);
+  }
+  int create_ordinal_reader(
+      core::OrdinalAccessHolder::Reader::Pointer *reader) override {
+    if (!reader) return core::IndexError_InvalidArgument;
+    *reader = std::make_unique<Reader>(documents_, &ordinals_);
+    return 0;
+  }
+
+ private:
+  core::IndexMeta meta_;
+  std::shared_ptr<const Documents> documents_;
+  std::vector<size_t> ordinals_;
+};
+
+}  // namespace
 
 int IVFIndex::create_and_init_streamer(const BaseIndexParam &param) {
   if (is_sparse_) {
@@ -93,9 +185,7 @@ int IVFIndex::open(const std::string &file_path,
       break;
     }
     case StorageOptions::StorageType::kBufferPool: {
-      // IVF is immutable after training and FileDumper already emits the
-      // IndexFormat consumed by BufferReadStorage. Keep construction on the
-      // FileDumper path and use the bounded page cache after dump/reopen.
+      // FileDumper emits the immutable IndexFormat consumed by this reader.
       // Opening an index must not prewarm the entire file or displace other
       // collections' cached pages. Populate the cache on demand instead.
       storage_params.set(core::BUFFER_READ_STORAGE_WARMUP_MODE,
@@ -119,6 +209,19 @@ int IVFIndex::open(const std::string &file_path,
       LOG_ERROR("Unsupported storage type");
       return core::IndexError_Unsupported;
     }
+  }
+
+  proxima_index_params_.set(
+      core::PARAM_IVF_BUILDER_BUILD_STORAGE_PATH,
+      storage_options.type == StorageOptions::StorageType::kBufferPool
+          ? file_path_ + ".build"
+          : std::string());
+  if (storage_options.create_new && !is_read_only_ &&
+      storage_options.type == StorageOptions::StorageType::kBufferPool) {
+    // Storage mode is selected after init. Configure the fresh builder now,
+    // then retain it through train/build/dump retries.
+    const int ret = reset_builder();
+    if (ret != 0) return ret;
   }
 
   if (is_read_only_ || !storage_options.create_new) {
@@ -145,7 +248,22 @@ int IVFIndex::open(const std::string &file_path,
 }
 
 int IVFIndex::generate_holder() {
-  return BuildMultiPassHolder(param_.data_type, param_.dimension, doc_cache_,
+  if (!proxima_index_params_
+           .get_as_string(core::PARAM_IVF_BUILDER_BUILD_STORAGE_PATH)
+           .empty()) {
+    core::IndexHolder::Pointer input = std::make_shared<CachedIVFHolder>(
+        param_.data_type, param_.dimension, doc_cache_);
+    if (converter_) {
+      const int ret =
+          core::IndexConverter::TrainAndTransform(converter_, input);
+      if (ret != 0) return ret;
+      input = converter_->result();
+      if (!input) return core::IndexError_Runtime;
+    }
+    holder_ = std::move(input);
+    return 0;
+  }
+  return BuildMultiPassHolder(param_.data_type, param_.dimension, *doc_cache_,
                               converter_, &holder_);
 }
 
@@ -164,12 +282,12 @@ int IVFIndex::add(const VectorData &vector, uint32_t doc_id) {
       input_vector_meta_.dimension() * input_vector_meta_.unit_size());
 
   std::lock_guard<std::mutex> lock(mutex_);
-  while (doc_cache_.size() <= doc_id) {
+  while (doc_cache_->size() <= doc_id) {
     std::string fake_data(
         input_vector_meta_.dimension() * input_vector_meta_.unit_size(), 0);
-    doc_cache_.push_back(std::make_pair(kInvalidKey, fake_data));
+    doc_cache_->push_back(std::make_pair(kInvalidKey, fake_data));
   }
-  doc_cache_[doc_id] = std::make_pair(doc_id, out_vector_buffer);
+  (*doc_cache_)[doc_id] = std::make_pair(doc_id, out_vector_buffer);
   return 0;
 }
 
@@ -280,7 +398,7 @@ int IVFIndex::dump_and_open() {
   // every failure path so dump/open can be retried with the trained state.
   converter_.reset();
   holder_.reset();
-  decltype(doc_cache_)().swap(doc_cache_);
+  doc_cache_.reset();
   return 0;
 }
 
@@ -291,15 +409,15 @@ int IVFIndex::_dense_fetch(const uint32_t doc_id,
   } else {
     std::lock_guard<std::mutex> lock(mutex_);
     // A failed merge has no cached input; sparse doc IDs also leave holes.
-    if (doc_id >= doc_cache_.size()) {
+    if (!doc_cache_ || doc_id >= doc_cache_->size()) {
       return core::IndexError_OutOfRange;
     }
-    if (doc_cache_[doc_id].first == kInvalidKey) {
+    if ((*doc_cache_)[doc_id].first == kInvalidKey) {
       return core::IndexError_NoExist;
     }
     DenseVectorBuffer dense_vector_buffer;
     std::string &out_vector_buffer = dense_vector_buffer.data;
-    out_vector_buffer = doc_cache_[doc_id].second;
+    out_vector_buffer = (*doc_cache_)[doc_id].second;
     vector_data_buffer->vector_buffer = std::move(dense_vector_buffer);
     return 0;
   }

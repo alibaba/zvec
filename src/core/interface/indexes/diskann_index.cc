@@ -177,6 +177,15 @@ int DiskAnnIndex::open(const std::string &file_path,
     }
   }
 
+  // A fresh builder is created at train/merge time, after open selected the
+  // storage mode. Temporary build pages share the same pool as source pages;
+  // mmap keeps the existing in-memory construction path.
+  proxima_index_params_.set(
+      core::PARAM_DISKANN_BUILDER_BUFFERED_BUILD,
+      storage_options.type == StorageOptions::StorageType::kBufferPool);
+  proxima_index_params_.set(core::PARAM_DISKANN_BUILDER_BUILD_STORAGE_PATH,
+                            file_path_ + ".build");
+
   if (!storage_options.create_new) {
     int ret = storage_->open(file_path_, false);
     if (ret != 0) {

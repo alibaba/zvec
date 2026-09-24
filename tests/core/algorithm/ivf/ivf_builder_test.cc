@@ -14,11 +14,13 @@
 #include "ivf_builder.h"
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <future>
 #include <iostream>
 #include <limits>
 #include <vector>
 #include <gtest/gtest.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_helper.h>
 #include <zvec/core/framework/index_provider.h>
@@ -793,6 +795,96 @@ TEST_F(IVFBuilderTest, OrdinalSourceFallsBackForUnsupportedTransforms) {
     ASSERT_EQ(0, dumper->close());
     EXPECT_EQ(103u, builder.stats().dumped_count());
   }
+}
+
+TEST_F(IVFBuilderTest, BufferedFallbackPreservesTransformsAndOriginalFeatures) {
+  const std::filesystem::path directory("ivf_buffered_fallback_test");
+  ASSERT_TRUE(std::filesystem::create_directory(directory));
+  auto &pool = MemoryLimitPool::get_instance();
+  const size_t capacity = pool.capacity();
+  ASSERT_EQ(pool.used(), 0u);
+  ASSERT_EQ(pool.init(16 * 1024 * 1024), 0);
+  for (int mode : {0, 1, 2}) {
+    SCOPED_TRACE(mode);
+    prepare_index_holder(100, 103);
+    Params params = params_;
+    params.set(PARAM_IVF_BUILDER_CLUSTER_CLASS, "OptKmeansCluster");
+    params.set(PARAM_IVF_BUILDER_BUILD_STORAGE_PATH,
+               (directory / "scratch").string());
+    params.set(PARAM_IVF_BUILDER_STORE_ORIGINAL_FEATURES, true);
+    if (mode == 1)
+      params.set(PARAM_IVF_BUILDER_CONVERTER_CLASS, "HalfFloatConverter");
+    if (mode == 2)
+      params.set(PARAM_IVF_BUILDER_QUANTIZER_CLASS, "HalfFloatConverter");
+    IVFBuilder builder;
+    ASSERT_EQ(builder.init(index_meta_, params), 0);
+    ASSERT_EQ(builder.train(threads_, holder_), 0);
+    auto source = std::make_shared<OrdinalTestHolder>(holder_);
+    source->create_error = IndexError_NotImplemented;
+    ASSERT_EQ(builder.build(threads_, source), 0);
+    EXPECT_FALSE(std::filesystem::is_empty(directory));
+    const auto path = (directory / "index").string();
+    for (int pass = 0; pass < 2; ++pass) {
+      auto dumper = IndexFactory::CreateDumper("FileDumper");
+      ASSERT_EQ(dumper->create(path), 0);
+      ASSERT_EQ(builder.dump(dumper), 0);
+      ASSERT_EQ(dumper->close(), 0);
+      auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+      ASSERT_EQ(storage->init(Params()), 0);
+      ASSERT_EQ(storage->open(path, false), 0);
+      auto streamer = IndexFactory::CreateStreamer("IVFStreamer");
+      ASSERT_EQ(streamer->init(index_meta_, Params()), 0);
+      ASSERT_EQ(streamer->open(storage), 0);
+      auto provider = streamer->create_provider();
+      ASSERT_NE(provider, nullptr);
+      // Original-feature storage must still contain input FP32 bytes, even
+      // when centroids or inverted features use FP16.
+      for (auto iter = holder_->create_iterator(); iter->is_valid();
+           iter->next()) {
+        const void *actual = provider->get_vector(iter->key());
+        ASSERT_NE(actual, nullptr);
+        ASSERT_EQ(std::memcmp(actual, iter->data(), holder_->element_size()),
+                  0);
+      }
+      provider.reset();
+      ASSERT_EQ(streamer->close(), 0);
+      ASSERT_EQ(storage->close(), 0);
+      ASSERT_TRUE(std::filesystem::remove(path));
+    }
+    ASSERT_EQ(builder.cleanup(), 0);
+    EXPECT_TRUE(std::filesystem::is_empty(directory));
+  }
+  EXPECT_EQ(pool.used(), 0u);
+  EXPECT_EQ(pool.init(capacity), 0);
+  EXPECT_TRUE(std::filesystem::remove(directory));
+}
+
+TEST_F(IVFBuilderTest, BufferedFallbackPropagatesDeferredIteratorErrors) {
+  const std::filesystem::path directory("ivf_buffered_read_error_test");
+  ASSERT_TRUE(std::filesystem::create_directory(directory));
+  auto &pool = MemoryLimitPool::get_instance();
+  const size_t capacity = pool.capacity();
+  ASSERT_EQ(pool.used(), 0u);
+  ASSERT_EQ(pool.init(16 * 1024 * 1024), 0);
+  prepare_index_holder(100, 16);
+  params_.set(PARAM_IVF_BUILDER_CLUSTER_CLASS, "OptKmeansCluster");
+  params_.set(PARAM_IVF_BUILDER_BUILD_STORAGE_PATH,
+              (directory / "scratch").string());
+  for (auto operation :
+       {IteratorErrorOperation::kValidity, IteratorErrorOperation::kKey,
+        IteratorErrorOperation::kData}) {
+    IVFBuilder builder;
+    ASSERT_EQ(builder.init(index_meta_, params_), 0);
+    ASSERT_EQ(builder.train(threads_, holder_), 0);
+    auto failing =
+        std::make_shared<IteratorErrorHolder>(holder_, 15, operation);
+    EXPECT_EQ(builder.build(threads_, failing), IndexError_ReadData);
+    EXPECT_EQ(builder.cleanup(), 0);
+    EXPECT_TRUE(std::filesystem::is_empty(directory));
+  }
+  EXPECT_EQ(pool.used(), 0u);
+  EXPECT_EQ(pool.init(capacity), 0);
+  EXPECT_TRUE(std::filesystem::remove(directory));
 }
 
 TEST_F(IVFBuilderTest, TestInitSuccess) {
