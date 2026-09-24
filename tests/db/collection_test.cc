@@ -8109,3 +8109,74 @@ TEST_F(CollectionTest, Feature_DropAndRecreateScalarIndex_MultipleFields) {
     ASSERT_EQ(*doc, expect_doc);
   }
 }
+
+// Regression test for Issue #781: GroupByQuery on HNSW index with filter predicate
+TEST_F(CollectionTest, Feature_GroupByQuery_HnswWithFilter) {
+  auto run_test = [&](bool enable_mmap) {
+    CollectionOptions options;
+    options.read_only_ = false;
+    options.enable_mmap_ = enable_mmap;
+
+    std::string path = "./demo_issue781";
+    ailego::FileHelper::RemoveDirectory(path.c_str());
+
+    auto schema = std::make_shared<CollectionSchema>("demo_issue781");
+    schema->add_field(std::make_shared<FieldSchema>("category", DataType::STRING, false));
+    schema->add_field(std::make_shared<FieldSchema>("score_val", DataType::INT32, false));
+    schema->add_field(std::make_shared<FieldSchema>(
+        "vec", DataType::VECTOR_FP32, 4, false,
+        std::make_shared<HnswIndexParams>(MetricType::L2)));
+
+    auto col_res = Collection::CreateAndOpen(path, *schema, options);
+    ASSERT_TRUE(col_res.has_value()) << col_res.error().message();
+    auto col = std::move(col_res.value());
+
+    std::vector<Doc> docs;
+    for (int i = 0; i < 20; ++i) {
+      Doc doc;
+      doc.set_pk("pk_" + std::to_string(i));
+      doc.set<std::string>("category", "cat_" + std::to_string(i % 4));
+      doc.set<int32_t>("score_val", i);
+      std::vector<float> vec(4, static_cast<float>(i));
+      doc.set<std::vector<float>>("vec", vec);
+      docs.push_back(doc);
+    }
+    auto insert_res = col->insert(docs);
+    ASSERT_TRUE(insert_res.has_value()) << insert_res.error().message();
+    ASSERT_TRUE(col->flush().ok());
+
+    GroupByVectorQuery group_query;
+    std::vector<float> qvec{0.0f, 0.0f, 0.0f, 0.0f};
+    group_query.target_.field_name_ = "vec";
+    group_query.target_.set_vector(
+        std::string((char *)qvec.data(), qvec.size() * sizeof(float)));
+    group_query.filter_ = "score_val >= 4";
+    group_query.group_by_field_name_ = "category";
+    group_query.group_count_ = 4;
+    group_query.topk_per_group_ = 2;
+    group_query.output_fields_ = std::vector<std::string>{"category", "score_val"};
+
+    auto group_res = col->group_by_query(group_query);
+    ASSERT_TRUE(group_res.has_value()) << group_res.error().message();
+    ASSERT_FALSE(group_res.value().empty());
+    EXPECT_LE(group_res.value().size(), 4u);
+
+    for (const auto &group : group_res.value()) {
+      EXPECT_FALSE(group.group_by_value_.empty());
+      EXPECT_FALSE(group.docs_.empty());
+      EXPECT_LE(group.docs_.size(), 2u);
+      for (const auto &d : group.docs_) {
+        EXPECT_TRUE(d.has("category"));
+        EXPECT_TRUE(d.has("score_val"));
+        EXPECT_GE(d.get<int32_t>("score_val").value(), 4);
+      }
+    }
+
+    col.reset();
+    ailego::FileHelper::RemoveDirectory(path.c_str());
+  };
+
+  run_test(false);
+  run_test(true);
+}
+

@@ -209,13 +209,20 @@ void HnswRabitqQueryAlgorithm::expand_neighbors_by_group(
 
   const auto &entity = ctx->get_entity();
   std::function<std::string(node_id_t)> group_by = [&](node_id_t id) {
-    return ctx->group_by()(entity.get_key(id));
+    auto key = entity.get_key(id);
+    if (key == kInvalidKey) {
+      return std::string();
+    }
+    return ctx->group_by()(key);
   };
 
   // devide into groups
   std::map<std::string, TopkHeap> &group_topk_heaps = ctx->group_topk_heaps();
   for (uint32_t i = 0; i < topk.size(); ++i) {
     node_id_t id = topk[i].first;
+    if (entity.get_key(id) == kInvalidKey) {
+      continue;
+    }
     auto score = topk[i].second;
 
     std::string group_id = group_by(id);
@@ -232,16 +239,22 @@ void HnswRabitqQueryAlgorithm::expand_neighbors_by_group(
     VisitFilter &visit = ctx->visit_filter();
     CandidateHeap &candidates = ctx->candidates();
 
-    std::function<bool(node_id_t)> filter = [](node_id_t) { return false; };
-    if (ctx->filter().is_valid()) {
-      filter = [&](node_id_t id) { return ctx->filter()(entity.get_key(id)); };
-    }
+    std::function<bool(node_id_t)> filter = [&](node_id_t id) {
+      auto key = entity.get_key(id);
+      if (key == kInvalidKey) {
+        return true;
+      }
+      return ctx->filter().is_valid() ? ctx->filter()(key) : false;
+    };
 
     // refill to get enough groups
     candidates.clear();
     visit.clear();
     for (uint32_t i = 0; i < topk.size(); ++i) {
       node_id_t id = topk[i].first;
+      if (entity.get_key(id) == kInvalidKey) {
+        continue;
+      }
       auto score = topk[i].second;
 
       visit.set_visited(id);

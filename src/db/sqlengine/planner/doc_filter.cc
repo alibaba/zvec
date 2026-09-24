@@ -71,6 +71,10 @@ bool DocFilter::empty() const {
 }
 
 bool DocFilter::is_filtered(uint64_t id) const {
+  if (id == std::numeric_limits<uint64_t>::max() ||
+      id >= segment_->doc_count()) {
+    return true;
+  }
   if (delete_filter_ && delete_filter_->is_filtered(id)) {
     return true;
   }
