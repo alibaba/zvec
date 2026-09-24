@@ -310,7 +310,7 @@ jobs:
 
           # Push helper binaries (needed by crash_recovery tests which fork+exec them)
           echo "Pushing helper binaries..."
-          for helper_name in data_generator collection_optimizer; do
+          for helper_name in data_generator collection_optimizer checkpoint_recovery_worker; do
             helper_path=$(find "$BUILD_DIR" -name "$helper_name" -type f -executable ! -name "*_test" 2>/dev/null | head -1)
             if [ -n "$helper_path" ]; then
               adb push "$helper_path" "$DEVICE_TEST_DIR/$helper_name" > /dev/null 2>&1
@@ -412,8 +412,8 @@ jobs:
             adb shell "mkdir -p $WORK_DIR" 2>/dev/null
 
             # Copy helper binaries into working directory so crash_recovery tests
-            # (which fork+exec data_generator / collection_optimizer) can find them
-            adb shell "for h in $DEVICE_TEST_DIR/data_generator $DEVICE_TEST_DIR/collection_optimizer; do [ -f \$h ] && cp \$h $WORK_DIR/; done" 2>/dev/null || true
+            # (which fork+exec the generator, optimizer, or checkpoint worker) can find them
+            adb shell "for h in $DEVICE_TEST_DIR/data_generator $DEVICE_TEST_DIR/collection_optimizer $DEVICE_TEST_DIR/checkpoint_recovery_worker; do [ -f \$h ] && cp \$h $WORK_DIR/; done" 2>/dev/null || true
 
             # Push test binary
             adb push "$test_bin" "$device_path" > /dev/null 2>&1
