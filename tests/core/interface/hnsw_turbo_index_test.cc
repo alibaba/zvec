@@ -214,7 +214,9 @@ void CheckGraphRecall(const SearchRowList &linear_rows,
         [key = graph_row.first](const auto &row) { return row.first == key; });
     if (match != linear_rows.end()) {
       ++matches;
-      EXPECT_FLOAT_EQ(match->second, graph_row.second);
+      // Single-vector and batch kernels can round differently near zero,
+      // where EXPECT_FLOAT_EQ's ULP comparison is too strict (e.g. cosine).
+      EXPECT_NEAR(match->second, graph_row.second, 1e-6f);
     }
   }
   EXPECT_GE(matches, 9U) << "Graph search must recover at least 90% of the "
