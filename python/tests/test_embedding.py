@@ -24,6 +24,7 @@ from zvec.extension import (
     DefaultLocalDenseEmbedding,
     DefaultLocalSparseEmbedding,
     OpenAIDenseEmbedding,
+    OrcaRouterDenseEmbedding,
     QwenDenseEmbedding,
     QwenSparseEmbedding,
 )
@@ -806,6 +807,303 @@ class TestOpenAIDenseEmbedding:
             dimension=256,
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         )
+        vector = embedding_func.embed("Hello, world!")
+        assert len(vector) == 256
+        assert isinstance(vector, list)
+        assert all(isinstance(x, float) for x in vector)
+
+
+# ----------------------------
+# OrcaRouterDenseEmbedding Test Case
+# ----------------------------
+class TestOrcaRouterDenseEmbedding:
+    def test_init_with_api_key(self):
+        """Test initialization with explicit API key."""
+        embedding_func = OrcaRouterDenseEmbedding(api_key="sk-orca-test-key")
+        assert embedding_func.dimension == 1536  # Default for text-embedding-3-small
+        assert embedding_func.model == "openai/text-embedding-3-small"
+        assert embedding_func._api_key == "sk-orca-test-key"
+
+    @patch.dict(os.environ, {"ORCAROUTER_API_KEY": "sk-orca-env-key"})
+    def test_init_with_env_api_key(self):
+        """Test initialization with API key from environment."""
+        embedding_func = OrcaRouterDenseEmbedding()
+        assert embedding_func._api_key == "sk-orca-env-key"
+
+    @patch.dict(os.environ, {"ORCAROUTER_API_KEY": ""})
+    def test_init_without_api_key(self):
+        """Test initialization fails without API key."""
+        with pytest.raises(ValueError, match="OrcaRouter API key is required"):
+            OrcaRouterDenseEmbedding()
+
+    def test_init_with_custom_dimension(self):
+        """Test initialization with custom dimension."""
+        embedding_func = OrcaRouterDenseEmbedding(
+            model="openai/text-embedding-3-large",
+            dimension=1024,
+            api_key="sk-orca-test",
+        )
+        assert embedding_func.dimension == 1024
+        assert embedding_func.model == "openai/text-embedding-3-large"
+
+    def test_init_with_custom_base_url(self):
+        """Test initialization with custom base URL."""
+        embedding_func = OrcaRouterDenseEmbedding(
+            api_key="sk-orca-test", base_url="https://custom.orca.example/v1"
+        )
+        assert embedding_func._base_url == "https://custom.orca.example/v1"
+
+    def test_default_base_url(self):
+        """Test default base URL points at OrcaRouter."""
+        embedding_func = OrcaRouterDenseEmbedding(api_key="sk-orca-test")
+        assert embedding_func._base_url == "https://api.orcarouter.ai/v1"
+
+    def test_model_property(self):
+        """Test model property."""
+        embedding_func = OrcaRouterDenseEmbedding(api_key="sk-orca-test")
+        assert embedding_func.model == "openai/text-embedding-3-small"
+
+        embedding_func = OrcaRouterDenseEmbedding(
+            model="openai/text-embedding-ada-002", api_key="sk-orca-test"
+        )
+        assert embedding_func.model == "openai/text-embedding-ada-002"
+
+    def test_extra_params(self):
+        """Test extra_params property."""
+        # Test without extra params
+        embedding_func = OrcaRouterDenseEmbedding(api_key="sk-orca-test")
+        assert embedding_func.extra_params == {}
+
+        # Test with extra params
+        embedding_func = OrcaRouterDenseEmbedding(
+            api_key="sk-orca-test",
+            encoding_format="float",
+            user="test-user",
+        )
+        assert embedding_func.extra_params == {
+            "encoding_format": "float",
+            "user": "test-user",
+        }
+
+    @patch("zvec.extension.orcarouter_function.require_module")
+    def test_embed_with_empty_text(self, mock_require_module):
+        """Test embed method with empty text raises ValueError."""
+        embedding_func = OrcaRouterDenseEmbedding(api_key="sk-orca-test")
+
+        with pytest.raises(
+            ValueError, match="Input text cannot be empty or whitespace only"
+        ):
+            embedding_func.embed("")
+
+        with pytest.raises(
+            ValueError, match="Input text cannot be empty or whitespace only"
+        ):
+            embedding_func.embed("   ")
+
+    @patch("zvec.extension.orcarouter_function.require_module")
+    def test_embed_with_non_string_input(self, mock_require_module):
+        """Test embed method with non-string input raises TypeError."""
+        embedding_func = OrcaRouterDenseEmbedding(api_key="sk-orca-test")
+
+        with pytest.raises(TypeError, match="Expected 'input' to be str"):
+            embedding_func.embed(123)
+
+        with pytest.raises(TypeError, match="Expected 'input' to be str"):
+            embedding_func.embed(None)
+
+    @patch("zvec.extension.orcarouter_function.require_module")
+    def test_embed_success(self, mock_require_module):
+        """Test successful embedding generation."""
+        # Mock OpenAI client
+        mock_openai = Mock()
+        mock_client = Mock()
+        mock_response = Mock()
+
+        # Create mock embedding data
+        fake_embedding = [0.1, 0.2, 0.3]
+        mock_embedding_obj = Mock()
+        mock_embedding_obj.embedding = fake_embedding
+        mock_response.data = [mock_embedding_obj]
+
+        mock_client.embeddings.create.return_value = mock_response
+        mock_openai.OpenAI.return_value = mock_client
+        mock_require_module.return_value = mock_openai
+
+        embedding_func = OrcaRouterDenseEmbedding(dimension=3, api_key="sk-orca-test")
+        embedding_func.embed.cache_clear()
+        result = embedding_func.embed("test text")
+
+        assert result == [0.1, 0.2, 0.3]
+        mock_client.embeddings.create.assert_called_once_with(
+            model="openai/text-embedding-3-small", input="test text", dimensions=3
+        )
+
+    @patch("zvec.extension.orcarouter_function.require_module")
+    def test_embed_with_custom_model(self, mock_require_module):
+        """Test embedding with custom model."""
+        mock_openai = Mock()
+        mock_client = Mock()
+        mock_response = Mock()
+
+        fake_embedding = [0.1] * 1536
+        mock_embedding_obj = Mock()
+        mock_embedding_obj.embedding = fake_embedding
+        mock_response.data = [mock_embedding_obj]
+
+        mock_client.embeddings.create.return_value = mock_response
+        mock_openai.OpenAI.return_value = mock_client
+        mock_require_module.return_value = mock_openai
+
+        embedding_func = OrcaRouterDenseEmbedding(
+            model="openai/text-embedding-ada-002", api_key="sk-orca-test"
+        )
+        embedding_func.embed.cache_clear()
+        result = embedding_func.embed("test text")
+
+        assert len(result) == 1536
+        mock_client.embeddings.create.assert_called_once_with(
+            model="openai/text-embedding-ada-002", input="test text"
+        )
+
+    @patch("zvec.extension.orcarouter_function.require_module")
+    def test_embed_api_error(self, mock_require_module):
+        """Test handling of API errors."""
+        mock_openai = Mock()
+        mock_client = Mock()
+
+        # Simulate API error
+        mock_openai.APIError = type("APIError", (Exception,), {})
+        mock_openai.APIConnectionError = type("APIConnectionError", (Exception,), {})
+
+        mock_client.embeddings.create.side_effect = mock_openai.APIError(
+            "Rate limit exceeded"
+        )
+        mock_openai.OpenAI.return_value = mock_client
+        mock_require_module.return_value = mock_openai
+
+        embedding_func = OrcaRouterDenseEmbedding(api_key="sk-orca-test")
+        embedding_func.embed.cache_clear()
+
+        with pytest.raises(RuntimeError, match="Failed to call OrcaRouter API"):
+            embedding_func.embed("test text")
+
+    @patch("zvec.extension.orcarouter_function.require_module")
+    def test_embed_invalid_response(self, mock_require_module):
+        """Test handling of invalid API response."""
+        mock_openai = Mock()
+        mock_client = Mock()
+        mock_response = Mock()
+
+        # Empty response data
+        mock_response.data = []
+
+        mock_client.embeddings.create.return_value = mock_response
+        mock_openai.OpenAI.return_value = mock_client
+        mock_openai.APIError = type("APIError", (Exception,), {})
+        mock_openai.APIConnectionError = type("APIConnectionError", (Exception,), {})
+        mock_require_module.return_value = mock_openai
+
+        embedding_func = OrcaRouterDenseEmbedding(api_key="sk-orca-test")
+        embedding_func.embed.cache_clear()
+
+        with pytest.raises(ValueError, match="no embedding data returned"):
+            embedding_func.embed("test text")
+
+    @patch("zvec.extension.orcarouter_function.require_module")
+    def test_embed_dimension_mismatch(self, mock_require_module):
+        """Test handling of dimension mismatch."""
+        mock_openai = Mock()
+        mock_client = Mock()
+        mock_response = Mock()
+
+        # Return embedding with wrong dimension
+        fake_embedding = [0.1] * 512
+        mock_embedding_obj = Mock()
+        mock_embedding_obj.embedding = fake_embedding
+        mock_response.data = [mock_embedding_obj]
+
+        mock_client.embeddings.create.return_value = mock_response
+        mock_openai.OpenAI.return_value = mock_client
+        mock_openai.APIError = type("APIError", (Exception,), {})
+        mock_openai.APIConnectionError = type("APIConnectionError", (Exception,), {})
+        mock_require_module.return_value = mock_openai
+
+        embedding_func = OrcaRouterDenseEmbedding(
+            dimension=1536, api_key="sk-orca-test"
+        )
+        embedding_func.embed.cache_clear()
+
+        with pytest.raises(ValueError, match="Dimension mismatch"):
+            embedding_func.embed("test text")
+
+    @patch("zvec.extension.orcarouter_function.require_module")
+    def test_embed_callable(self, mock_require_module):
+        """Test that embedding function is callable."""
+        mock_openai = Mock()
+        mock_client = Mock()
+        mock_response = Mock()
+
+        fake_embedding = [0.1] * 1536
+        mock_embedding_obj = Mock()
+        mock_embedding_obj.embedding = fake_embedding
+        mock_response.data = [mock_embedding_obj]
+
+        mock_client.embeddings.create.return_value = mock_response
+        mock_openai.OpenAI.return_value = mock_client
+        mock_openai.APIError = type("APIError", (Exception,), {})
+        mock_openai.APIConnectionError = type("APIConnectionError", (Exception,), {})
+        mock_require_module.return_value = mock_openai
+
+        embedding_func = OrcaRouterDenseEmbedding(api_key="sk-orca-test")
+        embedding_func.embed.cache_clear()
+
+        # Test calling the function directly
+        result = embedding_func("test text")
+        assert isinstance(result, list)
+        assert len(result) == 1536
+
+    @patch("zvec.extension.orcarouter_function.require_module")
+    def test_embed_with_base_url(self, mock_require_module):
+        """Test embedding with custom base URL."""
+        mock_openai = Mock()
+        mock_client = Mock()
+        mock_response = Mock()
+
+        fake_embedding = [0.1] * 1536
+        mock_embedding_obj = Mock()
+        mock_embedding_obj.embedding = fake_embedding
+        mock_response.data = [mock_embedding_obj]
+
+        mock_client.embeddings.create.return_value = mock_response
+        mock_openai.OpenAI.return_value = mock_client
+        mock_openai.APIError = type("APIError", (Exception,), {})
+        mock_openai.APIConnectionError = type("APIConnectionError", (Exception,), {})
+        mock_require_module.return_value = mock_openai
+
+        embedding_func = OrcaRouterDenseEmbedding(
+            api_key="sk-orca-test", base_url="https://custom.orca.example/v1"
+        )
+        embedding_func.embed.cache_clear()
+        result = embedding_func.embed("test text")
+
+        # Verify client was created with custom base URL
+        mock_openai.OpenAI.assert_called_once_with(
+            api_key="sk-orca-test", base_url="https://custom.orca.example/v1"
+        )
+        assert len(result) == 1536
+
+    @pytest.mark.skipif(
+        not RUN_INTEGRATION_TESTS,
+        reason="Integration test skipped. Set ZVEC_RUN_INTEGRATION_TESTS=1 to run.",
+    )
+    def test_real_embed_success(self):
+        """Integration test with real OrcaRouter API.
+
+        To run this test, set environment variable:
+            export ZVEC_RUN_INTEGRATION_TESTS=1
+            export ORCAROUTER_API_KEY=sk-orca-...
+        """
+        embedding_func = OrcaRouterDenseEmbedding(dimension=256)
         vector = embedding_func.embed("Hello, world!")
         assert len(vector) == 256
         assert isinstance(vector, list)
