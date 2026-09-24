@@ -135,6 +135,12 @@ jobs:
             ${{ matrix.arch_flag }}
         shell: bash
 
+      - name: Verify Turbo distance ISA dispatch
+        run: |
+          cd "$GITHUB_WORKSPACE/build"
+          cmake --build . --target unittest.turbo_distance_dispatch_test --parallel "$NPROC"
+        shell: bash
+
       - name: Run C++ Tests
         if: matrix.platform != 'macos-x64'
         run: |

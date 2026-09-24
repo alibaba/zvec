@@ -214,6 +214,14 @@ struct DistanceKernels {
   QueryPreprocessFunc preprocess = nullptr;
 };
 
+// Returns the architecture selected for a distance-kernel lookup without
+// executing the kernel. kAuto is returned when no matching kernel is
+// available. This is useful for diagnostics and for validating runtime
+// dispatch on different CPU models.
+ZVEC_TURBO_API CpuArchType get_distance_kernel_arch(
+    MetricType metric_type, DataType data_type, QuantizeType quantize_type,
+    CpuArchType cpu_arch_type = CpuArchType::kAuto);
+
 // Aggregate lookup: resolves dist/batch/preprocess in one pass so callers
 // cannot pair functions from different kernel families.
 ZVEC_TURBO_API DistanceKernels get_distance_kernels(
