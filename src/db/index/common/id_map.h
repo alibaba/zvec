@@ -58,6 +58,9 @@ class IDMap {
 
   Status flush();
 
+  // Merge all SSTs, including files already in the bottommost level
+  Status compact();
+
   Status upsert(const std::string &key, uint64_t doc_id);
 
   void remove(const std::string &key);
