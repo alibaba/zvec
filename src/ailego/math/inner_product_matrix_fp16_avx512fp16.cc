@@ -19,66 +19,6 @@
 namespace zvec {
 namespace ailego {
 
-#if defined(__AVX512FP16__)
-//! Inner Product
-float InnerProductFp16AVX512FP16(const Float16 *lhs, const Float16 *rhs,
-                                 size_t size) {
-  const Float16 *last = lhs + size;
-  const Float16 *last_aligned = lhs + ((size >> 6) << 6);
-
-  __m512h zmm_sum_0 = _mm512_setzero_ph();
-  __m512h zmm_sum_1 = _mm512_setzero_ph();
-
-  if (((uintptr_t)lhs & 0x3f) == 0 && ((uintptr_t)rhs & 0x3f) == 0) {
-    for (; lhs != last_aligned; lhs += 64, rhs += 64) {
-      FMA_FP16_AVX512FP16(_mm512_load_ph(lhs + 0), _mm512_load_ph(rhs + 0),
-                          zmm_sum_0)
-
-      FMA_FP16_AVX512FP16(_mm512_load_ph(lhs + 32), _mm512_load_ph(rhs + 32),
-                          zmm_sum_1)
-    }
-
-    if (last >= last_aligned + 32) {
-      FMA_FP16_AVX512FP16(_mm512_load_ph(lhs), _mm512_load_ph(rhs), zmm_sum_0)
-      lhs += 32;
-      rhs += 32;
-    }
-  } else {
-    for (; lhs != last_aligned; lhs += 64, rhs += 64) {
-      FMA_FP16_AVX512FP16(_mm512_loadu_ph(lhs + 0), _mm512_loadu_ph(rhs + 0),
-                          zmm_sum_0)
-
-      FMA_FP16_AVX512FP16(_mm512_loadu_ph(lhs + 32), _mm512_loadu_ph(rhs + 32),
-                          zmm_sum_1)
-    }
-
-    if (last >= last_aligned + 32) {
-      FMA_FP16_AVX512FP16(_mm512_loadu_ph(lhs), _mm512_loadu_ph(rhs), zmm_sum_0)
-      lhs += 32;
-      rhs += 32;
-    }
-  }
-
-  zmm_sum_0 = _mm512_add_ph(zmm_sum_0, zmm_sum_1);
-
-  if (lhs != last) {
-    __mmask32 mask = (__mmask32)((1 << (last - lhs)) - 1);
-    __m512i zmm_undefined = _mm512_undefined_epi32();
-    zmm_sum_0 = _mm512_mask3_fmadd_ph(
-        _mm512_castsi512_ph(_mm512_mask_loadu_epi16(zmm_undefined, mask, lhs)),
-        _mm512_castsi512_ph(_mm512_mask_loadu_epi16(zmm_undefined, mask, rhs)),
-        zmm_sum_0, mask);
-  }
-
-  return HorizontalAdd_FP16_V512(zmm_sum_0);
-}
-
-float MinusInnerProductFp16AVX512FP16(const Float16 *lhs, const Float16 *rhs,
-                                      size_t size) {
-  return -1 * InnerProductFp16AVX512FP16(lhs, rhs, size);
-}
-#endif
-
 // sparse
 #if defined(__AVX512FP16__)
 constexpr uint32_t MAX_SPARSE_BUFFER_LENGTH = 65536;
