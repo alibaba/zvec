@@ -952,6 +952,10 @@ Status CollectionImpl::optimize(const OptimizeOptions &options) {
   auto s = execute_compact_task(tasks);
   CHECK_RETURN_STATUS(s);
 
+  // Flushes never merge ID-map SSTs when primary keys only ascend.
+  s = id_map_->compact();
+  CHECK_RETURN_STATUS(s);
+
   // End of phase 2 (still lock-free): move built tmp segments to their
   // final paths and open them before the manifest is persisted, so a
   // failure aborts cleanly without a version/disk mismatch.
