@@ -246,23 +246,6 @@ static inline float HorizontalAdd_FP32_V512(__m512 v) {
 }
 #endif  // __AVX512F__
 
-#if defined(__AVX512FP16__)
-static inline float HorizontalMax_FP16_V512(__m512h v) {
-  __m512 low = _mm512_cvtxph_ps(_mm512_castph512_ph256(v));
-  __m512 high = _mm512_cvtxph_ps(
-      _mm256_castpd_ph(_mm512_extractf64x4_pd(_mm512_castph_pd(v), 1)));
-  return HorizontalMax_FP32_V512(_mm512_max_ps(low, high));
-}
-
-static inline float HorizontalAdd_FP16_V512(__m512h v) {
-  __m512 low = _mm512_cvtxph_ps(_mm512_castph512_ph256(v));
-  __m512 high = _mm512_cvtxph_ps(
-      _mm256_castpd_ph(_mm512_extractf64x4_pd(_mm512_castph_pd(v), 1)));
-
-  return HorizontalAdd_FP32_V512(_mm512_add_ps(low, high));
-}
-#endif  // __AVX512FP16__
-
 } // namespace ailego
 } // namespace zvec
 // NOLINTEND(readability-identifier-naming)

@@ -40,13 +40,6 @@ float MinusInnerProductFp16AVX512(const Float16 *lhs, const Float16 *rhs,
                                   size_t size);
 #endif
 
-#if defined(__AVX512FP16__)
-float InnerProductFp16AVX512FP16(const Float16 *lhs, const Float16 *rhs,
-                                 size_t size);
-float MinusInnerProductFp16AVX512FP16(const Float16 *lhs, const Float16 *rhs,
-                                      size_t size);
-#endif
-
 float InnerProductFp16Scalar(const Float16 *lhs, const Float16 *rhs,
                              size_t size);
 float MinusInnerProductFp16Scalar(const Float16 *lhs, const Float16 *rhs,
@@ -59,12 +52,6 @@ void InnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
 #if defined(__ARM_NEON)
   *out = InnerProductFp16NEON(m, q, dim);
 #else
-#if defined(__AVX512FP16__)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
-    *out = InnerProductFp16AVX512FP16(m, q, dim);
-    return;
-  }
-#endif  //__AVX512FP16__
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
     *out = InnerProductFp16AVX512(m, q, dim);
@@ -89,12 +76,6 @@ void MinusInnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
 #if defined(__ARM_NEON)
   *out = MinusInnerProductFp16NEON(m, q, dim);
 #else
-#if defined(__AVX512FP16__)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
-    *out = MinusInnerProductFp16AVX512FP16(m, q, dim);
-    return;
-  }
-#endif  //__AVX512FP16__
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
     *out = MinusInnerProductFp16AVX512(m, q, dim);
