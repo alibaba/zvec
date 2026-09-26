@@ -347,7 +347,7 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
     uint64_t chunk_offset = -1UL;
     size_t neighbors_size = get_total_upper_neighbors_size(level);
     uint64_t chunk_index = upper_neighbor_chunks_.size() - 1UL;
-    if (chunk_index == -1UL ||
+    if (chunk_index == UINT64_MAX ||
         (upper_neighbor_chunks_[chunk_index]->padding_size() <
          neighbors_size)) {  // no space left and need to alloc
       chunk_index++;

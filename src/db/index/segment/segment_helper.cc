@@ -16,16 +16,14 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <roaring.hh>
 #include <arrow/compute/api_vector.h>
 #include <arrow/type_fwd.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/config.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
-#if RABITQ_SUPPORTED
 #include "core/algorithm/hnsw_rabitq/rabitq_params.h"
-#endif
-#include <roaring.hh>
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
 #include "db/common/global_resource.h"
@@ -878,8 +876,7 @@ Status SegmentHelper::PrepareQuantizeField(
 
 #if !RABITQ_SUPPORTED
   (void)raw_vector_provider;
-  return Status::NotSupported(
-      "RabitQ is not supported on this platform (Linux x86_64 only)");
+  return Status::NotSupported(core::kRabitqUnsupportedPlatform);
 #else
   if (vector_index_params->type() == IndexType::IVF_RABITQ) {
     *out_field = field_clone;
