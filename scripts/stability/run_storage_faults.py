@@ -101,8 +101,8 @@ class Volume:
         self.loops.append(device)
         return device
 
-    def mount(self, device):
-        self.root("mount", "-o", "noatime", device, self.mountpoint)
+    def mount(self, device, options="noatime"):
+        self.root("mount", "-o", options, device, self.mountpoint)
         self.mounted = True
         self.root("chown", f"{os.getuid()}:{os.getgid()}", self.mountpoint)
 
@@ -146,6 +146,18 @@ class Volume:
             # Keep failed images; successful cases only need logs and metadata.
             for image in self.folder.glob("*.img"):
                 image.unlink()
+
+
+# rotate: one-byte memory buffer, every acknowledged insert crosses a block
+# checkpoint. create_index/drop_index retire old scalar index files.
+POWER_LOSS_OPERATIONS = (
+    "insert",
+    "flush",
+    "optimize",
+    "rotate",
+    "create_index",
+    "drop_index",
+)
 
 
 def worker_args(args, database, mode, fts, minimum=64):
@@ -366,6 +378,32 @@ def read_log(path):
         return entries
 
 
+def choose_settle_cuts(entries, limit):
+    """Cuts after the durable acknowledgement, before unmount.
+
+    ``operation-durable`` is marked as soon as the worker acknowledged flush(),
+    before the filesystem committed the metadata of that flush (for example
+    the WAL and old-manifest unlinks) or wrote back its delayed data. Every
+    state the device can expose while it settles must still contain the
+    acknowledged data, so all FLUSH/FUA boundaries up to
+    ``operation-settled`` are replayed, capped deterministically at ``limit``.
+    """
+    marks = {mark: index for index, _, mark in entries if mark}
+    durable, settled = marks["operation-durable"], marks["operation-settled"]
+    if settled < durable:
+        raise RuntimeError("Settle mark precedes the durability mark")
+    candidates = set()
+    for index, flags, _ in entries:
+        if durable < index < settled and flags & 3:
+            candidates.update((index, index + 1))
+    candidates = sorted(candidates - {settled + 1})
+    if len(candidates) > max(0, limit - 1):
+        # Evenly spaced and seed-independent, so reruns replay the same cuts.
+        step = len(candidates) / max(1, limit - 1)
+        candidates = sorted({candidates[int(i * step)] for i in range(limit - 1)})
+    return sorted(set(candidates) | {settled + 1})
+
+
 def choose_cuts(entries, count, seed):
     marks = {mark: index for index, _, mark in entries if mark}
     begin, end = marks["operation-begin"], marks["operation-durable"]
@@ -386,6 +424,10 @@ def choose_cuts(entries, count, seed):
 
 
 def power_case(args, folder, fts, operation):
+    # Commit the journal every second so metadata of the acknowledged
+    # operation reaches the log during the settle window while delayed data
+    # (dirty_expire_centisecs, 30 s by default) typically has not.
+    recording_options = "noatime,commit=1"
     with Volume(folder) as volume:
         database = volume.mountpoint / "collection"
         run_worker(args, database, "prepare", fts, folder)
@@ -405,7 +447,7 @@ def power_case(args, folder, fts, operation):
             "--table",
             f"0 {sectors} log-writes {volume.device} {log_device}",
         )
-        volume.mount("/dev/mapper/" + volume.mapper)
+        volume.mount("/dev/mapper/" + volume.mapper, recording_options)
         with paused_worker(args, database, operation, fts, folder) as process:
             volume.root(
                 "dmsetup", "message", volume.mapper, "0", "mark operation-begin"
@@ -419,15 +461,26 @@ def power_case(args, folder, fts, operation):
             volume.root(
                 "dmsetup", "message", volume.mapper, "0", "mark operation-durable"
             )
+        # No host sync: let the kernel commit and write back on its own.
+        time.sleep(args.settle)
+        volume.root("dmsetup", "message", volume.mapper, "0", "mark operation-settled")
         # Unmount completes recording, but replay excludes its later writes.
         volume.unmount()
         volume.root("dmsetup", "remove", volume.mapper)
         volume.mapper = None
         entries = read_log(log_image)
         cuts, durable = choose_cuts(entries, args.cuts, args.seed)
+        settle_cuts = choose_settle_cuts(entries, args.settle_cuts)
+        cuts = sorted(set(cuts) | set(settle_cuts))
         (folder / "cuts.json").write_text(
             json.dumps(
-                {"seed": args.seed, "cuts": cuts, "durable_limit": durable}, indent=2
+                {
+                    "seed": args.seed,
+                    "cuts": cuts,
+                    "durable_limit": durable,
+                    "settle_cuts": settle_cuts,
+                },
+                indent=2,
             )
         )
         replay = folder / "replay.img"
@@ -483,7 +536,23 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--seed", type=int, default=759)
     parser.add_argument("--cuts", type=int, default=8)
+    parser.add_argument(
+        "--settle",
+        type=float,
+        default=3.0,
+        help="seconds to keep recording after the durable acknowledgement",
+    )
+    parser.add_argument(
+        "--settle-cuts",
+        type=int,
+        default=32,
+        help="maximum replayed cuts between the durable and settled marks",
+    )
     args = parser.parse_args()
+    if args.settle < 0:
+        parser.error("--settle must not be negative")
+    if args.settle_cuts < 1:
+        parser.error("--settle-cuts must be at least 1")
 
     # Let context managers unmount/detach owned resources on workflow cancellation.
     def interrupted(signum, _frame):
@@ -539,7 +608,12 @@ def main():
         return 1
     for fts in (False, True):
         kind = "fts" if fts else "plain"
-        for operation in ("insert", "flush", "optimize"):
+        operations = (
+            POWER_LOSS_OPERATIONS
+            if args.mode == "power-loss"
+            else ("insert", "flush", "optimize")
+        )
+        for operation in operations:
             if args.mode == "power-loss":
                 suite.case(
                     f"{kind}-{operation}",

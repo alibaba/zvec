@@ -71,10 +71,21 @@ ExpectedDocs RecoveredDocs(Collection &collection, bool fts, int minimum) {
 // after a failed operation and accidentally repair the state under test.
 void Run(const std::string &path, const std::string &mode, bool fts,
          int minimum) {
+  // A one-byte buffer makes every insert after the first rotate the memory
+  // block, so acknowledged writes cross block checkpoints.
+  const CollectionOptions options = mode == "rotate" || mode == "flushed_rotate"
+                                        ? CollectionOptions(false, true, 1)
+                                        : CollectionOptions();
   auto opened = mode == "prepare"
                     ? Collection::CreateAndOpen(path, MakeSchema(fts), {})
-                    : Collection::Open(path, {});
+                    : Collection::Open(path, options);
   if (!opened) {
+    if (mode == "check") {
+      // Failing closed is acceptable for a damaged collection; the caller
+      // verifies separately that nothing was deleted.
+      std::cout << "OPEN_FAILED: " << opened.error().message() << std::endl;
+      std::_Exit(3);
+    }
     throw std::runtime_error(opened.error().message());
   }
   // Keep ownership outside stack unwinding on failures.
@@ -133,10 +144,60 @@ void Run(const std::string &path, const std::string &mode, bool fts,
     collection = std::move(reopened.value());
     VerifyState(*collection, fts, expected, id);
     Check(collection->close());
+  } else if (mode == "flushed_rotate" || mode == "flushed_seal" ||
+             mode == "flushed_optimize") {
+    // Acknowledge half of the new rows with flush(), then keep maintaining
+    // the collection. The flushed rows must survive whatever follows.
+    std::cout << "READY" << std::endl;
+    std::raise(SIGSTOP);
+    InsertRange(col, kInitialDocs, kInitialDocs + kInitialDocs / 2);
+    Check(col.flush());
+    std::cout << "DURABLE" << std::endl;
+    // With the one-byte buffer of flushed_rotate every insert rotates a block.
+    InsertRange(col, kInitialDocs + kInitialDocs / 2, 2 * kInitialDocs);
+    if (mode != "flushed_rotate") {
+      // Sealing through the public API runs the segment rollover path.
+      auto iterator = col.create_iterator();
+      if (!iterator) throw std::runtime_error(iterator.error().message());
+    }
+    if (mode == "flushed_optimize") {
+      Require(PersistedSegments(path).size() >= 2,
+              "Optimize requires multiple input segments");
+      Check(col.optimize());
+    }
+    std::cout << "MAINTAINED" << std::endl;
+    // Exit without close or another flush: the power cut happens here.
+  } else if (mode == "fsync_fail") {
+    InsertRange(col, kInitialDocs, kInitialDocs + kInitialDocs / 2);
+    std::cout << "READY" << std::endl;
+    std::raise(SIGSTOP);
+    // The parent armed a one-shot WAL fsync failure. Report every outcome;
+    // the parent checks that each acknowledgement given is truthful.
+    std::cout << (col.flush().ok() ? "FIRST_FLUSH_OK" : "FIRST_FLUSH_FAILED")
+              << std::endl;
+    try {
+      InsertRange(col, kInitialDocs + kInitialDocs / 2, 2 * kInitialDocs);
+    } catch (const std::exception &) {
+      std::cout << "LATER_WRITE_FAILED" << std::endl;
+      return;
+    }
+    if (col.flush().ok()) {
+      std::cout << "DURABLE" << std::endl;
+    } else {
+      std::cout << "LATER_FLUSH_FAILED" << std::endl;
+    }
+  } else if (mode == "check") {
+    // Read-only oracle for a pristine collection of `minimum` generation-0
+    // documents; exits without close so it cannot repair what it inspects.
+    VerifyState(col, fts, InitialDocs(minimum), minimum - 1);
+    std::cout << "CHECKED" << std::endl;
   } else {
-    Require(mode == "insert" || mode == "flush" || mode == "optimize",
+    Require(mode == "insert" || mode == "flush" || mode == "optimize" ||
+                mode == "rotate" || mode == "create_index" ||
+                mode == "drop_index",
             "Unknown operation");
-    if (mode != "insert") {
+    const bool insert_after_ready = mode == "insert" || mode == "rotate";
+    if (!insert_after_ready) {
       InsertRange(col, kInitialDocs, 2 * kInitialDocs);
     }
     if (mode == "optimize") {
@@ -155,8 +216,17 @@ void Run(const std::string &path, const std::string &mode, bool fts,
     }
     std::cout << "READY" << std::endl;
     std::raise(SIGSTOP);
-    if (mode == "insert") {
+    if (insert_after_ready) {
       InsertRange(col, kInitialDocs, 2 * kInitialDocs);
+    } else if (mode == "create_index") {
+      // Rebuild the scalar index with different parameters: the old index
+      // files are retired by the DDL.
+      Check(col.create_index("generation",
+                             std::make_shared<InvertIndexParams>(false)));
+      std::cout << "DDL_COMPLETE" << std::endl;
+    } else if (mode == "drop_index") {
+      Check(col.drop_index("generation"));
+      std::cout << "DDL_COMPLETE" << std::endl;
     } else if (mode == "optimize") {
       Check(col.optimize());
       const auto output_segments = PersistedSegments(path);

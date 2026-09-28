@@ -7,6 +7,7 @@ import io
 import os
 import signal
 import struct
+import subprocess
 import sys
 import tempfile
 import types
@@ -15,7 +16,15 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from run_recovery import discover_suites
-from run_storage_faults import Suite, choose_cuts, paused_worker, read_log, resume
+from run_storage_faults import (
+    POWER_LOSS_OPERATIONS,
+    Suite,
+    choose_cuts,
+    choose_settle_cuts,
+    paused_worker,
+    read_log,
+    resume,
+)
 
 
 class SuiteDiscoveryTests(unittest.TestCase):
@@ -93,6 +102,68 @@ class LogReplayTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "Truncated"):
                 read_log(path)
+
+
+class SettleCutTests(unittest.TestCase):
+    @staticmethod
+    def entries():
+        entries = [(0, 8, "operation-begin"), (1, 0, None), (2, 8, "operation-durable")]
+        entries += [(index, 1 if index % 4 == 0 else 0, None) for index in range(3, 40)]
+        entries += [(40, 8, "operation-settled"), (41, 1, None), (42, 2, None)]
+        return entries
+
+    def test_every_boundary_after_durable_mark_is_replayed(self):
+        cuts = choose_settle_cuts(self.entries(), 100)
+        boundaries = {i for i in range(4, 40, 4)} | {i + 1 for i in range(4, 40, 4)}
+        self.assertEqual(cuts, sorted(boundaries | {41}))
+        # The durable cut is covered by choose_cuts; unmount writes never are.
+        self.assertTrue(all(2 < cut <= 41 for cut in cuts))
+
+    def test_cap_is_deterministic_and_keeps_settled_mark(self):
+        cuts = choose_settle_cuts(self.entries(), 5)
+        self.assertEqual(cuts, choose_settle_cuts(self.entries(), 5))
+        self.assertLessEqual(len(cuts), 5)
+        self.assertEqual(cuts[-1], 41)
+
+    def test_all_cuts_after_durable_limit_require_acknowledged_data(self):
+        cuts, durable = choose_cuts(self.entries(), 8, 759)
+        settle = choose_settle_cuts(self.entries(), 32)
+        self.assertEqual(durable, 3)
+        self.assertIn(durable, cuts)
+        self.assertTrue(all(cut >= durable for cut in settle))
+
+    def test_missing_settle_mark_is_an_error(self):
+        entries = [e for e in self.entries() if e[2] != "operation-settled"]
+        with self.assertRaises(KeyError):
+            choose_settle_cuts(entries, 8)
+
+    def test_invalid_settle_options_are_rejected(self):
+        script = Path(__file__).with_name("run_storage_faults.py")
+        for option, value in (("--settle", "-1"), ("--settle-cuts", "0")):
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--mode",
+                    "power-loss",
+                    "--worker",
+                    "worker",
+                    "--output",
+                    "unused",
+                    option,
+                    value,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn(option, result.stderr)
+
+    def test_power_loss_covers_rotation_ddl_and_optimize(self):
+        for operation in ("rotate", "create_index", "drop_index", "optimize"):
+            self.assertIn(operation, POWER_LOSS_OPERATIONS)
 
 
 class ProcessControlTests(unittest.TestCase):
