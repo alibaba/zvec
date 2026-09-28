@@ -33,7 +33,16 @@ class Version {
 
   static Status Load(const std::string &path, Version *version);
 
+  //! Publishes `version` at `path` atomically: the manifest is written and
+  //! synced under a temporary name, then renamed into place and the
+  //! directory is synced. On error no manifest is left at `path`.
   static Status Save(const std::string &path, const Version &version);
+
+  //! Checks the invariants every collection manifest satisfies: a schema,
+  //! a writing segment, unique segment ids, and a next_segment_id above
+  //! every referenced segment id. next_segment_id is the last field written,
+  //! so this rejects a manifest cut at any field boundary.
+  Status validate() const;
 
  public:
   void set_schema(const CollectionSchema &schema) {
@@ -181,7 +190,13 @@ class VersionManager {
  public:
   using Ptr = std::shared_ptr<VersionManager>;
 
-  static Result<VersionManager::Ptr> Recovery(const std::string &path);
+  //! Loads the newest manifest in `path` that decodes completely, falling
+  //! back to an older generation when a newer one is damaged. With
+  //! `validate`, a candidate must also pass Version::validate(). Leftover
+  //! `manifest.<id>.tmp` files are ignored. Fails without modifying
+  //! anything when no manifest qualifies.
+  static Result<VersionManager::Ptr> Recovery(const std::string &path,
+                                              bool validate = false);
 
   static Result<VersionManager::Ptr> Create(const std::string &path,
                                             const Version &initial_version);
@@ -202,6 +217,9 @@ class VersionManager {
 
   Status remove_persisted_segment_meta(SegmentID id);
 
+  //! Publishes the current version as a new manifest generation and then
+  //! removes older generations. On error, the manifests on disk are
+  //! unchanged and a later flush() retries the same generation.
   Status flush();
 
   void set_id_map_path_suffix(uint32_t suffix) {

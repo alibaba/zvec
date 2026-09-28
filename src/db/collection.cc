@@ -178,7 +178,7 @@ class CollectionImpl : public Collection {
 
   Status recover_idmap_and_delete_store();
 
-  void cleanup_orphan_segment_dirs(const Version &version);
+  SegmentID cleanup_orphan_segment_dirs(const Version &version);
 
   Status acquire_file_lock(bool create = false);
 
@@ -2082,8 +2082,9 @@ Status CollectionImpl::recovery() {
   auto s = acquire_file_lock(false);
   CHECK_RETURN_STATUS(s);
 
-  // recovery version first
-  auto version_manager = VersionManager::Recovery(path_);
+  // recovery version first: the newest manifest that decodes completely and
+  // passes validation. Without one, open fails before anything is modified.
+  auto version_manager = VersionManager::Recovery(path_, true);
   if (!version_manager.has_value()) {
     return version_manager.error();
   }
@@ -2099,13 +2100,6 @@ Status CollectionImpl::recovery() {
   segment_manager_ = std::make_shared<SegmentManager>();
 
   auto segment_metas = v.persisted_segment_metas();
-
-  // Remove crash-leftover segment dirs before opening segments; safe
-  // under the exclusive file lock held above. Read-only opens hold only
-  // a shared lock and must not modify the collection.
-  if (!options_.read_only_) {
-    cleanup_orphan_segment_dirs(v);
-  }
 
   SegmentOptions seg_options;
   seg_options.read_only_ = true;
@@ -2134,7 +2128,14 @@ Status CollectionImpl::recovery() {
   writing_segment_ = writing_segment.value();
   segment_id_allocator_.store(v.next_segment_id());
 
-  // recover id map & delete store
+  // Remove crash-leftover segment dirs only once every segment the manifest
+  // references has opened; safe under the exclusive file lock held above.
+  // Read-only opens hold only a shared lock and must not modify the
+  // collection.
+  if (!options_.read_only_) {
+    segment_id_allocator_.store(cleanup_orphan_segment_dirs(v));
+  }
+
   return Status::OK();
 }
 
@@ -2165,11 +2166,14 @@ Status CollectionImpl::recover_idmap_and_delete_store() {
 
 // Removes segment directories that `version` does not reference: numeric
 // directories absent from the persisted set and the writing segment, plus
-// `<id>.tmp` compact outputs that were never renamed. Best-effort: a
-// directory that cannot be removed is only logged, since it is no worse
-// than the leftover itself. Must be called with the exclusive collection
-// file lock held.
-void CollectionImpl::cleanup_orphan_segment_dirs(const Version &version) {
+// `<id>.tmp` compact outputs that were never renamed. A directory that
+// still holds a WAL file may hold acknowledged writes and is kept. Best-
+// effort: a directory that cannot be removed is only logged, since it is no
+// worse than the leftover itself. Returns the first segment id that is safe
+// to allocate: above next_segment_id and every directory left in place.
+// Must be called with the exclusive collection file lock held.
+SegmentID CollectionImpl::cleanup_orphan_segment_dirs(const Version &version) {
+  SegmentID first_free_id = version.next_segment_id();
   std::unordered_set<SegmentID> referenced_ids;
   for (auto &meta : version.persisted_segment_metas()) {
     referenced_ids.insert(meta->id());
@@ -2200,6 +2204,19 @@ void CollectionImpl::cleanup_orphan_segment_dirs(const Version &version) {
     return true;
   };
 
+  // Anything that is not provably WAL-free counts as holding a WAL.
+  auto contains_wal = [](const std::filesystem::path &dir) {
+    std::error_code list_ec;
+    std::filesystem::directory_iterator file(dir, list_ec);
+    for (; !list_ec && file != std::filesystem::directory_iterator();
+         file.increment(list_ec)) {
+      if (file->path().extension() == ".wal") {
+        return true;
+      }
+    }
+    return static_cast<bool>(list_ec);
+  };
+
   // Collect candidates first and remove them after the scan: deleting an
   // entry while iterating a directory is implementation-defined, and this
   // matches the CleanupDirectory precedent.
@@ -2224,7 +2241,17 @@ void CollectionImpl::cleanup_orphan_segment_dirs(const Version &version) {
       SegmentID segment_id = 0;
       if (parse_segment_id(stem, &segment_id) &&
           (is_tmp || referenced_ids.count(segment_id) == 0)) {
-        orphan_names.push_back(name);
+        if (!contains_wal(it->path())) {
+          orphan_names.push_back(name);
+        } else {
+          LOG_WARN(
+              "Recovery kept unreferenced segment directory holding a WAL: "
+              "path=%s",
+              ailego::FileHelper::PathToUtf8(it->path()).c_str());
+          if (!is_tmp && segment_id >= first_free_id) {
+            first_free_id = segment_id + 1;
+          }
+        }
       }
     }
     it.increment(ec);
@@ -2232,7 +2259,7 @@ void CollectionImpl::cleanup_orphan_segment_dirs(const Version &version) {
   if (ec) {
     LOG_WARN("Failed to list collection directory for orphan cleanup: %s",
              ec.message().c_str());
-    return;
+    return first_free_id;
   }
 
   for (const auto &name : orphan_names) {
@@ -2250,6 +2277,7 @@ void CollectionImpl::cleanup_orphan_segment_dirs(const Version &version) {
           orphan_path.c_str(), error.c_str());
     }
   }
+  return first_free_id;
 }
 
 Status CollectionImpl::create() {

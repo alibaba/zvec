@@ -13,6 +13,13 @@
 // limitations under the License.
 
 #include "version_manager.h"
+#ifdef _WIN32
+#include <zvec/ailego/io/file.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+#include <algorithm>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
@@ -20,7 +27,6 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
-#include <regex>
 #include <sstream>
 #include <string>
 #include <zvec/ailego/logger/logger.h>
@@ -33,6 +39,119 @@
 #include "db/index/common/type_helper.h"
 
 namespace zvec {
+
+namespace {
+
+namespace fs = std::filesystem;
+
+#ifndef _WIN32
+// Flushes a file or directory to stable storage. On Apple platforms fsync()
+// only hands the data to the drive; F_FULLFSYNC also flushes the drive cache.
+int SyncDescriptor(int fd) {
+#ifdef F_FULLFSYNC
+  if (::fcntl(fd, F_FULLFSYNC) == 0) {
+    return 0;
+  }
+  // Not every file system supports F_FULLFSYNC; fall back to fsync().
+#endif
+  return ::fsync(fd);
+}
+#endif
+
+// Writes `data` to a new file at `path` and syncs it. Every write, the sync
+// and the close are checked.
+Status WriteFileDurably(const std::string &path, const std::string &data) {
+#ifdef _WIN32
+  ailego::File file;
+  if (!file.create(path.c_str(), 0) ||
+      file.write(data.data(), data.size()) != data.size() || !file.flush()) {
+    return Status::InternalError("Failed to write manifest ", path, ": ",
+                                 ailego::FileHelper::GetLastErrorString());
+  }
+  file.close();
+  return Status::OK();
+#else
+  int fd = -1;
+  do {
+    fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+  } while (fd < 0 && errno == EINTR);
+  if (fd < 0) {
+    return Status::InternalError("Failed to create manifest ", path, ": ",
+                                 std::strerror(errno));
+  }
+  int error = 0;
+  size_t written = 0;
+  while (written < data.size()) {
+    ssize_t n = ::write(fd, data.data() + written, data.size() - written);
+    if (n < 0 && errno == EINTR) {
+      continue;
+    }
+    if (n <= 0) {
+      error = n < 0 ? errno : EIO;
+      break;
+    }
+    written += static_cast<size_t>(n);
+  }
+  if (error == 0 && SyncDescriptor(fd) != 0) {
+    error = errno;
+  }
+  if (::close(fd) != 0 && error == 0) {
+    error = errno;
+  }
+  if (error != 0) {
+    return Status::InternalError("Failed to write manifest ", path, ": ",
+                                 std::strerror(error));
+  }
+  return Status::OK();
+#endif
+}
+
+// Makes a rename or unlink in `dir` durable.
+Status SyncDirectory(const fs::path &dir) {
+#ifdef _WIN32
+  // Windows has no directory sync; its metadata journal orders the rename.
+  (void)dir;
+  return Status::OK();
+#else
+  const std::string name = ailego::FileHelper::PathToUtf8(dir);
+  int fd = ::open(name.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
+    return Status::InternalError("Failed to open directory ", name, ": ",
+                                 std::strerror(errno));
+  }
+  int error = SyncDescriptor(fd) == 0 ? 0 : errno;
+  if (::close(fd) != 0 && error == 0) {
+    error = errno;
+  }
+  if (error != 0) {
+    return Status::InternalError("Failed to sync directory ", name, ": ",
+                                 std::strerror(error));
+  }
+  return Status::OK();
+#endif
+}
+
+// Parses "manifest.<id>" and, with `tmp`, "manifest.<id>.tmp".
+bool ParseManifestName(const std::string &name, bool tmp, uint64_t *id) {
+  const std::string prefix =
+      std::string(GetFileName(FileID::MANIFEST_FILE)) + ".";
+  const std::string suffix = tmp ? ".tmp" : "";
+  if (name.size() <= prefix.size() + suffix.size() ||
+      name.compare(0, prefix.size(), prefix) != 0 ||
+      name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
+    return false;
+  }
+  const std::string digits =
+      name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
+  if (digits.size() > 19 ||
+      digits.find_first_not_of("0123456789") != std::string::npos) {
+    return false;
+  }
+  *id = std::stoull(digits);
+  return true;
+}
+
+}  // namespace
 
 Status Version::Load(const std::string &path, Version *version) {
   std::ifstream ifs;
@@ -60,7 +179,12 @@ Status Version::Load(const std::string &path, Version *version) {
   version->set_enable_mmap(manifest.enable_mmap);
 
   for (auto &meta : manifest.persisted_segment_metas) {
-    version->add_persisted_segment_meta(meta);
+    status = version->add_persisted_segment_meta(meta);
+    if (!status.ok()) {
+      LOG_ERROR("Duplicate segment %u in manifest file: %s", meta->id(),
+                path.c_str());
+      return Status::InternalError("Duplicate segment in manifest ", path);
+    }
   }
 
   if (manifest.writing_segment_meta) {
@@ -77,14 +201,6 @@ Status Version::Load(const std::string &path, Version *version) {
 }
 
 Status Version::Save(const std::string &path, const Version &version) {
-  std::ofstream ofs;
-  ailego::FileHelper::OpenOfstream(ofs, path, std::ios::binary);
-  if (!ofs.is_open()) {
-    LOG_ERROR("Failed to open file: %s, err: %s", path.c_str(),
-              ailego::FileHelper::GetLastErrorString().c_str());
-    return Status::InternalError("Failed to open file: %s", path.c_str());
-  }
-
   ManifestData manifest;
   manifest.schema = std::make_shared<CollectionSchema>(version.schema());
   manifest.enable_mmap = version.enable_mmap();
@@ -101,12 +217,54 @@ Status Version::Save(const std::string &path, const Version &version) {
     return Status::InternalError("Failed to serialize manifest to file");
   }
 
-  ofs.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
-  if (!ofs.good()) {
-    LOG_ERROR("Failed to serialize manifest to file: %s", path.c_str());
-    return Status::InternalError("Failed to serialize manifest to file");
+  // Readers must only ever see a complete manifest under its final name:
+  // write and sync a temporary file, rename it into place, then sync the
+  // directory so that the rename itself survives power loss.
+  const std::string tmp_path = path + ".tmp";
+  status = WriteFileDurably(tmp_path, encoded);
+  if (status.ok() &&
+      !ailego::FileHelper::RenameFile(tmp_path.c_str(), path.c_str())) {
+    status = Status::InternalError("Failed to rename manifest ", tmp_path,
+                                   " to ", path, ": ",
+                                   ailego::FileHelper::GetLastErrorString());
+  }
+  if (!status.ok()) {
+    LOG_ERROR("%s", status.message().c_str());
+    FileHelper::RemoveFile(tmp_path);
+    return status;
   }
 
+  auto dir = ailego::FileHelper::PathFromUtf8(path).parent_path();
+  status = SyncDirectory(dir.empty() ? fs::path(".") : dir);
+  if (!status.ok()) {
+    // The caller treats the manifest as unpublished; do not leave it behind
+    // for recovery to pick up.
+    LOG_ERROR("%s", status.message().c_str());
+    FileHelper::RemoveFile(path);
+  }
+  return status;
+}
+
+Status Version::validate() const {
+  // An absent schema decodes to an empty placeholder (see ManifestCodec).
+  if (!schema_ || schema_->fields().empty()) {
+    return Status::InternalError("Manifest has no collection schema");
+  }
+  if (!writing_segment_meta_) {
+    return Status::InternalError("Manifest has no writing segment");
+  }
+  SegmentID max_id = writing_segment_meta_->id();
+  for (const auto &[id, meta] : persisted_segment_metas_map_) {
+    if (id == writing_segment_meta_->id()) {
+      return Status::InternalError("Manifest lists segment ", id,
+                                   " as both persisted and writing");
+    }
+    max_id = std::max(max_id, id);
+  }
+  if (next_segment_id_ <= max_id) {
+    return Status::InternalError("Manifest next_segment_id ", next_segment_id_,
+                                 " is not above segment id ", max_id);
+  }
   return Status::OK();
 }
 
@@ -182,8 +340,8 @@ std::string Version::to_string_formatted(int indent_level) const {
   return oss.str();
 }
 
-Result<VersionManager::Ptr> VersionManager::Recovery(const std::string &path) {
-  namespace fs = std::filesystem;
+Result<VersionManager::Ptr> VersionManager::Recovery(const std::string &path,
+                                                     bool validate) {
   auto u8path = ailego::FileHelper::PathFromUtf8(path);
   if (!fs::exists(u8path)) {
     LOG_ERROR("VersionManager::Recovery: path %s does not exist", path.c_str());
@@ -197,42 +355,55 @@ Result<VersionManager::Ptr> VersionManager::Recovery(const std::string &path) {
         Status::InvalidArgument("path", path, " is not a directory"));
   }
 
-  std::string prefix = GetFileName(FileID::MANIFEST_FILE);
-  std::string manifest_pattern = "^" + prefix + R"(\.(\d+)$)";
-  std::regex regex(manifest_pattern);
-  std::smatch match;
-
-  uint64_t max_id = UINT64_MAX;
-  std::string version_path;
-
+  // Candidates, newest first. "manifest.<id>.tmp" files are never
+  // candidates: they are unpublished and removed by the next flush().
+  std::vector<std::pair<uint64_t, std::string>> candidates;
   for (const auto &entry : fs::directory_iterator(u8path)) {
-    if (entry.is_regular_file()) {
-      std::string filename = entry.path().filename().u8string();
-      if (std::regex_match(filename, match, regex)) {
-        uint64_t id = std::stoull(match[1].str());
-        if (id > max_id || max_id == UINT64_MAX) {
-          max_id = id;
-          version_path = entry.path().u8string();
-        }
-      }
+    if (!entry.is_regular_file()) {
+      continue;
+    }
+    uint64_t id = 0;
+    if (ParseManifestName(
+            ailego::FileHelper::PathToUtf8(entry.path().filename()), false,
+            &id)) {
+      candidates.emplace_back(id, ailego::FileHelper::PathToUtf8(entry.path()));
     }
   }
-
-  if (max_id == UINT64_MAX) {
+  if (candidates.empty()) {
     LOG_ERROR("Failed to find the version file in collction_path(%s)",
               path.c_str());
     return tl::make_unexpected(
         Status::NotFound("Failed to find the version file"));
   }
+  std::sort(
+      candidates.begin(), candidates.end(),
+      [](const auto &lhs, const auto &rhs) { return lhs.first > rhs.first; });
 
-  Version version;
-  auto s = Version::Load(version_path, &version);
-  CHECK_RETURN_STATUS_EXPECTED(s);
+  for (const auto &[id, version_path] : candidates) {
+    Version version;
+    auto s = Version::Load(version_path, &version);
+    if (s.ok() && validate) {
+      s = version.validate();
+    }
+    if (!s.ok()) {
+      LOG_WARN("Skipping unusable manifest %s: %s", version_path.c_str(),
+               s.message().c_str());
+      continue;
+    }
+    // New generations are numbered above every manifest on disk, including
+    // damaged ones, so that publishing never reuses a name.
+    if (id != candidates.front().first) {
+      LOG_WARN("Recovered %s from older manifest %s", path.c_str(),
+               version_path.c_str());
+    }
+    return VersionManager::Ptr(
+        new VersionManager(path, version, candidates.front().first + 1));
+  }
 
-  VersionManager::Ptr manager =
-      VersionManager::Ptr(new VersionManager(path, version, max_id + 1));
-
-  return manager;
+  LOG_ERROR("No usable manifest in collection path %s", path.c_str());
+  return tl::make_unexpected(Status::InternalError(
+      "No usable manifest in ", path, " (", candidates.size(),
+      " candidates failed validation); nothing was modified"));
 }
 
 Result<VersionManager::Ptr> VersionManager::Create(
@@ -277,19 +448,31 @@ Status VersionManager::remove_persisted_segment_meta(SegmentID id) {
 Status VersionManager::flush() {
   std::lock_guard lock(mtx_);
 
-  std::string current_path;
-  if (version_id_ != 0) {
-    current_path =
-        FileHelper::MakeFilePath(path_, FileID::MANIFEST_FILE, version_id_ - 1);
-  }
-
+  // version_id_ only advances once the manifest is published, so a failed
+  // flush leaves every existing manifest in place.
   auto s = Version::Save(
-      FileHelper::MakeFilePath(path_, FileID::MANIFEST_FILE, version_id_++),
+      FileHelper::MakeFilePath(path_, FileID::MANIFEST_FILE, version_id_),
       current_version_);
   CHECK_RETURN_STATUS(s);
+  const uint64_t published = version_id_++;
 
-  if (!current_path.empty()) {
-    FileHelper::RemoveFile(current_path);
+  // The new manifest is durable: every older generation and every leftover
+  // temporary file is obsolete. A file that cannot be removed only wastes
+  // space, since recovery prefers the newest manifest that loads.
+  std::error_code ec;
+  fs::directory_iterator it(ailego::FileHelper::PathFromUtf8(path_), ec);
+  std::vector<fs::path> obsolete;
+  for (; !ec && it != fs::directory_iterator(); it.increment(ec)) {
+    const std::string name =
+        ailego::FileHelper::PathToUtf8(it->path().filename());
+    uint64_t id = 0;
+    if (ParseManifestName(name, true, &id) ||
+        (ParseManifestName(name, false, &id) && id < published)) {
+      obsolete.push_back(it->path());
+    }
+  }
+  for (const auto &file : obsolete) {
+    FileHelper::RemoveFile(ailego::FileHelper::PathToUtf8(file));
   }
 
   return Status::OK();
