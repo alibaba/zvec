@@ -336,7 +336,11 @@ void RocksdbContext::configure_hash_skiplist(bool read_only,
   }
 
   constexpr size_t kMinimumBucketCount = 4096;
-  constexpr size_t kMaximumBucketCount = 1000000;
+  // Each memtable eagerly allocates its bucket array. A large process budget
+  // must not turn small writable FTS collections into multi-megabyte arrays
+  // per CF. Cap that fixed overhead at 512 KiB on 64-bit hosts, while the
+  // budget below can still shrink it for small budgets or many CFs.
+  constexpr size_t kMaximumBucketCount = 65536;
   constexpr uint64_t kHashTableBudgetDivisor = 8;
   const uint64_t rocksdb_budget =
       GlobalResource::Instance().rocksdb_memory_capacity();
