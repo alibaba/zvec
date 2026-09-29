@@ -254,26 +254,9 @@ class ManifestRecoveryTest : public ::testing::Test {
   fs::path root_;
 };
 
-// The newest (and only) manifest is empty, as after a power loss before its
-// data reached the disk: open must fail and delete nothing.
-TEST_F(ManifestRecoveryTest, EmptyManifestFailsClosedWithoutDeleting) {
-  const auto path = root_ / "collection";
-  ASSERT_NO_FATAL_FAILURE(CreateCollection(path));
-  const auto ids = ManifestIds(path);
-  ASSERT_EQ(ids.size(), 1u);
-  const auto manifest = ManifestPath(path, ids.back());
-  const std::string published = ReadFile(manifest);
-
-  fs::resize_file(manifest, 0);
-  ASSERT_NO_FATAL_FAILURE(ExpectOpenFailsWithoutChanges(path));
-
-  // Nothing was lost: restoring the manifest restores the collection.
-  ASSERT_NO_FATAL_FAILURE(WriteFile(manifest, published));
-  ASSERT_NO_FATAL_FAILURE(ExpectOpensWithAllDocs(path));
-}
-
-// Every truncation of a real manifest, including cuts at a field boundary
-// that still decode, must be rejected without modifying anything.
+// Every truncation of the only manifest must be rejected without modifying
+// anything. This includes the empty file left by a power loss before the
+// data reached the disk, and cuts at a field boundary, which still decode.
 TEST_F(ManifestRecoveryTest, EveryTruncationFailsClosedWithoutDeleting) {
   const auto path = root_ / "collection";
   ASSERT_NO_FATAL_FAILURE(CreateCollection(path));
