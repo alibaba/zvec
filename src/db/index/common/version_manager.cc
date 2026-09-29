@@ -14,12 +14,14 @@
 
 #include "version_manager.h"
 #ifdef _WIN32
-#include <zvec/ailego/io/file.h>
+#include <windows.h>
 #else
 #include <fcntl.h>
 #include <unistd.h>
+#include <cstdio>
 #endif
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
@@ -29,6 +31,8 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <system_error>
+#include <vector>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/ailego/utility/string_helper.h>
@@ -44,40 +48,56 @@ namespace {
 
 namespace fs = std::filesystem;
 
+std::atomic<VersionManager::SyncFaultForTest> g_sync_fault{nullptr};
+
+int InjectedSyncError(bool directory) {
+  auto fault = g_sync_fault.load();
+  return fault ? fault(directory) : 0;
+}
+
 #ifndef _WIN32
-// Flushes a file or directory to stable storage. On Apple platforms fsync()
-// only hands the data to the drive; F_FULLFSYNC also flushes the drive cache.
-int SyncDescriptor(int fd) {
+std::string ErrorText(int error) {
+  return std::strerror(error);
+}
+
+// Flushes a file or directory to stable storage. Returns 0 or an errno value.
+int SyncDescriptor(int fd, bool directory) {
+  if (int injected = InjectedSyncError(directory)) {
+    return injected;
+  }
 #ifdef F_FULLFSYNC
-  if (::fcntl(fd, F_FULLFSYNC) == 0) {
+  // On Apple platforms fsync() only hands the data to the drive; F_FULLFSYNC
+  // also flushes the drive cache. Only a file system that does not implement
+  // it falls back to fsync(); every other error is reported.
+  int result;
+  do {
+    result = ::fcntl(fd, F_FULLFSYNC);
+  } while (result != 0 && errno == EINTR);
+  if (result == 0) {
     return 0;
   }
-  // Not every file system supports F_FULLFSYNC; fall back to fsync().
-#endif
-  return ::fsync(fd);
-}
-#endif
-
-// Writes `data` to a new file at `path` and syncs it. Every write, the sync
-// and the close are checked.
-Status WriteFileDurably(const std::string &path, const std::string &data) {
-#ifdef _WIN32
-  ailego::File file;
-  if (!file.create(path.c_str(), 0) ||
-      file.write(data.data(), data.size()) != data.size() || !file.flush()) {
-    return Status::InternalError("Failed to write manifest ", path, ": ",
-                                 ailego::FileHelper::GetLastErrorString());
+  if (errno != ENOTSUP && errno != EOPNOTSUPP && errno != EINVAL) {
+    return errno;
   }
-  file.close();
-  return Status::OK();
-#else
+#endif
+  while (::fsync(fd) != 0) {
+    if (errno != EINTR) {
+      return errno;
+    }
+  }
+  return 0;
+}
+
+// Writes `data` to a new file at `path` and syncs it. Returns 0 or an errno
+// value. Every write, the sync and the close are checked.
+int WriteFileDurably(const std::string &path, const std::string &data) {
   int fd = -1;
   do {
-    fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    // 0666 & ~umask, the mode std::ofstream used.
+    fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
   } while (fd < 0 && errno == EINTR);
   if (fd < 0) {
-    return Status::InternalError("Failed to create manifest ", path, ": ",
-                                 std::strerror(errno));
+    return errno;
   }
   int error = 0;
   size_t written = 0;
@@ -92,40 +112,118 @@ Status WriteFileDurably(const std::string &path, const std::string &data) {
     }
     written += static_cast<size_t>(n);
   }
-  if (error == 0 && SyncDescriptor(fd) != 0) {
-    error = errno;
+  if (error == 0) {
+    error = SyncDescriptor(fd, false);
   }
   if (::close(fd) != 0 && error == 0) {
     error = errno;
   }
-  if (error != 0) {
-    return Status::InternalError("Failed to write manifest ", path, ": ",
-                                 std::strerror(error));
-  }
-  return Status::OK();
-#endif
+  return error;
 }
 
-// Makes a rename or unlink in `dir` durable.
-Status SyncDirectory(const fs::path &dir) {
-#ifdef _WIN32
-  // Windows has no directory sync; its metadata journal orders the rename.
-  (void)dir;
-  return Status::OK();
-#else
-  const std::string name = ailego::FileHelper::PathToUtf8(dir);
-  int fd = ::open(name.c_str(), O_RDONLY | O_CLOEXEC);
+// Makes a rename in `dir` durable. Returns 0 or an errno value.
+int SyncDirectory(const std::string &dir) {
+  int fd = ::open(dir.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY);
   if (fd < 0) {
-    return Status::InternalError("Failed to open directory ", name, ": ",
-                                 std::strerror(errno));
+    return errno;
   }
-  int error = SyncDescriptor(fd) == 0 ? 0 : errno;
+  int error = SyncDescriptor(fd, true);
   if (::close(fd) != 0 && error == 0) {
     error = errno;
   }
+  return error;
+}
+#else
+std::string ErrorText(DWORD error) {
+  return std::system_category().message(static_cast<int>(error));
+}
+
+// Writes `data` to a new file at `path` and flushes it. Returns 0 or a
+// Win32 error code.
+DWORD WriteFileDurably(const std::wstring &path, const std::string &data) {
+  HANDLE handle = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    return ::GetLastError();
+  }
+  DWORD error = 0;
+  size_t written = 0;
+  while (written < data.size()) {
+    DWORD chunk = static_cast<DWORD>(
+        (std::min)(data.size() - written, static_cast<size_t>(1u << 30)));
+    DWORD n = 0;
+    if (!::WriteFile(handle, data.data() + written, chunk, &n, nullptr)) {
+      error = ::GetLastError();
+      break;
+    }
+    if (n == 0) {
+      error = ERROR_WRITE_FAULT;
+      break;
+    }
+    written += n;
+  }
+  if (error == 0 && InjectedSyncError(false) != 0) {
+    error = ERROR_WRITE_FAULT;
+  }
+  if (error == 0 && !::FlushFileBuffers(handle)) {
+    error = ::GetLastError();
+  }
+  if (!::CloseHandle(handle) && error == 0) {
+    error = ::GetLastError();
+  }
+  return error;
+}
+#endif
+
+// Publishes `data` at `path` via `tmp_path`: write and sync the temporary
+// file, rename it over `path`, then make the rename durable. `*renamed`
+// tells whether the rename happened; on error after it, the outcome of the
+// publish is unknown.
+Status PublishFile(const std::string &tmp_path, const std::string &path,
+                   const std::string &data, bool *renamed) {
+  *renamed = false;
+#ifndef _WIN32
+  int error = WriteFileDurably(tmp_path, data);
+  if (error == 0 && ::rename(tmp_path.c_str(), path.c_str()) != 0) {
+    error = errno;
+  }
   if (error != 0) {
-    return Status::InternalError("Failed to sync directory ", name, ": ",
-                                 std::strerror(error));
+    ::unlink(tmp_path.c_str());
+    return Status::InternalError("Failed to write manifest ", path, ": ",
+                                 ErrorText(error));
+  }
+  *renamed = true;
+  auto dir = ailego::FileHelper::PathFromUtf8(path).parent_path();
+  const std::string dir_name =
+      dir.empty() ? std::string(".") : ailego::FileHelper::PathToUtf8(dir);
+  error = SyncDirectory(dir_name);
+  if (error != 0) {
+    return Status::InternalError("Failed to sync directory ", dir_name,
+                                 " after publishing manifest ", path, ": ",
+                                 ErrorText(error));
+  }
+  return Status::OK();
+#else
+  // Untested on Windows. MOVEFILE_WRITE_THROUGH returns only once the rename
+  // is flushed, so no separate directory sync is needed.
+  const std::wstring wide_tmp =
+      ailego::FileHelper::PathFromUtf8(tmp_path).wstring();
+  const std::wstring wide_path =
+      ailego::FileHelper::PathFromUtf8(path).wstring();
+  DWORD error = WriteFileDurably(wide_tmp, data);
+  if (error == 0 &&
+      !::MoveFileExW(wide_tmp.c_str(), wide_path.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    error = ::GetLastError();
+  }
+  if (error != 0) {
+    ::DeleteFileW(wide_tmp.c_str());
+    return Status::InternalError("Failed to write manifest ", path, ": ",
+                                 ErrorText(error));
+  }
+  *renamed = true;
+  if (InjectedSyncError(true) != 0) {
+    return Status::InternalError("Failed to sync manifest rename ", path);
   }
   return Status::OK();
 #endif
@@ -200,7 +298,8 @@ Status Version::Load(const std::string &path, Version *version) {
   return Status::OK();
 }
 
-Status Version::Save(const std::string &path, const Version &version) {
+Status Version::Save(const std::string &path, const Version &version,
+                     bool *uncertain) {
   ManifestData manifest;
   manifest.schema = std::make_shared<CollectionSchema>(version.schema());
   manifest.enable_mmap = version.enable_mmap();
@@ -217,30 +316,14 @@ Status Version::Save(const std::string &path, const Version &version) {
     return Status::InternalError("Failed to serialize manifest to file");
   }
 
-  // Readers must only ever see a complete manifest under its final name:
-  // write and sync a temporary file, rename it into place, then sync the
-  // directory so that the rename itself survives power loss.
-  const std::string tmp_path = path + ".tmp";
-  status = WriteFileDurably(tmp_path, encoded);
-  if (status.ok() &&
-      !ailego::FileHelper::RenameFile(tmp_path.c_str(), path.c_str())) {
-    status = Status::InternalError("Failed to rename manifest ", tmp_path,
-                                   " to ", path, ": ",
-                                   ailego::FileHelper::GetLastErrorString());
-  }
+  // Readers must only ever see a complete manifest under its final name.
+  bool renamed = false;
+  status = PublishFile(path + ".tmp", path, encoded, &renamed);
   if (!status.ok()) {
     LOG_ERROR("%s", status.message().c_str());
-    FileHelper::RemoveFile(tmp_path);
-    return status;
   }
-
-  auto dir = ailego::FileHelper::PathFromUtf8(path).parent_path();
-  status = SyncDirectory(dir.empty() ? fs::path(".") : dir);
-  if (!status.ok()) {
-    // The caller treats the manifest as unpublished; do not leave it behind
-    // for recovery to pick up.
-    LOG_ERROR("%s", status.message().c_str());
-    FileHelper::RemoveFile(path);
+  if (uncertain != nullptr) {
+    *uncertain = !status.ok() && renamed;
   }
   return status;
 }
@@ -259,7 +342,7 @@ Status Version::validate() const {
       return Status::InternalError("Manifest lists segment ", id,
                                    " as both persisted and writing");
     }
-    max_id = std::max(max_id, id);
+    max_id = (std::max)(max_id, id);
   }
   if (next_segment_id_ <= max_id) {
     return Status::InternalError("Manifest next_segment_id ", next_segment_id_,
@@ -355,9 +438,10 @@ Result<VersionManager::Ptr> VersionManager::Recovery(const std::string &path,
         Status::InvalidArgument("path", path, " is not a directory"));
   }
 
-  // Candidates, newest first. "manifest.<id>.tmp" files are never
-  // candidates: they are unpublished and removed by the next flush().
-  std::vector<std::pair<uint64_t, std::string>> candidates;
+  // "manifest.<id>.tmp" files are never candidates: they are unpublished and
+  // removed by the next flush().
+  uint64_t max_id = 0;
+  std::string version_path;
   for (const auto &entry : fs::directory_iterator(u8path)) {
     if (!entry.is_regular_file()) {
       continue;
@@ -365,45 +449,33 @@ Result<VersionManager::Ptr> VersionManager::Recovery(const std::string &path,
     uint64_t id = 0;
     if (ParseManifestName(
             ailego::FileHelper::PathToUtf8(entry.path().filename()), false,
-            &id)) {
-      candidates.emplace_back(id, ailego::FileHelper::PathToUtf8(entry.path()));
+            &id) &&
+        (version_path.empty() || id > max_id)) {
+      max_id = id;
+      version_path = ailego::FileHelper::PathToUtf8(entry.path());
     }
   }
-  if (candidates.empty()) {
+  if (version_path.empty()) {
     LOG_ERROR("Failed to find the version file in collction_path(%s)",
               path.c_str());
     return tl::make_unexpected(
         Status::NotFound("Failed to find the version file"));
   }
-  std::sort(
-      candidates.begin(), candidates.end(),
-      [](const auto &lhs, const auto &rhs) { return lhs.first > rhs.first; });
 
-  for (const auto &[id, version_path] : candidates) {
-    Version version;
-    auto s = Version::Load(version_path, &version);
-    if (s.ok() && validate) {
-      s = version.validate();
-    }
-    if (!s.ok()) {
-      LOG_WARN("Skipping unusable manifest %s: %s", version_path.c_str(),
-               s.message().c_str());
-      continue;
-    }
-    // New generations are numbered above every manifest on disk, including
-    // damaged ones, so that publishing never reuses a name.
-    if (id != candidates.front().first) {
-      LOG_WARN("Recovered %s from older manifest %s", path.c_str(),
-               version_path.c_str());
-    }
-    return VersionManager::Ptr(
-        new VersionManager(path, version, candidates.front().first + 1));
+  Version version;
+  auto s = Version::Load(version_path, &version);
+  if (s.ok() && validate) {
+    s = version.validate();
+  }
+  if (!s.ok()) {
+    LOG_ERROR("Unusable manifest %s: %s", version_path.c_str(),
+              s.message().c_str());
+    return tl::make_unexpected(
+        Status::InternalError("Unusable manifest ", version_path, ": ",
+                              s.message(), "; nothing was modified"));
   }
 
-  LOG_ERROR("No usable manifest in collection path %s", path.c_str());
-  return tl::make_unexpected(Status::InternalError(
-      "No usable manifest in ", path, " (", candidates.size(),
-      " candidates failed validation); nothing was modified"));
+  return VersionManager::Ptr(new VersionManager(path, version, max_id + 1));
 }
 
 Result<VersionManager::Ptr> VersionManager::Create(
@@ -448,17 +520,32 @@ Status VersionManager::remove_persisted_segment_meta(SegmentID id) {
 Status VersionManager::flush() {
   std::lock_guard lock(mtx_);
 
+  if (fenced_.load()) {
+    return Status::FailedPrecondition(
+        "A previous manifest publish in ", path_,
+        " could not be confirmed durable; reopen the collection");
+  }
+
   // version_id_ only advances once the manifest is published, so a failed
   // flush leaves every existing manifest in place.
+  bool uncertain = false;
   auto s = Version::Save(
       FileHelper::MakeFilePath(path_, FileID::MANIFEST_FILE, version_id_),
-      current_version_);
-  CHECK_RETURN_STATUS(s);
+      current_version_, &uncertain);
+  if (!s.ok()) {
+    if (uncertain) {
+      // The new manifest may or may not survive a crash. Keep it and every
+      // older generation, never reuse its name, and publish nothing more.
+      fenced_.store(true);
+      ++version_id_;
+    }
+    return s;
+  }
   const uint64_t published = version_id_++;
 
   // The new manifest is durable: every older generation and every leftover
   // temporary file is obsolete. A file that cannot be removed only wastes
-  // space, since recovery prefers the newest manifest that loads.
+  // space, since recovery loads the newest manifest.
   std::error_code ec;
   fs::directory_iterator it(ailego::FileHelper::PathFromUtf8(path_), ec);
   std::vector<fs::path> obsolete;
@@ -478,5 +565,8 @@ Status VersionManager::flush() {
   return Status::OK();
 }
 
+void VersionManager::SetSyncFaultForTest(SyncFaultForTest fault) {
+  g_sync_fault.store(fault);
+}
 
 }  // namespace zvec

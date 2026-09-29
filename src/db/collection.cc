@@ -178,7 +178,20 @@ class CollectionImpl : public Collection {
 
   Status recover_idmap_and_delete_store();
 
-  SegmentID cleanup_orphan_segment_dirs(const Version &version);
+  Status cleanup_orphan_segment_dirs(const Version &version,
+                                     SegmentID *first_free_id,
+                                     SegmentID *first_free_tmp_id);
+
+  // Refuses writes after a manifest publish whose durability is unknown.
+  Status check_manifest_not_fenced() const {
+    if (version_manager_ && version_manager_->fenced()) {
+      return Status::FailedPrecondition(
+          "Collection ", path_,
+          " refuses writes: a manifest publish could not be confirmed "
+          "durable; reopen the collection");
+    }
+    return Status::OK();
+  }
 
   Status acquire_file_lock(bool create = false);
 
@@ -504,6 +517,7 @@ Status CollectionImpl::flush() {
 }
 
 Status CollectionImpl::flush_unsafe() {
+  CHECK_RETURN_STATUS(check_manifest_not_fenced());
   if (!writing_segment_) {
     return Status::InternalError(
         "flush writing segment failed because writing segment is nullptr");
@@ -595,6 +609,7 @@ Status CollectionImpl::create_index(const std::string &column_name,
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
+  CHECK_RETURN_STATUS(check_manifest_not_fenced());
 
   if (index_params == nullptr) {
     return Status::InvalidArgument("create_index: index_params is null");
@@ -787,6 +802,7 @@ Status CollectionImpl::drop_index(const std::string &column_name) {
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
+  CHECK_RETURN_STATUS(check_manifest_not_fenced());
 
   auto new_schema = std::make_shared<CollectionSchema>(*schema_);
   auto s = new_schema->drop_index(column_name);
@@ -928,6 +944,7 @@ Status CollectionImpl::optimize(const OptimizeOptions &options) {
 
     CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
     CHECK_CLOSED_RETURN_STATUS(closed_, false);
+    CHECK_RETURN_STATUS(check_manifest_not_fenced());
 
     if (writing_segment_->has_record()) {
       auto s = switch_to_new_segment_for_writing();
@@ -1322,6 +1339,7 @@ Status CollectionImpl::add_column(const FieldSchema::Ptr &column_schema,
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
+  CHECK_RETURN_STATUS(check_manifest_not_fenced());
 
   auto field_copy =
       column_schema ? std::make_shared<FieldSchema>(*column_schema) : nullptr;
@@ -1399,6 +1417,7 @@ Status CollectionImpl::drop_column(const std::string &column_name) {
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
+  CHECK_RETURN_STATUS(check_manifest_not_fenced());
 
   // validate
   auto s = validate(column_name, nullptr, "", "", ColumnOp::DROP);
@@ -1477,6 +1496,7 @@ Status CollectionImpl::alter_column(const std::string &column_name,
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
+  CHECK_RETURN_STATUS(check_manifest_not_fenced());
 
   auto field_copy = new_column_schema
                         ? std::make_shared<FieldSchema>(*new_column_schema)
@@ -1616,6 +1636,7 @@ Result<WriteResults> CollectionImpl::write_impl(std::vector<Doc> &docs,
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
+  CHECK_RETURN_STATUS_EXPECTED(check_manifest_not_fenced());
 
   for (auto &&doc : docs) {
     auto s = doc.validate_and_sanitize(schema_, mode == WriteMode::UPDATE);
@@ -1692,7 +1713,11 @@ Status CollectionImpl::commit_schema_change_with_new_writing_segment(
 
   s = version_manager_->flush();
   if (!s.ok()) {
-    new_writing_segment.value()->destroy();
+    // After an uncertain publish the new manifest may survive a crash, so
+    // the segment it references must stay.
+    if (!version_manager_->fenced()) {
+      new_writing_segment.value()->destroy();
+    }
     auto rollback_status = version_manager_->apply(old_version);
     CHECK_RETURN_STATUS(rollback_status);
     return s;
@@ -1755,6 +1780,7 @@ Result<WriteResults> CollectionImpl::delete_(
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
+  CHECK_RETURN_STATUS_EXPECTED(check_manifest_not_fenced());
 
   // TODO: The granularity of the write_lock is too coarse.
   std::lock_guard write_lock(write_mtx_);
@@ -1774,6 +1800,7 @@ Status CollectionImpl::delete_by_filter(const std::string &filter) {
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
+  CHECK_RETURN_STATUS(check_manifest_not_fenced());
 
   SearchQuery query;
   query.filter_ = filter;
@@ -2133,7 +2160,12 @@ Status CollectionImpl::recovery() {
   // Read-only opens hold only a shared lock and must not modify the
   // collection.
   if (!options_.read_only_) {
-    segment_id_allocator_.store(cleanup_orphan_segment_dirs(v));
+    SegmentID first_free_id = 0;
+    SegmentID first_free_tmp_id = 0;
+    s = cleanup_orphan_segment_dirs(v, &first_free_id, &first_free_tmp_id);
+    CHECK_RETURN_STATUS(s);
+    segment_id_allocator_.store(first_free_id);
+    tmp_segment_id_allocator_.store(first_free_tmp_id);
   }
 
   return Status::OK();
@@ -2167,13 +2199,17 @@ Status CollectionImpl::recover_idmap_and_delete_store() {
 // Removes segment directories that `version` does not reference: numeric
 // directories absent from the persisted set and the writing segment, plus
 // `<id>.tmp` compact outputs that were never renamed. A directory that
-// still holds a WAL file may hold acknowledged writes and is kept. Best-
-// effort: a directory that cannot be removed is only logged, since it is no
-// worse than the leftover itself. Returns the first segment id that is safe
-// to allocate: above next_segment_id and every directory left in place.
-// Must be called with the exclusive collection file lock held.
-SegmentID CollectionImpl::cleanup_orphan_segment_dirs(const Version &version) {
-  SegmentID first_free_id = version.next_segment_id();
+// still holds a WAL file may hold acknowledged writes and is kept; so is one
+// that cannot be removed. Every directory left in place has its id reserved:
+// `*first_free_id` and `*first_free_tmp_id` are above all of them (and
+// `*first_free_id` at least next_segment_id). Fails if the collection
+// directory cannot be listed completely. Must be called with the exclusive
+// collection file lock held.
+Status CollectionImpl::cleanup_orphan_segment_dirs(
+    const Version &version, SegmentID *first_free_id,
+    SegmentID *first_free_tmp_id) {
+  *first_free_id = version.next_segment_id();
+  *first_free_tmp_id = 0;
   std::unordered_set<SegmentID> referenced_ids;
   for (auto &meta : version.persisted_segment_metas()) {
     referenced_ids.insert(meta->id());
@@ -2217,17 +2253,38 @@ SegmentID CollectionImpl::cleanup_orphan_segment_dirs(const Version &version) {
     return static_cast<bool>(list_ec);
   };
 
+  // Moves the matching allocator past a directory that stays on disk.
+  auto reserve = [&](SegmentID id, bool is_tmp) {
+    if (id == std::numeric_limits<SegmentID>::max()) {
+      return Status::InternalError("Segment id space exhausted by directory ",
+                                   id, is_tmp ? ".tmp" : "", " in ", path_);
+    }
+    SegmentID *first_free = is_tmp ? first_free_tmp_id : first_free_id;
+    *first_free = (std::max)(*first_free, static_cast<SegmentID>(id + 1));
+    return Status::OK();
+  };
+
   // Collect candidates first and remove them after the scan: deleting an
   // entry while iterating a directory is implementation-defined, and this
   // matches the CleanupDirectory precedent.
-  std::vector<std::string> orphan_names;
+  struct Orphan {
+    std::string name;
+    SegmentID id;
+    bool is_tmp;
+  };
+  std::vector<Orphan> orphans;
   std::error_code ec;
   std::filesystem::directory_iterator it(
       ailego::FileHelper::PathFromUtf8(path_), ec);
   std::filesystem::directory_iterator end;
   while (!ec && it != end) {
     std::error_code entry_ec;
-    if (it->is_directory(entry_ec) && !entry_ec) {
+    const bool is_directory = it->is_directory(entry_ec);
+    if (entry_ec) {
+      ec = entry_ec;
+      break;
+    }
+    if (is_directory) {
       const std::string name =
           ailego::FileHelper::PathToUtf8(it->path().filename());
 
@@ -2242,28 +2299,28 @@ SegmentID CollectionImpl::cleanup_orphan_segment_dirs(const Version &version) {
       if (parse_segment_id(stem, &segment_id) &&
           (is_tmp || referenced_ids.count(segment_id) == 0)) {
         if (!contains_wal(it->path())) {
-          orphan_names.push_back(name);
+          orphans.push_back({name, segment_id, is_tmp});
         } else {
           LOG_WARN(
               "Recovery kept unreferenced segment directory holding a WAL: "
               "path=%s",
               ailego::FileHelper::PathToUtf8(it->path()).c_str());
-          if (!is_tmp && segment_id >= first_free_id) {
-            first_free_id = segment_id + 1;
-          }
+          auto s = reserve(segment_id, is_tmp);
+          CHECK_RETURN_STATUS(s);
         }
       }
     }
     it.increment(ec);
   }
   if (ec) {
-    LOG_WARN("Failed to list collection directory for orphan cleanup: %s",
-             ec.message().c_str());
-    return first_free_id;
+    LOG_ERROR("Failed to list collection directory for orphan cleanup: %s",
+              ec.message().c_str());
+    return Status::InternalError("Failed to list collection directory ", path_,
+                                 ": ", ec.message());
   }
 
-  for (const auto &name : orphan_names) {
-    auto orphan_path = ailego::FileHelper::PathJoin(path_, name);
+  for (const auto &orphan : orphans) {
+    auto orphan_path = ailego::FileHelper::PathJoin(path_, orphan.name);
     if (FileHelper::RemoveDirectory(orphan_path)) {
       LOG_WARN(
           "Recovery removed orphan segment directory not referenced by "
@@ -2275,9 +2332,11 @@ SegmentID CollectionImpl::cleanup_orphan_segment_dirs(const Version &version) {
           "Recovery failed to remove orphan segment directory not referenced "
           "by manifest: path=%s, error=%s",
           orphan_path.c_str(), error.c_str());
+      auto s = reserve(orphan.id, orphan.is_tmp);
+      CHECK_RETURN_STATUS(s);
     }
   }
-  return first_free_id;
+  return Status::OK();
 }
 
 Status CollectionImpl::create() {

@@ -71,11 +71,12 @@ numbers. Unknown values read from disk are preserved as-is and mapped to
 ### Truncation
 
 Manifests are published atomically (written to `manifest.<id>.tmp`, synced,
-renamed), so a complete file is expected on load. A collection additionally
-rejects a manifest that fails `Version::validate()`. Because
+renamed, directory synced). On open, a collection loads only the newest
+manifest and rejects it if it fails `Version::validate()`. Because
 `next_segment_id` (field 8) is always non-zero and is the last top-level
-field, a file cut at any field boundary is rejected. A top-level field added
-after it is not covered by this check: a cut that drops only that field
+field that the encoder writes, this detects truncation of that canonical
+encoding at any length. It is not a general corruption check. A top-level
+field added after field 8 is not covered: a cut that drops only that field
 decodes to its default value, as for a manifest written before the field
 existed.
 
