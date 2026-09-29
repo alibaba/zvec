@@ -14,6 +14,12 @@
 
 #include "version_manager.h"
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 #else
 #include <fcntl.h>
@@ -125,6 +131,10 @@ int WriteFileDurably(const std::string &path, const std::string &data) {
 }
 
 // Makes a rename in `dir` durable. Returns 0 or an errno value.
+// A file system that cannot sync directories reports EINVAL (or ENOTSUP /
+// EOPNOTSUPP). There is nothing more to wait for, so that is not a failure;
+// PostgreSQL does the same (fsync_fname_ext() in src/backend/storage/file/
+// fd.c: "Some OSes don't allow us to fsync directories at all").
 int SyncDirectory(const std::string &dir) {
   int fd = ::open(dir.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY);
   if (fd < 0) {
@@ -133,6 +143,14 @@ int SyncDirectory(const std::string &dir) {
   int error = SyncDescriptor(fd, true);
   if (::close(fd) != 0 && error == 0) {
     error = errno;
+  }
+  if (error == EINVAL || error == ENOTSUP || error == EOPNOTSUPP) {
+    static std::atomic<bool> logged{false};
+    if (!logged.exchange(true)) {
+      LOG_WARN("Directory sync is not supported for %s (%s); continuing",
+               dir.c_str(), std::strerror(error));
+    }
+    error = 0;
   }
   return error;
 }
@@ -262,8 +280,11 @@ Status PublishFile(const std::string &tmp_path, const std::string &path,
   }
   return Status::OK();
 #else
-  // Untested on Windows. MOVEFILE_WRITE_THROUGH returns only once the rename
-  // is flushed, so no separate directory sync is needed.
+  // Untested on Windows. The data is made durable by FlushFileBuffers on the
+  // temporary file before the move. MOVEFILE_WRITE_THROUGH makes MoveFileExW
+  // wait until the move is done on disk, but Microsoft documents its flush
+  // only for moves performed as a copy and delete; a same-volume rename is
+  // not covered by that statement, and Windows has no directory sync.
   const std::wstring wide_tmp =
       ailego::FileHelper::PathFromUtf8(tmp_path).wstring();
   const std::wstring wide_path =

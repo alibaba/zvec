@@ -53,6 +53,7 @@
 #include "db/index/segment/segment.h"
 #include "db/index/segment/segment_helper.h"
 #include "db/index/segment/segment_manager.h"
+#include "db/index/storage/wal/local_wal_file.h"
 #include "db/sqlengine/sqlengine.h"
 #include "zvec/core/interface/index.h"
 
@@ -177,6 +178,23 @@ class CollectionImpl : public Collection {
   Status create_idmap_and_delete_store();
 
   Status recover_idmap_and_delete_store();
+
+  // A segment directory on disk that the loaded manifest does not reference.
+  struct UnreferencedSegmentDir {
+    std::string name;
+    SegmentID id;
+    bool is_tmp;
+    // Holds a WAL file, or could not be listed.
+    bool holds_wal;
+    // A WAL file that holds records (or "?" if the directory could not be
+    // listed); empty otherwise.
+    std::string wal_with_records;
+  };
+
+  Status list_unreferenced_segment_dirs(
+      const Version &version, std::vector<UnreferencedSegmentDir> *dirs) const;
+
+  Status check_no_hidden_wal_records(const Version &version) const;
 
   Status cleanup_orphan_segment_dirs(const Version &version,
                                      SegmentID *first_free_id,
@@ -2164,6 +2182,10 @@ Status CollectionImpl::recovery() {
   const auto v = version_manager_->get_current_version();
   schema_ = std::make_shared<CollectionSchema>(v.schema());
   options_.enable_mmap_ = v.enable_mmap();
+  if (!options_.read_only_) {
+    s = check_no_hidden_wal_records(v);
+    CHECK_RETURN_STATUS(s);
+  }
   s = recover_idmap_and_delete_store();
   CHECK_RETURN_STATUS(s);
 
@@ -2240,20 +2262,12 @@ Status CollectionImpl::recover_idmap_and_delete_store() {
   return Status::OK();
 }
 
-// Removes segment directories that `version` does not reference: numeric
+// Lists the segment directories that `version` does not reference: numeric
 // directories absent from the persisted set and the writing segment, plus
-// `<id>.tmp` compact outputs that were never renamed. A directory that
-// still holds a WAL file may hold acknowledged writes and is kept; so is one
-// that cannot be removed. Every directory left in place has its id reserved:
-// `*first_free_id` and `*first_free_tmp_id` are above all of them (and
-// `*first_free_id` at least next_segment_id). Fails if the collection
-// directory cannot be listed completely. Must be called with the exclusive
-// collection file lock held.
-Status CollectionImpl::cleanup_orphan_segment_dirs(
-    const Version &version, SegmentID *first_free_id,
-    SegmentID *first_free_tmp_id) {
-  *first_free_id = version.next_segment_id();
-  *first_free_tmp_id = 0;
+// `<id>.tmp` compact outputs that were never renamed. Fails if the
+// collection directory cannot be listed completely.
+Status CollectionImpl::list_unreferenced_segment_dirs(
+    const Version &version, std::vector<UnreferencedSegmentDir> *dirs) const {
   std::unordered_set<SegmentID> referenced_ids;
   for (auto &meta : version.persisted_segment_metas()) {
     referenced_ids.insert(meta->id());
@@ -2284,39 +2298,31 @@ Status CollectionImpl::cleanup_orphan_segment_dirs(
     return true;
   };
 
-  // Anything that is not provably WAL-free counts as holding a WAL.
-  auto contains_wal = [](const std::filesystem::path &dir) {
+  // Anything that is not provably free of WAL records counts as holding
+  // them. A WAL no longer than its header holds no record.
+  auto inspect_wals = [](const std::filesystem::path &dir,
+                         UnreferencedSegmentDir *entry) {
     std::error_code list_ec;
     std::filesystem::directory_iterator file(dir, list_ec);
     for (; !list_ec && file != std::filesystem::directory_iterator();
          file.increment(list_ec)) {
-      if (file->path().extension() == ".wal") {
-        return true;
+      if (file->path().extension() != ".wal") {
+        continue;
+      }
+      entry->holds_wal = true;
+      std::error_code size_ec;
+      const auto size = std::filesystem::file_size(file->path(), size_ec);
+      if (size_ec || size > sizeof(WalHeader)) {
+        entry->wal_with_records = ailego::FileHelper::PathToUtf8(file->path());
+        return;
       }
     }
-    return static_cast<bool>(list_ec);
-  };
-
-  // Moves the matching allocator past a directory that stays on disk.
-  auto reserve = [&](SegmentID id, bool is_tmp) {
-    if (id == std::numeric_limits<SegmentID>::max()) {
-      return Status::InternalError("Segment id space exhausted by directory ",
-                                   id, is_tmp ? ".tmp" : "", " in ", path_);
+    if (list_ec) {
+      entry->holds_wal = true;
+      entry->wal_with_records = "?";
     }
-    SegmentID *first_free = is_tmp ? first_free_tmp_id : first_free_id;
-    *first_free = (std::max)(*first_free, static_cast<SegmentID>(id + 1));
-    return Status::OK();
   };
 
-  // Collect candidates first and remove them after the scan: deleting an
-  // entry while iterating a directory is implementation-defined, and this
-  // matches the CleanupDirectory precedent.
-  struct Orphan {
-    std::string name;
-    SegmentID id;
-    bool is_tmp;
-  };
-  std::vector<Orphan> orphans;
   std::error_code ec;
   std::filesystem::directory_iterator it(
       ailego::FileHelper::PathFromUtf8(path_), ec);
@@ -2342,41 +2348,100 @@ Status CollectionImpl::cleanup_orphan_segment_dirs(
       SegmentID segment_id = 0;
       if (parse_segment_id(stem, &segment_id) &&
           (is_tmp || referenced_ids.count(segment_id) == 0)) {
-        if (!contains_wal(it->path())) {
-          orphans.push_back({name, segment_id, is_tmp});
-        } else {
-          LOG_WARN(
-              "Recovery kept unreferenced segment directory holding a WAL: "
-              "path=%s",
-              ailego::FileHelper::PathToUtf8(it->path()).c_str());
-          auto s = reserve(segment_id, is_tmp);
-          CHECK_RETURN_STATUS(s);
-        }
+        UnreferencedSegmentDir entry{name, segment_id, is_tmp, false, ""};
+        inspect_wals(it->path(), &entry);
+        dirs->push_back(std::move(entry));
       }
     }
     it.increment(ec);
   }
   if (ec) {
-    LOG_ERROR("Failed to list collection directory for orphan cleanup: %s",
+    LOG_ERROR("Failed to list collection directory %s: %s", path_.c_str(),
               ec.message().c_str());
     return Status::InternalError("Failed to list collection directory ", path_,
                                  ": ", ec.message());
   }
+  return Status::OK();
+}
 
-  for (const auto &orphan : orphans) {
-    auto orphan_path = ailego::FileHelper::PathJoin(path_, orphan.name);
-    if (FileHelper::RemoveDirectory(orphan_path)) {
+// A segment directory that the manifest does not reference but whose WAL
+// holds records may contain acknowledged writes, for example after a failed
+// manifest publish during segment rollover followed by a crash. Opening
+// would hide them, so a writable open fails before modifying anything.
+Status CollectionImpl::check_no_hidden_wal_records(
+    const Version &version) const {
+  std::vector<UnreferencedSegmentDir> dirs;
+  auto s = list_unreferenced_segment_dirs(version, &dirs);
+  CHECK_RETURN_STATUS(s);
+  for (const auto &dir : dirs) {
+    if (dir.wal_with_records.empty()) {
+      continue;
+    }
+    const auto dir_path = ailego::FileHelper::PathJoin(path_, dir.name);
+    LOG_ERROR(
+        "Segment directory %s is not referenced by the manifest but holds WAL "
+        "records (%s)",
+        dir_path.c_str(), dir.wal_with_records.c_str());
+    return Status::FailedPrecondition(
+        "Segment directory ", dir_path,
+        " is not referenced by the manifest but holds WAL records (",
+        dir.wal_with_records,
+        "), which may be acknowledged writes; refusing a writable open. "
+        "Nothing was modified");
+  }
+  return Status::OK();
+}
+
+// Removes the unreferenced segment directories. A directory that still holds
+// a WAL file is kept (check_no_hidden_wal_records() already refused WAL
+// records), and so is one that cannot be removed. Every directory left in
+// place has its id reserved: `*first_free_id` and `*first_free_tmp_id` are
+// above all of them (and `*first_free_id` at least next_segment_id). Must be
+// called with the exclusive collection file lock held.
+Status CollectionImpl::cleanup_orphan_segment_dirs(
+    const Version &version, SegmentID *first_free_id,
+    SegmentID *first_free_tmp_id) {
+  *first_free_id = version.next_segment_id();
+  *first_free_tmp_id = 0;
+
+  // Moves the matching allocator past a directory that stays on disk.
+  auto reserve = [&](SegmentID id, bool is_tmp) {
+    if (id == std::numeric_limits<SegmentID>::max()) {
+      return Status::InternalError("Segment id space exhausted by directory ",
+                                   id, is_tmp ? ".tmp" : "", " in ", path_);
+    }
+    SegmentID *first_free = is_tmp ? first_free_tmp_id : first_free_id;
+    *first_free = (std::max)(*first_free, static_cast<SegmentID>(id + 1));
+    return Status::OK();
+  };
+
+  // The list is complete before anything is removed: deleting an entry while
+  // iterating a directory is implementation-defined.
+  std::vector<UnreferencedSegmentDir> dirs;
+  auto s = list_unreferenced_segment_dirs(version, &dirs);
+  CHECK_RETURN_STATUS(s);
+
+  for (const auto &dir : dirs) {
+    auto dir_path = ailego::FileHelper::PathJoin(path_, dir.name);
+    if (dir.holds_wal) {
+      LOG_WARN(
+          "Recovery kept unreferenced segment directory holding a WAL: "
+          "path=%s",
+          dir_path.c_str());
+      s = reserve(dir.id, dir.is_tmp);
+      CHECK_RETURN_STATUS(s);
+    } else if (FileHelper::RemoveDirectory(dir_path)) {
       LOG_WARN(
           "Recovery removed orphan segment directory not referenced by "
           "manifest: path=%s",
-          orphan_path.c_str());
+          dir_path.c_str());
     } else {
       const auto error = ailego::FileHelper::GetLastErrorString();
       LOG_WARN(
           "Recovery failed to remove orphan segment directory not referenced "
           "by manifest: path=%s, error=%s",
-          orphan_path.c_str(), error.c_str());
-      auto s = reserve(orphan.id, orphan.is_tmp);
+          dir_path.c_str(), error.c_str());
+      s = reserve(dir.id, dir.is_tmp);
       CHECK_RETURN_STATUS(s);
     }
   }
