@@ -15,7 +15,9 @@
 // Manifest durability tests (process crash semantics):
 //
 // * T1: a damaged newest manifest must never make open delete segment data;
-//   it must fail closed or fall back to a complete previous generation;
+//   it must fail closed. An older manifest that is still on disk is no
+//   substitute: the checkpoint that wrote the newest one already removed
+//   the older generation's WAL;
 // * T2: a disk-full error while flush writes the manifest must be reported
 //   and leave the previous state recoverable.
 //
@@ -72,10 +74,10 @@ class ManifestDurabilityTest : public DurabilityTestBase {
  protected:
   // Three segments: two sealed through create_iterator and one flushed
   // writing segment, without deletes (the initial delete snapshot is kept).
-  // `older` receives the manifest and WAL files as they were right before
-  // the final flush: together with the flushed collection they form the
-  // state of a crash after the new manifest was written and before the
-  // previous generation was retired.
+  // `older` receives the manifest as it was right before the final flush,
+  // which then publishes a newer manifest and removes the WAL. Adding it to
+  // the flushed collection gives the state of a crash that lost the unlink
+  // of the older manifest.
   void CreatePristine(const fs::path &path, const fs::path &older) {
     auto created =
         Collection::CreateAndOpen(path.string(), MakeSchema(false), {});
@@ -93,14 +95,9 @@ class ManifestDurabilityTest : public DurabilityTestBase {
       }
     }
     fs::create_directories(older);
-    for (const auto &entry : fs::recursive_directory_iterator(path)) {
-      const auto name = entry.path().filename().string();
-      if (!entry.is_regular_file() || (name.rfind("manifest.", 0) != 0 &&
-                                       entry.path().extension() != ".wal"))
-        continue;
-      const auto relative = fs::relative(entry.path(), path);
-      fs::create_directories((older / relative).parent_path());
-      fs::copy_file(entry.path(), older / relative);
+    for (const auto &entry : fs::directory_iterator(path)) {
+      if (entry.path().filename().string().rfind("manifest.", 0) == 0)
+        fs::copy_file(entry.path(), older / entry.path().filename());
     }
     auto status = collection->flush();
     ASSERT_TRUE(status.ok()) << status.message();
@@ -187,10 +184,12 @@ TEST_F(ManifestDurabilityTest, DamagedOnlyManifestFailsClosedWithoutDeleting) {
   for (size_t length : Cuts(manifest)) run_cut(length);
 }
 
-// A crash after the new manifest was written and before the previous
-// generation (its manifest and WAL) was retired, then the new manifest is
-// damaged: open must fall back to the complete previous generation.
-TEST_F(ManifestDurabilityTest, DamagedNewestManifestFallsBackToPrevious) {
+// The newest manifest is damaged and the older manifest is still on disk,
+// without the WAL that the newest checkpoint removed. Loading the older
+// manifest would silently drop acknowledged documents, so open must fail
+// closed, delete nothing, and recover once the newest manifest is repaired.
+TEST_F(ManifestDurabilityTest,
+       DamagedNewestManifestFailsClosedWithOlderOnDisk) {
   const auto pristine = directory_ / "pristine";
   const auto older = directory_ / "older";
   ASSERT_NO_FATAL_FAILURE(CreatePristine(pristine, older));
@@ -203,35 +202,35 @@ TEST_F(ManifestDurabilityTest, DamagedNewestManifestFallsBackToPrevious) {
   const std::string manifest = ReadFile(pristine / manifest_name);
   const auto segments = SegmentDirectories(pristine);
 
-  // Positive control: without the newest manifest, the previous generation
-  // (manifest and WAL) must recover every document on its own. Otherwise the
-  // fallback cases below could not tell a missing fallback from a bad setup.
+  // Control: the older manifest alone does not hold every document, so a
+  // fallback to it would lose data.
   {
     const auto control = directory_ / "control";
     fs::copy(pristine, control, fs::copy_options::recursive);
-    fs::copy(older, control,
-             fs::copy_options::recursive | fs::copy_options::skip_existing);
+    fs::copy(older, control, fs::copy_options::recursive);
     fs::remove(control / manifest_name);
     auto opened = Check(control, "control");
-    ASSERT_TRUE(opened.exited(0))
-        << "The previous generation alone does not recover\n"
+    ASSERT_FALSE(opened.exited(0))
+        << "The older generation alone is complete; the test proves nothing\n"
         << opened.describe();
   }
 
   auto run_cut = [&](size_t length) {
     SCOPED_TRACE("newest manifest truncated to " + std::to_string(length) +
                  " of " + std::to_string(manifest.size()) + " bytes");
-    const auto copy = directory_ / ("fallback-" + std::to_string(length));
+    const auto copy = directory_ / ("older-" + std::to_string(length));
     fs::copy(pristine, copy, fs::copy_options::recursive);
-    fs::copy(older, copy,
-             fs::copy_options::recursive | fs::copy_options::skip_existing);
+    fs::copy(older, copy, fs::copy_options::recursive);
     fs::resize_file(copy / manifest_name, length);
 
-    auto opened = Check(copy, "fallback-" + std::to_string(length));
+    auto opened = Check(copy, "older-" + std::to_string(length));
     ASSERT_NO_FATAL_FAILURE(ExpectSegmentsIntact(segments, copy, opened));
-    EXPECT_TRUE(opened.exited(0))
-        << "Open must fall back to the previous complete manifest\n"
+    ASSERT_TRUE(opened.exited(3))
+        << "Open must fail closed instead of loading the older manifest\n"
         << opened.describe();
+    ASSERT_NO_FATAL_FAILURE(WriteFile(copy / manifest_name, manifest));
+    auto repaired = Check(copy, "older-repaired-" + std::to_string(length));
+    ASSERT_TRUE(repaired.exited(0)) << repaired.describe();
   };
   for (size_t length : Cuts(manifest)) run_cut(length);
 }
