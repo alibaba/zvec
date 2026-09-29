@@ -48,6 +48,7 @@
 #include "db/index/common/manifest_codec.h"
 #include "db/index/common/meta.h"
 #include "db/index/common/version_manager.h"
+#include "db/index/storage/wal/local_wal_file.h"
 
 namespace zvec {
 namespace {
@@ -137,7 +138,14 @@ int g_directory_sync_error = 0;
 // When set, replaces the two fixed errors above.
 std::function<int(bool)> g_sync_fault;
 
-int InjectSyncFault(bool directory) {
+int g_file_close_error = 0;
+int g_directory_close_error = 0;
+
+int InjectSyncFault(VersionManager::SyncStep step) {
+  using Step = VersionManager::SyncStep;
+  if (step == Step::kFileClose) return g_file_close_error;
+  if (step == Step::kDirectoryClose) return g_directory_close_error;
+  const bool directory = step == Step::kDirectorySync;
   if (g_sync_fault) {
     return g_sync_fault(directory);
   }
@@ -204,6 +212,8 @@ class ManifestSyncFaultTest : public ::testing::Test {
     fs::create_directories(root_);
     g_file_sync_error = 0;
     g_directory_sync_error = 0;
+    g_file_close_error = 0;
+    g_directory_close_error = 0;
     g_sync_fault = nullptr;
     VersionManager::SetSyncFaultForTest(&InjectSyncFault);
   }
@@ -541,6 +551,148 @@ TEST_F(ManifestSyncFaultTest, UnsupportedDirectorySyncIsNotAFailure) {
   EXPECT_TRUE(result.has_value() && result->front().ok());
   EXPECT_TRUE(reopened.value()->flush().ok());
   g_directory_sync_error = 0;
+}
+
+// Only the result of the directory sync may be normalized. A failed close
+// is reported, also when the sync reported "unsupported" and when the close
+// itself fails with EINVAL.
+TEST_F(ManifestSyncFaultTest, CloseFailuresAreNotMasked) {
+  struct Case {
+    const char *name;
+    int directory_sync;
+    int directory_close;
+    int file_close;
+    bool fenced;  // the failure came after the rename
+  };
+  const Case cases[] = {
+      {"directory sync EINVAL, close EIO", EINVAL, EIO, 0, true},
+      {"directory close EINVAL", 0, EINVAL, 0, true},
+      {"file close EIO", 0, 0, EIO, false},
+  };
+  int index = 0;
+  for (const auto &c : cases) {
+    SCOPED_TRACE(c.name);
+    const auto dir = root_ / ("manifests-" + std::to_string(index++));
+    fs::create_directories(dir);
+    auto created = VersionManager::Create(dir.string(), MakeVersion(70001));
+    ASSERT_TRUE(created.has_value());
+    auto manager = created.value();
+    ASSERT_TRUE(manager->flush().ok());
+    manager->set_next_segment_id(70005);
+    g_directory_sync_error = c.directory_sync;
+    g_directory_close_error = c.directory_close;
+    g_file_close_error = c.file_close;
+    auto status = manager->flush();
+    g_directory_sync_error = 0;
+    g_directory_close_error = 0;
+    g_file_close_error = 0;
+    EXPECT_FALSE(status.ok()) << "A failed close was reported as success";
+    EXPECT_EQ(manager->fenced(), c.fenced);
+    if (!c.fenced) {
+      EXPECT_EQ(FileNames(dir), std::set<std::string>{"manifest.0"});
+    }
+  }
+}
+
+// Two crashes in a row leave a retired segment directory with an obsolete
+// WAL that still holds records:
+// 1. the writing segment's flush publishes the manifest that moves its
+//    writing block on, and the process dies before it removes the old WAL;
+// 2. optimize publishes a manifest that retires the segment, and the
+//    process dies before it removes the segment's directory.
+// Every document is committed, so the collection must open and keep them.
+TEST_F(ManifestSyncFaultTest, RetiredSegmentWithObsoleteWalDoesNotBlockOpen) {
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  // Outside root_: every death-test child runs SetUp again, which must not
+  // wipe the state that the previous child left behind.
+  const auto path = fs::absolute("manifest_sync_fault_successive_crash_db");
+  constexpr int kSegmentDocs = 32;
+  // Dies at the first directory sync of a publish, after the rename.
+  static std::function<int(bool)> crash_at_directory_sync = [](bool dir) {
+    if (dir) std::_Exit(0);
+    return 0;
+  };
+
+  EXPECT_EXIT(
+      {
+        fs::remove_all(path);
+        auto collection = Collection::CreateAndOpen(path.string(), MakeSchema(),
+                                                    CollectionOptions{})
+                              .value();
+        for (int id = 0; id < 2 * kSegmentDocs; ++id) {
+          std::vector<Doc> docs{MakeDoc(id)};
+          auto result = collection->insert(docs);
+          if (!(result.has_value() && result->front().ok())) std::_Exit(3);
+          if (id == kSegmentDocs - 1 &&
+              !collection->create_iterator().has_value()) {
+            std::_Exit(4);
+          }
+        }
+        g_sync_fault = crash_at_directory_sync;
+        collection->flush();
+        std::_Exit(5);
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  // The writing segment kept a WAL with records that the manifest no longer
+  // needs.
+  auto wals_with_records = [&]() {
+    std::map<SegmentID, std::string> wals;
+    for (const auto &segment : fs::directory_iterator(path)) {
+      const auto name = segment.path().filename().string();
+      if (!segment.is_directory() ||
+          name.find_first_not_of("0123456789") != std::string::npos) {
+        continue;
+      }
+      for (const auto &file : fs::directory_iterator(segment.path())) {
+        if (file.path().extension() == ".wal" &&
+            fs::file_size(file.path()) > sizeof(WalHeader)) {
+          wals[static_cast<SegmentID>(std::stoul(name))] = file.path().string();
+        }
+      }
+    }
+    return wals;
+  };
+  const auto obsolete = wals_with_records();
+  ASSERT_EQ(obsolete.size(), 1u) << "Crash 1 left no obsolete WAL";
+  const SegmentID retired_id = obsolete.begin()->first;
+
+  EXPECT_EXIT(
+      {
+        auto collection =
+            Collection::Open(path.string(), CollectionOptions{}).value();
+        if (!collection->create_iterator().has_value()) std::_Exit(3);
+        g_sync_fault = crash_at_directory_sync;
+        collection->optimize();
+        std::_Exit(4);
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  // The newest manifest retired the segment, whose directory still holds
+  // the obsolete WAL.
+  {
+    auto recovered = VersionManager::Recovery(path.string(), true);
+    ASSERT_TRUE(recovered.has_value()) << recovered.error().message();
+    auto version = recovered.value()->get_current_version();
+    for (const auto &meta : version.persisted_segment_metas()) {
+      ASSERT_NE(meta->id(), retired_id) << "Crash 2 did not retire it";
+    }
+    ASSERT_NE(version.writing_segment_meta()->id(), retired_id);
+    ASSERT_LT(retired_id, version.next_segment_id());
+    ASSERT_EQ(wals_with_records().count(retired_id), 1u);
+  }
+
+  {
+    auto reopened = Collection::Open(path.string(), CollectionOptions{});
+    ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
+    std::vector<int> ids;
+    for (int id = 0; id < 2 * kSegmentDocs; ++id) ids.push_back(id);
+    ASSERT_NO_FATAL_FAILURE(ExpectAcknowledgedDocs(*reopened.value(), ids));
+    EXPECT_FALSE(fs::exists(path / std::to_string(retired_id)))
+        << "The retired segment directory was not cleaned up";
+    EXPECT_TRUE(reopened.value()->close().ok());
+  }
+  fs::remove_all(path);
 }
 
 // A clean failure (before the rename) of the manifest publish during segment
