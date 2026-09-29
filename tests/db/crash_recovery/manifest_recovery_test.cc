@@ -14,10 +14,11 @@
 
 // Manifest publication and recovery:
 //
-// * a damaged manifest (empty, or cut at any length) must never make open
-//   delete data: open falls back to a complete previous generation, or fails
-//   without modifying anything;
+// * a damaged newest manifest (empty, or cut at any length) must never make
+//   open delete data: open fails without modifying anything, also when an
+//   older manifest is still on disk;
 // * leftover temporary manifests are ignored and cleaned up;
+// * an unreferenced segment directory that holds a WAL is kept;
 // * a short write while publishing a manifest makes flush() fail and keeps
 //   the previous generation, so no acknowledged data is lost.
 
@@ -26,6 +27,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <sstream>
 #include <string>
@@ -108,15 +110,30 @@ std::vector<uint64_t> ManifestIds(const fs::path &collection) {
   return ids;
 }
 
-// Every entry under `root` with its size (-1 for directories), to show that
-// a failed open modified nothing.
-std::map<std::string, int64_t> Snapshot(const fs::path &root) {
-  std::map<std::string, int64_t> entries;
+// Every entry under `root` with a digest of its contents ("dir" for
+// directories), to show that a failed open modified nothing.
+std::map<std::string, std::string> Snapshot(const fs::path &root) {
+  std::map<std::string, std::string> entries;
   for (const auto &entry : fs::recursive_directory_iterator(root)) {
+    const std::string data = entry.is_directory() ? "" : ReadFile(entry.path());
     entries[fs::relative(entry.path(), root).string()] =
-        entry.is_directory() ? -1 : static_cast<int64_t>(entry.file_size());
+        entry.is_directory()
+            ? "dir"
+            : std::to_string(data.size()) + ":" +
+                  std::to_string(std::hash<std::string>()(data));
   }
   return entries;
+}
+
+// Copies only the manifests of `from` into `to`: the state after a
+// checkpoint that removed the previous generation's WAL but whose unlink of
+// the previous manifest did not reach the disk.
+void CopyManifests(const fs::path &from, const fs::path &to) {
+  for (const auto &entry : fs::directory_iterator(from)) {
+    if (entry.path().filename().string().rfind("manifest.", 0) == 0) {
+      fs::copy_file(entry.path(), to / entry.path().filename());
+    }
+  }
 }
 
 void InsertDoc(Collection &collection, int id) {
@@ -150,31 +167,6 @@ CollectionOptions Options(bool read_only) {
   return options;
 }
 
-// Sets RLIMIT_FSIZE while alive, so that writes past `limit` bytes of any
-// regular file fail with EFBIG after a short write, as on a full disk.
-class FileSizeLimit {
- public:
-  explicit FileSizeLimit(rlim_t limit) {
-    previous_handler_ = std::signal(SIGXFSZ, SIG_IGN);
-    getrlimit(RLIMIT_FSIZE, &previous_);
-    struct rlimit limited = previous_;
-    limited.rlim_cur = limit;
-    ok_ = setrlimit(RLIMIT_FSIZE, &limited) == 0;
-  }
-  ~FileSizeLimit() {
-    setrlimit(RLIMIT_FSIZE, &previous_);
-    std::signal(SIGXFSZ, previous_handler_);
-  }
-  bool ok() const {
-    return ok_;
-  }
-
- private:
-  struct rlimit previous_{};
-  void (*previous_handler_)(int) = nullptr;
-  bool ok_ = false;
-};
-
 class ManifestRecoveryTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -191,10 +183,8 @@ class ManifestRecoveryTest : public ::testing::Test {
 
   // Creates kSegments segments: all but the last sealed through
   // create_iterator(), the last one a flushed writing segment. When `older`
-  // is given, it receives the manifest and WAL files as they were right
-  // before the final flush. Together with the flushed collection they form
-  // the state of a crash after the final manifest was published and before
-  // the previous generation was retired.
+  // is given, it receives the manifest as it was right before the final
+  // flush, which then publishes a newer one and removes the WAL.
   void CreateCollection(const fs::path &path, const fs::path &older = {}) {
     auto created =
         Collection::CreateAndOpen(path.string(), MakeSchema(), Options(false));
@@ -210,15 +200,8 @@ class ManifestRecoveryTest : public ::testing::Test {
       }
     }
     if (!older.empty()) {
-      for (const auto &entry : fs::recursive_directory_iterator(path)) {
-        const auto name = entry.path().filename().string();
-        if (!entry.is_regular_file() || (name.rfind("manifest.", 0) != 0 &&
-                                         entry.path().extension() != ".wal"))
-          continue;
-        const auto target = older / fs::relative(entry.path(), path);
-        fs::create_directories(target.parent_path());
-        fs::copy_file(entry.path(), target);
-      }
+      fs::create_directories(older);
+      ASSERT_NO_FATAL_FAILURE(CopyManifests(path, older));
     }
     auto status = collection->flush();
     ASSERT_TRUE(status.ok()) << status.message();
@@ -277,25 +260,12 @@ TEST_F(ManifestRecoveryTest, EveryTruncationFailsClosedWithoutDeleting) {
   ASSERT_NO_FATAL_FAILURE(ExpectOpensWithAllDocs(path));
 }
 
-// No manifest validates (newest empty, previous cut short): fail closed.
-TEST_F(ManifestRecoveryTest, NoValidManifestFailsClosedWithoutDeleting) {
-  const auto path = root_ / "collection";
-  const auto older = root_ / "older";
-  ASSERT_NO_FATAL_FAILURE(CreateCollection(path, older));
-  fs::copy(older, path,
-           fs::copy_options::recursive | fs::copy_options::skip_existing);
-  const auto ids = ManifestIds(path);
-  ASSERT_EQ(ids.size(), 2u);
-
-  fs::resize_file(ManifestPath(path, ids[1]), 0);
-  const auto previous = ManifestPath(path, ids[0]);
-  fs::resize_file(previous, fs::file_size(previous) - 1);
-  ASSERT_NO_FATAL_FAILURE(ExpectOpenFailsWithoutChanges(path));
-}
-
-// The newest manifest is damaged but the previous generation (manifest and
-// WAL) is still on disk: open must recover from it without losing data.
-TEST_F(ManifestRecoveryTest, DamagedNewestManifestFallsBackToPrevious) {
+// The newest manifest is damaged and an older one is still on disk, as after
+// a power loss that lost both the new manifest's data and the unlink of the
+// old one. The checkpoint that wrote the newest manifest already removed the
+// older generation's WAL, so loading the older manifest would silently drop
+// acknowledged documents: open must fail and modify nothing.
+TEST_F(ManifestRecoveryTest, DamagedNewestManifestFailsClosedWithOlderOnDisk) {
   const auto pristine = root_ / "pristine";
   const auto older = root_ / "older";
   ASSERT_NO_FATAL_FAILURE(CreateCollection(pristine, older));
@@ -306,15 +276,19 @@ TEST_F(ManifestRecoveryTest, DamagedNewestManifestFallsBackToPrevious) {
   const auto manifest_name = ManifestPath(pristine, newest.back()).filename();
   const std::string published = ReadFile(pristine / manifest_name);
 
-  // Control: the previous generation alone recovers every document, so a
-  // failure below is a missing fallback and not a bad setup.
+  // Control: the older manifest alone does not hold every document, so
+  // falling back to it would lose data.
   {
     const auto control = root_ / "control";
     fs::copy(pristine, control, fs::copy_options::recursive);
-    fs::copy(older, control,
-             fs::copy_options::recursive | fs::copy_options::skip_existing);
+    ASSERT_NO_FATAL_FAILURE(CopyManifests(older, control));
     fs::remove(control / manifest_name);
-    ASSERT_NO_FATAL_FAILURE(ExpectOpensWithAllDocs(control));
+    auto opened = Collection::Open(control.string(), Options(true));
+    ASSERT_TRUE(opened.has_value()) << opened.error().message();
+    auto stats = opened.value()->stats();
+    ASSERT_TRUE(stats.has_value());
+    ASSERT_LT(stats->doc_count, static_cast<uint64_t>(kDocs))
+        << "The older generation is complete; the test proves nothing";
   }
 
   // Empty, cut in the last field (next_segment_id), and one byte short.
@@ -324,12 +298,14 @@ TEST_F(ManifestRecoveryTest, DamagedNewestManifestFallsBackToPrevious) {
                  std::to_string(published.size()) + " bytes");
     const auto copy = root_ / ("cut-" + std::to_string(length));
     fs::copy(pristine, copy, fs::copy_options::recursive);
-    fs::copy(older, copy,
-             fs::copy_options::recursive | fs::copy_options::skip_existing);
+    ASSERT_NO_FATAL_FAILURE(CopyManifests(older, copy));
     fs::resize_file(copy / manifest_name, length);
-    ASSERT_NO_FATAL_FAILURE(ExpectOpensWithAllDocs(copy));
+    ASSERT_NO_FATAL_FAILURE(ExpectOpenFailsWithoutChanges(copy));
 
-    // The next flush publishes a fresh generation and retires the others.
+    // Nothing was lost: with the newest manifest restored, every document
+    // is back and the next flush retires the older manifest.
+    ASSERT_NO_FATAL_FAILURE(WriteFile(copy / manifest_name, published));
+    ASSERT_NO_FATAL_FAILURE(ExpectOpensWithAllDocs(copy));
     {
       auto opened = Collection::Open(copy.string(), Options(false));
       ASSERT_TRUE(opened.has_value()) << opened.error().message();
@@ -337,12 +313,7 @@ TEST_F(ManifestRecoveryTest, DamagedNewestManifestFallsBackToPrevious) {
       ASSERT_TRUE(opened.value()->flush().ok());
       ASSERT_TRUE(opened.value()->close().ok());
     }
-    const auto ids = ManifestIds(copy);
-    ASSERT_EQ(ids.size(), 1u);
-    EXPECT_GT(ids.back(), newest.back());
-    auto reopened = Collection::Open(copy.string(), Options(true));
-    ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
-    ASSERT_NO_FATAL_FAILURE(ExpectDocs(*reopened.value(), kDocs + 1));
+    EXPECT_EQ(ManifestIds(copy).size(), 1u);
   }
 }
 
@@ -439,20 +410,42 @@ TEST_F(ManifestRecoveryTest, ShortManifestWriteFailsFlushAndKeepsPrevious) {
           .ok());
   manager->set_next_segment_id(3);
 
-  Status status;
-  {
-    FileSizeLimit limit(published.size() / 2);
-    ASSERT_TRUE(limit.ok());
-    status = manager->flush();
-  }
-  EXPECT_FALSE(status.ok()) << "flush() reported a short manifest write as OK";
-  EXPECT_NE(status.message().find("manifest"), std::string::npos)
-      << status.message();
+  // The fault runs in a child process, so that the file size limit and the
+  // SIGXFSZ disposition cannot leak into other tests. The child exits with 0
+  // when flush() reports the short write, 1 when it returns OK, 2 when the
+  // fault could not be set up and 3 when the error does not name the manifest.
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  const rlim_t limit = published.size() / 2;
+  EXPECT_EXIT(
+      {
+        struct rlimit limited{};
+        if (std::signal(SIGXFSZ, SIG_IGN) == SIG_ERR ||
+            getrlimit(RLIMIT_FSIZE, &limited) != 0 ||
+            limited.rlim_max < limit) {
+          std::_Exit(2);
+        }
+        limited.rlim_cur = limit;
+        if (setrlimit(RLIMIT_FSIZE, &limited) != 0) {
+          std::_Exit(2);
+        }
+        auto status = manager->flush();
+        if (status.ok()) {
+          std::_Exit(1);
+        }
+        std::_Exit(status.message().find("manifest") == std::string::npos ? 3
+                                                                          : 0);
+      },
+      ::testing::ExitedWithCode(0), "");
 
-  // The previous generation is intact and is what recovery loads.
+  // The previous generation is intact and is what recovery loads; nothing
+  // else was left behind.
   ASSERT_TRUE(fs::exists(previous));
   EXPECT_EQ(ReadFile(previous), published);
-  EXPECT_EQ(ManifestIds(path).back(), ManifestIds(path).front());
+  std::vector<std::string> names;
+  for (const auto &entry : fs::directory_iterator(path)) {
+    names.push_back(entry.path().filename().string());
+  }
+  EXPECT_EQ(names, std::vector<std::string>{previous.filename().string()});
   auto recovered = VersionManager::Recovery(path.string());
   ASSERT_TRUE(recovered.has_value()) << recovered.error().message();
   auto loaded = recovered.value()->get_current_version();
