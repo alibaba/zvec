@@ -241,10 +241,16 @@ class VersionManager {
     return fenced_.load();
   }
 
-  //! Test-only fault injection. When set, it is called before each sync of a
-  //! manifest file (`directory` false) or of its directory (true); a non-zero
-  //! result fails that sync with this errno value.
-  using SyncFaultForTest = int (*)(bool directory);
+  //! Test-only fault injection. When set, it is called at each sync and each
+  //! close of a manifest file or of its directory; a non-zero result fails
+  //! that step with this errno value. A close still closes the descriptor.
+  enum class SyncStep {
+    kFileSync,
+    kFileClose,
+    kDirectorySync,
+    kDirectoryClose
+  };
+  using SyncFaultForTest = int (*)(SyncStep step);
   static void SetSyncFaultForTest(SyncFaultForTest fault);
 
   void set_id_map_path_suffix(uint32_t suffix) {

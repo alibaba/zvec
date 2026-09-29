@@ -194,6 +194,9 @@ class CollectionImpl : public Collection {
   Status list_unreferenced_segment_dirs(
       const Version &version, std::vector<UnreferencedSegmentDir> *dirs) const;
 
+  static bool is_retired_segment(const UnreferencedSegmentDir &dir,
+                                 const Version &version);
+
   Status check_no_hidden_wal_records(const Version &version) const;
 
   Status cleanup_orphan_segment_dirs(const Version &version,
@@ -2364,17 +2367,29 @@ Status CollectionImpl::list_unreferenced_segment_dirs(
   return Status::OK();
 }
 
-// A segment directory that the manifest does not reference but whose WAL
-// holds records may contain acknowledged writes, for example after a failed
-// manifest publish during segment rollover followed by a crash. Opening
-// would hide them, so a writable open fails before modifying anything.
+// True for an unreferenced segment that some manifest once published and a
+// later one retired. Every published segment id is below the
+// next_segment_id of every later manifest; a segment whose publish never
+// completed (such as a rollover target) has an id at or above it.
+bool CollectionImpl::is_retired_segment(const UnreferencedSegmentDir &dir,
+                                        const Version &version) {
+  return !dir.is_tmp && dir.id < version.next_segment_id();
+}
+
+// A segment that was never published but whose WAL holds records may
+// contain acknowledged writes, for example after a failed manifest publish
+// during segment rollover followed by a crash. Opening would hide them, so
+// a writable open fails before modifying anything. A retired segment's WAL
+// is obsolete: its records reached a published manifest before the segment
+// was retired.
 Status CollectionImpl::check_no_hidden_wal_records(
     const Version &version) const {
   std::vector<UnreferencedSegmentDir> dirs;
   auto s = list_unreferenced_segment_dirs(version, &dirs);
   CHECK_RETURN_STATUS(s);
   for (const auto &dir : dirs) {
-    if (dir.wal_with_records.empty()) {
+    if (dir.is_tmp || is_retired_segment(dir, version) ||
+        dir.wal_with_records.empty()) {
       continue;
     }
     const auto dir_path = ailego::FileHelper::PathJoin(path_, dir.name);
@@ -2392,9 +2407,10 @@ Status CollectionImpl::check_no_hidden_wal_records(
   return Status::OK();
 }
 
-// Removes the unreferenced segment directories. A directory that still holds
-// a WAL file is kept (check_no_hidden_wal_records() already refused WAL
-// records), and so is one that cannot be removed. Every directory left in
+// Removes the unreferenced segment directories. Retired segments are removed
+// even if they still hold a WAL, which is obsolete. Any other directory that
+// holds a WAL file is kept (check_no_hidden_wal_records() already refused
+// WAL records), and so is one that cannot be removed. Every directory left in
 // place has its id reserved: `*first_free_id` and `*first_free_tmp_id` are
 // above all of them (and `*first_free_id` at least next_segment_id). Must be
 // called with the exclusive collection file lock held.
@@ -2423,7 +2439,7 @@ Status CollectionImpl::cleanup_orphan_segment_dirs(
 
   for (const auto &dir : dirs) {
     auto dir_path = ailego::FileHelper::PathJoin(path_, dir.name);
-    if (dir.holds_wal) {
+    if (dir.holds_wal && !is_retired_segment(dir, version)) {
       LOG_WARN(
           "Recovery kept unreferenced segment directory holding a WAL: "
           "path=%s",

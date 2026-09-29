@@ -56,9 +56,11 @@ namespace fs = std::filesystem;
 
 std::atomic<VersionManager::SyncFaultForTest> g_sync_fault{nullptr};
 
-int InjectedSyncError(bool directory) {
+using SyncStep = VersionManager::SyncStep;
+
+int InjectedFault(SyncStep step) {
   auto fault = g_sync_fault.load();
-  return fault ? fault(directory) : 0;
+  return fault ? fault(step) : 0;
 }
 
 #ifndef _WIN32
@@ -68,7 +70,8 @@ std::string ErrorText(int error) {
 
 // Flushes a file or directory to stable storage. Returns 0 or an errno value.
 int SyncDescriptor(int fd, bool directory) {
-  if (int injected = InjectedSyncError(directory)) {
+  if (int injected = InjectedFault(directory ? SyncStep::kDirectorySync
+                                             : SyncStep::kFileSync)) {
     return injected;
   }
 #ifdef F_FULLFSYNC
@@ -124,35 +127,43 @@ int WriteFileDurably(const std::string &path, const std::string &data) {
   if (error == 0) {
     error = SyncDescriptor(fd, false);
   }
-  if (::close(fd) != 0 && error == 0) {
-    error = errno;
+  int close_error = ::close(fd) != 0 ? errno : 0;
+  if (int injected = InjectedFault(SyncStep::kFileClose)) {
+    close_error = injected;
+  }
+  if (error == 0) {
+    error = close_error;
   }
   return error;
 }
 
 // Makes a rename in `dir` durable. Returns 0 or an errno value.
 // A file system that cannot sync directories reports EINVAL (or ENOTSUP /
-// EOPNOTSUPP). There is nothing more to wait for, so that is not a failure;
-// PostgreSQL does the same (fsync_fname_ext() in src/backend/storage/file/
-// fd.c: "Some OSes don't allow us to fsync directories at all").
+// EOPNOTSUPP) from the sync. Accepting that is a portability concession:
+// the rename's durability is not proven on such file systems. PostgreSQL
+// makes the same concession (fsync_fname_ext() in src/backend/storage/file/
+// fd.c: "Some OSes don't allow us to fsync directories at all"). Only the
+// sync result is normalized; a failed close is always reported.
 int SyncDirectory(const std::string &dir) {
   int fd = ::open(dir.c_str(), O_RDONLY | O_CLOEXEC | O_DIRECTORY);
   if (fd < 0) {
     return errno;
   }
-  int error = SyncDescriptor(fd, true);
-  if (::close(fd) != 0 && error == 0) {
-    error = errno;
-  }
-  if (error == EINVAL || error == ENOTSUP || error == EOPNOTSUPP) {
+  int sync_error = SyncDescriptor(fd, true);
+  if (sync_error == EINVAL || sync_error == ENOTSUP ||
+      sync_error == EOPNOTSUPP) {
     static std::atomic<bool> logged{false};
     if (!logged.exchange(true)) {
       LOG_WARN("Directory sync is not supported for %s (%s); continuing",
-               dir.c_str(), std::strerror(error));
+               dir.c_str(), std::strerror(sync_error));
     }
-    error = 0;
+    sync_error = 0;
   }
-  return error;
+  int close_error = ::close(fd) != 0 ? errno : 0;
+  if (int injected = InjectedFault(SyncStep::kDirectoryClose)) {
+    close_error = injected;
+  }
+  return sync_error != 0 ? sync_error : close_error;
 }
 #else
 std::string ErrorText(DWORD error) {
@@ -183,7 +194,7 @@ DWORD WriteFileDurably(const std::wstring &path, const std::string &data) {
     }
     written += n;
   }
-  if (error == 0 && InjectedSyncError(false) != 0) {
+  if (error == 0 && InjectedFault(SyncStep::kFileSync) != 0) {
     error = ERROR_WRITE_FAULT;
   }
   if (error == 0 && !::FlushFileBuffers(handle)) {
@@ -191,6 +202,9 @@ DWORD WriteFileDurably(const std::wstring &path, const std::string &data) {
   }
   if (!::CloseHandle(handle) && error == 0) {
     error = ::GetLastError();
+  }
+  if (error == 0 && InjectedFault(SyncStep::kFileClose) != 0) {
+    error = ERROR_WRITE_FAULT;
   }
   return error;
 }
@@ -208,8 +222,12 @@ Status SyncPublishedFile(const std::string &path) {
     error = errno;
   } else {
     error = SyncDescriptor(fd, false);
-    if (::close(fd) != 0 && error == 0) {
-      error = errno;
+    int close_error = ::close(fd) != 0 ? errno : 0;
+    if (int injected = InjectedFault(SyncStep::kFileClose)) {
+      close_error = injected;
+    }
+    if (error == 0) {
+      error = close_error;
     }
   }
   if (error == 0) {
@@ -230,7 +248,7 @@ Status SyncPublishedFile(const std::string &path) {
   if (handle == INVALID_HANDLE_VALUE) {
     error = ::GetLastError();
   } else {
-    if (InjectedSyncError(false) != 0) {
+    if (InjectedFault(SyncStep::kFileSync) != 0) {
       error = ERROR_WRITE_FAULT;
     } else if (!::FlushFileBuffers(handle)) {
       error = ::GetLastError();
@@ -238,8 +256,11 @@ Status SyncPublishedFile(const std::string &path) {
     if (!::CloseHandle(handle) && error == 0) {
       error = ::GetLastError();
     }
+    if (error == 0 && InjectedFault(SyncStep::kFileClose) != 0) {
+      error = ERROR_WRITE_FAULT;
+    }
   }
-  if (error == 0 && InjectedSyncError(true) != 0) {
+  if (error == 0 && InjectedFault(SyncStep::kDirectorySync) != 0) {
     error = ERROR_WRITE_FAULT;
   }
   if (error != 0) {
@@ -301,7 +322,7 @@ Status PublishFile(const std::string &tmp_path, const std::string &path,
                                  ErrorText(error));
   }
   *renamed = true;
-  if (InjectedSyncError(true) != 0) {
+  if (InjectedFault(SyncStep::kDirectorySync) != 0) {
     return Status::InternalError("Failed to sync manifest rename ", path);
   }
   return Status::OK();
