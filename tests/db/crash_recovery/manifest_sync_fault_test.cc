@@ -19,16 +19,25 @@
 // * a failed file sync is a clean failure: nothing is published;
 // * a failed directory sync after the rename is an uncertain publish: the new
 //   manifest and everything it references stay, and the collection refuses
-//   further writes until it is reopened;
+//   further writes, including queued writers and the rest of the batch that
+//   raised the failure, until it is reopened;
+// * a writable open makes the loaded manifest durable before it modifies
+//   anything, and fails if it cannot;
 // * every truncation of a manifest is rejected, also when its ids and
 //   next_segment_id take several varint bytes.
 
+#include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <limits>
+#include <map>
 #include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/db/collection.h>
@@ -124,9 +133,65 @@ Version MakeVersion(SegmentID writing_id) {
 
 int g_file_sync_error = 0;
 int g_directory_sync_error = 0;
+// When set, replaces the two fixed errors above.
+std::function<int(bool)> g_sync_fault;
 
 int InjectSyncFault(bool directory) {
+  if (g_sync_fault) {
+    return g_sync_fault(directory);
+  }
   return directory ? g_directory_sync_error : g_file_sync_error;
+}
+
+// Every entry under `root` with a digest of its contents ("dir" for
+// directories).
+std::map<std::string, std::string> Snapshot(const fs::path &root) {
+  std::map<std::string, std::string> entries;
+  for (const auto &entry : fs::recursive_directory_iterator(root)) {
+    const std::string data = entry.is_directory() ? "" : ReadFile(entry.path());
+    entries[fs::relative(entry.path(), root).string()] =
+        entry.is_directory()
+            ? "dir"
+            : std::to_string(data.size()) + ":" +
+                  std::to_string(std::hash<std::string>()(data));
+  }
+  return entries;
+}
+
+// True when every segment that some manifest in `path` references exists.
+bool AllManifestDependenciesExist(const fs::path &path) {
+  for (const auto &manifest : Manifests(path)) {
+    Version version;
+    if (!Version::Load(manifest.string(), &version).ok() ||
+        !version.validate().ok()) {
+      return false;
+    }
+    std::vector<SegmentID> ids{version.writing_segment_meta()->id()};
+    for (const auto &meta : version.persisted_segment_metas()) {
+      ids.push_back(meta->id());
+    }
+    for (SegmentID id : ids) {
+      if (!fs::is_directory(path / std::to_string(id))) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// Every document whose write returned OK must be readable, unchanged.
+void ExpectAcknowledgedDocs(Collection &collection,
+                            const std::vector<int> &ids) {
+  std::vector<std::string> keys;
+  for (int id : ids) keys.push_back("pk_" + std::to_string(id));
+  auto fetched = collection.fetch(keys);
+  ASSERT_TRUE(fetched.has_value()) << fetched.error().message();
+  for (int id : ids) {
+    auto found = fetched->find("pk_" + std::to_string(id));
+    ASSERT_TRUE(found != fetched->end()) << id;
+    ASSERT_TRUE(found->second) << "Acknowledged document lost: pk_" << id;
+    EXPECT_EQ(*found->second, MakeDoc(id));
+  }
 }
 
 class ManifestSyncFaultTest : public ::testing::Test {
@@ -138,11 +203,13 @@ class ManifestSyncFaultTest : public ::testing::Test {
     fs::create_directories(root_);
     g_file_sync_error = 0;
     g_directory_sync_error = 0;
+    g_sync_fault = nullptr;
     VersionManager::SetSyncFaultForTest(&InjectSyncFault);
   }
 
   void TearDown() override {
     VersionManager::SetSyncFaultForTest(nullptr);
+    g_sync_fault = nullptr;
     std::error_code ec;
     fs::remove_all(root_, ec);
   }
@@ -253,7 +320,37 @@ TEST_F(ManifestSyncFaultTest, DirectorySyncFailureDuringCreateIndexKeepsData) {
     collection->close();
   }
 
+  // The newest manifest may still not be durable. A writable open whose
+  // sync of it fails must not open and must not modify anything.
+  {
+    const auto before = Snapshot(path);
+    g_file_sync_error = EIO;
+    auto opened = Collection::Open(path.string(), CollectionOptions{});
+    g_file_sync_error = 0;
+    EXPECT_FALSE(opened.has_value())
+        << "Writable open without a durable manifest";
+    EXPECT_EQ(Snapshot(path), before) << "The failed open modified files";
+  }
+
+  // A writable open syncs the manifest and its directory first. Until then,
+  // what every manifest on disk references must still exist, so that a
+  // power loss at any point before the sync recovers either generation.
+  int file_syncs = 0;
+  int directory_syncs = 0;
+  bool dependencies_kept = true;
+  g_sync_fault = [&](bool directory) {
+    if (file_syncs + directory_syncs == 0) {
+      dependencies_kept = AllManifestDependenciesExist(path);
+    }
+    ++(directory ? directory_syncs : file_syncs);
+    return 0;
+  };
   auto reopened = Collection::Open(path.string(), CollectionOptions{});
+  g_sync_fault = nullptr;
+  EXPECT_GE(file_syncs, 1);
+  EXPECT_GE(directory_syncs, 1);
+  EXPECT_TRUE(dependencies_kept)
+      << "Open modified the collection before the manifest was durable";
   ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
   auto stats = reopened.value()->stats();
   ASSERT_TRUE(stats.has_value());
@@ -272,6 +369,135 @@ TEST_F(ManifestSyncFaultTest, DirectorySyncFailureDuringCreateIndexKeepsData) {
   auto result = reopened.value()->insert(docs);
   ASSERT_TRUE(result.has_value() && result->front().ok());
   EXPECT_TRUE(reopened.value()->flush().ok());
+}
+
+// An automatic buffer flush inside a batch hits an uncertain publish. The
+// writing block has moved on but its WAL has not, so the rest of the batch
+// must fail; every document acknowledged before must survive a reopen.
+TEST_F(ManifestSyncFaultTest, FenceRaisedMidBatchFailsTheRestOfTheBatch) {
+  const auto path = root_ / "collection";
+  constexpr int kBatch = 400;
+  std::vector<int> acknowledged;
+  {
+    auto created = Collection::CreateAndOpen(
+        path.string(), MakeSchema(), CollectionOptions{false, true, 4096});
+    ASSERT_TRUE(created.has_value()) << created.error().message();
+    auto collection = created.value();
+
+    std::vector<Doc> docs;
+    for (int id = 0; id < kBatch; ++id) docs.push_back(MakeDoc(id));
+    g_directory_sync_error = EIO;
+    auto results = collection->insert(docs);
+    g_directory_sync_error = 0;
+    ASSERT_TRUE(results.has_value()) << results.error().message();
+    ASSERT_EQ(results->size(), static_cast<size_t>(kBatch));
+    int first_failure = -1;
+    for (int id = 0; id < kBatch; ++id) {
+      if ((*results)[id].ok()) {
+        acknowledged.push_back(id);
+        EXPECT_EQ(first_failure, -1)
+            << "pk_" << id << " acknowledged after a failure in its batch";
+      } else if (first_failure < 0) {
+        first_failure = id;
+      }
+    }
+    ASSERT_GT(first_failure, 0) << "The buffer never filled";
+    collection->close();
+  }
+
+  auto reopened = Collection::Open(path.string(), CollectionOptions{});
+  ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
+  ASSERT_NO_FATAL_FAILURE(
+      ExpectAcknowledgedDocs(*reopened.value(), acknowledged));
+}
+
+// A writer that is already waiting for the write lock when another batch
+// raises the fence must not write either.
+TEST_F(ManifestSyncFaultTest, FenceRaisedWhileWriterQueuedFailsTheWriter) {
+  const auto path = root_ / "collection";
+  constexpr int kBatch = 400;
+  constexpr int kQueuedId = 100000;
+  std::vector<int> acknowledged;
+  {
+    auto created = Collection::CreateAndOpen(
+        path.string(), MakeSchema(), CollectionOptions{false, true, 4096});
+    ASSERT_TRUE(created.has_value()) << created.error().message();
+    auto collection = created.value();
+
+    std::thread queued;
+    std::atomic<bool> queued_ok{false};
+    // The first directory sync happens inside the batch's buffer flush,
+    // under the write lock. Start the second writer there, give it time to
+    // pass its entry checks and block on the lock, then fail the sync.
+    g_sync_fault = [&](bool directory) {
+      if (!directory) return 0;
+      if (!queued.joinable()) {
+        queued = std::thread([&] {
+          std::vector<Doc> docs{MakeDoc(kQueuedId)};
+          auto result = collection->insert(docs);
+          queued_ok = result.has_value() && result->front().ok();
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      }
+      return EIO;
+    };
+    std::vector<Doc> docs;
+    for (int id = 0; id < kBatch; ++id) docs.push_back(MakeDoc(id));
+    auto results = collection->insert(docs);
+    ASSERT_TRUE(queued.joinable()) << "The buffer never filled";
+    queued.join();
+    g_sync_fault = nullptr;
+    ASSERT_TRUE(results.has_value()) << results.error().message();
+    for (int id = 0; id < kBatch; ++id) {
+      if ((*results)[id].ok()) acknowledged.push_back(id);
+    }
+    EXPECT_FALSE(queued_ok) << "A queued writer wrote past the fence";
+    if (queued_ok) acknowledged.push_back(kQueuedId);
+    collection->close();
+  }
+
+  auto reopened = Collection::Open(path.string(), CollectionOptions{});
+  ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
+  ASSERT_NO_FATAL_FAILURE(
+      ExpectAcknowledgedDocs(*reopened.value(), acknowledged));
+}
+
+// A collection whose next_segment_id is the largest SegmentID cannot
+// allocate another segment. The allocator must refuse instead of wrapping
+// to 0, which would publish a manifest that no longer validates.
+TEST_F(ManifestSyncFaultTest, SegmentIdExhaustionKeepsCollectionOpenable) {
+  const auto path = root_ / "collection";
+  {
+    auto created = Collection::CreateAndOpen(path.string(), MakeSchema(),
+                                             CollectionOptions{});
+    ASSERT_TRUE(created.has_value()) << created.error().message();
+    ASSERT_TRUE(created.value()->close().ok());
+  }
+  // Raise next_segment_id to the largest value the manifest can hold.
+  {
+    auto recovered = VersionManager::Recovery(path.string(), true);
+    ASSERT_TRUE(recovered.has_value()) << recovered.error().message();
+    recovered.value()->set_next_segment_id(
+        std::numeric_limits<SegmentID>::max());
+    ASSERT_TRUE(recovered.value()->flush().ok());
+  }
+  {
+    auto opened = Collection::Open(path.string(), CollectionOptions{});
+    ASSERT_TRUE(opened.has_value()) << opened.error().message();
+    std::vector<Doc> docs{MakeDoc(0)};
+    auto result = opened.value()->insert(docs);
+    ASSERT_TRUE(result.has_value() && result->front().ok());
+    // Sealing the writing segment needs a new segment id.
+    auto iterator = opened.value()->create_iterator();
+    EXPECT_FALSE(iterator.has_value())
+        << "A segment id was allocated past the end of the id space";
+    opened.value()->close();
+  }
+  auto reopened = Collection::Open(path.string(), CollectionOptions{});
+  ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
+  auto stats = reopened.value()->stats();
+  ASSERT_TRUE(stats.has_value());
+  EXPECT_EQ(stats->doc_count, 1u);
 }
 
 // Truncating a manifest at any length must be rejected, including cuts at a
