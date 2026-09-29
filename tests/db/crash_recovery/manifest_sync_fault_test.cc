@@ -29,6 +29,7 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -498,6 +499,105 @@ TEST_F(ManifestSyncFaultTest, SegmentIdExhaustionKeepsCollectionOpenable) {
   auto stats = reopened.value()->stats();
   ASSERT_TRUE(stats.has_value());
   EXPECT_EQ(stats->doc_count, 1u);
+}
+
+// A file system that cannot sync directories reports EINVAL, ENOTSUP or
+// EOPNOTSUPP. That is not an uncertain publish: nothing is fenced, older
+// manifests are retired, and writable opens work.
+TEST_F(ManifestSyncFaultTest, UnsupportedDirectorySyncIsNotAFailure) {
+  for (int error : {EINVAL, ENOTSUP, EOPNOTSUPP}) {
+    SCOPED_TRACE(std::strerror(error));
+    const auto dir = root_ / ("manifests-" + std::to_string(error));
+    fs::create_directories(dir);
+    auto created = VersionManager::Create(dir.string(), MakeVersion(70001));
+    ASSERT_TRUE(created.has_value());
+    auto manager = created.value();
+    ASSERT_TRUE(manager->flush().ok());
+    manager->set_next_segment_id(70005);
+    g_directory_sync_error = error;
+    auto status = manager->flush();
+    g_directory_sync_error = 0;
+    EXPECT_TRUE(status.ok()) << status.message();
+    EXPECT_FALSE(manager->fenced());
+    EXPECT_EQ(FileNames(dir), std::set<std::string>{"manifest.1"});
+  }
+
+  const auto path = root_ / "collection";
+  g_directory_sync_error = EINVAL;
+  {
+    auto created = Collection::CreateAndOpen(path.string(), MakeSchema(),
+                                             CollectionOptions{});
+    ASSERT_TRUE(created.has_value()) << created.error().message();
+    std::vector<Doc> docs{MakeDoc(0)};
+    auto result = created.value()->insert(docs);
+    ASSERT_TRUE(result.has_value() && result->front().ok());
+    EXPECT_TRUE(created.value()->flush().ok());
+    EXPECT_TRUE(created.value()->close().ok());
+  }
+  auto reopened = Collection::Open(path.string(), CollectionOptions{});
+  ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
+  std::vector<Doc> docs{MakeDoc(1)};
+  auto result = reopened.value()->insert(docs);
+  EXPECT_TRUE(result.has_value() && result->front().ok());
+  EXPECT_TRUE(reopened.value()->flush().ok());
+  g_directory_sync_error = 0;
+}
+
+// A clean failure (before the rename) of the manifest publish during segment
+// rollover leaves the new writing segment unreferenced, and writes continue
+// into its WAL. After a crash, a writable open must refuse to hide those
+// acknowledged writes: it fails, names the directory and modifies nothing.
+TEST_F(ManifestSyncFaultTest, FailedRolloverPublishThenCrashFailsClosed) {
+  const auto path = root_ / "collection";
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  // The child exits with 0 after acknowledging pk_0..pk_59 and crashing
+  // (no close), 3/5 when a write fails, 4 when the rollover did not fail.
+  EXPECT_EXIT(
+      {
+        auto collection = Collection::CreateAndOpen(path.string(), MakeSchema(),
+                                                    CollectionOptions{})
+                              .value();
+        for (int id = 0; id < 50; ++id) {
+          std::vector<Doc> docs{MakeDoc(id)};
+          auto result = collection->insert(docs);
+          if (!(result.has_value() && result->front().ok())) std::_Exit(3);
+        }
+        // The first file sync publishes the sealed segment's block, the
+        // second the rollover to the new writing segment.
+        int file_syncs = 0;
+        g_sync_fault = [&](bool directory) {
+          return !directory && ++file_syncs == 2 ? ENOSPC : 0;
+        };
+        auto iterator = collection->create_iterator();
+        g_sync_fault = nullptr;
+        if (iterator.has_value()) std::_Exit(4);
+        for (int id = 50; id < 60; ++id) {
+          std::vector<Doc> docs{MakeDoc(id)};
+          auto result = collection->insert(docs);
+          if (!(result.has_value() && result->front().ok())) std::_Exit(5);
+        }
+        std::_Exit(0);
+      },
+      ::testing::ExitedWithCode(0), "");
+
+  const auto before = Snapshot(path);
+  auto opened = Collection::Open(path.string(), CollectionOptions{});
+  if (opened.has_value()) {
+    std::vector<std::string> keys;
+    for (int id = 0; id < 60; ++id) keys.push_back("pk_" + std::to_string(id));
+    auto fetched = opened.value()->fetch(keys);
+    int missing = 0;
+    for (const auto &key : keys) {
+      missing +=
+          !(fetched.has_value() && fetched->count(key) && fetched->at(key));
+    }
+    FAIL() << "Writable open succeeded with " << missing
+           << " of 60 acknowledged documents missing";
+  }
+  EXPECT_NE(opened.error().message().find("holds WAL records"),
+            std::string::npos)
+      << opened.error().message();
+  EXPECT_EQ(Snapshot(path), before) << "The failed open modified files";
 }
 
 // Truncating a manifest at any length must be rejected, including cuts at a

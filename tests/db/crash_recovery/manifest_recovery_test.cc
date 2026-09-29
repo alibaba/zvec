@@ -18,7 +18,8 @@
 //   open delete data: open fails without modifying anything, also when an
 //   older manifest is still on disk;
 // * leftover temporary manifests are ignored and cleaned up;
-// * an unreferenced segment directory that holds a WAL is kept;
+// * an unreferenced segment directory with an empty WAL is kept, and one
+//   whose WAL holds records makes a writable open fail without changes;
 // * a short write while publishing a manifest makes flush() fail and keeps
 //   the previous generation, so no acknowledged data is lost.
 
@@ -39,6 +40,7 @@
 #include "db/common/file_helper.h"
 #include "db/index/common/meta.h"
 #include "db/index/common/version_manager.h"
+#include "db/index/storage/wal/local_wal_file.h"
 
 namespace zvec {
 namespace {
@@ -347,11 +349,11 @@ TEST_F(ManifestRecoveryTest, StaleTemporaryManifestIsIgnoredAndRemoved) {
   ASSERT_NO_FATAL_FAILURE(ExpectDocs(*reopened.value(), kDocs + 1));
 }
 
-// A segment directory the manifest does not reference but that holds a WAL
-// (for example a new writing segment whose manifest was never published)
-// may hold acknowledged writes: open must keep it, and must not hand out its
-// id again.
-TEST_F(ManifestRecoveryTest, UnreferencedSegmentWithWalIsKept) {
+// A segment directory the manifest does not reference but whose WAL holds
+// only its header (for example a new writing segment whose manifest was
+// never published, before any write) holds no data: open must keep it
+// anyway, and must not hand out its id again.
+TEST_F(ManifestRecoveryTest, UnreferencedSegmentWithEmptyWalIsKept) {
   const auto path = root_ / "collection";
   ASSERT_NO_FATAL_FAILURE(CreateCollection(path));
   SegmentID next_id = 0;
@@ -362,7 +364,8 @@ TEST_F(ManifestRecoveryTest, UnreferencedSegmentWithWalIsKept) {
   }
   const auto orphan = path / std::to_string(next_id);
   fs::create_directories(orphan);
-  ASSERT_NO_FATAL_FAILURE(WriteFile(orphan / "0.wal", "unreplayed records"));
+  const std::string header(sizeof(WalHeader), '\0');
+  ASSERT_NO_FATAL_FAILURE(WriteFile(orphan / "0.wal", header));
 
   auto opened = Collection::Open(path.string(), Options(false));
   ASSERT_TRUE(opened.has_value()) << opened.error().message();
@@ -372,9 +375,38 @@ TEST_F(ManifestRecoveryTest, UnreferencedSegmentWithWalIsKept) {
   auto iterator = opened.value()->create_iterator();
   ASSERT_TRUE(iterator.has_value()) << iterator.error().message();
   iterator.value().reset();
-  EXPECT_EQ(ReadFile(orphan / "0.wal"), "unreplayed records");
+  EXPECT_EQ(ReadFile(orphan / "0.wal"), header);
   ASSERT_NO_FATAL_FAILURE(ExpectDocs(*opened.value(), kDocs + 1));
   ASSERT_TRUE(opened.value()->close().ok());
+}
+
+// A segment directory the manifest does not reference but whose WAL holds
+// records may contain acknowledged writes. Opening would hide them, so a
+// writable open must fail, name the directory and modify nothing.
+TEST_F(ManifestRecoveryTest, UnreferencedSegmentWithWalRecordsFailsClosed) {
+  const auto path = root_ / "collection";
+  ASSERT_NO_FATAL_FAILURE(CreateCollection(path));
+  SegmentID next_id = 0;
+  {
+    auto recovered = VersionManager::Recovery(path.string());
+    ASSERT_TRUE(recovered.has_value()) << recovered.error().message();
+    next_id = recovered.value()->get_current_version().next_segment_id();
+  }
+  const auto orphan = path / std::to_string(next_id);
+  fs::create_directories(orphan);
+  ASSERT_NO_FATAL_FAILURE(WriteFile(
+      orphan / "0.wal", std::string(sizeof(WalHeader), '\0') + "records"));
+
+  const auto before = Snapshot(path);
+  {
+    auto opened = Collection::Open(path.string(), Options(false));
+    ASSERT_FALSE(opened.has_value()) << "Writable open hid WAL records";
+    EXPECT_NE(
+        opened.error().message().find(orphan.filename().string() + "/0.wal"),
+        std::string::npos)
+        << opened.error().message();
+  }
+  EXPECT_EQ(Snapshot(path), before) << "The failed open modified files";
 }
 
 // A short write while publishing a manifest (here: the file size limit,
