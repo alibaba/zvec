@@ -65,11 +65,17 @@ int main(int argc, char **argv) {
   }
   const std::string mode = argv[2];
   const bool fts = std::string(argv[3]) == "fts";
+  const bool rotated = mode == "rotated" || mode == "rotated_closed";
   const bool create = mode == "written" || mode == "flushed" ||
                       mode == "sealed" || mode == "optimized" ||
-                      mode == "rollover";
-  auto result = create ? Collection::CreateAndOpen(argv[1], MakeSchema(fts), {})
-                       : Collection::Open(argv[1], {});
+                      mode == "rollover" || rotated;
+  // A one-byte memory buffer makes every insert after the first rotate the
+  // writing block, so each acknowledged insert triggers a block checkpoint.
+  const CollectionOptions options =
+      rotated ? CollectionOptions(false, true, 1) : CollectionOptions();
+  auto result =
+      create ? Collection::CreateAndOpen(argv[1], MakeSchema(fts), options)
+             : Collection::Open(argv[1], {});
   if (!result) {
     Check(result.error(), create ? "create" : "recover");
   }
@@ -93,6 +99,10 @@ int main(int argc, char **argv) {
       StopAtCheckpoint();
     } else if (mode == "optimized") {
       Check(collection->optimize(), "optimize");
+    } else if (mode == "rotated_closed") {
+      // No crash: a clean close must persist the write that triggered the
+      // last block rotation.
+      Check(collection->close(), "close");
     }
   } else if (mode == "mutated" || mode == "mutated_flushed") {
     std::vector<Doc> updates{MakeDoc(0, 1)};

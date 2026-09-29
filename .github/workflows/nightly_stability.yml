@@ -74,7 +74,8 @@ jobs:
   recovery:
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # Three rounds include the manifest and power-loss simulation suites.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4

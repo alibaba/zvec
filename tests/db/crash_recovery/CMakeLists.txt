@@ -82,6 +82,16 @@ cc_binary(
 set_target_properties(storage_fault_worker PROPERTIES EXCLUDE_FROM_ALL TRUE)
 
 
+# Test-only syscall shim (fault injection and fsync recording), preloaded into
+# storage_fault_worker by the durability tests. Never linked into zvec.
+add_library(zvec_storage_shim SHARED storage_shim.c)
+set_target_properties(zvec_storage_shim PROPERTIES
+    EXCLUDE_FROM_ALL TRUE
+    LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/lib)
+if(NOT APPLE)
+  target_link_libraries(zvec_storage_shim PRIVATE ${CMAKE_DL_LIBS})
+endif()
+
 # Build test executables
 file(GLOB ALL_TEST_SRCS CONFIGURE_DEPENDS *_test.cc)
 add_custom_target(crash_recovery_binaries)
@@ -98,6 +108,13 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     if(CC_TARGET STREQUAL "checkpoint_recovery_test")
         add_dependencies(${CC_TARGET} checkpoint_recovery_worker)
         set_tests_properties(${CC_TARGET} PROPERTIES TIMEOUT 300)
+    elseif(CC_TARGET STREQUAL "manifest_durability_test" OR
+           CC_TARGET STREQUAL "power_loss_simulation_test")
+        add_dependencies(${CC_TARGET} storage_fault_worker zvec_storage_shim)
+        target_compile_definitions(${CC_TARGET} PRIVATE
+            STORAGE_SHIM_PATH="$<TARGET_FILE:zvec_storage_shim>"
+            STORAGE_SHIM_NAME="$<TARGET_FILE_NAME:zvec_storage_shim>")
+        set_tests_properties(${CC_TARGET} PROPERTIES TIMEOUT 1200)
     else()
         add_dependencies(${CC_TARGET} data_generator collection_optimizer)
     endif()

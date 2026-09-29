@@ -193,6 +193,25 @@ TEST_P(CheckpointRecoveryTest, SegmentRolloverSurvivesProcessKill) {
       verify_and_continue(InitialDocs(kSegmentDocs + 1), kSegmentDocs));
 }
 
+// Every insert after the first fills the one-byte memory block, so the write
+// is logged, the block is checkpointed (removing its WAL) and the write is
+// applied to the next block. The acknowledged write must still survive.
+TEST_P(CheckpointRecoveryTest, BlockRotationWriteSurvivesProcessKill) {
+  // The rotation window does not depend on the index type, and 64 FTS block
+  // checkpoints exceed the worker's checkpoint deadline on slow runners.
+  if (GetParam()) GTEST_SKIP() << "covered by the plain schema";
+  ASSERT_NO_FATAL_FAILURE(crash_at("rotated"));
+  ASSERT_NO_FATAL_FAILURE(verify_and_continue(InitialDocs(), kInitialDocs - 1));
+}
+
+TEST_P(CheckpointRecoveryTest, BlockRotationWriteSurvivesClose) {
+  if (GetParam()) GTEST_SKIP() << "covered by the plain schema";
+  ASSERT_NO_FATAL_FAILURE(crash_at("rotated_closed"));
+  // verify_and_continue also inserts a new key and checks every recovered key
+  // still maps to its own document (no doc id reuse after the lost write).
+  ASSERT_NO_FATAL_FAILURE(verify_and_continue(InitialDocs(), kInitialDocs - 1));
+}
+
 TEST_P(CheckpointRecoveryTest, RepeatedRecoveryWithoutClosePreservesWal) {
   ASSERT_NO_FATAL_FAILURE(crash_at("written"));
   // No parent open/close is allowed between kills: it could flush the WAL and

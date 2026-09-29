@@ -15,7 +15,7 @@ as expected failures.
 | Recovery | Three shuffled rounds of all CMake-registered crash recovery suites |
 | Disk full | Blocks and inodes exhausted separately during insert, flush, and optimize, with plain and FTS schemas |
 | I/O errors | One-shot/persistent EIO at initial calls, after partial writes, and at manifest writes; optimize also targets forward/vector/FTS files |
-| Power loss | Block-write recording for each operation/schema, then replay of eight sampled prefixes including both operation-boundary marks |
+| Power loss | Block-write recording for each operation/schema (insert, flush, optimize, block rotation, create index, drop index), then replay of eight sampled prefixes including both operation-boundary marks, plus every FLUSH/FUA boundary while the filesystem settles after the durable acknowledgement |
 
 A failing case is recorded in JUnit; other cases continue, and the runner returns
 a nonzero status.
@@ -57,6 +57,12 @@ required after every optimize fault/cut. Insert/flush permit partial extra rows
 until their final durable mark. Every operation checks per-document statuses and
 ends with an explicit flush.
 
+The power-loss job adds three workloads. `rotate` reopens the collection with a
+one-byte memory buffer and inserts the 64 rows after READY, so every
+acknowledged insert crosses a block checkpoint. `create_index` rebuilds the
+`generation` scalar index with different parameters and `drop_index` removes it;
+both insert their rows before READY and retire old index files during the DDL.
+
 After a failure or an intermediate power-loss cut, all 62 baseline documents and the two baseline deletions must
 survive. Additional recovered documents may be present, but their fields and all
 indexes must agree. At the completed-operation replay mark, all 126 live documents are
@@ -93,7 +99,15 @@ the failed operation before the parent observes it.
 - Power loss uses Linux `dm-log-writes` and the pinned upstream `replay-log` tool.
   Every cut starts from the same clean baseline; normal filesystem recovery runs
   when the reconstructed image is mounted. Later unmount writes from recording
-  are excluded. This samples block-write persistence states, including FLUSH/FUA
+  are excluded. The `operation-durable` mark is written as soon as the worker
+  acknowledges `flush()`, usually before the filesystem has committed that
+  flush's metadata (for example the unlink of the WAL and the old manifest) or
+  written back its delayed data, so a cut at `durable_limit` alone rarely
+  observes those states. Recording therefore mounts with `commit=1`, continues
+  for `--settle` seconds (default 3) without any host sync, and marks
+  `operation-settled`; every FLUSH/FUA boundary in between (at most
+  `--settle-cuts`, default 32, evenly spaced) is replayed and must contain all
+  acknowledged rows. This samples block-write persistence states, including FLUSH/FUA
   boundaries; it is not physical power cycling or an exhaustive enumeration of
   device reordering/torn writes. The recorded DURABLE mark is not preceded by an
   extra host sync that could hide a missing application flush.
