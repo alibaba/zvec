@@ -67,8 +67,10 @@ int SyncDescriptor(int fd, bool directory) {
   }
 #ifdef F_FULLFSYNC
   // On Apple platforms fsync() only hands the data to the drive; F_FULLFSYNC
-  // also flushes the drive cache. Only a file system that does not implement
-  // it falls back to fsync(); every other error is reported.
+  // also asks the drive to flush its cache (fcntl(2), fsync(2)). fcntl(2)
+  // documents no F_FULLFSYNC-specific errors; an object that does not
+  // implement it fails with a "not supported" code (devfs: ENODEV). Only then
+  // fall back to fsync(); every other error, EIO included, is reported.
   int result;
   do {
     result = ::fcntl(fd, F_FULLFSYNC);
@@ -76,7 +78,8 @@ int SyncDescriptor(int fd, bool directory) {
   if (result == 0) {
     return 0;
   }
-  if (errno != ENOTSUP && errno != EOPNOTSUPP && errno != EINVAL) {
+  if (errno != ENOTSUP && errno != EOPNOTSUPP && errno != EINVAL &&
+      errno != ENOTTY && errno != ENODEV) {
     return errno;
   }
 #endif
@@ -174,6 +177,61 @@ DWORD WriteFileDurably(const std::wstring &path, const std::string &data) {
   return error;
 }
 #endif
+
+// Syncs the existing file at `path` and the directory holding it.
+Status SyncPublishedFile(const std::string &path) {
+  auto dir = ailego::FileHelper::PathFromUtf8(path).parent_path();
+  const std::string dir_name =
+      dir.empty() ? std::string(".") : ailego::FileHelper::PathToUtf8(dir);
+#ifndef _WIN32
+  int error = 0;
+  int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
+    error = errno;
+  } else {
+    error = SyncDescriptor(fd, false);
+    if (::close(fd) != 0 && error == 0) {
+      error = errno;
+    }
+  }
+  if (error == 0) {
+    error = SyncDirectory(dir_name);
+  }
+  if (error != 0) {
+    return Status::InternalError("Failed to sync manifest ", path, ": ",
+                                 ErrorText(error));
+  }
+#else
+  const std::wstring wide_path =
+      ailego::FileHelper::PathFromUtf8(path).wstring();
+  HANDLE handle =
+      ::CreateFileW(wide_path.c_str(), GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  DWORD error = 0;
+  if (handle == INVALID_HANDLE_VALUE) {
+    error = ::GetLastError();
+  } else {
+    if (InjectedSyncError(false) != 0) {
+      error = ERROR_WRITE_FAULT;
+    } else if (!::FlushFileBuffers(handle)) {
+      error = ::GetLastError();
+    }
+    if (!::CloseHandle(handle) && error == 0) {
+      error = ::GetLastError();
+    }
+  }
+  if (error == 0 && InjectedSyncError(true) != 0) {
+    error = ERROR_WRITE_FAULT;
+  }
+  if (error != 0) {
+    return Status::InternalError("Failed to sync manifest ", path, ": ",
+                                 ErrorText(error));
+  }
+#endif
+  (void)dir_name;
+  return Status::OK();
+}
 
 // Publishes `data` at `path` via `tmp_path`: write and sync the temporary
 // file, rename it over `path`, then make the rename durable. `*renamed`
@@ -475,7 +533,9 @@ Result<VersionManager::Ptr> VersionManager::Recovery(const std::string &path,
                               s.message(), "; nothing was modified"));
   }
 
-  return VersionManager::Ptr(new VersionManager(path, version, max_id + 1));
+  VersionManager::Ptr manager(new VersionManager(path, version, max_id + 1));
+  manager->loaded_manifest_path_ = version_path;
+  return manager;
 }
 
 Result<VersionManager::Ptr> VersionManager::Create(
@@ -563,6 +623,18 @@ Status VersionManager::flush() {
   }
 
   return Status::OK();
+}
+
+Status VersionManager::sync_current_manifest() {
+  std::lock_guard lock(mtx_);
+  if (loaded_manifest_path_.empty()) {
+    return Status::OK();
+  }
+  auto s = SyncPublishedFile(loaded_manifest_path_);
+  if (!s.ok()) {
+    LOG_ERROR("%s", s.message().c_str());
+  }
+  return s;
 }
 
 void VersionManager::SetSyncFaultForTest(SyncFaultForTest fault) {

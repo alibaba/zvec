@@ -229,6 +229,11 @@ class VersionManager {
   //! the manager is fenced and every later flush() fails until reopen.
   Status flush();
 
+  //! Syncs the manifest loaded by Recovery() and its directory. A writable
+  //! open calls this before modifying anything: that manifest may have been
+  //! published by a process whose own directory sync failed or never ran.
+  Status sync_current_manifest();
+
   //! True after a publish whose durability could not be confirmed. The
   //! collection must not retire anything the new manifest may reference, and
   //! must refuse writes until it is reopened.
@@ -273,6 +278,7 @@ class VersionManager {
   mutable std::mutex mtx_;
 
   uint64_t version_id_ = 0;
+  std::string loaded_manifest_path_;
   std::atomic<bool> fenced_{false};
 };
 

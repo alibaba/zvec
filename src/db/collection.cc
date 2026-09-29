@@ -235,8 +235,17 @@ class CollectionImpl : public Collection {
   Segment::Ptr local_segment_by_doc_id(
       uint64_t doc_id, const std::vector<Segment::Ptr> &segments) const;
 
-  SegmentID allocate_segment_id() {
-    return segment_id_allocator_.fetch_add(1);
+  // Fails instead of wrapping: next_segment_id must stay above every id.
+  Status allocate_segment_id(SegmentID *id) {
+    SegmentID current = segment_id_allocator_.load();
+    do {
+      if (current == std::numeric_limits<SegmentID>::max()) {
+        return Status::InternalError("Segment id space exhausted in ", path_);
+      }
+    } while (
+        !segment_id_allocator_.compare_exchange_weak(current, current + 1));
+    *id = current;
+    return Status::OK();
   }
 
   SegmentID allocate_segment_id_for_tmp_segment() {
@@ -991,7 +1000,12 @@ Status CollectionImpl::optimize(const OptimizeOptions &options) {
 
     auto tmp_segment_path =
         FileHelper::MakeTempSegmentPath(path_, compact_task.output_segment_id_);
-    auto new_segment_id = allocate_segment_id();
+    SegmentID new_segment_id = 0;
+    s = allocate_segment_id(&new_segment_id);
+    if (!s.ok()) {
+      cleanup_moved_dirs();
+      return s;
+    }
     auto new_segment_path = FileHelper::MakeSegmentPath(path_, new_segment_id);
 
     if (!FileHelper::MoveDirectory(tmp_segment_path, new_segment_path)) {
@@ -1636,7 +1650,6 @@ Result<WriteResults> CollectionImpl::write_impl(std::vector<Doc> &docs,
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
-  CHECK_RETURN_STATUS_EXPECTED(check_manifest_not_fenced());
 
   for (auto &&doc : docs) {
     auto s = doc.validate_and_sanitize(schema_, mode == WriteMode::UPDATE);
@@ -1645,6 +1658,9 @@ Result<WriteResults> CollectionImpl::write_impl(std::vector<Doc> &docs,
 
   // TODO: The granularity of the write_lock is too coarse.
   std::lock_guard write_lock(write_mtx_);
+  // Checked under the write lock: another batch may have raised the fence
+  // while this one waited.
+  CHECK_RETURN_STATUS_EXPECTED(check_manifest_not_fenced());
 
   WriteResults results;
   // validate write batch size
@@ -1655,6 +1671,15 @@ Result<WriteResults> CollectionImpl::write_impl(std::vector<Doc> &docs,
   }
 
   for (auto &&doc : docs) {
+    // A flush triggered by the previous document may have raised the fence.
+    // The writing block has then moved on while its WAL did not, so nothing
+    // more may be written: fail the rest of the batch.
+    auto fence = check_manifest_not_fenced();
+    if (!fence.ok()) {
+      results.resize(docs.size(), fence);
+      break;
+    }
+
     if (need_switch_to_new_segment()) {
       auto s = switch_to_new_segment_for_writing();
       CHECK_RETURN_STATUS_EXPECTED(s);
@@ -1694,10 +1719,12 @@ Status CollectionImpl::commit_schema_change_with_new_writing_segment(
     return Status::InvalidArgument("new_version is null");
   }
 
+  SegmentID new_segment_id = 0;
+  CHECK_RETURN_STATUS(allocate_segment_id(&new_segment_id));
   auto seg_options =
       SegmentOptions{false, options_.enable_mmap_, options_.max_buffer_size_};
   auto new_writing_segment = Segment::CreateAndOpen(
-      path_, *new_schema, allocate_segment_id(), writing_min_doc_id, id_map_,
+      path_, *new_schema, new_segment_id, writing_min_doc_id, id_map_,
       delete_store_, version_manager_, seg_options);
   if (!new_writing_segment) {
     return new_writing_segment.error();
@@ -1737,7 +1764,12 @@ Status CollectionImpl::switch_to_new_segment_for_writing(
     return writing_segment_->flush();
   }
 
-  auto s = writing_segment_->dump();
+  // Allocate first, so that running out of ids changes nothing.
+  SegmentID new_segment_id = 0;
+  auto s = allocate_segment_id(&new_segment_id);
+  CHECK_RETURN_STATUS(s);
+
+  s = writing_segment_->dump();
   CHECK_RETURN_STATUS(s);
 
   s = segment_manager_->add_segment(writing_segment_);
@@ -1746,7 +1778,7 @@ Status CollectionImpl::switch_to_new_segment_for_writing(
   // when create new segment, segment meta should create a first new block
   // meta
   auto new_segment = Segment::CreateAndOpen(
-      path_, schema == nullptr ? *schema_ : *schema, allocate_segment_id(),
+      path_, schema == nullptr ? *schema_ : *schema, new_segment_id,
       writing_segment_->meta()->max_doc_id() + 1, id_map_, delete_store_,
       version_manager_,
       SegmentOptions{false, options_.enable_mmap_, options_.max_buffer_size_});
@@ -1780,12 +1812,16 @@ Result<WriteResults> CollectionImpl::delete_(
 
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
-  CHECK_RETURN_STATUS_EXPECTED(check_manifest_not_fenced());
 
   // TODO: The granularity of the write_lock is too coarse.
   std::lock_guard write_lock(write_mtx_);
   WriteResults results;
   for (auto &&pk : pks) {
+    auto fence = check_manifest_not_fenced();
+    if (!fence.ok()) {
+      results.resize(pks.size(), fence);
+      break;
+    }
     Status s = writing_segment_->Delete(pk);
     results.push_back(s);
   }
@@ -1824,6 +1860,7 @@ Status CollectionImpl::delete_by_filter(const std::string &filter) {
   // TODO: The granularity of the write_lock is too coarse.
   std::lock_guard write_lock(write_mtx_);
   for (auto &doc : ret.value()) {
+    CHECK_RETURN_STATUS(check_manifest_not_fenced());
     Status s = writing_segment_->Delete(doc->doc_id());
     if (!s.ok()) {
       LOG_ERROR("Delete doc_id: %zu failed", (size_t)doc->doc_id());
@@ -2117,6 +2154,13 @@ Status CollectionImpl::recovery() {
   }
 
   version_manager_ = version_manager.value();
+  // A previous process may have published this manifest without confirming
+  // it durable. Before anything that depends on it is modified (orphan
+  // cleanup, WAL replay, new writes), make it durable, or refuse to open.
+  if (!options_.read_only_) {
+    s = version_manager_->sync_current_manifest();
+    CHECK_RETURN_STATUS(s);
+  }
   const auto v = version_manager_->get_current_version();
   schema_ = std::make_shared<CollectionSchema>(v.schema());
   options_.enable_mmap_ = v.enable_mmap();
