@@ -2367,10 +2367,16 @@ Status CollectionImpl::list_unreferenced_segment_dirs(
   return Status::OK();
 }
 
-// True for an unreferenced segment that some manifest once published and a
-// later one retired. Every published segment id is below the
-// next_segment_id of every later manifest; a segment whose publish never
-// completed (such as a rollover target) has an id at or above it.
+// True for an unreferenced segment whose id is below the manifest's
+// next_segment_id. Every published segment id is below the next_segment_id
+// of every later manifest, so a retired segment always qualifies, and a
+// rollover target whose publish never completed has an id at or above it.
+// The converse does not hold: an unpublished id below next_segment_id can
+// occur (optimize allocates its output id outside the write lock, and a
+// failed DDL can leave an allocation gap), but such directories never hold
+// unique acknowledged WAL records: compaction output is written as persisted
+// blocks, and replacement DDL writers accept writes only after their publish
+// succeeds.
 bool CollectionImpl::is_retired_segment(const UnreferencedSegmentDir &dir,
                                         const Version &version) {
   return !dir.is_tmp && dir.id < version.next_segment_id();
