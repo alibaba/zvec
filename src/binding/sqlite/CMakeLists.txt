@@ -44,7 +44,7 @@ if(NOT ZVEC_SQLITE_INCLUDE_DIR OR NOT EXISTS "${ZVEC_SQLITE_INCLUDE_DIR}/sqlite3
 endif()
 message(STATUS "SQLite headers: ${ZVEC_SQLITE_INCLUDE_DIR}")
 
-add_library(zvec_sqlite MODULE zvec_sqlite.c)
+add_library(zvec_sqlite MODULE zvec_sqlite.c registry.c vtab.c)
 
 set_target_properties(zvec_sqlite PROPERTIES
     # File name must be zvec.<ext> (no "lib" prefix) so SQLite's default
@@ -59,8 +59,9 @@ set_target_properties(zvec_sqlite PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/lib/sqlite"
 )
 
+find_package(Threads REQUIRED)
 target_include_directories(zvec_sqlite PRIVATE "${ZVEC_SQLITE_INCLUDE_DIR}")
-target_link_libraries(zvec_sqlite PRIVATE zvec_c_api)
+target_link_libraries(zvec_sqlite PRIVATE zvec_c_api Threads::Threads)
 
 # The repo builds with CMAKE_BUILD_WITH_INSTALL_RPATH (cmake/bazel.cmake), where
 # the default "$ORIGIN/../lib" assumes the binary sits in bin/. The module lives

@@ -24,7 +24,6 @@
 
 #include <limits.h>
 #include <sqlite3ext.h>
-
 #include "zvec/c_api.h"
 
 SQLITE_EXTENSION_INIT1
@@ -93,11 +92,13 @@ static void zvec_check_version_fn(sqlite3_context *ctx, int argc,
   sqlite3_result_int(ctx, zvec_check_version(v[0], v[1], v[2]) ? 1 : 0);
 }
 
-ZVEC_SQLITE_EXPORT int sqlite3_zvec_init(sqlite3 *db, char **pzErrMsg,
-                                         const sqlite3_api_routines *pApi) {
+int zvec_vtab_register(sqlite3 *db);
+
+ZVEC_SQLITE_EXPORT int sqlite3_zvec_init(sqlite3 *db, char **p_err_msg,
+                                         const sqlite3_api_routines *p_api) {
   int rc;
-  SQLITE_EXTENSION_INIT2(pApi);
-  (void)pzErrMsg;
+  SQLITE_EXTENSION_INIT2(p_api);
+  (void)p_err_msg;
 
   rc = sqlite3_create_function_v2(db, "zvec_version", 0, ZVEC_SQLITE_FN_FLAGS,
                                   0, zvec_version_fn, 0, 0, 0);
@@ -111,9 +112,10 @@ ZVEC_SQLITE_EXPORT int sqlite3_zvec_init(sqlite3 *db, char **pzErrMsg,
     return rc;
   }
 
-  // The virtual table module (CREATE VIRTUAL TABLE ... USING zvec) will be
-  // registered here with sqlite3_create_module_v2().
-
+  rc = zvec_vtab_register(db);
+  if (rc != SQLITE_OK) {
+    return rc;
+  }
 #ifdef SQLITE_OK_LOAD_PERMANENTLY
   // Keep the library resident after the connection closes. zvec owns threads
   // and process-wide state, so unloading it under a live process is unsafe.
