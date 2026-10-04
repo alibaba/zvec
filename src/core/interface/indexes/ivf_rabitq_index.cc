@@ -16,13 +16,13 @@
 #include <mutex>
 #include <string>
 #include <zvec/core/interface/index.h>
+#include "algorithm/hnsw_rabitq/rabitq_params.h"
 #include "zvec/ailego/io/file.h"
 #include "zvec/core/framework/index_error.h"
 #include "holder_builder.h"
 
 #if RABITQ_SUPPORTED
 #include "algorithm/hnsw_rabitq/hnsw_rabitq_params.h"
-#include "algorithm/hnsw_rabitq/rabitq_params.h"
 #include "algorithm/ivf_rabitq/ivf_rabitq_params.h"
 #include "algorithm/ivf_rabitq/ivf_rabitq_streamer.h"
 #endif
@@ -32,7 +32,7 @@ namespace zvec::core_interface {
 int IVFRabitqIndex::create_and_init_streamer(const BaseIndexParam &param) {
 #if !RABITQ_SUPPORTED
   (void)param;
-  LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("%s", core::kRabitqUnsupportedPlatform);
   return core::IndexError_Unsupported;
 #else
   param_ = dynamic_cast<const IVFRabitqIndexParam &>(param);
@@ -100,7 +100,7 @@ int IVFRabitqIndex::open(const std::string &file_path,
 #if !RABITQ_SUPPORTED
   (void)file_path;
   (void)storage_options;
-  LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("%s", core::kRabitqUnsupportedPlatform);
   return core::IndexError_Unsupported;
 #else
   ailego::Params storage_params;
@@ -141,7 +141,7 @@ int IVFRabitqIndex::open(const std::string &file_path,
 
 int IVFRabitqIndex::generate_holder() {
 #if !RABITQ_SUPPORTED
-  LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("%s", core::kRabitqUnsupportedPlatform);
   return core::IndexError_Unsupported;
 #else
   return BuildMultiPassHolder(param_.data_type, param_.dimension, doc_cache_,
@@ -153,7 +153,7 @@ int IVFRabitqIndex::add(const VectorData &vector, uint32_t doc_id) {
 #if !RABITQ_SUPPORTED
   (void)vector;
   (void)doc_id;
-  LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("%s", core::kRabitqUnsupportedPlatform);
   return core::IndexError_Unsupported;
 #else
   if (is_trained_) {
@@ -182,7 +182,7 @@ int IVFRabitqIndex::add(const VectorData &vector, uint32_t doc_id) {
 
 int IVFRabitqIndex::train() {
 #if !RABITQ_SUPPORTED
-  LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("%s", core::kRabitqUnsupportedPlatform);
   return core::IndexError_Unsupported;
 #else
   int ret = generate_holder();
@@ -247,7 +247,7 @@ int IVFRabitqIndex::merge(const std::vector<Index::Pointer> &indexes,
   (void)indexes;
   (void)filter;
   (void)options;
-  LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("%s", core::kRabitqUnsupportedPlatform);
   return core::IndexError_Unsupported;
 #else
   int ret = Index::merge(indexes, filter, options);
@@ -307,7 +307,7 @@ int IVFRabitqIndex::_prepare_for_search(
 #if !RABITQ_SUPPORTED
   (void)search_param;
   (void)context;
-  LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("%s", core::kRabitqUnsupportedPlatform);
   return core::IndexError_Unsupported;
 #else
   const auto &ivf_rabitq_param =
