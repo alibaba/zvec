@@ -46,7 +46,7 @@ int HnswRabitqQueryAlgorithm::cleanup() {
 int HnswRabitqQueryAlgorithm::search(HnswRabitqQueryEntity *entity,
                                      HnswRabitqContext *ctx) const {
   spin_lock_.lock();
-  auto maxLevel = entity_.cur_max_level();
+  auto max_level = entity_.cur_max_level();
   auto entry_point = entity_.entry_point();
   spin_lock_.unlock();
 
@@ -57,7 +57,7 @@ int HnswRabitqQueryAlgorithm::search(HnswRabitqQueryEntity *entity,
   EstimateRecord curest;
   get_bin_est(entity_.get_vector(entry_point), curest, *entity);
 
-  for (level_t cur_level = maxLevel; cur_level >= 1; --cur_level) {
+  for (level_t cur_level = max_level; cur_level >= 1; --cur_level) {
     select_entry_point(cur_level, &entry_point, &curest, ctx, entity);
   }
 
@@ -170,10 +170,10 @@ void HnswRabitqQueryAlgorithm::search_neighbors(
 
       if (ex_bits_ > 0) {
         // Check preliminary score against current worst full estimate.
-        bool flag_update_KNNs =
+        bool flag_update_knns =
             (!topk.full()) || candest.low_dist < topk[0].second.est_dist;
 
-        if (flag_update_KNNs) {
+        if (flag_update_knns) {
           // Compute the full estimate if promising.
           get_full_est(cand_vector, candest, *query_entity);
         } else {
