@@ -4102,6 +4102,63 @@ class IVFTurboTest : public testing::TestWithParam<TurboCase> {
   std::string path_;
 };
 
+TEST_P(IVFTurboTest, ProviderConcurrentReadsKeepReturnedBytesStable) {
+  for (const char *storage_name :
+       {"FileReadStorage", "MMapFileReadStorage", "BufferReadStorage"}) {
+    SCOPED_TRACE(storage_name);
+    auto storage = open_storage(storage_name);
+    ASSERT_NE(nullptr, storage);
+    IVFSearcher searcher;
+    ASSERT_EQ(0, searcher.init(search_params()));
+    ASSERT_EQ(0, searcher.load(storage, IndexMetric::Pointer()));
+    auto provider = searcher.create_provider();
+    ASSERT_NE(nullptr, provider);
+    auto iterator = provider->create_iterator();
+    ASSERT_NE(nullptr, iterator);
+
+    const auto *first = static_cast<const char *>(provider->get_vector(Key(0)));
+    ASSERT_NE(nullptr, first);
+    const std::string expected(first, provider->element_size());
+    IndexStorage::MemoryBlock owned;
+    ASSERT_EQ(0, provider->get_vector(Key(0), owned));
+    // Start without priming iterator data or its lazy mapping cache.
+    std::vector<std::future<void>> readers;
+    for (size_t worker = 1; worker <= 4; ++worker) {
+      readers.push_back(std::async(std::launch::async, [&, worker]() {
+        auto other = provider->create_iterator();
+        ASSERT_NE(nullptr, other);
+        for (size_t i = 0; i < worker; ++i) {
+          other->next();
+        }
+        for (size_t repeat = 0; repeat < 32; ++repeat) {
+          ASSERT_TRUE(iterator->is_valid());
+          EXPECT_EQ(Key(0), iterator->key());
+          const void *data = iterator->data();
+          ASSERT_NE(nullptr, data);
+          ASSERT_NE(nullptr, other->data());
+          ASSERT_NE(nullptr, provider->get_vector(Key(worker)));
+          EXPECT_EQ(0, std::memcmp(expected.data(), data, expected.size()));
+          EXPECT_EQ(0, iterator->status());
+        }
+      }));
+    }
+    for (auto &reader : readers) {
+      reader.get();
+    }
+    EXPECT_EQ(0, std::memcmp(expected.data(), first, expected.size()));
+    ASSERT_NE(nullptr, provider->get_vector(Key(5)));
+    EXPECT_EQ(0, std::memcmp(expected.data(), owned.data(), expected.size()));
+    EXPECT_EQ(0,
+              std::memcmp(expected.data(), iterator->data(), expected.size()));
+    iterator->next();
+    EXPECT_EQ(Key(1), iterator->key());
+    const void *second = provider->get_vector(Key(1));
+    ASSERT_NE(nullptr, second);
+    ASSERT_NE(nullptr, iterator->data());
+    EXPECT_EQ(0, std::memcmp(second, iterator->data(), expected.size()));
+  }
+}
+
 TEST_P(IVFTurboTest, RawQueriesAndPostingCodesSurviveReopen) {
   // No quantizer is injected: all storage implementations must reconstruct
   // it from the dedicated persisted metadata and serialized state.
