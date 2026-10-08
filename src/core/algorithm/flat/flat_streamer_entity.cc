@@ -155,7 +155,7 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
   vec_cols_ = index_meta_.element_size() / vec_unit_size_;
   meta_.header.block_size =
       ailego_align(sizeof(BlockHeader) + sizeof(DeletionMap) +
-                       (index_meta_.element_size() + sizeof(uint64_t)) *
+                       (stored_vector_size() + sizeof(uint64_t)) *
                            meta_.header.block_vector_count,
                    32);
 
@@ -348,6 +348,7 @@ int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
                                IndexContext::Stats *context_stats,
                                FlatSearchScratch * /*scratch*/,
                                size_t /*batch_size*/) const {
+  if (use_external_vector_) return IndexError_Unsupported;
   IndexStorage::MemoryBlock head_block;
   this->get_head_block(head_block);
   const BlockLocation *bl =
@@ -394,6 +395,7 @@ int FlatStreamerEntity::search_by_p_keys(const void *query,
                                          IndexDocumentHeap *heap,
                                          FlatSearchScratch * /*scratch*/,
                                          size_t /*batch_size*/) const {
+  if (use_external_vector_) return IndexError_Unsupported;
   for (uint64_t key : p_keys) {
     if (filter.is_valid() && filter(key)) {
       continue;
@@ -498,6 +500,7 @@ FlatStreamerEntity::Pointer FlatStreamerEntity::clone() const {
     LOG_ERROR("Failed to New FlatStreamerEntity object");
     return nullptr;
   }
+  entity->use_external_vector_ = this->use_external_vector_;
   entity->index_meta_ = this->index_meta_;
   entity->storage_ = this->storage_;
   // entity->reformer_ = this->reformer_;
@@ -716,6 +719,7 @@ const void *FlatContiguousStreamerEntity::get_vector_ptr(
 }
 
 const void *FlatStreamerEntity::get_vector_by_key(uint64_t key) const {
+  if (use_external_vector_) return nullptr;
   VectorLocation loc{};
   key_info_map_lock_->lock_shared();
   if (use_key_info_map_) {
@@ -747,6 +751,7 @@ const void *FlatStreamerEntity::get_vector_by_key(uint64_t key) const {
 
 int FlatStreamerEntity::get_vector_by_key(
     const uint64_t key, IndexStorage::MemoryBlock &block) const {
+  if (use_external_vector_) return IndexError_Unsupported;
   VectorLocation loc{};
   key_info_map_lock_->lock_shared();
   if (use_key_info_map_) {
@@ -778,6 +783,7 @@ int FlatStreamerEntity::get_vector_by_key(
 int FlatStreamerEntity::get_vectors_by_key(
     const uint64_t *keys, uint32_t count,
     std::vector<IndexStorage::MemoryBlock> &blocks) const {
+  if (use_external_vector_) return IndexError_Unsupported;
   std::vector<VectorLocation> locations(count);
   key_info_map_lock_->lock_shared();
   if (use_key_info_map_) {
@@ -815,6 +821,8 @@ int FlatStreamerEntity::get_vectors_by_key(
 }
 
 IndexProvider::Iterator::Pointer FlatStreamerEntity::creater_iterator() const {
+  // An external scan requires a request-bound source.
+  if (use_external_vector_) return nullptr;
   auto entity = this->clone();
   if (!entity) {
     LOG_ERROR("Failed to clone entity");
@@ -961,6 +969,10 @@ int FlatStreamerEntity::load_linear_meta(IndexStorage::Pointer storage) {
     return IndexError_InvalidFormat;
   }
   auto *mt = reinterpret_cast<const decltype(meta_) *>(data_block.data());
+  if (mt->header.reserved_[0] != meta_.header.reserved_[0]) {
+    LOG_ERROR("Unmatched Flat external-vector storage mode");
+    return IndexError_Mismatch;
+  }
   if (mt->header.block_vector_count != meta_.header.block_vector_count) {
     LOG_ERROR("Unmatched BlockVecCount Setting, Index %u vs Setting %u",
               mt->header.block_vector_count, meta_.header.block_vector_count);
@@ -1293,7 +1305,7 @@ int FlatStreamerEntity::add_to_block(const BlockLocation &block, uint64_t key,
 
   size_t vector_off =
       get_block_vector_offset(block.block_index, header->vector_count);
-  if (segment->write(vector_off, data, size) != size) {
+  if (!use_external_vector_ && segment->write(vector_off, data, size) != size) {
     LOG_ERROR("Failed to write vector, off=%zu size=%zu", vector_off, size);
     return IndexError_WriteData;
   }
@@ -1327,6 +1339,11 @@ int FlatStreamerEntity::add_to_block(const BlockLocation &block, uint64_t key,
 
 int FlatStreamerEntity::add_vector_with_id(const uint32_t id, const void *query,
                                            const uint32_t size) {
+  if (use_external_vector_) {
+    // Keep sparse external IDs compact. Updates belong to the source.
+    int ret = add(id, query, size);
+    return ret == IndexError_Duplicate ? 0 : ret;
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   // if (filter_same_key_) {
   //   key_info_map_lock_->lock_shared();

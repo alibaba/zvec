@@ -681,6 +681,11 @@ bool Index::is_dirty() const {
   return storage_->is_dirty();
 }
 
+int Index::fetch_with_source(uint32_t, const core::VectorSource &,
+                             VectorDataBuffer *) {
+  return core::IndexError_Unsupported;
+}
+
 int Index::fetch(const uint32_t doc_id, VectorDataBuffer *vector_data_buffer) {
   if (!is_open_) {
     LOG_ERROR("Index is not open");
@@ -1093,6 +1098,14 @@ int Index::_refine_dense_candidates(
 
   auto &context = acquire_context();
   if (!context) return core::IndexError_Runtime;
+  if (param_.use_external_vector) {
+    int ret = bind_vector_source(
+        search_param->refiner_param->reference_vector_source, context);
+    if (ret != 0) {
+      context->reset();
+      return ret;
+    }
+  }
   context->set_topk(search_param->topk);
   context->set_fetch_vector(search_param->fetch_vector);
   if (search_param->filter && search_param->filter->is_valid()) {
@@ -1411,6 +1424,13 @@ int Index::_sparse_search(const VectorData &vector_data,
 
 int Index::merge(const std::vector<Index::Pointer> &indexes,
                  const IndexFilter &filter, const MergeOptions &options) {
+  // Merge has no request-bound source from which to materialize vectors.
+  if (param_.use_external_vector) return core::IndexError_Unsupported;
+  for (const auto &index : indexes) {
+    if (index && index->param_.use_external_vector) {
+      return core::IndexError_Unsupported;
+    }
+  }
   if (indexes.empty()) {
     return core::IndexError_Success;
   }

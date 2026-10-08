@@ -39,6 +39,7 @@ struct FlatSearchScratch {
   std::vector<uint64_t> vector_keys{};
   std::vector<float> distances{};
   std::vector<uint8_t> query_buffer{};
+  std::vector<uint8_t> key_presence{};
 };
 
 /*! Flat Streamer Entity
@@ -155,6 +156,28 @@ class FlatStreamerEntity {
   void set_use_key_info_map(bool use_id_map) {
     use_key_info_map_ = use_id_map;
     LOG_DEBUG("use_key_info_map_: %d", (int)use_key_info_map_);
+  }
+
+  void set_use_external_vector(bool enabled) {
+    use_external_vector_ = enabled;
+    // Persist the physical layout independently of the logical vector meta.
+    meta_.header.reserved_[0] = enabled ? 1 : 0;
+  }
+
+  bool contains_key(uint64_t key) const {
+    ailego::ReadLock lock(*key_info_map_lock_);
+    std::lock_guard<ailego::ReadLock> guard(lock);
+    return key_info_map_.find(key) != key_info_map_.end();
+  }
+
+  void key_presence(const std::vector<uint32_t> &keys,
+                    std::vector<uint8_t> *present) const {
+    present->resize(keys.size());
+    ailego::ReadLock lock(*key_info_map_lock_);
+    std::lock_guard<ailego::ReadLock> guard(lock);
+    for (size_t i = 0; i < keys.size(); ++i) {
+      (*present)[i] = key_info_map_.find(keys[i]) != key_info_map_.end();
+    }
   }
 
   //! Set params
@@ -370,6 +393,10 @@ class FlatStreamerEntity {
                    size_t size);
 
  private:
+  size_t stored_vector_size() const {
+    return use_external_vector_ ? 0 : index_meta_.element_size();
+  }
+
   size_t get_block_offset(uint32_t block_index) const {
     return block_index * linear_block_size();
   }
@@ -386,14 +413,14 @@ class FlatStreamerEntity {
   size_t get_block_key_offset(uint32_t block_index,
                               uint32_t vector_index) const {
     return get_block_offset(block_index) +
-           block_vector_count() * index_meta_.element_size() +
+           block_vector_count() * stored_vector_size() +
            sizeof(uint64_t) * vector_index;
   }
 
   size_t get_block_vector_offset(uint32_t block_index,
                                  uint32_t vector_index) const {
     return this->get_block_offset(block_index) +
-           vector_index * index_meta_.element_size();
+           vector_index * stored_vector_size();
   }
 
   //! Get header block of an linear list
@@ -477,6 +504,7 @@ class FlatStreamerEntity {
   // Open/close and initial loading require external lifecycle exclusion.
   mutable std::mutex segments_mutex_{};
   IndexMeta index_meta_{};
+  bool use_external_vector_{false};
   IndexStorage::Pointer storage_{};
   IndexMetric::MatrixDistance row_distance_{}, column_distance_{};
   IndexMetric::MatrixBatchDistance batch_distance_{};

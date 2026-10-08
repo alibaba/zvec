@@ -109,6 +109,21 @@ int FlatStreamer<BATCH_SIZE>::init(const IndexMeta &imeta,
   params.get(PARAM_FLAT_USE_ID_MAP, &use_key_info_map_);
   params.get(PARAM_FLAT_USE_CONTIGUOUS_MEMORY, &use_contiguous_memory_);
 
+  use_external_vector_ = false;
+  params.get(PARAM_FLAT_USE_EXTERNAL_VECTOR, &use_external_vector_);
+  if (use_external_vector_) {
+    if (use_contiguous_memory_ || meta_.major_order() != IndexMeta::MO_ROW ||
+        meta_.data_type() != IndexMeta::DT_FP32 ||
+        meta_.meta_type() != IndexMeta::MT_DENSE || meta_.dimension() == 0 ||
+        meta_.element_size() != meta_.dimension() * sizeof(float) ||
+        (meta_.metric_name() != "SquaredEuclidean" &&
+         meta_.metric_name() != "InnerProduct") ||
+        (quantizer_ && meta_.quantizer_name() != "Fp32Quantizer")) {
+      return IndexError_Unsupported;
+    }
+    use_key_info_map_ = true;
+  }
+
   state_ = STATE_INITED;
 
   return 0;
@@ -182,6 +197,7 @@ int FlatStreamer<BATCH_SIZE>::open(IndexStorage::Pointer stg) {
   entity_->enable_filter_same_key(true);
   entity_->set_linear_list_count(1);
   entity_->set_use_key_info_map(use_key_info_map_);
+  entity_->set_use_external_vector(use_external_vector_);
   entity_->set_quantizer(quantizer_);
   *entity_->mutable_meta() = meta_;
 
@@ -233,6 +249,7 @@ int FlatStreamer<BATCH_SIZE>::flush(uint64_t checkpoint) {
 
 template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::dump(const IndexDumper::Pointer &dumper) {
+  if (use_external_vector_) return IndexError_Unsupported;
   std::string searcher_name = "FlatSearcher";
   if constexpr (BATCH_SIZE == 16) {
     searcher_name = "FlatSearcher16";
@@ -285,6 +302,10 @@ int FlatStreamer<BATCH_SIZE>::add_impl(uint64_t pkey, const void *query,
     (*stats_.mutable_discarded_count())++;
     return IndexError_Cast;
   }
+  if (use_external_vector_) {
+    if (pkey >= kInvalidNodeId) return IndexError_InvalidArgument;
+    return add_with_id_impl(static_cast<uint32_t>(pkey), query, qmeta, context);
+  }
   READ_LOCK_GUARD_DEFER(dump_mutex_, dump_lock);
 
   if (!dump_lock.try_lock()) {
@@ -334,6 +355,18 @@ int FlatStreamer<BATCH_SIZE>::add_with_id_impl(uint32_t id, const void *query,
     (*stats_.mutable_discarded_count())++;
     return IndexError_Cast;
   }
+  if (use_external_vector_) {
+    if (state_ != STATE_OPENED || !ctx->vector_source())
+      return IndexError_NoReady;
+    if (id == kInvalidNodeId) return IndexError_InvalidArgument;
+    VectorSource::Batch batch;
+    int ret = ctx->vector_source()->get_vector_batch(&id, 1, &batch);
+    if (ret != 0) return ret;
+    if (batch.ids.size() != 1 || batch.ids[0] != id ||
+        batch.vectors.size() != 1 || !batch.vectors[0]) {
+      return IndexError_ReadData;
+    }
+  }
   READ_LOCK_GUARD_DEFER(dump_mutex_, dump_lock);
 
   if (!dump_lock.try_lock()) {
@@ -357,6 +390,10 @@ int FlatStreamer<BATCH_SIZE>::search_bf_impl(const void *query,
                                              const IndexQueryMeta &qmeta,
                                              uint32_t count,
                                              Context::Pointer &context) const {
+  if (use_external_vector_) {
+    if (state_ != STATE_OPENED) return IndexError_NoReady;
+    return search_external(query, qmeta, count, nullptr, context);
+  }
   if (state_ != STATE_OPENED) return IndexError_NoReady;
   ailego_assert(query && count && !!context);
   ailego_assert(quantizer_ || metric_->is_matched(meta_, qmeta));
@@ -405,6 +442,10 @@ int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
     const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
     const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
+  if (use_external_vector_) {
+    if (state_ != STATE_OPENED) return IndexError_NoReady;
+    return search_external(query, qmeta, count, &p_keys, context);
+  }
   if (state_ != STATE_OPENED) return IndexError_NoReady;
   if (count == 0 || count > p_keys.size()) return IndexError_InvalidArgument;
   ailego_assert(query && count && !!context);
@@ -450,9 +491,184 @@ int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
 }
 
 template <size_t BATCH_SIZE>
+int FlatStreamer<BATCH_SIZE>::search_external(
+    const void *query, const IndexQueryMeta &qmeta, uint32_t count,
+    const std::vector<std::vector<uint64_t>> *keys,
+    Context::Pointer &context) const {
+  auto *ctx = dynamic_cast<FlatStreamerContext<BATCH_SIZE> *>(context.get());
+  if (!ctx || !query || !count || (keys && keys->size() < count) ||
+      qmeta.meta_type() != meta_.meta_type() ||
+      qmeta.data_type() != meta_.data_type() ||
+      qmeta.dimension() != meta_.dimension() ||
+      qmeta.element_size() != meta_.element_size()) {
+    return IndexError_InvalidArgument;
+  }
+  if (ctx->magic() != magic_) ctx->reset(this);
+  const auto *source = ctx->vector_source();
+  if (!source || !ctx->threshold_is_valid()) return IndexError_NoReady;
+  const bool grouped = ctx->group_by_search();
+  if (grouped && !ctx->group_by().is_valid()) return IndexError_InvalidArgument;
+  ctx->reset_results(count);
+  ctx->resize_group_results(count);
+  // Bound both pointer scratch space and per-request pinned vector bytes.
+  const uint32_t batch_limit = static_cast<uint32_t>(std::min<size_t>(
+      1024,
+      std::max<size_t>(BATCH_SIZE, read_block_size_ / meta_.element_size())));
+  auto *scratch = ctx->search_scratch();
+
+  for (uint32_t q = 0; q < count; ++q) {
+    const void *current_query =
+        static_cast<const char *>(query) + q * qmeta.element_size();
+    auto *heap = ctx->result_heap();
+    heap->clear();
+    ctx->group_topk_heaps().clear();
+    // Destroy the outstanding lease before its cursor, including on errors.
+    VectorSource::Iterator::Pointer cursor;
+    VectorSource::Batch batch;
+    auto consume = [&]() -> int {
+      if (batch.ids.size() != batch.vectors.size() ||
+          batch.ids.size() > batch_limit)
+        return IndexError_ReadData;
+      scratch->vector_ptrs.clear();
+      scratch->vector_keys.clear();
+      if (!keys) entity_->key_presence(batch.ids, &scratch->key_presence);
+      for (size_t i = 0; i < batch.ids.size(); ++i) {
+        const auto id = batch.ids[i];
+        if (id == kInvalidNodeId || !batch.vectors[i])
+          return IndexError_ReadData;
+        if (!keys && (!scratch->key_presence[i] ||
+                      (ctx->filter().is_valid() && ctx->filter()(id)))) {
+          ++*ctx->mutable_stats(q)->mutable_filtered_count();
+          continue;
+        }
+        scratch->vector_ptrs.push_back(batch.vectors[i]);
+        scratch->vector_keys.push_back(id);
+      }
+      const size_t size = scratch->vector_ptrs.size();
+      if (!size) return 0;
+      scratch->distances.resize(size);
+      if (quantizer_) {
+        quantizer_->calc_distance_dp_query_batch(
+            scratch->vector_ptrs.data(), static_cast<int>(size), current_query,
+            scratch->distances.data());
+      } else if (auto distance = metric_->batch_distance()) {
+        distance(scratch->vector_ptrs.data(), current_query, size,
+                 meta_.dimension(), scratch->distances.data(), nullptr);
+      } else {
+        auto scalar_distance = metric_->distance();
+        for (size_t i = 0; i < size; ++i) {
+          scalar_distance(current_query, scratch->vector_ptrs[i],
+                          meta_.dimension(), &scratch->distances[i]);
+        }
+      }
+      *ctx->mutable_stats(q)->mutable_dist_calced_count() += size;
+      for (size_t i = 0; i < size; ++i) {
+        const auto id = scratch->vector_keys[i];
+        const auto distance = scratch->distances[i];
+        if (grouped) {
+          auto &group_heap = ctx->group_topk_heaps()[ctx->group_by()(id)];
+          if (group_heap.empty()) group_heap.limit(ctx->group_topk());
+          group_heap.emplace(id, distance);
+        } else {
+          heap->emplace(id, distance);
+        }
+      }
+      return 0;
+    };
+
+    if (keys) {
+      std::vector<uint32_t> ids;
+      ids.reserve(batch_limit);
+      auto read_candidates = [&]() -> int {
+        if (ids.empty()) return 0;
+        batch.clear();
+        int ret = source->get_vector_batch(ids.data(), ids.size(), &batch);
+        if (ret != 0) return ret;
+        if (batch.ids != ids) return IndexError_ReadData;
+        ret = consume();
+        ids.clear();
+        return ret;
+      };
+      for (auto key : (*keys)[q]) {
+        if (key >= kInvalidNodeId || !entity_->contains_key(key) ||
+            (ctx->filter().is_valid() && ctx->filter()(key)))
+          continue;
+        ids.push_back(static_cast<uint32_t>(key));
+        if (ids.size() == batch_limit) {
+          int ret = read_candidates();
+          if (ret != 0) return ret;
+        }
+      }
+      int ret = read_candidates();
+      if (ret != 0) return ret;
+    } else {
+      cursor = source->create_iterator();
+      if (!cursor) return IndexError_Unsupported;
+      while (true) {
+        batch.clear();
+        int ret = cursor->next_batch(batch_limit, &batch);
+        if (ret != 0) return ret;
+        ret = consume();
+        if (ret != 0) return ret;
+        if (batch.ids.empty()) break;
+      }
+    }
+    batch.clear();
+    if (grouped)
+      ctx->topk_to_group_result(q);
+    else
+      ctx->take_topk_result(q);
+
+    // Results outlive the source snapshot, cursor and index. Own the selected
+    // raw vectors instead of retaining borrowed pointers or disk page pins.
+    auto fetch_results = [&](IndexDocumentList *docs) -> int {
+      for (size_t begin = 0; begin < docs->size(); begin += batch_limit) {
+        const size_t end = std::min(docs->size(), begin + batch_limit);
+        std::vector<uint32_t> ids;
+        ids.reserve(end - begin);
+        for (size_t i = begin; i < end; ++i) ids.push_back((*docs)[i].key());
+        batch.clear();
+        int ret = source->get_vector_batch(ids.data(), ids.size(), &batch);
+        if (ret != 0) return ret;
+        if (batch.ids != ids || batch.vectors.size() != ids.size()) {
+          return IndexError_ReadData;
+        }
+        for (size_t i = 0; i < ids.size(); ++i) {
+          if (!batch.vectors[i]) return IndexError_ReadData;
+          auto owned = std::make_shared<std::string>(
+              static_cast<const char *>(batch.vectors[i]),
+              meta_.element_size());
+          auto block =
+              IndexStorage::MemoryBlock::MakeSharedView(owned->data(), owned);
+          auto &doc = (*docs)[begin + i];
+          doc = IndexDocument(doc.key(), doc.score(), doc.index(), block);
+        }
+      }
+      return 0;
+    };
+    if (ctx->fetch_vector()) {
+      if (grouped) {
+        for (auto &group : *ctx->mutable_group_result(q)) {
+          int ret = fetch_results(group.mutable_docs());
+          if (ret != 0) return ret;
+        }
+      } else {
+        int ret = fetch_results(ctx->mutable_result(q));
+        if (ret != 0) return ret;
+      }
+    }
+  }
+  return 0;
+}
+
+template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::group_by_search_impl(
     const void *query, const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
+  if (use_external_vector_) {
+    if (state_ != STATE_OPENED) return IndexError_NoReady;
+    return search_external(query, qmeta, count, nullptr, context);
+  }
   FlatStreamerContext<BATCH_SIZE> *bf_context =
       dynamic_cast<FlatStreamerContext<BATCH_SIZE> *>(context.get());
   if (!bf_context) {
@@ -501,6 +717,10 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_p_keys_impl(
     const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
     const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
+  if (use_external_vector_) {
+    if (state_ != STATE_OPENED) return IndexError_NoReady;
+    return search_external(query, qmeta, count, &p_keys, context);
+  }
   if (count == 0 || count > p_keys.size()) return IndexError_InvalidArgument;
   FlatStreamerContext<BATCH_SIZE> *bf_context =
       dynamic_cast<FlatStreamerContext<BATCH_SIZE> *>(context.get());

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <zvec/core/framework/index_error.h>
 #include <zvec/core/interface/vector_source.h>
 
 namespace zvec {
@@ -20,6 +21,27 @@ namespace core {
 VectorSource::VectorSource() = default;
 
 VectorSource::~VectorSource() = default;
+
+VectorSource::Iterator::Pointer VectorSource::create_iterator() const {
+  return nullptr;
+}
+
+int VectorSource::get_vector_batch(const uint32_t *ids, uint32_t count,
+                                   Batch *out) const {
+  if (!out || (count && !ids)) return IndexError_InvalidArgument;
+  out->clear();
+  if (!count) return 0;
+  out->ids.assign(ids, ids + count);
+  out->vectors.resize(count);
+  get_vectors(ids, count, out->vectors.data());
+  for (auto *vector : out->vectors) {
+    if (!vector) {
+      out->clear();
+      return IndexError_NoExist;
+    }
+  }
+  return 0;
+}
 
 void VectorSource::get_vectors(const uint32_t *ids, uint32_t count,
                                const void **out) const {

@@ -24,6 +24,7 @@
 #include <zvec/core/framework/index_filter.h>
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/core/interface/constants.h>
+#include <zvec/core/interface/vector_source.h>
 #include <zvec/export.h>
 #include "zvec/core/framework/index_framework.h"
 
@@ -204,6 +205,8 @@ struct RefinerParam {
 
   float scale_factor_{0};
   std::shared_ptr<Index> reference_index = nullptr;
+  // Borrowed for this request; independent of the coarse index source.
+  const core::VectorSource *reference_vector_source = nullptr;
 };
 
 // --- GroupBy Parameters ---

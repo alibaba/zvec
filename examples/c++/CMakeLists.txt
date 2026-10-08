@@ -135,6 +135,10 @@ add_executable(external-vector-example core/external_vector_example.cc)
 target_link_libraries(external-vector-example PRIVATE zvec-core-lib)
 list(APPEND ZVEC_EXAMPLE_TARGETS external-vector-example)
 
+add_executable(external-flat-example core/external_flat_example.cc)
+target_link_libraries(external-flat-example PRIVATE zvec-core-lib)
+list(APPEND ZVEC_EXAMPLE_TARGETS external-flat-example)
+
 # This is also a link-integration check: DiskANN must work through the
 # all-in-one core library without linking core_knn_diskann separately.
 add_executable(diskann-core-example core/diskann_main.cc)

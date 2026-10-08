@@ -128,7 +128,7 @@ class FlatStreamerContext : public IndexStreamer::Context {
       }
 
       key_t key = result_heap_[i].key();
-      if (fetch_vector_) {
+      if (fetch_vector_ && !owner_->use_external_vector()) {
         IndexStorage::MemoryBlock block;
         owner_->entity().get_vector_by_key(key, block);
         results_[idx].emplace_back(key, score, key, block);
@@ -200,8 +200,8 @@ class FlatStreamerContext : public IndexStreamer::Context {
           break;
         }
         node_id_t id = group_topk_list[i].second[j].first;
-        auto provider = owner_->create_provider();
-        if (fetch_vector_) {
+        if (fetch_vector_ && !owner_->use_external_vector()) {
+          auto provider = owner_->create_provider();
           IndexStorage::MemoryBlock block;
           provider->get_vector(id, block);
           group_results_[idx][i].mutable_docs()->emplace_back(id, score, id,
@@ -224,7 +224,16 @@ class FlatStreamerContext : public IndexStreamer::Context {
     group_topk_heaps_.clear();
   }
 
+  void set_vector_source(const VectorSource *source) {
+    vector_source_ = source;
+  }
+
+  const VectorSource *vector_source() const {
+    return vector_source_;
+  }
+
   void reset() override {
+    vector_source_ = nullptr;
     for (auto &it : results_) {
       it.clear();
     }
@@ -235,7 +244,9 @@ class FlatStreamerContext : public IndexStreamer::Context {
 
   //! Reset the context
   void reset(const FlatStreamer<BATCH_SIZE> *owner) {
+    const auto *source = vector_source_;
     this->reset();
+    vector_source_ = source;
     magic_ = owner->magic();
     feature_size_ = owner->meta().element_size();
 
@@ -270,6 +281,7 @@ class FlatStreamerContext : public IndexStreamer::Context {
 
  private:
   const FlatStreamer<BATCH_SIZE> *owner_{nullptr};
+  const VectorSource *vector_source_{nullptr};
   FlatSearchScratch search_scratch_{};
   std::vector<Stats> stats_vec_{};
   uint32_t magic_{0};
