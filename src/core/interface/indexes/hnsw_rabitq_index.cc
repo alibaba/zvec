@@ -15,12 +15,12 @@
 #include <memory>
 #include <string>
 #include <zvec/core/interface/index.h>
+#include "algorithm/hnsw_rabitq/rabitq_params.h"
 #include "zvec/core/framework/index_error.h"
 
 #if RABITQ_SUPPORTED
 #include "algorithm/hnsw_rabitq/hnsw_rabitq_params.h"
 #include "algorithm/hnsw_rabitq/hnsw_rabitq_streamer.h"
-#include "algorithm/hnsw_rabitq/rabitq_params.h"
 #endif
 
 namespace zvec::core_interface {
@@ -28,7 +28,7 @@ namespace zvec::core_interface {
 int HNSWRabitqIndex::create_and_init_streamer(const BaseIndexParam &param) {
 #if !RABITQ_SUPPORTED
   (void)param;
-  LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("%s", core::kRabitqUnsupportedPlatform);
   return core::IndexError_Unsupported;
 #else
   param_ = dynamic_cast<const HNSWRabitqIndexParam &>(param);
@@ -90,7 +90,7 @@ int HNSWRabitqIndex::_prepare_for_search(
 #if !RABITQ_SUPPORTED
   (void)search_param;
   (void)context;
-  LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("%s", core::kRabitqUnsupportedPlatform);
   return core::IndexError_Unsupported;
 #else
   const auto &hnsw_search_param =
@@ -135,7 +135,7 @@ int HNSWRabitqIndex::_get_coarse_search_topk(
     const BaseIndexQueryParam::Pointer &search_param) {
 #if !RABITQ_SUPPORTED
   (void)search_param;
-  LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
+  LOG_ERROR("%s", core::kRabitqUnsupportedPlatform);
   return -1;
 #else
   if (search_param->refiner_param->scale_factor_ != 0) {

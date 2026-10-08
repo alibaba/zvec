@@ -787,11 +787,13 @@ TEST(IndexInterface, BufferGeneral) {
 
   auto func = [&](const BaseIndexParam::Pointer &param,
                   const BaseIndexQueryParam::Pointer &query_param) {
-    const float value_tolerance =
-        param->quantizer_param &&
-                param->quantizer_param->type == QuantizerType::kInt4
-            ? 0.1f
-            : 1e-6f;
+    const bool is_int4 = param->quantizer_param &&
+                         param->quantizer_param->type == QuantizerType::kInt4;
+    const float value_tolerance = is_int4 ? 0.1f : 1e-6f;
+    // INT4 reconstructs 1.0 as 14/15 for this vector.
+    const float expected_score =
+        is_int4 ? 4.0f + (14.0f / 15.0f) * (14.0f / 15.0f) : 5.0f;
+    const float score_tolerance = is_int4 ? 1e-5f : 1e-6f;
     std::string real_index_name = index_name;
     zvec::test_util::RemoveTestFiles(index_name + "*");
     auto write_index = IndexFactory::CreateAndInitIndex(*param);
@@ -811,16 +813,21 @@ TEST(IndexInterface, BufferGeneral) {
 
     auto read_index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, read_index);
-    read_index->open(real_index_name,
-                     {StorageOptions::StorageType::kBufferPool, false});
+    ASSERT_EQ(
+        0, read_index->open(real_index_name,
+                            {StorageOptions::StorageType::kBufferPool, false}));
+    auto cleanup = zvec::ailego::ScopeGuard::Make([&]() {
+      EXPECT_EQ(0, read_index->close());
+      zvec::test_util::RemoveTestFiles(index_name + "*");
+    });
 
     SearchResult result;
     VectorData query;
     query.vector = DenseVector{vector.data()};
-    read_index->search(query, query_param, &result);
+    ASSERT_EQ(0, read_index->search(query, query_param, &result));
     ASSERT_EQ(1, result.doc_list_.size());
     ASSERT_EQ(233, result.doc_list_[0].key());
-    ASSERT_NEAR(5.0f, result.doc_list_[0].score(), value_tolerance);
+    ASSERT_NEAR(expected_score, result.doc_list_[0].score(), score_tolerance);
     if (query_param->fetch_vector) {
       auto &doc = result.doc_list_[0];
       if (result.reverted_vector_list_.size() != 0) {
@@ -847,8 +854,6 @@ TEST(IndexInterface, BufferGeneral) {
     ASSERT_NEAR(1.0f, fetched_vector[1], value_tolerance);
     ASSERT_NEAR(2.0f, fetched_vector[2], value_tolerance);
     result.doc_list_.clear();
-    read_index->close();
-    zvec::test_util::RemoveTestFiles(index_name + "*");
   };
 
 
