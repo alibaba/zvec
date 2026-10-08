@@ -50,7 +50,8 @@ class RabitqConverter : public IndexConverter {
   using IndexConverter::train;
 
   //! Train the data with the specified thread resources
-  int train(IndexHolder::Pointer holder, IndexThreads::Pointer threads);
+  int train(IndexHolder::Pointer holder,
+            IndexThreads::Pointer threads) override;
 
   //! Transform the data - quantize vectors using RaBitQ
   int transform(IndexHolder::Pointer holder) override;
