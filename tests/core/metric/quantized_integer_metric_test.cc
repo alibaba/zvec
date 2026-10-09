@@ -79,6 +79,36 @@ struct ReferenceDistance {
     for (size_t i = 0; i < dim; ++i) sum += (a[i] - b[i]) * (a[i] - b[i]);
     return sum;
   }
+  static double RecordInt4SquaredEuclidean(const float *a, const float *b,
+                                           const void *encoded_a,
+                                           const void *encoded_b, size_t dim) {
+    const auto *codes_a = static_cast<const uint8_t *>(encoded_a);
+    const auto *codes_b = static_cast<const uint8_t *>(encoded_b);
+    float params_a[2], params_b[2];
+    std::memcpy(params_a, codes_a + dim / 2, sizeof(params_a));
+    std::memcpy(params_b, codes_b + dim / 2, sizeof(params_b));
+    auto code_at = [](const uint8_t *codes, size_t i) {
+      const int code = (codes[i / 2] >> (4 * (i % 2))) & 0xf;
+      return code < 8 ? code : code - 16;
+    };
+
+    // INT4 records store sums/norms of the unrounded affine codes, while
+    // the dot product uses rounded nibbles. Thus the record score is the
+    // original L2 plus 2 * scale_a * scale_b * (raw_dot - rounded_dot).
+    // Derive it from the original vectors instead of reusing the kernel's
+    // stored sum/squared-sum formula or assuming a fixed quantization error.
+    double original_l2 = 0.0;
+    double rounding_correction = 0.0;
+    for (size_t i = 0; i < dim; ++i) {
+      const double delta = double(a[i]) - b[i];
+      original_l2 += delta * delta;
+      const double raw_a = (double(a[i]) - params_a[1]) / params_a[0];
+      const double raw_b = (double(b[i]) - params_b[1]) / params_b[0];
+      rounding_correction +=
+          raw_a * raw_b - code_at(codes_a, i) * code_at(codes_b, i);
+    }
+    return original_l2 + 2.0 * params_a[0] * params_b[0] * rounding_correction;
+  }
   static float MipsSquaredEuclidean(const float *a, const float *b, size_t dim,
                                     float /*eta*/) {
     return 2.0f -
@@ -368,62 +398,72 @@ TEST(QuantizedIntegerMetric, TestInt8SquaredEuclideanMetric) {
 }
 
 TEST(QuantizedIntegerMetric, TestInt4SquaredEuclidean) {
-  std::random_device rd;
-  std::mt19937 gen(rd());
-  std::uniform_real_distribution<float> dist(-1.0, 2.0);
+  for (const size_t DIMENSION : {2, 6, 8, 16, 30, 32, 34, 64, 128, 256}) {
+    SCOPED_TRACE(DIMENSION);
+    // Seed 295 includes an 8D pair whose quantization error exceeds the old
+    // 0.2 * dimension heuristic. Map engine output explicitly for portability.
+    std::mt19937 gen(295);
+    auto next_value = [&gen]() {
+      return float(gen() % 30001) / 10000.0f - 1.0f;
+    };
+    ailego::NumericalVector<float> vec(DIMENSION);
+    for (size_t j = 0; j < DIMENSION; ++j) vec[j] = next_value();
+    const size_t COUNT = 1000;
+    IndexMeta meta;
+    meta.set_meta(IndexMeta::DT_FP32, DIMENSION);
+    auto converter = IndexFactory::CreateConverter("Int4StreamingConverter");
+    ASSERT_TRUE(!!converter);
+    ASSERT_EQ(0u, converter->init(meta, Params()));
 
-  const size_t DIMENSION = std::uniform_int_distribution<int>(1, 128)(gen) * 2;
-  const size_t COUNT = 1000;
-  IndexMeta meta;
-  meta.set_meta(IndexMeta::DT_FP32, DIMENSION);
-  auto converter = IndexFactory::CreateConverter("Int4StreamingConverter");
-  ASSERT_TRUE(!!converter);
-  ASSERT_EQ(0u, converter->init(meta, Params()));
+    auto holder =
+        std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(DIMENSION);
+    for (size_t i = 0; i < COUNT; ++i) {
+      ailego::NumericalVector<float> record(DIMENSION);
+      for (size_t j = 0; j < DIMENSION; ++j) record[j] = next_value();
+      holder->emplace(i + 1, record);
+    }
+    ASSERT_EQ(0u, IndexConverter::TrainAndTransform(converter, holder));
+    auto holder2 = converter->result();
+    EXPECT_EQ(COUNT, holder2->count());
+    EXPECT_EQ(IndexMeta::DT_INT4, holder2->data_type());
+    auto &meta2 = converter->meta();
 
-  auto holder = GetHolder(DIMENSION, COUNT, dist);
-  ASSERT_EQ(0u, IndexConverter::TrainAndTransform(converter, holder));
-  auto holder2 = converter->result();
-  EXPECT_EQ(COUNT, holder2->count());
-  EXPECT_EQ(IndexMeta::DT_INT4, holder2->data_type());
-  auto &meta2 = converter->meta();
+    auto reformer = IndexFactory::CreateReformer(meta2.reformer_name());
+    ASSERT_TRUE(reformer);
+    ASSERT_EQ(0u, reformer->init(meta2.reformer_params()));
 
-  auto reformer = IndexFactory::CreateReformer(meta2.reformer_name());
-  ASSERT_TRUE(reformer);
-  ASSERT_EQ(0u, reformer->init(meta2.reformer_params()));
+    IndexQueryMeta qmeta;
+    qmeta.set_meta(IndexMeta::DT_FP32, DIMENSION);
+    IndexQueryMeta qmeta2;
+    std::string out;
+    ASSERT_EQ(0, reformer->transform(vec.data(), qmeta, &out, &qmeta2));
+    ASSERT_EQ(qmeta2.dimension(), meta2.dimension());
 
-  ailego::NumericalVector<float> vec(DIMENSION);
-  for (size_t j = 0; j < DIMENSION; ++j) {
-    vec[j] = dist(gen);
-  }
-  IndexQueryMeta qmeta;
-  qmeta.set_meta(IndexMeta::DT_FP32, DIMENSION);
-  IndexQueryMeta qmeta2;
-  std::string out;
-  ASSERT_EQ(0, reformer->transform(vec.data(), qmeta, &out, &qmeta2));
-  ASSERT_EQ(qmeta2.dimension(), meta2.dimension());
+    auto iter = holder->create_iterator();
+    auto iter2 = holder2->create_iterator();
+    auto metric = IndexFactory::CreateMetric(meta2.metric_name());
+    ASSERT_TRUE(!!metric);
+    ASSERT_EQ(0, metric->init(meta2, meta2.metric_params()));
+    auto compute = metric->distance();
+    ASSERT_TRUE(compute);
 
-  auto iter = holder->create_iterator();
-  auto iter2 = holder2->create_iterator();
-  auto metric = IndexFactory::CreateMetric(meta2.metric_name());
-  ASSERT_TRUE(!!metric);
-  ASSERT_EQ(0, metric->init(meta2, meta2.metric_params()));
-  auto compute = metric->distance();
-  ASSERT_TRUE(compute);
+    for (; iter->is_valid(); iter->next(), iter2->next()) {
+      const float *mf = (const float *)iter->data();
+      const int8_t *mi = (const int8_t *)iter2->data();
+      const int8_t *qi = reinterpret_cast<const int8_t *>(&out[0]);
+      SCOPED_TRACE(iter->key());
+      const double expected = ReferenceDistance::RecordInt4SquaredEuclidean(
+          mf, vec.data(), mi, qi, DIMENSION);
+      float v2;
+      compute(mi, qi, holder2->dimension(), &v2);
+      // Only floating-point evaluation error remains in this comparison.
+      ASSERT_NEAR(expected, v2, 1e-5 * DIMENSION);
 
-  for (; iter->is_valid(); iter->next(), iter2->next()) {
-    const float *mf = (const float *)iter->data();
-    const int8_t *mi = (const int8_t *)iter2->data();
-    const int8_t *qi = reinterpret_cast<const int8_t *>(&out[0]);
-    float v1 = ReferenceDistance::SquaredEuclidean(mf, vec.data(),
-                                                   holder->dimension());
-    float v2;
-    compute(mi, qi, holder2->dimension(), &v2);
-    ASSERT_NEAR(v1, v2, 0.2 * DIMENSION);
-
-    std::string out2;
-    ASSERT_EQ(0, reformer->convert(iter->data(), qmeta, &out2, &qmeta2));
-    ASSERT_EQ(out2.size(), holder2->element_size());
-    ASSERT_EQ(0, std::memcmp(out2.data(), iter2->data(), out2.size()));
+      std::string out2;
+      ASSERT_EQ(0, reformer->convert(iter->data(), qmeta, &out2, &qmeta2));
+      ASSERT_EQ(out2.size(), holder2->element_size());
+      ASSERT_EQ(0, std::memcmp(out2.data(), iter2->data(), out2.size()));
+    }
   }
 }
 
