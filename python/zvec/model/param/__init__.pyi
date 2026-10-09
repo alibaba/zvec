@@ -971,7 +971,7 @@ class FtsIndexParam(IndexParam):
     Attributes:
         type (IndexType): Always ``IndexType.FTS``.
         tokenizer_name (str): Name of the tokenizer (one of "standard", "ngram",
-            "jieba", "whitespace").
+            "jieba", "whitespace", "code").
             Default is "standard".
         filters (list[str]): List of token filter names applied after tokenization.
             Supported filters are "lowercase", "ascii_folding", and "stemmer".
@@ -994,6 +994,13 @@ class FtsIndexParam(IndexParam):
                     - "user_dict_path" (user dictionary path).
                     - "cut_mode" ("search", "mix", "full", or "hmm"; default
                       "search").
+                code:
+                    - "sub_tokenizer" ("standard" or "jieba"; default "standard").
+                    - "sub_tokenizer_params" (object passed to the child tokenizer).
+                    Preserves ASCII identifiers and emits naming subwords.
+                    Output is always lowercase, including with filters=[].
+                    Phrases match the expanded token sequence. Changes to the
+                    analyzer configuration require rebuilding the FTS index.
                 whitespace:
                     - no extra_params.
             Filters:

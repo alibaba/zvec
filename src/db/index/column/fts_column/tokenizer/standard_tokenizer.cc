@@ -930,6 +930,13 @@ std::vector<Token> tokenize_ascii(const std::string &text,
 
 }  // namespace
 
+bool StandardTokenizer::is_ideographic(uint32_t codepoint) {
+  if (codepoint > kUnicodeMaxCodepoint) {
+    return false;
+  }
+  return lookup_script_class(codepoint) == WordBreakClass::Ideographic;
+}
+
 Status StandardTokenizer::init(const ailego::JsonObject &config) {
   max_token_length_ = kDefaultMaxTokenLength;
   auto length_val = config["max_token_length"];
