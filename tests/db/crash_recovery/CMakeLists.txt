@@ -63,9 +63,29 @@ cc_binary(
 )
 set_target_properties(collection_optimizer PROPERTIES EXCLUDE_FROM_ALL TRUE)
 
+cc_binary(
+    NAME checkpoint_recovery_worker
+    LIBS ${CRASH_RECOVERY_COMMON_LIBS}
+    SRCS checkpoint_recovery_worker.cc
+    INCS .. ../../src
+    LDFLAGS ${APPLE_FRAMEWORK_LIBS}
+)
+set_target_properties(checkpoint_recovery_worker PROPERTIES EXCLUDE_FROM_ALL TRUE)
+
+cc_binary(
+    NAME storage_fault_worker
+    LIBS ${CRASH_RECOVERY_COMMON_LIBS}
+    SRCS storage_fault_worker.cc
+    INCS .. ../../src
+    LDFLAGS ${APPLE_FRAMEWORK_LIBS}
+)
+set_target_properties(storage_fault_worker PROPERTIES EXCLUDE_FROM_ALL TRUE)
+
 
 # Build test executables
-file(GLOB ALL_TEST_SRCS *_test.cc)
+file(GLOB ALL_TEST_SRCS CONFIGURE_DEPENDS *_test.cc)
+add_custom_target(crash_recovery_binaries)
+file(WRITE "${PROJECT_BINARY_DIR}/recovery-suites.txt" "")
 foreach(CC_SRCS ${ALL_TEST_SRCS})
     get_filename_component(CC_TARGET ${CC_SRCS} NAME_WE)
     cc_gmock(
@@ -75,10 +95,16 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
         INCS .. ../../src
         LDFLAGS ${APPLE_FRAMEWORK_LIBS}
     )
-    add_dependencies(${CC_TARGET} data_generator)
-    add_dependencies(${CC_TARGET} collection_optimizer)
+    if(CC_TARGET STREQUAL "checkpoint_recovery_test")
+        add_dependencies(${CC_TARGET} checkpoint_recovery_worker)
+        set_tests_properties(${CC_TARGET} PROPERTIES TIMEOUT 300)
+    else()
+        add_dependencies(${CC_TARGET} data_generator collection_optimizer)
+    endif()
     set_tests_properties(${CC_TARGET} PROPERTIES
         ENVIRONMENT "TEST_BINARY_DIR=${PROJECT_BINARY_DIR}"
     )
+    add_dependencies(crash_recovery_binaries ${CC_TARGET})
+    file(APPEND "${PROJECT_BINARY_DIR}/recovery-suites.txt" "${CC_TARGET}\n")
     cc_test_suite(zvec_crash_recovery ${CC_TARGET})
 endforeach()
