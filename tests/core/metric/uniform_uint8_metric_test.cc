@@ -35,7 +35,7 @@ std::vector<int8_t> EncodeRecord(const std::vector<uint8_t> &codes) {
   int64_t sum_squared = 0;
   for (size_t i = 0; i < codes.size(); ++i) {
     encoded[i] = static_cast<int8_t>(static_cast<int>(codes[i]) - 128);
-    sum_squared += static_cast<int>(codes[i]) * codes[i];
+    sum_squared += static_cast<int64_t>(codes[i]) * codes[i];
   }
   const uint32_t tail = static_cast<uint32_t>(sum_squared);
   std::memcpy(encoded.data() + codes.size(), &tail, sizeof(tail));
