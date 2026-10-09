@@ -94,6 +94,27 @@ Status IDMap::flush() {
 }
 
 
+Status IDMap::compact() {
+  if (!opened_) {
+    return Status::InternalError();
+  }
+
+  // Ascending keys make every flushed SST a trivial move into the bottommost
+  // level, which the default kIfHaveCompactionFilter skips.
+  rocksdb::CompactRangeOptions opts;
+  opts.bottommost_level_compaction =
+      rocksdb::BottommostLevelCompaction::kForceOptimized;
+  auto s = rocksdb_context_.db_->CompactRange(opts, nullptr, nullptr);
+  if (s.ok()) {
+    LOG_INFO("Compacted IDMap[%s]", working_dir_.c_str());
+    return Status::OK();
+  }
+  LOG_ERROR("Failed to compact IDMap[%s], code[%d], reason[%s]",
+            working_dir_.c_str(), s.code(), s.ToString().c_str());
+  return Status::InternalError();
+}
+
+
 Status IDMap::upsert(const std::string &key, uint64_t doc_id) {
   if (!opened_) {
     return Status::InternalError();

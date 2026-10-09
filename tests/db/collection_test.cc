@@ -3507,6 +3507,49 @@ TEST_F(CollectionTest, Feature_Optimize_Compacted_Segment_Directories_Removed) {
   ASSERT_EQ(reopened.value()->stats().value().doc_count, 2000u);
 }
 
+TEST_F(CollectionTest, Feature_Optimize_Compacts_IdMap) {
+  namespace fs = std::filesystem;
+
+  auto schema = TestHelper::CreateSchemaWithVectorIndex();
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(col_path, *schema,
+                                                        options, 0, 0, false);
+  ASSERT_NE(collection, nullptr);
+
+  const auto id_map_path =
+      FileHelper::MakeFilePath(col_path, FileID::ID_FILE, 0);
+  auto count_sst = [&]() {
+    size_t count = 0;
+    for (const auto &entry : fs::directory_iterator(id_map_path)) {
+      if (entry.path().extension() == ".sst") {
+        ++count;
+      }
+    }
+    return count;
+  };
+
+  // Ascending pks ("pk_1000" .. "pk_4199"): every flushed SST lies above all
+  // earlier ones, so level compaction only trivially moves them.
+  constexpr uint64_t kRounds = 50;
+  constexpr uint64_t kBatch = 64;
+  for (uint64_t i = 0; i < kRounds; ++i) {
+    const uint64_t start = 1000 + i * kBatch;
+    ASSERT_TRUE(
+        TestHelper::CollectionInsertDoc(collection, start, start + kBatch)
+            .ok());
+    ASSERT_TRUE(collection->flush().ok());
+  }
+  ASSERT_GE(count_sst(), kRounds / 2);
+
+  ASSERT_TRUE(collection->optimize().ok());
+  EXPECT_LE(count_sst(), 2u);
+
+  collection.reset();
+  auto reopened = Collection::Open(col_path, options);
+  ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
+  ASSERT_EQ(reopened.value()->stats().value().doc_count, kRounds * kBatch);
+}
+
 #ifdef _WIN32
 TEST_F(CollectionTest, Feature_Optimize_Cleanup_Failure_Is_Best_Effort) {
   namespace fs = std::filesystem;
