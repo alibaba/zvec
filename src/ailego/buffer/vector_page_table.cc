@@ -1598,6 +1598,14 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry,
                     wait_end - wait_start)
                     .count()),
             std::memory_order_relaxed);
+        // Capacity may have become available during the final allowed wait.
+        // Recheck admission before spending that retry, including when a
+        // different pool (rather than this pool's writeback) released a page.
+        found = MemoryLimitPool::get_instance().try_acquire_buffer(
+            kVectorPageSize, buffer);
+        if (found) {
+          break;
+        }
         const uint64_t now = writeback_pages_.load(std::memory_order_relaxed);
         if (now != completed) {
           no_progress_waits = 0;
@@ -1628,14 +1636,30 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry,
             file_name_.c_str(), page_id, error, memory_stats.used,
             memory_stats.committed, memory_stats.free_buffers);
       } else if (writable_) {
-        LOG_WARN(
+        const auto queue_stats = BlockEvictionQueue::get_instance().stats();
+        LOG_ERROR(
             "Buffer pool allocation made no progress: file[%s], "
-            "page_id[%zu], used[%zu], committed[%zu], free_buffers[%zu], "
-            "evict[%llu], second_chance[%llu]",
-            file_name_.c_str(), page_id, memory_stats.used,
-            memory_stats.committed, memory_stats.free_buffers,
+            "page_id[%zu], capacity[%zu], used[%zu], "
+            "committed[%zu], metadata_used[%zu], "
+            "external_used[%zu], page_reserve[%zu], free_buffers[%zu], "
+            "evict[%llu], second_chance[%llu], writeback_requests[%llu], "
+            "writeback_pending[%llu], "
+            "bg_evict_rounds[%llu], bg_evicted_buffers[%llu], "
+            "queue_sizes[%zu,%zu,%zu]",
+            file_name_.c_str(), page_id, memory_stats.pool_size,
+            memory_stats.used, memory_stats.committed,
+            memory_stats.metadata_used, memory_stats.external_used,
+            MemoryLimitPool::get_instance().page_admission_reserve(),
+            memory_stats.free_buffers,
             static_cast<unsigned long long>(page_stats.evict),
-            static_cast<unsigned long long>(page_stats.second_chance));
+            static_cast<unsigned long long>(page_stats.second_chance),
+            static_cast<unsigned long long>(writeback_requests_.load()),
+            static_cast<unsigned long long>(writeback_pending_.load()),
+            static_cast<unsigned long long>(memory_stats.bg_evict_rounds),
+            static_cast<unsigned long long>(memory_stats.bg_evicted_buffers),
+            queue_stats.approximate_queue_sizes[0],
+            queue_stats.approximate_queue_sizes[1],
+            queue_stats.approximate_queue_sizes[2]);
       } else {
         LOG_DEBUG(
             "Buffer pool failed to get free buffer: file[%s], page_id[%zu], "
