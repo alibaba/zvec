@@ -98,10 +98,10 @@ def test_existing_positional_extra_params_still_work(param_type):
             id="hnsw_rabitq",
             marks=pytest.mark.skipif(
                 not (
-                    sys.platform == "linux"
+                    sys.platform in ("linux", "win32")
                     and platform.machine() in ("x86_64", "AMD64")
                 ),
-                reason="HNSW RaBitQ only supported on Linux x86_64",
+                reason="HNSW RaBitQ only supported on Linux and Windows x86_64",
             ),
         )
     ],
