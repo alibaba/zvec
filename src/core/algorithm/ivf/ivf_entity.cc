@@ -15,6 +15,9 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <core/quantizer/quantizer_params.h>
+#include <turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h>
+#include "metric/metric_params.h"
 #include "ivf_utility.h"
 namespace zvec {
 namespace core {
@@ -88,12 +91,11 @@ class ScatterCursor {
 
 //! Calculate a row-major IVF block directly from its resident page spans.
 //! Only a vector split by a page boundary is copied into scratch.
-bool calculate_row_major_block(ScatterCursor *cursor,
-                               IVFDistanceCalculator *calculator,
-                               const void *query, size_t vector_count,
-                               size_t element_size, size_t serialized_size,
-                               uint8_t *scratch, float *distances,
-                               bool calculate) {
+template <typename Distance>
+bool calculate_row_major_block(ScatterCursor *cursor, const Distance &distance,
+                               size_t vector_count, size_t element_size,
+                               size_t serialized_size, uint8_t *scratch,
+                               float *distances, bool calculate) {
   if (element_size == 0 ||
       vector_count > std::numeric_limits<size_t>::max() / element_size) {
     return false;
@@ -112,8 +114,7 @@ bool calculate_row_major_block(ScatterCursor *cursor,
     const size_t direct_count =
         std::min(vector_count - processed, contiguous / element_size);
     if (direct_count != 0) {
-      calculator->query_features_distance(query, cursor->data(), direct_count,
-                                          distances + processed);
+      distance(cursor->data(), direct_count, distances + processed);
       if (!cursor->skip(direct_count * element_size)) {
         return false;
       }
@@ -124,8 +125,7 @@ bool calculate_row_major_block(ScatterCursor *cursor,
     if (!scratch || !cursor->copy(scratch, element_size)) {
       return false;
     }
-    calculator->query_features_distance(query, scratch, 1,
-                                        distances + processed);
+    distance(scratch, 1, distances + processed);
     ++processed;
   }
   return cursor->skip(serialized_size - vector_bytes);
@@ -599,6 +599,19 @@ int IVFEntity::load_header(const IndexStorage::Pointer &container) {
     return IndexError_InvalidFormat;
   }
 
+  if (header_.block_vector_count == 0 || meta_.element_size() == 0 ||
+      header_.block_size < static_cast<uint64_t>(header_.block_vector_count) *
+                               meta_.element_size()) {
+    LOG_ERROR("Invalid IVF posting block layout");
+    return IndexError_InvalidFormat;
+  }
+
+  if (!meta_.quantizer_name().empty()) {
+    return load_quantizer(container);
+  }
+  quantizer_.reset();
+  query_distance_ = turbo::DistanceImpl{};
+
   int ret = reformer_.init(meta_);
   ivf_check_error_code(ret);
 
@@ -620,6 +633,94 @@ int IVFEntity::load_header(const IndexStorage::Pointer &container) {
     return IndexError_NoMemory;
   }
 
+  return 0;
+}
+
+int IVFEntity::load_quantizer(const IndexStorage::Pointer &container) {
+  if (meta_.major_order() != IndexMeta::MajorOrder::MO_ROW ||
+      !meta_.reformer_name().empty() || header_.block_vector_count > 64) {
+    LOG_ERROR("Turbo IVF requires row-major codes without a legacy reformer");
+    return IndexError_InvalidFormat;
+  }
+
+  IndexMeta raw_meta;
+  int ret = IndexHelper::DeserializeFromStorage(container.get(), &raw_meta);
+  ivf_check_error_code(ret);
+  raw_meta.set_quantizer(meta_.quantizer_name(), meta_.quantizer_revision(),
+                         meta_.quantizer_params());
+  auto quantizer = IndexFactory::CreateQuantizer(meta_.quantizer_name());
+  if (!quantizer) {
+    LOG_ERROR("Failed to create Turbo quantizer %s",
+              meta_.quantizer_name().c_str());
+    return IndexError_NoExist;
+  }
+  if (dynamic_cast<turbo::PackedCodeQuantizer *>(quantizer.get())) {
+    LOG_ERROR("Packed Turbo codes are incompatible with row-major IVF");
+    return IndexError_Unsupported;
+  }
+  ret = quantizer->init(raw_meta, meta_.quantizer_params());
+  ivf_check_with_msg(ret, "Failed to initialize Turbo IVF quantizer");
+  const bool matched_input =
+      (raw_meta.data_type() == IndexMeta::DT_FP32 &&
+       quantizer->input_data_type() == turbo::DataType::kFp32) ||
+      (raw_meta.data_type() == IndexMeta::DT_FP16 &&
+       quantizer->input_data_type() == turbo::DataType::kFp16);
+  if (!matched_input || raw_meta.extra_meta_size() != 0) {
+    LOG_ERROR("Turbo quantizer does not match IVF input metadata");
+    return IndexError_InvalidFormat;
+  }
+
+  auto segment = container->get(IVF_TURBO_QUANTIZER_SEG_ID);
+  if (!segment || (quantizer->require_train() && segment->data_size() == 0)) {
+    LOG_ERROR("Missing Turbo IVF quantizer state");
+    return IndexError_InvalidFormat;
+  }
+  if (segment->data_size() != 0) {
+    const void *data = nullptr;
+    if (segment->read(0, &data, segment->data_size()) != segment->data_size()) {
+      return IndexError_ReadData;
+    }
+    ret = quantizer->deserialize(data, segment->data_size());
+    ivf_check_with_msg(ret, "Failed to restore Turbo IVF quantizer");
+  }
+
+  const auto &output = quantizer->meta();
+  if (output.data_type() != meta_.data_type() ||
+      output.dimension() != meta_.dimension() ||
+      output.element_size() != meta_.element_size() ||
+      output.extra_meta_size() != meta_.extra_meta_size() ||
+      output.metric_name() != meta_.metric_name() ||
+      quantizer->quantized_datapoint_vector_length() != meta_.element_size() ||
+      quantizer->dim() != static_cast<int>(raw_meta.dimension())) {
+    LOG_ERROR("Turbo quantizer does not match the persisted IVF code layout");
+    return IndexError_InvalidFormat;
+  }
+
+  quantizer_ = std::move(quantizer);
+  query_distance_ = turbo::DistanceImpl{};
+  calculator_ = std::make_shared<IVFDistanceCalculator>(
+      meta_, nullptr, header_.block_vector_count);
+  return 0;
+}
+
+int IVFEntity::bind_query(const void *query, const IndexQueryMeta &qmeta) {
+  if (!quantizer_) {
+    return 0;
+  }
+  query_distance_ = turbo::DistanceImpl{};
+  std::string encoded;
+  IndexQueryMeta encoded_meta;
+  int ret = quantizer_->quantize(query, qmeta, &encoded, &encoded_meta);
+  ivf_check_with_msg(ret, "Failed to encode Turbo IVF query");
+  if (encoded.size() != quantizer_->quantized_query_vector_length()) {
+    LOG_ERROR("Unexpected Turbo IVF query code size");
+    return IndexError_InvalidArgument;
+  }
+  query_distance_ = quantizer_->distance(encoded.data(), encoded_meta);
+  if (!query_distance_.valid()) {
+    LOG_ERROR("Turbo quantizer does not support IVF posting distances");
+    return IndexError_Unsupported;
+  }
   return 0;
 }
 
@@ -700,7 +801,8 @@ int IVFEntity::load(const IndexStorage::Pointer &container) {
     if (!features_) {
       return IndexError_InvalidFormat;
     }
-    if (features_->data_size() % vector_count() != 0) {
+    if ((vector_count() == 0 && features_->data_size() != 0) ||
+        (vector_count() != 0 && features_->data_size() % vector_count() != 0)) {
       LOG_ERROR("Invalid featureSegment size=%zu, totalVecs=%zu",
                 features_->data_size(), vector_count());
       return IndexError_InvalidFormat;
@@ -720,6 +822,9 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
                       const IndexFilter &filter, uint32_t *scan_count,
                       IndexDocumentHeap *heap,
                       IndexContext::Stats *context_stats) const {
+  if (quantizer_ && !query_distance_.valid()) {
+    return IndexError_InvalidArgument;
+  }
   ailego_assert_with(inverted_list_id < header_.inverted_list_count,
                      "invalid id");
   auto list_meta = this->inverted_list_meta(inverted_list_id);
@@ -731,6 +836,10 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
   const size_t batch_size = kBatchBlocks;
   const size_t block_size = header_.block_size;
   const size_t element_size = meta_.element_size();
+  const auto distance = [this, query](const void *features, size_t count,
+                                      float *out) {
+    query_features_distance(query, features, count, out);
+  };
   const bool row_major = meta_.major_order() == IndexMeta::MO_ROW;
   if (row_major) {
     scatter_vector_.resize(element_size);
@@ -770,7 +879,7 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
           std::min(block_vecs, list_meta->vector_count - (i + b) * block_vecs);
       auto block_keys = keys + b * block_vecs;
       size_t keeps = 0;
-      ailego_assert_with(block_vecs < sizeof(keeps) * 8, "bits overflow");
+      ailego_assert_with(block_vecs <= sizeof(keeps) * 8, "bits overflow");
       for (size_t k = 0; k < vecs_count; ++k) {
         if (!filter(block_keys[k])) {
           keeps |= (1ULL << k);
@@ -787,8 +896,8 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
       const size_t serialized_size = std::min(block_size, size - block_offset);
       if (keeps == 0) {
         if (row_major && !calculate_row_major_block(
-                             &scatter_cursor, calculator_.get(), query,
-                             vecs_count, element_size, serialized_size,
+                             &scatter_cursor, distance, vecs_count,
+                             element_size, serialized_size,
                              scatter_vector_.data(), distances.data(), false)) {
           LOG_ERROR("Invalid scatter-read IVF block, off=%zu, size=%zu",
                     off + block_offset, serialized_size);
@@ -798,18 +907,18 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
       }
 
       if (row_major) {
-        if (!calculate_row_major_block(&scatter_cursor, calculator_.get(),
-                                       query, vecs_count, element_size,
-                                       serialized_size, scatter_vector_.data(),
-                                       distances.data(), true)) {
+        if (!calculate_row_major_block(&scatter_cursor, distance, vecs_count,
+                                       element_size, serialized_size,
+                                       scatter_vector_.data(), distances.data(),
+                                       true)) {
           LOG_ERROR("Invalid scatter-read IVF block, off=%zu, size=%zu",
                     off + block_offset, serialized_size);
           return IndexError_ReadData;
         }
       } else {
         const void *block_data = static_cast<const char *>(data) + block_offset;
-        calculator_->query_features_distance(query, block_data, vecs_count,
-                                             distances.data());
+        query_features_distance(query, block_data, vecs_count,
+                                distances.data());
       }
 
       *(context_stats->mutable_dist_calced_count()) += vecs_count;
@@ -833,6 +942,9 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
 int IVFEntity::search(size_t inverted_list_id, const void *query,
                       uint32_t *scan_count, IndexDocumentHeap *heap,
                       IndexContext::Stats *context_stats) const {
+  if (quantizer_ && !query_distance_.valid()) {
+    return IndexError_InvalidArgument;
+  }
   ailego_assert_with(inverted_list_id < header_.inverted_list_count,
                      "invalid id");
   auto list_meta = inverted_list_meta(inverted_list_id);
@@ -844,6 +956,10 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
   const size_t batch_size = kBatchBlocks;
   const size_t block_size = header_.block_size;
   const size_t element_size = meta_.element_size();
+  const auto distance = [this, query](const void *features, size_t count,
+                                      float *out) {
+    query_features_distance(query, features, count, out);
+  };
   const bool row_major = meta_.major_order() == IndexMeta::MO_ROW;
   if (row_major) {
     scatter_vector_.resize(element_size);
@@ -889,18 +1005,18 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
       }
       const size_t serialized_size = std::min(block_size, size - block_offset);
       if (row_major) {
-        if (!calculate_row_major_block(&scatter_cursor, calculator_.get(),
-                                       query, vecs_count, element_size,
-                                       serialized_size, scatter_vector_.data(),
-                                       distances.data(), true)) {
+        if (!calculate_row_major_block(&scatter_cursor, distance, vecs_count,
+                                       element_size, serialized_size,
+                                       scatter_vector_.data(), distances.data(),
+                                       true)) {
           LOG_ERROR("Invalid scatter-read IVF block, off=%zu, size=%zu",
                     off + block_offset, serialized_size);
           return IndexError_ReadData;
         }
       } else {
         const void *block_data = static_cast<const char *>(data) + block_offset;
-        calculator_->query_features_distance(query, block_data, vecs_count,
-                                             distances.data());
+        query_features_distance(query, block_data, vecs_count,
+                                distances.data());
       }
       for (size_t k = 0; k < vecs_count; ++k) {
         if (block_keys[k] != kInvalidKey) {
@@ -1139,6 +1255,8 @@ IVFEntity::Pointer IVFEntity::clone(const IVFEntity::Pointer &entity) const {
   entity->meta_ = this->meta_;
   entity->reformer_ = this->reformer_;
   entity->calculator_ = this->calculator_;
+  entity->quantizer_ = this->quantizer_;
+  entity->query_distance_ = turbo::DistanceImpl{};
   entity->header_ = this->header_;
   entity->container_ = this->container_;
 

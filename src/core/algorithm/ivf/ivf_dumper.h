@@ -16,6 +16,7 @@
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_framework.h>
 #include "metric/metric_params.h"
+#include "turbo/quantizer/quantizer.h"
 #include "ivf_index_format.h"
 #include "ivf_params.h"
 #include "ivf_utility.h"
@@ -49,6 +50,15 @@ class IVFDumper {
     //! If the block is full and the block order is column, make a
     //! transpose
     void emplace(uint64_t key, const void *vec, IndexMeta::MajorOrder order) {
+      // Turbo records can include tails or packed codes whose byte lengths
+      // are not multiples of the legacy transposition unit.
+      if (major_order_ == IndexMeta::MO_ROW && order == IndexMeta::MO_ROW) {
+        ailego_assert_with(count_ < max_vec_count_, "emplace a full block");
+        std::memcpy(data_.data() + element_size_ * count_, vec, element_size_);
+        ++count_;
+        keys_.emplace_back(key);
+        return;
+      }
       switch (align_size_) {
         case 2:
           do_emplace<uint16_t>(vec, order);
@@ -204,6 +214,9 @@ class IVFDumper {
   //! Dump params for each inverted list quantizer
   int dump_quantizer_params(
       const std::vector<IndexConverter::Pointer> &quantizers);
+
+  //! Persist Turbo training state separately from the posting metadata.
+  int dump_turbo_quantizer(const turbo::Quantizer::Pointer &quantizer);
 
   //! Dump the original vector, which doesnot been quantized
   int dump_original_vector(const void *data, size_t size);

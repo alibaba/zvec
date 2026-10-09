@@ -33,17 +33,20 @@ class FlatSearcher : public IndexSearcher {
 
   //! Initialize Searcher
   int init(const ailego::Params &index_params) override {
+    quantizer_.reset();
     params_ = index_params;
     read_block_size_ = FLAT_DEFAULT_READ_BLOCK_SIZE;
     index_params.get(PARAM_FLAT_READ_BLOCK_SIZE, &read_block_size_);
     return 0;
   }
 
-  //! Initialize Searcher with a turbo quantizer
-  int init(const ailego::Params &index_params,
-           const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) override {
-    quantizer_ = quantizer;
-    return this->init(index_params);
+  // The caller supplies vectors/queries in the quantizer's encoded layout.
+  // Query conversion remains the responsibility of IndexFlow/the IVF reformer.
+  int init(const ailego::Params &params,
+           const turbo::Quantizer::Pointer &quantizer) override {
+    int ret = init(params);
+    if (ret == 0) quantizer_ = quantizer;
+    return ret;
   }
 
   //! Cleanup Searcher
@@ -56,13 +59,16 @@ class FlatSearcher : public IndexSearcher {
 
   //! Unload index
   int unload() override {
+    distance_matrix_ = {};
+    quantizer_.reset();
     container_ = nullptr;
     measure_ = nullptr;
-    quantizer_.reset();
+    legacy_quantizer_layout_ = false;
     features_segment_ = nullptr;
     keys_block_.reset();
     keys_ = nullptr;
     key_id_mapping_.clear();
+    mapping_.clear();
     return 0;
   }
 
@@ -191,15 +197,16 @@ class FlatSearcher : public IndexSearcher {
   uint32_t magic_{IndexContext::GenerateMagic()};
   uint32_t read_block_size_{FLAT_DEFAULT_READ_BLOCK_SIZE};
   bool column_major_order_{false};
+  bool legacy_quantizer_layout_{false};
   IndexMeta meta_{};
   IndexStorage::Pointer container_{};
   IndexMetric::Pointer measure_{};
+  turbo::Quantizer::Pointer quantizer_{};
   ailego::Params params_{};
   IndexStorage::Segment::Pointer features_segment_{};
   mutable std::vector<uint32_t> mapping_{};
   mutable std::mutex mapping_mutex_{};
   FlatDistanceMatrix<BATCH_SIZE> distance_matrix_{};
-  std::shared_ptr<zvec::turbo::Quantizer> quantizer_{};
   IndexSearcher::Stats stats_{};
 };
 
