@@ -19,9 +19,6 @@
 #define FMA_MASK_FP32_AVX512(zmm_m, zmm_q, zmm_sum, mask) \
   zmm_sum = _mm512_mask3_fmadd_ps(zmm_m, zmm_q, zmm_sum, mask);
 
-#define HorizontalAdd_FP16_NEON(v) \
-  vaddvq_f32(vaddq_f32(vcvt_f32_f16(vget_low_f16(v)), vcvt_high_f32_f16(v)))
-
 #define HorizontalAdd_FP32_V512_TO_V256(zmm) \
   _mm256_add_ps(                             \
       _mm512_castps512_ps256(zmm),           \

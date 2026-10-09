@@ -835,16 +835,6 @@
     MATRIX_VAR_PROC(2, 1, 31, zmm_m, zmm_q, _RES, _PROC)                      \
   }
 
-#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-//! Iterative process of computing distance (FP16, M=1, N=1)
-#define MATRIX_FP16_ITER_1X1_NEON(m, q, _RES, _PROC)   \
-  {                                                    \
-    float16x8_t v_m = vld1q_f16((const float16_t *)m); \
-    float16x8_t v_q = vld1q_f16((const float16_t *)q); \
-    _PROC(v_m, v_q, _RES##_0_0)                        \
-  }
-
-#else
 //! Iterative process of computing distance (FP16, M=1, N=1)
 #define MATRIX_FP16_ITER_1X1_NEON(m, q, _RES, _PROC)     \
   {                                                      \
@@ -857,5 +847,3 @@
     v_q_0 = vcvt_high_f32_f16(v_q);                      \
     _PROC(v_m_0, v_q_0, _RES##_0_0)                      \
   }
-
-#endif  // __ARM_FEATURE_FP16_VECTOR_ARITHMETIC

@@ -813,41 +813,6 @@
     MATRIX_VAR_STORE(2, 32, 16, zmm_sum, out, _mm512_storeu_ps, _NORM)    \
   }
 
-#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-//! Compute the distance between matrix and query (FP16, M=1, N=1)
-#define ACCUM_FP16_1X1_NEON(m, q, dim, out, _MASK, _NORM)                    \
-  MATRIX_VAR_INIT(1, 1, float16x8_t, v_sum, vdupq_n_f16(0))                  \
-  const Float16 *qe = q + dim;                                               \
-  const Float16 *qe_aligned = q + ((dim >> 3) << 3);                         \
-  for (; q != qe_aligned; m += 8, q += 8) {                                  \
-    MATRIX_FP16_ITER_1X1_NEON(m, q, v_sum, ACCUM_FP16_STEP_NEON)             \
-  }                                                                          \
-  if (qe >= qe_aligned + 4) {                                                \
-    float16x8_t v_m =                                                        \
-        vcombine_f16(vld1_f16((const float16_t *)m),                         \
-                     vreinterpret_f16_u64(vdup_n_u64((uint64_t)(_MASK))));   \
-    float16x8_t v_q =                                                        \
-        vcombine_f16(vld1_f16((const float16_t *)q),                         \
-                     vreinterpret_f16_u64(vdup_n_u64((uint64_t)(_MASK))));   \
-    ACCUM_FP16_STEP_NEON(v_m, v_q, v_sum_0_0)                                \
-    m += 4;                                                                  \
-    q += 4;                                                                  \
-  }                                                                          \
-  float result = vaddvq_f32(vaddq_f32(vcvt_f32_f16(vget_low_f16(v_sum_0_0)), \
-                                      vcvt_high_f32_f16(v_sum_0_0)));        \
-  switch (qe - q) {                                                          \
-    case 3:                                                                  \
-      ACCUM_FP16_STEP_GENERAL(m[2], q[2], result)                            \
-      /* FALLTHRU */                                                         \
-    case 2:                                                                  \
-      ACCUM_FP16_STEP_GENERAL(m[1], q[1], result)                            \
-      /* FALLTHRU */                                                         \
-    case 1:                                                                  \
-      ACCUM_FP16_STEP_GENERAL(m[0], q[0], result)                            \
-  }                                                                          \
-  *out = _NORM(result);
-
-#else
 //! Compute the distance between matrix and query (FP16, M=1, N=1)
 #define ACCUM_FP16_1X1_NEON(m, q, dim, out, _MASK, _NORM)           \
   MATRIX_VAR_INIT(1, 1, float32x4_t, v_sum, vdupq_n_f32(0))         \
@@ -875,5 +840,3 @@
       ACCUM_FP16_STEP_GENERAL(m[0], q[0], result)                   \
   }                                                                 \
   *out = _NORM(result);
-
-#endif  // __ARM_FEATURE_FP16_VECTOR_ARITHMETIC
