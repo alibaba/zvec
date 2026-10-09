@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -21,6 +22,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <variant>
 #include <vector>
@@ -44,6 +46,7 @@
 #include "db/common/typedef.h"
 #include "db/common/utils.h"
 #include "db/doc_iterator_internal.h"
+#include "db/index/column/vector_column/engine_helper.hpp"
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"
 #include "db/index/common/identifier_validation.h"
@@ -132,6 +135,12 @@ class CollectionImpl : public Collection {
 
   Result<DocPtrList> query(const MultiQuery &query) const override;
 
+  Result<InternalIdsQueryResult> query_internal_ids(
+      const SearchQuery &query, bool return_scores) const override;
+
+  Result<std::vector<std::optional<std::string>>> resolve_internal_ids(
+      const std::vector<int64_t> &ids) const override;
+
   Result<GroupResults> group_by_query(
       const GroupByVectorQuery &query) const override;
 
@@ -162,6 +171,9 @@ class CollectionImpl : public Collection {
 
   Result<DocPtrList> query_unsafe(const MultiQuery &query) const;
 
+  Result<InternalIdsQueryResult> query_internal_ids_fallback(
+      const SearchQuery &query, bool return_scores) const;
+
   void prepare_schema();
 
   Status close_internal();
@@ -173,6 +185,9 @@ class CollectionImpl : public Collection {
   Status create();
 
   Status recovery();
+
+  // Called only during a read-only open, after all segments have recovered.
+  void prepare_query_internal_ids();
 
   Status create_idmap_and_delete_store();
 
@@ -303,6 +318,23 @@ class CollectionImpl : public Collection {
 
   CollectionOptions options_;
 
+  struct QueryInternalIdsField {
+    // Borrowed from schema_; the owning collection is read-only.
+    const FieldSchema *schema;
+    // Same order as read_only_segments_; null means no index in that segment.
+    std::vector<CombinedVectorColumnIndexer::Ptr> indexers;
+    // Borrowed from indexers, resolved only for immutable, unfiltered,
+    // single-segment/block collections with identity document IDs.
+    const VectorColumnIndexer *primary{nullptr};
+    const VectorColumnIndexer *reference{nullptr};
+  };
+
+  // Prepared during open and immutable until close. Queries hold
+  // schema_handle_mtx_ shared; close holds it exclusively before clearing.
+  std::vector<Segment::Ptr> read_only_segments_;
+  std::unordered_map<std::string, QueryInternalIdsField>
+      query_internal_ids_fields_;
+
   mutable std::shared_mutex schema_handle_mtx_;
   // Number of open iterators, guarded by schema_handle_mtx_ (exclusive).
   int active_iterators_{0};
@@ -400,6 +432,10 @@ Status CollectionImpl::open(const CollectionOptions &options) {
     s = create();
   }
 
+  if (s.ok() && options_.read_only_) {
+    prepare_query_internal_ids();
+  }
+
   auto profiler = std::make_shared<Profiler>();
   sql_engine_ = sqlengine::SQLEngine::create(profiler);
 
@@ -456,6 +492,9 @@ Status CollectionImpl::close_unsafe() {
       result = s;
     }
   }
+
+  query_internal_ids_fields_.clear();
+  read_only_segments_.clear();
 
   // always release resources regardless of flush outcome
   writing_segment_.reset();
@@ -1814,6 +1853,226 @@ Result<DocPtrList> CollectionImpl::query(const SearchQuery &query) const {
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
   return query_unsafe(query);
+}
+
+void CollectionImpl::prepare_query_internal_ids() {
+  read_only_segments_ = get_all_segments();
+  for (const auto &field : schema_->vector_fields()) {
+    if (!field->is_dense_vector()) continue;
+    const auto *index_params =
+        dynamic_cast<const VectorIndexParams *>(field->index_params().get());
+    QueryInternalIdsField resolved{field.get(), {}};
+    resolved.indexers.reserve(read_only_segments_.size());
+    for (const auto &segment : read_only_segments_) {
+      CombinedVectorColumnIndexer::Ptr indexer;
+      if (index_params) {
+        indexer =
+            index_params->quantize_type() == QuantizeType::UNDEFINED
+                ? segment->get_combined_vector_indexer(field->name())
+                : segment->get_quant_combined_vector_indexer(field->name());
+      }
+      resolved.indexers.push_back(std::move(indexer));
+    }
+    if (resolved.indexers.size() == 1 && resolved.indexers[0] &&
+        !read_only_segments_[0]->get_filter() &&
+        read_only_segments_[0]->has_identity_doc_ids()) {
+      const auto [primary, reference] =
+          resolved.indexers[0]->single_block_indexers();
+      if (primary) {
+        resolved.primary = primary;
+        resolved.reference = reference;
+      }
+    }
+    query_internal_ids_fields_.emplace(field->name(), std::move(resolved));
+  }
+}
+
+Result<InternalIdsQueryResult> CollectionImpl::query_internal_ids_fallback(
+    const SearchQuery &query, bool return_scores) const {
+  SearchQuery fallback = query;
+  fallback.include_vector_ = false;
+  fallback.include_doc_id_ = true;
+  fallback.output_fields_ = std::vector<std::string>{};
+  auto docs = query_unsafe(fallback);
+  if (!docs) {
+    return tl::make_unexpected(docs.error());
+  }
+
+  const size_t topk = static_cast<size_t>(query.topk_);
+  InternalIdsQueryResult out;
+  out.ids.resize(topk, int64_t{-1});
+  if (return_scores) {
+    out.scores.resize(topk, std::numeric_limits<float>::quiet_NaN());
+  }
+  const size_t count = std::min(topk, docs->size());
+  for (size_t i = 0; i < count; ++i) {
+    const auto &doc = (*docs)[i];
+    if (!doc) continue;
+    out.ids[i] = static_cast<int64_t>(doc->doc_id());
+    if (return_scores) out.scores[i] = doc->score();
+  }
+  return out;
+}
+
+Result<InternalIdsQueryResult> CollectionImpl::query_internal_ids(
+    const SearchQuery &query, bool return_scores) const {
+  std::shared_lock lock(schema_handle_mtx_);
+  CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
+  if (!options_.read_only_) {
+    return tl::make_unexpected(Status::InvalidArgument(
+        "query_internal_ids requires a read-only collection"));
+  }
+  if (query.include_vector_ || query.output_fields_.has_value()) {
+    return tl::make_unexpected(Status::InvalidArgument(
+        "query_internal_ids does not support result-field materialization"));
+  }
+
+  const auto &field_name = query.target_.field_name_;
+  const auto field = query_internal_ids_fields_.find(field_name);
+  if (!query.filter_.empty() || field == query_internal_ids_fields_.end()) {
+    // Keep the optimized dense-vector paths below unchanged. Query shapes
+    // outside that contract use the regular query engine for identical
+    // validation, filtering, sparse-vector and FTS semantics, while this API
+    // still returns only compact native buffers to the binding.
+    return query_internal_ids_fallback(query, return_scores);
+  }
+  const auto *field_schema = field->second.schema;
+  const auto query_status = query.validate(field_schema, nullptr);
+  CHECK_RETURN_STATUS_EXPECTED(query_status);
+  const auto vector_view = query.target_.get_vector_view();
+  const void *query_vector = vector_view->query_vector_.data();
+  const auto &query_params = query.target_.query_params_;
+  const int topk = query.topk_;
+  if (topk == 0) return InternalIdsQueryResult{};
+
+  const auto &segments = read_only_segments_;
+  const auto &indexers = field->second.indexers;
+  InternalIdsQueryResult out;
+  out.ids.resize(static_cast<size_t>(topk), int64_t{-1});
+  // Segment merging needs scores even when the caller only requests IDs.
+  if (return_scores || segments.size() > 1) {
+    out.scores.resize(static_cast<size_t>(topk),
+                      std::numeric_limits<float>::quiet_NaN());
+  }
+  const bool refine = query_params && query_params->is_using_refiner();
+  if (field->second.primary && (!refine || field->second.reference)) {
+    const core_interface::VectorData vector{
+        core_interface::DenseVector{query_vector}};
+    const auto status = ProximaEngineHelper::search_internal_ids(
+        *field->second.primary, vector, query_params,
+        static_cast<uint32_t>(topk), nullptr,
+        refine ? field->second.reference : nullptr, out.ids.data(),
+        out.scores.empty() ? nullptr : out.scores.data());
+    CHECK_RETURN_STATUS_EXPECTED(status);
+    return out;
+  }
+
+  vector_column_params::QueryParams params;
+  params.topk = static_cast<uint32_t>(topk);
+  params.data_type = field_schema->data_type();
+  params.dimension = field_schema->dimension();
+  params.query_params = query_params;
+  vector_column_params::VectorData vector_data;
+  vector_data.vector = vector_column_params::DenseVector{query_vector};
+
+  std::vector<std::pair<float, int64_t>> candidates;
+  if (segments.size() > 1) {
+    candidates.reserve(static_cast<size_t>(topk) * segments.size());
+  }
+  bool searched = false;
+  for (size_t segment_id = 0; segment_id < segments.size(); ++segment_id) {
+    const auto &segment = segments[segment_id];
+    const auto &indexer = indexers[segment_id];
+    if (!indexer || !indexer->has_searchable_indexers()) continue;
+    searched = true;
+    auto filter = segment->get_filter();
+    params.filter = filter.get();
+    auto status = indexer->search_internal_ids(
+        vector_data, params, out.ids.data(),
+        out.scores.empty() ? nullptr : out.scores.data());
+    CHECK_RETURN_STATUS_EXPECTED(status);
+    // The read-only collection contract makes this property immutable.
+    if (!segment->has_identity_doc_ids()) {
+      status = segment->get_global_doc_ids(out.ids);
+      CHECK_RETURN_STATUS_EXPECTED(status);
+    }
+    if (segments.size() == 1) return out;
+    for (size_t i = 0; i < out.ids.size() && out.ids[i] != -1; ++i) {
+      candidates.emplace_back(out.scores[i], out.ids[i]);
+    }
+  }
+  if (!searched && !segments.empty()) {
+    return tl::make_unexpected(Status::InvalidArgument(
+        "query_internal_ids: no searchable vector index for field ",
+        field_name));
+  }
+
+  const auto *index_params = dynamic_cast<const VectorIndexParams *>(
+      field_schema->index_params().get());
+  const MetricType metric =
+      index_params ? index_params->metric_type() : MetricType::L2;
+  const size_t keep = std::min(static_cast<size_t>(topk), candidates.size());
+  std::partial_sort(candidates.begin(), candidates.begin() + keep,
+                    candidates.end(), [metric](const auto &a, const auto &b) {
+                      return metric == MetricType::IP ? a.first > b.first
+                                                      : a.first < b.first;
+                    });
+  for (size_t i = 0; i < keep; ++i) {
+    out.ids[i] = candidates[i].second;
+    out.scores[i] = candidates[i].first;
+  }
+  std::fill(out.ids.begin() + keep, out.ids.end(), int64_t{-1});
+  if (return_scores) {
+    std::fill(out.scores.begin() + keep, out.scores.end(),
+              std::numeric_limits<float>::quiet_NaN());
+  } else {
+    out.scores.clear();
+  }
+  return out;
+}
+
+Result<std::vector<std::optional<std::string>>>
+CollectionImpl::resolve_internal_ids(const std::vector<int64_t> &ids) const {
+  std::shared_lock lock(schema_handle_mtx_);
+  CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
+  CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
+  if (!options_.read_only_) {
+    return tl::make_unexpected(Status::InvalidArgument(
+        "resolve_internal_ids requires a read-only collection"));
+  }
+
+  std::vector<std::optional<std::string>> resolved;
+  resolved.reserve(ids.size());
+  const std::optional<std::vector<std::string>> no_fields =
+      std::vector<std::string>{};
+  for (const auto id : ids) {
+    if (id == -1) {
+      resolved.emplace_back(std::nullopt);
+      continue;
+    }
+    if (id < 0) {
+      return tl::make_unexpected(Status::InvalidArgument(
+          "resolve_internal_ids: ID must be non-negative or -1"));
+    }
+    const auto doc_id = static_cast<uint64_t>(id);
+    if (delete_store_->is_deleted(doc_id)) {
+      resolved.emplace_back(std::nullopt);
+      continue;
+    }
+    const auto segment = local_segment_by_doc_id(doc_id, read_only_segments_);
+    if (!segment || segment->doc_count_snapshot() == 0) {
+      resolved.emplace_back(std::nullopt);
+      continue;
+    }
+    const auto doc = segment->fetch(doc_id, no_fields, false);
+    if (!doc) {
+      resolved.emplace_back(std::nullopt);
+      continue;
+    }
+    resolved.emplace_back(doc->pk());
+  }
+  return resolved;
 }
 
 Result<DocPtrList> CollectionImpl::query(const MultiQuery &query) const {

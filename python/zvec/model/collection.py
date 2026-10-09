@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import contextlib
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import Optional, Union, overload
+
+import numpy as np
 
 from zvec._zvec import _Collection
 from zvec._zvec.param import _GroupByVectorQuery
@@ -508,6 +510,66 @@ class Collection:
         return DocIterator(iterator, self.schema)
 
     # ========== Collection DQL-Query Methods ==========
+
+    def query_internal_ids(
+        self,
+        query: Query,
+        *,
+        topk: int = 10,
+        filter: Optional[str] = None,
+        return_scores: bool = False,
+    ) -> Union[np.ndarray, tuple[np.ndarray, np.ndarray]]:
+        """Execute a single query and return internal numeric IDs.
+
+        This API requires a read-only collection and accepts the same single
+        :class:`Query` used by :meth:`query`, including scalar filters, sparse
+        vectors and full-text search. Eligible dense queries use a specialized
+        low-latency path; other query shapes use regular query semantics.
+        Re-ranking and result-field materialization are not supported.
+
+        The result is an owning int64 NumPy array. With
+        ``return_scores=True``, it returns ``(ids, scores)`` where scores is an
+        owning float32 NumPy array. Missing results are padded with ID ``-1``
+        and score ``NaN``. Refinement parameters have the same semantics as
+        :meth:`query`.
+
+        Use :meth:`query` for documents, multiple queries, group-by, re-ranking,
+        or fetching fields and vectors. Use :meth:`resolve_internal_ids` to
+        convert these IDs to user primary keys.
+
+        Examples:
+            >>> query = zvec.Query("vector", vector=vector, param=param)
+            >>> ids = collection.query_internal_ids(query, topk=10)
+            >>> ids, scores = collection.query_internal_ids(
+            ...     query, topk=10, return_scores=True
+            ... )
+        """
+        if self._obj is None:
+            msg = "query_internal_ids collection is closed"
+            raise ValueError(msg)
+        _require_positive_integer(topk, "topk")
+        ctx = QueryContext(topk=topk, filter=filter, queries=[query])
+        cpp_query = self._querier.build_search_query(ctx, query, self._obj)
+        return self._obj.QueryInternalIds(cpp_query, return_scores)
+
+    def resolve_internal_ids(
+        self, ids: Union[Sequence[int], np.ndarray]
+    ) -> list[Optional[str]]:
+        """Convert internal numeric IDs to user primary keys.
+
+        IDs are resolved against the same read-only collection snapshot used
+        by :meth:`query_internal_ids`. Input order and length are preserved;
+        padding ID ``-1`` and deleted or unknown IDs map to ``None``.
+
+        Args:
+            ids: A sequence or NumPy array of internal numeric IDs.
+
+        Returns:
+            list[Optional[str]]: Corresponding user primary keys.
+        """
+        if self._obj is None:
+            raise ValueError("resolve_internal_ids collection is closed")
+        return self._obj.ResolveInternalIds(ids)
 
     def query(
         self,

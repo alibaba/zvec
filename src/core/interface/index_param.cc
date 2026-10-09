@@ -468,6 +468,8 @@ bool VamanaIndexParam::deserialize_from_json_object(
   DESERIALIZE_VALUE_FIELD(json_obj, max_occlusion_size);
   DESERIALIZE_VALUE_FIELD(json_obj, saturate_graph);
   DESERIALIZE_VALUE_FIELD(json_obj, use_contiguous_memory);
+  // Compact JSON written before the default changed omitted false.
+  two_pass_build = false;
   DESERIALIZE_VALUE_FIELD(json_obj, two_pass_build);
 
   return true;

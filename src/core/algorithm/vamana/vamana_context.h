@@ -118,7 +118,8 @@ class VamanaContext : public IndexContext {
 
   void topk_to_result(uint32_t idx);
 
-  void topk_to_keys(std::vector<uint64_t> &keys);
+  void topk_to_keys(std::vector<uint64_t> &keys,
+                    std::vector<float> *scores = nullptr);
 
   inline void reset_query(const void *query) {
     if (auto query_preprocess_func = index_metric_->get_query_preprocess_func();

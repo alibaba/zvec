@@ -114,7 +114,7 @@ class QueryExecutor:
         if not ctx.queries:
             return [self._build_base_search_query(ctx)]
         return [
-            self._build_search_query(ctx, query, collection) for query in ctx.queries
+            self.build_search_query(ctx, query, collection) for query in ctx.queries
         ]
 
     def execute(self, ctx: QueryContext, collection: _Collection) -> DocList:
@@ -252,7 +252,7 @@ class QueryExecutor:
             convert_to_numpy(vec_data, target_dtype) if target_dtype else vec_data,
         )
 
-    def _build_search_query(
+    def build_search_query(
         self, ctx: QueryContext, query: Query, collection: _Collection
     ) -> _SearchQuery:
         query._validate()

@@ -72,6 +72,28 @@ class VamanaStreamerTest : public testing::Test {
   static shared_ptr<IndexMeta> index_meta_ptr_;
 };
 
+TEST(VamanaStreamerDefaultsTest, TwoPassAfterConstructionAndCleanup) {
+  IndexMeta meta(IndexMeta::DataType::DT_FP32, kDim);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+  auto streamer = IndexFactory::CreateStreamer("VamanaStreamer");
+  ASSERT_TRUE(streamer);
+  // The last initialization verifies that cleanup restores the new default
+  // after an explicit one-pass configuration.
+  for (bool use_default : {true, false, true}) {
+    ailego::Params params;
+    params.set(PARAM_VAMANA_STREAMER_ALPHA, 1.5f);
+    if (!use_default) {
+      params.set(PARAM_VAMANA_STREAMER_TWO_PASS_BUILD_ENABLE, false);
+    }
+    ASSERT_EQ(0, streamer->init(meta, params));
+    float initial_alpha = 0.0f;
+    ASSERT_TRUE(streamer->stats().get_attribute("vamana_initial_build_alpha",
+                                                &initial_alpha));
+    EXPECT_FLOAT_EQ(use_default ? 1.0f : 1.5f, initial_alpha);
+    ASSERT_EQ(0, streamer->cleanup());
+  }
+}
+
 TEST(VamanaQueryPrefetchTest, ResolvesSharedDefaultsFromStoredVectorSchema) {
   const uint32_t default_offset = core_interface::kDefaultPrefetchOffset;
   const uint32_t default_lines = core_interface::kDefaultPrefetchLines;
