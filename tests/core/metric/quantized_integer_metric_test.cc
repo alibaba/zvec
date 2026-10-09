@@ -21,6 +21,7 @@
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_flow.h>
+#include "core/metric/metric_params.h"
 #include "core/quantizer/quantizer_params.h"
 #include "zvec/core/framework/index_factory.h"
 
@@ -79,12 +80,11 @@ struct ReferenceDistance {
     for (size_t i = 0; i < dim; ++i) sum += (a[i] - b[i]) * (a[i] - b[i]);
     return sum;
   }
-  static double RecordInt4SquaredEuclidean(const float *a, const float *b,
-                                           const void *encoded_a,
+  static double RecordInt4SquaredEuclidean(const void *encoded_a,
                                            const void *encoded_b, size_t dim) {
     const auto *codes_a = static_cast<const uint8_t *>(encoded_a);
     const auto *codes_b = static_cast<const uint8_t *>(encoded_b);
-    float params_a[2], params_b[2];
+    float params_a[4], params_b[4];
     std::memcpy(params_a, codes_a + dim / 2, sizeof(params_a));
     std::memcpy(params_b, codes_b + dim / 2, sizeof(params_b));
     auto code_at = [](const uint8_t *codes, size_t i) {
@@ -92,22 +92,26 @@ struct ReferenceDistance {
       return code < 8 ? code : code - 16;
     };
 
-    // INT4 records store sums/norms of the unrounded affine codes, while
-    // the dot product uses rounded nibbles. Thus the record score is the
-    // original L2 plus 2 * scale_a * scale_b * (raw_dot - rounded_dot).
-    // Derive it from the original vectors instead of reusing the kernel's
-    // stored sum/squared-sum formula or assuming a fixed quantization error.
-    double original_l2 = 0.0;
-    double rounding_correction = 0.0;
+    // The record tail defines the scoring moments. Older records accumulated
+    // unrounded affine codes; newer encoders accumulate rounded nibbles.
+    // Expand each norm and the cross term in double precision so the reference
+    // works with both, without assuming a bound on the quantization error.
+    const double scale_a = params_a[0], bias_a = params_a[1];
+    const double scale_b = params_b[0], bias_b = params_b[1];
+    const double norm_a = scale_a * scale_a * params_a[3] +
+                          2 * scale_a * bias_a * params_a[2] +
+                          dim * bias_a * bias_a;
+    const double norm_b = scale_b * scale_b * params_b[3] +
+                          2 * scale_b * bias_b * params_b[2] +
+                          dim * bias_b * bias_b;
+    double dot = 0.0;
     for (size_t i = 0; i < dim; ++i) {
-      const double delta = double(a[i]) - b[i];
-      original_l2 += delta * delta;
-      const double raw_a = (double(a[i]) - params_a[1]) / params_a[0];
-      const double raw_b = (double(b[i]) - params_b[1]) / params_b[0];
-      rounding_correction +=
-          raw_a * raw_b - code_at(codes_a, i) * code_at(codes_b, i);
+      dot += code_at(codes_a, i) * code_at(codes_b, i);
     }
-    return original_l2 + 2.0 * params_a[0] * params_b[0] * rounding_correction;
+    const double cross = scale_a * scale_b * dot +
+                         scale_a * bias_b * params_a[2] +
+                         scale_b * bias_a * params_b[2] + dim * bias_a * bias_b;
+    return norm_a + norm_b - 2 * cross;
   }
   static float MipsSquaredEuclidean(const float *a, const float *b, size_t dim,
                                     float /*eta*/) {
@@ -448,12 +452,11 @@ TEST(QuantizedIntegerMetric, TestInt4SquaredEuclidean) {
     ASSERT_TRUE(compute);
 
     for (; iter->is_valid(); iter->next(), iter2->next()) {
-      const float *mf = (const float *)iter->data();
       const int8_t *mi = (const int8_t *)iter2->data();
       const int8_t *qi = reinterpret_cast<const int8_t *>(&out[0]);
       SCOPED_TRACE(iter->key());
-      const double expected = ReferenceDistance::RecordInt4SquaredEuclidean(
-          mf, vec.data(), mi, qi, DIMENSION);
+      const double expected =
+          ReferenceDistance::RecordInt4SquaredEuclidean(mi, qi, DIMENSION);
       float v2;
       compute(mi, qi, holder2->dimension(), &v2);
       // Only floating-point evaluation error remains in this comparison.
@@ -464,6 +467,37 @@ TEST(QuantizedIntegerMetric, TestInt4SquaredEuclidean) {
       ASSERT_EQ(out2.size(), holder2->element_size());
       ASSERT_EQ(0, std::memcmp(out2.data(), iter2->data(), out2.size()));
     }
+  }
+}
+
+TEST(QuantizedIntegerMetric, TestInt4SquaredEuclideanStoredMoments) {
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DT_INT4, 34);
+  Params params;
+  params.set(QUANTIZED_INTEGER_METRIC_ORIGIN_METRIC_NAME, "SquaredEuclidean");
+  auto metric = IndexFactory::CreateMetric("QuantizedInteger");
+  ASSERT_TRUE(metric);
+  ASSERT_EQ(0, metric->init(meta, params));
+  auto compute = metric->distance();
+  ASSERT_TRUE(compute);
+
+  for (bool rounded : {false, true}) {
+    SCOPED_TRACE(rounded);
+    // Both records pack [-8, 7]. Legacy moments represent [-8, 6.5] and
+    // [-7.5, 7]; rounded moments represent the packed codes themselves.
+    const float tail_a[] = {0.5f, 1.0f, rounded ? -1.0f : -1.5f,
+                            rounded ? 113.0f : 106.25f};
+    const float tail_b[] = {0.25f, -1.0f, rounded ? -1.0f : -0.5f,
+                            rounded ? 113.0f : 105.25f};
+    uint8_t a[17] = {0x78}, b[17] = {0x78};
+    std::memcpy(a + 1, tail_a, sizeof(tail_a));
+    std::memcpy(b + 1, tail_b, sizeof(tail_b));
+    const double expected = rounded ? 14.0625 : 10.390625;
+    EXPECT_DOUBLE_EQ(expected,
+                     ReferenceDistance::RecordInt4SquaredEuclidean(a, b, 2));
+    float actual;
+    compute(a, b, 34, &actual);
+    EXPECT_FLOAT_EQ(expected, actual);
   }
 }
 
