@@ -30,7 +30,14 @@ namespace {
 
 constexpr size_t kTailBytes = sizeof(uint32_t);
 
-std::vector<int8_t> EncodeRecord(const std::vector<uint8_t> &codes) {
+#if defined(_MSC_VER) && defined(_M_ARM64) && !defined(__clang__)
+// MSVC 14.51 ARM64 reports C1001 in this test helper's encoding/reduction loop
+// with /O2. Keep the workaround local; distance kernels remain optimized.
+#pragma optimize("", off)
+__declspec(noinline)
+#endif
+std::vector<int8_t>
+EncodeRecord(const std::vector<uint8_t> &codes) {
   std::vector<int8_t> encoded(codes.size() + kTailBytes, 0);
   int64_t sum_squared = 0;
   for (size_t i = 0; i < codes.size(); ++i) {
@@ -41,6 +48,9 @@ std::vector<int8_t> EncodeRecord(const std::vector<uint8_t> &codes) {
   std::memcpy(encoded.data() + codes.size(), &tail, sizeof(tail));
   return encoded;
 }
+#if defined(_MSC_VER) && defined(_M_ARM64) && !defined(__clang__)
+#pragma optimize("", on)
+#endif
 
 std::vector<int8_t> EncodeQuery(const std::vector<uint8_t> &codes) {
   return EncodeRecord(codes);
@@ -199,7 +209,8 @@ class UniformUint8SeparateExtraValuesTest
 
 TEST_P(UniformUint8SeparateExtraValuesTest,
        QueryBatchConsumesSeparateExtraValues) {
-  // Exercise multiple batches, look-ahead prefetches, and the single-vector tail.
+  // Exercise multiple batches, look-ahead prefetches, and the single-vector
+  // tail.
   constexpr size_t kVectorCount = 11;
   const size_t kDimension = GetParam();
   std::vector<uint8_t> query_codes(kDimension);
@@ -251,11 +262,12 @@ TEST_P(UniformUint8SeparateExtraValuesTest,
 }
 
 INSTANTIATE_TEST_SUITE_P(KernelLayouts, UniformUint8SeparateExtraValuesTest,
-                        testing::Values(size_t{128}, size_t{129}, size_t{960}));
+                         testing::Values(size_t{128}, size_t{129},
+                                         size_t{960}));
 
 TEST(UniformUint8Metric, QueryPreprocessConvertsCanonicalLayout) {
-  const size_t dimensions[] = {1, 63, 64, 65, 127, 128, 129, 960,
-                               MAX_DIMENSION};
+  const size_t dimensions[] = {1,   63,  64,  65,           127,
+                               128, 129, 960, MAX_DIMENSION};
   for (size_t dimension : dimensions) {
     auto metric = CreateMetric(dimension);
     ASSERT_TRUE(metric);
@@ -263,8 +275,8 @@ TEST(UniformUint8Metric, QueryPreprocessConvertsCanonicalLayout) {
     ASSERT_TRUE(preprocess);
 
     for (size_t pattern = 0; pattern < 4; ++pattern) {
-      SCOPED_TRACE(testing::Message() << "dimension=" << dimension
-                                     << ", pattern=" << pattern);
+      SCOPED_TRACE(testing::Message()
+                   << "dimension=" << dimension << ", pattern=" << pattern);
       const uint8_t constant_codes[] = {0, 128, 255};
       std::vector<uint8_t> query_codes(dimension);
       int64_t expected_correction = 0;
@@ -279,7 +291,8 @@ TEST(UniformUint8Metric, QueryPreprocessConvertsCanonicalLayout) {
       auto query = EncodeQuery(query_codes);
       preprocess(query.data(), query.size());
       const auto *raw_query = reinterpret_cast<const uint8_t *>(query.data());
-      EXPECT_TRUE(std::equal(query_codes.begin(), query_codes.end(), raw_query));
+      EXPECT_TRUE(
+          std::equal(query_codes.begin(), query_codes.end(), raw_query));
       EXPECT_EQ(expected_correction, ReadQueryCorrection(query, dimension));
     }
   }
@@ -296,16 +309,17 @@ TEST(UniformUint8Metric, QueryPreprocessPreservesOversizedFallback) {
 
     for (const uint8_t code : {uint8_t{128}, uint8_t{255}}) {
       SCOPED_TRACE(testing::Message() << "dimension=" << dimension
-                                     << ", code=" << static_cast<int>(code));
+                                      << ", code=" << static_cast<int>(code));
       const std::vector<uint8_t> query_codes(dimension, code);
       auto query = EncodeQuery(query_codes);
       const uint32_t original_tail = ReadTail(query, dimension);
-      const int64_t correction =
-          static_cast<int64_t>(dimension) * code * (static_cast<int>(code) - 256);
+      const int64_t correction = static_cast<int64_t>(dimension) * code *
+                                 (static_cast<int>(code) - 256);
 
       preprocess(query.data(), query.size());
       const auto *raw_query = reinterpret_cast<const uint8_t *>(query.data());
-      EXPECT_TRUE(std::equal(query_codes.begin(), query_codes.end(), raw_query));
+      EXPECT_TRUE(
+          std::equal(query_codes.begin(), query_codes.end(), raw_query));
       if (correction < (std::numeric_limits<int32_t>::min)() ||
           correction > (std::numeric_limits<int32_t>::max)()) {
         EXPECT_EQ(original_tail, ReadTail(query, dimension));

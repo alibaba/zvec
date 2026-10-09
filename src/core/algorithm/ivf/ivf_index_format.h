@@ -166,6 +166,7 @@ const std::string IVF_MAPPING_SEG_ID("ivf.mapping");
 const std::string IVF_FEATURES_SEG_ID("ivf.features");
 const std::string IVF_INT8_QUANTIZED_PARAMS_SEG_ID("ivf.int8_quantized_params");
 const std::string IVF_INT4_QUANTIZED_PARAMS_SEG_ID("ivf.int4_quantized_params");
+const std::string IVF_TURBO_QUANTIZER_SEG_ID("ivf.turbo_quantizer");
 
 const std::string IVF_INVERTED_LIST_HEAD_SEG_ID("ivf.inverted_list_head");
 const std::string IVF_STORAGE_SEGMENT_ID("ivf.S");

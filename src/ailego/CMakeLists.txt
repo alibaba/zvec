@@ -25,26 +25,18 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
         file(GLOB_RECURSE MATH_FILES_SSE
             ${CMAKE_CURRENT_SOURCE_DIR}/math/*_sse.cc
             ${CMAKE_CURRENT_SOURCE_DIR}/math/*_sse.c
-            ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_sse.cc
-            ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_sse.c
             )
 
         file(GLOB_RECURSE MATH_FILES_AVX2
             ${CMAKE_CURRENT_SOURCE_DIR}/math/*_avx2.cc
             ${CMAKE_CURRENT_SOURCE_DIR}/math/*_avx2.c
-            ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_avx2.cc
-            ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_avx2.c
             ${CMAKE_CURRENT_SOURCE_DIR}/math/*_avx.cc
             ${CMAKE_CURRENT_SOURCE_DIR}/math/*_avx.c
-            ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_avx.cc
-            ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_avx.c
         )
 
         file(GLOB_RECURSE MATH_FILES_AVX512
             ${CMAKE_CURRENT_SOURCE_DIR}/math/*_avx512.cc
             ${CMAKE_CURRENT_SOURCE_DIR}/math/*_avx512.c
-            ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_avx512.cc
-            ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_avx512.c
         )
 
         file(GLOB_RECURSE MATH_FILES_AVX512FP16
@@ -52,10 +44,6 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
           ${CMAKE_CURRENT_SOURCE_DIR}/math/*_dispatch.c
           ${CMAKE_CURRENT_SOURCE_DIR}/math/*_avx512fp16.cc
           ${CMAKE_CURRENT_SOURCE_DIR}/math/*_avx512fp16.c
-          ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_dispatch.cc
-          ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_dispatch.c
-          ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_avx512fp16.cc
-          ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_avx512fp16.c
         )
 
         foreach(MATH_FILE ${MATH_FILES_SSE})
@@ -96,12 +84,8 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH)
             file(GLOB_RECURSE MATH_FILES_NEON
               ${CMAKE_CURRENT_SOURCE_DIR}/math/*_dispatch.cc
               ${CMAKE_CURRENT_SOURCE_DIR}/math/*_dispatch.c
-              ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_dispatch.cc
-              ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_dispatch.c
               ${CMAKE_CURRENT_SOURCE_DIR}/math/*_neon.cc
               ${CMAKE_CURRENT_SOURCE_DIR}/math/*_neon.c
-              ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_neon.cc
-              ${CMAKE_CURRENT_SOURCE_DIR}/math_batch/*_neon.c
             )
 
             foreach(MATH_FILE ${MATH_FILES_NEON})

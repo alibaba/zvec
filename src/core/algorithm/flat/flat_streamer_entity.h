@@ -478,6 +478,8 @@ class FlatStreamerEntity {
   mutable std::mutex segments_mutex_{};
   IndexMeta index_meta_{};
   IndexStorage::Pointer storage_{};
+  // Distance callbacks may capture the metric's state (for example MIPS).
+  IndexMetric::Pointer metric_{};
   IndexMetric::MatrixDistance row_distance_{}, column_distance_{};
   IndexMetric::MatrixBatchDistance batch_distance_{};
   std::shared_ptr<zvec::turbo::Quantizer> quantizer_{};

@@ -237,6 +237,24 @@ int IVFDumper::dump_quantizer_params(
       params.data(), params.size() * sizeof(InvertedIntegerQuantizerParams));
 }
 
+int IVFDumper::dump_turbo_quantizer(
+    const turbo::Quantizer::Pointer &quantizer) {
+  if (!quantizer) {
+    return IndexError_InvalidArgument;
+  }
+  std::string state;
+  int ret = quantizer->serialize(&state);
+  ivf_check_with_msg(ret, "Failed to serialize Turbo IVF quantizer");
+  if (quantizer->require_train() && state.empty()) {
+    LOG_ERROR("Turbo IVF quantizer has no serialized training state");
+    return IndexError_InvalidFormat;
+  }
+  // Stateless quantizers use the default empty serialization. The segment
+  // still marks the index as having a persisted Turbo quantizer.
+  return this->dump_segment(IVF_TURBO_QUANTIZER_SEG_ID, state.data(),
+                            state.size());
+}
+
 int IVFDumper::dump_original_vector(const void *data, size_t size) {
   if (dumped_feature_count_ >= header_.total_vector_count) {
     LOG_ERROR("Dump too much orignal features, expect=%u",

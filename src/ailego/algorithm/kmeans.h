@@ -18,11 +18,10 @@
 #include <cmath>
 #include <random>
 #include <ailego/container/vector_array.h>
-#include <ailego/math/euclidean_distance_matrix.h>
-#include <ailego/math/inner_product_matrix.h>
 #include <ailego/math/norm2_matrix.h>
 #include <ailego/math/normalizer.h>
 #include <ailego/utility/matrix_helper.h>
+#include <turbo/distance/matrix.h>
 #include <zvec/ailego/container/heap.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/float_helper.h>
@@ -543,14 +542,15 @@ class NumericalKmeansContext {
   template <size_t N>
   static void BatchDistance(const ValueType *m, const ValueType *q, size_t dim,
                             float *out) {
-    SquaredEuclideanDistanceMatrix<ValueType, BatchCount, N>::Compute(m, q, dim,
-                                                                      out);
+    turbo::SquaredEuclideanDistanceMatrix<ValueType, BatchCount, N>::Compute(
+        m, q, dim, out);
   }
 
   //! Compute the distance between matrix and query (single)
   static void Distance(const ValueType *m, const ValueType *q, size_t dim,
                        float *out) {
-    SquaredEuclideanDistanceMatrix<ValueType, 1, 1>::Compute(m, q, dim, out);
+    turbo::SquaredEuclideanDistanceMatrix<ValueType, 1, 1>::Compute(m, q, dim,
+                                                                    out);
   }
 
   //! Transpose a matrix
@@ -727,7 +727,7 @@ class NibbleKmeansContext {
   template <size_t N>
   static void BatchDistance(const StoreType *m, const StoreType *q, size_t dim,
                             float *out) {
-    SquaredEuclideanDistanceMatrix<uint8_t, BatchCount, N>::Compute(
+    turbo::SquaredEuclideanDistanceMatrix<uint8_t, BatchCount, N>::Compute(
         reinterpret_cast<const uint8_t *>(m),
         reinterpret_cast<const uint8_t *>(q), dim, out);
   }
@@ -735,7 +735,7 @@ class NibbleKmeansContext {
   //! Compute the distance between matrix and query (single)
   static void Distance(const StoreType *m, const StoreType *q, size_t dim,
                        float *out) {
-    SquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute(
+    turbo::SquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute(
         reinterpret_cast<const uint8_t *>(m),
         reinterpret_cast<const uint8_t *>(q), dim, out);
   }
@@ -897,13 +897,14 @@ class NumericalInnerProductKmeansContext {
   template <size_t N>
   static void BatchDistance(const ValueType *m, const ValueType *q, size_t dim,
                             float *out) {
-    MinusInnerProductMatrix<ValueType, BatchCount, N>::Compute(m, q, dim, out);
+    turbo::MinusInnerProductMatrix<ValueType, BatchCount, N>::Compute(m, q, dim,
+                                                                      out);
   }
 
   //! Compute the distance between matrix and query (single)
   static void Distance(const ValueType *m, const ValueType *q, size_t dim,
                        float *out) {
-    MinusInnerProductMatrix<ValueType, 1, 1>::Compute(m, q, dim, out);
+    turbo::MinusInnerProductMatrix<ValueType, 1, 1>::Compute(m, q, dim, out);
   }
 
   //! Compute the L2 norm used by spherical K-MC2 initialization
@@ -1100,7 +1101,7 @@ class NibbleInnerProductKmeansContext {
   template <size_t N>
   static void BatchDistance(const StoreType *m, const StoreType *q, size_t dim,
                             float *out) {
-    MinusInnerProductMatrix<uint8_t, BatchCount, N>::Compute(
+    turbo::MinusInnerProductMatrix<uint8_t, BatchCount, N>::Compute(
         reinterpret_cast<const uint8_t *>(m),
         reinterpret_cast<const uint8_t *>(q), dim, out);
   }
@@ -1108,7 +1109,7 @@ class NibbleInnerProductKmeansContext {
   //! Compute the distance between matrix and query (single)
   static void Distance(const StoreType *m, const StoreType *q, size_t dim,
                        float *out) {
-    MinusInnerProductMatrix<uint8_t, 1, 1>::Compute(
+    turbo::MinusInnerProductMatrix<uint8_t, 1, 1>::Compute(
         reinterpret_cast<const uint8_t *>(m),
         reinterpret_cast<const uint8_t *>(q), dim, out);
   }

@@ -30,7 +30,7 @@
 
 namespace zvec::turbo::avx512_vnni::internal {
 
-static inline int32_t HorizontalAdd_INT32_V256(__m256i v) {
+static inline int32_t horizontal_add_int32_v256(__m256i v) {
   __m256i x1 = _mm256_hadd_epi32(v, v);
   __m256i x2 = _mm256_hadd_epi32(x1, x1);
   __m128i x3 = _mm256_extractf128_si256(x2, 1);
@@ -158,7 +158,7 @@ static ailego_force_inline void ip_int8_avx512_vnni(const void *a,
     }
   }
   result = static_cast<float>(
-      HorizontalAdd_INT32_V256(_mm256_add_epi32(ymm_sum_0, ymm_sum_1)));
+      horizontal_add_int32_v256(_mm256_add_epi32(ymm_sum_0, ymm_sum_1)));
 
   switch (last - lhs) {
     case 15:

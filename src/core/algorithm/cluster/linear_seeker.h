@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include "quantizer/distance_quantizer.h"
 #include "seeker.h"
 
 namespace zvec {
@@ -33,6 +34,11 @@ class LinearSeeker : public Seeker {
   //! Initialize Seeker
   int init(const IndexMeta &meta) override {
     meta_ = meta;
+
+    metric_.reset();
+    distance_func_ = nullptr;
+    quantizer_ = CreateDistanceQuantizer(meta_);
+    if (quantizer_) return 0;
 
     metric_ = IndexFactory::CreateMetric(meta_.metric_name());
     if (!metric_) {
@@ -92,6 +98,7 @@ class LinearSeeker : public Seeker {
   IndexMetric::Pointer metric_{};
   IndexFeatures::Pointer features_{};
   IndexMetric::MatrixDistance distance_func_{nullptr};
+  turbo::Quantizer::Pointer quantizer_{};
 };
 
 }  // namespace core

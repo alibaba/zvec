@@ -19,9 +19,9 @@
 #include <limits>
 #include <thread>
 #include <vector>
-#include <ailego/math/euclidean_distance_matrix.h>
 #include <ailego/math/normalizer.h>
 #include <ailego/pattern/defer.h>
+#include <turbo/distance/matrix.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_holder.h>
@@ -222,7 +222,7 @@ int DiskAnnBuilder::calculate_entry_point() {
             reinterpret_cast<const float *>(entity_.get_vector(id));
 
         float dist = 0.0f;
-        ailego::SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
+        turbo::SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
             centroid_fp32.data(), data_ptr, dimension, &dist);
 
         if (dist < min_dist) {
@@ -237,7 +237,7 @@ int DiskAnnBuilder::calculate_entry_point() {
             reinterpret_cast<const ailego::Float16 *>(entity_.get_vector(id));
 
         float dist = 0.0f;
-        ailego::SquaredEuclideanDistanceMatrix<ailego::Float16, 1, 1>::Compute(
+        turbo::SquaredEuclideanDistanceMatrix<ailego::Float16, 1, 1>::Compute(
             centroid_fp16.data(), data_ptr, dimension, &dist);
 
         if (dist < min_dist) {

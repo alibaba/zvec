@@ -48,7 +48,7 @@ void cosine_int8_distance(const void *a, const void *b, size_t dim,
   // Compute raw integer inner product over the original_dim bytes.
   // Note: for the single-vector path there is no query preprocessing, so both
   // sides are treated as int8_t (same as the non-preprocessed path in
-  // MinusInnerProductDistanceBatchWithScoreUnquantized<int8_t>).
+  // the record-quantized inner-product distance).
   internal::ip_int8_avx512_vnni(a, b, original_dim, distance);
 
   const float *a_tail = reinterpret_cast<const float *>(

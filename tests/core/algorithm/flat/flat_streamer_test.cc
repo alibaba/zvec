@@ -203,6 +203,73 @@ TEST_F(FlatStreamerTest, TestAddVector) {
   streamer.reset();
 }
 
+// The entity creates its own metric during open(). Its distance callbacks
+// must remain valid after open() returns, including after a storage reopen.
+TEST_F(FlatStreamerTest, MipsDistanceCallbacksSurviveOpen) {
+  constexpr uint32_t kDimension = 20;
+  constexpr uint32_t kCount = 20;
+  for (auto type : {IndexMeta::DT_FP32, IndexMeta::DT_FP16}) {
+    for (bool contiguous : {false, true}) {
+      SCOPED_TRACE(type);
+      SCOPED_TRACE(contiguous);
+      IndexMeta meta(type, kDimension);
+      meta.set_metric("MipsSquaredEuclidean", 0, Params());
+      Params params;
+      params.set(PARAM_FLAT_USE_CONTIGUOUS_MEMORY, contiguous);
+      auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+      ASSERT_TRUE(streamer);
+      ASSERT_EQ(0, streamer->init(meta, params));
+      auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+      ASSERT_TRUE(storage);
+      ASSERT_EQ(0, storage->init(Params()));
+      const std::string path = dir_ + "mips_callbacks_" + std::to_string(type) +
+                               "_" + std::to_string(contiguous);
+      ASSERT_EQ(0, storage->open(path, true));
+      ASSERT_EQ(0, streamer->open(storage));
+      auto context = streamer->create_context();
+      const IndexQueryMeta qmeta(type, kDimension);
+      for (uint32_t id = 0; id < kCount; ++id) {
+        std::vector<float> fp32(kDimension, float(id + 1));
+        std::vector<uint16_t> fp16(kDimension,
+                                   FloatHelper::ToFP16(float(id + 1)));
+        const void *data = type == IndexMeta::DT_FP32
+                               ? static_cast<const void *>(fp32.data())
+                               : static_cast<const void *>(fp16.data());
+        ASSERT_EQ(0, streamer->add_with_id_impl(id, data, qmeta, context));
+      }
+      const std::vector<float> query_fp32(kDimension, 1.0f);
+      const std::vector<uint16_t> query_fp16(kDimension,
+                                             FloatHelper::ToFP16(1.0f));
+      const void *query = type == IndexMeta::DT_FP32
+                              ? static_cast<const void *>(query_fp32.data())
+                              : static_cast<const void *>(query_fp16.data());
+      std::vector<std::vector<uint64_t>> keys(1);
+      for (uint32_t id = kCount; id > 0; --id) keys[0].push_back(id - 1);
+      for (bool reopen : {false, true}) {
+        SCOPED_TRACE(reopen);
+        if (reopen) {
+          ASSERT_EQ(0, streamer->flush(0));
+          ASSERT_EQ(0, streamer->close());
+          ASSERT_EQ(0, streamer->open(storage));
+          context = streamer->create_context();
+        }
+        context->set_topk(kCount);
+        ASSERT_EQ(0, streamer->search_impl(query, qmeta, 1, context));
+        ASSERT_EQ(kCount, context->result().size());
+        ASSERT_EQ(
+            0, streamer->search_bf_by_p_keys_impl(query, keys, qmeta, context));
+        ASSERT_EQ(kCount, context->result().size());
+        for (uint32_t id = 0; id < kCount; ++id) {
+          EXPECT_EQ(id, context->result()[id].key());
+          EXPECT_NEAR(2.0f - 2.0f / float(id + 1),
+                      context->result()[id].score(), 1e-6f);
+        }
+      }
+      ASSERT_EQ(0, streamer->close());
+    }
+  }
+}
+
 TEST_F(FlatStreamerTest,
        CandidateResultTransfersHeapBufferWithoutChangingOrder) {
   IndexMeta meta(IndexMeta::DT_FP32, 4);

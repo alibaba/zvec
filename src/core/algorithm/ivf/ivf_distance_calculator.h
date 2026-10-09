@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <turbo/quantizer/distance.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_framework.h>
 
@@ -31,6 +32,21 @@ class IVFDistanceCalculator {
   virtual ~IVFDistanceCalculator();
 
  public:
+  //! Gather row-major Turbo codes, including metadata tails and partial blocks.
+  void query_features_distance(const turbo::DistanceImpl &distance,
+                               const void *feature, size_t fnum,
+                               float *out) const {
+    const void *candidates[32];
+    const auto *rows = static_cast<const char *>(feature);
+    for (size_t offset = 0; offset < fnum; offset += 32) {
+      const size_t count = std::min(size_t(32), fnum - offset);
+      for (size_t i = 0; i < count; ++i) {
+        candidates[i] = rows + (offset + i) * element_size_;
+      }
+      distance.batch(candidates, count, out + offset);
+    }
+  }
+
   inline void query_centroids_distance(const void *query, size_t qnum,
                                        const void *feature, size_t fnum,
                                        float *distances);
