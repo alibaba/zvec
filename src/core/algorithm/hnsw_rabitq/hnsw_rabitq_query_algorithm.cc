@@ -46,7 +46,7 @@ int HnswRabitqQueryAlgorithm::cleanup() {
 int HnswRabitqQueryAlgorithm::search(HnswRabitqQueryEntity *entity,
                                      HnswRabitqContext *ctx) const {
   spin_lock_.lock();
-  auto maxLevel = entity_.cur_max_level();
+  auto max_level = entity_.cur_max_level();
   auto entry_point = entity_.entry_point();
   spin_lock_.unlock();
 
@@ -57,7 +57,7 @@ int HnswRabitqQueryAlgorithm::search(HnswRabitqQueryEntity *entity,
   EstimateRecord curest;
   get_bin_est(entity_.get_vector(entry_point), curest, *entity);
 
-  for (level_t cur_level = maxLevel; cur_level >= 1; --cur_level) {
+  for (level_t cur_level = max_level; cur_level >= 1; --cur_level) {
     select_entry_point(cur_level, &entry_point, &curest, ctx, entity);
   }
 
@@ -170,10 +170,10 @@ void HnswRabitqQueryAlgorithm::search_neighbors(
 
       if (ex_bits_ > 0) {
         // Check preliminary score against current worst full estimate.
-        bool flag_update_KNNs =
+        bool flag_update_knns =
             (!topk.full()) || candest.low_dist < topk[0].second.est_dist;
 
-        if (flag_update_KNNs) {
+        if (flag_update_knns) {
           // Compute the full estimate if promising.
           get_full_est(cand_vector, candest, *query_entity);
         } else {
@@ -209,13 +209,20 @@ void HnswRabitqQueryAlgorithm::expand_neighbors_by_group(
 
   const auto &entity = ctx->get_entity();
   std::function<std::string(node_id_t)> group_by = [&](node_id_t id) {
-    return ctx->group_by()(entity.get_key(id));
+    auto key = entity.get_key(id);
+    if (key == kInvalidKey) {
+      return std::string();
+    }
+    return ctx->group_by()(key);
   };
 
   // devide into groups
   std::map<std::string, TopkHeap> &group_topk_heaps = ctx->group_topk_heaps();
   for (uint32_t i = 0; i < topk.size(); ++i) {
     node_id_t id = topk[i].first;
+    if (entity.get_key(id) == kInvalidKey) {
+      continue;
+    }
     auto score = topk[i].second;
 
     std::string group_id = group_by(id);
@@ -232,16 +239,22 @@ void HnswRabitqQueryAlgorithm::expand_neighbors_by_group(
     VisitFilter &visit = ctx->visit_filter();
     CandidateHeap &candidates = ctx->candidates();
 
-    std::function<bool(node_id_t)> filter = [](node_id_t) { return false; };
-    if (ctx->filter().is_valid()) {
-      filter = [&](node_id_t id) { return ctx->filter()(entity.get_key(id)); };
-    }
+    std::function<bool(node_id_t)> filter = [&](node_id_t id) {
+      auto key = entity.get_key(id);
+      if (key == kInvalidKey) {
+        return true;
+      }
+      return ctx->filter().is_valid() ? ctx->filter()(key) : false;
+    };
 
     // refill to get enough groups
     candidates.clear();
     visit.clear();
     for (uint32_t i = 0; i < topk.size(); ++i) {
       node_id_t id = topk[i].first;
+      if (entity.get_key(id) == kInvalidKey) {
+        continue;
+      }
       auto score = topk[i].second;
 
       visit.set_visited(id);
