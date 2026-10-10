@@ -167,7 +167,7 @@ class DiskAnnContext : public IndexContext,
     memcpy(query_, query, element_size_);
     memcpy(query_rotated_, query, element_size_);
 
-    dc_.reset_query(query);
+    dc_.reset_query(query_);
   }
 
   inline TopkHeap &topk_heap() {

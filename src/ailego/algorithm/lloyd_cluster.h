@@ -16,6 +16,8 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <memory>
 #include <random>
 #include <ailego/parallel/lock.h>
 #include <zvec/ailego/parallel/thread_pool.h>
@@ -23,6 +25,16 @@
 
 namespace zvec {
 namespace ailego {
+
+// Optional backing for the transposed training matrix. The clustering kernel
+// owns only batch-sized scratch; implementations preserve their own error
+// codes.
+class LloydClusterMatrixStorage {
+ public:
+  virtual ~LloydClusterMatrixStorage() = default;
+  virtual int read(size_t offset, void *out, size_t bytes) const = 0;
+  virtual int write(size_t offset, const void *data, size_t bytes) = 0;
+};
 
 /*! Random Centroids Generator
  */
@@ -39,12 +51,12 @@ struct RandomCentroidsGenerator {
 
   //! Generate centroids
   void operator()(OwnerType *owner, ThreadPoolType &) const {
-    const auto &matrix = owner->feature_matrix();
     const auto &cache = owner->feature_cache();
     auto *centroids = owner->mutable_centroids();
 
     ContainerType rows(cache.dimension());
-    size_t m = matrix.count();
+    ContainerType scratch(cache.dimension());
+    size_t m = owner->feature_matrix_count();
     size_t n = m + cache.count();
     size_t k = owner->k_value();
     std::mt19937 mt((std::random_device())());
@@ -59,9 +71,12 @@ struct RandomCentroidsGenerator {
       }
       // Selected a feature
       if (i < m) {
-        ContextType::MatrixReverseTranspose(matrix[i / BatchCount * BatchCount],
-                                            matrix.dimension(), rows.data());
-        centroids->append(rows[i & (BatchCount - 1u)], matrix.dimension());
+        const auto *block =
+            owner->read_feature_matrix(i / BatchCount * BatchCount, &scratch);
+        if (!block) return;
+        ContextType::MatrixReverseTranspose(block, cache.dimension(),
+                                            rows.data());
+        centroids->append(rows[i & (BatchCount - 1u)], cache.dimension());
       } else {
         centroids->append(cache[i - m], cache.dimension());
       }
@@ -110,13 +125,29 @@ class LloydCluster {
 
   //! Append a feature
   void append(const StoreType *arr, size_t dim) {
+    if (matrix_status() != 0) return;
     feature_cache_.append(arr, dim);
 
     if (feature_cache_.count() == BatchCount) {
-      size_t pos = feature_matrix_.count();
-      feature_matrix_.resize(pos + BatchCount);
-      ContextType::MatrixTranspose(feature_cache_.data(), dim,
-                                   feature_matrix_[pos]);
+      if (matrix_storage_) {
+        matrix_write_buffer_.resize(BatchCount);
+        ContextType::MatrixTranspose(feature_cache_.data(), dim,
+                                     matrix_write_buffer_.data());
+        const size_t bytes = matrix_write_buffer_.bytes();
+        const int ret =
+            matrix_storage_->write(stored_matrix_count_ / BatchCount * bytes,
+                                   matrix_write_buffer_.data(), bytes);
+        if (ret != 0) {
+          record_matrix_error(ret);
+          return;
+        }
+        stored_matrix_count_ += BatchCount;
+      } else {
+        size_t pos = feature_matrix_.count();
+        feature_matrix_.resize(pos + BatchCount);
+        ContextType::MatrixTranspose(feature_cache_.data(), dim,
+                                     feature_matrix_[pos]);
+      }
       feature_cache_.clear();
     }
   }
@@ -126,6 +157,7 @@ class LloydCluster {
     k_value_ = k;
     feature_cache_.reset(dim);
     feature_matrix_.reset(dim);
+    reset_matrix_storage(dim);
     centroids_.reset(dim);
     centroids_matrix_.reset(dim);
     context_.clear();
@@ -136,6 +168,7 @@ class LloydCluster {
     k_value_ = k;
     feature_cache_.reset(dim);
     feature_matrix_.reset(dim);
+    reset_matrix_storage(dim);
     centroids_.reset(dim);
     centroids_matrix_.reset(dim);
     context_.clear();
@@ -145,17 +178,19 @@ class LloydCluster {
   //! Initialize centroids
   template <typename G = RandomCentroidsGenerator<LloydCluster, ThreadPoolType>>
   void init_centroids(ThreadPoolType &pool, const G &g = G()) {
+    if (matrix_status() != 0) return;
     g(this, pool);
   }
 
   //! Cluster one time
   template <typename ThreadPoolType>
   bool cluster_once(ThreadPoolType &pool, double *cost) {
+    if (matrix_status() != 0) return false;
     if (centroids_.empty()) {
       RandomCentroidsGenerator<LloydCluster, ThreadPoolType> g;
       this->init_centroids(pool, g);
     }
-    if (centroids_.count() != k_value_) {
+    if (matrix_status() != 0 || centroids_.count() != k_value_) {
       return false;
     }
     context_.reset(centroids_.count(), centroids_.dimension());
@@ -174,8 +209,8 @@ class LloydCluster {
 
     // Using thread pool
     auto group = pool.make_group();
-    if (!feature_matrix_.empty()) {
-      size_t n = feature_matrix_.count() / BatchCount;
+    if (feature_matrix_count() != 0) {
+      size_t n = feature_matrix_count() / BatchCount;
       size_t c = std::max<size_t>(n / pool.count() / 2u, 1u);
       size_t m = n / c * c;
 
@@ -192,6 +227,7 @@ class LloydCluster {
       group->submit(Closure::New(this, &LloydCluster::cluster_cache_features));
     }
     group->wait_finish();
+    if (matrix_status() != 0) return false;
 
     *cost = 0.0;
     for (size_t i = 0, n = centroids_.count(); i != n; ++i) {
@@ -247,7 +283,41 @@ class LloydCluster {
 
   //! Reserve the feature matrix
   void feature_matrix_reserve(size_t count) {
-    feature_matrix_.reserve(count);
+    if (!matrix_storage_) feature_matrix_.reserve(count);
+  }
+
+  // Set before appending any rows. The in-memory path remains the default.
+  void set_feature_matrix_storage(
+      std::shared_ptr<LloydClusterMatrixStorage> storage) {
+    ailego_assert_with(feature_matrix_.empty() && feature_cache_.empty(),
+                       "Cannot replace a populated training matrix");
+    reset_matrix_storage(feature_cache_.dimension());
+    matrix_storage_ = std::move(storage);
+  }
+
+  size_t feature_matrix_count() const {
+    return matrix_storage_ ? stored_matrix_count_ : feature_matrix_.count();
+  }
+
+  int matrix_status() const {
+    return matrix_storage_ ? matrix_error_.load(std::memory_order_relaxed) : 0;
+  }
+
+  // A returned external block belongs to the caller's scratch and survives
+  // concurrent reads/eviction. No pointer to reclaimable storage escapes.
+  const StoreType *read_feature_matrix(size_t index,
+                                       ContainerType *scratch) const {
+    if (!matrix_storage_) return feature_matrix_[index];
+    if (matrix_status() != 0) return nullptr;
+    scratch->resize(BatchCount);
+    const size_t bytes = scratch->bytes();
+    const int ret = matrix_storage_->read(index / BatchCount * bytes,
+                                          scratch->data(), bytes);
+    if (ret != 0) {
+      record_matrix_error(ret);
+      return nullptr;
+    }
+    return scratch->data();
   }
 
  protected:
@@ -293,6 +363,7 @@ class LloydCluster {
   void cluster_matrix_features(size_t first, size_t last) {
     std::array<float, BatchCount * BatchCount> scores;
     ContainerType rows(centroids_matrix_.dimension());
+    ContainerType scratch(centroids_matrix_.dimension());
 
     auto comp = [](float i, float j) {
       if (std::isnan(i)) return false;
@@ -308,7 +379,8 @@ class LloydCluster {
     for (size_t i = first * BatchCount; i != last * BatchCount;
          i += BatchCount) {
       size_t count = centroids_matrix_.count() / BatchCount * BatchCount;
-      const StoreType *block = feature_matrix_[i];
+      const StoreType *block = read_feature_matrix(i, &scratch);
+      if (!block) return;
 
       std::fill(nearest_indexes.data(), nearest_indexes.data() + BatchCount, 0);
       std::fill(nearest_scores.data(), nearest_scores.data() + BatchCount,
@@ -345,20 +417,37 @@ class LloydCluster {
         }
       }  // end of for
 
-      ContextType::MatrixReverseTranspose(block, feature_matrix_.dimension(),
+      ContextType::MatrixReverseTranspose(block, feature_cache_.dimension(),
                                           rows.data());
       for (size_t k = 0; k < BatchCount; ++k) {
-        context_[nearest_indexes[k]].append(
-            rows[k], feature_matrix_.dimension(), nearest_scores[k]);
+        context_[nearest_indexes[k]].append(rows[k], feature_cache_.dimension(),
+                                            nearest_scores[k]);
       }
     }  // end of for
   }
 
  private:
+  void record_matrix_error(int error) const {
+    int expected = 0;
+    matrix_error_.compare_exchange_strong(expected, error,
+                                          std::memory_order_relaxed);
+  }
+
+  void reset_matrix_storage(size_t dim) {
+    matrix_storage_.reset();
+    stored_matrix_count_ = 0;
+    matrix_error_.store(0, std::memory_order_relaxed);
+    matrix_write_buffer_.reset(dim);
+  }
+
   //! Members
   size_t k_value_{0u};
   ContainerType feature_cache_{};
   ContainerType feature_matrix_{};
+  ContainerType matrix_write_buffer_{};
+  std::shared_ptr<LloydClusterMatrixStorage> matrix_storage_{};
+  size_t stored_matrix_count_{0};
+  mutable std::atomic<int> matrix_error_{0};
   ContainerType centroids_matrix_{};
   ContainerType centroids_{};
   ContextType context_{};

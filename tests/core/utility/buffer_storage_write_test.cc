@@ -69,6 +69,82 @@ class BufferStorageWriteTest : public ::testing::Test {
     return storage;
   }
 
+  void check_writable_open_with_resident_pages(bool keep_pinned,
+                                               bool dirty = false) {
+    auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+    AILEGO_DEFER(
+        [&]() { EXPECT_EQ(0, memory_pool.init(64UL * 1024UL * 1024UL)); });
+    const size_t page_size = ailego::kVectorPageSize;
+    const size_t writable_metadata =
+        ailego::VecBufferPool::metadata_bytes_for_page_count(1, true);
+    const size_t resident_pages = writable_metadata / page_size / 2;
+    ASSERT_GT(resident_pages, 8U);
+    const size_t donor_metadata =
+        ailego::VecBufferPool::metadata_bytes_for_page_count(resident_pages,
+                                                             dirty);
+    ASSERT_EQ(0, memory_pool.init(donor_metadata + writable_metadata +
+                                  8 * page_size));
+
+    // Prior cases leave dead queue entries. No stores are open here, so remove
+    // them before testing the foreground reservation's finite scan budget.
+    ailego::BlockEvictionQueue::BlockType stale;
+    while (
+        ailego::BlockEvictionQueue::get_instance().evict_single_block(stale)) {
+    }
+
+    const std::string donor_path = file_path_ + ".cached-source";
+    AILEGO_DEFER([&]() { ailego::File::Delete(donor_path); });
+    ailego::File file;
+    ASSERT_TRUE(file.create(donor_path, resident_pages * page_size));
+    file.close();
+    auto donor = std::make_shared<ailego::VecBufferPool>(donor_path, dirty);
+    ASSERT_EQ(0, donor->init());
+    std::vector<ailego::block_id_t> pins;
+    AILEGO_DEFER([&]() { donor->release_pages(pins.data(), pins.size()); });
+    for (size_t id = 0; id < resident_pages; ++id) {
+      if (dirty) {
+        const char marker = static_cast<char>(id % 127 + 1);
+        ASSERT_EQ(0, donor->write_range(id * page_size, 1, &marker));
+      }
+      ASSERT_NE(nullptr, donor->acquire_buffer(id));
+      if (keep_pinned) {
+        pins.push_back(id);
+      } else {
+        const ailego::block_id_t page = id;
+        donor->release_pages(&page, 1);
+      }
+    }
+
+    // Resident data uses only half the page capacity, safely below the low
+    // watermark; there is no race with proactive background reclamation.
+    ASSERT_FALSE(memory_pool.under_cache_pressure());
+    ASSERT_LT(memory_pool.available(), writable_metadata);
+    auto storage = IndexFactory::CreateStorage("BufferStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(ailego::Params{}));
+    if (keep_pinned) {
+      EXPECT_EQ(IndexError_NoMemory, storage->open(file_path_, true));
+      EXPECT_EQ(nullptr, storage->vec_buffer_pool());
+      donor->release_pages(pins.data(), pins.size());
+      pins.clear();
+    }
+    ASSERT_EQ(0, storage->open(file_path_, true));
+    ASSERT_NE(nullptr, storage->vec_buffer_pool());
+    EXPECT_TRUE(storage->vec_buffer_pool()->cache_enabled());
+    EXPECT_GT(donor->stats().evict, 0U);
+    if (dirty) {
+      // Do not flush before open or before verifying: evicted pages must
+      // already contain their dirty bytes on disk, while resident pages must
+      // preserve them through the synchronized bypass path.
+      for (size_t id = 0; id < resident_pages; ++id) {
+        char marker = 0;
+        ASSERT_TRUE(donor->read_range_bypass(id * page_size, 1, &marker));
+        EXPECT_EQ(static_cast<char>(id % 127 + 1), marker);
+      }
+    }
+    ASSERT_EQ(0, storage->close());
+  }
+
   std::string file_path_;
 };
 
@@ -91,6 +167,34 @@ TEST_F(BufferStorageWriteTest, MissingFileReturnsErrorAndAllowsRetry) {
   EXPECT_NE(nullptr, storage->vec_buffer_pool());
   EXPECT_EQ(file_path_, storage->file_path());
   EXPECT_EQ(0, storage->close());
+}
+
+TEST_F(BufferStorageWriteTest, WritableOpenReclaimsOtherStoresCleanPages) {
+  check_writable_open_with_resident_pages(false);
+}
+
+TEST_F(BufferStorageWriteTest, WritableOpenWaitsForOtherStoresDirtyPages) {
+  check_writable_open_with_resident_pages(false, true);
+}
+
+TEST_F(BufferStorageWriteTest,
+       WritableOpenCannotReclaimPinnedPagesAndCanRetry) {
+  check_writable_open_with_resident_pages(true);
+}
+
+TEST_F(BufferStorageWriteTest, WritableOpenRejectsInsufficientFixedBudget) {
+  auto &pool = ailego::MemoryLimitPool::get_instance();
+  const size_t metadata =
+      ailego::VecBufferPool::metadata_bytes_for_page_count(1, true);
+  ASSERT_GT(pool.available(), metadata);
+  const size_t reservation = pool.available() - metadata;
+  ASSERT_TRUE(pool.try_charge_external(reservation));
+  AILEGO_DEFER([&]() { pool.release_external(reservation); });
+  auto storage = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(ailego::Params{}));
+  EXPECT_EQ(IndexError_NoMemory, storage->open(file_path_, true));
+  EXPECT_EQ(nullptr, storage->vec_buffer_pool());
 }
 
 TEST_F(BufferStorageWriteTest, FailedFileCapturePreservesPublishedState) {

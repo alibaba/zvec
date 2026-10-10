@@ -13,9 +13,11 @@
 // limitations under the License.
 #pragma once
 
+#include <limits>
 #include <zvec/core/framework/index_builder.h>
 #include <zvec/core/framework/index_meta.h>
 #include "utility/ordinal_access_holder.h"
+#include "utility/temporary_buffer_storage.h"
 #include "ivf_centroid_index.h"
 
 namespace zvec {
@@ -88,12 +90,20 @@ class IVFBuilder : public IndexBuilder {
 
       //! Retrieve pointer of data
       const void *data() const override {
-        return holder_->element(id_);
+        const void *data = nullptr;
+        if (status_ == 0) {
+          status_ = holder_->read_element(id_, &buffer_, &data);
+        }
+        return data;
       }
 
       //! Test if the iterator is valid
       bool is_valid() const override {
-        return id_ < holder_->count();
+        return status_ == 0 && id_ < holder_->count();
+      }
+
+      int status() const override {
+        return status_;
       }
 
       //! Retrieve primary key
@@ -110,6 +120,8 @@ class IVFBuilder : public IndexBuilder {
       //! Members
       RandomAccessIndexHolder *holder_{nullptr};
       uint32_t id_{0};
+      mutable std::string buffer_{};
+      mutable int status_{0};
     };
 
     //! Constructor
@@ -118,7 +130,7 @@ class IVFBuilder : public IndexBuilder {
 
     //! Retrieve count of elements in holder (-1 indicates unknown)
     size_t count() const override {
-      return features_->count();
+      return keys_.size();
     }
 
     //! Retrieve dimension
@@ -148,19 +160,49 @@ class IVFBuilder : public IndexBuilder {
     }
 
     void reserve(size_t elems) {
-      features_->reserve(elems);
+      if (!storage_) features_->reserve(elems);
       keys_.reserve(elems);
     }
 
-    //! Append an element into holder
-    void emplace(uint64_t pkey, const void *vec) {
-      features_->emplace(vec);
-      keys_.emplace_back(pkey);
+    int enable_buffered_storage(const std::string &prefix, size_t elems) {
+      if (element_size() == 0 ||
+          elems > std::numeric_limits<size_t>::max() / element_size()) {
+        return IndexError_InvalidArgument;
+      }
+      return TemporaryBufferStorage::Create(prefix, elems * element_size(),
+                                            &storage_);
     }
 
-    //! Retrieve feature via local id
-    const void *element(size_t id) const {
-      return features_->element(id);
+    //! Append an element into holder
+    int emplace(uint64_t pkey, const void *vec) {
+      if (storage_) {
+        int ret =
+            storage_->write(keys_.size() * element_size(), vec, element_size());
+        if (ret != 0) return ret;
+      } else {
+        features_->emplace(vec);
+      }
+      keys_.emplace_back(pkey);
+      return 0;
+    }
+
+    int read_element(size_t id, std::string *buffer, const void **data) const {
+      *data = nullptr;
+      if (id >= count()) return IndexError_OutOfRange;
+      if (storage_) {
+        buffer->resize(element_size());
+        int ret =
+            storage_->read(id * element_size(), buffer->data(), element_size());
+        if (ret != 0) return ret;
+        *data = buffer->data();
+      } else {
+        *data = features_->element(id);
+      }
+      return 0;
+    }
+
+    int flush() {
+      return storage_ ? storage_->flush() : 0;
     }
 
     //! Retrieve key via local id
@@ -177,6 +219,7 @@ class IVFBuilder : public IndexBuilder {
     //! Members
     CompactIndexFeatures::Pointer features_{};
     std::vector<uint64_t> keys_{};
+    std::shared_ptr<TemporaryBufferStorage> storage_{};
   };
 
  private:
@@ -303,6 +346,7 @@ class IVFBuilder : public IndexBuilder {
   // The reader owns only a key map and at most one provider, never all vectors.
   IndexHolder::Pointer source_holder_{};
   OrdinalAccessHolder::Reader::Pointer source_reader_{};
+  std::string read_buffer_{};
   IndexMeta converted_meta_{};
   IndexConverter::Pointer converter_{};
   IndexMeta quantized_meta_{};

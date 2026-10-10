@@ -58,6 +58,9 @@ static const std::string PARAM_IVF_BUILDER_OPTIMIZER_QUANTIZER_PARAMS(
     "proxima.ivf.builder.optimizer_quantizer_params");
 static const std::string PARAM_IVF_BUILDER_BLOCK_VECTOR_COUNT(
     "proxima.ivf.builder.block_vector_count");
+// Internal scratch-file prefix; empty preserves in-memory construction.
+static const std::string PARAM_IVF_BUILDER_BUILD_STORAGE_PATH(
+    "zvec.ivf.builder.build_storage_path");
 
 // searcher params
 static const std::string PARAM_IVF_SEARCHER_SCAN_RATIO(

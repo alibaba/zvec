@@ -14,12 +14,14 @@
 
 #include "rabitq_converter.h"
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <rabitqlib/utils/rotator.hpp>
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include "ailego/pattern/defer.h"
+#include "algorithm/cluster/holder_cluster.h"
 #include "algorithm/hnsw_rabitq/rabitq_reformer.h"
 #include "zvec/core/framework/index_cluster.h"
 #include "zvec/core/framework/index_error.h"
@@ -37,6 +39,38 @@
 
 namespace zvec {
 namespace core {
+
+namespace {
+// Inner-product conversion may append a dimension that RaBitQ intentionally
+// ignores. Expose the original prefix without materializing another corpus.
+class RabitqTrainingHolder : public IndexHolder {
+ public:
+  RabitqTrainingHolder(IndexHolder::Pointer source, const IndexMeta &meta)
+      : source_(std::move(source)), meta_(meta) {}
+  size_t count() const override {
+    return source_->count();
+  }
+  size_t dimension() const override {
+    return meta_.dimension();
+  }
+  size_t element_size() const override {
+    return meta_.element_size();
+  }
+  IndexMeta::DataType data_type() const override {
+    return meta_.data_type();
+  }
+  bool multipass() const override {
+    return source_->multipass();
+  }
+  Iterator::Pointer create_iterator() override {
+    return source_->create_iterator();
+  }
+
+ private:
+  IndexHolder::Pointer source_;
+  IndexMeta meta_;
+};
+}  // namespace
 
 RabitqConverter::~RabitqConverter() {
   this->cleanup();
@@ -130,6 +164,15 @@ int RabitqConverter::train(IndexHolder::Pointer holder,
 
   ailego::ElapsedTime timer;
 
+  if (!holder->is_matched(meta_)) {
+    if (holder->data_type() != meta_.data_type() ||
+        holder->dimension() < meta_.dimension() ||
+        holder->element_size() < meta_.element_size()) {
+      return IndexError_Mismatch;
+    }
+    holder = std::make_shared<RabitqTrainingHolder>(std::move(holder), meta_);
+  }
+
   size_t vector_count = holder->count();
   if (vector_count == 0) {
     LOG_ERROR("No vectors for training");
@@ -143,26 +186,6 @@ int RabitqConverter::train(IndexHolder::Pointer holder,
   }
   LOG_INFO("Training with %zu vectors from %zu of holder", sample_count,
            vector_count);
-  auto sampler = std::make_shared<SampleIndexFeatures<CompactIndexFeatures>>(
-      meta_, sample_count);
-  auto iter = holder->create_iterator();
-  if (!iter) {
-    LOG_ERROR("Create iterator error");
-    return IndexError_Runtime;
-  }
-  for (; iter->is_valid(); iter->next()) {
-    sampler->emplace(iter->data());
-  }
-
-  // Holder is not needed, cleanup it.
-  holder.reset();
-
-  if (sampler->count() == 0) {
-    LOG_ERROR("Load training data error");
-    return IndexError_InvalidLength;
-  }
-
-
   // Create KmeansCluster for training centroids
   auto cluster = IndexFactory::CreateCluster("OptKmeansCluster");
   if (!cluster) {
@@ -181,11 +204,6 @@ int RabitqConverter::train(IndexHolder::Pointer holder,
     return ret;
   }
 
-  ret = cluster->mount(sampler);
-  if (ret != 0) {
-    LOG_ERROR("Failed to mount training data: %d", ret);
-    return ret;
-  }
   cluster->suggest(num_clusters_);
 
   // Perform clustering
@@ -193,11 +211,42 @@ int RabitqConverter::train(IndexHolder::Pointer holder,
   if (!threads) {
     threads = std::make_shared<SingleQueueIndexThreads>(0, false);
   }
-  ret = cluster->cluster(threads, cents);
+  // Sampling the entire known corpus preserves its iteration order. Feed it
+  // straight into the training matrix, without an intermediate FP32 copy.
+  size_t trained_count = vector_count;
+  ret = IndexError_NotImplemented;
+  if (vector_count != std::numeric_limits<size_t>::max() &&
+      sample_count == vector_count) {
+    auto *streaming = dynamic_cast<HolderCluster *>(cluster.get());
+    if (streaming) ret = streaming->cluster_holder(threads, holder, cents);
+  }
+  if (ret == IndexError_NotImplemented) {
+    auto sampler = std::make_shared<SampleIndexFeatures<CompactIndexFeatures>>(
+        meta_, sample_count);
+    auto iter = holder->create_iterator();
+    if (!iter) return IndexError_Runtime;
+    for (; iter->is_valid(); iter->next()) {
+      if (iter->status() != 0) return iter->status();
+      const void *data = iter->data();
+      if (iter->status() != 0) return iter->status();
+      if (!data) return IndexError_ReadData;
+      sampler->emplace(data);
+    }
+    if (iter->status() != 0) return iter->status();
+    trained_count = sampler->count();
+    if (trained_count == 0) return IndexError_InvalidLength;
+    ret = cluster->mount(sampler);
+    if (ret != 0) return ret;
+    ret = cluster->cluster(threads, cents);
+  }
   if (ret != 0) {
     LOG_ERROR("Failed to perform clustering: %d", ret);
     return ret;
   }
+  // Centroids own their buffers. Release any mounted sample before building
+  // the original/rotated centroid tables.
+  cluster.reset();
+  holder.reset();
 
   if (cents.size() != num_clusters_) {
     LOG_WARN("Expected %zu clusters, got %zu", num_clusters_, cents.size());
@@ -216,7 +265,7 @@ int RabitqConverter::train(IndexHolder::Pointer holder,
     this->rotator_->rotate(cent_data, &rotated_centroids_[i * padded_dim_]);
   }
 
-  stats_.set_trained_count(sampler->count());
+  stats_.set_trained_count(trained_count);
   stats_.set_trained_costtime(timer.milli_seconds());
 
   LOG_INFO("Training completed: %zu centroids, cost %zu ms", num_clusters_,

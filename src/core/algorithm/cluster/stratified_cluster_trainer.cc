@@ -214,10 +214,15 @@ int StratifiedClusterTrainer::train(IndexThreads::Pointer threads,
                                ? train_sample_count
                                : holder->count();
       sampler->reserve(pre_reserve);
-      for (auto iter = holder->create_iterator(); iter && iter->is_valid();
-           iter->next()) {
-        sampler->emplace(iter->data());
+      auto iter = holder->create_iterator();
+      if (!iter) return IndexError_Runtime;
+      for (; iter->is_valid(); iter->next()) {
+        const void *data = iter->data();
+        if (iter->status() != 0) return iter->status();
+        if (!data) return IndexError_ReadData;
+        sampler->emplace(data);
       }
+      if (iter->status() != 0) return iter->status();
       features = sampler;
     } else {
       LOG_INFO(
@@ -231,10 +236,15 @@ int StratifiedClusterTrainer::train(IndexThreads::Pointer threads,
       if (holder->count() != static_cast<size_t>(-1)) {
         no_sampler->reserve(holder->count());
       }
-      for (auto iter = holder->create_iterator(); iter && iter->is_valid();
-           iter->next()) {
-        no_sampler->emplace(iter->data());
+      auto iter = holder->create_iterator();
+      if (!iter) return IndexError_Runtime;
+      for (; iter->is_valid(); iter->next()) {
+        const void *data = iter->data();
+        if (iter->status() != 0) return iter->status();
+        if (!data) return IndexError_ReadData;
+        no_sampler->emplace(data);
       }
+      if (iter->status() != 0) return iter->status();
 
       features = no_sampler;
     }

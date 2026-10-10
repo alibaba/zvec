@@ -13,40 +13,6 @@
 // limitations under the License.
 #pragma once
 
-#include <cstddef>
-#include <cstdint>
-#include <memory>
-
-namespace zvec {
-namespace core {
-
-// Internal, optional capability; does not change the public IndexHolder ABI.
-// The source must remain immutable and outlive its readers. Ordinals refer to
-// the holder's iteration order, not its keys. Each reader is single-threaded.
-class OrdinalAccessHolder {
- public:
-  class Reader {
-   public:
-    using Pointer = std::unique_ptr<Reader>;
-    virtual ~Reader() = default;
-
-    // On success, data is valid until the next read/reset or reader
-    // destruction. Consumers must copy it before then; it may be a provider's
-    // scratch buffer.
-    virtual int read(size_t ordinal, uint64_t *key, const void **data) = 0;
-
-    // Release the current provider/buffers, retaining the ordinal mapping so
-    // that a later dump can read the source again.
-    virtual void reset() = 0;
-  };
-
-  virtual ~OrdinalAccessHolder() = default;
-
-  // All errors must leave reader unchanged. NotImplemented must consume no
-  // source data; other errors are not a request to fall back to
-  // materialization.
-  virtual int create_ordinal_reader(Reader::Pointer *reader) = 0;
-};
-
-}  // namespace core
-}  // namespace zvec
+// Compatibility include for internal providers. Keeping the capability in the
+// framework lets ordinary in-memory holders expose the same zero-copy path.
+#include <zvec/core/framework/index_ordinal_access.h>

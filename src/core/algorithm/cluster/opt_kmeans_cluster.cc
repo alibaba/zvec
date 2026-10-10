@@ -18,11 +18,32 @@
 #include <zvec/core/framework/index_cluster.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
+#include "utility/temporary_buffer_storage.h"
 #include "cluster_params.h"
 #include "holder_cluster.h"
 
 namespace zvec {
 namespace core {
+
+namespace {
+class BufferedTrainingMatrix : public ailego::LloydClusterMatrixStorage {
+ public:
+  explicit BufferedTrainingMatrix(
+      std::shared_ptr<TemporaryBufferStorage> storage)
+      : storage_(std::move(storage)) {}
+
+  int read(size_t offset, void *out, size_t bytes) const override {
+    return storage_->read(offset, out, bytes);
+  }
+
+  int write(size_t offset, const void *data, size_t bytes) override {
+    return storage_->write(offset, data, bytes);
+  }
+
+ private:
+  std::shared_ptr<TemporaryBufferStorage> storage_;
+};
+}  // namespace
 
 /*! Optimize K-Means cluster algorithm
  */
@@ -77,13 +98,26 @@ class OptKmeansAlgorithm : public IndexCluster {
 
   int check_dimension() const;
 
-  // All kernels own their training matrix. Consume each input before advancing
-  // its iterator; never materialize a second, full IndexFeatures corpus.
+  // Consume each input before advancing its iterator. The optional backing
+  // stores exactly the same transposed matrix without retaining it on the heap.
   template <typename Algorithm>
   int load_features(Algorithm &algorithm, const IndexHolder::Pointer &holder) {
     using StoreType = typename Algorithm::StoreType;
     const size_t count = holder ? holder->count() : features_->count();
     const size_t bytes = meta_.element_size();
+    if (bytes == 0 || count > std::numeric_limits<size_t>::max() / bytes) {
+      return IndexError_InvalidArgument;
+    }
+    std::shared_ptr<TemporaryBufferStorage> storage;
+    const size_t matrix_count =
+        count / Algorithm::BatchCount * Algorithm::BatchCount;
+    if (!buffered_storage_path_.empty() && matrix_count != 0) {
+      int ret = TemporaryBufferStorage::Create(buffered_storage_path_,
+                                               matrix_count * bytes, &storage);
+      if (ret != 0) return ret;
+      algorithm.set_feature_matrix_storage(
+          std::make_shared<BufferedTrainingMatrix>(storage));
+    }
     std::vector<StoreType> aligned;
     auto append = [&](const void *data) -> int {
       if (!data) {
@@ -100,7 +134,7 @@ class OptKmeansAlgorithm : public IndexCluster {
       }
       algorithm.append(reinterpret_cast<const StoreType *>(data),
                        meta_.dimension());
-      return 0;
+      return algorithm.matrix_status();
     };
 
     algorithm.feature_matrix_reserve(count);
@@ -114,21 +148,25 @@ class OptKmeansAlgorithm : public IndexCluster {
         if (loaded == count) {
           return IndexError_InvalidArgument;
         }
-        int ret = append(iter->data());
+        const void *data = iter->data();
+        if (iter->status() != 0) return iter->status();
+        int ret = append(data);
         if (ret != 0) {
           return ret;
         }
         ++loaded;
       }
-      return loaded == count ? 0 : IndexError_InvalidArgument;
-    }
-    for (size_t i = 0; i < count; ++i) {
-      int ret = append(features_->element(i));
-      if (ret != 0) {
-        return ret;
+      if (iter->status() != 0) return iter->status();
+      if (loaded != count) return IndexError_InvalidArgument;
+    } else {
+      for (size_t i = 0; i < count; ++i) {
+        int ret = append(features_->element(i));
+        if (ret != 0) {
+          return ret;
+        }
       }
     }
-    return 0;
+    return storage ? storage->flush() : 0;
   }
 
   //! Update parameters
@@ -185,6 +223,7 @@ class OptKmeansAlgorithm : public IndexCluster {
   float shard_factor_{16.0f};
   bool purge_empty_{false};
   bool assumption_free_{false};
+  std::string buffered_storage_path_;
   uint32_t markov_chain_length_{32};
   IndexMeta meta_{};
   IndexFeatures::Pointer features_{};
@@ -219,6 +258,7 @@ void OptKmeansAlgorithm::update_params(const ailego::Params &params) {
   params.get(OPTKMEANS_CLUSTER_PURGE_EMPTY, &purge_empty_);
   params.get(OPTKMEANS_CLUSTER_MARKOV_CHAIN_LENGTH, &markov_chain_length_);
   params.get(OPTKMEANS_CLUSTER_ASSUMPTION_FREE, &assumption_free_);
+  params.get(OPTKMEANS_CLUSTER_BUFFERED_STORAGE_PATH, &buffered_storage_path_);
 }
 
 int OptKmeansAlgorithm::init_distance_func() {
@@ -681,6 +721,8 @@ int NumericalKmeansAlgorithm<T>::cluster_impl(
     algorithm.init_centroids(*threads, g);
   }
 
+  if (algorithm.matrix_status() != 0) return algorithm.matrix_status();
+
   double cost = 0.0;
 
   for (uint32_t i = 0; i < max_iterations_; ++i) {
@@ -690,7 +732,7 @@ int NumericalKmeansAlgorithm<T>::cluster_impl(
     bool result = algorithm.cluster_once(*threads, &cost);
     if (result != true) {
       LOG_ERROR("(%u) Failed to cluster.", i + 1);
-      return -1;
+      return algorithm.matrix_status() != 0 ? algorithm.matrix_status() : -1;
     }
 
     new_epsilon = std::abs(cost - old_cost);
@@ -811,6 +853,8 @@ int NibbleKmeansAlgorithm<T>::cluster_impl(IndexThreads::Pointer threads,
     algorithm.init_centroids(*threads, g);
   }
 
+  if (algorithm.matrix_status() != 0) return algorithm.matrix_status();
+
   double cost = 0.0;
 
   for (uint32_t i = 0; i < max_iterations_; ++i) {
@@ -820,7 +864,7 @@ int NibbleKmeansAlgorithm<T>::cluster_impl(IndexThreads::Pointer threads,
     bool result = algorithm.cluster_once(*threads, &cost);
     if (result != true) {
       LOG_ERROR("(%u) Failed to cluster.", i + 1);
-      return -1;
+      return algorithm.matrix_status() != 0 ? algorithm.matrix_status() : -1;
     }
 
     new_epsilon = std::abs(cost - old_cost);
@@ -943,6 +987,8 @@ int NumericalInnerProductKmeansAlgorithm<T>::cluster_impl(
     algorithm.init_centroids(*threads, g);
   }
 
+  if (algorithm.matrix_status() != 0) return algorithm.matrix_status();
+
   double cost = 0.0;
 
   for (uint32_t i = 0; i < max_iterations_; ++i) {
@@ -952,7 +998,7 @@ int NumericalInnerProductKmeansAlgorithm<T>::cluster_impl(
     bool result = algorithm.cluster_once(*threads, &cost);
     if (result != true) {
       LOG_ERROR("(%u) Failed to cluster.", i + 1);
-      return -1;
+      return algorithm.matrix_status() != 0 ? algorithm.matrix_status() : -1;
     }
 
     new_epsilon = std::abs(cost - old_cost);
@@ -1074,6 +1120,8 @@ int NibbleInnerProductKmeansAlgorithm<T>::cluster_impl(
     algorithm.init_centroids(*threads, g);
   }
 
+  if (algorithm.matrix_status() != 0) return algorithm.matrix_status();
+
   double cost = 0.0;
 
   for (uint32_t i = 0; i < max_iterations_; ++i) {
@@ -1083,7 +1131,7 @@ int NibbleInnerProductKmeansAlgorithm<T>::cluster_impl(
     bool result = algorithm.cluster_once(*threads, &cost);
     if (result != true) {
       LOG_ERROR("(%u) Failed to cluster.", i + 1);
-      return -1;
+      return algorithm.matrix_status() != 0 ? algorithm.matrix_status() : -1;
     }
 
     new_epsilon = std::abs(cost - old_cost);

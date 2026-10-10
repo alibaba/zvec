@@ -55,7 +55,7 @@ class DistCalculator {
 
   //! Reset query vector data
   inline void reset_query(const void *query) {
-    error_ = false;
+    error_code_ = 0;
     query_ = query;
   }
 
@@ -64,7 +64,7 @@ class DistCalculator {
     if (ailego_unlikely(vec_lhs == nullptr || vec_rhs == nullptr)) {
       LOG_ERROR("Nullptr of dense vector");
 
-      error_ = true;
+      error_code_ = IndexError_ReadData;
       return 0.0f;
     }
 
@@ -84,34 +84,37 @@ class DistCalculator {
   inline dist_t dist(diskann_id_t id) {
     compare_cnt_++;
 
-    const void *vec = entity_->get_vector(id);
-    if (ailego_unlikely(vec == nullptr)) {
-      LOG_ERROR("Get nullptr vector, id=%u", id);
-      error_ = true;
+    IndexStorage::MemoryBlock block;
+    const int ret = entity_->read_vector(id, block);
+    if (ailego_unlikely(ret != 0 || block.data() == nullptr)) {
+      LOG_ERROR("Read vector failed, id=%u, ret=%d", id, ret);
+      error_code_ = ret != 0 ? ret : IndexError_ReadData;
       return 0.0f;
     }
 
-    return dist(vec, query_);
+    return dist(block.data(), query_);
   }
 
   inline dist_t dist(diskann_id_t lhs, diskann_id_t rhs) {
     compare_cnt_++;
 
-    const void *vec_lhs = entity_->get_vector(lhs);
-    if (ailego_unlikely(vec_lhs == nullptr)) {
-      LOG_ERROR("Get nullptr vector, lhs id=%u", lhs);
-      error_ = true;
+    IndexStorage::MemoryBlock lhs_block;
+    int ret = entity_->read_vector(lhs, lhs_block);
+    if (ailego_unlikely(ret != 0 || lhs_block.data() == nullptr)) {
+      LOG_ERROR("Read vector failed, lhs id=%u, ret=%d", lhs, ret);
+      error_code_ = ret != 0 ? ret : IndexError_ReadData;
       return 0.0f;
     }
 
-    const void *vec_rhs = entity_->get_vector(rhs);
-    if (ailego_unlikely(vec_rhs == nullptr)) {
-      LOG_ERROR("Get nullptr vector, rhs id=%u", rhs);
-      error_ = true;
+    IndexStorage::MemoryBlock rhs_block;
+    ret = entity_->read_vector(rhs, rhs_block);
+    if (ailego_unlikely(ret != 0 || rhs_block.data() == nullptr)) {
+      LOG_ERROR("Read vector failed, rhs id=%u, ret=%d", rhs, ret);
+      error_code_ = ret != 0 ? ret : IndexError_ReadData;
       return 0.0f;
     }
 
-    return dist(vec_lhs, vec_rhs);
+    return dist(lhs_block.data(), rhs_block.data());
   }
 
   dist_t operator()(const void *vec) {
@@ -143,7 +146,7 @@ class DistCalculator {
 
   inline void clear() {
     compare_cnt_ = 0;
-    error_ = false;
+    error_code_ = 0;
   }
 
   inline void clear_compare_cnt() {
@@ -151,7 +154,11 @@ class DistCalculator {
   }
 
   inline bool error() const {
-    return error_;
+    return error_code_ != 0;
+  }
+
+  inline int error_code() const {
+    return error_code_;
   }
 
   //! Get distances compute times
@@ -238,7 +245,7 @@ class DistCalculator {
   uint32_t dim_;
 
   uint32_t compare_cnt_;
-  bool error_{false};
+  int error_code_{0};
 
   const turbo::Quantizer *quantizer_{nullptr};
   const uint8_t *quant_codes_{nullptr};

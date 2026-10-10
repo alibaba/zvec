@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstring>
+#include <limits>
 #include <numeric>
 #include <rabitqlib/fastscan/fastscan.hpp>
 #include <rabitqlib/quantization/data_layout.hpp>
@@ -25,6 +26,7 @@
 #include <zvec/ailego/utility/time_helper.h>
 #include "algorithm/hnsw_rabitq/rabitq_converter.h"
 #include "algorithm/hnsw_rabitq/rabitq_params.h"
+#include "utility/vector_build_source.h"
 #include "zvec/core/framework/index_error.h"
 #include "zvec/core/framework/index_factory.h"
 #include "zvec/core/framework/index_memory.h"
@@ -36,11 +38,6 @@ namespace zvec {
 namespace core {
 
 namespace {
-
-struct IvfRabitqVectorEntry {
-  uint64_t key{0};
-  std::vector<float> owned_data;
-};
 
 struct IvfRabitqBuildData {
   IvfRabitqHeader header;
@@ -61,7 +58,6 @@ struct IvfRabitqClusterBuildLayout {
 int BuildIvfRabitqData(const std::shared_ptr<IvfRabitqReformer> &reformer,
                        const IndexHolder::Pointer &holder,
                        const IndexThreads::Pointer &threads,
-                       std::vector<IvfRabitqVectorEntry> extra_vectors,
                        IvfRabitqBuildData *build_data) {
   if (!reformer || !reformer->loaded()) {
     LOG_ERROR("Reformer not loaded");
@@ -79,31 +75,16 @@ int BuildIvfRabitqData(const std::shared_ptr<IvfRabitqReformer> &reformer,
   size_t ex_bits = reformer->ex_bits();
   size_t cluster_count = reformer->num_clusters();
 
-  std::vector<IvfRabitqVectorEntry> all_vectors;
-  if (holder) {
-    if (holder->dimension() < dimension) {
-      LOG_ERROR("Holder dimension=%zu smaller than RaBitQ dimension=%zu",
-                holder->dimension(), dimension);
-      return IndexError_Mismatch;
-    }
-    auto iter = holder->create_iterator();
-    while (iter && iter->is_valid()) {
-      IvfRabitqVectorEntry entry;
-      entry.key = iter->key();
-      entry.owned_data.assign(
-          static_cast<const float *>(iter->data()),
-          static_cast<const float *>(iter->data()) + dimension);
-      all_vectors.push_back(std::move(entry));
-      iter->next();
-    }
+  if (!holder || holder->data_type() != IndexMeta::DT_FP32 ||
+      holder->dimension() < dimension ||
+      dimension > std::numeric_limits<size_t>::max() / sizeof(float) ||
+      holder->element_size() < dimension * sizeof(float)) {
+    return IndexError_Mismatch;
   }
-
-  all_vectors.reserve(all_vectors.size() + extra_vectors.size());
-  for (auto &entry : extra_vectors) {
-    all_vectors.push_back(std::move(entry));
-  }
-
-  size_t total_count = all_vectors.size();
+  VectorBuildSource::Pointer source;
+  int ret = VectorBuildSource::Create(holder, &source);
+  if (ret != 0) return ret;
+  size_t total_count = source->count();
   if (total_count == 0) {
     LOG_WARN("No vectors to build");
     return 0;
@@ -118,6 +99,7 @@ int BuildIvfRabitqData(const std::shared_ptr<IvfRabitqReformer> &reformer,
   }
 
   std::vector<uint32_t> cluster_labels(total_count);
+  std::atomic<int> build_error{0};
   auto assignment_group = threads->make_group();
   if (!assignment_group) {
     LOG_ERROR("Failed to create IVF RaBitQ assignment task group");
@@ -130,14 +112,31 @@ int BuildIvfRabitqData(const std::shared_ptr<IvfRabitqReformer> &reformer,
   for (size_t begin = 0; begin < total_count; begin += assignment_shard_size) {
     size_t end = std::min(begin + assignment_shard_size, total_count);
     assignment_group->submit(ailego::Closure::New(
-        [begin, end, &all_vectors, &cluster_labels, &reformer]() {
-          for (size_t i = begin; i < end; ++i) {
-            cluster_labels[i] = reformer->find_nearest_centroid(
-                all_vectors[i].owned_data.data());
+        [begin, end, &source, &cluster_labels, &reformer, &build_error]() {
+          OrdinalAccessHolder::Reader::Pointer reader;
+          int error = source->create_ordinal_reader(&reader);
+          for (size_t i = begin;
+               error == 0 && i < end &&
+               build_error.load(std::memory_order_relaxed) == 0;
+               ++i) {
+            uint64_t key = 0;
+            const void *data = nullptr;
+            error = reader->read(i, &key, &data);
+            if (error == 0 && !data) error = IndexError_ReadData;
+            if (error == 0) {
+              cluster_labels[i] = reformer->find_nearest_centroid(
+                  static_cast<const float *>(data));
+            }
+          }
+          if (error != 0) {
+            int expected = 0;
+            build_error.compare_exchange_strong(expected, error);
           }
         }));
   }
   assignment_group->wait_finish();
+  ret = build_error.load(std::memory_order_relaxed);
+  if (ret != 0) return ret;
 
   std::vector<std::vector<uint32_t>> cluster_assignments(cluster_count);
   for (size_t i = 0; i < total_count; ++i) {
@@ -149,6 +148,8 @@ int BuildIvfRabitqData(const std::shared_ptr<IvfRabitqReformer> &reformer,
     }
     cluster_assignments[cid].push_back(static_cast<uint32_t>(i));
   }
+  // The per-cluster ordinal lists now carry all assignment information.
+  std::vector<uint32_t>().swap(cluster_labels);
 
   size_t batch_data_per_batch =
       rabitqlib::BatchDataMap<float>::data_bytes(padded_dim);
@@ -192,7 +193,6 @@ int BuildIvfRabitqData(const std::shared_ptr<IvfRabitqReformer> &reformer,
     build_data->cluster_metas[cid].key_offset = layout.key_offset;
   }
 
-  std::atomic<int> build_error{0};
   auto encoding_group = threads->make_group();
   if (!encoding_group) {
     LOG_ERROR("Failed to create IVF RaBitQ encoding task group");
@@ -203,16 +203,19 @@ int BuildIvfRabitqData(const std::shared_ptr<IvfRabitqReformer> &reformer,
       continue;
     }
     encoding_group->submit(ailego::Closure::New(
-        [cid, padded_dim, batch_data_per_batch, ex_data_per_vector,
-         &all_vectors, &cluster_assignments, &cluster_layouts, &build_error,
-         &build_data, &reformer]() {
+        [cid, padded_dim, batch_data_per_batch, ex_data_per_vector, &source,
+         &cluster_assignments, &cluster_layouts, &build_error, &build_data,
+         &reformer]() {
           const auto &assignments = cluster_assignments[cid];
           const auto &layout = cluster_layouts[cid];
           uint32_t vec_count = static_cast<uint32_t>(assignments.size());
           uint32_t key_offset = layout.key_offset;
-          for (uint32_t i = 0; i < vec_count; ++i) {
-            build_data->keys_buf[key_offset + i] =
-                all_vectors[assignments[i]].key;
+          OrdinalAccessHolder::Reader::Pointer reader;
+          int error = source->create_ordinal_reader(&reader);
+          if (error != 0) {
+            int expected = 0;
+            build_error.compare_exchange_strong(expected, error);
+            return;
           }
 
           size_t batch_data_offset = layout.batch_data_offset;
@@ -230,8 +233,17 @@ int BuildIvfRabitqData(const std::shared_ptr<IvfRabitqReformer> &reformer,
                 rotated_batch.data(), 0,
                 rabitqlib::fastscan::kBatchSize * padded_dim * sizeof(float));
             for (uint32_t i = 0; i < batch_size; ++i) {
-              const float *src =
-                  all_vectors[assignments[processed + i]].owned_data.data();
+              const void *data = nullptr;
+              int read_ret = reader->read(
+                  assignments[processed + i],
+                  &build_data->keys_buf[key_offset + processed + i], &data);
+              if (read_ret == 0 && !data) read_ret = IndexError_ReadData;
+              if (read_ret != 0) {
+                int expected = 0;
+                build_error.compare_exchange_strong(expected, read_ret);
+                return;
+              }
+              const auto *src = static_cast<const float *>(data);
               float *dst = rotated_batch.data() + (i * padded_dim);
               int ret = reformer->rotate_vector(src, dst);
               if (ret != 0) {
@@ -265,7 +277,7 @@ int BuildIvfRabitqData(const std::shared_ptr<IvfRabitqReformer> &reformer,
   }
   encoding_group->wait_finish();
 
-  int ret = build_error.load(std::memory_order_relaxed);
+  ret = build_error.load(std::memory_order_relaxed);
   if (ret != 0) {
     LOG_ERROR("Failed to encode IVF RaBitQ cluster, ret=%d", ret);
     return ret;
@@ -369,11 +381,11 @@ int IvfRabitqBuilder::cleanup() {
   converter_.reset();
   reformer_.reset();
   header_ = IvfRabitqHeader();
-  batch_data_buf_.clear();
-  ex_data_buf_.clear();
-  cluster_metas_.clear();
-  keys_buf_.clear();
-  mapping_buf_.clear();
+  std::vector<char>().swap(batch_data_buf_);
+  std::vector<char>().swap(ex_data_buf_);
+  std::vector<IvfRabitqClusterMeta>().swap(cluster_metas_);
+  std::vector<uint64_t>().swap(keys_buf_);
+  std::vector<uint32_t>().swap(mapping_buf_);
   thread_count_ = 0;
   return 0;
 }
@@ -470,6 +482,9 @@ int IvfRabitqBuilder::train(IndexThreads::Pointer threads,
   IndexMemory::Instance()->remove(file_id);
 
   stats_.set_trained_count(converter_->stats().trained_count());
+  // The reformer owns the trained state used by build/dump. Do not retain a
+  // second set of centroids and rotator state in the training converter.
+  converter_.reset();
   stats_.set_trained_costtime(timer.milli_seconds());
 
   LOG_INFO("IvfRabitqBuilder training completed: %zu clusters, cost %zu ms",
@@ -504,7 +519,7 @@ int IvfRabitqBuilder::build(IndexThreads::Pointer threads,
     }
   }
   IvfRabitqBuildData build_data;
-  int ret = BuildIvfRabitqData(reformer_, holder, threads, {}, &build_data);
+  int ret = BuildIvfRabitqData(reformer_, holder, threads, &build_data);
   if (ret != 0) {
     return ret;
   }

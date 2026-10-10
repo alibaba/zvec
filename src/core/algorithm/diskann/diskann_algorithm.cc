@@ -35,9 +35,19 @@ std::vector<diskann_id_t> DiskAnnAlgorithm::get_init_ids(DiskAnnContext *ctx) {
 }
 
 int DiskAnnAlgorithm::add_node(diskann_id_t id, DiskAnnContext *ctx) {
-  const void *vec = entity_.get_vector(id);
-
-  ctx->reset_query(vec);
+  // reset_query copies the vector into context-owned storage, so the page can
+  // be released before traversal needs to read any other vector.
+  {
+    IndexStorage::MemoryBlock block;
+    const int ret = entity_.read_vector(id, block);
+    if (ret != 0) {
+      return ret;
+    }
+    if (block.data() == nullptr) {
+      return IndexError_ReadData;
+    }
+    ctx->reset_query(block.data());
+  }
 
   std::vector<diskann_id_t> pruned_list;
 
@@ -48,7 +58,10 @@ int DiskAnnAlgorithm::add_node(diskann_id_t id, DiskAnnContext *ctx) {
 
   {
     auto lock = lock_for(id);
-    entity_.set_neighbors(id, pruned_list);
+    ret = entity_.set_neighbors(id, pruned_list);
+    if (ret != 0) {
+      return ret;
+    }
   }
 
   return inter_insert(id, pruned_list, ctx);
@@ -56,31 +69,47 @@ int DiskAnnAlgorithm::add_node(diskann_id_t id, DiskAnnContext *ctx) {
 
 int DiskAnnAlgorithm::prune_node(diskann_id_t id, DiskAnnContext *ctx) {
   DistCalculator &dc = ctx->dist_calculator();
+  dc.clear();
 
-  auto neighbors = entity_.get_neighbors(id);
+  std::vector<diskann_id_t> neighbors;
+  int ret;
+  {
+    auto lock = lock_for(id);
+    ret = entity_.read_neighbors(id, &neighbors);
+  }
+  if (ret != 0) {
+    return ret;
+  }
 
-  if (neighbors.first > max_degree_) {
+  if (neighbors.size() > max_degree_) {
     std::set<diskann_id_t> dummy_visited;
     std::vector<Neighbor> dummy_pool(0);
     std::vector<diskann_id_t> new_out_neighbors;
 
-    for (size_t i = 0; i < neighbors.first; ++i) {
-      diskann_id_t node_id = (neighbors.second)[i];
-
+    for (diskann_id_t node_id : neighbors) {
       auto itr = dummy_visited.find(node_id);
       if (itr == dummy_visited.end() && node_id != id) {
         float dist = dc.dist(id, node_id);
+        if (dc.error()) {
+          return dc.error_code();
+        }
 
         dummy_pool.emplace_back(Neighbor(node_id, dist));
         dummy_visited.insert(node_id);
       }
     }
 
-    prune_neighbors(id, dummy_pool, new_out_neighbors, ctx);
+    ret = prune_neighbors(id, dummy_pool, new_out_neighbors, ctx);
+    if (ret != 0) {
+      return ret;
+    }
 
     {
       auto lock = lock_for(id);
-      entity_.set_neighbors(id, new_out_neighbors);
+      ret = entity_.set_neighbors(id, new_out_neighbors);
+      if (ret != 0) {
+        return ret;
+      }
     }
   }
 
@@ -99,28 +128,32 @@ int DiskAnnAlgorithm::inter_insert(diskann_id_t id,
     {
       auto lock = lock_for(des);
 
-      auto neighbors = entity_.get_neighbors(des);
+      std::vector<diskann_id_t> neighbors;
+      const int ret = entity_.read_neighbors(des, &neighbors);
+      if (ret != 0) {
+        return ret;
+      }
 
       bool found = false;
-      for (size_t i = 0; i < neighbors.first; ++i) {
-        if ((neighbors.second)[i] == id) {
+      for (diskann_id_t neighbor : neighbors) {
+        if (neighbor == id) {
           found = true;
           break;
         }
       }
 
       if (!found) {
-        if (neighbors.first <
+        if (neighbors.size() <
             static_cast<uint64_t>(DiskAnnEntity::kDefaultGraphSlackFactor *
                                   max_degree_)) {
-          entity_.add_neighbor(des, id);
+          const int add_ret = entity_.add_neighbor(des, id);
+          if (add_ret != 0) {
+            return add_ret;
+          }
           need_prune = false;
         } else {
-          new_neighbors.resize(neighbors.first + 1);
-          memcpy(&new_neighbors[0], neighbors.second,
-                 sizeof(diskann_id_t) * neighbors.first);
-
-          new_neighbors[neighbors.first] = id;
+          new_neighbors = std::move(neighbors);
+          new_neighbors.push_back(id);
 
           need_prune = true;
         }
@@ -139,17 +172,26 @@ int DiskAnnAlgorithm::inter_insert(diskann_id_t id,
       for (auto node_id : new_neighbors) {
         if (new_visited.find(node_id) == new_visited.end() && node_id != des) {
           float dist = dc.dist(des, node_id);
+          if (dc.error()) {
+            return dc.error_code();
+          }
           new_pool.emplace_back(Neighbor(node_id, dist));
           new_visited.insert(node_id);
         }
       }
 
       std::vector<diskann_id_t> new_pruned_neighbors;
-      prune_neighbors(des, new_pool, new_pruned_neighbors, ctx);
+      int ret = prune_neighbors(des, new_pool, new_pruned_neighbors, ctx);
+      if (ret != 0) {
+        return ret;
+      }
 
       {
         auto lock = lock_for(des);
-        entity_.set_neighbors(des, new_pruned_neighbors);
+        ret = entity_.set_neighbors(des, new_pruned_neighbors);
+        if (ret != 0) {
+          return ret;
+        }
       }
     }
   }
@@ -167,9 +209,10 @@ int DiskAnnAlgorithm::iterate_to_fixed_point(
   best_list_nodes.reserve(ctx->list_size());
 
   for (auto id : init_ids) {
-    const void *vec = entity_.get_vector(id);
-
-    float distance = dc.dist(vec);
+    float distance = dc.dist(id);
+    if (dc.error()) {
+      return dc.error_code();
+    }
 
     Neighbor nn = Neighbor(id, distance);
     best_list_nodes.insert(nn);
@@ -184,11 +227,13 @@ int DiskAnnAlgorithm::iterate_to_fixed_point(
     std::vector<diskann_id_t> id_scratch;
     {
       auto lock = lock_for(node_id);
-      auto neighbors = entity_.get_neighbors(node_id);
+      std::vector<diskann_id_t> neighbors;
+      const int ret = entity_.read_neighbors(node_id, &neighbors);
+      if (ret != 0) {
+        return ret;
+      }
 
-      for (size_t i = 0; i < neighbors.first; ++i) {
-        diskann_id_t neighbor_id = (neighbors.second)[i];
-
+      for (diskann_id_t neighbor_id : neighbors) {
         if (!visit.visited(neighbor_id)) {
           id_scratch.push_back(neighbor_id);
 
@@ -200,8 +245,10 @@ int DiskAnnAlgorithm::iterate_to_fixed_point(
     for (size_t i = 0; i < id_scratch.size(); ++i) {
       diskann_id_t id = id_scratch[i];
 
-      const void *vec = entity_.get_vector(id);
-      float dist = dc.dist(vec);
+      float dist = dc.dist(id);
+      if (dc.error()) {
+        return dc.error_code();
+      }
 
       best_list_nodes.insert(Neighbor(id, dist));
     }
@@ -250,6 +297,9 @@ int DiskAnnAlgorithm::occlude_list(diskann_id_t id, std::vector<Neighbor> &pool,
         }
 
         float djk = dc.dist(iter2->id, iter->id);
+        if (dc.error()) {
+          return dc.error_code();
+        }
 
         occlude_factor[t] =
             (djk == 0) ? std::numeric_limits<float>::max()
@@ -276,7 +326,10 @@ int DiskAnnAlgorithm::prune_neighbors(diskann_id_t id,
   pruned_list.clear();
   pruned_list.reserve(max_degree_);
 
-  occlude_list(id, pool, pruned_list, ctx);
+  const int ret = occlude_list(id, pool, pruned_list, ctx);
+  if (ret != 0) {
+    return ret;
+  }
 
   ailego_assert(pruned_list.size() <= max_degree_);
 

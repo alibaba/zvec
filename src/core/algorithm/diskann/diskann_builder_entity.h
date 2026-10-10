@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <atomic>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/core/framework/index_holder.h>
 #include "diskann_entity.h"
@@ -25,8 +26,8 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
  public:
   using Pointer = std::shared_ptr<DiskAnnBuilderEntity>;
 
-  DiskAnnBuilderEntity() = default;
-  ~DiskAnnBuilderEntity() override = default;
+  DiskAnnBuilderEntity();
+  ~DiskAnnBuilderEntity() override;
 
  public:
   void clear();
@@ -44,6 +45,10 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
   diskann_id_t get_id(diskann_key_t key) const override;
   diskann_key_t get_key(diskann_id_t id) const override;
   const void *get_vector(diskann_id_t id) const override;
+  int read_vector(diskann_id_t id,
+                  IndexStorage::MemoryBlock &block) const override;
+  int read_neighbors(diskann_id_t id,
+                     std::vector<diskann_id_t> *neighbors) const override;
 
  public:
   int init(const IndexMeta &meta, uint32_t max_degree, uint32_t list_size,
@@ -64,6 +69,18 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
 
   int reserve_space(uint32_t docs);
 
+  // Use private temporary BufferStorage files for build vectors and the
+  // mutable graph. The default in-memory build remains unchanged.
+  int enable_buffered_build(const std::string &scratch_prefix);
+  bool buffered_build() const {
+    return buffered_state_ != nullptr;
+  }
+
+  // PQ codes are generated sequentially. Buffered builds retain them on disk
+  // until clear(), so a failed or repeated dump can read the same bytes again.
+  int prepare_codes(size_t bytes);
+  int append_codes(const void *data, size_t bytes);
+
   // Graph construction is the only consumer of these vectors. PQ encoding
   // and dump read the retained source holder instead.
   void release_vectors();
@@ -82,8 +99,16 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
   double memory_limit_{0};
   uint32_t num_threads_{0};
   uint32_t max_build_degree_{0};
-  uint32_t max_observed_degree_{0};
+  std::atomic<uint32_t> max_observed_degree_{0};
   uint32_t neighbor_size_{0};
+  uint32_t reserved_docs_{0};
+
+  struct BufferedBuildState;
+  std::unique_ptr<BufferedBuildState> buffered_state_;
+  size_t code_bytes_{0};
+  size_t code_bytes_written_{0};
+
+  void observe_degree(uint32_t degree);
 
   std::string mem_index_file_{""};
   std::string index_path_prefix_{""};
