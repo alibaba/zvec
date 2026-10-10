@@ -600,9 +600,10 @@ TEST_F(IVFBuilderTest, HalfFloatOrdinalReaderPreservesErrorsAndFallback) {
   ASSERT_EQ(0, reader->read(0, &key, &data));
   ASSERT_NE(nullptr, data);
 
-  // An ordinary multipass source has no ordinal capability. Declining it
-  // must leave the existing reader intact and sequential conversion usable.
-  ASSERT_EQ(0, converter->transform(holder_));
+  // A source may decline ordinal access even though it supports iteration.
+  // This must leave the reader intact and sequential conversion usable.
+  source->create_error = IndexError_NotImplemented;
+  ASSERT_EQ(0, converter->transform(source));
   auto fallback = converter->result();
   auto *unsupported = dynamic_cast<OrdinalAccessHolder *>(fallback.get());
   ASSERT_NE(nullptr, unsupported);

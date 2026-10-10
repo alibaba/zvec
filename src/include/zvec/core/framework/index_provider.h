@@ -89,7 +89,8 @@ struct IndexSparseProvider : IndexSparseHolder {
 /*! Multi-Pass Numerical Index Provider
  */
 template <typename T>
-class MultiPassNumericalIndexProvider : public IndexProvider {
+class MultiPassNumericalIndexProvider : public IndexProvider,
+                                        public OrdinalAccessHolder {
  public:
   //! Constructor
   explicit MultiPassNumericalIndexProvider(size_t dim)
@@ -97,6 +98,11 @@ class MultiPassNumericalIndexProvider : public IndexProvider {
 
   //! Destructor
   ~MultiPassNumericalIndexProvider() override = default;
+
+  int create_ordinal_reader(
+      OrdinalAccessHolder::Reader::Pointer *out) override {
+    return holder_.create_ordinal_reader(out);
+  }
 
   //! Retrieve count of elements in holder
   size_t count() const override {
