@@ -52,24 +52,35 @@ class RecordQuantizer {
         }
         extras = reinterpret_cast<float *>(static_cast<int8_t *>(out) + dim);
       } else {
+        ailego_assert_with(dim % 2 == 0, "Dimension must be aligned with 2");
         scale = 15 / std::max(max - min, epsilon);
         bias = -min * scale - 8;
         // Accumulate the rounded codes: the stored sum must match the packed
         // nibbles, otherwise QuantizedInteger scoring (which reconstructs
         // scores from sum) ranks with a per-record error.
-        for (size_t i = 0; i < dim; i += 2) {
+        size_t even_dim = dim & ~static_cast<size_t>(1);
+        for (size_t i = 0; i < even_dim; i += 2) {
           float lo = std::round(vec[i] * scale + bias);
           float hi = std::round(vec[i + 1] * scale + bias);
+          squared_sum += lo * lo + hi * hi;
+          sum += lo + hi;
+          uint8_t u_lo = static_cast_from_float_to_uint8(lo);
+          uint8_t u_hi = static_cast_from_float_to_uint8(hi);
+          (reinterpret_cast<uint8_t *>(out))[i / 2] =
+              (u_hi << 4) | (u_lo & 0xF);
+          int8_sum += (static_cast<int8_t>(u_lo << 4) >> 4) +
+                      (static_cast<int8_t>(u_hi << 4) >> 4);
+        }
+        if (dim % 2 != 0) {
+          float lo = std::round(vec[even_dim] * scale + bias);
           squared_sum += lo * lo;
           sum += lo;
-          squared_sum += hi * hi;
-          sum += hi;
-          (reinterpret_cast<uint8_t *>(out))[i / 2] =
-              (static_cast_from_float_to_uint8(hi) << 4) |
-              (static_cast_from_float_to_uint8(lo) & 0xF);
+          uint8_t u_lo = static_cast_from_float_to_uint8(lo);
+          (reinterpret_cast<uint8_t *>(out))[even_dim / 2] = (u_lo & 0xF);
+          int8_sum += static_cast<int8_t>(u_lo << 4) >> 4;
         }
         extras =
-            reinterpret_cast<float *>(static_cast<uint8_t *>(out) + dim / 2);
+            reinterpret_cast<float *>(static_cast<uint8_t *>(out) + (dim + 1) / 2);
       }
 
       // Save the feature quantization params for IndexMeasure
@@ -103,16 +114,21 @@ class RecordQuantizer {
 
     } else if (type == IndexMeta::DataType::DT_INT4) {
       const float *extras = reinterpret_cast<const float *>(
-          static_cast<const uint8_t *>(vec) + origin_dim / 2);
+          static_cast<const uint8_t *>(vec) + (origin_dim + 1) / 2);
 
       const uint8_t *buf = reinterpret_cast<const uint8_t *>(vec);
 
-      for (size_t i = 0; i < origin_dim / 2; ++i) {
+      size_t pairs = origin_dim / 2;
+      for (size_t i = 0; i < pairs; ++i) {
         int8_t lo = (static_cast<int8_t>(buf[i] << 4) >> 4);
         int8_t hi = (static_cast<int8_t>(buf[i] & 0xf0) >> 4);
 
         out[2 * i] = lo * extras[0] + extras[1];
         out[2 * i + 1] = hi * extras[0] + extras[1];
+      }
+      if (origin_dim % 2 != 0) {
+        int8_t lo = (static_cast<int8_t>(buf[pairs] << 4) >> 4);
+        out[2 * pairs] = lo * extras[0] + extras[1];
       }
     } else if (type == IndexMeta::DataType::DT_FP16) {
       const uint16_t *in_buf = reinterpret_cast<const uint16_t *>(vec);

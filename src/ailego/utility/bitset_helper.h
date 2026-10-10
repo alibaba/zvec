@@ -47,7 +47,9 @@ class BitsetHelper {
 
   // ！Clear the bitset
   void clear() {
-    memset(array_, 0, sizeof(uint32_t) * size_);
+    if (array_ && size_ > 0) {
+      memset(array_, 0, sizeof(uint32_t) * size_);
+    }
   }
 
   //! Test a bit in bitset
