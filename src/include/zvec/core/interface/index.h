@@ -43,6 +43,8 @@ class Quantizer;
 
 namespace zvec::core_interface {
 
+class BufferedInput;
+
 class ZVEC_CORE_API IndexFactory;
 
 struct DenseVector {
@@ -258,6 +260,9 @@ class ZVEC_CORE_API Index {
 
   size_t context_index_{std::numeric_limits<size_t>::max()};
   core::IndexStorage::Pointer storage_{};
+
+  // Direct IVF/DiskANN input only; Collection merge borrows its providers.
+  std::shared_ptr<BufferedInput> buffered_input_{};
 
   bool is_open_{false};
   bool is_sparse_{false};

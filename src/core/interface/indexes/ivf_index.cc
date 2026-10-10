@@ -18,103 +18,11 @@
 #include <zvec/core/interface/index.h>
 #include "algorithm/cluster/cluster_params.h"
 #include "algorithm/ivf/ivf_params.h"
-#include "utility/ordinal_access_holder.h"
 #include "utility/utility_params.h"
+#include "buffered_input.h"
 #include "holder_builder.h"
 
 namespace zvec::core_interface {
-namespace {
-
-// Direct-add input is already owned by the index. Retain that immutable input
-// through training/dump rather than copying every vector into another holder.
-class CachedIVFHolder : public core::IndexHolder,
-                        public core::OrdinalAccessHolder {
- public:
-  using Documents = std::vector<std::pair<uint64_t, std::string>>;
-  CachedIVFHolder(DataType type, size_t dimension,
-                  std::shared_ptr<const Documents> documents)
-      : documents_(std::move(documents)) {
-    meta_.set_meta(type, dimension);
-    for (size_t i = 0; i < documents_->size(); ++i) {
-      if ((*documents_)[i].first != kInvalidKey) ordinals_.push_back(i);
-    }
-  }
-  size_t count() const override {
-    return ordinals_.size();
-  }
-  size_t dimension() const override {
-    return meta_.dimension();
-  }
-  DataType data_type() const override {
-    return meta_.data_type();
-  }
-  size_t element_size() const override {
-    return meta_.element_size();
-  }
-  bool multipass() const override {
-    return true;
-  }
-
-  class Reader : public core::OrdinalAccessHolder::Reader {
-   public:
-    Reader(std::shared_ptr<const Documents> documents,
-           const std::vector<size_t> *ordinals)
-        : documents_(std::move(documents)), ordinals_(ordinals) {}
-    int read(size_t ordinal, uint64_t *key, const void **data) override {
-      if (!key || !data) return core::IndexError_InvalidArgument;
-      *data = nullptr;
-      if (ordinal >= ordinals_->size()) return core::IndexError_OutOfRange;
-      const auto &doc = (*documents_)[(*ordinals_)[ordinal]];
-      *key = doc.first;
-      *data = doc.second.data();
-      return 0;
-    }
-    void reset() override {}
-
-   private:
-    std::shared_ptr<const Documents> documents_;
-    const std::vector<size_t> *ordinals_;
-  };
-
-  class Iterator : public core::IndexHolder::Iterator {
-   public:
-    explicit Iterator(const CachedIVFHolder *owner) : owner_(owner) {}
-    const void *data() const override {
-      return (*owner_->documents_)[owner_->ordinals_[ordinal_]].second.data();
-    }
-    bool is_valid() const override {
-      return ordinal_ < owner_->count();
-    }
-    uint64_t key() const override {
-      return (*owner_->documents_)[owner_->ordinals_[ordinal_]].first;
-    }
-    void next() override {
-      ++ordinal_;
-    }
-
-   private:
-    const CachedIVFHolder *owner_;
-    size_t ordinal_{0};
-  };
-
-  core::IndexHolder::Iterator::Pointer create_iterator() override {
-    return std::make_unique<Iterator>(this);
-  }
-  int create_ordinal_reader(
-      core::OrdinalAccessHolder::Reader::Pointer *reader) override {
-    if (!reader) return core::IndexError_InvalidArgument;
-    *reader = std::make_unique<Reader>(documents_, &ordinals_);
-    return 0;
-  }
-
- private:
-  core::IndexMeta meta_;
-  std::shared_ptr<const Documents> documents_;
-  std::vector<size_t> ordinals_;
-};
-
-}  // namespace
-
 int IVFIndex::create_and_init_streamer(const BaseIndexParam &param) {
   if (is_sparse_) {
     LOG_ERROR("IVF Index not support sparse vector");
@@ -244,15 +152,19 @@ int IVFIndex::open(const std::string &file_path,
     is_trained_ = true;
   }
   is_open_ = true;
+  if (storage_options.create_new && !is_read_only_ &&
+      storage_options.type == StorageOptions::StorageType::kBufferPool) {
+    buffered_input_ = std::make_shared<BufferedInput>(input_vector_meta_,
+                                                      file_path_ + ".input");
+  }
   return 0;
 }
 
 int IVFIndex::generate_holder() {
-  if (!proxima_index_params_
-           .get_as_string(core::PARAM_IVF_BUILDER_BUILD_STORAGE_PATH)
-           .empty()) {
-    core::IndexHolder::Pointer input = std::make_shared<CachedIVFHolder>(
-        param_.data_type, param_.dimension, doc_cache_);
+  if (buffered_input_) {
+    const int prepared = buffered_input_->prepare();
+    if (prepared != 0) return prepared;
+    core::IndexHolder::Pointer input = buffered_input_;
     if (converter_) {
       const int ret =
           core::IndexConverter::TrainAndTransform(converter_, input);
@@ -268,6 +180,7 @@ int IVFIndex::generate_holder() {
 }
 
 int IVFIndex::add(const VectorData &vector, uint32_t doc_id) {
+  if (!is_open_ || is_read_only_) return core::IndexError_NoReady;
   if (is_trained_ || build_stage_ != BuildStage::kCollecting) {
     LOG_ERROR("this IVF index is trained or has a pending build");
     return core::IndexError_Runtime;
@@ -277,11 +190,13 @@ int IVFIndex::add(const VectorData &vector, uint32_t doc_id) {
     return core::IndexError_Runtime;
   }
   const DenseVector &dense_vector = std::get<DenseVector>(vector.vector);
+  if (!dense_vector.data) return core::IndexError_InvalidArgument;
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (buffered_input_) return buffered_input_->add(doc_id, dense_vector.data);
   std::string out_vector_buffer = std::string(
       static_cast<const char *>(dense_vector.data),
       input_vector_meta_.dimension() * input_vector_meta_.unit_size());
 
-  std::lock_guard<std::mutex> lock(mutex_);
   while (doc_cache_->size() <= doc_id) {
     std::string fake_data(
         input_vector_meta_.dimension() * input_vector_meta_.unit_size(), 0);
@@ -295,6 +210,7 @@ int IVFIndex::train() {
   if (is_trained_) {
     return 0;
   }
+  if (!is_open_) return core::IndexError_NoReady;
   if (build_stage_ == BuildStage::kCollecting) {
     int ret = generate_holder();
     if (ret != 0) {
@@ -398,6 +314,7 @@ int IVFIndex::dump_and_open() {
   // every failure path so dump/open can be retried with the trained state.
   converter_.reset();
   holder_.reset();
+  buffered_input_.reset();
   doc_cache_.reset();
   return 0;
 }
@@ -408,6 +325,12 @@ int IVFIndex::_dense_fetch(const uint32_t doc_id,
     return Index::_dense_fetch(doc_id, vector_data_buffer);
   } else {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (buffered_input_) {
+      DenseVectorBuffer result;
+      int ret = buffered_input_->fetch(doc_id, &result.data);
+      if (ret == 0) vector_data_buffer->vector_buffer = std::move(result);
+      return ret;
+    }
     // A failed merge has no cached input; sparse doc IDs also leave holes.
     if (!doc_cache_ || doc_id >= doc_cache_->size()) {
       return core::IndexError_OutOfRange;

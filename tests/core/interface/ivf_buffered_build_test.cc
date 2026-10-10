@@ -166,12 +166,13 @@ class IVFBufferedBuildTest : public ::testing::Test {
     if (pressure) {
       // Use clean source pages so the setup reservation need not race dirty
       // writeback; training itself still competes with this source for pages.
-      if (source) ASSERT_EQ(source->flush(), 0);
-      const size_t retained_metadata = pool.metadata_used();
+      ASSERT_EQ((source ? source : target)->flush(), 0);
+      // Direct-add input now charges its compact ID map as well as pages.
+      const size_t retained_fixed = pool.metadata_used() + pool.external_used();
       ASSERT_GT(pool.capacity(),
-                retained_metadata + training_metadata + 128 * 1024);
+                retained_fixed + training_metadata + 128 * 1024);
       const size_t amount =
-          pool.capacity() - retained_metadata - training_metadata - 128 * 1024;
+          pool.capacity() - retained_fixed - training_metadata - 128 * 1024;
       ASSERT_TRUE(pool.try_charge_external(amount));
       reservation = amount;
       ASSERT_EQ(pool.capacity() - pool.external_used() - pool.metadata_used() -

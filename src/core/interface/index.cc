@@ -22,6 +22,7 @@
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
+#include "indexes/buffered_input.h"
 #include "mixed_reducer/mixed_reducer_params.h"
 #include "utility/utility_params.h"
 
@@ -631,6 +632,20 @@ int Index::close() {
     return core::IndexError_Runtime;
   }
 
+  if (buffered_input_ && !is_trained_) {
+    // No final search index has been opened yet. Closing abandons the build;
+    // drop builder readers first, then release input even if a holder still
+    // references it. Failed train/dump alone deliberately retains this input.
+    builder_.reset();
+    converter_.reset();
+    buffered_input_->clear();
+    buffered_input_.reset();
+    const int cleanup_ret = streamer_->cleanup();
+    const int close_ret = storage_->close();
+    is_open_ = false;
+    return cleanup_ret != 0 ? cleanup_ret : close_ret;
+  }
+
   if (!is_read_only_) {
     if (ailego_unlikely(flush() != 0)) {
       LOG_ERROR("Failed to cleanup streamer");
@@ -667,6 +682,8 @@ int Index::flush() {
     LOG_ERROR("Cannot flush read-only index");
     return core::IndexError_Runtime;
   }
+
+  if (buffered_input_ && !is_trained_) return buffered_input_->flush();
   if (ailego_unlikely(streamer_->flush(0) != 0)) {
     LOG_ERROR("Failed to flush streamer");
     return core::IndexError_Runtime;

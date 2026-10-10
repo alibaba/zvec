@@ -55,6 +55,27 @@ class TemporaryBufferStorage {
     }
   }
 
+  // An exclusively owned writable file for callers that append segments as
+  // input arrives. It uses the same cleanup and pool as fixed-size scratch.
+  static int CreateEmpty(const std::string &prefix, Pointer *out) {
+    if (!out || prefix.empty()) return IndexError_InvalidArgument;
+    try {
+      Pointer candidate(new TemporaryBufferStorage());
+      int ret = candidate->init(prefix, 0);
+      if (ret != 0) return ret;
+      *out = std::move(candidate);
+      return 0;
+    } catch (const std::bad_alloc &) {
+      return IndexError_NoMemory;
+    } catch (const std::exception &) {
+      return IndexError_Runtime;
+    }
+  }
+
+  const IndexStorage::Pointer &storage() const {
+    return storage_;
+  }
+
   ~TemporaryBufferStorage() {
     segment_.reset();
     if (storage_) storage_->close();
@@ -155,6 +176,7 @@ class TemporaryBufferStorage {
     if (ret != 0) return ret;
     ret = storage_->open(path_, true);
     if (ret != 0) return ret;
+    if (bytes == 0) return 0;
     ret = storage_->append("data", bytes);
     if (ret != 0) return ret;
     segment_ = storage_->get("data");
