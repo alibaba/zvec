@@ -22,6 +22,42 @@
 namespace zvec {
 
 
+namespace {
+
+// Empties a column family in place with one range tombstone. Dropping and
+// recreating the family instead rewrites the MANIFEST and the OPTIONS file
+// with several syncs. Readers see an empty family either way; the seal's
+// flush and compaction persist the tombstone and remove the covered keys.
+Status ClearColumnFamily(RocksdbContext &ctx, rocksdb::ColumnFamilyHandle *cf) {
+  std::unique_ptr<rocksdb::Iterator> it(
+      ctx.db_->NewIterator(ctx.read_opts_, cf));
+  it->SeekToFirst();
+  if (!it->Valid()) {
+    return it->status().ok() ? Status::OK() : Status::InternalError();
+  }
+  // Both bounds come from the family's own iterator, so they are ordered
+  // under its comparator. DeleteRange excludes its end key.
+  const std::string first = it->key().ToString();
+  it->SeekToLast();
+  if (!it->Valid()) {
+    return Status::InternalError();
+  }
+  const std::string last = it->key().ToString();
+  auto rs = ctx.db_->DeleteRange(ctx.write_opts_, cf, first, last);
+  if (rs.ok()) {
+    rs = ctx.db_->Delete(ctx.write_opts_, cf, last);
+  }
+  if (!rs.ok()) {
+    LOG_ERROR("Failed to clear cf[%s], code[%d], reason[%s]",
+              cf->GetName().c_str(), rs.code(), rs.ToString().c_str());
+    return Status::InternalError();
+  }
+  return Status::OK();
+}
+
+}  // namespace
+
+
 Status InvertedColumnIndexer::insert(uint32_t id, const std::string &value) {
   if (read_only_) {
     return Status::PermissionDenied();
@@ -247,14 +283,14 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
     return Status::PermissionDenied();
   }
 
-  if (!ctx_.reset_cf(cf_name_ranges()).ok()) {
-    // Reset the range index in case it is corrupted
-    LOG_ERROR("Failed to reset range index");
-    return Status::InternalError();
-  }
   cf_ranges_ = ctx_.get_cf(cf_name_ranges());
   if (!cf_ranges_) {
     LOG_ERROR("Failed to get column families for %s", id().c_str());
+    return Status::InternalError();
+  }
+  // Clear leftovers of an interrupted earlier seal before rebuilding.
+  if (!ClearColumnFamily(ctx_, cf_ranges_).ok()) {
+    LOG_ERROR("Failed to reset range index");
     return Status::InternalError();
   }
 
@@ -392,13 +428,8 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
     LOG_DEBUG(
         "Drop range index in %s, range_slot_count[%ld] vs term_count[%ld].",
         id().c_str(), num_range_slot_created, term_count);
-    if (!ctx_.reset_cf(cf_name_ranges()).ok()) {
+    if (!ClearColumnFamily(ctx_, cf_ranges_).ok()) {
       LOG_ERROR("Failed to drop range index");
-      return Status::InternalError();
-    }
-    cf_ranges_ = ctx_.get_cf(cf_name_ranges());
-    if (!cf_ranges_) {
-      LOG_ERROR("Failed to get cf_ranges for %s", id().c_str());
       return Status::InternalError();
     }
   }
