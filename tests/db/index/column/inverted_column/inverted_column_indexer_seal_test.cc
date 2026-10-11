@@ -18,14 +18,19 @@
 // queries stay exact both when the range index is kept and when it is
 // emptied because it would not help.
 
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
 #include <gtest/gtest.h>
 #include <rocksdb/db.h>
+#include <rocksdb/metadata.h>
+#include <rocksdb/table_properties.h>
 #include "db/common/constants.h"
 #include "db/index/column/inverted_column/inverted_codec.h"
 #include "db/index/column/inverted_column/inverted_indexer.h"
+#include "db/index/column/inverted_column/inverted_rocksdb_merger.h"
 #include "tests/test_util.h"
 
 using namespace zvec;
@@ -33,6 +38,8 @@ using namespace zvec;
 namespace {
 
 const std::string kDir{"./inverted_column_indexer_seal_dir/"};
+const std::string kCrashDir{"./inverted_column_indexer_seal_crash_dir/"};
+const std::string kFirstCrashDir{"./inverted_column_indexer_seal_first_dir/"};
 constexpr uint32_t kDocs = 5000;
 // "seq" has a distinct value per document: the range index is kept.
 // "cyc" has 7 values: it would not help, so the seal empties it.
@@ -88,6 +95,7 @@ struct RawFamilies {
         db->NewIterator(rocksdb::ReadOptions(), get(name)));
     size_t n = 0;
     for (it->SeekToFirst(); it->Valid(); it->Next()) ++n;
+    EXPECT_TRUE(it->status().ok()) << name << ": " << it->status().ToString();
     return n;
   }
 };
@@ -133,13 +141,132 @@ void VerifyQueries(const InvertedIndexer::Ptr &indexer) {
   }
 }
 
+// Leaves range entries, as an interrupted seal does, in the range family of
+// the unsealed index in kDir, flushed into one table file, and flips one byte
+// of that file's data blocks: the first data block, or one in the middle.
+void LeaveCorruptedRanges(bool first_block) {
+  RawFamilies raw(kDir, false);
+  auto *cf = raw.get("seq" + INVERT_SUFFIX_RANGES);
+  ASSERT_NE(cf, nullptr);
+  // Each value is a bitmap of about 4 KB that claims document 999999, so the
+  // file has many data blocks.
+  roaring_bitmap_t *bitmap = roaring_bitmap_create();
+  roaring_bitmap_add(bitmap, 999999);
+  for (uint32_t j = 0; j < 2000; ++j) {
+    roaring_bitmap_add(bitmap, 1000000 + 7 * j);
+  }
+  std::string value;
+  ASSERT_TRUE(InvertedIndexCodec::Serialize(bitmap, &value).ok());
+  roaring_bitmap_free(bitmap);
+  for (int i = 0; i < 64; ++i) {
+    std::string key(1, static_cast<char>(i));
+    key.append(1, '\0');
+    key.append(1, static_cast<char>(i));
+    uint64_t begin_size = 1;
+    key.append(reinterpret_cast<const char *>(&begin_size), sizeof(uint64_t));
+    ASSERT_TRUE(raw.db->Put(rocksdb::WriteOptions(), cf, key, value).ok());
+  }
+  ASSERT_TRUE(raw.db->Flush(rocksdb::FlushOptions(), cf).ok());
+
+  std::vector<rocksdb::LiveFileMetaData> files;
+  raw.db->GetLiveFilesMetaData(&files);
+  std::string path;
+  for (const auto &f : files) {
+    if (f.column_family_name == "seq" + INVERT_SUFFIX_RANGES) {
+      ASSERT_TRUE(path.empty()) << "more than one range table file";
+      path = f.db_path + f.name;
+    }
+  }
+  ASSERT_FALSE(path.empty());
+  rocksdb::TablePropertiesCollection props;
+  ASSERT_TRUE(raw.db->GetPropertiesOfAllTables(cf, &props).ok());
+  ASSERT_EQ(props.size(), 1u);
+  const uint64_t data_size = props.begin()->second->data_size;
+  ASSERT_GT(data_size, 16u * 4096) << "expected many data blocks";
+
+  std::fstream file(path, std::ios::in | std::ios::out | std::ios::binary);
+  ASSERT_TRUE(file.is_open()) << path;
+  file.seekg(first_block ? 100 : data_size / 2);
+  char byte = 0;
+  file.read(&byte, 1);
+  byte ^= 0x5a;
+  file.seekp(first_block ? 100 : data_size / 2);
+  file.write(&byte, 1);
+  ASSERT_TRUE(file.good());
+}
+
+// The seal rebuilds a range index that cannot be read: it must not read the
+// old family, and range and point queries must stay exact.
+void SealRebuildsCorruptedRanges(bool first_block) {
+  auto indexer =
+      InvertedIndexer::CreateAndOpen("seal", kDir, true, Fields(), false);
+  ASSERT_TRUE(indexer);
+  Insert(indexer);
+  ASSERT_TRUE(indexer->flush().ok());
+  indexer.reset();
+  LeaveCorruptedRanges(first_block);
+
+  indexer =
+      InvertedIndexer::CreateAndOpen("seal", kDir, false, Fields(), false);
+  ASSERT_TRUE(indexer);
+  ASSERT_TRUE(indexer->seal().ok());
+  EXPECT_TRUE((*indexer)["seq"]->is_sealed());
+  EXPECT_TRUE((*indexer)["cyc"]->is_sealed());
+  VerifyQueries(indexer);
+  auto lt = (*indexer)["seq"]->search(Value(kDocs), CompareOp::LT);
+  ASSERT_TRUE(lt);
+  EXPECT_FALSE(lt->contains(999999));
+  indexer.reset();
+
+  indexer = InvertedIndexer::CreateAndOpen("seal", kDir, false, Fields(), true);
+  ASSERT_TRUE(indexer);
+  EXPECT_TRUE((*indexer)["seq"]->is_sealed());
+  VerifyQueries(indexer);
+  indexer.reset();
+  RawFamilies sealed(kDir);
+  EXPECT_GT(sealed.count("seq" + INVERT_SUFFIX_RANGES), 0u);
+}
+
+// Seals the "seq" column of the index in dir, flushes only the column
+// families named in flushed, and copies dir to kCrashDir as a crash right then
+// would leave it: the indexes write without a write-ahead log, so the flushed
+// files are all that survives.
+void SealAndCrash(const std::string &dir,
+                  const std::vector<std::string> &flushed) {
+  RocksdbContext ctx;
+  ASSERT_TRUE(
+      ctx.open(dir, false, std::make_shared<InvertedRocksdbValueMerger>())
+          .ok());
+  auto seq = InvertedColumnIndexer::CreateAndOpen("seal", Fields()[0], ctx);
+  ASSERT_TRUE(seq);
+  ASSERT_TRUE(seq->seal().ok());
+  for (const auto &name : flushed) {
+    auto *cf = name == rocksdb::kDefaultColumnFamilyName
+                   ? ctx.db_->DefaultColumnFamily()
+                   : ctx.get_cf(name);
+    ASSERT_NE(cf, nullptr) << name;
+    ASSERT_TRUE(ctx.db_->Flush(rocksdb::FlushOptions(), cf).ok());
+  }
+  ASSERT_TRUE(ctx.db_->PauseBackgroundWork().ok());
+  zvec::test_util::RemoveTestPath(kCrashDir);
+  std::filesystem::copy(dir, kCrashDir,
+                        std::filesystem::copy_options::recursive);
+  ASSERT_TRUE(ctx.db_->ContinueBackgroundWork().ok());
+  seq.reset();
+  ctx.close();
+}
+
 class InvertedSealTest : public testing::Test {
  protected:
   void SetUp() override {
     zvec::test_util::RemoveTestPath(kDir);
+    zvec::test_util::RemoveTestPath(kCrashDir);
+    zvec::test_util::RemoveTestPath(kFirstCrashDir);
   }
   void TearDown() override {
     zvec::test_util::RemoveTestPath(kDir);
+    zvec::test_util::RemoveTestPath(kCrashDir);
+    zvec::test_util::RemoveTestPath(kFirstCrashDir);
   }
 };
 
@@ -216,4 +343,46 @@ TEST_F(InvertedSealTest, SealClearsRangesLeftByAnInterruptedSeal) {
   auto lt = (*indexer)["seq"]->search(Value(kDocs), CompareOp::LT);
   ASSERT_TRUE(lt);
   EXPECT_FALSE(lt->contains(999999));
+}
+
+TEST_F(InvertedSealTest, SealRebuildsRangesWithCorruptedFirstBlock) {
+  SealRebuildsCorruptedRanges(true);
+}
+
+TEST_F(InvertedSealTest, SealRebuildsRangesWithCorruptedMiddleBlock) {
+  SealRebuildsCorruptedRanges(false);
+}
+
+TEST_F(InvertedSealTest, ResealAfterACrashDoesNotUseOldRanges) {
+  auto indexer =
+      InvertedIndexer::CreateAndOpen("seal", kDir, true, Fields(), false);
+  ASSERT_TRUE(indexer);
+  Insert(indexer);
+  ASSERT_TRUE(indexer->flush().ok());
+  indexer.reset();
+
+  // A first seal stops after its range entries reach disk, before the seal
+  // marker does. The index stays unsealed and gets one more document.
+  SealAndCrash(kDir, {"seq" + INVERT_SUFFIX_RANGES});
+  std::filesystem::rename(kCrashDir, kFirstCrashDir);
+  indexer = InvertedIndexer::CreateAndOpen("seal", kFirstCrashDir, false,
+                                           Fields(), false);
+  ASSERT_TRUE(indexer);
+  ASSERT_FALSE((*indexer)["seq"]->is_sealed());
+  ASSERT_TRUE((*indexer)["seq"]->insert(kDocs, Value(0)).ok());
+  ASSERT_TRUE(indexer->flush().ok());
+  indexer.reset();
+
+  // The next seal stops after its seal marker reaches disk, before its range
+  // entries do. The ranges of the first seal must not be used: they miss the
+  // new document.
+  SealAndCrash(kFirstCrashDir, {rocksdb::kDefaultColumnFamilyName});
+  indexer =
+      InvertedIndexer::CreateAndOpen("seal", kCrashDir, false, Fields(), true);
+  ASSERT_TRUE(indexer);
+  ASSERT_TRUE((*indexer)["seq"]->is_sealed());
+  auto lt = (*indexer)["seq"]->search(Value(5), CompareOp::LT);
+  ASSERT_TRUE(lt);
+  EXPECT_EQ(lt->count(), 6u);
+  EXPECT_TRUE(lt->contains(kDocs));
 }
