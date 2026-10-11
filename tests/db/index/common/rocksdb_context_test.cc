@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "db/common/rocksdb_context.h"
-#include <cstdlib>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -27,8 +26,7 @@ namespace {
 class RocksdbContextTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    root_ = fs::temp_directory_path() /
-            ("rocksdb_context_test_" + std::to_string(::getpid()));
+    root_ = "./rocksdb_context_test_dir";
     fs::remove_all(root_);
     fs::create_directories(root_);
   }
