@@ -3462,6 +3462,140 @@ TEST_F(CollectionTest, Feature_Recovery_Orphan_Segment_Dirs_Removed) {
       collection->add_column(field_schema, "int32", AddColumnOptions()).ok());
 }
 
+TEST_F(CollectionTest, Feature_Recovery_Orphan_Index_Dirs_Removed) {
+  namespace fs = std::filesystem;
+  int doc_count = 1001;
+
+  // 1001 documents: a sealed segment and a writing segment with one
+  // document. Only "int32" has a scalar index, so both segments have a
+  // scalar index block.
+  auto schema =
+      TestHelper::CreateNormalSchema(false, "demo", nullptr, nullptr, 1000);
+  schema->get_field("int32")->set_index_params(
+      std::make_shared<InvertIndexParams>());
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, doc_count, false);
+  ASSERT_NE(collection, nullptr);
+  collection.reset();
+
+  // Fake the leftovers of a create_index that crashed after its RocksDB
+  // checkpoints existed but before it published the manifest: in every
+  // segment, the directory at the block id the retried build takes next,
+  // and checkpoint staging (".tmp") directories.
+  std::vector<std::string> orphans;
+  std::vector<std::string> referenced;
+  std::vector<std::string> unrelated;
+  {
+    auto version_manager = VersionManager::Recovery(col_path);
+    ASSERT_TRUE(version_manager.has_value());
+    auto version = version_manager.value()->get_current_version();
+    auto metas = version.persisted_segment_metas();
+    ASSERT_EQ(metas.size(), 1u);
+    metas.push_back(version.writing_segment_meta());
+    for (const auto &meta : metas) {
+      BlockID next_block_id = 0;
+      BlockID scalar_index_block_id = 0;
+      int scalar_index_blocks = 0;
+      for (const auto &block : meta->persisted_blocks()) {
+        next_block_id = std::max(next_block_id, block.id() + 1);
+        if (block.type() == BlockType::SCALAR_INDEX) {
+          scalar_index_block_id = block.id();
+          ++scalar_index_blocks;
+        }
+      }
+      if (meta->writing_forward_block()) {
+        next_block_id =
+            std::max(next_block_id, meta->writing_forward_block()->id() + 1);
+      }
+      ASSERT_EQ(scalar_index_blocks, 1);
+
+      auto segment_path = FileHelper::MakeSegmentPath(col_path, meta->id());
+      auto index_dir = [&](const std::string &prefix, BlockID id,
+                           const std::string &suffix) {
+        return (fs::path(segment_path) /
+                (prefix + std::to_string(id) + ".rocksdb" + suffix))
+            .string();
+      };
+      orphans.push_back(index_dir("scalar.index.", next_block_id, ""));
+      orphans.push_back(index_dir("scalar.index.", next_block_id + 1, ".tmp"));
+      orphans.push_back(
+          index_dir("scalar.index.", scalar_index_block_id, ".tmp"));
+      orphans.push_back(index_dir("fts.", next_block_id + 2, ""));
+      referenced.push_back(
+          index_dir("scalar.index.", scalar_index_block_id, ""));
+      // Not names the collection creates; must never be touched.
+      unrelated.push_back(
+          (fs::path(segment_path) / "scalar.index.07.rocksdb").string());
+      unrelated.push_back(
+          (fs::path(segment_path) / "scalar.index.rocksdb").string());
+      unrelated.push_back(
+          (fs::path(segment_path) / "fts.9.rocksdb.tmpx").string());
+    }
+  }
+  for (const auto &dir : orphans) {
+    ASSERT_FALSE(fs::exists(dir));
+    ASSERT_TRUE(fs::create_directories(dir));
+    std::ofstream((fs::path(dir) / "CURRENT").string()) << "orphan";
+  }
+  for (const auto &dir : unrelated) {
+    ASSERT_TRUE(fs::create_directories(dir));
+  }
+
+  // A read-only open holds only a shared file lock and must not delete
+  // anything.
+  {
+    auto ro_options = CollectionOptions{true, true, 64 * 1024 * 1024};
+    auto ro_result = Collection::Open(col_path, ro_options);
+    ASSERT_TRUE(ro_result.has_value()) << ro_result.error().message();
+    for (const auto &dir : orphans) {
+      ASSERT_TRUE(fs::exists(dir));
+    }
+  }
+
+  // A read-write open removes every index directory the manifest does not
+  // reference, and keeps the referenced ones.
+  auto result = Collection::Open(col_path, options);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  collection = std::move(result.value());
+  for (const auto &dir : orphans) {
+    ASSERT_FALSE(fs::exists(dir)) << dir;
+  }
+  for (const auto &dir : referenced) {
+    ASSERT_TRUE(fs::exists(dir)) << dir;
+  }
+  for (const auto &dir : unrelated) {
+    ASSERT_TRUE(fs::exists(dir)) << dir;
+  }
+
+  // Without the cleanup this fails: the build takes the block id of the
+  // leftover directory, and RocksDB refuses to write a checkpoint into it.
+  auto s =
+      collection->create_index("int64", std::make_shared<InvertIndexParams>());
+  ASSERT_TRUE(s.ok()) << s.message();
+
+  collection.reset();
+  result = Collection::Open(col_path, options);
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  collection = std::move(result.value());
+  auto schema_after = collection->schema();
+  ASSERT_TRUE(schema_after.has_value());
+  ASSERT_EQ(schema_after.value().get_field("int64")->index_type(),
+            IndexType::INVERT);
+  auto stats_result = collection->stats();
+  ASSERT_TRUE(stats_result.has_value());
+  ASSERT_EQ(stats_result.value().doc_count, (uint64_t)doc_count);
+  for (int i : {0, doc_count - 1}) {
+    auto expect_doc = TestHelper::CreateDoc(i, *schema);
+    auto fetched = collection->fetch({expect_doc.pk()});
+    ASSERT_TRUE(fetched.has_value());
+    ASSERT_EQ(fetched.value().count(expect_doc.pk()), 1);
+    auto doc = fetched.value()[expect_doc.pk()];
+    ASSERT_NE(doc, nullptr);
+    ASSERT_EQ(*doc, expect_doc);
+  }
+}
+
 TEST_F(CollectionTest, Feature_Optimize_Compacted_Segment_Directories_Removed) {
   namespace fs = std::filesystem;
 
