@@ -195,8 +195,8 @@ void LeaveCorruptedRanges(bool first_block) {
   ASSERT_TRUE(file.good());
 }
 
-// The seal rebuilds a range index that cannot be read: it must not read the
-// old family, and range and point queries must stay exact.
+// An unreadable range family must not stop the seal: the range index is
+// rebuilt, and range and point queries stay exact.
 void SealRebuildsCorruptedRanges(bool first_block) {
   auto indexer =
       InvertedIndexer::CreateAndOpen("seal", kDir, true, Fields(), false);
@@ -237,6 +237,18 @@ void SealAndCrash(const std::string &dir,
   ASSERT_TRUE(
       ctx.open(dir, false, std::make_shared<InvertedRocksdbValueMerger>())
           .ok());
+  // No background compaction, so the copied files are the same on every run.
+  std::vector<std::string> names;
+  ASSERT_TRUE(
+      rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), dir, &names).ok());
+  for (const auto &name : names) {
+    auto *cf = name == rocksdb::kDefaultColumnFamilyName
+                   ? ctx.db_->DefaultColumnFamily()
+                   : ctx.get_cf(name);
+    ASSERT_NE(cf, nullptr) << name;
+    ASSERT_TRUE(
+        ctx.db_->SetOptions(cf, {{"disable_auto_compactions", "true"}}).ok());
+  }
   auto seq = InvertedColumnIndexer::CreateAndOpen("seal", Fields()[0], ctx);
   ASSERT_TRUE(seq);
   ASSERT_TRUE(seq->seal().ok());
@@ -247,11 +259,11 @@ void SealAndCrash(const std::string &dir,
     ASSERT_NE(cf, nullptr) << name;
     ASSERT_TRUE(ctx.db_->Flush(rocksdb::FlushOptions(), cf).ok());
   }
-  ASSERT_TRUE(ctx.db_->PauseBackgroundWork().ok());
   zvec::test_util::RemoveTestPath(kCrashDir);
+  std::error_code copied;
   std::filesystem::copy(dir, kCrashDir,
-                        std::filesystem::copy_options::recursive);
-  ASSERT_TRUE(ctx.db_->ContinueBackgroundWork().ok());
+                        std::filesystem::copy_options::recursive, copied);
+  ASSERT_FALSE(copied) << copied.message();
   seq.reset();
   ctx.close();
 }
