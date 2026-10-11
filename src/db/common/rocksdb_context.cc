@@ -60,30 +60,48 @@ Status RocksdbContext::create(Args args) {
   }
   db_.reset(db);
 
-  bool has_default = false;
+  // Create every column family with one CreateColumnFamilies() call, which
+  // writes and syncs the OPTIONS file once instead of once per family.
+  std::vector<rocksdb::ColumnFamilyDescriptor> cf_descriptors;
   for (const auto &column_name : args.column_names) {
     if (column_name == rocksdb::kDefaultColumnFamilyName) {
-      cf_handles_.push_back(db->DefaultColumnFamily());
-      has_default = true;
       continue;
     }
-    rocksdb::ColumnFamilyHandle *cf_handle{nullptr};
     rocksdb::ColumnFamilyOptions cf_options(create_opts_);
     auto it = per_cf_merge_ops_.find(column_name);
     if (it != per_cf_merge_ops_.end() && it->second) {
       cf_options.merge_operator = it->second;
     }
-    s = db->CreateColumnFamily(cf_options, column_name, &cf_handle);
+    cf_descriptors.emplace_back(column_name, cf_options);
+  }
+  std::vector<rocksdb::ColumnFamilyHandle *> created;
+  if (!cf_descriptors.empty()) {
+    s = db->CreateColumnFamilies(cf_descriptors, &created);
     if (!s.ok()) {
-      LOG_ERROR("Failed to create cf[%s] in RocksDB[%s], code[%d], reason[%s]",
-                column_name.c_str(), args.db_path.c_str(), s.code(),
+      LOG_ERROR("Failed to create %zu cfs in RocksDB[%s], code[%d], reason[%s]",
+                cf_descriptors.size(), args.db_path.c_str(), s.code(),
                 s.ToString().c_str());
-      delete_cf_handles();
+      // On failure RocksDB returns the handles it created before the error.
+      for (auto *handle : created) {
+        db->DestroyColumnFamilyHandle(handle);
+      }
       db->Close();
       db_.reset();
       return Status::InternalError();
     }
-    cf_handles_.push_back(cf_handle);
+  }
+
+  // Same handle order as creating one family at a time: column_names order,
+  // with the default family where it is listed, else last.
+  bool has_default = false;
+  size_t next = 0;
+  for (const auto &column_name : args.column_names) {
+    if (column_name == rocksdb::kDefaultColumnFamilyName) {
+      cf_handles_.push_back(db->DefaultColumnFamily());
+      has_default = true;
+    } else {
+      cf_handles_.push_back(created[next++]);
+    }
   }
   if (!has_default) {
     cf_handles_.push_back(db->DefaultColumnFamily());
