@@ -234,21 +234,11 @@ void SealRebuildsCorruptedRanges(bool first_block) {
 void SealAndCrash(const std::string &dir,
                   const std::vector<std::string> &flushed) {
   RocksdbContext ctx;
+  // No background compaction, so the copied files are the same on every run.
+  ctx.create_opts_.disable_auto_compactions = true;
   ASSERT_TRUE(
       ctx.open(dir, false, std::make_shared<InvertedRocksdbValueMerger>())
           .ok());
-  // No background compaction, so the copied files are the same on every run.
-  std::vector<std::string> names;
-  ASSERT_TRUE(
-      rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), dir, &names).ok());
-  for (const auto &name : names) {
-    auto *cf = name == rocksdb::kDefaultColumnFamilyName
-                   ? ctx.db_->DefaultColumnFamily()
-                   : ctx.get_cf(name);
-    ASSERT_NE(cf, nullptr) << name;
-    ASSERT_TRUE(
-        ctx.db_->SetOptions(cf, {{"disable_auto_compactions", "true"}}).ok());
-  }
   auto seq = InvertedColumnIndexer::CreateAndOpen("seal", Fields()[0], ctx);
   ASSERT_TRUE(seq);
   ASSERT_TRUE(seq->seal().ok());
@@ -263,9 +253,9 @@ void SealAndCrash(const std::string &dir,
   std::error_code copied;
   std::filesystem::copy(dir, kCrashDir,
                         std::filesystem::copy_options::recursive, copied);
-  ASSERT_FALSE(copied) << copied.message();
   seq.reset();
   ctx.close();
+  ASSERT_FALSE(copied) << copied.message();
 }
 
 class InvertedSealTest : public testing::Test {
