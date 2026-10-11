@@ -83,19 +83,17 @@ TEST_F(RocksdbContextTest, CreateWritesOptionsFileOnce) {
   // without families, not one per family.
   const auto base = NewestOptionsFileNumber(path("empty"));
   const auto with_families = NewestOptionsFileNumber(path("many"));
-  EXPECT_LE(with_families, base + 2)
-      << "base OPTIONS number " << base << ", with 24 families "
-      << with_families;
+  EXPECT_LE(with_families, base + 2) << "base OPTIONS number " << base
+                                     << ", with 24 families " << with_families;
 }
 
 TEST_F(RocksdbContextTest, CreateKeepsHandleOrder) {
   const std::vector<std::vector<std::string>> cases = {
       {"a", "default", "b"}, {"default", "a", "b"}, {"a", "b"}, {}};
-  const std::vector<std::vector<std::string>> expected = {
-      {"a", "default", "b"},
-      {"default", "a", "b"},
-      {"a", "b", "default"},
-      {"default"}};
+  const std::vector<std::vector<std::string>> expected = {{"a", "default", "b"},
+                                                          {"default", "a", "b"},
+                                                          {"a", "b", "default"},
+                                                          {"default"}};
   for (size_t i = 0; i < cases.size(); ++i) {
     RocksdbContext ctx;
     ASSERT_TRUE(ctx.create(path("order" + std::to_string(i)), cases[i]).ok());
@@ -122,19 +120,18 @@ TEST_F(RocksdbContextTest, CreateFailureLeavesNoOpenHandles) {
 
   // The failed instance released its lock: another instance can open it.
   std::vector<std::string> names;
-  ASSERT_TRUE(rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(),
-                                              path("dup"), &names)
-                  .ok());
+  ASSERT_TRUE(
+      rocksdb::DB::ListColumnFamilies(rocksdb::DBOptions(), path("dup"), &names)
+          .ok());
   std::vector<rocksdb::ColumnFamilyDescriptor> descriptors;
   for (const auto &name : names) {
     descriptors.emplace_back(name, rocksdb::ColumnFamilyOptions());
   }
   std::vector<rocksdb::ColumnFamilyHandle *> handles;
   rocksdb::DB *db = nullptr;
-  ASSERT_TRUE(
-      rocksdb::DB::Open(rocksdb::DBOptions(), path("dup"), descriptors,
-                        &handles, &db)
-          .ok());
+  ASSERT_TRUE(rocksdb::DB::Open(rocksdb::DBOptions(), path("dup"), descriptors,
+                                &handles, &db)
+                  .ok());
   for (auto *handle : handles) {
     db->DestroyColumnFamilyHandle(handle);
   }
