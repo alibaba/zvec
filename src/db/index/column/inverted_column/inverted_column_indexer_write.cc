@@ -433,6 +433,15 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
 
 
 Status InvertedColumnIndexer::seal() {
+  Status status = prepare_seal();
+  if (!status.ok()) {
+    return status;
+  }
+  return mark_sealed();
+}
+
+
+Status InvertedColumnIndexer::prepare_seal() {
   if (read_only_) {
     return Status::PermissionDenied();
   }
@@ -449,6 +458,14 @@ Status InvertedColumnIndexer::seal() {
       LOG_ERROR("Failed to generate statistical indexes in %s", id().c_str());
       return status;
     }
+  }
+  return Status::OK();
+}
+
+
+Status InvertedColumnIndexer::mark_sealed() {
+  if (read_only_) {
+    return Status::PermissionDenied();
   }
 
   auto rs = ctx_.db_->Put(ctx_.write_opts_, key_sealed(), "sealed");

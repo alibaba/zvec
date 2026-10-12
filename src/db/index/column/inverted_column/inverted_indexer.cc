@@ -125,13 +125,25 @@ Status InvertedIndexer::create_snapshot(const std::string &snapshot_dir) {
 
 
 Status InvertedIndexer::seal() {
+  // Prepare every column before marking any of them sealed: if one fails,
+  // the caller keeps writing to this index, so no column may be read-only.
   Status s;
+  std::vector<InvertedColumnIndexer::Ptr> unsealed;
   for (const auto &[_, indexer] : indexers_) {
     if (indexer->is_sealed()) {
       continue;
     }
-    if (s = indexer->seal(); !s.ok()) {
+    if (s = indexer->prepare_seal(); !s.ok()) {
       LOG_ERROR("Failed to seal %s", indexer->id().c_str());
+      return s;
+    }
+    unsealed.push_back(indexer);
+  }
+
+  for (const auto &indexer : unsealed) {
+    if (s = indexer->mark_sealed(); !s.ok()) {
+      LOG_ERROR("Failed to seal %s", indexer->id().c_str());
+      return s;
     }
   }
 
