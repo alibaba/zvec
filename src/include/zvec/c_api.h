@@ -716,8 +716,9 @@ ZVEC_EXPORT uint32_t ZVEC_CALL
 zvec_config_data_get_optimize_thread_count(const zvec_config_data_t *config);
 
 /**
- * @brief Set jieba dict directory in configuration data
- * @param dir Dict directory; NULL or empty leaves the field empty
+ * @brief Set an external Jieba dictionary directory in configuration data
+ * @param dir Dict directory; NULL or empty leaves the field empty, preserving
+ *            a registered global override or using embedded defaults
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_config_data_set_jieba_dict_dir(
     zvec_config_data_t *config, const char *dir);
@@ -755,12 +756,12 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_shutdown(void);
 ZVEC_EXPORT bool ZVEC_CALL zvec_is_initialized(void);
 
 /**
- * @brief Set the process-wide default jieba dict directory.
+ * @brief Set the process-wide external Jieba dictionary override.
  *
- * For language SDKs to call on module load. Thread-safe, decoupled from
- * zvec_initialize(); last writer wins. A subsequent zvec_initialize() with
- * non-empty config.jieba_dict_dir overrides this. JiebaTokenizer priority:
- * per-field > ZVEC_JIEBA_DICT_DIR > this.
+ * Thread-safe, decoupled from zvec_initialize(); last writer wins. A subsequent
+ * zvec_initialize() with non-empty config.jieba_dict_dir overrides this.
+ * JiebaTokenizer priority: per-field > ZVEC_JIEBA_DICT_DIR > this > embedded
+ * defaults.
  *
  * @param dir UTF-8 directory containing jieba.dict.utf8 + hmm_model.utf8;
  *            NULL or empty clears the value.
@@ -1244,8 +1245,8 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_invert_params(
  *       "punctuation", "symbol"; default [] keeps all valid UTF-8
  *       characters). custom_token_chars is not supported.
  *   jieba:
- *     - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
- *       hmm_model.utf8).
+ *     - "jieba_dict_dir" (optional external directory containing
+ *       jieba.dict.utf8 and hmm_model.utf8; otherwise use embedded defaults).
  *     - "user_dict_path" (user dictionary path).
  *     - "cut_mode" ("search", "mix", "full", or "hmm"; default "search").
  *   whitespace:

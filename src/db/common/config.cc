@@ -127,7 +127,7 @@ Status GlobalConfig::initialize(const ConfigData &config) {
   auto s = validate(config);
   CHECK_RETURN_STATUS(s);
 
-  // Preserve the SDK-set jieba_dict_dir when caller didn't specify one.
+  // Preserve the registered external dictionary override when omitted.
   // Lock spans the bulk assign so readers never see a half-written string.
   {
     std::lock_guard<std::mutex> lk(mutex_);

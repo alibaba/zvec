@@ -189,8 +189,8 @@ void ZVecPyConfig::Initialize(pybind11::module_ &m) {
       data.fts_brute_force_by_keys_ratio = static_cast<float>(v);
     }
 
-    // jieba_dict_dir: optional override of the SDK-registered default.
-    // Empty value is a no-op (Initialize preserves the SDK default).
+    // jieba_dict_dir: optional external dictionary override.
+    // Empty value preserves a previously registered override.
     if (has_key(config_dict, "jieba_dict_dir")) {
       data.jieba_dict_dir =
           get_if<std::string>(config_dict, "jieba_dict_dir").value();
@@ -204,20 +204,23 @@ void ZVecPyConfig::Initialize(pybind11::module_ &m) {
     return py::none();
   });
 
-  // Process-wide setter, independent of Initialize(); called by __init__.py
-  // on import to register the wheel-bundled dict path.
+  // Process-wide external dictionary override, independent of Initialize().
+  // Empty values use embedded resources unless a field or environment
+  // override is configured.
   m.def(
       "set_default_jieba_dict_dir",
       [](const std::string &dir) {
         GlobalConfig::Instance().set_default_jieba_dict_dir(dir);
       },
       pybind11::arg("dir"),
-      "Register the process-wide default jieba dict directory.");
+      "Set the process-wide external jieba directory override. An empty "
+      "value uses embedded resources when no field or environment override "
+      "is configured.");
 
   m.def(
       "get_default_jieba_dict_dir",
       []() -> std::string { return GlobalConfig::Instance().jieba_dict_dir(); },
-      "Read the currently registered default jieba dict directory.");
+      "Read the external jieba directory override; empty by default.");
 
   // Returns the selected DiskAnn I/O backend. Linux tries io_uring, then
   // libaio, then pread; macOS ARM64 uses pread.

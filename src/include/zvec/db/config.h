@@ -106,8 +106,9 @@ class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
     // CPU binding is opt-in at the DB layer.
     bool optimize_thread_binding;
 
-    // FTS jieba tokenizer default dict dir (lowest-priority fallback;
-    // per-field config > ZVEC_JIEBA_DICT_DIR > this). Empty by default.
+    // FTS jieba tokenizer external dictionary override. Priority:
+    // per-field config > ZVEC_JIEBA_DICT_DIR > this > embedded defaults.
+    // Empty by default.
     std::string jieba_dict_dir;
 
     ConfigData();
@@ -118,8 +119,8 @@ class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
 
   Status validate(const ConfigData &config) const;
 
-  // Set the process-wide default jieba dict dir. Thread-safe and decoupled
-  // from initialize() so language SDKs can call it on module load.
+  // Set the process-wide external Jieba dictionary override. Thread-safe
+  // and decoupled from initialize(). An empty value clears the override.
   // initialize() with a non-empty config.jieba_dict_dir overrides this.
   void set_default_jieba_dict_dir(const std::string &dir);
 

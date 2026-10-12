@@ -106,10 +106,11 @@ def init(
             Override the default directory containing ``jieba.dict.utf8`` and
             ``hmm_model.utf8`` for the jieba FTS tokenizer. When ``None``, the
             value previously registered by ``zvec.set_default_jieba_dict_dir``
-            (called automatically on ``import zvec`` to point at the wheel's
-            bundled dict) is preserved. JiebaTokenizer also honors the
+            is preserved. JiebaTokenizer also honors the
             ``ZVEC_JIEBA_DICT_DIR`` environment variable and per-field
             ``FtsIndexParam.extra_params.jieba_dict_dir`` ahead of this value.
+            When no external directory is configured, the embedded dictionary
+            and HMM model are used. Invalid non-empty overrides raise an error.
 
     Raises:
         RuntimeError: If Zvec is already initialized.

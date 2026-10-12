@@ -989,8 +989,9 @@ class FtsIndexParam(IndexParam):
                       all valid UTF-8 characters). custom_token_chars is not
                       supported.
                 jieba:
-                    - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
-                      hmm_model.utf8).
+                    - "jieba_dict_dir" (optional external directory containing
+                      jieba.dict.utf8 and hmm_model.utf8; embedded resources are
+                      used when no directory override is configured).
                     - "user_dict_path" (user dictionary path).
                     - "cut_mode" ("search", "mix", "full", or "hmm"; default
                       "search").
@@ -1043,7 +1044,8 @@ class FtsIndexParam(IndexParam):
                           keeps all valid UTF-8 characters). custom_token_chars
                           is not supported.
                     jieba:
-                        - "jieba_dict_dir".
+                        - "jieba_dict_dir" (optional external directory
+                          override; embedded resources are used by default).
                         - "user_dict_path".
                         - "cut_mode" ("search", "mix", "full", or "hmm";
                           default "search").

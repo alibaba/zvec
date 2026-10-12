@@ -234,10 +234,9 @@ TEST_F(ConfigTest, LogConfigPolymorphism) {
   ASSERT_EQ(file_config->get_logger_type(), FILE_LOG_TYPE_NAME);
 }
 
-// jieba_dict_dir is the only ConfigData field that can be written outside
-// of initialize() — language SDKs call set_default_jieba_dict_dir() at
-// module-load to register the dict path they bundled. The setter is
-// independent of the initialize() one-shot lifecycle.
+// Callers can explicitly register an external dictionary override with
+// set_default_jieba_dict_dir(). The setter is independent of the
+// initialize() one-shot lifecycle.
 TEST_F(ConfigTest, JiebaDictDirSetterIsIndependentOfInitialize) {
   auto saved = GlobalConfig::Instance().jieba_dict_dir();
 

@@ -68,10 +68,14 @@ def io_backend_description() -> str:
     """
 
 def set_default_jieba_dict_dir(dir: str) -> None:
-    """Register the process-wide default jieba dict directory."""
+    """Set the process-wide external jieba directory override.
+
+    An empty value uses embedded resources when no field or environment
+    override is configured.
+    """
 
 def get_default_jieba_dict_dir() -> str:
-    """Read the currently registered default jieba dict directory."""
+    """Read the external jieba directory override; empty by default."""
 
 __all__: list = [
     "AddColumnOption",

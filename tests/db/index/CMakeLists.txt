@@ -60,3 +60,9 @@ if(TARGET fts_column_indexer_test)
     TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/column/fts_column"
     JIEBA_DICT_DIR="${PROJECT_SOURCE_DIR}/thirdparty/cppjieba/cppjieba-5.6.7/dict")
 endif()
+
+# Compare embedded Jieba resources with the original dictionary and model.
+if(TARGET jieba_tokenizer_test)
+  target_compile_definitions(jieba_tokenizer_test PRIVATE
+    JIEBA_DICT_DIR="${PROJECT_SOURCE_DIR}/thirdparty/cppjieba/cppjieba-5.6.7/dict")
+endif()

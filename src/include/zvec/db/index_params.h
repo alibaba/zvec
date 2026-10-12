@@ -921,8 +921,8 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
  *         "punctuation", "symbol"; default [] keeps all valid UTF-8
  *         characters). custom_token_chars is not supported.
  *     jieba:
- *       - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
- *         hmm_model.utf8).
+ *       - "jieba_dict_dir" (optional external directory containing
+ *         jieba.dict.utf8 and hmm_model.utf8; otherwise use embedded defaults).
  *       - "user_dict_path" (user dictionary path).
  *       - "cut_mode" ("search", "mix", "full", or "hmm"; default "search").
  *     whitespace:

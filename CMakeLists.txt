@@ -247,11 +247,9 @@ set(CPACK_PACKAGE_VERSION_PATCH ${ZVEC_VERSION_PATCH})
 set(CPACK_PACKAGE_NAME zvec)
 include(CPack)
 
-# cppjieba dict files bundled with installed artifacts so the `jieba` FTS
-# tokenizer works out of the box (source of truth for both the Python wheel
-# and the native SDK packages).
-set(ZVEC_JIEBA_DICT_SRC
-    "${PROJECT_SOURCE_DIR}/thirdparty/cppjieba/cppjieba-5.6.7/dict")
+# The default cppjieba dictionary and HMM model are embedded in the FTS
+# tokenizer, so both the Python wheel and native SDK work without deploying
+# separate dictionary files.
 
 if(BUILD_PYTHON_BINDINGS)
     if(APPLE)
@@ -281,24 +279,11 @@ if(BUILD_PYTHON_BINDINGS)
     # DiskAnn is now statically linked into _zvec.so via --whole-archive
     # (see src/binding/python/CMakeLists.txt -> core_knn_diskann_static),
     # so no separate runtime .so needs to be installed in the wheel.
-    # Bundle cppjieba's dictionary files so the `jieba` FTS tokenizer works
-    # out of the box. python/zvec/__init__.py resolves this directory via
-    # importlib.resources and registers it with set_default_jieba_dict_dir().
-    install(FILES
-        "${ZVEC_JIEBA_DICT_SRC}/jieba.dict.utf8"
-        "${ZVEC_JIEBA_DICT_SRC}/hmm_model.utf8"
-        DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec/data/jieba_dict
-        COMPONENT python)
+    # The default cppjieba dictionary and HMM model are already linked into
+    # the extension; the wheel does not need additional runtime data files.
 endif()
 
-# Ship the same dict files with the native SDK install (prebuilt packages)
-# as well, under <prefix>/data/jieba_dict (mirrors the wheel's
-# zvec/data/jieba_dict layout). Unlike Python there is no
-# import-time registration: consumers register the directory explicitly via
-# zvec_set_default_jieba_dict_dir() / zvec_config_data_set_jieba_dict_dir(),
-# the ZVEC_JIEBA_DICT_DIR env var, or per-field extra_params.jieba_dict_dir.
-# Default component, so the wheel build (COMPONENT python) is unaffected.
-install(FILES
-    "${ZVEC_JIEBA_DICT_SRC}/jieba.dict.utf8"
-    "${ZVEC_JIEBA_DICT_SRC}/hmm_model.utf8"
-    DESTINATION data/jieba_dict)
+# Native SDK consumers also use the embedded defaults. External dictionary
+# overrides remain available via zvec_set_default_jieba_dict_dir(),
+# zvec_config_data_set_jieba_dict_dir(), the ZVEC_JIEBA_DICT_DIR env var, or
+# per-field extra_params.jieba_dict_dir.

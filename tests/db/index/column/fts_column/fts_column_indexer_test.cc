@@ -790,18 +790,62 @@ TEST_F(FtsColumnIndexerJiebaTest, OpenWithJiebaTokenizerSucceeds) {
   EXPECT_TRUE(ret.has_value());
 }
 
-// Verify that jieba tokenizer fails when no jieba_dict_dir source resolves.
-// (cppjieba FATAL-aborts on non-existent dict files, so we test the init-time
-// validation in JiebaTokenizer instead.)
-// Assumes the ZVEC_JIEBA_DICT_DIR env-var is not set in the test environment.
-TEST_F(FtsColumnIndexerJiebaTest, OpenWithJiebaTokenizerFailsWithoutDictDir) {
+// Verify that the embedded dictionary works when no jieba_dict_dir source
+// resolves, without relying on external dictionary files in this fixture.
+TEST_F(FtsColumnIndexerTest, OpenWithJiebaTokenizerSucceedsWithoutDictDir) {
+  const auto saved_global = zvec::GlobalConfig::Instance().jieba_dict_dir();
+  const char *env = std::getenv("ZVEC_JIEBA_DICT_DIR");
+  const bool had_env = env != nullptr;
+  const std::string saved_env = had_env ? env : "";
+  struct RestoreDefaults {
+    std::string global;
+    std::string env;
+    bool had_env;
+    ~RestoreDefaults() {
+      zvec::GlobalConfig::Instance().set_default_jieba_dict_dir(global);
+#ifdef _WIN32
+      EXPECT_EQ(_putenv_s("ZVEC_JIEBA_DICT_DIR", had_env ? env.c_str() : ""),
+                0);
+#else
+      if (had_env) {
+        EXPECT_EQ(setenv("ZVEC_JIEBA_DICT_DIR", env.c_str(), 1), 0);
+      } else {
+        EXPECT_EQ(unsetenv("ZVEC_JIEBA_DICT_DIR"), 0);
+      }
+#endif
+    }
+  } restore{saved_global, saved_env, had_env};
+#ifdef _WIN32
+  ASSERT_EQ(_putenv_s("ZVEC_JIEBA_DICT_DIR", ""), 0);
+#else
+  ASSERT_EQ(unsetenv("ZVEC_JIEBA_DICT_DIR"), 0);
+#endif
   zvec::GlobalConfig::Instance().set_default_jieba_dict_dir("");
 
-  fts::FtsIndexParams bad_params;
-  bad_params.tokenizer_name = "jieba";
-  bad_params.extra_params = "";
-  auto pipeline = TokenizerFactory::create(bad_params);
-  EXPECT_FALSE(pipeline.has_value());
+  fts::FtsIndexParams params;
+  params.tokenizer_name = "jieba";
+  params.filters.clear();
+  auto pipeline = TokenizerFactory::create(params);
+  ASSERT_TRUE(pipeline.has_value());
+  const auto tokens = pipeline.value()->process("中文分词技术");
+  ASSERT_EQ(tokens.size(), 3u);
+  EXPECT_EQ(tokens[0].text, "中文");
+  EXPECT_EQ(tokens[1].text, "分词");
+  EXPECT_EQ(tokens[2].text, "技术");
+
+  auto fts_params = std::make_shared<zvec::FtsIndexParams>("jieba");
+  auto field_meta = make_test_field_meta("content", fts_params);
+  FtsColumnIndexer indexer;
+  ASSERT_TRUE(indexer
+                  .open(field_meta, &db_, postings_cf_, positions_cf_,
+                        term_freq_cf_, max_tf_cf_, doc_len_cf_, stat_cf_)
+                  .has_value());
+  ASSERT_TRUE(indexer.insert(0, "中文分词技术").has_value());
+  ASSERT_TRUE(indexer.flush().has_value());
+  std::vector<FtsResult> results;
+  ASSERT_TRUE(search_ok(indexer, "中文", 10, &results, pipeline.value()));
+  ASSERT_EQ(results.size(), 1u);
+  EXPECT_EQ(results[0].doc_id, 0ull);
 }
 
 // Insert a Chinese sentence and verify that total_docs and total_tokens are
@@ -1024,10 +1068,10 @@ class JiebaDictDirPriorityTest : public FtsColumnIndexerJiebaTest {
   std::string saved_global_;
 };
 
-// Core scenario: SDK in module-load called set_default_jieba_dict_dir; user
-// never called zvec_initialize; per-field extra_params is empty. Jieba must
-// still work end-to-end. Validates that SDK auto-registration is decoupled
-// from the GlobalConfig::Initialize one-shot lifecycle.
+// Callers can explicitly register an external dictionary without calling
+// zvec_initialize or providing per-field extra_params. Jieba must still
+// support indexing and retrieval independently of the
+// GlobalConfig::Initialize one-shot lifecycle.
 TEST_F(JiebaDictDirPriorityTest, GlobalConfigDefaultUsedWithoutInitialize) {
   zvec::GlobalConfig::Instance().set_default_jieba_dict_dir(kJiebaDictDir);
 
