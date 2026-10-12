@@ -23,6 +23,8 @@
 #include <gtest/gtest.h>
 #include <rocksdb/env.h>
 #include <rocksdb/file_system.h>
+#include <rocksdb/metadata.h>
+#include <rocksdb/table_properties.h>
 #include "db/common/constants.h"
 #include "db/common/rocksdb_context.h"
 #include "db/index/column/inverted_column/inverted_codec.h"
@@ -225,4 +227,107 @@ TEST_F(InvertedIndexerSealErrorTest, FailedResetKeepsNoDeletedHandle) {
   EXPECT_EQ(ctx.get_cf("r"), nullptr);
   // Uses every handle in cf_handles_. The injected error may make it fail.
   ctx.close();
+}
+
+namespace {
+
+// Test-only fault injection: while armed, every read of the table file
+// `file` that covers byte `byte` fails.
+class ReadFault : public rocksdb::FileSystemWrapper {
+ public:
+  ReadFault() : FileSystemWrapper(rocksdb::FileSystem::Default()) {}
+  const char *Name() const override {
+    return "ReadFault";
+  }
+
+  std::atomic<bool> armed{false};
+  std::string file;
+  uint64_t byte{0};
+  std::atomic<int> failed{0};
+
+  rocksdb::IOStatus NewRandomAccessFile(
+      const std::string &fname, const rocksdb::FileOptions &opts,
+      std::unique_ptr<rocksdb::FSRandomAccessFile> *result,
+      rocksdb::IODebugContext *dbg) override {
+    auto s = target()->NewRandomAccessFile(fname, opts, result, dbg);
+    if (s.ok()) {
+      result->reset(new File(std::move(*result), this, fname));
+    }
+    return s;
+  }
+
+ private:
+  class File : public rocksdb::FSRandomAccessFileOwnerWrapper {
+   public:
+    File(std::unique_ptr<rocksdb::FSRandomAccessFile> &&file, ReadFault *fs,
+         std::string name)
+        : FSRandomAccessFileOwnerWrapper(std::move(file)),
+          fs_(fs),
+          name_(std::move(name)) {}
+    rocksdb::IOStatus Read(uint64_t offset, size_t n,
+                           const rocksdb::IOOptions &opts,
+                           rocksdb::Slice *result, char *scratch,
+                           rocksdb::IODebugContext *dbg) const override {
+      if (fs_->armed && name_.size() >= fs_->file.size() &&
+          name_.compare(name_.size() - fs_->file.size(), fs_->file.size(),
+                        fs_->file) == 0 &&
+          offset <= fs_->byte && fs_->byte < offset + n) {
+        ++fs_->failed;
+        *result = rocksdb::Slice();
+        return rocksdb::IOStatus::IOError("injected");
+      }
+      return target()->Read(offset, n, opts, result, scratch, dbg);
+    }
+
+   private:
+    ReadFault *fs_;
+    std::string name_;
+  };
+};
+
+}  // namespace
+
+// A read error in the middle of the term table ends the term scan. The seal
+// must fail instead of building the range index from the terms before it.
+TEST_F(InvertedIndexerSealErrorTest, ColumnSealFailsOnTermReadError) {
+  constexpr uint32_t kDocs = 100000;
+  Build(kDocs);
+  auto fault = std::make_shared<ReadFault>();
+  auto env = rocksdb::NewCompositeEnv(fault);
+  RocksdbContext ctx;
+  ctx.create_opts_.env = env.get();
+  ASSERT_TRUE(OpenContext(ctx).ok());
+
+  auto *terms = ctx.get_cf("seq" + INVERT_SUFFIX_TERMS);
+  std::vector<rocksdb::LiveFileMetaData> files;
+  ctx.db_->GetLiveFilesMetaData(&files);
+  for (const auto &f : files) {
+    if (f.column_family_name == terms->GetName()) {
+      ASSERT_TRUE(fault->file.empty()) << "expected one term table";
+      fault->file = f.name;
+    }
+  }
+  rocksdb::TablePropertiesCollection props;
+  ASSERT_TRUE(ctx.db_->GetPropertiesOfAllTables(terms, &props).ok());
+  ASSERT_EQ(props.size(), 1u);
+  fault->byte = props.begin()->second->data_size / 2;
+
+  auto seq = InvertedColumnIndexer::CreateAndOpen("seal", Fields()[0], ctx);
+  ASSERT_TRUE(seq);
+  fault->armed = true;
+  auto s = seq->seal();
+  fault->armed = false;
+  ASSERT_GT(fault->failed.load(), 0);
+  EXPECT_FALSE(s.ok());
+  EXPECT_FALSE(seq->is_sealed());
+
+  // Without the fault, the seal succeeds and range queries are exact.
+  ASSERT_TRUE(seq->seal().ok());
+  for (int32_t v : {14999, 50000, 85000}) {
+    auto gt = seq->search(Value(v), CompareOp::GT);
+    ASSERT_TRUE(gt);
+    EXPECT_EQ(gt->count(), kDocs - v - 1) << "seq > " << v;
+  }
+  seq.reset();
+  ASSERT_TRUE(ctx.close().ok());
 }
