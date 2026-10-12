@@ -15,10 +15,14 @@
 // Errors while an inverted index seals must reach the caller, and a column
 // must never be marked sealed with an incomplete range index.
 
+#include <algorithm>
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
 #include <gtest/gtest.h>
+#include <rocksdb/env.h>
+#include <rocksdb/file_system.h>
 #include "db/common/constants.h"
 #include "db/common/rocksdb_context.h"
 #include "db/index/column/inverted_column/inverted_codec.h"
@@ -140,4 +144,85 @@ TEST_F(InvertedIndexerSealErrorTest, SealFlushesItsDataBeforeTheMarker) {
 
   seq.reset();
   ASSERT_TRUE(ctx.close().ok());
+}
+
+namespace {
+
+// Test-only fault injection: fails the n-th MANIFEST sync after it is armed.
+class ManifestSyncFault : public rocksdb::FileSystemWrapper {
+ public:
+  ManifestSyncFault() : FileSystemWrapper(rocksdb::FileSystem::Default()) {}
+  const char *Name() const override {
+    return "ManifestSyncFault";
+  }
+
+  std::atomic<int> fail_at{0};
+  std::atomic<int> syncs{0};
+  std::atomic<int> failed{0};
+
+  rocksdb::IOStatus NewWritableFile(
+      const std::string &fname, const rocksdb::FileOptions &opts,
+      std::unique_ptr<rocksdb::FSWritableFile> *result,
+      rocksdb::IODebugContext *dbg) override {
+    auto s = target()->NewWritableFile(fname, opts, result, dbg);
+    if (s.ok() && fname.find("MANIFEST") != std::string::npos) {
+      result->reset(new File(std::move(*result), this));
+    }
+    return s;
+  }
+
+ private:
+  class File : public rocksdb::FSWritableFileOwnerWrapper {
+   public:
+    File(std::unique_ptr<rocksdb::FSWritableFile> &&file, ManifestSyncFault *fs)
+        : FSWritableFileOwnerWrapper(std::move(file)), fs_(fs) {}
+    rocksdb::IOStatus Sync(const rocksdb::IOOptions &opts,
+                           rocksdb::IODebugContext *dbg) override {
+      return fs_->Fail() ? rocksdb::IOStatus::IOError("injected")
+                         : target()->Sync(opts, dbg);
+    }
+    rocksdb::IOStatus Fsync(const rocksdb::IOOptions &opts,
+                            rocksdb::IODebugContext *dbg) override {
+      return fs_->Fail() ? rocksdb::IOStatus::IOError("injected")
+                         : target()->Fsync(opts, dbg);
+    }
+
+   private:
+    ManifestSyncFault *fs_;
+  };
+
+  bool Fail() {
+    if (fail_at <= 0 || ++syncs != fail_at) {
+      return false;
+    }
+    ++failed;
+    return true;
+  }
+};
+
+}  // namespace
+
+// reset_cf() drops the family and deletes its handle before it re-creates
+// the family. If the re-create fails, the deleted handle must not stay in
+// cf_handles_, where flush() and close() would use it.
+TEST_F(InvertedIndexerSealErrorTest, FailedResetKeepsNoDeletedHandle) {
+  auto fault = std::make_shared<ManifestSyncFault>();
+  auto env = rocksdb::NewCompositeEnv(fault);
+  RocksdbContext ctx;
+  ctx.create_opts_.env = env.get();
+  ASSERT_TRUE(ctx.create(kDir, std::vector<std::string>{"r"}).ok());
+  auto *dropped = ctx.get_cf("r");
+  ASSERT_NE(dropped, nullptr);
+
+  // MANIFEST sync 1 records the drop, sync 2 the re-create.
+  fault->fail_at = 2;
+  EXPECT_FALSE(ctx.reset_cf("r").ok());
+  fault->fail_at = 0;
+  ASSERT_EQ(fault->failed.load(), 1);
+
+  ASSERT_EQ(std::count(ctx.cf_handles_.begin(), ctx.cf_handles_.end(), dropped),
+            0);
+  EXPECT_EQ(ctx.get_cf("r"), nullptr);
+  // Uses every handle in cf_handles_. The injected error may make it fail.
+  ctx.close();
 }
