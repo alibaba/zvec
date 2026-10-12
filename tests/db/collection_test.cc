@@ -3463,6 +3463,10 @@ TEST_F(CollectionTest, Feature_Recovery_Orphan_Segment_Dirs_Removed) {
 }
 
 TEST_F(CollectionTest, Feature_Recovery_Orphan_Index_Dirs_Removed) {
+#ifdef __ANDROID__
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
+#endif
   namespace fs = std::filesystem;
   int doc_count = 1001;
 
