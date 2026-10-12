@@ -437,6 +437,11 @@ Status InvertedColumnIndexer::seal() {
   if (!status.ok()) {
     return status;
   }
+  // The data prepare_seal() wrote must be durable before the marker.
+  if (status = ctx_.flush(); !status.ok()) {
+    LOG_ERROR("Failed to flush %s before sealing it", id().c_str());
+    return status;
+  }
   return mark_sealed();
 }
 

@@ -140,6 +140,14 @@ Status InvertedIndexer::seal() {
     unsealed.push_back(indexer);
   }
 
+  // The indexes write without a WAL. Flush the prepared data before writing
+  // the markers that describe it, so that no crash keeps a marker without
+  // its data.
+  if (s = rocksdb_context_.flush(); !s.ok()) {
+    LOG_ERROR("Failed to flush %s during sealing", id().c_str());
+    return s;
+  }
+
   for (const auto &indexer : unsealed) {
     if (s = indexer->mark_sealed(); !s.ok()) {
       LOG_ERROR("Failed to seal %s", indexer->id().c_str());

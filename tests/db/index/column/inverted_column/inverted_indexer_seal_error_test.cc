@@ -111,3 +111,33 @@ TEST_F(InvertedIndexerSealErrorTest, SealReturnsColumnSealError) {
     EXPECT_TRUE(column->insert(5000, Value(1)).ok()) << field.name();
   }
 }
+
+// The indexes write without a WAL, so data is durable once its family is
+// flushed. When seal() writes the marker, everything the marker describes
+// must already be flushed.
+TEST_F(InvertedIndexerSealErrorTest, SealFlushesItsDataBeforeTheMarker) {
+  Build(5000);
+  RocksdbContext ctx;
+  ASSERT_TRUE(OpenContext(ctx).ok());
+  auto seq = InvertedColumnIndexer::CreateAndOpen("seal", Fields()[0], ctx);
+  ASSERT_TRUE(seq);
+  ASSERT_TRUE(seq->seal().ok());
+
+  auto unflushed = [&](const std::string &family) {
+    uint64_t active = 0, immutable = 0;
+    auto *cf = ctx.get_cf(family);
+    EXPECT_TRUE(ctx.db_->GetIntProperty(
+        cf, "rocksdb.num-entries-active-mem-table", &active));
+    EXPECT_TRUE(ctx.db_->GetIntProperty(
+        cf, "rocksdb.num-entries-imm-mem-tables", &immutable));
+    return active + immutable;
+  };
+  EXPECT_EQ(unflushed("seq" + INVERT_SUFFIX_TERMS), 0u);
+  EXPECT_EQ(unflushed("seq" + INVERT_SUFFIX_RANGES), 0u);
+  EXPECT_EQ(unflushed(INVERT_CDF), 0u);
+  // Only the marker itself is still in memory.
+  EXPECT_EQ(unflushed(rocksdb::kDefaultColumnFamilyName), 1u);
+
+  seq.reset();
+  ASSERT_TRUE(ctx.close().ok());
+}
