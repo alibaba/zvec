@@ -43,7 +43,7 @@ Status InvertedColumnIndexer::insert(uint32_t id, const std::string &value) {
     std::sort(encoded_values.begin(), encoded_values.end());
     rocksdb::WriteBatch write_batch;
     for (auto encoded_value : encoded_values) {
-      s = write_batch.merge(cf_terms_, encoded_value, encoded_id);
+      s = write_batch.Merge(cf_terms_, encoded_value, encoded_id);
       if (!s.ok()) {
         return Status::InternalError();
       }
@@ -56,12 +56,12 @@ Status InvertedColumnIndexer::insert(uint32_t id, const std::string &value) {
     }
   } else {
     std::string encoded_value = encode(value);
-    s = ctx_.db_->merge(ctx_.write_opts_, cf_terms_, encoded_value, encoded_id);
+    s = ctx_.db_->Merge(ctx_.write_opts_, cf_terms_, encoded_value, encoded_id);
     if (!s.ok()) {
       return Status::InternalError();
     }
     if (cf_reversed_terms_) {
-      s = ctx_.db_->merge(ctx_.write_opts_, cf_reversed_terms_,
+      s = ctx_.db_->Merge(ctx_.write_opts_, cf_reversed_terms_,
                           encode_reversed(value), encoded_id);
       if (!s.ok()) {
         return Status::InternalError();
@@ -99,7 +99,7 @@ Status InvertedColumnIndexer::insert(uint32_t id,
   std::sort(encoded_values.begin(), encoded_values.end());
   rocksdb::WriteBatch write_batch;
   for (auto encoded_value : encoded_values) {
-    s = write_batch.merge(cf_terms_, encoded_value, encoded_id);
+    s = write_batch.Merge(cf_terms_, encoded_value, encoded_id);
     if (!s.ok()) {
       return Status::InternalError();
     }
@@ -124,7 +124,7 @@ Status InvertedColumnIndexer::insert(uint32_t id, bool value) {
   std::string encoded_value = encode(value);
 
   auto s =
-      ctx_.db_->merge(ctx_.write_opts_, cf_terms_, encoded_value, encoded_id);
+      ctx_.db_->Merge(ctx_.write_opts_, cf_terms_, encoded_value, encoded_id);
   if (s.ok()) {
     update_max_id(id);
     return Status::OK();
@@ -163,10 +163,10 @@ Status InvertedColumnIndexer::insert(uint32_t id,
 
   rocksdb::WriteBatch write_batch;
   if (has_true) {
-    write_batch.merge(cf_terms_, encode(true), encoded_id);
+    write_batch.Merge(cf_terms_, encode(true), encoded_id);
   }
   if (has_false) {
-    write_batch.merge(cf_terms_, encode(false), encoded_id);
+    write_batch.Merge(cf_terms_, encode(false), encoded_id);
   }
   rs = ctx_.db_->Write(ctx_.write_opts_, &write_batch);
   if (rs.ok()) {
@@ -234,7 +234,7 @@ rocksdb::Status InvertedColumnIndexer::index_array_len(uint32_t array_id,
   std::string encoded_len = InvertedIndexCodec::Encode(
       std::string((char *)&len, sizeof(uint32_t)), DataType::UINT32);
 
-  return ctx_.db_->merge(ctx_.write_opts_, cf_array_len_, encoded_len,
+  return ctx_.db_->Merge(ctx_.write_opts_, cf_array_len_, encoded_len,
                          encoded_id);
 }
 
@@ -293,7 +293,7 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
     uint64_t range_key_begin_size = range_begin_key.size();
     range_key.append((char *)&range_key_begin_size, sizeof(uint64_t));
     std::string range_value_str;
-    s = InvertedIndexCodec::serialize(bitmap_range, &range_value_str);
+    s = InvertedIndexCodec::Serialize(bitmap_range, &range_value_str);
     if (!s.ok()) {
       LOG_ERROR("Failed to serialize bitmap");
       return Status::InternalError();
@@ -336,7 +336,7 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
 
   while (iter_term->Valid()) {
     term_count++;
-    s = InvertedIndexCodec::deserialize(iter_term->value().data(),
+    s = InvertedIndexCodec::Deserialize(iter_term->value().data(),
                                         iter_term->value().size(), &bitmap_cur);
     if (!s.ok()) {
       LOG_ERROR("Failed to deserialize bitmap for term[%s] from %s",

@@ -195,7 +195,7 @@ class CollectionTest : public ::testing::Test {
 
   void reopen() {
     collection_.reset();
-    auto result = Collection::open(col_path, options_);
+    auto result = Collection::Open(col_path, options_);
     ASSERT_TRUE(result.has_value()) << result.error().message();
     collection_ = std::move(result).value();
   }
@@ -369,14 +369,14 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_General) {
     ASSERT_TRUE(ailego::FileHelper::IsExist(path.c_str()));
 
     // reopen
-    result = Collection::open(path, options);
+    result = Collection::Open(path, options);
     ASSERT_TRUE(result.has_value());
     col = std::move(result.value());
     col.reset();
 
     // reopen with read-only
     options.read_only_ = true;
-    result = Collection::open(path, options);
+    result = Collection::Open(path, options);
     if (!result.has_value()) {
       std::cout << result.error().message() << std::endl;
     }
@@ -410,14 +410,14 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_General) {
     ASSERT_FALSE(col->optimize().ok());
 
     // two threads open with read_only
-    result = Collection::open(path, options);
+    result = Collection::Open(path, options);
     if (!result.has_value()) {
       std::cout << result.error().message() << std::endl;
     }
     ASSERT_TRUE(result.has_value());
     col = result.value();
 
-    auto result1 = Collection::open(path, options);
+    auto result1 = Collection::Open(path, options);
     if (!result1.has_value()) {
       std::cout << result1.error().message() << std::endl;
     }
@@ -461,7 +461,7 @@ TEST_F(CollectionTest, Feature_OpenReadOnly_WithReadOnlyLockFile) {
   ro_options.read_only_ = true;
   ro_options.enable_mmap_ = true;
 
-  auto result = Collection::open(col_path, ro_options);
+  auto result = Collection::Open(col_path, ro_options);
   if (!result.has_value()) {
     std::cout << "Open read-only failed: " << result.error().message()
               << std::endl;
@@ -542,7 +542,7 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_Empty) {
     collection.reset();
 
     // Reopen collection
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value())
         << "Failed to reopen collection at iteration " << i;
     collection = std::move(result.value());
@@ -626,7 +626,7 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_Repeated) {
     collection.reset();
 
     // Reopen collection
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value())
         << "Failed to reopen collection at iteration " << i;
     collection = std::move(result.value());
@@ -681,7 +681,7 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_MultiThread) {
   options.read_only_ = true;
   std::atomic<bool> has_error{false};
   auto open_readonly = [&]() {
-    auto coll = Collection::open(col_path, options);
+    auto coll = Collection::Open(col_path, options);
     if (!coll.has_value()) {
       LOG_ERROR("Failed to reopen collection: %s", coll.error().c_str());
       has_error.store(true);
@@ -856,7 +856,7 @@ TEST_F(CollectionTest, Feature_Insert_General) {
 
     collection.reset();
     // Reopen collection
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
@@ -1046,7 +1046,7 @@ TEST_F(CollectionTest, Feature_Insert_VectorIndex) {
 
     collection.reset();
     // Reopen collection
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
@@ -1130,7 +1130,7 @@ TEST_F(CollectionTest, Feature_Insert_SwitchSegment) {
 
     collection.reset();
     // Reopen collection
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
@@ -1176,7 +1176,7 @@ TEST_F(CollectionTest, Feature_Insert_SwitchSegment) {
 
     collection.reset();
     // Reopen collection
-    result = Collection::open(col_path, options);
+    result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
@@ -1276,7 +1276,7 @@ TEST_F(CollectionTest, Feature_Upsert_General) {
 
     collection.reset();
     // Reopen collection
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
@@ -1367,7 +1367,7 @@ TEST_F(CollectionTest, Feature_Upsert_Incremental) {
 
     collection.reset();
     // Reopen collection
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
@@ -1579,7 +1579,7 @@ TEST_F(CollectionTest, Feature_Update_General) {
       if (i % 100 == 0 || i == 1) {
         check_doc(i + 1);
         collection.reset();
-        auto result = Collection::open(col_path, options);
+        auto result = Collection::Open(col_path, options);
         if (!result.has_value()) {
           std::cout << result.error().message() << std::endl;
         }
@@ -1590,7 +1590,7 @@ TEST_F(CollectionTest, Feature_Update_General) {
     }
 
     collection.reset();
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     if (!result.has_value()) {
       std::cout << result.error().message() << std::endl;
     }
@@ -1689,7 +1689,7 @@ TEST_F(CollectionTest, Feature_Update_Incremental) {
       if (i % 100 == 0 || i == 1) {
         check_doc(i + 1);
         collection.reset();
-        auto result = Collection::open(col_path, options);
+        auto result = Collection::Open(col_path, options);
         if (!result.has_value()) {
           std::cout << result.error().message() << std::endl;
         }
@@ -1700,7 +1700,7 @@ TEST_F(CollectionTest, Feature_Update_Incremental) {
     }
 
     collection.reset();
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     if (!result.has_value()) {
       std::cout << result.error().message() << std::endl;
     }
@@ -1931,7 +1931,7 @@ TEST_F(CollectionTest, Feature_Delete_General) {
       if (i % 100 == 0 || i == 0) {
         check_doc(i + 1);
         collection.reset();
-        auto result = Collection::open(col_path, options);
+        auto result = Collection::Open(col_path, options);
         if (!result.has_value()) {
           std::cout << result.error().message() << std::endl;
         }
@@ -1945,7 +1945,7 @@ TEST_F(CollectionTest, Feature_Delete_General) {
     }
 
     collection.reset();
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     if (!result.has_value()) {
       std::cout << result.error().message() << std::endl;
     }
@@ -2077,7 +2077,7 @@ TEST_F(CollectionTest, Feature_DeleteByFilter_General) {
 
         check_doc(i + 1);
         collection.reset();
-        auto result = Collection::open(col_path, options);
+        auto result = Collection::Open(col_path, options);
         if (!result.has_value()) {
           std::cout << result.error().message() << std::endl;
         }
@@ -2091,7 +2091,7 @@ TEST_F(CollectionTest, Feature_DeleteByFilter_General) {
     }
 
     collection.reset();
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     if (!result.has_value()) {
       std::cout << result.error().message() << std::endl;
     }
@@ -2168,7 +2168,7 @@ TEST_F(CollectionTest, Feature_DeleteByFilter_ScalarIndex) {
 
         check_doc(i + 1);
         collection.reset();
-        auto result = Collection::open(col_path, options);
+        auto result = Collection::Open(col_path, options);
         if (!result.has_value()) {
           std::cout << result.error().message() << std::endl;
         }
@@ -2182,7 +2182,7 @@ TEST_F(CollectionTest, Feature_DeleteByFilter_ScalarIndex) {
     }
 
     collection.reset();
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     if (!result.has_value()) {
       std::cout << result.error().message() << std::endl;
     }
@@ -2510,7 +2510,7 @@ TEST_F(CollectionTest, Feature_CreateIndex_Vector) {
 
     collection.reset();
 
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
 
     collection = result.value();
@@ -2618,7 +2618,7 @@ TEST_F(CollectionTest, Feature_CreateIndex_Scalar) {
 
     collection.reset();
 
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
 
     collection = result.value();
@@ -2737,7 +2737,7 @@ TEST_F(CollectionTest, Feature_DropIndex_General) {
 
     collection.reset();
 
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
 
     collection = std::move(result.value());
@@ -2833,7 +2833,7 @@ TEST_F(CollectionTest, Feature_DropIndex_Vector) {
     ASSERT_EQ(stats.index_completeness[field_name], 1);
 
     collection.reset();
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
@@ -2905,7 +2905,7 @@ TEST_F(CollectionTest, Feature_DropIndex_Scalar) {
     ASSERT_EQ(stats.doc_count, doc_count);
 
     collection.reset();
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
@@ -2930,7 +2930,7 @@ TEST_F(CollectionTest, Feature_DropIndex_Scalar) {
     ASSERT_TRUE(collection->optimize().ok());
 
     collection.reset();
-    auto reopen_result = Collection::open(col_path, options);
+    auto reopen_result = Collection::Open(col_path, options);
     ASSERT_TRUE(reopen_result.has_value()) << reopen_result.error().message();
     collection = std::move(reopen_result.value());
 
@@ -2947,7 +2947,7 @@ TEST_F(CollectionTest, Feature_DropIndex_Scalar) {
     ASSERT_EQ(*expected_schema, schema_after_drop.value());
 
     collection.reset();
-    reopen_result = Collection::open(col_path, options);
+    reopen_result = Collection::Open(col_path, options);
     ASSERT_TRUE(reopen_result.has_value()) << reopen_result.error().message();
     collection = std::move(reopen_result.value());
 
@@ -2990,7 +2990,7 @@ TEST_F(CollectionTest,
   ASSERT_TRUE(collection->optimize().ok());
 
   collection.reset();
-  auto reopen_result = Collection::open(col_path, options);
+  auto reopen_result = Collection::Open(col_path, options);
   ASSERT_TRUE(reopen_result.has_value()) << reopen_result.error().message();
   collection = std::move(reopen_result.value());
 
@@ -3005,7 +3005,7 @@ TEST_F(CollectionTest,
   ASSERT_FALSE(s.ok());
 
   collection.reset();
-  reopen_result = Collection::open(col_path, options);
+  reopen_result = Collection::Open(col_path, options);
   ASSERT_TRUE(reopen_result.has_value()) << reopen_result.error().message();
   collection = std::move(reopen_result.value());
 
@@ -3059,7 +3059,7 @@ TEST_F(CollectionTest, Feature_IndexDDL_WritingSegmentReopen) {
     ASSERT_TRUE(s.ok()) << s.message();
 
     collection.reset();
-    auto reopen_result = Collection::open(col_path, options);
+    auto reopen_result = Collection::Open(col_path, options);
     ASSERT_TRUE(reopen_result.has_value()) << reopen_result.error().message();
     collection = std::move(reopen_result.value());
 
@@ -3208,7 +3208,7 @@ TEST_F(CollectionTest, Feature_Optimize_General) {
     std::cout << "check success 2" << std::endl;
 
     collection.reset();
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
@@ -3443,7 +3443,7 @@ TEST_F(CollectionTest, Feature_Optimize_Superseded_Index_File_Removed) {
   // the removed file must not be one the collection still needs: a fresh
   // open must read every doc correctly through the new index
   collection.reset();
-  auto result = Collection::open(col_path, options);
+  auto result = Collection::Open(col_path, options);
   ASSERT_TRUE(result.has_value());
   collection = std::move(result.value());
 
@@ -3512,7 +3512,7 @@ TEST_F(CollectionTest, Feature_Recovery_Orphan_Segment_Dirs_Removed) {
   // anything.
   {
     auto ro_options = CollectionOptions{true, true, 64 * 1024 * 1024};
-    auto ro_result = Collection::open(col_path, ro_options);
+    auto ro_result = Collection::Open(col_path, ro_options);
     ASSERT_TRUE(ro_result.has_value());
     for (const auto &dir : {orphan_next, orphan_far, orphan_tmp}) {
       ASSERT_TRUE(fs::exists(dir));
@@ -3521,7 +3521,7 @@ TEST_F(CollectionTest, Feature_Recovery_Orphan_Segment_Dirs_Removed) {
 
   // A read-write open holds the exclusive file lock and removes every
   // unreferenced segment directory and tmp residue.
-  auto result = Collection::open(col_path, options);
+  auto result = Collection::Open(col_path, options);
   ASSERT_TRUE(result.has_value());
   collection = std::move(result.value());
   for (const auto &dir : {orphan_next, orphan_far, orphan_tmp}) {
@@ -3599,7 +3599,7 @@ TEST_F(CollectionTest, Feature_Optimize_Compacted_Segment_Directories_Removed) {
 
   // The cleanup must not remove data needed by the replacement segment.
   collection.reset();
-  auto reopened = Collection::open(col_path, options);
+  auto reopened = Collection::Open(col_path, options);
   ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
   ASSERT_EQ(reopened.value()->stats().value().doc_count, 2000u);
 }
@@ -3788,7 +3788,7 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
     // Phase 7: reopen the collection and verify the persisted state is
     // still fully built and fetchable.
     collection.reset();
-    auto reopen_result = Collection::open(col_path, options);
+    auto reopen_result = Collection::Open(col_path, options);
     ASSERT_TRUE(reopen_result.has_value());
     collection = std::move(reopen_result.value());
 
@@ -4085,7 +4085,7 @@ TEST_F(CollectionTest, Feature_OmegaCollectionInterfaceLifecycle) {
   ASSERT_TRUE(write_result.value()[0].ok())
       << write_result.value()[0].message();
 
-  auto delete_result = collection->Delete({TestHelper::MakePK(2)});
+  auto delete_result = collection->delete_({TestHelper::MakePK(2)});
   ASSERT_TRUE(delete_result.has_value()) << delete_result.error().message();
   ASSERT_TRUE(delete_result.value()[0].ok())
       << delete_result.value()[0].message();
@@ -4114,7 +4114,7 @@ TEST_F(CollectionTest, Feature_OmegaCollectionInterfaceLifecycle) {
   EXPECT_FALSE(OmegaModelFileExists(col_path, "model.txt"));
 
   collection.reset();
-  auto reopen_result = Collection::open(col_path, options);
+  auto reopen_result = Collection::Open(col_path, options);
   ASSERT_TRUE(reopen_result.has_value()) << reopen_result.error().message();
   collection = std::move(reopen_result.value());
 
@@ -4207,7 +4207,7 @@ TEST_F(CollectionTest, Feature_Optimize_Delete) {
   ASSERT_TRUE(s.ok());
 
   collection.reset();
-  auto result = Collection::open(col_path, options);
+  auto result = Collection::Open(col_path, options);
   ASSERT_TRUE(result.has_value());
   collection = std::move(result.value());
 
@@ -4265,7 +4265,7 @@ TEST_F(CollectionTest, Feature_Optimize_NormalSchema) {
   std::cout << "check success 2" << std::endl;
 
   collection.reset();
-  auto result = Collection::open(col_path, options);
+  auto result = Collection::Open(col_path, options);
   ASSERT_TRUE(result.has_value());
   collection = std::move(result.value());
 
@@ -4335,7 +4335,7 @@ TEST_F(CollectionTest, Feature_Optimize_ExceedMaxDocCount) {
       std::cout << "check success 2" << std::endl;
 
       collection.reset();
-      auto result = Collection::open(col_path, options);
+      auto result = Collection::Open(col_path, options);
       ASSERT_TRUE(result.has_value());
       collection = std::move(result.value());
 
@@ -4380,7 +4380,7 @@ TEST_F(CollectionTest, Feature_Optimize_ExceedMaxDocCount) {
     ASSERT_FLOAT_EQ(stats.index_completeness["dense_fp32"], 1.0);
 
     collection.reset();
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
@@ -4594,7 +4594,7 @@ TEST_F(CollectionTest, Feature_Optimize_Delete_RowMapping) {
     CheckRowMapping(collection, vector_positions);
 
     collection.reset();
-    result = Collection::open(col_path, CollectionOptions{true, enable_mmap});
+    result = Collection::Open(col_path, CollectionOptions{true, enable_mmap});
     ASSERT_TRUE(result.has_value()) << result.error().message();
     CheckRowMapping(result.value(), vector_positions);
   };
@@ -4632,7 +4632,7 @@ TEST_F(CollectionTest, Feature_Optimize_Upsert_RowMapping) {
     CheckRowMapping(collection, vector_positions);
 
     collection.reset();
-    result = Collection::open(col_path, CollectionOptions{true, enable_mmap});
+    result = Collection::Open(col_path, CollectionOptions{true, enable_mmap});
     ASSERT_TRUE(result.has_value()) << result.error().message();
     CheckRowMapping(result.value(), vector_positions);
   };
@@ -4672,7 +4672,7 @@ TEST_F(CollectionTest, Feature_CreateIndex_Delete_RowMapping) {
     CheckRowMapping(collection, vector_positions);
 
     collection.reset();
-    result = Collection::open(col_path, CollectionOptions{true, enable_mmap});
+    result = Collection::Open(col_path, CollectionOptions{true, enable_mmap});
     ASSERT_TRUE(result.has_value()) << result.error().message();
     CheckRowMapping(result.value(), vector_positions);
   };
@@ -4764,7 +4764,7 @@ TEST_F(CollectionTest, Feature_Optimize_IndexOperation) {
 
   // reset collection
   collection.reset();
-  auto result = Collection::open(col_path, options);
+  auto result = Collection::Open(col_path, options);
   collection = std::move(result.value());
 
   check_doc(max_doc_per_count * 3 / 2);
@@ -6016,7 +6016,7 @@ TEST_F(CollectionTest, Feature_AddColumn_CornerCase) {
 
   {
     // open collection and add invalid column
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     auto collection = result.value();
 
@@ -6035,7 +6035,7 @@ TEST_F(CollectionTest, Feature_AddColumn_CornerCase) {
 
   {
     // open collection and add one column
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     auto collection = result.value();
 
@@ -6052,7 +6052,7 @@ TEST_F(CollectionTest, Feature_AddColumn_CornerCase) {
 
   {
     // open collection and insert more doc
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     auto collection = result.value();
     auto new_schema = collection->schema().value();
@@ -6091,7 +6091,7 @@ TEST_F(CollectionTest, Feature_AddColumn_CornerCase) {
 
   {
     // open collection and add one more column
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     auto collection = result.value();
 
@@ -6230,7 +6230,7 @@ TEST_F(CollectionTest, Feature_AlterColumn_CornerCase) {
 
   {
     // open collection and alter column
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     auto collection = result.value();
 
@@ -6249,7 +6249,7 @@ TEST_F(CollectionTest, Feature_AlterColumn_CornerCase) {
 
   {
     // open collection and insert more doc
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     auto collection = result.value();
 
@@ -6333,7 +6333,7 @@ TEST_F(CollectionTest, Feature_AddNullableColumn_MultiSegment) {
 
   // Reopen to ensure segments are persisted
   collection.reset();
-  auto result = Collection::open(col_path, options);
+  auto result = Collection::Open(col_path, options);
   ASSERT_TRUE(result.has_value());
   collection = result.value();
 
@@ -6403,7 +6403,7 @@ TEST_F(CollectionTest, Feature_AddColumn_MultiSegment_MixedOps) {
 
   // Reopen
   collection.reset();
-  auto result = Collection::open(col_path, options);
+  auto result = Collection::Open(col_path, options);
   ASSERT_TRUE(result.has_value());
   collection = result.value();
 
@@ -6476,7 +6476,7 @@ TEST_F(CollectionTest, Feature_AlterColumn_MultiSegment) {
 
   // Reopen
   collection.reset();
-  auto result = Collection::open(col_path, options);
+  auto result = Collection::Open(col_path, options);
   ASSERT_TRUE(result.has_value());
   collection = result.value();
 
@@ -6537,7 +6537,7 @@ TEST_F(CollectionTest, Feature_DropColumn_MultiSegment) {
 
   // Reopen
   collection.reset();
-  auto result = Collection::open(col_path, options);
+  auto result = Collection::Open(col_path, options);
   ASSERT_TRUE(result.has_value());
   collection = result.value();
 
@@ -6594,7 +6594,7 @@ TEST_F(CollectionTest, Feature_AddNullableColumn_ReopenVerifyNull) {
 
   // Close and reopen
   collection.reset();
-  auto result = Collection::open(col_path, options);
+  auto result = Collection::Open(col_path, options);
   ASSERT_TRUE(result.has_value());
   collection = result.value();
 
@@ -6699,7 +6699,7 @@ TEST_F(CollectionTest, Feature_AddColumn_WithDeleteOnlyWritingSegment) {
   ASSERT_TRUE(s.ok()) << s.message();
 
   collection.reset();
-  auto open_result = Collection::open(col_path, options);
+  auto open_result = Collection::Open(col_path, options);
   ASSERT_TRUE(open_result.has_value()) << open_result.error().message();
   collection = open_result.value();
 
@@ -6732,7 +6732,7 @@ TEST_F(CollectionTest, Feature_ColumnDDL_ChainedOps_MultiSegment) {
 
   // Reopen
   collection.reset();
-  auto result = Collection::open(col_path, options);
+  auto result = Collection::Open(col_path, options);
   ASSERT_TRUE(result.has_value());
   collection = result.value();
 
@@ -6965,7 +6965,7 @@ TEST_F(CollectionTest, Feature_Column_MixOperation_Empty) {
 
   {
     // open collection and do mix operation
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     auto collection = result.value();
 
@@ -6984,7 +6984,7 @@ TEST_F(CollectionTest, Feature_Column_MixOperation_Empty) {
 
   {
     // open collection and do mix operation
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     auto collection = result.value();
 
@@ -7006,7 +7006,7 @@ TEST_F(CollectionTest, Feature_Column_MixOperation_Empty) {
 
   {
     // open collection and do mix operation
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     auto collection = result.value();
 
@@ -7084,7 +7084,7 @@ TEST_F(CollectionTest, Feature_Optimize_HNSW_RABITQ) {
     std::cout << "check success 2" << std::endl;
 
     collection.reset();
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
@@ -7188,7 +7188,7 @@ TEST_F(CollectionTest, Feature_Optimize_IVF_RABITQ) {
     check_query_with_vector();
 
     collection.reset();
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
@@ -7263,7 +7263,7 @@ TEST_F(CollectionTest, Feature_Optimize_DiskAnn) {
     std::cout << "check success 2" << std::endl;
 
     collection.reset();
-    auto result = Collection::open(col_path, options);
+    auto result = Collection::Open(col_path, options);
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
@@ -7318,7 +7318,7 @@ TEST_F(CollectionTest, CornerCase_CreateAndOpen) {
       ASSERT_TRUE(result.has_value());
 
       std::cout << "Collection::Open again" << std::endl;
-      auto new_result = Collection::open("invalid_path", CollectionOptions{});
+      auto new_result = Collection::Open("invalid_path", CollectionOptions{});
       ASSERT_FALSE(new_result.has_value());
 
       result.value().reset();
@@ -7372,7 +7372,7 @@ TEST_F(CollectionTest, CornerCase_CreateAndOpen) {
     {
       std::cout << "Collection::Open case 1" << std::endl;
       // open collection with non-exist path
-      auto result = Collection::open("non-exist-path", CollectionOptions{});
+      auto result = Collection::Open("non-exist-path", CollectionOptions{});
       ASSERT_FALSE(result.has_value());
     }
 
@@ -7381,7 +7381,7 @@ TEST_F(CollectionTest, CornerCase_CreateAndOpen) {
       // open collection with invalid path which contains no manifest
       FileHelper::RemoveDirectory("invalid_path");
       FileHelper::CreateDirectory("invalid_path");
-      auto result = Collection::open("invalid_path", CollectionOptions{});
+      auto result = Collection::Open("invalid_path", CollectionOptions{});
       ASSERT_FALSE(result.has_value());
       FileHelper::RemoveDirectory("invalid_path");
     }
@@ -7674,7 +7674,7 @@ TEST_F(CollectionTest, Feature_NoVectorCollection_FtsLifecycle) {
   col.reset();
   CollectionOptions ro_options;
   ro_options.read_only_ = true;
-  auto reopen_res = Collection::open(col_path, ro_options);
+  auto reopen_res = Collection::Open(col_path, ro_options);
   ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
   col = std::move(reopen_res.value());
 
@@ -7817,7 +7817,7 @@ TEST_F(CollectionTest, Feature_NoVectorCollection_FtsReopenWithoutOptimize) {
   col.reset();
 
   CollectionOptions ro_options{true, true};
-  auto reopen_res = Collection::open(col_path, ro_options);
+  auto reopen_res = Collection::Open(col_path, ro_options);
   ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
   col = std::move(reopen_res.value());
 
@@ -7868,7 +7868,7 @@ TEST_F(CollectionTest, Feature_NoVectorCollection_FtsReopenThenInsert) {
   col.reset();
 
   CollectionOptions rw_options{false, true};
-  auto reopen_res = Collection::open(col_path, rw_options);
+  auto reopen_res = Collection::Open(col_path, rw_options);
   ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
   col = std::move(reopen_res.value());
 
@@ -7880,7 +7880,7 @@ TEST_F(CollectionTest, Feature_NoVectorCollection_FtsReopenThenInsert) {
   col.reset();
 
   CollectionOptions ro_options{true, true};
-  reopen_res = Collection::open(col_path, ro_options);
+  reopen_res = Collection::Open(col_path, ro_options);
   ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
   col = std::move(reopen_res.value());
 
@@ -7930,7 +7930,7 @@ TEST_F(CollectionTest, Feature_DropFtsIndex_FailureKeepsPersistedOldSchema) {
   ASSERT_TRUE(col->optimize().ok());
 
   col.reset();
-  auto reopen_res = Collection::open(col_path, options);
+  auto reopen_res = Collection::Open(col_path, options);
   ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
   col = std::move(reopen_res.value());
 
@@ -7945,7 +7945,7 @@ TEST_F(CollectionTest, Feature_DropFtsIndex_FailureKeepsPersistedOldSchema) {
   ASSERT_FALSE(s.ok());
 
   col.reset();
-  reopen_res = Collection::open(col_path, options);
+  reopen_res = Collection::Open(col_path, options);
   ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
   col = std::move(reopen_res.value());
 
@@ -8059,7 +8059,7 @@ TEST_F(CollectionTest, Feature_CreateOrDropFtsIndex) {
 
     // Reopen and verify persistence.
     col.reset();
-    auto reopen_res = Collection::open(col_path, options);
+    auto reopen_res = Collection::Open(col_path, options);
     ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
     col = std::move(reopen_res.value());
 
@@ -8101,7 +8101,7 @@ TEST_F(CollectionTest, Feature_CreateOrDropFtsIndex) {
 
     // Reopen and verify FTS is still gone.
     col.reset();
-    auto reopen_res = Collection::open(col_path, options);
+    auto reopen_res = Collection::Open(col_path, options);
     ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
     col = std::move(reopen_res.value());
 
@@ -8146,7 +8146,7 @@ TEST_F(CollectionTest, Feature_CreateOrDropFtsIndex) {
     ASSERT_TRUE(col->optimize().ok());
 
     col.reset();
-    auto reopen_res = Collection::open(col_path, options);
+    auto reopen_res = Collection::Open(col_path, options);
     ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
     col = std::move(reopen_res.value());
 
@@ -8163,7 +8163,7 @@ TEST_F(CollectionTest, Feature_CreateOrDropFtsIndex) {
         nullptr);
 
     col.reset();
-    reopen_res = Collection::open(col_path, options);
+    reopen_res = Collection::Open(col_path, options);
     ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
     col = std::move(reopen_res.value());
 
@@ -8229,7 +8229,7 @@ TEST_F(CollectionTest, Feature_CreateOrDropFtsIndex) {
 
     // Reopen and verify final state (no FTS).
     col.reset();
-    auto reopen_res = Collection::open(col_path, options);
+    auto reopen_res = Collection::Open(col_path, options);
     ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
     col = std::move(reopen_res.value());
 
@@ -8285,7 +8285,7 @@ TEST_F(CollectionTest, Feature_CreateOrDropFtsIndex) {
 
     // Reopen and verify persistence.
     col.reset();
-    auto reopen_res = Collection::open(col_path, options);
+    auto reopen_res = Collection::Open(col_path, options);
     ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
     col = std::move(reopen_res.value());
 

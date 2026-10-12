@@ -69,7 +69,7 @@ BaseIndexParam::Pointer CreateOmegaIndexParam() {
       .with_dimension(kDimension)
       .with_is_sparse(false)
       .with_m(8)
-      .WithEFConstruction(64)
+      .with_ef_construction(64)
       .build();
 }
 
@@ -80,11 +80,11 @@ BaseIndexParam::Pointer CreateTrainableOmegaIndexParam() {
       .with_dimension(kDimension)
       .with_is_sparse(false)
       .with_m(8)
-      .WithEFConstruction(64)
-      .WithMinVectorThreshold(1)
-      .WithNumTrainingQueries(32)
-      .WithEFTraining(64)
-      .WithEFGroundTruth(64)
+      .with_ef_construction(64)
+      .with_min_vector_threshold(1)
+      .with_num_training_queries(32)
+      .with_ef_training(64)
+      .with_ef_groundtruth(64)
       .build();
 }
 

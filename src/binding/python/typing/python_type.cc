@@ -16,7 +16,7 @@
 
 namespace zvec {
 
-void ZVecPyTyping::initialize(pybind11::module_ &parent) {
+void ZVecPyTyping::Initialize(pybind11::module_ &parent) {
   auto m = parent.def_submodule(
       "typing", "This module contains the basic data types of Zvec");
   // binding base types

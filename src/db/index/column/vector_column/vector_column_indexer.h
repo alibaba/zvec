@@ -61,10 +61,10 @@ class VectorColumnIndexer {
 
   Status flush();
 
-  // Close will call flush()
+  // Close will call Flush()
   Status close();
 
-  // Destroy will call close() and remove index file
+  // Destroy will call Close() and remove index file
   Status destroy();
 
 

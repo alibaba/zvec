@@ -496,17 +496,17 @@ class ProximaEngineHelper {
         auto db_index_params = dynamic_cast<const OmegaIndexParams *>(
             field_schema.index_params().get());
         index_param_builder->with_m(db_index_params->m());
-        index_param_builder->WithEFConstruction(
+        index_param_builder->with_ef_construction(
             db_index_params->ef_construction());
-        index_param_builder->WithMinVectorThreshold(
+        index_param_builder->with_min_vector_threshold(
             db_index_params->min_vector_threshold());
-        index_param_builder->WithNumTrainingQueries(
+        index_param_builder->with_num_training_queries(
             db_index_params->num_training_queries());
-        index_param_builder->WithEFTraining(db_index_params->ef_training());
-        index_param_builder->WithWindowSize(db_index_params->window_size());
-        index_param_builder->WithEFGroundTruth(
+        index_param_builder->with_ef_training(db_index_params->ef_training());
+        index_param_builder->with_window_size(db_index_params->window_size());
+        index_param_builder->with_ef_groundtruth(
             db_index_params->ef_groundtruth());
-        index_param_builder->WithKTrain(db_index_params->k_train());
+        index_param_builder->with_k_train(db_index_params->k_train());
         return index_param_builder->build();
       }
 

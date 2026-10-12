@@ -465,7 +465,8 @@ struct OmegaIndexParam : public HNSWIndexParam {
   }
 
  protected:
-  bool deserialize_from_json_object(const ailego::JsonObject &json_obj) override;
+  bool deserialize_from_json_object(
+      const ailego::JsonObject &json_obj) override;
   ailego::JsonObject serialize_to_json_object(
       bool omit_empty_value = false) const override;
 };

@@ -87,7 +87,8 @@ class ZVEC_API HnswQueryParams : public QueryParams {
       uint32_t prefetch_lines = core_interface::kDefaultPrefetchLines,
       float scale_factor = 0.0f)
       : HnswQueryParams(IndexType::HNSW, ef, radius, is_linear,
-                        is_using_refiner, prefetch_offset, prefetch_lines, scale_factor) {}
+                        is_using_refiner, prefetch_offset, prefetch_lines,
+                        scale_factor) {}
 
   ~HnswQueryParams() override = default;
 

@@ -15,6 +15,10 @@
 #include "omega_model_trainer.h"
 #include <algorithm>
 #include <chrono>
+#if (defined(__GNUC__) || defined(__clang__)) && \
+    (defined(__x86_64__) || defined(__i386__) || defined(__amd64__))
+#include <mm_malloc.h>
+#endif
 #include <omega/omega_trainer.h>
 #include <zvec/ailego/logger/logger.h>
 

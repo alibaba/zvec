@@ -137,7 +137,7 @@ std::pair<std::string, std::string> serialize_sparse_vector(
   return {std::move(indices_buf), std::move(values_buf)};
 }
 
-void ZVecPyParams::initialize(pybind11::module_ &parent) {
+void ZVecPyParams::Initialize(pybind11::module_ &parent) {
   auto m =
       parent.def_submodule("param", "This module contains the params of Zvec");
 

@@ -572,7 +572,7 @@ bool PqQuantizerParam::deserialize_from_json_object(
   return true;
 }
 
-// bool BaseIndexQueryParam::deserialize_from_json_object(
+// bool BaseIndexQueryParam::DeserializeFromJsonObject(
 //     const ailego::JsonObject &json_obj) {
 //   DESERIALIZE_ENUM_FIELD(json_obj, index_type, IndexType);
 //   DESERIALIZE_VALUE_FIELD(json_obj, topk);
@@ -582,7 +582,7 @@ bool PqQuantizerParam::deserialize_from_json_object(
 //   return true;
 // }
 
-// ailego::JsonObject BaseIndexQueryParam::serialize_to_json_object(
+// ailego::JsonObject BaseIndexQueryParam::SerializeToJsonObject(
 //     bool omit_empty_value) const {
 //   ailego::JsonObject json_obj;
 //   if (!omit_empty_value || index_type != IndexType::kNone) {
@@ -604,9 +604,9 @@ bool PqQuantizerParam::deserialize_from_json_object(
 //   return json_obj;
 // }
 
-// bool FlatQueryParam::deserialize_from_json_object(
+// bool FlatQueryParam::DeserializeFromJsonObject(
 //     const ailego::JsonObject &json_obj) {
-//   if (!BaseIndexQueryParam::deserialize_from_json_object(json_obj)) {
+//   if (!BaseIndexQueryParam::DeserializeFromJsonObject(json_obj)) {
 //     return false;
 //   }
 //   if (index_type != IndexType::kFlat) {
@@ -616,16 +616,16 @@ bool PqQuantizerParam::deserialize_from_json_object(
 //   return true;
 // }
 
-// ailego::JsonObject FlatQueryParam::serialize_to_json_object(
+// ailego::JsonObject FlatQueryParam::SerializeToJsonObject(
 //     bool omit_empty_value) const {
 //   auto json_obj =
-//       BaseIndexQueryParam::serialize_to_json_object(omit_empty_value);
+//       BaseIndexQueryParam::SerializeToJsonObject(omit_empty_value);
 //   return json_obj;
 // }
 
-// bool HNSWQueryParam::deserialize_from_json_object(
+// bool HNSWQueryParam::DeserializeFromJsonObject(
 //     const ailego::JsonObject &json_obj) {
-//   if (!BaseIndexQueryParam::deserialize_from_json_object(json_obj)) {
+//   if (!BaseIndexQueryParam::DeserializeFromJsonObject(json_obj)) {
 //     return false;
 //   }
 //   if (index_type != IndexType::kHNSW) {
@@ -636,10 +636,10 @@ bool PqQuantizerParam::deserialize_from_json_object(
 //   return true;
 // }
 
-// ailego::JsonObject HNSWQueryParam::serialize_to_json_object(
+// ailego::JsonObject HNSWQueryParam::SerializeToJsonObject(
 //     bool omit_empty_value) const {
 //   auto json_obj =
-//       BaseIndexQueryParam::serialize_to_json_object(omit_empty_value);
+//       BaseIndexQueryParam::SerializeToJsonObject(omit_empty_value);
 //   if (!omit_empty_value || ef_search != 0) {
 //     json_obj.set("ef_search", ailego::JsonValue(ef_search));
 //   }

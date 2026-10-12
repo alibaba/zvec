@@ -4904,7 +4904,7 @@ zvec_error_code_t zvec_collection_open(const char *path,
         collection_options.read_only_ = opts->read_only_;
       }
 
-      auto result = zvec::Collection::open(path, collection_options);
+      auto result = zvec::Collection::Open(path, collection_options);
       zvec_error_code_t error_code = handle_expected_result(result);
 
       if (error_code == ZVEC_OK) {

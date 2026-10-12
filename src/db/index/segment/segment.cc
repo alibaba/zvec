@@ -70,7 +70,7 @@ void global_init() {
   static std::once_flag once;
   // run once
   std::call_once(once, []() {
-    auto status = arrow::compute::initialize();
+    auto status = arrow::compute::Initialize();
     if (!status.ok()) {
       LOG_ERROR("arrow compute init failed: [%s]", status.ToString().c_str());
       abort();
@@ -270,7 +270,7 @@ class SegmentImpl : public Segment,
   Status drop_column(const std::string &column_name) override;
 
  public:
-  Status open(const SegmentOptions &options);
+  Status Open(const SegmentOptions &options);
   Status create(const SegmentOptions &options, uint64_t min_doc_id);
 
  private:
@@ -278,7 +278,7 @@ class SegmentImpl : public Segment,
   Status cleanup();
   bool ready_for_dump_block();
 
-  // Helper functions for open()
+  // Helper functions for Open()
   Status load_persist_scalar_blocks();
   Status load_scalar_index_blocks(bool create = false);
   Status load_vector_index_blocks();
@@ -489,7 +489,7 @@ bool SegmentImpl::SegmentIndexFilter::is_filtered(uint64_t id) const {
   return false;
 }
 
-Status SegmentImpl::open(const SegmentOptions &options) {
+Status SegmentImpl::Open(const SegmentOptions &options) {
   options_ = options;
   options_.enable_mmap_ = version_manager_->get_current_version().enable_mmap();
 
@@ -1557,7 +1557,7 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
 
   if (vector_indexer->GetTrainingCapability() != nullptr) {
     LOG_INFO("Delegating OMEGA training to core index for field '%s'",
-             column.c_str());
+             field.name().c_str());
     if (vector_indexer->core_index()->train() != 0) {
       return tl::make_unexpected(
           Status::InternalError("Failed to train OMEGA model in core"));
@@ -2149,7 +2149,7 @@ Status SegmentImpl::reload_scalar_index(
 
 Status SegmentImpl::dump() {
   // Exclusive: flush() below resets memory_store_ and rewrites persist_stores_,
-  // the block metadata and the indexer maps. Lock order matches insert (the
+  // the block metadata and the indexer maps. Lock order matches Insert (the
   // caller already holds the collection's exclusive write_mtx_).
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
 
@@ -2975,7 +2975,7 @@ arrow::Status SegmentImpl::CombinedRecordBatchReader::ReadNext(
       ARROW_RETURN_NOT_OK(builder.Finish(&segment_row_id_array));
 
       auto result =
-          (*batch)->add_column(segment_row_id_output_col_index_,
+          (*batch)->AddColumn(segment_row_id_output_col_index_,
                               projected_schema_->GetFieldByName(LOCAL_ROW_ID),
                               std::move(segment_row_id_array));
       if (!result.ok()) {
@@ -4598,7 +4598,7 @@ Result<Segment::Ptr> Segment::CreateAndOpen(
   return segment;
 }
 
-Result<Segment::Ptr> Segment::open(const std::string &path,
+Result<Segment::Ptr> Segment::Open(const std::string &path,
                                    const CollectionSchema &schema,
                                    const SegmentMeta &segment_meta,
                                    const IDMap::Ptr &id_map,
@@ -4615,7 +4615,7 @@ Result<Segment::Ptr> Segment::open(const std::string &path,
         "Segment open failed: segment path not found [", segment_path, "]"));
   }
 
-  auto s = segment->open(options);
+  auto s = segment->Open(options);
   CHECK_RETURN_STATUS_EXPECTED(s);
 
   return segment;

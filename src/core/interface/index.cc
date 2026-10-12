@@ -1224,6 +1224,7 @@ int Index::_collect_dense_result(
       }
       if (revert_err) return revert_err;
     }
+    _collect_training_artifacts(context.get(), result);
     return 0;
   }
   if (reformer_) {

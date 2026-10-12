@@ -13,15 +13,15 @@
 // limitations under the License.
 
 #include "omega_streamer.h"
-#include <omega/omega_api.h>
-#include <omega/search_context.h>
-#include <zvec/ailego/io/file.h>
-#include <zvec/core/framework/index_factory.h>
-#include <zvec/core/framework/index_helper.h>
-#include <zvec/ailego/logger/logger.h>
 #include <fstream>
 #include <mutex>
 #include <sstream>
+#include <omega/omega_api.h>
+#include <omega/search_context.h>
+#include <zvec/ailego/io/file.h>
+#include <zvec/ailego/logger/logger.h>
+#include <zvec/core/framework/index_factory.h>
+#include <zvec/core/framework/index_helper.h>
 #include "omega_context.h"
 #include "omega_hook_utils.h"
 #include "omega_params.h"
@@ -436,7 +436,7 @@ int OmegaStreamer::omega_search_impl(const void *query,
 
   // Initialize context for search
   hnsw_ctx->clear();
-  hnsw_ctx->bind_dist_space(search_distance_, search_batch_distance_, nullptr);
+  bind_search_dist_space(hnsw_ctx);
   hnsw_ctx->resize_results(count);
   hnsw_ctx->check_need_adjuct_ctx(entity_->doc_cnt());
   hnsw_ctx->reset_query(query, meta_);
@@ -505,7 +505,8 @@ int OmegaStreamer::omega_search_impl(const void *query,
       return ret;
     }
     baseline_cmps = static_cast<int>(hnsw_ctx->get_scan_num());
-    hnsw_ctx->search_heap().reset<TopkHeap>(omega_topk_heap.limit()) = std::move(omega_topk_heap);
+    hnsw_ctx->search_heap().reset<TopkHeap>(omega_topk_heap.limit()) =
+        std::move(omega_topk_heap);
   }
 
   if (profile_prediction || !profile_output_path.empty()) {
@@ -557,6 +558,8 @@ IndexStreamer::Context::Pointer OmegaStreamer::create_context(void) const {
   }
 
   ctx->set_ef(ef_);
+  ctx->set_po(po_);
+  ctx->set_pl(pl_);
   ctx->set_max_scan_limit(max_scan_limit_);
   ctx->set_min_scan_limit(min_scan_limit_);
   ctx->set_max_scan_ratio(max_scan_ratio_);

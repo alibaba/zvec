@@ -987,6 +987,40 @@ TEST(ManifestCodecGolden, IvfRabitqIndexParams) {
   EXPECT_EQ(*decoded, params);
 }
 
+TEST(ManifestCodecGolden, OmegaIndexParamsRetainLegacyWireFormat) {
+  // Original PR protobuf: IndexParams.omega = 10; base = 1; m = 2;
+  // ef_construction = 3; min_vector_threshold = 4; field 5 unused;
+  // num_training_queries = 6; ef_training = 7; window_size = 8;
+  // ef_groundtruth = 9; k_train = 10. Base has no quantizer sub-message.
+  const uint8_t bytes[] = {
+      0x52, 0x17, 0x0a, 0x02, 0x08, 0x01, 0x10, 0x08, 0x18,
+      0x40, 0x20, 0xe8, 0x07, 0x30, 0x20, 0x38, 0x80, 0x01,
+      0x40, 0x10, 0x48, 0x80, 0x02, 0x50, 0x04,
+  };
+  std::string golden = Golden(bytes);
+  OmegaIndexParams params(MetricType::L2, 8, 64, QuantizeType::UNDEFINED, 1000,
+                          32, 128, 16, 256, 4);
+  std::string encoded;
+  ManifestCodec::EncodeIndexParams(&params, &encoded);
+  EXPECT_EQ(encoded, golden);
+  auto decoded = ManifestCodec::DecodeIndexParams(golden);
+  ASSERT_NE(decoded, nullptr);
+  ASSERT_EQ(decoded->type(), IndexType::OMEGA);
+  EXPECT_EQ(*decoded, params);
+
+  // Unknown legacy model_dir and future fields do not alter known params.
+  std::string payload = golden.substr(2);
+  pbwire::Writer writer(&payload);
+  writer.put_string(5, "legacy/model/path");
+  writer.put_varint(100, 123);
+  std::string with_unknown;
+  pbwire::Writer outer(&with_unknown);
+  outer.put_message(10, payload);
+  decoded = ManifestCodec::DecodeIndexParams(with_unknown);
+  ASSERT_NE(decoded, nullptr);
+  EXPECT_EQ(*decoded, params);
+}
+
 TEST(ManifestCodecGolden, VamanaTwoPassBuild) {
   // two_pass_build (proto field 8) was added after the golden bytes were
   // archived, so it has no legacy byte fixture: manifests written before it

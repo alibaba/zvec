@@ -56,11 +56,11 @@ BaseIndexParam::Pointer CreateOmegaParam() {
       .with_dimension(kDimension)
       .with_is_sparse(false)
       .with_m(32)
-      .WithEFConstruction(500)
-      .WithMinVectorThreshold(10000)
-      .WithNumTrainingQueries(1000)
-      .WithEFTraining(500)
-      .WithEFGroundTruth(1000)
+      .with_ef_construction(500)
+      .with_min_vector_threshold(10000)
+      .with_num_training_queries(1000)
+      .with_ef_training(500)
+      .with_ef_groundtruth(1000)
       .build();
 }
 

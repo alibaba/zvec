@@ -597,7 +597,7 @@ bool dual_heap_search_neighbors(const EntityType &entity, level_t level,
         }
       }
     }  // end for
-  }  // while
+  }    // while
 
   return false;
 }
@@ -607,10 +607,9 @@ bool dual_heap_search_neighbors(const EntityType &entity, level_t level,
 // queries, and upper levels for every backend.
 // ============================================================================
 template <typename EntityType>
-bool HnswAlgorithm<EntityType>::search_neighbors(level_t level,
-                                                 node_id_t *entry_point,
-                                                 dist_t *dist, TopkHeap &topk,
-                                                 HnswContext *ctx, const SearchHooks *hooks) const {
+bool HnswAlgorithm<EntityType>::search_neighbors(
+    level_t level, node_id_t *entry_point, dist_t *dist, TopkHeap &topk,
+    HnswContext *ctx, const SearchHooks *hooks) const {
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
 

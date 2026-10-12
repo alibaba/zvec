@@ -758,7 +758,7 @@ arrow::Status TestHelper::WriteTestFile(const std::string &filepath,
   }
 
   // Open output stream
-  ARROW_ASSIGN_OR_RAISE(auto out, arrow::io::FileOutputStream::open(filepath));
+  ARROW_ASSIGN_OR_RAISE(auto out, arrow::io::FileOutputStream::Open(filepath));
 
   if (format == FileFormat::PARQUET) {
     // Parquet write logic - create table with multiple record batches
@@ -794,12 +794,12 @@ arrow::Status TestHelper::WriteTestFile(const std::string &filepath,
       ARROW_RETURN_NOT_OK(writer->WriteRecordBatch(*batch));
     }
 
-    ARROW_RETURN_NOT_OK(writer->close());
+    ARROW_RETURN_NOT_OK(writer->Close());
 
     std::cout << "Wrote test IPC file with " << batches.size()
               << " batches: " << filepath << std::endl;
   }
 
-  ARROW_RETURN_NOT_OK(out->close());
+  ARROW_RETURN_NOT_OK(out->Close());
   return arrow::Status::OK();
 }

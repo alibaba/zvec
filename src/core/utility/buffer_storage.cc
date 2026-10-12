@@ -1385,11 +1385,6 @@ class BufferStorage : public IndexStorage {
     return meta_chains_.front().header->magic;
   }
 
-  //! Retrieve file path of storage
-  std::string file_path(void) const override {
-    return file_name_;
-  }
-
  protected:
   //! Write the version segment while the new mapping is open.
   int init_version_segment(IndexMapping &mapping) {
