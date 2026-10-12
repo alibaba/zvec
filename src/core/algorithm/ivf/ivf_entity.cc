@@ -725,6 +725,13 @@ int IVFEntity::bind_query(const void *query, const IndexQueryMeta &qmeta) {
     return IndexError_Unsupported;
   }
   if (scan_blocks_) block_scanner_ = quantizer_->block_scanner(query_distance_);
+  if (block_scanner_) {
+    if (!block_scanner_->set_reuse_coarse_dot(packed_scan_reuse_dot_))
+      return IndexError_Unsupported;
+    packed_scan_stats_.active = true;
+    packed_scan_stats_.mapped = scan_blocks_->base_data() &&
+                                keys_->base_data() && inverted_->base_data();
+  }
   return 0;
 }
 
@@ -1484,6 +1491,7 @@ IVFEntity::Pointer IVFEntity::clone(const IVFEntity::Pointer &entity) const {
   entity->block_scanner_.reset();
   entity->packed_scan_stats_ = {};
   entity->packed_scan_pruning_ = packed_scan_pruning_;
+  entity->packed_scan_reuse_dot_ = packed_scan_reuse_dot_;
   entity->scan_blocks_ = scan_blocks_ ? scan_blocks_->clone() : nullptr;
   if (scan_blocks_ && !entity->scan_blocks_) return nullptr;
   entity->scan_list_offsets_ = scan_list_offsets_;

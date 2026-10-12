@@ -82,6 +82,8 @@ static_assert(sizeof(QuantizerSerHeader) == 24,
 struct DistanceEstimate {
   float distance;
   float lower_bound;
+  // Query-local intermediate; never serialized into index records.
+  float coarse_dot{0};
 };
 
 //! Query-local state for an optional 32-lane posting accelerator. The packed
@@ -90,6 +92,10 @@ struct DistanceEstimate {
 class BlockScanner {
  public:
   virtual ~BlockScanner() = default;
+  // Opt-in approximate refinement; unsupported accelerators reject enabling it.
+  virtual bool set_reuse_coarse_dot(bool enabled) {
+    return !enabled;
+  }
   virtual int estimate(const void *block, size_t count,
                        DistanceEstimate *out) const = 0;
   virtual float refine(const void *row,

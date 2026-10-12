@@ -494,7 +494,23 @@ int IVFIndex::_dense_search(const VectorData &query,
                             SearchResult *result,
                             core::IndexContext::Pointer &context) {
   int ret = Index::_dense_search(query, search_param, result, context);
-  if (ret != 0 || !ivf_quantizer_ || !context->fetch_vector()) return ret;
+  if (ret != 0) return ret;
+  const auto options = std::dynamic_pointer_cast<IVFQueryParam>(search_param);
+  const auto *ctx =
+      dynamic_cast<const core::IVFSearcherContext *>(context.get());
+  if (options && options->rabitq_collect_stats && ctx) {
+    const auto &scan = ctx->entity()->packed_scan_stats();
+    result->ivf_scan_stats_ = {true,
+                               scan.active,
+                               scan.mapped,
+                               scan.coarse_count,
+                               scan.refined_count,
+                               scan.key_reads,
+                               scan.coarse_reads,
+                               scan.row_reads,
+                               scan.coarse_copy_bytes};
+  }
+  if (!ivf_quantizer_ || !context->fetch_vector()) return ret;
   auto provider = streamer_->create_provider();
   if (!provider) return core::IndexError_NoReady;
   result->reverted_vector_list_.clear();
@@ -516,6 +532,15 @@ int IVFIndex::_prepare_for_search(
       std::dynamic_pointer_cast<IVFQueryParam>(search_param);
 
   if (!ivf_search_param) return core::IndexError_InvalidArgument;
+  const bool scan_options = !ivf_search_param->rabitq_pruning ||
+                            ivf_search_param->rabitq_reuse_coarse_dot ||
+                            ivf_search_param->rabitq_collect_stats;
+  if (scan_options && (!use_rabitq_ || legacy_rabitq_ ||
+                       search_param->refiner_param || search_param->bf_pks)) {
+    LOG_ERROR(
+        "RaBitQ scan options require Turbo IVF without refiner or bf_pks");
+    return core::IndexError_Unsupported;
+  }
   if (use_rabitq_ &&
       (ivf_search_param->fetch_vector || ivf_search_param->nprobe <= 0)) {
     return core::IndexError_InvalidArgument;
@@ -543,6 +568,12 @@ int IVFIndex::_prepare_for_search(
     auto replacement = streamer_->create_context();
     if (!replacement) return core::IndexError_NoReady;
     context = std::move(replacement);
+  }
+  // Always reapply defaults as well: pooled contexts must not leak A/B modes.
+  if (auto *ctx = dynamic_cast<core::IVFSearcherContext *>(context.get())) {
+    ctx->entity()->set_packed_scan_pruning(ivf_search_param->rabitq_pruning);
+    ctx->entity()->set_packed_scan_reuse_dot(
+        ivf_search_param->rabitq_reuse_coarse_dot);
   }
   _set_group_by_on_context(search_param, context);
   context->set_topk(ivf_search_param->topk);

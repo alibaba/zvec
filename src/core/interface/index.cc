@@ -740,6 +740,7 @@ int Index::search_with_source(
 int Index::search(const VectorData &vector_data,
                   const BaseIndexQueryParam::Pointer &search_param,
                   SearchResult *result) {
+  result->ivf_scan_stats_ = {};
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;

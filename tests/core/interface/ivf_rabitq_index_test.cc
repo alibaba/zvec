@@ -76,6 +76,30 @@ TEST(IVFRabitqIntegration, RejectsInvalidNestedAndLegacyJson) {
                          param->serialize_to_json()));
 }
 
+TEST(IVFRabitqIntegration, ScanQueryOptionsRoundTrip) {
+  IVFQueryParam param;
+  param.rabitq_pruning = false;
+  param.rabitq_reuse_coarse_dot = true;
+  param.rabitq_collect_stats = true;
+  const auto json = IndexFactory::QueryParamSerializeToJson(param, true);
+  auto typed = IndexFactory::QueryParamDeserializeFromJson<IVFQueryParam>(json);
+  auto base = std::dynamic_pointer_cast<IVFQueryParam>(
+      IndexFactory::QueryParamDeserializeFromJson<BaseIndexQueryParam>(json));
+  auto copy = std::dynamic_pointer_cast<IVFQueryParam>(param.clone());
+  for (const auto &p : {typed, base, copy}) {
+    ASSERT_NE(nullptr, p);
+    EXPECT_FALSE(p->rabitq_pruning);
+    EXPECT_TRUE(p->rabitq_reuse_coarse_dot);
+    EXPECT_TRUE(p->rabitq_collect_stats);
+  }
+  auto defaults = IndexFactory::QueryParamDeserializeFromJson<IVFQueryParam>(
+      R"({"index_type":"kIVF","nprobe":16})");
+  ASSERT_NE(nullptr, defaults);
+  EXPECT_TRUE(defaults->rabitq_pruning);
+  EXPECT_FALSE(defaults->rabitq_reuse_coarse_dot);
+  EXPECT_FALSE(defaults->rabitq_collect_stats);
+}
+
 #if RABITQ_SUPPORTED
 class IVFRabitqIntegrationTest
     : public testing::TestWithParam<std::tuple<MetricType, int, bool>> {};
@@ -131,6 +155,33 @@ TEST_P(IVFRabitqIntegrationTest, TrainSearchAndReopen) {
   if (bits >= 7) {
     EXPECT_NEAR(metric == MetricType::kInnerProduct ? 1.0f : 0.0f,
                 before.doc_list_[0].score(), 0.1f);
+  }
+  // Public controls reach the query-local scanner and do not leak through
+  // thread-local contexts when the following query returns to defaults.
+  SearchResult diagnostics;
+  query->rabitq_collect_stats = true;
+  for (bool reuse : {false, true}) {
+    query->rabitq_reuse_coarse_dot = reuse;
+    query->rabitq_pruning = false;
+    ASSERT_EQ(0, index->search(input, query, &diagnostics));
+    EXPECT_TRUE(diagnostics.ivf_scan_stats_.collected);
+    EXPECT_TRUE(diagnostics.ivf_scan_stats_.active);
+    EXPECT_TRUE(diagnostics.ivf_scan_stats_.mapped);
+    EXPECT_EQ(80u, diagnostics.ivf_scan_stats_.coarse_count);
+    EXPECT_EQ(80u, diagnostics.ivf_scan_stats_.refined_count);
+    EXPECT_EQ(0u, diagnostics.ivf_scan_stats_.coarse_reads);
+    EXPECT_EQ(0u, diagnostics.ivf_scan_stats_.row_reads);
+  }
+  query->rabitq_pruning = true;
+  query->rabitq_reuse_coarse_dot = false;
+  query->rabitq_collect_stats = false;
+  ASSERT_EQ(0, index->search(input, query, &diagnostics));
+  EXPECT_FALSE(diagnostics.ivf_scan_stats_.collected);
+  ASSERT_EQ(before.doc_list_.size(), diagnostics.doc_list_.size());
+  for (size_t i = 0; i < before.doc_list_.size(); ++i) {
+    EXPECT_EQ(before.doc_list_[i].key(), diagnostics.doc_list_[i].key());
+    EXPECT_FLOAT_EQ(before.doc_list_[i].score(),
+                    diagnostics.doc_list_[i].score());
   }
   // Invalid probes must not silently reuse the previous thread-local setting.
   for (int nprobe : {-1, 0}) {

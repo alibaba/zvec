@@ -414,6 +414,17 @@ TEST(RabitqQuantizer, PackedScanMatchesDedicatedBatchEstimator) {
                 bits == 1 ? estimates[i].distance
                           : distance(rows.data() + i * stride),
                 scanner->refine(rows.data() + i * stride, estimates[i]));
+            ASSERT_TRUE(scanner->set_reuse_coarse_dot(true));
+            const float boosted =
+                bits == 1 ? expected[i]
+                          : rabitqlib::split_distance_boosting(
+                                rows.data() + i * stride + 8 + dim / 8 + 12,
+                                rabitqlib::select_excode_ipfunc(bits - 1),
+                                reference_query, dim, bits - 1, dot[i]);
+            EXPECT_NEAR(boosted - (ip ? 1 : 0),
+                        scanner->refine(rows.data() + i * stride, estimates[i]),
+                        1e-5f * std::max(1.0f, std::abs(boosted)));
+            ASSERT_TRUE(scanner->set_reuse_coarse_dot(false));
           }
           const uint32_t bad_cluster = 1;
           std::memcpy(packed.data(), &bad_cluster, sizeof(bad_cluster));
@@ -504,6 +515,13 @@ TEST(RabitqQuantizer, PackedScanUsesEachRowsModelCentroid) {
         EXPECT_NEAR(lower[i] - offset, estimates[i].lower_bound, tolerance);
         EXPECT_FLOAT_EQ(quantizer.calc_distance_dp_query(row, encoded.data()),
                         scanner->refine(row, estimates[i]));
+        ASSERT_TRUE(scanner->set_reuse_coarse_dot(true));
+        const float boosted = rabitqlib::split_distance_boosting(
+            row + 8 + padded / 8 + 12, rabitqlib::select_excode_ipfunc(6),
+            reference_query, padded, 6, dot[i]);
+        EXPECT_NEAR(boosted - offset, scanner->refine(row, estimates[i]),
+                    1e-5f * std::max(1.0f, std::abs(boosted)));
+        ASSERT_TRUE(scanner->set_reuse_coarse_dot(false));
       }
     }
   }
