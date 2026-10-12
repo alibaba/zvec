@@ -756,12 +756,14 @@ namespace {
 class RabitqBlockScanner final : public BlockScanner {
  public:
   RabitqBlockScanner(const DistanceImpl &distance, size_t dim, size_t clusters,
-                     int bits, bool inner_product)
+                     int bits, bool inner_product,
+                     float (*ex_ipfunc)(const float *, const uint8_t *, size_t))
       : distance_(distance),
         dim_(dim),
         clusters_(clusters),
         bits_(bits),
         ip_(inner_product),
+        ex_ipfunc_(ex_ipfunc),
         query_(
             reinterpret_cast<const float *>(distance_.query_storage().data()),
             dim, bits - 1) {}
@@ -793,21 +795,46 @@ class RabitqBlockScanner final : public BlockScanner {
                           batch.f_rescale()[i] * (dot + query_.k1xsumq()) -
                           (ip_ ? 1 : 0);
       out[i] = {score,
-                bits_ == 1 ? score : score - batch.f_error()[i] * g_error[c]};
+                bits_ == 1 ? score : score - batch.f_error()[i] * g_error[c],
+                dot};
     }
     return 0;
   }
 
   float refine(const void *row, const DistanceEstimate &coarse) const override {
-    // Preserve the existing full-bit score. Only surviving rows pay for it.
-    return bits_ == 1 ? coarse.distance : distance_(row);
+    if (bits_ == 1) return coarse.distance;
+    if (!reuse_coarse_dot_) return distance_(row);
+    const uint32_t cluster = ReadUint(row);
+    if (cluster >= clusters_) return std::numeric_limits<float>::infinity();
+    const auto *q = distance_.query_storage().data();
+    const auto *scalars =
+        reinterpret_cast<const float *>(q + dim_ * sizeof(float) + dim_ / 2);
+    const char *ex =
+        static_cast<const char *>(row) + kBinPrefix + dim_ / 8 + 12;
+    const size_t ex_bytes = dim_ * (bits_ - 1) / 8;
+    // Same extra-bit formula as the row estimator, but reuse the high-accuracy
+    // LUT dot. Each lane retains its own model-centroid correction.
+    return ReadFloat(ex, ex_bytes) + scalars[4 + cluster] +
+           ReadFloat(ex, ex_bytes + 4) *
+               (static_cast<float>(1u << (bits_ - 1)) * coarse.coarse_dot +
+                ex_ipfunc_(reinterpret_cast<const float *>(q),
+                           reinterpret_cast<const uint8_t *>(ex), dim_) +
+                scalars[3]) -
+           (ip_ ? 1 : 0);
+  }
+
+  bool set_reuse_coarse_dot(bool enabled) override {
+    reuse_coarse_dot_ = enabled;
+    return true;
   }
 
  private:
+  bool reuse_coarse_dot_{false};
   DistanceImpl distance_;
   size_t dim_, clusters_;
   int bits_;
   bool ip_;
+  float (*ex_ipfunc_)(const float *, const uint8_t *, size_t);
   rabitqlib::SplitBatchQuery<float> query_;
 };
 }  // namespace
@@ -827,7 +854,7 @@ std::unique_ptr<BlockScanner> RabitqQuantizer::block_scanner(
   if (!nonzero) return nullptr;
   return std::make_unique<RabitqBlockScanner>(
       distance, padded_dim_, num_clusters_, bits_,
-      metric_ == MetricType::kInnerProduct);
+      metric_ == MetricType::kInnerProduct, ex_ipfunc_);
 #else
   (void)distance;
   return nullptr;

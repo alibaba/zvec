@@ -317,6 +317,10 @@ struct ZVEC_CORE_API IVFQueryParam : public BaseIndexQueryParam {
   ~IVFQueryParam() override;
 
   int nprobe = 10;
+  // Turbo IVF RaBitQ only. Defaults preserve the v3 estimator.
+  bool rabitq_pruning = true;
+  bool rabitq_reuse_coarse_dot = false;
+  bool rabitq_collect_stats = false;
   std::shared_ptr<BaseIndexQueryParam> l1_query_param = nullptr;
   std::shared_ptr<BaseIndexQueryParam> l2_query_param = nullptr;
 

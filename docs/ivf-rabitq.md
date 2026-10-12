@@ -139,5 +139,89 @@ mmap 直接访问的这几项读取计数为零。`refined_count` 是精算接�
 `IVFSearcherContext::entity()->set_packed_scan_pruning(false)`，关闭下界剪枝，
 保留相同的编码、查询估计器和扫描顺序，对所有未过滤的有效候选调用精算。
 该开关默认开启，查询绑定不改变设置，clone 继承设置；对照完成后设回 `true`。
-它只用于内部诊断，尚未暴露为公开查询参数。比较同一索引剪枝开关的 top-k
-及 recall，再比较优化前后的 QPS，可以分别检查召回率损失和读取优化收益。
+公开入口现在也支持下述查询参数。比较同一索引剪枝开关的 top-k 及 recall，
+再比较优化前后的 QPS，可以分别检查召回率损失和读取优化收益。
+
+
+### 点积复用和服务器 A/B 验证
+
+本轮仍复用 v2/v3 索引，不改变文件格式或模型中心。新增的查询参数可直接放进
+现有 `bench` / `recall` YAML 的 `QueryConfig.QueryParam` JSON 中：
+
+| 参数 | 默认值 | 含义 |
+|---|---|---|
+| `rabitq_pruning` | `true` | 允许下界剪枝；关闭时精算所有未过滤的有效候选 |
+| `rabitq_reuse_coarse_dot` | `false` | 精算复用 FastScan 的高精度 LUT 点积，省去二进制码浮点点积重算 |
+| `rabitq_collect_stats` | `false` | 在 `SearchResult::ivf_scan_stats_` 返回该次查询计数 |
+
+例如（开启点积复用，保留剪枝）：
+
+```yaml
+QueryConfig:
+  QueryParam: '{"index_type":"kIVF","topk":50,"nprobe":256,"rabitq_pruning":true,"rabitq_reuse_coarse_dot":true}'
+```
+
+默认值保留 v3 的距离估计方式。复用模式只改变多位精算使用的点积，仍按每行自己的
+量化中心修正距离；1-bit 模式不受该开关影响。LUT 近似值与原浮点点积不完全相同，
+必须单独验证分数、排名和召回率。普通 IVF、旧专用格式、refiner 和 `bf_pks`
+组合不能启用这些非默认选项，以免静默忽略。零查询或没有粗筛段的旧 Turbo 文件
+仍回退原路径，统计的 `active=false`，不能据此宣称点积复用生效。
+每次公开查询都会重新应用全部选项，结果统计也会清空，避免线程局部 context 和
+重复使用 `SearchResult` 时遗留上一查询的模式或计数。
+
+新工具 `ivf_rabitq_scan_diagnostic` 接受现有 YAML（FP32 文本查询、单个 TopK、
+无过滤/分组/refiner），在同一个已加载索引上逐查询运行四种模式：
+
+| 输出模式 | 剪枝 | 点积复用 |
+|---|---|---|
+| `baseline` | 开 | 关 |
+| `unpruned` | 关 | 关 |
+| `reuse` | 开 | 开 |
+| `reuse_unpruned` | 关 | 开 |
+
+在服务器仓库目录编译并运行测试：
+
+```sh
+cmake -S . -B build_bench -DBUILD_TOOLS=ON
+cmake --build build_bench --target bench recall ivf_rabitq_scan_diagnostic \
+  ivf_block_scan_test ivf_rabitq_index_test turbo_rabitq_quantizer_test -j8
+ctest --test-dir build_bench --output-on-failure \
+  -R '^(ivf_block_scan_test|ivf_rabitq_index_test|turbo_rabitq_quantizer_test)$'
+export RABITQ_BIN="$PWD/build_bench/bin"
+```
+
+然后进入原先运行评测的目录。下面的 `CONFIG` 替换成现有 np256 YAML 的绝对路径；
+索引、查询文件和 ground truth 均使用原文件。工具保留 YAML 内的相对路径，
+所以生成配置与后续 bench/recall 必须在同一个工作目录运行。
+
+```sh
+CONFIG=/absolute/path/to/existing_np256.yaml
+"$RABITQ_BIN/ivf_rabitq_scan_diagnostic" "$CONFIG" ./v4_np256 > v4_np256.diagnostic.log 2>&1
+
+for mode in baseline unpruned reuse reuse_unpruned; do
+  mkdir -p "v4_np256.$mode.recall"
+  "$RABITQ_BIN/recall" "v4_np256.$mode.yaml" > "v4_np256.$mode.recall.log" 2>&1
+  "$RABITQ_BIN/bench" "v4_np256.$mode.yaml" > "v4_np256.$mode.bench.log" 2>&1
+done
+```
+
+只有诊断工具退出码为 0 时继续使用生成的配置；非零退出时 CSV 可能不完整。
+输出前缀需唯一，工具会覆盖同名前缀的文件。
+
+- `v4_np256.queries.csv`：每个输入查询、每种模式的计数，是否启用 packed scan、
+  是否三段数据均为稳定映射、相对 baseline 的结果集合交集数、ID 顺序是否一致，
+  以及公共 ID 的最大分数差。查询编号是从 0 开始的有效输入行序号。
+- `v4_np256.results.csv`：四种模式完整的结果 ID、rank（从 0 开始）、公开接口分数。
+- `v4_np256.{mode}.yaml`：可直接用于 bench/recall，关闭统计导出，保留原评测
+  参数与 ground truth 配置，并将 recall 输出目录按模式隔离。
+- 标准输出汇总每个模式的 coarse/refined 总数及精算比例。读取次数仍是逻辑调用数，
+  mmap 的读取计数为零不代表没有缺页或内存访问。
+
+该工具不输出 QPS，避免 CSV 写入、查询交替和结果对比污染计时；结果交集也不是
+真实 recall，真实 recall 必须使用原 ground truth。建议先测 np16/64/256，
+正式 bench 保持相同线程数、30 秒时长和独占环境，预热后交替顺序至少重复三次。
+
+先比较 `baseline` 与 `unpruned`，隔离原精算方式下剪枝的影响；比较 `unpruned`
+与 `reuse_unpruned`，隔离点积近似本身的影响；最后比较 `baseline` 与 `reuse`
+的 QPS、recall，并用各自的精算比例判断提速来自每次精算成本还是候选数变化。
+本地 macOS 只能验证通用路径和 x86 语法，RaBitQ SIMD 的运行测试与性能以服务器结果为准。

@@ -100,7 +100,18 @@ struct VectorDataBuffer {
 };
 
 
+// One public search processes one query. Counters are logical scan operations,
+// not OS I/O; mapped access has zero read-call counters.
+struct IVFScanStats {
+  bool collected{false};
+  bool active{false};
+  bool mapped{false};
+  size_t coarse_count{0}, refined_count{0};
+  size_t key_reads{0}, coarse_reads{0}, row_reads{0}, coarse_copy_bytes{0};
+};
+
 struct SearchResult {
+  IVFScanStats ivf_scan_stats_{};
   core::IndexDocumentList doc_list_;
   core::IndexGroupDocumentList group_doc_list_;
   // use string to manage memory

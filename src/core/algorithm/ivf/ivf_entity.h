@@ -54,6 +54,8 @@ class IVFEntity {
   // Query-local diagnostics, reset by bind_query(). No timers or allocations
   // in the candidate loop. Batched queries expose the last bound query.
   struct PackedScanStats {
+    bool active{false};
+    bool mapped{false};
     size_t coarse_count{0};
     size_t refined_count{0};
     size_t key_reads{0};
@@ -68,6 +70,10 @@ class IVFEntity {
   // estimators, but refine every unfiltered candidate when disabled.
   void set_packed_scan_pruning(bool enabled) {
     packed_scan_pruning_ = enabled;
+  }
+
+  void set_packed_scan_reuse_dot(bool enabled) {
+    packed_scan_reuse_dot_ = enabled;
   }
 
   struct CandidateVisitor {
@@ -441,6 +447,7 @@ class IVFEntity {
                          const CandidateVisitor &visitor) const;
   mutable PackedScanStats packed_scan_stats_{};
   bool packed_scan_pruning_{true};
+  bool packed_scan_reuse_dot_{false};
   mutable std::vector<uint64_t> scan_keys_{};
   mutable std::vector<char> scan_buffer_{};
   IndexStorage::Pointer container_{};
