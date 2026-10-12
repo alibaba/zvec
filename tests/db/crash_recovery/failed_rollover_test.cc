@@ -102,9 +102,10 @@ void ExpectDocuments(const Collection::Ptr &collection, uint32_t count) {
   auto stats = collection->stats();
   ASSERT_TRUE(stats.has_value()) << stats.error().message();
   EXPECT_EQ(stats->doc_count, count);
-  // Check both the indexed predicate and a forward scan. The original failure
-  // can put a rejected insert in the forward store but not the scalar index.
-  for (const char *filter : {"cls = 'a'", "n >= 0"}) {
+  // An empty filter forces a forward scan even after create_index indexes n.
+  // The original failure can put a rejected insert in the forward store but
+  // not the scalar index.
+  for (const char *filter : {"cls = 'a'", "n >= 0", ""}) {
     SearchQuery query;
     query.filter_ = filter;
     query.topk_ = 2 * kDocs + 10;
@@ -169,15 +170,21 @@ void RunCase(Operation operation, bool reopen_before_retry) {
   collection = std::move(opened.value());
 
   FileDescriptorLimit limit;
-  limit.exhaust();
-  ASSERT_FALSE(::testing::Test::HasFatalFailure());
-  auto failed = Rollover(collection, operation, "rejected");
-  limit.restore();
-  ASSERT_FALSE(failed.ok());
-  // A failed scalar-index open identifies the replacement-creation phase,
-  // rather than a failure in flushing/sealing the old segment.
-  ASSERT_EQ(failed.message(), "Failed to open scalar indexer");
-  ExpectDocuments(collection, kDocs);
+  for (int attempt = 1; attempt <= 2; ++attempt) {
+    limit.exhaust();
+    ASSERT_FALSE(::testing::Test::HasFatalFailure());
+    auto failed = Rollover(collection, operation, "rejected");
+    limit.restore();
+    ASSERT_FALSE(failed.ok());
+    // A failed scalar-index open identifies the replacement-creation phase,
+    // rather than a failure in flushing/sealing the old segment.
+    ASSERT_EQ(failed.message(), "Failed to open scalar indexer");
+    auto unused_path = path + "/" + std::to_string(attempt);
+    std::cout << "failed replacement " << unused_path
+              << " exists=" << std::filesystem::exists(unused_path) << '\n';
+    EXPECT_FALSE(std::filesystem::exists(unused_path));
+    ExpectDocuments(collection, kDocs);
+  }
 
   uint32_t expected = kDocs;
   if (operation != Operation::Insert) {
@@ -287,6 +294,8 @@ TEST(FailedRolloverBatch, KeepsResultsForTheWrittenPrefix) {
   EXPECT_FALSE(result->at(1).ok());
   EXPECT_FALSE(result->at(2).ok());
   EXPECT_EQ(result->at(1).message(), result->at(2).message());
+  // A failed create must not retire a directory it did not create.
+  EXPECT_TRUE(std::filesystem::is_directory(path + "/1"));
   ExpectDocuments(collection, kDocs);
   auto fetched = collection->fetch({"prefix", "rejected", "suffix"});
   ASSERT_TRUE(fetched.has_value()) << fetched.error().message();
