@@ -461,6 +461,11 @@ class ZVEC_CORE_API IVFRabitqIndex : public Index {
   IVFRabitqIndex() = default;
 
  protected:
+  int _dense_search(const VectorData &query,
+                    const BaseIndexQueryParam::Pointer &search_param,
+                    SearchResult *result,
+                    core::IndexContext::Pointer &context) override;
+
   int create_and_init_streamer(const BaseIndexParam &param) override;
 
   int _prepare_for_search(const VectorData &query,

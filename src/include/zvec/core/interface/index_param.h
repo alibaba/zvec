@@ -589,6 +589,8 @@ struct ZVEC_CORE_API IVFRabitqQueryParam : public BaseIndexQueryParam {
   ~IVFRabitqQueryParam() override;
 
   uint32_t nprobe = kDefaultIvfRabitqNprobe;
+  // Query-local diagnostics for ordinary cluster scans; disabled by default.
+  bool rabitq_collect_stats = false;
 
   BaseIndexQueryParam::Pointer clone() const override;
 };

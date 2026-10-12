@@ -1,5 +1,6 @@
 // Copyright 2025-present the zvec project
 // Licensed under the Apache License, Version 2.0.
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <fstream>
@@ -7,6 +8,26 @@
 #include <stdexcept>
 #include <unordered_map>
 #include "helper.h"
+
+namespace {
+void PrintDistribution(const char *name, std::vector<size_t> values) {
+  std::sort(values.begin(), values.end());
+  double sum = 0;
+  for (size_t value : values) sum += value;
+  const double mean = sum / values.size();
+  double variance = 0;
+  for (size_t value : values) variance += (value - mean) * (value - mean);
+  const auto percentile = [&](double fraction) {
+    return values[static_cast<size_t>(std::ceil(fraction * values.size())) - 1];
+  };
+  std::cout << ' ' << name << "_mean=" << mean << ' ' << name
+            << "_std=" << std::sqrt(variance / values.size()) << ' ' << name
+            << "_min=" << values.front() << ' ' << name
+            << "_p50=" << percentile(0.50) << ' ' << name
+            << "_p95=" << percentile(0.95) << ' ' << name
+            << "_max=" << values.back();
+}
+}  // namespace
 
 // Deliberately separate from timed bench: CSV I/O and A/B comparisons must not
 // contaminate throughput. Each query runs against the exact same loaded index.
@@ -23,12 +44,14 @@ int main(int argc, char **argv) {
         core_interface::IndexFactory::DeserializeIndexParamFromJson(
             common["IndexConfig"].as<std::string>());
     if (!index_params ||
-        index_params->index_type != core_interface::IndexType::kIVF ||
+        (index_params->index_type != core_interface::IndexType::kIVF &&
+         index_params->index_type != core_interface::IndexType::kIVFRabitq) ||
         index_params->data_type != core_interface::DataType::DT_FP32 ||
         index_params->dimension <= 0 ||
         (common["QueryType"] &&
          common["QueryType"].as<std::string>() != "float"))
-      throw std::runtime_error("Requires standard FP32 Turbo IVF RaBitQ index");
+      throw std::runtime_error(
+          "Requires FP32 Turbo IVF RaBitQ or dedicated IVF RaBitQ index");
     std::string path = common["IndexPath"].as<std::string>();
     core_interface::Index::Pointer index;
     core_interface::BaseIndexQueryParam::Pointer base_query;
@@ -36,8 +59,12 @@ int main(int argc, char **argv) {
       throw std::runtime_error("Cannot load index/query configuration");
     auto query =
         std::dynamic_pointer_cast<core_interface::IVFQueryParam>(base_query);
-    if (!query || query->refiner_param || query->group_by_param ||
-        query->bf_pks || (query->filter && query->filter->is_valid()) ||
+    auto dedicated_query =
+        std::dynamic_pointer_cast<core_interface::IVFRabitqQueryParam>(
+            base_query);
+    if ((!query && !dedicated_query) || base_query->refiner_param ||
+        base_query->group_by_param || base_query->bf_pks ||
+        (base_query->filter && base_query->filter->is_valid()) ||
         (common["FilterMode"] &&
          common["FilterMode"].as<std::string>() != "none"))
       throw std::runtime_error(
@@ -46,12 +73,27 @@ int main(int argc, char **argv) {
     const auto topk = common["TopK"].as<std::string>();
     size_t parsed = 0;
     const int k = std::stoi(topk, &parsed);
-    if (parsed != topk.size() || k <= 0 || query->nprobe <= 0)
+    if (parsed != topk.size() || k <= 0 ||
+        (query ? query->nprobe <= 0 : dedicated_query->nprobe == 0))
       throw std::runtime_error("Use one positive TopK and positive nprobe");
-    query->topk = k;
-    query->is_linear = false;
-    query->fetch_vector = false;
-    query->rabitq_collect_stats = true;
+    base_query->topk = k;
+    base_query->is_linear = false;
+    base_query->fetch_vector = false;
+    // Dedicated search always uses pruning and reuses the LUT dot. It has one
+    // native mode; do not label it as the integrated baseline or toggle it.
+    const std::vector<const char *> names =
+        query ? std::vector<const char *>{"baseline", "unpruned", "reuse",
+                                          "reuse_unpruned"}
+              : std::vector<const char *>{"dedicated"};
+    const auto configure = [&](size_t mode, bool collect) {
+      if (query) {
+        query->rabitq_pruning = (mode % 2 == 0);
+        query->rabitq_reuse_coarse_dot = (mode >= 2);
+        query->rabitq_collect_stats = collect;
+      } else {
+        dedicated_query->rabitq_collect_stats = collect;
+      }
+    };
     std::vector<std::vector<float>> vectors;
     std::vector<SparseData<float>> sparse;
     std::vector<std::vector<uint64_t>> tags;
@@ -80,19 +122,17 @@ int main(int argc, char **argv) {
     results << "query,mode,rank,key,score\n";
     counts << std::setprecision(std::numeric_limits<float>::max_digits10);
     results << std::setprecision(std::numeric_limits<float>::max_digits10);
-    const std::array<const char *, 4> names{"baseline", "unpruned", "reuse",
-                                            "reuse_unpruned"};
     std::array<size_t, 4> coarse{}, refined{}, active{};
+    std::array<std::vector<size_t>, 4> coarse_per_query, refined_per_query;
     for (size_t q = 0; q < vectors.size(); ++q) {
       core_interface::SearchResult baseline;
       for (size_t mode = 0; mode < names.size(); ++mode) {
-        query->rabitq_pruning = (mode % 2 == 0);
-        query->rabitq_reuse_coarse_dot = (mode >= 2);
+        configure(mode, true);
         core_interface::SearchResult result;
         const int ret = index->search(
             core_interface::VectorData{
                 core_interface::DenseVector{vectors[q].data()}},
-            query, &result);
+            base_query, &result);
         if (ret != 0)
           throw std::runtime_error("Search failed: " + std::to_string(ret));
         const auto &s = result.ivf_scan_stats_;
@@ -128,6 +168,8 @@ int main(int argc, char **argv) {
         coarse[mode] += s.coarse_count;
         refined[mode] += s.refined_count;
         active[mode] += s.active;
+        coarse_per_query[mode].push_back(s.coarse_count);
+        refined_per_query[mode].push_back(s.refined_count);
       }
     }
     counts.close();
@@ -135,21 +177,24 @@ int main(int argc, char **argv) {
     if (!counts || !results) throw std::runtime_error("Writing output failed");
     if (!active[0])
       throw std::runtime_error(
-          "No packed scan activated; check index sidecar and query data");
+          "No batch scan activated; check index type, sidecar and query data");
     for (size_t mode = 0; mode < names.size(); ++mode) {
       std::cout << names[mode] << " queries=" << vectors.size()
                 << " active=" << active[mode] << " coarse=" << coarse[mode]
                 << " refined=" << refined[mode] << " refine_ratio="
-                << (coarse[mode] ? double(refined[mode]) / coarse[mode] : 0)
-                << '\n';
+                << (coarse[mode] ? double(refined[mode]) / coarse[mode] : 0);
+      PrintDistribution("coarse", coarse_per_query[mode]);
+      PrintDistribution("refined", refined_per_query[mode]);
+      std::cout << '\n';
       // Emit directly runnable configurations without enabling stats in the
       // timed benchmark. Preserve input paths and separate recall log folders.
-      query->rabitq_pruning = (mode % 2 == 0);
-      query->rabitq_reuse_coarse_dot = (mode >= 2);
-      query->rabitq_collect_stats = false;
+      configure(mode, false);
       auto mode_config = YAML::Clone(config);
       mode_config["QueryConfig"]["QueryParam"] =
-          core_interface::IndexFactory::QueryParamSerializeToJson(*query);
+          query
+              ? core_interface::IndexFactory::QueryParamSerializeToJson(*query)
+              : core_interface::IndexFactory::QueryParamSerializeToJson(
+                    *dedicated_query);
       const std::string prefix = std::string(argv[2]) + "." + names[mode];
       mode_config["IndexCommon"]["RecallLogDir"] = prefix + ".recall";
       std::ofstream output(prefix + ".yaml");
@@ -158,7 +203,8 @@ int main(int argc, char **argv) {
       if (!output) throw std::runtime_error("Cannot write mode configuration");
     }
     std::cout << "Query numbers are zero-based input row positions. Overlap is "
-                 "against baseline, not ground truth.\n"
+                 "against the first mode of this index, not ground truth or "
+                 "another index.\n"
               << "Use bench/recall separately for QPS and recall; this tool is "
                  "not timed.\n";
     return index->close();

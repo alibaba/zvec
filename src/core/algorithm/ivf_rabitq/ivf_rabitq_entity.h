@@ -45,12 +45,14 @@ class IvfRabitqEntity {
   //! Same interface as IVFEntity::search for consistency.
   int search_cluster(uint32_t cluster_id,
                      const IvfRabitqQueryState &query_state, size_t padded_dim,
-                     size_t ex_bits, IndexDocumentHeap *heap) const;
+                     size_t ex_bits, IndexDocumentHeap *heap,
+                     IvfRabitqScanStats *stats = nullptr) const;
 
   int search_cluster(uint32_t cluster_id,
                      const IvfRabitqQueryState &query_state, size_t padded_dim,
                      size_t ex_bits, const IndexFilter &filter,
-                     IndexDocumentHeap *heap) const;
+                     IndexDocumentHeap *heap,
+                     IvfRabitqScanStats *stats = nullptr) const;
 
   int search_cluster_group_by(uint32_t cluster_id,
                               const IvfRabitqQueryState &query_state,
@@ -128,16 +130,17 @@ class IvfRabitqEntity {
   const uint64_t *keys_{nullptr};
   size_t batch_data_size_{0};
   size_t ex_data_size_{0};
+  bool mapped_{false};
 
   // Resolved once at load time to avoid per-cluster function-pointer lookup
   rabitqlib::ex_ipfunc ip_func_{nullptr};
 
-  template <bool HasFilter>
+  template <bool HasFilter, bool CollectStats>
   int search_cluster_impl(uint32_t cluster_id,
                           const IvfRabitqQueryState &query_state,
                           size_t padded_dim, size_t ex_bits,
-                          const IndexFilter *filter,
-                          IndexDocumentHeap *heap) const;
+                          const IndexFilter *filter, IndexDocumentHeap *heap,
+                          IvfRabitqScanStats *stats) const;
 
   template <bool HasFilter>
   int search_cluster_group_by_impl(

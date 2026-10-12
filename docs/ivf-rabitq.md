@@ -225,3 +225,69 @@ done
 与 `reuse_unpruned`，隔离点积近似本身的影响；最后比较 `baseline` 与 `reuse`
 的 QPS、recall，并用各自的精算比例判断提速来自每次精算成本还是候选数变化。
 本地 macOS 只能验证通用路径和 x86 语法，RaBitQ SIMD 的运行测试与性能以服务器结果为准。
+
+### 专用版与集成版的扫描工作量对照
+
+`ivf_rabitq_scan_diagnostic` 现在也接受 `IndexConfig.index_type=kIVFRabitq`
+和 `QueryParam.index_type=kIVFRabitq` 的专用索引配置。直接使用原有专用 YAML，
+无需重建索引。专用版只输出 `dedicated` 模式：维持原有下界剪枝和 LUT 点积复用，
+仅开启统计，不实现集成版的三个算法切换模式。
+
+`IVFRabitqQueryParam.rabitq_collect_stats` 默认 `false`，支持 JSON、复制和 clone。
+开启时普通列表扫描通过 `SearchResult::ivf_scan_stats_` 返回计数；
+refiner、group-by、`bf_pks` 组合会报参数错误，避免返回未覆盖路径的统计。
+关闭统计时，专用扫描循环使用无计数的模板实例。
+
+计数定义：
+
+- `coarse_count` 是实际批估计的向量数，不计 32-lane 块的补齐空位，不是理论均衡值。
+- 多位编码的 `refined_count` 是实际调用 extra-bit 精算的次数，不是最终入选数量。
+  1-bit 没有 extra-bit 精算，该字段计通过候选判断后送入堆的次数；专用版和集成版
+  对等分数的边界判断略有不同，不能将其解释为两侧等价的精算耗时。
+- 统计每次查询重新清零，不在索引共享实体上累计。`mapped` 表示所需数据段具有
+  稳定映射；专用版查询直接访问打开索引时取得的视图，因此查询期间读调用数为零。
+  该值不代表没有访存或缺页。
+- 汇总日志新增粗筛数、精算数的 mean/std/min/p50/p95/max；std 为总体标准差，
+  分位数使用 nearest-rank。它们描述查询工作量分布，不是全体列表大小分布。
+- 专用 CSV 中 overlap 等字段与该索引自身的首个模式对照，不能当作跨索引一致性
+  或 GT recall。结果 CSV 保留每个查询的 ID 和分数，可独立核对结果集合。
+
+在仓库目录编译与测试（Linux x86_64）：
+
+```sh
+cmake -S . -B build_bench -DBUILD_TOOLS=ON
+cmake --build build_bench --target ivf_rabitq_scan_diagnostic bench recall \
+  ivf_rabitq_index_test ivf_rabitq_streamer_test -j8
+ctest --test-dir build_bench --output-on-failure \
+  -R '^(ivf_rabitq_index_test|ivf_rabitq_streamer_test)$'
+export RABITQ_BIN="$PWD/build_bench/bin"
+```
+
+进入原先的评测工作目录，分别替换两份原有 YAML 的路径，并确保它们使用完全相同的
+FP32 查询文件及顺序、topk、GT、距离类型。先测 np16/64/256；下面以 np16 为例。
+输出前缀需唯一；工具会覆盖同名前缀文件，退出码非零时不要使用该次产物。
+
+```sh
+"$RABITQ_BIN/ivf_rabitq_scan_diagnostic" /absolute/path/integrated_np16.yaml \
+  ./v5_integrated_np16 > v5_integrated_np16.diagnostic.log 2>&1
+"$RABITQ_BIN/ivf_rabitq_scan_diagnostic" /absolute/path/dedicated_np16.yaml \
+  ./v5_dedicated_np16 > v5_dedicated_np16.diagnostic.log 2>&1
+```
+
+确认两次退出码均为 0 后，分别用生成的 `v5_integrated_np16.baseline.yaml`、
+`v5_integrated_np16.reuse.yaml`、`v5_dedicated_np16.dedicated.yaml` 运行 `recall`
+和 `bench`。例如专用版：
+
+```sh
+mkdir -p v5_dedicated_np16.dedicated.recall
+"$RABITQ_BIN/recall" v5_dedicated_np16.dedicated.yaml \
+  > v5_dedicated_np16.dedicated.recall.log 2>&1
+"$RABITQ_BIN/bench" v5_dedicated_np16.dedicated.yaml \
+  > v5_dedicated_np16.dedicated.bench.log 2>&1
+```
+
+生成配置已关闭统计。保持相同线程数、预热和运行时长，交替顺序多轮测试。
+先对照相同 nprobe 的实测工作量，再按 GT recall 增补 nprobe 点，找到相近召回后
+比较 QPS 与实际候选数。诊断工具自身不计时；数量占比不能代替耗时占比。
+这一步可判断候选数是否解释主要差距，但不保证两份索引采用相同分桶；共享中心和
+分配的受控实验、全量列表大小分布和分项 profiling 仍是后续独立验证项。

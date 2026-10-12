@@ -559,6 +559,8 @@ TEST_F(IvfRabitqStreamerTest, TestCosineBuildSearchAndReopen) {
 TEST_F(IvfRabitqStreamerTest, TestContextResetClearsSearchState) {
   IvfRabitqContext context;
   context.set_topk(3);
+  context.collect_scan_stats = true;
+  context.scan_stats = {true, true, 100, 12};
   context.set_fetch_vector(true);
   context.set_filter([](uint64_t key) { return key == 7; });
   context.set_threshold(0.5f);
@@ -576,6 +578,11 @@ TEST_F(IvfRabitqStreamerTest, TestContextResetClearsSearchState) {
 
   context.reset();
 
+  EXPECT_FALSE(context.collect_scan_stats);
+  EXPECT_FALSE(context.scan_stats.active);
+  EXPECT_FALSE(context.scan_stats.mapped);
+  EXPECT_EQ(0u, context.scan_stats.coarse_count);
+  EXPECT_EQ(0u, context.scan_stats.refined_count);
   EXPECT_FALSE(context.fetch_vector());
   EXPECT_FALSE(context.filter().is_valid());
   EXPECT_FALSE(context.group_by_search());

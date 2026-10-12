@@ -23,6 +23,7 @@
 #if RABITQ_SUPPORTED
 #include "algorithm/hnsw_rabitq/hnsw_rabitq_params.h"
 #include "algorithm/hnsw_rabitq/rabitq_params.h"
+#include "algorithm/ivf_rabitq/ivf_rabitq_context.h"
 #include "algorithm/ivf_rabitq/ivf_rabitq_params.h"
 #include "algorithm/ivf_rabitq/ivf_rabitq_streamer.h"
 #endif
@@ -321,6 +322,16 @@ int IVFRabitqIndex::_prepare_for_search(
     LOG_ERROR("nprobe must be greater than 0");
     return core::IndexError_InvalidArgument;
   }
+  if (ivf_rabitq_param->rabitq_collect_stats &&
+      (search_param->refiner_param || search_param->group_by_param ||
+       search_param->bf_pks)) {
+    LOG_ERROR("IVF RaBitQ scan stats do not support refiner/group-by/bf_pks");
+    return core::IndexError_InvalidArgument;
+  }
+  auto *ctx = dynamic_cast<core::IvfRabitqContext *>(context.get());
+  if (!ctx) return core::IndexError_Cast;
+  ctx->collect_scan_stats = ivf_rabitq_param->rabitq_collect_stats;
+  ctx->scan_stats = {};
   _set_group_by_on_context(search_param, context);
   context->set_topk(search_param->topk);
   context->set_fetch_vector(false);
@@ -334,6 +345,24 @@ int IVFRabitqIndex::_prepare_for_search(
   params.set(core::PARAM_IVF_RABITQ_NPROBE, ivf_rabitq_param->nprobe);
   return context->update(params);
 #endif  // RABITQ_SUPPORTED
+}
+
+int IVFRabitqIndex::_dense_search(
+    const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
+    SearchResult *result, core::IndexContext::Pointer &context) {
+  int ret = Index::_dense_search(query, search_param, result, context);
+#if RABITQ_SUPPORTED
+  if (ret != 0) return ret;
+  const auto *ctx = dynamic_cast<const core::IvfRabitqContext *>(context.get());
+  if (ctx && ctx->collect_scan_stats) {
+    const auto &scan = ctx->scan_stats;
+    // All entity reads occur at open time. Query-time accesses use the loaded
+    // views, so logical read/copy counters remain zero, even for owned views.
+    result->ivf_scan_stats_ = {true, scan.active, scan.mapped,
+                               scan.coarse_count, scan.refined_count};
+  }
+#endif
+  return ret;
 }
 
 }  // namespace zvec::core_interface

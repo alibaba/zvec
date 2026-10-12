@@ -331,6 +331,8 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
 
   // Reset results and heap for all queries
   ctx->reset_results(count);
+  ctx->scan_stats = {};
+  auto *scan_stats = ctx->collect_scan_stats ? &ctx->scan_stats : nullptr;
 
   for (uint32_t q = 0; q < count; ++q) {
     const float *q_vec = reinterpret_cast<const float *>(
@@ -371,19 +373,21 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
       if (ret != 0) {
         LOG_ERROR("Failed to prepare for cluster %zu, ret=%d", (size_t)cid,
                   ret);
+        if (scan_stats) return ret;
         continue;
       }
 
       // Scan cluster with 1-bit lower-bound pruning before extra-bit boosting
       if (!filter.is_valid()) {
         ret = entity_->search_cluster(cid, query_state, padded_dim, ex_bits,
-                                      &heap);
+                                      &heap, scan_stats);
       } else {
         ret = entity_->search_cluster(cid, query_state, padded_dim, ex_bits,
-                                      filter, &heap);
+                                      filter, &heap, scan_stats);
       }
       if (ret != 0) {
         LOG_ERROR("Failed to search cluster %zu, ret=%d", (size_t)cid, ret);
+        if (scan_stats) return ret;
         continue;
       }
 

@@ -48,6 +48,15 @@ struct IvfRabitqQueryState {
   std::shared_ptr<void> batch_query;
 };
 
+// Counts real lanes, excluding SIMD padding. For 1-bit indexes refined_count
+// counts candidates admitted to the heap, as there is no extra-bit refinement.
+struct IvfRabitqScanStats {
+  bool active{false};
+  bool mapped{false};
+  size_t coarse_count{0};
+  size_t refined_count{0};
+};
+
 /*! IVF RaBitQ Context
  * Follows the same pattern as IVFSearcherContext:
  *   - result_heap_: max-heap of size topk_ used during scan
@@ -120,6 +129,8 @@ class IvfRabitqContext : public IndexContext {
     query_state.query_norm_sq = 0.0f;
     query_state.batch_query.reset();
     probe_centroids.clear();
+    collect_scan_stats = false;
+    scan_stats = {};
   }
 
   //! Retrieve search result (first query)
@@ -345,6 +356,8 @@ class IvfRabitqContext : public IndexContext {
   // -----------------------------------------------------------------------
   IvfRabitqQueryState query_state;
   std::vector<IvfRabitqProbeCentroid> probe_centroids;
+  bool collect_scan_stats{false};
+  IvfRabitqScanStats scan_stats;
 
  private:
   struct GroupSearchState {

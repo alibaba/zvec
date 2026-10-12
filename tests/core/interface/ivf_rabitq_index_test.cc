@@ -100,6 +100,34 @@ TEST(IVFRabitqIntegration, ScanQueryOptionsRoundTrip) {
   EXPECT_FALSE(defaults->rabitq_collect_stats);
 }
 
+TEST(IVFRabitqIntegration, DedicatedScanOptionsRoundTrip) {
+  IVFRabitqQueryParam param;
+  param.rabitq_collect_stats = true;
+  const auto json = IndexFactory::QueryParamSerializeToJson(param, true);
+  auto typed =
+      IndexFactory::QueryParamDeserializeFromJson<IVFRabitqQueryParam>(json);
+  auto base = std::dynamic_pointer_cast<IVFRabitqQueryParam>(
+      IndexFactory::QueryParamDeserializeFromJson<BaseIndexQueryParam>(json));
+  auto copy = std::dynamic_pointer_cast<IVFRabitqQueryParam>(param.clone());
+  for (const auto &p : {typed, base, copy}) {
+    ASSERT_NE(nullptr, p);
+    EXPECT_TRUE(p->rabitq_collect_stats);
+  }
+  auto defaults =
+      IndexFactory::QueryParamDeserializeFromJson<IVFRabitqQueryParam>(
+          R"({"index_type":"kIVFRabitq","nprobe":16})");
+  ASSERT_NE(nullptr, defaults);
+  EXPECT_FALSE(defaults->rabitq_collect_stats);
+  const auto invalid =
+      R"({"index_type":"kIVFRabitq","rabitq_collect_stats":"yes"})";
+  EXPECT_EQ(nullptr,
+            IndexFactory::QueryParamDeserializeFromJson<IVFRabitqQueryParam>(
+                invalid));
+  EXPECT_EQ(nullptr,
+            IndexFactory::QueryParamDeserializeFromJson<BaseIndexQueryParam>(
+                invalid));
+}
+
 #if RABITQ_SUPPORTED
 class IVFRabitqIntegrationTest
     : public testing::TestWithParam<std::tuple<MetricType, int, bool>> {};
@@ -310,6 +338,49 @@ TEST_P(IVFRabitqIntegrationTest, TrainSearchAndReopen) {
     EXPECT_FLOAT_EQ(before.doc_list_[i].score(),
                     legacy_result.doc_list_[i].score());
   }
+  // Dedicated statistics must be query-local and must not change results.
+  const auto native_result = legacy_result;
+  legacy_query->rabitq_collect_stats = true;
+  size_t refined_count = 0;
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    ASSERT_EQ(0, legacy->search(input, legacy_query, &legacy_result));
+    const auto &scan = legacy_result.ivf_scan_stats_;
+    EXPECT_TRUE(scan.collected);
+    EXPECT_TRUE(scan.active);
+    EXPECT_TRUE(scan.mapped);
+    EXPECT_EQ(vectors.size(), scan.coarse_count);  // excludes padded lanes
+    EXPECT_GT(scan.refined_count, 0u);
+    EXPECT_LE(scan.refined_count, scan.coarse_count);
+    if (attempt) EXPECT_EQ(refined_count, scan.refined_count);
+    refined_count = scan.refined_count;
+    EXPECT_EQ(0u, scan.key_reads + scan.coarse_reads + scan.row_reads +
+                      scan.coarse_copy_bytes);
+    ASSERT_EQ(native_result.doc_list_.size(), legacy_result.doc_list_.size());
+    for (size_t i = 0; i < native_result.doc_list_.size(); ++i) {
+      EXPECT_EQ(native_result.doc_list_[i].key(),
+                legacy_result.doc_list_[i].key());
+      EXPECT_FLOAT_EQ(native_result.doc_list_[i].score(),
+                      legacy_result.doc_list_[i].score());
+    }
+  }
+  // A heap holding the entire corpus cannot prune a real lane before it fills.
+  legacy_query->topk = vectors.size();
+  ASSERT_EQ(0, legacy->search(input, legacy_query, &legacy_result));
+  EXPECT_EQ(vectors.size(), legacy_result.ivf_scan_stats_.refined_count);
+  legacy_query->rabitq_collect_stats = false;
+  ASSERT_EQ(0, legacy->search(input, legacy_query, &legacy_result));
+  EXPECT_FALSE(legacy_result.ivf_scan_stats_.collected);
+  EXPECT_EQ(0u, legacy_result.ivf_scan_stats_.coarse_count);
+  legacy_query->rabitq_collect_stats = true;
+  legacy_query->bf_pks = std::make_shared<std::vector<uint64_t>>();
+  EXPECT_EQ(core::IndexError_InvalidArgument,
+            legacy->search(input, legacy_query, &legacy_result));
+  EXPECT_FALSE(legacy_result.ivf_scan_stats_.collected);
+  legacy_query->bf_pks.reset();
+  legacy_query->group_by_param = group_query->group_by_param;
+  EXPECT_EQ(core::IndexError_InvalidArgument,
+            legacy->search(input, legacy_query, &legacy_result));
+  legacy_query->rabitq_collect_stats = false;
   legacy_query->topk = group_query->topk;
   legacy_query->group_by_param = group_query->group_by_param;
   ASSERT_EQ(0, legacy->search(input, legacy_query, &legacy_result));

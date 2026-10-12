@@ -217,6 +217,8 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
     if (!omit_empty_value || param.nprobe != 0) {
       json_obj.set("nprobe", ailego::JsonValue(param.nprobe));
     }
+    json_obj.set("rabitq_collect_stats",
+                 ailego::JsonValue(param.rabitq_collect_stats));
     index_type = IndexType::kIVFRabitq;
   } else if constexpr (std::is_same_v<QueryParamType, VamanaQueryParam>) {
     if (!omit_empty_value || param.ef_search != 0) {
@@ -368,8 +370,11 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
         return nullptr;
       }
       if (!extract_value_from_json(json_obj, "nprobe", param->nprobe,
+                                   tmp_json_value) ||
+          !extract_value_from_json(json_obj, "rabitq_collect_stats",
+                                   param->rabitq_collect_stats,
                                    tmp_json_value)) {
-        LOG_ERROR("Failed to deserialize nprobe");
+        LOG_ERROR("Failed to deserialize IVF RaBitQ query options");
         return nullptr;
       }
       return param;
@@ -459,8 +464,11 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
       }
     } else if constexpr (std::is_same_v<QueryParamType, IVFRabitqQueryParam>) {
       if (!extract_value_from_json(json_obj, "nprobe", param->nprobe,
+                                   tmp_json_value) ||
+          !extract_value_from_json(json_obj, "rabitq_collect_stats",
+                                   param->rabitq_collect_stats,
                                    tmp_json_value)) {
-        LOG_ERROR("Failed to deserialize nprobe");
+        LOG_ERROR("Failed to deserialize IVF RaBitQ query options");
         return nullptr;
       }
     } else if constexpr (std::is_same_v<QueryParamType, VamanaQueryParam>) {
