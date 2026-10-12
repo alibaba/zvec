@@ -13,10 +13,13 @@
 // limitations under the License.
 
 #include "db/common/rocksdb_context.h"
+#include <cstdarg>
+#include <cstdio>
 #include <filesystem>
 #include <string>
 #include <vector>
 #include <gtest/gtest.h>
+#include <zvec/ailego/logger/logger.h>
 
 using namespace zvec;
 namespace fs = std::filesystem;
@@ -61,6 +64,22 @@ uint64_t NewestOptionsFileNumber(const std::string &dir) {
   }
   return newest;
 }
+
+// Keeps the messages logged while it is registered.
+struct RecordingLogger : public ailego::Logger {
+  int init(const ailego::Params &) override {
+    return 0;
+  }
+  int cleanup() override {
+    return 0;
+  }
+  void log(int, const char *, int, const char *format, va_list args) override {
+    char buffer[1024];
+    vsnprintf(buffer, sizeof(buffer), format, args);
+    messages.emplace_back(buffer);
+  }
+  std::vector<std::string> messages;
+};
 
 }  // namespace
 
@@ -111,10 +130,22 @@ TEST_F(RocksdbContextTest, CreateKeepsHandleOrder) {
 TEST_F(RocksdbContextTest, CreateFailureLeavesNoOpenHandles) {
   // The second "a" fails inside family creation, after "a" and "b" exist.
   RocksdbContext ctx;
+  auto logger = std::make_shared<RecordingLogger>();
+  auto previous = ailego::LoggerBroker::Register(logger);
   auto s = ctx.create(path("dup"), std::vector<std::string>{"a", "b", "a"});
+  ailego::LoggerBroker::Register(previous);
   ASSERT_FALSE(s.ok());
   EXPECT_EQ(ctx.db_, nullptr);
   EXPECT_TRUE(ctx.cf_handles_.empty());
+
+  // The log names the family that could not be created.
+  bool named = false;
+  std::string logged;
+  for (const auto &message : logger->messages) {
+    named |= message.find("Failed to create cf[a]") != std::string::npos;
+    logged += message + "\n";
+  }
+  EXPECT_TRUE(named) << logged;
 
   // The failed instance released its lock: another instance can open it.
   std::vector<std::string> names;

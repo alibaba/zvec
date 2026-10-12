@@ -78,10 +78,19 @@ Status RocksdbContext::create(Args args) {
   if (!cf_descriptors.empty()) {
     s = db->CreateColumnFamilies(cf_descriptors, &created);
     if (!s.ok()) {
-      LOG_ERROR("Failed to create %zu cfs in RocksDB[%s], code[%d], reason[%s]",
-                cf_descriptors.size(), args.db_path.c_str(), s.code(),
-                s.ToString().c_str());
-      // On failure RocksDB returns the handles it created before the error.
+      // RocksDB stops at the first family it cannot create and returns the
+      // handles it created before it. If it created them all, writing the
+      // OPTIONS file failed.
+      if (created.size() < cf_descriptors.size()) {
+        LOG_ERROR(
+            "Failed to create cf[%s] in RocksDB[%s], code[%d], reason[%s]",
+            cf_descriptors[created.size()].name.c_str(), args.db_path.c_str(),
+            s.code(), s.ToString().c_str());
+      } else {
+        LOG_ERROR(
+            "Failed to write OPTIONS of RocksDB[%s], code[%d], reason[%s]",
+            args.db_path.c_str(), s.code(), s.ToString().c_str());
+      }
       for (auto *handle : created) {
         db->DestroyColumnFamilyHandle(handle);
       }
