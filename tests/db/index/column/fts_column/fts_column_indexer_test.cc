@@ -738,7 +738,8 @@ TEST_F(FtsColumnIndexerTest, MultipleInsertsAndSearches) {
 // Jieba Chinese tokenizer tests
 // ============================================================
 
-// JIEBA_DICT_DIR points to thirdparty/cppjieba/.../dict/ (injected by CMake).
+// JIEBA_DICT_DIR locates the original comparison fixtures (injected by CMake).
+// Android runners deploy them beside the isolated test working directories.
 #ifndef JIEBA_DICT_DIR
 #define JIEBA_DICT_DIR "."
 #endif
