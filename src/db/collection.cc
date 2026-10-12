@@ -1703,7 +1703,12 @@ Result<WriteResults> CollectionImpl::write_impl(std::vector<Doc> &docs,
 
     if (need_switch_to_new_segment()) {
       auto s = switch_to_new_segment_for_writing();
-      CHECK_RETURN_STATUS_EXPECTED(s);
+      if (!s.ok()) {
+        // Earlier documents in this batch were already inserted. Preserve
+        // their results and report the rollover error for the unwritten rest.
+        results.resize(docs.size(), s);
+        break;
+      }
     }
 
     Status s;
@@ -1790,12 +1795,8 @@ Status CollectionImpl::switch_to_new_segment_for_writing(
   auto s = allocate_segment_id(&new_segment_id);
   CHECK_RETURN_STATUS(s);
 
-  s = writing_segment_->dump();
-  CHECK_RETURN_STATUS(s);
-
-  s = segment_manager_->add_segment(writing_segment_);
-  CHECK_RETURN_STATUS(s);
-
+  // Prepare the replacement before sealing the writing segment. A creation
+  // failure (for example EMFILE) must leave the current segment writable.
   // when create new segment, segment meta should create a first new block
   // meta
   auto new_segment = Segment::CreateAndOpen(
@@ -1807,10 +1808,26 @@ Status CollectionImpl::switch_to_new_segment_for_writing(
     return new_segment.error();
   }
 
+  s = writing_segment_->dump();
+  if (!s.ok()) {
+    auto cleanup_status = new_segment.value()->destroy();
+    if (!cleanup_status.ok()) {
+      return Status::InternalError(
+          s.message(),
+          "; replacement cleanup failed: ", cleanup_status.message());
+    }
+    return s;
+  }
+
   Version version = version_manager_->get_current_version();
   auto writing_segment_meta = writing_segment_->meta();
   writing_segment_->remove_writing_forward_block();
   s = version.add_persisted_segment_meta(writing_segment_meta);
+  CHECK_RETURN_STATUS(s);
+
+  // Readers snapshot both owners under write_mtx_: publish the old segment
+  // only when its replacement is ready, so no failed creation lists it twice.
+  s = segment_manager_->add_segment(writing_segment_);
   CHECK_RETURN_STATUS(s);
 
   writing_segment_ = new_segment.value();
