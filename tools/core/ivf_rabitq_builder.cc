@@ -47,11 +47,17 @@ DEFINE_string(metric, "cosine", "metric: cosine, l2sq or ip");
 DEFINE_int32(n_list, 1024, "IVF list count");
 DEFINE_int32(n_iters, 20, "IVF kmeans iterations");
 
-static MetricType ParseMetric(const string &name) {
-  if (name == "cosine") return MetricType::kCosine;
-  if (name == "l2sq") return MetricType::kL2sq;
-  if (name == "ip") return MetricType::kInnerProduct;
-  return MetricType::kL2sq;
+static bool ParseMetric(const string &name, MetricType *metric) {
+  if (name == "cosine") {
+    *metric = MetricType::kCosine;
+  } else if (name == "l2sq") {
+    *metric = MetricType::kL2sq;
+  } else if (name == "ip") {
+    *metric = MetricType::kInnerProduct;
+  } else {
+    return false;
+  }
+  return true;
 }
 
 int main(int argc, char *argv[]) {
@@ -61,9 +67,29 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
+  MetricType metric;
+  if (!ParseMetric(FLAGS_metric, &metric)) {
+    cerr << "invalid --metric='" << FLAGS_metric
+         << "'; expected cosine, l2sq or ip (case-sensitive)" << endl;
+    return -1;
+  }
+
   zvec::core::VecsReader reader;
   if (!reader.load(FLAGS_vecs)) {
     cerr << "failed to load " << FLAGS_vecs << endl;
+    return -1;
+  }
+  // VecsReader also accepts non-FP32 files. Reject incompatible layouts
+  // before creating an output index or passing raw bytes to add().
+  const auto &meta = reader.index_meta();
+  if (meta.data_type() != zvec::core::IndexMeta::DT_FP32 ||
+      meta.dimension() == 0 ||
+      meta.element_size() != size_t(meta.dimension()) * sizeof(float)) {
+    cerr << "input must contain dense FP32 vectors with "
+            "element_size == dimension * sizeof(float); got data_type["
+         << static_cast<int>(meta.data_type()) << "] dimension["
+         << meta.dimension() << "] element_size[" << meta.element_size() << "]"
+         << endl;
     return -1;
   }
   const size_t num_vecs = reader.num_vecs();
@@ -72,8 +98,6 @@ int main(int argc, char *argv[]) {
   const size_t element_size = reader.index_meta().element_size();
   cout << "vecs loaded: count[" << num_vecs << "] dimension[" << dimension
        << "] element_size[" << element_size << "]" << endl;
-
-  const MetricType metric = ParseMetric(FLAGS_metric);
 
   RabitqQuantizerParam quantizer(FLAGS_bits);
   quantizer.num_clusters = FLAGS_num_clusters;
