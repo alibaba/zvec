@@ -1550,10 +1550,12 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
   s = vector_indexer->merge(source_indexers, nullptr, merge_options);
   CHECK_RETURN_STATUS_EXPECTED(s);
 
-  if (vector_indexer->GetTrainingCapability() != nullptr) {
+  auto core_index = vector_indexer->core_index();
+  if (dynamic_cast<core_interface::ITrainingCapable *>(core_index.get()) !=
+      nullptr) {
     LOG_INFO("Delegating OMEGA training to core index for field '%s'",
              field.name().c_str());
-    if (vector_indexer->core_index()->train() != 0) {
+    if (core_index->train() != 0) {
       return tl::make_unexpected(
           Status::InternalError("Failed to train OMEGA model in core"));
     }

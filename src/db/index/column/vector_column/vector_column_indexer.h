@@ -13,7 +13,6 @@
 // limitations under the License.
 #pragma once
 #include <map>
-#include <mutex>
 #include <string>
 #include <utility>
 #include <variant>
@@ -22,8 +21,6 @@
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_param.h>
-#include <zvec/core/interface/training.h>
-#include <zvec/core/interface/training_session.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
 #include "db/common/constants.h"
@@ -94,22 +91,6 @@ class VectorColumnIndexer {
   // const;
 
  public:
-  // OMEGA Training Mode Support
-  /**
-   * @brief Check if the underlying index supports training capability.
-   *
-   * @return Pointer to ITrainingCapable interface if supported, nullptr
-   * otherwise
-   */
-  core_interface::ITrainingCapable *GetTrainingCapability() const;
-
-  core_interface::ITrainingSession::Pointer CreateTrainingSession() const;
-
-  void SetTrainingSession(
-      const core_interface::ITrainingSession::Pointer &session);
-
-  void ClearTrainingSession();
-
   core::IndexProvider::Pointer create_index_provider() const {
     return index->create_index_provider();
   }
@@ -176,8 +157,6 @@ class VectorColumnIndexer {
   bool is_sparse_{false};  // TODO: eliminate the dynamic flag and make it
                            // static/template/seperate class
 
-  mutable std::mutex training_mutex_;
-  core_interface::ITrainingSession::Pointer training_session_;
 };
 
 

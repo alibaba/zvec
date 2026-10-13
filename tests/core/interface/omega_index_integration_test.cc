@@ -191,7 +191,7 @@ TEST_F(OmegaIndexIntegrationTest,
   PopulateIndex(index, 8);
   ASSERT_EQ(index->train(), 0);
 
-  auto *training_capable = index->GetTrainingCapability();
+  auto *training_capable = dynamic_cast<ITrainingCapable *>(index.get());
   ASSERT_NE(training_capable, nullptr);
 
   auto session = training_capable->CreateTrainingSession();

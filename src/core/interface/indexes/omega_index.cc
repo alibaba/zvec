@@ -457,13 +457,7 @@ bool CollectTrainingData(
     return false;
   }
 
-  auto *training_capable = index->GetTrainingCapability();
-  if (training_capable == nullptr) {
-    LOG_ERROR("OMEGA index does not expose training capability");
-    return false;
-  }
-
-  auto session = training_capable->CreateTrainingSession();
+  auto session = index->CreateTrainingSession();
   if (session == nullptr) {
     LOG_ERROR("Failed to create OMEGA training session");
     return false;

@@ -6,15 +6,6 @@ cc_directory(index)
 cc_directory(sqlengine)
 
 file(GLOB_RECURSE ALL_DB_SRCS *.cc *.c *.h)
-if(NOT ZVEC_ENABLE_OMEGA)
-  list(FILTER ALL_DB_SRCS EXCLUDE REGEX ".*/training/omega_model_trainer\\.cc$")
-  list(FILTER ALL_DB_SRCS EXCLUDE REGEX ".*/training/omega_training_coordinator\\.cc$")
-endif()
-
-set(ZVEC_DB_INCS . ${CMAKE_CURRENT_BINARY_DIR})
-if(ZVEC_ENABLE_OMEGA)
-  list(APPEND ZVEC_DB_INCS ${PROJECT_ROOT_DIR}/thirdparty/omega/OMEGALib/include)
-endif()
 
 # Ensure bitpacked_simd_sse41.cc is compiled with SSE4.1 flag and
 # bitpacked_simd_avx2.cc with AVX2 flag in the packed zvec target as well
@@ -63,11 +54,3 @@ cc_library(
     utf8proc
   VERSION "${PROXIMA_ZVEC_VERSION}"
 )
-
-if(ZVEC_ENABLE_OMEGA AND TARGET zvec)
-  target_compile_options(zvec PRIVATE
-      "$<$<CXX_COMPILER_ID:Clang>:-Wno-unknown-pragmas>"
-      "$<$<CXX_COMPILER_ID:AppleClang>:-Wno-unknown-pragmas>"
-      "$<$<CXX_COMPILER_ID:GNU>:-Wno-unknown-pragmas>"
-    )
-endif()

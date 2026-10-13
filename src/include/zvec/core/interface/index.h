@@ -153,21 +153,6 @@ class ZVEC_CORE_API Index {
                      const BaseIndexQueryParam::Pointer &search_param,
                      SearchResult *result);
 
-  // Capability Pattern: Query optional capabilities
-  /**
-   * @brief Get training capability interface if supported.
-   *
-   * This method allows indexes to optionally provide training functionality
-   * without polluting the base Index class. Follows the Capability Pattern.
-   *
-   * @return Pointer to ITrainingCapable interface if supported, nullptr
-   * otherwise
-   *
-   */
-  virtual class ITrainingCapable *GetTrainingCapability() {
-    return nullptr;  // Default: capability not supported
-  }
-
   virtual int add_with_source(const VectorData &vector, uint32_t doc_id,
                               const core::VectorSource &src);
   virtual int search_with_source(
@@ -525,11 +510,6 @@ class ZVEC_CORE_API DiskAnnIndex : public Index {
 class OmegaIndex : public HNSWIndex, public ITrainingCapable {
  public:
   OmegaIndex() = default;
-
-  // Override GetTrainingCapability to return this
-  ITrainingCapable *GetTrainingCapability() override {
-    return this;
-  }
 
   int open(const std::string &file_path,
            StorageOptions storage_options) override;

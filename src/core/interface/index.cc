@@ -1532,15 +1532,6 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
   }
   is_trained_ = true;
 
-  // Generic training support: Check if this index supports training capability
-  // The actual training orchestration happens at the db layer (Segment level)
-  auto *training_capable = this->GetTrainingCapability();
-  if (training_capable != nullptr) {
-    LOG_INFO(
-        "Index merge completed for trainable index, training can now be "
-        "performed");
-  }
-
   return 0;
 }
 
