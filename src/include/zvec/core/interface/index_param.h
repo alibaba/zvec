@@ -36,6 +36,7 @@ class ZVEC_CORE_API IndexFactory;
 class ZVEC_CORE_API Index;
 class ZVEC_CORE_API BaseIndexParam;
 class ZVEC_CORE_API BaseIndexQueryParam;
+struct QueryTrainingArtifacts;
 
 struct StorageOptions {
   enum class StorageType { kNone, kMMAP, kMemory, kBufferPool };
@@ -274,6 +275,7 @@ struct OmegaQueryParam : public HNSWQueryParam {
   float target_recall = 0.95f;
   int training_query_id =
       -1;  // For parallel training searches, -1 means use global
+  std::function<void(QueryTrainingArtifacts &&)> training_collector;
 
   BaseIndexQueryParam::Pointer clone() const override {
     return std::make_shared<OmegaQueryParam>(*this);

@@ -19,6 +19,7 @@
 #include <memory>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 #include <gtest/gtest.h>
 #include "tests/test_util.h"
@@ -175,8 +176,6 @@ TEST_F(OmegaIndexIntegrationTest,
   ASSERT_EQ(index->search(query, query_param, &result), 0);
   ASSERT_EQ(result.doc_list_.size(), 3U);
   EXPECT_EQ(result.doc_list_[0].key(), 7U);
-  EXPECT_TRUE(result.training_records_.empty());
-  EXPECT_TRUE(result.gt_cmps_per_rank_.empty());
 
   ASSERT_EQ(index->close(), 0);
 }
@@ -204,27 +203,31 @@ TEST_F(OmegaIndexIntegrationTest,
   ASSERT_EQ(session->Start(config), 0);
   session->BeginQuery(0);
 
+  QueryTrainingArtifacts collected;
+  int collector_calls = 0;
+
   auto query_param = OmegaQueryParamBuilder()
                          .with_topk(3)
                          .with_ef_search(32)
                          .with_training_query_id(0)
                          .with_target_recall(0.95f)
+                         .with_training_collector(
+                             [&](QueryTrainingArtifacts &&artifacts) {
+                               ++collector_calls;
+                               collected = std::move(artifacts);
+                               session->CollectQueryArtifacts(
+                                   QueryTrainingArtifacts(collected));
+                             })
                          .build();
 
   auto query = MakeQuery(0.0f);
   SearchResult result;
   ASSERT_EQ(index->search(query, query_param, &result), 0);
-  EXPECT_EQ(result.training_query_id_, 0);
-  EXPECT_FALSE(result.training_records_.empty());
-  ASSERT_EQ(result.gt_cmps_per_rank_.size(), 1U);
-  EXPECT_GT(result.total_cmps_, 0);
-
-  QueryTrainingArtifacts artifacts;
-  artifacts.records = result.training_records_;
-  artifacts.gt_cmps_per_rank = result.gt_cmps_per_rank_;
-  artifacts.total_cmps = result.total_cmps_;
-  artifacts.training_query_id = result.training_query_id_;
-  session->CollectQueryArtifacts(std::move(artifacts));
+  EXPECT_EQ(collector_calls, 1);
+  EXPECT_EQ(collected.training_query_id, 0);
+  EXPECT_FALSE(collected.records.empty());
+  ASSERT_EQ(collected.gt_cmps_per_rank.size(), 1U);
+  EXPECT_GT(collected.total_cmps, 0);
 
   TrainingArtifacts consumed = session->ConsumeArtifacts();
   ASSERT_FALSE(consumed.records.empty());
@@ -232,9 +235,107 @@ TEST_F(OmegaIndexIntegrationTest,
   ASSERT_EQ(consumed.gt_cmps_data.topk, 1U);
   ASSERT_EQ(consumed.gt_cmps_data.gt_cmps.size(), 1U);
   ASSERT_EQ(consumed.gt_cmps_data.total_cmps.size(), 1U);
-  EXPECT_EQ(consumed.gt_cmps_data.total_cmps[0], result.total_cmps_);
+  EXPECT_EQ(consumed.gt_cmps_data.total_cmps[0], collected.total_cmps);
+
+  // A subsequent query reuses the pooled context without the previous callback.
+  auto plain_query_param = OmegaQueryParamBuilder()
+                               .with_topk(3)
+                               .with_ef_search(32)
+                               .with_training_query_id(0)
+                               .build();
+  ASSERT_EQ(index->search(query, plain_query_param, &result), 0);
+  EXPECT_EQ(collector_calls, 1);
+  EXPECT_TRUE(session->ConsumeArtifacts().records.empty());
 
   session->Finish();
+  ASSERT_EQ(index->close(), 0);
+}
+
+TEST_F(OmegaIndexIntegrationTest, ParallelTrainingCollectorsKeepQueryIds) {
+  auto index = IndexFactory::CreateAndInitIndex(*CreateOmegaIndexParam());
+  ASSERT_NE(index, nullptr);
+  ASSERT_EQ(index->open(kIndexPath, {StorageOptions::StorageType::kMMAP, true}),
+            0);
+  auto dataset = PopulateRandomIndex(index, 8);
+  ASSERT_EQ(dataset.size(), 8U);
+  ASSERT_EQ(index->train(), 0);
+  auto *training_capable = dynamic_cast<ITrainingCapable *>(index.get());
+  ASSERT_NE(training_capable, nullptr);
+  auto session = training_capable->CreateTrainingSession();
+  ASSERT_NE(session, nullptr);
+  TrainingSessionConfig config;
+  config.topk = 1;
+  config.ground_truth = {{0}, {1}, {2}, {3}};
+  ASSERT_EQ(session->Start(config), 0);
+
+  std::vector<int> callback_query_ids(4, -1);
+  std::vector<int> search_errors(4, -1);
+  std::vector<std::thread> threads;
+  for (int q = 0; q < 4; ++q) {
+    threads.emplace_back([&, q]() {
+      auto query_param = OmegaQueryParamBuilder()
+                             .with_topk(3)
+                             .with_ef_search(32)
+                             .with_training_query_id(q)
+                             .with_training_collector(
+                                 [&, q](QueryTrainingArtifacts &&artifacts) {
+                                   callback_query_ids[q] =
+                                       artifacts.training_query_id;
+                                   session->CollectQueryArtifacts(
+                                       std::move(artifacts));
+                                 })
+                             .build();
+      SearchResult result;
+      search_errors[q] = index->search(
+          VectorData{DenseVector{dataset[q].data()}}, query_param, &result);
+    });
+  }
+  for (auto &thread : threads) {
+    thread.join();
+  }
+
+  auto artifacts = session->ConsumeArtifacts();
+  ASSERT_EQ(artifacts.gt_cmps_data.num_queries, 4U);
+  ASSERT_EQ(artifacts.gt_cmps_data.total_cmps.size(), 4U);
+  for (int q = 0; q < 4; ++q) {
+    EXPECT_EQ(search_errors[q], 0);
+    EXPECT_EQ(callback_query_ids[q], q);
+    EXPECT_GT(artifacts.gt_cmps_data.total_cmps[q], 0);
+  }
+  EXPECT_FALSE(artifacts.records.empty());
+  session->Finish();
+  ASSERT_EQ(index->close(), 0);
+}
+
+TEST_F(OmegaIndexIntegrationTest, SearchRetriesTrainingAfterDirectoryFailure) {
+  auto index =
+      IndexFactory::CreateAndInitIndex(*CreateTrainableOmegaIndexParam());
+  ASSERT_NE(index, nullptr);
+  ASSERT_EQ(index->open(kIndexPath, {StorageOptions::StorageType::kMMAP, true}),
+            0);
+  auto dataset = PopulateRandomIndex(index, 128);
+  ASSERT_EQ(dataset.size(), 128U);
+  auto query_param = OmegaQueryParamBuilder()
+                         .with_topk(5)
+                         .with_ef_search(64)
+                         .build();
+  VectorData query{DenseVector{dataset[kTrainQueryDocId].data()}};
+  SearchResult result;
+
+  const std::string model_dir = "OmegaIndexIntegrationTest/omega_model";
+  {
+    std::ofstream blocker(model_dir);
+    ASSERT_TRUE(blocker.is_open());
+    blocker << "blocks model directory creation";
+  }
+  EXPECT_NE(index->search(query, query_param, &result), 0);
+  EXPECT_FALSE(index->is_trained());
+  ASSERT_TRUE(std::filesystem::remove(model_dir));
+
+  ASSERT_EQ(index->search(query, query_param, &result), 0);
+  EXPECT_TRUE(index->is_trained());
+  EXPECT_TRUE(std::filesystem::exists(model_dir + "/model.txt"));
+  EXPECT_EQ(result.doc_list_.size(), 5U);
   ASSERT_EQ(index->close(), 0);
 }
 

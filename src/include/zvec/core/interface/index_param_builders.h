@@ -503,6 +503,12 @@ class OmegaQueryParamBuilder
     return *this;
   }
 
+  OmegaQueryParamBuilder &with_training_collector(
+      std::function<void(QueryTrainingArtifacts &&)> collector) {
+    m_param.training_collector = std::move(collector);
+    return *this;
+  }
+
   OmegaQueryParam::Pointer build() {
     return std::make_shared<OmegaQueryParam>(std::move(m_param));
   }

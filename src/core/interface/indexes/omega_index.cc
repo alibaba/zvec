@@ -511,19 +511,15 @@ bool CollectTrainingData(
                   .with_ef_search(param.ef_training)
                   .with_training_query_id(static_cast<int>(q))
                   .with_target_recall(0.95f)
+                  .with_training_collector(
+                      [session](QueryTrainingArtifacts &&artifacts) {
+                        session->CollectQueryArtifacts(std::move(artifacts));
+                      })
                   .build();
           if (index->search(query, query_param, &search_result) != 0) {
             LOG_WARN("OMEGA training search failed for query %zu", q);
             continue;
           }
-
-          QueryTrainingArtifacts artifacts;
-          artifacts.records = std::move(search_result.training_records_);
-          artifacts.gt_cmps_per_rank =
-              std::move(search_result.gt_cmps_per_rank_);
-          artifacts.total_cmps = search_result.total_cmps_;
-          artifacts.training_query_id = search_result.training_query_id_;
-          session->CollectQueryArtifacts(std::move(artifacts));
         }
       });
     }
@@ -726,6 +722,11 @@ int OmegaIndex::train() {
     return core::IndexError_Runtime;
   }
 
+  // Ground-truth and feature collection issue nested searches during training.
+  if (is_training_) {
+    return core::IndexError_Success;
+  }
+
   const uint32_t doc_count = get_doc_count();
   if (doc_count == 0) {
     is_trained_ = true;
@@ -823,19 +824,6 @@ ITrainingSession::Pointer OmegaIndex::CreateTrainingSession() {
   return nullptr;
 }
 
-void OmegaIndex::_collect_training_artifacts(core::IndexContext *context,
-                                             SearchResult *result) {
-  auto *omega_context = dynamic_cast<core::OmegaContext *>(context);
-  if (omega_context == nullptr || result == nullptr) {
-    return;
-  }
-
-  result->training_records_ = omega_context->take_training_records();
-  result->gt_cmps_per_rank_ = omega_context->take_gt_cmps();
-  result->total_cmps_ = omega_context->get_total_cmps();
-  result->training_query_id_ = omega_context->get_training_query_id();
-}
-
 int OmegaIndex::_prepare_for_search(
     const VectorData &vector_data,
     const BaseIndexQueryParam::Pointer &search_param,
@@ -851,6 +839,11 @@ int OmegaIndex::_prepare_for_search(
   // Extract OMEGA-specific parameter (target_recall)
   const auto &omega_search_param =
       std::dynamic_pointer_cast<OmegaQueryParam>(search_param);
+  auto *omega_context = dynamic_cast<core::OmegaContext *>(context.get());
+  if (omega_context != nullptr) {
+    omega_context->set_training_collector(
+        omega_search_param ? omega_search_param->training_collector : nullptr);
+  }
   if (omega_search_param) {
     params.set(core::PARAM_OMEGA_SEARCHER_TARGET_RECALL,
                omega_search_param->target_recall);

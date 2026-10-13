@@ -759,7 +759,7 @@ int Index::search(const VectorData &vector_data,
     return core::IndexError_Unsupported;
   }
 
-  if (!is_trained_ && !is_training_ && this->train() != 0) {
+  if (!is_trained_ && this->train() != 0) {
     LOG_ERROR("Failed to train index");
     return core::IndexError_Runtime;
   }
@@ -1224,7 +1224,6 @@ int Index::_collect_dense_result(
       }
       if (revert_err) return revert_err;
     }
-    _collect_training_artifacts(context.get(), result);
     return 0;
   }
   if (reformer_) {
@@ -1280,13 +1279,8 @@ int Index::_collect_dense_result(
     }
   }
 
-  _collect_training_artifacts(context.get(), result);
-
   return 0;
 }
-
-void Index::_collect_training_artifacts(core::IndexContext * /*context*/,
-                                        SearchResult * /*result*/) {}
 
 
 int Index::_sparse_search(const VectorData &vector_data,

@@ -109,14 +109,6 @@ struct SearchResult {
   // use string to manage memory
   std::vector<std::string> reverted_vector_list_{};
   std::vector<std::string> reverted_sparse_values_list_{};
-  // Training records collected during search (for OMEGA training mode)
-  std::vector<TrainingRecord> training_records_{};
-  // GT cmps data: cmps value when each GT rank was found (for OMEGA training)
-  // gt_cmps_per_rank_[rank] = cmps when GT[rank] first entered topk (-1 if not
-  // found)
-  std::vector<int> gt_cmps_per_rank_{};
-  int total_cmps_{0};          // Total comparisons in this search
-  int training_query_id_{-1};  // Query ID for this search (-1 if not training)
   // Grouped reverted values, aligned with group_doc_list_.
   std::vector<std::vector<std::string>> group_reverted_vector_list_{};
   std::vector<std::vector<std::string>> group_reverted_sparse_values_list_{};
@@ -217,8 +209,6 @@ class ZVEC_CORE_API Index {
       core::IndexContext::Pointer &context) = 0;
   virtual int _get_coarse_search_topk(
       const BaseIndexQueryParam::Pointer &search_param);
-  virtual void _collect_training_artifacts(core::IndexContext *context,
-                                           SearchResult *result);
 
   //! Helper: set group_by on context from the query param (common for all
   //! index types). Call this before set_topk() when topk depends on group
@@ -253,7 +243,6 @@ class ZVEC_CORE_API Index {
 
  protected:
   bool is_trained_{false};
-  bool is_training_{false};
 
   BaseIndexParam param_;
   ailego::Params proxima_index_params_{};
@@ -515,8 +504,6 @@ class OmegaIndex : public HNSWIndex, public ITrainingCapable {
            StorageOptions storage_options) override;
   int train() override;
   ITrainingSession::Pointer CreateTrainingSession() override;
-  void _collect_training_artifacts(core::IndexContext *context,
-                                   SearchResult *result) override;
   BaseIndexParam::Pointer get_param() const override {
     return std::make_shared<OmegaIndexParam>(param_);
   }
@@ -529,6 +516,7 @@ class OmegaIndex : public HNSWIndex, public ITrainingCapable {
       core::IndexContext::Pointer &context) override;
 
  private:
+  bool is_training_{false};
   OmegaIndexParam param_{};
 };
 

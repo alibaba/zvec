@@ -14,7 +14,8 @@
 
 #pragma once
 
-#include <zvec/core/interface/training.h>
+#include <functional>
+#include <zvec/core/interface/training_session.h>
 #include "omega_params.h"
 #include "../hnsw/hnsw_context.h"
 
@@ -87,6 +88,23 @@ class OmegaContext : public HnswContext {
     return training_query_id_;
   }
 
+  void set_training_collector(
+      std::function<void(core_interface::QueryTrainingArtifacts &&)> collector) {
+    training_collector_ = std::move(collector);
+  }
+
+  void collect_training_artifacts() {
+    if (!training_collector_) {
+      return;
+    }
+    core_interface::QueryTrainingArtifacts artifacts;
+    artifacts.records = take_training_records();
+    artifacts.gt_cmps_per_rank = take_gt_cmps();
+    artifacts.total_cmps = total_cmps_;
+    artifacts.training_query_id = training_query_id_;
+    training_collector_(std::move(artifacts));
+  }
+
   //! Reset context and clear per-search training artifacts.
   void reset() override {
     HnswContext::reset();
@@ -94,6 +112,7 @@ class OmegaContext : public HnswContext {
     gt_cmps_per_rank_.clear();
     total_cmps_ = 0;
     training_query_id_ = -1;
+    training_collector_ = nullptr;
   }
 
   //! Update context parameters (overrides HnswContext::update)
@@ -122,6 +141,8 @@ class OmegaContext : public HnswContext {
       training_records_;               // Per-query training records
   std::vector<int> gt_cmps_per_rank_;  // cmps value when each GT rank was found
   int total_cmps_ = 0;                 // Total cmps for this search
+  std::function<void(core_interface::QueryTrainingArtifacts &&)>
+      training_collector_;
 };
 
 }  // namespace core

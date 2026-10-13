@@ -535,6 +535,9 @@ int OmegaStreamer::omega_search_impl(const void *query,
   }
 
   omega_search_destroy(omega_search);
+  if (training_mode_enabled_ && omega_ctx != nullptr) {
+    omega_ctx->collect_training_artifacts();
+  }
   return 0;
 }
 
