@@ -12,8 +12,7 @@ cc_library(
     NAME core_knn_hnsw_sparse
     STATIC SHARED STRICT ALWAYS_LINK
     SRCS *.cc
-    # core_utility: provides ScopedTimer and other utilities
-    LIBS core_framework core_utility sparsehash
+    LIBS core_framework sparsehash
     INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
     LDFLAGS "${CORE_KNN_HNSW_SPARSE_LDFLAGS}"
     VERSION "${PROXIMA_ZVEC_VERSION}"

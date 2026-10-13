@@ -1083,11 +1083,10 @@ zvec_index_params_get_hnsw_ef_construction(const zvec_index_params_t *params);
  * @return ZVEC_OK on success, error code on failure
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
-zvec_index_params_set_omega_training_params(zvec_index_params_t *params,
-                                            uint32_t min_vector_threshold,
-                                            size_t num_training_queries,
-                                            int ef_training,
-                                            int ef_groundtruth);
+zvec_index_params_set_omega_params(zvec_index_params_t *params,
+                                 uint32_t min_vector_threshold,
+                                 size_t num_training_queries,
+                                 int ef_training, int ef_groundtruth);
 
 /**
  * @brief Set Vamana specific parameters

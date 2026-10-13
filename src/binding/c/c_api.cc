@@ -1688,7 +1688,7 @@ int zvec_index_params_get_hnsw_ef_construction(const zvec_index_params_t *params
  * @param ef_groundtruth ef value used for ground-truth generation
  * @return ZVEC_OK on success, error code on failure
  */
-zvec_error_code_t zvec_index_params_set_omega_training_params(
+zvec_error_code_t zvec_index_params_set_omega_params(
     zvec_index_params_t *params, uint32_t min_vector_threshold,
     size_t num_training_queries, int ef_training, int ef_groundtruth) {
   if (!params) {
