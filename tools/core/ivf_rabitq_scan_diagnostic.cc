@@ -32,6 +32,13 @@ void PrintDistribution(const char *name, std::vector<size_t> values) {
 // Deliberately separate from timed bench: CSV I/O and A/B comparisons must not
 // contaminate throughput. Each query runs against the exact same loaded index.
 int main(int argc, char **argv) {
+  const auto usage = [] {
+    std::cerr << "Usage: ivf_rabitq_scan_diagnostic CONFIG.yaml "
+                 "OUTPUT_PREFIX [--segment-timing] [--export-lists] "
+                 "[--disable-pruning]\n";
+    return 1;
+  };
+  if (argc < 3) return usage();
   bool segment_timing = false, export_lists = false, disable_pruning = false;
   for (int i = 3; i < argc; ++i) {
     const std::string flag = argv[i];
@@ -42,10 +49,7 @@ int main(int argc, char **argv) {
     } else if (flag == "--disable-pruning" && !disable_pruning) {
       disable_pruning = true;
     } else {
-      std::cerr << "Usage: ivf_rabitq_scan_diagnostic CONFIG.yaml "
-                   "OUTPUT_PREFIX [--segment-timing] [--export-lists] "
-                   "[--disable-pruning]\n";
-      return 1;
+      return usage();
     }
   }
   try {
@@ -79,7 +83,6 @@ int main(int argc, char **argv) {
       throw std::runtime_error(
           "--disable-pruning requires dedicated IVF RaBitQ; integrated "
           "configs already include unpruned modes");
-    if (disable_pruning) dedicated_query->rabitq_pruning = false;
     if ((!query && !dedicated_query) || base_query->refiner_param ||
         base_query->group_by_param || base_query->bf_pks ||
         (base_query->filter && base_query->filter->is_valid()) ||
@@ -88,6 +91,7 @@ int main(int argc, char **argv) {
       throw std::runtime_error(
           "Diagnostic requires unfiltered IVF queries without "
           "refiner/group-by");
+    if (disable_pruning) dedicated_query->rabitq_pruning = false;
     const auto topk = common["TopK"].as<std::string>();
     size_t parsed = 0;
     const int k = std::stoi(topk, &parsed);
@@ -97,8 +101,8 @@ int main(int argc, char **argv) {
     base_query->topk = k;
     base_query->is_linear = false;
     base_query->fetch_vector = false;
-    // Dedicated search always uses pruning and reuses the LUT dot. It has one
-    // native mode; do not label it as the integrated baseline or toggle it.
+    // Dedicated search reuses the LUT dot and has one mode per invocation.
+    // Its pruning option is preserved, including in the emitted configuration.
     const std::vector<const char *> names =
         query ? std::vector<const char *>{"baseline", "unpruned", "reuse",
                                           "reuse_unpruned"}

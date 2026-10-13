@@ -332,7 +332,8 @@ int IVFRabitqIndex::_prepare_for_search(
   }
   auto *ctx = dynamic_cast<core::IvfRabitqContext *>(context.get());
   if (!ctx) return core::IndexError_Cast;
-  ctx->collect_scan_stats = ivf_rabitq_param->rabitq_collect_stats;
+  ctx->collect_scan_stats = ivf_rabitq_param->rabitq_collect_stats ||
+                            ivf_rabitq_param->rabitq_export_scan_lists;
   ctx->scan_stats = {};
   ctx->disable_pruning = !ivf_rabitq_param->rabitq_pruning;
   ctx->collect_scan_lists = ivf_rabitq_param->rabitq_export_scan_lists;
