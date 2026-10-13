@@ -606,7 +606,21 @@ int IVFEntity::load_header(const IndexStorage::Pointer &container) {
     return IndexError_InvalidFormat;
   }
 
-  if (!meta_.quantizer_name().empty()) {
+  const auto &attributes = meta_.attributes();
+  if (attributes.has(IVF_TURBO_FORMAT_VERSION_ATTRIBUTE)) {
+    uint32_t version = 0;
+    if (!attributes.get(IVF_TURBO_FORMAT_VERSION_ATTRIBUTE, &version) ||
+        version != kIVFTurboFormatVersion) {
+      LOG_ERROR("Unsupported Turbo IVF posting format");
+      return IndexError_InvalidFormat;
+    }
+    // A marked Turbo index must have its state segment, even for FP32.
+    return load_quantizer(container);
+  }
+  // Earlier Turbo indexes have no version attribute but always contain this
+  // segment. Legacy indexes may have a quantizer descriptor without Turbo
+  // codes.
+  if (container->has(IVF_TURBO_QUANTIZER_SEG_ID)) {
     return load_quantizer(container);
   }
   quantizer_.reset();
@@ -637,7 +651,8 @@ int IVFEntity::load_header(const IndexStorage::Pointer &container) {
 }
 
 int IVFEntity::load_quantizer(const IndexStorage::Pointer &container) {
-  if (meta_.major_order() != IndexMeta::MajorOrder::MO_ROW ||
+  if (meta_.quantizer_name().empty() ||
+      meta_.major_order() != IndexMeta::MajorOrder::MO_ROW ||
       !meta_.reformer_name().empty() || header_.block_vector_count > 64) {
     LOG_ERROR("Turbo IVF requires row-major codes without a legacy reformer");
     return IndexError_InvalidFormat;
