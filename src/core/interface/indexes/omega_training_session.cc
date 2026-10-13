@@ -13,14 +13,15 @@
 // limitations under the License.
 
 #include "omega_training_session.h"
+#include <zvec/core/framework/index_error.h>
 #include "algorithm/omega/omega_streamer.h"
 
 namespace zvec::core_interface {
 
-zvec::Status OmegaTrainingSession::Start(const TrainingSessionConfig &config) {
+int OmegaTrainingSession::Start(const TrainingSessionConfig &config) {
   std::lock_guard<std::mutex> lock(mutex_);
   if (streamer_ == nullptr) {
-    return zvec::Status::InvalidArgument("Omega streamer is not available");
+    return core::IndexError_InvalidArgument;
   }
 
   ResetArtifactsLocked();
@@ -29,7 +30,7 @@ zvec::Status OmegaTrainingSession::Start(const TrainingSessionConfig &config) {
   streamer_->set_training_ground_truth(config.ground_truth, config.k_train);
   streamer_->enable_training_mode(true);
   active_ = true;
-  return zvec::Status::OK();
+  return core::IndexError_Success;
 }
 
 void OmegaTrainingSession::BeginQuery(int query_id) {

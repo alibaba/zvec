@@ -470,10 +470,10 @@ bool CollectTrainingData(
 
   {
     ScopedTimer timer(timing_stats, "Step3: EnableTrainingMode");
-    auto status = session->Start(config);
-    if (!status.ok()) {
+    int ret = session->Start(config);
+    if (ret != 0) {
       LOG_ERROR("Failed to start OMEGA training session: %s",
-                status.message().c_str());
+                core::IndexError::What(ret));
       return false;
     }
   }

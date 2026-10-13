@@ -18,7 +18,6 @@
 #include <memory>
 #include <vector>
 #include <zvec/core/interface/training.h>
-#include <zvec/db/status.h>
 
 namespace zvec::core_interface {
 
@@ -46,7 +45,7 @@ class ITrainingSession {
 
   virtual ~ITrainingSession() = default;
 
-  virtual zvec::Status Start(const TrainingSessionConfig &config) = 0;
+  virtual int Start(const TrainingSessionConfig &config) = 0;
 
   virtual void BeginQuery(int query_id) = 0;
 

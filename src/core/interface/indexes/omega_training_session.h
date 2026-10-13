@@ -30,7 +30,7 @@ class OmegaTrainingSession : public ITrainingSession {
   explicit OmegaTrainingSession(core::OmegaStreamer *streamer)
       : streamer_(streamer) {}
 
-  zvec::Status Start(const TrainingSessionConfig &config) override;
+  int Start(const TrainingSessionConfig &config) override;
 
   void BeginQuery(int query_id) override;
 

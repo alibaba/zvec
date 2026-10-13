@@ -201,7 +201,7 @@ TEST_F(OmegaIndexIntegrationTest,
   config.topk = 1;
   config.k_train = 1;
   config.ground_truth = {{0}};
-  ASSERT_TRUE(session->Start(config).ok());
+  ASSERT_EQ(session->Start(config), 0);
   session->BeginQuery(0);
 
   auto query_param = OmegaQueryParamBuilder()

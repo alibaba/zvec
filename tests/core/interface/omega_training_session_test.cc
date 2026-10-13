@@ -14,6 +14,7 @@
 
 #include "core/interface/indexes/omega_training_session.h"
 #include <gtest/gtest.h>
+#include <zvec/core/framework/index_error.h>
 
 namespace zvec::core_interface {
 
@@ -23,8 +24,7 @@ TEST(OmegaTrainingSessionTest, StartFailsWithoutStreamer) {
   config.topk = 3;
   config.ground_truth = {{1, 2, 3}};
 
-  auto status = session.Start(config);
-  EXPECT_FALSE(status.ok());
+  EXPECT_EQ(session.Start(config), core::IndexError_InvalidArgument);
 }
 
 TEST(OmegaTrainingSessionTest, ConsumeArtifactsAggregatesRecordsAndGtCmps) {
