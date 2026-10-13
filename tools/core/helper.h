@@ -259,7 +259,8 @@ int load_taglists(const std::string &path,
       return IndexError_ReadData;
     }
 
-    uint64_t tag_offset = *reinterpret_cast<const uint64_t *>(data_block.data());
+    uint64_t tag_offset =
+        *reinterpret_cast<const uint64_t *>(data_block.data());
     taglist_offsets.push_back(tag_offset);
 
     offset += sizeof(uint64_t);
@@ -277,7 +278,7 @@ int load_taglists(const std::string &path,
     uint64_t tag_count = *reinterpret_cast<const uint64_t *>(data_block.data());
 
     if (segment_taglist_data->read(offset, data_block,
-                                  tag_count * sizeof(uint64_t)) !=
+                                   tag_count * sizeof(uint64_t)) !=
         tag_count * sizeof(uint64_t)) {
       LOG_ERROR("Read tag list data failed");
       return IndexError_ReadData;
@@ -287,7 +288,8 @@ int load_taglists(const std::string &path,
     std::vector<uint64_t> tag_list;
     tag_list.reserve(tag_count);
     for (size_t j = 0; j < tag_count; ++j) {
-      tag_list.push_back(reinterpret_cast<const uint64_t *>(data_block.data())[j]);
+      tag_list.push_back(
+          reinterpret_cast<const uint64_t *>(data_block.data())[j]);
     }
     id_to_tags_list.push_back(std::move(tag_list));
   }

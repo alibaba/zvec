@@ -230,7 +230,8 @@ class Flow {
         return IndexError_ReadData;
       }
 
-      uint64_t tag_offset = *reinterpret_cast<const uint64_t *>(data_block.data());
+      uint64_t tag_offset =
+          *reinterpret_cast<const uint64_t *>(data_block.data());
       taglist_offsets.push_back(tag_offset);
 
       offset += sizeof(uint64_t);
@@ -245,10 +246,11 @@ class Flow {
       }
       offset += sizeof(uint64_t);
 
-      uint64_t tag_count = *reinterpret_cast<const uint64_t *>(data_block.data());
+      uint64_t tag_count =
+          *reinterpret_cast<const uint64_t *>(data_block.data());
 
       if (segment_taglist_data->read(offset, data_block,
-                                    tag_count * sizeof(uint64_t)) !=
+                                     tag_count * sizeof(uint64_t)) !=
           tag_count * sizeof(uint64_t)) {
         LOG_ERROR("Read tag list data failed");
         return IndexError_ReadData;
