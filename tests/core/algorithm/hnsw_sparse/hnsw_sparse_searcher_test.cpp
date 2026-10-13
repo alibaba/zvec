@@ -72,8 +72,8 @@ void HnswSparseSearcherTest::generate_sparse_data(
     }
 
     float norm;
-    ailego::Norm2Matrix<float, 1>::Compute(sparse_vec.data(), sparse_dim_count,
-                                           &norm);
+    turbo::Norm2Matrix<float, 1>::Compute(sparse_vec.data(), sparse_dim_count,
+                                          &norm);
     for (size_t j = 0; j < sparse_dim_count; ++j) {
       sparse_vec[j] = sparse_vec[j] / norm;
     }

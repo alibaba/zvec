@@ -11,8 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include <ailego/math/normalizer.h>
 #include <core/quantizer/quantizer_params.h>
+#include <turbo/norm/normalizer.h>
 #include <zvec/core/framework/index_factory.h>
 
 namespace zvec {
@@ -112,7 +112,7 @@ class MipsReformer : public IndexReformer {
 
         if (normalize_) {
           float norm = 0.0f;
-          ailego::Norm2Matrix<float, 1>::Compute(
+          turbo::Norm2Matrix<float, 1>::Compute(
               reinterpret_cast<const float *>(query), qmeta.dimension(), &norm);
 
           ailego::FloatHelper::ToFP16(reinterpret_cast<const float *>(query),
@@ -138,8 +138,8 @@ class MipsReformer : public IndexReformer {
 
         if (normalize_) {
           float norm = 0.0f;
-          ailego::Normalizer<float>::L2(reinterpret_cast<float *>(&(*out)[0]),
-                                        qmeta.dimension(), &norm);
+          turbo::Normalizer<float>::L2(reinterpret_cast<float *>(&(*out)[0]),
+                                       qmeta.dimension(), &norm);
         }
         if (spherical_injection_) {
           reinterpret_cast<float *>(&(*out)[0])[qmeta.dimension()] = 1.0f;
@@ -156,7 +156,7 @@ class MipsReformer : public IndexReformer {
 
       if (normalize_) {
         float norm = 0.0f;
-        ailego::Normalizer<ailego::Float16>::L2(
+        turbo::Normalizer<ailego::Float16>::L2(
             reinterpret_cast<ailego::Float16 *>(&(*out)[0]), qmeta.dimension(),
             &norm);
       }
@@ -194,8 +194,8 @@ class MipsReformer : public IndexReformer {
 
           if (normalize_) {
             float norm = 0.0f;
-            ailego::Norm2Matrix<float, 1>::Compute(sub_query, qmeta.dimension(),
-                                                   &norm);
+            turbo::Norm2Matrix<float, 1>::Compute(sub_query, qmeta.dimension(),
+                                                  &norm);
             ailego::FloatHelper::ToFP16(
                 sub_query, qmeta.dimension(), norm,
                 reinterpret_cast<uint16_t *>(&(*out)[offset]));
@@ -223,7 +223,7 @@ class MipsReformer : public IndexReformer {
 
           if (normalize_) {
             float norm = 0.0f;
-            ailego::Normalizer<float>::L2(
+            turbo::Normalizer<float>::L2(
                 reinterpret_cast<float *>(&(*out)[offset]), qmeta.dimension(),
                 &norm);
           }
@@ -251,7 +251,7 @@ class MipsReformer : public IndexReformer {
 
         if (normalize_) {
           float norm = 0.0f;
-          ailego::Normalizer<ailego::Float16>::L2(
+          turbo::Normalizer<ailego::Float16>::L2(
               reinterpret_cast<ailego::Float16 *>(&(*out)[offset]),
               qmeta.dimension(), &norm);
         }
@@ -417,7 +417,7 @@ class MipsReformer : public IndexReformer {
         return IndexError_Unsupported;
       }
       if (normalize_) {
-        ailego::Norm2Matrix<float, 1>::Compute(
+        turbo::Norm2Matrix<float, 1>::Compute(
             reinterpret_cast<const float *>(query), qmeta.dimension(), &norm);
       }
     } else if (dt == IndexMeta::DataType::DT_FP16) {
@@ -425,7 +425,7 @@ class MipsReformer : public IndexReformer {
         return IndexError_Unsupported;
       }
       if (normalize_) {
-        ailego::Norm2Matrix<ailego::Float16, 1>::Compute(
+        turbo::Norm2Matrix<ailego::Float16, 1>::Compute(
             reinterpret_cast<const ailego::Float16 *>(query), qmeta.dimension(),
             &norm);
       }

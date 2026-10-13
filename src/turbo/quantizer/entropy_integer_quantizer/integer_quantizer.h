@@ -19,7 +19,7 @@
 #include <zvec/ailego/internal/platform.h>
 
 namespace zvec {
-namespace ailego {
+namespace turbo {
 
 /*! Entropy-based Integer Quantization Algorithm
  */
@@ -234,5 +234,5 @@ class EntropyUInt4Quantizer : public EntropyIntegerQuantizer<uint8_t, 0, 15> {
   void decode(const ValueType *in, size_t dim, float *out) const;
 };
 
-}  // namespace ailego
+}  // namespace turbo
 }  // namespace zvec

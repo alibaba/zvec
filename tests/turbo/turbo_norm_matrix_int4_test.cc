@@ -15,8 +15,8 @@
 #include <random>
 #include <ailego/container/bitmap.h>
 #include <ailego/internal/cpu_features.h>
-#include <ailego/math/norm_matrix.h>
 #include <gtest/gtest.h>
+#include <turbo/norm/norm_matrix.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/ailego/utility/time_helper.h>
 
@@ -37,13 +37,15 @@ static inline void MatrixTranspose(uint32_t *dst, const uint32_t *src, size_t m,
 
 static float Norm2(const std::vector<uint8_t> &vec) {
   float out = 0.0f;
-  Norm2Matrix<uint8_t, 1>::Compute(vec.data(), vec.size() * 2, &out);
+  zvec::turbo::Norm2Matrix<uint8_t, 1>::Compute(vec.data(), vec.size() * 2,
+                                                &out);
   return out;
 }
 
 static float SquaredNorm2(const std::vector<uint8_t> &vec) {
   float out = 0.0f;
-  SquaredNorm2Matrix<uint8_t, 1>::Compute(vec.data(), vec.size() * 2, &out);
+  zvec::turbo::SquaredNorm2Matrix<uint8_t, 1>::Compute(vec.data(),
+                                                       vec.size() * 2, &out);
   return out;
 }
 
@@ -94,11 +96,11 @@ void TestNorm2Matrix() {
                   dimension / 8, batch_size);
 
   for (size_t j = 0; j < batch_size; ++j) {
-    Norm2Matrix<uint8_t, 1>::Compute(&matrix1[j * dimension / 2], dimension,
-                                     &result1[j]);
+    zvec::turbo::Norm2Matrix<uint8_t, 1>::Compute(&matrix1[j * dimension / 2],
+                                                  dimension, &result1[j]);
   }
-  Norm2Matrix<uint8_t, batch_size>::Compute(&matrix2[0], dimension,
-                                            &result2[0]);
+  zvec::turbo::Norm2Matrix<uint8_t, batch_size>::Compute(&matrix2[0], dimension,
+                                                         &result2[0]);
 
   for (size_t i = 0; i < batch_size; ++i) {
     EXPECT_FLOAT_EQ(result1[i], result2[i]);
@@ -159,8 +161,8 @@ void Norm2Benchmark() {
   elapsed_time.reset();
   for (size_t i = 0; i < block_size; ++i) {
     const uint8_t *matrix_batch = &matrix2[i * batch_size * dimension / 2];
-    Norm2Matrix<uint8_t, batch_size>::Compute(matrix_batch, dimension,
-                                              &results[0]);
+    zvec::turbo::Norm2Matrix<uint8_t, batch_size>::Compute(
+        matrix_batch, dimension, &results[0]);
   }
   std::cout << "* Batched Norm2 (us) \t" << elapsed_time.micro_seconds()
             << std::endl;
@@ -170,8 +172,8 @@ void Norm2Benchmark() {
   for (size_t i = 0; i < block_size; ++i) {
     const uint8_t *matrix_batch = &matrix1[i * batch_size * dimension / 2];
     for (size_t k = 0; k < batch_size; ++k) {
-      Norm2Matrix<uint8_t, 1>::Compute(&matrix_batch[k * dimension / 2],
-                                       dimension, &results[k]);
+      zvec::turbo::Norm2Matrix<uint8_t, 1>::Compute(
+          &matrix_batch[k * dimension / 2], dimension, &results[k]);
     }
   }
   std::cout << "* Unbatched Norm2 (us) \t" << elapsed_time.micro_seconds()

@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <iostream>
-#include <ailego/math/norm_matrix.h>
 #include <gtest/gtest.h>
+#include <turbo/norm/norm_matrix.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include "zvec/core/framework/index_factory.h"
 
@@ -27,7 +27,7 @@ static void Norm2(std::vector<Float16> &vec, std::string *out) {
 
   out->resize(vec.size() * sizeof(Float16) + sizeof(float));
 
-  Norm2Matrix<Float16, 1>::Compute(vec.data(), vec.size(), &norm);
+  zvec::turbo::Norm2Matrix<Float16, 1>::Compute(vec.data(), vec.size(), &norm);
 
   Float16 *buf = reinterpret_cast<Float16 *>(&(*out)[0]);
 
@@ -46,7 +46,7 @@ static void Norm2(std::vector<float> &vec, std::string *out) {
 
   out->resize((vec.size() + 1) * sizeof(float));
 
-  Norm2Matrix<float, 1>::Compute(vec.data(), vec.size(), &norm);
+  zvec::turbo::Norm2Matrix<float, 1>::Compute(vec.data(), vec.size(), &norm);
 
   float *buf = reinterpret_cast<float *>(&(*out)[0]);
   for (uint32_t i = 0; i < vec.size(); ++i) {

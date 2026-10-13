@@ -19,7 +19,7 @@
 #include <zvec/ailego/utility/type_helper.h>
 
 namespace zvec {
-namespace ailego {
+namespace turbo {
 
 /*! L1-Norm Matrix
  */
@@ -29,9 +29,10 @@ struct Norm1Matrix;
 /*! L1-Norm Matrix
  */
 template <typename T, size_t M>
-struct Norm1Matrix<T, M,
-                   typename std::enable_if<IsSignedArithmetic<T>::value &&
-                                           sizeof(T) >= 2 && M >= 2>::type> {
+struct Norm1Matrix<
+    T, M,
+    typename std::enable_if<ailego::IsSignedArithmetic<T>::value &&
+                            sizeof(T) >= 2 && M >= 2>::type> {
   //! Type of value
   using ValueType = typename std::remove_cv<T>::type;
 
@@ -42,13 +43,13 @@ struct Norm1Matrix<T, M,
     const ValueType *m_end = m + dim * M;
     if (m != m_end) {
       for (size_t i = 0; i < M; ++i) {
-        *(out + i) = MathHelper::Absolute(m[i]);
+        *(out + i) = ailego::MathHelper::Absolute(m[i]);
       }
       m += M;
     }
     while (m != m_end) {
       for (size_t i = 0; i < M; ++i) {
-        *(out + i) += MathHelper::Absolute(m[i]);
+        *(out + i) += ailego::MathHelper::Absolute(m[i]);
       }
       m += M;
     }
@@ -87,10 +88,10 @@ struct Norm1Matrix<int8_t, M, typename std::enable_if<M >= 2>::type> {
   //! Calculate sum of absolute values
   static inline float Absolute(uint32_t v) {
     return static_cast<float>(
-        MathHelper::Absolute<int8_t, int32_t>((int8_t)(v >> 0)) +
-        MathHelper::Absolute<int8_t, int32_t>((int8_t)(v >> 8)) +
-        MathHelper::Absolute<int8_t, int32_t>((int8_t)(v >> 16)) +
-        MathHelper::Absolute<int8_t, int32_t>((int8_t)(v >> 24)));
+        ailego::MathHelper::Absolute<int8_t, int32_t>((int8_t)(v >> 0)) +
+        ailego::MathHelper::Absolute<int8_t, int32_t>((int8_t)(v >> 8)) +
+        ailego::MathHelper::Absolute<int8_t, int32_t>((int8_t)(v >> 16)) +
+        ailego::MathHelper::Absolute<int8_t, int32_t>((int8_t)(v >> 24)));
   }
 };
 
@@ -98,7 +99,7 @@ struct Norm1Matrix<int8_t, M, typename std::enable_if<M >= 2>::type> {
  */
 template <typename T>
 struct Norm1Matrix<
-    T, 1, typename std::enable_if<IsSignedArithmetic<T>::value>::type> {
+    T, 1, typename std::enable_if<ailego::IsSignedArithmetic<T>::value>::type> {
   //! Type of value
   using ValueType = typename std::remove_cv<T>::type;
 
@@ -108,10 +109,10 @@ struct Norm1Matrix<
 
     const ValueType *m_end = m + dim;
     if (m != m_end) {
-      *out = MathHelper::Absolute(*m++);
+      *out = ailego::MathHelper::Absolute(*m++);
     }
     while (m != m_end) {
-      *out += MathHelper::Absolute(*m++);
+      *out += ailego::MathHelper::Absolute(*m++);
     }
   }
 };
@@ -135,14 +136,14 @@ struct Norm1Matrix<float, 1> {
 /*! L1-Norm Matrix (FP16, M=1)
  */
 template <>
-struct Norm1Matrix<Float16, 1> {
+struct Norm1Matrix<ailego::Float16, 1> {
   //! Type of value
-  using ValueType = Float16;
+  using ValueType = ailego::Float16;
 
   //! Compute the L1-norm of vectors
   static void Compute(const ValueType *m, size_t dim, float *out);
 };
 #endif  // (__F16C__ && __AVX__) || AILEGO_ARM64_GNU_LIKE
 
-}  // namespace ailego
+}  // namespace turbo
 }  // namespace zvec

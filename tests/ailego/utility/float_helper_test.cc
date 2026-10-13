@@ -14,8 +14,8 @@
 
 #include <cmath>
 #include <random>
-#include <ailego/math/norm_matrix.h>
 #include <gtest/gtest.h>
+#include <turbo/norm/norm_matrix.h>
 #include <zvec/ailego/utility/float_helper.h>
 
 using namespace zvec;
@@ -46,8 +46,8 @@ TEST(FloatHelper, General) {
       vec1_fp32[j] = dist(gen);
     }
     float norm1;
-    ailego::Norm2Matrix<float, 1>::Compute(vec1_fp32.data(), vec1_fp32.size(),
-                                           &norm1);
+    turbo::Norm2Matrix<float, 1>::Compute(vec1_fp32.data(), vec1_fp32.size(),
+                                          &norm1);
     EXPECT_NE(1.0f, norm1);
 
     // Convert to FP16
@@ -61,8 +61,8 @@ TEST(FloatHelper, General) {
     }
 
     float norm2;
-    ailego::Norm2Matrix<ailego::Float16, 1>::Compute(vec1_fp16.data(),
-                                                     vec1_fp16.size(), &norm2);
+    turbo::Norm2Matrix<ailego::Float16, 1>::Compute(vec1_fp16.data(),
+                                                    vec1_fp16.size(), &norm2);
     EXPECT_NE(1.0f, norm2);
 
     // Convert to FP32
@@ -75,10 +75,10 @@ TEST(FloatHelper, General) {
       // EXPECT_FLOAT_EQ(vec1_fp32[j], vec1_fp16[j]);
     }
 
-    ailego::Norm2Matrix<float, 1>::Compute(vec2_fp32.data(), vec2_fp32.size(),
-                                           &norm1);
-    ailego::Norm2Matrix<ailego::Float16, 1>::Compute(vec2_fp16.data(),
-                                                     vec2_fp16.size(), &norm2);
+    turbo::Norm2Matrix<float, 1>::Compute(vec2_fp32.data(), vec2_fp32.size(),
+                                          &norm1);
+    turbo::Norm2Matrix<ailego::Float16, 1>::Compute(vec2_fp16.data(),
+                                                    vec2_fp16.size(), &norm2);
     // EXPECT_FLOAT_EQ(norm1, norm2);
     // EXPECT_FLOAT_EQ(1.0f, norm1);
     EXPECT_GT(0.001, std::abs(1.0f - norm1));

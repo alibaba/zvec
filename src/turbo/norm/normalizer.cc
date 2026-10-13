@@ -15,7 +15,7 @@
 #include "normalizer.h"
 
 namespace zvec {
-namespace ailego {
+namespace turbo {
 
 #if defined(AILEGO_ARM64_NEON)
 static inline void NormalizeNEON(float *arr, size_t dim, float norm) {
@@ -45,7 +45,7 @@ static inline void NormalizeNEON(float *arr, size_t dim, float norm) {
 
 // MSVC ARM64 does not declare `float16_t` unless ARMv8.2 FP16 is enabled
 // (`_M_ARM64FP16` / `/arch:armv8.2`). Skip the FP16 NEON variants on MSVC
-// ARM64 — the FP16 `Normalizer<Float16>::Compute` dispatch below falls
+// ARM64 — the FP16 `Normalizer<ailego::Float16>::Compute` dispatch below falls
 // through to the scalar conversion path.
 #if !defined(_MSC_VER)
 #if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
@@ -424,10 +424,11 @@ void Normalizer<float>::Compute(ValueType *arr, size_t dim, float norm) {
 // MSVC ARM64 lacks `float16_t` without ARMv8.2 FP16, so the FP16
 // `NormalizeNEON` variants are not defined there (see top of file).
 // Exclude MSVC from this specialization so MSVC ARM64 falls back to the
-// generic uint16_t-based Float16 normalize path.
+// generic uint16_t-based ailego::Float16 normalize path.
 #if (defined(__F16C__) && defined(__AVX__)) || defined(AILEGO_ARM64_GNU_LIKE)
 //! Compute the norm of vector
-void Normalizer<Float16>::Compute(ValueType *arr, size_t dim, float norm) {
+void Normalizer<ailego::Float16>::Compute(ValueType *arr, size_t dim,
+                                          float norm) {
 #if defined(AILEGO_ARM64_GNU_LIKE)
   NormalizeNEON(reinterpret_cast<float16_t *>(arr), dim, norm);
 #else
@@ -442,5 +443,5 @@ void Normalizer<Float16>::Compute(ValueType *arr, size_t dim, float norm) {
 }
 #endif  // (__F16C__ && __AVX__) || AILEGO_ARM64_GNU_LIKE
 
-}  // namespace ailego
+}  // namespace turbo
 }  // namespace zvec

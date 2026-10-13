@@ -18,10 +18,10 @@
 #include <cmath>
 #include <random>
 #include <ailego/container/vector_array.h>
-#include <ailego/math/norm2_matrix.h>
-#include <ailego/math/normalizer.h>
 #include <ailego/utility/matrix_helper.h>
 #include <turbo/distance/matrix.h>
+#include <turbo/norm/norm2_matrix.h>
+#include <turbo/norm/normalizer.h>
 #include <zvec/ailego/container/heap.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/float_helper.h>
@@ -584,7 +584,7 @@ class NumericalKmeansContext {
   //! Normalize with L2 norm for floating-point values, otherwise do nothing
   static void Norm2(ValueType *data, size_t dim, float *norm) {
     if constexpr (IsFloatingPoint<ValueType>::value) {
-      Normalizer<ValueType>::L2(data, dim, norm);
+      zvec::turbo::Normalizer<ValueType>::L2(data, dim, norm);
     } else {
       (void)data;
       (void)dim;
@@ -958,7 +958,7 @@ class NumericalInnerProductKmeansContext {
   //! Normalize with L2 norm for floating-point values, otherwise do nothing
   static void Norm2(ValueType *data, size_t dim, float *norm) {
     if constexpr (IsFloatingPoint<ValueType>::value) {
-      Normalizer<ValueType>::L2(data, dim, norm);
+      zvec::turbo::Normalizer<ValueType>::L2(data, dim, norm);
     } else {
       (void)data;
       (void)dim;

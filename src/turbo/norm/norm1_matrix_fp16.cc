@@ -15,27 +15,32 @@
 #include <zvec/ailego/internal/platform.h>
 #include "ailego/internal/cpu_features.h"
 #include "norm1_matrix.h"
-#include "norm_matrix_fp32.i"
+#include "norm_matrix_fp16.i"
 
 namespace zvec {
-namespace ailego {
+namespace turbo {
 
 #define NORM_FP32_STEP_GENERAL SA_FP32_GENERAL
 #define NORM_FP32_STEP_SSE SA_FP32_SSE
 #define NORM_FP32_STEP_AVX SA_FP32_AVX
 #define NORM_FP32_STEP_AVX512 SA_FP32_AVX512
 #define NORM_FP32_STEP_NEON SA_FP32_NEON
+#define NORM_FP16_STEP_GENERAL SA_FP16_GENERAL
+#define NORM_FP16_STEP_NEON SA_FP16_NEON
 
 #if defined(__SSE__)
-#define ABS_MASK_FP32_SSE _mm_castsi128_ps(_mm_set1_epi32(0x7fffffffu))
+static const __m128 ABS_MASK_FP32_SSE =
+    _mm_castsi128_ps(_mm_set1_epi32(0x7fffffffu));
 #endif  // __SSE__
 
 #if defined(__AVX__)
-#define ABS_MASK_FP32_AVX _mm256_castsi256_ps(_mm256_set1_epi32(0x7fffffffu))
+static const __m256 ABS_MASK_FP32_AVX =
+    _mm256_castsi256_ps(_mm256_set1_epi32(0x7fffffffu));
 #endif  // __AVX__
 
 #if defined(__AVX512F__)
-#define ABS_MASK_FP32_AVX512 _mm512_castsi512_ps(_mm512_set1_epi32(0x7fffffffu))
+static const __m512 ABS_MASK_FP32_AVX512 =
+    _mm512_castsi512_ps(_mm512_set1_epi32(0x7fffffffu));
 #endif  // __AVX512F__
 
 //! Calculate sum of absolute (GENERAL)
@@ -56,29 +61,32 @@ namespace ailego {
 //! Calculate sum of absolute (NEON)
 #define SA_FP32_NEON(v_m, v_sum) v_sum = vaddq_f32(vabsq_f32(v_m), v_sum);
 
-#if defined(__SSE__) || defined(AILEGO_ARM64_NEON)
-//! Compute the L1-norm of vectors (FP32, M=1)
-void Norm1Matrix<float, 1>::Compute(const ValueType *m, size_t dim,
-                                    float *out) {
-#if defined(AILEGO_HAVE_NEON)
-  NORM_FP32_1_NEON(m, dim, out, )
+//! Calculate sum of absolute (GENERAL)
+#define SA_FP16_GENERAL(m, sum) sum += ailego::Float16::Absolute(m);
+
+//! Calculate sum of absolute (NEON)
+#define SA_FP16_NEON(v_m, v_sum) v_sum = vaddq_f16(vabsq_f16(v_m), v_sum);
+
+// MSVC ARM64 lacks `float16_t` without ARMv8.2 FP16, so the NEON FP16
+// kernel is gated to gcc/clang aarch64. The generic ailego::Float16 path is
+// used on MSVC ARM64.
+#if (defined(__F16C__) && defined(__AVX__)) || defined(AILEGO_ARM64_GNU_LIKE)
+//! Compute the L1-norm of vectors (FP16, M=1)
+void Norm1Matrix<ailego::Float16, 1>::Compute(const ValueType *m, size_t dim,
+                                              float *out) {
+#if defined(AILEGO_ARM64_GNU_LIKE)
+  NORM_FP16_1_NEON(m, dim, out, )
 #else
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
-    NORM_FP32_1_AVX512(m, dim, out, )
+    NORM_FP16_1_AVX512(m, dim, out, )
     return;
   }
 #endif
-#if defined(__AVX__)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
-    NORM_FP32_1_AVX(m, dim, out, )
-    return;
-  }
-#endif
-  NORM_FP32_1_SSE(m, dim, out, )
+  NORM_FP16_1_AVX(m, dim, out, )
 #endif
 }
-#endif  // __SSE__ || AILEGO_ARM64_NEON
+#endif  // (__F16C__ && __AVX__) || AILEGO_ARM64_GNU_LIKE
 
-}  // namespace ailego
+}  // namespace turbo
 }  // namespace zvec

@@ -17,11 +17,11 @@
 #include <cmath>
 #include <cstring>
 #include <numeric>
-#include <ailego/math/normalizer.h>
+#include <turbo/norm/normalizer.h>
 #include <zvec/ailego/internal/platform.h>
 
 namespace zvec {
-namespace ailego {
+namespace turbo {
 
 //! Make smooth the distribution to eliminate zero in hist
 static inline void MakeSmooth(std::vector<float> &dist) {
@@ -462,5 +462,5 @@ void EntropyUInt4Quantizer::decode(const uint8_t *in, size_t dim,
   }
 }
 
-}  // namespace ailego
+}  // namespace turbo
 }  // namespace zvec

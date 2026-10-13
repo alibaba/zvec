@@ -14,9 +14,9 @@
 #include <fstream>
 #include <iostream>
 #include <unordered_set>
-#include <ailego/math/norm_matrix.h>
-#include <ailego/math/normalizer.h>
 #include <gtest/gtest.h>
+#include <turbo/norm/norm_matrix.h>
+#include <turbo/norm/normalizer.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_factory.h>
@@ -164,11 +164,11 @@ TEST(QuantizedIntegerMetric, General) {
   auto v1 =
       ReferenceDistance::SquaredEuclidean(xt.data(), yt.data(), DIMENSION);
   auto ip = ReferenceDistance::InnerProduct(x.data(), y.data(), DIMENSION);
-  ailego::SquaredNorm2Matrix<float, 1>::Compute(x.data(), DIMENSION, &x2);
-  ailego::SquaredNorm2Matrix<float, 1>::Compute(y.data(), DIMENSION, &y2);
+  turbo::SquaredNorm2Matrix<float, 1>::Compute(x.data(), DIMENSION, &x2);
+  turbo::SquaredNorm2Matrix<float, 1>::Compute(y.data(), DIMENSION, &y2);
 #if 0
-  ailego::Norm1Matrix<float, 1>::Compute(x.data(), DIMENSION, &x1);
-  ailego::Norm1Matrix<float, 1>::Compute(y.data(), DIMENSION, &y1);
+  turbo::Norm1Matrix<float, 1>::Compute(x.data(), DIMENSION, &x1);
+  turbo::Norm1Matrix<float, 1>::Compute(y.data(), DIMENSION, &y1);
 #endif
   auto v2 = xa * xa * x2 + ya * ya * y2 - 2 * xa * ya * ip +
             (xb - yb) * (xb - yb) * DIMENSION +
@@ -1041,13 +1041,13 @@ TEST(QuantizedIntegerMetric, TestInt8NormalizedCosine) {
     std::vector<float> normalized_mf(DIMENSION);
     memcpy(normalized_mf.data(), mf, DIMENSION * sizeof(float));
     float norm_mf = 0.0;
-    ailego::Normalizer<float>::L2((float *)normalized_mf.data(), DIMENSION,
-                                  &norm_mf);
+    turbo::Normalizer<float>::L2((float *)normalized_mf.data(), DIMENSION,
+                                 &norm_mf);
     std::vector<float> normalized_vec(DIMENSION);
     memcpy(normalized_vec.data(), vec.data(), DIMENSION * sizeof(float));
     float norm_vec = 0.0;
-    ailego::Normalizer<float>::L2((float *)normalized_vec.data(), DIMENSION,
-                                  &norm_vec);
+    turbo::Normalizer<float>::L2((float *)normalized_vec.data(), DIMENSION,
+                                 &norm_vec);
 
     float v1 = ReferenceDistance::MinusInnerProduct(
         normalized_mf.data(), normalized_vec.data(), holder->dimension());
@@ -1145,13 +1145,13 @@ TEST(QuantizedIntegerMetric, TestInt8Cosine) {
     std::vector<float> normalized_mf(DIMENSION);
     memcpy(normalized_mf.data(), mf, DIMENSION * sizeof(float));
     float norm_mf = 0.0;
-    ailego::Normalizer<float>::L2((float *)normalized_mf.data(), DIMENSION,
-                                  &norm_mf);
+    turbo::Normalizer<float>::L2((float *)normalized_mf.data(), DIMENSION,
+                                 &norm_mf);
     std::vector<float> normalized_vec(DIMENSION);
     memcpy(normalized_vec.data(), vec.data(), DIMENSION * sizeof(float));
     float norm_vec = 0.0;
-    ailego::Normalizer<float>::L2((float *)normalized_vec.data(), DIMENSION,
-                                  &norm_vec);
+    turbo::Normalizer<float>::L2((float *)normalized_vec.data(), DIMENSION,
+                                 &norm_vec);
 
     float v1 = ReferenceDistance::MinusInnerProduct(
         normalized_mf.data(), normalized_vec.data(), holder->dimension());
@@ -1222,13 +1222,13 @@ TEST(QuantizedIntegerMetric, TestInt4NormalizedCosine) {
     std::vector<float> normalized_mf(DIMENSION);
     memcpy(normalized_mf.data(), mf, DIMENSION * sizeof(float));
     float norm_mf = 0.0;
-    ailego::Normalizer<float>::L2((float *)normalized_mf.data(), DIMENSION,
-                                  &norm_mf);
+    turbo::Normalizer<float>::L2((float *)normalized_mf.data(), DIMENSION,
+                                 &norm_mf);
     std::vector<float> normalized_vec(DIMENSION);
     memcpy(normalized_vec.data(), vec.data(), DIMENSION * sizeof(float));
     float norm_vec = 0.0;
-    ailego::Normalizer<float>::L2((float *)normalized_vec.data(), DIMENSION,
-                                  &norm_vec);
+    turbo::Normalizer<float>::L2((float *)normalized_vec.data(), DIMENSION,
+                                 &norm_vec);
 
     float v1 = ReferenceDistance::MinusInnerProduct(
         normalized_mf.data(), normalized_vec.data(), holder->dimension());

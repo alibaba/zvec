@@ -20,7 +20,7 @@
 #include <zvec/ailego/utility/type_helper.h>
 
 namespace zvec {
-namespace ailego {
+namespace turbo {
 
 /*! L2-Norm Matrix
  */
@@ -30,9 +30,10 @@ struct Norm2Matrix;
 /*! L2-Norm Matrix
  */
 template <typename T, size_t M>
-struct Norm2Matrix<T, M,
-                   typename std::enable_if<IsSignedArithmetic<T>::value &&
-                                           sizeof(T) >= 2 && M >= 2>::type> {
+struct Norm2Matrix<
+    T, M,
+    typename std::enable_if<ailego::IsSignedArithmetic<T>::value &&
+                            sizeof(T) >= 2 && M >= 2>::type> {
   //! Type of value
   using ValueType = typename std::remove_cv<T>::type;
 
@@ -108,7 +109,7 @@ struct Norm2Matrix<int8_t, M, typename std::enable_if<M >= 2>::type> {
  */
 template <typename T>
 struct Norm2Matrix<
-    T, 1, typename std::enable_if<IsSignedArithmetic<T>::value>::type> {
+    T, 1, typename std::enable_if<ailego::IsSignedArithmetic<T>::value>::type> {
   //! Type of value
   using ValueType = typename std::remove_cv<T>::type;
 
@@ -210,8 +211,8 @@ struct SquaredNorm2Matrix;
 template <typename T, size_t M>
 struct SquaredNorm2Matrix<
     T, M,
-    typename std::enable_if<IsSignedArithmetic<T>::value && sizeof(T) >= 2 &&
-                            M >= 2>::type> {
+    typename std::enable_if<ailego::IsSignedArithmetic<T>::value &&
+                            sizeof(T) >= 2 && M >= 2>::type> {
   //! Type of value
   using ValueType = typename std::remove_cv<T>::type;
 
@@ -279,7 +280,7 @@ struct SquaredNorm2Matrix<int8_t, M, typename std::enable_if<M >= 2>::type> {
  */
 template <typename T>
 struct SquaredNorm2Matrix<
-    T, 1, typename std::enable_if<IsSignedArithmetic<T>::value>::type> {
+    T, 1, typename std::enable_if<ailego::IsSignedArithmetic<T>::value>::type> {
   //! Type of value
   using ValueType = typename std::remove_cv<T>::type;
 
@@ -396,9 +397,9 @@ struct SquaredNorm2Matrix<float, 1> {
 /*! L2-Norm Matrix (FP16, M=1)
  */
 template <>
-struct Norm2Matrix<Float16, 1> {
+struct Norm2Matrix<ailego::Float16, 1> {
   //! Type of value
-  using ValueType = Float16;
+  using ValueType = ailego::Float16;
 
   //! Compute the L2-norm of vectors
   static void Compute(const ValueType *m, size_t dim, float *out);
@@ -407,14 +408,14 @@ struct Norm2Matrix<Float16, 1> {
 /*! Squared L2-Norm Matrix (FP16, M=1)
  */
 template <>
-struct SquaredNorm2Matrix<Float16, 1> {
+struct SquaredNorm2Matrix<ailego::Float16, 1> {
   //! Type of value
-  using ValueType = Float16;
+  using ValueType = ailego::Float16;
 
   //! Compute the squared L2-norm of vectors
   static void Compute(const ValueType *m, size_t dim, float *out);
 };
 #endif  // (__F16C__ && __AVX__) || AILEGO_ARM64_GNU_LIKE
 
-}  // namespace ailego
+}  // namespace turbo
 }  // namespace zvec
