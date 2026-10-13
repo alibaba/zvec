@@ -201,8 +201,10 @@ void VamanaContext::topk_to_result(uint32_t idx) {
   results_[idx].clear();
   collect_search_result([&](node_id_t id, dist_t score) {
     if (fetch_vector_) {
+      IndexStorage::MemoryBlock block;
+      entity_->get_vector(id, block);
       results_[idx].emplace_back(entity_->get_key(id), score, id,
-                                 entity_->get_vector(id));
+                                 std::move(block));
     } else {
       results_[idx].emplace_back(entity_->get_key(id), score, id);
     }

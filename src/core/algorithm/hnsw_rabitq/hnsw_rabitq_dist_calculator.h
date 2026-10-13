@@ -126,29 +126,30 @@ class HnswRabitqAddDistCalculator {
   inline dist_t dist(node_id_t id) {
     compare_cnt_++;
 
-    const void *feat = get_vector(id);
-    if (ailego_unlikely(feat == nullptr)) {
+    IndexStorage::MemoryBlock feat_block;
+    if (ailego_unlikely(get_vector(id, feat_block) != 0)) {
       LOG_ERROR("Get nullptr vector, id=%u", id);
       error_ = true;
       return 0.0f;
     }
 
-    return dist(feat, query_);
+    return dist(feat_block.data(), query_);
   }
 
   //! Return dist node lhs between node rhs
   inline dist_t dist(node_id_t lhs, node_id_t rhs) {
     compare_cnt_++;
 
-    const void *feat = get_vector(lhs);
-    const void *query = get_vector(rhs);
-    if (ailego_unlikely(feat == nullptr || query == nullptr)) {
+    IndexStorage::MemoryBlock feat_block;
+    IndexStorage::MemoryBlock query_block;
+    if (ailego_unlikely(get_vector(lhs, feat_block) != 0 ||
+                        get_vector(rhs, query_block) != 0)) {
       LOG_ERROR("Get nullptr vector");
       error_ = true;
       return 0.0f;
     }
 
-    return dist(feat, query);
+    return dist(feat_block.data(), query_block.data());
   }
 
   dist_t operator()(const void *vec) {
@@ -175,12 +176,13 @@ class HnswRabitqAddDistCalculator {
   inline dist_t batch_dist(node_id_t id) {
     compare_cnt_++;
 
-    const void *feat = get_vector(id);
-    if (ailego_unlikely(feat == nullptr)) {
+    IndexStorage::MemoryBlock feat_block;
+    if (ailego_unlikely(get_vector(id, feat_block) != 0)) {
       LOG_ERROR("Get nullptr vector, id=%u", id);
       error_ = true;
       return 0.0f;
     }
+    const void *feat = feat_block.data();
     dist_t score = 0;
     batch_distance_(&feat, query_, 1, dim_, &score, nullptr);
 

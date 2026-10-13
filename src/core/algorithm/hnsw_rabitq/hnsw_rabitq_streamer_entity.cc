@@ -134,39 +134,21 @@ const Neighbors HnswRabitqStreamerEntity::get_neighbors(level_t level,
 
 //! Get vector data by key
 const void *HnswRabitqStreamerEntity::get_vector(node_id_t id) const {
-  auto loc = get_vector_chunk_loc(id);
-  const void *vec = nullptr;
-  ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
-  ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
-                     "invalid chunk offset");
-
-  size_t read_size = vector_size();
-
-  size_t ret = node_chunks_[loc.first]->read(loc.second, &vec, read_size);
-  if (ailego_unlikely(ret != read_size)) {
-    LOG_ERROR("Read vector failed, offset=%zu, read size=%zu, ret=%zu",
-              static_cast<size_t>(loc.second), read_size, ret);
-  }
-
-  return vec;
+  // Keep the legacy pointer valid until the next call on this thread.
+  static thread_local IndexStorage::MemoryBlock block;
+  return get_vector(id, block) == 0 ? block.data() : nullptr;
 }
 
 int HnswRabitqStreamerEntity::get_vector(const node_id_t *ids, uint32_t count,
                                          const void **vecs) const {
-  for (auto i = 0U; i < count; ++i) {
-    auto loc = get_vector_chunk_loc(ids[i]);
-    ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
-    ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
-                       "invalid chunk offset");
-
-    size_t read_size = vector_size();
-
-    size_t ret = node_chunks_[loc.first]->read(loc.second, &vecs[i], read_size);
-    if (ailego_unlikely(ret != read_size)) {
-      LOG_ERROR("Read vector failed, offset=%zu, read size=%zu, ret=%zu",
-                static_cast<size_t>(loc.second), read_size, ret);
-      return IndexError_ReadData;
-    }
+  // Retain every result independently until the next batch on this thread.
+  static thread_local std::vector<IndexStorage::MemoryBlock> blocks;
+  int ret = get_vector(ids, count, blocks);
+  if (ret != 0) {
+    return ret;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    vecs[i] = blocks[i].data();
   }
   return 0;
 }

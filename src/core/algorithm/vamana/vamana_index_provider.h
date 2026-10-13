@@ -75,7 +75,8 @@ class VamanaIndexProvider : public IndexProvider {
     }
 
     const void *data() const override {
-      return entity_->get_vector(cur_id_);
+      return entity_->get_vector(cur_id_, block_) == 0 ? block_.data()
+                                                       : nullptr;
     }
 
     bool is_valid() const override {
@@ -106,6 +107,7 @@ class VamanaIndexProvider : public IndexProvider {
 
     const VamanaEntity::Pointer entity_;
     node_id_t cur_id_;
+    mutable IndexStorage::MemoryBlock block_;
   };
 
   const IndexMeta &meta_;

@@ -1376,15 +1376,14 @@ TEST_F(BufferStorageWriteTest, ReadOnlyBatchPreservesSharedCacheReserve) {
   EXPECT_EQ(0, storage->close());
 }
 
-// Repeated legacy pointer reads from a writable cached page must reuse the
-// pinned page. Retaining a separate 4K-aligned snapshot for every read grows
-// memory until close() and makes long Optimize workloads consume gigabytes.
-TEST_F(BufferStorageWriteTest, CR_WritableLegacyPointerReadReusesCachedPage) {
+// Writable reads own independent snapshots and release them with each block.
+TEST_F(BufferStorageWriteTest,
+       CR_WritableMemoryBlockReadsKeepIndependentSnapshots) {
   auto storage = open_writable();
   ASSERT_TRUE(storage);
 
-  ASSERT_EQ(0, storage->append("legacy_pointer_seg", 8192));
-  auto seg = storage->get("legacy_pointer_seg");
+  ASSERT_EQ(0, storage->append("memory_block_seg", 8192));
+  auto seg = storage->get("memory_block_seg");
   ASSERT_TRUE(seg);
 
   constexpr size_t kReadLen = 64;
@@ -1398,15 +1397,17 @@ TEST_F(BufferStorageWriteTest, CR_WritableLegacyPointerReadReusesCachedPage) {
   ASSERT_EQ(kReadLen,
             seg->write(read_offset, expected.data(), expected.size()));
 
-  const void *first = nullptr;
-  ASSERT_EQ(kReadLen, seg->read(read_offset, &first, kReadLen));
-  ASSERT_NE(nullptr, first);
-  EXPECT_EQ(0, std::memcmp(expected.data(), first, expected.size()));
+  IndexStorage::MemoryBlock first;
+  ASSERT_EQ(kReadLen, seg->read(read_offset, first, kReadLen));
+  ASSERT_NE(nullptr, first.data());
+  EXPECT_EQ(0, std::memcmp(expected.data(), first.data(), expected.size()));
 
   for (size_t i = 0; i < 128; ++i) {
-    const void *again = nullptr;
-    ASSERT_EQ(kReadLen, seg->read(read_offset, &again, kReadLen));
-    EXPECT_EQ(first, again);
+    IndexStorage::MemoryBlock again;
+    ASSERT_EQ(kReadLen, seg->read(read_offset, again, kReadLen));
+    EXPECT_NE(first.data(), again.data());
+    EXPECT_EQ(0, std::memcmp(expected.data(), again.data(), expected.size()));
+    EXPECT_EQ(0, std::memcmp(expected.data(), first.data(), expected.size()));
   }
 
   EXPECT_EQ(0, storage->close());
