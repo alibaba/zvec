@@ -15,13 +15,51 @@
 #include <memory>
 #include <string>
 #include <ailego/pattern/defer.h>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/core/interface/index.h>
 #include "algorithm/cluster/cluster_params.h"
 #include "algorithm/ivf/ivf_params.h"
+#include "algorithm/ivf/ivf_streamer.h"
 #include "utility/utility_params.h"
 #include "holder_builder.h"
 
 namespace zvec::core_interface {
+
+int IVFIndex::create_and_init_converter_reformer(
+    const QuantizerParam &param, const BaseIndexParam &index_param) {
+  // Clustering and centroid selection use the input vectors. Only the
+  // inverted lists are encoded, after their centroid assignments are known.
+  if (index_param.is_sparse || param.enable_rotate ||
+      index_param.data_type != DataType::DT_FP32 ||
+      (index_param.metric_type != MetricType::kL2sq &&
+       index_param.metric_type != MetricType::kInnerProduct &&
+       index_param.metric_type != MetricType::kCosine)) {
+    return Index::create_and_init_converter_reformer(param, index_param);
+  }
+  const char *name = nullptr;
+  switch (param.type) {
+    case QuantizerType::kNone:
+      name = "Fp32Quantizer";
+      break;
+    case QuantizerType::kFP16:
+      name = "Fp16Quantizer";
+      break;
+    case QuantizerType::kInt8:
+      name = "Int8Quantizer";
+      break;
+    case QuantizerType::kInt4:
+      name = "Int4Quantizer";
+      break;
+    default:
+      return Index::create_and_init_converter_reformer(param, index_param);
+  }
+  proxima_index_meta_.set_quantizer(name, 0, ailego::Params{});
+  ivf_quantizer_ = core::IndexFactory::CreateQuantizer(name);
+  if (!ivf_quantizer_) {
+    return core::IndexError_NoExist;
+  }
+  return ivf_quantizer_->init(proxima_index_meta_, ailego::Params{});
+}
 
 int IVFIndex::create_and_init_streamer(const BaseIndexParam &param) {
   if (is_sparse_) {
@@ -61,15 +99,73 @@ int IVFIndex::create_and_init_streamer(const BaseIndexParam &param) {
   } else {
     real_meta = proxima_index_meta_;
   }
-  if (ailego_unlikely(builder_->init(real_meta, proxima_index_params_) != 0)) {
+  if (ailego_unlikely(builder_->init(real_meta, proxima_index_params_,
+                                     ivf_quantizer_) != 0)) {
     LOG_ERROR("Failed to init builder");
     return core::IndexError_Runtime;
   }
-  if (ailego_unlikely(streamer_->init(real_meta, proxima_index_params_) != 0)) {
+  if (ailego_unlikely(streamer_->init(real_meta, proxima_index_params_,
+                                      ivf_quantizer_) != 0)) {
     LOG_ERROR("Failed to init streamer");
     return core::IndexError_Runtime;
   }
   return 0;
+}
+
+int IVFIndex::restore_legacy_pipeline() {
+  ivf_quantizer_.reset();
+  converter_.reset();
+  reformer_.reset();
+  proxima_index_meta_ = IndexMeta{};
+  proxima_index_meta_.set_meta(param_.data_type, param_.dimension);
+  int ret = parse_metric_name(param_);
+  if (ret != 0) return ret;
+  const auto quantizer_param =
+      param_.quantizer_param ? *param_.quantizer_param : QuantizerParam{};
+  ret = Index::create_and_init_converter_reformer(quantizer_param, param_);
+  if (ret != 0) return ret;
+  ret = create_and_init_metric(param_);
+  if (ret != 0) return ret;
+  return create_and_init_streamer(param_);
+}
+
+int IVFIndex::load_streamer() {
+  IndexMeta persisted_meta;
+  int ret = core::IndexHelper::DeserializeFromStorage(storage_.get(),
+                                                      &persisted_meta);
+  if (ret != 0) return ret;
+  if (persisted_meta.quantizer_name().empty()) {
+    if (ivf_quantizer_) {
+      ret = restore_legacy_pipeline();
+      if (ret != 0) return ret;
+    }
+  } else {
+    // Persisted descriptors decide the posting format, including when a
+    // caller reopens an index with the default quantizer configuration.
+    if (persisted_meta.data_type() != input_vector_meta_.data_type() ||
+        persisted_meta.dimension() != input_vector_meta_.dimension() ||
+        persisted_meta.metric_name() !=
+            get_metric_name(param_.metric_type, false)) {
+      return core::IndexError_Mismatch;
+    }
+    converter_.reset();
+    reformer_.reset();
+    proxima_index_meta_ = persisted_meta;
+    ret = create_and_init_metric(param_);
+    if (ret != 0) return ret;
+  }
+  // close() cleans up the streamer; reinitialize it before each load so
+  // reopening the same public Index instance follows the same lifecycle.
+  ret = streamer_->init(proxima_index_meta_, proxima_index_params_);
+  if (ret != 0) return ret;
+  ret = streamer_->open(storage_);
+  if (ret != 0) return ret;
+  auto ivf_streamer = std::dynamic_pointer_cast<core::IVFStreamer>(streamer_);
+  ivf_quantizer_ = ivf_streamer->quantizer();
+  if (reformer_) {
+    ret = reformer_->load(storage_);
+  }
+  return ret;
 }
 
 int IVFIndex::open(const std::string &file_path,
@@ -129,15 +225,8 @@ int IVFIndex::open(const std::string &file_path,
                 core::IndexError::What(ret));
       return core::IndexError_Runtime;
     }
-    if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
-      LOG_ERROR("Failed to open streamer, path: %s", file_path_.c_str());
-      return core::IndexError_Runtime;
-    }
-    // Load reformer data from storage (e.g., rotation matrix for INT8+rotate)
-    if (reformer_ != nullptr && reformer_->load(storage_) != 0) {
-      LOG_ERROR("Failed to load reformer, path: %s", file_path_.c_str());
-      return core::IndexError_Runtime;
-    }
+    ret = load_streamer();
+    if (ret != 0) return ret;
     is_trained_ = true;
   }
   is_open_ = true;
@@ -177,6 +266,7 @@ int IVFIndex::train() {
   if (is_trained_) {
     return 0;
   }
+  if (!is_open_ || is_read_only_) return core::IndexError_NoReady;
   if (build_stage_ == BuildStage::kCollecting) {
     int ret = generate_holder();
     if (ret != 0) {
@@ -205,7 +295,7 @@ int IVFIndex::reset_builder() {
   }
   int ret =
       next_builder->init(converter_ ? converter_->meta() : proxima_index_meta_,
-                         proxima_index_params_);
+                         proxima_index_params_, ivf_quantizer_);
   if (ret != 0) {
     return ret;
   }
@@ -265,15 +355,8 @@ int IVFIndex::dump_and_open() {
               core::IndexError::What(ret));
     return core::IndexError_Runtime;
   }
-  if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
-    LOG_ERROR("Failed to open streamer, path: %s", file_path_.c_str());
-    return core::IndexError_Runtime;
-  }
-  // Load reformer data from storage (e.g., rotation matrix)
-  if (reformer_ != nullptr && reformer_->load(storage_) != 0) {
-    LOG_ERROR("Failed to load reformer, path: %s", file_path_.c_str());
-    return core::IndexError_Runtime;
-  }
+  ret = load_streamer();
+  if (ret != 0) return ret;
   is_trained_ = true;
   // Only the reformer is needed after the persisted index is ready. Destroy
   // the build-only converter and its input ownership chain, but keep it on
@@ -287,6 +370,17 @@ int IVFIndex::dump_and_open() {
 int IVFIndex::_dense_fetch(const uint32_t doc_id,
                            VectorDataBuffer *vector_data_buffer) {
   if (is_trained_) {
+    if (ivf_quantizer_) {
+      auto provider = streamer_->create_provider();
+      if (!provider) return core::IndexError_NoReady;
+      const void *vector = provider->get_vector(doc_id);
+      if (!vector) return core::IndexError_NoExist;
+      DenseVectorBuffer buffer;
+      buffer.data.assign(static_cast<const char *>(vector),
+                         input_vector_meta_.element_size());
+      vector_data_buffer->vector_buffer = std::move(buffer);
+      return 0;
+    }
     return Index::_dense_fetch(doc_id, vector_data_buffer);
   } else {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -303,6 +397,25 @@ int IVFIndex::_dense_fetch(const uint32_t doc_id,
     vector_data_buffer->vector_buffer = std::move(dense_vector_buffer);
     return 0;
   }
+}
+
+int IVFIndex::_dense_search(const VectorData &query,
+                            const BaseIndexQueryParam::Pointer &search_param,
+                            SearchResult *result,
+                            core::IndexContext::Pointer &context) {
+  int ret = Index::_dense_search(query, search_param, result, context);
+  if (ret != 0 || !ivf_quantizer_ || !context->fetch_vector()) return ret;
+  auto provider = streamer_->create_provider();
+  if (!provider) return core::IndexError_NoReady;
+  result->reverted_vector_list_.clear();
+  result->reverted_vector_list_.reserve(result->doc_list_.size());
+  for (const auto &doc : result->doc_list_) {
+    const void *vector = provider->get_vector(doc.key());
+    if (!vector) return core::IndexError_ReadData;
+    result->reverted_vector_list_.emplace_back(
+        static_cast<const char *>(vector), input_vector_meta_.element_size());
+  }
+  return 0;
 }
 
 int IVFIndex::_prepare_for_search(

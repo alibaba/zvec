@@ -19,6 +19,7 @@
 #include <limits>
 #include <vector>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_helper.h>
 #include <zvec/core/framework/index_provider.h>
@@ -699,50 +700,61 @@ TEST_F(IVFBuilderTest, HalfFloatOrdinalSourceIsBorrowedAndDumpCanRetry) {
 }
 
 TEST_F(IVFBuilderTest, OrdinalSourceIsReadAtDumpAndRetainedForRepeatedDumps) {
-  for (bool store_original : {false, true}) {
-    prepare_index_holder(100, 103);
-    params_.set(PARAM_IVF_BUILDER_STORE_ORIGINAL_FEATURES, store_original);
-    IVFBuilder builder;
-    ASSERT_EQ(0, builder.init(index_meta_, params_));
-    ASSERT_EQ(0, builder.train(threads_, holder_));
-    auto source = std::make_shared<OrdinalTestHolder>(holder_);
-    std::weak_ptr<OrdinalTestHolder> weak = source;
-    ASSERT_EQ(0, builder.build(threads_, source));
-    EXPECT_EQ(1u, source->reader_creations);
-    EXPECT_EQ(1u, source->iterations);
-    EXPECT_EQ(0u, source->reads);
-    source.reset();
-    EXPECT_FALSE(weak.expired());
-    for (size_t pass = 1; pass <= 2; ++pass) {
-      const std::string path = "ivf_ordinal_source.index";
-      auto dumper = IndexFactory::CreateDumper("FileDumper");
-      ASSERT_EQ(0, dumper->create(path));
-      ASSERT_EQ(0, builder.dump(dumper));
-      ASSERT_EQ(0, dumper->close());
-      EXPECT_EQ(103u * pass * (store_original ? 2 : 1), weak.lock()->reads);
-      EXPECT_EQ(pass, weak.lock()->resets);
-      auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
-      ASSERT_EQ(0, storage->init(Params()));
-      ASSERT_EQ(0, storage->open(path, false));
-      auto streamer = IndexFactory::CreateStreamer("IVFStreamer");
-      ASSERT_EQ(0, streamer->init(index_meta_, Params()));
-      ASSERT_EQ(0, streamer->open(storage));
-      auto provider = streamer->create_provider();
-      ASSERT_NE(nullptr, provider);
-      for (auto iter = holder_->create_iterator(); iter->is_valid();
-           iter->next()) {
-        const void *actual = provider->get_vector(iter->key());
-        ASSERT_NE(nullptr, actual);
-        EXPECT_EQ(0,
-                  std::memcmp(actual, iter->data(), holder_->element_size()));
+  for (bool turbo : {false, true}) {
+    SCOPED_TRACE(turbo);
+    for (bool store_original : {false, true}) {
+      prepare_index_holder(100, 103);
+      params_.set(PARAM_IVF_BUILDER_STORE_ORIGINAL_FEATURES, store_original);
+      IVFBuilder builder;
+      auto meta = index_meta_;
+      zvec::turbo::Quantizer::Pointer quantizer;
+      if (turbo) {
+        meta.set_quantizer("Fp32Quantizer", 0, Params());
+        quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+        ASSERT_NE(nullptr, quantizer);
+        ASSERT_EQ(0, quantizer->init(meta, Params()));
       }
-      provider.reset();
-      ASSERT_EQ(0, streamer->close());
-      ASSERT_EQ(0, storage->close());
-      File::RemovePath(path);
+      ASSERT_EQ(0, builder.init(meta, params_, quantizer));
+      ASSERT_EQ(0, builder.train(threads_, holder_));
+      auto source = std::make_shared<OrdinalTestHolder>(holder_);
+      std::weak_ptr<OrdinalTestHolder> weak = source;
+      ASSERT_EQ(0, builder.build(threads_, source));
+      EXPECT_EQ(1u, source->reader_creations);
+      EXPECT_EQ(1u, source->iterations);
+      EXPECT_EQ(0u, source->reads);
+      source.reset();
+      EXPECT_FALSE(weak.expired());
+      for (size_t pass = 1; pass <= 2; ++pass) {
+        const std::string path = "ivf_ordinal_source.index";
+        auto dumper = IndexFactory::CreateDumper("FileDumper");
+        ASSERT_EQ(0, dumper->create(path));
+        ASSERT_EQ(0, builder.dump(dumper));
+        ASSERT_EQ(0, dumper->close());
+        EXPECT_EQ(103u * pass * (store_original ? 2 : 1), weak.lock()->reads);
+        EXPECT_EQ(pass, weak.lock()->resets);
+        auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+        ASSERT_EQ(0, storage->init(Params()));
+        ASSERT_EQ(0, storage->open(path, false));
+        auto streamer = IndexFactory::CreateStreamer("IVFStreamer");
+        ASSERT_EQ(0, streamer->init(index_meta_, Params()));
+        ASSERT_EQ(0, streamer->open(storage));
+        auto provider = streamer->create_provider();
+        ASSERT_NE(nullptr, provider);
+        for (auto iter = holder_->create_iterator(); iter->is_valid();
+             iter->next()) {
+          const void *actual = provider->get_vector(iter->key());
+          ASSERT_NE(nullptr, actual);
+          EXPECT_EQ(0,
+                    std::memcmp(actual, iter->data(), holder_->element_size()));
+        }
+        provider.reset();
+        ASSERT_EQ(0, streamer->close());
+        ASSERT_EQ(0, storage->close());
+        File::RemovePath(path);
+      }
+      ASSERT_EQ(0, builder.cleanup());
+      EXPECT_TRUE(weak.expired());
     }
-    ASSERT_EQ(0, builder.cleanup());
-    EXPECT_TRUE(weak.expired());
   }
 }
 
@@ -1253,3 +1265,44 @@ TEST_F(IVFBuilderTest, TestIndexThreads) {
   auto &stats2 = builder2->stats();
   ASSERT_EQ(doc_cnt, stats2.built_count());
 }
+
+namespace zvec {
+namespace core {
+namespace {
+
+TEST(IVFTurboConfiguration, RejectsColumnOrderAndLegacyPostingQuantization) {
+  constexpr uint32_t kDimension = 18;
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DataType::DT_FP32, kDimension);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+  meta.set_quantizer("Int8Quantizer", 0, ailego::Params());
+  auto quantizer = IndexFactory::CreateQuantizer("Int8Quantizer");
+  ASSERT_NE(nullptr, quantizer);
+  ASSERT_EQ(0, quantizer->init(meta, ailego::Params()));
+  ailego::Params params;
+  params.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "4");
+
+  {
+    IVFBuilder builder;
+    auto column_meta = meta;
+    column_meta.set_major_order(IndexMeta::MO_COLUMN);
+    EXPECT_NE(0, builder.init(column_meta, params, quantizer));
+  }
+  {
+    IVFBuilder builder;
+    auto conflicting_params = params;
+    conflicting_params.set(PARAM_IVF_BUILDER_QUANTIZER_CLASS,
+                           "Int8QuantizerConverter");
+    EXPECT_NE(0, builder.init(meta, conflicting_params, quantizer));
+  }
+  {
+    IVFBuilder builder;
+    auto conflicting_params = params;
+    conflicting_params.set(PARAM_IVF_BUILDER_QUANTIZE_BY_CENTROID, true);
+    EXPECT_NE(0, builder.init(meta, conflicting_params, quantizer));
+  }
+}
+
+}  // namespace
+}  // namespace core
+}  // namespace zvec

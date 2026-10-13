@@ -54,6 +54,13 @@ class IndexSearcher : public IndexRunner {
     return IndexError_NotImplemented;
   }
 
+  //! Whether the searcher quantizes queries itself (Turbo posting codes).
+  //! When true, IndexFlow must pass raw queries instead of pre-quantizing
+  //! them with the quantizer descriptor from the index meta.
+  virtual bool owns_query_quantization() const {
+    return false;
+  }
+
   //! Retrieve meta of index
   virtual const IndexMeta &meta() const = 0;
 
