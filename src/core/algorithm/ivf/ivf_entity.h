@@ -190,13 +190,9 @@ class IVFEntity {
   }
 
   //! Retrieve vector by local id
-  const void *get_vector(size_t id) const;
-
-  //! Retrieve vector by local id
-  const void *get_vector_by_key(uint64_t key) const;
-
   int get_vector(size_t id, IndexStorage::MemoryBlock &block) const;
 
+  //! Retrieve vector by primary key
   int get_vector_by_key(uint64_t key, IndexStorage::MemoryBlock &block) const;
 
   uint32_t key_to_id(uint64_t key) const;

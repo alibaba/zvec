@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <new>
 #include <numeric>
+#include <string>
 #include <vector>
 #include <zvec/core/framework/index_searcher.h>
 #include "ivf_entity.h"
@@ -62,7 +63,19 @@ class IVFIndexProvider : public IndexProvider {
 
   //! Retrieve a vector using a primary key
   const void *get_vector(uint64_t key) const override {
-    return entity_->get_vector_by_key(key);
+    IndexStorage::MemoryBlock block;
+    if (entity_->get_vector_by_key(key, block) != 0) {
+      return nullptr;
+    }
+    // The pointer API keeps only vector bytes until this thread's next call.
+    // Storage pins and file handles must not outlive the provider in TLS.
+    static thread_local std::string vector;
+    try {
+      vector.assign(static_cast<const char *>(block.data()), element_size());
+    } catch (const std::bad_alloc &) {
+      return nullptr;
+    }
+    return vector.data();
   }
 
   //! Retrieve the owner class
@@ -92,13 +105,15 @@ class IVFIndexProvider : public IndexProvider {
     const void *data() const override {
       size_t local_id = current_local_id();
       if (local_id >= count_) {
+        vector_block_.reset();
         return nullptr;
       }
-      const void *result = entity_->get_vector(local_id);
-      if (!result) {
+      if (entity_->get_vector(local_id, vector_block_) != 0) {
         status_ = IndexError_ReadData;
+        vector_block_.reset();
+        return nullptr;
       }
-      return result;
+      return vector_block_.data();
     }
 
     //! Test if the iterator is valid
@@ -126,6 +141,7 @@ class IVFIndexProvider : public IndexProvider {
 
     //! Next iterator
     void next() override {
+      vector_block_.reset();
       if (status_ == 0 && pos_ < count_) {
         ++pos_;
       }
@@ -181,6 +197,7 @@ class IVFIndexProvider : public IndexProvider {
     //! Members
     static constexpr size_t kMappingChunkEntries = 4096;
     IVFEntity::Pointer entity_;
+    mutable IndexStorage::MemoryBlock vector_block_;
     bool use_mapping_{false};
     mutable int status_{0};
     mutable std::vector<uint32_t> mapping_chunk_;
@@ -197,7 +214,11 @@ class IVFIndexProvider : public IndexProvider {
 
     //! Retrieve pointer of data
     const void *data() const override {
-      return entity_->get_vector(index_);
+      if (entity_->get_vector(index_, vector_block_) != 0) {
+        vector_block_.reset();
+        return nullptr;
+      }
+      return vector_block_.data();
     }
 
     //! Test if the iterator is valid
@@ -212,12 +233,14 @@ class IVFIndexProvider : public IndexProvider {
 
     //! Next iterator
     void next() override {
+      vector_block_.reset();
       ++index_;
     }
 
    private:
     //! Members
     IVFEntity::Pointer entity_;
+    mutable IndexStorage::MemoryBlock vector_block_;
     size_t index_{0};
   };
 

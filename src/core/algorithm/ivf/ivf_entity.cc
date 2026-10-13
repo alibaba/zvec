@@ -953,12 +953,6 @@ int IVFEntity::search(const void *query, IndexDocumentHeap *heap,
   return 0;
 }
 
-const void *IVFEntity::get_vector(size_t id) const {
-  // Keep the legacy pointer valid until the next call on this thread.
-  static thread_local IndexStorage::MemoryBlock block;
-  return get_vector(id, block) == 0 ? block.data() : nullptr;
-}
-
 int IVFEntity::get_vector(size_t id, IndexStorage::MemoryBlock &block) const {
   if (features_) {
     size_t element_size = features_->data_size() / vector_count();
@@ -1039,15 +1033,6 @@ uint32_t IVFEntity::key_to_id(uint64_t key) const {
     }
   }
   return std::numeric_limits<uint32_t>::max();
-}
-
-const void *IVFEntity::get_vector_by_key(uint64_t key) const {
-  uint32_t id = this->key_to_id(key);
-  if (id != std::numeric_limits<uint32_t>::max()) {
-    return get_vector(id);
-  } else {
-    return nullptr;
-  }
 }
 
 int IVFEntity::get_vector_by_key(uint64_t key,
