@@ -722,7 +722,8 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
                       IndexContext::Stats *context_stats) const {
   ailego_assert_with(inverted_list_id < header_.inverted_list_count,
                      "invalid id");
-  auto list_meta = this->inverted_list_meta(inverted_list_id);
+  IndexStorage::MemoryBlock meta_block;
+  auto list_meta = this->inverted_list_meta(inverted_list_id, meta_block);
   ivf_assert(list_meta, IndexError_ReadData);
 
   IndexStorage::MemoryBlock data;
@@ -741,7 +742,9 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
     //! Read keys
     size_t items = std::min(blocks * block_vecs,
                             list_meta->vector_count - (i * block_vecs));
-    auto keys = get_keys(list_meta->id_offset + i * block_vecs, items);
+    IndexStorage::MemoryBlock keys_block;
+    auto keys =
+        get_keys(list_meta->id_offset + i * block_vecs, items, keys_block);
     if (!keys) {
       return IndexError_ReadData;
     }
@@ -836,7 +839,8 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
                       IndexContext::Stats *context_stats) const {
   ailego_assert_with(inverted_list_id < header_.inverted_list_count,
                      "invalid id");
-  auto list_meta = inverted_list_meta(inverted_list_id);
+  IndexStorage::MemoryBlock meta_block;
+  auto list_meta = inverted_list_meta(inverted_list_id, meta_block);
   ivf_assert(list_meta, IndexError_ReadData);
 
   IndexStorage::MemoryBlock data;
@@ -855,7 +859,9 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
     //! Read keys
     size_t items = std::min(blocks * block_vecs,
                             list_meta->vector_count - (i * block_vecs));
-    auto keys = get_keys(list_meta->id_offset + i * block_vecs, items);
+    IndexStorage::MemoryBlock keys_block;
+    auto keys =
+        get_keys(list_meta->id_offset + i * block_vecs, items, keys_block);
     if (!keys) {
       return IndexError_ReadData;
     }

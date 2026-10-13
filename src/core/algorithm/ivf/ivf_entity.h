@@ -107,8 +107,10 @@ class IVFEntity {
 
   //! Retrieve a block of vectors
   const void *read_block(size_t inverted_list_id, size_t local_block_id,
-                         size_t *vecs_count) const {
-    auto iv_meta = this->inverted_list_meta(inverted_list_id);
+                         size_t *vecs_count,
+                         IndexStorage::MemoryBlock &data) const {
+    IndexStorage::MemoryBlock meta_block;
+    auto iv_meta = this->inverted_list_meta(inverted_list_id, meta_block);
     if (!iv_meta || local_block_id >= iv_meta->block_count) {
       LOG_ERROR("Failed to read inverted list, listId=%zu blockIdx=%zu",
                 inverted_list_id, local_block_id);
@@ -122,8 +124,6 @@ class IVFEntity {
                        "invalid vecs");
     const size_t off = iv_meta->offset + local_block_id * header_.block_size;
     const size_t size = *vecs_count * meta_.element_size();
-    // Keep the legacy pointer valid until the next call on this thread.
-    static thread_local IndexStorage::MemoryBlock data;
     if (inverted_->read(off, data, size) != size) {
       LOG_ERROR("Failed to read block off=%zu size=%zu", off, size);
       return nullptr;
@@ -132,10 +132,9 @@ class IVFEntity {
     return data.data();
   }
 
-  //! Retrieve the inverted list meta
-  const InvertedListMeta *inverted_list_meta(size_t inverted_list_id) const {
-    // Keep the legacy pointer valid until the next call on this thread.
-    static thread_local IndexStorage::MemoryBlock data;
+  //! Retrieve the inverted list meta; the caller owns its read lifetime.
+  const InvertedListMeta *inverted_list_meta(
+      size_t inverted_list_id, IndexStorage::MemoryBlock &data) const {
     const size_t size = sizeof(InvertedListMeta);
     const size_t offset = inverted_list_id * size;
     if (inverted_meta_->read(offset, data, size) != size) {
@@ -147,10 +146,9 @@ class IVFEntity {
     return static_cast<const InvertedListMeta *>(data.data());
   }
 
-  //! Retrieve the keys by consecutive local ids
-  const uint64_t *get_keys(size_t id, size_t count) const {
-    // Keep the legacy pointer valid until the next call on this thread.
-    static thread_local IndexStorage::MemoryBlock data;
+  //! Retrieve consecutive keys; the caller owns their read lifetime.
+  const uint64_t *get_keys(size_t id, size_t count,
+                           IndexStorage::MemoryBlock &data) const {
     const size_t offset = id * sizeof(uint64_t);
     const size_t size = count * sizeof(uint64_t);
     if (keys_->read(offset, data, size) != size) {
