@@ -90,6 +90,9 @@ int main(int argc, char **argv) {
         query->rabitq_pruning = (mode % 2 == 0);
         query->rabitq_reuse_coarse_dot = (mode >= 2);
         query->rabitq_collect_stats = collect;
+        // Segment timing is diagnostics-only and does not alter the search.
+        // Emitted mode configurations keep it off (collect == false).
+        query->rabitq_segment_timing = collect;
       } else {
         dedicated_query->rabitq_collect_stats = collect;
       }
@@ -118,12 +121,15 @@ int main(int argc, char **argv) {
       throw std::runtime_error("Cannot open output files");
     counts << "query,mode,active,mapped,coarse_count,refined_count,key_reads,"
               "coarse_reads,row_reads,coarse_copy_bytes,result_count,baseline_"
-              "overlap,same_ordered_ids,max_common_score_delta\n";
+              "overlap,same_ordered_ids,max_common_score_delta,prep_ns,coarse_"
+              "ns,cand_ns,refine_ns,finalize_ns\n";
     results << "query,mode,rank,key,score\n";
     counts << std::setprecision(std::numeric_limits<float>::max_digits10);
     results << std::setprecision(std::numeric_limits<float>::max_digits10);
     std::array<size_t, 4> coarse{}, refined{}, active{};
     std::array<std::vector<size_t>, 4> coarse_per_query, refined_per_query;
+    std::array<double, 4> prep_ns{}, seg_coarse_ns{}, cand_ns{}, seg_refine_ns{},
+        finalize_ns{};
     for (size_t q = 0; q < vectors.size(); ++q) {
       core_interface::SearchResult baseline;
       for (size_t mode = 0; mode < names.size(); ++mode) {
@@ -164,10 +170,17 @@ int main(int argc, char **argv) {
                << ',' << s.coarse_count << ',' << s.refined_count << ','
                << s.key_reads << ',' << s.coarse_reads << ',' << s.row_reads
                << ',' << s.coarse_copy_bytes << ',' << result.doc_list_.size()
-               << ',' << overlap << ',' << same << ',' << max_delta << '\n';
+               << ',' << overlap << ',' << same << ',' << max_delta << ','
+               << s.prep_ns << ',' << s.coarse_ns << ',' << s.cand_ns << ','
+               << s.refine_ns << ',' << s.finalize_ns << '\n';
         coarse[mode] += s.coarse_count;
         refined[mode] += s.refined_count;
         active[mode] += s.active;
+        prep_ns[mode] += s.prep_ns;
+        seg_coarse_ns[mode] += s.coarse_ns;
+        cand_ns[mode] += s.cand_ns;
+        seg_refine_ns[mode] += s.refine_ns;
+        finalize_ns[mode] += s.finalize_ns;
         coarse_per_query[mode].push_back(s.coarse_count);
         refined_per_query[mode].push_back(s.refined_count);
       }
@@ -185,6 +198,12 @@ int main(int argc, char **argv) {
                 << (coarse[mode] ? double(refined[mode]) / coarse[mode] : 0);
       PrintDistribution("coarse", coarse_per_query[mode]);
       PrintDistribution("refined", refined_per_query[mode]);
+      const double nq = double(vectors.size());
+      std::cout << " segments_us/q prep=" << prep_ns[mode] / nq / 1000.0
+                << " coarse=" << seg_coarse_ns[mode] / nq / 1000.0
+                << " cand=" << cand_ns[mode] / nq / 1000.0
+                << " refine=" << seg_refine_ns[mode] / nq / 1000.0
+                << " finalize=" << finalize_ns[mode] / nq / 1000.0;
       std::cout << '\n';
       // Emit directly runnable configurations without enabling stats in the
       // timed benchmark. Preserve input paths and separate recall log folders.

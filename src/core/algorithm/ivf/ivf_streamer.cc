@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "ivf_streamer.h"
+#include <chrono>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_segment_storage.h>
 #include "ivf_centroid_index.h"
@@ -247,6 +248,11 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   auto &filter = ctx->filter();
 
   auto &centroid_index_ctx = ctx->centroid_searcher_ctx();
+  // Segment timing: centroid selection and query transform run per batch.
+  using SteadyTime = std::chrono::steady_clock::time_point;
+  const bool segment_timing = entity->packed_scan_timing_enabled();
+  const SteadyTime prep_t0 =
+      segment_timing ? std::chrono::steady_clock::now() : SteadyTime{};
   int ret = centroid_index_->search(query, qmeta, count, centroid_index_ctx);
   ivf_check_error_code(ret);
 
@@ -258,6 +264,12 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   for (size_t q = 0; q < count; ++q) {
     ret = entity->bind_query(query, iv_qmeta);
     ivf_check_error_code(ret);
+    if (segment_timing && q == 0) {
+      entity->mutable_packed_scan_stats().prep_ns +=
+          std::chrono::duration<double, std::nano>(
+              std::chrono::steady_clock::now() - prep_t0)
+              .count();
+    }
     auto &centroids = centroid_index_ctx->result(q);
     auto &context_stats = ctx->mutable_stats(q);
     auto &heap = ctx->mutable_result_heap();
@@ -280,6 +292,9 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                          IndexError::What(ret));
       total_scan_count += scan_count;
     }
+    entity->finish_segment_timing();
+    const SteadyTime fin_t0 =
+        segment_timing ? std::chrono::steady_clock::now() : SteadyTime{};
     heap.sort();  // sort the results
     if (!filter.is_valid()) {
       // mapping the local id to key if query without filter
@@ -287,6 +302,12 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
       ivf_check_error_code(ret);
     }
     entity->normalize(q, &heap);
+    if (segment_timing) {
+      entity->mutable_packed_scan_stats().finalize_ns +=
+          std::chrono::duration<double, std::nano>(
+              std::chrono::steady_clock::now() - fin_t0)
+              .count();
+    }
     ctx->topk_to_result(q);
     query = static_cast<const char *>(query) + iv_qmeta.element_size();
   }

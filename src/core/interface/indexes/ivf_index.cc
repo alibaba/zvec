@@ -508,7 +508,12 @@ int IVFIndex::_dense_search(const VectorData &query,
                                scan.key_reads,
                                scan.coarse_reads,
                                scan.row_reads,
-                               scan.coarse_copy_bytes};
+                               scan.coarse_copy_bytes,
+                               scan.prep_ns,
+                               scan.coarse_ns,
+                               scan.cand_ns,
+                               scan.refine_ns,
+                               scan.finalize_ns};
   }
   if (!ivf_quantizer_ || !context->fetch_vector()) return ret;
   auto provider = streamer_->create_provider();
@@ -534,7 +539,8 @@ int IVFIndex::_prepare_for_search(
   if (!ivf_search_param) return core::IndexError_InvalidArgument;
   const bool scan_options = !ivf_search_param->rabitq_pruning ||
                             ivf_search_param->rabitq_reuse_coarse_dot ||
-                            ivf_search_param->rabitq_collect_stats;
+                            ivf_search_param->rabitq_collect_stats ||
+                            ivf_search_param->rabitq_segment_timing;
   if (scan_options && (!use_rabitq_ || legacy_rabitq_ ||
                        search_param->refiner_param || search_param->bf_pks)) {
     LOG_ERROR(
@@ -574,6 +580,8 @@ int IVFIndex::_prepare_for_search(
     ctx->entity()->set_packed_scan_pruning(ivf_search_param->rabitq_pruning);
     ctx->entity()->set_packed_scan_reuse_dot(
         ivf_search_param->rabitq_reuse_coarse_dot);
+    ctx->entity()->set_packed_scan_timing(
+        ivf_search_param->rabitq_segment_timing);
   }
   _set_group_by_on_context(search_param, context);
   context->set_topk(ivf_search_param->topk);

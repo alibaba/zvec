@@ -51,8 +51,8 @@ class IVFEntity {
     return quantizer_;
   }
 
-  // Query-local diagnostics, reset by bind_query(). No timers or allocations
-  // in the candidate loop. Batched queries expose the last bound query.
+  // Query-local diagnostics, reset by bind_query(). No allocations in the
+  // candidate loop. Batched queries expose the last bound query.
   struct PackedScanStats {
     bool active{false};
     bool mapped{false};
@@ -62,10 +62,21 @@ class IVFEntity {
     size_t coarse_reads{0};
     size_t row_reads{0};
     size_t coarse_copy_bytes{0};
+    // Segment timings (ns), zero unless segment timing is enabled:
+    // prep = query encode/bind (+ centroid selection, added by the searcher),
+    // coarse = FastScan estimates, cand = key mask/prune/staging,
+    // refine = exact refine + heap insert, finalize = heap sort/retrieve.
+    double prep_ns{0}, coarse_ns{0}, cand_ns{0}, refine_ns{0}, finalize_ns{0};
   };
   const PackedScanStats &packed_scan_stats() const {
     return packed_scan_stats_;
   }
+  PackedScanStats &mutable_packed_scan_stats() const {
+    return packed_scan_stats_;
+  }
+  // Convert accumulated raw scan-clock ticks into cand/coarse/refine ns.
+  // Called once per query by the searcher after the list scan.
+  void finish_segment_timing() const;
   // Diagnostic A/B switch: keep the same codes, candidates and distance
   // estimators, but refine every unfiltered candidate when disabled.
   void set_packed_scan_pruning(bool enabled) {
@@ -74,6 +85,14 @@ class IVFEntity {
 
   void set_packed_scan_reuse_dot(bool enabled) {
     packed_scan_reuse_dot_ = enabled;
+  }
+
+  void set_packed_scan_timing(bool enabled) const {
+    packed_scan_timing_ = enabled;
+  }
+
+  bool packed_scan_timing_enabled() const {
+    return packed_scan_timing_;
   }
 
   struct CandidateVisitor {
@@ -446,6 +465,9 @@ class IVFEntity {
                          IndexContext::Stats *stats,
                          const CandidateVisitor &visitor) const;
   mutable PackedScanStats packed_scan_stats_{};
+  mutable bool packed_scan_timing_{false};
+  // Raw scan-clock ticks per query: cand, coarse, refine.
+  mutable uint64_t segment_ticks_[3]{};
   bool packed_scan_pruning_{true};
   bool packed_scan_reuse_dot_{false};
   mutable std::vector<uint64_t> scan_keys_{};

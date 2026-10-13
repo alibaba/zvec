@@ -203,6 +203,8 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
                  ailego::JsonValue(param.rabitq_reuse_coarse_dot));
     json_obj.set("rabitq_collect_stats",
                  ailego::JsonValue(param.rabitq_collect_stats));
+    json_obj.set("rabitq_segment_timing",
+                 ailego::JsonValue(param.rabitq_segment_timing));
     index_type = IndexType::kIVF;
     // json_obj.set("l1QueryParam",
     // ailego::JsonValue(QueryParamSerializeToJson(param.l1QueryParam)));
@@ -343,6 +345,9 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
                                    tmp_json_value) ||
           !extract_value_from_json(json_obj, "rabitq_collect_stats",
                                    param->rabitq_collect_stats,
+                                   tmp_json_value) ||
+          !extract_value_from_json(json_obj, "rabitq_segment_timing",
+                                   param->rabitq_segment_timing,
                                    tmp_json_value)) {
         LOG_ERROR("Failed to deserialize RaBitQ scan options");
         return nullptr;

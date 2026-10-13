@@ -108,6 +108,8 @@ struct IVFScanStats {
   bool mapped{false};
   size_t coarse_count{0}, refined_count{0};
   size_t key_reads{0}, coarse_reads{0}, row_reads{0}, coarse_copy_bytes{0};
+  // Segment timings in nanoseconds, zero unless rabitq_segment_timing is set.
+  double prep_ns{0}, coarse_ns{0}, cand_ns{0}, refine_ns{0}, finalize_ns{0};
 };
 
 struct SearchResult {

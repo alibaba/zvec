@@ -91,6 +91,16 @@ cc_binary(
     LIBS gflags core_framework core_utility
   )
 
+# Offline GT candidate coverage: replicates FP32 centroid selection and maps
+# GT ids to inverted lists straight from the index segments.
+cc_binary(
+    NAME ivf_rabitq_gt_coverage
+    STRICT PACKED
+    SRCS ivf_rabitq_gt_coverage.cc
+    INCS ${PROJECT_ROOT_DIR}/src/core/
+    LIBS gflags core_framework core_utility
+  )
+
 # Same YAML inputs and public query API as bench/recall; single-query A/B diagnostics.
 cc_binary(
     NAME ivf_rabitq_scan_diagnostic
