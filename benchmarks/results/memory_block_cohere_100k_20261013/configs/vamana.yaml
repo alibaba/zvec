@@ -1,0 +1,16 @@
+BuilderCommon:
+  BuilderClass: VamanaStreamer
+  BuildFile: /Users/ali.yzf/zvec/benchmarks/results/memory_block_cohere_100k_20261013/data/cohere_100k.vecs
+  TrainFile: /Users/ali.yzf/zvec/benchmarks/results/memory_block_cohere_100k_20261013/data/cohere_100k.vecs
+  NeedTrain: false
+  DumpPath: /Users/ali.yzf/zvec/benchmarks/results/memory_block_cohere_100k_20261013/cosine_indexes/vamana.dump
+  IndexPath: /Users/ali.yzf/zvec/benchmarks/results/memory_block_cohere_100k_20261013/cosine_indexes/vamana.index
+  MetricName: Cosine
+  ConverterName: CosineFp32Converter
+  ThreadCount: 6
+  RetrievalMode: dense
+  LogLevel: warn
+BuilderParams:
+  proxima.vamana.streamer.max_degree: !!int 32
+  proxima.vamana.streamer.search_list_size: !!int 100
+  proxima.vamana.streamer.alpha: !!float 1.2

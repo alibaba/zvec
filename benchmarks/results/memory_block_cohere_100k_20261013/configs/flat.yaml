@@ -1,0 +1,14 @@
+BuilderCommon:
+  BuilderClass: FlatBuilder
+  BuildFile: /Users/ali.yzf/zvec/benchmarks/results/memory_block_cohere_100k_20261013/data/cohere_100k.vecs
+  TrainFile: /Users/ali.yzf/zvec/benchmarks/results/memory_block_cohere_100k_20261013/data/cohere_100k.vecs
+  NeedTrain: false
+  DumpPath: /Users/ali.yzf/zvec/benchmarks/results/memory_block_cohere_100k_20261013/cosine_indexes/flat.dump
+  IndexPath: /Users/ali.yzf/zvec/benchmarks/results/memory_block_cohere_100k_20261013/cosine_indexes/flat.index
+  MetricName: Cosine
+  ConverterName: CosineFp32Converter
+  ThreadCount: 6
+  RetrievalMode: dense
+  LogLevel: warn
+BuilderParams:
+  proxima.general.builder.thread_count: !!int 6

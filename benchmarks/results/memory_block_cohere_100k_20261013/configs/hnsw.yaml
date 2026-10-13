@@ -1,0 +1,17 @@
+BuilderCommon:
+  BuilderClass: HnswStreamer
+  BuildFile: /Users/ali.yzf/zvec/benchmarks/results/memory_block_cohere_100k_20261013/data/cohere_100k.vecs
+  TrainFile: /Users/ali.yzf/zvec/benchmarks/results/memory_block_cohere_100k_20261013/data/cohere_100k.vecs
+  NeedTrain: false
+  DumpPath: /Users/ali.yzf/zvec/benchmarks/results/memory_block_cohere_100k_20261013/cosine_indexes/hnsw.dump
+  IndexPath: /Users/ali.yzf/zvec/benchmarks/results/memory_block_cohere_100k_20261013/cosine_indexes/hnsw.index
+  MetricName: Cosine
+  ConverterName: CosineFp32Converter
+  ThreadCount: 6
+  RetrievalMode: dense
+  LogLevel: warn
+BuilderParams:
+  proxima.hnsw.streamer.efconstruction: !!int 200
+  proxima.hnsw.streamer.max_neighbor_count: !!int 16
+  proxima.hnsw.streamer.l0_max_neighbor_count_multiplier: !!int 2
+  proxima.hnsw.streamer.estimate_doc_count: !!int 100000
