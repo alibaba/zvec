@@ -498,7 +498,9 @@ int IVFIndex::_dense_search(const VectorData &query,
   const auto options = std::dynamic_pointer_cast<IVFQueryParam>(search_param);
   const auto *ctx =
       dynamic_cast<const core::IVFSearcherContext *>(context.get());
-  if (options && options->rabitq_collect_stats && ctx) {
+  if (options &&
+      (options->rabitq_collect_stats || options->rabitq_segment_timing) &&
+      ctx) {
     const auto &scan = ctx->entity()->packed_scan_stats();
     result->ivf_scan_stats_ = {true,
                                scan.active,
@@ -512,8 +514,9 @@ int IVFIndex::_dense_search(const VectorData &query,
                                scan.prep_ns,
                                scan.coarse_ns,
                                scan.cand_ns,
-                               scan.refine_ns,
-                               scan.finalize_ns};
+                               scan.post_scan_ns,
+                               scan.finalize_ns,
+                               scan.query_ns};
   }
   if (!ivf_quantizer_ || !context->fetch_vector()) return ret;
   auto provider = streamer_->create_provider();

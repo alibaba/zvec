@@ -322,7 +322,8 @@ struct ZVEC_CORE_API IVFQueryParam : public BaseIndexQueryParam {
   bool rabitq_reuse_coarse_dot = false;
   bool rabitq_collect_stats = false;
   // Default-off per-query segment timing (prep/centroid, coarse scan,
-  // candidate processing, refine+heap, finalize). Diagnostics only.
+  // key mask/staging, post-scan processing, finalize). Also returns scan stats.
+  // Instrumentation perturbs performance; diagnostics only.
   bool rabitq_segment_timing = false;
   std::shared_ptr<BaseIndexQueryParam> l1_query_param = nullptr;
   std::shared_ptr<BaseIndexQueryParam> l2_query_param = nullptr;

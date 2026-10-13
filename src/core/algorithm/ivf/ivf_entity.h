@@ -64,9 +64,13 @@ class IVFEntity {
     size_t coarse_copy_bytes{0};
     // Segment timings (ns), zero unless segment timing is enabled:
     // prep = query encode/bind (+ centroid selection, added by the searcher),
-    // coarse = FastScan estimates, cand = key mask/prune/staging,
-    // refine = exact refine + heap insert, finalize = heap sort/retrieve.
-    double prep_ns{0}, coarse_ns{0}, cand_ns{0}, refine_ns{0}, finalize_ns{0};
+    // coarse = estimates + scan counters, cand = key mask/coarse staging,
+    // post_scan = candidate traversal/pruning/row reads/refine/heap,
+    // finalize = heap sort/retrieve/normalize. query includes untimed gaps
+    // and result materialization; shared batch prep is amortized per query.
+    double prep_ns{0}, coarse_ns{0}, cand_ns{0}, post_scan_ns{0},
+        finalize_ns{0};
+    double query_ns{0};
   };
   const PackedScanStats &packed_scan_stats() const {
     return packed_scan_stats_;
@@ -74,7 +78,7 @@ class IVFEntity {
   PackedScanStats &mutable_packed_scan_stats() const {
     return packed_scan_stats_;
   }
-  // Convert accumulated raw scan-clock ticks into cand/coarse/refine ns.
+  // Publish accumulated cand/coarse/post-scan nanoseconds.
   // Called once per query by the searcher after the list scan.
   void finish_segment_timing() const;
   // Diagnostic A/B switch: keep the same codes, candidates and distance
@@ -466,8 +470,8 @@ class IVFEntity {
                          const CandidateVisitor &visitor) const;
   mutable PackedScanStats packed_scan_stats_{};
   mutable bool packed_scan_timing_{false};
-  // Raw scan-clock ticks per query: cand, coarse, refine.
-  mutable uint64_t segment_ticks_[3]{};
+  // Scan-clock nanoseconds per query: cand, coarse, post-scan.
+  mutable uint64_t segment_ns_[3]{};
   bool packed_scan_pruning_{true};
   bool packed_scan_reuse_dot_{false};
   mutable std::vector<uint64_t> scan_keys_{};

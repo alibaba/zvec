@@ -244,6 +244,57 @@ TEST(IVFBlockScan, StorageFallbackFiltersGroupsAndQueryIsolation) {
   }
 }
 
+TEST(IVFBlockScan, SegmentTimingDoesNotChangeResultsOrLeakAcrossQueries) {
+  const std::string path = "ivf_block_scan_timing_test.index";
+  WriteIndex(path, 32, true);
+  for (const char *type : {"FileReadStorage", "MMapFileReadStorage"}) {
+    SCOPED_TRACE(type);
+    auto storage = IndexFactory::CreateStorage(type);
+    ASSERT_EQ(0, storage->open(path, false));
+    IVFEntity entity;
+    ASSERT_EQ(0, entity.load(storage));
+    std::vector<float> query(kDim, 0);
+    IndexQueryMeta qmeta(IndexMeta::DT_FP32, kDim);
+    std::map<uint64_t, float> reference;
+    for (bool enabled : {false, true, false}) {
+      entity.set_packed_scan_timing(enabled);
+      ASSERT_EQ(0, entity.bind_query(query.data(), qmeta));
+      IndexDocumentHeap heap(5);
+      IndexContext::Stats stats;
+      ASSERT_EQ(0, entity.search(query.data(), &heap, &stats));
+      entity.finish_segment_timing();
+      const auto scan = entity.packed_scan_stats();
+      EXPECT_EQ(kCount, scan.coarse_count);
+      EXPECT_EQ(5u, scan.refined_count);
+      EXPECT_EQ(enabled, scan.prep_ns > 0);
+      EXPECT_EQ(enabled, scan.coarse_ns > 0);
+      EXPECT_EQ(enabled, scan.cand_ns > 0);
+      EXPECT_EQ(enabled, scan.post_scan_ns > 0);
+      std::map<uint64_t, float> actual;
+      for (const auto &doc : heap) actual.emplace(doc.key(), doc.score());
+      if (reference.empty()) reference = actual;
+      EXPECT_EQ(reference, actual);
+      // Publishing twice must not double count a query.
+      entity.finish_segment_timing();
+      EXPECT_EQ(scan.post_scan_ns, entity.packed_scan_stats().post_scan_ns);
+    }
+    entity.set_packed_scan_timing(true);
+    ASSERT_EQ(0, entity.bind_query(query.data(), qmeta));
+    IndexDocumentHeap heap(1);
+    heap.emplace(0, 0.0f, 0);
+    IndexContext::Stats stats;
+    uint32_t scanned = 0;
+    // Every candidate in list 3 is rejected by the existing best score.
+    // FileReadStorage must count the post-scan work even on the early exit.
+    ASSERT_EQ(0, entity.search(3, query.data(), &scanned, &heap, &stats));
+    entity.finish_segment_timing();
+    EXPECT_EQ(kCount - 37, scanned);
+    EXPECT_EQ(0u, entity.packed_scan_stats().refined_count);
+    EXPECT_GT(entity.packed_scan_stats().post_scan_ns, 0.0);
+  }
+  ailego::File::RemovePath(path);
+}
+
 TEST(IVFBlockScan, RejectsMalformedAuxiliarySegment) {
   const std::string path = "ivf_block_scan_bad.index";
   WriteIndex(path, 32, false, true);

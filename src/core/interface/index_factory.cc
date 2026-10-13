@@ -452,6 +452,9 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
                                    tmp_json_value) ||
           !extract_value_from_json(json_obj, "rabitq_collect_stats",
                                    param->rabitq_collect_stats,
+                                   tmp_json_value) ||
+          !extract_value_from_json(json_obj, "rabitq_segment_timing",
+                                   param->rabitq_segment_timing,
                                    tmp_json_value)) {
         LOG_ERROR("Failed to deserialize RaBitQ scan options");
         return nullptr;

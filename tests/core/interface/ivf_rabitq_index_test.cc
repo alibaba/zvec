@@ -81,6 +81,7 @@ TEST(IVFRabitqIntegration, ScanQueryOptionsRoundTrip) {
   param.rabitq_pruning = false;
   param.rabitq_reuse_coarse_dot = true;
   param.rabitq_collect_stats = true;
+  param.rabitq_segment_timing = true;
   const auto json = IndexFactory::QueryParamSerializeToJson(param, true);
   auto typed = IndexFactory::QueryParamDeserializeFromJson<IVFQueryParam>(json);
   auto base = std::dynamic_pointer_cast<IVFQueryParam>(
@@ -91,6 +92,7 @@ TEST(IVFRabitqIntegration, ScanQueryOptionsRoundTrip) {
     EXPECT_FALSE(p->rabitq_pruning);
     EXPECT_TRUE(p->rabitq_reuse_coarse_dot);
     EXPECT_TRUE(p->rabitq_collect_stats);
+    EXPECT_TRUE(p->rabitq_segment_timing);
   }
   auto defaults = IndexFactory::QueryParamDeserializeFromJson<IVFQueryParam>(
       R"({"index_type":"kIVF","nprobe":16})");
@@ -98,6 +100,10 @@ TEST(IVFRabitqIntegration, ScanQueryOptionsRoundTrip) {
   EXPECT_TRUE(defaults->rabitq_pruning);
   EXPECT_FALSE(defaults->rabitq_reuse_coarse_dot);
   EXPECT_FALSE(defaults->rabitq_collect_stats);
+  EXPECT_FALSE(defaults->rabitq_segment_timing);
+  EXPECT_EQ(nullptr,
+            IndexFactory::QueryParamDeserializeFromJson<IVFQueryParam>(
+                R"({"index_type":"kIVF","rabitq_segment_timing":"yes"})"));
 }
 
 TEST(IVFRabitqIntegration, DedicatedScanOptionsRoundTrip) {
@@ -203,8 +209,27 @@ TEST_P(IVFRabitqIntegrationTest, TrainSearchAndReopen) {
   query->rabitq_pruning = true;
   query->rabitq_reuse_coarse_dot = false;
   query->rabitq_collect_stats = false;
+  query->rabitq_segment_timing = true;
+  ASSERT_EQ(0, index->search(input, query, &diagnostics));
+  const auto &timing = diagnostics.ivf_scan_stats_;
+  EXPECT_TRUE(timing.collected);
+  EXPECT_GT(timing.query_ns, 0.0);
+  EXPECT_GT(timing.prep_ns, 0.0);
+  EXPECT_GT(timing.coarse_ns, 0.0);
+  EXPECT_GT(timing.post_scan_ns, 0.0);
+  EXPECT_LE(timing.prep_ns + timing.cand_ns + timing.coarse_ns +
+                timing.post_scan_ns + timing.finalize_ns,
+            timing.query_ns);
+  ASSERT_EQ(before.doc_list_.size(), diagnostics.doc_list_.size());
+  for (size_t i = 0; i < before.doc_list_.size(); ++i) {
+    EXPECT_EQ(before.doc_list_[i].key(), diagnostics.doc_list_[i].key());
+    EXPECT_FLOAT_EQ(before.doc_list_[i].score(),
+                    diagnostics.doc_list_[i].score());
+  }
+  query->rabitq_segment_timing = false;
   ASSERT_EQ(0, index->search(input, query, &diagnostics));
   EXPECT_FALSE(diagnostics.ivf_scan_stats_.collected);
+  EXPECT_EQ(0.0, diagnostics.ivf_scan_stats_.query_ns);
   ASSERT_EQ(before.doc_list_.size(), diagnostics.doc_list_.size());
   for (size_t i = 0; i < before.doc_list_.size(); ++i) {
     EXPECT_EQ(before.doc_list_[i].key(), diagnostics.doc_list_[i].key());

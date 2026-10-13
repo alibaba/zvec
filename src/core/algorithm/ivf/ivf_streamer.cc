@@ -260,15 +260,23 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   IndexQueryMeta iv_qmeta;
   ret = entity->transform(query, qmeta, count, &query, &iv_qmeta);
   ivf_check_with_msg(ret, "Failed to transform querys");
+  // Stop before bind_query(), which measures its own preparation work.
+  // Entity diagnostics expose the last query in a batch; amortize the shared
+  // centroid/transform work rather than attaching it only to the first query.
+  const double shared_prep_ns =
+      segment_timing && count ? std::chrono::duration<double, std::nano>(
+                                    std::chrono::steady_clock::now() - prep_t0)
+                                        .count() /
+                                    count
+                              : 0.0;
 
   for (size_t q = 0; q < count; ++q) {
+    const SteadyTime query_t0 =
+        segment_timing ? std::chrono::steady_clock::now() : SteadyTime{};
     ret = entity->bind_query(query, iv_qmeta);
     ivf_check_error_code(ret);
-    if (segment_timing && q == 0) {
-      entity->mutable_packed_scan_stats().prep_ns +=
-          std::chrono::duration<double, std::nano>(
-              std::chrono::steady_clock::now() - prep_t0)
-              .count();
+    if (segment_timing) {
+      entity->mutable_packed_scan_stats().prep_ns += shared_prep_ns;
     }
     auto &centroids = centroid_index_ctx->result(q);
     auto &context_stats = ctx->mutable_stats(q);
@@ -309,6 +317,12 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
               .count();
     }
     ctx->topk_to_result(q);
+    if (segment_timing) {
+      entity->mutable_packed_scan_stats().query_ns =
+          shared_prep_ns + std::chrono::duration<double, std::nano>(
+                               std::chrono::steady_clock::now() - query_t0)
+                               .count();
+    }
     query = static_cast<const char *>(query) + iv_qmeta.element_size();
   }
 

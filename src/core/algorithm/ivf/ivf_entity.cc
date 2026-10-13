@@ -17,47 +17,23 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
-#include <thread>
 #include <core/quantizer/quantizer_params.h>
 #include <turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h>
 #include "metric/metric_params.h"
 #include "ivf_utility.h"
-#if defined(__x86_64__) || defined(__i386__)
-#include <immintrin.h>
-#endif
 namespace zvec {
 namespace core {
 
 namespace {
 
-// Monotonic diagnostic clock for segment timing. Uses the invariant TSC on
-// x86 (cheap enough for per-scan-block accumulation); other platforms fall
-// back to steady_clock nanoseconds with a factor of exactly 1.
+// Diagnostic wall clock. Explicit nanoseconds on every platform, without TSC
+// calibration or unordered cycle reads. Instrumentation overhead must be
+// measured separately; these timings are not production throughput estimates.
 inline uint64_t SegmentClock() {
-#if defined(__x86_64__) || defined(__i386__)
-  return __rdtsc();
-#else
-  return uint64_t(
-      std::chrono::steady_clock::now().time_since_epoch().count());
-#endif
-}
-
-inline double SegmentClockNsPerTick() {
-  static const double factor = []() {
-#if defined(__x86_64__) || defined(__i386__)
-    const auto t0 = std::chrono::steady_clock::now();
-    const uint64_t c0 = SegmentClock();
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    const uint64_t c1 = SegmentClock();
-    const auto t1 = std::chrono::steady_clock::now();
-    const double ns =
-        std::chrono::duration<double, std::nano>(t1 - t0).count();
-    return ns / double(c1 - c0);
-#else
-    return 1.0;
-#endif
-  }();
-  return factor;
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
 }
 
 //! Cursor over a scatter read. IVF blocks and vectors are logical byte
@@ -742,7 +718,7 @@ int IVFEntity::load_quantizer(const IndexStorage::Pointer &container) {
 int IVFEntity::bind_query(const void *query, const IndexQueryMeta &qmeta) {
   const uint64_t seg_t0 = packed_scan_timing_ ? SegmentClock() : 0;
   packed_scan_stats_ = {};
-  segment_ticks_[0] = segment_ticks_[1] = segment_ticks_[2] = 0;
+  segment_ns_[0] = segment_ns_[1] = segment_ns_[2] = 0;
   block_scanner_.reset();
   if (!quantizer_) {
     return 0;
@@ -770,19 +746,17 @@ int IVFEntity::bind_query(const void *query, const IndexQueryMeta &qmeta) {
                                 keys_->base_data() && inverted_->base_data();
   }
   if (packed_scan_timing_ && block_scanner_) {
-    packed_scan_stats_.prep_ns =
-        double(SegmentClock() - seg_t0) * SegmentClockNsPerTick();
+    packed_scan_stats_.prep_ns = double(SegmentClock() - seg_t0);
   }
   return 0;
 }
 
 void IVFEntity::finish_segment_timing() const {
   if (!packed_scan_timing_) return;
-  const double factor = SegmentClockNsPerTick();
-  packed_scan_stats_.cand_ns += double(segment_ticks_[0]) * factor;
-  packed_scan_stats_.coarse_ns += double(segment_ticks_[1]) * factor;
-  packed_scan_stats_.refine_ns += double(segment_ticks_[2]) * factor;
-  segment_ticks_[0] = segment_ticks_[1] = segment_ticks_[2] = 0;
+  packed_scan_stats_.cand_ns += double(segment_ns_[0]);
+  packed_scan_stats_.coarse_ns += double(segment_ns_[1]);
+  packed_scan_stats_.post_scan_ns += double(segment_ns_[2]);
+  segment_ns_[0] = segment_ns_[1] = segment_ns_[2] = 0;
 }
 
 int IVFEntity::load(const IndexStorage::Pointer &container) {
@@ -1241,7 +1215,7 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
         keeps |= uint32_t(1) << i;
       }
       if (!keeps) {
-        if (packed_scan_timing_) segment_ticks_[0] += SegmentClock() - seg_t0;
+        if (packed_scan_timing_) segment_ns_[0] += SegmentClock() - seg_t0;
         continue;
       }
       const void *packed;
@@ -1261,7 +1235,7 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
       }
       if (packed_scan_timing_) {
         seg_t1 = SegmentClock();
-        segment_ticks_[0] += seg_t1 - seg_t0;
+        segment_ns_[0] += seg_t1 - seg_t0;
       }
       std::array<turbo::DistanceEstimate, 32> estimates;
       int ret = block_scanner_->estimate(packed, count, estimates.data());
@@ -1270,7 +1244,7 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
       packed_scan_stats_.coarse_count += count;
       if (packed_scan_timing_) {
         seg_t2 = SegmentClock();
-        segment_ticks_[1] += seg_t2 - seg_t1;
+        segment_ns_[1] += seg_t2 - seg_t1;
       }
       const auto consume = [&](const void *row, size_t i) {
         const float score = block_scanner_->refine(row, estimates[i]);
@@ -1296,7 +1270,10 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
               rejected(keys[i], estimates[i].lower_bound))
             keeps &= ~(uint32_t(1) << i);
         }
-        if (!keeps) continue;
+        if (!keeps) {
+          if (packed_scan_timing_) segment_ns_[2] += SegmentClock() - seg_t2;
+          continue;
+        }
         IndexStorage::Segment::ScatterBlock rows;
         ++packed_scan_stats_.row_reads;
         if (inverted_->read_scatter(off, rows, count * stride) !=
@@ -1317,7 +1294,7 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
           }
         }
       }
-      if (packed_scan_timing_) segment_ticks_[2] += SegmentClock() - seg_t2;
+      if (packed_scan_timing_) segment_ns_[2] += SegmentClock() - seg_t2;
     }
   }
   *scan_count = list.vector_count;

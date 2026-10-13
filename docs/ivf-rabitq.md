@@ -291,3 +291,118 @@ mkdir -p v5_dedicated_np16.dedicated.recall
 比较 QPS 与实际候选数。诊断工具自身不计时；数量占比不能代替耗时占比。
 这一步可判断候选数是否解释主要差距，但不保证两份索引采用相同分桶；共享中心和
 分配的受控实验、全量列表大小分布和分项 profiling 仍是后续独立验证项。
+
+### v9 服务端执行清单：先校正诊断，再定位 99% 召回差距
+
+本轮修复针对 v8 的计时口径，不更换索引、不修改量化算法或默认搜索参数。
+`rabitq_segment_timing` 默认关闭；开启时也会返回扫描统计，无需另外打开
+`rabitq_collect_stats`。本提交尚未实现真实选桶导出或专用侧禁用剪枝，见步骤 4。
+
+#### 1. 构建和回归
+
+在 Linux x86_64 仓库目录执行。所有临时文件放在当前目录或上一级。
+
+```sh
+mkdir -p ../local_validation/v9/tmp
+export TMPDIR="$(cd ../local_validation/v9/tmp && pwd)"
+cmake -S . -B build_bench -DBUILD_TOOLS=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build_bench --target bench recall ivf_rabitq_scan_diagnostic \
+  ivf_rabitq_gt_coverage ivf_block_scan_test ivf_rabitq_index_test \
+  ivf_rabitq_streamer_test turbo_rabitq_quantizer_test -j8
+ctest --test-dir build_bench --output-on-failure \
+  -R '^(ivf_block_scan_test|ivf_rabitq_index_test|ivf_rabitq_streamer_test|turbo_rabitq_quantizer_test)$'
+export RABITQ_BIN="$PWD/build_bench/bin"
+git rev-parse HEAD
+```
+
+记录提交、编译配置、CPU/指令集和线程/绑核设置。需要确认修复前后的默认路径
+吞吐时，保留父提交 `fa7a94e1` 的独立构建及配套动态库，避免混用构建产物。
+
+#### 2. 分开运行无计时与有计时的诊断
+
+回到 v8 使用的评测工作目录，保持 YAML 中相对路径的解析目录一致。
+复用 norm1、dedicated 索引和原查询/GT；`CONFIG` 替换为现有集成 np293 YAML。
+
+```sh
+CONFIG=/absolute/path/to/v8_base_np293.yaml
+RABITQ_RUN="$PWD/v9/$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$RABITQ_RUN/tmp"
+export TMPDIR="$RABITQ_RUN/tmp"
+"$RABITQ_BIN/ivf_rabitq_scan_diagnostic" "$CONFIG" "$RABITQ_RUN/plain" \
+  > "$RABITQ_RUN/plain.log" 2>&1
+"$RABITQ_BIN/ivf_rabitq_scan_diagnostic" "$CONFIG" "$RABITQ_RUN/timed" \
+  --segment-timing > "$RABITQ_RUN/timed.log" 2>&1
+```
+
+分别确认退出码为 0 后再使用产物。工具默认不再计时；显式
+`--segment-timing` 只支持集成侧，专用侧传入会报错。生成的所有 bench/recall
+YAML 始终关闭统计和计时，模式的剪枝/reuse 配置仍按既有四模式生成。
+
+核对：两次 `results.csv` 的 ID、排序和分数字节一致；逐查询 coarse/refined
+计数一致；普通诊断的所有时间列为 0。计时诊断中各段非负，分段和不超过
+`query_ns`，差额记录为未分配时间，不强制把分段和归一成 100%。
+
+时间列改为：
+
+| 字段 | 实际边界 |
+|---|---|
+| `prep_ns` | 中心检索/变换 + bind，一次计入；批量查询均摊共享准备时间 |
+| `cand_ns` | block 的 key 掩码与粗码准备/读取，不含后续剪枝 |
+| `coarse_ns` | `estimate()` 与该 block 的扫描计数更新 |
+| `post_scan_ns` | 候选遍历、剪枝、行读取、精算及堆操作，包含全部剪枝的 block |
+| `finalize_ns` | 堆排序、key 映射及结果归一化 |
+| `query_ns` | 搜索内部查询总时间，含未分配间隙和结果生成；不是公共 API 全程耗时 |
+
+旧 `refine_ns` / stdout `refine` 改名为 `post_scan_ns` / `post_scan`，分析脚本
+需按列名更新，不能解释为纯精算耗时。计时使用 `steady_clock` 显式纳秒，去掉
+TSC 首次校准等待；与 v8 的 TSC 数值不能直接拼表。按 block 读钟仍有开销，
+分别量化计时开/关的吞吐变化，不假定开销均匀或分段占比不受影响。
+
+#### 3. 重测性能与诊断开销
+
+- 配置：baseline np293、reuse np293、dedicated np249；同查询/GT、TopK=50、
+  Cosine、7bit。若声称 reuse 的最快达标点，补查 np292 及邻近点。
+- 先复现 recall 与候选计数，再以关闭统计/计时的配置测 1/4 线程。
+- 固定运行条件，预热至无明显爬升；每轮 30 秒，轮换先后顺序，至少 5 轮。
+  保留所有轮次，输出每轮 QPS 和每轮 dedicated/baseline、reuse/baseline 比值，
+  再给中位数与范围。若仍明显漂移，单列不稳定结果并补跑，不事后只剔除低值轮。
+- 默认路径父提交/本提交 A/B，以及本提交计时开/关 A/B，分开报告。
+  不从诊断工具 CSV 写入过程推导 QPS，也不把 QPS 下降百分数当成延迟增长百分数。
+- v8 四线程 reuse 五轮有三轮低于 baseline，因此高召回 reuse 的小幅收益仍需
+  验证；低召回已观察到的收益不自动外推。
+
+#### 4. 准确性归因：需要服务端另补诊断代码
+
+按两个独立小改动实现并单独验证，不混入性能优化：
+
+1. 默认关闭的真实选桶导出：在实际搜索路径记录查询 ID、实际扫描列表 ID、
+   每列表扫描量及是否受 max_scan 限制。两侧分别在 np293/249 和 np256 导出，
+   与 GT->list 映射计算覆盖率，核对每查询计数。现有离线工具使用 double 点积，
+   不能当作 FP32 搜索的逐位复刻；扫描向量总数相同也不证明列表集合相同。
+2. 专用侧默认关闭的禁用剪枝诊断：固定量化码、列表及距离公式，只跳过下界
+   剪枝；验证全候选精算计数和默认路径结果不变。再分离两侧的候选覆盖不足、
+   unpruned 量化排序损失、pruning 净影响。关闭剪枝不等于原始向量精确排序。
+
+统一输出 `query, covered_gt, baseline_gt, unpruned_gt, reuse_gt`，GT@50 分母
+应为 1000*50；缺失、重复 GT 或维度不一致应报错。明确变化查询数与净命中数，
+解释 v8 “26 个命中、25 个 query 各 +1”的矛盾。覆盖率接近只能支持本数据集和
+所测选点的局部判断，不能直接推出分区普遍等价。
+
+#### 5. 速度归因：正确识别现有内核
+
+`RabitqBlockScanner::estimate()` 已调用
+`rabitqlib::fastscan::accumulate_hacc()`，其运行时派发为 AVX2/AVX512。
+不能把整个 estimate 称为标量核，再把替换 SIMD 作为预设方案。
+
+先确认服务器实际运行的派发分支；在相同向量维数、block 数和缓存条件下，
+用重复批量调用、循环外计时分别测累加核与整个 estimate，保留校验和防止消除
+计算。两者差异才用于调查逐候选模型中心读取、距离/下界修正、输出写入等成本。
+专用侧用同口径对照；单侧占比不能独立解释跨实现差距。计时仍不能区分的项目
+保留为未知，不用粗扫量比乘精算量比推算耗时。
+
+#### 6. 报告交付
+
+追加 v9：提交号及测试结果、诊断开/关一致性、默认路径回归、所有轮次 QPS、
+真实选桶覆盖率、桶内损失分解、修正后的计时边界与开销、下一项最小优化。
+保留 YAML、CSV、原始日志和分析脚本；更新脚本读取 `post_scan_ns/query_ns`。
+将结论区分为实测、推断、待验证，并注明尚未完成的步骤。

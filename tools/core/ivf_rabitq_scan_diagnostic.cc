@@ -32,12 +32,14 @@ void PrintDistribution(const char *name, std::vector<size_t> values) {
 // Deliberately separate from timed bench: CSV I/O and A/B comparisons must not
 // contaminate throughput. Each query runs against the exact same loaded index.
 int main(int argc, char **argv) {
-  if (argc != 3) {
-    std::cerr
-        << "Usage: ivf_rabitq_scan_diagnostic CONFIG.yaml OUTPUT_PREFIX\n";
+  if ((argc != 3 && argc != 4) ||
+      (argc == 4 && std::string(argv[3]) != "--segment-timing")) {
+    std::cerr << "Usage: ivf_rabitq_scan_diagnostic CONFIG.yaml OUTPUT_PREFIX "
+                 "[--segment-timing]\n";
     return 1;
   }
   try {
+    const bool segment_timing = argc == 4;
     auto config = YAML::LoadFile(argv[1]);
     auto common = config["IndexCommon"];
     auto index_params =
@@ -62,6 +64,8 @@ int main(int argc, char **argv) {
     auto dedicated_query =
         std::dynamic_pointer_cast<core_interface::IVFRabitqQueryParam>(
             base_query);
+    if (segment_timing && !query)
+      throw std::runtime_error("Segment timing requires integrated IVF RaBitQ");
     if ((!query && !dedicated_query) || base_query->refiner_param ||
         base_query->group_by_param || base_query->bf_pks ||
         (base_query->filter && base_query->filter->is_valid()) ||
@@ -92,7 +96,7 @@ int main(int argc, char **argv) {
         query->rabitq_collect_stats = collect;
         // Segment timing is diagnostics-only and does not alter the search.
         // Emitted mode configurations keep it off (collect == false).
-        query->rabitq_segment_timing = collect;
+        query->rabitq_segment_timing = collect && segment_timing;
       } else {
         dedicated_query->rabitq_collect_stats = collect;
       }
@@ -122,14 +126,14 @@ int main(int argc, char **argv) {
     counts << "query,mode,active,mapped,coarse_count,refined_count,key_reads,"
               "coarse_reads,row_reads,coarse_copy_bytes,result_count,baseline_"
               "overlap,same_ordered_ids,max_common_score_delta,prep_ns,coarse_"
-              "ns,cand_ns,refine_ns,finalize_ns\n";
+              "ns,cand_ns,post_scan_ns,finalize_ns,query_ns\n";
     results << "query,mode,rank,key,score\n";
     counts << std::setprecision(std::numeric_limits<float>::max_digits10);
     results << std::setprecision(std::numeric_limits<float>::max_digits10);
     std::array<size_t, 4> coarse{}, refined{}, active{};
     std::array<std::vector<size_t>, 4> coarse_per_query, refined_per_query;
-    std::array<double, 4> prep_ns{}, seg_coarse_ns{}, cand_ns{}, seg_refine_ns{},
-        finalize_ns{};
+    std::array<double, 4> prep_ns{}, seg_coarse_ns{}, cand_ns{},
+        seg_post_scan_ns{}, finalize_ns{}, query_ns{};
     for (size_t q = 0; q < vectors.size(); ++q) {
       core_interface::SearchResult baseline;
       for (size_t mode = 0; mode < names.size(); ++mode) {
@@ -172,15 +176,17 @@ int main(int argc, char **argv) {
                << ',' << s.coarse_copy_bytes << ',' << result.doc_list_.size()
                << ',' << overlap << ',' << same << ',' << max_delta << ','
                << s.prep_ns << ',' << s.coarse_ns << ',' << s.cand_ns << ','
-               << s.refine_ns << ',' << s.finalize_ns << '\n';
+               << s.post_scan_ns << ',' << s.finalize_ns << ',' << s.query_ns
+               << '\n';
         coarse[mode] += s.coarse_count;
         refined[mode] += s.refined_count;
         active[mode] += s.active;
         prep_ns[mode] += s.prep_ns;
         seg_coarse_ns[mode] += s.coarse_ns;
         cand_ns[mode] += s.cand_ns;
-        seg_refine_ns[mode] += s.refine_ns;
+        seg_post_scan_ns[mode] += s.post_scan_ns;
         finalize_ns[mode] += s.finalize_ns;
+        query_ns[mode] += s.query_ns;
         coarse_per_query[mode].push_back(s.coarse_count);
         refined_per_query[mode].push_back(s.refined_count);
       }
@@ -202,8 +208,9 @@ int main(int argc, char **argv) {
       std::cout << " segments_us/q prep=" << prep_ns[mode] / nq / 1000.0
                 << " coarse=" << seg_coarse_ns[mode] / nq / 1000.0
                 << " cand=" << cand_ns[mode] / nq / 1000.0
-                << " refine=" << seg_refine_ns[mode] / nq / 1000.0
-                << " finalize=" << finalize_ns[mode] / nq / 1000.0;
+                << " post_scan=" << seg_post_scan_ns[mode] / nq / 1000.0
+                << " finalize=" << finalize_ns[mode] / nq / 1000.0
+                << " query=" << query_ns[mode] / nq / 1000.0;
       std::cout << '\n';
       // Emit directly runnable configurations without enabling stats in the
       // timed benchmark. Preserve input paths and separate recall log folders.
