@@ -26,6 +26,7 @@
 #include <zvec/core/framework/index_segment_storage.h>
 #include "zvec/core/framework/index_framework.h"
 #include "ivf_builder.h"
+#include "ivf_dumper.h"
 #include "ivf_streamer.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
@@ -271,6 +272,81 @@ TEST_F(IVFSearcherTest, TestInit) {
   IVFSearcher searcher;
   int ret = searcher.init(params_);
   EXPECT_EQ(0, ret);
+}
+
+TEST_F(IVFSearcherTest, LegacyQuantizerDescriptorDoesNotSelectTurboFormat) {
+  for (auto order : {IndexMeta::MO_ROW, IndexMeta::MO_COLUMN}) {
+    SCOPED_TRACE(order);
+    index_meta_.set_major_order(order);
+    index_meta_.set_quantizer("Fp32Quantizer", 0, Params());
+    params_.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "1");
+    params_.set(PARAM_IVF_BUILDER_CLUSTER_CLASS, "KmeansCluster");
+    prepare_index_holder(0, 33);
+    IVFBuilder builder;
+    // The legacy overload preserves quantizer metadata but does not encode
+    // postings with Turbo or write a Turbo quantizer segment.
+    ASSERT_EQ(0, builder.init(index_meta_, params_));
+    auto centroid_meta = index_meta_;
+    centroid_meta.set_quantizer("", 0, Params());
+    ASSERT_EQ(
+        0, builder.train(CreateFixedCentroidTrainer(centroid_meta, {16.0f})));
+    ASSERT_EQ(0, builder.build(threads_, holder_));
+    auto dumper = IndexFactory::CreateDumper("FileDumper");
+    ASSERT_NE(nullptr, dumper);
+    ASSERT_EQ(0, dumper->create(index_path_));
+    ASSERT_EQ(0, builder.dump(dumper));
+    ASSERT_EQ(0, dumper->close());
+
+    for (const char *storage_name :
+         {"FileReadStorage", "MMapFileReadStorage", "BufferReadStorage"}) {
+      SCOPED_TRACE(storage_name);
+      auto storage = IndexFactory::CreateStorage(storage_name);
+      ASSERT_NE(nullptr, storage);
+      ASSERT_EQ(0, storage->init(Params()));
+      ASSERT_EQ(0, storage->open(index_path_, false));
+      EXPECT_FALSE(storage->has(IVF_TURBO_QUANTIZER_SEG_ID));
+      IVFEntity entity;
+      ASSERT_EQ(0, entity.load(storage));
+      EXPECT_EQ("Fp32Quantizer", entity.meta().quantizer_name());
+      EXPECT_FALSE(
+          entity.meta().attributes().has(IVF_TURBO_FORMAT_VERSION_ATTRIBUTE));
+      EXPECT_EQ(nullptr, entity.quantizer());
+      Params search_params;
+      search_params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 1.0);
+      search_params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1);
+      const std::vector<float> query(dimension_, 32.0f);
+      const IndexQueryMeta qmeta(IndexMeta::DT_FP32, dimension_);
+      auto check_search = [&](auto *searcher) {
+        EXPECT_EQ(nullptr, searcher->quantizer());
+        auto context = searcher->create_context();
+        ASSERT_NE(nullptr, context);
+        context->set_topk(3);
+        for (bool brute_force : {false, true}) {
+          ASSERT_EQ(0,
+                    brute_force
+                        ? searcher->search_bf_impl(query.data(), qmeta, context)
+                        : searcher->search_impl(query.data(), qmeta, context));
+          const auto &result = context->result(0);
+          ASSERT_EQ(3U, result.size());
+          for (size_t i = 0; i < result.size(); ++i) {
+            EXPECT_EQ(32U - i, result[i].key());
+            EXPECT_FLOAT_EQ(static_cast<float>(i * i * dimension_),
+                            result[i].score());
+          }
+        }
+      };
+      IVFSearcher searcher;
+      ASSERT_EQ(0, searcher.init(search_params));
+      ASSERT_EQ(0, searcher.load(storage, IndexMetric::Pointer()));
+      check_search(&searcher);
+      ASSERT_EQ(0, searcher.unload());
+      IVFStreamer streamer;
+      ASSERT_EQ(0, streamer.init(index_meta_, search_params));
+      ASSERT_EQ(0, streamer.open(storage));
+      check_search(&streamer);
+      ASSERT_EQ(0, streamer.close());
+    }
+  }
 }
 
 TEST_F(IVFSearcherTest, TestSimple) {
@@ -3964,12 +4040,10 @@ class IVFTurboTest : public testing::TestWithParam<TurboCase> {
     ASSERT_EQ(0, builder.dump(dumper));
     ASSERT_EQ(0, dumper->close());
     EXPECT_EQ(kVectorCount, builder.stats().dumped_count());
-    if (quantizer_->require_train()) {
-      auto missing_state = std::make_shared<MissingQuantizerStateDumper>();
-      ASSERT_EQ(0, missing_state->create(path_ + ".missing"));
-      ASSERT_EQ(0, builder.dump(missing_state));
-      ASSERT_EQ(0, missing_state->close());
-    }
+    auto missing_state = std::make_shared<MissingQuantizerStateDumper>();
+    ASSERT_EQ(0, missing_state->create(path_ + ".missing"));
+    ASSERT_EQ(0, builder.dump(missing_state));
+    ASSERT_EQ(0, missing_state->close());
 
     for (const auto &row : vectors_) {
       codes_.emplace_back(quantizer_->quantized_datapoint_vector_length(),
@@ -3981,6 +4055,7 @@ class IVFTurboTest : public testing::TestWithParam<TurboCase> {
   void TearDown() override {
     ailego::File::RemovePath(path_);
     ailego::File::RemovePath(path_ + ".missing");
+    ailego::File::RemovePath(path_ + ".format");
   }
 
   ailego::Params search_params() const {
@@ -4102,6 +4177,108 @@ class IVFTurboTest : public testing::TestWithParam<TurboCase> {
   std::string path_;
 };
 
+TEST_P(IVFTurboTest, PostingFormatDetection) {
+  for (bool future_version : {false, true}) {
+    SCOPED_TRACE(future_version);
+    auto posting_meta = quantizer_->meta();
+    posting_meta.set_quantizer(meta_.quantizer_name(),
+                               meta_.quantizer_revision(),
+                               meta_.quantizer_params());
+    posting_meta.set_major_order(IndexMeta::MO_ROW);
+    posting_meta.mutable_attributes()->erase(
+        IVF_TURBO_FORMAT_VERSION_ATTRIBUTE);
+    if (future_version) {
+      posting_meta.mutable_attributes()->set(IVF_TURBO_FORMAT_VERSION_ATTRIBUTE,
+                                             kIVFTurboFormatVersion + 1);
+    }
+    auto dumper = IndexFactory::CreateDumper("FileDumper");
+    ASSERT_NE(nullptr, dumper);
+    ASSERT_EQ(0, dumper->create(path_ + ".format"));
+    // Reproduce the earlier Turbo format without the new metadata attribute.
+    IVFDumper postings(posting_meta, dumper, 1, 8);
+    for (size_t i = 0; i < codes_.size(); ++i) {
+      ASSERT_EQ(0, postings.dump_inverted_vector(0, Key(i), codes_[i].data()));
+    }
+    ASSERT_EQ(0, postings.dump_inverted_vector_finished());
+    ASSERT_EQ(0, postings.dump_turbo_quantizer(quantizer_));
+    ASSERT_EQ(0, IndexHelper::SerializeToDumper(meta_, dumper.get()));
+    ASSERT_EQ(0, dumper->close());
+    auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(ailego::Params()));
+    ASSERT_EQ(0, storage->open(path_ + ".format", false));
+    IVFEntity entity;
+    if (future_version) {
+      EXPECT_EQ(IndexError_InvalidFormat, entity.load(storage));
+    } else {
+      ASSERT_EQ(0, entity.load(storage));
+      ASSERT_NE(nullptr, entity.quantizer());
+      for (size_t i = 0; i < codes_.size(); ++i) {
+        const void *code = entity.get_vector_by_key(Key(i));
+        ASSERT_NE(nullptr, code);
+        EXPECT_EQ(0, std::memcmp(codes_[i].data(), code, codes_[i].size()));
+      }
+    }
+  }
+}
+
+TEST_P(IVFTurboTest, ProviderConcurrentReadsKeepReturnedBytesStable) {
+  for (const char *storage_name :
+       {"FileReadStorage", "MMapFileReadStorage", "BufferReadStorage"}) {
+    SCOPED_TRACE(storage_name);
+    auto storage = open_storage(storage_name);
+    ASSERT_NE(nullptr, storage);
+    IVFSearcher searcher;
+    ASSERT_EQ(0, searcher.init(search_params()));
+    ASSERT_EQ(0, searcher.load(storage, IndexMetric::Pointer()));
+    auto provider = searcher.create_provider();
+    ASSERT_NE(nullptr, provider);
+    auto iterator = provider->create_iterator();
+    ASSERT_NE(nullptr, iterator);
+
+    const auto *first = static_cast<const char *>(provider->get_vector(Key(0)));
+    ASSERT_NE(nullptr, first);
+    const std::string expected(first, provider->element_size());
+    IndexStorage::MemoryBlock owned;
+    ASSERT_EQ(0, provider->get_vector(Key(0), owned));
+    // Start without priming iterator data or its lazy mapping cache.
+    std::vector<std::future<void>> readers;
+    for (size_t worker = 1; worker <= 4; ++worker) {
+      readers.push_back(std::async(std::launch::async, [&, worker]() {
+        auto other = provider->create_iterator();
+        ASSERT_NE(nullptr, other);
+        for (size_t i = 0; i < worker; ++i) {
+          other->next();
+        }
+        for (size_t repeat = 0; repeat < 32; ++repeat) {
+          ASSERT_TRUE(iterator->is_valid());
+          EXPECT_EQ(Key(0), iterator->key());
+          const void *data = iterator->data();
+          ASSERT_NE(nullptr, data);
+          ASSERT_NE(nullptr, other->data());
+          ASSERT_NE(nullptr, provider->get_vector(Key(worker)));
+          EXPECT_EQ(0, std::memcmp(expected.data(), data, expected.size()));
+          EXPECT_EQ(0, iterator->status());
+        }
+      }));
+    }
+    for (auto &reader : readers) {
+      reader.get();
+    }
+    EXPECT_EQ(0, std::memcmp(expected.data(), first, expected.size()));
+    ASSERT_NE(nullptr, provider->get_vector(Key(5)));
+    EXPECT_EQ(0, std::memcmp(expected.data(), owned.data(), expected.size()));
+    EXPECT_EQ(0,
+              std::memcmp(expected.data(), iterator->data(), expected.size()));
+    iterator->next();
+    EXPECT_EQ(Key(1), iterator->key());
+    const void *second = provider->get_vector(Key(1));
+    ASSERT_NE(nullptr, second);
+    ASSERT_NE(nullptr, iterator->data());
+    EXPECT_EQ(0, std::memcmp(second, iterator->data(), expected.size()));
+  }
+}
+
 TEST_P(IVFTurboTest, RawQueriesAndPostingCodesSurviveReopen) {
   // No quantizer is injected: all storage implementations must reconstruct
   // it from the dedicated persisted metadata and serialized state.
@@ -4149,17 +4326,19 @@ TEST_P(IVFTurboTest, RawQueriesAndPostingCodesSurviveReopen) {
   check_searches(&streamer);
   ASSERT_EQ(0, streamer.close());
 
-  if (quantizer_->require_train()) {
+  {
+    // Even stateless Turbo quantizers require the state segment when marked.
     auto missing_state = IndexFactory::CreateStorage("MMapFileReadStorage");
     ASSERT_NE(nullptr, missing_state);
     ASSERT_EQ(0, missing_state->init(ailego::Params()));
     ASSERT_EQ(0, missing_state->open(path_ + ".missing", false));
     IVFSearcher searcher;
     ASSERT_EQ(0, searcher.init(search_params()));
-    EXPECT_NE(0, searcher.load(missing_state, IndexMetric::Pointer()));
+    EXPECT_EQ(IndexError_InvalidFormat,
+              searcher.load(missing_state, IndexMetric::Pointer()));
     IVFStreamer missing_streamer;
     ASSERT_EQ(0, missing_streamer.init(meta_, search_params()));
-    EXPECT_NE(0, missing_streamer.open(missing_state));
+    EXPECT_EQ(IndexError_InvalidFormat, missing_streamer.open(missing_state));
   }
 }
 
