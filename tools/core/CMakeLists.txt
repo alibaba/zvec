@@ -82,6 +82,15 @@ cc_binary(
         LIBS gflags yaml-cpp magic_enum core_framework core_metric core_quantizer core_utility core_knn_flat core_knn_flat_sparse core_knn_hnsw core_knn_hnsw_sparse core_knn_hnsw_rabitq core_knn_ivf_rabitq core_knn_vamana core_knn_cluster core_knn_ivf core_interface core_knn_diskann
 )
 
+# Reads index segments directly to compare list sizes and centroid norms.
+cc_binary(
+    NAME ivf_rabitq_partition_stat
+    STRICT PACKED
+    SRCS ivf_rabitq_partition_stat.cc
+    INCS ${PROJECT_ROOT_DIR}/src/core/
+    LIBS gflags core_framework core_utility
+  )
+
 # Same YAML inputs and public query API as bench/recall; single-query A/B diagnostics.
 cc_binary(
     NAME ivf_rabitq_scan_diagnostic
