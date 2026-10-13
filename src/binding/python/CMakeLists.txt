@@ -72,6 +72,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
     target_link_options(_zvec PRIVATE
             "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports.map"
+            "LINKER:--gc-sections"
     )
     # On musl, dynamic linking would force auditwheel to rewrite the ELF via
     # patchelf so it can vendor libstdc++/libgcc. The patchelf versions used
