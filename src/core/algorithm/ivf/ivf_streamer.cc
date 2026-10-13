@@ -180,13 +180,29 @@ int IVFStreamer::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
 
   //! Transform the querys for querying in inverted vector index later
   IndexQueryMeta iv_qmeta;
+  using SteadyTime = std::chrono::steady_clock::time_point;
+  const bool segment_timing = entity->packed_scan_timing_enabled();
+  const SteadyTime prep_t0 =
+      segment_timing ? std::chrono::steady_clock::now() : SteadyTime{};
   int ret = entity->transform(query, qmeta, count, &query, &iv_qmeta);
   ivf_check_with_msg(ret, "Failed to transform querys");
+  const double shared_prep_ns =
+      segment_timing && count
+          ? std::chrono::duration<double, std::nano>(
+                std::chrono::steady_clock::now() - prep_t0)
+                    .count() /
+                count
+          : 0.0;
 
   // TODO: do batch search in matrix
   for (size_t q = 0; q < count; ++q) {
+    const SteadyTime query_t0 =
+        segment_timing ? std::chrono::steady_clock::now() : SteadyTime{};
     ret = entity->bind_query(query, iv_qmeta);
     ivf_check_error_code(ret);
+    if (segment_timing) {
+      entity->mutable_packed_scan_stats().prep_ns += shared_prep_ns;
+    }
     auto &context_stats = ctx->mutable_stats(q);
     auto &heap = ctx->mutable_result_heap();
     heap.clear();
@@ -198,6 +214,9 @@ int IVFStreamer::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
     }
     ivf_check_with_msg(ret, "Failed to search in entity for %s",
                        IndexError::What(ret));
+    entity->finish_segment_timing();
+    const SteadyTime fin_t0 =
+        segment_timing ? std::chrono::steady_clock::now() : SteadyTime{};
     heap.sort();  // sort the results
     if (!filter.is_valid()) {
       // mapping the local id to key if query without filter
@@ -205,7 +224,19 @@ int IVFStreamer::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
       ivf_check_error_code(ret);
     }
     entity->normalize(q, &heap);
+    if (segment_timing) {
+      entity->mutable_packed_scan_stats().finalize_ns +=
+          std::chrono::duration<double, std::nano>(
+              std::chrono::steady_clock::now() - fin_t0)
+              .count();
+    }
     ctx->topk_to_result(q);
+    if (segment_timing) {
+      entity->mutable_packed_scan_stats().query_ns =
+          shared_prep_ns + std::chrono::duration<double, std::nano>(
+                               std::chrono::steady_clock::now() - query_t0)
+                               .count();
+    }
     query = static_cast<const char *>(query) + iv_qmeta.element_size();
   }
 
@@ -284,10 +315,12 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
     heap.clear();
     const auto visitor = ctx->candidate_visitor();
     size_t total_scan_count = 0;
-    for (size_t i = 0;
-         i < centroids.size() && total_scan_count < ctx->max_scan_count();
-         ++i) {
-      auto cid = centroids[i].key();
+    const bool export_lists = entity->packed_scan_lists_enabled();
+    size_t list_idx = 0;
+    for (; list_idx < centroids.size() &&
+           total_scan_count < ctx->max_scan_count();
+         ++list_idx) {
+      auto cid = centroids[list_idx].key();
       uint32_t scan_count = 0;
       if (!filter.is_valid()) {
         ret = entity->search(cid, query, &scan_count, &heap, &context_stats,
@@ -299,6 +332,13 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
       ivf_check_with_msg(ret, "Failed to search in entity for %s",
                          IndexError::What(ret));
       total_scan_count += scan_count;
+      if (export_lists) {
+        entity->mutable_packed_scan_lists().push_back(
+            {static_cast<uint32_t>(cid), scan_count});
+      }
+    }
+    if (export_lists) {
+      entity->set_packed_scan_limited(list_idx < centroids.size());
     }
     entity->finish_segment_timing();
     const SteadyTime fin_t0 =

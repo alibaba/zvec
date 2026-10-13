@@ -718,6 +718,8 @@ int IVFEntity::load_quantizer(const IndexStorage::Pointer &container) {
 int IVFEntity::bind_query(const void *query, const IndexQueryMeta &qmeta) {
   const uint64_t seg_t0 = packed_scan_timing_ ? SegmentClock() : 0;
   packed_scan_stats_ = {};
+  packed_scan_lists_.clear();
+  packed_scan_limited_ = false;
   segment_ns_[0] = segment_ns_[1] = segment_ns_[2] = 0;
   block_scanner_.reset();
   if (!quantizer_) {
@@ -1306,6 +1308,7 @@ int IVFEntity::search(const void *query, const IndexFilter &filter,
                       IndexDocumentHeap *heap,
                       IndexContext::Stats *context_stats,
                       const CandidateVisitor &visitor) const {
+  const bool export_lists = packed_scan_lists_enabled();
   for (size_t i = 0; i < header_.inverted_list_count; ++i) {
     uint32_t scan_count;
     int ret = this->search(i, query, filter, &scan_count, heap, context_stats,
@@ -1313,7 +1316,12 @@ int IVFEntity::search(const void *query, const IndexFilter &filter,
     if (ret != 0) {
       return ret;
     }
+    if (export_lists) {
+      mutable_packed_scan_lists().push_back(
+          {static_cast<uint32_t>(i), scan_count});
+    }
   }
+  if (export_lists) set_packed_scan_limited(false);
 
   return 0;
 }
@@ -1322,13 +1330,19 @@ int IVFEntity::search(const void *query, const IndexFilter &filter,
 int IVFEntity::search(const void *query, IndexDocumentHeap *heap,
                       IndexContext::Stats *context_stats,
                       const CandidateVisitor &visitor) const {
+  const bool export_lists = packed_scan_lists_enabled();
   for (size_t i = 0; i < header_.inverted_list_count; ++i) {
     uint32_t scan_count;
     int ret = this->search(i, query, &scan_count, heap, context_stats, visitor);
     if (ret != 0) {
       return ret;
     }
+    if (export_lists) {
+      mutable_packed_scan_lists().push_back(
+          {static_cast<uint32_t>(i), scan_count});
+    }
   }
+  if (export_lists) set_packed_scan_limited(false);
 
   return 0;
 }

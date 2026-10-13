@@ -109,3 +109,13 @@ cc_binary(
     INCS ${PROJECT_ROOT_DIR}/src/core/
     LIBS gflags yaml-cpp magic_enum core_framework core_metric core_quantizer core_utility core_knn_flat core_knn_flat_sparse core_knn_hnsw core_knn_hnsw_sparse core_knn_hnsw_rabitq core_knn_ivf_rabitq core_knn_vamana core_knn_cluster core_knn_ivf roaring core_interface core_knn_diskann
 )
+
+# Micro-benchmark for the RaBitQ batch estimate hot path: turbo block
+# scanner vs rabitqlib split_batch_estdist vs the accumulate_hacc kernel.
+cc_binary(
+    NAME ivf_rabitq_kernel_bench
+    STRICT PACKED
+    SRCS ivf_rabitq_kernel_bench.cc
+    INCS ${PROJECT_ROOT_DIR}/src/core/ ${PROJECT_ROOT_DIR}/src/turbo/
+    LIBS gflags zvec_ailego core_framework core_metric core_quantizer core_knn_cluster zvec_turbo rabitqlib
+  )

@@ -82,6 +82,7 @@ TEST(IVFRabitqIntegration, ScanQueryOptionsRoundTrip) {
   param.rabitq_reuse_coarse_dot = true;
   param.rabitq_collect_stats = true;
   param.rabitq_segment_timing = true;
+  param.rabitq_export_scan_lists = true;
   const auto json = IndexFactory::QueryParamSerializeToJson(param, true);
   auto typed = IndexFactory::QueryParamDeserializeFromJson<IVFQueryParam>(json);
   auto base = std::dynamic_pointer_cast<IVFQueryParam>(
@@ -93,6 +94,7 @@ TEST(IVFRabitqIntegration, ScanQueryOptionsRoundTrip) {
     EXPECT_TRUE(p->rabitq_reuse_coarse_dot);
     EXPECT_TRUE(p->rabitq_collect_stats);
     EXPECT_TRUE(p->rabitq_segment_timing);
+    EXPECT_TRUE(p->rabitq_export_scan_lists);
   }
   auto defaults = IndexFactory::QueryParamDeserializeFromJson<IVFQueryParam>(
       R"({"index_type":"kIVF","nprobe":16})");
@@ -101,14 +103,20 @@ TEST(IVFRabitqIntegration, ScanQueryOptionsRoundTrip) {
   EXPECT_FALSE(defaults->rabitq_reuse_coarse_dot);
   EXPECT_FALSE(defaults->rabitq_collect_stats);
   EXPECT_FALSE(defaults->rabitq_segment_timing);
+  EXPECT_FALSE(defaults->rabitq_export_scan_lists);
   EXPECT_EQ(nullptr,
             IndexFactory::QueryParamDeserializeFromJson<IVFQueryParam>(
                 R"({"index_type":"kIVF","rabitq_segment_timing":"yes"})"));
+  EXPECT_EQ(nullptr,
+            IndexFactory::QueryParamDeserializeFromJson<IVFQueryParam>(
+                R"({"index_type":"kIVF","rabitq_export_scan_lists":"yes"})"));
 }
 
 TEST(IVFRabitqIntegration, DedicatedScanOptionsRoundTrip) {
   IVFRabitqQueryParam param;
   param.rabitq_collect_stats = true;
+  param.rabitq_pruning = false;
+  param.rabitq_export_scan_lists = true;
   const auto json = IndexFactory::QueryParamSerializeToJson(param, true);
   auto typed =
       IndexFactory::QueryParamDeserializeFromJson<IVFRabitqQueryParam>(json);
@@ -118,12 +126,16 @@ TEST(IVFRabitqIntegration, DedicatedScanOptionsRoundTrip) {
   for (const auto &p : {typed, base, copy}) {
     ASSERT_NE(nullptr, p);
     EXPECT_TRUE(p->rabitq_collect_stats);
+    EXPECT_FALSE(p->rabitq_pruning);
+    EXPECT_TRUE(p->rabitq_export_scan_lists);
   }
   auto defaults =
       IndexFactory::QueryParamDeserializeFromJson<IVFRabitqQueryParam>(
           R"({"index_type":"kIVFRabitq","nprobe":16})");
   ASSERT_NE(nullptr, defaults);
   EXPECT_FALSE(defaults->rabitq_collect_stats);
+  EXPECT_TRUE(defaults->rabitq_pruning);
+  EXPECT_FALSE(defaults->rabitq_export_scan_lists);
   const auto invalid =
       R"({"index_type":"kIVFRabitq","rabitq_collect_stats":"yes"})";
   EXPECT_EQ(nullptr,
@@ -132,6 +144,12 @@ TEST(IVFRabitqIntegration, DedicatedScanOptionsRoundTrip) {
   EXPECT_EQ(nullptr,
             IndexFactory::QueryParamDeserializeFromJson<BaseIndexQueryParam>(
                 invalid));
+  EXPECT_EQ(nullptr,
+            IndexFactory::QueryParamDeserializeFromJson<IVFRabitqQueryParam>(
+                R"({"index_type":"kIVFRabitq","rabitq_pruning":"yes"})"));
+  EXPECT_EQ(nullptr,
+            IndexFactory::QueryParamDeserializeFromJson<IVFRabitqQueryParam>(
+                R"({"index_type":"kIVFRabitq","rabitq_export_scan_lists":"yes"})"));
 }
 
 #if RABITQ_SUPPORTED
@@ -236,6 +254,30 @@ TEST_P(IVFRabitqIntegrationTest, TrainSearchAndReopen) {
     EXPECT_FLOAT_EQ(before.doc_list_[i].score(),
                     diagnostics.doc_list_[i].score());
   }
+  // Real scanned-list export reproduces the default results, accounts for
+  // every scanned vector, and must not leak into later default queries.
+  query->rabitq_export_scan_lists = true;
+  SearchResult exported;
+  ASSERT_EQ(0, index->search(input, query, &exported));
+  const auto &lists = exported.ivf_scan_stats_;
+  EXPECT_TRUE(lists.collected);
+  EXPECT_TRUE(lists.scan_lists_collected);
+  EXPECT_FALSE(lists.scan_lists_limited);
+  EXPECT_LE(lists.scan_list_ids.size(), 4u);
+  size_t scanned_vectors = 0;
+  for (size_t count : lists.scan_list_counts) scanned_vectors += count;
+  EXPECT_EQ(lists.coarse_count, scanned_vectors);
+  ASSERT_EQ(before.doc_list_.size(), exported.doc_list_.size());
+  for (size_t i = 0; i < before.doc_list_.size(); ++i) {
+    EXPECT_EQ(before.doc_list_[i].key(), exported.doc_list_[i].key());
+    EXPECT_FLOAT_EQ(before.doc_list_[i].score(),
+                    exported.doc_list_[i].score());
+  }
+  query->rabitq_export_scan_lists = false;
+  SearchResult after_export;
+  ASSERT_EQ(0, index->search(input, query, &after_export));
+  EXPECT_FALSE(after_export.ivf_scan_stats_.collected);
+  ASSERT_EQ(before.doc_list_.size(), after_export.doc_list_.size());
   // Invalid probes must not silently reuse the previous thread-local setting.
   for (int nprobe : {-1, 0}) {
     query->nprobe = nprobe;
@@ -387,6 +429,35 @@ TEST_P(IVFRabitqIntegrationTest, TrainSearchAndReopen) {
       EXPECT_FLOAT_EQ(native_result.doc_list_[i].score(),
                       legacy_result.doc_list_[i].score());
     }
+  }
+  // Disable-pruning diagnostic: codes, lists and the distance formula stay
+  // fixed and only the prune check is skipped, so every lane is refined and
+  // the exported lists account for the whole scanned volume. Resetting the
+  // switch must restore the native default-path results.
+  legacy_query->topk = 5;
+  legacy_query->rabitq_pruning = false;
+  legacy_query->rabitq_export_scan_lists = true;
+  SearchResult unpruned_result;
+  ASSERT_EQ(0, legacy->search(input, legacy_query, &unpruned_result));
+  const auto &unpruned = unpruned_result.ivf_scan_stats_;
+  EXPECT_TRUE(unpruned.collected);
+  EXPECT_TRUE(unpruned.scan_lists_collected);
+  EXPECT_FALSE(unpruned.scan_lists_limited);
+  EXPECT_EQ(unpruned.coarse_count, vectors.size());
+  EXPECT_EQ(unpruned.refined_count, unpruned.coarse_count);
+  EXPECT_LE(unpruned.scan_list_ids.size(), 4u);
+  size_t unpruned_scanned = 0;
+  for (size_t count : unpruned.scan_list_counts) unpruned_scanned += count;
+  EXPECT_EQ(unpruned.coarse_count, unpruned_scanned);
+  legacy_query->rabitq_pruning = true;
+  legacy_query->rabitq_export_scan_lists = false;
+  ASSERT_EQ(0, legacy->search(input, legacy_query, &legacy_result));
+  ASSERT_EQ(native_result.doc_list_.size(), legacy_result.doc_list_.size());
+  for (size_t i = 0; i < native_result.doc_list_.size(); ++i) {
+    EXPECT_EQ(native_result.doc_list_[i].key(),
+              legacy_result.doc_list_[i].key());
+    EXPECT_FLOAT_EQ(native_result.doc_list_[i].score(),
+                    legacy_result.doc_list_[i].score());
   }
   // A heap holding the entire corpus cannot prune a real lane before it fills.
   legacy_query->topk = vectors.size();

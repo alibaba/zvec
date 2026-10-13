@@ -32,14 +32,23 @@ void PrintDistribution(const char *name, std::vector<size_t> values) {
 // Deliberately separate from timed bench: CSV I/O and A/B comparisons must not
 // contaminate throughput. Each query runs against the exact same loaded index.
 int main(int argc, char **argv) {
-  if ((argc != 3 && argc != 4) ||
-      (argc == 4 && std::string(argv[3]) != "--segment-timing")) {
-    std::cerr << "Usage: ivf_rabitq_scan_diagnostic CONFIG.yaml OUTPUT_PREFIX "
-                 "[--segment-timing]\n";
-    return 1;
+  bool segment_timing = false, export_lists = false, disable_pruning = false;
+  for (int i = 3; i < argc; ++i) {
+    const std::string flag = argv[i];
+    if (flag == "--segment-timing" && !segment_timing) {
+      segment_timing = true;
+    } else if (flag == "--export-lists" && !export_lists) {
+      export_lists = true;
+    } else if (flag == "--disable-pruning" && !disable_pruning) {
+      disable_pruning = true;
+    } else {
+      std::cerr << "Usage: ivf_rabitq_scan_diagnostic CONFIG.yaml "
+                   "OUTPUT_PREFIX [--segment-timing] [--export-lists] "
+                   "[--disable-pruning]\n";
+      return 1;
+    }
   }
   try {
-    const bool segment_timing = argc == 4;
     auto config = YAML::LoadFile(argv[1]);
     auto common = config["IndexCommon"];
     auto index_params =
@@ -66,6 +75,11 @@ int main(int argc, char **argv) {
             base_query);
     if (segment_timing && !query)
       throw std::runtime_error("Segment timing requires integrated IVF RaBitQ");
+    if (disable_pruning && query)
+      throw std::runtime_error(
+          "--disable-pruning requires dedicated IVF RaBitQ; integrated "
+          "configs already include unpruned modes");
+    if (disable_pruning) dedicated_query->rabitq_pruning = false;
     if ((!query && !dedicated_query) || base_query->refiner_param ||
         base_query->group_by_param || base_query->bf_pks ||
         (base_query->filter && base_query->filter->is_valid()) ||
@@ -97,8 +111,10 @@ int main(int argc, char **argv) {
         // Segment timing is diagnostics-only and does not alter the search.
         // Emitted mode configurations keep it off (collect == false).
         query->rabitq_segment_timing = collect && segment_timing;
+        query->rabitq_export_scan_lists = collect && export_lists;
       } else {
         dedicated_query->rabitq_collect_stats = collect;
+        dedicated_query->rabitq_export_scan_lists = collect && export_lists;
       }
     };
     std::vector<std::vector<float>> vectors;
@@ -121,19 +137,23 @@ int main(int argc, char **argv) {
 
     std::ofstream counts(std::string(argv[2]) + ".queries.csv");
     std::ofstream results(std::string(argv[2]) + ".results.csv");
-    if (!counts || !results)
+    std::ofstream lists;
+    if (export_lists) lists.open(std::string(argv[2]) + ".lists.csv");
+    if (!counts || !results || (export_lists && !lists))
       throw std::runtime_error("Cannot open output files");
     counts << "query,mode,active,mapped,coarse_count,refined_count,key_reads,"
               "coarse_reads,row_reads,coarse_copy_bytes,result_count,baseline_"
               "overlap,same_ordered_ids,max_common_score_delta,prep_ns,coarse_"
               "ns,cand_ns,post_scan_ns,finalize_ns,query_ns\n";
     results << "query,mode,rank,key,score\n";
+    if (export_lists) lists << "query,mode,list_id,scan_count,limited\n";
     counts << std::setprecision(std::numeric_limits<float>::max_digits10);
     results << std::setprecision(std::numeric_limits<float>::max_digits10);
     std::array<size_t, 4> coarse{}, refined{}, active{};
     std::array<std::vector<size_t>, 4> coarse_per_query, refined_per_query;
     std::array<double, 4> prep_ns{}, seg_coarse_ns{}, cand_ns{},
         seg_post_scan_ns{}, finalize_ns{}, query_ns{};
+    std::array<size_t, 4> lists_total{};
     for (size_t q = 0; q < vectors.size(); ++q) {
       core_interface::SearchResult baseline;
       for (size_t mode = 0; mode < names.size(); ++mode) {
@@ -178,6 +198,16 @@ int main(int argc, char **argv) {
                << s.prep_ns << ',' << s.coarse_ns << ',' << s.cand_ns << ','
                << s.post_scan_ns << ',' << s.finalize_ns << ',' << s.query_ns
                << '\n';
+        if (export_lists) {
+          if (!s.scan_lists_collected)
+            throw std::runtime_error("Scan lists were not collected");
+          for (size_t li = 0; li < s.scan_list_ids.size(); ++li) {
+            lists << q << ',' << names[mode] << ',' << s.scan_list_ids[li]
+                  << ',' << s.scan_list_counts[li] << ','
+                  << (s.scan_lists_limited ? 1 : 0) << '\n';
+          }
+          lists_total[mode] += s.scan_list_ids.size();
+        }
         coarse[mode] += s.coarse_count;
         refined[mode] += s.refined_count;
         active[mode] += s.active;
@@ -211,6 +241,7 @@ int main(int argc, char **argv) {
                 << " post_scan=" << seg_post_scan_ns[mode] / nq / 1000.0
                 << " finalize=" << finalize_ns[mode] / nq / 1000.0
                 << " query=" << query_ns[mode] / nq / 1000.0;
+      if (export_lists) std::cout << " lists_total=" << lists_total[mode];
       std::cout << '\n';
       // Emit directly runnable configurations without enabling stats in the
       // timed benchmark. Preserve input paths and separate recall log folders.

@@ -325,6 +325,9 @@ struct ZVEC_CORE_API IVFQueryParam : public BaseIndexQueryParam {
   // key mask/staging, post-scan processing, finalize). Also returns scan stats.
   // Instrumentation perturbs performance; diagnostics only.
   bool rabitq_segment_timing = false;
+  // Default-off export of the really scanned inverted lists per query.
+  // Diagnostics only; same restrictions as the other scan options.
+  bool rabitq_export_scan_lists = false;
   std::shared_ptr<BaseIndexQueryParam> l1_query_param = nullptr;
   std::shared_ptr<BaseIndexQueryParam> l2_query_param = nullptr;
 
@@ -595,6 +598,11 @@ struct ZVEC_CORE_API IVFRabitqQueryParam : public BaseIndexQueryParam {
   uint32_t nprobe = kDefaultIvfRabitqNprobe;
   // Query-local diagnostics for ordinary cluster scans; disabled by default.
   bool rabitq_collect_stats = false;
+  // Default-on lower-bound pruning. Disabling keeps the codes, lists and
+  // distance formula and only skips the prune check (diagnostic A/B).
+  bool rabitq_pruning = true;
+  // Default-off export of the really scanned clusters per query.
+  bool rabitq_export_scan_lists = false;
 
   BaseIndexQueryParam::Pointer clone() const override;
 };

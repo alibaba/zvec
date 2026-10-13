@@ -114,6 +114,12 @@ struct IVFScanStats {
   // time.
   double prep_ns{0}, coarse_ns{0}, cand_ns{0}, post_scan_ns{0}, finalize_ns{0};
   double query_ns{0};
+  // Real scanned inverted lists of the last bound query, populated only when
+  // rabitq_export_scan_lists is set. Counts are scanned vectors per list.
+  bool scan_lists_collected{false};
+  bool scan_lists_limited{false};
+  std::vector<uint32_t> scan_list_ids{};
+  std::vector<uint32_t> scan_list_counts{};
 };
 
 struct SearchResult {

@@ -498,8 +498,9 @@ int IVFIndex::_dense_search(const VectorData &query,
   const auto options = std::dynamic_pointer_cast<IVFQueryParam>(search_param);
   const auto *ctx =
       dynamic_cast<const core::IVFSearcherContext *>(context.get());
-  if (options &&
-      (options->rabitq_collect_stats || options->rabitq_segment_timing) &&
+  if (options && (options->rabitq_collect_stats ||
+                   options->rabitq_segment_timing ||
+                   options->rabitq_export_scan_lists) &&
       ctx) {
     const auto &scan = ctx->entity()->packed_scan_stats();
     result->ivf_scan_stats_ = {true,
@@ -517,6 +518,15 @@ int IVFIndex::_dense_search(const VectorData &query,
                                scan.post_scan_ns,
                                scan.finalize_ns,
                                scan.query_ns};
+    if (options->rabitq_export_scan_lists) {
+      auto &stats = result->ivf_scan_stats_;
+      stats.scan_lists_collected = true;
+      stats.scan_lists_limited = ctx->entity()->packed_scan_limited();
+      for (const auto &list : ctx->entity()->packed_scan_lists()) {
+        stats.scan_list_ids.push_back(list.list_id);
+        stats.scan_list_counts.push_back(list.scanned);
+      }
+    }
   }
   if (!ivf_quantizer_ || !context->fetch_vector()) return ret;
   auto provider = streamer_->create_provider();
@@ -543,7 +553,8 @@ int IVFIndex::_prepare_for_search(
   const bool scan_options = !ivf_search_param->rabitq_pruning ||
                             ivf_search_param->rabitq_reuse_coarse_dot ||
                             ivf_search_param->rabitq_collect_stats ||
-                            ivf_search_param->rabitq_segment_timing;
+                            ivf_search_param->rabitq_segment_timing ||
+                            ivf_search_param->rabitq_export_scan_lists;
   if (scan_options && (!use_rabitq_ || legacy_rabitq_ ||
                        search_param->refiner_param || search_param->bf_pks)) {
     LOG_ERROR(
@@ -585,6 +596,8 @@ int IVFIndex::_prepare_for_search(
         ivf_search_param->rabitq_reuse_coarse_dot);
     ctx->entity()->set_packed_scan_timing(
         ivf_search_param->rabitq_segment_timing);
+    ctx->entity()->set_packed_scan_lists_enabled(
+        ivf_search_param->rabitq_export_scan_lists);
   }
   _set_group_by_on_context(search_param, context);
   context->set_topk(ivf_search_param->topk);

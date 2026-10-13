@@ -46,13 +46,15 @@ class IvfRabitqEntity {
   int search_cluster(uint32_t cluster_id,
                      const IvfRabitqQueryState &query_state, size_t padded_dim,
                      size_t ex_bits, IndexDocumentHeap *heap,
-                     IvfRabitqScanStats *stats = nullptr) const;
+                     IvfRabitqScanStats *stats = nullptr,
+                     bool disable_pruning = false) const;
 
   int search_cluster(uint32_t cluster_id,
                      const IvfRabitqQueryState &query_state, size_t padded_dim,
                      size_t ex_bits, const IndexFilter &filter,
                      IndexDocumentHeap *heap,
-                     IvfRabitqScanStats *stats = nullptr) const;
+                     IvfRabitqScanStats *stats = nullptr,
+                     bool disable_pruning = false) const;
 
   int search_cluster_group_by(uint32_t cluster_id,
                               const IvfRabitqQueryState &query_state,
@@ -135,7 +137,7 @@ class IvfRabitqEntity {
   // Resolved once at load time to avoid per-cluster function-pointer lookup
   rabitqlib::ex_ipfunc ip_func_{nullptr};
 
-  template <bool HasFilter, bool CollectStats>
+  template <bool HasFilter, bool CollectStats, bool DisablePruning>
   int search_cluster_impl(uint32_t cluster_id,
                           const IvfRabitqQueryState &query_state,
                           size_t padded_dim, size_t ex_bits,

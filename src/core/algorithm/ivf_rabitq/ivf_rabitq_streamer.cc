@@ -363,9 +363,13 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
     const auto &filter = ctx->filter();
 
     uint32_t scanned = 0;
+    if (ctx->collect_scan_lists) {
+      ctx->scan_lists.clear();
+      ctx->scan_lists_limited = false;
+    }
 
-    for (uint32_t p = 0; p < probe_centroids.size() && scanned < max_scan;
-         ++p) {
+    uint32_t p = 0;
+    for (; p < probe_centroids.size() && scanned < max_scan; ++p) {
       const auto &probe = probe_centroids[p];
       uint32_t cid = probe.id;
 
@@ -380,10 +384,11 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
       // Scan cluster with 1-bit lower-bound pruning before extra-bit boosting
       if (!filter.is_valid()) {
         ret = entity_->search_cluster(cid, query_state, padded_dim, ex_bits,
-                                      &heap, scan_stats);
+                                      &heap, scan_stats, ctx->disable_pruning);
       } else {
         ret = entity_->search_cluster(cid, query_state, padded_dim, ex_bits,
-                                      filter, &heap, scan_stats);
+                                      filter, &heap, scan_stats,
+                                      ctx->disable_pruning);
       }
       if (ret != 0) {
         LOG_ERROR("Failed to search cluster %zu, ret=%d", (size_t)cid, ret);
@@ -392,6 +397,13 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
       }
 
       scanned += entity_->cluster_meta(cid).vector_count;
+      if (ctx->collect_scan_lists) {
+        ctx->scan_lists.push_back(
+            {cid, entity_->cluster_meta(cid).vector_count});
+      }
+    }
+    if (ctx->collect_scan_lists) {
+      ctx->scan_lists_limited = p < probe_centroids.size();
     }
 
     // Drain heap into sorted result list for query q

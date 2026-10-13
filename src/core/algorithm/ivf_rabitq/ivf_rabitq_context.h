@@ -131,6 +131,10 @@ class IvfRabitqContext : public IndexContext {
     probe_centroids.clear();
     collect_scan_stats = false;
     scan_stats = {};
+    disable_pruning = false;
+    collect_scan_lists = false;
+    scan_lists.clear();
+    scan_lists_limited = false;
   }
 
   //! Retrieve search result (first query)
@@ -358,6 +362,17 @@ class IvfRabitqContext : public IndexContext {
   std::vector<IvfRabitqProbeCentroid> probe_centroids;
   bool collect_scan_stats{false};
   IvfRabitqScanStats scan_stats;
+  // Diagnostic A/B: skip only the lower-bound prune check; codes, lists and
+  // the distance formula stay fixed. Set from IVFRabitqQueryParam.
+  bool disable_pruning{false};
+  // Diagnostic export of the really scanned clusters of the current query.
+  struct ScanListRecord {
+    uint32_t list_id{0};
+    uint32_t scanned{0};
+  };
+  bool collect_scan_lists{false};
+  std::vector<ScanListRecord> scan_lists;
+  bool scan_lists_limited{false};
 
  private:
   struct GroupSearchState {

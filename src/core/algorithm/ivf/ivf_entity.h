@@ -99,6 +99,32 @@ class IVFEntity {
     return packed_scan_timing_;
   }
 
+  struct PackedScanList {
+    uint32_t list_id{0};
+    uint32_t scanned{0};
+  };
+  // Real scanned lists of the last bound query (probe path). The streamer
+  // appends one entry per scanned list when export is enabled; bind_query
+  // clears them. limited means more lists were selected than max_scan allowed.
+  void set_packed_scan_lists_enabled(bool enabled) const {
+    packed_scan_lists_enabled_ = enabled;
+  }
+  bool packed_scan_lists_enabled() const {
+    return packed_scan_lists_enabled_;
+  }
+  const std::vector<PackedScanList> &packed_scan_lists() const {
+    return packed_scan_lists_;
+  }
+  std::vector<PackedScanList> &mutable_packed_scan_lists() const {
+    return packed_scan_lists_;
+  }
+  void set_packed_scan_limited(bool limited) const {
+    packed_scan_limited_ = limited;
+  }
+  bool packed_scan_limited() const {
+    return packed_scan_limited_;
+  }
+
   struct CandidateVisitor {
     std::function<void(uint64_t, float)> consume;
     // Threshold in internal distance units for this candidate's group.
@@ -469,6 +495,9 @@ class IVFEntity {
                          IndexContext::Stats *stats,
                          const CandidateVisitor &visitor) const;
   mutable PackedScanStats packed_scan_stats_{};
+  mutable std::vector<PackedScanList> packed_scan_lists_;
+  mutable bool packed_scan_limited_{false};
+  mutable bool packed_scan_lists_enabled_{false};
   mutable bool packed_scan_timing_{false};
   // Scan-clock nanoseconds per query: cand, coarse, post-scan.
   mutable uint64_t segment_ns_[3]{};
