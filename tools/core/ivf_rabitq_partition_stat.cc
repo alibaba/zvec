@@ -45,11 +45,24 @@ DEFINE_string(csv, "", "output csv prefix (default: index path)");
 namespace {
 
 void PrintDistribution(const char *name, const std::vector<double> &values) {
-  if (values.empty()) {
+  // Non-finite entries (NaN centroids from empty lists) must not poison the
+  // aggregate stats; they are counted and reported separately.
+  std::vector<double> sorted;
+  size_t nonfinite = 0;
+  for (double value : values) {
+    if (std::isfinite(value)) {
+      sorted.push_back(value);
+    } else {
+      ++nonfinite;
+    }
+  }
+  if (nonfinite > 0) {
+    std::cout << ' ' << name << "_nonfinite=" << nonfinite;
+  }
+  if (sorted.empty()) {
     std::cout << ' ' << name << "_count=0";
     return;
   }
-  std::vector<double> sorted(values);
   std::sort(sorted.begin(), sorted.end());
   double sum = 0.0;
   for (double value : sorted) sum += value;
