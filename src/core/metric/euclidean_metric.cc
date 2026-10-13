@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <cstdint>
-#include <ailego/math/sparse_distance.h>
+#include <turbo/distance/sparse/sparse_distance.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_metric.h>
@@ -70,7 +70,7 @@ class SquaredEuclideanMetric : public IndexMetric {
   //! Retrieve sparse distance function for query
   MatrixSparseDistance sparse_distance() const override {
     return reinterpret_cast<MatrixSparseDistanceHandle>(
-        ailego::SquaredEuclideanSparseDistanceMatrix<float>::Compute);
+        turbo::SquaredEuclideanSparseDistanceMatrix<float>::Compute);
   }
 
   //! Retrieve distance function for index features
@@ -229,7 +229,7 @@ class SquaredEuclideanSparseMetric : public IndexMetric {
   //! Retrieve sparse distance function for query
   MatrixSparseDistance sparse_distance() const override {
     return reinterpret_cast<MatrixSparseDistanceHandle>(
-        ailego::SquaredEuclideanSparseDistanceMatrix<float>::Compute);
+        turbo::SquaredEuclideanSparseDistanceMatrix<float>::Compute);
   }
 
   //! Retrieve params of Metric

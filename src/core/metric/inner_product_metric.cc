@@ -11,7 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include <ailego/math/sparse_distance.h>
+#include <turbo/distance/sparse/sparse_distance.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_metric.h>
@@ -74,7 +74,7 @@ class InnerProductMetric : public IndexMetric {
   //! Retrieve sparse distance function for query
   MatrixSparseDistance sparse_distance() const override {
     return reinterpret_cast<MatrixSparseDistanceHandle>(
-        ailego::MinusInnerProductSparseMatrix<float>::Compute);
+        turbo::MinusInnerProductSparseMatrix<float>::Compute);
   }
 
   //! Retrieve distance function for index features
@@ -200,10 +200,10 @@ class InnerProductSparseMetric : public IndexMetric {
     switch (data_type_) {
       case IndexMeta::DataType::DT_FP16:
         return reinterpret_cast<MatrixSparseDistanceHandle>(
-            ailego::MinusInnerProductSparseMatrix<ailego::Float16>::Compute);
+            turbo::MinusInnerProductSparseMatrix<ailego::Float16>::Compute);
       case IndexMeta::DataType::DT_FP32:
         return reinterpret_cast<MatrixSparseDistanceHandle>(
-            ailego::MinusInnerProductSparseMatrix<float>::Compute);
+            turbo::MinusInnerProductSparseMatrix<float>::Compute);
       default:
         return nullptr;
     }

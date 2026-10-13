@@ -15,7 +15,7 @@
 #include "sparse_distance.h"
 
 namespace zvec {
-namespace ailego {
+namespace turbo {
 // Sparse
 //--------------------------------------------------
 #if defined(__SSE4_1__)
@@ -253,5 +253,5 @@ do_scalar:
 }
 #endif  // __SSE4_1__
 
-}  // namespace ailego
+}  // namespace turbo
 }  // namespace zvec

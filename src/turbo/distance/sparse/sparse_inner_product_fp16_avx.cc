@@ -15,7 +15,7 @@
 #include "sparse_distance.h"
 
 namespace zvec {
-namespace ailego {
+namespace turbo {
 // Sparse
 //--------------------------------------------------
 #if defined(__AVX__)
@@ -524,17 +524,15 @@ const static __m128i SHUFFLE_MASK256[256] = {
 
 constexpr uint32_t MAX_SPARSE_BUFFER_LENGTH = 65536;
 
-float InnerProductSparseInSegmentFp16AVX(uint32_t m_sparse_count,
-                                         const uint16_t *m_sparse_index,
-                                         const Float16 *m_sparse_value,
-                                         uint32_t q_sparse_count,
-                                         const uint16_t *q_sparse_index,
-                                         const Float16 *q_sparse_value) {
+float InnerProductSparseInSegmentFp16AVX(
+    uint32_t m_sparse_count, const uint16_t *m_sparse_index,
+    const ailego::Float16 *m_sparse_value, uint32_t q_sparse_count,
+    const uint16_t *q_sparse_index, const ailego::Float16 *q_sparse_value) {
   float sum = 0.0f;
 
   // handle if the first dim is zero
   bool m_zero = false;
-  Float16 m_zero_value{0.0f};
+  ailego::Float16 m_zero_value{0.0f};
   if (m_sparse_count > 0 && m_sparse_index[0] == 0) {
     m_sparse_count--;
     m_sparse_index++;
@@ -543,7 +541,7 @@ float InnerProductSparseInSegmentFp16AVX(uint32_t m_sparse_count,
   }
 
   bool q_zero = false;
-  Float16 q_zero_value{0.0f};
+  ailego::Float16 q_zero_value{0.0f};
   if (q_sparse_count > 0 && q_sparse_index[0] == 0) {
     q_sparse_count--;
     q_sparse_index++;
@@ -569,11 +567,13 @@ float InnerProductSparseInSegmentFp16AVX(uint32_t m_sparse_count,
   uint16_t fixed_buffer_2[MAX_SPARSE_BUFFER_LENGTH];
 #endif
 
-  Float16 *val_start_1 = reinterpret_cast<Float16 *>(fixed_buffer_1);
-  Float16 *val_start_2 = reinterpret_cast<Float16 *>(fixed_buffer_2);
+  ailego::Float16 *val_start_1 =
+      reinterpret_cast<ailego::Float16 *>(fixed_buffer_1);
+  ailego::Float16 *val_start_2 =
+      reinterpret_cast<ailego::Float16 *>(fixed_buffer_2);
 
-  Float16 *val_1 = val_start_1;
-  Float16 *val_2 = val_start_2;
+  ailego::Float16 *val_1 = val_start_1;
+  ailego::Float16 *val_2 = val_start_2;
 
   if (i1 < end1 && i2 < end2) {
     while (m_sparse_index[i1 + 7] < q_sparse_index[i2]) {
@@ -697,5 +697,5 @@ do_scalar:
 
 #endif  // __AVX__
 
-}  // namespace ailego
+}  // namespace turbo
 }  // namespace zvec

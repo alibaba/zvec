@@ -20,7 +20,7 @@
 #include <ailego/utility/math_helper.h>
 #include <zvec/ailego/utility/type_helper.h>
 
-namespace zvec::ailego {
+namespace zvec::turbo {
 // Sparse
 //--------------------------------------------------
 struct SparseSegmentInfo {
@@ -59,14 +59,14 @@ struct MinusInnerProductSparseMatrix {
 };
 
 template <>
-struct MinusInnerProductSparseMatrix<Float16> {
+struct MinusInnerProductSparseMatrix<ailego::Float16> {
   //! Type of value
-  using ValueType = Float16;
+  using ValueType = ailego::Float16;
 
   static float ComputeInnerProductSparseInSegment(
       uint32_t m_sparse_count, const uint16_t *m_sparse_index,
-      const Float16 *m_sparse_value, uint32_t q_sparse_count,
-      const uint16_t *q_sparse_index, const Float16 *q_sparse_value);
+      const ailego::Float16 *m_sparse_value, uint32_t q_sparse_count,
+      const uint16_t *q_sparse_index, const ailego::Float16 *q_sparse_value);
 
   //! Compute the distance between matrix and query
   static void Compute(const void *m_sparse_data_in,
@@ -515,12 +515,12 @@ struct MipsSquaredEuclideanSparseDistanceMatrix {
     }
 
     float l2_m{0.0f};
-    SquaredNorm2Matrix<ValueType, 1>::Compute(m_sparse_value, m_sparse_count,
-                                              &l2_m);
+    ailego::SquaredNorm2Matrix<ValueType, 1>::Compute(m_sparse_value,
+                                                      m_sparse_count, &l2_m);
 
     float l2_q{0.0f};
-    SquaredNorm2Matrix<ValueType, 1>::Compute(q_sparse_value, q_sparse_count,
-                                              &l2_q);
+    ailego::SquaredNorm2Matrix<ValueType, 1>::Compute(q_sparse_value,
+                                                      q_sparse_count, &l2_q);
 
     *out = static_cast<float>(2.0 - 2.0 * ip / std::max(l2_m, l2_q));
   }
@@ -563,4 +563,4 @@ float MipsSquaredEuclideanSparseDistanceMatrix<
                                                const uint16_t *q_sparse_index,
                                                const ValueType *q_sparse_value);
 
-}  // namespace zvec::ailego
+}  // namespace zvec::turbo
