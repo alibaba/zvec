@@ -24,7 +24,8 @@ set(CORE_INTERFACE_LIBS
     core_knn_ivf_rabitq
     sparsehash
     magic_enum
-    rabitqlib)
+    rabitqlib
+    zvec_turbo)
 if(ZVEC_ENABLE_OMEGA)
   list(APPEND CORE_INTERFACE_LIBS core_knn_omega)
 endif()

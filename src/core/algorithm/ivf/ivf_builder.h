@@ -39,6 +39,13 @@ class IVFBuilder : public IndexBuilder {
   //! Initialize the builder
   int init(const IndexMeta &meta, const ailego::Params &params) override;
 
+  //! Initialize with an initialized Turbo quantizer for row-major postings.
+  //! Meta describes raw input vectors, retained for centroid training and
+  //! assignment. Meta (or quantizer->meta()) must carry the matching factory
+  //! name and initialization params in its quantizer descriptor for reload.
+  int init(const IndexMeta &meta, const ailego::Params &params,
+           const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) override;
+
   //! Cleanup the builder
   int cleanup() override;
 
@@ -307,6 +314,7 @@ class IVFBuilder : public IndexBuilder {
   IndexConverter::Pointer converter_{};
   IndexMeta quantized_meta_{};
   std::vector<IndexConverter::Pointer> quantizers_{};
+  std::shared_ptr<zvec::turbo::Quantizer> turbo_quantizer_{};
 
   std::atomic_bool error_{false};
   int err_code_{0};

@@ -1867,56 +1867,71 @@ class InspectableIVFIndex : public IVFIndex {
   }
 };
 
+// Exercise converter/reformer lifetime on the retained legacy pipeline even
+// though new FP32-input IVF indexes now select Turbo posting quantizers.
+class InspectableLegacyIVFIndex : public InspectableIVFIndex {
+ protected:
+  int create_and_init_converter_reformer(
+      const QuantizerParam &param, const BaseIndexParam &index_param) override {
+    return Index::create_and_init_converter_reformer(param, index_param);
+  }
+};
+
 TEST(IndexInterface, IvfPreservesBuildStateWhenDumpFails) {
-  const std::string parent = "ivf_dump_missing_parent";
-  zvec::test_util::RemoveTestFiles(parent);
-  // FileDumper creates missing directories, so use a regular file as the
-  // parent to make creating the output fail on every platform.
-  std::ofstream blocker(parent);
-  ASSERT_TRUE(blocker.good());
-  blocker.close();
-  auto param = IVFIndexParamBuilder()
-                   .with_metric_type(MetricType::kL2sq)
-                   .with_data_type(DataType::DT_FP32)
-                   .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
-                   .with_dimension(16)
-                   .with_n_list(1)
-                   .build();
-  auto inspected = std::make_shared<InspectableIVFIndex>();
-  ASSERT_EQ(0, inspected->initialize(*param));
-  Index::Pointer target = inspected;
-  auto build_state = inspected->build_state();
-  ASSERT_EQ(0, target->open(parent + "/index",
-                            {StorageOptions::StorageType::kMMAP, true}));
-  auto conversion_state = inspected->conversion_state();
-  ASSERT_FALSE(conversion_state.expired());
-  std::vector<float> vector(16, 1.0F);
-  ASSERT_EQ(0, target->add(VectorData{DenseVector{vector.data()}}, 0));
-  EXPECT_NE(0, target->train());
-  EXPECT_FALSE(build_state.expired());
-  EXPECT_FALSE(conversion_state.expired());
-  EXPECT_NE(nullptr, inspected->converted_input());
-  EXPECT_FALSE(target->is_trained());
-  // The pending snapshot must not silently ignore newly added records.
-  EXPECT_NE(0, target->add(VectorData{DenseVector{vector.data()}}, 1));
-  auto converted_input = inspected->converted_input();
-  EXPECT_NE(0, target->train());
-  EXPECT_EQ(converted_input, inspected->converted_input());
-  converted_input.reset();
-  zvec::test_util::RemoveTestFiles(parent);
-  ASSERT_EQ(0, target->train());
-  EXPECT_TRUE(target->is_trained());
-  EXPECT_TRUE(build_state.expired());
-  EXPECT_TRUE(conversion_state.expired());
-  EXPECT_EQ(nullptr, inspected->converted_input());
-  EXPECT_EQ(1u, target->get_doc_count());
-  VectorDataBuffer fetched;
-  ASSERT_EQ(0, target->fetch(0, &fetched));
-  EXPECT_EQ(std::string(reinterpret_cast<const char *>(vector.data()),
-                        vector.size() * sizeof(float)),
-            std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
-  ASSERT_EQ(0, target->close());
-  zvec::test_util::RemoveTestFiles(parent);
+  for (bool legacy : {false, true}) {
+    SCOPED_TRACE(legacy);
+    const std::string parent = "ivf_dump_missing_parent";
+    zvec::test_util::RemoveTestFiles(parent);
+    // FileDumper creates missing directories, so use a regular file as the
+    // parent to make creating the output fail on every platform.
+    std::ofstream blocker(parent);
+    ASSERT_TRUE(blocker.good());
+    blocker.close();
+    auto param = IVFIndexParamBuilder()
+                     .with_metric_type(MetricType::kL2sq)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+                     .with_dimension(16)
+                     .with_n_list(1)
+                     .build();
+    std::shared_ptr<InspectableIVFIndex> inspected =
+        legacy ? std::make_shared<InspectableLegacyIVFIndex>()
+               : std::make_shared<InspectableIVFIndex>();
+    ASSERT_EQ(0, inspected->initialize(*param));
+    Index::Pointer target = inspected;
+    auto build_state = inspected->build_state();
+    ASSERT_EQ(0, target->open(parent + "/index",
+                              {StorageOptions::StorageType::kMMAP, true}));
+    auto conversion_state = inspected->conversion_state();
+    ASSERT_EQ(!legacy, conversion_state.expired());
+    std::vector<float> vector(16, 1.0F);
+    ASSERT_EQ(0, target->add(VectorData{DenseVector{vector.data()}}, 0));
+    EXPECT_NE(0, target->train());
+    EXPECT_FALSE(build_state.expired());
+    EXPECT_EQ(!legacy, conversion_state.expired());
+    EXPECT_EQ(legacy, inspected->converted_input() != nullptr);
+    EXPECT_FALSE(target->is_trained());
+    // The pending snapshot must not silently ignore newly added records.
+    EXPECT_NE(0, target->add(VectorData{DenseVector{vector.data()}}, 1));
+    auto converted_input = inspected->converted_input();
+    EXPECT_NE(0, target->train());
+    EXPECT_EQ(converted_input, inspected->converted_input());
+    converted_input.reset();
+    zvec::test_util::RemoveTestFiles(parent);
+    ASSERT_EQ(0, target->train());
+    EXPECT_TRUE(target->is_trained());
+    EXPECT_TRUE(build_state.expired());
+    EXPECT_TRUE(conversion_state.expired());
+    EXPECT_EQ(nullptr, inspected->converted_input());
+    EXPECT_EQ(1u, target->get_doc_count());
+    VectorDataBuffer fetched;
+    ASSERT_EQ(0, target->fetch(0, &fetched));
+    EXPECT_EQ(std::string(reinterpret_cast<const char *>(vector.data()),
+                          vector.size() * sizeof(float)),
+              std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+    ASSERT_EQ(0, target->close());
+    zvec::test_util::RemoveTestFiles(parent);
+  }
 }
 
 class FailOnceIVFBuilder : public zvec::core::IndexBuilder {
@@ -2018,7 +2033,7 @@ TEST(IndexInterface, IvfRetriesOpeningWithoutRebuildingOrRedumping) {
                    .with_n_list(1)
                    .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
                    .build();
-  auto inspected = std::make_shared<InspectableIVFIndex>();
+  auto inspected = std::make_shared<InspectableLegacyIVFIndex>();
   ASSERT_EQ(0, inspected->initialize(*param));
   Index::Pointer target = inspected;
   auto build_state = inspected->build_state();
@@ -2148,9 +2163,7 @@ TEST(IndexInterface, IvfReleasesBuildStateAndPreservesStoredVectors) {
       Index::Pointer target = inspected;
       auto build_state = inspected->build_state();
       auto conversion_state = inspected->conversion_state();
-      EXPECT_EQ(metric != MetricType::kCosine &&
-                    quantizer.type == QuantizerType::kNone,
-                conversion_state.expired());
+      EXPECT_EQ(!quantizer.enable_rotate, conversion_state.expired());
       ASSERT_EQ(0,
                 target->open(path, {StorageOptions::StorageType::kMMAP, true}));
       auto source_param = FlatIndexParamBuilder()
