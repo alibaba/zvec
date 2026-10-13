@@ -1,8 +1,0 @@
-{
-  "unique_keys": 100000,
-  "strict_id_recall10": 1.0,
-  "different_ids": 0,
-  "max_similarity_gap": 0.0,
-  "above_1e_6": 0,
-  "above_1e_5": 0
-}
