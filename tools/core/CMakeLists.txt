@@ -119,3 +119,14 @@ cc_binary(
     INCS ${PROJECT_ROOT_DIR}/src/core/ ${PROJECT_ROOT_DIR}/src/turbo/
     LIBS gflags zvec_ailego core_framework core_metric core_quantizer core_knn_cluster zvec_turbo rabitqlib
   )
+
+# Replays recorded real per-query list/block access sequences for both the
+# integrated turbo scanner and the dedicated rabitqlib estimator, timing
+# original vs sequential order and kernel-only vs with-prepare variants.
+cc_binary(
+    NAME ivf_rabitq_scan_replay
+    STRICT PACKED
+    SRCS ivf_rabitq_scan_replay.cc
+    INCS ${PROJECT_ROOT_DIR}/src/core/ ${PROJECT_ROOT_DIR}/src/turbo/
+    LIBS gflags zvec_ailego core_framework core_metric core_quantizer core_knn_cluster core_utility zvec_turbo rabitqlib
+)

@@ -199,11 +199,14 @@ int RunKernelBench() {
   const float *g_error = g_add + clusters;
 
   // Cross-check the two estimators on uniform-cluster blocks only, where
-  // the dedicated single-g formulation is directly comparable.
+  // the dedicated single-g formulation is directly comparable. All three
+  // output lanes (distance, lower bound, coarse dot) must agree on every
+  // row of every checked block, not just lane 0 of a few blocks.
   DistanceEstimate turbo_out[32];
   float est[32], low[32], dot[32];
-  size_t checked = 0;
-  double max_diff = 0.0;
+  size_t checked = 0, checked_rows = 0;
+  double max_diff_dist = 0.0, max_diff_low = 0.0, max_diff_dot = 0.0;
+  size_t worst_block = 0, worst_row = 0;
   for (size_t b = 0; b < blocks && checked < 64; ++b) {
     const char *blk = block_data.data() + b * block_len;
     uint32_t c0;
@@ -226,14 +229,44 @@ int RunKernelBench() {
                                   est, low, dot, true);
     ++checked;
     for (int i = 0; i < 32; ++i) {
-      // Turbo's InnerProduct estimator subtracts 1; the library does not.
-      const double expected =
-          static_cast<double>(turbo_out[i].distance) + (ip_metric ? 1.0 : 0.0);
-      max_diff = std::max(max_diff, std::fabs(expected - est[i]));
+      // Turbo's InnerProduct scores subtract 1; the library's do not.
+      const double offset = ip_metric ? 1.0 : 0.0;
+      const double d_dist = std::fabs(
+          static_cast<double>(turbo_out[i].distance) + offset - est[i]);
+      const double d_low = std::fabs(
+          static_cast<double>(turbo_out[i].lower_bound) + offset - low[i]);
+      const double d_dot =
+          std::fabs(static_cast<double>(turbo_out[i].coarse_dot) - dot[i]);
+      if (d_dist > max_diff_dist) {
+        max_diff_dist = d_dist;
+        worst_block = b;
+        worst_row = static_cast<size_t>(i);
+      }
+      max_diff_low = std::max(max_diff_low, d_low);
+      max_diff_dot = std::max(max_diff_dot, d_dot);
+      ++checked_rows;
     }
   }
-  std::printf("crosscheck: uniform blocks compared=%zu max|turbo-dedicated|=%.3g\n",
-              checked, max_diff);
+  std::printf(
+      "crosscheck: uniform blocks compared=%zu rows=%zu max|d(est)|=%.3g "
+      "max|d(lower)|=%.3g max|d(dot)|=%.3g\n",
+      checked, checked_rows, max_diff_dist, max_diff_low, max_diff_dot);
+  if (checked == 0) {
+    std::fprintf(stderr,
+                 "crosscheck failed: no uniform blocks were checked\n");
+    return 1;
+  }
+  const double kTol = 1e-3;
+  if (!(max_diff_dist <= kTol && max_diff_low <= kTol &&
+        max_diff_dot <= kTol)) {
+    std::fprintf(
+        stderr,
+        "crosscheck failed: block %zu row %zu exceeds tolerance %g "
+        "(max|d(est)|=%.3g max|d(lower)|=%.3g max|d(dot)|=%.3g)\n",
+        worst_block, worst_row, kTol, max_diff_dist, max_diff_low,
+        max_diff_dot);
+    return 1;
+  }
 
   // Fix the batch query's g values outside the timed loops (per-list work in
   // the dedicated index; values do not affect kernel cost).
