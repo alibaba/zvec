@@ -328,6 +328,9 @@ struct ZVEC_CORE_API IVFQueryParam : public BaseIndexQueryParam {
   // Default-off export of the really scanned inverted lists per query.
   // Diagnostics only; same restrictions as the other scan options.
   bool rabitq_export_scan_lists = false;
+  // Default-off export of sampled coarse estimates (distance, lower bound,
+  // coarse dot) of scanned block rows. Diagnostics only.
+  bool rabitq_export_scan_samples = false;
   std::shared_ptr<BaseIndexQueryParam> l1_query_param = nullptr;
   std::shared_ptr<BaseIndexQueryParam> l2_query_param = nullptr;
 
@@ -603,6 +606,9 @@ struct ZVEC_CORE_API IVFRabitqQueryParam : public BaseIndexQueryParam {
   bool rabitq_pruning = true;
   // Default-off export of the really scanned clusters per query.
   bool rabitq_export_scan_lists = false;
+  // Default-off export of sampled coarse estimates (distance, lower bound,
+  // coarse dot) of scanned batch rows. Diagnostics only.
+  bool rabitq_export_scan_samples = false;
 
   BaseIndexQueryParam::Pointer clone() const override;
 };

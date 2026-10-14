@@ -135,6 +135,8 @@ class IvfRabitqContext : public IndexContext {
     collect_scan_lists = false;
     scan_lists.clear();
     scan_lists_limited = false;
+    collect_scan_samples = false;
+    scan_samples.clear();
   }
 
   //! Retrieve search result (first query)
@@ -373,6 +375,19 @@ class IvfRabitqContext : public IndexContext {
   bool collect_scan_lists{false};
   std::vector<ScanListRecord> scan_lists;
   bool scan_lists_limited{false};
+  // Diagnostic export of sampled coarse estimates (first/middle/last batch,
+  // first/last lane) of the current query. list_id is the cluster id.
+  struct ScanSampleRecord {
+    uint32_t list_id{0};
+    uint32_t block{0};
+    uint32_t row{0};
+    uint64_t key{0};
+    float distance{0};
+    float lower_bound{0};
+    float coarse_dot{0};
+  };
+  bool collect_scan_samples{false};
+  std::vector<ScanSampleRecord> scan_samples;
 
  private:
   struct GroupSearchState {

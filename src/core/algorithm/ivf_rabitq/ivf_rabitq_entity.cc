@@ -184,21 +184,22 @@ int IvfRabitqEntity::search_cluster(uint32_t cluster_id,
                                     size_t padded_dim, size_t ex_bits,
                                     IndexDocumentHeap *heap,
                                     IvfRabitqScanStats *stats,
-                                    bool disable_pruning) const {
+                                    bool disable_pruning,
+                                    SampleSink samples) const {
   if (disable_pruning) {
     return stats ? search_cluster_impl<false, true, true>(
                        cluster_id, query_state, padded_dim, ex_bits, nullptr,
-                       heap, stats)
+                       heap, stats, samples)
                  : search_cluster_impl<false, false, true>(
                        cluster_id, query_state, padded_dim, ex_bits, nullptr,
-                       heap, nullptr);
+                       heap, nullptr, samples);
   }
   return stats ? search_cluster_impl<false, true, false>(
                      cluster_id, query_state, padded_dim, ex_bits, nullptr,
-                     heap, stats)
+                     heap, stats, samples)
                : search_cluster_impl<false, false, false>(
                      cluster_id, query_state, padded_dim, ex_bits, nullptr,
-                     heap, nullptr);
+                     heap, nullptr, samples);
 }
 
 int IvfRabitqEntity::search_cluster(uint32_t cluster_id,
@@ -207,21 +208,22 @@ int IvfRabitqEntity::search_cluster(uint32_t cluster_id,
                                     const IndexFilter &filter,
                                     IndexDocumentHeap *heap,
                                     IvfRabitqScanStats *stats,
-                                    bool disable_pruning) const {
+                                    bool disable_pruning,
+                                    SampleSink samples) const {
   if (disable_pruning) {
     return stats ? search_cluster_impl<true, true, true>(
                        cluster_id, query_state, padded_dim, ex_bits, &filter,
-                       heap, stats)
+                       heap, stats, samples)
                  : search_cluster_impl<true, false, true>(
                        cluster_id, query_state, padded_dim, ex_bits, &filter,
-                       heap, nullptr);
+                       heap, nullptr, samples);
   }
   return stats ? search_cluster_impl<true, true, false>(
                      cluster_id, query_state, padded_dim, ex_bits, &filter,
-                     heap, stats)
+                     heap, stats, samples)
                : search_cluster_impl<true, false, false>(
                      cluster_id, query_state, padded_dim, ex_bits, &filter,
-                     heap, nullptr);
+                     heap, nullptr, samples);
 }
 
 int IvfRabitqEntity::search_cluster_group_by(
@@ -507,7 +509,8 @@ int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
                                          size_t padded_dim, size_t ex_bits,
                                          const IndexFilter *filter,
                                          IndexDocumentHeap *heap,
-                                         IvfRabitqScanStats *stats) const {
+                                         IvfRabitqScanStats *stats,
+                                         SampleSink samples) const {
   if (cluster_id >= cluster_metas_.size()) {
     LOG_ERROR("Invalid cluster_id=%zu", (size_t)cluster_id);
     return IndexError_OutOfRange;
@@ -562,6 +565,27 @@ int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
                                    true /* use_hacc */);
 
     if constexpr (CollectStats) stats->coarse_count += batch_size;
+
+    if (samples) {
+      // Deterministic batches (first, middle, last) and lanes (first, last)
+      // so a replay can recompute and compare these exact rows.
+      const uint32_t total_batches =
+          (meta.vector_count + rabitqlib::fastscan::kBatchSize - 1) /
+          rabitqlib::fastscan::kBatchSize;
+      const uint32_t batch_id =
+          offset / rabitqlib::fastscan::kBatchSize;
+      if (batch_id == 0 || batch_id == total_batches / 2 ||
+          batch_id == total_batches - 1) {
+        samples->push_back({cluster_id, batch_id, 0, cur_keys[offset],
+                            est_dist[0], low_dist[0], ip_x0_qr[0]});
+        if (batch_size > 1) {
+          const uint32_t lane = batch_size - 1;
+          samples->push_back({cluster_id, batch_id, lane,
+                              cur_keys[offset + lane], est_dist[lane],
+                              low_dist[lane], ip_x0_qr[lane]});
+        }
+      }
+    }
 
     if (ex_bits == 0) {
       // 1-bit only: scalar fast-reject before the heavy heap emplace so that

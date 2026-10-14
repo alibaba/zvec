@@ -31,13 +31,28 @@
 //
 // Work verification: per list, the replayed vector count must equal the
 // scan_count recorded in lists.csv (checked hard); the tool also requires
-// both lists.csv files to cover the identical query set.
+// both lists.csv files to cover the identical query set, and rejects
+// negative, out-of-range or duplicate query/list entries.
+//
+// With --samples-int/--samples-ded, every estimate row the production scan
+// exported (key, distance, lower_bound, coarse_dot) is recomputed from the
+// same segments and compared within --tolerance; the recorded sample rows
+// must be consumed exactly by walking the recorded lists and blocks, so
+// list ids, order, block counts and tail valid-row counts are verified too.
+//
+// Scope: the replay executes the coarse-estimate scan only -- query
+// quantization/rotation, per-list/cluster prepare, the key-keep mask and
+// the estimate kernels. It does NOT run heap maintenance, refinement
+// (split_distance_boosting / BlockScanner::refine) or result finalization,
+// so "kernel"/"full"/"unpruned" labels measure the coarse scan, not the
+// complete pruning pipeline.
 //
 // Usage:
 //   ivf_rabitq_scan_replay --index-int=PATH --index-ded=PATH \
 //       --queries=FILE --lists-int=CSV --lists-ded=CSV \
 //       [--mode-int=baseline] [--queries-count=N] [--rounds=5] \
-//       [--warmup=1] --csv=PREFIX
+//       [--warmup=1] [--samples-int=CSV --samples-ded=CSV] \
+//       [--tolerance=1e-4] --csv=PREFIX
 //
 // Outputs PREFIX.replay.csv (round,side,order,variant,...) and a stdout
 // summary. Exits nonzero on any verification failure.
@@ -52,13 +67,18 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <memory>
+#include <numeric>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
+#include <ailego/math/normalizer.h>
 #include <gflags/gflags.h>
 #include <turbo/quantizer/quantizer.h>
+#include <zvec/core/framework/index_metric.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_helper.h>
 #include <zvec/core/framework/index_storage.h>
@@ -87,7 +107,15 @@ DEFINE_string(mode_int, "baseline",
 DEFINE_int32(queries_count, 0, "replay only the first N queries (0 = all)");
 DEFINE_int32(rounds, 5, "timed rounds; sides are interleaved");
 DEFINE_int32(warmup, 1, "untimed warmup rounds before timing");
+DEFINE_string(samples_int, "",
+              "integrated samples.csv from the diagnostic tool (verification)");
+DEFINE_string(samples_ded, "",
+              "dedicated samples.csv from the diagnostic tool (verification)");
+DEFINE_double(tolerance, 1e-4,
+              "max abs diff for sample value verification (values are expected "
+              "to be bit-identical; the tolerance only guards drift)");
 DEFINE_string(csv, "", "output csv prefix (required)");
+
 
 #if RABITQ_SUPPORTED
 namespace {
@@ -120,7 +148,8 @@ static_assert(sizeof(ConverterHeader) == 32, "converter header must be 32B");
 
 struct QuerySet {
   std::vector<std::vector<float>> rows;
-  // File qid per row; lists.csv records these, not row indices.
+  // File qid per row; informational only. The diagnostic CSVs record the
+  // load-order row index of each query, not the file qid.
   std::vector<long long> qids;
   size_t dim = 0;
 };
@@ -157,15 +186,18 @@ struct RecordedLists {
 };
 
 bool LoadListsCsv(const std::string &path, const std::string &mode,
-                  const std::unordered_map<long long, size_t> &qid_to_row,
-                  RecordedLists *out) {
+                  size_t qcount, size_t total_rows, RecordedLists *out) {
   std::ifstream in(path);
   if (!in) return false;
   std::string line;
   if (!std::getline(in, line)) return false;
   if (line != "query,mode,list_id,scan_count,limited") return false;
-  out->per_query.assign(qid_to_row.size(), {});
+  // The diagnostic tool writes the load-order row index of the query into
+  // the "query" column (not the file qid), so rows map 1:1 onto the loaded
+  // query order and no qid translation may be applied on top.
+  out->per_query.assign(qcount, {});
   size_t line_no = 1;
+  size_t skipped = 0;
   while (std::getline(in, line)) {
     ++line_no;
     if (line.empty()) continue;
@@ -191,12 +223,18 @@ bool LoadListsCsv(const std::string &path, const std::string &mode,
     const unsigned long long lid = std::stoull(f[2]);
     const unsigned long long scan = std::stoull(f[3]);
     const int limited = std::stoi(f[4]);
-    const auto row_it = qid_to_row.find(q);
-    if (row_it == qid_to_row.end()) {
+    if (q < 0 || static_cast<unsigned long long>(q) >= total_rows) {
+      std::cerr << "lists.csv " << path << ":" << line_no
+                << " query row " << q << " out of range (" << total_rows
+                << " queries loaded)" << std::endl;
+      return false;
+    }
+    if (static_cast<size_t>(q) >= qcount) {
       // Belongs to a trimmed tail (--queries-count); not replayed.
+      ++skipped;
       continue;
     }
-    const size_t row = row_it->second;
+    const size_t row = static_cast<size_t>(q);
     if (limited != 0) {
       std::cerr << "lists.csv " << path << ":" << line_no
                 << " records a limited scan; replay requires max_scan_count "
@@ -215,6 +253,22 @@ bool LoadListsCsv(const std::string &path, const std::string &mode,
                 << " (mode=" << mode << ")" << std::endl;
       return false;
     }
+    // Duplicate list entries within one query mean a broken recording.
+    std::vector<uint32_t> ids;
+    ids.reserve(out->per_query[r].size());
+    for (const auto &e : out->per_query[r]) ids.push_back(e.first);
+    std::sort(ids.begin(), ids.end());
+    for (size_t i = 1; i < ids.size(); ++i) {
+      if (ids[i] == ids[i - 1]) {
+        std::cerr << "lists.csv " << path << " lists list " << ids[i]
+                  << " twice for query row " << r << std::endl;
+        return false;
+      }
+    }
+  }
+  if (skipped) {
+    std::cout << "lists.csv " << path << ": skipped " << skipped
+              << " rows beyond --queries-count=" << qcount << std::endl;
   }
   out->sorted = out->per_query;
   for (auto &lists : out->sorted) {
@@ -390,6 +444,7 @@ struct DedicatedIndex {
   IvfRabitqHeader header{};
   std::vector<IvfRabitqClusterMeta> clusters;
   const uint8_t *batch_base = nullptr;
+  const uint64_t *key_base = nullptr;
   size_t batch_stride = 0;
   size_t batch_bytes = 0;
   uint32_t dim = 0;
@@ -397,6 +452,10 @@ struct DedicatedIndex {
   uint8_t ex_bits = 0;
   rabitqlib::MetricType mtype = rabitqlib::METRIC_L2;
   std::vector<float> rotated_centroids;
+  std::vector<float> centroids;  // unrotated, num_clusters * dim
+  std::vector<float> centroid_norm_sqs;
+  IndexMetric::Pointer centroid_metric;
+  IndexMetric::MatrixDistance centroid_distance_func;
   std::unique_ptr<rabitqlib::Rotator<float>> rotator;
 };
 
@@ -460,6 +519,21 @@ bool LoadDedicated(const std::string &path, DedicatedIndex *out) {
     return false;
   }
 
+  // Keys segment (same layout IvfRabitqEntity loads: one u64 per vector,
+  // addressed as keys[key_offset + within-cluster index]).
+  auto key_seg = storage->get(IVF_RABITQ_KEYS_SEG_ID);
+  const size_t keys_size =
+      static_cast<size_t>(out->header.total_vector_count) * sizeof(uint64_t);
+  if (!key_seg || key_seg->data_size() != keys_size) {
+    std::cerr << "Bad ivf_rabitq.keys segment size" << std::endl;
+    return false;
+  }
+  out->key_base = reinterpret_cast<const uint64_t *>(key_seg->base_data());
+  if (!out->key_base) {
+    std::cerr << "ivf_rabitq.keys is not mmap-backed" << std::endl;
+    return false;
+  }
+
   // Converter segment: [header][rotated centroids][centroids][rotator blob].
   auto conv_seg = storage->get("rabitq.converter");
   if (!conv_seg) {
@@ -494,6 +568,48 @@ bool LoadDedicated(const std::string &path, DedicatedIndex *out) {
     }
     std::memcpy(out->rotated_centroids.data(), rc, rotated_bytes);
   }
+  out->centroids.resize(static_cast<size_t>(conv.num_clusters) * out->dim);
+  {
+    const void *cc = nullptr;
+    if (conv_seg->read(sizeof(conv) + rotated_bytes, &cc, centroid_bytes) !=
+        centroid_bytes) {
+      std::cerr << "Failed to read centroids" << std::endl;
+      return false;
+    }
+    std::memcpy(out->centroids.data(), cc, centroid_bytes);
+  }
+  // Same accumulation as IvfRabitqReformer::load (std::inner_product over the
+  // unrotated centroids), so the g_add inputs are bit-identical.
+  out->centroid_norm_sqs.resize(static_cast<size_t>(conv.num_clusters));
+  for (size_t i = 0; i < out->centroid_norm_sqs.size(); ++i) {
+    const float *centroid = out->centroids.data() + i * out->dim;
+    out->centroid_norm_sqs[i] =
+        std::inner_product(centroid, centroid + out->dim, centroid, 0.0f);
+  }
+  {
+    // The exact centroid distance function IvfRabitqReformer uses for probe
+    // selection and per-cluster g_add preparation.
+    IndexMeta centroid_meta;
+    centroid_meta.set_data_type(IndexMeta::DataType::DT_FP32);
+    centroid_meta.set_dimension(out->dim);
+    centroid_meta.set_metric(
+        out->mtype == rabitqlib::METRIC_L2 ? "SquaredEuclidean"
+                                           : "InnerProduct",
+        0, zvec::ailego::Params());
+    out->centroid_metric =
+        IndexFactory::CreateMetric(centroid_meta.metric_name());
+    if (!out->centroid_metric ||
+        out->centroid_metric->init(centroid_meta,
+                                   centroid_meta.metric_params()) != 0) {
+      std::cerr << "Failed to create centroid metric" << std::endl;
+      return false;
+    }
+    out->centroid_distance_func = out->centroid_metric->distance_matrix(1, 1);
+    if (!out->centroid_distance_func) {
+      std::cerr << "Failed to get centroid distance function" << std::endl;
+      return false;
+    }
+  }
   {
     IndexStorage::MemoryBlock block;
     if (conv_seg->read(sizeof(conv) + rotated_bytes + centroid_bytes, block,
@@ -513,6 +629,45 @@ bool LoadDedicated(const std::string &path, DedicatedIndex *out) {
   return true;
 }
 
+// Mirrors CosineNormalizeReformer::transform's FP32 fast path: the kCosine
+// query pipeline L2-normalizes a copy of the raw query (ailego::Normalizer)
+// before IvfRabitqReformer::create_query_state rotates it.
+void NormalizeQueryFp32(const float *query, size_t dim,
+                        std::vector<float> *normalized) {
+  normalized->assign(query, query + dim);
+  float norm = 0.0f;
+  zvec::ailego::Normalizer<float>::L2(normalized->data(), dim, &norm);
+  (void)norm;
+}
+
+// Mirrors IvfRabitqReformer::select_probe_centroids +
+// prepare_for_cluster: production derives the per-cluster g_add inputs from
+// the unrotated centroid distance of the normalized query, not from
+// rotated-space residuals.
+struct ClusterPrepare {
+  float residual_norm = 0;
+  float inner_product = 0;
+};
+
+ClusterPrepare PrepareCluster(const DedicatedIndex &idx,
+                              const std::vector<float> &nquery,
+                              float query_norm_sq, uint32_t cid) {
+  ClusterPrepare p;
+  float dist = 0.0f;
+  idx.centroid_distance_func(
+      idx.centroids.data() + static_cast<size_t>(cid) * idx.dim, nquery.data(),
+      idx.dim, &dist);
+  if (idx.mtype == rabitqlib::METRIC_L2) {
+    p.residual_norm = std::sqrt(std::max(dist, 0.0f));
+  } else {
+    p.inner_product = -dist;
+    const float residual_norm_sq =
+        query_norm_sq + idx.centroid_norm_sqs[cid] - 2.0f * p.inner_product;
+    p.residual_norm = std::sqrt(std::max(residual_norm_sq, 0.0f));
+  }
+  return p;
+}
+
 struct ReplayStats {
   double prep_ns = 0;
   double scan_ns = 0;
@@ -525,6 +680,383 @@ struct ReplayStats {
 struct Fail {
   std::string msg;
 };
+
+struct SampleRow {
+  size_t query;
+  uint32_t list_id;
+  uint32_t block;
+  uint32_t row;
+  uint64_t key;
+  float distance;
+  float lower_bound;
+  float coarse_dot;
+};
+
+// Loads the diagnostic tool's samples.csv for one side. The "query" column
+// is the load-order row index. Rows beyond --queries-count (trimmed tail)
+// are skipped and counted; malformed or duplicate rows are hard errors.
+bool LoadSamplesCsv(const std::string &path, const std::string &mode,
+                    size_t qcount, size_t total_rows,
+                    std::vector<std::vector<SampleRow>> *out,
+                    size_t *skipped) {
+  *skipped = 0;
+  std::ifstream in(path);
+  if (!in) return false;
+  std::string line;
+  if (!std::getline(in, line)) return false;
+  if (line !=
+      "query,mode,list_id,block,row,key,distance,lower_bound,coarse_dot") {
+    std::cerr << "samples.csv " << path << " has an unexpected header"
+              << std::endl;
+    return false;
+  }
+  out->assign(qcount, {});
+  size_t line_no = 1;
+  while (std::getline(in, line)) {
+    ++line_no;
+    if (line.empty()) continue;
+    std::array<std::string, 9> f;
+    size_t pos = 0;
+    bool ok = true;
+    for (size_t i = 0; i < 9; ++i) {
+      const size_t next = line.find(',', pos);
+      if ((i < 8) != (next != std::string::npos)) {
+        ok = false;
+        break;
+      }
+      f[i] = line.substr(pos, next - pos);
+      pos = next + 1;
+    }
+    if (!ok) {
+      std::cerr << "samples.csv " << path << ":" << line_no
+                << " malformed line" << std::endl;
+      return false;
+    }
+    if (f[1] != mode) continue;
+    const long long q = std::stoll(f[0]);
+    if (q < 0 || static_cast<unsigned long long>(q) >= total_rows) {
+      std::cerr << "samples.csv " << path << ":" << line_no
+                << " query row " << q << " out of range (" << total_rows
+                << " queries loaded)" << std::endl;
+      return false;
+    }
+    if (static_cast<size_t>(q) >= qcount) {
+      ++*skipped;
+      continue;
+    }
+    SampleRow s;
+    s.query = static_cast<size_t>(q);
+    s.list_id = static_cast<uint32_t>(std::stoul(f[2]));
+    s.block = static_cast<uint32_t>(std::stoul(f[3]));
+    s.row = static_cast<uint32_t>(std::stoul(f[4]));
+    s.key = std::stoull(f[5]);
+    s.distance = std::stof(f[6]);
+    s.lower_bound = std::stof(f[7]);
+    s.coarse_dot = std::stof(f[8]);
+    (*out)[s.query].push_back(s);
+  }
+  for (size_t r = 0; r < out->size(); ++r) {
+    const auto &rows = (*out)[r];
+    if (rows.size() < 2) continue;
+    std::vector<const SampleRow *> ptrs;
+    ptrs.reserve(rows.size());
+    for (const auto &s : rows) ptrs.push_back(&s);
+    std::sort(ptrs.begin(), ptrs.end(),
+              [](const SampleRow *a, const SampleRow *b) {
+                if (a->list_id != b->list_id) return a->list_id < b->list_id;
+                if (a->block != b->block) return a->block < b->block;
+                return a->row < b->row;
+              });
+    for (size_t i = 1; i < ptrs.size(); ++i) {
+      if (ptrs[i]->list_id == ptrs[i - 1]->list_id &&
+          ptrs[i]->block == ptrs[i - 1]->block &&
+          ptrs[i]->row == ptrs[i - 1]->row) {
+        std::cerr << "samples.csv " << path
+                  << ": duplicate sample row for query " << r << " list "
+                  << ptrs[i]->list_id << " block " << ptrs[i]->block
+                  << " row " << ptrs[i]->row << std::endl;
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+struct SampleVerify {
+  size_t checked = 0;
+  size_t queries = 0;
+  size_t key_mismatches = 0;
+  size_t value_mismatches = 0;
+  size_t tail_blocks = 0;
+  double max_distance_err = 0;
+  double max_lower_err = 0;
+  double max_dot_err = 0;
+  // Integrated: per-record model ids (u32 block prefix); dedicated: list ids.
+  std::map<uint32_t, size_t> ids;
+};
+
+void PrintSampleVerify(const char *side, const char *id_kind,
+                       const SampleVerify &v, double tol) {
+  std::cout << "samples " << side << ": checked=" << v.checked
+            << " queries_with_samples=" << v.queries
+            << " key_mismatches=" << v.key_mismatches
+            << " value_mismatches=" << v.value_mismatches
+            << " tail_blocks=" << v.tail_blocks
+            << " distinct_" << id_kind << "=" << v.ids.size()
+            << " max_err distance=" << v.max_distance_err
+            << " lower_bound=" << v.max_lower_err
+            << " coarse_dot=" << v.max_dot_err << " tolerance=" << tol
+            << std::endl;
+}
+
+// Recomputes every recorded integrated sample row by walking the recorded
+// lists in order and the blocks of each list exactly like
+// IVFEntity::search_packed_impl (key-keep mask included). The recorded rows
+// must be consumed in order, which verifies list ids, order, scan counts,
+// block counts and tail valid rows in addition to the estimate values.
+SampleVerify VerifyIntegratedSamples(
+    const IntegratedIndex &idx, const std::vector<std::vector<float>> &queries,
+    const RecordedLists &rec, const std::vector<std::vector<SampleRow>> &samples,
+    double tol) {
+  SampleVerify v;
+  const IndexQueryMeta qmeta(idx.dtype, idx.dim);
+  std::string encoded;
+  IndexQueryMeta emeta;
+  std::array<zvec::turbo::DistanceEstimate, 32> est;
+  for (size_t q = 0; q < queries.size(); ++q) {
+    if (samples[q].empty()) continue;
+    ++v.queries;
+    if (idx.quantizer->quantize(queries[q].data(), qmeta, &encoded, &emeta) !=
+        0) {
+      throw Fail{"integrated quantize failed at query " + std::to_string(q)};
+    }
+    auto distance = idx.quantizer->distance(encoded.data(), emeta);
+    auto scanner = idx.quantizer->block_scanner(distance);
+    if (!scanner) {
+      throw Fail{"integrated block_scanner unavailable at query " +
+                 std::to_string(q)};
+    }
+    const auto &rows = samples[q];
+    size_t ri = 0;
+    for (const auto &entry : rec.per_query[q]) {
+      const uint32_t lid = entry.first;
+      if (lid >= idx.lists.size()) {
+        throw Fail{"sampled list id " + std::to_string(lid) + " out of range"};
+      }
+      const auto &list = idx.lists[lid];
+      if (list.vector_count != entry.second) {
+        throw Fail{"query " + std::to_string(q) + " list " +
+                   std::to_string(lid) + " replayed " +
+                   std::to_string(list.vector_count) + " != recorded scan " +
+                   std::to_string(entry.second)};
+      }
+      const size_t coarse_offset = idx.scan_list_offsets[lid] * idx.packed_size;
+      for (uint32_t b = 0; b < list.block_count; ++b) {
+        const uint32_t count = static_cast<uint32_t>(
+            std::min(idx.block_vecs,
+                     static_cast<size_t>(list.vector_count) -
+                         static_cast<size_t>(b) * idx.block_vecs));
+        const uint64_t *keys = reinterpret_cast<const uint64_t *>(
+            idx.key_base +
+            (static_cast<size_t>(list.id_offset) +
+             static_cast<size_t>(b) * idx.block_vecs) *
+                sizeof(uint64_t));
+        uint32_t keeps = 0;
+        for (uint32_t i = 0; i < count; ++i) {
+          if (keys[i] != kInvalidKey) keeps |= uint32_t(1) << i;
+        }
+        if (!keeps) continue;
+        if (ri >= rows.size() || rows[ri].list_id != lid ||
+            rows[ri].block != b) {
+          continue;
+        }
+        const void *packed =
+            idx.coarse_base + coarse_offset +
+            static_cast<size_t>(b) * idx.packed_size;
+        if (scanner->estimate(packed, count, est.data()) != 0) {
+          throw Fail{"sample estimate failed at query " + std::to_string(q) +
+                     " list " + std::to_string(lid) + " block " +
+                     std::to_string(b)};
+        }
+        if (count < idx.block_vecs) ++v.tail_blocks;
+        while (ri < rows.size() && rows[ri].list_id == lid &&
+               rows[ri].block == b) {
+          const SampleRow &s = rows[ri];
+          ++ri;
+          if (s.row >= count) {
+            throw Fail{"query " + std::to_string(q) + " list " +
+                       std::to_string(lid) + " block " + std::to_string(b) +
+                       " sampled row " + std::to_string(s.row) +
+                       " beyond tail count " + std::to_string(count)};
+          }
+          uint32_t model = 0;
+          std::memcpy(&model,
+                      static_cast<const uint8_t *>(packed) +
+                          static_cast<size_t>(s.row) * sizeof(uint32_t),
+                      sizeof(model));
+          ++v.ids[model];
+          if (s.key != keys[s.row]) {
+            ++v.key_mismatches;
+            std::cerr << "sample key mismatch: query " << q << " list " << lid
+                      << " block " << b << " row " << s.row << std::endl;
+            continue;
+          }
+          const double d_err =
+              std::abs(double(est[s.row].distance) - double(s.distance));
+          const double l_err =
+              std::abs(double(est[s.row].lower_bound) - double(s.lower_bound));
+          const double c_err =
+              std::abs(double(est[s.row].coarse_dot) - double(s.coarse_dot));
+          v.max_distance_err = std::max(v.max_distance_err, d_err);
+          v.max_lower_err = std::max(v.max_lower_err, l_err);
+          v.max_dot_err = std::max(v.max_dot_err, c_err);
+          if (d_err > tol || l_err > tol || c_err > tol) {
+            ++v.value_mismatches;
+            std::cerr << "sample value mismatch: query " << q << " list "
+                      << lid << " block " << b << " row " << s.row
+                      << " distance " << s.distance << " vs "
+                      << est[s.row].distance << " lower_bound " << s.lower_bound
+                      << " vs " << est[s.row].lower_bound << " coarse_dot "
+                      << s.coarse_dot << " vs " << est[s.row].coarse_dot
+                      << std::endl;
+          }
+          ++v.checked;
+        }
+      }
+    }
+    if (ri != rows.size()) {
+      throw Fail{"query " + std::to_string(q) + ": " +
+                 std::to_string(rows.size() - ri) +
+                 " recorded sample rows were not matched by the replay walk "
+                 "(missing or out-of-order lists/blocks)"};
+    }
+  }
+  return v;
+}
+
+// Recomputes every recorded dedicated sample row by walking the recorded
+// clusters in order and their batches exactly like
+// IvfRabitqEntity::search_cluster_impl (per-cluster set_g_add included).
+SampleVerify VerifyDedicatedSamples(
+    const DedicatedIndex &idx, const std::vector<std::vector<float>> &queries,
+    const RecordedLists &rec, const std::vector<std::vector<SampleRow>> &samples,
+    double tol) {
+  SampleVerify v;
+  std::vector<float> rotated(idx.padded);
+  rabitqlib::SplitBatchQuery<float> bq(rotated.data(), idx.padded, idx.ex_bits,
+                                       idx.mtype, true);
+  std::array<float, 32> est, low, dot;
+  std::vector<float> normalized;
+  for (size_t q = 0; q < queries.size(); ++q) {
+    if (samples[q].empty()) continue;
+    ++v.queries;
+    // Production pipeline: normalize, then rotate.
+    NormalizeQueryFp32(queries[q].data(), idx.dim, &normalized);
+    idx.rotator->rotate(normalized.data(), rotated.data());
+    bq.reset(rotated.data(), idx.padded, idx.ex_bits, idx.mtype, true);
+    const float query_norm_sq =
+        std::inner_product(normalized.data(), normalized.data() + idx.dim,
+                           normalized.data(), 0.0f);
+    const auto &rows = samples[q];
+    size_t ri = 0;
+    for (const auto &entry : rec.per_query[q]) {
+      const uint32_t cid = entry.first;
+      if (cid >= idx.clusters.size()) {
+        throw Fail{"sampled cluster id " + std::to_string(cid) +
+                   " out of range"};
+      }
+      const auto &cm = idx.clusters[cid];
+      if (cm.vector_count != entry.second) {
+        throw Fail{"query " + std::to_string(q) + " cluster " +
+                   std::to_string(cid) + " replayed " +
+                   std::to_string(cm.vector_count) + " != recorded scan " +
+                   std::to_string(entry.second)};
+      }
+      if (cm.vector_count == 0) continue;
+      ++v.ids[cid];
+      // Same per-cluster prepare as the production streamer loop
+      // (select_probe_centroids -> prepare_for_cluster).
+      const ClusterPrepare prep =
+          PrepareCluster(idx, normalized, query_norm_sq, cid);
+      if (idx.mtype == rabitqlib::METRIC_IP) {
+        bq.set_g_add(prep.residual_norm, prep.inner_product);
+      } else {
+        bq.set_g_add(prep.residual_norm);
+      }
+      const uint32_t total_batches =
+          (cm.vector_count + rabitqlib::fastscan::kBatchSize - 1) /
+          rabitqlib::fastscan::kBatchSize;
+      const char *batch =
+          reinterpret_cast<const char *>(idx.batch_base) + cm.batch_data_offset;
+      uint32_t remaining = cm.vector_count;
+      uint32_t offset = 0;
+      while (remaining > 0) {
+        const uint32_t bs = static_cast<uint32_t>(
+            std::min<size_t>(remaining, rabitqlib::fastscan::kBatchSize));
+        const uint32_t batch_id =
+            offset / rabitqlib::fastscan::kBatchSize;
+        const bool sampled_batch =
+            batch_id == 0 || batch_id == total_batches / 2 ||
+            batch_id == total_batches - 1;
+        if (sampled_batch && ri < rows.size() && rows[ri].list_id == cid &&
+            rows[ri].block == batch_id) {
+          rabitqlib::split_batch_estdist(batch, bq, idx.padded, est.data(),
+                                         low.data(), dot.data(), true);
+          if (bs < rabitqlib::fastscan::kBatchSize) ++v.tail_blocks;
+          const uint64_t *keys = idx.key_base + cm.key_offset + offset;
+          while (ri < rows.size() && rows[ri].list_id == cid &&
+                 rows[ri].block == batch_id) {
+            const SampleRow &s = rows[ri];
+            ++ri;
+            if (s.row >= bs) {
+              throw Fail{"query " + std::to_string(q) + " cluster " +
+                         std::to_string(cid) + " batch " +
+                         std::to_string(batch_id) + " sampled row " +
+                         std::to_string(s.row) + " beyond tail size " +
+                         std::to_string(bs)};
+            }
+            if (s.key != keys[s.row]) {
+              ++v.key_mismatches;
+              std::cerr << "sample key mismatch: query " << q << " cluster "
+                        << cid << " batch " << batch_id << " row " << s.row
+                        << std::endl;
+              continue;
+            }
+            const double d_err =
+                std::abs(double(est[s.row]) - double(s.distance));
+            const double l_err =
+                std::abs(double(low[s.row]) - double(s.lower_bound));
+            const double c_err =
+                std::abs(double(dot[s.row]) - double(s.coarse_dot));
+            v.max_distance_err = std::max(v.max_distance_err, d_err);
+            v.max_lower_err = std::max(v.max_lower_err, l_err);
+            v.max_dot_err = std::max(v.max_dot_err, c_err);
+            if (d_err > tol || l_err > tol || c_err > tol) {
+              ++v.value_mismatches;
+              std::cerr << "sample value mismatch: query " << q << " cluster "
+                        << cid << " batch " << batch_id << " row " << s.row
+                        << " distance " << s.distance << " vs " << est[s.row]
+                        << " lower_bound " << s.lower_bound << " vs "
+                        << low[s.row] << " coarse_dot " << s.coarse_dot
+                        << " vs " << dot[s.row] << std::endl;
+            }
+            ++v.checked;
+          }
+        }
+        batch += idx.batch_stride;
+        offset += bs;
+        remaining -= bs;
+      }
+    }
+    if (ri != rows.size()) {
+      throw Fail{"query " + std::to_string(q) + ": " +
+                 std::to_string(rows.size() - ri) +
+                 " recorded sample rows were not matched by the replay walk "
+                 "(missing or out-of-order lists/batches)"};
+    }
+  }
+  return v;
+}
 
 // Integrated replay. The timed scan loop matches IVFEntity::search_packed_impl
 // for the mapped path: per-block key-keep mask, then estimate() on the exact
@@ -619,29 +1151,26 @@ ReplayStats ReplayDedicated(const DedicatedIndex &idx,
   rabitqlib::SplitBatchQuery<float> bq(rotated.data(), idx.padded, idx.ex_bits,
                                        idx.mtype, true);
   std::array<float, 32> est, low, dot;
-  std::vector<std::pair<float, float>> prepared;
+  std::vector<ClusterPrepare> prepared;
+  std::vector<float> normalized;
   for (size_t q = 0; q < queries.size(); ++q) {
     const auto t0 = Clock::now();
-    idx.rotator->rotate(queries[q].data(), rotated.data());
+    // Production pipeline: normalize (CosineNormalizeReformer::transform),
+    // then rotate (IvfRabitqReformer::create_query_state).
+    NormalizeQueryFp32(queries[q].data(), idx.dim, &normalized);
+    idx.rotator->rotate(normalized.data(), rotated.data());
     bq.reset(rotated.data(), idx.padded, idx.ex_bits, idx.mtype, true);
+    const float query_norm_sq =
+        std::inner_product(normalized.data(), normalized.data() + idx.dim,
+                           normalized.data(), 0.0f);
     const auto t1 = Clock::now();
     if (timed) stats.prep_ns += ElapsedNs(t0, t1);
 
     if (!prep_inside) {
       prepared.clear();
       for (const auto &entry : seq[q]) {
-        const uint32_t cid = entry.first;
-        const float *centroid =
-            idx.rotated_centroids.data() +
-            static_cast<size_t>(cid) * idx.padded;
-        const float residual_norm = std::sqrt(std::max(
-            rabitqlib::euclidean_sqr(rotated.data(), centroid, idx.padded),
-            0.0f));
-        const float ip =
-            idx.mtype == rabitqlib::METRIC_IP
-                ? rabitqlib::dot_product(rotated.data(), centroid, idx.padded)
-                : 0.0f;
-        prepared.emplace_back(residual_norm, ip);
+        prepared.push_back(
+            PrepareCluster(idx, normalized, query_norm_sq, entry.first));
       }
     }
 
@@ -665,21 +1194,17 @@ ReplayStats ReplayDedicated(const DedicatedIndex &idx,
         continue;
       }
       if (prep_inside) {
-        const float *centroid =
-            idx.rotated_centroids.data() +
-            static_cast<size_t>(cid) * idx.padded;
-        const float residual_norm = std::sqrt(std::max(
-            rabitqlib::euclidean_sqr(rotated.data(), centroid, idx.padded),
-            0.0f));
+        const ClusterPrepare prep =
+            PrepareCluster(idx, normalized, query_norm_sq, cid);
         if (idx.mtype == rabitqlib::METRIC_IP) {
-          bq.set_g_add(residual_norm,
-                       rabitqlib::dot_product(rotated.data(), centroid,
-                                              idx.padded));
+          bq.set_g_add(prep.residual_norm, prep.inner_product);
         } else {
-          bq.set_g_add(residual_norm);
+          bq.set_g_add(prep.residual_norm);
         }
+      } else if (idx.mtype == rabitqlib::METRIC_IP) {
+        bq.set_g_add(prepared[li].residual_norm, prepared[li].inner_product);
       } else {
-        bq.set_g_add(prepared[li].first, prepared[li].second);
+        bq.set_g_add(prepared[li].residual_norm);
       }
       const char *batch = reinterpret_cast<const char *>(idx.batch_base) +
                           cm.batch_data_offset;
@@ -725,12 +1250,20 @@ int main(int argc, char **argv) {
           << "Usage: ivf_rabitq_scan_replay --index-int=PATH --index-ded=PATH "
              "--queries=FILE --lists-int=CSV --lists-ded=CSV --csv=PREFIX "
              "[--mode-int=baseline] [--queries-count=N] [--rounds=5] "
-             "[--warmup=1]"
+             "[--warmup=1] [--samples-int=CSV --samples-ded=CSV] "
+             "[--tolerance=1e-4]"
           << std::endl;
       return 1;
     }
     if (FLAGS_rounds <= 0 || FLAGS_warmup < 0 || FLAGS_queries_count < 0) {
       std::cerr << "Invalid rounds/warmup/queries_count" << std::endl;
+      return 1;
+    }
+    if ((FLAGS_samples_int.empty() != FLAGS_samples_ded.empty()) ||
+        FLAGS_tolerance < 0) {
+      std::cerr << "--samples-int and --samples-ded must be used together; "
+                   "--tolerance must be >= 0"
+                << std::endl;
       return 1;
     }
 
@@ -756,18 +1289,25 @@ int main(int argc, char **argv) {
       return 1;
     }
 
-    // Only the first qcount rows are replayed; map their file qids to rows.
-    std::unordered_map<long long, size_t> qid_to_row;
-    for (size_t r = 0; r < qcount; ++r) qid_to_row.emplace(qs.qids[r], r);
-    if (qid_to_row.size() != qcount) {
-      std::cerr << "Duplicate qids in the query file" << std::endl;
-      return 1;
+    // Only the first qcount rows are replayed. The diagnostic CSVs record
+    // load-order row indices, so no qid translation is applied; qids only
+    // need to be unique so a stray qid-based join cannot silently pass.
+    {
+      std::unordered_set<long long> seen;
+      for (size_t r = 0; r < qcount; ++r) {
+        if (!seen.insert(qs.qids[r]).second) {
+          std::cerr << "Duplicate qids in the query file" << std::endl;
+          return 1;
+        }
+      }
     }
     RecordedLists rec_int, rec_ded;
-    if (!LoadListsCsv(FLAGS_lists_int, FLAGS_mode_int, qid_to_row, &rec_int)) {
+    if (!LoadListsCsv(FLAGS_lists_int, FLAGS_mode_int, qcount, qs.rows.size(),
+                      &rec_int)) {
       return 1;
     }
-    if (!LoadListsCsv(FLAGS_lists_ded, "dedicated", qid_to_row, &rec_ded)) {
+    if (!LoadListsCsv(FLAGS_lists_ded, "dedicated", qcount, qs.rows.size(),
+                      &rec_ded)) {
       return 1;
     }
     if (rec_int.queries() != rec_ded.queries() ||
@@ -796,12 +1336,19 @@ int main(int argc, char **argv) {
               << " has_avx512_popcnt="
               << rabitqlib::cpu::has_avx512_popcnt() << std::endl;
     std::cout << "loadavg: " << LoadAvg() << std::endl;
-    std::cout << "int: lists/query=" << double(rec_int.total_lists) / qcount
+    std::cout << "int: lists_total=" << rec_int.total_lists
+              << " lists/query=" << double(rec_int.total_lists) / qcount
+              << " vectors_total=" << rec_int.total_scan
               << " vectors/query=" << double(rec_int.total_scan) / qcount
               << " scan_bytes=" << int_idx.scan_bytes << std::endl;
-    std::cout << "ded: lists/query=" << double(rec_ded.total_lists) / qcount
+    std::cout << "ded: lists_total=" << rec_ded.total_lists
+              << " lists/query=" << double(rec_ded.total_lists) / qcount
+              << " vectors_total=" << rec_ded.total_scan
               << " vectors/query=" << double(rec_ded.total_scan) / qcount
               << " batch_bytes=" << ded_idx.batch_bytes << std::endl;
+    std::cout << "scope: coarse scan kernels only (query prepare + estimate + "
+                 "key-keep walk); no heap/refine/finalize"
+              << std::endl;
     std::cout << "warmup=" << FLAGS_warmup
               << " rounds=" << FLAGS_rounds
               << " (mmap pages are faulted in by warmup; timed rounds are "
@@ -810,6 +1357,53 @@ int main(int argc, char **argv) {
 
     std::vector<std::vector<float>> queries(qcount);
     for (size_t q = 0; q < qcount; ++q) queries[q] = qs.rows[q];
+
+    // Untimed equivalence pass: recompute every exported production sample
+    // (key + distance + lower_bound + coarse_dot) from the same segments.
+    if (!FLAGS_samples_int.empty()) {
+      std::vector<std::vector<SampleRow>> samples_int, samples_ded;
+      size_t skipped_int = 0, skipped_ded = 0;
+      if (!LoadSamplesCsv(FLAGS_samples_int, FLAGS_mode_int, qcount,
+                          qs.rows.size(), &samples_int, &skipped_int) ||
+          !LoadSamplesCsv(FLAGS_samples_ded, "dedicated", qcount,
+                          qs.rows.size(), &samples_ded, &skipped_ded)) {
+        std::cerr << "Failed to load samples.csv files" << std::endl;
+        return 1;
+      }
+      if (skipped_int || skipped_ded) {
+        std::cout << "samples: skipped trimmed-tail rows int=" << skipped_int
+                  << " ded=" << skipped_ded << std::endl;
+      }
+      std::cout << "sample verification: recomputing recorded estimate rows "
+                   "from the index segments (tolerance="
+                << FLAGS_tolerance << ")" << std::endl;
+      const SampleVerify v_int = VerifyIntegratedSamples(
+          int_idx, queries, rec_int, samples_int, FLAGS_tolerance);
+      PrintSampleVerify("int", "model_ids", v_int, FLAGS_tolerance);
+      if (v_int.checked == 0) {
+        std::cerr << "no integrated samples verified for mode "
+                  << FLAGS_mode_int << " (mode/column mismatch?)"
+                  << std::endl;
+        return 1;
+      }
+      const SampleVerify v_ded = VerifyDedicatedSamples(
+          ded_idx, queries, rec_ded, samples_ded, FLAGS_tolerance);
+      PrintSampleVerify("ded", "list_ids", v_ded, FLAGS_tolerance);
+      if (v_ded.checked == 0) {
+        std::cerr << "no dedicated samples verified (mode/column mismatch?)"
+                  << std::endl;
+        return 1;
+      }
+      if (v_int.key_mismatches || v_int.value_mismatches ||
+          v_ded.key_mismatches || v_ded.value_mismatches) {
+        std::cerr << "sample verification FAILED" << std::endl;
+        return 1;
+      }
+      std::cout << "sample verification: PASSED (keys and estimate values "
+                   "recomputed from the segments match the recorded "
+                   "production scan)"
+                << std::endl;
+    }
 
     // Warmup both sides, both orders, both variants.
     for (int w = 0; w < FLAGS_warmup; ++w) {

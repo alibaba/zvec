@@ -719,6 +719,7 @@ int IVFEntity::bind_query(const void *query, const IndexQueryMeta &qmeta) {
   const uint64_t seg_t0 = packed_scan_timing_ ? SegmentClock() : 0;
   packed_scan_stats_ = {};
   packed_scan_lists_.clear();
+  packed_scan_samples_.clear();
   packed_scan_limited_ = false;
   segment_ns_[0] = segment_ns_[1] = segment_ns_[2] = 0;
   block_scanner_.reset();
@@ -1244,6 +1245,20 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
       if (ret != 0) return IndexError_InvalidFormat;
       *(stats->mutable_dist_calced_count()) += count;
       packed_scan_stats_.coarse_count += count;
+      if (packed_scan_samples_enabled_) {
+        // Deterministic rows: first, middle and last lane of the block.
+        const uint32_t sample_rows[3] = {0, static_cast<uint32_t>(count / 2),
+                                         static_cast<uint32_t>(count - 1)};
+        uint32_t last_row = std::numeric_limits<uint32_t>::max();
+        for (uint32_t sr : sample_rows) {
+          if (sr == last_row) continue;
+          last_row = sr;
+          mutable_packed_scan_samples().push_back(
+              {static_cast<uint32_t>(list_id), static_cast<uint32_t>(block_id),
+               sr, keys[sr], estimates[sr].distance,
+               estimates[sr].lower_bound, estimates[sr].coarse_dot});
+        }
+      }
       if (packed_scan_timing_) {
         seg_t2 = SegmentClock();
         segment_ns_[1] += seg_t2 - seg_t1;

@@ -125,6 +125,31 @@ class IVFEntity {
     return packed_scan_limited_;
   }
 
+  struct PackedScanSample {
+    uint32_t list_id{0};
+    uint32_t block{0};
+    uint32_t row{0};
+    uint64_t key{0};
+    float distance{0};
+    float lower_bound{0};
+    float coarse_dot{0};
+  };
+  // Sampled coarse estimates of the last bound query. The scan records the
+  // first, middle and last row of every scanned block when enabled;
+  // bind_query clears them. Diagnostics only.
+  void set_packed_scan_samples_enabled(bool enabled) const {
+    packed_scan_samples_enabled_ = enabled;
+  }
+  bool packed_scan_samples_enabled() const {
+    return packed_scan_samples_enabled_;
+  }
+  const std::vector<PackedScanSample> &packed_scan_samples() const {
+    return packed_scan_samples_;
+  }
+  std::vector<PackedScanSample> &mutable_packed_scan_samples() const {
+    return packed_scan_samples_;
+  }
+
   struct CandidateVisitor {
     std::function<void(uint64_t, float)> consume;
     // Threshold in internal distance units for this candidate's group.
@@ -496,8 +521,10 @@ class IVFEntity {
                          const CandidateVisitor &visitor) const;
   mutable PackedScanStats packed_scan_stats_{};
   mutable std::vector<PackedScanList> packed_scan_lists_;
+  mutable std::vector<PackedScanSample> packed_scan_samples_;
   mutable bool packed_scan_limited_{false};
   mutable bool packed_scan_lists_enabled_{false};
+  mutable bool packed_scan_samples_enabled_{false};
   mutable bool packed_scan_timing_{false};
   // Scan-clock nanoseconds per query: cand, coarse, post-scan.
   mutable uint64_t segment_ns_[3]{};

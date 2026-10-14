@@ -207,6 +207,8 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
                  ailego::JsonValue(param.rabitq_segment_timing));
     json_obj.set("rabitq_export_scan_lists",
                  ailego::JsonValue(param.rabitq_export_scan_lists));
+    json_obj.set("rabitq_export_scan_samples",
+                 ailego::JsonValue(param.rabitq_export_scan_samples));
     index_type = IndexType::kIVF;
     // json_obj.set("l1QueryParam",
     // ailego::JsonValue(QueryParamSerializeToJson(param.l1QueryParam)));
@@ -226,6 +228,8 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
     json_obj.set("rabitq_pruning", ailego::JsonValue(param.rabitq_pruning));
     json_obj.set("rabitq_export_scan_lists",
                  ailego::JsonValue(param.rabitq_export_scan_lists));
+    json_obj.set("rabitq_export_scan_samples",
+                 ailego::JsonValue(param.rabitq_export_scan_samples));
     index_type = IndexType::kIVFRabitq;
   } else if constexpr (std::is_same_v<QueryParamType, VamanaQueryParam>) {
     if (!omit_empty_value || param.ef_search != 0) {
@@ -356,6 +360,9 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
                                    tmp_json_value) ||
           !extract_value_from_json(json_obj, "rabitq_export_scan_lists",
                                    param->rabitq_export_scan_lists,
+                                   tmp_json_value) ||
+          !extract_value_from_json(json_obj, "rabitq_export_scan_samples",
+                                   param->rabitq_export_scan_samples,
                                    tmp_json_value)) {
         LOG_ERROR("Failed to deserialize RaBitQ scan options");
         return nullptr;
@@ -391,6 +398,9 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
                                    param->rabitq_pruning, tmp_json_value) ||
           !extract_value_from_json(json_obj, "rabitq_export_scan_lists",
                                    param->rabitq_export_scan_lists,
+                                   tmp_json_value) ||
+          !extract_value_from_json(json_obj, "rabitq_export_scan_samples",
+                                   param->rabitq_export_scan_samples,
                                    tmp_json_value)) {
         LOG_ERROR("Failed to deserialize IVF RaBitQ query options");
         return nullptr;
@@ -471,6 +481,9 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
                                    tmp_json_value) ||
           !extract_value_from_json(json_obj, "rabitq_export_scan_lists",
                                    param->rabitq_export_scan_lists,
+                                   tmp_json_value) ||
+          !extract_value_from_json(json_obj, "rabitq_export_scan_samples",
+                                   param->rabitq_export_scan_samples,
                                    tmp_json_value)) {
         LOG_ERROR("Failed to deserialize RaBitQ scan options");
         return nullptr;
@@ -496,6 +509,9 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
                                    param->rabitq_pruning, tmp_json_value) ||
           !extract_value_from_json(json_obj, "rabitq_export_scan_lists",
                                    param->rabitq_export_scan_lists,
+                                   tmp_json_value) ||
+          !extract_value_from_json(json_obj, "rabitq_export_scan_samples",
+                                   param->rabitq_export_scan_samples,
                                    tmp_json_value)) {
         LOG_ERROR("Failed to deserialize IVF RaBitQ query options");
         return nullptr;

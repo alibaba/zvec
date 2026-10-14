@@ -43,18 +43,23 @@ class IvfRabitqEntity {
   //! Scan one cluster and insert qualifying candidates into heap.
   //! Uses 1-bit lower bound to prune before expensive extra-bit boosting.
   //! Same interface as IVFEntity::search for consistency.
+  //! samples (optional) collects deterministic coarse-estimate samples.
+  using SampleSink = std::vector<IvfRabitqContext::ScanSampleRecord> *;
+
   int search_cluster(uint32_t cluster_id,
                      const IvfRabitqQueryState &query_state, size_t padded_dim,
                      size_t ex_bits, IndexDocumentHeap *heap,
                      IvfRabitqScanStats *stats = nullptr,
-                     bool disable_pruning = false) const;
+                     bool disable_pruning = false,
+                     SampleSink samples = nullptr) const;
 
   int search_cluster(uint32_t cluster_id,
                      const IvfRabitqQueryState &query_state, size_t padded_dim,
                      size_t ex_bits, const IndexFilter &filter,
                      IndexDocumentHeap *heap,
                      IvfRabitqScanStats *stats = nullptr,
-                     bool disable_pruning = false) const;
+                     bool disable_pruning = false,
+                     SampleSink samples = nullptr) const;
 
   int search_cluster_group_by(uint32_t cluster_id,
                               const IvfRabitqQueryState &query_state,
@@ -142,7 +147,8 @@ class IvfRabitqEntity {
                           const IvfRabitqQueryState &query_state,
                           size_t padded_dim, size_t ex_bits,
                           const IndexFilter *filter, IndexDocumentHeap *heap,
-                          IvfRabitqScanStats *stats) const;
+                          IvfRabitqScanStats *stats,
+                          SampleSink samples) const;
 
   template <bool HasFilter>
   int search_cluster_group_by_impl(

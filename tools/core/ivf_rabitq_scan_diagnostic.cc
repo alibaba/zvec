@@ -35,11 +35,14 @@ int main(int argc, char **argv) {
   const auto usage = [] {
     std::cerr << "Usage: ivf_rabitq_scan_diagnostic CONFIG.yaml "
                  "OUTPUT_PREFIX [--segment-timing] [--export-lists] "
-                 "[--disable-pruning]\n";
+                 "[--disable-pruning] [--export-scan-samples] "
+                 "[--sample-query-stride=N]\n";
     return 1;
   };
   if (argc < 3) return usage();
   bool segment_timing = false, export_lists = false, disable_pruning = false;
+  bool export_samples = false;
+  size_t sample_query_stride = 25;
   for (int i = 3; i < argc; ++i) {
     const std::string flag = argv[i];
     if (flag == "--segment-timing" && !segment_timing) {
@@ -48,6 +51,20 @@ int main(int argc, char **argv) {
       export_lists = true;
     } else if (flag == "--disable-pruning" && !disable_pruning) {
       disable_pruning = true;
+    } else if (flag == "--export-scan-samples" && !export_samples) {
+      export_samples = true;
+    } else if (!flag.compare(0, 22, "--sample-query-stride=") &&
+               flag.size() > 22) {
+      const std::string value = flag.substr(22);
+      size_t parsed = 0;
+      unsigned long stride = 0;
+      try {
+        stride = std::stoul(value, &parsed);
+      } catch (...) {
+        return usage();
+      }
+      if (parsed != value.size() || stride == 0) return usage();
+      sample_query_stride = static_cast<size_t>(stride);
     } else {
       return usage();
     }
@@ -116,9 +133,13 @@ int main(int argc, char **argv) {
         // Emitted mode configurations keep it off (collect == false).
         query->rabitq_segment_timing = collect && segment_timing;
         query->rabitq_export_scan_lists = collect && export_lists;
+        // Samples are stride-gated per query and set right after configure();
+        // emitted mode configurations must stay free of the diagnostic flag.
+        query->rabitq_export_scan_samples = false;
       } else {
         dedicated_query->rabitq_collect_stats = collect;
         dedicated_query->rabitq_export_scan_lists = collect && export_lists;
+        dedicated_query->rabitq_export_scan_samples = false;
       }
     };
     std::vector<std::vector<float>> vectors;
@@ -143,7 +164,11 @@ int main(int argc, char **argv) {
     std::ofstream results(std::string(argv[2]) + ".results.csv");
     std::ofstream lists;
     if (export_lists) lists.open(std::string(argv[2]) + ".lists.csv");
-    if (!counts || !results || (export_lists && !lists))
+    std::ofstream samples;
+    if (export_samples)
+      samples.open(std::string(argv[2]) + ".samples.csv");
+    if (!counts || !results || (export_lists && !lists) ||
+        (export_samples && !samples))
       throw std::runtime_error("Cannot open output files");
     counts << "query,mode,active,mapped,coarse_count,refined_count,key_reads,"
               "coarse_reads,row_reads,coarse_copy_bytes,result_count,baseline_"
@@ -151,8 +176,14 @@ int main(int argc, char **argv) {
               "ns,cand_ns,post_scan_ns,finalize_ns,query_ns\n";
     results << "query,mode,rank,key,score\n";
     if (export_lists) lists << "query,mode,list_id,scan_count,limited\n";
+    if (export_samples)
+      samples << "query,mode,list_id,block,row,key,distance,lower_bound,"
+                 "coarse_dot\n";
     counts << std::setprecision(std::numeric_limits<float>::max_digits10);
     results << std::setprecision(std::numeric_limits<float>::max_digits10);
+    if (export_samples)
+      samples << std::setprecision(
+          std::numeric_limits<float>::max_digits10);
     std::array<size_t, 4> coarse{}, refined{}, active{};
     std::array<std::vector<size_t>, 4> coarse_per_query, refined_per_query;
     std::array<double, 4> prep_ns{}, seg_coarse_ns{}, cand_ns{},
@@ -162,6 +193,12 @@ int main(int argc, char **argv) {
       core_interface::SearchResult baseline;
       for (size_t mode = 0; mode < names.size(); ++mode) {
         configure(mode, true);
+        const bool export_samples_q =
+            export_samples && q % sample_query_stride == 0;
+        if (query)
+          query->rabitq_export_scan_samples = export_samples_q;
+        else
+          dedicated_query->rabitq_export_scan_samples = export_samples_q;
         core_interface::SearchResult result;
         const int ret = index->search(
             core_interface::VectorData{
@@ -212,6 +249,18 @@ int main(int argc, char **argv) {
           }
           lists_total[mode] += s.scan_list_ids.size();
         }
+        if (export_samples_q) {
+          if (!s.scan_samples_collected)
+            throw std::runtime_error("Scan samples were not collected");
+          for (const auto &sm : s.scan_samples) {
+            samples << q << ',' << names[mode] << ',' << sm.list_id << ','
+                    << sm.block << ',' << sm.row << ',' << sm.key << ','
+                    << sm.distance << ',' << sm.lower_bound << ','
+                    << sm.coarse_dot << '\n';
+          }
+        } else if (s.scan_samples_collected) {
+          throw std::runtime_error("Scan samples unexpectedly collected");
+        }
         coarse[mode] += s.coarse_count;
         refined[mode] += s.refined_count;
         active[mode] += s.active;
@@ -227,7 +276,9 @@ int main(int argc, char **argv) {
     }
     counts.close();
     results.close();
-    if (!counts || !results) throw std::runtime_error("Writing output failed");
+    if (export_samples) samples.close();
+    if (!counts || !results || (export_samples && !samples))
+      throw std::runtime_error("Writing output failed");
     if (!active[0])
       throw std::runtime_error(
           "No batch scan activated; check index type, sidecar and query data");

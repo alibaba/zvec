@@ -324,6 +324,7 @@ int IVFRabitqIndex::_prepare_for_search(
   }
   if ((ivf_rabitq_param->rabitq_collect_stats ||
        ivf_rabitq_param->rabitq_export_scan_lists ||
+       ivf_rabitq_param->rabitq_export_scan_samples ||
        !ivf_rabitq_param->rabitq_pruning) &&
       (search_param->refiner_param || search_param->group_by_param ||
        search_param->bf_pks)) {
@@ -333,12 +334,15 @@ int IVFRabitqIndex::_prepare_for_search(
   auto *ctx = dynamic_cast<core::IvfRabitqContext *>(context.get());
   if (!ctx) return core::IndexError_Cast;
   ctx->collect_scan_stats = ivf_rabitq_param->rabitq_collect_stats ||
-                            ivf_rabitq_param->rabitq_export_scan_lists;
+                            ivf_rabitq_param->rabitq_export_scan_lists ||
+                            ivf_rabitq_param->rabitq_export_scan_samples;
   ctx->scan_stats = {};
   ctx->disable_pruning = !ivf_rabitq_param->rabitq_pruning;
   ctx->collect_scan_lists = ivf_rabitq_param->rabitq_export_scan_lists;
   ctx->scan_lists.clear();
   ctx->scan_lists_limited = false;
+  ctx->collect_scan_samples = ivf_rabitq_param->rabitq_export_scan_samples;
+  ctx->scan_samples.clear();
   _set_group_by_on_context(search_param, context);
   context->set_topk(search_param->topk);
   context->set_fetch_vector(false);
@@ -361,7 +365,8 @@ int IVFRabitqIndex::_dense_search(
 #if RABITQ_SUPPORTED
   if (ret != 0) return ret;
   const auto *ctx = dynamic_cast<const core::IvfRabitqContext *>(context.get());
-  if (ctx && (ctx->collect_scan_stats || ctx->collect_scan_lists)) {
+  if (ctx && (ctx->collect_scan_stats || ctx->collect_scan_lists ||
+              ctx->collect_scan_samples)) {
     const auto &scan = ctx->scan_stats;
     // All entity reads occur at open time. Query-time accesses use the loaded
     // views, so logical read/copy counters remain zero, even for owned views.
@@ -378,6 +383,17 @@ int IVFRabitqIndex::_dense_search(
       for (const auto &list : ctx->scan_lists) {
         stats.scan_list_ids.push_back(list.list_id);
         stats.scan_list_counts.push_back(list.scanned);
+      }
+    }
+    if (ctx->collect_scan_samples) {
+      auto &stats = result->ivf_scan_stats_;
+      stats.scan_samples_collected = true;
+      stats.scan_samples.reserve(ctx->scan_samples.size());
+      for (const auto &sample : ctx->scan_samples) {
+        stats.scan_samples.push_back({sample.list_id, sample.block, sample.row,
+                                      sample.key, sample.distance,
+                                      sample.lower_bound,
+                                      sample.coarse_dot});
       }
     }
   }

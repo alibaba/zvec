@@ -100,6 +100,20 @@ struct VectorDataBuffer {
 };
 
 
+// One sampled coarse estimate the production scan computed for a row.
+// Populated only when rabitq_export_scan_samples is set; rows are chosen
+// deterministically (first, middle and last row of each sampled block) so a
+// replay can recompute and compare them.
+struct IVFScanSample {
+  uint32_t list_id{0};
+  uint32_t block{0};
+  uint32_t row{0};
+  uint64_t key{0};
+  float distance{0};
+  float lower_bound{0};
+  float coarse_dot{0};
+};
+
 // One public search processes one query. Counters are logical scan operations,
 // not OS I/O; mapped access has zero read-call counters.
 struct IVFScanStats {
@@ -120,6 +134,10 @@ struct IVFScanStats {
   bool scan_lists_limited{false};
   std::vector<uint32_t> scan_list_ids{};
   std::vector<uint32_t> scan_list_counts{};
+  // Sampled per-row coarse estimates of the last bound query, populated only
+  // when rabitq_export_scan_samples is set. Valid for single-query searches.
+  bool scan_samples_collected{false};
+  std::vector<IVFScanSample> scan_samples{};
 };
 
 struct SearchResult {

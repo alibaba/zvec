@@ -500,7 +500,8 @@ int IVFIndex::_dense_search(const VectorData &query,
       dynamic_cast<const core::IVFSearcherContext *>(context.get());
   if (options && (options->rabitq_collect_stats ||
                    options->rabitq_segment_timing ||
-                   options->rabitq_export_scan_lists) &&
+                   options->rabitq_export_scan_lists ||
+                   options->rabitq_export_scan_samples) &&
       ctx) {
     const auto &scan = ctx->entity()->packed_scan_stats();
     result->ivf_scan_stats_ = {true,
@@ -525,6 +526,17 @@ int IVFIndex::_dense_search(const VectorData &query,
       for (const auto &list : ctx->entity()->packed_scan_lists()) {
         stats.scan_list_ids.push_back(list.list_id);
         stats.scan_list_counts.push_back(list.scanned);
+      }
+    }
+    if (options->rabitq_export_scan_samples) {
+      auto &stats = result->ivf_scan_stats_;
+      stats.scan_samples_collected = true;
+      stats.scan_samples.reserve(ctx->entity()->packed_scan_samples().size());
+      for (const auto &sample : ctx->entity()->packed_scan_samples()) {
+        stats.scan_samples.push_back({sample.list_id, sample.block, sample.row,
+                                      sample.key, sample.distance,
+                                      sample.lower_bound,
+                                      sample.coarse_dot});
       }
     }
   }
@@ -554,7 +566,8 @@ int IVFIndex::_prepare_for_search(
                             ivf_search_param->rabitq_reuse_coarse_dot ||
                             ivf_search_param->rabitq_collect_stats ||
                             ivf_search_param->rabitq_segment_timing ||
-                            ivf_search_param->rabitq_export_scan_lists;
+                            ivf_search_param->rabitq_export_scan_lists ||
+                            ivf_search_param->rabitq_export_scan_samples;
   if (scan_options && (!use_rabitq_ || legacy_rabitq_ ||
                        search_param->refiner_param || search_param->bf_pks)) {
     LOG_ERROR(
@@ -598,6 +611,8 @@ int IVFIndex::_prepare_for_search(
         ivf_search_param->rabitq_segment_timing);
     ctx->entity()->set_packed_scan_lists_enabled(
         ivf_search_param->rabitq_export_scan_lists);
+    ctx->entity()->set_packed_scan_samples_enabled(
+        ivf_search_param->rabitq_export_scan_samples);
   }
   _set_group_by_on_context(search_param, context);
   context->set_topk(ivf_search_param->topk);
