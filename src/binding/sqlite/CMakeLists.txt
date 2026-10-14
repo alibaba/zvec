@@ -44,7 +44,7 @@ if(NOT ZVEC_SQLITE_INCLUDE_DIR OR NOT EXISTS "${ZVEC_SQLITE_INCLUDE_DIR}/sqlite3
 endif()
 message(STATUS "SQLite headers: ${ZVEC_SQLITE_INCLUDE_DIR}")
 
-add_library(zvec_sqlite MODULE zvec_sqlite.c registry.c vtab.c)
+add_library(zvec_sqlite MODULE zvec_sqlite.c registry.c vtab.c args.c)
 
 set_target_properties(zvec_sqlite PROPERTIES
     # File name must be zvec.<ext> (no "lib" prefix) so SQLite's default
