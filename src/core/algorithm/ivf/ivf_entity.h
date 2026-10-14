@@ -13,9 +13,8 @@
 // limitations under the License.
 #pragma once
 
-#include <core/quantizer/quantizer_params.h>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_framework.h>
-#include "metric/metric_params.h"
 #include "ivf_distance_calculator.h"
 #include "ivf_index_format.h"
 #include "ivf_params.h"
@@ -43,6 +42,13 @@ class IVFEntity {
 
   //! load the index from container
   virtual int load(const IndexStorage::Pointer &container);
+
+  //! Prepare the posting distance once per query, after centroid selection.
+  int bind_query(const void *query, const IndexQueryMeta &qmeta);
+
+  const turbo::Quantizer::Pointer &quantizer() const {
+    return quantizer_;
+  }
 
   //! search in inverted list with filter
   int search(size_t inverted_list_id, const void *query,
@@ -203,22 +209,38 @@ class IVFEntity {
   //! Transform a query
   int transform(const void *query, const IndexQueryMeta &qmeta,
                 const void **out, IndexQueryMeta *ometa) const {
+    if (quantizer_) {
+      *out = query;
+      *ometa = qmeta;
+      return 0;
+    }
     return reformer_.transform(query, qmeta, out, ometa);
   }
 
   //! Transform queries
   int transform(const void *query, const IndexQueryMeta &qmeta, uint32_t count,
                 const void **out, IndexQueryMeta *ometa) const {
+    if (quantizer_) {
+      *out = query;
+      *ometa = qmeta;
+      return 0;
+    }
     return reformer_.transform(query, qmeta, count, out, ometa);
   }
 
   //! Normalize the score in query part
   void normalize(size_t qidx, IndexDocumentHeap *heap) const {
+    if (quantizer_) {
+      return;
+    }
     return reformer_.normalize(qidx, heap);
   }
 
   //! Retrieve the value for each inverted list to multiply for normalizing
   float inverted_list_normalize_value(size_t inverted_list_id) const {
+    if (quantizer_) {
+      return 1.0f;
+    }
     if (norm_value_ != 0.0f) {
       return norm_value_;
     }
@@ -339,6 +361,18 @@ class IVFEntity {
   //! Load the header segment
   int load_header(const IndexStorage::Pointer &container);
 
+  int load_quantizer(const IndexStorage::Pointer &container);
+
+  void query_features_distance(const void *query, const void *features,
+                               size_t count, float *out) const {
+    if (quantizer_) {
+      calculator_->query_features_distance(query_distance_, features, count,
+                                           out);
+    } else {
+      calculator_->query_features_distance(query, features, count, out);
+    }
+  }
+
   //! Convert the int8 quantizer scale to normalize value
   float convert_to_normalize_value(float scale) const {
     auto v = scale == 0.0 ? 1.0 : (1.0 / scale);
@@ -353,6 +387,9 @@ class IVFEntity {
   IndexMeta meta_{};
   mutable IVFReformerWrapper reformer_{};
   IVFDistanceCalculator::Pointer calculator_{};
+  turbo::Quantizer::Pointer quantizer_{};
+  // Each context owns its entity clone and therefore its query buffer/LUT.
+  turbo::DistanceImpl query_distance_{};
   IndexStorage::Pointer container_{};
   IndexStorage::Segment::Pointer inverted_{};
   IndexStorage::Segment::Pointer inverted_meta_{};

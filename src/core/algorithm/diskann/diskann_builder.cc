@@ -375,7 +375,7 @@ int DiskAnnBuilder::prune_internal(IndexThreads::Pointer threads) {
   return 0;
 }
 
-int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer /*threads*/) {
+int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer threads) {
   LOG_INFO("Starting Train: Chunk Num: %u", pq_chunk_num_);
 
   ailego::ElapsedTime timer;
@@ -388,7 +388,10 @@ int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer /*threads*/) {
 
   ailego::Params qp;
   qp.set("num_chunk", pq_chunk_num_);
-  qp.set("thread_count", build_thread_count_);
+  // The quantizer creates its own pool, so bound it by the caller's pool.
+  const auto pq_thread_count = static_cast<uint32_t>(std::max<size_t>(
+      1, std::min<size_t>(build_thread_count_, threads->count())));
+  qp.set("thread_count", pq_thread_count);
   qp.set("use_zero_mean", false);
   int ret = quantizer_->init(build_meta_, qp);
   if (ret != 0) {

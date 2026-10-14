@@ -21,8 +21,14 @@ namespace core {
 
 int IndexConverter::TrainAndTransform(const IndexConverter::Pointer &converter,
                                       IndexHolder::Pointer holder) {
+  return TrainAndTransform(converter, std::move(holder), nullptr);
+}
+
+int IndexConverter::TrainAndTransform(const IndexConverter::Pointer &converter,
+                                      IndexHolder::Pointer holder,
+                                      IndexThreads::Pointer threads) {
   auto two_pass_holder = IndexHelper::MakeTwoPassHolder(std::move(holder));
-  int ret = converter->train(two_pass_holder);
+  int ret = converter->train(two_pass_holder, std::move(threads));
   if (ret == 0) {
     ret = converter->transform(std::move(two_pass_holder));
   }
