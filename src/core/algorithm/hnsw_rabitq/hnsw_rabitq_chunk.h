@@ -15,7 +15,6 @@
 
 #include <stdint.h>
 #include <string.h>
-#include <unistd.h>
 #include <atomic>
 #include <cstddef>
 #include <mutex>

@@ -186,6 +186,44 @@ float Fp32Quantizer::calc_distance_dp_dp(const void *dp1,
   return calc_distance_dp_query(dp1, dp2);
 }
 
+float Fp32Quantizer::calc_distance_input_query(const void *dp,
+                                               const void *query) const {
+  if (meta_.metric_name() != "Cosine") {
+    return calc_distance_dp_query(dp, query);
+  }
+  return Quantizer::calc_distance_input_query(dp, query);
+}
+
+void Fp32Quantizer::calc_distance_input_query_batch(const void *const *dp_list,
+                                                    int dp_num,
+                                                    const void *query,
+                                                    float *dist_list) const {
+  if (meta_.metric_name() != "Cosine") {
+    calc_distance_dp_query_batch(dp_list, dp_num, query, dist_list);
+    return;
+  }
+  Quantizer::calc_distance_input_query_batch(dp_list, dp_num, query, dist_list);
+}
+
+float Fp32Quantizer::calc_distance_input_input(const void *dp1,
+                                               const void *dp2) const {
+  if (meta_.metric_name() != "Cosine") {
+    return calc_distance_dp_query(dp1, dp2);
+  }
+  return Quantizer::calc_distance_input_input(dp1, dp2);
+}
+
+void Fp32Quantizer::calc_distance_input_input_batch(const void *const *dp_list,
+                                                    int dp_num,
+                                                    const void *query,
+                                                    float *dist_list) const {
+  if (meta_.metric_name() != "Cosine") {
+    calc_distance_dp_query_batch(dp_list, dp_num, query, dist_list);
+    return;
+  }
+  Quantizer::calc_distance_input_input_batch(dp_list, dp_num, query, dist_list);
+}
+
 INDEX_FACTORY_REGISTER_QUANTIZER(Fp32Quantizer);
 
 }  // namespace turbo

@@ -227,6 +227,8 @@ void set_predicate_values(SetPredicate *predicate, QueryNodeList values) {
   auto list = std::make_shared<QueryListNode>();
   list->set_exclude(predicate->polarity == SetPolarity::EXCLUDE);
   for (auto &value : values) {
+    // Moved scalar literals must no longer point at their old relation.
+    value->set_parent(list.get());
     list->add_value_expr(std::move(value));
   }
   predicate->source->set_op(QueryNodeOp::Q_IN);

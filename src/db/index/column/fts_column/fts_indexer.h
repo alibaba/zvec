@@ -82,6 +82,8 @@ class FtsIndexer {
   }
 
  private:
+  friend class FtsSealRetryTest;
+
   Status open(const FieldSchemaPtrList &fts_fields, bool create,
               bool read_only);
 

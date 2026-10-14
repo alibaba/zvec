@@ -15,6 +15,8 @@
 #include "diskann_builder_entity.h"
 #include <iostream>
 #include <numeric>
+#include <ailego/pattern/defer.h>
+#include "utility/ordinal_access_holder.h"
 #include "diskann_algorithm.h"
 #include "diskann_util.h"
 
@@ -31,13 +33,13 @@ void DiskAnnBuilderEntity::clear() {
   neighbor_size_ = 0;
   mem_index_file_.clear();
   index_path_prefix_.clear();
-  vectors_buffer_.clear();
-  keys_buffer_.clear();
-  neighbors_buffer_.clear();
+  release_vectors();
+  std::string().swap(keys_buffer_);
+  std::string().swap(neighbors_buffer_);
   entrypoints_.clear();
   meta_.clear();
-  pq_quantizer_meta_buffer_.clear();
-  block_compressed_data_.clear();
+  std::string().swap(pq_quantizer_meta_buffer_);
+  std::vector<uint8_t>().swap(block_compressed_data_);
   meta_header_.clear();
   pq_meta_.clear();
 }
@@ -62,27 +64,28 @@ int DiskAnnBuilderEntity::init(const IndexMeta &meta, uint32_t max_degree,
   return 0;
 }
 
+void DiskAnnBuilderEntity::release_vectors() {
+  std::string().swap(vectors_buffer_);
+}
+
 int DiskAnnBuilderEntity::reserve_space(uint32_t docs) {
   vectors_buffer_.reserve(meta_.element_size() * docs);
   keys_buffer_.reserve(sizeof(diskann_key_t) * docs);
-  neighbors_buffer_.reserve(neighbor_size_ * docs);
+  neighbors_buffer_.reserve(static_cast<size_t>(neighbor_size_) * docs);
 
   return 0;
 }
 
 int DiskAnnBuilderEntity::add_vector(diskann_key_t key, const void *vec) {
+  if (!vec) return IndexError_ReadData;
   vectors_buffer_.append(reinterpret_cast<const char *>(vec),
                          meta_.element_size());
   keys_buffer_.append(reinterpret_cast<const char *>(&key), sizeof(key));
 
   uint32_t neighbor_cnt = 0;
-  // Parentheses select the size/value constructor.
-  std::vector<diskann_id_t> neighbor(max_build_degree_, 0);
-
   neighbors_buffer_.append(reinterpret_cast<const char *>(&neighbor_cnt),
                            sizeof(uint32_t));
-  neighbors_buffer_.append(reinterpret_cast<const char *>(neighbor.data()),
-                           sizeof(diskann_id_t) * max_build_degree_);
+  neighbors_buffer_.append(sizeof(diskann_id_t) * max_build_degree_, '\0');
 
   (*mutable_doc_cnt())++;
 
@@ -375,6 +378,10 @@ int DiskAnnBuilderEntity::dump_entrypoint_segment(
 
 int DiskAnnBuilderEntity::dump(IndexHolder::Pointer holder, IndexMeta &meta,
                                const IndexDumper::Pointer &dumper) {
+  if (!holder || holder->count() != this->doc_cnt() ||
+      holder->element_size() != meta_.element_size()) {
+    return IndexError_Mismatch;
+  }
   uint64_t doc_cnt = holder->count();
   uint64_t max_node_size =
       (uint64_t)max_observed_degree_ * sizeof(diskann_id_t) + sizeof(uint32_t) +
@@ -410,11 +417,40 @@ int DiskAnnBuilderEntity::dump(IndexHolder::Pointer holder, IndexMeta &meta,
   size_t len = 0;
 
   // no need to write first sector
-  auto iter = holder->create_iterator();
-  if (!iter) {
-    LOG_ERROR("Create iterator for holder failed");
-    return IndexError_Runtime;
+  OrdinalAccessHolder::Reader::Pointer reader;
+  if (auto *source = dynamic_cast<OrdinalAccessHolder *>(holder.get())) {
+    ret = source->create_ordinal_reader(&reader);
+    if (ret != 0 && ret != IndexError_NotImplemented) return ret;
+    if (ret == 0 && !reader) return IndexError_Runtime;
   }
+  auto iter = reader ? nullptr : holder->create_iterator();
+  if (!reader && !iter) return IndexError_Runtime;
+  AILEGO_DEFER([&]() {
+    if (reader) reader->reset();
+  });
+  auto read_vector = [&](size_t id, void *output) -> int {
+    uint64_t key = 0;
+    const void *data = nullptr;
+    if (reader) {
+      int result = reader->read(id, &key, &data);
+      if (result != 0) return result;
+    } else {
+      if (!iter->is_valid()) return IndexError_Mismatch;
+      key = iter->key();
+      data = iter->data();
+      // A deferred read failure can return a non-null placeholder and
+      // invalidate the iterator. Reject it before copying, even on the last
+      // vector where no subsequent iteration would detect the error.
+      if (!iter->is_valid()) {
+        return IndexError_ReadData;
+      }
+    }
+    if (!data) return IndexError_ReadData;
+    if (key != get_key(id)) return IndexError_Mismatch;
+    memcpy(output, data, meta.element_size());
+    if (iter) iter->next();
+    return 0;
+  };
 
   uint64_t index_size = 0;
   uint32_t neighbor_num;
@@ -448,14 +484,8 @@ int DiskAnnBuilderEntity::dump(IndexHolder::Pointer holder, IndexMeta &meta,
         memcpy(&(neighbor_buf[0]), neighbors.second,
                neighbors.first * sizeof(diskann_id_t));
 
-        if (iter->is_valid()) {
-          const void *vec = iter->data();
-          memcpy(&(node_buf[0]), vec, meta.element_size());
-
-          iter->next();
-        } else {
-          return IndexError_Runtime;
-        }
+        ret = read_vector(cur_node_id, &node_buf[0]);
+        if (ret != 0) return ret;
 
         // write neighbor num
         *(uint32_t *)(node_buf.data() + meta_.element_size()) = neighbor_num;
@@ -517,14 +547,8 @@ int DiskAnnBuilderEntity::dump(IndexHolder::Pointer holder, IndexMeta &meta,
       memcpy((char *)neighbor_buf, neighbors.second,
              neighbor_num * sizeof(diskann_id_t));
 
-      if (iter->is_valid()) {
-        const void *vec = iter->data();
-        memcpy(&(multisector_buf[0]), vec, meta.element_size());
-
-        iter->next();
-      } else {
-        return IndexError_Runtime;
-      }
+      ret = read_vector(i, &multisector_buf[0]);
+      if (ret != 0) return ret;
 
       // write neighbor
       *(uint32_t *)(&(multisector_buf[0]) + meta_.element_size()) =

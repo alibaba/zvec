@@ -183,7 +183,7 @@ int FlatIndex::fallback_to_legacy_pipeline() {
   turbo_quantizer_.reset();
   streamer_.reset();
 
-  // Redo the Index::Init() setup down the legacy branch.
+  // Redo the Index::init() setup down the legacy branch.
   proxima_index_meta_.clear();
   proxima_index_meta_.set_meta(param_.data_type, param_.dimension);
   proxima_index_meta_.set_meta_type(is_sparse_

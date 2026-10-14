@@ -98,7 +98,7 @@ void HnswRabitqAlgorithm::select_entry_point(level_t level,
     }
 
     std::vector<IndexStorage::MemoryBlock> neighbor_vec_blocks;
-    int ret = dc.get_vector(&neighbors[0], size, neighbor_vec_blocks);
+    int ret = dc.get_vectors(&neighbors[0], size, neighbor_vec_blocks);
     if (ailego_unlikely(ctx->debugging())) {
       (*ctx->mutable_stats_get_vector())++;
     }
@@ -209,7 +209,7 @@ void HnswRabitqAlgorithm::search_neighbors(level_t level,
     }
 
     std::vector<IndexStorage::MemoryBlock> neighbor_vec_blocks;
-    int ret = dc.get_vector(neighbor_ids.data(), size, neighbor_vec_blocks);
+    int ret = dc.get_vectors(neighbor_ids.data(), size, neighbor_vec_blocks);
     if (ailego_unlikely(ctx->debugging())) {
       (*ctx->mutable_stats_get_vector())++;
     }
@@ -268,28 +268,7 @@ void HnswRabitqAlgorithm::update_neighbors(HnswRabitqAddDistCalculator &dc,
     }
   }
 
-  uint32_t cur_size = 0;
-  for (size_t i = 0; i < topk_heap.size(); ++i) {
-    node_id_t cur_node = topk_heap[i].first;
-    ResultRecord cur_node_dist = topk_heap[i].second;
-    bool good = true;
-    for (uint32_t j = 0; j < cur_size; ++j) {
-      ResultRecord tmp_dist = dc.dist(cur_node, topk_heap[j].first);
-      if (tmp_dist <= cur_node_dist) {
-        good = false;
-        break;
-      }
-    }
-
-    if (good) {
-      topk_heap.mutable_at(cur_size).first = cur_node;
-      topk_heap.mutable_at(cur_size).second = cur_node_dist;
-      cur_size++;
-      if (cur_size >= max_neighbor_cnt) {
-        break;
-      }
-    }
-  }
+  uint32_t cur_size = prune_neighbors(dc, topk_heap, max_neighbor_cnt);
 
   // when after-prune neighbor count is too seldom,
   // we use this strategy to make-up enough edges
@@ -318,6 +297,78 @@ void HnswRabitqAlgorithm::update_neighbors(HnswRabitqAddDistCalculator &dc,
   return;
 }
 
+size_t HnswRabitqAlgorithm::prune_neighbors(HnswRabitqAddDistCalculator &dc,
+                                            TopkHeap &topk_heap,
+                                            size_t max_neighbor_cnt) {
+  std::vector<node_id_t> candidate_ids(topk_heap.size());
+  for (size_t i = 0; i < topk_heap.size(); ++i) {
+    candidate_ids[i] = topk_heap[i].first;
+  }
+
+  std::vector<IndexStorage::MemoryBlock> candidate_blocks;
+  int ret = dc.get_vectors(candidate_ids.data(),
+                           static_cast<uint32_t>(candidate_ids.size()),
+                           candidate_blocks);
+
+  size_t cur_size = 0;
+  if (ailego_likely(ret == 0)) {
+    std::vector<const void *> candidate_vectors(candidate_blocks.size());
+    for (size_t i = 0; i < candidate_blocks.size(); ++i) {
+      candidate_vectors[i] = candidate_blocks[i].data();
+    }
+
+    for (size_t i = 0; i < topk_heap.size(); ++i) {
+      node_id_t cur_node = topk_heap[i].first;
+      ResultRecord cur_node_dist = topk_heap[i].second;
+      const void *cur_vector = candidate_vectors[i];
+      bool good = true;
+      for (size_t j = 0; j < cur_size; ++j) {
+        ResultRecord tmp_dist =
+            dc.dist_cached(cur_vector, candidate_vectors[j]);
+        if (tmp_dist <= cur_node_dist) {
+          good = false;
+          break;
+        }
+      }
+
+      if (good) {
+        topk_heap.mutable_at(cur_size).first = cur_node;
+        topk_heap.mutable_at(cur_size).second = cur_node_dist;
+        candidate_vectors[cur_size] = cur_vector;
+        cur_size++;
+        if (cur_size >= max_neighbor_cnt) {
+          break;
+        }
+      }
+    }
+    return cur_size;
+  }
+
+  // Preserve the previous error behavior for malformed providers.
+  for (size_t i = 0; i < topk_heap.size(); ++i) {
+    node_id_t cur_node = topk_heap[i].first;
+    ResultRecord cur_node_dist = topk_heap[i].second;
+    bool good = true;
+    for (size_t j = 0; j < cur_size; ++j) {
+      ResultRecord tmp_dist = dc.dist(cur_node, topk_heap[j].first);
+      if (tmp_dist <= cur_node_dist) {
+        good = false;
+        break;
+      }
+    }
+
+    if (good) {
+      topk_heap.mutable_at(cur_size).first = cur_node;
+      topk_heap.mutable_at(cur_size).second = cur_node_dist;
+      cur_size++;
+      if (cur_size >= max_neighbor_cnt) {
+        break;
+      }
+    }
+  }
+  return cur_size;
+}
+
 void HnswRabitqAlgorithm::reverse_update_neighbors(
     HnswRabitqAddDistCalculator &dc, node_id_t id, level_t level,
     node_id_t link_id, ResultRecord dist, TopkHeap &update_heap) {
@@ -336,37 +387,35 @@ void HnswRabitqAlgorithm::reverse_update_neighbors(
 
   update_heap.emplace(link_id, dist);
 
+  std::vector<node_id_t> neighbor_ids(size);
   for (size_t i = 0; i < size; ++i) {
-    node_id_t node = neighbors[i];
-    ResultRecord cur_dist = dc.dist(id, node);
-    update_heap.emplace(node, cur_dist);
+    neighbor_ids[i] = neighbors[i];
+  }
+  IndexStorage::MemoryBlock center_block;
+  std::vector<IndexStorage::MemoryBlock> neighbor_blocks;
+  int ret = dc.get_vector(id, center_block);
+  if (ailego_likely(ret == 0)) {
+    ret = dc.get_vectors(neighbor_ids.data(),
+                         static_cast<uint32_t>(neighbor_ids.size()),
+                         neighbor_blocks);
   }
 
-  //! TODO: optimize prune
+  if (ailego_likely(ret == 0)) {
+    for (size_t i = 0; i < size; ++i) {
+      ResultRecord cur_dist =
+          dc.dist_cached(center_block.data(), neighbor_blocks[i].data());
+      update_heap.emplace(neighbor_ids[i], cur_dist);
+    }
+  } else {
+    for (size_t i = 0; i < size; ++i) {
+      ResultRecord cur_dist = dc.dist(id, neighbor_ids[i]);
+      update_heap.emplace(neighbor_ids[i], cur_dist);
+    }
+  }
+
   //! prune edges
   update_heap.sort();
-  size_t cur_size = 0;
-  for (size_t i = 0; i < update_heap.size(); ++i) {
-    node_id_t cur_node = update_heap[i].first;
-    ResultRecord cur_node_dist = update_heap[i].second;
-    bool good = true;
-    for (size_t j = 0; j < cur_size; ++j) {
-      ResultRecord tmp_dist = dc.dist(cur_node, update_heap[j].first);
-      if (tmp_dist <= cur_node_dist) {
-        good = false;
-        break;
-      }
-    }
-
-    if (good) {
-      update_heap.mutable_at(cur_size).first = cur_node;
-      update_heap.mutable_at(cur_size).second = cur_node_dist;
-      cur_size++;
-      if (cur_size >= max_neighbor_cnt) {
-        break;
-      }
-    }
-  }
+  size_t cur_size = prune_neighbors(dc, update_heap, max_neighbor_cnt);
 
   update_heap.truncate(cur_size);
   entity_.update_neighbors(level, id, update_heap.container());
