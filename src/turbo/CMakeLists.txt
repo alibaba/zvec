@@ -170,7 +170,7 @@ cc_library(
 # target_include_directories, and STRICT turns Eigen's own warnings into errors.
 # Only the headers are consumed -- rabitqlib/rabitqlib_runtime is NOT linked.
 set(TURBO_EIGEN_INC
-    ${PROJECT_ROOT_DIR}/thirdparty/RaBitQ-Library/RaBitQ-Library-0.1/include)
+    ${PROJECT_ROOT_DIR}/thirdparty/RaBitQ-Library/RaBitQ-Library-0.3.8/include)
 foreach(_turbo_tgt zvec_turbo zvec_turbo_objects zvec_turbo_export_objects)
   if(TARGET ${_turbo_tgt})
     target_include_directories(${_turbo_tgt} SYSTEM PRIVATE ${TURBO_EIGEN_INC})

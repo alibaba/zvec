@@ -14,11 +14,13 @@
 #pragma once
 
 #include <atomic>
+#include <utility>
 #include <zvec/core/framework/index_dumper.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/core/framework/index_stats.h>
 #include <zvec/core/framework/index_storage.h>
+#include <zvec/core/framework/index_threads.h>
 #include "zvec/core/framework/index_reformer.h"
 
 namespace zvec {
@@ -179,6 +181,13 @@ class IndexConverter : public IndexModule {
     return IndexError_NotImplemented;
   }
 
+  //! Train the data with caller-provided thread resources when supported
+  virtual int train(IndexHolder::Pointer holder,
+                    IndexThreads::Pointer threads) {
+    (void)threads;
+    return train(std::move(holder));
+  }
+
   //! Train the data
   virtual int train(IndexSparseHolder::Pointer) {
     return IndexError_NotImplemented;
@@ -223,6 +232,11 @@ class IndexConverter : public IndexModule {
   //! Train and transform the index
   static int TrainAndTransform(const IndexConverter::Pointer &converter,
                                IndexHolder::Pointer holder);
+
+  //! Train and transform with caller-provided thread resources
+  static int TrainAndTransform(const IndexConverter::Pointer &converter,
+                               IndexHolder::Pointer holder,
+                               IndexThreads::Pointer threads);
 
   //! Train, transform and dump the index
   static int TrainTransformAndDump(const IndexConverter::Pointer &converter,

@@ -151,6 +151,12 @@ int MixedStreamerReducer::feed_streamer_with_reformer(
 
   auto check_datatype = [&](const IndexMeta & /*target_meta*/,
                             const IndexMeta &source_meta) -> bool {
+    if (target_builder_ && !is_sparse_) {
+      // Builders consume decoded vectors. Legacy and Turbo postings can
+      // describe different stored types for the same original input type.
+      // Validate each decoded record against original_query_meta_ in read_vec.
+      return true;
+    }
     if (!streamers_.empty()) {
       auto &last_meta = streamers_.back()->meta();
       // Quantizer-encoded sources are dequantized to the original format
@@ -447,6 +453,15 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
       needs_convert = need_encode;
     }
 
+    if (target_builder_ &&
+        (bytes.size() != original_query_meta_.element_size() ||
+         (!need_revert &&
+          (provider->data_type() != original_query_meta_.data_type() ||
+           provider->dimension() != original_query_meta_.dimension())))) {
+      LOG_ERROR("Decoded source vector does not match the builder input");
+      return IndexError_Mismatch;
+    }
+
     // TODO: use id instead of key
     if (!mt_list_.produce(
             VectorItem((*next_id)++, std::move(bytes), needs_convert))) {
@@ -725,9 +740,11 @@ int MixedStreamerReducer::reduce_with_builder(const IndexFilter &filter) {
 }
 
 int MixedStreamerReducer::index_build(IndexHolder::Pointer target_holder) {
+  auto threads =
+      std::make_shared<BorrowedSingleQueueIndexThreads>(*thread_pool_);
   if (target_builder_converter_) {
     int ret = core::IndexConverter::TrainAndTransform(target_builder_converter_,
-                                                      target_holder);
+                                                      target_holder, threads);
     if (ret != 0) {
       LOG_ERROR("Failed to convert target holder, ret=%d", ret);
       return merged_holder_ && merged_holder_->status() != 0
@@ -740,8 +757,6 @@ int MixedStreamerReducer::index_build(IndexHolder::Pointer target_holder) {
       return core::IndexError_Runtime;
     }
   }
-  auto threads =
-      std::make_shared<BorrowedSingleQueueIndexThreads>(*thread_pool_);
   int ret = target_builder_->train(threads, target_holder);
   if (merged_holder_ && merged_holder_->status() != 0) {
     return merged_holder_->status();
