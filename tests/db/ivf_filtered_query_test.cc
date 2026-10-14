@@ -52,7 +52,7 @@ class IVFFilteredQueryTest
     return std::vector<float>(kDimension, static_cast<float>(id + 1) / 16);
   }
 
-  void Create() {
+  void create() {
     CollectionSchema schema("ivf_filtered_query");
     ASSERT_TRUE(schema
                     .add_field(std::make_shared<FieldSchema>(
@@ -97,9 +97,9 @@ class IVFFilteredQueryTest
     }
   }
 
-  void ExpectQuery(const std::string &filter,
-                   const std::vector<uint32_t> &expected,
-                   int nprobe = kCentroidCount) {
+  void expect_query(const std::string &filter,
+                    const std::vector<uint32_t> &expected,
+                    int nprobe = kCentroidCount) {
     SCOPED_TRACE(filter);
     SearchQuery query;
     query.filter_ = filter;
@@ -131,29 +131,29 @@ class IVFFilteredQueryTest
     }
   }
 
-  void CheckFilters() {
+  void check_filters() {
     // Below, exactly at, and above the default 10% brute-force cutoff.
-    ASSERT_NO_FATAL_FAILURE(ExpectQuery("category = 3", {3, 23, 43, 63, 83}));
+    ASSERT_NO_FATAL_FAILURE(expect_query("category = 3", {3, 23, 43, 63, 83}));
     ASSERT_NO_FATAL_FAILURE(
-        ExpectQuery("category IN (3, 4)", {3, 4, 23, 24, 43}));
+        expect_query("category IN (3, 4)", {3, 4, 23, 24, 43}));
     ASSERT_NO_FATAL_FAILURE(
-        ExpectQuery("category IN (3, 4, 5)", {3, 4, 5, 23, 24}));
-    ASSERT_NO_FATAL_FAILURE(ExpectQuery("category = 99", {}));
+        expect_query("category IN (3, 4, 5)", {3, 4, 5, 23, 24}));
+    ASSERT_NO_FATAL_FAILURE(expect_query("category = 99", {}));
     // Candidate-key BF must preserve the forward predicate and must not be
     // restricted to the nearest centroid, which contains none of these rows.
-    ASSERT_NO_FATAL_FAILURE(ExpectQuery("category = 3 AND ordinal >= 503",
-                                        {503, 523, 543, 563, 583}, 1));
-    ASSERT_NO_FATAL_FAILURE(ExpectQuery("", {0, 1, 2, 3, 4}));
+    ASSERT_NO_FATAL_FAILURE(expect_query("category = 3 AND ordinal >= 503",
+                                         {503, 523, 543, 563, 583}, 1));
+    ASSERT_NO_FATAL_FAILURE(expect_query("", {0, 1, 2, 3, 4}));
   }
 
   Collection::Ptr collection_;
 };
 
 TEST_P(IVFFilteredQueryTest, PreservesFiltersBeforeBuildAfterBuildAndReopen) {
-  Create();
+  create();
   ASSERT_FALSE(HasFatalFailure());
   // The mutable index is Flat even though the schema declares IVF.
-  CheckFilters();
+  check_filters();
   ASSERT_FALSE(HasFatalFailure());
   ASSERT_TRUE(collection_->flush().ok());
   ASSERT_TRUE(collection_->optimize(OptimizeOptions{1}).ok());
@@ -161,7 +161,7 @@ TEST_P(IVFFilteredQueryTest, PreservesFiltersBeforeBuildAfterBuildAndReopen) {
   ASSERT_TRUE(stats.has_value()) << stats.error().message();
   ASSERT_EQ(kDocCount, stats->doc_count);
   ASSERT_FLOAT_EQ(1.0F, stats->index_completeness.at("embedding"));
-  CheckFilters();
+  check_filters();
   ASSERT_FALSE(HasFatalFailure());
 
   collection_.reset();
@@ -169,7 +169,7 @@ TEST_P(IVFFilteredQueryTest, PreservesFiltersBeforeBuildAfterBuildAndReopen) {
       kCollectionPath, CollectionOptions{true, std::get<0>(GetParam())});
   ASSERT_TRUE(result.has_value()) << result.error().message();
   collection_ = std::move(result.value());
-  CheckFilters();
+  check_filters();
 }
 
 INSTANTIATE_TEST_SUITE_P(
