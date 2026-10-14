@@ -549,7 +549,7 @@ class Collection:
             raise ValueError(msg)
         _require_positive_integer(topk, "topk")
         ctx = QueryContext(topk=topk, filter=filter, queries=[query])
-        cpp_query = self._querier.build_search_query(ctx, query, self._obj)
+        cpp_query = self._querier._build_search_query(ctx, query, self._obj)
         return self._obj.QueryInternalIds(cpp_query, return_scores)
 
     def resolve_internal_ids(
