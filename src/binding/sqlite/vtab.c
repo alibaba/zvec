@@ -1,14 +1,18 @@
 #define _XOPEN_SOURCE 700 /* nftw, mkdir */
 
 #include <sys/stat.h>
+#include <ctype.h>
 #include <errno.h>
+#include <math.h>
 #include <sqlite3ext.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
 #include <direct.h>
 #else
 #include <ftw.h>
+#include <unistd.h>
 #endif
 #include "zvec/c_api.h"
 #include "args.h"
@@ -18,10 +22,11 @@ SQLITE_EXTENSION_INIT3
 
 typedef struct zvec_vtab {
   sqlite3_vtab base;
-  sqlite3 *db;  /* needed by xDestroy to drop the shadow tables */
-  char *schema; /* "main", "temp", ... */
-  char *name;   /* the virtual table's own name */
-  int derived;  /* 1: created with base=..., owns shadow tables */
+  sqlite3 *db;    /* needed by xDestroy to drop the shadow tables */
+  char *schema;   /* "main", "temp", ... */
+  char *name;     /* the virtual table's own name */
+  int derived;    /* 1: created with base=..., owns shadow tables */
+  int sync_query; /* 1: drain the outbox before every search */
   zvec_shared *shared;
   int n_scalar;
   char **scalar_names;
@@ -359,6 +364,14 @@ static void free_vtab(zvec_vtab *vtab) {
 
 #define SHADOW_VERSION "1"
 
+/* sqlite3_str_finish() returns NULL for an empty string; this returns "". */
+static char *str_done(sqlite3_str *s) {
+  int failed = sqlite3_str_errcode(s) != 0;
+  char *r = sqlite3_str_finish(s);
+  if (r == NULL && !failed) r = sqlite3_mprintf("%s", "");
+  return r;
+}
+
 static int shadow_fail(char **err, int rc, const char *fmt, const char *a,
                        const char *b) {
   if (err != NULL) {
@@ -414,8 +427,27 @@ static int zvec_default_path(sqlite3 *db, const char *schema, const char *table,
   return SQLITE_OK;
 }
 
-static int zvec_shadow_check_base(sqlite3 *db, const char *schema,
-                                  const zvec_args *a, char **err) {
+/* SQLite's affinity rules, reduced to what the index can store. */
+static zvec_ftype filter_type_from_decl(const char *decl) {
+  if (decl == NULL) return ZVEC_FT_UNKNOWN;
+  char up[64];
+  size_t n = 0;
+  for (; decl[n] != '\0' && n + 1 < sizeof up; n++)
+    up[n] = (char)toupper((unsigned char)decl[n]);
+  up[n] = '\0';
+  if (strstr(up, "INT") != NULL) return ZVEC_FT_INT;
+  if (strstr(up, "CHAR") != NULL || strstr(up, "CLOB") != NULL ||
+      strstr(up, "TEXT") != NULL)
+    return ZVEC_FT_TEXT;
+  if (strstr(up, "BLOB") != NULL || up[0] == '\0') return ZVEC_FT_UNKNOWN;
+  if (strstr(up, "REAL") != NULL || strstr(up, "FLOA") != NULL ||
+      strstr(up, "DOUB") != NULL)
+    return ZVEC_FT_REAL;
+  return ZVEC_FT_UNKNOWN; /* NUMERIC and friends: ask the user */
+}
+
+static int zvec_shadow_check_base(sqlite3 *db, const char *schema, zvec_args *a,
+                                  char **err) {
   sqlite3_stmt *st = NULL;
   int rc;
 
@@ -440,13 +472,15 @@ static int zvec_shadow_check_base(sqlite3 *db, const char *schema,
         a->base, NULL);
   }
 
-  rc = sqlite3_prepare_v2(db, "SELECT name, pk FROM pragma_table_xinfo(?1, ?2)",
-                          -1, &st, NULL);
+  rc = sqlite3_prepare_v2(
+      db, "SELECT name, pk, type FROM pragma_table_xinfo(?1, ?2)", -1, &st,
+      NULL);
   if (rc != SQLITE_OK)
     return shadow_fail(err, rc, "zvec: %s%s", sqlite3_errmsg(db), NULL);
   sqlite3_bind_text(st, 1, a->base, -1, SQLITE_STATIC);
   sqlite3_bind_text(st, 2, schema, -1, SQLITE_STATIC);
   int have_key = 0, key_is_pk = 0, have_col = 0, pk_cols = 0;
+  int found[ZVEC_MAX_FILTER] = {0};
   while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
     const char *name = (const char *)sqlite3_column_text(st, 0);
     int pk = sqlite3_column_int(st, 1);
@@ -456,6 +490,14 @@ static int zvec_shadow_check_base(sqlite3 *db, const char *schema,
       key_is_pk = pk > 0;
     }
     if (name != NULL && sqlite3_stricmp(name, a->column) == 0) have_col = 1;
+    for (int f = 0; name != NULL && f < a->n_filter; f++) {
+      if (sqlite3_stricmp(name, a->filter_name[f]) != 0) continue;
+      found[f] = 1;
+      if (a->filter_type[f] == ZVEC_FT_UNKNOWN) {
+        a->filter_type[f] =
+            filter_type_from_decl((const char *)sqlite3_column_text(st, 2));
+      }
+    }
   }
   sqlite3_finalize(st);
   if (rc != SQLITE_DONE)
@@ -469,6 +511,20 @@ static int zvec_shadow_check_base(sqlite3 *db, const char *schema,
     return shadow_fail(err, SQLITE_ERROR,
                        "zvec: vector column '%s' not found in '%s'", a->column,
                        a->base);
+  for (int f = 0; f < a->n_filter; f++) {
+    if (!found[f]) {
+      return shadow_fail(err, SQLITE_ERROR,
+                         "zvec: filter column '%s' not found in '%s'",
+                         a->filter_name[f], a->base);
+    }
+    if (a->filter_type[f] == ZVEC_FT_UNKNOWN) {
+      return shadow_fail(
+          err, SQLITE_ERROR,
+          "zvec: cannot tell if filter column '%s' is int, real or text; "
+          "write it as name:int, name:real or name:text%s",
+          a->filter_name[f], NULL);
+    }
+  }
   if (!key_is_pk || pk_cols != 1) {
     return shadow_fail(
         err, SQLITE_ERROR,
@@ -511,13 +567,21 @@ static char *shadow_trigger_sql(const char *schema, const char *table,
       "INSERT INTO \"%w_outbox\"(op, pk) VALUES(1, CAST(new.\"%w\" AS TEXT)); "
       "END;",
       schema, table, a->base, table, a->key);
+  /* Fires for the vector, the key and every mirrored filter column. */
+  sqlite3_str_appendf(
+      q, "CREATE TRIGGER \"%w\".\"%w_zvec_au\" AFTER UPDATE OF \"%w\", \"%w\"",
+      schema, table, a->column, a->key);
+  for (int i = 0; i < a->n_filter; i++)
+    sqlite3_str_appendf(q, ", \"%w\"", a->filter_name[i]);
   sqlite3_str_appendf(q,
-                      "CREATE TRIGGER \"%w\".\"%w_zvec_au\" AFTER UPDATE OF "
-                      "\"%w\", \"%w\" ON \"%w\" "
-                      "WHEN new.\"%w\" IS NOT old.\"%w\" OR new.\"%w\" IS NOT "
-                      "old.\"%w\" BEGIN ",
-                      schema, table, a->column, a->key, a->base, a->column,
-                      a->column, a->key, a->key);
+                      " ON \"%w\" WHEN new.\"%w\" IS NOT old.\"%w\" OR "
+                      "new.\"%w\" IS NOT old.\"%w\"",
+                      a->base, a->column, a->column, a->key, a->key);
+  for (int i = 0; i < a->n_filter; i++) {
+    sqlite3_str_appendf(q, " OR new.\"%w\" IS NOT old.\"%w\"",
+                        a->filter_name[i], a->filter_name[i]);
+  }
+  sqlite3_str_appendall(q, " BEGIN ");
   sqlite3_str_appendf(
       q,
       "INSERT INTO \"%w_outbox\"(op, pk) SELECT 2, CAST(old.\"%w\" AS TEXT) "
@@ -557,6 +621,15 @@ static int zvec_shadow_create(sqlite3 *db, const char *schema,
 
   char dim[16];
   snprintf(dim, sizeof dim, "%u", (unsigned)a->dim);
+  sqlite3_str *fs = sqlite3_str_new(NULL);
+  for (int i = 0; i < a->n_filter; i++) {
+    sqlite3_str_appendf(fs, "%s%s:%s", i ? "," : "", a->filter_name[i],
+                        zvec_ftype_name(a->filter_type[i]));
+  }
+  char *filter_list = str_done(fs);
+  if (filter_list == NULL)
+    return shadow_fail(err, SQLITE_NOMEM, "zvec: out of memory%s%s", NULL,
+                       NULL);
   const char *rows[][2] = {{"version", SHADOW_VERSION},
                            {"base", a->base},
                            {"key", a->key},
@@ -565,20 +638,27 @@ static int zvec_shadow_create(sqlite3 *db, const char *schema,
                            {"metric", shadow_metric_name(a->metric)},
                            {"type", shadow_elem_name(a->elem)},
                            {"path", resolved_path},
-                           {"path_default", path_is_default ? "1" : "0"}};
+                           {"path_default", path_is_default ? "1" : "0"},
+                           {"sync", a->sync_query ? "query" : "manual"},
+                           {"filter", filter_list}};
+  size_t n_rows = a->n_filter > 0 ? 11 : 10;
 
   char *sql = sqlite3_mprintf(
       "INSERT INTO \"%w\".\"%w_config\"(key, value) VALUES(?1, ?2)", schema,
       table);
-  if (sql == NULL)
+  if (sql == NULL) {
+    sqlite3_free(filter_list);
     return shadow_fail(err, SQLITE_NOMEM, "zvec: out of memory%s%s", NULL,
                        NULL);
+  }
   sqlite3_stmt *st = NULL;
   rc = sqlite3_prepare_v2(db, sql, -1, &st, NULL);
   sqlite3_free(sql);
-  if (rc != SQLITE_OK)
+  if (rc != SQLITE_OK) {
+    sqlite3_free(filter_list);
     return shadow_fail(err, rc, "zvec: %s%s", sqlite3_errmsg(db), NULL);
-  for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+  }
+  for (size_t i = 0; i < n_rows; i++) {
     sqlite3_reset(st);
     sqlite3_bind_text(st, 1, rows[i][0], -1, SQLITE_STATIC);
     sqlite3_bind_text(st, 2, rows[i][1], -1, SQLITE_STATIC);
@@ -586,11 +666,22 @@ static int zvec_shadow_create(sqlite3 *db, const char *schema,
     if (rc != SQLITE_DONE) {
       rc = shadow_fail(err, rc, "zvec: %s%s", sqlite3_errmsg(db), NULL);
       sqlite3_finalize(st);
+      sqlite3_free(filter_list);
       return rc;
     }
   }
   sqlite3_finalize(st);
-  return shadow_exec(db, shadow_trigger_sql(schema, table, a), err);
+  sqlite3_free(filter_list);
+  rc = shadow_exec(db, shadow_trigger_sql(schema, table, a), err);
+  if (rc != SQLITE_OK) return rc;
+  /* Rows that already exist are queued too, so the first sync builds the index.
+   */
+  return shadow_exec(
+      db,
+      sqlite3_mprintf("INSERT INTO \"%w\".\"%w_outbox\"(op, pk) SELECT 1, "
+                      "CAST(\"%w\" AS TEXT) FROM \"%w\".\"%w\"",
+                      schema, table, a->key, schema, a->base),
+      err);
 }
 
 /* Wraps v in single quotes ('' escapes), the form zvec_args_parse expects. */
@@ -679,13 +770,39 @@ static int rm_cb(const char *p, const struct stat *sb, int flag,
 }
 #endif
 
-/* Only ever called on a directory this very call just created. */
-static void remove_tree(const char *path) {
+/* Deletes a directory tree. Returns 0 on success. Callers only pass
+ * directories this extension created itself. */
+static int remove_tree(const char *path) {
 #ifndef _WIN32
-  nftw(path, rm_cb, 16, FTW_DEPTH | FTW_PHYS);
+  return nftw(path, rm_cb, 16, FTW_DEPTH | FTW_PHYS);
 #else
   (void)path; /* TODO(windows): not implemented, the directory is left behind */
+  return -1;
 #endif
+}
+
+static int path_exists(const char *path) {
+#ifdef _WIN32
+  struct _stat sb;
+  return _stat(path, &sb) == 0;
+#else
+  struct stat sb;
+  return stat(path, &sb) == 0;
+#endif
+}
+
+/* Best effort: removes the directory above `path` if it is now empty. */
+static void remove_empty_parent(const char *path) {
+  const char *slash = strrchr(path, '/');
+  if (slash == NULL) return;
+  char *dir = sqlite3_mprintf("%.*s", (int)(slash - path), path);
+  if (dir == NULL) return;
+#ifdef _WIN32
+  _rmdir(dir);
+#else
+  rmdir(dir);
+#endif
+  sqlite3_free(dir);
 }
 
 /* Creates the directory above <dbfile>.zvec/<name> (the default location). */
@@ -723,6 +840,35 @@ static zvec_data_type_t data_type_for(zvec_elem e) {
 
 /* Builds a one-field collection (the vector column, HNSW) and creates it
  * through the registry. */
+static zvec_data_type_t filter_data_type(zvec_ftype t) {
+  switch (t) {
+    case ZVEC_FT_INT:
+      return ZVEC_DATA_TYPE_INT64;
+    case ZVEC_FT_REAL:
+      return ZVEC_DATA_TYPE_DOUBLE;
+    default:
+      return ZVEC_DATA_TYPE_STRING;
+  }
+}
+
+/* Nullable scalar field with an inverted index, one per filter column. */
+static int add_filter_fields(zvec_collection_schema_t *schema,
+                             const zvec_args *a) {
+  for (int i = 0; i < a->n_filter; i++) {
+    zvec_field_schema_t *f = zvec_field_schema_create(
+        a->filter_name[i], filter_data_type(a->filter_type[i]), true, 0);
+    zvec_index_params_t *ip = zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);
+    int ok = f != NULL && ip != NULL &&
+             zvec_index_params_set_invert_params(ip, true, false) == ZVEC_OK &&
+             zvec_field_schema_set_index_params(f, ip) == ZVEC_OK &&
+             zvec_collection_schema_add_field(schema, f) == ZVEC_OK;
+    if (ip != NULL) zvec_index_params_destroy(ip);
+    if (f != NULL) zvec_field_schema_destroy(f);
+    if (!ok) return -1;
+  }
+  return 0;
+}
+
 static zvec_error_code_t create_collection(const zvec_args *a, const char *name,
                                            const char *path, zvec_shared **out,
                                            char *err, size_t err_len) {
@@ -742,6 +888,9 @@ static zvec_error_code_t create_collection(const zvec_args *a, const char *name,
              zvec_collection_schema_add_field(schema, field) != ZVEC_OK) {
     snprintf(err, err_len, "invalid vector settings (dim=%u)",
              (unsigned)a->dim);
+    rc = ZVEC_ERROR_INVALID_ARGUMENT;
+  } else if (add_filter_fields(schema, a) != 0) {
+    snprintf(err, err_len, "cannot add the filter columns to the schema");
     rc = ZVEC_ERROR_INVALID_ARGUMENT;
   } else {
     rc = zvec_shared_create(path, schema, out, err, err_len);
@@ -768,8 +917,8 @@ static int open_existing(const char *path, zvec_shared **out, char **pz_err) {
  * *created_path is set (caller frees) once a new collection directory exists.
  */
 static int create_derived(sqlite3 *db, const char *schema, const char *name,
-                          const zvec_args *a, zvec_shared **out,
-                          char **created_path, char **pz_err) {
+                          zvec_args *a, zvec_shared **out, char **created_path,
+                          char **pz_err) {
   char *msg = NULL;
   int rc = zvec_shadow_check_base(db, schema, a, &msg);
   if (rc != SQLITE_OK) {
@@ -789,6 +938,15 @@ static int create_derived(sqlite3 *db, const char *schema, const char *name,
       return SQLITE_ERROR;
     }
     is_default = 1;
+  }
+
+  if (path_exists(path)) {
+    *pz_err = sqlite3_mprintf(
+        "zvec: '%s' already exists (an index left over from an earlier "
+        "table?); remove it or choose another path=",
+        path);
+    sqlite3_free(path);
+    return SQLITE_ERROR;
   }
 
   rc = zvec_shadow_create(db, schema, name, a, path, is_default, &msg);
@@ -818,7 +976,7 @@ static int create_derived(sqlite3 *db, const char *schema, const char *name,
 /* USING zvec(base=..., ...) at connect time: the stored settings win over the
  * arguments, and a default location follows the database file. */
 static int open_derived(sqlite3 *db, const char *schema, const char *name,
-                        zvec_shared **out, char **pz_err) {
+                        zvec_shared **out, int *sync_query, char **pz_err) {
   zvec_args cfg;
   int is_default = 0;
   char *msg = NULL;
@@ -835,6 +993,7 @@ static int open_derived(sqlite3 *db, const char *schema, const char *name,
     path = sqlite3_mprintf("%s", cfg.path);
     rc = path != NULL ? SQLITE_OK : SQLITE_NOMEM;
   }
+  *sync_query = cfg.sync_query;
   zvec_args_free(&cfg);
   if (rc != SQLITE_OK) return rc == SQLITE_NOMEM ? rc : SQLITE_ERROR;
   rc = open_existing(path, out, pz_err);
@@ -894,21 +1053,23 @@ static int zvec_open_table(sqlite3 *db, int argc, const char *const *argv,
   int derived = !a.attach;
   zvec_shared *shared = NULL;
   char *created_path = NULL;
-  int rc;
+  int rc, sync_query = 0;
   if (!derived) {
     rc = open_existing(a.path, &shared, pz_err);
   } else if (creating) {
     rc = create_derived(db, argv[1], argv[2], &a, &shared, &created_path,
                         pz_err);
+    sync_query = a.sync_query;
   } else {
-    rc = open_derived(db, argv[1], argv[2], &shared, pz_err);
+    rc = open_derived(db, argv[1], argv[2], &shared, &sync_query, pz_err);
   }
   zvec_args_free(&a);
   if (rc != SQLITE_OK) return rc;
 
   rc = make_vtab(db, argv[1], argv[2], derived, shared, pp_vtab, pz_err);
+  if (rc == SQLITE_OK) ((zvec_vtab *)*pp_vtab)->sync_query = sync_query;
   if (rc != SQLITE_OK && created_path != NULL) {
-    remove_tree(created_path); /* make_vtab already released the handle */
+    (void)remove_tree(created_path); /* make_vtab already released the handle */
   }
   sqlite3_free(created_path);
   return rc;
@@ -989,6 +1150,33 @@ static sqlite3_stmt *sync_prepare(sqlite3 *db, char *sql) {
   return st;
 }
 
+/* Copies the mirrored columns (fetch columns 1..n) into the document. A value
+ * of the wrong storage class is left out, which reads back as NULL. */
+static int sync_add_filter_values(zvec_doc_t *doc, const zvec_args *cfg,
+                                  sqlite3_stmt *fetch) {
+  for (int i = 0; i < cfg->n_filter; i++) {
+    int col = 1 + i, t = sqlite3_column_type(fetch, col);
+    const char *name = cfg->filter_name[i];
+    zvec_error_code_t rc = ZVEC_OK;
+    if (cfg->filter_type[i] == ZVEC_FT_INT && t == SQLITE_INTEGER) {
+      int64_t v = sqlite3_column_int64(fetch, col);
+      rc = zvec_doc_add_field_by_value(doc, name, ZVEC_DATA_TYPE_INT64, &v,
+                                       sizeof v);
+    } else if (cfg->filter_type[i] == ZVEC_FT_REAL &&
+               (t == SQLITE_FLOAT || t == SQLITE_INTEGER)) {
+      double v = sqlite3_column_double(fetch, col);
+      rc = zvec_doc_add_field_by_value(doc, name, ZVEC_DATA_TYPE_DOUBLE, &v,
+                                       sizeof v);
+    } else if (cfg->filter_type[i] == ZVEC_FT_TEXT && t == SQLITE_TEXT) {
+      rc = zvec_doc_add_field_by_value(
+          doc, name, ZVEC_DATA_TYPE_STRING, sqlite3_column_text(fetch, col),
+          (size_t)sqlite3_column_bytes(fetch, col));
+    }
+    if (rc != ZVEC_OK) return -1;
+  }
+  return 0;
+}
+
 /* One batch: `n` queued keys (duplicates allowed). Fills the stats. */
 static int sync_apply_batch(sqlite3 *db, zvec_collection_t *col,
                             const zvec_args *cfg, sqlite3_stmt *fetch,
@@ -1032,6 +1220,11 @@ static int sync_apply_batch(sqlite3 *db, zvec_collection_t *col,
                 sqlite3_column_blob(fetch, 0), want) != ZVEC_OK) {
           zvec_doc_destroy(doc);
           rc = sync_zvec_fail(err, "cannot build a document");
+          break;
+        }
+        if (sync_add_filter_values(doc, cfg, fetch) != 0) {
+          zvec_doc_destroy(doc);
+          rc = sync_zvec_fail(err, "cannot add a filter column to a document");
           break;
         }
         docs[n_docs++] = doc;
@@ -1082,8 +1275,9 @@ static int sync_apply_batch(sqlite3 *db, zvec_collection_t *col,
   return rc;
 }
 
+/* `open` is an already open handle to reuse (sync before a search), or NULL. */
 static int sync_run(sqlite3 *db, const char *schema, const char *name,
-                    sync_stats *stats, char **err) {
+                    zvec_shared *open, sync_stats *stats, char **err) {
   zvec_args cfg;
   int is_default = 0;
   char *msg = NULL;
@@ -1093,17 +1287,19 @@ static int sync_run(sqlite3 *db, const char *schema, const char *name,
     return SQLITE_ERROR;
   }
   char *path = NULL;
-  int rc;
-  if (is_default) {
-    rc = zvec_default_path(db, schema, name, &path, &msg);
-    if (rc != SQLITE_OK) *err = msg;
-  } else {
-    path = sqlite3_mprintf("%s", cfg.path);
-    rc = path != NULL ? SQLITE_OK : SQLITE_NOMEM;
+  int rc = SQLITE_OK;
+  zvec_shared *shared = open;
+  if (shared == NULL) {
+    if (is_default) {
+      rc = zvec_default_path(db, schema, name, &path, &msg);
+      if (rc != SQLITE_OK) *err = msg;
+    } else {
+      path = sqlite3_mprintf("%s", cfg.path);
+      rc = path != NULL ? SQLITE_OK : SQLITE_NOMEM;
+    }
+    if (rc == SQLITE_OK) rc = open_existing(path, &shared, err);
+    sqlite3_free(path);
   }
-  zvec_shared *shared = NULL;
-  if (rc == SQLITE_OK) rc = open_existing(path, &shared, err);
-  sqlite3_free(path);
   if (rc != SQLITE_OK) {
     zvec_args_free(&cfg);
     return rc == SQLITE_NOMEM ? rc : SQLITE_ERROR;
@@ -1116,9 +1312,18 @@ static int sync_run(sqlite3 *db, const char *schema, const char *name,
                           "\"%w\".\"%w_state\" WHERE id = 1) "
                           "ORDER BY seq LIMIT %d",
                           schema, name, schema, name, (int)SYNC_BATCH));
+  sqlite3_str *cols = sqlite3_str_new(NULL);
+  sqlite3_str_appendf(cols, "\"%w\"", cfg.column);
+  for (int i = 0; i < cfg.n_filter; i++)
+    sqlite3_str_appendf(cols, ", \"%w\"", cfg.filter_name[i]);
+  char *col_list = sqlite3_str_finish(cols);
   sqlite3_stmt *fetch = sync_prepare(
-      db, sqlite3_mprintf("SELECT \"%w\" FROM \"%w\".\"%w\" WHERE \"%w\" = ?1",
-                          cfg.column, schema, cfg.base, cfg.key));
+      db,
+      col_list == NULL
+          ? NULL
+          : sqlite3_mprintf("SELECT %s FROM \"%w\".\"%w\" WHERE \"%w\" = ?1",
+                            col_list, schema, cfg.base, cfg.key));
+  sqlite3_free(col_list);
   sqlite3_stmt *done = sync_prepare(
       db, sqlite3_mprintf(
               "UPDATE \"%w\".\"%w_state\" SET watermark = ?1 WHERE id = 1; ",
@@ -1180,7 +1385,7 @@ static int sync_run(sqlite3 *db, const char *schema, const char *name,
   sqlite3_finalize(fetch);
   sqlite3_finalize(done);
   sqlite3_finalize(purge);
-  zvec_shared_release(shared);
+  if (open == NULL) zvec_shared_release(shared);
   zvec_args_free(&cfg);
   return rc;
 }
@@ -1197,7 +1402,7 @@ static void zvec_sync_fn(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
   }
   sync_stats stats = {0, 0, 0};
   char *err = NULL;
-  if (sync_run(db, schema, name, &stats, &err) != SQLITE_OK) {
+  if (sync_run(db, schema, name, NULL, &stats, &err) != SQLITE_OK) {
     sqlite3_result_error(ctx, err != NULL ? err : "zvec_sync: failed", -1);
     sqlite3_free(err);
     return;
@@ -1208,6 +1413,188 @@ static void zvec_sync_fn(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
                       stats.upserted, stats.deleted, stats.skipped),
       -1, sqlite3_free);
 }
+
+/* ---- zvec_drop_index() ----------------------------------------------------
+ * DROP TABLE plus deleting the index directory, as one explicit call. Safety:
+ *  - not inside a transaction (file deletion cannot be rolled back);
+ *  - only the default location, which is recomputed from the database file
+ *    name, is ever deleted, never a path read from the (untrusted) config;
+ *  - not while another connection or process still holds the collection. */
+
+static int index_in_use(const char *path) {
+  zvec_collection_options_t *opts = zvec_collection_options_create();
+  zvec_collection_t *col = NULL;
+  zvec_error_code_t rc = ZVEC_ERROR_INTERNAL_ERROR;
+  if (opts != NULL) {
+    zvec_collection_options_set_read_only(opts, true); /* shared lock only */
+    rc = zvec_collection_open(path, opts, &col);
+    zvec_collection_options_destroy(opts);
+  }
+  if (rc == ZVEC_OK) {
+    zvec_collection_close(col);
+    return 0;
+  }
+  return 1; /* cannot open it: assume somebody holds the lock */
+}
+
+static void json_string(sqlite3_str *s, const char *v) {
+  sqlite3_str_appendchar(s, 1, '"');
+  for (; *v; v++) {
+    unsigned char c = (unsigned char)*v;
+    if (c == '"' || c == '\\') {
+      sqlite3_str_appendchar(s, 1, '\\');
+      sqlite3_str_appendchar(s, 1, (char)c);
+    } else if (c < 0x20) {
+      sqlite3_str_appendf(s, "\\u%04x", c);
+    } else {
+      sqlite3_str_appendchar(s, 1, (char)c);
+    }
+  }
+  sqlite3_str_appendchar(s, 1, '"');
+}
+
+/* zvec_drop_index(name [, schema]) ->
+ * '{"dropped":"<name>","directory":"removed|kept: ...","path":"<dir>"}' */
+static void zvec_drop_index_fn(sqlite3_context *ctx, int argc,
+                               sqlite3_value **argv) {
+  sqlite3 *db = sqlite3_context_db_handle(ctx);
+  const char *name = (const char *)sqlite3_value_text(argv[0]);
+  const char *schema =
+      argc > 1 ? (const char *)sqlite3_value_text(argv[1]) : "main";
+  if (name == NULL || schema == NULL) {
+    sqlite3_result_error(ctx, "zvec_drop_index: the table name must be text",
+                         -1);
+    return;
+  }
+  if (!sqlite3_get_autocommit(db)) {
+    sqlite3_result_error(ctx,
+                         "zvec_drop_index: cannot run inside a transaction "
+                         "(deleting files cannot be rolled back)",
+                         -1);
+    return;
+  }
+
+  zvec_args cfg;
+  int is_default = 0;
+  char *msg = NULL;
+  if (zvec_shadow_load(db, schema, name, &cfg, &is_default, &msg) !=
+      SQLITE_OK) {
+    sqlite3_result_error(ctx, msg != NULL ? msg : "zvec_drop_index: failed",
+                         -1);
+    sqlite3_free(msg);
+    return;
+  }
+  char *path = NULL;
+  if (is_default) {
+    if (zvec_default_path(db, schema, name, &path, &msg) != SQLITE_OK) {
+      zvec_args_free(&cfg);
+      sqlite3_result_error(ctx, msg != NULL ? msg : "zvec_drop_index: failed",
+                           -1);
+      sqlite3_free(msg);
+      return;
+    }
+  } else {
+    path = sqlite3_mprintf("%s", cfg.path);
+  }
+  zvec_args_free(&cfg);
+  if (path == NULL) {
+    sqlite3_result_error_nomem(ctx);
+    return;
+  }
+
+  char *sql = sqlite3_mprintf("DROP TABLE \"%w\".\"%w\"", schema, name);
+  int rc = sql != NULL ? sqlite3_exec(db, sql, NULL, NULL, &msg) : SQLITE_NOMEM;
+  sqlite3_free(sql);
+  if (rc != SQLITE_OK) {
+    char *e = sqlite3_mprintf("zvec_drop_index: %s",
+                              msg != NULL ? msg : "cannot drop the table");
+    sqlite3_result_error(ctx, e != NULL ? e : "zvec_drop_index: failed", -1);
+    sqlite3_free(e);
+    sqlite3_free(msg);
+    sqlite3_free(path);
+    return;
+  }
+
+  const char *outcome;
+  if (!is_default) {
+    outcome = "kept: explicit path, remove it yourself";
+  } else if (!path_exists(path)) {
+    outcome = "none: the directory did not exist";
+  } else if (index_in_use(path)) {
+    outcome = "kept: still in use by another connection or process";
+  } else if (remove_tree(path) != 0) {
+    outcome = "kept: could not delete it";
+  } else {
+    remove_empty_parent(path);
+    outcome = "removed";
+  }
+
+  sqlite3_str *out = sqlite3_str_new(NULL);
+  sqlite3_str_appendall(out, "{\"dropped\":");
+  json_string(out, name);
+  sqlite3_str_appendall(out, ",\"directory\":");
+  json_string(out, outcome);
+  sqlite3_str_appendall(out, ",\"path\":");
+  json_string(out, path);
+  sqlite3_str_appendchar(out, 1, '}');
+  sqlite3_free(path);
+  char *text = sqlite3_str_finish(out);
+  if (text == NULL) {
+    sqlite3_result_error_nomem(ctx);
+    return;
+  }
+  sqlite3_result_text(ctx, text, -1, sqlite3_free);
+}
+
+/* Which scalar columns the zvec filter language can compare, and with what. */
+enum { PUSH_NONE = 0, PUSH_INT, PUSH_REAL, PUSH_TEXT };
+
+static int push_class(zvec_data_type_t t) {
+  switch (t) {
+    case ZVEC_DATA_TYPE_INT32:
+    case ZVEC_DATA_TYPE_INT64:
+    case ZVEC_DATA_TYPE_UINT32:
+    case ZVEC_DATA_TYPE_UINT64:
+      return PUSH_INT;
+    case ZVEC_DATA_TYPE_FLOAT:
+    case ZVEC_DATA_TYPE_DOUBLE:
+      return PUSH_REAL;
+    case ZVEC_DATA_TYPE_STRING:
+      return PUSH_TEXT;
+    default:
+      return PUSH_NONE;
+  }
+}
+
+static int plain_name(const char *s) {
+  if (s == NULL || !(isalpha((unsigned char)s[0]) || s[0] == '_')) return 0;
+  for (; *s; s++) {
+    if (!(isalnum((unsigned char)*s) || *s == '_')) return 0;
+  }
+  return 1;
+}
+
+/* '=' 'n'(!=) '<' 'l'(<=) '>' 'g'(>=), or 0 when the operator is not pushed. */
+static char push_op(unsigned char op) {
+  switch (op) {
+    case SQLITE_INDEX_CONSTRAINT_EQ:
+      return '=';
+    case SQLITE_INDEX_CONSTRAINT_NE:
+      return 'n';
+    case SQLITE_INDEX_CONSTRAINT_LT:
+      return '<';
+    case SQLITE_INDEX_CONSTRAINT_LE:
+      return 'l';
+    case SQLITE_INDEX_CONSTRAINT_GT:
+      return '>';
+    case SQLITE_INDEX_CONSTRAINT_GE:
+      return 'g';
+    default:
+      return 0;
+  }
+}
+
+enum { MAX_PUSH = 16 };
 
 static int zvec_best_index(sqlite3_vtab *p_vtab, sqlite3_index_info *p_info) {
   const zvec_vtab *vtab = (const zvec_vtab *)p_vtab;
@@ -1244,10 +1631,112 @@ static int zvec_best_index(sqlite3_vtab *p_vtab, sqlite3_index_info *p_info) {
     p_info->aConstraintUsage[k_idx].argvIndex = ++argv_pos;
     p_info->aConstraintUsage[k_idx].omit = 1;
   }
+
+  /* Comparisons on scalar columns become a zvec filter. They are NOT marked
+   * as handled (omit stays 0): SQLite re-checks every returned row, so a value
+   * the filter language cannot express is simply not pushed (see xFilter). */
+  sqlite3_str *spec = sqlite3_str_new(NULL);
+  int n_push = 0;
+  for (int i = 0; i < p_info->nConstraint && n_push < MAX_PUSH; i++) {
+    const struct sqlite3_index_constraint *c = &p_info->aConstraint[i];
+    int si = c->iColumn - col_scalar(0);
+    char op = push_op(c->op);
+    if (!c->usable || op == 0 || si < 0 || si >= vtab->n_scalar) continue;
+    if (push_class(vtab->scalar_types[si]) == PUSH_NONE ||
+        !plain_name(vtab->scalar_names[si]))
+      continue;
+    p_info->aConstraintUsage[i].argvIndex = ++argv_pos;
+    p_info->aConstraintUsage[i].omit = 0;
+    sqlite3_str_appendf(spec, "%d%c;", si, op);
+    n_push++;
+  }
+  char *spec_str = str_done(spec);
+  if (spec_str == NULL) return SQLITE_NOMEM;
+  if (n_push > 0) {
+    p_info->idxStr = spec_str;
+    p_info->needToFreeIdxStr = 1;
+  } else {
+    sqlite3_free(spec_str);
+  }
+
   p_info->idxNum = (match_vec << 1) | (k_idx >= 0 ? 1 : 0);
-  p_info->estimatedCost = 100.0;
+  p_info->estimatedCost = n_push > 0 ? 50.0 : 100.0;
   p_info->estimatedRows = 10;
   return SQLITE_OK;
+}
+
+/* Appends `name <op> literal` for one pushed comparison. Returns 0 when this
+ * value cannot be written safely in the filter language (it is then left to
+ * SQLite's own re-check). */
+static int append_comparison(sqlite3_str *out, const zvec_vtab *vtab, int si,
+                             char op, sqlite3_value *val) {
+  int cls = push_class(vtab->scalar_types[si]);
+  int vt = sqlite3_value_type(val);
+  const char *op_text = op == '='   ? "="
+                        : op == 'n' ? "!="
+                        : op == '<' ? "<"
+                        : op == 'l' ? "<="
+                        : op == '>' ? ">"
+                                    : ">=";
+  sqlite3_str *lit = sqlite3_str_new(NULL);
+
+  if (cls == PUSH_INT && vt == SQLITE_INTEGER) {
+    sqlite3_str_appendf(lit, "%lld", sqlite3_value_int64(val));
+  } else if (cls == PUSH_REAL && (vt == SQLITE_INTEGER || vt == SQLITE_FLOAT)) {
+    double d = sqlite3_value_double(val);
+    char buf[40];
+    if (!isfinite(d)) goto skip;
+    snprintf(buf, sizeof buf, "%.17g", d);
+    if (strpbrk(buf, "eEnNiI") != NULL)
+      goto skip; /* exponent forms: not worth the risk */
+    sqlite3_str_appendall(lit, buf);
+    if (strchr(buf, '.') == NULL) sqlite3_str_appendall(lit, ".0");
+  } else if (cls == PUSH_TEXT && vt == SQLITE_TEXT) {
+    const unsigned char *t = sqlite3_value_text(val);
+    int n = sqlite3_value_bytes(val);
+    if (t == NULL || (int)strlen((const char *)t) != n)
+      goto skip; /* embedded NUL */
+    for (int i = 0; i < n; i++) {
+      if (t[i] == '\\' || t[i] < 0x20)
+        goto skip; /* the filter lexer's escapes are not reliable */
+    }
+    sqlite3_str_appendchar(lit, 1, '\'');
+    for (int i = 0; i < n; i++) {
+      if (t[i] == '\'') sqlite3_str_appendchar(lit, 1, '\\');
+      sqlite3_str_appendchar(lit, 1, (char)t[i]);
+    }
+    sqlite3_str_appendchar(lit, 1, '\'');
+  } else {
+    goto skip;
+  }
+  {
+    char *l = sqlite3_str_finish(lit);
+    if (l == NULL) return 0;
+    if (sqlite3_str_length(out) > 0) sqlite3_str_appendall(out, " AND ");
+    sqlite3_str_appendf(out, "%s %s %s", vtab->scalar_names[si], op_text, l);
+    sqlite3_free(l);
+    return 1;
+  }
+skip:
+  sqlite3_free(sqlite3_str_finish(lit));
+  return 0;
+}
+
+/* True when changes are waiting in the outbox. */
+static int outbox_pending(sqlite3 *db, const char *schema, const char *name) {
+  char *sql = sqlite3_mprintf(
+      "SELECT 1 FROM \"%w\".\"%w_outbox\" WHERE seq > "
+      "(SELECT watermark FROM \"%w\".\"%w_state\" WHERE id = 1) LIMIT 1",
+      schema, name, schema, name);
+  sqlite3_stmt *st = NULL;
+  int pending = 1; /* if in doubt, sync and let it report the problem */
+  if (sql != NULL && sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK) {
+    int rc = sqlite3_step(st);
+    pending = rc == SQLITE_ROW || (rc != SQLITE_DONE);
+  }
+  sqlite3_finalize(st);
+  sqlite3_free(sql);
+  return pending;
 }
 
 static int zvec_open_cursor(sqlite3_vtab *p_vtab,
@@ -1268,7 +1757,6 @@ static int zvec_close_cursor(sqlite3_vtab_cursor *p_cursor) {
 
 static int zvec_filter(sqlite3_vtab_cursor *p_cursor, int idx_num,
                        const char *idx_str, int argc, sqlite3_value **argv) {
-  (void)idx_str;
   zvec_cursor *cur = (zvec_cursor *)p_cursor;
   zvec_vtab *vtab = (zvec_vtab *)p_cursor->pVtab;
   clear_results(cur);
@@ -1317,18 +1805,64 @@ static int zvec_filter(sqlite3_vtab_cursor *p_cursor, int idx_num,
     k = (int)kk;
   }
 
-  zvec_vector_query_t *q = zvec_vector_query_create();
-  if (q == NULL) return SQLITE_NOMEM;
-  zvec_vector_query_set_topk(q, k);
-  zvec_vector_query_set_field_name(q, vtab->vec_names[vec]);
-  zvec_vector_query_set_include_vector(q, false);
-  zvec_vector_query_set_query_vector(q, sqlite3_value_blob(argv[0]), want);
+  /* sync=query: make the index current first (read-your-writes). A database
+   * opened read-only cannot be synced; it is searched as it is. */
+  if (vtab->derived && vtab->sync_query &&
+      sqlite3_db_readonly(vtab->db, vtab->schema) != 1 &&
+      outbox_pending(vtab->db, vtab->schema, vtab->name)) {
+    sync_stats stats = {0, 0, 0};
+    char *err = NULL;
+    int src = sync_run(vtab->db, vtab->schema, vtab->name, vtab->shared, &stats,
+                       &err);
+    char *msg =
+        src == SQLITE_OK
+            ? NULL
+            : sqlite3_mprintf("zvec: syncing before the search failed (%s)",
+                              err != NULL ? err : "unknown error");
+    sqlite3_free(err);
+    if (src != SQLITE_OK) return fail_msg(p_cursor->pVtab, msg);
+  }
+
+  /* Pushed-down comparisons: idx_str is "<scalar index><op>;..." in argv order.
+   */
+  sqlite3_str *fstr = sqlite3_str_new(NULL);
+  int next_arg = 1 + has_k;
+  for (const char *p = idx_str; p != NULL && *p != '\0' && next_arg < argc;) {
+    char *end = NULL;
+    long si = strtol(p, &end, 10);
+    char op = end != NULL ? *end : '\0';
+    if (end == p || op == '\0' || end[1] != ';' || si < 0 ||
+        si >= vtab->n_scalar)
+      break;
+    append_comparison(fstr, vtab, (int)si, op, argv[next_arg++]);
+    p = end + 2;
+  }
+  char *filter = str_done(fstr);
+  if (filter == NULL) return SQLITE_NOMEM;
 
   zvec_doc_t **docs = NULL;
   size_t n = 0;
-  zvec_error_code_t rc =
-      zvec_collection_query(zvec_shared_collection(vtab->shared), q, &docs, &n);
-  zvec_vector_query_destroy(q);
+  zvec_error_code_t rc = ZVEC_ERROR_INTERNAL_ERROR;
+  for (int attempt = 0; attempt < 2; attempt++) {
+    zvec_vector_query_t *q = zvec_vector_query_create();
+    if (q == NULL) {
+      sqlite3_free(filter);
+      return SQLITE_NOMEM;
+    }
+    zvec_vector_query_set_topk(q, k);
+    zvec_vector_query_set_field_name(q, vtab->vec_names[vec]);
+    zvec_vector_query_set_include_vector(q, false);
+    zvec_vector_query_set_query_vector(q, sqlite3_value_blob(argv[0]), want);
+    if (attempt == 0 && filter[0] != '\0')
+      zvec_vector_query_set_filter(q, filter);
+    rc = zvec_collection_query(zvec_shared_collection(vtab->shared), q, &docs,
+                               &n);
+    zvec_vector_query_destroy(q);
+    /* If zvec rejects the filter text (an unusual column name, say), search
+     * without it: SQLite re-checks every row, so the result stays correct. */
+    if (rc == ZVEC_OK || filter[0] == '\0') break;
+  }
+  sqlite3_free(filter);
   if (rc != ZVEC_OK) return fail_from_zvec(p_cursor->pVtab, "query failed");
 
   cur->docs = docs;
@@ -1382,11 +1916,18 @@ int zvec_vtab_register(sqlite3 *db) {
 #ifdef SQLITE_DIRECTONLY
   flags |= SQLITE_DIRECTONLY; /* touches files: no views, triggers or CHECKs */
 #endif
-  rc = sqlite3_create_function_v2(db, "zvec_sync", 1, flags, NULL, zvec_sync_fn,
-                                  NULL, NULL, NULL);
-  if (rc == SQLITE_OK) {
-    rc = sqlite3_create_function_v2(db, "zvec_sync", 2, flags, NULL,
-                                    zvec_sync_fn, NULL, NULL, NULL);
+  static const struct {
+    const char *name;
+    int n_arg;
+    void (*fn)(sqlite3_context *, int, sqlite3_value **);
+  } funcs[] = {{"zvec_sync", 1, zvec_sync_fn},
+               {"zvec_sync", 2, zvec_sync_fn},
+               {"zvec_drop_index", 1, zvec_drop_index_fn},
+               {"zvec_drop_index", 2, zvec_drop_index_fn}};
+  for (size_t i = 0; i < sizeof funcs / sizeof funcs[0] && rc == SQLITE_OK;
+       i++) {
+    rc = sqlite3_create_function_v2(db, funcs[i].name, funcs[i].n_arg, flags,
+                                    NULL, funcs[i].fn, NULL, NULL, NULL);
   }
   return rc;
 }

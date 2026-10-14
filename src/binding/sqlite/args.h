@@ -12,15 +12,29 @@ typedef enum zvec_elem {
   ZVEC_ELEM_I8
 } zvec_elem;
 
+/* Scalar columns mirrored into the index so searches can be filtered. */
+#define ZVEC_MAX_FILTER 8
+typedef enum zvec_ftype {
+  ZVEC_FT_UNKNOWN =
+      0, /* not resolved yet: taken from the base column's affinity */
+  ZVEC_FT_INT,
+  ZVEC_FT_REAL,
+  ZVEC_FT_TEXT
+} zvec_ftype;
+
 typedef struct zvec_args {
-  int attach;      /* 1: legacy USING zvec('path') -- open an existing collection */
-  char *path;      /* attach: required; derived mode: optional */
-  char *base;      /* derived mode only from here down */
+  int attach; /* 1: legacy USING zvec('path') -- open an existing collection */
+  char *path; /* attach: required; derived mode: optional */
+  char *base; /* derived mode only from here down */
   char *key;
   char *column;
   uint32_t dim;
-  int metric;      /* ZVEC_METRIC_TYPE_* */
+  int metric; /* ZVEC_METRIC_TYPE_* */
   zvec_elem elem;
+  int n_filter; /* filter=a,b:real,... */
+  char *filter_name[ZVEC_MAX_FILTER];
+  zvec_ftype filter_type[ZVEC_MAX_FILTER];
+  int sync_query; /* sync=query (default, 1) | manual (0) */
 } zvec_args;
 
 /* Parses the argv that SQLite hands to xCreate/xConnect (argv[0] is the module
@@ -31,7 +45,11 @@ int zvec_args_parse(int argc, const char *const *argv, zvec_args *out,
                     char *err, size_t err_len);
 void zvec_args_free(zvec_args *a);
 
-/* Bytes per element, and the BLOB length a vector of `dim` elements must have. */
+/* Bytes per element, and the BLOB length a vector of `dim` elements must have.
+ */
 size_t zvec_elem_size(zvec_elem e);
+
+/* "int", "real" or "text". */
+const char *zvec_ftype_name(zvec_ftype t);
 
 #endif
