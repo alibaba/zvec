@@ -30,10 +30,7 @@ Status DocFilter::compute_filter() {
                                    invert_res.error().message());
     }
     invert_result_ = invert_res.value();
-    // A missing bitmap means zero matches, not an absent predicate. Keep a
-    // rejecting filter for search paths that do not extract brute-force keys.
-    invert_filter_ =
-        std::make_shared<InvertedSearchResult::Filter>(invert_result_);
+    invert_filter_ = invert_result_->make_filter();
   }
 
   if (forward_plan_) {

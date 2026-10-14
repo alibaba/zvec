@@ -132,6 +132,79 @@ class IVFSearcherTest : public testing::Test {
   IndexThreads::Pointer threads_{};
 };
 
+// Compare candidate-key BF against full BF with the equivalent predicate.
+// Empty candidate batches, missing keys and a second predicate must not cause
+// scanning unrelated vectors or retaining results from an earlier query.
+template <typename Searcher>
+static void CheckKeyedBruteForce(
+    Searcher *searcher, const void *queries, const IndexQueryMeta &qmeta,
+    const std::vector<std::vector<uint64_t>> &keys) {
+  auto context = searcher->create_context();
+  auto baseline = searcher->create_context();
+  ASSERT_NE(nullptr, context);
+  ASSERT_NE(nullptr, baseline);
+  context->set_topk(16);
+  baseline->set_topk(16);
+  const auto count = static_cast<uint32_t>(keys.size());
+  for (bool filtered : {false, true}) {
+    for (float threshold : {std::numeric_limits<float>::max(), 0.25f}) {
+      context->set_threshold(threshold);
+      baseline->set_threshold(threshold);
+      context->set_filter(
+          [filtered](uint64_t key) { return filtered && key % 2 == 0; });
+      ASSERT_EQ(0, searcher->search_bf_by_p_keys_impl(queries, keys, qmeta,
+                                                      count, context));
+      for (uint32_t q = 0; q < count; ++q) {
+        SCOPED_TRACE(q);
+        baseline->set_filter([&keys, q, filtered](uint64_t key) {
+          return (filtered && key % 2 == 0) ||
+                 std::find(keys[q].begin(), keys[q].end(), key) ==
+                     keys[q].end();
+        });
+        const void *query = static_cast<const char *>(queries) +
+                            q * static_cast<size_t>(qmeta.element_size());
+        ASSERT_EQ(0, searcher->search_bf_impl(query, qmeta, baseline));
+        const auto &expected = baseline->result();
+        const auto &actual = context->result(q);
+        ASSERT_EQ(expected.size(), actual.size());
+        for (const auto &doc : actual) {
+          const auto found = std::find_if(
+              expected.begin(), expected.end(),
+              [&doc](const auto &item) { return item.key() == doc.key(); });
+          ASSERT_NE(expected.end(), found);
+          EXPECT_NEAR(found->score(), doc.score(),
+                      1e-4f * std::max(1.0f, std::abs(found->score())));
+        }
+        // Unlike full BF, work must be bounded by the requested candidates.
+        const auto *ivf_context =
+            dynamic_cast<const IVFSearcherContext *>(context.get());
+        ASSERT_NE(nullptr, ivf_context);
+        EXPECT_LE(ivf_context->stats(q).dist_calced_count(), keys[q].size());
+      }
+    }
+  }
+  const std::vector<std::vector<uint64_t>> empty_keys(1);
+  ASSERT_EQ(0, searcher->search_bf_by_p_keys_impl(queries, empty_keys, qmeta,
+                                                  context));
+  EXPECT_TRUE(context->result().empty());
+  EXPECT_EQ(IndexError_InvalidArgument, searcher->search_bf_by_p_keys_impl(
+                                            queries, keys, qmeta, 0, context));
+  EXPECT_EQ(IndexError_InvalidArgument,
+            searcher->search_bf_by_p_keys_impl(queries, keys, qmeta, count + 1,
+                                               context));
+  EXPECT_EQ(
+      IndexError_InvalidArgument,
+      searcher->search_bf_by_p_keys_impl(nullptr, keys, qmeta, count, context));
+  IndexRunner::Context::Pointer missing_context;
+  EXPECT_EQ(IndexError_InvalidArgument,
+            searcher->search_bf_by_p_keys_impl(queries, keys, qmeta, count,
+                                               missing_context));
+  IndexQueryMeta wrong_meta(qmeta.data_type(), qmeta.dimension() + 1);
+  EXPECT_EQ(IndexError_InvalidArgument,
+            searcher->search_bf_by_p_keys_impl(queries, keys, wrong_meta, count,
+                                               context));
+}
+
 void IVFSearcherTest::SetUp() {
   dimension_ = 8U;
 
@@ -334,6 +407,8 @@ TEST_F(IVFSearcherTest, LegacyQuantizerDescriptorDoesNotSelectTurboFormat) {
                             result[i].score());
           }
         }
+        CheckKeyedBruteForce(searcher, query.data(), qmeta,
+                             {{30, 2, 31, 9999, kInvalidKey}});
       };
       IVFSearcher searcher;
       ASSERT_EQ(0, searcher.init(search_params));
@@ -2627,6 +2702,9 @@ TEST_F(IVFSearcherTest, TestQuantizedPerCentroid) {
   auto context = searcher.create_context();
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dimension_);
 
+  CheckKeyedBruteForce(&searcher, query.data(), qmeta,
+                       {{11, 251, 502, 991, 10000}});
+
   // single bf serch
   {
     size_t topk = (size_t)total;
@@ -3229,6 +3307,9 @@ TEST_F(IVFSearcherTest, TestInt8QuantizerWithL2) {
 
   auto context = searcher->create_context();
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dimension_);
+  const std::vector<float> candidate_query(dimension_, 321.0f);
+  CheckKeyedBruteForce(searcher.get(), candidate_query.data(), qmeta,
+                       {{7, 301, 998, 4321, 10000}});
   size_t topk = 1;
   context->set_topk(topk);
   context->set_filter([](uint64_t) { return false; });
@@ -4139,6 +4220,11 @@ class IVFTurboTest : public testing::TestWithParam<TurboCase> {
                      filtered);
       }
     }
+    CheckKeyedBruteForce(
+        searcher, queries_.data(), qmeta,
+        {{Key(52), Key(7), Key(31), Key(kVectorCount + 1), kInvalidKey},
+         {},
+         {Key(19), Key(44)}});
     EXPECT_EQ(original_queries, queries_);
   }
 

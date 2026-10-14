@@ -98,7 +98,8 @@ class IVFFilteredQueryTest
   }
 
   void ExpectQuery(const std::string &filter,
-                   const std::vector<uint32_t> &expected) {
+                   const std::vector<uint32_t> &expected,
+                   int nprobe = kCentroidCount) {
     SCOPED_TRACE(filter);
     SearchQuery query;
     query.filter_ = filter;
@@ -106,8 +107,7 @@ class IVFFilteredQueryTest
     query.output_fields_ = {"category", "ordinal"};
     query.include_vector_ = true;
     query.target_.field_name_ = "embedding";
-    query.target_.query_params_ =
-        std::make_shared<IVFQueryParams>(kCentroidCount);
+    query.target_.query_params_ = std::make_shared<IVFQueryParams>(nprobe);
     const std::vector<float> vector(kDimension, 0.0F);
     query.target_.set_vector(
         std::string(reinterpret_cast<const char *>(vector.data()),
@@ -139,9 +139,10 @@ class IVFFilteredQueryTest
     ASSERT_NO_FATAL_FAILURE(
         ExpectQuery("category IN (3, 4, 5)", {3, 4, 5, 23, 24}));
     ASSERT_NO_FATAL_FAILURE(ExpectQuery("category = 99", {}));
-    // The inverted condition must survive alongside the forward condition.
+    // Candidate-key BF must preserve the forward predicate and must not be
+    // restricted to the nearest centroid, which contains none of these rows.
     ASSERT_NO_FATAL_FAILURE(ExpectQuery("category = 3 AND ordinal >= 503",
-                                        {503, 523, 543, 563, 583}));
+                                        {503, 523, 543, 563, 583}, 1));
     ASSERT_NO_FATAL_FAILURE(ExpectQuery("", {0, 1, 2, 3, 4}));
   }
 

@@ -160,15 +160,10 @@ Result<IndexResults::Ptr> VectorRecallNode::prepare() {
   query_params.data_type = vector_cond->vector_schema()->data_type();
   query_params.dimension = vector_cond->dimension();
   query_params.query_params = vector_cond->query_params();
-  // IVF supports filtered search, but not brute-force search by primary keys.
-  // Check before extracting candidates: extraction clears the inverted filter,
-  // which must remain intact when using the regular IVF search path.
-  if (vector_cond->vector_schema()->index_type() != IndexType::IVF) {
-    auto brute_force_keys = doc_filter_->get_bf_by_keys_and_update(
-        GlobalConfig::Instance().brute_force_by_keys_ratio());
-    if (brute_force_keys) {
-      query_params.bf_pks.emplace_back(std::move(brute_force_keys.value()));
-    }
+  auto brute_force_keys = doc_filter_->get_bf_by_keys_and_update(
+      GlobalConfig::Instance().brute_force_by_keys_ratio());
+  if (brute_force_keys) {
+    query_params.bf_pks.emplace_back(std::move(brute_force_keys.value()));
   }
   // set filter after brute force check
   query_params.filter = doc_filter_->empty() ? nullptr : doc_filter_.get();
