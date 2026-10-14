@@ -905,7 +905,7 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
 
 /*
  * FTS (Full-Text Search) index params
- * Supported tokenizers: "standard", "ngram", "jieba", "whitespace".
+ * Supported tokenizers: "standard", "ngram", "jieba", "whitespace", "code".
  * Supported filters: "lowercase", "ascii_folding", "stemmer".
  *
  * extra_params must be either empty or a JSON object string. Supported keys are
@@ -925,6 +925,14 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
  *         hmm_model.utf8).
  *       - "user_dict_path" (user dictionary path).
  *       - "cut_mode" ("search", "mix", "full", or "hmm"; default "search").
+ *     code:
+ *       - "sub_tokenizer" ("standard" or "jieba"; default "standard").
+ *       - "sub_tokenizer_params" (JSON object passed to the child tokenizer).
+ *       Preserves ASCII identifiers and emits camelCase/snake_case subwords.
+ *       Always lowercases output, even with empty filters. Digits stay joined
+ *       to letters (base64Encode -> base64encode, base64, encode).
+ *       Uses flat AND/OR semantics; phrases match the expanded token sequence.
+ *       Changing analyzer configuration requires rebuilding the FTS index.
  *     whitespace:
  *       - no extra_params.
  *   Filters:
