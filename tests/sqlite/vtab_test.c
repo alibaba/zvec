@@ -165,18 +165,19 @@ static int make_collection(const char *path, int metric) {
   zvec_field_schema_t *emb =
       zvec_field_schema_create("emb", ZVEC_DATA_TYPE_VECTOR_FP32, false, DIM);
   zvec_index_params_t *ip = zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
-  if (!schema || !grp || !emb || !ip) return 1;
+  zvec_collection_t *col = NULL;
+  int result = 1;
+  if (!schema || !grp || !emb || !ip) goto cleanup;
   if (zvec_index_params_set_metric_type(ip, (zvec_metric_type_t)metric) !=
           ZVEC_OK ||
       zvec_index_params_set_hnsw_params(ip, 16, 200) != ZVEC_OK ||
       zvec_field_schema_set_index_params(emb, ip) != ZVEC_OK ||
       zvec_collection_schema_add_field(schema, grp) != ZVEC_OK ||
       zvec_collection_schema_add_field(schema, emb) != ZVEC_OK) {
-    return 1;
+    goto cleanup;
   }
-  zvec_collection_t *col = NULL;
   if (zvec_collection_create_and_open(path, schema, NULL, &col) != ZVEC_OK) {
-    return 1;
+    goto cleanup;
   }
 
   enum { kBatch = 250 };
@@ -195,29 +196,35 @@ static int make_collection(const char *path, int metric) {
                                       sizeof g) != ZVEC_OK ||
           zvec_doc_add_field_by_value(doc, "emb", ZVEC_DATA_TYPE_VECTOR_FP32,
                                       vec, sizeof vec) != ZVEC_OK) {
-        return 1;
+        zvec_doc_destroy(doc);
+        goto cleanup;
       }
       docs[j] = doc;
     }
     size_t ok = 0, bad = 0;
     zvec_error_code_t rc = zvec_collection_insert(col, docs, kBatch, &ok, &bad);
     for (int j = 0; j < kBatch; j++) zvec_doc_destroy((zvec_doc_t *)docs[j]);
-    if (rc != ZVEC_OK || bad != 0 || ok != kBatch) return 1;
+    if (rc != ZVEC_OK || bad != 0 || ok != kBatch) goto cleanup;
   }
   if (zvec_collection_flush(col) != ZVEC_OK ||
-      zvec_collection_optimize(col) != ZVEC_OK ||
-      zvec_collection_close(col) != ZVEC_OK) {
-    return 1;
+      zvec_collection_optimize(col) != ZVEC_OK) {
+    goto cleanup;
   }
-  return 0;
+  result = 0;
+
+cleanup:
+  if (col != NULL && zvec_collection_close(col) != ZVEC_OK) result = 1;
+  if (ip) zvec_index_params_destroy(ip);
+  if (emb) zvec_field_schema_destroy(emb);
+  if (grp) zvec_field_schema_destroy(grp);
+  if (schema) zvec_collection_schema_destroy(schema);
+  return result;
 }
 
 // ---- tests -----------------------------------------------------------------
 
 static const char *metric_name(int m) {
-  return m == ZVEC_METRIC_TYPE_L2   ? "L2"
-         : m == ZVEC_METRIC_TYPE_IP ? "IP"
-                                    : "COSINE";
+  return m == ZVEC_METRIC_TYPE_L2 ? "L2" : m == ZVEC_METRIC_TYPE_IP ? "IP" : "COSINE";
 }
 
 // Recall, distance ordering/accuracy, self-hit and scalar column.
@@ -357,8 +364,8 @@ static void test_errors(sqlite3 *db, const char *missing_path) {
     CHECK(msg[0] != '\0', "%s: empty error message", cases[i].what);
   }
 
-  char *sql =
-      sqlite3_mprintf("CREATE VIRTUAL TABLE x USING zvec('%q')", missing_path);
+  char *sql = sqlite3_mprintf("CREATE VIRTUAL TABLE x USING zvec('%q')",
+                              missing_path);
   rc = exec_msg(db, sql, msg, sizeof msg);
   sqlite3_free(sql);
   CHECK(rc != SQLITE_OK, "CREATE on a missing collection succeeded");
@@ -440,8 +447,7 @@ int main(int argc, char **argv) {
       return 1;
     }
     sqlite3 *db = open_db(ext_path);
-    char *sql =
-        sqlite3_mprintf("CREATE VIRTUAL TABLE p USING zvec('%q')", path);
+    char *sql = sqlite3_mprintf("CREATE VIRTUAL TABLE p USING zvec('%q')", path);
     char msg[256];
     int rc = exec_msg(db, sql, msg, sizeof msg);
     sqlite3_free(sql);

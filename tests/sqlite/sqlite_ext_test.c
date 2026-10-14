@@ -22,7 +22,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #include "zvec/c_api.h"
 
 #define SKIP_EXIT_CODE 77
@@ -30,15 +29,15 @@
 static int g_checks = 0;
 static int g_failures = 0;
 
-#define CHECK(cond, ...)                                        \
-  do {                                                          \
-    g_checks++;                                                 \
-    if (!(cond)) {                                              \
-      g_failures++;                                             \
-      fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__);      \
-      fprintf(stderr, __VA_ARGS__);                             \
-      fprintf(stderr, "\n");                                    \
-    }                                                           \
+#define CHECK(cond, ...)                                   \
+  do {                                                     \
+    g_checks++;                                            \
+    if (!(cond)) {                                         \
+      g_failures++;                                        \
+      fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__); \
+      fprintf(stderr, __VA_ARGS__);                        \
+      fprintf(stderr, "\n");                               \
+    }                                                      \
   } while (0)
 
 static int enable_load_extension(sqlite3 *db) {
@@ -176,8 +175,8 @@ static void test_load_default_entry_point(const char *ext_path) {
 
   // NULL propagates.
   int is_null = 0;
-  rc = query_text(db, "SELECT zvec_check_version(NULL, 0, 0)", buf,
-                  sizeof(buf), &is_null);
+  rc = query_text(db, "SELECT zvec_check_version(NULL, 0, 0)", buf, sizeof(buf),
+                  &is_null);
   CHECK(rc == SQLITE_ROW && is_null, "NULL input should give NULL output");
 
   // Bad arguments produce SQL errors, not crashes.
