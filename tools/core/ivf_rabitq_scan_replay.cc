@@ -94,6 +94,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -160,6 +161,10 @@ DEFINE_string(rerank_topn, "",
 DEFINE_string(results_int, "",
               "diagnostic results.csv (baseline rows) of a topk=N run: "
               "rrfN/prod50 candidates are verified against it per query");
+DEFINE_bool(compare_selftest, false,
+            "run canned CompareProdTopN cases (exact / true tie / "
+            "cutoff-mismatch / duplicate id / count mismatch / score "
+            "mismatch) and exit; needs no index files");
 
 
 #if RABITQ_SUPPORTED
@@ -212,7 +217,16 @@ bool LoadQueries(const std::string &path, QuerySet *out) {
     std::vector<float> vals;
     float v;
     while (iss >> v) vals.push_back(v);
-    if (vals.empty()) continue;
+    if (vals.empty()) {
+      // A row whose first component fails float extraction (e.g. the text
+      // "nan") would otherwise be silently skipped and surface later as a
+      // confusing lists.csv out-of-range error.
+      std::cerr << "queries " << path
+                << ": row with qid " << qid
+                << " has no parseable components (nan/inf text is rejected)"
+                << std::endl;
+      return false;
+    }
     if (out->dim == 0) out->dim = vals.size();
     if (vals.size() != out->dim) return false;
     out->qids.push_back(qid);
@@ -885,6 +899,15 @@ struct SampleVerify {
   std::map<uint32_t, size_t> ids;
 };
 
+// True iff all three recomputed-vs-recorded error magnitudes are finite and
+// within tol. Non-finite errors must fail explicitly: "err > tol" is false
+// for NaN, so NaN would silently pass a magnitude-only check (the dedicated
+// verifier had exactly that hole).
+bool SampleErrsOk(double d_err, double l_err, double c_err, double tol) {
+  return std::isfinite(d_err) && std::isfinite(l_err) &&
+         std::isfinite(c_err) && d_err <= tol && l_err <= tol && c_err <= tol;
+}
+
 void PrintSampleVerify(const char *side, const char *id_kind,
                        const SampleVerify &v, double tol) {
   std::cout << "samples " << side << ": checked=" << v.checked
@@ -1003,9 +1026,7 @@ SampleVerify VerifyIntegratedSamples(
             v.max_lower_err = std::max(v.max_lower_err, l_err);
           if (std::isfinite(c_err))
             v.max_dot_err = std::max(v.max_dot_err, c_err);
-          if (!std::isfinite(d_err) || !std::isfinite(l_err) ||
-              !std::isfinite(c_err) || d_err > tol || l_err > tol ||
-              c_err > tol) {
+          if (!SampleErrsOk(d_err, l_err, c_err, tol)) {
             ++v.value_mismatches;
             std::cerr << "sample value mismatch: query " << q << " list "
                       << lid << " block " << b << " row " << s.row
@@ -1123,10 +1144,13 @@ SampleVerify VerifyDedicatedSamples(
                 std::abs(double(low[s.row]) - double(s.lower_bound));
             const double c_err =
                 std::abs(double(dot[s.row]) - double(s.coarse_dot));
-            v.max_distance_err = std::max(v.max_distance_err, d_err);
-            v.max_lower_err = std::max(v.max_lower_err, l_err);
-            v.max_dot_err = std::max(v.max_dot_err, c_err);
-            if (d_err > tol || l_err > tol || c_err > tol) {
+            if (std::isfinite(d_err))
+              v.max_distance_err = std::max(v.max_distance_err, d_err);
+            if (std::isfinite(l_err))
+              v.max_lower_err = std::max(v.max_lower_err, l_err);
+            if (std::isfinite(c_err))
+              v.max_dot_err = std::max(v.max_dot_err, c_err);
+            if (!SampleErrsOk(d_err, l_err, c_err, tol)) {
               ++v.value_mismatches;
               std::cerr << "sample value mismatch: query " << q << " cluster "
                         << cid << " batch " << batch_id << " row " << s.row
@@ -1446,12 +1470,13 @@ struct ProdTopN {
   std::vector<std::vector<std::pair<uint64_t, float>>> per_query;
 };
 
-// Candidate-set verification: the collected (key, refine score) pairs must
-// match the production top-N ids as a set; common-key scores must agree
-// within tol. When the id sets differ, the comparison still passes as a
-// boundary tie only if every differing key sits at its own side's cutoff
-// score (the largest kept score, the N-th best) within tol: heap
-// tie-breaking at the cutoff is not an ordering guarantee of production.
+// Compares the pre-rerank candidate set (cand) against the production
+// topk=N result (prod); scores are "smaller is better", so the cutoff is
+// the worst kept score (the max) on each side. "exact" = identical id
+// sets. "tie" = the sets differ only at the cutoff, which additionally
+// requires: same number of unique ids on both sides, no duplicate ids,
+// cutoff scores equal within tol, and every id missing on one side at
+// that shared cutoff score. Anything else is an id mismatch.
 void CompareProdTopN(const std::vector<std::pair<uint64_t, float>> &cand,
                      const std::vector<std::pair<uint64_t, float>> &prod,
                      double tol, ReplayStats *stats) {
@@ -1460,11 +1485,20 @@ void CompareProdTopN(const std::vector<std::pair<uint64_t, float>> &cand,
   for (const auto &p : prod) pm.emplace(p.first, p.second);
   std::unordered_map<uint64_t, float> cm;
   for (const auto &c : cand) cm.emplace(c.first, c.second);
+  const bool prod_unique = pm.size() == prod.size();
+  const bool cand_unique = cm.size() == cand.size();
+  if (!prod_unique || !cand_unique) {
+    std::cerr << "prod-topN compare: duplicate ids in "
+              << (prod_unique ? "candidate" : "production") << " set ("
+              << (prod_unique ? cand.size() - cm.size()
+                              : prod.size() - pm.size())
+              << " dup)" << std::endl;
+  }
   float p_cut = -std::numeric_limits<float>::infinity();
   float c_cut = -std::numeric_limits<float>::infinity();
   for (const auto &p : pm) p_cut = std::max(p_cut, p.second);
   for (const auto &c : cm) c_cut = std::max(c_cut, c.second);
-  bool exact = pm.size() == cm.size();
+  bool exact = prod_unique && cand_unique && pm.size() == cm.size();
   if (exact) {
     for (const auto &c : cm) {
       if (!pm.count(c.first)) {
@@ -1473,25 +1507,43 @@ void CompareProdTopN(const std::vector<std::pair<uint64_t, float>> &cand,
       }
     }
   }
-  bool tie_ok = true;
+  bool score_ok = true;
   for (const auto &c : cm) {
     const auto it = pm.find(c.first);
     if (it != pm.end()) {
       const double delta = std::abs(double(it->second) - double(c.second));
       if (std::isfinite(delta)) {
         stats->cmp_max_delta = std::max(stats->cmp_max_delta, delta);
-        if (!(delta <= tol)) ++stats->cmp_score_mismatch;
+        if (!(delta <= tol)) {
+          ++stats->cmp_score_mismatch;
+          score_ok = false;
+        }
       } else {
         ++stats->cmp_score_mismatch;
+        score_ok = false;
       }
-    } else if (!(std::abs(double(c.second) - double(c_cut)) <= tol)) {
-      tie_ok = false;
     }
   }
-  for (const auto &p : pm) {
-    if (!cm.count(p.first) &&
-        !(std::abs(double(p.second) - double(p_cut)) <= tol)) {
-      tie_ok = false;
+  bool tie_ok = score_ok && prod_unique && cand_unique &&
+                cand.size() == prod.size() && std::isfinite(p_cut) &&
+                std::isfinite(c_cut) &&
+                std::abs(double(p_cut) - double(c_cut)) <= tol;
+  if (tie_ok) {
+    for (const auto &c : cm) {
+      if (!pm.count(c.first) &&
+          !(std::abs(double(c.second) - double(c_cut)) <= tol)) {
+        tie_ok = false;
+        break;
+      }
+    }
+  }
+  if (tie_ok) {
+    for (const auto &p : pm) {
+      if (!cm.count(p.first) &&
+          !(std::abs(double(p.second) - double(p_cut)) <= tol)) {
+        tie_ok = false;
+        break;
+      }
     }
   }
   if (exact) {
@@ -1501,6 +1553,88 @@ void CompareProdTopN(const std::vector<std::pair<uint64_t, float>> &cand,
   } else {
     ++stats->cmp_id_mismatch;
   }
+}
+
+// Canned CompareProdTopN cases: positive cases must classify as
+// exact/tie, negative cases (the v13 review findings) must not.
+bool RunCompareSelfTest() {
+  using P = std::pair<uint64_t, float>;
+  struct Case {
+    const char *name;
+    std::vector<P> cand;
+    std::vector<P> prod;
+    size_t expect_exact;
+    size_t expect_tie;
+    size_t expect_id_mismatch;
+    size_t expect_score_mismatch;
+  };
+  const double tol = 1e-4;
+  const std::vector<Case> cases = {
+      {"exact",
+       {{1, 0.1f}, {2, 0.2f}},
+       {{1, 0.1f}, {2, 0.2f}},
+       1, 0, 0, 0},
+      {"true tie at equal cutoff",
+       {{1, 0.1f}, {2, 0.2f}},
+       {{1, 0.1f}, {3, 0.2f}},
+       0, 1, 0, 0},
+      {"different cutoffs 0.2 vs 0.3",
+       {{1, 0.1f}, {2, 0.2f}},
+       {{1, 0.1f}, {3, 0.3f}},
+       0, 0, 1, 0},
+      {"duplicate id in candidate",
+       {{1, 0.1f}, {1, 0.2f}},
+       {{1, 0.1f}, {2, 0.2f}},
+       0, 0, 1, 0},
+      {"count mismatch",
+       {{1, 0.1f}},
+       {{1, 0.1f}, {2, 0.2f}},
+       0, 0, 1, 0},
+      {"common id score mismatch",
+       {{1, 0.1f}, {2, 0.2f}},
+       {{1, 0.5f}, {2, 0.2f}},
+       1, 0, 0, 1},
+      {"nan production score",
+       {{1, 0.1f}, {2, 0.2f}},
+       {{1, std::numeric_limits<float>::quiet_NaN()}, {2, 0.2f}},
+       1, 0, 0, 1},
+  };
+  bool ok = true;
+  for (const auto &c : cases) {
+    ReplayStats st;
+    CompareProdTopN(c.cand, c.prod, tol, &st);
+    const bool pass = st.cmp_exact == c.expect_exact &&
+                      st.cmp_tie == c.expect_tie &&
+                      st.cmp_id_mismatch == c.expect_id_mismatch &&
+                      st.cmp_score_mismatch == c.expect_score_mismatch;
+    std::cout << "selftest " << c.name << ": exact=" << st.cmp_exact
+              << " tie=" << st.cmp_tie
+              << " id_mismatch=" << st.cmp_id_mismatch
+              << " score_mismatch=" << st.cmp_score_mismatch << " -> "
+              << (pass ? "PASS" : "FAIL") << std::endl;
+    if (!pass) ok = false;
+  }
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  struct ErrCase {
+    const char *name;
+    double d, l, c;
+    bool expect;
+  };
+  const std::vector<ErrCase> err_cases = {
+      {"errs finite within tol", 1e-5, 0.0, 1e-6, true},
+      {"errs finite beyond tol", 2e-4, 0.0, 0.0, false},
+      {"errs nan", nan, 0.0, 0.0, false},
+      {"errs inf", 0.0, inf, 0.0, false},
+  };
+  for (const auto &e : err_cases) {
+    const bool got = SampleErrsOk(e.d, e.l, e.c, tol);
+    const bool pass = got == e.expect;
+    std::cout << "selftest " << e.name << ": SampleErrsOk=" << (got ? 1 : 0)
+              << " -> " << (pass ? "PASS" : "FAIL") << std::endl;
+    if (!pass) ok = false;
+  }
+  return ok;
 }
 
 // Loads baseline rows of the diagnostic results.csv
@@ -1958,6 +2092,22 @@ int main(int argc, char **argv) {
         return 1;
       }
     }
+    if (FLAGS_rounds <= 0 || FLAGS_warmup < 0 || FLAGS_queries_count < 0) {
+      std::cerr << "Invalid rounds/warmup/queries_count" << std::endl;
+      return 1;
+    }
+    if (((FLAGS_samples_int.empty() != FLAGS_samples_ded.empty()) &&
+         !rerank_mode) ||
+        !(std::isfinite(FLAGS_tolerance) && FLAGS_tolerance >= 0)) {
+      std::cerr << "--samples-int and --samples-ded must be used together; "
+                   "--tolerance must be finite and >= 0"
+                << std::endl;
+      return 1;
+    }
+
+    if (FLAGS_compare_selftest) {
+      return RunCompareSelfTest() ? 0 : 1;
+    }
     if (FLAGS_index_int.empty() || FLAGS_queries.empty() ||
         FLAGS_lists_int.empty() || FLAGS_csv.empty() ||
         (!rerank_mode &&
@@ -1969,20 +2119,8 @@ int main(int argc, char **argv) {
              "[--warmup=1] [--samples-int=CSV --samples-ded=CSV] "
              "[--tolerance=1e-4] [--int-variant=prod] "
              "[--rerank-topn=60,80,100 --vecs=FILE --gt=FILE] "
-             "[--results-int=results.csv]"
+             "[--results-int=results.csv] [--compare-selftest]"
           << std::endl;
-      return 1;
-    }
-    if (FLAGS_rounds <= 0 || FLAGS_warmup < 0 || FLAGS_queries_count < 0) {
-      std::cerr << "Invalid rounds/warmup/queries_count" << std::endl;
-      return 1;
-    }
-    if (((FLAGS_samples_int.empty() != FLAGS_samples_ded.empty()) &&
-         !rerank_mode) ||
-        !(FLAGS_tolerance >= 0)) {
-      std::cerr << "--samples-int and --samples-ded must be used together; "
-                   "--tolerance must be finite and >= 0"
-                << std::endl;
       return 1;
     }
 
@@ -2261,58 +2399,72 @@ int main(int argc, char **argv) {
                               v == 0 ? "kernel" : "full", std::move(st)});
             }
             if (!seq_order) {
-              // Extra rows are generated in a fixed order but appended
-              // rotated (reversed every second round), so no variant keeps
-              // a permanent warm/cold position inside the invocation.
-              std::vector<std::pair<const char *, ReplayStats>> extra;
+              // Extra rows: build the task list first and rotate it BEFORE
+              // any measurement runs, so the rotation changes the actual
+              // execution order (warm/cold position inside the invocation)
+              // and not just the CSV row order; row order equals execution
+              // order. Round r rotates by (r-1) mod count, so every round
+              // gets a different order and r1 matches the historical fixed
+              // order.
+              std::vector<std::pair<const char *,
+                                    std::function<ReplayStats()>>>
+                  extra;
               if (iv_cluster0) {
-                extra.emplace_back(
-                    "cluster0",
-                    ReplayIntegratedDedShape(int_idx, queries, rec_int, true,
-                                             true));
+                extra.emplace_back("cluster0", [&] {
+                  return ReplayIntegratedDedShape(int_idx, queries, rec_int,
+                                                  true, true);
+                });
               }
               if (iv_dedshape) {
-                extra.emplace_back(
-                    "dedshape",
-                    ReplayIntegratedDedShape(int_idx, queries, rec_int,
-                                             false, true));
+                extra.emplace_back("dedshape", [&] {
+                  return ReplayIntegratedDedShape(int_idx, queries, rec_int,
+                                                  false, true);
+                });
               }
               if (flat_base) {
-                extra.emplace_back(
-                    iv_flat16 ? "flat16" : "flat",
-                    ReplayIntegrated(int_idx, queries, rec_int, false, true,
-                                     flat_base));
+                extra.emplace_back(iv_flat16 ? "flat16" : "flat", [&] {
+                  return ReplayIntegrated(int_idx, queries, rec_int, false,
+                                          true, flat_base);
+                });
               }
               if (rerank_mode) {
-                extra.emplace_back(
-                    "prod50",
-                    ReplayIntegratedProd50(
-                        int_idx, queries, qs.qids, rec_int, gt,
-                        prod_topn.n == 50 ? &prod_topn : nullptr, true));
+                extra.emplace_back("prod50", [&] {
+                  return ReplayIntegratedProd50(
+                      int_idx, queries, qs.qids, rec_int, gt,
+                      prod_topn.n == 50 ? &prod_topn : nullptr, true);
+                });
                 for (size_t ni = 0; ni < rerank_topn_values.size(); ++ni) {
                   const bool verify =
                       prod_topn.n != 0 &&
                       prod_topn.n == rerank_topn_values[ni];
-                  extra.emplace_back(
-                      rerank_row_names[ni].c_str(),
-                      ReplayIntegratedRerank(
-                          int_idx, queries, qs.qids, rec_int, gt,
-                          rerank_topn_values[ni], RerankScheme::kRefine,
-                          vecs, verify ? &prod_topn : nullptr, true));
+                  extra.emplace_back(rerank_row_names[ni].c_str(),
+                                     [&, ni, verify] {
+                                       return ReplayIntegratedRerank(
+                                           int_idx, queries, qs.qids, rec_int,
+                                           gt, rerank_topn_values[ni],
+                                           RerankScheme::kRefine, vecs,
+                                           verify ? &prod_topn : nullptr,
+                                           true);
+                                     });
                 }
                 for (size_t ni = 0; ni < rerank_topn_values.size(); ++ni) {
-                  extra.emplace_back(
-                      rerank_ctl_names[ni].c_str(),
-                      ReplayIntegratedRerank(
-                          int_idx, queries, qs.qids, rec_int, gt,
-                          rerank_topn_values[ni], RerankScheme::kLowerBound,
-                          vecs, nullptr, true));
+                  extra.emplace_back(rerank_ctl_names[ni].c_str(),
+                                     [&, ni] {
+                                       return ReplayIntegratedRerank(
+                                           int_idx, queries, qs.qids, rec_int,
+                                           gt, rerank_topn_values[ni],
+                                           RerankScheme::kLowerBound, vecs,
+                                           nullptr, true);
+                                     });
                 }
               }
-              if (r % 2 == 0) std::reverse(extra.begin(), extra.end());
+              if (extra.size() > 1) {
+                std::rotate(extra.begin(),
+                            extra.begin() + (r - 1) % extra.size(),
+                            extra.end());
+              }
               for (auto &e : extra) {
-                rows.push_back(
-                    {r, "int", "orig", e.first, std::move(e.second)});
+                rows.push_back({r, "int", "orig", e.first, e.second()});
               }
             }
           } else if (ded_loaded) {
