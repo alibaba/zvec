@@ -819,6 +819,12 @@ bool LoadSamplesCsv(const std::string &path, const std::string &mode,
     s.distance = std::stof(f[6]);
     s.lower_bound = std::stof(f[7]);
     s.coarse_dot = std::stof(f[8]);
+    if (!std::isfinite(s.distance) || !std::isfinite(s.lower_bound) ||
+        !std::isfinite(s.coarse_dot)) {
+      std::cerr << "samples.csv " << path << ":" << line_no
+                << " has a non-finite sample value" << std::endl;
+      return false;
+    }
     (*out)[s.query].push_back(s);
   }
   for (size_t r = 0; r < out->size(); ++r) {
@@ -973,10 +979,15 @@ SampleVerify VerifyIntegratedSamples(
               std::abs(double(est[s.row].lower_bound) - double(s.lower_bound));
           const double c_err =
               std::abs(double(est[s.row].coarse_dot) - double(s.coarse_dot));
-          v.max_distance_err = std::max(v.max_distance_err, d_err);
-          v.max_lower_err = std::max(v.max_lower_err, l_err);
-          v.max_dot_err = std::max(v.max_dot_err, c_err);
-          if (d_err > tol || l_err > tol || c_err > tol) {
+          if (std::isfinite(d_err))
+            v.max_distance_err = std::max(v.max_distance_err, d_err);
+          if (std::isfinite(l_err))
+            v.max_lower_err = std::max(v.max_lower_err, l_err);
+          if (std::isfinite(c_err))
+            v.max_dot_err = std::max(v.max_dot_err, c_err);
+          if (!std::isfinite(d_err) || !std::isfinite(l_err) ||
+              !std::isfinite(c_err) || d_err > tol || l_err > tol ||
+              c_err > tol) {
             ++v.value_mismatches;
             std::cerr << "sample value mismatch: query " << q << " list "
                       << lid << " block " << b << " row " << s.row
@@ -1780,9 +1791,9 @@ int main(int argc, char **argv) {
     }
     if (((FLAGS_samples_int.empty() != FLAGS_samples_ded.empty()) &&
          !rerank_mode) ||
-        FLAGS_tolerance < 0) {
+        !(FLAGS_tolerance >= 0)) {
       std::cerr << "--samples-int and --samples-ded must be used together; "
-                   "--tolerance must be >= 0"
+                   "--tolerance must be finite and >= 0"
                 << std::endl;
       return 1;
     }
