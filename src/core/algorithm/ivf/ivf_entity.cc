@@ -1130,17 +1130,27 @@ int IVFEntity::key_normalize_value(uint32_t id, float *value) const {
   size_t end = inverted_list_count();
   while (begin < end) {
     const size_t mid = begin + (end - begin) / 2;
-    const auto *list = inverted_list_meta(mid);
+    size_t list_id = mid;
+    const auto *list = inverted_list_meta(list_id);
+    // Empty lists have no ID range. In particular, trailing lists in older
+    // indexes can retain id_offset=0, so only compare nonempty lists.
+    while (list && list->vector_count == 0 && list_id > begin) {
+      list = inverted_list_meta(--list_id);
+    }
     if (!list) {
       return IndexError_ReadData;
     }
+    if (list->vector_count == 0) {
+      begin = mid + 1;
+      continue;
+    }
     if (id < list->id_offset) {
-      end = mid;
+      end = list_id;
     } else if (id - list->id_offset >= list->vector_count) {
       begin = mid + 1;
     } else {
       InvertedIntegerQuantizerParams params;
-      if (integer_quantizer_params_->fetch(mid * sizeof(params), &params,
+      if (integer_quantizer_params_->fetch(list_id * sizeof(params), &params,
                                            sizeof(params)) != sizeof(params)) {
         return IndexError_ReadData;
       }
