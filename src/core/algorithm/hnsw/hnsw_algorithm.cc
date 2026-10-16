@@ -593,12 +593,19 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
 
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   std::function<std::string(node_id_t)> group_by = [&](node_id_t id) {
-    return ctx->group_by()(entity.get_key_typed(id));
+    auto key = entity.get_key_typed(id);
+    if (key == kInvalidKey) {
+      return std::string();
+    }
+    return ctx->group_by()(key);
   };
 
   // devide into groups
   std::map<std::string, TopkHeap> &group_topk_heaps = ctx->group_topk_heaps();
   ctx->search_heap().for_each([&](node_id_t id, dist_t score) {
+    if (entity.get_key_typed(id) == kInvalidKey) {
+      return true;
+    }
     std::string group_id = group_by(id);
 
     auto &topk_heap = group_topk_heaps[group_id];
@@ -615,19 +622,22 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
     CandidateHeap &candidates = ctx->candidates();
     HnswDistCalculator &dc = ctx->dist_calculator();
 
-    std::function<bool(node_id_t)> filter = [](node_id_t) { return false; };
-    if (ctx->filter().is_valid()) {
-      filter = [&](node_id_t id) {
-        return ctx->filter()(entity.get_key_typed(id));
-      };
-    }
+    std::function<bool(node_id_t)> filter = [&](node_id_t id) {
+      auto key = entity.get_key_typed(id);
+      if (key == kInvalidKey) {
+        return true;
+      }
+      return ctx->filter().is_valid() ? ctx->filter()(key) : false;
+    };
 
     // refill to get enough groups
     candidates.clear();
     visit.clear();
     ctx->search_heap().for_each([&](node_id_t id, dist_t score) {
       visit.set_visited(id);
-      candidates.emplace(id, score);
+      if (entity.get_key_typed(id) != kInvalidKey) {
+        candidates.emplace(id, score);
+      }
       return true;
     });
 
