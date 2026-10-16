@@ -4,3 +4,6 @@ src/db/sqlengine/antlr/gen/** linguist-generated=true
 
 # Unified diff context lines use a leading space by definition.
 thirdparty/RaBitQ-Library/*.patch whitespace=-blank-at-eol
+
+# Keep patches readable by git apply after a Windows checkout.
+thirdparty/cppjieba/*.patch text eol=lf

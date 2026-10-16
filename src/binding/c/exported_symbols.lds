@@ -72,7 +72,6 @@
     zvec_config_data_get_brute_force_by_keys_ratio;
     zvec_config_data_get_fts_brute_force_by_keys_ratio;
     zvec_config_data_get_invert_to_forward_scan_ratio;
-    zvec_config_data_get_jieba_dict_dir;
     zvec_config_data_get_log_type;
     zvec_config_data_get_memory_limit;
     zvec_config_data_get_optimize_thread_count;
@@ -80,7 +79,6 @@
     zvec_config_data_set_brute_force_by_keys_ratio;
     zvec_config_data_set_fts_brute_force_by_keys_ratio;
     zvec_config_data_set_invert_to_forward_scan_ratio;
-    zvec_config_data_set_jieba_dict_dir;
     zvec_config_data_set_log_config;
     zvec_config_data_set_memory_limit;
     zvec_config_data_set_optimize_thread_count;
@@ -169,7 +167,6 @@
     zvec_fts_get_query_string;
     zvec_fts_set_match_string;
     zvec_fts_set_query_string;
-    zvec_get_default_jieba_dict_dir;
     zvec_get_io_backend_description;
     zvec_get_io_backend_type;
     zvec_get_io_backend_type_name;
@@ -324,7 +321,6 @@
     zvec_query_params_vamana_set_is_linear;
     zvec_query_params_vamana_set_is_using_refiner;
     zvec_query_params_vamana_set_radius;
-    zvec_set_default_jieba_dict_dir;
     zvec_shutdown;
     zvec_string_array_add;
     zvec_string_array_create;

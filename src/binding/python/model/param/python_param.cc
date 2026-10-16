@@ -298,9 +298,11 @@ Attributes:
                   "punctuation", "symbol"; default [] keeps all valid UTF-8
                   characters). custom_token_chars is not supported.
             jieba:
-                - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
-                  hmm_model.utf8).
-                - "user_dict_path" (user dictionary path).
+                - "jieba_dict_dir" (optional external directory containing
+                  jieba.dict.utf8 and hmm_model.utf8; priority: field value >
+                  ZVEC_JIEBA_DICT_DIR > embedded defaults).
+                - "user_dict_path" (user dictionary path; augments the selected
+                  dictionary, including the embedded default).
                 - "cut_mode" ("search", "mix", "full", or "hmm"; default
                   "search").
             whitespace:
@@ -352,8 +354,10 @@ Args:
                   "punctuation", "symbol"; default [] keeps all valid UTF-8
                   characters). custom_token_chars is not supported.
             jieba:
-                - "jieba_dict_dir".
-                - "user_dict_path".
+                - "jieba_dict_dir" (optional external directory override;
+                  priority: field value > ZVEC_JIEBA_DICT_DIR > embedded defaults).
+                - "user_dict_path" (augments the selected dictionary,
+                  including the embedded default).
                 - "cut_mode" ("search", "mix", "full", or "hmm"; default
                   "search").
             whitespace:

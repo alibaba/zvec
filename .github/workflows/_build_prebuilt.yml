@@ -212,7 +212,8 @@ jobs:
         run: |
           # Compile and run tiny C and C++ programs against the staged
           # package (the exact tree that gets packaged next): verifies the
-          # include/lib layout and that the shipped libraries link and load.
+          # include/lib layout, library loading, and Chinese FTS with the
+          # embedded default Jieba dictionary and HMM model.
           SMOKE_BUILD="$RUNNER_TEMP/sdk-smoke-build"
           cmake -S .github/cmake/sdk-smoke -B "$SMOKE_BUILD" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -555,9 +556,6 @@ jobs:
         run: |
           mkdir -p "$ZVEC_DIST_DIR"
           cp -R "$GITHUB_WORKSPACE/install_device/include" "$ZVEC_DIST_DIR/include"
-          # Architecture-independent data (jieba FTS dict) ships once from the
-          # device slice, same as the headers.
-          cp -R "$GITHUB_WORKSPACE/install_device/data" "$ZVEC_DIST_DIR/data"
           for dylib in "$GITHUB_WORKSPACE"/install_device/lib/*.dylib; do
             [ -L "$dylib" ] && continue  # skip version symlinks
             name=$(basename "$dylib" .dylib)
@@ -590,12 +588,6 @@ jobs:
             echo "missing C++ headers under include/zvec/db/"
             exit 1
           }
-          for dict_file in jieba.dict.utf8 hmm_model.utf8; do
-            if [ ! -f "$ZVEC_DIST_DIR/data/jieba_dict/$dict_file" ]; then
-              echo "missing data/jieba_dict/$dict_file"
-              exit 1
-            fi
-          done
 
       - name: Package SDK
         shell: bash

@@ -715,20 +715,6 @@ zvec_config_data_set_optimize_thread_count(zvec_config_data_t *config,
 ZVEC_EXPORT uint32_t ZVEC_CALL
 zvec_config_data_get_optimize_thread_count(const zvec_config_data_t *config);
 
-/**
- * @brief Set jieba dict directory in configuration data
- * @param dir Dict directory; NULL or empty leaves the field empty
- */
-ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_config_data_set_jieba_dict_dir(
-    zvec_config_data_t *config, const char *dir);
-
-/**
- * @brief Get jieba dict directory from configuration data
- * @return Pointer owned by config (do not free); empty when unset
- */
-ZVEC_EXPORT const char *ZVEC_CALL
-zvec_config_data_get_jieba_dict_dir(const zvec_config_data_t *config);
-
 // =============================================================================
 // Initialization and Cleanup Interface
 // =============================================================================
@@ -753,26 +739,6 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_shutdown(void);
  * @return true if initialized, false otherwise
  */
 ZVEC_EXPORT bool ZVEC_CALL zvec_is_initialized(void);
-
-/**
- * @brief Set the process-wide default jieba dict directory.
- *
- * For language SDKs to call on module load. Thread-safe, decoupled from
- * zvec_initialize(); last writer wins. A subsequent zvec_initialize() with
- * non-empty config.jieba_dict_dir overrides this. JiebaTokenizer priority:
- * per-field > ZVEC_JIEBA_DICT_DIR > this.
- *
- * @param dir UTF-8 directory containing jieba.dict.utf8 + hmm_model.utf8;
- *            NULL or empty clears the value.
- */
-ZVEC_EXPORT void ZVEC_CALL zvec_set_default_jieba_dict_dir(const char *dir);
-
-/**
- * @brief Get the process-wide default jieba dict directory.
- * @return Thread-local string valid until the next call on this thread;
- *         empty when unset.
- */
-ZVEC_EXPORT const char *ZVEC_CALL zvec_get_default_jieba_dict_dir(void);
 
 // =============================================================================
 // I/O Backend Introspection
@@ -1244,9 +1210,11 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_invert_params(
  *       "punctuation", "symbol"; default [] keeps all valid UTF-8
  *       characters). custom_token_chars is not supported.
  *   jieba:
- *     - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
- *       hmm_model.utf8).
- *     - "user_dict_path" (user dictionary path).
+ *     - "jieba_dict_dir" (optional external directory containing
+ *       jieba.dict.utf8 and hmm_model.utf8; priority: field value >
+ *       ZVEC_JIEBA_DICT_DIR > embedded defaults).
+ *     - "user_dict_path" (user dictionary path; augments the selected
+ *       dictionary, including the embedded default).
  *     - "cut_mode" ("search", "mix", "full", or "hmm"; default "search").
  *   whitespace:
  *     - no extra_params.
