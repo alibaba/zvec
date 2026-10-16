@@ -17,6 +17,7 @@
 #include <sys/mman.h>
 #endif
 #include <ailego/utility/memory_helper.h>
+#include "utility/legacy_read_buffer.h"
 
 // #define DEBUG_PRINT
 
@@ -164,20 +165,24 @@ const Neighbors HnswStreamerEntity::get_neighbors(level_t level,
 //! Get vector data by key
 const void *HnswStreamerEntity::get_vector(node_id_t id) const {
   // Keep the legacy pointer valid until the next call on this thread.
-  static thread_local IndexStorage::MemoryBlock block;
-  return get_vector(id, block) == 0 ? block.data() : nullptr;
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock block;
+  return get_vector(id, block) == 0 ? buffer.assign(block, vector_size())
+                                    : nullptr;
 }
 
 int HnswStreamerEntity::get_vector(const node_id_t *ids, uint32_t count,
                                    const void **vecs) const {
   // Retain every result independently until the next batch on this thread.
-  static thread_local std::vector<IndexStorage::MemoryBlock> blocks;
+  static thread_local std::vector<LegacyReadBuffer> buffers;
+  std::vector<IndexStorage::MemoryBlock> blocks;
   int ret = get_vector(ids, count, blocks);
   if (ret != 0) {
     return ret;
   }
+  buffers.resize(count);
   for (uint32_t i = 0; i < count; ++i) {
-    vecs[i] = blocks[i].data();
+    vecs[i] = buffers[i].assign(blocks[i], vector_size());
   }
   return 0;
 }

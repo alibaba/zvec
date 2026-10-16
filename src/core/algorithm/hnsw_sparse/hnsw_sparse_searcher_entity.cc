@@ -13,6 +13,7 @@
 // limitations under the License.
 #include "hnsw_sparse_searcher_entity.h"
 #include <zvec/ailego/hash/crc32c.h>
+#include "utility/legacy_read_buffer.h"
 #include "utility/sparse_utility.h"
 
 namespace zvec {
@@ -111,13 +112,14 @@ const void *HnswSparseSearcherEntity::get_vector_meta(node_id_t id) const {
   size_t offset = sparse_meta_size() * id;
 
   // Keep the legacy pointer valid until the next call on this thread.
-  static thread_local IndexStorage::MemoryBlock vec;
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock vec;
   if (ailego_unlikely(sparse_vector_meta_->read(offset, vec, read_size) !=
                       read_size)) {
     LOG_ERROR("Read vector from segment failed");
     return nullptr;
   }
-  return vec.data();
+  return buffer.assign(vec, read_size);
 }
 
 int HnswSparseSearcherEntity::get_vector_meta(
@@ -559,7 +561,8 @@ const HnswSparseEntity::Pointer HnswSparseSearcherEntity::clone() const {
 const void *HnswSparseSearcherEntity::get_sparse_data(uint64_t offset,
                                                       uint32_t len) const {
   // Keep the legacy pointer valid until the next call on this thread.
-  static thread_local IndexStorage::MemoryBlock sparse_data;
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock sparse_data;
 
   uint32_t real_length = sparse_vectors_->read(offset, sparse_data, len);
 
@@ -569,7 +572,7 @@ const void *HnswSparseSearcherEntity::get_sparse_data(uint64_t offset,
     return nullptr;
   }
 
-  return sparse_data.data();
+  return buffer.assign(sparse_data, len);
 }
 
 int HnswSparseSearcherEntity::get_sparse_data(

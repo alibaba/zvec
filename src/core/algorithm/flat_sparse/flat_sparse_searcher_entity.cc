@@ -15,6 +15,7 @@
 #include "flat_sparse_searcher_entity.h"
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_helper.h>
+#include "utility/legacy_read_buffer.h"
 #include "flat_sparse_utility.h"
 
 namespace zvec {
@@ -175,7 +176,8 @@ int FlatSparseSearcherEntity::get_sparse_vector_ptr_by_id(
 const void *FlatSparseSearcherEntity::get_sparse_vector_data(
     uint64_t offset, uint32_t length) const {
   // Keep the legacy pointer valid until the next call on this thread.
-  static thread_local IndexStorage::MemoryBlock data;
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock data;
   auto size = sparse_data_chunk_->read(offset, data, length);
   if (size != length) {
     LOG_ERROR(
@@ -184,7 +186,7 @@ const void *FlatSparseSearcherEntity::get_sparse_vector_data(
         (size_t)offset, length, size);
     return nullptr;
   }
-  return data.data();
+  return buffer.assign(data, length);
 }
 
 

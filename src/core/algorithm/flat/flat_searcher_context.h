@@ -113,10 +113,15 @@ class FlatSearcherContext : public IndexSearcher::Context {
     }
   }
 
-  void topk_to_group_result(uint32_t idx) {
+  int topk_to_group_result(uint32_t idx) {
     ailego_assert_with(idx < group_results_.size(), "invalid idx");
 
     group_results_[idx].clear();
+
+    auto provider = fetch_vector_ ? owner_->create_provider() : nullptr;
+    if (fetch_vector_ && !provider) {
+      return IndexError_NoReady;
+    }
 
     std::vector<std::pair<std::string, TopkHeap>> group_topk_list;
     std::vector<std::pair<std::string, float>> best_score_in_groups;
@@ -164,16 +169,22 @@ class FlatSearcherContext : public IndexSearcher::Context {
 
         node_id_t id = group_topk_list[i].second[j].first;
 
-        auto provider = owner_->create_provider();
-
+        const auto key = owner_->key(id);
         if (fetch_vector_) {
-          group_results_[idx][i].mutable_docs()->emplace_back(
-              id, score, id, provider->get_vector(id));
+          IndexStorage::MemoryBlock block;
+          int ret = provider->get_vector(key, block);
+          if (ret != 0) {
+            group_results_[idx].clear();
+            return ret;
+          }
+          group_results_[idx][i].mutable_docs()->emplace_back(key, score, id,
+                                                              std::move(block));
         } else {
-          group_results_[idx][i].mutable_docs()->emplace_back(id, score, id);
+          group_results_[idx][i].mutable_docs()->emplace_back(key, score, id);
         }
       }
     }
+    return 0;
   }
 
   //! Get if group by search
@@ -1091,7 +1102,8 @@ int FlatSearcherContext<BATCH_SIZE>::group_by_search_impl(
         topk_heap.emplace(id, dist);
       }
     }
-    this->topk_to_group_result(q);
+    int ret = this->topk_to_group_result(q);
+    if (ret != 0) return ret;
     query = static_cast<const char *>(query) + qmeta.element_size();
   }
   return 0;
@@ -1135,7 +1147,8 @@ int FlatSearcherContext<BATCH_SIZE>::search_bf_by_p_keys_impl(
           topk_heap.emplace(owner_->get_id(pk), dist);
         }
       }
-      this->topk_to_group_result(q);
+      int ret = this->topk_to_group_result(q);
+      if (ret != 0) return ret;
       query = static_cast<const char *>(query) + qmeta.element_size();
     }
   } else {

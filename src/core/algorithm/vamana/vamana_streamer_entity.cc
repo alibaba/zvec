@@ -15,6 +15,7 @@
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/hash/crc32c.h>
 #include <zvec/core/framework/index_stats.h>
+#include "utility/legacy_read_buffer.h"
 
 namespace zvec {
 namespace core {
@@ -61,8 +62,10 @@ key_t VamanaStreamerEntity::get_key(node_id_t id) const {
 
 const void *VamanaStreamerEntity::get_vector(node_id_t id) const {
   // Keep the legacy pointer valid until the next call on this thread.
-  static thread_local IndexStorage::MemoryBlock block;
-  return get_vector(id, block) == 0 ? block.data() : nullptr;
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock block;
+  return get_vector(id, block) == 0 ? buffer.assign(block, vector_size())
+                                    : nullptr;
 }
 
 const void *VamanaStreamerEntity::get_extra_values(node_id_t id) const {
@@ -89,13 +92,15 @@ int VamanaStreamerEntity::get_vector(const node_id_t id,
 int VamanaStreamerEntity::get_vector(const node_id_t *ids, uint32_t count,
                                      const void **vecs) const {
   // Retain every result independently until the next batch on this thread.
-  static thread_local std::vector<IndexStorage::MemoryBlock> blocks;
+  static thread_local std::vector<LegacyReadBuffer> buffers;
+  std::vector<IndexStorage::MemoryBlock> blocks;
   int ret = get_vector(ids, count, blocks);
   if (ret != 0) {
     return ret;
   }
+  buffers.resize(count);
   for (uint32_t i = 0; i < count; ++i) {
-    vecs[i] = blocks[i].data();
+    vecs[i] = buffers[i].assign(blocks[i], vector_size());
   }
   return 0;
 }
@@ -856,10 +861,11 @@ const dist_t *VamanaStreamerEntity::get_neighbor_dists(node_id_t id) const {
   if (ailego_unlikely(loc.first >= dist_chunks_.size())) return nullptr;
 
   // Keep the legacy pointer valid until the next call on this thread.
-  static thread_local IndexStorage::MemoryBlock ptr;
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock ptr;
   size_t ret = dist_chunks_[loc.first]->read(loc.second, ptr, dist_entry_size_);
   if (ailego_unlikely(ret != dist_entry_size_)) return nullptr;
-  return static_cast<const dist_t *>(ptr.data());
+  return static_cast<const dist_t *>(buffer.assign(ptr, dist_entry_size_));
 }
 
 void VamanaStreamerEntity::update_neighbor_dists(

@@ -15,6 +15,7 @@
 #include "flat_streamer_entity.h"
 #include <cstdint>
 #include <zvec/core/framework/index_error.h>
+#include "utility/legacy_read_buffer.h"
 #include "flat_utility.h"
 
 namespace zvec {
@@ -717,8 +718,11 @@ const void *FlatContiguousStreamerEntity::get_vector_ptr(
 
 const void *FlatStreamerEntity::get_vector_by_key(uint64_t key) const {
   // Keep the legacy pointer valid until the next call on this thread.
-  static thread_local IndexStorage::MemoryBlock block;
-  return get_vector_by_key(key, block) == 0 ? block.data() : nullptr;
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock block;
+  return get_vector_by_key(key, block) == 0
+             ? buffer.assign(block, index_meta_.element_size())
+             : nullptr;
 }
 
 int FlatStreamerEntity::get_vector_by_key(

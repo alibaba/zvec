@@ -22,6 +22,7 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_error.h>
+#include "utility/legacy_read_buffer.h"
 #include "flat_sparse_index_format.h"
 #include "flat_sparse_utility.h"
 
@@ -1050,7 +1051,8 @@ int FlatSparseStreamerEntity::write_sparse_vector_data(uint32_t chunk_index,
 const void *FlatSparseStreamerEntity::get_sparse_vector_data(
     uint32_t chunk_index, uint64_t offset, uint32_t length) const {
   // Keep the legacy pointer valid until the next call on this thread.
-  static thread_local IndexStorage::MemoryBlock data;
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock data;
   auto size = sparse_data_chunks_[chunk_index]->read(offset, data, length);
   if (size != length) {
     LOG_ERROR(
@@ -1063,7 +1065,7 @@ const void *FlatSparseStreamerEntity::get_sparse_vector_data(
   //     "get_sparse_vector_data: chunk_index=%u, offset=%lu, length=%u, "
   //     "data=%p",
   //     chunk_index, offset, length, data);
-  return data.data();
+  return buffer.assign(data, length);
 }
 
 int FlatSparseStreamerEntity::get_sparse_vector_data(

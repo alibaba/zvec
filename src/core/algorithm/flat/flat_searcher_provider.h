@@ -14,7 +14,9 @@
 
 #pragma once
 
+#include <cstring>
 #include <memory>
+#include "utility/legacy_read_buffer.h"
 #include "flat_distance_matrix.h"
 #include "flat_searcher.h"
 // #include "flat_streamer.h"
@@ -35,7 +37,6 @@ class FlatSearcherProvider : public IndexProvider {
     total_vector_count_ =
         features_segment_->data_size() / owner->meta().element_size();
     owner_ = owner;
-    block_buffer_.resize(BATCH_SIZE * feature_size_);
   }
 
   //! Create a new iterator
@@ -66,7 +67,15 @@ class FlatSearcherProvider : public IndexProvider {
 
   //! Retrieve a vector using a primary key
   const void *get_vector(uint64_t key) const override {
-    return this->get_vector_by_index(owner_->get_id(key));
+    IndexStorage::MemoryBlock block;
+    return get_vector(key, block) == 0
+               ? legacy_buffer_.assign(block, feature_size_)
+               : nullptr;
+  }
+
+  int get_vector(uint64_t key,
+                 IndexStorage::MemoryBlock &block) const override {
+    return get_vector_by_index(owner_->get_id(key), block);
   }
 
   //! Retrieve the owner class
@@ -172,10 +181,12 @@ class FlatSearcherProvider : public IndexProvider {
   };
 
   //! Retrieve a vector via local index
-  const void *get_vector_by_index(uint32_t index) const {
-    if (index == kInvalidNodeId) {
+  int get_vector_by_index(uint32_t index,
+                          IndexStorage::MemoryBlock &block) const {
+    block.reset();
+    if (index >= total_vector_count_) {
       LOG_ERROR("Failed to get vector by Invalid Id.");
-      return nullptr;
+      return IndexError_NoExist;
     }
 
     if (owner_->column_major_order() &&
@@ -183,38 +194,46 @@ class FlatSearcherProvider : public IndexProvider {
       uint32_t block_size = feature_size_ * BATCH_SIZE;
       uint64_t offset = (index - (index % BATCH_SIZE)) * feature_size_;
 
-      if (features_segment_->read(offset, read_block_, block_size) !=
+      IndexStorage::MemoryBlock read_block;
+      if (features_segment_->read(offset, read_block, block_size) !=
           block_size) {
         LOG_ERROR("Failed to read data (%u bytes) from features segment",
                   block_size);
-        return nullptr;
+        return IndexError_ReadData;
       }
 
-      uint32_t align_size = IndexMeta::AlignSizeof(owner_->meta().data_type());
-      ReverseTranspose<BATCH_SIZE>(align_size, read_block_.data(),
-                                   feature_size_ / align_size,
-                                   &block_buffer_[0]);
-      return block_buffer_.data() + ((index % BATCH_SIZE) * feature_size_);
+      const size_t align_size =
+          IndexMeta::AlignSizeof(owner_->meta().data_type());
+      auto buffer = std::make_shared<std::vector<uint8_t>>(feature_size_);
+      const auto *source = static_cast<const uint8_t *>(read_block.data()) +
+                           (index % BATCH_SIZE) * align_size;
+      // Extract only this row; retaining a full transposed batch per result
+      // would multiply the result memory by BATCH_SIZE.
+      for (size_t pos = 0; pos < feature_size_; pos += align_size) {
+        std::memcpy(buffer->data() + pos, source + pos * BATCH_SIZE,
+                    align_size);
+      }
+      block = IndexStorage::MemoryBlock::MakeSharedView(buffer->data(), buffer);
 
     } else {
-      if (features_segment_->read(index * feature_size_, read_block_,
-                                  feature_size_) != feature_size_) {
+      if (features_segment_->read(static_cast<uint64_t>(index) * feature_size_,
+                                  block, feature_size_) != feature_size_) {
         LOG_ERROR("Failed to read data (%u bytes) from features segment",
                   feature_size_);
-        return nullptr;
+        block.reset();
+        return IndexError_ReadData;
       }
     }
-    return read_block_.data();
+    return 0;
   }
 
  private:
   //! Members
   const FlatSearcher<BATCH_SIZE> *owner_{nullptr};
   IndexStorage::Segment::Pointer features_segment_{};
-  mutable IndexStorage::MemoryBlock read_block_;
+  mutable LegacyReadBuffer legacy_buffer_;
   uint32_t feature_size_{0};
   uint32_t total_vector_count_{0};
-  mutable std::vector<uint8_t> block_buffer_{};
 };
 
 }  // namespace core
