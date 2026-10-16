@@ -556,8 +556,6 @@ jobs:
         run: |
           mkdir -p "$ZVEC_DIST_DIR"
           cp -R "$GITHUB_WORKSPACE/install_device/include" "$ZVEC_DIST_DIR/include"
-          # Jieba's default dictionary and HMM model are embedded in each
-          # library slice, so no separate runtime data directory is required.
           for dylib in "$GITHUB_WORKSPACE"/install_device/lib/*.dylib; do
             [ -L "$dylib" ] && continue  # skip version symlinks
             name=$(basename "$dylib" .dylib)

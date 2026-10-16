@@ -299,9 +299,10 @@ Attributes:
                   characters). custom_token_chars is not supported.
             jieba:
                 - "jieba_dict_dir" (optional external directory containing
-                  jieba.dict.utf8 and hmm_model.utf8; embedded resources are
-                  used when no directory override is configured).
-                - "user_dict_path" (user dictionary path).
+                  jieba.dict.utf8 and hmm_model.utf8; priority: field value >
+                  ZVEC_JIEBA_DICT_DIR > embedded defaults).
+                - "user_dict_path" (user dictionary path; augments the selected
+                  dictionary, including the embedded default).
                 - "cut_mode" ("search", "mix", "full", or "hmm"; default
                   "search").
             whitespace:
@@ -354,8 +355,9 @@ Args:
                   characters). custom_token_chars is not supported.
             jieba:
                 - "jieba_dict_dir" (optional external directory override;
-                  embedded resources are used by default).
-                - "user_dict_path".
+                  priority: field value > ZVEC_JIEBA_DICT_DIR > embedded defaults).
+                - "user_dict_path" (augments the selected dictionary,
+                  including the embedded default).
                 - "cut_mode" ("search", "mix", "full", or "hmm"; default
                   "search").
             whitespace:

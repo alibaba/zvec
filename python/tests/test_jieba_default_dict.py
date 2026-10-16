@@ -21,71 +21,125 @@ any dictionary files. Explicit external directories retain their precedence.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+import textwrap
 
 import pytest
-import zvec
-from zvec import (
-    Collection,
-    CollectionOption,
-    DataType,
-    Doc,
-    FieldSchema,
-    FtsIndexParam,
-)
-from zvec.model.param.query import Fts, Query
 
+# Only the whole phrase is in the external dictionary. The embedded
+# dictionary would also index the shorter word in full mode.
+_EXTERNAL_MATCHES = {"搜索引擎技术": ["pk_1"], "技术": []}
 
-@pytest.fixture(autouse=True)
-def isolate_jieba_config(monkeypatch):
-    """Keep process-wide dictionary overrides independent between tests."""
-    saved = zvec.get_default_jieba_dict_dir()
-    # The environment variable takes precedence over the global override.
-    monkeypatch.delenv("ZVEC_JIEBA_DICT_DIR", raising=False)
-    zvec.set_default_jieba_dict_dir("")
-    try:
-        yield
-    finally:
-        zvec.set_default_jieba_dict_dir(saved)
+_JIEBA_CHECK = textwrap.dedent(
+    """\
+    import json
+    import sys
 
+    import zvec
+    from zvec.model.param.query import Fts, Query
 
-def _create_jieba_collection(path, extra_params: str = "") -> Collection:
-    """Create an FTS-only collection with an optional dictionary override."""
+    config = json.loads(sys.argv[1])
     schema = zvec.CollectionSchema(
         name="fts_jieba_default",
         fields=[
-            FieldSchema("title", DataType.STRING, nullable=False),
-            FieldSchema(
+            zvec.FieldSchema("title", zvec.DataType.STRING, nullable=False),
+            zvec.FieldSchema(
                 "content",
-                DataType.STRING,
+                zvec.DataType.STRING,
                 nullable=False,
-                # An empty extra_params must select the embedded default
-                # without a directory registered by the Python package.
-                index_param=FtsIndexParam(
+                # Empty parameters exercise embedded resources without any
+                # directory registered by the Python package.
+                index_param=zvec.FtsIndexParam(
                     tokenizer_name="jieba",
                     filters=["lowercase"],
-                    extra_params=extra_params,
+                    extra_params=config["extra_params"],
                 ),
             ),
         ],
     )
-    return zvec.create_and_open(
-        path=str(path),
-        schema=schema,
-        option=CollectionOption(read_only=False, enable_mmap=True),
-    )
-
-
-@pytest.fixture
-def jieba_collection(tmp_path) -> Collection:
-    """FTS-only collection using jieba tokenizer and no explicit dict path."""
-    coll = _create_jieba_collection(tmp_path / "fts_jieba")
-    assert coll is not None
     try:
-        yield coll
+        collection = zvec.create_and_open(
+            path=config["path"],
+            schema=schema,
+            option=zvec.CollectionOption(read_only=False, enable_mmap=True),
+        )
+    except ValueError as error:
+        if not config["invalid_override"]:
+            raise
+        assert "jieba" in str(error).lower(), str(error)
+        sys.exit(0)
+    if config["invalid_override"]:
+        collection.close()
+        raise AssertionError("An invalid override must not use embedded resources")
+
+    def matching_ids(text):
+        return {
+            doc.id
+            for doc in collection.query(
+                queries=Query(field_name="content", fts=Fts(match_string=text)),
+                topk=10,
+            )
+        }
+
+    def check_matches():
+        for text, expected in config["expected_matches"].items():
+            assert matching_ids(text) == set(expected), text
+
+    try:
+        results = collection.insert(
+            [
+                zvec.Doc(id="pk_1", fields={"title": "t1", "content": "搜索引擎技术"}),
+                zvec.Doc(id="pk_2", fields={"title": "t2", "content": "无关文档"}),
+            ]
+        )
+        assert all(result.ok() for result in results)
+        check_matches()
+        if config["reopen"]:
+            collection.flush()
+            collection.close()
+            collection = zvec.open(config["path"])
+            check_matches()
     finally:
-        coll.close()
+        collection.close()
+    """
+)
+
+
+def _run_jieba_check(
+    tmp_path,
+    *,
+    env_dict_dir=None,
+    extra_params="",
+    expected_matches=None,
+    invalid_override=False,
+    reopen=False,
+):
+    """Pass dictionary overrides in the environment before loading native code."""
+    env = os.environ.copy()
+    env.pop("ZVEC_JIEBA_DICT_DIR", None)
+    if env_dict_dir is not None:
+        env["ZVEC_JIEBA_DICT_DIR"] = str(env_dict_dir)
+    config = {
+        "path": str(tmp_path / "fts_jieba"),
+        "extra_params": extra_params,
+        "expected_matches": (
+            expected_matches
+            if expected_matches is not None
+            else {"搜索引擎技术": ["pk_1"], "技术": ["pk_1"]}
+        ),
+        "invalid_override": invalid_override,
+        "reopen": reopen,
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", _JIEBA_CHECK, json.dumps(config)],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.fixture
@@ -104,137 +158,68 @@ def external_dict_dir(tmp_path):
     return dict_dir
 
 
-def _matching_ids(collection: Collection, text: str) -> set[str]:
-    return {
-        doc.id
-        for doc in collection.query(
-            queries=Query(field_name="content", fts=Fts(match_string=text)),
-            topk=10,
-        )
-    }
+def test_jieba_works_without_explicit_dict_path(tmp_path):
+    """A fresh import can index and search CJK text without init or dict paths."""
+    _run_jieba_check(tmp_path)
 
 
-def _assert_external_dictionary(collection: Collection):
-    results = collection.insert(
-        [
-            Doc(id="pk_1", fields={"title": "t1", "content": "搜索引擎技术"}),
-            Doc(id="pk_2", fields={"title": "t2", "content": "无关文档"}),
-        ]
+def test_embedded_dictionary_works_after_reopen(tmp_path):
+    _run_jieba_check(tmp_path, reopen=True)
+
+
+def test_user_dictionary_supplements_embedded_resources_after_reopen(tmp_path):
+    """User words augment the embedded dictionary without replacing it."""
+    user_dict_path = tmp_path / "user.dict.utf8"
+    user_dict_path.write_text("搜索引擎技术 100000000 n\n", encoding="utf-8")
+    _run_jieba_check(
+        tmp_path,
+        extra_params=json.dumps(
+            {"cut_mode": "mix", "user_dict_path": str(user_dict_path)}
+        ),
+        # The user phrase is indexed as one token, while the other document
+        # still uses words from the embedded main dictionary.
+        expected_matches={
+            "搜索引擎技术": ["pk_1"],
+            "技术": [],
+            "文档": ["pk_2"],
+        },
+        reopen=True,
     )
-    assert all(r.ok() for r in results)
-    assert _matching_ids(collection, "搜索引擎技术") == {"pk_1"}
-    # Only the whole phrase is in the external dictionary. The embedded
-    # dictionary would also index the shorter word in full mode.
-    assert _matching_ids(collection, "技术") == set()
 
 
-def test_jieba_works_without_explicit_dict_path(jieba_collection: Collection):
-    """Insert CJK docs and search with no init(), paths, or environment var."""
-    docs = [
-        Doc(id="pk_1", fields={"title": "t1", "content": "中华人民共和国成立"}),
-        Doc(id="pk_2", fields={"title": "t2", "content": "无关文档"}),
-    ]
-    insert_results = jieba_collection.insert(docs)
-    assert all(r.ok() for r in insert_results)
-    assert _matching_ids(jieba_collection, "中华") == {"pk_1"}
-
-
-def test_embedded_dictionary_works_after_reopen(jieba_collection: Collection):
-    results = jieba_collection.insert(
-        [Doc(id="pk_1", fields={"title": "t", "content": "搜索引擎技术"})]
+def test_environment_dictionary_override(tmp_path, external_dict_dir):
+    """ZVEC_JIEBA_DICT_DIR selects an external default dictionary."""
+    _run_jieba_check(
+        tmp_path,
+        env_dict_dir=external_dict_dir,
+        extra_params=json.dumps({"cut_mode": "full"}),
+        expected_matches=_EXTERNAL_MATCHES,
     )
-    assert all(r.ok() for r in results)
-    path = jieba_collection.path
-    jieba_collection.flush()
-    jieba_collection.close()
-
-    reopened = zvec.open(path)
-    try:
-        assert _matching_ids(reopened, "搜索") == {"pk_1"}
-    finally:
-        reopened.close()
 
 
-def test_import_does_not_register_external_dict_directory():
-    """A fresh import leaves the external override empty."""
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import zvec; assert zvec.get_default_jieba_dict_dir() == ''",
-        ],
-        capture_output=True,
-        text=True,
+def test_field_dictionary_overrides_environment(tmp_path, external_dict_dir):
+    _run_jieba_check(
+        tmp_path,
+        env_dict_dir=tmp_path / "missing_env_dict",
+        extra_params=json.dumps(
+            {"jieba_dict_dir": str(external_dict_dir), "cut_mode": "full"}
+        ),
+        expected_matches=_EXTERNAL_MATCHES,
     )
-    assert result.returncode == 0, result.stderr
 
 
-def test_user_can_override_default_at_runtime():
-    """The public setter remains available for an external directory."""
-    zvec.set_default_jieba_dict_dir("/tmp/zvec/jieba-override")
-    assert zvec.get_default_jieba_dict_dir() == "/tmp/zvec/jieba-override"
-    zvec.set_default_jieba_dict_dir("")
-    assert zvec.get_default_jieba_dict_dir() == ""
-
-
-def test_global_dictionary_override(tmp_path, external_dict_dir):
-    zvec.set_default_jieba_dict_dir(str(external_dict_dir))
-    coll = _create_jieba_collection(
-        tmp_path / "fts_jieba_global", json.dumps({"cut_mode": "full"})
-    )
-    try:
-        _assert_external_dictionary(coll)
-    finally:
-        coll.close()
-
-
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="os.environ writes may not propagate across CRT to zvec.pyd",
-)
-def test_env_var_overrides_global_config(monkeypatch, tmp_path, external_dict_dir):
-    """ZVEC_JIEBA_DICT_DIR beats GlobalConfig in jieba's resolution chain."""
-    monkeypatch.setenv("ZVEC_JIEBA_DICT_DIR", str(external_dict_dir))
-    zvec.set_default_jieba_dict_dir(str(tmp_path / "missing_global_dict"))
-    coll = _create_jieba_collection(
-        tmp_path / "fts_jieba_env", json.dumps({"cut_mode": "full"})
-    )
-    try:
-        _assert_external_dictionary(coll)
-    finally:
-        coll.close()
-
-
-def test_field_dictionary_overrides_global_and_environment(
-    monkeypatch, tmp_path, external_dict_dir
-):
-    zvec.set_default_jieba_dict_dir(str(tmp_path / "missing_global_dict"))
-    monkeypatch.setenv("ZVEC_JIEBA_DICT_DIR", str(tmp_path / "missing_env_dict"))
-    coll = _create_jieba_collection(
-        tmp_path / "fts_jieba_field",
-        json.dumps({"jieba_dict_dir": str(external_dict_dir), "cut_mode": "full"}),
-    )
-    try:
-        _assert_external_dictionary(coll)
-    finally:
-        coll.close()
-
-
-@pytest.mark.parametrize("config_source", ["global", "environment", "field"])
+@pytest.mark.parametrize("config_source", ["environment", "field"])
 def test_invalid_dictionary_override_does_not_use_embedded_default(
-    monkeypatch, tmp_path, config_source
+    tmp_path, config_source
 ):
-    if config_source == "environment" and sys.platform == "win32":
-        pytest.skip("os.environ writes may not propagate across CRT to zvec.pyd")
-
     missing_dir = str(tmp_path / "missing_jieba_dict")
-    extra_params = ""
-    if config_source == "global":
-        zvec.set_default_jieba_dict_dir(missing_dir)
-    elif config_source == "environment":
-        monkeypatch.setenv("ZVEC_JIEBA_DICT_DIR", missing_dir)
-    else:
-        extra_params = json.dumps({"jieba_dict_dir": missing_dir})
-
-    with pytest.raises(ValueError, match="[Jj]ieba"):
-        _create_jieba_collection(tmp_path / "fts_jieba_invalid", extra_params)
+    _run_jieba_check(
+        tmp_path,
+        env_dict_dir=missing_dir if config_source == "environment" else None,
+        extra_params=(
+            json.dumps({"jieba_dict_dir": missing_dir})
+            if config_source == "field"
+            else ""
+        ),
+        invalid_override=True,
+    )

@@ -30,14 +30,7 @@ if sys.maxsize <= 2**32:
     )
 
 
-# Default jieba resources are embedded in the native library. These APIs
-# remain available for callers that need an external dictionary override.
-from zvec._zvec import (
-    get_default_jieba_dict_dir,
-    io_backend_description,
-    io_backend_type,
-    set_default_jieba_dict_dir,
-)
+from zvec._zvec import io_backend_description, io_backend_type
 
 # ==============================
 # Public API — grouped by category
@@ -127,8 +120,6 @@ __all__ = [
     "create_and_open",
     "init",
     "open",
-    "set_default_jieba_dict_dir",
-    "get_default_jieba_dict_dir",
     "io_backend_type",
     "io_backend_description",
     # Core classes

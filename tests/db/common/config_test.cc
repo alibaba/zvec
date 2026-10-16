@@ -233,24 +233,3 @@ TEST_F(ConfigTest, LogConfigPolymorphism) {
   ASSERT_EQ(console_config->get_logger_type(), CONSOLE_LOG_TYPE_NAME);
   ASSERT_EQ(file_config->get_logger_type(), FILE_LOG_TYPE_NAME);
 }
-
-// Callers can explicitly register an external dictionary override with
-// set_default_jieba_dict_dir(). The setter is independent of the
-// initialize() one-shot lifecycle.
-TEST_F(ConfigTest, JiebaDictDirSetterIsIndependentOfInitialize) {
-  auto saved = GlobalConfig::Instance().jieba_dict_dir();
-
-  // Setter works regardless of whether initialize was called.
-  GlobalConfig::Instance().set_default_jieba_dict_dir("/tmp/zvec/dict-A");
-  ASSERT_EQ(GlobalConfig::Instance().jieba_dict_dir(), "/tmp/zvec/dict-A");
-
-  // Last writer wins.
-  GlobalConfig::Instance().set_default_jieba_dict_dir("/tmp/zvec/dict-B");
-  ASSERT_EQ(GlobalConfig::Instance().jieba_dict_dir(), "/tmp/zvec/dict-B");
-
-  // Empty clears.
-  GlobalConfig::Instance().set_default_jieba_dict_dir("");
-  ASSERT_EQ(GlobalConfig::Instance().jieba_dict_dir(), "");
-
-  GlobalConfig::Instance().set_default_jieba_dict_dir(saved);
-}

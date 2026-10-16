@@ -45,7 +45,6 @@ class JiebaTokenizer : public Tokenizer {
   //   "cut_mode"       - "search" (default) | "mix" | "full" | "hmm"
   //
   // jieba_dict_dir resolution: per-field > ZVEC_JIEBA_DICT_DIR >
-  // zvec::GlobalConfig::jieba_dict_dir() (set explicitly or via init) >
   // embedded defaults when no external directory is configured.
   // Stop-word filtering belongs to a TokenFilter, not here.
   Status init(const ailego::JsonObject &config) override;

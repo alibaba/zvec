@@ -247,10 +247,6 @@ set(CPACK_PACKAGE_VERSION_PATCH ${ZVEC_VERSION_PATCH})
 set(CPACK_PACKAGE_NAME zvec)
 include(CPack)
 
-# The default cppjieba dictionary and HMM model are embedded in the FTS
-# tokenizer, so both the Python wheel and native SDK work without deploying
-# separate dictionary files.
-
 if(BUILD_PYTHON_BINDINGS)
     if(APPLE)
         set(CMAKE_STRIP "")
@@ -279,11 +275,4 @@ if(BUILD_PYTHON_BINDINGS)
     # DiskAnn is now statically linked into _zvec.so via --whole-archive
     # (see src/binding/python/CMakeLists.txt -> core_knn_diskann_static),
     # so no separate runtime .so needs to be installed in the wheel.
-    # The default cppjieba dictionary and HMM model are already linked into
-    # the extension; the wheel does not need additional runtime data files.
 endif()
-
-# Native SDK consumers also use the embedded defaults. External dictionary
-# overrides remain available via zvec_set_default_jieba_dict_dir(),
-# zvec_config_data_set_jieba_dict_dir(), the ZVEC_JIEBA_DICT_DIR env var, or
-# per-field extra_params.jieba_dict_dir.

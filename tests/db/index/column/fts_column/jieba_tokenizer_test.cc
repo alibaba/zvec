@@ -23,7 +23,6 @@
 #include <thread>
 #include <vector>
 #include <gtest/gtest.h>
-#include <zvec/db/config.h>
 #include "db/index/column/fts_column/tokenizer/jieba_embedded_dict.h"
 
 namespace {
@@ -82,14 +81,12 @@ void expect_invalid_init(const JsonObject &config) {
 class JiebaEmbeddedTokenizerTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    saved_global_ = zvec::GlobalConfig::Instance().jieba_dict_dir();
     const char *env = std::getenv(kDictEnv);
     had_env_ = env != nullptr;
     if (had_env_) {
       saved_env_ = env;
     }
     ASSERT_EQ(set_dict_env(nullptr), 0);
-    zvec::GlobalConfig::Instance().set_default_jieba_dict_dir("");
 
     static std::atomic<uint64_t> sequence{0};
     const auto timestamp = std::chrono::steady_clock::now().time_since_epoch();
@@ -104,7 +101,6 @@ class JiebaEmbeddedTokenizerTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    zvec::GlobalConfig::Instance().set_default_jieba_dict_dir(saved_global_);
     EXPECT_EQ(set_dict_env(had_env_ ? saved_env_.c_str() : nullptr), 0);
     if (!temp_dir_.empty()) {
       std::error_code error;
@@ -126,7 +122,6 @@ class JiebaEmbeddedTokenizerTest : public ::testing::Test {
   std::filesystem::path temp_dir_;
 
  private:
-  std::string saved_global_;
   std::string saved_env_;
   bool had_env_{false};
 };
@@ -282,15 +277,6 @@ TEST_F(JiebaEmbeddedTokenizerTest, SharedTokenizerSupportsConcurrentTokenize) {
   }
 }
 
-TEST_F(JiebaEmbeddedTokenizerTest, EnvironmentBeatsGlobalDefaultDirectory) {
-  zvec::GlobalConfig::Instance().set_default_jieba_dict_dir(
-      (temp_dir_ / "missing_global_dict").string());
-  ASSERT_EQ(set_dict_env(kDictDir.c_str()), 0);
-  JiebaTokenizer tokenizer;
-  ASSERT_TRUE(tokenizer.init(make_config()).ok());
-  EXPECT_TRUE(contains_token(tokenizer.tokenize("中文分词技术"), "中文"));
-}
-
 TEST_F(JiebaEmbeddedTokenizerTest, PerFieldBeatsEnvironmentDirectory) {
   ASSERT_EQ(set_dict_env((temp_dir_ / "missing_env_dict").string().c_str()), 0);
   JiebaTokenizer tokenizer;
@@ -298,10 +284,10 @@ TEST_F(JiebaEmbeddedTokenizerTest, PerFieldBeatsEnvironmentDirectory) {
   EXPECT_TRUE(contains_token(tokenizer.tokenize("中文分词技术"), "中文"));
 }
 
-TEST_F(JiebaEmbeddedTokenizerTest, GlobalDirectoryBeatsEmbeddedDefaults) {
+TEST_F(JiebaEmbeddedTokenizerTest, EnvironmentDirectoryBeatsEmbeddedDefaults) {
   const std::string word = "星河咕噜引擎";
   write_user_dict("jieba.dict.utf8", word);
-  zvec::GlobalConfig::Instance().set_default_jieba_dict_dir(temp_dir_.string());
+  ASSERT_EQ(set_dict_env(temp_dir_.string().c_str()), 0);
 
   JiebaTokenizer tokenizer;
   ASSERT_TRUE(tokenizer.init(make_config("full")).ok());
@@ -312,15 +298,10 @@ TEST_F(JiebaEmbeddedTokenizerTest, GlobalDirectoryBeatsEmbeddedDefaults) {
 
 TEST_F(JiebaEmbeddedTokenizerTest, InvalidConfiguredDirectoryDoesNotFallBack) {
   const std::string missing = (temp_dir_ / "missing_dict").string();
-  zvec::GlobalConfig::Instance().set_default_jieba_dict_dir(kDictDir);
   ASSERT_EQ(set_dict_env(kDictDir.c_str()), 0);
   expect_invalid_init(make_config("search", missing));
 
   ASSERT_EQ(set_dict_env(missing.c_str()), 0);
-  expect_invalid_init(make_config());
-
-  ASSERT_EQ(set_dict_env(nullptr), 0);
-  zvec::GlobalConfig::Instance().set_default_jieba_dict_dir(missing);
   expect_invalid_init(make_config());
 }
 

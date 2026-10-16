@@ -40,7 +40,6 @@ def init(
     brute_force_by_keys_ratio: Optional[float] = None,
     fts_brute_force_by_keys_ratio: Optional[float] = None,
     memory_limit_mb: Optional[int] = None,
-    jieba_dict_dir: Optional[str] = None,
 ) -> None:
     """Initialize Zvec with configuration options.
 
@@ -102,15 +101,6 @@ def init(
             approaching this limit.
             If ``None``, inferred from cgroup memory limit * 0.8 (e.g., in Docker).
             Must be > 0 if provided.
-        jieba_dict_dir (Optional[str], optional):
-            Override the default directory containing ``jieba.dict.utf8`` and
-            ``hmm_model.utf8`` for the jieba FTS tokenizer. When ``None``, the
-            value previously registered by ``zvec.set_default_jieba_dict_dir``
-            is preserved. JiebaTokenizer also honors the
-            ``ZVEC_JIEBA_DICT_DIR`` environment variable and per-field
-            ``FtsIndexParam.extra_params.jieba_dict_dir`` ahead of this value.
-            When no external directory is configured, the embedded dictionary
-            and HMM model are used. Invalid non-empty overrides raise an error.
 
     Raises:
         RuntimeError: If Zvec is already initialized.
@@ -179,8 +169,6 @@ def init(
         config_dict["fts_brute_force_by_keys_ratio"] = fts_brute_force_by_keys_ratio
     if memory_limit_mb is not None:
         config_dict["memory_limit_mb"] = memory_limit_mb
-    if jieba_dict_dir is not None:
-        config_dict["jieba_dict_dir"] = jieba_dict_dir
 
     Initialize(config_dict)
 

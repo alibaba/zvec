@@ -16,7 +16,6 @@
 #include <cstdlib>
 #include <fstream>
 #include <zvec/ailego/logger/logger.h>
-#include <zvec/db/config.h>
 #include "jieba_embedded_dict.h"
 
 namespace zvec::fts {
@@ -34,7 +33,7 @@ static std::string get_string_or_default(const ailego::JsonObject &config,
   return default_value;
 }
 
-// Priority: per-field config > ZVEC_JIEBA_DICT_DIR > GlobalConfig > embedded.
+// Priority: per-field config > ZVEC_JIEBA_DICT_DIR > embedded defaults.
 static std::string resolve_jieba_dict_dir(const ailego::JsonObject &config) {
   std::string dir = get_string_or_default(config, "jieba_dict_dir", "");
   if (!dir.empty()) {
@@ -43,7 +42,7 @@ static std::string resolve_jieba_dict_dir(const ailego::JsonObject &config) {
   if (const char *env = std::getenv("ZVEC_JIEBA_DICT_DIR"); env && *env) {
     return env;
   }
-  return GlobalConfig::Instance().jieba_dict_dir();
+  return {};
 }
 
 // cppjieba aborts when a file cannot be opened. Validate configured paths
