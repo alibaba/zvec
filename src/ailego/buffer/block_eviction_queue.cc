@@ -667,22 +667,31 @@ void MemoryLimitPool::stop_background_evictor() {
 
 void MemoryLimitPool::background_evict_loop() {
   using std::chrono::milliseconds;
+  const auto page_admission_pressure = [this] {
+    // Reserved headroom can block page admission below both general
+    // watermarks. Keep the background queue progressing at that boundary,
+    // but do not reclaim when only non-evictable fixed reservations remain.
+    return used_size_.load(std::memory_order_relaxed) > fixed_used() &&
+           is_page_full();
+  };
   while (bg_running_.load()) {
     {
       std::unique_lock<std::mutex> lk(bg_mutex_);
-      bg_cv_.wait_for(lk, milliseconds(5), [this] {
-        return !bg_running_.load() || should_background_reclaim();
+      bg_cv_.wait_for(lk, milliseconds(5), [this, &page_admission_pressure] {
+        return !bg_running_.load() || should_background_reclaim() ||
+               page_admission_pressure();
       });
     }
     if (!bg_running_.load()) break;
     if (pool_size_.load(std::memory_order_relaxed) == 0) continue;
     const size_t low = low_watermark();
-    if (used_size_.load() > low) {
+    if (used_size_.load() > low || page_admission_pressure()) {
       bg_evict_rounds_.fetch_add(1, std::memory_order_relaxed);
     }
-    // Reclaim proactively down to the low watermark so the foreground path
-    // finds ready buffers on the free-list instead of evicting inline.
-    while (bg_running_.load() && used_size_.load() > low) {
+    // Reclaim to the low watermark and make room for page admission so the
+    // foreground path finds ready buffers without a deep inline queue walk.
+    while (bg_running_.load() &&
+           (used_size_.load() > low || page_admission_pressure())) {
       size_t n = BlockEvictionQueue::get_instance().batch_recycle(64);
       if (n == 0) {
         // Back off when pressure remains but eviction makes no progress.
@@ -752,7 +761,14 @@ bool MemoryLimitPool::wait_for_available(const size_t buffer_size,
       capacity_cv_.wait_for(lock, timeout, [this, buffer_size] {
         const size_t capacity = pool_size_.load(std::memory_order_relaxed);
         const size_t used = used_size_.load(std::memory_order_relaxed);
-        return capacity >= used && buffer_size <= capacity - used;
+        if (capacity < used || buffer_size > capacity - used) {
+          return false;
+        }
+        // A page can be denied below the total capacity: unconsumed external
+        // cache headroom is not available to page admission. Use the same
+        // page-limit predicate as eviction instead of turning backpressure
+        // into immediate successful waits while pages still cannot fit.
+        return !is_cacheable_buffer_size(buffer_size) || !is_page_full();
       });
   if (!available) {
     capacity_wait_timeouts_.fetch_add(1, std::memory_order_relaxed);

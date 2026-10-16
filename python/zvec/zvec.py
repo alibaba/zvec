@@ -98,8 +98,10 @@ def init(
             because per-candidate FTS cost is higher.
             Range: [0.0, 1.0]. Default: ``0.05``.
         memory_limit_mb (Optional[int], optional):
-            Soft memory cap in MB. Zvec may throttle or fail operations
-            approaching this limit.
+            Process-wide managed cache budget in MB, shared by vector storage
+            and RocksDB-backed metadata/index features. This is not a hard RSS
+            limit; query workspaces, runtime state and allocator retention are
+            outside the budget.
             If ``None``, inferred from cgroup memory limit * 0.8 (e.g., in Docker).
             Must be > 0 if provided.
         jieba_dict_dir (Optional[str], optional):
