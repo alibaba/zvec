@@ -27,28 +27,40 @@ namespace {
 float dot_product(const float *a, const float *b, size_t dim) {
   __m512 acc0 = _mm512_setzero_ps();
   __m512 acc1 = _mm512_setzero_ps();
+  __m512 acc2 = _mm512_setzero_ps();
+  __m512 acc3 = _mm512_setzero_ps();
   size_t i = 0;
-  for (; i + 32 <= dim; i += 32) {
+  for (; i + 64 <= dim; i += 64) {
     acc0 =
         _mm512_fmadd_ps(_mm512_loadu_ps(a + i), _mm512_loadu_ps(b + i), acc0);
     acc1 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i + 16),
                            _mm512_loadu_ps(b + i + 16), acc1);
+    acc2 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i + 32),
+                           _mm512_loadu_ps(b + i + 32), acc2);
+    acc3 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i + 48),
+                           _mm512_loadu_ps(b + i + 48), acc3);
   }
-  if (i + 16 <= dim) {
+  if (i + 32 <= dim) {
     acc0 =
         _mm512_fmadd_ps(_mm512_loadu_ps(a + i), _mm512_loadu_ps(b + i), acc0);
+    acc1 = _mm512_fmadd_ps(_mm512_loadu_ps(a + i + 16),
+                           _mm512_loadu_ps(b + i + 16), acc1);
+    i += 32;
+  }
+  if (i + 16 <= dim) {
+    acc2 =
+        _mm512_fmadd_ps(_mm512_loadu_ps(a + i), _mm512_loadu_ps(b + i), acc2);
     i += 16;
   }
-
-  __m512 acc = _mm512_add_ps(acc0, acc1);
-  float sum = _mm512_reduce_add_ps(acc);
   if (i < dim) {
     const __mmask16 mask = static_cast<__mmask16>((1u << (dim - i)) - 1);
     const __m512 va = _mm512_maskz_loadu_ps(mask, a + i);
     const __m512 vb = _mm512_maskz_loadu_ps(mask, b + i);
-    sum += _mm512_reduce_add_ps(_mm512_maskz_mul_ps(mask, va, vb));
+    acc3 = _mm512_fmadd_ps(va, vb, acc3);
   }
-  return sum;
+
+  __m512 acc = _mm512_add_ps(_mm512_add_ps(acc0, acc1), _mm512_add_ps(acc2, acc3));
+  return _mm512_reduce_add_ps(acc);
 }
 
 // One-to-many inner product kernel: the query block is loaded once per

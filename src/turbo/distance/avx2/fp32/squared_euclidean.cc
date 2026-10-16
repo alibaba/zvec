@@ -55,12 +55,22 @@ float squared_euclidean(const float *a, const float *b, size_t dim) {
         _mm256_sub_ps(_mm256_loadu_ps(a + i + 24), _mm256_loadu_ps(b + i + 24));
     acc3 = _mm256_fmadd_ps(diff3, diff3, acc3);
   }
-  acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
-  for (; i + 8 <= dim; i += 8) {
+  if (i + 16 <= dim) {
+    const __m256 diff0 =
+        _mm256_sub_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i));
+    acc0 = _mm256_fmadd_ps(diff0, diff0, acc0);
+    const __m256 diff1 =
+        _mm256_sub_ps(_mm256_loadu_ps(a + i + 8), _mm256_loadu_ps(b + i + 8));
+    acc1 = _mm256_fmadd_ps(diff1, diff1, acc1);
+    i += 16;
+  }
+  if (i + 8 <= dim) {
     const __m256 diff =
         _mm256_sub_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i));
-    acc0 = _mm256_fmadd_ps(diff, diff, acc0);
+    acc2 = _mm256_fmadd_ps(diff, diff, acc2);
+    i += 8;
   }
+  acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
 
   float sum = horizontal_sum(acc0);
   for (; i < dim; ++i) {

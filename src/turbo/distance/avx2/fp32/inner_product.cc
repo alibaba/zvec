@@ -51,11 +51,19 @@ float dot_product(const float *a, const float *b, size_t dim) {
     acc3 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i + 24),
                            _mm256_loadu_ps(b + i + 24), acc3);
   }
-  acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
-  for (; i + 8 <= dim; i += 8) {
+  if (i + 16 <= dim) {
     acc0 =
         _mm256_fmadd_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i), acc0);
+    acc1 = _mm256_fmadd_ps(_mm256_loadu_ps(a + i + 8),
+                           _mm256_loadu_ps(b + i + 8), acc1);
+    i += 16;
   }
+  if (i + 8 <= dim) {
+    acc2 =
+        _mm256_fmadd_ps(_mm256_loadu_ps(a + i), _mm256_loadu_ps(b + i), acc2);
+    i += 8;
+  }
+  acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
 
   float sum = horizontal_sum(acc0);
   for (; i < dim; ++i) {
