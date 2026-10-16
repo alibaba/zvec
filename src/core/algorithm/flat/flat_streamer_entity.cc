@@ -15,6 +15,7 @@
 #include "flat_streamer_entity.h"
 #include <cstdint>
 #include <zvec/core/framework/index_error.h>
+#include "utility/legacy_read_buffer.h"
 #include "flat_utility.h"
 
 namespace zvec {
@@ -716,33 +717,12 @@ const void *FlatContiguousStreamerEntity::get_vector_ptr(
 }
 
 const void *FlatStreamerEntity::get_vector_by_key(uint64_t key) const {
-  VectorLocation loc{};
-  key_info_map_lock_->lock_shared();
-  if (use_key_info_map_) {
-    auto iterator = key_info_map_.find(key);
-    if (iterator == key_info_map_.end()) {
-      key_info_map_lock_->unlock_shared();
-      return nullptr;
-    }
-    loc = iterator->second;
-  } else {
-    if (key < withid_key_info_map_.size()) {
-      loc = withid_key_info_map_[key];
-    } else {
-      key_info_map_lock_->unlock_shared();
-      return nullptr;
-    }
-  }
-  key_info_map_lock_->unlock_shared();
-
-  auto segment = this->get_segment(loc.segment_id);
-  const void *data = nullptr;
-  if (segment->read(loc.offset, &data, index_meta_.element_size()) !=
-      index_meta_.element_size()) {
-    LOG_ERROR("Failed to read segment, size=%u", index_meta_.element_size());
-    return nullptr;
-  }
-  return data;
+  // Keep the legacy pointer valid until the next call on this thread.
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock block;
+  return get_vector_by_key(key, block) == 0
+             ? buffer.assign(block, index_meta_.element_size())
+             : nullptr;
 }
 
 int FlatStreamerEntity::get_vector_by_key(

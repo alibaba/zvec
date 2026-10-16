@@ -62,20 +62,14 @@ class TestSegment : public IndexStorage::Segment {
     }
     return length;
   }
-  size_t read(size_t offset, const void **data, size_t length) override {
-    if (offset > data_size() || length > data_size() - offset) {
-      *data = nullptr;
-      return 0;
-    }
-    *data = reinterpret_cast<const uint8_t *>(values_.data()) + offset;
-    return length;
-  }
   size_t read(size_t offset, IndexStorage::MemoryBlock &block,
               size_t length) override {
-    const void *data = nullptr;
-    const size_t result = read(offset, &data, length);
-    block.reset(const_cast<void *>(data));
-    return result;
+    if (offset > data_size() || length > data_size() - offset) {
+      block.reset();
+      return 0;
+    }
+    block.reset(reinterpret_cast<uint8_t *>(values_.data()) + offset);
+    return length;
   }
   size_t write(size_t, const void *, size_t) override {
     return 0;

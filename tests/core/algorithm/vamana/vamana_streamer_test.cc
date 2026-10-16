@@ -420,6 +420,48 @@ TEST_F(VamanaStreamerTest, TestAddVector) {
   streamer.reset();
 }
 
+TEST_F(VamanaStreamerTest, BufferStorageResultsRetainIndependentVectors) {
+  ailego::MemoryLimitPool::get_instance().init(64UL * 1024 * 1024);
+  auto streamer = create_vamana_streamer();
+  ASSERT_NE(nullptr, streamer);
+  auto storage = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "owned_results", true));
+  ASSERT_EQ(0, streamer->open(storage));
+  auto ctx = streamer->create_context();
+  ASSERT_TRUE(ctx);
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, kDim);
+  std::vector<float> vec(kDim);
+  for (uint64_t key = 0; key < 32; ++key) {
+    std::fill(vec.begin(), vec.end(), static_cast<float>(key));
+    ASSERT_EQ(0, streamer->add_impl(key, vec.data(), qmeta, ctx));
+  }
+
+  ctx->set_topk(16);
+  ctx->set_fetch_vector(true);
+  ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, ctx));
+  auto saved_results = ctx->result();
+  ASSERT_EQ(16u, saved_results.size());
+  // A second query releases/replaces the context's original result blocks.
+  std::fill(vec.begin(), vec.end(), 0.0f);
+  ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, ctx));
+  for (const auto &doc : saved_results) {
+    ASSERT_NE(nullptr, doc.vector());
+    const auto *values = static_cast<const float *>(doc.vector());
+    for (size_t d = 0; d < kDim; ++d) {
+      EXPECT_FLOAT_EQ(static_cast<float>(doc.key()), values[d]);
+    }
+    IndexDocument assigned;
+    assigned = doc;
+    EXPECT_NE(doc.vector(), assigned.vector());
+    EXPECT_EQ(
+        0, std::memcmp(doc.vector(), assigned.vector(), kDim * sizeof(float)));
+  }
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, storage->close());
+}
+
 TEST_F(VamanaStreamerTest, TestLinearSearch) {
   auto streamer = create_vamana_streamer();
   ASSERT_NE(nullptr, streamer);

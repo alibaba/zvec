@@ -100,10 +100,10 @@ TEST(MMapFileReadStorage, General) {
     auto seg = container->get(std::to_string(i));
     auto seg1 = seg->clone();
 
-    const void *data = nullptr;
-    EXPECT_EQ(seg1->data_size(), seg1->read(0, &data, seg1->data_size()));
+    IndexStorage::MemoryBlock data;
+    EXPECT_EQ(seg1->data_size(), seg1->read(0, data, seg1->data_size()));
     std::string hello = "Hello world!!! #" + std::to_string(i);
-    EXPECT_EQ(hello, std::string((const char *)data, seg1->data_size()));
+    EXPECT_EQ(hello, std::string((const char *)data.data(), seg1->data_size()));
   }
   container->cleanup();
 }
