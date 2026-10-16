@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
@@ -43,6 +44,8 @@ struct IvfRabitqProbeCentroid {
 // SplitBatchQuery object (via type-erased shared_ptr).
 struct IvfRabitqQueryState {
   std::vector<float> rotated_query;
+  std::vector<float> lut_scratch;
+  std::vector<uint16_t> hacc_scratch;
   float query_norm_sq{0.0f};
   // Opaque pointer to rabitqlib::SplitBatchQuery<float>, managed by reformer
   std::shared_ptr<void> batch_query;
@@ -117,6 +120,8 @@ class IvfRabitqContext : public IndexContext {
     result_heap_.clear();
     result_heap_.set_threshold(this->threshold());
     query_state.rotated_query.clear();
+    query_state.lut_scratch.clear();
+    query_state.hacc_scratch.clear();
     query_state.query_norm_sq = 0.0f;
     query_state.batch_query.reset();
     probe_centroids.clear();

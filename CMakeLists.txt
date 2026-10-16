@@ -160,14 +160,11 @@ if(NOT ANDROID AND NOT IOS AND CMAKE_SIZEOF_VOID_P EQUAL 8
     set(RABITQ_AVX2_FLAGS "/arch:AVX2")
     set(RABITQ_AVX512_FLAGS "/arch:AVX512")
     set(RABITQ_AVX512_POPCNT_FLAGS "/arch:AVX512")
-    set(RABITQ_HNSW_AVX512_CORE_FLAGS "/arch:AVX512")
   else()
     set(RABITQ_AVX2_FLAGS "-mavx2;-mfma")
     set(RABITQ_AVX512_FLAGS "-mavx512f;-mavx512bw;-mavx512dq;-mfma")
     set(RABITQ_AVX512_POPCNT_FLAGS
         "-mavx512f;-mavx512bw;-mavx512dq;-mavx512vpopcntdq;-mfma")
-    set(RABITQ_HNSW_AVX512_CORE_FLAGS
-        "-mavx512f;-mavx512bw;-mavx512dq;-mavx2;-mfma")
   endif()
 
   # check_cxx_compiler_flag takes one argument, so the semicolon-separated
@@ -186,11 +183,6 @@ if(NOT ANDROID AND NOT IOS AND CMAKE_SIZEOF_VOID_P EQUAL 8
 
   if(RABITQ_SUPPORTED)
     add_definitions(-DRABITQ_SUPPORTED=1)
-    if(MSVC)
-      # rabitqlib's AVX2 rotator calls FHT kernels that only exist as MASM on
-      # MSVC; enable_language() must run in the top-level directory.
-      enable_language(ASM_MASM)
-    endif()
   else()
     add_definitions(-DRABITQ_SUPPORTED=0)
     message(STATUS "RaBitQ support disabled - compiler cannot build all runtime dispatch variants")
