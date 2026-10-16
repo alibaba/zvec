@@ -1,6 +1,17 @@
 #!/usr/bin/env python3
-"""v13 4-way production analysis: QPS / latency / P95 / P99 / RSS medians and
-per-round paired ratios from v13_prod_summary.txt (+ holdout summary).
+"""v13 4-way production analysis with a data-integrity gate.
+
+Medians (QPS / P95 / P99 / RSS) and per-round paired ratios come from
+v13_prod_summary.txt (+ holdout summary). BEFORE any conclusion is
+emitted the gate verifies the formal timing grid: 4 schemes x 2 thread
+tiers x 5 rounds = 40 unique rc=0 records (warmups are excluded from
+the 40, but all 8 must exist with rc=0), every qps/avg/p95/p99/rss
+field present, finite and within sanity bounds (p95 <= p99), no
+duplicate (config, round) keys, no failed rounds, no unparseable or
+FAILED lines, and paired comparisons require identical round sets
+(never the intersection). Any violation exits non-zero, prints the
+problems to stderr and suppresses the formal conclusions and
+v13_prod_analysis.out.
 
 Schemes (t1 and t4):
   int    v12_prod50_np293     integrated baseline
@@ -8,9 +19,11 @@ Schemes (t1 and t4):
   native v13_native_np249     dedicated kIVFRabitq baseline
   natref v13_natref_np{np}    dedicated + refine rerank
 
-Warmup runs are excluded from medians. All 5 rounds are kept; per-round
-paired ratios compare schemes within the same round (same rotation slot
-order), which is the drift-resistant quantity on a shared host.
+The q500-999 half is a grouped check of the tuning data, not an
+independent confirmation: those queries took part in the full-1000
+tuning (a truly independent query set is v14 work). Per-round paired
+ratios compare schemes within the same round (same rotation slot
+order), the drift-resistant quantity on a shared host.
 
 Writes v13_prod_analysis.out. Usage: python3 analyze_v13_prod.py [RUN_DIR]
 """
@@ -19,59 +32,245 @@ import sys
 from pathlib import Path
 from statistics import median
 
+ROUNDS = 5
+TIERS = ('t1', 't4')
+SCHEME_RE = {
+    'int': re.compile(r'^v12_prod50_np293$'),
+    'rrf': re.compile(r'^v13_rrf\d+_np\d+$'),
+    'native': re.compile(r'^v13_native_np\d+$'),
+    'natref': re.compile(r'^v13_natref_np\d+$'),
+}
+PAIRS = (('rrf', 'int'), ('natref', 'native'), ('natref', 'int'),
+         ('rrf', 'natref'), ('natref', 'rrf'))
+FIELDS = ('qps', 'avg', 'p95', 'p99', 'rss', 'load')
+BOUNDS = {'qps': (0.0, 1e6, True), 'avg': (0.0, 1e5, True),
+          'p95': (0.0, 1e5, True), 'p99': (0.0, 1e5, True),
+          'rss': (1024.0, 1e12, True), 'load': (0.0, 1e5, False)}
+
 RUN = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent
 LINE = re.compile(
     r'bench (?P<tag>\S+) rc=(?P<rc>\d+) qps=(?P<qps>[0-9.]+|MISSING) '
     r'avg_ms=(?P<avg>[0-9.]+|MISSING) p95_ms=(?P<p95>[0-9.]+|MISSING) '
     r'p99_ms=(?P<p99>[0-9.]+|MISSING) rss_kb=(?P<rss>[0-9]+|MISSING) '
     r'loadavg=(?P<load>[0-9.]+)')
+HOLD_BENCH = re.compile(
+    r'^holdout bench (?P<name>\S+) rc=(?P<rc>\d+) '
+    r'qps=(?P<qps>[0-9.]+|MISSING) rss_kb=(?P<rss>[0-9]+|MISSING) '
+    r'loadavg=(?P<load>[0-9.]+)$')
+HOLD_RECALL = re.compile(
+    r'^holdout recall (?P<name>\S+) rc=(?P<rc>\d+) '
+    r'Recall@50: (?P<v>[0-9.]+|MISSING)')
 
 
-def load_runs(path):
-    runs = {}
-    if not path.exists():
-        return runs
-    for m in LINE.finditer(path.read_text()):
-        if m.group('rc') != '0':
+def parse_summary(text, errors):
+    formal, warm, recalls = {}, {}, []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        s = line.strip()
+        m = LINE.search(s)
+        if not m:
+            if s.startswith('bench '):
+                errors.append(f'line {lineno}: unparseable bench line: {s}')
+            elif s.startswith('FAILED:'):
+                errors.append(f'line {lineno}: aborted run: {s}')
+            elif s.startswith('recall ') and ' Recall@50: ' in s:
+                if ' rc=0 ' not in s:
+                    errors.append(f'line {lineno}: failed recall line: {s}')
+                recalls.append(s)
             continue
         tag = m.group('tag')
+        rec = {'tag': tag, 'line': lineno, 'rc': int(m.group('rc')),
+               'raw': {f: m.group(f) for f in FIELDS}}
         if tag.startswith('warmup_'):
+            if tag in warm:
+                errors.append(
+                    f'line {lineno}: duplicate warmup record {tag} '
+                    f'(first at line {warm[tag]["line"]})')
+            warm[tag] = rec
             continue
-        name = re.sub(r'_r\d+$', '', tag)
         run_r = re.search(r'_r(\d+)$', tag)
-        runs.setdefault(name, {})[int(run_r.group(1)) if run_r else 0] = {
-            'qps': float(m.group('qps')), 'avg': float(m.group('avg')),
-            'p95': float(m.group('p95')), 'p99': float(m.group('p99')),
-            'rss': float(m.group('rss')), 'load': float(m.group('load'))}
-    return runs
+        name = re.sub(r'_r\d+$', '', tag)
+        rnd = int(run_r.group(1)) if run_r else 0
+        if (name, rnd) in formal:
+            first = formal[(name, rnd)]
+            errors.append(
+                f'line {lineno}: duplicate (config, round) record {tag}: '
+                f'round {rnd} of {name} already recorded at line '
+                f'{first["line"]}')
+        formal[(name, rnd)] = rec
+    return formal, warm, recalls
+
+
+def classify(name):
+    tier = name[-2:] if name.endswith(('_t1', '_t4')) else ''
+    base = name[:-3] if tier else name
+    for scheme, pat in SCHEME_RE.items():
+        if pat.match(base):
+            return scheme, tier
+    return None, tier
+
+
+def validate_structure(formal, warm, errors):
+    by_cfg = {}
+    for (name, rnd), rec in sorted(formal.items()):
+        if rec['rc'] != 0:
+            errors.append(
+                f'FAILED round: {rec["tag"]} rc={rec["rc"]} '
+                f'(line {rec["line"]})')
+        scheme, tier = classify(name)
+        if scheme is None or tier not in TIERS:
+            errors.append(
+                f'unrecognized config name: {name} (line {rec["line"]})')
+            continue
+        by_cfg.setdefault((scheme, tier), {}).setdefault(name, {})[rnd] = rec
+    for scheme in SCHEME_RE:
+        for tier in TIERS:
+            cfgs = by_cfg.get((scheme, tier), {})
+            if not cfgs:
+                errors.append(
+                    f'missing config: scheme {scheme} ({tier}) has no records')
+                continue
+            if len(cfgs) > 1:
+                errors.append(
+                    f'ambiguous configs for {scheme} ({tier}): '
+                    f'{", ".join(sorted(cfgs))} (expected exactly one)')
+            for name, rr in cfgs.items():
+                missing = [r for r in range(1, ROUNDS + 1) if r not in rr]
+                if missing:
+                    errors.append(
+                        f'missing rounds: {name} lacks '
+                        f'{", ".join(f"r{r}" for r in missing)}')
+                extra = sorted(r for r in rr if not 1 <= r <= ROUNDS)
+                if extra:
+                    errors.append(
+                        f'unexpected rounds: {name} has '
+                        f'{", ".join(f"r{r}" for r in extra)}')
+    n = sum(len(rr) for cfgs in by_cfg.values() for rr in cfgs.values())
+    if n != 4 * 2 * ROUNDS:
+        errors.append(
+            f'formal record count {n} != {4 * 2 * ROUNDS} '
+            f'(4 schemes x 2 tiers x {ROUNDS} rounds)')
+    formal_names = {name for (name, rnd) in formal}
+    for tag, rec in sorted(warm.items()):
+        if rec['rc'] != 0:
+            errors.append(
+                f'FAILED warmup: {tag} rc={rec["rc"]} (line {rec["line"]})')
+        if tag[len('warmup_'):] not in formal_names:
+            errors.append(
+                f'unexpected warmup tag {tag}: no matching formal config')
+    for name in sorted(formal_names):
+        if f'warmup_{name}' not in warm:
+            errors.append(f'missing warmup record: warmup_{name}')
+
+
+def check_fields(formal, errors):
+    vals = {}
+    for (name, rnd), rec in sorted(formal.items()):
+        v = {}
+        for f in FIELDS:
+            raw = rec['raw'][f]
+            if raw == 'MISSING':
+                errors.append(f'field MISSING: {rec["tag"]} {f}')
+                continue
+            try:
+                x = float(raw)
+            except ValueError:
+                errors.append(f'field unparseable: {rec["tag"]} {f}={raw}')
+                continue
+            lo, hi, strict = BOUNDS[f]
+            if not ((lo < x if strict else lo <= x) and x <= hi):
+                errors.append(
+                    f'field out of range: {rec["tag"]} {f}={raw} '
+                    f'(expected {lo}..{hi})')
+                continue
+            v[f] = x
+        if 'p95' in v and 'p99' in v and v['p95'] > v['p99']:
+            errors.append(
+                f'field inconsistent: {rec["tag"]} '
+                f'p95_ms={rec["raw"]["p95"]} > p99_ms={rec["raw"]["p99"]}')
+        vals[(name, rnd)] = v
+    return vals
+
+
+def check_holdout(text, errors):
+    keep = []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        s = line.strip()
+        if not (s.startswith('holdout recall') or s.startswith('holdout bench')
+                or s.startswith('WARN:')):
+            continue
+        keep.append(s)
+        if s.startswith('WARN:'):
+            continue
+        m = (HOLD_RECALL if s.startswith('holdout recall')
+             else HOLD_BENCH).match(s)
+        if not m:
+            errors.append(f'holdout line {lineno}: unparseable: {s}')
+            continue
+        if m.group('rc') != '0':
+            errors.append(f'holdout line {lineno}: rc={m.group("rc")}: {s}')
+            continue
+        if s.startswith('holdout recall'):
+            v = m.group('v')
+            if v == 'MISSING':
+                errors.append(f'holdout line {lineno}: Recall@50 MISSING')
+            elif not 0.0 <= float(v) <= 100.0:
+                errors.append(f'holdout line {lineno}: Recall@50={v} out of range')
+        else:
+            for f, lo, hi in (('qps', 0.0, 1e6), ('rss', 1024.0, 1e12)):
+                raw = m.group(f)
+                if raw == 'MISSING':
+                    errors.append(f'holdout line {lineno}: {f} MISSING')
+                elif not lo < float(raw) <= hi:
+                    errors.append(f'holdout line {lineno}: {f}={raw} out of range')
+    return keep
 
 
 def main():
+    errors = []
     lines = ['=== v13 4-way production analysis (rebuilt binaries) ===']
-    runs = load_runs(RUN / 'v13_prod_summary.txt')
-    if not runs:
-        lines.append('no bench lines parsed from v13_prod_summary.txt')
+    summary = RUN / 'v13_prod_summary.txt'
+    formal, warm, recalls, vals = {}, {}, [], {}
+    if not summary.exists():
+        errors.append(f'missing summary file: {summary}')
+    else:
+        formal, warm, recalls = parse_summary(
+            summary.read_text(encoding='utf-8'), errors)
+        validate_structure(formal, warm, errors)
+        vals = check_fields(formal, errors)
+
+    holdout_lines = []
+    holdout = RUN / 'v13_holdout_summary.txt'
+    if holdout.exists():
+        holdout_lines = check_holdout(
+            holdout.read_text(encoding='utf-8'), errors)
+
+    if errors:
         print('\n'.join(lines))
+        print(f'INTEGRITY FAILURE: {len(errors)} problem(s) in {summary} -- '
+              f'no formal conclusions; v13_prod_analysis.out NOT written')
+        for e in errors:
+            print(f'  - {e}', file=sys.stderr)
         return 1
 
     schemes = {}
-    for name, rr in runs.items():
-        # classify by prefix
-        if name.startswith('v12_prod50_np293'):
-            scheme = 'int'
-        elif name.startswith('v13_rrf'):
-            scheme = 'rrf'
-        elif name.startswith('v13_native_np249'):
-            scheme = 'native'
-        elif name.startswith('v13_natref'):
-            scheme = 'natref'
-        else:
-            continue
-        threads = 't4' if '_t4' in name else 't1'
-        schemes.setdefault((scheme, threads), {})[name] = rr
+    for (name, rnd), v in vals.items():
+        scheme, tier = classify(name)
+        schemes.setdefault((scheme, tier), {}).setdefault(name, {})[rnd] = v
 
-    for (scheme, threads), cfgs in sorted(schemes.items()):
-        lines.append(f'--- {scheme} ({threads}) ---')
+    lines.append(
+        f'integrity: {len(formal)}/{4 * 2 * ROUNDS} formal records OK '
+        f'(4 schemes x 2 tiers x {ROUNDS} rounds, unique rc=0; '
+        f'{len(warm)}/{len({n for n, _ in formal})} warmups rc=0; '
+        f'qps/avg/p95/p99/rss present, finite, in range; '
+        f'paired round sets identical)')
+
+    if recalls:
+        lines.append(
+            '--- recall gates (context; qualification ran in run_v13_prod.sh) ---')
+        lines.extend('  ' + r for r in recalls)
+
+    for (scheme, tier), cfgs in sorted(schemes.items()):
+        lines.append(f'--- {scheme} ({tier}) ---')
         for name, rr in sorted(cfgs.items()):
             rounds = sorted(rr)
             q = [rr[r]['qps'] for r in rounds]
@@ -86,37 +285,40 @@ def main():
                 f'loadavg med={median(loads):.1f}')
 
     lines.append('--- per-round paired QPS ratios (same round, same rotation) ---')
-    for threads in ('t1', 't4'):
-        for a, b in (('rrf', 'int'), ('natref', 'native'),
-                     ('natref', 'int'), ('rrf', 'natref'), ('natref', 'rrf')):
-            ca = schemes.get((a, threads))
-            cb = schemes.get((b, threads))
+    for tier in TIERS:
+        for a, b in PAIRS:
+            ca, cb = schemes.get((a, tier)), schemes.get((b, tier))
             if not ca or not cb:
                 continue
-            ra = list(ca.values())[0]
-            rb = list(cb.values())[0]
-            common = sorted(set(ra) & set(rb))
-            if not common:
-                continue
-            ratios = [ra[r]['qps'] / rb[r]['qps'] for r in common]
+            ra, rb = list(ca.values())[0], list(cb.values())[0]
+            if set(ra) != set(rb):
+                print('=== v13 4-way production analysis (rebuilt binaries) ===')
+                print(f'INTEGRITY FAILURE: paired {tier} {a}/{b} round sets '
+                      f'differ ({sorted(ra)} vs {sorted(rb)}); refusing '
+                      f'intersection pairing')
+                for e in (f'paired {tier} {a}/{b} round sets differ '
+                          f'({sorted(ra)} vs {sorted(rb)}); refusing '
+                          f'intersection pairing',):
+                    print(f'  - {e}', file=sys.stderr)
+                return 1
+            rounds = sorted(ra)
+            ratios = [ra[r]['qps'] / rb[r]['qps'] for r in rounds]
             lines.append(
-                f'{threads} {a}/{b}: '
+                f'{tier} {a}/{b}: '
                 f'{" ".join(f"{x:.3f}" for x in ratios)} '
                 f'| med x{median(ratios):.3f}')
 
-    hold = RUN / 'v13_holdout_summary.txt'
-    if hold.exists():
-        lines.append('--- holdout (qid 500-999, independent confirmation) ---')
-        for l in hold.read_text().splitlines():
-            if (l.startswith('holdout recall') or l.startswith('holdout bench')
-                    or l.startswith('WARN:')):
-                lines.append('  ' + l)
+    if holdout_lines:
+        lines.append(
+            '--- holdout (qid 500-999, 调参数据的分组检查 grouped check of '
+            'the tuning data; not an independent set) ---')
+        lines.extend('  ' + l for l in holdout_lines)
     else:
         lines.append('holdout summary: not run yet')
 
     out = '\n'.join(lines)
     print(out)
-    (RUN / 'v13_prod_analysis.out').write_text(out + '\n')
+    (RUN / 'v13_prod_analysis.out').write_text(out + '\n', encoding='utf-8')
     print(f'\nwrote {RUN / "v13_prod_analysis.out"}')
     return 0
 

@@ -1,10 +1,12 @@
 #!/bin/bash
-# v13 stage C: independent-query-set confirmation + scan-volume stats.
-# Holdout = the 500 test queries q500-999. The v12/v13 (np, N) choices were
-# made on the full 1000-query set, so neither half is fully untouched; the
-# knobs are two global integers, so per-query overfitting is not possible --
-# this half mainly demonstrates that recall and QPS are stable across query
-# subsets rather than artifacts of the aggregate.
+# v13 stage C: grouped check of the tuning data (q500-999) + scan-volume stats.
+# Holdout = the 500 test queries q500-999. NOT an independent confirmation
+# set: the v12/v13 (np, N) choices were made on the full 1000-query set that
+# includes these queries, so this is a grouped check of the tuning data (a
+# truly independent query set is v14 work); the knobs are two global
+# integers, so per-query overfitting is not possible -- this half mainly
+# demonstrates that recall and QPS are stable across query subsets rather
+# than artifacts of the aggregate.
 # 1. Recall on the holdout half for all four schemes. The PROPOSED configs
 #    (rrf, natref) hard-gate at >=99% (guards against params fitted to the
 #    full 1000); the baseline anchors (int, native) are report-only -- they
@@ -13,7 +15,7 @@
 #    variance (int@np293: full 99.002 -> holdout 98.952 measured from the
 #    per-query logs). The full-set value governs anchor qualification;
 #    aborting on the half-split would only block data collection.
-# 2. One t1 bench round per scheme on the holdout half (QPS confirmation).
+# 2. One t1 bench round per scheme on the holdout half (QPS grouped check).
 # 3. Diagnostic scan-volume runs: int np293 topk50, int np{np} topk{N},
 #    ded np249 topk50, ded np{natref_np} topk60.
 # Usage: run_v13_holdout.sh <np> <topn> <natref_np>
@@ -91,6 +93,8 @@ for c in "${HOLDOFF[@]}"; do
   rss=$(grep -o 'Maximum resident set size (kbytes): [0-9]*' "holdout_bench_$name.time.log" | grep -o '[0-9]*$')
   echo "holdout bench $name rc=$rc qps=${qps:-MISSING} rss_kb=${rss:-MISSING} loadavg=$(cut -d' ' -f1 /proc/loadavg)" | tee -a $SUM
   [ $rc -ne 0 ] && fail "holdout bench $name"
+  [ -z "$qps" ] && fail "holdout bench $name incomplete output: qps MISSING (see holdout_bench_$name.log)"
+  [ -z "$rss" ] && fail "holdout bench $name incomplete output: rss_kb MISSING (see holdout_bench_$name.time.log)"
 done
 
 diag_run() {  # tag cfg
