@@ -13,13 +13,7 @@
 // limitations under the License.
 #pragma once
 
-#include <atomic>
-#include <condition_variable>
-#include <deque>
-#include <fstream>
 #include <mutex>
-#include <thread>
-#include <unordered_map>
 #include <zvec/ailego/io/file.h>
 #include "wal_file.h"
 
@@ -30,7 +24,7 @@ namespace zvec {
  */
 struct WalHeader {
   uint64_t wal_version{0U};
-  uint64_t reserved_[7];
+  uint64_t reserved_[7]{};
 };
 
 static_assert(sizeof(WalHeader) % 64 == 0,
@@ -61,7 +55,7 @@ class LocalWalFile : public WalFile {
  public:
   int append(std::string &&data) override;
   int prepare_for_read() override;
-  std::string next() override;
+  Result<std::optional<std::string>> next() override;
 
  public:
   int open(const WalOptions &wal_option) override;
@@ -73,12 +67,13 @@ class LocalWalFile : public WalFile {
   int remove() override;
 
   bool has_record() override {
-    return file_.size() > sizeof(header_);
+    std::lock_guard<std::mutex> lock(file_mutex_);
+    return opened_ && file_.size() > sizeof(header_);
   }
 
  private:
   int write_record(WalRecord &record);
-  int read_record(WalRecord &record);
+  Result<bool> read_record(WalRecord &record);
 
  private:
   ailego::File file_;
@@ -89,10 +84,16 @@ class LocalWalFile : public WalFile {
   std::string wal_path_{};
   std::mutex file_mutex_;
   uint32_t max_docs_wal_flush_{0};
-  std::atomic<uint64_t> docs_count_{0UL};
+  uint64_t docs_count_{0};
   WalHeader header_;
 
   bool opened_{false};
+  bool read_only_{false};
+  bool reader_ready_{false};
+  bool failed_{false};
+  // Preserve the complete prefix and remove a torn final record before the
+  // next append. Merely reading a WAL must not modify it.
+  std::optional<size_t> incomplete_tail_offset_;
 };
 
 

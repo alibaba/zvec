@@ -12,20 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifdef _MSC_VER
-#define _ALLOW_KEYWORD_MACROS
-#endif
-#define private public
-#define protected public
 #include "db/index/storage/wal/wal_file.h"
-#undef private
-#undef protected
-
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <limits>
 #include <gtest/gtest.h>
+#include <zvec/ailego/io/file.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/ailego/utility/time_helper.h>
@@ -47,6 +41,16 @@ class WalFileTest : public testing::Test {
   }
 
   void TearDown() override {}
+
+  // Legacy success-path tests use empty string as their loop sentinel, but
+  // still assert that the new API did not report an error.
+  std::string ReadRecord(const WalFilePtr &wal_file) {
+    auto result = wal_file->next();
+    EXPECT_TRUE(result.has_value())
+        << (result.has_value() ? "" : result.error().message());
+    if (!result.has_value() || !result.value().has_value()) return {};
+    return std::move(result.value().value());
+  }
 };
 
 TEST_F(WalFileTest, TestGeneral) {
@@ -126,14 +130,14 @@ TEST_F(WalFileTest, TestGeneral) {
   uint32_t idx = 0;
   ret = wal_file->prepare_for_read();
   ASSERT_EQ(ret, 0);
-  std::string record = wal_file->next();
+  std::string record = ReadRecord(wal_file);
   while (!record.empty()) {
     if (idx < 100) {
       ASSERT_EQ(record, "hello");
     } else {
       ASSERT_EQ(record, std::string("hello") + std::to_string(idx));
     }
-    record = wal_file->next();
+    record = ReadRecord(wal_file);
     idx++;
   }
   ASSERT_EQ(idx, 400);
@@ -205,9 +209,9 @@ TEST_F(WalFileTest, TestMultiThread) {
   uint32_t idx = 0;
   ret = wal_file->prepare_for_read();
   ASSERT_EQ(ret, 0);
-  std::string record = wal_file->next();
+  std::string record = ReadRecord(wal_file);
   while (!record.empty()) {
-    record = wal_file->next();
+    record = ReadRecord(wal_file);
     idx++;
   }
   ASSERT_EQ(idx, 30000);
@@ -242,10 +246,11 @@ TEST_F(WalFileTest, TestBoundaryCondition) {
   wal_option.create_new = false;
   ret = wal_file->open(wal_option);
   ASSERT_EQ(ret, 0);
+  ASSERT_EQ(wal_file->prepare_for_read(), 0);
   uint32_t idx = 0;
-  std::string record = wal_file->next();
+  std::string record = ReadRecord(wal_file);
   while (!record.empty()) {
-    record = wal_file->next();
+    record = ReadRecord(wal_file);
     idx++;
   }
   ASSERT_EQ(idx, 0);
@@ -271,13 +276,13 @@ TEST_F(WalFileTest, TestBoundaryCondition) {
   idx = 0;
   ret = wal_file->prepare_for_read();
   ASSERT_EQ(ret, 0);
-  record = wal_file->next();
+  record = ReadRecord(wal_file);
   while (!record.empty()) {
     ASSERT_EQ(record.size(), 4);
     for (size_t i = 0; i < 4; i++) {
       ASSERT_EQ(record[i], i);
     }
-    record = wal_file->next();
+    record = ReadRecord(wal_file);
     idx++;
   }
   ASSERT_EQ(idx, 1);
@@ -312,13 +317,13 @@ TEST_F(WalFileTest, TestBoundaryCondition) {
   idx = 0;
   ret = wal_file->prepare_for_read();
   ASSERT_EQ(ret, 0);
-  record = wal_file->next();
+  record = ReadRecord(wal_file);
   while (!record.empty()) {
     ASSERT_EQ(record.size(), big_data_size);
     for (size_t i = 0; i < big_data_size; i++) {
       ASSERT_EQ((uint8_t)record[i], i % 256);
     }
-    record = wal_file->next();
+    record = ReadRecord(wal_file);
     idx++;
   }
   ASSERT_EQ(idx, 1);
@@ -349,10 +354,10 @@ TEST_F(WalFileTest, TestBoundaryCondition) {
   idx = 0;
   ret = wal_file->prepare_for_read();
   ASSERT_EQ(ret, 0);
-  record = wal_file->next();
+  record = ReadRecord(wal_file);
   while (!record.empty()) {
     ASSERT_EQ(record, std::string("hello") + std::to_string(idx));
-    record = wal_file->next();
+    record = ReadRecord(wal_file);
     idx++;
   }
   ASSERT_EQ(idx, 99);
@@ -417,16 +422,16 @@ TEST_F(WalFileTest, TestFirstErrorCase) {
   ret = wal_file->open(wal_option);
   ASSERT_EQ(ret, 0);
 
-  uint32_t idx = 0;
-  ret = wal_file->prepare_for_read();
-  ASSERT_EQ(ret, 0);
-  std::string record = wal_file->next();
-  while (!record.empty()) {
-    ASSERT_EQ(record, "hello");
-    record = wal_file->next();
-    idx++;
+  ASSERT_EQ(wal_file->prepare_for_read(), 0);
+  for (size_t i = 0; i < 0; ++i) {
+    EXPECT_EQ(ReadRecord(wal_file), "hello");
   }
-  ASSERT_EQ(idx, 0);
+  auto result = wal_file->next();
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), StatusCode::INTERNAL_ERROR);
+  EXPECT_NE(result.error().message().find("CRC mismatch"), std::string::npos);
+  EXPECT_NE(wal_file->append("after corruption"), 0);
+  EXPECT_NE(wal_file->flush(), 0);
   // close
   ret = wal_file->close();
   ASSERT_EQ(ret, 0);
@@ -477,16 +482,15 @@ TEST_F(WalFileTest, TestMiddleErrorCase) {
   ret = wal_file->open(wal_option);
   ASSERT_EQ(ret, 0);
 
-  uint32_t idx = 0;
-  ret = wal_file->prepare_for_read();
-  ASSERT_EQ(ret, 0);
-  std::string record = wal_file->next();
-  while (!record.empty()) {
-    ASSERT_EQ(record, "hello");
-    record = wal_file->next();
-    idx++;
+  ASSERT_EQ(wal_file->prepare_for_read(), 0);
+  for (size_t i = 0; i < 5; ++i) {
+    EXPECT_EQ(ReadRecord(wal_file), "hello");
   }
-  ASSERT_EQ(idx, 5);
+  auto result = wal_file->next();
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), StatusCode::INTERNAL_ERROR);
+  EXPECT_NE(result.error().message().find("CRC mismatch"), std::string::npos);
+  EXPECT_NE(wal_file->append("after corruption"), 0);
   // close
   ret = wal_file->close();
   ASSERT_EQ(ret, 0);
@@ -538,10 +542,10 @@ TEST_F(WalFileTest, TestLastErrorCase) {
   uint32_t idx = 0;
   ret = wal_file->prepare_for_read();
   ASSERT_EQ(ret, 0);
-  std::string record = wal_file->next();
+  std::string record = ReadRecord(wal_file);
   while (!record.empty()) {
     ASSERT_EQ(record, "hello");
-    record = wal_file->next();
+    record = ReadRecord(wal_file);
     idx++;
   }
   ASSERT_EQ(idx, 9);
@@ -594,16 +598,15 @@ TEST_F(WalFileTest, TestLengthSmallErrorCase) {
   ret = wal_file->open(wal_option);
   ASSERT_EQ(ret, 0);
 
-  uint32_t idx = 0;
-  ret = wal_file->prepare_for_read();
-  ASSERT_EQ(ret, 0);
-  std::string record = wal_file->next();
-  while (!record.empty()) {
-    ASSERT_EQ(record, "hello");
-    record = wal_file->next();
-    idx++;
+  ASSERT_EQ(wal_file->prepare_for_read(), 0);
+  for (size_t i = 0; i < 0; ++i) {
+    EXPECT_EQ(ReadRecord(wal_file), "hello");
   }
-  ASSERT_EQ(idx, 0);
+  auto result = wal_file->next();
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), StatusCode::INTERNAL_ERROR);
+  EXPECT_NE(result.error().message().find("CRC mismatch"), std::string::npos);
+  EXPECT_NE(wal_file->append("after corruption"), 0);
   // close
   ret = wal_file->close();
   ASSERT_EQ(ret, 0);
@@ -643,7 +646,7 @@ TEST_F(WalFileTest, TestLengthBigErrorCase) {
       dir_path, "data.wal.", std::to_string(segment_id));
   int wal_fd = open(wal_path.c_str(), O_RDWR, 0644);
   ASSERT_GT(wal_fd, 0);
-  uint32_t err_length = 200;  // exceed file size 130
+  uint32_t err_length = std::numeric_limits<uint32_t>::max();
 
   lseek(wal_fd, 64, SEEK_SET);
   write(wal_fd, (const void *)&err_length, 4);
@@ -657,10 +660,10 @@ TEST_F(WalFileTest, TestLengthBigErrorCase) {
   uint32_t idx = 0;
   ret = wal_file->prepare_for_read();
   ASSERT_EQ(ret, 0);
-  std::string record = wal_file->next();
+  std::string record = ReadRecord(wal_file);
   while (!record.empty()) {
     ASSERT_EQ(record, "hello");
-    record = wal_file->next();
+    record = ReadRecord(wal_file);
     idx++;
   }
   ASSERT_EQ(idx, 0);
@@ -714,22 +717,183 @@ TEST_F(WalFileTest, TestCRCErrorCase) {
   ret = wal_file->open(wal_option);
   ASSERT_EQ(ret, 0);
 
-  uint32_t idx = 0;
-  ret = wal_file->prepare_for_read();
-  ASSERT_EQ(ret, 0);
-  std::string record = wal_file->next();
-  while (!record.empty()) {
-    ASSERT_EQ(record, "hello");
-    record = wal_file->next();
-    idx++;
+  ASSERT_EQ(wal_file->prepare_for_read(), 0);
+  for (size_t i = 0; i < 1; ++i) {
+    EXPECT_EQ(ReadRecord(wal_file), "hello");
   }
-  ASSERT_EQ(idx, 1);
+  auto result = wal_file->next();
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), StatusCode::INTERNAL_ERROR);
+  EXPECT_NE(result.error().message().find("CRC mismatch"), std::string::npos);
+  EXPECT_NE(wal_file->append("after corruption"), 0);
   // close
   ret = wal_file->close();
   ASSERT_EQ(ret, 0);
   // remove
   ret = wal_file->remove();
   ASSERT_EQ(ret, 0);
+}
+
+TEST_F(WalFileTest, RecordLargerThanFourMiBPreservesFollowingRecord) {
+  const std::string path = "./data.wal.large";
+  auto wal = WalFile::Create(path);
+  WalOptions options;
+  options.create_new = true;
+  ASSERT_EQ(wal->open(options), 0);
+  const std::string large(4 * 1024 * 1024 + 1024, 'x');
+  ASSERT_EQ(wal->append("prefix"), 0);
+  ASSERT_EQ(wal->append(std::string(large)), 0);
+  ASSERT_EQ(wal->append("suffix"), 0);
+  ASSERT_EQ(wal->close(), 0);
+  options.create_new = false;
+  ASSERT_EQ(wal->open(options), 0);
+  ASSERT_EQ(wal->prepare_for_read(), 0);
+  EXPECT_EQ(ReadRecord(wal), "prefix");
+  EXPECT_EQ(ReadRecord(wal), large);
+  EXPECT_EQ(ReadRecord(wal), "suffix");
+  auto end = wal->next();
+  ASSERT_TRUE(end.has_value());
+  EXPECT_FALSE(end.value().has_value());
+}
+
+TEST_F(WalFileTest, IncompleteTailIsRemovedOnlyBeforeAppend) {
+  const std::string path = "./data.wal.tail";
+  constexpr size_t prefix_end = 64 + 8 + 6;
+  // Exercise every partial header and partial payload boundary.
+  for (size_t tail_size = 1; tail_size < 8 + 4; ++tail_size) {
+    SCOPED_TRACE(tail_size);
+    auto wal = WalFile::Create(path);
+    WalOptions options;
+    options.create_new = true;
+    ASSERT_EQ(wal->open(options), 0);
+    ASSERT_EQ(wal->append("prefix"), 0);
+    ASSERT_EQ(wal->append("torn"), 0);
+    ASSERT_EQ(wal->close(), 0);
+    ailego::File file;
+    ASSERT_TRUE(file.open(path, false));
+    ASSERT_TRUE(file.truncate(prefix_end + tail_size));
+    file.close();
+
+    options.create_new = false;
+    ASSERT_EQ(wal->open(options), 0);
+    ASSERT_EQ(wal->prepare_for_read(), 0);
+    EXPECT_EQ(ReadRecord(wal), "prefix");
+    auto end = wal->next();
+    ASSERT_TRUE(end.has_value());
+    EXPECT_FALSE(end.value().has_value());
+    ASSERT_TRUE(file.open(path, true));
+    EXPECT_EQ(file.size(), prefix_end + tail_size);
+    file.close();
+
+    ASSERT_EQ(wal->append("suffix"), 0);
+    ASSERT_EQ(wal->close(), 0);
+    ASSERT_EQ(wal->open(options), 0);
+    ASSERT_EQ(wal->prepare_for_read(), 0);
+    EXPECT_EQ(ReadRecord(wal), "prefix");
+    EXPECT_EQ(ReadRecord(wal), "suffix");
+    end = wal->next();
+    ASSERT_TRUE(end.has_value());
+    EXPECT_FALSE(end.value().has_value());
+    ASSERT_EQ(wal->remove(), 0);
+  }
+}
+
+TEST_F(WalFileTest, ClosedReaderReturnsError) {
+  auto wal = WalFile::Create("./data.wal.closed");
+  auto result = wal->next();
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), StatusCode::INTERNAL_ERROR);
+}
+
+TEST_F(WalFileTest, ReadOnlyWalCannotBeModified) {
+  const std::string path = "./data.wal.readonly";
+  auto wal = WalFile::Create(path);
+  WalOptions options;
+  options.create_new = true;
+  ASSERT_EQ(wal->open(options), 0);
+  ASSERT_EQ(wal->append("prefix"), 0);
+  ASSERT_EQ(wal->close(), 0);
+  options.create_new = false;
+  options.read_only = true;
+  ASSERT_EQ(wal->open(options), 0);
+  ASSERT_EQ(wal->prepare_for_read(), 0);
+  EXPECT_EQ(ReadRecord(wal), "prefix");
+  EXPECT_NE(wal->append("suffix"), 0);
+  EXPECT_NE(wal->flush(), 0);
+  EXPECT_NE(wal->remove(), 0);
+  ASSERT_EQ(wal->close(), 0);
+  EXPECT_NE(wal->remove(), 0);
+  options.read_only = false;
+  ASSERT_EQ(wal->open(options), 0);
+  ASSERT_EQ(wal->prepare_for_read(), 0);
+  EXPECT_EQ(ReadRecord(wal), "prefix");
+  auto end = wal->next();
+  ASSERT_TRUE(end.has_value());
+  EXPECT_FALSE(end.value().has_value());
+  ASSERT_EQ(wal->remove(), 0);
+}
+
+TEST_F(WalFileTest, AppendRequiresReadCursorToBePreparedAgain) {
+  auto wal = WalFile::Create("./data.wal.cursor");
+  WalOptions options;
+  options.create_new = true;
+  ASSERT_EQ(wal->open(options), 0);
+  ASSERT_EQ(wal->append("first"), 0);
+  ASSERT_EQ(wal->append("second"), 0);
+  ASSERT_EQ(wal->prepare_for_read(), 0);
+  EXPECT_EQ(ReadRecord(wal), "first");
+  ASSERT_EQ(wal->append("third"), 0);
+  EXPECT_FALSE(wal->next().has_value());
+  ASSERT_EQ(wal->prepare_for_read(), 0);
+  EXPECT_EQ(ReadRecord(wal), "first");
+  EXPECT_EQ(ReadRecord(wal), "second");
+  EXPECT_EQ(ReadRecord(wal), "third");
+}
+
+TEST_F(WalFileTest, RemoveReportsFilesystemFailure) {
+  const std::string path = "./data.wal.remove";
+  ASSERT_TRUE(FileHelper::CreateDirectory(path));
+  auto wal = WalFile::Create(path);
+  EXPECT_NE(wal->remove(), 0);
+  ASSERT_TRUE(FileHelper::RemoveDirectory(path));
+}
+
+TEST_F(WalFileTest, ZeroLengthRecordIsCorruption) {
+  const std::string path = "./data.wal.zero";
+  auto wal = WalFile::Create(path);
+  WalOptions options;
+  options.create_new = true;
+  ASSERT_EQ(wal->open(options), 0);
+  EXPECT_NE(wal->append(""), 0);
+  ASSERT_EQ(wal->append("payload"), 0);
+  ASSERT_EQ(wal->close(), 0);
+  ailego::File file;
+  ASSERT_TRUE(file.open(path, false));
+  const uint32_t length = 0;
+  ASSERT_EQ(file.write(64, &length, sizeof(length)), sizeof(length));
+  file.close();
+  options.create_new = false;
+  ASSERT_EQ(wal->open(options), 0);
+  ASSERT_EQ(wal->prepare_for_read(), 0);
+  auto result = wal->next();
+  ASSERT_FALSE(result.has_value());
+  EXPECT_NE(result.error().message().find("zero length"), std::string::npos);
+}
+
+TEST_F(WalFileTest, TruncatedFileHeaderReturnsError) {
+  const std::string path = "./data.wal.header";
+  auto wal = WalFile::Create(path);
+  WalOptions options;
+  options.create_new = true;
+  ASSERT_EQ(wal->open(options), 0);
+  ASSERT_EQ(wal->close(), 0);
+  ailego::File file;
+  ASSERT_TRUE(file.open(path, false));
+  ASSERT_TRUE(file.truncate(63));
+  file.close();
+  options.create_new = false;
+  ASSERT_EQ(wal->open(options), 0);
+  EXPECT_NE(wal->prepare_for_read(), 0);
 }
 
 #if defined(__GNUC__) || defined(__GNUG__)
