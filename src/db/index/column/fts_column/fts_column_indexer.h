@@ -147,17 +147,19 @@ class FtsColumnIndexer {
   Result<void> flush();
 
   /*! Convert all Roaring-format postings in postings_cf to BitPacked format
-   *  with inline tf/doc_len/max_score payloads, then DeleteRange-clear the
-   *  $TF, $DOC_LEN, and $MAX_TF CFs.
+   *  with inline tf/doc_len/max_score payloads and synchronously flush them
+   *  along with segment statistics. Preserve auxiliary data until CF removal.
    *
    *  Called by MutableSegment::dump_fts_column_indexers() right before the
-   *  SST dump.  After all indexers finish conversion, MutableSegment drops
-   *  the $TF/$MAX_TF/$DOC_LEN CFs entirely (via reset_side_cfs() +
-   *  RocksdbStore::drop_column_family()), so the dumped immutable segment
+   *  SST dump. After conversion, FtsIndexer drops the $TF/$MAX_TF/$DOC_LEN
+   *  CFs entirely (via reset_side_cfs() + RocksdbContext::drop_cf()),
+   *  so the dumped immutable segment
    *  no longer contains these CFs at all.
    *
    *  Idempotent: terms whose postings are already in BitPacked format are
-   *  skipped, so re-running after a partial-failure dump is safe.
+   *  skipped, so re-running after a partial-failure dump is safe. $TF is
+   *  dropped first after conversion is durable, allowing cleanup to resume
+   *  after reopening the index.
    *
    *  Must be called after flush() so that the BM25 scorer used by encode()
    *  sees the up-to-date segment statistics.

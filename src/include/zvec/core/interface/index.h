@@ -142,6 +142,16 @@ class ZVEC_CORE_API Index {
                      const BaseIndexQueryParam::Pointer &search_param,
                      SearchResult *result);
 
+  // Advanced dense ANN API for latency-sensitive callers. Writes sorted keys
+  // and optional public scores into caller-owned storage. The common ANN path
+  // avoids SearchResult materialization; constrained modes reuse search().
+  // Sparse and group-by searches are unsupported. Passing nullptr for
+  // output_scores keeps the ID-only path. Output buffers must hold at least
+  // search_param->topk elements.
+  int search_internal_ids(const VectorData &query,
+                          const BaseIndexQueryParam::Pointer &search_param,
+                          int64_t *output_ids, float *output_scores);
+
   virtual int add_with_source(const VectorData &vector, uint32_t doc_id,
                               const core::VectorSource &src);
   virtual int search_with_source(
@@ -181,9 +191,10 @@ class ZVEC_CORE_API Index {
                      const BaseIndexQueryParam::Pointer &search_param,
                      SearchResult *result,
                      core::IndexContext::Pointer &context);
-  int _dense_search(const VectorData &query,
-                    const BaseIndexQueryParam::Pointer &search_param,
-                    SearchResult *result, core::IndexContext::Pointer &context);
+  virtual int _dense_search(const VectorData &query,
+                            const BaseIndexQueryParam::Pointer &search_param,
+                            SearchResult *result,
+                            core::IndexContext::Pointer &context);
   int _prepare_dense_query(const VectorData &query, std::string *query_storage,
                            const void **prepared_query,
                            core::IndexQueryMeta *prepared_meta);
@@ -192,6 +203,9 @@ class ZVEC_CORE_API Index {
                             const BaseIndexQueryParam::Pointer &search_param,
                             core::IndexContext::Pointer &context,
                             std::vector<uint64_t> *candidate_keys = nullptr);
+  int _normalize_buffer_scores(const VectorData &query,
+                               const int64_t *output_ids, float *output_scores,
+                               size_t count);
   int _collect_dense_result(const VectorData &query,
                             const core::IndexQueryMeta &query_meta,
                             const BaseIndexQueryParam::Pointer &search_param,
@@ -229,6 +243,11 @@ class ZVEC_CORE_API Index {
                               const ailego::Params &converter_params = {});
   virtual int create_and_init_streamer(const BaseIndexParam &param) = 0;
 
+  //! Adjust the pipeline after storage opens, before the streamer reads it.
+  virtual int prepare_streamer_open(const StorageOptions & /*options*/) {
+    return 0;
+  }
+
  protected:
   bool init_context();
   core::IndexContext::Pointer &acquire_context();
@@ -246,10 +265,9 @@ class ZVEC_CORE_API Index {
   core::IndexStreamer::Pointer streamer_{};
   core::IndexReformer::Pointer reformer_{};
   core::IndexConverter::Pointer converter_{};  // for build()
-  core::IndexMetric::Pointer metric_{};        // to do normalization
-  // Turbo quantizer for the FLAT-on-turbo path: quantizes records and
-  // queries and computes distances via turbo SIMD batch kernels. When set,
-  // converter_/reformer_/metric_ stay null.
+  core::IndexMetric::Pointer metric_{};        // legacy distance/score path
+  // Quantizes records and queries and computes distances through turbo SIMD
+  // kernels. When set, converter_/reformer_/metric_ stay null.
   std::shared_ptr<turbo::Quantizer> turbo_quantizer_{};
 
   size_t context_index_{std::numeric_limits<size_t>::max()};
@@ -308,7 +326,14 @@ class ZVEC_CORE_API IVFIndex : public Index {
   IVFIndex() = default;
 
  protected:
+  int create_and_init_converter_reformer(
+      const QuantizerParam &param, const BaseIndexParam &index_param) override;
   int create_and_init_streamer(const BaseIndexParam &param) override;
+
+  int _dense_search(const VectorData &query,
+                    const BaseIndexQueryParam::Pointer &search_param,
+                    SearchResult *result,
+                    core::IndexContext::Pointer &context) override;
 
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,
@@ -328,6 +353,11 @@ class ZVEC_CORE_API IVFIndex : public Index {
   int generate_holder();
 
  private:
+  int load_streamer();
+  int restore_legacy_pipeline();
+
+  std::shared_ptr<zvec::turbo::Quantizer> ivf_quantizer_{};
+
   enum class BuildStage { kCollecting, kTrained, kBuilt, kDumped };
 
   int reset_builder();
@@ -363,6 +393,9 @@ class ZVEC_CORE_API HNSWIndex : public Index {
  protected:
   int create_and_init_streamer(const BaseIndexParam &param) override;
 
+  int create_and_init_converter_reformer(
+      const QuantizerParam &param, const BaseIndexParam &index_param) override;
+
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,
                           core::IndexContext::Pointer &context) override;
@@ -370,7 +403,10 @@ class ZVEC_CORE_API HNSWIndex : public Index {
       const BaseIndexQueryParam::Pointer &search_param) override;
 
  private:
+  int prepare_streamer_open(const StorageOptions &options) override;
+
   HNSWIndexParam param_{};
+  bool use_legacy_pipeline_{false};
 };
 
 class ZVEC_CORE_API VamanaIndex : public Index {
@@ -465,6 +501,10 @@ class ZVEC_CORE_API DiskAnnIndex : public Index {
   int generate_holder();
 
  private:
+  enum class BuildStage { kCollecting, kTrained, kBuilt, kDumped };
+  int reset_builder();
+  int dump_and_open();
+  BuildStage build_stage_{BuildStage::kCollecting};
   DiskAnnIndexParam param_{};
   std::mutex mutex_{};
   std::vector<std::pair<uint64_t, std::string>> doc_cache_;

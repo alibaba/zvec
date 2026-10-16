@@ -64,6 +64,10 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
 
   int reserve_space(uint32_t docs);
 
+  // Graph construction is the only consumer of these vectors. PQ encoding
+  // and dump read the retained source holder instead.
+  void release_vectors();
+
   std::string &pq_quantizer_meta_buffer() {
     return pq_quantizer_meta_buffer_;
   }

@@ -95,6 +95,10 @@ class HnswRabitqAlgorithm {
   void update_neighbors(HnswRabitqAddDistCalculator &dc, node_id_t id,
                         level_t level, TopkHeap &topk_heap);
 
+  //! Prune a sorted candidate heap, reusing each fetched raw vector.
+  size_t prune_neighbors(HnswRabitqAddDistCalculator &dc, TopkHeap &topk_heap,
+                         size_t max_neighbor_cnt);
+
   //! Checking linkId could be id's new neighbor, and add as neighbor if true
   //! @dc         distance calculator
   //! @updateHeap temporary heap in updating neighbors

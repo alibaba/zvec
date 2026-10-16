@@ -151,6 +151,12 @@ int MixedStreamerReducer::feed_streamer_with_reformer(
 
   auto check_datatype = [&](const IndexMeta & /*target_meta*/,
                             const IndexMeta &source_meta) -> bool {
+    if (target_builder_ && !is_sparse_) {
+      // Builders consume decoded vectors. Legacy and Turbo postings can
+      // describe different stored types for the same original input type.
+      // Validate each decoded record against original_query_meta_ in read_vec.
+      return true;
+    }
     if (!streamers_.empty()) {
       auto &last_meta = streamers_.back()->meta();
       // Quantizer-encoded sources are dequantized to the original format
@@ -361,14 +367,16 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
   bool need_encode = need_revert || reformer == nullptr;
   if (quantizer != nullptr) {
     // Quantizer-encoded records can be copied raw only into an identical
-    // target layout; otherwise (or when a builder consumes original vectors)
-    // dequantize back to the original format.
+    // target layout, including the metric: INT4 IP and L2 tails have the
+    // same size but different meanings. Otherwise (or when a builder consumes
+    // original vectors), dequantize back to the original format.
     const auto &source_meta = streamer->meta();
     const auto &target_meta = target_streamer_->meta();
     const bool same_layout =
         target_builder_ == nullptr &&
         turbo::QuantizerStorageDataTypeMatches(target_meta, source_meta) &&
         target_meta.quantizer_name() == source_meta.quantizer_name() &&
+        target_meta.metric_name() == source_meta.metric_name() &&
         target_meta.data_type() == source_meta.data_type() &&
         target_meta.dimension() == source_meta.dimension() &&
         target_meta.unit_size() == source_meta.unit_size() &&
@@ -443,6 +451,15 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
       bytes.resize(provider->element_size());
       memcpy(bytes.data(), vector_data, bytes.size());
       needs_convert = need_encode;
+    }
+
+    if (target_builder_ &&
+        (bytes.size() != original_query_meta_.element_size() ||
+         (!need_revert &&
+          (provider->data_type() != original_query_meta_.data_type() ||
+           provider->dimension() != original_query_meta_.dimension())))) {
+      LOG_ERROR("Decoded source vector does not match the builder input");
+      return IndexError_Mismatch;
     }
 
     // TODO: use id instead of key
@@ -693,10 +710,11 @@ int MixedStreamerReducer::reduce_with_builder(const IndexFilter &filter) {
 
   AILEGO_DEFER([&]() { holder->set_stop_flag(nullptr); });
   IndexHolder::Pointer target_holder = holder;
-  // Only IVF has been adapted to propagate source read failures during dump.
+  // IVF and DiskAnn propagate source read failures during dump.
   // Other builders retain an owned multipass snapshot, as before, so their
   // dump paths never depend on a source provider or its deferred error state.
-  if (target_builder_->name() != "IVFBuilder") {
+  if (target_builder_->name() != "IVFBuilder" &&
+      target_builder_->name() != "DiskAnnBuilder") {
     switch (holder->data_type()) {
       case IndexMeta::DataType::DT_FP32:
         ret = MaterializeMergedInput<IndexMeta::DataType::DT_FP32, float>(
@@ -722,9 +740,11 @@ int MixedStreamerReducer::reduce_with_builder(const IndexFilter &filter) {
 }
 
 int MixedStreamerReducer::index_build(IndexHolder::Pointer target_holder) {
+  auto threads =
+      std::make_shared<BorrowedSingleQueueIndexThreads>(*thread_pool_);
   if (target_builder_converter_) {
     int ret = core::IndexConverter::TrainAndTransform(target_builder_converter_,
-                                                      target_holder);
+                                                      target_holder, threads);
     if (ret != 0) {
       LOG_ERROR("Failed to convert target holder, ret=%d", ret);
       return merged_holder_ && merged_holder_->status() != 0
@@ -737,8 +757,6 @@ int MixedStreamerReducer::index_build(IndexHolder::Pointer target_holder) {
       return core::IndexError_Runtime;
     }
   }
-  auto threads =
-      std::make_shared<BorrowedSingleQueueIndexThreads>(*thread_pool_);
   int ret = target_builder_->train(threads, target_holder);
   if (merged_holder_ && merged_holder_->status() != 0) {
     return merged_holder_->status();

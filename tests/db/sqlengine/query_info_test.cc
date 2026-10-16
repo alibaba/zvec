@@ -170,13 +170,13 @@ TEST_F(QueryInfoTest, QueryRequestWithFilter) {
   EXPECT_EQ(query.target_.query_params_, vector_cond->query_params());
 
   EXPECT_TRUE(new_query_info->filter_cond());
-  // (nullptr) and (xxx)
+  // The empty AND wrapper is removed after extracting the vector condition.
   auto filter_cond = new_query_info->filter_cond();
-  EXPECT_EQ(filter_cond->op_name(), "and");
-  EXPECT_FALSE(filter_cond->left());
+  ASSERT_EQ(filter_cond->op_name(), "or");
+  EXPECT_EQ(filter_cond->parent(), nullptr);
 
   // ((name<3) or (name=4)) or (1-dash_score_field=test)
-  auto right = std::dynamic_pointer_cast<QueryNode>(filter_cond->right());
+  auto right = std::dynamic_pointer_cast<QueryNode>(filter_cond);
   EXPECT_TRUE(right);
   EXPECT_EQ(right->op_name(), "or");
 
@@ -314,13 +314,13 @@ TEST_F(QueryInfoTest, QueryRequestWithInFilter) {
             vector_cond->vector_term());
 
   EXPECT_TRUE(new_query_info->filter_cond());
-  // (nullptr) and (xxx)
+  // The empty AND wrapper is removed after extracting the vector condition.
   auto filter_cond = new_query_info->filter_cond();
-  EXPECT_EQ(filter_cond->op_name(), "and");
-  EXPECT_FALSE(filter_cond->left());
+  ASSERT_EQ(filter_cond->op_name(), "or");
+  EXPECT_EQ(filter_cond->parent(), nullptr);
 
   // (name in (3, 1, 2)) or (category not in ("a", "b", "c"))
-  auto right = std::dynamic_pointer_cast<QueryNode>(filter_cond->right());
+  auto right = std::dynamic_pointer_cast<QueryNode>(filter_cond);
   EXPECT_TRUE(right);
   EXPECT_EQ(right->op_name(), "or");
 
@@ -512,8 +512,7 @@ TEST_F(QueryInfoTest, QueryRequestWithNonFoldableBalancedOr4096) {
   ASSERT_TRUE(ret.has_value()) << ret.error().c_str();
   ASSERT_TRUE(ret.value()->filter_cond());
 
-  auto root =
-      std::dynamic_pointer_cast<QueryNode>(ret.value()->filter_cond()->right());
+  auto root = std::dynamic_pointer_cast<QueryNode>(ret.value()->filter_cond());
   auto stats = CheckDeepOrTree(root);
   EXPECT_TRUE(stats.valid);
   EXPECT_EQ(kDeepOrCount - 1, stats.logic_count);
@@ -546,8 +545,7 @@ TEST_F(QueryInfoTest, QueryRequestWithPartiallyFoldableBalancedOr1024) {
   ASSERT_TRUE(ret.has_value()) << ret.error().c_str();
   ASSERT_TRUE(ret.value()->filter_cond());
 
-  auto root =
-      std::dynamic_pointer_cast<QueryNode>(ret.value()->filter_cond()->right());
+  auto root = std::dynamic_pointer_cast<QueryNode>(ret.value()->filter_cond());
   ASSERT_TRUE(root);
 
   size_t max_or_depth = 0;
@@ -618,15 +616,11 @@ TEST_F(QueryInfoTest, QueryRequestWithFilter_contain) {
   EXPECT_EQ("face_feature", vector_cond->vector_field_name());
 
   EXPECT_TRUE(new_query_info->filter_cond());
-  /*
-                     _________________[and]__________________
-                   /                                         \
-      [nullptr(vector_cond)]                            [filter condition]
-  */
-  // (nullptr) and (xxx)
+  // Extracting the vector condition leaves the filter subtree as the root.
+  // The empty AND wrapper is removed after extracting the vector condition.
   auto filter_cond = new_query_info->filter_cond();
-  EXPECT_EQ(filter_cond->op_name(), "and");
-  EXPECT_FALSE(filter_cond->left());
+  ASSERT_EQ(filter_cond->op_name(), "or");
+  EXPECT_EQ(filter_cond->parent(), nullptr);
 
   /*
                                 _______________[or]_______________
@@ -644,7 +638,7 @@ TEST_F(QueryInfoTest, QueryRequestWithFilter_contain) {
   // (name_array not contain_all (4, 5) or category_array contain_any ("a",
   // "b")) or category_array not contain_any ("c", "d", "e")
   auto parent_node = std::dynamic_pointer_cast<QueryNode>(filter_cond);
-  auto cur_node = std::dynamic_pointer_cast<QueryNode>(filter_cond->right());
+  auto cur_node = std::dynamic_pointer_cast<QueryNode>(filter_cond);
   EXPECT_TRUE(cur_node);
   EXPECT_EQ(cur_node->op_name(), "or");
 

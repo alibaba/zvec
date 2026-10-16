@@ -22,6 +22,7 @@
 #include <rocksdb/write_batch.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/status.h>
+#include "db/common/constants.h"
 #include "db/common/typedef.h"
 #include "iterator/fts_candidate_iterator.h"
 #include "iterator/fts_conjunction_iterator.h"
@@ -611,6 +612,11 @@ Result<void> FtsColumnIndexer::insert(uint64_t seg_doc_id,
         "FtsColumnIndexer::insert: not opened. field=", field_name_));
   }
 
+  if (cf_dropped_.load(std::memory_order_acquire)) {
+    return tl::make_unexpected(Status::InternalError(
+        "FtsColumnIndexer::insert: field is sealed. field=", field_name_));
+  }
+
   // Tokenize
   std::vector<Token> tokens = tokenizer_pipeline_->process(text);
   const uint32_t doc_len = static_cast<uint32_t>(tokens.size());
@@ -731,11 +737,44 @@ Result<void> FtsColumnIndexer::flush() {
 // ============================================================
 
 Result<void> FtsColumnIndexer::convert_postings_to_bitpacked() {
-  // safe access check
-
-  if (!postings_cf_ || !term_freq_cf_ || !doc_len_cf_ || !scorer_) {
+  if (!ctx_) {
+    return tl::make_unexpected(Status::InternalError(
+        "FtsColumnIndexer: not opened. field=", field_name_));
+  }
+  // Read actual CF handles: a previous failed seal may have reset the reader's
+  // side pointers while leaving the column families available for retry.
+  auto *term_freq_cf = term_freq_cf_.load();
+  auto *doc_len_cf = doc_len_cf_.load();
+  if (!term_freq_cf) term_freq_cf = ctx_->get_cf(field_name_ + kFtsTfSuffix);
+  if (!doc_len_cf) doc_len_cf = ctx_->get_cf(field_name_ + kFtsDocLenSuffix);
+  if (!postings_cf_ || !stat_cf_ || !scorer_) {
     return tl::make_unexpected(Status::InternalError(
         "FtsColumnIndexer::convert_postings_to_bitpacked: not opened. field=",
+        field_name_));
+  }
+  if (!term_freq_cf) {
+    // $TF is dropped first, after postings and statistics are durable.
+    // Older versions did not guarantee this ordering; reject leftover Roaring
+    // postings instead of accepting an already damaged index as sealed.
+    std::unique_ptr<rocksdb::Iterator> iter(
+        ctx_->db_->NewIterator(ctx_->read_opts_, postings_cf_));
+    for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
+      if (!BitPackedPostingList::is_bitpacked_format(iter->value().data(),
+                                                     iter->value().size())) {
+        return tl::make_unexpected(Status::InternalError(
+            "FtsColumnIndexer: missing $TF with non-BitPacked postings. field=",
+            field_name_));
+      }
+    }
+    if (!iter->status().ok()) {
+      return tl::make_unexpected(
+          Status::InternalError(iter->status().ToString()));
+    }
+    return {};
+  }
+  if (!doc_len_cf) {
+    return tl::make_unexpected(Status::InternalError(
+        "FtsColumnIndexer: missing $DOC_LEN before conversion. field=",
         field_name_));
   }
 
@@ -747,7 +786,7 @@ Result<void> FtsColumnIndexer::convert_postings_to_bitpacked() {
   std::vector<uint32_t> doc_lens;
   {
     std::unique_ptr<rocksdb::Iterator> iter(
-        ctx_->db_->NewIterator(ctx_->read_opts_, doc_len_cf_.load()));
+        ctx_->db_->NewIterator(ctx_->read_opts_, doc_len_cf));
     iter->SeekToFirst();
     while (iter->Valid()) {
       const std::string key = iter->key().ToString();
@@ -822,7 +861,7 @@ Result<void> FtsColumnIndexer::convert_postings_to_bitpacked() {
 
   {
     std::unique_ptr<rocksdb::Iterator> iter(
-        ctx_->db_->NewIterator(ctx_->read_opts_, term_freq_cf_.load()));
+        ctx_->db_->NewIterator(ctx_->read_opts_, term_freq_cf));
     iter->SeekToFirst();
     while (iter->Valid()) {
       const std::string key = iter->key().ToString();
@@ -861,37 +900,25 @@ Result<void> FtsColumnIndexer::convert_postings_to_bitpacked() {
     return ret;
   }
 
-  // ---------------------------------------------------------------
-  // 3) Clear $TF / $DOC_LEN / $MAX_TF CFs via DeleteRange.
-  //
-  // All payloads (tf, doc_len, max_score) have been inlined into the
-  // BitPacked postings in step 2.  Wiping them here ensures the SST files
-  // are cleaned up during the dump-side compaction, so the dumped immutable
-  // segment is significantly smaller.  MutableSegment then drops the CFs
-  // entirely after all indexers finish conversion.
-  //
-  // DeleteRange uses [begin, end) semantics; an empty begin and a 256-byte
-  // 0xFF end together cover every possible key in these CFs.
-  // ---------------------------------------------------------------
-  static const std::string kClearBegin{};
-  static const std::string kClearEnd(256, '\xFF');
+  // Postings writes bypass the RocksDB WAL. Make the converted data durable
+  // before clearing the side CFs: a successful dump can publish this segment
+  // before its RocksDB is closed, and recovery expects BitPacked postings.
+  rocksdb::FlushOptions flush_options;
+  flush_options.wait = true;
+  auto flush_status = ctx_->db_->Flush(flush_options, postings_cf_);
+  if (!flush_status.ok()) {
+    return tl::make_unexpected(Status::InternalError(
+        "FtsColumnIndexer::convert_postings_to_bitpacked: flush failed. field=",
+        field_name_, " status=", flush_status.ToString()));
+  }
 
-  const std::pair<const char *, rocksdb::ColumnFamilyHandle *> cfs_to_clear[] =
-      {
-          {"$TF", term_freq_cf_.load()},
-          {"$DOC_LEN", doc_len_cf_.load()},
-          {"$MAX_TF", max_tf_cf_.load()},
-      };
-  for (const auto &[cf_name, cf] : cfs_to_clear) {
-    if (cf == nullptr) {
-      continue;
-    }
-    if (!ctx_->db_->DeleteRange(ctx_->write_opts_, cf, kClearBegin, kClearEnd)
-             .ok()) {
-      return tl::make_unexpected(Status::InternalError(
-          "FtsColumnIndexer::convert_postings_to_bitpacked: failed to clear ",
-          cf_name, " CF. field=", field_name_));
-    }
+  // Statistics must also survive before $TF is dropped. Keep auxiliary data
+  // intact until DropColumnFamily so a failed first drop can retry conversion.
+  flush_status = ctx_->db_->Flush(flush_options, stat_cf_);
+  if (!flush_status.ok()) {
+    return tl::make_unexpected(Status::InternalError(
+        "FtsColumnIndexer: flush statistics failed. field=", field_name_,
+        " status=", flush_status.ToString()));
   }
 
   return {};

@@ -209,11 +209,21 @@ void VamanaContext::topk_to_result(uint32_t idx) {
   });
 }
 
-void VamanaContext::topk_to_keys(std::vector<uint64_t> &keys) {
+void VamanaContext::topk_to_keys(std::vector<uint64_t> &keys,
+                                 std::vector<float> *scores) {
   keys.clear();
   keys.reserve((std::min)(static_cast<size_t>(topk_), search_heap_.size()));
-  collect_search_result(
-      [&](node_id_t id, dist_t) { keys.push_back(entity_->get_key(id)); });
+  if (scores) {
+    scores->clear();
+    scores->reserve(keys.capacity());
+    collect_search_result([&](node_id_t id, dist_t score) {
+      keys.push_back(entity_->get_key(id));
+      scores->push_back(score);
+    });
+  } else {
+    collect_search_result(
+        [&](node_id_t id, dist_t) { keys.push_back(entity_->get_key(id)); });
+  }
 }
 
 void VamanaContext::fill_random_to_topk_full() {

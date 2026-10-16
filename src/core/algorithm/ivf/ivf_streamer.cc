@@ -24,12 +24,25 @@ namespace core {
 int IVFStreamer::init(const IndexMeta &meta, const ailego::Params &parameters) {
   meta_ = meta;
   params_ = parameters;
+  quantizer_.reset();
 
   params_.get(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, &bruteforce_threshold_);
 
   searcher_state_ = STATE_INITED;
 
   return 0;
+}
+
+int IVFStreamer::init(const IndexMeta &meta, const ailego::Params &parameters,
+                      const turbo::Quantizer::Pointer &quantizer) {
+  if (!quantizer) {
+    return init(meta, parameters);
+  }
+  int ret = init(meta, parameters);
+  if (ret == 0) {
+    quantizer_ = quantizer;
+  }
+  return ret;
 }
 
 int IVFStreamer::cleanup() {
@@ -103,6 +116,10 @@ int IVFStreamer::open(IndexStorage::Pointer storage) {
   ret = entity_->load(storage);
   ivf_check_error_code(ret);
 
+  // Restore from the persisted descriptor, including when an injected
+  // quantizer was supplied. Legacy postings retain their original metric.
+  quantizer_ = entity_->quantizer();
+
   magic_ = IndexContext::GenerateMagic();
 
   stats_.set_loaded_count(entity_->vector_count());
@@ -119,6 +136,7 @@ int IVFStreamer::unload() {
   magic_ = 0;
   centroid_index_.reset();
   entity_.reset();
+  quantizer_.reset();
   stats_.set_loaded_count(0UL);
   stats_.set_loaded_costtime(0UL);
   stats_.clear_attributes();
@@ -135,7 +153,12 @@ int IVFStreamer::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
 int IVFStreamer::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                                 uint32_t count,
                                 Context::Pointer &context) const {
-  if (!query || qmeta.element_size() != meta_.element_size()) {
+  if (searcher_state_ != STATE_LOADED) {
+    return IndexError_Runtime;
+  }
+  if (!query || qmeta.element_size() != meta_.element_size() ||
+      (quantizer_ && (qmeta.data_type() != meta_.data_type() ||
+                      qmeta.dimension() != meta_.dimension()))) {
     LOG_ERROR("Null query or invalid qmeta");
     return IndexError_InvalidArgument;
   }
@@ -161,6 +184,8 @@ int IVFStreamer::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
 
   // TODO: do batch search in matrix
   for (size_t q = 0; q < count; ++q) {
+    ret = entity->bind_query(query, iv_qmeta);
+    ivf_check_error_code(ret);
     auto &context_stats = ctx->mutable_stats(q);
     auto &heap = ctx->mutable_result_heap();
     heap.clear();
@@ -192,10 +217,15 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 
 int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                              uint32_t count, Context::Pointer &context) const {
+  if (searcher_state_ != STATE_LOADED) {
+    return IndexError_Runtime;
+  }
   if (entity_->vector_count() <= bruteforce_threshold_) {
     return this->search_bf_impl(query, qmeta, count, context);
   }
-  if (!query || qmeta.element_size() != meta_.element_size()) {
+  if (!query || qmeta.element_size() != meta_.element_size() ||
+      (quantizer_ && (qmeta.data_type() != meta_.data_type() ||
+                      qmeta.dimension() != meta_.dimension()))) {
     LOG_ERROR("Null query or invalid qmeta");
     return IndexError_InvalidArgument;
   }
@@ -225,6 +255,8 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   ivf_check_with_msg(ret, "Failed to transform querys");
 
   for (size_t q = 0; q < count; ++q) {
+    ret = entity->bind_query(query, iv_qmeta);
+    ivf_check_error_code(ret);
     auto &centroids = centroid_index_ctx->result(q);
     auto &context_stats = ctx->mutable_stats(q);
     auto &heap = ctx->mutable_result_heap();
@@ -310,9 +342,10 @@ IndexProvider::Pointer IVFStreamer::create_provider() const {
     return Provider::Pointer();
   }
 
-  auto *provider = new (std::nothrow)
-      IVFIndexProvider(entity->has_orignal_feature() ? meta_ : entity->meta(),
-                       entity, "IVFStreamer");
+  auto *provider = new (std::nothrow) IVFIndexProvider(
+      (entity->has_orignal_feature() || entity->quantizer()) ? meta_
+                                                             : entity->meta(),
+      entity, "IVFStreamer");
   if (!provider) {
     LOG_ERROR("Failed to alloc IVFIndexProvider");
     return Provider::Pointer();
