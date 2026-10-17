@@ -206,6 +206,9 @@ class ZVEC_CORE_API Index {
   int _normalize_buffer_scores(const VectorData &query,
                                const int64_t *output_ids, float *output_scores,
                                size_t count);
+  int _search_refine_internal_ids(
+      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
+      int64_t *output_ids, float *output_scores);
   int _collect_dense_result(const VectorData &query,
                             const core::IndexQueryMeta &query_meta,
                             const BaseIndexQueryParam::Pointer &search_param,
