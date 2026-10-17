@@ -48,7 +48,7 @@ if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
    _TURBO_TARGET_ARCH MATCHES "^(arm|arm64)$")
   # Keep this probe local to Turbo: only its neon_fp16 distance kernels need
   # FEAT_FP16, while the plain NEON kernels (which widen to FP32) and the
-  # existing Ailego distance implementations stay untouched.
+  # Ailego sparse kernels keep their own feature gates.
   # Android is kept even though build_android.sh sets AUTO_DETECT_ARCH=OFF:
   # that switch guards the host-oriented march detection, while this probe
   # runs against the actual (cross) target toolchain.

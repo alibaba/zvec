@@ -14,7 +14,6 @@
 #include <fstream>
 #include <iostream>
 #include <unordered_set>
-#include <ailego/math/distance.h>
 #include <ailego/math/norm_matrix.h>
 #include <ailego/math/normalizer.h>
 #include <gtest/gtest.h>
@@ -22,6 +21,7 @@
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_flow.h>
+#include "core/metric/metric_params.h"
 #include "core/quantizer/quantizer_params.h"
 #include "zvec/core/framework/index_factory.h"
 
@@ -65,6 +65,63 @@ static inline auto IsAlmostEqual(const T &x, const T &y, int ulp) ->
           (std::fabs(x - y) < std::numeric_limits<T>::min()));
 }
 
+namespace {
+struct ReferenceDistance {
+  static float InnerProduct(const float *a, const float *b, size_t dim) {
+    float sum = 0;
+    for (size_t i = 0; i < dim; ++i) sum += a[i] * b[i];
+    return sum;
+  }
+  static float MinusInnerProduct(const float *a, const float *b, size_t dim) {
+    return -InnerProduct(a, b, dim);
+  }
+  static float SquaredEuclidean(const float *a, const float *b, size_t dim) {
+    float sum = 0;
+    for (size_t i = 0; i < dim; ++i) sum += (a[i] - b[i]) * (a[i] - b[i]);
+    return sum;
+  }
+  static double RecordInt4SquaredEuclidean(const void *encoded_a,
+                                           const void *encoded_b, size_t dim) {
+    const auto *codes_a = static_cast<const uint8_t *>(encoded_a);
+    const auto *codes_b = static_cast<const uint8_t *>(encoded_b);
+    float params_a[4], params_b[4];
+    std::memcpy(params_a, codes_a + dim / 2, sizeof(params_a));
+    std::memcpy(params_b, codes_b + dim / 2, sizeof(params_b));
+    auto code_at = [](const uint8_t *codes, size_t i) {
+      const int code = (codes[i / 2] >> (4 * (i % 2))) & 0xf;
+      return code < 8 ? code : code - 16;
+    };
+
+    // The record tail defines the scoring moments. Older records accumulated
+    // unrounded affine codes; newer encoders accumulate rounded nibbles.
+    // Expand each norm and the cross term in double precision so the reference
+    // works with both, without assuming a bound on the quantization error.
+    const double scale_a = params_a[0], bias_a = params_a[1];
+    const double scale_b = params_b[0], bias_b = params_b[1];
+    const double norm_a = scale_a * scale_a * params_a[3] +
+                          2 * scale_a * bias_a * params_a[2] +
+                          dim * bias_a * bias_a;
+    const double norm_b = scale_b * scale_b * params_b[3] +
+                          2 * scale_b * bias_b * params_b[2] +
+                          dim * bias_b * bias_b;
+    double dot = 0.0;
+    for (size_t i = 0; i < dim; ++i) {
+      dot += code_at(codes_a, i) * code_at(codes_b, i);
+    }
+    const double cross = scale_a * scale_b * dot +
+                         scale_a * bias_b * params_a[2] +
+                         scale_b * bias_a * params_b[2] + dim * bias_a * bias_b;
+    return norm_a + norm_b - 2 * cross;
+  }
+  static float MipsSquaredEuclidean(const float *a, const float *b, size_t dim,
+                                    float /*eta*/) {
+    return 2.0f -
+           2.0f * InnerProduct(a, b, dim) /
+               std::max(InnerProduct(a, a, dim), InnerProduct(b, b, dim));
+  }
+};
+}  // namespace
+
 TEST(QuantizedIntegerMetric, General) {
   auto metric = IndexFactory::CreateMetric("MipsSquaredEuclidean");
   ASSERT_TRUE(metric);
@@ -104,8 +161,9 @@ TEST(QuantizedIntegerMetric, General) {
   }
   printf("\n");
 
-  auto v1 = ailego::Distance::SquaredEuclidean(xt.data(), yt.data(), DIMENSION);
-  auto ip = ailego::Distance::InnerProduct(x.data(), y.data(), DIMENSION);
+  auto v1 =
+      ReferenceDistance::SquaredEuclidean(xt.data(), yt.data(), DIMENSION);
+  auto ip = ReferenceDistance::InnerProduct(x.data(), y.data(), DIMENSION);
   ailego::SquaredNorm2Matrix<float, 1>::Compute(x.data(), DIMENSION, &x2);
   ailego::SquaredNorm2Matrix<float, 1>::Compute(y.data(), DIMENSION, &y2);
 #if 0
@@ -124,14 +182,14 @@ TEST(QuantizedIntegerMetric, General) {
       x[0], y[0], xt[0], yt[0], xa, xb, ya, yb, x2, y2, x1, y1, ip);
   printf("v1=%f v2=%f v3=%f\n", v1, v2, v3);
 
-  auto ip_t = ailego::Distance::InnerProduct(xt.data(), yt.data(), DIMENSION);
+  auto ip_t = ReferenceDistance::InnerProduct(xt.data(), yt.data(), DIMENSION);
   auto v = xa * ya * ip + xb * ya * y1 + xa * yb * x1 + xb * yb * DIMENSION;
   printf("V=%f %f\n", ip_t, v);
 
   printf("=========\n");
   float mips;
-  ailego::MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
-      xt.data(), yt.data(), DIMENSION, 0.0, &mips);
+  mips = ReferenceDistance::MipsSquaredEuclidean(xt.data(), yt.data(),
+                                                 DIMENSION, 0.0);
   printf("u2=%f v2=%f\n", x2, y2);
   float uu2 = xa * xa * x2 + 2 * xa * xb * x1 + xb * xb * DIMENSION;
   float vv2 = ya * ya * y2 + 2 * ya * yb * y1 + yb * yb * DIMENSION;
@@ -187,8 +245,8 @@ TEST(QuantizedIntegerMetric, TestInt8SquaredEuclidean) {
     const float *mf = (const float *)iter->data();
     const int8_t *mi = (const int8_t *)iter2->data();
     const int8_t *qi = reinterpret_cast<const int8_t *>(&out[0]);
-    float v1 =
-        ailego::Distance::SquaredEuclidean(mf, vec.data(), holder->dimension());
+    float v1 = ReferenceDistance::SquaredEuclidean(mf, vec.data(),
+                                                   holder->dimension());
     float v2;
     compute(mi, qi, holder2->dimension(), &v2);
     // printf("%f %f\n", v1, v2);
@@ -344,62 +402,102 @@ TEST(QuantizedIntegerMetric, TestInt8SquaredEuclideanMetric) {
 }
 
 TEST(QuantizedIntegerMetric, TestInt4SquaredEuclidean) {
-  std::random_device rd;
-  std::mt19937 gen(rd());
-  std::uniform_real_distribution<float> dist(-1.0, 2.0);
+  for (const size_t DIMENSION : {2, 6, 8, 16, 30, 32, 34, 64, 128, 256}) {
+    SCOPED_TRACE(DIMENSION);
+    // Seed 295 includes an 8D pair whose quantization error exceeds the old
+    // 0.2 * dimension heuristic. Map engine output explicitly for portability.
+    std::mt19937 gen(295);
+    auto next_value = [&gen]() {
+      return float(gen() % 30001) / 10000.0f - 1.0f;
+    };
+    ailego::NumericalVector<float> vec(DIMENSION);
+    for (size_t j = 0; j < DIMENSION; ++j) vec[j] = next_value();
+    const size_t COUNT = 1000;
+    IndexMeta meta;
+    meta.set_meta(IndexMeta::DT_FP32, DIMENSION);
+    auto converter = IndexFactory::CreateConverter("Int4StreamingConverter");
+    ASSERT_TRUE(!!converter);
+    ASSERT_EQ(0u, converter->init(meta, Params()));
 
-  const size_t DIMENSION = std::uniform_int_distribution<int>(1, 128)(gen) * 2;
-  const size_t COUNT = 1000;
-  IndexMeta meta;
-  meta.set_meta(IndexMeta::DT_FP32, DIMENSION);
-  auto converter = IndexFactory::CreateConverter("Int4StreamingConverter");
-  ASSERT_TRUE(!!converter);
-  ASSERT_EQ(0u, converter->init(meta, Params()));
+    auto holder =
+        std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(DIMENSION);
+    for (size_t i = 0; i < COUNT; ++i) {
+      ailego::NumericalVector<float> record(DIMENSION);
+      for (size_t j = 0; j < DIMENSION; ++j) record[j] = next_value();
+      holder->emplace(i + 1, record);
+    }
+    ASSERT_EQ(0u, IndexConverter::TrainAndTransform(converter, holder));
+    auto holder2 = converter->result();
+    EXPECT_EQ(COUNT, holder2->count());
+    EXPECT_EQ(IndexMeta::DT_INT4, holder2->data_type());
+    auto &meta2 = converter->meta();
 
-  auto holder = GetHolder(DIMENSION, COUNT, dist);
-  ASSERT_EQ(0u, IndexConverter::TrainAndTransform(converter, holder));
-  auto holder2 = converter->result();
-  EXPECT_EQ(COUNT, holder2->count());
-  EXPECT_EQ(IndexMeta::DT_INT4, holder2->data_type());
-  auto &meta2 = converter->meta();
+    auto reformer = IndexFactory::CreateReformer(meta2.reformer_name());
+    ASSERT_TRUE(reformer);
+    ASSERT_EQ(0u, reformer->init(meta2.reformer_params()));
 
-  auto reformer = IndexFactory::CreateReformer(meta2.reformer_name());
-  ASSERT_TRUE(reformer);
-  ASSERT_EQ(0u, reformer->init(meta2.reformer_params()));
+    IndexQueryMeta qmeta;
+    qmeta.set_meta(IndexMeta::DT_FP32, DIMENSION);
+    IndexQueryMeta qmeta2;
+    std::string out;
+    ASSERT_EQ(0, reformer->transform(vec.data(), qmeta, &out, &qmeta2));
+    ASSERT_EQ(qmeta2.dimension(), meta2.dimension());
 
-  ailego::NumericalVector<float> vec(DIMENSION);
-  for (size_t j = 0; j < DIMENSION; ++j) {
-    vec[j] = dist(gen);
+    auto iter = holder->create_iterator();
+    auto iter2 = holder2->create_iterator();
+    auto metric = IndexFactory::CreateMetric(meta2.metric_name());
+    ASSERT_TRUE(!!metric);
+    ASSERT_EQ(0, metric->init(meta2, meta2.metric_params()));
+    auto compute = metric->distance();
+    ASSERT_TRUE(compute);
+
+    for (; iter->is_valid(); iter->next(), iter2->next()) {
+      const int8_t *mi = (const int8_t *)iter2->data();
+      const int8_t *qi = reinterpret_cast<const int8_t *>(&out[0]);
+      SCOPED_TRACE(iter->key());
+      const double expected =
+          ReferenceDistance::RecordInt4SquaredEuclidean(mi, qi, DIMENSION);
+      float v2;
+      compute(mi, qi, holder2->dimension(), &v2);
+      // Only floating-point evaluation error remains in this comparison.
+      ASSERT_NEAR(expected, v2, 1e-5 * DIMENSION);
+
+      std::string out2;
+      ASSERT_EQ(0, reformer->convert(iter->data(), qmeta, &out2, &qmeta2));
+      ASSERT_EQ(out2.size(), holder2->element_size());
+      ASSERT_EQ(0, std::memcmp(out2.data(), iter2->data(), out2.size()));
+    }
   }
-  IndexQueryMeta qmeta;
-  qmeta.set_meta(IndexMeta::DT_FP32, DIMENSION);
-  IndexQueryMeta qmeta2;
-  std::string out;
-  ASSERT_EQ(0, reformer->transform(vec.data(), qmeta, &out, &qmeta2));
-  ASSERT_EQ(qmeta2.dimension(), meta2.dimension());
+}
 
-  auto iter = holder->create_iterator();
-  auto iter2 = holder2->create_iterator();
-  auto metric = IndexFactory::CreateMetric(meta2.metric_name());
-  ASSERT_TRUE(!!metric);
-  ASSERT_EQ(0, metric->init(meta2, meta2.metric_params()));
+TEST(QuantizedIntegerMetric, TestInt4SquaredEuclideanStoredMoments) {
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DT_INT4, 34);
+  Params params;
+  params.set(QUANTIZED_INTEGER_METRIC_ORIGIN_METRIC_NAME, "SquaredEuclidean");
+  auto metric = IndexFactory::CreateMetric("QuantizedInteger");
+  ASSERT_TRUE(metric);
+  ASSERT_EQ(0, metric->init(meta, params));
   auto compute = metric->distance();
   ASSERT_TRUE(compute);
 
-  for (; iter->is_valid(); iter->next(), iter2->next()) {
-    const float *mf = (const float *)iter->data();
-    const int8_t *mi = (const int8_t *)iter2->data();
-    const int8_t *qi = reinterpret_cast<const int8_t *>(&out[0]);
-    float v1 =
-        ailego::Distance::SquaredEuclidean(mf, vec.data(), holder->dimension());
-    float v2;
-    compute(mi, qi, holder2->dimension(), &v2);
-    ASSERT_NEAR(v1, v2, 0.2 * DIMENSION);
-
-    std::string out2;
-    ASSERT_EQ(0, reformer->convert(iter->data(), qmeta, &out2, &qmeta2));
-    ASSERT_EQ(out2.size(), holder2->element_size());
-    ASSERT_EQ(0, std::memcmp(out2.data(), iter2->data(), out2.size()));
+  for (bool rounded : {false, true}) {
+    SCOPED_TRACE(rounded);
+    // Both records pack [-8, 7]. Legacy moments represent [-8, 6.5] and
+    // [-7.5, 7]; rounded moments represent the packed codes themselves.
+    const float tail_a[] = {0.5f, 1.0f, rounded ? -1.0f : -1.5f,
+                            rounded ? 113.0f : 106.25f};
+    const float tail_b[] = {0.25f, -1.0f, rounded ? -1.0f : -0.5f,
+                            rounded ? 113.0f : 105.25f};
+    uint8_t a[17] = {0x78}, b[17] = {0x78};
+    std::memcpy(a + 1, tail_a, sizeof(tail_a));
+    std::memcpy(b + 1, tail_b, sizeof(tail_b));
+    const double expected = rounded ? 14.0625 : 10.390625;
+    EXPECT_DOUBLE_EQ(expected,
+                     ReferenceDistance::RecordInt4SquaredEuclidean(a, b, 2));
+    float actual;
+    compute(a, b, 34, &actual);
+    EXPECT_FLOAT_EQ(expected, actual);
   }
 }
 
@@ -592,8 +690,8 @@ TEST(QuantizedIntegerMetric, TestInt8InnerProduct) {
     const float *mf = (const float *)iter->data();
     const int8_t *mi = (const int8_t *)iter2->data();
     const int8_t *qi = reinterpret_cast<const int8_t *>(&out[0]);
-    float v1 = ailego::Distance::MinusInnerProduct(mf, vec.data(),
-                                                   holder->dimension());
+    float v1 = ReferenceDistance::MinusInnerProduct(mf, vec.data(),
+                                                    holder->dimension());
     float v2;
     compute(mi, qi, holder2->dimension(), &v2);
     // printf("%f %f\n", v1, v2);
@@ -678,8 +776,8 @@ TEST(QuantizedIntegerMetric, TestInt4InnerProduct) {
     const float *mf = (const float *)iter->data();
     const int8_t *mi = (const int8_t *)iter2->data();
     const int8_t *qi = reinterpret_cast<const int8_t *>(&out[0]);
-    float v1 = ailego::Distance::MinusInnerProduct(mf, vec.data(),
-                                                   holder->dimension());
+    float v1 = ReferenceDistance::MinusInnerProduct(mf, vec.data(),
+                                                    holder->dimension());
     float v2;
     compute(mi, qi, holder2->dimension(), &v2);
     ASSERT_NEAR(v1, v2, 0.2 * DIMENSION);
@@ -766,7 +864,7 @@ TEST(QuantizedIntegerMetric, TestInt8MipsSquaredEuclidean) {
     const float *mf = (const float *)iter->data();
     const int8_t *mi = (const int8_t *)iter2->data();
     const int8_t *qi = reinterpret_cast<const int8_t *>(&out[0]);
-    float v1 = ailego::Distance::MipsSquaredEuclidean(
+    float v1 = ReferenceDistance::MipsSquaredEuclidean(
         mf, vec.data(), holder->dimension(), 0.0f);
     float v2;
     compute(mi, qi, holder2->dimension(), &v2);
@@ -852,8 +950,8 @@ TEST(QuantizedIntegerMetric, TestInt4MipsSquaredEuclidean) {
     const float *mf = (const float *)iter->data();
     const int8_t *mi = (const int8_t *)iter2->data();
     const int8_t *qi = reinterpret_cast<const int8_t *>(&out[0]);
-    float v1 = ailego::Distance::MipsSquaredEuclidean(mf, vec.data(),
-                                                      holder->dimension(), 0.0);
+    float v1 = ReferenceDistance::MipsSquaredEuclidean(
+        mf, vec.data(), holder->dimension(), 0.0);
     float v2;
     compute(mi, qi, holder2->dimension(), &v2);
     ASSERT_NEAR(v1, v2, 0.2 * DIMENSION);
@@ -951,7 +1049,7 @@ TEST(QuantizedIntegerMetric, TestInt8NormalizedCosine) {
     ailego::Normalizer<float>::L2((float *)normalized_vec.data(), DIMENSION,
                                   &norm_vec);
 
-    float v1 = ailego::Distance::MinusInnerProduct(
+    float v1 = ReferenceDistance::MinusInnerProduct(
         normalized_mf.data(), normalized_vec.data(), holder->dimension());
     float v2;
     compute(mi, qi, holder2->dimension(), &v2);
@@ -1055,7 +1153,7 @@ TEST(QuantizedIntegerMetric, TestInt8Cosine) {
     ailego::Normalizer<float>::L2((float *)normalized_vec.data(), DIMENSION,
                                   &norm_vec);
 
-    float v1 = ailego::Distance::MinusInnerProduct(
+    float v1 = ReferenceDistance::MinusInnerProduct(
         normalized_mf.data(), normalized_vec.data(), holder->dimension());
     float v2;
     compute_batch(reinterpret_cast<const void **>(&mi), qi, 1,
@@ -1132,7 +1230,7 @@ TEST(QuantizedIntegerMetric, TestInt4NormalizedCosine) {
     ailego::Normalizer<float>::L2((float *)normalized_vec.data(), DIMENSION,
                                   &norm_vec);
 
-    float v1 = ailego::Distance::MinusInnerProduct(
+    float v1 = ReferenceDistance::MinusInnerProduct(
         normalized_mf.data(), normalized_vec.data(), holder->dimension());
     float v2;
     compute(mi, qi, holder2->dimension(), &v2);

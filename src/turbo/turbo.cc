@@ -88,6 +88,7 @@
 #include "scalar/pq_quantizer_fast/pq_distance.h"
 #include "scalar/pq_quantizer_int4/pq_distance.h"
 #include "scalar/pq_quantizer_int8/pq_distance.h"
+#include "scalar/raw_numeric.h"
 #include "scalar/raw_uint8/squared_euclidean.h"
 #include "scalar/record_quantized_int4/cosine.h"
 #include "scalar/record_quantized_int4/inner_product.h"
@@ -477,6 +478,50 @@ constexpr KernelSet kKernelTable[] = {
     {QuantizeType::kFp32, DataType::kFp32, CpuArchType::kScalar,
      MetricType::kInnerProduct, scalar::inner_product_fp32_distance,
      scalar::inner_product_fp32_batch_distance, nullptr},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kAVX512,
+     MetricType::kInnerProduct, avx512::inner_product_fp16_distance_avx512,
+     avx512::inner_product_fp16_batch_distance_avx512, nullptr,
+     kCpuFeatureF16c},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kAVX2,
+     MetricType::kInnerProduct, avx2::inner_product_fp16_distance_avx2,
+     avx2::inner_product_fp16_batch_distance_avx2, nullptr, kCpuFeatureF16c},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kSSE2,
+     MetricType::kInnerProduct, sse2::inner_product_fp16_distance_sse2,
+     sse2::inner_product_fp16_batch_distance_sse2, nullptr},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kNEON,
+     MetricType::kInnerProduct, neon::inner_product_fp16_distance,
+     neon::inner_product_fp16_batch_distance, nullptr},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kScalar,
+     MetricType::kInnerProduct, scalar::inner_product_fp16_distance,
+     scalar::inner_product_fp16_batch_distance, nullptr},
+    {QuantizeType::kRaw, DataType::kInt8, CpuArchType::kScalar,
+     MetricType::kSquaredEuclidean, scalar::raw_integer_distance<false, false>,
+     scalar::raw_integer_batch_distance<false, false>, nullptr},
+    {QuantizeType::kRaw, DataType::kInt8, CpuArchType::kScalar,
+     MetricType::kInnerProduct, scalar::raw_integer_distance<false, true>,
+     scalar::raw_integer_batch_distance<false, true>, nullptr},
+    {QuantizeType::kRaw, DataType::kInt4, CpuArchType::kScalar,
+     MetricType::kSquaredEuclidean, scalar::raw_integer_distance<true, false>,
+     scalar::raw_integer_batch_distance<true, false>, nullptr},
+    {QuantizeType::kRaw, DataType::kInt4, CpuArchType::kScalar,
+     MetricType::kInnerProduct, scalar::raw_integer_distance<true, true>,
+     scalar::raw_integer_batch_distance<true, true>, nullptr},
+    {QuantizeType::kUniform, DataType::kInt8, CpuArchType::kScalar,
+     MetricType::kSquaredEuclidean, scalar::raw_integer_distance<false, false>,
+     scalar::raw_integer_batch_distance<false, false>, nullptr},
+    {QuantizeType::kRaw, DataType::kFp64, CpuArchType::kScalar,
+     MetricType::kSquaredEuclidean, scalar::raw_numeric_distance<double, false>,
+     scalar::raw_numeric_batch_distance<double, false>, nullptr},
+    {QuantizeType::kRaw, DataType::kFp64, CpuArchType::kScalar,
+     MetricType::kInnerProduct, scalar::raw_numeric_distance<double, true>,
+     scalar::raw_numeric_batch_distance<double, true>, nullptr},
+    {QuantizeType::kRaw, DataType::kInt16, CpuArchType::kScalar,
+     MetricType::kSquaredEuclidean,
+     scalar::raw_numeric_distance<int16_t, false>,
+     scalar::raw_numeric_batch_distance<int16_t, false>, nullptr},
+    {QuantizeType::kRaw, DataType::kInt16, CpuArchType::kScalar,
+     MetricType::kInnerProduct, scalar::raw_numeric_distance<int16_t, true>,
+     scalar::raw_numeric_batch_distance<int16_t, true>, nullptr},
 };
 
 struct ConvertKernel {
@@ -501,6 +546,10 @@ constexpr ConvertKernel kConvertKernelTable[] = {
 const KernelSet *FindKernel(MetricType metric_type, DataType data_type,
                             QuantizeType quantize_type,
                             CpuArchType cpu_arch_type) {
+  // Raw FP32 and identity FP32 quantization use the same physical layout.
+  if (quantize_type == QuantizeType::kRaw && data_type == DataType::kFp32) {
+    quantize_type = QuantizeType::kFp32;
+  }
   for (const auto &k : kKernelTable) {
     if (k.metric != metric_type || k.dtype != data_type ||
         k.quantize != quantize_type) {

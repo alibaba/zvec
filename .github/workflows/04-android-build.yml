@@ -151,23 +151,6 @@ jobs:
             exit 1
           fi
 
-          # All test cases in this legacy target are disabled with #if 0.
-          # Exclude it instead of treating a zero-test binary as a passing suite.
-          FILTERED_TEST_NAMES=()
-          for name in "${TEST_NAMES[@]}"; do
-            if [ "$name" = "cosine_distance_matrix_int8_test" ]; then
-              echo "Skipping $name: it contains no enabled GTest cases"
-              continue
-            fi
-            FILTERED_TEST_NAMES+=("$name")
-          done
-          TEST_NAMES=("${FILTERED_TEST_NAMES[@]}")
-
-          if [ ${#TEST_NAMES[@]} -eq 0 ]; then
-            echo "ERROR: No non-empty Android test targets were discovered"
-            exit 1
-          fi
-
           for required_test in diskann_mobile_compat_test diskann_mobile_collection_test; do
             found=0
             for name in "${TEST_NAMES[@]}"; do
@@ -337,15 +320,6 @@ jobs:
             echo "ERROR: No Android test targets were discovered"
             exit 1
           fi
-
-          FILTERED_TEST_NAMES=()
-          for name in "${TEST_NAMES[@]}"; do
-            if [ "$name" = "cosine_distance_matrix_int8_test" ]; then
-              continue
-            fi
-            FILTERED_TEST_NAMES+=("$name")
-          done
-          TEST_NAMES=("${FILTERED_TEST_NAMES[@]}")
 
           for required_test in diskann_mobile_compat_test diskann_mobile_collection_test; do
             found=0

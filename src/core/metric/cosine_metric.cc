@@ -11,133 +11,14 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include <ailego/math/cosine_distance_matrix.h>
 #include <ailego/math/norm2_matrix.h>
-#include <ailego/math_batch/distance_batch.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
+#include "turbo_metric.h"
 
 namespace zvec {
 namespace core {
 
-//! Retrieve distance function for index features
-inline IndexMetric::MatrixDistanceHandle CosineDistanceMatrixFp32(size_t m,
-                                                                  size_t n) {
-  static const IndexMetric::MatrixDistanceHandle distance_table[6][6] = {
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 1, 1>::Compute),
-       nullptr, nullptr, nullptr, nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 2, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 2, 2>::Compute),
-       nullptr, nullptr, nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 4, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 4, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 4, 4>::Compute),
-       nullptr, nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 8, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 8, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 8, 4>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 8, 8>::Compute),
-       nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 16, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 16, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 16, 4>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 16, 8>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 16, 16>::Compute),
-       nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 32, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 32, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 32, 4>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 32, 8>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 32, 16>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<float, 32, 32>::Compute)},
-  };
-  if (m > 32 || n > 32 || ailego_popcount(m) != 1 || ailego_popcount(n) != 1) {
-    return nullptr;
-  }
-  return distance_table[ailego_ctz(m)][ailego_ctz(n)];
-}
-
-//! Retrieve distance function for index features
-inline IndexMetric::MatrixDistanceHandle CosineDistanceMatrixFp16(size_t m,
-                                                                  size_t n) {
-  static const IndexMetric::MatrixDistanceHandle distance_table[6][6] = {
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 1, 1>::Compute),
-       nullptr, nullptr, nullptr, nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 2, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 2, 2>::Compute),
-       nullptr, nullptr, nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 4, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 4, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 4, 4>::Compute),
-       nullptr, nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 8, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 8, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 8, 4>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 8, 8>::Compute),
-       nullptr, nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 16, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 16, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 16, 4>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 16, 8>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 16, 16>::Compute),
-       nullptr},
-      {reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 32, 1>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 32, 2>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 32, 4>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 32, 8>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 32, 16>::Compute),
-       reinterpret_cast<IndexMetric::MatrixDistanceHandle>(
-           ailego::CosineDistanceMatrix<ailego::Float16, 32, 32>::Compute)},
-  };
-  if (m > 32 || n > 32 || ailego_popcount(m) != 1 || ailego_popcount(n) != 1) {
-    return nullptr;
-  }
-  return distance_table[ailego_ctz(m)][ailego_ctz(n)];
-}
-
-/*! Cosine Metric
- */
 class CosineMetric : public IndexMetric {
  public:
   //! Initialize Metric
@@ -177,17 +58,13 @@ class CosineMetric : public IndexMetric {
 
   //! Retrieve distance function for query
   MatrixDistance distance() const override {
-    switch (data_type_) {
-      case IndexMeta::DataType::DT_FP16:
-        return reinterpret_cast<MatrixDistanceHandle>(
-            ailego::CosineDistanceMatrix<ailego::Float16, 1, 1>::Compute);
-      case IndexMeta::DataType::DT_FP32:
-        return reinterpret_cast<MatrixDistanceHandle>(
-            ailego::CosineDistanceMatrix<float, 1, 1>::Compute);
-
-      default:
-        return nullptr;
-    }
+    auto distance = RawKernels(turbo::MetricType::kCosine, data_type_).dist;
+    const size_t extra = sizeof(float) / IndexMeta::UnitSizeof(data_type_);
+    if (!distance) return nullptr;
+    // CosineConverter appends a float norm to the normalized vector.
+    return [=](const void *m, const void *q, size_t dim, float *out) {
+      distance(m, q, dim - extra, out);
+    };
   }
 
   //! Retrieve distance function for index features
@@ -200,18 +77,13 @@ class CosineMetric : public IndexMetric {
 
   //! Retrieve distance function for query
   MatrixBatchDistance batch_distance() const override {
-    switch (data_type_) {
-      case IndexMeta::DataType::DT_FP32:
-        return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-            ailego::BaseDistance<ailego::CosineDistanceMatrix, float, 12,
-                                 2>::ComputeBatch);
-      case IndexMeta::DataType::DT_FP16:
-        return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-            ailego::BaseDistance<ailego::CosineDistanceMatrix, ailego::Float16,
-                                 12, 2>::ComputeBatch);
-      default:
-        return nullptr;
-    }
+    auto batch = RawKernels(turbo::MetricType::kCosine, data_type_).batch;
+    const size_t extra = sizeof(float) / IndexMeta::UnitSizeof(data_type_);
+    if (!batch) return nullptr;
+    return [=](const void **m, const void *q, size_t count, size_t dim,
+               float *out, const void **values) {
+      batch(m, q, count, dim - extra, out, values);
+    };
   }
 
   //! Retrieve params of Metric

@@ -15,10 +15,10 @@
 
 #include <memory>
 #include <zvec/ailego/container/params.h>
-#include <zvec/ailego/math_batch/utils.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/core/framework/index_module.h>
+#include <zvec/turbo/turbo.h>
 
 namespace zvec {
 namespace core {
@@ -140,8 +140,7 @@ struct IndexMetric : public IndexModule {
     return dist;
   }
 
-  using DistanceBatchQueryPreprocessFunc =
-      ailego::distance_batch::DistanceBatchQueryPreprocessFunc;
+  using DistanceBatchQueryPreprocessFunc = turbo::QueryPreprocessFunc;
 
   virtual DistanceBatchQueryPreprocessFunc get_query_preprocess_func() const {
     return nullptr;
