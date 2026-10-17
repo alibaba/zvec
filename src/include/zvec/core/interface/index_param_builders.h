@@ -191,6 +191,58 @@ class HNSWIndexParamBuilder
   }
 };
 
+class OmegaIndexParamBuilder
+    : public BaseIndexParamBuilder<OmegaIndexParamBuilder, OmegaIndexParam> {
+ public:
+  OmegaIndexParamBuilder() = default;
+
+  OmegaIndexParamBuilder &with_m(int m) {
+    param->m = m;
+    return *this;
+  }
+
+  OmegaIndexParamBuilder &with_ef_construction(int ef_construction) {
+    param->ef_construction = ef_construction;
+    return *this;
+  }
+
+  OmegaIndexParamBuilder &with_min_vector_threshold(
+      uint32_t min_vector_threshold) {
+    param->min_vector_threshold = min_vector_threshold;
+    return *this;
+  }
+
+  OmegaIndexParamBuilder &with_num_training_queries(
+      size_t num_training_queries) {
+    param->num_training_queries = num_training_queries;
+    return *this;
+  }
+
+  OmegaIndexParamBuilder &with_ef_training(int ef_training) {
+    param->ef_training = ef_training;
+    return *this;
+  }
+
+  OmegaIndexParamBuilder &with_window_size(int window_size) {
+    param->window_size = window_size;
+    return *this;
+  }
+
+  OmegaIndexParamBuilder &with_ef_groundtruth(int ef_groundtruth) {
+    param->ef_groundtruth = ef_groundtruth;
+    return *this;
+  }
+
+  OmegaIndexParamBuilder &with_k_train(int k_train) {
+    param->k_train = k_train;
+    return *this;
+  }
+
+  std::shared_ptr<OmegaIndexParam> build() override {
+    return param;
+  }
+};
+
 class HNSWRabitqIndexParamBuilder
     : public BaseIndexParamBuilder<HNSWRabitqIndexParamBuilder,
                                    HNSWRabitqIndexParam> {
@@ -429,6 +481,36 @@ class HNSWQueryParamBuilder
 
   HNSWQueryParam::Pointer build() {
     return std::make_shared<HNSWQueryParam>(std::move(m_param));
+  }
+};
+
+class OmegaQueryParamBuilder
+    : public BaseIndexQueryParamBuilder<OmegaQueryParam,
+                                        OmegaQueryParamBuilder> {
+ public:
+  OmegaQueryParamBuilder &with_ef_search(int ef_search) {
+    m_param.ef_search = ef_search;
+    return *this;
+  }
+
+  OmegaQueryParamBuilder &with_training_query_id(int training_query_id) {
+    m_param.training_query_id = training_query_id;
+    return *this;
+  }
+
+  OmegaQueryParamBuilder &with_target_recall(float target_recall) {
+    m_param.target_recall = target_recall;
+    return *this;
+  }
+
+  OmegaQueryParamBuilder &with_training_collector(
+      std::function<void(QueryTrainingArtifacts &&)> collector) {
+    m_param.training_collector = std::move(collector);
+    return *this;
+  }
+
+  OmegaQueryParam::Pointer build() {
+    return std::make_shared<OmegaQueryParam>(std::move(m_param));
   }
 };
 

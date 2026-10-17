@@ -90,6 +90,13 @@ class HnswStreamer : public IndexStreamer {
     return entity_->storage_mode();
   }
 
+  //! Fast search without lock (for OMEGA integration)
+  int FastSearch(HnswContext *ctx) const;
+
+  //! Fast search with hooks (for OMEGA integration)
+  int FastSearchWithHooks(HnswContext *ctx, const SearchHooks *hooks,
+                          bool *stopped_early) const;
+
   //! Whether the active search distance path is backed by a turbo quantizer.
   bool uses_turbo_distance() const {
     return quantizer_ != nullptr;
@@ -239,8 +246,9 @@ class HnswStreamer : public IndexStreamer {
   //! Configure and initialize the entity with saved parameters
   int setup_entity();
 
+ protected:
   //! To share ctx across streamer/searcher, we need to update the context for
-  //! current streamer/searcher
+  //! current streamer/searcher (moved to protected for OmegaStreamer)
   int update_context(HnswContext *ctx) const;
 
   //! Bind the distance functions and inline record layout used for graph build
@@ -249,7 +257,7 @@ class HnswStreamer : public IndexStreamer {
   //! Bind the distance functions and inline record layout used for search
   void bind_search_dist_space(HnswContext *ctx) const;
 
- private:
+ protected:
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_OPENED = 2 };
   class Stats : public IndexStreamer::Stats {
    public:

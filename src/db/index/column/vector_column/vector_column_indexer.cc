@@ -43,6 +43,7 @@ Status VectorColumnIndexer::create_proxima_index(
   }
   auto &index_param = index_param_result.value();
 
+  // Use IndexFactory for all index types (including OMEGA)
   index = core_interface::IndexFactory::CreateAndInitIndex(*index_param);
   if (index == nullptr) {
     return Status::InternalError("Failed to create index");
@@ -130,6 +131,7 @@ Status VectorColumnIndexer::merge(
                    {merge_options.write_concurrency, merge_options.pool})) {
     return Status::InternalError("Failed to merge index");
   }
+
   return Status::OK();
 }
 

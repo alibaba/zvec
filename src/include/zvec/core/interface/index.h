@@ -33,6 +33,9 @@
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index_param.h>
+#include <zvec/core/interface/training.h>
+#include <zvec/core/interface/training_capable.h>
+#include <zvec/core/interface/training_session.h>
 #include <zvec/core/interface/vector_source.h>
 #include <zvec/export.h>
 #include "zvec/core/framework/index_provider.h"
@@ -272,6 +275,7 @@ class ZVEC_CORE_API Index {
 
   size_t context_index_{std::numeric_limits<size_t>::max()};
   core::IndexStorage::Pointer storage_{};
+  std::string file_path_;  // Storage file path
 
   bool is_open_{false};
   bool is_sparse_{false};
@@ -368,7 +372,6 @@ class ZVEC_CORE_API IVFIndex : public Index {
   std::mutex mutex_{};
   std::vector<std::pair<uint64_t, std::string>> doc_cache_;
   core::IndexHolder::Pointer holder_{};
-  std::string file_path_;
 };
 
 
@@ -509,7 +512,39 @@ class ZVEC_CORE_API DiskAnnIndex : public Index {
   std::mutex mutex_{};
   std::vector<std::pair<uint64_t, std::string>> doc_cache_;
   core::IndexHolder::Pointer holder_{};
-  std::string file_path_;
 };
+
+//! OMEGA Index - HNSW with learned early stopping
+/**
+ * OmegaIndex is a specialized HNSW index that supports training mode for
+ * collecting features to train the OMEGA early stopping model.
+ *
+ * It implements the ITrainingCapable interface to provide training
+ * functionality without modifying the generic HNSWIndex class.
+ */
+class OmegaIndex : public HNSWIndex, public ITrainingCapable {
+ public:
+  OmegaIndex() = default;
+
+  int open(const std::string &file_path,
+           StorageOptions storage_options) override;
+  int train() override;
+  ITrainingSession::Pointer CreateTrainingSession() override;
+  BaseIndexParam::Pointer get_param() const override {
+    return std::make_shared<OmegaIndexParam>(param_);
+  }
+
+ protected:
+  virtual int create_and_init_streamer(const BaseIndexParam &param) override;
+
+  virtual int _prepare_for_search(
+      const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
+      core::IndexContext::Pointer &context) override;
+
+ private:
+  bool is_training_{false};
+  OmegaIndexParam param_{};
+};
+
 
 }  // namespace zvec::core_interface

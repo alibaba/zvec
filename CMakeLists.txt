@@ -145,6 +145,13 @@ message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
 message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
 message(STATUS "BUILD_CPP_EXAMPLES:${BUILD_CPP_EXAMPLES}")
 
+if(ANDROID)
+    option(ZVEC_ENABLE_OMEGA "Build OMEGA support" OFF)
+else()
+    option(ZVEC_ENABLE_OMEGA "Build OMEGA support" ON)
+endif()
+message(STATUS "ZVEC_ENABLE_OMEGA:${ZVEC_ENABLE_OMEGA}")
+add_compile_definitions(ZVEC_ENABLE_OMEGA=$<BOOL:${ZVEC_ENABLE_OMEGA}>)
 # RaBitQ support (rabitqlib ships x86-64 AVX2/AVX-512 kernels with runtime dispatch):
 #   - Linux x86_64 with GCC/Clang
 #   - Windows x86_64 with MSVC (added upstream in v0.3.8)
