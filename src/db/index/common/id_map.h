@@ -85,6 +85,8 @@ class IDMap {
 
 
  private:
+  friend class IDMapTest;
+
   using FILE = ailego::File;
 
   Status merge_small_files(size_t min_files, bool size_ratio);

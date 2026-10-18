@@ -15,9 +15,9 @@
 #include "db/index/common/id_map.h"
 #include <algorithm>
 #include <cstdio>
-#include <filesystem>
 #include <set>
 #include <string>
+#include <vector>
 #include <gtest/gtest.h>
 #include "db/common/file_helper.h"
 
@@ -36,12 +36,14 @@ class IDMapTest : public ::testing::Test {
     FileHelper::RemoveDirectory(path_);
   }
 
+  // Live SSTs as RocksDB sees them. Counting files in the directory is racy:
+  // CompactRange can return before the background thread deletes its inputs.
   std::set<std::string> ssts() const {
+    std::vector<rocksdb::LiveFileMetaData> files;
+    id_map_->rocksdb_context_.db_->GetLiveFilesMetaData(&files);
     std::set<std::string> names;
-    for (const auto &entry : std::filesystem::directory_iterator(path_)) {
-      if (entry.path().extension() == ".sst") {
-        names.insert(entry.path().filename().string());
-      }
+    for (const auto &file : files) {
+      names.insert(file.name);
     }
     return names;
   }
