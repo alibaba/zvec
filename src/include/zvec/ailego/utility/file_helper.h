@@ -96,8 +96,9 @@ struct ZVEC_AILEGO_API FileHelper {
   //! Retrieve the base name from a path
   static const char *BaseName(const char *path) {
     const char *output = std::strrchr(path, '/');
-    if (!output) {
-      output = std::strrchr(path, '\\');
+    const char *backslash = std::strrchr(path, '\\');
+    if (backslash && (!output || backslash > output)) {
+      output = backslash;
     }
     return (output ? output + 1 : path);
   }
