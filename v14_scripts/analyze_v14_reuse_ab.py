@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""v14 review task 5: analyze the reuse OFF/ON production A/B with an
+"""v14/v15 review: analyze the reuse OFF/ON production A/B with an
 integrity gate before any conclusion.
 
 Consumes v14_reuse_ab_summary.txt (run_v14_reuse_ab.sh): 'bench <tag> ...'
@@ -14,16 +14,24 @@ duplicates/missing rounds/FAILED/unparseable lines, and identical paired
 round sets for on/off -- any violation exits non-zero and suppresses
 v14_reuse_ab_analysis.out.
 
+Per-query .knn validation (strict): the set of query ids must equal the
+GT query set exactly; every query must return exactly 50 ids, all unique;
+every line must parse; a query may appear in only one shard (duplicate
+shards or mixed-run remnants are rejected). Recall is recomputed as an
+integer hit total and cross-checked against the tool-reported value at
+the tool's printed precision (4 decimals, i.e. <= 5e-5pp) -- no wide
+tolerance that could mask the 1-2 hit changes under discussion.
+
 Beyond aggregate medians and per-round paired ON/OFF QPS ratios (same
 round, same rotation slot), the recall section compares the per-query
 t*.knn logs of each off/on pair: how many queries return an identical
-ordered id list, and the per-query GT@50 hit delta (improved / degraded /
-unchanged, max delta) -- the reuse flag is not allowed to silently trade
-recall for speed. The tool-reported Recall@50 is cross-checked against a
-recomputation from the .knn logs.
+ordered id list, the per-query GT@50 hit delta (improved / degraded /
+unchanged, max delta) and the integer hit totals.
 
 Writes v14_reuse_ab_analysis.out. Usage: python3 analyze_v14_reuse_ab.py
+[RUN_DIR]
 """
+import os
 import re
 import sys
 from pathlib import Path
@@ -36,11 +44,18 @@ SUMMARY = RUN / 'v14_reuse_ab_summary.txt'
 SCHEMES = ('int_np293',)
 TIERS = ('t1', 't4')
 QSETS = ('tuning', 'indep')
+# Overridable for the self-contained test suite; defaults are the real
+# production GT files.
 GT_FILES = {
-    'tuning': Path('/home/xingrui/bench/dataset/cohere/1m/neighbors.txt'),
-    'indep': Path('/home/xingrui/bench/integrate_rabitq_in_hnsw/v14_runs/'
-                  'indep/neighbors_indep_q10m_900.txt')}
+    'tuning': Path(os.environ.get(
+        'V14_AB_GT_TUNING',
+        '/home/xingrui/bench/dataset/cohere/1m/neighbors.txt')),
+    'indep': Path(os.environ.get(
+        'V14_AB_GT_INDEP',
+        '/home/xingrui/bench/integrate_rabitq_in_hnsw/v14_runs/indep/'
+        'neighbors_indep_q10m_900.txt'))}
 NQ = {'tuning': 1000, 'indep': 900}
+KNN_TOPK = 50
 
 FIELDS = ('qps', 'avg', 'p95', 'p99', 'rss', 'load')
 BOUNDS = {'qps': (0.0, 1e6, True), 'avg': (0.0, 1e5, True),
@@ -57,7 +72,7 @@ LINE = re.compile(
 AB_RECALL = re.compile(
     r'^ab recall (?P<cfg>\S+) rc=(?P<rc>\d+) '
     r'Recall@50: (?P<v>[0-9.]+|MISSING)$')
-KNN_RE = re.compile(r'query\[(\d+)\]\s+key\[(\d+)\]')
+KNN_RE = re.compile(r'^query\[(\d+)\]\s+key\[(\d+)\]')
 
 
 def parse_summary(text, errors):
@@ -151,7 +166,7 @@ def validate_structure(formal, warm, recalls, errors):
         v = rec['v']
         if v == 'MISSING':
             errors.append(f'recall {cfg}: Recall@50 MISSING')
-        elif not 0.0 <= float(v) <= 100.0:
+        elif not 0.0 < float(v) <= 100.0:
             errors.append(f'recall {cfg}: Recall@50={v} out of range')
     for s in SCHEMES:
         for q in QSETS:
@@ -198,24 +213,76 @@ def load_gt(qset):
     return gt
 
 
-def load_knn(cfg, expected_nq):
-    qs = {}
+def load_knn(cfg, gt, errors):
+    """Strictly validate and load one config's per-query .knn logs.
+
+    Returns {qid: [key, ...]} with exactly KNN_TOPK unique keys per query
+    and the query-id set equal to the GT query set, or None when the logs
+    for this config are unusable (details are appended to errors).
+    """
     d = RUN / f'{cfg}.recall'
     if not d.is_dir():
+        errors.append(f'{cfg}: missing RecallLogDir {d.name}')
         return None
-    for p in sorted(d.glob('t*.knn')):
-        for line in p.read_text(encoding='utf-8').splitlines():
-            m = KNN_RE.match(line.strip())
-            if m:
-                qs.setdefault(int(m.group(1)), []).append(int(m.group(2)))
-    if len(qs) != expected_nq:
+    shards = sorted(d.glob('t*.knn'))
+    if not shards:
+        errors.append(f'{cfg}: no t*.knn shards in {d.name}')
+        return None
+    qs = {}
+    qid_shard = {}
+    bad = 0
+    for p in shards:
+        shard = p.name
+        for lineno, line in enumerate(
+                p.read_text(encoding='utf-8').splitlines(), 1):
+            s = line.strip()
+            if not s:
+                continue
+            m = KNN_RE.match(s)
+            if not m:
+                bad += 1
+                if bad <= 5:
+                    errors.append(f'{cfg}/{shard}:{lineno}: unparseable '
+                                  f'line: {s[:60]}')
+                continue
+            q, k = int(m.group(1)), int(m.group(2))
+            # Each query legitimately spans KNN_TOPK lines in ONE shard; a
+            # second shard carrying the same query means a duplicate shard
+            # file or remnants of a previous run mixed into this one.
+            if q in qid_shard and qid_shard[q] != shard:
+                bad += 1
+                if bad <= 5:
+                    errors.append(f'{cfg}/{shard}:{lineno}: query {q} already '
+                                  f'logged by {qid_shard[q]} (duplicate shard '
+                                  f'or mixed-run data)')
+                continue
+            qid_shard[q] = shard
+            qs.setdefault(q, []).append(k)
+    if bad > 5:
+        errors.append(f'{cfg}: {bad} per-query log problems in total')
+    missing = sorted(set(gt) - set(qs))
+    if missing:
+        errors.append(f'{cfg}: {len(missing)} query id(s) missing from .knn '
+                      f'(first: {missing[:5]})')
+    extra = sorted(set(qs) - set(gt))
+    if extra:
+        errors.append(f'{cfg}: {len(extra)} unexpected query id(s) not in GT '
+                      f'(first: {extra[:5]})')
+    for q in sorted(set(qs) & set(gt)):
+        ks = qs[q]
+        if len(ks) != KNN_TOPK:
+            errors.append(f'{cfg}: query {q} returned {len(ks)} results, '
+                          f'expected {KNN_TOPK}')
+        elif len(set(ks)) != KNN_TOPK:
+            errors.append(f'{cfg}: query {q} returned '
+                          f'{KNN_TOPK - len(set(ks))} duplicate id(s)')
+    if missing or extra or bad:
         return None
     return qs
 
 
-def knn_recall(qs, gt):
-    return 100.0 * sum(len(gt[q] & set(k[:50])) for q, k in qs.items()) \
-        / (50.0 * len(gt))
+def knn_hits(qs, gt):
+    return sum(len(gt[q] & set(qs[q])) for q in qs)
 
 
 def main():
@@ -237,18 +304,21 @@ def main():
                     continue
                 if gt is None:
                     gt = load_gt(q)
-                qs = load_knn(cfg, NQ[q])
+                qs = load_knn(cfg, gt, errors)
                 if qs is None:
-                    errors.append(f'per-query logs unusable for {cfg} '
-                                  f'(missing dir or wrong query count)')
                     continue
-                knn_data[cfg] = (qs, gt)
+                hits = knn_hits(qs, gt)
+                r_knn = 100.0 * hits / (KNN_TOPK * len(gt))
                 v_raw = recalls[cfg]['v']
                 if v_raw != 'MISSING':
-                    r_knn = knn_recall(qs, gt)
-                    if abs(r_knn - float(v_raw)) > 0.02:
-                        errors.append(f'recall cross-check failed for {cfg}:'
-                                      f' .knn={r_knn:.4f} vs tool={v_raw}')
+                    # Tool prints 4 decimals: accept only a recomputation
+                    # that rounds/truncates to the reported figure (<=5e-5pp).
+                    if abs(r_knn - float(v_raw)) > 5e-5 + 1e-9:
+                        errors.append(
+                            f'recall mismatch for {cfg}: .knn={r_knn:.6f} '
+                            f'({hits}/{KNN_TOPK * len(gt)} hits) vs '
+                            f'tool={v_raw}')
+                knn_data[cfg] = (qs, gt, hits, r_knn)
 
     if errors:
         print(f'INTEGRITY FAILURE: {len(errors)} problem(s) in {SUMMARY} -- '
@@ -257,12 +327,14 @@ def main():
             print(f'  - {e}', file=sys.stderr)
         return 1
 
-    n_cfg = len(SCHEMES) * len(TIERS) * len(QSETS) * 2
     lines = ['=== v14 reuse OFF/ON production A/B analysis ===']
+    n_cfg = len(SCHEMES) * len(TIERS) * len(QSETS) * 2
     lines.append(f'integrity: {len(formal)}/{n_cfg * ROUNDS} formal records OK '
                  f'({n_cfg} configs x {ROUNDS} rounds, unique rc=0; '
                  f'{len(warm)}/{n_cfg} warmups rc=0; fields finite, in range; '
-                 f'paired on/off round sets identical)')
+                 f'paired on/off round sets identical; per-query .knn strict: '
+                 f'exact query-id set, {KNN_TOPK} unique ids per query, one '
+                 f'shard per query, recall cross-checked at tool precision)')
 
     by_cfg = {}
     for (name, rnd), v in vals.items():
@@ -310,26 +382,27 @@ def main():
             on_cfg = f'v14_ab_{s}_t1_{q}_on'
             v_off = float(recalls[off_cfg]['v'])
             v_on = float(recalls[on_cfg]['v'])
+            qs_off, gt, hits_off, r_off = knn_data[off_cfg]
+            qs_on, _, hits_on, r_on = knn_data[on_cfg]
+            total = KNN_TOPK * NQ[q]
             lines.append(f'{s} {q}: Recall@50 off={v_off:.4f} on={v_on:.4f} '
-                         f'(delta {v_on - v_off:+.4f})')
-            qs_off, gt = knn_data[off_cfg]
-            qs_on, _ = knn_data[on_cfg]
+                         f'(delta {v_on - v_off:+.4f}pp); GT@50 hit totals '
+                         f'off={hits_off}/{total} on={hits_on}/{total} '
+                         f'({hits_on - hits_off:+d})')
             same_order = sum(1 for x in qs_off if qs_off[x] == qs_on[x])
             same_set = sum(1 for x in qs_off
                            if set(qs_off[x]) == set(qs_on[x]))
-            hits_off = {x: len(gt[x] & set(qs_off[x][:50])) for x in qs_off}
-            hits_on = {x: len(gt[x] & set(qs_on[x][:50])) for x in qs_on}
-            improved = sum(1 for x in hits_off if hits_on[x] > hits_off[x])
-            degraded = sum(1 for x in hits_off if hits_on[x] < hits_off[x])
-            max_delta = max((abs(hits_on[x] - hits_off[x])
-                             for x in hits_off), default=0)
+            hits_off_q = {x: len(gt[x] & set(qs_off[x])) for x in qs_off}
+            hits_on_q = {x: len(gt[x] & set(qs_on[x])) for x in qs_on}
+            improved = sum(1 for x in hits_off_q if hits_on_q[x] > hits_off_q[x])
+            degraded = sum(1 for x in hits_off_q if hits_on_q[x] < hits_off_q[x])
+            max_delta = max((abs(hits_on_q[x] - hits_off_q[x])
+                             for x in hits_off_q), default=0)
             lines.append(
                 f'  per-query: identical ordered ids {same_order}/{NQ[q]}, '
                 f'identical id sets {same_set}/{NQ[q]}; GT@50 hits '
                 f'improved {improved}, degraded {degraded}, unchanged '
                 f'{NQ[q] - improved - degraded}, max |delta| {max_delta}')
-            r_off = knn_recall(qs_off, gt)
-            r_on = knn_recall(qs_on, gt)
             lines.append(f'  recomputed from .knn: off={r_off:.4f} '
                          f'on={r_on:.4f} (tool: {v_off:.4f}/{v_on:.4f})')
 

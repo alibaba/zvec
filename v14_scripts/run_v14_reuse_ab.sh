@@ -30,6 +30,13 @@ cd "$RUN"
 ROUNDS=5
 SUM=v14_reuse_ab_summary.txt
 fail() { echo "FAILED: $1 -- aborting" | tee -a "$SUM"; exit 1; }
+# Repeated executions use an independent run directory: refuse to touch an
+# existing summary or bench/recall logs so nothing from a previous run is
+# overwritten or mixed.
+if [ -e "$SUM" ]; then
+  echo "FAILED: $SUM already exists -- rerun in a fresh run directory (old logs are kept)"
+  exit 1
+fi
 
 INT_T1=/home/xingrui/bench/integrate_rabitq_in_hnsw/v12_runs/prod/v12_prod50_np293_t1.yaml
 INT_T4=/home/xingrui/bench/integrate_rabitq_in_hnsw/v12_runs/prod/v12_prod50_np293_t4.yaml
@@ -70,6 +77,12 @@ mkcfg "$INT_INDEP" v14_ab_int_np293_t4_indep_on 1 4
 
 run_recall() {  # tag cfg
   local tag=$1 cfg=$2
+  # Repeated executions must use a fresh run directory so old per-query
+  # logs are never overwritten or mixed (the recall tool truncates t*.knn
+  # in place but leaves foreign shard files untouched).
+  if [ -e "$tag.recall" ]; then
+    fail "$tag.recall already exists from a previous execution; rerun in a fresh run directory (old logs are kept)"
+  fi
   echo "--- ab recall $tag $(date -Is) ---" | tee -a "$SUM"
   "$BIN/recall" "$cfg" > "recall_$tag.log" 2>&1
   local rc=$?
