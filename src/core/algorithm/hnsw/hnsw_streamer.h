@@ -18,6 +18,7 @@
 #include <zvec/core/framework/index_provider.h>
 #include "hnsw_algorithm.h"
 #include "hnsw_streamer_entity.h"
+#include "hnsw_turbo_quantizer.h"
 
 namespace zvec {
 namespace core {
@@ -93,6 +94,12 @@ class HnswStreamer : public IndexStreamer {
   //! Whether the active search distance path is backed by a turbo quantizer.
   bool uses_turbo_distance() const {
     return quantizer_ != nullptr;
+  }
+
+  //! The turbo quantizer backing distance computation, restored on open for
+  //! trained quantizers (e.g. PQ) or injected at build time.
+  const std::shared_ptr<zvec::turbo::Quantizer> &quantizer() const {
+    return quantizer_;
   }
 
   //! Whether graph construction is backed by a turbo quantizer. Compatible
@@ -207,20 +214,7 @@ class HnswStreamer : public IndexStreamer {
   void print_debug_info() override;
 
  private:
-  inline int check_params(const void *query,
-                          const IndexQueryMeta &qmeta) const {
-    if (ailego_unlikely(!query)) {
-      LOG_ERROR("null query");
-      return IndexError_InvalidArgument;
-    }
-    if (ailego_unlikely(qmeta.dimension() != meta_.dimension() ||
-                        qmeta.data_type() != meta_.data_type() ||
-                        qmeta.element_size() != meta_.element_size())) {
-      LOG_ERROR("Unsupported query meta");
-      return IndexError_Mismatch;
-    }
-    return 0;
-  }
+  int check_params(const void *query, const IndexQueryMeta &qmeta) const;
 
   inline int check_sparse_count_is_zero(const uint32_t *sparse_count,
                                         uint32_t count) const {

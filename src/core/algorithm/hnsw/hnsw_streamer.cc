@@ -54,6 +54,130 @@ void BindTurboDistances(TurboQuantizer::Pointer quantizer,
 
 }  // namespace
 
+const std::string HNSW_TURBO_QUANTIZER_SEG_ID = "hnsw.turbo_quantizer";
+
+int DumpTurboQuantizerSegment(const IndexStorage::Pointer &storage,
+                              const zvec::turbo::Quantizer &quantizer) {
+  if (!storage) {
+    return IndexError_InvalidArgument;
+  }
+  if (!quantizer.require_train()) {
+    // Stateless quantizers carry no training state; the meta descriptor is
+    // enough to rebuild them, so no segment is written.
+    return 0;
+  }
+  std::string state;
+  int ret = quantizer.serialize(&state);
+  if (ret != 0) {
+    LOG_ERROR("Failed to serialize turbo quantizer, ret=%d", ret);
+    return ret;
+  }
+  if (state.empty()) {
+    LOG_ERROR("Turbo quantizer has no serialized training state");
+    return IndexError_InvalidFormat;
+  }
+  const size_t total_size = (state.size() + 0x1F) & ~size_t(0x1F);
+  ret = storage->append(HNSW_TURBO_QUANTIZER_SEG_ID, total_size);
+  if (ret != 0) {
+    LOG_ERROR("Failed to append segment %s, ret=%d",
+              HNSW_TURBO_QUANTIZER_SEG_ID.c_str(), ret);
+    return ret;
+  }
+  auto segment = storage->get(HNSW_TURBO_QUANTIZER_SEG_ID);
+  if (!segment) {
+    LOG_ERROR("Failed to get segment %s", HNSW_TURBO_QUANTIZER_SEG_ID.c_str());
+    return IndexError_WriteData;
+  }
+  if (segment->write(0, state.data(), state.size()) != state.size()) {
+    LOG_ERROR("Failed to write segment %s", HNSW_TURBO_QUANTIZER_SEG_ID.c_str());
+    return IndexError_WriteData;
+  }
+  return 0;
+}
+
+int RestoreTurboQuantizer(const IndexStorage::Pointer &storage,
+                          const IndexMeta &quantized_meta,
+                          std::shared_ptr<zvec::turbo::Quantizer> *out_quantizer) {
+  if (out_quantizer == nullptr || quantized_meta.quantizer_name().empty()) {
+    return IndexError_NoExist;
+  }
+  std::shared_ptr<zvec::turbo::Quantizer> quantizer =
+      IndexFactory::CreateQuantizer(quantized_meta.quantizer_name());
+  if (!quantizer) {
+    LOG_ERROR("Failed to create turbo quantizer %s",
+              quantized_meta.quantizer_name().c_str());
+    return IndexError_NoExist;
+  }
+
+  // The quantized meta records the raw input layout next to the quantizer
+  // params, so init() can rebuild the code layout before the state is
+  // deserialized on top.
+  const ailego::Params &params = quantized_meta.quantizer_params();
+  int64_t input_dim = 0;
+  int64_t input_type = IndexMeta::DataType::DT_FP32;
+  if (!params.get("input_dimension", &input_dim) || input_dim <= 0) {
+    LOG_ERROR("Quantizer %s misses the recorded input dimension",
+              quantized_meta.quantizer_name().c_str());
+    return IndexError_InvalidFormat;
+  }
+  params.get("input_data_type", &input_type);
+  IndexMeta raw_meta;
+  raw_meta.set_meta(static_cast<IndexMeta::DataType>(input_type),
+                    static_cast<uint32_t>(input_dim));
+  raw_meta.set_metric(quantized_meta.metric_name(), 0,
+                      quantized_meta.metric_params());
+  int ret = quantizer->init(raw_meta, params);
+  if (ret != 0) {
+    LOG_ERROR("Failed to init turbo quantizer %s, ret=%d",
+              quantized_meta.quantizer_name().c_str(), ret);
+    return ret;
+  }
+
+  // The rebuilt layout must line up with the persisted code layout.
+  const IndexMeta &rebuilt = quantizer->meta();
+  if (rebuilt.data_type() != quantized_meta.data_type() ||
+      rebuilt.dimension() != quantized_meta.dimension() ||
+      rebuilt.element_size() != quantized_meta.element_size() ||
+      rebuilt.extra_meta_size() != quantized_meta.extra_meta_size() ||
+      quantizer->quantized_datapoint_vector_length() !=
+          quantized_meta.element_size() ||
+      quantizer->dim() != static_cast<int>(input_dim)) {
+    LOG_ERROR("Turbo quantizer %s mismatches the persisted HNSW code layout",
+              quantized_meta.quantizer_name().c_str());
+    return IndexError_Mismatch;
+  }
+
+  if (storage && storage->has(HNSW_TURBO_QUANTIZER_SEG_ID)) {
+    auto segment = storage->get(HNSW_TURBO_QUANTIZER_SEG_ID);
+    if (!segment) {
+      LOG_ERROR("Failed to get segment %s",
+                HNSW_TURBO_QUANTIZER_SEG_ID.c_str());
+      return IndexError_ReadData;
+    }
+    if (segment->data_size() != 0) {
+      const void *data = nullptr;
+      if (segment->read(0, &data, segment->data_size()) !=
+          segment->data_size()) {
+        return IndexError_ReadData;
+      }
+      ret = quantizer->deserialize(data, segment->data_size());
+      if (ret != 0) {
+        LOG_ERROR("Failed to restore turbo quantizer %s, ret=%d",
+                  quantized_meta.quantizer_name().c_str(), ret);
+        return ret;
+      }
+    }
+  } else if (quantizer->require_train()) {
+    // A trained quantizer without persisted state cannot serve queries.
+    LOG_ERROR("Missing turbo quantizer state segment %s",
+              HNSW_TURBO_QUANTIZER_SEG_ID.c_str());
+    return IndexError_NoExist;
+  }
+
+  *out_quantizer = quantizer;
+  return 0;
+}
+
 HnswStreamer::HnswStreamer() = default;
 
 HnswStreamer::~HnswStreamer() {
@@ -73,6 +197,30 @@ void HnswStreamer::merge_trained_meta(const IndexMeta &trained_meta) {
                         trained_meta.converter_revision(),
                         trained_meta.converter_params());
   }
+}
+
+int HnswStreamer::check_params(const void *query,
+                               const IndexQueryMeta &qmeta) const {
+  if (ailego_unlikely(!query)) {
+    LOG_ERROR("null query");
+    return IndexError_InvalidArgument;
+  }
+  if (ailego_unlikely(qmeta.dimension() != meta_.dimension() ||
+                      qmeta.data_type() != meta_.data_type() ||
+                      qmeta.element_size() != meta_.element_size())) {
+    // A query prepared by the active turbo quantizer may keep the
+    // quantizer's raw input layout instead of the stored code layout
+    // (e.g. a PQ lookup table); identify it by the quantizer stamp.
+    const bool quantizer_query =
+        quantizer_ != nullptr && quantizer_->dim() > 0 &&
+        qmeta.quantize_type() == static_cast<uint32_t>(quantizer_->type()) &&
+        qmeta.dimension() == static_cast<uint32_t>(quantizer_->dim());
+    if (ailego_unlikely(!quantizer_query)) {
+      LOG_ERROR("Unsupported query meta");
+      return IndexError_Mismatch;
+    }
+  }
+  return 0;
 }
 
 int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
@@ -338,6 +486,9 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
     return ret;
   }
 
+  // The entity takes ownership of the storage handle; keep a reference for
+  // the quantizer state restore below.
+  IndexStorage::Pointer stg_ref = stg;
   ret = entity_->open(std::move(stg), max_index_size_, check_crc_enabled_);
   if (ret != 0) {
     return ret;
@@ -384,6 +535,20 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
   auto valid_vector_layout = [](size_t vector_size, size_t extra_values_size) {
     return extra_values_size == 0 || extra_values_size < vector_size;
   };
+
+  // Restore a persisted turbo quantizer (e.g. a trained PQ codebook) when
+  // none was injected via init(); the distances below bind from it.
+  if (!quantizer_ && !meta_.quantizer_name().empty()) {
+    std::shared_ptr<zvec::turbo::Quantizer> restored;
+    int qret = RestoreTurboQuantizer(stg_ref, meta_, &restored);
+    if (qret == 0 && restored) {
+      quantizer_ = restored;
+      LOG_INFO("Restored turbo quantizer %s from index",
+               meta_.quantizer_name().c_str());
+    } else if (qret != IndexError_NoExist) {
+      return qret;
+    }
+  }
 
   if (quantizer_) {
     if (use_external_vector_) {
