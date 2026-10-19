@@ -21,31 +21,16 @@
 
 namespace zvec::sqlengine {
 
-Status DocFilter::compute_filter() {
+arrow::Future<> DocFilter::compute_filter_async() {
   if (invert_cond_) {
     InvertSearch search(segment_.get());
     auto invert_res = search.exec_invert_cond_tree(invert_cond_.get());
     if (!invert_res) {
-      return Status::InternalError("Execute invert search failed: ",
-                                   invert_res.error().message());
+      return arrow::Status::ExecutionError("Execute invert search failed: ",
+                                           invert_res.error().message());
     }
     invert_result_ = invert_res.value();
     invert_filter_ = invert_result_->make_filter();
-  }
-
-  if (forward_plan_) {
-    auto forward_result = arrow::acero::DeclarationToTable(*forward_plan_);
-    if (!forward_result.ok()) {
-      return Status::InternalError("Execute filter bitmap failed: ",
-                                   forward_result.status().ToString());
-    }
-    // has only one column with boolean type
-    auto &forward_table = forward_result.ValueUnsafe();
-    if (forward_table->num_columns() != 1 ||
-        forward_table->column(0)->type() != arrow::boolean()) {
-      return Status::InternalError("Filter bitmap is not boolean type");
-    }
-    forward_bitmap_ = forward_table->column(0);
   }
 
   if (forward_filter_expr_) {
@@ -53,16 +38,33 @@ Status DocFilter::compute_filter() {
     auto table = segment_->fetch(query_info_->get_forward_filter_field_names(),
                                  std::vector<int>{});
     if (!table) {
-      return Status::InternalError("Fetch forward failed");
+      return arrow::Status::ExecutionError("Fetch forward failed");
     }
     auto bind_res = forward_filter_expr_->Bind(*table->schema());
     if (!bind_res.ok()) {
-      return Status::InternalError("Bind forward filter expression failed",
-                                   bind_res.status().ToString());
+      return arrow::Status::ExecutionError(
+          "Bind forward filter expression failed",
+          bind_res.status().ToString());
     }
     *forward_filter_expr_ = bind_res.MoveValueUnsafe();
   }
-  return Status::OK();
+  if (forward_plan_) {
+    // This subplan can run inside an Arrow source callback. Return its future
+    // so the parent releases its CPU worker while the bitmap is computed.
+    return arrow::acero::DeclarationToTableAsync(*forward_plan_)
+        .Then([self = shared_from_this()](
+                  const std::shared_ptr<arrow::Table> &table) {
+          // The bitmap has only one column with boolean type.
+          if (table->num_columns() != 1 ||
+              table->column(0)->type() != arrow::boolean()) {
+            return arrow::Status::ExecutionError(
+                "Filter bitmap is not boolean type");
+          }
+          self->forward_bitmap_ = table->column(0);
+          return arrow::Status::OK();
+        });
+  }
+  return arrow::Status::OK();
 }
 
 bool DocFilter::empty() const {

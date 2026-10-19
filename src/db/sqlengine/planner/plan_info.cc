@@ -14,11 +14,30 @@
 
 #include "plan_info.h"
 #include <arrow/api.h>
+#include <arrow/util/thread_pool.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/pattern/expected.hpp>
 #include "db/common/error_code.h"
 
 namespace zvec::sqlengine {
+namespace {
+
+struct RunningPlan {
+  std::shared_ptr<arrow::acero::ExecPlan> plan;
+  PlanInfo::BatchGenerator generator;
+
+  ~RunningPlan() {
+    if (!plan->finished().is_finished()) {
+      // A LIMIT may abandon the stream. Cancel without waiting on this CPU
+      // worker, and retain the plan until its outstanding tasks have stopped.
+      plan->finished().AddCallback(
+          [keep_alive = plan](const arrow::Status &) {});
+      plan->StopProducing();
+    }
+  }
+};
+
+}  // namespace
 
 Result<std::unique_ptr<arrow::RecordBatchReader>>
 PlanInfo::execute_to_reader() {
@@ -28,6 +47,40 @@ PlanInfo::execute_to_reader() {
         "execute plan_info failed: ", res.status().ToString()));
   }
   return res.MoveValueUnsafe();
+}
+
+arrow::Result<PlanInfo::BatchGenerator> PlanInfo::execute_to_generator() {
+  arrow::compute::ExecContext context(arrow::default_memory_pool(),
+                                      arrow::internal::GetCpuThreadPool());
+  ARROW_ASSIGN_OR_RAISE(auto plan, arrow::acero::ExecPlan::Make(context));
+  BatchGenerator generator;
+  auto declaration = arrow::acero::Declaration::Sequence(
+      {plan_,
+       {"sink",
+        arrow::acero::SinkNodeOptions{
+            &generator,
+            arrow::acero::BackpressureOptions::DefaultBackpressure()}}});
+  ARROW_RETURN_NOT_OK(declaration.AddToPlan(plan.get()));
+  ARROW_RETURN_NOT_OK(plan->Validate());
+  auto running = std::make_shared<RunningPlan>();
+  running->plan = std::move(plan);
+  running->generator = std::move(generator);
+  running->plan->StartProducing();
+  return [running]() {
+    return running->generator().Then(
+        [running](const Batch &batch) -> arrow::Future<Batch> {
+          if (batch) {
+            return batch;
+          }
+          // The sink can end before the last task reports its status.
+          return running->plan->finished().Then(
+              []() -> Batch { return std::nullopt; });
+        },
+        [running](const arrow::Status &error) {
+          return running->plan->finished().Then(
+              [error]() -> arrow::Result<Batch> { return error; });
+        });
+  };
 }
 
 }  // namespace zvec::sqlengine

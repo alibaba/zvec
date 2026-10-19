@@ -342,7 +342,11 @@ Result<QueryInfo::Ptr> SQLEngineImpl::build_query_info(
 
   LOG_DEBUG("Sql info is %s", sql_info.value()->to_string().c_str());
   stage_guard.close();
-  return parse_sql_info(*collection, std::move(sql_info.value()));
+  auto query_info = parse_sql_info(*collection, std::move(sql_info.value()));
+  if (query_info) {
+    query_info.value()->keep_schema_alive(std::move(collection));
+  }
+  return query_info;
 }
 
 Result<std::unique_ptr<arrow::RecordBatchReader>>

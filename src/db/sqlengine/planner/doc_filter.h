@@ -26,7 +26,8 @@
 
 namespace zvec::sqlengine {
 
-class DocFilter : public IndexFilter {
+class DocFilter : public IndexFilter,
+                  public std::enable_shared_from_this<DocFilter> {
  public:
   using Ptr = std::shared_ptr<DocFilter>;
 
@@ -40,7 +41,7 @@ class DocFilter : public IndexFilter {
         forward_plan_(std::move(forward_plan)),
         forward_filter_expr_(std::move(forward_filter)) {}
 
-  Status compute_filter();
+  arrow::Future<> compute_filter_async();
 
   bool is_filtered(uint64_t id) const override;
 

@@ -14,6 +14,7 @@
 
 #include "db/sqlengine/planner/fts_recall_node.h"
 #include <arrow/api.h>
+#include <arrow/util/thread_pool.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/config.h>
 #include "db/sqlengine/common/util.h"
@@ -39,80 +40,88 @@ arrow::AsyncGenerator<std::optional<cp::ExecBatch>> FtsRecallNode::gen() {
   auto state_ptr = std::make_shared<State>();
   return [self = shared_from_this(), state_ptr = std::move(state_ptr)]()
              -> arrow::Future<std::optional<cp::ExecBatch>> {
-    auto &state = *state_ptr;
+    auto next_batch =
+        [self, state_ptr]() -> arrow::Future<std::optional<cp::ExecBatch>> {
+      auto &state = *state_ptr;
 
-    if (!state.iter_) {
-      auto fts_ret = self->prepare();
-      if (!fts_ret) {
-        return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-            arrow::Status::ExecutionError("prepare fts failed:",
-                                          fts_ret.error().c_str()));
+      if (!state.iter_) {
+        auto fts_ret = self->prepare();
+        if (!fts_ret) {
+          return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+              arrow::Status::ExecutionError("prepare fts failed:",
+                                            fts_ret.error().c_str()));
+        }
+        state.fts_result_ = fts_ret.value();
+        state.iter_ = state.fts_result_->create_iterator();
       }
-      state.fts_result_ = fts_ret.value();
-      state.iter_ = state.fts_result_->create_iterator();
-    }
 
-    if (!state.iter_->valid()) {
-      return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-          std::nullopt);
-    }
-
-    std::vector<int> indices;
-    indices.reserve(self->batch_size_);
-    arrow::FloatBuilder score_builder;
-    for (int i = 0; state.iter_->valid() && i < self->batch_size_;
-         i++, state.iter_->next()) {
-      indices.push_back(state.iter_->doc_id());
-      auto s = score_builder.Append(state.iter_->score());
-      if (!s.ok()) {
+      if (!state.iter_->valid()) {
         return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-            arrow::Status::ExecutionError("score builder append failed:",
-                                          s.ToString()));
+            std::nullopt);
       }
-    }
-    if (indices.empty()) {
-      return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-          std::nullopt);
-    }
 
-    auto table = self->segment_->fetch(self->fetched_columns_, indices);
-    if (!table) {
+      std::vector<int> indices;
+      indices.reserve(self->batch_size_);
+      arrow::FloatBuilder score_builder;
+      for (int i = 0; state.iter_->valid() && i < self->batch_size_;
+           i++, state.iter_->next()) {
+        indices.push_back(state.iter_->doc_id());
+        auto s = score_builder.Append(state.iter_->score());
+        if (!s.ok()) {
+          return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+              arrow::Status::ExecutionError("score builder append failed:",
+                                            s.ToString()));
+        }
+      }
+      if (indices.empty()) {
+        return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+            std::nullopt);
+      }
+
+      auto table = self->segment_->fetch(self->fetched_columns_, indices);
+      if (!table) {
+        return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+            arrow::Status::UnknownError("fetch table failed"));
+      }
+      auto batch = table->CombineChunksToBatch();
+      if (!batch.ok()) {
+        return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+            arrow::Status::ExecutionError("combine chunks to batch failed:",
+                                          batch.status().ToString()));
+      }
+      auto score_array = score_builder.Finish();
+      if (!score_array.ok()) {
+        return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+            arrow::Status::ExecutionError("finish score builder failed:",
+                                          score_array.status().ToString()));
+      }
+      auto record_batch = std::move(batch.ValueUnsafe());
+      auto with_score =
+          record_batch->AddColumn(record_batch->num_columns(), FIELD_SCORE,
+                                  score_array.MoveValueUnsafe());
+      if (!with_score.ok()) {
+        return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+            arrow::Status::ExecutionError("add score column failed:",
+                                          with_score.status().ToString()));
+      }
+      cp::ExecBatch exec_batch(*with_score.ValueUnsafe());
       return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-          arrow::Status::UnknownError("fetch table failed"));
+          std::move(exec_batch));
+    };
+    if (state_ptr->iter_) {
+      return next_batch();
     }
-    auto batch = table->CombineChunksToBatch();
-    if (!batch.ok()) {
-      return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-          arrow::Status::ExecutionError("combine chunks to batch failed:",
-                                        batch.status().ToString()));
-    }
-    auto score_array = score_builder.Finish();
-    if (!score_array.ok()) {
-      return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-          arrow::Status::ExecutionError("finish score builder failed:",
-                                        score_array.status().ToString()));
-    }
-    auto record_batch = std::move(batch.ValueUnsafe());
-    auto with_score =
-        record_batch->AddColumn(record_batch->num_columns(), FIELD_SCORE,
-                                score_array.MoveValueUnsafe());
-    if (!with_score.ok()) {
-      return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-          arrow::Status::ExecutionError("add score column failed:",
-                                        with_score.status().ToString()));
-    }
-    cp::ExecBatch exec_batch(*with_score.ValueUnsafe());
-    return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-        std::move(exec_batch));
+    // Suspend this source until its filter is ready. Resume CPU work on the
+    // Arrow executor even if the last filter task finishes on an I/O thread.
+    arrow::CallbackOptions options;
+    options.executor = arrow::internal::GetCpuThreadPool();
+    options.should_schedule = arrow::ShouldSchedule::IfDifferentExecutor;
+    return self->doc_filter_->compute_filter_async().Then(std::move(next_batch),
+                                                          {}, options);
   };
 }
 
 Result<FtsIndexResults::Ptr> FtsRecallNode::prepare() {
-  auto filter_status = doc_filter_->compute_filter();
-  if (!filter_status.ok()) {
-    return tl::make_unexpected(filter_status);
-  }
-
   const auto &fts_cond = query_info_->fts_cond_info();
   if (!fts_cond) {
     return tl::make_unexpected(

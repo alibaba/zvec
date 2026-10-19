@@ -40,3 +40,5 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
   )
   cc_test_suite(zvec_sqlengine ${CC_TARGET})
 endforeach()
+
+set_tests_properties(query_threading_test PROPERTIES TIMEOUT 30)
