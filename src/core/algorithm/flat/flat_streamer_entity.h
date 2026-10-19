@@ -485,7 +485,9 @@ class FlatStreamerEntity {
   // Protects the segment cache, independently of the serialized add path.
   // Open/close and initial loading require external lifecycle exclusion.
   mutable std::mutex segments_mutex_{};
-  IndexMeta index_meta_{};
+  // Distance loops repeatedly read this metadata. Keep it off the cache line
+  // written by segment-cache locking in concurrent queries.
+  alignas(64) IndexMeta index_meta_{};
   IndexStorage::Pointer storage_{};
   IndexMetric::MatrixDistance row_distance_{}, column_distance_{};
   IndexMetric::MatrixBatchDistance batch_distance_{};
