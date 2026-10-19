@@ -275,14 +275,13 @@ float InnerProductSparseInSegmentFp32Scalar(uint32_t m_sparse_count,
                                             uint32_t q_sparse_count,
                                             const uint16_t *q_sparse_index,
                                             const float *q_sparse_value) {
-  // Round once per segment, matching SIMD implementations across platforms.
-  double sum = 0.0;
+  float sum = 0.0f;
 
   size_t m_i = 0;
   size_t q_i = 0;
   while (m_i < m_sparse_count && q_i < q_sparse_count) {
     if (m_sparse_index[m_i] == q_sparse_index[q_i]) {
-      sum += static_cast<double>(m_sparse_value[m_i]) * q_sparse_value[q_i];
+      sum += m_sparse_value[m_i] * q_sparse_value[q_i];
 
       ++m_i;
       ++q_i;

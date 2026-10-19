@@ -18,8 +18,9 @@
 
 namespace zvec::turbo::neon_fp16 {
 
-// Compute cosine distance between normalized FP16 vectors using FP32
-// arithmetic, matching the inner-product kernel on every architecture.
+// Compute cosine distance between normalized FP16 vectors using native FP16
+// products and accumulation, widening only for the final reduction and tail.
+// Accumulation is approximate, especially for long vectors.
 void cosine_fp16_distance_neon_fp16(const void *a, const void *b, size_t dim,
                                     float *distance);
 

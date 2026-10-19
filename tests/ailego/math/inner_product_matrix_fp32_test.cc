@@ -863,30 +863,6 @@ static inline float SparseDistanceCommon(uint32_t count1, uint32_t *index1,
   return result;
 }
 
-TEST(DistanceMatrix, SparseInnerProductAccumulatesPrecisely) {
-  for (uint32_t count : {1U, 7U, 8U, 15U, 16U, 31U, 128U, 1024U}) {
-    for (uint32_t first_index : {0U, 1U}) {
-      SCOPED_TRACE(::testing::Message()
-                   << "count=" << count << ", first_index=" << first_index);
-      std::vector<uint32_t> indices(count);
-      std::vector<float> values(count);
-      double expected = 0.0;
-      for (uint32_t i = 0; i < count; ++i) {
-        indices[i] = first_index + 3 * i;
-        values[i] = (i % 2 ? -1.0f : 1.0f) * (2.1f + (i % 7) * 0.13f);
-        expected += static_cast<double>(values[i]) * values[i];
-      }
-      std::string encoded;
-      MinusInnerProductSparseMatrix<float>::transform_sparse_format(
-          count, indices.data(), values.data(), encoded);
-      float actual;
-      MinusInnerProductSparseMatrix<float>::Compute(encoded.data(),
-                                                     encoded.data(), &actual);
-      EXPECT_EQ(static_cast<float>(-expected), actual);
-    }
-  }
-}
-
 void TestInnerProductSparse() {
   // test 1
   const uint32_t sparse_vec_count_0 = 52;

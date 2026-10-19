@@ -133,9 +133,7 @@ float InnerProductSparseInSegmentFp32SSE(uint32_t m_sparse_count,
                                          uint32_t q_sparse_count,
                                          const uint16_t *q_sparse_index,
                                          const float *q_sparse_value) {
-  // Match the scalar path's wide accumulator. Sparse IP is unnormalized,
-  // so FP32 reduction order can otherwise change scores after migration.
-  double sum = 0.0;
+  float sum = 0.0f;
 
   // handle if the first dim is zero
   bool m_zero = false;
@@ -157,7 +155,7 @@ float InnerProductSparseInSegmentFp32SSE(uint32_t m_sparse_count,
   }
 
   if (m_zero && q_zero) {
-    sum = static_cast<double>(m_zero_value) * q_zero_value;
+    sum = m_zero_value * q_zero_value;
   }
 
   size_t i1 = 0, i2 = 0;
@@ -309,26 +307,20 @@ do_scalar:
   size_t res_num4 = res_num / 4 * 4;
 
   if (res_num4) {
-    __m128d sum_low = _mm_setzero_pd();
-    __m128d sum_high = _mm_setzero_pd();
+    __m128 sum128 = _mm_set1_ps(0);
 
     for (size_t k = 0; k < res_num4; k += 4) {
-      const __m128 lhs = _mm_loadu_ps(val_start_1 + k);
-      const __m128 rhs = _mm_loadu_ps(val_start_2 + k);
-      sum_low = _mm_add_pd(sum_low, _mm_mul_pd(_mm_cvtps_pd(lhs),
-                                                _mm_cvtps_pd(rhs)));
-      sum_high = _mm_add_pd(
-          sum_high, _mm_mul_pd(_mm_cvtps_pd(_mm_movehl_ps(lhs, lhs)),
-                               _mm_cvtps_pd(_mm_movehl_ps(rhs, rhs))));
+      sum128 = _mm_add_ps(sum128, _mm_mul_ps(_mm_loadu_ps(val_start_1 + k),
+                                             _mm_loadu_ps(val_start_2 + k)));
     }
 
-    alignas(16) double tmp_res[2];
-    _mm_store_pd(tmp_res, _mm_add_pd(sum_low, sum_high));
-    sum += tmp_res[0] + tmp_res[1];
+    alignas(16) float tmp_res[4];
+    _mm_store_ps(tmp_res, sum128);
+    sum += (tmp_res[0] + tmp_res[1] + tmp_res[2] + tmp_res[3]);
   }
 
   for (size_t k = res_num4; k < res_num; ++k)
-    sum += static_cast<double>(val_start_1[k]) * val_start_2[k];
+    sum += val_start_1[k] * val_start_2[k];
 
   return sum;
 }

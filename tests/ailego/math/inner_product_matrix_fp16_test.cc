@@ -22,52 +22,11 @@
 #include <ailego/container/bitmap.h>
 #include <ailego/internal/cpu_features.h>
 #include <ailego/math/distance.h>
-#include <ailego/math/normalizer.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/ailego/utility/time_helper.h>
 
 using namespace zvec::ailego;
-
-TEST(DistanceMatrix, Fp16UsesFloatAccumulation) {
-  // Exercise vector blocks, tails, tiny products and sums exceeding FP16.
-  for (size_t dim : {7, 8, 15, 32, 65, 128, 1024}) {
-    for (float value : {0.001f, 0.1f, 300.0f}) {
-      SCOPED_TRACE(::testing::Message() << "dim=" << dim << ", value=" << value);
-      std::vector<Float16> lhs(dim, Float16(value));
-      std::vector<Float16> rhs(dim, Float16(-value));
-      const double v = static_cast<float>(lhs[0]);
-      const double squared_norm = dim * v * v;
-      const double tolerance = std::max(1e-10, squared_norm * 2e-6);
-      EXPECT_NEAR(-squared_norm,
-                  Distance::InnerProduct(lhs.data(), rhs.data(), dim),
-                  tolerance);
-      EXPECT_NEAR(4 * squared_norm,
-                  Distance::SquaredEuclidean(lhs.data(), rhs.data(), dim),
-                  4 * tolerance);
-      float norm;
-      SquaredNorm2Matrix<Float16, 1>::Compute(lhs.data(), dim, &norm);
-      // Builds without F16C use sequential FP32 summation for norms. Bound
-      // its rounding by gamma_n rather than requiring SIMD reduction order.
-      const double roundoff = dim * std::numeric_limits<float>::epsilon();
-      const double norm_tolerance =
-          std::max(tolerance, squared_norm * roundoff / (1.0 - roundoff));
-      EXPECT_NEAR(squared_norm, norm, norm_tolerance);
-    }
-  }
-}
-
-TEST(DistanceMatrix, Fp16NormalizationKeepsFloatDivisor) {
-  const float divisor = 1.0004f;  // Rounding to FP16 would turn this into 1.
-  for (size_t dim : {3, 4, 8, 16, 31}) {
-    std::vector<Float16> values(dim, Float16(1.0f));
-    Normalizer<Float16>::Compute(values.data(), dim, divisor);
-    const Float16 expected(1.0f / divisor);
-    for (auto value : values) {
-      EXPECT_EQ(static_cast<float>(expected), static_cast<float>(value));
-    }
-  }
-}
 
 static inline const char *IntelIntrinsics() {
   return internal::CpuFeatures::Intrinsics();

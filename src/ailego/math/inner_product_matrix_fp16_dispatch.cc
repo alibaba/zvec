@@ -40,6 +40,13 @@ float MinusInnerProductFp16AVX512(const Float16 *lhs, const Float16 *rhs,
                                   size_t size);
 #endif
 
+#if defined(__AVX512FP16__)
+float InnerProductFp16AVX512FP16(const Float16 *lhs, const Float16 *rhs,
+                                 size_t size);
+float MinusInnerProductFp16AVX512FP16(const Float16 *lhs, const Float16 *rhs,
+                                      size_t size);
+#endif
+
 float InnerProductFp16Scalar(const Float16 *lhs, const Float16 *rhs,
                              size_t size);
 float MinusInnerProductFp16Scalar(const Float16 *lhs, const Float16 *rhs,
@@ -52,7 +59,12 @@ void InnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
 #if defined(__ARM_NEON)
   *out = InnerProductFp16NEON(m, q, dim);
 #else
-  // Keep FP32 accumulation even on CPUs with native FP16 arithmetic.
+#if defined(__AVX512FP16__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
+    *out = InnerProductFp16AVX512FP16(m, q, dim);
+    return;
+  }
+#endif  //__AVX512FP16__
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
     *out = InnerProductFp16AVX512(m, q, dim);
@@ -77,7 +89,12 @@ void MinusInnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
 #if defined(__ARM_NEON)
   *out = MinusInnerProductFp16NEON(m, q, dim);
 #else
-  // Keep FP32 accumulation even on CPUs with native FP16 arithmetic.
+#if defined(__AVX512FP16__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
+    *out = MinusInnerProductFp16AVX512FP16(m, q, dim);
+    return;
+  }
+#endif  //__AVX512FP16__
 #if defined(__AVX512F__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512F) {
     *out = MinusInnerProductFp16AVX512(m, q, dim);
@@ -99,6 +116,15 @@ void MinusInnerProductMatrix<Float16, 1, 1>::Compute(const ValueType *m,
 //--------------------------------------------------
 // Sparse
 //--------------------------------------------------
+#if defined(__AVX512FP16__)
+float InnerProductSparseInSegmentFp16AVX512FP16(uint32_t m_sparse_count,
+                                                const uint16_t *m_sparse_index,
+                                                const Float16 *m_sparse_value,
+                                                uint32_t q_sparse_count,
+                                                const uint16_t *q_sparse_index,
+                                                const Float16 *q_sparse_value);
+#endif  //__AVX512FP16__
+
 #if defined(__AVX__)
 float InnerProductSparseInSegmentFp16AVX(uint32_t m_sparse_count,
                                          const uint16_t *m_sparse_index,
@@ -130,6 +156,13 @@ float ComputeInnerProductSparseInSegmentFp16(uint32_t m_sparse_count,
                                              uint32_t q_sparse_count,
                                              const uint16_t *q_sparse_index,
                                              const Float16 *q_sparse_value) {
+#if defined(__AVX512FP16__)
+  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
+    return InnerProductSparseInSegmentFp16AVX512FP16(
+        m_sparse_count, m_sparse_index, m_sparse_value, q_sparse_count,
+        q_sparse_index, q_sparse_value);
+  }
+#endif
 #if defined(__AVX__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
     return InnerProductSparseInSegmentFp16AVX(m_sparse_count, m_sparse_index,
