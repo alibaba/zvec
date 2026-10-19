@@ -117,6 +117,7 @@ TEST(IVFRabitqIntegration, DedicatedScanOptionsRoundTrip) {
   IVFRabitqQueryParam param;
   param.rabitq_collect_stats = true;
   param.rabitq_pruning = false;
+  param.rabitq_segment_timing = true;
   param.rabitq_export_scan_lists = true;
   const auto json = IndexFactory::QueryParamSerializeToJson(param, true);
   auto typed =
@@ -128,6 +129,7 @@ TEST(IVFRabitqIntegration, DedicatedScanOptionsRoundTrip) {
     ASSERT_NE(nullptr, p);
     EXPECT_TRUE(p->rabitq_collect_stats);
     EXPECT_FALSE(p->rabitq_pruning);
+    EXPECT_TRUE(p->rabitq_segment_timing);
     EXPECT_TRUE(p->rabitq_export_scan_lists);
   }
   auto defaults =
@@ -136,6 +138,7 @@ TEST(IVFRabitqIntegration, DedicatedScanOptionsRoundTrip) {
   ASSERT_NE(nullptr, defaults);
   EXPECT_FALSE(defaults->rabitq_collect_stats);
   EXPECT_TRUE(defaults->rabitq_pruning);
+  EXPECT_FALSE(defaults->rabitq_segment_timing);
   EXPECT_FALSE(defaults->rabitq_export_scan_lists);
   const auto invalid =
       R"({"index_type":"kIVFRabitq","rabitq_collect_stats":"yes"})";
@@ -148,6 +151,10 @@ TEST(IVFRabitqIntegration, DedicatedScanOptionsRoundTrip) {
   EXPECT_EQ(nullptr,
             IndexFactory::QueryParamDeserializeFromJson<IVFRabitqQueryParam>(
                 R"({"index_type":"kIVFRabitq","rabitq_pruning":"yes"})"));
+  EXPECT_EQ(
+      nullptr,
+      IndexFactory::QueryParamDeserializeFromJson<IVFRabitqQueryParam>(
+          R"({"index_type":"kIVFRabitq","rabitq_segment_timing":"yes"})"));
   EXPECT_EQ(
       nullptr,
       IndexFactory::QueryParamDeserializeFromJson<IVFRabitqQueryParam>(
@@ -501,6 +508,38 @@ TEST_P(IVFRabitqIntegrationTest, TrainSearchAndReopen) {
   ASSERT_EQ(0, legacy->search(input, legacy_query, &legacy_result));
   EXPECT_FALSE(legacy_result.ivf_scan_stats_.collected);
   EXPECT_EQ(0u, legacy_result.ivf_scan_stats_.coarse_count);
+  // Native segment timing mirrors the integrated caliber: counters plus
+  // per-query stage sums, bit-identical results, and no leak after reset.
+  // The dedicated backend has no staged candidate segment, so cand stays 0.
+  legacy_query->rabitq_segment_timing = true;
+  SearchResult native_timing;
+  ASSERT_EQ(0, legacy->search(input, legacy_query, &native_timing));
+  const auto &ded_timing = native_timing.ivf_scan_stats_;
+  EXPECT_TRUE(ded_timing.collected);
+  EXPECT_TRUE(ded_timing.active);
+  EXPECT_TRUE(ded_timing.mapped);
+  EXPECT_GT(ded_timing.query_ns, 0.0);
+  EXPECT_GT(ded_timing.prep_ns, 0.0);
+  EXPECT_GT(ded_timing.coarse_ns, 0.0);
+  EXPECT_GT(ded_timing.post_scan_ns, 0.0);
+  EXPECT_EQ(0.0, ded_timing.cand_ns);
+  EXPECT_LE(ded_timing.prep_ns + ded_timing.coarse_ns +
+                ded_timing.post_scan_ns + ded_timing.finalize_ns,
+            ded_timing.query_ns);
+  EXPECT_EQ(vectors.size(), ded_timing.coarse_count);
+  EXPECT_LE(ded_timing.refined_count, ded_timing.coarse_count);
+  legacy_query->rabitq_segment_timing = false;
+  SearchResult native_timing_off;
+  ASSERT_EQ(0, legacy->search(input, legacy_query, &native_timing_off));
+  EXPECT_FALSE(native_timing_off.ivf_scan_stats_.collected);
+  EXPECT_EQ(0.0, native_timing_off.ivf_scan_stats_.query_ns);
+  ASSERT_EQ(native_timing.doc_list_.size(), native_timing_off.doc_list_.size());
+  for (size_t i = 0; i < native_timing.doc_list_.size(); ++i) {
+    EXPECT_EQ(native_timing.doc_list_[i].key(),
+              native_timing_off.doc_list_[i].key());
+    EXPECT_FLOAT_EQ(native_timing.doc_list_[i].score(),
+                    native_timing_off.doc_list_[i].score());
+  }
   legacy_query->rabitq_collect_stats = true;
   legacy_query->bf_pks = std::make_shared<std::vector<uint64_t>>();
   EXPECT_EQ(core::IndexError_InvalidArgument,
@@ -511,6 +550,12 @@ TEST_P(IVFRabitqIntegrationTest, TrainSearchAndReopen) {
   EXPECT_EQ(core::IndexError_InvalidArgument,
             legacy->search(input, legacy_query, &legacy_result));
   legacy_query->rabitq_collect_stats = false;
+  // Segment timing alone must trip the same dedicated guard as the other
+  // diagnostic scan options.
+  legacy_query->rabitq_segment_timing = true;
+  EXPECT_EQ(core::IndexError_InvalidArgument,
+            legacy->search(input, legacy_query, &legacy_result));
+  legacy_query->rabitq_segment_timing = false;
   legacy_query->topk = group_query->topk;
   legacy_query->group_by_param = group_query->group_by_param;
   ASSERT_EQ(0, legacy->search(input, legacy_query, &legacy_result));
@@ -620,6 +665,31 @@ TEST_P(IVFRabitqIntegrationTest, ReuseWithKFlatRefinerAndContextSwitching) {
   EXPECT_EQ(5u, off.doc_list_.size());
   EXPECT_EQ(5u, on.doc_list_.size());
   EXPECT_EQ(off.doc_list_[0].key(), on.doc_list_[0].key());
+
+  // Refine-stage timing (default off) splits the shared pipeline into the
+  // coarse-search and reference-rerank stages without touching results.
+  query->rabitq_reuse_coarse_dot = false;
+  query->refine_stage_timing = true;
+  SearchResult staged;
+  ASSERT_EQ(0, index->search(input, query, &staged));
+  const auto &stage = staged.refine_stage_stats_;
+  EXPECT_TRUE(stage.collected);
+  EXPECT_GT(stage.base_ns, 0.0);
+  EXPECT_GT(stage.refine_ns, 0.0);
+  ASSERT_EQ(off.doc_list_.size(), staged.doc_list_.size());
+  for (size_t i = 0; i < off.doc_list_.size(); ++i) {
+    EXPECT_EQ(off.doc_list_[i].key(), staged.doc_list_[i].key());
+    EXPECT_FLOAT_EQ(off.doc_list_[i].score(), staged.doc_list_[i].score());
+  }
+  query->refine_stage_timing = false;
+  SearchResult unstaged;
+  ASSERT_EQ(0, index->search(input, query, &unstaged));
+  EXPECT_FALSE(unstaged.refine_stage_stats_.collected);
+  ASSERT_EQ(off.doc_list_.size(), unstaged.doc_list_.size());
+  for (size_t i = 0; i < off.doc_list_.size(); ++i) {
+    EXPECT_EQ(off.doc_list_[i].key(), unstaged.doc_list_[i].key());
+    EXPECT_FLOAT_EQ(off.doc_list_[i].score(), unstaged.doc_list_[i].score());
+  }
 
   // Diagnostic scan options stay rejected under the refiner, including
   // reuse combined with a disabled pruning switch.

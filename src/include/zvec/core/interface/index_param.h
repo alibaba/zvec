@@ -259,6 +259,11 @@ class ZVEC_CORE_API BaseIndexQueryParam {
   bool is_linear = false;
   RefinerParam::Pointer refiner_param = nullptr;
   std::shared_ptr<GroupByParam> group_by_param = nullptr;
+  // Default-off refine-pipeline stage timing (coarse search incl. query
+  // preparation vs reference-index rerank of the coarse candidates). Set
+  // programmatically by diagnostic tooling; deliberately not part of the
+  // serialized JSON schema.
+  bool refine_stage_timing = false;
 
   virtual Pointer clone() const = 0;
 };
@@ -604,6 +609,11 @@ struct ZVEC_CORE_API IVFRabitqQueryParam : public BaseIndexQueryParam {
   // Default-on lower-bound pruning. Disabling keeps the codes, lists and
   // distance formula and only skips the prune check (diagnostic A/B).
   bool rabitq_pruning = true;
+  // Default-off per-query segment timing (query prep/centroid, coarse
+  // estimate, refine+heap loop, finalize), mirroring the Turbo IVF option of
+  // the same name so both RaBitQ backends expose the same segment caliber.
+  // Instrumentation perturbs performance; diagnostics only.
+  bool rabitq_segment_timing = false;
   // Default-off export of the really scanned clusters per query.
   bool rabitq_export_scan_lists = false;
   // Default-off export of sampled coarse estimates (distance, lower bound,

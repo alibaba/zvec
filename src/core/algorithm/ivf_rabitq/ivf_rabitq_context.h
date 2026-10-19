@@ -55,6 +55,18 @@ struct IvfRabitqScanStats {
   bool mapped{false};
   size_t coarse_count{0};
   size_t refined_count{0};
+  // Set by the streamer when the query asks for segment timing; the entity
+  // then accumulates the coarse-estimate and refine/heap loop segments below.
+  bool timing{false};
+  // Segment timings in nanoseconds, zero unless rabitq_segment_timing is set.
+  // prep covers query state, centroid selection and per-cluster preparation;
+  // coarse covers the 1-bit batch estimation kernel; post_scan covers the
+  // pruning, extra-bit boosting and heap loop; finalize covers the heap drain
+  // into the sorted result list. The dedicated backend has no staging segment,
+  // so the Turbo IVF cand_ns column stays zero. query_ns includes unassigned
+  // gaps; stage sums are not total time.
+  double prep_ns{0}, coarse_ns{0}, post_scan_ns{0}, finalize_ns{0};
+  double query_ns{0};
 };
 
 /*! IVF RaBitQ Context
@@ -131,6 +143,7 @@ class IvfRabitqContext : public IndexContext {
     probe_centroids.clear();
     collect_scan_stats = false;
     scan_stats = {};
+    segment_timing = false;
     disable_pruning = false;
     collect_scan_lists = false;
     scan_lists.clear();
@@ -364,6 +377,8 @@ class IvfRabitqContext : public IndexContext {
   std::vector<IvfRabitqProbeCentroid> probe_centroids;
   bool collect_scan_stats{false};
   IvfRabitqScanStats scan_stats;
+  // Default-off per-query segment timing, set from IVFRabitqQueryParam.
+  bool segment_timing{false};
   // Diagnostic A/B: skip only the lower-bound prune check; codes, lists and
   // the distance formula stay fixed. Set from IVFRabitqQueryParam.
   bool disable_pruning{false};

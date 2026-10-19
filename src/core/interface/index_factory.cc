@@ -226,6 +226,8 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
     json_obj.set("rabitq_collect_stats",
                  ailego::JsonValue(param.rabitq_collect_stats));
     json_obj.set("rabitq_pruning", ailego::JsonValue(param.rabitq_pruning));
+    json_obj.set("rabitq_segment_timing",
+                 ailego::JsonValue(param.rabitq_segment_timing));
     json_obj.set("rabitq_export_scan_lists",
                  ailego::JsonValue(param.rabitq_export_scan_lists));
     json_obj.set("rabitq_export_scan_samples",
@@ -396,6 +398,9 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
                                    tmp_json_value) ||
           !extract_value_from_json(json_obj, "rabitq_pruning",
                                    param->rabitq_pruning, tmp_json_value) ||
+          !extract_value_from_json(json_obj, "rabitq_segment_timing",
+                                   param->rabitq_segment_timing,
+                                   tmp_json_value) ||
           !extract_value_from_json(json_obj, "rabitq_export_scan_lists",
                                    param->rabitq_export_scan_lists,
                                    tmp_json_value) ||
@@ -507,6 +512,9 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
                                    tmp_json_value) ||
           !extract_value_from_json(json_obj, "rabitq_pruning",
                                    param->rabitq_pruning, tmp_json_value) ||
+          !extract_value_from_json(json_obj, "rabitq_segment_timing",
+                                   param->rabitq_segment_timing,
+                                   tmp_json_value) ||
           !extract_value_from_json(json_obj, "rabitq_export_scan_lists",
                                    param->rabitq_export_scan_lists,
                                    tmp_json_value) ||

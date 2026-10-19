@@ -325,6 +325,7 @@ int IVFRabitqIndex::_prepare_for_search(
   if ((ivf_rabitq_param->rabitq_collect_stats ||
        ivf_rabitq_param->rabitq_export_scan_lists ||
        ivf_rabitq_param->rabitq_export_scan_samples ||
+       ivf_rabitq_param->rabitq_segment_timing ||
        !ivf_rabitq_param->rabitq_pruning) &&
       (search_param->refiner_param || search_param->group_by_param ||
        search_param->bf_pks)) {
@@ -336,6 +337,7 @@ int IVFRabitqIndex::_prepare_for_search(
   ctx->collect_scan_stats = ivf_rabitq_param->rabitq_collect_stats ||
                             ivf_rabitq_param->rabitq_export_scan_lists ||
                             ivf_rabitq_param->rabitq_export_scan_samples;
+  ctx->segment_timing = ivf_rabitq_param->rabitq_segment_timing;
   ctx->scan_stats = {};
   ctx->disable_pruning = !ivf_rabitq_param->rabitq_pruning;
   ctx->collect_scan_lists = ivf_rabitq_param->rabitq_export_scan_lists;
@@ -366,7 +368,7 @@ int IVFRabitqIndex::_dense_search(
   if (ret != 0) return ret;
   const auto *ctx = dynamic_cast<const core::IvfRabitqContext *>(context.get());
   if (ctx && (ctx->collect_scan_stats || ctx->collect_scan_lists ||
-              ctx->collect_scan_samples)) {
+              ctx->collect_scan_samples || ctx->segment_timing)) {
     const auto &scan = ctx->scan_stats;
     // All entity reads occur at open time. Query-time accesses use the loaded
     // views, so logical read/copy counters remain zero, even for owned views.
@@ -376,6 +378,14 @@ int IVFRabitqIndex::_dense_search(
     result->ivf_scan_stats_.mapped = scan.mapped;
     result->ivf_scan_stats_.coarse_count = scan.coarse_count;
     result->ivf_scan_stats_.refined_count = scan.refined_count;
+    if (ctx->segment_timing) {
+      auto &stats = result->ivf_scan_stats_;
+      stats.prep_ns = scan.prep_ns;
+      stats.coarse_ns = scan.coarse_ns;
+      stats.post_scan_ns = scan.post_scan_ns;
+      stats.finalize_ns = scan.finalize_ns;
+      stats.query_ns = scan.query_ns;
+    }
     if (ctx->collect_scan_lists) {
       auto &stats = result->ivf_scan_stats_;
       stats.scan_lists_collected = true;

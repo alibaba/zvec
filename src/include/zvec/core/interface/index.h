@@ -140,8 +140,20 @@ struct IVFScanStats {
   std::vector<IVFScanSample> scan_samples{};
 };
 
+// Refine-pipeline stage timing of one search. base_ns covers coarse search of
+// the base index (including its query preparation); refine_ns covers the
+// reference-index rerank of the coarse candidates. Populated only when
+// refine_stage_timing is set on the query param; instrumentation perturbs
+// performance and diagnostics are the only consumer.
+struct RefineStageStats {
+  bool collected{false};
+  double base_ns{0};
+  double refine_ns{0};
+};
+
 struct SearchResult {
   IVFScanStats ivf_scan_stats_{};
+  RefineStageStats refine_stage_stats_{};
   core::IndexDocumentList doc_list_;
   core::IndexGroupDocumentList group_doc_list_;
   // use string to manage memory
