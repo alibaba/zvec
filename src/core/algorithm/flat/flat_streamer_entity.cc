@@ -800,10 +800,29 @@ int FlatStreamerEntity::get_vectors_by_key(
   }
   key_info_map_lock_->unlock_shared();
 
+  std::vector<IndexStorage::Segment::Pointer> segments(count);
+  {
+    std::lock_guard<std::mutex> lock(segments_mutex_);
+    for (uint32_t i = 0; i < count; ++i) {
+      const size_t segment_index = locations[i].segment_id;
+      for (size_t j = segments_.size(); j <= segment_index; ++j) {
+        auto segment_id =
+            ailego::StringHelper::Concat(FLAT_SEGMENT_FEATURES_SEG_ID, j);
+        auto segment = storage_->get(segment_id);
+        if (!segment) {
+          LOG_ERROR("Failed to get segment %s", segment_id.c_str());
+          return -1;
+        }
+        segments_.emplace_back(std::move(segment));
+      }
+      segments[i] = segments_[segment_index];
+    }
+  }
+
   blocks.resize(count);
   for (uint32_t i = 0; i < count; ++i) {
     const VectorLocation &loc = locations[i];
-    auto segment = this->get_segment(loc.segment_id);
+    const auto &segment = segments[i];
     if (!segment ||
         segment->read(loc.offset, blocks[i], index_meta_.element_size()) !=
             index_meta_.element_size()) {
