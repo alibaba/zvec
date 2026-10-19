@@ -441,12 +441,11 @@ int IVFIndex::_prepare_for_search(
     context->set_threshold(ivf_search_param->radius);
   }
 
-  if (ivf_search_param->nprobe > 0) {
-    ailego::Params params;
-    params.set(core::PARAM_IVF_SEARCHER_NPROBE, ivf_search_param->nprobe);
-    context->update(params);
-  }
-  return 0;
+  ailego::Params params;
+  // Zero explicitly restores scan_ratio instead of retaining a previous query.
+  params.set(core::PARAM_IVF_SEARCHER_NPROBE,
+             static_cast<uint32_t>(std::max(0, ivf_search_param->nprobe)));
+  return context->update(params);
 }
 
 int IVFIndex::merge(const std::vector<Index::Pointer> &indexes,

@@ -113,22 +113,6 @@ static void expect_simd_near(float actual, float expected,
       tolerance = std::max(
           tolerance, std::max(5.0e-3 * result_scale, fp16_error + fp32_error));
     }
-  } else if (arch == turbo::CpuArchType::kNEON &&
-             metric == turbo::MetricType::kCosine) {
-    // Native NEON cosine deliberately retains FP16 arithmetic. Its four
-    // 8-lane accumulators process 32-element blocks, with an 8-element tail
-    // folded into the first accumulator and a two-level FP16 combine.
-    // Inner product and L2 widen to FP32 and must retain the tighter bound.
-    size_t fp16_depth = dim / 32 + (dim % 32) / 8;
-    if (fp16_depth != 0) {
-      fp16_depth += 2;
-      constexpr double kFp16UnitRoundoff = 1.0 / 2048.0;
-      const double fp16_error =
-          rounding_error_bound(fp16_depth, kFp16UnitRoundoff) *
-          accumulation_scale;
-      tolerance = std::max(
-          tolerance, std::max(2.0e-2 * result_scale, fp16_error + fp32_error));
-    }
   }
 
   EXPECT_NEAR(actual, expected, tolerance)
@@ -870,42 +854,18 @@ TEST(Fp16Quantizer, NeonDistancesPreserveFp32Range) {
   }
 }
 
-TEST(Fp16Quantizer, NeonCosineRetainsFp16Arithmetic) {
-  using RawDistance = void (*)(const void *, const void *, size_t, float *);
-  const auto automatic = turbo::get_distance_kernels(
-      turbo::MetricType::kCosine, turbo::DataType::kFp16,
-      turbo::QuantizeType::kFp16, turbo::CpuArchType::kAuto);
-  const auto *target = automatic.dist.target<RawDistance>();
-  if (!target || *target != turbo::neon_fp16::cosine_fp16_distance_neon_fp16) {
-    GTEST_SKIP() << "Native NEON FP16 cosine kernel is not selected";
-  }
-
-  const auto scalar = turbo::get_distance_kernels(
-      turbo::MetricType::kCosine, turbo::DataType::kFp16,
-      turbo::QuantizeType::kFp16, turbo::CpuArchType::kScalar);
-  ASSERT_TRUE(scalar.dist);
-  // Cover both the 8-element remainder and the full 32-element main loop.
-  for (size_t dim : {8u, 32u}) {
+TEST(Fp16Quantizer, CosineUsesFp32AccumulationAcrossArchitectures) {
+  // Cover native FP16 SIMD blocks, odd tails and long normalized vectors.
+  // The old NEON cosine rounded every partial sum in FP16, unlike x86.
+  for (size_t dim : {8u, 32u, 65u, 128u, 1024u}) {
     SCOPED_TRACE(testing::Message() << "dim=" << dim);
     const std::vector<float> query(dim, 1.0f);
     std::vector<float> neighbor = query;
     neighbor[0] = -1.0f;
-
-    // Native FP16 products round to exactly 1/dim, giving distances 0 and
-    // 2/dim. Widening first produces a nonzero self distance, so this detects
-    // cosine accidentally using the FP32 inner-product implementation.
-    const std::vector<uint16_t> encoded(
-        dim, FloatHelper::ToFP16(1.0f / std::sqrt(static_cast<float>(dim))));
-    float scalar_self = 0.0f;
-    scalar.dist(encoded.data(), encoded.data(), dim, &scalar_self);
-    EXPECT_GT(scalar_self, 1.0e-4f);
-
     check_quantizer_distances(
         turbo::MetricType::kCosine, "Cosine", query,
-        {query, neighbor, neighbor, query, neighbor, query, neighbor}, 0.0, 0.0,
-        {0.0f, 2.0f / static_cast<float>(dim), 2.0f / static_cast<float>(dim),
-         0.0f, 2.0f / static_cast<float>(dim), 0.0f,
-         2.0f / static_cast<float>(dim)});
+        {query, neighbor, neighbor, query, neighbor, query, neighbor},
+        2.0e-6, 2.0e-6);
   }
 }
 

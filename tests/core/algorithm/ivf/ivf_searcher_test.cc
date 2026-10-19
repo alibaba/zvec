@@ -3856,6 +3856,59 @@ TEST_F(IVFSearcherTest, TestNprobeMaxScanCountValue) {
   EXPECT_EQ(0, ret);
 }
 
+TEST_F(IVFSearcherTest, QueryNprobeSurvivesContextRebind) {
+  IVFBuilder builder;
+  Params build_params;
+  build_params.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "4");
+  ASSERT_EQ(0, builder.init(index_meta_, build_params));
+  ASSERT_EQ(0, builder.train(CreateFixedCentroidTrainer(
+                   index_meta_, {50.0f, 150.0f, 250.0f, 350.0f})));
+  prepare_index_holder(0, 400);
+  ASSERT_EQ(0, builder.build(IndexThreads::Pointer(), holder_));
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_EQ(0, dumper->create(index_path_));
+  ASSERT_EQ(0, builder.dump(dumper));
+  ASSERT_EQ(0, dumper->close());
+  auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(index_path_, false));
+
+  Params defaults;
+  defaults.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 0U);
+  defaults.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 0.25f);
+  IVFSearcher searcher;
+  IVFStreamer streamer;
+  ASSERT_EQ(0, searcher.init(defaults));
+  ASSERT_EQ(0, searcher.load(storage, IndexMetric::Pointer()));
+  ASSERT_EQ(0, streamer.init(index_meta_, defaults));
+  ASSERT_EQ(0, streamer.open(storage));
+  auto context = searcher.create_context();
+  ASSERT_NE(nullptr, context);
+  context->set_topk(400);
+  auto *ivf = dynamic_cast<IVFSearcherContext *>(context.get());
+  ASSERT_NE(nullptr, ivf);
+  std::vector<float> query(dimension_, 0.0f);
+  IndexQueryMeta qmeta(IndexMeta::DT_FP32, dimension_);
+  for (uint32_t nprobe : {2U, 4U, 1U, 0U, 64U, 2U}) {
+    Params query_params;
+    query_params.set(PARAM_IVF_SEARCHER_NPROBE, nprobe);
+    for (bool use_streamer : {true, false}) {
+      ASSERT_EQ(0, context->update(query_params));
+      ASSERT_EQ(0, use_streamer
+                       ? streamer.search_impl(query.data(), qmeta, context)
+                       : searcher.search_impl(query.data(), qmeta, context));
+      EXPECT_EQ(nprobe ? std::min(nprobe, 4U) : 1U,
+                ivf->centroid_searcher_ctx()->result().size());
+      EXPECT_EQ(nprobe ? 400U : 100U, ivf->max_scan_count());
+    }
+    // Retain the thread's context across an index reopen as well as switches.
+    ASSERT_EQ(0, searcher.unload());
+    ASSERT_EQ(0, searcher.load(storage, IndexMetric::Pointer()));
+  }
+  ASSERT_EQ(0, streamer.unload());
+  ASSERT_EQ(0, searcher.unload());
+}
+
 // Test: nprobe exceeding inverted_list_count is clamped
 TEST_F(IVFSearcherTest, TestNprobeClampToListCount) {
   // Build index with 4 centroids and 400 vectors

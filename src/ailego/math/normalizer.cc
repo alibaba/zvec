@@ -48,36 +48,7 @@ static inline void NormalizeNEON(float *arr, size_t dim, float norm) {
 // ARM64 — the FP16 `Normalizer<Float16>::Compute` dispatch below falls
 // through to the scalar conversion path.
 #if !defined(_MSC_VER)
-#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-static inline void NormalizeNEON(float16_t *arr, size_t dim, float norm) {
-  float16_t *last = arr + dim;
-  float16_t *last_aligned = arr + ((dim >> 4) << 4);
-
-  float16x8_t v_norm = vdupq_n_f16((float16_t)norm);
-  for (; arr != last_aligned; arr += 16) {
-    vst1q_f16(arr + 0, vdivq_f16(vld1q_f16(arr + 0), v_norm));
-    vst1q_f16(arr + 8, vdivq_f16(vld1q_f16(arr + 8), v_norm));
-  }
-  if (last >= arr + 8) {
-    vst1q_f16(arr, vdivq_f16(vld1q_f16(arr), v_norm));
-    arr += 8;
-  }
-  if (last >= arr + 4) {
-    vst1_f16(arr, vdiv_f16(vld1_f16(arr), vget_low_f16(v_norm)));
-    arr += 4;
-  }
-  switch (last - arr) {
-    case 3:
-      arr[2] /= norm;
-      /* FALLTHRU */
-    case 2:
-      arr[1] /= norm;
-      /* FALLTHRU */
-    case 1:
-      arr[0] /= norm;
-  }
-}
-#else
+// Widen FP16 storage to FP32 before arithmetic on every ARM CPU.
 static inline void NormalizeNEON(float16_t *arr, size_t dim, float norm) {
   float16_t *last = arr + dim;
   float16_t *last_aligned = arr + ((dim >> 4) << 4);
@@ -118,7 +89,7 @@ static inline void NormalizeNEON(float16_t *arr, size_t dim, float norm) {
       arr[0] /= norm;
   }
 }
-#endif  // __ARM_FEATURE_FP16_VECTOR_ARITHMETIC
+
 #endif  // !_MSC_VER (FP16 NEON: gcc/clang aarch64 only)
 #endif  // AILEGO_ARM64_NEON
 

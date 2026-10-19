@@ -155,37 +155,7 @@
   }                                                                           \
   *out = _NORM(result);
 
-#if defined(__ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-//! Compute the norm of vectors (FP16, M=1)
-#define NORM_FP16_1_NEON(m, dim, out, _NORM)                                 \
-  MATRIX_VAR_INIT(1, 1, float16x8_t, v_sum, vdupq_n_f16(0))                  \
-  const Float16 *last = m + dim;                                             \
-  const Float16 *last_aligned = m + ((dim >> 3) << 3);                       \
-  for (; m != last_aligned; m += 8) {                                        \
-    float16x8_t v_m = vld1q_f16((const float16_t *)m);                       \
-    NORM_FP16_STEP_NEON(v_m, v_sum_0_0)                                      \
-  }                                                                          \
-  if (last >= m + 4) {                                                       \
-    float16x8_t v_m = vreinterpretq_f16_u64(                                 \
-        vld1q_lane_u64((const uint64_t *)m, vdupq_n_u64(0), 0));             \
-    NORM_FP16_STEP_NEON(v_m, v_sum_0_0)                                      \
-    m += 4;                                                                  \
-  }                                                                          \
-  float result = vaddvq_f32(vaddq_f32(vcvt_f32_f16(vget_low_f16(v_sum_0_0)), \
-                                      vcvt_high_f32_f16(v_sum_0_0)));        \
-  switch (last - m) {                                                        \
-    case 3:                                                                  \
-      NORM_FP16_STEP_GENERAL(m[2], result)                                   \
-      /* FALLTHRU */                                                         \
-    case 2:                                                                  \
-      NORM_FP16_STEP_GENERAL(m[1], result)                                   \
-      /* FALLTHRU */                                                         \
-    case 1:                                                                  \
-      NORM_FP16_STEP_GENERAL(m[0], result)                                   \
-  }                                                                          \
-  *out = _NORM(result);
-
-#else
+// Widen FP16 storage to FP32 before arithmetic on every ARM CPU.
 //! Compute the norm of vectors (FP16, M=1)
 #define NORM_FP16_1_NEON(m, dim, out, _NORM)                        \
   MATRIX_VAR_INIT(1, 2, float32x4_t, v_sum, vdupq_n_f32(0))         \
@@ -215,5 +185,3 @@
       NORM_FP16_STEP_GENERAL(m[0], result)                          \
   }                                                                 \
   *out = _NORM(result);
-
-#endif  // __ARM_FEATURE_FP16_VECTOR_ARITHMETIC
