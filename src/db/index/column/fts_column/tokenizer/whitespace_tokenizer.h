@@ -19,8 +19,8 @@
 namespace zvec::fts {
 
 /*! Whitespace tokenizer
- *  Split text by whitespace characters (space, tab, newline, etc.), used as
- * default tokenizer
+ *  Split UTF-8 text on ASCII whitespace (space, tab, LF, VT, FF, CR),
+ * independently of the process locale. Non-ASCII bytes remain in their token.
  */
 class WhitespaceTokenizer : public Tokenizer {
  public:
