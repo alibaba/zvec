@@ -20,12 +20,14 @@
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_helper.h>
 #include <zvec/core/framework/index_streamer.h>
+#include "../streamer_layout.h"
 
 namespace zvec {
 namespace core {
 
 int SparseChunkBroker::init_storage(size_t chunk_size) {
   chunk_meta_.clear();
+  StoreStreamerLayout(page_mask_ + 1, chunk_meta_.reserved);
   chunk_meta_.chunk_size = chunk_size;
   chunk_meta_.create_time = ailego::Realtime::Seconds();
   stats_.set_create_time(chunk_meta_.create_time);
@@ -62,7 +64,7 @@ int SparseChunkBroker::init_storage(size_t chunk_size) {
   return 0;
 }
 
-int SparseChunkBroker::load_storage(size_t chunk_size) {
+int SparseChunkBroker::load_storage() {
   IndexStorage::MemoryBlock data_block;
   size_t size = chunk_meta_segment_->read(0UL, data_block,
                                           chunk_meta_segment_->data_size());
@@ -72,13 +74,12 @@ int SparseChunkBroker::load_storage(size_t chunk_size) {
     return IndexError_InvalidFormat;
   }
   std::memcpy(static_cast<void *>(&chunk_meta_), data_block.data(), size);
-  if (chunk_meta_.chunk_size != chunk_size) {
-    LOG_ERROR(
-        "Params hnsw chunk size=%zu mismatch from previous %zu "
-        "in index",
-        chunk_size, (size_t)chunk_meta_.chunk_size);
-    return IndexError_Mismatch;
+  if (!LoadStreamerLayout(chunk_meta_.reserved, chunk_meta_segment_->capacity(),
+                          &page_mask_)) {
+    LOG_ERROR("Invalid or unsupported streamer layout");
+    return IndexError_InvalidFormat;
   }
+
 
   *stats_.mutable_check_point() = stg_->check_point();
   stats_.set_revision_id(chunk_meta_.revision_id);
@@ -110,33 +111,44 @@ int SparseChunkBroker::open(IndexStorage::Pointer stg, size_t max_index_size,
     return IndexError_Duplicate;
   }
   stg_ = std::move(stg);
+  page_mask_ = ailego::MemoryHelper::PageSize() - 1;
   check_crc_ = check_crc;
   max_chunks_size_ = max_index_size;
   dirty_ = false;
 
   const std::string segment_id =
       make_segment_id(CHUNK_TYPE_META, kDefaultChunkSeqId);
-  chunk_meta_segment_ = stg_->get(segment_id);
-  if (!chunk_meta_segment_) {
-    LOG_DEBUG("Create new index");
-    return init_storage(chunk_size);
+  int ret;
+  if (!stg_->has(segment_id)) {
+    ret = init_storage(chunk_size);
+  } else {
+    chunk_meta_segment_ = stg_->get(segment_id);
+    ret = chunk_meta_segment_ ? load_storage() : IndexError_ReadData;
   }
-
-  return load_storage(chunk_size);
+  if (ret != 0) {
+    // An existing but unreadable segment is not an empty index. In particular,
+    // do not create it again, or flush incomplete state during error cleanup.
+    chunk_meta_segment_.reset();
+    stg_.reset();
+    chunk_meta_.clear();
+  }
+  return ret;
 }
 
 int SparseChunkBroker::close() {
-  flush(0UL);
-
+  const int ret = stg_ && chunk_meta_segment_ ? flush(0UL) : 0;
+  chunk_meta_segment_.reset();
   stg_.reset();
   check_crc_ = false;
   dirty_ = false;
 
-  return 0;
+  return ret;
 }
 
 int SparseChunkBroker::flush(uint64_t checkpoint) {
-  ailego_assert_with(chunk_meta_segment_, "invalid meta segment");
+  if (!stg_ || !chunk_meta_segment_) {
+    return IndexError_Uninitialized;
+  }
 
   chunk_meta_.update_time = ailego::Realtime::Seconds();
   stats_.set_update_time(chunk_meta_.update_time);
@@ -145,6 +157,7 @@ int SparseChunkBroker::flush(uint64_t checkpoint) {
                                            sizeof(HnswSparseChunkMeta));
   if (ailego_unlikely(size != sizeof(HnswSparseChunkMeta))) {
     LOG_ERROR("Storage write data failed, wsize=%zu", size);
+    return IndexError_WriteData;
   }
 
   stg_->refresh(checkpoint);

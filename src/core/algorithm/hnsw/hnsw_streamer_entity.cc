@@ -463,7 +463,7 @@ int HnswStreamerEntity::open(IndexStorage::Pointer stg, uint64_t max_index_size,
     LOG_ERROR("Open index failed for %s", IndexError::What(ret));
     return ret;
   }
-  ret = init_chunk_params(max_index_size, huge_page);
+  ret = init_chunk_params(max_index_size);
   if (ailego_unlikely(ret != 0)) {
     LOG_ERROR("init_chunk_params failed for %s", IndexError::What(ret));
     return ret;

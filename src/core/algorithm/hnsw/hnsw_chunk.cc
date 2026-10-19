@@ -20,12 +20,14 @@
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_helper.h>
 #include <zvec/core/framework/index_streamer.h>
+#include "../streamer_layout.h"
 
 namespace zvec {
 namespace core {
 
 int ChunkBroker::init_storage(uint32_t chunk_size) {
   chunk_meta_.clear();
+  StoreStreamerLayout(page_mask_ + 1, chunk_meta_.reserved);
   chunk_meta_.chunk_size = chunk_size;
   chunk_meta_.create_time = ailego::Realtime::Seconds();
   stats_.set_create_time(chunk_meta_.create_time);
@@ -71,6 +73,11 @@ int ChunkBroker::load_storage(uint32_t &chunk_size) {
     return IndexError_InvalidFormat;
   }
   std::memcpy(static_cast<void *>(&chunk_meta_), data_block.data(), size);
+  if (!LoadStreamerLayout(chunk_meta_.reserved, chunk_meta_segment_->capacity(),
+                          &page_mask_)) {
+    LOG_ERROR("Invalid or unsupported streamer layout");
+    return IndexError_InvalidFormat;
+  }
   if (chunk_meta_.chunk_size != chunk_size) {
     LOG_WARN(
         "chunk_size mismatch: config=%u, index=%zu. "
@@ -119,27 +126,37 @@ int ChunkBroker::open(IndexStorage::Pointer stg, uint32_t &chunk_size,
 
   const std::string segment_id =
       make_segment_id(CHUNK_TYPE_META, kDefaultChunkSeqId);
-  chunk_meta_segment_ = stg_->get(segment_id);
-  if (!chunk_meta_segment_) {
-    LOG_DEBUG("Create new index");
-    return init_storage(chunk_size);
+  int ret;
+  if (!stg_->has(segment_id)) {
+    ret = init_storage(chunk_size);
+  } else {
+    chunk_meta_segment_ = stg_->get(segment_id);
+    ret = chunk_meta_segment_ ? load_storage(chunk_size) : IndexError_ReadData;
   }
-
-  return load_storage(chunk_size);
+  if (ret != 0) {
+    // An existing but unreadable segment is not an empty index. In particular,
+    // do not create it again, or flush incomplete state during error cleanup.
+    chunk_meta_segment_.reset();
+    stg_.reset();
+    chunk_meta_.clear();
+  }
+  return ret;
 }
 
 int ChunkBroker::close() {
-  flush(0UL);
-
+  const int ret = stg_ && chunk_meta_segment_ ? flush(0UL) : 0;
+  chunk_meta_segment_.reset();
   stg_.reset();
   check_crc_ = false;
   dirty_ = false;
 
-  return 0;
+  return ret;
 }
 
 int ChunkBroker::flush(uint64_t checkpoint) {
-  ailego_assert_with(chunk_meta_segment_, "invalid meta segment");
+  if (!stg_ || !chunk_meta_segment_) {
+    return IndexError_Uninitialized;
+  }
 
   chunk_meta_.update_time = ailego::Realtime::Seconds();
   stats_.set_update_time(chunk_meta_.update_time);
@@ -148,6 +165,7 @@ int ChunkBroker::flush(uint64_t checkpoint) {
       chunk_meta_segment_->write(0UL, &chunk_meta_, sizeof(HnswChunkMeta));
   if (ailego_unlikely(size != sizeof(HnswChunkMeta))) {
     LOG_ERROR("Storage write data failed, wsize=%zu", size);
+    return IndexError_WriteData;
   }
 
   stg_->refresh(checkpoint);

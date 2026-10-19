@@ -263,15 +263,11 @@ class VamanaStreamerEntity : public VamanaEntity {
     return node_chunks_.capacity() * node_cnt_per_chunk_;
   }
 
-  int init_chunk_params(size_t max_index_size, bool huge_page) {
+  int init_chunk_params(size_t max_index_size) {
     node_cnt_per_chunk_ = std::max<uint32_t>(1, chunk_size_ / node_size());
     node_index_mask_bits_ = std::ceil(std::log2(node_cnt_per_chunk_));
     node_cnt_per_chunk_ = 1UL << node_index_mask_bits_;
-    if (huge_page) {
-      chunk_size_ = AlignHugePageSize(node_cnt_per_chunk_ * node_size());
-    } else {
-      chunk_size_ = AlignPageSize(node_cnt_per_chunk_ * node_size());
-    }
+    chunk_size_ = broker_->align_size(node_cnt_per_chunk_ * node_size());
     node_index_mask_ = node_cnt_per_chunk_ - 1;
 
     if (max_index_size == 0UL) {

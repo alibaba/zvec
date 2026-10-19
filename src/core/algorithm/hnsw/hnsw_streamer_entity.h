@@ -397,8 +397,8 @@ class HnswStreamerEntity : public HnswEntity {
     size_t neighbors_size = get_total_upper_neighbors_size(level);
     uint64_t chunk_index = upper_neighbor_chunks_.size() - 1ULL;
     if (chunk_index == UINT64_MAX ||
-        (upper_neighbor_chunks_[chunk_index]->padding_size() <
-         neighbors_size)) {  // no space left and need to alloc
+        (upper_neighbor_chunks_[chunk_index]->data_size() + neighbors_size >
+         upper_neighbor_chunk_size_)) {  // no space left and need to alloc
       chunk_index++;
       if (ailego_unlikely(upper_neighbor_chunks_.capacity() ==
                           upper_neighbor_chunks_.size())) {
@@ -471,16 +471,12 @@ class HnswStreamerEntity : public HnswEntity {
     return node_chunks_.capacity() * node_cnt_per_chunk_;
   }
 
-  int init_chunk_params(size_t max_index_size, bool huge_page) {
+  int init_chunk_params(size_t max_index_size) {
     node_cnt_per_chunk_ = std::max<uint32_t>(1, chunk_size_ / node_size());
     //! align node cnt per chunk to pow of 2
     node_index_mask_bits_ = std::ceil(std::log2(node_cnt_per_chunk_));
     node_cnt_per_chunk_ = 1UL << node_index_mask_bits_;
-    if (huge_page) {
-      chunk_size_ = AlignHugePageSize(node_cnt_per_chunk_ * node_size());
-    } else {
-      chunk_size_ = AlignPageSize(node_cnt_per_chunk_ * node_size());
-    }
+    chunk_size_ = broker_->align_size(node_cnt_per_chunk_ * node_size());
     node_index_mask_ = node_cnt_per_chunk_ - 1;
 
     if (max_index_size == 0UL) {
@@ -496,15 +492,9 @@ class HnswStreamerEntity : public HnswEntity {
     //! get a balanced ratio be sqrt of the node/neighbor size ratio
     float ratio =
         std::sqrt(node_size() * scaling_factor() * 1.0f / upper_neighbor_size_);
-    if (huge_page) {
-      upper_neighbor_chunk_size_ = AlignHugePageSize(
-          std::max(get_total_upper_neighbors_size(kMaxGraphLayers),
-                   static_cast<size_t>(chunk_size_ / ratio)));
-    } else {
-      upper_neighbor_chunk_size_ = AlignPageSize(
-          std::max(get_total_upper_neighbors_size(kMaxGraphLayers),
-                   static_cast<size_t>(chunk_size_ / ratio)));
-    }
+    upper_neighbor_chunk_size_ = broker_->align_size(
+        std::max(get_total_upper_neighbors_size(kMaxGraphLayers),
+                 static_cast<size_t>(chunk_size_ / ratio)));
     upper_neighbor_mask_bits_ =
         std::ceil(std::log2(upper_neighbor_chunk_size_ / upper_neighbor_size_));
     upper_neighbor_mask_ = (1 << upper_neighbor_mask_bits_) - 1;

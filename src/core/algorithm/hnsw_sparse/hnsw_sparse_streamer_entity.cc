@@ -54,6 +54,8 @@ int HnswSparseStreamerEntity::init(uint64_t max_index_size,
   size = AlignSize(size);
   set_node_size(size);
 
+  configured_chunk_size_ = chunk_size_;
+  configured_max_index_size_ = max_index_size;
   return init_chunk_params(max_index_size);
 }
 
@@ -425,6 +427,14 @@ int HnswSparseStreamerEntity::open(IndexStorage::Pointer stg, bool check_crc) {
     LOG_ERROR("Open index failed for %s", IndexError::What(ret));
     return ret;
   }
+  // init() used the local page size. Recompute from the file's layout before
+  // interpreting persisted neighbor locations and the neighbor hash table.
+  chunk_size_ = configured_chunk_size_;
+  ret = init_chunk_params(configured_max_index_size_);
+  if (ret != 0 || chunk_size_ != broker_->chunk_size()) {
+    return ret != 0 ? ret : IndexError_Mismatch;
+  }
+  broker_->set_max_chunks_size(max_index_size_);
   ret = upper_neighbor_index_->init(broker_, upper_neighbor_chunk_size_,
                                     scaling_factor(), estimate_doc_capacity(),
                                     kUpperHashMemoryInflateRatio);

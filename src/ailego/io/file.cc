@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <limits>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/io/file.h>
 #if !defined(_WIN64) && !defined(_WIN32)
@@ -310,6 +311,18 @@ ssize_t File::offset() const {
 }
 
 void *File::MemoryMap(NativeHandle handle, ssize_t off, size_t len, int opts) {
+  if (off < 0 || len == 0) {
+    errno = EINVAL;
+    return nullptr;
+  }
+  // A file can have been written on a machine with a smaller page size.
+  // Keep the logical offset independent of the OS mapping boundary.
+  const size_t excess = static_cast<size_t>(off) % getpagesize();
+  if (len > std::numeric_limits<size_t>::max() - excess ||
+      ((opts & File::MMAP_HUGE_PAGE) && excess != 0)) {
+    errno = EINVAL;
+    return nullptr;
+  }
   int prot =
       ((opts & File::MMAP_READONLY) ? PROT_READ : PROT_READ | PROT_WRITE);
   int flags = (opts & File::MMAP_SHARED) ? MAP_SHARED : MAP_PRIVATE;
@@ -326,8 +339,9 @@ void *File::MemoryMap(NativeHandle handle, ssize_t off, size_t len, int opts) {
   }
 #endif
 
-  void *addr = mmap(nullptr, len, prot, flags, handle, off);
-  ailego_null_if_false(addr != MAP_FAILED);
+  void *base = mmap(nullptr, len + excess, prot, flags, handle, off - excess);
+  ailego_null_if_false(base != MAP_FAILED);
+  void *addr = static_cast<char *>(base) + excess;
 
   if (opts & File::MMAP_LOCKED) {
     mlock(addr, len);
@@ -370,12 +384,33 @@ void *File::MemoryMap(size_t len, int opts) {
 
 void *File::MemoryRemap(void *oldptr, size_t oldsize, void *newptr,
                         size_t newsize) {
+#if defined(__linux__) || defined(__linux) || defined(__NetBSD__)
+  const size_t page_size = getpagesize();
+  const size_t excess = reinterpret_cast<uintptr_t>(oldptr) % page_size;
+  if (!oldptr || oldsize == 0 || newsize == 0 ||
+      oldsize > std::numeric_limits<size_t>::max() - excess ||
+      newsize > std::numeric_limits<size_t>::max() - excess ||
+      (newptr && reinterpret_cast<uintptr_t>(newptr) % page_size != excess)) {
+    errno = EINVAL;
+    return nullptr;
+  }
+  void *oldbase = static_cast<char *>(oldptr) - excess;
+  void *newbase = newptr ? static_cast<char *>(newptr) - excess : nullptr;
+  void *base;
 #if defined(__linux) || defined(__linux__)
-  return newptr ? mremap(oldptr, oldsize, newsize, MREMAP_FIXED, newptr)
-                : mremap(oldptr, oldsize, newsize, MREMAP_MAYMOVE);
+  if (newbase == oldbase) {
+    base = mremap(oldbase, oldsize + excess, newsize + excess, 0);
+  } else if (newbase) {
+    base = mremap(oldbase, oldsize + excess, newsize + excess,
+                  MREMAP_FIXED | MREMAP_MAYMOVE, newbase);
+  } else {
+    base = mremap(oldbase, oldsize + excess, newsize + excess, MREMAP_MAYMOVE);
+  }
 #elif defined(__NetBSD__)
-  return newptr ? mremap(oldptr, oldsize, newptr, newsize, MAP_FIXED)
-                : mremap(oldptr, oldsize, nullptr, newsize, 0);
+  base = mremap(oldbase, oldsize + excess, newbase, newsize + excess,
+                newbase ? MAP_FIXED : 0);
+#endif
+  return base == MAP_FAILED ? nullptr : static_cast<char *>(base) + excess;
 #else
   (void)oldptr;
   (void)oldsize;
@@ -388,12 +423,15 @@ void *File::MemoryRemap(void *oldptr, size_t oldsize, void *newptr,
 
 void File::MemoryUnmap(void *addr, size_t len) {
   ailego_return_if_false(addr);
-  munmap(addr, len);
+  const size_t excess = reinterpret_cast<uintptr_t>(addr) % getpagesize();
+  munmap(static_cast<char *>(addr) - excess, len + excess);
 }
 
 bool File::MemoryFlush(void *addr, size_t len) {
   ailego_false_if_false(addr);
-  return (msync(addr, len, MS_ASYNC) == 0);
+  const size_t excess = reinterpret_cast<uintptr_t>(addr) % getpagesize();
+  return (msync(static_cast<char *>(addr) - excess, len + excess, MS_ASYNC) ==
+          0);
 }
 
 bool File::MemoryLock(void *addr, size_t len) {

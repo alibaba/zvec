@@ -273,9 +273,11 @@ TEST(File, MemoryMap) {
   EXPECT_TRUE(File::MemoryFlush(addr, map_size));
 
 #if defined(__linux) || defined(__linux__) || defined(__NetBSD__)
-  EXPECT_TRUE(File::MemoryRemap(addr, map_size, addr, map_size * 2));
+  // Growing in place is not guaranteed: the adjacent virtual range may be
+  // occupied. Allow relocation and release the entire resulting mapping.
   addr = File::MemoryRemap(addr, map_size, nullptr, map_size * 3);
-  EXPECT_TRUE(addr);
+  ASSERT_NE(nullptr, addr);
+  map_size *= 3;
 #endif
 
   File::MemoryUnmap(addr, map_size);
@@ -291,6 +293,72 @@ TEST(File, MemoryMap) {
   File::MemoryUnmap(addr, map_size);
 #endif
 }
+
+TEST(File, UnalignedMappingRoundTrip) {
+  const char *path = "file_unaligned_mapping.tmp";
+  const size_t page = MemoryHelper::PageSize();
+  const size_t offset = page + 7;
+  const size_t length = page * 2 + 19;
+  std::vector<char> expected(page * 5, 'a');
+  File file;
+  ASSERT_TRUE(file.create(path, expected.size()));
+  ASSERT_EQ(expected.size(), file.write(0, expected.data(), expected.size()));
+
+  auto *data = static_cast<char *>(file.map(offset, length, File::MMAP_SHARED));
+  ASSERT_NE(nullptr, data);
+  EXPECT_EQ(0, std::memcmp(data, expected.data() + offset, length));
+  std::memset(data, 'b', length);
+  ASSERT_TRUE(File::MemoryFlush(data, length));
+  File::MemoryUnmap(data, length);
+  std::fill(expected.begin() + offset, expected.begin() + offset + length, 'b');
+  file.close();
+
+  ASSERT_TRUE(file.open(path, true));
+  data = static_cast<char *>(file.map(offset, length, 0));
+  ASSERT_NE(nullptr, data);
+  EXPECT_EQ(0, std::memcmp(data, expected.data() + offset, length));
+  File::MemoryUnmap(data, length);
+  std::vector<char> actual(expected.size());
+  ASSERT_EQ(actual.size(), file.read(0, actual.data(), actual.size()));
+  EXPECT_EQ(expected, actual);  // prefix and suffix must remain unchanged
+  file.close();
+
+  ASSERT_TRUE(file.open(path, false));
+  data = static_cast<char *>(file.map(offset, length, 0));
+  ASSERT_NE(nullptr, data);
+  std::memset(data, 'c', length);  // private mapping must not modify the file
+  File::MemoryUnmap(data, length);
+  ASSERT_EQ(actual.size(), file.read(0, actual.data(), actual.size()));
+  EXPECT_EQ(expected, actual);
+  file.close();
+  EXPECT_TRUE(File::Delete(path));
+}
+
+#if defined(__linux__) || defined(__NetBSD__)
+TEST(File, UnalignedRemapPreservesLogicalOffset) {
+  const char *path = "file_unaligned_remap.tmp";
+  const size_t page = MemoryHelper::PageSize();
+  const size_t offset = page + 7;
+  File file;
+  ASSERT_TRUE(file.create(path, page * 8));
+  auto *data = static_cast<char *>(file.map(offset, page, File::MMAP_SHARED));
+  ASSERT_NE(nullptr, data);
+  data[0] = 'x';
+  data[page - 1] = 'y';
+  data = static_cast<char *>(File::MemoryRemap(data, page, nullptr, page * 3));
+  ASSERT_NE(nullptr, data);
+  EXPECT_EQ('x', data[0]);
+  EXPECT_EQ('y', data[page - 1]);
+  data[page * 3 - 1] = 'z';
+  ASSERT_TRUE(File::MemoryFlush(data, page * 3));
+  File::MemoryUnmap(data, page * 3);
+  char value = 0;
+  ASSERT_EQ(1u, file.read(offset + page * 3 - 1, &value, 1));
+  EXPECT_EQ('z', value);
+  file.close();
+  EXPECT_TRUE(File::Delete(path));
+}
+#endif
 
 TEST(File, Append) {
   const char *file_path = "file_append_testing.tmp";
