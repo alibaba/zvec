@@ -5,6 +5,7 @@
 // http://www.apache.org/licenses/LICENSE-2.0
 
 #include <cmath>
+#include <functional>
 #include <random>
 #include <gtest/gtest.h>
 #include <zvec/core/interface/index_factory.h>
@@ -528,6 +529,156 @@ TEST_P(IVFRabitqIntegrationTest, TrainSearchAndReopen) {
   ASSERT_EQ(0, legacy->close());
   ASSERT_EQ(0, reopened->close());
   test_util::RemoveTestFiles(legacy_path);
+  test_util::RemoveTestFiles(path);
+}
+
+// Dot reuse is the one scan option that composes with the kFlat refiner:
+// it only changes the arithmetic inside the base search's quantized
+// refine, and just candidate keys cross the refine boundary. Diagnostic
+// scan options stay rejected under a refiner, and no scan option may
+// leak across the shared thread-local context when the mode flips.
+TEST_P(IVFRabitqIntegrationTest, ReuseWithKFlatRefinerAndContextSwitching) {
+  const auto metric = std::get<0>(GetParam());
+  const auto bits = std::get<1>(GetParam());
+  auto index = IndexFactory::CreateAndInitIndex(*RabitqParam(metric, bits));
+  ASSERT_NE(nullptr, std::dynamic_pointer_cast<IVFIndex>(index));
+  const std::string path = "ivf_integrated_rabitq_refiner.index";
+  test_util::RemoveTestFiles(path);
+  ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+  std::mt19937 rng(2026);
+  std::normal_distribution<float> normal;
+  std::vector<std::vector<float>> vectors(80, std::vector<float>(128));
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    float norm = 0;
+    for (auto &v : vectors[i]) {
+      v = normal(rng);
+      norm += v * v;
+    }
+    for (auto &v : vectors[i]) v /= std::sqrt(norm);
+    ASSERT_EQ(0, index->add(VectorData{DenseVector{vectors[i].data()}}, i * 3));
+  }
+  ASSERT_EQ(0, index->train());
+
+  // Reference kFlat index holding the same vectors under the same keys.
+  auto flat_param = FlatIndexParamBuilder()
+                        .with_dimension(128)
+                        .with_metric_type(metric)
+                        .with_data_type(DataType::DT_FP32)
+                        .build();
+  auto flat = IndexFactory::CreateAndInitIndex(*flat_param);
+  ASSERT_NE(nullptr, flat);
+  const std::string flat_path = path + ".flat";
+  test_util::RemoveTestFiles(flat_path);
+  ASSERT_EQ(0, flat->open(flat_path, {StorageOptions::StorageType::kMMAP, true}));
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    ASSERT_EQ(0, flat->add(VectorData{DenseVector{vectors[i].data()}}, i * 3));
+  }
+  ASSERT_EQ(0, flat->train());
+  const auto input = VectorData{DenseVector{vectors[7].data()}};
+
+  auto refiner = std::make_shared<RefinerParam>();
+  refiner->reference_index = flat;
+  auto query = IVFQueryParamBuilder()
+                   .with_topk(5)
+                   .with_nprobe(4)
+                   .with_refiner_param(refiner)
+                   .build();
+  auto exact_query = FlatQueryParamBuilder().with_topk(5).build();
+
+  // Plain mode baseline, captured before any reuse/refiner query touches
+  // the shared thread-local context.
+  SearchResult plain_before;
+  query->refiner_param = nullptr;
+  ASSERT_EQ(0, index->search(input, query, &plain_before));
+  ASSERT_EQ(5u, plain_before.doc_list_.size());
+
+  // With the coarse set covering every vector, the refined result is the
+  // exact FP32 top-5 whether reuse is off or on.
+  refiner->scale_factor_ = static_cast<float>(vectors.size());
+  query->refiner_param = refiner;
+  SearchResult exact, off, on;
+  ASSERT_EQ(0, flat->search(input, exact_query, &exact));
+  ASSERT_EQ(0, index->search(input, query, &off));
+  query->rabitq_reuse_coarse_dot = true;
+  ASSERT_EQ(0, index->search(input, query, &on));
+  ASSERT_EQ(exact.doc_list_.size(), off.doc_list_.size());
+  ASSERT_EQ(exact.doc_list_.size(), on.doc_list_.size());
+  for (size_t i = 0; i < exact.doc_list_.size(); ++i) {
+    EXPECT_EQ(exact.doc_list_[i].key(), off.doc_list_[i].key());
+    EXPECT_EQ(exact.doc_list_[i].key(), on.doc_list_[i].key());
+    EXPECT_NEAR(exact.doc_list_[i].score(), off.doc_list_[i].score(), 1e-6f);
+    EXPECT_NEAR(exact.doc_list_[i].score(), on.doc_list_[i].score(), 1e-6f);
+  }
+
+  // Production-like scale factor: reuse with the refiner is accepted and
+  // still returns full-topk refined results.
+  refiner->scale_factor_ = 1.1f;
+  query->rabitq_reuse_coarse_dot = false;
+  ASSERT_EQ(0, index->search(input, query, &off));
+  query->rabitq_reuse_coarse_dot = true;
+  ASSERT_EQ(0, index->search(input, query, &on));
+  EXPECT_EQ(5u, off.doc_list_.size());
+  EXPECT_EQ(5u, on.doc_list_.size());
+  EXPECT_EQ(off.doc_list_[0].key(), on.doc_list_[0].key());
+
+  // Diagnostic scan options stay rejected under the refiner, including
+  // reuse combined with a disabled pruning switch.
+  const std::pair<const char *, std::function<void(IVFQueryParam &)>> bad[] = {
+      {"collect_stats", [](IVFQueryParam &q) { q.rabitq_collect_stats = true; }},
+      {"segment_timing",
+       [](IVFQueryParam &q) { q.rabitq_segment_timing = true; }},
+      {"export_scan_lists",
+       [](IVFQueryParam &q) { q.rabitq_export_scan_lists = true; }},
+      {"no_pruning", [](IVFQueryParam &q) { q.rabitq_pruning = false; }},
+      {"no_pruning_with_reuse", [](IVFQueryParam &q) {
+         q.rabitq_pruning = false;
+         q.rabitq_reuse_coarse_dot = true;
+       }}};
+  for (const auto &[name, flip] : bad) {
+    query->rabitq_reuse_coarse_dot = false;
+    query->rabitq_collect_stats = false;
+    query->rabitq_segment_timing = false;
+    query->rabitq_export_scan_lists = false;
+    query->rabitq_pruning = true;
+    flip(*query);
+    SearchResult rejected;
+    EXPECT_EQ(core::IndexError_Unsupported,
+              index->search(input, query, &rejected)) << name;
+  }
+  query->rabitq_pruning = true;
+  query->rabitq_reuse_coarse_dot = false;
+  query->rabitq_collect_stats = false;
+  query->rabitq_segment_timing = false;
+  query->rabitq_export_scan_lists = false;
+
+  // Context-switch regression: reuse+refiner, reuse-only and refiner-only
+  // queries interleave on one thread; returning to plain mode must
+  // reproduce the untouched baseline exactly.
+  for (int round = 0; round < 2; ++round) {
+    query->refiner_param = refiner;
+    query->rabitq_reuse_coarse_dot = true;
+    ASSERT_EQ(0, index->search(input, query, &on));
+    EXPECT_EQ(5u, on.doc_list_.size());
+    query->refiner_param = nullptr;
+    ASSERT_EQ(0, index->search(input, query, &on));
+    query->rabitq_reuse_coarse_dot = false;
+    query->refiner_param = refiner;
+    ASSERT_EQ(0, index->search(input, query, &off));
+    EXPECT_EQ(5u, off.doc_list_.size());
+    query->refiner_param = nullptr;
+    SearchResult plain_after;
+    ASSERT_EQ(0, index->search(input, query, &plain_after));
+    ASSERT_EQ(plain_before.doc_list_.size(), plain_after.doc_list_.size());
+    for (size_t i = 0; i < plain_before.doc_list_.size(); ++i) {
+      EXPECT_EQ(plain_before.doc_list_[i].key(), plain_after.doc_list_[i].key());
+      EXPECT_FLOAT_EQ(plain_before.doc_list_[i].score(),
+                      plain_after.doc_list_[i].score());
+    }
+  }
+
+  ASSERT_EQ(0, flat->close());
+  test_util::RemoveTestFiles(flat_path);
+  ASSERT_EQ(0, index->close());
   test_util::RemoveTestFiles(path);
 }
 

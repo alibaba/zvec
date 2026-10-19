@@ -562,16 +562,26 @@ int IVFIndex::_prepare_for_search(
       std::dynamic_pointer_cast<IVFQueryParam>(search_param);
 
   if (!ivf_search_param) return core::IndexError_InvalidArgument;
-  const bool scan_options = !ivf_search_param->rabitq_pruning ||
-                            ivf_search_param->rabitq_reuse_coarse_dot ||
-                            ivf_search_param->rabitq_collect_stats ||
-                            ivf_search_param->rabitq_segment_timing ||
-                            ivf_search_param->rabitq_export_scan_lists ||
-                            ivf_search_param->rabitq_export_scan_samples;
-  if (scan_options && (!use_rabitq_ || legacy_rabitq_ ||
-                       search_param->refiner_param || search_param->bf_pks)) {
-    LOG_ERROR(
-        "RaBitQ scan options require Turbo IVF without refiner or bf_pks");
+  // Dot reuse only changes the arithmetic inside the base search's
+  // quantized refine; just candidate keys cross to the kFlat refiner
+  // (Index::search refine branch), so it is the one scan option that is
+  // not silently ignored under a refiner. The diagnostic scan options are
+  // still rejected there: their outputs land in the base SearchResult,
+  // which the refine pipeline discards. None of these options run at all
+  // under bf_pks or non-RaBitQ/legacy postings.
+  const bool diagnostics = !ivf_search_param->rabitq_pruning ||
+                           ivf_search_param->rabitq_collect_stats ||
+                           ivf_search_param->rabitq_segment_timing ||
+                           ivf_search_param->rabitq_export_scan_lists ||
+                           ivf_search_param->rabitq_export_scan_samples;
+  const bool reuse = ivf_search_param->rabitq_reuse_coarse_dot;
+  if ((reuse || diagnostics) && (!use_rabitq_ || legacy_rabitq_ ||
+                                 search_param->bf_pks)) {
+    LOG_ERROR("RaBitQ scan options require Turbo IVF without bf_pks");
+    return core::IndexError_Unsupported;
+  }
+  if (diagnostics && search_param->refiner_param) {
+    LOG_ERROR("RaBitQ scan diagnostics require Turbo IVF without refiner");
     return core::IndexError_Unsupported;
   }
   if (use_rabitq_ &&
