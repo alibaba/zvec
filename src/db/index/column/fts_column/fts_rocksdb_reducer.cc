@@ -17,6 +17,7 @@
 #include <vector>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/status.h>
+#include "db/common/constants.h"
 #include "db/index/column/fts_column/fts_utils.h"
 #include "db/index/column/fts_column/posting/bitpacked_posting_list.h"
 
@@ -106,6 +107,7 @@ Result<void> FtsRocksdbReducer::cleanup() {
   src_positions_cfs_.clear();
   scan_offset_per_seg_.clear();
   num_segments_ = 0;
+  tokenizer_version_.reset();
   state_ = STATE_UNINITED;
   return {};
 }
@@ -142,6 +144,34 @@ Result<void> FtsRocksdbReducer::feed(
         "ranges. field=",
         field_name_));
   }
+
+  // Compaction copies postings, not source text. Preserve their tokenizer
+  // version instead of labelling legacy terms as freshly tokenized data.
+  auto *stat_cf = src_ctx->get_cf(kFtsStatCfName);
+  if (!stat_cf) {
+    return tl::make_unexpected(Status::InternalError(
+        "FtsRocksdbReducer: missing source metadata. field=", field_name_));
+  }
+  std::string version;
+  auto status =
+      src_ctx->db_->Get(src_ctx->read_opts_, stat_cf,
+                        make_tokenizer_version_key(field_name_), &version);
+  if (!status.ok() && !status.IsNotFound()) {
+    return tl::make_unexpected(Status::InternalError(
+        "FtsRocksdbReducer: read tokenizer version failed: ",
+        status.ToString()));
+  }
+  std::optional<std::string> source_version;
+  if (status.ok()) {
+    source_version = std::move(version);
+  }
+  if (num_segments_ != 0 && tokenizer_version_ != source_version) {
+    return tl::make_unexpected(Status::FailedPrecondition(
+        "FtsRocksdbReducer: incompatible tokenizer versions; rebuild required. "
+        "field=",
+        field_name_));
+  }
+  tokenizer_version_ = std::move(source_version);
 
   segment_stats_.emplace_back(std::move(segment_stats));
   src_ctxs_.emplace_back(src_ctx);
@@ -469,6 +499,17 @@ Result<void> FtsRocksdbReducer::reduce_positions(
 
 Result<void> FtsRocksdbReducer::flush_stat(uint64_t total_docs,
                                            uint64_t total_tokens) {
+  const auto version_key = make_tokenizer_version_key(field_name_);
+  auto version_status =
+      tokenizer_version_
+          ? ctx_->db_->Put(ctx_->write_opts_, dst_stat_cf_, version_key,
+                           *tokenizer_version_)
+          : ctx_->db_->Delete(ctx_->write_opts_, dst_stat_cf_, version_key);
+  if (!version_status.ok()) {
+    return tl::make_unexpected(Status::InternalError(
+        "FtsRocksdbReducer: write tokenizer version failed: ",
+        version_status.ToString()));
+  }
   if (!ctx_->db_
            ->Put(ctx_->write_opts_, dst_stat_cf_,
                  make_total_docs_key(field_name_),

@@ -36,10 +36,11 @@ class FtsIndexer {
   ~FtsIndexer();
 
   // Create a new fts.rocksdb or open an existing one. Returns nullptr on
-  // failure.
+  // failure. When provided, status receives the error including any required
+  // index-rebuild instructions, so collection callers can propagate it.
   static Ptr CreateAndOpen(const std::string &working_dir,
                            const FieldSchemaPtrList &fts_fields, bool create,
-                           bool read_only = false);
+                           bool read_only = false, Status *status = nullptr);
 
   // Get FtsColumnIndexer by field name.
   fts::FtsColumnIndexerPtr get(const std::string &field_name) const;
@@ -86,6 +87,8 @@ class FtsIndexer {
 
   Status open(const FieldSchemaPtrList &fts_fields, bool create,
               bool read_only);
+
+  Status check_tokenizer_version(const FieldSchema &field, bool create);
 
   std::string working_dir_;
   std::shared_ptr<RocksdbContext> fts_ctx_;

@@ -31,6 +31,7 @@
 #include "db/index/column/fts_column/fts_ast_rewriter.h"
 #include "db/index/column/fts_column/fts_indexer.h"
 #include "db/index/column/fts_column/fts_rocksdb_merge.h"
+#include "db/index/column/fts_column/fts_utils.h"
 #include "db/index/column/fts_column/parser/fts_query_parser.h"
 #include "db/index/column/fts_column/posting/bitpacked_posting_list.h"
 #include "db/index/column/fts_column/tokenizer/tokenizer_factory.h"
@@ -134,6 +135,175 @@ static const std::string kPositionsCf{kPostingsCf + zvec::kFtsPositionsSuffix};
 static const std::string kTermFreqCf{kPostingsCf + zvec::kFtsTfSuffix};
 static const std::string kDocLenCf{kPostingsCf + zvec::kFtsDocLenSuffix};
 static const std::string kStatCf{zvec::kFtsStatCfName};
+
+class FtsTokenizerCompatibilityTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    FileHelper::RemoveDirectory(path_);
+    FileHelper::RemoveDirectory(snapshot_);
+  }
+  void TearDown() override {
+    FileHelper::RemoveDirectory(path_);
+    FileHelper::RemoveDirectory(snapshot_);
+  }
+  FieldSchema::Ptr field(const std::string &tokenizer = "whitespace") {
+    return make_test_field_meta("text",
+                                std::make_shared<zvec::FtsIndexParams>(
+                                    tokenizer, std::vector<std::string>{}));
+  }
+  RocksdbContext::Args raw_args() {
+    return {path_,
+            {},
+            nullptr,
+            {{"text", std::make_shared<FtsPostingsMerge>()},
+             {std::string("text") + kFtsMaxTfSuffix,
+              std::make_shared<FtsMaxTfMerge>()}},
+            true};
+  }
+  std::string path_{"./test_fts_tokenizer_version"};
+  std::string snapshot_{"./test_fts_tokenizer_snapshot"};
+};
+
+TEST_F(FtsTokenizerCompatibilityTest, LegacyWhitespaceRequiresRebuild) {
+  for (bool sealed : {false, true}) {
+    SCOPED_TRACE(sealed);
+    FileHelper::RemoveDirectory(path_);
+    auto schema = field();
+    auto indexer = FtsIndexer::CreateAndOpen(path_, {schema}, true);
+    ASSERT_NE(indexer, nullptr);
+    // Exact term boundaries produced for "你好" by the old macOS
+    // en_US.UTF-8 byte tokenizer: the 0xA0 continuation byte was discarded.
+    const std::string legacy_terms = "\xe4\xbd \xe5\xa5\xbd";
+    ASSERT_TRUE(indexer->insert("text", 0, legacy_terms).ok());
+    ASSERT_TRUE(indexer->flush().ok());
+    if (sealed) {
+      ASSERT_TRUE(indexer->seal_all().ok());
+    }
+    std::vector<FtsResult> results;
+    ASSERT_TRUE(search_ok(*indexer->get("text"), u8"你好", 10, &results));
+    ASSERT_TRUE(
+        results.empty());  // Demonstrates why silently opening is unsafe.
+    indexer.reset();
+
+    // Legacy files have no tokenizer-format key, in mutable and sealed form.
+    {
+      RocksdbContext db;
+      ASSERT_TRUE(db.open(raw_args(), false).ok());
+      ASSERT_TRUE(db.db_
+                      ->Delete(db.write_opts_, db.get_cf(kFtsStatCfName),
+                               make_tokenizer_version_key("text"))
+                      .ok());
+      ASSERT_TRUE(db.flush().ok());
+    }
+    for (bool read_only : {false, true, false}) {
+      Status status;
+      auto reopened =
+          FtsIndexer::CreateAndOpen(path_, {schema}, false, read_only, &status);
+      EXPECT_EQ(reopened, nullptr);
+      EXPECT_EQ(status.code(), StatusCode::FAILED_PRECONDITION);
+      EXPECT_NE(status.message().find("Rebuild required"), std::string::npos);
+      EXPECT_NE(status.message().find("field[text]"), std::string::npos);
+    }
+    // A failed writable open must not bless old postings with a new marker.
+    RocksdbContext db;
+    ASSERT_TRUE(db.open(raw_args(), true).ok());
+    std::string value;
+    EXPECT_TRUE(db.db_
+                    ->Get(db.read_opts_, db.get_cf(kFtsStatCfName),
+                          make_tokenizer_version_key("text"), &value)
+                    .IsNotFound());
+    EXPECT_TRUE(
+        db.db_->Get(db.read_opts_, db.get_cf("text"), "\xe4\xbd", &value).ok());
+  }
+}
+
+TEST_F(FtsTokenizerCompatibilityTest, NewWhitespaceSurvivesReopenAndSnapshot) {
+  for (bool sealed : {false, true}) {
+    SCOPED_TRACE(sealed);
+    FileHelper::RemoveDirectory(path_);
+    FileHelper::RemoveDirectory(snapshot_);
+    auto schema = field();
+    auto indexer = FtsIndexer::CreateAndOpen(path_, {schema}, true);
+    ASSERT_NE(indexer, nullptr);
+    ASSERT_TRUE(indexer->insert("text", 0, u8"你好").ok());
+    ASSERT_TRUE(indexer->flush().ok());
+    if (sealed) {
+      ASSERT_TRUE(indexer->seal_all().ok());
+    }
+    ASSERT_TRUE(indexer->create_snapshot(snapshot_).ok());
+    indexer.reset();
+    for (const auto &path : {path_, snapshot_}) {
+      for (bool read_only : {true, false}) {
+        Status status;
+        auto reopened = FtsIndexer::CreateAndOpen(path, {schema}, false,
+                                                  read_only, &status);
+        ASSERT_NE(reopened, nullptr) << status.message();
+        ASSERT_TRUE(status.ok());
+        std::vector<FtsResult> results;
+        ASSERT_TRUE(search_ok(*reopened->get("text"), u8"你好", 10, &results));
+        ASSERT_EQ(results.size(), 1u);
+        EXPECT_EQ(results.front().doc_id, 0u);
+      }
+    }
+  }
+}
+
+TEST_F(FtsTokenizerCompatibilityTest, UnknownVersionIsRejected) {
+  auto schema = field();
+  auto indexer = FtsIndexer::CreateAndOpen(path_, {schema}, true);
+  ASSERT_NE(indexer, nullptr);
+  ASSERT_TRUE(indexer->insert("text", 0, u8"你好").ok());
+  ASSERT_TRUE(indexer->flush().ok());
+  indexer.reset();
+  {
+    RocksdbContext db;
+    ASSERT_TRUE(db.open(raw_args(), false).ok());
+    ASSERT_TRUE(db.db_
+                    ->Put(db.write_opts_, db.get_cf(kFtsStatCfName),
+                          make_tokenizer_version_key("text"), "future-v2")
+                    .ok());
+    ASSERT_TRUE(db.flush().ok());
+  }
+  for (bool read_only : {false, true}) {
+    Status status;
+    EXPECT_EQ(
+        FtsIndexer::CreateAndOpen(path_, {schema}, false, read_only, &status),
+        nullptr);
+    EXPECT_EQ(status.code(), StatusCode::FAILED_PRECONDITION);
+  }
+}
+
+TEST_F(FtsTokenizerCompatibilityTest, FieldRebuildReplacesVersionMetadata) {
+  auto schema = field();
+  auto indexer = FtsIndexer::CreateAndOpen(path_, {schema}, true);
+  ASSERT_NE(indexer, nullptr);
+  ASSERT_TRUE(indexer->insert("text", 0, u8"你好").ok());
+  ASSERT_TRUE(indexer->remove_field_indexer("text").ok());
+  auto standard = field("standard");
+  ASSERT_TRUE(indexer->create_field_indexer(*standard).ok());
+  auto *ctx = indexer->get("text")->ctx();
+  std::string version;
+  ASSERT_TRUE(ctx->db_
+                  ->Get(ctx->read_opts_, ctx->get_cf(kFtsStatCfName),
+                        make_tokenizer_version_key("text"), &version)
+                  .IsNotFound());
+  ASSERT_TRUE(indexer->insert("text", 0, "hello").ok());
+  ASSERT_TRUE(indexer->flush().ok());
+  indexer.reset();
+  // Existing standard indexes do not need a whitespace-format marker.
+  indexer = FtsIndexer::CreateAndOpen(path_, {standard}, false);
+  ASSERT_NE(indexer, nullptr);
+  ASSERT_TRUE(indexer->remove_field_indexer("text").ok());
+  ASSERT_TRUE(indexer->create_field_indexer(*schema).ok());
+  ASSERT_TRUE(indexer->insert("text", 0, u8"你好").ok());
+  ASSERT_TRUE(indexer->flush().ok());
+  indexer.reset();
+  indexer = FtsIndexer::CreateAndOpen(path_, {schema}, false, true);
+  ASSERT_NE(indexer, nullptr);
+  std::vector<FtsResult> results;
+  ASSERT_TRUE(search_ok(*indexer->get("text"), u8"你好", 10, &results));
+  EXPECT_EQ(results.size(), 1u);
+}
 
 class FtsColumnIndexerTest : public ::testing::Test {
  protected:

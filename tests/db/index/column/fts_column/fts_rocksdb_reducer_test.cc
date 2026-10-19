@@ -1116,3 +1116,52 @@ TEST_F(FtsRocksdbReducerTest, MultiSegmentBM25StatsAreAccumulatedCorrectly) {
   EXPECT_EQ(docs[2], 2u);
   EXPECT_EQ(docs[3], 3u);
 }
+
+TEST_F(FtsRocksdbReducerTest, PreservesTokenizerVersionAcrossCompaction) {
+  auto indexer = make_src0_indexer();
+  InsertDocs(indexer.get(), {{0, u8"你好"}});
+  ASSERT_TRUE(src0_db_.db_
+                  ->Put(src0_db_.write_opts_, src0_stat_,
+                        make_tokenizer_version_key(kFieldName),
+                        kWhitespaceTokenizerVersion)
+                  .ok());
+  auto reducer = make_reducer();
+  ASSERT_TRUE(reducer
+                  .feed(MakeSegmentStats(0, 0), &src0_db_, src0_postings_,
+                        src0_positions_)
+                  .has_value());
+  ASSERT_TRUE(reducer.reduce(NoDeleteFilter()).has_value());
+  std::string version;
+  ASSERT_TRUE(dst_db_.db_
+                  ->Get(dst_db_.read_opts_, dst_stat_,
+                        make_tokenizer_version_key(kFieldName), &version)
+                  .ok());
+  EXPECT_EQ(version, kWhitespaceTokenizerVersion);
+  auto reader = make_dst_reader();
+  std::vector<FtsResult> results;
+  ASSERT_TRUE(search_str_ok(*reader, u8"你好", 10, &results));
+  EXPECT_EQ(results.size(), 1u);
+}
+
+TEST_F(FtsRocksdbReducerTest, RejectsMixingLegacyAndVersionedPostings) {
+  auto first = make_src0_indexer();
+  auto second = make_src1_indexer();
+  InsertDocs(first.get(), {{0, "hello"}});
+  InsertDocs(second.get(), {{0, "world"}});
+  ASSERT_TRUE(src0_db_.db_
+                  ->Put(src0_db_.write_opts_, src0_stat_,
+                        make_tokenizer_version_key(kFieldName),
+                        kWhitespaceTokenizerVersion)
+                  .ok());
+  auto reducer = make_reducer();
+  ASSERT_TRUE(reducer
+                  .feed(MakeSegmentStats(0, 0), &src0_db_, src0_postings_,
+                        src0_positions_)
+                  .has_value());
+  auto result = reducer.feed(MakeSegmentStats(1, 1), &src1_db_, src1_postings_,
+                             src1_positions_);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), StatusCode::FAILED_PRECONDITION);
+  EXPECT_NE(result.error().message().find("rebuild required"),
+            std::string::npos);
+}

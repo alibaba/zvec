@@ -27,13 +27,61 @@ FtsIndexer::~FtsIndexer() {
 
 FtsIndexer::Ptr FtsIndexer::CreateAndOpen(const std::string &working_dir,
                                           const FieldSchemaPtrList &fts_fields,
-                                          bool create, bool read_only) {
+                                          bool create, bool read_only,
+                                          Status *status) {
   auto indexer = std::make_shared<FtsIndexer>(working_dir);
   auto s = indexer->open(fts_fields, create, read_only);
+  if (status) {
+    *status = s;
+  }
   if (!s.ok()) {
     return nullptr;
   }
   return indexer;
+}
+
+Status FtsIndexer::check_tokenizer_version(const FieldSchema &field,
+                                           bool create) {
+  auto params = std::dynamic_pointer_cast<FtsIndexParams>(field.index_params());
+  if (!params || params->tokenizer_name() != "whitespace") {
+    return Status::OK();
+  }
+  auto *stat_cf = fts_ctx_->get_cf(kFtsStatCfName);
+  if (!stat_cf) {
+    return Status::InternalError("Missing FTS metadata for field[",
+                                 field.name(), "] at [", working_dir_, "]");
+  }
+  const auto key = fts::make_tokenizer_version_key(field.name());
+  if (create) {
+    // Only freshly created field CFs may receive the current version. Make
+    // the marker durable before accepting documents, including crash recovery.
+    auto options = fts_ctx_->write_opts_;
+    options.disableWAL = false;
+    options.sync = true;
+    auto s = fts_ctx_->db_->Put(options, stat_cf, key,
+                                fts::kWhitespaceTokenizerVersion);
+    return s.ok() ? Status::OK()
+                  : Status::InternalError(
+                        "Failed to persist FTS tokenizer "
+                        "version: ",
+                        s.ToString());
+  }
+
+  std::string version;
+  auto s = fts_ctx_->db_->Get(fts_ctx_->read_opts_, stat_cf, key, &version);
+  if (!s.ok() && !s.IsNotFound()) {
+    return Status::InternalError("Failed to read FTS tokenizer version: ",
+                                 s.ToString());
+  }
+  if (!s.ok() || version != fts::kWhitespaceTokenizerVersion) {
+    return Status::FailedPrecondition(
+        "Whitespace FTS index has a legacy or unsupported tokenizer format. "
+        "Rebuild required: export documents using the version that created "
+        "this index, then recreate and reinsert them with the current version. "
+        "field[",
+        field.name(), "] path[", working_dir_, "]");
+  }
+  return Status::OK();
 }
 
 Status FtsIndexer::open(const FieldSchemaPtrList &fts_fields, bool create,
@@ -85,6 +133,15 @@ Status FtsIndexer::open(const FieldSchemaPtrList &fts_fields, bool create,
   }
 
   auto *stat_cf = fts_ctx_->get_cf(kFtsStatCfName);
+
+  // Validate every field before exposing any indexer. Never stamp a legacy
+  // index as current merely because it was opened successfully by RocksDB.
+  for (const auto &field : fts_fields) {
+    s = check_tokenizer_version(*field, create);
+    if (!s.ok()) {
+      return s;
+    }
+  }
 
   for (const auto &field : fts_fields) {
     const auto &name = field->name();
@@ -193,6 +250,11 @@ Status FtsIndexer::create_field_indexer(const FieldSchema &field) {
     }
   }
 
+  auto version_status = check_tokenizer_version(field, true);
+  if (!version_status.ok()) {
+    return version_status;
+  }
+
   // Open FtsColumnIndexer on the new CFs.
   auto *postings_cf = fts_ctx_->get_cf(name);
   auto *positions_cf = fts_ctx_->get_cf(name + kFtsPositionsSuffix);
@@ -251,6 +313,12 @@ Status FtsIndexer::remove_field_indexer(const std::string &field_name) {
           "failed for field[%s]: %s",
           field_name.c_str(), rs.ToString().c_str());
       return Status::InternalError("delete total_tokens key failed");
+    }
+    rs = fts_ctx_->db_->Delete(fts_ctx_->write_opts_, stat_cf,
+                               fts::make_tokenizer_version_key(field_name));
+    if (!rs.ok()) {
+      return Status::InternalError("delete tokenizer version key failed: ",
+                                   rs.ToString());
     }
   }
 
