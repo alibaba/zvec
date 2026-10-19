@@ -5,8 +5,11 @@ Each case synthesizes a v14_prod_summary.txt (plus a v14_indep_summary.txt
 when the case exercises the independent-set section) in a scratch dir next
 to this script (never /tmp; TMPDIR is pointed at the scratch dir), runs the
 analyzer as a subprocess, and asserts the exit code, whether
-v14_prod_analysis.out was written, and error keywords. Scratch dirs are
-removed when all cases pass and kept for inspection when a case fails.
+v14_prod_analysis.out was written, and error keywords. The positive indep
+fixture mirrors the real run_v14_indep.sh output byte-for-byte in shape
+(gtgen header, per-config recall records, warmup_<cfg> bench records and
+<cfg>_r{1,2,3} rotated formal rounds). Scratch dirs are removed when all
+cases pass and kept for inspection when a case fails.
 
 Usage: python3 test_analyze_v14_prod.py
 """
@@ -21,6 +24,7 @@ ANALYZER = HERE / 'analyze_v14_prod.py'
 SCRATCH = HERE / 'test_tmp'
 
 ROUNDS = 5
+INDEP_ROUNDS = 3
 # name -> (base qps, rss_kb); qps_r = base + 0.5*(r-1)
 CFG = [
     ('v12_prod50_np293_t1', 130.0, 840000),
@@ -38,22 +42,53 @@ RECALLS = [
     'recall v13_native_np249_t1 rc=0 Recall@50: 99.002',
     'recall v14_natref_np170_top55_t1 rc=0 Recall@50: 99.058',
 ]
-INDEP = [
-    '=== v14 independent query set validation ===',
-    'indep recall v12_prod50_np293_t1_indep rc=0 Recall@50: 98.988',
-    'indep bench v12_prod50_np293_t1_indep rc=0 qps=128.1 '
-    'rss_kb=868384 loadavg=1.50',
-    'indep recall v13_rrf55_np180_t1_indep rc=0 Recall@50: 99.052',
-    'indep bench v13_rrf55_np180_t1_indep rc=0 qps=186.9 '
-    'rss_kb=3585536 loadavg=1.60',
-    'indep recall v13_native_np249_t1_indep rc=0 Recall@50: 98.990',
-    'indep bench v13_native_np249_t1_indep rc=0 qps=161.0 '
-    'rss_kb=724992 loadavg=1.40',
-    'indep recall v14_natref_np170_top55_t1_indep rc=0 Recall@50: 99.128',
-    'indep bench v14_natref_np170_top55_t1_indep rc=0 qps=180.5 '
-    'rss_kb=3472256 loadavg=1.70',
-    '=== v14 indep DONE ===',
+# frozen t1 configs -> real measured independent-set values (run_v14_indep.sh)
+INDEP_CFGS = [
+    # name, Recall@50, warmup qps/rss/load, r1..r3 qps, rss, load
+    ('v12_prod50_np293_t1_indep', 94.4689, 42.9, 835192, 5.86,
+     [(42.4, 835576, 2.47), (40.8, 835448, 1.51), (41.4, 835444, 1.47)]),
+    ('v13_rrf55_np180_t1_indep', 91.4422, 62.4, 3383640, 4.14,
+     [(59.1, 3383876, 2.44), (59.9, 3384016, 1.72), (58.2, 3384188, 2.71)]),
+    ('v13_native_np249_t1_indep', 92.74, 85.0, 719460, 3.07,
+     [(79.0, 719332, 2.10), (75.1, 719460, 1.58), (78.4, 719208, 1.62)]),
+    ('v14_natref_np170_top55_t1_indep', 89.6778, 111.2, 3267884, 2.33,
+     [(104.3, 3268236, 1.96), (99.9, 3268128, 1.47), (102.6, 3267980, 1.77)]),
 ]
+TS = '2026-10-16T18:30:15+08:00'
+
+
+def build_indep():
+    lines = [
+        '=== v14 independent GT generation 2026-10-16T18:28:36+08:00 '
+        'commit=423423c1 ===',
+        '--- gtgen flat100 2026-10-16T18:28:36+08:00 ---',
+        'gtgen_recall v14_gtgen_flat100 rc=0 Recall@100: 100',
+        'wrote GT: 900 queries x 100 keys -> '
+        'indep/neighbors_indep_q10m_900.txt',
+        'brute-force check on 10 sampled queries (keys mapped): top100 set '
+        'match 10/10, top50 set match 10/10',
+        '=== v14 independent GT generation DONE 2026-10-16T18:29:54+08:00 ===',
+        f'=== v14 independent-set validation np=170 N=55 {TS} '
+        'commit=423423c1 ===',
+    ]
+    for name, v, *_ in INDEP_CFGS:
+        lines.append(f'--- indep recall {name} {TS} ---')
+        lines.append(f'indep recall {name} rc=0 Recall@50: {v}')
+    for name, _, wq, wr, wl, _ in INDEP_CFGS:
+        lines.append(f'--- indep warmup {name} {TS} ---')
+        lines.append(f'indep bench warmup_{name} rc=0 qps={wq} '
+                     f'rss_kb={wr} loadavg={wl}')
+    order = {1: [0, 1, 2, 3], 2: [1, 2, 3, 0], 3: [2, 3, 0, 1]}
+    for r in range(1, INDEP_ROUNDS + 1):
+        lines.append(f'=== indep ROUND r{r} {TS} loadavg=2.0 2.0 2.0 ===')
+        for i in order[r]:
+            name, _, _, _, _, rr = INDEP_CFGS[i]
+            q, rss, load = rr[r - 1]
+            lines.append(f'--- indep r{r} {name} {TS} ---')
+            lines.append(f'indep bench {name}_r{r} rc=0 qps={q} '
+                         f'rss_kb={rss} loadavg={load}')
+    lines.append(f'=== v14 independent-set validation DONE {TS} ===')
+    return lines
 
 
 def values(name, r):
@@ -156,6 +191,7 @@ def main():
         shutil.rmtree(SCRATCH)
     SCRATCH.mkdir(parents=True)
     base = build_summary()
+    indep = build_indep()
 
     native_r2 = values('v13_native_np249_t1', 2)
     unparseable = (f'bench v13_native_np249_t1_r2 rc=0 qps={native_r2["qps"]} '
@@ -167,26 +203,42 @@ def main():
     failed_warm = warmup_line('v13_native_np249_t1', rc=1, qps='MISSING',
                               avg='MISSING', p95='MISSING', p99='MISSING',
                               rss='MISSING')
-    bad_indep = ['=== v14 independent query set validation ===',
-                 'indep recall v13_native_np249_t1_indep rc=1 '
-                 'Recall@50: 99.000',
-                 'indep recall v14_natref_np170_top55_t1_indep rc=0 '
-                 'Recall@50: MISSING',
-                 'indep bench v14_natref_np170_top55_t1_indep rc=0 qps=180.5 '
-                 'rss_kb=3472256 loadavg=1.70']
+    bad_indep = replace_line(
+        indep, 'indep recall v13_native_np249_t1_indep rc=0 Recall@50: 92.74',
+        'indep recall v13_native_np249_t1_indep rc=1 Recall@50: 92.74')
+    bad_indep = replace_line(
+        bad_indep,
+        'indep recall v14_natref_np170_top55_t1_indep rc=0 '
+        'Recall@50: 89.6778',
+        'indep recall v14_natref_np170_top55_t1_indep rc=0 '
+        'Recall@50: MISSING')
+    r1_v12 = next(l for l in indep
+                  if l == 'indep bench v12_prod50_np293_t1_indep_r1 rc=0 '
+                          'qps=42.4 rss_kb=835576 loadavg=2.47')
+    no_round = ('indep bench v12_prod50_np293_t1_indep rc=0 qps=42.4 '
+                'rss_kb=835576 loadavg=2.47')
+    gtgen_only = [l for l in indep if 'indep recall' not in l
+                  and 'indep bench' not in l
+                  and '--- indep' not in l and 'indep ROUND' not in l
+                  and 'independent-set validation' not in l]
+    mismatched = [l.replace('np170_top55', 'np175_top55') for l in indep]
 
     cases = [
         ('complete', dict(
-            summary=base, indep=INDEP, expect_rc0=True,
+            summary=base, indep=indep, expect_rc0=True,
             must=['integrity: 40/40 formal records OK',
                   'qps med=191.0', 'qps med=131.0', 'qps med=871.0',
                   'rss med=3.42GB', 'rss med=3.31GB', 'rss med=0.80GB',
                   't1 rrf/int:', 'x1.458',
                   'recall v14_natref_np170_top55_t1 rc=0 Recall@50: 99.058',
                   'independent query set (cohere 10m test split',
-                  'indep recall v14_natref_np170_top55_t1_indep rc=0 '
-                  'Recall@50: 99.128',
-                  'indep bench v13_rrf55_np180_t1_indep rc=0 qps=186.9'],
+                  'indep integrity: 4 recall + 4 warmup + 12 bench records',
+                  'indep recall v12_prod50_np293_t1_indep rc=0 '
+                  'Recall@50: 94.4689',
+                  'indep bench warmup_v12_prod50_np293_t1_indep rc=0 qps=42.9',
+                  'indep bench v12_prod50_np293_t1_indep_r1 rc=0 qps=42.4',
+                  'indep bench v14_natref_np170_top55_t1_indep_r3 rc=0 '
+                  'qps=102.6'],
             must_not=['INTEGRITY FAILURE'])),
         ('no_indep_file', dict(
             summary=base, expect_rc0=True,
@@ -195,8 +247,76 @@ def main():
             must_not=['indep recall', 'INTEGRITY FAILURE'])),
         ('bad_indep_line', dict(
             summary=base, indep=bad_indep,
-            must_stderr=['indep line 2: rc=1',
-                         'indep line 3: Recall@50 MISSING'])),
+            must_stderr=['rc=1', 'Recall@50 MISSING'])),
+        ('indep_missing_round', dict(
+            summary=base, indep=drop(indep, '_r2 rc=0 qps=40.8'),
+            must_stderr=['indep missing rounds: v12_prod50_np293_t1_indep '
+                         'lacks r2',
+                         'indep record count 19 != 20'])),
+        ('indep_duplicate_round', dict(
+            summary=base, indep=indep + [r1_v12],
+            must_stderr=['duplicate (config, round) record '
+                         'v12_prod50_np293_t1_indep_r1'])),
+        ('indep_failed_marker', dict(
+            summary=base,
+            indep=[l for l in indep if 'r1 rc=0 qps=42.4' not in l] +
+                  ['FAILED: indep bench v12_prod50_np293_t1_indep_r1 rc=1 '
+                   '-- aborting'],
+            must_stderr=['indep line ', 'aborted run',
+                         'indep missing rounds: v12_prod50_np293_t1_indep '
+                         'lacks r1'])),
+        ('indep_missing_recall', dict(
+            summary=base,
+            indep=drop(indep,
+                       'indep recall v13_rrf55_np180_t1_indep rc=0 '
+                       'Recall@50: 91.4422'),
+            must_stderr=['indep missing recall record: '
+                         'v13_rrf55_np180_t1_indep',
+                         'indep record count 19 != 20'])),
+        ('indep_one_recall_only', dict(
+            summary=base,
+            indep=[l for l in indep if not l.startswith('indep recall')
+                   or 'v12_prod50_np293_t1_indep' in l],
+            must_stderr=['indep missing recall record: '
+                         'v13_rrf55_np180_t1_indep',
+                         'indep missing recall record: '
+                         'v13_native_np249_t1_indep',
+                         'indep missing recall record: '
+                         'v14_natref_np170_top55_t1_indep'])),
+        ('indep_missing_warmup', dict(
+            summary=base,
+            indep=drop(indep, 'warmup_v13_native_np249_t1_indep rc=0'),
+            must_stderr=['indep missing warmup record: '
+                         'warmup_v13_native_np249_t1_indep',
+                         'indep record count 19 != 20'])),
+        ('indep_unexpected_round', dict(
+            summary=base,
+            indep=indep + ['indep bench v12_prod50_np293_t1_indep_r4 rc=0 '
+                           'qps=43.0 rss_kb=835576 loadavg=2.0'],
+            must_stderr=['indep unexpected rounds: '
+                         'v12_prod50_np293_t1_indep has r4',
+                         'indep record count 21 != 20'])),
+        ('indep_config_mismatch', dict(
+            summary=base, indep=mismatched,
+            must_stderr=['indep config identity mismatch for scheme natref: '
+                         "got ['v14_natref_np175_top55_t1'], expected "
+                         'v14_natref_np170_top55_t1'])),
+        ('indep_run_mixing', dict(
+            summary=base, indep=indep + indep,
+            must_stderr=['duplicate recall record', 'duplicate warmup record',
+                         'duplicate (config, round) record'])),
+        ('indep_no_round_suffix', dict(
+            summary=base,
+            indep=replace_line(indep, 'v12_prod50_np293_t1_indep_r1 rc=0 '
+                                      'qps=42.4', no_round),
+            must_stderr=['bench tag v12_prod50_np293_t1_indep is neither a '
+                         'warmup nor a formal _r<round> record',
+                         'indep missing rounds: v12_prod50_np293_t1_indep '
+                         'lacks r1'])),
+        ('indep_gtgen_only', dict(
+            summary=base, indep=gtgen_only,
+            must_stderr=['indep summary exists but contains no validation '
+                         'records'])),
         ('missing_round', dict(
             summary=drop(base, 'bench v14_natref_np170_top55_t4_r3 '),
             must_stderr=['missing rounds: v14_natref_np170_top55_t4 lacks r3'])),

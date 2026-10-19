@@ -12,6 +12,17 @@ and paired comparisons require identical round sets (never the
 intersection). Any violation exits non-zero, prints the problems to
 stderr and suppresses the formal conclusions and v14_prod_analysis.out.
 
+The independent-set summary gets the same strict treatment when the file
+exists: a complete validation is exactly 4 recall records (one per frozen
+t1 config) + 4 warmup bench records + 3 rotated rounds x 4 configs = 12
+bench records, config names must equal the production t1 names + '_indep'
+(identity: the same frozen parameters), rounds complete and unique, rc=0,
+fields finite and in range; FAILED markers, unparseable lines, missing or
+duplicate records, unexpected rounds and appended re-runs (mixed
+experiments) are all rejected -- a present-but-incomplete file suppresses
+ALL formal conclusions. A missing file only downgrades the section to
+'independent validation not completed' (tuning-set results remain valid).
+
 Schemes (t1 and t4):
   int    v12_prod50_np293          integrated baseline
   rrf    v13_rrf{N}_np{np}         integrated + refine rerank
@@ -56,6 +67,7 @@ LINE = re.compile(
     r'avg_ms=(?P<avg>[0-9.]+|MISSING) p95_ms=(?P<p95>[0-9.]+|MISSING) '
     r'p99_ms=(?P<p99>[0-9.]+|MISSING) rss_kb=(?P<rss>[0-9]+|MISSING) '
     r'loadavg=(?P<load>[0-9.]+)')
+INDEP_ROUNDS = 3
 INDEP_BENCH = re.compile(
     r'^indep bench (?P<name>\S+) rc=(?P<rc>\d+) '
     r'qps=(?P<qps>[0-9.]+|MISSING) rss_kb=(?P<rss>[0-9]+|MISSING) '
@@ -194,10 +206,27 @@ def check_fields(formal, errors):
     return vals
 
 
-def check_indep(text, errors):
+def check_indep(text, formal_t1, errors):
+    r"""Strict gate for the independent-set summary.
+
+    A COMPLETE independent validation is exactly 4 recall records (one per
+    frozen t1 config), 4 warmup bench records and 3 rotated formal rounds
+    x 4 configs = 12 bench records. Every config name must be a production
+    t1 config + '_indep' (identity check against the formal grid); rounds
+    must be complete and unique; rc must be 0; numeric fields must be
+    present, finite and in range. A present-but-incomplete file is an
+    integrity failure (no formal conclusions at all); a missing file only
+    downgrades the section to 'not completed'.
+    """
     keep = []
+    recalls = {}
+    warm = {}
+    rounds = {}
     for lineno, line in enumerate(text.splitlines(), 1):
         s = line.strip()
+        if s.startswith('FAILED:'):
+            errors.append(f'indep line {lineno}: aborted run: {s}')
+            continue
         if not (s.startswith('indep recall') or s.startswith('indep bench')
                 or s.startswith('WARN:')):
             continue
@@ -213,18 +242,120 @@ def check_indep(text, errors):
             errors.append(f'indep line {lineno}: rc={m.group("rc")}: {s}')
             continue
         if s.startswith('indep recall'):
+            name = m.group('name')
+            if name in recalls:
+                errors.append(
+                    f'indep line {lineno}: duplicate recall record {name} '
+                    f'(first at line {recalls[name]})')
+            else:
+                recalls[name] = lineno
             v = m.group('v')
             if v == 'MISSING':
                 errors.append(f'indep line {lineno}: Recall@50 MISSING')
             elif not 0.0 <= float(v) <= 100.0:
                 errors.append(f'indep line {lineno}: Recall@50={v} out of range')
+            continue
+        tag = m.group('name')
+        for f, lo, hi in (('qps', 0.0, 1e6), ('rss', 1024.0, 1e12)):
+            raw = m.group(f)
+            if raw == 'MISSING':
+                errors.append(f'indep line {lineno}: {f} MISSING')
+            elif not lo < float(raw) <= hi:
+                errors.append(f'indep line {lineno}: {f}={raw} out of range')
+        if tag.startswith('warmup_'):
+            name = tag[len('warmup_'):]
+            if re.search(r'_r\d+$', name):
+                errors.append(
+                    f'indep line {lineno}: warmup tag {tag} carries a round '
+                    f'suffix')
+                continue
+            if tag in warm:
+                errors.append(
+                    f'indep line {lineno}: duplicate warmup record {tag} '
+                    f'(first at line {warm[tag]})')
+            else:
+                warm[tag] = lineno
+            continue
+        rm = re.search(r'_r(\d+)$', tag)
+        if not rm:
+            errors.append(
+                f'indep line {lineno}: bench tag {tag} is neither a warmup '
+                f'nor a formal _r<round> record')
+            continue
+        name, rnd = tag[:rm.start()], int(rm.group(1))
+        if (name, rnd) in rounds:
+            errors.append(
+                f'indep line {lineno}: duplicate (config, round) record '
+                f'{tag} (first at line {rounds[(name, rnd)]})')
         else:
-            for f, lo, hi in (('qps', 0.0, 1e6), ('rss', 1024.0, 1e12)):
-                raw = m.group(f)
-                if raw == 'MISSING':
-                    errors.append(f'indep line {lineno}: {f} MISSING')
-                elif not lo < float(raw) <= hi:
-                    errors.append(f'indep line {lineno}: {f}={raw} out of range')
+            rounds[(name, rnd)] = lineno
+
+    if not recalls and not warm and not rounds:
+        errors.append('indep summary exists but contains no validation '
+                      'records (incomplete run: expected 4 recall + 4 warmup '
+                      f'+ {4 * INDEP_ROUNDS} bench records)')
+        return keep
+
+    # config identity: scheme classification plus exact match against the
+    # production t1 grid (when that grid parsed cleanly)
+    by_cfg = {}
+    for name in sorted(set(recalls)
+                       | {n for n, _ in rounds}
+                       | {t[len('warmup_'):] for t in warm}):
+        if not name.endswith('_indep'):
+            errors.append(f'indep config name {name} lacks _indep suffix')
+            continue
+        scheme, tier = classify(name[:-len('_indep')])
+        if scheme is None or tier != 't1':
+            errors.append(
+                f'indep config name {name} does not classify as a '
+                f'production t1 scheme')
+            continue
+        by_cfg.setdefault(scheme, set()).add(name[:-len('_indep')])
+    for scheme, bases in sorted(by_cfg.items()):
+        if len(bases) > 1:
+            errors.append(f'indep ambiguous configs for scheme {scheme}: '
+                          f'{", ".join(sorted(bases))}')
+        if formal_t1:
+            expected = formal_t1.get(scheme)
+            if expected is None or bases != {expected}:
+                errors.append(
+                    f'indep config identity mismatch for scheme {scheme}: '
+                    f'got {sorted(bases)}, expected '
+                    f'{expected or "<missing from grid>"}')
+    if formal_t1:
+        for scheme in sorted(set(formal_t1) - set(by_cfg)):
+            errors.append(
+                f'indep missing config: scheme {scheme} '
+                f'({formal_t1[scheme]}_indep) has no records')
+
+    # completeness: every config needs 1 recall + 1 warmup + r1..r3
+    names = sorted(set(recalls)
+                   | {t[len('warmup_'):] for t in warm}
+                   | {n for n, _ in rounds})
+    for name in names:
+        if name not in recalls:
+            errors.append(f'indep missing recall record: {name}')
+        if f'warmup_{name}' not in warm:
+            errors.append(f'indep missing warmup record: warmup_{name}')
+        have = sorted(r for n, r in rounds if n == name)
+        missing = [r for r in range(1, INDEP_ROUNDS + 1) if r not in have]
+        if missing:
+            errors.append(
+                f'indep missing rounds: {name} lacks '
+                f'{", ".join(f"r{r}" for r in missing)}')
+        extra = [r for r in have if not 1 <= r <= INDEP_ROUNDS]
+        if extra:
+            errors.append(
+                f'indep unexpected rounds: {name} has '
+                f'{", ".join(f"r{r}" for r in extra)}')
+    n_total = len(recalls) + len(warm) + len(rounds)
+    if formal_t1 and n_total != len(formal_t1) * (2 + INDEP_ROUNDS):
+        errors.append(
+            f'indep record count {n_total} != '
+            f'{len(formal_t1) * (2 + INDEP_ROUNDS)} '
+            f'({len(formal_t1)} configs x (1 recall + 1 warmup + '
+            f'{INDEP_ROUNDS} rounds))')
     return keep
 
 
@@ -243,14 +374,26 @@ def main():
 
     indep_lines = []
     indep = RUN / 'v14_indep_summary.txt'
+    formal_t1 = {}
+    if not errors:
+        for (name, rnd) in formal:
+            scheme, tier = classify(name)
+            if scheme is not None and tier == 't1':
+                formal_t1.setdefault(scheme, set()).add(name)
+        if any(len(v) != 1 for v in formal_t1.values()) or \
+                len(formal_t1) != len(SCHEME_RE):
+            formal_t1 = {}
+        else:
+            formal_t1 = {k: next(iter(v)) for k, v in formal_t1.items()}
     if indep.exists():
         indep_lines = check_indep(
-            indep.read_text(encoding='utf-8'), errors)
+            indep.read_text(encoding='utf-8'), formal_t1, errors)
 
     if errors:
         print('\n'.join(lines))
-        print(f'INTEGRITY FAILURE: {len(errors)} problem(s) in {summary} -- '
-              f'no formal conclusions; v14_prod_analysis.out NOT written')
+        print(f'INTEGRITY FAILURE: {len(errors)} problem(s) in '
+              f'{summary} / {indep} -- no formal conclusions; '
+              f'v14_prod_analysis.out NOT written')
         for e in errors:
             print(f'  - {e}', file=sys.stderr)
         return 1
@@ -316,6 +459,10 @@ def main():
             'after removing 100 exact members of the 1M base; disjoint from '
             'tuning set and base; GT = exact kFlat scan, key-mapped numpy '
             'brute-force-verified) ---')
+        lines.append(
+            f'indep integrity: 4 recall + 4 warmup + {4 * INDEP_ROUNDS} '
+            f'bench records, unique rc=0, config identity matches the '
+            f'production t1 grid')
         lines.extend('  ' + l for l in indep_lines)
     else:
         lines.append('independent query set: not run yet '
