@@ -17,10 +17,12 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <rabitqlib/core/data_layout.hpp>
+#include <rabitqlib/core/estimator.hpp>
+#include <rabitqlib/fastscan/data_layout.hpp>
+#include <rabitqlib/fastscan/estimator.hpp>
 #include <rabitqlib/fastscan/fastscan.hpp>
-#include <rabitqlib/index/estimator.hpp>
-#include <rabitqlib/index/query.hpp>
-#include <rabitqlib/quantization/data_layout.hpp>
+#include <rabitqlib/fastscan/query.hpp>
 #include <rabitqlib/utils/space.hpp>
 #include <zvec/ailego/logger/logger.h>
 #include "algorithm/hnsw_rabitq/rabitq_params.h"
