@@ -39,9 +39,12 @@ struct RunningPlan {
 
 }  // namespace
 
-Result<std::unique_ptr<arrow::RecordBatchReader>>
-PlanInfo::execute_to_reader() {
-  auto res = arrow::acero::DeclarationToReader(plan_);
+Result<std::unique_ptr<arrow::RecordBatchReader>> PlanInfo::execute_to_reader(
+    bool use_threads) {
+  // A scalar caller can drive its outer plan while reading results. Scored
+  // queries keep the CPU executor for recall and result merging. Child plans
+  // and filters retain their asynchronous executors in either case.
+  auto res = arrow::acero::DeclarationToReader(plan_, use_threads);
   if (!res.ok()) {
     return tl::make_unexpected(Status::InternalError(
         "execute plan_info failed: ", res.status().ToString()));

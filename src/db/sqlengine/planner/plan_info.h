@@ -34,7 +34,8 @@ class PlanInfo {
            std::shared_ptr<arrow::Schema> schema)
       : plan_(std::move(plan)), schema_(std::move(schema)) {}
 
-  Result<std::unique_ptr<arrow::RecordBatchReader>> execute_to_reader();
+  Result<std::unique_ptr<arrow::RecordBatchReader>> execute_to_reader(
+      bool use_threads = false);
 
   // Stream a child plan without blocking an Arrow CPU worker on ReadNext().
   arrow::Result<BatchGenerator> execute_to_generator();

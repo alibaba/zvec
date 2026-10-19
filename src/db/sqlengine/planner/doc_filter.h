@@ -16,7 +16,7 @@
 
 #include <memory>
 #include <arrow/acero/api.h>
-#include <arrow/chunked_array.h>
+#include <arrow/array/array_primitive.h>
 #include <zvec/db/status.h>
 #include "db/index/column/inverted_column/inverted_search_result.h"
 #include "db/index/common/index_filter.h"
@@ -54,7 +54,6 @@ class DocFilter : public IndexFilter,
   bool empty() const;
 
  private:
-  std::optional<bool> get_forward_bit(uint64_t id) const;
   std::optional<bool> is_matched_by_forward_filter(uint64_t id) const;
 
  private:
@@ -69,7 +68,7 @@ class DocFilter : public IndexFilter,
   InvertedSearchResult::Ptr invert_result_;
   IndexFilter::Ptr invert_filter_{nullptr};
 
-  std::shared_ptr<arrow::ChunkedArray> forward_bitmap_;
+  std::shared_ptr<arrow::BooleanArray> forward_bitmap_;
 };
 
 }  // namespace zvec::sqlengine

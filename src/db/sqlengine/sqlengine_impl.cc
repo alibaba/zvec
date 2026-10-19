@@ -356,6 +356,9 @@ SQLEngineImpl::search_by_query_info(
   global_init();
 
   ScopedProfilerStage stage_guard(profiler_, "build_query_plan");
+  const auto &query_info = (*query_infos)[0];
+  const bool use_threads =
+      query_info->vector_cond_info() || query_info->fts_cond_info();
   QueryPlanner planner(collection.get());
   auto plan_info =
       planner.make_plan(segments, profiler_->trace_id(), query_infos);
@@ -364,7 +367,7 @@ SQLEngineImpl::search_by_query_info(
     return tl::make_unexpected(plan_info.error());
   }
   // LOG_DEBUG("plan_info: [%s]", plan_info->to_string().c_str());
-  return plan_info.value()->execute_to_reader();
+  return plan_info.value()->execute_to_reader(use_threads);
 }
 
 #define GET_FIELD_FROM_RECORD_BATCH(res, field_name)                    \

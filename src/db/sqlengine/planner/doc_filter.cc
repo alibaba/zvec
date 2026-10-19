@@ -60,7 +60,11 @@ arrow::Future<> DocFilter::compute_filter_async() {
             return arrow::Status::ExecutionError(
                 "Filter bitmap is not boolean type");
           }
-          self->forward_bitmap_ = table->column(0);
+          // Compact once so each candidate lookup is constant-time, including
+          // filters whose output spans many batches.
+          ARROW_ASSIGN_OR_RAISE(auto batch, table->CombineChunksToBatch());
+          self->forward_bitmap_ =
+              std::static_pointer_cast<arrow::BooleanArray>(batch->column(0));
           return arrow::Status::OK();
         });
   }
@@ -79,33 +83,25 @@ bool DocFilter::is_filtered(uint64_t id) const {
   if (invert_filter_ && invert_filter_->is_filtered(id)) {
     return true;
   }
-  auto forward_bit = get_forward_bit(id);
-  if (!forward_bit) {
-    return false;
-  }
-  // revert to return false if forward filter is matched
-  return !forward_bit.value();
-}
-
-std::optional<bool> DocFilter::get_forward_bit(uint64_t id) const {
   if (forward_filter_expr_) {
-    return is_matched_by_forward_filter(id);
+    auto forward_bit = is_matched_by_forward_filter(id);
+    if (!forward_bit) {
+      return false;
+    }
+    // revert to return false if forward filter is matched
+    return !forward_bit.value();
   }
   if (!forward_bitmap_) {
-    return std::nullopt;
+    return false;
   }
-  uint64_t rows_seen = 0;
-  for (int c = 0; c < forward_bitmap_->num_chunks(); c++) {
-    const auto &arr = forward_bitmap_->chunk(c);
-    if (id < rows_seen + arr->length()) {
-      auto *bool_array = static_cast<arrow::BooleanArray *>(arr.get());
-      return (*bool_array)[id - rows_seen].value_or(false);
-    }
-    rows_seen += arr->length();
+  // This runs for every candidate. Read the compact bitmap directly instead
+  // of returning an optional through another per-row function call.
+  if (id < static_cast<uint64_t>(forward_bitmap_->length())) {
+    return forward_bitmap_->IsNull(id) || !forward_bitmap_->Value(id);
   }
   LOG_ERROR("ID is out or range: id[%zu] count[%zu]", (size_t)id,
-            (size_t)rows_seen);
-  return std::nullopt;
+            (size_t)forward_bitmap_->length());
+  return false;
 }
 
 std::optional<std::vector<uint64_t>> DocFilter::get_bf_by_keys_and_update(

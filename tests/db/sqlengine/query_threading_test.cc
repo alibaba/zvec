@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <chrono>
+#include <future>
 #include <memory>
 #include <string>
 #include <utility>
@@ -67,6 +69,49 @@ class QueryThreadingTest : public ::testing::Test {
  private:
   int original_capacity_{0};
 };
+
+TEST_F(QueryThreadingTest, ScalarReaderDoesNotWaitForBusyCpuPool) {
+  auto entered = arrow::Future<>::Make();
+  auto release = arrow::Future<>::Make();
+  auto occupied =
+      arrow::internal::GetCpuThreadPool()->Submit([entered, release]() mutable {
+        entered.MarkFinished();
+        release.Wait();
+        return arrow::Status::OK();
+      });
+  ASSERT_TRUE(occupied.ok()) << occupied.status().ToString();
+  EXPECT_TRUE(entered.Wait(2.0));
+
+  auto table = MakeTable(0);
+  auto caller = std::async(std::launch::async, [table]() {
+    auto declaration = arrow::acero::Declaration::Sequence(
+        {{"table_source", arrow::acero::TableSourceNodeOptions{table, 4}},
+         {"filter", arrow::acero::FilterNodeOptions{arrow::compute::call(
+                        "greater_equal", {arrow::compute::field_ref("value"),
+                                          arrow::compute::literal(16)})}},
+         {"fetch", arrow::acero::FetchNodeOptions{0, 3}}});
+    PlanInfo plan(std::move(declaration), table->schema());
+    auto reader = plan.execute_to_reader();
+    if (!reader) {
+      return arrow::Result<std::shared_ptr<arrow::Table>>(
+          arrow::Status::ExecutionError(reader.error().c_str()));
+    }
+    return reader.value()->ToTable();
+  });
+  // Other queries can occupy the shared CPU pool. The synchronous caller
+  // should drive its outer scalar plan instead of queueing behind them.
+  const bool completed =
+      caller.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+  release.MarkFinished();
+  EXPECT_TRUE(occupied->Wait(5.0));
+  auto result = caller.get();
+  EXPECT_TRUE(completed) << "Scalar reader waited for the shared CPU pool";
+  ASSERT_TRUE(result.ok()) << result.status().ToString();
+  ASSERT_EQ(result.ValueOrDie()->num_rows(), 3);
+  auto values = std::static_pointer_cast<arrow::Int32Array>(
+      result.ValueOrDie()->column(0)->chunk(0));
+  EXPECT_EQ(values->Value(0), 16);
+}
 
 TEST_F(QueryThreadingTest, SegmentBatchesCompleteOnTheOnlyCpuWorker) {
   for (bool filtered : {false, true}) {
@@ -211,6 +256,50 @@ TEST_F(QueryThreadingTest, LimitCompletesWithoutWaitingForOtherSegments) {
   EXPECT_EQ(future.result().ValueOrDie()->num_rows(), 4);
 }
 
+TEST_F(QueryThreadingTest, ReaderLimitDoesNotWaitForOtherSegments) {
+  auto schema = MakeTable(0)->schema();
+  auto delayed = arrow::Future<PlanInfo::Batch>::Make();
+  arrow::acero::Declaration slow_plan{
+      "source",
+      arrow::acero::SourceNodeOptions{schema, [delayed]() { return delayed; }}};
+  arrow::acero::Declaration fast_plan{
+      "table_source", arrow::acero::TableSourceNodeOptions{MakeTable(100, 4)}};
+  std::vector<PlanInfo::Ptr> plans{
+      std::make_shared<PlanInfo>(std::move(slow_plan), schema),
+      std::make_shared<PlanInfo>(std::move(fast_plan), schema)};
+  ailego::ThreadPool pool(2, false);
+  auto node = std::make_shared<SegmentNode>(std::move(plans), &pool, 1);
+  auto caller = std::async(
+      std::launch::async, [node = std::move(node), schema]() mutable {
+        auto declaration = arrow::acero::Declaration::Sequence(
+            {{"source",
+              arrow::acero::SourceNodeOptions{
+                  schema, node->gen(), arrow::compute::Ordering::Implicit()}},
+             {"fetch", arrow::acero::FetchNodeOptions{0, 1}}});
+        // The plan is the only owner of the segment node during destruction.
+        node.reset();
+        PlanInfo plan(std::move(declaration), schema);
+        auto reader = plan.execute_to_reader();
+        if (!reader) {
+          return arrow::Result<std::shared_ptr<arrow::Table>>(
+              arrow::Status::ExecutionError(reader.error().c_str()));
+        }
+        return reader.value()->ToTable();
+      });
+  // Reading and destroying the caller-driven outer plan must not wait for
+  // an unrelated segment's pending source after LIMIT has been satisfied.
+  const bool completed =
+      caller.wait_for(std::chrono::seconds(2)) == std::future_status::ready;
+  delayed.MarkFinished(std::nullopt);
+  auto result = caller.get();
+  EXPECT_TRUE(completed) << "Reader LIMIT waited for an unrelated segment";
+  ASSERT_TRUE(result.ok()) << result.status().ToString();
+  ASSERT_EQ(result.ValueOrDie()->num_rows(), 1);
+  auto values = std::static_pointer_cast<arrow::Int32Array>(
+      result.ValueOrDie()->column(0)->chunk(0));
+  EXPECT_EQ(values->Value(0), 100);
+}
+
 TEST_F(QueryThreadingTest, ForwardFilterCompletesOnTheOnlyCpuWorker) {
   auto table = MakeTable(0);
   arrow::acero::Declaration plan{
@@ -236,6 +325,39 @@ TEST_F(QueryThreadingTest, ForwardFilterCompletesOnTheOnlyCpuWorker) {
   for (uint64_t i = 0; i < 32; ++i) {
     // MockSegment's deletion filter also excludes odd row IDs.
     EXPECT_EQ(filter->is_filtered(i), i < 16 || i % 2 == 1);
+  }
+}
+
+TEST_F(QueryThreadingTest, ForwardBitmapPreservesNullsAndChunkOffsets) {
+  for (int rows : {0, 17, 67}) {
+    arrow::BooleanBuilder builder;
+    ASSERT_TRUE(builder.Append(true).ok());
+    for (int i = 0; i < rows; ++i) {
+      ASSERT_TRUE(
+          (i % 5 == 0 ? builder.AppendNull() : builder.Append(i % 3 == 0))
+              .ok());
+    }
+    ASSERT_TRUE(builder.Append(false).ok());
+    auto values = builder.Finish().ValueOrDie()->Slice(1, rows);
+    auto table = arrow::Table::Make(
+        arrow::schema({arrow::field("matched", arrow::boolean())}), {values});
+    // Small batches exercise chunk boundaries and nonzero bitmap offsets;
+    // zero rows must also produce a valid, empty filter.
+    arrow::acero::Declaration plan{
+        "table_source", arrow::acero::TableSourceNodeOptions{table, 3}};
+    auto filter = std::make_shared<DocFilter>(
+        std::make_shared<MockSegment>(), std::make_shared<QueryInfo>(),
+        std::make_unique<arrow::acero::Declaration>(std::move(plan)), nullptr);
+    auto submitted = arrow::internal::GetCpuThreadPool()->Submit(
+        [filter]() { return filter->compute_filter_async(); });
+    ASSERT_TRUE(submitted.ok()) << submitted.status().ToString();
+    auto future = submitted.MoveValueUnsafe();
+    CheckCompletion(future);
+    ASSERT_TRUE(future.status().ok()) << future.status().ToString();
+    for (int i = 0; i < rows; ++i) {
+      // Null predicates reject a row, as does MockSegment's deletion filter.
+      EXPECT_EQ(filter->is_filtered(i), i % 2 == 1 || i % 5 == 0 || i % 3 != 0);
+    }
   }
 }
 
