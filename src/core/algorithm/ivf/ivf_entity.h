@@ -67,6 +67,11 @@ class IVFEntity {
   int search(const void *query, IndexDocumentHeap *heap,
              IndexContext::Stats *context_stats) const;
 
+  //! Search only the specified primary keys, using posting-space distances.
+  int search_by_p_keys(const void *query, const std::vector<uint64_t> &p_keys,
+                       const IndexFilter &filter, IndexDocumentHeap *heap,
+                       IndexContext::Stats *context_stats) const;
+
   //! Clone the entity
   virtual IVFEntity::Pointer clone() const;
 
@@ -362,6 +367,14 @@ class IVFEntity {
   int load_header(const IndexStorage::Pointer &container);
 
   int load_quantizer(const IndexStorage::Pointer &container);
+
+  //! Unlike fetch, distance evaluation must not read retained original vectors.
+  int read_posting_vector(size_t id, IndexStorage::MemoryBlock &block) const;
+
+  //! Distinguish missing keys from storage read failures.
+  int key_to_id(uint64_t key, uint32_t *id) const;
+
+  int key_normalize_value(uint32_t id, float *value) const;
 
   void query_features_distance(const void *query, const void *features,
                                size_t count, float *out) const {

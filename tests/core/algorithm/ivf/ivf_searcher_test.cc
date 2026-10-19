@@ -132,6 +132,79 @@ class IVFSearcherTest : public testing::Test {
   IndexThreads::Pointer threads_{};
 };
 
+// Compare candidate-key BF against full BF with the equivalent predicate.
+// Empty candidate batches, missing keys and a second predicate must not cause
+// scanning unrelated vectors or retaining results from an earlier query.
+template <typename Searcher>
+static void CheckKeyedBruteForce(
+    Searcher *searcher, const void *queries, const IndexQueryMeta &qmeta,
+    const std::vector<std::vector<uint64_t>> &keys) {
+  auto context = searcher->create_context();
+  auto baseline = searcher->create_context();
+  ASSERT_NE(nullptr, context);
+  ASSERT_NE(nullptr, baseline);
+  context->set_topk(16);
+  baseline->set_topk(16);
+  const auto count = static_cast<uint32_t>(keys.size());
+  for (bool filtered : {false, true}) {
+    for (float threshold : {std::numeric_limits<float>::max(), 0.25f}) {
+      context->set_threshold(threshold);
+      baseline->set_threshold(threshold);
+      context->set_filter(
+          [filtered](uint64_t key) { return filtered && key % 2 == 0; });
+      ASSERT_EQ(0, searcher->search_bf_by_p_keys_impl(queries, keys, qmeta,
+                                                      count, context));
+      for (uint32_t q = 0; q < count; ++q) {
+        SCOPED_TRACE(q);
+        baseline->set_filter([&keys, q, filtered](uint64_t key) {
+          return (filtered && key % 2 == 0) ||
+                 std::find(keys[q].begin(), keys[q].end(), key) ==
+                     keys[q].end();
+        });
+        const void *query = static_cast<const char *>(queries) +
+                            q * static_cast<size_t>(qmeta.element_size());
+        ASSERT_EQ(0, searcher->search_bf_impl(query, qmeta, baseline));
+        const auto &expected = baseline->result();
+        const auto &actual = context->result(q);
+        ASSERT_EQ(expected.size(), actual.size());
+        for (const auto &doc : actual) {
+          const auto found = std::find_if(
+              expected.begin(), expected.end(),
+              [&doc](const auto &item) { return item.key() == doc.key(); });
+          ASSERT_NE(expected.end(), found);
+          EXPECT_NEAR(found->score(), doc.score(),
+                      1e-4f * std::max(1.0f, std::abs(found->score())));
+        }
+        // Unlike full BF, work must be bounded by the requested candidates.
+        const auto *ivf_context =
+            dynamic_cast<const IVFSearcherContext *>(context.get());
+        ASSERT_NE(nullptr, ivf_context);
+        EXPECT_LE(ivf_context->stats(q).dist_calced_count(), keys[q].size());
+      }
+    }
+  }
+  const std::vector<std::vector<uint64_t>> empty_keys(1);
+  ASSERT_EQ(0, searcher->search_bf_by_p_keys_impl(queries, empty_keys, qmeta,
+                                                  context));
+  EXPECT_TRUE(context->result().empty());
+  EXPECT_EQ(IndexError_InvalidArgument, searcher->search_bf_by_p_keys_impl(
+                                            queries, keys, qmeta, 0, context));
+  EXPECT_EQ(IndexError_InvalidArgument,
+            searcher->search_bf_by_p_keys_impl(queries, keys, qmeta, count + 1,
+                                               context));
+  EXPECT_EQ(
+      IndexError_InvalidArgument,
+      searcher->search_bf_by_p_keys_impl(nullptr, keys, qmeta, count, context));
+  IndexRunner::Context::Pointer missing_context;
+  EXPECT_EQ(IndexError_InvalidArgument,
+            searcher->search_bf_by_p_keys_impl(queries, keys, qmeta, count,
+                                               missing_context));
+  IndexQueryMeta wrong_meta(qmeta.data_type(), qmeta.dimension() + 1);
+  EXPECT_EQ(IndexError_InvalidArgument,
+            searcher->search_bf_by_p_keys_impl(queries, keys, wrong_meta, count,
+                                               context));
+}
+
 void IVFSearcherTest::SetUp() {
   dimension_ = 8U;
 
@@ -334,6 +407,8 @@ TEST_F(IVFSearcherTest, LegacyQuantizerDescriptorDoesNotSelectTurboFormat) {
                             result[i].score());
           }
         }
+        CheckKeyedBruteForce(searcher, query.data(), qmeta,
+                             {{30, 2, 31, 9999, kInvalidKey}});
       };
       IVFSearcher searcher;
       ASSERT_EQ(0, searcher.init(search_params));
@@ -2566,6 +2641,119 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithConverterAndQuantizer) {
   EXPECT_EQ(0, ret);
 }
 
+TEST_F(IVFSearcherTest, KeyedBruteForceWithEmptyQuantizedCentroids) {
+  const std::vector<std::vector<float>> centroid_layouts{
+      {1.0f, -1.0f, 0.0f, 0.0f},
+      {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f},
+      {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, -1.0f, 0.0f}};
+  for (const char *quantizer :
+       {"Int8QuantizerConverter", "Int4QuantizerConverter"}) {
+    SCOPED_TRACE(quantizer);
+    for (auto order : {IndexMeta::MO_ROW, IndexMeta::MO_COLUMN}) {
+      SCOPED_TRACE(order);
+      for (const auto &centroids : centroid_layouts) {
+        SCOPED_TRACE(testing::PrintToString(centroids));
+        auto meta = index_meta_;
+        meta.set_metric("InnerProduct", 0, Params());
+        meta.set_major_order(order);
+        IndexCluster::CentroidList centroid_list;
+        std::vector<IndexConverter::Pointer> quantizers;
+        for (float value : centroids) {
+          NumericalVector<float> centroid(dimension_);
+          for (size_t d = 0; d < dimension_; ++d) {
+            centroid[d] = value;
+          }
+          IndexCluster::Centroid item;
+          item.set_feature(centroid);
+          centroid_list.emplace_back(std::move(item));
+
+          auto holder =
+              std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(
+                  dimension_);
+          for (uint64_t i = 0; i < 10; ++i) {
+            NumericalVector<float> vector(dimension_);
+            for (size_t d = 0; d < dimension_; ++d) {
+              vector[d] = value < 0 ? -2.0f * float(i + 1) : float(i + 1);
+            }
+            holder->emplace((value < 0 ? 110 : 100) + i, vector);
+          }
+          auto converter = IndexFactory::CreateConverter(quantizer);
+          ASSERT_NE(nullptr, converter);
+          ASSERT_EQ(0, converter->init(meta, Params()));
+          ASSERT_EQ(0, IndexConverter::TrainAndTransform(converter, holder));
+          quantizers.emplace_back(std::move(converter));
+        }
+        IVFCentroidIndex centroid_index;
+        ASSERT_EQ(0, centroid_index.init(meta, Params()));
+        ASSERT_EQ(0, centroid_index.build(centroid_list));
+        auto dumper = IndexFactory::CreateDumper("FileDumper");
+        ASSERT_NE(nullptr, dumper);
+        ASSERT_EQ(0, dumper->create(index_path_));
+        auto posting_meta = quantizers.front()->meta();
+        posting_meta.set_major_order(order);
+        IVFDumper postings(posting_meta, dumper, centroids.size());
+        for (size_t i = 0; i < centroids.size(); ++i) {
+          // Write only two lists, leaving leading, interior and trailing gaps.
+          if (centroids[i] == 0.0f) {
+            continue;
+          }
+          auto iter = quantizers[i]->result()->create_iterator();
+          for (; iter->is_valid(); iter->next()) {
+            ASSERT_EQ(
+                0, postings.dump_inverted_vector(i, iter->key(), iter->data()));
+          }
+        }
+        ASSERT_EQ(0, postings.dump_inverted_vector_finished());
+        ASSERT_EQ(0, postings.dump_quantizer_params(quantizers));
+        ASSERT_EQ(0, postings.dump_centroid_index(centroid_index.data(),
+                                                  centroid_index.size()));
+        ASSERT_EQ(0, IndexHelper::SerializeToDumper(meta, dumper.get()));
+        ASSERT_EQ(0, dumper->close());
+
+        for (const char *storage_name :
+             {"FileReadStorage", "MMapFileReadStorage", "BufferReadStorage"}) {
+          SCOPED_TRACE(storage_name);
+          auto storage = IndexFactory::CreateStorage(storage_name);
+          ASSERT_NE(nullptr, storage);
+          ASSERT_EQ(0, storage->init(Params()));
+          ASSERT_EQ(0, storage->open(index_path_, false));
+          ASSERT_TRUE(storage->has(IVF_INT8_QUANTIZED_PARAMS_SEG_ID) ||
+                      storage->has(IVF_INT4_QUANTIZED_PARAMS_SEG_ID));
+          IVFEntity entity;
+          ASSERT_EQ(0, entity.load(storage));
+          ASSERT_EQ(nullptr, entity.quantizer());
+          ASSERT_EQ(centroids.size(), entity.inverted_list_count());
+          for (size_t i = 0; i < centroids.size(); ++i) {
+            const auto *list = entity.inverted_list_meta(i);
+            ASSERT_NE(nullptr, list);
+            EXPECT_EQ(centroids[i] == 0.0f ? 0u : 10u, list->vector_count);
+          }
+          // The real Dumper leaves the trailing empty list's offset at zero.
+          EXPECT_EQ(0u,
+                    entity.inverted_list_meta(centroids.size() - 1)->id_offset);
+
+          Params search_params;
+          search_params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 1.0);
+          const std::vector<float> queries(dimension_ * 2, 5.0f);
+          const IndexQueryMeta qmeta(IndexMeta::DT_FP32, dimension_);
+          const std::vector<std::vector<uint64_t>> keys{
+              {100, 109, 110, 119, 9999, kInvalidKey}, {101, 111}};
+          IVFSearcher searcher;
+          ASSERT_EQ(0, searcher.init(search_params));
+          ASSERT_EQ(0, searcher.load(storage, IndexMetric::Pointer()));
+          CheckKeyedBruteForce(&searcher, queries.data(), qmeta, keys);
+          ASSERT_EQ(0, searcher.unload());
+          IVFStreamer streamer;
+          ASSERT_EQ(0, streamer.init(meta, search_params));
+          ASSERT_EQ(0, streamer.open(storage));
+          CheckKeyedBruteForce(&streamer, queries.data(), qmeta, keys);
+          ASSERT_EQ(0, streamer.close());
+        }
+      }
+    }
+  }
+}
+
 TEST_F(IVFSearcherTest, TestQuantizedPerCentroid) {
   IVFBuilder builder;
   auto build_params = params_;
@@ -2626,6 +2814,9 @@ TEST_F(IVFSearcherTest, TestQuantizedPerCentroid) {
 
   auto context = searcher.create_context();
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dimension_);
+
+  CheckKeyedBruteForce(&searcher, query.data(), qmeta,
+                       {{11, 251, 502, 991, 10000}});
 
   // single bf serch
   {
@@ -3229,6 +3420,9 @@ TEST_F(IVFSearcherTest, TestInt8QuantizerWithL2) {
 
   auto context = searcher->create_context();
   IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dimension_);
+  const std::vector<float> candidate_query(dimension_, 321.0f);
+  CheckKeyedBruteForce(searcher.get(), candidate_query.data(), qmeta,
+                       {{7, 301, 998, 4321, 10000}});
   size_t topk = 1;
   context->set_topk(topk);
   context->set_filter([](uint64_t) { return false; });
@@ -4139,6 +4333,11 @@ class IVFTurboTest : public testing::TestWithParam<TurboCase> {
                      filtered);
       }
     }
+    CheckKeyedBruteForce(
+        searcher, queries_.data(), qmeta,
+        {{Key(52), Key(7), Key(31), Key(kVectorCount + 1), kInvalidKey},
+         {},
+         {Key(19), Key(44)}});
     EXPECT_EQ(original_queries, queries_);
   }
 
