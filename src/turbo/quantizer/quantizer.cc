@@ -46,8 +46,8 @@ void QuantizeDatapoints(const Quantizer &quantizer, const void *const *dp_list,
 
 }  // namespace
 
-void Quantizer::calc_distance_dp_dp_batch(const void *const *dp_list, int dp_num,
-                                          const void *dp,
+void Quantizer::calc_distance_dp_dp_batch(const void *const *dp_list,
+                                          int dp_num, const void *dp,
                                           float *dist_list) const {
   for (int i = 0; i < dp_num; ++i) {
     dist_list[i] = calc_distance_dp_dp(dp_list[i], dp);

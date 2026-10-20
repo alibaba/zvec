@@ -54,7 +54,8 @@ static float reference_squared_euclidean(const float *a, const float *b,
   return sum;
 }
 
-static float reference_inner_product(const float *a, const float *b, size_t dim) {
+static float reference_inner_product(const float *a, const float *b,
+                                     size_t dim) {
   float dot = 0.0f;
   for (size_t i = 0; i < dim; ++i) {
     dot += a[i] * b[i];
@@ -356,8 +357,7 @@ TEST(Fp32Quantizer, DatapointBatchMatchesPairwiseAndReference) {
       constexpr size_t kCount = 33;
       std::mt19937 gen(static_cast<uint32_t>(dim));
       std::uniform_real_distribution<float> dist(-3.0f, 4.0f);
-      std::vector<std::vector<float>> raw(kCount + 1,
-                                          std::vector<float>(dim));
+      std::vector<std::vector<float>> raw(kCount + 1, std::vector<float>(dim));
       std::vector<std::string> encoded(
           kCount + 1,
           std::string(quantizer->quantized_datapoint_vector_length(), '\0'));
@@ -383,15 +383,14 @@ TEST(Fp32Quantizer, DatapointBatchMatchesPairwiseAndReference) {
       for (int count : {1, 4, 5, 9, 33}) {
         SCOPED_TRACE(testing::Message() << "count=" << count);
         std::vector<float> actual(count);
-        quantizer->calc_distance_dp_dp_batch(
-            candidates.data(), count, encoded[0].data(), actual.data());
+        quantizer->calc_distance_dp_dp_batch(candidates.data(), count,
+                                             encoded[0].data(), actual.data());
         for (int i = 0; i < count; ++i) {
           const float expected =
               metric.reference(raw[i + 1].data(), raw[0].data(), dim);
           expect_simd_near(actual[i], expected);
-          expect_simd_near(
-              actual[i], quantizer->calc_distance_dp_dp(candidates[i],
-                                                       encoded[0].data()));
+          expect_simd_near(actual[i], quantizer->calc_distance_dp_dp(
+                                          candidates[i], encoded[0].data()));
         }
       }
     }

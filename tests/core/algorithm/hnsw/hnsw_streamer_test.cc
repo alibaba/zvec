@@ -4632,15 +4632,15 @@ class CountingDatapointBatchQuantizer : public turbo::Quantizer {
     ++query_batch_calls;
     delegate_->calc_distance_dp_query_batch(dp_list, dp_num, query, dist_list);
   }
-  float calc_distance_dp_query_unquantized(
-      const void *dp, const void *query) const override {
+  float calc_distance_dp_query_unquantized(const void *dp,
+                                           const void *query) const override {
     return delegate_->calc_distance_dp_query_unquantized(dp, query);
   }
   void calc_distance_dp_query_batch_unquantized(
       const void *const *dp_list, int dp_num, const void *query,
       float *dist_list) const override {
     delegate_->calc_distance_dp_query_batch_unquantized(dp_list, dp_num, query,
-                                                       dist_list);
+                                                        dist_list);
   }
   float calc_distance_dp_dp(const void *lhs, const void *rhs) const override {
     ++datapoint_calls;
@@ -4683,13 +4683,14 @@ TEST_F(HnswStreamerTest, TestTurboDatapointBatchOverrideAndFallback) {
 
     auto streamer = IndexFactory::CreateStreamer("HnswStreamer");
     ASSERT_NE(nullptr, streamer);
-    ASSERT_EQ(0, streamer->init(quantizer->meta(), ailego::Params(), quantizer));
+    ASSERT_EQ(0,
+              streamer->init(quantizer->meta(), ailego::Params(), quantizer));
     auto storage = IndexFactory::CreateStorage("MMapFileStorage");
     ASSERT_NE(nullptr, storage);
     ASSERT_EQ(0, storage->init(ailego::Params()));
     ASSERT_EQ(0, storage->open(dir_ + "turbo_dp_batch_" +
-                                  std::to_string(enable_batch) + ".index",
-                              true));
+                                   std::to_string(enable_batch) + ".index",
+                               true));
     ASSERT_EQ(0, streamer->open(storage));
 
     std::vector<std::string> codes(
@@ -4711,7 +4712,7 @@ TEST_F(HnswStreamerTest, TestTurboDatapointBatchOverrideAndFallback) {
     quantizer->query_batch_calls = 0;
     ctx->dist_calculator().reset_query(codes[3].data());
     const void *candidates[] = {codes[0].data(), codes[1].data(),
-                               codes[2].data()};
+                                codes[2].data()};
     float distances[3];
     ctx->dist_calculator().batch_dist(candidates, 3, distances, nullptr);
     EXPECT_FLOAT_EQ(72.0f, distances[0]);
@@ -4759,8 +4760,8 @@ TEST_F(HnswStreamerTest, TestTurboFp32BatchBuildAndSearch) {
       for (float &value : input) {
         value = sign(random) ? 0.0625f : -0.0625f;
       }
-      ASSERT_EQ(0, quantizer->quantize(input.data(), raw_qmeta, &codes[i],
-                                      &qmeta));
+      ASSERT_EQ(
+          0, quantizer->quantize(input.data(), raw_qmeta, &codes[i], &qmeta));
     }
 
     auto streamer = IndexFactory::CreateStreamer("HnswStreamer");
@@ -4774,8 +4775,8 @@ TEST_F(HnswStreamerTest, TestTurboFp32BatchBuildAndSearch) {
     auto storage = IndexFactory::CreateStorage("MMapFileStorage");
     ASSERT_NE(nullptr, storage);
     ASSERT_EQ(0, storage->init(ailego::Params()));
-    ASSERT_EQ(0, storage->open(
-                     dir_ + "turbo_fp32_batch_" + metric + ".index", true));
+    ASSERT_EQ(
+        0, storage->open(dir_ + "turbo_fp32_batch_" + metric + ".index", true));
     ASSERT_EQ(0, streamer->open(storage));
     auto context = streamer->create_context();
     ASSERT_NE(nullptr, context);
@@ -4785,8 +4786,7 @@ TEST_F(HnswStreamerTest, TestTurboFp32BatchBuildAndSearch) {
 
     context->set_topk(1);
     for (size_t probe : {size_t{0}, size_t{17}, kCount - 1}) {
-      ASSERT_EQ(0,
-                streamer->search_impl(codes[probe].data(), qmeta, context));
+      ASSERT_EQ(0, streamer->search_impl(codes[probe].data(), qmeta, context));
       ASSERT_EQ(1U, context->result().size());
       EXPECT_EQ(probe, context->result()[0].key());
       EXPECT_NEAR(quantizer->calc_distance_dp_query(codes[probe].data(),

@@ -187,8 +187,8 @@ float Fp32Quantizer::calc_distance_dp_dp(const void *dp1,
 }
 
 void Fp32Quantizer::calc_distance_dp_dp_batch(const void *const *dp_list,
-                                             int dp_num, const void *dp,
-                                             float *dist_list) const {
+                                              int dp_num, const void *dp,
+                                              float *dist_list) const {
   if (dp_num <= 0) {
     return;
   }

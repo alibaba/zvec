@@ -19,6 +19,7 @@
 #include <stdexcept>
 #include <vector>
 #include <gtest/gtest.h>
+#include <zvec/ailego/internal/platform.h>
 #include "distance/neon/fp32/inner_product.h"
 
 #if defined(__unix__) || defined(__APPLE__)
@@ -30,9 +31,11 @@ namespace zvec::turbo {
 namespace {
 
 constexpr float kGuard = 9876.0f;
-constexpr std::array<size_t, 23> kBatchSizes = {
-    0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 23, 24, 25, 31, 32, 33,
-    49, 50, 65, 100, 101};
+constexpr size_t kCacheLineSize = AILEGO_CACHE_LINE_SIZE;
+constexpr size_t kFloatsPerCacheLine = kCacheLineSize / sizeof(float);
+constexpr std::array<size_t, 23> kBatchSizes = {0,  1,  2,  3,  4,  5,   7,  8,
+                                                9,  15, 16, 17, 23, 24,  25, 31,
+                                                32, 33, 49, 50, 65, 100, 101};
 
 float ReferenceInnerProduct(const void *data, const float *query, size_t dim) {
   const auto *vector = static_cast<const float *>(data);
@@ -45,7 +48,8 @@ float ReferenceInnerProduct(const void *data, const float *query, size_t dim) {
 
 float *AlignedData(std::vector<float> &storage, size_t offset_floats) {
   const auto address = reinterpret_cast<uintptr_t>(storage.data());
-  const size_t padding = (128 - address % 128) % 128 / sizeof(float);
+  const size_t padding = (kCacheLineSize - address % kCacheLineSize) %
+                         kCacheLineSize / sizeof(float);
   return storage.data() + padding + offset_floats;
 }
 
@@ -53,16 +57,18 @@ void CheckBatch(size_t dim, size_t count, size_t offset_floats) {
   SCOPED_TRACE(testing::Message()
                << "dim=" << dim << ", count=" << count
                << ", alignment=" << offset_floats * sizeof(float));
-  std::vector<float> query_storage(dim + 64, kGuard);
-  float *query = AlignedData(query_storage, (offset_floats + 13) % 32);
+  std::vector<float> query_storage(dim + 2 * kFloatsPerCacheLine, kGuard);
+  float *query =
+      AlignedData(query_storage, (offset_floats + 13) % kFloatsPerCacheLine);
   for (size_t d = 0; d < dim; ++d) {
     query[d] = static_cast<float>(static_cast<int>(d % 13) - 6) / 16.0f;
   }
   std::vector<std::vector<float>> storage(
-      count, std::vector<float>(dim + 64, kGuard));
+      count, std::vector<float>(dim + 2 * kFloatsPerCacheLine, kGuard));
   std::vector<const void *> vectors(count);
   for (size_t i = 0; i < count; ++i) {
-    float *vector = AlignedData(storage[i], (offset_floats + i * 7) % 32);
+    float *vector =
+        AlignedData(storage[i], (offset_floats + i * 7) % kFloatsPerCacheLine);
     vectors[i] = vector;
     for (size_t d = 0; d < dim; ++d) {
       vector[d] =
@@ -71,8 +77,8 @@ void CheckBatch(size_t dim, size_t count, size_t offset_floats) {
   }
 
   std::vector<float> actual(count + 2, kGuard);
-  neon::inner_product_fp32_batch_distance(
-      vectors.data(), query, count, dim, actual.data() + 1, nullptr);
+  neon::inner_product_fp32_batch_distance(vectors.data(), query, count, dim,
+                                          actual.data() + 1, nullptr);
   EXPECT_EQ(kGuard, actual.front());
   EXPECT_EQ(kGuard, actual.back());
   for (size_t i = 0; i < count; ++i) {
@@ -85,7 +91,7 @@ void CheckBatch(size_t dim, size_t count, size_t offset_floats) {
 TEST(Fp32PrefetchKernel, EmptyBatchDoesNotAccessPointers) {
   for (size_t dim : {0, 255, 256, 257}) {
     neon::inner_product_fp32_batch_distance(nullptr, nullptr, 0, dim, nullptr,
-                                           nullptr);
+                                            nullptr);
   }
 }
 
@@ -98,7 +104,7 @@ TEST(Fp32PrefetchKernel, DimensionsAndBatchTailsMatchReference) {
 }
 
 TEST(Fp32PrefetchKernel, EveryFloatAlignmentAcrossCacheLineMatchesReference) {
-  for (size_t offset = 0; offset < 32; ++offset) {
+  for (size_t offset = 0; offset < kFloatsPerCacheLine; ++offset) {
     for (size_t count : {23, 24, 25, 33, 65}) {
       CheckBatch(256, count, offset);
     }
@@ -111,8 +117,7 @@ class GuardedBuffer {
  public:
   explicit GuardedBuffer(size_t count) {
     const long page_size = sysconf(_SC_PAGESIZE);
-    if (page_size <= 0 ||
-        count * sizeof(T) > static_cast<size_t>(page_size)) {
+    if (page_size <= 0 || count * sizeof(T) > static_cast<size_t>(page_size)) {
       throw std::runtime_error("Invalid guarded buffer size");
     }
     bytes_ = static_cast<size_t>(page_size) * 2;

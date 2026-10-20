@@ -36,9 +36,9 @@ namespace zvec::turbo {
 namespace {
 
 constexpr float kSentinel = 1234567.0f;
-constexpr std::array<size_t, 22> kBatchSizes = {
-    0, 1, 2, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 32, 33, 49, 50,
-    63, 64, 65, 100, 101};
+constexpr std::array<size_t, 22> kBatchSizes = {0,  1,  2,  3,  4,   5,  7,  8,
+                                                9,  15, 16, 17, 31,  32, 33, 49,
+                                                50, 63, 64, 65, 100, 101};
 
 std::vector<size_t> TestDimensions() {
   std::vector<size_t> dimensions;
@@ -153,20 +153,21 @@ TEST(Fp32NeonKernel, BatchMatchesDoubleOracleAndWritesOnlyRequestedOutputs) {
     for (size_t n : kBatchSizes) {
       SCOPED_TRACE(n);
       std::vector<float> distances(kBatchSizes.back() + 2, kSentinel);
-      neon::inner_product_fp32_batch_distance(
-          vectors.data(), query.data() + 1, n, dim, distances.data() + 1,
-          nullptr);
+      neon::inner_product_fp32_batch_distance(vectors.data(), query.data() + 1,
+                                              n, dim, distances.data() + 1,
+                                              nullptr);
       for (size_t i = 0; i < n; ++i) {
         const auto reference = ReferenceDot(
             static_cast<const float *>(vectors[i]), query.data() + 1, dim);
-        EXPECT_NEAR(-reference.dot, distances[i + 1], ErrorBound(reference, dim));
+        EXPECT_NEAR(-reference.dot, distances[i + 1],
+                    ErrorBound(reference, dim));
       }
       EXPECT_EQ(kSentinel, distances.front());
       for (size_t i = n + 1; i < distances.size(); ++i) {
         EXPECT_EQ(kSentinel, distances[i]);
       }
-      neon::cosine_fp32_batch_distance(vectors.data(), query.data() + 1, n,
-                                      dim, distances.data() + 1, nullptr);
+      neon::cosine_fp32_batch_distance(vectors.data(), query.data() + 1, n, dim,
+                                       distances.data() + 1, nullptr);
       for (size_t i = 0; i < n; ++i) {
         const auto reference = ReferenceDot(
             static_cast<const float *>(vectors[i]), query.data() + 1, dim);
@@ -183,7 +184,7 @@ TEST(Fp32NeonKernel, BatchMatchesDoubleOracleAndWritesOnlyRequestedOutputs) {
 
 TEST(Fp32NeonKernel, EmptyBatchDoesNotDereferencePointers) {
   neon::inner_product_fp32_batch_distance(nullptr, nullptr, 0, 256, nullptr,
-                                         nullptr);
+                                          nullptr);
   neon::cosine_fp32_batch_distance(nullptr, nullptr, 0, 256, nullptr, nullptr);
 }
 
@@ -212,11 +213,11 @@ TEST(Fp32NeonKernel, BatchCancellationAndEveryFloatAlignmentMatchDoubleOracle) {
         SCOPED_TRACE(n);
         std::array<float, count + 2> distances;
         distances.fill(kSentinel);
-        neon::inner_product_fp32_batch_distance(
-            vectors.data(), query, n, dim, distances.data() + 1, nullptr);
+        neon::inner_product_fp32_batch_distance(vectors.data(), query, n, dim,
+                                                distances.data() + 1, nullptr);
         for (size_t i = 0; i < n; ++i) {
-          const auto oracle = ReferenceDot(
-              static_cast<const float *>(vectors[i]), query, dim);
+          const auto oracle =
+              ReferenceDot(static_cast<const float *>(vectors[i]), query, dim);
           EXPECT_NEAR(-oracle.dot, distances[i + 1], ErrorBound(oracle, dim));
         }
         EXPECT_EQ(kSentinel, distances.front());
@@ -308,7 +309,7 @@ TEST(Fp32NeonKernel, GuardPagesProtectInputsPointerArrayAndOutputs) {
       }
       EXPECT_EQ(kSentinel, distances.data()[0]);
       neon::cosine_fp32_batch_distance(vectors.data(), query.data(), n, dim,
-                                      distances.data() + 1, nullptr);
+                                       distances.data() + 1, nullptr);
       for (size_t i = 0; i < n; ++i) {
         const auto reference =
             ReferenceDot(storage[i]->data(), query.data(), dim);
