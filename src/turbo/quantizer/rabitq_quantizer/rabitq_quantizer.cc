@@ -787,15 +787,23 @@ class RabitqBlockScanner final : public BlockScanner {
         distance_.query_storage().data() + dim_ * sizeof(float) + dim_ / 2);
     const float *g_add = scalars + 4;
     const float *g_error = g_add + clusters_;
+    // Read once per block: the out[i] stores below can alias *this in the
+    // compiler's view, which otherwise forces a reload of every query scalar
+    // and flag on each of the 32 lanes.
+    const float delta = query_.delta();
+    const float sum_vl_lut = query_.sum_vl_lut();
+    const float k1xsumq = query_.k1xsumq();
+    const float ip_sub = ip_ ? 1.0f : 0.0f;
+    const bool one_bit = bits_ == 1;
     for (size_t i = 0; i < count; ++i) {
       const uint32_t c = ReadUint(bytes + i * sizeof(uint32_t));
       if (c >= clusters_) return kErrInvalidArgument;
-      const float dot = query_.delta() * sums[i] + query_.sum_vl_lut();
-      const float score = batch.f_add()[i] + g_add[c] +
-                          batch.f_rescale()[i] * (dot + query_.k1xsumq()) -
-                          (ip_ ? 1 : 0);
+      const float dot = delta * sums[i] + sum_vl_lut;
+      const float score =
+          batch.f_add()[i] + g_add[c] +
+          batch.f_rescale()[i] * (dot + k1xsumq) - ip_sub;
       out[i] = {score,
-                bits_ == 1 ? score : score - batch.f_error()[i] * g_error[c],
+                one_bit ? score : score - batch.f_error()[i] * g_error[c],
                 dot};
     }
     return 0;
