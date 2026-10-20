@@ -59,10 +59,28 @@ class IVFSearcherContext : public IndexSearcher::Context {
 
   //! Update the parameters of context
   int update(const ailego::Params &params) override {
+    int ret = apply_params(params);
+    ivf_check_error_code(ret);
+
     // Query parameters arrive before search_impl rebinds a cached context.
-    // Keep them separate from index defaults so a rebind cannot discard them.
-    query_params_ = params;
-    return apply_params(params);
+    // Retain explicitly supplied ratio/threshold overrides across partial
+    // updates, without turning index defaults into query overrides.
+    float scan_ratio = 0.0f;
+    if (params.get(PARAM_IVF_SEARCHER_SCAN_RATIO, &scan_ratio)) {
+      query_params_.set(PARAM_IVF_SEARCHER_SCAN_RATIO, scan_ratio);
+    }
+    uint32_t bruteforce_threshold = 0;
+    if (params.get(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD,
+                   &bruteforce_threshold)) {
+      query_params_.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD,
+                        bruteforce_threshold);
+    }
+    // Unlike ratio/threshold, an omitted nprobe resets to scan-ratio mode.
+    // Persist zero as well so a rebind cannot restore an index's nprobe.
+    uint32_t nprobe = 0;
+    params.get(PARAM_IVF_SEARCHER_NPROBE, &nprobe);
+    query_params_.set(PARAM_IVF_SEARCHER_NPROBE, nprobe);
+    return 0;
   }
 
  private:
