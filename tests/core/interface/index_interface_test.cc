@@ -42,6 +42,7 @@
 #include "algorithm/cluster/cluster_params.h"
 #include "algorithm/hnsw/hnsw_entity.h"
 #include "algorithm/hnsw/hnsw_params.h"
+#include "algorithm/hnsw/hnsw_streamer.h"
 #include "algorithm/ivf/ivf_params.h"
 #include "algorithm/vamana/vamana_entity.h"
 #include "algorithm/vamana/vamana_streamer.h"
@@ -88,6 +89,47 @@ class TestableVamanaIndex : public VamanaIndex {
  public:
   int get_coarse_search_topk(const BaseIndexQueryParam::Pointer &param) {
     return _get_coarse_search_topk(param);
+  }
+};
+
+class CountingHnswStreamer : public zvec::core::HnswStreamer {
+ public:
+  using HnswStreamer::init;
+
+  int search_candidates_impl(
+      const void *query, const zvec::core::IndexQueryMeta &meta,
+      std::vector<uint64_t> &keys, Context::Pointer &context,
+      std::vector<float> *scores = nullptr) const override {
+    ++candidate_search_count;
+    return HnswStreamer::search_candidates_impl(query, meta, keys, context,
+                                                scores);
+  }
+
+  mutable size_t candidate_search_count{0};
+};
+
+class CountingHNSWIndex : public HNSWIndex {
+ public:
+  int init_for_test(const BaseIndexParam &param) {
+    return init(param);
+  }
+
+  size_t candidate_search_count() const {
+    return std::static_pointer_cast<CountingHnswStreamer>(streamer_)
+        ->candidate_search_count;
+  }
+
+ protected:
+  int create_and_init_streamer(const BaseIndexParam &param) override {
+    int ret = HNSWIndex::create_and_init_streamer(param);
+    if (ret != 0) return ret;
+    auto streamer = std::make_shared<CountingHnswStreamer>();
+    ret = turbo_quantizer_
+              ? streamer->init(proxima_index_meta_, proxima_index_params_,
+                               turbo_quantizer_)
+              : streamer->init(proxima_index_meta_, proxima_index_params_);
+    if (ret == 0) streamer_ = std::move(streamer);
+    return ret;
   }
 };
 
@@ -974,10 +1016,17 @@ TEST(IndexInterface, IvfBufferPoolDefersWarmupUntilReads) {
     VectorData query{DenseVector{vector.data()}};
     auto query_param =
         IVFQueryParamBuilder().with_topk(1).with_nprobe(8).build();
-    SearchResult result;
-    ASSERT_EQ(0, index->search(query, query_param, &result));
-    ASSERT_EQ(1u, result.doc_list_.size());
-    EXPECT_EQ(511u, result.doc_list_[0].key());
+    for (bool filtered : {false, true}) {
+      SCOPED_TRACE(filtered);
+      if (filtered) {
+        query_param->filter = std::make_shared<IndexFilter>();
+        query_param->filter->set([](uint64_t key) { return key != 511u; });
+      }
+      SearchResult result;
+      ASSERT_EQ(0, index->search(query, query_param, &result));
+      ASSERT_EQ(1u, result.doc_list_.size());
+      EXPECT_EQ(511u, result.doc_list_[0].key());
+    }
   };
 
   {
@@ -3027,6 +3076,24 @@ TEST(IndexInterface, VamanaNativeRefineMatchesExplicitCandidates) {
     EXPECT_EQ(expected.reverted_vector_list_, actual.reverted_vector_list_);
   }
 
+  // Default refine scale uses graph-specific query parameters to determine
+  // the candidate count. Validate their type before accessing those fields.
+  auto wrong_refiner = std::make_shared<RefinerParam>();
+  wrong_refiner->reference_index = fine;
+  auto wrong_param = HNSWQueryParamBuilder()
+                         .with_topk(kTopk)
+                         .with_refiner_param(wrong_refiner)
+                         .build();
+  std::array<int64_t, kTopk> ids{};
+  const VectorData invalid_query{DenseVector{vectors[7].data()}};
+  SearchResult invalid_result;
+  const int expected_error =
+      coarse->search(invalid_query, wrong_param, &invalid_result);
+  ASSERT_NE(0, expected_error);
+  EXPECT_EQ(expected_error,
+            coarse->search_internal_ids(invalid_query, wrong_param, ids.data(),
+                                        nullptr));
+
   ASSERT_EQ(0, coarse->close());
   ASSERT_EQ(0, fine->close());
   zvec::test_util::RemoveTestFiles(coarse_path);
@@ -3066,7 +3133,7 @@ TEST(IndexInterface, VamanaTwoPassFinalizeOnMerge) {
     ASSERT_EQ(0, source->add(data, i));
   }
 
-  auto run_merge = [&](bool two_pass_build) {
+  auto run_merge = [&](bool two_pass_build, bool use_default = false) {
     remove_files(target_name);
     auto target_param = VamanaIndexParamBuilder()
                             .with_metric_type(MetricType::kL2sq)
@@ -3076,8 +3143,11 @@ TEST(IndexInterface, VamanaTwoPassFinalizeOnMerge) {
                             .with_max_degree(16)
                             .with_search_list_size(32)
                             .with_alpha(1.5f)
-                            .with_two_pass_build(two_pass_build)
                             .build();
+    ASSERT_TRUE(target_param->two_pass_build);
+    if (!use_default) {
+      target_param->two_pass_build = two_pass_build;
+    }
     auto target = IndexFactory::CreateAndInitIndex(*target_param);
     ASSERT_NE(nullptr, target);
     ASSERT_EQ(0, target->open(target_name,
@@ -3139,10 +3209,27 @@ TEST(IndexInterface, VamanaTwoPassFinalizeOnMerge) {
 
   run_merge(false);
   run_merge(true);
+  run_merge(true, true);
 
   ASSERT_EQ(0, source->close());
   remove_files(source_name);
   remove_files(target_name);
+}
+
+TEST(IndexInterface, VamanaTwoPassSerialization) {
+  VamanaIndexParam param;
+  EXPECT_TRUE(param.two_pass_build);
+  for (bool two_pass_build : {false, true}) {
+    param.two_pass_build = two_pass_build;
+    for (bool omit_empty_value : {false, true}) {
+      const auto json = param.serialize_to_json(omit_empty_value);
+      EXPECT_EQ(json.find("\"two_pass_build\"") != std::string::npos,
+                !omit_empty_value || two_pass_build);
+      VamanaIndexParam restored;
+      ASSERT_TRUE(restored.deserialize_from_json(json));
+      EXPECT_EQ(two_pass_build, restored.two_pass_build);
+    }
+  }
 }
 
 TEST(IndexInterface, Serialize) {
@@ -4323,8 +4410,8 @@ TEST(IndexInterface, HNSWRabitqGeneral) {
 // mode.
 TEST(IndexInterface, ContiguousMemoryEndToEnd) {
   constexpr uint32_t kDimension = 32;
-  constexpr uint32_t kNumDocs = 500;
-  constexpr int kTopk = 10;
+  constexpr uint32_t kNumDocs = 1200;
+  static constexpr int kTopk = 10;
   const std::string index_name{"test_contiguous.index"};
 
   // build_then_search builds an index from scratch (with use_contiguous_memory
@@ -4373,6 +4460,23 @@ TEST(IndexInterface, ContiguousMemoryEndToEnd) {
             ASSERT_EQ(0, index->search(query, query_param, &result));
             ASSERT_GT(result.doc_list_.size(), 0UL);
             ASSERT_EQ(i, result.doc_list_[0].key());
+
+            std::array<int64_t, kTopk> ids;
+            std::array<float, kTopk> scores;
+            ASSERT_EQ(0, index->search_internal_ids(query, query_param,
+                                                    ids.data(), scores.data()));
+            ASSERT_EQ(kTopk, result.doc_list_.size());
+            for (size_t rank = 0; rank < result.doc_list_.size(); ++rank) {
+              EXPECT_EQ(static_cast<int64_t>(result.doc_list_[rank].key()),
+                        ids[rank]);
+              EXPECT_FLOAT_EQ(result.doc_list_[rank].score(), scores[rank]);
+            }
+
+            std::array<int64_t, kTopk> ids_without_scores;
+            ASSERT_EQ(
+                0, index->search_internal_ids(
+                       query, query_param, ids_without_scores.data(), nullptr));
+            EXPECT_EQ(ids, ids_without_scores);
           }
           ASSERT_EQ(0, index->close());
         }
@@ -4593,11 +4697,11 @@ TEST(IndexInterface, ExternalVectorInnerProduct) {
   zvec::test_util::RemoveTestFiles(index_name + "*");
 }
 
-TEST(IndexInterface, ExternalVectorFastSearchRecallRegression) {
+TEST(IndexInterface, ExternalVectorInternalIdSearchRecallRegression) {
   constexpr uint32_t kDimension = 64;
   constexpr uint32_t kNumVectors = 2000;
   constexpr uint32_t kTopk = 20;
-  const std::string index_name{"test_external_fast_search.index"};
+  const std::string index_name{"test_external_internal_id_search.index"};
 
   std::mt19937 generator(42);
   std::uniform_real_distribution<float> distribution(-1.0f, 1.0f);
@@ -4942,3 +5046,389 @@ TEST(IndexInterface, BuilderChainingReturnsCorrectType) {
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic pop
 #endif
+
+
+TEST(IndexInterface, RefineInternalIdsMatchesSearchAcrossStorageModes) {
+  constexpr uint32_t kDimension = 128;
+  const std::string coarse_path = "docids_refine_coarse.index";
+  const std::string fine_path = "docids_refine_fine.index";
+  std::vector<float> values(kDimension, 0.0f);
+  auto coarse_param = FlatIndexParamBuilder()
+                          .with_metric_type(MetricType::kL2sq)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(kDimension)
+                          .build();
+  zvec::test_util::RemoveTestFiles(coarse_path);
+  auto coarse = IndexFactory::CreateAndInitIndex(*coarse_param);
+  ASSERT_TRUE(coarse);
+  ASSERT_EQ(
+      0, coarse->open(coarse_path, {StorageOptions::StorageType::kMMAP, true}));
+  for (uint32_t key = 0; key < 8; ++key) {
+    values[0] = static_cast<float>(key);
+    ASSERT_EQ(0, coarse->add(VectorData{DenseVector{values.data()}}, key));
+  }
+  values[0] = 0.0f;
+  const VectorData query{DenseVector{values.data()}};
+  for (auto type : {DataType::DT_FP32, DataType::DT_FP16, DataType::DT_UINT8}) {
+    for (bool contiguous : {false, true}) {
+      for (bool tied : {false, true}) {
+        SCOPED_TRACE(static_cast<int>(type));
+        SCOPED_TRACE(contiguous);
+        SCOPED_TRACE(tied);
+        zvec::test_util::RemoveTestFiles(fine_path);
+        auto fine_param = FlatIndexParamBuilder()
+                              .with_metric_type(MetricType::kL2sq)
+                              .with_data_type(DataType::DT_FP32)
+                              .with_storage_data_type(type)
+                              .with_dimension(kDimension)
+                              .with_use_contiguous_memory(contiguous)
+                              .build();
+        auto fine = IndexFactory::CreateAndInitIndex(*fine_param);
+        ASSERT_TRUE(fine);
+        ASSERT_EQ(0, fine->open(fine_path,
+                                {StorageOptions::StorageType::kMMAP, true}));
+        std::vector<float> fine_values(kDimension, 0.0f);
+        for (uint32_t key = 0; key < 8; ++key) {
+          fine_values[0] = tied ? 1.0f : float(8 - key);
+          ASSERT_EQ(
+              0, fine->add(VectorData{DenseVector{fine_values.data()}}, key));
+        }
+        // The contiguous reference is built on reopen, not on add().
+        ASSERT_EQ(0, fine->close());
+        fine = IndexFactory::CreateAndInitIndex(*fine_param);
+        ASSERT_TRUE(fine);
+        ASSERT_EQ(0, fine->open(fine_path,
+                                {StorageOptions::StorageType::kMMAP, false}));
+        auto refiner = std::make_shared<RefinerParam>();
+        refiner->reference_index = fine;
+        refiner->scale_factor_ = 2.0f;
+        auto param = FlatQueryParamBuilder()
+                         .with_topk(3)
+                         .with_refiner_param(refiner)
+                         .build();
+        SearchResult expected;
+        ASSERT_EQ(0, coarse->search(query, param, &expected));
+        ASSERT_EQ(3U, expected.doc_list_.size());
+        std::array<int64_t, 3> ids{{-2, -2, -2}};
+        for (int repeat = 0; repeat < 3; ++repeat) {
+          ASSERT_EQ(0, coarse->search_internal_ids(query, param, ids.data(),
+                                                   nullptr));
+          for (size_t i = 0; i < ids.size(); ++i) {
+            EXPECT_EQ(static_cast<int64_t>(expected.doc_list_[i].key()),
+                      ids[i]);
+          }
+        }
+        std::array<int64_t, 3> scored_ids{{-2, -2, -2}};
+        std::array<float, 3> scores;
+        ASSERT_EQ(0, coarse->search_internal_ids(
+                         query, param, scored_ids.data(), scores.data()));
+        EXPECT_EQ(ids, scored_ids);
+        for (size_t rank = 0; rank < scores.size(); ++rank) {
+          EXPECT_FLOAT_EQ(expected.doc_list_[rank].score(), scores[rank]);
+        }
+        auto expect_current_param_matches = [&]() {
+          SearchResult current_expected;
+          ASSERT_EQ(0, coarse->search(query, param, &current_expected));
+          const size_t topk = param->topk;
+          const size_t count = current_expected.doc_list_.size();
+          ASSERT_LE(count, topk);
+          // Alternate score requests and keep a guard beyond the caller's
+          // output range, including when a query returns fewer than topk.
+          for (bool return_scores : {true, false, true}) {
+            std::vector<int64_t> current_ids(topk + 1, -2);
+            std::vector<float> current_scores(topk + 1, -123.0f);
+            ASSERT_EQ(0, coarse->search_internal_ids(
+                             query, param, current_ids.data(),
+                             return_scores ? current_scores.data() : nullptr));
+            for (size_t rank = 0; rank < count; ++rank) {
+              EXPECT_EQ(
+                  static_cast<int64_t>(current_expected.doc_list_[rank].key()),
+                  current_ids[rank]);
+              if (return_scores) {
+                EXPECT_FLOAT_EQ(current_expected.doc_list_[rank].score(),
+                                current_scores[rank]);
+              }
+            }
+            for (size_t rank = count; rank < topk; ++rank) {
+              EXPECT_EQ(-1, current_ids[rank]);
+              if (return_scores) {
+                EXPECT_TRUE(std::isnan(current_scores[rank]));
+              }
+            }
+            EXPECT_EQ(-2, current_ids[topk]);
+            EXPECT_FLOAT_EQ(-123.0f, current_scores[topk]);
+          }
+        };
+        // Fewer coarse candidates than k use the ordinary refiner, which must
+        // fill the remainder instead of exposing stale output.
+        param->radius = 0.5f;
+        ASSERT_EQ(
+            0, coarse->search_internal_ids(query, param, ids.data(), nullptr));
+        EXPECT_EQ((std::array<int64_t, 3>{{0, -1, -1}}), ids);
+        expect_current_param_matches();
+        param->radius = 0.0f;
+        param->filter = std::make_shared<IndexFilter>();
+        param->filter->set([](uint64_t key) { return key >= 2; });
+        ASSERT_EQ(
+            0, coarse->search_internal_ids(query, param, ids.data(), nullptr));
+        EXPECT_EQ(-1, ids[2]);
+        std::array<int64_t, 2> filtered{{ids[0], ids[1]}};
+        std::sort(filtered.begin(), filtered.end());
+        EXPECT_EQ((std::array<int64_t, 2>{{0, 1}}), filtered);
+        expect_current_param_matches();
+        param->filter.reset();
+        ASSERT_EQ(
+            0, coarse->search_internal_ids(query, param, ids.data(), nullptr));
+        if (!tied) {
+          EXPECT_EQ((std::array<int64_t, 3>{{5, 4, 3}}), ids);
+        }
+        // Grow beyond the document count, then shrink on the same thread.
+        // Neither candidate scratch nor a preceding fallback may leak into
+        // the next refined query or overwrite an earlier caller's result.
+        for (uint32_t topk : {11U, 1U, 3U}) {
+          param->topk = topk;
+          expect_current_param_matches();
+        }
+        for (size_t rank = 0; rank < scores.size(); ++rank) {
+          EXPECT_EQ(static_cast<int64_t>(expected.doc_list_[rank].key()),
+                    scored_ids[rank]);
+          EXPECT_FLOAT_EQ(expected.doc_list_[rank].score(), scores[rank]);
+        }
+        ASSERT_EQ(0, fine->close());
+        zvec::test_util::RemoveTestFiles(fine_path);
+      }
+    }
+  }
+  ASSERT_EQ(0, coarse->close());
+  zvec::test_util::RemoveTestFiles(coarse_path);
+}
+
+TEST(IndexInterface, RefineInternalIdsFallbackReusesCoarseCandidates) {
+  constexpr uint32_t kDimension = 128;
+  constexpr uint32_t kCoarseCount = 8;
+  const std::string coarse_path = "refine_once_coarse.index";
+  const std::string fine_path = "refine_once_fine.index";
+  zvec::test_util::RemoveTestFiles(coarse_path);
+  auto coarse_param = HNSWIndexParamBuilder()
+                          .with_metric_type(MetricType::kL2sq)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(kDimension)
+                          .with_m(8)
+                          .with_ef_construction(32)
+                          .build();
+  auto coarse = std::make_shared<CountingHNSWIndex>();
+  ASSERT_EQ(0, coarse->init_for_test(*coarse_param));
+  ASSERT_EQ(
+      0, coarse->open(coarse_path, {StorageOptions::StorageType::kMMAP, true}));
+  std::vector<float> values(kDimension, 0.0f);
+  for (uint32_t key = 0; key < kCoarseCount; ++key) {
+    values[0] = static_cast<float>(key);
+    ASSERT_EQ(0, coarse->add(VectorData{DenseVector{values.data()}}, key));
+  }
+  const std::vector<float> query_values(kDimension, 0.0f);
+  const VectorData query{DenseVector{query_values.data()}};
+  struct Case {
+    const char *name;
+    bool contiguous;
+    uint32_t reference_count;
+    uint32_t topk;
+  };
+  const std::array<Case, 4> cases{{
+      {"non_contiguous", false, kCoarseCount, 3},
+      {"too_few_candidates", true, kCoarseCount, kCoarseCount + 1},
+      {"missing_reference_keys", true, 2, 3},
+      {"direct_output", true, kCoarseCount, 3},
+  }};
+  for (const auto &test_case : cases) {
+    SCOPED_TRACE(test_case.name);
+    zvec::test_util::RemoveTestFiles(fine_path);
+    auto fine_param = FlatIndexParamBuilder()
+                          .with_metric_type(MetricType::kL2sq)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(kDimension)
+                          .with_use_contiguous_memory(test_case.contiguous)
+                          .build();
+    auto fine = IndexFactory::CreateAndInitIndex(*fine_param);
+    ASSERT_TRUE(fine);
+    ASSERT_EQ(
+        0, fine->open(fine_path, {StorageOptions::StorageType::kMMAP, true}));
+    for (uint32_t key = 0; key < test_case.reference_count; ++key) {
+      values[0] = static_cast<float>(kCoarseCount - key);
+      ASSERT_EQ(0, fine->add(VectorData{DenseVector{values.data()}}, key));
+    }
+    ASSERT_EQ(0, fine->close());
+    fine = IndexFactory::CreateAndInitIndex(*fine_param);
+    ASSERT_TRUE(fine);
+    ASSERT_EQ(
+        0, fine->open(fine_path, {StorageOptions::StorageType::kMMAP, false}));
+    auto refiner = std::make_shared<RefinerParam>();
+    refiner->reference_index = fine;
+    refiner->scale_factor_ = 2.0f;
+    auto param = HNSWQueryParamBuilder()
+                     .with_topk(test_case.topk)
+                     .with_ef_search(32)
+                     .with_refiner_param(refiner)
+                     .build();
+    SearchResult expected;
+    ASSERT_EQ(0, coarse->search(query, param, &expected));
+    ASSERT_EQ(std::min(test_case.reference_count, test_case.topk),
+              expected.doc_list_.size());
+    for (bool return_scores : {true, false, true}) {
+      const size_t count_before = coarse->candidate_search_count();
+      std::vector<int64_t> ids(test_case.topk + 1, -2);
+      std::vector<float> scores(test_case.topk + 1, -123.0f);
+      ASSERT_EQ(0, coarse->search_internal_ids(
+                       query, param, ids.data(),
+                       return_scores ? scores.data() : nullptr));
+      // Falling back after candidate generation must only rerun refinement,
+      // never the coarse search that produced those candidates.
+      EXPECT_EQ(count_before + 1, coarse->candidate_search_count());
+      for (size_t i = 0; i < expected.doc_list_.size(); ++i) {
+        EXPECT_EQ(static_cast<int64_t>(expected.doc_list_[i].key()), ids[i]);
+        if (return_scores) {
+          EXPECT_FLOAT_EQ(expected.doc_list_[i].score(), scores[i]);
+        }
+      }
+      for (size_t i = expected.doc_list_.size(); i < test_case.topk; ++i) {
+        EXPECT_EQ(-1, ids[i]);
+        if (return_scores) {
+          EXPECT_TRUE(std::isnan(scores[i]));
+        }
+      }
+      EXPECT_EQ(-2, ids.back());
+      EXPECT_FLOAT_EQ(-123.0f, scores.back());
+    }
+    ASSERT_EQ(0, fine->close());
+    zvec::test_util::RemoveTestFiles(fine_path);
+  }
+  ASSERT_EQ(0, coarse->close());
+  zvec::test_util::RemoveTestFiles(coarse_path);
+}
+
+TEST(IndexInterface, RefineInternalIdsInnerProductMatchesSearch) {
+  constexpr uint32_t kDimension = 128;
+  const std::string coarse_path = "docids_ip_coarse.index";
+  const std::string fine_path = "docids_ip_fine.index";
+  zvec::test_util::RemoveTestFiles(coarse_path);
+  auto coarse_param = FlatIndexParamBuilder()
+                          .with_metric_type(MetricType::kInnerProduct)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(kDimension)
+                          .build();
+  auto coarse = IndexFactory::CreateAndInitIndex(*coarse_param);
+  ASSERT_TRUE(coarse);
+  ASSERT_EQ(
+      0, coarse->open(coarse_path, {StorageOptions::StorageType::kMMAP, true}));
+  std::vector<float> values(kDimension, 0.0f);
+  for (uint32_t key = 0; key < 8; ++key) {
+    values[0] = float(key);
+    ASSERT_EQ(0, coarse->add(VectorData{DenseVector{values.data()}}, key));
+  }
+  values[0] = 1.0f;
+  const VectorData query{DenseVector{values.data()}};
+  for (auto type : {DataType::DT_FP32, DataType::DT_FP16}) {
+    for (bool tied : {false, true}) {
+      SCOPED_TRACE(static_cast<int>(type));
+      SCOPED_TRACE(tied);
+      zvec::test_util::RemoveTestFiles(fine_path);
+      auto fine_param = FlatIndexParamBuilder()
+                            .with_metric_type(MetricType::kInnerProduct)
+                            .with_data_type(DataType::DT_FP32)
+                            .with_storage_data_type(type)
+                            .with_dimension(kDimension)
+                            .with_use_contiguous_memory(true)
+                            .build();
+      auto fine = IndexFactory::CreateAndInitIndex(*fine_param);
+      ASSERT_TRUE(fine);
+      ASSERT_EQ(
+          0, fine->open(fine_path, {StorageOptions::StorageType::kMMAP, true}));
+      std::vector<float> fine_values(kDimension, 0.0f);
+      for (uint32_t key = 0; key < 8; ++key) {
+        fine_values[0] = tied ? 1.0f : float(8 - key);
+        ASSERT_EQ(0,
+                  fine->add(VectorData{DenseVector{fine_values.data()}}, key));
+      }
+      ASSERT_EQ(0, fine->close());
+      fine = IndexFactory::CreateAndInitIndex(*fine_param);
+      ASSERT_TRUE(fine);
+      ASSERT_EQ(0, fine->open(fine_path,
+                              {StorageOptions::StorageType::kMMAP, false}));
+      auto refiner = std::make_shared<RefinerParam>();
+      refiner->reference_index = fine;
+      refiner->scale_factor_ = 2.0f;
+      auto param = FlatQueryParamBuilder()
+                       .with_topk(3)
+                       .with_refiner_param(refiner)
+                       .build();
+      std::array<int64_t, 3> ids{{-2, -2, -2}};
+      std::array<float, 3> scores;
+      SearchResult expected;
+      ASSERT_EQ(0, coarse->search(query, param, &expected));
+      ASSERT_EQ(3U, expected.doc_list_.size());
+      ASSERT_EQ(0, coarse->search_internal_ids(query, param, ids.data(),
+                                               scores.data()));
+      for (size_t i = 0; i < ids.size(); ++i) {
+        EXPECT_EQ(static_cast<int64_t>(expected.doc_list_[i].key()), ids[i]);
+        EXPECT_FLOAT_EQ(expected.doc_list_[i].score(), scores[i]);
+      }
+      // search_param owns topk; the index writes exactly that many entries.
+      std::array<int64_t, 4> larger{{-2, -2, -2, -2}};
+      ASSERT_EQ(
+          0, coarse->search_internal_ids(query, param, larger.data(), nullptr));
+      EXPECT_EQ(-2, larger[3]);
+      ASSERT_EQ(0, fine->close());
+      zvec::test_util::RemoveTestFiles(fine_path);
+    }
+  }
+  ASSERT_EQ(0, coarse->close());
+  zvec::test_util::RemoveTestFiles(coarse_path);
+}
+
+TEST(IndexInterface, NativeFp16CandidateBatchAroundTwelveIsExact) {
+  const std::string path = "flat_fp16_twelve_batch.index";
+  for (uint32_t dimension : {128U, 960U}) {
+    SCOPED_TRACE(dimension);
+    zvec::test_util::RemoveTestFiles(path);
+    auto param = FlatIndexParamBuilder()
+                     .with_metric_type(MetricType::kL2sq)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_storage_data_type(DataType::DT_FP16)
+                     .with_dimension(dimension)
+                     .with_use_contiguous_memory(true)
+                     .build();
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_TRUE(index);
+    ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+    std::vector<float> values(dimension, 0.0f);
+    for (uint32_t key = 0; key < 14; ++key) {
+      values[0] = float(14 - key);
+      ASSERT_EQ(0, index->add(VectorData{DenseVector{values.data()}}, key));
+    }
+    ASSERT_EQ(0, index->close());
+    index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_TRUE(index);
+    ASSERT_EQ(0,
+              index->open(path, {StorageOptions::StorageType::kMMAP, false}));
+    values[0] = 0.0f;
+    for (uint32_t candidates : {11U, 12U, 13U, 12U}) {
+      SCOPED_TRACE(candidates);
+      auto query_param = FlatQueryParamBuilder().with_topk(10).build();
+      query_param->bf_pks = std::make_shared<std::vector<uint64_t>>();
+      for (uint32_t key = 0; key < candidates; ++key) {
+        query_param->bf_pks->push_back(key);
+      }
+      SearchResult result;
+      ASSERT_EQ(0, index->search(VectorData{DenseVector{values.data()}},
+                                 query_param, &result));
+      ASSERT_EQ(10U, result.doc_list_.size());
+      for (uint32_t i = 0; i < 10; ++i) {
+        const uint32_t key = candidates - 1 - i;
+        EXPECT_EQ(key, result.doc_list_[i].key());
+        EXPECT_FLOAT_EQ(float((14 - key) * (14 - key)),
+                        result.doc_list_[i].score());
+      }
+    }
+    ASSERT_EQ(0, index->close());
+    zvec::test_util::RemoveTestFiles(path);
+  }
+}

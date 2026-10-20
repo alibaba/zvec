@@ -162,50 +162,6 @@ class BufferReadStorage : public IndexStorage {
     }
 
     //! Read data from segment (stable until this thread's next pointer read)
-    size_t read(size_t offset, const void **data, size_t len) override {
-      if (ailego_unlikely(data == nullptr)) {
-        return 0;
-      }
-      auto scratch = thread_scratch();
-      scratch->release_pin();
-      len = clamp_length(&offset, len);
-      if (len == 0) {
-        *data = scratch->buffer.data();
-        return 0;
-      }
-      const size_t abs_offset = data_offset_ + offset;
-      const size_t offset_in_page = abs_offset % ailego::kVectorPageSize;
-      bool force_bypass = !cache_enabled_;
-      if (cache_enabled_ && len <= ailego::kVectorPageSize - offset_in_page) {
-        size_t page_id = 0;
-        char *raw = scratch->handle->get_single_page(abs_offset, len, page_id);
-        if (raw != nullptr) {
-          scratch->pin(page_id);
-          *data = raw;
-          return len;
-        }
-        force_bypass = true;
-      }
-      scratch->buffer.resize(len);
-      const bool read_ok =
-          force_bypass
-              ? scratch->handle->read_range_bypass(
-                    abs_offset, len,
-                    reinterpret_cast<char *>(scratch->buffer.data()))
-              : read_bytes(abs_offset, len,
-                           reinterpret_cast<char *>(scratch->buffer.data()));
-      if (!read_ok) {
-        LOG_ERROR(
-            "BufferReadStorage::Segment::read: read_range failed, "
-            "abs_offset=%zu, len=%zu",
-            abs_offset, len);
-        *data = nullptr;
-        return 0;
-      }
-      *data = scratch->buffer.data();
-      return len;
-    }
-
     //! Read data from segment into a MemoryBlock
     size_t read(size_t offset, MemoryBlock &data, size_t len) override {
       len = clamp_length(&offset, len);
@@ -302,7 +258,6 @@ class BufferReadStorage : public IndexStorage {
       ailego_false_if_false(total != 0);
 
       auto scratch = thread_scratch();
-      scratch->release_pin();
       scratch->buffer.resize(total);
       uint8_t *buf = scratch->buffer.data();
       for (size_t i = 0; i < count; ++i) {
@@ -346,35 +301,14 @@ class BufferReadStorage : public IndexStorage {
 
    private:
     struct ThreadScratch {
-      ThreadScratch(
-          const std::shared_ptr<const uint8_t> &owner_arg,
-          const std::shared_ptr<ailego::VecBufferPoolHandle> &handle_arg)
-          : owner(owner_arg), handle(handle_arg) {}
+      explicit ThreadScratch(const std::shared_ptr<const uint8_t> &owner_arg)
+          : owner(owner_arg) {}
 
       ThreadScratch(const ThreadScratch &) = delete;
       ThreadScratch &operator=(const ThreadScratch &) = delete;
 
-      ~ThreadScratch() {
-        release_pin();
-      }
-
-      void pin(size_t page_id) {
-        pinned_page_id = page_id;
-        page_pinned = true;
-      }
-
-      void release_pin() {
-        if (page_pinned) {
-          handle->release_one(pinned_page_id);
-          page_pinned = false;
-        }
-      }
-
       std::weak_ptr<const uint8_t> owner;
       std::vector<uint8_t> buffer;
-      std::shared_ptr<ailego::VecBufferPoolHandle> handle;
-      size_t pinned_page_id{0};
-      bool page_pinned{false};
     };
 
     static bool &thread_scratch_registry_alive() {
@@ -414,8 +348,8 @@ class BufferReadStorage : public IndexStorage {
     }
 
     ThreadScratch *thread_scratch() const {
-      // Keep one scratch/pin per (thread, Segment); weak tokens clean up dead
-      // segments on long-lived worker threads.
+      // Keep one batch scratch buffer per (thread, Segment); weak tokens clean
+      // up dead segments on long-lived worker threads.
       ThreadScratchRegistry &registry = thread_scratch_registry();
       const uint8_t *key = scratch_token_.get();
       if (registry.last_key == key && registry.last_scratch != nullptr &&
@@ -434,8 +368,7 @@ class BufferReadStorage : public IndexStorage {
           ++iter;
         }
       }
-      auto result =
-          registry.scratches.try_emplace(key, scratch_token_, handle_);
+      auto result = registry.scratches.try_emplace(key, scratch_token_);
       registry.last_key = key;
       registry.last_scratch = &result.first->second;
       return registry.last_scratch;

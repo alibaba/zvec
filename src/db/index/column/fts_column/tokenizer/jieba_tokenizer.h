@@ -40,12 +40,12 @@ class JiebaTokenizer : public Tokenizer {
   JiebaTokenizer &operator=(const JiebaTokenizer &) = delete;
 
   // JSON config keys:
-  //   "jieba_dict_dir" - directory containing jieba.dict.utf8 + hmm_model.utf8
+  //   "jieba_dict_dir" - optional external dictionary directory override
   //   "user_dict_path" - optional user.dict.utf8
   //   "cut_mode"       - "search" (default) | "mix" | "full" | "hmm"
   //
   // jieba_dict_dir resolution: per-field > ZVEC_JIEBA_DICT_DIR >
-  // zvec::GlobalConfig::jieba_dict_dir() (set by SDK on import or via init).
+  // embedded defaults when no external directory is configured.
   // Stop-word filtering belongs to a TokenFilter, not here.
   Status init(const ailego::JsonObject &config) override;
 
@@ -73,7 +73,7 @@ class JiebaTokenizer : public Tokenizer {
   // Declared before segmenters: reverse-order destruction keeps the raw
   // pointers held by segmenters valid until the segmenters die.
   std::unique_ptr<cppjieba::DictTrie> dict_trie_;
-  std::unique_ptr<cppjieba::HMMModel> hmm_model_;
+  std::shared_ptr<const cppjieba::HMMModel> hmm_model_;
   std::unique_ptr<cppjieba::QuerySegment> query_seg_;
   std::unique_ptr<cppjieba::MixSegment> mix_seg_;
   std::unique_ptr<cppjieba::FullSegment> full_seg_;

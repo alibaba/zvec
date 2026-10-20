@@ -975,8 +975,10 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 
 int HnswStreamer::search_candidates_impl(
     const void *query, const IndexQueryMeta &qmeta, std::vector<uint64_t> &keys,
-    IndexStreamer::Context::Pointer &context) const {
+    IndexStreamer::Context::Pointer &context,
+    std::vector<float> *scores) const {
   keys.clear();
+  if (scores) scores->clear();
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) {
     return ret;
@@ -991,7 +993,8 @@ int HnswStreamer::search_candidates_impl(
   }
 
   if (entity_->doc_cnt() <= ctx->get_bruteforce_threshold()) {
-    return IndexRunner::search_candidates_impl(query, qmeta, keys, context);
+    return IndexRunner::search_candidates_impl(query, qmeta, keys, context,
+                                               scores);
   }
 
   if (ctx->magic() != magic_) {
@@ -1010,10 +1013,11 @@ int HnswStreamer::search_candidates_impl(
     LOG_ERROR("Hnsw searcher fast search failed");
     return ret;
   }
-  ctx->topk_to_keys(keys);
+  ctx->topk_to_keys(keys, scores);
 
   if (ailego_unlikely(ctx->error())) {
     keys.clear();
+    if (scores) scores->clear();
     return IndexError_Runtime;
   }
   return 0;

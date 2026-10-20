@@ -17,6 +17,7 @@
 #include <sys/mman.h>
 #endif
 #include <ailego/utility/memory_helper.h>
+#include "utility/legacy_read_buffer.h"
 
 // #define DEBUG_PRINT
 
@@ -163,51 +164,25 @@ const Neighbors HnswStreamerEntity::get_neighbors(level_t level,
 
 //! Get vector data by key
 const void *HnswStreamerEntity::get_vector(node_id_t id) const {
-  auto loc = get_vector_chunk_loc(id);
-  ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
-
-  // Fast path: mmap backend — direct pointer arithmetic.
-  // Bounds-check guards against new chunks added after clone() was taken.
-  if (node_chunk_bases_ && loc.first < node_chunk_bases_->size() &&
-      (*node_chunk_bases_)[loc.first]) {
-    return (*node_chunk_bases_)[loc.first] + loc.second;
-  }
-
-  ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
-                     "invalid chunk offset");
-  const void *vec = nullptr;
-  size_t read_size = vector_size();
-  size_t ret = node_chunks_[loc.first]->read(loc.second, &vec, read_size);
-  if (ailego_unlikely(ret != read_size)) {
-    LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",
-              loc.second, read_size, ret);
-  }
-  return vec;
+  // Keep the legacy pointer valid until the next call on this thread.
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock block;
+  return get_vector(id, block) == 0 ? buffer.assign(block, vector_size())
+                                    : nullptr;
 }
 
 int HnswStreamerEntity::get_vector(const node_id_t *ids, uint32_t count,
                                    const void **vecs) const {
-  for (auto i = 0U; i < count; ++i) {
-    auto loc = get_vector_chunk_loc(ids[i]);
-    ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
-
-    // Fast path: mmap backend.
-    // Bounds-check guards against new chunks added after clone() was taken.
-    if (node_chunk_bases_ && loc.first < node_chunk_bases_->size() &&
-        (*node_chunk_bases_)[loc.first]) {
-      vecs[i] = (*node_chunk_bases_)[loc.first] + loc.second;
-      continue;
-    }
-
-    ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
-                       "invalid chunk offset");
-    size_t read_size = vector_size();
-    size_t ret = node_chunks_[loc.first]->read(loc.second, &vecs[i], read_size);
-    if (ailego_unlikely(ret != read_size)) {
-      LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",
-                loc.second, read_size, ret);
-      return IndexError_ReadData;
-    }
+  // Retain every result independently until the next batch on this thread.
+  static thread_local std::vector<LegacyReadBuffer> buffers;
+  std::vector<IndexStorage::MemoryBlock> blocks;
+  int ret = get_vector(ids, count, blocks);
+  if (ret != 0) {
+    return ret;
+  }
+  buffers.resize(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    vecs[i] = buffers[i].assign(blocks[i], vector_size());
   }
   return 0;
 }
@@ -1104,14 +1079,14 @@ int HnswContiguousStreamerEntity::build_contiguous_memory() {
   const auto &chunks = node_chunks_;
   const uint32_t nodes_per_chunk = 1U << node_index_mask_bits_;
   for (size_t chunk_idx = 0; chunk_idx < chunks.size(); ++chunk_idx) {
-    const void *chunk_data = nullptr;
+    IndexStorage::MemoryBlock chunk_data;
     size_t data_size = chunks[chunk_idx]->data_size();
-    chunks[chunk_idx]->read(0, &chunk_data, data_size);
+    chunks[chunk_idx]->read(0, chunk_data, data_size);
 
     uint32_t base_id = chunk_idx * nodes_per_chunk;
     uint32_t count_in_chunk = std::min(nodes_per_chunk, total_docs - base_id);
 
-    const char *src = static_cast<const char *>(chunk_data);
+    const char *src = static_cast<const char *>(chunk_data.data());
     for (uint32_t i = 0; i < count_in_chunk; ++i) {
       const char *node_src = src + static_cast<size_t>(i) * per_node;
       size_t global_id = static_cast<size_t>(base_id + i);
@@ -1160,11 +1135,11 @@ int HnswContiguousStreamerEntity::build_contiguous_memory() {
 
   // Copy upper neighbor data from chunks into contiguous memory
   for (size_t i = 0; i < upper_chunks.size(); ++i) {
-    const void *chunk_data = nullptr;
+    IndexStorage::MemoryBlock chunk_data;
     size_t data_size = upper_chunks[i]->data_size();
-    upper_chunks[i]->read(0, &chunk_data, data_size);
-    std::memcpy(upper_neighbor_base_ + upper_chunk_offsets_[i], chunk_data,
-                data_size);
+    upper_chunks[i]->read(0, chunk_data, data_size);
+    std::memcpy(upper_neighbor_base_ + upper_chunk_offsets_[i],
+                chunk_data.data(), data_size);
   }
 
   LOG_INFO(

@@ -1,0 +1,157 @@
+diff --git a/include/cppjieba/DictTrie.hpp b/include/cppjieba/DictTrie.hpp
+index e3e1a7e4..3e36c3c2 100644
+--- a/include/cppjieba/DictTrie.hpp
++++ b/include/cppjieba/DictTrie.hpp
+@@ -7,6 +7,7 @@
+ #include <cstdlib>
+ #include <cmath>
+ #include <deque>
++#include <istream>
+ #include <memory>
+ #include <mutex>
+ #include <set>
+@@ -34,10 +35,26 @@ class DictTrie {
+     WordWeightMax,
+   }; // enum UserWordWeightOption
+
++  struct DictCacheEntry {
++    std::shared_ptr<const std::vector<DictUnit> > node_infos;
++    double freq_sum;
++    double min_weight;
++    double max_weight;
++    double median_weight;
++  };
++
+   DictTrie(const std::string& dict_path, const std::string& user_dict_paths = "", UserWordWeightOption user_word_weight_opt = WordWeightMedian) {
+     Init(dict_path, user_dict_paths, user_word_weight_opt);
+   }
+
++  DictTrie(const DictCacheEntry& cache, const std::string& user_dict_paths = "", UserWordWeightOption user_word_weight_opt = WordWeightMedian) {
++    Init(cache, user_dict_paths, user_word_weight_opt);
++  }
++
++  static DictCacheEntry LoadDict(std::istream& stream) {
++    return BuildDictCacheEntry(stream);
++  }
++
+   ~DictTrie() {
+     delete trie_;
+   }
+@@ -168,16 +185,12 @@ class DictTrie {
+
+
+  private:
+-  struct DictCacheEntry {
+-    std::shared_ptr<const std::vector<DictUnit> > node_infos;
+-    double freq_sum;
+-    double min_weight;
+-    double max_weight;
+-    double median_weight;
+-  };
+
+   void Init(const std::string& dict_path, const std::string& user_dict_paths, UserWordWeightOption user_word_weight_opt) {
+-    const DictCacheEntry& cache = GetDictCache(dict_path);
++    Init(GetDictCache(dict_path), user_dict_paths, user_word_weight_opt);
++  }
++
++  void Init(const DictCacheEntry& cache, const std::string& user_dict_paths, UserWordWeightOption user_word_weight_opt) {
+     base_static_node_infos_ = cache.node_infos;
+     freq_sum_ = cache.freq_sum;
+     min_weight_ = cache.min_weight;
+@@ -236,14 +249,18 @@ class DictTrie {
+   }
+
+   static DictCacheEntry BuildDictCacheEntry(const std::string& filePath) {
+-    DictCacheEntry entry;
+-    std::vector<DictUnit> node_infos;
+     std::ifstream ifs;
+     OpenInputFile(ifs, filePath);
+     XCHECK(ifs.is_open()) << "open " << filePath << " failed.";
++    return BuildDictCacheEntry(ifs, filePath);
++  }
++
++  static DictCacheEntry BuildDictCacheEntry(std::istream& stream, const std::string& filePath = "input stream") {
++    DictCacheEntry entry;
++    std::vector<DictUnit> node_infos;
+     std::string line;
+     std::vector<std::string> buf;
+-    while (getline(ifs, line)) {
++    while (getline(stream, line)) {
+       limonp::Split(line, buf, " ");
+       XCHECK(buf.size() == DICT_COLUMN_NUM) << "split result illegal, line:" << line;
+       DictUnit node_info;
+diff --git a/include/cppjieba/HMMModel.hpp b/include/cppjieba/HMMModel.hpp
+index 11524957..e181241d 100644
+--- a/include/cppjieba/HMMModel.hpp
++++ b/include/cppjieba/HMMModel.hpp
+@@ -1,6 +1,7 @@
+ #ifndef CPPJIEBA_HMMMODEL_H
+ #define CPPJIEBA_HMMMODEL_H
+
++#include <istream>
+ #include "UnicodeFile.hpp"
+ #include "limonp/StringUtil.hpp"
+ #include "Trie.hpp"
+@@ -18,24 +19,22 @@ struct HMMModel {
+   enum {B = 0, E = 1, M = 2, S = 3, STATUS_SUM = 4};
+
+   HMMModel(const string& modelPath) {
+-    memset(startProb, 0, sizeof(startProb));
+-    memset(transProb, 0, sizeof(transProb));
+-    statMap[0] = 'B';
+-    statMap[1] = 'E';
+-    statMap[2] = 'M';
+-    statMap[3] = 'S';
+-    emitProbVec.push_back(&emitProbB);
+-    emitProbVec.push_back(&emitProbE);
+-    emitProbVec.push_back(&emitProbM);
+-    emitProbVec.push_back(&emitProbS);
++    Init();
+     LoadModel(modelPath);
+   }
++  HMMModel(std::istream& stream) {
++    Init();
++    LoadModel(stream);
++  }
+   ~HMMModel() {
+   }
+   void LoadModel(const string& filePath) {
+     ifstream ifile;
+     OpenInputFile(ifile, filePath);
+     XCHECK(ifile.is_open()) << "open " << filePath << " failed";
++    LoadModel(ifile);
++  }
++  void LoadModel(std::istream& ifile) {
+     string line;
+     vector<string> tmp;
+     vector<string> tmp2;
+@@ -81,7 +80,7 @@ struct HMMModel {
+     }
+     return cit->second;
+   }
+-  bool GetLine(ifstream& ifile, string& line) {
++  bool GetLine(std::istream& ifile, string& line) {
+     while (getline(ifile, line)) {
+       Trim(line);
+       if (line.empty()) {
+@@ -124,6 +123,20 @@ struct HMMModel {
+   EmitProbMap emitProbM;
+   EmitProbMap emitProbS;
+   vector<EmitProbMap* > emitProbVec;
++
++ private:
++  void Init() {
++    memset(startProb, 0, sizeof(startProb));
++    memset(transProb, 0, sizeof(transProb));
++    statMap[0] = 'B';
++    statMap[1] = 'E';
++    statMap[2] = 'M';
++    statMap[3] = 'S';
++    emitProbVec.push_back(&emitProbB);
++    emitProbVec.push_back(&emitProbE);
++    emitProbVec.push_back(&emitProbM);
++    emitProbVec.push_back(&emitProbS);
++  }
+ }; // struct HMMModel
+
+ } // namespace cppjieba
