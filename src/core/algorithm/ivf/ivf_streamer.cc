@@ -202,6 +202,9 @@ int IVFStreamer::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
     ivf_check_error_code(ret);
     if (segment_timing) {
       entity->mutable_packed_scan_stats().prep_ns += shared_prep_ns;
+      // Brute-force path: the shared window covers only the transform (no
+      // bucket selection), so the whole shared prep is a transform sub-stage.
+      entity->mutable_packed_scan_stats().prep_transform_ns += shared_prep_ns;
     }
     auto &context_stats = ctx->mutable_stats(q);
     auto &heap = ctx->mutable_result_heap();
@@ -284,8 +287,12 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   const bool segment_timing = entity->packed_scan_timing_enabled();
   const SteadyTime prep_t0 =
       segment_timing ? std::chrono::steady_clock::now() : SteadyTime{};
+  const SteadyTime select_t0 =
+      segment_timing ? std::chrono::steady_clock::now() : SteadyTime{};
   int ret = centroid_index_->search(query, qmeta, count, centroid_index_ctx);
   ivf_check_error_code(ret);
+  const SteadyTime select_t1 =
+      segment_timing ? std::chrono::steady_clock::now() : SteadyTime{};
 
   //! Transform the querys for querying in inverted vector index later
   IndexQueryMeta iv_qmeta;
@@ -300,6 +307,22 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                                         .count() /
                                     count
                               : 0.0;
+  // v17 prep sub-stages: bucket selection vs query transform, amortized per
+  // query with the same caliber as shared_prep_ns (their sum <= prep_ns;
+  // boundary clock gaps between the windows are excluded).
+  const double shared_select_ns =
+      segment_timing && count
+          ? std::chrono::duration<double, std::nano>(select_t1 - select_t0)
+                .count() /
+                count
+          : 0.0;
+  const double shared_transform_ns =
+      segment_timing && count
+          ? std::chrono::duration<double, std::nano>(
+                std::chrono::steady_clock::now() - select_t1)
+                .count() /
+                count
+          : 0.0;
 
   for (size_t q = 0; q < count; ++q) {
     const SteadyTime query_t0 =
@@ -308,6 +331,9 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
     ivf_check_error_code(ret);
     if (segment_timing) {
       entity->mutable_packed_scan_stats().prep_ns += shared_prep_ns;
+      entity->mutable_packed_scan_stats().prep_select_ns += shared_select_ns;
+      entity->mutable_packed_scan_stats().prep_transform_ns +=
+          shared_transform_ns;
     }
     auto &centroids = centroid_index_ctx->result(q);
     auto &context_stats = ctx->mutable_stats(q);

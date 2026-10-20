@@ -153,6 +153,9 @@ mmap 直接访问的这几项读取计数为零。`refined_count` 是精算接�
 | `rabitq_pruning` | `true` | 允许下界剪枝；关闭时精算所有未过滤的有效候选 |
 | `rabitq_reuse_coarse_dot` | `false` | 精算复用 FastScan 的高精度 LUT 点积，省去二进制码浮点点积重算 |
 | `rabitq_collect_stats` | `false` | 在 `SearchResult::ivf_scan_stats_` 返回该次查询计数 |
+| `rabitq_segment_timing` | `false` | 在 `ivf_scan_stats_` 返回分段计时与 prep 子阶段（选桶/变换/编码/LUT/扫描器/每桶准备） |
+| `rabitq_segment_timing_stride` | `1` | 分段计时只对每第 N 个 block（集成）或 32 行批（专用）取时钟，结果不变 |
+| `refine_stage_timing` | `false` | 在 `SearchResult::refine_stage_stats_` 返回粗筛与 kFlat 精排两段耗时；可与 refiner 组合 |
 
 例如（开启点积复用，保留剪枝）：
 

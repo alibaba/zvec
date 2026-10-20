@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "ivf_rabitq_streamer.h"
+#include <chrono>
 #include <limits>
 #include <map>
 #include <new>
@@ -33,6 +34,19 @@
 
 namespace zvec {
 namespace core {
+
+namespace {
+
+// Diagnostic wall clock mirroring the Turbo IVF SegmentClock (see
+// ivf_entity.cc); instrumentation overhead is measured separately.
+inline uint64_t SegmentClock() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+
+}  // namespace
 
 // --------------------------------------------------------------------------
 // init
@@ -332,20 +346,35 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
   // Reset results and heap for all queries
   ctx->reset_results(count);
   ctx->scan_stats = {};
-  auto *scan_stats = ctx->collect_scan_stats ? &ctx->scan_stats : nullptr;
+  const bool segment_timing = ctx->segment_timing;
+  auto *scan_stats =
+      (ctx->collect_scan_stats || segment_timing) ? &ctx->scan_stats : nullptr;
+  if (scan_stats) {
+    scan_stats->timing = segment_timing;
+    scan_stats->timing_stride =
+        ctx->segment_timing_stride ? ctx->segment_timing_stride : 1;
+  }
 
   for (uint32_t q = 0; q < count; ++q) {
     const float *q_vec = reinterpret_cast<const float *>(
         static_cast<const char *>(query) +
         (static_cast<size_t>(q) * qmeta.element_size()));
 
+    const uint64_t query_t0 = segment_timing ? SegmentClock() : 0;
+
     // Create query state (rotate query and prepare per-query scan state)
     auto &query_state = ctx->query_state;
+    [[maybe_unused]] uint64_t prep_t0 = 0;
+    if (segment_timing) prep_t0 = SegmentClock();
     int ret = reformer_->create_query_state(q_vec, &query_state);
     if (ret != 0) {
       LOG_ERROR("Failed to create query state, ret=%d", ret);
       return ret;
     }
+    // v17 prep sub-stage boundary: query state (rotate + SplitBatchQuery)
+    // ends here, centroid selection follows.
+    [[maybe_unused]] uint64_t state_t1 = 0;
+    if (segment_timing) state_t1 = SegmentClock();
 
     // Select probe centroids with the same metric used for build assignment.
     auto &probe_centroids = ctx->probe_centroids;
@@ -354,6 +383,12 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
     if (ret != 0) {
       LOG_ERROR("Failed to select probe centroids, ret=%d", ret);
       return ret;
+    }
+    if (segment_timing) {
+      const uint64_t prep_t1 = SegmentClock();
+      scan_stats->prep_ns += double(prep_t1 - prep_t0);
+      scan_stats->prep_state_ns += double(state_t1 - prep_t0);
+      scan_stats->prep_select_ns += double(prep_t1 - state_t1);
     }
 
     // Use context heap for online dist-k gated pruning
@@ -376,7 +411,15 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
       const auto &probe = probe_centroids[p];
       uint32_t cid = probe.id;
 
+      [[maybe_unused]] uint64_t cluster_prep_t0 = 0;
+      if (segment_timing) cluster_prep_t0 = SegmentClock();
       ret = reformer_->prepare_for_cluster(probe, &query_state);
+      if (segment_timing) {
+        const double cluster_prep_ns =
+            double(SegmentClock() - cluster_prep_t0);
+        scan_stats->prep_ns += cluster_prep_ns;
+        scan_stats->prep_cluster_ns += cluster_prep_ns;
+      }
       if (ret != 0) {
         LOG_ERROR("Failed to prepare for cluster %zu, ret=%d", (size_t)cid,
                   ret);
@@ -413,7 +456,14 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
     }
 
     // Drain heap into sorted result list for query q
-    ctx->topk_to_result(q);
+    if (segment_timing) {
+      const uint64_t finalize_t0 = SegmentClock();
+      ctx->topk_to_result(q);
+      scan_stats->finalize_ns += double(SegmentClock() - finalize_t0);
+      scan_stats->query_ns += double(SegmentClock() - query_t0);
+    } else {
+      ctx->topk_to_result(q);
+    }
   }
 
   return 0;

@@ -795,13 +795,19 @@ class RabitqBlockScanner final : public BlockScanner {
       adds[i] = g_add[c];
       errors[i] = g_error[c];
     }
+    // Read once per block: the out[i] stores below can alias *this in the
+    // compiler's view, which otherwise forces a reload of every query scalar
+    // and flag on each of the 32 lanes.
+    const float delta = query_.delta();
+    const float sum_vl_lut = query_.sum_vl_lut();
+    const float k1xsumq = query_.k1xsumq();
+    const float ip_sub = ip_ ? 1.0f : 0.0f;
+    const bool one_bit = bits_ == 1;
     for (size_t i = 0; i < count; ++i) {
-      const float dot = query_.delta() * sums[i] + query_.sum_vl_lut();
+      const float dot = delta * sums[i] + sum_vl_lut;
       const float score = batch.f_add()[i] + adds[i] +
-                          batch.f_rescale()[i] * (dot + query_.k1xsumq()) -
-                          (ip_ ? 1 : 0);
-      out[i] = {score,
-                bits_ == 1 ? score : score - batch.f_error()[i] * errors[i],
+                          batch.f_rescale()[i] * (dot + k1xsumq) - ip_sub;
+      out[i] = {score, one_bit ? score : score - batch.f_error()[i] * errors[i],
                 dot};
     }
     return 0;

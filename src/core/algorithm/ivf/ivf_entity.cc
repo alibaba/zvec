@@ -750,11 +750,14 @@ int IVFEntity::bind_query(const void *query, const IndexQueryMeta &qmeta) {
   packed_scan_samples_.clear();
   packed_scan_limited_ = false;
   segment_ns_[0] = segment_ns_[1] = segment_ns_[2] = 0;
+  timing_block_seq_ = 0;
   block_scanner_.reset();
   if (!quantizer_) {
     return 0;
   }
   query_distance_ = turbo::DistanceImpl{};
+  uint64_t sub_t0 = 0, sub_t1 = 0, sub_t2 = 0;
+  if (packed_scan_timing_) sub_t0 = SegmentClock();
   std::string encoded;
   IndexQueryMeta encoded_meta;
   int ret = quantizer_->quantize(query, qmeta, &encoded, &encoded_meta);
@@ -763,11 +766,13 @@ int IVFEntity::bind_query(const void *query, const IndexQueryMeta &qmeta) {
     LOG_ERROR("Unexpected Turbo IVF query code size");
     return IndexError_InvalidArgument;
   }
+  if (packed_scan_timing_) sub_t1 = SegmentClock();
   query_distance_ = quantizer_->distance(encoded.data(), encoded_meta);
   if (!query_distance_.valid()) {
     LOG_ERROR("Turbo quantizer does not support IVF posting distances");
     return IndexError_Unsupported;
   }
+  if (packed_scan_timing_) sub_t2 = SegmentClock();
   if (scan_blocks_) block_scanner_ = quantizer_->block_scanner(query_distance_);
   if (block_scanner_) {
     if (!block_scanner_->set_reuse_coarse_dot(packed_scan_reuse_dot_))
@@ -776,8 +781,12 @@ int IVFEntity::bind_query(const void *query, const IndexQueryMeta &qmeta) {
     packed_scan_stats_.mapped = scan_blocks_->base_data() &&
                                 keys_->base_data() && inverted_->base_data();
   }
-  if (packed_scan_timing_ && block_scanner_) {
-    packed_scan_stats_.prep_ns = double(SegmentClock() - seg_t0);
+  if (packed_scan_timing_) {
+    const uint64_t sub_t3 = SegmentClock();
+    packed_scan_stats_.prep_encode_ns = double(sub_t1 - sub_t0);
+    packed_scan_stats_.prep_lut_ns = double(sub_t2 - sub_t1);
+    packed_scan_stats_.prep_scanner_ns = double(sub_t3 - sub_t2);
+    packed_scan_stats_.prep_ns = double(sub_t3 - seg_t0);
   }
   return 0;
 }
@@ -1238,7 +1247,16 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
       const size_t count = std::min(block_vecs, items - b * block_vecs);
       const uint64_t *keys = window_keys + b * block_vecs;
       uint64_t seg_t0 = 0, seg_t1 = 0, seg_t2 = 0;
-      if (packed_scan_timing_) seg_t0 = SegmentClock();
+      // Stride sampling: 1 times every block; N>1 times every Nth block of
+      // the query so the three block segments cover the sampled subset only.
+      const bool block_timed =
+          packed_scan_timing_ &&
+          (packed_scan_timing_stride_ == 1 ||
+           (timing_block_seq_++ % packed_scan_timing_stride_) == 0);
+      if (block_timed) {
+        ++packed_scan_stats_.timed_blocks;
+        seg_t0 = SegmentClock();
+      }
       uint32_t keeps = 0;
       for (size_t i = 0; i < count; ++i) {
         if (keys[i] == kInvalidKey) continue;
@@ -1258,7 +1276,7 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
         keeps |= uint32_t(1) << i;
       }
       if (!keeps) {
-        if (packed_scan_timing_) segment_ns_[0] += SegmentClock() - seg_t0;
+        if (block_timed) segment_ns_[0] += SegmentClock() - seg_t0;
         continue;
       }
       const void *packed;
@@ -1276,7 +1294,7 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
         }
         packed = scan_buffer_.data() + b * packed_size;
       }
-      if (packed_scan_timing_) {
+      if (block_timed) {
         seg_t1 = SegmentClock();
         segment_ns_[0] += seg_t1 - seg_t0;
       }
@@ -1303,7 +1321,7 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
                estimates[sr].coarse_dot});
         }
       }
-      if (packed_scan_timing_) {
+      if (block_timed) {
         seg_t2 = SegmentClock();
         segment_ns_[1] += seg_t2 - seg_t1;
       }
@@ -1351,7 +1369,7 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
             keeps &= ~(uint32_t(1) << i);
         }
         if (!keeps) {
-          if (packed_scan_timing_) segment_ns_[2] += SegmentClock() - seg_t2;
+          if (block_timed) segment_ns_[2] += SegmentClock() - seg_t2;
           continue;
         }
         IndexStorage::Segment::ScatterBlock rows;
@@ -1374,7 +1392,7 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
           }
         }
       }
-      if (packed_scan_timing_) segment_ns_[2] += SegmentClock() - seg_t2;
+      if (block_timed) segment_ns_[2] += SegmentClock() - seg_t2;
     }
   }
   *scan_count = list.vector_count;

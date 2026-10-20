@@ -71,6 +71,19 @@ class IVFEntity {
     double prep_ns{0}, coarse_ns{0}, cand_ns{0}, post_scan_ns{0},
         finalize_ns{0};
     double query_ns{0};
+    // Prep sub-stages (ns), zero unless segment timing is enabled (v17):
+    // prep_select = centroid/bucket selection, prep_transform = streamer
+    // query transform (both added by the searcher after bind_query),
+    // prep_encode = quantizer query encode, prep_lut = query distance/LUT,
+    // prep_scanner = block scanner construction (last three from bind_query).
+    // Sums are <= prep_ns; boundary clock gaps are excluded.
+    double prep_select_ns{0}, prep_transform_ns{0}, prep_encode_ns{0};
+    double prep_lut_ns{0}, prep_scanner_ns{0};
+    // Blocks that contributed to cand/coarse/post. With the timing stride at
+    // 1 this is every scanned block (v16 caliber); stride N>1 times only
+    // every Nth block of the query, and the three segments then cover the
+    // sampled subset only.
+    size_t timed_blocks{0};
   };
   const PackedScanStats &packed_scan_stats() const {
     return packed_scan_stats_;
@@ -97,6 +110,17 @@ class IVFEntity {
 
   bool packed_scan_timing_enabled() const {
     return packed_scan_timing_;
+  }
+
+  // Block sampling stride for segment timing: 1 = every block (default),
+  // N>1 = only every Nth block of the query contributes to cand/coarse/post.
+  // Results are unaffected; only the diagnostic segments change coverage.
+  void set_packed_scan_timing_stride(uint32_t stride) const {
+    packed_scan_timing_stride_ = stride ? stride : 1;
+  }
+
+  uint32_t packed_scan_timing_stride() const {
+    return packed_scan_timing_stride_;
   }
 
   struct PackedScanList {
@@ -526,6 +550,10 @@ class IVFEntity {
   mutable bool packed_scan_lists_enabled_{false};
   mutable bool packed_scan_samples_enabled_{false};
   mutable bool packed_scan_timing_{false};
+  // Block sampling stride for segment timing; 0/invalid values normalize to 1.
+  mutable uint32_t packed_scan_timing_stride_{1};
+  // Per-query block sequence for stride sampling, reset by bind_query().
+  mutable size_t timing_block_seq_{0};
   // Scan-clock nanoseconds per query: cand, coarse, post-scan.
   mutable uint64_t segment_ns_[3]{};
   bool packed_scan_pruning_{true};

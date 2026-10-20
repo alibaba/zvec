@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <magic_enum/magic_enum.hpp>
@@ -28,6 +29,15 @@
 namespace zvec::core_interface {
 
 namespace {
+
+// Diagnostic wall clock mirroring the Turbo IVF SegmentClock (see
+// ivf_entity.cc); instrumentation overhead is measured separately.
+inline uint64_t RefineStageClock() {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
 
 bool has_group_by_search(const BaseIndexQueryParam::Pointer &search_param) {
   return search_param->group_by_param && search_param->group_by_param->group_by;
@@ -741,6 +751,7 @@ int Index::search(const VectorData &vector_data,
                   const BaseIndexQueryParam::Pointer &search_param,
                   SearchResult *result) {
   result->ivf_scan_stats_ = {};
+  result->refine_stage_stats_ = {};
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;
@@ -808,9 +819,14 @@ int Index::search(const VectorData &vector_data,
     }
     context->set_topk(coarse_topk);
     context->set_fetch_vector(false);  // no need to fetch vector
+    const bool stage_timing = search_param->refine_stage_timing;
+    if (stage_timing) {
+      result->refine_stage_stats_.collected = true;
+    }
     std::string transformed_vector;
     const void *query = nullptr;
     core::IndexQueryMeta query_meta;
+    const uint64_t base_t0 = stage_timing ? RefineStageClock() : 0;
     ret = _prepare_dense_query(vector_data, &transformed_vector, &query,
                                &query_meta);
     if (ret != 0) {
@@ -829,9 +845,17 @@ int Index::search(const VectorData &vector_data,
       }
       return core::IndexError_Runtime;
     }
+    if (stage_timing) {
+      result->refine_stage_stats_.base_ns += double(RefineStageClock() - base_t0);
+    }
     result->reverted_vector_list_.clear();
+    const uint64_t refine_t0 = stage_timing ? RefineStageClock() : 0;
     ret = reference_index->_refine_dense_candidates(vector_data, search_param,
                                                     keys, result);
+    if (stage_timing) {
+      result->refine_stage_stats_.refine_ns +=
+          double(RefineStageClock() - refine_t0);
+    }
   }
   if (context) {
     context->reset();

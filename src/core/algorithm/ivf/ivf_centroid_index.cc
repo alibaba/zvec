@@ -608,6 +608,14 @@ int IVFCentroidIndex::load(const IndexStorage::Pointer &container,
   ivf_check_with_msg(ret, "Failed to load searcher %s",
                      searcher_class_.c_str());
 
+  LOG_INFO(
+      "CentroidIndex loaded: searcher %s, quantizer %s, reformer %s, metric %s"
+      ", data_type %d, dimension %u, centroids %zu",
+      searcher_class_.c_str(), meta_.quantizer_name().c_str(),
+      reformer_name.c_str(), meta_.metric_name().c_str(),
+      static_cast<int>(meta_.data_type()), meta_.dimension(),
+      searcher_->stats().loaded_count());
+
   return 0;
 }
 
