@@ -71,15 +71,6 @@ inline std::string make_total_tokens_key(const std::string &field_name) {
   return field_name + "_total_tokens";
 }
 
-// Legacy whitespace indexes used locale-dependent byte classification and
-// did not record the writer's locale. Their postings cannot safely be queried
-// with the deterministic ASCII-whitespace tokenizer without rebuilding.
-inline constexpr char kWhitespaceTokenizerVersion[] = "ascii-whitespace-v1";
-
-inline std::string make_tokenizer_version_key(const std::string &field_name) {
-  return field_name + "_tokenizer_version";
-}
-
 // uint64 big-endian encoding for stat values.
 inline std::string encode_uint64_value(uint64_t value) {
   std::string out(sizeof(uint64_t), '\0');

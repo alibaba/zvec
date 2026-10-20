@@ -4613,11 +4613,11 @@ Status SegmentImpl::open_fts_indexers(bool create) {
   if (create) {
     auto block_id = allocate_block_id();
     auto fts_path = FileHelper::MakeFtsIndexPath(seg_path_, block_id);
-    Status status;
     fts_indexer_ = FtsIndexer::CreateAndOpen(
-        fts_path, collection_schema_->fts_fields(), true, false, &status);
+        fts_path, collection_schema_->fts_fields(), true);
     if (!fts_indexer_) {
-      return status;
+      return Status::InternalError("open_fts_indexers: create failed at [",
+                                   fts_path, "]");
     }
     segment_meta_->add_persisted_block(
         BlockMeta{block_id, BlockType::FTS_INDEX, 0, 0, 0, {}});
@@ -4625,12 +4625,12 @@ Status SegmentImpl::open_fts_indexers(bool create) {
     for (const auto &block : segment_meta_->persisted_blocks()) {
       if (block.type() == BlockType::FTS_INDEX) {
         auto fts_path = FileHelper::MakeFtsIndexPath(seg_path_, block.id());
-        Status status;
         fts_indexer_ = FtsIndexer::CreateAndOpen(
             fts_path, collection_schema_->fts_fields(), false,
-            options_.read_only_, &status);
+            options_.read_only_);
         if (!fts_indexer_) {
-          return status;
+          return Status::InternalError("open_fts_indexers: open failed at [",
+                                       fts_path, "]");
         }
         break;
       }
@@ -4746,23 +4746,21 @@ Status SegmentImpl::create_fts_index(const std::string &column,
   new_schema->get_field(column)->set_index_params(index_params);
 
   FtsIndexer::Ptr new_fts_indexer;
-  Status open_status;
   if (fts_indexer_) {
     // Snapshot existing fts DB, then open the copy with current schema.
     auto s = fts_indexer_->create_snapshot(new_fts_path);
     CHECK_RETURN_STATUS(s);
 
     new_fts_indexer = FtsIndexer::CreateAndOpen(
-        new_fts_path, collection_schema_->fts_fields(), false, false,
-        &open_status);
+        new_fts_path, collection_schema_->fts_fields(), false);
   } else {
     // No existing fts DB — create a fresh one.
-    new_fts_indexer = FtsIndexer::CreateAndOpen(
-        new_fts_path, new_schema->fts_fields(), true, false, &open_status);
+    new_fts_indexer =
+        FtsIndexer::CreateAndOpen(new_fts_path, new_schema->fts_fields(), true);
   }
   if (!new_fts_indexer) {
     FileHelper::RemoveDirectory(new_fts_path);
-    return open_status;
+    return Status::InternalError("create_fts_index: failed to open snapshot");
   }
 
   // If the field already exists in the snapshot (params change), remove it
@@ -4878,13 +4876,11 @@ Status SegmentImpl::drop_fts_index(const std::string &column,
     auto s = fts_indexer_->create_snapshot(new_fts_path);
     CHECK_RETURN_STATUS(s);
 
-    Status open_status;
     auto new_fts_indexer = FtsIndexer::CreateAndOpen(
-        new_fts_path, collection_schema_->fts_fields(), false, false,
-        &open_status);
+        new_fts_path, collection_schema_->fts_fields(), false);
     if (!new_fts_indexer) {
       FileHelper::RemoveDirectory(new_fts_path);
-      return open_status;
+      return Status::InternalError("drop_fts_index: failed to open snapshot");
     }
 
     s = new_fts_indexer->remove_field_indexer(column);

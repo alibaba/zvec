@@ -13,17 +13,9 @@
 // limitations under the License.
 
 #include "whitespace_tokenizer.h"
+#include <cctype>
 
 namespace zvec::fts {
-namespace {
-
-constexpr bool is_ascii_whitespace(unsigned char ch) {
-  // Ctype tables vary by OS and locale. Classifying UTF-8 continuation bytes
-  // through them can split a word differently when an index moves platforms.
-  return ch == ' ' || (ch >= '\t' && ch <= '\r');
-}
-
-}  // namespace
 
 std::vector<Token> WhitespaceTokenizer::tokenize(
     const std::string &text) const {
@@ -35,7 +27,7 @@ std::vector<Token> WhitespaceTokenizer::tokenize(
   while (index < text_length) {
     // skip whitespace characters
     while (index < text_length &&
-           is_ascii_whitespace(static_cast<unsigned char>(text[index]))) {
+           std::isspace(static_cast<unsigned char>(text[index]))) {
       ++index;
     }
     if (index >= text_length) {
@@ -47,7 +39,7 @@ std::vector<Token> WhitespaceTokenizer::tokenize(
 
     // find token end position
     while (index < text_length &&
-           !is_ascii_whitespace(static_cast<unsigned char>(text[index]))) {
+           !std::isspace(static_cast<unsigned char>(text[index]))) {
       ++index;
     }
 

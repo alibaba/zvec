@@ -15,7 +15,6 @@
 #pragma once
 
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 #include <roaring.hh>
@@ -139,7 +138,6 @@ class FtsRocksdbReducer {
   std::vector<rocksdb::ColumnFamilyHandle *> src_positions_cfs_{};
 
   uint32_t num_segments_{0};
-  std::optional<std::string> tokenizer_version_;
 
   // Survivor-only stats; fed into scorer_ for block_max_score and written
   // to dst stat_cf.

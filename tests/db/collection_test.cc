@@ -47,9 +47,6 @@
 #include "db/collection_query_internal.h"
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
-#include "db/common/rocksdb_context.h"
-#include "db/index/column/fts_column/fts_rocksdb_merge.h"
-#include "db/index/column/fts_column/fts_utils.h"
 #include "db/index/common/type_helper.h"
 #include "db/index/common/version_manager.h"
 #include "index/utils/utils.h"
@@ -7671,84 +7668,6 @@ TEST_F(CollectionTest, Feature_DropFtsIndex_FailureKeepsPersistedOldSchema) {
 // Dynamic CreateIndex/DropIndex for FTS: create an FTS index on a STRING column
 // that already has data, verify queries hit, then drop the index and verify FTS
 // is no longer available. Also covers reopen persistence.
-TEST_F(CollectionTest, Feature_LegacyWhitespaceReportsRebuildOnOpen) {
-  for (bool optimize : {false, true}) {
-    SCOPED_TRACE(optimize);
-    FileHelper::RemoveDirectory(col_path);
-    CollectionSchema schema("whitespace_compatibility");
-    schema.add_field(std::make_shared<FieldSchema>(
-        "content", DataType::STRING, false,
-        std::make_shared<FtsIndexParams>("whitespace")));
-    auto created = Collection::CreateAndOpen(col_path, schema,
-                                             CollectionOptions{false, true});
-    ASSERT_TRUE(created.has_value()) << created.error().message();
-    auto collection = std::move(created.value());
-    Doc doc;
-    doc.set_pk("one");
-    doc.set<std::string>("content", u8"你好");
-    std::vector<Doc> docs{doc};
-    ASSERT_TRUE(collection->insert(docs).has_value());
-    ASSERT_TRUE(collection->flush().ok());
-    if (optimize) {
-      ASSERT_TRUE(collection->optimize().ok());
-    }
-    collection.reset();
-    SearchQuery query;
-    query.target_.field_name_ = "content";
-    query.topk_ = 10;
-    FtsClause clause;
-    clause.query_string_ = u8"你好";
-    query.target_.clause_ = clause;
-    for (bool read_only : {true, false}) {
-      auto opened =
-          Collection::Open(col_path, CollectionOptions{read_only, true});
-      ASSERT_TRUE(opened.has_value()) << opened.error().message();
-      auto results = opened.value()->query(query);
-      ASSERT_TRUE(results.has_value()) << results.error().message();
-      ASSERT_EQ(results.value().size(), 1u);
-    }
-
-    // Remove only the format metadata to reproduce an unversioned old index.
-    // Raw text and postings remain present, so open must not silently proceed.
-    std::vector<std::string> fts_paths;
-    for (const auto &entry :
-         std::filesystem::recursive_directory_iterator(col_path)) {
-      if (entry.is_directory() &&
-          entry.path().filename().string().rfind("fts.", 0) == 0) {
-        fts_paths.push_back(entry.path().string());
-      }
-    }
-    ASSERT_FALSE(fts_paths.empty());
-    for (const auto &path : fts_paths) {
-      RocksdbContext ctx;
-      RocksdbContext::Args args{
-          path,
-          {},
-          nullptr,
-          {{"content", std::make_shared<fts::FtsPostingsMerge>()},
-           {std::string("content") + kFtsMaxTfSuffix,
-            std::make_shared<fts::FtsMaxTfMerge>()}},
-          true};
-      ASSERT_TRUE(ctx.open(std::move(args), false).ok());
-      ASSERT_TRUE(ctx.db_
-                      ->Delete(ctx.write_opts_, ctx.get_cf(kFtsStatCfName),
-                               fts::make_tokenizer_version_key("content"))
-                      .ok());
-      ASSERT_TRUE(ctx.flush().ok());
-    }
-    for (bool read_only : {false, true, false}) {
-      auto opened =
-          Collection::Open(col_path, CollectionOptions{read_only, true});
-      ASSERT_FALSE(opened.has_value());
-      EXPECT_EQ(opened.error().code(), StatusCode::FAILED_PRECONDITION);
-      EXPECT_NE(opened.error().message().find("Rebuild required"),
-                std::string::npos);
-      EXPECT_NE(opened.error().message().find("field[content]"),
-                std::string::npos);
-    }
-  }
-}
-
 TEST_F(CollectionTest, Feature_CreateOrDropFtsIndex) {
 #ifdef __ANDROID__
   GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
