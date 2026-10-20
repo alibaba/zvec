@@ -507,6 +507,9 @@ ailego::JsonObject PqQuantizerParam::serialize_to_json_object(
   auto json_obj = QuantizerParam::serialize_to_json_object(omit_empty_value);
   json_obj.set("num_chunk", ailego::JsonValue(num_chunk));
   json_obj.set("num_bits", ailego::JsonValue(num_bits));
+  json_obj.set("fast_scan", ailego::JsonValue(fast_scan));
+  json_obj.set("opq_iter", ailego::JsonValue(opq_iter));
+  json_obj.set("opq_pq_iter", ailego::JsonValue(opq_pq_iter));
   return json_obj;
 }
 
@@ -517,6 +520,9 @@ bool PqQuantizerParam::deserialize_from_json_object(
   }
   DESERIALIZE_VALUE_FIELD(json_obj, num_chunk);
   DESERIALIZE_VALUE_FIELD(json_obj, num_bits);
+  DESERIALIZE_VALUE_FIELD(json_obj, fast_scan);
+  DESERIALIZE_VALUE_FIELD(json_obj, opq_iter);
+  DESERIALIZE_VALUE_FIELD(json_obj, opq_pq_iter);
   return true;
 }
 

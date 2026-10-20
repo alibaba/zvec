@@ -210,6 +210,39 @@ int IVFStreamer::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
   return 0;
 }
 
+int IVFStreamer::search_bf_by_p_keys_impl(
+    const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
+    const IndexQueryMeta &qmeta, uint32_t count,
+    Context::Pointer &context) const {
+  if (searcher_state_ != STATE_LOADED) return IndexError_NoReady;
+  if (!quantizer_) return IndexError_Unsupported;
+  if (!query || count == 0 || count > p_keys.size() ||
+      qmeta.data_type() != meta_.data_type() ||
+      qmeta.dimension() != meta_.dimension() ||
+      qmeta.element_size() != meta_.element_size()) {
+    return IndexError_InvalidArgument;
+  }
+  auto *ctx = dynamic_cast<IVFSearcherContext *>(context.get());
+  if (!ctx || ctx->topk() == 0) return IndexError_InvalidArgument;
+  if (ctx->magic() != magic_) {
+    int ret = update_context(ctx);
+    ivf_check_error_code(ret);
+  }
+  ctx->reset_results(count);
+  for (uint32_t q = 0; q < count; ++q) {
+    int ret = ctx->entity()->bind_query(query, qmeta);
+    ivf_check_error_code(ret);
+    auto &heap = ctx->mutable_result_heap();
+    heap.clear();
+    ret = ctx->entity()->search_by_keys(p_keys[q], ctx->filter(), &heap,
+                                        &ctx->mutable_stats(q));
+    ivf_check_error_code(ret);
+    ctx->topk_to_result(q);
+    query = static_cast<const char *>(query) + qmeta.element_size();
+  }
+  return 0;
+}
+
 int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                              Context::Pointer &context) const {
   return this->search_impl(query, qmeta, 1, context);

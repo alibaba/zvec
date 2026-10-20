@@ -793,9 +793,9 @@ int Index::search(const VectorData &vector_data,
       context->reset();
       return core::IndexError_Runtime;
     }
-    // TODO: tackle query_param's type info loss to loosen the constraint
-    if (reference_index->param_.index_type != IndexType::kFlat) {
-      LOG_ERROR("Reference index is not flat");
+    if (reference_index->param_.index_type != IndexType::kFlat &&
+        reference_index->param_.index_type != IndexType::kIVF) {
+      LOG_ERROR("Reference index must be Flat or IVF");
       context->reset();
       return core::IndexError_Runtime;
     }

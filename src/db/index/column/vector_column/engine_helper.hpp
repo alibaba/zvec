@@ -310,6 +310,8 @@ class ProximaEngineHelper {
         return core_interface::QuantizerType::kFP16;
       case QuantizeType::INT8:
         return core_interface::QuantizerType::kInt8;
+      case QuantizeType::PQ:
+        return core_interface::QuantizerType::kPQ;
       case QuantizeType::INT4:
         return core_interface::QuantizerType::kInt4;
       case QuantizeType::RABITQ:
@@ -384,8 +386,19 @@ class ProximaEngineHelper {
     if (auto quantize_type =
             convert_to_engine_quantize_type(db_index_params->quantize_type());
         quantize_type.has_value()) {
-      index_param_builder->with_quantizer_param(
-          core_interface::QuantizerParam::Create(quantize_type.value()));
+      auto quantizer =
+          core_interface::QuantizerParam::Create(quantize_type.value());
+      if (quantize_type.value() == core_interface::QuantizerType::kPQ) {
+        auto pq = std::static_pointer_cast<core_interface::PqQuantizerParam>(
+            quantizer);
+        const auto &params = db_index_params->quantizer_param();
+        pq->num_chunk = params.num_chunk();
+        pq->num_bits = params.num_bits();
+        pq->fast_scan = params.fast_scan();
+        pq->opq_iter = params.opq_iter();
+        pq->opq_pq_iter = params.opq_pq_iter();
+      }
+      index_param_builder->with_quantizer_param(quantizer);
     } else {
       return tl::make_unexpected(
           Status::InvalidArgument("unsupported quantize type"));

@@ -193,11 +193,10 @@ class ZVEC_CORE_API Index {
                             const BaseIndexQueryParam::Pointer &search_param,
                             core::IndexContext::Pointer &context,
                             std::vector<uint64_t> *candidate_keys = nullptr);
-  int _collect_dense_result(const VectorData &query,
-                            const core::IndexQueryMeta &query_meta,
-                            const BaseIndexQueryParam::Pointer &search_param,
-                            SearchResult *result,
-                            core::IndexContext::Pointer &context);
+  virtual int _collect_dense_result(
+      const VectorData &query, const core::IndexQueryMeta &query_meta,
+      const BaseIndexQueryParam::Pointer &search_param, SearchResult *result,
+      core::IndexContext::Pointer &context);
   int _refine_dense_candidates(const VectorData &query,
                                const BaseIndexQueryParam::Pointer &search_param,
                                const std::vector<std::vector<uint64_t>> &keys,
@@ -317,10 +316,11 @@ class ZVEC_CORE_API IVFIndex : public Index {
       const QuantizerParam &param, const BaseIndexParam &index_param) override;
   int create_and_init_streamer(const BaseIndexParam &param) override;
 
-  int _dense_search(const VectorData &query,
-                    const BaseIndexQueryParam::Pointer &search_param,
-                    SearchResult *result,
-                    core::IndexContext::Pointer &context) override;
+  int _collect_dense_result(const VectorData &query,
+                            const core::IndexQueryMeta &query_meta,
+                            const BaseIndexQueryParam::Pointer &search_param,
+                            SearchResult *result,
+                            core::IndexContext::Pointer &context) override;
 
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,

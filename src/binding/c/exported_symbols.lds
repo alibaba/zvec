@@ -217,6 +217,7 @@
     zvec_index_params_get_metric_type;
     zvec_index_params_get_quantize_type;
     zvec_index_params_get_quantizer_enable_rotate;
+    zvec_index_params_get_quantizer_pq;
     zvec_index_params_get_type;
     zvec_index_params_get_vamana_params;
     zvec_index_params_get_vamana_two_pass_build;
@@ -229,6 +230,7 @@
     zvec_index_params_set_metric_type;
     zvec_index_params_set_quantize_type;
     zvec_index_params_set_quantizer_enable_rotate;
+    zvec_index_params_set_quantizer_pq;
     zvec_index_params_set_vamana_params;
     zvec_index_params_set_vamana_two_pass_build;
     zvec_index_type_to_string;

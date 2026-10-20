@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_framework.h>
 #include "ivf_distance_calculator.h"
@@ -66,6 +67,11 @@ class IVFEntity {
   //! search all inverted list without filter
   int search(const void *query, IndexDocumentHeap *heap,
              IndexContext::Stats *context_stats) const;
+
+  //! Score only the requested IDs in this index's posting score space.
+  int search_by_keys(const std::vector<uint64_t> &keys,
+                     const IndexFilter &filter, IndexDocumentHeap *heap,
+                     IndexContext::Stats *stats) const;
 
   //! Clone the entity
   virtual IVFEntity::Pointer clone() const;
@@ -127,7 +133,8 @@ class IVFEntity {
     ailego_assert_with(*vecs_count <= header_.block_vector_count,
                        "invalid vecs");
     const size_t off = iv_meta->offset + local_block_id * header_.block_size;
-    const size_t size = *vecs_count * meta_.element_size();
+    const size_t size = packed_quantizer_ ? header_.block_size
+                                          : *vecs_count * meta_.element_size();
     const void *data = nullptr;
     if (inverted_->read(off, &data, size) != size) {
       LOG_ERROR("Failed to read block off=%zu size=%zu", off, size);
@@ -365,7 +372,10 @@ class IVFEntity {
 
   void query_features_distance(const void *query, const void *features,
                                size_t count, float *out) const {
-    if (quantizer_) {
+    if (packed_quantizer_) {
+      packed_quantizer_->calc_distance_packed_block(features, count,
+                                                    packed_query_.data(), out);
+    } else if (quantizer_ || distance_quantizer_) {
       calculator_->query_features_distance(query_distance_, features, count,
                                            out);
     } else {
@@ -388,8 +398,13 @@ class IVFEntity {
   mutable IVFReformerWrapper reformer_{};
   IVFDistanceCalculator::Pointer calculator_{};
   turbo::Quantizer::Pointer quantizer_{};
+  // Legacy rows are already encoded. This helper only supplies distance
+  // kernels; it must not change query transformation or provider decoding.
+  turbo::Quantizer::Pointer distance_quantizer_{};
   // Each context owns its entity clone and therefore its query buffer/LUT.
   turbo::DistanceImpl query_distance_{};
+  turbo::PackedCodeQuantizer *packed_quantizer_{nullptr};
+  std::string packed_query_{};
   IndexStorage::Pointer container_{};
   IndexStorage::Segment::Pointer inverted_{};
   IndexStorage::Segment::Pointer inverted_meta_{};

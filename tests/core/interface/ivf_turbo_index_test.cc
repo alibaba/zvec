@@ -15,17 +15,21 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
+#include <map>
 #include <random>
 #include <string>
 #include <tuple>
 #include <vector>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
 #include "algorithm/ivf/ivf_builder.h"
+#include "algorithm/ivf/ivf_searcher.h"
 #include "tests/test_util.h"
 
 namespace zvec::core_interface {
@@ -432,6 +436,391 @@ TEST(IVFTurboCompatibility, ReopensLegacyInt8AndMergesWithTurbo) {
   ASSERT_EQ(0, target->close());
   ASSERT_EQ(0, turbo->close());
   ASSERT_EQ(0, legacy->close());
+}
+
+constexpr uint32_t kPqDimension = 12;
+constexpr uint32_t kPqCount = 321;
+constexpr uint32_t kPqTopK = 7;
+using PqCase = std::tuple<int, bool, MetricType, bool>;
+
+class IVFPqTest : public testing::TestWithParam<PqCase> {
+ protected:
+  void SetUp() override {
+    path_ = std::string("ivf_pq_") +
+            testing::UnitTest::GetInstance()->current_test_info()->name();
+    std::replace(path_.begin(), path_.end(), '/', '_');
+    std::mt19937 random(963);
+    std::normal_distribution<float> value(0.0f, 2.0f);
+    for (uint32_t i = 0; i < kPqCount; ++i) {
+      vectors_.emplace_back(kPqDimension);
+      for (auto &v : vectors_.back()) v = value(random);
+    }
+  }
+  void TearDown() override {
+    for (const auto &suffix : {"", ".fine", ".merge"})
+      test_util::RemoveTestFiles(path_ + suffix);
+  }
+  IVFIndexParam::Pointer param(bool pq = true) const {
+    auto builder = IVFIndexParamBuilder()
+                       .with_dimension(kPqDimension)
+                       .with_data_type(DataType::DT_FP32)
+                       .with_metric_type(std::get<2>(GetParam()))
+                       .with_n_list(3)
+                       .with_n_iters(3);
+    if (pq) {
+      int mode = std::get<0>(GetParam());
+      PqQuantizerParam quantizer(3, mode == 8 ? 8 : 4, std::get<1>(GetParam()));
+      quantizer.fast_scan = mode == 0;
+      quantizer.opq_iter = 2;
+      quantizer.opq_pq_iter = 2;
+      builder.with_quantizer_param(quantizer);
+    }
+    return builder.build();
+  }
+  StorageOptions::StorageType storage() const {
+    return std::get<3>(GetParam()) ? StorageOptions::StorageType::kBufferPool
+                                   : StorageOptions::StorageType::kMMAP;
+  }
+  void build(const Index::Pointer &index) const {
+    for (uint32_t i = 0; i < kPqCount; ++i) {
+      ASSERT_EQ(0, index->add(VectorData{DenseVector{vectors_[i].data()}}, i));
+    }
+    ASSERT_EQ(0, index->train());
+  }
+  void same(const SearchResult &expected, const SearchResult &actual) const {
+    ASSERT_EQ(expected.doc_list_.size(), actual.doc_list_.size());
+    std::map<uint64_t, float> expected_by_key, actual_by_key;
+    for (size_t i = 0; i < expected.doc_list_.size(); ++i) {
+      // Quantized ties may be emitted in either order, but ranks and the
+      // complete set of (ID, score) pairs must agree.
+      EXPECT_FLOAT_EQ(expected.doc_list_[i].score(),
+                      actual.doc_list_[i].score());
+      expected_by_key.emplace(expected.doc_list_[i].key(),
+                              expected.doc_list_[i].score());
+      actual_by_key.emplace(actual.doc_list_[i].key(),
+                            actual.doc_list_[i].score());
+    }
+    ASSERT_EQ(expected_by_key.size(), actual_by_key.size());
+    for (const auto &entry : expected_by_key) {
+      auto found = actual_by_key.find(entry.first);
+      ASSERT_NE(actual_by_key.end(), found);
+      EXPECT_FLOAT_EQ(entry.second, found->second);
+    }
+  }
+  std::string path_;
+  std::vector<std::vector<float>> vectors_;
+};
+
+TEST_P(IVFPqTest, ScoresPersistenceCandidatesAndRefinement) {
+  auto config = param();
+  IVFIndexParam roundtrip;
+  ASSERT_TRUE(roundtrip.deserialize_from_json(config->serialize_to_json()));
+  const auto *pq =
+      dynamic_cast<PqQuantizerParam *>(roundtrip.quantizer_param.get());
+  ASSERT_NE(nullptr, pq);
+  EXPECT_EQ(std::get<0>(GetParam()) == 0, pq->fast_scan);
+  EXPECT_EQ(std::get<1>(GetParam()), pq->enable_rotate);
+  EXPECT_EQ(2u, pq->opq_iter);
+  EXPECT_EQ(2u, pq->opq_pq_iter);
+  auto index = IndexFactory::CreateAndInitIndex(roundtrip);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(0, index->open(path_, {storage(), true}));
+  build(index);
+  const VectorData query{DenseVector{vectors_[7].data()}};
+  auto query_param =
+      IVFQueryParamBuilder().with_nprobe(3).with_topk(kPqCount).build();
+  SearchResult all;
+  ASSERT_EQ(0, index->search(query, query_param, &all));
+  ASSERT_EQ(kPqCount, all.doc_list_.size());
+
+  // Independently encode and score each row with the persisted Turbo state.
+  auto disk = core::IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_EQ(0, disk->init(ailego::Params{}));
+  ASSERT_EQ(0, disk->open(path_, false));
+  core::IVFSearcher searcher;
+  ASSERT_EQ(0, searcher.init(ailego::Params{}));
+  ASSERT_EQ(0, searcher.load(disk, nullptr));
+  auto quantizer = searcher.quantizer();
+  ASSERT_NE(nullptr, quantizer);
+  std::string encoded_query(quantizer->quantized_query_vector_length(), '\0');
+  quantizer->quantize_query(vectors_[7].data(), encoded_query.data());
+  const size_t code_size = quantizer->quantized_datapoint_vector_length();
+  std::string code(code_size, '\0');
+  std::string packed(code_size * 32, '\0');
+  auto *packer = dynamic_cast<turbo::PackedCodeQuantizer *>(quantizer.get());
+  for (const auto &doc : all.doc_list_) {
+    ASSERT_LT(doc.key(), kPqCount);
+    quantizer->quantize_data(vectors_[doc.key()].data(), code.data());
+    float expected;
+    if (packer) {
+      ASSERT_EQ(0,
+                packer->pack_codes(code.data(), 1, code_size, packed.data()));
+      packer->calc_distance_packed_block(packed.data(), 1, encoded_query.data(),
+                                         &expected);
+    } else {
+      expected =
+          quantizer->calc_distance_dp_query(code.data(), encoded_query.data());
+    }
+    if (std::get<2>(GetParam()) == MetricType::kInnerProduct)
+      expected = -expected;
+    EXPECT_NEAR(expected, doc.score(),
+                1e-4f * std::max(1.0f, std::abs(expected)));
+  }
+  ASSERT_EQ(0, searcher.unload());
+  ASSERT_EQ(0, disk->close());
+
+  auto filtered_param = IVFQueryParamBuilder()
+                            .with_nprobe(3)
+                            .with_topk(kPqTopK)
+                            .with_fetch_vector(true)
+                            .build();
+  auto set_filter = [](const IVFQueryParam::Pointer &p) {
+    p->filter = std::make_shared<IndexFilter>();
+    p->filter->set([](uint64_t id) { return id % 3 == 0; });
+  };
+  set_filter(filtered_param);
+  SearchResult filtered;
+  ASSERT_EQ(0, index->search(query, filtered_param, &filtered));
+  ASSERT_EQ(kPqTopK, filtered.doc_list_.size());
+  for (size_t i = 0; i < filtered.doc_list_.size(); ++i) {
+    auto id = filtered.doc_list_[i].key();
+    EXPECT_NE(0u, id % 3);
+    VectorDataBuffer fetched;
+    ASSERT_EQ(0, index->fetch(id, &fetched));
+    auto decoded = std::get<DenseVectorBuffer>(fetched.vector_buffer).data;
+    EXPECT_EQ(decoded, filtered.reverted_vector_list_[i]);
+    if (packer)
+      EXPECT_EQ(0, std::memcmp(decoded.data(), vectors_[id].data(),
+                               kPqDimension * sizeof(float)));
+  }
+  auto excluded =
+      IVFQueryParamBuilder().with_nprobe(3).with_topk(kPqTopK).build();
+  excluded->filter = std::make_shared<IndexFilter>();
+  excluded->filter->set([](uint64_t) { return true; });
+  SearchResult empty;
+  ASSERT_EQ(0, index->search(query, excluded, &empty));
+  EXPECT_TRUE(empty.doc_list_.empty());
+  excluded->filter.reset();
+  excluded->bf_pks = std::make_shared<std::vector<uint64_t>>();
+  ASSERT_EQ(0, index->search(query, excluded, &empty));
+  EXPECT_TRUE(empty.doc_list_.empty());
+
+  // Candidate-ID search must retain this index's own PQ scores.
+  auto selected = IVFQueryParamBuilder().with_topk(kPqTopK).build();
+  selected->bf_pks = std::make_shared<std::vector<uint64_t>>();
+  for (const auto &doc : filtered.doc_list_)
+    selected->bf_pks->push_back(doc.key());
+  selected->bf_pks->push_back(kPqCount + 100);
+  SearchResult selected_result;
+  ASSERT_EQ(0, index->search(query, selected, &selected_result));
+  same(filtered, selected_result);
+
+  auto fine = IndexFactory::CreateAndInitIndex(*param(false));
+  ASSERT_NE(nullptr, fine);
+  ASSERT_EQ(0, fine->open(path_ + ".fine", {storage(), true}));
+  build(fine);
+  auto refiner = std::make_shared<RefinerParam>();
+  refiner->reference_index = fine;
+  for (float scale : {0.0f, 0.5f, 1.0f, 2.5f, 4.0f}) {
+    SCOPED_TRACE(scale);
+    auto candidates_param =
+        IVFQueryParamBuilder()
+            .with_topk(uint32_t(kPqTopK * std::max(1.0f, scale)))
+            .with_nprobe(3)
+            .build();
+    set_filter(candidates_param);
+    SearchResult candidates;
+    ASSERT_EQ(0, index->search(query, candidates_param, &candidates));
+    auto exact_param = IVFQueryParamBuilder()
+                           .with_topk(kPqTopK)
+                           .with_fetch_vector(true)
+                           .build();
+    exact_param->bf_pks = std::make_shared<std::vector<uint64_t>>();
+    for (const auto &doc : candidates.doc_list_)
+      exact_param->bf_pks->push_back(doc.key());
+    SearchResult expected, actual;
+    ASSERT_EQ(0, fine->search(query, exact_param, &expected));
+    auto refined_param = IVFQueryParamBuilder()
+                             .with_topk(kPqTopK)
+                             .with_nprobe(3)
+                             .with_fetch_vector(true)
+                             .with_refiner_param(refiner)
+                             .build();
+    set_filter(refined_param);
+    refiner->scale_factor_ = scale;
+    ASSERT_EQ(0, index->search(query, refined_param, &actual));
+    same(expected, actual);
+    EXPECT_EQ(expected.reverted_vector_list_, actual.reverted_vector_list_);
+  }
+  for (float invalid : {-1.0f, std::numeric_limits<float>::infinity(),
+                        std::numeric_limits<float>::quiet_NaN(),
+                        std::numeric_limits<float>::max()}) {
+    refiner->scale_factor_ = invalid;
+    auto p = IVFQueryParamBuilder()
+                 .with_topk(kPqTopK)
+                 .with_refiner_param(refiner)
+                 .build();
+    SearchResult result;
+    EXPECT_NE(0, index->search(query, p, &result));
+  }
+  ASSERT_EQ(0, fine->close());
+  ASSERT_EQ(0, index->close());
+  auto reopened = IndexFactory::CreateAndInitIndex(*param(false));
+  ASSERT_EQ(0, reopened->open(path_, {storage(), false}));
+  SearchResult after;
+  ASSERT_EQ(0, reopened->search(query, query_param, &after));
+  same(all, after);
+  // Merge must consume decoded/original input, never packed posting bytes.
+  std::vector<std::string> decoded(kPqCount);
+  for (uint32_t id = 0; id < kPqCount; ++id) {
+    VectorDataBuffer fetched;
+    ASSERT_EQ(0, reopened->fetch(id, &fetched));
+    decoded[id] = std::get<DenseVectorBuffer>(fetched.vector_buffer).data;
+  }
+  auto merged = IndexFactory::CreateAndInitIndex(*param(false));
+  ASSERT_EQ(0, merged->open(path_ + ".merge", {storage(), true}));
+  IndexFilter merge_filter;
+  merge_filter.set([](uint64_t id) { return id == 7; });
+  ASSERT_EQ(0, merged->merge({reopened}, merge_filter));
+  EXPECT_EQ(kPqCount - 1, merged->get_doc_count());
+  for (uint32_t id = 0; id < kPqCount; ++id) {
+    if (id == 7) continue;
+    VectorDataBuffer fetched;
+    // Merge's existing contract compacts surviving IDs in source order.
+    ASSERT_EQ(0, merged->fetch(id < 7 ? id : id - 1, &fetched));
+    const auto &actual =
+        std::get<DenseVectorBuffer>(fetched.vector_buffer).data;
+    ASSERT_EQ(decoded[id].size(), actual.size());
+    for (uint32_t d = 0; d < kPqDimension; ++d) {
+      float expected_value, actual_value;
+      std::memcpy(&expected_value, decoded[id].data() + d * sizeof(float),
+                  sizeof(float));
+      std::memcpy(&actual_value, actual.data() + d * sizeof(float),
+                  sizeof(float));
+      // Cosine FP32 storage normalizes and reconstructs its components.
+      EXPECT_NEAR(expected_value, actual_value,
+                  1e-5f * std::max(1.0f, std::abs(expected_value)));
+    }
+  }
+  ASSERT_EQ(0, merged->close());
+  ASSERT_EQ(0, reopened->close());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Turbo, IVFPqTest,
+    testing::Combine(testing::Values(8, 4, 0), testing::Bool(),
+                     testing::Values(MetricType::kL2sq,
+                                     MetricType::kInnerProduct,
+                                     MetricType::kCosine),
+                     testing::Bool()));
+
+TEST(IVFPqStorage, PackedBlocksAcrossPages) {
+  const std::string path = "ivf_pq_cross_page.index";
+  struct Cleanup {
+    std::string path;
+    ~Cleanup() {
+      test_util::RemoveTestFiles(path);
+      test_util::RemoveTestFiles(path + ".merged");
+    }
+  } cleanup{path};
+  // Five chunks produce 96-byte blocks. The posting body exceeds a 16 KiB
+  // page and the block stride does not divide either 4 KiB or 16 KiB pages.
+  PqQuantizerParam pq(5, 4);
+  pq.fast_scan = true;
+  auto config = IVFIndexParamBuilder()
+                    .with_dimension(30)
+                    .with_data_type(DataType::DT_FP32)
+                    .with_metric_type(MetricType::kL2sq)
+                    .with_n_list(7)
+                    .with_n_iters(3)
+                    .with_quantizer_param(pq)
+                    .build();
+  auto mmap = IndexFactory::CreateAndInitIndex(*config);
+  ASSERT_NE(nullptr, mmap);
+  ASSERT_EQ(0, mmap->open(path, {StorageOptions::StorageType::kMMAP, true}));
+  std::mt19937 random(905);
+  std::normal_distribution<float> value(0.0f, 1.0f);
+  std::vector<float> vector(30);
+  for (uint32_t id = 0; id < 8193; ++id) {
+    for (auto &v : vector) v = value(random);
+    ASSERT_EQ(0, mmap->add(VectorData{DenseVector{vector.data()}}, id));
+  }
+  ASSERT_EQ(0, mmap->train());
+  auto pooled = IndexFactory::CreateAndInitIndex(*config);
+  ASSERT_EQ(
+      0, pooled->open(path, {StorageOptions::StorageType::kBufferPool, false}));
+  auto run = [&](const Index::Pointer &index, uint32_t nprobe, bool filtered,
+                 float radius = 0.0f) {
+    auto param = IVFQueryParamBuilder()
+                     .with_nprobe(nprobe)
+                     .with_topk(8193)
+                     .with_radius(radius)
+                     .build();
+    if (filtered) {
+      param->filter = std::make_shared<IndexFilter>();
+      param->filter->set([](uint64_t id) { return id % 7 == 0; });
+    }
+    SearchResult result;
+    EXPECT_EQ(0, index->search(VectorData{DenseVector{vector.data()}}, param,
+                               &result));
+    std::map<uint64_t, float> scores;
+    for (const auto &doc : result.doc_list_)
+      scores.emplace(doc.key(), doc.score());
+    return scores;
+  };
+  for (uint32_t nprobe : {1u, 7u, 0u}) {
+    SCOPED_TRACE(nprobe);
+    for (bool filtered : {false, true}) {
+      SCOPED_TRACE(filtered);
+      auto expected = run(mmap, nprobe, filtered);
+      ASSERT_FALSE(expected.empty());
+      if (nprobe == 7 && !filtered) EXPECT_EQ(8193u, expected.size());
+      if (nprobe == 1 || nprobe == 0) EXPECT_LT(expected.size(), 8193u);
+      for (int pass = 0; pass < 3; ++pass) {
+        // Cold contiguous reads and warm resident page spans must agree.
+        EXPECT_EQ(expected, run(pooled, nprobe, filtered));
+      }
+    }
+  }
+  auto all_scores = run(mmap, 7, false);
+  run(pooled, 7, false, 1.0f);
+  EXPECT_EQ(all_scores, run(pooled, 7, false));
+  auto merged = IndexFactory::CreateAndInitIndex(*config);
+  ASSERT_EQ(0, merged->open(path + ".merged",
+                            {StorageOptions::StorageType::kBufferPool, true}));
+  ASSERT_EQ(0, merged->merge({pooled}, IndexFilter{}));
+  EXPECT_EQ(8193u, merged->get_doc_count());
+  VectorDataBuffer fetched;
+  ASSERT_EQ(0, merged->fetch(8192, &fetched));
+  EXPECT_EQ(std::string(reinterpret_cast<const char *>(vector.data()),
+                        vector.size() * sizeof(float)),
+            std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+  EXPECT_EQ(8193u, run(merged, 7, false).size());
+  ASSERT_EQ(0, merged->close());
+  ASSERT_EQ(0, pooled->close());
+  ASSERT_EQ(0, mmap->close());
+}
+
+TEST(IVFPqValidation, InvalidParameters) {
+  for (const auto &pq : {PqQuantizerParam(0, 4), PqQuantizerParam(3, 6),
+                         PqQuantizerParam(5, 4), PqQuantizerParam(13, 8)}) {
+    auto param = IVFIndexParamBuilder()
+                     .with_dimension(kPqDimension)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_metric_type(MetricType::kL2sq)
+                     .with_quantizer_param(pq)
+                     .build();
+    EXPECT_EQ(nullptr, IndexFactory::CreateAndInitIndex(*param));
+  }
+  PqQuantizerParam pq(3, 8);
+  pq.fast_scan = true;
+  auto param = IVFIndexParamBuilder()
+                   .with_dimension(kPqDimension)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_quantizer_param(pq)
+                   .build();
+  EXPECT_EQ(nullptr, IndexFactory::CreateAndInitIndex(*param));
 }
 
 }  // namespace

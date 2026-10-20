@@ -1356,3 +1356,38 @@ TEST(FieldSchemaTest, HnswRabitqIndexValidation_UnsupportedDataTypes) {
         << status.message();
   }
 }
+
+TEST(FieldSchemaTest, IvfPqValidatesLayoutAndSupportedIndex) {
+  auto check = [](QuantizerParam qp, int dim = 16,
+                  DataType type = DataType::VECTOR_FP32,
+                  MetricType metric = MetricType::L2) {
+    return FieldSchema("vector", type, dim, false,
+                       std::make_shared<IVFIndexParams>(metric, 4, 3, false,
+                                                        QuantizeType::PQ, qp))
+        .validate();
+  };
+  EXPECT_TRUE(check(QuantizerParam(true, 4, 4, true, 2, 2)).ok());
+  EXPECT_TRUE(check(QuantizerParam(false, 3, 8), 16).ok());
+  EXPECT_TRUE(check(QuantizerParam(false, 4, 4), 16, DataType::VECTOR_FP32,
+                    MetricType::IP)
+                  .ok());
+  EXPECT_TRUE(check(QuantizerParam(true, 4, 8), 16, DataType::VECTOR_FP32,
+                    MetricType::COSINE)
+                  .ok());
+  for (const auto &qp :
+       {QuantizerParam(false, 0), QuantizerParam(false, -1),
+        QuantizerParam(false, 17), QuantizerParam(false, 4, 3),
+        QuantizerParam(false, 3, 4), QuantizerParam(false, 4, 8, true),
+        QuantizerParam(true, 4, 4, false, 0, 2),
+        QuantizerParam(true, 4, 4, false, 2, 0)}) {
+    EXPECT_FALSE(check(qp).ok());
+  }
+  EXPECT_FALSE(check(QuantizerParam(), 16, DataType::VECTOR_FP16).ok());
+  EXPECT_FALSE(
+      check(QuantizerParam(), 16, DataType::VECTOR_FP32, MetricType::MIPSL2)
+          .ok());
+  FieldSchema flat(
+      "vector", DataType::VECTOR_FP32, 16, false,
+      std::make_shared<FlatIndexParams>(MetricType::L2, QuantizeType::PQ));
+  EXPECT_FALSE(flat.validate().ok());
+}

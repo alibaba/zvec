@@ -1143,3 +1143,24 @@ TEST(ManifestCodecGolden, WireReaderRejectsGroups) {
     EXPECT_FALSE(r.ok());
   }
 }
+
+TEST(ManifestCodecTest, IvfPqParametersSurvivePersistence) {
+  for (bool rotate : {false, true}) {
+    for (int mode = 0; mode < 3; ++mode) {
+      const QuantizerParam qp(rotate, 4, mode == 0 ? 8 : 4, mode == 2,
+                              rotate ? 3 : 0, rotate ? 2 : 0);
+      IVFIndexParams params(MetricType::COSINE, 16, 7, false, QuantizeType::PQ,
+                            qp);
+      std::string encoded;
+      ManifestCodec::EncodeIndexParams(&params, &encoded);
+      const auto restored = std::dynamic_pointer_cast<IVFIndexParams>(
+          ManifestCodec::DecodeIndexParams(encoded));
+      ASSERT_NE(nullptr, restored);
+      EXPECT_EQ(params, *restored);
+      EXPECT_EQ(qp, restored->quantizer_param());
+      std::string reencoded;
+      ManifestCodec::EncodeIndexParams(restored.get(), &reencoded);
+      EXPECT_EQ(encoded, reencoded);
+    }
+  }
+}

@@ -917,6 +917,7 @@ typedef uint32_t zvec_quantize_type_t;
 #define ZVEC_QUANTIZE_TYPE_INT8 2
 #define ZVEC_QUANTIZE_TYPE_INT4 3
 #define ZVEC_QUANTIZE_TYPE_RABITQ 4
+#define ZVEC_QUANTIZE_TYPE_PQ 8
 
 // =============================================================================
 // Collection Structures (Opaque Pointer Pattern)
@@ -1023,15 +1024,16 @@ ZVEC_EXPORT zvec_quantize_type_t ZVEC_CALL
 zvec_index_params_get_quantize_type(const zvec_index_params_t *params);
 
 /**
- * @brief Set enable_rotate for quantizer (only effective with INT8/INT4
- * quantize type)
+ * @brief Set enable_rotate for quantizer (random rotation for INT8/INT4; OPQ
+ * for PQ, quantize type)
  *
  * When enabled, vectors are randomly rotated before INT8/INT4 quantization to
- * reduce quantization error. The rotation matrix is stored with the index
+ * reduce quantization error. With PQ, learned OPQ is used instead.
+ * The rotation matrix is stored with the index
  * and automatically applied to query vectors at search time.
  *
  * @param params Index parameters (must be vector index type)
- * @param enable_rotate Whether to enable random rotation before quantization
+ * @param enable_rotate Whether to enable rotation (learned OPQ with PQ)
  * @return ZVEC_OK on success, error code on failure
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
@@ -1045,6 +1047,34 @@ zvec_index_params_set_quantizer_enable_rotate(zvec_index_params_t *params,
  */
 ZVEC_EXPORT bool ZVEC_CALL zvec_index_params_get_quantizer_enable_rotate(
     const zvec_index_params_t *params);
+
+/** IVF PQ configuration. Set the index quantize type to ZVEC_QUANTIZE_TYPE_PQ.
+ * PQ supports FP32 IVF fields with L2, IP or COSINE metrics. num_bits is 4 or
+ * 8; FastScan requires 4 bits and dimension divisible by num_chunk.
+ * enable_rotate selects learned OPQ; its iteration counts must then be
+ * positive.
+ */
+typedef struct {
+  int num_chunk;
+  int num_bits;
+  bool enable_rotate;
+  bool fast_scan;
+  uint32_t opq_iter;
+  uint32_t opq_pq_iter;
+} zvec_pq_quantizer_params_t;
+
+#define ZVEC_PQ_QUANTIZER_PARAMS_DEFAULT {8, 8, false, false, 5, 4}
+
+/** Set IVF PQ configuration. Copies values; schema validation checks dimension.
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_quantizer_pq(
+    zvec_index_params_t *params, const zvec_pq_quantizer_params_t *pq);
+
+/** Read IVF PQ configuration. Returns INVALID_ARGUMENT for null/non-IVF params.
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_quantizer_pq(
+    const zvec_index_params_t *params, zvec_pq_quantizer_params_t *pq);
+
 
 /**
  * @brief Set HNSW specific parameters

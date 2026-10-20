@@ -1388,7 +1388,7 @@ class QuantizerParam:
     Attributes:
         enable_rotate (bool): Whether to apply random rotation before INT8/INT4
             quantization to reduce quantization error.
-            Only effective with quantize_type=INT8 or INT4. Defaults to False.
+            For PQ, enables learned OPQ. Defaults to False.
 
     Examples:
         >>> qp = QuantizerParam(enable_rotate=True)
@@ -1397,13 +1397,26 @@ class QuantizerParam:
     """
 
     def __getstate__(self) -> tuple: ...
-    def __init__(self, enable_rotate: bool = False) -> None:
+    def __init__(
+        self,
+        enable_rotate: bool = False,
+        num_chunk: int = 8,
+        num_bits: int = 8,
+        fast_scan: bool = False,
+        opq_iter: int = 5,
+        opq_pq_iter: int = 4,
+    ) -> None:
         """
         Constructs a QuantizerParam instance.
 
         Args:
+            num_chunk (int): PQ subquantizers; default 8.
+            num_bits (int): PQ bits per code, 4 or 8; default 8.
+            fast_scan (bool): Packed IVF PQ4 scan; default False.
+            opq_iter (int): OPQ iterations; default 5.
+            opq_pq_iter (int): PQ iterations per OPQ iteration; default 4.
             enable_rotate (bool, optional): Whether to apply random rotation
-                before INT8/INT4 quantization. Defaults to False.
+                before INT8/INT4 quantization, or learned OPQ for PQ. Defaults to False.
         """
 
     def __repr__(self) -> str: ...
@@ -1417,8 +1430,19 @@ class QuantizerParam:
     @property
     def enable_rotate(self) -> bool:
         """
-        bool: Whether random rotation is enabled before INT8/INT4 quantization.
+        bool: Enable random rotation for INT8/INT4 or learned OPQ for PQ.
         """
+
+    @property
+    def num_chunk(self) -> int: ...
+    @property
+    def num_bits(self) -> int: ...
+    @property
+    def fast_scan(self) -> bool: ...
+    @property
+    def opq_iter(self) -> int: ...
+    @property
+    def opq_pq_iter(self) -> int: ...
 
 class VectorIndexParam(IndexParam):
     """

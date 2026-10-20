@@ -29,7 +29,8 @@ int IVFIndex::create_and_init_converter_reformer(
     const QuantizerParam &param, const BaseIndexParam &index_param) {
   // Clustering and centroid selection use the input vectors. Only the
   // inverted lists are encoded, after their centroid assignments are known.
-  if (index_param.is_sparse || param.enable_rotate ||
+  if (index_param.is_sparse ||
+      (param.enable_rotate && param.type != QuantizerType::kPQ) ||
       index_param.data_type != DataType::DT_FP32 ||
       (index_param.metric_type != MetricType::kL2sq &&
        index_param.metric_type != MetricType::kInnerProduct &&
@@ -37,7 +38,27 @@ int IVFIndex::create_and_init_converter_reformer(
     return Index::create_and_init_converter_reformer(param, index_param);
   }
   const char *name = nullptr;
+  ailego::Params quantizer_params;
   switch (param.type) {
+    case QuantizerType::kPQ: {
+      const auto *pq = dynamic_cast<const PqQuantizerParam *>(&param);
+      if (!pq || pq->num_chunk <= 0 || pq->num_chunk > index_param.dimension ||
+          (pq->num_bits != 4 && pq->num_bits != 8) ||
+          (pq->fast_scan && pq->num_bits != 4) ||
+          (pq->num_bits == 4 && index_param.dimension % pq->num_chunk != 0) ||
+          (pq->enable_rotate && (pq->opq_iter == 0 || pq->opq_pq_iter == 0))) {
+        return core::IndexError_InvalidArgument;
+      }
+      name = pq->fast_scan
+                 ? "PqFastQuantizer"
+                 : (pq->num_bits == 4 ? "PqInt4Quantizer" : "PqInt8Quantizer");
+      quantizer_params.set("num_chunk", static_cast<uint32_t>(pq->num_chunk));
+      quantizer_params.set("rotate_type",
+                           std::string(pq->enable_rotate ? "opq" : "none"));
+      quantizer_params.set("opq_iter", pq->opq_iter);
+      quantizer_params.set("opq_pq_iter", pq->opq_pq_iter);
+      break;
+    }
     case QuantizerType::kNone:
       name = "Fp32Quantizer";
       break;
@@ -53,12 +74,12 @@ int IVFIndex::create_and_init_converter_reformer(
     default:
       return Index::create_and_init_converter_reformer(param, index_param);
   }
-  proxima_index_meta_.set_quantizer(name, 0, ailego::Params{});
+  proxima_index_meta_.set_quantizer(name, 0, quantizer_params);
   ivf_quantizer_ = core::IndexFactory::CreateQuantizer(name);
   if (!ivf_quantizer_) {
     return core::IndexError_NoExist;
   }
-  return ivf_quantizer_->init(proxima_index_meta_, ailego::Params{});
+  return ivf_quantizer_->init(proxima_index_meta_, quantizer_params);
 }
 
 int IVFIndex::create_and_init_streamer(const BaseIndexParam &param) {
@@ -399,11 +420,12 @@ int IVFIndex::_dense_fetch(const uint32_t doc_id,
   }
 }
 
-int IVFIndex::_dense_search(const VectorData &query,
-                            const BaseIndexQueryParam::Pointer &search_param,
-                            SearchResult *result,
-                            core::IndexContext::Pointer &context) {
-  int ret = Index::_dense_search(query, search_param, result, context);
+int IVFIndex::_collect_dense_result(
+    const VectorData &query, const core::IndexQueryMeta &query_meta,
+    const BaseIndexQueryParam::Pointer &search_param, SearchResult *result,
+    core::IndexContext::Pointer &context) {
+  int ret = Index::_collect_dense_result(query, query_meta, search_param,
+                                         result, context);
   if (ret != 0 || !ivf_quantizer_ || !context->fetch_vector()) return ret;
   auto provider = streamer_->create_provider();
   if (!provider) return core::IndexError_NoReady;
@@ -430,6 +452,7 @@ int IVFIndex::_prepare_for_search(
     return core::IndexError_Unsupported;
   }
 
+  context->reset_threshold();
   context->set_topk(ivf_search_param->topk);
   context->set_fetch_vector(ivf_search_param->fetch_vector);
   if (ivf_search_param->filter && ivf_search_param->filter->is_valid()) {
@@ -441,12 +464,9 @@ int IVFIndex::_prepare_for_search(
     context->set_threshold(ivf_search_param->radius);
   }
 
-  if (ivf_search_param->nprobe > 0) {
-    ailego::Params params;
-    params.set(core::PARAM_IVF_SEARCHER_NPROBE, ivf_search_param->nprobe);
-    context->update(params);
-  }
-  return 0;
+  ailego::Params params;
+  params.set(core::PARAM_IVF_SEARCHER_NPROBE, ivf_search_param->nprobe);
+  return context->update(params);
 }
 
 int IVFIndex::merge(const std::vector<Index::Pointer> &indexes,

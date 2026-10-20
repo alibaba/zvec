@@ -3845,6 +3845,42 @@ void test_index_params_functions(void) {
   TEST_END();
 }
 
+void test_ivf_pq_params(void) {
+  TEST_START();
+  zvec_index_params_t *ivf = zvec_index_params_create(ZVEC_INDEX_TYPE_IVF);
+  TEST_ASSERT(ivf != NULL);
+  TEST_ASSERT(zvec_index_params_set_quantize_type(ivf, ZVEC_QUANTIZE_TYPE_PQ) ==
+              ZVEC_OK);
+  zvec_pq_quantizer_params_t pq = ZVEC_PQ_QUANTIZER_PARAMS_DEFAULT;
+  pq.num_chunk = 4;
+  pq.num_bits = 4;
+  pq.fast_scan = true;
+  pq.enable_rotate = true;
+  pq.opq_iter = 3;
+  pq.opq_pq_iter = 2;
+  TEST_ASSERT(zvec_index_params_set_quantizer_pq(ivf, &pq) == ZVEC_OK);
+  zvec_pq_quantizer_params_t restored = ZVEC_PQ_QUANTIZER_PARAMS_DEFAULT;
+  TEST_ASSERT(zvec_index_params_get_quantizer_pq(ivf, &restored) == ZVEC_OK);
+  TEST_ASSERT(restored.num_chunk == 4 && restored.num_bits == 4);
+  TEST_ASSERT(restored.fast_scan && restored.enable_rotate);
+  TEST_ASSERT(restored.opq_iter == 3 && restored.opq_pq_iter == 2);
+  TEST_ASSERT(zvec_index_params_get_quantize_type(ivf) ==
+              ZVEC_QUANTIZE_TYPE_PQ);
+  pq.num_bits = 8;
+  TEST_ASSERT(zvec_index_params_set_quantizer_pq(ivf, &pq) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_index_params_get_quantizer_pq(ivf, NULL) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_index_params_set_quantizer_pq(NULL, &pq) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  zvec_index_params_t *flat = zvec_index_params_create(ZVEC_INDEX_TYPE_FLAT);
+  TEST_ASSERT(zvec_index_params_set_quantizer_pq(flat, &pq) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  zvec_index_params_destroy(flat);
+  zvec_index_params_destroy(ivf);
+  TEST_END();
+}
+
 void test_quantizer_enable_rotate(void) {
   TEST_START();
 
@@ -7112,6 +7148,7 @@ int main(void) {
   test_index_params();
   test_index_params_functions();
   test_quantizer_enable_rotate();
+  test_ivf_pq_params();
   test_int8_rotate_e2e();
   test_index_params_api_functions();
   test_index_creation_and_management();

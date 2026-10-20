@@ -766,14 +766,10 @@ IndexHolder::Pointer quantize_holder(
     return IndexHolder::Pointer();
   }
 
-  if (!quantizer->require_train()) {
-    out_meta.set_quantizer(name, 0, params);
-  } else {
-    cerr << "Quantizer " << name
-         << " requires training, query-side quantizer info is not recorded "
-            "in the index meta"
-         << endl;
-  }
+  // The descriptor must be recorded for trained quantizers too: the codebook
+  // is persisted in the index and restored at load time from this descriptor
+  // (IVFEntity::load_quantizer). Without it turbo IVF rejects the builder init.
+  out_meta.set_quantizer(name, 0, params);
 
   IndexHolder::Pointer result =
       std::make_shared<zvec::turbo::QuantizedIndexHolder>(cast_holder,

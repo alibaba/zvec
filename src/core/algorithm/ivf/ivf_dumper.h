@@ -16,6 +16,7 @@
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_framework.h>
 #include "metric/metric_params.h"
+#include "turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h"
 #include "turbo/quantizer/quantizer.h"
 #include "ivf_index_format.h"
 #include "ivf_params.h"
@@ -172,9 +173,11 @@ class IVFDumper {
 
   //! Constructor
   IVFDumper(const IndexMeta &meta, const IndexDumper::Pointer &dumper,
-            size_t inverted_list_count, size_t block_vector_count)
+            size_t inverted_list_count, size_t block_vector_count,
+            turbo::Quantizer::Pointer quantizer = nullptr)
       : meta_(meta),
         dumper_(dumper),
+        quantizer_(std::move(quantizer)),
         block_vector_count_(block_vector_count),
         inverted_lists_meta_(inverted_list_count) {
     block_.init(meta, block_vector_count_);
@@ -259,6 +262,7 @@ class IVFDumper {
   Block block_{};           // vectors grouped in block
   const IndexMeta meta_{};  // IndexMeta of the inverted index
   const IndexDumper::Pointer dumper_{};
+  turbo::Quantizer::Pointer quantizer_{};
   size_t block_vector_count_{kDefaultBlockCount};
   std::vector<InvertedListMeta> inverted_lists_meta_{};
   std::vector<uint64_t> keys_{};

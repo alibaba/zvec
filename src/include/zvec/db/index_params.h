@@ -122,13 +122,21 @@ class ZVEC_API InvertIndexParams : public IndexParams {
 
 /*
  * Quantizer parameters for vector indexes.
- * Encapsulates quantization-related settings such as enable_rotate.
- * Designed for future extensibility (e.g., num_bits, calibration_size).
+ * Rotation settings and IVF product-quantization configuration.
+ * PQ fields apply when quantize_type is PQ; enable_rotate selects learned OPQ.
  */
 class QuantizerParam {
  public:
   QuantizerParam() = default;
-  explicit QuantizerParam(bool enable_rotate) : enable_rotate_(enable_rotate) {}
+  explicit QuantizerParam(bool enable_rotate, int num_chunk = 8,
+                          int num_bits = 8, bool fast_scan = false,
+                          uint32_t opq_iter = 5, uint32_t opq_pq_iter = 4)
+      : enable_rotate_(enable_rotate),
+        num_chunk_(num_chunk),
+        num_bits_(num_bits),
+        fast_scan_(fast_scan),
+        opq_iter_(opq_iter),
+        opq_pq_iter_(opq_pq_iter) {}
 
   bool enable_rotate() const {
     return enable_rotate_;
@@ -138,8 +146,46 @@ class QuantizerParam {
     enable_rotate_ = v;
   }
 
+  int num_chunk() const {
+    return num_chunk_;
+  }
+  void set_num_chunk(int value) {
+    num_chunk_ = value;
+  }
+
+  int num_bits() const {
+    return num_bits_;
+  }
+  void set_num_bits(int value) {
+    num_bits_ = value;
+  }
+
+  bool fast_scan() const {
+    return fast_scan_;
+  }
+  void set_fast_scan(bool value) {
+    fast_scan_ = value;
+  }
+
+  uint32_t opq_iter() const {
+    return opq_iter_;
+  }
+  void set_opq_iter(uint32_t value) {
+    opq_iter_ = value;
+  }
+
+  uint32_t opq_pq_iter() const {
+    return opq_pq_iter_;
+  }
+  void set_opq_pq_iter(uint32_t value) {
+    opq_pq_iter_ = value;
+  }
+
   bool operator==(const QuantizerParam &other) const {
-    return enable_rotate_ == other.enable_rotate_;
+    return enable_rotate_ == other.enable_rotate_ &&
+           num_chunk_ == other.num_chunk_ && num_bits_ == other.num_bits_ &&
+           fast_scan_ == other.fast_scan_ && opq_iter_ == other.opq_iter_ &&
+           opq_pq_iter_ == other.opq_pq_iter_;
   }
 
   bool operator!=(const QuantizerParam &other) const {
@@ -147,9 +193,13 @@ class QuantizerParam {
   }
 
  private:
-  // When enabled, vectors are rotated before INT8 quantization to reduce
-  // quantization error. Only effective with quantize_type=INT8.
+  // Random rotation for scalar quantizers; learned OPQ for PQ.
   bool enable_rotate_{false};
+  int num_chunk_{8};
+  int num_bits_{8};
+  bool fast_scan_{false};
+  uint32_t opq_iter_{5};
+  uint32_t opq_pq_iter_{4};
 };
 
 /*
@@ -610,7 +660,12 @@ class ZVEC_API IVFIndexParams : public VectorIndexParams {
     std::ostringstream oss;
     oss << base_str << ",n_list:" << n_list_ << ",n_iters:" << n_iters_
         << ",enable_rotate:"
-        << (quantizer_param_.enable_rotate() ? "true" : "false") << "}";
+        << (quantizer_param_.enable_rotate() ? "true" : "false")
+        << ",num_chunk:" << quantizer_param_.num_chunk()
+        << ",num_bits:" << quantizer_param_.num_bits()
+        << ",fast_scan:" << quantizer_param_.fast_scan()
+        << ",opq_iter:" << quantizer_param_.opq_iter()
+        << ",opq_pq_iter:" << quantizer_param_.opq_pq_iter() << "}";
     return oss.str();
   }
 

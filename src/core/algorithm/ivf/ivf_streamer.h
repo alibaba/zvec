@@ -57,6 +57,11 @@ class IVFStreamer : public IndexStreamer {
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      uint32_t count, Context::Pointer &context) const override;
 
+  int search_bf_by_p_keys_impl(const void *query,
+                               const std::vector<std::vector<uint64_t>> &p_keys,
+                               const IndexQueryMeta &qmeta, uint32_t count,
+                               Context::Pointer &context) const override;
+
   //! Similarity search
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
                   Context::Pointer &context) const override;

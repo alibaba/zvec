@@ -72,8 +72,9 @@ class IVFSearcherContext : public IndexSearcher::Context {
                      std::round(entity_->inverted_list_count() * scan_ratio_)),
                  1u);
 
-    uint32_t nprobe = 0;
-    params.get(PARAM_IVF_SEARCHER_NPROBE, &nprobe);
+    requested_nprobe_ = 0;
+    params.get(PARAM_IVF_SEARCHER_NPROBE, &requested_nprobe_);
+    uint32_t nprobe = requested_nprobe_;
     if (nprobe > 0) {
       nprobe = std::min(nprobe,
                         static_cast<uint32_t>(entity_->inverted_list_count()));
@@ -166,7 +167,11 @@ class IVFSearcherContext : public IndexSearcher::Context {
                      const ailego::Params &params, uint32_t magic_num) {
     entity_ = new_entity;
     centroid_searcher_ctx_ = std::move(centroid_ctx);
-    int ret = this->update(params);
+    // Public indexes share a per-thread context. Preserve the request made
+    // before rebinding, and clamp it against the new entity's list count.
+    ailego::Params rebound_params = params;
+    rebound_params.set(PARAM_IVF_SEARCHER_NPROBE, requested_nprobe_);
+    int ret = this->update(rebound_params);
     ivf_check_error_code(ret);
 
     magic_ = magic_num;
@@ -230,6 +235,7 @@ class IVFSearcherContext : public IndexSearcher::Context {
   bool fetch_vector_{false};
   uint32_t topk_{0};
   uint32_t magic_{0};
+  uint32_t requested_nprobe_{0};
   float scan_ratio_{kDefaultScanRatio};
   uint32_t max_scan_count_{0};
   uint32_t bruteforce_threshold_{kDefaultBfThreshold};
