@@ -13,9 +13,13 @@
 // limitations under the License.
 
 #include "rotator.h"
+#include <array>
 #include <cstring>
 #include <vector>
+#include <zvec/ailego/buffer/budgeted_buffer.h>
+#include <zvec/ailego/buffer/budgeted_mapped_buffer.h>
 #include <zvec/ailego/hash/crc32c.h>
+#include "utility/storage_segment_dumper.h"
 #include "zvec/ailego/logger/logger.h"
 #include "zvec/core/framework/index_error.h"
 #include "fht_rotator.h"
@@ -99,7 +103,7 @@ struct Header {
 // ============================================================================
 
 int Rotator::create(std::shared_ptr<Rotator> *out, size_t dimension,
-                    RotatorType rotator_type) {
+                    RotatorType rotator_type) try {
   *out = nullptr;
   std::unique_ptr<Rotator> rot;
   if (rotator_type == RotatorType::FhtKac) {
@@ -117,10 +121,14 @@ int Rotator::create(std::shared_ptr<Rotator> *out, size_t dimension,
   rot->initialized_ = true;
   *out = std::move(rot);
   return 0;
+} catch (const std::bad_alloc &) {
+  return IndexError_NoMemory;
+} catch (const std::runtime_error &) {
+  return IndexError_ReadData;
 }
 
 int Rotator::open(std::shared_ptr<Rotator> *out, IndexStorage::Pointer storage,
-                  const std::string &seg_id) {
+                  const std::string &seg_id) try {
   *out = nullptr;
   if (!storage) {
     LOG_ERROR("Rotator::open: null storage");
@@ -139,26 +147,24 @@ int Rotator::open(std::shared_ptr<Rotator> *out, IndexStorage::Pointer storage,
     return IndexError_InvalidFormat;
   }
 
-  IndexStorage::MemoryBlock block;
-  size_t read_size = segment->read(0, block, data_size);
-  if (read_size != data_size) {
-    LOG_ERROR("Rotator::open: read failed, read=%zu, expected=%zu", read_size,
-              data_size);
-    return IndexError_InvalidFormat;
-  }
-
-  // Verify CRC if available (covers header + blob)
+  std::array<char, kHeaderSize> header_bytes{};
+  if (segment->fetch(0, header_bytes.data(), header_bytes.size()) !=
+      header_bytes.size())
+    return IndexError_ReadData;
   uint32_t expected_crc = segment->data_crc();
-  if (expected_crc != 0) {
-    uint32_t actual_crc = ailego::Crc32c::Hash(block.data(), data_size, 0);
-    if (actual_crc != expected_crc) {
-      LOG_ERROR("Rotator::open: CRC mismatch, expected=0x%08x, actual=0x%08x",
-                expected_crc, actual_crc);
-      return IndexError_InvalidFormat;
+  if (expected_crc) {
+    ailego::BudgetedMappedBuffer scratch(std::min(size_t{65536}, data_size));
+    uint32_t crc = 0;
+    for (size_t offset = 0; offset < data_size;) {
+      size_t bytes = std::min(scratch.size(), data_size - offset);
+      if (segment->fetch(offset, scratch.data(), bytes) != bytes)
+        return IndexError_ReadData;
+      crc = ailego::Crc32c::Hash(scratch.data(), bytes, crc);
+      offset += bytes;
     }
+    if (crc != expected_crc) return IndexError_InvalidFormat;
   }
-
-  const char *raw = reinterpret_cast<const char *>(block.data());
+  const char *raw = header_bytes.data();
   uint32_t maybe_magic = read_u32_le(raw);
   if (maybe_magic != kMagic) {
     LOG_ERROR("Rotator::open: invalid magic (expected 0x%08x, got 0x%08x)",
@@ -168,6 +174,10 @@ int Rotator::open(std::shared_ptr<Rotator> *out, IndexStorage::Pointer storage,
 
   Header header;
   header.read_from(raw);
+  if (header.version != kVersion || header.rotator_type > 1 ||
+      header.in_dim == 0 || header.in_dim != header.out_dim ||
+      header.payload_size != data_size - kHeaderSize)
+    return IndexError_InvalidFormat;
   RotatorType type = Header::ser_to_type(header.rotator_type);
   size_t dim = static_cast<size_t>(header.in_dim);
 
@@ -179,7 +189,14 @@ int Rotator::open(std::shared_ptr<Rotator> *out, IndexStorage::Pointer storage,
     rot = std::make_unique<MatrixRotator>();
   }
   rot->dimension_ = dim;
-  rot->load_blob(raw + kHeaderSize);
+  int ret = rot->load_reader(
+      [&](size_t offset, void *data, size_t bytes) {
+        return segment->fetch(kHeaderSize + offset, data, bytes) == bytes
+                   ? 0
+                   : IndexError_ReadData;
+      },
+      header.payload_size);
+  if (ret != 0) return ret;
   rot->initialized_ = true;
 
   LOG_DEBUG("Rotator::open done: seg=%s, dim=%zu, data_size=%zu",
@@ -187,6 +204,8 @@ int Rotator::open(std::shared_ptr<Rotator> *out, IndexStorage::Pointer storage,
 
   *out = std::move(rot);
   return 0;
+} catch (const std::bad_alloc &) {
+  return IndexError_NoMemory;
 }
 
 std::unique_ptr<Rotator> Rotator::load_matrix(const float *matrix,
@@ -225,111 +244,68 @@ size_t Rotator::dump_bytes() const {
   return kHeaderSize + blob_bytes();
 }
 
+int Rotator::read_blob(size_t offset, void *data, size_t bytes) const try {
+  ailego::BudgetedVector<char> buffer(blob_bytes());
+  if (offset > buffer.size() || bytes > buffer.size() - offset)
+    return IndexError_InvalidArgument;
+  save_blob(buffer.data());
+  std::memcpy(data, buffer.data() + offset, bytes);
+  return 0;
+} catch (const std::bad_alloc &) {
+  return IndexError_NoMemory;
+}
+int Rotator::load_reader(const BlobReader &reader, size_t bytes) {
+  // FHT stores four bit masks. MatrixRotator overrides this with paged reads.
+  if (bytes != 4 * ((dimension_ + 7) / 8)) return IndexError_InvalidFormat;
+  ailego::BudgetedVector<char> buffer(bytes);
+  int ret = reader(0, buffer.data(), bytes);
+  if (ret == 0) load_blob(buffer.data());
+  return ret;
+}
+
 int Rotator::dump(const IndexStorage::Pointer &storage,
                   const std::string &seg_id) const {
-  if (!storage) {
-    LOG_ERROR("Rotator::dump(storage): null storage");
-    return IndexError_InvalidArgument;
-  }
-  if (!initialized_) {
-    LOG_ERROR("Rotator::dump(storage): rotator not initialized");
-    return IndexError_NoReady;
-  }
-
-  auto align_size = [](size_t size) -> size_t {
-    return (size + 0x1F) & (~0x1F);
-  };
-
-  const size_t blob_size = blob_bytes();
-  const size_t data_size = kHeaderSize + blob_size;
-  const size_t total_size = align_size(data_size);
-  std::vector<char> buffer(data_size);
-
-  Header header;
-  header.magic = kMagic;
-  header.version = kVersion;
-  header.rotator_type = Header::type_to_ser(rotator_type());
-  header.in_dim = static_cast<uint32_t>(dimension_);
-  header.out_dim = static_cast<uint32_t>(dimension_);
-  header.payload_size = static_cast<uint32_t>(blob_size);
-  header.reserved = 0;
-  header.write_to(buffer.data());
-  save_blob(buffer.data() + kHeaderSize);
-
-  int ret = storage->append(seg_id, total_size);
-  if (ret != 0) {
-    LOG_ERROR("Rotator::dump(storage): append segment '%s' failed, ret=%d",
-              seg_id.c_str(), ret);
-    return ret;
-  }
-
-  auto segment = storage->get(seg_id);
-  if (!segment) {
-    LOG_ERROR("Rotator::dump(storage): get segment '%s' failed",
-              seg_id.c_str());
-    return IndexError_WriteData;
-  }
-
-  size_t written = segment->write(0, buffer.data(), data_size);
-  if (written != data_size) {
-    LOG_ERROR("Rotator::dump(storage): write failed, written=%zu, expected=%zu",
-              written, data_size);
-    return IndexError_WriteData;
-  }
-  segment->resize(data_size);
-  segment->update_data_crc(ailego::Crc32c::Hash(buffer.data(), data_size, 0));
-
-  LOG_DEBUG("Rotator::dump(storage) done: seg=%s, data_size=%zu, total=%zu",
-            seg_id.c_str(), data_size, total_size);
-  return 0;
+  if (!storage) return IndexError_InvalidArgument;
+  if (!initialized_) return IndexError_NoReady;
+  auto dumper = std::make_shared<StorageSegmentDumper>();
+  int ret = dumper->prepare(storage, seg_id, (dump_bytes() + 31) & ~size_t(31));
+  return ret == 0 ? dump(dumper, seg_id) : ret;
 }
 
 int Rotator::dump(const IndexDumper::Pointer &dumper,
                   const std::string &seg_id) const {
-  if (!dumper) {
-    LOG_ERROR("Rotator::dump(dumper): null dumper");
-    return IndexError_InvalidArgument;
-  }
-  if (!initialized_) {
-    LOG_ERROR("Rotator::dump(dumper): rotator not initialized");
-    return IndexError_NoReady;
-  }
-
+  if (!dumper) return IndexError_InvalidArgument;
+  if (!initialized_) return IndexError_NoReady;
   const size_t blob_size = blob_bytes();
-  const size_t data_size = kHeaderSize + blob_size;
-  const size_t total_size = (data_size + 0x1F) & (~0x1F);
-
-  std::vector<char> buffer(total_size, 0);
-  Header header;
-  header.magic = kMagic;
-  header.version = kVersion;
-  header.rotator_type = Header::type_to_ser(rotator_type());
-  header.in_dim = static_cast<uint32_t>(dimension_);
-  header.out_dim = static_cast<uint32_t>(dimension_);
-  header.payload_size = static_cast<uint32_t>(blob_size);
-  header.reserved = 0;
-  header.write_to(buffer.data());
-  save_blob(buffer.data() + kHeaderSize);
-
-  const uint32_t crc = ailego::Crc32c::Hash(buffer.data(), data_size, 0);
-  const size_t padding_size = total_size - data_size;
-
-  if (dumper->write(buffer.data(), total_size) != total_size) {
-    LOG_ERROR("Rotator::dump(dumper): write failed, seg=%s", seg_id.c_str());
+  if (blob_size > UINT32_MAX || dimension_ > UINT32_MAX)
+    return IndexError_InvalidArgument;
+  Header header{kMagic,
+                kVersion,
+                Header::type_to_ser(rotator_type()),
+                static_cast<uint32_t>(dimension_),
+                static_cast<uint32_t>(dimension_),
+                static_cast<uint32_t>(blob_size),
+                0};
+  std::array<char, 65536> scratch{};
+  header.write_to(scratch.data());
+  if (dumper->write(scratch.data(), kHeaderSize) != kHeaderSize)
     return IndexError_WriteData;
+  uint32_t crc = ailego::Crc32c::Hash(scratch.data(), kHeaderSize, 0);
+  for (size_t offset = 0; offset < blob_size;) {
+    size_t bytes = std::min(scratch.size(), blob_size - offset);
+    int ret = read_blob(offset, scratch.data(), bytes);
+    if (ret != 0) return ret;
+    crc = ailego::Crc32c::Hash(scratch.data(), bytes, crc);
+    if (dumper->write(scratch.data(), bytes) != bytes)
+      return IndexError_WriteData;
+    offset += bytes;
   }
-
-  int ret = dumper->append(seg_id, data_size, padding_size, crc);
-  if (ret != 0) {
-    LOG_ERROR("Rotator::dump(dumper): append failed, seg=%s, ret=%d",
-              seg_id.c_str(), ret);
-    return ret;
-  }
-
-  LOG_DEBUG("Rotator::dump(dumper) done: seg=%s, data_size=%zu, padding=%zu",
-            seg_id.c_str(), data_size, padding_size);
-  return 0;
+  const size_t data_size = kHeaderSize + blob_size;
+  const size_t padding = (32 - data_size % 32) % 32;
+  std::array<char, 32> zeros{};
+  if (dumper->write(zeros.data(), padding) != padding)
+    return IndexError_WriteData;
+  return dumper->append(seg_id, data_size, padding, crc);
 }
-
 }  // namespace core
 }  // namespace zvec

@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <limits>
 #include <vector>
+#include <zvec/ailego/buffer/budgeted_allocator.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_meta.h>
@@ -156,6 +157,9 @@ class PqFastQuantizer : public Quantizer,
                  std::string *out) const override;
 
   int serialize(std::string *out) const override;
+  using Quantizer::serialize;
+  size_t serialized_size() const override;
+  int serialize_to(const SerializationSink &sink) const override;
 
   int deserialize(std::string &in) override;
 
@@ -177,8 +181,8 @@ class PqFastQuantizer : public Quantizer,
   //! back into \p x_hat (num * original_dim floats, rotated space).  Returns
   //! the mean squared reconstruction error per vector.  fp32-only, used by the
   //! OPQ loop to feed the preprocessor's two-input train().
-  float encode_reconstruct_batch(const float *rotated, size_t num,
-                                 float *x_hat) const;
+  float encode_reconstruct_batch(const float *rotated, size_t num, float *x_hat,
+                                 double *sum_error = nullptr) const;
 
   //! Compute the per-dimension mean (accumulated in float to avoid FP16
   //! overflow) and subtract it from all training vectors in-place.
@@ -216,8 +220,8 @@ class PqFastQuantizer : public Quantizer,
   int quantize_lut(const float *lut, void *out) const;
 
   //! Compute ||c_m[j]||^2 for every sub-centroid, consumed by
-  //! build_centroid_distance_table().  Built in train() and deserialize().
-  void compute_sub_centroid_norms();
+  //! build_centroid_distance_table(). Computed on demand, not kept resident.
+  void compute_sub_centroid_norms(float *norms) const;
 
   //! Build centroid_ptrs_cache_ from current centroids_.
   void build_centroid_ptrs_cache();
@@ -275,13 +279,15 @@ class PqFastQuantizer : public Quantizer,
 
   //! Centroids stored as raw bytes in the original data type:
   //! [num_chunk * kNumCentroids * sub_dim * sizeof(T)]
-  std::vector<uint8_t> centroids_;
+  template <typename T>
+  using ModelVector = std::vector<T, ailego::BudgetedAllocator<T>>;
+  ModelVector<uint8_t> centroids_;
 
   //! Global centroid (per-dimension mean) for zero-mean centering.
-  std::vector<float> centroid_;
+  ModelVector<float> centroid_;
 
   //! Pre-built centroid pointer arrays for each sub-quantizer.
-  std::vector<std::vector<const void *>> centroid_ptrs_cache_;
+  ModelVector<ModelVector<const void *>> centroid_ptrs_cache_;
 
   //! ISA-dispatched FastScan scan32 kernel.
   CodebookFastScanFunc scan_fn_{nullptr};
@@ -297,10 +303,6 @@ class PqFastQuantizer : public Quantizer,
   //! tables.  The table terms are pure inner products regardless of the
   //! search metric; the kernel returns -<a, b> per element.
   BatchDistanceFunc ip_batch_fn_{};
-
-  //! Squared norms of the sub-centroids: [num_chunk * kNumCentroids].
-  //! Used by build_centroid_distance_table().
-  std::vector<float> sub_centroid_norms_;
 
   //! Shared OPQ training, rotation and persistence.
   PqOpq opq_;

@@ -15,6 +15,7 @@
 
 #include <zvec/core/framework/index_cluster.h>
 #include <zvec/core/framework/index_holder.h>
+#include "paged_centroids.h"
 
 namespace zvec {
 namespace core {
@@ -28,9 +29,16 @@ class HolderCluster {
  public:
   virtual ~HolderCluster() = default;
 
+  void set_centroid_storage(std::shared_ptr<PagedCentroids> storage) {
+    centroid_storage_ = std::move(storage);
+  }
+
   virtual int cluster_holder(IndexThreads::Pointer threads,
                              IndexHolder::Pointer holder,
                              IndexCluster::CentroidList &cents) = 0;
+
+ protected:
+  std::shared_ptr<PagedCentroids> centroid_storage_;
 };
 
 }  // namespace core

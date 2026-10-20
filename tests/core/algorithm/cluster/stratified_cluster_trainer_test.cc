@@ -15,10 +15,13 @@
 #include <cstring>
 #include <limits>
 #include <gtest/gtest.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_trainer.h>
 #include "algorithm/cluster/cluster_params.h"
 #include "algorithm/cluster/holder_cluster.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 using zvec::ailego::Params;
 
@@ -122,7 +125,17 @@ class StratifiedTrainerInputTest : public ::testing::Test {
  protected:
   void SetUp() override {
     calls = {};
+    auto &pool = ailego::PoolPayloadBudget::get_instance();
+    capacity_ = pool.capacity();
+    ASSERT_EQ(0u, pool.used());
+    ASSERT_EQ(0, pool.init(0));
   }
+  void TearDown() override {
+    auto &pool = ailego::PoolPayloadBudget::get_instance();
+    EXPECT_EQ(0u, pool.used());
+    EXPECT_EQ(0, pool.init(capacity_));
+  }
+  size_t capacity_{0};
   IndexTrainer::Pointer make_trainer(uint32_t sample_count,
                                      float ratio = 0.0f) {
     auto trainer = IndexFactory::CreateTrainer("StratifiedClusterTrainer");
@@ -183,6 +196,58 @@ TEST_F(StratifiedTrainerInputTest, SamplingKeepsTheReservoirSequence) {
       EXPECT_FLOAT_EQ(value, calls.values[i]);
     }
   }
+}
+
+TEST_F(StratifiedTrainerInputTest, BufferedSamplingPreservesReservoirSequence) {
+  auto &pool = ailego::PoolPayloadBudget::get_instance();
+  const size_t metadata =
+      ailego::VecBufferPool::metadata_bytes_for_page_count(4096, true);
+  ASSERT_EQ(0, pool.init(metadata + 64 * 1024));
+  for (bool known : {true, false}) {
+    for (bool fallback : {false, true}) {
+      for (uint32_t count : {4u, 32u}) {
+        SCOPED_TRACE(::testing::Message()
+                     << known << ":" << fallback << ":" << count);
+        calls = {};
+        if (fallback) calls.holder_result = IndexError_NotImplemented;
+        auto trainer = make_trainer(count);
+        auto holder = std::make_shared<TrainerTestHolder>();
+        if (!known) holder->reported_count = std::numeric_limits<size_t>::max();
+        SampleIndexFeatures<CompactIndexFeatures> expected(
+            IndexMeta(IndexMeta::DT_FP32, 1), count);
+        for (auto iter = holder->create_iterator(); iter->is_valid();
+             iter->next())
+          expected.emplace(iter->data());
+        const size_t reference_charge = pool.used();
+        const size_t before = holder->iterator_calls;
+        ASSERT_EQ(0, trainer->train(threads, holder));
+        EXPECT_EQ(1u, calls.holder_calls);
+        EXPECT_EQ(fallback ? 1u : 0u, calls.mount_calls);
+        // A fallback must not consume the original single-pass source twice.
+        EXPECT_EQ(before + 1, holder->iterator_calls);
+        ASSERT_EQ(expected.count(), calls.values.size());
+        EXPECT_EQ(expected.count(), trainer->stats().trained_count());
+        for (size_t i = 0; i < calls.values.size(); ++i) {
+          float value;
+          std::memcpy(&value, expected.element(i), sizeof(value));
+          EXPECT_FLOAT_EQ(value, calls.values[i]);
+        }
+        EXPECT_EQ(reference_charge, pool.used());
+      }
+    }
+  }
+}
+
+TEST_F(StratifiedTrainerInputTest, BufferedSampleErrorsDoNotRetryOnHeap) {
+  auto &pool = ailego::PoolPayloadBudget::get_instance();
+  ASSERT_EQ(0, pool.init(1));
+  auto trainer = make_trainer(4);
+  auto holder = std::make_shared<TrainerTestHolder>();
+  EXPECT_NE(0, trainer->train(threads, holder));
+  EXPECT_EQ(0u, calls.holder_calls);
+  EXPECT_EQ(0u, calls.mount_calls);
+  EXPECT_EQ(0u, holder->iterator_calls);
+  EXPECT_EQ(0u, pool.used());
 }
 
 TEST_F(StratifiedTrainerInputTest, UnsupportedHolderFallsBackButErrorsDoNot) {

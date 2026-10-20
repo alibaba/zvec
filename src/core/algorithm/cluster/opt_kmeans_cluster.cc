@@ -11,6 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <ailego/algorithm/kmeans.h>
@@ -18,6 +20,8 @@
 #include <zvec/core/framework/index_cluster.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
+#include "ailego/pattern/defer.h"
+#include "utility/temporary_buffer_storage.h"
 #include "cluster_params.h"
 #include "holder_cluster.h"
 #include "turbo_kmeans_context.h"
@@ -25,9 +29,39 @@
 namespace zvec {
 namespace core {
 
+namespace {
+class BufferedTrainingMatrix : public ailego::LloydClusterMatrixStorage {
+ public:
+  explicit BufferedTrainingMatrix(
+      std::shared_ptr<TemporaryBufferStorage> storage, size_t base,
+      size_t bytes)
+      : storage_(std::move(storage)), base_(base), bytes_(bytes) {}
+
+  int read(size_t offset, void *out, size_t bytes) const override {
+    if (offset > bytes_ || bytes > bytes_ - offset)
+      return IndexError_InvalidArgument;
+    return storage_->read(base_ + offset, out, bytes);
+  }
+
+  int write(size_t offset, const void *data, size_t bytes) override {
+    if (offset > bytes_ || bytes > bytes_ - offset)
+      return IndexError_InvalidArgument;
+    return storage_->write(base_ + offset, data, bytes);
+  }
+
+ private:
+  std::shared_ptr<TemporaryBufferStorage> storage_;
+  size_t base_;
+  size_t bytes_;
+};
+}  // namespace
+
 /*! Optimize K-Means cluster algorithm
  */
 class OptKmeansAlgorithm : public IndexCluster {
+ public:
+  std::shared_ptr<PagedCentroids> output_storage;
+
  public:
   //! Constructor
   OptKmeansAlgorithm() = default;
@@ -77,15 +111,132 @@ class OptKmeansAlgorithm : public IndexCluster {
                            IndexCluster::CentroidList &cents) = 0;
 
   int check_dimension() const;
+  // Preserve centroid-order tie handling, but read each paged centroid once
+  // per small input tile rather than once per input vector. Scratch is bounded
+  // independently of corpus and centroid counts.
+  template <typename Consumer>
+  void label_stored(size_t begin, size_t end,
+                    const IndexCluster::CentroidList &cents,
+                    const Consumer &consume) try {
+    constexpr size_t kTile = 64;
+    std::array<float, kTile> best{};
+    std::array<uint32_t, kTile> ids{};
+    std::vector<uint8_t, ailego::BudgetedAllocator<uint8_t>> row(
+        meta_.element_size());
+    for (size_t base = begin; base < end; base += kTile) {
+      const size_t count = std::min(kTile, end - base);
+      best.fill(std::numeric_limits<float>::max());
+      ids.fill(0);
+      for (size_t j = 0; j < cents.size(); ++j) {
+        const int ret = cents[j].read_feature(row.data(), row.size());
+        if (ret != 0) {
+          read_error_.store(ret);
+          return;
+        }
+        for (size_t i = 0; i < count; ++i) {
+          float score = 0;
+          distance_func_(row.data(), features_->element(base + i),
+                         meta_.dimension(), &score);
+          if (score < best[i]) {
+            best[i] = score;
+            ids[i] = static_cast<uint32_t>(j);
+          }
+        }
+      }
+      for (size_t i = 0; i < count; ++i) consume(base + i, ids[i]);
+    }
+  } catch (const std::bad_alloc &) {
+    read_error_.store(IndexError_NoMemory);
+  } catch (const std::exception &) {
+    read_error_.store(IndexError_ReadData);
+  }
 
-  // All kernels own their training matrix. Consume each input before advancing
-  // its iterator; never materialize a second, full IndexFeatures corpus.
+  template <typename Algorithm>
+  int export_centroids(IndexCluster::CentroidList &cents,
+                       const Algorithm &algorithm) try {
+    const size_t count = algorithm.centroids().count();
+    const size_t bytes = meta_.element_size();
+    auto storage = output_storage;
+    if (!storage && ailego::MemoryLimitPool::get_instance().capacity() != 0)
+      storage = PagedCentroids::Create();
+    ailego::MemoryReservation directory;
+    directory.add_array(count, IndexCluster::Centroid::loaded_metadata_bytes());
+    IndexCluster::CentroidList candidate(count);
+    for (size_t i = 0; i < count; ++i) {
+      candidate[i].adopt_metadata(
+          directory.take(IndexCluster::Centroid::loaded_metadata_bytes()));
+      const void *row = algorithm.centroids()[i];
+      if (algorithm.matrix_status() != 0)
+        return algorithm.matrix_status() ==
+                       std::decay_t<decltype(algorithm)>::kWorkspaceNoMemory
+                   ? IndexError_NoMemory
+                   : algorithm.matrix_status();
+      if (!row) return IndexError_ReadData;
+      int ret = 0;
+      if (storage)
+        ret = storage->append(row, bytes, &candidate[i]);
+      else
+        candidate[i].set_feature(row, bytes);
+      if (ret != 0) return ret;
+      candidate[i].set_score(algorithm.context().clusters()[i].cost());
+      candidate[i].set_follows(algorithm.context().clusters()[i].count());
+    }
+    for (size_t i = 0; i < std::min(count, cents.size()); ++i)
+      candidate[i].swap_assignments(cents[i]);
+    cents.swap(candidate);
+    return 0;
+  } catch (const std::bad_alloc &) {
+    return IndexError_NoMemory;
+  } catch (const std::exception &) {
+    return IndexError_Runtime;
+  }
+
+  // Consume each input before advancing its iterator. The optional backing
+  // stores exactly the same transposed matrix without retaining it on the heap.
   template <typename Algorithm>
   int load_features(Algorithm &algorithm, const IndexHolder::Pointer &holder) {
     using StoreType = typename Algorithm::StoreType;
     const size_t count = holder ? holder->count() : features_->count();
     const size_t bytes = meta_.element_size();
-    std::vector<StoreType> aligned;
+    if (bytes == 0 || count > std::numeric_limits<size_t>::max() / bytes) {
+      return IndexError_InvalidArgument;
+    }
+    std::shared_ptr<TemporaryBufferStorage> storage;
+    const size_t matrix_count =
+        count / Algorithm::BatchCount * Algorithm::BatchCount;
+    const size_t center_count =
+        algorithm.k_value() / Algorithm::BatchCount * Algorithm::BatchCount;
+    if (center_count >
+        std::numeric_limits<size_t>::max() / bytes - matrix_count)
+      return IndexError_Overflow;
+    const size_t matrix_bytes = (matrix_count + center_count) * bytes;
+    const size_t dimensions = meta_.dimension();
+    if (dimensions > std::numeric_limits<size_t>::max() / sizeof(double))
+      return IndexError_Overflow;
+    const size_t accumulator_stride = dimensions * sizeof(double);
+    if (algorithm.k_value() >
+        (std::numeric_limits<size_t>::max() - matrix_bytes) /
+            accumulator_stride)
+      return IndexError_Overflow;
+    const size_t accumulator_bytes = algorithm.k_value() * accumulator_stride;
+    if (!buffered_storage_path_.empty() &&
+        matrix_bytes + accumulator_bytes != 0) {
+      int ret = TemporaryBufferStorage::Create(
+          buffered_storage_path_, matrix_bytes + accumulator_bytes, &storage);
+      if (ret != 0) return ret;
+      algorithm.set_feature_matrix_storage(
+          std::make_shared<BufferedTrainingMatrix>(storage, 0,
+                                                   matrix_count * bytes));
+      if (center_count != 0) {
+        algorithm.set_centroid_matrix_storage(
+            std::make_shared<BufferedTrainingMatrix>(
+                storage, matrix_count * bytes, center_count * bytes));
+      }
+      algorithm.set_accumulator_storage(
+          std::make_shared<BufferedTrainingMatrix>(storage, matrix_bytes,
+                                                   accumulator_bytes));
+    }
+    ailego::BudgetedVector<StoreType> aligned;
     auto append = [&](const void *data) -> int {
       if (!data) {
         return IndexError_InvalidArgument;
@@ -101,7 +252,7 @@ class OptKmeansAlgorithm : public IndexCluster {
       }
       algorithm.append(reinterpret_cast<const StoreType *>(data),
                        meta_.dimension());
-      return 0;
+      return algorithm.matrix_status();
     };
 
     algorithm.feature_matrix_reserve(count);
@@ -115,21 +266,25 @@ class OptKmeansAlgorithm : public IndexCluster {
         if (loaded == count) {
           return IndexError_InvalidArgument;
         }
-        int ret = append(iter->data());
+        const void *data = iter->data();
+        if (iter->status() != 0) return iter->status();
+        int ret = append(data);
         if (ret != 0) {
           return ret;
         }
         ++loaded;
       }
-      return loaded == count ? 0 : IndexError_InvalidArgument;
-    }
-    for (size_t i = 0; i < count; ++i) {
-      int ret = append(features_->element(i));
-      if (ret != 0) {
-        return ret;
+      if (iter->status() != 0) return iter->status();
+      if (loaded != count) return IndexError_InvalidArgument;
+    } else {
+      for (size_t i = 0; i < count; ++i) {
+        int ret = append(features_->element(i));
+        if (ret != 0) {
+          return ret;
+        }
       }
     }
-    return 0;
+    return storage ? storage->flush() : 0;
   }
 
   //! Update parameters
@@ -186,10 +341,13 @@ class OptKmeansAlgorithm : public IndexCluster {
   float shard_factor_{16.0f};
   bool purge_empty_{false};
   bool assumption_free_{false};
+  std::string buffered_storage_path_;
+  std::atomic<int> read_error_{0};
   uint32_t markov_chain_length_{32};
   IndexMeta meta_{};
   IndexFeatures::Pointer features_{};
-  std::vector<std::vector<const void *>> shard_cluster_features_{};
+  ailego::BudgetedVector<ailego::BudgetedVector<const void *>>
+      shard_cluster_features_{};
   IndexMetric::MatrixDistance distance_func_{nullptr};
 };
 
@@ -220,6 +378,7 @@ void OptKmeansAlgorithm::update_params(const ailego::Params &params) {
   params.get(OPTKMEANS_CLUSTER_PURGE_EMPTY, &purge_empty_);
   params.get(OPTKMEANS_CLUSTER_MARKOV_CHAIN_LENGTH, &markov_chain_length_);
   params.get(OPTKMEANS_CLUSTER_ASSUMPTION_FREE, &assumption_free_);
+  params.get(OPTKMEANS_CLUSTER_BUFFERED_STORAGE_PATH, &buffered_storage_path_);
 }
 
 int OptKmeansAlgorithm::init_distance_func() {
@@ -255,6 +414,7 @@ void OptKmeansAlgorithm::update_clusters(
   // Initilize containers
   this->init_features_containers(threads->count() * cents.size());
   auto task_group = threads->make_group();
+  AILEGO_DEFER([&] { task_group->wait_finish(); });
 
   size_t features_count = features_->count();
   size_t shard_count = std::max<size_t>(
@@ -281,8 +441,17 @@ void OptKmeansAlgorithm::update_clusters(
 
 void OptKmeansAlgorithm::update_cluster_thread(
     size_t index_begin, size_t index_end, const IndexThreads *threads,
-    const IndexCluster::CentroidList &cents) {
+    const IndexCluster::CentroidList &cents) try {
+  ailego::BudgetedVector<uint8_t> row;
   size_t thread_offset = threads->indexof_this() * cents.size();
+  if (std::any_of(cents.begin(), cents.end(),
+                  [](const auto &c) { return c.feature_stored(); })) {
+    label_stored(index_begin, index_end, cents, [&](size_t i, uint32_t id) {
+      shard_cluster_features_[thread_offset + id].push_back(
+          features_->element(i));
+    });
+    return;
+  }
 
   for (size_t i = index_begin; i != index_end; ++i) {
     const void *feat = features_->element(i);
@@ -294,7 +463,18 @@ void OptKmeansAlgorithm::update_cluster_thread(
     for (uint32_t j = 0; j < total; ++j) {
       float score = 0.0f;
 
-      distance_func_(cents[j].feature(), feat, meta_.dimension(), &score);
+      const void *center = nullptr;
+      if (cents[j].feature_stored()) {
+        row.resize(meta_.element_size());
+        const int ret = cents[j].read_feature(row.data(), row.size());
+        if (ret != 0) {
+          read_error_.store(ret);
+          return;
+        }
+        center = row.data();
+      } else
+        center = cents[j].feature();
+      distance_func_(center, feat, meta_.dimension(), &score);
       if (score < sel_score) {
         sel_score = score;
         sel_index = j;
@@ -304,6 +484,8 @@ void OptKmeansAlgorithm::update_cluster_thread(
     size_t sel_column = thread_offset + sel_index;
     shard_cluster_features_[sel_column].emplace_back(feat);
   }
+} catch (const std::bad_alloc &) {
+  read_error_.store(IndexError_NoMemory);
 }
 
 void OptKmeansAlgorithm::init_features_containers(size_t shard_count) {
@@ -316,6 +498,7 @@ void OptKmeansAlgorithm::init_features_containers(size_t shard_count) {
 void OptKmeansAlgorithm::update_features(IndexThreads *threads,
                                          IndexCluster::CentroidList &cents) {
   auto task_group = threads->make_group();
+  AILEGO_DEFER([&] { task_group->wait_finish(); });
   for (size_t i = 0; i < cents.size(); ++i) {
     // Process in work thread
     task_group->submit(ailego::Closure::New(
@@ -332,6 +515,7 @@ void OptKmeansAlgorithm::update_labels(
       static_cast<size_t>(std::ceil(threads->count() * shard_factor_)), 1u);
   size_t fregment_count = (features_count + shard_count - 1) / shard_count;
   auto task_group = threads->make_group();
+  AILEGO_DEFER([&] { task_group->wait_finish(); });
 
   // Prepare buffer
   labels->resize(features_count);
@@ -356,7 +540,14 @@ void OptKmeansAlgorithm::update_labels(
 
 void OptKmeansAlgorithm::update_labels_thread(
     size_t index_begin, size_t index_end, std::vector<uint32_t> *labels,
-    const IndexCluster::CentroidList &cents) {
+    const IndexCluster::CentroidList &cents) try {
+  ailego::BudgetedVector<uint8_t> row;
+  if (std::any_of(cents.begin(), cents.end(),
+                  [](const auto &c) { return c.feature_stored(); })) {
+    label_stored(index_begin, index_end, cents,
+                 [&](size_t i, uint32_t id) { (*labels)[i] = id; });
+    return;
+  }
   for (size_t i = index_begin; i != index_end; ++i) {
     const void *feat = features_->element(i);
 
@@ -368,7 +559,18 @@ void OptKmeansAlgorithm::update_labels_thread(
     for (uint32_t j = 0; j < total; ++j) {
       float score = 0.0f;
 
-      distance_func_(cents[j].feature(), feat, meta_.dimension(), &score);
+      const void *center = nullptr;
+      if (cents[j].feature_stored()) {
+        row.resize(meta_.element_size());
+        const int ret = cents[j].read_feature(row.data(), row.size());
+        if (ret != 0) {
+          read_error_.store(ret);
+          return;
+        }
+        center = row.data();
+      } else
+        center = cents[j].feature();
+      distance_func_(center, feat, meta_.dimension(), &score);
       if (score < sel_score) {
         sel_score = score;
         sel_index = j;
@@ -377,6 +579,8 @@ void OptKmeansAlgorithm::update_labels_thread(
 
     (*labels)[i] = static_cast<uint32_t>(sel_index);
   }
+} catch (const std::bad_alloc &) {
+  read_error_.store(IndexError_NoMemory);
 }
 
 void OptKmeansAlgorithm::init_centroids(size_t count,
@@ -386,7 +590,7 @@ void OptKmeansAlgorithm::init_centroids(size_t count,
 }
 
 void OptKmeansAlgorithm::update_features_thread(
-    size_t column, IndexCluster::CentroidList *out) {
+    size_t column, IndexCluster::CentroidList *out) try {
   size_t cluster_count = out->size();
   size_t cluster_follows = 0u;
 
@@ -399,16 +603,18 @@ void OptKmeansAlgorithm::update_features_thread(
   // Merge all features in cluster
   std::vector<const void *> &cluster_features =
       *(out->at(column).mutable_similars());
-  cluster_features.resize(cluster_follows);
+  out->at(column).resize_similars(cluster_follows);
 
   for (size_t i = column, j = 0; i < shard_cluster_features_.size();
        i += cluster_count) {
-    const std::vector<const void *> &it = shard_cluster_features_[i];
+    const auto &it = shard_cluster_features_[i];
     if (!it.empty()) {
       std::memcpy(&cluster_features[j], it.data(), it.size() * sizeof(void *));
       j += it.size();
     }
   }
+} catch (const std::bad_alloc &) {
+  read_error_.store(IndexError_NoMemory);
 }
 
 static inline void PurgeCentroids(IndexCluster::CentroidList &cents,
@@ -429,7 +635,14 @@ static inline void PurgeCentroids(IndexCluster::CentroidList &cents,
     ++index;
   }
   if (cutting) {
-    cents.resize(tamp);
+    if (tamp == 0) {
+      IndexCluster::CentroidList().swap(cents);
+    } else {
+      // resize retains the vector capacity; keep its directory bill alive.
+      for (size_t i = tamp; i < cents.size(); ++i)
+        cents.front().absorb_metadata(cents[i]);
+      cents.resize(tamp);
+    }
   }
 }
 
@@ -515,7 +728,10 @@ void OptKmeansAlgorithm::suggest(uint32_t k) {
 }
 
 int OptKmeansAlgorithm::classify(IndexThreads::Pointer threads,
-                                 IndexCluster::CentroidList &cents) {
+                                 IndexCluster::CentroidList &cents) try {
+  auto release = ailego::ScopeGuard::Make([&] {
+    decltype(shard_cluster_features_)().swap(shard_cluster_features_);
+  });
   if (!threads) {
     threads = std::make_shared<SingleQueueIndexThreads>(thread_count_, false);
     if (!threads) {
@@ -537,9 +753,13 @@ int OptKmeansAlgorithm::classify(IndexThreads::Pointer threads,
     return IndexError_NoReady;
   }
 
+  read_error_.store(0);
   this->update_clusters(threads.get(), cents);
+  if (read_error_.load() != 0) return read_error_.load();
   this->update_features(threads.get(), cents);
-  return 0;
+  return read_error_.load();
+} catch (const std::bad_alloc &) {
+  return IndexError_NoMemory;
 }
 
 int OptKmeansAlgorithm::label(IndexThreads::Pointer threads,
@@ -566,8 +786,9 @@ int OptKmeansAlgorithm::label(IndexThreads::Pointer threads,
     return IndexError_NoReady;
   }
 
+  read_error_.store(0);
   this->update_labels(threads.get(), out, cents);
-  return 0;
+  return read_error_.load();
 }
 
 int OptKmeansAlgorithm::update(const ailego::Params &params) {
@@ -613,29 +834,22 @@ class NumericalKmeansAlgorithm : public OptKmeansAlgorithm {
   int cluster_impl(IndexThreads::Pointer threads, IndexHolder::Pointer holder,
                    IndexCluster::CentroidList &cents) override;
 
-  void update_centroids(
+  int update_centroids(
       IndexCluster::CentroidList &cents,
       const ailego::NumericalKmeans<T, IndexThreads, Context> &algorithm);
 };
 
 template <typename T, typename Context>
-void NumericalKmeansAlgorithm<T, Context>::update_centroids(
+int NumericalKmeansAlgorithm<T, Context>::update_centroids(
     IndexCluster::CentroidList &cents,
     const ailego::NumericalKmeans<T, IndexThreads, Context> &algorithm) {
-  this->init_centroids(algorithm.centroids().count(), &cents);
-  for (size_t i = 0; i < cents.size(); ++i) {
-    IndexCluster::Centroid *centroid = &(cents.at(i));
-    centroid->set_score(algorithm.context().clusters()[i].cost());
-    centroid->set_follows(algorithm.context().clusters()[i].count());
-    centroid->set_feature(algorithm.centroids()[i],
-                          meta_.dimension() * sizeof(T));
-  }
+  return export_centroids(cents, algorithm);
 }
 
 template <typename T, typename Context>
 int NumericalKmeansAlgorithm<T, Context>::cluster_impl(
     IndexThreads::Pointer threads, IndexHolder::Pointer holder,
-    IndexCluster::CentroidList &cents) {
+    IndexCluster::CentroidList &cents) try {
   ailego::ElapsedTime stamp;
 
   if (!threads) {
@@ -677,8 +891,11 @@ int NumericalKmeansAlgorithm<T, Context>::cluster_impl(
   if (!cents.empty()) {
     auto centroids = algorithm.mutable_centroids();
     centroids->reserve(cents.size());
+    ailego::BudgetedVector<uint64_t> seed((meta_.element_size() + 7) / 8);
     for (const auto &it : cents) {
-      centroids->append(reinterpret_cast<const T *>(it.feature()),
+      ret = it.read_feature(seed.data(), meta_.element_size());
+      if (ret != 0) return ret;
+      centroids->append(reinterpret_cast<const T *>(seed.data()),
                         meta_.dimension());
     }
   } else {
@@ -690,6 +907,12 @@ int NumericalKmeansAlgorithm<T, Context>::cluster_impl(
     algorithm.init_centroids(*threads, g);
   }
 
+  if (algorithm.matrix_status() != 0)
+    return algorithm.matrix_status() ==
+                   std::decay_t<decltype(algorithm)>::kWorkspaceNoMemory
+               ? IndexError_NoMemory
+               : algorithm.matrix_status();
+
   double cost = 0.0;
 
   for (uint32_t i = 0; i < max_iterations_; ++i) {
@@ -699,7 +922,11 @@ int NumericalKmeansAlgorithm<T, Context>::cluster_impl(
     bool result = algorithm.cluster_once(*threads, &cost);
     if (result != true) {
       LOG_ERROR("(%u) Failed to cluster.", i + 1);
-      return -1;
+      return algorithm.matrix_status() ==
+                     std::decay_t<decltype(algorithm)>::kWorkspaceNoMemory
+                 ? IndexError_NoMemory
+                 : (algorithm.matrix_status() != 0 ? algorithm.matrix_status()
+                                                   : -1);
     }
 
     new_epsilon = std::abs(cost - old_cost);
@@ -714,11 +941,14 @@ int NumericalKmeansAlgorithm<T, Context>::cluster_impl(
   }
 
   // update_centroids(cents);
-  update_centroids(cents, algorithm);
+  ret = update_centroids(cents, algorithm);
+  if (ret != 0) return ret;
 
   // Purge the empty centroids
   PurgeCentroids(cents, purge_empty_);
   return 0;
+} catch (const std::bad_alloc &) {
+  return IndexError_NoMemory;
 }
 
 /*! Nibble K-Means cluster algorithm
@@ -744,27 +974,21 @@ class NibbleKmeansAlgorithm : public OptKmeansAlgorithm {
                    IndexCluster::CentroidList &cents) override;
 
   //! update centroids
-  void update_centroids(IndexCluster::CentroidList &cents,
-                        const ailego::NibbleKmeans<T, IndexThreads> &algorithm);
+  int update_centroids(IndexCluster::CentroidList &cents,
+                       const ailego::NibbleKmeans<T, IndexThreads> &algorithm);
 };
 
 template <typename T>
-void NibbleKmeansAlgorithm<T>::update_centroids(
+int NibbleKmeansAlgorithm<T>::update_centroids(
     IndexCluster::CentroidList &cents,
     const ailego::NibbleKmeans<T, IndexThreads> &algorithm) {
-  this->init_centroids(algorithm.centroids().count(), &cents);
-  for (size_t i = 0; i < cents.size(); ++i) {
-    IndexCluster::Centroid *centroid = &(cents.at(i));
-    centroid->set_score(algorithm.context().clusters()[i].cost());
-    centroid->set_follows(algorithm.context().clusters()[i].count());
-    centroid->set_feature(algorithm.centroids()[i], (meta_.dimension() >> 1));
-  }
+  return export_centroids(cents, algorithm);
 }
 
 template <typename T>
-int NibbleKmeansAlgorithm<T>::cluster_impl(IndexThreads::Pointer threads,
-                                           IndexHolder::Pointer holder,
-                                           IndexCluster::CentroidList &cents) {
+int NibbleKmeansAlgorithm<T>::cluster_impl(
+    IndexThreads::Pointer threads, IndexHolder::Pointer holder,
+    IndexCluster::CentroidList &cents) try {
   ailego::ElapsedTime stamp;
 
   if (!threads) {
@@ -805,10 +1029,13 @@ int NibbleKmeansAlgorithm<T>::cluster_impl(IndexThreads::Pointer threads,
   if (!cents.empty()) {
     auto centroids = algorithm.mutable_centroids();
     centroids->reserve(cents.size());
+    ailego::BudgetedVector<uint64_t> seed((meta_.element_size() + 7) / 8);
     for (const auto &it : cents) {
+      ret = it.read_feature(seed.data(), meta_.element_size());
+      if (ret != 0) return ret;
       centroids->append(
           reinterpret_cast<const typename std::make_unsigned<T>::type *>(
-              it.feature()),
+              seed.data()),
           size_t(meta_.dimension()));
     }
   } else {
@@ -820,6 +1047,12 @@ int NibbleKmeansAlgorithm<T>::cluster_impl(IndexThreads::Pointer threads,
     algorithm.init_centroids(*threads, g);
   }
 
+  if (algorithm.matrix_status() != 0)
+    return algorithm.matrix_status() ==
+                   std::decay_t<decltype(algorithm)>::kWorkspaceNoMemory
+               ? IndexError_NoMemory
+               : algorithm.matrix_status();
+
   double cost = 0.0;
 
   for (uint32_t i = 0; i < max_iterations_; ++i) {
@@ -829,7 +1062,11 @@ int NibbleKmeansAlgorithm<T>::cluster_impl(IndexThreads::Pointer threads,
     bool result = algorithm.cluster_once(*threads, &cost);
     if (result != true) {
       LOG_ERROR("(%u) Failed to cluster.", i + 1);
-      return -1;
+      return algorithm.matrix_status() ==
+                     std::decay_t<decltype(algorithm)>::kWorkspaceNoMemory
+                 ? IndexError_NoMemory
+                 : (algorithm.matrix_status() != 0 ? algorithm.matrix_status()
+                                                   : -1);
     }
 
     new_epsilon = std::abs(cost - old_cost);
@@ -846,11 +1083,14 @@ int NibbleKmeansAlgorithm<T>::cluster_impl(IndexThreads::Pointer threads,
   }
 
   // update centroids
-  update_centroids(cents, algorithm);
+  ret = update_centroids(cents, algorithm);
+  if (ret != 0) return ret;
 
   // Purge the empty centroids
   PurgeCentroids(cents, purge_empty_);
   return 0;
+} catch (const std::bad_alloc &) {
+  return IndexError_NoMemory;
 }
 
 /*! Numerical K-Means cluster algorithm
@@ -876,31 +1116,24 @@ class NumericalInnerProductKmeansAlgorithm : public OptKmeansAlgorithm {
   int cluster_impl(IndexThreads::Pointer threads, IndexHolder::Pointer holder,
                    IndexCluster::CentroidList &cents) override;
 
-  void update_centroids(
+  int update_centroids(
       IndexCluster::CentroidList &cents,
       const ailego::NumericalInnerProductKmeans<T, IndexThreads, Context>
           &algorithm);
 };
 
 template <typename T, typename Context>
-void NumericalInnerProductKmeansAlgorithm<T, Context>::update_centroids(
+int NumericalInnerProductKmeansAlgorithm<T, Context>::update_centroids(
     IndexCluster::CentroidList &cents,
     const ailego::NumericalInnerProductKmeans<T, IndexThreads, Context>
         &algorithm) {
-  this->init_centroids(algorithm.centroids().count(), &cents);
-  for (size_t i = 0; i < cents.size(); ++i) {
-    IndexCluster::Centroid *centroid = &(cents.at(i));
-    centroid->set_score(algorithm.context().clusters()[i].cost());
-    centroid->set_follows(algorithm.context().clusters()[i].count());
-    centroid->set_feature(algorithm.centroids()[i],
-                          meta_.dimension() * sizeof(T));
-  }
+  return export_centroids(cents, algorithm);
 }
 
 template <typename T, typename Context>
 int NumericalInnerProductKmeansAlgorithm<T, Context>::cluster_impl(
     IndexThreads::Pointer threads, IndexHolder::Pointer holder,
-    IndexCluster::CentroidList &cents) {
+    IndexCluster::CentroidList &cents) try {
   ailego::ElapsedTime stamp;
 
   if (!threads) {
@@ -941,8 +1174,11 @@ int NumericalInnerProductKmeansAlgorithm<T, Context>::cluster_impl(
   if (!cents.empty()) {
     auto centroids = algorithm.mutable_centroids();
     centroids->reserve(cents.size());
+    ailego::BudgetedVector<uint64_t> seed((meta_.element_size() + 7) / 8);
     for (const auto &it : cents) {
-      centroids->append(reinterpret_cast<const T *>(it.feature()),
+      ret = it.read_feature(seed.data(), meta_.element_size());
+      if (ret != 0) return ret;
+      centroids->append(reinterpret_cast<const T *>(seed.data()),
                         meta_.dimension());
     }
   } else {
@@ -955,6 +1191,12 @@ int NumericalInnerProductKmeansAlgorithm<T, Context>::cluster_impl(
     algorithm.init_centroids(*threads, g);
   }
 
+  if (algorithm.matrix_status() != 0)
+    return algorithm.matrix_status() ==
+                   std::decay_t<decltype(algorithm)>::kWorkspaceNoMemory
+               ? IndexError_NoMemory
+               : algorithm.matrix_status();
+
   double cost = 0.0;
 
   for (uint32_t i = 0; i < max_iterations_; ++i) {
@@ -964,7 +1206,11 @@ int NumericalInnerProductKmeansAlgorithm<T, Context>::cluster_impl(
     bool result = algorithm.cluster_once(*threads, &cost);
     if (result != true) {
       LOG_ERROR("(%u) Failed to cluster.", i + 1);
-      return -1;
+      return algorithm.matrix_status() ==
+                     std::decay_t<decltype(algorithm)>::kWorkspaceNoMemory
+                 ? IndexError_NoMemory
+                 : (algorithm.matrix_status() != 0 ? algorithm.matrix_status()
+                                                   : -1);
     }
 
     new_epsilon = std::abs(cost - old_cost);
@@ -979,11 +1225,14 @@ int NumericalInnerProductKmeansAlgorithm<T, Context>::cluster_impl(
   }
 
   // update_centroids(cents);
-  update_centroids(cents, algorithm);
+  ret = update_centroids(cents, algorithm);
+  if (ret != 0) return ret;
 
   // Purge the empty centroids
   PurgeCentroids(cents, purge_empty_);
   return 0;
+} catch (const std::bad_alloc &) {
+  return IndexError_NoMemory;
 }
 
 /*! Nibble Inner Product K-Means cluster algorithm
@@ -1009,28 +1258,22 @@ class NibbleInnerProductKmeansAlgorithm : public OptKmeansAlgorithm {
                    IndexCluster::CentroidList &cents) override;
 
   //! update centroids
-  void update_centroids(
+  int update_centroids(
       IndexCluster::CentroidList &cents,
       const ailego::NibbleInnerProductKmeans<T, IndexThreads> &algorithm);
 };
 
 template <typename T>
-void NibbleInnerProductKmeansAlgorithm<T>::update_centroids(
+int NibbleInnerProductKmeansAlgorithm<T>::update_centroids(
     IndexCluster::CentroidList &cents,
     const ailego::NibbleInnerProductKmeans<T, IndexThreads> &algorithm) {
-  this->init_centroids(algorithm.centroids().count(), &cents);
-  for (size_t i = 0; i < cents.size(); ++i) {
-    IndexCluster::Centroid *centroid = &(cents.at(i));
-    centroid->set_score(algorithm.context().clusters()[i].cost());
-    centroid->set_follows(algorithm.context().clusters()[i].count());
-    centroid->set_feature(algorithm.centroids()[i], (meta_.dimension() >> 1));
-  }
+  return export_centroids(cents, algorithm);
 }
 
 template <typename T>
 int NibbleInnerProductKmeansAlgorithm<T>::cluster_impl(
     IndexThreads::Pointer threads, IndexHolder::Pointer holder,
-    IndexCluster::CentroidList &cents) {
+    IndexCluster::CentroidList &cents) try {
   ailego::ElapsedTime stamp;
 
   if (!threads) {
@@ -1071,10 +1314,13 @@ int NibbleInnerProductKmeansAlgorithm<T>::cluster_impl(
   if (!cents.empty()) {
     auto centroids = algorithm.mutable_centroids();
     centroids->reserve(cents.size());
+    ailego::BudgetedVector<uint64_t> seed((meta_.element_size() + 7) / 8);
     for (const auto &it : cents) {
+      ret = it.read_feature(seed.data(), meta_.element_size());
+      if (ret != 0) return ret;
       centroids->append(
           reinterpret_cast<const typename std::make_unsigned<T>::type *>(
-              it.feature()),
+              seed.data()),
           size_t(meta_.dimension()));
     }
   } else {
@@ -1086,6 +1332,12 @@ int NibbleInnerProductKmeansAlgorithm<T>::cluster_impl(
     algorithm.init_centroids(*threads, g);
   }
 
+  if (algorithm.matrix_status() != 0)
+    return algorithm.matrix_status() ==
+                   std::decay_t<decltype(algorithm)>::kWorkspaceNoMemory
+               ? IndexError_NoMemory
+               : algorithm.matrix_status();
+
   double cost = 0.0;
 
   for (uint32_t i = 0; i < max_iterations_; ++i) {
@@ -1095,7 +1347,11 @@ int NibbleInnerProductKmeansAlgorithm<T>::cluster_impl(
     bool result = algorithm.cluster_once(*threads, &cost);
     if (result != true) {
       LOG_ERROR("(%u) Failed to cluster.", i + 1);
-      return -1;
+      return algorithm.matrix_status() ==
+                     std::decay_t<decltype(algorithm)>::kWorkspaceNoMemory
+                 ? IndexError_NoMemory
+                 : (algorithm.matrix_status() != 0 ? algorithm.matrix_status()
+                                                   : -1);
     }
 
     new_epsilon = std::abs(cost - old_cost);
@@ -1112,11 +1368,14 @@ int NibbleInnerProductKmeansAlgorithm<T>::cluster_impl(
   }
 
   // update centroids
-  update_centroids(cents, algorithm);
+  ret = update_centroids(cents, algorithm);
+  if (ret != 0) return ret;
 
   // Purge the empty centroids
   PurgeCentroids(cents, purge_empty_);
   return 0;
+} catch (const std::bad_alloc &) {
+  return IndexError_NoMemory;
 }
 
 /*! Kmeans Cluster
@@ -1153,6 +1412,7 @@ class OptKmeansCluster : public IndexCluster, public HolderCluster {
 
   int cluster_holder(IndexThreads::Pointer threads, IndexHolder::Pointer holder,
                      IndexCluster::CentroidList &cents) override {
+    algorithm_->output_storage = centroid_storage_;
     return algorithm_->cluster_holder(std::move(threads), std::move(holder),
                                       cents);
   }

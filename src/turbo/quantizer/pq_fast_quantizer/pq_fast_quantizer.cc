@@ -23,9 +23,11 @@
 #include <vector>
 #include <ailego/algorithm/kmeans.h>
 #include <ailego/math/normalizer.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_threads.h>
 #include "common/fast_scan_common.h"
+#include "quantizer/common/pq_buffered_training.h"
 
 namespace zvec {
 namespace turbo {
@@ -97,8 +99,12 @@ int PqFastQuantizer::setup_functions() {
   return 0;
 }
 
-int PqFastQuantizer::init(const IndexMeta &meta, const ailego::Params &params) {
+int PqFastQuantizer::init(const IndexMeta &meta,
+                          const ailego::Params &params) try {
   initialized_ = false;
+  ModelVector<ModelVector<const void *>>().swap(centroid_ptrs_cache_);
+  ModelVector<uint8_t>().swap(centroids_);
+  ModelVector<float>().swap(centroid_);
   meta_ = meta;
 
   // Map core IndexMeta::DataType to turbo DataType.
@@ -162,6 +168,8 @@ int PqFastQuantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   meta_.set_extra_meta_size(extra_meta_size_);
   initialized_ = true;
   return 0;
+} catch (const std::bad_alloc &) {
+  return core::IndexError_NoMemory;
 }
 
 // ---------------------------------------------------------------------------
@@ -238,47 +246,70 @@ void PqFastQuantizer::train_subquantizer(const T *data, size_t num,
   }
 }
 
-int PqFastQuantizer::train(IndexHolder::Pointer holder) {
+int PqFastQuantizer::train(IndexHolder::Pointer holder) try {
   return train(holder, static_cast<int>(thread_count_));
+} catch (const std::bad_alloc &) {
+  return core::IndexError_NoMemory;
 }
 
-int PqFastQuantizer::train(IndexHolder::Pointer holder, int thread_count) {
+int PqFastQuantizer::train(IndexHolder::Pointer holder, int thread_count) try {
   if (!holder) {
     return kErrUnsupported;
   }
 
-  size_t num = holder->count();
+  const size_t input_count = holder->count();
   const uint32_t elem_size = element_size();
+  const size_t vec_bytes = static_cast<size_t>(original_dim_) * elem_size;
+  if (!input_count || holder->dimension() != original_dim_ ||
+      holder->element_size() != vec_bytes ||
+      holder->data_type() != (input_data_type_ == DataType::kFp16
+                                  ? IndexMeta::DataType::DT_FP16
+                                  : IndexMeta::DataType::DT_FP32)) {
+    return kErrUnsupported;
+  }
+  const size_t num =
+      std::min(input_count, static_cast<size_t>(kMaxTrainVectors));
+  if (num > std::numeric_limits<size_t>::max() / vec_bytes)
+    return kErrUnsupported;
 
-  // Collect all data into a contiguous byte buffer (original data type).
-  auto iter = holder->create_iterator();
-  std::vector<uint8_t> all_data(num * original_dim_ * elem_size);
-  size_t row = 0;
-  for (; iter->is_valid(); iter->next(), ++row) {
-    std::memcpy(all_data.data() + row * original_dim_ * elem_size, iter->data(),
-                original_dim_ * elem_size);
+  if (ailego::MemoryLimitPool::get_instance().capacity() != 0) {
+    std::vector<uint32_t> offsets(num_chunk_ + 1);
+    for (size_t m = 0; m <= num_chunk_; ++m) offsets[m] = m * sub_dim_;
+    const PqBufferedTrainingOptions options{"PqFastQuantizer",
+                                            original_dim_,
+                                            std::move(offsets),
+                                            kNumCentroids,
+                                            kMaxTrainVectors,
+                                            kMaxKmeansIters,
+                                            static_cast<uint32_t>(thread_count),
+                                            markov_chain_length_,
+                                            epsilon_,
+                                            meta_.metric_name() == "Cosine",
+                                            use_zero_mean_};
+    const auto refresh = [this]() { build_centroid_ptrs_cache(); };
+    const auto reconstruct = [this](const float *rows, size_t count,
+                                    float *out) {
+      double error = 0.0;
+      encode_reconstruct_batch(rows, count, out, &error);
+      return error;
+    };
+    const int ret =
+        input_data_type_ == DataType::kFp16
+            ? TrainPqBuffered<ailego::Float16>(holder, num, options, centroids_,
+                                               centroid_, opq_, refresh,
+                                               reconstruct)
+            : TrainPqBuffered<float>(holder, num, options, centroids_,
+                                     centroid_, opq_, refresh, reconstruct);
+    if (ret != 0) return ret;
+    build_centroid_ptrs_cache();
+    return 0;
   }
 
-  // Subsample if the dataset exceeds the training limit.
-  if (num > kMaxTrainVectors) {
-    std::mt19937 rng(42);
-    // Fisher-Yates partial shuffle: randomly place kMaxTrainVectors vectors
-    // at the front of the buffer.
-    for (size_t i = 0; i < kMaxTrainVectors; ++i) {
-      std::uniform_int_distribution<size_t> dist(i, num - 1);
-      size_t j = dist(rng);
-      if (i != j) {
-        // Swap full vectors (dim-sized chunks in bytes).
-        size_t vec_bytes = original_dim_ * elem_size;
-        for (size_t b = 0; b < vec_bytes; ++b) {
-          std::swap(all_data[i * vec_bytes + b], all_data[j * vec_bytes + b]);
-        }
-      }
-    }
-    num = kMaxTrainVectors;
-    all_data.resize(num * original_dim_ * elem_size);
-    all_data.shrink_to_fit();
-  }
+  // Preserve the seeded partial Fisher-Yates sample order without copying
+  // the full corpus before sampling.
+  std::vector<uint8_t> all_data;
+  if (!CollectPqTrainingSamples(holder, kMaxTrainVectors, vec_bytes, &all_data))
+    return kErrUnsupported;
 
   size_t data_stride = original_dim_ * elem_size;
 
@@ -317,7 +348,7 @@ int PqFastQuantizer::train(IndexHolder::Pointer holder, int thread_count) {
     }
   }
 
-  opq_.train(
+  const int opq_status = opq_.train(
       all_data.data(), num, "PqFastQuantizer",
       [&](uint32_t max_iters) {
         train_all_chunks(all_data.data(), num, data_stride, max_iters,
@@ -326,7 +357,13 @@ int PqFastQuantizer::train(IndexHolder::Pointer holder, int thread_count) {
       },
       [this](const float *rotated, size_t count, float *x_hat) {
         return encode_reconstruct_batch(rotated, count, x_hat);
+      },
+      [this](const float *rotated, size_t count, float *x_hat) {
+        double error = 0.0;
+        encode_reconstruct_batch(rotated, count, x_hat, &error);
+        return error;
       });
+  if (opq_status != 0) return opq_status;
 
   train_all_chunks(all_data.data(), num, data_stride, kMaxKmeansIters,
                    thread_count);
@@ -334,10 +371,9 @@ int PqFastQuantizer::train(IndexHolder::Pointer holder, int thread_count) {
   // Pre-build centroid pointer cache for fast encode/search.
   build_centroid_ptrs_cache();
 
-  // Pre-compute sub-centroid norms for the precomputed residual table.
-  compute_sub_centroid_norms();
-
   return 0;
+} catch (const std::bad_alloc &) {
+  return core::IndexError_NoMemory;
 }
 
 void PqFastQuantizer::train_all_chunks(const void *data, size_t num,
@@ -381,11 +417,11 @@ void PqFastQuantizer::train_all_chunks(const void *data, size_t num,
 }
 
 float PqFastQuantizer::encode_reconstruct_batch(const float *rotated,
-                                                size_t num,
-                                                float *x_hat) const {
+                                                size_t num, float *x_hat,
+                                                double *sum_error) const {
   return pq_reconstruct_batch<kNumCentroids>(
       rotated, num, original_dim_, centroid_ptrs_cache_, l2_batch_fn_,
-      [this](size_t) { return sub_dim_; }, x_hat);
+      [this](size_t) { return sub_dim_; }, x_hat, sum_error);
 }
 
 // ---------------------------------------------------------------------------
@@ -632,23 +668,23 @@ void PqFastQuantizer::quantize_query(const void *input, void *output) const {
 // _table() so the scan keeps consuming the packed-u8 FastScan query format.
 // ---------------------------------------------------------------------------
 
-void PqFastQuantizer::compute_sub_centroid_norms() {
+void PqFastQuantizer::compute_sub_centroid_norms(float *norms) const {
   const size_t k = kNumCentroids;
-  sub_centroid_norms_.resize(static_cast<size_t>(num_chunk_) * k);
 
   // ||c_m[j]||^2 = dist(zero, c_m[j]): reuse the L2 batch kernel with a
   // zero query vector instead of hand-rolling a norm loop.
-  std::vector<uint8_t> zero(static_cast<size_t>(sub_dim_) * element_size(), 0);
+  ModelVector<uint8_t> zero(static_cast<size_t>(sub_dim_) * element_size(), 0);
   for (uint32_t m = 0; m < num_chunk_; ++m) {
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
     l2_batch_fn_(const_cast<const void **>(centroid_ptrs.data()), zero.data(),
-                 k, sub_dim_, sub_centroid_norms_.data() + m * k, nullptr);
+                 k, sub_dim_, norms + m * k, nullptr);
   }
 }
 
 int PqFastQuantizer::build_centroid_distance_table(const void *centroids,
                                                    size_t centroid_num,
-                                                   std::string *table) const {
+                                                   std::string *table) const
+    try {
   if (input_data_type_ != DataType::kFp32 ||
       meta_.metric_name() != "SquaredEuclidean") {
     return kErrUnsupported;
@@ -660,7 +696,8 @@ int PqFastQuantizer::build_centroid_distance_table(const void *centroids,
     return kErrUnsupported;
   }
   if (centroids == nullptr || centroid_num == 0 || table == nullptr ||
-      num_chunk_ == 0 || centroids_.empty() || sub_centroid_norms_.empty()) {
+      num_chunk_ == 0 || centroids_.empty() ||
+      centroid_ptrs_cache_.size() != num_chunk_) {
     return kErrInvalidArgument;
   }
 
@@ -672,6 +709,8 @@ int PqFastQuantizer::build_centroid_distance_table(const void *centroids,
     return kErrUnsupported;
   }
 
+  ModelVector<float> norms(row_floats);
+  compute_sub_centroid_norms(norms.data());
   table->resize(centroid_num * row_floats * sizeof(float));
   float *tab = reinterpret_cast<float *>(&(*table)[0]);
 
@@ -701,7 +740,7 @@ int PqFastQuantizer::build_centroid_distance_table(const void *centroids,
       ip_batch_fn_(const_cast<const void **>(centroid_ptrs.data()),
                    buf_bytes + static_cast<size_t>(m) * sub_dim_ * elem_size,
                    kNumCentroids, sub_dim_, dists, nullptr);
-      const float *rn = sub_centroid_norms_.data() + m * kNumCentroids;
+      const float *rn = norms.data() + m * kNumCentroids;
       float *out_m = row + m * kNumCentroids;
       for (uint32_t j = 0; j < kNumCentroids; ++j) {
         out_m[j] = rn[j] - 2.0f * dists[j];
@@ -709,6 +748,8 @@ int PqFastQuantizer::build_centroid_distance_table(const void *centroids,
     }
   }
   return 0;
+} catch (const std::bad_alloc &) {
+  return core::IndexError_NoMemory;
 }
 
 int PqFastQuantizer::quantize_precomputed_query(const void *query,
@@ -948,8 +989,18 @@ DistanceImpl PqFastQuantizer::sym_distance(
 // Serialization
 // ---------------------------------------------------------------------------
 int PqFastQuantizer::serialize(std::string *out) const {
-  if (!out) return kErrUnsupported;
+  return serialize(out, nullptr);
+}
 
+size_t PqFastQuantizer::serialized_size() const {
+  return sizeof(QuantizerSerHeader) + sizeof(PqFastSerPayload) +
+         centroids_.size() +
+         (use_zero_mean_ ? centroid_.size() * sizeof(float) : 0) +
+         opq_.serialized_size();
+}
+
+int PqFastQuantizer::serialize_to(const SerializationSink &sink) const {
+  if (!sink) return kErrUnsupported;
   QuantizerSerHeader hdr{};
   hdr.magic = kQuantizerMagic;
   hdr.version = kQuantizerSerVersion;
@@ -967,37 +1018,29 @@ int PqFastQuantizer::serialize(std::string *out) const {
   payload.input_data_type = static_cast<uint8_t>(input_data_type_);
   payload.rotate_type = opq_.rotate_type();
 
-  // The rotator blob is self-describing (RotatorSerHeader + matrix), so the
-  // payload only needs the type tag to know whether one follows.
-  std::string preprocessor_blob;
-  int opq_ret = opq_.serialize(&preprocessor_blob);
-  if (opq_ret != 0) return opq_ret;
 
-  size_t centroids_bytes = centroids_.size();  // already byte buffer
-  size_t centroid_bytes = use_zero_mean_ ? centroid_.size() * sizeof(float) : 0;
-  hdr.payload_size =
-      static_cast<uint32_t>(sizeof(payload) + centroids_bytes + centroid_bytes +
-                            preprocessor_blob.size());
-
-  out->clear();
-  out->append(reinterpret_cast<const char *>(&hdr), sizeof(hdr));
-  out->append(reinterpret_cast<const char *>(&payload), sizeof(payload));
-  out->append(reinterpret_cast<const char *>(centroids_.data()),
-              centroids_bytes);
-  // Append zero-mean centroid for centering support.
-  if (use_zero_mean_) {
-    out->append(reinterpret_cast<const char *>(centroid_.data()),
-                centroid_bytes);
-  }
-  out->append(preprocessor_blob);
-  return 0;
+  const size_t centroids_bytes = centroids_.size();
+  const size_t centroid_bytes =
+      use_zero_mean_ ? centroid_.size() * sizeof(float) : 0;
+  const uint64_t payload_bytes = uint64_t{sizeof(payload)} + centroids_bytes +
+                                 centroid_bytes + opq_.serialized_size();
+  if (payload_bytes > std::numeric_limits<uint32_t>::max())
+    return kErrUnsupported;
+  hdr.payload_size = static_cast<uint32_t>(payload_bytes);
+  int ret = sink(&hdr, sizeof(hdr));
+  if (ret == 0) ret = sink(&payload, sizeof(payload));
+  if (ret == 0) ret = WriteSerialized(sink, centroids_.data(), centroids_bytes);
+  if (ret == 0 && centroid_bytes)
+    ret = WriteSerialized(sink, centroid_.data(), centroid_bytes);
+  if (ret == 0) ret = opq_.serialize_to(sink);
+  return ret;
 }
 
 int PqFastQuantizer::deserialize(std::string &in) {
   return deserialize(in.data(), in.size());
 }
 
-int PqFastQuantizer::deserialize(const void *data, size_t len) {
+int PqFastQuantizer::deserialize(const void *data, size_t len) try {
   if (!initialized_) return kErrUnsupported;
   if (len < sizeof(QuantizerSerHeader) + sizeof(PqFastSerPayload)) {
     return kErrUnsupported;
@@ -1032,6 +1075,7 @@ int PqFastQuantizer::deserialize(const void *data, size_t len) {
   }
 
   // Restore centroids (raw bytes in original data type).
+  initialized_ = false;
   size_t centroids_bytes = static_cast<size_t>(num_chunk_) * kNumCentroids *
                            sub_dim_ * element_size();
   size_t centroid_bytes =
@@ -1073,10 +1117,10 @@ int PqFastQuantizer::deserialize(const void *data, size_t len) {
   // Pre-build centroid pointer cache for fast encode/search.
   build_centroid_ptrs_cache();
 
-  // Pre-compute sub-centroid norms for the precomputed residual table.
-  compute_sub_centroid_norms();
-
+  initialized_ = true;
   return 0;
+} catch (const std::bad_alloc &) {
+  return core::IndexError_NoMemory;
 }
 
 INDEX_FACTORY_REGISTER_QUANTIZER(PqFastQuantizer);

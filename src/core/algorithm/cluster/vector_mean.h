@@ -45,6 +45,12 @@ struct VectorMean {
   //! Merge another vector mean
   virtual bool merge(const VectorMean &rhs) = 0;
 
+  // Exact accumulator state for pageable training workspaces. These are
+  // internal scratch records, not an on-disk index format.
+  virtual size_t state_size() const = 0;
+  virtual void save_state(void *out) const = 0;
+  virtual void restore_state(const void *data) = 0;
+
   //! Retrieve the count of vectors
   virtual size_t count() const = 0;
 
@@ -253,6 +259,23 @@ class NumericalVectorMean : public VectorMean {
     return true;
   }
 
+  size_t state_size() const override {
+    return sizeof(count_) + accums_.size() * sizeof(accums_[0]);
+  }
+
+  void save_state(void *out) const override {
+    std::memcpy(out, &count_, sizeof(count_));
+    std::memcpy(static_cast<char *>(out) + sizeof(count_), accums_.data(),
+                accums_.size() * sizeof(accums_[0]));
+  }
+
+  void restore_state(const void *data) override {
+    std::memcpy(&count_, data, sizeof(count_));
+    std::memcpy(accums_.data(),
+                static_cast<const char *>(data) + sizeof(count_),
+                accums_.size() * sizeof(accums_[0]));
+  }
+
   //! Retrieve the count of vectors
   size_t count() const override {
     return count_;
@@ -376,6 +399,23 @@ class NumericalVectorHarmonicMean : public VectorMean {
       accums_[i] += src.accums_[i];
     }
     return true;
+  }
+
+  size_t state_size() const override {
+    return sizeof(count_) + accums_.size() * sizeof(accums_[0]);
+  }
+
+  void save_state(void *out) const override {
+    std::memcpy(out, &count_, sizeof(count_));
+    std::memcpy(static_cast<char *>(out) + sizeof(count_), accums_.data(),
+                accums_.size() * sizeof(accums_[0]));
+  }
+
+  void restore_state(const void *data) override {
+    std::memcpy(&count_, data, sizeof(count_));
+    std::memcpy(accums_.data(),
+                static_cast<const char *>(data) + sizeof(count_),
+                accums_.size() * sizeof(accums_[0]));
   }
 
   //! Retrieve the count of vectors
@@ -502,6 +542,23 @@ class NumericalVectorGeometricMean : public VectorMean {
       accums_[i] *= src.accums_[i];
     }
     return true;
+  }
+
+  size_t state_size() const override {
+    return sizeof(count_) + accums_.size() * sizeof(accums_[0]);
+  }
+
+  void save_state(void *out) const override {
+    std::memcpy(out, &count_, sizeof(count_));
+    std::memcpy(static_cast<char *>(out) + sizeof(count_), accums_.data(),
+                accums_.size() * sizeof(accums_[0]));
+  }
+
+  void restore_state(const void *data) override {
+    std::memcpy(&count_, data, sizeof(count_));
+    std::memcpy(accums_.data(),
+                static_cast<const char *>(data) + sizeof(count_),
+                accums_.size() * sizeof(accums_[0]));
   }
 
   //! Retrieve the count of vectors
@@ -644,6 +701,23 @@ class BinaryVectorMean : public VectorMean {
     return true;
   }
 
+  size_t state_size() const override {
+    return sizeof(count_) + accums_.size() * sizeof(accums_[0]);
+  }
+
+  void save_state(void *out) const override {
+    std::memcpy(out, &count_, sizeof(count_));
+    std::memcpy(static_cast<char *>(out) + sizeof(count_), accums_.data(),
+                accums_.size() * sizeof(accums_[0]));
+  }
+
+  void restore_state(const void *data) override {
+    std::memcpy(&count_, data, sizeof(count_));
+    std::memcpy(accums_.data(),
+                static_cast<const char *>(data) + sizeof(count_),
+                accums_.size() * sizeof(accums_[0]));
+  }
+
   //! Retrieve the count of vectors
   size_t count() const override {
     return count_;
@@ -769,6 +843,23 @@ class NibbleVectorMean : public VectorMean {
       accums_[i] += src.accums_[i];
     }
     return true;
+  }
+
+  size_t state_size() const override {
+    return sizeof(count_) + accums_.size() * sizeof(accums_[0]);
+  }
+
+  void save_state(void *out) const override {
+    std::memcpy(out, &count_, sizeof(count_));
+    std::memcpy(static_cast<char *>(out) + sizeof(count_), accums_.data(),
+                accums_.size() * sizeof(accums_[0]));
+  }
+
+  void restore_state(const void *data) override {
+    std::memcpy(&count_, data, sizeof(count_));
+    std::memcpy(accums_.data(),
+                static_cast<const char *>(data) + sizeof(count_),
+                accums_.size() * sizeof(accums_[0]));
   }
 
   //! Retrieve the count of vectors

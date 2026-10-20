@@ -20,16 +20,18 @@
 #include <random>
 #include <unordered_map>
 #include <vector>
+#include <zvec/ailego/buffer/budgeted_allocator.h>
 #include <zvec/core/framework/index_holder.h>
 
 namespace zvec::turbo {
 
 // Preserve legacy sampling order with O(limit * vector_size) copied data.
 // Iterators may reuse their buffers. Leave output unchanged on read failure.
-inline bool CollectPqTrainingSamples(const core::IndexHolder::Pointer &holder,
-                                     size_t limit, size_t vec_bytes,
-                                     std::vector<uint8_t> *output) {
-  if (!holder || !output || !limit || !vec_bytes) return false;
+template <class WriteSample>
+inline bool CollectPqTrainingSamplesTo(const core::IndexHolder::Pointer &holder,
+                                       size_t limit, size_t vec_bytes,
+                                       WriteSample write_sample) {
+  if (!holder || !limit || !vec_bytes) return false;
   if (vec_bytes > holder->element_size()) return false;
   const size_t input_count = holder->count();
   const size_t num = std::min(input_count, limit);
@@ -38,10 +40,14 @@ inline bool CollectPqTrainingSamples(const core::IndexHolder::Pointer &holder,
   // Perform the same seeded partial Fisher-Yates shuffle on row ordinals,
   // then stream only selected rows into their original training slots. The
   // sparse permutation and data buffer are bounded by the training limit.
-  std::vector<std::pair<size_t, size_t>> selected;
+  using Selection = std::pair<size_t, size_t>;
+  std::vector<Selection, ailego::BudgetedAllocator<Selection>> selected;
   if (input_count > num) {
     selected.reserve(num);
-    std::unordered_map<size_t, size_t> permutation;
+    std::unordered_map<
+        size_t, size_t, std::hash<size_t>, std::equal_to<size_t>,
+        ailego::BudgetedAllocator<std::pair<const size_t, size_t>>>
+        permutation;
     permutation.reserve(num);
     auto at = [&](size_t position) {
       auto entry = permutation.find(position);
@@ -57,24 +63,40 @@ inline bool CollectPqTrainingSamples(const core::IndexHolder::Pointer &holder,
     }
     std::sort(selected.begin(), selected.end());
   }
-  std::vector<uint8_t> all_data(num * vec_bytes);
   auto iter = holder->create_iterator();
   if (!iter) return false;
   size_t row = 0, copied = 0;
   for (; iter->is_valid(); iter->next(), ++row) {
+    if (iter->status() != 0) return false;
     if (row >= input_count) return false;
     if (!selected.empty() && (copied == num || selected[copied].first != row))
       continue;
     const void *data = iter->data();
-    if (!data) return false;
+    if (!data || iter->status() != 0) return false;
     size_t slot = selected.empty() ? row : selected[copied].second;
-    std::memcpy(all_data.data() + slot * vec_bytes, data, vec_bytes);
+    if (!write_sample(slot, data)) return false;
     ++copied;
   }
-  if (row != input_count || copied != num) return false;
+  if (iter->status() != 0 || row != input_count || copied != num) return false;
   iter.reset();
+  return true;
+}
 
-  *output = std::move(all_data);
+inline bool CollectPqTrainingSamples(const core::IndexHolder::Pointer &holder,
+                                     size_t limit, size_t vec_bytes,
+                                     std::vector<uint8_t> *output) {
+  if (!holder || !output || !limit || !vec_bytes) return false;
+  const size_t count = std::min(holder->count(), limit);
+  if (!count || count > std::numeric_limits<size_t>::max() / vec_bytes)
+    return false;
+  std::vector<uint8_t> data(count * vec_bytes);
+  if (!CollectPqTrainingSamplesTo(
+          holder, limit, vec_bytes, [&](size_t slot, const void *row) {
+            std::memcpy(data.data() + slot * vec_bytes, row, vec_bytes);
+            return true;
+          }))
+    return false;
+  *output = std::move(data);
   return true;
 }
 

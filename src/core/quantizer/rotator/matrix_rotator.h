@@ -15,6 +15,7 @@
 
 #include <cstddef>
 #include <vector>
+#include "utility/paged_rotation_matrix.h"
 #include "rotator.h"
 
 namespace zvec {
@@ -43,9 +44,11 @@ class MatrixRotator : public Rotator {
   size_t blob_bytes() const override;
   void save_blob(char *data) const override;
   void load_blob(const char *data) override;
+  int read_blob(size_t offset, void *data, size_t bytes) const override;
+  int load_reader(const BlobReader &reader, size_t bytes) override;
 
  private:
-  std::vector<float> matrix_;  // dim x dim, row-major
+  PagedRotationMatrix matrix_;
 };
 
 }  // namespace core

@@ -21,6 +21,7 @@
 #include <limits>
 #include <string>
 #include <vector>
+#include <turbo/preprocessor/opq_rotator/opq_rotator.h>
 #include <turbo/preprocessor/preprocessor.h>
 #include <zvec/ailego/container/params.h>
 
@@ -34,6 +35,7 @@ class PqOpq {
   using TrainCodebook = std::function<void(uint32_t max_iters)>;
   using Reconstruct =
       std::function<float(const float *rotated, size_t num, float *x_hat)>;
+  using ReconstructSum = std::function<double(const float *, size_t, float *)>;
 
   int init(uint32_t dim, DataType data_type, const ailego::Params &params);
 
@@ -48,9 +50,17 @@ class PqOpq {
   //! Operates on packed fp32 data, leaving it rotated by the final matrix.
   //! train_codebook must refresh its centroid pointer cache each round.
   //! The caller performs the final full PQ training after this returns.
-  void train(void *data, size_t num, const char *name,
-             const TrainCodebook &train_codebook,
-             const Reconstruct &reconstruct);
+  int train(void *data, size_t num, const char *name,
+            const TrainCodebook &train_codebook, const Reconstruct &reconstruct,
+            const ReconstructSum &reconstruct_sum = {});
+
+  using ReadRows = std::function<int(size_t, size_t, float *)>;
+  using WriteRows = std::function<int(size_t, size_t, const float *)>;
+  using TrainPagedCodebook = std::function<int(uint32_t)>;
+  int train_rows(size_t num, const char *name, const ReadRows &read_original,
+                 const WriteRows &write_rotated,
+                 const TrainPagedCodebook &train_codebook,
+                 const ReconstructSum &reconstruct);
 
   //! Returns input unchanged when disabled, otherwise rotates into buffer.
   const void *apply(const void *input, std::vector<float> *buffer) const;
@@ -61,6 +71,12 @@ class PqOpq {
 
   //! Retains the existing rotator blob format; disabled OPQ has an empty blob.
   int serialize(std::string *out) const;
+  size_t serialized_size() const {
+    return enabled() ? preprocessor_->serialized_size() : 0;
+  }
+  int serialize_to(const SerializationSink &sink) const {
+    return enabled() ? preprocessor_->serialize_to(sink) : 0;
+  }
   int deserialize(uint8_t rotate_type, uint32_t dim, const void *data,
                   size_t len);
 
@@ -68,7 +84,7 @@ class PqOpq {
   void rotate_batch(const float *input, size_t num, float *output) const;
 
   static constexpr float kMinImprovement = 1e-4f;
-  Preprocessor::Pointer preprocessor_;
+  OpqRotator::Pointer preprocessor_;
   uint32_t opq_iter_{5};
   uint32_t opq_pq_iter_{4};
 };
@@ -76,11 +92,12 @@ class PqOpq {
 //! Reconstruct packed fp32 training vectors from a PQ codebook. chunk_dim(m)
 //! supports both uniform blocks and PQ-int8's unequal blocks. Centroid pointers
 //! must already be refreshed by the quantizer after training its codebook.
-template <size_t NumCentroids, typename ChunkDim>
-float pq_reconstruct_batch(
-    const float *rotated, size_t num, size_t dim,
-    const std::vector<std::vector<const void *>> &centroid_ptrs,
-    const BatchDistanceFunc &l2_batch, ChunkDim chunk_dim, float *x_hat) {
+template <size_t NumCentroids, typename ChunkDim, typename CentroidPointers>
+float pq_reconstruct_batch(const float *rotated, size_t num, size_t dim,
+                           const CentroidPointers &centroid_ptrs,
+                           const BatchDistanceFunc &l2_batch,
+                           ChunkDim chunk_dim, float *x_hat,
+                           double *sum_error = nullptr) {
   float dists[NumCentroids];
   double sum_err = 0.0;
   for (size_t i = 0; i < num; ++i) {
@@ -105,6 +122,7 @@ float pq_reconstruct_batch(
       offset += width;
     }
   }
+  if (sum_error) *sum_error = sum_err;
   return static_cast<float>(sum_err / static_cast<double>(num));
 }
 

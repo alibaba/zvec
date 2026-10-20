@@ -14,6 +14,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -137,6 +138,10 @@ class Rotator {
 
   //! Read the payload blob from the given buffer
   virtual void load_blob(const char *data) = 0;
+
+  using BlobReader = std::function<int(size_t, void *, size_t)>;
+  virtual int read_blob(size_t offset, void *data, size_t bytes) const;
+  virtual int load_reader(const BlobReader &reader, size_t bytes);
 
   // Protected members --------------------------------------------------------
 
