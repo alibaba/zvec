@@ -16,7 +16,7 @@
 
 #include <memory>
 #include <vector>
-#include <rabitqlib/index/query.hpp>
+#include <rabitqlib/core/query.hpp>
 namespace zvec::core {
 
 struct HnswRabitqQueryEntity {

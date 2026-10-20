@@ -1153,6 +1153,22 @@ TEST_P(HnswPqLifecycleTest, TrainMergeReopenAndAppend) {
   ASSERT_EQ(0, index->add(VectorData{DenseVector{vectors[0].data()}}, 300));
   EXPECT_EQ(301U, index->get_doc_count());
 
+  // Candidate extraction accepts the PQ query layout and preserves scores.
+  auto query_param =
+      HNSWQueryParamBuilder().with_topk(kTopK).with_ef_search(100).build();
+  const VectorData query{DenseVector{vectors[11].data()}};
+  SearchResult expected_rows;
+  ASSERT_EQ(0, index->search(query, query_param, &expected_rows));
+  std::vector<int64_t> ids(kTopK);
+  std::vector<float> scores(kTopK);
+  ASSERT_EQ(0, index->search_internal_ids(query, query_param, ids.data(),
+                                          scores.data()));
+  ASSERT_EQ(kTopK, expected_rows.doc_list_.size());
+  for (size_t i = 0; i < kTopK; ++i) {
+    EXPECT_EQ(expected_rows.doc_list_[i].key(), static_cast<uint64_t>(ids[i]));
+    EXPECT_FLOAT_EQ(expected_rows.doc_list_[i].score(), scores[i]);
+  }
+
   // Train a separate codebook from reconstructed source vectors. Codes from
   // the first index must be decoded and encoded again, even with equal layout.
   auto merged = IndexFactory::CreateAndInitIndex(*param);

@@ -533,6 +533,17 @@ TEST_P(IVFPqTest, ScoresPersistenceCandidatesAndRefinement) {
   ASSERT_EQ(0, index->search(query, query_param, &all));
   ASSERT_EQ(kPqCount, all.doc_list_.size());
 
+  // The merged internal-ID API must preserve PQ/OPQ/FastScan score semantics.
+  std::vector<int64_t> internal_ids(kPqCount);
+  std::vector<float> internal_scores(kPqCount);
+  ASSERT_EQ(0,
+            index->search_internal_ids(query, query_param, internal_ids.data(),
+                                       internal_scores.data()));
+  for (size_t i = 0; i < all.doc_list_.size(); ++i) {
+    EXPECT_EQ(all.doc_list_[i].key(), static_cast<uint64_t>(internal_ids[i]));
+    EXPECT_FLOAT_EQ(all.doc_list_[i].score(), internal_scores[i]);
+  }
+
   // Independently encode and score each row with the persisted Turbo state.
   auto disk = core::IndexFactory::CreateStorage("MMapFileReadStorage");
   ASSERT_EQ(0, disk->init(ailego::Params{}));
@@ -783,6 +794,23 @@ TEST(IVFPqStorage, PackedBlocksAcrossPages) {
     }
   }
   auto all_scores = run(mmap, 7, false);
+  // Restricted-key scoring must retain complete packed blocks across pages.
+  auto candidates = IVFQueryParamBuilder().with_topk(8193).build();
+  candidates->bf_pks = std::make_shared<std::vector<uint64_t>>();
+  for (const auto &entry : all_scores) {
+    if (entry.first % 3 == 0) candidates->bf_pks->push_back(entry.first);
+  }
+  candidates->bf_pks->push_back(10000);  // Missing keys are ignored.
+  for (const auto &index : {mmap, pooled}) {
+    SearchResult selected;
+    ASSERT_EQ(0, index->search(VectorData{DenseVector{vector.data()}},
+                               candidates, &selected));
+    ASSERT_EQ(candidates->bf_pks->size() - 1, selected.doc_list_.size());
+    for (const auto &doc : selected.doc_list_) {
+      EXPECT_EQ(0u, doc.key() % 3);
+      EXPECT_FLOAT_EQ(all_scores.at(doc.key()), doc.score());
+    }
+  }
   run(pooled, 7, false, 1.0f);
   EXPECT_EQ(all_scores, run(pooled, 7, false));
   auto merged = IndexFactory::CreateAndInitIndex(*config);

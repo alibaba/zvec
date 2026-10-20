@@ -464,9 +464,9 @@ class IndexStorage : public IndexModule {
     //! Fetch data from segment (with own buffer)
     virtual size_t fetch(size_t offset, void *buf, size_t len) const = 0;
 
-    //! Read data from segment
-    virtual size_t read(size_t offset, const void **data, size_t len) = 0;
-
+    //! Read data from segment. Keep the block alive while using its data.
+    //! Resetting or destroying the block releases owned buffers/cache pins;
+    //! mmap and memory-backed views still require their segment to stay alive.
     virtual size_t read(size_t offset, MemoryBlock &data, size_t len) = 0;
 
     //! Read bytes that the caller guarantees will never be modified after
