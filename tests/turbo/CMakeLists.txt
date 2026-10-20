@@ -11,4 +11,8 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
       SRCS ${CC_SRCS}
       INCS . ${PROJECT_ROOT_DIR}/src/core/ ${PROJECT_ROOT_DIR}/src/turbo/
     )
+  if(CC_TARGET STREQUAL "accelerate_fp32_distance_test")
+    target_compile_definitions(${CC_TARGET} PRIVATE
+      ZVEC_TEST_HAVE_ACCELERATE=$<BOOL:${ZVEC_TURBO_HAVE_ACCELERATE}>)
+  endif()
 endforeach()

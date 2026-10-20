@@ -64,6 +64,7 @@ int Int4Quantizer::init(const IndexMeta &meta,
   }
   dp_query_func_ = std::move(kernels.dist);
   dp_query_batch_func_ = std::move(kernels.batch);
+  dp_query_batch_strided_func_ = std::move(kernels.batch_strided);
 
   return 0;
 }
@@ -146,6 +147,7 @@ DistanceImpl Int4Quantizer::distance(const void *query,
     return DistanceImpl{};
   }
   BatchDistanceFunc batch_func = dp_query_batch_func_;
+  StridedBatchDistanceFunc batch_strided_func = dp_query_batch_strided_func_;
 
   if (distance_offset_ != 0.0f) {
     float offset = distance_offset_;
@@ -166,13 +168,27 @@ DistanceImpl Int4Quantizer::distance(const void *query,
         }
       };
     }
+    if (batch_strided_func) {
+      StridedBatchDistanceFunc batch_strided_base =
+          std::move(batch_strided_func);
+      batch_strided_func = [batch_strided_base, offset](
+                               const void *m, size_t stride_bytes,
+                               const void *q, size_t num, size_t dim,
+                               float *out, const void **extra_values) {
+        batch_strided_base(m, stride_bytes, q, num, dim, out, extra_values);
+        for (size_t i = 0; i < num; ++i) {
+          out[i] += offset;
+        }
+      };
+    }
   }
 
   // The query is assumed to be already quantized — copy it directly.
   std::string quantized_query(static_cast<const char *>(query),
                               qmeta.element_size());
   return DistanceImpl(std::move(func), std::move(batch_func),
-                      std::move(quantized_query), dist_dim_);
+                      std::move(quantized_query), dist_dim_,
+                      std::move(batch_strided_func));
 }
 
 float Int4Quantizer::calc_distance_dp_query(const void *dp,
@@ -201,6 +217,27 @@ void Int4Quantizer::calc_distance_dp_query_batch(const void *const *dp_list,
   }
   for (int i = 0; i < dp_num; ++i) {
     dist_list[i] = calc_distance_dp_query(dp_list[i], query);
+  }
+}
+
+void Int4Quantizer::calc_distance_dp_query_batch_strided(
+    const void *base, size_t stride_bytes, int dp_num, const void *query,
+    float *dist_list) const {
+  if (dp_num <= 0) {
+    return;
+  }
+  if (!dp_query_batch_strided_func_) {
+    Quantizer::calc_distance_dp_query_batch_strided(base, stride_bytes, dp_num,
+                                                    query, dist_list);
+    return;
+  }
+  dp_query_batch_strided_func_(base, stride_bytes, query,
+                               static_cast<size_t>(dp_num), dist_dim_,
+                               dist_list, nullptr);
+  if (distance_offset_ != 0.0f) {
+    for (int i = 0; i < dp_num; ++i) {
+      dist_list[i] += distance_offset_;
+    }
   }
 }
 

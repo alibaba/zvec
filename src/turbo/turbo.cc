@@ -15,6 +15,9 @@
 #include <cassert>
 #include <ailego/internal/cpu_features.h>
 #include <zvec/turbo/turbo.h>
+#if defined(ZVEC_HAVE_ACCELERATE)
+#include "accelerate/fp32/distance.h"
+#endif
 #include "avx2/fp16/cosine.h"
 #include "avx2/fp16/inner_product.h"
 #include "avx2/fp16/squared_euclidean.h"
@@ -146,6 +149,9 @@ namespace {
 using RawDistanceFn = void (*)(const void *, const void *, size_t, float *);
 using RawBatchDistanceFn = void (*)(const void *const *, const void *, size_t,
                                     size_t, float *, const void *const *);
+using RawStridedBatchDistanceFn = void (*)(const void *, size_t, const void *,
+                                           size_t, size_t, float *,
+                                           const void *const *);
 
 using CpuFeatureMask = uint32_t;
 constexpr CpuFeatureMask kCpuFeatureNone = 0;
@@ -181,6 +187,7 @@ struct KernelSet {
   RawBatchDistanceFn batch;
   QueryPreprocessFunc preprocess;  //!< non-null: batch needs preprocessing
   CpuFeatureMask required_cpu_features{kCpuFeatureNone};
+  RawStridedBatchDistanceFn batch_strided{nullptr};
 };
 
 // Dispatch registry, SIMD rows before their scalar
@@ -540,6 +547,26 @@ DistanceKernels get_distance_kernels(MetricType metric_type, DataType data_type,
   if (k->batch) {
     kernels.batch = k->batch;
   }
+  if (k->batch_strided) {
+    kernels.batch_strided = k->batch_strided;
+  }
+#if defined(ZVEC_HAVE_ACCELERATE)
+  // Accelerate selects its own CPU implementation. Keep explicit ISA requests,
+  // pairwise kernels and pointer-batch kernels on the existing dispatch path.
+  // This is the sole runtime OS gate for these kernels. Older macOS releases
+  // keep Turbo's batch fallback; the provider only checks the input layout.
+  if (cpu_arch_type == CpuArchType::kAuto && data_type == DataType::kFp32 &&
+      quantize_type == QuantizeType::kFp32) {
+    if (__builtin_available(macOS 13.3, *)) {
+      if (metric_type == MetricType::kInnerProduct) {
+        kernels.batch_strided =
+            accelerate::inner_product_fp32_strided_batch_distance;
+      } else if (metric_type == MetricType::kCosine) {
+        kernels.batch_strided = accelerate::cosine_fp32_strided_batch_distance;
+      }
+    }
+  }
+#endif
   kernels.preprocess = k->preprocess;
   return kernels;
 }
@@ -559,6 +586,14 @@ BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
   return get_distance_kernels(metric_type, data_type, quantize_type,
                               cpu_arch_type)
       .batch;
+}
+
+StridedBatchDistanceFunc get_strided_batch_distance_func(
+    MetricType metric_type, DataType data_type, QuantizeType quantize_type,
+    CpuArchType cpu_arch_type) {
+  return get_distance_kernels(metric_type, data_type, quantize_type,
+                              cpu_arch_type)
+      .batch_strided;
 }
 
 QueryPreprocessFunc get_query_preprocess_func(MetricType metric_type,

@@ -92,6 +92,11 @@ class Int4Quantizer : public Quantizer {
                                     const void *query,
                                     float *dist_list) const override;
 
+  void calc_distance_dp_query_batch_strided(const void *base,
+                                            size_t stride_bytes, int dp_num,
+                                            const void *query,
+                                            float *dist_list) const override;
+
   float calc_distance_dp_query_unquantized(const void *dp,
                                            const void *query) const override;
 
@@ -149,6 +154,7 @@ class Int4Quantizer : public Quantizer {
   //! Cached distance dispatch (bound in init()).
   DistanceFunc dp_query_func_{};
   BatchDistanceFunc dp_query_batch_func_{};
+  StridedBatchDistanceFunc dp_query_batch_strided_func_{};
 };
 
 }  // namespace turbo

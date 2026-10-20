@@ -58,6 +58,7 @@ int Int8Quantizer::init(const IndexMeta &meta,
   }
   dp_query_func_ = std::move(kernels.dist);
   dp_query_batch_func_ = std::move(kernels.batch);
+  dp_query_batch_strided_func_ = std::move(kernels.batch_strided);
   dp_query_preprocess_func_ = kernels.preprocess;
 
   return 0;
@@ -141,12 +142,31 @@ DistanceImpl Int8Quantizer::distance(const void *query,
     return DistanceImpl{};
   }
 
-  // Batch kernels that require a preprocessed (uint8-shifted) query cannot
-  // share the stored query with the single-pair kernel; fall back to the
-  // scalar path inside DistanceImpl in that case.
+  // The query is assumed to be already quantized — copy it directly.
+  std::string quantized_query(static_cast<const char *>(query),
+                              qmeta.element_size());
+
+  // Keep the gathered batch fallback unchanged when the kernel requires a
+  // preprocessed (uint8-shifted) query instead of the single-pair layout.
   BatchDistanceFunc batch_func;
   if (!dp_query_preprocess_func_) {
     batch_func = dp_query_batch_func_;
+  }
+
+  StridedBatchDistanceFunc batch_strided_func = dp_query_batch_strided_func_;
+  if (batch_strided_func && dp_query_preprocess_func_) {
+    // Bind a separate preprocessed query once for the native strided kernel.
+    // Capturing both values keeps the handle independent of this quantizer.
+    std::string preprocessed_query = quantized_query;
+    dp_query_preprocess_func_(&preprocessed_query[0], dist_dim_);
+    batch_strided_func = [native_func = std::move(batch_strided_func),
+                          preprocessed_query = std::move(preprocessed_query)](
+                             const void *m, size_t stride_bytes,
+                             const void * /*query*/, size_t num, size_t dim,
+                             float *out, const void **extra_values) {
+      native_func(m, stride_bytes, preprocessed_query.data(), num, dim, out,
+                  extra_values);
+    };
   }
 
   if (distance_offset_ != 0.0f) {
@@ -168,13 +188,24 @@ DistanceImpl Int8Quantizer::distance(const void *query,
         }
       };
     }
+    if (batch_strided_func) {
+      StridedBatchDistanceFunc batch_strided_base =
+          std::move(batch_strided_func);
+      batch_strided_func = [batch_strided_base, offset](
+                               const void *m, size_t stride_bytes,
+                               const void *q, size_t num, size_t dim,
+                               float *out, const void **extra_values) {
+        batch_strided_base(m, stride_bytes, q, num, dim, out, extra_values);
+        for (size_t i = 0; i < num; ++i) {
+          out[i] += offset;
+        }
+      };
+    }
   }
 
-  // The query is assumed to be already quantized — copy it directly.
-  std::string quantized_query(static_cast<const char *>(query),
-                              qmeta.element_size());
   return DistanceImpl(std::move(func), std::move(batch_func),
-                      std::move(quantized_query), dist_dim_);
+                      std::move(quantized_query), dist_dim_,
+                      std::move(batch_strided_func));
 }
 
 float Int8Quantizer::calc_distance_dp_query(const void *dp,
@@ -213,6 +244,36 @@ void Int8Quantizer::calc_distance_dp_query_batch(const void *const *dp_list,
   }
   for (int i = 0; i < dp_num; ++i) {
     dist_list[i] = calc_distance_dp_query(dp_list[i], query);
+  }
+}
+
+void Int8Quantizer::calc_distance_dp_query_batch_strided(
+    const void *base, size_t stride_bytes, int dp_num, const void *query,
+    float *dist_list) const {
+  if (dp_num <= 0) {
+    return;
+  }
+  if (!dp_query_batch_strided_func_) {
+    Quantizer::calc_distance_dp_query_batch_strided(base, stride_bytes, dp_num,
+                                                    query, dist_list);
+    return;
+  }
+  if (dp_query_preprocess_func_) {
+    // Match the gathered batch path: only a private query copy is shifted.
+    std::string buf(static_cast<const char *>(query), quantized_length());
+    dp_query_preprocess_func_(&buf[0], dist_dim_);
+    dp_query_batch_strided_func_(base, stride_bytes, buf.data(),
+                                 static_cast<size_t>(dp_num), dist_dim_,
+                                 dist_list, nullptr);
+  } else {
+    dp_query_batch_strided_func_(base, stride_bytes, query,
+                                 static_cast<size_t>(dp_num), dist_dim_,
+                                 dist_list, nullptr);
+  }
+  if (distance_offset_ != 0.0f) {
+    for (int i = 0; i < dp_num; ++i) {
+      dist_list[i] += distance_offset_;
+    }
   }
 }
 

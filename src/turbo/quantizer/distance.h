@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 #include <utility>
@@ -38,9 +39,11 @@ class DistanceImpl {
         dim_(dim) {}
 
   DistanceImpl(DistanceFunc func, BatchDistanceFunc batch_func,
-               std::string quantized_query, size_t dim)
+               std::string quantized_query, size_t dim,
+               StridedBatchDistanceFunc batch_strided_func = {})
       : func_(std::move(func)),
         batch_func_(std::move(batch_func)),
+        batch_strided_func_(std::move(batch_strided_func)),
         query_storage_(std::move(quantized_query)),
         dim_(dim) {}
 
@@ -62,7 +65,7 @@ class DistanceImpl {
   }
 
   //! Compute distances for a batch of `num` candidates against the
-  //! stored query. Falls back to the scalar path when no batch function
+  //! stored query. Falls back to the single-pair path when no batch function
   //! is bound.
   void batch(const void **candidates, size_t num, float *out) const {
     if (batch_func_) {
@@ -75,6 +78,31 @@ class DistanceImpl {
     }
   }
 
+  //! Distances for row-major codes separated by stride_bytes (including tails
+  //! and padding). An empty batch is a no-op, even with null buffers.
+  //! Without a native kernel, reuse batch() in bounded, allocation-free chunks.
+  void batch_strided(const void *base, size_t stride_bytes, size_t num,
+                     float *out) const {
+    if (num == 0) {
+      return;
+    }
+    if (batch_strided_func_) {
+      batch_strided_func_(base, stride_bytes, query_storage_.data(), num, dim_,
+                          out, nullptr);
+      return;
+    }
+    const void *candidates[32];
+    const auto *rows = static_cast<const char *>(base);
+    for (size_t offset = 0; offset < num;) {
+      const size_t count = std::min(size_t(32), num - offset);
+      for (size_t i = 0; i < count; ++i) {
+        candidates[i] = rows + (offset + i) * stride_bytes;
+      }
+      batch(candidates, count, out + offset);
+      offset += count;
+    }
+  }
+
   //! Access the quantized query bytes (for pairwise helpers).
   const std::string &query_storage() const {
     return query_storage_;
@@ -84,7 +112,7 @@ class DistanceImpl {
     return dim_;
   }
 
-  //! Raw scalar distance function (operates on already-quantized
+  //! Raw single-pair distance function (operates on already-quantized
   //! candidates). Useful for pairwise node-vs-node distance where no
   //! stored query is involved.
   const DistanceFunc &func() const {
@@ -99,6 +127,7 @@ class DistanceImpl {
  private:
   DistanceFunc func_{};
   BatchDistanceFunc batch_func_{};
+  StridedBatchDistanceFunc batch_strided_func_{};
   std::string query_storage_{};
   size_t dim_{0};
 };

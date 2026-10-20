@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "quantizer/quantizer.h"
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,26 @@ void QuantizeDatapoints(const Quantizer &quantizer, const void *const *dp_list,
 }
 
 }  // namespace
+
+void Quantizer::calc_distance_dp_query_batch_strided(const void *base,
+                                                     size_t stride_bytes,
+                                                     int dp_num,
+                                                     const void *query,
+                                                     float *dist_list) const {
+  if (dp_num <= 0) {
+    return;
+  }
+  const void *candidates[32];
+  const auto *rows = static_cast<const char *>(base);
+  for (int offset = 0; offset < dp_num;) {
+    const int count = std::min(32, dp_num - offset);
+    for (int i = 0; i < count; ++i) {
+      candidates[i] = rows + static_cast<size_t>(offset + i) * stride_bytes;
+    }
+    calc_distance_dp_query_batch(candidates, count, query, dist_list + offset);
+    offset += count;
+  }
+}
 
 float Quantizer::calc_distance_input_query(const void *dp,
                                            const void *query) const {
