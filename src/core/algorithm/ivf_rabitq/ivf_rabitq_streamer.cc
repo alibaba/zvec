@@ -349,7 +349,11 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
   const bool segment_timing = ctx->segment_timing;
   auto *scan_stats =
       (ctx->collect_scan_stats || segment_timing) ? &ctx->scan_stats : nullptr;
-  if (scan_stats) scan_stats->timing = segment_timing;
+  if (scan_stats) {
+    scan_stats->timing = segment_timing;
+    scan_stats->timing_stride =
+        ctx->segment_timing_stride ? ctx->segment_timing_stride : 1;
+  }
 
   for (uint32_t q = 0; q < count; ++q) {
     const float *q_vec = reinterpret_cast<const float *>(
@@ -367,6 +371,10 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
       LOG_ERROR("Failed to create query state, ret=%d", ret);
       return ret;
     }
+    // v17 prep sub-stage boundary: query state (rotate + SplitBatchQuery)
+    // ends here, centroid selection follows.
+    [[maybe_unused]] uint64_t state_t1 = 0;
+    if (segment_timing) state_t1 = SegmentClock();
 
     // Select probe centroids with the same metric used for build assignment.
     auto &probe_centroids = ctx->probe_centroids;
@@ -377,7 +385,10 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
       return ret;
     }
     if (segment_timing) {
-      scan_stats->prep_ns += double(SegmentClock() - prep_t0);
+      const uint64_t prep_t1 = SegmentClock();
+      scan_stats->prep_ns += double(prep_t1 - prep_t0);
+      scan_stats->prep_state_ns += double(state_t1 - prep_t0);
+      scan_stats->prep_select_ns += double(prep_t1 - state_t1);
     }
 
     // Use context heap for online dist-k gated pruning
@@ -404,7 +415,10 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
       if (segment_timing) cluster_prep_t0 = SegmentClock();
       ret = reformer_->prepare_for_cluster(probe, &query_state);
       if (segment_timing) {
-        scan_stats->prep_ns += double(SegmentClock() - cluster_prep_t0);
+        const double cluster_prep_ns =
+            double(SegmentClock() - cluster_prep_t0);
+        scan_stats->prep_ns += cluster_prep_ns;
+        scan_stats->prep_cluster_ns += cluster_prep_ns;
       }
       if (ret != 0) {
         LOG_ERROR("Failed to prepare for cluster %zu, ret=%d", (size_t)cid,

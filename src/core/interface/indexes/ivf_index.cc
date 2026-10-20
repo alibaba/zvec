@@ -519,6 +519,15 @@ int IVFIndex::_dense_search(const VectorData &query,
                                scan.post_scan_ns,
                                scan.finalize_ns,
                                scan.query_ns};
+    if (options->rabitq_segment_timing) {
+      auto &stats = result->ivf_scan_stats_;
+      stats.prep_select_ns = scan.prep_select_ns;
+      stats.prep_transform_ns = scan.prep_transform_ns;
+      stats.prep_encode_ns = scan.prep_encode_ns;
+      stats.prep_lut_ns = scan.prep_lut_ns;
+      stats.prep_scanner_ns = scan.prep_scanner_ns;
+      stats.timed_blocks = scan.timed_blocks;
+    }
     if (options->rabitq_export_scan_lists) {
       auto &stats = result->ivf_scan_stats_;
       stats.scan_lists_collected = true;
@@ -619,6 +628,8 @@ int IVFIndex::_prepare_for_search(
         ivf_search_param->rabitq_reuse_coarse_dot);
     ctx->entity()->set_packed_scan_timing(
         ivf_search_param->rabitq_segment_timing);
+    ctx->entity()->set_packed_scan_timing_stride(
+        ivf_search_param->rabitq_segment_timing_stride);
     ctx->entity()->set_packed_scan_lists_enabled(
         ivf_search_param->rabitq_export_scan_lists);
     ctx->entity()->set_packed_scan_samples_enabled(

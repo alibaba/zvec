@@ -128,6 +128,21 @@ struct IVFScanStats {
   // time.
   double prep_ns{0}, coarse_ns{0}, cand_ns{0}, post_scan_ns{0}, finalize_ns{0};
   double query_ns{0};
+  // Prep sub-stage timings in nanoseconds, zero unless segment timing is set
+  // (v17 calibration). prep_select = IVF bucket selection; prep_transform =
+  // streamer query transform (integrated only); prep_encode = query
+  // normalization/rotation/quantized encode (integrated: quantizer encode;
+  // dedicated: create_query_state); prep_lut = query distance/LUT build
+  // (integrated only); prep_scanner = block scanner construction (integrated
+  // only); prep_cluster = per-probe cluster preparation (dedicated only).
+  // Sub-stage sums are <= prep_ns (boundary gaps excluded).
+  double prep_select_ns{0}, prep_transform_ns{0}, prep_encode_ns{0};
+  double prep_lut_ns{0}, prep_scanner_ns{0}, prep_cluster_ns{0};
+  // Blocks (integrated) or 32-row batches (dedicated) that contributed to the
+  // block-level segments. Equals all blocks when the timing stride is 1; with
+  // stride N>1 only every Nth block is timed and cand/coarse/post cover the
+  // sampled subset only. Zero unless segment timing is set.
+  size_t timed_blocks{0};
   // Real scanned inverted lists of the last bound query, populated only when
   // rabitq_export_scan_lists is set. Counts are scanned vectors per list.
   bool scan_lists_collected{false};

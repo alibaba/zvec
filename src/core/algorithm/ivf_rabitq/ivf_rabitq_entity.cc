@@ -572,17 +572,25 @@ int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
     const uint32_t batch_size =
         std::min(remaining, (uint32_t)rabitqlib::fastscan::kBatchSize);
 
+    // v17 sampled batch timing: with stride N only 1/N of batches take the
+    // clock calls; reported coarse/post rates are per timed batch.
+    const bool batch_timed =
+        timing &&
+        (stats->timing_stride <= 1 ||
+         (stats->batch_seq++ % stats->timing_stride) == 0);
+    if (batch_timed) ++stats->timed_batches;
+
     // Step 1: 1-bit estimation for all 32 vectors at once (cheap, SIMD)
     std::array<float, rabitqlib::fastscan::kBatchSize> est_dist;
     std::array<float, rabitqlib::fastscan::kBatchSize> low_dist;
     std::array<float, rabitqlib::fastscan::kBatchSize> ip_x0_qr;
 
     [[maybe_unused]] uint64_t coarse_t0 = 0;
-    if (timing) coarse_t0 = SegmentClock();
+    if (batch_timed) coarse_t0 = SegmentClock();
     rabitqlib::split_batch_estdist(cur_batch, *bq, padded_dim, est_dist.data(),
                                    low_dist.data(), ip_x0_qr.data(),
                                    true /* use_hacc */);
-    if (timing) stats->coarse_ns += double(SegmentClock() - coarse_t0);
+    if (batch_timed) stats->coarse_ns += double(SegmentClock() - coarse_t0);
 
     if constexpr (CollectStats) stats->coarse_count += batch_size;
 
@@ -608,7 +616,7 @@ int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
     }
 
     [[maybe_unused]] uint64_t post_scan_t0 = 0;
-    if (timing) post_scan_t0 = SegmentClock();
+    if (batch_timed) post_scan_t0 = SegmentClock();
     if (ex_bits == 0) {
       // 1-bit only: scalar fast-reject before the heavy heap emplace so that
       // rejected candidates cost a single float compare instead of building a
@@ -666,7 +674,7 @@ int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
         }
       }
     }
-    if (timing) stats->post_scan_ns += double(SegmentClock() - post_scan_t0);
+    if (batch_timed) stats->post_scan_ns += double(SegmentClock() - post_scan_t0);
 
     cur_batch += batch_stride;
     if (ex_bits > 0) {

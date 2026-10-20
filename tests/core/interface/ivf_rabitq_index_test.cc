@@ -83,6 +83,8 @@ TEST(IVFRabitqIntegration, ScanQueryOptionsRoundTrip) {
   param.rabitq_reuse_coarse_dot = true;
   param.rabitq_collect_stats = true;
   param.rabitq_segment_timing = true;
+  param.rabitq_segment_timing_stride = 4;
+  param.refine_stage_timing = true;
   param.rabitq_export_scan_lists = true;
   const auto json = IndexFactory::QueryParamSerializeToJson(param, true);
   auto typed = IndexFactory::QueryParamDeserializeFromJson<IVFQueryParam>(json);
@@ -95,6 +97,8 @@ TEST(IVFRabitqIntegration, ScanQueryOptionsRoundTrip) {
     EXPECT_TRUE(p->rabitq_reuse_coarse_dot);
     EXPECT_TRUE(p->rabitq_collect_stats);
     EXPECT_TRUE(p->rabitq_segment_timing);
+    EXPECT_EQ(4u, p->rabitq_segment_timing_stride);
+    EXPECT_TRUE(p->refine_stage_timing);
     EXPECT_TRUE(p->rabitq_export_scan_lists);
   }
   auto defaults = IndexFactory::QueryParamDeserializeFromJson<IVFQueryParam>(
@@ -104,10 +108,15 @@ TEST(IVFRabitqIntegration, ScanQueryOptionsRoundTrip) {
   EXPECT_FALSE(defaults->rabitq_reuse_coarse_dot);
   EXPECT_FALSE(defaults->rabitq_collect_stats);
   EXPECT_FALSE(defaults->rabitq_segment_timing);
+  EXPECT_EQ(1u, defaults->rabitq_segment_timing_stride);
+  EXPECT_FALSE(defaults->refine_stage_timing);
   EXPECT_FALSE(defaults->rabitq_export_scan_lists);
   EXPECT_EQ(nullptr,
             IndexFactory::QueryParamDeserializeFromJson<IVFQueryParam>(
                 R"({"index_type":"kIVF","rabitq_segment_timing":"yes"})"));
+  EXPECT_EQ(nullptr,
+            IndexFactory::QueryParamDeserializeFromJson<IVFQueryParam>(
+                R"({"index_type":"kIVF","rabitq_segment_timing_stride":"yes"})"));
   EXPECT_EQ(nullptr,
             IndexFactory::QueryParamDeserializeFromJson<IVFQueryParam>(
                 R"({"index_type":"kIVF","rabitq_export_scan_lists":"yes"})"));
@@ -118,6 +127,7 @@ TEST(IVFRabitqIntegration, DedicatedScanOptionsRoundTrip) {
   param.rabitq_collect_stats = true;
   param.rabitq_pruning = false;
   param.rabitq_segment_timing = true;
+  param.rabitq_segment_timing_stride = 4;
   param.rabitq_export_scan_lists = true;
   const auto json = IndexFactory::QueryParamSerializeToJson(param, true);
   auto typed =
@@ -130,6 +140,7 @@ TEST(IVFRabitqIntegration, DedicatedScanOptionsRoundTrip) {
     EXPECT_TRUE(p->rabitq_collect_stats);
     EXPECT_FALSE(p->rabitq_pruning);
     EXPECT_TRUE(p->rabitq_segment_timing);
+    EXPECT_EQ(4u, p->rabitq_segment_timing_stride);
     EXPECT_TRUE(p->rabitq_export_scan_lists);
   }
   auto defaults =
@@ -139,6 +150,7 @@ TEST(IVFRabitqIntegration, DedicatedScanOptionsRoundTrip) {
   EXPECT_FALSE(defaults->rabitq_collect_stats);
   EXPECT_TRUE(defaults->rabitq_pruning);
   EXPECT_FALSE(defaults->rabitq_segment_timing);
+  EXPECT_EQ(1u, defaults->rabitq_segment_timing_stride);
   EXPECT_FALSE(defaults->rabitq_export_scan_lists);
   const auto invalid =
       R"({"index_type":"kIVFRabitq","rabitq_collect_stats":"yes"})";
@@ -155,6 +167,10 @@ TEST(IVFRabitqIntegration, DedicatedScanOptionsRoundTrip) {
       nullptr,
       IndexFactory::QueryParamDeserializeFromJson<IVFRabitqQueryParam>(
           R"({"index_type":"kIVFRabitq","rabitq_segment_timing":"yes"})"));
+  EXPECT_EQ(
+      nullptr,
+      IndexFactory::QueryParamDeserializeFromJson<IVFRabitqQueryParam>(
+          R"({"index_type":"kIVFRabitq","rabitq_segment_timing_stride":"yes"})"));
   EXPECT_EQ(
       nullptr,
       IndexFactory::QueryParamDeserializeFromJson<IVFRabitqQueryParam>(
@@ -247,12 +263,40 @@ TEST_P(IVFRabitqIntegrationTest, TrainSearchAndReopen) {
   EXPECT_LE(timing.prep_ns + timing.cand_ns + timing.coarse_ns +
                 timing.post_scan_ns + timing.finalize_ns,
             timing.query_ns);
+  // Prep sub-stages (v17 calibration) partition the prep window. The
+  // 80-vector corpus is below the brute-force threshold, so the streamer
+  // runs the all-lists path: prep is pure transform with no bucket
+  // selection and prep_select stays zero.
+  EXPECT_EQ(0.0, timing.prep_select_ns);
+  EXPECT_GT(timing.prep_transform_ns, 0.0);
+  EXPECT_GT(timing.prep_encode_ns, 0.0);
+  EXPECT_GT(timing.prep_lut_ns, 0.0);
+  EXPECT_GT(timing.prep_scanner_ns, 0.0);
+  EXPECT_LE(timing.prep_select_ns + timing.prep_transform_ns +
+                timing.prep_encode_ns + timing.prep_lut_ns +
+                timing.prep_scanner_ns + timing.prep_cluster_ns,
+            timing.prep_ns);
+  EXPECT_GT(timing.timed_blocks, 0u);
   ASSERT_EQ(before.doc_list_.size(), diagnostics.doc_list_.size());
   for (size_t i = 0; i < before.doc_list_.size(); ++i) {
     EXPECT_EQ(before.doc_list_[i].key(), diagnostics.doc_list_[i].key());
     EXPECT_FLOAT_EQ(before.doc_list_[i].score(),
                     diagnostics.doc_list_[i].score());
   }
+  // Stride-sampled block timing takes fewer clock calls but must not alter
+  // results; timed_blocks reports the sampled subset.
+  query->rabitq_segment_timing_stride = 4;
+  SearchResult sampled;
+  ASSERT_EQ(0, index->search(input, query, &sampled));
+  const auto &sampled_timing = sampled.ivf_scan_stats_;
+  EXPECT_GT(sampled_timing.timed_blocks, 0u);
+  EXPECT_LT(sampled_timing.timed_blocks, timing.timed_blocks);
+  ASSERT_EQ(before.doc_list_.size(), sampled.doc_list_.size());
+  for (size_t i = 0; i < before.doc_list_.size(); ++i) {
+    EXPECT_EQ(before.doc_list_[i].key(), sampled.doc_list_[i].key());
+    EXPECT_FLOAT_EQ(before.doc_list_[i].score(), sampled.doc_list_[i].score());
+  }
+  query->rabitq_segment_timing_stride = 1;
   query->rabitq_segment_timing = false;
   ASSERT_EQ(0, index->search(input, query, &diagnostics));
   EXPECT_FALSE(diagnostics.ivf_scan_stats_.collected);
@@ -528,6 +572,35 @@ TEST_P(IVFRabitqIntegrationTest, TrainSearchAndReopen) {
             ded_timing.query_ns);
   EXPECT_EQ(vectors.size(), ded_timing.coarse_count);
   EXPECT_LE(ded_timing.refined_count, ded_timing.coarse_count);
+  // Prep sub-stages (v17 calibration): create_query_state maps to
+  // prep_encode, select_probe_centroids to prep_select, per-probe
+  // preparation to prep_cluster; the integrated-only fields stay zero.
+  EXPECT_GT(ded_timing.prep_encode_ns, 0.0);
+  EXPECT_GT(ded_timing.prep_select_ns, 0.0);
+  EXPECT_GT(ded_timing.prep_cluster_ns, 0.0);
+  EXPECT_EQ(0.0, ded_timing.prep_transform_ns);
+  EXPECT_EQ(0.0, ded_timing.prep_lut_ns);
+  EXPECT_EQ(0.0, ded_timing.prep_scanner_ns);
+  EXPECT_LE(ded_timing.prep_encode_ns + ded_timing.prep_select_ns +
+                ded_timing.prep_cluster_ns,
+            ded_timing.prep_ns);
+  EXPECT_GT(ded_timing.timed_blocks, 0u);
+  // Stride-sampled batch timing takes fewer clock calls but must not alter
+  // results; timed_blocks reports the sampled 32-row batch count.
+  legacy_query->rabitq_segment_timing_stride = 4;
+  SearchResult native_sampled;
+  ASSERT_EQ(0, legacy->search(input, legacy_query, &native_sampled));
+  const auto &ded_sampled = native_sampled.ivf_scan_stats_;
+  EXPECT_GT(ded_sampled.timed_blocks, 0u);
+  EXPECT_LT(ded_sampled.timed_blocks, ded_timing.timed_blocks);
+  ASSERT_EQ(native_timing.doc_list_.size(), native_sampled.doc_list_.size());
+  for (size_t i = 0; i < native_timing.doc_list_.size(); ++i) {
+    EXPECT_EQ(native_timing.doc_list_[i].key(),
+              native_sampled.doc_list_[i].key());
+    EXPECT_FLOAT_EQ(native_timing.doc_list_[i].score(),
+                    native_sampled.doc_list_[i].score());
+  }
+  legacy_query->rabitq_segment_timing_stride = 1;
   legacy_query->rabitq_segment_timing = false;
   SearchResult native_timing_off;
   ASSERT_EQ(0, legacy->search(input, legacy_query, &native_timing_off));

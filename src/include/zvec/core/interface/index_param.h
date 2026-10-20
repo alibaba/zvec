@@ -260,9 +260,9 @@ class ZVEC_CORE_API BaseIndexQueryParam {
   RefinerParam::Pointer refiner_param = nullptr;
   std::shared_ptr<GroupByParam> group_by_param = nullptr;
   // Default-off refine-pipeline stage timing (coarse search incl. query
-  // preparation vs reference-index rerank of the coarse candidates). Set
-  // programmatically by diagnostic tooling; deliberately not part of the
-  // serialized JSON schema.
+  // preparation vs reference-index rerank of the coarse candidates). Part of
+  // the serialized JSON schema since v17 so bench-style ON/OFF calibration
+  // can toggle it from configuration; diagnostics are the only consumer.
   bool refine_stage_timing = false;
 
   virtual Pointer clone() const = 0;
@@ -330,6 +330,11 @@ struct ZVEC_CORE_API IVFQueryParam : public BaseIndexQueryParam {
   // key mask/staging, post-scan processing, finalize). Also returns scan stats.
   // Instrumentation perturbs performance; diagnostics only.
   bool rabitq_segment_timing = false;
+  // Block/batch sampling stride for segment timing: 1 times every block
+  // (default, v16 caliber), N>1 times only every Nth block of the query and
+  // reports timed_blocks for normalization. Reduces clock-call overhead by
+  // the stride factor; results are unaffected. Diagnostics only.
+  uint32_t rabitq_segment_timing_stride = 1;
   // Default-off export of the really scanned inverted lists per query.
   // Diagnostics only; same restrictions as the other scan options.
   bool rabitq_export_scan_lists = false;
@@ -614,6 +619,10 @@ struct ZVEC_CORE_API IVFRabitqQueryParam : public BaseIndexQueryParam {
   // the same name so both RaBitQ backends expose the same segment caliber.
   // Instrumentation perturbs performance; diagnostics only.
   bool rabitq_segment_timing = false;
+  // Batch sampling stride for segment timing, mirroring the Turbo IVF option
+  // of the same name: 1 times every 32-row batch (default), N>1 only every
+  // Nth batch and reports timed_batches for normalization. Diagnostics only.
+  uint32_t rabitq_segment_timing_stride = 1;
   // Default-off export of the really scanned clusters per query.
   bool rabitq_export_scan_lists = false;
   // Default-off export of sampled coarse estimates (distance, lower bound,

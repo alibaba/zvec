@@ -338,6 +338,10 @@ int IVFRabitqIndex::_prepare_for_search(
                             ivf_rabitq_param->rabitq_export_scan_lists ||
                             ivf_rabitq_param->rabitq_export_scan_samples;
   ctx->segment_timing = ivf_rabitq_param->rabitq_segment_timing;
+  ctx->segment_timing_stride =
+      ivf_rabitq_param->rabitq_segment_timing_stride
+          ? ivf_rabitq_param->rabitq_segment_timing_stride
+          : 1;
   ctx->scan_stats = {};
   ctx->disable_pruning = !ivf_rabitq_param->rabitq_pruning;
   ctx->collect_scan_lists = ivf_rabitq_param->rabitq_export_scan_lists;
@@ -385,6 +389,13 @@ int IVFRabitqIndex::_dense_search(
       stats.post_scan_ns = scan.post_scan_ns;
       stats.finalize_ns = scan.finalize_ns;
       stats.query_ns = scan.query_ns;
+      // Dedicated-side sub-stages: create_query_state maps to prep_encode,
+      // select_probe_centroids to prep_select, per-probe preparation to
+      // prep_cluster. timed_blocks carries the sampled 32-row batch count.
+      stats.prep_encode_ns = scan.prep_state_ns;
+      stats.prep_select_ns = scan.prep_select_ns;
+      stats.prep_cluster_ns = scan.prep_cluster_ns;
+      stats.timed_blocks = scan.timed_batches;
     }
     if (ctx->collect_scan_lists) {
       auto &stats = result->ivf_scan_stats_;

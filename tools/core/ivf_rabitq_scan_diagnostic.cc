@@ -37,17 +37,22 @@ int main(int argc, char **argv) {
     std::cerr << "Usage: ivf_rabitq_scan_diagnostic CONFIG.yaml "
                  "OUTPUT_PREFIX [--segment-timing] [--export-lists] "
                  "[--disable-pruning] [--export-scan-samples] "
-                 "[--sample-query-stride=N] [--refine-stages]\n"
+                 "[--sample-query-stride=N] [--refine-stages] "
+                 "[--timing-stride=N]\n"
                  "  --segment-timing: per-query segment ns (integrated and "
                  "dedicated)\n"
                  "  --refine-stages: coarse-vs-rerank stage ns of the refiner "
-                 "pipeline (requires RefinerConfig; scan flags off)\n";
+                 "pipeline (requires RefinerConfig; scan flags off)\n"
+                 "  --timing-stride: segment timing samples every Nth block/"
+                 "batch (1 = all; coarse/cand/post then cover the sampled "
+                 "subset only; results are unaffected)\n";
     return 1;
   };
   if (argc < 3) return usage();
   bool segment_timing = false, export_lists = false, disable_pruning = false;
   bool export_samples = false, refine_stages = false;
   size_t sample_query_stride = 25;
+  uint32_t timing_stride = 1;
   for (int i = 3; i < argc; ++i) {
     const std::string flag = argv[i];
     if (flag == "--segment-timing" && !segment_timing) {
@@ -60,6 +65,18 @@ int main(int argc, char **argv) {
       disable_pruning = true;
     } else if (flag == "--export-scan-samples" && !export_samples) {
       export_samples = true;
+    } else if (!flag.compare(0, 16, "--timing-stride=") &&
+               flag.size() > 16) {
+      const std::string value = flag.substr(16);
+      size_t parsed = 0;
+      unsigned long stride = 0;
+      try {
+        stride = std::stoul(value, &parsed);
+      } catch (...) {
+        return usage();
+      }
+      if (parsed != value.size() || stride == 0) return usage();
+      timing_stride = static_cast<uint32_t>(stride);
     } else if (!flag.compare(0, 22, "--sample-query-stride=") &&
                flag.size() > 22) {
       const std::string value = flag.substr(22);
@@ -111,7 +128,8 @@ int main(int argc, char **argv) {
       // coarse-vs-rerank stage split is collected.
       if (!base_query->refiner_param)
         throw std::runtime_error("--refine-stages requires a RefinerConfig");
-      if (segment_timing || export_lists || export_samples || disable_pruning)
+      if (segment_timing || export_lists || export_samples || disable_pruning ||
+          timing_stride != 1)
         throw std::runtime_error(
             "--refine-stages cannot be combined with scan diagnostic flags");
       base_query->refine_stage_timing = true;
@@ -150,6 +168,9 @@ int main(int argc, char **argv) {
         // Segment timing is diagnostics-only and does not alter the search.
         // Emitted mode configurations keep it off (collect == false).
         query->rabitq_segment_timing = collect && segment_timing;
+        // Stride only affects which blocks take clock calls; emitted mode
+        // configurations keep the default 1.
+        query->rabitq_segment_timing_stride = collect ? timing_stride : 1;
         query->rabitq_export_scan_lists = collect && export_lists;
         // Samples are stride-gated per query and set right after configure();
         // emitted mode configurations must stay free of the diagnostic flag.
@@ -157,6 +178,10 @@ int main(int argc, char **argv) {
       } else {
         dedicated_query->rabitq_collect_stats = collect;
         dedicated_query->rabitq_segment_timing = collect && segment_timing;
+        // Stride only affects which batches take clock calls; emitted mode
+        // configurations keep the default 1.
+        dedicated_query->rabitq_segment_timing_stride =
+            collect ? timing_stride : 1;
         dedicated_query->rabitq_export_scan_lists = collect && export_lists;
         dedicated_query->rabitq_export_scan_samples = false;
       }
@@ -219,6 +244,9 @@ int main(int argc, char **argv) {
     std::array<std::vector<size_t>, 4> coarse_per_query, refined_per_query;
     std::array<double, 4> prep_ns{}, seg_coarse_ns{}, cand_ns{},
         seg_post_scan_ns{}, finalize_ns{}, query_ns{};
+    std::array<double, 4> prep_select_ns{}, prep_transform_ns{},
+        prep_encode_ns{}, prep_lut_ns{}, prep_scanner_ns{}, prep_cluster_ns{};
+    std::array<size_t, 4> timed_blocks{};
     std::array<size_t, 4> lists_total{};
     std::array<double, 4> stage_wall_ns{}, stage_base_ns{}, stage_refine_ns{};
     for (size_t q = 0; q < vectors.size(); ++q) {
@@ -319,6 +347,13 @@ int main(int argc, char **argv) {
         seg_post_scan_ns[mode] += s.post_scan_ns;
         finalize_ns[mode] += s.finalize_ns;
         query_ns[mode] += s.query_ns;
+        prep_select_ns[mode] += s.prep_select_ns;
+        prep_transform_ns[mode] += s.prep_transform_ns;
+        prep_encode_ns[mode] += s.prep_encode_ns;
+        prep_lut_ns[mode] += s.prep_lut_ns;
+        prep_scanner_ns[mode] += s.prep_scanner_ns;
+        prep_cluster_ns[mode] += s.prep_cluster_ns;
+        timed_blocks[mode] += s.timed_blocks;
         coarse_per_query[mode].push_back(s.coarse_count);
         refined_per_query[mode].push_back(s.refined_count);
       }
@@ -358,6 +393,19 @@ int main(int argc, char **argv) {
                   << " post_scan=" << seg_post_scan_ns[mode] / nq / 1000.0
                   << " finalize=" << finalize_ns[mode] / nq / 1000.0
                   << " query=" << query_ns[mode] / nq / 1000.0;
+        if (segment_timing) {
+          // Prep sub-stages (v17). With timing_stride N>1 coarse/cand/
+          // post_scan cover the timed subset only; timed_blocks reports its
+          // size so per-block rates can be derived.
+          std::cout << " prep_sub_us/q select="
+                    << prep_select_ns[mode] / nq / 1000.0 << " transform="
+                    << prep_transform_ns[mode] / nq / 1000.0 << " encode="
+                    << prep_encode_ns[mode] / nq / 1000.0 << " lut="
+                    << prep_lut_ns[mode] / nq / 1000.0 << " scanner="
+                    << prep_scanner_ns[mode] / nq / 1000.0 << " cluster="
+                    << prep_cluster_ns[mode] / nq / 1000.0
+                    << " timed_blocks=" << timed_blocks[mode];
+        }
         if (export_lists) std::cout << " lists_total=" << lists_total[mode];
         std::cout << '\n';
       }

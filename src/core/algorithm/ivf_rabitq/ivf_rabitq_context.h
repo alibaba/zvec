@@ -67,6 +67,20 @@ struct IvfRabitqScanStats {
   // gaps; stage sums are not total time.
   double prep_ns{0}, coarse_ns{0}, post_scan_ns{0}, finalize_ns{0};
   double query_ns{0};
+  // Prep sub-stages (ns), zero unless timing is set (v17 calibration):
+  // prep_state = create_query_state (rotate + SplitBatchQuery), prep_select =
+  // select_probe_centroids, prep_cluster = sum of per-probe prepare_for_
+  // cluster calls. Their sum is <= prep_ns (boundary clock gaps excluded).
+  double prep_state_ns{0}, prep_select_ns{0}, prep_cluster_ns{0};
+  // 32-row batches that contributed to coarse/post_scan. Equals all batches
+  // when timing_stride is 1; stride N>1 times only every Nth batch and the
+  // two segments then cover the sampled subset only.
+  size_t timed_batches{0};
+  // Batch sampling stride for segment timing (1 = every batch). Set from
+  // IVFRabitqQueryParam; the entity reads it from the stats struct.
+  uint32_t timing_stride{1};
+  // Batch sequence for stride sampling, reset with the stats.
+  size_t batch_seq{0};
 };
 
 /*! IVF RaBitQ Context
@@ -144,6 +158,7 @@ class IvfRabitqContext : public IndexContext {
     collect_scan_stats = false;
     scan_stats = {};
     segment_timing = false;
+    segment_timing_stride = 1;
     disable_pruning = false;
     collect_scan_lists = false;
     scan_lists.clear();
@@ -379,6 +394,9 @@ class IvfRabitqContext : public IndexContext {
   IvfRabitqScanStats scan_stats;
   // Default-off per-query segment timing, set from IVFRabitqQueryParam.
   bool segment_timing{false};
+  // Batch sampling stride for segment timing, set from IVFRabitqQueryParam
+  // (1 = every batch). The streamer copies it into scan_stats per search.
+  uint32_t segment_timing_stride{1};
   // Diagnostic A/B: skip only the lower-bound prune check; codes, lists and
   // the distance formula stay fixed. Set from IVFRabitqQueryParam.
   bool disable_pruning{false};
