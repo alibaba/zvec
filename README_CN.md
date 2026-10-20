@@ -80,9 +80,11 @@ Zvec 提供多语言官方 SDK：
 
 ### ✅ 支持的平台
 
-- Linux (x86_64, ARM64; glibc & musl)
-- macOS (ARM64, x86_64)
-- Windows (x86_64, ARM64；ARM64 Python wheel 支持 3.11–3.14)
+| 平台    | 架构          | 说明                             |
+|---------|---------------|----------------------------------|
+| Linux   | x86_64, ARM64 | 支持 glibc 和 musl 两种 C 标准库 |
+| macOS   | x86_64, ARM64 |                                  |
+| Windows | x86_64, ARM64 | ARM64 不含 3.10                  |
 
 ### 🛠️ 源码构建
 

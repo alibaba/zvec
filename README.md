@@ -75,9 +75,11 @@ Prefer a visual tool? Try **[Zvec Studio](https://github.com/zvec-ai/zvec-studio
 
 ### ✅ Supported Platforms
 
-- Linux (x86_64, ARM64; glibc & musl)
-- macOS (ARM64, x86_64)
-- Windows (x86_64, ARM64; ARM64 Python wheels: 3.11–3.14)
+| Platform | Architectures | Notes                             |
+|----------|---------------|-----------------------------------|
+| Linux    | x86_64, ARM64 | Supports both glibc and musl libc |
+| macOS    | x86_64, ARM64 |                                   |
+| Windows  | x86_64, ARM64 | Except 3.10 on ARM64              |
 
 ### 🛠️ Building from Source
 
