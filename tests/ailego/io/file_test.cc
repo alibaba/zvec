@@ -18,6 +18,10 @@
 #include <gtest/gtest.h>
 #include <zvec/ailego/io/file.h>
 
+#if defined(_WIN32)
+#include <Windows.h>
+#endif
+
 using namespace zvec::ailego;
 
 TEST(File, General) {
@@ -333,6 +337,50 @@ TEST(File, UnalignedMappingRoundTrip) {
   file.close();
   EXPECT_TRUE(File::Delete(path));
 }
+
+#if defined(_WIN32)
+TEST(File, MappingAccessModes) {
+  const char *path = "file_mapping_access_modes.tmp";
+  const size_t page = MemoryHelper::PageSize();
+  File file;
+  ASSERT_TRUE(file.create(path, page * 4));
+  struct MappingMode {
+    int options;
+    DWORD protection;
+  };
+  const MappingMode modes[] = {
+      {0, PAGE_WRITECOPY},
+      {File::MMAP_SHARED, PAGE_READWRITE},
+      {File::MMAP_READONLY, PAGE_READONLY},
+      {File::MMAP_READONLY | File::MMAP_SHARED, PAGE_READONLY},
+  };
+  for (const auto &mode : modes) {
+    SCOPED_TRACE(mode.options);
+    for (size_t offset : {size_t{0}, page + 7}) {
+      SCOPED_TRACE(offset);
+      void *data = file.map(offset, page, mode.options);
+      ASSERT_NE(nullptr, data);
+      MEMORY_BASIC_INFORMATION info{};
+      EXPECT_EQ(sizeof(info), VirtualQuery(data, &info, sizeof(info)));
+      EXPECT_EQ(mode.protection, info.Protect);
+      File::MemoryUnmap(data, page);
+    }
+  }
+  file.close();
+
+  // A read-only file handle also forces a read-only view, even if the caller
+  // does not explicitly set MMAP_READONLY.
+  ASSERT_TRUE(file.open(path, true));
+  void *data = file.map(page + 7, page, 0);
+  ASSERT_NE(nullptr, data);
+  MEMORY_BASIC_INFORMATION info{};
+  EXPECT_EQ(sizeof(info), VirtualQuery(data, &info, sizeof(info)));
+  EXPECT_EQ(static_cast<DWORD>(PAGE_READONLY), info.Protect);
+  File::MemoryUnmap(data, page);
+  file.close();
+  EXPECT_TRUE(File::Delete(path));
+}
+#endif
 
 #if defined(__linux__) || defined(__NetBSD__)
 TEST(File, UnalignedRemapPreservesLogicalOffset) {

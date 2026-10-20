@@ -723,10 +723,10 @@ void *File::MemoryMap(NativeHandle handle, ssize_t off, size_t len, int opts) {
 
   DWORD desired_access = FILE_MAP_READ;
   if (!(opts & File::MMAP_READONLY)) {
-    desired_access |= FILE_MAP_WRITE;
-  }
-  if (!(opts & File::MMAP_SHARED)) {
-    desired_access |= FILE_MAP_COPY;
+    // Writable private views must use copy-on-write without FILE_MAP_WRITE,
+    // otherwise writes can reach the backing file.
+    desired_access =
+        (opts & File::MMAP_SHARED) ? FILE_MAP_WRITE : FILE_MAP_COPY;
   }
 
   LARGE_INTEGER view_offset;
