@@ -111,6 +111,9 @@ int HNSWIndex::prepare_streamer_open(const StorageOptions &options) {
   if (turbo_quantizer_) {
     const core::IndexMeta &config_meta = turbo_quantizer_->meta();
     matches_config =
+        !turbo_quantizer_->require_train() &&
+        proxima_index_meta_.quantizer_name() ==
+            persisted_meta.quantizer_name() &&
         config_meta.data_type() == persisted_meta.data_type() &&
         config_meta.dimension() == persisted_meta.dimension() &&
         config_meta.element_size() == persisted_meta.element_size();
@@ -120,7 +123,8 @@ int HNSWIndex::prepare_streamer_open(const StorageOptions &options) {
   }
 
   std::shared_ptr<zvec::turbo::Quantizer> restored;
-  int ret = core::RestoreTurboQuantizer(storage_, persisted_meta, &restored);
+  int ret =
+      core::HnswStreamer::RestoreQuantizer(storage_, persisted_meta, &restored);
   if (ret != 0) {
     LOG_ERROR("Failed to restore turbo quantizer %s, ret=%d",
               persisted_meta.quantizer_name().c_str(), ret);

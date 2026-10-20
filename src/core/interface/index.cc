@@ -911,15 +911,11 @@ int Index::_dense_add(const VectorData &vector_data, const uint32_t doc_id,
   }
   const DenseVector &dense_vector = std::get<DenseVector>(vector_data.vector);
   if (turbo_quantizer_ != nullptr) {
-    core::IndexQueryMeta new_meta;
     auto *new_vector = context->mutable_features();
-    if (turbo_quantizer_->quantize(dense_vector.data, input_vector_meta_,
-                                   new_vector, &new_meta) != 0) {
-      LOG_ERROR("Failed to quantize vector with turbo quantizer");
-      return core::IndexError_Runtime;
-    }
-    if (streamer_->add_with_id_impl(doc_id, new_vector->data(), new_meta,
-                                    context) != 0) {
+    new_vector->resize(turbo_quantizer_->quantized_datapoint_vector_length());
+    turbo_quantizer_->quantize_data(dense_vector.data, new_vector->data());
+    if (streamer_->add_with_id_impl(doc_id, new_vector->data(),
+                                    streamer_vector_meta_, context) != 0) {
       LOG_ERROR("Failed to add vector");
       return core::IndexError_Runtime;
     }

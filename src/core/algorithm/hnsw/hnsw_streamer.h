@@ -18,7 +18,6 @@
 #include <zvec/core/framework/index_provider.h>
 #include "hnsw_algorithm.h"
 #include "hnsw_streamer_entity.h"
-#include "hnsw_turbo_quantizer.h"
 
 namespace zvec {
 namespace core {
@@ -96,11 +95,10 @@ class HnswStreamer : public IndexStreamer {
     return quantizer_ != nullptr;
   }
 
-  //! The turbo quantizer backing distance computation, restored on open for
-  //! trained quantizers (e.g. PQ) or injected at build time.
-  const std::shared_ptr<zvec::turbo::Quantizer> &quantizer() const {
-    return quantizer_;
-  }
+  //! Reconstruct the persisted quantizer, sharing it with the interface layer.
+  static int RestoreQuantizer(
+      const IndexStorage::Pointer &storage, const IndexMeta &meta,
+      std::shared_ptr<zvec::turbo::Quantizer> *quantizer);
 
   //! Whether graph construction is backed by a turbo quantizer. Compatible
   //! FP32 providers use a dedicated quantizer; other providers use a metric.
@@ -214,7 +212,8 @@ class HnswStreamer : public IndexStreamer {
   void print_debug_info() override;
 
  private:
-  int check_params(const void *query, const IndexQueryMeta &qmeta) const;
+  int check_params(const void *query, const IndexQueryMeta &qmeta,
+                   bool search = false) const;
 
   inline int check_sparse_count_is_zero(const uint32_t *sparse_count,
                                         uint32_t count) const {

@@ -28,7 +28,6 @@
 #include "algorithm/hnsw_rabitq/rabitq_converter.h"
 #endif
 #include "algorithm/hnsw/hnsw_params.h"
-#include "algorithm/hnsw/hnsw_turbo_quantizer.h"
 #include "zvec/ailego/logger/logger.h"
 #include "zvec/core/framework/index_dumper.h"
 #include "zvec/core/framework/index_factory.h"
@@ -526,7 +525,8 @@ int build_sparse_by_streamer(IndexStreamer::Pointer &streamer,
 
 int do_build_by_streamer(
     IndexStreamer::Pointer &streamer, uint32_t thread_count,
-    RetrievalMode retrieval_mode, const IndexStorage::Pointer &storage = nullptr,
+    RetrievalMode retrieval_mode,
+    const IndexStorage::Pointer &storage = nullptr,
     const std::shared_ptr<zvec::turbo::Quantizer> &quantizer = nullptr,
     const IndexQueryMeta &quantized_qmeta = IndexQueryMeta()) {
   int ret;
@@ -745,29 +745,15 @@ int build_by_streamer(
 
   IndexQueryMeta quantized_qmeta;
   if (quantizer) {
-    quantized_qmeta.set_meta(
-        meta.data_type(), meta.dimension(),
-        static_cast<uint32_t>(quantizer->type()), meta.extra_meta_size());
+    quantized_qmeta.set_meta(meta.data_type(), meta.dimension(),
+                             static_cast<uint32_t>(quantizer->type()),
+                             meta.extra_meta_size());
   }
 
   LOG_DEBUG("thread count: %zu, retrieval mode: %s", thread_count,
             retrieval_mode == 1 ? "Dense" : "Sparse");
-  ret = do_build_by_streamer(streamer, thread_count, retrieval_mode, storage,
-                             quantizer, quantized_qmeta);
-  if (ret != 0) {
-    return ret;
-  }
-
-  // Persist the quantizer state (e.g. the PQ codebook) so the search side
-  // can restore it from the index meta descriptor.
-  if (quantizer) {
-    ret = DumpTurboQuantizerSegment(storage, *quantizer);
-    if (ret != 0) {
-      LOG_ERROR("Failed to dump turbo quantizer state, ret=%d", ret);
-      return ret;
-    }
-  }
-  return 0;
+  return do_build_by_streamer(streamer, thread_count, retrieval_mode, storage,
+                              quantizer, quantized_qmeta);
 }
 
 IndexSparseHolder::Pointer convert_sparse_holder(
@@ -900,7 +886,8 @@ IndexHolder::Pointer fill_quantized_holder(
 IndexHolder::Pointer quantize_holder(
     const std::string &name, const ailego::Params &params,
     VecsIndexHolder::Pointer &in_holder, IndexMeta &index_meta,
-    std::shared_ptr<zvec::turbo::Quantizer> *out_quantizer) {
+    std::shared_ptr<zvec::turbo::Quantizer> *out_quantizer,
+    bool materialize = true) {
   IndexHolder::Pointer cast_holder =
       std::dynamic_pointer_cast<IndexHolder>(in_holder);
   if (name.empty()) {
@@ -942,7 +929,7 @@ IndexHolder::Pointer quantize_holder(
   }
   uint32_t alloc_dim = static_cast<uint32_t>(code_bytes / unit);
 
-  if (!quantizer->require_train()) {
+  if (!quantizer->require_train() || !materialize) {
     out_meta.set_quantizer(name, 0, params);
   } else {
     LOG_WARN(
@@ -950,6 +937,12 @@ IndexHolder::Pointer quantize_holder(
         "recorded in the index meta",
         name.c_str());
   }
+
+  if (out_quantizer) {
+    *out_quantizer = quantizer;
+  }
+  index_meta = out_meta;
+  if (!materialize) return cast_holder;
 
   IndexHolder::Pointer result;
   switch (out_meta.data_type()) {
@@ -975,10 +968,6 @@ IndexHolder::Pointer quantize_holder(
     return IndexHolder::Pointer();
   }
 
-  if (out_quantizer) {
-    *out_quantizer = quantizer;
-  }
-  index_meta = out_meta;
   return result;
 }
 
@@ -1273,23 +1262,12 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   std::shared_ptr<zvec::turbo::Quantizer> build_quantizer;
   IndexHolder::Pointer cv_build_holder;
   if (!quantizer_name.empty()) {
-    cv_build_holder = quantize_holder(quantizer_name, quantizer_params,
-                                      build_holder, meta, &build_quantizer);
+    cv_build_holder =
+        quantize_holder(quantizer_name, quantizer_params, build_holder, meta,
+                        &build_quantizer, builder != nullptr);
     if (!cv_build_holder) {
       LOG_ERROR("Quantize holder failed.");
       return -1;
-    }
-    if (!builder) {
-      // Streamer path: the streamer stores the quantized codes itself.
-      // Record the quantizer descriptor (plus the raw input layout) in the
-      // meta so the search side can restore a trained quantizer, and let
-      // the build stream quantize each vector on the fly.
-      ailego::Params recorded_params = quantizer_params;
-      recorded_params.set("input_dimension",
-                          static_cast<int64_t>(input_meta.dimension()));
-      recorded_params.set("input_data_type",
-                          static_cast<int64_t>(input_meta.data_type()));
-      meta.set_quantizer(quantizer_name, 0, recorded_params);
     }
   } else {
     cv_build_holder = convert_holder(converter_name, converter_params,

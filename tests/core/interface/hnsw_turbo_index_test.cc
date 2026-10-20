@@ -1046,3 +1046,64 @@ INSTANTIATE_TEST_SUITE_P(AddApis, HnswExternalCoreCompatibilityTest,
 }  // namespace
 }  // namespace core
 }  // namespace zvec
+
+TEST(HnswPqIndexTest, ReopenAndAddUsesDataCodes) {
+  using namespace zvec;
+  const std::string path = "hnsw_pq_reopen_test.index";
+  test_util::RemoveTestFiles(path);
+  const auto vectors = RandomVectors(256);
+  auto holder =
+      std::make_shared<core::MultiPassIndexHolder<core::IndexMeta::DT_FP32>>(
+          kDimension);
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    ailego::NumericalVector<float> v(kDimension);
+    std::copy(vectors[i].begin(), vectors[i].end(), v.data());
+    holder->emplace(i, v);
+  }
+  core::IndexMeta raw(core::IndexMeta::DT_FP32, kDimension);
+  raw.set_metric("SquaredEuclidean", 0, ailego::Params());
+  ailego::Params params;
+  params.set("num_chunk", 4U);
+  auto quantizer = core::IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  ASSERT_EQ(0, quantizer->init(raw, params));
+  ASSERT_EQ(0, quantizer->train(holder));
+  auto meta = quantizer->meta();
+  meta.set_quantizer("PqInt8Quantizer", 0, params);
+  auto param = MakeParam(MetricType::kL2sq, QuantizerType::kNone);
+  auto seed = IndexFactory::CreateAndInitIndex(*param);
+  core::IndexStreamer::Pointer streamer =
+      std::make_shared<core::HnswStreamer>();
+  ASSERT_EQ(
+      0, streamer->init(meta, seed->index_searcher()->meta().streamer_params(),
+                        quantizer));
+  auto storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(path, true));
+  ASSERT_EQ(0, streamer->open(storage));
+  auto ctx = streamer->create_context();
+  core::IndexQueryMeta codes;
+  codes.set_meta(meta.data_type(), meta.dimension(),
+                 static_cast<uint32_t>(quantizer->type()),
+                 meta.extra_meta_size());
+  std::string code(quantizer->quantized_datapoint_vector_length(), '\0');
+  for (size_t i = 0; i < 32; ++i) {
+    quantizer->quantize_data(vectors[i].data(), code.data());
+    ASSERT_EQ(0, streamer->add_with_id_impl(i, code.data(), codes, ctx));
+  }
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, storage->close());
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, false}));
+  ASSERT_EQ(0, index->add(VectorData{DenseVector{vectors[32].data()}}, 32));
+  quantizer->quantize_data(vectors[32].data(), code.data());
+  std::string expected;
+  ASSERT_EQ(0, quantizer->dequantize(code.data(), codes, &expected));
+  VectorDataBuffer fetched;
+  ASSERT_EQ(0, index->fetch(32, &fetched));
+  EXPECT_EQ(expected, std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+  auto rows = SearchRows(index.get(), vectors[32], true);
+  ASSERT_FALSE(rows.empty());
+  EXPECT_EQ(32U, rows.front().first);
+  ASSERT_EQ(0, index->close());
+  test_util::RemoveTestFiles(path);
+}
