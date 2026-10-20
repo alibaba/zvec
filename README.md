@@ -35,17 +35,18 @@
 **Zvec** is an open-source, in-process vector database — lightweight, lightning-fast, and designed to embed directly into applications. Battle-tested within Alibaba Group, it delivers production-grade, low-latency and scalable similarity search with minimal setup.
 
 > [!Important]
-> 🚀 **v0.7.0 (August 24, 2026)**
+> 🚀 **v0.8.0**
 >
-> - **[zvec-grep](https://github.com/zvec-ai/zvec-grep) (`zg`)**: Local-first workspace search that unifies ripgrep, BM25, and vector search behind one CLI — built for humans and AI agents.
-> - **[ReMe](https://github.com/agentscope-ai/ReMe) integration**: zvec is now a file store backend in ReMe, the memory management kit for agents, providing in-process HNSW ANN search.
-> - **DiskANN productionization**: Adds **Linux ARM64 / macOS ARM64** support and an **io_uring** async I/O backend, with automatic fallback to the best available I/O option — no user intervention needed.
-> - **Index optimization**: New **IVF-RaBitQ** index and **PQ-INT8** quantizer; RaBitQ supports runtime **AVX2 / AVX512** dispatch, so the same binary automatically picks the best path on each CPU.
-> - **Deployment experience improved**: Prebuilt dynamic libraries slimmed significantly (macOS arm64 C API library 37→22 MB, **-40%**); new **musl libc / Alpine Linux** support; prebuilt SDK binaries for Linux (glibc/musl), macOS, Windows, Android, and iOS published with every release.
-> - **DocIterator**: New iterator for streaming full-collection document traversal across C++, C, and Python.
-> - **Full-text search**: New **N-gram tokenizer**, better suited for phrase, code, and short-text search.
+> - **Broader platform support**: Added **Intel Mac** and **Windows ARM64** builds, wheels, and SDKs; extended **DiskANN to Windows, Android, and iOS**, and **RaBitQ to Windows x86_64**.
+> - **Chinese FTS ready to use**: Embedded the default **Jieba dictionary and HMM model**, so Chinese tokenization needs no separate dictionary files or path configuration.
+> - **Lower index build costs**: Reduced peak memory during **IVF / DiskANN** builds and merges, and accelerated **HNSW RaBitQ** construction through vector reuse and batched lookups. Build and nested training tasks now enforce configured thread limits more strictly.
+> - **Faster distance computation**: Extensively refactored quantizers and distance calculations to benefit multiple quantization types and metrics, with major improvements to **INT4 kernels** and **Linux ARM64** performance. Query performance improved by up to **131.8%**.[^query-performance]
+> - **Faster search**: Added faster **Uniform quantizers** and optimized **Vamana** graph layout and prefetching. Uniform quantization avoids per-point score reconstruction, though a shared min/max range can increase quantization error and reduce recall.
+> - **Bug fixes and improvements**: Added more flexible **UTF-8 document IDs** up to 1,024 bytes; fixed concurrent reads during segment switches, index rebuilding with deleted rows, and correctness issues in **LIKE** and floating-point range filters.
 >
-> 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.7.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
+> 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.8.0)
+
+[^query-performance]: Measured on GIST 1M with L2 distance, INT8 quantization, and HNSW on a 16-core Linux ARM64 system.
 
 ## 💫 Features
 
@@ -76,7 +77,7 @@ Prefer a visual tool? Try **[Zvec Studio](https://github.com/zvec-ai/zvec-studio
 
 - Linux (x86_64, ARM64; glibc & musl)
 - macOS (ARM64, x86_64)
-- Windows (x86_64)
+- Windows (x86_64, ARM64; ARM64 Python wheels: 3.11–3.14)
 
 ### 🛠️ Building from Source
 

@@ -35,17 +35,23 @@
 **Zvec** 是一款开源的嵌入式(进程内)向量数据库 — 轻量、极速，可直接嵌入应用程序。以极简的配置提供生产级、低延迟、可扩展的向量检索能力。
 
 > [!IMPORTANT]
-> 🚀  **v0.7.0（2026 年 8 月 24 日）**
+> 🚀 **v0.8.0**
 >
-> - **[zvec-grep](https://github.com/zvec-ai/zvec-grep)（`zg`）**：本地优先的工作区搜索，一个 CLI 统一 ripgrep、BM25 与向量检索，为人类与 AI Agent 而设计。
-> - **[ReMe](https://github.com/agentscope-ai/ReMe) 集成**：zvec 成为 ReMe（Agent 记忆管理套件）的文件存储后端，提供进程内 HNSW 向量检索。
-> - **DiskANN 生产化**：新增 **Linux ARM64 / macOS ARM64** 支持与 **io_uring** 异步 I/O 后端，自动回退到最优 I/O 方案，用户无需任何配置。
-> - **索引优化**：新增 **IVF-RaBitQ** 索引、**PQ-INT8** 量化器；RaBitQ 支持运行时 **AVX2 / AVX512** 指令集动态分发，同一套二进制可在不同 CPU 上自动选择最优路径。
-> - **部署体验优化**：动态库大幅瘦身（macOS arm64 C API 库 37→22 MB，**-40%**）；新增 **musl libc / Alpine Linux** 支持；每次发布自动提供 Linux（glibc/musl）、macOS、Windows、Android、iOS 的预编译 SDK。
-> - **DocIterator**：新增全集合文档流式遍历迭代器，覆盖 C++、C、Python。
-> - **全文检索**：新增 **N-gram 分词器**，更适合短语、代码、短文本等检索场景。
+> - **平台覆盖更广**：新增 **Intel Mac、Windows ARM64** 构建、wheel 与 SDK， **DiskANN 扩展至 Windows、Android 和 iOS**，
+    **RaBitQ 新增 Windows x86_64 支持**。
+> - **中文全文检索开箱即用**：内置 **Jieba 中文词典和 HMM 模型**，无需单独部署词典文件或配置词典路径。
+> - **建图更省内存、更快**：降低 **IVF / DiskANN** 建图与合并时的峰值内存，通过向量复用与批量查找加速 **HNSW RaBitQ**
+    建图；建图与嵌套训练更严格地遵守配置的线程数限制。
+> - **距离计算全面提速**：大范围重构量化器和距离计算，多种量化类型与距离度量均受益，重点优化 **INT4 内核**和 **Linux
+    ARM64** 场景性能，查询性能最高提升 **131.8%**。[^query-performance]
+> - **更快的检索**：新增更快的 **Uniform 系列量化器**，优化 **Vamana** 图布局与预取。Uniform 量化避免逐点分数反算，但共享
+    Min/Max 可能增大量化误差、降低召回率。
+> - **修复与改进**：支持更灵活的 **UTF-8 文档 ID**，长度上限提升至 1,024 字节；修复分段切换时的并发读取、含删除记录的索引重建，以及
+    **LIKE、浮点范围过滤**等正确性问题。
 >
-> 👉 [查看更新日志](https://github.com/alibaba/zvec/releases/tag/v0.7.0) | [查看路线图 📍](https://github.com/alibaba/zvec/issues/309)
+> 👉 [查看更新日志](https://github.com/alibaba/zvec/releases/tag/v0.8.0)
+
+[^query-performance]: 测试配置：GIST 1M 数据集，L2 距离，INT8 量化，HNSW 索引，16 核 Linux ARM64。
 
 ## 💫 核心特性
 
@@ -76,7 +82,7 @@ Zvec 提供多语言官方 SDK：
 
 - Linux (x86_64, ARM64; glibc & musl)
 - macOS (ARM64, x86_64)
-- Windows (x86_64)
+- Windows (x86_64, ARM64；ARM64 Python wheel 支持 3.11–3.14)
 
 ### 🛠️ 源码构建
 
