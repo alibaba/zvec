@@ -20,6 +20,8 @@
 
 #if defined(_WIN32)
 #include <Windows.h>
+// Keep the Win32 A/W alias from rewriting File::RemoveDirectory and its test.
+#undef RemoveDirectory
 #endif
 
 using namespace zvec::ailego;
