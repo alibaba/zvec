@@ -100,6 +100,22 @@ class BlockScanner {
                        DistanceEstimate *out) const = 0;
   virtual float refine(const void *row,
                        const DistanceEstimate &estimate) const = 0;
+
+  // Estimate and prune against a block-entry heap threshold. Only selected
+  // lanes need to be written to out. Callers must consume them in row order
+  // and recheck the threshold as the heap tightens. Other accelerators retain
+  // their ordinary estimator through this default implementation.
+  virtual int estimate_candidates(const void *block, size_t count, float worst,
+                                  DistanceEstimate *out,
+                                  uint32_t *candidates) const {
+    if (!block || !out || !candidates || count > 32) return kErrInvalidArgument;
+    *candidates = 0;
+    const int ret = estimate(block, count, out);
+    if (ret != 0) return ret;
+    for (size_t i = 0; i < count; ++i)
+      *candidates |= uint32_t(!(out[i].lower_bound > worst)) << i;
+    return 0;
+  }
 };
 
 class Quantizer {

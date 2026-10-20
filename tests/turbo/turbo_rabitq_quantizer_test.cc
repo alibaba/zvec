@@ -319,6 +319,34 @@ TEST(RabitqQuantizer, MatchesDedicatedRabitqEstimator) {
   }
 }
 
+// Fusing threshold selection must preserve both the selected lanes and the
+// estimates used by refinement, including equality and unordered thresholds.
+void CheckCandidateEstimates(const BlockScanner &scanner, const void *block,
+                             size_t count) {
+  DistanceEstimate reference[32];
+  ASSERT_EQ(0, scanner.estimate(block, count, reference));
+  for (float threshold :
+       {std::numeric_limits<float>::infinity(),
+        -std::numeric_limits<float>::infinity(),
+        std::numeric_limits<float>::quiet_NaN(), reference[0].lower_bound,
+        reference[count / 2].lower_bound}) {
+    SCOPED_TRACE(threshold);
+    DistanceEstimate selected[32];
+    uint32_t expected = 0, candidates = 0;
+    for (size_t i = 0; i < count; ++i)
+      expected |= uint32_t(!(reference[i].lower_bound > threshold)) << i;
+    ASSERT_EQ(0, scanner.estimate_candidates(block, count, threshold, selected,
+                                             &candidates));
+    EXPECT_EQ(expected, candidates);
+    for (size_t i = 0; i < count; ++i) {
+      if (!(candidates & (uint32_t(1) << i))) continue;
+      EXPECT_FLOAT_EQ(reference[i].distance, selected[i].distance);
+      EXPECT_FLOAT_EQ(reference[i].lower_bound, selected[i].lower_bound);
+      EXPECT_FLOAT_EQ(reference[i].coarse_dot, selected[i].coarse_dot);
+    }
+  }
+}
+
 // Verify uint64 single-code -> uint8 FastScan packing against the independent
 // batch encoder, including partial lanes and the >1024-dimension accumulator.
 TEST(RabitqQuantizer, PackedScanMatchesDedicatedBatchEstimator) {
@@ -403,6 +431,7 @@ TEST(RabitqQuantizer, PackedScanMatchesDedicatedBatchEstimator) {
                                          expected, lower, dot, true);
           turbo::DistanceEstimate estimates[32];
           ASSERT_EQ(0, scanner->estimate(packed.data(), count, estimates));
+          CheckCandidateEstimates(*scanner, packed.data(), count);
           for (size_t i = 0; i < count; ++i) {
             const float tolerance =
                 1e-5f * std::max(1.0f, std::abs(expected[i]));
@@ -473,56 +502,79 @@ TEST(RabitqQuantizer, PackedScanUsesEachRowsModelCentroid) {
     distance =
         {};  // scanner owns its query, including the LUT's source pointer
     const size_t stride = quantizer.quantized_datapoint_vector_length();
-    std::string rows(17 * stride, '\0'),
-        block(quantizer.scan_block_size(), '\0');
-    for (size_t i = 0; i < 17; ++i) {
-      auto row = centers[i % clusters];
-      if (i >= clusters)
-        for (float &v : row) v += random(rng) * .1f;
-      quantizer.quantize_data(row.data(), rows.data() + i * stride);
-    }
-    ASSERT_EQ(0,
-              quantizer.pack_scan_block(rows.data(), 17, stride, block.data()));
-    DistanceEstimate estimates[32];
-    ASSERT_EQ(0, scanner->estimate(block.data(), 17, estimates));
-    const auto *scalars = reinterpret_cast<const float *>(
-        encoded.data() + padded * sizeof(float) + padded / 2);
-    const auto library_metric = std::strcmp(metric, "SquaredEuclidean") == 0
-                                    ? rabitqlib::METRIC_L2
-                                    : rabitqlib::METRIC_IP;
-    rabitqlib::SplitBatchQuery<float> reference_query(
-        reinterpret_cast<const float *>(encoded.data()), padded, 6,
-        library_metric, true);
-    // The reference uses the same 16-bit LUT estimator, rather than comparing
-    // it with an exact floating-point dot product at an arbitrary tolerance.
-    // Evaluate each model centroid independently, then select its own lanes.
-    for (uint32_t c = 0; c < clusters; ++c) {
-      reference_query.set_g_add(scalars[4 + clusters + c], -scalars[4 + c]);
-      float expected[32], lower[32], dot[32];
-      rabitqlib::split_batch_estdist(block.data() + 32 * sizeof(uint32_t),
-                                     reference_query, padded, expected, lower,
-                                     dot, true);
-      for (size_t i = 0; i < 17; ++i) {
-        const char *row = rows.data() + i * stride;
-        uint32_t cluster;
-        std::memcpy(&cluster, row, sizeof(cluster));
-        ASSERT_LT(cluster, clusters);
-        if (i < clusters) EXPECT_EQ(i, cluster);
-        if (cluster != c) continue;
-        const float offset = std::strcmp(metric, "InnerProduct") == 0 ? 1 : 0;
-        const float tolerance = 1e-5f * std::max(1.0f, std::abs(expected[i]));
-        EXPECT_NEAR(expected[i] - offset, estimates[i].distance, tolerance);
-        EXPECT_NEAR(lower[i] - offset, estimates[i].lower_bound, tolerance);
-        EXPECT_FLOAT_EQ(quantizer.calc_distance_dp_query(row, encoded.data()),
-                        scanner->refine(row, estimates[i]));
-        ASSERT_TRUE(scanner->set_reuse_coarse_dot(true));
-        const float boosted = rabitqlib::split_distance_boosting(
-            row + 8 + padded / 8 + 12, rabitqlib::select_excode_ipfunc(6),
-            reference_query, padded, 6, dot[i]);
-        EXPECT_NEAR(boosted - offset, scanner->refine(row, estimates[i]),
-                    1e-5f * std::max(1.0f, std::abs(boosted)));
-        ASSERT_TRUE(scanner->set_reuse_coarse_dot(false));
+    for (size_t count : {1u, 17u, 32u}) {
+      SCOPED_TRACE(count);
+      std::string rows(count * stride, '\0'),
+          block(quantizer.scan_block_size(), '\0');
+      for (size_t i = 0; i < count; ++i) {
+        auto row = centers[i % clusters];
+        if (i >= clusters)
+          for (float &v : row) v += random(rng) * .1f;
+        quantizer.quantize_data(row.data(), rows.data() + i * stride);
       }
+      ASSERT_EQ(0, quantizer.pack_scan_block(rows.data(), count, stride,
+                                             block.data()));
+      DistanceEstimate estimates[32];
+      ASSERT_EQ(0, scanner->estimate(block.data(), count, estimates));
+      CheckCandidateEstimates(*scanner, block.data(), count);
+      const auto *scalars = reinterpret_cast<const float *>(
+          encoded.data() + padded * sizeof(float) + padded / 2);
+      const auto library_metric = std::strcmp(metric, "SquaredEuclidean") == 0
+                                      ? rabitqlib::METRIC_L2
+                                      : rabitqlib::METRIC_IP;
+      rabitqlib::SplitBatchQuery<float> reference_query(
+          reinterpret_cast<const float *>(encoded.data()), padded, 6,
+          library_metric, true);
+      // The reference uses the same 16-bit LUT estimator, rather than comparing
+      // it with an exact floating-point dot product at an arbitrary tolerance.
+      // Evaluate each model centroid independently, then select its own lanes.
+      for (uint32_t c = 0; c < clusters; ++c) {
+        reference_query.set_g_add(scalars[4 + clusters + c], -scalars[4 + c]);
+        float expected[32], lower[32], dot[32];
+        rabitqlib::split_batch_estdist(block.data() + 32 * sizeof(uint32_t),
+                                       reference_query, padded, expected, lower,
+                                       dot, true);
+        for (size_t i = 0; i < count; ++i) {
+          const char *row = rows.data() + i * stride;
+          uint32_t cluster;
+          std::memcpy(&cluster, row, sizeof(cluster));
+          ASSERT_LT(cluster, clusters);
+          if (i < clusters) {
+            EXPECT_EQ(i, cluster);
+          }
+          if (cluster != c) continue;
+          const float offset = std::strcmp(metric, "InnerProduct") == 0 ? 1 : 0;
+          const float tolerance = 1e-5f * std::max(1.0f, std::abs(expected[i]));
+          EXPECT_NEAR(expected[i] - offset, estimates[i].distance, tolerance);
+          EXPECT_NEAR(lower[i] - offset, estimates[i].lower_bound, tolerance);
+          EXPECT_FLOAT_EQ(quantizer.calc_distance_dp_query(row, encoded.data()),
+                          scanner->refine(row, estimates[i]));
+          ASSERT_TRUE(scanner->set_reuse_coarse_dot(true));
+          const float boosted = rabitqlib::split_distance_boosting(
+              row + 8 + padded / 8 + 12, rabitqlib::select_excode_ipfunc(6),
+              reference_query, padded, 6, dot[i]);
+          EXPECT_NEAR(boosted - offset, scanner->refine(row, estimates[i]),
+                      1e-5f * std::max(1.0f, std::abs(boosted)));
+          ASSERT_TRUE(scanner->set_reuse_coarse_dot(false));
+        }
+      }
+      // Unused tail IDs must not be gathered; every active ID must be checked
+      // before it can index the query's model corrections.
+      const uint32_t invalid = std::numeric_limits<uint32_t>::max();
+      if (count < 32) {
+        std::memcpy(block.data() + count * sizeof(invalid), &invalid,
+                    sizeof(invalid));
+        ASSERT_EQ(0, scanner->estimate(block.data(), count, estimates));
+        CheckCandidateEstimates(*scanner, block.data(), count);
+      }
+      std::memcpy(block.data() + (count - 1) * sizeof(invalid), &invalid,
+                  sizeof(invalid));
+      EXPECT_NE(0, scanner->estimate(block.data(), count, estimates));
+      uint32_t candidates = 0;
+      EXPECT_NE(
+          0, scanner->estimate_candidates(
+                 block.data(), count, -std::numeric_limits<float>::infinity(),
+                 estimates, &candidates));
     }
   }
 }

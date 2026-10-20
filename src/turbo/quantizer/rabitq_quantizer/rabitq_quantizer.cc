@@ -15,6 +15,9 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#if defined(__AVX512F__)
+#include <immintrin.h>
+#endif
 #include <rabitqlib/quantization/rabitq_impl.hpp>
 #if RABITQ_SUPPORTED
 #include <rabitqlib/fastscan/highacc_fastscan.hpp>
@@ -776,29 +779,97 @@ class RabitqBlockScanner final : public BlockScanner {
                                               dim_);
     // Like split_batch_estdist, accumulate in <=1024-dimension chunks to
     // avoid overflowing the 16-bit SIMD accumulators. No per-block allocation.
-    std::array<int32_t, 32> sums{}, chunk;
-    for (size_t d = 0; d < dim_; d += 1024) {
-      rabitqlib::fastscan::accumulate_hacc(batch.bin_code() + d * 4,
-                                           query_.lut() + d * 8, chunk.data(),
-                                           std::min(size_t(1024), dim_ - d));
-      for (size_t i = 0; i < 32; ++i) sums[i] += chunk[i];
-    }
+    std::array<int32_t, 32> sums;
+    accumulate(batch.bin_code(), sums.data());
     const auto *scalars = reinterpret_cast<const float *>(
         distance_.query_storage().data() + dim_ * sizeof(float) + dim_ / 2);
     const float *g_add = scalars + 4;
     const float *g_error = g_add + clusters_;
+    // Validate and gather model corrections separately. A conditional return
+    // in the arithmetic loop prevents vectorization of the 32-lane epilogue.
+    // Keep each lane's own model even when a block contains mixed centroids.
+    alignas(64) std::array<float, 32> adds, errors;
     for (size_t i = 0; i < count; ++i) {
       const uint32_t c = ReadUint(bytes + i * sizeof(uint32_t));
       if (c >= clusters_) return kErrInvalidArgument;
+      adds[i] = g_add[c];
+      errors[i] = g_error[c];
+    }
+    for (size_t i = 0; i < count; ++i) {
       const float dot = query_.delta() * sums[i] + query_.sum_vl_lut();
-      const float score = batch.f_add()[i] + g_add[c] +
+      const float score = batch.f_add()[i] + adds[i] +
                           batch.f_rescale()[i] * (dot + query_.k1xsumq()) -
                           (ip_ ? 1 : 0);
       out[i] = {score,
-                bits_ == 1 ? score : score - batch.f_error()[i] * g_error[c],
+                bits_ == 1 ? score : score - batch.f_error()[i] * errors[i],
                 dot};
     }
     return 0;
+  }
+
+  int estimate_candidates(const void *block, size_t count, float worst,
+                          DistanceEstimate *out,
+                          uint32_t *candidates) const override {
+    if (!block || !out || !candidates || count > 32) return kErrInvalidArgument;
+#if defined(__AVX512F__)
+    if (count == 32) {
+      *candidates = 0;
+      const auto *bytes = static_cast<const char *>(block);
+      const auto limit = _mm512_set1_epi32(static_cast<int>(clusters_));
+      const __m512i ids[2] = {
+          _mm512_loadu_si512(bytes),
+          _mm512_loadu_si512(bytes + 16 * sizeof(uint32_t))};
+      // Validate every active model ID, including lanes that pruning rejects.
+      if (_mm512_cmp_epu32_mask(ids[0], limit, _MM_CMPINT_NLT) ||
+          _mm512_cmp_epu32_mask(ids[1], limit, _MM_CMPINT_NLT))
+        return kErrInvalidArgument;
+      rabitqlib::ConstBatchDataMap<float> batch(bytes + 32 * sizeof(uint32_t),
+                                                dim_);
+      alignas(64) std::array<int32_t, 32> sums;
+      accumulate(batch.bin_code(), sums.data());
+      const auto *scalars = reinterpret_cast<const float *>(
+          distance_.query_storage().data() + dim_ * sizeof(float) + dim_ / 2);
+      const float *g_add = scalars + 4;
+      const float *g_error = g_add + clusters_;
+      const __m512 delta = _mm512_set1_ps(query_.delta());
+      const __m512 sum_vl = _mm512_set1_ps(query_.sum_vl_lut());
+      const __m512 k1 = _mm512_set1_ps(query_.k1xsumq());
+      const __m512 threshold = _mm512_set1_ps(worst);
+      for (size_t half = 0; half < 2; ++half) {
+        const size_t first = half * 16;
+        const __m512 dot = _mm512_fmadd_ps(
+            delta, _mm512_cvtepi32_ps(_mm512_load_si512(sums.data() + first)),
+            sum_vl);
+        const __m512 add = _mm512_i32gather_ps(ids[half], g_add, 4);
+        __m512 score = _mm512_fmadd_ps(
+            _mm512_loadu_ps(batch.f_rescale() + first), _mm512_add_ps(dot, k1),
+            _mm512_add_ps(_mm512_loadu_ps(batch.f_add() + first), add));
+        if (ip_) score = _mm512_sub_ps(score, _mm512_set1_ps(1));
+        const __m512 lower =
+            bits_ == 1 ? score
+                       : _mm512_fnmadd_ps(
+                             _mm512_loadu_ps(batch.f_error() + first),
+                             _mm512_i32gather_ps(ids[half], g_error, 4), score);
+        uint32_t mask = _mm512_cmp_ps_mask(lower, threshold, _CMP_NGT_UQ);
+        *candidates |= mask << first;
+        if (!mask) continue;
+        // Most blocks have no candidates. Avoid writing 32 AoS estimates and
+        // gathering their bounds back just to discover an empty mask.
+        alignas(64) float scores[16], bounds[16], dots[16];
+        _mm512_store_ps(scores, score);
+        _mm512_store_ps(bounds, lower);
+        _mm512_store_ps(dots, dot);
+        while (mask) {
+          const size_t lane = ailego_ctz32(mask);
+          mask &= mask - 1;
+          out[first + lane] = {scores[lane], bounds[lane], dots[lane]};
+        }
+      }
+      return 0;
+    }
+#endif
+    return BlockScanner::estimate_candidates(block, count, worst, out,
+                                             candidates);
   }
 
   float refine(const void *row, const DistanceEstimate &coarse) const override {
@@ -829,6 +900,20 @@ class RabitqBlockScanner final : public BlockScanner {
   }
 
  private:
+  void accumulate(const uint8_t *codes, int32_t *sums) const {
+    // The library overwrites all 32 sums. For the common <=1024D case, write
+    // straight to the final array instead of zeroing and adding a second one.
+    rabitqlib::fastscan::accumulate_hacc(codes, query_.lut(), sums,
+                                         std::min(size_t(1024), dim_));
+    std::array<int32_t, 32> chunk;
+    for (size_t d = 1024; d < dim_; d += 1024) {
+      rabitqlib::fastscan::accumulate_hacc(codes + d * 4, query_.lut() + d * 8,
+                                           chunk.data(),
+                                           std::min(size_t(1024), dim_ - d));
+      for (size_t i = 0; i < 32; ++i) sums[i] += chunk[i];
+    }
+  }
+
   bool reuse_coarse_dot_{false};
   DistanceImpl distance_;
   size_t dim_, clusters_;

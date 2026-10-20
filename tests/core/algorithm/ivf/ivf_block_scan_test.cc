@@ -1,6 +1,7 @@
 // Copyright 2025-present the zvec project
 // Licensed under the Apache License, Version 2.0.
 #include <atomic>
+#include <limits>
 #include <map>
 #include <thread>
 #include <gtest/gtest.h>
@@ -65,7 +66,7 @@ constexpr size_t kDim = 73;
 constexpr size_t kCount = 1057;
 
 void WriteIndex(const std::string &path, size_t block_size, bool packed,
-                bool malformed = false) {
+                bool malformed = false, bool deleted = false) {
   IndexMeta meta(IndexMeta::DT_FP32, kDim);
   meta.set_metric("SquaredEuclidean", 0, ailego::Params{});
   meta.set_major_order(IndexMeta::MO_ROW);
@@ -80,7 +81,8 @@ void WriteIndex(const std::string &path, size_t block_size, bool packed,
   for (size_t i = 0; i < kCount; ++i) {
     row[0] = i;
     // Two empty lists and two different partial posting blocks.
-    ASSERT_EQ(0, dumper.dump_inverted_vector(i < 37 ? 1 : 3, i, row.data()));
+    const uint64_t key = deleted && (i < 69 || i % 2 == 0) ? kInvalidKey : i;
+    ASSERT_EQ(0, dumper.dump_inverted_vector(i < 37 ? 1 : 3, key, row.data()));
   }
   ASSERT_EQ(0, dumper.dump_inverted_vector_finished());
   ASSERT_EQ(0, dumper.dump_turbo_quantizer(quantizer));
@@ -292,6 +294,69 @@ TEST(IVFBlockScan, SegmentTimingDoesNotChangeResultsOrLeakAcrossQueries) {
     EXPECT_EQ(0u, entity.packed_scan_stats().refined_count);
     EXPECT_GT(entity.packed_scan_stats().post_scan_ns, 0.0);
   }
+  ailego::File::RemovePath(path);
+}
+
+TEST(IVFBlockScan, DeletedKeysInMappedUnfilteredScan) {
+  const std::string path = "ivf_block_scan_deleted_test.index";
+  // Includes an entirely deleted list, an entirely deleted block, live and
+  // deleted lanes in the same block, and a partial final block.
+  WriteIndex(path, 32, true, false, true);
+  for (const char *type : {"FileReadStorage", "MMapFileReadStorage"}) {
+    SCOPED_TRACE(type);
+    auto storage = IndexFactory::CreateStorage(type);
+    ASSERT_EQ(0, storage->open(path, false));
+    IVFEntity entity;
+    ASSERT_EQ(0, entity.load(storage));
+    std::vector<float> query(kDim, 0);
+    IndexQueryMeta qmeta(IndexMeta::DT_FP32, kDim);
+    for (bool pruning : {false, true}) {
+      SCOPED_TRACE(pruning);
+      entity.set_packed_scan_pruning(pruning);
+      ASSERT_EQ(0, entity.bind_query(query.data(), qmeta));
+      IndexDocumentHeap heap(5);
+      IndexContext::Stats stats;
+      ASSERT_EQ(0, entity.search(query.data(), &heap, &stats));
+      heap.sort();
+      ASSERT_EQ(5u, heap.size());
+      size_t rank = 0;
+      for (const auto &doc : heap) {
+        const uint64_t key = 69 + 2 * rank++;
+        EXPECT_EQ(key, doc.key());
+        EXPECT_FLOAT_EQ(key * key, doc.score());
+      }
+      EXPECT_EQ(988u, entity.packed_scan_stats().coarse_count);
+      EXPECT_EQ(pruning ? 5u : 494u, entity.packed_scan_stats().refined_count);
+    }
+  }
+  ailego::File::RemovePath(path);
+}
+
+TEST(IVFBlockScan, MappedPruningRetainsEqualAndUnorderedBounds) {
+  const std::string path = "ivf_block_scan_bound_test.index";
+  WriteIndex(path, 32, true);
+  auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_EQ(0, storage->open(path, false));
+  IVFEntity entity;
+  ASSERT_EQ(0, entity.load(storage));
+  for (float value : {0.0f, std::numeric_limits<float>::infinity(),
+                      std::numeric_limits<float>::quiet_NaN()}) {
+    std::vector<float> query(kDim, 0);
+    query[0] = value;
+    IndexQueryMeta qmeta(IndexMeta::DT_FP32, kDim);
+    ASSERT_EQ(0, entity.bind_query(query.data(), qmeta));
+    IndexDocumentHeap heap(1);
+    if (value == 0) {
+      heap.emplace(9999, 0.0f, 0);
+    }
+    IndexContext::Stats stats;
+    ASSERT_EQ(0, entity.search(query.data(), &heap, &stats));
+    // A lower bound equal to the threshold must still be refined, including
+    // infinity == infinity. An unordered comparison must not prune NaNs.
+    EXPECT_EQ(value == 0 ? 1u : kCount,
+              entity.packed_scan_stats().refined_count);
+  }
+  storage->close();
   ailego::File::RemovePath(path);
 }
 

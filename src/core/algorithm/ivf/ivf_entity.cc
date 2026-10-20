@@ -17,6 +17,9 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#if defined(__AVX512F__)
+#include <immintrin.h>
+#endif
 #include <core/quantizer/quantizer_params.h>
 #include <turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h>
 #include "metric/metric_params.h"
@@ -34,6 +37,31 @@ inline uint64_t SegmentClock() {
       std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now().time_since_epoch())
           .count());
+}
+
+// Keep equality and unordered bounds: production pruning rejects only bounds
+// strictly greater than the heap threshold. The heap can tighten while this
+// mask is consumed, so each surviving lane is checked again before refinement.
+inline uint32_t CandidateMask(const turbo::DistanceEstimate *estimates,
+                              size_t count, float worst) {
+#if defined(__AVX512F__)
+  if (count == 32) {
+    static_assert(sizeof(turbo::DistanceEstimate) == 3 * sizeof(float));
+    const __m512i offsets = _mm512_setr_epi32(0, 3, 6, 9, 12, 15, 18, 21, 24,
+                                              27, 30, 33, 36, 39, 42, 45);
+    const __m512 threshold = _mm512_set1_ps(worst);
+    const __m512 first =
+        _mm512_i32gather_ps(offsets, &estimates[0].lower_bound, 4);
+    const __m512 second =
+        _mm512_i32gather_ps(offsets, &estimates[16].lower_bound, 4);
+    return uint32_t(_mm512_cmp_ps_mask(first, threshold, _CMP_NGT_UQ)) |
+           (uint32_t(_mm512_cmp_ps_mask(second, threshold, _CMP_NGT_UQ)) << 16);
+  }
+#endif
+  uint32_t mask = 0;
+  for (size_t i = 0; i < count; ++i)
+    mask |= uint32_t(!(estimates[i].lower_bound > worst)) << i;
+  return mask;
 }
 
 //! Cursor over a scatter read. IVF blocks and vectors are logical byte
@@ -1165,6 +1193,11 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
   const auto *coarse_base = scan_blocks_->base_data();
   const auto *key_base = keys_->base_data();
   const auto *row_base = inverted_->base_data();
+  const bool mapped_unfiltered = row_base && !HasFilter && !HasVisitor;
+  // Sample exports need estimates for every lane; timing and ordinary scan
+  // counters can use the same fused path as production queries.
+  const bool fused_candidates = mapped_unfiltered && packed_scan_pruning_ &&
+                                !packed_scan_samples_enabled_;
   // At most 32 blocks and 64 KiB of coarse data. A single larger block is
   // allowed by the capability contract; RaBitQ blocks fit within 17 KiB.
   const size_t window_blocks =
@@ -1209,6 +1242,13 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
       uint32_t keeps = 0;
       for (size_t i = 0; i < count; ++i) {
         if (keys[i] == kInvalidKey) continue;
+        // Mapped unfiltered scans can defer key checks until after pruning.
+        // Stop at the first live key, retaining the all-deleted-block skip
+        // without building a per-row mask for every live block.
+        if (mapped_unfiltered) {
+          keeps = 1;
+          break;
+        }
         if constexpr (HasFilter) {
           if ((*filter)(keys[i])) {
             ++(*stats->mutable_filtered_count());
@@ -1241,7 +1281,11 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
         segment_ns_[0] += seg_t1 - seg_t0;
       }
       std::array<turbo::DistanceEstimate, 32> estimates;
-      int ret = block_scanner_->estimate(packed, count, estimates.data());
+      uint32_t candidates = 0;
+      int ret = fused_candidates
+                    ? block_scanner_->estimate_candidates(
+                          packed, count, worst, estimates.data(), &candidates)
+                    : block_scanner_->estimate(packed, count, estimates.data());
       if (ret != 0) return IndexError_InvalidFormat;
       *(stats->mutable_dist_calced_count()) += count;
       packed_scan_stats_.coarse_count += count;
@@ -1255,8 +1299,8 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
           last_row = sr;
           mutable_packed_scan_samples().push_back(
               {static_cast<uint32_t>(list_id), static_cast<uint32_t>(block_id),
-               sr, keys[sr], estimates[sr].distance,
-               estimates[sr].lower_bound, estimates[sr].coarse_dot});
+               sr, keys[sr], estimates[sr].distance, estimates[sr].lower_bound,
+               estimates[sr].coarse_dot});
         }
       }
       if (packed_scan_timing_) {
@@ -1276,10 +1320,29 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
       const size_t off = list.offset + block_id * header_.block_size;
       if (row_base) {
         // No preliminary mask pass is needed when row access has no I/O cost.
-        for (size_t i = 0; i < count; ++i) {
-          if ((keeps & (uint32_t(1) << i)) &&
-              !rejected(keys[i], estimates[i].lower_bound))
-            consume(row_base + off + i * stride, i);
+        if (mapped_unfiltered) {
+          if (packed_scan_pruning_) {
+            if (!fused_candidates)
+              candidates = CandidateMask(estimates.data(), count, worst);
+            while (candidates) {
+              const size_t i = ailego_ctz32(candidates);
+              candidates &= candidates - 1;
+              if (estimates[i].lower_bound > worst) continue;
+              if (keys[i] != kInvalidKey)
+                consume(row_base + off + i * stride, i);
+            }
+          } else {
+            for (size_t i = 0; i < count; ++i) {
+              if (keys[i] != kInvalidKey)
+                consume(row_base + off + i * stride, i);
+            }
+          }
+        } else {
+          for (size_t i = 0; i < count; ++i) {
+            if ((keeps & (uint32_t(1) << i)) &&
+                !rejected(keys[i], estimates[i].lower_bound))
+              consume(row_base + off + i * stride, i);
+          }
         }
       } else {
         for (size_t i = 0; i < count; ++i) {
