@@ -197,11 +197,16 @@ class RetainedBlockAllocator {
   T *allocate(size_t n) {
     static_assert(alignof(T) <= 16,
                   "over-aligned retained objects are unsupported");
+    // T may be a pointer (e.g. hash buckets); allocate slots, not pointees.
+    // NOLINTNEXTLINE(bugprone-sizeof-expression)
     if (n > std::numeric_limits<size_t>::max() / sizeof(T))
       throw std::bad_alloc();
+    // NOLINTNEXTLINE(bugprone-sizeof-expression)
     return static_cast<T *>(resource_->allocate(n * sizeof(T), alignof(T)));
   }
   void deallocate(T *data, size_t n) noexcept {
+    // Match the pointer-slot accounting used by allocate().
+    // NOLINTNEXTLINE(bugprone-sizeof-expression)
     resource_->deallocate(data, n * sizeof(T), alignof(T));
   }
   size_t live_bytes() const {
@@ -236,10 +241,13 @@ template <typename T>
 RetainedMetadataArray<T> MakeRetainedMetadataArray(size_t n) {
   static_assert(alignof(T) <= MemoryLimitPool::kRetainedBlockHeaderBytes,
                 "over-aligned retained metadata is unsupported");
+  // Pointer-valued metadata stores slots, not the objects they refer to.
+  // NOLINTNEXTLINE(bugprone-sizeof-expression)
   if (n > std::numeric_limits<size_t>::max() / sizeof(T))
     throw std::bad_alloc();
   auto *data =
       static_cast<T *>(MemoryLimitPool::get_instance().acquire_retained_block(
+          // NOLINTNEXTLINE(bugprone-sizeof-expression)
           n * sizeof(T), /*metadata=*/true));
   if (!data) throw std::bad_alloc();
   RetainedMetadataArray<T> result(data);
