@@ -24,6 +24,9 @@
 #include <limits>
 #include <thread>
 #include <ailego/io/iouring_loader.h>
+#include <ailego/pattern/scope_guard.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/buffer/budgeted_mapped_buffer.h>
 #include <zvec/ailego/logger/logger.h>
 
 namespace zvec {
@@ -32,6 +35,27 @@ namespace ailego {
 // Retry budget for draining in-flight requests when the kernel keeps
 // returning EAGAIN/EBUSY (100 us sleep per retry, about one second total).
 static constexpr size_t kIoUringDrainRetries = 10000;
+
+IoUringRing::~IoUringRing() {
+  teardown();
+  if (prepaid_staging_bytes_)
+    MemoryLimitPool::get_instance().release_metadata(prepaid_staging_bytes_);
+}
+
+void IoUringRing::adopt_staging_reservation(size_t bytes) {
+  assert(staging_ == nullptr && staging_charge_ == 0 &&
+         prepaid_staging_bytes_ == 0);
+  prepaid_staging_bytes_ = bytes;
+}
+
+void IoUringRing::release_staging() {
+  if (staging_) File::MemoryUnmap(staging_, staging_size_);
+  staging_ = nullptr;
+  staging_size_ = 0;
+  if (staging_charge_)
+    MemoryLimitPool::get_instance().release_external(staging_charge_);
+  staging_charge_ = 0;
+}
 
 bool IoUringRing::setup(uint32_t entries) {
   struct io_uring_params params;
@@ -175,32 +199,50 @@ void IoUringRing::teardown() {
     ring_fd_ = -1;
   }
 
-  ::free(staging_);
-  staging_ = nullptr;
-  staging_size_ = 0;
+  release_staging();
 
   sq_entries_ = 0;
   cq_entries_ = 0;
 }
 
 bool IoUringRing::ensure_staging(size_t bytes) {
+  try {
+    bytes = BudgetedMappedBuffer::mapping_size(bytes);
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
   if (staging_size_ >= bytes) {
     return true;
   }
-  void *ptr = nullptr;
-  int err = ::posix_memalign(&ptr, kIoUringStagingAlign, bytes);
-  if (err != 0) {
-    LOG_WARN("io_uring staging allocation failed; size=%zu, %s", bytes,
-             ::strerror(err));
+  // Writeback has already reserved its maximum batch. Allocate that capacity
+  // once, avoiding both a second charge and overlapping growth allocations.
+  if (prepaid_staging_bytes_) {
+    if (bytes > prepaid_staging_bytes_) return false;
+    bytes = prepaid_staging_bytes_;
+  }
+  auto &pool = MemoryLimitPool::get_instance();
+  const size_t charge = prepaid_staging_bytes_ || !pool.capacity() ? 0 : bytes;
+  // Keep the old allocation charged until the replacement actually exists.
+  if (charge && !pool.try_charge_workspace(charge)) return false;
+  // Anonymous mappings are page-aligned, satisfying the I/O alignment. They
+  // bypass malloc arenas, so release_staging() really returns physical pages.
+  void *ptr = File::MemoryMap(bytes, 0);
+  if (!ptr) {
+    if (charge) pool.release_external(charge);
+    LOG_WARN("io_uring staging mapping failed; size=%zu", bytes);
     return false;
   }
-  ::free(staging_);
+  release_staging();
   staging_ = static_cast<char *>(ptr);
   staging_size_ = bytes;
+  staging_charge_ = charge;
   return true;
 }
 
 int IoUringRing::execute(int fd, const IoUringRead *read_reqs, size_t count) {
+  // Reuse across batches of this blocking call, not across a TLS ring's
+  // lifetime. execute_impl drains or quarantines all outstanding I/O first.
+  auto release = ScopeGuard::Make([&] { release_staging(); });
   return execute_impl(fd, read_reqs, nullptr, count);
 }
 

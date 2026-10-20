@@ -18,6 +18,7 @@
 #include <memory>
 #include <new>
 #include <vector>
+#include <zvec/ailego/buffer/memory_reservation.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/io/file.h>
@@ -66,6 +67,22 @@ class IndexStorage : public IndexModule {
       MemoryBlock mb;
       mb.type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
       mb.data_ = owned;
+      mb.scratch_size_ = size;
+      return mb;
+    }
+
+    //! Reserve before allocating; the charge follows ownership, including
+    //! copies and blocks that outlive their storage. Zero alignment uses
+    //! malloc.
+    static MemoryBlock AllocateOwned(size_t size, size_t alignment = 0) {
+      MemoryBlock mb;
+      mb.type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
+      if (!size) return mb;
+      mb.scratch_charge_.add(size);
+      void *data = alignment ? ailego_aligned_malloc(size, alignment)
+                             : ailego_malloc(size);
+      if (!data && size) throw std::bad_alloc();
+      mb.data_ = data;
       mb.scratch_size_ = size;
       return mb;
     }
@@ -140,6 +157,7 @@ class IndexStorage : public IndexModule {
           type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
           data_ = rhs.data_;
           scratch_size_ = rhs.scratch_size_;
+          scratch_charge_ = std::move(rhs.scratch_charge_);
           rhs.data_ = nullptr;
           rhs.scratch_size_ = 0;
           rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
@@ -213,6 +231,7 @@ class IndexStorage : public IndexModule {
             type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
             data_ = rhs.data_;
             scratch_size_ = rhs.scratch_size_;
+            scratch_charge_ = std::move(rhs.scratch_charge_);
             rhs.data_ = nullptr;
             rhs.scratch_size_ = 0;
             rhs.type_ = MemoryBlockType::MBT_UNKNOWN;
@@ -303,6 +322,7 @@ class IndexStorage : public IndexModule {
         data_ = nullptr;
       }
       scratch_size_ = 0;
+      scratch_charge_.retain_at_most(0);
     }
 
     //! Release the current representation and reset the block.
@@ -331,20 +351,13 @@ class IndexStorage : public IndexModule {
 
     //! Deep-copy heap scratch ownership.
     void deep_copy_from(const MemoryBlock &rhs) {
-      type_ = MemoryBlockType::MBT_HEAP_SCRATCH;
-      scratch_size_ = rhs.scratch_size_;
-      if (scratch_size_ > 0 && rhs.data_) {
-        data_ = ailego_malloc(scratch_size_);
-        if (data_ == nullptr) {
-          scratch_size_ = 0;
-          type_ = MemoryBlockType::MBT_UNKNOWN;
-          throw std::bad_alloc();
-        }
-        std::memcpy(data_, rhs.data_, scratch_size_);
-      } else {
-        data_ = nullptr;
-      }
+      auto copy = AllocateOwned(rhs.data_ ? rhs.scratch_size_ : 0);
+      if (rhs.data_ && rhs.scratch_size_)
+        std::memcpy(copy.data_, rhs.data_, rhs.scratch_size_);
+      *this = std::move(copy);
     }
+
+    ailego::MemoryReservation scratch_charge_;
   };
 
   struct SegmentData {
@@ -428,6 +441,7 @@ class IndexStorage : public IndexModule {
     //! segments owned by the same storage so backends can merge their page
     //! misses into one I/O submission.
     struct BorrowedRead {
+      BorrowedRead() = default;
       BorrowedRead(Segment *segment_arg, size_t offset_arg, size_t length_arg,
                    MemoryBlock *block_arg)
           : segment(segment_arg),
@@ -461,9 +475,16 @@ class IndexStorage : public IndexModule {
     //! Retrieve capacity of segment
     virtual size_t capacity() const = 0;
 
-    //! Fetch data from segment (with own buffer)
+    //! Copy into caller-owned memory. Dynamic destinations must be admitted
+    //! before allocation; fetch does not charge them again. Storage backends
+    //! are responsible for budgeting any intermediate buffers they allocate.
     virtual size_t fetch(size_t offset, void *buf, size_t len) const = 0;
 
+    //! Inspect immediately after a failed read/fetch on this thread. Backends
+    //! with only byte-count APIs may expose a more specific failure reason.
+    virtual int read_error() const {
+      return IndexError_ReadData;
+    }
     //! Read data from segment. Keep the block alive while using its data.
     //! Resetting or destroying the block releases owned buffers/cache pins;
     //! mmap and memory-backed views still require their segment to stay alive.

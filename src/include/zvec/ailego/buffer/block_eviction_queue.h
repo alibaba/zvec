@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <shared_mutex>
 #include <thread>
 #include <unordered_set>
@@ -37,6 +38,14 @@ using eviction_key_t = size_t;
 using block_id_t = size_t;
 using version_t = size_t;
 
+// Queue allocations must not reclaim pages: enqueue can run inside eviction.
+// The hooks cover initial blocks, growth, producers and producer indexes.
+struct ZVEC_AILEGO_API EvictionQueueTraits
+    : moodycamel::ConcurrentQueueDefaultTraits {
+  static void *malloc(size_t bytes);
+  static void free(void *ptr);
+};
+
 class ZVEC_AILEGO_API EvictableBlockOwner {
  public:
   virtual ~EvictableBlockOwner() = default;
@@ -45,6 +54,13 @@ class ZVEC_AILEGO_API EvictableBlockOwner {
 
   //! Evict a block; return true only when memory was reclaimed.
   virtual bool evict_block(eviction_key_t owner_key) = 0;
+
+  //! Opportunistically reclaim an inactive costly payload. The queue owns
+  //! the popped membership and requeues it when this returns false. Ordinary
+  //! explicit-hot pages do not opt in and retain their priority semantics.
+  virtual bool evict_inactive_block(eviction_key_t /*owner_key*/) {
+    return false;
+  }
 
   //! Current eviction-queue priority for an item. Owners that do not support
   //! priority keep the default low-priority queue.
@@ -75,7 +91,8 @@ class BlockEvictionQueue {
     EvictableBlockOwner *owner{nullptr};
     uint8_t priority{0};
   };
-  typedef moodycamel::ConcurrentQueue<BlockType> ConcurrentQueue;
+  typedef moodycamel::ConcurrentQueue<BlockType, EvictionQueueTraits>
+      ConcurrentQueue;
 
   static BlockEvictionQueue &get_instance() {
     // Weak COMDAT storage keeps the singleton shared across loaded images.
@@ -122,9 +139,22 @@ class BlockEvictionQueue {
   }
 
   void set_invalid(EvictableBlockOwner *owner) {
-    std::unique_lock<std::shared_mutex> lock(valid_owners_mutex_);
-    valid_owners_.erase(owner);
+    {
+      std::unique_lock<std::shared_mutex> lock(valid_owners_mutex_);
+      valid_owners_.erase(owner);
+    }
+    request_dead_entry_cleanup();
   }
+
+  // Retirement can leave queue membership behind even below the eviction
+  // watermarks. Scheduling is lock-free, including from an owner's mutex.
+  void request_dead_entry_cleanup() {
+    cleanup_generation_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  // Inspect at most max_attempts entries without evicting live pages. A pass
+  // spans bounded calls; concurrent retirement requests another pass.
+  size_t cleanup_dead_entries(size_t max_attempts);
 
   void recycle();
 
@@ -133,6 +163,10 @@ class BlockEvictionQueue {
   struct Stats {
     std::array<size_t, kQueueCount> approximate_queue_sizes{};
     uint64_t protected_aging_dequeues{0};
+    uint64_t dead_entries_cleaned{0};
+    uint64_t cleanup_attempts{0};
+    uint64_t inactive_probes{0};
+    uint64_t inactive_evictions{0};
   };
 
   Stats stats() const {
@@ -143,20 +177,34 @@ class BlockEvictionQueue {
     }
     result.protected_aging_dequeues =
         protected_aging_dequeues_.load(std::memory_order_relaxed);
+    result.dead_entries_cleaned =
+        dead_entries_cleaned_.load(std::memory_order_relaxed);
+    result.cleanup_attempts = cleanup_attempts_.load(std::memory_order_relaxed);
+    result.inactive_probes = inactive_probes_.load(std::memory_order_relaxed);
+    result.inactive_evictions =
+        inactive_evictions_.load(std::memory_order_relaxed);
     return result;
   }
 
  private:
-  bool evict_single_block(BlockType &item, bool age_protected);
+  bool evict_single_block(
+      BlockType &item, bool age_protected,
+      std::array<size_t, kQueueCount> *scan_remaining = nullptr);
 
   bool evict_block(BlockType &item, size_t &attempts, size_t max_attempts,
-                   bool &age_protected);
+                   bool &age_protected,
+                   std::array<size_t, kQueueCount> *scan_remaining = nullptr);
 
   size_t recover_owner_queues();
+
+  size_t recycle_inactive(size_t max_attempts);
 
   BlockEvictionQueue() {
     for (size_t i = 0; i < kQueueCount; ++i) {
       evict_queues_.push_back(ConcurrentQueue(kEvictQueueCapacity));
+    }
+    for (size_t i = 0; i < kQueueCount; ++i) {
+      cleanup_consumers_[i].emplace(evict_queues_[i]);
     }
   }
 
@@ -171,6 +219,17 @@ class BlockEvictionQueue {
   std::atomic<version_t> version_sequence_{1};
   std::array<std::atomic<size_t>, kQueueCount> approximate_queue_sizes_{};
   std::atomic<uint64_t> protected_aging_dequeues_{0};
+  std::atomic<uint64_t> cleanup_generation_{0};
+  std::atomic<uint64_t> dead_entries_cleaned_{0};
+  std::atomic<uint64_t> cleanup_attempts_{0};
+  std::atomic<uint64_t> inactive_probes_{0};
+  std::atomic<uint64_t> inactive_evictions_{0};
+  std::mutex cleanup_mutex_;
+  uint64_t cleanup_generation_seen_{0};
+  std::array<size_t, kQueueCount> cleanup_scan_remaining_{};
+  std::array<std::optional<ConcurrentQueue::consumer_token_t>, kQueueCount>
+      cleanup_consumers_{};
+  size_t cleanup_next_queue_{0};
 };
 
 class MemoryLimitPool {
@@ -210,8 +269,21 @@ class MemoryLimitPool {
   //! Reserve bounded capacity outside the page cache, evicting if needed.
   bool try_charge_external(const size_t buffer_size);
 
+  //! Reserve mandatory non-evictable workspace capacity. Unlike optional cache
+  //! admission, allow pending page reclamation up to 100 ms to release space.
+  //! Successful reservations must be paired with release_external().
+  bool try_charge_workspace(const size_t buffer_size);
+
   //! Reserve non-evictable buffer-pool metadata capacity.
   bool try_charge_metadata(const size_t buffer_size);
+
+  //! Non-spillable, reusable backing blocks, independent of VectorPageTable.
+  //! Active blocks count toward used(); idle blocks still count toward
+  //! committed(). Only successful unmapping refunds their backing budget.
+  void *acquire_retained_block(size_t bytes, bool metadata = false);
+  void release_retained_block(void *data);
+  static size_t retained_block_size(size_t bytes);
+  static constexpr size_t kRetainedBlockHeaderBytes = 64;
 
   void release_buffer(char *buffer, const size_t buffer_size);
 
@@ -304,6 +376,17 @@ class MemoryLimitPool {
     return metadata_used_size_.load(std::memory_order_relaxed);
   }
 
+  //! Queue allocations charged as a subset of metadata_used(). Unlike page
+  //! owners, the process-wide eviction queues survive collection close.
+  size_t queue_metadata_used() const {
+    return queue_charged_size_.load(std::memory_order_relaxed);
+  }
+
+  //! Retained queue allocation bytes, including when the pool is disabled.
+  size_t queue_allocated() const {
+    return queue_allocated_size_.load(std::memory_order_relaxed);
+  }
+
   //! Current configured capacity in bytes.
   size_t capacity() const {
     return pool_size_.load(std::memory_order_relaxed);
@@ -331,12 +414,17 @@ class MemoryLimitPool {
     size_t page_used{0};
     size_t external_used{0};
     size_t metadata_used{0};
-    size_t free_buffers{0};            // buffers cached across all shards
-    size_t slab_count{0};              // live 4 MiB virtual mappings
-    size_t slab_mapped_bytes{0};       // virtual address space held by slabs
-    size_t slab_header_bytes{0};       // resident-capable allocator metadata
-    uint64_t alloc_from_freelist{0};   // acquisitions served from a shard
-    uint64_t alloc_from_slab{0};       // cold page acquisitions from slabs
+    size_t queue_metadata_used{0};  // included in metadata_used, not additional
+    size_t queue_allocated{0};
+    size_t retained_block_bytes{0};  // active + idle mapped backing
+    size_t retained_idle_bytes{0};   // included in committed, not used
+    uint64_t retained_block_reuses{0};
+    size_t free_buffers{0};           // buffers cached across all shards
+    size_t slab_count{0};             // live 4 MiB virtual mappings
+    size_t slab_mapped_bytes{0};      // virtual address space held by slabs
+    size_t slab_header_bytes{0};      // included in metadata_used and committed
+    uint64_t alloc_from_freelist{0};  // acquisitions served from a shard
+    uint64_t alloc_from_slab{0};      // cold page acquisitions from slabs
     uint64_t slab_reclaimed_pages{0};  // pages decommitted under pressure
     uint64_t bg_evict_rounds{0};       // background reclaim passes
     uint64_t bg_evicted_buffers{0};    // buffers reclaimed by background thread
@@ -349,16 +437,21 @@ class MemoryLimitPool {
   void log_stats() const;
 
  private:
+  friend struct EvictionQueueTraits;
   struct ReclaimableSlab;
+  struct RetainedBlock;
 
   MemoryLimitPool() = default;
   ~MemoryLimitPool();
 
   void drain_free_list();
+  void *allocate_queue_memory(size_t bytes);
+  void free_queue_memory(void *ptr);
   bool try_reserve_used(size_t bytes);
   bool try_reserve_page_used(size_t bytes);
   bool try_reserve_committed(size_t bytes);
   bool try_charge_fixed(size_t bytes, std::atomic<size_t> *counter);
+  bool try_charge_fixed_with_wait(size_t bytes, std::atomic<size_t> *counter);
   void release_fixed(size_t bytes, std::atomic<size_t> *counter);
   bool is_cacheable_buffer_size(size_t buffer_size);
   char *pop_free_buffer(size_t start_shard);
@@ -367,6 +460,8 @@ class MemoryLimitPool {
   bool reclaim_slab_buffer(char *buffer);
   void release_all_slabs_locked();
   size_t trim_free_buffers(size_t bytes_needed);
+  void trim_idle_buffers();
+  size_t trim_retained_blocks(size_t bytes_needed);
   size_t pick_shard();
 
   // Reclaim in the background to keep eviction off foreground allocations.
@@ -423,6 +518,18 @@ class MemoryLimitPool {
   std::atomic<size_t> committed_size_{0};
   std::atomic<size_t> external_used_size_{0};
   std::atomic<size_t> metadata_used_size_{0};
+
+  // Serialize queue allocation with budget adoption/reinitialization. These
+  // hooks never acquire lifecycle_mutex_ or call an eviction/reclaim path.
+  std::mutex queue_memory_mutex_;
+  std::atomic<size_t> queue_allocated_size_{0};
+  std::atomic<size_t> queue_charged_size_{0};
+
+  std::mutex retained_mutex_;
+  RetainedBlock *retained_free_{nullptr};
+  std::atomic<size_t> retained_block_bytes_{0};
+  std::atomic<size_t> retained_idle_bytes_{0};
+  std::atomic<uint64_t> retained_block_reuses_{0};
 
   FreeShard free_shards_[kNumFreeShards];
   std::atomic<size_t> shard_seq_{0};

@@ -23,13 +23,123 @@
 #include <vector>
 #include <ailego/io/iouring_loader.h>
 #include <gtest/gtest.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/buffer/budgeted_mapped_buffer.h>
+#include "../buffer/pool_payload_budget.h"
 
 namespace zvec {
 namespace ailego {
+class IoUringStagingTestPeer {
+ public:
+  static void *data(const IoUringRing &ring) {
+    return ring.staging_;
+  }
+  static size_t size(const IoUringRing &ring) {
+    return ring.staging_size_;
+  }
+};
 namespace {
 
 constexpr size_t kBlockSize = 512;
 constexpr size_t kBlockCount = 4;
+
+class IoUringLoaderTest : public testing::Test {
+ protected:
+  void SetUp() override {
+    old_capacity_ = pool_.capacity();
+    ASSERT_EQ(0u, pool_.used());
+    ASSERT_EQ(0, pool_.init(16 * PoolPayloadBudget::page_buffer_size()));
+  }
+  void TearDown() override {
+    EXPECT_EQ(0u, pool_.used());
+    EXPECT_EQ(0, pool_.init(old_capacity_));
+  }
+  PoolPayloadBudget &pool_ = PoolPayloadBudget::get_instance();
+  size_t old_capacity_{0};
+};
+
+TEST_F(IoUringLoaderTest, StagingGrowthChargesOverlapAndCanRetry) {
+  const size_t kPage = PoolPayloadBudget::page_buffer_size();
+  ASSERT_EQ(0, pool_.init(3 * kPage));
+  IoUringRing ring;
+  ASSERT_TRUE(ring.ensure_staging(kPage));
+  EXPECT_EQ(kPage, pool_.external_used());
+  ASSERT_TRUE(ring.ensure_staging(2 * kPage));
+  EXPECT_EQ(2 * kPage, pool_.external_used());
+  auto *data = IoUringStagingTestPeer::data(ring);
+  std::memset(data, 0x6a, 2 * kPage);
+  EXPECT_FALSE(ring.ensure_staging(3 * kPage));
+  EXPECT_EQ(data, IoUringStagingTestPeer::data(ring));
+  EXPECT_EQ(0x6a, static_cast<unsigned char *>(data)[kPage]);
+  EXPECT_EQ(2 * kPage, pool_.used());
+  ASSERT_TRUE(ring.ensure_staging(kPage));
+  EXPECT_EQ(2 * kPage, pool_.used());
+  ring.teardown();
+  EXPECT_EQ(0u, pool_.used());
+  ASSERT_TRUE(ring.ensure_staging(3 * kPage));
+  EXPECT_EQ(3 * kPage, pool_.used());
+}
+
+TEST_F(IoUringLoaderTest, PrechargedWritebackStagingIsNotChargedTwice) {
+  const size_t kBytes = 4 * PoolPayloadBudget::page_buffer_size();
+  ASSERT_TRUE(pool_.try_charge_metadata(kBytes));
+  {
+    IoUringRing ring;
+    ring.adopt_staging_reservation(kBytes);
+    ASSERT_TRUE(ring.ensure_staging(kIoUringStagingAlign));
+    auto *data = IoUringStagingTestPeer::data(ring);
+    EXPECT_EQ(kBytes, IoUringStagingTestPeer::size(ring));
+    ASSERT_TRUE(ring.ensure_staging(kBytes));
+    EXPECT_EQ(data, IoUringStagingTestPeer::data(ring));
+    EXPECT_FALSE(ring.ensure_staging(kBytes + 1));
+    EXPECT_EQ(kBytes, pool_.metadata_used());
+    EXPECT_EQ(0u, pool_.external_used());
+    ring.teardown();
+    // Reservation follows the writeback ring, even after backend fallback.
+    EXPECT_EQ(kBytes, pool_.used());
+  }
+  EXPECT_EQ(0u, pool_.used());
+}
+
+TEST_F(IoUringLoaderTest, AbandonedStagingKeepsItsChargeAfterDestruction) {
+  const size_t kBytes = PoolPayloadBudget::page_buffer_size();
+  for (bool prepaid : {false, true}) {
+    SCOPED_TRACE(prepaid);
+    void *abandoned = nullptr;
+    {
+      IoUringRing ring;
+      if (prepaid) {
+        ASSERT_TRUE(pool_.try_charge_metadata(kBytes));
+        ring.adopt_staging_reservation(kBytes);
+      }
+      ASSERT_TRUE(ring.ensure_staging(kBytes));
+      abandoned = IoUringStagingTestPeer::data(ring);
+      ring.abandon_staging();
+      EXPECT_EQ(nullptr, IoUringStagingTestPeer::data(ring));
+      ring.teardown();
+      EXPECT_EQ(kBytes, pool_.used());
+    }
+    EXPECT_EQ(kBytes, pool_.used());
+    EXPECT_EQ(prepaid ? kBytes : 0u, pool_.metadata_used());
+    EXPECT_EQ(prepaid ? 0u : kBytes, pool_.external_used());
+    // No kernel requests were submitted in this test, so test cleanup may
+    // release the simulated quarantine. Production must not do this.
+    File::MemoryUnmap(abandoned, kBytes);
+    if (prepaid)
+      pool_.release_metadata(kBytes);
+    else
+      pool_.release_external(kBytes);
+  }
+}
+
+TEST_F(IoUringLoaderTest, FailedReadReleasesStagingWithoutDestroyingRing) {
+  IoUringRing ring;
+  ASSERT_TRUE(ring.ensure_staging(kIoUringStagingAlign));
+  EXPECT_EQ(PoolPayloadBudget::page_buffer_size(), pool_.used());
+  EXPECT_EQ(-1, ring.execute(-1, nullptr, 0));
+  EXPECT_EQ(0u, pool_.used());
+  EXPECT_EQ(nullptr, IoUringStagingTestPeer::data(ring));
+}
 
 class TemporaryFile {
  public:
@@ -60,7 +170,7 @@ void *allocate_aligned(size_t size) {
   return buffer;
 }
 
-TEST(IoUringLoaderTest, ReadsBatchAndZeroPadsExpectedShortRead) {
+TEST_F(IoUringLoaderTest, ReadsBatchAndZeroPadsExpectedShortRead) {
   IoUringRing ring;
   if (!ring.setup(/*entries=*/8)) {
     GTEST_SKIP() << "io_uring is unavailable";
@@ -83,6 +193,8 @@ TEST(IoUringLoaderTest, ReadsBatchAndZeroPadsExpectedShortRead) {
                         static_cast<uint8_t *>(output) + kBlockSize, kTailSize);
 
   ASSERT_EQ(ring.execute(file.fd(), requests), 0);
+  EXPECT_EQ(0u, pool_.used());
+  EXPECT_EQ(0u, IoUringStagingTestPeer::size(ring));
   EXPECT_EQ(std::memcmp(output, source.data(), kBlockSize), 0);
   const auto *tail = static_cast<const uint8_t *>(output) + kBlockSize;
   EXPECT_EQ(std::memcmp(tail, source.data() + kBlockSize, kTailSize), 0);
@@ -91,7 +203,7 @@ TEST(IoUringLoaderTest, ReadsBatchAndZeroPadsExpectedShortRead) {
   std::free(output);
 }
 
-TEST(IoUringLoaderTest, WritesScatteredBatch) {
+TEST_F(IoUringLoaderTest, WritesScatteredBatch) {
   IoUringRing ring;
   if (!ring.setup(/*entries=*/8)) {
     GTEST_SKIP() << "io_uring is unavailable";
@@ -112,6 +224,9 @@ TEST(IoUringLoaderTest, WritesScatteredBatch) {
                           source.data() + block * kBlockSize);
   }
   ASSERT_EQ(ring.execute_writes(file.fd(), requests), 0);
+  EXPECT_EQ(
+      BudgetedMappedBuffer::mapping_size(kBlockCount * kIoUringStagingAlign),
+      pool_.external_used());
 
   std::vector<uint8_t> output(source.size());
   ASSERT_EQ(::pread(file.fd(), output.data(), output.size(), 0),

@@ -17,10 +17,12 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <stdexcept>
 #include <unordered_map>
 #include <vector>
+#include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/core/framework/index_error.h>
@@ -111,9 +113,8 @@ class BufferReadStorage : public IndexStorage {
           handle_(rhs.handle_),
           cache_enabled_(rhs.cache_enabled_) {}
 
-    //! Destructor. Release scratch eagerly on long-lived worker threads, but
-    //! do not touch the registry after it has entered TLS teardown (an Index
-    //! context may outlive the registry because of TLS destruction order).
+    //! All workers borrow scratch owned by this segment. Remove this thread
+    //! registry entry too, unless its TLS teardown has already started.
     ~Segment() override {
       if (thread_scratch_registry_alive()) {
         release_thread_scratch();
@@ -145,8 +146,13 @@ class BufferReadStorage : public IndexStorage {
       return region_size_;
     }
 
+    int read_error() const override {
+      return thread_read_error();
+    }
+
     //! Fetch data from segment (copies into the caller-owned buffer)
-    size_t fetch(size_t offset, void *buf, size_t len) const override {
+    size_t fetch(size_t offset, void *buf, size_t len) const override try {
+      thread_read_error() = IndexError_ReadData;
       len = clamp_length(&offset, len);
       if (len == 0) {
         return 0;
@@ -159,11 +165,15 @@ class BufferReadStorage : public IndexStorage {
         return 0;
       }
       return len;
+    } catch (const std::bad_alloc &) {
+      thread_read_error() = IndexError_NoMemory;
+      return 0;
     }
 
     //! Read data from segment (stable until this thread's next pointer read)
     //! Read data from segment into a MemoryBlock
     size_t read(size_t offset, MemoryBlock &data, size_t len) override {
+      thread_read_error() = IndexError_ReadData;
       len = clamp_length(&offset, len);
       if (len == 0) {
         data.reset();
@@ -176,6 +186,7 @@ class BufferReadStorage : public IndexStorage {
     //! Borrowed read; the caller keeps this Segment alive until block release.
     size_t read_borrowed(size_t offset, MemoryBlock &data,
                          size_t len) override {
+      thread_read_error() = IndexError_ReadData;
       len = clamp_length(&offset, len);
       if (len == 0) {
         data.reset();
@@ -190,6 +201,7 @@ class BufferReadStorage : public IndexStorage {
     //! cache admission and bypass behavior remain unchanged.
     size_t read_scatter(size_t offset, ScatterBlock &data,
                         size_t len) override {
+      thread_read_error() = IndexError_ReadData;
       data.reset();
       len = clamp_length(&offset, len);
       if (len == 0) {
@@ -232,6 +244,7 @@ class BufferReadStorage : public IndexStorage {
         data.reset_scattered(std::move(spans), std::move(lease), len);
         return len;
       } catch (const std::bad_alloc &) {
+        thread_read_error() = IndexError_NoMemory;
         if (!pins_owned_by_lease) {
           handle_->release_pages(page_ids.data(), page_ids.size());
         }
@@ -244,7 +257,8 @@ class BufferReadStorage : public IndexStorage {
     }
 
     //! Read scattered data (stable until this thread's next pointer read)
-    bool read(SegmentData *iovec, size_t count) override {
+    bool read(SegmentData *iovec, size_t count) override try {
+      thread_read_error() = IndexError_ReadData;
       ailego_false_if_false(iovec != nullptr && count != 0);
       size_t total = 0u;
       for (size_t i = 0; i < count; ++i) {
@@ -268,6 +282,9 @@ class BufferReadStorage : public IndexStorage {
         buf += it->length;
       }
       return true;
+    } catch (const std::bad_alloc &) {
+      thread_read_error() = IndexError_NoMemory;
+      return false;
     }
 
     size_t write(size_t, const void *, size_t) override {
@@ -300,15 +317,45 @@ class BufferReadStorage : public IndexStorage {
     }
 
    private:
+    static int &thread_read_error() {
+      static thread_local int error = IndexError_ReadData;
+      return error;
+    }
+
+    struct ScratchOwner;
     struct ThreadScratch {
-      explicit ThreadScratch(const std::shared_ptr<const uint8_t> &owner_arg)
-          : owner(owner_arg) {}
+      ThreadScratch() = default;
 
       ThreadScratch(const ThreadScratch &) = delete;
       ThreadScratch &operator=(const ThreadScratch &) = delete;
 
-      std::weak_ptr<const uint8_t> owner;
-      std::vector<uint8_t> buffer;
+      ailego::BudgetedVector<uint8_t> buffer;
+    };
+
+    struct ScratchOwner {
+      std::mutex mutex;
+      ailego::BudgetedVector<std::shared_ptr<ThreadScratch>> scratches;
+    };
+
+    // TLS borrows scratch; the segment owns it. Destruction on any thread
+    // therefore drops all pins/buffers. Worker exit releases its own entry
+    // while a surviving segment can still serve other workers.
+    struct ThreadScratchRef {
+      explicit ThreadScratchRef(std::shared_ptr<ScratchOwner> owner_arg)
+          : owner(std::move(owner_arg)) {}
+      ~ThreadScratchRef() {
+        if (auto live = owner.lock()) {
+          std::lock_guard<std::mutex> lock(live->mutex);
+          auto &entries = live->scratches;
+          entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                       [this](const auto &entry) {
+                                         return entry.get() == scratch;
+                                       }),
+                        entries.end());
+        }
+      }
+      std::weak_ptr<ScratchOwner> owner;
+      ThreadScratch *scratch{nullptr};
     };
 
     static bool &thread_scratch_registry_alive() {
@@ -327,8 +374,14 @@ class BufferReadStorage : public IndexStorage {
         thread_scratch_registry_alive() = false;
       }
 
-      std::unordered_map<const uint8_t *, ThreadScratch> scratches;
-      const uint8_t *last_key{nullptr};
+      std::unordered_map<
+          const ScratchOwner *, ThreadScratchRef,
+          std::hash<const ScratchOwner *>, std::equal_to<const ScratchOwner *>,
+          ailego::BudgetedAllocator<
+              std::pair<const ScratchOwner *const, ThreadScratchRef>>>
+          scratches;
+      const ScratchOwner *last_key{nullptr};
+      std::weak_ptr<ScratchOwner> last_owner;
       ThreadScratch *last_scratch{nullptr};
     };
 
@@ -339,27 +392,37 @@ class BufferReadStorage : public IndexStorage {
 
     void release_thread_scratch() const {
       ThreadScratchRegistry &registry = thread_scratch_registry();
-      const uint8_t *key = scratch_token_.get();
+      const ScratchOwner *key = scratch_token_.get();
       if (registry.last_key == key) {
         registry.last_key = nullptr;
         registry.last_scratch = nullptr;
+        registry.last_owner.reset();
       }
       registry.scratches.erase(key);
+      if (registry.scratches.empty()) {
+        // erase() releases nodes, not the budgeted bucket array. Do not keep
+        // an empty registry charged for the lifetime of a worker thread.
+        decltype(registry.scratches){}.swap(registry.scratches);
+        registry.last_key = nullptr;
+        registry.last_scratch = nullptr;
+        registry.last_owner.reset();
+      }
     }
 
     ThreadScratch *thread_scratch() const {
       // Keep one batch scratch buffer per (thread, Segment); weak tokens clean
       // up dead segments on long-lived worker threads.
       ThreadScratchRegistry &registry = thread_scratch_registry();
-      const uint8_t *key = scratch_token_.get();
+      const ScratchOwner *key = scratch_token_.get();
       if (registry.last_key == key && registry.last_scratch != nullptr &&
-          !registry.last_scratch->owner.expired()) {
+          !registry.last_owner.expired()) {
         return registry.last_scratch;
       }
 
       // Only Segment switches scan expired TLS entries.
       registry.last_key = nullptr;
       registry.last_scratch = nullptr;
+      registry.last_owner.reset();
       for (auto iter = registry.scratches.begin();
            iter != registry.scratches.end();) {
         if (iter->second.owner.expired()) {
@@ -369,8 +432,21 @@ class BufferReadStorage : public IndexStorage {
         }
       }
       auto result = registry.scratches.try_emplace(key, scratch_token_);
+      if (result.second) {
+        try {
+          auto scratch = std::allocate_shared<ThreadScratch>(
+              ailego::BudgetedAllocator<ThreadScratch>{});
+          std::lock_guard<std::mutex> lock(scratch_token_->mutex);
+          scratch_token_->scratches.push_back(scratch);
+          result.first->second.scratch = scratch.get();
+        } catch (...) {
+          registry.scratches.erase(result.first);
+          throw;
+        }
+      }
       registry.last_key = key;
-      registry.last_scratch = &result.first->second;
+      registry.last_owner = scratch_token_;
+      registry.last_scratch = result.first->second.scratch;
       return registry.last_scratch;
     }
 
@@ -401,7 +477,7 @@ class BufferReadStorage : public IndexStorage {
     }
 
     size_t read_owned(size_t abs_offset, MemoryBlock &data, size_t len,
-                      bool force_bypass) const {
+                      bool force_bypass) const try {
       static constexpr size_t kAlign = 4096UL;
       if (ailego_unlikely(len >
                           std::numeric_limits<size_t>::max() - (kAlign - 1))) {
@@ -412,28 +488,24 @@ class BufferReadStorage : public IndexStorage {
         return 0;
       }
       size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
-      char *tmp =
-          static_cast<char *>(ailego_aligned_malloc(alloc_size, kAlign));
-      if (!tmp) {
-        LOG_ERROR(
-            "BufferReadStorage::Segment::read(MemoryBlock&): cross-page alloc "
-            "failed, abs_offset=%zu, len=%zu",
-            abs_offset, len);
-        return 0;
-      }
+      auto owned = MemoryBlock::AllocateOwned(alloc_size, kAlign);
+      auto *tmp = static_cast<char *>(owned.data_);
       const bool read_ok =
           force_bypass ? handle_->read_range_bypass(abs_offset, len, tmp)
                        : read_bytes(abs_offset, len, tmp);
       if (!read_ok) {
-        ailego_free(tmp);
         LOG_ERROR(
             "BufferReadStorage::Segment::read(MemoryBlock&): cross-page "
             "read_range failed, abs_offset=%zu, len=%zu",
             abs_offset, len);
         return 0;
       }
-      data = MemoryBlock::MakeOwned(tmp, len);
+      owned.scratch_size_ = len;
+      data = std::move(owned);
       return len;
+    } catch (const std::bad_alloc &) {
+      thread_read_error() = IndexError_NoMemory;
+      return 0;
     }
     size_t clamp_length(size_t *offset, size_t len) const {
       if (ailego_unlikely(*offset > region_size_)) {
@@ -448,8 +520,9 @@ class BufferReadStorage : public IndexStorage {
     size_t padding_size_{0u};
     size_t region_size_{0u};
     uint32_t data_crc_{0u};
-    std::shared_ptr<const uint8_t> scratch_token_{
-        std::make_shared<const uint8_t>(0)};
+    std::shared_ptr<ScratchOwner> scratch_token_{
+        std::allocate_shared<ScratchOwner>(
+            ailego::BudgetedAllocator<ScratchOwner>{})};
     std::shared_ptr<ailego::VecBufferPoolHandle> handle_{nullptr};
     bool cache_enabled_{false};
   };
@@ -523,7 +596,7 @@ class BufferReadStorage : public IndexStorage {
       const size_t container_size = end_offset - candidate_index_offset;
 
       // IndexUnpacker requires a stable pointer until its next callback.
-      std::vector<uint8_t> scratch;
+      ailego::BudgetedVector<uint8_t> scratch;
       auto read_data = [&candidate_handle, &scratch, candidate_index_offset,
                         container_size](size_t offset, const void **data,
                                         size_t len) -> size_t {
@@ -681,7 +754,7 @@ class BufferReadStorage : public IndexStorage {
   size_t index_offset_{0};
   uint32_t magic_{0};
   std::string file_path_{};
-  std::map<std::string, IndexUnpacker::SegmentMeta> segments_{};
+  IndexUnpacker::SegmentMap segments_{};
   std::shared_ptr<ailego::VecBufferPool> buffer_pool_{nullptr};
   std::shared_ptr<ailego::VecBufferPoolHandle> handle_{nullptr};
   bool cache_enabled_{false};

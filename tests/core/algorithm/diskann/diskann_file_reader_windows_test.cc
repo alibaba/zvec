@@ -28,6 +28,7 @@
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/utility/file_helper.h>
 #include "diskann_file_reader.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 namespace zvec {
 namespace core {
@@ -269,9 +270,11 @@ TEST(DiskAnnFileReaderWindowsTest, BufferPoolReadsCachedAndBypassedPages) {
   TemporaryFile file;
   ASSERT_TRUE(file.valid());
   ASSERT_TRUE(file.write_pages());
-  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = ailego::PoolPayloadBudget::get_instance();
+  // Reserve the slab header without admitting a second data page.
   ASSERT_EQ(
       memory_pool.init(native_page_size +
+                       ailego::PoolPayloadBudget::page_buffer_size() +
                        ailego::VecBufferPool::metadata_bytes_for_page_count(
                            native_page_count)),
       0);
@@ -308,7 +311,7 @@ TEST(DiskAnnFileReaderWindowsTest, BufferPoolWithoutPageTableUsesBypassOnly) {
   TemporaryFile file;
   ASSERT_TRUE(file.valid());
   ASSERT_TRUE(file.write_pages());
-  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = ailego::PoolPayloadBudget::get_instance();
   ASSERT_EQ(memory_pool.init(1), 0);
   auto pool = std::make_shared<ailego::VecBufferPool>(file.path(), false);
   ASSERT_FALSE(pool->cache_enabled());

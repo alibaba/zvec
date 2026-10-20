@@ -174,7 +174,7 @@ class MMapFileReadStorage : public IndexStorage {
   }
 
   //! Load a index file into container
-  int open(const std::string &path, bool) override {
+  int open(const std::string &path, bool) override try {
     file_path_ = path;
     file_ptr_ = std::make_shared<ailego::MMapFile>();
     if (!file_ptr_) {
@@ -224,6 +224,9 @@ class MMapFileReadStorage : public IndexStorage {
     segments_ = std::move(*unpacker.mutable_segments());
     magic_ = unpacker.magic();
     return 0;
+  } catch (const std::bad_alloc &) {
+    close();
+    return IndexError_NoMemory;
   }
 
   int close() override {
@@ -284,7 +287,7 @@ class MMapFileReadStorage : public IndexStorage {
   size_t index_offset_{0};
   uint32_t magic_{0};
   std::string file_path_;
-  std::map<std::string, IndexUnpacker::SegmentMeta> segments_{};
+  IndexUnpacker::SegmentMap segments_{};
   std::shared_ptr<ailego::MMapFile> file_ptr_{nullptr};
 };
 

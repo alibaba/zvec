@@ -51,6 +51,7 @@
 #include "zvec/core/interface/index_factory.h"
 #include "zvec/core/interface/index_param.h"
 #include "zvec/core/interface/index_param_builders.h"
+#include "../../ailego/buffer/pool_payload_budget.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic push
@@ -975,7 +976,7 @@ TEST(IndexInterface, IvfBufferPoolDefersWarmupUntilReads) {
   constexpr size_t kVectorBytes = kDimension * kDocCount * sizeof(float);
   constexpr size_t kBufferBudget = 32UL * 1024UL * 1024UL;
   const std::string index_name{"test_ivf_buffer_lazy_open.index"};
-  auto &memory_pool = zvec::ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = zvec::ailego::PoolPayloadBudget::get_instance();
   const size_t previous_capacity = memory_pool.capacity();
   ASSERT_EQ(0u, memory_pool.used());
   auto cleanup = zvec::ailego::ScopeGuard::Make([&]() {
@@ -1061,11 +1062,20 @@ TEST(IndexInterface, IvfBufferPoolDefersWarmupUntilReads) {
 TEST(IndexInterface, IvfBufferPoolSearchAfterOpenThreadExits) {
   constexpr uint32_t kDimension = 768;
   constexpr uint32_t kDocCount = 256;
-  // Enough for VecBufferPool metadata plus only a fraction of this index's
-  // data pages, so searches exercise real cache pressure rather than the
-  // bypass-only fallback.
-  constexpr size_t kBufferBudget = 1024 * 1024;
-  const std::string index_name{"test_ivf_buffer_eviction.index"};
+  // This is a cross-thread ownership regression, not a minimum-budget test.
+  // Leave room for metadata, resident pages and four concurrent queries.
+  constexpr size_t kBufferBudget = 8 * 1024 * 1024;
+  const std::string index_name{"test_ivf_buffer_thread_lifetime.index"};
+  auto &memory_pool = zvec::ailego::PoolPayloadBudget::get_instance();
+  const size_t previous_capacity = memory_pool.capacity();
+  Index::Pointer read_index;
+  auto cleanup = zvec::ailego::ScopeGuard::Make([&]() {
+    if (read_index) EXPECT_EQ(0, read_index->close());
+    read_index.reset();
+    zvec::test_util::RemoveTestFiles(index_name + "*");
+    EXPECT_EQ(0u, memory_pool.used());
+    EXPECT_EQ(0, memory_pool.init(previous_capacity));
+  });
   zvec::test_util::RemoveTestFiles(index_name + "*");
 
   auto param = IVFIndexParamBuilder()
@@ -1093,9 +1103,9 @@ TEST(IndexInterface, IvfBufferPoolSearchAfterOpenThreadExits) {
     ASSERT_EQ(0, write_index->close());
   }
 
-  ASSERT_EQ(0,
-            zvec::ailego::MemoryLimitPool::get_instance().init(kBufferBudget));
-  auto read_index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_EQ(
+      0, zvec::ailego::PoolPayloadBudget::get_instance().init(kBufferBudget));
+  read_index = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, read_index);
 
   // Load on a short-lived thread. Buffer-backed sub-indexes must own every
@@ -1117,8 +1127,14 @@ TEST(IndexInterface, IvfBufferPoolSearchAfterOpenThreadExits) {
     std::vector<float> query_vector(kDimension, static_cast<float>(id));
     VectorData query{DenseVector{query_vector.data()}};
     SearchResult result;
-    if (read_index->search(query, query_param, &result) != 0 ||
-        result.doc_list_.size() != 1 || result.doc_list_[0].key() != id) {
+    const int ret = read_index->search(query, query_param, &result);
+    if (ret != 0 || result.doc_list_.size() != 1 ||
+        result.doc_list_[0].key() != id) {
+      const auto stats = memory_pool.stats();
+      ADD_FAILURE() << "query=" << id << " error=" << ret
+                    << " metadata=" << stats.metadata_used
+                    << " external=" << stats.external_used
+                    << " pages=" << stats.page_used;
       return false;
     }
     auto vector = static_cast<const float *>(result.doc_list_[0].vector());
@@ -1143,16 +1159,15 @@ TEST(IndexInterface, IvfBufferPoolSearchAfterOpenThreadExits) {
     ASSERT_TRUE(ok);
   }
 
-  auto &memory_pool = zvec::ailego::MemoryLimitPool::get_instance();
   ASSERT_GT(memory_pool.metadata_used(), 0u);
   ASSERT_GT(memory_pool.used(), memory_pool.metadata_used());
+  EXPECT_LE(memory_pool.used(), kBufferBudget);
 
   ASSERT_EQ(0, read_index->close());
   read_index.reset();
   ASSERT_EQ(0u, memory_pool.metadata_used());
   ASSERT_EQ(0u, memory_pool.used());
   zvec::test_util::RemoveTestFiles(index_name + "*");
-  ASSERT_EQ(0, memory_pool.init(100 * 1024 * 1024));
 }
 
 
@@ -1162,7 +1177,7 @@ TEST(IndexInterface, DiskAnnBufferPoolSearchAcrossBudgets) {
   constexpr uint32_t kDocCount = 512;
   constexpr size_t kFullBudget = 8UL * 1024UL * 1024UL;
   const std::string index_name{"test_diskann_buffer_budgets.index"};
-  auto &memory_pool = zvec::ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = zvec::ailego::PoolPayloadBudget::get_instance();
   const size_t previous_capacity = memory_pool.capacity();
   ASSERT_EQ(0u, memory_pool.used());
   auto cleanup = zvec::ailego::ScopeGuard::Make([&]() {
@@ -1243,10 +1258,10 @@ TEST(IndexInterface, DiskAnnBufferPoolSearchAcrossBudgets) {
     ASSERT_EQ(0, index->close());
   }
 
-  // Cover both bypass-only thresholds, then actual cache pressure and a pool
-  // large enough for the entire index. Every mode reads the same built file.
-  for (size_t budget : {page_size - 1, metadata_bytes + page_size - 1,
-                        metadata_bytes + 4 * page_size, kFullBudget}) {
+  // Storage metadata and owned read buffers now share the same budget as
+  // cached pages. Tiny page-only budgets are covered by the storage admission
+  // tests; compare successful queries here using the same built index.
+  for (size_t budget : {kFullBudget, 4 * kFullBudget}) {
     SCOPED_TRACE(budget);
     ASSERT_EQ(0u, memory_pool.used());
     ASSERT_EQ(0, memory_pool.init(budget));
@@ -1255,19 +1270,14 @@ TEST(IndexInterface, DiskAnnBufferPoolSearchAcrossBudgets) {
     ASSERT_EQ(0,
               index->open(index_name, {StorageOptions::StorageType::kBufferPool,
                                        false, true}));
-    const bool cache_enabled = budget >= metadata_bytes + page_size;
-    EXPECT_EQ(cache_enabled ? metadata_bytes : 0u, memory_pool.metadata_used());
+    EXPECT_EQ(metadata_bytes, memory_pool.metadata_used());
     for (size_t repeat = 0; repeat < 2; ++repeat) {
       for (size_t i = 0; i < baseline.size(); ++i) {
         Result actual;
         ASSERT_NO_FATAL_FAILURE(query(index, i, &actual));
         EXPECT_EQ(baseline[i], actual);
-        if (cache_enabled) {
-          EXPECT_LE(memory_pool.stats().page_used, budget - metadata_bytes);
-        } else {
-          EXPECT_EQ(0u, memory_pool.metadata_used());
-          EXPECT_EQ(0u, memory_pool.stats().page_used);
-        }
+        EXPECT_LE(memory_pool.stats().page_used, budget - metadata_bytes);
+        EXPECT_LE(memory_pool.used(), budget);
       }
     }
     ASSERT_EQ(0, index->close());
