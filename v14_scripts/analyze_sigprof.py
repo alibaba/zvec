@@ -52,28 +52,34 @@ def object_bases(maps_entries):
 
 
 def symbolize(maps_entries, prefix):
-    """Build per-object sorted (addr, name) tables from nm output."""
+    """Build per-object (sorted addrs, (addr, size, name) rows) from nm -S."""
     tables = {}
     for _start, _end, _offset, path in maps_entries:
         if path in tables:
             continue
         syms = []
         if os.path.exists(path):
-            try:
-                out = subprocess.run(
-                    ["nm", "-C", "--defined-only", path],
-                    capture_output=True, text=True, timeout=120).stdout
+            for flags in (["nm", "-C", "-S", "--defined-only", path],
+                          ["nm", "-C", "-D", "-S", "--defined-only", path]):
+                try:
+                    out = subprocess.run(
+                        flags, capture_output=True, text=True,
+                        timeout=120).stdout
+                except Exception as exc:  # nm may fail on stripped objects
+                    print("nm failed for %s: %s" % (path, exc), file=sys.stderr)
+                    continue
                 for line in out.splitlines():
-                    toks = line.split(None, 2)
-                    if len(toks) == 3 and toks[1] in "tTwW":
+                    toks = line.split(None, 3)
+                    if len(toks) == 4 and toks[2] in "tTwW":
                         try:
-                            syms.append((int(toks[0], 16), toks[2]))
+                            syms.append((int(toks[0], 16),
+                                         int(toks[1], 16), toks[3]))
                         except ValueError:
                             pass
-            except Exception as exc:  # nm may fail on stripped objects
-                print("nm failed for %s: %s" % (path, exc), file=sys.stderr)
-        syms.sort()
-        tables[path] = syms
+                if syms:
+                    break
+        syms = sorted(set(syms))
+        tables[path] = ([s[0] for s in syms], syms)
     return tables
 
 
@@ -83,21 +89,22 @@ def resolve(rip, maps_entries, starts, bases, tables):
         return "[unmapped]"
     start, _end, _offset, path = maps_entries[i]
     obj = os.path.basename(path)
-    syms = tables.get(path)
-    if not syms:
-        return "%s+0x%x" % (obj, rip - start)
-    lo, hi = syms[0][0], syms[-1][0]
+    entry = tables.get(path)
+    if not entry:
+        return "unknown"
+    addrs, syms = entry
     cands = []
     for cand in (rip - bases.get(path, 0), rip):
         if cand not in cands:
             cands.append(cand)
-    in_range = [c for c in cands if lo <= c <= hi + 0x1000]
-    cand = in_range[0] if in_range else cands[0]
-    j = bisect.bisect_right(syms, (cand, chr(0x10FFFF) * 64)) - 1
-    if j < 0:
-        return "%s+0x%x" % (obj, rip - start)
-    addr, name = syms[j]
-    return "%s:%s+0x%x" % (obj, name, cand - addr)
+    for cand in cands:
+        j = bisect.bisect_right(addrs, cand) - 1
+        if j < 0:
+            continue
+        addr, size, name = syms[j]
+        if size and addr <= cand < addr + size:
+            return "%s:%s+0x%x" % (obj, name, cand - addr)
+    return "unknown"
 
 
 def main():

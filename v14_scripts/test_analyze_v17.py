@@ -111,7 +111,8 @@ def test_sigprof_resolve_pie_rebases_runtime_rip():
     entries = [(0x7d0000000000, 0x7d0000002000, 0x46000, "/fake/libfoo.so")]
     starts = [e[0] for e in entries]
     bases = {"/fake/libfoo.so": base}
-    tables = {"/fake/libfoo.so": [(0x46000, "funcA"), (0x47000, "funcB")]}
+    rows = [(0x46000, 0x1000, "funcA"), (0x47000, 0x1000, "funcB")]
+    tables = {"/fake/libfoo.so": ([r[0] for r in rows], rows)}
     rip = base + 0x47010  # inside funcB at link time, far from raw rip
     assert mod.resolve(rip, entries, starts, bases, tables) == \
         "libfoo.so:funcB+0x10"
@@ -122,7 +123,8 @@ def test_sigprof_resolve_nonpie_uses_absolute_rip():
     entries = [(0x400000, 0x402000, 0x0, "/fake/python3.10")]
     starts = [e[0] for e in entries]
     bases = {"/fake/python3.10": 0x400000}
-    tables = {"/fake/python3.10": [(0x401000, "PyMain")]}
+    rows = [(0x401000, 0x100, "PyMain")]
+    tables = {"/fake/python3.10": ([r[0] for r in rows], rows)}
     assert mod.resolve(0x401010, entries, starts, bases, tables) == \
         "python3.10:PyMain+0x10"
 
@@ -133,7 +135,31 @@ def test_sigprof_resolve_unmapped_and_symbolless():
     starts = [e[0] for e in entries]
     assert mod.resolve(0x1000, entries, starts, {}, {}) == "[unmapped]"
     assert mod.resolve(0x401000, entries, starts,
-                       {"/fake/vdso": 0x400000}, {}) == "vdso+0x1000"
+                       {"/fake/vdso": 0x400000}, {}) == "unknown"
+
+
+def test_sigprof_resolve_gap_after_symbol_end_is_unknown():
+    mod = load("analyze_sigprof")
+    base = 0x7d0000000000 - 0x46000
+    entries = [(0x7d0000000000, 0x7d0000004000, 0x46000, "/fake/libfoo.so")]
+    starts = [e[0] for e in entries]
+    bases = {"/fake/libfoo.so": base}
+    rows = [(0x46000, 0x100, "funcA"), (0x47800, 0x100, "funcB")]
+    tables = {"/fake/libfoo.so": ([r[0] for r in rows], rows)}
+    rip = base + 0x47700  # past funcA's end, before funcB
+    assert mod.resolve(rip, entries, starts, bases, tables) == "unknown"
+
+
+def test_sigprof_resolve_zero_size_symbol_is_unknown():
+    mod = load("analyze_sigprof")
+    base = 0x7d0000000000 - 0x46000
+    entries = [(0x7d0000000000, 0x7d0000002000, 0x46000, "/fake/libfoo.so")]
+    starts = [e[0] for e in entries]
+    bases = {"/fake/libfoo.so": base}
+    rows = [(0x46000, 0, "sizelessSym")]
+    tables = {"/fake/libfoo.so": ([r[0] for r in rows], rows)}
+    rip = base + 0x46010
+    assert mod.resolve(rip, entries, starts, bases, tables) == "unknown"
 
 
 def test_sigprof_load_samples_roundtrip():
