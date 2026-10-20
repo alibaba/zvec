@@ -4737,6 +4737,67 @@ TEST_F(HnswStreamerTest, TestTurboDatapointBatchOverrideAndFallback) {
   }
 }
 
+TEST_F(HnswStreamerTest, TestTurboFp32BatchBuildAndSearch) {
+  constexpr size_t kDimension = 256;
+  constexpr size_t kCount = 32;
+  IndexQueryMeta raw_qmeta(IndexMeta::DataType::DT_FP32, kDimension);
+
+  for (const char *metric : {"Cosine", "InnerProduct"}) {
+    SCOPED_TRACE(metric);
+    IndexMeta raw_meta(IndexMeta::DataType::DT_FP32, kDimension);
+    raw_meta.set_metric(metric, 0, ailego::Params());
+    auto quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+    ASSERT_NE(nullptr, quantizer);
+    ASSERT_EQ(0, quantizer->init(raw_meta, ailego::Params()));
+    std::mt19937 random(2026);
+    std::uniform_int_distribution<int> sign(0, 1);
+    std::vector<std::string> codes(kCount);
+    IndexQueryMeta qmeta;
+    for (size_t i = 0; i < kCount; ++i) {
+      // Equal unit norms give both metrics a unique exact self-match.
+      std::vector<float> input(kDimension);
+      for (float &value : input) {
+        value = sign(random) ? 0.0625f : -0.0625f;
+      }
+      ASSERT_EQ(0, quantizer->quantize(input.data(), raw_qmeta, &codes[i],
+                                      &qmeta));
+    }
+
+    auto streamer = IndexFactory::CreateStreamer("HnswStreamer");
+    ASSERT_NE(nullptr, streamer);
+    ailego::Params params;
+    params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 8U);
+    params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 64U);
+    params.set(PARAM_HNSW_STREAMER_EF, 64U);
+    params.set(PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
+    ASSERT_EQ(0, streamer->init(quantizer->meta(), params, quantizer));
+    auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(ailego::Params()));
+    ASSERT_EQ(0, storage->open(
+                     dir_ + "turbo_fp32_batch_" + metric + ".index", true));
+    ASSERT_EQ(0, streamer->open(storage));
+    auto context = streamer->create_context();
+    ASSERT_NE(nullptr, context);
+    for (size_t i = 0; i < kCount; ++i) {
+      ASSERT_EQ(0, streamer->add_impl(i, codes[i].data(), qmeta, context));
+    }
+
+    context->set_topk(1);
+    for (size_t probe : {size_t{0}, size_t{17}, kCount - 1}) {
+      ASSERT_EQ(0,
+                streamer->search_impl(codes[probe].data(), qmeta, context));
+      ASSERT_EQ(1U, context->result().size());
+      EXPECT_EQ(probe, context->result()[0].key());
+      EXPECT_NEAR(quantizer->calc_distance_dp_query(codes[probe].data(),
+                                                    codes[probe].data()),
+                  context->result()[0].score(), 1e-5f);
+    }
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, storage->close());
+  }
+}
+
 TEST_F(HnswStreamerTest, TestTurboSearchWithFp16ProviderBuildFallback) {
   constexpr size_t kProviderDim = 8;
   constexpr size_t kCount = 64;

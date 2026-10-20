@@ -13,10 +13,15 @@
 // limitations under the License.
 
 #include "neon/fp32/inner_product.h"
+#include <algorithm>
+#include <cstdint>
 #include <zvec/ailego/internal/platform.h>
 
 #if defined(AILEGO_ARM64_NEON)
 #include <arm_neon.h>
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#endif
 #else
 #include "scalar/fp32/inner_product.h"
 #endif
@@ -34,15 +39,55 @@ namespace {
 #define ZVEC_NEON_UNROLL
 #endif
 
+constexpr size_t kPrefetchCacheLine = 128;
+
+inline void prefetch_l2(uintptr_t address) {
+#if defined(__GNUC__) || defined(__clang__)
+  __builtin_prefetch(reinterpret_cast<const void *>(address), 0, 2);
+#else
+  (void)address;
+#endif
+}
+
+#if defined(__APPLE__)
+inline void prefetch_vector(const void *vector, size_t bytes) {
+  uintptr_t next = reinterpret_cast<uintptr_t>(vector);
+  const uintptr_t end = reinterpret_cast<uintptr_t>(vector) + bytes;
+  if (next < end) {
+    prefetch_l2(next);
+    next = (next & ~(kPrefetchCacheLine - 1)) + kPrefetchCacheLine;
+    for (; next < end; next += kPrefetchCacheLine) {
+      prefetch_l2(next);
+    }
+  }
+}
+
+bool supports_batch_prefetch(size_t dim) noexcept {
+  if (dim != 256) {
+    return false;
+  }
+  static const bool supported = []() noexcept {
+    uint64_t cache_line = 0;
+    size_t size = sizeof(cache_line);
+    return sysctlbyname("hw.cachelinesize", &cache_line, &size, nullptr, 0) == 0 &&
+           cache_line == kPrefetchCacheLine;
+  }();
+  return supported;
+}
+#endif
+
 // Reuse each query load across several vectors. Independent FMA chains hide
 // instruction latency; limiting the largest block to 16 accumulators keeps it
 // within AArch64's SIMD register file without spilling to the stack.
-template <size_t Batch, size_t Accumulators>
+template <size_t Batch, size_t Accumulators, bool StreamPrefetch = false>
 inline void inner_product_block(const void *const *vectors, const float *query,
-                                size_t dim, float *distances) {
+                                size_t dim, float *distances,
+                                const void *const *future = nullptr,
+                                size_t future_count = 0) {
   static_assert(Accumulators == 2 || Accumulators == 4);
   const float *data[Batch];
   float32x4_t sums[Batch][Accumulators];
+  [[maybe_unused]] uintptr_t next[Batch], ends[Batch], bases[Batch];
 ZVEC_NEON_UNROLL
   for (size_t b = 0; b < Batch; ++b) {
     data[b] = static_cast<const float *>(vectors[b]);
@@ -50,10 +95,29 @@ ZVEC_NEON_UNROLL
     for (size_t u = 0; u < Accumulators; ++u) {
       sums[b][u] = vdupq_n_f32(0.0f);
     }
+    if constexpr (StreamPrefetch) {
+      bases[b] = b < future_count ? reinterpret_cast<uintptr_t>(future[b]) : 0;
+      ends[b] = bases[b] + (b < future_count ? dim * sizeof(float) : 0);
+      next[b] = bases[b];
+    }
   }
 
   size_t offset = 0;
   for (; dim - offset >= Accumulators * 4; offset += Accumulators * 4) {
+    if constexpr (StreamPrefetch) {
+      if ((offset & (kPrefetchCacheLine / sizeof(float) - 1)) == 0) {
+ZVEC_NEON_UNROLL
+        for (size_t b = 0; b < Batch; ++b) {
+          const uintptr_t stop = std::min(
+              ends[b], bases[b] + offset * sizeof(float) + kPrefetchCacheLine);
+          while (next[b] < stop) {
+            prefetch_l2(next[b]);
+            next[b] =
+                (next[b] & ~(kPrefetchCacheLine - 1)) + kPrefetchCacheLine;
+          }
+        }
+      }
+    }
     float32x4_t q[Accumulators];
 ZVEC_NEON_UNROLL
     for (size_t u = 0; u < Accumulators; ++u) {
@@ -128,6 +192,41 @@ void inner_product_batch(const void *const *vectors, const void *query, size_t n
   }
 }
 
+#if defined(__APPLE__)
+// Warm up three groups of eight vectors, then prefetch the next group while
+// computing. The kernel manages its own requests; callers may also prefetch.
+__attribute__((noinline))
+void inner_product_batch_prefetched(const void *const *vectors,
+                                    const void *query, size_t n, size_t dim,
+                                    float *distances) {
+  constexpr size_t kAhead = 3 * 8;
+  const float *typed_query = static_cast<const float *>(query);
+  const size_t bytes = dim * sizeof(float);
+  for (size_t j = 0; j < std::min(n, kAhead); ++j) {
+    prefetch_vector(vectors[j], bytes);
+  }
+  size_t i = 0;
+  for (; n - i >= 8; i += 8) {
+    const size_t begin = std::min(n, i + kAhead);
+    const size_t end = std::min(n, begin + 8);
+    inner_product_block<8, 2, true>(
+        vectors + i, typed_query, dim, distances + i, vectors + begin,
+        end - begin);
+  }
+  if (n - i >= 4) {
+    inner_product_block<4, 2>(vectors + i, typed_query, dim, distances + i);
+    i += 4;
+  }
+  if (n - i >= 2) {
+    inner_product_block<2, 4>(vectors + i, typed_query, dim, distances + i);
+    i += 2;
+  }
+  if (i < n) {
+    inner_product_fp32_distance(vectors[i], query, dim, distances + i);
+  }
+}
+#endif
+
 #undef ZVEC_NEON_UNROLL
 
 }  // namespace
@@ -151,6 +250,9 @@ void inner_product_fp32_batch_distance(const void *const *vectors,
                                        const void *query, size_t n, size_t dim,
                                        float *distances,
                                        const void *const * /*extra_values*/) {
+  if (n == 0) {
+    return;
+  }
 #if defined(AILEGO_ARM64_NEON)
   if (dim == 0) {
     for (size_t i = 0; i < n; ++i) {
@@ -163,6 +265,12 @@ void inner_product_fp32_batch_distance(const void *const *vectors,
     return;
   }
 
+#if defined(__APPLE__)
+  if (supports_batch_prefetch(dim)) {
+    inner_product_batch_prefetched(vectors, query, n, dim, distances);
+    return;
+  }
+#endif
   inner_product_batch(vectors, query, n, dim, distances);
 #else
   for (size_t i = 0; i < n; ++i) {

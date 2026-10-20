@@ -340,7 +340,7 @@ TEST(Fp32Quantizer, DatapointBatchMatchesPairwiseAndReference) {
       {"SquaredEuclidean", reference_squared_euclidean},
   };
   for (const auto &metric : metrics) {
-    for (size_t dim : {3u, 16u, 33u}) {
+    for (size_t dim : {3u, 16u, 33u, 255u, 256u, 257u}) {
       SCOPED_TRACE(testing::Message()
                    << "metric=" << metric.name << ", dim=" << dim);
       IndexMeta meta;
@@ -353,7 +353,7 @@ TEST(Fp32Quantizer, DatapointBatchMatchesPairwiseAndReference) {
       quantizer->calc_distance_dp_dp_batch(nullptr, 0, nullptr, nullptr);
       quantizer->calc_distance_dp_dp_batch(nullptr, -1, nullptr, nullptr);
 
-      constexpr size_t kCount = 9;
+      constexpr size_t kCount = 33;
       std::mt19937 gen(static_cast<uint32_t>(dim));
       std::uniform_real_distribution<float> dist(-3.0f, 4.0f);
       std::vector<std::vector<float>> raw(kCount + 1,
@@ -380,7 +380,7 @@ TEST(Fp32Quantizer, DatapointBatchMatchesPairwiseAndReference) {
       for (size_t i = 0; i < kCount; ++i) {
         candidates[i] = encoded[i + 1].data();
       }
-      for (int count : {1, 4, 5, 9}) {
+      for (int count : {1, 4, 5, 9, 33}) {
         SCOPED_TRACE(testing::Message() << "count=" << count);
         std::vector<float> actual(count);
         quantizer->calc_distance_dp_dp_batch(
