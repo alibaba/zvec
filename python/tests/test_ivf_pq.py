@@ -1,4 +1,4 @@
-"""Public IVF PQ configuration, persistence and coarse/refine behavior."""
+"""Public HNSW/IVF PQ configuration, persistence and coarse/refine behavior."""
 
 import pickle
 
@@ -7,9 +7,30 @@ import pytest
 import zvec
 
 
-@pytest.mark.parametrize("bits,fast_scan", [(8, False), (4, False), (4, True)])
+def index_param(kind, **kwargs):
+    if kind == "ivf":
+        return zvec.IVFIndexParam(n_list=4, n_iters=3, **kwargs)
+    return zvec.HnswIndexParam(m=16, ef_construction=100, **kwargs)
+
+
+def query_param(kind, **kwargs):
+    if kind == "ivf":
+        return zvec.IVFQueryParam(nprobe=4, **kwargs)
+    return zvec.HnswQueryParam(ef=2000, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "kind,bits,fast_scan",
+    [
+        ("ivf", 8, False),
+        ("ivf", 4, False),
+        ("ivf", 4, True),
+        ("hnsw", 8, False),
+        ("hnsw", 4, False),
+    ],
+)
 @pytest.mark.parametrize("rotate", [False, True])
-def test_ivf_pq_parameter_round_trip(bits, fast_scan, rotate):
+def test_pq_parameter_round_trip(kind, bits, fast_scan, rotate):
     qp = zvec.QuantizerParam(
         enable_rotate=rotate,
         num_chunk=4,
@@ -18,10 +39,9 @@ def test_ivf_pq_parameter_round_trip(bits, fast_scan, rotate):
         opq_iter=3,
         opq_pq_iter=2,
     )
-    param = zvec.IVFIndexParam(
+    param = index_param(
+        kind,
         metric_type=zvec.MetricType.L2,
-        n_list=4,
-        n_iters=3,
         quantize_type=zvec.QuantizeType.PQ,
         quantizer_param=qp,
     )
@@ -49,12 +69,23 @@ def test_legacy_quantizer_and_ivf_pickle():
         assert param.quantizer_param.num_bits == 8
 
 
-@pytest.mark.parametrize("bits,fast_scan", [(8, False), (4, False), (4, True)])
+@pytest.mark.parametrize(
+    "kind,bits,fast_scan",
+    [
+        ("ivf", 8, False),
+        ("ivf", 4, False),
+        ("ivf", 4, True),
+        ("hnsw", 8, False),
+        ("hnsw", 4, False),
+    ],
+)
 @pytest.mark.parametrize("rotate", [False, True])
 @pytest.mark.parametrize(
     "metric", [zvec.MetricType.L2, zvec.MetricType.IP, zvec.MetricType.COSINE]
 )
-def test_ivf_pq_collection_reopen_and_refine(tmp_path, bits, fast_scan, rotate, metric):
+def test_pq_collection_reopen_and_refine(
+    tmp_path, kind, bits, fast_scan, rotate, metric
+):
     rng = np.random.default_rng(903)
     vectors = rng.normal(size=(1100, 16)).astype(np.float32)
     query = rng.normal(size=16).astype(np.float32)
@@ -73,10 +104,9 @@ def test_ivf_pq_collection_reopen_and_refine(tmp_path, bits, fast_scan, rotate, 
                 "vector",
                 zvec.DataType.VECTOR_FP32,
                 dimension=16,
-                index_param=zvec.IVFIndexParam(
+                index_param=index_param(
+                    kind,
                     metric_type=metric,
-                    n_list=4,
-                    n_iters=3,
                     quantize_type=zvec.QuantizeType.PQ,
                     quantizer_param=qp,
                 ),
@@ -94,12 +124,16 @@ def test_ivf_pq_collection_reopen_and_refine(tmp_path, bits, fast_scan, rotate, 
                 ]
             )
             assert all(status.ok() for status in statuses)
+        # Untrained writer blocks remain searchable through raw Flat.
+        assert coll.query(
+            zvec.Query(field_name="vector", vector=query.tolist()), topk=5
+        )
         coll.optimize()
         before = coll.query(
             zvec.Query(
                 field_name="vector",
                 vector=query.tolist(),
-                param=zvec.IVFQueryParam(nprobe=4),
+                param=query_param(kind),
             ),
             topk=40,
             output_fields=[],
@@ -115,7 +149,7 @@ def test_ivf_pq_collection_reopen_and_refine(tmp_path, bits, fast_scan, rotate, 
             zvec.Query(
                 field_name="vector",
                 vector=query.tolist(),
-                param=zvec.IVFQueryParam(nprobe=4),
+                param=query_param(kind),
             ),
             topk=40,
             output_fields=[],
@@ -128,9 +162,7 @@ def test_ivf_pq_collection_reopen_and_refine(tmp_path, bits, fast_scan, rotate, 
             zvec.Query(
                 field_name="vector",
                 vector=query.tolist(),
-                param=zvec.IVFQueryParam(
-                    nprobe=4, is_using_refiner=True, scale_factor=4
-                ),
+                param=query_param(kind, is_using_refiner=True, scale_factor=4),
             ),
             topk=10,
             output_fields=[],
@@ -154,4 +186,124 @@ def test_ivf_pq_collection_reopen_and_refine(tmp_path, bits, fast_scan, rotate, 
             [doc.score for doc in refined], scores[order], rtol=1e-4, atol=1e-5
         )
     finally:
+        coll.close()
+
+
+def test_legacy_hnsw_pickle():
+    for state in [
+        (zvec.MetricType.L2, 16, 100, zvec.QuantizeType.INT8, False),
+        (
+            zvec.MetricType.L2,
+            16,
+            100,
+            zvec.QuantizeType.INT8,
+            False,
+            True,
+            True,
+            zvec.DataType.VECTOR_FP16,
+        ),
+    ]:
+        param = zvec.HnswIndexParam.__new__(zvec.HnswIndexParam)
+        param.__setstate__(state)
+        assert param.quantizer_param.enable_rotate == (len(state) == 8)
+        assert param.quantizer_param.num_bits == 8
+
+
+@pytest.mark.parametrize("bits", [4, 8])
+@pytest.mark.parametrize("enable_mmap", [False, True])
+def test_hnsw_pq_incremental_writes_and_retraining(tmp_path, bits, enable_mmap):
+    zvec.init()
+    rng = np.random.default_rng(137)
+    vectors = rng.normal(size=(303, 16)).astype(np.float32)
+    qp = zvec.QuantizerParam(num_chunk=4, num_bits=bits)
+    param = zvec.HnswIndexParam(
+        metric_type=zvec.MetricType.L2,
+        m=16,
+        ef_construction=100,
+        quantize_type=zvec.QuantizeType.PQ,
+        quantizer_param=qp,
+        flat_data_type=zvec.DataType.VECTOR_FP16,
+    )
+    schema = zvec.CollectionSchema(
+        name="pq_writes",
+        vectors=[
+            zvec.VectorSchema(
+                "vector", zvec.DataType.VECTOR_FP32, 16, index_param=param
+            )
+        ],
+    )
+    path = str(tmp_path / "index")
+    option = zvec.CollectionOption(enable_mmap=enable_mmap)
+    coll = zvec.create_and_open(path, schema, option=option)
+
+    def check(ids):
+        hits = coll.query(
+            zvec.Query(
+                "vector",
+                vector=vectors[302].tolist(),
+                param=zvec.HnswQueryParam(is_linear=True, is_using_refiner=True),
+            ),
+            topk=400,
+        )
+        assert {hit.id for hit in hits} == ids
+        assert coll.schema.vector("vector").index_param.quantizer_param == qp
+
+    try:
+        for start in range(0, 300, 100):
+            statuses = coll.insert(
+                [
+                    zvec.Doc(id=str(i), vectors={"vector": vectors[i].tolist()})
+                    for i in range(start, start + 100)
+                ]
+            )
+            assert all(status.ok() for status in statuses)
+        coll.optimize()
+        coll.close()
+        coll = zvec.open(path, option)
+        assert coll.insert(
+            zvec.Doc(id="300", vectors={"vector": vectors[300].tolist()})
+        ).ok()
+        assert coll.update(
+            zvec.Doc(id="1", vectors={"vector": vectors[301].tolist()})
+        ).ok()
+        assert coll.delete("0").ok()
+        expected = {str(i) for i in range(1, 301)}
+        check(expected)
+        coll.optimize()
+        check(expected)
+        coll.close()
+        coll = zvec.open(path, option)
+        check(expected)
+    finally:
+        coll.close()
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"fast_scan": True, "num_bits": 4},
+        {"num_chunk": 0},
+        {"num_chunk": 17},
+        {"num_bits": 6},
+        {"num_chunk": 3, "num_bits": 4},
+        {"enable_rotate": True, "opq_iter": 0},
+    ],
+)
+def test_hnsw_pq_rejects_invalid_configuration(tmp_path, kwargs):
+    schema = zvec.CollectionSchema(
+        name="invalid_pq",
+        vectors=[
+            zvec.VectorSchema(
+                "vector",
+                zvec.DataType.VECTOR_FP32,
+                16,
+                index_param=zvec.HnswIndexParam(
+                    quantize_type=zvec.QuantizeType.PQ,
+                    quantizer_param=zvec.QuantizerParam(**kwargs),
+                ),
+            )
+        ],
+    )
+    with pytest.raises(ValueError, match="PQ"):
+        coll = zvec.create_and_open(str(tmp_path / "index"), schema)
         coll.close()

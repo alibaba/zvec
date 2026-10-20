@@ -40,25 +40,8 @@ int IVFIndex::create_and_init_converter_reformer(
   const char *name = nullptr;
   ailego::Params quantizer_params;
   switch (param.type) {
-    case QuantizerType::kPQ: {
-      const auto *pq = dynamic_cast<const PqQuantizerParam *>(&param);
-      if (!pq || pq->num_chunk <= 0 || pq->num_chunk > index_param.dimension ||
-          (pq->num_bits != 4 && pq->num_bits != 8) ||
-          (pq->fast_scan && pq->num_bits != 4) ||
-          (pq->num_bits == 4 && index_param.dimension % pq->num_chunk != 0) ||
-          (pq->enable_rotate && (pq->opq_iter == 0 || pq->opq_pq_iter == 0))) {
-        return core::IndexError_InvalidArgument;
-      }
-      name = pq->fast_scan
-                 ? "PqFastQuantizer"
-                 : (pq->num_bits == 4 ? "PqInt4Quantizer" : "PqInt8Quantizer");
-      quantizer_params.set("num_chunk", static_cast<uint32_t>(pq->num_chunk));
-      quantizer_params.set("rotate_type",
-                           std::string(pq->enable_rotate ? "opq" : "none"));
-      quantizer_params.set("opq_iter", pq->opq_iter);
-      quantizer_params.set("opq_pq_iter", pq->opq_pq_iter);
-      break;
-    }
+    case QuantizerType::kPQ:
+      return init_pq_quantizer(param, index_param, &ivf_quantizer_);
     case QuantizerType::kNone:
       name = "Fp32Quantizer";
       break;

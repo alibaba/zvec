@@ -266,22 +266,25 @@ Status FieldSchema::validate() const {
         if (quantize_type == QuantizeType::PQ) {
           const auto &pq = vector_index_params->quantizer_param();
           const auto metric = vector_index_params->metric_type();
-          if (index_params_->type() != IndexType::IVF ||
+          if ((index_params_->type() != IndexType::IVF &&
+               index_params_->type() != IndexType::HNSW) ||
               data_type_ != DataType::VECTOR_FP32 ||
               (metric != MetricType::L2 && metric != MetricType::IP &&
                metric != MetricType::COSINE)) {
             return Status::InvalidArgument(
-                "PQ requires an IVF FP32 field with L2, IP or COSINE metric");
+                "PQ requires an IVF or HNSW FP32 field with L2, IP or COSINE "
+                "metric");
           }
           if (pq.num_chunk() <= 0 ||
               static_cast<uint32_t>(pq.num_chunk()) > dimension_ ||
               (pq.num_bits() != 4 && pq.num_bits() != 8) ||
-              (pq.fast_scan() && pq.num_bits() != 4) ||
+              (pq.fast_scan() && (pq.num_bits() != 4 ||
+                                  index_params_->type() != IndexType::IVF)) ||
               (pq.num_bits() == 4 && dimension_ % pq.num_chunk() != 0) ||
               (pq.enable_rotate() &&
                (pq.opq_iter() == 0 || pq.opq_pq_iter() == 0))) {
             return Status::InvalidArgument(
-                "Invalid IVF PQ/OPQ/FastScan parameters");
+                "Invalid PQ/OPQ parameters; FastScan requires IVF PQ4");
           }
         }
         const bool is_uniform = quantize_type == QuantizeType::UNIFORM_UINT7 ||

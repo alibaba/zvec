@@ -1391,3 +1391,23 @@ TEST(FieldSchemaTest, IvfPqValidatesLayoutAndSupportedIndex) {
       std::make_shared<FlatIndexParams>(MetricType::L2, QuantizeType::PQ));
   EXPECT_FALSE(flat.validate().ok());
 }
+
+TEST(FieldSchemaTest, HnswPqSupportsOpqButRejectsPackedCodes) {
+  for (auto metric : {MetricType::L2, MetricType::IP, MetricType::COSINE}) {
+    for (int bits : {4, 8}) {
+      auto params = std::make_shared<HnswIndexParams>(
+          metric, 16, 100, QuantizeType::PQ, false,
+          QuantizerParam(true, 4, bits, false, 2, 2));
+      EXPECT_TRUE(
+          FieldSchema("vector", DataType::VECTOR_FP32, 16, false, params)
+              .validate()
+              .ok());
+    }
+  }
+  auto packed = std::make_shared<HnswIndexParams>(
+      MetricType::L2, 16, 100, QuantizeType::PQ, false,
+      QuantizerParam(false, 4, 4, true));
+  EXPECT_FALSE(FieldSchema("vector", DataType::VECTOR_FP32, 16, false, packed)
+                   .validate()
+                   .ok());
+}

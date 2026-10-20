@@ -434,7 +434,7 @@ Args:
       m, "QuantizerParam", R"pbdoc(
 Parameters for quantizer configuration.
 
-For IVF PQ, configure subquantizers, code width, FastScan and learned OPQ.
+For HNSW/IVF PQ, configure subquantizers, code width, FastScan and learned OPQ.
 
 Attributes:
     enable_rotate (bool): Whether to apply random rotation before INT8/INT4
@@ -585,13 +585,17 @@ Attributes:
         neighbors during index construction. Larger values yield better
         graph quality at the cost of slower build time. Default is 500.
     quantize_type (QuantizeType): Optional quantization type for vector
-        compression (e.g., FP16, INT8). Default is `QuantizeType.UNDEFINED` to
+        compression (FP16, INT8, INT4, or PQ). Default is `QuantizeType.UNDEFINED` to
         disable quantization.
     use_flat_contiguous_memory (bool): Whether the Flat reference index used
         for refine should use contiguous vector memory.
     flat_data_type (DataType): Physical data type stored by the Flat reference
         index. Defaults to ``VECTOR_FP32``; ``VECTOR_FP16`` and
         ``VECTOR_UINT8`` are also supported.
+
+PQ learns its codebook during Collection.optimize(). Before optimization,
+writes remain searchable through Flat. Configure PQ4/PQ8 and optional OPQ
+with QuantizerParam; fast_scan is supported only by IVF.
 
 Examples:
     >>> from zvec.typing import MetricType, QuantizeType
@@ -663,39 +667,43 @@ Examples:
             return dict;
           },
           "Convert to dictionary with all fields")
-      .def(
-          "__repr__",
-          [](const HnswIndexParams &self) -> std::string {
-            return "{"
-                   "\"metric_type\":" +
-                   metric_type_to_string(self.metric_type()) +
-                   ", \"m\":" + std::to_string(self.m()) +
-                   ", \"ef_construction\":" +
-                   std::to_string(self.ef_construction()) +
-                   ", \"quantize_type\":" +
-                   quantize_type_to_string(self.quantize_type()) +
-                   ", \"use_contiguous_memory\":" +
-                   (self.use_contiguous_memory() ? "true" : "false") +
-                   ", \"use_flat_contiguous_memory\":" +
-                   (self.use_flat_contiguous_memory() ? "true" : "false") +
-                   ", \"flat_data_type\":\"" +
-                   data_type_to_string(self.flat_data_type()) + "\"" +
-                   ", \"quantizer_param\":{" + "\"enable_rotate\":" +
-                   (self.quantizer_param().enable_rotate() ? "true" : "false") +
-                   "}}";
-          })
+      .def("__repr__",
+           [](const HnswIndexParams &self) -> std::string {
+             return "{"
+                    "\"metric_type\":" +
+                    metric_type_to_string(self.metric_type()) +
+                    ", \"m\":" + std::to_string(self.m()) +
+                    ", \"ef_construction\":" +
+                    std::to_string(self.ef_construction()) +
+                    ", \"quantize_type\":" +
+                    quantize_type_to_string(self.quantize_type()) +
+                    ", \"use_contiguous_memory\":" +
+                    (self.use_contiguous_memory() ? "true" : "false") +
+                    ", \"use_flat_contiguous_memory\":" +
+                    (self.use_flat_contiguous_memory() ? "true" : "false") +
+                    ", \"flat_data_type\":\"" +
+                    data_type_to_string(self.flat_data_type()) + "\"" +
+                    ", \"quantizer_param\":" +
+                    py::str(py::cast(self.quantizer_param()))
+                        .cast<std::string>() +
+                    "}";
+           })
       .def(py::pickle(
           [](const HnswIndexParams &self) {
             return py::make_tuple(
                 self.metric_type(), self.m(), self.ef_construction(),
                 self.quantize_type(), self.use_contiguous_memory(),
                 self.quantizer_param().enable_rotate(),
-                self.use_flat_contiguous_memory(), self.flat_data_type());
+                self.use_flat_contiguous_memory(), self.flat_data_type(),
+                self.quantizer_param());
           },
           [](py::tuple t) {
-            if (t.size() < 5 || t.size() > 8)
+            if (t.size() < 5 || t.size() > 9)
               throw std::runtime_error("Invalid state for HnswIndexParams");
-            QuantizerParam qp(t.size() >= 6 ? t[5].cast<bool>() : false);
+            QuantizerParam qp =
+                t.size() == 9
+                    ? t[8].cast<QuantizerParam>()
+                    : QuantizerParam(t.size() >= 6 ? t[5].cast<bool>() : false);
             return std::make_shared<HnswIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<QuantizeType>(), t[4].cast<bool>(), qp,

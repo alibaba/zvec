@@ -335,7 +335,7 @@ class HnswIndexParam(VectorIndexParam):
             neighbors during index construction. Larger values yield better
             graph quality at the cost of slower build time. Default is 500.
         quantize_type (QuantizeType): Optional quantization type for vector
-            compression (e.g., FP16, INT8). Default is `QuantizeType.UNDEFINED` to
+            compression (FP16, INT8, INT4, or PQ). Default is `QuantizeType.UNDEFINED` to
             disable quantization.
         use_contiguous_memory (bool): If True, the HNSW streamer allocates a
             single contiguous memory arena for all graph nodes, improving cache
@@ -346,6 +346,10 @@ class HnswIndexParam(VectorIndexParam):
         flat_data_type (DataType): Physical type stored by the refine Flat
             reference index. Defaults to ``VECTOR_FP32``; ``VECTOR_FP16`` and
             ``VECTOR_UINT8`` are also supported.
+
+    PQ learns its codebook during Collection.optimize(). Before optimization,
+    writes remain searchable through Flat. Configure PQ4/PQ8 and optional OPQ
+    with QuantizerParam; fast_scan is supported only by IVF.
 
     Examples:
         >>> from zvec.typing import MetricType, QuantizeType

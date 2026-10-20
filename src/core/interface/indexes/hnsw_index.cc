@@ -86,9 +86,10 @@ int HNSWIndex::prepare_streamer_open(const StorageOptions &options) {
   core::IndexMeta persisted_meta;
   if (core::IndexHelper::DeserializeFromStorage(storage_.get(),
                                                 &persisted_meta) != 0) {
-    return 0;
+    return pending_quantizer_training_ ? core::IndexError_InvalidFormat : 0;
   }
   if (persisted_meta.quantizer_name().empty()) {
+    if (pending_quantizer_training_) return core::IndexError_InvalidFormat;
     if (!turbo_quantizer_) {
       return 0;
     }
@@ -136,6 +137,7 @@ int HNSWIndex::prepare_streamer_open(const StorageOptions &options) {
     return core::IndexError_Runtime;
   }
 
+  pending_quantizer_training_ = false;
   turbo_quantizer_ = restored;
   converter_.reset();
   reformer_.reset();
@@ -161,6 +163,25 @@ int HNSWIndex::prepare_streamer_open(const StorageOptions &options) {
 int HNSWIndex::create_and_init_converter_reformer(
     const QuantizerParam &quantizer_param, const BaseIndexParam &index_param) {
   const auto &hnsw_param = dynamic_cast<const HNSWIndexParam &>(index_param);
+  if (quantizer_param.type == QuantizerType::kPQ) {
+    if (hnsw_param.is_sparse || hnsw_param.data_type != DataType::DT_FP32 ||
+        (hnsw_param.metric_type != MetricType::kL2sq &&
+         hnsw_param.metric_type != MetricType::kInnerProduct &&
+         hnsw_param.metric_type != MetricType::kCosine) ||
+        hnsw_param.use_external_vector || hnsw_param.provider) {
+      return core::IndexError_Unsupported;
+    }
+    int ret =
+        init_pq_quantizer(quantizer_param, index_param, &turbo_quantizer_);
+    if (ret != 0) return ret;
+    pending_quantizer_training_ = true;
+    proxima_index_meta_ = turbo_quantizer_->meta();
+    streamer_vector_meta_.set_meta(
+        proxima_index_meta_.data_type(), proxima_index_meta_.dimension(),
+        static_cast<uint32_t>(turbo_quantizer_->type()),
+        proxima_index_meta_.extra_meta_size());
+    return 0;
+  }
   const char *quantizer_name =
       use_legacy_pipeline_
           ? nullptr

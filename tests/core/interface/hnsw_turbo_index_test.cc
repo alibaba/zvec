@@ -1107,3 +1107,91 @@ TEST(HnswPqIndexTest, ReopenAndAddUsesDataCodes) {
   ASSERT_EQ(0, index->close());
   test_util::RemoveTestFiles(path);
 }
+
+class HnswPqLifecycleTest
+    : public testing::TestWithParam<
+          std::tuple<int, bool, MetricType, StorageOptions::StorageType>> {};
+
+TEST_P(HnswPqLifecycleTest, TrainMergeReopenAndAppend) {
+  using namespace zvec;
+  const auto [bits, rotate, metric, storage_type] = GetParam();
+  const std::string raw_path = "hnsw_pq_raw.index";
+  const std::string pq_path = "hnsw_pq_target.index";
+  const std::string merge_path = "hnsw_pq_merge.index";
+  for (auto &path : {raw_path, pq_path, merge_path})
+    test_util::RemoveTestFiles(path);
+  ailego::MemoryLimitPool::get_instance().init(256 * 1024 * 1024);
+  auto vectors = RandomVectors(300);
+  auto raw_param = FlatIndexParamBuilder()
+                       .with_dimension(kDimension)
+                       .with_data_type(DataType::DT_FP32)
+                       .with_metric_type(metric)
+                       .build();
+  auto raw = IndexFactory::CreateAndInitIndex(*raw_param);
+  ASSERT_NE(nullptr, raw);
+  ASSERT_EQ(0, raw->open(raw_path, {storage_type, true}));
+  AddVectors(raw.get(), vectors);
+  PqQuantizerParam pq(bits == 8 ? 5 : 4, bits, rotate);
+  pq.opq_iter = 2;
+  pq.opq_pq_iter = 2;
+  auto param = MakeDefaultParam(metric);
+  param->quantizer_param = pq.clone();
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(0, index->open(pq_path, {storage_type, true}));
+  EXPECT_EQ(0U, index->get_doc_count());
+  EXPECT_NE(0, index->add(VectorData{DenseVector{vectors[0].data()}}, 0));
+  EXPECT_NE(0, index->train());
+  ASSERT_EQ(0, index->merge({raw}, IndexFilter()));
+  EXPECT_EQ(vectors.size(), index->get_doc_count());
+  auto before = SearchRows(index.get(), vectors[11], true);
+  ASSERT_FALSE(before.empty());
+  ASSERT_EQ(0, index->close());
+  index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_EQ(0, index->open(pq_path, {storage_type, false}));
+  EXPECT_EQ(before, SearchRows(index.get(), vectors[11], true));
+  ASSERT_EQ(0, index->add(VectorData{DenseVector{vectors[0].data()}}, 300));
+  EXPECT_EQ(301U, index->get_doc_count());
+
+  // Train a separate codebook from reconstructed source vectors. Codes from
+  // the first index must be decoded and encoded again, even with equal layout.
+  auto merged = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, merged);
+  ASSERT_EQ(0, merged->open(merge_path, {storage_type, true}));
+  ASSERT_EQ(0, merged->merge({index}, IndexFilter()));
+  ASSERT_EQ(0, merged->flush());
+  auto storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(merge_path, false));
+  std::shared_ptr<turbo::Quantizer> quantizer;
+  ASSERT_EQ(0, core::HnswStreamer::RestoreQuantizer(
+                   storage, merged->index_searcher()->meta(), &quantizer));
+  std::string code(quantizer->quantized_datapoint_vector_length(), '\0');
+  for (uint32_t id : {0U, 11U, 299U, 300U}) {
+    VectorDataBuffer source, actual;
+    ASSERT_EQ(0, index->fetch(id, &source));
+    const auto &decoded =
+        std::get<DenseVectorBuffer>(source.vector_buffer).data;
+    quantizer->quantize_data(decoded.data(), code.data());
+    std::string expected;
+    ASSERT_EQ(0, quantizer->dequantize(code.data(), core::IndexQueryMeta(),
+                                       &expected));
+    ASSERT_EQ(0, merged->fetch(id, &actual));
+    EXPECT_EQ(expected, std::get<DenseVectorBuffer>(actual.vector_buffer).data);
+  }
+  ASSERT_EQ(0, storage->close());
+  ASSERT_EQ(0, merged->close());
+  ASSERT_EQ(0, index->close());
+  ASSERT_EQ(0, raw->close());
+  for (auto &path : {raw_path, pq_path, merge_path})
+    test_util::RemoveTestFiles(path);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Pq, HnswPqLifecycleTest,
+    testing::Combine(
+        testing::Values(4, 8), testing::Bool(),
+        testing::Values(MetricType::kL2sq, MetricType::kInnerProduct,
+                        MetricType::kCosine),
+        testing::Values(StorageOptions::StorageType::kMMAP,
+                        StorageOptions::StorageType::kBufferPool)));

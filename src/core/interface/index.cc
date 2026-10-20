@@ -231,6 +231,7 @@ core::IndexContext::Pointer &Index::acquire_context() {
 }
 
 int Index::train() {
+  if (pending_quantizer_training_) return core::IndexError_NoReady;
   is_trained_ = true;
   return 0;
 }
@@ -244,6 +245,7 @@ bool Index::is_trained() const {
 }
 
 uint32_t Index::get_doc_count() const {
+  if (pending_quantizer_training_) return 0;
   if (streamer_ == nullptr) {
     return -1;
   }
@@ -258,6 +260,7 @@ core::IndexStreamer::Pointer Index::index_searcher() {
 }
 
 core::IndexProvider::Pointer Index::create_index_provider() const {
+  if (pending_quantizer_training_) return nullptr;
   return streamer_->create_provider();
 }
 
@@ -425,6 +428,32 @@ int Index::create_and_init_converter_reformer(
   return init_converter_reformer(converter_name, converter_params);
 }
 
+int Index::init_pq_quantizer(const QuantizerParam &param,
+                             const BaseIndexParam &index_param,
+                             std::shared_ptr<turbo::Quantizer> *quantizer) {
+  const auto *pq = dynamic_cast<const PqQuantizerParam *>(&param);
+  if (!pq || pq->num_chunk <= 0 || pq->num_chunk > index_param.dimension ||
+      (pq->num_bits != 4 && pq->num_bits != 8) ||
+      (pq->fast_scan &&
+       (pq->num_bits != 4 || index_param.index_type != IndexType::kIVF)) ||
+      (pq->num_bits == 4 && index_param.dimension % pq->num_chunk != 0) ||
+      (pq->enable_rotate && (pq->opq_iter == 0 || pq->opq_pq_iter == 0))) {
+    return core::IndexError_InvalidArgument;
+  }
+  const char *name = pq->fast_scan ? "PqFastQuantizer"
+                                   : (pq->num_bits == 4 ? "PqInt4Quantizer"
+                                                        : "PqInt8Quantizer");
+  ailego::Params params;
+  params.set("num_chunk", static_cast<uint32_t>(pq->num_chunk));
+  params.set("rotate_type", std::string(pq->enable_rotate ? "opq" : "none"));
+  params.set("opq_iter", pq->opq_iter);
+  params.set("opq_pq_iter", pq->opq_pq_iter);
+  proxima_index_meta_.set_quantizer(name, 0, params);
+  *quantizer = core::IndexFactory::CreateQuantizer(name);
+  return *quantizer ? (*quantizer)->init(proxima_index_meta_, params)
+                    : core::IndexError_NoExist;
+}
+
 int Index::init_converter_reformer(const std::string &converter_name,
                                    const ailego::Params &converter_params) {
   proxima_index_meta_.set_converter(converter_name, 0, converter_params);
@@ -552,7 +581,11 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
   }
 
   // read_options.create_new
-  int ret = storage_->open(file_path, storage_options.create_new);
+  // Storage's boolean also controls write access. Reopening an existing
+  // writable index must not turn BufferStorage into a read-only pool.
+  int ret = storage_->open(file_path, storage_options.create_new ||
+                                          (!storage_options.read_only &&
+                                           ailego::File::IsExist(file_path)));
   if (ret != 0) {
     LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path.c_str(),
               core::IndexError::What(ret));
@@ -562,7 +595,8 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
   if (ret != 0) {
     return ret;
   }
-  if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
+  if (!pending_quantizer_training_ &&
+      (streamer_ == nullptr || streamer_->open(storage_) != 0)) {
     LOG_ERROR("Failed to open streamer, path: %s", file_path.c_str());
     return core::IndexError_Runtime;
   }
@@ -615,7 +649,7 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
   }
 
   // TODO: context pool
-  if (!init_context()) {  // to validate if any error, will be overwritten
+  if (!pending_quantizer_training_ && !init_context()) {
     LOG_ERROR("Failed to init context");
     return core::IndexError_Runtime;
   }
@@ -631,7 +665,7 @@ int Index::close() {
     return core::IndexError_Runtime;
   }
 
-  if (!is_read_only_) {
+  if (!is_read_only_ && !pending_quantizer_training_) {
     if (ailego_unlikely(flush() != 0)) {
       LOG_ERROR("Failed to cleanup streamer");
       return core::IndexError_Runtime;
@@ -658,6 +692,7 @@ int Index::close() {
 }
 
 int Index::flush() {
+  if (pending_quantizer_training_) return core::IndexError_NoReady;
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;
@@ -686,6 +721,7 @@ bool Index::is_dirty() const {
 }
 
 int Index::fetch(const uint32_t doc_id, VectorDataBuffer *vector_data_buffer) {
+  if (pending_quantizer_training_) return core::IndexError_NoReady;
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;
@@ -697,6 +733,7 @@ int Index::fetch(const uint32_t doc_id, VectorDataBuffer *vector_data_buffer) {
 }
 
 int Index::add(const VectorData &vector_data, const uint32_t doc_id) {
+  if (pending_quantizer_training_) return core::IndexError_NoReady;
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;
@@ -1411,6 +1448,9 @@ int Index::_sparse_search(const VectorData &vector_data,
 
 int Index::merge(const std::vector<Index::Pointer> &indexes,
                  const IndexFilter &filter, const MergeOptions &options) {
+  if (pending_quantizer_training_ && (!is_open_ || is_read_only_)) {
+    return core::IndexError_NoReady;
+  }
   if (indexes.empty()) {
     return core::IndexError_Success;
   }
@@ -1450,7 +1490,8 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
     LOG_ERROR("Failed to init reducer");
     return core::IndexError_Runtime;
   }
-  if (converter_ != nullptr && reformer_ == nullptr) {
+  if (pending_quantizer_training_ ||
+      (converter_ != nullptr && reformer_ == nullptr)) {
     std::vector<MergeSourceIndexHolder::Source> sources;
     sources.reserve(indexes.size());
     for (const auto &index : indexes) {
@@ -1485,19 +1526,36 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
                                                            input_vector_meta_);
     if (holder->error() != 0) return holder->error();
     if (holder->count() == 0) {
-      LOG_ERROR("No vectors available to train converter");
+      LOG_ERROR("No vectors available to train quantization");
       return core::IndexError_InvalidArgument;
     }
-    int ret = converter_->train(holder);
+    int ret = pending_quantizer_training_ ? turbo_quantizer_->train(holder)
+                                          : converter_->train(holder);
     if (holder->error() != 0) return holder->error();
     if (ret != 0) {
-      LOG_ERROR("Failed to train converter from merge sources");
+      LOG_ERROR("Failed to train quantization from merge sources");
       return ret;
     }
-    ret = CreateReformerFromConverterMeta(converter_, &proxima_index_meta_,
-                                          &streamer_vector_meta_, &reformer_);
-    if (ret != 0) return ret;
-    streamer_->merge_trained_meta(proxima_index_meta_);
+    if (pending_quantizer_training_) {
+      // Training may change the code layout. Persist the codebook before any
+      // graph nodes are inserted, using the normal streamer open path.
+      proxima_index_meta_ = turbo_quantizer_->meta();
+      streamer_vector_meta_.set_meta(
+          proxima_index_meta_.data_type(), proxima_index_meta_.dimension(),
+          static_cast<uint32_t>(turbo_quantizer_->type()),
+          proxima_index_meta_.extra_meta_size());
+      ret = streamer_->init(proxima_index_meta_, proxima_index_params_,
+                            turbo_quantizer_);
+      if (ret != 0) return ret;
+      ret = streamer_->open(storage_);
+      if (ret != 0) return ret;
+      pending_quantizer_training_ = false;
+    } else {
+      ret = CreateReformerFromConverterMeta(converter_, &proxima_index_meta_,
+                                            &streamer_vector_meta_, &reformer_);
+      if (ret != 0) return ret;
+      streamer_->merge_trained_meta(proxima_index_meta_);
+    }
   }
   if (reducer->set_target_streamer_wiht_info(builder_, streamer_, converter_,
                                              reformer_, input_vector_meta_,

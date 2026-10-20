@@ -225,6 +225,9 @@ class ZVEC_CORE_API Index {
   int create_and_init_metric(const BaseIndexParam &param);
   virtual int create_and_init_converter_reformer(
       const QuantizerParam &param, const BaseIndexParam &index_param);
+  int init_pq_quantizer(const QuantizerParam &param,
+                        const BaseIndexParam &index_param,
+                        std::shared_ptr<turbo::Quantizer> *quantizer);
   int init_converter_reformer(const std::string &converter_name,
                               const ailego::Params &converter_params = {});
   virtual int create_and_init_streamer(const BaseIndexParam &param) = 0;
@@ -240,6 +243,8 @@ class ZVEC_CORE_API Index {
 
  protected:
   bool is_trained_{false};
+  // Trained streaming quantizers open their empty target after merge training.
+  bool pending_quantizer_training_{false};
 
   BaseIndexParam param_;
   ailego::Params proxima_index_params_{};
