@@ -1498,9 +1498,11 @@ Args:
         - ``prefetch_offset`` (int): Graph prefetch offset (PO).
           ``0`` disables prefetching. Default is ``8``.
           Values are clamped to ``256``.
-        - ``prefetch_lines`` (int): Number of 64B cache lines to prefetch
-          per neighbour vector (PL). ``0`` (default) uses the auto-derived
-          value ``ceil(vector_size/64)``. Values are clamped to ``256``.
+        - ``prefetch_lines`` (int): Number of cache lines to prefetch per
+          neighbour vector (PL). Cache-line size follows the build target:
+          normally 128 bytes on Apple ARM64 and 64 bytes elsewhere.
+          ``0`` (default) uses ``ceil(vector_size/cache_line_size)``.
+          Values are clamped to ``256``.
 )pbdoc")
       .def_property_readonly(
           "ef", [](const HnswQueryParams &self) -> int { return self.ef(); },
@@ -1903,10 +1905,13 @@ Args:
           for this phase only. ``0`` disables this prefix, not local-descent,
           graph-row, or distance-kernel prefetching.
           Values are clamped to ``256``.
-        - ``prefetch_lines`` (int): Number of 64B cache lines to prefetch
-          per neighbour vector (PL). The shared default ``0`` makes Vamana use
-          at most two lines, further clamped to the stored vector size. Values
-          are clamped to ``256`` and to the stored vector size.
+        - ``prefetch_lines`` (int): Number of cache lines to prefetch per
+          neighbour vector (PL). Cache-line size follows the build target:
+          normally 128 bytes on Apple ARM64 and 64 bytes elsewhere.
+          The shared default ``0`` makes Vamana use at most two lines, further
+          clamped to the stored vector size. The nominal 6 KiB prefix budget
+          uses this cache-line size. Values are clamped to ``256`` and to the
+          stored vector size.
 )pbdoc")
       .def_property_readonly(
           "ef_search",

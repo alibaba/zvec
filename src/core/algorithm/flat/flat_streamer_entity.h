@@ -487,7 +487,7 @@ class FlatStreamerEntity {
   mutable std::mutex segments_mutex_{};
   // Distance loops repeatedly read this metadata. Keep it off the cache line
   // written by segment-cache locking in concurrent queries.
-  alignas(64) IndexMeta index_meta_{};
+  alignas(AILEGO_CACHE_LINE_SIZE) IndexMeta index_meta_{};
   IndexStorage::Pointer storage_{};
   IndexMetric::MatrixDistance row_distance_{}, column_distance_{};
   IndexMetric::MatrixBatchDistance batch_distance_{};
@@ -577,7 +577,8 @@ class FlatContiguousStreamerEntity : public FlatStreamerEntity {
   const void *get_vector_ptr_by_key(const ContiguousStorage &storage,
                                     uint64_t key) const;
 
-  static constexpr size_t kVectorAlignment = 64;
+  // Padding is only for the rebuilt in-memory copy, not the index format.
+  static constexpr size_t kVectorAlignment = AILEGO_CACHE_LINE_SIZE;
   std::shared_ptr<const ContiguousStorage> contiguous_storage_{};
 };
 
