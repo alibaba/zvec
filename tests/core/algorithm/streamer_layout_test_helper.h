@@ -48,17 +48,14 @@ class LayoutTestSegment : public IndexStorage::Segment {
     std::memcpy(buf, bytes.data() + offset, len);
     return len;
   }
-  size_t read(size_t offset, const void **data, size_t len) override {
-    if (offset > used) return 0;
-    *data = bytes.data() + offset;
-    return std::min(len, used - offset);
-  }
   size_t read(size_t offset, IndexStorage::MemoryBlock &block,
               size_t len) override {
-    const void *data = nullptr;
-    size_t size = read(offset, &data, len);
-    block.reset(const_cast<void *>(data));
-    return size;
+    if (offset > used) {
+      block.reset(nullptr);
+      return 0;
+    }
+    block.reset(bytes.data() + offset);
+    return std::min(len, used - offset);
   }
   size_t write(size_t offset, const void *data, size_t len) override {
     if (offset > bytes.size() || len > bytes.size() - offset) return 0;
