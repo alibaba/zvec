@@ -40,7 +40,8 @@
 > - **Broader platform support**: Added **Intel Mac** and **Windows ARM64** builds, wheels, and SDKs; extended **DiskANN to Windows, Android, and iOS**, and **RaBitQ to Windows x86_64**.
 > - **Chinese FTS ready to use**: Embedded the default **Jieba dictionary and HMM model**, so Chinese tokenization needs no separate dictionary files or path configuration.
 > - **Lower index build costs**: Reduced peak memory during **IVF / DiskANN** builds and merges, and accelerated **HNSW RaBitQ** construction through vector reuse and batched lookups. Build and nested training tasks now enforce configured thread limits more strictly.
-> - **Faster distance computation**: Extensively refactored quantizers and distance calculations to benefit multiple quantization types and metrics, with major improvements to **INT4 kernels** and **Linux ARM64** performance. Query performance improved by up to **131.8%**.[^query-performance]
+> - **Faster distance computation**: Extensively refactored quantizers and distance calculations to benefit multiple
+    quantization types and metrics, with major improvements to **INT4 kernels** and **Linux ARM64** performance.
 > - **Faster search**: Added faster **Uniform quantizers** and optimized **Vamana** graph layout and prefetching. Uniform quantization avoids per-point score reconstruction, though a shared min/max range can increase quantization error and reduce recall.
 > - **Bug fixes and improvements**: Added more flexible **UTF-8 document IDs** up to 1,024 bytes; fixed concurrent reads during segment switches, index rebuilding with deleted rows, and correctness issues in **LIKE** and floating-point range filters.
 >
@@ -75,11 +76,8 @@ Prefer a visual tool? Try **[Zvec Studio](https://github.com/zvec-ai/zvec-studio
 
 ### ✅ Supported Platforms
 
-| Platform | Architectures | Notes                             |
-|----------|---------------|-----------------------------------|
-| Linux    | x86_64, ARM64 | Supports both glibc and musl libc |
-| macOS    | x86_64, ARM64 |                                   |
-| Windows  | x86_64, ARM64 | Except 3.10 on ARM64              |
+Zvec supports all major platforms, including **Linux, macOS, and Windows**; see
+the [platform support documentation](https://zvec.org/en/docs/db/platforms/) for details.
 
 ### 🛠️ Building from Source
 
