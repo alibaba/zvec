@@ -415,14 +415,18 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
     return node_chunks_.capacity() * node_cnt_per_chunk_;
   }
 
-  int init_chunk_params(size_t max_index_size) {
-    sparse_chunk_size_ = broker_->align_size(chunk_size_);
+  int init_chunk_params(size_t max_index_size, size_t page_size) {
+    const size_t page_mask = page_size - 1;
+    auto align_size = [page_mask](size_t size) {
+      return (size + page_mask) & ~page_mask;
+    };
+    sparse_chunk_size_ = align_size(chunk_size_);
 
     node_cnt_per_chunk_ = std::max<uint32_t>(1, chunk_size_ / node_size());
     //! align node cnt per chunk to pow of 2
     node_index_mask_bits_ = std::ceil(std::log2(node_cnt_per_chunk_));
     node_cnt_per_chunk_ = 1UL << node_index_mask_bits_;
-    chunk_size_ = broker_->align_size(node_cnt_per_chunk_ * node_size());
+    chunk_size_ = align_size(node_cnt_per_chunk_ * node_size());
     node_index_mask_ = node_cnt_per_chunk_ - 1;
 
     if (max_index_size == 0UL) {
@@ -438,9 +442,9 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
     //! get a balanced ratio be sqrt of the node/neighbor size ratio
     float ratio =
         std::sqrt(node_size() * scaling_factor() * 1.0f / upper_neighbor_size_);
-    upper_neighbor_chunk_size_ = broker_->align_size(
-        std::max(get_total_upper_neighbors_size(kMaxGraphLayers),
-                 static_cast<size_t>(chunk_size_ / ratio)));
+    upper_neighbor_chunk_size_ =
+        align_size(std::max(get_total_upper_neighbors_size(kMaxGraphLayers),
+                            static_cast<size_t>(chunk_size_ / ratio)));
     upper_neighbor_mask_bits_ =
         std::ceil(std::log2(upper_neighbor_chunk_size_ / upper_neighbor_size_));
     upper_neighbor_mask_ = (1 << upper_neighbor_mask_bits_) - 1;

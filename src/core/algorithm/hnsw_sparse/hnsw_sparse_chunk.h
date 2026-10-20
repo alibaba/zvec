@@ -69,6 +69,11 @@ class SparseChunkBroker {
   size_t chunk_size() const {
     return chunk_meta_.chunk_size;
   }
+  bool needs_legacy_layout() const {
+    return legacy_layout_pending_;
+  }
+  bool resolve_legacy_layout(size_t page_size, size_t node_chunk_size,
+                             size_t upper_chunk_size, size_t sparse_chunk_size);
   void set_max_chunks_size(size_t size) {
     max_chunks_size_ = size;
   }
@@ -150,6 +155,7 @@ class SparseChunkBroker {
   IndexStorage::Pointer stg_{};
   IndexStorage::Segment::Pointer chunk_meta_segment_{};
   bool check_crc_{false};
+  bool legacy_layout_pending_{false};
   bool dirty_{false};  // set as true if index is modified , the flag
                        // will not be cleared even if flushed
 };

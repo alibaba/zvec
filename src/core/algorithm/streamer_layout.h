@@ -34,6 +34,8 @@ inline bool LoadStreamerLayout(uint64_t *reserved, size_t meta_capacity,
                                size_t *page_mask) {
   // Legacy writers allocated the 128-byte chunk metadata as exactly one
   // writer page. Its persisted capacity therefore recovers that alignment.
+  // Sparse hugetlbfs storage must resolve its logical page separately because
+  // the physical metadata capacity was rounded up to a huge page.
   uint64_t page_size = meta_capacity;
   if (reserved[0] == kStreamerLayoutV1) {
     page_size = reserved[1];
