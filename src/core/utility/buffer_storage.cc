@@ -291,6 +291,7 @@ class BufferStorage : public IndexStorage {
       // Larger batches use individually owned buffers.
       static constexpr size_t kMaxArenaBytes = 2UL
                                                << 20;  // 2 MiB shared / batch
+      static constexpr size_t kArenaAlign = AILEGO_CACHE_LINE_SIZE;
 #if defined(__APPLE__)
       static constexpr size_t kBypassBatchPages = 16;
 #else
@@ -429,11 +430,13 @@ class BufferStorage : public IndexStorage {
           return fail();
         }
         total_pages += state.page_count;
-        if (request.length > std::numeric_limits<size_t>::max() - 63 ||
-            ((request.length + 63) & ~size_t{63}) >
+        if (request.length >
+                std::numeric_limits<size_t>::max() - (kArenaAlign - 1) ||
+            ((request.length + kArenaAlign - 1) & ~(kArenaAlign - 1)) >
                 std::numeric_limits<size_t>::max() - copy_upper_bound)
           return fail();
-        copy_upper_bound += (request.length + 63) & ~size_t{63};
+        copy_upper_bound +=
+            (request.length + kArenaAlign - 1) & ~(kArenaAlign - 1);
         scratch.states.emplace_back(state);
         for (size_t page = first_page; page <= last_page; ++page) {
           scratch.page_ids.emplace_back(page);
@@ -443,9 +446,8 @@ class BufferStorage : public IndexStorage {
       // Reserve bounded fallback space before pinning pages. Otherwise a
       // large batch can pin the entire budget and prevent its own fallback.
       if (copy_upper_bound && copy_upper_bound <= kMaxArenaBytes) {
-        scratch.arena = std::make_shared<
-            std::vector<char, ailego::BudgetedAllocator<char>>>(
-            copy_upper_bound);
+        scratch.arena =
+            std::make_shared<BatchArena>(copy_upper_bound / kArenaAlign);
       }
       // Reserve before pinning any cache page, including the bounded cold-read
       // batch. Writable paths still use synchronized scalar bypass reads.
@@ -574,7 +576,6 @@ class BufferStorage : public IndexStorage {
       // Reserve copied values once, then hand out bump slices. This includes
       // single-page bypass values, so the direct-read page scratch can be
       // immediately reused for the next unique miss.
-      static constexpr size_t kArenaAlign = AILEGO_CACHE_LINE_SIZE;
       size_t total = 0;
       for (const BatchState &state : scratch.states) {
         if (!state.copy_result) {
