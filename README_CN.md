@@ -77,7 +77,7 @@ Zvec 提供多语言官方 SDK：
 
 想要图形界面？试试 **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)**，零代码浏览数据与调试查询。
 
-### 🌍 全平台支持
+### ✅ 全平台支持
 
 **Linux · macOS · Windows · Android · iOS**
 

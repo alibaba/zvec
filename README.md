@@ -74,7 +74,7 @@ Searching code or documents? Try **[zvec-grep](https://github.com/zvec-ai/zvec-g
 
 Prefer a visual tool? Try **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)** to browse data and debug queries — no code required.
 
-### 🌍 Cross-Platform Support
+### ✅ Cross-Platform Support
 
 **Linux · macOS · Windows · Android · iOS**
 
