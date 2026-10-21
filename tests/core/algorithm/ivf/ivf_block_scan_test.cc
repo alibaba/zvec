@@ -107,6 +107,8 @@ TEST(IVFBlockScan, StorageFallbackFiltersGroupsAndQueryIsolation) {
            {"FileReadStorage", "MMapFileReadStorage", "BufferReadStorage"}) {
         SCOPED_TRACE(testing::Message()
                      << block_size << ':' << packed << ':' << storage_type);
+        const auto pool_before =
+            ailego::MemoryLimitPool::get_instance().stats();
         auto storage = IndexFactory::CreateStorage(storage_type);
         ailego::Params storage_params;
         storage_params.set("proxima.buffer.read_storage.warmup_mode", "none");
@@ -215,9 +217,15 @@ TEST(IVFBlockScan, StorageFallbackFiltersGroupsAndQueryIsolation) {
           });
         }
         for (auto &thread : threads) thread.join();
-        if (std::strcmp(storage_type, "BufferReadStorage") == 0)
-          EXPECT_GT(ailego::MemoryLimitPool::get_instance().stats().page_used,
-                    0u);
+        if (std::strcmp(storage_type, "BufferReadStorage") == 0) {
+          // Background eviction may reclaim every page before this check.
+          // Cumulative acquisitions still prove the cache path was exercised.
+          const auto pool_after =
+              ailego::MemoryLimitPool::get_instance().stats();
+          EXPECT_GT(
+              pool_after.alloc_from_freelist + pool_after.alloc_from_slab,
+              pool_before.alloc_from_freelist + pool_before.alloc_from_slab);
+        }
       }
       ailego::File::RemovePath(path);
     }

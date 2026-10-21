@@ -1026,10 +1026,6 @@ Examples:
                 quantize_type_to_string(self.quantize_type());
             py::dict qp_dict;
             qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
-            qp_dict["total_bits"] = self.quantizer_param().total_bits();
-            qp_dict["num_clusters"] = self.quantizer_param().num_clusters();
-            qp_dict["sample_count"] = self.quantizer_param().sample_count();
-            qp_dict["n_iters"] = self.quantizer_param().n_iters();
             dict["quantizer_param"] = qp_dict;
             return dict;
           },
@@ -1151,10 +1147,6 @@ Args:
                 quantize_type_to_string(self.quantize_type());
             py::dict qp_dict;
             qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
-            qp_dict["total_bits"] = self.quantizer_param().total_bits();
-            qp_dict["num_clusters"] = self.quantizer_param().num_clusters();
-            qp_dict["sample_count"] = self.quantizer_param().sample_count();
-            qp_dict["n_iters"] = self.quantizer_param().n_iters();
             dict["quantizer_param"] = qp_dict;
             dict["use_contiguous_memory"] = self.use_contiguous_memory();
             return dict;

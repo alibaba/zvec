@@ -383,8 +383,9 @@ int IVFIndex::reset_builder() {
   if (!next_builder) {
     return core::IndexError_NoExist;
   }
-  const auto &meta = converter_ ? converter_->meta() : proxima_index_meta_;
-  int ret = next_builder->init(meta, proxima_index_params_, ivf_quantizer_);
+  int ret =
+      next_builder->init(converter_ ? converter_->meta() : proxima_index_meta_,
+                         proxima_index_params_, ivf_quantizer_);
   if (ret != 0) {
     return ret;
   }
@@ -494,8 +495,7 @@ int IVFIndex::_dense_search(const VectorData &query,
                             SearchResult *result,
                             core::IndexContext::Pointer &context) {
   int ret = Index::_dense_search(query, search_param, result, context);
-  if (ret != 0) return ret;
-  if (!ivf_quantizer_ || !context->fetch_vector()) return ret;
+  if (ret != 0 || !ivf_quantizer_ || !context->fetch_vector()) return ret;
   auto provider = streamer_->create_provider();
   if (!provider) return core::IndexError_NoReady;
   result->reverted_vector_list_.clear();

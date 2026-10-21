@@ -193,7 +193,6 @@ int IVFSearcher::search_bf(
 
   //! Transform the querys for querying in inverted vector index later
   IndexQueryMeta iv_qmeta;
-
   int ret = entity->transform(query, qmeta, count, &query, &iv_qmeta);
   ivf_check_with_msg(ret, "Failed to transform querys");
 
@@ -215,7 +214,6 @@ int IVFSearcher::search_bf(
     }
     ivf_check_with_msg(ret, "Failed to search in entity for %s",
                        IndexError::What(ret));
-
     heap.sort();  // sort the results
     if (!p_keys && !filter.is_valid()) {
       // mapping the local id to key if query without filter
@@ -266,7 +264,6 @@ int IVFSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
   auto &filter = ctx->filter();
 
   auto &centroid_index_ctx = ctx->centroid_searcher_ctx();
-
   int ret = centroid_index_->search(query, qmeta, count, centroid_index_ctx);
   ivf_check_error_code(ret);
 
@@ -284,11 +281,10 @@ int IVFSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
     heap.clear();
     const auto visitor = ctx->candidate_visitor();
     size_t total_scan_count = 0;
-    size_t list_idx = 0;
-    for (; list_idx < centroids.size() &&
-           total_scan_count < ctx->max_scan_count();
-         ++list_idx) {
-      auto cid = centroids[list_idx].key();
+    for (size_t i = 0;
+         i < centroids.size() && total_scan_count < ctx->max_scan_count();
+         ++i) {
+      auto cid = centroids[i].key();
       uint32_t scan_count = 0;
       if (!filter.is_valid()) {
         ret = entity->search(cid, query, &scan_count, &heap, &context_stats,
@@ -301,7 +297,6 @@ int IVFSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
                          IndexError::What(ret));
       total_scan_count += scan_count;
     }
-
     heap.sort();  // sort the results
     if (!filter.is_valid()) {
       // mapping the local id to key if query without filter
