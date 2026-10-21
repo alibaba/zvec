@@ -47,13 +47,6 @@
     sum += (x * x);                 \
   }
 
-//! Calculate sum of squared difference (NEON)
-#define SSD_FP16_NEON(v_m, v_q, v_sum)     \
-  {                                        \
-    float16x8_t v_d = vsubq_f16(v_m, v_q); \
-    v_sum = vfmaq_f16(v_sum, v_d, v_d);    \
-  }
-
 //! Calculate sum of squared difference (AVX512)
 #define SSD_FP32_AVX512(zmm_m, zmm_q, zmm_sum)        \
   {                                                   \
@@ -244,7 +237,6 @@ static const __m256i ONES_INT16_AVX = _mm256_set1_epi32(0x00010001);
 #define ACCUM_FP32_STEP_AVX512 SSD_FP32_AVX512
 #define ACCUM_FP16_STEP_GENERAL SSD_FP16_GENERAL
 
-#define ACCUM_FP16_STEP_NEON SSD_FP16_NEON
 #define ACCUM_FP32_STEP_NEON SSD_FP32_NEON
 
 #define ACCUM_INT4_STEP_SSE SSD_INT4_SSE
