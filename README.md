@@ -85,10 +85,9 @@ For more details, please see the [platform support documentation](https://zvec.o
 
 If you prefer to build Zvec from source, please check the [Building from Source](https://zvec.org/en/docs/db/build/) guide.
 
-## ⚡ One-Minute Example
+## ⚡ One-Minute Python Example
 
 ```python
-# Zvec Python SDK — quickstart example
 import zvec
 
 # Define collection schema

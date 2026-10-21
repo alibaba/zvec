@@ -88,10 +88,9 @@ Zvec 提供全平台支持，覆盖服务器、桌面和移动设备。<br>
 
 如需从源码构建 Zvec，请参考[源码构建指南](https://zvec.org/zh/docs/db/build/)。
 
-## ⚡ 一分钟上手
+## ⚡ 一分钟上手（Python）
 
 ```python
-# Zvec Python SDK — 快速入门示例
 import zvec
 
 # 定义 collection schema
