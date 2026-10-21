@@ -163,6 +163,14 @@ TEST_P(ReadOnlyCloseTest, PreservesEveryByteAcrossOpenAndClose) {
       auto reader = make_index();
       ASSERT_NE(nullptr, reader);
       ASSERT_EQ(0, reader->open(path_, options(false, true)));
+      if (GetParam().type == IndexType::kHNSW && !GetParam().sparse) {
+        auto hnsw = std::dynamic_pointer_cast<HNSWIndex>(reader);
+        ASSERT_NE(nullptr, hnsw);
+        EXPECT_EQ(GetParam().mmap
+                      ? (GetParam().contiguous ? "contiguous" : "mmap")
+                      : "buffer_pool",
+                  hnsw->storage_mode());
+      }
       EXPECT_TRUE(before == snapshot()) << "open changed persisted bytes";
       if (cycle == 1) {
         ASSERT_NO_FATAL_FAILURE(check_vectors(reader, count));
@@ -191,13 +199,25 @@ TEST_P(ReadOnlyCloseTest, WritableClosePersistsWritesAfterFlushAndReopen) {
   ASSERT_EQ(0, writer->open(path_, options(true)));
   ASSERT_NO_FATAL_FAILURE(check_vectors(writer, 2));
   ASSERT_EQ(0, writer->add(vector(), 2));
+  uint32_t count = 3;
+  if (GetParam().type == IndexType::kHNSW && !GetParam().sparse) {
+    auto hnsw = std::dynamic_pointer_cast<HNSWIndex>(writer);
+    ASSERT_NE(nullptr, hnsw);
+    ASSERT_EQ(GetParam().mmap ? "mmap" : "buffer_pool", hnsw->storage_mode());
+    // 同线程复用接口缓存的上下文，追加后不关闭索引就继续查询。
+    ASSERT_NO_FATAL_FAILURE(check_vectors(writer, count));
+    for (; count < 32; ++count) {
+      ASSERT_EQ(0, writer->add(vector(), count));
+      ASSERT_NO_FATAL_FAILURE(check_vectors(writer, count + 1));
+    }
+  }
   ASSERT_EQ(0, writer->close());
   writer.reset();
 
   auto reader = make_index();
   ASSERT_NE(nullptr, reader);
   ASSERT_EQ(0, reader->open(path_, options(false, true)));
-  ASSERT_NO_FATAL_FAILURE(check_vectors(reader, 3));
+  ASSERT_NO_FATAL_FAILURE(check_vectors(reader, count));
   ASSERT_EQ(0, reader->close());
 }
 

@@ -325,7 +325,10 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
     default: {
       if (use_external_vector_) {
         entity_ = std::make_unique<HnswExternalStreamerEntity>(stats_);
-      } else if (use_contiguous_memory_) {
+      } else if (use_contiguous_memory_ &&
+                 stg->name() == "MMapFileReadStorage") {
+        // 连续内存是打开时的快照，仅用于只读 mmap。
+        // 可写实体追加时的 mmap 降级不会刷新已克隆的上下文，故直接使用 mmap。
         entity_ = std::make_unique<HnswContiguousStreamerEntity>(stats_);
       } else {
         entity_ = std::make_unique<HnswMmapStreamerEntity>(stats_);
