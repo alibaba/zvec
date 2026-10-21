@@ -187,6 +187,12 @@ class FlatStreamerEntity {
   }
 
   inline uint64_t key(uint32_t id) const {
+    if (!use_key_info_map_) {
+      // Positional indexes rebuild storage offsets on open, not the key cache.
+      // Read the persisted key even after reopening and appending new vectors.
+      uint64_t key = kInvalidKey;
+      return get_key_by_position(id, &key) == 0 ? key : kInvalidKey;
+    }
     if (id < id_key_vector_.size()) {
       return id_key_vector_[id];
     } else {
