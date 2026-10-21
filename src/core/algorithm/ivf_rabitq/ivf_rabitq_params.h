@@ -28,8 +28,6 @@ static const std::string PARAM_IVF_RABITQ_BRUTE_FORCE_THRESHOLD(
 static const std::string PARAM_IVF_RABITQ_BUILDER_THREAD_COUNT(
     "proxima.ivf_rabitq.builder.thread_count");
 
-static const std::string PARAM_IVF_RABITQ_NITERS("proxima.ivf_rabitq.niters");
-
 // Segment IDs
 static const std::string IVF_RABITQ_HEADER_SEG_ID{"ivf_rabitq.header"};
 static const std::string IVF_RABITQ_BATCH_DATA_SEG_ID{"ivf_rabitq.batch_data"};

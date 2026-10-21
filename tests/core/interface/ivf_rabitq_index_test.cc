@@ -98,10 +98,11 @@ TEST(IVFRabitqIntegration, ScanQueryOptionsRoundTrip) {
   EXPECT_FALSE(defaults->rabitq_reuse_coarse_dot);
 }
 
-TEST(IVFRabitqIntegration, DedicatedScanOptionsRoundTrip) {
+TEST(IVFRabitqIntegration, DedicatedQueryOptionsRoundTrip) {
   IVFRabitqQueryParam param;
-  param.rabitq_pruning = false;
+  param.nprobe = 16;
   const auto json = IndexFactory::QueryParamSerializeToJson(param, true);
+  EXPECT_EQ(std::string::npos, json.find("rabitq_pruning"));
   auto typed =
       IndexFactory::QueryParamDeserializeFromJson<IVFRabitqQueryParam>(json);
   auto base = std::dynamic_pointer_cast<IVFRabitqQueryParam>(
@@ -109,14 +110,14 @@ TEST(IVFRabitqIntegration, DedicatedScanOptionsRoundTrip) {
   auto copy = std::dynamic_pointer_cast<IVFRabitqQueryParam>(param.clone());
   for (const auto &p : {typed, base, copy}) {
     ASSERT_NE(nullptr, p);
-    EXPECT_FALSE(p->rabitq_pruning);
+    EXPECT_EQ(16u, p->nprobe);
   }
   auto defaults =
       IndexFactory::QueryParamDeserializeFromJson<IVFRabitqQueryParam>(
           R"({"index_type":"kIVFRabitq","nprobe":16})");
   ASSERT_NE(nullptr, defaults);
-  EXPECT_TRUE(defaults->rabitq_pruning);
-  const auto invalid = R"({"index_type":"kIVFRabitq","rabitq_pruning":"yes"})";
+  EXPECT_EQ(16u, defaults->nprobe);
+  const auto invalid = R"({"index_type":"kIVFRabitq","nprobe":"yes"})";
   EXPECT_EQ(nullptr,
             IndexFactory::QueryParamDeserializeFromJson<IVFRabitqQueryParam>(
                 invalid));
@@ -325,33 +326,9 @@ TEST_P(IVFRabitqIntegrationTest, TrainSearchAndReopen) {
     EXPECT_FLOAT_EQ(before.doc_list_[i].score(),
                     legacy_result.doc_list_[i].score());
   }
-  // Resetting pruning must restore the native default-path results.
-  const auto native_result = legacy_result;
-  legacy_query->rabitq_pruning = false;
-  ASSERT_EQ(0, legacy->search(input, legacy_query, &legacy_result));
-  EXPECT_EQ(native_result.doc_list_.size(), legacy_result.doc_list_.size());
-  legacy_query->rabitq_pruning = true;
-  ASSERT_EQ(0, legacy->search(input, legacy_query, &legacy_result));
-  ASSERT_EQ(native_result.doc_list_.size(), legacy_result.doc_list_.size());
-  for (size_t i = 0; i < native_result.doc_list_.size(); ++i) {
-    EXPECT_EQ(native_result.doc_list_[i].key(),
-              legacy_result.doc_list_[i].key());
-    EXPECT_FLOAT_EQ(native_result.doc_list_[i].score(),
-                    legacy_result.doc_list_[i].score());
-  }
   legacy_query->topk = vectors.size();
   ASSERT_EQ(0, legacy->search(input, legacy_query, &legacy_result));
   EXPECT_EQ(vectors.size(), legacy_result.doc_list_.size());
-  // The no-pruning option remains unsupported for bf_pks and grouped search.
-  legacy_query->rabitq_pruning = false;
-  legacy_query->bf_pks = std::make_shared<std::vector<uint64_t>>();
-  EXPECT_EQ(core::IndexError_InvalidArgument,
-            legacy->search(input, legacy_query, &legacy_result));
-  legacy_query->bf_pks.reset();
-  legacy_query->group_by_param = group_query->group_by_param;
-  EXPECT_EQ(core::IndexError_InvalidArgument,
-            legacy->search(input, legacy_query, &legacy_result));
-  legacy_query->rabitq_pruning = true;
   legacy_query->topk = group_query->topk;
   legacy_query->group_by_param = group_query->group_by_param;
   ASSERT_EQ(0, legacy->search(input, legacy_query, &legacy_result));

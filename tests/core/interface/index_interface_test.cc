@@ -3145,8 +3145,8 @@ TEST(IndexInterface, IvfQueryJsonTypedAndRuntimeDispatch) {
     using Param = decltype(param);
     param.topk = 55;
     param.nprobe = 180;
-    param.rabitq_pruning = false;
     if constexpr (std::is_same_v<Param, IVFQueryParam>) {
+      param.rabitq_pruning = false;
       param.rabitq_reuse_coarse_dot = true;
     }
     for (bool omit : {false, true}) {
@@ -3187,7 +3187,12 @@ TEST(IndexInterface, IvfQueryJsonDefaultsAndInvalidTypes) {
       EXPECT_EQ(defaults,
                 IndexFactory::QueryParamSerializeToJson(*runtime, false));
     }
-    for (const char *field : {"nprobe", "rabitq_pruning"}) {
+    std::vector<const char *> fields{"nprobe"};
+    if constexpr (std::is_same_v<Param, IVFQueryParam>) {
+      fields.push_back("rabitq_pruning");
+      fields.push_back("rabitq_reuse_coarse_dot");
+    }
+    for (const char *field : fields) {
       const auto json = prefix + ",\"" + field + "\":\"invalid\"}";
       EXPECT_EQ(nullptr,
                 IndexFactory::QueryParamDeserializeFromJson<Param>(json));

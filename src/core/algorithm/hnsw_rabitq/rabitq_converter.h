@@ -85,7 +85,6 @@ class RabitqConverter : public IndexConverter {
   IndexHolder::Pointer result_holder_;
   Stats stats_;
   size_t sample_count_{0};
-  ailego::Params cluster_params_;
 
   // RaBitQ parameters
   size_t num_clusters_{0};

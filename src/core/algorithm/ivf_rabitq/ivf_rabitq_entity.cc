@@ -179,26 +179,18 @@ int IvfRabitqEntity::load(IndexStorage::Pointer storage) {
 int IvfRabitqEntity::search_cluster(uint32_t cluster_id,
                                     const IvfRabitqQueryState &query_state,
                                     size_t padded_dim, size_t ex_bits,
-                                    IndexDocumentHeap *heap,
-                                    bool disable_pruning) const {
-  return disable_pruning
-             ? search_cluster_impl<false, true>(
-                   cluster_id, query_state, padded_dim, ex_bits, nullptr, heap)
-             : search_cluster_impl<false, false>(
-                   cluster_id, query_state, padded_dim, ex_bits, nullptr, heap);
+                                    IndexDocumentHeap *heap) const {
+  return search_cluster_impl<false>(cluster_id, query_state, padded_dim,
+                                    ex_bits, nullptr, heap);
 }
 
 int IvfRabitqEntity::search_cluster(uint32_t cluster_id,
                                     const IvfRabitqQueryState &query_state,
                                     size_t padded_dim, size_t ex_bits,
                                     const IndexFilter &filter,
-                                    IndexDocumentHeap *heap,
-                                    bool disable_pruning) const {
-  return disable_pruning
-             ? search_cluster_impl<true, true>(
-                   cluster_id, query_state, padded_dim, ex_bits, &filter, heap)
-             : search_cluster_impl<true, false>(
-                   cluster_id, query_state, padded_dim, ex_bits, &filter, heap);
+                                    IndexDocumentHeap *heap) const {
+  return search_cluster_impl<true>(cluster_id, query_state, padded_dim, ex_bits,
+                                   &filter, heap);
 }
 
 int IvfRabitqEntity::search_cluster_group_by(
@@ -476,9 +468,7 @@ int IvfRabitqEntity::compute_distances(uint32_t cluster_id,
 }
 
 // Cluster scan with lower-bound pruning — mirrors rabitqlib IVF::scan_one_batch
-// DisablePruning keeps the codes, lists and distance formula and only skips
-// the prune checks, so every unfiltered lane is refined.
-template <bool HasFilter, bool DisablePruning>
+template <bool HasFilter>
 int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
                                          const IvfRabitqQueryState &query_state,
                                          size_t padded_dim, size_t ex_bits,
@@ -533,19 +523,15 @@ int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
                                    low_dist.data(), ip_x0_qr.data(),
                                    true /* use_hacc */);
 
-
     if (ex_bits == 0) {
       // 1-bit only: scalar fast-reject before the heavy heap emplace so that
       // rejected candidates cost a single float compare instead of building a
       // full IndexDocument (matches rabitqlib SearchBuffer semantics).
-      [[maybe_unused]] float distk = heap->full()
-                                         ? heap->begin()->score()
-                                         : std::numeric_limits<float>::max();
+      float distk = heap->full() ? heap->begin()->score()
+                                 : std::numeric_limits<float>::max();
       for (uint32_t i = 0; i < batch_size; ++i) {
-        if constexpr (!DisablePruning) {
-          if (est_dist[i] >= distk) {
-            continue;
-          }
+        if (est_dist[i] >= distk) {
+          continue;
         }
         uint64_t key = cur_keys[offset + i];
         if constexpr (HasFilter) {
@@ -561,17 +547,11 @@ int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
     } else {
       // Step 2: lower-bound pruning + extra-bit boosting (same as rabitqlib)
       // distk: current worst distance in heap, updated after each insertion
-      [[maybe_unused]] float distk = heap->full()
-                                         ? heap->begin()->score()
-                                         : std::numeric_limits<float>::max();
+      float distk = heap->full() ? heap->begin()->score()
+                                 : std::numeric_limits<float>::max();
 
       for (uint32_t i = 0; i < batch_size; ++i) {
-        if constexpr (!DisablePruning) {
-          if (!(low_dist[i] < distk)) {
-            continue;
-          }
-        }
-        {
+        if (low_dist[i] < distk) {
           uint64_t key = cur_keys[offset + i];
           if constexpr (HasFilter) {
             if ((*filter)(key)) {

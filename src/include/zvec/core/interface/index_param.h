@@ -588,9 +588,6 @@ struct ZVEC_CORE_API IVFRabitqQueryParam : public BaseIndexQueryParam {
   ~IVFRabitqQueryParam() override;
 
   uint32_t nprobe = kDefaultIvfRabitqNprobe;
-  // Default-on lower-bound pruning. Disabling keeps the codes, lists and
-  // distance formula and only skips the prune check (diagnostic A/B).
-  bool rabitq_pruning = true;
 
   BaseIndexQueryParam::Pointer clone() const override;
 };

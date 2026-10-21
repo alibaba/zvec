@@ -142,7 +142,7 @@ keys、粗筛码和行记录；分页及文件读取使用可复用的窗口缓�
 
 | 参数 | 默认值 | 含义 |
 |---|---|---|
-| `rabitq_pruning` | `true` | 下界剪枝；关闭时精算全部有效候选 |
+| `rabitq_pruning` | `true` | 仅 Turbo IVF：下界剪枝；关闭时精算全部有效候选 |
 | `rabitq_reuse_coarse_dot` | `false` | 多位精算复用 LUT 点积；仅 Turbo IVF 支持 |
 
 点积复用与原浮点点积不完全相同，启用时需要独立验证召回。它可以与
@@ -157,6 +157,11 @@ kFlat refiner 组合；关闭剪枝不能与 refiner 组合。普通 IVF、旧�
 旧诊断配置中的对应字段应删除；查询 JSON 仍沿用忽略未知字段的行为，
 这些字段不再产生诊断输出。C++ 调用方需移除诊断字段访问并重新编译。
 需要复查历史诊断时，使用 `b8a4e30f` 及其诊断工具。
+
+原生 `hnsw_rabitq` 和 `ivf_rabitq` 算法目录保持与本分支和 `main`
+的共同基线一致，不增加关闭剪枝开关或训练迭代次数透传。
+`IVFRabitqQueryParam` 使用原生查询参数，`rabitq_pruning` 仅适用于
+Turbo IVF。原生训练继续采用已有默认行为；跨版本复测优先复用相同索引。
 
 正式性能比较使用 `bench` 与 `recall`，固定索引、查询、
 TopK、nprobe、线程数、reuse 和 refiner 配置。充分预热后轮换版本运行，

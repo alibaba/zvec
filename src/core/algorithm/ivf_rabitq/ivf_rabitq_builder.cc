@@ -23,7 +23,6 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/ailego/utility/time_helper.h>
-#include "algorithm/cluster/cluster_params.h"
 #include "algorithm/hnsw_rabitq/rabitq_converter.h"
 #include "algorithm/hnsw_rabitq/rabitq_params.h"
 #include "zvec/core/framework/index_error.h"
@@ -397,13 +396,6 @@ int IvfRabitqBuilder::train(IndexThreads::Pointer threads,
   ailego::Params conv_params;
   conv_params.set(PARAM_RABITQ_NUM_CLUSTERS, nlist_);
   conv_params.set(PARAM_RABITQ_TOTAL_BITS, total_bits_);
-  int niters = 0;
-  if (params_.get(PARAM_IVF_RABITQ_NITERS, &niters)) {
-    if (niters <= 0) return IndexError_InvalidArgument;
-    ailego::Params cluster_params;
-    cluster_params.set(OPTKMEANS_CLUSTER_MAX_ITERATIONS, niters);
-    conv_params.set(PARAM_RABITQ_CLUSTER_PARAMS, cluster_params);
-  }
   if (sample_count_ > 0) {
     conv_params.set(PARAM_RABITQ_SAMPLE_COUNT, sample_count_);
   }

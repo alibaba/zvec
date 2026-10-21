@@ -120,7 +120,6 @@ class IvfRabitqContext : public IndexContext {
     query_state.query_norm_sq = 0.0f;
     query_state.batch_query.reset();
     probe_centroids.clear();
-    disable_pruning = false;
   }
 
   //! Retrieve search result (first query)
@@ -346,9 +345,6 @@ class IvfRabitqContext : public IndexContext {
   // -----------------------------------------------------------------------
   IvfRabitqQueryState query_state;
   std::vector<IvfRabitqProbeCentroid> probe_centroids;
-  // Diagnostic A/B: skip only the lower-bound prune check; codes, lists and
-  // the distance formula stay fixed. Set from IVFRabitqQueryParam.
-  bool disable_pruning{false};
 
  private:
   struct GroupSearchState {

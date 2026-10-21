@@ -45,14 +45,12 @@ class IvfRabitqEntity {
   //! Same interface as IVFEntity::search for consistency.
   int search_cluster(uint32_t cluster_id,
                      const IvfRabitqQueryState &query_state, size_t padded_dim,
-                     size_t ex_bits, IndexDocumentHeap *heap,
-                     bool disable_pruning = false) const;
+                     size_t ex_bits, IndexDocumentHeap *heap) const;
 
   int search_cluster(uint32_t cluster_id,
                      const IvfRabitqQueryState &query_state, size_t padded_dim,
                      size_t ex_bits, const IndexFilter &filter,
-                     IndexDocumentHeap *heap,
-                     bool disable_pruning = false) const;
+                     IndexDocumentHeap *heap) const;
 
   int search_cluster_group_by(uint32_t cluster_id,
                               const IvfRabitqQueryState &query_state,
@@ -134,7 +132,7 @@ class IvfRabitqEntity {
   // Resolved once at load time to avoid per-cluster function-pointer lookup
   rabitqlib::ex_ipfunc ip_func_{nullptr};
 
-  template <bool HasFilter, bool DisablePruning>
+  template <bool HasFilter>
   int search_cluster_impl(uint32_t cluster_id,
                           const IvfRabitqQueryState &query_state,
                           size_t padded_dim, size_t ex_bits,

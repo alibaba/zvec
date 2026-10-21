@@ -32,8 +32,6 @@ static const std::string PARAM_RABITQ_TOTAL_BITS("proxima.rabitq.total_bits");
 static const std::string PARAM_RABITQ_METRIC_NAME("proxima.rabitq.metric_name");
 static const std::string PARAM_RABITQ_ROTATOR_TYPE(
     "proxima.rabitq.rotator.type");
-static const std::string PARAM_RABITQ_CLUSTER_PARAMS(
-    "proxima.rabitq.cluster_params");
 static const std::string PARAM_RABITQ_SAMPLE_COUNT(
     "proxima.rabitq.sample_count");
 

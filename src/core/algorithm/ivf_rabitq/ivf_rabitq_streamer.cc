@@ -331,6 +331,7 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
 
   // Reset results and heap for all queries
   ctx->reset_results(count);
+
   for (uint32_t q = 0; q < count; ++q) {
     const float *q_vec = reinterpret_cast<const float *>(
         static_cast<const char *>(query) +
@@ -343,6 +344,7 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
       LOG_ERROR("Failed to create query state, ret=%d", ret);
       return ret;
     }
+
     // Select probe centroids with the same metric used for build assignment.
     auto &probe_centroids = ctx->probe_centroids;
     ret = reformer_->select_probe_centroids(q_vec, nprobe, &query_state,
@@ -360,8 +362,8 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
 
     uint32_t scanned = 0;
 
-    uint32_t p = 0;
-    for (; p < probe_centroids.size() && scanned < max_scan; ++p) {
+    for (uint32_t p = 0; p < probe_centroids.size() && scanned < max_scan;
+         ++p) {
       const auto &probe = probe_centroids[p];
       uint32_t cid = probe.id;
 
@@ -375,10 +377,10 @@ int IvfRabitqStreamer::search_impl_internal(const void *query,
       // Scan cluster with 1-bit lower-bound pruning before extra-bit boosting
       if (!filter.is_valid()) {
         ret = entity_->search_cluster(cid, query_state, padded_dim, ex_bits,
-                                      &heap, ctx->disable_pruning);
+                                      &heap);
       } else {
         ret = entity_->search_cluster(cid, query_state, padded_dim, ex_bits,
-                                      filter, &heap, ctx->disable_pruning);
+                                      filter, &heap);
       }
       if (ret != 0) {
         LOG_ERROR("Failed to search cluster %zu, ret=%d", (size_t)cid, ret);

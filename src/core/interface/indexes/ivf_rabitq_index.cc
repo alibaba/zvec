@@ -23,7 +23,6 @@
 #if RABITQ_SUPPORTED
 #include "algorithm/hnsw_rabitq/hnsw_rabitq_params.h"
 #include "algorithm/hnsw_rabitq/rabitq_params.h"
-#include "algorithm/ivf_rabitq/ivf_rabitq_context.h"
 #include "algorithm/ivf_rabitq/ivf_rabitq_params.h"
 #include "algorithm/ivf_rabitq/ivf_rabitq_streamer.h"
 #endif
@@ -322,15 +321,6 @@ int IVFRabitqIndex::_prepare_for_search(
     LOG_ERROR("nprobe must be greater than 0");
     return core::IndexError_InvalidArgument;
   }
-  if (!ivf_rabitq_param->rabitq_pruning &&
-      (search_param->refiner_param || search_param->group_by_param ||
-       search_param->bf_pks)) {
-    LOG_ERROR("IVF RaBitQ scan options do not support refiner/group-by/bf_pks");
-    return core::IndexError_InvalidArgument;
-  }
-  auto *ctx = dynamic_cast<core::IvfRabitqContext *>(context.get());
-  if (!ctx) return core::IndexError_Cast;
-  ctx->disable_pruning = !ivf_rabitq_param->rabitq_pruning;
   _set_group_by_on_context(search_param, context);
   context->set_topk(search_param->topk);
   context->set_fetch_vector(false);
