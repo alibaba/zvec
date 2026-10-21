@@ -4122,6 +4122,172 @@ TEST_F(IVFSearcherTest, TestNprobeMaxScanCountValue) {
   EXPECT_EQ(0, ret);
 }
 
+TEST_F(IVFSearcherTest, QueryNprobeSurvivesContextRebind) {
+  IVFBuilder builder;
+  Params build_params;
+  build_params.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "4");
+  ASSERT_EQ(0, builder.init(index_meta_, build_params));
+  ASSERT_EQ(0, builder.train(CreateFixedCentroidTrainer(
+                   index_meta_, {50.0f, 150.0f, 250.0f, 350.0f})));
+  prepare_index_holder(0, 400);
+  ASSERT_EQ(0, builder.build(IndexThreads::Pointer(), holder_));
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_EQ(0, dumper->create(index_path_));
+  ASSERT_EQ(0, builder.dump(dumper));
+  ASSERT_EQ(0, dumper->close());
+  auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(index_path_, false));
+
+  Params defaults;
+  defaults.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 0U);
+  defaults.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 0.25f);
+  IVFSearcher searcher;
+  IVFStreamer streamer;
+  ASSERT_EQ(0, searcher.init(defaults));
+  ASSERT_EQ(0, searcher.load(storage, IndexMetric::Pointer()));
+  ASSERT_EQ(0, streamer.init(index_meta_, defaults));
+  ASSERT_EQ(0, streamer.open(storage));
+  auto context = searcher.create_context();
+  ASSERT_NE(nullptr, context);
+  context->set_topk(400);
+  auto *ivf = dynamic_cast<IVFSearcherContext *>(context.get());
+  ASSERT_NE(nullptr, ivf);
+  std::vector<float> query(dimension_, 0.0f);
+  IndexQueryMeta qmeta(IndexMeta::DT_FP32, dimension_);
+  for (uint32_t nprobe : {2U, 4U, 1U, 0U, 64U, 2U}) {
+    Params query_params;
+    query_params.set(PARAM_IVF_SEARCHER_NPROBE, nprobe);
+    for (bool use_streamer : {true, false}) {
+      ASSERT_EQ(0, context->update(query_params));
+      ASSERT_EQ(0, use_streamer
+                       ? streamer.search_impl(query.data(), qmeta, context)
+                       : searcher.search_impl(query.data(), qmeta, context));
+      EXPECT_EQ(nprobe ? std::min(nprobe, 4U) : 1U,
+                ivf->centroid_searcher_ctx()->result().size());
+      EXPECT_EQ(nprobe ? 400U : 100U, ivf->max_scan_count());
+    }
+    // Retain the thread's context across an index reopen as well as switches.
+    ASSERT_EQ(0, searcher.unload());
+    ASSERT_EQ(0, searcher.load(storage, IndexMetric::Pointer()));
+  }
+  ASSERT_EQ(0, streamer.unload());
+  ASSERT_EQ(0, searcher.unload());
+}
+
+TEST_F(IVFSearcherTest, PartialQueryUpdatesSurviveContextRebind) {
+  IVFBuilder builder;
+  Params build_params;
+  build_params.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "4");
+  ASSERT_EQ(0, builder.init(index_meta_, build_params));
+  ASSERT_EQ(0, builder.train(CreateFixedCentroidTrainer(
+                   index_meta_, {500.0f, 1500.0f, 2500.0f, 3500.0f})));
+  prepare_index_holder(0, 4000);
+  ASSERT_EQ(0, builder.build(IndexThreads::Pointer(), holder_));
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_EQ(0, dumper->create(index_path_));
+  ASSERT_EQ(0, builder.dump(dumper));
+  ASSERT_EQ(0, dumper->close());
+  auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(index_path_, false));
+
+  Params defaults;
+  defaults.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 0.25f);
+  defaults.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 10U);
+  defaults.set(PARAM_IVF_SEARCHER_NPROBE, 3U);
+  IVFSearcher searcher;
+  IVFStreamer streamer;
+  ASSERT_EQ(0, searcher.init(defaults));
+  ASSERT_EQ(0, searcher.load(storage, IndexMetric::Pointer()));
+  // The destination does not specify any of the query parameters.
+  ASSERT_EQ(0, streamer.init(index_meta_, Params()));
+  ASSERT_EQ(0, streamer.open(storage));
+  auto context = searcher.create_context();
+  ASSERT_NE(nullptr, context);
+  context->set_topk(4000);
+  auto *ivf = dynamic_cast<IVFSearcherContext *>(context.get());
+  ASSERT_NE(nullptr, ivf);
+  std::vector<float> query(dimension_, 0.0f);
+  IndexQueryMeta qmeta(IndexMeta::DT_FP32, dimension_);
+  auto check_rebind = [&](float ratio, uint32_t threshold, uint32_t centroids,
+                          uint32_t scan_count) {
+    EXPECT_FLOAT_EQ(ratio, ivf->scan_ratio());
+    EXPECT_EQ(threshold, ivf->bruteforce_threshold());
+    EXPECT_EQ(scan_count, ivf->max_scan_count());
+    ASSERT_EQ(0, searcher.search_impl(query.data(), qmeta, context));
+    const auto expected = context->result();
+    for (bool use_streamer : {true, false}) {
+      SCOPED_TRACE(use_streamer);
+      // Rebind after switching implementation and after reopening the searcher.
+      if (!use_streamer) {
+        ASSERT_EQ(0, searcher.unload());
+        ASSERT_EQ(0, searcher.load(storage, IndexMetric::Pointer()));
+      }
+      ASSERT_EQ(0, use_streamer
+                       ? streamer.search_impl(query.data(), qmeta, context)
+                       : searcher.search_impl(query.data(), qmeta, context));
+      EXPECT_FLOAT_EQ(ratio, ivf->scan_ratio());
+      EXPECT_EQ(threshold, ivf->bruteforce_threshold());
+      EXPECT_EQ(scan_count, ivf->max_scan_count());
+      EXPECT_EQ(centroids, ivf->centroid_searcher_ctx()->result().size());
+      const auto &actual = context->result();
+      ASSERT_EQ(expected.size(), actual.size());
+      for (size_t i = 0; i < expected.size(); ++i) {
+        EXPECT_EQ(expected[i].key(), actual[i].key());
+        EXPECT_FLOAT_EQ(expected[i].score(), actual[i].score());
+      }
+    }
+  };
+
+  Params overrides;
+  overrides.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 0.5f);
+  overrides.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 0U);
+  ASSERT_EQ(0, context->update(overrides));
+  Params nprobe;
+  nprobe.set(PARAM_IVF_SEARCHER_NPROBE, 0U);
+  ASSERT_EQ(0, context->update(nprobe));
+  check_rebind(0.5f, 0U, 2U, 2000U);
+
+  // A later ratio-only update retains the threshold and resets nprobe.
+  nprobe.set(PARAM_IVF_SEARCHER_NPROBE, 3U);
+  ASSERT_EQ(0, context->update(nprobe));
+  Params ratio;
+  ratio.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 0.25f);
+  ASSERT_EQ(0, context->update(ratio));
+  check_rebind(0.25f, 0U, 1U, 1000U);
+
+  // A threshold-only update retains the ratio across another nprobe update.
+  Params threshold;
+  threshold.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 2001U);
+  ASSERT_EQ(0, context->update(threshold));
+  nprobe.set(PARAM_IVF_SEARCHER_NPROBE, 1U);
+  ASSERT_EQ(0, context->update(nprobe));
+  check_rebind(0.25f, 2001U, 1U, 4000U);
+  ASSERT_EQ(0, context->update(Params()));
+  check_rebind(0.25f, 2001U, 1U, 2001U);
+
+  // Unspecified query fields still follow each index's defaults. An empty
+  // update must also keep nprobe reset when the index has a nonzero default.
+  auto default_context = searcher.create_context();
+  ASSERT_NE(nullptr, default_context);
+  default_context->set_topk(4000);
+  auto *default_ivf = dynamic_cast<IVFSearcherContext *>(default_context.get());
+  ASSERT_NE(nullptr, default_ivf);
+  ASSERT_EQ(0, default_context->update(Params()));
+  ASSERT_EQ(0, streamer.search_impl(query.data(), qmeta, default_context));
+  EXPECT_FLOAT_EQ(0.1f, default_ivf->scan_ratio());
+  EXPECT_EQ(1000U, default_ivf->bruteforce_threshold());
+  ASSERT_EQ(0, searcher.search_impl(query.data(), qmeta, default_context));
+  EXPECT_FLOAT_EQ(0.25f, default_ivf->scan_ratio());
+  EXPECT_EQ(10U, default_ivf->bruteforce_threshold());
+  EXPECT_EQ(1U, default_ivf->centroid_searcher_ctx()->result().size());
+  EXPECT_EQ(1000U, default_ivf->max_scan_count());
+
+  ASSERT_EQ(0, streamer.unload());
+  ASSERT_EQ(0, searcher.unload());
+}
+
 // Test: nprobe exceeding inverted_list_count is clamped
 TEST_F(IVFSearcherTest, TestNprobeClampToListCount) {
   // Build index with 4 centroids and 400 vectors

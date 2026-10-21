@@ -13,6 +13,7 @@
 // limitations under the License.
 #include "hnsw_sparse_chunk.h"
 #include <chrono>
+#include <limits>
 #include <random>
 #include <zvec/ailego/hash/crc32c.h>
 #include <zvec/ailego/logger/logger.h>
@@ -20,12 +21,14 @@
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_helper.h>
 #include <zvec/core/framework/index_streamer.h>
+#include "../streamer_layout.h"
 
 namespace zvec {
 namespace core {
 
 int SparseChunkBroker::init_storage(size_t chunk_size) {
   chunk_meta_.clear();
+  StoreStreamerLayout(page_mask_ + 1, chunk_meta_.reserved);
   chunk_meta_.chunk_size = chunk_size;
   chunk_meta_.create_time = ailego::Realtime::Seconds();
   stats_.set_create_time(chunk_meta_.create_time);
@@ -62,7 +65,7 @@ int SparseChunkBroker::init_storage(size_t chunk_size) {
   return 0;
 }
 
-int SparseChunkBroker::load_storage(size_t chunk_size) {
+int SparseChunkBroker::load_storage() {
   IndexStorage::MemoryBlock data_block;
   size_t size = chunk_meta_segment_->read(0UL, data_block,
                                           chunk_meta_segment_->data_size());
@@ -72,13 +75,20 @@ int SparseChunkBroker::load_storage(size_t chunk_size) {
     return IndexError_InvalidFormat;
   }
   std::memcpy(static_cast<void *>(&chunk_meta_), data_block.data(), size);
-  if (chunk_meta_.chunk_size != chunk_size) {
-    LOG_ERROR(
-        "Params hnsw chunk size=%zu mismatch from previous %zu "
-        "in index",
-        chunk_size, (size_t)chunk_meta_.chunk_size);
-    return IndexError_Mismatch;
+  // Legacy sparse writers used ordinary pages even on hugetlbfs. The storage
+  // rounded the metadata capacity to a huge page, but total_size retained the
+  // logical allocation sizes. Resolve that layout before interpreting chunks.
+  legacy_layout_pending_ =
+      chunk_meta_segment_->capacity() == ailego::MemoryHelper::HugePageSize() &&
+      chunk_meta_.reserved[0] == 0 && chunk_meta_.reserved[1] == 0 &&
+      chunk_meta_.reserved[2] == 0;
+  if (!legacy_layout_pending_ &&
+      !LoadStreamerLayout(chunk_meta_.reserved, chunk_meta_segment_->capacity(),
+                          &page_mask_)) {
+    LOG_ERROR("Invalid or unsupported streamer layout");
+    return IndexError_InvalidFormat;
   }
+
 
   *stats_.mutable_check_point() = stg_->check_point();
   stats_.set_revision_id(chunk_meta_.revision_id);
@@ -103,6 +113,57 @@ int SparseChunkBroker::load_storage(size_t chunk_size) {
   return 0;
 }
 
+bool SparseChunkBroker::resolve_legacy_layout(size_t page_size,
+                                              size_t node_chunk_size,
+                                              size_t upper_chunk_size,
+                                              size_t sparse_chunk_size) {
+  if (!legacy_layout_pending_ || page_size < 4096 ||
+      page_size >= ailego::MemoryHelper::HugePageSize() ||
+      (page_size & (page_size - 1)) != 0 ||
+      chunk_meta_.chunk_size != node_chunk_size ||
+      chunk_meta_.chunk_cnts[CHUNK_TYPE_META] != 1 ||
+      chunk_meta_.chunk_cnts[0] != 0 ||
+      chunk_meta_.chunk_cnts[CHUNK_TYPE_MAX - 1] != 0) {
+    return false;
+  }
+  uint64_t remaining = chunk_meta_.total_size;
+  auto consume = [&remaining](uint64_t count, uint64_t size) {
+    if (count != 0 && (size == 0 || count > remaining / size)) {
+      return false;
+    }
+    remaining -= count * size;
+    return true;
+  };
+  if (!consume(1, page_size) ||
+      !consume(chunk_meta_.chunk_cnts[CHUNK_TYPE_NODE], node_chunk_size) ||
+      !consume(chunk_meta_.chunk_cnts[CHUNK_TYPE_UPPER_NEIGHBOR],
+               upper_chunk_size) ||
+      !consume(chunk_meta_.chunk_cnts[CHUNK_TYPE_SPARSE_NODE],
+               sparse_chunk_size)) {
+    return false;
+  }
+  // Headers and hash slots are resized to their complete logical payload.
+  // Unlike capacity(), their data_size() excludes hugetlbfs padding.
+  const size_t mask = page_size - 1;
+  for (int type : {CHUNK_TYPE_HEADER, CHUNK_TYPE_NEIGHBOR_INDEX}) {
+    for (uint64_t i = 0; i < chunk_meta_.chunk_cnts[type]; ++i) {
+      auto chunk = get_chunk(type, i);
+      if (!chunk ||
+          chunk->data_size() > std::numeric_limits<size_t>::max() - mask ||
+          !consume(1, (chunk->data_size() + mask) & ~mask)) {
+        return false;
+      }
+    }
+  }
+  if (remaining != 0) {
+    return false;
+  }
+  page_mask_ = mask;
+  StoreStreamerLayout(page_size, chunk_meta_.reserved);
+  legacy_layout_pending_ = false;
+  return true;
+}
+
 int SparseChunkBroker::open(IndexStorage::Pointer stg, size_t max_index_size,
                             size_t chunk_size, bool check_crc) {
   if (ailego_unlikely(stg_)) {
@@ -110,33 +171,47 @@ int SparseChunkBroker::open(IndexStorage::Pointer stg, size_t max_index_size,
     return IndexError_Duplicate;
   }
   stg_ = std::move(stg);
+  page_mask_ = ailego::MemoryHelper::PageSize() - 1;
   check_crc_ = check_crc;
   max_chunks_size_ = max_index_size;
   dirty_ = false;
+  legacy_layout_pending_ = false;
 
   const std::string segment_id =
       make_segment_id(CHUNK_TYPE_META, kDefaultChunkSeqId);
-  chunk_meta_segment_ = stg_->get(segment_id);
-  if (!chunk_meta_segment_) {
-    LOG_DEBUG("Create new index");
-    return init_storage(chunk_size);
+  int ret;
+  if (!stg_->has(segment_id)) {
+    ret = init_storage(chunk_size);
+  } else {
+    chunk_meta_segment_ = stg_->get(segment_id);
+    ret = chunk_meta_segment_ ? load_storage() : IndexError_ReadData;
   }
-
-  return load_storage(chunk_size);
+  if (ret != 0) {
+    // An existing but unreadable segment is not an empty index. In particular,
+    // do not create it again, or flush incomplete state during error cleanup.
+    chunk_meta_segment_.reset();
+    stg_.reset();
+    chunk_meta_.clear();
+  }
+  return ret;
 }
 
 int SparseChunkBroker::close() {
-  flush(0UL);
-
+  const int ret =
+      stg_ && chunk_meta_segment_ && !legacy_layout_pending_ ? flush(0UL) : 0;
+  chunk_meta_segment_.reset();
   stg_.reset();
   check_crc_ = false;
   dirty_ = false;
+  legacy_layout_pending_ = false;
 
-  return 0;
+  return ret;
 }
 
 int SparseChunkBroker::flush(uint64_t checkpoint) {
-  ailego_assert_with(chunk_meta_segment_, "invalid meta segment");
+  if (!stg_ || !chunk_meta_segment_ || legacy_layout_pending_) {
+    return IndexError_Uninitialized;
+  }
 
   chunk_meta_.update_time = ailego::Realtime::Seconds();
   stats_.set_update_time(chunk_meta_.update_time);
@@ -145,6 +220,7 @@ int SparseChunkBroker::flush(uint64_t checkpoint) {
                                            sizeof(HnswSparseChunkMeta));
   if (ailego_unlikely(size != sizeof(HnswSparseChunkMeta))) {
     LOG_ERROR("Storage write data failed, wsize=%zu", size);
+    return IndexError_WriteData;
   }
 
   stg_->refresh(checkpoint);
@@ -162,7 +238,7 @@ std::pair<int, SparseChunk::Pointer> SparseChunkBroker::alloc_chunk(
   ailego_assert_with(type < CHUNK_TYPE_MAX, "chunk type overflow");
 
   SparseChunk::Pointer chunk;
-  if (ailego_unlikely(!stg_)) {
+  if (ailego_unlikely(!stg_ || legacy_layout_pending_)) {
     LOG_ERROR("Init storage first");
     return std::make_pair(IndexError_Uninitialized, chunk);
   }

@@ -59,6 +59,32 @@ class IVFSearcherContext : public IndexSearcher::Context {
 
   //! Update the parameters of context
   int update(const ailego::Params &params) override {
+    int ret = apply_params(params);
+    ivf_check_error_code(ret);
+
+    // Query parameters arrive before search_impl rebinds a cached context.
+    // Retain explicitly supplied ratio/threshold overrides across partial
+    // updates, without turning index defaults into query overrides.
+    float scan_ratio = 0.0f;
+    if (params.get(PARAM_IVF_SEARCHER_SCAN_RATIO, &scan_ratio)) {
+      query_params_.set(PARAM_IVF_SEARCHER_SCAN_RATIO, scan_ratio);
+    }
+    uint32_t bruteforce_threshold = 0;
+    if (params.get(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD,
+                   &bruteforce_threshold)) {
+      query_params_.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD,
+                        bruteforce_threshold);
+    }
+    // Unlike ratio/threshold, an omitted nprobe resets to scan-ratio mode.
+    // Persist zero as well so a rebind cannot restore an index's nprobe.
+    uint32_t nprobe = 0;
+    params.get(PARAM_IVF_SEARCHER_NPROBE, &nprobe);
+    query_params_.set(PARAM_IVF_SEARCHER_NPROBE, nprobe);
+    return 0;
+  }
+
+ private:
+  int apply_params(const ailego::Params &params) {
     params.get(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD,
                &bruteforce_threshold_);
     params.get(PARAM_IVF_SEARCHER_SCAN_RATIO, &scan_ratio_);
@@ -94,6 +120,7 @@ class IVFSearcherContext : public IndexSearcher::Context {
     return 0;
   }
 
+ public:
   //! Retrieve magic number
   uint32_t magic() const override {
     return magic_;
@@ -102,7 +129,7 @@ class IVFSearcherContext : public IndexSearcher::Context {
  public:
   //! Initialize the context
   int init(const ailego::Params &params) {
-    return this->update(params);
+    return apply_params(params);
   }
 
   //! Update the magic number
@@ -166,8 +193,14 @@ class IVFSearcherContext : public IndexSearcher::Context {
                      const ailego::Params &params, uint32_t magic_num) {
     entity_ = new_entity;
     centroid_searcher_ctx_ = std::move(centroid_ctx);
-    int ret = this->update(params);
+    scan_ratio_ = kDefaultScanRatio;
+    bruteforce_threshold_ = kDefaultBfThreshold;
+    int ret = apply_params(params);
     ivf_check_error_code(ret);
+    if (!query_params_.empty()) {
+      ret = apply_params(query_params_);
+      ivf_check_error_code(ret);
+    }
 
     magic_ = magic_num;
 
@@ -222,6 +255,7 @@ class IVFSearcherContext : public IndexSearcher::Context {
 
   //! Members
   IVFEntity::Pointer entity_{};
+  ailego::Params query_params_{};
   IndexSearcher::Context::Pointer centroid_searcher_ctx_{};
   IndexDocumentHeap result_heap_;
   std::vector<IndexDocumentList> results_{};
