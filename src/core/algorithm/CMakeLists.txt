@@ -56,10 +56,10 @@ if(RABITQ_SUPPORTED)
   cc_directory(ivf_rabitq)
 else()
   message(STATUS "NOT BUILD RABITQ")
-  # Empty stub library for unsupported platforms
+  # Empty stub library when RaBitQ is disabled for this build
   file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/rabitq_stub.cc
-    "// Stub implementation for unsupported platforms\n"
-    "// RaBitQ only supports Linux x86_64 and Windows x86_64\n"
+    "// Stub implementation for build compatibility\n"
+    "// RaBitQ is disabled for this build\n"
     "namespace zvec { namespace core { /* empty namespace for compatibility */ } }\n"
   )
 
@@ -73,8 +73,8 @@ else()
     )
 
   file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/ivf_rabitq_stub.cc
-    "// Stub implementation for unsupported platforms\n"
-    "// IVF RaBitQ only supports Linux x86_64 and Windows x86_64\n"
+    "// Stub implementation for build compatibility\n"
+    "// IVF RaBitQ is disabled for this build\n"
     "namespace zvec { namespace core { /* empty namespace for compatibility */ } }\n"
   )
 

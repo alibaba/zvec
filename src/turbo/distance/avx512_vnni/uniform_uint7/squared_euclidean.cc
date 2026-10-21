@@ -66,8 +66,8 @@ static ailego_force_inline __m128i reduce_add_4x16_epi32(__m512i a0, __m512i a1,
                        _mm256_extracti128_si256(d, 1));
 }
 
-// SIFT hot path. The Vamana caller has already prefetched both cache lines of
-// every candidate, so keep the query resident and overlap four independent
+// SIFT hot path. The Vamana caller has already prefetched every 128-byte
+// candidate, so keep the query resident and overlap four independent
 // candidate streams without issuing redundant software prefetches here.
 template <size_t batch_size>
 static ailego_force_inline void uniform_sq_l2_uint7_batch_128(
@@ -125,7 +125,7 @@ static ailego_force_inline void uniform_sq_l2_int8_batch_impl(
     accs[i] = _mm512_setzero_si512();
   }
 
-  // Process 64 bytes (one cache line) per iteration.
+  // Process one 512-bit SIMD block (64 bytes) per iteration.
   size_t d = 0;
   for (; d + 64 <= dim; d += 64) {
     // Load 64 query bytes

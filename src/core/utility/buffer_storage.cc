@@ -314,6 +314,13 @@ class BufferStorage : public IndexStorage {
         size_t destination_offset{0};
         size_t length{0};
       };
+      // C++17 allocators preserve this alignment for the arena base as well
+      // as the cache-line-sized slices handed to individual reads.
+      struct alignas(AILEGO_CACHE_LINE_SIZE) ArenaLine {
+        char bytes[AILEGO_CACHE_LINE_SIZE];
+      };
+      using BatchArena =
+          std::vector<ArenaLine, ailego::BudgetedAllocator<ArenaLine>>;
       struct BatchScratch {
         std::vector<BatchState, ailego::BudgetedAllocator<BatchState>> states;
         std::vector<ailego::block_id_t,
@@ -323,8 +330,7 @@ class BufferStorage : public IndexStorage {
             admitted_pages;
         std::vector<PageUse, ailego::BudgetedAllocator<PageUse>> page_uses;
         std::vector<size_t, ailego::BudgetedAllocator<size_t>> admitted_indices;
-        std::shared_ptr<std::vector<char, ailego::BudgetedAllocator<char>>>
-            arena;
+        std::shared_ptr<BatchArena> arena;
         std::vector<char, ailego::BudgetedAllocator<char>> bypass_page;
       };
       // Descriptors scale with request count and touched pages. Own and
@@ -568,7 +574,7 @@ class BufferStorage : public IndexStorage {
       // Reserve copied values once, then hand out bump slices. This includes
       // single-page bypass values, so the direct-read page scratch can be
       // immediately reused for the next unique miss.
-      static constexpr size_t kArenaAlign = 64;
+      static constexpr size_t kArenaAlign = AILEGO_CACHE_LINE_SIZE;
       size_t total = 0;
       for (const BatchState &state : scratch.states) {
         if (!state.copy_result) {
@@ -586,15 +592,14 @@ class BufferStorage : public IndexStorage {
         total += aligned;
       }
       batch_arena = total <= kMaxArenaBytes;
-      std::shared_ptr<std::vector<char, ailego::BudgetedAllocator<char>>>
-          arena_owner;
+      std::shared_ptr<BatchArena> arena_owner;
       if (batch_arena && total != 0) {
         if (!scratch.arena || scratch.arena.use_count() != 1) {
-          scratch.arena = std::make_shared<
-              std::vector<char, ailego::BudgetedAllocator<char>>>();
+          scratch.arena = std::make_shared<BatchArena>();
         }
-        if (scratch.arena->size() < total) {
-          scratch.arena->resize(total);
+        const size_t lines = total / kArenaAlign;
+        if (scratch.arena->size() < lines) {
+          scratch.arena->resize(lines);
         }
         arena_owner = scratch.arena;
         size_t off = 0;
@@ -602,7 +607,7 @@ class BufferStorage : public IndexStorage {
           if (!state.copy_result) {
             continue;
           }
-          state.owned = arena_owner->data() + off;
+          state.owned = reinterpret_cast<char *>(arena_owner->data()) + off;
           off += (state.request->length + kArenaAlign - 1) & ~(kArenaAlign - 1);
         }
       }
@@ -1901,7 +1906,7 @@ class BufferStorage : public IndexStorage {
 
   // Readers hash across shards; metadata writers lock every shard.
   static constexpr size_t kMappingMutexShards = 32;
-  struct alignas(64) MutexShard {
+  struct alignas(AILEGO_CACHE_LINE_SIZE) MutexShard {
     std::shared_mutex mtx;
   };
   mutable MutexShard mapping_shards_[kMappingMutexShards]{};
