@@ -16,6 +16,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <new>
 #include <magic_enum/magic_enum.hpp>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_error.h>
@@ -842,32 +843,44 @@ int Index::search(const VectorData &vector_data,
       context->reset();
       return coarse_topk;
     }
-    context->set_topk(coarse_topk);
-    context->set_fetch_vector(false);  // no need to fetch vector
-    std::string transformed_vector;
-    const void *query = nullptr;
-    core::IndexQueryMeta query_meta;
-    ret = _prepare_dense_query(vector_data, &transformed_vector, &query,
-                               &query_meta);
-    if (ret != 0) {
-      context->reset();
-      return ret;
-    }
-    // Refine replaces the coarse scores; only candidate membership and order
-    // cross this boundary, not document/vector materialization or
-    // normalization.
-    std::vector<std::vector<uint64_t>> keys(1);
-    if (_execute_dense_search(query, query_meta, search_param, context,
-                              &keys[0]) != 0) {
-      LOG_ERROR("Failed to search");
+    try {
+      context->set_topk(coarse_topk);
+      context->set_fetch_vector(false);  // no need to fetch vector
+      std::string transformed_vector;
+      const void *query = nullptr;
+      core::IndexQueryMeta query_meta;
+      ret = _prepare_dense_query(vector_data, &transformed_vector, &query,
+                                 &query_meta);
+      if (ret != 0) {
+        context->reset();
+        return ret;
+      }
+      // Refine replaces the coarse scores; only candidate membership and order
+      // cross this boundary, not document/vector materialization or
+      // normalization.
+      std::vector<std::vector<uint64_t>> keys(1);
+      if (_execute_dense_search(query, query_meta, search_param, context,
+                                &keys[0]) != 0) {
+        LOG_ERROR("Failed to search");
+        if (context) {
+          context->reset();
+        }
+        return core::IndexError_Runtime;
+      }
+      result->reverted_vector_list_.clear();
+      ret = reference_index->_refine_dense_candidates(vector_data, search_param,
+                                                      keys, result);
+    } catch (const std::bad_alloc &) {
+      // A huge scale factor (topk * SF up to INT_MAX) passes validation but
+      // the coarse result heap cannot be allocated; surface it as an error
+      // instead of terminating the process.
+      LOG_ERROR("Failed to allocate coarse result heap for %d candidates",
+                coarse_topk);
       if (context) {
         context->reset();
       }
-      return core::IndexError_Runtime;
+      return core::IndexError_NoMemory;
     }
-    result->reverted_vector_list_.clear();
-    ret = reference_index->_refine_dense_candidates(vector_data, search_param,
-                                                    keys, result);
   }
   if (context) {
     context->reset();
