@@ -21,6 +21,8 @@ from .jina_function import JinaFunctionBase
 from .multi_vector_reranker import CallbackReRanker, RrfReRanker, WeightedReRanker
 from .openai_embedding_function import OpenAIDenseEmbedding
 from .openai_function import OpenAIFunctionBase
+from .orcarouter_embedding_function import OrcaRouterDenseEmbedding
+from .orcarouter_function import OrcaRouterFunctionBase
 from .qwen_embedding_function import QwenDenseEmbedding, QwenSparseEmbedding
 from .qwen_function import QwenFunctionBase
 from .qwen_rerank_function import QwenReRanker
@@ -45,6 +47,8 @@ __all__ = [
     "JinaFunctionBase",
     "OpenAIDenseEmbedding",
     "OpenAIFunctionBase",
+    "OrcaRouterDenseEmbedding",
+    "OrcaRouterFunctionBase",
     "QwenDenseEmbedding",
     "QwenFunctionBase",
     "QwenReRanker",
