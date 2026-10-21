@@ -198,6 +198,13 @@ TEST_P(ReadOnlyCloseTest, WritableClosePersistsWritesAfterFlushAndReopen) {
   ASSERT_EQ(0, reader->close());
 }
 
+TEST_P(ReadOnlyCloseTest, ReadOnlyCannotCreateStorage) {
+  auto reader = make_index();
+  ASSERT_NE(nullptr, reader);
+  EXPECT_NE(0, reader->open(path_, options(true, true)));
+  EXPECT_FALSE(zvec::ailego::File::IsExist(path_));
+}
+
 INSTANTIATE_TEST_SUITE_P(
     StorageAndIndexTypes, ReadOnlyCloseTest,
     testing::Values(

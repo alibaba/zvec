@@ -23,6 +23,8 @@ namespace zvec {
 const uint32_t DEFAULT_MAX_BUFFER_SIZE = 64 * 1024 * 1024;  // 64M
 
 struct CollectionOptions {
+  // Read-only opens reject pending WAL recovery; recover with a writable open
+  // and close first so readers never modify files or observe partial replay.
   bool read_only_{false};
   bool enable_mmap_{true};  // ignored when load collection
   uint32_t max_buffer_size_{
