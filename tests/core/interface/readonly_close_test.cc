@@ -14,10 +14,12 @@
 
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <iterator>
 #include <string>
 #include <thread>
+#include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/core/interface/index.h>
@@ -48,6 +50,7 @@ class ReadOnlyCloseTest : public testing::TestWithParam<CloseTestCase> {
 
   void TearDown() override {
     zvec::test_util::RemoveTestFiles(path_);
+    zvec::test_util::RemoveTestFiles(path_ + ".source");
   }
 
   Index::Pointer make_index() const {
@@ -203,6 +206,136 @@ TEST_P(ReadOnlyCloseTest, ReadOnlyCannotCreateStorage) {
   ASSERT_NE(nullptr, reader);
   EXPECT_NE(0, reader->open(path_, options(true, true)));
   EXPECT_FALSE(zvec::ailego::File::IsExist(path_));
+}
+
+TEST_P(ReadOnlyCloseTest, ReadOnlyRejectsMergeWithoutChangingData) {
+  auto writer = make_index();
+  ASSERT_NE(nullptr, writer);
+  ASSERT_EQ(0, writer->open(path_, options(true)));
+  ASSERT_EQ(0, writer->add(vector(), 0));
+  ASSERT_EQ(0, writer->add(vector(), 1));
+  ASSERT_EQ(0, writer->close());
+  writer.reset();
+  const auto before = snapshot();
+
+  auto source = make_index();
+  ASSERT_NE(nullptr, source);
+  ASSERT_EQ(0, source->open(path_ + ".source", options(true)));
+  ASSERT_EQ(0, source->add(vector(), 0));
+  ASSERT_EQ(0, source->flush());
+
+  auto reader = make_index();
+  ASSERT_NE(nullptr, reader);
+  ASSERT_EQ(0, reader->open(path_, options(false, true)));
+  EXPECT_NE(0, reader->merge({source}, {}));
+  ASSERT_NO_FATAL_FAILURE(check_vectors(reader, 2));
+  EXPECT_TRUE(before == snapshot());
+  ASSERT_EQ(0, reader->close());
+  EXPECT_TRUE(before == snapshot());
+  ASSERT_EQ(0, source->close());
+}
+
+TEST(ReadOnlyOfflineIndexTest, CannotCreateOrMergeIntoReadOnlyStorage) {
+  ASSERT_EQ(0, zvec::ailego::MemoryLimitPool::get_instance().init(256UL * 1024 *
+                                                                  1024));
+  std::vector<BaseIndexParam::Pointer> params;
+  params.push_back(IVFIndexParamBuilder()
+                       .with_dimension(64)
+                       .with_data_type(DataType::DT_FP32)
+                       .with_metric_type(MetricType::kL2sq)
+                       .with_n_list(4)
+                       .with_n_iters(2)
+                       .build());
+#if RABITQ_SUPPORTED
+  params.push_back(IVFRabitqIndexParamBuilder()
+                       .with_dimension(64)
+                       .with_data_type(DataType::DT_FP32)
+                       .with_metric_type(MetricType::kL2sq)
+                       .with_n_list(4)
+                       .with_total_bits(7)
+                       .build());
+#endif
+#if DISKANN_SUPPORTED
+  params.push_back(DiskAnnIndexParamBuilder()
+                       .with_dimension(64)
+                       .with_data_type(DataType::DT_FP32)
+                       .with_metric_type(MetricType::kL2sq)
+                       .with_max_degree(8)
+                       .with_list_size(16)
+                       .with_pq_chunk_num(4)
+                       .build());
+#endif
+  for (const auto &param : params) {
+    for (auto storage : {StorageOptions::StorageType::kMMAP,
+                         StorageOptions::StorageType::kBufferPool}) {
+      SCOPED_TRACE(::testing::Message()
+                   << int(param->index_type) << " " << int(storage));
+      const std::string path = "readonly_offline_target.index";
+      const std::string source_path = path + ".source";
+      zvec::test_util::RemoveTestFiles(path);
+      zvec::test_util::RemoveTestFiles(source_path);
+      auto snapshot = [&]() {
+        std::ifstream input(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(input),
+                           std::istreambuf_iterator<char>());
+      };
+
+      auto rejected = IndexFactory::CreateAndInitIndex(*param);
+      ASSERT_NE(nullptr, rejected);
+      EXPECT_NE(0, rejected->open(path, {storage, true, true}));
+      EXPECT_FALSE(zvec::ailego::File::IsExist(path));
+      rejected.reset();
+
+      auto flat = FlatIndexParamBuilder()
+                      .with_dimension(64)
+                      .with_data_type(DataType::DT_FP32)
+                      .with_metric_type(MetricType::kL2sq)
+                      .build();
+      auto source = IndexFactory::CreateAndInitIndex(*flat);
+      ASSERT_NE(nullptr, source);
+      ASSERT_EQ(0, source->open(source_path, {storage, true, false}));
+      auto writer = IndexFactory::CreateAndInitIndex(*param);
+      ASSERT_NE(nullptr, writer);
+      ASSERT_EQ(0, writer->open(path, {storage, true, false}));
+      for (uint32_t id = 0; id < 128; ++id) {
+        std::array<float, 64> data;
+        for (size_t dim = 0; dim < data.size(); ++dim) {
+          data[dim] = std::sin(float(id * 13 + dim + 1));
+        }
+        VectorData vector{DenseVector{data.data()}};
+        ASSERT_EQ(0, source->add(vector, id));
+        if (id < 64) {
+          ASSERT_EQ(0, writer->add(vector, id));
+        }
+      }
+      ASSERT_EQ(0, source->flush());
+      ASSERT_EQ(0, writer->train());
+      ASSERT_EQ(0, writer->close());
+      writer.reset();
+      const auto before = snapshot();
+      ASSERT_FALSE(before.empty());
+
+      rejected = IndexFactory::CreateAndInitIndex(*param);
+      ASSERT_NE(nullptr, rejected);
+      EXPECT_NE(0, rejected->open(path, {storage, true, true}));
+      rejected.reset();
+      EXPECT_TRUE(before == snapshot());
+
+      auto reader = IndexFactory::CreateAndInitIndex(*param);
+      ASSERT_NE(nullptr, reader);
+      ASSERT_EQ(0, reader->open(path, {storage, false, true}));
+      EXPECT_NE(0, reader->merge({source}, {}));
+      EXPECT_TRUE(before == snapshot());
+      EXPECT_EQ(64U, reader->get_doc_count());
+      ASSERT_EQ(0, reader->close());
+      reader.reset();
+      EXPECT_TRUE(before == snapshot());
+      ASSERT_EQ(0, source->close());
+      source.reset();
+      zvec::test_util::RemoveTestFiles(path);
+      zvec::test_util::RemoveTestFiles(source_path);
+    }
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(

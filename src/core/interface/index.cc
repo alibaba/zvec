@@ -1421,6 +1421,10 @@ int Index::_sparse_search(const VectorData &vector_data,
 
 int Index::merge(const std::vector<Index::Pointer> &indexes,
                  const IndexFilter &filter, const MergeOptions &options) {
+  if (!is_open_ || is_read_only_) {
+    LOG_ERROR("Cannot merge into an index that is closed or read-only");
+    return core::IndexError_Runtime;
+  }
   if (indexes.empty()) {
     return core::IndexError_Success;
   }

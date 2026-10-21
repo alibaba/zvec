@@ -113,7 +113,10 @@ def test_pending_wal_requires_writable_recovery(tmp_path, enable_mmap, kind, ope
         with pytest.raises(
             (ValueError, RuntimeError), match="requires WAL recovery.*read_only=false"
         ):
-            zvec.open(str(path), zvec.CollectionOption(read_only=True))
+            zvec.open(
+                str(path),
+                zvec.CollectionOption(read_only=True, enable_mmap=enable_mmap),
+            )
         assert _snapshot(path) == before
 
     expected = {"a": 1, "b": 2}
@@ -123,11 +126,13 @@ def test_pending_wal_requires_writable_recovery(tmp_path, enable_mmap, kind, ope
         expected["a"] = 4
     else:
         del expected["a"]
-    writer = zvec.open(str(path))
+    writer = zvec.open(str(path), zvec.CollectionOption(enable_mmap=enable_mmap))
     _assert_docs(writer, expected)
     writer.close()
     recovered = _snapshot(path)
-    reader = zvec.open(str(path), zvec.CollectionOption(read_only=True))
+    reader = zvec.open(
+        str(path), zvec.CollectionOption(read_only=True, enable_mmap=enable_mmap)
+    )
     _assert_docs(reader, expected)
     reader.close()
     assert _snapshot(path) == recovered
@@ -140,7 +145,9 @@ def test_header_only_wal_can_be_opened_readonly(tmp_path, enable_mmap):
     wal = next(path.rglob("*.wal"))
     assert wal.stat().st_size == 64
     before = _snapshot(path)
-    reader = zvec.open(str(path), zvec.CollectionOption(read_only=True))
+    reader = zvec.open(
+        str(path), zvec.CollectionOption(read_only=True, enable_mmap=enable_mmap)
+    )
     _assert_docs(reader, {"a": 1, "b": 2})
     reader.close()
     assert _snapshot(path) == before
@@ -179,7 +186,9 @@ def test_readonly_files_support_queries(tmp_path, enable_mmap, kind):
     writer.close()
     before = _snapshot(path)
     with _read_only_tree(path):
-        reader = zvec.open(str(path), zvec.CollectionOption(read_only=True))
+        reader = zvec.open(
+            str(path), zvec.CollectionOption(read_only=True, enable_mmap=enable_mmap)
+        )
         _assert_docs(reader, {"a": 1, "b": 2})
         assert reader.query(filter="value = 1", topk=1)[0].id == "a"
         assert (
