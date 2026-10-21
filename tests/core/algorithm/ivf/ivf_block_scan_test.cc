@@ -141,47 +141,27 @@ TEST(IVFBlockScan, StorageFallbackFiltersGroupsAndQueryIsolation) {
           }
           if (packed) {
             EXPECT_EQ(5u, refinements.load());
-            const auto &scan = entity.packed_scan_stats();
-            EXPECT_EQ(5u, scan.refined_count);
-            EXPECT_GT(scan.coarse_count, 0u);
-            if (std::strcmp(storage_type, "MMapFileReadStorage") == 0) {
-              EXPECT_EQ(0u, scan.key_reads);
-              EXPECT_EQ(0u, scan.coarse_reads);
-              EXPECT_EQ(0u, scan.row_reads);
-              EXPECT_EQ(0u, scan.coarse_copy_bytes);
-            } else {
-              const size_t blocks1 = (37 + block_size - 1) / block_size;
-              const size_t blocks3 =
-                  (kCount - 37 + block_size - 1) / block_size;
-              const size_t windows = (blocks1 + 31) / 32 + (blocks3 + 31) / 32;
-              EXPECT_EQ(windows, scan.key_reads);
-              EXPECT_LE(scan.coarse_reads, windows);
-              EXPECT_GT(scan.coarse_reads, 0u);
-              EXPECT_LT(scan.coarse_reads, blocks1 + blocks3);
-              EXPECT_LE(scan.coarse_copy_bytes,
-                        (blocks1 + blocks3) * 32 * sizeof(float));
-            }
+            EXPECT_GT(stats.dist_calced_count(), 0u);
           }
         }
         if (packed) {
-          // An all-rejected window must not fetch coarse codes or full rows.
+          // An all-rejected window must not estimate or refine any candidates.
           ASSERT_EQ(0, entity.bind_query(query.data(), qmeta));
           IndexFilter reject_all;
           reject_all.set([](uint64_t) { return true; });
           IndexDocumentHeap heap(5);
           IndexContext::Stats stats;
+          refinements = 0;
           ASSERT_EQ(0, entity.search(query.data(), reject_all, &heap, &stats));
           EXPECT_EQ(kCount, stats.filtered_count());
-          EXPECT_EQ(0u, entity.packed_scan_stats().coarse_count);
-          EXPECT_EQ(0u, entity.packed_scan_stats().coarse_reads);
-          EXPECT_EQ(0u, entity.packed_scan_stats().row_reads);
-          EXPECT_EQ(0u, entity.packed_scan_stats().refined_count);
+          EXPECT_EQ(0u, stats.dist_calced_count());
+          EXPECT_EQ(0u, refinements.load());
           // Same-index A/B reference: identical top-k with pruning disabled.
           entity.set_packed_scan_pruning(false);
           ASSERT_EQ(0, entity.bind_query(query.data(), qmeta));
           ASSERT_EQ(0, entity.search(query.data(), &heap, &stats));
-          EXPECT_EQ(kCount, entity.packed_scan_stats().refined_count);
-          EXPECT_EQ(kCount, entity.packed_scan_stats().coarse_count);
+          EXPECT_EQ(kCount, refinements.load());
+          EXPECT_EQ(kCount, stats.dist_calced_count());
           ASSERT_EQ(5u, heap.size());
           for (const auto &doc : heap) {
             EXPECT_LT(doc.key(), 5u);
@@ -189,7 +169,6 @@ TEST(IVFBlockScan, StorageFallbackFiltersGroupsAndQueryIsolation) {
           }
           entity.set_packed_scan_pruning(true);
           ASSERT_EQ(0, entity.bind_query(query.data(), qmeta));
-          EXPECT_EQ(0u, entity.packed_scan_stats().refined_count);
         }
         // A global top-k threshold would incorrectly suppress later groups.
         std::map<uint64_t, IndexDocumentHeap> groups;
@@ -221,7 +200,6 @@ TEST(IVFBlockScan, StorageFallbackFiltersGroupsAndQueryIsolation) {
         for (size_t t = 0; t < 3; ++t) {
           auto clone = entity.clone();
           ASSERT_NE(nullptr, clone);
-          EXPECT_EQ(0u, clone->packed_scan_stats().refined_count);
           threads.emplace_back([clone, t, qmeta] {
             for (size_t key : {t, kCount - 1 - t}) {
               std::vector<float> q(kDim, 0);
@@ -246,57 +224,6 @@ TEST(IVFBlockScan, StorageFallbackFiltersGroupsAndQueryIsolation) {
   }
 }
 
-TEST(IVFBlockScan, SegmentTimingDoesNotChangeResultsOrLeakAcrossQueries) {
-  const std::string path = "ivf_block_scan_timing_test.index";
-  WriteIndex(path, 32, true);
-  for (const char *type : {"FileReadStorage", "MMapFileReadStorage"}) {
-    SCOPED_TRACE(type);
-    auto storage = IndexFactory::CreateStorage(type);
-    ASSERT_EQ(0, storage->open(path, false));
-    IVFEntity entity;
-    ASSERT_EQ(0, entity.load(storage));
-    std::vector<float> query(kDim, 0);
-    IndexQueryMeta qmeta(IndexMeta::DT_FP32, kDim);
-    std::map<uint64_t, float> reference;
-    for (bool enabled : {false, true, false}) {
-      entity.set_packed_scan_timing(enabled);
-      ASSERT_EQ(0, entity.bind_query(query.data(), qmeta));
-      IndexDocumentHeap heap(5);
-      IndexContext::Stats stats;
-      ASSERT_EQ(0, entity.search(query.data(), &heap, &stats));
-      entity.finish_segment_timing();
-      const auto scan = entity.packed_scan_stats();
-      EXPECT_EQ(kCount, scan.coarse_count);
-      EXPECT_EQ(5u, scan.refined_count);
-      EXPECT_EQ(enabled, scan.prep_ns > 0);
-      EXPECT_EQ(enabled, scan.coarse_ns > 0);
-      EXPECT_EQ(enabled, scan.cand_ns > 0);
-      EXPECT_EQ(enabled, scan.post_scan_ns > 0);
-      std::map<uint64_t, float> actual;
-      for (const auto &doc : heap) actual.emplace(doc.key(), doc.score());
-      if (reference.empty()) reference = actual;
-      EXPECT_EQ(reference, actual);
-      // Publishing twice must not double count a query.
-      entity.finish_segment_timing();
-      EXPECT_EQ(scan.post_scan_ns, entity.packed_scan_stats().post_scan_ns);
-    }
-    entity.set_packed_scan_timing(true);
-    ASSERT_EQ(0, entity.bind_query(query.data(), qmeta));
-    IndexDocumentHeap heap(1);
-    heap.emplace(0, 0.0f, 0);
-    IndexContext::Stats stats;
-    uint32_t scanned = 0;
-    // Every candidate in list 3 is rejected by the existing best score.
-    // FileReadStorage must count the post-scan work even on the early exit.
-    ASSERT_EQ(0, entity.search(3, query.data(), &scanned, &heap, &stats));
-    entity.finish_segment_timing();
-    EXPECT_EQ(kCount - 37, scanned);
-    EXPECT_EQ(0u, entity.packed_scan_stats().refined_count);
-    EXPECT_GT(entity.packed_scan_stats().post_scan_ns, 0.0);
-  }
-  ailego::File::RemovePath(path);
-}
-
 TEST(IVFBlockScan, DeletedKeysInMappedUnfilteredScan) {
   const std::string path = "ivf_block_scan_deleted_test.index";
   // Includes an entirely deleted list, an entirely deleted block, live and
@@ -316,6 +243,7 @@ TEST(IVFBlockScan, DeletedKeysInMappedUnfilteredScan) {
       ASSERT_EQ(0, entity.bind_query(query.data(), qmeta));
       IndexDocumentHeap heap(5);
       IndexContext::Stats stats;
+      refinements = 0;
       ASSERT_EQ(0, entity.search(query.data(), &heap, &stats));
       heap.sort();
       ASSERT_EQ(5u, heap.size());
@@ -325,8 +253,8 @@ TEST(IVFBlockScan, DeletedKeysInMappedUnfilteredScan) {
         EXPECT_EQ(key, doc.key());
         EXPECT_FLOAT_EQ(key * key, doc.score());
       }
-      EXPECT_EQ(988u, entity.packed_scan_stats().coarse_count);
-      EXPECT_EQ(pruning ? 5u : 494u, entity.packed_scan_stats().refined_count);
+      EXPECT_EQ(988u, stats.dist_calced_count());
+      EXPECT_EQ(pruning ? 5u : 494u, refinements.load());
     }
   }
   ailego::File::RemovePath(path);
@@ -350,11 +278,11 @@ TEST(IVFBlockScan, MappedPruningRetainsEqualAndUnorderedBounds) {
       heap.emplace(9999, 0.0f, 0);
     }
     IndexContext::Stats stats;
+    refinements = 0;
     ASSERT_EQ(0, entity.search(query.data(), &heap, &stats));
     // A lower bound equal to the threshold must still be refined, including
     // infinity == infinity. An unordered comparison must not prune NaNs.
-    EXPECT_EQ(value == 0 ? 1u : kCount,
-              entity.packed_scan_stats().refined_count);
+    EXPECT_EQ(value == 0 ? 1u : kCount, refinements.load());
   }
   storage->close();
   ailego::File::RemovePath(path);

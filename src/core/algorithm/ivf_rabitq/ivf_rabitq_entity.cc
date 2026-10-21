@@ -15,7 +15,6 @@
 #include "ivf_rabitq_entity.h"
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cstring>
 #include <limits>
 #include <rabitqlib/fastscan/fastscan.hpp>
@@ -30,21 +29,6 @@
 
 namespace zvec {
 namespace core {
-
-namespace {
-
-// Diagnostic wall clock mirroring the Turbo IVF SegmentClock: explicit
-// nanoseconds on every platform, without TSC calibration. Instrumentation
-// overhead must be measured separately; these timings are not production
-// throughput estimates.
-inline uint64_t SegmentClock() {
-  return static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now().time_since_epoch())
-          .count());
-}
-
-}  // namespace
 
 int IvfRabitqEntity::load(IndexStorage::Pointer storage) {
   if (!storage) {
@@ -118,7 +102,6 @@ int IvfRabitqEntity::load(IndexStorage::Pointer storage) {
     return IndexError_InvalidFormat;
   }
   batch_data_ = reinterpret_cast<const char *>(batch_data_block_.data());
-  mapped_ = batch_seg->base_data() != nullptr;
 
   // Read ex data
   ex_data_ = nullptr;
@@ -141,7 +124,6 @@ int IvfRabitqEntity::load(IndexStorage::Pointer storage) {
       return IndexError_InvalidFormat;
     }
     ex_data_ = reinterpret_cast<const char *>(ex_data_block_.data());
-    mapped_ = mapped_ && ex_seg->base_data();
   }
 
   // Read keys
@@ -163,7 +145,6 @@ int IvfRabitqEntity::load(IndexStorage::Pointer storage) {
     return IndexError_InvalidFormat;
   }
   keys_ = reinterpret_cast<const uint64_t *>(keys_block_.data());
-  mapped_ = mapped_ && keys_seg->base_data();
 
   ret = load_key_order_mapping(storage);
   if (ret != 0) {
@@ -199,23 +180,12 @@ int IvfRabitqEntity::search_cluster(uint32_t cluster_id,
                                     const IvfRabitqQueryState &query_state,
                                     size_t padded_dim, size_t ex_bits,
                                     IndexDocumentHeap *heap,
-                                    IvfRabitqScanStats *stats,
-                                    bool disable_pruning,
-                                    SampleSink samples) const {
-  if (disable_pruning) {
-    return stats ? search_cluster_impl<false, true, true>(
-                       cluster_id, query_state, padded_dim, ex_bits, nullptr,
-                       heap, stats, samples)
-                 : search_cluster_impl<false, false, true>(
-                       cluster_id, query_state, padded_dim, ex_bits, nullptr,
-                       heap, nullptr, samples);
-  }
-  return stats ? search_cluster_impl<false, true, false>(
-                     cluster_id, query_state, padded_dim, ex_bits, nullptr,
-                     heap, stats, samples)
-               : search_cluster_impl<false, false, false>(
-                     cluster_id, query_state, padded_dim, ex_bits, nullptr,
-                     heap, nullptr, samples);
+                                    bool disable_pruning) const {
+  return disable_pruning
+             ? search_cluster_impl<false, true>(
+                   cluster_id, query_state, padded_dim, ex_bits, nullptr, heap)
+             : search_cluster_impl<false, false>(
+                   cluster_id, query_state, padded_dim, ex_bits, nullptr, heap);
 }
 
 int IvfRabitqEntity::search_cluster(uint32_t cluster_id,
@@ -223,23 +193,12 @@ int IvfRabitqEntity::search_cluster(uint32_t cluster_id,
                                     size_t padded_dim, size_t ex_bits,
                                     const IndexFilter &filter,
                                     IndexDocumentHeap *heap,
-                                    IvfRabitqScanStats *stats,
-                                    bool disable_pruning,
-                                    SampleSink samples) const {
-  if (disable_pruning) {
-    return stats ? search_cluster_impl<true, true, true>(
-                       cluster_id, query_state, padded_dim, ex_bits, &filter,
-                       heap, stats, samples)
-                 : search_cluster_impl<true, false, true>(
-                       cluster_id, query_state, padded_dim, ex_bits, &filter,
-                       heap, nullptr, samples);
-  }
-  return stats ? search_cluster_impl<true, true, false>(
-                     cluster_id, query_state, padded_dim, ex_bits, &filter,
-                     heap, stats, samples)
-               : search_cluster_impl<true, false, false>(
-                     cluster_id, query_state, padded_dim, ex_bits, &filter,
-                     heap, nullptr, samples);
+                                    bool disable_pruning) const {
+  return disable_pruning
+             ? search_cluster_impl<true, true>(
+                   cluster_id, query_state, padded_dim, ex_bits, &filter, heap)
+             : search_cluster_impl<true, false>(
+                   cluster_id, query_state, padded_dim, ex_bits, &filter, heap);
 }
 
 int IvfRabitqEntity::search_cluster_group_by(
@@ -519,23 +478,17 @@ int IvfRabitqEntity::compute_distances(uint32_t cluster_id,
 // Cluster scan with lower-bound pruning — mirrors rabitqlib IVF::scan_one_batch
 // DisablePruning keeps the codes, lists and distance formula and only skips
 // the prune checks, so every unfiltered lane is refined.
-template <bool HasFilter, bool CollectStats, bool DisablePruning>
+template <bool HasFilter, bool DisablePruning>
 int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
                                          const IvfRabitqQueryState &query_state,
                                          size_t padded_dim, size_t ex_bits,
                                          const IndexFilter *filter,
-                                         IndexDocumentHeap *heap,
-                                         IvfRabitqScanStats *stats,
-                                         SampleSink samples) const {
+                                         IndexDocumentHeap *heap) const {
   if (cluster_id >= cluster_metas_.size()) {
     LOG_ERROR("Invalid cluster_id=%zu", (size_t)cluster_id);
     return IndexError_OutOfRange;
   }
 
-  if constexpr (CollectStats) {
-    stats->active = true;
-    stats->mapped = mapped_;
-  }
   const auto &meta = cluster_metas_[cluster_id];
   if (meta.vector_count == 0) {
     return 0;
@@ -566,64 +519,28 @@ int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
 
   uint32_t remaining = meta.vector_count;
   uint32_t offset = 0;
-  const bool timing = stats && stats->timing;
 
   while (remaining > 0) {
     const uint32_t batch_size =
         std::min(remaining, (uint32_t)rabitqlib::fastscan::kBatchSize);
-
-    // v17 sampled batch timing: with stride N only 1/N of batches take the
-    // clock calls; reported coarse/post rates are per timed batch.
-    const bool batch_timed =
-        timing &&
-        (stats->timing_stride <= 1 ||
-         (stats->batch_seq++ % stats->timing_stride) == 0);
-    if (batch_timed) ++stats->timed_batches;
 
     // Step 1: 1-bit estimation for all 32 vectors at once (cheap, SIMD)
     std::array<float, rabitqlib::fastscan::kBatchSize> est_dist;
     std::array<float, rabitqlib::fastscan::kBatchSize> low_dist;
     std::array<float, rabitqlib::fastscan::kBatchSize> ip_x0_qr;
 
-    [[maybe_unused]] uint64_t coarse_t0 = 0;
-    if (batch_timed) coarse_t0 = SegmentClock();
     rabitqlib::split_batch_estdist(cur_batch, *bq, padded_dim, est_dist.data(),
                                    low_dist.data(), ip_x0_qr.data(),
                                    true /* use_hacc */);
-    if (batch_timed) stats->coarse_ns += double(SegmentClock() - coarse_t0);
 
-    if constexpr (CollectStats) stats->coarse_count += batch_size;
 
-    if (samples) {
-      // Deterministic batches (first, middle, last) and lanes (first, last)
-      // so a replay can recompute and compare these exact rows.
-      const uint32_t total_batches =
-          (meta.vector_count + rabitqlib::fastscan::kBatchSize - 1) /
-          rabitqlib::fastscan::kBatchSize;
-      const uint32_t batch_id =
-          offset / rabitqlib::fastscan::kBatchSize;
-      if (batch_id == 0 || batch_id == total_batches / 2 ||
-          batch_id == total_batches - 1) {
-        samples->push_back({cluster_id, batch_id, 0, cur_keys[offset],
-                            est_dist[0], low_dist[0], ip_x0_qr[0]});
-        if (batch_size > 1) {
-          const uint32_t lane = batch_size - 1;
-          samples->push_back({cluster_id, batch_id, lane,
-                              cur_keys[offset + lane], est_dist[lane],
-                              low_dist[lane], ip_x0_qr[lane]});
-        }
-      }
-    }
-
-    [[maybe_unused]] uint64_t post_scan_t0 = 0;
-    if (batch_timed) post_scan_t0 = SegmentClock();
     if (ex_bits == 0) {
       // 1-bit only: scalar fast-reject before the heavy heap emplace so that
       // rejected candidates cost a single float compare instead of building a
       // full IndexDocument (matches rabitqlib SearchBuffer semantics).
-      [[maybe_unused]] float distk =
-          heap->full() ? heap->begin()->score()
-                       : std::numeric_limits<float>::max();
+      [[maybe_unused]] float distk = heap->full()
+                                         ? heap->begin()->score()
+                                         : std::numeric_limits<float>::max();
       for (uint32_t i = 0; i < batch_size; ++i) {
         if constexpr (!DisablePruning) {
           if (est_dist[i] >= distk) {
@@ -636,7 +553,6 @@ int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
             continue;
           }
         }
-        if constexpr (CollectStats) ++stats->refined_count;
         heap->emplace(key, est_dist[i]);
         if (heap->full()) {
           distk = heap->begin()->score();
@@ -645,9 +561,9 @@ int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
     } else {
       // Step 2: lower-bound pruning + extra-bit boosting (same as rabitqlib)
       // distk: current worst distance in heap, updated after each insertion
-      [[maybe_unused]] float distk =
-          heap->full() ? heap->begin()->score()
-                       : std::numeric_limits<float>::max();
+      [[maybe_unused]] float distk = heap->full()
+                                         ? heap->begin()->score()
+                                         : std::numeric_limits<float>::max();
 
       for (uint32_t i = 0; i < batch_size; ++i) {
         if constexpr (!DisablePruning) {
@@ -663,7 +579,6 @@ int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
             }
           }
           // Extra-bit boosting (expensive, but only when needed)
-          if constexpr (CollectStats) ++stats->refined_count;
           const float ex_dist = rabitqlib::split_distance_boosting(
               cur_ex + i * ex_stride, ip_func_, *bq, padded_dim, ex_bits,
               ip_x0_qr[i]);
@@ -674,7 +589,6 @@ int IvfRabitqEntity::search_cluster_impl(uint32_t cluster_id,
         }
       }
     }
-    if (batch_timed) stats->post_scan_ns += double(SegmentClock() - post_scan_t0);
 
     cur_batch += batch_stride;
     if (ex_bits > 0) {

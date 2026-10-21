@@ -495,60 +495,6 @@ int IVFIndex::_dense_search(const VectorData &query,
                             core::IndexContext::Pointer &context) {
   int ret = Index::_dense_search(query, search_param, result, context);
   if (ret != 0) return ret;
-  const auto options = std::dynamic_pointer_cast<IVFQueryParam>(search_param);
-  const auto *ctx =
-      dynamic_cast<const core::IVFSearcherContext *>(context.get());
-  if (options && (options->rabitq_collect_stats ||
-                   options->rabitq_segment_timing ||
-                   options->rabitq_export_scan_lists ||
-                   options->rabitq_export_scan_samples) &&
-      ctx) {
-    const auto &scan = ctx->entity()->packed_scan_stats();
-    result->ivf_scan_stats_ = {true,
-                               scan.active,
-                               scan.mapped,
-                               scan.coarse_count,
-                               scan.refined_count,
-                               scan.key_reads,
-                               scan.coarse_reads,
-                               scan.row_reads,
-                               scan.coarse_copy_bytes,
-                               scan.prep_ns,
-                               scan.coarse_ns,
-                               scan.cand_ns,
-                               scan.post_scan_ns,
-                               scan.finalize_ns,
-                               scan.query_ns};
-    if (options->rabitq_segment_timing) {
-      auto &stats = result->ivf_scan_stats_;
-      stats.prep_select_ns = scan.prep_select_ns;
-      stats.prep_transform_ns = scan.prep_transform_ns;
-      stats.prep_encode_ns = scan.prep_encode_ns;
-      stats.prep_lut_ns = scan.prep_lut_ns;
-      stats.prep_scanner_ns = scan.prep_scanner_ns;
-      stats.timed_blocks = scan.timed_blocks;
-    }
-    if (options->rabitq_export_scan_lists) {
-      auto &stats = result->ivf_scan_stats_;
-      stats.scan_lists_collected = true;
-      stats.scan_lists_limited = ctx->entity()->packed_scan_limited();
-      for (const auto &list : ctx->entity()->packed_scan_lists()) {
-        stats.scan_list_ids.push_back(list.list_id);
-        stats.scan_list_counts.push_back(list.scanned);
-      }
-    }
-    if (options->rabitq_export_scan_samples) {
-      auto &stats = result->ivf_scan_stats_;
-      stats.scan_samples_collected = true;
-      stats.scan_samples.reserve(ctx->entity()->packed_scan_samples().size());
-      for (const auto &sample : ctx->entity()->packed_scan_samples()) {
-        stats.scan_samples.push_back({sample.list_id, sample.block, sample.row,
-                                      sample.key, sample.distance,
-                                      sample.lower_bound,
-                                      sample.coarse_dot});
-      }
-    }
-  }
   if (!ivf_quantizer_ || !context->fetch_vector()) return ret;
   auto provider = streamer_->create_provider();
   if (!provider) return core::IndexError_NoReady;
@@ -571,26 +517,16 @@ int IVFIndex::_prepare_for_search(
       std::dynamic_pointer_cast<IVFQueryParam>(search_param);
 
   if (!ivf_search_param) return core::IndexError_InvalidArgument;
-  // Dot reuse only changes the arithmetic inside the base search's
-  // quantized refine; just candidate keys cross to the kFlat refiner
-  // (Index::search refine branch), so it is the one scan option that is
-  // not silently ignored under a refiner. The diagnostic scan options are
-  // still rejected there: their outputs land in the base SearchResult,
-  // which the refine pipeline discards. None of these options run at all
-  // under bf_pks or non-RaBitQ/legacy postings.
-  const bool diagnostics = !ivf_search_param->rabitq_pruning ||
-                           ivf_search_param->rabitq_collect_stats ||
-                           ivf_search_param->rabitq_segment_timing ||
-                           ivf_search_param->rabitq_export_scan_lists ||
-                           ivf_search_param->rabitq_export_scan_samples;
+  // Pruning controls the base scan; dot reuse also supports the kFlat refiner.
+  const bool disable_pruning = !ivf_search_param->rabitq_pruning;
   const bool reuse = ivf_search_param->rabitq_reuse_coarse_dot;
-  if ((reuse || diagnostics) && (!use_rabitq_ || legacy_rabitq_ ||
-                                 search_param->bf_pks)) {
+  if ((reuse || disable_pruning) &&
+      (!use_rabitq_ || legacy_rabitq_ || search_param->bf_pks)) {
     LOG_ERROR("RaBitQ scan options require Turbo IVF without bf_pks");
     return core::IndexError_Unsupported;
   }
-  if (diagnostics && search_param->refiner_param) {
-    LOG_ERROR("RaBitQ scan diagnostics require Turbo IVF without refiner");
+  if (disable_pruning && search_param->refiner_param) {
+    LOG_ERROR("Disabling RaBitQ pruning requires Turbo IVF without refiner");
     return core::IndexError_Unsupported;
   }
   if (use_rabitq_ &&
@@ -626,14 +562,6 @@ int IVFIndex::_prepare_for_search(
     ctx->entity()->set_packed_scan_pruning(ivf_search_param->rabitq_pruning);
     ctx->entity()->set_packed_scan_reuse_dot(
         ivf_search_param->rabitq_reuse_coarse_dot);
-    ctx->entity()->set_packed_scan_timing(
-        ivf_search_param->rabitq_segment_timing);
-    ctx->entity()->set_packed_scan_timing_stride(
-        ivf_search_param->rabitq_segment_timing_stride);
-    ctx->entity()->set_packed_scan_lists_enabled(
-        ivf_search_param->rabitq_export_scan_lists);
-    ctx->entity()->set_packed_scan_samples_enabled(
-        ivf_search_param->rabitq_export_scan_samples);
   }
   _set_group_by_on_context(search_param, context);
   context->set_topk(ivf_search_param->topk);

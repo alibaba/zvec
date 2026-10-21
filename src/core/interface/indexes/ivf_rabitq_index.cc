@@ -322,11 +322,7 @@ int IVFRabitqIndex::_prepare_for_search(
     LOG_ERROR("nprobe must be greater than 0");
     return core::IndexError_InvalidArgument;
   }
-  if ((ivf_rabitq_param->rabitq_collect_stats ||
-       ivf_rabitq_param->rabitq_export_scan_lists ||
-       ivf_rabitq_param->rabitq_export_scan_samples ||
-       ivf_rabitq_param->rabitq_segment_timing ||
-       !ivf_rabitq_param->rabitq_pruning) &&
+  if (!ivf_rabitq_param->rabitq_pruning &&
       (search_param->refiner_param || search_param->group_by_param ||
        search_param->bf_pks)) {
     LOG_ERROR("IVF RaBitQ scan options do not support refiner/group-by/bf_pks");
@@ -334,21 +330,7 @@ int IVFRabitqIndex::_prepare_for_search(
   }
   auto *ctx = dynamic_cast<core::IvfRabitqContext *>(context.get());
   if (!ctx) return core::IndexError_Cast;
-  ctx->collect_scan_stats = ivf_rabitq_param->rabitq_collect_stats ||
-                            ivf_rabitq_param->rabitq_export_scan_lists ||
-                            ivf_rabitq_param->rabitq_export_scan_samples;
-  ctx->segment_timing = ivf_rabitq_param->rabitq_segment_timing;
-  ctx->segment_timing_stride =
-      ivf_rabitq_param->rabitq_segment_timing_stride
-          ? ivf_rabitq_param->rabitq_segment_timing_stride
-          : 1;
-  ctx->scan_stats = {};
   ctx->disable_pruning = !ivf_rabitq_param->rabitq_pruning;
-  ctx->collect_scan_lists = ivf_rabitq_param->rabitq_export_scan_lists;
-  ctx->scan_lists.clear();
-  ctx->scan_lists_limited = false;
-  ctx->collect_scan_samples = ivf_rabitq_param->rabitq_export_scan_samples;
-  ctx->scan_samples.clear();
   _set_group_by_on_context(search_param, context);
   context->set_topk(search_param->topk);
   context->set_fetch_vector(false);
@@ -362,64 +344,6 @@ int IVFRabitqIndex::_prepare_for_search(
   params.set(core::PARAM_IVF_RABITQ_NPROBE, ivf_rabitq_param->nprobe);
   return context->update(params);
 #endif  // RABITQ_SUPPORTED
-}
-
-int IVFRabitqIndex::_dense_search(
-    const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
-    SearchResult *result, core::IndexContext::Pointer &context) {
-  int ret = Index::_dense_search(query, search_param, result, context);
-#if RABITQ_SUPPORTED
-  if (ret != 0) return ret;
-  const auto *ctx = dynamic_cast<const core::IvfRabitqContext *>(context.get());
-  if (ctx && (ctx->collect_scan_stats || ctx->collect_scan_lists ||
-              ctx->collect_scan_samples || ctx->segment_timing)) {
-    const auto &scan = ctx->scan_stats;
-    // All entity reads occur at open time. Query-time accesses use the loaded
-    // views, so logical read/copy counters remain zero, even for owned views.
-    result->ivf_scan_stats_ = {};
-    result->ivf_scan_stats_.collected = true;
-    result->ivf_scan_stats_.active = scan.active;
-    result->ivf_scan_stats_.mapped = scan.mapped;
-    result->ivf_scan_stats_.coarse_count = scan.coarse_count;
-    result->ivf_scan_stats_.refined_count = scan.refined_count;
-    if (ctx->segment_timing) {
-      auto &stats = result->ivf_scan_stats_;
-      stats.prep_ns = scan.prep_ns;
-      stats.coarse_ns = scan.coarse_ns;
-      stats.post_scan_ns = scan.post_scan_ns;
-      stats.finalize_ns = scan.finalize_ns;
-      stats.query_ns = scan.query_ns;
-      // Dedicated-side sub-stages: create_query_state maps to prep_encode,
-      // select_probe_centroids to prep_select, per-probe preparation to
-      // prep_cluster. timed_blocks carries the sampled 32-row batch count.
-      stats.prep_encode_ns = scan.prep_state_ns;
-      stats.prep_select_ns = scan.prep_select_ns;
-      stats.prep_cluster_ns = scan.prep_cluster_ns;
-      stats.timed_blocks = scan.timed_batches;
-    }
-    if (ctx->collect_scan_lists) {
-      auto &stats = result->ivf_scan_stats_;
-      stats.scan_lists_collected = true;
-      stats.scan_lists_limited = ctx->scan_lists_limited;
-      for (const auto &list : ctx->scan_lists) {
-        stats.scan_list_ids.push_back(list.list_id);
-        stats.scan_list_counts.push_back(list.scanned);
-      }
-    }
-    if (ctx->collect_scan_samples) {
-      auto &stats = result->ivf_scan_stats_;
-      stats.scan_samples_collected = true;
-      stats.scan_samples.reserve(ctx->scan_samples.size());
-      for (const auto &sample : ctx->scan_samples) {
-        stats.scan_samples.push_back({sample.list_id, sample.block, sample.row,
-                                      sample.key, sample.distance,
-                                      sample.lower_bound,
-                                      sample.coarse_dot});
-      }
-    }
-  }
-#endif
-  return ret;
 }
 
 }  // namespace zvec::core_interface

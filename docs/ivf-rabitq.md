@@ -127,14 +127,6 @@ keys、粗筛码和行记录；分页及文件读取使用可复用的窗口缓�
 完整行仍仅在块中存在通过下界筛选的候选时读取；整窗口被过滤时不读粗筛码。
 普通查询还省去逐候选的过滤/分组分支，并缓存随 top-k 更新的阈值。
 
-内部诊断接口 `IVFSearcherContext::entity()->packed_scan_stats()` 提供
-`coarse_count`、`refined_count`、`key_reads`、`coarse_reads`、`row_reads`
-和 `coarse_copy_bytes`。统计随 `bind_query()` 重置，累计该查询扫描的列表；
-批量查询结束后仅保留最后一个查询，评测需逐查询汇总。
-读取次数是扫描器发起的逻辑读取调用数，不代表系统调用、缺页或物理磁盘 I/O；
-mmap 直接访问的这几项读取计数为零。`refined_count` 是精算接口调用数，
-1-bit 模式该接口直接返回粗估分数。
-
 同索引召回率对照可在查询前调用
 `IVFSearcherContext::entity()->set_packed_scan_pruning(false)`，关闭下界剪枝，
 保留相同的编码、查询估计器和扫描顺序，对所有未过滤的有效候选调用精算。
@@ -143,56 +135,39 @@ mmap 直接访问的这几项读取计数为零。`refined_count` 是精算接�
 再比较优化前后的 QPS，可以分别检查召回率损失和读取优化收益。
 
 
-### 查询开关与诊断
+### 查询开关与评测
 
-所有开关的名称和默认值保持兼容，可在 `bench` / `recall` YAML 的
+以下搜索开关可在 `bench` / `recall` YAML 的
 `QueryConfig.QueryParam` JSON 中配置：
 
 | 参数 | 默认值 | 含义 |
 |---|---|---|
 | `rabitq_pruning` | `true` | 下界剪枝；关闭时精算全部有效候选 |
 | `rabitq_reuse_coarse_dot` | `false` | 多位精算复用 LUT 点积；仅 Turbo IVF 支持 |
-| `rabitq_collect_stats` | `false` | 返回扫描和精算计数 |
-| `rabitq_segment_timing` | `false` | 返回扫描及查询准备的分段耗时 |
-| `rabitq_segment_timing_stride` | `1` | 每 N 个块采样计时，段耗时仅覆盖采样块 |
-| `rabitq_export_scan_lists` | `false` | 导出扫描列表及候选数 |
-| `rabitq_export_scan_samples` | `false` | 导出每块首、中、尾候选估计值 |
-| `refine_stage_timing` | `false` | 返回基础检索与 kFlat 精排阶段耗时 |
 
 点积复用与原浮点点积不完全相同，启用时需要独立验证召回。它可以与
-kFlat refiner 组合；统计、分段计时、样本导出及关闭剪枝不能与 refiner
-组合。普通 IVF、旧专用格式和 `bf_pks` 不支持 Turbo IVF 的非默认扫描
-选项。查询会重新应用全部选项并清空统计，避免复用 context 时泄漏状态。
+kFlat refiner 组合；关闭剪枝不能与 refiner 组合。普通 IVF、旧专用格式和 `bf_pks` 不支持 Turbo IVF 的非默认扫描
+选项。查询会重新应用全部选项，避免复用 context 时泄漏状态。
 
 32 行整块的 AVX-512 融合路径在距离估计时直接生成候选掩码，仅写出
 入选候选，按原始行顺序精算并重新检查收紧的堆阈值。它要求映射行存储、
-无过滤或分组、开启剪枝且关闭样本导出。尾块和其他 ISA 使用通用回退。
-**导出样本会关闭融合路径**，不能用样本导出时的表现代替生产性能验证。
+无过滤或分组且开启剪枝。尾块和其他 ISA 使用通用回退。
 
-保留 `ivf_rabitq_scan_diagnostic` 作为诊断入口，接受现有 YAML；Turbo
-IVF 输出 `baseline`、`unpruned`、`reuse`、`reuse_unpruned` 四种模式，
-专用 IVF-RaBitQ 输出 `dedicated` 模式。工具返回结果 ID/分数、扫描计数，
-可选导出列表、候选样本或分段计时；输出前缀必须唯一，避免覆盖既有结果。
-带 refiner 的配置使用 `--refine-stages`，不导出扫描诊断。
+扫描统计、分段计时、列表/样本导出及 `ivf_rabitq_scan_diagnostic` 已移除。
+旧诊断配置中的对应字段应删除；查询 JSON 仍沿用忽略未知字段的行为，
+这些字段不再产生诊断输出。C++ 调用方需移除诊断字段访问并重新编译。
+需要复查历史诊断时，使用 `b8a4e30f` 及其诊断工具。
 
-```sh
-export TMPDIR="$PWD/test_tmp"
-mkdir -p "$TMPDIR"
-cmake --build build --target bench recall ivf_rabitq_scan_diagnostic \
-  ivf_block_scan_test ivf_rabitq_index_test turbo_rabitq_quantizer_test
-build/bin/ivf_rabitq_scan_diagnostic /absolute/path/to/config.yaml ./diagnostic
-```
-
-正式性能比较使用 `bench` 与 `recall`，关闭诊断，固定索引、查询、
+正式性能比较使用 `bench` 与 `recall`，固定索引、查询、
 TopK、nprobe、线程数、reuse 和 refiner 配置。充分预热后轮换版本运行，
 保留逐轮数据，并同时报告召回率与 QPS；同 nprobe 不代表同召回。
-正确性检查必须同时覆盖关闭样本导出的融合路径及通用回退。
+正确性检查必须同时覆盖融合路径及通用回退。
 
 ### 开发与历史实验
 
 `refactor/rabitq-quantizer` 从 `b7815384` 开始精简。量化器、融合扫描、
 剪枝、文件格式及默认参数保留；查询 JSON 的动态分派与显式类型解析
-共享实现，诊断字段和返回类型不变。
+共享实现；后续清理移除了实验性诊断字段及工具，保留搜索选项。
 
 历次 `v10_scripts/` 至 `v14_scripts/`、离线回放、微基准、列表统计和
 GT 覆盖分析工具属于性能调查材料，已从交付树移出。完整源文件仍可从

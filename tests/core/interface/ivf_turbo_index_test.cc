@@ -180,15 +180,13 @@ TEST_P(IVFTurboIndexTest, AddTrainSearchFetchAndReopenWithDefaultQuantizer) {
   ASSERT_NE(nullptr, index);
   ASSERT_EQ(0, index->open(path_, {StorageOptions::StorageType::kMMAP, true}));
   populate(index.get());
-  // Diagnostic options must not silently apply to unrelated IVF quantizers.
+  // RaBitQ pruning options must not apply to unrelated IVF quantizers.
   auto diagnostic = IVFQueryParamBuilder().with_topk(3).with_nprobe(4).build();
-  diagnostic->rabitq_collect_stats = true;
+  diagnostic->rabitq_pruning = false;
   SearchResult rejected;
-  rejected.ivf_scan_stats_.collected = true;
   EXPECT_EQ(core::IndexError_Unsupported,
             index->search(VectorData{DenseVector{vectors_[0].data()}},
                           diagnostic, &rejected));
-  EXPECT_FALSE(rejected.ivf_scan_stats_.collected);
   auto before = check_search_and_fetch(index.get());
   ASSERT_EQ(0, index->close());
   index.reset();

@@ -12,7 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "ivf_streamer.h"
-#include <chrono>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_segment_storage.h>
 #include "ivf_centroid_index.h"
@@ -180,32 +179,14 @@ int IVFStreamer::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
 
   //! Transform the querys for querying in inverted vector index later
   IndexQueryMeta iv_qmeta;
-  using SteadyTime = std::chrono::steady_clock::time_point;
-  const bool segment_timing = entity->packed_scan_timing_enabled();
-  const SteadyTime prep_t0 =
-      segment_timing ? std::chrono::steady_clock::now() : SteadyTime{};
+
   int ret = entity->transform(query, qmeta, count, &query, &iv_qmeta);
   ivf_check_with_msg(ret, "Failed to transform querys");
-  const double shared_prep_ns =
-      segment_timing && count
-          ? std::chrono::duration<double, std::nano>(
-                std::chrono::steady_clock::now() - prep_t0)
-                    .count() /
-                count
-          : 0.0;
 
   // TODO: do batch search in matrix
   for (size_t q = 0; q < count; ++q) {
-    const SteadyTime query_t0 =
-        segment_timing ? std::chrono::steady_clock::now() : SteadyTime{};
     ret = entity->bind_query(query, iv_qmeta);
     ivf_check_error_code(ret);
-    if (segment_timing) {
-      entity->mutable_packed_scan_stats().prep_ns += shared_prep_ns;
-      // Brute-force path: the shared window covers only the transform (no
-      // bucket selection), so the whole shared prep is a transform sub-stage.
-      entity->mutable_packed_scan_stats().prep_transform_ns += shared_prep_ns;
-    }
     auto &context_stats = ctx->mutable_stats(q);
     auto &heap = ctx->mutable_result_heap();
     heap.clear();
@@ -217,9 +198,7 @@ int IVFStreamer::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
     }
     ivf_check_with_msg(ret, "Failed to search in entity for %s",
                        IndexError::What(ret));
-    entity->finish_segment_timing();
-    const SteadyTime fin_t0 =
-        segment_timing ? std::chrono::steady_clock::now() : SteadyTime{};
+
     heap.sort();  // sort the results
     if (!filter.is_valid()) {
       // mapping the local id to key if query without filter
@@ -227,19 +206,7 @@ int IVFStreamer::search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
       ivf_check_error_code(ret);
     }
     entity->normalize(q, &heap);
-    if (segment_timing) {
-      entity->mutable_packed_scan_stats().finalize_ns +=
-          std::chrono::duration<double, std::nano>(
-              std::chrono::steady_clock::now() - fin_t0)
-              .count();
-    }
     ctx->topk_to_result(q);
-    if (segment_timing) {
-      entity->mutable_packed_scan_stats().query_ns =
-          shared_prep_ns + std::chrono::duration<double, std::nano>(
-                               std::chrono::steady_clock::now() - query_t0)
-                               .count();
-    }
     query = static_cast<const char *>(query) + iv_qmeta.element_size();
   }
 
@@ -282,66 +249,26 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   auto &filter = ctx->filter();
 
   auto &centroid_index_ctx = ctx->centroid_searcher_ctx();
-  // Segment timing: centroid selection and query transform run per batch.
-  using SteadyTime = std::chrono::steady_clock::time_point;
-  const bool segment_timing = entity->packed_scan_timing_enabled();
-  const SteadyTime prep_t0 =
-      segment_timing ? std::chrono::steady_clock::now() : SteadyTime{};
-  const SteadyTime select_t0 =
-      segment_timing ? std::chrono::steady_clock::now() : SteadyTime{};
+
+
   int ret = centroid_index_->search(query, qmeta, count, centroid_index_ctx);
   ivf_check_error_code(ret);
-  const SteadyTime select_t1 =
-      segment_timing ? std::chrono::steady_clock::now() : SteadyTime{};
+
 
   //! Transform the querys for querying in inverted vector index later
   IndexQueryMeta iv_qmeta;
   ret = entity->transform(query, qmeta, count, &query, &iv_qmeta);
   ivf_check_with_msg(ret, "Failed to transform querys");
-  // Stop before bind_query(), which measures its own preparation work.
-  // Entity diagnostics expose the last query in a batch; amortize the shared
-  // centroid/transform work rather than attaching it only to the first query.
-  const double shared_prep_ns =
-      segment_timing && count ? std::chrono::duration<double, std::nano>(
-                                    std::chrono::steady_clock::now() - prep_t0)
-                                        .count() /
-                                    count
-                              : 0.0;
-  // v17 prep sub-stages: bucket selection vs query transform, amortized per
-  // query with the same caliber as shared_prep_ns (their sum <= prep_ns;
-  // boundary clock gaps between the windows are excluded).
-  const double shared_select_ns =
-      segment_timing && count
-          ? std::chrono::duration<double, std::nano>(select_t1 - select_t0)
-                .count() /
-                count
-          : 0.0;
-  const double shared_transform_ns =
-      segment_timing && count
-          ? std::chrono::duration<double, std::nano>(
-                std::chrono::steady_clock::now() - select_t1)
-                .count() /
-                count
-          : 0.0;
 
   for (size_t q = 0; q < count; ++q) {
-    const SteadyTime query_t0 =
-        segment_timing ? std::chrono::steady_clock::now() : SteadyTime{};
     ret = entity->bind_query(query, iv_qmeta);
     ivf_check_error_code(ret);
-    if (segment_timing) {
-      entity->mutable_packed_scan_stats().prep_ns += shared_prep_ns;
-      entity->mutable_packed_scan_stats().prep_select_ns += shared_select_ns;
-      entity->mutable_packed_scan_stats().prep_transform_ns +=
-          shared_transform_ns;
-    }
     auto &centroids = centroid_index_ctx->result(q);
     auto &context_stats = ctx->mutable_stats(q);
     auto &heap = ctx->mutable_result_heap();
     heap.clear();
     const auto visitor = ctx->candidate_visitor();
     size_t total_scan_count = 0;
-    const bool export_lists = entity->packed_scan_lists_enabled();
     size_t list_idx = 0;
     for (; list_idx < centroids.size() &&
            total_scan_count < ctx->max_scan_count();
@@ -358,17 +285,8 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
       ivf_check_with_msg(ret, "Failed to search in entity for %s",
                          IndexError::What(ret));
       total_scan_count += scan_count;
-      if (export_lists) {
-        entity->mutable_packed_scan_lists().push_back(
-            {static_cast<uint32_t>(cid), scan_count});
-      }
     }
-    if (export_lists) {
-      entity->set_packed_scan_limited(list_idx < centroids.size());
-    }
-    entity->finish_segment_timing();
-    const SteadyTime fin_t0 =
-        segment_timing ? std::chrono::steady_clock::now() : SteadyTime{};
+
     heap.sort();  // sort the results
     if (!filter.is_valid()) {
       // mapping the local id to key if query without filter
@@ -376,19 +294,7 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
       ivf_check_error_code(ret);
     }
     entity->normalize(q, &heap);
-    if (segment_timing) {
-      entity->mutable_packed_scan_stats().finalize_ns +=
-          std::chrono::duration<double, std::nano>(
-              std::chrono::steady_clock::now() - fin_t0)
-              .count();
-    }
     ctx->topk_to_result(q);
-    if (segment_timing) {
-      entity->mutable_packed_scan_stats().query_ns =
-          shared_prep_ns + std::chrono::duration<double, std::nano>(
-                               std::chrono::steady_clock::now() - query_t0)
-                               .count();
-    }
     query = static_cast<const char *>(query) + iv_qmeta.element_size();
   }
 

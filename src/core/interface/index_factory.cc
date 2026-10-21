@@ -178,10 +178,6 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
   if (!omit_empty_value || param.is_linear) {
     json_obj.set("is_linear", ailego::JsonValue(param.is_linear));
   }
-  if (!omit_empty_value || param.refine_stage_timing) {
-    json_obj.set("refine_stage_timing",
-                 ailego::JsonValue(param.refine_stage_timing));
-  }
 
   IndexType index_type{IndexType::kNone};
   if constexpr (std::is_same_v<QueryParamType, FlatQueryParam>) {
@@ -204,18 +200,6 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
       json_obj.set("nprobe", ailego::JsonValue(param.nprobe));
     }
     json_obj.set("rabitq_pruning", ailego::JsonValue(param.rabitq_pruning));
-    json_obj.set("rabitq_collect_stats",
-                 ailego::JsonValue(param.rabitq_collect_stats));
-    json_obj.set("rabitq_segment_timing",
-                 ailego::JsonValue(param.rabitq_segment_timing));
-    if (!omit_empty_value || param.rabitq_segment_timing_stride != 1) {
-      json_obj.set("rabitq_segment_timing_stride",
-                   ailego::JsonValue(param.rabitq_segment_timing_stride));
-    }
-    json_obj.set("rabitq_export_scan_lists",
-                 ailego::JsonValue(param.rabitq_export_scan_lists));
-    json_obj.set("rabitq_export_scan_samples",
-                 ailego::JsonValue(param.rabitq_export_scan_samples));
     if constexpr (std::is_same_v<QueryParamType, IVFQueryParam>) {
       json_obj.set("rabitq_reuse_coarse_dot",
                    ailego::JsonValue(param.rabitq_reuse_coarse_dot));
@@ -300,11 +284,6 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
       LOG_ERROR("Failed to deserialize is_linear");
       return false;
     }
-    if (!extract_value_from_json(json_obj, "refine_stage_timing",
-                                 param->refine_stage_timing, tmp_json_value)) {
-      LOG_ERROR("Failed to deserialize refine_stage_timing");
-      return false;
-    }
     return true;
   };
 
@@ -343,22 +322,7 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
       if (!extract_value_from_json(json_obj, "nprobe", param->nprobe,
                                    tmp_json_value) ||
           !extract_value_from_json(json_obj, "rabitq_pruning",
-                                   param->rabitq_pruning, tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_collect_stats",
-                                   param->rabitq_collect_stats,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_segment_timing",
-                                   param->rabitq_segment_timing,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_segment_timing_stride",
-                                   param->rabitq_segment_timing_stride,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_export_scan_lists",
-                                   param->rabitq_export_scan_lists,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_export_scan_samples",
-                                   param->rabitq_export_scan_samples,
-                                   tmp_json_value)) {
+                                   param->rabitq_pruning, tmp_json_value)) {
         LOG_ERROR("Failed to deserialize IVF scan options");
         return nullptr;
       }

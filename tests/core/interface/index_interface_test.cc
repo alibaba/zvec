@@ -3146,12 +3146,6 @@ TEST(IndexInterface, IvfQueryJsonTypedAndRuntimeDispatch) {
     param.topk = 55;
     param.nprobe = 180;
     param.rabitq_pruning = false;
-    param.rabitq_collect_stats = true;
-    param.rabitq_segment_timing = true;
-    param.rabitq_segment_timing_stride = 8;
-    param.rabitq_export_scan_lists = true;
-    param.rabitq_export_scan_samples = true;
-    param.refine_stage_timing = true;
     if constexpr (std::is_same_v<Param, IVFQueryParam>) {
       param.rabitq_reuse_coarse_dot = true;
     }
@@ -3193,10 +3187,7 @@ TEST(IndexInterface, IvfQueryJsonDefaultsAndInvalidTypes) {
       EXPECT_EQ(defaults,
                 IndexFactory::QueryParamSerializeToJson(*runtime, false));
     }
-    for (const char *field :
-         {"nprobe", "rabitq_pruning", "rabitq_collect_stats",
-          "rabitq_segment_timing", "rabitq_segment_timing_stride",
-          "rabitq_export_scan_lists", "rabitq_export_scan_samples"}) {
+    for (const char *field : {"nprobe", "rabitq_pruning"}) {
       const auto json = prefix + ",\"" + field + "\":\"invalid\"}";
       EXPECT_EQ(nullptr,
                 IndexFactory::QueryParamDeserializeFromJson<Param>(json));
@@ -3205,6 +3196,30 @@ TEST(IndexInterface, IvfQueryJsonDefaultsAndInvalidTypes) {
           IndexFactory::QueryParamDeserializeFromJson<BaseIndexQueryParam>(
               json));
     }
+  };
+  check(IVFQueryParam{}, "kIVF");
+  check(IVFRabitqQueryParam{}, "kIVFRabitq");
+}
+
+// Removed instrumentation keys follow the parser's existing unknown-key policy.
+TEST(IndexInterface, IvfQueryJsonIgnoresRemovedDiagnostics) {
+  auto check = [](auto param, const char *type) {
+    using Param = decltype(param);
+    const std::string json =
+        std::string("{\"index_type\":\"") + type +
+        R"(","rabitq_collect_stats":true,"rabitq_segment_timing":true,
+            "rabitq_segment_timing_stride":4,"rabitq_export_scan_lists":true,
+            "rabitq_export_scan_samples":true,"refine_stage_timing":true})";
+    auto parsed = IndexFactory::QueryParamDeserializeFromJson<Param>(json);
+    auto runtime = std::dynamic_pointer_cast<Param>(
+        IndexFactory::QueryParamDeserializeFromJson<BaseIndexQueryParam>(json));
+    ASSERT_NE(nullptr, parsed);
+    ASSERT_NE(nullptr, runtime);
+    const auto expected = IndexFactory::QueryParamSerializeToJson(param, false);
+    EXPECT_EQ(expected,
+              IndexFactory::QueryParamSerializeToJson(*parsed, false));
+    EXPECT_EQ(expected,
+              IndexFactory::QueryParamSerializeToJson(*runtime, false));
   };
   check(IVFQueryParam{}, "kIVF");
   check(IVFRabitqQueryParam{}, "kIVFRabitq");

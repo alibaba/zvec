@@ -13,13 +13,9 @@
 // limitations under the License.
 #include "ivf_entity.h"
 #include <array>
-#include <chrono>
 #include <cstring>
 #include <iostream>
 #include <limits>
-#if defined(__AVX512F__)
-#include <immintrin.h>
-#endif
 #include <core/quantizer/quantizer_params.h>
 #include <turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h>
 #include "metric/metric_params.h"
@@ -28,41 +24,6 @@ namespace zvec {
 namespace core {
 
 namespace {
-
-// Diagnostic wall clock. Explicit nanoseconds on every platform, without TSC
-// calibration or unordered cycle reads. Instrumentation overhead must be
-// measured separately; these timings are not production throughput estimates.
-inline uint64_t SegmentClock() {
-  return static_cast<uint64_t>(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now().time_since_epoch())
-          .count());
-}
-
-// Keep equality and unordered bounds: production pruning rejects only bounds
-// strictly greater than the heap threshold. The heap can tighten while this
-// mask is consumed, so each surviving lane is checked again before refinement.
-inline uint32_t CandidateMask(const turbo::DistanceEstimate *estimates,
-                              size_t count, float worst) {
-#if defined(__AVX512F__)
-  if (count == 32) {
-    static_assert(sizeof(turbo::DistanceEstimate) == 3 * sizeof(float));
-    const __m512i offsets = _mm512_setr_epi32(0, 3, 6, 9, 12, 15, 18, 21, 24,
-                                              27, 30, 33, 36, 39, 42, 45);
-    const __m512 threshold = _mm512_set1_ps(worst);
-    const __m512 first =
-        _mm512_i32gather_ps(offsets, &estimates[0].lower_bound, 4);
-    const __m512 second =
-        _mm512_i32gather_ps(offsets, &estimates[16].lower_bound, 4);
-    return uint32_t(_mm512_cmp_ps_mask(first, threshold, _CMP_NGT_UQ)) |
-           (uint32_t(_mm512_cmp_ps_mask(second, threshold, _CMP_NGT_UQ)) << 16);
-  }
-#endif
-  uint32_t mask = 0;
-  for (size_t i = 0; i < count; ++i)
-    mask |= uint32_t(!(estimates[i].lower_bound > worst)) << i;
-  return mask;
-}
 
 //! Cursor over a scatter read. IVF blocks and vectors are logical byte
 //! ranges, so neither needs to be aligned with an underlying storage page.
@@ -744,20 +705,11 @@ int IVFEntity::load_quantizer(const IndexStorage::Pointer &container) {
 }
 
 int IVFEntity::bind_query(const void *query, const IndexQueryMeta &qmeta) {
-  const uint64_t seg_t0 = packed_scan_timing_ ? SegmentClock() : 0;
-  packed_scan_stats_ = {};
-  packed_scan_lists_.clear();
-  packed_scan_samples_.clear();
-  packed_scan_limited_ = false;
-  segment_ns_[0] = segment_ns_[1] = segment_ns_[2] = 0;
-  timing_block_seq_ = 0;
   block_scanner_.reset();
   if (!quantizer_) {
     return 0;
   }
   query_distance_ = turbo::DistanceImpl{};
-  uint64_t sub_t0 = 0, sub_t1 = 0, sub_t2 = 0;
-  if (packed_scan_timing_) sub_t0 = SegmentClock();
   std::string encoded;
   IndexQueryMeta encoded_meta;
   int ret = quantizer_->quantize(query, qmeta, &encoded, &encoded_meta);
@@ -766,41 +718,20 @@ int IVFEntity::bind_query(const void *query, const IndexQueryMeta &qmeta) {
     LOG_ERROR("Unexpected Turbo IVF query code size");
     return IndexError_InvalidArgument;
   }
-  if (packed_scan_timing_) sub_t1 = SegmentClock();
   query_distance_ = quantizer_->distance(encoded.data(), encoded_meta);
   if (!query_distance_.valid()) {
     LOG_ERROR("Turbo quantizer does not support IVF posting distances");
     return IndexError_Unsupported;
   }
-  if (packed_scan_timing_) sub_t2 = SegmentClock();
   if (scan_blocks_) block_scanner_ = quantizer_->block_scanner(query_distance_);
   if (block_scanner_) {
     if (!block_scanner_->set_reuse_coarse_dot(packed_scan_reuse_dot_))
       return IndexError_Unsupported;
-    packed_scan_stats_.active = true;
-    packed_scan_stats_.mapped = scan_blocks_->base_data() &&
-                                keys_->base_data() && inverted_->base_data();
-  }
-  if (packed_scan_timing_) {
-    const uint64_t sub_t3 = SegmentClock();
-    packed_scan_stats_.prep_encode_ns = double(sub_t1 - sub_t0);
-    packed_scan_stats_.prep_lut_ns = double(sub_t2 - sub_t1);
-    packed_scan_stats_.prep_scanner_ns = double(sub_t3 - sub_t2);
-    packed_scan_stats_.prep_ns = double(sub_t3 - seg_t0);
   }
   return 0;
 }
 
-void IVFEntity::finish_segment_timing() const {
-  if (!packed_scan_timing_) return;
-  packed_scan_stats_.cand_ns += double(segment_ns_[0]);
-  packed_scan_stats_.coarse_ns += double(segment_ns_[1]);
-  packed_scan_stats_.post_scan_ns += double(segment_ns_[2]);
-  segment_ns_[0] = segment_ns_[1] = segment_ns_[2] = 0;
-}
-
 int IVFEntity::load(const IndexStorage::Pointer &container) {
-  packed_scan_stats_ = {};
   block_scanner_.reset();
   scan_blocks_.reset();
   scan_list_offsets_.reset();
@@ -1203,10 +1134,7 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
   const auto *key_base = keys_->base_data();
   const auto *row_base = inverted_->base_data();
   const bool mapped_unfiltered = row_base && !HasFilter && !HasVisitor;
-  // Sample exports need estimates for every lane; timing and ordinary scan
-  // counters can use the same fused path as production queries.
-  const bool fused_candidates = mapped_unfiltered && packed_scan_pruning_ &&
-                                !packed_scan_samples_enabled_;
+  const bool fused_candidates = mapped_unfiltered && packed_scan_pruning_;
   // At most 32 blocks and 64 KiB of coarse data. A single larger block is
   // allowed by the capability contract; RaBitQ blocks fit within 17 KiB.
   const size_t window_blocks =
@@ -1234,7 +1162,6 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
       window_keys = reinterpret_cast<const uint64_t *>(key_base + key_off);
     } else {
       const size_t bytes = items * sizeof(uint64_t);
-      ++packed_scan_stats_.key_reads;
       if (keys_->fetch(key_off, scan_keys_.data(), bytes) != bytes)
         return IndexError_ReadData;
       window_keys = scan_keys_.data();
@@ -1246,17 +1173,6 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
       const size_t id = list.id_offset + block_id * block_vecs;
       const size_t count = std::min(block_vecs, items - b * block_vecs);
       const uint64_t *keys = window_keys + b * block_vecs;
-      uint64_t seg_t0 = 0, seg_t1 = 0, seg_t2 = 0;
-      // Stride sampling: 1 times every block; N>1 times every Nth block of
-      // the query so the three block segments cover the sampled subset only.
-      const bool block_timed =
-          packed_scan_timing_ &&
-          (packed_scan_timing_stride_ == 1 ||
-           (timing_block_seq_++ % packed_scan_timing_stride_) == 0);
-      if (block_timed) {
-        ++packed_scan_stats_.timed_blocks;
-        seg_t0 = SegmentClock();
-      }
       uint32_t keeps = 0;
       for (size_t i = 0; i < count; ++i) {
         if (keys[i] == kInvalidKey) continue;
@@ -1276,7 +1192,6 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
         keeps |= uint32_t(1) << i;
       }
       if (!keeps) {
-        if (block_timed) segment_ns_[0] += SegmentClock() - seg_t0;
         continue;
       }
       const void *packed;
@@ -1285,18 +1200,12 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
       } else {
         if (!coarse_loaded) {
           const size_t bytes = blocks * packed_size;
-          ++packed_scan_stats_.coarse_reads;
           if (scan_blocks_->fetch(coarse_offset + first * packed_size,
                                   scan_buffer_.data(), bytes) != bytes)
             return IndexError_ReadData;
-          packed_scan_stats_.coarse_copy_bytes += bytes;
           coarse_loaded = true;
         }
         packed = scan_buffer_.data() + b * packed_size;
-      }
-      if (block_timed) {
-        seg_t1 = SegmentClock();
-        segment_ns_[0] += seg_t1 - seg_t0;
       }
       std::array<turbo::DistanceEstimate, 32> estimates;
       uint32_t candidates = 0;
@@ -1306,28 +1215,8 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
                     : block_scanner_->estimate(packed, count, estimates.data());
       if (ret != 0) return IndexError_InvalidFormat;
       *(stats->mutable_dist_calced_count()) += count;
-      packed_scan_stats_.coarse_count += count;
-      if (packed_scan_samples_enabled_) {
-        // Deterministic rows: first, middle and last lane of the block.
-        const uint32_t sample_rows[3] = {0, static_cast<uint32_t>(count / 2),
-                                         static_cast<uint32_t>(count - 1)};
-        uint32_t last_row = std::numeric_limits<uint32_t>::max();
-        for (uint32_t sr : sample_rows) {
-          if (sr == last_row) continue;
-          last_row = sr;
-          mutable_packed_scan_samples().push_back(
-              {static_cast<uint32_t>(list_id), static_cast<uint32_t>(block_id),
-               sr, keys[sr], estimates[sr].distance, estimates[sr].lower_bound,
-               estimates[sr].coarse_dot});
-        }
-      }
-      if (block_timed) {
-        seg_t2 = SegmentClock();
-        segment_ns_[1] += seg_t2 - seg_t1;
-      }
       const auto consume = [&](const void *row, size_t i) {
         const float score = block_scanner_->refine(row, estimates[i]);
-        ++packed_scan_stats_.refined_count;
         if constexpr (HasVisitor) {
           visitor(keys[i], score);
         } else {
@@ -1340,8 +1229,6 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
         // No preliminary mask pass is needed when row access has no I/O cost.
         if (mapped_unfiltered) {
           if (packed_scan_pruning_) {
-            if (!fused_candidates)
-              candidates = CandidateMask(estimates.data(), count, worst);
             while (candidates) {
               const size_t i = ailego_ctz32(candidates);
               candidates &= candidates - 1;
@@ -1369,11 +1256,9 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
             keeps &= ~(uint32_t(1) << i);
         }
         if (!keeps) {
-          if (block_timed) segment_ns_[2] += SegmentClock() - seg_t2;
           continue;
         }
         IndexStorage::Segment::ScatterBlock rows;
-        ++packed_scan_stats_.row_reads;
         if (inverted_->read_scatter(off, rows, count * stride) !=
             count * stride)
           return IndexError_ReadData;
@@ -1392,7 +1277,6 @@ int IVFEntity::search_packed_impl(size_t list_id, const IndexFilter *filter,
           }
         }
       }
-      if (block_timed) segment_ns_[2] += SegmentClock() - seg_t2;
     }
   }
   *scan_count = list.vector_count;
@@ -1404,7 +1288,6 @@ int IVFEntity::search(const void *query, const IndexFilter &filter,
                       IndexDocumentHeap *heap,
                       IndexContext::Stats *context_stats,
                       const CandidateVisitor &visitor) const {
-  const bool export_lists = packed_scan_lists_enabled();
   for (size_t i = 0; i < header_.inverted_list_count; ++i) {
     uint32_t scan_count;
     int ret = this->search(i, query, filter, &scan_count, heap, context_stats,
@@ -1412,12 +1295,7 @@ int IVFEntity::search(const void *query, const IndexFilter &filter,
     if (ret != 0) {
       return ret;
     }
-    if (export_lists) {
-      mutable_packed_scan_lists().push_back(
-          {static_cast<uint32_t>(i), scan_count});
-    }
   }
-  if (export_lists) set_packed_scan_limited(false);
 
   return 0;
 }
@@ -1426,19 +1304,13 @@ int IVFEntity::search(const void *query, const IndexFilter &filter,
 int IVFEntity::search(const void *query, IndexDocumentHeap *heap,
                       IndexContext::Stats *context_stats,
                       const CandidateVisitor &visitor) const {
-  const bool export_lists = packed_scan_lists_enabled();
   for (size_t i = 0; i < header_.inverted_list_count; ++i) {
     uint32_t scan_count;
     int ret = this->search(i, query, &scan_count, heap, context_stats, visitor);
     if (ret != 0) {
       return ret;
     }
-    if (export_lists) {
-      mutable_packed_scan_lists().push_back(
-          {static_cast<uint32_t>(i), scan_count});
-    }
   }
-  if (export_lists) set_packed_scan_limited(false);
 
   return 0;
 }
@@ -1640,7 +1512,6 @@ IVFEntity::Pointer IVFEntity::clone(const IVFEntity::Pointer &entity) const {
   entity->quantizer_ = this->quantizer_;
   entity->query_distance_ = turbo::DistanceImpl{};
   entity->block_scanner_.reset();
-  entity->packed_scan_stats_ = {};
   entity->packed_scan_pruning_ = packed_scan_pruning_;
   entity->packed_scan_reuse_dot_ = packed_scan_reuse_dot_;
   entity->scan_blocks_ = scan_blocks_ ? scan_blocks_->clone() : nullptr;

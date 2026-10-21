@@ -48,41 +48,6 @@ struct IvfRabitqQueryState {
   std::shared_ptr<void> batch_query;
 };
 
-// Counts real lanes, excluding SIMD padding. For 1-bit indexes refined_count
-// counts candidates admitted to the heap, as there is no extra-bit refinement.
-struct IvfRabitqScanStats {
-  bool active{false};
-  bool mapped{false};
-  size_t coarse_count{0};
-  size_t refined_count{0};
-  // Set by the streamer when the query asks for segment timing; the entity
-  // then accumulates the coarse-estimate and refine/heap loop segments below.
-  bool timing{false};
-  // Segment timings in nanoseconds, zero unless rabitq_segment_timing is set.
-  // prep covers query state, centroid selection and per-cluster preparation;
-  // coarse covers the 1-bit batch estimation kernel; post_scan covers the
-  // pruning, extra-bit boosting and heap loop; finalize covers the heap drain
-  // into the sorted result list. The dedicated backend has no staging segment,
-  // so the Turbo IVF cand_ns column stays zero. query_ns includes unassigned
-  // gaps; stage sums are not total time.
-  double prep_ns{0}, coarse_ns{0}, post_scan_ns{0}, finalize_ns{0};
-  double query_ns{0};
-  // Prep sub-stages (ns), zero unless timing is set (v17 calibration):
-  // prep_state = create_query_state (rotate + SplitBatchQuery), prep_select =
-  // select_probe_centroids, prep_cluster = sum of per-probe prepare_for_
-  // cluster calls. Their sum is <= prep_ns (boundary clock gaps excluded).
-  double prep_state_ns{0}, prep_select_ns{0}, prep_cluster_ns{0};
-  // 32-row batches that contributed to coarse/post_scan. Equals all batches
-  // when timing_stride is 1; stride N>1 times only every Nth batch and the
-  // two segments then cover the sampled subset only.
-  size_t timed_batches{0};
-  // Batch sampling stride for segment timing (1 = every batch). Set from
-  // IVFRabitqQueryParam; the entity reads it from the stats struct.
-  uint32_t timing_stride{1};
-  // Batch sequence for stride sampling, reset with the stats.
-  size_t batch_seq{0};
-};
-
 /*! IVF RaBitQ Context
  * Follows the same pattern as IVFSearcherContext:
  *   - result_heap_: max-heap of size topk_ used during scan
@@ -155,16 +120,7 @@ class IvfRabitqContext : public IndexContext {
     query_state.query_norm_sq = 0.0f;
     query_state.batch_query.reset();
     probe_centroids.clear();
-    collect_scan_stats = false;
-    scan_stats = {};
-    segment_timing = false;
-    segment_timing_stride = 1;
     disable_pruning = false;
-    collect_scan_lists = false;
-    scan_lists.clear();
-    scan_lists_limited = false;
-    collect_scan_samples = false;
-    scan_samples.clear();
   }
 
   //! Retrieve search result (first query)
@@ -390,37 +346,9 @@ class IvfRabitqContext : public IndexContext {
   // -----------------------------------------------------------------------
   IvfRabitqQueryState query_state;
   std::vector<IvfRabitqProbeCentroid> probe_centroids;
-  bool collect_scan_stats{false};
-  IvfRabitqScanStats scan_stats;
-  // Default-off per-query segment timing, set from IVFRabitqQueryParam.
-  bool segment_timing{false};
-  // Batch sampling stride for segment timing, set from IVFRabitqQueryParam
-  // (1 = every batch). The streamer copies it into scan_stats per search.
-  uint32_t segment_timing_stride{1};
   // Diagnostic A/B: skip only the lower-bound prune check; codes, lists and
   // the distance formula stay fixed. Set from IVFRabitqQueryParam.
   bool disable_pruning{false};
-  // Diagnostic export of the really scanned clusters of the current query.
-  struct ScanListRecord {
-    uint32_t list_id{0};
-    uint32_t scanned{0};
-  };
-  bool collect_scan_lists{false};
-  std::vector<ScanListRecord> scan_lists;
-  bool scan_lists_limited{false};
-  // Diagnostic export of sampled coarse estimates (first/middle/last batch,
-  // first/last lane) of the current query. list_id is the cluster id.
-  struct ScanSampleRecord {
-    uint32_t list_id{0};
-    uint32_t block{0};
-    uint32_t row{0};
-    uint64_t key{0};
-    float distance{0};
-    float lower_bound{0};
-    float coarse_dot{0};
-  };
-  bool collect_scan_samples{false};
-  std::vector<ScanSampleRecord> scan_samples;
 
  private:
   struct GroupSearchState {

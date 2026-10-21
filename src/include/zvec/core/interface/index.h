@@ -100,75 +100,7 @@ struct VectorDataBuffer {
 };
 
 
-// One sampled coarse estimate the production scan computed for a row.
-// Populated only when rabitq_export_scan_samples is set; rows are chosen
-// deterministically (first, middle and last row of each sampled block) so a
-// replay can recompute and compare them.
-struct IVFScanSample {
-  uint32_t list_id{0};
-  uint32_t block{0};
-  uint32_t row{0};
-  uint64_t key{0};
-  float distance{0};
-  float lower_bound{0};
-  float coarse_dot{0};
-};
-
-// One public search processes one query. Counters are logical scan operations,
-// not OS I/O; mapped access has zero read-call counters.
-struct IVFScanStats {
-  bool collected{false};
-  bool active{false};
-  bool mapped{false};
-  size_t coarse_count{0}, refined_count{0};
-  size_t key_reads{0}, coarse_reads{0}, row_reads{0}, coarse_copy_bytes{0};
-  // Segment timings in nanoseconds, zero unless rabitq_segment_timing is set.
-  // post_scan includes candidate traversal, pruning, row access, refine and
-  // heap work. query_ns includes unassigned gaps; stage sums are not total
-  // time.
-  double prep_ns{0}, coarse_ns{0}, cand_ns{0}, post_scan_ns{0}, finalize_ns{0};
-  double query_ns{0};
-  // Prep sub-stage timings in nanoseconds, zero unless segment timing is set
-  // (v17 calibration). prep_select = IVF bucket selection; prep_transform =
-  // streamer query transform (integrated only); prep_encode = query
-  // normalization/rotation/quantized encode (integrated: quantizer encode;
-  // dedicated: create_query_state); prep_lut = query distance/LUT build
-  // (integrated only); prep_scanner = block scanner construction (integrated
-  // only); prep_cluster = per-probe cluster preparation (dedicated only).
-  // Sub-stage sums are <= prep_ns (boundary gaps excluded).
-  double prep_select_ns{0}, prep_transform_ns{0}, prep_encode_ns{0};
-  double prep_lut_ns{0}, prep_scanner_ns{0}, prep_cluster_ns{0};
-  // Blocks (integrated) or 32-row batches (dedicated) that contributed to the
-  // block-level segments. Equals all blocks when the timing stride is 1; with
-  // stride N>1 only every Nth block is timed and cand/coarse/post cover the
-  // sampled subset only. Zero unless segment timing is set.
-  size_t timed_blocks{0};
-  // Real scanned inverted lists of the last bound query, populated only when
-  // rabitq_export_scan_lists is set. Counts are scanned vectors per list.
-  bool scan_lists_collected{false};
-  bool scan_lists_limited{false};
-  std::vector<uint32_t> scan_list_ids{};
-  std::vector<uint32_t> scan_list_counts{};
-  // Sampled per-row coarse estimates of the last bound query, populated only
-  // when rabitq_export_scan_samples is set. Valid for single-query searches.
-  bool scan_samples_collected{false};
-  std::vector<IVFScanSample> scan_samples{};
-};
-
-// Refine-pipeline stage timing of one search. base_ns covers coarse search of
-// the base index (including its query preparation); refine_ns covers the
-// reference-index rerank of the coarse candidates. Populated only when
-// refine_stage_timing is set on the query param; instrumentation perturbs
-// performance and diagnostics are the only consumer.
-struct RefineStageStats {
-  bool collected{false};
-  double base_ns{0};
-  double refine_ns{0};
-};
-
 struct SearchResult {
-  IVFScanStats ivf_scan_stats_{};
-  RefineStageStats refine_stage_stats_{};
   core::IndexDocumentList doc_list_;
   core::IndexGroupDocumentList group_doc_list_;
   // use string to manage memory
@@ -518,11 +450,6 @@ class ZVEC_CORE_API IVFRabitqIndex : public Index {
   IVFRabitqIndex() = default;
 
  protected:
-  int _dense_search(const VectorData &query,
-                    const BaseIndexQueryParam::Pointer &search_param,
-                    SearchResult *result,
-                    core::IndexContext::Pointer &context) override;
-
   int create_and_init_streamer(const BaseIndexParam &param) override;
 
   int _prepare_for_search(const VectorData &query,
