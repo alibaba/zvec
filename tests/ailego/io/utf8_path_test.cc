@@ -188,6 +188,14 @@ TEST_F(Utf8PathTest, PathJoinSeparator) {
 #endif
 }
 
+TEST_F(Utf8PathTest, BaseNameUsesLastSeparator) {
+  EXPECT_STREQ("file.txt", FileHelper::BaseName("root/sub\\file.txt"));
+  EXPECT_STREQ("file.txt", FileHelper::BaseName("root\\sub/file.txt"));
+  EXPECT_STREQ("file.txt", FileHelper::BaseName("file.txt"));
+  EXPECT_STREQ("", FileHelper::BaseName("root/sub\\"));
+  EXPECT_STREQ("", FileHelper::BaseName(""));
+}
+
 // ---------------------------------------------------------------------------
 // 7. Verify NO mojibake on actual filesystem via "dir" (Windows) / "ls" (POSIX)
 //    We create a directory + file with Chinese names, then list the parent

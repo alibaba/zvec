@@ -33,12 +33,16 @@ foreach(UTF8_ACP_VARIANT ${UTF8_ACP_VARIANTS})
   set(ZVEC_ACP_MANIFEST "${CMAKE_CURRENT_BINARY_DIR}/${ZVEC_ACP_TARGET}.manifest")
   configure_file(acp.manifest.in "${ZVEC_ACP_MANIFEST}" @ONLY)
 
+  # Run Jieba path and environment regressions under each process code page.
   cc_gmock(
     NAME ${ZVEC_ACP_TARGET} STRICT
     LIBS ${UTF8_ACP_LIBS}
     SRCS utf8_acp_test.cc ../index/utils/utils.cc
+         ../index/column/fts_column/jieba_tokenizer_test.cc
+         ../../ailego/utility/env_helper_test.cc
     INCS ${CMAKE_CURRENT_SOURCE_DIR}/..
     DEFS ZVEC_TEST_EXPECTED_ACP=${ZVEC_ACP_CODE}
+         JIEBA_DICT_DIR="${JIEBA_TEST_DICT_DIR}"
   )
   db_test_force_load_core(${ZVEC_ACP_TARGET})
 
