@@ -198,13 +198,12 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
       json_obj.set("prefetch_lines", ailego::JsonValue(param.prefetch_lines));
     }
     index_type = IndexType::kHNSW;
-  } else if constexpr (std::is_same_v<QueryParamType, IVFQueryParam>) {
+  } else if constexpr (std::is_same_v<QueryParamType, IVFQueryParam> ||
+                       std::is_same_v<QueryParamType, IVFRabitqQueryParam>) {
     if (!omit_empty_value || param.nprobe != 0) {
       json_obj.set("nprobe", ailego::JsonValue(param.nprobe));
     }
     json_obj.set("rabitq_pruning", ailego::JsonValue(param.rabitq_pruning));
-    json_obj.set("rabitq_reuse_coarse_dot",
-                 ailego::JsonValue(param.rabitq_reuse_coarse_dot));
     json_obj.set("rabitq_collect_stats",
                  ailego::JsonValue(param.rabitq_collect_stats));
     json_obj.set("rabitq_segment_timing",
@@ -217,34 +216,18 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
                  ailego::JsonValue(param.rabitq_export_scan_lists));
     json_obj.set("rabitq_export_scan_samples",
                  ailego::JsonValue(param.rabitq_export_scan_samples));
-    index_type = IndexType::kIVF;
-    // json_obj.set("l1QueryParam",
-    // ailego::JsonValue(QueryParamSerializeToJson(param.l1QueryParam)));
-    // json_obj.set("l2QueryParam",
-    // ailego::JsonValue(QueryParamSerializeToJson(param.l2QueryParam)));
+    if constexpr (std::is_same_v<QueryParamType, IVFQueryParam>) {
+      json_obj.set("rabitq_reuse_coarse_dot",
+                   ailego::JsonValue(param.rabitq_reuse_coarse_dot));
+      index_type = IndexType::kIVF;
+    } else {
+      index_type = IndexType::kIVFRabitq;
+    }
   } else if constexpr (std::is_same_v<QueryParamType, HNSWRabitqQueryParam>) {
     if (!omit_empty_value || param.ef_search != 0) {
       json_obj.set("ef_search", ailego::JsonValue(param.ef_search));
     }
     index_type = IndexType::kHNSWRabitq;
-  } else if constexpr (std::is_same_v<QueryParamType, IVFRabitqQueryParam>) {
-    if (!omit_empty_value || param.nprobe != 0) {
-      json_obj.set("nprobe", ailego::JsonValue(param.nprobe));
-    }
-    json_obj.set("rabitq_collect_stats",
-                 ailego::JsonValue(param.rabitq_collect_stats));
-    json_obj.set("rabitq_pruning", ailego::JsonValue(param.rabitq_pruning));
-    json_obj.set("rabitq_segment_timing",
-                 ailego::JsonValue(param.rabitq_segment_timing));
-    if (!omit_empty_value || param.rabitq_segment_timing_stride != 1) {
-      json_obj.set("rabitq_segment_timing_stride",
-                   ailego::JsonValue(param.rabitq_segment_timing_stride));
-    }
-    json_obj.set("rabitq_export_scan_lists",
-                 ailego::JsonValue(param.rabitq_export_scan_lists));
-    json_obj.set("rabitq_export_scan_samples",
-                 ailego::JsonValue(param.rabitq_export_scan_samples));
-    index_type = IndexType::kIVFRabitq;
   } else if constexpr (std::is_same_v<QueryParamType, VamanaQueryParam>) {
     if (!omit_empty_value || param.ef_search != 0) {
       json_obj.set("ef_search", ailego::JsonValue(param.ef_search));
@@ -318,8 +301,7 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
       return false;
     }
     if (!extract_value_from_json(json_obj, "refine_stage_timing",
-                                 param->refine_stage_timing,
-                                 tmp_json_value)) {
+                                 param->refine_stage_timing, tmp_json_value)) {
       LOG_ERROR("Failed to deserialize refine_stage_timing");
       return false;
     }
@@ -334,153 +316,13 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
     return nullptr;
   }
 
-  if constexpr (std::is_same_v<QueryParamType, BaseIndexQueryParam>) {
-    if (index_type == IndexType::kFlat) {
-      auto param = std::make_shared<FlatQueryParam>();
-      if (!parse_common_fields(param)) {
-        return nullptr;
-      }
-      return param;
-    } else if (index_type == IndexType::kHNSW) {
-      auto param = std::make_shared<HNSWQueryParam>();
-      if (!parse_common_fields(param)) {
-        return nullptr;
-      }
-      if (!extract_value_from_json(json_obj, "ef_search", param->ef_search,
-                                   tmp_json_value)) {
-        LOG_ERROR("Failed to deserialize ef_search");
-        return nullptr;
-      }
-      if (!extract_value_from_json(json_obj, "prefetch_offset",
-                                   param->prefetch_offset, tmp_json_value)) {
-        LOG_ERROR("Failed to deserialize prefetch_offset");
-        return nullptr;
-      }
-      if (!extract_value_from_json(json_obj, "prefetch_lines",
-                                   param->prefetch_lines, tmp_json_value)) {
-        LOG_ERROR("Failed to deserialize prefetch_lines");
-        return nullptr;
-      }
-      return param;
-    } else if (index_type == IndexType::kIVF) {
-      auto param = std::make_shared<IVFQueryParam>();
-      if (!parse_common_fields(param)) {
-        return nullptr;
-      }
-      if (!extract_value_from_json(json_obj, "rabitq_pruning",
-                                   param->rabitq_pruning, tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_reuse_coarse_dot",
-                                   param->rabitq_reuse_coarse_dot,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_collect_stats",
-                                   param->rabitq_collect_stats,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_segment_timing",
-                                   param->rabitq_segment_timing,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_segment_timing_stride",
-                                   param->rabitq_segment_timing_stride,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_export_scan_lists",
-                                   param->rabitq_export_scan_lists,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_export_scan_samples",
-                                   param->rabitq_export_scan_samples,
-                                   tmp_json_value)) {
-        LOG_ERROR("Failed to deserialize RaBitQ scan options");
-        return nullptr;
-      }
-      if (!extract_value_from_json(json_obj, "nprobe", param->nprobe,
-                                   tmp_json_value)) {
-        LOG_ERROR("Failed to deserialize nprobe");
-        return nullptr;
-      }
-      return param;
-    } else if (index_type == IndexType::kHNSWRabitq) {
-      auto param = std::make_shared<HNSWRabitqQueryParam>();
-      if (!parse_common_fields(param)) {
-        return nullptr;
-      }
-      if (!extract_value_from_json(json_obj, "ef_search", param->ef_search,
-                                   tmp_json_value)) {
-        LOG_ERROR("Failed to deserialize ef_search");
-        return nullptr;
-      }
-      return param;
-    } else if (index_type == IndexType::kIVFRabitq) {
-      auto param = std::make_shared<IVFRabitqQueryParam>();
-      if (!parse_common_fields(param)) {
-        return nullptr;
-      }
-      if (!extract_value_from_json(json_obj, "nprobe", param->nprobe,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_collect_stats",
-                                   param->rabitq_collect_stats,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_pruning",
-                                   param->rabitq_pruning, tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_segment_timing",
-                                   param->rabitq_segment_timing,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_segment_timing_stride",
-                                   param->rabitq_segment_timing_stride,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_export_scan_lists",
-                                   param->rabitq_export_scan_lists,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_export_scan_samples",
-                                   param->rabitq_export_scan_samples,
-                                   tmp_json_value)) {
-        LOG_ERROR("Failed to deserialize IVF RaBitQ query options");
-        return nullptr;
-      }
-      return param;
-    } else if (index_type == IndexType::kVamana) {
-      auto param = std::make_shared<VamanaQueryParam>();
-      if (!parse_common_fields(param)) {
-        return nullptr;
-      }
-      if (!extract_value_from_json(json_obj, "ef_search", param->ef_search,
-                                   tmp_json_value)) {
-        LOG_ERROR("Failed to deserialize ef_search");
-        return nullptr;
-      }
-      if (!extract_value_from_json(json_obj, "prefetch_offset",
-                                   param->prefetch_offset, tmp_json_value)) {
-        LOG_ERROR("Failed to deserialize prefetch_offset");
-        return nullptr;
-      }
-      if (!extract_value_from_json(json_obj, "prefetch_lines",
-                                   param->prefetch_lines, tmp_json_value)) {
-        LOG_ERROR("Failed to deserialize prefetch_lines");
-        return nullptr;
-      }
-      return param;
-#if DISKANN_SUPPORTED
-    } else if (index_type == IndexType::kDiskAnn) {
-      auto param = std::make_shared<DiskAnnQueryParam>();
-      if (!parse_common_fields(param)) {
-        return nullptr;
-      }
-      if (!extract_value_from_json(json_obj, "list_size", param->list_size,
-                                   tmp_json_value)) {
-        LOG_ERROR("Failed to deserialize list_size");
-        return nullptr;
-      }
-      return param;
-#endif
-    } else {
-      LOG_ERROR("Unsupported index type: %s",
-                magic_enum::enum_name(index_type).data());
-      return nullptr;
-    }
-  } else {
-    auto param = std::make_shared<QueryParamType>();
+  auto parse_fields = [&](auto param) -> decltype(param) {
+    using Param = std::decay_t<decltype(*param)>;
     if (!parse_common_fields(param)) {
       return nullptr;
     }
-    if constexpr (std::is_same_v<QueryParamType, FlatQueryParam>) {
-    } else if constexpr (std::is_same_v<QueryParamType, HNSWQueryParam>) {
+    if constexpr (std::is_same_v<Param, FlatQueryParam>) {
+    } else if constexpr (std::is_same_v<Param, HNSWQueryParam>) {
       if (!extract_value_from_json(json_obj, "ef_search", param->ef_search,
                                    tmp_json_value)) {
         LOG_ERROR("Failed to deserialize ef_search");
@@ -496,12 +338,12 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
         LOG_ERROR("Failed to deserialize prefetch_lines");
         return nullptr;
       }
-    } else if constexpr (std::is_same_v<QueryParamType, IVFQueryParam>) {
-      if (!extract_value_from_json(json_obj, "rabitq_pruning",
-                                   param->rabitq_pruning, tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_reuse_coarse_dot",
-                                   param->rabitq_reuse_coarse_dot,
+    } else if constexpr (std::is_same_v<Param, IVFQueryParam> ||
+                         std::is_same_v<Param, IVFRabitqQueryParam>) {
+      if (!extract_value_from_json(json_obj, "nprobe", param->nprobe,
                                    tmp_json_value) ||
+          !extract_value_from_json(json_obj, "rabitq_pruning",
+                                   param->rabitq_pruning, tmp_json_value) ||
           !extract_value_from_json(json_obj, "rabitq_collect_stats",
                                    param->rabitq_collect_stats,
                                    tmp_json_value) ||
@@ -517,44 +359,24 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
           !extract_value_from_json(json_obj, "rabitq_export_scan_samples",
                                    param->rabitq_export_scan_samples,
                                    tmp_json_value)) {
-        LOG_ERROR("Failed to deserialize RaBitQ scan options");
+        LOG_ERROR("Failed to deserialize IVF scan options");
         return nullptr;
       }
-      if (!extract_value_from_json(json_obj, "nprobe", param->nprobe,
-                                   tmp_json_value)) {
-        LOG_ERROR("Failed to deserialize nprobe");
-        return nullptr;
+      if constexpr (std::is_same_v<Param, IVFQueryParam>) {
+        if (!extract_value_from_json(json_obj, "rabitq_reuse_coarse_dot",
+                                     param->rabitq_reuse_coarse_dot,
+                                     tmp_json_value)) {
+          LOG_ERROR("Failed to deserialize rabitq_reuse_coarse_dot");
+          return nullptr;
+        }
       }
-    } else if constexpr (std::is_same_v<QueryParamType, HNSWRabitqQueryParam>) {
+    } else if constexpr (std::is_same_v<Param, HNSWRabitqQueryParam>) {
       if (!extract_value_from_json(json_obj, "ef_search", param->ef_search,
                                    tmp_json_value)) {
         LOG_ERROR("Failed to deserialize ef_search");
         return nullptr;
       }
-    } else if constexpr (std::is_same_v<QueryParamType, IVFRabitqQueryParam>) {
-      if (!extract_value_from_json(json_obj, "nprobe", param->nprobe,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_collect_stats",
-                                   param->rabitq_collect_stats,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_pruning",
-                                   param->rabitq_pruning, tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_segment_timing",
-                                   param->rabitq_segment_timing,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_segment_timing_stride",
-                                   param->rabitq_segment_timing_stride,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_export_scan_lists",
-                                   param->rabitq_export_scan_lists,
-                                   tmp_json_value) ||
-          !extract_value_from_json(json_obj, "rabitq_export_scan_samples",
-                                   param->rabitq_export_scan_samples,
-                                   tmp_json_value)) {
-        LOG_ERROR("Failed to deserialize IVF RaBitQ query options");
-        return nullptr;
-      }
-    } else if constexpr (std::is_same_v<QueryParamType, VamanaQueryParam>) {
+    } else if constexpr (std::is_same_v<Param, VamanaQueryParam>) {
       if (!extract_value_from_json(json_obj, "ef_search", param->ef_search,
                                    tmp_json_value)) {
         LOG_ERROR("Failed to deserialize ef_search");
@@ -571,7 +393,7 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
         return nullptr;
       }
 #if DISKANN_SUPPORTED
-    } else if constexpr (std::is_same_v<QueryParamType, DiskAnnQueryParam>) {
+    } else if constexpr (std::is_same_v<Param, DiskAnnQueryParam>) {
       if (!extract_value_from_json(json_obj, "list_size", param->list_size,
                                    tmp_json_value)) {
         LOG_ERROR("Failed to deserialize list_size");
@@ -584,6 +406,33 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
       return nullptr;
     }
     return param;
+  };
+
+  if constexpr (std::is_same_v<QueryParamType, BaseIndexQueryParam>) {
+    switch (index_type) {
+      case IndexType::kFlat:
+        return parse_fields(std::make_shared<FlatQueryParam>());
+      case IndexType::kHNSW:
+        return parse_fields(std::make_shared<HNSWQueryParam>());
+      case IndexType::kIVF:
+        return parse_fields(std::make_shared<IVFQueryParam>());
+      case IndexType::kHNSWRabitq:
+        return parse_fields(std::make_shared<HNSWRabitqQueryParam>());
+      case IndexType::kIVFRabitq:
+        return parse_fields(std::make_shared<IVFRabitqQueryParam>());
+      case IndexType::kVamana:
+        return parse_fields(std::make_shared<VamanaQueryParam>());
+#if DISKANN_SUPPORTED
+      case IndexType::kDiskAnn:
+        return parse_fields(std::make_shared<DiskAnnQueryParam>());
+#endif
+      default:
+        LOG_ERROR("Unsupported index type: %s",
+                  magic_enum::enum_name(index_type).data());
+        return nullptr;
+    }
+  } else {
+    return parse_fields(std::make_shared<QueryParamType>());
   }
 }
 
