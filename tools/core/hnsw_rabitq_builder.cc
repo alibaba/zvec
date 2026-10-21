@@ -13,8 +13,7 @@
 // limitations under the License.
 
 // Build a standard HNSW index with an optional turbo quantizer (e.g.
-// RaBitQ) through the core_interface API, following
-// docs/hnsw_rabitq_quantizer.md: the original FP32 vectors are pushed
+// RaBitQ) through the core_interface API: the original FP32 vectors are pushed
 // into a MultiPassIndexProvider before the index is created; the graph
 // is built from the originals while stored codes come from the
 // quantizer.

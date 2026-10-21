@@ -13,8 +13,8 @@
 // limitations under the License.
 
 // Build a standard IVF index with a turbo RaBitQ quantizer through the
-// core_interface API, following docs/ivf-rabitq.md: vectors are added and
-// cached, then train() clusters the lists, trains the quantizer model and
+// core_interface API: vectors are added and cached, then train() clusters
+// the lists, trains the quantizer model and
 // writes the postings.
 //
 // Usage:
