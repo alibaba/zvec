@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include <string>
+#include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/core/framework/index_storage.h>
 
 namespace zvec {
@@ -29,12 +29,16 @@ class LegacyReadBuffer {
     if (!block.data() || block.type_ == IndexStorage::MemoryBlock::MBT_MMAP) {
       return block.data();
     }
-    data_.assign(static_cast<const char *>(block.data()), size);
+    const auto *begin = static_cast<const char *>(block.data());
+    // Admit replacement capacity before releasing a previous result. Failed
+    // growth must preserve both its bytes and its still-live budget charge.
+    data_.reserve(size);
+    data_.assign(begin, begin + size);
     return data_.data();
   }
 
  private:
-  std::string data_;
+  ailego::BudgetedVector<char> data_;
 };
 
 }  // namespace core

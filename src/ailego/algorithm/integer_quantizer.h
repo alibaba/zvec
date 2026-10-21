@@ -13,9 +13,9 @@
 // limitations under the License.
 
 #pragma once
-
 #include <limits>
 #include <vector>
+#include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/ailego/internal/platform.h>
 
 namespace zvec {
@@ -127,7 +127,7 @@ class EntropyIntegerQuantizer {
   float scale_reciprocal_{0.0f};
   float left_boundary_{0.0f};
   bool non_bias_{false};
-  std::vector<uint32_t> histogram_{};
+  BudgetedVector<uint32_t> histogram_{};
 };
 
 /*! INT16 Quantizer

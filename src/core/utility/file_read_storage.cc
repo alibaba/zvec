@@ -298,7 +298,7 @@ class FileReadStorage : public IndexStorage {
   }
 
   //! Load a index file into container
-  int open(const std::string &path, bool) override {
+  int open(const std::string &path, bool) override try {
     auto file_ptr = FileReadStorage::OpenFile(path, enable_direct_io_);
     if (!file_ptr) {
       return IndexError_OpenFile;
@@ -333,11 +333,15 @@ class FileReadStorage : public IndexStorage {
     file_path_ = path;
     file_ptr_ = alone_file_handle_ ? nullptr : file_ptr;
     return 0;
+  } catch (const std::bad_alloc &) {
+    close();
+    return IndexError_NoMemory;
   }
 
   int close() override {
     file_ptr_ = nullptr;
     segments_.clear();
+    decltype(buffer_)().swap(buffer_);
     return 0;
   }
 
@@ -492,8 +496,8 @@ class FileReadStorage : public IndexStorage {
   int64_t header_offset_{0};
   int64_t footer_offset_{0};
   size_t index_offset_{0};
-  std::vector<uint8_t> buffer_{};
-  std::map<std::string, IndexUnpacker::SegmentMeta> segments_{};
+  ailego::BudgetedVector<uint8_t> buffer_{};
+  IndexUnpacker::SegmentMap segments_{};
   std::shared_ptr<ailego::File> file_ptr_{nullptr};
   std::string file_path_{};
 };

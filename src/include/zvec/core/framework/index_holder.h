@@ -20,8 +20,10 @@
 #include <vector>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/ailego/internal/platform.h>
+#include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_features.h>
 #include <zvec/core/framework/index_meta.h>
+#include <zvec/core/framework/index_ordinal_access.h>
 
 namespace zvec {
 namespace core {
@@ -306,7 +308,8 @@ class OnePassNumericalIndexHolder : public IndexHolder {
 /*! Multi-Pass Numerical Index Holder
  */
 template <typename T>
-class MultiPassNumericalIndexHolder : public IndexHolder {
+class MultiPassNumericalIndexHolder : public IndexHolder,
+                                      public OrdinalAccessHolder {
  public:
   /*! Multi-Pass Index Holder Iterator
    */
@@ -351,6 +354,17 @@ class MultiPassNumericalIndexHolder : public IndexHolder {
 
   //! Constructor
   MultiPassNumericalIndexHolder(size_t dim) : dimension_(dim) {}
+
+  int create_ordinal_reader(
+      OrdinalAccessHolder::Reader::Pointer *out) override {
+    if (!out) return IndexError_InvalidArgument;
+    try {
+      *out = std::make_unique<OrdinalReader>(this);
+      return 0;
+    } catch (const std::bad_alloc &) {
+      return IndexError_NoMemory;
+    }
+  }
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
   size_t count() const override {
@@ -424,6 +438,24 @@ class MultiPassNumericalIndexHolder : public IndexHolder {
   MultiPassNumericalIndexHolder() = delete;
 
  private:
+  class OrdinalReader : public OrdinalAccessHolder::Reader {
+   public:
+    explicit OrdinalReader(const MultiPassNumericalIndexHolder *holder)
+        : holder_(holder) {}
+
+    int read(size_t ordinal, uint64_t *key, const void **data) override {
+      if (!key || !data) return IndexError_InvalidArgument;
+      if (ordinal >= holder_->features_.size()) return IndexError_OutOfRange;
+      const auto &entry = holder_->features_[ordinal];
+      *key = entry.first;
+      *data = entry.second.data();
+      return 0;
+    }
+    void reset() override {}
+
+   private:
+    const MultiPassNumericalIndexHolder *holder_;
+  };
 };
 
 /*! One-Pass Binary Index Holder

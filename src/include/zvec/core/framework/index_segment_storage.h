@@ -159,17 +159,18 @@ class IndexSegmentStorage : public IndexStorage {
   }
 
   //! Load the current segment, ignore path
-  int open(const std::string &, bool) override {
+  int open(const std::string &, bool) override try {
     if (!parent_) {
       LOG_ERROR("Failed to load an empty segment");
       return IndexError_NoReady;
     }
 
-    MemoryBlock block;
-    auto read_data = [this, &block](size_t offset, const void **data,
-                                    size_t len) {
-      size_t size = this->parent_->read(offset, block, len);
-      *data = block.data();
+    IndexStorage::MemoryBlock metadata;
+    auto read_data = [this, &metadata](size_t offset, const void **data,
+                                       size_t len) {
+      metadata.reset();
+      const auto size = parent_->read(offset, metadata, len);
+      *data = metadata.data();
       return size;
     };
 
@@ -181,6 +182,8 @@ class IndexSegmentStorage : public IndexStorage {
     segments_ = std::move(*unpacker.mutable_segments());
     magic_ = unpacker.magic();
     return 0;
+  } catch (const std::bad_alloc &) {
+    return IndexError_NoMemory;
   }
 
   //! Retrieve a segment by id
@@ -243,7 +246,7 @@ class IndexSegmentStorage : public IndexStorage {
 
  private:
   uint32_t magic_{0};
-  std::map<std::string, IndexUnpacker::SegmentMeta> segments_{};
+  IndexUnpacker::SegmentMap segments_{};
   IndexStorage::Segment::Pointer parent_{};
 };
 

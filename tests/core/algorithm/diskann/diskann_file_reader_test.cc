@@ -22,6 +22,7 @@
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 using namespace zvec::core;
 
@@ -185,9 +186,11 @@ TEST(DiskAnnFileReaderTest, BufferPoolReadsSectorSlicesFromNativePages) {
   ASSERT_TRUE(file.write_all(source.data(), source.size()));
   file.close();
 
-  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = ailego::PoolPayloadBudget::get_instance();
+  // One data page plus the slab header; the second data page must bypass.
   ASSERT_EQ(
       memory_pool.init(native_page_size +
+                       ailego::PoolPayloadBudget::page_buffer_size() +
                        ailego::VecBufferPool::metadata_bytes_for_page_count(2)),
       0);
   auto pool =
@@ -243,9 +246,11 @@ TEST(DiskAnnFileReaderTest,
   original.close();
   replacement.close();
 
-  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = ailego::PoolPayloadBudget::get_instance();
+  // The slab header is charged separately from the single resident data page.
   ASSERT_EQ(
       memory_pool.init(native_page_size +
+                       ailego::PoolPayloadBudget::page_buffer_size() +
                        ailego::VecBufferPool::metadata_bytes_for_page_count(2)),
       0);
   auto pool = std::make_shared<ailego::VecBufferPool>(original.path(), false);
@@ -288,7 +293,7 @@ TEST(DiskAnnFileReaderTest, BufferPoolWithoutPageTableUsesBypassOnly) {
               ailego::kVectorPageSize);
   ASSERT_TRUE(file.write_all(source.data(), source.size()));
   file.close();
-  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = ailego::PoolPayloadBudget::get_instance();
   ASSERT_EQ(memory_pool.init(1), 0);
   auto pool = std::make_shared<ailego::VecBufferPool>(file.path(), false);
 
@@ -357,7 +362,7 @@ TEST(DiskAnnFileReaderTest, BufferPoolRejectsUnalignedRequestsAfterOpen) {
   std::vector<uint8_t> source(2 * ailego::kVectorPageSize, 0x5a);
   ASSERT_TRUE(file.write_all(source.data(), source.size()));
   file.close();
-  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = ailego::PoolPayloadBudget::get_instance();
   ASSERT_EQ(
       memory_pool.init(16 * ailego::kVectorPageSize +
                        ailego::VecBufferPool::metadata_bytes_for_page_count(2)),

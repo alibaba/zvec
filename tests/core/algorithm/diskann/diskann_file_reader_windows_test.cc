@@ -28,6 +28,7 @@
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/utility/file_helper.h>
 #include "diskann_file_reader.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 namespace zvec {
 namespace core {
@@ -150,12 +151,11 @@ bool verify_page(const uint8_t *buffer, size_t page, uint8_t bias = 0) {
 }
 
 DWORD replace_open_file_atomically(const wchar_t *replacement_path,
-                                    const wchar_t *target_path) {
+                                   const wchar_t *target_path) {
   // diskann_file_reader.h targets Windows Vista, whose SDK view predates the
   // extended rename declarations. These values and this layout are the Win10
   // FILE_RENAME_INFO_EX ABI used by FileRenameInfoEx.
-  constexpr auto kFileRenameInfoEx =
-      static_cast<FILE_INFO_BY_HANDLE_CLASS>(22);
+  constexpr auto kFileRenameInfoEx = static_cast<FILE_INFO_BY_HANDLE_CLASS>(22);
   constexpr DWORD kReplaceIfExists = 0x00000001;
   constexpr DWORD kPosixSemantics = 0x00000002;
   struct ExtendedFileRenameInfo {
@@ -171,10 +171,10 @@ DWORD replace_open_file_atomically(const wchar_t *replacement_path,
   static_assert(offsetof(ExtendedFileRenameInfo, file_name) ==
                 offsetof(FILE_RENAME_INFO, FileName));
 
-  HANDLE replacement_handle = ::CreateFileW(
-      replacement_path, DELETE | SYNCHRONIZE,
-      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  HANDLE replacement_handle =
+      ::CreateFileW(replacement_path, DELETE | SYNCHRONIZE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (replacement_handle == INVALID_HANDLE_VALUE) {
     return ::GetLastError();
   }
@@ -185,8 +185,7 @@ DWORD replace_open_file_atomically(const wchar_t *replacement_path,
     return ERROR_FILENAME_EXCED_RANGE;
   }
 
-  const size_t target_path_bytes =
-      target_path_length * sizeof(target_path[0]);
+  const size_t target_path_bytes = target_path_length * sizeof(target_path[0]);
   ExtendedFileRenameInfo rename_info{};
   rename_info.flags = kReplaceIfExists | kPosixSemantics;
   rename_info.root_directory = nullptr;
@@ -225,8 +224,7 @@ class ScopedCurrentDirectory {
       return;
     }
     original_.resize(capacity, L'\0');
-    const DWORD length =
-        ::GetCurrentDirectoryW(capacity, original_.data());
+    const DWORD length = ::GetCurrentDirectoryW(capacity, original_.data());
     if (length == 0 || length >= capacity) {
       original_.clear();
       return;
@@ -269,9 +267,11 @@ TEST(DiskAnnFileReaderWindowsTest, BufferPoolReadsCachedAndBypassedPages) {
   TemporaryFile file;
   ASSERT_TRUE(file.valid());
   ASSERT_TRUE(file.write_pages());
-  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = ailego::PoolPayloadBudget::get_instance();
+  // Reserve the slab header without admitting a second data page.
   ASSERT_EQ(
       memory_pool.init(native_page_size +
+                       ailego::PoolPayloadBudget::page_buffer_size() +
                        ailego::VecBufferPool::metadata_bytes_for_page_count(
                            native_page_count)),
       0);
@@ -308,7 +308,7 @@ TEST(DiskAnnFileReaderWindowsTest, BufferPoolWithoutPageTableUsesBypassOnly) {
   TemporaryFile file;
   ASSERT_TRUE(file.valid());
   ASSERT_TRUE(file.write_pages());
-  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = ailego::PoolPayloadBudget::get_instance();
   ASSERT_EQ(memory_pool.init(1), 0);
   auto pool = std::make_shared<ailego::VecBufferPool>(file.path(), false);
   ASSERT_FALSE(pool->cache_enabled());
@@ -399,8 +399,7 @@ TEST(DiskAnnFileReaderWindowsTest, OpenSupportsUtf8Path) {
   EXPECT_EQ(ctx, nullptr);
 }
 
-TEST(DiskAnnFileReaderWindowsTest,
-     RelativePathSurvivesWorkingDirectoryChange) {
+TEST(DiskAnnFileReaderWindowsTest, RelativePathSurvivesWorkingDirectoryChange) {
   TemporaryFile file;
   ASSERT_TRUE(file.valid());
   ASSERT_TRUE(file.write_pages());
@@ -623,8 +622,7 @@ TEST(DiskAnnFileReaderWindowsTest, DestroyContextDrainsOutstandingBatch) {
     // reader does not opt into FILE_SKIP_COMPLETION_PORT_ON_SUCCESS, teardown
     // must still dequeue its completion packet along with pending reads.
     const size_t length = i == 0 ? 0 : kPageSize;
-    requests.emplace_back(i * kPageSize, length,
-                          output.get() + i * kPageSize);
+    requests.emplace_back(i * kPageSize, length, output.get() + i * kPageSize);
   }
 
   PendingBatch batch;
@@ -727,9 +725,9 @@ TEST(DiskAnnFileReaderWindowsTest,
             ERROR_SUCCESS);
 
   WindowsAlignedFileReader original_reader;
-  ASSERT_EQ(original_reader.open_from_handle(original.path(),
-                                             source.native_handle()),
-            0);
+  ASSERT_EQ(
+      original_reader.open_from_handle(original.path(), source.native_handle()),
+      0);
   HANDLE stable_handle =
       WindowsAlignedFileReaderTestPeer::stable_file_handle(original_reader);
   ASSERT_NE(stable_handle, INVALID_HANDLE_VALUE);

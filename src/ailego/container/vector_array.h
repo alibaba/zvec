@@ -13,7 +13,7 @@
 // limitations under the License.
 
 #pragma once
-
+#include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/ailego/internal/platform.h>
 
@@ -189,7 +189,7 @@ class NumericalVectorArray {
 
  private:
   size_t dimension_{0u};
-  std::string buffer_{};
+  BudgetedString buffer_{};
 };
 
 /*! Nibble Vector Array
@@ -363,7 +363,7 @@ class NibbleVectorArray {
 
  private:
   size_t dimension_{0u};
-  std::string buffer_{};
+  BudgetedString buffer_{};
 };
 
 /*! Binary Vector Array
@@ -534,7 +534,7 @@ class BinaryVectorArray {
 
  private:
   size_t dimension_{0u};
-  std::string buffer_{};
+  BudgetedString buffer_{};
 };
 
 }  // namespace ailego

@@ -30,6 +30,7 @@
 #include "ivf_builder.h"
 #include "ivf_dumper.h"
 #include "ivf_streamer.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic push
@@ -3174,7 +3175,7 @@ TEST_F(IVFSearcherTest, TestProvider) {
 }
 
 TEST_F(IVFSearcherTest, ProviderReleasesStorageBeforeThreadExit) {
-  auto &memory_pool = MemoryLimitPool::get_instance();
+  auto &memory_pool = PoolPayloadBudget::get_instance();
   const size_t previous_capacity = memory_pool.capacity();
   ASSERT_EQ(0u, memory_pool.used());
   ASSERT_EQ(0, memory_pool.init(8 * 1024 * 1024));

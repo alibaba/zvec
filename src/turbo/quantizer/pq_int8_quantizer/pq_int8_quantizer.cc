@@ -14,16 +14,20 @@
 
 #include "quantizer/pq_int8_quantizer/pq_int8_quantizer.h"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <random>
+#include <stdexcept>
 #include <vector>
 #include <ailego/algorithm/kmeans.h>
 #include <ailego/math/normalizer.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_threads.h>
+#include "quantizer/common/pq_buffered_training.h"
 #include "quantizer/common/pq_training_samples.h"
 
 namespace zvec {
@@ -101,8 +105,12 @@ int PqInt8Quantizer::setup_functions() {
   return 0;
 }
 
-int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
+int PqInt8Quantizer::init(const IndexMeta &meta,
+                          const ailego::Params &params) try {
   initialized_ = false;
+  ModelVector<ModelVector<const void *>>().swap(centroid_ptrs_cache_);
+  ModelVector<uint8_t>().swap(centroids_);
+  ModelVector<float>().swap(centroid_);
   meta_ = meta;
 
   // Map core IndexMeta::DataType to turbo DataType.
@@ -143,6 +151,14 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   params.get("markov_chain_length", &markov_chain_length_);
   params.get("epsilon", &epsilon_);
   params.get("use_zero_mean", &use_zero_mean_);
+  build_sdc_table_ = true;
+  if (params.has("build_sdc_table") &&
+      !params.get<bool>("build_sdc_table", &build_sdc_table_)) {
+    return kErrUnsupported;
+  }
+  // Reinitialization invalidates both derivatives of the old codebook.
+  std::vector<float>().swap(dist_table_);
+  paged_dist_table_.reset();
 
   int opq_ret = opq_.init(original_dim_, input_data_type_, params);
   if (opq_ret != 0) return opq_ret;
@@ -158,6 +174,8 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   meta_.set_extra_meta_size(extra_meta_size_);
   initialized_ = true;
   return 0;
+} catch (const std::bad_alloc &) {
+  return core::IndexError_NoMemory;
 }
 
 void PqInt8Quantizer::setup_chunk_offsets() {
@@ -229,7 +247,29 @@ void PqInt8Quantizer::train_chunk(const T *data, size_t num, size_t stride,
   }
 }
 
-int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
+template <class T>
+int PqInt8Quantizer::train_buffered(const IndexHolder::Pointer &holder,
+                                    size_t num) {
+  const PqBufferedTrainingOptions options{
+      "PqInt8Quantizer", original_dim_,
+      chunk_offsets_,    kNumCentroids,
+      kMaxTrainVectors,  kMaxKmeansIters,
+      thread_count_,     markov_chain_length_,
+      epsilon_,          meta_.metric_name() == "Cosine",
+      use_zero_mean_};
+  return TrainPqBuffered<T>(
+      holder, num, options, centroids_, centroid_, opq_,
+      [this]() { build_centroid_ptrs_cache(); },
+      [this](const float *rotated, size_t count, float *out) {
+        double error = 0.0;
+        pq_reconstruct_batch<kNumCentroids>(
+            rotated, count, original_dim_, centroid_ptrs_cache_, l2_batch_fn_,
+            [this](size_t m) { return chunk_dim(m); }, out, &error);
+        return error;
+      });
+}
+
+int PqInt8Quantizer::train(IndexHolder::Pointer holder) try {
   if (!holder) {
     return kErrUnsupported;
   }
@@ -247,6 +287,21 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
   size_t num = std::min(input_count, static_cast<size_t>(kMaxTrainVectors));
   if (num > std::numeric_limits<size_t>::max() / vec_bytes) {
     return kErrUnsupported;
+  }
+
+  // Both plain PQ and OPQ keep sample-sized matrices in shared pageable
+  // storage. Failed backing I/O must not retry with full heap allocations.
+  if (ailego::MemoryLimitPool::get_instance().capacity() != 0) {
+    int ret = input_data_type_ == DataType::kFp16
+                  ? train_buffered<ailego::Float16>(holder, num)
+                  : train_buffered<float>(holder, num);
+    if (ret != 0) return ret;
+    build_centroid_ptrs_cache();
+    if (build_sdc_table_) {
+      ret = compute_dist_table();
+      if (ret != 0) return ret;
+    }
+    return 0;
   }
 
   std::vector<uint8_t> all_data;
@@ -292,7 +347,7 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
     }
   }
 
-  opq_.train(
+  const int opq_status = opq_.train(
       all_data.data(), num, "PqInt8Quantizer",
       [&](uint32_t max_iters) {
         train_all_chunks(all_data.data(), num, data_stride, max_iters);
@@ -301,19 +356,26 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
       [this](const float *rotated, size_t count, float *x_hat) {
         return encode_reconstruct_batch(rotated, count, x_hat);
       });
+  if (opq_status != 0) return opq_status;
 
   train_all_chunks(all_data.data(), num, data_stride, kMaxKmeansIters);
+
+  // Training tasks have joined and the codebook owns its centroids. Do not
+  // overlap the sampled vectors with the large derived SDC table below.
+  std::vector<uint8_t>().swap(all_data);
 
   // Pre-build centroid pointer cache (needed by compute_dist_table).
   build_centroid_ptrs_cache();
 
-  // Pre-compute SDC dist_table.
-  compute_dist_table();
-
-  // Pre-compute sub-centroid norms for the precomputed residual table.
-  compute_sub_centroid_norms();
+  // Encoding and ADC do not need centroid-to-centroid distances.
+  if (build_sdc_table_) {
+    int ret = compute_dist_table();
+    if (ret != 0) return ret;
+  }
 
   return 0;
+} catch (const std::bad_alloc &) {
+  return core::IndexError_NoMemory;
 }
 
 void PqInt8Quantizer::train_all_chunks(const void *data, size_t num,
@@ -381,44 +443,69 @@ void PqInt8Quantizer::build_centroid_ptrs_cache() {
   }
 }
 
-void PqInt8Quantizer::compute_dist_table() {
-  const size_t k = kNumCentroids;
-  dist_table_.resize(static_cast<size_t>(num_chunk_) * k * k, 0.0f);
-
-  // Centroid-to-centroid distances via the metric-aware batch_fn_:
-  // L2:  dist_table[m][i][j] = ||c_m[i] - c_m[j]||^2
-  // IP:  dist_table[m][i][j] = -dot(c_m[i], c_m[j])
-  // Cosine: centroids trained on normalized data, uses L2.
+int PqInt8Quantizer::compute_dist_table() try {
+  constexpr size_t k = kNumCentroids;
+  const size_t count = static_cast<size_t>(num_chunk_) * k * k;
+  std::vector<float> table;
+  std::shared_ptr<core::PagedBuildBuffer> paged;
+  if (ailego::MemoryLimitPool::get_instance().capacity() != 0) {
+    paged = std::make_shared<core::PagedBuildBuffer>();
+    int ret = paged->init(count * sizeof(float));
+    if (ret != 0) return ret;
+  } else {
+    table.resize(count);
+  }
+  std::array<float, k> row{};
   for (uint32_t m = 0; m < num_chunk_; ++m) {
     const size_t d = chunk_dim(m);
-    float *table_m = dist_table_.data() + m * k * k;
-
-    // Use pre-built centroid pointer cache.
-    // const_cast: .data() returns const void* const* but batch_fn_
-    // expects const void**.  The kernel never modifies the pointer array.
-    const auto &centroid_ptrs = centroid_ptrs_cache_[m];
-    const void *centroid_i = centroid_ptrs[0];
-    for (uint32_t i = 0; i < k; ++i) {
-      batch_fn_(const_cast<const void **>(centroid_ptrs.data()),
-                reinterpret_cast<const uint8_t *>(centroid_i) +
-                    static_cast<size_t>(i) * d * element_size(),
-                k, d, table_m + i * k, nullptr);
+    const auto &ptrs = centroid_ptrs_cache_[m];
+    for (size_t i = 0; i < k; ++i) {
+      const size_t offset = (static_cast<size_t>(m) * k + i) * k;
+      float *out = paged ? row.data() : table.data() + offset;
+      batch_fn_(const_cast<const void **>(ptrs.data()), ptrs[i], k, d, out,
+                nullptr);
+      if (paged) {
+        int ret = paged->write(offset * sizeof(float), out, sizeof(row));
+        if (ret != 0) return ret;
+      }
     }
   }
+  dist_table_ = std::move(table);
+  paged_dist_table_ = std::move(paged);
+  return 0;
+} catch (const std::bad_alloc &) {
+  return core::IndexError_NoMemory;
 }
 
-void PqInt8Quantizer::compute_sub_centroid_norms() {
+namespace {
+float PagedSdc(const core::PagedBuildBuffer &table, const void *a,
+               const void *b, size_t chunks) {
+  auto *left = static_cast<const uint8_t *>(a);
+  auto *right = static_cast<const uint8_t *>(b);
+  float distance = 0.0f;
+  for (size_t m = 0; m < chunks; ++m) {
+    float value;
+    const size_t offset =
+        (m * 256 * 256 + left[m] * 256 + right[m]) * sizeof(float);
+    if (table.read(offset, &value, sizeof(value)) != 0)
+      throw std::runtime_error("Failed to read PQ SDC table");
+    distance += value;
+  }
+  return distance;
+}
+}  // namespace
+
+void PqInt8Quantizer::compute_sub_centroid_norms(float *norms) const {
   const size_t k = kNumCentroids;
-  sub_centroid_norms_.resize(static_cast<size_t>(num_chunk_) * k);
 
   // ||c_m[j]||^2 = dist(zero, c_m[j]): reuse the L2 batch kernel with a
   // zero query vector instead of hand-rolling a norm loop.
-  std::vector<uint8_t> zero(chunk_dim(0) * element_size(), 0);
+  ModelVector<uint8_t> zero(chunk_dim(0) * element_size(), 0);
   for (uint32_t m = 0; m < num_chunk_; ++m) {
     const auto &centroid_ptrs = centroid_ptrs_cache_[m];
     // const_cast: see compute_dist_table for rationale.
     l2_batch_fn_(const_cast<const void **>(centroid_ptrs.data()), zero.data(),
-                 k, chunk_dim(m), sub_centroid_norms_.data() + m * k, nullptr);
+                 k, chunk_dim(m), norms + m * k, nullptr);
   }
 }
 
@@ -630,6 +717,8 @@ void PqInt8Quantizer::calc_distance_dp_query_batch_unquantized(
 
 float PqInt8Quantizer::calc_distance_dp_dp(const void *dp1,
                                            const void *dp2) const {
+  if (paged_dist_table_)
+    return PagedSdc(*paged_dist_table_, dp1, dp2, num_chunk_);
   float d = 0.0f;
   sdc_fn_(reinterpret_cast<const uint8_t *>(dp1),
           reinterpret_cast<const uint8_t *>(dp2), dist_table_.data(),
@@ -667,7 +756,8 @@ int PqInt8Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
 
 int PqInt8Quantizer::build_centroid_distance_table(const void *centroids,
                                                    size_t centroid_num,
-                                                   std::string *table) const {
+                                                   std::string *table) const
+    try {
   //! The three-term decomposition below is pure L2 algebra.  IVF forces the
   //! residual meta's metric to L2 on both the build and the restore side, so
   //! any other metric here means that contract was broken.
@@ -681,7 +771,8 @@ int PqInt8Quantizer::build_centroid_distance_table(const void *centroids,
     return kErrUnsupported;
   }
   if (centroids == nullptr || centroid_num == 0 || table == nullptr ||
-      num_chunk_ == 0 || centroids_.empty() || sub_centroid_norms_.empty()) {
+      num_chunk_ == 0 || centroids_.empty() ||
+      centroid_ptrs_cache_.size() != num_chunk_) {
     return kErrInvalidArgument;
   }
 
@@ -693,6 +784,8 @@ int PqInt8Quantizer::build_centroid_distance_table(const void *centroids,
     return kErrUnsupported;
   }
 
+  ModelVector<float> norms(row_floats);
+  compute_sub_centroid_norms(norms.data());
   table->resize(centroid_num * row_floats * sizeof(float));
   float *tab = reinterpret_cast<float *>(&(*table)[0]);
   const uint32_t elem_size = element_size();
@@ -727,7 +820,7 @@ int PqInt8Quantizer::build_centroid_distance_table(const void *centroids,
             const_cast<const void **>(centroid_ptrs.data()),
             buf_bytes + static_cast<size_t>(chunk_offsets_[m]) * elem_size,
             kNumCentroids, chunk_dim(m), dists, nullptr);
-        const float *rn = sub_centroid_norms_.data() + m * kNumCentroids;
+        const float *rn = norms.data() + m * kNumCentroids;
         float *out_m = row + m * kNumCentroids;
         for (uint32_t j = 0; j < kNumCentroids; ++j) {
           out_m[j] = rn[j] - 2.0f * dists[j];
@@ -747,6 +840,8 @@ int PqInt8Quantizer::build_centroid_distance_table(const void *centroids,
       return kErrUnsupported;
   }
   return 0;
+} catch (const std::bad_alloc &) {
+  return core::IndexError_NoMemory;
 }
 
 int PqInt8Quantizer::quantize_precomputed_query(const void *query,
@@ -969,6 +1064,13 @@ DistanceImpl PqInt8Quantizer::sym_distance(const void *query,
   DistanceFunc sdc_func = [sdc, dt](const void *a, const void *b, size_t dim,
                                     float *out) { sdc(a, b, dt, dim, out); };
 
+  if (paged_dist_table_) {
+    auto table = paged_dist_table_;
+    sdc_func = [table](const void *a, const void *b, size_t dim, float *out) {
+      *out = PagedSdc(*table, a, b, dim);
+    };
+  }
+
   // The query is a PQ code (uint8_t[num_chunk]), NOT a LUT: SDC compares two
   // PQ codes via the centroid-to-centroid dist_table_.
   size_t code_bytes = quantized_datapoint_vector_length();
@@ -983,8 +1085,18 @@ DistanceImpl PqInt8Quantizer::sym_distance(const void *query,
 // Serialization
 // ---------------------------------------------------------------------------
 int PqInt8Quantizer::serialize(std::string *out) const {
-  if (!out || !initialized_) return kErrUnsupported;
+  return serialize(out, nullptr);
+}
 
+size_t PqInt8Quantizer::serialized_size() const {
+  return sizeof(QuantizerSerHeader) + sizeof(PqInt8SerPayload) +
+         centroids_.size() +
+         (use_zero_mean_ ? centroid_.size() * sizeof(float) : 0) +
+         opq_.serialized_size();
+}
+
+int PqInt8Quantizer::serialize_to(const SerializationSink &sink) const {
+  if (!sink || !initialized_) return kErrUnsupported;
   QuantizerSerHeader hdr{};
   hdr.magic = kQuantizerMagic;
   hdr.version = original_dim_ % num_chunk_ == 0 ? kQuantizerSerVersion
@@ -1003,36 +1115,22 @@ int PqInt8Quantizer::serialize(std::string *out) const {
   payload.input_data_type = static_cast<uint8_t>(input_data_type_);
   payload.rotate_type = opq_.rotate_type();
 
-  // The rotator blob is self-describing (RotatorSerHeader + matrix), so the
-  // payload only needs the type tag to know whether one follows.
-  std::string preprocessor_blob;
-  int opq_ret = opq_.serialize(&preprocessor_blob);
-  if (opq_ret != 0) return opq_ret;
 
-  size_t centroids_bytes = centroids_.size();
-  size_t centroid_bytes = use_zero_mean_ ? centroid_.size() * sizeof(float) : 0;
+  const size_t centroids_bytes = centroids_.size();
+  const size_t centroid_bytes =
+      use_zero_mean_ ? centroid_.size() * sizeof(float) : 0;
   const uint64_t payload_bytes = uint64_t{sizeof(payload)} + centroids_bytes +
-                                 centroid_bytes + preprocessor_blob.size();
-  if (payload_bytes > std::numeric_limits<uint32_t>::max()) {
+                                 centroid_bytes + opq_.serialized_size();
+  if (payload_bytes > std::numeric_limits<uint32_t>::max())
     return kErrUnsupported;
-  }
   hdr.payload_size = static_cast<uint32_t>(payload_bytes);
-
-  out->clear();
-  out->append(reinterpret_cast<const char *>(&hdr), sizeof(hdr));
-  out->append(reinterpret_cast<const char *>(&payload), sizeof(payload));
-  out->append(reinterpret_cast<const char *>(centroids_.data()),
-              centroids_bytes);
-  // Append zero-mean centroid for centering support.
-  if (use_zero_mean_) {
-    out->append(reinterpret_cast<const char *>(centroid_.data()),
-                centroid_bytes);
-  }
-  out->append(preprocessor_blob);
-  // dist_table_ is NOT serialized: it is a build-phase-only derivative of the
-  // codebook (used by SDC), recomputable on demand and unneeded after
-  // deserialization (search uses ADC).
-  return 0;
+  int ret = sink(&hdr, sizeof(hdr));
+  if (ret == 0) ret = sink(&payload, sizeof(payload));
+  if (ret == 0) ret = WriteSerialized(sink, centroids_.data(), centroids_bytes);
+  if (ret == 0 && centroid_bytes)
+    ret = WriteSerialized(sink, centroid_.data(), centroid_bytes);
+  if (ret == 0) ret = opq_.serialize_to(sink);
+  return ret;
 }
 
 int PqInt8Quantizer::deserialize(std::string &in) {
@@ -1044,7 +1142,7 @@ int PqInt8Quantizer::deserialize(std::string &in) {
 //! meta_ and is intentionally NOT restored from hdr.metric: load paths (e.g.
 //! IVFResidualCodec) own the metric via the persisted IndexMeta and may even
 //! rewrite it before init().
-int PqInt8Quantizer::deserialize(const void *data, size_t len) {
+int PqInt8Quantizer::deserialize(const void *data, size_t len) try {
   if (!initialized_ || data == nullptr) return kErrUnsupported;
   if (len < sizeof(QuantizerSerHeader) + sizeof(PqInt8SerPayload)) {
     return kErrUnsupported;
@@ -1145,6 +1243,7 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   const size_t centroids_bytes = static_cast<size_t>(centroids_bytes64);
   const size_t centroid_bytes = static_cast<size_t>(centroid_bytes64);
 
+  initialized_ = false;
   original_dim_ = payload.original_dim;
   num_chunk_ = payload.num_chunk;
   input_data_type_ = restored_data_type;
@@ -1166,7 +1265,8 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   if (opq_ret != 0) return opq_ret;
   // dist_table_ is intentionally not restored: SDC is only needed during
   // offline build, not after deserialization (search uses ADC).
-  dist_table_.clear();
+  std::vector<float>().swap(dist_table_);
+  paged_dist_table_.reset();
 
   // Re-dispatch kernels and batch distance functions.
   if (setup_functions() != 0) {
@@ -1181,26 +1281,28 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   // Pre-build centroid pointer cache for fast encode/search.
   build_centroid_ptrs_cache();
 
-  // Pre-compute sub-centroid norms for the precomputed residual table.
-  compute_sub_centroid_norms();
-
+  initialized_ = true;
   return 0;
+} catch (const std::bad_alloc &) {
+  return core::IndexError_NoMemory;
 }
 
-int PqInt8Quantizer::import_codebook(const void *data, size_t len) {
+int PqInt8Quantizer::import_codebook(const void *data, size_t len) try {
   // init() owns the geometry, so the codebook size is fully determined; a
   // mismatch means the caller repacked against a different layout.
   if (!initialized_ || data == nullptr) return kErrUnsupported;
   if (len != centroids_.size()) return kErrUnsupported;
 
+  initialized_ = false;
   std::memcpy(centroids_.data(), data, len);
 
   // Same derivations as deserialize(); dist_table_ stays unbuilt because SDC is
   // only used while building.
   build_centroid_ptrs_cache();
-  compute_sub_centroid_norms();
-
+  initialized_ = true;
   return 0;
+} catch (const std::bad_alloc &) {
+  return core::IndexError_NoMemory;
 }
 
 INDEX_FACTORY_REGISTER_QUANTIZER(PqInt8Quantizer);

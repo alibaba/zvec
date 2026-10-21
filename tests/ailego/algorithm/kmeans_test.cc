@@ -15,6 +15,7 @@
 #include <cmath>
 #include <random>
 #include <gtest/gtest.h>
+#include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 
@@ -39,7 +40,7 @@ TEST(NumericalInnerProductKmeans, Kmc2UsesCosineWeightForNormalizedVectors) {
   const float feature[] = {0.6f, 0.8f};
   kmeans.mutable_centroids()->append(centroid, 2);
 
-  std::vector<float> centroid_norms;
+  ailego::BudgetedVector<float> centroid_norms;
   SmallInnerProductKmc2Generator::UpdateCentroidNorms(&kmeans, &centroid_norms);
   float weight = 0.0f;
   SmallInnerProductKmc2Generator::UpdateBenchScores(
@@ -54,7 +55,7 @@ TEST(NumericalInnerProductKmeans, Kmc2UsesNonNegativeWeightForRawVectors) {
   const float feature[] = {6.0f, 8.0f};
   kmeans.mutable_centroids()->append(centroid, 2);
 
-  std::vector<float> centroid_norms;
+  ailego::BudgetedVector<float> centroid_norms;
   SmallInnerProductKmc2Generator::UpdateCentroidNorms(&kmeans, &centroid_norms);
   float weight = 0.0f;
   SmallInnerProductKmc2Generator::UpdateBenchScores(
@@ -71,7 +72,7 @@ TEST(NumericalInnerProductKmeans, Kmc2NormalizesEachCandidateCentroid) {
     kmeans.mutable_centroids()->append(centroid, 2);
   }
 
-  std::vector<float> centroid_norms;
+  ailego::BudgetedVector<float> centroid_norms;
   SmallInnerProductKmc2Generator::UpdateCentroidNorms(&kmeans, &centroid_norms);
   float weight = 0.0f;
   SmallInnerProductKmc2Generator::UpdateBenchScores(
@@ -111,7 +112,7 @@ TEST(NumericalInnerProductKmeans, Afkmc2UsesNonNegativeWeightForRawVectors) {
 
 TEST(NumericalInnerProductKmeans,
      Afkmc2UsesUniformProbabilitiesForZeroWeights) {
-  std::vector<float> probabilities = {0.0f, 0.0f};
+  ailego::BudgetedVector<float> probabilities = {0.0f, 0.0f};
 
   SmallInnerProductKmc2Generator::NormalizeProbabilities(&probabilities);
 
@@ -126,7 +127,7 @@ TEST(NumericalInnerProductKmeans, NonSphericalKmc2KeepsInnerProductScore) {
   const float feature[] = {0.6f, 0.8f};
   kmeans.mutable_centroids()->append(centroid, 2);
 
-  std::vector<float> centroid_norms;
+  ailego::BudgetedVector<float> centroid_norms;
   SmallInnerProductKmc2Generator::UpdateCentroidNorms(&kmeans, &centroid_norms);
   float weight = 0.0f;
   SmallInnerProductKmc2Generator::UpdateBenchScores(
@@ -305,14 +306,22 @@ TEST(NibbleKmeans, INT4_General) {
 
   auto &cluster1 = kmeans1.context().clusters();
   auto &cluster2 = kmeans2.context().clusters();
+  ASSERT_EQ(cluster1.size(), cluster2.size());
+  ailego::BudgetedVector<double> scratch1;
+  ailego::BudgetedVector<double> scratch2;
   for (size_t i = 0; i < cluster1.size(); ++i) {
     // printf("(%zu) INT8 %f: %zu\n", i, cluster1[i].cost(),
     //        cluster1[i].count());
     // printf("(%zu) INT4 %f: %zu\n", i, cluster2[i].cost(),
     //        cluster2[i].count());
 
+    ASSERT_EQ(cluster1[i].accum_.size(), cluster2[i].accum_.size());
+    const double *sums1 = nullptr;
+    const double *sums2 = nullptr;
+    ASSERT_EQ(0, cluster1[i].accum_.read(&scratch1, &sums1));
+    ASSERT_EQ(0, cluster2[i].accum_.read(&scratch2, &sums2));
     for (size_t j = 0; j < cluster1[i].accum_.size(); ++j) {
-      EXPECT_DOUBLE_EQ(cluster1[i].accum_[j], cluster2[i].accum_[j]);
+      EXPECT_DOUBLE_EQ(sums1[j], sums2[j]);
     }
   }
 }

@@ -15,13 +15,14 @@
 
 #include <zvec/core/framework/index_cluster.h>
 #include <zvec/core/framework/index_trainer.h>
+#include "centroid_trainer.h"
 
 namespace zvec {
 namespace core {
 
 /*! Cluster Trainer
  */
-class StratifiedClusterTrainer : public IndexTrainer {
+class StratifiedClusterTrainer : public IndexTrainer, public CentroidTrainer {
  public:
   typedef std::shared_ptr<StratifiedClusterTrainer> Pointer;
 
@@ -30,6 +31,10 @@ class StratifiedClusterTrainer : public IndexTrainer {
 
   //! Destructor
   ~StratifiedClusterTrainer() override = default;
+
+  const IndexCluster::CentroidList &centroids() const override {
+    return centroids_;
+  }
 
  protected:
   //! Initialize Trainer

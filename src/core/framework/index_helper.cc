@@ -12,9 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <limits>
 #include <ailego/utility/memory_helper.h>
+#include <zvec/ailego/buffer/budgeted_allocator.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_helper.h>
+#include "utility/appendable_build_buffer.h"
 
 namespace zvec {
 namespace core {
@@ -162,9 +165,8 @@ class TwoPassIndexHolder : public IndexHolder {
       if (status() != 0) {
         return;
       }
-      holder_->features_.emplace_back(
-          record_key, std::string(static_cast<const char *>(record_data),
-                                  holder_->front_->element_size()));
+      holder_->remember(record_key, record_data);
+      if (status() != 0) return;
       front_iter_->next();
       (void)status();
     }
@@ -182,6 +184,14 @@ class TwoPassIndexHolder : public IndexHolder {
     //! Constructor
     SecondPassIterator(TwoPassIndexHolder *owner) : holder_(owner) {
       features_iter_ = holder_->features_.begin();
+      if (holder_->paged_ && holder_->status_ == 0 && holder_->saved_count_) {
+        try {
+          row_.resize(holder_->element_size_);
+          load();
+        } catch (const std::bad_alloc &) {
+          holder_->status_ = IndexError_NoMemory;
+        }
+      }
     }
 
     //! Destructor
@@ -189,13 +199,15 @@ class TwoPassIndexHolder : public IndexHolder {
 
     //! Retrieve pointer of data
     const void *data() const override {
-      return features_iter_->second.data();
+      if (!is_valid()) return nullptr;
+      return holder_->paged_ ? row_.data() : features_iter_->second.data();
     }
 
     //! Test if the iterator is valid
     bool is_valid() const override {
       return holder_->status_ == 0 &&
-             features_iter_ != holder_->features_.end();
+             (holder_->paged_ ? ordinal_ < holder_->saved_count_
+                              : features_iter_ != holder_->features_.end());
     }
 
     int status() const override {
@@ -204,16 +216,37 @@ class TwoPassIndexHolder : public IndexHolder {
 
     //! Retrieve primary key
     uint64_t key() const override {
-      return features_iter_->first;
+      if (!is_valid()) return 0;
+      return holder_->paged_ ? key_ : features_iter_->first;
     }
 
     //! Next iterator
     void next() override {
-      holder_->features_.erase(features_iter_++);
+      if (!is_valid()) return;
+      if (holder_->paged_) {
+        ++ordinal_;
+        load();
+      } else {
+        holder_->features_.erase(features_iter_++);
+      }
     }
 
    private:
+    void load() {
+      if (!is_valid()) return;
+      const size_t offset = ordinal_ * (sizeof(key_) + holder_->element_size_);
+      int ret = holder_->records_.read(offset, &key_, sizeof(key_));
+      if (ret == 0) {
+        ret = holder_->records_.read(offset + sizeof(key_), row_.data(),
+                                     row_.size());
+      }
+      holder_->status_ = ret;
+    }
+
     TwoPassIndexHolder *holder_{nullptr};
+    size_t ordinal_{0};
+    uint64_t key_{0};
+    std::vector<char, ailego::BudgetedAllocator<char>> row_;
     typename std::list<std::pair<uint64_t, std::string>>::iterator
         features_iter_{};
   };
@@ -225,7 +258,9 @@ class TwoPassIndexHolder : public IndexHolder {
         data_type_(front_->data_type()),
         dimension_(front_->dimension()),
         element_size_(front_->element_size()),
-        count_(front_->count()) {}
+        count_(front_->count()) {
+    paged_ = ailego::MemoryLimitPool::get_instance().capacity() != 0;
+  }
 
   //! Retrieve count of elements in holder (-1 indicates unknown)
   size_t count() const override {
@@ -274,8 +309,33 @@ class TwoPassIndexHolder : public IndexHolder {
   TwoPassIndexHolder() = delete;
 
  private:
+  void remember(uint64_t key, const void *data) try {
+    if (!paged_) {
+      features_.emplace_back(
+          key, std::string(static_cast<const char *>(data), element_size_));
+      return;
+    }
+    const size_t offset = records_.size();
+    if (element_size_ > std::numeric_limits<size_t>::max() - sizeof(key) ||
+        offset >
+            std::numeric_limits<size_t>::max() - sizeof(key) - element_size_) {
+      status_ = IndexError_InvalidArgument;
+      return;
+    }
+    status_ = records_.resize(offset + sizeof(key) + element_size_);
+    if (status_ == 0) status_ = records_.write(offset, &key, sizeof(key));
+    if (status_ == 0)
+      status_ = records_.write(offset + sizeof(key), data, element_size_);
+    if (status_ == 0) ++saved_count_;
+  } catch (const std::bad_alloc &) {
+    status_ = IndexError_NoMemory;
+  }
+
   //! Members
   IndexHolder::Pointer front_{};
+  bool paged_{false};
+  size_t saved_count_{0};
+  AppendableBuildBuffer records_;
   std::list<std::pair<uint64_t, std::string>> features_{};
   int status_{0};
   size_t pass_{0};

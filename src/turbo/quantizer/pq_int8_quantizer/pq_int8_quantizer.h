@@ -17,6 +17,8 @@
 #include <cstdint>
 #include <limits>
 #include <vector>
+#include <core/utility/paged_build_buffer.h>
+#include <zvec/ailego/buffer/budgeted_allocator.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_meta.h>
@@ -122,6 +124,9 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
                             const IndexQueryMeta &qmeta) const;
 
   int serialize(std::string *out) const override;
+  using Quantizer::serialize;
+  size_t serialized_size() const override;
+  int serialize_to(const SerializationSink &sink) const override;
 
   int deserialize(std::string &in) override;
 
@@ -133,6 +138,10 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   int import_codebook(const void *data, size_t len) override;
 
  private:
+  // Test access must preserve member access levels: MSVC encodes them in
+  // out-of-line member symbols.
+  friend class PqInt8QuantizerTestAccess;
+
   //! Match legacy DiskAnn chunking: distribute the remainder to leading chunks.
   //! original_dim_ and num_chunk_ must satisfy 1 <= num_chunk_ <=
   //! original_dim_.
@@ -155,6 +164,9 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   //! This is OPQ step 2: fix the rotation matrix, train the codebook.
   void train_all_chunks(const void *data, size_t num, size_t stride,
                         uint32_t max_iters);
+
+  template <class T>
+  int train_buffered(const IndexHolder::Pointer &holder, size_t num);
 
   //! Encode \p rotated with the current codebook and write the reconstruction
   //! back into \p x_hat (num * original_dim floats, rotated space).  Returns
@@ -181,11 +193,11 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   void subtract_center(T *vec) const;
 
   //! Compute the centroid-to-centroid distance table for SDC.
-  void compute_dist_table();
+  int compute_dist_table();
 
   //! Compute the squared norms of all sub-centroids ([num_chunk * 256]).
-  //! Called after train() and deserialize() when centroids are available.
-  void compute_sub_centroid_norms();
+  //! Only the precomputed residual table builder needs these temporary norms.
+  void compute_sub_centroid_norms(float *norms) const;
 
   //! Build centroid_ptrs_cache_ from current centroids_.
   //! Called after train() and deserialize() when centroids are available.
@@ -227,6 +239,10 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   //! from all vectors (train, encode, query) and added back on dequantize.
   bool use_zero_mean_{false};
 
+  //! Encoding-only builders can skip the SDC table. The default preserves
+  //! symmetric PQ distance support for other build-time consumers.
+  bool build_sdc_table_{true};
+
   //! Set by a successful init().  deserialize() requires it: the metric policy
   //! comes from meta_, and a default-constructed IndexMeta silently reports
   //! "SquaredEuclidean", so its value cannot tell initialized from fresh.
@@ -241,27 +257,24 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   //! consecutive [kNumCentroids][chunk_dim(m)] blocks, totaling
   //! kNumCentroids * original_dim_ * sizeof(T) bytes.
   //! T = float for kFp32, ailego::Float16 for kFp16.
-  std::vector<uint8_t> centroids_;
+  template <typename T>
+  using ModelVector = std::vector<T, ailego::BudgetedAllocator<T>>;
+  ModelVector<uint8_t> centroids_;
 
   //! Global centroid (per-dimension mean) for zero-mean centering.
   //! Size: original_dim_ floats.  Only populated when use_zero_mean_ = true.
-  std::vector<float> centroid_;
+  ModelVector<float> centroid_;
 
   //! Centroid-to-centroid distance table for SDC:
   //! [num_chunk * kNumCentroids * kNumCentroids]
   std::vector<float> dist_table_;
-
-  //! Squared norms of the sub-centroids: [num_chunk * kNumCentroids],
-  //! entry [m * 256 + j] = ||c_m[j]||^2.  Used by the precomputed
-  //! residual distance table (build_centroid_distance_table /
-  //! quantize_precomputed_query).
-  std::vector<float> sub_centroid_norms_;
+  std::shared_ptr<core::PagedBuildBuffer> paged_dist_table_;
 
   //! Pre-built centroid pointer arrays for each chunk.
   //! Layout: centroid_ptrs_cache_[sub_idx][centroid_idx] = pointer to centroid.
   //! Built once during init/deserialize, reused by compute_dist_table
   //! and quantize_query to avoid repeated allocations.
-  std::vector<std::vector<const void *>> centroid_ptrs_cache_;
+  ModelVector<ModelVector<const void *>> centroid_ptrs_cache_;
 
   //! ISA-dispatched kernel function pointers (ADC / SDC / Batch ADC).
   CodebookAsymmetricDistanceFunc adc_fn_{nullptr};

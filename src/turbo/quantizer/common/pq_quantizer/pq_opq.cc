@@ -14,7 +14,10 @@
 
 #include "pq_opq.h"
 #include <turbo/preprocessor/opq_rotator/opq_rotator.h>
+#include <zvec/ailego/buffer/budgeted_allocator.h>
 #include <zvec/ailego/logger/logger.h>
+#include "core/utility/paged_build_buffer.h"
+#include "turbo/training_workspace.h"
 
 namespace zvec {
 namespace turbo {
@@ -34,10 +37,39 @@ int PqOpq::init(uint32_t dim, DataType data_type,
   return preprocessor_ ? 0 : kErrInvalidArgument;
 }
 
-void PqOpq::train(void *data, size_t num, const char *name,
-                  const TrainCodebook &train_codebook,
-                  const Reconstruct &reconstruct) {
-  if (!enabled() || num == 0) return;
+int PqOpq::train(void *data, size_t num, const char *name,
+                 const TrainCodebook &train_codebook,
+                 const Reconstruct &reconstruct,
+                 const ReconstructSum &reconstruct_sum) try {
+  if (!enabled() || num == 0) return 0;
+  if (!data) return kErrInvalidArgument;
+  const size_t dim = static_cast<size_t>(preprocessor_->in_dim());
+  if (!dim || num > std::numeric_limits<size_t>::max() / sizeof(float) / dim)
+    return kErrInvalidArgument;
+  if (reconstruct_sum &&
+      ailego::MemoryLimitPool::get_instance().capacity() != 0) {
+    core::PagedBuildBuffer original;
+    const size_t row_bytes = dim * sizeof(float);
+    int ret = original.init(num * row_bytes, 64 * 1024);
+    if (ret != 0) return ret;
+    ret = original.write(0, data, num * row_bytes);
+    if (ret != 0) return ret;
+    return train_rows(
+        num, name,
+        [&](size_t first, size_t count, float *rows) {
+          return original.read(first * row_bytes, rows, count * row_bytes);
+        },
+        [&](size_t first, size_t count, const float *rows) {
+          std::memcpy(static_cast<char *>(data) + first * row_bytes, rows,
+                      count * row_bytes);
+          return 0;
+        },
+        [&](uint32_t iters) {
+          train_codebook(iters);
+          return 0;
+        },
+        reconstruct_sum);
+  }
   float *rotated = reinterpret_cast<float *>(data);
   const size_t total = num * static_cast<size_t>(preprocessor_->in_dim());
   std::vector<float> x(rotated, rotated + total);
@@ -60,6 +92,85 @@ void PqOpq::train(void *data, size_t num, const char *name,
 
   // The final PQ codebook must be trained using the final rotation.
   rotate_batch(x.data(), num, rotated);
+  return 0;
+} catch (const std::bad_alloc &) {
+  return core::IndexError_NoMemory;
+} catch (const std::exception &) {
+  return core::IndexError_Runtime;
+}
+
+int PqOpq::train_rows(size_t num, const char *name,
+                      const ReadRows &read_original,
+                      const WriteRows &write_rotated,
+                      const TrainPagedCodebook &train_codebook,
+                      const ReconstructSum &reconstruct) try {
+  if (!enabled() || num == 0) return 0;
+  if (!read_original || !write_rotated || !train_codebook || !reconstruct)
+    return kErrInvalidArgument;
+  auto rotator = std::dynamic_pointer_cast<OpqRotator>(preprocessor_);
+  if (!rotator) return kErrUnsupported;
+  const size_t dim = static_cast<size_t>(preprocessor_->in_dim());
+  if (dim == 0 ||
+      num > std::numeric_limits<size_t>::max() / sizeof(float) / dim)
+    return kErrInvalidArgument;
+  const size_t row_bytes = dim * sizeof(float);
+  core::PagedBuildBuffer reconstruction;
+  int ret = reconstruction.init(num * row_bytes, 64 * 1024);
+  if (ret != 0) return ret;
+  // Reserve backing metadata first, then shrink tiles under budget pressure.
+  const size_t tile =
+      TrainingTileRows(std::min<size_t>(num, 1024), row_bytes, 3);
+  std::vector<float, ailego::BudgetedAllocator<float>> original(tile * dim),
+      rotated(original.size()), reconstructed(original.size());
+  auto publish_rotation = [&]() -> int {
+    for (size_t first = 0; first < num; first += tile) {
+      const size_t count = std::min(tile, num - first);
+      int status = read_original(first, count, original.data());
+      if (status != 0) return status;
+      rotate_batch(original.data(), count, rotated.data());
+      status = write_rotated(first, count, rotated.data());
+      if (status != 0) return status;
+    }
+    return 0;
+  };
+  float previous = 0.0f;
+  for (uint32_t iter = 0; iter < opq_iter_; ++iter) {
+    ret = publish_rotation();
+    if (ret != 0) return ret;
+    ret = train_codebook(opq_pq_iter_);
+    if (ret != 0) return ret;
+    double error = 0.0;
+    for (size_t first = 0; first < num; first += tile) {
+      const size_t count = std::min(tile, num - first);
+      ret = read_original(first, count, original.data());
+      if (ret != 0) return ret;
+      rotate_batch(original.data(), count, rotated.data());
+      error += reconstruct(rotated.data(), count, reconstructed.data());
+      ret = reconstruction.write(first * row_bytes, reconstructed.data(),
+                                 count * row_bytes);
+      if (ret != 0) return ret;
+    }
+    const float mse = static_cast<float>(error / num);
+    LOG_INFO("%s OPQ round %u/%u: reconstruction mse=%f", name, iter + 1,
+             opq_iter_, mse);
+    if (iter > 0 &&
+        (mse >= previous || previous - mse <= previous * kMinImprovement))
+      break;
+    previous = mse;
+    ret = rotator->fit_rows(
+        num, [&](size_t first, size_t count, float *x, float *x_hat) {
+          int status = read_original(first, count, x);
+          return status != 0 ? status
+                             : reconstruction.read(first * row_bytes, x_hat,
+                                                   count * row_bytes);
+        });
+    if (ret != 0) return ret;
+  }
+  return publish_rotation();
+} catch (const std::bad_alloc &) {
+  return core::IndexError_NoMemory;
+} catch (const std::exception &) {
+  return core::IndexError_Runtime;
 }
 
 void PqOpq::rotate_batch(const float *input, size_t num, float *output) const {

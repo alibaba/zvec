@@ -15,6 +15,8 @@
 #pragma once
 
 #include <map>
+#include <string_view>
+#include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/type_helper.h>
 #include <zvec/core/framework/index_error.h>
@@ -65,13 +67,24 @@ class IndexUnpacker {
     uint32_t data_crc_{0};
   };
 
+  struct SegmentNameLess {
+    using is_transparent = void;
+    bool operator()(std::string_view a, std::string_view b) const {
+      return a < b;
+    }
+  };
+  using SegmentMap =
+      std::map<ailego::BudgetedString, SegmentMeta, SegmentNameLess,
+               ailego::BudgetedAllocator<
+                   std::pair<const ailego::BudgetedString, SegmentMeta>>>;
+
   //! Reset the unpacker
   void reset() {
     segments_.clear();
   }
 
   //! Retrieve segments of index package
-  const std::map<std::string, SegmentMeta> &segments() const {
+  const SegmentMap &segments() const {
     return segments_;
   }
 
@@ -96,7 +109,7 @@ class IndexUnpacker {
   }
 
   //! Retrieve mutable segments of index package
-  std::map<std::string, SegmentMeta> *mutable_segments() {
+  SegmentMap *mutable_segments() {
     return &segments_;
   }
 
@@ -226,7 +239,7 @@ class IndexUnpacker {
 
     IndexFormat::SegmentMeta *seg = (IndexFormat::SegmentMeta *)data;
     for (size_t i = 0; i < footer_.segment_count; ++i, ++seg) {
-      if (seg->segment_id_offset > footer_.segments_meta_size) {
+      if (seg->segment_id_offset >= footer_.segments_meta_size) {
         return false;
       }
       if (seg->data_index > footer_.content_size) {
@@ -235,9 +248,14 @@ class IndexUnpacker {
       if (seg->data_index + seg->data_size > footer_.content_size) {
         return false;
       }
+      const char *name =
+          reinterpret_cast<const char *>(data) + seg->segment_id_offset;
+      const size_t max_length =
+          footer_.segments_meta_size - seg->segment_id_offset;
+      const size_t length = ::strnlen(name, max_length);
+      if (length == max_length) return false;
       segments_.emplace(
-          std::string(reinterpret_cast<const char *>(data) +
-                      seg->segment_id_offset),
+          ailego::BudgetedString(name, length),
           SegmentMeta(seg->data_index + header_.content_offset +
                           current_header_start_offset_,
                       seg->data_size, seg->padding_size, seg->data_crc));
@@ -309,7 +327,7 @@ class IndexUnpacker {
   IndexFormat::MetaHeader header_{};
   IndexFormat::MetaFooter footer_{};
   std::string version_{};
-  std::map<std::string, SegmentMeta> segments_{};
+  SegmentMap segments_{};
   uint64_t current_header_start_offset_{0u};
 };
 

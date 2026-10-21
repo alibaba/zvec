@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #pragma once
-
 #include <cstring>
 #include <memory>
 #include <random>
 #include <string>
 #include <vector>
+#include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/core/framework/index_meta.h>
 
 namespace zvec {
@@ -514,7 +514,7 @@ class CompactIndexFeatures : public IndexFeatures {
 
  private:
   //! Members
-  std::string features_;
+  ailego::BudgetedString features_;
   size_t feature_size_;
   size_t feature_dimension_;
   IndexMeta::DataType data_type_;

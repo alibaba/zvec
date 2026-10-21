@@ -24,7 +24,7 @@ namespace zvec {
 namespace ailego {
 
 //! Make smooth the distribution to eliminate zero in hist
-static inline void MakeSmooth(std::vector<float> &dist) {
+static inline void MakeSmooth(BudgetedVector<float> &dist) {
   constexpr float epsilon = std::numeric_limits<float>::epsilon();
 
   // L1 Normalize first
@@ -52,8 +52,8 @@ static inline void MakeSmooth(std::vector<float> &dist) {
 }
 
 //! Compute the Entropy of distribution p/q by  Kullback-Leibler Divergence
-static inline double ComputeKlDivergence(const std::vector<float> &p,
-                                         const std::vector<float> &q) {
+static inline double ComputeKlDivergence(const BudgetedVector<float> &p,
+                                         const BudgetedVector<float> &q) {
   if (p.size() != q.size() || p.size() == 0) {
     return std::numeric_limits<float>::max();
   }
@@ -71,9 +71,9 @@ static inline double ComputeKlDivergence(const std::vector<float> &p,
 //! Expand the quantization distribution to origin distribution in
 //! [-threshold, threshold]
 static inline void ExpandCandidateDistribution(
-    const std::vector<uint32_t> &distribution,
-    const std::vector<float> &quantized_distribution, size_t threshold,
-    std::vector<float> *expand_distribution) {
+    const BudgetedVector<uint32_t> &distribution,
+    const BudgetedVector<float> &quantized_distribution, size_t threshold,
+    BudgetedVector<float> *expand_distribution) {
   expand_distribution->resize(threshold * 2, 0);
   float merged_cnt = static_cast<float>(expand_distribution->size()) /
                      quantized_distribution.size();
@@ -127,9 +127,9 @@ static inline void ExpandCandidateDistribution(
  *  Implement Int8 Quantization Algorithm ref:
  *  http://on-demand.gputechconf.com/gtc/2017/presentation/s7310-8-bit-inference-with-tensorrt.pdf
  */
-static inline size_t ComputeThreshold(const std::vector<uint32_t> &hist,
+static inline size_t ComputeThreshold(const BudgetedVector<uint32_t> &hist,
                                       const size_t target_bins) {
-  std::vector<float> p_distribution(hist.size());
+  BudgetedVector<float> p_distribution(hist.size());
   size_t zero_point_index = hist.size() / 2;
 
   size_t start_bin = target_bins / 2;
@@ -159,7 +159,7 @@ static inline size_t ComputeThreshold(const std::vector<uint32_t> &hist,
     p_distribution[p_distribution.size() - 1] += positive_outliers_count;
 
     //! Quantize the bins in range [-threshold, threshold] to target_bins
-    std::vector<float> q_distribution(target_bins, 0);
+    BudgetedVector<float> q_distribution(target_bins, 0);
     float merged_cnt = static_cast<float>(threshold * 2) / target_bins;
     size_t left_boundary = zero_point_index - threshold;
     for (size_t i = 0; i < target_bins; ++i) {
@@ -180,7 +180,7 @@ static inline size_t ComputeThreshold(const std::vector<uint32_t> &hist,
         q_distribution[i] += hist[left_boundary + j];
       }
     }
-    std::vector<float> q_expand_distribution;
+    BudgetedVector<float> q_expand_distribution;
     ExpandCandidateDistribution(hist, q_distribution, threshold,
                                 &q_expand_distribution);
 
@@ -276,6 +276,7 @@ static inline float QuantizeValue(float val, float scale, float bias) {
     if (!non_bias_) {                                                    \
       bias_ += (MAX_VALUE + MIN_VALUE) * 0.5f / scale_;                  \
     }                                                                    \
+    BudgetedVector<uint32_t>().swap(histogram_);                         \
     scale_reciprocal_ = 1 / scale_;                                      \
     return true;                                                         \
   }

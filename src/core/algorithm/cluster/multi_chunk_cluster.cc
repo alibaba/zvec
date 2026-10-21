@@ -234,7 +234,7 @@ int MultiChunkClusterAlgorithm::classify(
 //! Label
 int MultiChunkClusterAlgorithm::label(IndexThreads::Pointer threads,
                                       const IndexCluster::CentroidList &cents,
-                                      std::vector<uint32_t> *out) {
+                                      std::vector<uint32_t> *out) try {
   if (chunk_count_ == 0) {
     LOG_ERROR("Invalid Chunk Count: %u", chunk_count_);
 
@@ -276,6 +276,13 @@ int MultiChunkClusterAlgorithm::label(IndexThreads::Pointer threads,
   }
 
   size_t features_count = features_->count();
+  if (!out) return IndexError_InvalidArgument;
+  if (features_count > std::numeric_limits<size_t>::max() / chunk_count_)
+    return IndexError_Overflow;
+  // Output is caller-owned after return. Admit its allocation before
+  // resizing it or launching workers (including vector growth overlap).
+  ailego::MemoryReservation output_memory;
+  output_memory.add_array(features_count * chunk_count_, 2 * sizeof(uint32_t));
   out->resize(features_count * chunk_count_);
 
   std::atomic<size_t> finished{0};
@@ -308,6 +315,8 @@ int MultiChunkClusterAlgorithm::label(IndexThreads::Pointer threads,
   task_group->wait_finish();
 
   return 0;
+} catch (const std::bad_alloc &) {
+  return IndexError_NoMemory;
 }
 
 //! Cluster

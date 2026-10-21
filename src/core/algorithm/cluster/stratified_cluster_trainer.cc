@@ -13,11 +13,13 @@
 // limitations under the License.
 #include "stratified_cluster_trainer.h"
 #include <cmath>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_helper.h>
+#include "utility/reservoir_sample_holder.h"
 #include "cluster_params.h"
 #include "holder_cluster.h"
 
@@ -135,7 +137,7 @@ int StratifiedClusterTrainer::init(const IndexMeta &index_meta,
 
 int StratifiedClusterTrainer::cleanup() {
   cluster_ = nullptr;
-  centroids_.clear();
+  IndexCluster::CentroidList().swap(centroids_);
   return 0;
 }
 
@@ -155,8 +157,8 @@ int StratifiedClusterTrainer::train(IndexThreads::Pointer threads,
     }
   }
 
-  const size_t holder_count = holder->count();
-  const bool has_known_count = holder_count != static_cast<size_t>(-1);
+  size_t holder_count = holder->count();
+  bool has_known_count = holder_count != static_cast<size_t>(-1);
   if (!std::isfinite(sample_ratio_) || sample_ratio_ < 0.0f ||
       (!has_known_count && sample_ratio_ > 0.0f)) {
     return IndexError_InvalidArgument;
@@ -175,13 +177,30 @@ int StratifiedClusterTrainer::train(IndexThreads::Pointer threads,
     train_sample_count = std::max(train_sample_count, ratio_sample_count);
   }
 
-  centroids_.clear();
+  IndexCluster::CentroidList().swap(centroids_);
+  auto streaming_cluster = dynamic_cast<HolderCluster *>(cluster_.get());
+  if (streaming_cluster && train_sample_count > 0 &&
+      (!has_known_count || train_sample_count < holder_count) &&
+      ailego::MemoryLimitPool::get_instance().capacity() != 0) {
+    // Keep the legacy reservoir order, but do not materialize a second heap
+    // corpus before the streaming cluster creates its pageable matrix.
+    IndexHolder::Pointer sample;
+    const int ret =
+        CreateReservoirSampleHolder(holder, train_sample_count, &sample);
+    if (ret != 0) return ret;
+    holder = std::move(sample);
+    holder_count = holder->count();
+    has_known_count = true;
+    // An unsupported cluster may still use its legacy feature interface, but
+    // must consume this completed sample, not resample or reread the source.
+    train_sample_count = 0;
+  }
+
   int result = IndexError_NotImplemented;
   // Reservoir sampling preserves every row in input order when its capacity
   // covers the known corpus. Such a request is full training, too.
   if (has_known_count &&
       (train_sample_count == 0 || train_sample_count >= holder_count)) {
-    auto streaming_cluster = dynamic_cast<HolderCluster *>(cluster_.get());
     if (streaming_cluster) {
       // A previous fallback train may still have features mounted. They are
       // not needed by a new one-shot train and must not overlap its matrix.
@@ -214,10 +233,15 @@ int StratifiedClusterTrainer::train(IndexThreads::Pointer threads,
                                ? train_sample_count
                                : holder->count();
       sampler->reserve(pre_reserve);
-      for (auto iter = holder->create_iterator(); iter && iter->is_valid();
-           iter->next()) {
-        sampler->emplace(iter->data());
+      auto iter = holder->create_iterator();
+      if (!iter) return IndexError_Runtime;
+      for (; iter->is_valid(); iter->next()) {
+        const void *data = iter->data();
+        if (iter->status() != 0) return iter->status();
+        if (!data) return IndexError_ReadData;
+        sampler->emplace(data);
       }
+      if (iter->status() != 0) return iter->status();
       features = sampler;
     } else {
       LOG_INFO(
@@ -231,10 +255,15 @@ int StratifiedClusterTrainer::train(IndexThreads::Pointer threads,
       if (holder->count() != static_cast<size_t>(-1)) {
         no_sampler->reserve(holder->count());
       }
-      for (auto iter = holder->create_iterator(); iter && iter->is_valid();
-           iter->next()) {
-        no_sampler->emplace(iter->data());
+      auto iter = holder->create_iterator();
+      if (!iter) return IndexError_Runtime;
+      for (; iter->is_valid(); iter->next()) {
+        const void *data = iter->data();
+        if (iter->status() != 0) return iter->status();
+        if (!data) return IndexError_ReadData;
+        no_sampler->emplace(data);
       }
+      if (iter->status() != 0) return iter->status();
 
       features = no_sampler;
     }
@@ -299,75 +328,31 @@ int StratifiedClusterTrainer::load(IndexStorage::Pointer cntr) {
     LOG_ERROR("IndexStorage is nullptr.");
     return IndexError_InvalidArgument;
   }
-  std::shared_ptr<MemoryIndexBundle> bundle =
-      std::make_shared<MemoryIndexBundle>();
-  if (!bundle) {
-    LOG_ERROR("New MemoryInndexBundle failed.");
-    return IndexError_NoMemory;
-  }
 
-  auto results = cntr->get_all();
-  for (auto &it : results) {
-    IndexStorage::Segment::Pointer &seg = it.second;
-    if (!seg) {
-      LOG_ERROR("Get Segment %s failed.", it.first.c_str());
-      return IndexError_InvalidArgument;
-    }
-    size_t data_size = seg->data_size();
-    IndexStorage::MemoryBlock data;
-    size_t actual_size = seg->read(0, data, data_size);
-    if (actual_size != data_size) {
-      LOG_ERROR("Read data failed expect %zu, actual %zu.", data_size,
-                actual_size);
-      return IndexError_ReadData;
-    }
-    bundle->set(it.first, data.data(), data_size);
-  }
-
-  int result = IndexHelper::DeserializeFromStorage(cntr.get(), &meta_);
+  IndexMeta loaded_meta;
+  int result = IndexHelper::DeserializeFromStorage(cntr.get(), &loaded_meta);
   if (result != 0) {
     LOG_ERROR("Failed to deserialize meta from container");
     return result;
   }
 
-  result = IndexCluster::Deserialize(meta_, std::move(bundle), &centroids_);
+  result = IndexCluster::Load(loaded_meta, std::move(cntr), &centroids_);
   if (result != 0) {
     LOG_ERROR("Failed to deserialize index: %d", result);
     return result;
   }
+  meta_ = std::move(loaded_meta);
   return 0;
 }
 
 int StratifiedClusterTrainer::dump(const IndexDumper::Pointer &dumper) {
-  IndexBundle::Pointer bundle;
-  int result = IndexCluster::Serialize(meta_, centroids_, &bundle);
-  if (result != 0) {
-    LOG_ERROR("IndexCluster Serialize failed with ret %d.", result);
-    return result;
-  }
-
-  result = IndexHelper::SerializeToDumper(meta_, dumper.get());
+  int result = IndexHelper::SerializeToDumper(meta_, dumper.get());
   if (result != 0) {
     LOG_ERROR("Failed to serialize meta into dumper.");
     return result;
   }
 
-  for (const auto &it : bundle->all()) {
-    size_t data_size = it.second.size();
-    result = dumper->append(it.first, data_size, 0, 0);
-    if (result != 0) {
-      LOG_ERROR("Dumper append meta %s %zu failed.", it.first.c_str(),
-                data_size);
-      return IndexError_PackIndex;
-    }
-    size_t actual_size = dumper->write(it.second.buffer(), data_size);
-    if (actual_size != data_size) {
-      LOG_ERROR("Dumper segment %s expect %zu, actual %zu.", it.first.c_str(),
-                data_size, actual_size);
-      return IndexError_PackIndex;
-    }
-  }
-  return 0;
+  return IndexCluster::Dump(meta_, centroids_, dumper);
 }
 
 const IndexMeta &StratifiedClusterTrainer::meta() const {

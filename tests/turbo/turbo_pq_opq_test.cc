@@ -15,9 +15,13 @@
 #include <algorithm>
 #include <limits>
 #include <vector>
+#include <ailego/pattern/defer.h>
 #include <gtest/gtest.h>
+#include <zvec/core/framework/index_factory.h>
 #include "preprocessor/opq_rotator/opq_rotator.h"
 #include "quantizer/common/pq_quantizer/pq_opq.h"
+#include "quantizer/quantizer.h"
+#include "../ailego/buffer/pool_payload_budget.h"
 
 namespace zvec {
 namespace turbo {
@@ -76,6 +80,62 @@ void check_reconstruction(const std::vector<size_t> &widths) {
   for (size_t d = 0; d < dim; ++d) {
     EXPECT_FLOAT_EQ(expected[d], output[d]);
     EXPECT_FLOAT_EQ(-expected[d], output[dim + d]);
+  }
+}
+
+TEST(PqOpq, StreamingExportMatchesBlobForAllCodeFormats) {
+  for (const char *name :
+       {"PqInt8Quantizer", "PqInt4Quantizer", "PqFastQuantizer"}) {
+    SCOPED_TRACE(name);
+    for (bool rotated : {false, true}) {
+      SCOPED_TRACE(rotated);
+      core::IndexMeta meta;
+      meta.set_meta(core::IndexMeta::DT_FP32, 8);
+      meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+      ailego::Params params;
+      params.set("num_chunk", uint32_t{2});
+      params.set("max_iter", uint32_t{1});
+      params.set("thread_count", uint32_t{1});
+      params.set("build_sdc_table", false);
+      if (rotated) {
+        params.set("rotate_type", std::string("opq"));
+        params.set("opq_iter", uint32_t{1});
+        params.set("opq_pq_iter", uint32_t{1});
+      }
+      auto quantizer = core::IndexFactory::CreateQuantizer(name);
+      ASSERT_TRUE(quantizer);
+      ASSERT_EQ(0, quantizer->init(meta, params));
+      auto holder = std::make_shared<
+          core::MultiPassIndexHolder<core::IndexMeta::DT_FP32>>(8);
+      for (size_t i = 0; i < 256; ++i) {
+        ailego::NumericalVector<float> row(8);
+        for (size_t d = 0; d < 8; ++d)
+          row[d] = static_cast<float>((i * 17 + d * 3) % 251) / 251;
+        holder->emplace(i, row);
+      }
+      ASSERT_EQ(0, quantizer->train(holder));
+      std::string blob, streamed;
+      ASSERT_EQ(0, quantizer->serialize(&blob));
+      EXPECT_EQ(blob.size(), quantizer->serialized_size());
+      ASSERT_EQ(0, quantizer->serialize_to([&](const void *data, size_t bytes) {
+        EXPECT_LE(bytes, 64u * 1024u);
+        streamed.append(static_cast<const char *>(data), bytes);
+        return 0;
+      }));
+      EXPECT_EQ(blob, streamed);
+      size_t calls = 0;
+      EXPECT_EQ(-123, quantizer->serialize_to([&](const void *, size_t) {
+        return ++calls == 3 ? -123 : 0;
+      }));
+      EXPECT_EQ(3u, calls);
+      auto restored = core::IndexFactory::CreateQuantizer(name);
+      ASSERT_TRUE(restored);
+      ASSERT_EQ(0, restored->init(meta, params));
+      ASSERT_EQ(0, restored->deserialize(streamed));
+      std::string roundtrip;
+      ASSERT_EQ(0, restored->serialize(&roundtrip));
+      EXPECT_EQ(blob, roundtrip);
+    }
   }
 }
 
@@ -202,6 +262,48 @@ TEST(PqOpq, PreservesRotatorBlobAndRejectsInvalidDimension) {
             opq.deserialize(type, 3, blob.data(), blob.size() - 1));
   EXPECT_EQ(0, opq.deserialize(0, 3, nullptr, 0));
   EXPECT_FALSE(opq.enabled());
+}
+
+TEST(PqOpq, StreamedTilesAreByteBoundedChargedAndReleasedOnFailure) {
+  auto &pool = ailego::PoolPayloadBudget::get_instance();
+  const size_t previous = pool.capacity();
+  ASSERT_EQ(0u, pool.used());
+  ASSERT_EQ(0, pool.init(16 * 1024 * 1024));
+  AILEGO_DEFER([&]() {
+    EXPECT_EQ(0u, pool.used());
+    EXPECT_EQ(0, pool.init(previous));
+  });
+  PqOpq opq;
+  constexpr size_t kDimension = 128, kRows = 1025;
+  ASSERT_EQ(0, opq.init(kDimension, DataType::kFp32, opq_params()));
+  const auto baseline = pool.external_used();
+  size_t reads = 0;
+  auto read = [&](size_t first, size_t count, float *) {
+    ++reads;
+    EXPECT_EQ(0u, first);
+    EXPECT_EQ(256u * 1024 / (kDimension * sizeof(float)), count);
+    EXPECT_GE(pool.external_used(), baseline + 3 * 256u * 1024);
+    return -123;
+  };
+  auto write = [](size_t, size_t, const float *) { return 0; };
+  auto train = [](uint32_t) { return 0; };
+  auto reconstruct = [](const float *, size_t, float *) { return 0.0; };
+  EXPECT_EQ(-123, opq.train_rows(kRows, "budget-test", read, write, train,
+                                 reconstruct));
+  EXPECT_EQ(1u, reads);
+  EXPECT_EQ(baseline, pool.external_used());
+
+  // Mandatory backing metadata and even the smallest tiles must both fit.
+  // Refusal must precede input consumption and release all temporary charges.
+  ailego::MemoryReservation pressure;
+  pressure.add(pool.capacity() - pool.metadata_used() - pool.external_used() -
+               384 * 1024);
+  const auto pressured = pool.external_used();
+  EXPECT_EQ(
+      core::IndexError_NoMemory,
+      opq.train_rows(kRows, "budget-test", read, write, train, reconstruct));
+  EXPECT_EQ(1u, reads);
+  EXPECT_EQ(pressured, pool.external_used());
 }
 
 }  // namespace

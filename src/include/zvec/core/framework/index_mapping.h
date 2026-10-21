@@ -14,6 +14,8 @@
 #pragma once
 
 #include <map>
+#include <string_view>
+#include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/io/file.h>
 #include <zvec/core/framework/index_format.h>
@@ -91,33 +93,16 @@ class IndexMapping {
   //! Constructor
   IndexMapping() = default;
 
-  //! Constructor
-  IndexMapping(IndexMapping &&rhs)
-      : segment_ids_offset_(rhs.segment_ids_offset_),
-        segment_start_(rhs.segment_start_),
-        header_(rhs.header_),
-        footer_(rhs.footer_),
-        segments_(std::move(rhs.segments_)),
-        file_(std::move(rhs.file_)) {
-    rhs.segment_ids_offset_ = 0;
-    rhs.segment_start_ = nullptr;
-    rhs.header_ = nullptr;
-    rhs.footer_ = nullptr;
+  IndexMapping(IndexMapping &&rhs) noexcept {
+    swap(rhs);
   }
-
-  //! Assignment
-  IndexMapping &operator=(IndexMapping &&rhs) {
-    segment_ids_offset_ = rhs.segment_ids_offset_;
-    segment_start_ = rhs.segment_start_;
-    header_ = rhs.header_;
-    footer_ = rhs.footer_;
-    segments_ = std::move(rhs.segments_);
-    file_ = std::move(rhs.file_);
-    rhs.segment_ids_offset_ = 0;
-    rhs.segment_start_ = nullptr;
-    rhs.header_ = nullptr;
-    rhs.footer_ = nullptr;
+  IndexMapping &operator=(IndexMapping &&rhs) noexcept {
+    IndexMapping replacement(std::move(rhs));
+    swap(replacement);
     return *this;
+  }
+  ~IndexMapping() {
+    close();
   }
 
   //! Open a index file
@@ -201,13 +186,29 @@ class IndexMapping {
   IndexMapping &operator=(const IndexMapping &) = delete;
 
  private:
+  void swap(IndexMapping &rhs) noexcept;
+  struct MetaMapping {
+    IndexFormat::MetaHeader *header;
+    size_t length;
+  };
+  using HeaderMap = std::map<
+      uint64_t, MetaMapping, std::less<uint64_t>,
+      ailego::BudgetedAllocator<std::pair<const uint64_t, MetaMapping>>>;
+  // Names borrow NUL-terminated bytes in the owned metadata mappings.
+  using SegmentMap =
+      std::map<std::string_view, SegmentInfo, std::less<>,
+               ailego::BudgetedAllocator<
+                   std::pair<const std::string_view, SegmentInfo>>>;
+  int init_index_mapping_admitted(size_t len, HeaderMap::node_type node,
+                                  ailego::MemoryReservation memory);
+  ailego::MemoryReservation metadata_memory_;
   //! Members
   uint32_t segment_ids_offset_{0};
   IndexFormat::SegmentMeta *segment_start_{nullptr};
   IndexFormat::MetaHeader *header_{nullptr};
-  std::map<uint64_t, IndexFormat::MetaHeader *> header_addr_map_{};
+  HeaderMap header_addr_map_{};
   IndexFormat::MetaFooter *footer_{nullptr};
-  std::map<std::string, SegmentInfo> segments_{};
+  SegmentMap segments_{};
   size_t index_size_{0u};
   ailego::File file_{};
   std::string path_;

@@ -17,8 +17,10 @@
 #include <ailego/math/normalizer.h>
 #include <ailego/pattern/defer.h>
 #include <core/quantizer/quantizer_params.h>
+#include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/core/framework/index_factory.h>
 #include "rotator/rotator.h"
+#include "utility/appendable_build_buffer.h"
 #include "record_quantizer.h"
 #include "../metric/metric_params.h"
 
@@ -74,7 +76,7 @@ class IntegerQuantizerConverterHolder : public IndexHolder {
 
    private:
     //! Encode the data by quantizer
-    inline void encode_record() {
+    inline void encode_record() try {
       if (this->is_valid()) {
         const float *vec = reinterpret_cast<const float *>(front_iter_->data());
         status_ = front_iter_->status();
@@ -86,10 +88,14 @@ class IntegerQuantizerConverterHolder : public IndexHolder {
             vec, dim_,
             reinterpret_cast<typename Quantizer::ValueType *>(buffer_.data()));
       }
+    } catch (const std::bad_alloc &) {
+      status_ = IndexError_NoMemory;
+    } catch (const std::runtime_error &) {
+      status_ = IndexError_ReadData;
     }
 
     //! Members
-    std::vector<uint8_t> buffer_{};
+    ailego::BudgetedVector<uint8_t> buffer_{};
     IndexHolder::Iterator::Pointer front_iter_{};
     std::shared_ptr<Quantizer> quantizer_{};
     size_t dim_{0u};
@@ -217,8 +223,9 @@ class IntegerQuantizerConverter : public IndexConverter {
   }
 
   //! Train the data
-  int train(IndexHolder::Pointer holder) override {
-    if (holder->dimension() != meta_.dimension() ||
+  int train(IndexHolder::Pointer holder) override try {
+    if (!holder || meta_.dimension() == 0 ||
+        holder->dimension() != meta_.dimension() ||
         holder->data_type() != IndexMeta::DataType::DT_FP32) {
       return IndexError_Mismatch;
     }
@@ -265,24 +272,49 @@ class IntegerQuantizerConverter : public IndexConverter {
         LOG_ERROR("Failed to create iterator of holder");
         return IndexError_Runtime;
       }
-      std::vector<float> features;
+      AppendableBuildBuffer features;
+      const size_t row_bytes =
+          static_cast<size_t>(meta_.dimension()) * sizeof(float);
       float max = -std::numeric_limits<float>::max();
       float min = std::numeric_limits<float>::max();
       for (; iter->is_valid(); iter->next()) {
         const float *vec = reinterpret_cast<const float *>(iter->data());
+        if (!vec) return IndexError_ReadData;
         for (size_t i = 0; i < meta_.dimension(); ++i) {
           max = std::max(max, vec[i]);
           min = std::min(min, vec[i]);
-          features.emplace_back(vec[i]);
         }
+        const size_t offset = features.size();
+        if (offset > std::numeric_limits<size_t>::max() - row_bytes)
+          return IndexError_IndexFull;
+        int ret = features.resize(offset + row_bytes);
+        if (ret != 0) return ret;
+        ret = features.write(offset, vec, row_bytes);
+        if (ret != 0) return ret;
       }
+      if (iter->status() != 0) return iter->status();
       quantizer_->set_max(max);
       quantizer_->set_min(min);
 
       //! step2: feed quantizer with training data
-      for (size_t i = 0; i < features.size(); i += meta_.dimension()) {
-        quantizer_->feed(&features[i], meta_.dimension());
-        (*stats_.mutable_trained_count())++;
+      // Replay in bounded, float-aligned batches. Never retain the entire
+      // single-pass input on the heap when a pool is configured.
+      const size_t rows_per_batch =
+          std::max(size_t{1}, (64 * 1024) / row_bytes);
+      ailego::BudgetedVector<float> batch(
+          std::min(rows_per_batch, features.size() / row_bytes) *
+          meta_.dimension());
+      for (size_t offset = 0; offset < features.size();) {
+        const size_t rows =
+            std::min(rows_per_batch, (features.size() - offset) / row_bytes);
+        int ret = features.read(offset, batch.data(), rows * row_bytes);
+        if (ret != 0) return ret;
+        for (size_t i = 0; i < rows; ++i) {
+          quantizer_->feed(batch.data() + i * meta_.dimension(),
+                           meta_.dimension());
+          (*stats_.mutable_trained_count())++;
+        }
+        offset += rows * row_bytes;
       }
     }
 
@@ -326,6 +358,8 @@ class IntegerQuantizerConverter : public IndexConverter {
         (size_t)timer.milli_seconds(), quantizer_->scale(), quantizer_->bias());
 
     return 0;
+  } catch (const std::bad_alloc &) {
+    return IndexError_NoMemory;
   }
 
   //! Transform the data
@@ -443,8 +477,10 @@ class IntegerStreamingConverter : public IndexConverter {
   }
 
   //! Train the data
-  int train(IndexHolder::Pointer /*holder*/) override {
+  int train(IndexHolder::Pointer /*holder*/) override try {
     return 0;
+  } catch (const std::bad_alloc &) {
+    return IndexError_NoMemory;
   }
 
   //! Transform the data
@@ -545,7 +581,7 @@ class IntegerStreamingConverter : public IndexConverter {
 
      private:
       //! Encode the data by quantizer
-      void encode_record() {
+      void encode_record() try {
         if (this->is_valid()) {
           const float *vec =
               reinterpret_cast<const float *>(front_iter_->data());
@@ -573,13 +609,17 @@ class IntegerStreamingConverter : public IndexConverter {
                                            owner_->is_euclidean_,
                                            buffer_.data());
         }
+      } catch (const std::bad_alloc &) {
+        status_ = IndexError_NoMemory;
+      } catch (const std::runtime_error &) {
+        status_ = IndexError_ReadData;
       }
 
       //! Members
       const IntegerStreamingConverterHolder *owner_{nullptr};
-      std::vector<uint8_t> buffer_{};
-      std::string normalize_buffer_{};
-      std::string rotate_buffer_{};
+      ailego::BudgetedVector<uint8_t> buffer_{};
+      ailego::BudgetedString normalize_buffer_{};
+      ailego::BudgetedString rotate_buffer_{};
       IndexHolder::Iterator::Pointer front_iter_{};
       int status_{0};
     };

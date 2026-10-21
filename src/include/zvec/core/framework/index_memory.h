@@ -81,13 +81,9 @@ class IndexMemory {
     //! Fetch data from the storage (with own buffer)
     size_t fetch(size_t off, void *buf, size_t len) const {
       size_t region_size = buffer_.size();
-      if (off + len > region_size) {
-        if (off > region_size) {
-          off = region_size;
-        }
-        len = region_size - off;
-      }
-      std::copy(buffer_.data(), buffer_.data() + len,
+      if (off >= region_size) return 0;
+      len = std::min(len, region_size - off);
+      std::copy(buffer_.data() + off, buffer_.data() + off + len,
                 reinterpret_cast<uint8_t *>(buf));
       return len;
     }

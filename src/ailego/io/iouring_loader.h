@@ -88,9 +88,7 @@ static constexpr size_t kIoUringStagingAlign = 4096;
 class IoUringRing {
  public:
   IoUringRing() = default;
-  ~IoUringRing() {
-    teardown();
-  }
+  ~IoUringRing();
 
   IoUringRing(const IoUringRing &) = delete;
   IoUringRing &operator=(const IoUringRing &) = delete;
@@ -109,12 +107,20 @@ class IoUringRing {
   // the ring is quiesced (the old pool is freed here).  In iouring_loader.cc.
   bool ensure_staging(size_t bytes);
 
+  // Take ownership of an existing metadata reservation for writeback staging.
+  // Must be called before staging allocation. No second charge is taken.
+  void adopt_staging_reservation(size_t bytes);
+
   // Deliberately leak the staging pool when in-flight requests cannot be
   // drained: the kernel may keep writing into it after the fd is closed.
   // Caller buffers are never handed to the kernel and remain safe.
   void abandon_staging() {
+    if (!staging_) return;
     staging_ = nullptr;
     staging_size_ = 0;
+    // The allocation has not been freed. Leave its charge quarantined too.
+    staging_charge_ = 0;
+    prepaid_staging_bytes_ = 0;
   }
 
   bool is_valid() const {
@@ -140,6 +146,8 @@ class IoUringRing {
   }
 
  private:
+  friend class IoUringStagingTestPeer;
+  void release_staging();
   int execute_impl(int fd, const IoUringRead *read_reqs,
                    const IoUringWrite *write_reqs, size_t count);
 
@@ -177,6 +185,8 @@ class IoUringRing {
   // io_uring teardown (see abandon_staging()).
   char *staging_{nullptr};
   size_t staging_size_{0};
+  size_t staging_charge_{0};
+  size_t prepaid_staging_bytes_{0};
 
   unsigned sq_entries_{0};
   unsigned cq_entries_{0};

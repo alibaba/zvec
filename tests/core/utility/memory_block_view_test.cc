@@ -15,11 +15,55 @@
 #include <cstring>
 #include <utility>
 #include <vector>
+#include <ailego/pattern/scope_guard.h>
 #include <gtest/gtest.h>
 #include <zvec/core/framework/index_storage.h>
+#include "../../ailego/buffer/pool_payload_budget.h"
 
 using namespace zvec;
 using namespace zvec::core;
+
+TEST(MemoryBlockBudget, CopiesMovesAndResetsTrackLiveAllocations) {
+  auto &pool = ailego::PoolPayloadBudget::get_instance();
+  const size_t previous = pool.capacity();
+  auto restore = ailego::ScopeGuard::Make([&] {
+    EXPECT_EQ(0u, pool.used());
+    EXPECT_EQ(0, pool.init(previous));
+  });
+  ASSERT_EQ(0, pool.init(8192));
+  auto first = IndexStorage::MemoryBlock::AllocateOwned(4096, 4096);
+  std::memset(first.data_, 0x35, 4096);
+  EXPECT_EQ(4096u, pool.external_used());
+  auto second = first;
+  EXPECT_NE(first.data(), second.data());
+  EXPECT_EQ(8192u, pool.external_used());
+  EXPECT_THROW((void)IndexStorage::MemoryBlock(first), std::bad_alloc);
+  EXPECT_EQ(8192u, pool.external_used());
+  auto moved = std::move(first);
+  EXPECT_EQ(nullptr, first.data());
+  EXPECT_EQ(8192u, pool.external_used());
+  second.reset();
+  EXPECT_EQ(4096u, pool.external_used());
+  second = std::move(moved);
+  EXPECT_EQ(nullptr, moved.data());
+  EXPECT_EQ(4096u, pool.external_used());
+  EXPECT_EQ(0x35, *static_cast<const unsigned char *>(second.data()));
+  second.reset();
+  EXPECT_EQ(0u, pool.external_used());
+}
+
+TEST(MemoryBlockBudget, OversizedAllocationDoesNotConsumeBudget) {
+  auto &pool = ailego::PoolPayloadBudget::get_instance();
+  const size_t previous = pool.capacity();
+  auto restore = ailego::ScopeGuard::Make([&] {
+    EXPECT_EQ(0u, pool.used());
+    EXPECT_EQ(0, pool.init(previous));
+  });
+  ASSERT_EQ(0, pool.init(4096));
+  EXPECT_THROW(IndexStorage::MemoryBlock::AllocateOwned(8192, 4096),
+               std::bad_alloc);
+  EXPECT_EQ(0u, pool.used());
+}
 
 // MakeBorrowedView is only for explicitly caller-managed buffers, not batch
 // results whose backing storage must survive later reads. The block must free

@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <turbo/serialization.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_meta.h>
@@ -217,6 +218,18 @@ class Quantizer {
   //! Serialize quantizer parameters
   virtual int serialize(std::string * /*out*/) const {
     return 0;
+  }
+
+  virtual size_t serialized_size() const {
+    return 0;
+  }
+  virtual int serialize_to(const SerializationSink &) const {
+    return kErrUnsupported;
+  }
+  int serialize(std::string *out, ailego::MemoryReservation *owner) const {
+    return SerializeString(
+        serialized_size(),
+        [this](const auto &sink) { return serialize_to(sink); }, out, owner);
   }
 
   //! Deserialize quantizer parameters

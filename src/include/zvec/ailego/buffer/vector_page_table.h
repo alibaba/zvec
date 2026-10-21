@@ -32,6 +32,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <zvec/ailego/buffer/retained_block_allocator.h>
 #include <zvec/ailego/io/io_backend.h>
 #include <zvec/export.h>
 #include "block_eviction_queue.h"
@@ -108,10 +109,9 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
     // No readers remain during destruction.
     size_t cnt = segment_count_.load(std::memory_order_relaxed);
     for (size_t i = 0; i < cnt; ++i) {
-      delete[] segments_[i];
-      delete[] metadata_segments_[i];
+      RetainedMetadataDeleter<Entry>{}(segments_[i]);
+      RetainedMetadataDeleter<MetadataEntry>{}(metadata_segments_[i]);
     }
-    MemoryLimitPool::get_instance().release_metadata(metadata_bytes());
   }
 
   VectorPageTable(const VectorPageTable &) = delete;
@@ -392,19 +392,15 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   // Capacity used to validate growth before changing the file.
   static constexpr size_t kMaxEntries = kMaxSegments * kSegmentSize;
 
-  //! Heap bytes allocated by the segmented page table for `entry_num`.
+  //! Charged backing bytes (including mapping headers/alignment).
   static size_t metadata_bytes_for_entries(size_t entry_num);
 
  private:
   // Release/acquire publication makes initialized segment slots visible.
   std::atomic<size_t> entry_num_{0};
   std::atomic<size_t> segment_count_{0};
-  static constexpr size_t kSegmentMetadataBytes =
-      kSegmentSize * (sizeof(Entry) + sizeof(MetadataEntry));
-  static constexpr size_t kSegmentDirectoryBytes =
-      kMaxSegments * (sizeof(Entry *) + sizeof(MetadataEntry *));
-  std::unique_ptr<Entry *[]> segments_{};
-  std::unique_ptr<MetadataEntry *[]> metadata_segments_{};
+  RetainedMetadataArray<Entry *> segments_{};
+  RetainedMetadataArray<MetadataEntry *> metadata_segments_{};
   static constexpr size_t kInvalidLoadedBlock =
       std::numeric_limits<size_t>::max();
   static constexpr int kUnloadedRefCount = std::numeric_limits<int>::min();
@@ -689,11 +685,22 @@ class ZVEC_AILEGO_API VecBufferPool {
   // synchronize with page loads/evictions before falling back to the file.
   bool read_range_bypass(size_t file_offset, size_t length, char *buffer);
 
+  struct ReadRange {
+    size_t offset;
+    size_t length;
+    char *buffer;
+  };
+
+  //! Read into disjoint caller-owned buffers. All submitted I/O is complete
+  //! on return, including failure. Writable pools retain synchronized reads.
+  bool read_ranges_bypass(const ReadRange *ranges, size_t count);
+
   //! Write a contiguous range via the page cache; marks touched pages dirty.
   //! Returns 0 on success, -1 on failure (e.g. read-only pool or I/O error).
   int write_range(size_t file_offset, size_t length, const char *src);
 
-  //! Apply ordered fragments that all lie in one page under one pin/latch.
+  //! Apply ordered fragments after acquiring every destination page.
+  //! Admission failure leaves all destination bytes unchanged.
   int write_fragments(const VecBufferWriteFragment *fragments, size_t count);
 
   //! Write metadata without cache admission.
@@ -729,6 +736,10 @@ class ZVEC_AILEGO_API VecBufferPool {
   int file_descriptor() const {
     return fd_;
   }
+
+  //! Partial/unaligned reads need an admitted intermediary page only for
+  //! O_DIRECT, not for Darwin F_NOCACHE or ordinary file handles.
+  bool requires_aligned_io() const;
 
   //! Sequentially preload pages into the pool until pool is full.
   void warmup();

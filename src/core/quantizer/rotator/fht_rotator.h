@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <vector>
 #include <ailego/math/fht.h>
+#include <zvec/ailego/buffer/budgeted_buffer.h>
 #include "rotator.h"
 
 namespace zvec {
@@ -48,7 +49,7 @@ class FhtRotator : public Rotator {
   void load_blob(const char *data) override;
 
  private:
-  std::vector<uint8_t> flip;
+  ailego::BudgetedVector<uint8_t> flip;
   size_t flip_offset_{0};  // bytes per round: ceil(dim / 8)
   size_t trunc_dim{0};
   float fac{0};

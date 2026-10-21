@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstring>
 #include <random>
+#include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/core/framework/index_error.h>
 
 namespace zvec {
@@ -112,7 +113,7 @@ void FhtRotator::rotate(const float *in, float *out) const {
 void FhtRotator::unrotate(const float *in, float *out) const {
   const size_t dim = dimension_;
   // Copy input into working buffer
-  std::vector<float> data(in, in + dim);
+  ailego::BudgetedVector<float> data(in, in + dim);
 
   if (trunc_dim == dim) {
     // Exact power-of-2: reverse 4 rounds in reverse order.

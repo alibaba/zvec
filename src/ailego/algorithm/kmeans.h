@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #pragma once
-
 #include <algorithm>
 #include <cmath>
 #include <random>
@@ -23,10 +22,13 @@
 #include <ailego/math/norm2_matrix.h>
 #include <ailego/math/normalizer.h>
 #include <ailego/utility/matrix_helper.h>
+#include <zvec/ailego/buffer/budgeted_buffer.h>
+#include <zvec/ailego/buffer/memory_reservation.h>
 #include <zvec/ailego/container/heap.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/ailego/utility/type_helper.h>
+#include "ailego/pattern/defer.h"
 #include "lloyd_cluster.h"
 
 namespace zvec {
@@ -84,13 +86,11 @@ class Kmc2CentroidsGenerator {
  protected:
   //! Initialize centroids randomly
   void init_centroids_random(OwnerType *owner) const {
-    RandomSelectBenches(owner->feature_cache(), owner->feature_matrix(),
-                        owner->k_value(), owner->mutable_centroids());
+    RandomSelectBenches(owner, owner->k_value(), owner->mutable_centroids());
   }
 
   //! Initialize centroids with K-MC2
   void init_centroids_kmc2(OwnerType *owner, ThreadPoolType &pool) const {
-    const auto &matrix = owner->feature_matrix();
     const auto &cache = owner->feature_cache();
     auto *centroids = owner->mutable_centroids();
 
@@ -99,17 +99,18 @@ class Kmc2CentroidsGenerator {
     std::uniform_real_distribution<float> dist(0.0, 1.0);
 
     ContainerType benches(cache.dimension());
-    std::vector<float> scores;
-    std::vector<float> centroid_norms;
+    BudgetedVector<float> scores;
+    BudgetedVector<float> centroid_norms;
 
     // Sample first center uniformly
-    RandomSelectBenches(cache, matrix, 1, centroids);
+    if (!RandomSelectBenches(owner, 1, centroids)) return;
 
     // Make a thread group
     auto group = pool.make_group();
+    AILEGO_DEFER([&] { group->wait_finish(); });
 
     for (size_t i = 1, k = owner->k_value(); i < k; ++i) {
-      RandomSelectBenches(cache, matrix, chain_length_, &benches);
+      if (!RandomSelectBenches(owner, chain_length_, &benches)) return;
       UpdateCentroidNorms(owner, &centroid_norms);
 
       // Update bench scores
@@ -138,19 +139,22 @@ class Kmc2CentroidsGenerator {
 
   //! Initialize centroids with K-MC2
   void init_centroids_afkmc2(OwnerType *owner, ThreadPoolType &pool) const {
-    const auto &matrix = owner->feature_matrix();
     const auto &cache = owner->feature_cache();
+    const size_t matrix_count = owner->feature_matrix_count();
 
     // Probability
-    std::vector<float> probs(matrix.count() + cache.count());
+    if (matrix_count > std::numeric_limits<size_t>::max() - cache.count())
+      throw std::bad_alloc();
+    BudgetedVector<float> probs(matrix_count + cache.count());
 
     // Sample first center uniformly
-    RandomSelectBenches(cache, matrix, 1, owner->mutable_centroids());
+    if (!RandomSelectBenches(owner, 1, owner->mutable_centroids())) return;
 
     // Make a thread group
     auto group = pool.make_group();
-    if (!matrix.empty()) {
-      size_t n = matrix.count() / BatchCount;
+    AILEGO_DEFER([&] { group->wait_finish(); });
+    if (matrix_count != 0) {
+      size_t n = matrix_count / BatchCount;
       size_t c = std::max<size_t>(n / pool.count() / 2u, 1u);
       size_t m = n / c * c;
 
@@ -165,9 +169,10 @@ class Kmc2CentroidsGenerator {
     }
     if (!cache.empty()) {
       group->submit(Closure::New(&Kmc2CentroidsGenerator::UpdateCacheScores,
-                                 owner, &probs[matrix.count()]));
+                                 owner, &probs[matrix_count]));
     }
     group->wait_finish();
+    if (owner->matrix_status() != 0) return;
 
     // Update probabilities
     NormalizeProbabilities(&probs);
@@ -175,13 +180,15 @@ class Kmc2CentroidsGenerator {
     std::mt19937 mt((std::random_device())());
     std::uniform_real_distribution<float> dist(0.0, 1.0);
     ContainerType benches(cache.dimension());
-    std::vector<float> scores;
-    std::vector<float> bench_probs;
-    std::vector<float> centroid_norms;
+    BudgetedVector<float> scores;
+    BudgetedVector<float> bench_probs;
+    BudgetedVector<float> centroid_norms;
+    AILEGO_DEFER([&] { group->wait_finish(); });
 
     for (size_t i = 1; i < owner->k_value(); ++i) {
-      RandomSelectBenches(cache, matrix, chain_length_, probs, &benches,
-                          &bench_probs);
+      if (!RandomSelectBenches(owner, chain_length_, probs, &benches,
+                               &bench_probs))
+        return;
       UpdateCentroidNorms(owner, &centroid_norms);
 
       // Update bench scores
@@ -215,36 +222,38 @@ class Kmc2CentroidsGenerator {
 
   //! Update matrix score
   static void UpdateMatrixScores(const OwnerType *owner, size_t first,
-                                 size_t last, float *out) {
-    const auto &matrix = owner->feature_matrix();
+                                 size_t last, float *out) try {
+    const size_t dimension = owner->feature_cache().dimension();
     const auto *bench = owner->centroids().data();
-    ContainerType rows(matrix.dimension());
+    ContainerType rows(dimension);
+    ContainerType scratch(dimension);
     float bench_norm = 0.0f;
 
     if constexpr (NeedsSphericalWeight) {
       if (owner->spherical()) {
         rows.resize(BatchCount);
-        bench_norm = ContextType::Kmc2Norm(bench, matrix.dimension());
+        bench_norm = ContextType::Kmc2Norm(bench, dimension);
       }
     }
 
     for (size_t i = first * BatchCount; i != last * BatchCount;
          i += BatchCount) {
-      ContextType::template BatchDistance<1>(matrix[i], bench,
-                                             matrix.dimension(), &out[i]);
+      const auto *block = owner->read_feature_matrix(i, &scratch);
+      if (!block) return;
+      ContextType::template BatchDistance<1>(block, bench, dimension, &out[i]);
       if constexpr (NeedsSphericalWeight) {
         if (owner->spherical()) {
-          ContextType::MatrixReverseTranspose(matrix[i], matrix.dimension(),
-                                              rows.data());
+          ContextType::MatrixReverseTranspose(block, dimension, rows.data());
           for (size_t j = 0; j < BatchCount; ++j) {
-            float feature_norm =
-                ContextType::Kmc2Norm(rows[j], matrix.dimension());
+            float feature_norm = ContextType::Kmc2Norm(rows[j], dimension);
             out[i + j] =
                 ContextType::Kmc2Weight(out[i + j], bench_norm, feature_norm);
           }
         }
       }
     }
+  } catch (const std::bad_alloc &) {
+    owner->workspace_no_memory();
   }
 
   //! Update cache score
@@ -273,7 +282,7 @@ class Kmc2CentroidsGenerator {
 
   //! Update centroid norms for spherical K-MC2 weights
   static void UpdateCentroidNorms(const OwnerType *owner,
-                                  std::vector<float> *out) {
+                                  BudgetedVector<float> *out) {
     out->clear();
     if constexpr (NeedsSphericalWeight) {
       if (owner->spherical()) {
@@ -319,7 +328,7 @@ class Kmc2CentroidsGenerator {
   }
 
   //! Normalize AFK-MC2 sampling probabilities
-  static void NormalizeProbabilities(std::vector<float> *probs) {
+  static void NormalizeProbabilities(BudgetedVector<float> *probs) {
     double p_sum = 0.0;
     bool valid = true;
     for (float prob : *probs) {
@@ -338,11 +347,12 @@ class Kmc2CentroidsGenerator {
   }
 
   //! Select k benches randomly
-  static void RandomSelectBenches(const ContainerType &cache,
-                                  const ContainerType &matrix, size_t k,
+  static bool RandomSelectBenches(const OwnerType *owner, size_t k,
                                   ContainerType *benches) {
+    const auto &cache = owner->feature_cache();
     ContainerType rows(cache.dimension());
-    size_t m = matrix.count();
+    ContainerType scratch(cache.dimension());
+    size_t m = owner->feature_matrix_count();
     size_t n = m + cache.count();
     std::mt19937 mt((std::random_device())());
 
@@ -356,22 +366,25 @@ class Kmc2CentroidsGenerator {
       }
       // Selected a feature
       if (i < m) {
-        ContextType::MatrixReverseTranspose(matrix[i / BatchCount * BatchCount],
-                                            matrix.dimension(), rows.data());
-        benches->append(rows[i & (BatchCount - 1u)], matrix.dimension());
+        const auto *block =
+            owner->read_feature_matrix(i / BatchCount * BatchCount, &scratch);
+        if (!block) return false;
+        ContextType::MatrixReverseTranspose(block, cache.dimension(),
+                                            rows.data());
+        benches->append(rows[i & (BatchCount - 1u)], cache.dimension());
       } else {
         benches->append(cache[i - m], cache.dimension());
       }
       --k;
     }  // end of for
+    return true;
   }
 
   //! Select k benches randomly
-  static void RandomSelectBenches(const ContainerType &cache,
-                                  const ContainerType &matrix, size_t k,
-                                  const std::vector<float> &probs,
+  static bool RandomSelectBenches(const OwnerType *owner, size_t k,
+                                  const BudgetedVector<float> &probs,
                                   ContainerType *benches,
-                                  std::vector<float> *bench_probs) {
+                                  BudgetedVector<float> *bench_probs) {
     std::mt19937 mt((std::random_device())());
     std::uniform_real_distribution<float> dist(0.0, 1.0);
 
@@ -381,8 +394,10 @@ class Kmc2CentroidsGenerator {
       samples.emplace(i, std::pow(dist(mt), 1.0 / probs[i]));
     }
 
+    const auto &cache = owner->feature_cache();
     ContainerType rows(cache.dimension());
-    size_t matrix_count = matrix.count();
+    ContainerType scratch(cache.dimension());
+    size_t matrix_count = owner->feature_matrix_count();
 
     rows.resize(BatchCount);
     benches->reset(cache.dimension());
@@ -393,15 +408,18 @@ class Kmc2CentroidsGenerator {
     for (const auto &it : samples) {
       // Selected a feature
       if (it.first < matrix_count) {
-        ContextType::MatrixReverseTranspose(
-            matrix[it.first / BatchCount * BatchCount], matrix.dimension(),
-            rows.data());
-        benches->append(rows[it.first & (BatchCount - 1u)], matrix.dimension());
+        const auto *block = owner->read_feature_matrix(
+            it.first / BatchCount * BatchCount, &scratch);
+        if (!block) return false;
+        ContextType::MatrixReverseTranspose(block, cache.dimension(),
+                                            rows.data());
+        benches->append(rows[it.first & (BatchCount - 1u)], cache.dimension());
       } else {
         benches->append(cache[it.first - matrix_count], cache.dimension());
       }
       bench_probs->push_back(probs[it.first]);
     }
+    return true;
   }
 
  private:
@@ -431,7 +449,10 @@ class NumericalKmeansContext {
   class Cluster {
    public:
     //! Constructor
-    Cluster(size_t dim) : accum_(dim, 0.0) {}
+    Cluster(size_t dim,
+            std::shared_ptr<LloydClusterMatrixStorage> storage = nullptr,
+            size_t offset = 0)
+        : accum_(dim, std::move(storage), offset) {}
 
     //! Constructor
     Cluster(const Cluster &rhs)
@@ -458,27 +479,46 @@ class NumericalKmeansContext {
     }
 
     //! Append a vector
-    void append(const ValueType *vec, size_t dim, float dist) {
+    int append(const ValueType *vec, size_t dim, float dist,
+               BudgetedVector<double> *workspace = nullptr) {
       ailego_check_with(dim == accum_.size(), "Unmatched dimension");
-
-      mutex_.lock();
+      BudgetedVector<double> local;
+      auto *scratch = workspace ? workspace : &local;
+      std::lock_guard<SpinMutex> lock(mutex_);
+      double *sums = nullptr;
+      int ret = accum_.prepare(count_ == 0, scratch, &sums);
+      if (ret != 0) return ret;
+      for (size_t i = 0; i != dim; ++i) {
+        sums[i] += vec[i];
+      }
+      ret = accum_.commit(*scratch);
+      if (ret != 0) return ret;
       cost_ += dist;
       count_ += 1;
-
-      for (size_t i = 0; i != dim; ++i) {
-        accum_[i] += vec[i];
-      }
-      mutex_.unlock();
+      return 0;
     }
 
     //! Retrieve the centroid of vectors
-    void centroid(ValueType *out, size_t dim) const {
+    int centroid(ValueType *out, size_t dim,
+                 BudgetedVector<double> *workspace = nullptr) const {
       ailego_check_with(dim == accum_.size(), "Unmatched dimension");
-
+      BudgetedVector<double> local;
+      auto *scratch = workspace ? workspace : &local;
+      const double *sums = nullptr;
+      if (count_ != 0) {
+        const int ret = accum_.read(scratch, &sums);
+        if (ret != 0) return ret;
+      }
       for (size_t i = 0; i != dim; ++i) {
         out[i] = count_ == 0 ? FloatCast<ValueType>(NAN)
-                             : FloatCast<ValueType>(accum_[i] / count_);
+                             : FloatCast<ValueType>(sums[i] / count_);
       }
+      return 0;
+    }
+
+    void reset() {
+      cost_ = 0.0;
+      count_ = 0;
     }
 
     //! Retrieve squared error
@@ -510,7 +550,7 @@ class NumericalKmeansContext {
     SpinMutex mutex_{};
     double cost_{0.0};
     size_t count_{0u};
-    std::vector<double> accum_{};
+    LloydAccumulatorRow accum_{0};
   };
 
   //! operator []
@@ -530,12 +570,26 @@ class NumericalKmeansContext {
 
   //! Reset the context
   void reset(size_t k_value, size_t dim) {
+    if (clusters_.size() != k_value || dimension_ != dim) {
+      clusters_.clear();
+      clusters_.reserve(k_value);
+      for (size_t i = 0; i < k_value; ++i)
+        clusters_.emplace_back(dim, accumulator_storage_,
+                               i * dim * sizeof(double));
+      dimension_ = dim;
+    } else {
+      for (auto &cluster : clusters_) cluster.reset();
+    }
+  }
+
+  void set_accumulator_storage(
+      std::shared_ptr<LloydClusterMatrixStorage> storage) {
     clusters_.clear();
-    clusters_.resize(k_value, dim);
+    accumulator_storage_ = std::move(storage);
   }
 
   //! Retrieve context of clusters
-  const std::vector<Cluster> &clusters() const {
+  const BudgetedVector<Cluster> &clusters() const {
     return clusters_;
   }
 
@@ -594,7 +648,9 @@ class NumericalKmeansContext {
 
  private:
   //! Members
-  std::vector<Cluster> clusters_{};
+  BudgetedVector<Cluster> clusters_{};
+  size_t dimension_{0};
+  std::shared_ptr<LloydClusterMatrixStorage> accumulator_storage_;
 };
 
 /*! Nibble K-Means Context (INT4)
@@ -620,7 +676,10 @@ class NibbleKmeansContext {
   class Cluster {
    public:
     //! Constructor
-    Cluster(size_t dim) : accum_(dim, 0.0) {}
+    Cluster(size_t dim,
+            std::shared_ptr<LloydClusterMatrixStorage> storage = nullptr,
+            size_t offset = 0)
+        : accum_(dim, std::move(storage), offset) {}
 
     //! Constructor
     Cluster(const Cluster &rhs)
@@ -647,37 +706,56 @@ class NibbleKmeansContext {
     }
 
     //! Append a vector
-    void append(const StoreType *vec, size_t dim, float dist) {
+    int append(const StoreType *vec, size_t dim, float dist,
+               BudgetedVector<double> *workspace = nullptr) {
       ailego_check_with(dim == accum_.size(), "Unmatched dimension");
-
-      mutex_.lock();
-      cost_ += dist;
-      count_ += 1;
-
+      BudgetedVector<double> local;
+      auto *scratch = workspace ? workspace : &local;
+      std::lock_guard<SpinMutex> lock(mutex_);
+      double *sums = nullptr;
+      int ret = accum_.prepare(count_ == 0, scratch, &sums);
+      if (ret != 0) return ret;
       const uint8_t *arr = reinterpret_cast<const uint8_t *>(vec);
       dim = (dim >> 1) << 1;
       for (size_t i = 0; i != dim; i += 2) {
         uint8_t val = arr[i >> 1];
-        accum_[i] += ((int8_t)(val << 4) >> 4);
-        accum_[i + 1] += ((int8_t)(val) >> 4);
+        sums[i] += ((int8_t)(val << 4) >> 4);
+        sums[i + 1] += ((int8_t)(val) >> 4);
       }
-      mutex_.unlock();
+      ret = accum_.commit(*scratch);
+      if (ret != 0) return ret;
+      cost_ += dist;
+      count_ += 1;
+      return 0;
     }
 
     //! Retrieve the centroid of vectors
-    void centroid(StoreType *out, size_t dim) const {
+    int centroid(StoreType *out, size_t dim,
+                 BudgetedVector<double> *workspace = nullptr) const {
       ailego_check_with(dim == accum_.size(), "Unmatched dimension");
-
+      BudgetedVector<double> local;
+      auto *scratch = workspace ? workspace : &local;
+      const double *sums = nullptr;
+      if (count_ != 0) {
+        const int ret = accum_.read(scratch, &sums);
+        if (ret != 0) return ret;
+      }
       uint8_t *arr = reinterpret_cast<uint8_t *>(out);
       dim = (dim >> 1) << 1;
       for (size_t i = 0; i != dim; i += 2) {
         int lo =
-            count_ == 0 ? 0 : static_cast<int>(std::round(accum_[i] / count_));
+            count_ == 0 ? 0 : static_cast<int>(std::round(sums[i] / count_));
         int hi = count_ == 0
                      ? 0
-                     : static_cast<int>(std::round(accum_[i + 1] / count_));
+                     : static_cast<int>(std::round(sums[i + 1] / count_));
         arr[i >> 1] = (uint8_t)((hi << 4) & 0xf0) | (uint8_t)(lo & 0xf);
       }
+      return 0;
+    }
+
+    void reset() {
+      cost_ = 0.0;
+      count_ = 0;
     }
 
     //! Retrieve squared error
@@ -694,7 +772,7 @@ class NibbleKmeansContext {
     SpinMutex mutex_{};
     double cost_{0.0};
     size_t count_{0u};
-    std::vector<double> accum_{};
+    LloydAccumulatorRow accum_{0};
   };
 
   //! operator []
@@ -714,12 +792,26 @@ class NibbleKmeansContext {
 
   //! Reset the context
   void reset(size_t k_value, size_t dim) {
+    if (clusters_.size() != k_value || dimension_ != dim) {
+      clusters_.clear();
+      clusters_.reserve(k_value);
+      for (size_t i = 0; i < k_value; ++i)
+        clusters_.emplace_back(dim, accumulator_storage_,
+                               i * dim * sizeof(double));
+      dimension_ = dim;
+    } else {
+      for (auto &cluster : clusters_) cluster.reset();
+    }
+  }
+
+  void set_accumulator_storage(
+      std::shared_ptr<LloydClusterMatrixStorage> storage) {
     clusters_.clear();
-    clusters_.resize(k_value, dim);
+    accumulator_storage_ = std::move(storage);
   }
 
   //! Retrieve context of clusters
-  const std::vector<Cluster> &clusters() const {
+  const BudgetedVector<Cluster> &clusters() const {
     return clusters_;
   }
 
@@ -759,7 +851,9 @@ class NibbleKmeansContext {
 
  private:
   //! Members
-  std::vector<Cluster> clusters_{};
+  BudgetedVector<Cluster> clusters_{};
+  size_t dimension_{0};
+  std::shared_ptr<LloydClusterMatrixStorage> accumulator_storage_;
 };
 
 /*! Numerical InnerProduct K-Means Context
@@ -785,7 +879,10 @@ class NumericalInnerProductKmeansContext {
   class Cluster {
    public:
     //! Constructor
-    Cluster(size_t dim) : accum_(dim, 0.0) {}
+    Cluster(size_t dim,
+            std::shared_ptr<LloydClusterMatrixStorage> storage = nullptr,
+            size_t offset = 0)
+        : accum_(dim, std::move(storage), offset) {}
 
     //! Constructor
     Cluster(const Cluster &rhs)
@@ -812,27 +909,46 @@ class NumericalInnerProductKmeansContext {
     }
 
     //! Append a vector
-    void append(const ValueType *vec, size_t dim, float dist) {
+    int append(const ValueType *vec, size_t dim, float dist,
+               BudgetedVector<double> *workspace = nullptr) {
       ailego_check_with(dim == accum_.size(), "Unmatched dimension");
-
-      mutex_.lock();
+      BudgetedVector<double> local;
+      auto *scratch = workspace ? workspace : &local;
+      std::lock_guard<SpinMutex> lock(mutex_);
+      double *sums = nullptr;
+      int ret = accum_.prepare(count_ == 0, scratch, &sums);
+      if (ret != 0) return ret;
+      for (size_t i = 0; i != dim; ++i) {
+        sums[i] += vec[i];
+      }
+      ret = accum_.commit(*scratch);
+      if (ret != 0) return ret;
       cost_ += dist;
       count_ += 1;
-
-      for (size_t i = 0; i != dim; ++i) {
-        accum_[i] += vec[i];
-      }
-      mutex_.unlock();
+      return 0;
     }
 
     //! Retrieve the centroid of vectors
-    void centroid(ValueType *out, size_t dim) const {
+    int centroid(ValueType *out, size_t dim,
+                 BudgetedVector<double> *workspace = nullptr) const {
       ailego_check_with(dim == accum_.size(), "Unmatched dimension");
-
+      BudgetedVector<double> local;
+      auto *scratch = workspace ? workspace : &local;
+      const double *sums = nullptr;
+      if (count_ != 0) {
+        const int ret = accum_.read(scratch, &sums);
+        if (ret != 0) return ret;
+      }
       for (size_t i = 0; i != dim; ++i) {
         out[i] = count_ == 0 ? FloatCast<ValueType>(NAN)
-                             : FloatCast<ValueType>(accum_[i] / count_);
+                             : FloatCast<ValueType>(sums[i] / count_);
       }
+      return 0;
+    }
+
+    void reset() {
+      cost_ = 0.0;
+      count_ = 0;
     }
 
     //! Retrieve squared error
@@ -864,7 +980,7 @@ class NumericalInnerProductKmeansContext {
     SpinMutex mutex_{};
     double cost_{0.0};
     size_t count_{0u};
-    std::vector<double> accum_{};
+    LloydAccumulatorRow accum_{0};
   };
 
   //! operator []
@@ -884,12 +1000,26 @@ class NumericalInnerProductKmeansContext {
 
   //! Reset the context
   void reset(size_t k_value, size_t dim) {
+    if (clusters_.size() != k_value || dimension_ != dim) {
+      clusters_.clear();
+      clusters_.reserve(k_value);
+      for (size_t i = 0; i < k_value; ++i)
+        clusters_.emplace_back(dim, accumulator_storage_,
+                               i * dim * sizeof(double));
+      dimension_ = dim;
+    } else {
+      for (auto &cluster : clusters_) cluster.reset();
+    }
+  }
+
+  void set_accumulator_storage(
+      std::shared_ptr<LloydClusterMatrixStorage> storage) {
     clusters_.clear();
-    clusters_.resize(k_value, dim);
+    accumulator_storage_ = std::move(storage);
   }
 
   //! Retrieve context of clusters
-  const std::vector<Cluster> &clusters() const {
+  const BudgetedVector<Cluster> &clusters() const {
     return clusters_;
   }
 
@@ -967,7 +1097,9 @@ class NumericalInnerProductKmeansContext {
 
  private:
   //! Members
-  std::vector<Cluster> clusters_{};
+  BudgetedVector<Cluster> clusters_{};
+  size_t dimension_{0};
+  std::shared_ptr<LloydClusterMatrixStorage> accumulator_storage_;
 };
 
 /*! Nibble InnerProduct K-Means Context (INT4)
@@ -993,7 +1125,10 @@ class NibbleInnerProductKmeansContext {
   class Cluster {
    public:
     //! Constructor
-    Cluster(size_t dim) : accum_(dim, 0.0) {}
+    Cluster(size_t dim,
+            std::shared_ptr<LloydClusterMatrixStorage> storage = nullptr,
+            size_t offset = 0)
+        : accum_(dim, std::move(storage), offset) {}
 
     //! Constructor
     Cluster(const Cluster &rhs)
@@ -1020,37 +1155,56 @@ class NibbleInnerProductKmeansContext {
     }
 
     //! Append a vector
-    void append(const StoreType *vec, size_t dim, float dist) {
+    int append(const StoreType *vec, size_t dim, float dist,
+               BudgetedVector<double> *workspace = nullptr) {
       ailego_check_with(dim == accum_.size(), "Unmatched dimension");
-
-      mutex_.lock();
-      cost_ += dist;
-      count_ += 1;
-
+      BudgetedVector<double> local;
+      auto *scratch = workspace ? workspace : &local;
+      std::lock_guard<SpinMutex> lock(mutex_);
+      double *sums = nullptr;
+      int ret = accum_.prepare(count_ == 0, scratch, &sums);
+      if (ret != 0) return ret;
       const uint8_t *arr = reinterpret_cast<const uint8_t *>(vec);
       dim = (dim >> 1) << 1;
       for (size_t i = 0; i != dim; i += 2) {
         uint8_t val = arr[i >> 1];
-        accum_[i] += ((int8_t)(val << 4) >> 4);
-        accum_[i + 1] += ((int8_t)(val) >> 4);
+        sums[i] += ((int8_t)(val << 4) >> 4);
+        sums[i + 1] += ((int8_t)(val) >> 4);
       }
-      mutex_.unlock();
+      ret = accum_.commit(*scratch);
+      if (ret != 0) return ret;
+      cost_ += dist;
+      count_ += 1;
+      return 0;
     }
 
     //! Retrieve the centroid of vectors
-    void centroid(StoreType *out, size_t dim) const {
+    int centroid(StoreType *out, size_t dim,
+                 BudgetedVector<double> *workspace = nullptr) const {
       ailego_check_with(dim == accum_.size(), "Unmatched dimension");
-
+      BudgetedVector<double> local;
+      auto *scratch = workspace ? workspace : &local;
+      const double *sums = nullptr;
+      if (count_ != 0) {
+        const int ret = accum_.read(scratch, &sums);
+        if (ret != 0) return ret;
+      }
       uint8_t *arr = reinterpret_cast<uint8_t *>(out);
       dim = (dim >> 1) << 1;
       for (size_t i = 0; i != dim; i += 2) {
         int lo =
-            count_ == 0 ? 0 : static_cast<int>(std::round(accum_[i] / count_));
+            count_ == 0 ? 0 : static_cast<int>(std::round(sums[i] / count_));
         int hi = count_ == 0
                      ? 0
-                     : static_cast<int>(std::round(accum_[i + 1] / count_));
+                     : static_cast<int>(std::round(sums[i + 1] / count_));
         arr[i >> 1] = (uint8_t)((hi << 4) & 0xf0) | (uint8_t)(lo & 0xf);
       }
+      return 0;
+    }
+
+    void reset() {
+      cost_ = 0.0;
+      count_ = 0;
     }
 
     //! Retrieve squared error
@@ -1067,7 +1221,7 @@ class NibbleInnerProductKmeansContext {
     SpinMutex mutex_{};
     double cost_{0.0};
     size_t count_{0u};
-    std::vector<double> accum_{};
+    LloydAccumulatorRow accum_{0};
   };
 
   //! operator []
@@ -1087,12 +1241,26 @@ class NibbleInnerProductKmeansContext {
 
   //! Reset the context
   void reset(size_t k_value, size_t dim) {
+    if (clusters_.size() != k_value || dimension_ != dim) {
+      clusters_.clear();
+      clusters_.reserve(k_value);
+      for (size_t i = 0; i < k_value; ++i)
+        clusters_.emplace_back(dim, accumulator_storage_,
+                               i * dim * sizeof(double));
+      dimension_ = dim;
+    } else {
+      for (auto &cluster : clusters_) cluster.reset();
+    }
+  }
+
+  void set_accumulator_storage(
+      std::shared_ptr<LloydClusterMatrixStorage> storage) {
     clusters_.clear();
-    clusters_.resize(k_value, dim);
+    accumulator_storage_ = std::move(storage);
   }
 
   //! Retrieve context of clusters
-  const std::vector<Cluster> &clusters() const {
+  const BudgetedVector<Cluster> &clusters() const {
     return clusters_;
   }
 
@@ -1132,7 +1300,9 @@ class NibbleInnerProductKmeansContext {
 
  private:
   //! Members
-  std::vector<Cluster> clusters_{};
+  BudgetedVector<Cluster> clusters_{};
+  size_t dimension_{0};
+  std::shared_ptr<LloydClusterMatrixStorage> accumulator_storage_;
 };
 
 /*! Numerical K-Means cluster algorithm
