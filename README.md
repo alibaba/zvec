@@ -74,12 +74,11 @@ Searching code or documents? Try **[zvec-grep](https://github.com/zvec-ai/zvec-g
 
 Prefer a visual tool? Try **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)** to browse data and debug queries — no code required.
 
-### ✅ Supported Platforms
+### 🌍 Cross-Platform Support
 
 **Linux · macOS · Windows · Android · iOS**
 
-See [platform compatibility](https://zvec.org/en/docs/db/platforms/)
-for supported architectures, SDKs, and index availability.
+[Platform details →](https://zvec.org/en/docs/db/platforms/)
 
 ### 🛠️ Building from Source
 
