@@ -10,38 +10,6 @@ cc_binary(
   )
 
 cc_binary(
-    NAME hnsw_rabitq_builder
-    STRICT PACKED
-    SRCS hnsw_rabitq_builder.cc
-    INCS ${PROJECT_ROOT_DIR}/src/core/
-    LIBS gflags magic_enum core_framework core_metric core_interface core_knn_hnsw core_knn_hnsw_rabitq core_knn_ivf_rabitq core_knn_ivf core_knn_vamana core_quantizer core_utility
-)
-
-cc_binary(
-    NAME flat_ref_builder
-    STRICT PACKED
-    SRCS flat_ref_builder.cc
-    INCS ${PROJECT_ROOT_DIR}/src/core/
-    LIBS gflags magic_enum core_framework core_metric core_interface core_knn_flat core_knn_flat_sparse core_knn_hnsw core_knn_hnsw_rabitq core_knn_ivf_rabitq core_knn_ivf core_knn_vamana core_quantizer core_utility
-)
-
-cc_binary(
-    NAME ivf_rabitq_builder
-    STRICT PACKED
-    SRCS ivf_rabitq_builder.cc
-    INCS ${PROJECT_ROOT_DIR}/src/core/
-    LIBS gflags magic_enum core_framework core_metric core_interface core_knn_flat core_knn_flat_sparse core_knn_hnsw core_knn_hnsw_rabitq core_knn_ivf_rabitq core_knn_ivf core_knn_vamana core_quantizer core_utility
-)
-
-cc_binary(
-    NAME ivf_rabitq_dedicated_builder
-    STRICT PACKED
-    SRCS ivf_rabitq_dedicated_builder.cc
-    INCS ${PROJECT_ROOT_DIR}/src/core/
-    LIBS gflags magic_enum core_framework core_metric core_interface core_knn_flat core_knn_flat_sparse core_knn_hnsw core_knn_hnsw_rabitq core_knn_ivf_rabitq core_knn_ivf core_knn_vamana core_quantizer core_utility
-)
-
-cc_binary(
     NAME local_builder
     STRICT PACKED
     SRCS local_builder.cc

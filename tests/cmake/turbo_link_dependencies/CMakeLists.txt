@@ -11,8 +11,9 @@ set(RABITQ_SUPPORTED ON)
 set(AUTO_DETECT_ARCH OFF)
 
 add_library(zvec_ailego INTERFACE)
-add_library(rabitqlib INTERFACE)
-target_compile_definitions(rabitqlib INTERFACE TURBO_RABITQ_DEPENDENCY=1)
+add_library(rabitq_fastscan INTERFACE)
+add_library(rabitqlib::fastscan ALIAS rabitq_fastscan)
+target_compile_definitions(rabitq_fastscan INTERFACE TURBO_RABITQ_DEPENDENCY=1)
 
 # Copy the build rules, using a small source to check dependency propagation
 # independently of platform-specific SIMD compilation and downloaded headers.
@@ -33,7 +34,7 @@ foreach(_target zvec_turbo zvec_turbo_objects zvec_turbo_export_objects)
     message(FATAL_ERROR "Missing Turbo variant: ${_target}")
   endif()
   get_target_property(_libs ${_target} LINK_LIBRARIES)
-  if(NOT "rabitqlib" IN_LIST _libs)
+  if(NOT "rabitqlib::fastscan" IN_LIST _libs)
     message(FATAL_ERROR "RaBitQ dependency missing from ${_target}: ${_libs}")
   endif()
 endforeach()
