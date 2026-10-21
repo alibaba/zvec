@@ -76,8 +76,10 @@ Prefer a visual tool? Try **[Zvec Studio](https://github.com/zvec-ai/zvec-studio
 
 ### ✅ Supported Platforms
 
-Zvec supports all major platforms, including **Linux, macOS, and Windows**; see
-the [platform support documentation](https://zvec.org/en/docs/db/platforms/) for details.
+**Linux · macOS · Windows · Android · iOS**
+
+See [platform compatibility](https://zvec.org/en/docs/db/platforms/)
+for supported architectures, SDKs, and index availability.
 
 ### 🛠️ Building from Source
 
@@ -86,6 +88,7 @@ If you prefer to build Zvec from source, please check the [Building from Source]
 ## ⚡ One-Minute Example
 
 ```python
+# Zvec Python SDK — quickstart example
 import zvec
 
 # Define collection schema

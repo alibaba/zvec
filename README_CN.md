@@ -79,8 +79,9 @@ Zvec 提供多语言官方 SDK：
 
 ### ✅ 支持的平台
 
-Zvec 支持 **Linux、macOS、Windows**
-等主流平台，完整兼容性信息请参阅[全平台支持文档](https://zvec.org/zh/docs/db/platforms/)。
+**Linux · macOS · Windows · Android · iOS**
+
+有关支持的架构、SDK 和索引类型，请参阅[平台兼容性文档](https://zvec.org/zh/docs/db/platforms/)。
 
 ### 🛠️ 源码构建
 
@@ -89,6 +90,7 @@ Zvec 支持 **Linux、macOS、Windows**
 ## ⚡ 一分钟上手
 
 ```python
+# Zvec Python SDK — 快速入门示例
 import zvec
 
 # 定义 collection schema
