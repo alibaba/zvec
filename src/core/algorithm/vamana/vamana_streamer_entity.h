@@ -114,6 +114,11 @@ class VamanaStreamerEntity : public VamanaEntity {
   int open(IndexStorage::Pointer stg, uint64_t max_index_size, bool check_crc);
   int close();
 
+  //! Whether vectors have been modified since opening the entity.
+  bool dirty() const {
+    return broker_->dirty();
+  }
+
   int set_index_meta(const IndexMeta &meta) const {
     return IndexHelper::SerializeToStorage(meta, broker_->storage().get());
   }

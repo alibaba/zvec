@@ -502,6 +502,8 @@ class FlatStreamerEntity {
   std::vector<uint32_t> withid_key_map_{};
   std::vector<uint64_t> id_key_vector_{};
   bool filter_same_key_{false};
+  // Linear metadata only needs rewriting after creation or vector writes.
+  bool meta_dirty_{false};
   bool use_key_info_map_{true};
   uint32_t vec_unit_size_{0};
   uint32_t vec_cols_{0};
