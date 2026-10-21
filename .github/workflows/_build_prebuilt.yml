@@ -88,6 +88,14 @@ jobs:
             os: windows-2025
             os_name: windows
             arch: amd64
+            msvc_arch: x64
+            ext: zip
+            container: ''
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            os_name: windows
+            arch: arm64
+            msvc_arch: arm64
             ext: zip
             container: ''
 
@@ -154,7 +162,7 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
-          arch: x64
+          arch: ${{ matrix.msvc_arch }}
 
       - name: Configure CMake
         shell: bash
@@ -212,7 +220,8 @@ jobs:
         run: |
           # Compile and run tiny C and C++ programs against the staged
           # package (the exact tree that gets packaged next): verifies the
-          # include/lib layout and that the shipped libraries link and load.
+          # include/lib layout, library loading, and Chinese FTS with the
+          # embedded default Jieba dictionary and HMM model.
           SMOKE_BUILD="$RUNNER_TEMP/sdk-smoke-build"
           cmake -S .github/cmake/sdk-smoke -B "$SMOKE_BUILD" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -449,6 +458,29 @@ jobs:
           # Ship shared libraries only (same policy as desktop platforms).
           rm -f "$ZVEC_DIST_DIR"/lib/*.a
 
+      - name: Strip debug symbols from shared libraries
+        shell: bash
+        run: |
+          # The NDK toolchain compiles with -g in all build types (AGP strips
+          # the .so files at APK packaging time, but we ship them directly).
+          # Without this step libzvec.so carries hundreds of MB of DWARF.
+          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
+          TOOLCHAIN_BIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          # NDK r28+ removed the target-prefixed strip aliases; llvm-strip is
+          # the canonical tool. Fall back to llvm-objcopy --strip-all (equivalent)
+          # in case llvm-strip is unavailable.
+          if [ -x "$TOOLCHAIN_BIN/llvm-strip" ]; then
+            STRIP_CMD=("$TOOLCHAIN_BIN/llvm-strip")
+          elif [ -x "$TOOLCHAIN_BIN/llvm-objcopy" ]; then
+            STRIP_CMD=("$TOOLCHAIN_BIN/llvm-objcopy" "--strip-all")
+          else
+            echo "No strip tool found under $NDK" >&2
+            find "$NDK" \( -name 'llvm-strip' -o -name 'llvm-objcopy' \) 2>/dev/null >&2 || true
+            exit 1
+          fi
+          find "$ZVEC_DIST_DIR/lib" -name '*.so' -type f -print -exec "${STRIP_CMD[@]}" {} +
+          ls -lh "$ZVEC_DIST_DIR"/lib/*.so
+
       - name: Smoke-test staged SDK (link only)
         shell: bash
         run: |
@@ -555,9 +587,6 @@ jobs:
         run: |
           mkdir -p "$ZVEC_DIST_DIR"
           cp -R "$GITHUB_WORKSPACE/install_device/include" "$ZVEC_DIST_DIR/include"
-          # Architecture-independent data (jieba FTS dict) ships once from the
-          # device slice, same as the headers.
-          cp -R "$GITHUB_WORKSPACE/install_device/data" "$ZVEC_DIST_DIR/data"
           for dylib in "$GITHUB_WORKSPACE"/install_device/lib/*.dylib; do
             [ -L "$dylib" ] && continue  # skip version symlinks
             name=$(basename "$dylib" .dylib)
@@ -590,12 +619,6 @@ jobs:
             echo "missing C++ headers under include/zvec/db/"
             exit 1
           }
-          for dict_file in jieba.dict.utf8 hmm_model.utf8; do
-            if [ ! -f "$ZVEC_DIST_DIR/data/jieba_dict/$dict_file" ]; then
-              echo "missing data/jieba_dict/$dict_file"
-              exit 1
-            fi
-          done
 
       - name: Package SDK
         shell: bash

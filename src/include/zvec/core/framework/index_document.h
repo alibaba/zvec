@@ -138,6 +138,7 @@ class IndexDocument {
     if (rhs.has_vec_mem_block_) {
       vec_mem_block_ = rhs.vec_mem_block_;
       has_vec_mem_block_ = true;
+      vector_ = vec_mem_block_.data();
     }
   }
 
@@ -152,6 +153,10 @@ class IndexDocument {
       if (rhs.has_vec_mem_block_) {
         vec_mem_block_ = rhs.vec_mem_block_;
         has_vec_mem_block_ = true;
+        vector_ = vec_mem_block_.data();
+      } else {
+        vec_mem_block_.reset();
+        has_vec_mem_block_ = false;
       }
       sparse_doc_ = rhs.sparse_doc_;
     }

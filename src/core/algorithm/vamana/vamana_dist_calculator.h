@@ -95,25 +95,26 @@ class VamanaDistCalculator {
 
   inline dist_t dist(node_id_t id) {
     compare_cnt_++;
-    const void *feat = entity_->get_vector(id);
-    if (ailego_unlikely(feat == nullptr)) {
+    IndexStorage::MemoryBlock feat_block;
+    if (ailego_unlikely(entity_->get_vector(id, feat_block) != 0)) {
       LOG_ERROR("Get nullptr vector, id=%u", id);
       error_ = true;
       return 0.0f;
     }
-    return dist(feat, query_);
+    return dist(feat_block.data(), query_);
   }
 
   inline dist_t dist(node_id_t lhs, node_id_t rhs) {
     compare_cnt_++;
-    const void *feat = entity_->get_vector(lhs);
-    const void *query = entity_->get_vector(rhs);
-    if (ailego_unlikely(feat == nullptr || query == nullptr)) {
+    IndexStorage::MemoryBlock feat_block;
+    IndexStorage::MemoryBlock query_block;
+    if (ailego_unlikely(entity_->get_vector(lhs, feat_block) != 0 ||
+                        entity_->get_vector(rhs, query_block) != 0)) {
       LOG_ERROR("Get nullptr vector");
       error_ = true;
       return 0.0f;
     }
-    return dist(feat, query);
+    return dist(feat_block.data(), query_block.data());
   }
 
   inline void batch_dist(const void **vecs, uint32_t count, float *dists,
@@ -126,12 +127,13 @@ class VamanaDistCalculator {
   // node using batch_distance_. Consistent with HnswDistCalculator::batch_dist.
   inline dist_t batch_dist(node_id_t id) {
     compare_cnt_++;
-    const void *feat = entity_->get_vector(id);
-    if (ailego_unlikely(feat == nullptr)) {
+    IndexStorage::MemoryBlock feat_block;
+    if (ailego_unlikely(entity_->get_vector(id, feat_block) != 0)) {
       LOG_ERROR("Get nullptr vector, id=%u", id);
       error_ = true;
       return 0.0f;
     }
+    const void *feat = feat_block.data();
     dist_t score = 0;
     if (entity_->extra_values_size() != 0) {
       const void *extra_values = entity_->get_extra_values(id);

@@ -49,6 +49,19 @@ class IVFSearcher : public IndexSearcher {
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      uint32_t count, Context::Pointer &context) const override;
 
+  //! Similarity brute force search restricted to primary keys.
+  int search_bf_by_p_keys_impl(const void *query,
+                               const std::vector<std::vector<uint64_t>> &p_keys,
+                               const IndexQueryMeta &qmeta,
+                               Context::Pointer &context) const override {
+    return search_bf_by_p_keys_impl(query, p_keys, qmeta, 1, context);
+  }
+
+  int search_bf_by_p_keys_impl(const void *query,
+                               const std::vector<std::vector<uint64_t>> &p_keys,
+                               const IndexQueryMeta &qmeta, uint32_t count,
+                               Context::Pointer &context) const override;
+
   //! Similarity search
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
                   Context::Pointer &context) const override;
@@ -109,6 +122,10 @@ class IVFSearcher : public IndexSearcher {
   }
 
  private:
+  int search_bf(const void *query, const IndexQueryMeta &qmeta, uint32_t count,
+                Context::Pointer &context,
+                const std::vector<std::vector<uint64_t>> *p_keys) const;
+
   //! Constants
   static constexpr uint32_t kDefaultBfThreshold = 1000u;
 

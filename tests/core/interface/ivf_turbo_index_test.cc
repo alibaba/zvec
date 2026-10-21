@@ -481,48 +481,57 @@ TEST(IVFTurboGroups, MatchesScannedCandidatesAndClearsPooledState) {
     }
     ASSERT_EQ(0, index->train());
     const auto input = VectorData{DenseVector{query_vector.data()}};
-    for (bool filtered : {false, true}) {
-      auto query =
-          IVFQueryParamBuilder().with_nprobe(2).with_topk(count).build();
-      if (filtered) {
-        query->filter = std::make_shared<IndexFilter>();
-        query->filter->set([](uint64_t key) { return key % 5 == 0; });
-      }
-      SearchResult all;
-      ASSERT_EQ(0, index->search(input, query, &all));
-      std::map<std::string, std::vector<core::IndexDocument>> expected;
-      for (const auto &doc : all.doc_list_) {
-        auto &group = expected[std::to_string(doc.key() % 4)];
-        if (group.size() < 2) group.push_back(doc);
-      }
-      query->group_by_param = std::make_shared<GroupByParam>();
-      query->group_by_param->group_count = 4;
-      query->group_by_param->group_topk = 2;
-      query->group_by_param->group_by = [](uint64_t key) {
-        return std::to_string(key % 4);
-      };
-      // The public search consumes filters, so bind a new one for each query.
-      if (filtered)
-        query->filter->set([](uint64_t key) { return key % 5 == 0; });
-      SearchResult grouped;
-      ASSERT_EQ(0, index->search(input, query, &grouped));
-      ASSERT_EQ(expected.size(), grouped.group_doc_list_.size());
-      for (const auto &group : grouped.group_doc_list_) {
-        const auto &docs = expected.at(group.group_id());
-        ASSERT_EQ(docs.size(), group.docs().size());
-        for (size_t i = 0; i < docs.size(); ++i) {
-          EXPECT_EQ(docs[i].key(), group.docs()[i].key());
-          EXPECT_FLOAT_EQ(docs[i].score(), group.docs()[i].score());
+    for (bool keyed : {false, true}) {
+      SCOPED_TRACE(keyed);
+      for (bool filtered : {false, true}) {
+        auto query =
+            IVFQueryParamBuilder().with_nprobe(2).with_topk(count).build();
+        if (keyed) {
+          query->bf_pks = std::make_shared<std::vector<uint64_t>>();
+          for (uint32_t i = 1; i < count; i += 2)
+            query->bf_pks->push_back(i * 3);
+          query->bf_pks->push_back(count * 3);  // Missing keys are ignored.
         }
+        if (filtered) {
+          query->filter = std::make_shared<IndexFilter>();
+          query->filter->set([](uint64_t key) { return key % 5 == 0; });
+        }
+        SearchResult all;
+        ASSERT_EQ(0, index->search(input, query, &all));
+        std::map<std::string, std::vector<core::IndexDocument>> expected;
+        for (const auto &doc : all.doc_list_) {
+          auto &group = expected[std::to_string(doc.key() % 4)];
+          if (group.size() < 2) group.push_back(doc);
+        }
+        query->group_by_param = std::make_shared<GroupByParam>();
+        query->group_by_param->group_count = 4;
+        query->group_by_param->group_topk = 2;
+        query->group_by_param->group_by = [](uint64_t key) {
+          return std::to_string(key % 4);
+        };
+        // The public search consumes filters, so bind a new one for each query.
+        if (filtered)
+          query->filter->set([](uint64_t key) { return key % 5 == 0; });
+        SearchResult grouped;
+        ASSERT_EQ(0, index->search(input, query, &grouped));
+        ASSERT_EQ(expected.size(), grouped.group_doc_list_.size());
+        for (const auto &group : grouped.group_doc_list_) {
+          const auto &docs = expected.at(group.group_id());
+          ASSERT_EQ(docs.size(), group.docs().size());
+          for (size_t i = 0; i < docs.size(); ++i) {
+            EXPECT_EQ(docs[i].key(), group.docs()[i].key());
+            EXPECT_FLOAT_EQ(docs[i].score(), group.docs()[i].score());
+          }
+        }
+        query->group_by_param.reset();
+        if (filtered)
+          query->filter->set([](uint64_t key) { return key % 5 == 0; });
+        SearchResult again;
+        ASSERT_EQ(0, index->search(input, query, &again));
+        ASSERT_EQ(all.doc_list_.size(), again.doc_list_.size());
+        for (size_t i = 0; i < all.doc_list_.size(); ++i)
+          EXPECT_EQ(all.doc_list_[i].key(), again.doc_list_[i].key());
       }
-      query->group_by_param.reset();
-      if (filtered)
-        query->filter->set([](uint64_t key) { return key % 5 == 0; });
-      SearchResult again;
-      ASSERT_EQ(0, index->search(input, query, &again));
-      ASSERT_EQ(all.doc_list_.size(), again.doc_list_.size());
-      for (size_t i = 0; i < all.doc_list_.size(); ++i)
-        EXPECT_EQ(all.doc_list_[i].key(), again.doc_list_[i].key());
     }
     ASSERT_EQ(0, index->close());
     test_util::RemoveTestFiles(path);

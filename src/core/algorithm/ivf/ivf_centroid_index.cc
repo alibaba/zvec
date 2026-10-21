@@ -583,7 +583,11 @@ int IVFCentroidIndex::load(const IndexStorage::Pointer &container,
 
   auto searcher_params = meta_.searcher_params();
   searcher_params.merge(searcher_params_);
-  auto distance_quantizer = CreateDistanceQuantizer(meta_);
+  // Legacy centroid builders can preserve the input quantizer descriptor
+  // without quantizing the stored records. Keep their metric path: injecting
+  // a distance quantizer would make Flat require Turbo query metadata.
+  auto distance_quantizer =
+      meta_.quantizer_name().empty() ? CreateDistanceQuantizer(meta_) : nullptr;
   if (distance_quantizer) {
     ret = searcher_->init(searcher_params, distance_quantizer);
     if (ret == IndexError_NotImplemented)

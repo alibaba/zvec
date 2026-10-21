@@ -852,8 +852,14 @@ int IVFBuilder::dump_index(const IndexDumper::Pointer &dumper) {
     ivf_check_error_code(ret);
   }
 
+  IndexMeta posting_meta = quantized_meta_;
+  posting_meta.mutable_attributes()->erase(IVF_TURBO_FORMAT_VERSION_ATTRIBUTE);
+  if (turbo_quantizer_) {
+    posting_meta.mutable_attributes()->set(IVF_TURBO_FORMAT_VERSION_ATTRIBUTE,
+                                           kIVFTurboFormatVersion);
+  }
   IVFDumper::Pointer ivf_dumper = std::make_shared<IVFDumper>(
-      quantized_meta_, dumper, centroid_index_->centroids_count(),
+      posting_meta, dumper, centroid_index_->centroids_count(),
       block_vector_count_);
   if (!ivf_dumper) {
     LOG_ERROR("Alloc IVFDumper failed");

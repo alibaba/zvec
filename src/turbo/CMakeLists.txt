@@ -161,11 +161,10 @@ if(WIN32 AND (BUILD_ZVEC_CORE_SHARED OR BUILD_ZVEC_SHARED))
   endif()
 endif()
 
-set(ZVEC_TURBO_LIBS zvec_ailego)
+set(ZVEC_TURBO_RABITQ_LIBS "")
 if(RABITQ_SUPPORTED)
-  # cc_library uses plain linkage for archives and PRIVATE linkage for object
-  # libraries. Let it apply the dependency to every variant consistently.
-  list(APPEND ZVEC_TURBO_LIBS rabitqlib)
+  # Share Eigen's ABI settings with RaBitQ when both are linked into zvec.
+  list(APPEND ZVEC_TURBO_RABITQ_LIBS rabitqlib::fastscan)
 endif()
 
 cc_library(
@@ -173,19 +172,15 @@ cc_library(
     ${ZVEC_TURBO_LIBRARY_OPTIONS}
     SRCS ${ALL_SRCS}
     DEFS ${ZVEC_TURBO_DEFS}
-    LIBS ${ZVEC_TURBO_LIBS}
+    LIBS zvec_ailego ${ZVEC_TURBO_RABITQ_LIBS}
     INCS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/distance ${PROJECT_ROOT_DIR}/src/include
 )
 
 # Eigen (header-only, shipped inside the RaBitQ third-party tree) backs the OPQ
-# rotator and the scalar RaBitQ encoder. It must be a SYSTEM include: INCS
-# above maps to a plain target_include_directories, and STRICT turns Eigen's
-# own warnings into errors.
-# The scalar encoders stay header-only on every platform; on RABITQ_SUPPORTED
-# builds the split estimator additionally calls rabitqlib's dispatched SIMD
-# kernels (warmup/mask/excode-ip), so rabitqlib_runtime must be linked.
+# rotator and scalar RaBitQ encoder. Keep third-party headers SYSTEM so
+# their warnings do not become errors under STRICT.
 set(TURBO_EIGEN_INC
-    ${PROJECT_ROOT_DIR}/thirdparty/RaBitQ-Library/RaBitQ-Library-0.1/include)
+    ${PROJECT_ROOT_DIR}/thirdparty/RaBitQ-Library/RaBitQ-Library-0.7.0/include)
 foreach(_turbo_tgt zvec_turbo zvec_turbo_objects zvec_turbo_export_objects)
   if(TARGET ${_turbo_tgt})
     target_include_directories(${_turbo_tgt} SYSTEM PRIVATE ${TURBO_EIGEN_INC})

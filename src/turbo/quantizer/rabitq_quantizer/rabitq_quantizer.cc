@@ -18,11 +18,11 @@
 #if defined(__AVX512F__)
 #include <immintrin.h>
 #endif
-#include <rabitqlib/quantization/rabitq_impl.hpp>
+#include <rabitqlib/core/detail/rabitq_impl.hpp>
 #if RABITQ_SUPPORTED
+#include <rabitqlib/fastscan/data_layout.hpp>
 #include <rabitqlib/fastscan/highacc_fastscan.hpp>
-#include <rabitqlib/index/query.hpp>
-#include <rabitqlib/quantization/data_layout.hpp>
+#include <rabitqlib/fastscan/query.hpp>
 #include <rabitqlib/utils/space.hpp>
 #include <rabitqlib/utils/warmup_space.hpp>
 #endif
@@ -841,6 +841,10 @@ class RabitqBlockScanner final : public BlockScanner {
       const __m512 sum_vl = _mm512_set1_ps(query_.sum_vl_lut());
       const __m512 k1 = _mm512_set1_ps(query_.k1xsumq());
       const __m512 threshold = _mm512_set1_ps(worst);
+      // 0.7 exposes packed factor views instead of float pointers. SIMD loads
+      // can still read the serialized bytes directly using its layout offsets.
+      using Offsets = rabitqlib::detail::BatchCodeOffsets<float>;
+      const char *factors = bytes + 32 * sizeof(uint32_t);
       for (size_t half = 0; half < 2; ++half) {
         const size_t first = half * 16;
         const __m512 dot = _mm512_fmadd_ps(
@@ -848,13 +852,18 @@ class RabitqBlockScanner final : public BlockScanner {
             sum_vl);
         const __m512 add = _mm512_i32gather_ps(ids[half], g_add, 4);
         __m512 score = _mm512_fmadd_ps(
-            _mm512_loadu_ps(batch.f_rescale() + first), _mm512_add_ps(dot, k1),
-            _mm512_add_ps(_mm512_loadu_ps(batch.f_add() + first), add));
+            _mm512_loadu_ps(factors + Offsets::rescale(dim_) +
+                            first * sizeof(float)),
+            _mm512_add_ps(dot, k1),
+            _mm512_add_ps(_mm512_loadu_ps(factors + Offsets::add(dim_) +
+                                          first * sizeof(float)),
+                          add));
         if (ip_) score = _mm512_sub_ps(score, _mm512_set1_ps(1));
         const __m512 lower =
             bits_ == 1 ? score
                        : _mm512_fnmadd_ps(
-                             _mm512_loadu_ps(batch.f_error() + first),
+                             _mm512_loadu_ps(factors + Offsets::error(dim_) +
+                                             first * sizeof(float)),
                              _mm512_i32gather_ps(ids[half], g_error, 4), score);
         uint32_t mask = _mm512_cmp_ps_mask(lower, threshold, _CMP_NGT_UQ);
         *candidates |= mask << first;

@@ -99,8 +99,9 @@ class FlatSparseStreamerEntity : public FlatSparseEntity {
   inline node_id_t get_id(uint64_t key) const override {
     keys_map_lock_->lock_shared();
     auto it = keys_map_->find(key);
+    node_id_t id = it == keys_map_->end() ? kInvalidNodeId : it->second;
     keys_map_lock_->unlock_shared();
-    return it == keys_map_->end() ? kInvalidNodeId : it->second;
+    return id;
   }
 
   uint64_t get_key(node_id_t node_id) const override;

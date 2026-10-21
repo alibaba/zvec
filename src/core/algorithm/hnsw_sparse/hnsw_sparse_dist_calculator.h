@@ -110,28 +110,16 @@ class HnswSparseDistCalculator {
   //! Return dist node lhs between node rhs
   inline dist_t dist(node_id_t lhs, node_id_t rhs) {
     compare_cnt_++;
-
-    const void *feat = entity_->get_vector_meta(lhs);
-    const void *query = entity_->get_vector_meta(rhs);
-    if (ailego_unlikely(feat == nullptr || query == nullptr)) {
-      LOG_ERROR("Get nullptr vector");
+    IndexStorage::MemoryBlock feat;
+    IndexStorage::MemoryBlock query;
+    if (ailego_unlikely(entity_->get_sparse_data(lhs, feat) != 0 ||
+                        entity_->get_sparse_data(rhs, query) != 0 ||
+                        feat.data() == nullptr || query.data() == nullptr)) {
+      LOG_ERROR("Get nullptr sparse vector");
       error_ = true;
       return 0.0f;
     }
-
-    auto feat_sparse_data = entity_->get_sparse_data_from_vector(feat);
-    if (feat_sparse_data.first == nullptr) {
-      error_ = true;
-      return 0.0f;
-    }
-
-    auto query_sparse_data = entity_->get_sparse_data_from_vector(query);
-    if (query_sparse_data.first == nullptr) {
-      error_ = true;
-      return 0.0f;
-    }
-
-    return dist(feat_sparse_data.first, query_sparse_data.first);
+    return dist(feat.data(), query.data());
   }
 
   dist_t operator()(const void *vec) {

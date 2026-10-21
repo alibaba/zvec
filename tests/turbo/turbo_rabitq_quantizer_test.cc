@@ -8,8 +8,10 @@
 #include <turbo/quantizer/rabitq_quantizer/rabitq_quantizer.h>
 #include <zvec/core/framework/index_factory.h>
 #if RABITQ_SUPPORTED
-#include <rabitqlib/index/estimator.hpp>
-#include <rabitqlib/quantization/rabitq.hpp>
+#include <rabitqlib/core/encoder.hpp>
+#include <rabitqlib/core/estimator.hpp>
+#include <rabitqlib/fastscan/encoder.hpp>
+#include <rabitqlib/fastscan/estimator.hpp>
 #endif
 
 namespace zvec::turbo {

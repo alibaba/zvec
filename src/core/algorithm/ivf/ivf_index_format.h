@@ -171,6 +171,12 @@ const std::string IVF_TURBO_QUANTIZER_SEG_ID("ivf.turbo_quantizer");
 // Row records remain authoritative for fetch, merge and old-file fallback.
 const std::string IVF_TURBO_SCAN_SEG_ID("ivf.turbo_scan.v1");
 
+// Stored in posting IndexMeta attributes; quantizer_name also exists in legacy
+// indexes and cannot identify the posting format on its own.
+const std::string IVF_TURBO_FORMAT_VERSION_ATTRIBUTE(
+    "ivf.turbo_format_version");
+constexpr uint32_t kIVFTurboFormatVersion = 1;
+
 const std::string IVF_INVERTED_LIST_HEAD_SEG_ID("ivf.inverted_list_head");
 const std::string IVF_STORAGE_SEGMENT_ID("ivf.S");
 

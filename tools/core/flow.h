@@ -184,15 +184,14 @@ class Flow {
     }
 
     TagListHeader taglist_header;
-    void *data_ptr;
-    if (segment_taglist_header->read(0, (const void **)(&data_ptr),
-                                     sizeof(TagListHeader)) !=
+    IndexStorage::MemoryBlock data_block;
+    if (segment_taglist_header->read(0, data_block, sizeof(TagListHeader)) !=
         sizeof(TagListHeader)) {
       LOG_ERROR("Read tag list meta failed");
       return IndexError_ReadData;
     }
 
-    memcpy(&taglist_header, data_ptr, sizeof(TagListHeader));
+    memcpy(&taglist_header, data_block.data(), sizeof(TagListHeader));
 
     auto segment_taglist_key = storage->get(TAGLIST_KEY_SEGMENT_NAME);
     if (!segment_taglist_key) {
@@ -203,13 +202,13 @@ class Flow {
 
     size_t offset = 0;
     for (size_t i = 0; i < taglist_header.num_vecs; ++i) {
-      if (segment_taglist_key->read(offset, (const void **)(&data_ptr),
-                                    sizeof(uint64_t)) != sizeof(uint64_t)) {
+      if (segment_taglist_key->read(offset, data_block, sizeof(uint64_t)) !=
+          sizeof(uint64_t)) {
         LOG_ERROR("Read tag list key failed");
         return IndexError_ReadData;
       }
 
-      uint64_t key = *reinterpret_cast<const uint64_t *>(data_ptr);
+      uint64_t key = *reinterpret_cast<const uint64_t *>(data_block.data());
       tag_key_list_.push_back(key);
 
       offset += sizeof(uint64_t);
@@ -225,13 +224,14 @@ class Flow {
     std::vector<uint64_t> taglist_offsets;
     offset = 0;
     for (size_t i = 0; i < taglist_header.num_vecs; ++i) {
-      if (segment_taglist_data->read(offset, (const void **)(&data_ptr),
-                                     sizeof(uint64_t)) != sizeof(uint64_t)) {
+      if (segment_taglist_data->read(offset, data_block, sizeof(uint64_t)) !=
+          sizeof(uint64_t)) {
         LOG_ERROR("Read tag list data failed");
         return IndexError_ReadData;
       }
 
-      uint64_t tag_offset = *reinterpret_cast<const uint64_t *>(data_ptr);
+      uint64_t tag_offset =
+          *reinterpret_cast<const uint64_t *>(data_block.data());
       taglist_offsets.push_back(tag_offset);
 
       offset += sizeof(uint64_t);
@@ -239,16 +239,17 @@ class Flow {
 
     offset = taglist_header.num_vecs * sizeof(uint64_t);
     for (size_t i = 0; i < taglist_header.num_vecs; ++i) {
-      if (segment_taglist_data->read(offset, (const void **)(&data_ptr),
-                                     sizeof(uint64_t)) != sizeof(uint64_t)) {
+      if (segment_taglist_data->read(offset, data_block, sizeof(uint64_t)) !=
+          sizeof(uint64_t)) {
         LOG_ERROR("Read tag list data failed");
         return IndexError_ReadData;
       }
       offset += sizeof(uint64_t);
 
-      uint64_t tag_count = *reinterpret_cast<const uint64_t *>(data_ptr);
+      uint64_t tag_count =
+          *reinterpret_cast<const uint64_t *>(data_block.data());
 
-      if (segment_taglist_data->read(offset, (const void **)(&data_ptr),
+      if (segment_taglist_data->read(offset, data_block,
                                      tag_count * sizeof(uint64_t)) !=
           tag_count * sizeof(uint64_t)) {
         LOG_ERROR("Read tag list data failed");
@@ -258,7 +259,8 @@ class Flow {
 
       std::vector<uint64_t> tag_list;
       for (size_t j = 0; j < tag_count; ++j) {
-        uint64_t tag_id = *(reinterpret_cast<const uint64_t *>(data_ptr) + j);
+        uint64_t tag_id =
+            *(reinterpret_cast<const uint64_t *>(data_block.data()) + j);
         tag_list.push_back(tag_id);
       }
 
@@ -317,6 +319,13 @@ class Flow {
             return IndexError_NoExist;
           }
           reformer_->init(meta.reformer_params());
+          // Load converter state (e.g. rotator) so queries are transformed
+          // into the same space as the stored codes.
+          ret = reformer_->load(stg_);
+          if (ret != 0) {
+            LOG_ERROR("Failed to load reformer state from storage");
+            return ret;
+          }
         }
       }
 
@@ -486,6 +495,13 @@ class SparseFlow {
             return IndexError_NoExist;
           }
           reformer_->init(meta.reformer_params());
+          // Load converter state (e.g. rotator) so queries are transformed
+          // into the same space as the stored codes.
+          ret = reformer_->load(stg_);
+          if (ret != 0) {
+            LOG_ERROR("Failed to load reformer state from storage");
+            return ret;
+          }
         }
       }
 

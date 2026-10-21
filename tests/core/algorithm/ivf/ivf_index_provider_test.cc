@@ -62,20 +62,14 @@ class TestSegment : public IndexStorage::Segment {
     }
     return length;
   }
-  size_t read(size_t offset, const void **data, size_t length) override {
-    if (offset > data_size() || length > data_size() - offset) {
-      *data = nullptr;
-      return 0;
-    }
-    *data = reinterpret_cast<const uint8_t *>(values_.data()) + offset;
-    return length;
-  }
   size_t read(size_t offset, IndexStorage::MemoryBlock &block,
               size_t length) override {
-    const void *data = nullptr;
-    const size_t result = read(offset, &data, length);
-    block.reset(const_cast<void *>(data));
-    return result;
+    if (offset > data_size() || length > data_size() - offset) {
+      block.reset();
+      return 0;
+    }
+    block.reset(reinterpret_cast<uint8_t *>(values_.data()) + offset);
+    return length;
   }
   size_t write(size_t, const void *, size_t) override {
     return 0;
@@ -148,7 +142,7 @@ class MappingStorage : public IndexStorage {
 };
 
 struct MappingProvider {
-  MappingProvider()
+  explicit MappingProvider(bool column_major = false)
       : mapping(std::make_shared<TestSegment<uint32_t>>(kVectorCount)),
         entity(std::make_shared<IVFEntity>()) {
     // IVFEntity contains a header with a flexible array member, so MSVC
@@ -182,11 +176,14 @@ struct MappingProvider {
     for (size_t id = 0; id < kVectorCount; ++id) {
       keys->values()[id] = kVectorCount - id;
       for (size_t column = 0; column < kDimension; ++column) {
-        features->values()[id * kDimension + column] =
+        features->values()[column_major ? column * kVectorCount + id
+                                        : id * kDimension + column] =
             static_cast<float>(kVectorCount - id);
       }
       mapping->values()[id] = static_cast<uint32_t>(kVectorCount - id - 1);
-      const InvertedVecLocation location(id * meta.element_size(), false);
+      const InvertedVecLocation location(
+          id * (column_major ? sizeof(float) : meta.element_size()),
+          column_major);
       std::memcpy(offsets->values().data() + id * sizeof(location), &location,
                   sizeof(location));
     }
@@ -201,6 +198,9 @@ struct MappingProvider {
                          {IVF_MAPPING_SEG_ID, mapping},
                          {IVF_FEATURES_SEG_ID, features}};
 
+    if (column_major) {
+      storage->segments.erase(IVF_FEATURES_SEG_ID);
+    }
     load_status = entity->load(storage);
     if (load_status == 0) {
       provider = std::make_shared<IVFIndexProvider>(entity->meta(), entity,
@@ -323,4 +323,25 @@ TEST(IVFIndexProviderTest, InvalidMappingIdsHaveStickyFormatError) {
     EXPECT_TRUE(fresh->is_valid());
     EXPECT_EQ(fresh->status(), 0);
   }
+}
+
+TEST(IVFIndexProviderTest, ColumnMajorReadsDoNotOverwriteIteratorData) {
+  MappingProvider fixture(true);
+  ASSERT_EQ(0, fixture.load_status);
+  auto first = fixture.provider->create_iterator();
+  auto second = fixture.provider->create_iterator();
+  ASSERT_NE(nullptr, first);
+  ASSERT_NE(nullptr, second);
+  const auto *data = static_cast<const float *>(first->data());
+  ASSERT_NE(nullptr, data);
+  second->next();
+  ASSERT_NE(nullptr, second->data());
+  const auto *random =
+      static_cast<const float *>(fixture.provider->get_vector(3));
+  ASSERT_NE(nullptr, random);
+  EXPECT_FLOAT_EQ(3.0f, random[0]);
+  for (size_t column = 0; column < kDimension; ++column) {
+    EXPECT_FLOAT_EQ(1.0f, data[column]);
+  }
+  EXPECT_EQ(data, first->data());
 }

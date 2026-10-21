@@ -22,7 +22,8 @@
 #include <string>
 #include <vector>
 #include <gtest/gtest.h>
-#include <rabitqlib/quantization/data_layout.hpp>
+#include <rabitqlib/fastscan/data_layout.hpp>
+#include <rabitqlib/fastscan/query.hpp>
 #include "algorithm/hnsw_rabitq/rabitq_utils.h"
 #include "zvec/ailego/container/params.h"
 #include "zvec/ailego/logger/logger.h"
@@ -257,18 +258,18 @@ void BuildLoadedReformer(const IndexMeta &rabitq_meta,
   if (rotated_centroids) {
     auto segment = memory_storage->get(RABITQ_CONVERTER_SEG_ID);
     ASSERT_NE(nullptr, segment);
-    const void *header_data = nullptr;
+    IndexStorage::MemoryBlock header_data;
     ASSERT_EQ(sizeof(RabitqConverterHeader),
-              segment->read(0, &header_data, sizeof(RabitqConverterHeader)));
+              segment->read(0, header_data, sizeof(RabitqConverterHeader)));
     const auto *header =
-        static_cast<const RabitqConverterHeader *>(header_data);
+        static_cast<const RabitqConverterHeader *>(header_data.data());
     const size_t centroid_count =
         static_cast<size_t>(header->num_clusters) * header->padded_dim;
-    const void *centroid_data = nullptr;
+    IndexStorage::MemoryBlock centroid_data;
     ASSERT_EQ(centroid_count * sizeof(float),
-              segment->read(sizeof(RabitqConverterHeader), &centroid_data,
+              segment->read(sizeof(RabitqConverterHeader), centroid_data,
                             centroid_count * sizeof(float)));
-    const auto *centroids = static_cast<const float *>(centroid_data);
+    const auto *centroids = static_cast<const float *>(centroid_data.data());
     rotated_centroids->assign(centroids, centroids + centroid_count);
   }
   IndexMemory::Instance()->remove(file_id);
@@ -382,11 +383,11 @@ TEST_F(IvfRabitqStreamerTest, TestRejectInvalidFormatMagicAndVersion) {
 
   auto header_segment = storage->get(IVF_RABITQ_HEADER_SEG_ID);
   ASSERT_NE(nullptr, header_segment);
-  const void *header_data = nullptr;
+  IndexStorage::MemoryBlock header_data;
   ASSERT_EQ(sizeof(IvfRabitqHeader),
-            header_segment->read(0, &header_data, sizeof(IvfRabitqHeader)));
+            header_segment->read(0, header_data, sizeof(IvfRabitqHeader)));
   auto *header = const_cast<IvfRabitqHeader *>(
-      static_cast<const IvfRabitqHeader *>(header_data));
+      static_cast<const IvfRabitqHeader *>(header_data.data()));
   ASSERT_EQ(kIvfRabitqIndexMagic, header->magic);
   ASSERT_EQ(kIvfRabitqIndexVersion, header->version);
 
@@ -565,6 +566,8 @@ TEST_F(IvfRabitqStreamerTest, TestContextResetClearsSearchState) {
   context.set_group_by([](uint64_t key) { return std::to_string(key % 3U); });
   context.set_group_params(/*group_num=*/3, /*group_topk=*/2);
   context.query_state.rotated_query.push_back(1.0f);
+  context.query_state.lut_scratch.push_back(1.0f);
+  context.query_state.hacc_scratch.push_back(1);
   context.query_state.query_norm_sq = 2.0f;
   context.query_state.batch_query = std::make_shared<int>(1);
   context.probe_centroids.push_back({3U, 2.0f, 1.0f});
@@ -582,9 +585,61 @@ TEST_F(IvfRabitqStreamerTest, TestContextResetClearsSearchState) {
   EXPECT_FALSE(context.group_by().is_valid());
   EXPECT_EQ(std::numeric_limits<float>::max(), context.threshold());
   EXPECT_TRUE(context.query_state.rotated_query.empty());
+  EXPECT_TRUE(context.query_state.lut_scratch.empty());
+  EXPECT_TRUE(context.query_state.hacc_scratch.empty());
   EXPECT_FLOAT_EQ(0.0f, context.query_state.query_norm_sq);
   EXPECT_EQ(nullptr, context.query_state.batch_query);
   EXPECT_TRUE(context.probe_centroids.empty());
+}
+
+TEST_F(IvfRabitqStreamerTest, TestQueryPreparationReusesScratch) {
+  constexpr size_t dimension = 65;
+  auto holder = BuildDirectionalHolder(dimension, 128);
+  for (const std::string metric : {"SquaredEuclidean", "InnerProduct"}) {
+    IndexMeta meta(IndexMeta::DataType::DT_FP32, dimension);
+    meta.set_metric(metric, 0, ailego::Params());
+    std::shared_ptr<IvfRabitqReformer> reformer;
+    BuildLoadedReformer(meta, metric, holder, dir_ + "/ReuseScratch" + metric,
+                        &reformer, nullptr, 4U);
+    ASSERT_NE(nullptr, reformer);
+    IvfRabitqQueryState state;
+    NumericalVector<float> query(dimension);
+    FillTestVector(17, &query);
+    ASSERT_EQ(0, reformer->create_query_state(query.data(), &state));
+    ASSERT_EQ(128UL, reformer->padded_dim());
+    ASSERT_EQ(512UL, state.lut_scratch.size());
+    ASSERT_EQ(512UL, state.hacc_scratch.size());
+    const auto *lut_scratch = state.lut_scratch.data();
+    const auto *hacc_scratch = state.hacc_scratch.data();
+    auto reused = std::static_pointer_cast<rabitqlib::SplitBatchQuery<float>>(
+        state.batch_query);
+    const auto *lut = reused->lut();
+    for (size_t row : {97U, 23U}) {
+      ASSERT_EQ(0, reformer->prepare_for_cluster(0, &state));
+      FillTestVector(row, &query);
+      ASSERT_EQ(0, reformer->create_query_state(query.data(), &state));
+      IvfRabitqQueryState fresh_state;
+      ASSERT_EQ(0, reformer->create_query_state(query.data(), &fresh_state));
+      auto fresh = std::static_pointer_cast<rabitqlib::SplitBatchQuery<float>>(
+          fresh_state.batch_query);
+      EXPECT_EQ(reused.get(), state.batch_query.get());
+      EXPECT_EQ(lut, reused->lut());
+      EXPECT_EQ(lut_scratch, state.lut_scratch.data());
+      EXPECT_EQ(hacc_scratch, state.hacc_scratch.data());
+      EXPECT_EQ(state.rotated_query.data(), reused->rotated_query());
+      EXPECT_EQ(0, reused->g_add());
+      EXPECT_EQ(0, reused->g_error());
+      EXPECT_EQ(fresh->delta(), reused->delta());
+      EXPECT_EQ(fresh->kbxsumq(), reused->kbxsumq());
+      EXPECT_TRUE(std::equal(fresh->lut(),
+                             fresh->lut() + reformer->padded_dim() * 8,
+                             reused->lut()));
+      ASSERT_EQ(0, reformer->prepare_for_cluster(0, &state));
+      ASSERT_EQ(0, reformer->prepare_for_cluster(0, &fresh_state));
+      EXPECT_EQ(fresh->g_add(), reused->g_add());
+      EXPECT_EQ(fresh->g_error(), reused->g_error());
+    }
+  }
 }
 
 TEST_F(IvfRabitqStreamerTest, TestProbeCentroidsUseAssignmentMetric) {

@@ -54,16 +54,19 @@ class RecordQuantizer {
       } else {
         scale = 15 / std::max(max - min, epsilon);
         bias = -min * scale - 8;
+        // Accumulate the rounded codes: the stored sum must match the packed
+        // nibbles, otherwise QuantizedInteger scoring (which reconstructs
+        // scores from sum) ranks with a per-record error.
         for (size_t i = 0; i < dim; i += 2) {
-          float lo = vec[i] * scale + bias;
-          float hi = vec[i + 1] * scale + bias;
+          float lo = std::round(vec[i] * scale + bias);
+          float hi = std::round(vec[i + 1] * scale + bias);
           squared_sum += lo * lo;
           sum += lo;
           squared_sum += hi * hi;
           sum += hi;
           (reinterpret_cast<uint8_t *>(out))[i / 2] =
-              (static_cast_from_float_to_uint8(std::round(hi)) << 4) |
-              (static_cast_from_float_to_uint8(std::round(lo)) & 0xF);
+              (static_cast_from_float_to_uint8(hi) << 4) |
+              (static_cast_from_float_to_uint8(lo) & 0xF);
         }
         extras =
             reinterpret_cast<float *>(static_cast<uint8_t *>(out) + dim / 2);
