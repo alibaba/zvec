@@ -805,6 +805,74 @@ TEST_F(IVFSearcherTest, AllValidKeysSkipReadsAndSurviveCloneReload) {
     }
   }
 
+  // Query across the list boundary so neither list alone contains top-k.
+  // Quarter-integer coordinates give distinct, exactly representable scores.
+  std::vector<float> boundary_query(dimension_, 0.0f);
+  boundary_query[0] = static_cast<float>(first_list_count) - 0.25f;
+  constexpr size_t boundary_topk = 7;
+  const auto expected_topk = [&](float threshold, uint32_t begin,
+                                 uint32_t end) {
+    std::vector<std::pair<float, uint32_t>> expected;
+    for (uint32_t id = begin; id < end; ++id) {
+      const float delta = boundary_query[0] - static_cast<float>(id);
+      const float score = delta * delta;
+      if (score <= threshold) {
+        expected.emplace_back(score, id);
+      }
+    }
+    std::sort(expected.begin(), expected.end());
+    expected.resize(std::min(expected.size(), boundary_topk));
+    return expected;
+  };
+  ASSERT_EQ(0, entity.load(storages[0]));
+  ASSERT_TRUE(entity.all_keys_valid());
+  ASSERT_EQ(0, entity.bind_query(boundary_query.data(), qmeta));
+  auto counted_keys = entity.count_key_reads();
+  for (bool reverse_lists : {false, true}) {
+    SCOPED_TRACE(reverse_lists);
+    for (float threshold :
+         {std::numeric_limits<float>::max(), 7.5625f, 0.0625f, -1.0f}) {
+      SCOPED_TRACE(threshold);
+      IndexDocumentHeap heap(boundary_topk, threshold);
+      IndexContext::Stats stats;
+      counted_keys->reads = 0;
+      for (uint32_t pass = 0; pass < 2; ++pass) {
+        const uint32_t list = reverse_lists ? 1 - pass : pass;
+        SCOPED_TRACE(list);
+        uint32_t scan_count = 0;
+        ASSERT_EQ(0, entity.search(list, boundary_query.data(), &scan_count,
+                                   &heap, &stats));
+        EXPECT_EQ(list == 0 ? first_list_count : second_list_count, scan_count);
+        EXPECT_EQ(0U, counted_keys->reads);
+        const uint32_t begin = pass == 1 || list == 0 ? 0 : first_list_count;
+        const uint32_t end = pass == 1 || list == 1 ? count : first_list_count;
+        const auto expected = expected_topk(threshold, begin, end);
+        std::vector<std::pair<float, uint32_t>> actual;
+        for (const auto &doc : heap.container()) {
+          actual.emplace_back(doc.score(), doc.index());
+        }
+        std::sort(actual.begin(), actual.end());
+        // On pass two the prefilled heap contains both nearer and farther
+        // candidates than this list. Preserve the former and replace the
+        // latter, regardless of list order or a partially filled radius heap.
+        EXPECT_EQ(expected, actual);
+        if (threshold == std::numeric_limits<float>::max()) {
+          EXPECT_TRUE(heap.full());
+        }
+      }
+      EXPECT_EQ(count, stats.dist_calced_count());
+      heap.sort();
+      ASSERT_EQ(0, entity.retrieve_keys(&heap));
+      EXPECT_EQ(heap.size(), counted_keys->reads);
+      const auto expected = expected_topk(threshold, 0, count);
+      ASSERT_EQ(expected.size(), heap.size());
+      for (size_t i = 0; i < expected.size(); ++i) {
+        EXPECT_EQ(key(expected[i].second), heap.container()[i].key());
+        EXPECT_FLOAT_EQ(expected[i].first, heap.container()[i].score());
+      }
+    }
+  }
+
   Params search_params;
   search_params.set(PARAM_IVF_SEARCHER_NPROBE, 2U);
   search_params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1U);
@@ -834,6 +902,30 @@ TEST_F(IVFSearcherTest, AllValidKeysSkipReadsAndSurviveCloneReload) {
           const float delta = static_cast<float>(count - 1 - id);
           EXPECT_FLOAT_EQ(delta * delta, result[i].score());
         }
+      }
+    }
+    context->reset_filter();
+    context->set_topk(boundary_topk);
+    for (float threshold :
+         {std::numeric_limits<float>::max(), 7.5625f, 0.0625f, -1.0f}) {
+      SCOPED_TRACE(threshold);
+      context->set_threshold(threshold);
+      const auto expected = expected_topk(threshold, 0, count);
+      for (bool brute_force : {false, true}) {
+        SCOPED_TRACE(brute_force);
+        ASSERT_EQ(0, brute_force ? searcher->search_bf_impl(
+                                       boundary_query.data(), qmeta, context)
+                                 : searcher->search_impl(boundary_query.data(),
+                                                         qmeta, context));
+        const auto &result = context->result(0);
+        ASSERT_EQ(expected.size(), result.size());
+        for (size_t i = 0; i < expected.size(); ++i) {
+          EXPECT_EQ(key(expected[i].second), result[i].key());
+          EXPECT_FLOAT_EQ(expected[i].first, result[i].score());
+        }
+        auto *ivf_context = dynamic_cast<IVFSearcherContext *>(context.get());
+        ASSERT_NE(nullptr, ivf_context);
+        EXPECT_EQ(count, ivf_context->stats(0).dist_calced_count());
       }
     }
   };

@@ -379,6 +379,11 @@ class IVFEntity {
       const InvertedListMeta *list_meta, const uint8_t *base, const void *query,
       float norm_val, IndexDocumentHeap *heap,
       IndexContext::Stats *context_stats) const;
+  template <typename TopK>
+  int search_contiguous_rows_all_valid_impl(
+      const InvertedListMeta *list_meta, const uint8_t *base, const void *query,
+      float norm_val, IndexDocumentHeap *heap,
+      IndexContext::Stats *context_stats) const;
   int search_contiguous_rows(const InvertedListMeta *list_meta,
                              const uint8_t *base, const void *query,
                              float norm_val, IndexDocumentHeap *heap,

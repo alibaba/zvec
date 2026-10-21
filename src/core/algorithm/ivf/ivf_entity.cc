@@ -19,6 +19,7 @@
 #include <core/quantizer/quantizer_params.h>
 #include <turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h>
 #include "metric/metric_params.h"
+#include "utility/batch_topk.h"
 #include "ivf_utility.h"
 namespace zvec {
 namespace core {
@@ -1030,7 +1031,9 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
       LOG_ERROR("Invalid contiguous IVF list range or block count");
       return IndexError_ReadData;
     }
-    if (all_keys_valid_) {
+    // An unlimited result heap needs no selection or additional O(n) buffer.
+    if (all_keys_valid_ &&
+        heap->limit() != std::numeric_limits<size_t>::max()) {
       ret = search_contiguous_rows_all_valid(list_meta, base, query, norm_val,
                                              heap, context_stats);
     } else {
@@ -1056,6 +1059,35 @@ int IVFEntity::search_contiguous_rows_all_valid(
     const InvertedListMeta *list_meta, const uint8_t *base, const void *query,
     float norm_val, IndexDocumentHeap *heap,
     IndexContext::Stats *context_stats) const {
+  // Select once for the entire list. Each instantiated scan calls its concrete
+  // BatchTopK kernel directly throughout the block and distance-batch loops.
+  using Impl = BatchTopK::Implementation;
+  switch (BatchTopK::implementation()) {
+    case Impl::kAVX512:
+      return search_contiguous_rows_all_valid_impl<
+          BatchTopKImpl<Impl::kAVX512>>(list_meta, base, query, norm_val, heap,
+                                        context_stats);
+    case Impl::kAVX2:
+      return search_contiguous_rows_all_valid_impl<BatchTopKImpl<Impl::kAVX2>>(
+          list_meta, base, query, norm_val, heap, context_stats);
+    case Impl::kSSE2:
+      return search_contiguous_rows_all_valid_impl<BatchTopKImpl<Impl::kSSE2>>(
+          list_meta, base, query, norm_val, heap, context_stats);
+    case Impl::kNEON:
+      return search_contiguous_rows_all_valid_impl<BatchTopKImpl<Impl::kNEON>>(
+          list_meta, base, query, norm_val, heap, context_stats);
+    default:
+      return search_contiguous_rows_all_valid_impl<
+          BatchTopKImpl<Impl::kScalar>>(list_meta, base, query, norm_val, heap,
+                                        context_stats);
+  }
+}
+
+template <typename TopK>
+int IVFEntity::search_contiguous_rows_all_valid_impl(
+    const InvertedListMeta *list_meta, const uint8_t *base, const void *query,
+    float norm_val, IndexDocumentHeap *heap,
+    IndexContext::Stats *context_stats) const {
   const size_t block_vecs = header_.block_vector_count;
   const size_t batch_blocks =
       std::max(size_t{1}, kDistanceBatchVectors / block_vecs);
@@ -1070,6 +1102,15 @@ int IVFEntity::search_contiguous_rows_all_valid(
               static_cast<size_t>(list_meta->offset));
     return IndexError_ReadData;
   }
+  float threshold = heap->threshold();
+  bool strict_threshold = false;
+  if (heap->full() && heap->front().score() <= threshold) {
+    threshold = heap->front().score();
+    strict_threshold = true;
+  }
+  TopK topk;
+  topk.reset(std::min(heap->limit(), size_t{list_meta->vector_count}),
+             threshold, strict_threshold);
   const auto *features = base + list_meta->offset;
   for (size_t i = 0; i < list_meta->block_count; i += batch_blocks) {
     const size_t blocks = std::min(batch_blocks, list_meta->block_count - i);
@@ -1081,13 +1122,15 @@ int IVFEntity::search_contiguous_rows_all_valid(
       const size_t count = std::min(kDistanceBatchVectors, items - offset);
       query_features_distance(query, batch_features + offset * element_size,
                               count, distances.data());
-      for (size_t k = 0; k < count; ++k) {
-        const uint32_t id = id_offset + offset + k;
-        // Resolve only the final results' keys through retrieve_keys().
-        heap->emplace(0, distances[k] * norm_val, id);
-      }
+      topk.push_block(distances.data(), count, id_offset + offset, norm_val);
       *(context_stats->mutable_dist_calced_count()) += count;
     }
+  }
+  topk.finish();
+  for (size_t i = 0; i < topk.size(); ++i) {
+    const auto &candidate = topk.data()[i];
+    // Resolve only the final query results' keys through retrieve_keys().
+    heap->emplace(0, candidate.score, candidate.id);
   }
   return 0;
 }
