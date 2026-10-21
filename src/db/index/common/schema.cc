@@ -155,7 +155,8 @@ Status FieldSchema::validate() const {
 
       if (index_params_->type() == IndexType::HNSW_RABITQ ||
           index_params_->type() == IndexType::IVF_RABITQ ||
-          (index_params_->type() == IndexType::IVF &&
+          ((index_params_->type() == IndexType::IVF ||
+            index_params_->type() == IndexType::HNSW) &&
            vector_index_params->quantize_type() == QuantizeType::RABITQ)) {
         if (dimension_ < kMinRabitqDimSize || dimension_ > kMaxRabitqDimSize) {
           return Status::InvalidArgument(
@@ -185,6 +186,24 @@ Status FieldSchema::validate() const {
         if (!supports_rabitq_avx2 && !supports_rabitq_avx512) {
           return Status::NotSupported(
               "RabitQ requires AVX2/FMA or AVX512F/BW/DQ to be supported");
+        }
+      }
+
+      if ((index_params_->type() == IndexType::HNSW ||
+           index_params_->type() == IndexType::IVF) &&
+          vector_index_params->quantize_type() == QuantizeType::RABITQ) {
+        const auto &q = vector_index_params->quantizer_param();
+        if (q.num_clusters() <= 0 || q.n_iters() <= 0 || q.enable_rotate()) {
+          return Status::InvalidArgument(
+              "Invalid RABITQ quantizer parameters: num_clusters/n_iters must "
+              "be positive; enable_rotate is unsupported");
+        }
+        if (index_params_->type() == IndexType::HNSW &&
+            (q.total_bits() < 1 || q.total_bits() > 9 || q.sample_count() < 0 ||
+             vector_index_params->flat_data_type() != DataType::VECTOR_FP32)) {
+          return Status::InvalidArgument(
+              "Invalid HNSW RABITQ parameters: total_bits in [1, 9], "
+              "sample_count >= 0; FP32 reference vectors required");
         }
       }
 

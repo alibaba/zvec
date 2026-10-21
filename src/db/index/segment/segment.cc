@@ -1699,10 +1699,14 @@ Status SegmentImpl::create_vector_index(
       block.set_max_doc_id(meta()->max_doc_id());
       block.set_doc_count(meta()->doc_count());
       new_segment_meta->add_persisted_block(block);
-      if (vector_index_params->type() == IndexType::HNSW_RABITQ) {
+      if (vector_index_params->type() == IndexType::HNSW_RABITQ ||
+          (vector_index_params->type() == IndexType::HNSW &&
+           vector_index_params->quantize_type() == QuantizeType::RABITQ)) {
         raw_vector_provider = vector_indexer.value()->create_index_provider();
       }
-    } else if (vector_index_params->type() == IndexType::HNSW_RABITQ) {
+    } else if (vector_index_params->type() == IndexType::HNSW_RABITQ ||
+               (vector_index_params->type() == IndexType::HNSW &&
+                vector_index_params->quantize_type() == QuantizeType::RABITQ)) {
       raw_vector_provider =
           vector_indexers_[column][0]->create_index_provider();
     }
@@ -1710,9 +1714,9 @@ Status SegmentImpl::create_vector_index(
     auto field_with_new_index_params = std::make_shared<FieldSchema>(*field);
     field_with_new_index_params->set_index_params(index_params);
 
-    // For HNSW_RABITQ, PrepareQuantizeField trains a reformer with
-    // raw_vector_provider. IVF_RABITQ trains inside its builder. For other
-    // quantize types, field_with_new_index_params is reused as-is.
+    // HNSW RaBitQ needs raw vectors before graph insertion: the native path
+    // trains a reformer here; Turbo trains when opening the target streamer.
+    // IVF trains inside its builder.
     std::shared_ptr<FieldSchema> field_for_quantize;
     {
       auto s = SegmentHelper::PrepareQuantizeField(*field_with_new_index_params,

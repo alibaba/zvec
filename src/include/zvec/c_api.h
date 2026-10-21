@@ -989,6 +989,25 @@ ZVEC_EXPORT zvec_quantize_type_t ZVEC_CALL
 zvec_index_params_get_quantize_type(const zvec_index_params_t *params);
 
 /**
+ * Configure Turbo RaBitQ for an ordinary HNSW or IVF index whose quantize type
+ * is RABITQ. total_bits: 1..9; num_clusters/n_iters: positive; sample_count:
+ * nonnegative (0 uses all training vectors). This does not change IVF n_list.
+ * For IVF this also sets its legacy total_bits and sample_count fields.
+ * Invalid inputs leave the parameters unchanged.
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_index_params_set_rabitq_quantizer_params(zvec_index_params_t *params,
+                                              int total_bits, int num_clusters,
+                                              int sample_count, int n_iters);
+
+/** Get effective Turbo RaBitQ settings. Each output pointer may be NULL. */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_index_params_get_rabitq_quantizer_params(const zvec_index_params_t *params,
+                                              int *total_bits,
+                                              int *num_clusters,
+                                              int *sample_count, int *n_iters);
+
+/**
  * @brief Set enable_rotate for quantizer (only effective with INT8/INT4
  * quantize type)
  *

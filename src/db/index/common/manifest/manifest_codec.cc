@@ -33,6 +33,10 @@ using pbwire::Writer;
 // breaks compatibility with existing manifest files.
 namespace f_quantizer {
 constexpr uint32_t kEnableRotate = 1;
+constexpr uint32_t kTotalBits = 2;
+constexpr uint32_t kNumClusters = 3;
+constexpr uint32_t kSampleCount = 4;
+constexpr uint32_t kNIters = 5;
 }
 namespace f_base {
 constexpr uint32_t kMetricType = 1;
@@ -161,6 +165,14 @@ struct BaseParams {
   // bytes identical.
   bool has_quantizer_param{false};
   bool enable_rotate{false};
+  int total_bits{7};
+  int num_clusters{16};
+  int sample_count{0};
+  int n_iters{20};
+  QuantizerParam quantizer_param() const {
+    return QuantizerParam(enable_rotate, total_bits, num_clusters, sample_count,
+                          n_iters);
+  }
 };
 
 void EncodeBase(const BaseParams &base, std::string *out) {
@@ -175,6 +187,14 @@ void EncodeBase(const BaseParams &base, std::string *out) {
     std::string quantizer;
     Writer qw(&quantizer);
     qw.put_bool(f_quantizer::kEnableRotate, base.enable_rotate);
+    // Omit defaults to preserve existing manifest bytes.
+    if (base.total_bits != 7)
+      qw.put_varint(f_quantizer::kTotalBits, base.total_bits);
+    if (base.num_clusters != 16)
+      qw.put_varint(f_quantizer::kNumClusters, base.num_clusters);
+    if (base.sample_count != 0)
+      qw.put_varint(f_quantizer::kSampleCount, base.sample_count);
+    if (base.n_iters != 20) qw.put_varint(f_quantizer::kNIters, base.n_iters);
     w.put_message(f_base::kQuantizerParam, quantizer);
   }
 }
@@ -196,8 +216,24 @@ BaseParams DecodeBase(std::string_view buf) {
         base.has_quantizer_param = true;
         Reader qr(r.bytes());
         while (qr.next()) {
-          if (qr.field() == f_quantizer::kEnableRotate) {
-            base.enable_rotate = qr.bool_value();
+          switch (qr.field()) {
+            case f_quantizer::kEnableRotate:
+              base.enable_rotate = qr.bool_value();
+              break;
+            case f_quantizer::kTotalBits:
+              base.total_bits = qr.int32_value();
+              break;
+            case f_quantizer::kNumClusters:
+              base.num_clusters = qr.int32_value();
+              break;
+            case f_quantizer::kSampleCount:
+              base.sample_count = qr.int32_value();
+              break;
+            case f_quantizer::kNIters:
+              base.n_iters = qr.int32_value();
+              break;
+            default:
+              break;
           }
         }
         break;
@@ -216,7 +252,12 @@ BaseParams MakeBase(const Params *params) {
   base.metric_type = params->metric_type();
   base.quantize_type = params->quantize_type();
   base.has_quantizer_param = true;
-  base.enable_rotate = params->quantizer_param().enable_rotate();
+  const auto &q = params->quantizer_param();
+  base.enable_rotate = q.enable_rotate();
+  base.total_bits = q.total_bits();
+  base.num_clusters = q.num_clusters();
+  base.sample_count = q.sample_count();
+  base.n_iters = q.n_iters();
   return base;
 }
 
@@ -273,8 +314,8 @@ HnswIndexParams::OPtr DecodeHnsw(std::string_view buf) {
   }
   return std::make_shared<HnswIndexParams>(
       base.metric_type, m, ef_construction, base.quantize_type,
-      use_contiguous_memory, QuantizerParam(base.enable_rotate),
-      use_flat_contiguous_memory, flat_data_type);
+      use_contiguous_memory, base.quantizer_param(), use_flat_contiguous_memory,
+      flat_data_type);
 }
 
 void EncodeHnswRabitq(const HnswRabitqIndexParams *params, std::string *out) {
@@ -419,7 +460,7 @@ FlatIndexParams::OPtr DecodeFlat(std::string_view buf) {
     }
   }
   return std::make_shared<FlatIndexParams>(
-      base.metric_type, base.quantize_type, QuantizerParam(base.enable_rotate),
+      base.metric_type, base.quantize_type, base.quantizer_param(),
       use_contiguous_memory, storage_data_type);
 }
 
@@ -476,7 +517,7 @@ IVFIndexParams::OPtr DecodeIvf(std::string_view buf) {
   }
   return std::make_shared<IVFIndexParams>(
       base.metric_type, n_list, n_iters, use_soar, base.quantize_type,
-      QuantizerParam(base.enable_rotate), total_bits, sample_count);
+      base.quantizer_param(), total_bits, sample_count);
 }
 
 void EncodeDiskAnn(const DiskAnnIndexParams *params, std::string *out) {
@@ -518,7 +559,7 @@ DiskAnnIndexParams::OPtr DecodeDiskAnn(std::string_view buf) {
   }
   return std::make_shared<DiskAnnIndexParams>(
       base.metric_type, max_degree, list_size, pq_chunk_num, base.quantize_type,
-      QuantizerParam(base.enable_rotate));
+      base.quantizer_param());
 }
 
 void EncodeVamana(const VamanaIndexParams *params, std::string *out) {
@@ -596,8 +637,8 @@ VamanaIndexParams::OPtr DecodeVamana(std::string_view buf) {
   return std::make_shared<VamanaIndexParams>(
       base.metric_type, max_degree, search_list_size, alpha, saturate_graph,
       use_contiguous_memory, use_id_map, base.quantize_type,
-      QuantizerParam(base.enable_rotate), two_pass_build,
-      use_flat_contiguous_memory, flat_data_type);
+      base.quantizer_param(), two_pass_build, use_flat_contiguous_memory,
+      flat_data_type);
 }
 
 void EncodeInvert(const InvertIndexParams *params, std::string *out) {

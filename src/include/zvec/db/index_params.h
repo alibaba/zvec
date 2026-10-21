@@ -123,12 +123,32 @@ class ZVEC_API InvertIndexParams : public IndexParams {
 /*
  * Quantizer parameters for vector indexes.
  * Encapsulates quantization-related settings such as enable_rotate.
- * Designed for future extensibility (e.g., num_bits, calibration_size).
+ * Also configures Turbo RaBitQ training for standard HNSW and IVF.
  */
 class QuantizerParam {
  public:
   QuantizerParam() = default;
-  explicit QuantizerParam(bool enable_rotate) : enable_rotate_(enable_rotate) {}
+  explicit QuantizerParam(bool enable_rotate, int total_bits = 7,
+                          int num_clusters = 16, int sample_count = 0,
+                          int n_iters = 20)
+      : enable_rotate_(enable_rotate),
+        total_bits_(total_bits),
+        num_clusters_(num_clusters),
+        sample_count_(sample_count),
+        n_iters_(n_iters) {}
+
+  int total_bits() const {
+    return total_bits_;
+  }
+  int num_clusters() const {
+    return num_clusters_;
+  }
+  int sample_count() const {
+    return sample_count_;
+  }
+  int n_iters() const {
+    return n_iters_;
+  }
 
   bool enable_rotate() const {
     return enable_rotate_;
@@ -139,7 +159,10 @@ class QuantizerParam {
   }
 
   bool operator==(const QuantizerParam &other) const {
-    return enable_rotate_ == other.enable_rotate_;
+    return enable_rotate_ == other.enable_rotate_ &&
+           total_bits_ == other.total_bits_ &&
+           num_clusters_ == other.num_clusters_ &&
+           sample_count_ == other.sample_count_ && n_iters_ == other.n_iters_;
   }
 
   bool operator!=(const QuantizerParam &other) const {
@@ -150,6 +173,12 @@ class QuantizerParam {
   // When enabled, vectors are rotated before INT8 quantization to reduce
   // quantization error. Only effective with quantize_type=INT8.
   bool enable_rotate_{false};
+  // Used by standard HNSW/IVF with RABITQ; IVF's top-level bits and sample
+  // count remain authoritative for compatibility with its existing API.
+  int total_bits_{7};
+  int num_clusters_{16};
+  int sample_count_{0};
+  int n_iters_{20};
 };
 
 /*
@@ -242,10 +271,7 @@ class ZVEC_API HnswIndexParams : public VectorIndexParams {
 
  public:
   Ptr clone() const override {
-    return std::make_shared<HnswIndexParams>(
-        metric_type_, m_, ef_construction_, quantize_type_,
-        use_contiguous_memory_, quantizer_param_, use_flat_contiguous_memory_,
-        flat_data_type_);
+    return std::make_shared<HnswIndexParams>(*this);
   }
 
   std::string to_string() const override {
@@ -318,7 +344,16 @@ class ZVEC_API HnswIndexParams : public VectorIndexParams {
     return flat_data_type_;
   }
 
+  // Build-only provider: shared while training/building, never persisted.
+  const core::IndexProvider::Pointer &raw_vector_provider() const {
+    return raw_vector_provider_;
+  }
+  void set_raw_vector_provider(core::IndexProvider::Pointer provider) {
+    raw_vector_provider_ = std::move(provider);
+  }
+
  protected:
+  core::IndexProvider::Pointer raw_vector_provider_;
   int m_;
   int ef_construction_;
   // When enabled, HNSW streamer allocates a single contiguous memory arena

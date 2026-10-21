@@ -1330,6 +1330,9 @@ zvec_index_params_t *zvec_index_params_create(zvec_index_type_t index_type) {
                   zvec::core_interface::kDefaultHnswEfConstruction,  // ef_construction
                   zvec::QuantizeType::UNDEFINED);
           break;
+        case ZVEC_INDEX_TYPE_HNSW_RABITQ:
+          cpp_params = new zvec::HnswRabitqIndexParams(zvec::MetricType::L2);
+          break;
         case ZVEC_INDEX_TYPE_IVF:
           cpp_params =
               new zvec::IVFIndexParams(zvec::MetricType::L2,  // metric_type
@@ -1860,6 +1863,48 @@ zvec_error_code_t zvec_index_params_get_ivf_params(const zvec_index_params_t *pa
   if (out_n_list) *out_n_list = ivf_params->n_list();
   if (out_n_iters) *out_n_iters = ivf_params->n_iters();
   if (out_use_soar) *out_use_soar = ivf_params->use_soar();
+  return ZVEC_OK;
+}
+
+// Shared Turbo RaBitQ settings for the ordinary HNSW and IVF indexes.
+zvec_error_code_t zvec_index_params_set_rabitq_quantizer_params(
+    zvec_index_params_t *params, int total_bits, int num_clusters,
+    int sample_count, int n_iters) {
+  auto *p = dynamic_cast<zvec::VectorIndexParams *>(
+      reinterpret_cast<zvec::IndexParams *>(params));
+  if (!p || (p->type() != zvec::IndexType::HNSW && p->type() != zvec::IndexType::IVF) ||
+      p->quantize_type() != zvec::QuantizeType::RABITQ ||
+      total_bits < 1 || total_bits > 9 || num_clusters <= 0 ||
+      sample_count < 0 || n_iters <= 0) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+        "Expected HNSW/IVF with RABITQ, total_bits in [1, 9], positive num_clusters/n_iters, nonnegative sample_count");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  p->set_quantizer_param(zvec::QuantizerParam(p->enable_rotate(), total_bits,
+                                            num_clusters, sample_count, n_iters));
+  if (auto *ivf = dynamic_cast<zvec::IVFIndexParams *>(p)) {
+    ivf->set_total_bits(total_bits);
+    ivf->set_sample_count(sample_count);
+  }
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_index_params_get_rabitq_quantizer_params(
+    const zvec_index_params_t *params, int *total_bits, int *num_clusters,
+    int *sample_count, int *n_iters) {
+  const auto *p = dynamic_cast<const zvec::VectorIndexParams *>(
+      reinterpret_cast<const zvec::IndexParams *>(params));
+  if (!p || (p->type() != zvec::IndexType::HNSW && p->type() != zvec::IndexType::IVF) ||
+      p->quantize_type() != zvec::QuantizeType::RABITQ) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Expected HNSW/IVF with RABITQ");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  const auto &q = p->quantizer_param();
+  const auto *ivf = dynamic_cast<const zvec::IVFIndexParams *>(p);
+  if (total_bits) *total_bits = ivf ? ivf->total_bits() : q.total_bits();
+  if (sample_count) *sample_count = ivf ? ivf->sample_count() : q.sample_count();
+  if (num_clusters) *num_clusters = q.num_clusters();
+  if (n_iters) *n_iters = q.n_iters();
   return ZVEC_OK;
 }
 

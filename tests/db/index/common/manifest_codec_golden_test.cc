@@ -1162,3 +1162,22 @@ TEST(ManifestCodecGolden, IvfRabitqQuantizationRoundTrip) {
   EXPECT_EQ(1234, decoded->sample_count());
   EXPECT_EQ(params, *params.clone());
 }
+
+TEST(ManifestCodecRabitqTest, QuantizerSettingsRoundTrip) {
+  using namespace zvec;
+  QuantizerParam q(false, 3, 4, 24, 6);
+  HnswIndexParams hnsw(MetricType::L2, 16, 100, QuantizeType::RABITQ, false, q);
+  IVFIndexParams ivf(MetricType::L2, 8, 10, false, QuantizeType::RABITQ, q, 3,
+                     24);
+  for (const IndexParams *params :
+       {static_cast<IndexParams *>(&hnsw), static_cast<IndexParams *>(&ivf)}) {
+    std::string encoded;
+    ManifestCodec::EncodeIndexParams(params, &encoded);
+    auto decoded = ManifestCodec::DecodeIndexParams(encoded);
+    ASSERT_NE(decoded, nullptr);
+    auto vector = std::dynamic_pointer_cast<VectorIndexParams>(decoded);
+    ASSERT_NE(vector, nullptr);
+    EXPECT_EQ(vector->quantizer_param(), q);
+    EXPECT_TRUE(*params == *decoded);
+  }
+}
