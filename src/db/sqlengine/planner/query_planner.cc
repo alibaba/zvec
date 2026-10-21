@@ -434,8 +434,14 @@ Result<PlanInfo::Ptr> QueryPlanner::make_physical_plan(
 
   // multi segment logic
   ailego::ThreadPool *pool = GlobalResource::Instance().query_thread_pool();
+  // Scalar LIMIT can finish without reading every segment. Scored searches
+  // and grouping still need all candidates before the final result is known.
+  std::optional<int64_t> row_limit;
+  if (!has_vector && !has_fts && !has_group_by) {
+    row_limit = topn;
+  }
   auto recall_node =
-      std::make_shared<SegmentNode>(std::move(segment_plans), pool);
+      std::make_shared<SegmentNode>(std::move(segment_plans), pool, row_limit);
   auto source_node_options =
       arrow::acero::SourceNodeOptions{recall_node->schema(), recall_node->gen(),
                                       arrow::compute::Ordering::Implicit()};

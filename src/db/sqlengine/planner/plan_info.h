@@ -19,6 +19,7 @@
 #include <string>
 #include <arrow/acero/api.h>
 #include <arrow/acero/exec_plan.h>
+#include <arrow/util/async_generator.h>
 #include <zvec/db/status.h>
 
 namespace zvec::sqlengine {
@@ -26,12 +27,18 @@ namespace zvec::sqlengine {
 class PlanInfo {
  public:
   using Ptr = std::shared_ptr<PlanInfo>;
+  using Batch = std::optional<arrow::compute::ExecBatch>;
+  using BatchGenerator = arrow::AsyncGenerator<Batch>;
 
   PlanInfo(arrow::acero::Declaration plan,
            std::shared_ptr<arrow::Schema> schema)
       : plan_(std::move(plan)), schema_(std::move(schema)) {}
 
-  Result<std::unique_ptr<arrow::RecordBatchReader>> execute_to_reader();
+  Result<std::unique_ptr<arrow::RecordBatchReader>> execute_to_reader(
+      bool use_threads = false);
+
+  // Stream a child plan without blocking an Arrow CPU worker on ReadNext().
+  arrow::Result<BatchGenerator> execute_to_generator();
 
   std::shared_ptr<arrow::Schema> schema() const {
     return schema_;

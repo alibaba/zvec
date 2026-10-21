@@ -128,6 +128,44 @@ TEST_F(QueryInfoTest, BasicQueryRequest) {
   EXPECT_EQ(query.target_.query_params_, vector_cond->query_params());
 }
 
+TEST_F(QueryInfoTest, QueryStateOwnsAsyncInputs) {
+  QueryInfo::Ptr info;
+  std::weak_ptr<CollectionSchema> schema_lifetime;
+  const std::string vector(4 * sizeof(float), 'v');
+  {
+    auto owned_schema = std::make_shared<CollectionSchema>(*schema);
+    schema_lifetime = owned_schema;
+    SearchQuery query;
+    query.topk_ = 10;
+    query.target_.field_name_ = "face_feature";
+    query.target_.set_vector(vector);
+    SQLEngineImpl engine(std::make_shared<Profiler>());
+    auto result = engine.build_query_info(owned_schema, query, nullptr);
+    ASSERT_TRUE(result.has_value()) << result.error().c_str();
+    info = std::move(result.value());
+    // Reusing the request must not overwrite buffers read by a pending plan.
+    query.target_.set_vector(std::string(vector.size(), 'x'));
+    EXPECT_EQ(info->vector_cond_info()->vector_term(), vector);
+  }
+  EXPECT_FALSE(schema_lifetime.expired());
+  EXPECT_EQ(info->vector_cond_info()->vector_term(), vector);
+  EXPECT_EQ(info->vector_cond_info()->vector_field_name(), "face_feature");
+  info.reset();
+  EXPECT_TRUE(schema_lifetime.expired());
+}
+
+TEST_F(QueryInfoTest, SparseQueryBuffersSurviveRequestReuse) {
+  std::string indices(4 * sizeof(uint32_t), 'i');
+  std::string values(4 * sizeof(float), 'v');
+  QueryInfo::QueryVectorCondInfo cond(schema->get_field("face_feature"), {},
+                                      core::IndexMeta::DataType::DT_FP32, 4,
+                                      indices, values, nullptr);
+  indices.assign(indices.size(), 'x');
+  values.assign(values.size(), 'x');
+  EXPECT_EQ(cond.vector_sparse_indices(), std::string(indices.size(), 'i'));
+  EXPECT_EQ(cond.vector_sparse_values(), std::string(values.size(), 'v'));
+}
+
 TEST_F(QueryInfoTest, QueryRequestWithFilter) {
   SearchQuery query;
   query.output_fields_ = {"*"};

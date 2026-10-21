@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "db/sqlengine/planner/segment_node.h"
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <arrow/record_batch.h>
@@ -25,61 +26,53 @@ namespace cp = arrow::compute;
 
 arrow::AsyncGenerator<std::optional<arrow::compute::ExecBatch>>
 SegmentNode::gen() {
-  return [self = shared_from_this()]()
-             -> arrow::Future<std::optional<arrow::compute::ExecBatch>> {
-    if (!self->prepared_.exchange(true)) {
-      auto status = self->prepare();
-      if (!status.ok()) {
-        return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-            arrow::Status::ExecutionError("prepare segment node failed:",
-                                          status.c_str()));
-      }
+  return [self = shared_from_this()]() -> arrow::Future<PlanInfo::Batch> {
+    // A downstream fetch can stop after its limit, but the source may already
+    // be awaiting the next segment. Stop here before starting that extra read.
+    if (self->remaining_rows_ && *self->remaining_rows_ == 0) {
+      return PlanInfo::Batch{};
     }
-    // process backward
-    std::shared_ptr<arrow::RecordBatch> batch;
-    while (!self->readers_.empty()) {
-      auto &back = self->readers_.back();
-      auto status = back->ReadNext(&batch);
-      if (!status.ok()) {
-        return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-            arrow::Status::ExecutionError("read next batch failed:",
-                                          status.ToString()));
-      }
-      if (batch == nullptr) {
-        LOG_DEBUG("batch finished: %p", back.get());
-        self->readers_.pop_back();
-        continue;
-      }
-      LOG_INFO("Segment batch: %p %s", back.get(), batch->ToString().c_str());
-      cp::ExecBatch exec_batch(*batch);
-      return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-          std::move(exec_batch));
-    };
-    // 返回空的optional表示结束
-    return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-        std::nullopt);
+    if (!self->prepared_.exchange(true)) {
+      self->prepare();
+    }
+    return arrow::Loop(
+        [self]() -> arrow::Future<arrow::ControlFlow<PlanInfo::Batch>> {
+          // Process backwards to preserve the existing segment order.
+          if (self->generators_.empty()) {
+            // An empty optional marks the end of the stream.
+            return arrow::Break(PlanInfo::Batch{});
+          }
+          return self->generators_.back()
+              .Then([](const PlanInfo::BatchGenerator &generator) {
+                return generator();
+              })
+              .Then([self](const PlanInfo::Batch &batch)
+                        -> arrow::ControlFlow<PlanInfo::Batch> {
+                if (batch) {
+                  if (self->remaining_rows_) {
+                    *self->remaining_rows_ -=
+                        std::min(*self->remaining_rows_, batch->length);
+                  }
+                  return arrow::Break(batch);
+                }
+                self->generators_.pop_back();
+                return std::nullopt;
+              });
+        });
   };
 }
 
-Status SegmentNode::prepare() {
+void SegmentNode::prepare() {
   auto group = thread_pool_->make_group();
-
-  std::vector<Result<std::unique_ptr<arrow::RecordBatchReader>>> results;
-  results.resize(segment_plans_.size());
-  for (size_t i = 0; i < segment_plans_.size(); i++) {
-    auto &plan = segment_plans_[i];
-    group->execute([&, i]() { results[i] = plan->execute_to_reader(); });
+  // Submit the first consumed segment first. Creation and batch production
+  // complete independently; source callbacks return their pending futures.
+  for (size_t i = segment_plans_.size(); i > 0; --i) {
+    auto ready = arrow::Future<PlanInfo::BatchGenerator>::Make();
+    generators_[i - 1] = ready;
+    group->execute([plan = segment_plans_[i - 1], ready]() mutable {
+      ready.MarkFinished(plan->execute_to_generator());
+    });
   }
-  group->wait_finish();
-  for (size_t i = 0; i < segment_plans_.size(); i++) {
-    auto &result = results[i];
-    if (!result) {
-      return result.error();
-    }
-    readers_[i] = std::move(result.value());
-  }
-  return Status::OK();
 }
-
 
 }  // namespace zvec::sqlengine
