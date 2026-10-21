@@ -78,8 +78,8 @@ Prefer a visual tool? Try **[Zvec Studio](https://github.com/zvec-ai/zvec-studio
 
 **Linux · macOS · Windows · Android · iOS**
 
-Embed Zvec in server, desktop, and mobile applications.
-[Platform details →](https://zvec.org/en/docs/db/platforms/)
+Embed Zvec in server, desktop, and mobile applications.<br>
+[Platform Support and Compatibility](https://zvec.org/en/docs/db/platforms/)
 
 ### 🛠️ Building from Source
 

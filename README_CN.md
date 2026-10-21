@@ -81,8 +81,8 @@ Zvec 提供多语言官方 SDK：
 
 **Linux · macOS · Windows · Android · iOS**
 
-将 Zvec 嵌入服务端、桌面或移动应用。
-[查看平台详情 →](https://zvec.org/zh/docs/db/platforms/)
+将 Zvec 嵌入服务端、桌面或移动应用。<br>
+[平台支持与兼容性说明](https://zvec.org/zh/docs/db/platforms/)
 
 ### 🛠️ 源码构建
 
