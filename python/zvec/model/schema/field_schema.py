@@ -238,6 +238,9 @@ class VectorSchema:
                 f"Invalid schema: field name must be str, got {type(name).__name__}"
             )
 
+        if dimension is None:
+            dimension = 0
+
         if not isinstance(dimension, int) or dimension < 0:
             raise ValueError("Invalid schema: vector's dimension must be >= 0")
 
