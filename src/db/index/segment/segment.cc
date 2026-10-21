@@ -4609,7 +4609,17 @@ Result<Segment::Ptr> Segment::CreateAndOpen(
   }
 
   auto s = segment->create(options, min_doc_id);
-  CHECK_RETURN_STATUS_EXPECTED(s);
+  if (!s.ok()) {
+    // This invocation created the directory. Retire its partial segment so
+    // repeated failed creations do not retain another directory each time.
+    auto cleanup_status = segment->destroy();
+    if (!cleanup_status.ok()) {
+      return tl::make_unexpected(Status::InternalError(
+          s.message(),
+          "; failed segment retirement: ", cleanup_status.message()));
+    }
+    return tl::make_unexpected(s);
+  }
 
   return segment;
 }
