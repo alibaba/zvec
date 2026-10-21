@@ -262,16 +262,16 @@ TEST_F(BufferReadStorageTest, BorrowedReadAvoidsOwningHandleOnResidentPage) {
   block.reset();
 }
 
-TEST_F(BufferReadStorageTest, PointerReadPinsUntilNextPointerRead) {
+TEST_F(BufferReadStorageTest, MemoryBlockPinsUntilReset) {
   auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
   auto segment = storage->get("payload");
   ASSERT_NE(segment, nullptr);
-  const void *data = nullptr;
-  ASSERT_EQ(64u, segment->read(0, &data, 64));
-  ASSERT_NE(data, nullptr);
-  EXPECT_EQ(0, std::memcmp(payload_.data(), data, 64));
+  IndexStorage::MemoryBlock data;
+  ASSERT_EQ(64u, segment->read(0, data, 64));
+  ASSERT_NE(data.data(), nullptr);
+  EXPECT_EQ(0, std::memcmp(payload_.data(), data.data(), 64));
   auto &pool = ailego::MemoryLimitPool::get_instance();
   const size_t external_charge = pool.available();
   ASSERT_GT(external_charge, 0u);
@@ -281,6 +281,9 @@ TEST_F(BufferReadStorageTest, PointerReadPinsUntilNextPointerRead) {
   IndexStorage::SegmentData copied(0, 64);
   ASSERT_TRUE(segment->read(&copied, 1));
   EXPECT_EQ(0, std::memcmp(payload_.data(), copied.data, 64));
+  EXPECT_EQ(0, std::memcmp(payload_.data(), data.data(), 64));
+  EXPECT_FALSE(pool.try_charge_external(1));
+  data.reset();
   bool charged_after_pin_release = false;
   for (size_t attempt = 0; attempt < 100 && !charged_after_pin_release;
        ++attempt) {
@@ -296,7 +299,7 @@ TEST_F(BufferReadStorageTest, PointerReadPinsUntilNextPointerRead) {
   EXPECT_TRUE(charged_after_pin_release);
 }
 
-TEST_F(BufferReadStorageTest, PointerReadsUsePerThreadScratchBuffers) {
+TEST_F(BufferReadStorageTest, MemoryBlockReadsAreIndependentAcrossThreads) {
   auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
@@ -310,9 +313,9 @@ TEST_F(BufferReadStorageTest, PointerReadsUsePerThreadScratchBuffers) {
   std::array<std::thread, 2> readers;
   for (size_t i = 0; i < readers.size(); ++i) {
     readers[i] = std::thread([&, i] {
-      const void *data = nullptr;
-      if (segment->read(kOffsets[i], &data, kReadSize) != kReadSize ||
-          data == nullptr) {
+      IndexStorage::MemoryBlock data;
+      if (segment->read(kOffsets[i], data, kReadSize) != kReadSize ||
+          data.data() == nullptr) {
         failed.store(true, std::memory_order_release);
         ready.fetch_add(1, std::memory_order_release);
         return;
@@ -321,7 +324,8 @@ TEST_F(BufferReadStorageTest, PointerReadsUsePerThreadScratchBuffers) {
       while (ready.load(std::memory_order_acquire) != readers.size()) {
         std::this_thread::yield();
       }
-      if (std::memcmp(data, payload_.data() + kOffsets[i], kReadSize) != 0) {
+      if (std::memcmp(data.data(), payload_.data() + kOffsets[i], kReadSize) !=
+          0) {
         failed.store(true, std::memory_order_release);
       }
     });

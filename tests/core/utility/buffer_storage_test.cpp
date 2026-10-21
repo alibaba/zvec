@@ -61,10 +61,10 @@ TEST(BufferStorage, General) {
   EXPECT_EQ("builder", meta2.builder_name());
   auto aaaa2 = read_storage->get("AAAA");
   ASSERT_TRUE(aaaa2);
-  const void *data;
-  EXPECT_EQ(hello.size(), aaaa2->read(0, &data, hello.size()));
+  IndexStorage::MemoryBlock data;
+  EXPECT_EQ(hello.size(), aaaa2->read(0, data, hello.size()));
   auto aaaa3 = aaaa2->clone();
   ASSERT_TRUE(aaaa3);
-  EXPECT_EQ(hello.size(), aaaa3->read(0, &data, hello.size()));
-  EXPECT_EQ(hello, std::string((const char *)data, hello.size()));
+  EXPECT_EQ(hello.size(), aaaa3->read(0, data, hello.size()));
+  EXPECT_EQ(hello, std::string((const char *)data.data(), hello.size()));
 }

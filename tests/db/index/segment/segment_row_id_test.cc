@@ -21,6 +21,7 @@
 #include <arrow/record_batch.h>
 #include <gtest/gtest.h>
 #include "db/common/constants.h"
+#include "db/index/storage/wal/wal_file.h"
 #include "segment_test_fixture.h"
 
 using namespace zvec;
@@ -230,5 +231,88 @@ TEST_P(SegmentTest, DocCountDeleteFilterWithNonZeroGlobalDocID) {
   EXPECT_EQ(segment->doc_count(delete_store_->make_filter()), 8);
 }
 
+
+TEST_P(SegmentTest, MapGlobalDocIDsInPlacePreservesPadding) {
+  auto segment = test::TestHelper::CreateSegmentWithDoc(
+      col_path_, *schema_, 0, 100, id_map_, delete_store_, version_manager_,
+      options_, 0, 10);
+  ASSERT_NE(segment, nullptr);
+
+  std::vector<int64_t> ids{9, 0, 3, 0, -1};
+  ASSERT_TRUE(segment->get_global_doc_ids(ids).ok());
+  EXPECT_EQ(ids, (std::vector<int64_t>{109, 100, 103, 100, -1}));
+  for (int64_t invalid : {-2, 10}) {
+    ids = {invalid};
+    EXPECT_EQ(segment->get_global_doc_ids(ids).code(),
+              StatusCode::INVALID_ARGUMENT);
+  }
+  ids.clear();
+  EXPECT_TRUE(segment->get_global_doc_ids(ids).ok());
+}
+
+TEST_P(SegmentTest, ReadOnlyIdentityDocIDsInitializedDuringOpen) {
+  struct Case {
+    uint64_t first_doc_id;
+    uint32_t count;
+    bool identity;
+  };
+  const std::vector<Case> cases{{0, 0, true}, {0, 4, true}, {100, 4, false}};
+  for (size_t i = 0; i < cases.size(); ++i) {
+    const auto &test_case = cases[i];
+    SCOPED_TRACE(i);
+    auto writer = test::TestHelper::CreateSegmentWithDoc(
+        col_path_, *schema_, i, test_case.first_doc_id, id_map_, delete_store_,
+        version_manager_, options_, test_case.first_doc_id, test_case.count);
+    ASSERT_NE(writer, nullptr);
+    ASSERT_TRUE(writer->flush().ok());
+    auto meta = writer->meta();
+    writer.reset();
+
+    auto read_options = options_;
+    read_options.read_only_ = true;
+    auto opened = Segment::Open(col_path_, *schema_, *meta, id_map_,
+                                delete_store_, version_manager_, read_options);
+    ASSERT_TRUE(opened) << opened.error().message();
+    EXPECT_EQ(opened.value()->doc_count(), test_case.count);
+    EXPECT_EQ(opened.value()->has_identity_doc_ids(), test_case.identity);
+  }
+}
+
+TEST_P(SegmentTest, ReadOnlyIdentityDocIDsIncludeRecoveredWal) {
+  CollectionSchema wal_schema(col_name_);
+  wal_schema.add_field(
+      std::make_shared<FieldSchema>("id", DataType::INT32, false));
+  auto writer = test::TestHelper::CreateSegmentWithDoc(
+      col_path_, wal_schema, 0, 100, id_map_, delete_store_, version_manager_,
+      options_, 100, 0);
+  ASSERT_NE(writer, nullptr);
+  auto meta = writer->meta();
+  writer.reset();
+
+  // Persisted doc IDs are empty (identity), but WAL recovery adds ID 100.
+  // Computing the flag before recovery would incorrectly keep it true.
+  const auto wal_path = FileHelper::MakeWalPath(
+      col_path_, meta->id(), meta->writing_forward_block()->id());
+  WalFilePtr wal;
+  ASSERT_EQ(WalFile::CreateAndOpen(wal_path, WalOptions{0, true}, &wal), 0);
+  ASSERT_NE(wal, nullptr);
+  auto doc = test::TestHelper::CreateDoc(100, wal_schema);
+  doc.set_operator(Operator::INSERT);
+  auto serialized = doc.serialize();
+  ASSERT_EQ(wal->append(std::string(serialized.begin(), serialized.end())), 0);
+  ASSERT_EQ(wal->close(), 0);
+  wal.reset();
+
+  auto read_options = options_;
+  read_options.read_only_ = true;
+  auto opened = Segment::Open(col_path_, wal_schema, *meta, id_map_,
+                              delete_store_, version_manager_, read_options);
+  ASSERT_TRUE(opened) << opened.error().message();
+  EXPECT_EQ(opened.value()->doc_count(), 1);
+  EXPECT_FALSE(opened.value()->has_identity_doc_ids());
+  std::vector<int64_t> ids{0, -1};
+  ASSERT_TRUE(opened.value()->get_global_doc_ids(ids).ok());
+  EXPECT_EQ(ids, (std::vector<int64_t>{100, -1}));
+}
 
 INSTANTIATE_TEST_SUITE_P(MMapTest, SegmentTest, testing::Values(true, false));

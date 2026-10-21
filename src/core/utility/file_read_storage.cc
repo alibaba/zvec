@@ -99,18 +99,6 @@ class FileReadStorage : public IndexStorage {
     }
 
     //! Read data from segment
-    size_t read(size_t offset, const void **data, size_t len) override {
-      if (ailego_unlikely(offset + len > region_size_)) {
-        if (offset > region_size_) {
-          offset = region_size_;
-        }
-        len = region_size_ - offset;
-      }
-      buffer_.reserve(len);
-      *data = buffer_.data();
-      return file_ptr_->read(data_offset_ + offset, (void *)*data, len);
-    }
-
     size_t read(size_t offset, MemoryBlock &data, size_t len) override {
       if (ailego_unlikely(offset + len > region_size_)) {
         if (offset > region_size_) {
@@ -118,9 +106,16 @@ class FileReadStorage : public IndexStorage {
         }
         len = region_size_ - offset;
       }
-      buffer_.reserve(len);
-      data.reset(buffer_.data());
-      return file_ptr_->read(data_offset_ + offset, (void *)data.data(), len);
+      data.reset();
+      if (len == 0) {
+        return 0;
+      }
+      void *buffer = ailego_malloc(len);
+      if (buffer == nullptr) {
+        return 0;
+      }
+      data = MemoryBlock::MakeOwned(buffer, len);
+      return file_ptr_->read(data_offset_ + offset, buffer, len);
     }
 
     //! Read data from segment
@@ -220,17 +215,6 @@ class FileReadStorage : public IndexStorage {
     }
 
     //! Read data from segment
-    size_t read(size_t offset, const void **data, size_t len) override {
-      if (ailego_unlikely(offset + len > region_size_)) {
-        if (offset > region_size_) {
-          offset = region_size_;
-        }
-        len = region_size_ - offset;
-      }
-      *data = data_ + offset;
-      return len;
-    }
-
     size_t read(size_t offset, MemoryBlock &data, size_t len) override {
       if (ailego_unlikely(offset + len > region_size_)) {
         if (offset > region_size_) {

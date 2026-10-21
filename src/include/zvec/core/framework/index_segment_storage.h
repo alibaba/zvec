@@ -88,10 +88,6 @@ class IndexSegmentStorage : public IndexStorage {
     }
 
     //! Read data from segment
-    size_t read(size_t offset, const void **data, size_t len) override {
-      return parent_->read(data_offset_ + offset, data, len);
-    }
-
     size_t read(size_t offset, MemoryBlock &data, size_t len) override {
       return parent_->read(data_offset_ + offset, data, len);
     }
@@ -169,8 +165,12 @@ class IndexSegmentStorage : public IndexStorage {
       return IndexError_NoReady;
     }
 
-    auto read_data = [this](size_t offset, const void **data, size_t len) {
-      return this->parent_->read(offset, data, len);
+    MemoryBlock block;
+    auto read_data = [this, &block](size_t offset, const void **data,
+                                    size_t len) {
+      size_t size = this->parent_->read(offset, block, len);
+      *data = block.data();
+      return size;
     };
 
     IndexUnpacker unpacker;

@@ -81,6 +81,7 @@ jobs:
             zvec-sdk-linux-musl-amd64.tar.gz
             zvec-sdk-linux-musl-arm64.tar.gz
             zvec-sdk-windows-amd64.zip
+            zvec-sdk-windows-arm64.zip
             zvec-sdk-android-arm64.tar.gz
             zvec-sdk-ios.zip
           )
@@ -105,8 +106,8 @@ jobs:
           # libzvec_c_api.so, so the exact tag must appear in the binary.
           # This catches a missing tag input (silent v0.0.0 fallback) before
           # anything is published.
-          # Jieba dict: the jieba FTS tokenizer needs these files at runtime;
-          # they must ship under data/jieba_dict (see CMakeLists.txt).
+          # Jieba's default dictionary and HMM model must work from the
+          # packaged libraries, verified by the Chinese FTS smoke test below.
           SDK_DIR=prebuilt-artifacts/zvec-sdk-linux-amd64
           mkdir -p "$SDK_DIR/extracted"
           tar xzf "$SDK_DIR"/zvec-sdk-linux-amd64.tar.gz -C "$SDK_DIR/extracted"
@@ -121,13 +122,12 @@ jobs:
             exit 1
           fi
           echo "Embedded version matches release tag: $EXPECTED_TAG"
-          for dict_file in jieba.dict.utf8 hmm_model.utf8; do
-            if [ ! -f "$SDK_DIR/extracted/data/jieba_dict/$dict_file" ]; then
-              echo "::error::data/jieba_dict/$dict_file missing from the linux-amd64 SDK"
-              exit 1
-            fi
-          done
-          echo "Jieba dict files present in the SDK"
+          SMOKE_BUILD="$RUNNER_TEMP/release-sdk-smoke-build"
+          cmake -S .github/cmake/sdk-smoke -B "$SMOKE_BUILD" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DZVEC_SDK_DIR="$GITHUB_WORKSPACE/$SDK_DIR/extracted"
+          cmake --build "$SMOKE_BUILD" --parallel 2
+          ctest --test-dir "$SMOKE_BUILD" --output-on-failure
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3

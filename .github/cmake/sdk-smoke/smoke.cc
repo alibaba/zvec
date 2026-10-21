@@ -33,6 +33,9 @@ int main() {
   schema.add_field(std::make_shared<FieldSchema>(
       "sparse_embedding", DataType::SPARSE_VECTOR_FP32, 0, false,
       std::make_shared<HnswIndexParams>(MetricType::IP)));
+  schema.add_field(
+      std::make_shared<FieldSchema>("content", DataType::STRING, false,
+                                    std::make_shared<FtsIndexParams>("jieba")));
 
   CollectionOptions options{false, true};
   auto create_result =
@@ -42,6 +45,10 @@ int main() {
   }
   auto collection = std::move(create_result).value();
 
+  const std::vector<std::string> contents{
+      u8"\u6211\u7231\u5317\u4eac\u5929\u5b89\u95e8",
+      u8"\u5357\u4eac\u5e02\u957f\u6c5f\u5927\u6865",
+      u8"\u81ea\u7136\u8bed\u8a00\u5904\u7406"};
   std::vector<Doc> docs;
   for (int i = 0; i < 3; ++i) {
     Doc doc;
@@ -51,6 +58,7 @@ int main() {
     doc.set<std::pair<std::vector<uint32_t>, std::vector<float>>>(
         "sparse_embedding", std::make_pair(std::vector<uint32_t>{1, 3},
                                            std::vector<float>{1.0F + i, 0.5F}));
+    doc.set<std::string>("content", contents[i]);
     docs.emplace_back(std::move(doc));
   }
 
@@ -92,6 +100,25 @@ int main() {
     return Fail("sparse query returned no documents");
   }
 
+  // The default dictionary and HMM model must work from the packaged
+  // library alone, including after the collection is reopened.
+  SearchQuery fts_query;
+  fts_query.topk_ = 3;
+  fts_query.target_.field_name_ = "content";
+  FtsClause fts_clause;
+  fts_clause.match_string_ = u8"\u5929\u5b89\u95e8";
+  fts_query.target_.clause_ = std::move(fts_clause);
+  auto fts_query_result = collection->query(fts_query);
+  if (!fts_query_result.has_value()) {
+    return Fail("Chinese FTS query failed: " +
+                fts_query_result.error().message());
+  }
+  if (fts_query_result.value().size() != 1 ||
+      fts_query_result.value()[0]->pk() != "doc_0" ||
+      fts_query_result.value()[0]->score() <= 0.0F) {
+    return Fail("Chinese FTS query did not return the expected document");
+  }
+
   if (!collection->close().ok()) {
     return Fail("close failed");
   }
@@ -113,6 +140,16 @@ int main() {
       reopened_sparse_query_result.value().empty()) {
     return Fail("sparse query after reopen returned no documents");
   }
+  auto reopened_fts_query_result = reopened->query(fts_query);
+  if (!reopened_fts_query_result.has_value()) {
+    return Fail("Chinese FTS query after reopen failed: " +
+                reopened_fts_query_result.error().message());
+  }
+  if (reopened_fts_query_result.value().size() != 1 ||
+      reopened_fts_query_result.value()[0]->pk() != "doc_0" ||
+      reopened_fts_query_result.value()[0]->score() <= 0.0F) {
+    return Fail("Chinese FTS query after reopen returned unexpected documents");
+  }
   if (!reopened->close().ok()) {
     return Fail("read-only close failed");
   }
@@ -123,8 +160,8 @@ int main() {
   if (!message) {
     return Fail("GetDefaultMessage() returned null");
   }
-  std::cout << "cpp_smoke: inserted, optimized, queried dense/sparse, and "
-               "reopened 3 docs"
+  std::cout << "cpp_smoke: inserted, optimized, queried dense/sparse/Chinese "
+               "FTS, and reopened 3 docs"
             << std::endl;
   std::cout << "cpp_smoke: StatusCode::OK -> " << message << std::endl;
   std::cout << "cpp_smoke: OK" << std::endl;

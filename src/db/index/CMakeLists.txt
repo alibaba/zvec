@@ -27,6 +27,7 @@ cc_library(
          Arrow::parquet_static
          Arrow::arrow_compute
          cppjieba
+         lz4
          snowball
          FastPFOR
          utf8proc

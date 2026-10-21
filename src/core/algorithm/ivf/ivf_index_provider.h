@@ -19,6 +19,7 @@
 #include <mutex>
 #include <new>
 #include <numeric>
+#include <string>
 #include <vector>
 #include <zvec/core/framework/index_searcher.h>
 #include "ivf_entity.h"
@@ -68,10 +69,17 @@ class IVFIndexProvider : public IndexProvider {
   // until this thread's next pointer-returning get_vector() on this provider,
   // provider destruction, or thread exit.
   const void *get_vector(uint64_t key) const override {
-    auto &buffer = thread_result_buffer();
-    std::lock_guard<std::mutex> lock(*read_mutex_);
-    return CopyVector(entity_, entity_->get_vector_by_key(key), element_size(),
-                      &buffer);
+    try {
+      auto &buffer = thread_result_buffer();
+      std::lock_guard<std::mutex> lock(*read_mutex_);
+      IndexStorage::MemoryBlock data;
+      if (entity_->get_vector_by_key(key, data) != 0) {
+        return nullptr;
+      }
+      return CopyVector(entity_, data.data(), element_size(), &buffer);
+    } catch (const std::bad_alloc &) {
+      return nullptr;
+    }
   }
 
   //! Return independently owned bytes, including for decoded Turbo postings.
@@ -79,8 +87,9 @@ class IVFIndexProvider : public IndexProvider {
                  IndexStorage::MemoryBlock &block) const override {
     auto buffer = std::make_shared<std::string>();
     std::lock_guard<std::mutex> lock(*read_mutex_);
-    if (!CopyVector(entity_, entity_->get_vector_by_key(key), element_size(),
-                    buffer.get())) {
+    IndexStorage::MemoryBlock data;
+    if (entity_->get_vector_by_key(key, data) != 0 ||
+        !CopyVector(entity_, data.data(), element_size(), buffer.get())) {
       return IndexError_ReadData;
     }
     block = IndexStorage::MemoryBlock::MakeSharedView(buffer->data(), buffer);
@@ -195,8 +204,9 @@ class IVFIndexProvider : public IndexProvider {
         return nullptr;
       }
       if (!vector_loaded_) {
-        if (!CopyVector(entity_, entity_->get_vector(local_id), element_size_,
-                        &vector_)) {
+        IndexStorage::MemoryBlock data;
+        if (entity_->get_vector(local_id, data) != 0 ||
+            !CopyVector(entity_, data.data(), element_size_, &vector_)) {
           status_ = IndexError_ReadData;
           return nullptr;
         }

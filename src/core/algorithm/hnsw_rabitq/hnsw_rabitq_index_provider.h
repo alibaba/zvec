@@ -84,7 +84,8 @@ class HnswRabitqIndexProvider : public IndexProvider {
     //! NOTICE: the vec feature will be changed after iterating to next, so
     //! the caller need to keep a copy of it before iterator to next vector
     const void *data() const override {
-      return entity_->get_vector(cur_id_);
+      return entity_->get_vector(cur_id_, block_) == 0 ? block_.data()
+                                                       : nullptr;
     }
 
     //! Test if the iterator is valid
@@ -122,6 +123,7 @@ class HnswRabitqIndexProvider : public IndexProvider {
    private:
     const HnswRabitqEntity::Pointer entity_;
     node_id_t cur_id_;
+    mutable IndexStorage::MemoryBlock block_;
   };
 
  private:

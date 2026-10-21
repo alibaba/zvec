@@ -53,10 +53,10 @@ TEST(MemoryDumper, General) {
 
   for (size_t i = 0; i < 10; ++i) {
     auto seg = container->get(std::to_string(i));
-    const void *data = nullptr;
-    EXPECT_EQ(seg->data_size(), seg->read(0, &data, seg->data_size()));
+    IndexStorage::MemoryBlock data;
+    EXPECT_EQ(seg->data_size(), seg->read(0, data, seg->data_size()));
 
     std::string hello = "Hello world!!! #" + std::to_string(i);
-    EXPECT_EQ(hello, std::string((const char *)data, seg->data_size()));
+    EXPECT_EQ(hello, std::string((const char *)data.data(), seg->data_size()));
   }
 }

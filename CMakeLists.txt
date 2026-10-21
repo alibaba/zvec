@@ -160,14 +160,11 @@ if(NOT ANDROID AND NOT IOS AND CMAKE_SIZEOF_VOID_P EQUAL 8
     set(RABITQ_AVX2_FLAGS "/arch:AVX2")
     set(RABITQ_AVX512_FLAGS "/arch:AVX512")
     set(RABITQ_AVX512_POPCNT_FLAGS "/arch:AVX512")
-    set(RABITQ_HNSW_AVX512_CORE_FLAGS "/arch:AVX512")
   else()
     set(RABITQ_AVX2_FLAGS "-mavx2;-mfma")
     set(RABITQ_AVX512_FLAGS "-mavx512f;-mavx512bw;-mavx512dq;-mfma")
     set(RABITQ_AVX512_POPCNT_FLAGS
         "-mavx512f;-mavx512bw;-mavx512dq;-mavx512vpopcntdq;-mfma")
-    set(RABITQ_HNSW_AVX512_CORE_FLAGS
-        "-mavx512f;-mavx512bw;-mavx512dq;-mavx2;-mfma")
   endif()
 
   # check_cxx_compiler_flag takes one argument, so the semicolon-separated
@@ -186,11 +183,6 @@ if(NOT ANDROID AND NOT IOS AND CMAKE_SIZEOF_VOID_P EQUAL 8
 
   if(RABITQ_SUPPORTED)
     add_definitions(-DRABITQ_SUPPORTED=1)
-    if(MSVC)
-      # rabitqlib's AVX2 rotator calls FHT kernels that only exist as MASM on
-      # MSVC; enable_language() must run in the top-level directory.
-      enable_language(ASM_MASM)
-    endif()
   else()
     add_definitions(-DRABITQ_SUPPORTED=0)
     message(STATUS "RaBitQ support disabled - compiler cannot build all runtime dispatch variants")
@@ -247,12 +239,6 @@ set(CPACK_PACKAGE_VERSION_PATCH ${ZVEC_VERSION_PATCH})
 set(CPACK_PACKAGE_NAME zvec)
 include(CPack)
 
-# cppjieba dict files bundled with installed artifacts so the `jieba` FTS
-# tokenizer works out of the box (source of truth for both the Python wheel
-# and the native SDK packages).
-set(ZVEC_JIEBA_DICT_SRC
-    "${PROJECT_SOURCE_DIR}/thirdparty/cppjieba/cppjieba-5.6.7/dict")
-
 if(BUILD_PYTHON_BINDINGS)
     if(APPLE)
         set(CMAKE_STRIP "")
@@ -281,24 +267,4 @@ if(BUILD_PYTHON_BINDINGS)
     # DiskAnn is now statically linked into _zvec.so via --whole-archive
     # (see src/binding/python/CMakeLists.txt -> core_knn_diskann_static),
     # so no separate runtime .so needs to be installed in the wheel.
-    # Bundle cppjieba's dictionary files so the `jieba` FTS tokenizer works
-    # out of the box. python/zvec/__init__.py resolves this directory via
-    # importlib.resources and registers it with set_default_jieba_dict_dir().
-    install(FILES
-        "${ZVEC_JIEBA_DICT_SRC}/jieba.dict.utf8"
-        "${ZVEC_JIEBA_DICT_SRC}/hmm_model.utf8"
-        DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec/data/jieba_dict
-        COMPONENT python)
 endif()
-
-# Ship the same dict files with the native SDK install (prebuilt packages)
-# as well, under <prefix>/data/jieba_dict (mirrors the wheel's
-# zvec/data/jieba_dict layout). Unlike Python there is no
-# import-time registration: consumers register the directory explicitly via
-# zvec_set_default_jieba_dict_dir() / zvec_config_data_set_jieba_dict_dir(),
-# the ZVEC_JIEBA_DICT_DIR env var, or per-field extra_params.jieba_dict_dir.
-# Default component, so the wheel build (COMPONENT python) is unaffected.
-install(FILES
-    "${ZVEC_JIEBA_DICT_SRC}/jieba.dict.utf8"
-    "${ZVEC_JIEBA_DICT_SRC}/hmm_model.utf8"
-    DESTINATION data/jieba_dict)
