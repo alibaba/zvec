@@ -14,7 +14,11 @@
 
 #pragma once
 
+#include <cctype>
+#include <cerrno>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 #include <zvec/ailego/string/string_concat_helper.h>
@@ -93,72 +97,211 @@ struct ZVEC_AILEGO_API StringHelper {
 
   //! Convert string to floating-point number (double)
   static bool ToDouble(const std::string &str, double *val) {
+    if (str.empty()) {
+      return false;
+    }
     char *endptr = nullptr;
-    *val = std::strtod(str.c_str(), &endptr);
-    return (endptr && *endptr == '\0');
+    errno = 0;
+    double res = std::strtod(str.c_str(), &endptr);
+    if ((errno == ERANGE && (res == HUGE_VAL || res == -HUGE_VAL)) ||
+        endptr == str.c_str() || *endptr != '\0') {
+      return false;
+    }
+    if (val) {
+      *val = res;
+    }
+    return true;
   }
 
   //! Convert string to floating-point number (float)
   static bool ToFloat(const std::string &str, float *val) {
+    if (str.empty()) {
+      return false;
+    }
     char *endptr = nullptr;
-    *val = std::strtof(str.c_str(), &endptr);
-    return (endptr && *endptr == '\0');
+    errno = 0;
+    float res = std::strtof(str.c_str(), &endptr);
+    if ((errno == ERANGE && (res == HUGE_VALF || res == -HUGE_VALF)) ||
+        endptr == str.c_str() || *endptr != '\0') {
+      return false;
+    }
+    if (val) {
+      *val = res;
+    }
+    return true;
   }
 
   //! Convert string to integer number (int8_t)
   static bool ToInt8(const std::string &str, int8_t *val) {
+    if (str.empty()) {
+      return false;
+    }
     char *endptr = nullptr;
-    *val = static_cast<int8_t>(std::strtol(str.c_str(), &endptr, 0));
-    return (endptr && *endptr == '\0');
+    errno = 0;
+    long long v = std::strtoll(str.c_str(), &endptr, 0);
+    if (errno == ERANGE || endptr == str.c_str() || *endptr != '\0' ||
+        v < std::numeric_limits<int8_t>::min() ||
+        v > std::numeric_limits<int8_t>::max()) {
+      return false;
+    }
+    if (val) {
+      *val = static_cast<int8_t>(v);
+    }
+    return true;
   }
 
   //! Convert string to integer number (int16_t)
   static bool ToInt16(const std::string &str, int16_t *val) {
+    if (str.empty()) {
+      return false;
+    }
     char *endptr = nullptr;
-    *val = static_cast<int16_t>(std::strtol(str.c_str(), &endptr, 0));
-    return (endptr && *endptr == '\0');
+    errno = 0;
+    long long v = std::strtoll(str.c_str(), &endptr, 0);
+    if (errno == ERANGE || endptr == str.c_str() || *endptr != '\0' ||
+        v < std::numeric_limits<int16_t>::min() ||
+        v > std::numeric_limits<int16_t>::max()) {
+      return false;
+    }
+    if (val) {
+      *val = static_cast<int16_t>(v);
+    }
+    return true;
   }
 
   //! Convert string to integer number (int32_t)
   static bool ToInt32(const std::string &str, int32_t *val) {
+    if (str.empty()) {
+      return false;
+    }
     char *endptr = nullptr;
-    *val = static_cast<int32_t>(std::strtol(str.c_str(), &endptr, 0));
-    return (endptr && *endptr == '\0');
+    errno = 0;
+    long long v = std::strtoll(str.c_str(), &endptr, 0);
+    if (errno == ERANGE || endptr == str.c_str() || *endptr != '\0' ||
+        v < std::numeric_limits<int32_t>::min() ||
+        v > std::numeric_limits<int32_t>::max()) {
+      return false;
+    }
+    if (val) {
+      *val = static_cast<int32_t>(v);
+    }
+    return true;
   }
 
   //! Convert string to integer number (int64_t)
   static bool ToInt64(const std::string &str, int64_t *val) {
+    if (str.empty()) {
+      return false;
+    }
     char *endptr = nullptr;
-    *val = static_cast<int64_t>(std::strtoll(str.c_str(), &endptr, 0));
-    return (endptr && *endptr == '\0');
+    errno = 0;
+    long long v = std::strtoll(str.c_str(), &endptr, 0);
+    if (errno == ERANGE || endptr == str.c_str() || *endptr != '\0') {
+      return false;
+    }
+    if (val) {
+      *val = static_cast<int64_t>(v);
+    }
+    return true;
   }
 
   //! Convert string to unsigned integer number (uint8_t)
   static bool ToUint8(const std::string &str, uint8_t *val) {
+    if (str.empty()) {
+      return false;
+    }
+    const char *p = str.c_str();
+    while (std::isspace(static_cast<unsigned char>(*p))) {
+      ++p;
+    }
+    if (*p == '-') {
+      return false;
+    }
     char *endptr = nullptr;
-    *val = static_cast<uint8_t>(std::strtoul(str.c_str(), &endptr, 0));
-    return (endptr && *endptr == '\0');
+    errno = 0;
+    unsigned long long v = std::strtoull(str.c_str(), &endptr, 0);
+    if (errno == ERANGE || endptr == str.c_str() || *endptr != '\0' ||
+        v > std::numeric_limits<uint8_t>::max()) {
+      return false;
+    }
+    if (val) {
+      *val = static_cast<uint8_t>(v);
+    }
+    return true;
   }
 
   //! Convert string to unsigned integer number (uint16_t)
   static bool ToUint16(const std::string &str, uint16_t *val) {
+    if (str.empty()) {
+      return false;
+    }
+    const char *p = str.c_str();
+    while (std::isspace(static_cast<unsigned char>(*p))) {
+      ++p;
+    }
+    if (*p == '-') {
+      return false;
+    }
     char *endptr = nullptr;
-    *val = static_cast<uint16_t>(std::strtoul(str.c_str(), &endptr, 0));
-    return (endptr && *endptr == '\0');
+    errno = 0;
+    unsigned long long v = std::strtoull(str.c_str(), &endptr, 0);
+    if (errno == ERANGE || endptr == str.c_str() || *endptr != '\0' ||
+        v > std::numeric_limits<uint16_t>::max()) {
+      return false;
+    }
+    if (val) {
+      *val = static_cast<uint16_t>(v);
+    }
+    return true;
   }
 
   //! Convert string to unsigned integer number (uint32_t)
   static bool ToUint32(const std::string &str, uint32_t *val) {
+    if (str.empty()) {
+      return false;
+    }
+    const char *p = str.c_str();
+    while (std::isspace(static_cast<unsigned char>(*p))) {
+      ++p;
+    }
+    if (*p == '-') {
+      return false;
+    }
     char *endptr = nullptr;
-    *val = static_cast<uint32_t>(std::strtoul(str.c_str(), &endptr, 0));
-    return (endptr && *endptr == '\0');
+    errno = 0;
+    unsigned long long v = std::strtoull(str.c_str(), &endptr, 0);
+    if (errno == ERANGE || endptr == str.c_str() || *endptr != '\0' ||
+        v > std::numeric_limits<uint32_t>::max()) {
+      return false;
+    }
+    if (val) {
+      *val = static_cast<uint32_t>(v);
+    }
+    return true;
   }
 
   //! Convert string to unsigned integer number (uint64_t)
   static bool ToUint64(const std::string &str, uint64_t *val) {
+    if (str.empty()) {
+      return false;
+    }
+    const char *p = str.c_str();
+    while (std::isspace(static_cast<unsigned char>(*p))) {
+      ++p;
+    }
+    if (*p == '-') {
+      return false;
+    }
     char *endptr = nullptr;
-    *val = static_cast<uint64_t>(std::strtoull(str.c_str(), &endptr, 0));
-    return (endptr && *endptr == '\0');
+    errno = 0;
+    unsigned long long v = std::strtoull(str.c_str(), &endptr, 0);
+    if (errno == ERANGE || endptr == str.c_str() || *endptr != '\0') {
+      return false;
+    }
+    if (val) {
+      *val = static_cast<uint64_t>(v);
+    }
+    return true;
   }
 
   //! Convert floating-point number string (double)
