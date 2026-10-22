@@ -1774,30 +1774,45 @@ TEST_F(BufferPoolTest, ReusedGhostAdmissionRenewsHotHistory) {
 
 TEST_F(BufferPoolTest, ReusedPageSurvivesContinuousColdStream) {
   constexpr size_t kFilePages = 32;
-  init_vec_pool(/*capacity_pages=*/3, /*file_pages=*/kFilePages);
+  // Keep three resident pages at the low watermark of a four-page pool.
+  // Reclaim one page explicitly per cold read so background scheduling cannot
+  // change the policy assertions below.
+  init_vec_pool(/*capacity_pages=*/4, /*file_pages=*/kFilePages);
   std::string file = new_file(kFilePages);
 
   VecBufferPool pool(file, /*writable=*/false);
   ASSERT_EQ(pool.init(), 0);
   auto handle = pool.get_handle();
   std::vector<char> data(kVectorPageSize);
+  auto &queue = BlockEvictionQueue::get_instance();
 
-  for (size_t page = 1; page <= 4; ++page) {
+  for (size_t page = 1; page <= 3; ++page) {
     ASSERT_TRUE(handle.read_range(page * kVectorPageSize, kVectorPageSize,
                                   data.data()));
   }
-  ASSERT_GT(pool.stats().evict, 0u);
+  ASSERT_EQ(1u, queue.batch_recycle(1));
   ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
-  ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
-  for (size_t page = 5; page < kFilePages; ++page) {
-    ASSERT_TRUE(handle.read_range(page * kVectorPageSize, kVectorPageSize,
-                                  data.data()));
+  ASSERT_TRUE(MemoryLimitPool::get_instance().under_cache_pressure());
+  // Cover the thread-local sampling phase before testing retention. The hot
+  // page remains unpinned during every eviction in the cold stream.
+  for (size_t i = 0; i < 16; ++i) {
     ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
   }
+  ASSERT_EQ(VecBufferPool::kNormalPriority,
+            pool.page_table_.eviction_priority(0));
 
-  EXPECT_TRUE(pool.is_page_resident(0));
+  for (size_t page = 4; page < kFilePages; ++page) {
+    ASSERT_EQ(1u, queue.batch_recycle(1));
+    ASSERT_TRUE(pool.is_page_resident(0));
+    ASSERT_TRUE(handle.read_range(page * kVectorPageSize, kVectorPageSize,
+                                  data.data()));
+    ExpectPageContent(data.data(), page);
+    ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
+    ExpectPageContent(data.data(), 0);
+  }
+
   const auto stats = pool.stats();
-  EXPECT_LT(stats.miss, kFilePages + kFilePages / 2);
+  EXPECT_EQ(kFilePages, stats.miss);
   EXPECT_GT(stats.priority_promotions[VecBufferPool::kNormalPriority], 0u);
   EXPECT_GT(stats.evictions_by_priority[VecBufferPool::kLowPriority], 0u);
   EXPECT_EQ(0u, stats.evictions_by_priority[VecBufferPool::kNormalPriority]);
@@ -2126,6 +2141,38 @@ TEST_F(BufferPoolTest, BackgroundReclaimsToLowWatermark) {
   }
   EXPECT_LE(mp.stats().page_used, low + kVectorPageSize);
   EXPECT_GT(mp.stats().bg_evicted_buffers, 0u);
+}
+
+TEST_F(BufferPoolTest, BackgroundReclaimPreservesTinyWorkingSet) {
+  constexpr size_t kCapacityPages = 3;
+  init_vec_pool(kCapacityPages, /*file_pages=*/kCapacityPages);
+  std::string file = new_file(kCapacityPages);
+
+  VecBufferPool pool(file, /*writable=*/false);
+  ASSERT_EQ(pool.init(), 0);
+  auto handle = pool.get_handle();
+  auto &memory_pool = MemoryLimitPool::get_instance();
+  const uint64_t evicted_before = memory_pool.stats().bg_evicted_buffers;
+
+  // The first two pages are released before the third allocation triggers
+  // reclaim. A fixed 64-page batch would evict both (and possibly the third),
+  // although freeing one page is enough to reach the 2.25-page low watermark.
+  std::vector<char> data(kVectorPageSize);
+  for (size_t page = 0; page < kCapacityPages; ++page) {
+    ASSERT_TRUE(handle.read_range(page * kVectorPageSize, kVectorPageSize,
+                                  data.data()));
+    ExpectPageContent(data.data(), page);
+  }
+
+  // Observe completion of the batch, not just its first buffer release.
+  for (int i = 0;
+       i < 200 && memory_pool.stats().bg_evicted_buffers == evicted_before;
+       ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  const auto stats = memory_pool.stats();
+  EXPECT_EQ(1u, stats.bg_evicted_buffers - evicted_before);
+  EXPECT_EQ(2 * kVectorPageSize, stats.page_used);
 }
 
 TEST_F(BufferPoolTest, BackgroundBacksOffWhenAllPagesArePinned) {

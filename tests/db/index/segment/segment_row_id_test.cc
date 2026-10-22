@@ -14,6 +14,8 @@
 
 
 #include <cstdint>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <vector>
@@ -278,7 +280,7 @@ TEST_P(SegmentTest, ReadOnlyIdentityDocIDsInitializedDuringOpen) {
   }
 }
 
-TEST_P(SegmentTest, ReadOnlyIdentityDocIDsIncludeRecoveredWal) {
+TEST_P(SegmentTest, ReadOnlyIdentityDocIDsAfterWritableWalRecovery) {
   CollectionSchema wal_schema(col_name_);
   wal_schema.add_field(
       std::make_shared<FieldSchema>("id", DataType::INT32, false));
@@ -289,8 +291,7 @@ TEST_P(SegmentTest, ReadOnlyIdentityDocIDsIncludeRecoveredWal) {
   auto meta = writer->meta();
   writer.reset();
 
-  // Persisted doc IDs are empty (identity), but WAL recovery adds ID 100.
-  // Computing the flag before recovery would incorrectly keep it true.
+  // WAL recovery changes the empty identity mapping by adding doc ID 100.
   const auto wal_path = FileHelper::MakeWalPath(
       col_path_, meta->id(), meta->writing_forward_block()->id());
   WalFilePtr wal;
@@ -303,10 +304,34 @@ TEST_P(SegmentTest, ReadOnlyIdentityDocIDsIncludeRecoveredWal) {
   ASSERT_EQ(wal->close(), 0);
   wal.reset();
 
+  const auto read_wal = [&wal_path]() {
+    std::ifstream input(wal_path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(input),
+                       std::istreambuf_iterator<char>());
+  };
+  const auto wal_before = read_wal();
+  ASSERT_FALSE(wal_before.empty());
+
   auto read_options = options_;
   read_options.read_only_ = true;
   auto opened = Segment::Open(col_path_, wal_schema, *meta, id_map_,
                               delete_store_, version_manager_, read_options);
+  ASSERT_FALSE(opened);
+  EXPECT_EQ(opened.error().code(), StatusCode::FAILED_PRECONDITION);
+  EXPECT_NE(opened.error().message().find("requires WAL recovery"),
+            std::string::npos);
+  EXPECT_EQ(read_wal(), wal_before);
+
+  auto recovered = Segment::Open(col_path_, wal_schema, *meta, id_map_,
+                                 delete_store_, version_manager_, options_);
+  ASSERT_TRUE(recovered) << recovered.error().message();
+  EXPECT_EQ(recovered.value()->doc_count(), 1);
+  ASSERT_TRUE(recovered.value()->flush().ok());
+  meta = recovered.value()->meta();
+  recovered.value().reset();
+
+  opened = Segment::Open(col_path_, wal_schema, *meta, id_map_, delete_store_,
+                         version_manager_, read_options);
   ASSERT_TRUE(opened) << opened.error().message();
   EXPECT_EQ(opened.value()->doc_count(), 1);
   EXPECT_FALSE(opened.value()->has_identity_doc_ids());

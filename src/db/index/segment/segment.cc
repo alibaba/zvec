@@ -553,8 +553,7 @@ Status SegmentImpl::Open(const SegmentOptions &options) {
 
   fresh_persist_chunked_array();
 
-  // WAL recovery can append doc IDs even for a read-only open. Initialize
-  // this property only after recovery has finished, before publication.
+  // All persisted doc IDs must be loaded before checking identity.
   if (options_.read_only_) {
     has_identity_doc_ids_ = true;
     for (size_t i = 0; i < doc_ids_.size(); ++i) {
@@ -4304,11 +4303,13 @@ Status SegmentImpl::recover() {
   WalFilePtr recover_wal_file;
   WalOptions wal_option;
   wal_option.create_new = false;
+  wal_option.read_only = options_.read_only_;
   if (WalFile::CreateAndOpen(wal_file_path, wal_option, &recover_wal_file) !=
       0) {
     LOG_ERROR("WAL recovery failed: unable to open WAL file [%s]",
               wal_file_path.c_str());
-    return Status::OK();
+    return Status::InternalError("Failed to open WAL file for recovery: ",
+                                 wal_file_path);
   }
   std::array<uint64_t, static_cast<size_t>(Operator::DELETE) + 1>
       recovered_doc_count{};
@@ -4323,6 +4324,18 @@ Status SegmentImpl::recover() {
     return Status::InternalError(
         "Failed to prepare WAL file for reading: path[", wal_file_path,
         "], segment[", id(), "], ret[", ret, "]");
+  }
+
+  // WAL replay modifies persistent state, even for deletes, and requires
+  // an exclusive collection lock.
+  if (options_.read_only_) {
+    if (recover_wal_file->has_record()) {
+      return Status::FailedPrecondition(
+          "Collection requires WAL recovery; open with read_only=false and "
+          "close it before opening read-only. WAL path: ",
+          wal_file_path);
+    }
+    return Status::OK();
   }
 
   LOG_INFO("WAL recovery started: path[%s], segment[%d]", wal_file_path.c_str(),
@@ -4349,22 +4362,23 @@ Status SegmentImpl::recover() {
     Status status;
     switch (doc->get_operator()) {
       case Operator::INSERT: {
-        internal_insert(*doc);
+        status = internal_insert(*doc);
         break;
       }
       case Operator::UPDATE: {
-        internal_update(*doc);
+        status = internal_update(*doc);
         break;
       }
       case Operator::UPSERT: {
-        internal_upsert(*doc);
+        status = internal_upsert(*doc);
         break;
       }
       case Operator::DELETE: {
-        internal_delete(*doc);
+        status = internal_delete(*doc);
         break;
       }
       default:
+        status = Status::InvalidArgument("Unknown WAL operator");
         LOG_ERROR(
             "WAL record recovery failed: path[%s], segment[%d], record[%zu], "
             "operator[%d], reason[unknown operator]",
@@ -4379,7 +4393,7 @@ Status SegmentImpl::recover() {
           "operator[%d], reason[%s]",
           wal_file_path.c_str(), id(), (size_t)total_recovered_doc_count,
           static_cast<int>(doc->get_operator()), status.message().c_str());
-      continue;
+      return status;
     }
 
     recovered_doc_count[static_cast<size_t>(doc->get_operator())]++;

@@ -325,7 +325,10 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
     default: {
       if (use_external_vector_) {
         entity_ = std::make_unique<HnswExternalStreamerEntity>(stats_);
-      } else if (use_contiguous_memory_) {
+      } else if (use_contiguous_memory_ &&
+                 stg->name() == "MMapFileReadStorage") {
+        // Writable appends would leave cloned contexts using stale contiguous
+        // snapshots.
         entity_ = std::make_unique<HnswContiguousStreamerEntity>(stats_);
       } else {
         entity_ = std::make_unique<HnswMmapStreamerEntity>(stats_);

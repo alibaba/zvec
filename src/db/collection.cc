@@ -345,9 +345,10 @@ class CollectionImpl : public Collection {
   // destroy) without holding schema_handle_mtx_, so a maintenance
   // operation waiting for a running optimize never becomes a pending
   // exclusive acquirer of the schema lock (which would block new readers).
+  // Iterator creators share this lock; schema_handle_mtx_ guards snapshots.
   // Lock order: maintenance -> schema -> write -> SegmentManager; never
   // acquire maintenance_mtx_ after any of the others.
-  mutable std::mutex maintenance_mtx_;
+  mutable std::shared_mutex maintenance_mtx_;
 
   std::atomic<SegmentID> segment_id_allocator_;
   std::atomic<SegmentID> tmp_segment_id_allocator_;
@@ -2806,7 +2807,7 @@ Result<DocIterator::Ptr> CollectionImpl::create_iterator(
     const IteratorOptions &options) {
   // Iterators and maintenance operations are mutually exclusive (see the
   // contract in collection.h); fail fast instead of blocking here.
-  std::unique_lock maintenance_lock(maintenance_mtx_, std::try_to_lock);
+  std::shared_lock maintenance_lock(maintenance_mtx_, std::try_to_lock);
   if (!maintenance_lock.owns_lock()) {
     return tl::make_unexpected(Status::FailedPrecondition(
         "create_iterator is not allowed while a maintenance operation "
