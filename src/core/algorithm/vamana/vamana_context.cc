@@ -24,7 +24,6 @@ namespace {
 // Vamana resolves the shared query defaults against the loaded graph layout.
 // Keep this policy local to Vamana rather than exposing algorithm-tuning
 // constants through the public interface.
-constexpr uint32_t kPrefetchCacheLineBytes = 64;
 constexpr uint32_t kPrefetchBudgetBytes = 6 * 1024;
 constexpr uint32_t kPrefetchTargetLines = 2;
 constexpr uint32_t kPrefetchMaxValue = 256;
@@ -171,8 +170,7 @@ std::pair<uint32_t, uint32_t> VamanaContext::resolve_query_prefetch(
   }
 
   const uint32_t body_lines =
-      static_cast<uint32_t>((vector_data_size + kPrefetchCacheLineBytes - 1) /
-                            kPrefetchCacheLineBytes);
+      static_cast<uint32_t>(ailego_cache_line_count(vector_data_size));
 
   uint32_t resolved_lines;
   if (requested_lines == kDefaultPrefetchLines) {
@@ -184,7 +182,7 @@ std::pair<uint32_t, uint32_t> VamanaContext::resolve_query_prefetch(
   uint32_t resolved_offset;
   if (requested_offset == kDefaultPrefetchOffset) {
     const uint64_t bytes_per_neighbor =
-        static_cast<uint64_t>(kPrefetchCacheLineBytes) * resolved_lines;
+        static_cast<uint64_t>(AILEGO_CACHE_LINE_SIZE) * resolved_lines;
     const uint32_t budget_offset = static_cast<uint32_t>(
         std::max<uint64_t>(1, kPrefetchBudgetBytes / bytes_per_neighbor));
     resolved_offset = std::min({budget_offset, max_degree, kPrefetchMaxValue});

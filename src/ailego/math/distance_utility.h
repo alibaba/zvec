@@ -21,7 +21,8 @@ namespace ailego {
 
 /*! Four-bits Squared Difference Table
  */
-static const AILEGO_ALIGNED(64) uint8_t Int4SquaredDiffTable[256] = {
+static const AILEGO_ALIGNED(
+    AILEGO_CACHE_LINE_SIZE) uint8_t Int4SquaredDiffTable[256] = {
     0,  1,  4,   9,   16,  25,  36,  49,  64,  49,  36,  25,  16,  9,   4,  1,
     1,  0,  1,   4,   9,   16,  25,  36,  81,  64,  49,  36,  25,  16,  9,  4,
     4,  1,  0,   1,   4,   9,   16,  25,  100, 81,  64,  49,  36,  25,  16, 9,
@@ -42,7 +43,7 @@ static const AILEGO_ALIGNED(64) uint8_t Int4SquaredDiffTable[256] = {
 
 /*! Four-bits Integer Multiplication Table
  */
-static const AILEGO_ALIGNED(64) int8_t Int4MulTable[256] = {
+static const AILEGO_ALIGNED(AILEGO_CACHE_LINE_SIZE) int8_t Int4MulTable[256] = {
     0, 0,  0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
     0, 1,  2,   3,   4,   5,   6,   7,   -8,  -7,  -6,  -5,  -4,  -3,  -2,  -1,
     0, 2,  4,   6,   8,   10,  12,  14,  -16, -14, -12, -10, -8,  -6,  -4,  -2,

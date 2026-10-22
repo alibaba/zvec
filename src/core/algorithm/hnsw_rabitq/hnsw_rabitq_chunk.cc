@@ -131,13 +131,15 @@ int HnswRabitqChunkBroker::open(IndexStorage::Pointer stg,
 }
 
 int HnswRabitqChunkBroker::close() {
-  flush(0UL);
+  // A loaded, unmodified index must not acquire a new timestamp on close.
+  // Storage can still be dirty for a newly created index with no vectors.
+  int ret = stg_ && (dirty_ || stg_->is_dirty()) ? flush(0UL) : 0;
 
   stg_.reset();
   check_crc_ = false;
   dirty_ = false;
 
-  return 0;
+  return ret;
 }
 
 int HnswRabitqChunkBroker::flush(uint64_t checkpoint) {

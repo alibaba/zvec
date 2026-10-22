@@ -80,18 +80,20 @@ jobs:
             fi
           done
 
-      - name: Build required DiskAnn test targets
+      - name: Build required ARM64 index test targets
         run: |
           NPROC=$(sysctl -n hw.ncpu)
           BUILD_DIR=build_ios_${{ matrix.platform }}
           cmake --build "$BUILD_DIR" \
             --target diskann_mobile_compat_test diskann_mobile_collection_test \
+              hnsw_rabitq_streamer_test ivf_rabitq_streamer_test \
             --parallel "$NPROC"
 
-          for test_name in diskann_mobile_compat_test diskann_mobile_collection_test; do
+          for test_name in diskann_mobile_compat_test diskann_mobile_collection_test \
+            hnsw_rabitq_streamer_test ivf_rabitq_streamer_test; do
             test_app="$BUILD_DIR/bin/${test_name}.app"
             if [ ! -d "$test_app" ]; then
-              echo "::error::Missing required iOS DiskAnn test app: $test_app"
+              echo "::error::Missing required iOS index test app: $test_app"
               exit 1
             fi
           done

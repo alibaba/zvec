@@ -601,14 +601,14 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory() {
   const size_t vector_body_size = vector_data_size();
   const size_t extra_size = extra_values_size();
 
-  // Pad per-vector stride up to kVectorAlignment (64B) so every vector
+  // Pad per-vector stride up to the configured cache-line size so every vector
   // starts on a cache-line boundary.
   vector_stride_ =
       (vector_body_size + (kVectorAlignment - 1)) & ~(kVectorAlignment - 1);
   // Packed graph row: key + degree + adjacency.
   graph_stride_ = sizeof(key_t) + neighbors_size();
 
-  // Allocate flat vector array (stride = vector_stride_, padded for 64B)
+  // Allocate the flat vector array with the in-memory padding.
   const size_t total_vec_data =
       static_cast<size_t>(total_docs) * vector_stride_;
   size_t vector_memory_size = AlignHugePageSize(total_vec_data);
