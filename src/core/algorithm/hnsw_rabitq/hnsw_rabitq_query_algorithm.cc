@@ -61,6 +61,12 @@ int HnswRabitqQueryAlgorithm::search(HnswRabitqQueryEntity *entity,
     select_entry_point(cur_level, &entry_point, &curest, ctx, entity);
   }
 
+  // Level-zero candidates and results use full estimates. Refine the entry
+  // point too: it is marked visited before its neighbors are explored.
+  if (ex_bits_ > 0) {
+    get_full_est(entry_point, curest, *entity);
+  }
+
   auto &topk_heap = ctx->topk_heap();
   topk_heap.clear();
   search_neighbors(0, &entry_point, &curest, topk_heap, ctx, entity);
