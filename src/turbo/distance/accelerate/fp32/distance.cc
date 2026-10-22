@@ -88,6 +88,22 @@ void inner_product_fp32_strided_batch_distance(
       stride_bytes % sizeof(float) == 0 &&
       reinterpret_cast<uintptr_t>(base) % alignof(float) == 0 &&
       reinterpret_cast<uintptr_t>(query) % alignof(float) == 0) {
+#if defined(AILEGO_ARM64_NEON)
+    // Small blocks do not amortize BLAS dispatch. At 32 rows, short vectors
+    // and strides that misalign successive NEON loads (e.g. cosine's norm
+    // tail) also favor the existing batch kernel. Keep GEMV for larger
+    // batches and wide, SIMD-aligned rows, including aligned padding.
+    constexpr size_t kNeonBatch = 32;
+    if (n <= 16 || (n <= kNeonBatch && (dim <= 128 || lda % 4 != 0))) {
+      const void *rows[kNeonBatch];
+      for (size_t i = 0; i < n; ++i) {
+        rows[i] = static_cast<const char *>(base) + i * stride_bytes;
+      }
+      neon::inner_product_fp32_batch_distance(rows, query, n, dim, distances,
+                                              nullptr);
+      return;
+    }
+#endif
     cblas_sgemv(CblasRowMajor, CblasNoTrans, static_cast<__LAPACK_int>(n),
                 static_cast<__LAPACK_int>(dim), -1.0f,
                 static_cast<const float *>(base),

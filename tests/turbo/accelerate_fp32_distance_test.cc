@@ -91,14 +91,14 @@ TEST(AccelerateFp32Distance, TightAndPaddedMatrices) {
   if (!HasAccelerateStridedDistance()) {
     GTEST_SKIP() << "Accelerate strided kernels require macOS 13.3 or later";
   }
-  for (size_t dim : {1, 7, 16, 31, 34, 128, 1536}) {
+  for (size_t dim : {1, 7, 16, 31, 34, 127, 128, 129, 256, 768, 1536}) {
     std::vector<float> query(dim);
     for (size_t d = 0; d < dim; ++d) {
       query[d] = std::sin(static_cast<float>(d + 3));
     }
     const auto original_query = query;
-    for (size_t count : {1, 3, 31, 32, 33, 65}) {
-      for (size_t padding : {0, 1, 13}) {
+    for (size_t count : {1, 2, 3, 15, 16, 17, 31, 32, 33, 65, 512}) {
+      for (size_t padding : {0, 1, 4, 13, 16}) {
         SCOPED_TRACE(testing::Message() << "dim=" << dim << ", count=" << count
                                         << ", padding=" << padding);
         const size_t stride = dim + padding;
