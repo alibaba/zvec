@@ -1375,11 +1375,12 @@ Args:
         construction. Clamped to [10, 100]. Defaults to 50.
     pq_chunk_num (int, optional): Number of PQ chunks for product
         quantization. ``0`` means auto-pick based on dimension.
-        Clamped to [1, 1024]. Defaults to 0.
+        Clamped to [1, 1024]. Ignored with RABITQ. Defaults to 0.
     quantize_type (QuantizeType, optional): Vector quantization type.
         Defaults to QuantizeType.UNDEFINED.
     quantizer_param (QuantizerParam, optional): Quantizer configuration.
-        Defaults to QuantizerParam().
+        Defaults to QuantizerParam(). With RABITQ, configures in-memory
+        candidate codes; disk vectors retain FP32 precision.
 )pbdoc")
       .def_property_readonly("max_degree", &DiskAnnIndexParams::max_degree,
                              "int: max node degree.")
@@ -1431,13 +1432,15 @@ Args:
           [](const DiskAnnIndexParams &self) {
             return py::make_tuple(self.metric_type(), self.max_degree(),
                                   self.list_size(), self.pq_chunk_num(),
-                                  self.quantize_type(),
-                                  self.quantizer_param().enable_rotate());
+                                  self.quantize_type(), self.quantizer_param());
           },
           [](py::tuple t) {
             if (t.size() != 5 && t.size() != 6)
               throw std::runtime_error("Invalid state for DiskAnnIndexParams");
-            QuantizerParam qp(t.size() >= 6 ? t[5].cast<bool>() : false);
+            QuantizerParam qp =
+                t.size() >= 6 && py::isinstance<QuantizerParam>(t[5])
+                    ? t[5].cast<QuantizerParam>()
+                    : QuantizerParam(t.size() >= 6 ? t[5].cast<bool>() : false);
             return std::make_shared<DiskAnnIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<int>(), t[4].cast<QuantizeType>(), qp);

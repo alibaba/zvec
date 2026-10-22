@@ -1169,8 +1169,11 @@ TEST(ManifestCodecRabitqTest, QuantizerSettingsRoundTrip) {
   HnswIndexParams hnsw(MetricType::L2, 16, 100, QuantizeType::RABITQ, false, q);
   IVFIndexParams ivf(MetricType::L2, 8, 10, false, QuantizeType::RABITQ, q, 3,
                      24);
+  DiskAnnIndexParams diskann(MetricType::L2, 16, 100, 0, QuantizeType::RABITQ,
+                             q);
   for (const IndexParams *params :
-       {static_cast<IndexParams *>(&hnsw), static_cast<IndexParams *>(&ivf)}) {
+       {static_cast<IndexParams *>(&hnsw), static_cast<IndexParams *>(&ivf),
+        static_cast<IndexParams *>(&diskann)}) {
     std::string encoded;
     ManifestCodec::EncodeIndexParams(params, &encoded);
     auto decoded = ManifestCodec::DecodeIndexParams(encoded);

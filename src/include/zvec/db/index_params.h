@@ -123,7 +123,7 @@ class ZVEC_API InvertIndexParams : public IndexParams {
 /*
  * Quantizer parameters for vector indexes.
  * Encapsulates quantization-related settings such as enable_rotate.
- * Also configures Turbo RaBitQ training for standard HNSW and IVF.
+ * Also configures Turbo RaBitQ training for standard HNSW, IVF, and DiskANN.
  */
 class QuantizerParam {
  public:
@@ -173,8 +173,8 @@ class QuantizerParam {
   // When enabled, vectors are rotated before INT8 quantization to reduce
   // quantization error. Only effective with quantize_type=INT8.
   bool enable_rotate_{false};
-  // Used by standard HNSW/IVF with RABITQ; IVF's top-level bits and sample
-  // count remain authoritative for compatibility with its existing API.
+  // Used by standard HNSW/IVF/DiskANN with RABITQ; IVF's top-level bits and
+  // sample count remain authoritative for compatibility with its existing API.
   int total_bits_{7};
   int num_clusters_{16};
   int sample_count_{0};

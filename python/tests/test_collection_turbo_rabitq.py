@@ -1,6 +1,6 @@
 # Copyright 2025-present the zvec project
 # Licensed under the Apache License, Version 2.0.
-"""Public HNSW/IVF + Turbo RaBitQ: settings, training, mutations, and reopen."""
+"""Public HNSW/IVF/DiskANN + Turbo RaBitQ: settings, training, mutations, and reopen."""
 
 import math
 import pickle
@@ -24,6 +24,14 @@ def make_params(kind, metric, bits):
             quantize_type=zvec.QuantizeType.RABITQ,
             quantizer_param=q,
         )
+    if kind == "diskann":
+        return zvec.DiskAnnIndexParam(
+            metric_type=metric,
+            max_degree=16,
+            list_size=100,
+            quantize_type=zvec.QuantizeType.RABITQ,
+            quantizer_param=q,
+        )
     return zvec.IVFIndexParam(
         metric_type=metric,
         n_list=8,
@@ -34,7 +42,8 @@ def make_params(kind, metric, bits):
         quantizer_param=q,
     )
 
-@pytest.mark.parametrize("kind", ["hnsw", "ivf"])
+
+@pytest.mark.parametrize("kind", ["hnsw", "ivf", "diskann"])
 def test_rabitq_parameter_pickle(kind):
     params = make_params(kind, zvec.MetricType.L2, 3)
     restored = pickle.loads(pickle.dumps(params))
@@ -53,7 +62,7 @@ supported = sys.platform == "linux" and platform.machine() in ("x86_64", "AMD64"
 
 
 @pytest.mark.skipif(not supported, reason="RaBitQ integration requires Linux x86_64")
-@pytest.mark.parametrize("kind", ["hnsw", "ivf"])
+@pytest.mark.parametrize("kind", ["hnsw", "ivf", "diskann"])
 @pytest.mark.parametrize("bits", [3, 9])
 @pytest.mark.parametrize(
     "metric", [zvec.MetricType.L2, zvec.MetricType.IP, zvec.MetricType.COSINE]
@@ -70,7 +79,10 @@ def test_turbo_rabitq_collection(tmp_path, kind, bits, metric):
         fields=[zvec.FieldSchema("ordinal", zvec.DataType.INT64)],
         vectors=[
             zvec.VectorSchema(
-                "embedding", zvec.DataType.VECTOR_FP32, dimension=128, index_param=params
+                "embedding",
+                zvec.DataType.VECTOR_FP32,
+                dimension=128,
+                index_param=params,
             )
         ],
     )
@@ -89,6 +101,8 @@ def test_turbo_rabitq_collection(tmp_path, kind, bits, metric):
         qp = (
             zvec.HnswQueryParam(ef=320, is_using_refiner=True)
             if kind == "hnsw"
+            else zvec.DiskAnnQueryParam(list_size=320)
+            if kind == "diskann"
             else zvec.IVFQueryParam(nprobe=8, is_using_refiner=True)
         )
         return coll.query(
@@ -150,8 +164,10 @@ def test_turbo_rabitq_collection(tmp_path, kind, bits, metric):
         {"enable_rotate": True},
     ],
 )
-def test_hnsw_rabitq_rejects_invalid_settings(tmp_path, settings):
-    params = zvec.HnswIndexParam(
+@pytest.mark.parametrize("kind", ["hnsw", "diskann"])
+def test_graph_rabitq_rejects_invalid_settings(tmp_path, settings, kind):
+    cls = zvec.HnswIndexParam if kind == "hnsw" else zvec.DiskAnnIndexParam
+    params = cls(
         quantize_type=zvec.QuantizeType.RABITQ,
         quantizer_param=zvec.QuantizerParam(**settings),
     )
@@ -159,7 +175,10 @@ def test_hnsw_rabitq_rejects_invalid_settings(tmp_path, settings):
         name="invalid",
         vectors=[
             zvec.VectorSchema(
-                "embedding", zvec.DataType.VECTOR_FP32, dimension=128, index_param=params
+                "embedding",
+                zvec.DataType.VECTOR_FP32,
+                dimension=128,
+                index_param=params,
             )
         ],
     )
@@ -167,19 +186,35 @@ def test_hnsw_rabitq_rejects_invalid_settings(tmp_path, settings):
         zvec.create_and_open(path=str(tmp_path / "invalid"), schema=schema)
 
 
-@pytest.mark.parametrize("kind", ["hnsw", "ivf"])
+@pytest.mark.parametrize("kind", ["hnsw", "ivf", "diskann"])
 def test_legacy_rabitq_parameter_state(kind):
     """Previously pickled indexes stored only enable_rotate at position 5."""
     if kind == "hnsw":
         cls = zvec.HnswIndexParam
         state = (
-            zvec.MetricType.L2, 16, 100, zvec.QuantizeType.RABITQ,
-            False, False, False, zvec.DataType.VECTOR_FP32,
+            zvec.MetricType.L2,
+            16,
+            100,
+            zvec.QuantizeType.RABITQ,
+            False,
+            False,
+            False,
+            zvec.DataType.VECTOR_FP32,
         )
+    elif kind == "diskann":
+        cls = zvec.DiskAnnIndexParam
+        state = (zvec.MetricType.L2, 16, 100, 0, zvec.QuantizeType.RABITQ, False)
     else:
         cls = zvec.IVFIndexParam
         state = (
-            zvec.MetricType.L2, 8, 10, False, zvec.QuantizeType.RABITQ, False, 3, 128,
+            zvec.MetricType.L2,
+            8,
+            10,
+            False,
+            zvec.QuantizeType.RABITQ,
+            False,
+            3,
+            128,
         )
     restored = cls.__new__(cls)
     restored.__setstate__(state)
@@ -188,3 +223,8 @@ def test_legacy_rabitq_parameter_state(kind):
     assert restored.quantizer_param.n_iters == 20
     if kind == "ivf":
         assert restored.total_bits == 3 and restored.sample_count == 128
+    if kind == "diskann":
+        restored = cls.__new__(cls)
+        restored.__setstate__(state[:5])
+        assert restored.quantizer_param.total_bits == 7
+        assert not restored.quantizer_param.enable_rotate

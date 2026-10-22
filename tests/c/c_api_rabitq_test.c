@@ -27,8 +27,9 @@ static void check_settings(const zvec_index_params_t *params, int bits) {
 }
 
 static void test_params(void) {
-  const zvec_index_type_t types[] = {ZVEC_INDEX_TYPE_HNSW, ZVEC_INDEX_TYPE_IVF};
-  for (size_t i = 0; i < 2; ++i) {
+  const zvec_index_type_t types[] = {ZVEC_INDEX_TYPE_HNSW, ZVEC_INDEX_TYPE_IVF,
+                                     ZVEC_INDEX_TYPE_DISKANN};
+  for (size_t i = 0; i < sizeof(types) / sizeof(types[0]); ++i) {
     zvec_index_params_t *p = zvec_index_params_create(types[i]);
     CHECK(p != NULL);
     CHECK(zvec_index_params_set_rabitq_quantizer_params(p, 3, 4, 128, 6) ==
@@ -139,6 +140,10 @@ static void test_collection(zvec_index_type_t type, zvec_metric_type_t metric,
     CHECK(q != NULL);
     OK(zvec_vector_query_set_hnsw_params(query, q));
     // The query owns q after a successful setter.
+  } else if (type == ZVEC_INDEX_TYPE_DISKANN) {
+    zvec_diskann_query_params_t *q = zvec_query_params_diskann_create(256);
+    CHECK(q != NULL);
+    OK(zvec_vector_query_set_diskann_params(query, q));
   } else {
     zvec_ivf_query_params_t *q = zvec_query_params_ivf_create(8, true, 10);
     CHECK(q != NULL);
@@ -199,8 +204,9 @@ int main(void) {
     for (int bits = 3; bits <= 9; bits += 6) {
       test_collection(ZVEC_INDEX_TYPE_HNSW, metrics[i], bits);
       test_collection(ZVEC_INDEX_TYPE_IVF, metrics[i], bits);
+      test_collection(ZVEC_INDEX_TYPE_DISKANN, metrics[i], bits);
     }
-  puts("RaBitQ C API parameters and 12 collection cases passed");
+  puts("RaBitQ C API parameters and 18 collection cases passed");
 #else
   puts(
       "RaBitQ C API parameter tests passed; collection cases skipped on "

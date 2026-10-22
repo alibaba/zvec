@@ -81,3 +81,24 @@ TEST(EngineHelperTest, HnswRabitqQuantizerParameters) {
   EXPECT_EQ(hnsw->provider_meta.dimension(), 128U);
   EXPECT_EQ(hnsw->provider_meta.metric_name(), "SquaredEuclidean");
 }
+
+TEST(EngineHelperTest, DiskAnnRabitqQuantizerParameters) {
+  auto params = std::make_shared<DiskAnnIndexParams>(
+      MetricType::COSINE, 16, 100, 0, QuantizeType::RABITQ,
+      QuantizerParam(false, 9, 4, 24, 6));
+  FieldSchema field("vector", DataType::VECTOR_FP32, 128, false, params);
+  auto result = ProximaEngineHelper::convert_to_engine_index_param(field);
+  ASSERT_TRUE(result);
+  auto diskann =
+      std::dynamic_pointer_cast<core_interface::DiskAnnIndexParam>(*result);
+  ASSERT_NE(diskann, nullptr);
+  auto q = std::dynamic_pointer_cast<core_interface::RabitqQuantizerParam>(
+      diskann->quantizer_param);
+  ASSERT_NE(q, nullptr);
+  EXPECT_EQ(q->total_bits, 9);
+  EXPECT_EQ(q->num_clusters, 4);
+  EXPECT_EQ(q->sample_count, 24);
+  EXPECT_EQ(q->niters, 6);
+  EXPECT_EQ(diskann->pq_chunk_num, 0);
+  EXPECT_EQ(diskann->metric_type, core_interface::MetricType::kCosine);
+}
