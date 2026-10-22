@@ -459,7 +459,7 @@ int KmeansCluster::init(const IndexMeta &meta, const ailego::Params &params) {
     size_t extra_dim = 0u;
     switch (meta_.data_type()) {
       case IndexMeta::DataType::DT_FP32:
-        extra_dim = sizeof(float) / sizeof(float);
+        extra_dim = 1u;
         break;
 
       case IndexMeta::DataType::DT_FP16:

@@ -778,10 +778,8 @@ class IVFIndexParam(VectorIndexParam):
 
     @property
     def total_bits(self) -> int: ...
-
     @property
     def sample_count(self) -> int: ...
-
 
 class IVFQueryParam(QueryParam):
     """
@@ -1419,9 +1417,14 @@ class QuantizerParam:
     """
 
     def __getstate__(self) -> tuple: ...
-    def __init__(self, enable_rotate: bool = False, total_bits: int = 7,
-                 num_clusters: int = 16, sample_count: int = 0,
-                 n_iters: int = 20) -> None:
+    def __init__(
+        self,
+        enable_rotate: bool = False,
+        total_bits: int = 7,
+        num_clusters: int = 16,
+        sample_count: int = 0,
+        n_iters: int = 20,
+    ) -> None:
         """
         Constructs a QuantizerParam instance.
 
@@ -1432,16 +1435,12 @@ class QuantizerParam:
 
     @property
     def total_bits(self) -> int: ...
-
     @property
     def num_clusters(self) -> int: ...
-
     @property
     def sample_count(self) -> int: ...
-
     @property
     def n_iters(self) -> int: ...
-
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
     def __eq__(self, arg0: typing.Any) -> bool: ...
