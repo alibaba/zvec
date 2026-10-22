@@ -4128,7 +4128,8 @@ TEST_F(HnswStreamerTest, TestContiguousWritableReopenWithExistingContexts) {
     ASSERT_EQ(0, streamer->close());
     ASSERT_EQ(0, storage->close());
 
-    // 同一 streamer 在只读、可写之间切换，配置不能被可写打开永久清除。
+    // Opening the same streamer for writes must preserve the setting for
+    // subsequent read-only opens.
     auto read_storage = IndexFactory::CreateStorage("MMapFileReadStorage");
     ASSERT_NE(nullptr, read_storage);
     ASSERT_EQ(0, read_storage->init(ailego::Params()));
@@ -4142,7 +4143,8 @@ TEST_F(HnswStreamerTest, TestContiguousWritableReopenWithExistingContexts) {
     ASSERT_EQ(0, streamer->open(storage));
     ASSERT_EQ(HnswStorageMode::kMmap, hnsw->storage_mode());
     {
-      // 写入与查询上下文均在首次追加前创建，并在全部追加过程中复用。
+      // Create write and query contexts before the first append, then reuse
+      // them throughout all appends.
       auto add_ctx = streamer->create_context();
       auto query_ctx = streamer->create_context();
       auto linear_ctx = streamer->create_context();

@@ -205,7 +205,8 @@ TEST_P(ReadOnlyCloseTest, WritableClosePersistsWritesAfterFlushAndReopen) {
     auto hnsw = std::dynamic_pointer_cast<HNSWIndex>(writer);
     ASSERT_NE(nullptr, hnsw);
     ASSERT_EQ(GetParam().mmap ? "mmap" : "buffer_pool", hnsw->storage_mode());
-    // 同线程复用接口缓存的上下文，追加后不关闭索引就继续查询。
+    // Reuse the thread-local context to query appended vectors without
+    // closing the index.
     ASSERT_NO_FATAL_FAILURE(check_vectors(writer, count));
     for (; count < 32; ++count) {
       ASSERT_EQ(0, writer->add(vector(), count));

@@ -327,8 +327,9 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
         entity_ = std::make_unique<HnswExternalStreamerEntity>(stats_);
       } else if (use_contiguous_memory_ &&
                  stg->name() == "MMapFileReadStorage") {
-        // 连续内存是打开时的快照，仅用于只读 mmap。
-        // 可写实体追加时的 mmap 降级不会刷新已克隆的上下文，故直接使用 mmap。
+        // Contiguous memory is a snapshot taken at open, so use it only for
+        // read-only mmap. Falling back to mmap after an append would leave
+        // previously cloned contexts pointing at the old snapshot.
         entity_ = std::make_unique<HnswContiguousStreamerEntity>(stats_);
       } else {
         entity_ = std::make_unique<HnswMmapStreamerEntity>(stats_);
