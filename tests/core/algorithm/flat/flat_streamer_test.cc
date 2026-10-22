@@ -2326,6 +2326,76 @@ TEST_F(FlatStreamerTest, TestQuantizerNameGuardOnOpen) {
   plain_streamer.reset();
 }
 
+TEST_F(FlatStreamerTest, RecoveryKeysWithUseIdMapFalse) {
+  IndexStreamer::Pointer write_streamer =
+      IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_NE(write_streamer, nullptr);
+
+  std::string file_path = dir_ + "TestRecoveryKeys.index";
+  Params write_params;
+  write_params.set(PARAM_FLAT_USE_ID_MAP, false);
+  Params write_stg_params;
+  auto write_storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_EQ(0, write_storage->init(write_stg_params));
+  ASSERT_EQ(0, write_storage->open(file_path, true));
+  ASSERT_EQ(0, write_streamer->init(*index_meta_ptr_, write_params));
+  ASSERT_EQ(0, write_streamer->open(write_storage));
+  auto ctx = write_streamer->create_context();
+  ASSERT_TRUE(!!ctx);
+
+  size_t cnt = 100;
+  NumericalVector<float> vec(dim);
+  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
+  for (size_t i = 0; i < cnt; ++i) {
+    for (size_t j = 0; j < dim; ++j) {
+      vec[j] = static_cast<float>(i);
+    }
+    ASSERT_EQ(0, write_streamer->add_impl(i * 10, vec.data(), qmeta, ctx));
+  }
+  ASSERT_EQ(0, write_streamer->flush(0UL));
+  ASSERT_EQ(0, write_streamer->close());
+  write_streamer.reset();
+  ASSERT_EQ(0, write_storage->close());
+
+  // Reopen with use_id_map = false
+  IndexStreamer::Pointer read_streamer =
+      IndexFactory::CreateStreamer("FlatStreamer");
+  Params read_params;
+  read_params.set(PARAM_FLAT_USE_ID_MAP, false);
+  Params read_stg_params;
+  auto read_storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_EQ(0, read_storage->init(read_stg_params));
+  ASSERT_EQ(0, read_storage->open(file_path, false));
+  ASSERT_EQ(0, read_streamer->init(*index_meta_ptr_, read_params));
+  ASSERT_EQ(0, read_streamer->open(read_storage));
+
+  // Perform group-by search which relies on entity_->key(id)
+  auto group_ctx = read_streamer->create_context();
+  ASSERT_TRUE(!!group_ctx);
+  auto groupby_func = [](uint64_t key) {
+    return std::string("g_") + std::to_string((key / 10) % 4);
+  };
+  group_ctx->set_group_params(4, 2);
+  group_ctx->set_group_by(groupby_func);
+
+  for (size_t j = 0; j < dim; ++j) {
+    vec[j] = 0.0f;
+  }
+  ASSERT_EQ(0, read_streamer->search_impl(vec.data(), qmeta, 1, group_ctx));
+  auto &group_result = group_ctx->group_result();
+  ASSERT_FALSE(group_result.empty());
+  for (const auto &grp : group_result) {
+    for (const auto &doc : grp.docs()) {
+      EXPECT_NE(kInvalidKey, doc.key());
+      EXPECT_EQ(0, doc.key() % 10);
+    }
+  }
+
+  ASSERT_EQ(0, read_streamer->close());
+  read_streamer.reset();
+  ASSERT_EQ(0, read_storage->close());
+}
+
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic pop
 #endif

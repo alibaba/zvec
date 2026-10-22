@@ -1139,6 +1139,20 @@ int FlatStreamerEntity::load_segment_keys_to_map(BlockLocation block) {
 }
 
 int FlatStreamerEntity::load_segment_keys_to_vector() {
+  id_key_vector_.clear();
+  withid_key_info_map_.clear();
+  withid_key_map_.clear();
+  id_key_vector_.reserve(meta_.header.total_vector_count);
+  withid_key_info_map_.reserve(meta_.header.total_vector_count);
+  withid_key_map_.reserve(meta_.header.total_vector_count);
+
+  IndexStorage::MemoryBlock keys_block;
+  IndexStorage::MemoryBlock deletion_map_block;
+  size_t current_segment_id = std::numeric_limits<size_t>::max();
+  size_t current_real_block_id = std::numeric_limits<size_t>::max();
+  const uint64_t *keys = nullptr;
+  const DeletionMap *deletion_map = nullptr;
+
   for (uint32_t i = 0; i < meta_.header.total_vector_count; i++) {
     size_t block_id = i / block_vector_count();
     uint32_t vector_index = i % block_vector_count();
@@ -1155,6 +1169,34 @@ int FlatStreamerEntity::load_segment_keys_to_vector() {
         VectorLocation(segment_id, false, vector_off));
     size_t key_off = get_block_key_offset(real_block_id, vector_index);
     withid_key_map_.push_back(key_off);
+
+    if (segment_id != current_segment_id ||
+        real_block_id != current_real_block_id) {
+      current_segment_id = segment_id;
+      current_real_block_id = real_block_id;
+      BlockLocation bl{static_cast<uint32_t>(segment_id),
+                       static_cast<uint32_t>(real_block_id)};
+      if (this->get_block_keys(bl, keys_block) != 0) {
+        LOG_ERROR("Failed to get block keys for block %zu in segment %zu",
+                  real_block_id, segment_id);
+        return IndexError_ReadData;
+      }
+      keys = reinterpret_cast<const uint64_t *>(keys_block.data());
+      if (this->get_block_deletion_map(bl, deletion_map_block) != 0) {
+        LOG_ERROR(
+            "Failed to get block deletion map for block %zu in segment %zu",
+            real_block_id, segment_id);
+        return IndexError_ReadData;
+      }
+      deletion_map =
+          reinterpret_cast<const DeletionMap *>(deletion_map_block.data());
+    }
+
+    uint64_t key = kInvalidKey;
+    if (keys && (!deletion_map || !deletion_map->test(vector_index))) {
+      key = keys[vector_index];
+    }
+    id_key_vector_.push_back(key);
   }
   return 0;
 }
@@ -1500,6 +1542,9 @@ int FlatStreamerEntity::add_vector_with_id(const uint32_t id, const void *query,
     }
     key_info_map_lock_->lock();
     key_info_map_[key] = vector_loc;
+    if (id < id_key_vector_.size()) {
+      id_key_vector_[id] = key;
+    }
     key_info_map_lock_->unlock();
   }
   (*stats_.mutable_added_count())++;
