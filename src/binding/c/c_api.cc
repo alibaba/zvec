@@ -7400,6 +7400,69 @@ zvec_error_code_t zvec_collection_query(const zvec_collection_t *collection,
       return error_code;)
 }
 
+void zvec_group_results_free(zvec_group_result_t *results, size_t result_count) {
+  if (!results) return;
+  for (size_t i = 0; i < result_count; ++i) {
+    free(results[i].group_by_value);
+    zvec_docs_free(results[i].docs, results[i].doc_count);
+  }
+  free(results);
+}
+
+zvec_error_code_t zvec_collection_group_by_query(
+    const zvec_collection_t *collection,
+    const zvec_group_by_vector_query_t *query, zvec_group_result_t **results,
+    size_t *result_count) {
+  if (results) *results = nullptr;
+  if (result_count) *result_count = 0;
+  if (!collection || !query || !results || !result_count) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Collection, query, results or result_count pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Failed to execute grouped vector query",
+      auto *coll_ptr =
+          reinterpret_cast<const std::shared_ptr<zvec::Collection> *>(collection);
+      auto *internal_query =
+          reinterpret_cast<const zvec::GroupByVectorQuery *>(query);
+
+      auto result = (*coll_ptr)->group_by_query(*internal_query);
+      auto error_code = handle_expected_result(result);
+      if (error_code != ZVEC_OK) return error_code;
+      auto &groups = result.value();
+      if (groups.empty()) return ZVEC_OK;
+
+      // Keep partially built results owned locally until every group succeeds.
+      // Zero initialization allows the deleter to clean up on any exception.
+      auto cleanup = [&groups](zvec_group_result_t *ptr) {
+        zvec_group_results_free(ptr, groups.size());
+      };
+      std::unique_ptr<zvec_group_result_t, decltype(cleanup)> converted(
+          static_cast<zvec_group_result_t *>(
+              calloc(groups.size(), sizeof(zvec_group_result_t))), cleanup);
+      if (!converted) throw std::bad_alloc();
+      for (size_t i = 0; i < groups.size(); ++i) {
+        auto &group = groups[i];
+        auto &out = converted.get()[i];
+        out.group_by_value = strdup(group.group_by_value_.c_str());
+        if (!out.group_by_value) throw std::bad_alloc();
+        if (group.docs_.empty()) continue;
+        out.docs = static_cast<zvec_doc_t **>(
+            calloc(group.docs_.size(), sizeof(zvec_doc_t *)));
+        if (!out.docs) throw std::bad_alloc();
+        for (auto &doc : group.docs_) {
+          auto owned_doc = std::make_unique<zvec::Doc>(std::move(doc));
+          out.docs[out.doc_count++] =
+              reinterpret_cast<zvec_doc_t *>(owned_doc.release());
+        }
+      }
+      *results = converted.release();
+      *result_count = groups.size();
+      return ZVEC_OK;)
+}
+
 zvec_error_code_t zvec_collection_multi_query(
     const zvec_collection_t *collection,
     const zvec_multi_query_t *query,
