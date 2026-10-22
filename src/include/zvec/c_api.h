@@ -1339,7 +1339,8 @@ typedef struct zvec_vector_query_t zvec_vector_query_t;
  * @brief Grouped vector query structure (opaque pointer)
  * Aligned with zvec::GroupByVectorQuery
  * Use zvec_group_by_vector_query_create() to create and
- * zvec_group_by_vector_query_destroy() to destroy
+ * zvec_group_by_vector_query_destroy() to destroy.
+ * Execute with zvec_collection_group_by_query().
  */
 typedef struct zvec_group_by_vector_query_t zvec_group_by_vector_query_t;
 
@@ -2287,6 +2288,7 @@ zvec_vector_query_get_fts(const zvec_vector_query_t *query);
 
 /**
  * @brief Create group by vector query
+ * Defaults to at most 2 groups and 3 documents per group.
  * @return zvec_group_by_vector_query_t* Pointer to the newly created group by
  * vector query
  */
@@ -3740,6 +3742,42 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_delete_by_filter(
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_query(
     const zvec_collection_t *collection, const zvec_vector_query_t *query,
     zvec_doc_t ***results, size_t *result_count);
+
+/**
+ * @brief One group of vector search results
+ * All members are owned by the result array. Release the entire array with
+ * zvec_group_results_free; do not free individual members separately.
+ */
+typedef struct zvec_group_result_t {
+  char *group_by_value; /**< String representation of the grouping value */
+  zvec_doc_t **docs;    /**< Documents ordered by vector similarity */
+  size_t doc_count;     /**< Number of documents in this group */
+} zvec_group_result_t;
+
+/**
+ * @brief Vector similarity search grouped by a scalar field
+ * @param collection Collection handle
+ * @param query Grouped query specifying the vector, grouping field, maximum
+ * group count and maximum results per group
+ * @param[out] results Owned result array; release with zvec_group_results_free.
+ * NULL on failure or when no groups match. Results remain valid after the query
+ * or collection is destroyed.
+ * @param[out] result_count Number of groups; zero on failure or no matches
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_group_by_query(
+    const zvec_collection_t *collection,
+    const zvec_group_by_vector_query_t *query, zvec_group_result_t **results,
+    size_t *result_count);
+
+/**
+ * @brief Free grouped results, including grouping values and documents
+ * @param results Result array returned by zvec_collection_group_by_query;
+ * NULL is allowed
+ * @param result_count Number of groups in the array
+ */
+ZVEC_EXPORT void ZVEC_CALL zvec_group_results_free(zvec_group_result_t *results,
+                                                   size_t result_count);
 
 /**
  * @brief Multi-query with multiple sub-queries and re-ranking

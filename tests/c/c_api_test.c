@@ -4820,6 +4820,226 @@ void test_actual_vector_queries(void) {
 }
 
 // =============================================================================
+// Grouped vector search tests
+// =============================================================================
+
+static void check_group_results(zvec_group_result_t *results, size_t count,
+                                size_t topk, bool include_vector) {
+  bool seen[3] = {false, false, false};
+  for (size_t i = 0; i < count; ++i) {
+    TEST_ASSERT(results[i].group_by_value != NULL);
+    int group_id = atoi(results[i].group_by_value);
+    TEST_ASSERT(group_id >= 0 && group_id < 3);
+    if (group_id < 0 || group_id >= 3) continue;
+    TEST_ASSERT(!seen[group_id]);
+    seen[group_id] = true;
+    TEST_ASSERT(results[i].doc_count == topk);
+    for (size_t j = 0; j < results[i].doc_count; ++j) {
+      zvec_doc_t *doc = results[i].docs[j];
+      int64_t id = -1;
+      TEST_ASSERT(zvec_doc_get_field_value_basic(doc, "id",
+                                                 ZVEC_DATA_TYPE_INT64, &id,
+                                                 sizeof(id)) == ZVEC_OK);
+      TEST_ASSERT(id == group_id * 3 + (int64_t)j);
+      char expected_pk[32];
+      snprintf(expected_pk, sizeof(expected_pk), "doc_%lld", (long long)id);
+      const char *pk = zvec_doc_get_pk_pointer(doc);
+      TEST_ASSERT(pk != NULL && strcmp(pk, expected_pk) == 0);
+      TEST_ASSERT(fabsf(zvec_doc_get_score(doc) - (float)(id * id)) < 0.001f);
+      TEST_ASSERT(zvec_doc_has_field(doc, "embedding") == include_vector);
+      TEST_ASSERT(!zvec_doc_has_field(doc, "group_id"));
+    }
+  }
+}
+
+static void check_invalid_group_params(zvec_collection_t *collection,
+                                       zvec_group_by_vector_query_t *query) {
+  // Both empty and populated collections must reject the same parameters.
+  zvec_group_result_t *results = NULL;
+  size_t count = 99;
+  uint32_t group_count = zvec_group_by_vector_query_get_group_count(query);
+  uint32_t topk = zvec_group_by_vector_query_get_topk_per_group(query);
+  TEST_ASSERT(zvec_group_by_vector_query_set_group_count(query, 0) == ZVEC_OK);
+  TEST_ASSERT(
+      zvec_collection_group_by_query(collection, query, &results, &count) ==
+      ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(results == NULL && count == 0);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, "group_count");
+  TEST_ASSERT(zvec_group_by_vector_query_set_group_count(query, group_count) ==
+              ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_topk_per_group(query, 0) ==
+              ZVEC_OK);
+  TEST_ASSERT(
+      zvec_collection_group_by_query(collection, query, &results, &count) ==
+      ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(results == NULL && count == 0);
+  TEST_ASSERT(zvec_group_by_vector_query_set_topk_per_group(query, topk) ==
+              ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_group_by_field_name(query, NULL) ==
+              ZVEC_OK);
+  TEST_ASSERT(
+      zvec_collection_group_by_query(collection, query, &results, &count) ==
+      ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(results == NULL && count == 0);
+  TEST_ASSERT(zvec_group_by_vector_query_set_group_by_field_name(
+                  query, "group_id") == ZVEC_OK);
+}
+
+void test_group_by_query(void) {
+  TEST_START();
+  char temp_dir[] = "./zvec_test_group_by_queries";
+  cleanup_temp_directory(temp_dir);
+  zvec_collection_schema_t *schema =
+      zvec_collection_schema_create("group_by_test");
+  TEST_ASSERT(schema != NULL);
+  const char *scalar_fields[] = {"id", "group_id"};
+  for (size_t i = 0; i < 2; ++i) {
+    zvec_field_schema_t *field = zvec_field_schema_create(
+        scalar_fields[i], ZVEC_DATA_TYPE_INT64, false, 0);
+    TEST_ASSERT(zvec_collection_schema_add_field(schema, field) == ZVEC_OK);
+    zvec_field_schema_destroy(field);
+  }
+  zvec_index_params_t *params = zvec_index_params_create(ZVEC_INDEX_TYPE_FLAT);
+  zvec_field_schema_t *field = zvec_field_schema_create(
+      "embedding", ZVEC_DATA_TYPE_VECTOR_FP32, false, 4);
+  TEST_ASSERT(zvec_field_schema_set_index_params(field, params) == ZVEC_OK);
+  TEST_ASSERT(zvec_collection_schema_add_field(schema, field) == ZVEC_OK);
+  zvec_field_schema_destroy(field);
+  zvec_index_params_destroy(params);
+
+  zvec_collection_t *collection = NULL;
+  TEST_ASSERT(zvec_collection_create_and_open(temp_dir, schema, NULL,
+                                              &collection) == ZVEC_OK);
+  if (!collection) {
+    zvec_collection_schema_destroy(schema);
+    TEST_END();
+    return;
+  }
+  zvec_group_by_vector_query_t *query = zvec_group_by_vector_query_create();
+  TEST_ASSERT(query != NULL);
+  TEST_ASSERT(zvec_group_by_vector_query_get_group_count(query) == 2);
+  TEST_ASSERT(zvec_group_by_vector_query_get_topk_per_group(query) == 3);
+  TEST_ASSERT(zvec_group_by_vector_query_set_field_name(query, "embedding") ==
+              ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_group_by_field_name(
+                  query, "group_id") == ZVEC_OK);
+  TEST_ASSERT(strcmp(zvec_group_by_vector_query_get_group_by_field_name(query),
+                     "group_id") == 0);
+  float vector[4] = {0};
+  TEST_ASSERT(zvec_group_by_vector_query_set_query_vector(
+                  query, vector, sizeof(vector)) == ZVEC_OK);
+  // The query takes ownership of the index-specific search parameters.
+  TEST_ASSERT(zvec_group_by_vector_query_set_flat_params(
+                  query, zvec_query_params_flat_create(false, 10)) == ZVEC_OK);
+  const char *output_fields[] = {"id"};
+  TEST_ASSERT(zvec_group_by_vector_query_set_output_fields(query, output_fields,
+                                                           1) == ZVEC_OK);
+
+  zvec_group_result_t *results = NULL;
+  size_t count = 99;
+  TEST_ASSERT(zvec_collection_group_by_query(collection, query, &results,
+                                             &count) == ZVEC_OK);
+  TEST_ASSERT(results == NULL && count == 0);
+
+  check_invalid_group_params(collection, query);
+
+  for (int64_t id = 0; id < 9; ++id) {
+    zvec_doc_t *doc = zvec_doc_create();
+    char pk[16];
+    snprintf(pk, sizeof(pk), "doc_%lld", (long long)id);
+    int64_t group_id = id / 3;
+    vector[0] = (float)id;
+    zvec_doc_set_pk(doc, pk);
+    TEST_ASSERT(zvec_doc_add_field_by_value(doc, "id", ZVEC_DATA_TYPE_INT64,
+                                            &id, sizeof(id)) == ZVEC_OK);
+    TEST_ASSERT(zvec_doc_add_field_by_value(doc, "group_id",
+                                            ZVEC_DATA_TYPE_INT64, &group_id,
+                                            sizeof(group_id)) == ZVEC_OK);
+    TEST_ASSERT(zvec_doc_add_field_by_value(doc, "embedding",
+                                            ZVEC_DATA_TYPE_VECTOR_FP32, vector,
+                                            sizeof(vector)) == ZVEC_OK);
+    size_t inserted = 0, errors = 0;
+    const zvec_doc_t *docs[] = {doc};
+    TEST_ASSERT(zvec_collection_insert(collection, docs, 1, &inserted,
+                                       &errors) == ZVEC_OK);
+    TEST_ASSERT(inserted == 1 && errors == 0);
+    zvec_doc_destroy(doc);
+  }
+  TEST_ASSERT(zvec_collection_flush(collection) == ZVEC_OK);
+
+  TEST_ASSERT(zvec_group_by_vector_query_set_topk_per_group(query, 2) ==
+              ZVEC_OK);
+  TEST_ASSERT(zvec_collection_group_by_query(collection, query, &results,
+                                             &count) == ZVEC_OK);
+  TEST_ASSERT(count == 2 && results != NULL);
+  if (count == 2) {
+    TEST_ASSERT(strcmp(results[0].group_by_value, "0") == 0);
+    TEST_ASSERT(strcmp(results[1].group_by_value, "1") == 0);
+  }
+  check_group_results(results, count, 2, false);
+  zvec_group_results_free(results, count);
+
+  TEST_ASSERT(zvec_group_by_vector_query_set_group_count(query, 3) == ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_topk_per_group(query, 1) ==
+              ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_include_vector(query, true) ==
+              ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_filter(query, "id >= 3") ==
+              ZVEC_OK);
+  TEST_ASSERT(zvec_collection_group_by_query(collection, query, &results,
+                                             &count) == ZVEC_OK);
+  TEST_ASSERT(count == 2 && results != NULL);
+  check_group_results(results, count, 1, true);
+  for (size_t i = 0; i < count; ++i) {
+    TEST_ASSERT(atoi(results[i].group_by_value) >= 1);
+  }
+  zvec_group_results_free(results, count);
+
+  TEST_ASSERT(zvec_group_by_vector_query_set_filter(query, "id < 0") ==
+              ZVEC_OK);
+  TEST_ASSERT(zvec_collection_group_by_query(collection, query, &results,
+                                             &count) == ZVEC_OK);
+  TEST_ASSERT(results == NULL && count == 0);
+  TEST_ASSERT(zvec_group_by_vector_query_set_filter(query, NULL) == ZVEC_OK);
+
+  zvec_group_result_t unused_result = {0};
+  results = &unused_result;
+  count = 99;
+  TEST_ASSERT(zvec_collection_group_by_query(NULL, query, &results, &count) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(results == NULL && count == 0);
+  TEST_ASSERT(
+      zvec_collection_group_by_query(collection, NULL, &results, &count) ==
+      ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_collection_group_by_query(collection, query, NULL, &count) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(
+      zvec_collection_group_by_query(collection, query, &results, NULL) ==
+      ZVEC_ERROR_INVALID_ARGUMENT);
+  check_invalid_group_params(collection, query);
+  TEST_ASSERT(zvec_group_by_vector_query_set_group_by_field_name(
+                  query, "missing") == ZVEC_OK);
+  TEST_ASSERT(
+      zvec_collection_group_by_query(collection, query, &results, &count) ==
+      ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(results == NULL && count == 0);
+  TEST_ASSERT(zvec_group_by_vector_query_set_group_by_field_name(
+                  query, "group_id") == ZVEC_OK);
+  TEST_ASSERT(zvec_collection_group_by_query(collection, query, &results,
+                                             &count) == ZVEC_OK);
+  TEST_ASSERT(count == 3 && results != NULL);
+  zvec_group_by_vector_query_destroy(query);
+  zvec_collection_destroy(collection);
+  // Results own their documents and grouping values independently of handles.
+  check_group_results(results, count, 1, true);
+  zvec_group_results_free(results, count);
+  zvec_group_results_free(NULL, 0);
+  zvec_collection_schema_destroy(schema);
+  cleanup_temp_directory(temp_dir);
+  TEST_END();
+}
+
+// =============================================================================
 // FTS (full-text search) tests
 // =============================================================================
 
@@ -7123,6 +7343,7 @@ int main(void) {
   // Query tests
   test_query_params_functions();
   test_actual_vector_queries();
+  test_group_by_query();
 
   // Document iterator tests
   test_iterator_basic();

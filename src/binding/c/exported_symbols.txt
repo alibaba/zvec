@@ -20,6 +20,7 @@ _zvec_collection_flush
 _zvec_collection_get_options
 _zvec_collection_get_schema
 _zvec_collection_get_stats
+_zvec_collection_group_by_query
 _zvec_collection_insert
 _zvec_collection_insert_with_results
 _zvec_collection_multi_query
@@ -175,6 +176,7 @@ _zvec_get_version
 _zvec_get_version_major
 _zvec_get_version_minor
 _zvec_get_version_patch
+_zvec_group_results_free
 _zvec_group_by_vector_query_create
 _zvec_group_by_vector_query_destroy
 _zvec_group_by_vector_query_get_field_name

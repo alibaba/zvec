@@ -331,6 +331,26 @@ class TestGroupBySearch:
 
 
 class TestGroupByEmptyCollection:
+    @pytest.mark.parametrize(
+        ("kwargs", "error"),
+        [
+            ({"group_by_field_name": ""}, "group_by_field_name"),
+            ({"group_by_field_name": "group_id", "group_count": 0}, "group_count"),
+            (
+                {"group_by_field_name": "group_id", "topk_per_group": 0},
+                "topk_per_group",
+            ),
+        ],
+    )
+    def test_group_by_rejects_invalid_group_params(
+        self, group_by_collection: Collection, kwargs: dict, error: str
+    ):
+        with pytest.raises(ValueError, match=error):
+            group_by_collection.group_by_query(
+                Query(field_name="dense_flat", vector=[1.0] * GB_DIMENSION),
+                **kwargs,
+            )
+
     def test_group_by_empty_collection(self, group_by_collection: Collection):
         """Group-by on an empty collection returns an empty list."""
         results = group_by_collection.group_by_query(
