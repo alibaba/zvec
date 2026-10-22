@@ -219,10 +219,8 @@ def open(path: str, option: CollectionOption = CollectionOption()) -> Collection
 
     The collection must have been previously created with ``create_and_open``.
 
-    Read-only opens require a collection with no pending WAL recovery. After
-    an unclean shutdown, open and close the collection with
-    ``CollectionOption(read_only=False)`` to recover it before opening read-only.
-    A read-only open never replays pending writes into the collection files.
+    Pending WAL recovery requires opening and closing the collection with
+    ``CollectionOption(read_only=False)`` before a read-only open.
 
     Args:
         path (str): Path or name of the existing collection.

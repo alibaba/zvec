@@ -11,22 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""
-Tests for the ``use_contiguous_memory`` optimization on ``HnswIndexParam``.
+"""HNSW contiguous storage is used only for read-only mmap opens.
 
-The HNSW streamer supports two allocation strategies for graph nodes:
-
-* ``use_contiguous_memory=False`` (default): each node allocates its own
-  linked buffer. Lower peak memory usage, worse cache locality.
-* ``use_contiguous_memory=True``: read-only mmap opens load every node into
-  a single contiguous arena for better cache locality and search throughput.
-  Writable indexes use the mmap entity so cached contexts remain valid
-  across appends.
-
-These tests exercise the Python surface end-to-end and make sure that
-when a collection is created / reopened with ``use_contiguous_memory=True``
-the underlying HNSW streamer entity is constructed correctly and serves
-search traffic.
+Verify parameter persistence and query parity across writable/read-only opens.
 """
 
 from __future__ import annotations
@@ -225,34 +212,17 @@ def rng() -> np.random.Generator:
     return np.random.default_rng(seed=42)
 
 
-# NOTE: the ``enable_mmap=False`` (BufferPool) variant is intentionally
-# omitted from this fixture. Building a persisted HNSW index via
-# ``optimize()`` / ``create_vector_index`` / ``drop_vector_index``
-# currently requires mmap-backed storage, because the BufferPool backend
-# has not implemented the ``create_new`` semantics yet and the guard in
-# ``SegmentImpl::merge_vector_indexer`` rejects that combination. Once
-# BufferPool gains write support, re-add ``False`` to ``params`` (and
-# drop the guard in segment.cc) so these end-to-end tests cover both
-# storage modes again.
+# Persisted HNSW builds require mmap until BufferPool supports create_new.
 @pytest.fixture(params=[True], ids=["mmap_on"])
 def collection_option(request) -> CollectionOption:
     return CollectionOption(read_only=False, enable_mmap=request.param)
 
 
-# Building a new persisted HNSW index currently requires mmap-backed storage
-# because the BufferPool backend has not implemented `create_new` semantics
-# yet. Collections opened with ``enable_mmap=False`` therefore cannot run
-# optimize()/create_vector_index/drop_vector_index. Tests use this fixture
-# to know which behaviour to assert, and once BufferPool gains write support
-# the guard in segment.cc (and these branches) can be removed together.
 @pytest.fixture
 def build_index_supported(collection_option: CollectionOption) -> bool:
     return bool(collection_option.enable_mmap)
 
 
-# Error message fragments emitted by the NotSupported guard in
-# SegmentImpl::merge_vector_indexer / drop_vector_index. If the C++ message
-# changes, update these together.
 _BUILD_NOT_SUPPORTED_FRAGMENTS = ("not yet supported", "enable_mmap=false")
 
 
@@ -265,11 +235,6 @@ class TestHnswContiguousMemoryEndToEnd:
         collection_option,
         rng,
     ):
-        """With the flag on, the schema round-trips and search works end-to-end.
-
-        The newly built index uses mmap while writable. Reopening it read-only
-        activates the contiguous entity without changing the query results.
-        """
         schema = _build_schema("hnsw_contig_create", use_contiguous_memory=True)
 
         path = tmp_path_factory.mktemp("zvec") / "hnsw_contig_create"
@@ -277,7 +242,6 @@ class TestHnswContiguousMemoryEndToEnd:
             path=str(path), schema=schema, option=collection_option
         )
         try:
-            # Schema round-trips with the flag set.
             vec_schema = coll.schema.vectors[0]
             assert vec_schema.index_param.use_contiguous_memory is True
 
@@ -287,11 +251,9 @@ class TestHnswContiguousMemoryEndToEnd:
                 assert r.ok(), f"insert failed: code={r.code()}"
             assert coll.stats.doc_count == NUM_DOCS
 
-            # Newly built writable indexes must keep cached contexts valid.
             coll.optimize()
             assert _debug_hnsw_storage_mode(coll) == "mmap"
 
-            # Pick an existing vector as the query; top-1 must be itself.
             query_vec = docs[0].vector("dense")
             ids = _assert_query_matches(coll, query_vec)
             assert ids[0] == "0", f"expected self-recall, got top-1 id={ids[0]}"
@@ -309,7 +271,6 @@ class TestHnswContiguousMemoryEndToEnd:
         collection_option,
         rng,
     ):
-        """Baseline: when the flag is omitted the default (mmap) entity is used."""
         schema = _build_schema("hnsw_contig_default", use_contiguous_memory=False)
         path = tmp_path_factory.mktemp("zvec") / "hnsw_contig_default"
         coll = zvec.create_and_open(
@@ -325,14 +286,11 @@ class TestHnswContiguousMemoryEndToEnd:
             assert coll.stats.doc_count == NUM_DOCS
 
             coll.optimize()
-            # With the flag off and mmap on, the persisted entity must be the
-            # default mmap layout — specifically, not the contiguous arena.
             assert _debug_hnsw_storage_mode(coll) == "mmap", (
                 "use_contiguous_memory=False + enable_mmap=True should "
                 "produce the mmap entity"
             )
 
-            # Search still functions with the default entity backing.
             query_vec = docs[0].vector("dense")
             ids = _assert_query_matches(coll, query_vec)
             assert ids[0] == "0"
@@ -345,12 +303,6 @@ class TestHnswContiguousMemoryEndToEnd:
         collection_option,
         rng,
     ):
-        """Reopening a collection must preserve the ``use_contiguous_memory`` flag.
-
-        The flag survives a writable reopen and index build, then takes effect
-        when the persisted index is reopened read-only. Both layouts must
-        preserve query and fetch results.
-        """
         schema = _build_schema("hnsw_contig_reopen", use_contiguous_memory=True)
         path = tmp_path_factory.mktemp("zvec") / "hnsw_contig_reopen"
         path_str = str(path)
@@ -362,7 +314,6 @@ class TestHnswContiguousMemoryEndToEnd:
         for r in created.insert(docs=docs):
             assert r.ok()
         assert created.stats.doc_count == NUM_DOCS
-        # Persist pending writes so that reopen reconstructs state from disk.
         created.flush()
         created.close()
 
@@ -371,14 +322,12 @@ class TestHnswContiguousMemoryEndToEnd:
             assert reopened is not None
             assert reopened.stats.doc_count == NUM_DOCS
 
-            # Schema persisted the flag across the reopen boundary.
             vec_schema = reopened.schema.vectors[0]
             assert vec_schema.index_param.use_contiguous_memory is True
 
             reopened.optimize()
             assert _debug_hnsw_storage_mode(reopened) == "mmap"
 
-            # Entity actually works: exact self-recall + fetch parity.
             query_vec = docs[7].vector("dense")
             ids = _assert_query_matches(reopened, query_vec)
             assert ids[0] == "7"
@@ -401,12 +350,6 @@ class TestHnswContiguousMemoryEndToEnd:
         tmp_path_factory,
         rng,
     ):
-        """
-        Two collections built from the same documents must return the same
-        top-k neighbors regardless of whether contiguous memory is enabled:
-        the flag is a memory-layout optimization and must not alter recall
-        for identical graph construction parameters on the same data.
-        """
         docs = _generate_docs(rng)
         query_vec = docs[3].vector("dense")
 
@@ -439,11 +382,8 @@ class TestHnswContiguousMemoryEndToEnd:
         ids_off = _build_and_query("off", flag=False)
         ids_on = _build_and_query("on", flag=True)
 
-        # The graph is built with the same (m, ef_construction, data, order),
-        # so top-k results must match exactly.
         assert ids_on == ids_off, (
             f"top-{TOPK} results diverged between use_contiguous_memory modes: "
             f"on={ids_on}, off={ids_off}"
         )
-        # Sanity: self-recall is still perfect.
         assert ids_on[0] == "3"

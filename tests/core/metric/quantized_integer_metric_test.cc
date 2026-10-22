@@ -350,9 +350,7 @@ TEST(QuantizedIntegerMetric, TestInt4SquaredEuclidean) {
   std::mt19937 gen(20261022);
   std::uniform_real_distribution<float> dist(-1.0, 2.0);
 
-  // Cover short vectors and SIMD boundaries deterministically. Comparing the
-  // quantized score with the original FP32 score using 0.2 * dimension is not
-  // a rounding-error bound, especially for short vectors.
+  // Include short vectors and SIMD boundaries.
   for (size_t dimension : {2u, 4u, 6u, 14u, 16u, 30u, 32u, 64u, 128u, 256u}) {
     SCOPED_TRACE(testing::Message() << "dimension=" << dimension);
     const size_t COUNT = 1000;
@@ -370,8 +368,7 @@ TEST(QuantizedIntegerMetric, TestInt4SquaredEuclidean) {
         record[j] = dist(gen);
       }
       if (dimension == 4 && i == 0) {
-        // With the query below, valid INT4 rounding changes squared distance
-        // from 31.8088 to 33.76, exceeding the old tolerance of 0.8.
+        // Exercise a short vector with a large quantization error.
         const float regression[] = {-1.0f, -0.91f, -0.71f, 2.0f};
         std::copy(std::begin(regression), std::end(regression), record.data());
       }

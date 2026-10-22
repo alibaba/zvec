@@ -553,8 +553,7 @@ Status SegmentImpl::Open(const SegmentOptions &options) {
 
   fresh_persist_chunked_array();
 
-  // Compute this property after all persisted doc IDs have been loaded,
-  // before publishing the read-only segment.
+  // All persisted doc IDs must be loaded before checking identity.
   if (options_.read_only_) {
     has_identity_doc_ids_ = true;
     for (size_t i = 0; i < doc_ids_.size(); ++i) {
@@ -4327,9 +4326,8 @@ Status SegmentImpl::recover() {
         "], segment[", id(), "], ret[", ret, "]");
   }
 
-  // Replay uses writable ID maps, scalar indexes and file-backed memory
-  // components. A read-only open holds only a shared collection lock and
-  // cannot safely run that path, even when only delete records remain.
+  // WAL replay modifies persistent state, even for deletes, and requires
+  // an exclusive collection lock.
   if (options_.read_only_) {
     if (recover_wal_file->has_record()) {
       return Status::FailedPrecondition(

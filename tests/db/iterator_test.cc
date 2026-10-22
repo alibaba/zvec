@@ -49,7 +49,6 @@ class IteratorTest : public ::testing::Test {
   }
 };
 
-// Concurrent iterator creators must coexist while their snapshots are prepared.
 TEST_F(IteratorTest, ConcurrentIteratorCreation) {
   constexpr int kThreads = 8;
   constexpr int kRounds = 20;

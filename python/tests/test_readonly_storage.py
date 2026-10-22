@@ -85,8 +85,7 @@ def _snapshot(path):
 
 
 def _crash_writer(path, enable_mmap, kind, operation):
-    # Re-exec before initializing any collection threads; os._exit bypasses
-    # destructors, leaving a real WAL and the writer's file-backed buffers.
+    # A fresh process using os._exit leaves a WAL without running destructors.
     subprocess.run(
         [sys.executable, __file__, str(path), str(int(enable_mmap)), kind, operation],
         check=True,
@@ -244,8 +243,7 @@ if __name__ == "__main__":
     elif operation == "delete":
         assert collection.delete("a").ok()
     elif operation == "empty":
-        # Model a crash after creating a WAL header but before completing its
-        # first append, preserving the native header rather than inventing one.
+        # Simulate an interrupted first append while preserving the WAL header.
         assert collection.insert(_doc("c", 3, kind)).ok()
         wal = next(Path(path).rglob("*.wal"))
         wal.write_bytes(wal.read_bytes()[:64])

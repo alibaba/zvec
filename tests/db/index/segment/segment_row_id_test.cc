@@ -291,8 +291,7 @@ TEST_P(SegmentTest, ReadOnlyIdentityDocIDsAfterWritableWalRecovery) {
   auto meta = writer->meta();
   writer.reset();
 
-  // Persisted doc IDs are empty (identity), but writable WAL recovery adds
-  // ID 100. The following read-only open must load the recovered mapping.
+  // WAL recovery changes the empty identity mapping by adding doc ID 100.
   const auto wal_path = FileHelper::MakeWalPath(
       col_path_, meta->id(), meta->writing_forward_block()->id());
   WalFilePtr wal;

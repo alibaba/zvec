@@ -205,8 +205,6 @@ TEST_P(ReadOnlyCloseTest, WritableClosePersistsWritesAfterFlushAndReopen) {
     auto hnsw = std::dynamic_pointer_cast<HNSWIndex>(writer);
     ASSERT_NE(nullptr, hnsw);
     ASSERT_EQ(GetParam().mmap ? "mmap" : "buffer_pool", hnsw->storage_mode());
-    // Reuse the thread-local context to query appended vectors without
-    // closing the index.
     ASSERT_NO_FATAL_FAILURE(check_vectors(writer, count));
     for (; count < 32; ++count) {
       ASSERT_EQ(0, writer->add(vector(), count));
@@ -417,8 +415,7 @@ class ReadOnlyOfflineMutationTest
   }
 
   void reject_adds(const Index::Pointer &index) const {
-    // Continue after a failed expectation so the train call still catches
-    // attempts to persist vectors cached by an unguarded add implementation.
+    // Still call train() if add() incorrectly caches vectors.
     for (uint32_t id = 0; id < 32; ++id) {
       EXPECT_EQ(zvec::core::IndexError_NoReady, add(index, id));
     }
@@ -484,13 +481,11 @@ TEST_P(ReadOnlyOfflineMutationTest, ReadOnlyTrainingPreservesExistingData) {
 
   auto reader = make_index();
   ASSERT_NE(nullptr, reader);
-  // Previously these vectors were cached before open, allowing IVF RaBitQ
-  // train() to replace a successfully opened read-only index with 32 vectors.
   reject_adds(reader);
   ASSERT_EQ(0, reader->open(path_, options(false, true)));
   EXPECT_EQ(128U, reader->get_doc_count());
   reject_adds(reader);
-  // An already trained index keeps its existing no-op train contract.
+  // Training an already trained index is a no-op.
   EXPECT_EQ(0, reader->train());
   EXPECT_TRUE(before == snapshot());
   ASSERT_EQ(0, reader->close());

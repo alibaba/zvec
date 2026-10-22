@@ -327,9 +327,8 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
         entity_ = std::make_unique<HnswExternalStreamerEntity>(stats_);
       } else if (use_contiguous_memory_ &&
                  stg->name() == "MMapFileReadStorage") {
-        // Contiguous memory is a snapshot taken at open, so use it only for
-        // read-only mmap. Falling back to mmap after an append would leave
-        // previously cloned contexts pointing at the old snapshot.
+        // Writable appends would leave cloned contexts using stale contiguous
+        // snapshots.
         entity_ = std::make_unique<HnswContiguousStreamerEntity>(stats_);
       } else {
         entity_ = std::make_unique<HnswMmapStreamerEntity>(stats_);

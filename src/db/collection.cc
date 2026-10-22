@@ -345,8 +345,7 @@ class CollectionImpl : public Collection {
   // destroy) without holding schema_handle_mtx_, so a maintenance
   // operation waiting for a running optimize never becomes a pending
   // exclusive acquirer of the schema lock (which would block new readers).
-  // Iterator creation holds a shared lock, excluding maintenance without
-  // rejecting other iterator creators. schema_handle_mtx_ serializes snapshots.
+  // Iterator creators share this lock; schema_handle_mtx_ guards snapshots.
   // Lock order: maintenance -> schema -> write -> SegmentManager; never
   // acquire maintenance_mtx_ after any of the others.
   mutable std::shared_mutex maintenance_mtx_;
