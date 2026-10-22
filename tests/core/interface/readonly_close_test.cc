@@ -22,6 +22,7 @@
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/core/framework/index_error.h>
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
@@ -85,7 +86,7 @@ class ReadOnlyCloseTest : public testing::TestWithParam<CloseTestCase> {
 
   StorageOptions options(bool create, bool read_only = false) const {
     return {GetParam().mmap ? StorageOptions::StorageType::kMMAP
-                           : StorageOptions::StorageType::kBufferPool,
+                            : StorageOptions::StorageType::kBufferPool,
             create, read_only};
   }
 
@@ -100,9 +101,9 @@ class ReadOnlyCloseTest : public testing::TestWithParam<CloseTestCase> {
     for (uint32_t id = 0; id < count; ++id) {
       VectorDataBuffer fetched;
       ASSERT_EQ(0, index->fetch(id, &fetched));
-      const auto expected = std::string(
-          reinterpret_cast<const char *>(values_.data()),
-          GetParam().sparse ? sizeof(float) : sizeof(values_));
+      const auto expected =
+          std::string(reinterpret_cast<const char *>(values_.data()),
+                      GetParam().sparse ? sizeof(float) : sizeof(values_));
       if (GetParam().sparse) {
         const auto &sparse =
             std::get<SparseVectorBuffer>(fetched.vector_buffer);
@@ -255,9 +256,7 @@ TEST_P(ReadOnlyCloseTest, ReadOnlyRejectsMergeWithoutChangingData) {
   ASSERT_EQ(0, source->close());
 }
 
-TEST(ReadOnlyOfflineIndexTest, CannotCreateOrMergeIntoReadOnlyStorage) {
-  ASSERT_EQ(0, zvec::ailego::MemoryLimitPool::get_instance().init(256UL * 1024 *
-                                                                  1024));
+std::vector<BaseIndexParam::Pointer> OfflineIndexParams() {
   std::vector<BaseIndexParam::Pointer> params;
   params.push_back(IVFIndexParamBuilder()
                        .with_dimension(64)
@@ -285,6 +284,13 @@ TEST(ReadOnlyOfflineIndexTest, CannotCreateOrMergeIntoReadOnlyStorage) {
                        .with_pq_chunk_num(4)
                        .build());
 #endif
+  return params;
+}
+
+TEST(ReadOnlyOfflineIndexTest, CannotCreateOrMergeIntoReadOnlyStorage) {
+  ASSERT_EQ(0, zvec::ailego::MemoryLimitPool::get_instance().init(256UL * 1024 *
+                                                                  1024));
+  const auto params = OfflineIndexParams();
   for (const auto &param : params) {
     for (auto storage : {StorageOptions::StorageType::kMMAP,
                          StorageOptions::StorageType::kBufferPool}) {
@@ -358,6 +364,179 @@ TEST(ReadOnlyOfflineIndexTest, CannotCreateOrMergeIntoReadOnlyStorage) {
   }
 }
 
+
+struct OfflineMutationCase {
+  std::string name;
+  BaseIndexParam::Pointer param;
+  StorageOptions::StorageType storage;
+};
+
+std::vector<OfflineMutationCase> OfflineMutationCases() {
+  std::vector<OfflineMutationCase> cases;
+  for (const auto &param : OfflineIndexParams()) {
+    const std::string name = param->index_type == IndexType::kIVF ? "IVF"
+                             : param->index_type == IndexType::kIVFRabitq
+                                 ? "IVFRabitq"
+                                 : "DiskAnn";
+    cases.push_back({name + "Mmap", param, StorageOptions::StorageType::kMMAP});
+    cases.push_back(
+        {name + "Buffer", param, StorageOptions::StorageType::kBufferPool});
+  }
+  return cases;
+}
+
+class ReadOnlyOfflineMutationTest
+    : public testing::TestWithParam<OfflineMutationCase> {
+ protected:
+  void SetUp() override {
+    ASSERT_EQ(0, zvec::ailego::MemoryLimitPool::get_instance().init(
+                     256UL * 1024 * 1024));
+    path_ = "readonly_offline_mutation_" + GetParam().name + ".index";
+    zvec::test_util::RemoveTestFiles(path_);
+  }
+
+  void TearDown() override {
+    zvec::test_util::RemoveTestFiles(path_);
+  }
+
+  Index::Pointer make_index() const {
+    return IndexFactory::CreateAndInitIndex(*GetParam().param);
+  }
+
+  StorageOptions options(bool create_new, bool read_only = false) const {
+    return {GetParam().storage, create_new, read_only};
+  }
+
+  int add(const Index::Pointer &index, uint32_t id) const {
+    std::array<float, 64> data;
+    for (size_t dim = 0; dim < data.size(); ++dim) {
+      data[dim] = std::sin(float(id * 13 + dim + 1));
+    }
+    return index->add(VectorData{DenseVector{data.data()}}, id);
+  }
+
+  void reject_adds(const Index::Pointer &index) const {
+    // Continue after a failed expectation so the train call still catches
+    // attempts to persist vectors cached by an unguarded add implementation.
+    for (uint32_t id = 0; id < 32; ++id) {
+      EXPECT_EQ(zvec::core::IndexError_NoReady, add(index, id));
+    }
+  }
+
+  void populate(const Index::Pointer &index) const {
+    for (uint32_t id = 0; id < 128; ++id) {
+      ASSERT_EQ(0, add(index, id));
+    }
+    ASSERT_EQ(0, index->train());
+    ASSERT_EQ(128U, index->get_doc_count());
+  }
+
+  std::string snapshot() const {
+    std::ifstream input(path_, std::ios::binary);
+    return {std::istreambuf_iterator<char>(input),
+            std::istreambuf_iterator<char>()};
+  }
+
+  std::string path_;
+};
+
+TEST_P(ReadOnlyOfflineMutationTest, RejectsMutationsBeforeOpen) {
+  auto index = make_index();
+  ASSERT_NE(nullptr, index);
+  reject_adds(index);
+  EXPECT_EQ(zvec::core::IndexError_NoReady, index->train());
+  EXPECT_FALSE(zvec::ailego::File::IsExist(path_));
+}
+
+TEST_P(ReadOnlyOfflineMutationTest, FailedReadOnlyOpenCannotWriteTarget) {
+  for (bool existing : {false, true}) {
+    SCOPED_TRACE(existing);
+    zvec::test_util::RemoveTestFiles(path_);
+    if (existing) {
+      std::ofstream output(path_, std::ios::binary);
+      output << "existing index contents - invalid header";
+      ASSERT_TRUE(output.good());
+    }
+    const auto before = snapshot();
+    auto index = make_index();
+    ASSERT_NE(nullptr, index);
+    ASSERT_NE(0, index->open(path_, options(false, true)));
+    reject_adds(index);
+    EXPECT_EQ(zvec::core::IndexError_NoReady, index->train());
+    EXPECT_EQ(existing, zvec::ailego::File::IsExist(path_));
+    EXPECT_TRUE(before == snapshot());
+    index.reset();
+    EXPECT_EQ(existing, zvec::ailego::File::IsExist(path_));
+    EXPECT_TRUE(before == snapshot());
+  }
+}
+
+TEST_P(ReadOnlyOfflineMutationTest, ReadOnlyTrainingPreservesExistingData) {
+  auto writer = make_index();
+  ASSERT_NE(nullptr, writer);
+  ASSERT_EQ(0, writer->open(path_, options(true)));
+  ASSERT_NO_FATAL_FAILURE(populate(writer));
+  ASSERT_EQ(0, writer->close());
+  writer.reset();
+  const auto before = snapshot();
+  ASSERT_FALSE(before.empty());
+
+  auto reader = make_index();
+  ASSERT_NE(nullptr, reader);
+  // Previously these vectors were cached before open, allowing IVF RaBitQ
+  // train() to replace a successfully opened read-only index with 32 vectors.
+  reject_adds(reader);
+  ASSERT_EQ(0, reader->open(path_, options(false, true)));
+  EXPECT_EQ(128U, reader->get_doc_count());
+  reject_adds(reader);
+  // An already trained index keeps its existing no-op train contract.
+  EXPECT_EQ(0, reader->train());
+  EXPECT_TRUE(before == snapshot());
+  ASSERT_EQ(0, reader->close());
+  reader.reset();
+  EXPECT_TRUE(before == snapshot());
+
+  auto reopened = make_index();
+  ASSERT_NE(nullptr, reopened);
+  ASSERT_EQ(0, reopened->open(path_, options(false, true)));
+  EXPECT_EQ(128U, reopened->get_doc_count());
+  ASSERT_EQ(0, reopened->close());
+  reopened.reset();
+  EXPECT_TRUE(before == snapshot());
+}
+
+TEST_P(ReadOnlyOfflineMutationTest,
+       WritableTrainIsIdempotentAndCloseStopsWrites) {
+  auto writer = make_index();
+  ASSERT_NE(nullptr, writer);
+  ASSERT_EQ(0, writer->open(path_, options(true)));
+  ASSERT_NO_FATAL_FAILURE(populate(writer));
+  const auto trained = snapshot();
+  ASSERT_FALSE(trained.empty());
+  ASSERT_EQ(0, writer->train());
+  EXPECT_TRUE(trained == snapshot());
+  EXPECT_EQ(128U, writer->get_doc_count());
+  ASSERT_EQ(0, writer->close());
+  const auto closed = snapshot();
+  reject_adds(writer);
+  EXPECT_EQ(0, writer->train());
+  writer.reset();
+  EXPECT_TRUE(closed == snapshot());
+
+  auto reader = make_index();
+  ASSERT_NE(nullptr, reader);
+  ASSERT_EQ(0, reader->open(path_, options(false, true)));
+  EXPECT_EQ(128U, reader->get_doc_count());
+  ASSERT_EQ(0, reader->close());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    StorageAndOfflineIndexTypes, ReadOnlyOfflineMutationTest,
+    testing::ValuesIn(OfflineMutationCases()),
+    [](const testing::TestParamInfo<OfflineMutationCase> &info) {
+      return info.param.name;
+    });
+
 INSTANTIATE_TEST_SUITE_P(
     StorageAndIndexTypes, ReadOnlyCloseTest,
     testing::Values(
@@ -371,7 +550,8 @@ INSTANTIATE_TEST_SUITE_P(
         CloseTestCase{"SparseHnswBuffer", IndexType::kHNSW, true, false, false},
         CloseTestCase{"VamanaMmap", IndexType::kVamana, false, true, false},
         CloseTestCase{"VamanaBuffer", IndexType::kVamana, false, false, false},
-        CloseTestCase{"VamanaContiguous", IndexType::kVamana, false, true, true}),
+        CloseTestCase{"VamanaContiguous", IndexType::kVamana, false, true,
+                      true}),
     [](const testing::TestParamInfo<CloseTestCase> &info) {
       return info.param.name;
     });

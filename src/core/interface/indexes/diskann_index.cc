@@ -204,6 +204,7 @@ int DiskAnnIndex::generate_holder() {
 }
 
 int DiskAnnIndex::add(const VectorData &vector, uint32_t doc_id) {
+  if (!is_open_ || is_read_only_) return core::IndexError_NoReady;
   if (is_trained_ || build_stage_ != BuildStage::kCollecting) {
     LOG_ERROR("this diskann index is trained or has a pending build");
     return core::IndexError_Runtime;
@@ -227,6 +228,7 @@ int DiskAnnIndex::add(const VectorData &vector, uint32_t doc_id) {
 
 int DiskAnnIndex::train() {
   if (is_trained_) return 0;
+  if (!is_open_ || is_read_only_) return core::IndexError_NoReady;
   if (build_stage_ == BuildStage::kCollecting) {
     int ret = reset_builder();
     if (ret != 0) return ret;
