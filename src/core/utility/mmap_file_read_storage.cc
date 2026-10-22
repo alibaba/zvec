@@ -85,17 +85,6 @@ class MMapFileReadStorage : public IndexStorage {
     }
 
     //! Read data from segment
-    size_t read(size_t offset, const void **data, size_t len) override {
-      if (ailego_unlikely(offset + len > region_size_)) {
-        if (offset > region_size_) {
-          offset = region_size_;
-        }
-        len = region_size_ - offset;
-      }
-      *data = data_ptr_ + offset;
-      return len;
-    }
-
     size_t read(size_t offset, MemoryBlock &data, size_t len) override {
       if (ailego_unlikely(offset + len > region_size_)) {
         if (offset > region_size_) {

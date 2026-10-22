@@ -17,6 +17,7 @@
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/core/framework/index_searcher.h>
+#include "utility/legacy_read_buffer.h"
 #include "flat_distance_matrix.h"
 #include "flat_index_format.h"
 
@@ -182,8 +183,25 @@ class FlatSearcher : public IndexSearcher {
   }
 
   const void *get_vector(key_t key) const override {
+    // The provider below is temporary, so retain only independent bytes here.
+    static thread_local LegacyReadBuffer buffer;
+    IndexStorage::MemoryBlock block;
+    return get_vector(key, block) == 0
+               ? buffer.assign(block, meta_.element_size())
+               : nullptr;
+  }
+
+  int get_vector(key_t key, IndexStorage::MemoryBlock &block) const override {
+    if (!container_) {
+      block.reset();
+      return IndexError_NoReady;
+    }
     auto provider = this->create_provider();
-    return provider->get_vector(key);
+    if (!provider) {
+      block.reset();
+      return IndexError_NoReady;
+    }
+    return provider->get_vector(key, block);
   }
 
  private:

@@ -1016,10 +1016,17 @@ TEST(IndexInterface, IvfBufferPoolDefersWarmupUntilReads) {
     VectorData query{DenseVector{vector.data()}};
     auto query_param =
         IVFQueryParamBuilder().with_topk(1).with_nprobe(8).build();
-    SearchResult result;
-    ASSERT_EQ(0, index->search(query, query_param, &result));
-    ASSERT_EQ(1u, result.doc_list_.size());
-    EXPECT_EQ(511u, result.doc_list_[0].key());
+    for (bool filtered : {false, true}) {
+      SCOPED_TRACE(filtered);
+      if (filtered) {
+        query_param->filter = std::make_shared<IndexFilter>();
+        query_param->filter->set([](uint64_t key) { return key != 511u; });
+      }
+      SearchResult result;
+      ASSERT_EQ(0, index->search(query, query_param, &result));
+      ASSERT_EQ(1u, result.doc_list_.size());
+      EXPECT_EQ(511u, result.doc_list_[0].key());
+    }
   };
 
   {

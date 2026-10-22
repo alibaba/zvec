@@ -18,6 +18,19 @@
 
 using namespace zvec;
 
+TEST(MemoryHelper, DefaultCacheLineAlignment) {
+  // A non-multiple size also exercises the small-buffer allocation path.
+  const size_t size = AILEGO_CACHE_LINE_SIZE + 3;
+  void *ptr = ailego::MemoryHelper::AllocateAligned(size);
+  ASSERT_NE(nullptr, ptr);
+  EXPECT_EQ(0u, reinterpret_cast<uintptr_t>(ptr) % AILEGO_CACHE_LINE_SIZE);
+  const auto *bytes = static_cast<const unsigned char *>(ptr);
+  for (size_t i = 0; i < size; ++i) {
+    EXPECT_EQ(0, bytes[i]);
+  }
+  ailego::MemoryHelper::FreeAligned(ptr, size);
+}
+
 TEST(MemoryHelper, General) {
   size_t vsz, rss;
   EXPECT_TRUE(ailego::MemoryHelper::SelfUsage(&vsz, &rss));

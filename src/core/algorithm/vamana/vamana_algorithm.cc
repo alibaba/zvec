@@ -50,12 +50,12 @@ int VamanaAlgorithm<EntityType>::add_node(node_id_t id, VamanaContext *ctx) {
 
   // Set query to the new node's vector. Use reset_query (same as search path)
   // so that greedy_search works with the search-optimized distance kernel.
-  const void *query_vec = entity_.get_vector(id);
-  if (ailego_unlikely(query_vec == nullptr)) {
+  IndexStorage::MemoryBlock query_block;
+  if (ailego_unlikely(entity_.get_vector(id, query_block) != 0)) {
     LOG_ERROR("Failed to get vector for node %u", id);
     return IndexError_ReadData;
   }
-  ctx->reset_query(query_vec);
+  ctx->reset_query(query_block.data());
 
   int ret = greedy_search(entry_point, ctx, /*use_pool=*/false);
   if (ailego_unlikely(ret != 0)) {
@@ -162,13 +162,13 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
 // Prefetch all cache lines covering a packed contiguous graph row.
 ailego_force_inline void prefetch_graph_row(
     const VamanaContiguousStreamerEntity &entity, node_id_t node) {
-  constexpr uintptr_t kCacheLineMask = ~uintptr_t{63};
+  constexpr uintptr_t kCacheLineMask = ~uintptr_t{AILEGO_CACHE_LINE_SIZE - 1};
   const char *data = entity.graph_prefetch_data(node);
   if (ailego_unlikely(data == nullptr)) return;
   const uintptr_t begin = reinterpret_cast<uintptr_t>(data) & kCacheLineMask;
   const uintptr_t end =
       reinterpret_cast<uintptr_t>(data) + entity.graph_prefetch_size();
-  const size_t lines = (end - begin + 63) / 64;
+  const size_t lines = ailego_cache_line_count(end - begin);
   ailego_prefetch_lines(reinterpret_cast<const void *>(begin), lines);
 }
 
@@ -392,11 +392,10 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
                              VamanaDistCalculator &dc, node_id_t entry_point,
                              FilterFn &&filter) {
   const uint32_t prefetch_offset = ctx->po();
-  const uint32_t vector_body_lines =
-      static_cast<uint32_t>((entity.vector_data_size() + 63) / 64);
-  const uint32_t prefetch_lines = ctx->pl() > 0
-                                      ? std::min(ctx->pl(), vector_body_lines)
-                                      : vector_body_lines;
+  const size_t vector_lines =
+      ailego_cache_line_count(entity.vector_data_size());
+  const uint32_t prefetch_lines =
+      ctx->pl() > 0 ? std::min<size_t>(ctx->pl(), vector_lines) : vector_lines;
 
   uint32_t buf_capacity = entity.max_degree();
   std::vector<node_id_t> neighbor_ids(buf_capacity);
@@ -474,11 +473,8 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
     if (ailego_unlikely(ret != 0)) break;
 
     for (uint32_t i = 0; i < std::min(prefetch_offset, unvisited_count); ++i) {
-      const char *base =
-          static_cast<const char *>(neighbor_vec_blocks[i].data());
-      for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
-        ailego_prefetch(base + cl * 64);
-      }
+      const void *vector = neighbor_vec_blocks[i].data();
+      ailego_prefetch_lines(vector, prefetch_lines);
     }
 
     // Batch distance computation (reuse pre-allocated buffers).
@@ -522,11 +518,10 @@ int VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
   const IndexFilter &index_filter =
       static_cast<const IndexContext *>(ctx)->filter();
 
-  const uint32_t vector_body_lines =
-      static_cast<uint32_t>((entity.vector_data_size() + 63) / 64);
-  const uint32_t prefetch_lines = ctx->pl() > 0
-                                      ? std::min(ctx->pl(), vector_body_lines)
-                                      : vector_body_lines;
+  const size_t vector_lines =
+      ailego_cache_line_count(entity.vector_data_size());
+  const uint32_t prefetch_lines =
+      ctx->pl() > 0 ? std::min<size_t>(ctx->pl(), vector_lines) : vector_lines;
 
   if (!use_pool || index_filter.is_valid()) {
     // Fallback path used by add_node (use_pool=false) and filtered search.
@@ -585,8 +580,8 @@ int VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
 template <typename EntityType>
 int VamanaAlgorithm<EntityType>::refine_node(node_id_t id, float alpha,
                                              VamanaContext *ctx) {
-  const void *query_vec = entity_.get_vector(id);
-  if (ailego_unlikely(query_vec == nullptr)) {
+  IndexStorage::MemoryBlock query_block;
+  if (ailego_unlikely(entity_.get_vector(id, query_block) != 0)) {
     return IndexError_ReadData;
   }
 
@@ -610,7 +605,7 @@ int VamanaAlgorithm<EntityType>::refine_node(node_id_t id, float alpha,
   auto &search_candidates =
       ctx->search_heap().reset<TopkHeap>(entity_.search_list_size());
   ctx->dist_calculator().clear_compare_cnt();
-  ctx->reset_query(query_vec);
+  ctx->reset_query(query_block.data());
 
   int ret = greedy_search(entry_point, ctx, /*use_pool=*/false);
   if (ailego_unlikely(ret != 0)) {
@@ -644,9 +639,9 @@ int VamanaAlgorithm<EntityType>::refine_node(node_id_t id, float alpha,
     if (neighbor == id || candidate_membership.visited(neighbor)) continue;
     const void *neighbor_vec = entity_.get_vector(neighbor);
     if (neighbor_vec == nullptr) continue;
-    dist_t dist = cached_dists
-                      ? cached_dists[i]
-                      : ctx->dist_calculator().dist(query_vec, neighbor_vec);
+    dist_t dist = cached_dists ? cached_dists[i]
+                               : ctx->dist_calculator().dist(query_block.data(),
+                                                             neighbor_vec);
     candidates.emplace(neighbor, dist);
     candidate_membership.set_visited(neighbor);
   }
@@ -710,8 +705,12 @@ void VamanaAlgorithm<EntityType>::robust_prune(node_id_t id,
   // Pre-cache all candidate vectors at once
   auto &vec_cache = ctx->prune_vec_cache();
   vec_cache.resize(n);
+  std::vector<IndexStorage::MemoryBlock> vector_blocks(n);
   for (size_t i = 0; i < n; ++i) {
-    vec_cache[i] = entity_.get_vector(candidates[i].first);
+    vec_cache[i] =
+        entity_.get_vector(candidates[i].first, vector_blocks[i]) == 0
+            ? vector_blocks[i].data()
+            : nullptr;
   }
 
   // occlude_factor: tracks the maximum occlusion ratio for each candidate
@@ -877,13 +876,14 @@ void VamanaAlgorithm<EntityType>::reverse_update_neighbor(node_id_t id,
     }
   } else {
     // Fallback: compute distances (first time or dist storage not loaded)
-    const void *neighbor_vec = entity_.get_vector(neighbor_id);
-    if (ailego_unlikely(neighbor_vec == nullptr)) return;
+    IndexStorage::MemoryBlock neighbor_block;
+    if (ailego_unlikely(entity_.get_vector(neighbor_id, neighbor_block) != 0))
+      return;
     for (uint32_t i = 0; i < current_size; ++i) {
       node_id_t nbr = current_neighbors[i];
       const void *nbr_vec = entity_.get_vector(nbr);
       if (ailego_unlikely(nbr_vec == nullptr)) continue;
-      dist_t nbr_dist = dc.dist(neighbor_vec, nbr_vec);
+      dist_t nbr_dist = dc.dist(neighbor_block.data(), nbr_vec);
       prune_candidates.emplace(nbr, nbr_dist);
     }
   }

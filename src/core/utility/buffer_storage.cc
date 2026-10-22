@@ -84,9 +84,6 @@ inline void bs_store_relaxed(uint64_t *p, uint64_t v) {
 
 }  // namespace
 
-// Legacy pointer reads stay valid until close_index(); prefer MemoryBlock for
-// bounded ownership.
-
 /*! Buffer Storage
  */
 class BufferStorage : public IndexStorage {
@@ -164,82 +161,6 @@ class BufferStorage : public IndexStorage {
     }
 
     //! Read data from segment
-    size_t read(size_t offset, const void **data, size_t len) override {
-      if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
-        LOG_ERROR("WrappedSegment::read: handle is null, file[%s], id[%s]",
-                  owner_->file_name_.c_str(), segment_id_->c_str());
-        *data = nullptr;
-        return 0;
-      }
-      len = clamp_length(&offset, len);
-      if (len == 0) {
-        *data = nullptr;
-        return 0;
-      }
-      const size_t abs_offset = absolute_offset(offset);
-      // Without a page cache, retain a copied result for the legacy pointer
-      // lifetime. Cached single-page reads below pin the page until close(),
-      // including for writable pools, instead of retaining one copy per read.
-      size_t first_page = abs_offset / ailego::kVectorPageSize;
-      size_t last_page = (abs_offset + len - 1) / ailego::kVectorPageSize;
-      bool force_bypass = !owner_->cache_enabled_;
-      if (owner_->cache_enabled_ && first_page == last_page) {
-        size_t page_id = 0;
-        char *raw = owner_->buffer_pool_handle_->get_single_page(abs_offset,
-                                                                 len, page_id);
-        if (raw != nullptr) {
-          *data = raw;
-          // Legacy pointer reads retain their pin until close_index().
-          {
-            std::lock_guard<std::mutex> pin_latch(owner_->pinned_pages_mutex_);
-            owner_->pinned_pages_.push_back(page_id);
-          }
-          return len;
-        }
-        force_bypass = true;
-      }
-      // Keep scratch buffers 4K-aligned without over-allocating on platforms
-      // whose native page size is larger.
-      size_t alloc_size = 0;
-      if (ailego_unlikely(!AlignBufferSize(len, &alloc_size))) {
-        *data = nullptr;
-        return 0;
-      }
-      // The arena amortizes aligned allocation and avoids fragmented-heap
-      // failures observed with many small aligned allocations on Android.
-      char *tmp = nullptr;
-      {
-        std::lock_guard<std::mutex> tmp_latch(owner_->tmp_buffers_mutex_);
-        tmp = owner_->tmp_arena_alloc_locked(alloc_size);
-      }
-      if (!tmp) {
-        LOG_ERROR(
-            "WrappedSegment::read: cross-page alloc failed, file[%s], "
-            "id[%s], abs_offset=%zu, len=%zu, alloc_size=%zu, align=%zu",
-            owner_->file_name_.c_str(), segment_id_->c_str(), abs_offset, len,
-            alloc_size, kBufferAlignment);
-        *data = nullptr;
-        return 0;
-      }
-      const bool read_ok = force_bypass
-                               ? owner_->buffer_pool_handle_->read_range_bypass(
-                                     abs_offset, len, tmp)
-                               : owner_->read_range(abs_offset, len, tmp);
-      if (!read_ok) {
-        LOG_ERROR(
-            "WrappedSegment::read: cross-page read_range failed, file[%s], "
-            "id[%s], abs_offset=%zu, len=%zu, first_page=%zu, last_page=%zu",
-            owner_->file_name_.c_str(), segment_id_->c_str(), abs_offset, len,
-            first_page, last_page);
-        // Avoid holding the arena lock across I/O; a failed read loses one
-        // temporary slot.
-        *data = nullptr;
-        return 0;
-      }
-      *data = tmp;
-      return len;
-    }
-
     //! Read data into a bounded-lifetime block.
     size_t read(size_t offset, MemoryBlock &data, size_t len) override {
       if (ailego_unlikely(!owner_->buffer_pool_handle_)) {
@@ -380,6 +301,12 @@ class BufferStorage : public IndexStorage {
         size_t destination_offset{0};
         size_t length{0};
       };
+      // C++17 allocators preserve this alignment for the arena base as well
+      // as the cache-line-sized slices handed to individual reads.
+      struct alignas(AILEGO_CACHE_LINE_SIZE) ArenaLine {
+        char bytes[AILEGO_CACHE_LINE_SIZE];
+      };
+      using BatchArena = std::vector<ArenaLine>;
       struct BatchScratch {
         std::vector<BatchState> states;
         std::vector<ailego::block_id_t> page_ids;
@@ -389,7 +316,7 @@ class BufferStorage : public IndexStorage {
         std::vector<ailego::block_id_t> admitted_ids;
         std::vector<size_t> admitted_indices;
         std::vector<char *> admitted_pages;
-        std::shared_ptr<std::vector<char>> arena;
+        std::shared_ptr<BatchArena> arena;
         std::vector<char> bypass_page;
       };
       static thread_local BatchScratch scratch;
@@ -600,7 +527,7 @@ class BufferStorage : public IndexStorage {
       // Reserve copied values once, then hand out bump slices. This includes
       // single-page bypass values, so the direct-read page scratch can be
       // immediately reused for the next unique miss.
-      static constexpr size_t kArenaAlign = 64;
+      static constexpr size_t kArenaAlign = AILEGO_CACHE_LINE_SIZE;
       size_t total = 0;
       for (const BatchState &state : scratch.states) {
         if (!state.copy_result) {
@@ -618,13 +545,14 @@ class BufferStorage : public IndexStorage {
         total += aligned;
       }
       batch_arena = total <= kMaxArenaBytes;
-      std::shared_ptr<std::vector<char>> arena_owner;
+      std::shared_ptr<BatchArena> arena_owner;
       if (batch_arena && total != 0) {
         if (!scratch.arena || scratch.arena.use_count() != 1) {
-          scratch.arena = std::make_shared<std::vector<char>>();
+          scratch.arena = std::make_shared<BatchArena>();
         }
-        if (scratch.arena->size() < total) {
-          scratch.arena->resize(total);
+        const size_t lines = total / kArenaAlign;
+        if (scratch.arena->size() < lines) {
+          scratch.arena->resize(lines);
         }
         arena_owner = scratch.arena;
         size_t off = 0;
@@ -632,7 +560,7 @@ class BufferStorage : public IndexStorage {
           if (!state.copy_result) {
             continue;
           }
-          state.owned = arena_owner->data() + off;
+          state.owned = reinterpret_cast<char *>(arena_owner->data()) + off;
           off += (state.request->length + kArenaAlign - 1) & ~(kArenaAlign - 1);
         }
       }
@@ -1569,25 +1497,6 @@ class BufferStorage : public IndexStorage {
     file_name_.clear();
     segments_.clear();
     meta_chains_.clear();
-    {
-      std::lock_guard<std::mutex> tmp_latch(tmp_buffers_mutex_);
-      for (const ArenaBlock &b : tmp_buffers_) {
-        if (b.base) {
-          ailego_free(b.base);
-        }
-      }
-      tmp_buffers_.clear();
-    }
-    // Drop persistent pointer-read pins before destroying the pool.
-    {
-      std::lock_guard<std::mutex> pin_latch(pinned_pages_mutex_);
-      if (buffer_pool_handle_) {
-        for (size_t pid : pinned_pages_) {
-          buffer_pool_handle_->release_one(pid);
-        }
-      }
-      pinned_pages_.clear();
-    }
     buffer_pool_handle_.reset();
     buffer_pool_.reset();
     cache_enabled_ = false;
@@ -1899,7 +1808,7 @@ class BufferStorage : public IndexStorage {
 
   // Readers hash across shards; metadata writers lock every shard.
   static constexpr size_t kMappingMutexShards = 32;
-  struct alignas(64) MutexShard {
+  struct alignas(AILEGO_CACHE_LINE_SIZE) MutexShard {
     std::shared_mutex mtx;
   };
   mutable MutexShard mapping_shards_[kMappingMutexShards]{};
@@ -1927,39 +1836,6 @@ class BufferStorage : public IndexStorage {
     AllShardsExclusiveLatch &operator=(const AllShardsExclusiveLatch &) =
         delete;
   };
-
-  // Aligned arenas retain legacy pointer-read results until close_index().
-  struct ArenaBlock {
-    char *base{nullptr};
-    size_t size{0};  // Total bytes in this arena (4K-aligned).
-    size_t used{0};  // Bytes already handed out (4K-aligned).
-  };
-  // Requires tmp_buffers_mutex_; alloc_size must be 4K-aligned.
-  char *tmp_arena_alloc_locked(size_t alloc_size) {
-    static constexpr size_t kArenaSize = 1UL << 20;  // 1 MiB
-    if (!tmp_buffers_.empty()) {
-      ArenaBlock &back = tmp_buffers_.back();
-      if (back.base && back.size - back.used >= alloc_size) {
-        char *out = back.base + back.used;
-        back.used += alloc_size;
-        return out;
-      }
-    }
-    size_t new_size = alloc_size > kArenaSize ? alloc_size : kArenaSize;
-    char *p =
-        static_cast<char *>(ailego_aligned_malloc(new_size, kBufferAlignment));
-    if (!p) {
-      return nullptr;
-    }
-    tmp_buffers_.push_back(ArenaBlock{p, new_size, alloc_size});
-    return p;
-  }
-  std::vector<ArenaBlock> tmp_buffers_{};
-  mutable std::mutex tmp_buffers_mutex_{};
-
-  // One entry per legacy pointer-read pin; duplicates are intentional.
-  std::vector<size_t> pinned_pages_{};
-  mutable std::mutex pinned_pages_mutex_{};
 
   // buffer manager
   std::string file_name_;

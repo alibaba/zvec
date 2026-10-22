@@ -258,18 +258,18 @@ void BuildLoadedReformer(const IndexMeta &rabitq_meta,
   if (rotated_centroids) {
     auto segment = memory_storage->get(RABITQ_CONVERTER_SEG_ID);
     ASSERT_NE(nullptr, segment);
-    const void *header_data = nullptr;
+    IndexStorage::MemoryBlock header_data;
     ASSERT_EQ(sizeof(RabitqConverterHeader),
-              segment->read(0, &header_data, sizeof(RabitqConverterHeader)));
+              segment->read(0, header_data, sizeof(RabitqConverterHeader)));
     const auto *header =
-        static_cast<const RabitqConverterHeader *>(header_data);
+        static_cast<const RabitqConverterHeader *>(header_data.data());
     const size_t centroid_count =
         static_cast<size_t>(header->num_clusters) * header->padded_dim;
-    const void *centroid_data = nullptr;
+    IndexStorage::MemoryBlock centroid_data;
     ASSERT_EQ(centroid_count * sizeof(float),
-              segment->read(sizeof(RabitqConverterHeader), &centroid_data,
+              segment->read(sizeof(RabitqConverterHeader), centroid_data,
                             centroid_count * sizeof(float)));
-    const auto *centroids = static_cast<const float *>(centroid_data);
+    const auto *centroids = static_cast<const float *>(centroid_data.data());
     rotated_centroids->assign(centroids, centroids + centroid_count);
   }
   IndexMemory::Instance()->remove(file_id);
@@ -383,11 +383,11 @@ TEST_F(IvfRabitqStreamerTest, TestRejectInvalidFormatMagicAndVersion) {
 
   auto header_segment = storage->get(IVF_RABITQ_HEADER_SEG_ID);
   ASSERT_NE(nullptr, header_segment);
-  const void *header_data = nullptr;
+  IndexStorage::MemoryBlock header_data;
   ASSERT_EQ(sizeof(IvfRabitqHeader),
-            header_segment->read(0, &header_data, sizeof(IvfRabitqHeader)));
+            header_segment->read(0, header_data, sizeof(IvfRabitqHeader)));
   auto *header = const_cast<IvfRabitqHeader *>(
-      static_cast<const IvfRabitqHeader *>(header_data));
+      static_cast<const IvfRabitqHeader *>(header_data.data()));
   ASSERT_EQ(kIvfRabitqIndexMagic, header->magic);
   ASSERT_EQ(kIvfRabitqIndexVersion, header->version);
 

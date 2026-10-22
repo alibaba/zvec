@@ -68,7 +68,7 @@ struct MemoryHelper {
   //! `alignment`-aligned allocation is used, which avoids wasting a full huge
   //! page on small buffers. Returns nullptr on failure.
   //!
-  //! `alignment` must be a power of two.
+  //! `alignment` must be a power of two; it defaults to the target cache line.
   //!
   //! `zero_fill` follows the same contract as AllocateHugePage: true guarantees
   //! zeroed memory; false does not require zeroing but the implementation may
@@ -78,7 +78,8 @@ struct MemoryHelper {
   //! Blocks returned here MUST be released with FreeAligned, passing the same
   //! `size`, because the chosen allocator (and therefore the matching free) is
   //! derived from `size`.
-  static void *AllocateAligned(size_t size, size_t alignment = 64,
+  static void *AllocateAligned(size_t size,
+                               size_t alignment = AILEGO_CACHE_LINE_SIZE,
                                bool zero_fill = true);
 
   //! Release a block previously returned by AllocateAligned.

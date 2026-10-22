@@ -21,8 +21,10 @@
 #include <string>
 #include <tuple>
 #include <vector>
+#include <ailego/pattern/scope_guard.h>
 #include <gtest/gtest.h>
 #include <turbo/quantizer/quantizer.h>
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/core/framework/index_segment_storage.h>
 #include "zvec/core/framework/index_framework.h"
 #include "ivf_builder.h"
@@ -2724,13 +2726,17 @@ TEST_F(IVFSearcherTest, KeyedBruteForceWithEmptyQuantizedCentroids) {
           ASSERT_EQ(nullptr, entity.quantizer());
           ASSERT_EQ(centroids.size(), entity.inverted_list_count());
           for (size_t i = 0; i < centroids.size(); ++i) {
-            const auto *list = entity.inverted_list_meta(i);
+            IndexStorage::MemoryBlock meta_block;
+            const auto *list = entity.inverted_list_meta(i, meta_block);
             ASSERT_NE(nullptr, list);
             EXPECT_EQ(centroids[i] == 0.0f ? 0u : 10u, list->vector_count);
           }
           // The real Dumper leaves the trailing empty list's offset at zero.
-          EXPECT_EQ(0u,
-                    entity.inverted_list_meta(centroids.size() - 1)->id_offset);
+          IndexStorage::MemoryBlock meta_block;
+          const auto *last_list =
+              entity.inverted_list_meta(centroids.size() - 1, meta_block);
+          ASSERT_NE(nullptr, last_list);
+          EXPECT_EQ(0u, last_list->id_offset);
 
           Params search_params;
           search_params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 1.0);
@@ -3165,6 +3171,72 @@ TEST_F(IVFSearcherTest, TestProvider) {
   ASSERT_EQ(dimension_, provider->dimension());
   ASSERT_EQ(index_meta_.element_size(), provider->element_size());
   ASSERT_EQ(index_meta_.data_type(), provider->data_type());
+}
+
+TEST_F(IVFSearcherTest, ProviderReleasesStorageBeforeThreadExit) {
+  auto &memory_pool = MemoryLimitPool::get_instance();
+  const size_t previous_capacity = memory_pool.capacity();
+  ASSERT_EQ(0u, memory_pool.used());
+  ASSERT_EQ(0, memory_pool.init(8 * 1024 * 1024));
+  auto cleanup = ScopeGuard::Make([&]() {
+    EXPECT_EQ(0u, memory_pool.used());
+    EXPECT_EQ(0, memory_pool.init(previous_capacity));
+  });
+
+  prepare_index_holder(0, 32);
+  for (bool quantized : {false, true}) {
+    SCOPED_TRACE(quantized);
+    Params build_params;
+    build_params.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "2");
+    if (quantized) {
+      build_params.set(PARAM_IVF_BUILDER_QUANTIZER_CLASS, "HalfFloatConverter");
+    }
+    IVFBuilder builder;
+    ASSERT_EQ(0, builder.init(index_meta_, build_params));
+    ASSERT_EQ(0, builder.train(threads_, holder_));
+    ASSERT_EQ(0, builder.build(threads_, holder_));
+    auto dumper = IndexFactory::CreateDumper("FileDumper");
+    ASSERT_NE(nullptr, dumper);
+    ASSERT_EQ(0, dumper->create(index_path_));
+    ASSERT_EQ(0, builder.dump(dumper));
+    ASSERT_EQ(0, dumper->close());
+    ASSERT_EQ(0, builder.cleanup());
+
+    for (bool iterate : {true, false}) {
+      SCOPED_TRACE(iterate);
+      auto storage = IndexFactory::CreateStorage("BufferReadStorage");
+      ASSERT_NE(nullptr, storage);
+      ASSERT_EQ(0, storage->init(Params()));
+      ASSERT_EQ(0, storage->open(index_path_, false));
+      IVFSearcher searcher;
+      ASSERT_EQ(0, searcher.init(Params()));
+      ASSERT_EQ(0, searcher.load(storage, IndexMetric::Pointer()));
+      auto provider = searcher.create_provider();
+      ASSERT_NE(nullptr, provider);
+      {
+        auto iterator = provider->create_iterator();
+        ASSERT_NE(nullptr, iterator);
+        ASSERT_TRUE(iterator->is_valid());
+        const uint64_t key = iterator->key();
+        const void *data =
+            iterate ? iterator->data() : provider->get_vector(key);
+        ASSERT_NE(nullptr, data);
+        EXPECT_FLOAT_EQ(static_cast<float>(key),
+                        static_cast<const float *>(data)[0]);
+      }
+      ASSERT_GT(memory_pool.used(), 0u);
+      provider.reset();
+      ASSERT_EQ(0, searcher.unload());
+      ASSERT_EQ(0, storage->close());
+      storage.reset();
+      // The calling thread remains alive. A TLS read block must not retain
+      // the pool or its file handle after every index owner has been released.
+      EXPECT_EQ(0u, memory_pool.used());
+      EXPECT_EQ(0u, memory_pool.metadata_used());
+    }
+    // Windows refuses this removal if a provider left a file handle open.
+    EXPECT_TRUE(File::RemovePath(index_path_));
+  }
 }
 
 TEST_F(IVFSearcherTest, TestProviderInt8) {
@@ -4413,9 +4485,11 @@ TEST_P(IVFTurboTest, PostingFormatDetection) {
       ASSERT_EQ(0, entity.load(storage));
       ASSERT_NE(nullptr, entity.quantizer());
       for (size_t i = 0; i < codes_.size(); ++i) {
-        const void *code = entity.get_vector_by_key(Key(i));
-        ASSERT_NE(nullptr, code);
-        EXPECT_EQ(0, std::memcmp(codes_[i].data(), code, codes_[i].size()));
+        IndexStorage::MemoryBlock code;
+        ASSERT_EQ(0, entity.get_vector_by_key(Key(i), code));
+        ASSERT_NE(nullptr, code.data());
+        EXPECT_EQ(0,
+                  std::memcmp(codes_[i].data(), code.data(), codes_[i].size()));
       }
     }
   }

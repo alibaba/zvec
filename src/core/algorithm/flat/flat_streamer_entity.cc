@@ -15,6 +15,7 @@
 #include "flat_streamer_entity.h"
 #include <cstdint>
 #include <zvec/core/framework/index_error.h>
+#include "utility/legacy_read_buffer.h"
 #include "flat_utility.h"
 
 namespace zvec {
@@ -232,12 +233,14 @@ int FlatStreamerEntity::close() {
   batch_query_preprocess_ = nullptr;
   metric_.reset();
   extra_values_size_ = 0;
+  meta_dirty_ = false;
 
   return 0;
 }
 
 int FlatStreamerEntity::flush_linear_meta() {
-  if (!storage_) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!storage_ || !meta_dirty_) {
     return 0;
   }
 
@@ -253,6 +256,8 @@ int FlatStreamerEntity::flush_linear_meta() {
     LOG_ERROR("Failed to write segment %s", FLAT_LINEAR_META_SEG_ID.c_str());
     return IndexError_WriteData;
   }
+
+  meta_dirty_ = false;
 
   return 0;
 }
@@ -312,6 +317,7 @@ int FlatStreamerEntity::add(uint64_t key, const void *vec, size_t size) {
   // function (alloc_block / add_to_block may compete for the same memory).
   head_block.reset(nullptr);
 
+  meta_dirty_ = true;
   if (!this->is_valid_block(block)) {
     int ret = this->alloc_block(block, &block);
     if (ailego_unlikely(ret != 0)) {
@@ -801,33 +807,12 @@ const void *FlatContiguousStreamerEntity::get_vector_ptr(
 }
 
 const void *FlatStreamerEntity::get_vector_by_key(uint64_t key) const {
-  VectorLocation loc{};
-  key_info_map_lock_->lock_shared();
-  if (use_key_info_map_) {
-    auto iterator = key_info_map_.find(key);
-    if (iterator == key_info_map_.end()) {
-      key_info_map_lock_->unlock_shared();
-      return nullptr;
-    }
-    loc = iterator->second;
-  } else {
-    if (key < withid_key_info_map_.size()) {
-      loc = withid_key_info_map_[key];
-    } else {
-      key_info_map_lock_->unlock_shared();
-      return nullptr;
-    }
-  }
-  key_info_map_lock_->unlock_shared();
-
-  auto segment = this->get_segment(loc.segment_id);
-  const void *data = nullptr;
-  if (segment->read(loc.offset, &data, index_meta_.element_size()) !=
-      index_meta_.element_size()) {
-    LOG_ERROR("Failed to read segment, size=%u", index_meta_.element_size());
-    return nullptr;
-  }
-  return data;
+  // Keep the legacy pointer valid until the next call on this thread.
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock block;
+  return get_vector_by_key(key, block) == 0
+             ? buffer.assign(block, index_meta_.element_size())
+             : nullptr;
 }
 
 int FlatStreamerEntity::get_vector_by_key(
@@ -964,6 +949,7 @@ void FlatStreamerEntity::Iterator::read_next_block() {
 }
 
 int FlatStreamerEntity::init_storage(IndexStorage::Pointer storage) {
+  meta_dirty_ = true;
   // Init Linear Meta Segment
   meta_.create_time = ailego::Realtime::Seconds();
   stats_.set_create_time(meta_.create_time);
@@ -1179,6 +1165,7 @@ int FlatStreamerEntity::load_segment_keys_to_vector() {
 }
 
 int FlatStreamerEntity::load_storage(IndexStorage::Pointer storage) {
+  meta_dirty_ = false;
   int ret = this->load_linear_meta(storage);
   if (ailego_unlikely(ret != 0)) {
     return ret;
@@ -1449,6 +1436,7 @@ int FlatStreamerEntity::add_vector_with_id(const uint32_t id, const void *query,
   }
 
 
+  meta_dirty_ = true;
   if (id >= vector_count()) {
     IndexStorage::MemoryBlock head_block;
     this->get_head_block(head_block);

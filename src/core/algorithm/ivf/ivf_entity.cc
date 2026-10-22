@@ -578,13 +578,13 @@ int IVFEntity::load_header(const IndexStorage::Pointer &container) {
               IVF_INVERTED_HEADER_SEG_ID.c_str());
     return IndexError_InvalidFormat;
   }
-  const void *data = nullptr;
-  if (header->read(0, &data, header->data_size()) != header->data_size()) {
+  IndexStorage::MemoryBlock data;
+  if (header->read(0, data, header->data_size()) != header->data_size()) {
     LOG_ERROR("Failed to read data, segment %s",
               IVF_INVERTED_HEADER_SEG_ID.c_str());
     return IndexError_ReadData;
   }
-  std::memcpy(&header_, data, sizeof(header_));
+  std::memcpy(&header_, data.data(), sizeof(header_));
   if (header_.header_size < sizeof(header_) + header_.index_meta_size ||
       header_.header_size > header->data_size()) {
     LOG_ERROR("Invalid header size %u", header_.header_size);
@@ -593,7 +593,7 @@ int IVFEntity::load_header(const IndexStorage::Pointer &container) {
 
   //! Load the index meta
   if (!meta_.deserialize(
-          reinterpret_cast<const uint8_t *>(data) + sizeof(header_),
+          reinterpret_cast<const uint8_t *>(data.data()) + sizeof(header_),
           header_.index_meta_size)) {
     LOG_ERROR("Failed to deserialize index meta");
     return IndexError_InvalidFormat;
@@ -691,11 +691,11 @@ int IVFEntity::load_quantizer(const IndexStorage::Pointer &container) {
     return IndexError_InvalidFormat;
   }
   if (segment->data_size() != 0) {
-    const void *data = nullptr;
-    if (segment->read(0, &data, segment->data_size()) != segment->data_size()) {
+    IndexStorage::MemoryBlock data;
+    if (segment->read(0, data, segment->data_size()) != segment->data_size()) {
       return IndexError_ReadData;
     }
-    ret = quantizer->deserialize(data, segment->data_size());
+    ret = quantizer->deserialize(data.data(), segment->data_size());
     ivf_check_with_msg(ret, "Failed to restore Turbo IVF quantizer");
   }
 
@@ -842,10 +842,11 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
   }
   ailego_assert_with(inverted_list_id < header_.inverted_list_count,
                      "invalid id");
-  auto list_meta = this->inverted_list_meta(inverted_list_id);
+  IndexStorage::MemoryBlock meta_block;
+  auto list_meta = this->inverted_list_meta(inverted_list_id, meta_block);
   ivf_assert(list_meta, IndexError_ReadData);
 
-  const void *data = nullptr;
+  IndexStorage::MemoryBlock data;
   const size_t block_vecs = header_.block_vector_count;
   std::vector<float> distances(block_vecs);
   const size_t batch_size = kBatchBlocks;
@@ -865,7 +866,9 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
     //! Read keys
     size_t items = std::min(blocks * block_vecs,
                             list_meta->vector_count - (i * block_vecs));
-    auto keys = get_keys(list_meta->id_offset + i * block_vecs, items);
+    IndexStorage::MemoryBlock keys_block;
+    auto keys =
+        get_keys(list_meta->id_offset + i * block_vecs, items, keys_block);
     if (!keys) {
       return IndexError_ReadData;
     }
@@ -882,7 +885,7 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
         LOG_ERROR("Failed to scatter-read block, off=%zu, size=%zu", off, size);
         return IndexError_ReadData;
       }
-    } else if (inverted_->read(off, &data, size) != size) {
+    } else if (inverted_->read(off, data, size) != size) {
       LOG_ERROR("Failed to read block, off=%zu, size=%zu", off, size);
       return IndexError_ReadData;
     }
@@ -931,7 +934,8 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
           return IndexError_ReadData;
         }
       } else {
-        const void *block_data = static_cast<const char *>(data) + block_offset;
+        const void *block_data =
+            static_cast<const char *>(data.data()) + block_offset;
         query_features_distance(query, block_data, vecs_count,
                                 distances.data());
       }
@@ -962,10 +966,11 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
   }
   ailego_assert_with(inverted_list_id < header_.inverted_list_count,
                      "invalid id");
-  auto list_meta = inverted_list_meta(inverted_list_id);
+  IndexStorage::MemoryBlock meta_block;
+  auto list_meta = inverted_list_meta(inverted_list_id, meta_block);
   ivf_assert(list_meta, IndexError_ReadData);
 
-  const void *data = nullptr;
+  IndexStorage::MemoryBlock data;
   const size_t block_vecs = header_.block_vector_count;
   std::vector<float> distances(block_vecs);
   const size_t batch_size = kBatchBlocks;
@@ -985,7 +990,9 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
     //! Read keys
     size_t items = std::min(blocks * block_vecs,
                             list_meta->vector_count - (i * block_vecs));
-    auto keys = get_keys(list_meta->id_offset + i * block_vecs, items);
+    IndexStorage::MemoryBlock keys_block;
+    auto keys =
+        get_keys(list_meta->id_offset + i * block_vecs, items, keys_block);
     if (!keys) {
       return IndexError_ReadData;
     }
@@ -1001,7 +1008,7 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
         LOG_ERROR("Failed to scatter-read block, off=%zu, size=%zu", off, size);
         return IndexError_ReadData;
       }
-    } else if (inverted_->read(off, &data, size) != size) {
+    } else if (inverted_->read(off, data, size) != size) {
       LOG_ERROR("Failed to read block, off=%zu, size=%zu", off, size);
       return IndexError_ReadData;
     }
@@ -1029,7 +1036,8 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
           return IndexError_ReadData;
         }
       } else {
-        const void *block_data = static_cast<const char *>(data) + block_offset;
+        const void *block_data =
+            static_cast<const char *>(data.data()) + block_offset;
         query_features_distance(query, block_data, vecs_count,
                                 distances.data());
       }
@@ -1131,11 +1139,12 @@ int IVFEntity::key_normalize_value(uint32_t id, float *value) const {
   while (begin < end) {
     const size_t mid = begin + (end - begin) / 2;
     size_t list_id = mid;
-    const auto *list = inverted_list_meta(list_id);
+    IndexStorage::MemoryBlock meta_block;
+    const auto *list = inverted_list_meta(list_id, meta_block);
     // Empty lists have no ID range. In particular, trailing lists in older
     // indexes can retain id_offset=0, so only compare nonempty lists.
     while (list && list->vector_count == 0 && list_id > begin) {
-      list = inverted_list_meta(--list_id);
+      list = inverted_list_meta(--list_id, meta_block);
     }
     if (!list) {
       return IndexError_ReadData;
@@ -1159,53 +1168,6 @@ int IVFEntity::key_normalize_value(uint32_t id, float *value) const {
     }
   }
   return IndexError_InvalidFormat;
-}
-
-const void *IVFEntity::get_vector(size_t id) const {
-  if (features_) {
-    const void *data = nullptr;
-    size_t element_size = features_->data_size() / vector_count();
-    size_t off = id * element_size;
-    if (features_->read(off, &data, element_size) != element_size) {
-      LOG_ERROR("Failed to read segment, off=%zu size=%zu", off, element_size);
-      return nullptr;
-    }
-    return data;
-  }
-
-  const void *data = nullptr;
-  size_t size = sizeof(InvertedVecLocation);
-  if (offsets_->read(id * size, &data, size) != size) {
-    LOG_ERROR("Failed to read offsets segment, id=%zu", id);
-    return nullptr;
-  }
-  auto &loc = *reinterpret_cast<const InvertedVecLocation *>(data);
-  if (loc.column_major) {
-    vector_.resize(meta_.element_size());
-    auto unit_size = IndexMeta::AlignSizeof(meta_.data_type());
-    size_t cols = meta_.element_size() / unit_size;
-    size_t step = block_vector_count() * unit_size;
-    size_t rd_size = step * (cols - 1) + unit_size;
-    if (inverted_->read(loc.offset, &data, rd_size) != rd_size) {
-      LOG_ERROR("Failed to read data, off=%zu size=%zu",
-                static_cast<size_t>(loc.offset), rd_size);
-      return nullptr;
-    }
-    for (size_t c = 0; c < cols; ++c) {
-      vector_.replace(c * unit_size, unit_size,
-                      reinterpret_cast<const char *>(data) + c * step,
-                      unit_size);
-    }
-    return vector_.data();
-  } else {
-    if (inverted_->read(loc.offset, &data, meta_.element_size()) !=
-        meta_.element_size()) {
-      LOG_ERROR("Failed to read data, off=%zu size=%u",
-                static_cast<size_t>(loc.offset), meta_.element_size());
-      return nullptr;
-    }
-    return data;
-  }
 }
 
 int IVFEntity::get_vector(size_t id, IndexStorage::MemoryBlock &block) const {
@@ -1236,22 +1198,23 @@ int IVFEntity::read_posting_vector(size_t id,
   }
   const auto loc = *static_cast<const InvertedVecLocation *>(data_block.data());
   data_block.reset();
-  const void *data = nullptr;
   if (loc.column_major) {
     vector_.resize(meta_.element_size());
     auto unit_size = IndexMeta::AlignSizeof(meta_.data_type());
     size_t cols = meta_.element_size() / unit_size;
     size_t step = block_vector_count() * unit_size;
     size_t rd_size = step * (cols - 1) + unit_size;
-    if (inverted_->read(loc.offset, &data, rd_size) != rd_size) {
+    IndexStorage::MemoryBlock vector_block;
+    if (inverted_->read(loc.offset, vector_block, rd_size) != rd_size) {
       LOG_ERROR("Failed to read data, off=%zu size=%zu",
                 static_cast<size_t>(loc.offset), rd_size);
       return IndexError_ReadData;
     }
     for (size_t c = 0; c < cols; ++c) {
-      vector_.replace(c * unit_size, unit_size,
-                      reinterpret_cast<const char *>(data) + c * step,
-                      unit_size);
+      vector_.replace(
+          c * unit_size, unit_size,
+          reinterpret_cast<const char *>(vector_block.data()) + c * step,
+          unit_size);
     }
     block.reset(vector_.data());
     return 0;
@@ -1279,29 +1242,29 @@ int IVFEntity::key_to_id(uint64_t key, uint32_t *id) const {
   //! Do binary search
   uint32_t start = 0UL;
   uint32_t end = vector_count();
-  const void *data = nullptr;
+  IndexStorage::MemoryBlock data;
   uint32_t idx = 0u;
   while (start < end) {
     idx = start + (end - start) / 2;
-    if (ailego_unlikely(mapping_->read(idx * sizeof(uint32_t), &data,
+    if (ailego_unlikely(mapping_->read(idx * sizeof(uint32_t), data,
                                        sizeof(uint32_t)) != sizeof(uint32_t))) {
       LOG_ERROR("Failed to read mapping segment, idx=%u", idx);
       return IndexError_ReadData;
     }
-    const uint64_t *mkey;
-    uint32_t local_id = *reinterpret_cast<const uint32_t *>(data);
+    IndexStorage::MemoryBlock key_block;
+    uint32_t local_id = *reinterpret_cast<const uint32_t *>(data.data());
     if (local_id >= vector_count()) {
       return IndexError_InvalidFormat;
     }
-    if (ailego_unlikely(keys_->read(local_id * sizeof(uint64_t),
-                                    (const void **)(&mkey),
+    if (ailego_unlikely(keys_->read(local_id * sizeof(uint64_t), key_block,
                                     sizeof(uint64_t)) != sizeof(uint64_t))) {
       LOG_ERROR("Read key from segment failed");
       return IndexError_ReadData;
     }
-    if (*mkey < key) {
+    const auto mkey = *static_cast<const uint64_t *>(key_block.data());
+    if (mkey < key) {
       start = idx + 1;
-    } else if (*mkey > key) {
+    } else if (mkey > key) {
       end = idx;
     } else {
       *id = local_id;
@@ -1309,15 +1272,6 @@ int IVFEntity::key_to_id(uint64_t key, uint32_t *id) const {
     }
   }
   return 0;
-}
-
-const void *IVFEntity::get_vector_by_key(uint64_t key) const {
-  uint32_t id = this->key_to_id(key);
-  if (id != std::numeric_limits<uint32_t>::max()) {
-    return get_vector(id);
-  } else {
-    return nullptr;
-  }
 }
 
 int IVFEntity::get_vector_by_key(uint64_t key,

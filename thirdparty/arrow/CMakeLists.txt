@@ -72,6 +72,11 @@ if(USE_OSS_MIRROR)
                 "ARROW_ZLIB_URL=https://zvec-bj.oss-cn-beijing.aliyuncs.com/thirdparty/zlib-1.3.1.tar.gz"
         )
         message(STATUS "Using OSS mirror for third-party downloads")
+elseif(NOT DEFINED ENV{ARROW_THRIFT_URL})
+        # Arrow's pinned Thrift release is no longer on Apache's live mirrors.
+        # Keep explicit caller URLs and the OSS mirror option unchanged.
+        list(APPEND CONFIGURE_ENV_LIST
+                "ARROW_THRIFT_URL=https://archive.apache.org/dist/thrift/0.22.0/thrift-0.22.0.tar.gz")
 endif()
 
 # Propagate compiler launcher (ccache/sccache) to Arrow's ExternalProject
@@ -109,6 +114,7 @@ if(ANDROID)
                 LOG_CONFIGURE ON
                 LOG_BUILD ON
                 LOG_INSTALL ON
+                LOG_OUTPUT_ON_FAILURE ON
         )
 elseif(IOS)
         # Determine ARROW_CPU_FLAG based on architecture
@@ -136,6 +142,7 @@ elseif(IOS)
                 LOG_CONFIGURE ON
                 LOG_BUILD ON
                 LOG_INSTALL ON
+                LOG_OUTPUT_ON_FAILURE ON
         )
 elseif (MSVC)
     if(ZVEC_USE_STATIC_CRT)
@@ -172,6 +179,7 @@ elseif (MSVC)
                 LOG_CONFIGURE ON
                 LOG_BUILD ON
                 LOG_INSTALL ON
+                LOG_OUTPUT_ON_FAILURE ON
         )
 else ()
     ExternalProject_Add(
