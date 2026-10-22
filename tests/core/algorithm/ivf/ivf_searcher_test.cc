@@ -672,25 +672,32 @@ class IVFCountingKeysSegment : public IndexSegmentStorage::Segment {
   size_t reads{0};
 };
 
-class IVFKeysValidityEntity : public IVFEntity {
+namespace zvec {
+namespace core {
+
+class IVFEntityTestPeer {
  public:
-  bool all_keys_valid() const {
-    return all_keys_valid_;
+  static bool all_keys_valid(const IVFEntity &entity) {
+    return entity.all_keys_valid_;
   }
 
-  std::shared_ptr<IVFCountingKeysSegment> count_key_reads() {
-    auto counted = std::make_shared<IVFCountingKeysSegment>(keys_);
-    keys_ = counted;
+  static std::shared_ptr<IVFCountingKeysSegment> count_key_reads(
+      IVFEntity &entity) {
+    auto counted = std::make_shared<IVFCountingKeysSegment>(entity.keys_);
+    entity.keys_ = counted;
     return counted;
   }
 };
+
+}  // namespace core
+}  // namespace zvec
 
 TEST_F(IVFSearcherTest, AllValidKeysSkipReadsAndSurviveCloneReload) {
   constexpr uint32_t first_list_count = 17;
   constexpr uint32_t second_list_count = 2 * 512 + 7;
   constexpr uint32_t count = first_list_count + second_list_count;
   constexpr uint32_t invalid_id = first_list_count + 512;
-  const auto key = [](uint32_t id) {
+  const auto key = [=](uint32_t id) {
     // The largest key is not the last stored key, and keys are not local IDs.
     return uint64_t{10000} + 13 * ((id * 67) % count);
   };
@@ -750,8 +757,8 @@ TEST_F(IVFSearcherTest, AllValidKeysSkipReadsAndSurviveCloneReload) {
     storages.emplace_back(std::move(storage));
   }
 
-  IVFKeysValidityEntity entity;
-  EXPECT_FALSE(entity.all_keys_valid());
+  IVFEntity entity;
+  EXPECT_FALSE(IVFEntityTestPeer::all_keys_valid(entity));
   const IndexQueryMeta qmeta(IndexMeta::DT_FP32, dimension_);
   std::vector<float> query(dimension_, 0.0f);
   query[0] = static_cast<float>(count - 1);
@@ -759,17 +766,18 @@ TEST_F(IVFSearcherTest, AllValidKeysSkipReadsAndSurviveCloneReload) {
   for (size_t state : {0U, 1U, 0U, 2U, 1U}) {
     SCOPED_TRACE(state);
     ASSERT_EQ(0, entity.load(storages[state]));
-    EXPECT_EQ(state != 1, entity.all_keys_valid());
-    auto clone = std::make_shared<IVFKeysValidityEntity>();
+    EXPECT_EQ(state != 1, IVFEntityTestPeer::all_keys_valid(entity));
+    auto clone = std::make_shared<IVFEntity>();
     ASSERT_EQ(clone, entity.clone(clone));
-    EXPECT_EQ(entity.all_keys_valid(), clone->all_keys_valid());
+    EXPECT_EQ(IVFEntityTestPeer::all_keys_valid(entity),
+              IVFEntityTestPeer::all_keys_valid(*clone));
     if (state == 2) {
       EXPECT_EQ(0U, clone->vector_count());
       continue;
     }
     ASSERT_EQ(32 * clone->meta().element_size(), clone->inverted_block_size());
     ASSERT_EQ(0, clone->bind_query(query.data(), qmeta));
-    auto counted_keys = clone->count_key_reads();
+    auto counted_keys = IVFEntityTestPeer::count_key_reads(*clone);
     for (size_t topk : {size_t{17}, size_t{second_list_count}}) {
       SCOPED_TRACE(topk);
       IndexDocumentHeap heap(topk);
@@ -825,9 +833,9 @@ TEST_F(IVFSearcherTest, AllValidKeysSkipReadsAndSurviveCloneReload) {
     return expected;
   };
   ASSERT_EQ(0, entity.load(storages[0]));
-  ASSERT_TRUE(entity.all_keys_valid());
+  ASSERT_TRUE(IVFEntityTestPeer::all_keys_valid(entity));
   ASSERT_EQ(0, entity.bind_query(boundary_query.data(), qmeta));
-  auto counted_keys = entity.count_key_reads();
+  auto counted_keys = IVFEntityTestPeer::count_key_reads(entity);
   for (bool reverse_lists : {false, true}) {
     SCOPED_TRACE(reverse_lists);
     for (float threshold :

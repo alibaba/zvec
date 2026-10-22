@@ -357,6 +357,8 @@ class IVFEntity {
   };
 
  private:
+  friend class IVFEntityTestPeer;
+
   //! Load the segment by seg_id in expect_size segment size
   IndexStorage::Segment::Pointer load_segment(const std::string &seg_id,
                                               size_t expect_size) const;
