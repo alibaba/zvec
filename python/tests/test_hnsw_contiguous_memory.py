@@ -18,9 +18,10 @@ The HNSW streamer supports two allocation strategies for graph nodes:
 
 * ``use_contiguous_memory=False`` (default): each node allocates its own
   linked buffer. Lower peak memory usage, worse cache locality.
-* ``use_contiguous_memory=True``: a single contiguous arena holds every
-  node. Higher peak memory usage, better cache locality and search
-  throughput.
+* ``use_contiguous_memory=True``: read-only mmap opens load every node into
+  a single contiguous arena for better cache locality and search throughput.
+  Writable indexes use the mmap entity so cached contexts remain valid
+  across appends.
 
 These tests exercise the Python surface end-to-end and make sure that
 when a collection is created / reopened with ``use_contiguous_memory=True``
@@ -266,10 +267,8 @@ class TestHnswContiguousMemoryEndToEnd:
     ):
         """With the flag on, the schema round-trips and search works end-to-end.
 
-        After ``optimize()`` the writing segment is compacted into a persisted
-        segment backed by the configured HNSW entity. We assert both the
-        user-observable behaviour (schema + search) and, via the debug hook,
-        that the entity type actually honours ``use_contiguous_memory``.
+        The newly built index uses mmap while writable. Reopening it read-only
+        activates the contiguous entity without changing the query results.
         """
         schema = _build_schema("hnsw_contig_create", use_contiguous_memory=True)
 
@@ -288,19 +287,21 @@ class TestHnswContiguousMemoryEndToEnd:
                 assert r.ok(), f"insert failed: code={r.code()}"
             assert coll.stats.doc_count == NUM_DOCS
 
-            # Build persisted HNSW index; this is where the contiguous entity
-            # is actually instantiated.
+            # Newly built writable indexes must keep cached contexts valid.
             coll.optimize()
-            assert _debug_hnsw_storage_mode(coll) == "contiguous", (
-                "use_contiguous_memory=True should produce a contiguous entity"
-            )
+            assert _debug_hnsw_storage_mode(coll) == "mmap"
 
             # Pick an existing vector as the query; top-1 must be itself.
             query_vec = docs[0].vector("dense")
             ids = _assert_query_matches(coll, query_vec)
             assert ids[0] == "0", f"expected self-recall, got top-1 id={ids[0]}"
+
+            coll.close()
+            coll = zvec.open(path=str(path), option=CollectionOption(read_only=True))
+            assert _debug_hnsw_storage_mode(coll) == "contiguous"
+            assert _assert_query_matches(coll, query_vec) == ids
         finally:
-            coll.destroy()
+            coll.close()
 
     def test_create_without_contiguous_memory_uses_mmap_entity(
         self,
@@ -346,11 +347,9 @@ class TestHnswContiguousMemoryEndToEnd:
     ):
         """Reopening a collection must preserve the ``use_contiguous_memory`` flag.
 
-        The core property: the flag survives the schema persist/reload
-        round-trip so the HNSW streamer entity — constructed lazily on first
-        persisted-segment build — honours the user's choice. We run
-        ``optimize()`` after reopen and confirm the contiguous entity was
-        materialized.
+        The flag survives a writable reopen and index build, then takes effect
+        when the persisted index is reopened read-only. Both layouts must
+        preserve query and fetch results.
         """
         schema = _build_schema("hnsw_contig_reopen", use_contiguous_memory=True)
         path = tmp_path_factory.mktemp("zvec") / "hnsw_contig_reopen"
@@ -365,7 +364,7 @@ class TestHnswContiguousMemoryEndToEnd:
         assert created.stats.doc_count == NUM_DOCS
         # Persist pending writes so that reopen reconstructs state from disk.
         created.flush()
-        del created  # close the handle
+        created.close()
 
         reopened = zvec.open(path=path_str, option=collection_option)
         try:
@@ -377,7 +376,7 @@ class TestHnswContiguousMemoryEndToEnd:
             assert vec_schema.index_param.use_contiguous_memory is True
 
             reopened.optimize()
-            assert _debug_hnsw_storage_mode(reopened) == "contiguous"
+            assert _debug_hnsw_storage_mode(reopened) == "mmap"
 
             # Entity actually works: exact self-recall + fetch parity.
             query_vec = docs[7].vector("dense")
@@ -386,8 +385,16 @@ class TestHnswContiguousMemoryEndToEnd:
 
             fetched = reopened.fetch([d.id for d in docs[:10]])
             assert len(fetched) == 10
+
+            reopened.close()
+            reopened = zvec.open(path=path_str, option=CollectionOption(read_only=True))
+            assert reopened.schema.vectors[0].index_param.use_contiguous_memory is True
+            assert reopened.stats.doc_count == NUM_DOCS
+            assert _debug_hnsw_storage_mode(reopened) == "contiguous"
+            assert _assert_query_matches(reopened, query_vec) == ids
+            assert len(reopened.fetch([d.id for d in docs[:10]])) == 10
         finally:
-            reopened.destroy()
+            reopened.close()
 
     def test_result_parity_with_and_without_contiguous_memory(
         self,
@@ -412,13 +419,22 @@ class TestHnswContiguousMemoryEndToEnd:
                 for r in coll.insert(docs=docs):
                     assert r.ok()
                 coll.optimize()
+                assert _debug_hnsw_storage_mode(coll) == "mmap"
+                writable_ids = _assert_query_matches(coll, query_vec)
+
+                coll.close()
+                coll = zvec.open(
+                    path=str(path), option=CollectionOption(read_only=True)
+                )
                 expected_mode = "contiguous" if flag else "mmap"
                 assert _debug_hnsw_storage_mode(coll) == expected_mode, (
                     f"{tag}: unexpected entity type"
                 )
-                return _assert_query_matches(coll, query_vec)
+                readonly_ids = _assert_query_matches(coll, query_vec)
+                assert readonly_ids == writable_ids
+                return readonly_ids
             finally:
-                coll.destroy()
+                coll.close()
 
         ids_off = _build_and_query("off", flag=False)
         ids_on = _build_and_query("on", flag=True)
