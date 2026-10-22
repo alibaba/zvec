@@ -41,7 +41,7 @@ namespace {
 
 constexpr size_t kPrefetchCacheLine = AILEGO_CACHE_LINE_SIZE;
 
-inline void prefetch_l2(uintptr_t address) {
+[[maybe_unused]] inline void prefetch_l2(uintptr_t address) {
 #if defined(__GNUC__) || defined(__clang__)
   __builtin_prefetch(reinterpret_cast<const void *>(address), 0, 2);
 #else
