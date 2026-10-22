@@ -3748,7 +3748,7 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_query(
  * All members are owned by the result array. Release the entire array with
  * zvec_group_results_free; do not free individual members separately.
  */
-typedef struct zvec_group_result_t {
+typedef struct {
   char *group_by_value; /**< String representation of the grouping value */
   zvec_doc_t **docs;    /**< Documents ordered by vector similarity */
   size_t doc_count;     /**< Number of documents in this group */
