@@ -18,70 +18,70 @@
 namespace zvec {
 namespace core {
 
-static const std::string INDEX_META_SEGMENT_NAME = "IndexMeta";
-static const std::string INDEX_VERSION_SEGMENT_NAME = "IndexVersion";
+inline const std::string INDEX_META_SEGMENT_NAME = "IndexMeta";
+inline const std::string INDEX_VERSION_SEGMENT_NAME = "IndexVersion";
 
 //! FileLogger
-static const std::string FILE_LOGGER_PATH = "proxima.file.logger.path";
+inline const std::string FILE_LOGGER_PATH = "proxima.file.logger.path";
 
 //! FileContainer
-static const std::string FILE_READ_STORAGE_CHECKSUM_VALIDATION =
+inline const std::string FILE_READ_STORAGE_CHECKSUM_VALIDATION =
     "proxima.file.read_storage.checksum_validation";
-static const std::string FILE_READ_STORAGE_ENABLE_DIRECT_IO =
+inline const std::string FILE_READ_STORAGE_ENABLE_DIRECT_IO =
     "proxima.file.read_storage.enable_direct_io";
-static const std::string FILE_READ_STORAGE_ALONE_FILE_HANDLE =
+inline const std::string FILE_READ_STORAGE_ALONE_FILE_HANDLE =
     "proxima.file.read_storage.alone_file_handle";
-static const std::string FILE_READ_STORAGE_MEMORY_LOCKED =
+inline const std::string FILE_READ_STORAGE_MEMORY_LOCKED =
     "proxima.file.read_storage.memory_locked";
-static const std::string FILE_READ_STORAGE_MEMORY_WARMUP =
+inline const std::string FILE_READ_STORAGE_MEMORY_WARMUP =
     "proxima.file.read_storage.memory_warmup";
-static const std::string FILE_READ_STORAGE_MEMORY_SHARED =
+inline const std::string FILE_READ_STORAGE_MEMORY_SHARED =
     "proxima.file.read_storage.memory_shared";
-static const std::string FILE_READ_STORAGE_HEADER_OFFSET =
+inline const std::string FILE_READ_STORAGE_HEADER_OFFSET =
     "proxima.file.read_storage.header_offset";
-static const std::string FILE_READ_STORAGE_FOOTER_OFFSET =
+inline const std::string FILE_READ_STORAGE_FOOTER_OFFSET =
     "proxima.file.read_storage.footer_offset";
 
 //! MemoryContainer
-static const std::string MEMORY_CONTAINER_CHECKSUM_VALIDATION =
+inline const std::string MEMORY_CONTAINER_CHECKSUM_VALIDATION =
     "proxima.memory.container.checksum_validation";
 
 //! MMapFileContainer
-static const std::string MMAPFILE_READ_STORAGE_MEMORY_LOCKED =
+inline const std::string MMAPFILE_READ_STORAGE_MEMORY_LOCKED =
     "proxima.mmap_file.container.memory_locked";
-static const std::string MMAPFILE_READ_STORAGE_MEMORY_WARMUP =
+inline const std::string MMAPFILE_READ_STORAGE_MEMORY_WARMUP =
     "proxima.mmap_file.container.memory_warmup";
-static const std::string MMAPFILE_READ_STORAGE_MEMORY_SHARED =
+inline const std::string MMAPFILE_READ_STORAGE_MEMORY_SHARED =
     "proxima.mmap_file.container.memory_shared";
-static const std::string MMAPFILE_READ_STORAGE_CHECKSUM_VALIDATION =
+inline const std::string MMAPFILE_READ_STORAGE_CHECKSUM_VALIDATION =
     "proxima.mmap_file.container.checksum_validation";
-static const std::string MMAPFILE_READ_STORAGE_HEADER_OFFSET =
+inline const std::string MMAPFILE_READ_STORAGE_HEADER_OFFSET =
     "proxima.mmap_file.container.header_offset";
-static const std::string MMAPFILE_READ_STORAGE_FOOTER_OFFSET =
+inline const std::string MMAPFILE_READ_STORAGE_FOOTER_OFFSET =
     "proxima.mmap_file.container.footer_offset";
 
 //! BufferReadStorage (read-only storage backed by VecBufferPool)
-static const std::string BUFFER_READ_STORAGE_CHECKSUM_VALIDATION =
+inline const std::string BUFFER_READ_STORAGE_CHECKSUM_VALIDATION =
     "proxima.buffer.read_storage.checksum_validation";
-static const std::string BUFFER_READ_STORAGE_HEADER_OFFSET =
+inline const std::string BUFFER_READ_STORAGE_HEADER_OFFSET =
     "proxima.buffer.read_storage.header_offset";
-static const std::string BUFFER_READ_STORAGE_FOOTER_OFFSET =
+inline const std::string BUFFER_READ_STORAGE_FOOTER_OFFSET =
     "proxima.buffer.read_storage.footer_offset";
-static const std::string BUFFER_READ_STORAGE_WARMUP_MODE =
+inline const std::string BUFFER_READ_STORAGE_WARMUP_MODE =
     "proxima.buffer.read_storage.warmup_mode";
-static const std::string BUFFER_READ_STORAGE_WARMUP_NONE = "none";
-static const std::string BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL = "sequential";
+inline const std::string BUFFER_READ_STORAGE_WARMUP_NONE = "none";
+inline const std::string BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL = "sequential";
 
 //! MMapFileStorage
-static const std::string MMAPFILE_STORAGE_MEMORY_LOCKED =
+inline const std::string MMAPFILE_STORAGE_MEMORY_LOCKED =
     "proxima.mmap_file.storage.memory_locked";
-static const std::string MMAPFILE_STORAGE_MEMORY_WARMUP =
+inline const std::string MMAPFILE_STORAGE_MEMORY_WARMUP =
     "proxima.mmap_file.storage.memory_warmup";
-static const std::string MMAPFILE_STORAGE_COPY_ON_WRITE =
+inline const std::string MMAPFILE_STORAGE_COPY_ON_WRITE =
     "proxima.mmap_file.storage.copy_on_write";
-static const std::string MMAPFILE_STORAGE_FORCE_FLUSH =
+inline const std::string MMAPFILE_STORAGE_FORCE_FLUSH =
     "proxima.mmap_file.storage.force_flush";
-static const std::string MMAPFILE_STORAGE_SEGMENT_META_CAPACITY =
+inline const std::string MMAPFILE_STORAGE_SEGMENT_META_CAPACITY =
     "proxima.mmap_file.storage.segment_meta_capacity";
 
 //! MipsConverter
@@ -217,29 +217,29 @@ static const std::string DOUBLE_BIT_REFORMER_B_VALUE =
     "proxima.double_bit.reformer.b_value";
 
 //! SimpleForward
-static const std::string SIMPLE_FORWARD_DATA_BLOCK_SIZE =
+inline const std::string SIMPLE_FORWARD_DATA_BLOCK_SIZE =
     "proxima.simple.forward.data_block_size";
-static const std::string SIMPLE_FORWARD_INDEX_BLOCK_SIZE =
+inline const std::string SIMPLE_FORWARD_INDEX_BLOCK_SIZE =
     "proxima.simple.forward.index_block_size";
 
 //! SimpleForward
-static const std::string SIMPLE_CLOSET_DATA_BLOCK_SIZE =
+inline const std::string SIMPLE_CLOSET_DATA_BLOCK_SIZE =
     "proxima.simple.closet.data_block_size";
-static const std::string SIMPLE_CLOSET_INDEX_BLOCK_SIZE =
+inline const std::string SIMPLE_CLOSET_INDEX_BLOCK_SIZE =
     "proxima.simple.closet.index_block_size";
 
 //! ChainCloset
-static const std::string CHAIN_CLOSET_SLOT_SIZE =
+inline const std::string CHAIN_CLOSET_SLOT_SIZE =
     "proxima.chain.closet.slot_size";
-static const std::string CHAIN_CLOSET_INDEX_BLOCK_SIZE =
+inline const std::string CHAIN_CLOSET_INDEX_BLOCK_SIZE =
     "proxima.chain.closet.index_block_size";
-static const std::string CHAIN_CLOSET_DATA_BLOCK_SIZE =
+inline const std::string CHAIN_CLOSET_DATA_BLOCK_SIZE =
     "proxima.chain.closet.data_block_size";
 
 //! IndexForward
-static const std::string PARAM_FORWARD_MULTI_VALUE =
+inline const std::string PARAM_FORWARD_MULTI_VALUE =
     "proxima.param.forward.multi_value";
-static const std::string PARAM_FORWARD_MULTI_COUNT =
+inline const std::string PARAM_FORWARD_MULTI_COUNT =
     "proxima.param.forward.multi_count";
 
 }  // namespace core
