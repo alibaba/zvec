@@ -117,7 +117,8 @@ CollectionSchema::Ptr TestHelper::CreateNormalSchema(
   auto supports_sparse = [](const IndexParams::Ptr &params) {
     auto type = params->type();
     return type != IndexType::IVF && type != IndexType::HNSW_RABITQ &&
-           type != IndexType::IVF_RABITQ && type != IndexType::DISKANN;
+           type != IndexType::IVF_RABITQ && type != IndexType::DISKANN &&
+           type != IndexType::OMEGA;
   };
 
   IndexParams::Ptr sparse_index_params;

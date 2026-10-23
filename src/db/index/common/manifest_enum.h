@@ -72,6 +72,7 @@ enum class IndexType : int32_t {
   IT_VAMANA = 5,
   IT_DISKANN = 6,
   IT_IVF_RABITQ = 7,
+  IT_OMEGA = 8,
   IT_INVERT = 10,
   IT_FTS = 11,
 };

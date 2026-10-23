@@ -157,3 +157,8 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" AND ANDROID AND ZVEC_EXAMPLE_TARGETS)
     set_property(TARGET ${ZVEC_EXAMPLE_TARGETS} PROPERTY COMPILE_FLAGS "-Os")
     set_property(TARGET ${ZVEC_EXAMPLE_TARGETS} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
+
+if(ZVEC_ENABLE_OMEGA)
+    add_executable(omega-example omega/main.cc)
+    target_link_libraries(omega-example PRIVATE zvec-lib)
+endif()

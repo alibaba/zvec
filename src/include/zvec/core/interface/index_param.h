@@ -36,6 +36,7 @@ class ZVEC_CORE_API IndexFactory;
 class ZVEC_CORE_API Index;
 class ZVEC_CORE_API BaseIndexParam;
 class ZVEC_CORE_API BaseIndexQueryParam;
+struct QueryTrainingArtifacts;
 
 struct StorageOptions {
   enum class StorageType { kNone, kMMAP, kMemory, kBufferPool };
@@ -74,6 +75,7 @@ enum class IndexType {
   kDiskAnn,
   kVamana,
   kIVFRabitq,
+  kOMEGA,  // HNSW with learned early stopping
 };
 
 enum class IVFSearchMethod { kBF, kHNSW };
@@ -267,6 +269,19 @@ struct ZVEC_CORE_API HNSWQueryParam : public BaseIndexQueryParam {
   BaseIndexQueryParam::Pointer clone() const override;
 };
 
+struct OmegaQueryParam : public HNSWQueryParam {
+  using Pointer = std::shared_ptr<OmegaQueryParam>;
+
+  float target_recall = 0.95f;
+  int training_query_id =
+      -1;  // For parallel training searches, -1 means use global
+  std::function<void(QueryTrainingArtifacts &&)> training_collector;
+
+  BaseIndexQueryParam::Pointer clone() const override {
+    return std::make_shared<OmegaQueryParam>(*this);
+  }
+};
+
 struct ZVEC_CORE_API HNSWRabitqQueryParam : public BaseIndexQueryParam {
   using Pointer = std::shared_ptr<HNSWRabitqQueryParam>;
 
@@ -429,6 +444,27 @@ struct ZVEC_CORE_API HNSWIndexParam : public BaseIndexParam {
       : BaseIndexParam(IndexType::kHNSW, metric, dim),
         m(m),
         ef_construction(ef_construction) {}
+
+ protected:
+  bool deserialize_from_json_object(
+      const ailego::JsonObject &json_obj) override;
+  ailego::JsonObject serialize_to_json_object(
+      bool omit_empty_value = false) const override;
+};
+
+struct OmegaIndexParam : public HNSWIndexParam {
+  using Pointer = std::shared_ptr<OmegaIndexParam>;
+
+  uint32_t min_vector_threshold = 100000;
+  size_t num_training_queries = 1000;
+  int ef_training = 1000;
+  int window_size = 100;
+  int ef_groundtruth = 0;
+  int k_train = 1;
+
+  OmegaIndexParam() : HNSWIndexParam() {
+    index_type = IndexType::kOMEGA;
+  }
 
  protected:
   bool deserialize_from_json_object(

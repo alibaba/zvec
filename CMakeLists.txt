@@ -145,6 +145,13 @@ message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
 message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
 message(STATUS "BUILD_CPP_EXAMPLES:${BUILD_CPP_EXAMPLES}")
 
+if(ANDROID)
+    option(ZVEC_ENABLE_OMEGA "Build OMEGA support" OFF)
+else()
+    option(ZVEC_ENABLE_OMEGA "Build OMEGA support" ON)
+endif()
+message(STATUS "ZVEC_ENABLE_OMEGA:${ZVEC_ENABLE_OMEGA}")
+add_compile_definitions(ZVEC_ENABLE_OMEGA=$<BOOL:${ZVEC_ENABLE_OMEGA}>)
 # RaBitQ support:
 #   - Linux x86_64 and ARM64 with GCC/Clang
 #   - macOS x86_64 and ARM64 with AppleClang

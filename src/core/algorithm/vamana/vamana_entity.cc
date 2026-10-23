@@ -36,7 +36,7 @@ int VamanaEntity::CalcAndAddPadding(const IndexDumper::Pointer &dumper,
   }
   std::string padding(*padding_size, '\0');
   if (dumper->write(padding.data(), *padding_size) != *padding_size) {
-    LOG_ERROR("Append padding failed, size %lu", *padding_size);
+    LOG_ERROR("Append padding failed, size %zu", *padding_size);
     return IndexError_WriteData;
   }
   return 0;
@@ -47,7 +47,7 @@ int64_t VamanaEntity::dump_segment(const IndexDumper::Pointer &dumper,
                                    const void *data, size_t size) const {
   size_t len = dumper->write(data, size);
   if (len != size) {
-    LOG_ERROR("Dump segment %s data failed, expect: %lu, actual: %lu",
+    LOG_ERROR("Dump segment %s data failed, expect: %zu, actual: %zu",
               segment_id.c_str(), size, len);
     return IndexError_WriteData;
   }
@@ -56,7 +56,7 @@ int64_t VamanaEntity::dump_segment(const IndexDumper::Pointer &dumper,
   if (padding_size > 0) {
     std::string padding(padding_size, '\0');
     if (dumper->write(padding.data(), padding_size) != padding_size) {
-      LOG_ERROR("Append padding failed, size %lu", padding_size);
+      LOG_ERROR("Append padding failed, size %zu", padding_size);
       return IndexError_WriteData;
     }
   }

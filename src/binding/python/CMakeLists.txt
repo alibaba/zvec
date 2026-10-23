@@ -44,8 +44,13 @@ elseif (APPLE)
 endif()
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(_zvec_force_link_libs)
+    if(ZVEC_ENABLE_OMEGA)
+        list(APPEND _zvec_force_link_libs $<TARGET_FILE:core_knn_omega_static>)
+    endif()
     target_link_libraries(_zvec PRIVATE
             -Wl,--whole-archive
+            ${_zvec_force_link_libs}
             $<TARGET_FILE:core_knn_flat_static>
             $<TARGET_FILE:core_knn_flat_sparse_static>
             $<TARGET_FILE:core_knn_hnsw_static>
@@ -67,6 +72,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     )
     target_link_options(_zvec PRIVATE
             "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/exports.map"
+            "LINKER:--gc-sections"
     )
     # On musl, dynamic linking would force auditwheel to rewrite the ELF via
     # patchelf so it can vendor libstdc++/libgcc. The patchelf versions used
@@ -84,7 +90,12 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # falls back to synchronous pread. None of these paths requires a separate
     # DiskAnn runtime library.
 elseif (APPLE)
+    set(_zvec_force_load_libs)
+    if(ZVEC_ENABLE_OMEGA)
+        list(APPEND _zvec_force_load_libs -Wl,-force_load,$<TARGET_FILE:core_knn_omega_static>)
+    endif()
     target_link_libraries(_zvec PRIVATE
+            ${_zvec_force_load_libs}
             -Wl,-force_load,$<TARGET_FILE:core_knn_flat_static>
             -Wl,-force_load,$<TARGET_FILE:core_knn_flat_sparse_static>
             -Wl,-force_load,$<TARGET_FILE:core_knn_hnsw_static>
@@ -123,6 +134,9 @@ elseif (MSVC)
             core_quantizer_static
             zvec_turbo
     )
+    if(ZVEC_ENABLE_OMEGA)
+        list(PREPEND _zvec_whole_archive_libs core_knn_omega_static)
+    endif()
     target_link_libraries(_zvec PRIVATE
             ${_zvec_whole_archive_libs}
             zvec

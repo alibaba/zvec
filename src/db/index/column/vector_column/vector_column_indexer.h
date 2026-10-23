@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #pragma once
+#include <map>
 #include <string>
 #include <utility>
 #include <variant>
@@ -97,6 +98,7 @@ class VectorColumnIndexer {
   // Result<VectorDataset> BatchFetch(const std::vector<uint32_t> &doc_ids)
   // const;
 
+ public:
   core::IndexProvider::Pointer create_index_provider() const {
     return index->create_index_provider();
   }
@@ -104,6 +106,10 @@ class VectorColumnIndexer {
  public:
   std::string index_file_path() const {
     return index_file_path_;
+  }
+
+  core_interface::Index::Pointer core_index() const {
+    return index;
   }
 
   const FieldSchema &field_schema() const {
@@ -115,6 +121,18 @@ class VectorColumnIndexer {
       return -1;
     }
     return index->get_doc_count();
+  }
+
+  MetricType metric_type() const {
+    auto index_params = field_schema_.index_params();
+    if (index_params) {
+      auto vector_params =
+          std::dynamic_pointer_cast<VectorIndexParams>(index_params);
+      if (vector_params) {
+        return vector_params->metric_type();
+      }
+    }
+    return MetricType::IP;  // default
   }
 
   //! Debug-only accessor for the underlying core_interface Index.
@@ -146,6 +164,7 @@ class VectorColumnIndexer {
   std::string engine_name_ = "proxima";
   bool is_sparse_{false};  // TODO: eliminate the dynamic flag and make it
                            // static/template/seperate class
+
 };
 
 
