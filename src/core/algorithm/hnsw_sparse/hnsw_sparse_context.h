@@ -177,6 +177,8 @@ class HnswSparseContext : public IndexContext {
 
       node_id_t id = topk_heap_[i].first;
       if (fetch_vector_) {
+        IndexStorage::MemoryBlock meta_block;
+        entity_->get_vector_meta(id, meta_block);
         IndexSparseDocument sparse_doc;
         IndexStorage::MemoryBlock vec_block;
         entity_->get_sparse_data(id, vec_block);
@@ -187,7 +189,7 @@ class HnswSparseContext : public IndexContext {
         }
 
         results_[idx].emplace_back(entity_->get_key(id), score, id,
-                                   entity_->get_vector_meta(id), sparse_doc);
+                                   std::move(meta_block), sparse_doc);
       } else {
         results_[idx].emplace_back(entity_->get_key(id), score, id);
       }
@@ -249,6 +251,8 @@ class HnswSparseContext : public IndexContext {
         node_id_t id = group_topk_list[i].second[j].first;
 
         if (fetch_vector_) {
+          IndexStorage::MemoryBlock meta_block;
+          entity_->get_vector_meta(id, meta_block);
           IndexSparseDocument sparse_doc;
           IndexStorage::MemoryBlock vec_block;
           entity_->get_sparse_data(id, vec_block);
@@ -258,7 +262,7 @@ class HnswSparseContext : public IndexContext {
                                                entity_->sparse_unit_size());
           }
           group_results_[idx][i].mutable_docs()->emplace_back(
-              entity_->get_key(id), score, id, entity_->get_vector_meta(id),
+              entity_->get_key(id), score, id, std::move(meta_block),
               sparse_doc);
         } else {
           group_results_[idx][i].mutable_docs()->emplace_back(

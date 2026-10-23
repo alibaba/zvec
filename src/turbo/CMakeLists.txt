@@ -156,21 +156,26 @@ if(WIN32 AND (BUILD_ZVEC_CORE_SHARED OR BUILD_ZVEC_SHARED))
   endif()
 endif()
 
+set(ZVEC_TURBO_RABITQ_LIBS "")
+if(RABITQ_SUPPORTED)
+  # Share Eigen's ABI settings with RaBitQ when both are linked into zvec.
+  list(APPEND ZVEC_TURBO_RABITQ_LIBS rabitqlib::core)
+endif()
+
 cc_library(
     NAME zvec_turbo STATIC STRICT ALWAYS_LINK PACKED
     ${ZVEC_TURBO_LIBRARY_OPTIONS}
     SRCS ${ALL_SRCS}
     DEFS ${ZVEC_TURBO_DEFS}
-    LIBS zvec_ailego
+    LIBS zvec_ailego ${ZVEC_TURBO_RABITQ_LIBS}
     INCS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/distance ${PROJECT_ROOT_DIR}/src/include
 )
 
 # Eigen (header-only, shipped inside the RaBitQ third-party tree) backs the OPQ
 # rotator only. It must be a SYSTEM include: INCS above maps to a plain
 # target_include_directories, and STRICT turns Eigen's own warnings into errors.
-# Only the headers are consumed -- rabitqlib/rabitqlib_runtime is NOT linked.
 set(TURBO_EIGEN_INC
-    ${PROJECT_ROOT_DIR}/thirdparty/RaBitQ-Library/RaBitQ-Library-0.3.8/include)
+    ${PROJECT_ROOT_DIR}/thirdparty/RaBitQ-Library/RaBitQ-Library-0.7.0/include)
 foreach(_turbo_tgt zvec_turbo zvec_turbo_objects zvec_turbo_export_objects)
   if(TARGET ${_turbo_tgt})
     target_include_directories(${_turbo_tgt} SYSTEM PRIVATE ${TURBO_EIGEN_INC})

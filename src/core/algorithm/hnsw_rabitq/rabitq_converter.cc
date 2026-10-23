@@ -15,7 +15,7 @@
 #include "rabitq_converter.h"
 #include <cstring>
 #include <memory>
-#include <rabitqlib/utils/rotator.hpp>
+#include <rabitqlib/core/rotator.hpp>
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/ailego/utility/string_helper.h>

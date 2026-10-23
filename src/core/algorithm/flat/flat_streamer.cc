@@ -212,11 +212,14 @@ template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::close() {
   LOG_DEBUG("FlatStreamer close");
 
-  entity_->flush_linear_meta();
+  int ret = entity_->flush_linear_meta();
+  if (ret != 0) {
+    return ret;
+  }
 
   stats_.clear();
 
-  int ret = entity_->close();
+  ret = entity_->close();
   if (ailego_unlikely(ret != 0)) {
     return ret;
   }
@@ -450,6 +453,37 @@ int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
 }
 
 template <size_t BATCH_SIZE>
+int FlatStreamer<BATCH_SIZE>::search_by_p_keys_fast(
+    const void *query, const std::vector<uint64_t> &keys, int64_t *output_ids,
+    float *output_scores, size_t topk, const IndexQueryMeta &qmeta,
+    Context::UPointer &context) const {
+  if (state_ != STATE_OPENED) return IndexError_NoReady;
+  if (!query || !output_ids || topk == 0 || !context) {
+    return IndexError_InvalidArgument;
+  }
+  auto *flat_context =
+      dynamic_cast<FlatStreamerContext<BATCH_SIZE> *>(context.get());
+  if (!flat_context) return IndexError_InvalidArgument;
+  if (flat_context->filter().is_valid() || flat_context->group_by_search() ||
+      flat_context->threshold_set() || flat_context->fetch_vector()) {
+    return IndexError_NotImplemented;
+  }
+  if (quantizer_) {
+    // The caller has already prepared the query using this quantizer.
+    if (qmeta.dimension() != static_cast<uint32_t>(quantizer_->dim()) ||
+        qmeta.quantize_type() != static_cast<uint32_t>(quantizer_->type()) ||
+        qmeta.element_size() != quantizer_->quantized_query_vector_length()) {
+      return IndexError_InvalidArgument;
+    }
+  } else if (!metric_ || !metric_->is_matched(meta_, qmeta)) {
+    return IndexError_InvalidArgument;
+  }
+  if (flat_context->magic() != magic_) flat_context->reset(this);
+  return entity_->search_by_p_keys_fast(query, keys, output_ids, output_scores,
+                                        topk, flat_context->search_scratch());
+}
+
+template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::group_by_search_impl(
     const void *query, const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
@@ -544,6 +578,14 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_p_keys_impl(
   }
   return 0;
 }
+
+// The direct operation is not virtual on the streamer.
+template int FlatStreamer<16>::search_by_p_keys_fast(
+    const void *, const std::vector<uint64_t> &, int64_t *, float *, size_t,
+    const IndexQueryMeta &, Context::UPointer &) const;
+template int FlatStreamer<32>::search_by_p_keys_fast(
+    const void *, const std::vector<uint64_t> &, int64_t *, float *, size_t,
+    const IndexQueryMeta &, Context::UPointer &) const;
 
 INDEX_FACTORY_REGISTER_STREAMER_ALIAS(LinearStreamer, FlatStreamer<32>);
 INDEX_FACTORY_REGISTER_STREAMER_ALIAS(FlatStreamer, FlatStreamer<32>);

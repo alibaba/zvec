@@ -87,6 +87,8 @@ class FlatQueryCopyTestMetric : public IndexMetric {
               size_t dimension, float *distances, const void **) {
       const auto *prepared_query = static_cast<const float *>(query);
       for (size_t i = 0; i < count; ++i) {
+        EXPECT_EQ(0U, reinterpret_cast<uintptr_t>(rows[i]) %
+                          AILEGO_CACHE_LINE_SIZE);
         const auto *row = static_cast<const float *>(rows[i]);
         double sum = 0;
         for (size_t d = 0; d < dimension; ++d) {
@@ -266,7 +268,10 @@ TEST_F(FlatStreamerTest, CandidateSearchKeepsMetricBatchAndReusesScratch) {
       {IndexMeta::DT_FP32, "FlatPreprocessedQueryTest"},
       {IndexMeta::DT_FP32, "FlatScalarOnlyTest"}};
   for (const auto &[type, metric_name] : cases) {
-    for (uint32_t dimension : {128U, 960U}) {
+    for (uint32_t dimension : {17U, 128U, 960U}) {
+      if (dimension == 17 && metric_name != "FlatPreprocessedQueryTest") {
+        continue;
+      }
       SCOPED_TRACE(type);
       SCOPED_TRACE(metric_name);
       SCOPED_TRACE(dimension);
@@ -2005,6 +2010,110 @@ TEST_F(FlatStreamerTest, TestInt8WithRotate) {
 
   EXPECT_EQ(kTopk, knn_ctx->result().size());
   EXPECT_EQ(kTopk, linear_ctx->result().size());
+}
+
+TEST_F(FlatStreamerTest, TurboCandidateDirectOutputMatchesOrdinarySearch) {
+  constexpr size_t kCount = 32;
+  constexpr size_t kTopk = 10;
+  for (const char *name : {"Fp16Quantizer", "Fp32Quantizer"}) {
+    for (const char *metric : {"SquaredEuclidean", "InnerProduct"}) {
+      for (size_t dimension : {128U, 960U}) {
+        SCOPED_TRACE(name);
+        SCOPED_TRACE(metric);
+        SCOPED_TRACE(dimension);
+        IndexMeta raw_meta(IndexMeta::DT_FP32, dimension);
+        raw_meta.set_metric(metric, 0, Params());
+        auto quantizer = IndexFactory::CreateQuantizer(name);
+        ASSERT_NE(nullptr, quantizer);
+        ASSERT_EQ(0, quantizer->init(raw_meta, Params()));
+        IndexMeta meta = quantizer->meta();
+        meta.set_quantizer(name, 0, Params());
+        Params params;
+        params.set(PARAM_FLAT_USE_CONTIGUOUS_MEMORY, true);
+        auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+        ASSERT_NE(nullptr, streamer);
+        ASSERT_EQ(0, streamer->init(meta, params, quantizer));
+        auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+        ASSERT_NE(nullptr, storage);
+        ASSERT_EQ(0, storage->init(Params()));
+        const std::string path =
+            dir_ + "direct_" + name + metric + std::to_string(dimension);
+        ASSERT_EQ(0, storage->open(path, true));
+        ASSERT_EQ(0, streamer->open(storage));
+        auto context = streamer->create_context();
+        ASSERT_NE(nullptr, context);
+        std::vector<float> query(dimension, 0.371f);
+        std::string query_code;
+        IndexQueryMeta qmeta;
+        ASSERT_EQ(
+            0, quantizer->quantize(
+                   query.data(), IndexQueryMeta(IndexMeta::DT_FP32, dimension),
+                   &query_code, &qmeta));
+        std::vector<float> row(dimension);
+        std::string code(quantizer->quantized_datapoint_vector_length(), '\0');
+        for (size_t id = 0; id < kCount; ++id) {
+          // Duplicate pairs also check the ordinary path's tie ordering.
+          for (size_t d = 0; d < dimension; ++d) {
+            row[d] = float(((id / 2) * 37 + d * 13) % 251) / 129.3f;
+          }
+          quantizer->quantize_data(row.data(), code.data());
+          ASSERT_EQ(
+              0, streamer->add_with_id_impl(id, code.data(), qmeta, context));
+        }
+        ASSERT_EQ(0, streamer->flush(0));
+        ASSERT_EQ(0, streamer->close());
+        ASSERT_EQ(0, streamer->open(storage));
+        auto *flat = dynamic_cast<FlatStreamer<32> *>(streamer.get());
+        ASSERT_NE(nullptr, flat);
+        ASSERT_NE(nullptr, flat->quantizer());
+        const auto *entity =
+            dynamic_cast<const FlatContiguousStreamerEntity *>(&flat->entity());
+        ASSERT_NE(nullptr, entity);
+        ASSERT_TRUE(entity->is_contiguous());
+        context = streamer->create_context();
+        ASSERT_NE(nullptr, context);
+        context->set_topk(kTopk);
+        for (size_t count : {11U, 14U, 26U, 32U}) {
+          SCOPED_TRACE(count);
+          std::vector<uint64_t> keys(count);
+          for (size_t i = 0; i < count; ++i) keys[i] = (i * 7) % kCount;
+          ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(
+                           query_code.data(), {keys}, qmeta, 1, context));
+          const auto expected = context->result();
+          ASSERT_EQ(kTopk, expected.size());
+          for (bool return_scores : {false, true, false}) {
+            std::vector<int64_t> ids(kTopk + 1, -2);
+            std::vector<float> scores(kTopk + 1, -123.0f);
+            // Call the direct operation itself: an Index-level fallback
+            // must not make this regression test pass accidentally.
+            ASSERT_EQ(0, flat->search_by_p_keys_fast(
+                             query_code.data(), keys, ids.data(),
+                             return_scores ? scores.data() : nullptr, kTopk,
+                             qmeta, context));
+            for (size_t rank = 0; rank < kTopk; ++rank) {
+              EXPECT_EQ(static_cast<int64_t>(expected[rank].key()), ids[rank]);
+              if (return_scores) {
+                EXPECT_FLOAT_EQ(expected[rank].score(), scores[rank]);
+              }
+            }
+            EXPECT_EQ(-2, ids[kTopk]);
+            EXPECT_FLOAT_EQ(-123.0f, scores[kTopk]);
+          }
+          keys[0] = kCount;
+          std::vector<int64_t> ids(kTopk, -2);
+          std::vector<float> scores(kTopk, -123.0f);
+          EXPECT_EQ(IndexError_NotImplemented,
+                    flat->search_by_p_keys_fast(query_code.data(), keys,
+                                                ids.data(), scores.data(),
+                                                kTopk, qmeta, context));
+          EXPECT_EQ(std::vector<int64_t>(kTopk, -2), ids);
+          EXPECT_EQ(std::vector<float>(kTopk, -123.0f), scores);
+        }
+        ASSERT_EQ(0, streamer->close());
+        ASSERT_EQ(0, storage->close());
+      }
+    }
+  }
 }
 
 // The streamer computes distances with the turbo quantizer.

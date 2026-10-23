@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include "db/index/column/vector_column/engine_helper.hpp"
 #include "db/index/column/vector_column/vector_column_params.h"
 #include "tests/test_util.h"
 #include "zvec/ailego/utility/float_helper.h"
@@ -30,6 +31,133 @@
 #endif
 
 using namespace zvec;
+
+
+TEST(VectorColumnIndexerTest, ReusedQueryParametersAndFlatFallback) {
+  FieldSchema field("vector", DataType::VECTOR_FP32, 32, false,
+                    std::make_shared<VamanaIndexParams>(MetricType::L2));
+  vector_column_params::QueryParams query;
+  auto result =
+      ProximaEngineHelper::convert_to_engine_query_param(field, query);
+  ASSERT_TRUE(result);
+  auto engine = std::move(result.value());
+  auto defaults = engine->clone();
+  auto *typed = dynamic_cast<core_interface::VamanaQueryParam *>(engine.get());
+  ASSERT_NE(typed, nullptr);
+  auto params = std::make_shared<VamanaQueryParams>();
+  for (int ef : {128, 32}) {
+    params->set_ef_search(ef);
+    params->set_prefetch_offset(3);
+    params->set_prefetch_lines(2);
+    params->set_radius(1.25f);
+    params->set_is_linear(true);
+    ASSERT_TRUE(ProximaEngineHelper::update_engine_query_param(
+                    IndexType::VAMANA, params, engine.get(), defaults.get())
+                    .ok());
+    EXPECT_EQ(typed->ef_search, ef);
+    EXPECT_EQ(typed->prefetch_offset, 3U);
+    EXPECT_EQ(typed->prefetch_lines, 2U);
+    EXPECT_FLOAT_EQ(typed->radius, 1.25f);
+    EXPECT_TRUE(typed->is_linear);
+    query.query_params = params;
+    auto fresh =
+        ProximaEngineHelper::convert_to_engine_query_param(field, query);
+    ASSERT_TRUE(fresh);
+    auto *fresh_typed =
+        dynamic_cast<core_interface::VamanaQueryParam *>(fresh->get());
+    ASSERT_NE(fresh_typed, nullptr);
+    EXPECT_EQ(fresh_typed->ef_search, typed->ef_search);
+    EXPECT_EQ(fresh_typed->prefetch_offset, typed->prefetch_offset);
+    EXPECT_EQ(fresh_typed->prefetch_lines, typed->prefetch_lines);
+    EXPECT_EQ(fresh_typed->radius, typed->radius);
+    EXPECT_EQ(fresh_typed->is_linear, typed->is_linear);
+    ASSERT_TRUE(ProximaEngineHelper::update_engine_query_param(
+                    IndexType::VAMANA, nullptr, engine.get(), defaults.get())
+                    .ok());
+    EXPECT_EQ(typed->ef_search, core_interface::kDefaultVamanaEfSearch);
+    EXPECT_EQ(typed->prefetch_offset, core_interface::kDefaultPrefetchOffset);
+    EXPECT_EQ(typed->prefetch_lines, core_interface::kDefaultPrefetchLines);
+    EXPECT_FLOAT_EQ(typed->radius, 0.0f);
+    EXPECT_FALSE(typed->is_linear);
+  }
+  // Untrained graph fields use Flat storage but retain graph query parameters.
+  field.set_index_params(std::make_shared<FlatIndexParams>(MetricType::L2));
+  auto flat = ProximaEngineHelper::convert_to_engine_query_param(field, query);
+  ASSERT_TRUE(flat);
+  EXPECT_NE(dynamic_cast<core_interface::FlatQueryParam *>(flat->get()),
+            nullptr);
+  EXPECT_FLOAT_EQ(flat.value()->radius, 1.25f);
+  EXPECT_TRUE(flat.value()->is_linear);
+  auto invalid = std::make_shared<QueryParams>(IndexType::VAMANA);
+  EXPECT_FALSE(ProximaEngineHelper::update_engine_query_param(
+                   IndexType::VAMANA, invalid, engine.get(), defaults.get())
+                   .ok());
+}
+
+
+TEST(VectorColumnIndexerTest, BaseQueryParametersForFlatFallback) {
+  FieldSchema field("vector", DataType::VECTOR_FP32, 32, false,
+                    std::make_shared<FlatIndexParams>(MetricType::L2));
+  for (auto type :
+       {IndexType::HNSW, IndexType::HNSW_RABITQ, IndexType::VAMANA,
+        IndexType::IVF, IndexType::IVF_RABITQ, IndexType::DISKANN,
+        IndexType::OMEGA}) {
+    SCOPED_TRACE(static_cast<int>(type));
+    vector_column_params::QueryParams query;
+    query.topk = 7;
+    query.query_params = std::make_shared<QueryParams>(type);
+    query.query_params->set_radius(1.25f);
+    query.query_params->set_is_linear(true);
+    auto result =
+        ProximaEngineHelper::convert_to_engine_query_param(field, query);
+    ASSERT_TRUE(result) << result.error().message();
+    ASSERT_NE(nullptr,
+              dynamic_cast<core_interface::FlatQueryParam *>(result->get()));
+    EXPECT_EQ(7U, result.value()->topk);
+    EXPECT_FLOAT_EQ(1.25f, result.value()->radius);
+    EXPECT_TRUE(result.value()->is_linear);
+    // Validation without a Flat fallback still requires the concrete type.
+    EXPECT_FALSE(ProximaEngineHelper::update_engine_query_param(
+                     type, query.query_params, nullptr, nullptr)
+                     .ok());
+  }
+}
+
+
+TEST(VectorColumnIndexerTest, ReusedOmegaQueryParametersRestoreDefaults) {
+  FieldSchema field("vector", DataType::VECTOR_FP32, 32, false,
+                    std::make_shared<OmegaIndexParams>(MetricType::L2));
+  vector_column_params::QueryParams query;
+  auto result =
+      ProximaEngineHelper::convert_to_engine_query_param(field, query);
+  ASSERT_TRUE(result);
+  auto *engine =
+      dynamic_cast<core_interface::OmegaQueryParam *>(result->get());
+  ASSERT_NE(engine, nullptr);
+  const auto defaults = *engine;
+  auto params = std::make_shared<OmegaQueryParams>(128, 0.8f);
+  params->set_training_query_id(42);
+  params->set_prefetch_offset(3);
+  params->set_prefetch_lines(2);
+  params->set_radius(1.25f);
+  params->set_is_linear(true);
+  ASSERT_TRUE(ProximaEngineHelper::update_engine_query_param(
+                  IndexType::OMEGA, params, engine, &defaults)
+                  .ok());
+  EXPECT_EQ(engine->ef_search, 128U);
+  EXPECT_FLOAT_EQ(engine->target_recall, 0.8f);
+  EXPECT_EQ(engine->training_query_id, 42);
+  ASSERT_TRUE(ProximaEngineHelper::update_engine_query_param(
+                  IndexType::OMEGA, nullptr, engine, &defaults)
+                  .ok());
+  EXPECT_EQ(engine->ef_search, defaults.ef_search);
+  EXPECT_FLOAT_EQ(engine->target_recall, defaults.target_recall);
+  EXPECT_EQ(engine->training_query_id, defaults.training_query_id);
+  EXPECT_EQ(engine->prefetch_offset, defaults.prefetch_offset);
+  EXPECT_EQ(engine->prefetch_lines, defaults.prefetch_lines);
+  EXPECT_FLOAT_EQ(engine->radius, defaults.radius);
+  EXPECT_EQ(engine->is_linear, defaults.is_linear);
+}
 
 
 std::string print_dense_vector(const void *vector, size_t dim,

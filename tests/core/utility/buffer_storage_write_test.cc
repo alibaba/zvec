@@ -1376,15 +1376,14 @@ TEST_F(BufferStorageWriteTest, ReadOnlyBatchPreservesSharedCacheReserve) {
   EXPECT_EQ(0, storage->close());
 }
 
-// Repeated legacy pointer reads from a writable cached page must reuse the
-// pinned page. Retaining a separate 4K-aligned snapshot for every read grows
-// memory until close() and makes long Optimize workloads consume gigabytes.
-TEST_F(BufferStorageWriteTest, CR_WritableLegacyPointerReadReusesCachedPage) {
+// Writable reads own independent snapshots and release them with each block.
+TEST_F(BufferStorageWriteTest,
+       CR_WritableMemoryBlockReadsKeepIndependentSnapshots) {
   auto storage = open_writable();
   ASSERT_TRUE(storage);
 
-  ASSERT_EQ(0, storage->append("legacy_pointer_seg", 8192));
-  auto seg = storage->get("legacy_pointer_seg");
+  ASSERT_EQ(0, storage->append("memory_block_seg", 8192));
+  auto seg = storage->get("memory_block_seg");
   ASSERT_TRUE(seg);
 
   constexpr size_t kReadLen = 64;
@@ -1398,15 +1397,17 @@ TEST_F(BufferStorageWriteTest, CR_WritableLegacyPointerReadReusesCachedPage) {
   ASSERT_EQ(kReadLen,
             seg->write(read_offset, expected.data(), expected.size()));
 
-  const void *first = nullptr;
-  ASSERT_EQ(kReadLen, seg->read(read_offset, &first, kReadLen));
-  ASSERT_NE(nullptr, first);
-  EXPECT_EQ(0, std::memcmp(expected.data(), first, expected.size()));
+  IndexStorage::MemoryBlock first;
+  ASSERT_EQ(kReadLen, seg->read(read_offset, first, kReadLen));
+  ASSERT_NE(nullptr, first.data());
+  EXPECT_EQ(0, std::memcmp(expected.data(), first.data(), expected.size()));
 
   for (size_t i = 0; i < 128; ++i) {
-    const void *again = nullptr;
-    ASSERT_EQ(kReadLen, seg->read(read_offset, &again, kReadLen));
-    EXPECT_EQ(first, again);
+    IndexStorage::MemoryBlock again;
+    ASSERT_EQ(kReadLen, seg->read(read_offset, again, kReadLen));
+    EXPECT_NE(first.data(), again.data());
+    EXPECT_EQ(0, std::memcmp(expected.data(), again.data(), expected.size()));
+    EXPECT_EQ(0, std::memcmp(expected.data(), first.data(), expected.size()));
   }
 
   EXPECT_EQ(0, storage->close());
@@ -1912,14 +1913,20 @@ TEST_F(BufferStorageWriteTest, BatchScratchResultsSurviveLaterBatches) {
                        : segment->read_borrowed_batch(reads, count);
     };
 
-    IndexStorage::MemoryBlock first[2];
+    IndexStorage::MemoryBlock first[3];
     IndexStorage::Segment::BorrowedRead batch_a[] = {
         {segment.get(), offset, 128, &first[0]},
         {segment.get(), offset + page_size, 192, &first[1]},
+        {segment.get(), offset + 2 * page_size, 65, &first[2]},
     };
-    ASSERT_TRUE(read_batch(batch_a, 2));
-    ASSERT_EQ(IndexStorage::MemoryBlock::MBT_SHARED_SCRATCH, first[0].type_);
-    ASSERT_EQ(IndexStorage::MemoryBlock::MBT_SHARED_SCRATCH, first[1].type_);
+    ASSERT_TRUE(read_batch(batch_a, 3));
+    for (size_t i = 0; i < 3; ++i) {
+      ASSERT_EQ(IndexStorage::MemoryBlock::MBT_SHARED_SCRATCH, first[i].type_);
+      EXPECT_EQ(0U, reinterpret_cast<uintptr_t>(first[i].data()) %
+                        AILEGO_CACHE_LINE_SIZE);
+      EXPECT_EQ(0, std::memcmp(payload.data() + batch_a[i].offset,
+                               first[i].data(), batch_a[i].length));
+    }
     EXPECT_EQ(first[0].scratch_owner_, first[1].scratch_owner_);
     auto retained = first[0];
     IndexStorage::MemoryBlock assigned;
@@ -1927,6 +1934,7 @@ TEST_F(BufferStorageWriteTest, BatchScratchResultsSurviveLaterBatches) {
     auto moved = std::move(assigned);
     first[0].reset();
     first[1].reset();
+    first[2].reset();
 
     // Reusing the same sized arena must not overwrite live copies from A.
     IndexStorage::MemoryBlock second[2];

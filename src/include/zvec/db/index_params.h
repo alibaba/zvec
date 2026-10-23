@@ -893,7 +893,7 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
       bool saturate_graph = core_interface::kDefaultVamanaSaturateGraph,
       bool use_contiguous_memory = false, bool use_id_map = false,
       QuantizeType quantize_type = QuantizeType::UNDEFINED,
-      QuantizerParam quantizer_param = {}, bool two_pass_build = false,
+      QuantizerParam quantizer_param = {}, bool two_pass_build = true,
       bool use_flat_contiguous_memory = false,
       DataType flat_data_type = DataType::VECTOR_FP32)
       : VectorIndexParams(IndexType::VAMANA, metric_type, quantize_type,
@@ -1066,9 +1066,11 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
  *         "punctuation", "symbol"; default [] keeps all valid UTF-8
  *         characters). custom_token_chars is not supported.
  *     jieba:
- *       - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
- *         hmm_model.utf8).
- *       - "user_dict_path" (user dictionary path).
+ *       - "jieba_dict_dir" (optional external directory containing
+ *         jieba.dict.utf8 and hmm_model.utf8; priority: field value >
+ *         ZVEC_JIEBA_DICT_DIR > embedded defaults).
+ *       - "user_dict_path" (user dictionary path; augments the selected
+ *         dictionary, including the embedded default).
  *       - "cut_mode" ("search", "mix", "full", or "hmm"; default "search").
  *     whitespace:
  *       - no extra_params.

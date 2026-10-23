@@ -105,6 +105,20 @@ class ZVEC_API Collection {
 
   virtual Result<DocPtrList> query(const MultiQuery &query) const = 0;
 
+  // Single-target query returning internal numeric IDs and optional scores.
+  // Requires a read-only collection. Dense queries without user filters use
+  // the specialized low-latency path; other query shapes fall back to query()
+  // semantics. Result-field materialization is not supported. Use
+  // resolve_internal_ids() to obtain user primary keys.
+  virtual Result<InternalIdsQueryResult> query_internal_ids(
+      const SearchQuery &query, bool return_scores = false) const = 0;
+
+  // Resolve internal numeric IDs against the same read-only collection
+  // snapshot. Result positions are preserved; -1, deleted, or unknown IDs
+  // resolve to nullopt.
+  virtual Result<std::vector<std::optional<std::string>>> resolve_internal_ids(
+      const std::vector<int64_t> &ids) const = 0;
+
   virtual Result<GroupResults> group_by_query(
       const GroupByVectorQuery &query) const = 0;
 

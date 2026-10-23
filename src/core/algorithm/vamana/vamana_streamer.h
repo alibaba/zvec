@@ -59,9 +59,10 @@ class VamanaStreamer : public IndexStreamer {
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
                   uint32_t count, Context::Pointer &context) const override;
 
-  int search_candidates_impl(const void *query, const IndexQueryMeta &qmeta,
-                             std::vector<uint64_t> &keys,
-                             Context::Pointer &context) const override;
+  int search_candidates_impl(
+      const void *query, const IndexQueryMeta &qmeta,
+      std::vector<uint64_t> &keys, Context::Pointer &context,
+      std::vector<float> *scores = nullptr) const override;
 
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      Context::Pointer &context) const override;
@@ -192,7 +193,7 @@ class VamanaStreamer : public IndexStreamer {
   bool use_id_map_{true};
   bool saturate_graph_{VamanaEntity::kDefaultSaturateGraph};
   bool use_contiguous_memory_{false};
-  bool two_pass_build_enabled_{false};
+  bool two_pass_build_enabled_{true};
   std::atomic<bool> build_finalized_{false};
 
   ailego::SharedMutex shared_mutex_{};
