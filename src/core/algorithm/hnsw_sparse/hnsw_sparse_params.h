@@ -34,7 +34,7 @@ inline const std::string PARAM_HNSW_SPARSE_BUILDER_MIN_NEIGHBOR_COUNT(
     "proxima.hnsw.sparse_builder.min_neighbor_count");
 inline const std::string PARAM_HNSW_SPARSE_BUILDER_MAX_NEIGHBOR_COUNT(
     "proxima.hnsw.sparse_builder.max_neighbor_count");
-static const std::string
+inline const std::string
     PARAM_HNSW_SPARSE_BUILDER_L0_MAX_NEIGHBOR_COUNT_MULTIPLIER(
         "proxima.hnsw.sparse_builder.l0_max_neighbor_count_multiplier");
 
@@ -50,7 +50,7 @@ inline const std::string PARAM_HNSW_SPARSE_SEARCHER_CHECK_CRC_ENABLE(
     "proxima.hnsw.sparse_searcher.check_crc_enable");
 inline const std::string PARAM_HNSW_SPARSE_SEARCHER_VISIT_BLOOMFILTER_ENABLE(
     "proxima.hnsw.sparse_searcher.visit_bloomfilter_enable");
-static const std::string
+inline const std::string
     PARAM_HNSW_SPARSE_SEARCHER_VISIT_BLOOMFILTER_NEGATIVE_PROB(
         "proxima.hnsw.sparse_searcher.visit_bloomfilter_negative_prob");
 inline const std::string PARAM_HNSW_SPARSE_SEARCHER_FORCE_PADDING_RESULT_ENABLE(
@@ -70,7 +70,7 @@ inline const std::string PARAM_HNSW_SPARSE_STREAMER_EFCONSTRUCTION(
     "proxima.hnsw.sparse_streamer.efconstruction");
 inline const std::string PARAM_HNSW_SPARSE_STREAMER_MAX_NEIGHBOR_COUNT(
     "proxima.hnsw.sparse_streamer.max_neighbor_count");
-static const std::string
+inline const std::string
     PARAM_HNSW_SPARSE_STREAMER_L0_MAX_NEIGHBOR_COUNT_MULTIPLIER(
         "proxima.hnsw.sparse_streamer.l0_max_neighbor_count_multiplier");
 inline const std::string PARAM_HNSW_SPARSE_STREAMER_SCALING_FACTOR(
@@ -85,7 +85,7 @@ inline const std::string PARAM_HNSW_SPARSE_STREAMER_MAX_INDEX_SIZE(
     "proxima.hnsw.sparse_streamer.max_index_size");
 inline const std::string PARAM_HNSW_SPARSE_STREAMER_VISIT_BLOOMFILTER_ENABLE(
     "proxima.hnsw.sparse_streamer.visit_bloomfilter_enable");
-static const std::string
+inline const std::string
     PARAM_HNSW_SPARSE_STREAMER_VISIT_BLOOMFILTER_NEGATIVE_PROB(
         "proxima.hnsw.sparse_streamer.visit_bloomfilter_negative_prob");
 inline const std::string PARAM_HNSW_SPARSE_STREAMER_CHECK_CRC_ENABLE(
