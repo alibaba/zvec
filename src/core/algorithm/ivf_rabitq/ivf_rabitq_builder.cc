@@ -16,9 +16,9 @@
 #include <atomic>
 #include <cstring>
 #include <numeric>
+#include <rabitqlib/fastscan/data_layout.hpp>
+#include <rabitqlib/fastscan/encoder.hpp>
 #include <rabitqlib/fastscan/fastscan.hpp>
-#include <rabitqlib/quantization/data_layout.hpp>
-#include <rabitqlib/quantization/rabitq.hpp>
 #include <zvec/ailego/hash/crc32c.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/string_helper.h>

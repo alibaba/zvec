@@ -242,9 +242,9 @@ static ailego_force_inline __m128i reduce_add_4x16_epi32(__m512i accumulator0,
                        _mm256_extracti128_si256(totals, 1));
 }
 
-// SIFT hot path for split contiguous storage. The query's two cache lines stay
+// SIFT hot path for split contiguous storage. The query's two SIMD blocks stay
 // resident across the whole batch call, while four candidate streams are
-// loaded independently. Vamana already prefetched both candidate cache lines.
+// loaded independently. Vamana already prefetched each full 128-byte candidate.
 static ailego_force_inline void uniform_sq_l2_uint8_batch4_128(
     const void *const *vectors, __m512i query0, __m512i query1,
     int32_t correction, const void *const *extra_values, float *distances) {

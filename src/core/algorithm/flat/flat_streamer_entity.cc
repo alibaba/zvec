@@ -15,6 +15,7 @@
 #include "flat_streamer_entity.h"
 #include <cstdint>
 #include <zvec/core/framework/index_error.h>
+#include "utility/legacy_read_buffer.h"
 #include "flat_utility.h"
 
 namespace zvec {
@@ -227,12 +228,14 @@ int FlatStreamerEntity::close() {
   meta_.header.linear_body_size = 0;
   batch_query_preprocess_ = nullptr;
   extra_values_size_ = 0;
+  meta_dirty_ = false;
 
   return 0;
 }
 
 int FlatStreamerEntity::flush_linear_meta() {
-  if (!storage_) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!storage_ || !meta_dirty_) {
     return 0;
   }
 
@@ -248,6 +251,8 @@ int FlatStreamerEntity::flush_linear_meta() {
     LOG_ERROR("Failed to write segment %s", FLAT_LINEAR_META_SEG_ID.c_str());
     return IndexError_WriteData;
   }
+
+  meta_dirty_ = false;
 
   return 0;
 }
@@ -307,6 +312,7 @@ int FlatStreamerEntity::add(uint64_t key, const void *vec, size_t size) {
   // function (alloc_block / add_to_block may compete for the same memory).
   head_block.reset(nullptr);
 
+  meta_dirty_ = true;
   if (!this->is_valid_block(block)) {
     int ret = this->alloc_block(block, &block);
     if (ailego_unlikely(ret != 0)) {
@@ -596,6 +602,86 @@ int FlatContiguousStreamerEntity::search_by_p_keys(
                             scratch, nullptr, heap);
 }
 
+int FlatStreamerEntity::search_by_p_keys_fast(
+    const void * /*query*/, const std::vector<uint64_t> & /*keys*/,
+    int64_t * /*output_ids*/, float * /*output_scores*/, size_t /*topk*/,
+    FlatSearchScratch * /*scratch*/) const {
+  return IndexError_NotImplemented;
+}
+
+int FlatContiguousStreamerEntity::search_by_p_keys_fast(
+    const void *query, const std::vector<uint64_t> &keys, int64_t *output_ids,
+    float *output_scores, size_t topk, FlatSearchScratch *scratch) const {
+  if (!query || !output_ids || topk == 0 || !scratch) {
+    return IndexError_InvalidArgument;
+  }
+  // Hold the same immutable generation for pointer lookup and evaluation.
+  // A concurrent degrade/add cannot free its rows while this call is active.
+  auto storage = load_contiguous_storage();
+  if (!storage || !storage->vector_memory || keys.size() < topk ||
+      (quantizer() &&
+       keys.size() > static_cast<size_t>(std::numeric_limits<int>::max()))) {
+    return IndexError_NotImplemented;
+  }
+  auto &ptrs = scratch->vector_ptrs;
+  auto &extras = scratch->extra_values;
+  auto &distances = scratch->distances;
+  const size_t count = keys.size();
+  const size_t extra_size = extra_values_size();
+  const bool has_extras = extra_size != 0;
+  const size_t vector_data_size = meta().element_size() - extra_size;
+  ptrs.resize(count);
+  extras.resize(has_extras ? count : 0);
+  distances.resize(count);
+  for (size_t i = 0; i < count; ++i) {
+    ptrs[i] = get_vector_ptr_by_key(*storage, keys[i]);
+    if (!ptrs[i]) return IndexError_NotImplemented;
+    if (has_extras) {
+      extras[i] = static_cast<const char *>(ptrs[i]) + vector_data_size;
+    }
+  }
+  // Use the same prepared-query dispatch as the regular Flat search.
+  if (quantizer()) {
+    quantizer()->calc_distance_dp_query_batch(
+        ptrs.data(), static_cast<int>(count), query, distances.data());
+  } else {
+    const void *batch_query = query;
+    if (const auto &preprocess = batch_query_preprocess();
+        preprocess != nullptr) {
+      auto &buffer = scratch->query_buffer;
+      buffer.resize(meta().element_size());
+      std::memcpy(buffer.data(), query, buffer.size());
+      preprocess(buffer.data(), meta().dimension());
+      batch_query = buffer.data();
+    }
+    if (const auto &batch = batch_distance(); batch) {
+      batch(ptrs.data(), batch_query, count, meta().dimension(),
+            distances.data(), has_extras ? extras.data() : nullptr);
+    } else {
+      for (size_t i = 0; i < count; ++i) {
+        distance()(query, ptrs[i], meta().dimension(), distances.data() + i);
+      }
+    }
+  }
+  // Use the same heap operations and score-only ordering as IndexDocumentHeap,
+  // with lightweight key/score entries rather than full result documents.
+  ailego::KeyValueHeap<uint64_t, float> documents(topk);
+  for (size_t i = 0; i < count; ++i) {
+    // Match the regular heap: NaN and positive overflow are not candidates.
+    // Let that path decide the result count without modifying caller output.
+    if (!(distances[i] <= std::numeric_limits<float>::max())) {
+      return IndexError_NotImplemented;
+    }
+    documents.emplace(keys[i], distances[i]);
+  }
+  documents.sort();
+  for (size_t i = 0; i < topk; ++i) {
+    output_ids[i] = static_cast<int64_t>(documents[i].first);
+    if (output_scores) output_scores[i] = documents[i].second;
+  }
+  return 0;
+}
+
 int FlatContiguousStreamerEntity::build_contiguous_memory() {
   degrade_to_mmap();
 
@@ -716,33 +802,12 @@ const void *FlatContiguousStreamerEntity::get_vector_ptr(
 }
 
 const void *FlatStreamerEntity::get_vector_by_key(uint64_t key) const {
-  VectorLocation loc{};
-  key_info_map_lock_->lock_shared();
-  if (use_key_info_map_) {
-    auto iterator = key_info_map_.find(key);
-    if (iterator == key_info_map_.end()) {
-      key_info_map_lock_->unlock_shared();
-      return nullptr;
-    }
-    loc = iterator->second;
-  } else {
-    if (key < withid_key_info_map_.size()) {
-      loc = withid_key_info_map_[key];
-    } else {
-      key_info_map_lock_->unlock_shared();
-      return nullptr;
-    }
-  }
-  key_info_map_lock_->unlock_shared();
-
-  auto segment = this->get_segment(loc.segment_id);
-  const void *data = nullptr;
-  if (segment->read(loc.offset, &data, index_meta_.element_size()) !=
-      index_meta_.element_size()) {
-    LOG_ERROR("Failed to read segment, size=%u", index_meta_.element_size());
-    return nullptr;
-  }
-  return data;
+  // Keep the legacy pointer valid until the next call on this thread.
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock block;
+  return get_vector_by_key(key, block) == 0
+             ? buffer.assign(block, index_meta_.element_size())
+             : nullptr;
 }
 
 int FlatStreamerEntity::get_vector_by_key(
@@ -800,10 +865,29 @@ int FlatStreamerEntity::get_vectors_by_key(
   }
   key_info_map_lock_->unlock_shared();
 
+  std::vector<IndexStorage::Segment::Pointer> segments(count);
+  {
+    std::lock_guard<std::mutex> lock(segments_mutex_);
+    for (uint32_t i = 0; i < count; ++i) {
+      const size_t segment_index = locations[i].segment_id;
+      for (size_t j = segments_.size(); j <= segment_index; ++j) {
+        auto segment_id =
+            ailego::StringHelper::Concat(FLAT_SEGMENT_FEATURES_SEG_ID, j);
+        auto segment = storage_->get(segment_id);
+        if (!segment) {
+          LOG_ERROR("Failed to get segment %s", segment_id.c_str());
+          return -1;
+        }
+        segments_.emplace_back(std::move(segment));
+      }
+      segments[i] = segments_[segment_index];
+    }
+  }
+
   blocks.resize(count);
   for (uint32_t i = 0; i < count; ++i) {
     const VectorLocation &loc = locations[i];
-    auto segment = this->get_segment(loc.segment_id);
+    const auto &segment = segments[i];
     if (!segment ||
         segment->read(loc.offset, blocks[i], index_meta_.element_size()) !=
             index_meta_.element_size()) {
@@ -860,6 +944,7 @@ void FlatStreamerEntity::Iterator::read_next_block() {
 }
 
 int FlatStreamerEntity::init_storage(IndexStorage::Pointer storage) {
+  meta_dirty_ = true;
   // Init Linear Meta Segment
   meta_.create_time = ailego::Realtime::Seconds();
   stats_.set_create_time(meta_.create_time);
@@ -1075,6 +1160,7 @@ int FlatStreamerEntity::load_segment_keys_to_vector() {
 }
 
 int FlatStreamerEntity::load_storage(IndexStorage::Pointer storage) {
+  meta_dirty_ = false;
   int ret = this->load_linear_meta(storage);
   if (ailego_unlikely(ret != 0)) {
     return ret;
@@ -1345,6 +1431,7 @@ int FlatStreamerEntity::add_vector_with_id(const uint32_t id, const void *query,
   }
 
 
+  meta_dirty_ = true;
   if (id >= vector_count()) {
     IndexStorage::MemoryBlock head_block;
     this->get_head_block(head_block);

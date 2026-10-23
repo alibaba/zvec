@@ -1,6 +1,8 @@
 """Fast search with native reference storage and optional refined scores."""
 
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from threading import Barrier
 
 import numpy as np
 import pytest
@@ -169,6 +171,45 @@ def test_refine_candidate_counts_and_parameter_switches(
                     np.testing.assert_allclose(
                         scores, [doc.score for doc in coarse_docs], rtol=2e-5, atol=2e-5
                     )
+        concurrent_cases = []
+        for row, refine, scale, topk in [
+            (11, True, 1.1, 10),
+            (89, True, 2.6, 3),
+            (531, False, 2.6, 10),
+            (11, True, 1.4, 7),
+        ]:
+            query = np.ascontiguousarray(vectors[row] + np.float32(0.021))
+            param = query_param(is_using_refiner=refine, scale_factor=scale)
+            docs = coll.query(
+                Query(field_name="vector", vector=query, param=param), topk=topk
+            )
+            concurrent_cases.append(
+                (query, param, topk, [int(d.id) for d in docs], [d.score for d in docs])
+            )
+        ready = Barrier(4)
+
+        def search(worker):
+            ready.wait()
+            for repeat in range(8):
+                query, param, topk, expected_ids, expected_scores = concurrent_cases[
+                    (worker + repeat) % len(concurrent_cases)
+                ]
+                return_scores = repeat % 2 == 0
+                output = _query_internal_ids(
+                    coll, "vector", query, param, topk, return_scores
+                )
+                if return_scores:
+                    ids, scores = output
+                    np.testing.assert_allclose(
+                        scores, expected_scores, rtol=2e-5, atol=2e-5
+                    )
+                else:
+                    ids = output
+                np.testing.assert_array_equal(ids, expected_ids)
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(search, range(4)))
+
         for scale in (-1.0, float("nan"), float("inf")):
             param = query_param(is_using_refiner=True, scale_factor=scale)
             with pytest.raises((ValueError, RuntimeError)):

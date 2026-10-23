@@ -83,6 +83,15 @@ class FlatStreamerEntity {
                                FlatSearchScratch *scratch = nullptr,
                                size_t batch_size = 0) const;
 
+  // A storage-specific candidate-only operation. Generic layouts request
+  // the streamer's existing full-result fallback without touching output.
+  // Scores use the metric's internal representation and are optional.
+  virtual int search_by_p_keys_fast(const void *query,
+                                    const std::vector<uint64_t> &keys,
+                                    int64_t *output_ids, float *output_scores,
+                                    size_t topk,
+                                    FlatSearchScratch *scratch) const;
+
   //! Search in a block
   void search_block(const void *query, const BlockLocation &bl,
                     const BlockHeader *hd, float norm_val,
@@ -476,7 +485,9 @@ class FlatStreamerEntity {
   // Protects the segment cache, independently of the serialized add path.
   // Open/close and initial loading require external lifecycle exclusion.
   mutable std::mutex segments_mutex_{};
-  IndexMeta index_meta_{};
+  // Distance loops repeatedly read this metadata. Keep it off the cache line
+  // written by segment-cache locking in concurrent queries.
+  alignas(AILEGO_CACHE_LINE_SIZE) IndexMeta index_meta_{};
   IndexStorage::Pointer storage_{};
   IndexMetric::MatrixDistance row_distance_{}, column_distance_{};
   IndexMetric::MatrixBatchDistance batch_distance_{};
@@ -491,6 +502,8 @@ class FlatStreamerEntity {
   std::vector<uint32_t> withid_key_map_{};
   std::vector<uint64_t> id_key_vector_{};
   bool filter_same_key_{false};
+  // Linear metadata only needs rewriting after creation or vector writes.
+  bool meta_dirty_{false};
   bool use_key_info_map_{true};
   uint32_t vec_unit_size_{0};
   uint32_t vec_cols_{0};
@@ -519,6 +532,12 @@ class FlatContiguousStreamerEntity : public FlatStreamerEntity {
                        const IndexFilter &filter, IndexDocumentHeap *heap,
                        FlatSearchScratch *scratch,
                        size_t batch_size) const override;
+
+  int search_by_p_keys_fast(const void *query,
+                            const std::vector<uint64_t> &keys,
+                            int64_t *output_ids, float *output_scores,
+                            size_t topk,
+                            FlatSearchScratch *scratch) const override;
 
   bool is_contiguous() const {
     return !!load_contiguous_storage();
@@ -560,7 +579,8 @@ class FlatContiguousStreamerEntity : public FlatStreamerEntity {
   const void *get_vector_ptr_by_key(const ContiguousStorage &storage,
                                     uint64_t key) const;
 
-  static constexpr size_t kVectorAlignment = 64;
+  // Padding is only for the rebuilt in-memory copy, not the index format.
+  static constexpr size_t kVectorAlignment = AILEGO_CACHE_LINE_SIZE;
   std::shared_ptr<const ContiguousStorage> contiguous_storage_{};
 };
 
