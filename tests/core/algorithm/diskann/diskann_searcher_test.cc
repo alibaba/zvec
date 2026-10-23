@@ -22,7 +22,6 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_set>
-#include <ailego/math/distance.h>
 #include <gtest/gtest.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/vector.h>

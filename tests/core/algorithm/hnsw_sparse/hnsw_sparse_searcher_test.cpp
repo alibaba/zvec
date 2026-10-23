@@ -17,7 +17,6 @@
 #include <fcntl.h>
 #include <future>
 #include <iomanip>
-#include <ailego/math/distance.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
 #include "tests/test_util.h"

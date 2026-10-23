@@ -82,7 +82,7 @@ class ReadOnlyCloseTest : public testing::TestWithParam<CloseTestCase> {
 
   StorageOptions options(bool create, bool read_only = false) const {
     return {GetParam().mmap ? StorageOptions::StorageType::kMMAP
-                           : StorageOptions::StorageType::kBufferPool,
+                            : StorageOptions::StorageType::kBufferPool,
             create, read_only};
   }
 
@@ -97,9 +97,9 @@ class ReadOnlyCloseTest : public testing::TestWithParam<CloseTestCase> {
     for (uint32_t id = 0; id < count; ++id) {
       VectorDataBuffer fetched;
       ASSERT_EQ(0, index->fetch(id, &fetched));
-      const auto expected = std::string(
-          reinterpret_cast<const char *>(values_.data()),
-          GetParam().sparse ? sizeof(float) : sizeof(values_));
+      const auto expected =
+          std::string(reinterpret_cast<const char *>(values_.data()),
+                      GetParam().sparse ? sizeof(float) : sizeof(values_));
       if (GetParam().sparse) {
         const auto &sparse =
             std::get<SparseVectorBuffer>(fetched.vector_buffer);
@@ -211,7 +211,8 @@ INSTANTIATE_TEST_SUITE_P(
         CloseTestCase{"SparseHnswBuffer", IndexType::kHNSW, true, false, false},
         CloseTestCase{"VamanaMmap", IndexType::kVamana, false, true, false},
         CloseTestCase{"VamanaBuffer", IndexType::kVamana, false, false, false},
-        CloseTestCase{"VamanaContiguous", IndexType::kVamana, false, true, true}),
+        CloseTestCase{"VamanaContiguous", IndexType::kVamana, false, true,
+                      true}),
     [](const testing::TestParamInfo<CloseTestCase> &info) {
       return info.param.name;
     });
