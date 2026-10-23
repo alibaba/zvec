@@ -78,6 +78,8 @@ static void test_collection(zvec_index_type_t type, zvec_metric_type_t metric,
   char path[128];
   snprintf(path, sizeof(path), "./c_api_turbo_rabitq_%d_%d_%d", (int)type,
            (int)metric, bits);
+  fprintf(stderr, "RaBitQ collection case: type=%d metric=%d bits=%d\n",
+          (int)type, (int)metric, bits);
   zvec_test_delete_dir(path);
   zvec_index_params_t *p = zvec_index_params_create(type);
   CHECK(p != NULL);

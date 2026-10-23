@@ -213,10 +213,14 @@ Status FieldSchema::validate() const {
               "Invalid RABITQ quantizer parameters: num_clusters/n_iters must "
               "be positive; enable_rotate is unsupported");
         }
+        // UNDEFINED keeps the field's FP32 type, already validated above.
+        // DiskANN uses this default instead of a configurable reference Flat.
+        const auto flat_data_type = vector_index_params->flat_data_type();
         if ((index_params_->type() == IndexType::HNSW ||
              index_params_->type() == IndexType::DISKANN) &&
             (q.total_bits() < 1 || q.total_bits() > 9 || q.sample_count() < 0 ||
-             vector_index_params->flat_data_type() != DataType::VECTOR_FP32)) {
+             (flat_data_type != DataType::UNDEFINED &&
+              flat_data_type != DataType::VECTOR_FP32))) {
           return Status::InvalidArgument(
               "Invalid graph RABITQ parameters: total_bits in [1, 9], "
               "sample_count >= 0; FP32 reference vectors required");
