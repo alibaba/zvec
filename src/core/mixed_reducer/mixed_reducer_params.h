@@ -19,22 +19,22 @@ namespace zvec {
 namespace core {
 
 
-static const std::string PARAM_MIXED_STREAMER_REDUCER_ENABLE_PK_REWRITE(
+inline const std::string PARAM_MIXED_STREAMER_REDUCER_ENABLE_PK_REWRITE(
     "proxima.mixed.reducer.enable_pk_rewrite");
-static const std::string PARAM_MIXED_STREAMER_REDUCER_NUM_OF_ADD_THREADS(
+inline const std::string PARAM_MIXED_STREAMER_REDUCER_NUM_OF_ADD_THREADS(
     "proxima.mixed.reducer.num_of_add_threads");
 
-static const std::string PARAM_MIXED_REDUCER_WORKING_PATH(
+inline const std::string PARAM_MIXED_REDUCER_WORKING_PATH(
     "proxima.mixed.reducer.working_path");
-static const std::string PARAM_MIXED_REDUCER_NUM_OF_ADD_THREADS(
+inline const std::string PARAM_MIXED_REDUCER_NUM_OF_ADD_THREADS(
     "proxima.mixed.reducer.num_of_add_threads");
-static const std::string PARAM_MIXED_REDUCER_STREAMER_CLASS(
+inline const std::string PARAM_MIXED_REDUCER_STREAMER_CLASS(
     "proxima.mixed.reducer.streamer_class");
-static const std::string PARAM_MIXED_REDUCER_HYBRID_VECTOR_ENABLE(
+inline const std::string PARAM_MIXED_REDUCER_HYBRID_VECTOR_ENABLE(
     "proxima.mixed.reducer.hybrid_vector_enable");
-static const std::string PARAM_MIXED_REDUCER_INDEX_NAME(
+inline const std::string PARAM_MIXED_REDUCER_INDEX_NAME(
     "proxima.mixed.reducer.index_name");
-static const std::string PARAM_MIXED_REDUCER_QUANTIZER_CLASS(
+inline const std::string PARAM_MIXED_REDUCER_QUANTIZER_CLASS(
     "proxima.mixed.reducer.quantizer_class");
 
 
