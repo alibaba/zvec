@@ -12,17 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "ivf_entity.h"
+#include <array>
 #include <cstring>
 #include <iostream>
 #include <limits>
 #include <core/quantizer/quantizer_params.h>
 #include <turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h>
 #include "metric/metric_params.h"
+#include "utility/batch_topk.h"
 #include "ivf_utility.h"
 namespace zvec {
 namespace core {
 
 namespace {
+
+// Reuse bounded output scratch after each distance batch is added to the heap.
+constexpr size_t kDistanceBatchVectors = 512;
 
 //! Cursor over a scatter read. IVF blocks and vectors are logical byte
 //! ranges, so neither needs to be aligned with an underlying storage page.
@@ -41,6 +46,17 @@ class ScatterCursor {
     normalize();
     return span_index_ < spans_.size() ? spans_[span_index_].size - span_offset_
                                        : 0;
+  }
+
+  const uint8_t *take_contiguous(size_t size) {
+    normalize();
+    if (span_index_ == spans_.size() ||
+        size > spans_[span_index_].size - span_offset_) {
+      return nullptr;
+    }
+    const auto *data = spans_[span_index_].data + span_offset_;
+    span_offset_ += size;
+    return data;
   }
 
   bool skip(size_t size) {
@@ -106,6 +122,11 @@ bool calculate_row_major_block(ScatterCursor *cursor, const Distance &distance,
   }
   if (!calculate) {
     return cursor->skip(serialized_size);
+  }
+
+  if (const auto *data = cursor->take_contiguous(serialized_size)) {
+    distance(data, vector_count, distances);
+    return true;
   }
 
   size_t processed = 0;
@@ -740,6 +761,7 @@ int IVFEntity::bind_query(const void *query, const IndexQueryMeta &qmeta) {
 }
 
 int IVFEntity::load(const IndexStorage::Pointer &container) {
+  all_keys_valid_ = false;
   int ret = this->load_header(container);
   ivf_check_error_code(ret);
 
@@ -786,6 +808,26 @@ int IVFEntity::load(const IndexStorage::Pointer &container) {
     return IndexError_InvalidFormat;
   }
 
+  // The mapping orders keys ascending, so any invalid key (UINT64_MAX)
+  // sorts last. Empty indexes contain no invalid keys either.
+  bool all_keys_valid = true;
+  if (vector_count() != 0) {
+    uint32_t last_id;
+    if (get_key_order_mapping(vector_count() - 1, &last_id, 1) != 1) {
+      return IndexError_ReadData;
+    }
+    if (last_id >= vector_count()) {
+      LOG_ERROR("Invalid IVF key-order mapping id=%u", last_id);
+      return IndexError_InvalidFormat;
+    }
+    IndexStorage::MemoryBlock key_block;
+    const auto *key = get_keys(last_id, 1, key_block);
+    if (!key) {
+      return IndexError_ReadData;
+    }
+    all_keys_valid = *key != kInvalidKey;
+  }
+
   norm_value_sqrt_ =
       meta_.metric_name() == "Euclidean" || meta_.metric_name() == "Manhattan";
   if (container_->get(IVF_INT8_QUANTIZED_PARAMS_SEG_ID) ||
@@ -824,6 +866,7 @@ int IVFEntity::load(const IndexStorage::Pointer &container) {
     }
   }
 
+  all_keys_valid_ = all_keys_valid;
   LOG_DEBUG(
       "Load inverted index done, docs=%u invertedListCnt=%u "
       "elementSize=%u metric=%s reformer=%s",
@@ -970,88 +1013,360 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
   auto list_meta = inverted_list_meta(inverted_list_id, meta_block);
   ivf_assert(list_meta, IndexError_ReadData);
 
-  IndexStorage::MemoryBlock data;
+  const bool row_major = meta_.major_order() == IndexMeta::MO_ROW;
+  const bool packed_rows =
+      row_major &&
+      header_.block_size == header_.block_vector_count * meta_.element_size();
+  const auto *base = inverted_->base_data();
+  const auto norm_val = this->inverted_list_normalize_value(inverted_list_id);
+  int ret;
+  if (packed_rows && base) {
+    const size_t block_vecs = header_.block_vector_count;
+    if (list_meta->id_offset > header_.total_vector_count ||
+        list_meta->vector_count >
+            header_.total_vector_count - list_meta->id_offset ||
+        block_vecs == 0 ||
+        list_meta->block_count !=
+            (list_meta->vector_count + block_vecs - 1) / block_vecs) {
+      LOG_ERROR("Invalid contiguous IVF list range or block count");
+      return IndexError_ReadData;
+    }
+    // An unlimited result heap needs no selection or additional O(n) buffer.
+    if (all_keys_valid_ &&
+        heap->limit() != std::numeric_limits<size_t>::max()) {
+      ret = search_contiguous_rows_all_valid(list_meta, base, query, norm_val,
+                                             heap, context_stats);
+    } else {
+      ret = search_contiguous_rows(list_meta, base, query, norm_val, heap,
+                                   context_stats);
+    }
+  } else if (packed_rows) {
+    ret =
+        search_scattered_rows(list_meta, query, norm_val, heap, context_stats);
+  } else if (row_major) {
+    ret = search_padded_rows(list_meta, query, norm_val, heap, context_stats);
+  } else {
+    ret = search_column_major(list_meta, query, norm_val, heap, context_stats);
+  }
+  if (ret != 0) {
+    return ret;
+  }
+  *scan_count = list_meta->vector_count;
+  return 0;
+}
+
+int IVFEntity::search_contiguous_rows_all_valid(
+    const InvertedListMeta *list_meta, const uint8_t *base, const void *query,
+    float norm_val, IndexDocumentHeap *heap,
+    IndexContext::Stats *context_stats) const {
+  // Select once for the entire list. Each instantiated scan calls its concrete
+  // BatchTopK kernel directly throughout the block and distance-batch loops.
+  using Impl = BatchTopK::Implementation;
+  switch (BatchTopK::implementation()) {
+    case Impl::kAVX512:
+      return search_contiguous_rows_all_valid_impl<
+          BatchTopKImpl<Impl::kAVX512>>(list_meta, base, query, norm_val, heap,
+                                        context_stats);
+    case Impl::kAVX2:
+      return search_contiguous_rows_all_valid_impl<BatchTopKImpl<Impl::kAVX2>>(
+          list_meta, base, query, norm_val, heap, context_stats);
+    case Impl::kSSE2:
+      return search_contiguous_rows_all_valid_impl<BatchTopKImpl<Impl::kSSE2>>(
+          list_meta, base, query, norm_val, heap, context_stats);
+    case Impl::kNEON:
+      return search_contiguous_rows_all_valid_impl<BatchTopKImpl<Impl::kNEON>>(
+          list_meta, base, query, norm_val, heap, context_stats);
+    default:
+      return search_contiguous_rows_all_valid_impl<
+          BatchTopKImpl<Impl::kScalar>>(list_meta, base, query, norm_val, heap,
+                                        context_stats);
+  }
+}
+
+template <typename TopK>
+int IVFEntity::search_contiguous_rows_all_valid_impl(
+    const InvertedListMeta *list_meta, const uint8_t *base, const void *query,
+    float norm_val, IndexDocumentHeap *heap,
+    IndexContext::Stats *context_stats) const {
   const size_t block_vecs = header_.block_vector_count;
-  std::vector<float> distances(block_vecs);
-  const size_t batch_size = kBatchBlocks;
+  const size_t batch_blocks =
+      std::max(size_t{1}, kDistanceBatchVectors / block_vecs);
+  const size_t element_size = meta_.element_size();
+  std::array<float, kDistanceBatchVectors> distances;
+  const size_t body_size = std::min(
+      static_cast<size_t>(header_.inverted_body_size), inverted_->capacity());
+  if (element_size == 0 || list_meta->offset > body_size ||
+      list_meta->vector_count >
+          (body_size - list_meta->offset) / element_size) {
+    LOG_ERROR("Invalid contiguous IVF list range, off=%zu",
+              static_cast<size_t>(list_meta->offset));
+    return IndexError_ReadData;
+  }
+  float threshold = heap->threshold();
+  bool strict_threshold = false;
+  if (heap->full() && heap->front().score() <= threshold) {
+    threshold = heap->front().score();
+    strict_threshold = true;
+  }
+  TopK topk;
+  topk.reset(std::min(heap->limit(), size_t{list_meta->vector_count}),
+             threshold, strict_threshold);
+  const auto *features = base + list_meta->offset;
+  for (size_t i = 0; i < list_meta->block_count; i += batch_blocks) {
+    const size_t blocks = std::min(batch_blocks, list_meta->block_count - i);
+    const size_t items =
+        std::min(blocks * block_vecs, list_meta->vector_count - i * block_vecs);
+    const uint32_t id_offset = list_meta->id_offset + i * block_vecs;
+    const auto *batch_features = features + i * header_.block_size;
+    for (size_t offset = 0; offset < items; offset += kDistanceBatchVectors) {
+      const size_t count = std::min(kDistanceBatchVectors, items - offset);
+      query_features_distance(query, batch_features + offset * element_size,
+                              count, distances.data());
+      topk.push_block(distances.data(), count, id_offset + offset, norm_val);
+      *(context_stats->mutable_dist_calced_count()) += count;
+    }
+  }
+  topk.finish();
+  for (size_t i = 0; i < topk.size(); ++i) {
+    const auto &candidate = topk.data()[i];
+    // Resolve only the final query results' keys through retrieve_keys().
+    heap->emplace(0, candidate.score, candidate.id);
+  }
+  return 0;
+}
+
+int IVFEntity::search_contiguous_rows(
+    const InvertedListMeta *list_meta, const uint8_t *base, const void *query,
+    float norm_val, IndexDocumentHeap *heap,
+    IndexContext::Stats *context_stats) const {
+  const size_t block_vecs = header_.block_vector_count;
+  const size_t batch_blocks =
+      std::max(size_t{1}, kDistanceBatchVectors / block_vecs);
+  const size_t element_size = meta_.element_size();
+  std::array<float, kDistanceBatchVectors> distances;
+  // Stable contiguous storage needs no per-batch read or scatter traversal.
+  const size_t body_size = std::min(
+      static_cast<size_t>(header_.inverted_body_size), inverted_->capacity());
+  if (element_size == 0 || list_meta->offset > body_size ||
+      list_meta->vector_count >
+          (body_size - list_meta->offset) / element_size) {
+    LOG_ERROR("Invalid contiguous IVF list range, off=%zu",
+              static_cast<size_t>(list_meta->offset));
+    return IndexError_ReadData;
+  }
+  const auto *features = base + list_meta->offset;
+  for (size_t i = 0; i < list_meta->block_count; i += batch_blocks) {
+    const size_t blocks = std::min(batch_blocks, list_meta->block_count - i);
+    const size_t items =
+        std::min(blocks * block_vecs, list_meta->vector_count - i * block_vecs);
+    const uint32_t id_offset = list_meta->id_offset + i * block_vecs;
+    IndexStorage::MemoryBlock keys_block;
+    const auto *keys = get_keys(id_offset, items, keys_block);
+    if (!keys) {
+      return IndexError_ReadData;
+    }
+    const auto *batch_features = features + i * header_.block_size;
+    // Keep distance batches bounded even for older, larger physical blocks.
+    for (size_t offset = 0; offset < items; offset += kDistanceBatchVectors) {
+      const size_t count = std::min(kDistanceBatchVectors, items - offset);
+      query_features_distance(query, batch_features + offset * element_size,
+                              count, distances.data());
+      for (size_t k = 0; k < count; ++k) {
+        if (keys[offset + k] != kInvalidKey) {
+          const uint32_t id = id_offset + offset + k;
+          heap->emplace(keys[offset + k], distances[k] * norm_val, id);
+        }
+      }
+      *(context_stats->mutable_dist_calced_count()) += count;
+    }
+  }
+  return 0;
+}
+
+int IVFEntity::search_scattered_rows(const InvertedListMeta *list_meta,
+                                     const void *query, float norm_val,
+                                     IndexDocumentHeap *heap,
+                                     IndexContext::Stats *context_stats) const {
+  const size_t block_vecs = header_.block_vector_count;
+  const size_t batch_blocks =
+      std::max(size_t{1}, kDistanceBatchVectors / block_vecs);
   const size_t block_size = header_.block_size;
   const size_t element_size = meta_.element_size();
   const auto distance = [this, query](const void *features, size_t count,
                                       float *out) {
     query_features_distance(query, features, count, out);
   };
-  const bool row_major = meta_.major_order() == IndexMeta::MO_ROW;
-  if (row_major) {
-    scatter_vector_.resize(element_size);
-  }
-  const auto norm_val = this->inverted_list_normalize_value(inverted_list_id);
-  for (size_t i = 0; i < list_meta->block_count; i += batch_size) {
-    const size_t blocks = std::min(batch_size, list_meta->block_count - i);
-    //! Read keys
-    size_t items = std::min(blocks * block_vecs,
-                            list_meta->vector_count - (i * block_vecs));
+  std::array<float, kDistanceBatchVectors> distances;
+  // Page-backed rows may span several independently pinned buffers.
+  scatter_vector_.resize(element_size);
+  for (size_t i = 0; i < list_meta->block_count; i += batch_blocks) {
+    const size_t blocks = std::min(batch_blocks, list_meta->block_count - i);
+    const size_t items =
+        std::min(blocks * block_vecs, list_meta->vector_count - i * block_vecs);
+    const uint32_t id_offset = list_meta->id_offset + i * block_vecs;
     IndexStorage::MemoryBlock keys_block;
-    auto keys =
-        get_keys(list_meta->id_offset + i * block_vecs, items, keys_block);
+    const auto *keys = get_keys(id_offset, items, keys_block);
     if (!keys) {
       return IndexError_ReadData;
     }
-
-    //! Read vectors after keys so scatter-page pins cover computation only.
     const size_t off = list_meta->offset + i * block_size;
     const size_t size =
         std::min(blocks * block_size,
                  static_cast<size_t>(header_.inverted_body_size - off));
     IndexStorage::Segment::ScatterBlock scatter_data;
-    if (row_major) {
-      if (inverted_->read_scatter(off, scatter_data, size) != size) {
-        LOG_ERROR("Failed to scatter-read block, off=%zu, size=%zu", off, size);
+    if (inverted_->read_scatter(off, scatter_data, size) != size) {
+      LOG_ERROR("Failed to scatter-read block, off=%zu, size=%zu", off, size);
+      return IndexError_ReadData;
+    }
+    ScatterCursor cursor(scatter_data);
+    for (size_t offset = 0; offset < items; offset += kDistanceBatchVectors) {
+      const size_t count = std::min(kDistanceBatchVectors, items - offset);
+      if (!calculate_row_major_block(
+              &cursor, distance, count, element_size, count * element_size,
+              scatter_vector_.data(), distances.data(), true)) {
+        LOG_ERROR("Invalid scatter-read IVF batch, off=%zu", off);
         return IndexError_ReadData;
       }
-    } else if (inverted_->read(off, data, size) != size) {
+      for (size_t k = 0; k < count; ++k) {
+        if (keys[offset + k] != kInvalidKey) {
+          heap->emplace(keys[offset + k], distances[k] * norm_val,
+                        id_offset + offset + k);
+        }
+      }
+      *(context_stats->mutable_dist_calced_count()) += count;
+    }
+  }
+  return 0;
+}
+
+int IVFEntity::search_padded_rows(const InvertedListMeta *list_meta,
+                                  const void *query, float norm_val,
+                                  IndexDocumentHeap *heap,
+                                  IndexContext::Stats *context_stats) const {
+  const size_t block_vecs = header_.block_vector_count;
+  const size_t batch_blocks =
+      std::max(size_t{1}, kDistanceBatchVectors / block_vecs);
+  const size_t block_size = header_.block_size;
+  const size_t element_size = meta_.element_size();
+  const auto distance = [this, query](const void *features, size_t count,
+                                      float *out) {
+    query_features_distance(query, features, count, out);
+  };
+  std::array<float, kDistanceBatchVectors> distances;
+  // Padded rows must retain physical block boundaries and skip padding.
+  scatter_vector_.resize(element_size);
+  for (size_t i = 0; i < list_meta->block_count; i += batch_blocks) {
+    const size_t blocks = std::min(batch_blocks, list_meta->block_count - i);
+    const size_t items =
+        std::min(blocks * block_vecs, list_meta->vector_count - i * block_vecs);
+    const uint32_t id_offset = list_meta->id_offset + i * block_vecs;
+    IndexStorage::MemoryBlock keys_block;
+    const auto *keys = get_keys(id_offset, items, keys_block);
+    if (!keys) {
+      return IndexError_ReadData;
+    }
+    const size_t off = list_meta->offset + i * block_size;
+    const size_t size =
+        std::min(blocks * block_size,
+                 static_cast<size_t>(header_.inverted_body_size - off));
+    IndexStorage::Segment::ScatterBlock scatter_data;
+    if (inverted_->read_scatter(off, scatter_data, size) != size) {
+      LOG_ERROR("Failed to scatter-read block, off=%zu, size=%zu", off, size);
+      return IndexError_ReadData;
+    }
+    ScatterCursor cursor(scatter_data);
+    for (size_t b = 0; b < blocks; ++b) {
+      const size_t row_offset = b * block_vecs;
+      const size_t count = std::min(block_vecs, items - row_offset);
+      const size_t byte_offset = b * block_size;
+      if (byte_offset > size || element_size == 0) {
+        return IndexError_ReadData;
+      }
+      const size_t block_bytes = std::min(block_size, size - byte_offset);
+      if (count > block_bytes / element_size) {
+        return IndexError_ReadData;
+      }
+      // Older row-major indexes can have physical blocks larger than 512.
+      for (size_t offset = 0; offset < count; offset += kDistanceBatchVectors) {
+        const size_t batch = std::min(kDistanceBatchVectors, count - offset);
+        if (!calculate_row_major_block(
+                &cursor, distance, batch, element_size, batch * element_size,
+                scatter_vector_.data(), distances.data(), true)) {
+          LOG_ERROR("Invalid padded IVF block, off=%zu", off + byte_offset);
+          return IndexError_ReadData;
+        }
+        for (size_t k = 0; k < batch; ++k) {
+          const size_t row = row_offset + offset + k;
+          if (keys[row] != kInvalidKey) {
+            heap->emplace(keys[row], distances[k] * norm_val, id_offset + row);
+          }
+        }
+        *(context_stats->mutable_dist_calced_count()) += batch;
+      }
+      if (!cursor.skip(block_bytes - count * element_size)) {
+        return IndexError_ReadData;
+      }
+    }
+  }
+  return 0;
+}
+
+int IVFEntity::search_column_major(const InvertedListMeta *list_meta,
+                                   const void *query, float norm_val,
+                                   IndexDocumentHeap *heap,
+                                   IndexContext::Stats *context_stats) const {
+  const size_t block_vecs = header_.block_vector_count;
+  const size_t batch_blocks =
+      std::max(size_t{1}, kDistanceBatchVectors / block_vecs);
+  const size_t block_size = header_.block_size;
+  const size_t element_size = meta_.element_size();
+  std::array<float, kDistanceBatchVectors> distances;
+  // Column-major kernels consume one physical matrix block at a time.
+  if (block_vecs > kDistanceBatchVectors) {
+    LOG_ERROR("Column-major IVF block exceeds distance batch capacity");
+    return IndexError_Unsupported;
+  }
+  IndexStorage::MemoryBlock data;
+  for (size_t i = 0; i < list_meta->block_count; i += batch_blocks) {
+    const size_t blocks = std::min(batch_blocks, list_meta->block_count - i);
+    const size_t items =
+        std::min(blocks * block_vecs, list_meta->vector_count - i * block_vecs);
+    const uint32_t id_offset = list_meta->id_offset + i * block_vecs;
+    IndexStorage::MemoryBlock keys_block;
+    const auto *keys = get_keys(id_offset, items, keys_block);
+    if (!keys) {
+      return IndexError_ReadData;
+    }
+    const size_t off = list_meta->offset + i * block_size;
+    const size_t size =
+        std::min(blocks * block_size,
+                 static_cast<size_t>(header_.inverted_body_size - off));
+    if (inverted_->read(off, data, size) != size) {
       LOG_ERROR("Failed to read block, off=%zu, size=%zu", off, size);
       return IndexError_ReadData;
     }
-    ScatterCursor scatter_cursor(scatter_data);
-
-    //! Compute distances for each block
+    const size_t last_block_offset = (blocks - 1) * block_size;
+    const size_t last_count = items - (blocks - 1) * block_vecs;
+    if (last_block_offset > size || element_size == 0 ||
+        last_count > (size - last_block_offset) / element_size) {
+      LOG_ERROR("Invalid column-major IVF batch, off=%zu, size=%zu", off, size);
+      return IndexError_ReadData;
+    }
+    const auto *features = static_cast<const uint8_t *>(data.data());
     for (size_t b = 0; b < blocks; ++b) {
-      const size_t vecs_count =
-          std::min(block_vecs, list_meta->vector_count - (i + b) * block_vecs);
-      auto block_keys = keys + b * block_vecs;
-      const size_t block_offset = b * block_size;
-      if (block_offset > size) {
-        LOG_ERROR("Invalid IVF block range, off=%zu, size=%zu", block_offset,
-                  size);
-        return IndexError_ReadData;
-      }
-      const size_t serialized_size = std::min(block_size, size - block_offset);
-      if (row_major) {
-        if (!calculate_row_major_block(&scatter_cursor, distance, vecs_count,
-                                       element_size, serialized_size,
-                                       scatter_vector_.data(), distances.data(),
-                                       true)) {
-          LOG_ERROR("Invalid scatter-read IVF block, off=%zu, size=%zu",
-                    off + block_offset, serialized_size);
-          return IndexError_ReadData;
-        }
-      } else {
-        const void *block_data =
-            static_cast<const char *>(data.data()) + block_offset;
-        query_features_distance(query, block_data, vecs_count,
-                                distances.data());
-      }
-      for (size_t k = 0; k < vecs_count; ++k) {
-        if (block_keys[k] != kInvalidKey) {
-          uint32_t id = list_meta->id_offset + (i + b) * block_vecs + k;
-          heap->emplace(block_keys[k], distances[k] * norm_val, id);
+      const size_t offset = b * block_vecs;
+      const size_t count = std::min(block_vecs, items - offset);
+      query_features_distance(query, features + b * block_size, count,
+                              distances.data());
+      for (size_t k = 0; k < count; ++k) {
+        if (keys[offset + k] != kInvalidKey) {
+          heap->emplace(keys[offset + k], distances[k] * norm_val,
+                        id_offset + offset + k);
         }
       }
-      *(context_stats->mutable_dist_calced_count()) += vecs_count;
+      *(context_stats->mutable_dist_calced_count()) += count;
     }
   }
-
-  *scan_count = list_meta->vector_count;
   return 0;
 }
 
@@ -1345,6 +1660,7 @@ IVFEntity::Pointer IVFEntity::clone(const IVFEntity::Pointer &entity) const {
   entity->features_ = features;
   entity->norm_value_ = this->norm_value_;
   entity->norm_value_sqrt_ = this->norm_value_sqrt_;
+  entity->all_keys_valid_ = this->all_keys_valid_;
 
   return entity;
 }

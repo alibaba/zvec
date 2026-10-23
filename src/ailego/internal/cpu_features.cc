@@ -17,6 +17,7 @@
 #include <zvec/ailego/internal/platform.h>
 
 #if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
+#include <immintrin.h>
 #include <intrin.h>
 #elif defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
@@ -45,23 +46,39 @@ namespace internal {
 
 CpuFeatures::CpuFlags CpuFeatures::flags_;
 
+CpuFeatures::CpuFlags::CpuFlags()
+    : L1_ECX(0),
+      L1_EDX(0),
+      L7_EBX(0),
+      L7_ECX(0),
+      L7_EDX(0),
+      L80000001_ECX(0),
+      XCR0(0) {
 #if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
-CpuFeatures::CpuFlags::CpuFlags()
-    : L1_ECX(0), L1_EDX(0), L7_EBX(0), L7_ECX(0), L7_EDX(0) {
-  int l1[4] = {0, 0, 0, 0};
-  int l7[4] = {0, 0, 0, 0};
-
-  __cpuidex(l1, 1, 0);
-  __cpuidex(l7, 7, 0);
-  L1_ECX = l1[2];
-  L1_EDX = l1[3];
-  L7_EBX = l7[1];
-  L7_ECX = l7[2];
-  L7_EDX = l7[3];
-}
+  int registers[4] = {0, 0, 0, 0};
+  __cpuidex(registers, 0, 0);
+  const uint32_t max_leaf = static_cast<uint32_t>(registers[0]);
+  if (max_leaf >= 1) {
+    __cpuidex(registers, 1, 0);
+    L1_ECX = registers[2];
+    L1_EDX = registers[3];
+  }
+  if (max_leaf >= 7) {
+    __cpuidex(registers, 7, 0);
+    L7_EBX = registers[1];
+    L7_ECX = registers[2];
+    L7_EDX = registers[3];
+  }
+  __cpuidex(registers, static_cast<int>(0x80000000u), 0);
+  if (static_cast<uint32_t>(registers[0]) >= 0x80000001u) {
+    __cpuidex(registers, static_cast<int>(0x80000001u), 0);
+    L80000001_ECX = registers[2];
+  }
+  // XGETBV faults unless both CPU support and OS enablement are present.
+  if ((L1_ECX & (3u << 26)) == (3u << 26)) {
+    XCR0 = _xgetbv(0);
+  }
 #elif defined(__x86_64__) || defined(__i386__)
-CpuFeatures::CpuFlags::CpuFlags()
-    : L1_ECX(0), L1_EDX(0), L7_EBX(0), L7_ECX(0), L7_EDX(0) {
   uint32_t eax, ebx, ecx, edx;
 
   if (__get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
@@ -74,11 +91,16 @@ CpuFeatures::CpuFlags::CpuFlags()
     L7_ECX = ecx;
     L7_EDX = edx;
   }
-}
-#else
-CpuFeatures::CpuFlags::CpuFlags()
-    : L1_ECX(0), L1_EDX(0), L7_EBX(0), L7_ECX(0), L7_EDX(0) {}
+  if (__get_cpuid(0x80000001u, &eax, &ebx, &ecx, &edx)) {
+    L80000001_ECX = ecx;
+  }
+  if ((L1_ECX & (3u << 26)) == (3u << 26)) {
+    // Inline assembly keeps this probe compatible with baseline x86 builds.
+    __asm__ volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
+    XCR0 = (static_cast<uint64_t>(edx) << 32) | eax;
+  }
 #endif
+}
 
 //! 16-bit FP conversions
 bool CpuFeatures::F16C() {
@@ -253,6 +275,22 @@ bool CpuFeatures::POPCNT() {
 //! XSAVE/XRSTOR/XSETBV/XGETBV instructions
 bool CpuFeatures::XSAVE() {
   return !!(flags_.L1_ECX & (1u << 26));
+}
+
+bool CpuFeatures::OSXSAVE() {
+  return !!(flags_.L1_ECX & (1u << 27));
+}
+
+bool CpuFeatures::AVX_STATE() {
+  return XSAVE() && OSXSAVE() && (flags_.XCR0 & 0x6u) == 0x6u;
+}
+
+bool CpuFeatures::AVX512_STATE() {
+  return XSAVE() && OSXSAVE() && (flags_.XCR0 & 0xe6u) == 0xe6u;
+}
+
+bool CpuFeatures::LZCNT() {
+  return !!(flags_.L80000001_ECX & (1u << 5));
 }
 
 //! Fused multiply-add

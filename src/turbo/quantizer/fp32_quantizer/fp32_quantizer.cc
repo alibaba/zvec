@@ -48,6 +48,7 @@ int Fp32Quantizer::init(const IndexMeta &meta,
   }
   dp_query_func_ = std::move(kernels.dist);
   dp_query_batch_func_ = std::move(kernels.batch);
+  dp_query_batch_strided_func_ = std::move(kernels.batch_strided);
 
   return 0;
 }
@@ -124,7 +125,8 @@ DistanceImpl Fp32Quantizer::distance(const void *query,
   std::string quantized_query(static_cast<const char *>(query),
                               qmeta.element_size());
   return DistanceImpl(dp_query_func_, dp_query_batch_func_,
-                      std::move(quantized_query), original_dim_);
+                      std::move(quantized_query), original_dim_,
+                      dp_query_batch_strided_func_);
 }
 
 void Fp32Quantizer::quantize_one(const void *input, void *output) const {
@@ -164,6 +166,22 @@ void Fp32Quantizer::calc_distance_dp_query_batch(const void *const *dp_list,
   for (int i = 0; i < dp_num; ++i) {
     dist_list[i] = calc_distance_dp_query(dp_list[i], query);
   }
+}
+
+void Fp32Quantizer::calc_distance_dp_query_batch_strided(
+    const void *base, size_t stride_bytes, int dp_num, const void *query,
+    float *dist_list) const {
+  if (dp_num <= 0) {
+    return;
+  }
+  if (dp_query_batch_strided_func_) {
+    dp_query_batch_strided_func_(base, stride_bytes, query,
+                                 static_cast<size_t>(dp_num), original_dim_,
+                                 dist_list, nullptr);
+    return;
+  }
+  Quantizer::calc_distance_dp_query_batch_strided(base, stride_bytes, dp_num,
+                                                  query, dist_list);
 }
 
 float Fp32Quantizer::calc_distance_dp_query_unquantized(

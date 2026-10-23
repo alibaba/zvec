@@ -260,6 +260,21 @@ class FlatStreamerEntity {
   FlatStreamerEntity &operator=(const FlatStreamerEntity &) = delete;
 
  private:
+  static constexpr size_t kDistanceBatchVectors = 512;
+
+  int search_rows_all_valid(const void *query, uint32_t *scan_count,
+                            IndexDocumentHeap *heap,
+                            IndexContext::Stats *context_stats) const;
+
+  template <typename TopK>
+  int search_rows_all_valid_impl(const void *query, uint32_t *scan_count,
+                                 IndexDocumentHeap *heap,
+                                 IndexContext::Stats *context_stats) const;
+
+  int search_blocks(const void *query, const IndexFilter &filter,
+                    uint32_t *scan_count, IndexDocumentHeap *heap,
+                    IndexContext::Stats *context_stats) const;
+
   /*! Iterator of all the linear list
    */
   class Iterator : public IndexProvider::Iterator {
@@ -340,8 +355,8 @@ class FlatStreamerEntity {
   //! Load linear meta information from storage
   int load_linear_meta(IndexStorage::Pointer storage);
 
-  //! Load keys to keys map
-  int load_segment_keys_to_map(BlockLocation block);
+  //! Validate row keys/deletions and optionally populate the key map.
+  int load_segment_keys(BlockLocation block);
 
   //! Load keys to keys map
   int load_segment_keys_to_vector();
@@ -495,6 +510,9 @@ class FlatStreamerEntity {
   IndexMetric::DistanceBatchQueryPreprocessFunc batch_query_preprocess_{};
   size_t extra_values_size_{0};
   mutable std::vector<IndexStorage::Segment::Pointer> segments_{};
+  // Shared with clones of this storage generation. Invalid slots or internal
+  // deletions disable the key-free scan until the next load validates all rows.
+  std::shared_ptr<std::atomic<bool>> all_keys_valid_{};
   IndexStreamer::Stats &stats_;
   mutable std::shared_ptr<ailego::SharedMutex> key_info_map_lock_{};
   std::unordered_map<uint64_t, VectorLocation> key_info_map_{};

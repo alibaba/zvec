@@ -1,6 +1,47 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 include(CheckCXXSourceCompiles)
+include(CMakePushCheckState)
+
+set(ZVEC_TURBO_ACCELERATE_LIBS "")
+set(ZVEC_TURBO_HAVE_ACCELERATE OFF CACHE INTERNAL
+    "Whether the target SDK provides Accelerate's new CBLAS interface" FORCE)
+# Recheck after SDK or architecture changes in an existing build directory.
+unset(ZVEC_ACCELERATE_FRAMEWORK CACHE)
+unset(ZVEC_ACCELERATE_FRAMEWORK)
+unset(ZVEC_TURBO_ACCELERATE_API_SUPPORTED CACHE)
+unset(ZVEC_TURBO_ACCELERATE_API_SUPPORTED)
+if(APPLE AND CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND NOT IOS)
+  find_library(ZVEC_ACCELERATE_FRAMEWORK Accelerate NO_CACHE)
+  if(ZVEC_ACCELERATE_FRAMEWORK)
+    # Check the target SDK and linker, not the build host's OS or CPU. New SDKs
+    # can still target macOS 11; runtime dispatch guards the macOS 13.3 API.
+    block(SCOPE_FOR VARIABLES)
+      cmake_reset_check_state()
+      set(CMAKE_TRY_COMPILE_TARGET_TYPE EXECUTABLE)
+      set(CMAKE_REQUIRED_LIBRARIES ${ZVEC_ACCELERATE_FRAMEWORK})
+      check_cxx_source_compiles([=[
+        #define ACCELERATE_NEW_LAPACK
+        #include <Accelerate/Accelerate.h>
+        int main() {
+          const __LAPACK_int n = 1;
+          float a = 1.0f, x = 1.0f, y = 0.0f;
+          if (__builtin_available(macOS 13.3, *)) {
+            cblas_sgemv(CblasRowMajor, CblasNoTrans, n, n, -1.0f,
+                        &a, n, &x, 1, 0.0f, &y, 1);
+          }
+          return 0;
+        }
+      ]=] ZVEC_TURBO_ACCELERATE_API_SUPPORTED)
+    endblock()
+    if(ZVEC_TURBO_ACCELERATE_API_SUPPORTED)
+      set(ZVEC_TURBO_HAVE_ACCELERATE ON CACHE INTERNAL
+          "Whether the target SDK provides Accelerate's new CBLAS interface" FORCE)
+      list(APPEND ZVEC_TURBO_ACCELERATE_LIBS ${ZVEC_ACCELERATE_FRAMEWORK})
+    endif()
+  endif()
+endif()
+message(STATUS "turbo: Accelerate strided FP32 kernels: ${ZVEC_TURBO_HAVE_ACCELERATE}")
 
 # HOST_ARCH is only populated by the shared AUTO_DETECT_ARCH path. Resolve the
 # CMake target locally as well so Turbo's ARM dispatch also works for Android
@@ -142,6 +183,9 @@ if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
 endif()
 
 set(ZVEC_TURBO_DEFS)
+if(ZVEC_TURBO_HAVE_ACCELERATE)
+    list(APPEND ZVEC_TURBO_DEFS ZVEC_HAVE_ACCELERATE=1)
+endif()
 if(ZVEC_TURBO_ARM_FP16_SUPPORTED)
     list(APPEND ZVEC_TURBO_DEFS ZVEC_HAVE_ARM_FP16_KERNEL=1)
 endif()
@@ -167,7 +211,7 @@ cc_library(
     ${ZVEC_TURBO_LIBRARY_OPTIONS}
     SRCS ${ALL_SRCS}
     DEFS ${ZVEC_TURBO_DEFS}
-    LIBS zvec_ailego ${ZVEC_TURBO_RABITQ_LIBS}
+    LIBS zvec_ailego ${ZVEC_TURBO_RABITQ_LIBS} ${ZVEC_TURBO_ACCELERATE_LIBS}
     INCS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/distance ${PROJECT_ROOT_DIR}/src/include
 )
 
