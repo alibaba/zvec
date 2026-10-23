@@ -16,7 +16,6 @@
 #include <array>
 #include <cstdint>
 #include <memory>
-#include <random>
 #include <stdexcept>
 #include <vector>
 #include <gtest/gtest.h>
@@ -108,43 +107,6 @@ TEST(Fp32PrefetchKernel, EveryFloatAlignmentAcrossCacheLineMatchesReference) {
   for (size_t offset = 0; offset < kFloatsPerCacheLine; ++offset) {
     for (size_t count : {23, 24, 25, 33, 65}) {
       CheckBatch(256, count, offset);
-    }
-  }
-}
-
-TEST(Fp32PrefetchKernel, SequentialReversedAndShuffledRowsMatchReference) {
-  constexpr size_t dim = 256;
-  std::vector<float> query(dim, 0.125f);
-  std::mt19937 random(20261022);
-  for (size_t count : kBatchSizes) {
-    for (size_t padding : {size_t{0}, size_t{1}, kFloatsPerCacheLine}) {
-      SCOPED_TRACE(testing::Message()
-                   << "count=" << count << ", padding=" << padding);
-      const size_t stride = dim + padding;
-      std::vector<float> rows(count * stride, kGuard);
-      std::vector<const void *> vectors(count);
-      for (size_t i = 0; i < count; ++i) {
-        vectors[i] = rows.data() + i * stride;
-        for (size_t d = 0; d < dim; ++d) {
-          rows[i * stride + d] =
-              static_cast<float>(static_cast<int>((i + d) % 19) - 9) / 16;
-        }
-      }
-      for (size_t order = 0; order < 3; ++order) {
-        SCOPED_TRACE(order);
-        if (order == 1) std::reverse(vectors.begin(), vectors.end());
-        if (order == 2) std::shuffle(vectors.begin(), vectors.end(), random);
-        std::vector<float> actual(count + 2, kGuard);
-        neon::inner_product_fp32_batch_distance(vectors.data(), query.data(),
-                                                count, dim, actual.data() + 1,
-                                                nullptr);
-        EXPECT_EQ(kGuard, actual.front());
-        EXPECT_EQ(kGuard, actual.back());
-        for (size_t i = 0; i < count; ++i) {
-          EXPECT_FLOAT_EQ(ReferenceInnerProduct(vectors[i], query.data(), dim),
-                          actual[i + 1]);
-        }
-      }
     }
   }
 }

@@ -79,30 +79,6 @@ bool supports_batch_prefetch(size_t dim) noexcept {
   }();
   return supported;
 }
-
-// Sequential scans already benefit from hardware prefetch. Recognize tightly
-// packed rows and rows with a small metadata/alignment tail, in either order.
-// Use integer addresses: the pointer batch may refer to unrelated allocations.
-bool is_sequential_batch(const void *const *vectors, size_t n,
-                         size_t dim) noexcept {
-  const uintptr_t first = reinterpret_cast<uintptr_t>(vectors[0]);
-  const uintptr_t second = reinterpret_cast<uintptr_t>(vectors[1]);
-  const uintptr_t spacing = first < second ? second - first : first - second;
-  const size_t bytes = dim * sizeof(float);
-  if (spacing < bytes || spacing > bytes + kPrefetchCacheLine) {
-    return false;
-  }
-  const uintptr_t step = second - first;
-  uintptr_t previous = second;
-  for (size_t i = 2; i < n; ++i) {
-    const uintptr_t current = reinterpret_cast<uintptr_t>(vectors[i]);
-    if (current - previous != step) {
-      return false;
-    }
-    previous = current;
-  }
-  return true;
-}
 #endif
 
 // Reuse each query load across several vectors. Independent FMA chains hide
@@ -294,7 +270,7 @@ void inner_product_fp32_batch_distance(const void *const *vectors,
   }
 
 #if defined(__APPLE__)
-  if (supports_batch_prefetch(dim) && !is_sequential_batch(vectors, n, dim)) {
+  if (supports_batch_prefetch(dim)) {
     inner_product_batch_prefetched(vectors, query, n, dim, distances);
     return;
   }
