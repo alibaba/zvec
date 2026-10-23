@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <map>
 #include <zvec/ailego/container/heap.h>
 #include "ivf_entity.h"
 #include "ivf_utility.h"
@@ -55,6 +56,46 @@ class IVFSearcherContext : public IndexSearcher::Context {
 
   inline IndexDocumentHeap *result_heap() {
     return &result_heap_;
+  }
+
+  // Grouped searches retain only group_topk records per encountered group.
+  // Candidates arrive with public keys and final Turbo distances during scan.
+  void set_group_params(uint32_t count, uint32_t topk) override {
+    group_count_ = count;
+    group_topk_ = topk;
+    group_heaps_.clear();
+    group_results_.clear();
+  }
+
+  const IndexGroupDocumentList &group_result() const override {
+    return group_result(0);
+  }
+  const IndexGroupDocumentList &group_result(size_t idx) const override {
+    static const IndexGroupDocumentList empty;
+    return idx < group_results_.size() ? group_results_[idx] : empty;
+  }
+  IndexGroupDocumentList *mutable_group_result() override {
+    return mutable_group_result(0);
+  }
+  IndexGroupDocumentList *mutable_group_result(size_t idx) override {
+    return idx < group_results_.size() ? &group_results_[idx] : nullptr;
+  }
+
+  IVFEntity::CandidateVisitor candidate_visitor() {
+    group_heaps_.clear();
+    if (!group_count_ || !group_topk_ || !group_by().is_valid()) return {};
+    return {[this](uint64_t key, float score) {
+              if (!(score <= threshold())) return;
+              const auto group = group_by()(key);
+              auto entry = group_heaps_.try_emplace(group, group_topk_);
+              entry.first->second.emplace(key, score);
+            },
+            [this](uint64_t key) {
+              auto entry = group_heaps_.find(group_by()(key));
+              return entry != group_heaps_.end() && entry->second.full()
+                         ? std::min(threshold(), entry->second.begin()->score())
+                         : threshold();
+            }};
   }
 
   //! Update the parameters of context
@@ -150,6 +191,8 @@ class IVFSearcherContext : public IndexSearcher::Context {
   //! Reset all the query results
   void reset_results(size_t qnum) {
     results_.resize(qnum);
+    group_results_.assign(qnum, {});
+    group_heaps_.clear();
     stats_vec_.resize(qnum);
     for (size_t i = 0; i < qnum; ++i) {
       results_[i].clear();
@@ -190,6 +233,25 @@ class IVFSearcherContext : public IndexSearcher::Context {
   }
 
   void topk_to_result(uint32_t idx) {
+    if (group_count_ && group_topk_ && group_by().is_valid()) {
+      auto &groups = group_results_[idx];
+      for (auto &entry : group_heaps_) {
+        entry.second.sort();
+        if (!entry.second.empty()) {
+          groups.emplace_back();
+          groups.back().set_group_id(entry.first);
+          for (const auto &doc : entry.second)
+            groups.back().mutable_docs()->emplace_back(doc.key(), doc.score());
+        }
+      }
+      std::sort(groups.begin(), groups.end(), [](const auto &a, const auto &b) {
+        if (a.docs()[0].score() != b.docs()[0].score())
+          return a.docs()[0].score() < b.docs()[0].score();
+        return a.group_id() < b.group_id();
+      });
+      if (groups.size() > group_count_) groups.resize(group_count_);
+      return;
+    }
     if (ailego_unlikely(result_heap_.size() == 0)) {
       return;
     }
@@ -224,6 +286,10 @@ class IVFSearcherContext : public IndexSearcher::Context {
   IVFEntity::Pointer entity_{};
   IndexSearcher::Context::Pointer centroid_searcher_ctx_{};
   IndexDocumentHeap result_heap_;
+  uint32_t group_count_{0};
+  uint32_t group_topk_{0};
+  std::map<std::string, IndexDocumentHeap> group_heaps_;
+  std::vector<IndexGroupDocumentList> group_results_;
   std::vector<IndexDocumentList> results_{};
   std::vector<Stats> stats_vec_{};
 

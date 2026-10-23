@@ -1330,6 +1330,9 @@ zvec_index_params_t *zvec_index_params_create(zvec_index_type_t index_type) {
                   zvec::core_interface::kDefaultHnswEfConstruction,  // ef_construction
                   zvec::QuantizeType::UNDEFINED);
           break;
+        case ZVEC_INDEX_TYPE_HNSW_RABITQ:
+          cpp_params = new zvec::HnswRabitqIndexParams(zvec::MetricType::L2);
+          break;
         case ZVEC_INDEX_TYPE_IVF:
           cpp_params =
               new zvec::IVFIndexParams(zvec::MetricType::L2,  // metric_type
@@ -1863,52 +1866,103 @@ zvec_error_code_t zvec_index_params_get_ivf_params(const zvec_index_params_t *pa
   return ZVEC_OK;
 }
 
+// Shared Turbo RaBitQ settings for the ordinary HNSW and IVF indexes.
+zvec_error_code_t zvec_index_params_set_rabitq_quantizer_params(
+    zvec_index_params_t *params, int total_bits, int num_clusters,
+    int sample_count, int n_iters) {
+  auto *p = dynamic_cast<zvec::VectorIndexParams *>(
+      reinterpret_cast<zvec::IndexParams *>(params));
+  if (!p || (p->type() != zvec::IndexType::HNSW &&
+             p->type() != zvec::IndexType::IVF &&
+             p->type() != zvec::IndexType::DISKANN) ||
+      p->quantize_type() != zvec::QuantizeType::RABITQ ||
+      total_bits < 1 || total_bits > 9 || num_clusters <= 0 ||
+      sample_count < 0 || n_iters <= 0) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+        "Expected HNSW/IVF/DISKANN with RABITQ, total_bits in [1, 9], positive num_clusters/n_iters, nonnegative sample_count");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  p->set_quantizer_param(zvec::QuantizerParam(p->enable_rotate(), total_bits,
+                                            num_clusters, sample_count, n_iters));
+  if (auto *ivf = dynamic_cast<zvec::IVFIndexParams *>(p)) {
+    ivf->set_total_bits(total_bits);
+    ivf->set_sample_count(sample_count);
+  }
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_index_params_get_rabitq_quantizer_params(
+    const zvec_index_params_t *params, int *total_bits, int *num_clusters,
+    int *sample_count, int *n_iters) {
+  const auto *p = dynamic_cast<const zvec::VectorIndexParams *>(
+      reinterpret_cast<const zvec::IndexParams *>(params));
+  if (!p || (p->type() != zvec::IndexType::HNSW &&
+             p->type() != zvec::IndexType::IVF &&
+             p->type() != zvec::IndexType::DISKANN) ||
+      p->quantize_type() != zvec::QuantizeType::RABITQ) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Expected HNSW/IVF/DISKANN with RABITQ");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  const auto &q = p->quantizer_param();
+  const auto *ivf = dynamic_cast<const zvec::IVFIndexParams *>(p);
+  if (total_bits) *total_bits = ivf ? ivf->total_bits() : q.total_bits();
+  if (sample_count) *sample_count = ivf ? ivf->sample_count() : q.sample_count();
+  if (num_clusters) *num_clusters = q.num_clusters();
+  if (n_iters) *n_iters = q.n_iters();
+  return ZVEC_OK;
+}
+
 zvec_error_code_t zvec_index_params_set_ivf_rabitq_params(
     zvec_index_params_t *params, int nlist, int total_bits, int sample_count) {
-  if (!params) {
+  if (!params || nlist <= 0 || total_bits < 1 || total_bits > 9 ||
+      sample_count < 0) {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Invalid params or not IVF_RABITQ index type");
+                   "RaBitQ requires non-null params, nlist > 0, total_bits in "
+                   "[1, 9], and sample_count >= 0");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *cpp_params = reinterpret_cast<zvec::IndexParams *>(params);
-  auto *ivf_rabitq_params =
-      dynamic_cast<zvec::IvfRabitqIndexParams *>(cpp_params);
-  if (!ivf_rabitq_params) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Invalid params or not IVF_RABITQ index type");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
+  if (auto *legacy = dynamic_cast<zvec::IvfRabitqIndexParams *>(cpp_params)) {
+    legacy->set_nlist(nlist);
+    legacy->set_total_bits(total_bits);
+    legacy->set_sample_count(sample_count);
+    return ZVEC_OK;
   }
-  ivf_rabitq_params->set_nlist(nlist);
-  ivf_rabitq_params->set_total_bits(total_bits);
-  ivf_rabitq_params->set_sample_count(sample_count);
-  return ZVEC_OK;
+  auto *ivf = dynamic_cast<zvec::IVFIndexParams *>(cpp_params);
+  if (ivf && ivf->quantize_type() == zvec::QuantizeType::RABITQ) {
+    ivf->set_n_list(nlist);
+    ivf->set_total_bits(total_bits);
+    ivf->set_sample_count(sample_count);
+    return ZVEC_OK;
+  }
+  SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                 "Expected IVF_RABITQ or IVF with RABITQ quantization");
+  return ZVEC_ERROR_INVALID_ARGUMENT;
 }
 
 zvec_error_code_t zvec_index_params_get_ivf_rabitq_params(
     const zvec_index_params_t *params, int *out_nlist, int *out_total_bits,
     int *out_sample_count) {
-  if (!params) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Invalid params or not IVF_RABITQ index type");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
   auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
-  auto *ivf_rabitq_params =
-      dynamic_cast<const zvec::IvfRabitqIndexParams *>(cpp_params);
-  if (!ivf_rabitq_params) {
+  int nlist, total_bits, sample_count;
+  if (auto *legacy =
+          dynamic_cast<const zvec::IvfRabitqIndexParams *>(cpp_params)) {
+    nlist = legacy->nlist();
+    total_bits = legacy->total_bits();
+    sample_count = legacy->sample_count();
+  } else if (auto *ivf = dynamic_cast<const zvec::IVFIndexParams *>(cpp_params);
+             ivf && ivf->quantize_type() == zvec::QuantizeType::RABITQ) {
+    nlist = ivf->n_list();
+    total_bits = ivf->total_bits();
+    sample_count = ivf->sample_count();
+  } else {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Invalid params or not IVF_RABITQ index type");
+                   "Expected IVF_RABITQ or IVF with RABITQ quantization");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-  if (out_nlist) {
-    *out_nlist = ivf_rabitq_params->nlist();
-  }
-  if (out_total_bits) {
-    *out_total_bits = ivf_rabitq_params->total_bits();
-  }
-  if (out_sample_count) {
-    *out_sample_count = ivf_rabitq_params->sample_count();
-  }
+  if (out_nlist) *out_nlist = nlist;
+  if (out_total_bits) *out_total_bits = total_bits;
+  if (out_sample_count) *out_sample_count = sample_count;
   return ZVEC_OK;
 }
 

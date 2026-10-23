@@ -27,6 +27,7 @@
 #include <zvec/core/framework/index_framework.h>
 #include "diskann_builder.h"
 #include "diskann_file_reader.h"
+#include "diskann_quantizer.h"
 #include "diskann_util.h"
 
 namespace zvec::core {
@@ -102,7 +103,7 @@ void ExpectLegacyPqChunkWidths(IndexMeta::DataType data_type) {
 
   IndexMeta meta(data_type, kDimension);
   meta.set_metric("SquaredEuclidean", 0, ailego::Params());
-  auto quantizer = DiskAnnUtil::create_quantizer_from_meta_buffer(
+  auto quantizer = DiskAnnQuantizer::create_quantizer_from_meta_buffer(
       payload, meta, kChunkCount, true);
   ASSERT_NE(quantizer, nullptr);
   ASSERT_EQ(quantizer->quantized_datapoint_vector_length(), kChunkCount);

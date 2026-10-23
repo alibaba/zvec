@@ -211,6 +211,7 @@
     zvec_index_params_get_invert_params;
     zvec_index_params_get_ivf_params;
     zvec_index_params_get_ivf_rabitq_params;
+    zvec_index_params_get_rabitq_quantizer_params;
     zvec_index_params_get_metric_type;
     zvec_index_params_get_quantize_type;
     zvec_index_params_get_quantizer_enable_rotate;
@@ -223,6 +224,7 @@
     zvec_index_params_set_invert_params;
     zvec_index_params_set_ivf_params;
     zvec_index_params_set_ivf_rabitq_params;
+    zvec_index_params_set_rabitq_quantizer_params;
     zvec_index_params_set_metric_type;
     zvec_index_params_set_quantize_type;
     zvec_index_params_set_quantizer_enable_rotate;

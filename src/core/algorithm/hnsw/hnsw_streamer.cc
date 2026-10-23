@@ -226,8 +226,22 @@ int HnswStreamer::init(
     return this->init(imeta, params);
   }
 
+  if (quantizer->requires_original_vectors() && provider_ &&
+      (provider_meta_.data_type() != IndexMeta::DT_FP32 ||
+       provider_meta_.dimension() != static_cast<uint32_t>(quantizer->dim()) ||
+       provider_meta_.element_size() !=
+           static_cast<size_t>(quantizer->dim()) * sizeof(float))) {
+    LOG_ERROR("Invalid original-vector provider for quantizer");
+    return IndexError_InvalidArgument;
+  }
+
   quantizer_ = quantizer;
   int ret = this->init(imeta, params);
+  if (ret == 0 && quantizer->requires_original_vectors() &&
+      use_external_vector_) {
+    LOG_ERROR("This quantizer requires in-index vector storage");
+    ret = IndexError_Unsupported;
+  }
   if (ret != 0) {
     quantizer_.reset();
   }
@@ -308,6 +322,70 @@ int HnswStreamer::setup_entity() {
   return ret;
 }
 
+int HnswStreamer::open_quantizer(const IndexStorage::Pointer &storage,
+                                 bool create) {
+  if (!quantizer_) return 0;
+  // Train once from the original provider before storing any encoded records.
+  // Reopen always restores the saved model, even when a provider is attached.
+  if (create && quantizer_->requires_original_vectors() &&
+      quantizer_->require_train() && provider_ && provider_->count() != 0) {
+    const int ret = quantizer_->train(provider_);
+    if (ret != 0) return ret;
+  }
+  std::string state;
+  int ret = quantizer_->serialize(&state);
+  if (ret != 0 || state.empty()) return ret;
+  const std::string segment_id = "hnsw.quantizer";
+  if (create) {
+    ret = storage->append(segment_id, state.size());
+    if (ret != 0) return ret;
+    auto segment = storage->get(segment_id);
+    if (!segment ||
+        segment->write(0, state.data(), state.size()) != state.size())
+      return IndexError_WriteData;
+    segment->resize(state.size());
+    segment->update_data_crc(
+        ailego::Crc32c::Hash(state.data(), state.size(), 0));
+    return 0;
+  }
+  auto segment = storage->get(segment_id);
+  // Never continue with a new random rotation if persisted state is missing.
+  if (!segment) return IndexError_InvalidFormat;
+  IndexStorage::MemoryBlock block;
+  const size_t size = segment->data_size();
+  if (segment->read(0, block, size) != size) return IndexError_ReadData;
+  if (ailego::Crc32c::Hash(block.data(), size, 0) != segment->data_crc())
+    return IndexError_InvalidChecksum;
+  return quantizer_->deserialize(block.data(), size);
+}
+
+int HnswStreamer::check_params(const void *query, const IndexQueryMeta &qmeta,
+                               bool search) const {
+  if (!query) return IndexError_InvalidArgument;
+  if (quantizer_ && quantizer_->requires_original_vectors() &&
+      quantizer_->require_train())
+    return IndexError_NoReady;
+  if (!search && quantizer_ && quantizer_->requires_original_vectors() &&
+      !provider_) {
+    LOG_ERROR(
+        "This quantizer requires an original-vector provider for graph "
+        "construction");
+    return IndexError_Unsupported;
+  }
+  if (search && quantizer_) {
+    const auto expected = quantizer_->quantized_query_meta();
+    if (qmeta.dimension() != expected.dimension() ||
+        qmeta.data_type() != expected.data_type() ||
+        qmeta.element_size() != expected.element_size())
+      return IndexError_Mismatch;
+  } else if (qmeta.dimension() != meta_.dimension() ||
+             qmeta.data_type() != meta_.data_type() ||
+             qmeta.element_size() != meta_.element_size()) {
+    return IndexError_Mismatch;
+  }
+  return 0;
+}
+
 int HnswStreamer::open(IndexStorage::Pointer stg) {
   LOG_INFO("HnswStreamer open");
 
@@ -338,13 +416,16 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
     return ret;
   }
 
-  ret = entity_->open(std::move(stg), max_index_size_, check_crc_enabled_);
+  ret = entity_->open(stg, max_index_size_, check_crc_enabled_);
   if (ret != 0) {
     return ret;
   }
   IndexMeta index_meta;
   ret = entity_->get_index_meta(&index_meta);
-  if (ret == IndexError_NoExist) {
+  const bool new_index = ret == IndexError_NoExist;
+  if (new_index) {
+    ret = open_quantizer(stg, true);
+    if (ret != 0) return ret;
     // Set IndexMeta for the new index
     ret = entity_->set_index_meta(meta_);
     if (ret != 0) {
@@ -379,6 +460,11 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
                           index_meta.converter_revision(),
                           index_meta.converter_params());
     }
+  }
+
+  if (!new_index) {
+    ret = open_quantizer(stg, false);
+    if (ret != 0) return ret;
   }
 
   auto valid_vector_layout = [](size_t vector_size, size_t extra_values_size) {
@@ -623,6 +709,20 @@ int HnswStreamer::dump(const IndexDumper::Pointer &dumper) {
     LOG_ERROR("Failed to serialize meta into dumper.");
     return ret;
   }
+  if (quantizer_) {
+    std::string state;
+    ret = quantizer_->serialize(&state);
+    if (ret != 0) return ret;
+    if (!state.empty()) {
+      const size_t data_size = state.size();
+      const uint32_t crc = ailego::Crc32c::Hash(state.data(), data_size, 0);
+      state.resize((data_size + 31u) & ~size_t{31u});
+      if (dumper->write(state.data(), state.size()) != state.size() ||
+          dumper->append("hnsw.quantizer", data_size, state.size() - data_size,
+                         crc) != 0)
+        return IndexError_WriteData;
+    }
+  }
   return entity_->dump(dumper);
 }
 
@@ -715,6 +815,15 @@ void HnswStreamer::bind_search_dist_space(HnswContext *ctx) const {
       metric_ ? metric_->extra_values_size_per_vector() : 0;
   ctx->bind_dist_space(search_distance_, search_batch_distance_, nullptr,
                        meta_.element_size(), extra_values_size);
+  if (quantizer_ && quantizer_->supports_distance_refinement()) {
+    ctx->dist_calculator().set_estimate_distance(
+        [quantizer = quantizer_](const void *dp, const void *q, float *score,
+                                 float *lower) {
+          const auto estimate = quantizer->estimate_distance_dp_query(dp, q);
+          *score = estimate.distance;
+          *lower = estimate.lower_bound;
+        });
+  }
 }
 
 //! Add a vector with id into index
@@ -931,7 +1040,7 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                               uint32_t count,
                               IndexStreamer::Context::Pointer &context) const {
-  int ret = check_params(query, qmeta);
+  int ret = check_params(query, qmeta, true);
   if (ailego_unlikely(ret != 0)) {
     return ret;
   }
@@ -982,7 +1091,7 @@ int HnswStreamer::search_candidates_impl(
     std::vector<float> *scores) const {
   keys.clear();
   if (scores) scores->clear();
-  int ret = check_params(query, qmeta);
+  int ret = check_params(query, qmeta, true);
   if (ailego_unlikely(ret != 0)) {
     return ret;
   }
@@ -1057,7 +1166,7 @@ int HnswStreamer::search_bf_impl(
 int HnswStreamer::search_bf_impl(
     const void *query, const IndexQueryMeta &qmeta, uint32_t count,
     IndexStreamer::Context::Pointer &context) const {
-  int ret = check_params(query, qmeta);
+  int ret = check_params(query, qmeta, true);
   if (ailego_unlikely(ret != 0)) {
     return ret;
   }
@@ -1146,7 +1255,7 @@ int HnswStreamer::search_bf_by_p_keys_impl(
     const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
     const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
-  int ret = check_params(query, qmeta);
+  int ret = check_params(query, qmeta, true);
   if (ailego_unlikely(ret != 0)) {
     return ret;
   }

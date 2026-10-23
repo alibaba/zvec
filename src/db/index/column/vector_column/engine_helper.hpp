@@ -527,8 +527,18 @@ class ProximaEngineHelper {
     if (auto quantize_type =
             convert_to_engine_quantize_type(db_index_params->quantize_type());
         quantize_type.has_value()) {
-      index_param_builder->with_quantizer_param(
-          core_interface::QuantizerParam::Create(quantize_type.value()));
+      auto quantizer =
+          core_interface::QuantizerParam::Create(quantize_type.value());
+      if (auto rabitq =
+              std::dynamic_pointer_cast<core_interface::RabitqQuantizerParam>(
+                  quantizer)) {
+        const auto &settings = db_index_params->quantizer_param();
+        rabitq->total_bits = settings.total_bits();
+        rabitq->num_clusters = settings.num_clusters();
+        rabitq->sample_count = settings.sample_count();
+        rabitq->niters = settings.n_iters();
+      }
+      index_param_builder->with_quantizer_param(quantizer);
     } else {
       return tl::make_unexpected(
           Status::InvalidArgument("unsupported quantize type"));
@@ -592,6 +602,18 @@ class ProximaEngineHelper {
             db_index_params->ef_construction());
         index_param_builder->with_use_contiguous_memory(
             db_index_params->use_contiguous_memory());
+        if (db_index_params->raw_vector_provider()) {
+          core::IndexMeta meta(core::IndexMeta::DT_FP32,
+                               field_schema.dimension());
+          meta.set_metric(
+              core_interface::Index::get_metric_name(
+                  convert_to_engine_metric_type(db_index_params->metric_type())
+                      .value(),
+                  false),
+              0, ailego::Params{});
+          index_param_builder->with_provider(
+              db_index_params->raw_vector_provider(), meta);
+        }
 
         return index_param_builder->build();
       }
@@ -637,6 +659,19 @@ class ProximaEngineHelper {
         index_param_builder->with_n_list(db_index_params->n_list());
         index_param_builder->with_n_iters(db_index_params->n_iters());
         index_param_builder->with_use_soar(db_index_params->use_soar());
+        index_param_builder->with_total_bits(db_index_params->total_bits());
+        index_param_builder->with_sample_count(db_index_params->sample_count());
+        if (db_index_params->quantize_type() == QuantizeType::RABITQ) {
+          // Typed quantizer parameters take precedence over the IVF fields.
+          core_interface::RabitqQuantizerParam quantizer(
+              db_index_params->total_bits());
+          quantizer.sample_count = db_index_params->sample_count();
+          quantizer.num_clusters =
+              db_index_params->quantizer_param().num_clusters();
+          quantizer.niters = db_index_params->quantizer_param().n_iters();
+          quantizer.enable_rotate = db_index_params->enable_rotate();
+          index_param_builder->with_quantizer_param(quantizer);
+        }
 
         return index_param_builder->build();
       }

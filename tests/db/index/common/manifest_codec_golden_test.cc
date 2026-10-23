@@ -344,6 +344,8 @@ void ExpectRichSchemaFields(const CollectionSchema &schema,
   EXPECT_EQ(ivf->metric_type(), MetricType::COSINE);
   EXPECT_EQ(ivf->n_list(), 512);
   EXPECT_EQ(ivf->n_iters(), 12);
+  EXPECT_EQ(ivf->total_bits(), core_interface::kDefaultRabitqTotalBits);
+  EXPECT_EQ(ivf->sample_count(), 0);
   EXPECT_TRUE(ivf->use_soar());
   EXPECT_EQ(ivf->quantize_type(), QuantizeType::INT4);
   EXPECT_TRUE(ivf->quantizer_param().enable_rotate());
@@ -1143,5 +1145,42 @@ TEST(ManifestCodecGolden, WireReaderRejectsGroups) {
     pbwire::Reader r(buf);
     EXPECT_FALSE(r.next());
     EXPECT_FALSE(r.ok());
+  }
+}
+
+TEST(ManifestCodecGolden, IvfRabitqQuantizationRoundTrip) {
+  IVFIndexParams params(MetricType::COSINE, 32, 7, false, QuantizeType::RABITQ,
+                        {}, 9, 1234);
+  std::string encoded;
+  ManifestCodec::EncodeIndexParams(&params, &encoded);
+  auto decoded = std::dynamic_pointer_cast<IVFIndexParams>(
+      ManifestCodec::DecodeIndexParams(encoded));
+  ASSERT_NE(nullptr, decoded);
+  EXPECT_EQ(IndexType::IVF, decoded->type());
+  EXPECT_EQ(params, *decoded);
+  EXPECT_EQ(9, decoded->total_bits());
+  EXPECT_EQ(1234, decoded->sample_count());
+  EXPECT_EQ(params, *params.clone());
+}
+
+TEST(ManifestCodecRabitqTest, QuantizerSettingsRoundTrip) {
+  using namespace zvec;
+  QuantizerParam q(false, 3, 4, 24, 6);
+  HnswIndexParams hnsw(MetricType::L2, 16, 100, QuantizeType::RABITQ, false, q);
+  IVFIndexParams ivf(MetricType::L2, 8, 10, false, QuantizeType::RABITQ, q, 3,
+                     24);
+  DiskAnnIndexParams diskann(MetricType::L2, 16, 100, 0, QuantizeType::RABITQ,
+                             q);
+  for (const IndexParams *params :
+       {static_cast<IndexParams *>(&hnsw), static_cast<IndexParams *>(&ivf),
+        static_cast<IndexParams *>(&diskann)}) {
+    std::string encoded;
+    ManifestCodec::EncodeIndexParams(params, &encoded);
+    auto decoded = ManifestCodec::DecodeIndexParams(encoded);
+    ASSERT_NE(decoded, nullptr);
+    auto vector = std::dynamic_pointer_cast<VectorIndexParams>(decoded);
+    ASSERT_NE(vector, nullptr);
+    EXPECT_EQ(vector->quantizer_param(), q);
+    EXPECT_TRUE(*params == *decoded);
   }
 }

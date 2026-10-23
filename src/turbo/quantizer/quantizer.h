@@ -79,6 +79,45 @@ struct QuantizerSerHeader {
 static_assert(sizeof(QuantizerSerHeader) == 24,
               "QuantizerSerHeader must be 24 bytes");
 
+struct DistanceEstimate {
+  float distance;
+  float lower_bound;
+  // Query-local intermediate; never serialized into index records.
+  float coarse_dot{0};
+};
+
+//! Query-local state for an optional 32-lane posting accelerator. The packed
+//! block contains coarse codes only; refinement consumes the original row.
+//! Implementations own their query bytes and must not retain storage pointers.
+class BlockScanner {
+ public:
+  virtual ~BlockScanner() = default;
+  // Opt-in approximate refinement; unsupported accelerators reject enabling it.
+  virtual bool set_reuse_coarse_dot(bool enabled) {
+    return !enabled;
+  }
+  virtual int estimate(const void *block, size_t count,
+                       DistanceEstimate *out) const = 0;
+  virtual float refine(const void *row,
+                       const DistanceEstimate &estimate) const = 0;
+
+  // Estimate and prune against a block-entry heap threshold. Only selected
+  // lanes need to be written to out. Callers must consume them in row order
+  // and recheck the threshold as the heap tightens. Other accelerators retain
+  // their ordinary estimator through this default implementation.
+  virtual int estimate_candidates(const void *block, size_t count, float worst,
+                                  DistanceEstimate *out,
+                                  uint32_t *candidates) const {
+    if (!block || !out || !candidates || count > 32) return kErrInvalidArgument;
+    *candidates = 0;
+    const int ret = estimate(block, count, out);
+    if (ret != 0) return ret;
+    for (size_t i = 0; i < count; ++i)
+      *candidates |= uint32_t(!(out[i].lower_bound > worst)) << i;
+    return 0;
+  }
+};
+
 class Quantizer {
  public:
   typedef std::shared_ptr<Quantizer> Pointer;
@@ -110,6 +149,11 @@ class Quantizer {
   //! Whether the quantizer requires training before use
   virtual bool require_train() const = 0;
 
+  //! Whether graph construction must use an original-vector provider.
+  virtual bool requires_original_vectors() const {
+    return false;
+  }
+
   //! Train the quantizer with data from an IndexHolder
   virtual int train(IndexHolder::Pointer /*holder*/) {
     return 0;
@@ -127,6 +171,14 @@ class Quantizer {
   //! Byte length of a quantized query vector
   virtual size_t quantized_query_vector_length() const = 0;
 
+  //! Query layout, which may differ from the stored datapoint layout.
+  virtual IndexQueryMeta quantized_query_meta() const {
+    IndexQueryMeta result;
+    result.set_meta(meta().data_type(), meta().dimension(),
+                    static_cast<uint32_t>(type()), meta().extra_meta_size());
+    return result;
+  }
+
   //! Quantize a datapoint vector
   virtual void quantize_data(const void *input, void *output) const = 0;
 
@@ -136,6 +188,17 @@ class Quantizer {
   //! Distance between a quantized datapoint and a quantized query
   virtual float calc_distance_dp_query(const void *dp,
                                        const void *query) const = 0;
+
+  //! Optional coarse estimate used to screen graph neighbors before refinement.
+  //! The lower bound is in the same distance space as calc_distance_dp_query.
+  virtual bool supports_distance_refinement() const {
+    return false;
+  }
+  virtual DistanceEstimate estimate_distance_dp_query(const void *dp,
+                                                      const void *query) const {
+    const float d = calc_distance_dp_query(dp, query);
+    return {d, d};
+  }
 
   //! Batched distance between quantized datapoints and a quantized query.
   //! Gather-style contract: each datapoint is addressed by its own pointer,
@@ -191,6 +254,14 @@ class Quantizer {
     return 0;
   }
 
+  //! Encode a stored record. Asymmetric quantizers override this separately
+  //! from quantize(), which prepares a search query.
+  virtual int quantize_datapoint(const void *data, const IndexQueryMeta &meta,
+                                 std::string *out,
+                                 IndexQueryMeta *ometa) const {
+    return quantize(data, meta, out, ometa);
+  }
+
   //! Dequantize a result vector back to original format
   virtual int dequantize(const void * /*in*/, const IndexQueryMeta & /*qmeta*/,
                          std::string * /*out*/) const {
@@ -200,6 +271,19 @@ class Quantizer {
   virtual DistanceImpl distance(const void * /*query*/,
                                 const IndexQueryMeta & /*qmeta*/) const {
     return DistanceImpl{};
+  }
+
+  //! Optional, versioned auxiliary layout. Zero disables packed scanning.
+  //! pack_scan_block accepts 1..32 row-major codes and zero-pads unused lanes.
+  virtual size_t scan_block_size() const {
+    return 0;
+  }
+  virtual int pack_scan_block(const void *, size_t, size_t, void *) const {
+    return kErrUnsupported;
+  }
+  virtual std::unique_ptr<BlockScanner> block_scanner(
+      const DistanceImpl &) const {
+    return nullptr;
   }
 
   //! Convert an internal distance into the caller-facing score in place

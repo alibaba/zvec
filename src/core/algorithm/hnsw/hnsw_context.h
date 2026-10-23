@@ -594,6 +594,7 @@ class HnswContext : public IndexContext {
       extra_values_size_ = extra_values_size;
     }
     dc_.update_distance(distance, batch_distance);
+    dc_.set_estimate_distance({});
     dc_.set_provider(std::move(provider));
   }
 

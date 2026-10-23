@@ -37,6 +37,12 @@ static const std::string PARAM_DISKANN_BUILDER_TRAIN_SAMPLE_RATIO(
 static const std::string PARAM_DISKANN_BUILDER_MAX_PQ_CHUNK_NUM(
     "zvec.diskann.builder.max_pq_chunk_num");
 
+// In-memory candidate codes; graph records retain their original layout.
+static const std::string PARAM_DISKANN_BUILDER_QUANTIZER_CLASS(
+    "zvec.diskann.builder.quantizer_class");
+static const std::string PARAM_DISKANN_BUILDER_QUANTIZER_PARAMS(
+    "zvec.diskann.builder.quantizer_params");
+
 static const std::string PARAM_DISKANN_SEARCHER_LIST_SIZE(
     "zvec.diskann.searcher.list_size");
 static const std::string PARAM_DISKANN_SEARCHER_CACHE_NODE_NUM(

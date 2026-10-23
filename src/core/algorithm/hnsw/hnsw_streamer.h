@@ -208,20 +208,10 @@ class HnswStreamer : public IndexStreamer {
   void print_debug_info() override;
 
  private:
-  inline int check_params(const void *query,
-                          const IndexQueryMeta &qmeta) const {
-    if (ailego_unlikely(!query)) {
-      LOG_ERROR("null query");
-      return IndexError_InvalidArgument;
-    }
-    if (ailego_unlikely(qmeta.dimension() != meta_.dimension() ||
-                        qmeta.data_type() != meta_.data_type() ||
-                        qmeta.element_size() != meta_.element_size())) {
-      LOG_ERROR("Unsupported query meta");
-      return IndexError_Mismatch;
-    }
-    return 0;
-  }
+  int open_quantizer(const IndexStorage::Pointer &storage, bool create);
+
+  int check_params(const void *query, const IndexQueryMeta &qmeta,
+                   bool search = false) const;
 
   inline int check_sparse_count_is_zero(const uint32_t *sparse_count,
                                         uint32_t count) const {

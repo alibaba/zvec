@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <random>
 #include <string>
 #include <tuple>
@@ -179,6 +180,13 @@ TEST_P(IVFTurboIndexTest, AddTrainSearchFetchAndReopenWithDefaultQuantizer) {
   ASSERT_NE(nullptr, index);
   ASSERT_EQ(0, index->open(path_, {StorageOptions::StorageType::kMMAP, true}));
   populate(index.get());
+  // RaBitQ pruning options must not apply to unrelated IVF quantizers.
+  auto diagnostic = IVFQueryParamBuilder().with_topk(3).with_nprobe(4).build();
+  diagnostic->rabitq_pruning = false;
+  SearchResult rejected;
+  EXPECT_EQ(core::IndexError_Unsupported,
+            index->search(VectorData{DenseVector{vectors_[0].data()}},
+                          diagnostic, &rejected));
   auto before = check_search_and_fetch(index.get());
   ASSERT_EQ(0, index->close());
   index.reset();
@@ -432,6 +440,102 @@ TEST(IVFTurboCompatibility, ReopensLegacyInt8AndMergesWithTurbo) {
   ASSERT_EQ(0, target->close());
   ASSERT_EQ(0, turbo->close());
   ASSERT_EQ(0, legacy->close());
+}
+
+// Exercise the shared scan/group implementation on every platform using FP32.
+// Public non-RaBitQ IVF still intentionally rejects grouped queries.
+class GroupedIVFForTest : public IVFIndex {
+ public:
+  using Index::init;
+  using IVFIndex::add;
+  using IVFIndex::open;
+  using IVFIndex::train;
+
+ protected:
+  bool supports_group_by() const override {
+    return true;
+  }
+};
+
+TEST(IVFTurboGroups, MatchesScannedCandidatesAndClearsPooledState) {
+  for (uint32_t count : {37u, 1057u}) {
+    SCOPED_TRACE(count);
+    const std::string path = "ivf_turbo_group_test.index";
+    test_util::RemoveTestFiles(path);
+    auto param = IVFIndexParamBuilder()
+                     .with_dimension(17)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_metric_type(MetricType::kL2sq)
+                     .with_n_list(4)
+                     .with_n_iters(3)
+                     .build();
+    auto index = std::make_shared<GroupedIVFForTest>();
+    ASSERT_EQ(0, index->init(*param));
+    ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+    std::mt19937 rng(47);
+    std::normal_distribution<float> random;
+    std::vector<float> vector(17), query_vector(17, 0.25f);
+    for (uint32_t i = 0; i < count; ++i) {
+      for (auto &value : vector) value = random(rng);
+      ASSERT_EQ(0, index->add(VectorData{DenseVector{vector.data()}}, i * 3));
+    }
+    ASSERT_EQ(0, index->train());
+    const auto input = VectorData{DenseVector{query_vector.data()}};
+    for (bool keyed : {false, true}) {
+      SCOPED_TRACE(keyed);
+      for (bool filtered : {false, true}) {
+        auto query =
+            IVFQueryParamBuilder().with_nprobe(2).with_topk(count).build();
+        if (keyed) {
+          query->bf_pks = std::make_shared<std::vector<uint64_t>>();
+          for (uint32_t i = 1; i < count; i += 2)
+            query->bf_pks->push_back(i * 3);
+          query->bf_pks->push_back(count * 3);  // Missing keys are ignored.
+        }
+        if (filtered) {
+          query->filter = std::make_shared<IndexFilter>();
+          query->filter->set([](uint64_t key) { return key % 5 == 0; });
+        }
+        SearchResult all;
+        ASSERT_EQ(0, index->search(input, query, &all));
+        std::map<std::string, std::vector<core::IndexDocument>> expected;
+        for (const auto &doc : all.doc_list_) {
+          auto &group = expected[std::to_string(doc.key() % 4)];
+          if (group.size() < 2) group.push_back(doc);
+        }
+        query->group_by_param = std::make_shared<GroupByParam>();
+        query->group_by_param->group_count = 4;
+        query->group_by_param->group_topk = 2;
+        query->group_by_param->group_by = [](uint64_t key) {
+          return std::to_string(key % 4);
+        };
+        // The public search consumes filters, so bind a new one for each query.
+        if (filtered)
+          query->filter->set([](uint64_t key) { return key % 5 == 0; });
+        SearchResult grouped;
+        ASSERT_EQ(0, index->search(input, query, &grouped));
+        ASSERT_EQ(expected.size(), grouped.group_doc_list_.size());
+        for (const auto &group : grouped.group_doc_list_) {
+          const auto &docs = expected.at(group.group_id());
+          ASSERT_EQ(docs.size(), group.docs().size());
+          for (size_t i = 0; i < docs.size(); ++i) {
+            EXPECT_EQ(docs[i].key(), group.docs()[i].key());
+            EXPECT_FLOAT_EQ(docs[i].score(), group.docs()[i].score());
+          }
+        }
+        query->group_by_param.reset();
+        if (filtered)
+          query->filter->set([](uint64_t key) { return key % 5 == 0; });
+        SearchResult again;
+        ASSERT_EQ(0, index->search(input, query, &again));
+        ASSERT_EQ(all.doc_list_.size(), again.doc_list_.size());
+        for (size_t i = 0; i < all.doc_list_.size(); ++i)
+          EXPECT_EQ(all.doc_list_[i].key(), again.doc_list_[i].key());
+      }
+    }
+    ASSERT_EQ(0, index->close());
+    test_util::RemoveTestFiles(path);
+  }
 }
 
 }  // namespace

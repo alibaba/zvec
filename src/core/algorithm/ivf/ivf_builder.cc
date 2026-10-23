@@ -867,6 +867,7 @@ int IVFBuilder::dump_index(const IndexDumper::Pointer &dumper) {
   }
 
   //! Dump inverted vectors
+  ivf_dumper->enable_block_scan(turbo_quantizer_);
   std::vector<uint32_t> dumped_ids;
   std::function<void(uint32_t)> record_dumped_id = [&](uint32_t) {};
   if (store_original_features_) {

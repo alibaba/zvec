@@ -30,6 +30,7 @@
 #include "diskann_holder.h"
 #include "diskann_index_provider.h"
 #include "diskann_params.h"
+#include "diskann_quantizer.h"
 #include "diskann_streamer.h"
 #include "diskann_util.h"
 
@@ -307,7 +308,7 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
     std::string quantizer_meta_buffer;
     ASSERT_EQ(0, malformed_entity.read_pq_quantizer_meta_buffer(
                      &quantizer_meta_buffer));
-    auto pq_quantizer = DiskAnnUtil::create_quantizer_from_meta_buffer(
+    auto pq_quantizer = DiskAnnQuantizer::create_quantizer_from_meta_buffer(
         quantizer_meta_buffer, *_index_meta_ptr,
         static_cast<uint32_t>(malformed_entity.pq_chunk_num()),
         malformed_entity.legacy_pq_layout());

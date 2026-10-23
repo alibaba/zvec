@@ -18,6 +18,7 @@
 #include "diskann_context.h"
 #include "diskann_indexer.h"
 #include "diskann_params.h"
+#include "diskann_quantizer.h"
 
 namespace zvec {
 namespace core {
@@ -144,7 +145,7 @@ int DiskAnnSearcher::load(IndexStorage::Pointer storage,
     LOG_ERROR("Read quantizer meta buffer failed, ret=%d", ret);
     return ret;
   }
-  auto quantizer = DiskAnnUtil::create_quantizer_from_meta_buffer(
+  auto quantizer = DiskAnnQuantizer::create_quantizer_from_meta_buffer(
       quantizer_meta_buffer, meta_,
       static_cast<uint32_t>(entity_.pq_chunk_num()),
       entity_.legacy_pq_layout());
