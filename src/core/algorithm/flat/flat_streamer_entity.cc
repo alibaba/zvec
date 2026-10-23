@@ -228,12 +228,14 @@ int FlatStreamerEntity::close() {
   meta_.header.linear_body_size = 0;
   batch_query_preprocess_ = nullptr;
   extra_values_size_ = 0;
+  meta_dirty_ = false;
 
   return 0;
 }
 
 int FlatStreamerEntity::flush_linear_meta() {
-  if (!storage_) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!storage_ || !meta_dirty_) {
     return 0;
   }
 
@@ -249,6 +251,8 @@ int FlatStreamerEntity::flush_linear_meta() {
     LOG_ERROR("Failed to write segment %s", FLAT_LINEAR_META_SEG_ID.c_str());
     return IndexError_WriteData;
   }
+
+  meta_dirty_ = false;
 
   return 0;
 }
@@ -308,6 +312,7 @@ int FlatStreamerEntity::add(uint64_t key, const void *vec, size_t size) {
   // function (alloc_block / add_to_block may compete for the same memory).
   head_block.reset(nullptr);
 
+  meta_dirty_ = true;
   if (!this->is_valid_block(block)) {
     int ret = this->alloc_block(block, &block);
     if (ailego_unlikely(ret != 0)) {
@@ -939,6 +944,7 @@ void FlatStreamerEntity::Iterator::read_next_block() {
 }
 
 int FlatStreamerEntity::init_storage(IndexStorage::Pointer storage) {
+  meta_dirty_ = true;
   // Init Linear Meta Segment
   meta_.create_time = ailego::Realtime::Seconds();
   stats_.set_create_time(meta_.create_time);
@@ -1154,6 +1160,7 @@ int FlatStreamerEntity::load_segment_keys_to_vector() {
 }
 
 int FlatStreamerEntity::load_storage(IndexStorage::Pointer storage) {
+  meta_dirty_ = false;
   int ret = this->load_linear_meta(storage);
   if (ailego_unlikely(ret != 0)) {
     return ret;
@@ -1424,6 +1431,7 @@ int FlatStreamerEntity::add_vector_with_id(const uint32_t id, const void *query,
   }
 
 
+  meta_dirty_ = true;
   if (id >= vector_count()) {
     IndexStorage::MemoryBlock head_block;
     this->get_head_block(head_block);

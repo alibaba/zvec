@@ -262,10 +262,7 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
       if (visit.visited(node)) continue;
       visit.set_visited(node);
       const void *vec_ptr = entity.get_vector_ptr(node);
-      const char *p = reinterpret_cast<const char *>(vec_ptr);
-      for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
-        ailego_prefetch(p + cl * 64);
-      }
+      ailego_prefetch_lines(vec_ptr, prefetch_lines);
       neighbor_ids[unvisited_count] = node;
       neighbor_vecs[unvisited_count] = vec_ptr;
       if (has_extra_values) {
@@ -363,10 +360,7 @@ void fast_search_neighbors_buffer(const EntityType &entity, HeapType &pool,
     }
     const uint32_t po = std::min(prefetch_offset, unvisited_count);
     for (uint32_t i = 0; i < po; ++i) {
-      const char *p = static_cast<const char *>(neighbor_vecs[i]);
-      for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
-        ailego_prefetch(p + cl * 64);
-      }
+      ailego_prefetch_lines(neighbor_vecs[i], prefetch_lines);
     }
 
     dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data(),
@@ -389,8 +383,9 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
                                 TopkHeap &topk, HnswContext *ctx,
                                 HnswDistCalculator &dc, FilterFn &&filter) {
   const uint32_t prefetch_offset = ctx->po();
+  const size_t vector_lines = ailego_cache_line_count(entity.vector_size());
   const uint32_t prefetch_lines =
-      ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
+      ctx->pl() > 0 ? std::min<size_t>(ctx->pl(), vector_lines) : vector_lines;
 
   uint32_t buf_capacity = entity.max_degree(level);
   std::vector<node_id_t> neighbor_ids(buf_capacity);
@@ -496,10 +491,7 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
 
     // do prefetch
     for (uint32_t i = 0; i < std::min(prefetch_offset, size); ++i) {
-      const char *base = static_cast<const char *>(neighbor_vecs[i]);
-      for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
-        ailego_prefetch(base + cl * 64);
-      }
+      ailego_prefetch_lines(neighbor_vecs[i], prefetch_lines);
     }
 
     dc.batch_dist(neighbor_vecs.data(), size, dists.data(),
@@ -556,8 +548,9 @@ template <typename EntityType>
 int HnswAlgorithm<EntityType>::dispatch_search_neighbors(
     node_id_t entry_point, dist_t entry_dist, HnswContext *ctx) const {
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
+  const size_t vector_lines = ailego_cache_line_count(entity.vector_size());
   const uint32_t prefetch_lines =
-      ctx->pl() > 0 ? ctx->pl() : (entity.vector_size() + 63) / 64;
+      ctx->pl() > 0 ? std::min<size_t>(ctx->pl(), vector_lines) : vector_lines;
   const bool dispatched =
       dispatch_visit_filter(ctx->visit_filter(), [&](auto visit) {
         visit.clear();

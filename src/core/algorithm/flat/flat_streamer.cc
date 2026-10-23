@@ -212,11 +212,14 @@ template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::close() {
   LOG_DEBUG("FlatStreamer close");
 
-  entity_->flush_linear_meta();
+  int ret = entity_->flush_linear_meta();
+  if (ret != 0) {
+    return ret;
+  }
 
   stats_.clear();
 
-  int ret = entity_->close();
+  ret = entity_->close();
   if (ailego_unlikely(ret != 0)) {
     return ret;
   }
