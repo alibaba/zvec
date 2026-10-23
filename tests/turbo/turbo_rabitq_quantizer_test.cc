@@ -17,6 +17,33 @@
 namespace zvec::turbo {
 namespace {
 
+TEST(RabitqQuantizer, RejectsContiguousTrainingWithoutChangingModel) {
+  RabitqQuantizer quantizer;
+  IndexMeta meta(IndexMeta::DT_FP32, 64);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params{});
+  ASSERT_EQ(0, quantizer.init(meta, {}));
+  Quantizer &base = quantizer;
+  float data[64] = {};
+  std::string before, after;
+  ASSERT_EQ(0, base.serialize(&before));
+  EXPECT_EQ(kErrUnsupported, base.train(data, 1, sizeof(data)));
+  EXPECT_TRUE(base.require_train());
+  ASSERT_EQ(0, base.serialize(&after));
+  EXPECT_EQ(before, after);
+
+  auto holder = std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(64);
+  ailego::NumericalVector<float> value(64);
+  std::fill(value.begin(), value.end(), 0);
+  ASSERT_TRUE(holder->emplace(0, value));
+  ASSERT_EQ(0, base.train(holder, 1));
+  EXPECT_FALSE(base.require_train());
+  ASSERT_EQ(0, base.serialize(&before));
+  EXPECT_EQ(kErrUnsupported, base.train(data, 1, sizeof(data)));
+  ASSERT_EQ(0, base.serialize(&after));
+  EXPECT_EQ(before, after);
+  EXPECT_FALSE(base.require_train());
+}
+
 TEST(RabitqQuantizer, BitsMetricsAsymmetricEncodingAndPersistence) {
   constexpr int dim =
       73;  // non-power-of-two rotation and non-byte-aligned codes

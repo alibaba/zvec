@@ -228,3 +228,42 @@ def test_legacy_rabitq_parameter_state(kind):
         restored.__setstate__(state[:5])
         assert restored.quantizer_param.total_bits == 7
         assert not restored.quantizer_param.enable_rotate
+
+
+@pytest.mark.parametrize("cls", [zvec.FlatIndexParam, zvec.VamanaIndexParam])
+def test_rabitq_rejects_unsupported_index(tmp_path, cls):
+    params = cls(quantize_type=zvec.QuantizeType.RABITQ)
+    schema = zvec.CollectionSchema(
+        name="invalid",
+        vectors=[
+            zvec.VectorSchema(
+                "embedding",
+                zvec.DataType.VECTOR_FP32,
+                dimension=128,
+                index_param=params,
+            )
+        ],
+    )
+    with pytest.raises(Exception, match="RABITQ"):
+        zvec.create_and_open(path=str(tmp_path / "invalid"), schema=schema)
+
+
+@pytest.mark.skipif(not supported, reason="RaBitQ integration requires Linux x86_64")
+def test_ivf_rabitq_rejects_additional_rotation(tmp_path):
+    params = zvec.IVFIndexParam(
+        quantize_type=zvec.QuantizeType.RABITQ,
+        quantizer_param=zvec.QuantizerParam(enable_rotate=True),
+    )
+    schema = zvec.CollectionSchema(
+        name="invalid",
+        vectors=[
+            zvec.VectorSchema(
+                "embedding",
+                zvec.DataType.VECTOR_FP32,
+                dimension=128,
+                index_param=params,
+            )
+        ],
+    )
+    with pytest.raises(Exception, match="RABITQ"):
+        zvec.create_and_open(path=str(tmp_path / "invalid"), schema=schema)

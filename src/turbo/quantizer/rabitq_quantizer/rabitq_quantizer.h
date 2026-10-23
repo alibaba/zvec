@@ -39,6 +39,12 @@ class RabitqQuantizer final : public Quantizer {
   bool require_train() const override {
     return centroids_.empty();
   }
+  using Quantizer::train;
+  // Training consumes an IndexHolder; never report success for an unused
+  // contiguous batch through the base class's default implementation.
+  int train(const void *, size_t, size_t) override {
+    return kErrUnsupported;
+  }
   int train(IndexHolder::Pointer holder) override;
   bool requires_original_vectors() const override {
     return true;

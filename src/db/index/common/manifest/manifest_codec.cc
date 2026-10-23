@@ -37,7 +37,7 @@ constexpr uint32_t kTotalBits = 2;
 constexpr uint32_t kNumClusters = 3;
 constexpr uint32_t kSampleCount = 4;
 constexpr uint32_t kNIters = 5;
-}
+}  // namespace f_quantizer
 namespace f_base {
 constexpr uint32_t kMetricType = 1;
 constexpr uint32_t kQuantizeType = 2;

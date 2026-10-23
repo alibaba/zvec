@@ -121,6 +121,18 @@ Status FieldSchema::validate() const {
       auto vector_index_params =
           std::dynamic_pointer_cast<VectorIndexParams>(index_params_);
 
+      if (vector_index_params &&
+          vector_index_params->quantize_type() == QuantizeType::RABITQ &&
+          index_params_->type() != IndexType::HNSW &&
+          index_params_->type() != IndexType::IVF &&
+          index_params_->type() != IndexType::DISKANN &&
+          index_params_->type() != IndexType::HNSW_RABITQ &&
+          index_params_->type() != IndexType::IVF_RABITQ) {
+        return Status::InvalidArgument(
+            "Invalid schema: RABITQ requires HNSW, IVF, DISKANN, "
+            "HNSW_RABITQ, or IVF_RABITQ");
+      }
+
       if (is_sparse) {
         if (support_sparse_vector_index.find(index_params_->type()) ==
             support_sparse_vector_index.end()) {

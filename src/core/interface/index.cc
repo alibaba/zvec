@@ -455,6 +455,25 @@ int Index::init_converter_reformer(const std::string &converter_name,
 }
 
 int Index::init(const BaseIndexParam &param) {
+  if (param.quantizer_param &&
+      param.quantizer_param->type == QuantizerType::kRabitq) {
+    switch (param.index_type) {
+      case IndexType::kHNSW:
+      case IndexType::kIVF:
+      case IndexType::kDiskAnn:
+        if (param.quantizer_param->enable_rotate) {
+          LOG_ERROR("RABITQ does not support additional enable_rotate");
+          return core::IndexError_Unsupported;
+        }
+        break;
+      case IndexType::kHNSWRabitq:
+      case IndexType::kIVFRabitq:
+        break;  // Preserve the dedicated indexes' parameter handling.
+      default:
+        LOG_ERROR("RABITQ is unsupported for this index type");
+        return core::IndexError_Unsupported;
+    }
+  }
   param_ = param;  // will lose the original type info
 
   is_sparse_ = param.is_sparse;

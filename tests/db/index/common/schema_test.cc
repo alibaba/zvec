@@ -1365,3 +1365,23 @@ TEST(FieldSchemaTest, HnswRabitqIndexValidation_UnsupportedDataTypes) {
         << status.message();
   }
 }
+
+TEST(FieldSchemaTest, RejectsRabitqOnUnsupportedIndexes) {
+  for (auto metric : {MetricType::L2, MetricType::IP, MetricType::COSINE}) {
+    for (bool vamana : {false, true}) {
+      std::shared_ptr<VectorIndexParams> params;
+      if (vamana)
+        params = std::make_shared<VamanaIndexParams>(metric);
+      else
+        params = std::make_shared<FlatIndexParams>(metric);
+      params->set_quantize_type(QuantizeType::RABITQ);
+      FieldSchema field("vector", DataType::VECTOR_FP32, 128, false, params);
+      const auto status = field.validate();
+      EXPECT_EQ(StatusCode::INVALID_ARGUMENT, status.code());
+      EXPECT_NE(std::string::npos, status.message().find("RABITQ"));
+      params->set_quantize_type(QuantizeType::UNDEFINED);
+      field.set_index_params(params);
+      EXPECT_TRUE(field.validate().ok());
+    }
+  }
+}
