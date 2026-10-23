@@ -508,9 +508,9 @@ void MixedStreamerReducer::add_vec(int *result) {
       // the original format directly, so no encoding is needed.
       if (target_streamer_quantizer_ != nullptr) {
         IndexQueryMeta quantized_meta;
-        if (target_streamer_quantizer_->quantize(vector, original_query_meta_,
-                                                 &new_vector,
-                                                 &quantized_meta) != 0) {
+        if (target_streamer_quantizer_->quantize_datapoint(
+                vector, original_query_meta_, &new_vector, &quantized_meta) !=
+            0) {
           LOG_ERROR("Failed to quantize vector. pkey[%zu]",
                     (size_t)vector_item.pkey_);
           *result = IndexError_Runtime;

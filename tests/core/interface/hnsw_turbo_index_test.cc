@@ -407,7 +407,8 @@ void CheckOriginalProviderUsesTurbo(MetricType metric, QuantizerType quantizer,
                                     int rabitq_bits = 7,
                                     StorageOptions::StorageType storage_type =
                                         StorageOptions::StorageType::kMMAP,
-                                    bool contiguous = false) {
+                                    bool contiguous = false,
+                                    bool merge_from_flat = false) {
   zvec::test_util::RemoveTestFiles(path);
   auto vectors = RandomVectors(kGraphVectorCount);
   if (metric == MetricType::kCosine) {
@@ -449,7 +450,30 @@ void CheckOriginalProviderUsesTurbo(MetricType metric, QuantizerType quantizer,
   EXPECT_TRUE(streamer->uses_turbo_distance());
   EXPECT_TRUE(streamer->uses_turbo_build_distance());
 
-  AddVectors(index.get(), vectors);
+  if (merge_from_flat) {
+    const std::string source_path = path + ".flat";
+    zvec::test_util::RemoveTestFiles(source_path);
+    auto flat_param = FlatIndexParamBuilder()
+                          .with_metric_type(metric)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(kDimension)
+                          .build();
+    auto source = IndexFactory::CreateAndInitIndex(*flat_param);
+    ASSERT_NE(nullptr, source);
+    ASSERT_EQ(0, source->open(source_path, {storage_type, true}));
+    AddVectors(source.get(), vectors);
+    ASSERT_EQ(0, source->flush());
+    ASSERT_EQ(0, source->close());
+    source = IndexFactory::CreateAndInitIndex(*flat_param);
+    ASSERT_NE(nullptr, source);
+    ASSERT_EQ(0, source->open(source_path, {storage_type, false}));
+    ASSERT_EQ(0, index->merge({source}, IndexFilter()));
+    EXPECT_EQ(vectors.size(), index->get_doc_count());
+    ASSERT_EQ(0, source->close());
+    zvec::test_util::RemoveTestFiles(source_path);
+  } else {
+    AddVectors(index.get(), vectors);
+  }
   CheckGraphSearchEnabled(index.get());
   // This test checks encoding and persistence, not approximate-search recall.
   // A raw-vector graph with a random 1-bit RaBitQ model can miss quantized
@@ -1111,6 +1135,20 @@ INSTANTIATE_TEST_SUITE_P(AddApis, HnswExternalCoreCompatibilityTest,
 }  // namespace zvec
 
 #if RABITQ_SUPPORTED
+TEST(HnswTurboRabitq, MergesReopenedFlatUsingDatapointEncoding) {
+  for (auto metric :
+       {MetricType::kL2sq, MetricType::kCosine, MetricType::kInnerProduct}) {
+    for (int bits : {3, 9}) {
+      SCOPED_TRACE(static_cast<int>(metric));
+      SCOPED_TRACE(bits);
+      CheckOriginalProviderUsesTurbo(
+          metric, QuantizerType::kRabitq, "RabitqQuantizer",
+          "hnsw_turbo_rabitq_merge.index", bits,
+          StorageOptions::StorageType::kMMAP, false, true);
+    }
+  }
+}
+
 TEST(HnswTurboRabitq, BuildsFromOriginalAndReopensWithoutProvider) {
   for (auto metric :
        {MetricType::kL2sq, MetricType::kCosine, MetricType::kInnerProduct}) {
