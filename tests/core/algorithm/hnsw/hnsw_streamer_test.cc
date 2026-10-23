@@ -4763,6 +4763,133 @@ TEST_F(HnswStreamerTest, TestTurboInt8QuantizerDistance) {
   ASSERT_EQ(0, storage->close());
 }
 
+TEST_F(HnswStreamerTest, PqPersistenceAndIncrementalBuild) {
+  ASSERT_EQ(0, MemoryLimitPool::get_instance().init(256UL * 1024UL * 1024UL));
+  auto holder = std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(dim);
+  std::mt19937 rng(42);
+  std::uniform_real_distribution<float> dist(-1, 1);
+  std::vector<NumericalVector<float>> vectors;
+  for (size_t i = 0; i < 256; ++i) {
+    NumericalVector<float> v(dim);
+    for (size_t j = 0; j < dim; ++j) v[j] = dist(rng);
+    holder->emplace(i, v);
+    vectors.push_back(v);
+  }
+  for (const auto *name : {"PqInt8Quantizer", "PqInt4Quantizer"}) {
+    SCOPED_TRACE(name);
+    ailego::Params params;
+    params.set("num_chunk", 4U);
+    auto quantizer = IndexFactory::CreateQuantizer(name);
+    ASSERT_NE(nullptr, quantizer);
+    ASSERT_EQ(0, quantizer->init(*index_meta_ptr_, params));
+    ASSERT_EQ(0, quantizer->train(holder));
+    auto meta = quantizer->meta();
+    meta.set_quantizer(name, 0, params);
+    IndexQueryMeta codes;
+    codes.set_meta(meta.data_type(), meta.dimension(),
+                   static_cast<uint32_t>(quantizer->type()),
+                   meta.extra_meta_size());
+    IndexQueryMeta raw(IndexMeta::DT_FP32, dim), queries;
+    std::string lut, second;
+    ASSERT_EQ(0, quantizer->quantize(vectors[3].data(), raw, &lut, &queries));
+    ASSERT_EQ(0,
+              quantizer->quantize(vectors[7].data(), raw, &second, &queries));
+    lut += second;
+    std::string code(quantizer->quantized_datapoint_vector_length(), '\0');
+    for (const auto *storage_name : {"MMapFileStorage", "BufferStorage"}) {
+      SCOPED_TRACE(storage_name);
+      const auto path = dir_ + name + storage_name;
+      auto storage = IndexFactory::CreateStorage(storage_name);
+      ASSERT_EQ(0, storage->init(ailego::Params()));
+      ASSERT_EQ(0, storage->open(path, true));
+      IndexStreamer::Pointer streamer = std::make_shared<HnswStreamer>();
+      ASSERT_EQ(0, streamer->init(meta, ailego::Params(), quantizer));
+      ASSERT_EQ(0, streamer->open(storage));
+      auto ctx = streamer->create_context();
+      for (size_t i = 0; i < 32; ++i) {
+        quantizer->quantize_data(vectors[i].data(), code.data());
+        ASSERT_EQ(0, streamer->add_impl(i, code.data(), codes, ctx));
+      }
+      // LUT metadata is valid only on the query path.
+      EXPECT_EQ(IndexError_Mismatch,
+                streamer->add_impl(99, lut.data(), queries, ctx));
+      ctx->set_topk(4);
+      ASSERT_EQ(0, streamer->search_bf_impl(lut.data(), queries, 2, ctx));
+      auto first_result = ctx->result(0);
+      auto second_result = ctx->result(1);
+      ASSERT_EQ(4U, first_result.size());
+      ASSERT_EQ(4U, second_result.size());
+      meta = streamer->meta();
+      ASSERT_EQ(0, streamer->close());
+      ASSERT_EQ(0, storage->close());
+
+      ASSERT_EQ(0, storage->open(path, true));
+      streamer = std::make_shared<HnswStreamer>();
+      ASSERT_EQ(0, streamer->init(meta, ailego::Params()));
+      ASSERT_EQ(0, streamer->open(storage));
+      ctx = streamer->create_context();
+      ctx->set_topk(4);
+      ASSERT_EQ(0, streamer->search_bf_impl(lut.data(), queries, 2, ctx));
+      for (size_t i = 0; i < 4; ++i) {
+        EXPECT_EQ(first_result[i].key(), ctx->result(0)[i].key());
+        EXPECT_FLOAT_EQ(first_result[i].score(), ctx->result(0)[i].score());
+        EXPECT_EQ(second_result[i].key(), ctx->result(1)[i].key());
+        EXPECT_FLOAT_EQ(second_result[i].score(), ctx->result(1)[i].score());
+      }
+      // Compare the second batch result with an independent single query.
+      ASSERT_EQ(0, streamer->search_bf_impl(second.data(), queries, ctx));
+      for (size_t i = 0; i < 4; ++i) {
+        EXPECT_EQ(second_result[i].key(), ctx->result()[i].key());
+      }
+      quantizer->quantize_data(vectors[32].data(), code.data());
+      ASSERT_EQ(0, streamer->add_impl(32, code.data(), codes, ctx));
+      // Exercise graph traversal as well as brute force after reopening.
+      dynamic_cast<HnswContext *>(ctx.get())->set_bruteforce_threshold(0);
+      ASSERT_EQ(0, streamer->search_impl(second.data(), queries, ctx));
+      ASSERT_FALSE(ctx->result().empty());
+
+      auto dumper = IndexFactory::CreateDumper("FileDumper");
+      ASSERT_EQ(0, dumper->create(path + ".dump"));
+      ASSERT_EQ(0, streamer->dump(dumper));
+      ASSERT_EQ(0, dumper->close());
+      auto dumped = IndexFactory::CreateStorage("MMapFileReadStorage");
+      ASSERT_EQ(0, dumped->init(ailego::Params()));
+      ASSERT_EQ(0, dumped->open(path + ".dump", false));
+      std::shared_ptr<turbo::Quantizer> restored;
+      ASSERT_EQ(0, HnswStreamer::RestoreQuantizer(dumped, meta, &restored));
+      EXPECT_FLOAT_EQ(
+          quantizer->calc_distance_dp_query(code.data(), second.data()),
+          restored->calc_distance_dp_query(code.data(), second.data()));
+      ASSERT_EQ(0, dumped->close());
+      ASSERT_EQ(0, streamer->close());
+      ASSERT_EQ(0, storage->close());
+
+      // Truncating a trained quantizer must fail, never fall back to a metric.
+      ASSERT_EQ(0, storage->open(path, true));
+      auto segment = storage->get("hnsw.turbo_quantizer");
+      ASSERT_NE(nullptr, segment);
+      char damaged = 0;
+      ASSERT_EQ(1U, segment->write(0, &damaged, 1));
+      restored.reset();
+      EXPECT_EQ(IndexError_InvalidChecksum,
+                HnswStreamer::RestoreQuantizer(storage, meta, &restored));
+      segment->resize(0);
+      restored.reset();
+      EXPECT_EQ(IndexError_InvalidFormat,
+                HnswStreamer::RestoreQuantizer(storage, meta, &restored));
+      streamer = std::make_shared<HnswStreamer>();
+      ASSERT_EQ(0, streamer->init(meta, ailego::Params()));
+      EXPECT_EQ(IndexError_InvalidFormat, streamer->open(storage));
+      streamer.reset();
+      ASSERT_EQ(0, storage->close());
+      ASSERT_EQ(0, storage->open(path + ".missing", true));
+      EXPECT_EQ(IndexError_InvalidFormat,
+                HnswStreamer::RestoreQuantizer(storage, meta, &restored));
+      ASSERT_EQ(0, storage->close());
+    }
+  }
+}
+
 }  // namespace core
 }  // namespace zvec
 

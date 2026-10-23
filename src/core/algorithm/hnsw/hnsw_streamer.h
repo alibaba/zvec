@@ -95,6 +95,11 @@ class HnswStreamer : public IndexStreamer {
     return quantizer_ != nullptr;
   }
 
+  //! Reconstruct the persisted quantizer, sharing it with the interface layer.
+  static int RestoreQuantizer(
+      const IndexStorage::Pointer &storage, const IndexMeta &meta,
+      std::shared_ptr<zvec::turbo::Quantizer> *quantizer);
+
   //! Whether graph construction is backed by a turbo quantizer. Compatible
   //! FP32 providers use a dedicated quantizer; other providers use a metric.
   bool uses_turbo_build_distance() const {
@@ -208,20 +213,8 @@ class HnswStreamer : public IndexStreamer {
   void print_debug_info() override;
 
  private:
-  inline int check_params(const void *query,
-                          const IndexQueryMeta &qmeta) const {
-    if (ailego_unlikely(!query)) {
-      LOG_ERROR("null query");
-      return IndexError_InvalidArgument;
-    }
-    if (ailego_unlikely(qmeta.dimension() != meta_.dimension() ||
-                        qmeta.data_type() != meta_.data_type() ||
-                        qmeta.element_size() != meta_.element_size())) {
-      LOG_ERROR("Unsupported query meta");
-      return IndexError_Mismatch;
-    }
-    return 0;
-  }
+  int check_params(const void *query, const IndexQueryMeta &qmeta,
+                   bool search = false) const;
 
   inline int check_sparse_count_is_zero(const uint32_t *sparse_count,
                                         uint32_t count) const {

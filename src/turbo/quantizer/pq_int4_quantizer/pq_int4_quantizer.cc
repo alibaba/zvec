@@ -654,7 +654,7 @@ int PqInt4Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
   quantize_query(query, &(*out)[0]);
 
   *ometa = qmeta;
-  ometa->set_meta(IndexMeta::DataType::DT_INT4, num_chunk_,
+  ometa->set_meta(IndexMeta::DataType::DT_FP32, original_dim_,
                   static_cast<uint32_t>(type_), 0);
   return 0;
 }
@@ -1102,6 +1102,7 @@ int PqInt4Quantizer::deserialize(const void *data, size_t len) {
   if (opq_ret != 0) return opq_ret;
   // dist_table_ is intentionally not restored: SDC is only needed during
   // offline build, not after deserialization (search uses ADC).
+  dist_table_.clear();
 
   // Re-dispatch kernels and batch distance functions.
   if (setup_functions() != 0) {

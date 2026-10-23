@@ -80,29 +80,108 @@ const char *ResolveTurboQuantizerName(const QuantizerParam &quantizer_param,
 }  // namespace
 
 int HNSWIndex::prepare_streamer_open(const StorageOptions &options) {
-  if (!turbo_quantizer_ || options.create_new) {
+  if (options.create_new) {
     return 0;
   }
   core::IndexMeta persisted_meta;
   if (core::IndexHelper::DeserializeFromStorage(storage_.get(),
-                                                &persisted_meta) != 0 ||
-      !persisted_meta.quantizer_name().empty()) {
+                                                &persisted_meta) != 0) {
+    return pending_quantizer_training_ ? core::IndexError_InvalidFormat : 0;
+  }
+  if (persisted_meta.quantizer_name().empty()) {
+    if (pending_quantizer_training_) return core::IndexError_InvalidFormat;
+    if (!turbo_quantizer_) {
+      return 0;
+    }
+    // Reuse normal initialization for old indexes, without selecting Turbo
+    // again.
+    turbo_quantizer_.reset();
+    streamer_.reset();
+    converter_.reset();
+    reformer_.reset();
+    metric_.reset();
+    proxima_index_meta_.clear();
+    use_legacy_pipeline_ = true;
+    return Index::init(param_);
+  }
+  // The persisted descriptor decides the search pipeline, including when a
+  // caller reopens an index with a different quantizer configuration: a
+  // trained quantizer (e.g. PQ) is restored from its serialized state, and
+  // the streamer is re-initialized on the persisted code layout.
+  bool matches_config = false;
+  if (turbo_quantizer_) {
+    const core::IndexMeta &config_meta = turbo_quantizer_->meta();
+    matches_config =
+        !turbo_quantizer_->require_train() &&
+        proxima_index_meta_.quantizer_name() ==
+            persisted_meta.quantizer_name() &&
+        config_meta.data_type() == persisted_meta.data_type() &&
+        config_meta.dimension() == persisted_meta.dimension() &&
+        config_meta.element_size() == persisted_meta.element_size();
+  }
+  if (matches_config) {
     return 0;
   }
-  // Reuse normal initialization for old indexes, without selecting Turbo again.
-  turbo_quantizer_.reset();
-  streamer_.reset();
+
+  std::shared_ptr<zvec::turbo::Quantizer> restored;
+  int ret =
+      core::HnswStreamer::RestoreQuantizer(storage_, persisted_meta, &restored);
+  if (ret != 0) {
+    LOG_ERROR("Failed to restore turbo quantizer %s, ret=%d",
+              persisted_meta.quantizer_name().c_str(), ret);
+    return ret;
+  }
+  if (!restored) {
+    LOG_ERROR("Restored turbo quantizer %s is null",
+              persisted_meta.quantizer_name().c_str());
+    return core::IndexError_Runtime;
+  }
+
+  pending_quantizer_training_ = false;
+  turbo_quantizer_ = restored;
   converter_.reset();
   reformer_.reset();
   metric_.reset();
-  proxima_index_meta_.clear();
-  use_legacy_pipeline_ = true;
-  return Index::init(param_);
+  proxima_index_meta_ = persisted_meta;
+  streamer_vector_meta_.set_meta(
+      persisted_meta.data_type(), persisted_meta.dimension(),
+      static_cast<uint32_t>(turbo_quantizer_->type()),
+      persisted_meta.extra_meta_size());
+  streamer_vector_meta_.set_meta_type(persisted_meta.meta_type());
+  LOG_INFO("Restored turbo quantizer %s from the persisted index meta",
+           persisted_meta.quantizer_name().c_str());
+  ret = streamer_->init(proxima_index_meta_, proxima_index_params_,
+                        turbo_quantizer_);
+  if (ret != 0) {
+    LOG_ERROR("Failed to re-init streamer with restored turbo quantizer %s",
+              persisted_meta.quantizer_name().c_str());
+    return ret;
+  }
+  return 0;
 }
 
 int HNSWIndex::create_and_init_converter_reformer(
     const QuantizerParam &quantizer_param, const BaseIndexParam &index_param) {
   const auto &hnsw_param = dynamic_cast<const HNSWIndexParam &>(index_param);
+  if (quantizer_param.type == QuantizerType::kPQ) {
+    if (hnsw_param.is_sparse || hnsw_param.data_type != DataType::DT_FP32 ||
+        (hnsw_param.metric_type != MetricType::kL2sq &&
+         hnsw_param.metric_type != MetricType::kInnerProduct &&
+         hnsw_param.metric_type != MetricType::kCosine) ||
+        hnsw_param.use_external_vector || hnsw_param.provider) {
+      return core::IndexError_Unsupported;
+    }
+    int ret =
+        init_pq_quantizer(quantizer_param, index_param, &turbo_quantizer_);
+    if (ret != 0) return ret;
+    pending_quantizer_training_ = true;
+    proxima_index_meta_ = turbo_quantizer_->meta();
+    streamer_vector_meta_.set_meta(
+        proxima_index_meta_.data_type(), proxima_index_meta_.dimension(),
+        static_cast<uint32_t>(turbo_quantizer_->type()),
+        proxima_index_meta_.extra_meta_size());
+    return 0;
+  }
   const char *quantizer_name =
       use_legacy_pipeline_
           ? nullptr

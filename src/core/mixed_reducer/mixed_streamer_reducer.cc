@@ -373,7 +373,7 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     const auto &source_meta = streamer->meta();
     const auto &target_meta = target_streamer_->meta();
     const bool same_layout =
-        target_builder_ == nullptr &&
+        target_builder_ == nullptr && !quantizer->require_train() &&
         turbo::QuantizerStorageDataTypeMatches(target_meta, source_meta) &&
         target_meta.quantizer_name() == source_meta.quantizer_name() &&
         target_meta.metric_name() == source_meta.metric_name() &&
@@ -507,17 +507,15 @@ void MixedStreamerReducer::add_vec(int *result) {
       // the target layout. A target without quantizer or reformer stores
       // the original format directly, so no encoding is needed.
       if (target_streamer_quantizer_ != nullptr) {
-        IndexQueryMeta quantized_meta;
-        if (target_streamer_quantizer_->quantize(vector, original_query_meta_,
-                                                 &new_vector,
-                                                 &quantized_meta) != 0) {
-          LOG_ERROR("Failed to quantize vector. pkey[%zu]",
-                    (size_t)vector_item.pkey_);
-          *result = IndexError_Runtime;
-          return;
-        }
+        new_vector.resize(
+            target_streamer_quantizer_->quantized_datapoint_vector_length());
+        target_streamer_quantizer_->quantize_data(vector, new_vector.data());
         vector = new_vector.data();
-        add_meta = quantized_meta;
+        add_meta.set_meta(
+            target_streamer_query_meta.data_type(),
+            target_streamer_query_meta.dimension(),
+            static_cast<uint32_t>(target_streamer_quantizer_->type()),
+            target_streamer_query_meta.extra_meta_size());
       } else if (target_streamer_reformer_ != nullptr) {
         IndexQueryMeta new_meta;
         if (target_streamer_reformer_->convert(vector, original_query_meta_,
