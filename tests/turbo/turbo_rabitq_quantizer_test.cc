@@ -458,30 +458,79 @@ TEST(RabitqQuantizer, PackedScanMatchesDedicatedBatchEstimator) {
           float expected[32], lower[32], dot[32];
           rabitqlib::split_batch_estdist(reference.data(), reference_query, dim,
                                          expected, lower, dot, true);
+          rabitqlib::ConstBatchDataMap<float> batch(reference.data(), dim);
           turbo::DistanceEstimate estimates[32];
           ASSERT_EQ(0, scanner->estimate(packed.data(), count, estimates));
           CheckCandidateEstimates(*scanner, packed.data(), count);
           for (size_t i = 0; i < count; ++i) {
+            // FMA and separate multiply/add round differently. IP can cancel
+            // large intermediate terms to almost zero, so bound roundoff by
+            // those terms rather than by the final distance alone.
+            constexpr float roundoff =
+                4 * std::numeric_limits<float>::epsilon();
+            const float lut_offset = reference_query.sum_vl_lut();
+            const float dot_tolerance =
+                roundoff * std::max(1.0f, std::abs(dot[i] - lut_offset) +
+                                              std::abs(lut_offset));
+            EXPECT_NEAR(dot[i], estimates[i].coarse_dot, dot_tolerance);
+            const float correction_error =
+                roundoff * std::abs(reference_query.g_add());
+            EXPECT_NEAR(scalars[4], reference_query.g_add(), correction_error);
+            const float scale = std::abs(batch.f_rescale()[i]);
             const float tolerance =
-                1e-5f * std::max(1.0f, std::abs(expected[i]));
+                correction_error + scale * dot_tolerance +
+                roundoff *
+                    std::max(1.0f,
+                             std::abs(batch.f_add()[i]) +
+                                 std::abs(reference_query.g_add()) +
+                                 scale * (std::abs(dot[i]) +
+                                          std::abs(reference_query.k1xsumq())) +
+                                 (ip ? 1.0f : 0.0f));
             EXPECT_NEAR(expected[i] - (ip ? 1 : 0), estimates[i].distance,
                         tolerance);
-            EXPECT_NEAR((bits == 1 ? expected[i] : lower[i]) - (ip ? 1 : 0),
-                        estimates[i].lower_bound, tolerance);
+            EXPECT_NEAR(
+                (bits == 1 ? expected[i] : lower[i]) - (ip ? 1 : 0),
+                estimates[i].lower_bound,
+                tolerance +
+                    (bits == 1
+                         ? 0.0f
+                         : roundoff * std::abs(batch.f_error()[i] *
+                                               reference_query.g_error())));
             EXPECT_FLOAT_EQ(
                 bits == 1 ? estimates[i].distance
                           : distance(rows.data() + i * stride),
                 scanner->refine(rows.data() + i * stride, estimates[i]));
             ASSERT_TRUE(scanner->set_reuse_coarse_dot(true));
-            const float boosted =
-                bits == 1 ? expected[i]
-                          : rabitqlib::split_distance_boosting(
-                                rows.data() + i * stride + 8 + dim / 8 + 12,
-                                rabitqlib::select_excode_ipfunc(bits - 1),
-                                reference_query, dim, bits - 1, dot[i]);
+            const char *ex_data = rows.data() + i * stride + 8 + dim / 8 + 12;
+            const auto ex_ip =
+                bits > 1 ? rabitqlib::select_excode_ipfunc(bits - 1) : nullptr;
+            const float boosted = bits == 1
+                                      ? expected[i]
+                                      : rabitqlib::split_distance_boosting(
+                                            ex_data, ex_ip, reference_query,
+                                            dim, bits - 1, dot[i]);
+            float refine_tolerance = tolerance;
+            if (bits > 1) {
+              rabitqlib::ConstExDataMap<float> ex(ex_data, dim, bits - 1);
+              const float extra_dot =
+                  ex_ip(reference_query.rotated_query(), ex.ex_code(), dim);
+              const float ex_scale = std::abs(ex.f_rescale_ex());
+              refine_tolerance =
+                  correction_error +
+                  ex_scale * std::ldexp(dot_tolerance, bits - 1) +
+                  roundoff *
+                      std::max(1.0f,
+                               std::abs(ex.f_add_ex()) +
+                                   std::abs(reference_query.g_add()) +
+                                   ex_scale *
+                                       (std::abs(std::ldexp(dot[i], bits - 1)) +
+                                        std::abs(extra_dot) +
+                                        std::abs(reference_query.kbxsumq())) +
+                                   (ip ? 1.0f : 0.0f));
+            }
             EXPECT_NEAR(boosted - (ip ? 1 : 0),
                         scanner->refine(rows.data() + i * stride, estimates[i]),
-                        1e-5f * std::max(1.0f, std::abs(boosted)));
+                        refine_tolerance);
             ASSERT_TRUE(scanner->set_reuse_coarse_dot(false));
           }
           const uint32_t bad_cluster = 1;

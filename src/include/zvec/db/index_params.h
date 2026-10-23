@@ -615,6 +615,11 @@ inline FlatIndexParams MakeDefaultVectorIndexParams(
 inline FlatIndexParams MakeDefaultQuantVectorIndexParams(
     MetricType metric_type, QuantizeType quantize_type,
     QuantizerParam quantizer_param = {}) {
+  // RaBitQ needs dataset training during optimize. Its temporary Flat stores
+  // raw vectors, including when reopening an existing unindexed block.
+  if (quantize_type == QuantizeType::RABITQ) {
+    return MakeDefaultVectorIndexParams(metric_type);
+  }
   return FlatIndexParams(metric_type, quantize_type, quantizer_param);
 }
 

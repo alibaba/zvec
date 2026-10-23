@@ -1212,22 +1212,28 @@ TEST(FieldSchemaTest, IvfIndexSupportsRabitqQuantization) {
                                                  QuantizeType::RABITQ);
   FieldSchema field("vector_field", DataType::VECTOR_FP32, 128, false, params);
   EXPECT_TRUE(field.validate().ok());
+  const auto validate_params = [&]() {
+    field.set_index_params(params);
+    return field.validate();
+  };
   params->set_total_bits(0);
-  EXPECT_FALSE(field.validate().ok());
+  EXPECT_FALSE(validate_params().ok());
   params->set_total_bits(10);
-  EXPECT_FALSE(field.validate().ok());
+  EXPECT_FALSE(validate_params().ok());
   params->set_total_bits(7);
   params->set_sample_count(-1);
-  EXPECT_FALSE(field.validate().ok());
+  EXPECT_FALSE(validate_params().ok());
   params->set_sample_count(0);
   params->set_n_list(0);
-  EXPECT_FALSE(field.validate().ok());
+  EXPECT_FALSE(validate_params().ok());
   params->set_n_list(16);
   params->set_n_iters(0);
-  EXPECT_FALSE(field.validate().ok());
+  EXPECT_FALSE(validate_params().ok());
   params->set_n_iters(5);
   params->set_use_soar(true);
-  EXPECT_FALSE(field.validate().ok());
+  EXPECT_FALSE(validate_params().ok());
+  params->set_use_soar(false);
+  EXPECT_TRUE(validate_params().ok());
 }
 
 TEST(FieldSchemaTest, IvfRabitqIndexValidationDimensionAndDataTypes) {

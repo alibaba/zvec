@@ -121,6 +121,11 @@ static void test_collection(zvec_index_type_t type, zvec_metric_type_t metric,
     CHECK(success == 1 && errors == 0);
     zvec_doc_destroy(doc);
   }
+  // Reopen the untrained Flat blocks before optimize builds the RaBitQ index.
+  OK(zvec_collection_close(coll));
+  coll = NULL;
+  OK(zvec_collection_open(path, NULL, &coll));
+  CHECK(coll != NULL);
   OK(zvec_collection_optimize(coll));
   zvec_collection_stats_t *stats = NULL;
   OK(zvec_collection_get_stats(coll, &stats));

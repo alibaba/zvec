@@ -17,6 +17,32 @@
 
 using namespace zvec;
 
+TEST(EngineHelperTest, RabitqTemporaryFlatUsesRawVectors) {
+  for (auto metric : {MetricType::L2, MetricType::IP, MetricType::COSINE}) {
+    auto params = MakeDefaultQuantVectorIndexParams(
+        metric, QuantizeType::RABITQ, QuantizerParam(false, 7, 4, 128, 6));
+    EXPECT_EQ(params.quantize_type(), QuantizeType::UNDEFINED);
+    EXPECT_EQ(params.metric_type(), metric);
+    FieldSchema field("vector", DataType::VECTOR_FP32, 128, false,
+                      params.clone());
+    ASSERT_TRUE(field.validate().ok());
+    auto result = ProximaEngineHelper::convert_to_engine_index_param(field);
+    ASSERT_TRUE(result) << result.error().message();
+    ASSERT_NE((*result)->quantizer_param, nullptr);
+    EXPECT_EQ((*result)->index_type, core_interface::IndexType::kFlat);
+    EXPECT_EQ((*result)->quantizer_param->type,
+              core_interface::QuantizerType::kNone);
+  }
+  // Other quantizers must keep the same temporary-index configuration.
+  for (auto type : {QuantizeType::UNDEFINED, QuantizeType::FP16,
+                    QuantizeType::INT8, QuantizeType::INT4}) {
+    auto params = MakeDefaultQuantVectorIndexParams(MetricType::L2, type,
+                                                    QuantizerParam(true));
+    EXPECT_EQ(params.quantize_type(), type);
+    EXPECT_TRUE(params.quantizer_param().enable_rotate());
+  }
+}
+
 TEST(EngineHelperTest, IVFRabitqQuantizerParameters) {
   for (int bits : {3, 7, 9}) {
     for (int samples : {0, 24}) {
