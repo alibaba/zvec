@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <cstring>
 #include <ailego/math/norm2_matrix.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
@@ -88,12 +89,22 @@ class QuantizedIntegerMetric : public IndexMetric {
       return kernels.dist;
     const auto ip = kernels.dist;
     if (!ip) return nullptr;
-    return [=](const void *m, const void *q, size_t dim, float *out) {
-      float u2, v2;
-      ip(m, m, dim, &u2);
-      ip(q, q, dim, &v2);
+    const bool int4 = meta_.data_type() == IndexMeta::DT_INT4;
+    return [ip, int4](const void *m, const void *q, size_t dim, float *out) {
+      const size_t original_dim = dim - (int4 ? 32 : 20);
+      const size_t tail_offset = int4 ? original_dim / 2 : original_dim;
+      auto squared_norm = [=](const void *record) {
+        // Legacy records store moments of the unrounded affine codes. A
+        // self inner product of packed codes does not reproduce their norm.
+        float tail[4];
+        std::memcpy(tail, static_cast<const uint8_t *>(record) + tail_offset,
+                    sizeof(tail));
+        const float a = tail[0], b = tail[1], sum = tail[2], sum2 = tail[3];
+        return a * a * sum2 + 2 * a * b * sum + original_dim * b * b;
+      };
+      const float u2 = squared_norm(m), v2 = squared_norm(q);
       ip(m, q, dim, out);
-      *out = 2.0f + 2.0f * *out / std::max(-u2, -v2);
+      *out = 2.0f + 2.0f * *out / std::max(u2, v2);
     };
   }
 

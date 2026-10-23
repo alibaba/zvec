@@ -76,8 +76,8 @@ class SquaredEuclideanMetric : public IndexMetric {
   //! Retrieve distance function for index features
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
     if (data_type_ == IndexMeta::DT_UINT8 && (m != 1 || n != 1)) return nullptr;
-    return turbo::MakeDistanceMatrix(distance(), m, n,
-                                     TurboDataType(data_type_));
+    return turbo::MakeRawDistanceMatrix<turbo::MetricType::kSquaredEuclidean>(
+        m, n, TurboDataType(data_type_));
   }
 
   //! Retrieve distance function for query
@@ -153,8 +153,15 @@ class EuclideanMetric : public IndexMetric {
 
   //! Retrieve distance function for index features
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
-    return turbo::MakeDistanceMatrix(distance(), m, n,
-                                     TurboDataType(data_type_));
+    auto squared =
+        turbo::MakeRawDistanceMatrix<turbo::MetricType::kSquaredEuclidean>(
+            m, n, TurboDataType(data_type_));
+    if (!squared) return nullptr;
+    return
+        [squared, m, n](const void *a, const void *b, size_t dim, float *out) {
+          squared(a, b, dim, out);
+          for (size_t i = 0; i < m * n; ++i) out[i] = std::sqrt(out[i]);
+        };
   }
 
   //! Retrieve distance function for query

@@ -147,17 +147,22 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
         RawKernels(turbo::MetricType::kSquaredEuclidean, data_type_).dist;
     if (injection_ == Injection::kIdentity) return l2;
     if (!ip || !l2) return nullptr;
-    return [this, ip, l2](const void *m, const void *q, size_t dim,
-                          float *out) {
+    // Callers may keep the distance function after destroying the metric.
+    const auto norm = squared_norm2_handle_;
+    const auto injection = injection_;
+    const auto eta = eta_;
+    const auto repeats = m_value_;
+    return [norm, injection, eta, repeats, ip, l2](const void *m, const void *q,
+                                                   size_t dim, float *out) {
       float u2, v2;
-      squared_norm2_handle_(m, dim, &u2);
-      squared_norm2_handle_(q, dim, &v2);
-      if (injection_ == Injection::kRepeatedQuadratic) {
+      norm(m, dim, &u2);
+      norm(q, dim, &v2);
+      if (injection == Injection::kRepeatedQuadratic) {
         l2(m, q, dim, out);
-        *out *= eta_;
-        u2 *= eta_;
-        v2 *= eta_;
-        for (size_t i = 0; i < m_value_; ++i) {
+        *out *= eta;
+        u2 *= eta;
+        v2 *= eta;
+        for (size_t i = 0; i < repeats; ++i) {
           *out += (u2 - v2) * (u2 - v2);
           u2 *= u2;
           v2 *= v2;
@@ -165,13 +170,13 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
       } else {
         float negative_ip;
         ip(m, q, dim, &negative_ip);
-        if (injection_ == Injection::kLocalizedSpherical || eta_ == 0.0f) {
+        if (injection == Injection::kLocalizedSpherical || eta == 0.0f) {
           *out = static_cast<float>(2.0 + 2.0 * negative_ip / std::max(u2, v2));
         } else {
           const double product =
-              (1.0 - double(eta_) * u2) * (1.0 - double(eta_) * v2);
+              (1.0 - double(eta) * u2) * (1.0 - double(eta) * v2);
           *out = static_cast<float>(
-              2.0 * (1.0 + double(eta_) * negative_ip -
+              2.0 * (1.0 + double(eta) * negative_ip -
                      (product > 0.0 ? std::sqrt(product) : 0.0)));
         }
       }

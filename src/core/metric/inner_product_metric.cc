@@ -79,8 +79,8 @@ class InnerProductMetric : public IndexMetric {
 
   //! Retrieve distance function for index features
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
-    return turbo::MakeDistanceMatrix(distance(), m, n,
-                                     TurboDataType(data_type_));
+    return turbo::MakeRawDistanceMatrix<turbo::MetricType::kInnerProduct>(
+        m, n, TurboDataType(data_type_));
   }
 
   //! Retrieve distance function for query

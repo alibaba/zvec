@@ -501,6 +501,99 @@ TEST(QuantizedIntegerMetric, TestInt4SquaredEuclideanStoredMoments) {
   }
 }
 
+TEST(QuantizedIntegerMetric, LegacyInt4MipsUnalignedTail) {
+  // Pre-rounding RecordQuantizer output for [0, .1, .5, 1] and
+  // [0, .2, .3, .8]. Freeze the old encoding instead of using today's encoder.
+  uint8_t a[18] = {0x98, 0x7f}, b[18] = {0xc8, 0x7e};
+  const float tail_a[] = {1.0f / 15, 8.0f / 15, -8.0f, 155.5f};
+  const float tail_b[] = {1.0f / 18.75f, 8.0f / 18.75f, -7.625f, 136.703125f};
+  std::memcpy(a + 2, tail_a, sizeof(tail_a));
+  std::memcpy(b + 2, tail_b, sizeof(tail_b));
+  Params params;
+  params.set(QUANTIZED_INTEGER_METRIC_ORIGIN_METRIC_NAME,
+             "MipsSquaredEuclidean");
+  auto metric = IndexFactory::CreateMetric("QuantizedInteger");
+  ASSERT_TRUE(metric);
+  ASSERT_EQ(0, metric->init(IndexMeta(IndexMeta::DT_INT4, 36), params));
+  float actual;
+  metric->distance()(a, b, 36, &actual);
+  EXPECT_NEAR(0.453615427f, actual, 1e-6f);
+}
+
+TEST(QuantizedIntegerMetric, MipsUsesStoredMomentsAfterMetadataReload) {
+  // Freeze legacy INT4 records: packed [-8, 7], with moments accumulated
+  // before rounding. The rounded variants exercise newer index records too.
+  for (auto type : {IndexMeta::DT_INT4, IndexMeta::DT_INT8}) {
+    for (bool rounded : {false, true}) {
+      SCOPED_TRACE(int(type));
+      SCOPED_TRACE(rounded);
+      const size_t dim = type == IndexMeta::DT_INT4 ? 40 : 28;
+      const size_t offset = type == IndexMeta::DT_INT4 ? 4 : 8;
+      alignas(8) uint8_t a[28]{}, b[28]{};
+      if (type == IndexMeta::DT_INT4) {
+        std::memset(a, 0x78, 4);
+        std::memset(b, 0x78, 4);
+      } else {
+        for (size_t i = 0; i < 8; ++i) {
+          a[i] = b[i] = static_cast<uint8_t>(i % 2 ? 7 : -8);
+        }
+      }
+      const float tail_a[] = {0.5f, 1.0f, rounded ? -4.0f : -6.0f,
+                              rounded ? 452.0f : 425.0f};
+      const float tail_b[] = {0.25f, -1.0f, rounded ? -4.0f : -2.0f,
+                              rounded ? 452.0f : 421.0f};
+      std::memcpy(a + offset, tail_a, sizeof(tail_a));
+      std::memcpy(b + offset, tail_b, sizeof(tail_b));
+      if (type == IndexMeta::DT_INT8) {
+        const int32_t code_sum = -4;
+        std::memcpy(a + offset + 16, &code_sum, sizeof(code_sum));
+        std::memcpy(b + offset + 16, &code_sum, sizeof(code_sum));
+      }
+      // Independent expansion of the old record format's scoring formula.
+      const double norm_a = 0.25 * tail_a[3] + tail_a[2] + 8.0;
+      const double norm_b = 0.0625 * tail_b[3] - 0.5 * tail_b[2] + 8.0;
+      const double cross =
+          0.125 * 452 + 0.25 * tail_b[2] - 0.5 * tail_a[2] - 8.0;
+      const float expected = 2.0 - 2.0 * cross / std::max(norm_a, norm_b);
+      Params params;
+      params.set(QUANTIZED_INTEGER_METRIC_ORIGIN_METRIC_NAME,
+                 "MipsSquaredEuclidean");
+      IndexMeta saved(type, dim);
+      saved.set_metric("QuantizedInteger", 0, params);
+      std::string blob;
+      saved.serialize(&blob);
+      IndexMeta loaded;
+      ASSERT_TRUE(loaded.deserialize(blob.data(), blob.size()));
+      auto metric = IndexFactory::CreateMetric(loaded.metric_name());
+      ASSERT_TRUE(metric);
+      ASSERT_EQ(0, metric->init(loaded, loaded.metric_params()));
+      auto scalar = metric->distance();
+      auto batch = metric->batch_distance();
+      auto matrix = metric->distance_matrix(2, 2);
+      metric.reset();
+      float actual;
+      scalar(a, b, dim, &actual);
+      EXPECT_NEAR(expected, actual, 1e-6f);
+      const void *rows[] = {a, a};
+      float results[4];
+      batch(rows, b, 2, dim, results, nullptr);
+      for (size_t i = 0; i < 2; ++i) EXPECT_NEAR(expected, results[i], 1e-6f);
+      // Matrix records interleave all words, including the persisted tail.
+      uint32_t matrix_a[14]{}, matrix_b[14]{};
+      for (size_t word = 0;
+           word < (offset + (type == IndexMeta::DT_INT4 ? 16 : 20)) / 4;
+           ++word) {
+        for (size_t row = 0; row < 2; ++row) {
+          std::memcpy(matrix_a + word * 2 + row, a + word * 4, 4);
+          std::memcpy(matrix_b + word * 2 + row, b + word * 4, 4);
+        }
+      }
+      matrix(matrix_a, matrix_b, dim, results);
+      for (float result : results) EXPECT_NEAR(expected, result, 1e-6f);
+    }
+  }
+}
+
 TEST(QuantizedIntegerMetric, TestInt4SquaredEuclideanReformer) {
   std::random_device rd;
   std::mt19937 gen(rd());

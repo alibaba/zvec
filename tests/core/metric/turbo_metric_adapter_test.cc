@@ -110,8 +110,18 @@ TEST(TurboMetricAdapter, MipsInjectionsKeepTheirDistanceSemantics) {
     auto metric = IndexFactory::CreateMetric("MipsSquaredEuclidean");
     ASSERT_TRUE(metric);
     ASSERT_EQ(0, metric->init(IndexMeta(IndexMeta::DT_FP32, 3), params));
+    auto scalar = metric->distance();
+    auto matrix = metric->distance_matrix(1, 1);
+    auto matrix_block = metric->distance_matrix(2, 2);
+    auto batch_distance = metric->batch_distance();
+    std::weak_ptr<IndexMetric> weak_metric = metric;
+    // Match the clustering callers: only the callbacks outlive this scope.
+    // cleanup also checks that they retain the original parameter values.
+    ASSERT_EQ(0, metric->cleanup());
+    metric.reset();
+    ASSERT_TRUE(weak_metric.expired());
     float distance;
-    metric->distance()(a, b, 3, &distance);
+    scalar(a, b, 3, &distance);
     const float eta = 0.25f / 16.0f;
     const float u2 = 14.0f * eta, v2 = 6.0f * eta;
     const float expected[] = {
@@ -123,7 +133,15 @@ TEST(TurboMetricAdapter, MipsInjectionsKeepTheirDistanceSemantics) {
     EXPECT_NEAR(expected[injection], distance, 1e-6f);
     const void *rows[] = {a, b};
     float batch[2];
-    metric->batch_distance()(rows, b, 2, 3, batch, nullptr);
+    float matrix_result;
+    matrix(a, b, 3, &matrix_result);
+    EXPECT_NEAR(expected[injection], matrix_result, 1e-6f);
+    const float interleaved_a[] = {1, 1, 2, 2, 3, 3};
+    const float interleaved_b[] = {2, 2, 1, 1, -1, -1};
+    float block[4];
+    matrix_block(interleaved_a, interleaved_b, 3, block);
+    for (float result : block) EXPECT_NEAR(expected[injection], result, 1e-6f);
+    batch_distance(rows, b, 2, 3, batch, nullptr);
     EXPECT_NEAR(distance, batch[0], 1e-6f);
     EXPECT_NEAR(0.0f, batch[1], 1e-6f);
   }
