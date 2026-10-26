@@ -29,6 +29,53 @@
 namespace zvec {
 // TODO: rename file extension
 class ProximaEngineHelper {
+  // Cosine Flat stores FP32 coordinates followed by a norm. Cosine training
+  // and graph distances are invariant to that norm, so expose only the
+  // coordinates without copying the dataset. Keep iteration and block access
+  // delegated to the source to preserve its stride, errors and pin lifetimes.
+  class CosineCoordinateProvider final : public core::IndexProvider {
+   public:
+    explicit CosineCoordinateProvider(core::IndexProvider::Pointer source)
+        : source_(std::move(source)) {}
+
+    size_t count() const override {
+      return source_->count();
+    }
+    size_t dimension() const override {
+      return source_->dimension();
+    }
+    core::IndexMeta::DataType data_type() const override {
+      return source_->data_type();
+    }
+    size_t element_size() const override {
+      return dimension() * sizeof(float);
+    }
+    bool multipass() const override {
+      return source_->multipass();
+    }
+    Iterator::Pointer create_iterator() override {
+      return source_->create_iterator();
+    }
+    const void *get_vector(uint64_t key) const override {
+      return source_->get_vector(key);
+    }
+    int get_vector(uint64_t key,
+                   core::IndexStorage::MemoryBlock &block) const override {
+      return source_->get_vector(key, block);
+    }
+    int get_vectors(
+        const uint64_t *keys, uint32_t count,
+        std::vector<core::IndexStorage::MemoryBlock> &blocks) const override {
+      return source_->get_vectors(keys, count, blocks);
+    }
+    const std::string &owner_class() const override {
+      return source_->owner_class();
+    }
+
+   private:
+    core::IndexProvider::Pointer source_;
+  };
+
  public:
   static Result<vector_column_params::VectorDataBuffer>
   move_from_engine_vector_buffer(
@@ -603,6 +650,15 @@ class ProximaEngineHelper {
         index_param_builder->with_use_contiguous_memory(
             db_index_params->use_contiguous_memory());
         if (db_index_params->raw_vector_provider()) {
+          auto provider = db_index_params->raw_vector_provider();
+          if (db_index_params->quantize_type() == QuantizeType::RABITQ &&
+              db_index_params->metric_type() == MetricType::COSINE &&
+              provider->data_type() == core::IndexMeta::DT_FP32 &&
+              provider->dimension() == field_schema.dimension() &&
+              provider->element_size() ==
+                  (provider->dimension() + 1) * sizeof(float)) {
+            provider = std::make_shared<CosineCoordinateProvider>(provider);
+          }
           core::IndexMeta meta(core::IndexMeta::DT_FP32,
                                field_schema.dimension());
           meta.set_metric(
@@ -611,8 +667,7 @@ class ProximaEngineHelper {
                       .value(),
                   false),
               0, ailego::Params{});
-          index_param_builder->with_provider(
-              db_index_params->raw_vector_provider(), meta);
+          index_param_builder->with_provider(std::move(provider), meta);
         }
 
         return index_param_builder->build();

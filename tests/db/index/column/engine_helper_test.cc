@@ -13,9 +13,141 @@
 // limitations under the License.
 
 #include "db/index/column/vector_column/engine_helper.hpp"
+#include <random>
 #include <gtest/gtest.h>
+#include <zvec/core/interface/index_factory.h>
+#include "tests/test_util.h"
 
 using namespace zvec;
+
+#if RABITQ_SUPPORTED
+TEST(EngineHelperTest, HnswRabitqBuildsFromReopenedCosineFlat) {
+  namespace ci = core_interface;
+  const std::string flat_path = "engine_helper_cosine_flat.index";
+  const std::string graph_path = "engine_helper_cosine_rabitq.index";
+  test_util::RemoveTestFiles(flat_path);
+  constexpr uint32_t dim = 128;
+  constexpr size_t count = 1001;  // Above HNSW's default brute-force threshold.
+  std::mt19937 rng(2026);
+  std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+  std::vector<std::vector<float>> vectors(count, std::vector<float>(dim));
+  auto flat_param = ci::FlatIndexParamBuilder()
+                        .with_metric_type(ci::MetricType::kCosine)
+                        .with_data_type(ci::DataType::DT_FP32)
+                        .with_dimension(dim)
+                        .build();
+  auto flat = ci::IndexFactory::CreateAndInitIndex(*flat_param);
+  ASSERT_NE(flat, nullptr);
+  const ci::StorageOptions create{ci::StorageOptions::StorageType::kMMAP, true};
+  const ci::StorageOptions reopen{ci::StorageOptions::StorageType::kMMAP,
+                                  false};
+  ASSERT_EQ(flat->open(flat_path, create), 0);
+  for (size_t i = 0; i < count; ++i) {
+    for (float &v : vectors[i]) v = dist(rng) * (i % 7 + 1);
+    // Include a zero vector; the cosine provider view must preserve it too.
+    if (i == 0) std::fill(vectors[i].begin(), vectors[i].end(), 0.0f);
+    ASSERT_EQ(flat->add(ci::VectorData{ci::DenseVector{vectors[i].data()}}, i),
+              0);
+  }
+  ASSERT_EQ(flat->flush(), 0);
+  ASSERT_EQ(flat->close(), 0);
+  flat = ci::IndexFactory::CreateAndInitIndex(*flat_param);
+  ASSERT_NE(flat, nullptr);
+  ASSERT_EQ(flat->open(flat_path, reopen), 0);
+  auto stored = flat->create_index_provider();
+  ASSERT_EQ(stored->element_size(), (dim + 1) * sizeof(float));
+
+  // Only the RaBitQ cosine build path should strip the norm from its view.
+  for (auto metric : {MetricType::L2, MetricType::IP, MetricType::COSINE}) {
+    for (auto quantizer :
+         {QuantizeType::UNDEFINED, QuantizeType::FP16, QuantizeType::RABITQ}) {
+      if (metric == MetricType::COSINE && quantizer == QuantizeType::RABITQ)
+        continue;
+      auto params =
+          std::make_shared<HnswIndexParams>(metric, 16, 100, quantizer);
+      params->set_raw_vector_provider(stored);
+      FieldSchema field("vector", DataType::VECTOR_FP32, dim, false, params);
+      auto converted =
+          ProximaEngineHelper::convert_to_engine_index_param(field);
+      ASSERT_TRUE(converted);
+      auto hnsw = std::dynamic_pointer_cast<ci::HNSWIndexParam>(*converted);
+      ASSERT_NE(hnsw, nullptr);
+      EXPECT_EQ(hnsw->provider, stored);
+    }
+  }
+
+  for (int bits : {3, 9}) {
+    SCOPED_TRACE(bits);
+    test_util::RemoveTestFiles(graph_path);
+    auto params = std::make_shared<HnswIndexParams>(
+        MetricType::COSINE, 16, 100, QuantizeType::RABITQ, false,
+        QuantizerParam(false, bits, 4, 128, 6));
+    params->set_raw_vector_provider(stored);
+    FieldSchema field("vector", DataType::VECTOR_FP32, dim, false, params);
+    auto converted = ProximaEngineHelper::convert_to_engine_index_param(field);
+    ASSERT_TRUE(converted);
+    auto hnsw = std::dynamic_pointer_cast<ci::HNSWIndexParam>(*converted);
+    ASSERT_NE(hnsw, nullptr);
+    ASSERT_EQ(hnsw->provider->element_size(), dim * sizeof(float));
+    EXPECT_TRUE(hnsw->provider->is_matched(hnsw->provider_meta));
+    EXPECT_EQ(hnsw->provider->count(), count);
+    EXPECT_EQ(hnsw->provider->get_vector(17), stored->get_vector(17));
+    core::IndexStorage::MemoryBlock missing;
+    EXPECT_EQ(hnsw->provider->get_vector(count + 1, missing),
+              stored->get_vector(count + 1, missing));
+    const uint64_t keys[] = {0, 17, 101};
+    std::vector<core::IndexStorage::MemoryBlock> blocks;
+    ASSERT_EQ(hnsw->provider->get_vectors(keys, 3, blocks), 0);
+    ASSERT_EQ(blocks.size(), 3U);
+    for (size_t i = 0; i < 3; ++i) {
+      ASSERT_NE(blocks[i].data(), nullptr);
+      EXPECT_EQ(std::memcmp(blocks[i].data(), stored->get_vector(keys[i]),
+                            dim * sizeof(float)),
+                0);
+    }
+    auto graph = ci::IndexFactory::CreateAndInitIndex(*hnsw);
+    ASSERT_NE(graph, nullptr);
+    ASSERT_EQ(graph->open(graph_path, create), 0);
+    ASSERT_EQ(graph->merge({flat}, ci::IndexFilter()), 0);
+    EXPECT_EQ(graph->get_doc_count(), count);
+    auto query_param =
+        ci::HNSWQueryParamBuilder().with_topk(5).with_ef_search(count).build();
+    const ci::VectorData query{ci::DenseVector{vectors[17].data()}};
+    ci::SearchResult before;
+    ASSERT_EQ(graph->search(query, query_param, &before), 0);
+    ASSERT_EQ(before.doc_list_.size(), 5U);
+    EXPECT_EQ(before.doc_list_.front().key(), 17U);
+    auto scaled = vectors[17];
+    for (float &v : scaled) v *= 4.0f;
+    ci::SearchResult scaled_result;
+    ASSERT_EQ(graph->search(ci::VectorData{ci::DenseVector{scaled.data()}},
+                            query_param, &scaled_result),
+              0);
+    ASSERT_EQ(scaled_result.doc_list_.size(), before.doc_list_.size());
+    for (size_t i = 0; i < before.doc_list_.size(); ++i) {
+      EXPECT_EQ(scaled_result.doc_list_[i].key(), before.doc_list_[i].key());
+      EXPECT_FLOAT_EQ(scaled_result.doc_list_[i].score(),
+                      before.doc_list_[i].score());
+    }
+    ASSERT_EQ(graph->close(), 0);
+    hnsw->provider.reset();
+    graph = ci::IndexFactory::CreateAndInitIndex(*hnsw);
+    ASSERT_NE(graph, nullptr);
+    ASSERT_EQ(graph->open(graph_path, reopen), 0);
+    ci::SearchResult after;
+    ASSERT_EQ(graph->search(query, query_param, &after), 0);
+    ASSERT_EQ(after.doc_list_.size(), before.doc_list_.size());
+    for (size_t i = 0; i < before.doc_list_.size(); ++i) {
+      EXPECT_EQ(after.doc_list_[i].key(), before.doc_list_[i].key());
+      EXPECT_FLOAT_EQ(after.doc_list_[i].score(), before.doc_list_[i].score());
+    }
+    ASSERT_EQ(graph->close(), 0);
+    test_util::RemoveTestFiles(graph_path);
+  }
+  ASSERT_EQ(flat->close(), 0);
+  test_util::RemoveTestFiles(flat_path);
+}
+#endif
 
 TEST(EngineHelperTest, RabitqTemporaryFlatUsesRawVectors) {
   for (auto metric : {MetricType::L2, MetricType::IP, MetricType::COSINE}) {
