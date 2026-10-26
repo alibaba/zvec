@@ -518,22 +518,21 @@ int FlatStreamer<BATCH_SIZE>::search_external(
     auto *heap = ctx->result_heap();
     heap->clear();
     // Destroy the outstanding lease before its cursor, including on errors.
-    VectorSource::Iterator::Pointer cursor;
-    VectorSource::Batch batch;
+    VectorIterator::Pointer cursor;
+    VectorBatch batch;
     if (!keys) cursor = source->create_iterator();
     auto clear_batch = [&]() {
-      if (auto *pointers = std::get_if<VectorSource::PointerBatch>(&batch)) {
+      if (auto *pointers = std::get_if<PointerBatch>(&batch)) {
         pointers->ids.clear();
         pointers->vectors.clear();
         pointers->lease.reset();
       } else {
-        std::get<VectorSource::ContiguousBatch>(batch) = {};
+        std::get<ContiguousBatch>(batch) = {};
       }
     };
     auto consume = [&]() -> int {
-      const auto *contiguous =
-          std::get_if<VectorSource::ContiguousBatch>(&batch);
-      const auto *pointers = std::get_if<VectorSource::PointerBatch>(&batch);
+      const auto *contiguous = std::get_if<ContiguousBatch>(&batch);
+      const auto *pointers = std::get_if<PointerBatch>(&batch);
       if (!contiguous && !pointers) return IndexError_ReadData;
       const size_t batch_size =
           contiguous ? contiguous->count : pointers->ids.size();
@@ -609,11 +608,9 @@ int FlatStreamer<BATCH_SIZE>::search_external(
         if (ret != 0) return ret;
         ret = consume();
         if (ret != 0) return ret;
-        const auto *contiguous =
-            std::get_if<VectorSource::ContiguousBatch>(&batch);
-        if (contiguous
-                ? contiguous->count == 0
-                : std::get<VectorSource::PointerBatch>(batch).ids.empty())
+        const auto *contiguous = std::get_if<ContiguousBatch>(&batch);
+        if (contiguous ? contiguous->count == 0
+                       : std::get<PointerBatch>(batch).ids.empty())
           break;
       }
     } else {
@@ -622,7 +619,7 @@ int FlatStreamer<BATCH_SIZE>::search_external(
       auto read_batch = [&]() -> int {
         if (ids.empty()) return 0;
         clear_batch();
-        auto &pointers = std::get<VectorSource::PointerBatch>(batch);
+        auto &pointers = std::get<PointerBatch>(batch);
         pointers.ids = ids;
         pointers.vectors.resize(ids.size());
         source->get_vectors(ids.data(), ids.size(), pointers.vectors.data());

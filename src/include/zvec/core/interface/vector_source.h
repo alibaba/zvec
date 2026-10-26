@@ -24,37 +24,36 @@
 namespace zvec {
 namespace core {
 
+// Borrowed raw FP32 rows in get_vector()'s ID space. Leases may pin storage.
+struct PointerBatch {
+  std::vector<uint32_t> ids;
+  // Only filtered or unregistered rows may have null pointers.
+  std::vector<const void *> vectors;
+  std::shared_ptr<const void> lease;
+};
+
+// Row i has ID first_id + i; stride is in bytes, at least one vector's size.
+struct ContiguousBatch {
+  const void *data{nullptr};
+  uint32_t first_id{0};
+  uint32_t count{0};  // Includes filtered rows.
+  size_t stride{0};
+  std::shared_ptr<const void> lease;
+};
+
+using VectorBatch = std::variant<PointerBatch, ContiguousBatch>;
+
+class ZVEC_CORE_API VectorIterator {
+ public:
+  using Pointer = std::unique_ptr<VectorIterator>;
+  virtual ~VectorIterator() = default;
+  // Return 0 with 1..max_count rows, 0 with an empty batch at EOF, or an
+  // IndexError on failure. Enumerate every visible ID exactly once.
+  virtual int next_batch(uint32_t max_count, VectorBatch *out) = 0;
+};
+
 class ZVEC_CORE_API VectorSource {
  public:
-  // Both batch types borrow raw FP32 rows in get_vector()'s ID space.
-  // Keep memory valid through consumption; lease may pin its backing storage.
-  struct PointerBatch {
-    std::vector<uint32_t> ids;
-    // Only filtered or unregistered rows may have null pointers.
-    std::vector<const void *> vectors;
-    std::shared_ptr<const void> lease;
-  };
-
-  // Row i has ID first_id + i; stride is in bytes, at least one vector's size.
-  struct ContiguousBatch {
-    const void *data{nullptr};
-    uint32_t first_id{0};
-    uint32_t count{0};  // Includes filtered rows.
-    size_t stride{0};
-    std::shared_ptr<const void> lease;
-  };
-
-  using Batch = std::variant<PointerBatch, ContiguousBatch>;
-
-  class Iterator {
-   public:
-    using Pointer = std::unique_ptr<Iterator>;
-    virtual ~Iterator() = default;
-    // Return 0 with 1..max_count rows, 0 with an empty batch at EOF, or an
-    // IndexError on failure. Enumerate every visible ID exactly once.
-    virtual int next_batch(uint32_t max_count, Batch *out) = 0;
-  };
-
   VectorSource();
   virtual ~VectorSource();
 
@@ -70,7 +69,20 @@ class ZVEC_CORE_API VectorSource {
   // The caller binds the source, scan domain and visibility filter to the same
   // stable snapshot for the whole request, including subsequent random reads.
   // A disk source can scan physical blocks behind this interface.
-  virtual Iterator::Pointer create_iterator() const;
+  virtual VectorIterator::Pointer create_iterator() const;
+};
+
+class ZVEC_CORE_API ContiguousVectorSource final : public VectorSource {
+ public:
+  explicit ContiguousVectorSource(ContiguousBatch view);
+
+  const void *get_vector(uint32_t id) const override;
+
+  VectorIterator::Pointer create_iterator() const override;
+
+ private:
+  const ContiguousBatch view_;
+  const bool valid_;
 };
 
 }  // namespace core
