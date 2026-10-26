@@ -26,17 +26,14 @@ namespace core {
 
 class ZVEC_CORE_API VectorSource {
  public:
-  // Borrowed row-major storage. Row i starts at data + i * stride bytes.
-  // stride must be at least the vector's byte length. Nonempty batches need
-  // valid backing storage; count includes rows excluded by the query filter.
+  // Borrowed, tightly packed row-major vectors with consecutive IDs.
+  // Row i has ID first_id + i and starts at data + i * element_size bytes,
+  // using the index's vector byte length. No padding or row compaction.
+  // Nonempty batches need valid backing storage; count includes filtered rows.
   struct ContiguousBatch {
     const void *data{nullptr};
     uint32_t first_id{0};
     uint32_t count{0};
-    size_t stride{0};
-    // Optional borrowed array of count IDs. If null, row i has first_id + i.
-    // Otherwise first_id is ignored. IDs use the get_vector() namespace.
-    const uint32_t *ids{nullptr};
   };
 
   // Logical row-major vectors in the same ID namespace as get_vector().
@@ -46,9 +43,8 @@ class ZVEC_CORE_API VectorSource {
     // Rows excluded by Flat's registered-ID set or filter may be null.
     // Every row selected for distance computation must have a valid pointer.
     std::vector<const void *> vectors;
-    // Optional backing allocation or page pin. Vectors and any borrowed ID
-    // array must remain valid until the batch is released, or (for scans)
-    // the next next_batch() call.
+    // Optional backing allocation or page pin. Data must remain valid until
+    // the batch is released, or (for scans) the next next_batch() call.
     std::shared_ptr<const void> lease;
     // Alternative to ids/vectors, which must both be empty when set. Flat
     // adapts this view directly into its reusable distance-computation buffers.

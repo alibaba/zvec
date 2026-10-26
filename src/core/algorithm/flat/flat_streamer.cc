@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include "flat_streamer.h"
-#include <limits>
 #include <zvec/core/framework/index_factory.h>
 #include "flat_streamer_context.h"
 #include "flat_streamer_dumper.h"
@@ -529,18 +528,13 @@ int FlatStreamer<BATCH_SIZE>::search_external(
         if (!batch.ids.empty() || !batch.vectors.empty())
           return IndexError_ReadData;
         if (batch_size &&
-            (!contiguous->data || contiguous->stride < meta_.element_size() ||
-             batch_size - 1 >
-                 (std::numeric_limits<size_t>::max() - meta_.element_size()) /
-                     contiguous->stride ||
-             (!contiguous->ids &&
-              (contiguous->first_id >= kInvalidNodeId ||
-               batch_size > kInvalidNodeId - contiguous->first_id))))
+            (!contiguous->data || contiguous->first_id >= kInvalidNodeId ||
+             batch_size > kInvalidNodeId - contiguous->first_id))
           return IndexError_ReadData;
       } else if (batch.ids.size() != batch.vectors.size()) {
         return IndexError_ReadData;
       }
-      const auto *ids = contiguous ? contiguous->ids : batch.ids.data();
+      const auto *ids = contiguous ? nullptr : batch.ids.data();
       const uint32_t first_id = contiguous ? contiguous->first_id : 0;
       scratch->vector_ptrs.clear();
       scratch->vector_keys.clear();
@@ -560,7 +554,7 @@ int FlatStreamer<BATCH_SIZE>::search_external(
         // Invisible or unregistered rows need not have a readable vector.
         const void *vector = contiguous
                                  ? static_cast<const char *>(contiguous->data) +
-                                       i * contiguous->stride
+                                       i * meta_.element_size()
                                  : batch.vectors[i];
         if (!vector) return IndexError_ReadData;
         scratch->vector_ptrs.push_back(vector);

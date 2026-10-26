@@ -16,7 +16,6 @@
 #include <atomic>
 #include <cstring>
 #include <functional>
-#include <limits>
 #include <map>
 #include <set>
 #include <thread>
@@ -129,27 +128,23 @@ class RandomAccessSource : public core::VectorSource {
 
 class ContiguousSource : public BatchSource {
  public:
-  ContiguousSource(uint32_t count, bool explicit_ids, size_t padding = 0,
-                   uint32_t first_id = 3)
-      : BatchSource(0),
-        explicit_ids_(explicit_ids),
-        stride_elements_(kDimension + padding) {
-    data_.resize(count * stride_elements_, -999.0f);
+  explicit ContiguousSource(uint32_t count, uint32_t first_id = 3)
+      : BatchSource(0), first_id_(first_id) {
+    data_.resize(count * kDimension);
     for (uint32_t i = 0; i < count; ++i) {
-      auto id = first_id + i * (explicit_ids ? 13 : 1);
-      row_ids_.push_back(id);
+      auto id = first_id + i;
       auto &row = rows[id];
       for (uint32_t d = 0; d < kDimension; ++d) {
         row.push_back(((i * 19 + d * 7) % 101) / 101.0f + i * 0.001f);
       }
-      std::copy(row.begin(), row.end(), data_.begin() + i * stride_elements_);
+      std::copy(row.begin(), row.end(), data_.begin() + i * kDimension);
     }
   }
 
   const void *get_vector(uint32_t id) const override {
-    auto it = std::lower_bound(row_ids_.begin(), row_ids_.end(), id);
-    if (it == row_ids_.end() || *it != id) return nullptr;
-    return data_.data() + (it - row_ids_.begin()) * stride_elements_;
+    if (id < first_id_ || id - first_id_ >= data_.size() / kDimension)
+      return nullptr;
+    return data_.data() + (id - first_id_) * kDimension;
   }
 
   class Cursor : public Iterator {
@@ -165,33 +160,28 @@ class ContiguousSource : public BatchSource {
       if (source_.fail_scan && position_) return core::IndexError_ReadData;
       const auto count = static_cast<uint32_t>(
           std::min({size_t{max_count}, source_.page_rows,
-                    source_.row_ids_.size() - position_}));
+                    source_.data_.size() / kDimension - position_}));
       // Exercise EOF expressed as an empty contiguous view too.
       out->contiguous = ContiguousBatch{};
       if (!count) return 0;
       ++source_.scan_batches;
       auto &view = *out->contiguous;
-      view.data = source_.data_.data() + position_ * source_.stride_elements_;
-      view.first_id = source_.row_ids_[position_];
+      view.data = source_.data_.data() + position_ * kDimension;
+      view.first_id = source_.first_id_ + static_cast<uint32_t>(position_);
       view.count = count;
-      view.stride = source_.stride_elements_ * sizeof(float);
-      if (source_.explicit_ids_) view.ids = source_.row_ids_.data() + position_;
       if (source_.lease_pages) {
-        auto page = std::make_shared<Page>();
         const auto *begin = static_cast<const float *>(view.data);
-        page->data.assign(begin, begin + count * source_.stride_elements_);
-        page->ids.assign(source_.row_ids_.begin() + position_,
-                         source_.row_ids_.begin() + position_ + count);
-        view.data = page->data.data();
-        if (view.ids) view.ids = page->ids.data();
+        auto page = std::make_shared<std::vector<float>>(
+            begin, begin + count * kDimension);
+        view.data = page->data();
         out->lease = page;
         previous_ = page;
       }
       if (source_.mixed_batches && batch_number_ % 2) {
         for (uint32_t i = 0; i < count; ++i) {
-          out->ids.push_back(view.ids ? view.ids[i] : view.first_id + i);
-          out->vectors.push_back(static_cast<const char *>(view.data) +
-                                 i * view.stride);
+          out->ids.push_back(view.first_id + i);
+          out->vectors.push_back(static_cast<const float *>(view.data) +
+                                 i * kDimension);
         }
         out->contiguous.reset();
       }
@@ -202,10 +192,6 @@ class ContiguousSource : public BatchSource {
     }
 
    private:
-    struct Page {
-      std::vector<float> data;
-      std::vector<uint32_t> ids;
-    };
     const ContiguousSource &source_;
     size_t position_{0};
     size_t batch_number_{0};
@@ -220,11 +206,9 @@ class ContiguousSource : public BatchSource {
   mutable std::atomic<uint32_t> scan_batches{0};
   bool lease_pages{false}, mixed_batches{false};
   std::function<void(Batch *)> mutate_batch;
-  std::vector<uint32_t> row_ids_;
 
  private:
-  bool explicit_ids_;
-  size_t stride_elements_;
+  uint32_t first_id_;
   std::vector<float> data_;
 };
 
@@ -436,61 +420,57 @@ TEST_F(ExternalFlatTest, FullScanWithOnlyGetVector) {
 }
 
 TEST_F(ExternalFlatTest, ContiguousScanMatchesEmbeddedAndSkipsDeletedRows) {
+  constexpr uint32_t kFirstId = 3;
+  constexpr uint32_t kRowCount = 2103;
   int case_id = 0;
   for (auto metric : {MetricType::kL2sq, MetricType::kInnerProduct}) {
     for (bool id_map : {false, true}) {
-      for (bool explicit_ids : {false, true}) {
-        for (size_t padding : {0, 3}) {
-          ContiguousSource source(2103, explicit_ids, padding);
-          source.page_rows = 1024;
-          // This row is in the scan but is not registered in either index.
-          source.rows.erase(source.row_ids_.back());
-          auto suffix = std::to_string(case_id++);
-          auto external = open_index(Param(true, metric, id_map),
-                                     test_path(suffix + "ext"));
-          auto embedded = open_index(Param(false, metric, id_map),
-                                     test_path(suffix + "base"));
-          add_vectors(external.get(), source);
-          add_vectors(embedded.get(), source, false);
-          auto qp = FlatQueryParamBuilder()
-                        .with_topk(11)
-                        .with_fetch_vector(true)
-                        .build();
-          qp->filter = std::make_shared<IndexFilter>();
-          // The first physical batch is entirely deleted. It must not end
-          // the scan, and holes in later batches must retain the correct IDs.
-          qp->filter->set([last_deleted = source.row_ids_[1023]](uint64_t id) {
-            return id <= last_deleted || id % 7 == 0;
-          });
-          std::vector<float> query(kDimension, 0.3f);
-          SearchResult want, got;
-          ASSERT_EQ(0, embedded->search(Vector(query), qp, &want));
-          ASSERT_EQ(
-              0, external->search_with_source(Vector(query), qp, source, &got));
-          SameResults(want, got);
-          EXPECT_EQ(3, source.scan_batches);
-          EXPECT_EQ(0, source.batch_reads);
-          for (const auto &doc : got.doc_list_) {
-            EXPECT_EQ(source.get_vector(doc.key()), doc.vector());
-            EXPECT_NE(source.row_ids_.back(), doc.key());
-          }
-          // Candidate lookup still uses random access, even with this source.
-          qp->bf_pks = std::make_shared<std::vector<uint64_t>>(
-              source.row_ids_.begin() + 1024, source.row_ids_.begin() + 1048);
-          ASSERT_EQ(0, embedded->search(Vector(query), qp, &want));
-          ASSERT_EQ(
-              0, external->search_with_source(Vector(query), qp, source, &got));
-          SameResults(want, got);
-          EXPECT_EQ(1, source.scans);
-          EXPECT_EQ(1, source.batch_reads);
-        }
+      ContiguousSource source(kRowCount, kFirstId);
+      source.page_rows = 1024;
+      // This row is in the scan but is not registered in either index.
+      source.rows.erase(kFirstId + kRowCount - 1);
+      auto suffix = std::to_string(case_id++);
+      auto external =
+          open_index(Param(true, metric, id_map), test_path(suffix + "ext"));
+      auto embedded =
+          open_index(Param(false, metric, id_map), test_path(suffix + "base"));
+      add_vectors(external.get(), source);
+      add_vectors(embedded.get(), source, false);
+      auto qp =
+          FlatQueryParamBuilder().with_topk(11).with_fetch_vector(true).build();
+      qp->filter = std::make_shared<IndexFilter>();
+      // The first physical batch is entirely deleted. It must not end
+      // the scan, and holes in later batches must retain the correct IDs.
+      qp->filter->set(
+          [](uint64_t id) { return id <= kFirstId + 1023 || id % 7 == 0; });
+      std::vector<float> query(kDimension, 0.3f);
+      SearchResult want, got;
+      ASSERT_EQ(0, embedded->search(Vector(query), qp, &want));
+      ASSERT_EQ(0,
+                external->search_with_source(Vector(query), qp, source, &got));
+      SameResults(want, got);
+      EXPECT_EQ(3, source.scan_batches);
+      EXPECT_EQ(0, source.batch_reads);
+      for (const auto &doc : got.doc_list_) {
+        EXPECT_EQ(source.get_vector(doc.key()), doc.vector());
+        EXPECT_NE(kFirstId + kRowCount - 1, doc.key());
       }
+      // Candidate lookup still uses random access, even with this source.
+      qp->bf_pks = std::make_shared<std::vector<uint64_t>>();
+      for (uint32_t i = 1024; i < 1048; ++i)
+        qp->bf_pks->push_back(kFirstId + i);
+      ASSERT_EQ(0, embedded->search(Vector(query), qp, &want));
+      ASSERT_EQ(0,
+                external->search_with_source(Vector(query), qp, source, &got));
+      SameResults(want, got);
+      EXPECT_EQ(1, source.scans);
+      EXPECT_EQ(1, source.batch_reads);
     }
   }
 }
 
 TEST_F(ExternalFlatTest, ContiguousScanLeasesAndMixedBatches) {
-  ContiguousSource source(30, true, 3);
+  ContiguousSource source(30);
   source.lease_pages = source.mixed_batches = true;
   auto external = open_index(Param(true), test_path("external"));
   auto embedded = open_index(Param(false), test_path("embedded"));
@@ -519,14 +499,14 @@ TEST_F(ExternalFlatTest, ContiguousScanLeasesAndMixedBatches) {
 }
 
 TEST_F(ExternalFlatTest, RejectsMalformedContiguousBatches) {
-  ContiguousSource source(10, false);
+  ContiguousSource source(10);
   source.lease_pages = true;
   auto index = open_index(Param(true), test_path("index"));
   add_vectors(index.get(), source);
   auto qp = FlatQueryParamBuilder().with_topk(3).build();
   std::vector<float> query(kDimension, 0.3f);
   SearchResult result;
-  for (int failure = 0; failure < 8; ++failure) {
+  for (int failure = 0; failure < 6; ++failure) {
     SCOPED_TRACE(failure);
     source.mutate_batch = [failure](core::VectorSource::Batch *batch) {
       auto &view = *batch->contiguous;
@@ -541,22 +521,14 @@ TEST_F(ExternalFlatTest, RejectsMalformedContiguousBatches) {
           view.data = nullptr;
           break;
         case 3:
-          view.stride = kDimension * sizeof(float) - 1;
-          break;
-        case 4:
-          view.stride = std::numeric_limits<size_t>::max();
-          break;
-        case 5:
           view.count = 1025;
           break;
-        case 6:
+        case 4:
           view.first_id = UINT32_MAX - 1;
           break;
-        case 7: {
-          static const uint32_t kInvalidIds[7] = {UINT32_MAX};
-          view.ids = kInvalidIds;
+        case 5:
+          view.first_id = UINT32_MAX;
           break;
-        }
       }
     };
     result.doc_list_.emplace_back(999, 0);
@@ -569,7 +541,7 @@ TEST_F(ExternalFlatTest, RejectsMalformedContiguousBatches) {
 }
 
 TEST_F(ExternalFlatTest, ContiguousIdBoundaryAndEmptySource) {
-  ContiguousSource source(1, false, 0, UINT32_MAX - 1);
+  ContiguousSource source(1, UINT32_MAX - 1);
   auto index = open_index(Param(true), test_path("index"));
   add_vectors(index.get(), source);
   auto qp = FlatQueryParamBuilder().with_topk(1).build();
@@ -578,7 +550,7 @@ TEST_F(ExternalFlatTest, ContiguousIdBoundaryAndEmptySource) {
   ASSERT_EQ(0, index->search_with_source(query, qp, source, &result));
   ASSERT_EQ(1, result.doc_list_.size());
   EXPECT_EQ(UINT32_MAX - 1, result.doc_list_[0].key());
-  ContiguousSource empty(0, false);
+  ContiguousSource empty(0);
   ASSERT_EQ(0, index->search_with_source(query, qp, empty, &result));
   EXPECT_TRUE(result.doc_list_.empty());
 }
