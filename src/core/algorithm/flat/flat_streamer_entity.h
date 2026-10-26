@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -187,6 +188,23 @@ class FlatStreamerEntity {
     for (size_t i = 0; i < keys.size(); ++i) {
       (*present)[i] = key_info_map_.find(keys[i]) != key_info_map_.end();
     }
+  }
+
+  size_t registered_key_count() const {
+    ailego::ReadLock lock(*key_info_map_lock_);
+    std::lock_guard<ailego::ReadLock> guard(lock);
+    return id_key_vector_.size();
+  }
+
+  // Copy a bounded batch so source callbacks never run under the key lock.
+  void get_registered_keys(size_t offset, size_t count,
+                           std::vector<uint64_t> *keys) const {
+    ailego::ReadLock lock(*key_info_map_lock_);
+    std::lock_guard<ailego::ReadLock> guard(lock);
+    offset = std::min(offset, id_key_vector_.size());
+    count = std::min(count, id_key_vector_.size() - offset);
+    auto begin = id_key_vector_.begin() + offset;
+    keys->assign(begin, begin + count);
   }
 
   //! Set params

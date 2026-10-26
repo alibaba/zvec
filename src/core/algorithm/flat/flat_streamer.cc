@@ -519,18 +519,19 @@ int FlatStreamer<BATCH_SIZE>::search_external(
     // Destroy the outstanding lease before its cursor, including on errors.
     VectorSource::Iterator::Pointer cursor;
     VectorSource::Batch batch;
+    if (!keys) cursor = source->create_iterator();
     auto consume = [&]() -> int {
       if (batch.ids.size() != batch.vectors.size() ||
           batch.ids.size() > batch_limit)
         return IndexError_ReadData;
       scratch->vector_ptrs.clear();
       scratch->vector_keys.clear();
-      if (!keys) entity_->key_presence(batch.ids, &scratch->key_presence);
+      if (cursor) entity_->key_presence(batch.ids, &scratch->key_presence);
       for (size_t i = 0; i < batch.ids.size(); ++i) {
         const auto id = batch.ids[i];
         if (id == kInvalidNodeId) return IndexError_ReadData;
-        if (!keys && (!scratch->key_presence[i] ||
-                      (ctx->filter().is_valid() && ctx->filter()(id)))) {
+        if (cursor && (!scratch->key_presence[i] ||
+                       (ctx->filter().is_valid() && ctx->filter()(id)))) {
           ++*ctx->mutable_stats(q)->mutable_filtered_count();
           continue;
         }
@@ -565,10 +566,19 @@ int FlatStreamer<BATCH_SIZE>::search_external(
       return 0;
     };
 
-    if (keys) {
+    if (cursor) {
+      while (true) {
+        batch.clear();
+        int ret = cursor->next_batch(batch_limit, &batch);
+        if (ret != 0) return ret;
+        ret = consume();
+        if (ret != 0) return ret;
+        if (batch.ids.empty()) break;
+      }
+    } else {
       std::vector<uint32_t> ids;
       ids.reserve(batch_limit);
-      auto read_candidates = [&]() -> int {
+      auto read_batch = [&]() -> int {
         if (ids.empty()) return 0;
         batch.clear();
         batch.ids = ids;
@@ -578,28 +588,38 @@ int FlatStreamer<BATCH_SIZE>::search_external(
         ids.clear();
         return ret;
       };
-      for (auto key : (*keys)[q]) {
-        if (key >= kInvalidNodeId || !entity_->contains_key(key) ||
-            (ctx->filter().is_valid() && ctx->filter()(key)))
-          continue;
-        ids.push_back(static_cast<uint32_t>(key));
-        if (ids.size() == batch_limit) {
-          int ret = read_candidates();
+      auto read_candidates = [&](const std::vector<uint64_t> &candidates) {
+        for (auto key : candidates) {
+          if (key >= kInvalidNodeId || (keys && !entity_->contains_key(key)))
+            continue;
+          if (ctx->filter().is_valid() && ctx->filter()(key)) {
+            if (!keys) ++*ctx->mutable_stats(q)->mutable_filtered_count();
+            continue;
+          }
+          ids.push_back(static_cast<uint32_t>(key));
+          if (ids.size() == batch_limit) {
+            int ret = read_batch();
+            if (ret != 0) return ret;
+          }
+        }
+        return read_batch();
+      };
+      if (keys) {
+        int ret = read_candidates((*keys)[q]);
+        if (ret != 0) return ret;
+      } else {
+        // Sources without a scan cursor can use the existing random reads.
+        // Fix the scan length and copy only one batch of registered IDs.
+        const size_t registered_count = entity_->registered_key_count();
+        std::vector<uint64_t> registered_keys;
+        for (size_t offset = 0; offset < registered_count;
+             offset += batch_limit) {
+          entity_->get_registered_keys(
+              offset, std::min<size_t>(batch_limit, registered_count - offset),
+              &registered_keys);
+          int ret = read_candidates(registered_keys);
           if (ret != 0) return ret;
         }
-      }
-      int ret = read_candidates();
-      if (ret != 0) return ret;
-    } else {
-      cursor = source->create_iterator();
-      if (!cursor) return IndexError_Unsupported;
-      while (true) {
-        batch.clear();
-        int ret = cursor->next_batch(batch_limit, &batch);
-        if (ret != 0) return ret;
-        ret = consume();
-        if (ret != 0) return ret;
-        if (batch.ids.empty()) break;
       }
     }
     batch.clear();

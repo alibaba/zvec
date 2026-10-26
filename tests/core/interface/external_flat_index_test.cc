@@ -37,6 +37,7 @@ class BatchSource : public core::VectorSource {
  public:
   std::map<uint32_t, std::vector<float>> rows;
   mutable std::atomic<uint32_t> scans{0};
+  mutable std::atomic<uint32_t> batch_reads{0};
   size_t page_rows{7};
   std::set<uint32_t> null_scan_ids;
   bool supports_scan{true}, fail_scan{false}, malformed_scan{false};
@@ -55,6 +56,13 @@ class BatchSource : public core::VectorSource {
     if (fail_read) return nullptr;
     auto it = rows.find(id);
     return it == rows.end() ? nullptr : it->second.data();
+  }
+
+  void get_vectors(const uint32_t *ids, uint32_t count,
+                   const void **out) const override {
+    ++batch_reads;
+    EXPECT_LE(count, 1024u);
+    VectorSource::get_vectors(ids, count, out);
   }
 
   class Cursor : public Iterator {
@@ -99,6 +107,22 @@ class BatchSource : public core::VectorSource {
     ++scans;
     return supports_scan ? std::make_unique<Cursor>(*this) : nullptr;
   }
+};
+
+// An existing source that implements only the original random-read API.
+class RandomAccessSource : public core::VectorSource {
+ public:
+  explicit RandomAccessSource(const BatchSource &source) : source_(source) {}
+
+  const void *get_vector(uint32_t id) const override {
+    reads.push_back(id);
+    return source_.get_vector(id);
+  }
+
+  mutable std::vector<uint32_t> reads;
+
+ private:
+  const BatchSource &source_;
 };
 
 VectorData Vector(const std::vector<float> &row) {
@@ -258,6 +282,7 @@ TEST_F(ExternalFlatTest, ScanMatchesEmbeddedAndBorrowsReturnedVectors) {
                 external->search_with_source(Vector(query), qp, source, &got));
       SameResults(want, got);
       EXPECT_EQ(1, source.scans);
+      EXPECT_EQ(0, source.batch_reads);
       close_index(external);
       ASSERT_EQ(11, got.doc_list_.size());
       // External vectors are returned directly in the input layout, without
@@ -269,6 +294,83 @@ TEST_F(ExternalFlatTest, ScanMatchesEmbeddedAndBorrowsReturnedVectors) {
         // transient scan pages. The source remains alive after index close.
         EXPECT_EQ(source.get_vector(doc.key()), doc.vector());
       }
+    }
+  }
+}
+
+TEST_F(ExternalFlatTest, FullScanWithOnlyGetVector) {
+  BatchSource data(30);
+  RandomAccessSource source(data);
+  auto external = open_index(Param(true), test_path("external"));
+  auto embedded = open_index(Param(false), test_path("embedded"));
+  add_vectors(external.get(), data);
+  add_vectors(embedded.get(), data, false);
+  // Invisible rows must be excluded before calling the source.
+  const std::set<uint32_t> invisible{3, 16, 42};
+  for (auto id : invisible) data.rows.erase(id);
+  data.rows[99999] = std::vector<float>(kDimension, 0.3f);
+  auto qp = FlatQueryParamBuilder().with_topk(10).build();
+  qp->filter = std::make_shared<IndexFilter>();
+  qp->filter->set([invisible](uint64_t id) { return invisible.count(id); });
+  std::vector<float> query(kDimension, 0.3f);
+  SearchResult want, got;
+  ASSERT_EQ(0, embedded->search(Vector(query), qp, &want));
+  ASSERT_EQ(0, external->search_with_source(Vector(query), qp, source, &got));
+  SameResults(want, got);
+  EXPECT_EQ(27, source.reads.size());
+  for (auto id : source.reads) {
+    EXPECT_EQ(0, invisible.count(id));
+    EXPECT_NE(99999, id);
+  }
+  source.reads.clear();
+  qp->filter->set([](uint64_t) { return true; });
+  ASSERT_EQ(0, external->search_with_source(Vector(query), qp, source, &got));
+  EXPECT_TRUE(got.doc_list_.empty());
+  EXPECT_TRUE(source.reads.empty());
+  qp->filter.reset();
+  EXPECT_NE(0, external->search_with_source(Vector(query), qp, source, &got));
+  EXPECT_TRUE(got.doc_list_.empty());
+}
+
+TEST_F(ExternalFlatTest, FallbackMatchesEmbeddedUsesBatchesAndReopens) {
+  int case_id = 0;
+  for (auto metric : {MetricType::kL2sq, MetricType::kInnerProduct}) {
+    for (bool id_map : {false, true}) {
+      BatchSource source(2103);
+      source.supports_scan = false;
+      // Break ties in the generated rows when comparing full result lists.
+      for (auto &[id, row] : source.rows) row[0] += id * 0.0001f;
+      auto param = Param(true, metric, id_map);
+      auto suffix = std::to_string(case_id++);
+      auto path = test_path(suffix + "external");
+      auto external = open_index(param, path);
+      auto embedded =
+          open_index(Param(false, metric, id_map), test_path(suffix + "base"));
+      add_vectors(external.get(), source);
+      add_vectors(embedded.get(), source, false);
+      source.rows[99999] = std::vector<float>(kDimension, 0.3f);
+      auto qp =
+          FlatQueryParamBuilder().with_topk(11).with_fetch_vector(true).build();
+      std::vector<float> query(kDimension, 0.3f);
+      SearchResult want, got;
+      ASSERT_EQ(0, embedded->search(Vector(query), qp, &want));
+      for (int reopened = 0; reopened < 2; ++reopened) {
+        source.batch_reads = 0;
+        ASSERT_EQ(
+            0, external->search_with_source(Vector(query), qp, source, &got));
+        SameResults(want, got);
+        EXPECT_GE(source.batch_reads.load(), 3u);
+        for (auto &doc : got.doc_list_) {
+          EXPECT_EQ(source.get_vector(doc.key()), doc.vector());
+          EXPECT_NE(99999, doc.key());
+        }
+        if (!reopened) {
+          ASSERT_EQ(0, external->flush());
+          close_index(external);
+          external = open_index(param, path, false);
+        }
+      }
+      EXPECT_EQ(2, source.scans);
     }
   }
 }
@@ -358,6 +460,7 @@ TEST_F(ExternalFlatTest, RejectsReadFailuresAndClearsRequestSource) {
     source.malformed_scan = failure == 1;
     source.null_scan = failure == 2;
     source.supports_scan = failure != 3;
+    source.fail_read = failure == 3;
     result.doc_list_.emplace_back(999, 0);
     EXPECT_NE(0, index->search_with_source(Vector(query), qp, source, &result));
     EXPECT_TRUE(result.doc_list_.empty());
@@ -365,6 +468,7 @@ TEST_F(ExternalFlatTest, RejectsReadFailuresAndClearsRequestSource) {
   }
   source.fail_scan = source.malformed_scan = source.null_scan = false;
   source.supports_scan = true;
+  source.fail_read = false;
   ASSERT_EQ(0, index->search_with_source(Vector(query), qp, source, &result));
   source.fail_read = true;
   qp->fetch_vector = true;
@@ -382,6 +486,7 @@ TEST_F(ExternalFlatTest, RejectsReadFailuresAndClearsRequestSource) {
 
 TEST_F(ExternalFlatTest, ConcurrentRequestsKeepTheirSourceAndCursor) {
   BatchSource first(50), second(50, 2.0f);
+  second.supports_scan = false;
   auto index = open_index(Param(true), test_path("index"));
   add_vectors(index.get(), first);
   std::vector<float> query(kDimension, 0.3f);
@@ -407,6 +512,8 @@ TEST_F(ExternalFlatTest, ConcurrentRequestsKeepTheirSourceAndCursor) {
   for (auto &thread : threads) thread.join();
   EXPECT_EQ(61, first.scans);
   EXPECT_EQ(61, second.scans);
+  EXPECT_EQ(0, first.batch_reads);
+  EXPECT_EQ(61, second.batch_reads);
 }
 
 TEST_F(ExternalFlatTest, RejectsUnsupportedFormatsAndUnboundOperations) {
@@ -476,6 +583,11 @@ TEST_F(ExternalFlatTest, BufferPoolReopen) {
   ASSERT_EQ(1, result.doc_list_.size());
   EXPECT_EQ(3, result.doc_list_[0].key());
   EXPECT_EQ(0, result.doc_list_[0].score());
+  source.supports_scan = false;
+  ASSERT_EQ(0, index->search_with_source(vector, qp, source, &result));
+  ASSERT_EQ(1, result.doc_list_.size());
+  EXPECT_EQ(3, result.doc_list_[0].key());
+  EXPECT_EQ(0, result.doc_list_[0].score());
 }
 
 TEST_F(ExternalFlatTest, LowLevelBatchQueriesAndMetadataValidation) {
@@ -509,6 +621,13 @@ TEST_F(ExternalFlatTest, LowLevelBatchQueriesAndMetadataValidation) {
   EXPECT_EQ(3, context->result(0)[0].key());
   EXPECT_EQ(16, context->result(1)[0].key());
   EXPECT_EQ(2, source.scans);
+  source.supports_scan = false;
+  ASSERT_EQ(0, streamer->search_bf_impl(query.data(), qmeta, 2, context));
+  ASSERT_EQ(1, context->result(0).size());
+  ASSERT_EQ(1, context->result(1).size());
+  EXPECT_EQ(3, context->result(0)[0].key());
+  EXPECT_EQ(16, context->result(1)[0].key());
+  EXPECT_EQ(2, source.batch_reads);
   core::IndexQueryMeta wrong(core::IndexMeta::DT_FP32, kDimension - 1);
   EXPECT_NE(0, streamer->search_bf_impl(query.data(), wrong, 2, context));
   ctx->set_group_params(1, 1);
@@ -534,6 +653,9 @@ TEST_F(ExternalFlatTest, EmptyIndexAndEmptyCandidates) {
   ASSERT_EQ(0, index->search_with_source(Vector(query), qp, source, &result));
   EXPECT_TRUE(result.doc_list_.empty());
   source.supports_scan = false;
+  ASSERT_EQ(0, index->search_with_source(Vector(query), qp, source, &result));
+  EXPECT_TRUE(result.doc_list_.empty());
+  EXPECT_EQ(0, source.batch_reads);
   qp->bf_pks = std::make_shared<std::vector<uint64_t>>();
   ASSERT_EQ(0, index->search_with_source(Vector(query), qp, source, &result));
   EXPECT_TRUE(result.doc_list_.empty());

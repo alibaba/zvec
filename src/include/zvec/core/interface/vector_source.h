@@ -61,9 +61,10 @@ class ZVEC_CORE_API VectorSource {
   virtual void get_vectors(const uint32_t *ids, uint32_t count,
                            const void **out) const;
 
-  // Optional full scan. Each call creates an independent cursor. The caller
-  // binds the source, scan domain and visibility filter to the same stable
-  // snapshot for the whole request, including subsequent random reads.
+  // Optional full scan. Each call creates an independent cursor. Returning
+  // nullptr makes External Flat read registered IDs through get_vectors().
+  // The caller binds the source, scan domain and visibility filter to the same
+  // stable snapshot for the whole request, including subsequent random reads.
   // A disk source can scan physical blocks behind this interface.
   virtual Iterator::Pointer create_iterator() const;
 };
