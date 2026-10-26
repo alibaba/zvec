@@ -17,7 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <optional>
+#include <variant>
 #include <vector>
 #include <zvec/export.h>
 
@@ -26,41 +26,25 @@ namespace core {
 
 class ZVEC_CORE_API VectorSource {
  public:
-  // Packed row-major data; IDs first_id + i, count includes filtered rows.
+  // Both batch types borrow raw FP32 rows in get_vector()'s ID space.
+  // Keep memory valid through consumption; lease may pin its backing storage.
+  struct PointerBatch {
+    std::vector<uint32_t> ids;
+    // Only filtered or unregistered rows may have null pointers.
+    std::vector<const void *> vectors;
+    std::shared_ptr<const void> lease;
+  };
+
+  // Row i has ID first_id + i; stride is in bytes, at least one vector's size.
   struct ContiguousBatch {
     const void *data{nullptr};
     uint32_t first_id{0};
-    uint32_t count{0};
-  };
-
-  // Logical row-major vectors in the same ID namespace as get_vector().
-  // Pointers need not be contiguous. External Flat currently expects raw FP32.
-  struct Batch {
-    std::vector<uint32_t> ids;
-    // Rows excluded by Flat's registered-ID set or filter may be null.
-    // Every row selected for distance computation must have a valid pointer.
-    std::vector<const void *> vectors;
-    // Optional backing allocation or page pin. Data must remain valid until
-    // the batch is released, or (for scans) the next next_batch() call.
+    uint32_t count{0};  // Includes filtered rows.
+    size_t stride{0};
     std::shared_ptr<const void> lease;
-    // When set, ids and vectors must be empty.
-    std::optional<ContiguousBatch> contiguous;
-
-    size_t size() const {
-      return contiguous ? contiguous->count : ids.size();
-    }
-
-    bool empty() const {
-      return size() == 0;
-    }
-
-    void clear() {
-      vectors.clear();
-      ids.clear();
-      contiguous.reset();
-      lease.reset();
-    }
   };
+
+  using Batch = std::variant<PointerBatch, ContiguousBatch>;
 
   class Iterator {
    public:

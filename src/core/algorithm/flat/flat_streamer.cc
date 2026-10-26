@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "flat_streamer.h"
+#include <limits>
 #include <zvec/core/framework/index_factory.h>
 #include "flat_streamer_context.h"
 #include "flat_streamer_dumper.h"
@@ -520,21 +521,36 @@ int FlatStreamer<BATCH_SIZE>::search_external(
     VectorSource::Iterator::Pointer cursor;
     VectorSource::Batch batch;
     if (!keys) cursor = source->create_iterator();
+    auto clear_batch = [&]() {
+      if (auto *pointers = std::get_if<VectorSource::PointerBatch>(&batch)) {
+        pointers->ids.clear();
+        pointers->vectors.clear();
+        pointers->lease.reset();
+      } else {
+        std::get<VectorSource::ContiguousBatch>(batch) = {};
+      }
+    };
     auto consume = [&]() -> int {
-      const auto *contiguous = batch.contiguous ? &*batch.contiguous : nullptr;
-      const size_t batch_size = batch.size();
+      const auto *contiguous =
+          std::get_if<VectorSource::ContiguousBatch>(&batch);
+      const auto *pointers = std::get_if<VectorSource::PointerBatch>(&batch);
+      if (!contiguous && !pointers) return IndexError_ReadData;
+      const size_t batch_size =
+          contiguous ? contiguous->count : pointers->ids.size();
       if (batch_size > batch_limit) return IndexError_ReadData;
       if (contiguous) {
-        if (!batch.ids.empty() || !batch.vectors.empty())
-          return IndexError_ReadData;
         if (batch_size &&
-            (!contiguous->data || contiguous->first_id >= kInvalidNodeId ||
+            (!contiguous->data || contiguous->stride < meta_.element_size() ||
+             batch_size - 1 >
+                 (std::numeric_limits<size_t>::max() - meta_.element_size()) /
+                     contiguous->stride ||
+             contiguous->first_id >= kInvalidNodeId ||
              batch_size > kInvalidNodeId - contiguous->first_id))
           return IndexError_ReadData;
-      } else if (batch.ids.size() != batch.vectors.size()) {
+      } else if (pointers->ids.size() != pointers->vectors.size()) {
         return IndexError_ReadData;
       }
-      const auto *ids = contiguous ? nullptr : batch.ids.data();
+      const auto *ids = pointers ? pointers->ids.data() : nullptr;
       const uint32_t first_id = contiguous ? contiguous->first_id : 0;
       scratch->vector_ptrs.clear();
       scratch->vector_keys.clear();
@@ -554,8 +570,8 @@ int FlatStreamer<BATCH_SIZE>::search_external(
         // Invisible or unregistered rows need not have a readable vector.
         const void *vector = contiguous
                                  ? static_cast<const char *>(contiguous->data) +
-                                       i * meta_.element_size()
-                                 : batch.vectors[i];
+                                       i * contiguous->stride
+                                 : pointers->vectors[i];
         if (!vector) return IndexError_ReadData;
         scratch->vector_ptrs.push_back(vector);
         scratch->vector_keys.push_back(id);
@@ -588,22 +604,28 @@ int FlatStreamer<BATCH_SIZE>::search_external(
 
     if (cursor) {
       while (true) {
-        batch.clear();
+        clear_batch();
         int ret = cursor->next_batch(batch_limit, &batch);
         if (ret != 0) return ret;
         ret = consume();
         if (ret != 0) return ret;
-        if (batch.empty()) break;
+        const auto *contiguous =
+            std::get_if<VectorSource::ContiguousBatch>(&batch);
+        if (contiguous
+                ? contiguous->count == 0
+                : std::get<VectorSource::PointerBatch>(batch).ids.empty())
+          break;
       }
     } else {
       std::vector<uint32_t> ids;
       ids.reserve(batch_limit);
       auto read_batch = [&]() -> int {
         if (ids.empty()) return 0;
-        batch.clear();
-        batch.ids = ids;
-        batch.vectors.resize(ids.size());
-        source->get_vectors(ids.data(), ids.size(), batch.vectors.data());
+        clear_batch();
+        auto &pointers = std::get<VectorSource::PointerBatch>(batch);
+        pointers.ids = ids;
+        pointers.vectors.resize(ids.size());
+        source->get_vectors(ids.data(), ids.size(), pointers.vectors.data());
         int ret = consume();
         ids.clear();
         return ret;
@@ -642,7 +664,7 @@ int FlatStreamer<BATCH_SIZE>::search_external(
         }
       }
     }
-    batch.clear();
+    clear_batch();
     ctx->take_topk_result(q);
     if (ctx->fetch_vector()) {
       // Match HNSW's borrowed random-access result contract. Scan pages have
