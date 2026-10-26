@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "flat_streamer.h"
+#include <limits>
 #include <zvec/core/framework/index_factory.h>
 #include "flat_streamer_context.h"
 #include "flat_streamer_dumper.h"
@@ -521,14 +522,35 @@ int FlatStreamer<BATCH_SIZE>::search_external(
     VectorSource::Batch batch;
     if (!keys) cursor = source->create_iterator();
     auto consume = [&]() -> int {
-      if (batch.ids.size() != batch.vectors.size() ||
-          batch.ids.size() > batch_limit)
+      const auto *contiguous = batch.contiguous ? &*batch.contiguous : nullptr;
+      const size_t batch_size = batch.size();
+      if (batch_size > batch_limit) return IndexError_ReadData;
+      if (contiguous) {
+        if (!batch.ids.empty() || !batch.vectors.empty())
+          return IndexError_ReadData;
+        if (batch_size &&
+            (!contiguous->data || contiguous->stride < meta_.element_size() ||
+             batch_size - 1 >
+                 (std::numeric_limits<size_t>::max() - meta_.element_size()) /
+                     contiguous->stride ||
+             (!contiguous->ids &&
+              (contiguous->first_id >= kInvalidNodeId ||
+               batch_size > kInvalidNodeId - contiguous->first_id))))
+          return IndexError_ReadData;
+      } else if (batch.ids.size() != batch.vectors.size()) {
         return IndexError_ReadData;
+      }
+      const auto *ids = contiguous ? contiguous->ids : batch.ids.data();
+      const uint32_t first_id = contiguous ? contiguous->first_id : 0;
       scratch->vector_ptrs.clear();
       scratch->vector_keys.clear();
-      if (cursor) entity_->key_presence(batch.ids, &scratch->key_presence);
-      for (size_t i = 0; i < batch.ids.size(); ++i) {
-        const auto id = batch.ids[i];
+      scratch->vector_ptrs.reserve(batch_size);
+      scratch->vector_keys.reserve(batch_size);
+      if (cursor)
+        entity_->key_presence(ids, batch_size, first_id,
+                              &scratch->key_presence);
+      for (size_t i = 0; i < batch_size; ++i) {
+        const auto id = ids ? ids[i] : first_id + static_cast<uint32_t>(i);
         if (id == kInvalidNodeId) return IndexError_ReadData;
         if (cursor && (!scratch->key_presence[i] ||
                        (ctx->filter().is_valid() && ctx->filter()(id)))) {
@@ -536,8 +558,12 @@ int FlatStreamer<BATCH_SIZE>::search_external(
           continue;
         }
         // Invisible or unregistered rows need not have a readable vector.
-        if (!batch.vectors[i]) return IndexError_ReadData;
-        scratch->vector_ptrs.push_back(batch.vectors[i]);
+        const void *vector = contiguous
+                                 ? static_cast<const char *>(contiguous->data) +
+                                       i * contiguous->stride
+                                 : batch.vectors[i];
+        if (!vector) return IndexError_ReadData;
+        scratch->vector_ptrs.push_back(vector);
         scratch->vector_keys.push_back(id);
       }
       const size_t size = scratch->vector_ptrs.size();
@@ -573,7 +599,7 @@ int FlatStreamer<BATCH_SIZE>::search_external(
         if (ret != 0) return ret;
         ret = consume();
         if (ret != 0) return ret;
-        if (batch.ids.empty()) break;
+        if (batch.empty()) break;
       }
     } else {
       std::vector<uint32_t> ids;
