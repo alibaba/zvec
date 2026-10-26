@@ -64,7 +64,7 @@ Zvec offers official SDKs across multiple languages:
 
 | SDK | Install / Dependency | Source |
 | --- | --- | --- |
-| [Python](https://pypi.org/project/zvec/) | `pip install zvec` | — |
+| [Python](https://pypi.org/project/zvec/) | `pip install zvec` | [Source](https://github.com/alibaba/zvec) |
 | [Node.js](https://www.npmjs.com/package/@zvec/zvec) | `npm install @zvec/zvec` | [Source](https://github.com/zvec-ai/zvec-node) |
 | [Go](https://pkg.go.dev/github.com/zvec-ai/zvec-go) | [Installation guide](https://github.com/zvec-ai/zvec-go#installation) | [Source](https://github.com/zvec-ai/zvec-go) |
 | [Rust](https://crates.io/crates/zvec-rust) | `cargo add zvec-rust` | [Source](https://github.com/zvec-ai/zvec-rust) |
