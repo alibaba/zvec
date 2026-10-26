@@ -66,11 +66,11 @@
 Zvec 提供多语言官方 SDK：
 
 - **[Python](https://pypi.org/project/zvec/)**：`pip install zvec`（需 64 位 Python 3.10–3.14）
-- **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**（[Repo](https://github.com/zvec-ai/zvec-node)）：`npm install @zvec/zvec`
-- **[Go](https://pkg.go.dev/github.com/zvec-ai/zvec-go)**（[Repo](https://github.com/zvec-ai/zvec-go)）：高性能的 Go 绑定。
-- **[Rust](https://crates.io/crates/zvec-rust)**（[Repo](https://github.com/zvec-ai/zvec-rust)）：`cargo add zvec-rust`
-- **[Java](https://central.sonatype.com/artifact/org.zvec/zvec-java)**（[Repo](https://github.com/zvec-ai/zvec-java)）：通过 Maven Central 引入 `org.zvec:zvec-java`（需 Java 8+）。
-- **[Dart/Flutter](https://pub.dev/packages/zvec)**（[Repo](https://github.com/zvec-ai/zvec-dart)）：`flutter pub add zvec`
+- **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**：`npm install @zvec/zvec`（[Repo](https://github.com/zvec-ai/zvec-node)）
+- **[Go](https://pkg.go.dev/github.com/zvec-ai/zvec-go)**：高性能的 Go 绑定。（[Repo](https://github.com/zvec-ai/zvec-go)）
+- **[Rust](https://crates.io/crates/zvec-rust)**：`cargo add zvec-rust`（[Repo](https://github.com/zvec-ai/zvec-rust)）
+- **[Java](https://central.sonatype.com/artifact/org.zvec/zvec-java)**：通过 Maven Central 引入 `org.zvec:zvec-java`（需 Java 8+）。（[Repo](https://github.com/zvec-ai/zvec-java)）
+- **[Dart/Flutter](https://pub.dev/packages/zvec)**：`flutter pub add zvec`（[Repo](https://github.com/zvec-ai/zvec-dart)）
 
 想搜索代码或文档？试试 **[zvec-grep](https://github.com/zvec-ai/zvec-grep)**（`zg`）— 本地优先的搜索 CLI，统一 ripgrep、BM25 与向量检索，为人类与 AI Agent 而设计。
 

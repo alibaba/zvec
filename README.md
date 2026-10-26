@@ -63,11 +63,11 @@
 Zvec offers official SDKs across multiple languages:
 
 - **[Python](https://pypi.org/project/zvec/)**: `pip install zvec` (requires 64-bit Python 3.10–3.14)
-- **[Node.js](https://www.npmjs.com/package/@zvec/zvec)** ([Repo](https://github.com/zvec-ai/zvec-node)): `npm install @zvec/zvec`
-- **[Go](https://pkg.go.dev/github.com/zvec-ai/zvec-go)** ([Repo](https://github.com/zvec-ai/zvec-go)): High-performance Go bindings.
-- **[Rust](https://crates.io/crates/zvec-rust)** ([Repo](https://github.com/zvec-ai/zvec-rust)): `cargo add zvec-rust`
-- **[Java](https://central.sonatype.com/artifact/org.zvec/zvec-java)** ([Repo](https://github.com/zvec-ai/zvec-java)): Available on Maven Central as `org.zvec:zvec-java` (requires Java 8+).
-- **[Dart/Flutter](https://pub.dev/packages/zvec)** ([Repo](https://github.com/zvec-ai/zvec-dart)): `flutter pub add zvec`
+- **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**: `npm install @zvec/zvec` ([Repo](https://github.com/zvec-ai/zvec-node))
+- **[Go](https://pkg.go.dev/github.com/zvec-ai/zvec-go)**: High-performance Go bindings. ([Repo](https://github.com/zvec-ai/zvec-go))
+- **[Rust](https://crates.io/crates/zvec-rust)**: `cargo add zvec-rust` ([Repo](https://github.com/zvec-ai/zvec-rust))
+- **[Java](https://central.sonatype.com/artifact/org.zvec/zvec-java)**: Available on Maven Central as `org.zvec:zvec-java` (requires Java 8+). ([Repo](https://github.com/zvec-ai/zvec-java))
+- **[Dart/Flutter](https://pub.dev/packages/zvec)**: `flutter pub add zvec` ([Repo](https://github.com/zvec-ai/zvec-dart))
 
 Searching code or documents? Try **[zvec-grep](https://github.com/zvec-ai/zvec-grep)** (`zg`) — a local-first search CLI that unifies ripgrep, BM25, and vector search, built for humans and AI agents.
 
