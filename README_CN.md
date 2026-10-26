@@ -13,9 +13,7 @@
   <a href="https://codecov.io/github/alibaba/zvec"><img src="https://codecov.io/github/alibaba/zvec/graph/badge.svg?token=O81CT45B66" alt="代码覆盖率"/></a>
   <a href="https://github.com/alibaba/zvec/actions/workflows/01-ci-pipeline.yml"><img src="https://github.com/alibaba/zvec/actions/workflows/01-ci-pipeline.yml/badge.svg?branch=main" alt="Main"/></a>
   <a href="https://github.com/alibaba/zvec/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="许可证"/></a>
-  <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/pypi/v/zvec.svg" alt="PyPI 版本"/></a>
-  <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/badge/python-3.10%20~%203.14-blue.svg" alt="Python 版本"/></a>
-  <a href="https://www.npmjs.com/package/@zvec/zvec"><img src="https://img.shields.io/npm/v/@zvec/zvec.svg" alt="npm 版本"/></a>
+  <a href="https://github.com/alibaba/zvec/releases/latest"><img src="https://img.shields.io/github/v/release/alibaba/zvec?label=release" alt="最新版本"/></a>
 </p>
 
 <p align="center">
@@ -67,11 +65,16 @@
 
 Zvec 提供多语言官方 SDK：
 
-- **[Python](https://pypi.org/project/zvec/)**：`pip install zvec`（需 64 位 Python 3.10–3.14）
-- **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**：`npm install @zvec/zvec`
-- **[Go](https://github.com/zvec-ai/zvec-go)**：高性能的 Go 绑定。
-- **[Rust](https://crates.io/crates/zvec-rust)**：`cargo add zvec-rust`
-- **[Dart/Flutter](https://pub.dev/packages/zvec)**：`flutter pub add zvec`
+| SDK | 安装 / 依赖 | 源码 |
+| --- | --- | --- |
+| [Python](https://pypi.org/project/zvec/) | `pip install zvec` | [源码](https://github.com/alibaba/zvec/tree/main/python/zvec) |
+| [Node.js](https://www.npmjs.com/package/@zvec/zvec) | `npm install @zvec/zvec` | [源码](https://github.com/zvec-ai/zvec-node) |
+| [Go](https://pkg.go.dev/github.com/zvec-ai/zvec-go) | [安装指南](https://github.com/zvec-ai/zvec-go/blob/main/README_CN.md#安装) | [源码](https://github.com/zvec-ai/zvec-go) |
+| [Rust](https://crates.io/crates/zvec-rust) | `cargo add zvec-rust` | [源码](https://github.com/zvec-ai/zvec-rust) |
+| [Java](https://central.sonatype.com/artifact/org.zvec/zvec-java) | `org.zvec:zvec-java`（Maven） | [源码](https://github.com/zvec-ai/zvec-java) |
+| [Dart / Flutter](https://pub.dev/packages/zvec) | `flutter pub add zvec` | [源码](https://github.com/zvec-ai/zvec-dart) |
+
+Python 需 64 位 Python 3.10–3.14；Java 需 Java 8+。
 
 想搜索代码或文档？试试 **[zvec-grep](https://github.com/zvec-ai/zvec-grep)**（`zg`）— 本地优先的搜索 CLI，统一 ripgrep、BM25 与向量检索，为人类与 AI Agent 而设计。
 
