@@ -118,11 +118,12 @@ class QueryInfo {
 
    private:
     const FieldSchema *vector_schema_{nullptr};
-    std::string_view vector_term_;
+    // A cancelled asynchronous plan can outlive the caller's query buffers.
+    std::string vector_term_;
     core::IndexMeta::DataType data_type_;
     uint32_t dimension_{0};
-    std::string_view vector_sparse_indices_;
-    std::string_view vector_sparse_values_;
+    std::string vector_sparse_indices_;
+    std::string vector_sparse_values_;
     QueryParams::Ptr query_params_;
     bool reverse_sort_{false};
   };
@@ -131,6 +132,10 @@ class QueryInfo {
  public:
   QueryInfo() = default;
   ~QueryInfo() = default;
+
+  void keep_schema_alive(CollectionSchema::Ptr schema) {
+    schema_owner_ = std::move(schema);
+  }
 
   void set_search_cond(QueryNode::Ptr value) {
     search_cond_ = std::move(value);
@@ -345,6 +350,8 @@ class QueryInfo {
   bool is_filter_unsatisfiable() const;
 
  private:
+  // Field schema pointers remain valid while asynchronous tasks wind down.
+  CollectionSchema::Ptr schema_owner_;
   QueryNode::Ptr search_cond_{nullptr};
 
   QueryNode::Ptr invert_cond_{nullptr};
