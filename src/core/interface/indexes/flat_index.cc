@@ -156,11 +156,17 @@ int FlatIndex::bind_vector_source(const core::VectorSource &source,
 int FlatIndex::add_with_source(const VectorData &vector, uint32_t doc_id,
                                const core::VectorSource &source) {
   if (!is_open_) return core::IndexError_NoReady;
+  if (is_read_only_) return core::IndexError_Runtime;
+  const auto *dense = std::get_if<DenseVector>(&vector.vector);
+  if (!dense || !dense->data) return core::IndexError_InvalidArgument;
   auto &context = acquire_context();
   if (!context) return core::IndexError_Runtime;
   FlatSourceScope scope{context};
   int ret = bind_vector_source(source, context);
-  return ret == 0 ? Index::add(vector, doc_id) : ret;
+  if (ret != 0) return ret;
+  // External Flat stores only IDs. Its raw FP32 layout needs no conversion.
+  return streamer_->add_with_id_impl(doc_id, dense->data, input_vector_meta_,
+                                     context);
 }
 
 int FlatIndex::search_with_source(
@@ -406,7 +412,7 @@ int FlatIndex::_prepare_for_search(
   context->set_topk(flat_search_param->topk);
   context->set_fetch_vector(flat_search_param->fetch_vector);
   if (flat_search_param->filter && flat_search_param->filter->is_valid()) {
-    context->set_filter(std::move(*flat_search_param->filter));
+    context->set_filter(*flat_search_param->filter);
   } else {
     context->reset_filter();
   }

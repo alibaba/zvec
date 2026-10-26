@@ -525,13 +525,14 @@ int FlatStreamer<BATCH_SIZE>::search_external(
       if (!keys) entity_->key_presence(batch.ids, &scratch->key_presence);
       for (size_t i = 0; i < batch.ids.size(); ++i) {
         const auto id = batch.ids[i];
-        if (id == kInvalidNodeId || !batch.vectors[i])
-          return IndexError_ReadData;
+        if (id == kInvalidNodeId) return IndexError_ReadData;
         if (!keys && (!scratch->key_presence[i] ||
                       (ctx->filter().is_valid() && ctx->filter()(id)))) {
           ++*ctx->mutable_stats(q)->mutable_filtered_count();
           continue;
         }
+        // Invisible or unregistered rows need not have a readable vector.
+        if (!batch.vectors[i]) return IndexError_ReadData;
         scratch->vector_ptrs.push_back(batch.vectors[i]);
         scratch->vector_keys.push_back(id);
       }

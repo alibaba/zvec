@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstring>
 #include <map>
+#include <set>
 #include <thread>
 #include <vector>
 #include <gtest/gtest.h>
@@ -37,6 +38,7 @@ class BatchSource : public core::VectorSource {
   std::map<uint32_t, std::vector<float>> rows;
   mutable std::atomic<uint32_t> scans{0};
   size_t page_rows{7};
+  std::set<uint32_t> null_scan_ids;
   bool supports_scan{true}, fail_scan{false}, malformed_scan{false};
   bool null_scan{false}, fail_read{false};
 
@@ -75,8 +77,10 @@ class BatchSource : public core::VectorSource {
         std::memcpy(page->data() + i * kDimension, source_.rows.at(id).data(),
                     kDimension * sizeof(float));
         out->ids.push_back(id);
-        out->vectors.push_back(
-            source_.null_scan ? nullptr : page->data() + i * kDimension);
+        out->vectors.push_back(source_.null_scan ||
+                                       source_.null_scan_ids.count(id)
+                                   ? nullptr
+                                   : page->data() + i * kDimension);
       }
       out->lease = page;
       previous_ = page;
@@ -167,6 +171,69 @@ class ExternalFlatTest : public testing::Test {
     for (auto &path : paths_) zvec::test_util::RemoveTestFiles(path);
   }
 };
+
+class InspectableFlatIndex : public FlatIndex {
+ public:
+  using Index::acquire_context;
+  using Index::init;
+};
+
+TEST_F(ExternalFlatTest, RegistrationDoesNotCopyVectorPayload) {
+  BatchSource source(3);
+  auto index = std::make_shared<InspectableFlatIndex>();
+  ASSERT_EQ(0, index->init(*Param(true)));
+  ASSERT_EQ(0, index->open(test_path("index"),
+                           {StorageOptions::StorageType::kMMAP, true}));
+  opened_.push_back(index);
+  auto &context = index->acquire_context();
+  ASSERT_NE(nullptr, context);
+  *context->mutable_features() = "unchanged";
+  add_vectors(index.get(), source);
+  ASSERT_EQ("unchanged", *context->mutable_features());
+  EXPECT_EQ(source.rows.size(), index->get_doc_count());
+
+  // Keep the generic add guards when bypassing its conversion pipeline.
+  EXPECT_NE(
+      0, index->add_with_source(VectorData{DenseVector{nullptr}}, 3, source));
+  EXPECT_NE(0, index->add_with_source(
+                   VectorData{SparseVector{0, nullptr, nullptr}}, 3, source));
+  const auto vector = Vector(source.rows.at(3));
+  EXPECT_NE(0, index->add_with_source(vector, UINT32_MAX, source));
+  EXPECT_NE(0, index->add_with_source(vector, 99999, source));
+  EXPECT_NE(0, index->add(vector, 3));
+  close_index(index);
+  EXPECT_NE(0, index->add_with_source(vector, 3, source));
+}
+
+TEST_F(ExternalFlatTest, FullScanAppliesSnapshotFilterBeforeReadingVectors) {
+  BatchSource source(30);
+  auto external = open_index(Param(true), test_path("external"));
+  auto embedded = open_index(Param(false), test_path("embedded"));
+  add_vectors(external.get(), source);
+  add_vectors(embedded.get(), source, false);
+  // Model an immutable snapshot whose invisible rows have no usable pointer.
+  const std::set<uint32_t> invisible{3, 16, 42};
+  source.null_scan_ids = invisible;
+  source.rows[99999] = std::vector<float>(kDimension, 0.3f);
+  source.null_scan_ids.insert(99999);  // Unregistered rows are also skipped.
+  std::vector<float> query(kDimension, 0.3f);
+  auto make_query = [&]() {
+    auto qp = FlatQueryParamBuilder().with_topk(10).build();
+    qp->filter = std::make_shared<IndexFilter>();
+    qp->filter->set([invisible](uint64_t id) { return invisible.count(id); });
+    return qp;
+  };
+  SearchResult expected, actual;
+  ASSERT_EQ(0, embedded->search(Vector(query), make_query(), &expected));
+  auto qp = make_query();
+  // Reusing the query must preserve its visibility filter across requests.
+  for (int i = 0; i < 2; ++i) {
+    ASSERT_EQ(0,
+              external->search_with_source(Vector(query), qp, source, &actual));
+    SameResults(expected, actual);
+    EXPECT_TRUE(qp->filter->is_valid());
+  }
+}
 
 TEST_F(ExternalFlatTest, ScanMatchesEmbeddedAndBorrowsReturnedVectors) {
   int case_id = 0;

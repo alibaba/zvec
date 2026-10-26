@@ -275,9 +275,10 @@ class ZVEC_CORE_API FlatIndex : public Index {
   // doc_id is the source ID with either use_id_map setting.
   int add_with_source(const VectorData &vector, uint32_t doc_id,
                       const core::VectorSource &src) override;
-  // Full scans enumerate every registered ID once (extra IDs are ignored).
-  // Candidate searches use get_vectors(). Hold a stable source snapshot for
-  // the request. With fetch_vector, returned pointers borrow source memory;
+  // Full scans use the source's visible IDs intersected with registered IDs
+  // and the request filter; extra IDs are ignored. Candidate searches use
+  // get_vectors(). Bind the source, scan and filter to one stable snapshot.
+  // With fetch_vector, returned pointers borrow source memory;
   // keep that memory valid while using the results, as with external HNSW.
   // External Flat does not support group-by or binding a source for refinement.
   int search_with_source(const VectorData &query,

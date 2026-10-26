@@ -28,6 +28,8 @@ class ZVEC_CORE_API VectorSource {
   // Pointers need not be contiguous. External Flat currently expects raw FP32.
   struct Batch {
     std::vector<uint32_t> ids;
+    // Rows excluded by Flat's registered-ID set or filter may be null.
+    // Every row selected for distance computation must have a valid pointer.
     std::vector<const void *> vectors;
     // Optional backing allocation or page pin. Data must remain valid until
     // the batch is released, or (for scans) the next next_batch() call.
@@ -60,8 +62,9 @@ class ZVEC_CORE_API VectorSource {
                            const void **out) const;
 
   // Optional full scan. Each call creates an independent cursor. The caller
-  // holds a stable source snapshot for the whole request, including subsequent
-  // random reads. A disk source can scan physical blocks behind this interface.
+  // binds the source, scan domain and visibility filter to the same stable
+  // snapshot for the whole request, including subsequent random reads.
+  // A disk source can scan physical blocks behind this interface.
   virtual Iterator::Pointer create_iterator() const;
 };
 
