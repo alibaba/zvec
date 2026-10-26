@@ -62,12 +62,16 @@
 
 Zvec offers official SDKs across multiple languages:
 
-- **[Python](https://pypi.org/project/zvec/)**: `pip install zvec` (requires 64-bit Python 3.10–3.14)
-- **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**: `npm install @zvec/zvec` ([Repo](https://github.com/zvec-ai/zvec-node))
-- **[Go](https://pkg.go.dev/github.com/zvec-ai/zvec-go)**: High-performance Go bindings. ([Repo](https://github.com/zvec-ai/zvec-go))
-- **[Rust](https://crates.io/crates/zvec-rust)**: `cargo add zvec-rust` ([Repo](https://github.com/zvec-ai/zvec-rust))
-- **[Java](https://central.sonatype.com/artifact/org.zvec/zvec-java)**: Available on Maven Central as `org.zvec:zvec-java` (requires Java 8+). ([Repo](https://github.com/zvec-ai/zvec-java))
-- **[Dart/Flutter](https://pub.dev/packages/zvec)**: `flutter pub add zvec` ([Repo](https://github.com/zvec-ai/zvec-dart))
+| SDK | Install / Dependency | Resources |
+| --- | --- | --- |
+| [Python](https://pypi.org/project/zvec/) | `pip install zvec` | [Docs](https://zvec.org/en/docs/db/) |
+| [Node.js](https://www.npmjs.com/package/@zvec/zvec) | `npm install @zvec/zvec` | [Docs](https://zvec.org/en/docs/db/) · [Source](https://github.com/zvec-ai/zvec-node) |
+| [Go](https://pkg.go.dev/github.com/zvec-ai/zvec-go) | [Installation guide](https://github.com/zvec-ai/zvec-go#installation) | [Docs](https://pkg.go.dev/github.com/zvec-ai/zvec-go) · [Source](https://github.com/zvec-ai/zvec-go) |
+| [Rust](https://crates.io/crates/zvec-rust) | `cargo add zvec-rust` | [Docs](https://github.com/zvec-ai/zvec-rust/blob/main/README.md) · [Source](https://github.com/zvec-ai/zvec-rust) |
+| [Java](https://central.sonatype.com/artifact/org.zvec/zvec-java) | `org.zvec:zvec-java` (Maven) | [Docs](https://github.com/zvec-ai/zvec-java/blob/main/README.md) · [Source](https://github.com/zvec-ai/zvec-java) |
+| [Dart / Flutter](https://pub.dev/packages/zvec) | `flutter pub add zvec` | [Docs](https://github.com/zvec-ai/zvec-dart/blob/main/README.md) · [Source](https://github.com/zvec-ai/zvec-dart) |
+
+Python requires 64-bit Python 3.10–3.14; Java requires Java 8+.
 
 Searching code or documents? Try **[zvec-grep](https://github.com/zvec-ai/zvec-grep)** (`zg`) — a local-first search CLI that unifies ripgrep, BM25, and vector search, built for humans and AI agents.
 
