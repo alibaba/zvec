@@ -28,6 +28,9 @@ class IVFSearcher : public IndexSearcher {
   //! Initialize Searcher
   int init(const ailego::Params &parameters) override;
 
+  int init(const ailego::Params &parameters,
+           const turbo::Quantizer::Pointer &quantizer) override;
+
   //! Cleanup Searcher
   int cleanup() override;
 
@@ -45,6 +48,19 @@ class IVFSearcher : public IndexSearcher {
   //! Similarity brute force search
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      uint32_t count, Context::Pointer &context) const override;
+
+  //! Similarity brute force search restricted to primary keys.
+  int search_bf_by_p_keys_impl(const void *query,
+                               const std::vector<std::vector<uint64_t>> &p_keys,
+                               const IndexQueryMeta &qmeta,
+                               Context::Pointer &context) const override {
+    return search_bf_by_p_keys_impl(query, p_keys, qmeta, 1, context);
+  }
+
+  int search_bf_by_p_keys_impl(const void *query,
+                               const std::vector<std::vector<uint64_t>> &p_keys,
+                               const IndexQueryMeta &qmeta, uint32_t count,
+                               Context::Pointer &context) const override;
 
   //! Similarity search
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
@@ -73,6 +89,20 @@ class IVFSearcher : public IndexSearcher {
     return params_;
   }
 
+  //! The entity binds and quantizes raw queries itself when a Turbo
+  //! quantizer is restored from the index.
+  bool owns_query_quantization() const override {
+    return quantizer_ != nullptr;
+  }
+
+  const turbo::Quantizer::Pointer &quantizer() const {
+    return quantizer_;
+  }
+
+  const IndexMeta &posting_meta() const {
+    return entity_ ? entity_->meta() : meta_;
+  }
+
  protected:
   int update_context(IVFSearcherContext *ctx) const {
     auto entity = entity_->clone();
@@ -92,6 +122,10 @@ class IVFSearcher : public IndexSearcher {
   }
 
  private:
+  int search_bf(const void *query, const IndexQueryMeta &qmeta, uint32_t count,
+                Context::Pointer &context,
+                const std::vector<std::vector<uint64_t>> *p_keys) const;
+
   //! Constants
   static constexpr uint32_t kDefaultBfThreshold = 1000u;
 
@@ -102,6 +136,7 @@ class IVFSearcher : public IndexSearcher {
   ailego::Params params_{};
   IVFCentroidIndex::Pointer centroid_index_{};
   IVFEntity::Pointer entity_{};
+  turbo::Quantizer::Pointer quantizer_{};
   uint32_t bruteforce_threshold_{kDefaultBfThreshold};
   uint32_t magic_{0};
   Stats stats_{};

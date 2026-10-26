@@ -148,6 +148,11 @@ class HnswStreamerEntity : public HnswEntity {
   //! return 0 on success, or errCode in failure
   int close();
 
+  //! Whether vectors have been modified since opening the entity.
+  bool dirty() const {
+    return broker_->dirty();
+  }
+
   //! Set meta information from entity
   int set_index_meta(const IndexMeta &meta) const {
     return IndexHelper::SerializeToStorage(meta, broker_->storage().get());
@@ -654,13 +659,13 @@ HnswStreamerEntity::get_neighbors_typed<MmapMemoryBlock>(level_t level,
     nbr_size = upper_neighbor_size_;
   }
   ailego_assert_with(offset < chunk->data_size(), "invalid chunk offset");
-  const void *ptr = nullptr;
-  size_t ret = chunk->read(offset, &ptr, nbr_size);
+  IndexStorage::MemoryBlock ptr;
+  size_t ret = chunk->read(offset, ptr, nbr_size);
   if (ailego_unlikely(ret != nbr_size)) {
     LOG_ERROR("Read neighbor header failed, ret=%zu", ret);
     return NeighborsT<MmapMemoryBlock>();
   }
-  MmapMemoryBlock block(const_cast<void *>(ptr));
+  MmapMemoryBlock block(const_cast<void *>(ptr.data()));
   return NeighborsT<MmapMemoryBlock>(std::move(block));
 }
 
@@ -707,14 +712,14 @@ inline int HnswStreamerEntity::get_vector_typed<MmapMemoryBlock>(
     ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
                        "invalid chunk offset");
     size_t read_size = vector_size();
-    const void *ptr = nullptr;
-    size_t ret = node_chunks_[loc.first]->read(loc.second, &ptr, read_size);
+    IndexStorage::MemoryBlock ptr;
+    size_t ret = node_chunks_[loc.first]->read(loc.second, ptr, read_size);
     if (ailego_unlikely(ret != read_size)) {
       LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",
                 loc.second, read_size, ret);
       return IndexError_ReadData;
     }
-    vec_blocks[i].reset(const_cast<void *>(ptr));
+    vec_blocks[i].reset(const_cast<void *>(ptr.data()));
   }
   return 0;
 }
@@ -793,13 +798,13 @@ inline key_t HnswStreamerEntity::get_key_typed<MmapMemoryBlock>(
   ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
   ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
                      "invalid chunk offset");
-  const void *ptr = nullptr;
-  size_t ret = node_chunks_[loc.first]->read(loc.second, &ptr, sizeof(key_t));
+  IndexStorage::MemoryBlock ptr;
+  size_t ret = node_chunks_[loc.first]->read(loc.second, ptr, sizeof(key_t));
   if (ailego_unlikely(ret != sizeof(key_t))) {
     LOG_ERROR("Read key failed, ret=%zu", ret);
     return kInvalidKey;
   }
-  return *reinterpret_cast<const key_t *>(ptr);
+  return *reinterpret_cast<const key_t *>(ptr.data());
 }
 
 //! BufferPoolMemoryBlock specialization for get_key
@@ -921,9 +926,9 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
     sync_node_chunks(chunk_idx);
     const auto &chunks = node_chunks_;
     for (size_t i = node_chunk_bases_.size(); i <= chunk_idx; ++i) {
-      const void *ptr = nullptr;
-      chunks[i]->read(0, &ptr, 1);
-      node_chunk_bases_.push_back(static_cast<const char *>(ptr));
+      IndexStorage::MemoryBlock ptr;
+      chunks[i]->read(0, ptr, 1);
+      node_chunk_bases_.push_back(static_cast<const char *>(ptr.data()));
     }
   }
 
@@ -932,9 +937,10 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
     sync_upper_neighbor_chunks(chunk_idx);
     const auto &chunks = upper_neighbor_chunks_;
     for (size_t i = upper_neighbor_chunk_bases_.size(); i <= chunk_idx; ++i) {
-      const void *ptr = nullptr;
-      chunks[i]->read(0, &ptr, 1);
-      upper_neighbor_chunk_bases_.push_back(static_cast<const char *>(ptr));
+      IndexStorage::MemoryBlock ptr;
+      chunks[i]->read(0, ptr, 1);
+      upper_neighbor_chunk_bases_.push_back(
+          static_cast<const char *>(ptr.data()));
     }
   }
 

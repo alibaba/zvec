@@ -13,9 +13,8 @@
 // limitations under the License.
 #pragma once
 
-#include <core/quantizer/quantizer_params.h>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_framework.h>
-#include "metric/metric_params.h"
 #include "ivf_distance_calculator.h"
 #include "ivf_index_format.h"
 #include "ivf_params.h"
@@ -44,6 +43,13 @@ class IVFEntity {
   //! load the index from container
   virtual int load(const IndexStorage::Pointer &container);
 
+  //! Prepare the posting distance once per query, after centroid selection.
+  int bind_query(const void *query, const IndexQueryMeta &qmeta);
+
+  const turbo::Quantizer::Pointer &quantizer() const {
+    return quantizer_;
+  }
+
   //! search in inverted list with filter
   int search(size_t inverted_list_id, const void *query,
              const IndexFilter &filter, uint32_t *scan_count,
@@ -60,6 +66,11 @@ class IVFEntity {
   //! search all inverted list without filter
   int search(const void *query, IndexDocumentHeap *heap,
              IndexContext::Stats *context_stats) const;
+
+  //! Search only the specified primary keys, using posting-space distances.
+  int search_by_p_keys(const void *query, const std::vector<uint64_t> &p_keys,
+                       const IndexFilter &filter, IndexDocumentHeap *heap,
+                       IndexContext::Stats *context_stats) const;
 
   //! Clone the entity
   virtual IVFEntity::Pointer clone() const;
@@ -107,8 +118,10 @@ class IVFEntity {
 
   //! Retrieve a block of vectors
   const void *read_block(size_t inverted_list_id, size_t local_block_id,
-                         size_t *vecs_count) const {
-    auto iv_meta = this->inverted_list_meta(inverted_list_id);
+                         size_t *vecs_count,
+                         IndexStorage::MemoryBlock &data) const {
+    IndexStorage::MemoryBlock meta_block;
+    auto iv_meta = this->inverted_list_meta(inverted_list_id, meta_block);
     if (!iv_meta || local_block_id >= iv_meta->block_count) {
       LOG_ERROR("Failed to read inverted list, listId=%zu blockIdx=%zu",
                 inverted_list_id, local_block_id);
@@ -122,53 +135,52 @@ class IVFEntity {
                        "invalid vecs");
     const size_t off = iv_meta->offset + local_block_id * header_.block_size;
     const size_t size = *vecs_count * meta_.element_size();
-    const void *data = nullptr;
-    if (inverted_->read(off, &data, size) != size) {
+    if (inverted_->read(off, data, size) != size) {
       LOG_ERROR("Failed to read block off=%zu size=%zu", off, size);
       return nullptr;
     }
 
-    return data;
+    return data.data();
   }
 
-  //! Retrieve the inverted list meta
-  const InvertedListMeta *inverted_list_meta(size_t inverted_list_id) const {
-    const void *data = nullptr;
+  //! Retrieve the inverted list meta; the caller owns its read lifetime.
+  const InvertedListMeta *inverted_list_meta(
+      size_t inverted_list_id, IndexStorage::MemoryBlock &data) const {
     const size_t size = sizeof(InvertedListMeta);
     const size_t offset = inverted_list_id * size;
-    if (inverted_meta_->read(offset, &data, size) != size) {
+    if (inverted_meta_->read(offset, data, size) != size) {
       LOG_ERROR("Failed to read inverted meta, id=%zu, size=%zu",
                 inverted_list_id, size);
       return nullptr;
     }
 
-    return static_cast<const InvertedListMeta *>(data);
+    return static_cast<const InvertedListMeta *>(data.data());
   }
 
-  //! Retrieve the keys by consecutive local ids
-  const uint64_t *get_keys(size_t id, size_t count) const {
-    const void *data = nullptr;
+  //! Retrieve consecutive keys; the caller owns their read lifetime.
+  const uint64_t *get_keys(size_t id, size_t count,
+                           IndexStorage::MemoryBlock &data) const {
     const size_t offset = id * sizeof(uint64_t);
     const size_t size = count * sizeof(uint64_t);
-    if (keys_->read(offset, &data, size) != size) {
+    if (keys_->read(offset, data, size) != size) {
       LOG_ERROR("Failed to read keys, id=%zu, size=%zu", id, size);
       return nullptr;
     }
 
-    return static_cast<const uint64_t *>(data);
+    return static_cast<const uint64_t *>(data.data());
   }
 
   //! Retrieve the key by local id
   uint64_t get_key(size_t id) const {
-    const void *data = nullptr;
+    IndexStorage::MemoryBlock data;
     const size_t offset = id * sizeof(uint64_t);
     const size_t size = sizeof(uint64_t);
-    if (keys_->read(offset, &data, size) != size) {
+    if (keys_->read(offset, data, size) != size) {
       LOG_ERROR("Failed to read key, id=%zu", id);
       return kInvalidKey;
     }
 
-    return *static_cast<const uint64_t *>(data);
+    return *static_cast<const uint64_t *>(data.data());
   }
 
   //! Test whether the sorted-rank to local-id mapping is available.
@@ -189,13 +201,9 @@ class IVFEntity {
   }
 
   //! Retrieve vector by local id
-  const void *get_vector(size_t id) const;
-
-  //! Retrieve vector by local id
-  const void *get_vector_by_key(uint64_t key) const;
-
   int get_vector(size_t id, IndexStorage::MemoryBlock &block) const;
 
+  //! Retrieve vector by primary key
   int get_vector_by_key(uint64_t key, IndexStorage::MemoryBlock &block) const;
 
   uint32_t key_to_id(uint64_t key) const;
@@ -203,37 +211,54 @@ class IVFEntity {
   //! Transform a query
   int transform(const void *query, const IndexQueryMeta &qmeta,
                 const void **out, IndexQueryMeta *ometa) const {
+    if (quantizer_) {
+      *out = query;
+      *ometa = qmeta;
+      return 0;
+    }
     return reformer_.transform(query, qmeta, out, ometa);
   }
 
   //! Transform queries
   int transform(const void *query, const IndexQueryMeta &qmeta, uint32_t count,
                 const void **out, IndexQueryMeta *ometa) const {
+    if (quantizer_) {
+      *out = query;
+      *ometa = qmeta;
+      return 0;
+    }
     return reformer_.transform(query, qmeta, count, out, ometa);
   }
 
   //! Normalize the score in query part
   void normalize(size_t qidx, IndexDocumentHeap *heap) const {
+    if (quantizer_) {
+      return;
+    }
     return reformer_.normalize(qidx, heap);
   }
 
   //! Retrieve the value for each inverted list to multiply for normalizing
   float inverted_list_normalize_value(size_t inverted_list_id) const {
+    if (quantizer_) {
+      return 1.0f;
+    }
     if (norm_value_ != 0.0f) {
       return norm_value_;
     }
 
     // ailego_assert_with(integer_quantizer_params_, "nullptr");
     if (integer_quantizer_params_ != nullptr) {
-      const void *data = nullptr;
+      IndexStorage::MemoryBlock data;
       size_t size = sizeof(InvertedIntegerQuantizerParams);
       size_t off = inverted_list_id * size;
-      if (integer_quantizer_params_->read(off, &data, size) != size) {
+      if (integer_quantizer_params_->read(off, data, size) != size) {
         LOG_ERROR("Failed to read data from segment, off=%zu", off);
         return 1.0f;
       }
       auto scale =
-          static_cast<const InvertedIntegerQuantizerParams *>(data)->scale;
+          static_cast<const InvertedIntegerQuantizerParams *>(data.data())
+              ->scale;
       return this->convert_to_normalize_value(scale);
     }
 
@@ -339,6 +364,26 @@ class IVFEntity {
   //! Load the header segment
   int load_header(const IndexStorage::Pointer &container);
 
+  int load_quantizer(const IndexStorage::Pointer &container);
+
+  //! Unlike fetch, distance evaluation must not read retained original vectors.
+  int read_posting_vector(size_t id, IndexStorage::MemoryBlock &block) const;
+
+  //! Distinguish missing keys from storage read failures.
+  int key_to_id(uint64_t key, uint32_t *id) const;
+
+  int key_normalize_value(uint32_t id, float *value) const;
+
+  void query_features_distance(const void *query, const void *features,
+                               size_t count, float *out) const {
+    if (quantizer_) {
+      calculator_->query_features_distance(query_distance_, features, count,
+                                           out);
+    } else {
+      calculator_->query_features_distance(query, features, count, out);
+    }
+  }
+
   //! Convert the int8 quantizer scale to normalize value
   float convert_to_normalize_value(float scale) const {
     auto v = scale == 0.0 ? 1.0 : (1.0 / scale);
@@ -353,6 +398,9 @@ class IVFEntity {
   IndexMeta meta_{};
   mutable IVFReformerWrapper reformer_{};
   IVFDistanceCalculator::Pointer calculator_{};
+  turbo::Quantizer::Pointer quantizer_{};
+  // Each context owns its entity clone and therefore its query buffer/LUT.
+  turbo::DistanceImpl query_distance_{};
   IndexStorage::Pointer container_{};
   IndexStorage::Segment::Pointer inverted_{};
   IndexStorage::Segment::Pointer inverted_meta_{};

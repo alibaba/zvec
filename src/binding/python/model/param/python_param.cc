@@ -298,9 +298,11 @@ Attributes:
                   "punctuation", "symbol"; default [] keeps all valid UTF-8
                   characters). custom_token_chars is not supported.
             jieba:
-                - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
-                  hmm_model.utf8).
-                - "user_dict_path" (user dictionary path).
+                - "jieba_dict_dir" (optional external directory containing
+                  jieba.dict.utf8 and hmm_model.utf8; priority: field value >
+                  ZVEC_JIEBA_DICT_DIR > embedded defaults).
+                - "user_dict_path" (user dictionary path; augments the selected
+                  dictionary, including the embedded default).
                 - "cut_mode" ("search", "mix", "full", or "hmm"; default
                   "search").
             whitespace:
@@ -352,8 +354,10 @@ Args:
                   "punctuation", "symbol"; default [] keeps all valid UTF-8
                   characters). custom_token_chars is not supported.
             jieba:
-                - "jieba_dict_dir".
-                - "user_dict_path".
+                - "jieba_dict_dir" (optional external directory override;
+                  priority: field value > ZVEC_JIEBA_DICT_DIR > embedded defaults).
+                - "user_dict_path" (augments the selected dictionary,
+                  including the embedded default).
                 - "cut_mode" ("search", "mix", "full", or "hmm"; default
                   "search").
             whitespace:
@@ -889,7 +893,7 @@ Attributes:
         Default is ``QuantizerParam()``.
     two_pass_build (bool): If True, build the initial graph with alpha=1.0,
         then run one full-graph pass with the configured alpha. Default is
-        False.
+        True.
     use_flat_contiguous_memory (bool): Whether the Flat reference index used
         for refine should use contiguous vector memory.
     flat_data_type (DataType): Physical data type stored by the Flat reference
@@ -930,7 +934,7 @@ Examples:
            py::arg("use_id_map") = false,
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("quantizer_param") = QuantizerParam(),
-           py::arg("two_pass_build") = false,
+           py::arg("two_pass_build") = true,
            py::arg("use_flat_contiguous_memory") = false,
            py::arg("flat_data_type") = DataType::VECTOR_FP32)
       .def_property_readonly(
@@ -1036,6 +1040,7 @@ Examples:
             if (t.size() < 8 || t.size() > 12)
               throw std::runtime_error("Invalid state for VamanaIndexParams");
             QuantizerParam qp(t.size() >= 9 ? t[8].cast<bool>() : false);
+            // Legacy pickles without this flag used one-pass construction.
             bool two_pass_build = t.size() >= 10 ? t[9].cast<bool>() : false;
             return std::make_shared<VamanaIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
@@ -1493,9 +1498,11 @@ Args:
         - ``prefetch_offset`` (int): Graph prefetch offset (PO).
           ``0`` disables prefetching. Default is ``8``.
           Values are clamped to ``256``.
-        - ``prefetch_lines`` (int): Number of 64B cache lines to prefetch
-          per neighbour vector (PL). ``0`` (default) uses the auto-derived
-          value ``ceil(vector_size/64)``. Values are clamped to ``256``.
+        - ``prefetch_lines`` (int): Number of cache lines to prefetch per
+          neighbour vector (PL). Cache-line size follows the build target:
+          normally 128 bytes on Apple ARM64 and 64 bytes elsewhere.
+          ``0`` (default) uses ``ceil(vector_size/cache_line_size)``.
+          Values are clamped to ``256``.
 )pbdoc")
       .def_property_readonly(
           "ef", [](const HnswQueryParams &self) -> int { return self.ef(); },
@@ -1898,10 +1905,13 @@ Args:
           for this phase only. ``0`` disables this prefix, not local-descent,
           graph-row, or distance-kernel prefetching.
           Values are clamped to ``256``.
-        - ``prefetch_lines`` (int): Number of 64B cache lines to prefetch
-          per neighbour vector (PL). The shared default ``0`` makes Vamana use
-          at most two lines, further clamped to the stored vector size. Values
-          are clamped to ``256`` and to the stored vector size.
+        - ``prefetch_lines`` (int): Number of cache lines to prefetch per
+          neighbour vector (PL). Cache-line size follows the build target:
+          normally 128 bytes on Apple ARM64 and 64 bytes elsewhere.
+          The shared default ``0`` makes Vamana use at most two lines, further
+          clamped to the stored vector size. The nominal 6 KiB prefix budget
+          uses this cache-line size. Values are clamped to ``256`` and to the
+          stored vector size.
 )pbdoc")
       .def_property_readonly(
           "ef_search",

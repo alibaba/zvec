@@ -15,6 +15,7 @@
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/hash/crc32c.h>
 #include <zvec/core/framework/index_stats.h>
+#include "utility/legacy_read_buffer.h"
 
 namespace zvec {
 namespace core {
@@ -50,25 +51,21 @@ key_t VamanaStreamerEntity::get_key(node_id_t id) const {
   if (!use_key_info_map_) return id;
   auto loc = get_key_chunk_loc(id);
   if (ailego_unlikely(loc.first >= node_chunks_.size())) return kInvalidKey;
-  const void *ptr = nullptr;
-  size_t ret = node_chunks_[loc.first]->read(loc.second, &ptr, sizeof(key_t));
+  IndexStorage::MemoryBlock ptr;
+  size_t ret = node_chunks_[loc.first]->read(loc.second, ptr, sizeof(key_t));
   if (ailego_unlikely(ret != sizeof(key_t))) {
     LOG_ERROR("Read key failed, ret=%zu", ret);
     return kInvalidKey;
   }
-  return *reinterpret_cast<const key_t *>(ptr);
+  return *reinterpret_cast<const key_t *>(ptr.data());
 }
 
 const void *VamanaStreamerEntity::get_vector(node_id_t id) const {
-  auto loc = get_vector_chunk_loc(id);
-  if (ailego_unlikely(loc.first >= node_chunks_.size())) return nullptr;
-  const void *ptr = nullptr;
-  size_t ret = node_chunks_[loc.first]->read(loc.second, &ptr, vector_size());
-  if (ailego_unlikely(ret != vector_size())) {
-    LOG_ERROR("Read vector failed, ret=%zu", ret);
-    return nullptr;
-  }
-  return ptr;
+  // Keep the legacy pointer valid until the next call on this thread.
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock block;
+  return get_vector(id, block) == 0 ? buffer.assign(block, vector_size())
+                                    : nullptr;
 }
 
 const void *VamanaStreamerEntity::get_extra_values(node_id_t id) const {
@@ -94,11 +91,16 @@ int VamanaStreamerEntity::get_vector(const node_id_t id,
 
 int VamanaStreamerEntity::get_vector(const node_id_t *ids, uint32_t count,
                                      const void **vecs) const {
+  // Retain every result independently until the next batch on this thread.
+  static thread_local std::vector<LegacyReadBuffer> buffers;
+  std::vector<IndexStorage::MemoryBlock> blocks;
+  int ret = get_vector(ids, count, blocks);
+  if (ret != 0) {
+    return ret;
+  }
+  buffers.resize(count);
   for (uint32_t i = 0; i < count; ++i) {
-    vecs[i] = get_vector(ids[i]);
-    if (ailego_unlikely(vecs[i] == nullptr)) {
-      return IndexError_NoExist;
-    }
+    vecs[i] = buffers[i].assign(blocks[i], vector_size());
   }
   return 0;
 }
@@ -416,13 +418,13 @@ int VamanaStreamerEntity::open(IndexStorage::Pointer stg,
 
 int VamanaStreamerEntity::init_chunks(const Chunk::Pointer &header_chunk) {
   // Read header from chunk
-  const void *hd_ptr = nullptr;
-  size_t ret = header_chunk->read(0UL, &hd_ptr, header_size());
+  IndexStorage::MemoryBlock hd_ptr;
+  size_t ret = header_chunk->read(0UL, hd_ptr, header_size());
   if (ailego_unlikely(ret != header_size())) {
     LOG_ERROR("Read header chunk failed");
     return IndexError_ReadData;
   }
-  auto *hd = reinterpret_cast<const VamanaHeader *>(hd_ptr);
+  auto *hd = reinterpret_cast<const VamanaHeader *>(hd_ptr.data());
 
   // Validate
   if (vector_size() != hd->vector_size()) {
@@ -599,14 +601,14 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory() {
   const size_t vector_body_size = vector_data_size();
   const size_t extra_size = extra_values_size();
 
-  // Pad per-vector stride up to kVectorAlignment (64B) so every vector
+  // Pad per-vector stride up to the configured cache-line size so every vector
   // starts on a cache-line boundary.
   vector_stride_ =
       (vector_body_size + (kVectorAlignment - 1)) & ~(kVectorAlignment - 1);
   // Packed graph row: key + degree + adjacency.
   graph_stride_ = sizeof(key_t) + neighbors_size();
 
-  // Allocate flat vector array (stride = vector_stride_, padded for 64B)
+  // Allocate the flat vector array with the in-memory padding.
   const size_t total_vec_data =
       static_cast<size_t>(total_docs) * vector_stride_;
   size_t vector_memory_size = AlignHugePageSize(total_vec_data);
@@ -658,10 +660,11 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory() {
   const auto &chunks = node_chunks_;
   const uint32_t nodes_per_chunk = 1U << node_index_mask_bits_;
   for (size_t chunk_idx = 0; chunk_idx < chunks.size(); ++chunk_idx) {
-    const void *chunk_data = nullptr;
+    IndexStorage::MemoryBlock chunk_data;
     const size_t data_size = chunks[chunk_idx]->data_size();
-    const size_t read_size = chunks[chunk_idx]->read(0, &chunk_data, data_size);
-    if (ailego_unlikely(read_size != data_size || chunk_data == nullptr)) {
+    const size_t read_size = chunks[chunk_idx]->read(0, chunk_data, data_size);
+    if (ailego_unlikely(read_size != data_size ||
+                        chunk_data.data() == nullptr)) {
       degrade_to_mmap();
       return IndexError_ReadData;
     }
@@ -671,7 +674,7 @@ int VamanaContiguousStreamerEntity::build_contiguous_memory() {
     const uint32_t count_in_chunk =
         std::min(nodes_per_chunk, total_docs - base_id);
 
-    const char *src = static_cast<const char *>(chunk_data);
+    const char *src = static_cast<const char *>(chunk_data.data());
     for (uint32_t i = 0; i < count_in_chunk; ++i) {
       const char *node_src = src + static_cast<size_t>(i) * per_node;
       const size_t global_id = static_cast<size_t>(base_id + i);
@@ -857,11 +860,12 @@ const dist_t *VamanaStreamerEntity::get_neighbor_dists(node_id_t id) const {
   }
   if (ailego_unlikely(loc.first >= dist_chunks_.size())) return nullptr;
 
-  const void *ptr = nullptr;
-  size_t ret =
-      dist_chunks_[loc.first]->read(loc.second, &ptr, dist_entry_size_);
+  // Keep the legacy pointer valid until the next call on this thread.
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock ptr;
+  size_t ret = dist_chunks_[loc.first]->read(loc.second, ptr, dist_entry_size_);
   if (ailego_unlikely(ret != dist_entry_size_)) return nullptr;
-  return static_cast<const dist_t *>(ptr);
+  return static_cast<const dist_t *>(buffer.assign(ptr, dist_entry_size_));
 }
 
 void VamanaStreamerEntity::update_neighbor_dists(

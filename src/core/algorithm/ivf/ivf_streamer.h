@@ -30,6 +30,9 @@ class IVFStreamer : public IndexStreamer {
   int init(const IndexMeta & /*meta*/,
            const ailego::Params & /*params*/) override;
 
+  int init(const IndexMeta &meta, const ailego::Params &params,
+           const turbo::Quantizer::Pointer &quantizer) override;
+
   //! Cleanup Searcher
   int cleanup() override;
 
@@ -54,6 +57,19 @@ class IVFStreamer : public IndexStreamer {
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
                      uint32_t count, Context::Pointer &context) const override;
 
+  //! Similarity brute force search restricted to primary keys.
+  int search_bf_by_p_keys_impl(const void *query,
+                               const std::vector<std::vector<uint64_t>> &p_keys,
+                               const IndexQueryMeta &qmeta,
+                               Context::Pointer &context) const override {
+    return search_bf_by_p_keys_impl(query, p_keys, qmeta, 1, context);
+  }
+
+  int search_bf_by_p_keys_impl(const void *query,
+                               const std::vector<std::vector<uint64_t>> &p_keys,
+                               const IndexQueryMeta &qmeta, uint32_t count,
+                               Context::Pointer &context) const override;
+
   //! Similarity search
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
                   Context::Pointer &context) const override;
@@ -74,6 +90,14 @@ class IVFStreamer : public IndexStreamer {
   //! Retrieve meta of index
   const IndexMeta &meta() const override {
     return meta_;
+  }
+
+  const turbo::Quantizer::Pointer &quantizer() const {
+    return quantizer_;
+  }
+
+  const IndexMeta &posting_meta() const {
+    return entity_ ? entity_->meta() : meta_;
   }
 
   int get_vector_by_id(const uint32_t id,
@@ -100,6 +124,10 @@ class IVFStreamer : public IndexStreamer {
   }
 
  private:
+  int search_bf(const void *query, const IndexQueryMeta &qmeta, uint32_t count,
+                Context::Pointer &context,
+                const std::vector<std::vector<uint64_t>> *p_keys) const;
+
   //! Constants
   static constexpr uint32_t kDefaultBfThreshold = 1000u;
 
@@ -111,6 +139,7 @@ class IVFStreamer : public IndexStreamer {
   IndexBuilder::Pointer builder_;
   IVFCentroidIndex::Pointer centroid_index_{};
   IVFEntity::Pointer entity_{};
+  turbo::Quantizer::Pointer quantizer_{};
   uint32_t bruteforce_threshold_{kDefaultBfThreshold};
   uint32_t magic_{0};
   Stats stats_{};

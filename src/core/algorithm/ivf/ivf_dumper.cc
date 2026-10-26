@@ -93,13 +93,13 @@ int IVFDumper::dump_container_segment(const IndexStorage::Pointer &container,
   const size_t total_size = seg->data_size() + seg->padding_size();
   size_t off = 0;
   while (off < total_size) {
-    const void *data = nullptr;
+    IndexStorage::MemoryBlock data;
     size_t rd_size = std::min(batch_size, total_size - off);
-    if (seg->read(off, &data, rd_size) != rd_size) {
+    if (seg->read(off, data, rd_size) != rd_size) {
       LOG_ERROR("Failed to read data, off=%zu size=%zu", off, rd_size);
       return IndexError_ReadData;
     }
-    if (dumper_->write(data, rd_size) != rd_size) {
+    if (dumper_->write(data.data(), rd_size) != rd_size) {
       LOG_ERROR("Failed to write data, size=%zu", rd_size);
       return IndexError_WriteData;
     }
@@ -235,6 +235,24 @@ int IVFDumper::dump_quantizer_params(
       int8_quantizer ? IVF_INT8_QUANTIZED_PARAMS_SEG_ID
                      : IVF_INT4_QUANTIZED_PARAMS_SEG_ID,
       params.data(), params.size() * sizeof(InvertedIntegerQuantizerParams));
+}
+
+int IVFDumper::dump_turbo_quantizer(
+    const turbo::Quantizer::Pointer &quantizer) {
+  if (!quantizer) {
+    return IndexError_InvalidArgument;
+  }
+  std::string state;
+  int ret = quantizer->serialize(&state);
+  ivf_check_with_msg(ret, "Failed to serialize Turbo IVF quantizer");
+  if (quantizer->require_train() && state.empty()) {
+    LOG_ERROR("Turbo IVF quantizer has no serialized training state");
+    return IndexError_InvalidFormat;
+  }
+  // Stateless quantizers use the default empty serialization. The segment
+  // still marks the index as having a persisted Turbo quantizer.
+  return this->dump_segment(IVF_TURBO_QUANTIZER_SEG_ID, state.data(),
+                            state.size());
 }
 
 int IVFDumper::dump_original_vector(const void *data, size_t size) {
