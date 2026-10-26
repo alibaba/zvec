@@ -72,17 +72,18 @@ class ZVEC_CORE_API VectorSource {
   virtual VectorIterator::Pointer create_iterator() const;
 };
 
-class ZVEC_CORE_API ContiguousVectorSource final : public VectorSource {
+class ZVEC_CORE_API ContiguousVectorSource : public VectorSource {
  public:
-  explicit ContiguousVectorSource(ContiguousBatch view);
+  // Iterators retain this view and its lease. The caller keeps storage alive
+  // for random reads and any borrowed search results.
+  virtual ContiguousBatch get_contiguous_view() const = 0;
 
   const void *get_vector(uint32_t id) const override;
 
-  VectorIterator::Pointer create_iterator() const override;
+  void get_vectors(const uint32_t *ids, uint32_t count,
+                   const void **out) const override;
 
- private:
-  const ContiguousBatch view_;
-  const bool valid_;
+  VectorIterator::Pointer create_iterator() const override;
 };
 
 }  // namespace core

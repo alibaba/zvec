@@ -34,10 +34,16 @@ bool ValidContiguousView(const ContiguousBatch &view) {
   return view.count <= max_span / view.stride;
 }
 
+const void *GetContiguousVector(const ContiguousBatch &view, uint32_t id) {
+  if (id < view.first_id || id - view.first_id >= view.count) return nullptr;
+  return static_cast<const char *>(view.data) +
+         size_t(id - view.first_id) * view.stride;
+}
+
 class ContiguousVectorIterator final : public VectorIterator {
  public:
-  ContiguousVectorIterator(ContiguousBatch view, bool valid)
-      : view_(std::move(view)), valid_(valid) {}
+  explicit ContiguousVectorIterator(ContiguousBatch view)
+      : view_(std::move(view)), valid_(ValidContiguousView(view_)) {}
 
   int next_batch(uint32_t max_count, VectorBatch *out) override {
     if (!out || !max_count) return IndexError_InvalidArgument;
@@ -75,18 +81,23 @@ void VectorSource::get_vectors(const uint32_t *ids, uint32_t count,
   }
 }
 
-ContiguousVectorSource::ContiguousVectorSource(ContiguousBatch view)
-    : view_(std::move(view)), valid_(ValidContiguousView(view_)) {}
-
 const void *ContiguousVectorSource::get_vector(uint32_t id) const {
-  if (!valid_ || id < view_.first_id || id - view_.first_id >= view_.count)
-    return nullptr;
-  return static_cast<const char *>(view_.data) +
-         size_t(id - view_.first_id) * view_.stride;
+  const auto view = get_contiguous_view();
+  return ValidContiguousView(view) ? GetContiguousVector(view, id) : nullptr;
+}
+
+void ContiguousVectorSource::get_vectors(const uint32_t *ids, uint32_t count,
+                                         const void **out) const {
+  if (!count) return;
+  const auto view = get_contiguous_view();
+  const bool valid = ValidContiguousView(view);
+  for (uint32_t i = 0; i < count; ++i) {
+    out[i] = valid ? GetContiguousVector(view, ids[i]) : nullptr;
+  }
 }
 
 VectorIterator::Pointer ContiguousVectorSource::create_iterator() const {
-  return std::make_unique<ContiguousVectorIterator>(view_, valid_);
+  return std::make_unique<ContiguousVectorIterator>(get_contiguous_view());
 }
 
 }  // namespace core

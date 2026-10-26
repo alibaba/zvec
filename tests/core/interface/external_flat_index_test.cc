@@ -20,6 +20,7 @@
 #include <map>
 #include <set>
 #include <thread>
+#include <utility>
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/core/interface/index_factory.h>
@@ -125,6 +126,20 @@ class RandomAccessSource : public core::VectorSource {
 
  private:
   const BatchSource &source_;
+};
+
+class ContiguousViewSource : public core::ContiguousVectorSource {
+ public:
+  explicit ContiguousViewSource(core::ContiguousBatch value)
+      : view(std::move(value)) {}
+
+  core::ContiguousBatch get_contiguous_view() const override {
+    ++view_reads;
+    return view;
+  }
+
+  core::ContiguousBatch view;
+  mutable uint32_t view_reads{0};
 };
 
 class ContiguousSource : public BatchSource {
@@ -433,12 +448,11 @@ TEST_F(ExternalFlatTest, ContiguousScanMatchesEmbeddedAndSkipsDeletedRows) {
     for (bool id_map : {false, true}) {
       for (size_t padding : {0, 3}) {
         ContiguousSource data(kRowCount, kFirstId, padding);
-        core::ContiguousVectorSource source(
-            {data.get_vector(kFirstId),
-             kFirstId,
-             kRowCount,
-             (kDimension + padding) * sizeof(float),
-             {}});
+        ContiguousViewSource source({data.get_vector(kFirstId),
+                                     kFirstId,
+                                     kRowCount,
+                                     (kDimension + padding) * sizeof(float),
+                                     {}});
         // Keep an unregistered row in the scan.
         data.rows.erase(kFirstId + kRowCount - 1);
         auto suffix = std::to_string(case_id++);
@@ -555,7 +569,7 @@ TEST_F(ExternalFlatTest, RejectsMalformedContiguousBatches) {
 
 TEST_F(ExternalFlatTest, ContiguousIdBoundaryAndEmptySource) {
   std::vector<float> row(kDimension, 0.5f);
-  core::ContiguousVectorSource source(
+  ContiguousViewSource source(
       {row.data(), UINT32_MAX - 1, 1, kDimension * sizeof(float), {}});
   auto index = open_index(Param(true), test_path("index"));
   ASSERT_EQ(0, index->add_with_source(Vector(row), UINT32_MAX - 1, source));
@@ -565,14 +579,14 @@ TEST_F(ExternalFlatTest, ContiguousIdBoundaryAndEmptySource) {
   ASSERT_EQ(0, index->search_with_source(query, qp, source, &result));
   ASSERT_EQ(1, result.doc_list_.size());
   EXPECT_EQ(UINT32_MAX - 1, result.doc_list_[0].key());
-  core::ContiguousVectorSource empty(core::ContiguousBatch{});
+  ContiguousViewSource empty(core::ContiguousBatch{});
   ASSERT_EQ(0, index->search_with_source(query, qp, empty, &result));
   EXPECT_TRUE(result.doc_list_.empty());
 }
 
 TEST(ContiguousVectorSourceTest, RandomReadsAndIndependentCursors) {
   const float rows[] = {1, 2, -1, 3, 4, -1, 5, 6, -1};
-  core::ContiguousVectorSource source({rows, 100, 3, 3 * sizeof(float), {}});
+  ContiguousViewSource source({rows, 100, 3, 3 * sizeof(float), {}});
   EXPECT_EQ(nullptr, source.get_vector(99));
   EXPECT_EQ(rows, source.get_vector(100));
   EXPECT_EQ(rows + 6, source.get_vector(102));
@@ -580,6 +594,9 @@ TEST(ContiguousVectorSourceTest, RandomReadsAndIndependentCursors) {
   const uint32_t ids[] = {102, 99, 100};
   const void *vectors[3] = {};
   source.get_vectors(ids, 3, vectors);
+  EXPECT_EQ(5, source.view_reads);
+  source.get_vectors(nullptr, 0, nullptr);
+  EXPECT_EQ(5, source.view_reads);
   EXPECT_EQ(rows + 6, vectors[0]);
   EXPECT_EQ(nullptr, vectors[1]);
   EXPECT_EQ(rows, vectors[2]);
@@ -611,13 +628,47 @@ TEST(ContiguousVectorSourceTest, RandomReadsAndIndependentCursors) {
   EXPECT_EQ(rows, view.data);
   EXPECT_EQ(100, view.first_id);
   EXPECT_EQ(3, view.count);
+  EXPECT_EQ(7, source.view_reads);
+}
+
+TEST(ContiguousVectorSourceTest, CursorsRetainViewAcrossSourceUpdates) {
+  const float old_rows[] = {1, 2, -1, 3, 4, -1, 5, 6, -1};
+  const float new_rows[] = {7, 8, 9, 10};
+  ContiguousViewSource source({old_rows, 100, 3, 3 * sizeof(float), {}});
+  auto old_cursor = source.create_iterator();
+  core::VectorBatch batch;
+  ASSERT_EQ(0, old_cursor->next_batch(2, &batch));
+  EXPECT_EQ(old_rows, std::get<core::ContiguousBatch>(batch).data);
+
+  source.view = {new_rows, 200, 2, 2 * sizeof(float), {}};
+  EXPECT_EQ(nullptr, source.get_vector(100));
+  EXPECT_EQ(new_rows + 2, source.get_vector(201));
+  auto new_cursor = source.create_iterator();
+  ASSERT_EQ(4, source.view_reads);
+
+  ASSERT_EQ(0, old_cursor->next_batch(2, &batch));
+  auto view = std::get<core::ContiguousBatch>(batch);
+  EXPECT_EQ(old_rows + 6, view.data);
+  EXPECT_EQ(102, view.first_id);
+  EXPECT_EQ(1, view.count);
+  EXPECT_EQ(3 * sizeof(float), view.stride);
+  ASSERT_EQ(0, old_cursor->next_batch(2, &batch));
+  EXPECT_EQ(0, std::get<core::ContiguousBatch>(batch).count);
+
+  ASSERT_EQ(0, new_cursor->next_batch(2, &batch));
+  view = std::get<core::ContiguousBatch>(batch);
+  EXPECT_EQ(new_rows, view.data);
+  EXPECT_EQ(200, view.first_id);
+  EXPECT_EQ(2, view.count);
+  EXPECT_EQ(2 * sizeof(float), view.stride);
+  EXPECT_EQ(4, source.view_reads);
 }
 
 TEST(ContiguousVectorSourceTest, SourceCursorAndBatchRetainLease) {
   auto storage = std::make_shared<std::vector<float>>(6, 0.5f);
   std::weak_ptr<const void> weak = storage;
   const auto *data = storage->data();
-  auto source = std::make_unique<core::ContiguousVectorSource>(
+  auto source = std::make_unique<ContiguousViewSource>(
       core::ContiguousBatch{data, 3, 3, 2 * sizeof(float), storage});
   storage.reset();
   ASSERT_FALSE(weak.expired());
@@ -646,14 +697,19 @@ TEST(ContiguousVectorSourceTest, RejectsInvalidViewsAndSupportsEmptyViews) {
       {rows, 3, 3, std::numeric_limits<size_t>::max(), {}},
   };
   for (const auto &view : invalid) {
-    core::ContiguousVectorSource source(view);
+    ContiguousViewSource source(view);
     EXPECT_EQ(nullptr, source.get_vector(view.first_id));
+    const uint32_t ids[] = {view.first_id, 0};
+    const void *vectors[] = {rows, rows};
+    source.get_vectors(ids, 2, vectors);
+    EXPECT_EQ(nullptr, vectors[0]);
+    EXPECT_EQ(nullptr, vectors[1]);
     auto cursor = source.create_iterator();
     ASSERT_NE(nullptr, cursor);
     core::VectorBatch batch;
     EXPECT_EQ(core::IndexError_InvalidArgument, cursor->next_batch(1, &batch));
   }
-  core::ContiguousVectorSource empty(core::ContiguousBatch{});
+  ContiguousViewSource empty(core::ContiguousBatch{});
   EXPECT_EQ(nullptr, empty.get_vector(0));
   auto cursor = empty.create_iterator();
   ASSERT_NE(nullptr, cursor);
