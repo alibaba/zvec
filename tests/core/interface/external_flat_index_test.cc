@@ -161,7 +161,6 @@ class ContiguousSource : public BatchSource {
       const auto count = static_cast<uint32_t>(
           std::min({size_t{max_count}, source_.page_rows,
                     source_.data_.size() / kDimension - position_}));
-      // Exercise EOF expressed as an empty contiguous view too.
       out->contiguous = ContiguousBatch{};
       if (!count) return 0;
       ++source_.scan_batches;
@@ -427,7 +426,7 @@ TEST_F(ExternalFlatTest, ContiguousScanMatchesEmbeddedAndSkipsDeletedRows) {
     for (bool id_map : {false, true}) {
       ContiguousSource source(kRowCount, kFirstId);
       source.page_rows = 1024;
-      // This row is in the scan but is not registered in either index.
+      // Keep an unregistered row in the scan.
       source.rows.erase(kFirstId + kRowCount - 1);
       auto suffix = std::to_string(case_id++);
       auto external =
@@ -439,8 +438,7 @@ TEST_F(ExternalFlatTest, ContiguousScanMatchesEmbeddedAndSkipsDeletedRows) {
       auto qp =
           FlatQueryParamBuilder().with_topk(11).with_fetch_vector(true).build();
       qp->filter = std::make_shared<IndexFilter>();
-      // The first physical batch is entirely deleted. It must not end
-      // the scan, and holes in later batches must retain the correct IDs.
+      // A fully filtered batch must not end the scan.
       qp->filter->set(
           [](uint64_t id) { return id <= kFirstId + 1023 || id % 7 == 0; });
       std::vector<float> query(kDimension, 0.3f);
@@ -455,7 +453,6 @@ TEST_F(ExternalFlatTest, ContiguousScanMatchesEmbeddedAndSkipsDeletedRows) {
         EXPECT_EQ(source.get_vector(doc.key()), doc.vector());
         EXPECT_NE(kFirstId + kRowCount - 1, doc.key());
       }
-      // Candidate lookup still uses random access, even with this source.
       qp->bf_pks = std::make_shared<std::vector<uint64_t>>();
       for (uint32_t i = 1024; i < 1048; ++i)
         qp->bf_pks->push_back(kFirstId + i);

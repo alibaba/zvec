@@ -26,10 +26,7 @@ namespace core {
 
 class ZVEC_CORE_API VectorSource {
  public:
-  // Borrowed, tightly packed row-major vectors with consecutive IDs.
-  // Row i has ID first_id + i and starts at data + i * element_size bytes,
-  // using the index's vector byte length. No padding or row compaction.
-  // Nonempty batches need valid backing storage; count includes filtered rows.
+  // Packed row-major data; IDs first_id + i, count includes filtered rows.
   struct ContiguousBatch {
     const void *data{nullptr};
     uint32_t first_id{0};
@@ -46,8 +43,7 @@ class ZVEC_CORE_API VectorSource {
     // Optional backing allocation or page pin. Data must remain valid until
     // the batch is released, or (for scans) the next next_batch() call.
     std::shared_ptr<const void> lease;
-    // Alternative to ids/vectors, which must both be empty when set. Flat
-    // adapts this view directly into its reusable distance-computation buffers.
+    // When set, ids and vectors must be empty.
     std::optional<ContiguousBatch> contiguous;
 
     size_t size() const {
@@ -71,9 +67,7 @@ class ZVEC_CORE_API VectorSource {
     using Pointer = std::unique_ptr<Iterator>;
     virtual ~Iterator() = default;
     // Return 0 with 1..max_count rows, 0 with an empty batch at EOF, or an
-    // IndexError on failure. Enumerate every visible ID exactly once. Either
-    // batch representation may include filtered rows; an entirely filtered
-    // batch still has a nonzero size and must not signal EOF.
+    // IndexError on failure. Enumerate every visible ID exactly once.
     virtual int next_batch(uint32_t max_count, Batch *out) = 0;
   };
 
