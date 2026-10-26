@@ -235,7 +235,7 @@ class BinaryConverter : public IndexConverter {
   size_t dimension_{0u};
 };
 
-INDEX_FACTORY_REGISTER_CONVERTER(BinaryConverter);
+INDEX_FACTORY_DEFINE_CONVERTER(BinaryConverter);
 
 }  // namespace core
 }  // namespace zvec

@@ -32,7 +32,7 @@ namespace core {
 class UniformUint7Reformer : public IndexReformer {
  public:
   //! Constructor.
-  //! `dst_type` is required by the INDEX_FACTORY_REGISTER_REFORMER_ALIAS
+  //! `dst_type` is required by the INDEX_FACTORY_DEFINE_REFORMER_ALIAS
   //! macro signature but is unused here: the quantization output is
   //! always int8, governed by the (scale, bias) pair received in init().
   UniformUint7Reformer(IndexMeta::DataType /*dst_type*/) {}
@@ -241,9 +241,8 @@ class UniformUint7Reformer : public IndexReformer {
   turbo::UniformQuantizeFunc quantize_func_{nullptr};
 };
 
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(UniformUint7Reformer,
-                                      UniformUint7Reformer,
-                                      IndexMeta::DataType::DT_INT8);
+INDEX_FACTORY_DEFINE_REFORMER_ALIAS(UniformUint7Reformer, UniformUint7Reformer,
+                                    IndexMeta::DataType::DT_INT8);
 
 }  // namespace core
 }  // namespace zvec

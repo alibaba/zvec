@@ -19,6 +19,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -26,11 +27,21 @@
 namespace zvec {
 namespace ailego {
 
+//! Optional built-in defaults for a factory category. Specializations must
+//! register defaults without calling Make, Has, or Classes recursively.
+template <typename TBase>
+struct FactoryBuiltinLoader {
+  static void Load() {}
+};
+
 /*! Factory
  */
 template <typename TBase>
 class Factory {
  public:
+  //! Built-in defaults must not replace an explicitly registered extension.
+  struct BuiltinTag {};
+
   /*! Factory Register
    */
   template <typename TImpl, typename = typename std::enable_if<
@@ -48,6 +59,22 @@ class Factory {
       std::tuple<TArgs...> tuple(std::forward<TArgs>(args)...);
 
       Factory::Instance()->set(key, [tuple] {
+        return Register::Construct(
+            tuple, typename TupleIndexMaker<sizeof...(TArgs)>::Type());
+      });
+    }
+
+    //! Register a default only when the name has not been registered already.
+    Register(BuiltinTag, const char *key) {
+      Factory::Instance()->set_builtin(key,
+                                       [] { return Register::Construct(); });
+    }
+
+    //! Register a parameterized built-in default without replacing extensions.
+    template <typename... TArgs>
+    Register(BuiltinTag, const char *key, TArgs &&...args) {
+      std::tuple<TArgs...> tuple(std::forward<TArgs>(args)...);
+      Factory::Instance()->set_builtin(key, [tuple] {
         return Register::Construct(
             tuple, typename TupleIndexMaker<sizeof...(TArgs)>::Type());
       });
@@ -83,6 +110,7 @@ class Factory {
 
   //! Produce an instance (c_ptr)
   static TBase *Make(const char *key) {
+    FactoryBuiltinLoader<TBase>::Load();
     return Factory::Instance()->produce(key);
   }
 
@@ -98,11 +126,13 @@ class Factory {
 
   //! Test if the class is exist
   static bool Has(const char *key) {
+    FactoryBuiltinLoader<TBase>::Load();
     return Factory::Instance()->has(key);
   }
 
   //! Retrieve classes in factory
   static std::vector<std::string> Classes() {
+    FactoryBuiltinLoader<TBase>::Load();
     return Factory::Instance()->classes();
   }
 
@@ -155,25 +185,52 @@ class Factory {
   //! Inserts a new class into map
   template <typename TFunc>
   void set(const char *key, TFunc &&func) {
-    map_[key] = std::forward<TFunc>(func);
+    CreatorPointer creator =
+        std::make_shared<const Creator>(std::forward<TFunc>(func));
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      map_[key].swap(creator);
+    }
+    // Captured arguments may query this factory when they are destroyed.
+  }
+
+  //! Insert a built-in default without replacing a user registration.
+  template <typename TFunc>
+  void set_builtin(const char *key, TFunc &&func) {
+    CreatorPointer creator =
+        std::make_shared<const Creator>(std::forward<TFunc>(func));
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      map_.emplace(key, creator);
+    }
   }
 
   //! Produce an instance
   TBase *produce(const char *key) {
-    auto iter = map_.find(key);
-    if (iter != map_.end()) {
-      return iter->second();
+    CreatorPointer creator;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      auto iter = map_.find(key);
+      if (iter == map_.end()) {
+        return nullptr;
+      }
+      creator = iter->second;
     }
-    return nullptr;
+    // Copying captured arguments and invoking constructors may query or
+    // register objects through this factory. Only copy the shared pointer
+    // while holding the mutex.
+    return (*creator)();
   }
 
   //! Test if the class is exist
   bool has(const char *key) {
+    std::lock_guard<std::mutex> lock(mutex_);
     return (map_.find(key) != map_.end());
   }
 
   //! Retrieve classes in factory
   std::vector<std::string> classes() const {
+    std::lock_guard<std::mutex> lock(mutex_);
     std::vector<std::string> vec;
     for (const auto &it : map_) {
       vec.push_back(std::string(it.first));
@@ -196,20 +253,19 @@ class Factory {
     }
   };
 
+  using Creator = std::function<TBase *()>;
+  using CreatorPointer = std::shared_ptr<const Creator>;
+
   //! Don't use variable buffer as key store.
   //! The key must be use a static buffer to store.
-  std::map<const char *, std::function<TBase *()>, KeyComparer> map_;
+  std::map<const char *, CreatorPointer, KeyComparer> map_;
+  mutable std::mutex mutex_;
 };
 
-// Force compiler/linker retention of the factory-registration static object.
-// Under clang -O3 + --gc-sections + install.strip (CI Release), these
-// file-scope static objects have no external references and can be silently
-// dropped along with their .init_array entries, causing runtime
-// 'Create vector column indexer failed' failures for indexers like
-// VamanaStreamer. `used` defeats compiler dead-code elimination and
-// `retain` (GCC>=11 / Clang>=13) defeats linker `--gc-sections`. On MSVC
-// the equivalent is achieved elsewhere via /WHOLEARCHIVE. Fall back to just
-// `used` on older toolchains that don't know `retain`.
+// Retain custom registrations in explicitly linked translation units, including
+// builds that discard unused sections. Built-in modules use explicit
+// registration functions and do not depend on this annotation or startup
+// initialization.
 #if defined(__has_attribute)
 #if __has_attribute(retain) && __has_attribute(used)
 #define AILEGO_FACTORY_REGISTER_ATTR __attribute__((used, retain))

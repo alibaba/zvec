@@ -371,7 +371,7 @@ IndexProvider::Pointer IVFSearcher::create_provider() const {
   return Provider::Pointer(provider);
 }
 
-INDEX_FACTORY_REGISTER_SEARCHER(IVFSearcher);
+INDEX_FACTORY_DEFINE_SEARCHER(IVFSearcher);
 
 }  // namespace core
 }  // namespace zvec

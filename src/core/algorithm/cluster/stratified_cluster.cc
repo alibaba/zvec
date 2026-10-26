@@ -496,7 +496,7 @@ int StratifiedCluster::init_second_cluster(IndexCluster::Pointer *second,
   return 0;
 }
 
-INDEX_FACTORY_REGISTER_CLUSTER(StratifiedCluster);
+INDEX_FACTORY_DEFINE_CLUSTER(StratifiedCluster);
 
 }  // namespace core
 }  // namespace zvec

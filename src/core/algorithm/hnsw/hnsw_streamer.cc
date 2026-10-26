@@ -1238,7 +1238,7 @@ int HnswStreamer::search_bf_by_p_keys_impl(
 }
 
 
-INDEX_FACTORY_REGISTER_STREAMER(HnswStreamer);
+INDEX_FACTORY_DEFINE_STREAMER(HnswStreamer);
 
 }  // namespace core
 }  // namespace zvec

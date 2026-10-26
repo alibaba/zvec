@@ -481,8 +481,8 @@ class HalfFloatSparseConverter : public IndexConverter {
   Stats stats_{};
 };
 
-INDEX_FACTORY_REGISTER_CONVERTER(HalfFloatConverter);
-INDEX_FACTORY_REGISTER_CONVERTER(HalfFloatSparseConverter);
+INDEX_FACTORY_DEFINE_CONVERTER(HalfFloatConverter);
+INDEX_FACTORY_DEFINE_CONVERTER(HalfFloatSparseConverter);
 
 }  // namespace core
 }  // namespace zvec

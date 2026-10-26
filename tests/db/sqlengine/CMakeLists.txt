@@ -30,6 +30,5 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/db ${PROJECT_ROOT_DIR}/src/db/common
     LDFLAGS ${APPLE_FRAMEWORK_LIBS}
   )
-  db_test_force_load_core(${CC_TARGET})
   cc_test_suite(zvec_sqlengine ${CC_TARGET})
 endforeach()

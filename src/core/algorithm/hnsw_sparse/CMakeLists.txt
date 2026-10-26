@@ -8,7 +8,7 @@ endif()
 
 cc_library(
     NAME core_knn_hnsw_sparse 
-    STATIC SHARED STRICT ALWAYS_LINK
+    STATIC SHARED STRICT
     SRCS *.cc
     LIBS core_framework sparsehash
     INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm

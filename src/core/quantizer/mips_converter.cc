@@ -687,7 +687,7 @@ class MipsConverter : public IndexConverter {
   Stats stats_{};
 };
 
-INDEX_FACTORY_REGISTER_CONVERTER(MipsConverter);
+INDEX_FACTORY_DEFINE_CONVERTER(MipsConverter);
 
 }  // namespace core
 }  // namespace zvec

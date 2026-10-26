@@ -957,7 +957,7 @@ void HnswSparseStreamer::print_debug_info() {
   // entity_.print_key_map();
 }
 
-INDEX_FACTORY_REGISTER_STREAMER(HnswSparseStreamer);
+INDEX_FACTORY_DEFINE_STREAMER(HnswSparseStreamer);
 
 }  // namespace core
 }  // namespace zvec

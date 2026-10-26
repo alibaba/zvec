@@ -821,7 +821,7 @@ int DiskAnnBuilder::dump(const IndexDumper::Pointer &dumper) {
   return 0;
 }
 
-INDEX_FACTORY_REGISTER_BUILDER(DiskAnnBuilder);
+INDEX_FACTORY_DEFINE_BUILDER(DiskAnnBuilder);
 
 }  // namespace core
 }  // namespace zvec

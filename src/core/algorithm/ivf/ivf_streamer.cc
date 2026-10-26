@@ -374,7 +374,7 @@ IndexProvider::Pointer IVFStreamer::create_provider() const {
   return Provider::Pointer(provider);
 }
 
-INDEX_FACTORY_REGISTER_STREAMER(IVFStreamer);
+INDEX_FACTORY_DEFINE_STREAMER(IVFStreamer);
 
 }  // namespace core
 }  // namespace zvec

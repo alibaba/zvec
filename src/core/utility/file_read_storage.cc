@@ -498,7 +498,7 @@ class FileReadStorage : public IndexStorage {
   std::string file_path_{};
 };
 
-INDEX_FACTORY_REGISTER_STORAGE(FileReadStorage);
+INDEX_FACTORY_DEFINE_STORAGE(FileReadStorage);
 
 }  // namespace core
 }  // namespace zvec

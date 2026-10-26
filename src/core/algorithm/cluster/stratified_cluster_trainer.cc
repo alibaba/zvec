@@ -385,7 +385,7 @@ IndexBundle::Pointer StratifiedClusterTrainer::indexes() const {
 }
 
 //! Register Cluster Trainer in Factory
-INDEX_FACTORY_REGISTER_TRAINER(StratifiedClusterTrainer);
+INDEX_FACTORY_DEFINE_TRAINER(StratifiedClusterTrainer);
 
 }  // namespace core
 }  // namespace zvec

@@ -522,7 +522,7 @@ int HnswSparseBuilder::build(IndexThreads::Pointer threads,
   return 0;
 }
 
-INDEX_FACTORY_REGISTER_BUILDER(HnswSparseBuilder);
+INDEX_FACTORY_DEFINE_BUILDER(HnswSparseBuilder);
 
 }  // namespace core
 }  // namespace zvec

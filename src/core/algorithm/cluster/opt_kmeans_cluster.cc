@@ -1319,7 +1319,7 @@ int OptKmeansCluster::init(const IndexMeta &meta,
   return 0;
 }
 
-INDEX_FACTORY_REGISTER_CLUSTER(OptKmeansCluster);
+INDEX_FACTORY_DEFINE_CLUSTER(OptKmeansCluster);
 
 }  // namespace core
 }  // namespace zvec

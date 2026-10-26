@@ -8,7 +8,7 @@ endif()
 
 cc_library(
         NAME core_quantizer 
-        STATIC SHARED STRICT ALWAYS_LINK
+        STATIC SHARED STRICT
         SRCS *.cc rotator/*.cc
         LIBS zvec_ailego zvec_turbo core_framework
         INCS . ${PROJECT_ROOT_DIR}/src/core

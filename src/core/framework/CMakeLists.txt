@@ -3,7 +3,7 @@ include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
 cc_library(
     NAME core_framework 
-    STATIC STRICT ALWAYS_LINK
+    STATIC STRICT
     SRCS *.cc
     LIBS zvec_ailego zvec_turbo
     INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/turbo

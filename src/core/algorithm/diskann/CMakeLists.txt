@@ -5,9 +5,8 @@ file(GLOB_RECURSE ALL_SRCS *.cc *.c)
 
 # DiskAnn is compiled as a STATIC+SHARED library (matching the pattern used by
 # core_knn_hnsw, core_knn_cluster, etc.). The static variant
-# (core_knn_diskann_static) is whole-archived into _zvec.so for the Python
-# wheel, so no separate runtime .so is needed. The shared variant is used by
-# C++ tools and tests that link against it directly.
+# is used by internal consumers. The Python wheel links the full zvec_core
+# archive with an explicit built-in directory, so no runtime plugin is needed.
 #
 # io_uring uses raw Linux syscalls and has no liburing dependency. libaio is
 # loaded at runtime via dlopen()/dlsym() (see libaio_loader.h), so we do NOT
@@ -28,7 +27,7 @@ endif()
 
 cc_library(
     NAME core_knn_diskann
-    STATIC SHARED STRICT ALWAYS_LINK
+    STATIC SHARED STRICT
     SRCS *.cc
     LIBS ${CORE_KNN_DISKANN_LIBS}
     INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
