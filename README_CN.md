@@ -67,7 +67,7 @@ Zvec 提供多语言官方 SDK：
 
 | SDK | 安装 / 依赖 | 源码 |
 | --- | --- | --- |
-| [Python](https://pypi.org/project/zvec/) | `pip install zvec` | [源码](https://github.com/alibaba/zvec) |
+| [Python](https://pypi.org/project/zvec/) | `pip install zvec` | [源码](https://github.com/alibaba/zvec/tree/main/python/zvec) |
 | [Node.js](https://www.npmjs.com/package/@zvec/zvec) | `npm install @zvec/zvec` | [源码](https://github.com/zvec-ai/zvec-node) |
 | [Go](https://pkg.go.dev/github.com/zvec-ai/zvec-go) | [安装指南](https://github.com/zvec-ai/zvec-go/blob/main/README_CN.md#安装) | [源码](https://github.com/zvec-ai/zvec-go) |
 | [Rust](https://crates.io/crates/zvec-rust) | `cargo add zvec-rust` | [源码](https://github.com/zvec-ai/zvec-rust) |
