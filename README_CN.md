@@ -65,14 +65,14 @@
 
 Zvec 提供多语言官方 SDK：
 
-| SDK | 安装 / 依赖 | 资源 |
+| SDK | 安装 / 依赖 | 源码 |
 | --- | --- | --- |
-| [Python](https://pypi.org/project/zvec/) | `pip install zvec` | [文档](https://zvec.org/zh/docs/db/) |
-| [Node.js](https://www.npmjs.com/package/@zvec/zvec) | `npm install @zvec/zvec` | [文档](https://zvec.org/zh/docs/db/) · [源码](https://github.com/zvec-ai/zvec-node) |
-| [Go](https://pkg.go.dev/github.com/zvec-ai/zvec-go) | [安装指南](https://github.com/zvec-ai/zvec-go/blob/main/README_CN.md#安装) | [文档](https://pkg.go.dev/github.com/zvec-ai/zvec-go) · [源码](https://github.com/zvec-ai/zvec-go) |
-| [Rust](https://crates.io/crates/zvec-rust) | `cargo add zvec-rust` | [文档](https://github.com/zvec-ai/zvec-rust/blob/main/README_CN.md) · [源码](https://github.com/zvec-ai/zvec-rust) |
-| [Java](https://central.sonatype.com/artifact/org.zvec/zvec-java) | `org.zvec:zvec-java`（Maven） | [文档](https://github.com/zvec-ai/zvec-java/blob/main/README_CN.md) · [源码](https://github.com/zvec-ai/zvec-java) |
-| [Dart / Flutter](https://pub.dev/packages/zvec) | `flutter pub add zvec` | [文档](https://github.com/zvec-ai/zvec-dart/blob/main/README_zh.md) · [源码](https://github.com/zvec-ai/zvec-dart) |
+| [Python](https://pypi.org/project/zvec/) | `pip install zvec` | — |
+| [Node.js](https://www.npmjs.com/package/@zvec/zvec) | `npm install @zvec/zvec` | [源码](https://github.com/zvec-ai/zvec-node) |
+| [Go](https://pkg.go.dev/github.com/zvec-ai/zvec-go) | [安装指南](https://github.com/zvec-ai/zvec-go/blob/main/README_CN.md#安装) | [源码](https://github.com/zvec-ai/zvec-go) |
+| [Rust](https://crates.io/crates/zvec-rust) | `cargo add zvec-rust` | [源码](https://github.com/zvec-ai/zvec-rust) |
+| [Java](https://central.sonatype.com/artifact/org.zvec/zvec-java) | `org.zvec:zvec-java`（Maven） | [源码](https://github.com/zvec-ai/zvec-java) |
+| [Dart / Flutter](https://pub.dev/packages/zvec) | `flutter pub add zvec` | [源码](https://github.com/zvec-ai/zvec-dart) |
 
 Python 需 64 位 Python 3.10–3.14；Java 需 Java 8+。
 

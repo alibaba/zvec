@@ -62,14 +62,14 @@
 
 Zvec offers official SDKs across multiple languages:
 
-| SDK | Install / Dependency | Resources |
+| SDK | Install / Dependency | Source |
 | --- | --- | --- |
-| [Python](https://pypi.org/project/zvec/) | `pip install zvec` | [Docs](https://zvec.org/en/docs/db/) |
-| [Node.js](https://www.npmjs.com/package/@zvec/zvec) | `npm install @zvec/zvec` | [Docs](https://zvec.org/en/docs/db/) · [Source](https://github.com/zvec-ai/zvec-node) |
-| [Go](https://pkg.go.dev/github.com/zvec-ai/zvec-go) | [Installation guide](https://github.com/zvec-ai/zvec-go#installation) | [Docs](https://pkg.go.dev/github.com/zvec-ai/zvec-go) · [Source](https://github.com/zvec-ai/zvec-go) |
-| [Rust](https://crates.io/crates/zvec-rust) | `cargo add zvec-rust` | [Docs](https://github.com/zvec-ai/zvec-rust/blob/main/README.md) · [Source](https://github.com/zvec-ai/zvec-rust) |
-| [Java](https://central.sonatype.com/artifact/org.zvec/zvec-java) | `org.zvec:zvec-java` (Maven) | [Docs](https://github.com/zvec-ai/zvec-java/blob/main/README.md) · [Source](https://github.com/zvec-ai/zvec-java) |
-| [Dart / Flutter](https://pub.dev/packages/zvec) | `flutter pub add zvec` | [Docs](https://github.com/zvec-ai/zvec-dart/blob/main/README.md) · [Source](https://github.com/zvec-ai/zvec-dart) |
+| [Python](https://pypi.org/project/zvec/) | `pip install zvec` | — |
+| [Node.js](https://www.npmjs.com/package/@zvec/zvec) | `npm install @zvec/zvec` | [Source](https://github.com/zvec-ai/zvec-node) |
+| [Go](https://pkg.go.dev/github.com/zvec-ai/zvec-go) | [Installation guide](https://github.com/zvec-ai/zvec-go#installation) | [Source](https://github.com/zvec-ai/zvec-go) |
+| [Rust](https://crates.io/crates/zvec-rust) | `cargo add zvec-rust` | [Source](https://github.com/zvec-ai/zvec-rust) |
+| [Java](https://central.sonatype.com/artifact/org.zvec/zvec-java) | `org.zvec:zvec-java` (Maven) | [Source](https://github.com/zvec-ai/zvec-java) |
+| [Dart / Flutter](https://pub.dev/packages/zvec) | `flutter pub add zvec` | [Source](https://github.com/zvec-ai/zvec-dart) |
 
 Python requires 64-bit Python 3.10–3.14; Java requires Java 8+.
 
