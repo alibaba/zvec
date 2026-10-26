@@ -66,7 +66,7 @@
 Zvec 提供多语言官方 SDK：
 
 - **[Python](https://pypi.org/project/zvec/)**：`pip install zvec`（需 64 位 Python 3.10–3.14）
-- **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**：`npm install @zvec/zvec`
+- **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**（[Repo](https://github.com/zvec-ai/zvec-node)）：`npm install @zvec/zvec`
 - **[Go](https://pkg.go.dev/github.com/zvec-ai/zvec-go)**（[Repo](https://github.com/zvec-ai/zvec-go)）：高性能的 Go 绑定。
 - **[Rust](https://crates.io/crates/zvec-rust)**（[Repo](https://github.com/zvec-ai/zvec-rust)）：`cargo add zvec-rust`
 - **[Java](https://central.sonatype.com/artifact/org.zvec/zvec-java)**（[Repo](https://github.com/zvec-ai/zvec-java)）：通过 Maven Central 引入 `org.zvec:zvec-java`（需 Java 8+）。
