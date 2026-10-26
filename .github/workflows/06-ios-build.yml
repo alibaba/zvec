@@ -138,8 +138,6 @@ jobs:
           DISKANN_COMPAT_PASSED=0
           DISKANN_COLLECTION_PASSED=0
           BUILD_DIR=build_ios_${{ matrix.platform }}
-          LOG_DIR="$RUNNER_TEMP/ios-test-logs"
-          mkdir -p "$LOG_DIR"
 
           for test_name in diskann_mobile_compat_test diskann_mobile_collection_test; do
             test_app="$BUILD_DIR/bin/${test_name}.app"
@@ -161,12 +159,12 @@ jobs:
             fi
 
             BUNDLE_ID="com.zvec.${TEST_NAME}"
+            LOG_FILE="$RUNNER_TEMP/${TEST_NAME}.log"
             TOTAL=$((TOTAL + 1))
 
             echo "::group::Running ${TEST_NAME}"
             xcrun simctl install "$DEVICE_ID" "$APP"
             for attempt in 1 2 3; do
-              LOG_FILE="$LOG_DIR/${TEST_NAME}.attempt-${attempt}.log"
               set +e
               python3 - "$DEVICE_ID" "$BUNDLE_ID" "$LOG_FILE" <<'PY'
           import os
@@ -196,13 +194,7 @@ jobs:
               return_code = 124
 
           pathlib.Path(log_file).write_text(output, encoding="utf-8")
-          lines = output.splitlines(keepends=True)
-          if len(lines) <= 200:
-              print(output, end="")
-          else:
-              print("".join(lines[:60]), end="")
-              print(f"\n... {len(lines) - 200} lines omitted; full output in the iOS test logs artifact ...\n")
-              print("".join(lines[-140:]), end="")
+          print(output, end="")
           sys.exit(return_code)
           PY
               LAUNCH_EXIT=$?
@@ -309,14 +301,6 @@ jobs:
             echo "::error::Only ${PASSED}/${TOTAL} iOS tests completed successfully"
             exit 1
           fi
-
-      - name: Upload iOS test logs
-        if: matrix.test_on_simulator && always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: ios-test-logs-${{ matrix.platform }}
-          path: ${{ runner.temp }}/ios-test-logs/
-          if-no-files-found: ignore
 
       - name: Shutdown Simulator
         if: matrix.test_on_simulator && always()

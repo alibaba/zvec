@@ -482,10 +482,10 @@ jobs:
               : # The required DiskAnn suite ran exactly N/N tests successfully.
             elif grep -Eq '^\[==========\][[:space:]]+[1-9][0-9]* tests?[[:space:]]+from[[:space:]]+[1-9][0-9]* test (suites?|cases?)[[:space:]]+ran\.' <<< "$OUTPUT"; then
               : # A non-empty GTest suite completed without failures; skips are valid.
-            elif [ "$test_name" = "c_api_test" ] && \
+            elif { [ "$test_name" = "c_api_test" ] || [ "$test_name" = "c_api_rabitq_test" ]; } && \
                  grep -Eq '^Passed: [1-9][0-9]*[[:space:]]*$' <<< "$OUTPUT" && \
                  grep -Eq '^Failed: 0[[:space:]]*$' <<< "$OUTPUT"; then
-              : # c_api_test uses a custom test framework.
+              : # C API tests use custom summaries rather than GTest.
             else
               echo "  >>> FAILED (no recognisable non-empty passing test summary)"
               TEST_PASSED=0
