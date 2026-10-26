@@ -5,7 +5,7 @@ cc_library(
     NAME core_framework 
     STATIC STRICT ALWAYS_LINK
     SRCS *.cc
-    LIBS zvec_ailego
+    LIBS zvec_ailego zvec_turbo
     INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/turbo
     VERSION "${PROXIMA_ZVEC_VERSION}"
   )

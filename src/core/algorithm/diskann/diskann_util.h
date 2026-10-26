@@ -18,8 +18,10 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <turbo/quantizer/fp16_quantizer/fp16_quantizer.h>
+#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
+#include <turbo/quantizer/pq_int8_quantizer/pq_int8_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
-#include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_framework.h>
 #include "diskann_entity.h"
 
@@ -332,7 +334,14 @@ class DiskAnnUtil {
       LOG_ERROR("Unsupported or corrupted quantizer meta buffer");
       return turbo::Quantizer::Pointer();
     }
-    auto quantizer = IndexFactory::CreateQuantizer(name);
+    turbo::Quantizer::Pointer quantizer;
+    if (std::string(name) == "PqInt8Quantizer") {
+      quantizer = std::make_shared<turbo::PqInt8Quantizer>();
+    } else if (std::string(name) == "Fp16Quantizer") {
+      quantizer = std::make_shared<turbo::Fp16Quantizer>();
+    } else if (std::string(name) == "Fp32Quantizer") {
+      quantizer = std::make_shared<turbo::Fp32Quantizer>();
+    }
     if (!quantizer) {
       LOG_ERROR("Create quantizer %s failed", name);
       return turbo::Quantizer::Pointer();

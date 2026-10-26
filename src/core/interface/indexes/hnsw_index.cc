@@ -14,6 +14,10 @@
 
 #include <memory>
 #include <string>
+#include <turbo/quantizer/fp16_quantizer/fp16_quantizer.h>
+#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
+#include <turbo/quantizer/int4_quantizer/int4_quantizer.h>
+#include <turbo/quantizer/int8_quantizer/int8_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_helper.h>
 #include <zvec/core/interface/index.h>
@@ -108,7 +112,17 @@ int HNSWIndex::create_and_init_converter_reformer(
           ? nullptr
           : ResolveTurboQuantizerName(quantizer_param, hnsw_param);
   if (quantizer_name != nullptr) {
-    turbo_quantizer_ = core::IndexFactory::CreateQuantizer(quantizer_name);
+    if (std::string(quantizer_name) == "Fp32Quantizer") {
+      turbo_quantizer_ = std::make_shared<turbo::Fp32Quantizer>();
+    } else if (std::string(quantizer_name) == "Fp16Quantizer") {
+      turbo_quantizer_ = std::make_shared<turbo::Fp16Quantizer>();
+    } else if (std::string(quantizer_name) == "Int8Quantizer") {
+      turbo_quantizer_ = std::make_shared<turbo::Int8Quantizer>();
+    } else if (std::string(quantizer_name) == "Int4Quantizer") {
+      turbo_quantizer_ = std::make_shared<turbo::Int4Quantizer>();
+    } else {
+      turbo_quantizer_.reset();
+    }
     if (!turbo_quantizer_) {
       LOG_ERROR("Failed to create turbo quantizer %s", quantizer_name);
       return core::IndexError_Runtime;

@@ -18,7 +18,6 @@
 #include <vector>
 #include <ailego/math/normalizer.h>
 #include <zvec/ailego/logger/logger.h>
-#include <zvec/core/framework/index_factory.h>
 #include "core/quantizer/record_quantizer.h"
 
 namespace zvec {
@@ -29,7 +28,6 @@ int Fp32Quantizer::init(const IndexMeta &meta,
   meta_ = meta;
 
   meta_.set_meta(IndexMeta::DataType::DT_FP32, meta.dimension());
-
 
   original_dim_ = meta.dimension();
   auto metric_name = meta.metric_name();
@@ -223,8 +221,6 @@ void Fp32Quantizer::calc_distance_input_input_batch(const void *const *dp_list,
   }
   Quantizer::calc_distance_input_input_batch(dp_list, dp_num, query, dist_list);
 }
-
-INDEX_FACTORY_REGISTER_QUANTIZER(Fp32Quantizer);
 
 }  // namespace turbo
 }  // namespace zvec

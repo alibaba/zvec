@@ -22,6 +22,7 @@
 #include <ailego/math/euclidean_distance_matrix.h>
 #include <ailego/math/normalizer.h>
 #include <ailego/pattern/defer.h>
+#include <turbo/quantizer/pq_int8_quantizer/pq_int8_quantizer.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_holder.h>
@@ -380,7 +381,7 @@ int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer threads) {
 
   ailego::ElapsedTime timer;
 
-  quantizer_ = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  quantizer_ = std::make_shared<turbo::PqInt8Quantizer>();
   if (!quantizer_) {
     LOG_ERROR("Create PqInt8Quantizer failed");
     return IndexError_NoExist;

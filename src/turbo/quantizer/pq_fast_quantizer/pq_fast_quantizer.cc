@@ -23,7 +23,6 @@
 #include <vector>
 #include <ailego/algorithm/kmeans.h>
 #include <ailego/math/normalizer.h>
-#include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_threads.h>
 #include "common/fast_scan_common.h"
 
@@ -1078,8 +1077,6 @@ int PqFastQuantizer::deserialize(const void *data, size_t len) {
 
   return 0;
 }
-
-INDEX_FACTORY_REGISTER_QUANTIZER(PqFastQuantizer);
 
 // ---------------------------------------------------------------------------
 // Template helper implementations (type-dispatched at call sites)

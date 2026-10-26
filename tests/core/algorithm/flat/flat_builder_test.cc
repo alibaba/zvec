@@ -22,8 +22,14 @@
 #include <string>
 #include <vector>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/fp16_quantizer/fp16_quantizer.h>
+#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
+#include <turbo/quantizer/int4_quantizer/int4_quantizer.h>
+#include <turbo/quantizer/int8_quantizer/int8_quantizer.h>
+#include <turbo/quantizer/pq_int8_quantizer/pq_int8_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/vector.h>
+#include <zvec/core/framework/index_flow.h>
 #include <zvec/core/framework/index_streamer.h>
 #include "tests/test_util.h"
 
@@ -396,7 +402,16 @@ static void BuildQuantizedIndex(const std::string &metric_name,
   raw_meta.set_meta(IndexMeta::DataType::DT_FP32, dim);
   raw_meta.set_metric(metric_name, 0, Params());
 
-  auto quantizer = IndexFactory::CreateQuantizer(quantizer_name);
+  zvec::turbo::Quantizer::Pointer quantizer;
+  if (std::string(quantizer_name) == "Fp32Quantizer") {
+    quantizer = std::make_shared<zvec::turbo::Fp32Quantizer>();
+  } else if (std::string(quantizer_name) == "Fp16Quantizer") {
+    quantizer = std::make_shared<zvec::turbo::Fp16Quantizer>();
+  } else if (std::string(quantizer_name) == "Int8Quantizer") {
+    quantizer = std::make_shared<zvec::turbo::Int8Quantizer>();
+  } else if (std::string(quantizer_name) == "Int4Quantizer") {
+    quantizer = std::make_shared<zvec::turbo::Int4Quantizer>();
+  }
   ASSERT_NE(nullptr, quantizer);
   ASSERT_EQ(0, quantizer->init(raw_meta, Params()));
 
@@ -473,13 +488,54 @@ class ThresholdContext : public IndexContext {
 };
 }  // namespace
 
+TEST_F(FlatBuilderTest, IndexFlowRestoresQuantizerFromMetadata) {
+  constexpr size_t dim = 34;
+  auto data = RandomData(17, dim);
+  for (const char *name : kTurboQuantizers) {
+    SCOPED_TRACE(name);
+    const std::string path = dir_ + name + "_flow.index";
+    zvec::turbo::Quantizer::Pointer quantizer;
+    ASSERT_NO_FATAL_FAILURE(BuildQuantizedIndex("SquaredEuclidean", data, dim,
+                                                path, &quantizer, name));
+    IndexSearcher::Pointer reference;
+    ASSERT_NO_FATAL_FAILURE(LoadQuantizedIndex(path, quantizer, reference));
+    auto expected = reference->create_context();
+    ASSERT_NE(nullptr, expected);
+    expected->set_topk(4);
+    const IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
+    std::string encoded_query;
+    IndexQueryMeta encoded_meta;
+    ASSERT_EQ(0, quantizer->quantize(data[0].data(), qmeta, &encoded_query,
+                                     &encoded_meta));
+    ASSERT_EQ(0, reference->search_bf_impl(encoded_query.data(), encoded_meta,
+                                           expected));
+
+    // No quantizer is supplied: loading must reconstruct it from the file.
+    IndexFlow flow;
+    ASSERT_EQ(0, flow.load(path));
+    auto actual = flow.create_context();
+    ASSERT_NE(nullptr, actual);
+    actual->set_topk(4);
+    ASSERT_EQ(0, flow.search_bf_impl(data[0].data(), qmeta, actual));
+    ASSERT_EQ(expected->result().size(), actual->result().size());
+    for (size_t i = 0; i < actual->result().size(); ++i) {
+      EXPECT_EQ(expected->result()[i].key(), actual->result()[i].key());
+      EXPECT_FLOAT_EQ(expected->result()[i].score(),
+                      actual->result()[i].score());
+    }
+    ASSERT_EQ(0, flow.unload());
+    ASSERT_EQ(0, reference->unload());
+  }
+}
+
 TEST_F(FlatBuilderTest, ThresholdBackendRebinding) {
   IndexMeta meta(IndexMeta::DT_FP32, 32);
   meta.set_metric("InnerProduct", 0, Params());
   auto ip_metric = IndexFactory::CreateMetric("InnerProduct");
   ASSERT_NE(nullptr, ip_metric);
   ASSERT_EQ(0, ip_metric->init(meta, Params()));
-  auto ip_quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+  zvec::turbo::Quantizer::Pointer ip_quantizer =
+      std::make_shared<zvec::turbo::Fp16Quantizer>();
   ASSERT_NE(nullptr, ip_quantizer);
   ASSERT_EQ(0, ip_quantizer->init(meta, Params()));
 
@@ -504,7 +560,16 @@ TEST_F(FlatBuilderTest, ThresholdBackendRebinding) {
     context.update_index_metric(ip_metric);
     EXPECT_FLOAT_EQ(-0.5f, context.threshold());
     for (const char *name : kTurboQuantizers) {
-      auto quantizer = IndexFactory::CreateQuantizer(name);
+      zvec::turbo::Quantizer::Pointer quantizer;
+      if (std::string(name) == "Fp32Quantizer") {
+        quantizer = std::make_shared<zvec::turbo::Fp32Quantizer>();
+      } else if (std::string(name) == "Fp16Quantizer") {
+        quantizer = std::make_shared<zvec::turbo::Fp16Quantizer>();
+      } else if (std::string(name) == "Int8Quantizer") {
+        quantizer = std::make_shared<zvec::turbo::Int8Quantizer>();
+      } else if (std::string(name) == "Int4Quantizer") {
+        quantizer = std::make_shared<zvec::turbo::Int4Quantizer>();
+      }
       ASSERT_NE(nullptr, quantizer);
       ASSERT_EQ(0, quantizer->init(meta, Params()));
       context.update_index_quantizer(quantizer);
@@ -754,7 +819,16 @@ TEST_F(FlatBuilderTest, TestInitWithTurboQuantizer) {
       SCOPED_TRACE(testing::Message() << name << "/" << metric);
       IndexMeta raw_meta(IndexMeta::DT_FP32, dim);
       raw_meta.set_metric(metric, 0, Params());
-      auto quantizer = IndexFactory::CreateQuantizer(name);
+      zvec::turbo::Quantizer::Pointer quantizer;
+      if (std::string(name) == "Fp32Quantizer") {
+        quantizer = std::make_shared<zvec::turbo::Fp32Quantizer>();
+      } else if (std::string(name) == "Fp16Quantizer") {
+        quantizer = std::make_shared<zvec::turbo::Fp16Quantizer>();
+      } else if (std::string(name) == "Int8Quantizer") {
+        quantizer = std::make_shared<zvec::turbo::Int8Quantizer>();
+      } else if (std::string(name) == "Int4Quantizer") {
+        quantizer = std::make_shared<zvec::turbo::Int4Quantizer>();
+      }
       ASSERT_NE(nullptr, quantizer);
       ASSERT_EQ(0, quantizer->init(raw_meta, Params()));
       IndexMeta meta = quantizer->meta();
@@ -919,7 +993,18 @@ TEST_F(FlatBuilderTest, TestTurboQuantizerDistance) {
                 ? name
                 : (std::string(name) == "Fp32Quantizer" ? "Fp16Quantizer"
                                                         : "Fp32Quantizer");
-        auto incompatible = IndexFactory::CreateQuantizer(wrong_name);
+        zvec::turbo::Quantizer::Pointer incompatible;
+        if (std::string(wrong_name) == "Fp32Quantizer") {
+          incompatible = std::make_shared<zvec::turbo::Fp32Quantizer>();
+        } else if (std::string(wrong_name) == "Fp16Quantizer") {
+          incompatible = std::make_shared<zvec::turbo::Fp16Quantizer>();
+        } else if (std::string(wrong_name) == "Int8Quantizer") {
+          incompatible = std::make_shared<zvec::turbo::Int8Quantizer>();
+        } else if (std::string(wrong_name) == "Int4Quantizer") {
+          incompatible = std::make_shared<zvec::turbo::Int4Quantizer>();
+        } else if (std::string(wrong_name) == "PqInt8Quantizer") {
+          incompatible = std::make_shared<zvec::turbo::PqInt8Quantizer>();
+        }
         ASSERT_NE(nullptr, incompatible);
         IndexMeta wrong_meta(IndexMeta::DT_FP32,
                              dim + (wrong_dimension ? 2 : 0));
@@ -1081,7 +1166,17 @@ TEST_F(FlatBuilderTest, TestTurboQuantizerDistance) {
       EXPECT_TRUE(weak_quantizer.expired());
 
       // Reuse the searcher with a newly initialized quantizer after unload.
-      quantizer = IndexFactory::CreateQuantizer(name);
+      if (std::string(name) == "Fp32Quantizer") {
+        quantizer = std::make_shared<zvec::turbo::Fp32Quantizer>();
+      } else if (std::string(name) == "Fp16Quantizer") {
+        quantizer = std::make_shared<zvec::turbo::Fp16Quantizer>();
+      } else if (std::string(name) == "Int8Quantizer") {
+        quantizer = std::make_shared<zvec::turbo::Int8Quantizer>();
+      } else if (std::string(name) == "Int4Quantizer") {
+        quantizer = std::make_shared<zvec::turbo::Int4Quantizer>();
+      } else {
+        quantizer.reset();
+      }
       ASSERT_NE(nullptr, quantizer);
       IndexMeta raw_meta(IndexMeta::DT_FP32, dim);
       raw_meta.set_metric(metric, 0, Params());

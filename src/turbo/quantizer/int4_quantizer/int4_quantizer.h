@@ -14,11 +14,11 @@
 
 #pragma once
 
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/core/framework/index_reformer.h>
 #include <zvec/core/framework/index_stats.h>
-#include "quantizer/quantizer.h"
 
 namespace zvec {
 namespace turbo {

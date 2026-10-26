@@ -17,8 +17,8 @@
 #include <cstring>
 #include <vector>
 #include <ailego/math/normalizer.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/float_helper.h>
-#include <zvec/core/framework/index_factory.h>
 
 namespace zvec {
 namespace turbo {
@@ -224,8 +224,6 @@ float Fp16Quantizer::calc_distance_dp_dp(const void *dp1,
                                          const void *dp2) const {
   return calc_distance_dp_query(dp1, dp2);
 }
-
-INDEX_FACTORY_REGISTER_QUANTIZER(Fp16Quantizer);
 
 }  // namespace turbo
 }  // namespace zvec

@@ -17,6 +17,13 @@
 #include <iostream>
 #include <memory>
 #include <ailego/pattern/defer.h>
+#include <turbo/quantizer/fp16_quantizer/fp16_quantizer.h>
+#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
+#include <turbo/quantizer/int4_quantizer/int4_quantizer.h>
+#include <turbo/quantizer/int8_quantizer/int8_quantizer.h>
+#include <turbo/quantizer/pq_fast_quantizer/pq_fast_quantizer.h>
+#include <turbo/quantizer/pq_int4_quantizer/pq_int4_quantizer.h>
+#include <turbo/quantizer/pq_int8_quantizer/pq_int8_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/utility/time_helper.h>
@@ -870,8 +877,22 @@ IndexHolder::Pointer quantize_holder(
     return cast_holder;
   }
 
-  std::shared_ptr<zvec::turbo::Quantizer> quantizer =
-      IndexFactory::CreateQuantizer(name);
+  zvec::turbo::Quantizer::Pointer quantizer;
+  if (name == "Fp32Quantizer") {
+    quantizer = std::make_shared<zvec::turbo::Fp32Quantizer>();
+  } else if (name == "Fp16Quantizer") {
+    quantizer = std::make_shared<zvec::turbo::Fp16Quantizer>();
+  } else if (name == "Int8Quantizer") {
+    quantizer = std::make_shared<zvec::turbo::Int8Quantizer>();
+  } else if (name == "Int4Quantizer") {
+    quantizer = std::make_shared<zvec::turbo::Int4Quantizer>();
+  } else if (name == "PqInt8Quantizer") {
+    quantizer = std::make_shared<zvec::turbo::PqInt8Quantizer>();
+  } else if (name == "PqInt4Quantizer") {
+    quantizer = std::make_shared<zvec::turbo::PqInt4Quantizer>();
+  } else if (name == "PqFastQuantizer") {
+    quantizer = std::make_shared<zvec::turbo::PqFastQuantizer>();
+  }
   if (!quantizer) {
     LOG_ERROR("Failed to create quantizer %s", name.c_str());
     return IndexHolder::Pointer();
