@@ -214,10 +214,13 @@ int main(void) {
       test_collection(ZVEC_INDEX_TYPE_DISKANN, metrics[i], bits);
     }
   puts("RaBitQ C API parameters and 18 collection cases passed");
+  puts("Passed: 19");
 #else
   puts(
       "RaBitQ C API parameter tests passed; collection cases skipped on "
       "unsupported build");
+  puts("Passed: 1");
 #endif
+  puts("Failed: 0");
   return 0;
 }

@@ -71,13 +71,8 @@ TEST(MultiChunkCluster, General) {
     for (size_t cluster = 0; cluster < cluster_count; ++cluster) {
       size_t idx = chunk * cluster_count + cluster;
       const auto &cent = centroids[idx];
-      const auto &vec = cent.vector<float>();
-
-      std::cout << "chunk: " << chunk << ", cluster: " << cluster
-                << ", dim: " << vec.size() << ", count: " << cent.follows()
-                << " (" << cent.score() << ") { " << vec[0] << "," << vec[1]
-                << " }" << std::endl;
-      ASSERT_EQ(0u, cent.similars().size());
+      ASSERT_EQ(0u, cent.similars().size())
+          << "chunk: " << chunk << ", cluster: " << cluster;
     }
   }
 
@@ -132,13 +127,8 @@ TEST(MultiChunkCluster, TestChunk) {
     for (size_t cluster = 0; cluster < cluster_count; ++cluster) {
       size_t idx = chunk * cluster_count + cluster;
       const auto &cent = centroids[idx];
-      const auto &vec = cent.vector<float>();
-
-      std::cout << "chunk: " << chunk << ", cluster: " << cluster
-                << ", dim: " << vec.size() << ", count: " << cent.follows()
-                << " (" << cent.score() << ") { " << vec[0] << "," << vec[1]
-                << " }" << std::endl;
-      ASSERT_EQ(0u, cent.similars().size());
+      ASSERT_EQ(0u, cent.similars().size())
+          << "chunk: " << chunk << ", cluster: " << cluster;
     }
   }
 
@@ -206,14 +196,8 @@ TEST(MultiChunkCluster, General_InnerProduct) {
     for (size_t cluster = 0; cluster < cluster_count; ++cluster) {
       size_t idx = chunk * cluster_count + cluster;
       const auto &cent = centroids[idx];
-      const auto &vec = cent.vector<float>();
-
-      std::cout << "chunk: " << chunk << ", cluster: " << cluster
-                << ", dim: " << vec.size() << ", count: " << cent.follows()
-                << " (" << cent.score() << ") { " << vec[0] << ", " << vec[1]
-                << ", " << vec[2] << ", ... , " << vec[vec.size() - 2] << ", "
-                << vec[vec.size() - 1] << " }" << std::endl;
-      ASSERT_EQ(0u, cent.similars().size());
+      ASSERT_EQ(0u, cent.similars().size())
+          << "chunk: " << chunk << ", cluster: " << cluster;
     }
   }
 
