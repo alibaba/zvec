@@ -33,6 +33,10 @@ jobs:
         run: python -m ruff format --check .
         shell: bash
 
+      - name: Check Public C++ Header Hygiene
+        run: python scripts/check_public_headers.py --verbose --compile-check
+        shell: bash
+
       - name: Run clang-format Check
         run: |
           CPP_FILES=$(find . -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.hpp" -o -name "*.cc" -o -name "*.cxx" \) \

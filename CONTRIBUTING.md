@@ -83,6 +83,38 @@ CMAKE_BUILD_TYPE=Debug CMAKE_GENERATOR="Unix Makefiles" pip install -v .
 
 ---
 
+## C++ Public API
+
+Only `src/include/zvec/db/*.h` and `src/include/zvec/c_api.h` are the stable,
+versioned API. `src/include/zvec/{core,ailego,turbo}/**` are the engine and may
+change at any time; they are installed only because `libzvec_core` /
+`libzvec_ailego` are published alongside them, and `-DZVEC_INSTALL_ENGINE_HEADERS=OFF`
+produces a stable-API-only SDK. See
+[`src/include/zvec/README.md`](src/include/zvec/README.md) for the boundary rules
+(where internal helpers go, how to hide engine types, how to keep the include
+budget in check).
+
+The rules are enforced by `scripts/check_public_headers.py`, which runs in
+pre-commit and in the Lint workflow:
+
+```bash
+python scripts/check_public_headers.py --verbose --compile-check
+```
+
+It also owns the install manifest. After adding, removing or re-including a
+public header, regenerate it and commit the diff:
+
+```bash
+python scripts/check_public_headers.py --write-install-manifest
+git diff cmake/zvec_public_headers.cmake
+```
+
+A manifest diff means the SDK's header set changed, so call it out in the PR
+description: every header that enters the closure ships in every package from
+then on.
+
+---
+
 ## Submitting Changes
 
 1. Fork the repo and create a feature branch (`feat/...`, `fix/...`, `docs/...`)

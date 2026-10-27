@@ -45,6 +45,17 @@ repos:
 
   - repo: local
     hooks:
+      - id: public-header-check
+        name: Public C++ header hygiene
+        description: >-
+          Keeps the stable public C++ API (src/include/zvec/db) free of engine
+          internals and within its transitive include budget. See
+          src/include/zvec/README.md for the boundary rules.
+        entry: python3 scripts/check_public_headers.py
+        language: system
+        pass_filenames: false
+        files: ^(src/|scripts/check_public_headers\.py)
+
       - id: clang-tidy
         name: clang-tidy (C++)
         description: >-
