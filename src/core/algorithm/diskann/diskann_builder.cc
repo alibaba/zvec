@@ -719,12 +719,6 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
     }
   }
 
-  auto iter = holder->create_iterator();
-  if (!iter) {
-    LOG_ERROR("Create iterator for holder failed");
-    return IndexError_Runtime;
-  }
-
   if (!holder->is_matched(raw_meta_) || !holder->multipass() ||
       holder->count() > std::numeric_limits<uint32_t>::max()) {
     return IndexError_Mismatch;
@@ -734,22 +728,42 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
     return IndexError_Runtime;
   }
 
-  int ret = entity_.reserve_space(holder->count());
-  if (ret != 0) return ret;
-
+  StableVectorView vector_view;
+  auto *stable = dynamic_cast<StableVectorHolder *>(holder.get());
+  int ret = stable ? stable->get_stable_vectors(&vector_view)
+                   : IndexError_NotImplemented;
   error_ = false;
-  while (iter->is_valid()) {
-    if (entity_.doc_cnt() >= holder->count()) return IndexError_Mismatch;
-    ret = entity_.add_vector(iter->key(), iter->data());
-    if (ailego_unlikely(ret != 0)) {
-      return ret;
+  if (ret == 0) {
+    if (vector_view.vectors.size() != holder->count()) {
+      return IndexError_Mismatch;
     }
-
-    iter->next();
+    ret = entity_.use_vector_view(std::move(vector_view));
+    if (ret != 0) return ret;
+    LOG_INFO("Using stable source vectors for graph: count=%zu, saved_bytes=%zu",
+             holder->count(), holder->count() * raw_meta_.element_size());
+  } else if (ret == IndexError_NotImplemented) {
+    auto iter = holder->create_iterator();
+    if (!iter) {
+      LOG_ERROR("Create iterator for holder failed");
+      return IndexError_Runtime;
+    }
+    ret = entity_.reserve_space(holder->count());
+    if (ret != 0) return ret;
+    while (iter->is_valid()) {
+      if (iter->status() != 0) return iter->status();
+      if (entity_.doc_cnt() >= holder->count()) return IndexError_Mismatch;
+      const void *data = iter->data();
+      if (iter->status() != 0) return iter->status();
+      ret = entity_.add_vector(iter->key(), data);
+      if (ret != 0) return ret;
+      iter->next();
+    }
+    if (iter->status() != 0) return iter->status();
+  } else {
+    return ret;
   }
 
   if (entity_.doc_cnt() != holder->count()) return IndexError_Mismatch;
-  iter.reset();
   LOG_INFO("Finished saving vector");
 
   LOG_INFO("Start to calculate entrypoint");
@@ -771,7 +785,7 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
   }
 
   // All graph workers have joined. Subsequent stages consume holder_, so
-  // release the full vector copy before allocating PQ buffers.
+  // release the vector copy or borrowed view before allocating PQ buffers.
   entity_.release_vectors();
   LOG_INFO("Start to generate quantized data");
   ret = generate_quantized_data(threads);

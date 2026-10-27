@@ -28,6 +28,7 @@
 #include <zvec/core/framework/index_streamer.h>
 #include "flat_index_format.h"
 #include "flat_utility.h"
+#include "utility/stable_vector_holder.h"
 
 namespace zvec {
 namespace core {
@@ -107,6 +108,9 @@ class FlatStreamerEntity {
   size_t vector_count() const {
     return meta_.header.total_vector_count;
   }
+
+  // Borrow the mmap vectors in iterator order, retaining the storage owner.
+  int get_stable_vectors(StableVectorView *view) const;
 
   //! Retrieve the linear list count
   size_t linear_list_count() const {

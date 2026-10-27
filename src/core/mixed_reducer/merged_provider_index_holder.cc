@@ -370,6 +370,50 @@ int MergedProviderIndexHolder::create_ordinal_reader(
   return ret;
 }
 
+int MergedProviderIndexHolder::get_stable_vectors(StableVectorView *view) {
+  if (!view || !initialized_) return IndexError_InvalidArgument;
+  if (status() != 0) return status();
+  for (const auto &source : sources_) {
+    if (source.need_revert) return IndexError_NotImplemented;
+  }
+
+  auto fail = [this](int ret) {
+    set_status(ret);
+    return status();
+  };
+  StableVectorView result;
+  result.keys.reserve(count_);
+  result.vectors.reserve(count_);
+  for (size_t i = 0; i < sources_.size(); ++i) {
+    if (canceled()) return fail(IndexError_Canceled);
+    auto provider = acquire_provider(i, true);
+    if (!provider) return status();
+    auto *stable = dynamic_cast<StableVectorHolder *>(provider.get());
+    if (!stable) return IndexError_NotImplemented;
+    StableVectorView source_view;
+    int ret = stable->get_stable_vectors(&source_view);
+    if (ret == IndexError_NotImplemented) return ret;
+    if (ret != 0) return fail(ret);
+    if (source_view.vectors.size() != sources_[i].iterated_count ||
+        source_view.keys.size() != source_view.vectors.size()) {
+      return fail(IndexError_Mismatch);
+    }
+    for (size_t ordinal = 0; ordinal < source_view.vectors.size(); ++ordinal) {
+      if (canceled()) return fail(IndexError_Canceled);
+      if (!keep(i, ordinal)) continue;
+      if (!source_view.vectors[ordinal]) return fail(IndexError_ReadData);
+      result.keys.push_back(result.vectors.size());
+      result.vectors.push_back(source_view.vectors[ordinal]);
+    }
+    for (auto &owner : source_view.owners) {
+      result.owners.emplace_back(std::move(owner));
+    }
+  }
+  if (result.vectors.size() != count_) return fail(IndexError_Mismatch);
+  *view = std::move(result);
+  return 0;
+}
+
 MergedProviderIndexHolder::MergedProviderIndexHolder(
     IndexQueryMeta output_meta, std::vector<Source> sources)
     : output_meta_(output_meta), sources_(std::move(sources)) {}

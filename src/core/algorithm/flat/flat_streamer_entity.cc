@@ -814,6 +814,31 @@ int FlatStreamerEntity::get_vectors_by_key(
   return 0;
 }
 
+int FlatStreamerEntity::get_stable_vectors(StableVectorView *view) const {
+  if (!view) return IndexError_InvalidArgument;
+  // MemoryBlock::MBT_MMAP also represents caller-managed scratch, so its tag
+  // alone is not sufficient proof of a stable mmap address.
+  if (!storage_ || storage_->name() != "MMapFileStorage") {
+    return IndexError_NotImplemented;
+  }
+  StableVectorView result;
+  result.owners.emplace_back(storage_);
+  result.keys.reserve(vector_count());
+  result.vectors.reserve(vector_count());
+  auto iter = creater_iterator();
+  if (!iter) return IndexError_Runtime;
+  for (; iter->is_valid(); iter->next()) {
+    if (iter->status() != 0) return iter->status();
+    const void *data = iter->data();
+    if (!data) return IndexError_ReadData;
+    result.keys.push_back(iter->key());
+    result.vectors.push_back(data);
+  }
+  if (iter->status() != 0) return iter->status();
+  *view = std::move(result);
+  return 0;
+}
+
 IndexProvider::Iterator::Pointer FlatStreamerEntity::creater_iterator() const {
   auto entity = this->clone();
   if (!entity) {

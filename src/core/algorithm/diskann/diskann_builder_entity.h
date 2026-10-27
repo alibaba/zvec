@@ -16,6 +16,7 @@
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/core/framework/index_holder.h>
 #include "diskann_entity.h"
+#include "utility/stable_vector_holder.h"
 
 namespace zvec {
 namespace core {
@@ -64,6 +65,9 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
 
   int reserve_space(uint32_t docs);
 
+  // Initialize graph records using stable source addresses instead of copies.
+  int use_vector_view(StableVectorView view);
+
   // Graph construction is the only consumer of these vectors. PQ encoding
   // and dump read the retained source holder instead.
   void release_vectors();
@@ -89,6 +93,7 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
   std::string index_path_prefix_{""};
 
   std::string vectors_buffer_{};
+  StableVectorView vector_view_{};
   std::string keys_buffer_{};
   std::string neighbors_buffer_{};
   std::vector<diskann_id_t> entrypoints_{};

@@ -26,7 +26,7 @@ namespace core {
  */
 
 template <size_t BATCH_SIZE>
-class FlatStreamerProvider : public IndexProvider {
+class FlatStreamerProvider : public IndexProvider, public StableVectorHolder {
  public:
   //! Constructor
   FlatStreamerProvider(const FlatStreamer<BATCH_SIZE> *owner) {
@@ -39,6 +39,10 @@ class FlatStreamerProvider : public IndexProvider {
   //! Create a new iterator
   IndexProvider::Iterator::Pointer create_iterator() override {
     return owner_->entity().creater_iterator();
+  }
+
+  int get_stable_vectors(StableVectorView *view) override {
+    return owner_->entity().get_stable_vectors(view);
   }
 
   //! Retrieve count of vectors
