@@ -18,6 +18,7 @@
 #include <memory>
 #include <string>
 #include <zvec/ailego/container/params.h>
+#include <zvec/core/framework/index_factory_builtins.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/turbo/turbo.h>

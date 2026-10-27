@@ -185,11 +185,11 @@ class Factory {
   //! Inserts a new class into map
   template <typename TFunc>
   void set(const char *key, TFunc &&func) {
-    CreatorPointer creator =
-        std::make_shared<const Creator>(std::forward<TFunc>(func));
+    auto creator = std::make_shared<const Creator>(std::forward<TFunc>(func));
+    Creator replacement = [creator] { return (*creator)(); };
     {
-      std::lock_guard<std::mutex> lock(mutex_);
-      map_[key].swap(creator);
+      std::lock_guard<std::recursive_mutex> lock(Mutex());
+      map_[key].swap(replacement);
     }
     // Captured arguments may query this factory when they are destroyed.
   }
@@ -197,40 +197,40 @@ class Factory {
   //! Insert a built-in default without replacing a user registration.
   template <typename TFunc>
   void set_builtin(const char *key, TFunc &&func) {
-    CreatorPointer creator =
-        std::make_shared<const Creator>(std::forward<TFunc>(func));
+    auto creator = std::make_shared<const Creator>(std::forward<TFunc>(func));
+    Creator replacement = [creator] { return (*creator)(); };
     {
-      std::lock_guard<std::mutex> lock(mutex_);
-      map_.emplace(key, creator);
+      std::lock_guard<std::recursive_mutex> lock(Mutex());
+      map_.emplace(key, replacement);
     }
   }
 
   //! Produce an instance
   TBase *produce(const char *key) {
-    CreatorPointer creator;
+    Creator creator;
     {
-      std::lock_guard<std::mutex> lock(mutex_);
+      std::lock_guard<std::recursive_mutex> lock(Mutex());
       auto iter = map_.find(key);
       if (iter == map_.end()) {
         return nullptr;
       }
       creator = iter->second;
     }
-    // Copying captured arguments and invoking constructors may query or
-    // register objects through this factory. Only copy the shared pointer
-    // while holding the mutex.
-    return (*creator)();
+    // New registrations copy only a shared pointer here. Legacy registrations
+    // can copy user arguments, whose same-thread queries use the recursive
+    // side mutex. Invoke the constructor after releasing the lock.
+    return creator();
   }
 
   //! Test if the class is exist
   bool has(const char *key) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(Mutex());
     return (map_.find(key) != map_.end());
   }
 
   //! Retrieve classes in factory
   std::vector<std::string> classes() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::recursive_mutex> lock(Mutex());
     std::vector<std::string> vec;
     for (const auto &it : map_) {
       vec.push_back(std::string(it.first));
@@ -245,6 +245,24 @@ class Factory {
   Factory &operator=(const Factory &) = delete;
 
  private:
+  //! Keep synchronization outside the legacy Factory object layout. Like the
+  //! factory singleton, this state survives shutdown and has no static guard.
+  static std::recursive_mutex &Mutex() {
+    static std::atomic<std::recursive_mutex *> ptr{nullptr};
+    auto *current = ptr.load(std::memory_order_acquire);
+    if (!current) {
+      auto *created = new std::recursive_mutex();
+      if (ptr.compare_exchange_strong(current, created,
+                                      std::memory_order_acq_rel,
+                                      std::memory_order_acquire)) {
+        current = created;
+      } else {
+        delete created;
+      }
+    }
+    return *current;
+  }
+
   /*! Key Comparer
    */
   struct KeyComparer {
@@ -254,12 +272,11 @@ class Factory {
   };
 
   using Creator = std::function<TBase *()>;
-  using CreatorPointer = std::shared_ptr<const Creator>;
 
   //! Don't use variable buffer as key store.
   //! The key must be use a static buffer to store.
-  std::map<const char *, CreatorPointer, KeyComparer> map_;
-  mutable std::mutex mutex_;
+  //! Preserve this exact layout for clients compiled with the legacy header.
+  std::map<const char *, std::function<TBase *()>, KeyComparer> map_;
 };
 
 // Retain custom registrations in explicitly linked translation units, including

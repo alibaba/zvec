@@ -20,6 +20,7 @@
 #include <zvec/core/framework/index_cluster.h>
 #include <zvec/core/framework/index_converter.h>
 #include <zvec/core/framework/index_dumper.h>
+#include <zvec/core/framework/index_factory_builtins.h>
 #include <zvec/core/framework/index_metric.h>
 #include <zvec/core/framework/index_reducer.h>
 #include <zvec/core/framework/index_refiner.h>
@@ -31,11 +32,6 @@
 
 namespace zvec {
 namespace core {
-
-//! Register the built-in modules selected by this library or executable.
-//! Its generated implementation references the module entry points explicitly,
-//! so ordinary static linking retains the selected implementations.
-void RegisterBuiltinIndexModules();
 
 /*! Index Factory
  */
@@ -163,6 +159,16 @@ struct IndexFactory {
 
   //! Retrieve all refiner classes
   static std::vector<std::string> AllRefiners();
+
+  //! Create a quantizer by its persisted or application-registered name.
+  static std::shared_ptr<turbo::Quantizer> CreateQuantizer(
+      const std::string &name);
+
+  //! Test if the quantizer exists.
+  static bool HasQuantizer(const std::string &name);
+
+  //! Retrieve all quantizer classes.
+  static std::vector<std::string> AllQuantizers();
 };
 
 //! Define an explicitly referenced built-in registration entry point.
@@ -181,6 +187,13 @@ struct IndexFactory {
 
 #define INDEX_FACTORY_DEFINE_METRIC(__IMPL__, ...) \
   INDEX_FACTORY_DEFINE_METRIC_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_QUANTIZER_ALIAS(__NAME__, __IMPL__, ...) \
+  INDEX_FACTORY_DEFINE_BUILTIN(QUANTIZER, __NAME__, turbo::Quantizer, \
+                               __IMPL__, ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_QUANTIZER(__IMPL__, ...) \
+  INDEX_FACTORY_DEFINE_QUANTIZER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_DUMPER_ALIAS(__NAME__, __IMPL__, ...)      \
   INDEX_FACTORY_DEFINE_BUILTIN(DUMPER, __NAME__, IndexDumper, __IMPL__, \
@@ -371,6 +384,13 @@ struct IndexFactory {
 //! Register Index Refiner
 #define INDEX_FACTORY_REGISTER_REFINER(__IMPL__, ...) \
   INDEX_FACTORY_REGISTER_REFINER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
+
+//! Register Quantizer (retained for application-defined types and aliases).
+#define INDEX_FACTORY_REGISTER_QUANTIZER_ALIAS(__NAME__, __IMPL__, ...) \
+  AILEGO_FACTORY_REGISTER(__NAME__, turbo::Quantizer, __IMPL__, ##__VA_ARGS__)
+
+#define INDEX_FACTORY_REGISTER_QUANTIZER(__IMPL__, ...) \
+  INDEX_FACTORY_REGISTER_QUANTIZER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 }  // namespace core
 }  // namespace zvec

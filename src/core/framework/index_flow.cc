@@ -13,13 +13,6 @@
 // limitations under the License.
 
 #include <ailego/pattern/defer.h>
-#include <turbo/quantizer/fp16_quantizer/fp16_quantizer.h>
-#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
-#include <turbo/quantizer/int4_quantizer/int4_quantizer.h>
-#include <turbo/quantizer/int8_quantizer/int8_quantizer.h>
-#include <turbo/quantizer/pq_fast_quantizer/pq_fast_quantizer.h>
-#include <turbo/quantizer/pq_int4_quantizer/pq_int4_quantizer.h>
-#include <turbo/quantizer/pq_int8_quantizer/pq_int8_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_factory.h>
@@ -166,23 +159,7 @@ int IndexFlow::load_internal() {
   // Prepare query quantizer
   const std::string &quantizer_name = meta_.quantizer_name();
   if (!quantizer_name.empty()) {
-    if (quantizer_name == "Fp32Quantizer") {
-      query_quantizer_ = std::make_shared<turbo::Fp32Quantizer>();
-    } else if (quantizer_name == "Fp16Quantizer") {
-      query_quantizer_ = std::make_shared<turbo::Fp16Quantizer>();
-    } else if (quantizer_name == "Int8Quantizer") {
-      query_quantizer_ = std::make_shared<turbo::Int8Quantizer>();
-    } else if (quantizer_name == "Int4Quantizer") {
-      query_quantizer_ = std::make_shared<turbo::Int4Quantizer>();
-    } else if (quantizer_name == "PqInt8Quantizer") {
-      query_quantizer_ = std::make_shared<turbo::PqInt8Quantizer>();
-    } else if (quantizer_name == "PqInt4Quantizer") {
-      query_quantizer_ = std::make_shared<turbo::PqInt4Quantizer>();
-    } else if (quantizer_name == "PqFastQuantizer") {
-      query_quantizer_ = std::make_shared<turbo::PqFastQuantizer>();
-    } else {
-      query_quantizer_.reset();
-    }
+    query_quantizer_ = IndexFactory::CreateQuantizer(quantizer_name);
     if (!query_quantizer_) {
       LOG_ERROR("Failed to create quantizer %s", quantizer_name.c_str());
       return IndexError_NoExist;
@@ -199,24 +176,12 @@ int IndexFlow::load_internal() {
   if (!user_reformer_) {
     const std::string &reformer_name = meta_.reformer_name();
     if (!reformer_name.empty()) {
-      turbo::Quantizer::Pointer quantizer;
-      if (reformer_name == "Fp32Quantizer") {
-        quantizer = std::make_shared<turbo::Fp32Quantizer>();
-      } else if (reformer_name == "Fp16Quantizer") {
-        quantizer = std::make_shared<turbo::Fp16Quantizer>();
-      } else if (reformer_name == "Int8Quantizer") {
-        quantizer = std::make_shared<turbo::Int8Quantizer>();
-      } else if (reformer_name == "Int4Quantizer") {
-        quantizer = std::make_shared<turbo::Int4Quantizer>();
-      } else if (reformer_name == "PqInt8Quantizer") {
-        quantizer = std::make_shared<turbo::PqInt8Quantizer>();
-      } else if (reformer_name == "PqInt4Quantizer") {
-        quantizer = std::make_shared<turbo::PqInt4Quantizer>();
-      } else if (reformer_name == "PqFastQuantizer") {
-        quantizer = std::make_shared<turbo::PqFastQuantizer>();
-      }
-      if (quantizer) {
-        query_quantizer_ = std::move(quantizer);
+      if (IndexFactory::HasQuantizer(reformer_name)) {
+        query_quantizer_ = IndexFactory::CreateQuantizer(reformer_name);
+        if (!query_quantizer_) {
+          LOG_ERROR("Failed to create quantizer %s", reformer_name.c_str());
+          return IndexError_NoExist;
+        }
         ret = query_quantizer_->init(meta_, meta_.reformer_params());
         if (ret != 0) {
           LOG_ERROR("Failed to init quantizer %s", reformer_name.c_str());

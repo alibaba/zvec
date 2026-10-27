@@ -13,8 +13,7 @@
 // limitations under the License.
 #pragma once
 
-#include <turbo/quantizer/fp16_quantizer/fp16_quantizer.h>
-#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
+#include <zvec/core/framework/index_factory.h>
 #include "turbo/quantizer/quantizer.h"
 
 namespace zvec::core {
@@ -53,12 +52,8 @@ inline turbo::Quantizer::Pointer CreateDistanceQuantizer(
   IndexMeta input;
   input.set_meta(IndexMeta::DT_FP32, dim);
   input.set_metric(metric, meta.metric_revision(), meta.metric_params());
-  turbo::Quantizer::Pointer quantizer;
-  if (half) {
-    quantizer = std::make_shared<turbo::Fp16Quantizer>();
-  } else {
-    quantizer = std::make_shared<turbo::Fp32Quantizer>();
-  }
+  auto quantizer =
+      IndexFactory::CreateQuantizer(half ? "Fp16Quantizer" : "Fp32Quantizer");
   ailego::Params params;
   // Match raw FP16 training arithmetic, including values whose squared
   // differences overflow half precision. Posting quantizers keep their policy.

@@ -4536,6 +4536,55 @@ TEST_P(IVFTurboTest, RejectsUnknownQuantizerName) {
   EXPECT_EQ(IndexError_NoExist, entity.load(storage));
 }
 
+TEST_P(IVFTurboTest, RestoresCustomQuantizerAlias) {
+  using Factory = ailego::Factory<zvec::turbo::Quantizer>;
+  if (std::string(std::get<0>(GetParam())) == "Fp32Quantizer") {
+    Factory::Register<zvec::turbo::Fp32Quantizer> registration(
+        "CompatibilityIVFAlias");
+  } else if (std::string(std::get<0>(GetParam())) == "Fp16Quantizer") {
+    Factory::Register<zvec::turbo::Fp16Quantizer> registration(
+        "CompatibilityIVFAlias");
+  } else if (std::string(std::get<0>(GetParam())) == "Int8Quantizer") {
+    Factory::Register<zvec::turbo::Int8Quantizer> registration(
+        "CompatibilityIVFAlias");
+  } else if (std::string(std::get<0>(GetParam())) == "Int4Quantizer") {
+    Factory::Register<zvec::turbo::Int4Quantizer> registration(
+        "CompatibilityIVFAlias");
+  } else if (std::string(std::get<0>(GetParam())) == "PqInt4Quantizer") {
+    Factory::Register<zvec::turbo::PqInt4Quantizer> registration(
+        "CompatibilityIVFAlias");
+  }
+  auto posting_meta = quantizer_->meta();
+  posting_meta.set_quantizer("CompatibilityIVFAlias", 0,
+                             meta_.quantizer_params());
+  posting_meta.set_major_order(IndexMeta::MO_ROW);
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_NE(nullptr, dumper);
+  ASSERT_EQ(0, dumper->create(path_ + ".format"));
+  IVFDumper postings(posting_meta, dumper, 1, 8);
+  for (size_t i = 0; i < codes_.size(); ++i) {
+    ASSERT_EQ(0, postings.dump_inverted_vector(0, Key(i), codes_[i].data()));
+  }
+  ASSERT_EQ(0, postings.dump_inverted_vector_finished());
+  ASSERT_EQ(0, postings.dump_turbo_quantizer(quantizer_));
+  ASSERT_EQ(0, IndexHelper::SerializeToDumper(meta_, dumper.get()));
+  ASSERT_EQ(0, dumper->close());
+
+  auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(path_ + ".format", false));
+  IVFEntity entity;
+  ASSERT_EQ(0, entity.load(storage));
+  ASSERT_NE(nullptr, entity.quantizer());
+  for (size_t i = 0; i < codes_.size(); ++i) {
+    IndexStorage::MemoryBlock code;
+    ASSERT_EQ(0, entity.get_vector_by_key(Key(i), code));
+    ASSERT_NE(nullptr, code.data());
+    EXPECT_EQ(0, std::memcmp(codes_[i].data(), code.data(), codes_[i].size()));
+  }
+}
+
 TEST_P(IVFTurboTest, ProviderConcurrentReadsKeepReturnedBytesStable) {
   for (const char *storage_name :
        {"FileReadStorage", "MMapFileReadStorage", "BufferReadStorage"}) {

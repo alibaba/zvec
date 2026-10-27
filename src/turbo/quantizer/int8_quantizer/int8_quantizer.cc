@@ -18,6 +18,7 @@
 #include <vector>
 #include <ailego/math/normalizer.h>
 #include <zvec/ailego/logger/logger.h>
+#include <zvec/core/framework/index_factory.h>
 #include "core/quantizer/record_quantizer.h"
 
 namespace zvec {
@@ -238,3 +239,7 @@ float Int8Quantizer::calc_distance_dp_dp(const void *dp1,
 
 }  // namespace turbo
 }  // namespace zvec
+
+namespace zvec::core {
+INDEX_FACTORY_DEFINE_QUANTIZER_ALIAS(Int8Quantizer, turbo::Int8Quantizer);
+}  // namespace zvec::core

@@ -22,6 +22,7 @@
 #include <vector>
 #include <ailego/algorithm/kmeans.h>
 #include <ailego/math/normalizer.h>
+#include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_threads.h>
 
 namespace zvec {
@@ -1171,3 +1172,7 @@ void PqInt4Quantizer::subtract_center(T *vec) const {
 
 }  // namespace turbo
 }  // namespace zvec
+
+namespace zvec::core {
+INDEX_FACTORY_DEFINE_QUANTIZER_ALIAS(PqInt4Quantizer, turbo::PqInt4Quantizer);
+}  // namespace zvec::core

@@ -23,6 +23,7 @@
 #include <vector>
 #include <ailego/algorithm/kmeans.h>
 #include <ailego/math/normalizer.h>
+#include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_threads.h>
 #include "common/fast_scan_common.h"
 
@@ -1128,3 +1129,7 @@ void PqFastQuantizer::normalize_single(T *vec, float *norm_out) const {
 
 }  // namespace turbo
 }  // namespace zvec
+
+namespace zvec::core {
+INDEX_FACTORY_DEFINE_QUANTIZER_ALIAS(PqFastQuantizer, turbo::PqFastQuantizer);
+}  // namespace zvec::core

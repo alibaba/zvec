@@ -15,11 +15,10 @@
 
 #include <memory>
 #include <vector>
-#include <turbo/quantizer/fp16_quantizer/fp16_quantizer.h>
-#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_context.h>
+#include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_meta.h>
 #include "diskann_entity.h"
 
@@ -181,7 +180,7 @@ class DistCalculator {
     }
 
     // An externally constructed quantizer (already initialized by the caller)
-    // takes precedence over the internal quantizer selection below.
+    // takes precedence over the internal factory selection below.
     if (external_quantizer) {
       turbo::DistanceImpl impl =
           external_quantizer->distance("", IndexQueryMeta());
@@ -196,30 +195,33 @@ class DistCalculator {
       LOG_WARN("External data quantizer has no valid distance, falling back");
     }
 
-    turbo::Quantizer::Pointer quantizer;
+    const char *name = nullptr;
     if (meta.data_type() == IndexMeta::DataType::DT_FP16) {
-      quantizer = std::make_shared<turbo::Fp16Quantizer>();
+      name = "Fp16Quantizer";
     } else if (meta.data_type() == IndexMeta::DataType::DT_FP32) {
-      quantizer = std::make_shared<turbo::Fp32Quantizer>();
+      name = "Fp32Quantizer";
     }
-    if (quantizer) {
-      IndexMeta quant_meta = meta;
-      // Legacy Cosine layout folds the stored norm into an inflated
-      // dimension; the turbo-quantizer layout keeps the raw dimension and
-      // accounts the norm with extra_meta_size instead.
-      if (meta.metric_name() == "Cosine" && meta.extra_meta_size() == 0) {
-        quant_meta.set_dimension(meta.dimension() -
-                                 sizeof(float) / meta.unit_size());
-      }
-      if (quantizer->init(quant_meta, quant_meta.metric_params()) == 0) {
-        turbo::DistanceImpl impl = quantizer->distance("", IndexQueryMeta());
-        if (impl.valid()) {
-          data_quantizer_ = std::move(quantizer);
-          distance_ = [func = impl.func(),
-                       quant_dim = static_cast<size_t>(data_quantizer_->dim())](
-                          const void *m, const void *q, size_t /*dim*/,
-                          float *out) { func(m, q, quant_dim, out); };
-          return;
+    if (name != nullptr) {
+      turbo::Quantizer::Pointer quantizer = IndexFactory::CreateQuantizer(name);
+      if (quantizer) {
+        IndexMeta quant_meta = meta;
+        // Legacy Cosine layout folds the stored norm into an inflated
+        // dimension; the turbo-quantizer layout keeps the raw dimension and
+        // accounts the norm with extra_meta_size instead.
+        if (meta.metric_name() == "Cosine" && meta.extra_meta_size() == 0) {
+          quant_meta.set_dimension(meta.dimension() -
+                                   sizeof(float) / meta.unit_size());
+        }
+        if (quantizer->init(quant_meta, quant_meta.metric_params()) == 0) {
+          turbo::DistanceImpl impl = quantizer->distance("", IndexQueryMeta());
+          if (impl.valid()) {
+            data_quantizer_ = std::move(quantizer);
+            distance_ = [func = impl.func(), quant_dim = static_cast<size_t>(
+                                                 data_quantizer_->dim())](
+                            const void *m, const void *q, size_t /*dim*/,
+                            float *out) { func(m, q, quant_dim, out); };
+            return;
+          }
         }
       }
     }

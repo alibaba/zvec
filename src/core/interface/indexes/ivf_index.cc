@@ -15,11 +15,8 @@
 #include <memory>
 #include <string>
 #include <ailego/pattern/defer.h>
-#include <turbo/quantizer/fp16_quantizer/fp16_quantizer.h>
-#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
-#include <turbo/quantizer/int4_quantizer/int4_quantizer.h>
-#include <turbo/quantizer/int8_quantizer/int8_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
+#include <zvec/core/framework/index_factory.h>
 #include <zvec/core/interface/index.h>
 #include "algorithm/cluster/cluster_params.h"
 #include "algorithm/ivf/ivf_params.h"
@@ -44,24 +41,24 @@ int IVFIndex::create_and_init_converter_reformer(
   switch (param.type) {
     case QuantizerType::kNone:
       name = "Fp32Quantizer";
-      ivf_quantizer_ = std::make_shared<turbo::Fp32Quantizer>();
       break;
     case QuantizerType::kFP16:
       name = "Fp16Quantizer";
-      ivf_quantizer_ = std::make_shared<turbo::Fp16Quantizer>();
       break;
     case QuantizerType::kInt8:
       name = "Int8Quantizer";
-      ivf_quantizer_ = std::make_shared<turbo::Int8Quantizer>();
       break;
     case QuantizerType::kInt4:
       name = "Int4Quantizer";
-      ivf_quantizer_ = std::make_shared<turbo::Int4Quantizer>();
       break;
     default:
       return Index::create_and_init_converter_reformer(param, index_param);
   }
   proxima_index_meta_.set_quantizer(name, 0, ailego::Params{});
+  ivf_quantizer_ = core::IndexFactory::CreateQuantizer(name);
+  if (!ivf_quantizer_) {
+    return core::IndexError_NoExist;
+  }
   return ivf_quantizer_->init(proxima_index_meta_, ailego::Params{});
 }
 

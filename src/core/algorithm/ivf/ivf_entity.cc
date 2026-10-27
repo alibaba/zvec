@@ -17,13 +17,6 @@
 #include <limits>
 #include <core/quantizer/quantizer_params.h>
 #include <turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h>
-#include <turbo/quantizer/fp16_quantizer/fp16_quantizer.h>
-#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
-#include <turbo/quantizer/int4_quantizer/int4_quantizer.h>
-#include <turbo/quantizer/int8_quantizer/int8_quantizer.h>
-#include <turbo/quantizer/pq_fast_quantizer/pq_fast_quantizer.h>
-#include <turbo/quantizer/pq_int4_quantizer/pq_int4_quantizer.h>
-#include <turbo/quantizer/pq_int8_quantizer/pq_int8_quantizer.h>
 #include "metric/metric_params.h"
 #include "ivf_utility.h"
 namespace zvec {
@@ -670,22 +663,7 @@ int IVFEntity::load_quantizer(const IndexStorage::Pointer &container) {
   ivf_check_error_code(ret);
   raw_meta.set_quantizer(meta_.quantizer_name(), meta_.quantizer_revision(),
                          meta_.quantizer_params());
-  turbo::Quantizer::Pointer quantizer;
-  if (meta_.quantizer_name() == "Fp32Quantizer") {
-    quantizer = std::make_shared<turbo::Fp32Quantizer>();
-  } else if (meta_.quantizer_name() == "Fp16Quantizer") {
-    quantizer = std::make_shared<turbo::Fp16Quantizer>();
-  } else if (meta_.quantizer_name() == "Int8Quantizer") {
-    quantizer = std::make_shared<turbo::Int8Quantizer>();
-  } else if (meta_.quantizer_name() == "Int4Quantizer") {
-    quantizer = std::make_shared<turbo::Int4Quantizer>();
-  } else if (meta_.quantizer_name() == "PqInt8Quantizer") {
-    quantizer = std::make_shared<turbo::PqInt8Quantizer>();
-  } else if (meta_.quantizer_name() == "PqInt4Quantizer") {
-    quantizer = std::make_shared<turbo::PqInt4Quantizer>();
-  } else if (meta_.quantizer_name() == "PqFastQuantizer") {
-    quantizer = std::make_shared<turbo::PqFastQuantizer>();
-  }
+  auto quantizer = IndexFactory::CreateQuantizer(meta_.quantizer_name());
   if (!quantizer) {
     LOG_ERROR("Failed to create Turbo quantizer %s",
               meta_.quantizer_name().c_str());

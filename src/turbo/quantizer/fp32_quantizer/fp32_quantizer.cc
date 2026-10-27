@@ -18,6 +18,7 @@
 #include <vector>
 #include <ailego/math/normalizer.h>
 #include <zvec/ailego/logger/logger.h>
+#include <zvec/core/framework/index_factory.h>
 #include "core/quantizer/record_quantizer.h"
 
 namespace zvec {
@@ -224,3 +225,7 @@ void Fp32Quantizer::calc_distance_input_input_batch(const void *const *dp_list,
 
 }  // namespace turbo
 }  // namespace zvec
+
+namespace zvec::core {
+INDEX_FACTORY_DEFINE_QUANTIZER_ALIAS(Fp32Quantizer, turbo::Fp32Quantizer);
+}  // namespace zvec::core

@@ -14,11 +14,8 @@
 
 #include <memory>
 #include <string>
-#include <turbo/quantizer/fp16_quantizer/fp16_quantizer.h>
-#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
-#include <turbo/quantizer/int4_quantizer/int4_quantizer.h>
-#include <turbo/quantizer/int8_quantizer/int8_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
+#include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
 #include "algorithm/flat/flat_index_format.h"
@@ -240,16 +237,7 @@ int FlatIndex::create_and_init_converter_reformer(
 
 int FlatIndex::create_and_init_turbo_quantizer(const std::string &name,
                                                const ailego::Params &params) {
-  turbo::Quantizer::Pointer quantizer;
-  if (name == "Fp32Quantizer") {
-    quantizer = std::make_shared<turbo::Fp32Quantizer>();
-  } else if (name == "Fp16Quantizer") {
-    quantizer = std::make_shared<turbo::Fp16Quantizer>();
-  } else if (name == "Int8Quantizer") {
-    quantizer = std::make_shared<turbo::Int8Quantizer>();
-  } else if (name == "Int4Quantizer") {
-    quantizer = std::make_shared<turbo::Int4Quantizer>();
-  }
+  auto quantizer = core::IndexFactory::CreateQuantizer(name);
   if (!quantizer) {
     LOG_ERROR("Failed to create turbo %s", name.c_str());
     return core::IndexError_Runtime;

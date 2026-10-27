@@ -712,7 +712,7 @@ endfunction()
 ## Set the properties of target
 function(_cc_target_properties)
   cmake_parse_arguments(
-      CC_ARGS "STRICT" "NAME;VERSION;C_STANDARD;CXX_STANDARD"
+      CC_ARGS "STRICT;ALWAYS_LINK" "NAME;VERSION;C_STANDARD;CXX_STANDARD"
       "INCS;PUBINCS;DEFS;LIBS;CFLAGS;CXXFLAGS;LDFLAGS;DEPS" ${ARGN}
     )
 
@@ -725,6 +725,10 @@ function(_cc_target_properties)
       ("${TARGET_TYPE}" STREQUAL "STATIC_LIBRARY") OR
       ("${TARGET_TYPE}" STREQUAL "EXECUTABLE"))
     set(TARGET_LINKABLE TRUE)
+  endif()
+
+  if(CC_ARGS_ALWAYS_LINK)
+    set_property(TARGET ${CC_ARGS_NAME} PROPERTY ALWAYS_LINK TRUE)
   endif()
 
   # Set the warning level of compiling
@@ -857,6 +861,10 @@ function(cc_library)
   zvec_collect_source_builtins(BUILTIN_SYMBOLS ${SOURCE_FILES})
   if(CC_ARGS_NAME STREQUAL "zvec_core")
     set(REGISTRY_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/zvec_core_builtin_registry.cc")
+    zvec_write_builtin_registry("${REGISTRY_SOURCE}" ${BUILTIN_SYMBOLS})
+    list(APPEND SOURCE_FILES "${REGISTRY_SOURCE}")
+  elseif(CC_ARGS_NAME STREQUAL "zvec_turbo")
+    set(REGISTRY_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/zvec_quantizer_registry.cc")
     zvec_write_builtin_registry("${REGISTRY_SOURCE}" ${BUILTIN_SYMBOLS})
     list(APPEND SOURCE_FILES "${REGISTRY_SOURCE}")
   endif()

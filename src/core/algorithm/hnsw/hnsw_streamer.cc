@@ -16,8 +16,8 @@
 #include <ailego/internal/cpu_features.h>
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
-#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
+#include <zvec/core/framework/index_factory.h>
 #include "utility/sparse_utility.h"
 #include "hnsw_algorithm.h"
 #include "hnsw_context.h"
@@ -476,7 +476,7 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
         provider_quantizer_meta.set_metric(meta_.metric_name(), 0,
                                            meta_.metric_params());
       }
-      provider_quantizer_ = std::make_shared<turbo::Fp32Quantizer>();
+      provider_quantizer_ = IndexFactory::CreateQuantizer("Fp32Quantizer");
       if (!provider_quantizer_) {
         LOG_ERROR("Failed to create provider Fp32Quantizer");
         return IndexError_NoExist;
