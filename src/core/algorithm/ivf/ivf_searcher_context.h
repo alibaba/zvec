@@ -134,6 +134,10 @@ class IVFSearcherContext : public IndexSearcher::Context {
     return entity_;
   }
 
+  IVFSearchScratch &search_scratch() {
+    return search_scratch_;
+  }
+
   //! Retrieve Mutable Query Result By Query Index
   IndexDocumentHeap &mutable_result_heap() {
     return result_heap_;
@@ -222,6 +226,8 @@ class IVFSearcherContext : public IndexSearcher::Context {
 
   //! Members
   IVFEntity::Pointer entity_{};
+  // Reused across queries in this context, never shared through the entity.
+  IVFSearchScratch search_scratch_{};
   IndexSearcher::Context::Pointer centroid_searcher_ctx_{};
   IndexDocumentHeap result_heap_;
   std::vector<IndexDocumentList> results_{};

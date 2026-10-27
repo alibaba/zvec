@@ -310,10 +310,8 @@ class CountingQuantizer : public Base {
                                     float *dist_list) const override {
     EXPECT_GT(dp_num, 0);
     EXPECT_LE(dp_num, 512);
-    const size_t stride = this->quantized_datapoint_vector_length();
-    for (int i = 1; i < dp_num; ++i) {
-      EXPECT_EQ(static_cast<const char *>(dp_list[0]) + i * stride, dp_list[i]);
-    }
+    // Pointer batches may cross physical blocks or omit filtered rows.
+    for (int i = 0; i < dp_num; ++i) EXPECT_NE(nullptr, dp_list[i]);
     batches.push_back(dp_num);
     queries.push_back(query);
     // Some families implement batch by calling their single-pair method.
@@ -399,73 +397,93 @@ void CheckBatchRows(const char *metric_name) {
     if (cosine) queries[j * dim + logical_dim] = 100000.0f + j;
   }
   BuildFp32Rows(file.path, meta, rows, keys);
-  auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
-  ASSERT_NE(nullptr, storage);
-  ASSERT_EQ(0, storage->open(file.path, false));
   IndexMeta input(IndexMeta::DT_FP32, logical_dim);
   input.set_metric(metric_name, 0, ailego::Params());
   auto quantizer = std::make_shared<CountingFp32Quantizer>();
   ASSERT_EQ(0, quantizer->init(input, ailego::Params()));
   ailego::Params params;
-  // Two 1,056-row reads followed by 91 rows. Each complete read contains
-  // two full 512-row batches and a 32-row tail.
+  // Reads end within a 512-row distance batch. Filtered rows must not force
+  // premature flushes; FileReadStorage invalidates each temporary read block.
   params.set("proxima.flat.read_block_size",
              static_cast<uint32_t>(1056 * dim * sizeof(float)));
-  for (bool use_quantizer : {true, false}) {
-    SCOPED_TRACE(use_quantizer);
-    auto searcher = IndexFactory::CreateSearcher("FlatSearcher");
-    ASSERT_NE(nullptr, searcher);
-    ASSERT_EQ(0, use_quantizer ? searcher->init(params, quantizer)
-                               : searcher->init(params));
-    ASSERT_EQ(0, searcher->load(storage, nullptr));
-    auto context = searcher->create_context();
-    ASSERT_NE(nullptr, context);
-    IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
-    for (uint32_t topk : {0U, 17U, 129U, 2210U}) {
-      SCOPED_TRACE(topk);
-      context->set_topk(topk);
-      for (int mode = 0; mode < 3; ++mode) {
-        SCOPED_TRACE(mode);
-        quantizer->reset_counts();
-        const size_t count = mode == 2 ? query_count : 1;
-        ASSERT_EQ(0, mode == 0
-                         ? searcher->search_impl(queries.data(), qmeta, context)
-                         : searcher->search_impl(queries.data(), qmeta, count,
-                                                 context));
-        if (use_quantizer) {
-          EXPECT_EQ(0U, quantizer->single_calls);
-          size_t scanned_rows = 0;
-          for (int batch : quantizer->batches) scanned_rows += batch;
-          EXPECT_EQ(row_count * count, scanned_rows);
-          EXPECT_NE(quantizer->batches.end(),
-                    std::find(quantizer->batches.begin(),
-                              quantizer->batches.end(), 512));
-          EXPECT_NE(quantizer->batches.end(),
-                    std::find(quantizer->batches.begin(),
-                              quantizer->batches.end(), 91));
-        }
-        for (size_t j = 0; j < count; ++j) {
-          std::vector<std::pair<float, uint64_t>> expected;
-          for (size_t i = 0; i < row_count; ++i) {
-            double score = cosine ? 1.0 : 0.0;
-            for (size_t d = 0; d < logical_dim; ++d) {
-              const double x = rows[i * dim + d];
-              const double y = queries[j * dim + d];
-              score += l2 ? (x - y) * (x - y) : -x * y;
+  for (const char *storage_name : {"MMapFileReadStorage", "FileReadStorage"}) {
+    SCOPED_TRACE(storage_name);
+    auto storage = IndexFactory::CreateStorage(storage_name);
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(ailego::Params()));
+    ASSERT_EQ(0, storage->open(file.path, false));
+    for (bool use_quantizer : {true, false}) {
+      SCOPED_TRACE(use_quantizer);
+      auto searcher = IndexFactory::CreateSearcher("FlatSearcher");
+      ASSERT_NE(nullptr, searcher);
+      ASSERT_EQ(0, use_quantizer ? searcher->init(params, quantizer)
+                                 : searcher->init(params));
+      ASSERT_EQ(0, searcher->load(storage, nullptr));
+      auto context = searcher->create_context();
+      ASSERT_NE(nullptr, context);
+      IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
+      for (uint32_t topk : {0U, 17U, 129U, 2210U}) {
+        SCOPED_TRACE(topk);
+        context->set_topk(topk);
+        for (int filter_mode : {0, 1, 2, 0}) {
+          SCOPED_TRACE(filter_mode);
+          auto excluded = [filter_mode](uint64_t key) {
+            return filter_mode == 2 ||
+                   (filter_mode == 1 && ((1000000 - key) / 37) % 3 == 0);
+          };
+          if (filter_mode)
+            context->set_filter(excluded);
+          else
+            context->reset_filter();
+          const size_t kept =
+              std::count_if(keys.begin(), keys.end(),
+                            [&](uint64_t key) { return !excluded(key); });
+          for (int mode = 0; mode < 3; ++mode) {
+            SCOPED_TRACE(mode);
+            quantizer->reset_counts();
+            const size_t count = mode == 2 ? query_count : 1;
+            ASSERT_EQ(
+                0, mode == 0
+                       ? searcher->search_impl(queries.data(), qmeta, context)
+                       : searcher->search_impl(queries.data(), qmeta, count,
+                                               context));
+            if (use_quantizer) {
+              EXPECT_EQ(0U, quantizer->single_calls);
+              std::vector<int> expected_batches;
+              for (size_t offset = 0; offset < kept; offset += 512) {
+                for (size_t j = 0; j < count; ++j) {
+                  expected_batches.push_back(
+                      std::min<size_t>(512, kept - offset));
+                }
+              }
+              EXPECT_EQ(expected_batches, quantizer->batches);
             }
-            expected.emplace_back(static_cast<float>(score), keys[i]);
-          }
-          std::sort(expected.begin(), expected.end());
-          expected.resize(std::min(row_count, size_t(std::max(topk, 1U))));
-          const auto &result = context->result(j);
-          ASSERT_EQ(expected.size(), result.size());
-          for (size_t i = 0; i < result.size(); ++i) {
-            EXPECT_EQ(expected[i].second, result[i].key());
-            EXPECT_NEAR(expected[i].first, result[i].score(), 1e-5f);
+            for (size_t j = 0; j < count; ++j) {
+              std::vector<std::pair<float, uint64_t>> expected;
+              for (size_t i = 0; i < row_count; ++i) {
+                if (excluded(keys[i])) continue;
+                double score = cosine ? 1.0 : 0.0;
+                for (size_t d = 0; d < logical_dim; ++d) {
+                  const double x = rows[i * dim + d];
+                  const double y = queries[j * dim + d];
+                  score += l2 ? (x - y) * (x - y) : -x * y;
+                }
+                expected.emplace_back(static_cast<float>(score), keys[i]);
+              }
+              std::sort(expected.begin(), expected.end());
+              expected.resize(std::min(kept, size_t(std::max(topk, 1U))));
+              const auto &result = context->result(j);
+              ASSERT_EQ(expected.size(), result.size());
+              for (size_t i = 0; i < result.size(); ++i) {
+                EXPECT_EQ(expected[i].second, result[i].key());
+                EXPECT_NEAR(expected[i].first, result[i].score(), 1e-5f);
+              }
+            }
           }
         }
       }
     }
+    ASSERT_EQ(0, storage->close());
   }
 }
 }  // namespace
@@ -480,8 +498,8 @@ namespace {
 template <typename Base>
 void CheckEncodedStreamerBatch(const char *metric) {
   SCOPED_TRACE(metric);
-  constexpr size_t dim = 18;     // INT4 requires an even logical dimension.
-  constexpr size_t count = 113;  // Three full physical blocks and a tail.
+  constexpr size_t dim = 18;      // INT4 requires an even logical dimension.
+  constexpr size_t count = 1105;  // Two full distance batches and a tail.
   const std::string path = "flat_encoded_batch_streamer";
   test_util::RemoveTestPath(path);
   struct Cleanup {
@@ -542,20 +560,21 @@ void CheckEncodedStreamerBatch(const char *metric) {
       }
       quantizer->reset_counts();
       ASSERT_EQ(0, streamer->search_impl(batch.data(), qmeta, 3, context));
-      if (filtered) {
-        EXPECT_TRUE(quantizer->batches.empty());
-      } else {
-        ASSERT_EQ(12U, quantizer->batches.size());
-        EXPECT_EQ(0U, quantizer->single_calls);
-        for (size_t j = 0; j < queries.size(); ++j) {
-          size_t scanned = 0;
-          for (size_t block = 0; block < 4; ++block) {
-            scanned += quantizer->batches[j * 4 + block];
-            EXPECT_EQ(batch.data() + j * qmeta.element_size(),
-                      quantizer->queries[j * 4 + block]);
-          }
-          EXPECT_EQ(count, scanned);
+      const size_t kept = count - (filtered ? 1 : 0);
+      const size_t batches_per_query = (kept + 511) / 512;
+      ASSERT_EQ(queries.size() * batches_per_query, quantizer->batches.size());
+      EXPECT_EQ(0U, quantizer->single_calls);
+      for (size_t j = 0; j < queries.size(); ++j) {
+        size_t scanned = 0;
+        for (size_t block = 0; block < batches_per_query; ++block) {
+          const size_t slot = j * batches_per_query + block;
+          EXPECT_EQ(std::min<size_t>(512, kept - block * 512),
+                    quantizer->batches[slot]);
+          scanned += quantizer->batches[slot];
+          EXPECT_EQ(batch.data() + j * qmeta.element_size(),
+                    quantizer->queries[slot]);
         }
+        EXPECT_EQ(kept, scanned);
       }
       for (size_t j = 0; j < queries.size(); ++j) {
         std::vector<float> scores(count), expected;

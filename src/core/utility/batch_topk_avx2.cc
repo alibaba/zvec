@@ -16,8 +16,8 @@
 namespace zvec {
 namespace core {
 
-void BatchTopKImpl<BatchTopK::Implementation::kAVX2>::push_block(
-    const float *distances, size_t count, uint32_t first_id, float scale) {
+void BatchTopK::push_block_avx2(const float *distances, const uint64_t *indices,
+                                size_t count, float scale) {
 #if !defined(ZVEC_BATCH_TOPK_FORCE_SCALAR) && defined(__AVX2__)
   if (limit_ == 0) {
     return;
@@ -40,13 +40,13 @@ void BatchTopKImpl<BatchTopK::Implementation::kAVX2>::push_block(
     _mm256_store_ps(values, scores);
     while (mask != 0) {
       const uint32_t lane = ailego_ctz32(mask);
-      append(values[lane], first_id + static_cast<uint32_t>(i) + lane);
+      append(values[lane], indices[i + lane]);
       mask &= mask - 1;
     }
   }
-  append_tail(distances, count, first_id, scale, i);
+  append_tail(distances, indices, count, scale, i);
 #else
-  push_block_scalar(distances, count, first_id, scale);
+  push_block_scalar(distances, indices, count, scale);
 #endif
 }
 

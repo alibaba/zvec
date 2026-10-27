@@ -22,18 +22,7 @@
 namespace zvec {
 namespace core {
 
-class IndexDocumentHeap;
-
-// Merge one distance batch into an existing heap. UINT64_MAX keys are excluded
-// before selection by replacing their distances with NaN. The indexed overload
-// preserves first_id + row; the other overload leaves document indices unset.
-// The caller guarantees the batch and its indices fit uint32_t.
-void BatchTopKHeapPush(float *distances, const uint64_t *keys, size_t count,
-                       float scale, IndexDocumentHeap *heap);
-void BatchTopKHeapPush(float *distances, const uint64_t *keys, size_t count,
-                       uint32_t first_id, float scale, IndexDocumentHeap *heap);
-
-// Buffered top-k for contiguous distance batches with consecutive uint32 IDs.
+// Buffered top-k for distance batches with opaque uint64 indices.
 // SIMD rejects distances outside the current bound; surviving candidates are
 // appended without heap maintenance. A full buffer is partitioned down to k.
 // This follows the buffering strategy of ScaNN's FastTopNeighbors, without
@@ -41,16 +30,17 @@ void BatchTopKHeapPush(float *distances, const uint64_t *keys, size_t count,
 //
 // Storage is O(k), with no allocation for k <= 64. Equal-score IDs and output
 // order are unspecified, as with a score-only heap. No ID bits are reserved.
-// ISA selection is cached at runtime, checking CPU and OS support. Select a
-// BatchTopKImpl once before scanning batches. Each class uses SIMD only when
-// enabled by the build's compiler target; otherwise its method is scalar.
+// ISA selection is cached at runtime, checking CPU and OS support.
+// BatchTopKImpl can select an ISA once before scanning batches; BatchTopK
+// dispatches each batch using the cached runtime choice. Each implementation
+// uses SIMD only when enabled by the build; otherwise its method is scalar.
 class BatchTopK {
  public:
   enum class Implementation { kScalar, kSSE2, kAVX2, kAVX512, kNEON };
 
   struct Candidate {
     float score;
-    uint32_t id;
+    uint64_t id;
   };
 
   BatchTopK() = default;
@@ -61,9 +51,16 @@ class BatchTopK {
   static Implementation implementation();
 
   // The initial bound is inclusive unless strict_threshold is set (e.g. the
-  // worst score in an already-full destination heap). NaN scores are rejected.
+  // kth score from a previous selection). NaN scores are rejected.
   void reset(size_t k, float threshold = std::numeric_limits<float>::max(),
              bool strict_threshold = false);
+
+  // Append without resetting. Indices need not be consecutive or monotonic;
+  // all 64 bits are preserved. Passing candidates copy their distance/index,
+  // so input buffers can be reused after this call. Scores are scaled before
+  // filtering. For a nonempty batch, distances and indices must be non-null.
+  void push_block(const float *distances, const uint64_t *indices, size_t count,
+                  float scale = 1.0f);
 
   // Retain at most k candidates before consuming data()/size(). Further
   // pushes are allowed; call finish() again before consuming their results.
@@ -78,11 +75,19 @@ class BatchTopK {
   }
 
  protected:
-  void push_block_scalar(const float *distances, size_t count,
-                         uint32_t first_id, float scale);
-  void append(float score, uint32_t id);
-  void append_tail(const float *distances, size_t count, uint32_t first_id,
-                   float scale, size_t offset);
+  void push_block_scalar(const float *distances, const uint64_t *indices,
+                         size_t count, float scale);
+  void push_block_sse2(const float *distances, const uint64_t *indices,
+                       size_t count, float scale);
+  void push_block_avx2(const float *distances, const uint64_t *indices,
+                       size_t count, float scale);
+  void push_block_avx512(const float *distances, const uint64_t *indices,
+                         size_t count, float scale);
+  void push_block_neon(const float *distances, const uint64_t *indices,
+                       size_t count, float scale);
+  void append(float score, uint64_t index);
+  void append_tail(const float *distances, const uint64_t *indices,
+                   size_t count, float scale, size_t offset);
 
   size_t limit_{0};
   float threshold_{std::numeric_limits<float>::max()};
@@ -111,44 +116,23 @@ class BatchTopK {
 // Each fixed implementation owns its SIMD loop, with a scalar fallback when
 // that ISA is not compiled. Select Impl through BatchTopK::implementation()
 // before entering a scan loop; push_block itself does not dispatch.
-// Scores are multiplied by scale before filtering, matching the destination
-// heap's score space. The caller guarantees first_id + count - 1 fits uint32.
 template <BatchTopK::Implementation Impl>
-class BatchTopKImpl;
-
-template <>
-class BatchTopKImpl<BatchTopK::Implementation::kScalar> : public BatchTopK {
+class BatchTopKImpl : public BatchTopK {
  public:
-  void push_block(const float *distances, size_t count, uint32_t first_id,
-                  float scale = 1.0f);
-};
-
-template <>
-class BatchTopKImpl<BatchTopK::Implementation::kSSE2> : public BatchTopK {
- public:
-  void push_block(const float *distances, size_t count, uint32_t first_id,
-                  float scale = 1.0f);
-};
-
-template <>
-class BatchTopKImpl<BatchTopK::Implementation::kAVX2> : public BatchTopK {
- public:
-  void push_block(const float *distances, size_t count, uint32_t first_id,
-                  float scale = 1.0f);
-};
-
-template <>
-class BatchTopKImpl<BatchTopK::Implementation::kAVX512> : public BatchTopK {
- public:
-  void push_block(const float *distances, size_t count, uint32_t first_id,
-                  float scale = 1.0f);
-};
-
-template <>
-class BatchTopKImpl<BatchTopK::Implementation::kNEON> : public BatchTopK {
- public:
-  void push_block(const float *distances, size_t count, uint32_t first_id,
-                  float scale = 1.0f);
+  void push_block(const float *distances, const uint64_t *indices, size_t count,
+                  float scale = 1.0f) {
+    if constexpr (Impl == Implementation::kSSE2) {
+      push_block_sse2(distances, indices, count, scale);
+    } else if constexpr (Impl == Implementation::kAVX2) {
+      push_block_avx2(distances, indices, count, scale);
+    } else if constexpr (Impl == Implementation::kAVX512) {
+      push_block_avx512(distances, indices, count, scale);
+    } else if constexpr (Impl == Implementation::kNEON) {
+      push_block_neon(distances, indices, count, scale);
+    } else {
+      push_block_scalar(distances, indices, count, scale);
+    }
+  }
 };
 
 }  // namespace core

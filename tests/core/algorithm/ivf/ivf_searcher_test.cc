@@ -13,8 +13,11 @@
 // limitations under the License.
 #include "ivf_searcher.h"
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <random>
@@ -645,7 +648,8 @@ TEST_F(IVFSearcherTest,
                 EXPECT_EQ(1u, returned_keys.count(item.second));
               }
             }
-            EXPECT_EQ(count, ivf_context->stats(0).dist_calced_count());
+            EXPECT_EQ(turbo ? expected.size() : count,
+                      ivf_context->stats(0).dist_calced_count());
           }
         }
       }
@@ -653,6 +657,310 @@ TEST_F(IVFSearcherTest,
       ASSERT_EQ(0, searcher.unload());
       ASSERT_EQ(0, storage->close());
     }
+  }
+}
+
+class ObservedIVFEntity : public IVFEntity {
+ public:
+  void observe_batches(std::function<void()> before_batch = {}) {
+    batches.clear();
+    rows.clear();
+    const auto original = query_distance_;
+    query_distance_ = zvec::turbo::DistanceImpl(
+        original.func(),
+        [this, original, before_batch](const void **vectors, const void *,
+                                       size_t count, size_t, float *out,
+                                       const void **) {
+          if (before_batch) before_batch();
+          batches.push_back(count);
+          for (size_t i = 0; i < count; ++i) {
+            float value;
+            std::memcpy(&value, vectors[i], sizeof(value));
+            rows.push_back(static_cast<uint32_t>(value) - 1);
+          }
+          original.batch(vectors, count, out);
+        },
+        original.query_storage(), original.dim());
+  }
+
+  std::vector<size_t> batches;
+  std::vector<uint32_t> rows;
+};
+
+TEST_F(IVFSearcherTest, TurboBatchesSpanListsAndReleasePagePins) {
+  constexpr uint32_t dim = 257;
+  constexpr uint32_t count = 2 * 512 + 13;
+  constexpr uint64_t key_base = uint64_t{1} << 40;
+  const std::vector<uint32_t> invalid{0, 511, 512, count - 1};
+  const auto key = [&](uint32_t id) {
+    return std::find(invalid.begin(), invalid.end(), id) != invalid.end()
+               ? kInvalidKey
+               : key_base + 17 * (count - 1 - id);
+  };
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DT_FP32, dim);
+  meta.set_metric("SquaredEuclidean", 0, Params());
+  meta.set_major_order(IndexMeta::MO_ROW);
+  meta.set_quantizer("Fp32Quantizer", 0, Params());
+  auto quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+  ASSERT_NE(nullptr, quantizer);
+  ASSERT_EQ(0, quantizer->init(meta, Params()));
+  auto holder = std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(dim);
+  for (uint32_t id = 0; id < count; ++id) {
+    NumericalVector<float> vector(dim);
+    std::fill(vector.data(), vector.data() + dim, 0.0f);
+    vector[0] = id + 1;
+    holder->emplace(key(id), vector);
+  }
+  Params params;
+  params.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "2");
+  params.set(PARAM_IVF_BUILDER_CLUSTER_CLASS, "KmeansCluster");
+  params.set(PARAM_IVF_BUILDER_THREAD_COUNT, 1U);
+  // 4 * 1028 bytes require physical block padding, and rows cross pages.
+  params.set(PARAM_IVF_BUILDER_BLOCK_VECTOR_COUNT, 4U);
+  IVFBuilder builder;
+  ASSERT_EQ(0, builder.init(meta, params, quantizer));
+  ASSERT_EQ(0, builder.train(IndexThreads::Pointer(), holder));
+  ASSERT_EQ(0, builder.build(IndexThreads::Pointer(), holder));
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_NE(nullptr, dumper);
+  ASSERT_EQ(0, dumper->create(index_path_));
+  ASSERT_EQ(0, builder.dump(dumper));
+  ASSERT_EQ(0, dumper->close());
+  ASSERT_EQ(0, builder.cleanup());
+
+  auto &pool = MemoryLimitPool::get_instance();
+  const size_t previous_capacity = pool.capacity();
+  ASSERT_EQ(0u, pool.used());
+  auto cleanup = ScopeGuard::Make([&]() {
+    EXPECT_EQ(0u, pool.used());
+    EXPECT_EQ(0, pool.init(previous_capacity));
+  });
+  for (const auto &backend :
+       {std::make_pair("MMapFileReadStorage", size_t{8 * 1024 * 1024}),
+        std::make_pair("BufferReadStorage", size_t{8 * 1024 * 1024}),
+        std::make_pair("BufferReadStorage", kVectorPageSize),
+        std::make_pair("BufferReadStorage", 2 * kVectorPageSize),
+        std::make_pair("BufferReadStorage", 4 * kVectorPageSize)}) {
+    SCOPED_TRACE(backend.first);
+    SCOPED_TRACE(backend.second);
+    ASSERT_EQ(0, pool.init(backend.second));
+    auto storage = IndexFactory::CreateStorage(backend.first);
+    ASSERT_NE(nullptr, storage);
+    Params storage_params;
+    storage_params.set("proxima.buffer.read_storage.warmup_mode", "sequential");
+    ASSERT_EQ(0, storage->init(storage_params));
+    ASSERT_EQ(0, storage->open(index_path_, false));
+    {
+      ObservedIVFEntity entity;
+      IVFSearchScratch scratch;
+      ASSERT_EQ(0, entity.load(storage));
+      ASSERT_EQ(2u, entity.inverted_list_count());
+      ASSERT_GT(entity.inverted_block_size(), 4 * entity.meta().element_size());
+      std::vector<float> query(dim, 0.0f);
+      const IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
+      for (int mode : {0, 1, 2, 0}) {
+        SCOPED_TRACE(mode);
+        IndexFilter filter;
+        if (mode != 0) {
+          filter.set([=](uint64_t candidate) {
+            return mode == 2 || ((candidate - key_base) / 17) % 4 == 0;
+          });
+        }
+        std::vector<uint32_t> expected_rows;
+        for (uint32_t id = 0; id < count; ++id) {
+          if (key(id) != kInvalidKey &&
+              (!filter.is_valid() || !filter(key(id)))) {
+            expected_rows.push_back(id);
+          }
+        }
+        ASSERT_EQ(0, entity.bind_query(query.data(), qmeta));
+        entity.observe_batches();
+        IndexDocumentHeap heap(17);
+        // This existing result has no posting in this entity. Final mapping
+        // must touch only this query's retained candidates.
+        const uint64_t existing_key = key_base - 1;
+        heap.emplace(existing_key, -1.0f, std::numeric_limits<uint32_t>::max());
+        IndexContext::Stats stats;
+        entity.begin_search(heap, scratch);
+        for (uint32_t list = 0; list < entity.inverted_list_count(); ++list) {
+          uint32_t scanned = 0;
+          ASSERT_EQ(0, entity.search(list, query.data(), filter, &scanned,
+                                     &heap, &stats, scratch));
+          EXPECT_EQ(1u, heap.size());
+        }
+        ASSERT_EQ(0, entity.finish_search(&heap, &stats, scratch));
+        std::vector<size_t> expected_batches(expected_rows.size() / 512, 512);
+        if (expected_rows.size() % 512 != 0) {
+          expected_batches.push_back(expected_rows.size() % 512);
+        }
+        EXPECT_EQ(expected_batches, entity.batches);
+        std::sort(entity.rows.begin(), entity.rows.end());
+        EXPECT_EQ(expected_rows, entity.rows);
+        EXPECT_EQ(expected_rows.size(), stats.dist_calced_count());
+        EXPECT_EQ(count - expected_rows.size(), stats.filtered_count());
+        heap.sort();
+        ASSERT_EQ(std::min(size_t{17}, expected_rows.size() + 1), heap.size());
+        EXPECT_EQ(existing_key, heap[0].key());
+        EXPECT_EQ(std::numeric_limits<uint32_t>::max(), heap[0].index());
+        for (size_t i = 1; i < heap.size(); ++i) {
+          const uint32_t id = expected_rows[i - 1];
+          EXPECT_EQ(key(id), heap[i].key());
+          EXPECT_EQ(heap[i].key(), entity.get_key(heap[i].index()));
+          EXPECT_FLOAT_EQ(float((id + 1) * (id + 1)), heap[i].score());
+        }
+      }
+      // Match context ownership: two entity clones retain separate query
+      // bindings, each with its own batch scratch. The larger pools cover
+      // stable mappings and copied rows; tiny pools above test pin release.
+      if (backend.second == 8 * 1024 * 1024) {
+        struct QueryState {
+          std::vector<float> query;
+          IndexFilter filter;
+          IndexDocumentHeap heap;
+          IndexContext::Stats stats;
+          std::shared_ptr<ObservedIVFEntity> entity;
+          IVFSearchScratch scratch;
+          std::vector<uint32_t> expected_rows;
+          std::vector<std::pair<float, uint64_t>> expected;
+        };
+        std::array<QueryState, 2> states;
+        for (auto &state : states) {
+          state.entity = std::make_shared<ObservedIVFEntity>();
+          ASSERT_EQ(state.entity, entity.clone(state.entity));
+        }
+        ASSERT_NE(states[0].entity.get(), states[1].entity.get());
+        uint32_t first_list;
+        {
+          IndexStorage::MemoryBlock first, second;
+          const auto *a = entity.inverted_list_meta(0, first);
+          const auto *b = entity.inverted_list_meta(1, second);
+          ASSERT_NE(nullptr, a);
+          ASSERT_NE(nullptr, b);
+          first_list = a->vector_count <= b->vector_count ? 0 : 1;
+        }
+        const auto search_list = [&](size_t slot, uint32_t list) {
+          auto &state = states[slot];
+          uint32_t scanned = 0;
+          return state.entity->search(list, state.query.data(), state.filter,
+                                      &scanned, &state.heap, &state.stats,
+                                      state.scratch);
+        };
+        for (bool parallel : {false, true}) {
+          SCOPED_TRACE(parallel);
+          for (size_t slot = 0; slot < states.size(); ++slot) {
+            auto &state = states[slot];
+            state.query.assign(dim, 0.0f);
+            // Rebind each clone and reuse its batch scratch in phase two.
+            state.query[0] =
+                (slot != size_t{parallel}) ? float(count + 1) : 0.0f;
+            state.filter.set([&, slot](uint64_t candidate) {
+              const uint64_t id = count - 1 - (candidate - key_base) / 17;
+              return slot == 0 ? id % 3 == 0 : id % 5 == 1;
+            });
+            state.heap.clear();
+            state.heap.limit(slot == 0 ? 17 : 9);
+            state.heap.set_threshold(std::numeric_limits<float>::max());
+            state.stats.clear();
+            state.expected_rows.clear();
+            state.expected.clear();
+            for (uint32_t id = 0; id < count; ++id) {
+              if (key(id) == kInvalidKey || state.filter(key(id))) continue;
+              state.expected_rows.push_back(id);
+              const float delta = state.query[0] - float(id + 1);
+              state.expected.emplace_back(delta * delta, key(id));
+            }
+            std::sort(state.expected.begin(), state.expected.end());
+            state.expected.resize(state.heap.limit());
+            ASSERT_EQ(0, state.entity->bind_query(state.query.data(), qmeta));
+            if (!parallel) state.entity->observe_batches();
+            state.entity->begin_search(state.heap, state.scratch);
+          }
+          if (!parallel) {
+            ASSERT_EQ(0, search_list(0, first_list));
+            const size_t pending = states[0].scratch.batch_count;
+            ASSERT_GT(pending, 0u);
+            ASSERT_LT(pending, IVFSearchScratch::kBatchVectors);
+            ASSERT_EQ(0, search_list(1, first_list));
+            EXPECT_EQ(pending, states[0].scratch.batch_count);
+            ASSERT_GT(states[1].scratch.batch_count, 0u);
+            ASSERT_LT(states[1].scratch.batch_count,
+                      IVFSearchScratch::kBatchVectors);
+            for (const auto &state : states) {
+              EXPECT_TRUE(state.entity->batches.empty());
+              EXPECT_EQ(0u, state.heap.size());
+            }
+            ASSERT_EQ(0, search_list(0, 1 - first_list));
+            ASSERT_EQ(0, search_list(1, 1 - first_list));
+            for (size_t slot : {1u, 0u}) {
+              auto &state = states[slot];
+              ASSERT_EQ(0, state.entity->finish_search(
+                               &state.heap, &state.stats, state.scratch));
+            }
+          } else {
+            // Both async workers must reach a distance batch while the other
+            // search is still active. A bounded rendezvous avoids sleeps and
+            // reports a failed overlap without leaving a hung test worker.
+            std::array<std::promise<void>, 2> arrived;
+            std::array<std::shared_future<void>, 2> ready{
+                arrived[0].get_future().share(),
+                arrived[1].get_future().share()};
+            std::array<bool, 2> entered{}, overlapped{};
+            for (size_t slot = 0; slot < states.size(); ++slot) {
+              states[slot].entity->observe_batches([&, slot]() {
+                if (entered[slot]) return;
+                entered[slot] = true;
+                arrived[slot].set_value();
+                overlapped[slot] =
+                    ready[1 - slot].wait_for(std::chrono::seconds(10)) ==
+                    std::future_status::ready;
+              });
+            }
+            std::array<std::future<int>, 2> workers;
+            for (size_t slot = 0; slot < states.size(); ++slot) {
+              workers[slot] = std::async(std::launch::async, [&, slot]() {
+                for (uint32_t list : {first_list, 1 - first_list}) {
+                  const int ret = search_list(slot, list);
+                  if (ret != 0) return ret;
+                }
+                auto &state = states[slot];
+                return state.entity->finish_search(&state.heap, &state.stats,
+                                                   state.scratch);
+              });
+            }
+            for (auto &worker : workers) EXPECT_EQ(0, worker.get());
+            EXPECT_TRUE(overlapped[0]);
+            EXPECT_TRUE(overlapped[1]);
+          }
+          for (auto &state : states) {
+            std::vector<size_t> batches(state.expected_rows.size() / 512, 512);
+            if (state.expected_rows.size() % 512) {
+              batches.push_back(state.expected_rows.size() % 512);
+            }
+            EXPECT_EQ(batches, state.entity->batches);
+            std::sort(state.entity->rows.begin(), state.entity->rows.end());
+            EXPECT_EQ(state.expected_rows, state.entity->rows);
+            EXPECT_EQ(state.expected_rows.size(),
+                      state.stats.dist_calced_count());
+            EXPECT_EQ(count - state.expected_rows.size(),
+                      state.stats.filtered_count());
+            EXPECT_EQ(0u, state.scratch.batch_count);
+            EXPECT_FALSE(state.scratch.batch_search_active);
+            state.heap.sort();
+            ASSERT_EQ(state.expected.size(), state.heap.size());
+            for (size_t i = 0; i < state.heap.size(); ++i) {
+              EXPECT_EQ(state.expected[i].second, state.heap[i].key());
+              EXPECT_FLOAT_EQ(state.expected[i].first, state.heap[i].score());
+              EXPECT_EQ(state.heap[i].key(),
+                        state.entity->get_key(state.heap[i].index()));
+            }
+          }
+        }
+      }
+    }
+    ASSERT_EQ(0, storage->close());
+    storage.reset();
+    EXPECT_EQ(0u, pool.used());
   }
 }
 
@@ -731,6 +1039,7 @@ TEST_F(IVFSearcherTest, BatchTopKPreservesKeysAcrossBlocksCloneAndReload) {
       continue;
     }
     ASSERT_EQ(32 * clone->meta().element_size(), clone->inverted_block_size());
+    IVFSearchScratch scratch;
     ASSERT_EQ(0, clone->bind_query(query.data(), qmeta));
     for (size_t topk : {size_t{17}, size_t{second_list_count},
                         std::numeric_limits<size_t>::max()}) {
@@ -741,7 +1050,8 @@ TEST_F(IVFSearcherTest, BatchTopKPreservesKeysAcrossBlocksCloneAndReload) {
       }
       IndexContext::Stats stats;
       uint32_t scan_count = 0;
-      ASSERT_EQ(0, clone->search(1, query.data(), &scan_count, &heap, &stats));
+      ASSERT_EQ(0, clone->search(1, query.data(), &scan_count, &heap, &stats,
+                                 scratch));
       EXPECT_EQ(second_list_count, scan_count);
       EXPECT_EQ(second_list_count, stats.dist_calced_count());
       heap.sort();
@@ -781,6 +1091,7 @@ TEST_F(IVFSearcherTest, BatchTopKPreservesKeysAcrossBlocksCloneAndReload) {
     return expected;
   };
   ASSERT_EQ(0, entity.load(storages[0]));
+  IVFSearchScratch scratch;
   ASSERT_EQ(0, entity.bind_query(boundary_query.data(), qmeta));
   for (bool reverse_lists : {false, true}) {
     SCOPED_TRACE(reverse_lists);
@@ -794,7 +1105,7 @@ TEST_F(IVFSearcherTest, BatchTopKPreservesKeysAcrossBlocksCloneAndReload) {
         SCOPED_TRACE(list);
         uint32_t scan_count = 0;
         ASSERT_EQ(0, entity.search(list, boundary_query.data(), &scan_count,
-                                   &heap, &stats));
+                                   &heap, &stats, scratch));
         EXPECT_EQ(list == 0 ? first_list_count : second_list_count, scan_count);
         const uint32_t begin = pass == 1 || list == 0 ? 0 : first_list_count;
         const uint32_t end = pass == 1 || list == 1 ? count : first_list_count;

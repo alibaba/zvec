@@ -14,7 +14,6 @@
 #include <algorithm>
 #include <stdexcept>
 #include <ailego/internal/cpu_features.h>
-#include <zvec/core/framework/index_document.h>
 #include "batch_topk_internal.h"
 
 #if !defined(ZVEC_BATCH_TOPK_FORCE_SCALAR) && \
@@ -120,21 +119,33 @@ BatchTopK::Implementation BatchTopK::implementation() {
   return impl;
 }
 
-void BatchTopK::push_block_scalar(const float *distances, size_t count,
-                                  uint32_t first_id, float scale) {
+void BatchTopK::push_block_scalar(const float *distances,
+                                  const uint64_t *indices, size_t count,
+                                  float scale) {
   if (limit_ == 0) {
     return;
   }
-  append_tail(distances, count, first_id, scale, 0);
+  append_tail(distances, indices, count, scale, 0);
 }
 
-void BatchTopKImpl<BatchTopK::Implementation::kScalar>::push_block(
-    const float *distances, size_t count, uint32_t first_id, float scale) {
-  push_block_scalar(distances, count, first_id, scale);
+void BatchTopK::push_block(const float *distances, const uint64_t *indices,
+                           size_t count, float scale) {
+  switch (implementation()) {
+    case Implementation::kAVX512:
+      return push_block_avx512(distances, indices, count, scale);
+    case Implementation::kAVX2:
+      return push_block_avx2(distances, indices, count, scale);
+    case Implementation::kSSE2:
+      return push_block_sse2(distances, indices, count, scale);
+    case Implementation::kNEON:
+      return push_block_neon(distances, indices, count, scale);
+    default:
+      return push_block_scalar(distances, indices, count, scale);
+  }
 }
 
-void BatchTopKImpl<BatchTopK::Implementation::kSSE2>::push_block(
-    const float *distances, size_t count, uint32_t first_id, float scale) {
+void BatchTopK::push_block_sse2(const float *distances, const uint64_t *indices,
+                                size_t count, float scale) {
 #if defined(ZVEC_BATCH_TOPK_HAVE_SSE2)
   if (limit_ == 0) {
     return;
@@ -154,18 +165,18 @@ void BatchTopKImpl<BatchTopK::Implementation::kSSE2>::push_block(
     _mm_store_ps(values, scores);
     while (mask != 0) {
       const uint32_t lane = ailego_ctz32(mask);
-      append(values[lane], first_id + static_cast<uint32_t>(i) + lane);
+      append(values[lane], indices[i + lane]);
       mask &= mask - 1;
     }
   }
-  append_tail(distances, count, first_id, scale, i);
+  append_tail(distances, indices, count, scale, i);
 #else
-  push_block_scalar(distances, count, first_id, scale);
+  push_block_scalar(distances, indices, count, scale);
 #endif
 }
 
-void BatchTopKImpl<BatchTopK::Implementation::kNEON>::push_block(
-    const float *distances, size_t count, uint32_t first_id, float scale) {
+void BatchTopK::push_block_neon(const float *distances, const uint64_t *indices,
+                                size_t count, float scale) {
 #if !defined(ZVEC_BATCH_TOPK_FORCE_SCALAR) && defined(AILEGO_ARM64_NEON)
   if (limit_ == 0) {
     return;
@@ -187,94 +198,18 @@ void BatchTopKImpl<BatchTopK::Implementation::kNEON>::push_block(
     vst1q_f32(values, scores);
     while (mask != 0) {
       const uint32_t lane = ailego_ctz32(mask);
-      append(values[lane], first_id + static_cast<uint32_t>(i) + lane);
+      append(values[lane], indices[i + lane]);
       mask &= mask - 1;
     }
   }
-  append_tail(distances, count, first_id, scale, i);
+  append_tail(distances, indices, count, scale, i);
 #else
-  push_block_scalar(distances, count, first_id, scale);
+  push_block_scalar(distances, indices, count, scale);
 #endif
 }
 
 void BatchTopK::finish() {
   compact();
-}
-
-namespace {
-
-template <typename TopK, typename Emit>
-void MergeDistanceBatch(const float *distances, size_t count, float scale,
-                        const IndexDocumentHeap &heap, const Emit &emit) {
-  float threshold = heap.threshold();
-  bool strict = false;
-  if (heap.full() && heap.front().score() <= threshold) {
-    threshold = heap.front().score();
-    strict = true;
-  }
-  TopK topk;
-  topk.reset(std::min(count, heap.limit()), threshold, strict);
-  topk.push_block(distances, count, 0, scale);
-  topk.finish();
-  for (size_t i = 0; i < topk.size(); ++i) {
-    emit(topk.data()[i].id, topk.data()[i].score);
-  }
-}
-
-template <typename Emit>
-void MergeDistanceBatch(float *distances, const uint64_t *keys, size_t count,
-                        float scale, IndexDocumentHeap *heap,
-                        const Emit &emit) {
-  if (count == 0 || heap->limit() == 0) return;
-  if (heap->limit() == std::numeric_limits<size_t>::max()) {
-    for (size_t i = 0; i < count; ++i) {
-      if (keys[i] != std::numeric_limits<uint64_t>::max())
-        emit(i, distances[i] * scale);
-    }
-    return;
-  }
-  for (size_t i = 0; i < count; ++i) {
-    if (keys[i] == std::numeric_limits<uint64_t>::max()) {
-      distances[i] = std::numeric_limits<float>::quiet_NaN();
-    }
-  }
-  using Impl = BatchTopK::Implementation;
-  switch (BatchTopK::implementation()) {
-    case Impl::kAVX512:
-      return MergeDistanceBatch<BatchTopKImpl<Impl::kAVX512>>(
-          distances, count, scale, *heap, emit);
-    case Impl::kAVX2:
-      return MergeDistanceBatch<BatchTopKImpl<Impl::kAVX2>>(distances, count,
-                                                            scale, *heap, emit);
-    case Impl::kSSE2:
-      return MergeDistanceBatch<BatchTopKImpl<Impl::kSSE2>>(distances, count,
-                                                            scale, *heap, emit);
-    case Impl::kNEON:
-      return MergeDistanceBatch<BatchTopKImpl<Impl::kNEON>>(distances, count,
-                                                            scale, *heap, emit);
-    default:
-      return MergeDistanceBatch<BatchTopKImpl<Impl::kScalar>>(
-          distances, count, scale, *heap, emit);
-  }
-}
-
-}  // namespace
-
-void BatchTopKHeapPush(float *distances, const uint64_t *keys, size_t count,
-                       float scale, IndexDocumentHeap *heap) {
-  MergeDistanceBatch(distances, keys, count, scale, heap,
-                     [heap, keys](size_t row, float score) {
-                       heap->emplace(keys[row], score);
-                     });
-}
-
-void BatchTopKHeapPush(float *distances, const uint64_t *keys, size_t count,
-                       uint32_t first_id, float scale,
-                       IndexDocumentHeap *heap) {
-  MergeDistanceBatch(distances, keys, count, scale, heap,
-                     [heap, keys, first_id](size_t row, float score) {
-                       heap->emplace(keys[row], score, first_id + row);
-                     });
 }
 
 }  // namespace core

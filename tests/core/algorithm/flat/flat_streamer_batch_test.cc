@@ -156,7 +156,8 @@ class FlatStreamerBatchTest
     std::vector<std::pair<float, uint64_t>> expected;
     for (size_t i = 0; i < codes.size(); ++i) {
       if ((deleted && (i == 2 || i == 256 || i == 1024)) ||
-          (filter_mode == 1 && i % 3 == 0) || (filter_mode == 2 && i == 12)) {
+          (filter_mode == 1 && i % 3 == 0) || (filter_mode == 2 && i == 12) ||
+          filter_mode == 3) {
         continue;
       }
       const auto *row = reinterpret_cast<const float *>(codes[i].data());
@@ -171,10 +172,11 @@ class FlatStreamerBatchTest
       }
       expected.emplace_back(static_cast<float>(score), key(i));
     }
-    std::partial_sort(expected.begin(), expected.begin() + kTopk,
+    const size_t result_count = std::min(kTopk, expected.size());
+    std::partial_sort(expected.begin(), expected.begin() + result_count,
                       expected.end());
-    ASSERT_EQ(kTopk, actual.size());
-    for (size_t i = 0; i < kTopk; ++i) {
+    ASSERT_EQ(result_count, actual.size());
+    for (size_t i = 0; i < result_count; ++i) {
       EXPECT_EQ(expected[i].second, actual[i].key());
       EXPECT_NEAR(expected[i].first, actual[i].score(),
                   1e-4f * std::max(1.0f, std::abs(expected[i].first)));
@@ -182,37 +184,18 @@ class FlatStreamerBatchTest
   }
 
   void check_calls(const RecordingFp32Quantizer &quantizer, size_t query_count,
-                   bool filtered, bool deleted, size_t topk = kTopk) {
-    const auto *flat = dynamic_cast<const FlatStreamer<32> *>(streamer_.get());
-    ASSERT_NE(nullptr, flat);
-    const auto *contiguous =
-        dynamic_cast<const FlatContiguousStreamerEntity *>(&flat->entity());
-    const bool snapshot = contiguous && contiguous->is_contiguous();
-    if (snapshot || filtered || deleted || topk == 0 ||
-        topk == std::numeric_limits<size_t>::max()) {
-      // These paths also use pointer batches, with their own grouping rules.
-      // Result and statistics checks below cover their scan semantics.
-      return;
+                   size_t valid_count) {
+    constexpr size_t batch_size = FlatSearchScratch::kBatchVectors;
+    const size_t batches = (valid_count + batch_size - 1) / batch_size;
+    ASSERT_EQ(batches * query_count, quantizer.calls.size());
+    for (size_t q = 0; q < query_count; ++q) {
+      for (size_t batch = 0; batch < batches; ++batch) {
+        const auto &call = quantizer.calls[q * batches + batch];
+        EXPECT_EQ(quantizer.quantized_datapoint_vector_length(), call.stride);
+        EXPECT_EQ(std::min(batch_size, valid_count - batch * batch_size),
+                  static_cast<size_t>(call.count));
+      }
     }
-    ASSERT_FALSE(quantizer.calls.empty());
-    size_t count = 0;
-    size_t full_blocks = 0;
-    bool has_tail = false;
-    for (const auto &call : quantizer.calls) {
-      const size_t encoded_size = quantizer.quantized_datapoint_vector_length();
-      EXPECT_EQ(encoded_size, call.stride);
-      EXPECT_TRUE(call.contiguous);
-      EXPECT_GT(call.count, 0);
-      EXPECT_LE(call.count, 32);
-      count += call.count;
-      full_blocks += call.count == 32;
-      has_tail |= call.count % 32 != 0;
-    }
-    // The 17-row head must not split later full physical blocks.
-    EXPECT_EQ(kCount * query_count, count);
-    EXPECT_TRUE(has_tail);
-    EXPECT_EQ(((kCount + 31) / 32) * query_count, quantizer.calls.size());
-    EXPECT_EQ((kCount / 32) * query_count, full_blocks);
   }
 
   void open_generic_entity(RecordingFp32Quantizer *quantizer,
@@ -227,8 +210,8 @@ class FlatStreamerBatchTest
     }
     *entity = std::make_shared<FlatStreamerEntity>(*stats);
     (*entity)->set_block_vector_count(32);
-    // One 19D FP32 physical block fits in this segment. Small segments make
-    // clone/cache extension observable cheaply.
+    // The minimum segment is rounded to the host page size. Small segments
+    // make clone/cache extension observable cheaply.
     (*entity)->set_segment_size(4096);
     (*entity)->set_linear_list_count(1);
     (*entity)->set_use_key_info_map(use_key_map);
@@ -254,8 +237,7 @@ class FlatStreamerBatchTest
   void check_ip_entity(const FlatStreamerEntity &entity,
                        RecordingFp32Quantizer *quantizer,
                        std::vector<std::pair<float, uint64_t>> expected,
-                       size_t physical_count, bool eligible,
-                       size_t deleted_rows = 0) {
+                       size_t physical_count) {
     const std::vector<float> query = ip_row(0);
     IndexDocumentHeap heap(kTopk);
     IndexContext::Stats stats;
@@ -265,11 +247,9 @@ class FlatStreamerBatchTest
     ASSERT_EQ(0, entity.search(query.data(), IndexFilter(), &scanned, &heap,
                                &stats, &scratch));
     EXPECT_EQ(physical_count, scanned);
-    EXPECT_EQ(physical_count - deleted_rows, stats.dist_calced_count());
-    EXPECT_EQ(deleted_rows, stats.filtered_count());
-    if (eligible) {
-      EXPECT_FALSE(quantizer->calls.empty());
-    }
+    EXPECT_EQ(expected.size(), stats.dist_calced_count());
+    EXPECT_EQ(physical_count - expected.size(), stats.filtered_count());
+    check_calls(*quantizer, 1, expected.size());
     std::sort(expected.begin(), expected.end());
     expected.resize(std::min(kTopk, expected.size()));
     heap.sort();
@@ -345,14 +325,12 @@ class FlatStreamerBatchTest
           quantizer->calls.clear();
           ASSERT_EQ(0, flat->entity().search(query, filter, &scan_count, &heap,
                                              &stats, &scratch));
-          check_calls(*quantizer, 1, filtered, deleted, topk);
+          check_calls(*quantizer, 1, valid_count);
           const size_t expected_scan_count =
               kCount - (snapshot && deleted ? 2 : 0);
-          const size_t expected_calced_count =
-              snapshot || filtered ? valid_count : kCount - (deleted ? 2 : 0);
+          const size_t expected_calced_count = valid_count;
           const size_t expected_filtered_count =
-              snapshot || filtered ? expected_scan_count - valid_count
-                                   : (deleted ? 2 : 0);
+              expected_scan_count - valid_count;
           EXPECT_EQ(expected_scan_count, scan_count);
           EXPECT_EQ(expected_calced_count, stats.dist_calced_count());
           EXPECT_EQ(expected_filtered_count, stats.filtered_count());
@@ -433,21 +411,30 @@ TEST_P(FlatStreamerBatchTest, FullScanUsesBoundedBatchDistances) {
         ASSERT_NE(nullptr, context);
         context->set_topk(kTopk);
       }
-      for (int filter_mode : {0, 1, 2, 0}) {
+      for (int filter_mode : {0, 1, 2, 3, 0}) {
         SCOPED_TRACE(filter_mode);
-        const bool filtered = filter_mode != 0;
+        size_t valid_count = 0;
+        for (size_t i = 0; i < kCount; ++i) {
+          if ((deleted && (i == 2 || i == 256 || i == 1024)) ||
+              (filter_mode == 1 && i % 3 == 0) ||
+              (filter_mode == 2 && i == 12) || filter_mode == 3)
+            continue;
+          ++valid_count;
+        }
         if (filter_mode == 1) {
           context->set_filter(
               [](uint64_t value) { return ((value - key(0)) / 17) % 3 == 0; });
         } else if (filter_mode == 2) {
           context->set_filter([](uint64_t value) { return value == key(12); });
+        } else if (filter_mode == 3) {
+          context->set_filter([](uint64_t) { return true; });
         } else {
           context->reset_filter();
         }
         std::string batch = queries[0] + queries[1] + queries[2];
         quantizer->calls.clear();
         ASSERT_EQ(0, streamer_->search_impl(batch.data(), qmeta, 3, context));
-        check_calls(*quantizer, 3, filtered, deleted);
+        check_calls(*quantizer, 3, valid_count);
         for (size_t q = 0; q < queries.size(); ++q) {
           check_result(context->result(q), codes, queries[q].data(), metric,
                        filter_mode, deleted);
@@ -455,7 +442,7 @@ TEST_P(FlatStreamerBatchTest, FullScanUsesBoundedBatchDistances) {
         quantizer->calls.clear();
         ASSERT_EQ(0,
                   streamer_->search_bf_impl(queries[1].data(), qmeta, context));
-        check_calls(*quantizer, 1, filtered, deleted);
+        check_calls(*quantizer, 1, valid_count);
         check_result(context->result(), codes, queries[1].data(), metric,
                      filter_mode, deleted);
       }
@@ -489,7 +476,7 @@ TEST_P(FlatStreamerBatchTest, ReloadChecksValidityWithEitherKeyMapMode) {
     ASSERT_EQ(0, entity->close());
     open_generic_entity(quantizer.get(), quantizer, use_key_map, &stats,
                         &entity);
-    check_ip_entity(*entity, quantizer.get(), expected, kCount, true);
+    check_ip_entity(*entity, quantizer.get(), expected, kCount);
     ASSERT_EQ(0, entity->close());
     mark_deleted_and_invalid(quantizer->meta().element_size());
     open_generic_entity(quantizer.get(), quantizer, use_key_map, &stats,
@@ -500,7 +487,7 @@ TEST_P(FlatStreamerBatchTest, ReloadChecksValidityWithEitherKeyMapMode) {
         expected.emplace_back(-ip_row(i)[0], key(i));
       }
     }
-    check_ip_entity(*entity, quantizer.get(), expected, kCount, false, 2);
+    check_ip_entity(*entity, quantizer.get(), expected, kCount);
     ASSERT_EQ(0, entity->close());
     entity.reset();
     ASSERT_EQ(0, storage_->close());
@@ -509,7 +496,7 @@ TEST_P(FlatStreamerBatchTest, ReloadChecksValidityWithEitherKeyMapMode) {
   }
 }
 
-TEST_P(FlatStreamerBatchTest, FillingSparseIdsKeepsConservativeFallback) {
+TEST_P(FlatStreamerBatchTest, SparseIdsGatherOnlyValidRows) {
   for (bool use_key_map : {false, true}) {
     SCOPED_TRACE(use_key_map);
     std::shared_ptr<RecordingFp32Quantizer> quantizer;
@@ -525,25 +512,24 @@ TEST_P(FlatStreamerBatchTest, FillingSparseIdsKeepsConservativeFallback) {
                                               row.size() * sizeof(float)));
       expected.emplace_back(-row[0], i);
     }
-    check_ip_entity(*entity, quantizer.get(), expected, 32, true);
+    check_ip_entity(*entity, quantizer.get(), expected, 32);
     auto row = ip_row(65);
     ASSERT_EQ(0, entity->add_vector_with_id(65, row.data(),
                                             row.size() * sizeof(float)));
     expected.emplace_back(-row[0], 65);
-    check_ip_entity(*entity, quantizer.get(), expected, 66, false);
+    check_ip_entity(*entity, quantizer.get(), expected, 66);
     for (uint32_t i = 32; i < 65; ++i) {
       row = ip_row(i);
       ASSERT_EQ(0, entity->add_vector_with_id(i, row.data(),
                                               row.size() * sizeof(float)));
       expected.emplace_back(-row[0], i);
     }
-    // Filling all holes does not restore the live generation's flag.
-    check_ip_entity(*entity, quantizer.get(), expected, 66, false);
+    check_ip_entity(*entity, quantizer.get(), expected, 66);
     ASSERT_EQ(0, entity->flush(0));
     ASSERT_EQ(0, entity->close());
     open_generic_entity(quantizer.get(), quantizer, use_key_map, &stats,
                         &entity);
-    check_ip_entity(*entity, quantizer.get(), expected, 66, true);
+    check_ip_entity(*entity, quantizer.get(), expected, 66);
     ASSERT_EQ(0, entity->close());
     entity.reset();
     ASSERT_EQ(0, storage_->close());
@@ -552,7 +538,7 @@ TEST_P(FlatStreamerBatchTest, FillingSparseIdsKeepsConservativeFallback) {
   }
 }
 
-TEST_P(FlatStreamerBatchTest, CloneSharesInvalidationAndExtendsSegmentCache) {
+TEST_P(FlatStreamerBatchTest, CloneReadsNewRowsAndExtendsSegmentCache) {
   std::shared_ptr<RecordingFp32Quantizer> quantizer;
   init_ip_quantizer(&quantizer);
   IndexStreamer::Stats stats;
@@ -566,7 +552,7 @@ TEST_P(FlatStreamerBatchTest, CloneSharesInvalidationAndExtendsSegmentCache) {
   }
   auto clone = entity->clone();
   ASSERT_NE(nullptr, clone);
-  check_ip_entity(*clone, quantizer.get(), expected, 32, true);
+  check_ip_entity(*clone, quantizer.get(), expected, 32);
   // Each extra 32-row block requires another 4 KiB segment. The clone was
   // created before those segments existed and must grow its own lazy cache.
   for (size_t i = 32; i < 96; ++i) {
@@ -574,13 +560,13 @@ TEST_P(FlatStreamerBatchTest, CloneSharesInvalidationAndExtendsSegmentCache) {
     ASSERT_EQ(0, entity->add(key(i), row.data(), row.size() * sizeof(float)));
     expected.emplace_back(-row[0], key(i));
   }
-  check_ip_entity(*clone, quantizer.get(), expected, 96, true);
+  check_ip_entity(*clone, quantizer.get(), expected, 96);
   const auto invalid = ip_row(1000);
   ASSERT_EQ(0, entity->add(kInvalidKey, invalid.data(),
                            invalid.size() * sizeof(float)));
   // The invalid key was published by the original after clone creation.
-  check_ip_entity(*clone, quantizer.get(), expected, 97, false);
-  check_ip_entity(*entity, quantizer.get(), expected, 97, false);
+  check_ip_entity(*clone, quantizer.get(), expected, 97);
+  check_ip_entity(*entity, quantizer.get(), expected, 97);
   ASSERT_EQ(0, clone->close());
   ASSERT_EQ(0, entity->close());
 }

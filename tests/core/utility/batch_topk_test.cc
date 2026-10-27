@@ -26,7 +26,6 @@
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/internal/platform.h>
-#include <zvec/core/framework/index_document.h>
 
 namespace zvec {
 namespace core {
@@ -55,7 +54,7 @@ using zvec::core::BatchTopKTestPeer;
 
 namespace {
 
-using ScoredId = std::pair<float, uint32_t>;
+using ScoredId = std::pair<float, uint64_t>;
 using Implementation = BatchTopKTestPeer::Implementation;
 
 #if !defined(ZVEC_BATCH_TOPK_FORCE_SCALAR) && \
@@ -146,14 +145,14 @@ TYPED_TEST_SUITE(BatchTopKTypedTest, BatchTopKTypes);
 // pruning strategy. A secondary ID order makes comparisons unambiguous for
 // the unique-score cases; the collector does not promise an order for ties.
 std::vector<ScoredId> reference_topk(const std::vector<float> &distances,
-                                     uint32_t first_id, size_t k,
+                                     uint64_t first_id, size_t k,
                                      float threshold, bool strict,
                                      float scale) {
   std::vector<ScoredId> result;
   for (size_t i = 0; i < distances.size(); ++i) {
     const float score = distances[i] * scale;
     if (strict ? score < threshold : score <= threshold) {
-      result.emplace_back(score, first_id + static_cast<uint32_t>(i));
+      result.emplace_back(score, first_id + static_cast<uint64_t>(i));
     }
   }
   std::sort(result.begin(), result.end());
@@ -165,14 +164,14 @@ std::vector<ScoredId> reference_topk(const std::vector<float> &distances,
 
 void expect_matches_reference(const BatchTopK &topk,
                               const std::vector<float> &distances,
-                              uint32_t first_id, size_t k, float threshold,
+                              uint64_t first_id, size_t k, float threshold,
                               bool strict, float scale,
                               bool compare_exact_ids) {
   const auto expected =
       reference_topk(distances, first_id, k, threshold, strict, scale);
   ASSERT_EQ(expected.size(), topk.size());
   std::vector<ScoredId> actual;
-  std::unordered_set<uint32_t> seen;
+  std::unordered_set<uint64_t> seen;
   for (size_t i = 0; i < topk.size(); ++i) {
     const auto &candidate = topk.data()[i];
     EXPECT_FALSE(std::isnan(candidate.score));
@@ -194,17 +193,24 @@ void expect_matches_reference(const BatchTopK &topk,
 
 template <typename TopK>
 void push_batches(TopK *topk, const std::vector<float> &distances,
-                  uint32_t first_id, size_t block_size, float scale) {
+                  uint64_t first_id, size_t block_size, float scale) {
   // Use an unaligned start and partial final blocks. The input is not
   // required to have any SIMD alignment or readable trailing padding.
   std::vector<float> unaligned(distances.size() + 1);
   std::copy(distances.begin(), distances.end(), unaligned.begin() + 1);
+  std::vector<uint64_t> indices(distances.size() + 1);
+  std::iota(indices.begin() + 1, indices.end(), first_id);
   for (size_t offset = 0; offset < distances.size(); offset += block_size) {
-    topk->push_block(unaligned.data() + 1 + offset,
-                     std::min(block_size, distances.size() - offset),
-                     first_id + static_cast<uint32_t>(offset), scale);
+    topk->push_block(unaligned.data() + 1 + offset, indices.data() + 1 + offset,
+                     std::min(block_size, distances.size() - offset), scale);
   }
   topk->finish();
+}
+
+TEST(BatchTopK, CandidateStoresOnlyDistanceAndFullWidthIndex) {
+  EXPECT_EQ(8U, sizeof(BatchTopK::Candidate::id));
+  EXPECT_TRUE(
+      (std::is_same<decltype(BatchTopK::Candidate::id), uint64_t>::value));
 }
 
 TEST(BatchTopK, DispatchRequiresCompiledKernelsCpuFeaturesAndOsState) {
@@ -284,7 +290,7 @@ TEST(BatchTopK, MissingImplementationsUseScalarStubs) {
 
 TYPED_TEST(BatchTopKTypedTest,
            MatchesSortedReferenceAcrossBatchAndCapacityBoundaries) {
-  constexpr uint32_t first_id = 107;
+  constexpr uint64_t first_id = 107;
   constexpr size_t count = 4099;
   const float threshold = std::numeric_limits<float>::max();
   std::vector<float> distances(count);
@@ -387,16 +393,17 @@ TYPED_TEST(BatchTopKTypedTest, SelectionAndThresholdUseScaledScores) {
   }
 }
 
-TYPED_TEST(BatchTopKTypedTest, PreservesAllIdBitsAndNonzeroBatchOffsets) {
+TYPED_TEST(BatchTopKTypedTest, PreservesAllIndexBitsAcrossInputSlices) {
   constexpr size_t count = 1031;
   std::vector<float> distances(count);
   for (size_t i = 0; i < count; ++i) {
     distances[i] = static_cast<float>((i * 67) % count);
   }
   typename TestFixture::TopK topk;
-  for (uint32_t first_id :
-       {uint32_t{0x80000025}, std::numeric_limits<uint32_t>::max() -
-                                  static_cast<uint32_t>(count) + 1}) {
+  for (uint64_t first_id :
+       {uint64_t{0x80000025},
+        uint64_t{std::numeric_limits<uint32_t>::max()} - count + 1,
+        uint64_t{1} << 40, std::numeric_limits<uint64_t>::max() - count + 1}) {
     SCOPED_TRACE(first_id);
     for (size_t k : {1U, 17U, 1031U}) {
       SCOPED_TRACE(k);
@@ -417,7 +424,9 @@ TYPED_TEST(BatchTopKTypedTest, AcceptsAdditionalBatchesAfterFinish) {
   for (size_t i = 0; i < distances.size(); ++i) {
     distances[i] = static_cast<float>(distances.size() - i) * 0.25f;
   }
-  constexpr uint32_t first_id = 20000;
+  constexpr uint64_t first_id = 20000;
+  std::vector<uint64_t> indices(distances.size());
+  std::iota(indices.begin(), indices.end(), first_id);
   constexpr float threshold = 300.0f;
   typename TestFixture::TopK topk;
   for (size_t k : {1U, 17U, 65U, 513U, 4096U}) {
@@ -427,8 +436,8 @@ TYPED_TEST(BatchTopKTypedTest, AcceptsAdditionalBatchesAfterFinish) {
     for (size_t offset = 0; offset < distances.size(); offset += 137) {
       SCOPED_TRACE(offset);
       const size_t count = std::min(size_t{137}, distances.size() - offset);
-      topk.push_block(distances.data() + offset, count,
-                      first_id + static_cast<uint32_t>(offset));
+      topk.push_block(distances.data() + offset, indices.data() + offset,
+                      count);
       prefix.insert(prefix.end(), distances.begin() + offset,
                     distances.begin() + offset + count);
       topk.finish();
@@ -442,13 +451,14 @@ TYPED_TEST(BatchTopKTypedTest,
            EmptyBlocksAndResetDiscardPreviousCandidatesAndThreshold) {
   typename TestFixture::TopK topk;
   topk.reset(10);
-  topk.push_block(nullptr, 0, 0);
+  topk.push_block(nullptr, nullptr, 0);
   topk.finish();
   EXPECT_EQ(0U, topk.size());
 
   std::vector<float> descending(2053);
   std::iota(descending.rbegin(), descending.rend(), -1000.0f);
   const std::vector<float> subsequent{50.0f, 20.0f, 40.0f, 10.0f, 30.0f};
+  const std::vector<uint64_t> subsequent_indices{100, 101, 102, 103, 104};
   for (size_t previous_k : {1U, 17U, 1024U, 4096U}) {
     SCOPED_TRACE(previous_k);
     topk.reset(previous_k, -100.0f, true);
@@ -457,15 +467,16 @@ TYPED_TEST(BatchTopKTypedTest,
                              1.0f, true);
 
     topk.reset(0);
-    topk.push_block(subsequent.data(), subsequent.size(), 100);
+    topk.push_block(subsequent.data(), subsequent_indices.data(),
+                    subsequent.size());
     topk.finish();
     EXPECT_EQ(0U, topk.size());
 
     topk.reset(3);
     EXPECT_EQ(0U, topk.size());
-    topk.push_block(nullptr, 0, 0);
+    topk.push_block(nullptr, nullptr, 0);
     push_batches(&topk, subsequent, 100, 3, 1.0f);
-    topk.push_block(nullptr, 0, 1000);
+    topk.push_block(nullptr, nullptr, 0);
     topk.finish();
     expect_matches_reference(topk, subsequent, 100, 3,
                              std::numeric_limits<float>::max(), false, 1.0f,
@@ -482,92 +493,177 @@ TYPED_TEST(BatchTopKTypedTest,
            OverflowResetPreservesThePreviousSelectionState) {
   typename TestFixture::TopK topk;
   const std::vector<float> distances{9.0f, 4.0f, 8.0f, 3.0f, 8.0f, 2.0f};
-  constexpr uint32_t first_id = 101;
+  constexpr uint64_t first_id = 101;
+  const std::vector<uint64_t> indices{101, 102, 103, 104, 105, 106};
   topk.reset(4, 8.0f, true);
-  topk.push_block(distances.data(), 3, first_id);
+  topk.push_block(distances.data(), indices.data(), 3);
   EXPECT_THROW(topk.reset(std::numeric_limits<size_t>::max()),
                std::length_error);
-  topk.push_block(distances.data() + 3, distances.size() - 3, first_id + 3);
+  topk.push_block(distances.data() + 3, indices.data() + 3,
+                  distances.size() - 3);
   topk.finish();
   expect_matches_reference(topk, distances, first_id, 4, 8.0f, true, 1.0f,
                            true);
 }
 
 
-TEST(BatchTopKHeapTest, MatchesHeapAcrossBlocksAndPreservesKeysAndIndices) {
-  using namespace zvec::core;
-  constexpr size_t count = 1031;
-  constexpr uint32_t first_id = 0xfffff000;
-  constexpr uint64_t kInvalidKey = std::numeric_limits<uint64_t>::max();
-  const size_t unlimited = std::numeric_limits<size_t>::max();
-  std::vector<uint64_t> keys(count);
-  std::vector<float> scores(count);
-  for (size_t i = 0; i < count; ++i) {
-    keys[i] = i % 7 == 0 ? kInvalidKey : (uint64_t{1} << 44) + i * 17;
-    scores[i] = static_cast<float>((i * 67) % count) - 515.0f;
+using ScoredIndex = std::pair<float, uint64_t>;
+
+// Independent full-sort oracle: no SIMD masks, compaction or batch boundaries.
+std::vector<ScoredIndex> reference_indices(const std::vector<float> &scores,
+                                           const std::vector<uint64_t> &indices,
+                                           size_t k, float threshold,
+                                           bool strict, float scale) {
+  std::vector<ScoredIndex> result;
+  for (size_t i = 0; i < scores.size(); ++i) {
+    const float score = scores[i] * scale;
+    if (strict ? score < threshold : score <= threshold) {
+      result.emplace_back(score, indices[i]);
+    }
   }
-  scores[3] = std::numeric_limits<float>::infinity();
-  scores[17] = -std::numeric_limits<float>::infinity();
-  scores[511] = std::numeric_limits<float>::quiet_NaN();
-  for (size_t k :
-       {size_t{1}, size_t{10}, size_t{65}, size_t{2000}, unlimited}) {
-    for (size_t block : {1U, 7U, 32U, 512U}) {
-      for (float scale : {1.0f, -2.0f, 0.0f}) {
-        for (float threshold : {0.0f, std::numeric_limits<float>::infinity()}) {
-          for (bool indexed : {false, true}) {
+  std::sort(result.begin(), result.end());
+  if (result.size() > k) result.resize(k);
+  return result;
+}
+
+void expect_indices(const BatchTopK &topk,
+                    const std::vector<ScoredIndex> &expected) {
+  std::vector<ScoredIndex> actual;
+  for (size_t i = 0; i < topk.size(); ++i) {
+    actual.emplace_back(topk.data()[i].score, topk.data()[i].id);
+  }
+  std::sort(actual.begin(), actual.end());
+  EXPECT_EQ(expected, actual);
+}
+
+template <typename TopK>
+void check_explicit_indices() {
+  constexpr size_t count = 1537;
+  const float infinity = std::numeric_limits<float>::infinity();
+  std::vector<float> scores(count);
+  std::vector<uint64_t> indices(count);
+  for (size_t i = 0; i < count; ++i) {
+    scores[i] = static_cast<float>((i * 37) % count) - 768.0f;
+    // Arbitrary nonmonotonic full-width indices; no batch-relative mapping.
+    indices[i] = uint64_t{0xa5f17c09d384b620} ^
+                 (static_cast<uint64_t>(i) * uint64_t{104729});
+  }
+  indices[0] = 0;
+  indices[1] = std::numeric_limits<uint64_t>::max();
+  indices[2] = uint64_t{1} << 63;
+  indices[3] = std::numeric_limits<uint32_t>::max();
+  indices[4] = uint64_t{1} << 32;
+  // Equal low 32 bits must not make distinct full-width IDs interchangeable.
+  indices[5] = 17;
+  indices[6] = (uint64_t{1} << 32) | 17;
+  indices[11] = (uint64_t{1} << 63) | 17;
+  scores[7] = infinity;
+  scores[8] = -infinity;
+  scores[9] = std::numeric_limits<float>::quiet_NaN();
+  TopK topk;
+  for (size_t k : {0U, 1U, 10U, 100U, 200U, 4096U}) {
+    for (size_t block : {1U, 7U, 32U, 512U, 1537U}) {
+      for (float scale : {1.0f, -2.0f}) {
+        for (float threshold : {0.0f, infinity}) {
+          for (bool strict : {false, true}) {
             SCOPED_TRACE(::testing::Message()
                          << k << " " << block << " " << scale << " "
-                         << threshold << " " << indexed);
-            IndexDocumentHeap expected, actual;
-            if (k != unlimited) {
-              expected.limit(k);
-              actual.limit(k);
-            }
-            expected.set_threshold(threshold);
-            actual.set_threshold(threshold);
-            expected.emplace(42, -10.0f, 73);
-            actual.emplace(42, -10.0f, 73);
-            auto distances = scores;
+                         << threshold << " " << strict);
+            topk.reset(k, threshold, strict);
+            topk.push_block(nullptr, nullptr, 0);
+            std::vector<float> distances(block + 1);
+            std::vector<uint64_t> ids(block + 1);
             for (size_t offset = 0; offset < count; offset += block) {
               const size_t rows = std::min(block, count - offset);
-              if (indexed) {
-                BatchTopKHeapPush(distances.data() + offset,
-                                  keys.data() + offset, rows, first_id + offset,
-                                  scale, &actual);
-              } else {
-                BatchTopKHeapPush(distances.data() + offset,
-                                  keys.data() + offset, rows, scale, &actual);
-              }
-              for (size_t i = offset; i < offset + rows; ++i) {
-                if (keys[i] != kInvalidKey) {
-                  expected.emplace(keys[i], scores[i] * scale,
-                                   indexed ? first_id + i : 0);
-                }
-              }
+              std::copy_n(scores.data() + offset, rows, distances.data() + 1);
+              std::copy_n(indices.data() + offset, rows, ids.data() + 1);
+              topk.push_block(distances.data() + 1, ids.data() + 1, rows,
+                              scale);
+              // Both arrays are caller-owned scratch, overwritten on every
+              // flush. Retained indices must not alias their original slots.
+              std::fill(distances.begin(), distances.end(), infinity);
+              std::fill(ids.begin(), ids.end(), 0);
             }
-            expected.sort();
-            actual.sort();
-            ASSERT_EQ(expected.size(), actual.size());
-            std::unordered_set<uint64_t> seen;
-            for (size_t i = 0; i < actual.size(); ++i) {
-              EXPECT_FLOAT_EQ(expected[i].score(), actual[i].score());
-              EXPECT_TRUE(seen.insert(actual[i].key()).second);
-              if (actual[i].key() == 42) {
-                EXPECT_EQ(73U, actual[i].index());
-              } else {
-                const size_t row = (actual[i].key() - (uint64_t{1} << 44)) / 17;
-                ASSERT_LT(row, count);
-                EXPECT_EQ(keys[row], actual[i].key());
-                EXPECT_NE(kInvalidKey, actual[i].key());
-                EXPECT_FLOAT_EQ(scores[row] * scale, actual[i].score());
-                EXPECT_EQ(indexed ? first_id + row : 0, actual[i].index());
-              }
-            }
+            topk.finish();
+            expect_indices(topk, reference_indices(scores, indices, k,
+                                                   threshold, strict, scale));
           }
         }
       }
     }
   }
+}
+
+TYPED_TEST(BatchTopKTypedTest, ExplicitIndicesSurviveBatchesAndScratchReuse) {
+  check_explicit_indices<typename TestFixture::TopK>();
+}
+
+TEST(BatchTopK, RuntimeDispatchPreservesExplicitIndices) {
+  check_explicit_indices<BatchTopK>();
+}
+
+template <typename TopK>
+void check_full_width_indices_and_reset() {
+  TopK topk;
+  const std::vector<float> scores{9.0f, -7.0f, 3.0f, -2.0f, 1.0f};
+  for (uint64_t first :
+       {uint64_t{1} << 40, std::numeric_limits<uint64_t>::max() - 4}) {
+    std::vector<uint64_t> indices(scores.size());
+    std::iota(indices.begin(), indices.end(), first);
+    topk.reset(3);
+    topk.push_block(scores.data(), indices.data(), 2);
+    topk.push_block(scores.data() + 2, indices.data() + 2, scores.size() - 2);
+    topk.finish();
+    expect_indices(topk,
+                   reference_indices(scores, indices, 3, 100.0f, false, 1.0f));
+
+    // Reset must discard full-width IDs and the tightened previous bound.
+    const std::vector<float> next{40.0f, 20.0f, 30.0f};
+    const std::vector<uint64_t> ids{17, uint64_t{1} << 63, 17};
+    topk.reset(2);
+    topk.push_block(next.data(), ids.data(), 1);
+    topk.finish();
+    topk.push_block(next.data() + 1, ids.data() + 1, 2);
+    topk.finish();
+    expect_indices(topk, reference_indices(next, ids, 2, 100.0f, false, 1.0f));
+  }
+}
+
+TYPED_TEST(BatchTopKTypedTest, FullWidthIndicesSurviveResetAndRepeatedFinish) {
+  check_full_width_indices_and_reset<typename TestFixture::TopK>();
+}
+
+TEST(BatchTopK, RuntimeDispatchSupportsFullWidthIndicesAndReset) {
+  check_full_width_indices_and_reset<BatchTopK>();
+}
+
+TYPED_TEST(BatchTopKTypedTest, ExplicitIndicesHonorStrictInitialBound) {
+  typename TestFixture::TopK topk;
+  const std::vector<float> scores{4.0f, 2.0f, 3.0f, 1.0f};
+  const std::vector<uint64_t> indices{99, uint64_t{1} << 48, 7, 0};
+  for (bool strict : {false, true}) {
+    topk.reset(10, 3.0f, strict);
+    topk.push_block(scores.data(), indices.data(), 2);
+    topk.push_block(scores.data() + 2, indices.data() + 2, 2);
+    topk.finish();
+    expect_indices(topk,
+                   reference_indices(scores, indices, 10, 3.0f, strict, 1.0f));
+  }
+}
+
+TYPED_TEST(BatchTopKTypedTest, ExplicitInputContinuesAfterFullSelection) {
+  typename TestFixture::TopK topk;
+  const std::vector<float> scores{1.0f, 5.0f, 8.0f, 8.0f, 7.0f, 0.0f};
+  const std::vector<uint64_t> indices{
+      uint64_t{1} << 60, 3, 99, 11, 0, std::numeric_limits<uint64_t>::max()};
+  topk.reset(3);
+  topk.push_block(scores.data(), indices.data(), 3);
+  topk.finish();
+  ASSERT_EQ(3U, topk.size());
+  topk.push_block(scores.data() + 3, indices.data() + 3, 3);
+  topk.finish();
+  expect_indices(topk,
+                 reference_indices(scores, indices, 3, 100.0f, false, 1.0f));
 }
 
 }  // namespace

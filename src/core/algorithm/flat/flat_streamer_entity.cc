@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "flat_streamer_entity.h"
+#include <algorithm>
 #include <cstdint>
 #include <zvec/core/framework/index_error.h>
 #include "utility/batch_topk.h"
@@ -30,6 +31,20 @@ int FlatContiguousStreamerEntity::evaluate_distances(
   if (!storage.vector_memory || !query || !scratch || batch_size == 0 ||
       !heap) {
     return IndexError_InvalidArgument;
+  }
+
+  // Full scans use a query-sized batch independent of the physical block size.
+  // Keyed reranking preserves the heap ordering shared with direct output.
+  if (quantizer() && !p_keys) batch_size = FlatSearchScratch::kBatchVectors;
+  const bool buffered_topk =
+      quantizer() && !p_keys &&
+      heap->limit() != std::numeric_limits<size_t>::max();
+  auto &topk = scratch->batch_topk;
+  if (buffered_topk) {
+    float threshold = heap->threshold();
+    const bool strict = heap->full() && heap->front().score() <= threshold;
+    if (strict) threshold = heap->front().score();
+    topk.reset(heap->limit(), threshold, strict);
   }
 
   auto &vector_ptrs = scratch->vector_ptrs;
@@ -82,8 +97,12 @@ int FlatContiguousStreamerEntity::evaluate_distances(
     if (context_stats) {
       *context_stats->mutable_dist_calced_count() += vector_ptrs.size();
     }
-    for (size_t i = 0; i < vector_ptrs.size(); ++i) {
-      heap->emplace(vector_keys[i], distances[i]);
+    if (buffered_topk) {
+      topk.push_block(distances.data(), vector_keys.data(), vector_ptrs.size());
+    } else {
+      for (size_t i = 0; i < vector_ptrs.size(); ++i) {
+        heap->emplace(vector_keys[i], distances[i]);
+      }
     }
     vector_ptrs.clear();
     extra_values.clear();
@@ -132,6 +151,12 @@ int FlatContiguousStreamerEntity::evaluate_distances(
     }
   }
   evaluate_batch();
+  if (buffered_topk) {
+    topk.finish();
+    for (size_t i = 0; i < topk.size(); ++i) {
+      heap->emplace(topk.data()[i].id, topk.data()[i].score);
+    }
+  }
   return 0;
 }
 
@@ -353,8 +378,17 @@ int FlatStreamerEntity::add(uint64_t key, const void *vec, size_t size) {
 int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
                                uint32_t *scan_count, IndexDocumentHeap *heap,
                                IndexContext::Stats *context_stats,
-                               FlatSearchScratch * /*scratch*/,
+                               FlatSearchScratch *scratch,
                                size_t /*batch_size*/) const {
+  if (quantizer_ && index_meta_.major_order() == IndexMeta::MO_ROW) {
+    if (scratch) {
+      return search_batch_rows(query, filter, scan_count, heap, context_stats,
+                               scratch);
+    }
+    FlatSearchScratch local_scratch;
+    return search_batch_rows(query, filter, scan_count, heap, context_stats,
+                             &local_scratch);
+  }
   IndexStorage::MemoryBlock head_block;
   this->get_head_block(head_block);
   const BlockLocation *bl =
@@ -395,6 +429,109 @@ int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
   return 0;
 }
 
+int FlatStreamerEntity::search_batch_rows(const void *query,
+                                          const IndexFilter &filter,
+                                          uint32_t *scan_count,
+                                          IndexDocumentHeap *heap,
+                                          IndexContext::Stats *context_stats,
+                                          FlatSearchScratch *scratch) const {
+  constexpr size_t kBatchVectors = FlatSearchScratch::kBatchVectors;
+  const size_t stride = index_meta_.element_size();
+  const size_t block_rows = block_vector_count();
+  const size_t block_size = linear_block_size();
+  const size_t metadata_size = sizeof(DeletionMap) + sizeof(BlockHeader);
+  if (stride == 0 || block_rows == 0 || block_size < metadata_size ||
+      block_rows > (block_size - metadata_size) / (stride + sizeof(uint64_t))) {
+    return IndexError_InvalidFormat;
+  }
+  BlockLocation block;
+  {
+    IndexStorage::MemoryBlock head;
+    if (get_head_block(head) != 0 || !head.data()) return IndexError_ReadData;
+    std::memcpy(&block, head.data(), sizeof(block));
+  }
+
+  const bool unlimited = heap->limit() == std::numeric_limits<size_t>::max();
+  auto &topk = scratch->batch_topk;
+  if (!unlimited) {
+    float threshold = heap->threshold();
+    const bool strict = heap->full() && heap->front().score() <= threshold;
+    if (strict) threshold = heap->front().score();
+    topk.reset(heap->limit(), threshold, strict);
+  }
+  size_t count = 0;
+  auto flush = [&]() {
+    if (count == 0) return;
+    quantizer_->calc_distance_dp_query_batch(scratch->batch_vectors.data(),
+                                             static_cast<int>(count), query,
+                                             scratch->batch_distances.data());
+    *context_stats->mutable_dist_calced_count() += count;
+    if (unlimited) {
+      for (size_t i = 0; i < count; ++i) {
+        heap->emplace(scratch->batch_indices[i], scratch->batch_distances[i]);
+      }
+    } else {
+      topk.push_block(scratch->batch_distances.data(),
+                      scratch->batch_indices.data(), count);
+    }
+    count = 0;
+  };
+
+  while (is_valid_block(block)) {
+    auto segment = get_segment(block.segment_id);
+    if (!segment) return IndexError_ReadData;
+    IndexStorage::MemoryBlock data;
+    if (segment->read(get_block_offset(block.block_index), data, block_size) !=
+            block_size ||
+        !data.data()) {
+      return IndexError_ReadData;
+    }
+    const auto *body = static_cast<const uint8_t *>(data.data());
+    BlockHeader header;
+    DeletionMap deleted;
+    std::memcpy(&header, body + block_size - sizeof(header), sizeof(header));
+    std::memcpy(deleted.bitset.data(), body + block_size - metadata_size,
+                sizeof(deleted));
+    if (header.vector_count > block_rows) return IndexError_ReadData;
+    *scan_count += header.vector_count;
+    const bool stable = segment->base_data() != nullptr;
+    for (size_t row = 0; row < header.vector_count; ++row) {
+      uint64_t key;
+      std::memcpy(&key, body + block_rows * stride + row * sizeof(key),
+                  sizeof(key));
+      if (key == kInvalidKey || deleted.test(row) ||
+          (filter.is_valid() && filter(key))) {
+        ++(*context_stats->mutable_filtered_count());
+        continue;
+      }
+      const void *vector = body + row * stride;
+      if (!stable) {
+        // Do not keep buffer-pool pages pinned while reading the next block.
+        // The arena is bounded to one batch and reused across queries.
+        if (scratch->batch_owned.size() < kBatchVectors * stride) {
+          scratch->batch_owned.resize(kBatchVectors * stride);
+        }
+        auto *copy = scratch->batch_owned.data() + count * stride;
+        std::memcpy(copy, vector, stride);
+        vector = copy;
+      }
+      scratch->batch_vectors[count] = vector;
+      // Flat's key is already the final identifier; no second mapping needed.
+      scratch->batch_indices[count++] = key;
+      if (count == kBatchVectors) flush();
+    }
+    block = header.next;
+  }
+  flush();
+  if (!unlimited) {
+    topk.finish();
+    for (size_t i = 0; i < topk.size(); ++i) {
+      heap->emplace(topk.data()[i].id, topk.data()[i].score);
+    }
+  }
+  return 0;
+}
+
 int FlatStreamerEntity::search_by_p_keys(const void *query,
                                          const std::vector<uint64_t> &p_keys,
                                          const IndexFilter &filter,
@@ -429,7 +566,11 @@ void FlatStreamerEntity::search_block(const void *query,
   this->get_block_keys(bl, keys_block);
   const uint64_t *keys = reinterpret_cast<const uint64_t *>(keys_block.data());
   row_major_distance(query, vecs, hd->vector_count, distances.data());
-  BatchTopKHeapPush(distances.data(), keys, hd->vector_count, norm_val, heap);
+  for (size_t k = 0; k < hd->vector_count; ++k) {
+    if (keys[k] != kInvalidKey) {
+      heap->emplace(keys[k], distances[k] * norm_val);
+    }
+  }
 }
 
 //! Search in a block with filter
@@ -564,9 +705,10 @@ int FlatContiguousStreamerEntity::search(
                                       context_stats, scratch, batch_size);
   }
 
-  FlatSearchScratch local_scratch;
+  std::unique_ptr<FlatSearchScratch> local_scratch;
   if (!scratch) {
-    scratch = &local_scratch;
+    local_scratch = std::make_unique<FlatSearchScratch>();
+    scratch = local_scratch.get();
   }
   if (batch_size == 0) {
     batch_size = block_vector_count();
@@ -588,9 +730,10 @@ int FlatContiguousStreamerEntity::search_by_p_keys(
                                                 scratch, batch_size);
   }
 
-  FlatSearchScratch local_scratch;
+  std::unique_ptr<FlatSearchScratch> local_scratch;
   if (!scratch) {
-    scratch = &local_scratch;
+    local_scratch = std::make_unique<FlatSearchScratch>();
+    scratch = local_scratch.get();
   }
   if (batch_size == 0) {
     batch_size = block_vector_count();

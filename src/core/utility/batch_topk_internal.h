@@ -21,20 +21,21 @@
 namespace zvec {
 namespace core {
 
-ailego_force_inline void BatchTopK::append(float score, uint32_t id) {
-  entries_[size_++] = Candidate{score, id};
+ailego_force_inline void BatchTopK::append(float score, uint64_t index) {
+  entries_[size_++] = Candidate{score, index};
   if (size_ == buffer_capacity_) {
     compact();
   }
 }
 
 ailego_force_inline void BatchTopK::append_tail(const float *distances,
-                                                size_t count, uint32_t first_id,
-                                                float scale, size_t offset) {
+                                                const uint64_t *indices,
+                                                size_t count, float scale,
+                                                size_t offset) {
   for (size_t i = offset; i < count; ++i) {
     const float score = distances[i] * scale;
     if (strict_threshold_ ? score < threshold_ : score <= threshold_) {
-      append(score, first_id + static_cast<uint32_t>(i));
+      append(score, indices[i]);
     }
   }
 }
