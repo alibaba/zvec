@@ -378,6 +378,10 @@ TEST(QuantizedIntegerMetric, TestInt4SquaredEuclidean) {
   ASSERT_EQ(0, reformer->transform(vec.data(), qmeta, &out, &qmeta2));
   ASSERT_EQ(qmeta2.dimension(), meta2.dimension());
 
+  std::string decoded_query;
+  ASSERT_EQ(0, reformer->revert(out.data(), qmeta2, &decoded_query));
+  ASSERT_EQ(DIMENSION * sizeof(float), decoded_query.size());
+
   auto iter = holder->create_iterator();
   auto iter2 = holder2->create_iterator();
   auto metric = IndexFactory::CreateMetric(meta2.metric_name());
@@ -387,20 +391,63 @@ TEST(QuantizedIntegerMetric, TestInt4SquaredEuclidean) {
   ASSERT_TRUE(compute);
 
   for (; iter->is_valid(); iter->next(), iter2->next()) {
-    const float *mf = (const float *)iter->data();
     const int8_t *mi = (const int8_t *)iter2->data();
     const int8_t *qi = reinterpret_cast<const int8_t *>(&out[0]);
-    float v1 =
-        ailego::Distance::SquaredEuclidean(mf, vec.data(), holder->dimension());
+    std::string decoded_record;
+    ASSERT_EQ(0, reformer->revert(mi, qmeta2, &decoded_record));
+    ASSERT_EQ(decoded_query.size(), decoded_record.size());
+    // INT4 quantization is lossy. Verify the metric against the stored
+    // vectors, whose distance can legitimately differ from the raw inputs.
+    const float v1 = ailego::Distance::SquaredEuclidean(
+        reinterpret_cast<const float *>(decoded_record.data()),
+        reinterpret_cast<const float *>(decoded_query.data()), DIMENSION);
     float v2;
     compute(mi, qi, holder2->dimension(), &v2);
-    ASSERT_NEAR(v1, v2, 0.2 * DIMENSION);
+    ASSERT_NEAR(v1, v2, 1e-4f * std::max(1.0f, std::fabs(v1)));
 
     std::string out2;
     ASSERT_EQ(0, reformer->convert(iter->data(), qmeta, &out2, &qmeta2));
     ASSERT_EQ(out2.size(), holder2->element_size());
     ASSERT_EQ(0, std::memcmp(out2.data(), iter2->data(), out2.size()));
   }
+}
+
+TEST(QuantizedIntegerMetric, TestInt4SquaredEuclideanWithQuantizationLoss) {
+  constexpr size_t kDimension = 14;
+  std::vector<float> record(kDimension, 0.89f);
+  std::vector<float> query(kDimension, -0.89f);
+  record[0] = query[0] = -1.0f;
+  record[1] = query[1] = 2.0f;
+
+  IndexMeta meta(IndexMeta::DT_FP32, kDimension);
+  auto converter = IndexFactory::CreateConverter("Int4StreamingConverter");
+  ASSERT_TRUE(converter);
+  ASSERT_EQ(0, converter->init(meta, Params()));
+  const auto &quantized_meta = converter->meta();
+  auto reformer = IndexFactory::CreateReformer(quantized_meta.reformer_name());
+  ASSERT_TRUE(reformer);
+  ASSERT_EQ(0, reformer->init(quantized_meta.reformer_params()));
+  IndexQueryMeta qmeta(IndexMeta::DT_FP32, kDimension);
+  IndexQueryMeta encoded_meta;
+  std::string encoded_record;
+  std::string encoded_query;
+  ASSERT_EQ(0, reformer->convert(record.data(), qmeta, &encoded_record,
+                                 &encoded_meta));
+  ASSERT_EQ(0, reformer->transform(query.data(), qmeta, &encoded_query,
+                                   &encoded_meta));
+  auto metric = IndexFactory::CreateMetric(quantized_meta.metric_name());
+  ASSERT_TRUE(metric);
+  ASSERT_EQ(0, metric->init(quantized_meta, quantized_meta.metric_params()));
+  auto compute = metric->distance();
+  ASSERT_TRUE(compute);
+  float actual = 0.0f;
+  compute(encoded_record.data(), encoded_query.data(), encoded_meta.dimension(),
+          &actual);
+
+  // The endpoints fix a 0.2 quantization step, so +/-0.89 become +/-0.8.
+  // The raw distance is 38.0208, over 0.2 * dimension away from the correct
+  // stored-vector distance of 30.72. Quantization loss is not metric error.
+  EXPECT_NEAR(30.72f, actual, 1e-4f);
 }
 
 TEST(QuantizedIntegerMetric, TestInt4SquaredEuclideanReformer) {

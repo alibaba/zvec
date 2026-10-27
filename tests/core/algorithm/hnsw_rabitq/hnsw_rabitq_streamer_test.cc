@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include "hnsw_rabitq_streamer.h"
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <string>
 #include <gtest/gtest.h>
@@ -309,6 +311,86 @@ TEST_F(HnswRabitqStreamerTest, TestKnnSearch) {
   // actual: no guarantee
   // TODO(jiliang.ljl): check if ok?
   EXPECT_GT(topk1_recall, 0.00f);
+}
+
+TEST_F(HnswRabitqStreamerTest, TestSingleEntryPointMatchesBruteForceScore) {
+  for (const char *metric : {"SquaredEuclidean", "InnerProduct"}) {
+    // Exercise both one extra bit and the default six extra bits.
+    for (uint32_t total_bits : {2U, 7U}) {
+      SCOPED_TRACE(testing::Message()
+                   << "metric=" << metric << ", total_bits=" << total_bits);
+      IndexMeta meta(IndexMeta::DataType::DT_FP32, dim);
+      meta.set_metric(metric, 0, ailego::Params());
+      auto holder =
+          make_shared<MultiPassIndexProvider<IndexMeta::DataType::DT_FP32>>(
+              dim);
+      // Train on several vectors so the sole indexed vector has a nonzero
+      // residual from its centroid. A one-vector training set hides the
+      // difference between binary and full estimates.
+      for (size_t i = 0; i < 8; ++i) {
+        NumericalVector<float> vec(dim);
+        for (size_t j = 0; j < dim; ++j) {
+          vec[j] =
+              static_cast<float>(static_cast<int>((j * 13 + i * 7) % 31) - 15) /
+              16.0f;
+        }
+        ASSERT_TRUE(holder->emplace(i, vec));
+      }
+
+      ailego::Params quantizer_params;
+      quantizer_params.set(PARAM_RABITQ_NUM_CLUSTERS, 1U);
+      quantizer_params.set(PARAM_RABITQ_TOTAL_BITS, total_bits);
+      RabitqConverter converter;
+      ASSERT_EQ(0, converter.init(meta, quantizer_params));
+      ASSERT_EQ(0, converter.train(holder));
+      std::shared_ptr<IndexReformer> index_reformer;
+      ASSERT_EQ(0, converter.to_reformer(&index_reformer));
+      auto reformer = std::dynamic_pointer_cast<RabitqReformer>(index_reformer);
+      ASSERT_NE(nullptr, reformer);
+      IndexStreamer::Pointer streamer =
+          std::make_shared<HnswRabitqStreamer>(holder, reformer);
+      ailego::Params params;
+      params.set(PARAM_HNSW_RABITQ_GENERAL_DIMENSION, dim);
+      params.set(PARAM_HNSW_RABITQ_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
+      params.set(PARAM_RABITQ_TOTAL_BITS, total_bits);
+      ASSERT_EQ(0, streamer->init(meta, params));
+      auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+      ASSERT_NE(nullptr, storage);
+      ASSERT_EQ(0, storage->init(ailego::Params()));
+      ASSERT_EQ(0, storage->open(dir_ + "/TestEntryPointScore/" + metric +
+                                     std::to_string(total_bits),
+                                 true));
+      ASSERT_EQ(0, streamer->open(storage));
+
+      IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
+      auto graph_ctx = streamer->create_context();
+      auto linear_ctx = streamer->create_context();
+      ASSERT_NE(nullptr, graph_ctx);
+      ASSERT_NE(nullptr, linear_ctx);
+      auto it = holder->create_iterator();
+      ASSERT_TRUE(it->is_valid());
+      const uint64_t indexed_key = it->key();
+      ASSERT_EQ(0,
+                streamer->add_impl(indexed_key, it->data(), qmeta, graph_ctx));
+      graph_ctx->set_topk(1);
+      linear_ctx->set_topk(1);
+
+      for (it->next(); it->is_valid(); it->next()) {
+        SCOPED_TRACE(it->key());
+        ASSERT_EQ(0, streamer->search_bf_impl(it->data(), qmeta, linear_ctx));
+        ASSERT_EQ(0, streamer->search_impl(it->data(), qmeta, 1, graph_ctx));
+        ASSERT_EQ(1U, linear_ctx->result().size());
+        ASSERT_EQ(1U, graph_ctx->result().size());
+        EXPECT_EQ(indexed_key, graph_ctx->result()[0].key());
+        EXPECT_EQ(indexed_key, linear_ctx->result()[0].key());
+        const float expected = linear_ctx->result()[0].score();
+        EXPECT_NEAR(expected, graph_ctx->result()[0].score(),
+                    1e-5f * std::max(1.0f, std::fabs(expected)));
+      }
+      ASSERT_EQ(0, streamer->close());
+      ASSERT_EQ(0, storage->close());
+    }
+  }
 }
 
 TEST_F(HnswRabitqStreamerTest, TestRandomData) {
