@@ -13,14 +13,31 @@
 // limitations under the License.
 #pragma once
 
+#include <array>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_framework.h>
+#include "utility/batch_topk.h"
 #include "ivf_distance_calculator.h"
 #include "ivf_index_format.h"
 #include "ivf_params.h"
 
 namespace zvec {
 namespace core {
+
+//! Reusable request-local batch state, owned by a search context or caller.
+struct IVFSearchScratch {
+  static constexpr size_t kBatchVectors = 512;
+  std::array<const void *, kBatchVectors> batch_vectors{};
+  std::array<uint64_t, kBatchVectors> batch_indices{};
+  std::array<float, kBatchVectors> batch_distances{};
+  // Nonstable reads are copied before their leases expire. The arena holds
+  // at most one batch, including vectors split across pages.
+  std::vector<uint8_t> batch_storage{};
+  BatchTopK batch_topk{};
+  size_t batch_count{0};
+  float batch_scale{1.0f};
+  bool batch_search_active{false};
+};
 
 /*! IVF Entity
  */
@@ -46,6 +63,16 @@ class IVFEntity {
   //! Prepare the posting distance once per query, after centroid selection.
   int bind_query(const void *query, const IndexQueryMeta &qmeta);
 
+  //! Keep one Turbo candidate buffer and collector across all probed lists.
+  void begin_search(const IndexDocumentHeap &heap,
+                    IVFSearchScratch &scratch) const;
+  int finish_search(IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
+                    IVFSearchScratch &scratch) const;
+  void cancel_search(IVFSearchScratch &scratch) const {
+    scratch.batch_count = 0;
+    scratch.batch_search_active = false;
+  }
+
   const turbo::Quantizer::Pointer &quantizer() const {
     return quantizer_;
   }
@@ -53,24 +80,29 @@ class IVFEntity {
   //! search in inverted list with filter
   int search(size_t inverted_list_id, const void *query,
              const IndexFilter &filter, uint32_t *scan_count,
-             IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;
+             IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
+             IVFSearchScratch &scratch) const;
 
   //! search in inverted list without filter
   int search(size_t inverted_list_id, const void *query, uint32_t *scan_count,
-             IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;
+             IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
+             IVFSearchScratch &scratch) const;
 
   //! search all inverted list with filter
   int search(const void *query, const IndexFilter &filter,
-             IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;
+             IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
+             IVFSearchScratch &scratch) const;
 
   //! search all inverted list without filter
   int search(const void *query, IndexDocumentHeap *heap,
-             IndexContext::Stats *context_stats) const;
+             IndexContext::Stats *context_stats,
+             IVFSearchScratch &scratch) const;
 
   //! Search only the specified primary keys, using posting-space distances.
   int search_by_p_keys(const void *query, const std::vector<uint64_t> &p_keys,
                        const IndexFilter &filter, IndexDocumentHeap *heap,
-                       IndexContext::Stats *context_stats) const;
+                       IndexContext::Stats *context_stats,
+                       IVFSearchScratch &scratch) const;
 
   //! Clone the entity
   virtual IVFEntity::Pointer clone() const;
@@ -373,6 +405,14 @@ class IVFEntity {
   int key_to_id(uint64_t key, uint32_t *id) const;
 
   int key_normalize_value(uint32_t id, float *value) const;
+
+  int search_turbo_rows(size_t inverted_list_id,
+                        const InvertedListMeta &list_meta,
+                        const IndexFilter *filter,
+                        IndexContext::Stats *context_stats,
+                        IVFSearchScratch &scratch) const;
+  void flush_turbo_batch(IndexContext::Stats *context_stats,
+                         IVFSearchScratch &scratch) const;
 
   void query_features_distance(const void *query, const void *features,
                                size_t count, float *out) const {

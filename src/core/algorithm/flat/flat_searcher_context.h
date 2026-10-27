@@ -14,8 +14,11 @@
 
 #pragma once
 
+#include <array>
+#include <cstring>
 #include <zvec/core/framework/index_document.h>
 #include <zvec/core/framework/index_error.h>
+#include "utility/batch_topk.h"
 #include "flat_index_format.h"
 #include "flat_searcher.h"
 #include "flat_utility.h"
@@ -221,16 +224,12 @@ class FlatSearcherContext : public IndexSearcher::Context {
 
   //! Similarity search
   int search_row(const void *query, const IndexQueryMeta &qmeta) {
-    return (this->filter().is_valid()
-                ? this->search_row_filter(query, qmeta)
-                : this->search_row_nofilter(query, qmeta));
+    return this->batch_search_rows(query, qmeta, 1);
   }
 
   //! Similarity search
   int search_row(const void *query, const IndexQueryMeta &qmeta, size_t count) {
-    return (this->filter().is_valid()
-                ? this->batch_search_row_filter(query, qmeta, count)
-                : this->batch_search_row_nofilter(query, qmeta, count));
+    return this->batch_search_rows(query, qmeta, count);
   }
 
   //! Similarity search
@@ -263,43 +262,6 @@ class FlatSearcherContext : public IndexSearcher::Context {
       *out = quantizer_->calc_distance_dp_query(feature, query);
     } else {
       owner_->distance_matrix().template distance<1>(feature, query, dim, out);
-    }
-  }
-
-  //! Compute the quantizer distances of contiguous row features
-  inline void quantized_batch_distance(const void *features, size_t num,
-                                       const void *query, float *out) const {
-    const void *dp_list[BATCH_SIZE];
-    for (size_t i = 0; i != num; ++i) {
-      dp_list[i] = static_cast<const char *>(features) + i * feature_size_;
-    }
-    quantizer_->calc_distance_dp_query_batch(dp_list, static_cast<int>(num),
-                                             query, out);
-  }
-
-  //! Enqueue a chunk of contiguous row features into the heap (no filter)
-  void enqueue_row_chunk(const void *data, size_t size, const void *query,
-                         const IndexQueryMeta &qmeta, size_t *feature_index,
-                         IndexDocumentHeap *heap) {
-    if (quantizer_) {
-      size_t count = size / feature_size_;
-      for (size_t i = 0; i < count; i += BATCH_SIZE) {
-        size_t num = std::min<size_t>(count - i, BATCH_SIZE);
-        this->quantized_batch_distance(
-            static_cast<const char *>(data) + i * feature_size_, num, query,
-            scores_);
-        for (size_t j = 0; j != num; ++j) {
-          heap->emplace(0, scores_[j], (*feature_index)++);
-        }
-      }
-    } else {
-      auto matrix = owner_->distance_matrix();
-      for (size_t offset = 0; offset < size; offset += feature_size_) {
-        float score;
-        matrix.template distance<1>(static_cast<const char *>(data) + offset,
-                                    query, qmeta.dimension(), &score);
-        heap->emplace(0, score, (*feature_index)++);
-      }
     }
   }
 
@@ -447,12 +409,6 @@ class FlatSearcherContext : public IndexSearcher::Context {
   //! Similarity search (1 column with filter)
   int search_column_filter(const void *query, const IndexQueryMeta &qmeta);
 
-  //! Similarity search (1 row without filter)
-  int search_row_nofilter(const void *query, const IndexQueryMeta &qmeta);
-
-  //! Similarity search (1 row with filter)
-  int search_row_filter(const void *query, const IndexQueryMeta &qmeta);
-
   //! Similarity search (n columns without filter)
   int batch_search_column_nofilter(const void *query,
                                    const IndexQueryMeta &qmeta,
@@ -462,15 +418,13 @@ class FlatSearcherContext : public IndexSearcher::Context {
   int batch_search_column_filter(const void *query, const IndexQueryMeta &qmeta,
                                  size_t query_count);
 
-  //! Similarity search (n rows without filter)
-  int batch_search_row_nofilter(const void *query, const IndexQueryMeta &qmeta,
-                                size_t query_count);
-
-  //! Similarity search (n rows with filter)
-  int batch_search_row_filter(const void *query, const IndexQueryMeta &qmeta,
-                              size_t query_count);
+  //! Row scans share one collector per query across all reads and batches.
+  int batch_search_rows(const void *query, const IndexQueryMeta &qmeta,
+                        size_t query_count);
 
  private:
+  static constexpr size_t kDistanceBatchVectors = 512;
+
   const FlatSearcher<BATCH_SIZE> *owner_{nullptr};
   uint32_t magic_{0};
   uint32_t topk_{0};
@@ -480,6 +434,13 @@ class FlatSearcherContext : public IndexSearcher::Context {
   std::shared_ptr<zvec::turbo::Quantizer> quantizer_{};
   std::vector<IndexDocumentHeap> result_heaps_{1};
   std::string batch_queries_{};
+  std::array<const void *, kDistanceBatchVectors> row_candidates_;
+  std::array<uint64_t, kDistanceBatchVectors> row_indices_;
+  std::array<float, kDistanceBatchVectors> row_distances_;
+  // Non-stable reads copy accepted rows here before their MemoryBlock expires.
+  std::vector<uint64_t> row_storage_;
+  std::unique_ptr<BatchTopK[]> row_topks_;
+  size_t row_topk_capacity_{0};
   float scores_[BATCH_SIZE * BATCH_SIZE];
   bool fetch_vector_{false};
 
@@ -633,106 +594,6 @@ int FlatSearcherContext<BATCH_SIZE>::search_column_filter(
       float score;
       matrix.template distance<1>((const char *)data.data() + offset, query,
                                   qmeta.dimension(), &score);
-      heap->emplace(feature_key, score, feature_index);
-    }
-    feature_index += 1;
-  }
-  heap->sort();
-  return 0;
-}
-
-template <size_t BATCH_SIZE>
-int FlatSearcherContext<BATCH_SIZE>::search_row_nofilter(
-    const void *query, const IndexQueryMeta &qmeta) {
-  IndexDocumentHeap *heap = &result_heaps_[0];
-  heap->clear();
-  heap->limit(topk_);
-  heap->set_threshold(this->threshold());
-
-  size_t left_size = features_segment_->data_size();
-  size_t read_offset = 0;
-  size_t feature_index = 0;
-
-  while (left_size >= actual_read_size_) {
-    IndexStorage::MemoryBlock data;
-    if (features_segment_->read(read_offset, data, actual_read_size_) !=
-        actual_read_size_) {
-      LOG_ERROR("Failed to read data (%u bytes) from features segment",
-                actual_read_size_);
-      return IndexError_ReadData;
-    }
-
-    this->enqueue_row_chunk(data.data(), actual_read_size_, query, qmeta,
-                            &feature_index, heap);
-    read_offset += actual_read_size_;
-    left_size -= actual_read_size_;
-  }
-
-  IndexStorage::MemoryBlock data;
-  if (features_segment_->read(read_offset, data, left_size) != left_size) {
-    LOG_ERROR("Failed to read data (%zu bytes) from features segment",
-              left_size);
-    return IndexError_ReadData;
-  }
-
-  this->enqueue_row_chunk(data.data(), left_size, query, qmeta, &feature_index,
-                          heap);
-  for (auto &it : heap->mutable_container()) {
-    it.set_key(owner_->key(it.index()));
-  }
-  heap->sort();
-  return 0;
-}
-
-template <size_t BATCH_SIZE>
-int FlatSearcherContext<BATCH_SIZE>::search_row_filter(
-    const void *query, const IndexQueryMeta &qmeta) {
-  IndexDocumentHeap *heap = &result_heaps_[0];
-  heap->clear();
-  heap->limit(topk_);
-  heap->set_threshold(this->threshold());
-
-  size_t left_size = features_segment_->data_size();
-  size_t read_offset = 0;
-  size_t feature_index = 0;
-
-  while (left_size >= actual_read_size_) {
-    IndexStorage::MemoryBlock data;
-    if (features_segment_->read(read_offset, data, actual_read_size_) !=
-        actual_read_size_) {
-      LOG_ERROR("Failed to read data (%u bytes) from features segment",
-                actual_read_size_);
-      return IndexError_ReadData;
-    }
-
-    for (size_t offset = 0; offset < actual_read_size_;
-         offset += feature_size_) {
-      uint64_t feature_key = owner_->key(feature_index);
-      if (!this->filter()(feature_key)) {
-        float score;
-        this->feature_distance((const char *)data.data() + offset, query,
-                               qmeta.dimension(), &score);
-        heap->emplace(feature_key, score, feature_index);
-      }
-      feature_index += 1;
-    }
-    read_offset += actual_read_size_;
-    left_size -= actual_read_size_;
-  }
-
-  IndexStorage::MemoryBlock data;
-  if (features_segment_->read(read_offset, data, left_size) != left_size) {
-    LOG_ERROR("Failed to read data (%zu bytes) from features segment",
-              left_size);
-    return IndexError_ReadData;
-  }
-
-  for (size_t offset = 0; offset < left_size; offset += feature_size_) {
-    uint64_t feature_key = owner_->key(feature_index);
-    if (!this->filter()(feature_key)) {
-      float score;
-      this->feature_distance((const char *)data.data() + offset, query,
-                             qmeta.dimension(), &score);
       heap->emplace(feature_key, score, feature_index);
     }
     feature_index += 1;
@@ -910,155 +771,103 @@ int FlatSearcherContext<BATCH_SIZE>::batch_search_column_filter(
 }
 
 template <size_t BATCH_SIZE>
-int FlatSearcherContext<BATCH_SIZE>::batch_search_row_nofilter(
+int FlatSearcherContext<BATCH_SIZE>::batch_search_rows(
     const void *query, const IndexQueryMeta &qmeta, size_t query_count) {
-  // Initialize resources
-  result_heaps_.resize(query_count);
-  for (auto &heap : result_heaps_) {
-    heap.clear();
-    heap.limit(topk_);
-    heap.set_threshold(this->threshold());
-  }
-
-  size_t left_size = features_segment_->data_size();
-  size_t read_offset = 0;
-  size_t feature_index = 0;
-
-  // Process feature blocks
-  while (left_size >= actual_read_size_) {
-    IndexStorage::MemoryBlock data;
-    if (features_segment_->read(read_offset, data, actual_read_size_) !=
-        actual_read_size_) {
-      LOG_ERROR("Failed to read data (%u bytes) from features segment",
-                actual_read_size_);
-      return IndexError_ReadData;
-    }
-
-    for (size_t offset = 0; offset < actual_read_size_;
-         offset += feature_size_) {
-      size_t query_offset = 0;
-      const void *feature = (const char *)data.data() + offset;
-
-      for (auto &heap : result_heaps_) {
-        float score;
-        this->feature_distance(feature, (const char *)query + query_offset,
-                               qmeta.dimension(), &score);
-        heap.emplace(0, score, feature_index);
-        query_offset += qmeta.element_size();
-      }
-      feature_index += 1;
-    }
-    read_offset += actual_read_size_;
-    left_size -= actual_read_size_;
-  }
-
-  IndexStorage::MemoryBlock data;
-  if (features_segment_->read(read_offset, data, left_size) != left_size) {
-    LOG_ERROR("Failed to read data (%zu bytes) from features segment",
-              left_size);
+  const size_t data_size = features_segment_->data_size();
+  if (feature_size_ == 0 || actual_read_size_ == 0 ||
+      data_size % feature_size_ != 0) {
     return IndexError_ReadData;
   }
-
-  // Process left features
-  for (size_t offset = 0; offset < left_size; offset += feature_size_) {
-    size_t query_offset = 0;
-    const void *feature = (const char *)data.data() + offset;
-
-    for (auto &heap : result_heaps_) {
-      float score;
-      this->feature_distance(feature, (const char *)query + query_offset,
-                             qmeta.dimension(), &score);
-      heap.emplace(0, score, feature_index);
-      query_offset += qmeta.element_size();
-    }
-    feature_index += 1;
+  const size_t vector_count = data_size / feature_size_;
+  if (vector_count != 0 &&
+      vector_count - 1 > std::numeric_limits<uint32_t>::max()) {
+    LOG_ERROR("Too many Flat vectors for uint32 result IDs");
+    return IndexError_Overflow;
   }
-
-  // Normalize results
-  for (auto &heap : result_heaps_) {
-    for (auto &it : heap.mutable_container()) {
-      it.set_key(owner_->key(it.index()));
-    }
-    heap.sort();
+  if (query_count > row_topk_capacity_) {
+    row_topks_.reset(new BatchTopK[query_count]);
+    row_topk_capacity_ = query_count;
   }
-  return 0;
-}
-
-template <size_t BATCH_SIZE>
-int FlatSearcherContext<BATCH_SIZE>::batch_search_row_filter(
-    const void *query, const IndexQueryMeta &qmeta, size_t query_count) {
-  // Initialize resources
   result_heaps_.resize(query_count);
-  for (auto &heap : result_heaps_) {
+  for (size_t i = 0; i < query_count; ++i) {
+    auto &heap = result_heaps_[i];
     heap.clear();
     heap.limit(topk_);
     heap.set_threshold(this->threshold());
+    row_topks_[i].reset(std::min(heap.limit(), vector_count), heap.threshold());
   }
 
-  size_t left_size = features_segment_->data_size();
-  size_t read_offset = 0;
-  size_t feature_index = 0;
-
-  // Process feature blocks
-  while (left_size >= actual_read_size_) {
-    IndexStorage::MemoryBlock data;
-    if (features_segment_->read(read_offset, data, actual_read_size_) !=
-        actual_read_size_) {
-      LOG_ERROR("Failed to read data (%u bytes) from features segment",
-                actual_read_size_);
-      return IndexError_ReadData;
-    }
-
-    for (size_t offset = 0; offset < actual_read_size_;
-         offset += feature_size_) {
-      uint64_t feature_key = owner_->key(feature_index);
-
-      if (!this->filter()(feature_key)) {
-        size_t query_offset = 0;
-        const void *feature = (const char *)data.data() + offset;
-
-        for (auto &heap : result_heaps_) {
-          float score;
-          this->feature_distance(feature, (const char *)query + query_offset,
-                                 qmeta.dimension(), &score);
-          heap.emplace(feature_key, score, feature_index);
-          query_offset += qmeta.element_size();
+  const uint8_t *base = features_segment_->base_data();
+  if (!base) {
+    const size_t bytes = kDistanceBatchVectors * size_t{feature_size_};
+    row_storage_.resize((bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t));
+  }
+  size_t buffered = 0;
+  const bool filtered = this->filter().is_valid();
+  auto flush = [&]() {
+    if (buffered == 0) return;
+    const auto *query_row = static_cast<const char *>(query);
+    for (size_t i = 0; i < query_count; ++i) {
+      if (quantizer_) {
+        quantizer_->calc_distance_dp_query_batch(
+            row_candidates_.data(), static_cast<int>(buffered), query_row,
+            row_distances_.data());
+      } else {
+        // Preserve legacy and custom metric dispatch for row-major features.
+        for (size_t j = 0; j < buffered; ++j) {
+          this->feature_distance(row_candidates_[j], query_row,
+                                 qmeta.dimension(), &row_distances_[j]);
         }
       }
-      feature_index += 1;
+      row_topks_[i].push_block(row_distances_.data(), row_indices_.data(),
+                               buffered);
+      query_row += qmeta.element_size();
     }
-    read_offset += actual_read_size_;
-    left_size -= actual_read_size_;
-  }
-
-  IndexStorage::MemoryBlock data;
-  if (features_segment_->read(read_offset, data, left_size) != left_size) {
-    LOG_ERROR("Failed to read data (%zu bytes) from features segment",
-              left_size);
-    return IndexError_ReadData;
-  }
-
-  // Process left features
-  for (size_t offset = 0; offset < left_size; offset += feature_size_) {
-    uint64_t feature_key = owner_->key(feature_index);
-
-    if (!this->filter()(feature_key)) {
-      size_t query_offset = 0;
-      const void *feature = (const char *)data.data() + offset;
-
-      for (auto &heap : result_heaps_) {
-        float score;
-        this->feature_distance(feature, (const char *)query + query_offset,
-                               qmeta.dimension(), &score);
-        heap.emplace(feature_key, score, feature_index);
-        query_offset += qmeta.element_size();
+    // Original row IDs remain in the collector; only the input length resets.
+    buffered = 0;
+  };
+  size_t feature_index = 0;
+  for (size_t read_offset = 0; read_offset < data_size;) {
+    const size_t read_size =
+        std::min<size_t>(actual_read_size_, data_size - read_offset);
+    IndexStorage::MemoryBlock data;
+    const uint8_t *features = base ? base + read_offset : nullptr;
+    if (!features) {
+      if (features_segment_->read(read_offset, data, read_size) != read_size) {
+        LOG_ERROR("Failed to read data (%zu bytes) from features segment",
+                  read_size);
+        return IndexError_ReadData;
       }
+      features = static_cast<const uint8_t *>(data.data());
     }
-    feature_index += 1;
+    for (size_t offset = 0; offset < read_size; offset += feature_size_) {
+      const uint64_t key = owner_->key(feature_index);
+      if (key != kInvalidKey && (!filtered || !this->filter()(key))) {
+        const void *row = features + offset;
+        if (!base) {
+          auto *copy = reinterpret_cast<uint8_t *>(row_storage_.data()) +
+                       buffered * feature_size_;
+          std::memcpy(copy, row, feature_size_);
+          row = copy;
+        }
+        row_candidates_[buffered] = row;
+        row_indices_[buffered] = feature_index;
+        if (++buffered == kDistanceBatchVectors) flush();
+      }
+      ++feature_index;
+    }
+    read_offset += read_size;
   }
-
-  // Normalize results
-  for (auto &heap : result_heaps_) {
+  flush();
+  for (size_t i = 0; i < query_count; ++i) {
+    auto &topk = row_topks_[i];
+    auto &heap = result_heaps_[i];
+    topk.finish();
+    for (size_t j = 0; j < topk.size(); ++j) {
+      const auto &candidate = topk.data()[j];
+      heap.emplace(owner_->key(candidate.id), candidate.score,
+                   static_cast<uint32_t>(candidate.id));
+    }
     heap.sort();
   }
   return 0;

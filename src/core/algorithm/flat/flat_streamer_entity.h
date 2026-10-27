@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -26,6 +27,7 @@
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
+#include "utility/batch_topk.h"
 #include "flat_index_format.h"
 #include "flat_utility.h"
 
@@ -34,8 +36,16 @@ namespace core {
 
 //! Reusable request-local buffers for storage-specific Flat search paths.
 struct FlatSearchScratch {
+  static constexpr size_t kBatchVectors = 512;
+  std::array<const void *, kBatchVectors> batch_vectors{};
+  std::array<uint64_t, kBatchVectors> batch_indices{};
+  std::array<float, kBatchVectors> batch_distances{};
+  // Only evictable storage needs owned row copies between reads.
+  std::vector<uint8_t> batch_owned{};
+  BatchTopK batch_topk{};
   std::vector<const void *> vector_ptrs{};
   std::vector<const void *> extra_values{};
+  // Contiguous, legacy, and keyed paths keep keys alongside their pointers.
   std::vector<uint64_t> vector_keys{};
   std::vector<float> distances{};
   std::vector<uint8_t> query_buffer{};
@@ -260,6 +270,11 @@ class FlatStreamerEntity {
   FlatStreamerEntity &operator=(const FlatStreamerEntity &) = delete;
 
  private:
+  int search_batch_rows(const void *query, const IndexFilter &filter,
+                        uint32_t *scan_count, IndexDocumentHeap *heap,
+                        IndexContext::Stats *context_stats,
+                        FlatSearchScratch *scratch) const;
+
   /*! Iterator of all the linear list
    */
   class Iterator : public IndexProvider::Iterator {

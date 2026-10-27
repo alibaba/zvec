@@ -189,6 +189,7 @@ int IVFSearcher::search_bf(
 
   ctx->reset_results(count);
   auto &entity = ctx->entity();
+  auto &scratch = ctx->search_scratch();
   auto &filter = ctx->filter();
 
   //! Transform the querys for querying in inverted vector index later
@@ -203,18 +204,22 @@ int IVFSearcher::search_bf(
     auto &context_stats = ctx->mutable_stats(q);
     auto &heap = ctx->mutable_result_heap();
     heap.clear();
+    entity->begin_search(heap, scratch);
     if (p_keys) {
       ret = entity->search_by_p_keys(query, (*p_keys)[q], filter, &heap,
-                                     &context_stats);
+                                     &context_stats, scratch);
     } else if (!filter.is_valid()) {
-      ret = entity->search(query, &heap, &context_stats);
+      ret = entity->search(query, &heap, &context_stats, scratch);
     } else {
-      ret = entity->search(query, filter, &heap, &context_stats);
+      ret = entity->search(query, filter, &heap, &context_stats, scratch);
     }
+    if (ret != 0) entity->cancel_search(scratch);
     ivf_check_with_msg(ret, "Failed to search in entity for %s",
                        IndexError::What(ret));
+    ret = entity->finish_search(&heap, &context_stats, scratch);
+    ivf_check_error_code(ret);
     heap.sort();  // sort the results
-    if (!p_keys && !filter.is_valid()) {
+    if (!entity->quantizer() && !p_keys && !filter.is_valid()) {
       // mapping the local id to key if query without filter
       ret = entity->retrieve_keys(&heap);
       ivf_check_error_code(ret);
@@ -260,6 +265,7 @@ int IVFSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
 
   ctx->reset_results(count);
   auto &entity = ctx->entity();
+  auto &scratch = ctx->search_scratch();
   auto &filter = ctx->filter();
 
   auto &centroid_index_ctx = ctx->centroid_searcher_ctx();
@@ -278,6 +284,7 @@ int IVFSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
     auto &context_stats = ctx->mutable_stats(q);
     auto &heap = ctx->mutable_result_heap();
     heap.clear();
+    entity->begin_search(heap, scratch);
     size_t total_scan_count = 0;
     for (size_t i = 0;
          i < centroids.size() && total_scan_count < ctx->max_scan_count();
@@ -285,17 +292,21 @@ int IVFSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
       auto cid = centroids[i].key();
       uint32_t scan_count = 0;
       if (!filter.is_valid()) {
-        ret = entity->search(cid, query, &scan_count, &heap, &context_stats);
+        ret = entity->search(cid, query, &scan_count, &heap, &context_stats,
+                             scratch);
       } else {
         ret = entity->search(cid, query, filter, &scan_count, &heap,
-                             &context_stats);
+                             &context_stats, scratch);
       }
+      if (ret != 0) entity->cancel_search(scratch);
       ivf_check_with_msg(ret, "Failed to search in entity for %s",
                          IndexError::What(ret));
       total_scan_count += scan_count;
     }
+    ret = entity->finish_search(&heap, &context_stats, scratch);
+    ivf_check_error_code(ret);
     heap.sort();  // sort the results
-    if (!filter.is_valid()) {
+    if (!entity->quantizer() && !filter.is_valid()) {
       // mapping the local id to key if query without filter
       ret = entity->retrieve_keys(&heap);
       ivf_check_error_code(ret);
