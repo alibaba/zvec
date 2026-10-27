@@ -1,5 +1,6 @@
 #include <cstdlib>
 #include <filesystem>
+#include <iostream>
 #include <string>
 #include <vector>
 #include <zvec/db/collection.h>

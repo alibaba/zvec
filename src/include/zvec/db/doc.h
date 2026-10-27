@@ -27,6 +27,12 @@
 
 namespace zvec {
 
+namespace internal {
+// Grants the write path access to Doc's private validation entry point.
+// Defined in src/db/index/common/doc_internal.h.
+struct DocAccess;
+}  // namespace internal
+
 using float16_t = ailego::Float16;
 
 class ZVEC_API Doc {
@@ -260,9 +266,6 @@ class ZVEC_API Doc {
     fields_.erase(field_name);
   }
 
-  Status validate_and_sanitize(const CollectionSchema::Ptr &schema,
-                               bool is_update = false);
-
   size_t memory_usage() const;
 
   void clear() {
@@ -319,6 +322,14 @@ class ZVEC_API Doc {
   static void read_from_buffer(const uint8_t *&data, void *dest, size_t size);
 
   struct ValueEqual;
+
+  // Write-path validation and in-place sanitization against a collection
+  // schema.  Internal: the engine calls it before persisting a batch, and it
+  // may rewrite the document, so it is not part of the stable public API.
+  Status validate_and_sanitize(const CollectionSchema::Ptr &schema,
+                               bool is_update = false);
+
+  friend struct internal::DocAccess;
 
  private:
   std::string pk_;

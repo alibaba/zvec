@@ -19,6 +19,7 @@
 #include <thread>
 #include <utility>
 #include <gtest/gtest.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/ailego/utility/file_helper.h>
 #include <zvec/db/collection.h>
 #include "db/common/file_helper.h"
