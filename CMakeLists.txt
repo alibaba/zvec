@@ -143,6 +143,24 @@ option(BUILD_C_BINDINGS "Build C bindings" ON)
 option(BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(BUILD_CPP_EXAMPLES "Build C++ examples" OFF)
 
+# SDK surface policy.
+#
+# ON  (default, unchanged behaviour): install everything under src/include plus
+#     the standalone libzvec_core / libzvec_ailego shared libraries.
+# OFF (trimmed SDK): install only the stable API -- zvec/db/**, zvec/c_api.h,
+#     zvec/export.h and the engine headers they transitively need, listed in
+#     cmake/zvec_public_headers.cmake -- and stop installing libzvec_core /
+#     libzvec_ailego, whose API would otherwise ship without headers.
+#
+# core and ailego cannot be split into separate switches: zvec/core/** pulls in
+# 31 of the 35 zvec/ailego headers transitively (measured), so trimming ailego
+# while publishing core saves 3 headers out of 95.  Treat the engine surface as
+# one unit.  Flipping the default to OFF removes a published capability and
+# needs the release workflows' libzvec_core/libzvec_ailego assertions updated.
+option(ZVEC_INSTALL_ENGINE_HEADERS
+       "Install the advanced zvec/core, zvec/ailego, zvec/turbo headers and their standalone shared libraries"
+       ON)
+
 message(STATUS "BUILD_ZVEC_SHARED:${BUILD_ZVEC_SHARED}")
 message(STATUS "BUILD_ZVEC_AILEGO_SHARED:${BUILD_ZVEC_AILEGO_SHARED}")
 message(STATUS "BUILD_ZVEC_CORE_SHARED:${BUILD_ZVEC_CORE_SHARED}")
@@ -150,6 +168,7 @@ message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
 message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
 message(STATUS "BUILD_BENCHMARKS:${BUILD_BENCHMARKS}")
 message(STATUS "BUILD_CPP_EXAMPLES:${BUILD_CPP_EXAMPLES}")
+message(STATUS "ZVEC_INSTALL_ENGINE_HEADERS:${ZVEC_INSTALL_ENGINE_HEADERS}")
 
 # RaBitQ support:
 #   - Linux x86_64 and ARM64 with GCC/Clang

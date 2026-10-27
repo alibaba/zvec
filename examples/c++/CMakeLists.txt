@@ -20,9 +20,7 @@ set(ZVEC_INCLUDE_DIR ${ZVEC_ROOT_DIR}/src/include)
 include_directories(${ZVEC_INCLUDE_DIR})
 
 if(ANDROID OR IOS)
-    if(NOT TARGET zvec::static OR
-       NOT TARGET zvec::core_static OR
-       NOT TARGET zvec::ailego_static)
+    if(NOT TARGET zvec::static OR NOT TARGET zvec::core_static)
         message(FATAL_ERROR
             "Mobile C++ examples must be built from the zvec root with "
             "-DBUILD_CPP_EXAMPLES=ON so they use the static SDK targets.")
@@ -31,21 +29,23 @@ if(ANDROID OR IOS)
     add_library(zvec-lib INTERFACE)
     target_link_libraries(zvec-lib INTERFACE zvec::static)
 
+    # ailego is an internal foundation library: libzvec_ailego is built but not
+    # published, and its symbols are whole-archived into libzvec.  The example
+    # only uses ailego/utility/string_helper.h, which the stable API closure
+    # ships anyway, so linking the all-in-one library is enough.
     add_library(zvec-ailego-lib INTERFACE)
-    target_link_libraries(zvec-ailego-lib INTERFACE zvec::ailego_static)
+    target_link_libraries(zvec-ailego-lib INTERFACE zvec::static)
 
     add_library(zvec-core-lib INTERFACE)
     target_link_libraries(zvec-core-lib INTERFACE zvec::core_static)
-elseif(TARGET zvec_shared AND
-       TARGET zvec_core_shared AND
-       TARGET zvec_ailego_shared)
+elseif(TARGET zvec_shared AND TARGET zvec_core_shared)
     # An in-tree desktop build can link targets directly; the shared-library
     # files do not need to exist yet during CMake configuration.
     add_library(zvec-lib INTERFACE)
     target_link_libraries(zvec-lib INTERFACE zvec_shared)
 
     add_library(zvec-ailego-lib INTERFACE)
-    target_link_libraries(zvec-ailego-lib INTERFACE zvec_ailego_shared)
+    target_link_libraries(zvec-ailego-lib INTERFACE zvec_shared)
 
     add_library(zvec-core-lib INTERFACE)
     target_link_libraries(zvec-core-lib INTERFACE zvec_core_shared)
@@ -102,7 +102,6 @@ else()
     endfunction()
 
     zvec_require_shared_library(ZVEC_SHARED_LIBRARY zvec)
-    zvec_require_shared_library(ZVEC_AILEGO_SHARED_LIBRARY zvec_ailego)
     zvec_require_shared_library(ZVEC_CORE_SHARED_LIBRARY zvec_core)
 
     # Desktop examples keep using the public all-in-one shared libraries.
@@ -110,7 +109,7 @@ else()
     target_link_libraries(zvec-lib INTERFACE "${ZVEC_SHARED_LIBRARY}")
 
     add_library(zvec-ailego-lib INTERFACE)
-    target_link_libraries(zvec-ailego-lib INTERFACE "${ZVEC_AILEGO_SHARED_LIBRARY}")
+    target_link_libraries(zvec-ailego-lib INTERFACE "${ZVEC_SHARED_LIBRARY}")
 
     add_library(zvec-core-lib INTERFACE)
     target_link_libraries(zvec-core-lib INTERFACE "${ZVEC_CORE_SHARED_LIBRARY}")

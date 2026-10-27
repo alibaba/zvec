@@ -226,11 +226,43 @@ jobs:
           SMOKE_BUILD="$RUNNER_TEMP/sdk-smoke-build"
           cmake -S .github/cmake/sdk-smoke -B "$SMOKE_BUILD" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DZVEC_SDK_DIR="$ZVEC_DIST_DIR"
+            -DZVEC_SDK_DIR="$ZVEC_DIST_DIR" \
+            -DZVEC_REQUIRE_CORE=ON
           cmake --build "$SMOKE_BUILD" --parallel 2
           # Windows loads the DLLs via PATH; Unix uses BUILD_RPATH.
           export PATH="$ZVEC_DIST_DIR/lib:$PATH"
           ctest --test-dir "$SMOKE_BUILD" --output-on-failure
+
+      - name: Verify trimmed SDK configuration
+        shell: bash
+        run: |
+          # ZVEC_INSTALL_ENGINE_HEADERS=OFF is not the release default yet, but
+          # it is the configuration the SDK is expected to move to, so it must
+          # not rot.  Reconfiguring only changes install rules -- no rebuild --
+          # then the stable API is compiled, linked and run against the trimmed
+          # tree to prove the header manifest in cmake/zvec_public_headers.cmake
+          # is complete.
+          cmake -S . -B build -DZVEC_INSTALL_ENGINE_HEADERS=OFF
+          TRIMMED="$RUNNER_TEMP/sdk-trimmed"
+          cmake --install build --prefix "$TRIMMED"
+
+          # The trimmed package must carry the stable closure and nothing else
+          # from the engine layers, and must not carry the standalone engine
+          # shared libraries.
+          test -f "$TRIMMED/include/zvec/db/collection.h"
+          test -f "$TRIMMED/include/zvec/ailego/pattern/expected.hpp"
+          test ! -e "$TRIMMED/include/zvec/core/framework"
+          test ! -e "$TRIMMED/include/zvec/ailego/logger"
+          python3 scripts/check_public_headers.py --verbose --compile-check
+
+          TRIMMED_SMOKE="$RUNNER_TEMP/sdk-smoke-trimmed"
+          cmake -S .github/cmake/sdk-smoke -B "$TRIMMED_SMOKE" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DZVEC_SDK_DIR="$TRIMMED" \
+            -DZVEC_FORBID_AILEGO_LIBRARY=ON
+          cmake --build "$TRIMMED_SMOKE" --parallel 2
+          export PATH="$TRIMMED/lib:$PATH"
+          ctest --test-dir "$TRIMMED_SMOKE" --output-on-failure
 
       - name: Package SDK (Unix)
         if: runner.os != 'Windows'
@@ -348,7 +380,8 @@ jobs:
           docker exec "$MUSL_CONTAINER" sh -c '
             cmake -S .github/cmake/sdk-smoke -B /work/smoke-build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
-              -DZVEC_SDK_DIR=/work/dist
+              -DZVEC_SDK_DIR=/work/dist \
+              -DZVEC_REQUIRE_CORE=ON
             cmake --build /work/smoke-build --parallel "$(nproc)"
             ctest --test-dir /work/smoke-build --output-on-failure
           '
@@ -494,7 +527,8 @@ jobs:
             -DANDROID_ABI="$ZVEC_ANDROID_ABI" \
             -DANDROID_NATIVE_API_LEVEL="$ZVEC_ANDROID_API_LEVEL" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DZVEC_SDK_DIR="$ZVEC_DIST_DIR"
+            -DZVEC_SDK_DIR="$ZVEC_DIST_DIR" \
+            -DZVEC_REQUIRE_CORE=ON
           cmake --build build_smoke --parallel 2
 
       - name: Package SDK

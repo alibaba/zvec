@@ -18,8 +18,56 @@ cc_directory(binding)
 include(GNUInstallDirs)
 find_package(Threads REQUIRED)
 
+# =============================================================================
+# Public header installation
+# =============================================================================
+# src/include is a *build* directory, not the published API surface: it also
+# holds the engine internals (zvec/core/framework/**, most of zvec/ailego/**).
+# Installing it wholesale ships 95 headers where the stable API only needs 18,
+# inviting users to depend on an unstable surface.  The stable closure is
+# therefore installed from an explicit manifest -- the whitelist approach LevelDB
+# uses, and the opposite of Arrow's ARROW_INSTALL_ALL_HEADERS -- while the
+# advanced engine headers stay behind ZVEC_INSTALL_ENGINE_HEADERS.
+#
+# cmake/zvec_public_headers.cmake mirrors the real include graph and is kept
+# honest by scripts/check_public_headers.py (rules 6 and 7).
+include(${PROJECT_ROOT_DIR}/cmake/zvec_public_headers.cmake)
+
+set(ZVEC_INCLUDE_ROOT ${PROJECT_ROOT_DIR}/src/include)
+foreach(ZVEC_PUBLIC_HEADER ${ZVEC_STABLE_PUBLIC_HEADERS})
+  if(NOT EXISTS ${ZVEC_INCLUDE_ROOT}/${ZVEC_PUBLIC_HEADER})
+    message(FATAL_ERROR
+        "ZVEC_STABLE_PUBLIC_HEADERS lists a missing header: ${ZVEC_PUBLIC_HEADER}")
+  endif()
+  get_filename_component(ZVEC_PUBLIC_HEADER_DIR ${ZVEC_PUBLIC_HEADER} DIRECTORY)
+  install(
+      FILES ${ZVEC_INCLUDE_ROOT}/${ZVEC_PUBLIC_HEADER}
+      DESTINATION "${CMAKE_INSTALL_INCDIR}/${ZVEC_PUBLIC_HEADER_DIR}"
+  )
+endforeach()
+
+install(
+    FILES ${PROJECT_ROOT_DIR}/src/include/zvec/README.md
+    DESTINATION "${CMAKE_INSTALL_INCDIR}/zvec"
+)
+
+# Advanced engine headers.  The manifest above already installs the few zvec/core
+# and zvec/ailego headers that zvec/db/** transitively needs, so this only *adds*
+# to the package.  It must stay all-or-nothing: zvec/core/** reaches 31 of the 35
+# zvec/ailego headers, so publishing core without ailego would ship headers that
+# do not compile.
+if(ZVEC_INSTALL_ENGINE_HEADERS)
+  install(
+      DIRECTORY ${ZVEC_INCLUDE_ROOT}/zvec/core
+                ${ZVEC_INCLUDE_ROOT}/zvec/ailego
+                ${ZVEC_INCLUDE_ROOT}/zvec/turbo
+      DESTINATION "${CMAKE_INSTALL_INCDIR}/zvec"
+      FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
+  )
+endif()
+
 function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
-    cmake_parse_arguments(ZVEC_ALLIN "" "" "LIBS;EXPORT_COMPONENTS" ${ARGN})
+    cmake_parse_arguments(ZVEC_ALLIN "SKIP_INSTALL" "" "LIBS;EXPORT_COMPONENTS" ${ARGN})
     if(NOT ZVEC_ALLIN_LIBS)
         message(FATAL_ERROR "zvec_add_all_in_one_shared requires LIBS")
     endif()
@@ -208,11 +256,13 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
         endif()
     endif()
 
-    install(TARGETS ${TARGET_NAME}
-        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    )
+    if(NOT ZVEC_ALLIN_SKIP_INSTALL)
+        install(TARGETS ${TARGET_NAME}
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        )
+    endif()
 endfunction()
 
 # Mobile public C++ API.  These build-tree targets keep the application and
@@ -300,12 +350,25 @@ if(ANDROID OR IOS)
     add_library(zvec::ailego_static ALIAS zvec_ailego_static_sdk)
 endif()
 
+# Standalone engine libraries are part of the advanced surface: their headers are
+# only installed together with ZVEC_INSTALL_ENGINE_HEADERS, so the libraries must
+# follow the same switch.  Publishing libzvec_core without zvec/core/** would
+# ship a library that cannot be called; both are still *built* either way, since
+# libzvec and libzvec_c_api whole-archive them and in-tree tests, examples and
+# subproject-integration link the targets directly.  The static archives keep
+# installing through cc_library(PACKED) for static and mobile-SDK consumers.
+set(ZVEC_ENGINE_SHARED_INSTALL_OPTIONS)
+if(NOT ZVEC_INSTALL_ENGINE_HEADERS)
+  set(ZVEC_ENGINE_SHARED_INSTALL_OPTIONS SKIP_INSTALL)
+endif()
+
 if(BUILD_ZVEC_AILEGO_SHARED)
     zvec_add_all_in_one_shared(zvec_ailego_shared zvec_ailego
         LIBS
             zvec_ailego
         EXPORT_COMPONENTS
             zvec_ailego
+        ${ZVEC_ENGINE_SHARED_INSTALL_OPTIONS}
     )
 endif()
 
@@ -319,6 +382,7 @@ if(BUILD_ZVEC_CORE_SHARED)
             zvec_core
             zvec_ailego
             zvec_turbo
+        ${ZVEC_ENGINE_SHARED_INSTALL_OPTIONS}
     )
 endif()
 
