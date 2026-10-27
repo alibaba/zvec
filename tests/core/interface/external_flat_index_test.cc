@@ -470,8 +470,9 @@ TEST_F(ExternalFlatTest, ContiguousScanMatchesEmbeddedAndSkipsDeletedRows) {
                       .build();
         qp->filter = std::make_shared<IndexFilter>();
         // A fully filtered batch must not end the scan.
-        qp->filter->set(
-            [](uint64_t id) { return id <= kFirstId + 1023 || id % 7 == 0; });
+        qp->filter->set([first_id = kFirstId](uint64_t id) {
+          return id <= first_id + 1023 || id % 7 == 0;
+        });
         std::vector<float> query(kDimension, 0.3f);
         SearchResult want, got;
         ASSERT_EQ(0, embedded->search(Vector(query), qp, &want));
