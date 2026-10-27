@@ -82,7 +82,9 @@ void HnswStreamer::merge_trained_meta(const IndexMeta &trained_meta) {
 int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   quantized_graph_model_.clear();
   params.get(PARAM_HNSW_QUANTIZED_GRAPH_MODEL, &quantized_graph_model_);
-  quantized_graph_enabled_ = !quantized_graph_model_.empty();
+  quantized_graph_enabled_ = false;
+  params.get(PARAM_HNSW_QUANTIZED_GRAPH_ENABLED, &quantized_graph_enabled_);
+  quantized_graph_enabled_ |= !quantized_graph_model_.empty();
   bool external = false;
   params.get(PARAM_HNSW_STREAMER_USE_EXTERNAL_VECTOR, &external);
   if (quantized_graph_enabled_) {
@@ -109,9 +111,13 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
     if (external || !supported_quantizer ||
         imeta.extra_meta_size() != expected_extras ||
         imeta.unit_size() != sizeof(float) ||
-        imeta.data_type() != IndexMeta::DataType::DT_FP32 || !cosine ||
-        imeta.dimension() != 768 + extra_dimension) {
-      LOG_ERROR("QuantizedGraph requires inline 768D FP32 cosine vectors");
+        imeta.data_type() != IndexMeta::DataType::DT_FP32 ||
+        (!cosine && imeta.metric_name() != "SquaredEuclidean") ||
+        imeta.dimension() <= extra_dimension ||
+        imeta.dimension() - extra_dimension > 4096) {
+      LOG_ERROR(
+          "QuantizedGraph requires inline FP32 cosine/L2 vectors, dimension "
+          "1..4096");
       return IndexError_Unsupported;
     }
   }

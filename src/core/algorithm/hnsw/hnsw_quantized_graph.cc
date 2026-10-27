@@ -53,6 +53,9 @@ struct HnswQueryAdapter {
   TopkHeap &reset_results() {
     return ctx.search_heap().reset<TopkHeap>(std::max(ctx.topk(), ctx.ef()));
   }
+  const QuantizedGraphSearchOptions &quantized_graph_options() const {
+    return ctx.quantized_graph_options();
+  }
   uint32_t topk() const {
     return ctx.topk();
   }
@@ -115,7 +118,8 @@ HnswQuantizedGraph::HnswQuantizedGraph(size_t dimension, size_t max_neighbors,
                                        bool cosine, size_t stored_dimension,
                                        const std::string &model_path) {
 #if ZVEC_PROJECTED_QG_SUPPORTED
-  if (supported() && dimension == 768 && cosine && max_neighbors == 32) {
+  if (supported() && dimension > 0 && dimension <= 4096 &&
+      max_neighbors == 32) {
     impl_ = std::make_unique<Model<SymphonyQGCodec>>(
         dimension, max_neighbors, cosine, stored_dimension, model_path);
   }

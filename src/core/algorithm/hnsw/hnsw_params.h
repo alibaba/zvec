@@ -18,6 +18,8 @@
 namespace zvec {
 namespace core {
 
+const std::string PARAM_HNSW_QUANTIZED_GRAPH_ENABLED =
+    "proxima.hnsw.quantized_graph.enabled";
 const std::string PARAM_HNSW_QUANTIZED_GRAPH_MODEL =
     "proxima.hnsw.quantized_graph.model";
 

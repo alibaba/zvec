@@ -37,7 +37,9 @@
 
 namespace ci = zvec::core_interface;
 using Clock = std::chrono::steady_clock;
-constexpr int DIM = 768;
+const bool GIST = std::getenv("BENCH_DATASET") &&
+                  std::string(std::getenv("BENCH_DATASET")) == "gist";
+const int DIM = GIST ? 960 : 768;
 int TOPK = 10, M = 50, EFC = 500, DEGREE = 32, BUILD_THREADS = 8;
 const size_t N =
     std::getenv("BENCH_N") ? std::stoul(std::getenv("BENCH_N")) : 1000000;
@@ -63,10 +65,12 @@ long peak_kib() {
   return r.ru_maxrss;
 }
 ci::HNSWIndexParam params(const std::string &method) {
-  ci::HNSWIndexParam p(ci::MetricType::kCosine, DIM, M, EFC);
+  ci::HNSWIndexParam p(GIST ? ci::MetricType::kL2sq : ci::MetricType::kCosine,
+                       DIM, M, EFC);
   p.data_type = ci::DataType::DT_FP32;
   p.use_id_map = true;
-  p.quantized_graph_model = method == "hnsw" ? "" : method;
+  p.use_quantized_graph = method != "hnsw";
+  p.quantized_graph_model = method == "hnsw" || method == "qg" ? "" : method;
   return p;
 }
 class TunableHNSW : public ci::HNSWIndex {
@@ -84,6 +88,38 @@ struct Queries {
   std::vector<std::vector<float>> vectors;
   std::vector<std::vector<uint64_t>> gt;
   Queries() {
+    if (GIST) {
+      std::ifstream query(DATA + "gist_query.fvecs", std::ios::binary);
+      std::ifstream truth(DATA + "gist_groundtruth.ivecs", std::ios::binary);
+      check(bool(query) && bool(truth), "open GIST queries/ground truth");
+      uint32_t dim;
+      while (query.read(reinterpret_cast<char *>(&dim), 4)) {
+        check(dim == uint32_t(DIM), "GIST query dimension");
+        std::vector<float> v(dim);
+        query.read(reinterpret_cast<char *>(v.data()), dim * sizeof(float));
+        check(bool(query), "truncated GIST query");
+        for (float x : v) check(std::isfinite(x), "nonfinite GIST query");
+        vectors.push_back(std::move(v));
+      }
+      check(query.eof() && query.gcount() == 0, "trailing GIST query bytes");
+      uint32_t count;
+      while (truth.read(reinterpret_cast<char *>(&count), 4)) {
+        check(count >= uint32_t(TOPK) && count <= 10000,
+              "invalid GIST GT count");
+        std::vector<uint32_t> ids(count);
+        truth.read(reinterpret_cast<char *>(ids.data()),
+                   count * sizeof(uint32_t));
+        check(bool(truth), "truncated GIST ground truth");
+        std::unordered_set<uint32_t> unique;
+        for (uint32_t id : ids)
+          check(id < N && unique.insert(id).second, "invalid GIST GT ID");
+        gt.emplace_back(ids.begin(), ids.end());
+      }
+      check(truth.eof() && truth.gcount() == 0, "trailing GIST GT bytes");
+      check(vectors.size() == 1000 && gt.size() == vectors.size(),
+            "expected 1000 GIST queries");
+      return;
+    }
     std::ifstream in(DATA + "cohere_test_vector_1m.1000.new.txt");
     std::string line;
     while (std::getline(in, line)) {
@@ -123,6 +159,39 @@ struct Queries {
           "expected 1000 queries and GT rows");
   }
 };
+struct Setting {
+  float margin = -1, width = 0;
+  uint32_t beam = 1, cap = 0;
+};
+std::vector<float> values(const char *key, float fallback) {
+  if (!std::getenv(key)) return {fallback};
+  std::vector<float> result;
+  std::istringstream in(std::getenv(key));
+  std::string item;
+  while (std::getline(in, item, ',')) {
+    size_t end;
+    float v = std::stof(item, &end);
+    check(end == item.size() && std::isfinite(v), "invalid ablation value");
+    result.push_back(v);
+  }
+  check(!result.empty(), "empty ablation grid");
+  return result;
+}
+std::vector<Setting> settings() {
+  std::vector<Setting> result;
+  for (float margin : values("BENCH_MARGINS", -1))
+    for (float width : values("BENCH_BUCKET_WIDTHS", 0))
+      for (float beam : values("BENCH_ROUTE_BEAMS", 1))
+        for (float cap : values("BENCH_CAPS", 0)) {
+          check((margin == -1 || margin >= 0) && width >= 0 && width <= 1 &&
+                    beam >= 0 && beam <= 4 && beam == std::floor(beam) &&
+                    cap >= 0 && cap <= 1000000 && cap == std::floor(cap),
+                "invalid ablation settings");
+          result.push_back({margin, width, uint32_t(beam), uint32_t(cap)});
+        }
+  check(result.size() <= 512, "ablation grid too large");
+  return result;
+}
 void search(const std::string &path, const std::string &method, int round,
             int duration, const std::string &baseprefix) {
   Queries q;
@@ -156,6 +225,10 @@ void search(const std::string &path, const std::string &method, int round,
   int rounds =
       std::getenv("BENCH_ROUNDS") ? std::stoi(std::getenv("BENCH_ROUNDS")) : 1;
   int initial_round = round;
+  const auto grid = settings();
+  const bool ablation =
+      std::getenv("BENCH_MARGINS") || std::getenv("BENCH_ROUTE_BEAMS") ||
+      std::getenv("BENCH_BUCKET_WIDTHS") || std::getenv("BENCH_CAPS");
   for (int rr = 0; rr < rounds; ++rr) {
     round = initial_round + rr;
     std::vector<int> ks{TOPK};
@@ -165,186 +238,204 @@ void search(const std::string &path, const std::string &method, int round,
     if (round % 2) std::reverse(ks.begin(), ks.end());
     for (int k : ks) {
       TOPK = k;
-      std::string prefix =
-          baseprefix + "_k" + std::to_string(k) + "_r" + std::to_string(round);
-      std::ofstream ids(prefix + "_ids.csv");
-      std::ofstream csv(prefix + ".csv");
-      csv << "algorithm,topk,degree,round,ef,threads,queries,seconds,qps,mean_"
-             "us,p50_us,p95_us,p99_us,recall,rss_kib,peak_rss_kib,minor_faults,"
-             "major_faults\n";
-      std::ofstream per_query(prefix + "_recall.csv");
-      per_query << "ef,query_id,hits,returned\n";
-      std::vector<size_t> order(query_end - query_begin);
-      std::iota(order.begin(), order.end(), query_begin);
-      std::mt19937 rng(20261021);
-      std::shuffle(order.begin(), order.end(), rng);
-      std::vector<int> efs{TOPK, 2048};
-      bool tune = duration == 0;
-      int low = TOPK - 1, high = 2048;
-      double high_recall = 0;
-      double target = std::getenv("BENCH_TARGET")
-                          ? std::stod(std::getenv("BENCH_TARGET"))
-                          : .90;
-      if (!tune) {
-        const char *grid = TOPK == 10
-                               ? "10,20,30,50,100,200,400"
-                               : (TOPK == 50 ? "50,100,150,250,500,1000"
-                                             : "100,200,250,400,800,1600");
-        if (N == 100000)
-          grid = TOPK == 10 ? "10,20,40,80,160" : "100,200,400,800";
-        if (std::getenv("BENCH_ALL_TOPK")) setenv("BENCH_EFS", grid, 1);
-        check(std::getenv("BENCH_EFS") != nullptr, "BENCH_EFS required");
-        efs.clear();
-        std::istringstream input(std::getenv("BENCH_EFS"));
-        std::string item;
-        while (std::getline(input, item, ',')) efs.push_back(std::stoi(item));
-        if (round % 2) std::reverse(efs.begin(), efs.end());
-      }
-      for (size_t ei = 0; ei < efs.size(); ++ei) {
-        int ef = efs[ei];
-        auto param = std::make_shared<ci::HNSWQueryParam>();
-        param->ef_search = ef;
-        param->topk = TOPK;
-        size_t hits = 0;
-        // Full-query warmup plus exact ID-based recall measurement.
-        for (size_t qi = query_begin; qi < query_end; ++qi) {
-          ci::SearchResult result;
-          check(index->search({ci::DenseVector{q.vectors[qi].data()}}, param,
-                              &result) == 0,
-                "recall search");
-          check(result.doc_list_.size() == size_t(TOPK), "short result");
-          std::unordered_set<uint64_t> seen;
-          size_t local_hits = 0;
-          for (auto &doc : result.doc_list_) {
-            check(seen.insert(doc.key()).second && doc.key() < N &&
-                      std::isfinite(doc.score()),
-                  "invalid search result");
-            ids << ef << "," << qi << "," << doc.key() << "," << std::hexfloat
-                << doc.score() << "\n";
-            local_hits += std::find(q.gt[qi].begin(), q.gt[qi].begin() + TOPK,
-                                    doc.key()) != q.gt[qi].begin() + TOPK;
-          }
-          hits += local_hits;
-          per_query << ef << ',' << qi << ',' << local_hits << ','
-                    << result.doc_list_.size() << '\n';
+      for (size_t setting_id = 0; setting_id < grid.size(); ++setting_id) {
+        const auto &setting = grid[setting_id];
+        std::string prefix =
+            baseprefix + (ablation ? "_s" + std::to_string(setting_id) : "") +
+            "_k" + std::to_string(k) + "_r" + std::to_string(round);
+        std::ofstream config(prefix + "_config.csv");
+        config << "margin,route_beam,bucket_width,max_expansions\n"
+               << setting.margin << "," << setting.beam << "," << setting.width
+               << "," << setting.cap << "\n";
+        std::ofstream ids(prefix + "_ids.csv");
+        std::ofstream csv(prefix + ".csv");
+        csv << "algorithm,topk,degree,round,ef,threads,queries,seconds,qps,"
+               "mean_"
+               "us,p50_us,p95_us,p99_us,recall,rss_kib,peak_rss_kib,minor_"
+               "faults,"
+               "major_faults,margin,route_beam,bucket_width,max_expansions\n";
+        std::ofstream per_query(prefix + "_recall.csv");
+        per_query << "ef,query_id,hits,returned\n";
+        std::vector<size_t> order(query_end - query_begin);
+        std::iota(order.begin(), order.end(), query_begin);
+        std::mt19937 rng(20261021);
+        std::shuffle(order.begin(), order.end(), rng);
+        std::vector<int> efs{TOPK, 2048};
+        bool tune = duration == 0;
+        int low = TOPK - 1, high = 2048;
+        double high_recall = 0;
+        double target = std::getenv("BENCH_TARGET")
+                            ? std::stod(std::getenv("BENCH_TARGET"))
+                            : .90;
+        if (!tune) {
+          const char *grid = TOPK == 10
+                                 ? "10,20,30,50,100,200,400"
+                                 : (TOPK == 50 ? "50,100,150,250,500,1000"
+                                               : "100,200,250,400,800,1600");
+          if (N == 100000)
+            grid = TOPK == 10 ? "10,20,40,80,160" : "100,200,400,800";
+          if (std::getenv("BENCH_ALL_TOPK")) setenv("BENCH_EFS", grid, 1);
+          check(std::getenv("BENCH_EFS") != nullptr, "BENCH_EFS required");
+          efs.clear();
+          std::istringstream input(std::getenv("BENCH_EFS"));
+          std::string item;
+          while (std::getline(input, item, ',')) efs.push_back(std::stoi(item));
+          if (round % 2) std::reverse(efs.begin(), efs.end());
         }
-        double recall = double(hits) / ((query_end - query_begin) * TOPK);
-        std::cout << std::setprecision(10) << "RECALL_RESULT ef=" << ef
-                  << " recall=" << recall << std::endl;
-        if (tune) {
-          if (recall >= target) {
-            high = ef;
-            high_recall = recall;
-          } else
-            low = ef;
-          if (ei == 0 && recall >= target) {
-            std::cout << "SELECTED ef=" << TOPK << " recall=" << recall
-                      << " minimum_ef_equals_topk=true" << std::endl;
-            break;
+        for (size_t ei = 0; ei < efs.size(); ++ei) {
+          int ef = efs[ei];
+          auto param = std::make_shared<ci::HNSWQueryParam>();
+          param->ef_search = ef;
+          param->topk = TOPK;
+          param->quantized_graph_margin = setting.margin;
+          param->quantized_graph_bucket_width = setting.width;
+          param->quantized_graph_route_beam = setting.beam;
+          param->quantized_graph_max_expansions = setting.cap;
+          size_t hits = 0;
+          // Full-query warmup plus exact ID-based recall measurement.
+          for (size_t qi = query_begin; qi < query_end; ++qi) {
+            ci::SearchResult result;
+            check(index->search({ci::DenseVector{q.vectors[qi].data()}}, param,
+                                &result) == 0,
+                  "recall search");
+            check(result.doc_list_.size() == size_t(TOPK), "short result");
+            std::unordered_set<uint64_t> seen;
+            size_t local_hits = 0;
+            for (auto &doc : result.doc_list_) {
+              check(seen.insert(doc.key()).second && doc.key() < N &&
+                        std::isfinite(doc.score()),
+                    "invalid search result");
+              ids << ef << "," << qi << "," << doc.key() << "," << std::hexfloat
+                  << doc.score() << "\n";
+              local_hits += std::find(q.gt[qi].begin(), q.gt[qi].begin() + TOPK,
+                                      doc.key()) != q.gt[qi].begin() + TOPK;
+            }
+            hits += local_hits;
+            per_query << ef << ',' << qi << ',' << local_hits << ','
+                      << result.doc_list_.size() << '\n';
           }
-          if (ei >= 1) {
-            check(high_recall >= target,
-                  "upper tuning bound did not reach 90% recall");
-            if (high - low == 1) {
-              std::cout << "SELECTED ef=" << high << " recall=" << high_recall
-                        << " previous_ef=" << low << std::endl;
+          double recall = double(hits) / ((query_end - query_begin) * TOPK);
+          std::cout << std::setprecision(10) << "RECALL_RESULT ef=" << ef
+                    << " recall=" << recall << " setting=" << setting_id
+                    << std::endl;
+          if (tune) {
+            if (recall >= target) {
+              high = ef;
+              high_recall = recall;
+            } else
+              low = ef;
+            if (ei == 0 && recall >= target) {
+              std::cout << "SELECTED ef=" << TOPK << " recall=" << recall
+                        << " minimum_ef_equals_topk=true" << std::endl;
               break;
             }
-            efs.push_back((low + high) / 2);
+            if (ei >= 1) {
+              check(high_recall >= target,
+                    "upper tuning bound did not reach 90% recall");
+              if (high - low == 1) {
+                std::cout << "SELECTED ef=" << high << " recall=" << high_recall
+                          << " previous_ef=" << low << std::endl;
+                break;
+              }
+              efs.push_back((low + high) / 2);
+            }
+            continue;
           }
-          continue;
-        }
-        if (duration < 0) continue;
-        for (int threads : thread_counts) {
-          rusage usage_begin{};
-          getrusage(RUSAGE_SELF, &usage_begin);
-          std::mutex mutex;
-          std::condition_variable cv;
-          int ready = 0;
-          bool go = false;
-          Clock::time_point begin, deadline;
-          std::atomic<int> errors{0};
-          std::vector<std::vector<double>> latencies(threads);
-          std::vector<Clock::time_point> endings(threads);
-          std::vector<std::thread> workers;
-          for (int t = 0; t < threads; ++t)
-            workers.emplace_back([&, t] {
-              auto local = std::make_shared<ci::HNSWQueryParam>(*param);
-              auto &times = latencies[t];
-              times.reserve(200000);
-              // Initialize each worker's thread-local search context before
-              // timing.
-              for (size_t i = t; i < order.size(); i += threads) {
-                ci::SearchResult result;
-                if (index->search({ci::DenseVector{q.vectors[order[i]].data()}},
-                                  local, &result) != 0)
-                  ++errors;
-              }
-              {
-                std::unique_lock<std::mutex> lock(mutex);
-                ++ready;
-                cv.notify_all();
-                cv.wait(lock, [&] { return go; });
-              }
-              size_t i = size_t(t) * 127;
-              while (Clock::now() < deadline) {
-                auto qi = order[(i++) % order.size()];
-                ci::SearchResult result;
-                auto before = Clock::now();
-                int rc = index->search({ci::DenseVector{q.vectors[qi].data()}},
-                                       local, &result);
-                auto after = Clock::now();
-                if (rc != 0 || result.doc_list_.size() != size_t(TOPK))
-                  ++errors;
-                times.push_back(
-                    std::chrono::duration<double, std::micro>(after - before)
-                        .count());
-              }
-              endings[t] = Clock::now();
-            });
-          {
-            std::unique_lock<std::mutex> lock(mutex);
-            cv.wait(lock, [&] { return ready == threads; });
-            begin = Clock::now();
-            deadline = begin + std::chrono::seconds(duration);
-            go = true;
+          if (duration < 0) continue;
+          for (int threads : thread_counts) {
+            rusage usage_begin{};
+            getrusage(RUSAGE_SELF, &usage_begin);
+            std::mutex mutex;
+            std::condition_variable cv;
+            int ready = 0;
+            bool go = false;
+            Clock::time_point begin, deadline;
+            std::atomic<int> errors{0};
+            std::vector<std::vector<double>> latencies(threads);
+            std::vector<Clock::time_point> endings(threads);
+            std::vector<std::thread> workers;
+            for (int t = 0; t < threads; ++t)
+              workers.emplace_back([&, t] {
+                auto local = std::make_shared<ci::HNSWQueryParam>(*param);
+                auto &times = latencies[t];
+                times.reserve(200000);
+                // Initialize each worker's thread-local search context before
+                // timing.
+                for (size_t i = t; i < order.size(); i += threads) {
+                  ci::SearchResult result;
+                  if (index->search(
+                          {ci::DenseVector{q.vectors[order[i]].data()}}, local,
+                          &result) != 0)
+                    ++errors;
+                }
+                {
+                  std::unique_lock<std::mutex> lock(mutex);
+                  ++ready;
+                  cv.notify_all();
+                  cv.wait(lock, [&] { return go; });
+                }
+                size_t i = size_t(t) * 127;
+                while (Clock::now() < deadline) {
+                  auto qi = order[(i++) % order.size()];
+                  ci::SearchResult result;
+                  auto before = Clock::now();
+                  int rc = index->search(
+                      {ci::DenseVector{q.vectors[qi].data()}}, local, &result);
+                  auto after = Clock::now();
+                  if (rc != 0 || result.doc_list_.size() != size_t(TOPK))
+                    ++errors;
+                  times.push_back(
+                      std::chrono::duration<double, std::micro>(after - before)
+                          .count());
+                }
+                endings[t] = Clock::now();
+              });
+            {
+              std::unique_lock<std::mutex> lock(mutex);
+              cv.wait(lock, [&] { return ready == threads; });
+              begin = Clock::now();
+              deadline = begin + std::chrono::seconds(duration);
+              go = true;
+            }
+            cv.notify_all();
+            for (auto &w : workers) w.join();
+            check(errors == 0, "timed search errors");
+            double elapsed =
+                std::chrono::duration<double>(
+                    *std::max_element(endings.begin(), endings.end()) - begin)
+                    .count();
+            std::vector<double> all;
+            for (auto &v : latencies) all.insert(all.end(), v.begin(), v.end());
+            check(!all.empty(), "empty timings");
+            double mean =
+                std::accumulate(all.begin(), all.end(), 0.0) / all.size();
+            std::sort(all.begin(), all.end());
+            auto pct = [&](double p) {
+              return all[std::min(all.size() - 1,
+                                  size_t(std::ceil(p * all.size()) - 1))];
+            };
+            rusage usage_end{};
+            getrusage(RUSAGE_SELF, &usage_end);
+            csv << std::setprecision(10)
+                << (std::getenv("BENCH_LABEL") ? std::getenv("BENCH_LABEL")
+                                               : method)
+                << ',' << TOPK << ',' << (method != "hnsw" ? DEGREE : 0) << ','
+                << round << ',' << ef << ',' << threads << ',' << all.size()
+                << ',' << elapsed << ',' << all.size() / elapsed << ',' << mean
+                << ',' << pct(.5) << ',' << pct(.95) << ',' << pct(.99) << ','
+                << recall << ',' << rss_kib() << ',' << peak_kib() << ','
+                << usage_end.ru_minflt - usage_begin.ru_minflt << ','
+                << usage_end.ru_majflt - usage_begin.ru_majflt << ","
+                << setting.margin << "," << setting.beam << "," << setting.width
+                << "," << setting.cap << std::endl;
+            std::cout << "MEASURE ef=" << ef << " threads=" << threads
+                      << " recall=" << recall << " qps=" << all.size() / elapsed
+                      << std::endl;
           }
-          cv.notify_all();
-          for (auto &w : workers) w.join();
-          check(errors == 0, "timed search errors");
-          double elapsed =
-              std::chrono::duration<double>(
-                  *std::max_element(endings.begin(), endings.end()) - begin)
-                  .count();
-          std::vector<double> all;
-          for (auto &v : latencies) all.insert(all.end(), v.begin(), v.end());
-          check(!all.empty(), "empty timings");
-          double mean =
-              std::accumulate(all.begin(), all.end(), 0.0) / all.size();
-          std::sort(all.begin(), all.end());
-          auto pct = [&](double p) {
-            return all[std::min(all.size() - 1,
-                                size_t(std::ceil(p * all.size()) - 1))];
-          };
-          rusage usage_end{};
-          getrusage(RUSAGE_SELF, &usage_end);
-          csv << std::setprecision(10)
-              << (std::getenv("BENCH_LABEL") ? std::getenv("BENCH_LABEL")
-                                             : method)
-              << ',' << TOPK << ',' << (method != "hnsw" ? DEGREE : 0) << ','
-              << round << ',' << ef << ',' << threads << ',' << all.size()
-              << ',' << elapsed << ',' << all.size() / elapsed << ',' << mean
-              << ',' << pct(.5) << ',' << pct(.95) << ',' << pct(.99) << ','
-              << recall << ',' << rss_kib() << ',' << peak_kib() << ','
-              << usage_end.ru_minflt - usage_begin.ru_minflt << ','
-              << usage_end.ru_majflt - usage_begin.ru_majflt << std::endl;
-          std::cout << "MEASURE ef=" << ef << " threads=" << threads
-                    << " recall=" << recall << " qps=" << all.size() / elapsed
-                    << std::endl;
         }
       }
     }
-  }
+  }  // ablation settings
   check(index->close() == 0, "close search index");
 }
 

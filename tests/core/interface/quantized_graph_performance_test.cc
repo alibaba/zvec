@@ -33,6 +33,7 @@ TEST(QuantizedGraphPerformance, ParameterRoundTripAndUnsupportedLayouts) {
   auto p = ci::HNSWIndexParamBuilder()
                .with_metric_type(ci::MetricType::kCosine)
                .with_dimension(768)
+               .with_use_quantized_graph(true)
                .with_quantized_graph_model("model with spaces/\"router\".bin")
                .build();
   for (bool omit : {false, true}) {
@@ -40,14 +41,17 @@ TEST(QuantizedGraphPerformance, ParameterRoundTripAndUnsupportedLayouts) {
     ASSERT_TRUE(restored.deserialize_from_json(p->serialize_to_json(omit)))
         << p->serialize_to_json(omit);
     EXPECT_EQ(restored.quantized_graph_model, p->quantized_graph_model);
+    EXPECT_TRUE(restored.use_quantized_graph);
   }
   ci::HNSWIndexParam legacy;
   EXPECT_TRUE(legacy.quantized_graph_model.empty());
+  EXPECT_FALSE(legacy.use_quantized_graph);
   TestHnswIndex index;
-  p->dimension = 960;
+  p->data_type = ci::DataType::DT_FP32;
+  p->dimension = 4097;
   EXPECT_NE(0, index.init(*p));
   p->dimension = 768;
-  p->metric_type = ci::MetricType::kL2sq;
+  p->metric_type = ci::MetricType::kInnerProduct;
   EXPECT_NE(0, index.init(*p));
   p->metric_type = ci::MetricType::kCosine;
   p->use_external_vector = true;
@@ -101,7 +105,9 @@ void WriteModel(const std::filesystem::path &path, uint32_t docs,
 }
 }  // namespace
 TEST(QuantizedGraphPerformance, ModelValidation) {
-  if (!HnswQuantizedGraph::supported()) GTEST_SKIP();
+  if (!HnswQuantizedGraph::supported()) {
+    GTEST_SKIP();
+  }
   TemporaryFiles tmp;
   const auto path = (tmp.dir / "router.bin").string();
   QuantizedGraphIntegerRouter router;
@@ -134,7 +140,9 @@ TEST(QuantizedGraphPerformance, ModelValidation) {
   EXPECT_FALSE(QuantizedGraphIntegerRouter::read_mean(path.c_str(), 100, mean));
 }
 TEST(QuantizedGraphPerformance, IntegerBoundAndRotation) {
-  if (!HnswQuantizedGraph::supported()) GTEST_SKIP();
+  if (!HnswQuantizedGraph::supported()) {
+    GTEST_SKIP();
+  }
   std::mt19937 rng(20261027);
   std::normal_distribution<float> normal;
   zvec::turbo::SymphonyQGRotation rotation(768);
@@ -173,7 +181,9 @@ TEST(QuantizedGraphPerformance, IntegerBoundAndRotation) {
   }
 }
 TEST(QuantizedGraphPerformance, SnapshotSearchAndMutationGuard) {
-  if (!HnswQuantizedGraph::supported()) GTEST_SKIP();
+  if (!HnswQuantizedGraph::supported()) {
+    GTEST_SKIP();
+  }
   TemporaryFiles tmp;
   const auto index_path = (tmp.dir / "index").string();
   const auto model_path = (tmp.dir / "model").string();
@@ -251,5 +261,137 @@ TEST(QuantizedGraphPerformance, SnapshotSearchAndMutationGuard) {
   WriteModel(model_path, count + 1);
   ASSERT_EQ(0, optimized.init(p));
   EXPECT_NE(0, optimized.open(index_path, options));
+}
+
+TEST(QuantizedGraphPerformance, GenericRoutingAndNoRouterSearch) {
+  if (!HnswQuantizedGraph::supported()) {
+    GTEST_SKIP();
+  }
+  for (bool cosine : {false, true}) {
+    for (size_t dim : {size_t{33}, size_t{960}}) {
+      TemporaryFiles tmp;
+      const auto path = (tmp.dir / "l2-index").string();
+      const auto model_path = (tmp.dir / "l2-router").string();
+      constexpr size_t count = 128;
+      std::mt19937 rng(72);
+      std::uniform_real_distribution<float> dist(0.f, .2f);
+      QuantizedGraphRouterBuilder::Data training;
+      training.docs = count;
+      training.cosine = cosine;
+      training.mean.assign(dim, 0);
+      for (size_t i = 0; i < count; ++i) {
+        training.ids.push_back(i);
+        training.vectors.emplace_back(dim);
+        for (size_t d = 0; d < dim; ++d) {
+          training.vectors.back()[d] = dist(rng);
+        }
+        double norm2 = 0;
+        for (float v : training.vectors.back()) norm2 += double(v) * v;
+        for (size_t d = 0; d < dim; ++d) {
+          if (cosine) training.vectors.back()[d] /= std::sqrt(norm2);
+          training.mean[d] += training.vectors.back()[d] / count;
+        }
+      }
+      ci::HNSWIndexParam p(
+          cosine ? ci::MetricType::kCosine : ci::MetricType::kL2sq, dim, 16,
+          100);
+      p.data_type = ci::DataType::DT_FP32;
+      p.use_id_map = true;
+      ci::StorageOptions storage;
+      storage.type = ci::StorageOptions::StorageType::kMMAP;
+      storage.create_new = true;
+      TestHnswIndex source;
+      ASSERT_EQ(source.init(p), 0);
+      ASSERT_EQ(source.open(path, storage), 0);
+      for (size_t i = 0; i < count; ++i) {
+        ASSERT_EQ(source.add({ci::DenseVector{training.vectors[i].data()}}, i),
+                  0);
+      }
+      ASSERT_EQ(source.flush(), 0);
+      ASSERT_EQ(source.close(), 0);
+      {
+        const auto model = QuantizedGraphRouterBuilder::train(training, {});
+        std::ofstream out(model_path, std::ios::binary);
+        model.write(out);
+      }
+      storage.create_new = false;
+      storage.read_only = true;
+      p.use_quantized_graph = true;
+      for (bool model : {false, true}) {
+        p.quantized_graph_model = model ? model_path : "";
+        TestHnswIndex index;
+        ASSERT_EQ(index.init(p), 0);
+        ASSERT_EQ(index.open(path, storage), 0);
+        auto qp = std::make_shared<ci::HNSWQueryParam>();
+        qp->topk = 10;
+        qp->ef_search = 800;
+        for (uint32_t beam : {0u, 1u, 2u}) {
+          qp->quantized_graph_route_beam = beam;
+          for (size_t i : {size_t{0}, size_t{37}, size_t{127}}) {
+            ci::SearchResult result;
+            ASSERT_EQ(
+                index.search({ci::DenseVector{training.vectors[i].data()}}, qp,
+                             &result),
+                0);
+            ASSERT_EQ(result.doc_list_.size(), 10u);
+            EXPECT_EQ(result.doc_list_[0].key(), i);
+            for (const auto &doc : result.doc_list_) {
+              double exact = 0, dot = 0, qnorm = 0, xnorm = 0;
+              for (size_t d = 0; d < dim; ++d) {
+                const double diff = double(training.vectors[i][d]) -
+                                    training.vectors.at(doc.key())[d];
+                exact += diff * diff;
+                const double q = training.vectors[i][d],
+                             x = training.vectors.at(doc.key())[d];
+                dot += q * x;
+                qnorm += q * q;
+                xnorm += x * x;
+              }
+              if (cosine) exact = 1 - dot / std::sqrt(qnorm * xnorm);
+              EXPECT_NEAR(exact, doc.score(), 1e-5);
+            }
+          }
+        }
+        qp->quantized_graph_margin = std::numeric_limits<float>::quiet_NaN();
+        ci::SearchResult invalid;
+        EXPECT_NE(index.search({ci::DenseVector{training.vectors[0].data()}},
+                               qp, &invalid),
+                  0);
+        qp->quantized_graph_margin = -1;
+        qp->quantized_graph_route_beam = 5;
+        EXPECT_NE(index.search({ci::DenseVector{training.vectors[0].data()}},
+                               qp, &invalid),
+                  0);
+        ASSERT_EQ(index.close(), 0);
+      }
+    }
+  }
+}
+
+TEST(QuantizedGraphPerformance, L2ReconstructionLowerBound) {
+  if (!HnswQuantizedGraph::supported()) {
+    GTEST_SKIP();
+  }
+  std::mt19937 rng(93);
+  std::uniform_real_distribution<float> random(-3.f, 4.f);
+  for (size_t dim : {size_t{33}, size_t{960}, size_t{1024}}) {
+    for (size_t trial = 0; trial < 64; ++trial) {
+      std::vector<float> center(dim), query(dim);
+      std::vector<uint8_t> codes(dim);
+      double exact = 0;
+      for (size_t d = 0; d < dim; ++d) {
+        center[d] = random(rng);
+        query[d] = trial % 2 ? center[d] + .001f * random(rng) : random(rng);
+        const double diff = double(query[d]) - center[d];
+        exact += diff * diff;
+      }
+      float error, norm, offset, scale;
+      ASSERT_TRUE(SQ8Center::encode(center.data(), dim, codes.data(), error,
+                                    norm, offset, scale));
+      const float estimate =
+          SQ8Center::distance(query.data(), codes.data(), dim, offset, scale);
+      EXPECT_LE(SQ8Center::l2_lower_bound(estimate, error, dim), exact);
+    }
+  }
 }
 #endif

@@ -34,8 +34,8 @@ class QuantizedGraphBucket {
     summary_ = 0;
     width_ = 1.0f;
   }
-  void set_scale(float distance) {
-    width_ = std::max(distance, 1e-6f) * .016f;
+  void set_scale(float distance, float coefficient = .016f) {
+    width_ = std::max(distance, 1e-6f) * coefficient;
   }
   float width() const {
     return width_;

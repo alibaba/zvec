@@ -53,7 +53,8 @@ namespace zvec::core {
 // first dimension coordinates. Optional trailing FP32 metadata is retained
 // in cached centers for exact scoring but excluded from graph geometry.
 // Context: reset_results() returns a bounded heap with limit/size/emplace;
-// query(), topk(), distance(), excluded(id), reach_scan_limit(), on_expand().
+// query(), topk(), distance(), excluded(id), reach_scan_limit(), on_expand(),
+// quantized_graph_options().
 // distance() accounts for the exact scan budget; excluded() means EXCLUDE.
 // The caller serializes prebuild/clear against searches. The source graph
 // remains immutable while this snapshot is active.
@@ -246,7 +247,7 @@ QuantizedGraph<Codec>::QuantizedGraph(size_t dimension, Codec codec,
       codec_(std::move(codec)) {
   cosine_ = cosine;
   stored_center_bytes_ = stored_dimension_ * sizeof(float);
-  compressed_center_ = cosine;
+  compressed_center_ = true;
   if (compressed_center_) {
     stored_center_bytes_ = (dimension_ + 63) & ~size_t{63};
   }
@@ -413,13 +414,21 @@ bool QuantizedGraph<Codec>::build_block(const Graph &entity, NodeId id,
       error = IndexError_Mismatch;
       return false;
     }
-    float projection, projection_error;
-    const bool encoded = SQ8Center::encode_shifted(
-        storage_values, center_shift_.data(), dimension_,
-        reinterpret_cast<uint8_t *>(const_cast<float *>(block->center())),
-        block->center_error, block->center_norm2, block->center_offset,
-        block->center_scale, projection, projection_error);
-    if (encoded) {
+    float projection = 0, projection_error = 0;
+    const bool encoded =
+        cosine_ ? SQ8Center::encode_shifted(
+                      storage_values, center_shift_.data(), dimension_,
+                      reinterpret_cast<uint8_t *>(
+                          const_cast<float *>(block->center())),
+                      block->center_error, block->center_norm2,
+                      block->center_offset, block->center_scale, projection,
+                      projection_error)
+                : SQ8Center::encode(storage_values, dimension_,
+                                    reinterpret_cast<uint8_t *>(
+                                        const_cast<float *>(block->center())),
+                                    block->center_error, block->center_norm2,
+                                    block->center_offset, block->center_scale);
+    if (encoded && cosine_) {
       block->integer_anchor_projection = projection;
       IntegerCenter::annotate(
           storage_values, center_shift_.data(),
@@ -428,7 +437,8 @@ bool QuantizedGraph<Codec>::build_block(const Graph &entity, NodeId id,
           block->center_residual_norm, block->center_coded_norm,
           block->center_mean_dot);
     }
-    if (!encoded) {
+    if (!encoded || !std::isfinite(block->center_error) ||
+        !std::isfinite(block->center_norm2)) {
       error = IndexError_Mismatch;
       return false;
     }
@@ -444,6 +454,14 @@ bool QuantizedGraph<Codec>::build_block(const Graph &entity, NodeId id,
   }
 
   const void *encoding_center = center_ptr;
+  std::vector<float> reconstructed;
+  if (!cosine_) {
+    reconstructed.resize(dimension_);
+    SQ8Center::decode(reinterpret_cast<const uint8_t *>(block->center()),
+                      dimension_, reconstructed.data(), block->center_offset,
+                      block->center_scale);
+    encoding_center = reconstructed.data();
+  }
   codec_.transform(encoding_center, scratch.encoded_center);
   scratch.encoded.assign(batch_size * dim, 0.0f);
   for (size_t offset = 0; offset < neighbor_cnt; offset += batch_size) {
@@ -475,30 +493,28 @@ template <class Codec>
 template <class Graph>
 int QuantizedGraph<Codec>::prebuild(const Graph &entity, size_t doc_cnt,
                                     size_t threads) {
-  // Reject incompatible layouts before touching the projected mean or graph.
-  if (!compressed_center_ || dimension_ != 768) return IndexError_Mismatch;
-  if (compressed_center_ &&
-      (dimension_ != 768 || !__builtin_cpu_supports("avx512vnni")))
+  if (dimension_ == 0 || dimension_ > 4096 ||
+      !__builtin_cpu_supports("avx512vnni"))
     return IndexError_Mismatch;
   static_assert(sizeof(Block) <= Block::kCenterOffset,
                 "Block header overlaps center");
-  if (compressed_center_) {
-    if (!QuantizedGraphIntegerRouter::read_mean(model_path_.c_str(), doc_cnt,
-                                                center_shift_))
-      return IndexError_Mismatch;
-    center_shift_norm2_ = 0;
-    for (float v : center_shift_) {
-      if (!std::isfinite(v)) return IndexError_Mismatch;
-      center_shift_norm2_ += double(v) * v;
-    }
-  }
-  std::vector<float> route_mean;
-  codec_.transform(center_shift_.data(), route_mean);
-  if (dimension_ != 768 || route_mean.size() != 768) return IndexError_Mismatch;
-  if (!compressed_center_ ||
-      !integer_router_.load(model_path_.c_str(), center_shift_, entity, doc_cnt,
-                            &route_mean))
+  center_shift_.assign(dimension_, 0.f);
+  if (!model_path_.empty() &&
+      !QuantizedGraphIntegerRouter::read_mean(
+          model_path_.c_str(), doc_cnt, center_shift_, dimension_, cosine_))
     return IndexError_Mismatch;
+  center_shift_norm2_ = 0;
+  for (float v : center_shift_) {
+    if (!std::isfinite(v)) return IndexError_Mismatch;
+    center_shift_norm2_ += double(v) * v;
+  }
+  if (!model_path_.empty()) {
+    std::vector<float> route_mean;
+    codec_.transform(center_shift_.data(), route_mean);
+    if (!integer_router_.load(model_path_.c_str(), center_shift_, entity,
+                              doc_cnt, &route_mean, cosine_))
+      return IndexError_Mismatch;
+  }
   const size_t nthreads =
       threads == 0 ? std::max(1u, std::thread::hardware_concurrency())
                    : threads;
@@ -640,15 +656,14 @@ int QuantizedGraph<Codec>::search(NodeId entry, const Graph &entity,
   beam.insert(entry, std::numeric_limits<float>::max());
   auto &batch_query = state.query;
   codec_.prepare_query(ctx.query(), batch_query);
-  if (compressed_center_ &&
-      !IntegerCenter::prepare(static_cast<const float *>(ctx.query()),
-                              center_shift_.data(), dimension_,
-                              state.integer_query))
+  if (cosine_ && !IntegerCenter::prepare(
+                     static_cast<const float *>(ctx.query()),
+                     center_shift_.data(), dimension_, state.integer_query))
     return IndexError_Mismatch;
   float route_bucket_scale = std::numeric_limits<float>::quiet_NaN();
   double query_norm2_double = 0;
   const float *query_values = static_cast<const float *>(ctx.query());
-  if (compressed_center_)
+  if (cosine_)
     query_norm2_double = state.integer_query.norm * state.integer_query.norm;
   else
     for (size_t d = 0; d < dimension_; ++d)
@@ -657,8 +672,9 @@ int QuantizedGraph<Codec>::search(NodeId entry, const Graph &entity,
       float(query_norm2_double), std::numeric_limits<float>::infinity());
   auto &expanded = state.expanded;
   expanded.clear();
-  if (!integer_router_.empty()) {
-    constexpr size_t route_beam = 1;
+  const auto &options = ctx.quantized_graph_options();
+  if (!integer_router_.empty() && options.route_beam != 0) {
+    const size_t route_beam = options.route_beam;
     if (!integer_router_.prepare_projected(batch_query.rotated.data(),
                                            state.projected_route_query))
       return IndexError_Mismatch;
@@ -697,6 +713,10 @@ int QuantizedGraph<Codec>::search(NodeId entry, const Graph &entity,
   };
   state.best_exact.clear();
   StopState stopping{state.best_exact, ctx.topk()};
+  stopping.margin =
+      options.margin >= 0 ? options.margin : (cosine_ ? .02f : .085f);
+  stopping.cap =
+      options.max_expansions ? options.max_expansions : (cosine_ ? 64 : 256);
   struct Scan {
     enum { kVisitOnExpansion = true };
     const QuantizedGraph &index;
@@ -707,6 +727,7 @@ int QuantizedGraph<Codec>::search(NodeId entry, const Graph &entity,
     const IntegerCenter::Query &integer_query;
     std::vector<NodeId> &expanded;
     float route_bucket_scale;
+    float bucket_width;
     std::vector<std::pair<float, NodeId>> &refine_candidates;
     float query_norm2;
     Bucket *bucket;
@@ -736,7 +757,7 @@ int QuantizedGraph<Codec>::search(NodeId entry, const Graph &entity,
         __builtin_prefetch(codes + offset, 0, 2);
 #endif
       bool refined = true;
-      if (index.compressed_center_) {
+      if (index.cosine_) {
         exact = IntegerCenter::distance(
             integer_query, reinterpret_cast<const uint8_t *>(block->center()),
             index.dimension_, block->center_offset, block->center_scale,
@@ -749,14 +770,31 @@ int QuantizedGraph<Codec>::search(NodeId entry, const Graph &entity,
             index.center_shift_norm2_, index.dimension_);
         refined = false;
         if (!ctx.excluded(id)) refine_candidates.emplace_back(lower, id);
-      } else
-        exact = ctx.distance(block->center());
+      } else {
+        exact = SQ8Center::distance(
+            static_cast<const float *>(ctx.query()),
+            reinterpret_cast<const uint8_t *>(block->center()),
+            index.dimension_, block->center_offset, block->center_scale);
+        navigation_center =
+            exact;  // Neighbor codes use the reconstructed center.
+        const float lower = SQ8Center::l2_lower_bound(
+            exact, block->center_error, index.dimension_);
+        refined = !ctx.excluded(id) && (stopping->best.size() < stopping->k ||
+                                        lower <= stopping->best.back());
+        if (refined) {
+          typename Graph::Vector raw;
+          const int rc = entity.get_vector(id, raw);
+          if (rc != 0 || raw.data() == nullptr) return IndexError_Mismatch;
+          exact = ctx.distance(raw.data());
+        }
+      }
       if (expanded.size() == 1)
-        bucket->set_scale(std::isfinite(route_bucket_scale) ? route_bucket_scale
-                                                            : exact);
+        bucket->set_scale(
+            std::isfinite(route_bucket_scale) ? route_bucket_scale : exact,
+            bucket_width);
       // Heuristic navigation threshold; interval bounds still certify terminal
       // Top-K over expanded nodes, not navigation/global recall.
-      stopping->observe(exact, !ctx.excluded(id));
+      stopping->observe(exact, !ctx.excluded(id) && (index.cosine_ || refined));
       if (refined && !ctx.excluded(id)) {
         output.emplace(id, exact);
       }
@@ -791,6 +829,8 @@ int QuantizedGraph<Codec>::search(NodeId entry, const Graph &entity,
          state.integer_query,
          expanded,
          route_bucket_scale,
+         options.bucket_width > 0 ? options.bucket_width
+                                  : (cosine_ ? .016f : .002f),
          state.refine_candidates,
          query_norm2,
          &beam,

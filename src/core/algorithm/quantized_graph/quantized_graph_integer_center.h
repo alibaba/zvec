@@ -20,8 +20,8 @@
 #include <vector>
 
 namespace zvec::core {
-// Normalized cosine center estimate. The adapter checks 768 dimensions and
-// VNNI availability before any query executes.
+// Normalized cosine center estimate. The adapter checks supported dimensions
+// and VNNI availability before any query executes.
 struct IntegerCenter {
   struct Query {
     std::vector<int8_t> codes;

@@ -251,6 +251,11 @@ struct ZVEC_CORE_API FlatQueryParam : public BaseIndexQueryParam {
 };
 
 struct ZVEC_CORE_API HNSWQueryParam : public BaseIndexQueryParam {
+  // Quantized graph controls; defaults retain the metric-specific preset.
+  float quantized_graph_margin = -1;
+  float quantized_graph_bucket_width = 0;
+  uint32_t quantized_graph_max_expansions = 0;
+  uint32_t quantized_graph_route_beam = 1;  // 0 disables entry routing.
   using Pointer = std::shared_ptr<HNSWQueryParam>;
 
   HNSWQueryParam();
@@ -407,8 +412,11 @@ struct ZVEC_CORE_API IVFIndexParam : public BaseIndexParam {
 };
 
 struct ZVEC_CORE_API HNSWIndexParam : public BaseIndexParam {
-  // Optional projected-router model for immutable 768D FP32 cosine snapshots.
-  // Empty preserves ordinary HNSW; see algorithm/hnsw/README.performance.md.
+  // Immutable FP32 cosine/L2 graph; a model also implicitly enables it.
+  bool use_quantized_graph = false;
+  // Optional database-trained entry router, matched to this graph snapshot.
+  // Empty uses a centroid entry when use_quantized_graph is enabled; otherwise
+  // ordinary HNSW. See algorithm/hnsw/README.performance.md.
   std::string quantized_graph_model;
   using Pointer = std::shared_ptr<HNSWIndexParam>;
   int m = kDefaultHnswNeighborCnt;
