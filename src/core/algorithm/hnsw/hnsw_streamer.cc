@@ -31,7 +31,7 @@ namespace {
 using TurboQuantizer = zvec::turbo::Quantizer;
 
 // Adapt Turbo's typed operations to the callbacks used by graph traversal.
-template <auto Distance, auto BatchDistance = nullptr>
+template <auto Distance, auto BatchDistance>
 void BindTurboDistances(TurboQuantizer::Pointer quantizer,
                         IndexMetric::MatrixDistance &distance,
                         IndexMetric::MatrixBatchDistance &batch_distance) {
@@ -41,14 +41,7 @@ void BindTurboDistances(TurboQuantizer::Pointer quantizer,
   batch_distance = [quantizer](const void **vectors, const void *query,
                                size_t count, size_t, float *out,
                                const void **) {
-    if constexpr (BatchDistance != nullptr) {
-      ((*quantizer).*BatchDistance)(vectors, static_cast<int>(count), query,
-                                    out);
-    } else {
-      for (size_t i = 0; i < count; ++i) {
-        out[i] = ((*quantizer).*Distance)(vectors[i], query);
-      }
-    }
+    ((*quantizer).*BatchDistance)(vectors, static_cast<int>(count), query, out);
   };
 }
 
@@ -395,7 +388,8 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
                          &TurboQuantizer::calc_distance_input_query_batch>(
           quantizer_, search_distance_, search_batch_distance_);
     } else {
-      BindTurboDistances<&TurboQuantizer::calc_distance_dp_dp>(
+      BindTurboDistances<&TurboQuantizer::calc_distance_dp_dp,
+                         &TurboQuantizer::calc_distance_dp_dp_batch>(
           quantizer_, add_distance_, add_batch_distance_);
       BindTurboDistances<&TurboQuantizer::calc_distance_dp_query,
                          &TurboQuantizer::calc_distance_dp_query_batch>(

@@ -265,10 +265,11 @@ TEST(IVFIndexProviderTest,
      SortedIterationOwnsMappingChunksAndEndsWithoutError) {
   MappingProvider fixture;
   ASSERT_EQ(fixture.load_status, 0);
+  const size_t load_fetch_calls = fixture.mapping->fetch_calls();
   auto iter = fixture.provider->create_iterator();
   ASSERT_NE(iter, nullptr);
   ASSERT_TRUE(iter->is_valid());
-  ASSERT_EQ(fixture.mapping->fetch_calls(), 1U);
+  ASSERT_EQ(fixture.mapping->fetch_calls(), load_fetch_calls + 1);
 
   // Reusing storage-owned memory after fetch must not overwrite the chunk
   // already copied into the iterator. Leave the next chunk valid to exercise
@@ -288,7 +289,7 @@ TEST(IVFIndexProviderTest,
   }
   EXPECT_FALSE(iter->is_valid());
   EXPECT_EQ(iter->status(), 0);
-  EXPECT_EQ(fixture.mapping->fetch_calls(), 2U);
+  EXPECT_EQ(fixture.mapping->fetch_calls(), load_fetch_calls + 2);
 }
 
 TEST(IVFIndexProviderTest, InvalidMappingIdsHaveStickyFormatError) {

@@ -158,6 +158,13 @@ class Quantizer {
   //! Distance between two quantized datapoints
   virtual float calc_distance_dp_dp(const void *dp1, const void *dp2) const = 0;
 
+  //! Batched distance between quantized datapoints and a quantized datapoint.
+  //! The default implementation loops over calc_distance_dp_dp. Overrides
+  //! must preserve those distance semantics. A nonpositive count is a no-op.
+  virtual void calc_distance_dp_dp_batch(const void *const *dp_list, int dp_num,
+                                         const void *dp,
+                                         float *dist_list) const;
+
   //! Distance between an input datapoint and an already-quantized query.
   //!
   //! This is used by indexes whose vectors live outside the index in the

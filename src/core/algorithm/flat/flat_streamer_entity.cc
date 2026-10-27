@@ -13,8 +13,11 @@
 // limitations under the License.
 
 #include "flat_streamer_entity.h"
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <zvec/core/framework/index_error.h>
+#include "utility/batch_topk.h"
 #include "utility/legacy_read_buffer.h"
 #include "flat_utility.h"
 
@@ -146,6 +149,7 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
   // segments_[0] store the meta information of the linear list
   ailego_assert_with(segments_.size() == 0, "Invalid Size");
 
+  all_keys_valid_ = std::make_shared<std::atomic<bool>>(true);
   key_info_map_lock_ = std::make_shared<ailego::SharedMutex>();
   key_info_map_.clear();
   id_key_vector_.clear();
@@ -214,6 +218,7 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
 int FlatStreamerEntity::close() {
   segments_.clear();
   storage_.reset();
+  all_keys_valid_.reset();
   key_info_map_lock_.reset();
   key_info_map_.clear();
   withid_key_info_map_.clear();
@@ -354,6 +359,49 @@ int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
                                IndexContext::Stats *context_stats,
                                FlatSearchScratch * /*scratch*/,
                                size_t /*batch_size*/) const {
+  const bool batch_rows =
+      quantizer_ && index_meta_.major_order() == IndexMeta::MO_ROW &&
+      block_vector_count() > 0 && block_vector_count() <= kDistanceBatchVectors;
+  // Flat blocks have keys, a deletion map and a header after their rows.
+  // Keep physical block boundaries when gathering the vector body.
+  if (batch_rows && !filter.is_valid() && all_keys_valid_->load() &&
+      heap->limit() > 0 &&
+      heap->limit() != std::numeric_limits<size_t>::max()) {
+    return search_rows_all_valid(query, scan_count, heap, context_stats);
+  }
+  // Filtered/deleted rows, unlimited results and other layouts retain the
+  // original scan without an additional O(n) candidate buffer.
+  return search_blocks(query, filter, scan_count, heap, context_stats);
+}
+
+int FlatStreamerEntity::search_rows_all_valid(
+    const void *query, uint32_t *scan_count, IndexDocumentHeap *heap,
+    IndexContext::Stats *context_stats) const {
+  // Dispatch once within this sub-path. Quantizer owns distance-kernel
+  // selection for the pointer batch interface.
+  using Impl = BatchTopK::Implementation;
+  switch (BatchTopK::implementation()) {
+    case Impl::kAVX512:
+      return search_rows_all_valid_impl<BatchTopKImpl<Impl::kAVX512>>(
+          query, scan_count, heap, context_stats);
+    case Impl::kAVX2:
+      return search_rows_all_valid_impl<BatchTopKImpl<Impl::kAVX2>>(
+          query, scan_count, heap, context_stats);
+    case Impl::kSSE2:
+      return search_rows_all_valid_impl<BatchTopKImpl<Impl::kSSE2>>(
+          query, scan_count, heap, context_stats);
+    case Impl::kNEON:
+      return search_rows_all_valid_impl<BatchTopKImpl<Impl::kNEON>>(
+          query, scan_count, heap, context_stats);
+    default:
+      return search_rows_all_valid_impl<BatchTopKImpl<Impl::kScalar>>(
+          query, scan_count, heap, context_stats);
+  }
+}
+
+int FlatStreamerEntity::search_blocks(
+    const void *query, const IndexFilter &filter, uint32_t *scan_count,
+    IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const {
   IndexStorage::MemoryBlock head_block;
   this->get_head_block(head_block);
   const BlockLocation *bl =
@@ -391,6 +439,102 @@ int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
     }
     block = hd->next;
   }
+  return 0;
+}
+
+template <typename TopK>
+int FlatStreamerEntity::search_rows_all_valid_impl(
+    const void *query, uint32_t *scan_count, IndexDocumentHeap *heap,
+    IndexContext::Stats *context_stats) const {
+  BlockLocation block;
+  {
+    IndexStorage::MemoryBlock head;
+    if (get_head_block(head) != 0 || !head.data()) return IndexError_ReadData;
+    block = *static_cast<const BlockLocation *>(head.data());
+  }
+  // A clone may need to populate its cache after the writer adds a segment.
+  if (!get_segment(block.segment_id)) return IndexError_ReadData;
+  std::vector<IndexStorage::Segment::Pointer> segments;
+  {
+    std::lock_guard<std::mutex> lock(segments_mutex_);
+    segments = segments_;
+  }
+  const size_t block_size = linear_block_size();
+  const size_t block_rows = block_vector_count();
+  const size_t stride = index_meta_.element_size();
+  // Physical slot IDs remain reversible even when segment sizes differ after
+  // reopening. Only segment boundaries are stored, not per-vector keys/offsets.
+  std::vector<uint64_t> offsets(segments.size() + 1, 0);
+  for (size_t i = 1; i < segments.size(); ++i) {
+    offsets[i + 1] =
+        offsets[i] + segments[i]->data_size() / block_size * block_rows;
+  }
+  if (offsets.back() > uint64_t{1} + UINT32_MAX) {
+    return search_blocks(query, IndexFilter{}, scan_count, heap, context_stats);
+  }
+
+  float threshold = heap->threshold();
+  bool strict_threshold = false;
+  if (heap->full() && heap->front().score() <= threshold) {
+    threshold = heap->front().score();
+    strict_threshold = true;
+  }
+  TopK topk;
+  topk.reset(std::min<size_t>(heap->limit(), offsets.back()), threshold,
+             strict_threshold);
+  alignas(AILEGO_CACHE_LINE_SIZE) std::array<float, kDistanceBatchVectors>
+      distances;
+  std::array<const void *, kDistanceBatchVectors> candidates;
+  uint32_t scanned = 0;
+  while (is_valid_block(block)) {
+    IndexStorage::MemoryBlock data;
+    if (block.segment_id >= segments.size() ||
+        segments[block.segment_id]->read(get_block_offset(block.block_index),
+                                         data, block_size) != block_size) {
+      return IndexError_ReadData;
+    }
+    const auto *vectors = static_cast<const char *>(data.data());
+    const auto header = *reinterpret_cast<const BlockHeader *>(
+        vectors + block_size - sizeof(BlockHeader));
+    const size_t rows = header.vector_count;
+    if (rows > block_rows) return IndexError_ReadData;
+    if (rows > 0) {
+      const uint32_t first_id =
+          offsets[block.segment_id] + uint64_t{block.block_index} * block_rows;
+      for (size_t i = 0; i < rows; ++i) {
+        candidates[i] = vectors + i * stride;
+      }
+      quantizer_->calc_distance_dp_query_batch(
+          candidates.data(), static_cast<int>(rows), query, distances.data());
+      topk.push_block(distances.data(), rows, first_id);
+      scanned += rows;
+    }
+    block = header.next;
+  }
+  // An append may have published invalid gap rows during the scan. No output
+  // has been committed yet, so the original path can safely redo this search.
+  if (!all_keys_valid_->load()) {
+    return search_blocks(query, IndexFilter{}, scan_count, heap, context_stats);
+  }
+  topk.finish();
+  for (size_t i = 0; i < topk.size(); ++i) {
+    const auto &candidate = topk.data()[i];
+    const size_t segment_id =
+        std::upper_bound(offsets.begin() + 1, offsets.end(), candidate.id) -
+        offsets.begin() - 1;
+    const uint32_t slot = candidate.id - offsets[segment_id];
+    IndexStorage::MemoryBlock key_block;
+    uint64_t key;
+    if (segments[segment_id]->read(
+            get_block_key_offset(slot / block_rows, slot % block_rows),
+            key_block, sizeof(key)) != sizeof(key)) {
+      return IndexError_ReadData;
+    }
+    std::memcpy(&key, key_block.data(), sizeof(key));
+    heap->emplace(key, candidate.score);
+  }
+  *scan_count += scanned;
+  *context_stats->mutable_dist_calced_count() += scanned;
   return 0;
 }
 
@@ -510,6 +654,7 @@ FlatStreamerEntity::Pointer FlatStreamerEntity::clone() const {
   entity->segments_ = std::move(segments);
   entity->meta_ = this->meta_;
   entity->quantizer_ = this->quantizer_;
+  entity->all_keys_valid_ = this->all_keys_valid_;
   entity->key_info_map_lock_ = this->key_info_map_lock_;
   entity->key_info_map_ = this->key_info_map_;
   entity->id_key_vector_ = this->id_key_vector_;
@@ -1101,30 +1246,34 @@ int FlatStreamerEntity::load_linear_meta(IndexStorage::Pointer storage) {
   return 0;
 }
 
-int FlatStreamerEntity::load_segment_keys_to_map(BlockLocation block) {
+int FlatStreamerEntity::load_segment_keys(BlockLocation block) {
   while (this->is_valid_block(block)) {
-    auto segment = this->get_segment(block.segment_id);
-
     IndexStorage::MemoryBlock block_header_block;
     this->get_block_header(block, block_header_block);
     const BlockHeader *hd =
         reinterpret_cast<const BlockHeader *>(block_header_block.data());
-    if (ailego_unlikely(hd == nullptr)) {
+    if (ailego_unlikely(hd == nullptr ||
+                        hd->vector_count > block_vector_count())) {
       LOG_ERROR("Failed to get block header");
       return IndexError_ReadData;
     }
     IndexStorage::MemoryBlock keys_block;
-    this->get_block_keys(block, keys_block);
+    if (get_block_keys(block, keys_block) != 0) return IndexError_ReadData;
     const uint64_t *keys =
         reinterpret_cast<const uint64_t *>(keys_block.data());
     IndexStorage::MemoryBlock deletion_map_block;
-    this->get_block_deletion_map(block, deletion_map_block);
+    if (get_block_deletion_map(block, deletion_map_block) != 0) {
+      return IndexError_ReadData;
+    }
     const DeletionMap *deletion_map =
         reinterpret_cast<const DeletionMap *>(deletion_map_block.data());
 
+    if (deletion_map->is_dirty()) all_keys_valid_->store(false);
+
     for (uint32_t vector_index = 0; vector_index < hd->vector_count;
          ++vector_index) {
-      if (deletion_map->test(vector_index)) {
+      if (keys[vector_index] == kInvalidKey) all_keys_valid_->store(false);
+      if (!use_key_info_map_ || deletion_map->test(vector_index)) {
         continue;
       }
       size_t vector_off =
@@ -1203,9 +1352,8 @@ int FlatStreamerEntity::load_storage(IndexStorage::Pointer storage) {
       return IndexError_ReadData;
     }
     BlockLocation block = *bl;
-    if (use_key_info_map_) {
-      ret = this->load_segment_keys_to_map(block);
-    } else {
+    ret = this->load_segment_keys(block);
+    if (ret == 0 && !use_key_info_map_) {
       ret = this->load_segment_keys_to_vector();
     }
     if (ailego_unlikely(ret != 0)) {
@@ -1390,6 +1538,9 @@ int FlatStreamerEntity::add_to_block(const BlockLocation &block, uint64_t key,
     LOG_ERROR("Failed to write key, off=%zu", key_off);
     return IndexError_WriteData;
   }
+
+  // Invalidate before publishing the new row count to concurrent readers.
+  if (key == kInvalidKey) all_keys_valid_->store(false);
 
   BlockHeader hd = *header;
   hd.vector_count += 1;

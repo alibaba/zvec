@@ -11,11 +11,20 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <algorithm>
 #include <cmath>
+#include <limits>
+#include <random>
 #include <gtest/gtest.h>
 #include <zvec/core/framework/index_factory.h>
 #include "flat/flat_distance_matrix.h"
+#include "flat/flat_streamer.h"
 #include "quantizer/distance_quantizer.h"
+#include "quantizer/fp16_quantizer/fp16_quantizer.h"
+#include "quantizer/fp32_quantizer/fp32_quantizer.h"
+#include "quantizer/int4_quantizer/int4_quantizer.h"
+#include "quantizer/int8_quantizer/int8_quantizer.h"
+#include "tests/test_util.h"
 
 using namespace zvec;
 using namespace zvec::core;
@@ -187,7 +196,11 @@ void CheckEncodedSearcher(const char *metric_name,
       row[d] = static_cast<T>((i + 1) * 0.03125f + d * 0.015625f);
     }
     if (i == 2 || i == 17 || i == 34) {
-      queries.insert(queries.end(), row.data(), row.data() + dim);
+      // Offset from the grid so L2 neighbors have distinct distances. Heap
+      // and buffered top-k need not select/order equal-distance IDs alike.
+      for (size_t d = 0; d < dim; ++d) {
+        queries.push_back(static_cast<T>(row[d] + 0.0078125f));
+      }
     }
     ASSERT_TRUE(holder->emplace(i, row));
   }
@@ -278,6 +291,360 @@ TEST(FlatQuantizerDistance, EncodedFp16SearcherMatchesLegacyAndReopens) {
   for (auto order : {IndexMeta::MO_ROW, IndexMeta::MO_COLUMN}) {
     for (const auto *metric : {"SquaredEuclidean", "InnerProduct", "Cosine"}) {
       CheckEncodedSearcher<IndexMeta::DT_FP16, ailego::Float16>(metric, order);
+    }
+  }
+}
+
+namespace {
+template <typename Base>
+class CountingQuantizer : public Base {
+ public:
+  float calc_distance_dp_query(const void *dp,
+                               const void *query) const override {
+    if (!inside_batch_) ++single_calls;
+    return Base::calc_distance_dp_query(dp, query);
+  }
+
+  void calc_distance_dp_query_batch(const void *const *dp_list, int dp_num,
+                                    const void *query,
+                                    float *dist_list) const override {
+    EXPECT_GT(dp_num, 0);
+    EXPECT_LE(dp_num, 512);
+    const size_t stride = this->quantized_datapoint_vector_length();
+    for (int i = 1; i < dp_num; ++i) {
+      EXPECT_EQ(static_cast<const char *>(dp_list[0]) + i * stride, dp_list[i]);
+    }
+    batches.push_back(dp_num);
+    queries.push_back(query);
+    // Some families implement batch by calling their single-pair method.
+    // Count only calls made directly by the Flat scanner.
+    inside_batch_ = true;
+    Base::calc_distance_dp_query_batch(dp_list, dp_num, query, dist_list);
+    inside_batch_ = false;
+  }
+
+  void reset_counts() const {
+    single_calls = 0;
+    batches.clear();
+    queries.clear();
+  }
+
+  mutable size_t single_calls{0};
+  mutable std::vector<int> batches;
+  mutable std::vector<const void *> queries;
+
+ private:
+  mutable bool inside_batch_{false};
+};
+
+using CountingFp32Quantizer = CountingQuantizer<turbo::Fp32Quantizer>;
+
+struct FlatIndexFile {
+  explicit FlatIndexFile(std::string value) : path(std::move(value)) {
+    ailego::File::RemovePath(path);
+  }
+  ~FlatIndexFile() {
+    ailego::File::RemovePath(path);
+  }
+  std::string path;
+};
+
+void BuildFp32Rows(const std::string &path, const IndexMeta &meta,
+                   const std::vector<float> &rows,
+                   const std::vector<uint64_t> &keys) {
+  auto holder = std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(
+      meta.dimension());
+  for (size_t i = 0; i < keys.size(); ++i) {
+    ailego::NumericalVector<float> row(meta.dimension());
+    std::copy_n(rows.data() + i * meta.dimension(), meta.dimension(),
+                row.data());
+    ASSERT_TRUE(holder->emplace(keys[i], row));
+  }
+  auto builder = IndexFactory::CreateBuilder("FlatBuilder");
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_NE(nullptr, builder);
+  ASSERT_NE(nullptr, dumper);
+  ASSERT_EQ(0, builder->init(meta, ailego::Params()));
+  ASSERT_EQ(0, dumper->create(path));
+  ASSERT_EQ(0, IndexBuilder::TrainBuildAndDump(builder, holder, dumper));
+  ASSERT_EQ(0, dumper->close());
+}
+
+void CheckBatchRows(const char *metric_name) {
+  SCOPED_TRACE(metric_name);
+  constexpr size_t logical_dim = 17;
+  constexpr size_t row_count = 2203;
+  constexpr size_t query_count = 3;
+  const bool cosine = std::string(metric_name) == "Cosine";
+  const bool l2 = std::string(metric_name) == "SquaredEuclidean";
+  const size_t dim = logical_dim + (cosine ? 1 : 0);
+  IndexMeta meta(IndexMeta::DT_FP32, dim);
+  meta.set_metric(metric_name, 0, ailego::Params());
+  meta.set_major_order(IndexMeta::MO_ROW);
+  FlatIndexFile file(std::string("flat_batch_rows_") + metric_name);
+  std::vector<float> rows(row_count * dim), queries(query_count * dim);
+  std::vector<uint64_t> keys(row_count);
+  for (size_t i = 0; i < row_count; ++i) {
+    keys[i] = 1000000 - i * 37;
+    for (size_t d = 0; d < logical_dim; ++d) {
+      rows[i * dim + d] = d == 0 ? (i + 1) / 4096.0f : (d + 1) / 128.0f;
+    }
+    if (cosine) rows[i * dim + logical_dim] = 1000.0f + i;
+  }
+  for (size_t j = 0; j < query_count; ++j) {
+    for (size_t d = 0; d < logical_dim; ++d) {
+      queries[j * dim + d] =
+          d == 0 ? (l2 ? -1.0f : 1.0f) * (j + 1) / 8.0f : (d + j + 1) / 256.0f;
+    }
+    if (cosine) queries[j * dim + logical_dim] = 100000.0f + j;
+  }
+  BuildFp32Rows(file.path, meta, rows, keys);
+  auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->open(file.path, false));
+  IndexMeta input(IndexMeta::DT_FP32, logical_dim);
+  input.set_metric(metric_name, 0, ailego::Params());
+  auto quantizer = std::make_shared<CountingFp32Quantizer>();
+  ASSERT_EQ(0, quantizer->init(input, ailego::Params()));
+  ailego::Params params;
+  // Two 1,056-row reads followed by 91 rows. Each complete read contains
+  // two full 512-row batches and a 32-row tail.
+  params.set("proxima.flat.read_block_size",
+             static_cast<uint32_t>(1056 * dim * sizeof(float)));
+  for (bool use_quantizer : {true, false}) {
+    SCOPED_TRACE(use_quantizer);
+    auto searcher = IndexFactory::CreateSearcher("FlatSearcher");
+    ASSERT_NE(nullptr, searcher);
+    ASSERT_EQ(0, use_quantizer ? searcher->init(params, quantizer)
+                               : searcher->init(params));
+    ASSERT_EQ(0, searcher->load(storage, nullptr));
+    auto context = searcher->create_context();
+    ASSERT_NE(nullptr, context);
+    IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
+    for (uint32_t topk : {0U, 17U, 129U, 2210U}) {
+      SCOPED_TRACE(topk);
+      context->set_topk(topk);
+      for (int mode = 0; mode < 3; ++mode) {
+        SCOPED_TRACE(mode);
+        quantizer->reset_counts();
+        const size_t count = mode == 2 ? query_count : 1;
+        ASSERT_EQ(0, mode == 0
+                         ? searcher->search_impl(queries.data(), qmeta, context)
+                         : searcher->search_impl(queries.data(), qmeta, count,
+                                                 context));
+        if (use_quantizer) {
+          EXPECT_EQ(0U, quantizer->single_calls);
+          size_t scanned_rows = 0;
+          for (int batch : quantizer->batches) scanned_rows += batch;
+          EXPECT_EQ(row_count * count, scanned_rows);
+          EXPECT_NE(quantizer->batches.end(),
+                    std::find(quantizer->batches.begin(),
+                              quantizer->batches.end(), 512));
+          EXPECT_NE(quantizer->batches.end(),
+                    std::find(quantizer->batches.begin(),
+                              quantizer->batches.end(), 91));
+        }
+        for (size_t j = 0; j < count; ++j) {
+          std::vector<std::pair<float, uint64_t>> expected;
+          for (size_t i = 0; i < row_count; ++i) {
+            double score = cosine ? 1.0 : 0.0;
+            for (size_t d = 0; d < logical_dim; ++d) {
+              const double x = rows[i * dim + d];
+              const double y = queries[j * dim + d];
+              score += l2 ? (x - y) * (x - y) : -x * y;
+            }
+            expected.emplace_back(static_cast<float>(score), keys[i]);
+          }
+          std::sort(expected.begin(), expected.end());
+          expected.resize(std::min(row_count, size_t(std::max(topk, 1U))));
+          const auto &result = context->result(j);
+          ASSERT_EQ(expected.size(), result.size());
+          for (size_t i = 0; i < result.size(); ++i) {
+            EXPECT_EQ(expected[i].second, result[i].key());
+            EXPECT_NEAR(expected[i].first, result[i].score(), 1e-5f);
+          }
+        }
+      }
+    }
+  }
+}
+}  // namespace
+
+TEST(FlatQuantizerDistance, BatchRowsAcrossReadsMatchScalarReference) {
+  for (const auto *metric : {"SquaredEuclidean", "InnerProduct", "Cosine"}) {
+    CheckBatchRows(metric);
+  }
+}
+
+namespace {
+template <typename Base>
+void CheckEncodedStreamerBatch(const char *metric) {
+  SCOPED_TRACE(metric);
+  constexpr size_t dim = 18;     // INT4 requires an even logical dimension.
+  constexpr size_t count = 113;  // Three full physical blocks and a tail.
+  const std::string path = "flat_encoded_batch_streamer";
+  test_util::RemoveTestPath(path);
+  struct Cleanup {
+    std::string path;
+    ~Cleanup() {
+      test_util::RemoveTestPath(path);
+    }
+  } cleanup{path};
+  auto quantizer = std::make_shared<CountingQuantizer<Base>>();
+  IndexMeta input(IndexMeta::DT_FP32, dim);
+  input.set_metric(metric, 0, ailego::Params());
+  ASSERT_EQ(0, quantizer->init(input, ailego::Params()));
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(path, true));
+  auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_NE(nullptr, streamer);
+  ailego::Params params;
+  params.set(PARAM_FLAT_USE_CONTIGUOUS_MEMORY, false);
+  ASSERT_EQ(0, streamer->init(quantizer->meta(), params, quantizer));
+  ASSERT_EQ(0, streamer->open(storage));
+  auto context = streamer->create_context();
+  ASSERT_NE(nullptr, context);
+  std::mt19937 random(20261022);
+  std::uniform_real_distribution<float> distribution(-1.0f, 1.0f);
+  std::vector<float> raw(dim);
+  std::vector<std::string> queries(3), codes(count);
+  IndexQueryMeta qmeta;
+  for (auto &query : queries) {
+    for (float &value : raw) value = distribution(random);
+    ASSERT_EQ(0, quantizer->quantize(raw.data(),
+                                     IndexQueryMeta(IndexMeta::DT_FP32, dim),
+                                     &query, &qmeta));
+  }
+  ASSERT_EQ(quantizer->meta().data_type(), qmeta.data_type());
+  ASSERT_EQ(quantizer->quantized_query_vector_length(), qmeta.element_size());
+  std::vector<uint64_t> keys(count);
+  for (size_t i = 0; i < count; ++i) {
+    keys[i] = (uint64_t{1} << 45) + (count - i) * 37;
+    for (float &value : raw) value = distribution(random);
+    codes[i].resize(quantizer->quantized_datapoint_vector_length());
+    quantizer->quantize_data(raw.data(), codes[i].data());
+    ASSERT_EQ(0, streamer->add_impl(keys[i], codes[i].data(), qmeta, context));
+  }
+  // The caller supplies encoded queries, including each encoding's metadata
+  // tail. Multiple queries catch accidental use of the FP32 input stride.
+  const std::string batch = queries[0] + queries[1] + queries[2];
+  for (uint32_t topk : {17U, 513U}) {
+    SCOPED_TRACE(topk);
+    context->set_topk(topk);
+    for (bool filtered : {false, true}) {
+      SCOPED_TRACE(filtered);
+      if (filtered) {
+        context->set_filter([&](uint64_t key) { return key == keys[0]; });
+      } else {
+        context->reset_filter();
+      }
+      quantizer->reset_counts();
+      ASSERT_EQ(0, streamer->search_impl(batch.data(), qmeta, 3, context));
+      if (filtered) {
+        EXPECT_TRUE(quantizer->batches.empty());
+      } else {
+        ASSERT_EQ(12U, quantizer->batches.size());
+        EXPECT_EQ(0U, quantizer->single_calls);
+        for (size_t j = 0; j < queries.size(); ++j) {
+          size_t scanned = 0;
+          for (size_t block = 0; block < 4; ++block) {
+            scanned += quantizer->batches[j * 4 + block];
+            EXPECT_EQ(batch.data() + j * qmeta.element_size(),
+                      quantizer->queries[j * 4 + block]);
+          }
+          EXPECT_EQ(count, scanned);
+        }
+      }
+      for (size_t j = 0; j < queries.size(); ++j) {
+        std::vector<float> scores(count), expected;
+        for (size_t i = 0; i < count; ++i) {
+          scores[i] = quantizer->Base::calc_distance_dp_query(
+              codes[i].data(), queries[j].data());
+          if (!filtered || i != 0) expected.push_back(scores[i]);
+        }
+        std::sort(expected.begin(), expected.end());
+        expected.resize(std::min(expected.size(), size_t(topk)));
+        const auto &result = context->result(j);
+        ASSERT_EQ(expected.size(), result.size());
+        std::vector<bool> seen(count, false);
+        for (size_t k = 0; k < result.size(); ++k) {
+          auto found = std::find(keys.begin(), keys.end(), result[k].key());
+          ASSERT_NE(keys.end(), found);
+          const size_t i = found - keys.begin();
+          EXPECT_FALSE(seen[i]);
+          seen[i] = true;
+          if (filtered) EXPECT_NE(0U, i);
+          // FP16 single and batch kernels may accumulate differently. Check
+          // both the selected rank and the actual key's score, allowing ties.
+          const float tolerance = 2e-3f * std::max(1.0f, std::abs(expected[k]));
+          EXPECT_NEAR(expected[k], scores[i], tolerance);
+          EXPECT_NEAR(scores[i], result[k].score(), tolerance);
+        }
+      }
+    }
+  }
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, storage->close());
+}
+}  // namespace
+
+TEST(FlatQuantizerDistance, StreamerBatchSupportsEncodedTypesAndFallback) {
+  for (const char *metric : {"SquaredEuclidean", "InnerProduct", "Cosine"}) {
+    CheckEncodedStreamerBatch<turbo::Fp16Quantizer>(metric);
+  }
+  // Record quantizers support L2/Cosine and retain per-row metadata in batch.
+  for (const char *metric : {"SquaredEuclidean", "Cosine"}) {
+    CheckEncodedStreamerBatch<turbo::Int8Quantizer>(metric);
+    CheckEncodedStreamerBatch<turbo::Int4Quantizer>(metric);
+  }
+}
+
+TEST(FlatQuantizerDistance, RowTopKThresholdIncludesBoundaryAndRejectsNaN) {
+  IndexMeta meta(IndexMeta::DT_FP32, 1);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+  meta.set_major_order(IndexMeta::MO_ROW);
+  const std::vector<float> rows{1, 2, 3,
+                                4, 5, std::numeric_limits<float>::quiet_NaN()};
+  const std::vector<uint64_t> keys{107, 53, 199, 13, 71, 997};
+  const float queries[] = {0, -1};
+  const IndexQueryMeta qmeta(IndexMeta::DT_FP32, 1);
+  FlatIndexFile file("flat_batch_threshold.index");
+  BuildFp32Rows(file.path, meta, rows, keys);
+  auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->open(file.path, false));
+  for (bool use_quantizer : {true, false}) {
+    SCOPED_TRACE(use_quantizer);
+    auto searcher = IndexFactory::CreateSearcher("FlatSearcher");
+    ASSERT_NE(nullptr, searcher);
+    ASSERT_EQ(0, use_quantizer ? searcher->init(ailego::Params(),
+                                                CreateDistanceQuantizer(meta))
+                               : searcher->init(ailego::Params()));
+    ASSERT_EQ(0, searcher->load(storage, nullptr));
+    auto context = searcher->create_context();
+    ASSERT_NE(nullptr, context);
+    context->set_topk(20);
+    for (float threshold : {9.0f, 0.25f}) {
+      context->set_threshold(threshold);
+      ASSERT_EQ(0, searcher->search_impl(queries, qmeta, 2, context));
+      for (size_t j = 0; j < 2; ++j) {
+        const auto &result = context->result(j);
+        const size_t count = threshold == 9.0f ? 3 - j : 0;
+        ASSERT_EQ(count, result.size());
+        for (size_t i = 0; i < count; ++i) {
+          EXPECT_EQ(keys[i], result[i].key());
+          EXPECT_FLOAT_EQ((rows[i] - queries[j]) * (rows[i] - queries[j]),
+                          result[i].score());
+        }
+      }
+    }
+    context->reset_threshold();
+    ASSERT_EQ(0, searcher->search_impl(queries, qmeta, context));
+    ASSERT_EQ(5U, context->result().size());
+    for (size_t i = 0; i < 5; ++i) {
+      EXPECT_EQ(keys[i], context->result()[i].key());
     }
   }
 }
