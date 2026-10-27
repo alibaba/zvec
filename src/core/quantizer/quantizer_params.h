@@ -19,138 +19,138 @@ namespace zvec {
 namespace core {
 
 //! MipsConverter
-static const std::string MIPS_CONVERTER_M_VALUE = "mips.converter.m_value";
-static const std::string MIPS_CONVERTER_U_VALUE = "mips.converter.u_value";
-static const std::string MIPS_CONVERTER_L2_NORM = "mips.converter.l2_norm";
-static const std::string MIPS_CONVERTER_FORCED_HALF_FLOAT =
+inline const std::string MIPS_CONVERTER_M_VALUE = "mips.converter.m_value";
+inline const std::string MIPS_CONVERTER_U_VALUE = "mips.converter.u_value";
+inline const std::string MIPS_CONVERTER_L2_NORM = "mips.converter.l2_norm";
+inline const std::string MIPS_CONVERTER_FORCED_HALF_FLOAT =
     "mips.converter.forced_half_float";
-static const std::string MIPS_CONVERTER_SPHERICAL_INJECTION =
+inline const std::string MIPS_CONVERTER_SPHERICAL_INJECTION =
     "mips.converter.spherical_injection";
 
 //! MipsReverseConverter
-static const std::string MIPS_REVERSE_CONVERTER_M_VALUE =
+inline const std::string MIPS_REVERSE_CONVERTER_M_VALUE =
     "mips_reverse.converter.m_value";
-static const std::string MIPS_REVERSE_CONVERTER_U_VALUE =
+inline const std::string MIPS_REVERSE_CONVERTER_U_VALUE =
     "mips_reverse.converter.u_value";
-static const std::string MIPS_REVERSE_CONVERTER_L2_NORM =
+inline const std::string MIPS_REVERSE_CONVERTER_L2_NORM =
     "mips_reverse.converter.l2_norm";
-static const std::string MIPS_REVERSE_CONVERTER_FORCED_SINGLE_FLOAT =
+inline const std::string MIPS_REVERSE_CONVERTER_FORCED_SINGLE_FLOAT =
     "mips_reverse.converter.forced_single_float";
-static const std::string MIPS_REVERSE_CONVERTER_SPHERICAL_INJECTION =
+inline const std::string MIPS_REVERSE_CONVERTER_SPHERICAL_INJECTION =
     "mips_reverse.converter.spherical_injection";
 
 //! MipsReformer
-static const std::string MIPS_REFORMER_M_VALUE = "mips.reformer.m_value";
-static const std::string MIPS_REFORMER_U_VALUE = "mips.reformer.u_value";
-static const std::string MIPS_REFORMER_L2_NORM = "mips.reformer.l2_norm";
-static const std::string MIPS_REFORMER_NORMALIZE = "mips.reformer.normalize";
-static const std::string MIPS_REFORMER_FORCED_HALF_FLOAT =
+inline const std::string MIPS_REFORMER_M_VALUE = "mips.reformer.m_value";
+inline const std::string MIPS_REFORMER_U_VALUE = "mips.reformer.u_value";
+inline const std::string MIPS_REFORMER_L2_NORM = "mips.reformer.l2_norm";
+inline const std::string MIPS_REFORMER_NORMALIZE = "mips.reformer.normalize";
+inline const std::string MIPS_REFORMER_FORCED_HALF_FLOAT =
     "mips.reformer.forced_half_float";
-static const std::string MIPS_REFORMER_SPHERICAL_INJECTION =
+inline const std::string MIPS_REFORMER_SPHERICAL_INJECTION =
     "mips.reformer.spherical_injection";
 
 //! NormalizeConverter
-static const std::string NORMALIZE_CONVERTER_FORCED_HALF_FLOAT =
+inline const std::string NORMALIZE_CONVERTER_FORCED_HALF_FLOAT =
     "normalize.converter.forced_half_float";
-static const std::string NORMALIZE_CONVERTER_P_VALUE =
+inline const std::string NORMALIZE_CONVERTER_P_VALUE =
     "normalize.converter.p_value";
 
 //! NormalizeReformer
-static const std::string NORMALIZE_REFORMER_FORCED_HALF_FLOAT =
+inline const std::string NORMALIZE_REFORMER_FORCED_HALF_FLOAT =
     "normalize.reformer.forced_half_float";
-static const std::string NORMALIZE_REFORMER_P_VALUE =
+inline const std::string NORMALIZE_REFORMER_P_VALUE =
     "normalize.reformer.p_value";
 
 //! Int8Converter
-static const std::string INT8_QUANTIZER_CONVERTER_HISTOGRAM_BINS_COUNT =
+inline const std::string INT8_QUANTIZER_CONVERTER_HISTOGRAM_BINS_COUNT =
     "int8_quantizer.converter.histogram_bins_count";
-static const std::string INT8_QUANTIZER_CONVERTER_DISABLE_BIAS =
+inline const std::string INT8_QUANTIZER_CONVERTER_DISABLE_BIAS =
     "int8_quantizer.converter.disable_bias";
-static const std::string INT8_QUANTIZER_CONVERTER_BIAS =
+inline const std::string INT8_QUANTIZER_CONVERTER_BIAS =
     "int8_quantizer.converter.bias";
-static const std::string INT8_QUANTIZER_CONVERTER_SCALE =
+inline const std::string INT8_QUANTIZER_CONVERTER_SCALE =
     "int8_quantizer.converter.scale";
 
 //! Int4Converter
-static const std::string INT4_QUANTIZER_CONVERTER_HISTOGRAM_BINS_COUNT =
+inline const std::string INT4_QUANTIZER_CONVERTER_HISTOGRAM_BINS_COUNT =
     "int4_quantizer.converter.histogram_bins_count";
-static const std::string INT4_QUANTIZER_CONVERTER_DISABLE_BIAS =
+inline const std::string INT4_QUANTIZER_CONVERTER_DISABLE_BIAS =
     "int4_quantizer.converter.disable_bias";
-static const std::string INT4_QUANTIZER_CONVERTER_BIAS =
+inline const std::string INT4_QUANTIZER_CONVERTER_BIAS =
     "int4_quantizer.converter.bias";
-static const std::string INT4_QUANTIZER_CONVERTER_SCALE =
+inline const std::string INT4_QUANTIZER_CONVERTER_SCALE =
     "int4_quantizer.converter.scale";
 
 //! Int8Reformer
-static const std::string INT8_QUANTIZER_REFORMER_BIAS =
+inline const std::string INT8_QUANTIZER_REFORMER_BIAS =
     "int8_quantizer.reformer.bias";
-static const std::string INT8_QUANTIZER_REFORMER_SCALE =
+inline const std::string INT8_QUANTIZER_REFORMER_SCALE =
     "int8_quantizer.reformer.scale";
-static const std::string INT8_QUANTIZER_REFORMER_METRIC =
+inline const std::string INT8_QUANTIZER_REFORMER_METRIC =
     "int8_quantizer.reformer.metric";
 
 //! Int4Reformer
-static const std::string INT4_QUANTIZER_REFORMER_BIAS =
+inline const std::string INT4_QUANTIZER_REFORMER_BIAS =
     "int4_quantizer.reformer.bias";
-static const std::string INT4_QUANTIZER_REFORMER_SCALE =
+inline const std::string INT4_QUANTIZER_REFORMER_SCALE =
     "int4_quantizer.reformer.scale";
-static const std::string INT4_QUANTIZER_REFORMER_METRIC =
+inline const std::string INT4_QUANTIZER_REFORMER_METRIC =
     "int4_quantizer.reformer.metric";
 
 //! CosineConverter
-static const std::string COSINE_CONVERTER_FORCED_HALF_FLOAT =
+inline const std::string COSINE_CONVERTER_FORCED_HALF_FLOAT =
     "cosine.converter.forced_half_float";
-static const std::string COSINE_CONVERTER_ENABLE_ROTATE =
+inline const std::string COSINE_CONVERTER_ENABLE_ROTATE =
     "cosine.converter.enable_rotate";
 
 //! CosineReformer
-static const std::string COSINE_REFORMER_FORCED_HALF_FLOAT =
+inline const std::string COSINE_REFORMER_FORCED_HALF_FLOAT =
     "cosine.reformer.forced_half_float";
 
 //! IntegerStreamingConverter
-static const std::string INTEGER_STREAMING_CONVERTER_ENABLE_NORMALIZE =
+inline const std::string INTEGER_STREAMING_CONVERTER_ENABLE_NORMALIZE =
     "integer_streaming.converter.enable_normalize";
-static const std::string INTEGER_STREAMING_CONVERTER_ENABLE_ROTATE =
+inline const std::string INTEGER_STREAMING_CONVERTER_ENABLE_ROTATE =
     "integer_streaming.converter.enable_rotate";
 
 //! IntegerStreamingReformer
-static const std::string INTEGER_STREAMING_REFORMER_ENABLE_NORMALIZE =
+inline const std::string INTEGER_STREAMING_REFORMER_ENABLE_NORMALIZE =
     "integer_streaming.reformer.enable_normalize";
-static const std::string INTEGER_STREAMING_REFORMER_IS_EUCLIDEAN =
+inline const std::string INTEGER_STREAMING_REFORMER_IS_EUCLIDEAN =
     "integer_streaming.reformer.is_euclidean";
 
 //! UniformUint7Converter / Reformer
-static const std::string UNIFORM_UINT7_REFORMER_SCALE =
+inline const std::string UNIFORM_UINT7_REFORMER_SCALE =
     "uniform_uint7.reformer.scale";
-static const std::string UNIFORM_UINT7_REFORMER_BIAS =
+inline const std::string UNIFORM_UINT7_REFORMER_BIAS =
     "uniform_uint7.reformer.bias";
 
 //! UniformUint8Converter / Reformer
-static const std::string UNIFORM_UINT8_REFORMER_SCALE =
+inline const std::string UNIFORM_UINT8_REFORMER_SCALE =
     "uniform_uint8.reformer.scale";
-static const std::string UNIFORM_UINT8_REFORMER_BIAS =
+inline const std::string UNIFORM_UINT8_REFORMER_BIAS =
     "uniform_uint8.reformer.bias";
 
 //! UniformUint4Converter / Reformer
-static const std::string UNIFORM_UINT4_REFORMER_MINIMUM =
+inline const std::string UNIFORM_UINT4_REFORMER_MINIMUM =
     "uniform_uint4.reformer.minimum";
-static const std::string UNIFORM_UINT4_REFORMER_RANGE =
+inline const std::string UNIFORM_UINT4_REFORMER_RANGE =
     "uniform_uint4.reformer.range";
-static const std::string UNIFORM_UINT4_REFORMER_ORIGINAL_DIMENSION =
+inline const std::string UNIFORM_UINT4_REFORMER_ORIGINAL_DIMENSION =
     "uniform_uint4.reformer.original_dimension";
 
 //! DoubleBitConverter
-static const std::string DOUBLE_BIT_CONVERTER_TRAIN_SAMPLE_COUNT =
+inline const std::string DOUBLE_BIT_CONVERTER_TRAIN_SAMPLE_COUNT =
     "double_bit.converter.train_sample_count";
-static const std::string DOUBLE_BIT_CONVERTER_A_VALUE =
+inline const std::string DOUBLE_BIT_CONVERTER_A_VALUE =
     "double_bit.converter.a_value";
-static const std::string DOUBLE_BIT_CONVERTER_B_VALUE =
+inline const std::string DOUBLE_BIT_CONVERTER_B_VALUE =
     "double_bit.converter.b_value";
 
 //! DoubleBitReformer
-static const std::string DOUBLE_BIT_REFORMER_A_VALUE =
+inline const std::string DOUBLE_BIT_REFORMER_A_VALUE =
     "double_bit.reformer.a_value";
-static const std::string DOUBLE_BIT_REFORMER_B_VALUE =
+inline const std::string DOUBLE_BIT_REFORMER_B_VALUE =
     "double_bit.reformer.b_value";
 
 }  // namespace core
