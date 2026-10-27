@@ -64,7 +64,9 @@ A nonempty `quantized_graph_model` also enables the mode, preserving existing
 callers. The builder exposes `with_use_quantized_graph(bool)` and
 `with_quantized_graph_model(path)`; the corresponding JSON fields have the same
 names. Low-level streamer keys are `proxima.hnsw.quantized_graph.enabled` and
-`proxima.hnsw.quantized_graph.model`. Query options are runtime core C++ fields.
+`proxima.hnsw.quantized_graph.model`. Query options also round-trip through
+`IndexFactory::QueryParamSerializeToJson` / `QueryParamDeserializeFromJson`,
+so the standard `recall` and `bench` tools can configure them.
 There are no production experiment environment variables.
 
 Metric defaults remain explicit presets, not universal recommendations:
@@ -153,7 +155,67 @@ validity do not prove dataset identity; the format contains no cryptographic
 graph fingerprint. Keep external hashes in deployment/benchmark manifests.
 Rebuild a matching router after changing graph IDs or the dataset.
 
-## Benchmark and ablation
+## Standard recall and bench tools
+
+Use the existing `tools/core/recall` and `tools/core/bench` executables for
+comparable tool-level measurements. Build the underlying HNSW snapshot with
+`local_builder` when needed; reuse the same snapshot across search ablations.
+Changing the graph requires rebuilding a matching entry model.
+
+```sh
+cmake --build "$BUILD_DIR" --target local_builder recall bench -j 8
+"$BUILD_DIR/bin/recall" /local/experiment.yaml
+"$BUILD_DIR/bin/bench" /local/experiment.yaml
+```
+
+Example configuration for a GIST snapshot and an existing 256-coordinate model:
+
+```yaml
+IndexCommon:
+  IndexConfig: '{"index_type":"kHNSW","data_type":"DT_FP32","metric_type":"kL2sq","dimension":960,"m":50,"ef_construction":500,"use_id_map":true,"use_quantized_graph":true,"quantized_graph_model":"/path/gist256.bin"}'
+  IndexPath: /path/gist.index
+  TopK: '10'
+  QueryFile: /path/queries.txt
+  QueryFirstSep: ';'
+  QuerySecondSep: ' '
+  GroundTruthFile: /path/neighbors.txt
+  GroundTruthFirstSep: ';'
+  GroundTruthSecondSep: ' '
+  CompareById: true
+  RecallThreadCount: 1
+  RecallBatchCount: 0
+  RecallGTCount: 10
+  RecallLogDir: /local/recall-results
+  BenchBatchCount: 1
+  BenchIterCount: 1000000000
+  BenchSecs: 5
+  BenchRounds: 3
+  BenchThreadCounts: [1, 8]
+QueryConfig:
+  QueryParam: '{"index_type":"kHNSW","ef_search":800,"quantized_graph_margin":0.085,"quantized_graph_bucket_width":0.004,"quantized_graph_max_expansions":256,"quantized_graph_route_beam":1}'
+  QueryParams:
+    - '{"index_type":"kHNSW","ef_search":800,"quantized_graph_margin":0.085,"quantized_graph_bucket_width":0.004,"quantized_graph_max_expansions":256,"quantized_graph_route_beam":1}'
+    - '{"index_type":"kHNSW","ef_search":800,"quantized_graph_margin":0.085,"quantized_graph_bucket_width":0.004,"quantized_graph_max_expansions":256,"quantized_graph_route_beam":0}'
+```
+
+`QueryParams` is an optional sequence of complete query-parameter JSON strings.
+Cases share one opened index and the common external refiner, if configured.
+Without it, the existing single `QueryParam` behavior is preserved. Recall logs
+for multiple cases go into `case_0`, `case_1`, etc. `BenchRounds` defaults to one;
+`BenchThreadCounts` defaults to the existing `BenchThreadCount`. The bench tool
+reverses case order on alternate rounds and prints case/round/thread markers.
+Its normal query-parameter cloning and shared timing statistics remain in the
+measured path, so its QPS should not be mixed with other drivers' measurements.
+
+Queries use `key;float float ...`; ID ground truth uses `key;id id ...`.
+For fvecs/ivecs input, convert the file encoding without changing FP32 values,
+query order or IDs, and verify the float round trip. Models and measurements
+belong outside the source tree.
+
+## Historical diagnostic driver
+
+The following driver is retained for reproducing earlier experiments and
+low-level diagnostics; standard-tool QPS should be reported separately.
 
 ```sh
 cmake -S . -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release \

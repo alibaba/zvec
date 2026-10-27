@@ -10,6 +10,7 @@
 #include <random>
 #include <gtest/gtest.h>
 #include <zvec/core/interface/index.h>
+#include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
 #include "algorithm/hnsw/hnsw_quantized_graph.h"
 #if RABITQ_SUPPORTED && defined(__x86_64__) && \
@@ -28,6 +29,54 @@ struct TestHnswIndex : ci::HNSWIndex {
     return static_cast<const float *>(streamer_->get_vector_by_id(id));
   }
 };
+
+TEST(QuantizedGraphPerformance, QueryJsonPreservesExplicitZeroAndDefaults) {
+  for (bool omit : {false, true}) {
+    for (bool defaults : {false, true}) {
+      ci::HNSWQueryParam input;
+      if (!defaults) {
+        input.quantized_graph_margin = 0;
+        input.quantized_graph_bucket_width = .004f;
+        input.quantized_graph_route_beam = 0;
+        input.quantized_graph_max_expansions = 256;
+      }
+      const auto json =
+          ci::IndexFactory::QueryParamSerializeToJson(input, omit);
+      auto typed =
+          ci::IndexFactory::QueryParamDeserializeFromJson<ci::HNSWQueryParam>(
+              json);
+      auto base = ci::IndexFactory::QueryParamDeserializeFromJson<
+          ci::BaseIndexQueryParam>(json);
+      auto derived = std::dynamic_pointer_cast<ci::HNSWQueryParam>(base);
+      for (const auto &output : {typed, derived}) {
+        ASSERT_NE(output, nullptr);
+        EXPECT_EQ(input.quantized_graph_margin, output->quantized_graph_margin);
+        EXPECT_EQ(input.quantized_graph_bucket_width,
+                  output->quantized_graph_bucket_width);
+        EXPECT_EQ(input.quantized_graph_route_beam,
+                  output->quantized_graph_route_beam);
+        EXPECT_EQ(input.quantized_graph_max_expansions,
+                  output->quantized_graph_max_expansions);
+      }
+    }
+  }
+  for (const std::string json :
+       {R"({"index_type":"kHNSW","quantized_graph_route_beam":5})",
+        R"({"index_type":"kHNSW","quantized_graph_route_beam":-1})",
+        R"({"index_type":"kHNSW","quantized_graph_route_beam":4294967296})",
+        R"({"index_type":"kHNSW","quantized_graph_max_expansions":-1})",
+        R"({"index_type":"kHNSW","quantized_graph_max_expansions":4294967296})",
+        R"({"index_type":"kHNSW","quantized_graph_margin":-2})",
+        R"({"index_type":"kHNSW","quantized_graph_bucket_width":1.1})",
+        R"({"index_type":"kHNSW","quantized_graph_margin":"bad"})"}) {
+    EXPECT_EQ(
+        nullptr,
+        ci::IndexFactory::QueryParamDeserializeFromJson<ci::HNSWQueryParam>(
+            json));
+    EXPECT_EQ(nullptr, ci::IndexFactory::QueryParamDeserializeFromJson<
+                           ci::BaseIndexQueryParam>(json));
+  }
+}
 
 TEST(QuantizedGraphPerformance, ParameterRoundTripAndUnsupportedLayouts) {
   auto p = ci::HNSWIndexParamBuilder()
