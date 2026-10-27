@@ -6,21 +6,14 @@
 #include "legacy/include/zvec/ailego/pattern/factory.h"
 #include "factory_abi_fixture.h"
 
-namespace zvec {
-namespace compatibility {
+namespace zvec::compatibility {
 namespace {
 
 template <int Order>
-struct LegacyValue : FactoryABIBase<Order> {
-  explicit LegacyValue(int input) : value_(input) {}
-  int value() const override {
-    return value_;
-  }
-  int value_;
-};
+using LegacyFactory = ailego::Factory<FactoryABIBase<Order>>;
 
 template <int Order>
-struct LegacyAccess : ailego::Factory<FactoryABIBase<Order>> {
+struct LegacyAccess : LegacyFactory<Order> {
   static const void *Address() {
     return LegacyAccess::Instance();
   }
@@ -57,43 +50,41 @@ const void *LegacyFactoryAddress(int order) {
 }
 
 size_t LegacyFactorySize() {
-  return sizeof(ailego::Factory<FactoryABIBase<0>>);
+  return sizeof(LegacyFactory<0>);
 }
 
 void LegacyFactoryRegister(int order, const char *key, int value) {
   if (order == 0) {
-    ailego::Factory<FactoryABIBase<0>>::Register<LegacyValue<0>> registration(
+    LegacyFactory<0>::Register<FactoryABIValue<0, true>> registration(
         key, int{value});
   } else {
-    ailego::Factory<FactoryABIBase<1>>::Register<LegacyValue<1>> registration(
+    LegacyFactory<1>::Register<FactoryABIValue<1, true>> registration(
         key, int{value});
   }
 }
 
 int LegacyFactoryCreate(int order, const char *key) {
   if (order == 0) {
-    auto result = ailego::Factory<FactoryABIBase<0>>::MakeUnique(key);
+    auto result = LegacyFactory<0>::MakeUnique(key);
     return result ? result->value() : -1;
   }
-  auto result = ailego::Factory<FactoryABIBase<1>>::MakeUnique(key);
+  auto result = LegacyFactory<1>::MakeUnique(key);
   return result ? result->value() : -1;
 }
 
 bool LegacyFactoryHas(int order, const char *key) {
-  return order == 0 ? ailego::Factory<FactoryABIBase<0>>::Has(key)
-                    : ailego::Factory<FactoryABIBase<1>>::Has(key);
+  return order == 0 ? LegacyFactory<0>::Has(key) : LegacyFactory<1>::Has(key);
 }
 
 size_t LegacyFactoryClassCount(int order) {
-  return order == 0 ? ailego::Factory<FactoryABIBase<0>>::Classes().size()
-                    : ailego::Factory<FactoryABIBase<1>>::Classes().size();
+  return order == 0 ? LegacyFactory<0>::Classes().size()
+                    : LegacyFactory<1>::Classes().size();
 }
 
 void LegacyFactoryRegisterArgument(const char *key,
                                    LegacyArgumentState *state) {
-  ailego::Factory<FactoryABIBase<0>>::Register<LegacyArgumentValue>
-      registration(key, LegacyArgument{state});
+  LegacyFactory<0>::Register<LegacyArgumentValue> registration(
+      key, LegacyArgument{state});
 }
 
-}  // namespace compatibility
-}  // namespace zvec
+}  // namespace zvec::compatibility

@@ -5,8 +5,7 @@
 
 #include <cstddef>
 
-namespace zvec {
-namespace compatibility {
+namespace zvec::compatibility {
 
 // Distinct categories exercise either version allocating the shared singleton
 // first. Keep these types independent of both versions of the Factory header.
@@ -14,6 +13,16 @@ template <int Order>
 struct FactoryABIBase {
   virtual ~FactoryABIBase() = default;
   virtual int value() const = 0;
+};
+
+// Keep client types distinct so the linker cannot merge their Register code.
+template <int Order, bool LegacyClient>
+struct FactoryABIValue : FactoryABIBase<Order> {
+  explicit FactoryABIValue(int input) : value_(input) {}
+  int value() const override {
+    return value_;
+  }
+  int value_;
 };
 
 struct LegacyArgumentState {
@@ -31,5 +40,4 @@ bool LegacyFactoryHas(int order, const char *key);
 size_t LegacyFactoryClassCount(int order);
 void LegacyFactoryRegisterArgument(const char *key, LegacyArgumentState *state);
 
-}  // namespace compatibility
-}  // namespace zvec
+}  // namespace zvec::compatibility

@@ -5,21 +5,11 @@
 #include <zvec/ailego/pattern/factory.h>
 #include "factory_abi_fixture.h"
 
-namespace zvec {
-namespace compatibility {
+namespace zvec::compatibility {
 namespace {
 
 template <int Order>
 using CurrentFactory = ailego::Factory<FactoryABIBase<Order>>;
-
-template <int Order>
-struct CurrentValue : FactoryABIBase<Order> {
-  explicit CurrentValue(int input) : value_(input) {}
-  int value() const override {
-    return value_;
-  }
-  int value_;
-};
 
 template <int Order>
 struct CurrentAccess : CurrentFactory<Order> {
@@ -39,7 +29,8 @@ void CheckBothDirections() {
   EXPECT_EQ(17, legacy->value());
   EXPECT_TRUE(CurrentFactory<Order>::Has("LegacyEntry"));
 
-  typename CurrentFactory<Order>::template Register<CurrentValue<Order>>
+  typename CurrentFactory<Order>::template Register<
+      FactoryABIValue<Order, false>>
       current("CurrentEntry", 29);
   EXPECT_EQ(29, LegacyFactoryCreate(Order, "CurrentEntry"));
   EXPECT_TRUE(LegacyFactoryHas(Order, "CurrentEntry"));
@@ -51,11 +42,13 @@ void CheckBothDirections() {
   auto replaced = CurrentFactory<Order>::MakeUnique("CurrentEntry");
   ASSERT_NE(nullptr, replaced);
   EXPECT_EQ(41, replaced->value());
-  typename CurrentFactory<Order>::template Register<CurrentValue<Order>>
+  typename CurrentFactory<Order>::template Register<
+      FactoryABIValue<Order, false>>
       replace_legacy("LegacyEntry", 53);
   EXPECT_EQ(53, LegacyFactoryCreate(Order, "LegacyEntry"));
 
-  typename CurrentFactory<Order>::template Register<CurrentValue<Order>>
+  typename CurrentFactory<Order>::template Register<
+      FactoryABIValue<Order, false>>
       builtin(typename CurrentFactory<Order>::BuiltinTag{}, "CurrentEntry", 99);
   EXPECT_EQ(41, LegacyFactoryCreate(Order, "CurrentEntry"));
 }
@@ -92,10 +85,9 @@ TEST(FactoryABI, LegacyCallableCanReenterCurrentFactory) {
   EXPECT_GT(state.destructions, destructions);
 
   // Release the legacy callback while its stack-owned test state is alive.
-  CurrentFactory<0>::Register<CurrentValue<0>> replacement(
+  CurrentFactory<0>::Register<FactoryABIValue<0, false>> replacement(
       "LegacyReentrantArgument", 83);
   EXPECT_EQ(83, LegacyFactoryCreate(0, "LegacyReentrantArgument"));
 }
 
-}  // namespace compatibility
-}  // namespace zvec
+}  // namespace zvec::compatibility
