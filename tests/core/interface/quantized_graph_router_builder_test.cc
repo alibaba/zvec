@@ -138,7 +138,8 @@ TEST(QuantizedGraphRouterBuilder, RejectsInvalidTrainingDataAndWriteErrors) {
     (defined(__GNUC__) || defined(__clang__))
 TEST(QuantizedGraphRouterBuilder, GenericMetricsDimensionsAndScalarScores) {
   if (!__builtin_cpu_supports("avx512vnni")) GTEST_SKIP();
-  for (size_t dim : {size_t{33}, size_t{768}, size_t{960}}) {
+  for (size_t dim : {size_t{33}, size_t{512}, size_t{768}, size_t{960},
+                     size_t{1536}, size_t{2048}}) {
     for (bool cosine : {true, false}) {
       Builder::Data input;
       input.docs = 64;
@@ -194,6 +195,10 @@ TEST(QuantizedGraphRouterBuilder, GenericMetricsDimensionsAndScalarScores) {
         float scores[16];
         int32_t products[16];
         router.score(router.group(0), query, scores, products);
+        float generic_scores[16];
+        int32_t generic_products[16];
+        router.score_impl(router.group(0), query, generic_scores,
+                          generic_products);
         std::pair<double, uint32_t> expected{INFINITY, UINT32_MAX};
         const auto &g = router.group(0);
         for (size_t j = 0; j < 16; ++j) {
@@ -202,6 +207,8 @@ TEST(QuantizedGraphRouterBuilder, GenericMetricsDimensionsAndScalarScores) {
             dot +=
                 int32_t(g.codes[j * router.code_stride() + d]) * query.codes[d];
           EXPECT_EQ(dot, products[j]);
+          EXPECT_EQ(products[j], generic_products[j]);
+          EXPECT_EQ(scores[j], generic_scores[j]);
           const double residual =
               double(query.scale) *
               (double(g.scale[j]) * dot + double(g.offset[j]) * query.code_sum);
