@@ -1,13 +1,22 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 include(CheckCXXSourceCompiles)
+include(CMakePushCheckState)
 
 # HOST_ARCH is only populated by the shared AUTO_DETECT_ARCH path. Resolve the
 # CMake target locally as well so Turbo's ARM dispatch also works for Android
 # cross builds and explicitly selected architectures.
 set(_TURBO_TARGET_ARCH "${HOST_ARCH}")
+set(_TURBO_SYSTEM_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")
+if(APPLE AND CMAKE_OSX_ARCHITECTURES)
+  # An explicit target takes precedence over the build host (e.g. Intel Mac
+  # cross-compiling for Apple Silicon). Multi-architecture builds fail the
+  # single-ISA probes safely and retain the baseline kernels.
+  set(_TURBO_TARGET_ARCH "")
+  set(_TURBO_SYSTEM_PROCESSOR "${CMAKE_OSX_ARCHITECTURES}")
+endif()
 if(NOT _TURBO_TARGET_ARCH)
-  string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" _TURBO_SYSTEM_PROCESSOR)
+  string(TOLOWER "${_TURBO_SYSTEM_PROCESSOR}" _TURBO_SYSTEM_PROCESSOR)
   if(_TURBO_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|x64)$")
     set(_TURBO_TARGET_ARCH x64)
   elseif(_TURBO_SYSTEM_PROCESSOR MATCHES "^(i[3-6]86|x86)$")
@@ -23,28 +32,61 @@ endif()
 
 if(NOT ANDROID AND AUTO_DETECT_ARCH AND
    _TURBO_TARGET_ARCH MATCHES "^(x86|x64)$")
-  setup_compiler_march_for_x86(
-    TURBO_MARCH_FLAG_SSE2
-    TURBO_MARCH_FLAG_AVX2
-    TURBO_MARCH_FLAG_AVX512
-    TURBO_MARCH_FLAG_AVX512FP16)
-  # kSSE2 is gated by SSE2 at runtime. Keep these translation units at
-  # that exact baseline so auto-vectorized scalar tails cannot acquire
-  # instructions from the broader corei7 profile returned above.
-  if(MSVC AND _TURBO_TARGET_ARCH STREQUAL "x86")
-    set(TURBO_MARCH_FLAG_SSE2 "/arch:SSE2")
-  elseif(NOT MSVC)
+  # Use explicit ISA sets instead of a whole CPU model. For example,
+  # -march=icelake-server can emit instructions absent on Skylake AVX512 CPUs.
+  if(MSVC)
+    if(_TURBO_TARGET_ARCH STREQUAL "x86")
+      set(TURBO_MARCH_FLAG_SSE2 "/arch:SSE2")
+    endif()
+    set(_TURBO_AVX2_FLAGS "/arch:AVX2")
+    set(_TURBO_AVX512_FLAGS "/arch:AVX512")
+    set(_TURBO_VNNI_FLAGS "/arch:AVX512")
+    set(_TURBO_FP16_FLAGS "/arch:AVX512")
+  else()
     if(_TURBO_TARGET_ARCH STREQUAL "x64")
       set(TURBO_MARCH_FLAG_SSE2 "-march=x86-64")
     else()
       set(TURBO_MARCH_FLAG_SSE2 "-march=i686 -msse2")
     endif()
+    set(_TURBO_AVX2_FLAGS
+      "${TURBO_MARCH_FLAG_SSE2} -mavx2 -mfma -mf16c")
+    set(_TURBO_AVX512_FLAGS
+      "${_TURBO_AVX2_FLAGS} -mavx512f -mavx512bw -mavx512dq -mavx512vl")
+    set(_TURBO_VNNI_FLAGS "${_TURBO_AVX512_FLAGS} -mavx512vnni")
+    set(_TURBO_FP16_FLAGS "${_TURBO_AVX512_FLAGS} -mavx512fp16")
   endif()
 endif()
 
+# Check the same feature macros used by the implementation, with the same
+# per-source flags. A missing ISA produces empty explicit dispatch rather than
+# selecting a no-op stub. This also covers AUTO_DETECT_ARCH=OFF cross builds.
+function(turbo_probe_x86 ISA CONDITION)
+  cmake_push_check_state(RESET)
+  set(CMAKE_REQUIRED_FLAGS "${_TURBO_${ISA}_FLAGS}")
+  unset(ZVEC_TURBO_COMPILER_${ISA} CACHE)
+  check_cxx_source_compiles("
+    #include <immintrin.h>
+    #if !(${CONDITION})
+    #error Kernel ISA unavailable
+    #endif
+    int main() { return 0; }
+  " ZVEC_TURBO_COMPILER_${ISA})
+  cmake_pop_check_state()
+  if(ZVEC_TURBO_COMPILER_${ISA})
+    set(TURBO_MARCH_FLAG_${ISA} "${_TURBO_${ISA}_FLAGS}" PARENT_SCOPE)
+  else()
+    set(TURBO_MARCH_FLAG_${ISA} "" PARENT_SCOPE)
+  endif()
+endfunction()
+
+turbo_probe_x86(AVX2 "defined(__AVX2__) && (defined(__FMA__) || defined(_MSC_VER)) && (defined(__F16C__) || defined(_MSC_VER))")
+turbo_probe_x86(AVX512 "defined(__AVX2__) && defined(__AVX512F__) && (defined(_MSC_VER) || (defined(__FMA__) && defined(__F16C__) && defined(__AVX512BW__) && defined(__AVX512DQ__) && defined(__AVX512VL__)))")
+turbo_probe_x86(VNNI "(defined(__AVX512VNNI__) && defined(__AVX512BW__) && defined(__AVX512DQ__) && defined(__AVX512VL__) && defined(__FMA__) && defined(__F16C__)) || (defined(_MSC_VER) && defined(__AVX512F__))")
+turbo_probe_x86(FP16 "defined(__AVX512FP16__)")
+
 set(ZVEC_TURBO_ARM_FP16_SUPPORTED OFF)
 set(TURBO_MARCH_FLAG_NEON_FP16 "")
-if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
+if(NOT IOS AND NOT MSVC AND
    _TURBO_TARGET_ARCH MATCHES "^(arm|arm64)$")
   # Keep this probe local to Turbo: only its neon_fp16 distance kernels need
   # FEAT_FP16, while the plain NEON kernels (which widen to FP32) and the
@@ -54,9 +96,14 @@ if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
   # runs against the actual (cross) target toolchain.
   # No fallback march is injected on probe failure: armv8-a is already the
   # aarch64 default, and forcing it onto 32-bit arm targets would be wrong.
+  set(_TURBO_ARM_FP16_FLAGS "")
+  if(AUTO_DETECT_ARCH OR ANDROID)
+    set(_TURBO_ARM_FP16_FLAGS "-march=armv8.2-a+fp16")
+  endif()
   set(_TURBO_SAVED_CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
   set(CMAKE_REQUIRED_FLAGS
-    "${_TURBO_SAVED_CMAKE_REQUIRED_FLAGS} -march=armv8.2-a+fp16")
+    "${_TURBO_SAVED_CMAKE_REQUIRED_FLAGS} ${_TURBO_ARM_FP16_FLAGS}")
+  unset(ZVEC_TURBO_COMPILER_SUPPORTS_ARM_FP16 CACHE)
   check_cxx_source_compiles([=[
     #include <arm_neon.h>
     #if !defined(__aarch64__)
@@ -74,7 +121,7 @@ if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
   set(CMAKE_REQUIRED_FLAGS "${_TURBO_SAVED_CMAKE_REQUIRED_FLAGS}")
 
   if(ZVEC_TURBO_COMPILER_SUPPORTS_ARM_FP16)
-    set(TURBO_MARCH_FLAG_NEON_FP16 "-march=armv8.2-a+fp16")
+    set(TURBO_MARCH_FLAG_NEON_FP16 "${_TURBO_ARM_FP16_FLAGS}")
     set(ZVEC_TURBO_ARM_FP16_SUPPORTED ON)
   endif()
 
@@ -114,13 +161,14 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH AND
     set_source_files_properties(
         ${AVX512FP16_SRCS}
         PROPERTIES
-        COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX512FP16}"
+        COMPILE_FLAGS "${TURBO_MARCH_FLAG_FP16}"
     )
 
     # AVX512
     file(GLOB_RECURSE AVX512_SRCS
         ${CMAKE_CURRENT_SOURCE_DIR}/conversion/avx512/*.cc
-        ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512_vnni/*.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512_vnni/fp16/*.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512_vnni/raw_uint8/*.cc
         ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512/*.cc
     )
     set_source_files_properties(
@@ -128,6 +176,13 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH AND
         PROPERTIES
         COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX512}"
     )
+    file(GLOB_RECURSE VNNI_SRCS
+        ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512_vnni/record_quantized_int8/*.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512_vnni/uniform_uint4/*.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512_vnni/uniform_uint7/*.cc
+        ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512_vnni/uniform_uint8/*.cc)
+    set_source_files_properties(${VNNI_SRCS} PROPERTIES
+        COMPILE_FLAGS "${TURBO_MARCH_FLAG_VNNI}")
 endif()
 
 if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
@@ -142,6 +197,11 @@ if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
 endif()
 
 set(ZVEC_TURBO_DEFS)
+foreach(_isa AVX2 AVX512 VNNI FP16)
+  if(ZVEC_TURBO_COMPILER_${_isa})
+    list(APPEND ZVEC_TURBO_DEFS ZVEC_HAVE_${_isa}_KERNEL=1)
+  endif()
+endforeach()
 if(ZVEC_TURBO_ARM_FP16_SUPPORTED)
     list(APPEND ZVEC_TURBO_DEFS ZVEC_HAVE_ARM_FP16_KERNEL=1)
 endif()
