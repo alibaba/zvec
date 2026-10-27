@@ -24,7 +24,7 @@
 
 // `__fp16` is a GCC/Clang extension; MSVC ARM64 has no equivalent and
 // falls through to the F16C/scalar paths below.
-#if defined(AILEGO_ARM64_GNU_LIKE)
+#if defined(ZVEC_FLOAT16_ARM64_GNU_LIKE)
 static inline float float32(uint16_t val) {
   __fp16 f;
   memcpy(&f, &val, sizeof(val));
@@ -65,7 +65,7 @@ static inline void convert_fp32_to_fp16(const float *arr, size_t size,
     out[i] = float16(arr[i] / norm);
   }
 }
-#else  // !AILEGO_ARM64_GNU_LIKE
+#else  // !ZVEC_FLOAT16_ARM64_GNU_LIKE
 // Refer: https://github.com/Maratyszcza/FP16/blob/master/third-party/half.hpp
 static inline float float32(uint16_t val) {
   static const uint32_t mantissa_table[2048] = {
@@ -1243,7 +1243,7 @@ static inline void convert_fp32_to_fp16(const float *arr, size_t size,
   return convert_fp32_to_fp16_fallback(arr, size, norm, out);
 }
 
-#endif  // AILEGO_ARM64_GNU_LIKE
+#endif  // ZVEC_FLOAT16_ARM64_GNU_LIKE
 
 namespace zvec {
 namespace ailego {

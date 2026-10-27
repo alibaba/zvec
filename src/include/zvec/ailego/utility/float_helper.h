@@ -16,8 +16,20 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <zvec/ailego/internal/platform.h>
 #include <zvec/export.h>
+
+// Selects the storage type of Float16::value_ below: __fp16 on ARM64 with NEON
+// under a GNU-like compiler, the portable uint16_t path everywhere else (MSVC
+// lacks __fp16 even on ARM64).
+//
+// This duplicates AILEGO_ARM64_GNU_LIKE from the internal
+// <zvec/ailego/internal/platform.h>, which must not ship with the stable public
+// API.  Keep the condition identical to platform.h's and to the guard in
+// float_helper.cc that picks the matching implementation -- a mismatch would
+// change the class layout between this header and the compiled library.
+#if defined(__ARM_NEON) && defined(__aarch64__)
+#define ZVEC_FLOAT16_ARM64_GNU_LIKE 1
+#endif
 
 namespace zvec {
 namespace ailego {
@@ -57,7 +69,7 @@ struct ZVEC_AILEGO_API FloatHelper {
 // The `#else` branch below stores `Float16::value_` as `__fp16`, a GCC/Clang
 // extension MSVC lacks even on ARM64. Keep the uint16_t storage path there so
 // the wrapper still compiles. Must match the guard in float_helper.cc.
-#if !defined(AILEGO_ARM64_GNU_LIKE)
+#if !defined(ZVEC_FLOAT16_ARM64_GNU_LIKE)
 /*! Half-Precision Floating Point
  */
 class Float16 {
@@ -233,7 +245,7 @@ class Float16 {
  private:
   __fp16 value_;
 };
-#endif  // !AILEGO_ARM64_GNU_LIKE
+#endif  // !ZVEC_FLOAT16_ARM64_GNU_LIKE
 
 // Check size of Float16
 static_assert(sizeof(Float16) == 2, "Float16 must be aligned with 2 bytes");

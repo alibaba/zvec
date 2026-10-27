@@ -12,13 +12,104 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #pragma once
-#include <iostream>
+#include <cstdio>
+#include <iosfwd>
 #include <string>
+#include <type_traits>
 #include <zvec/ailego/pattern/expected.hpp>
-#include <zvec/ailego/utility/string_helper.h>
 #include <zvec/export.h>
 
 namespace zvec {
+
+namespace detail {
+
+/// @name Status message formatting
+/// @{
+/// Appends one argument to a Status error message.  These overloads replace a
+/// dependency on the internal `ailego::StringHelper::Concat`, keeping engine
+/// headers out of the published API.  Formatting is deliberately identical to
+/// what it replaced -- `std::to_string` for integers (which the standard
+/// specifies as `%d`/`%u`/`%ld`/`%lu`/`%lld`/`%llu`) and `%g` for floating
+/// point -- so existing message text, and the tests that assert on it, are
+/// unaffected.
+
+/// Buffer for one numeric conversion; matches the width the previous
+/// implementation used.
+constexpr int kStatusFormatBufferSize = 32;
+
+inline void append_status(std::string &out, const char *text) {
+  out.append(text);
+}
+
+inline void append_status(std::string &out, const std::string &text) {
+  out.append(text);
+}
+
+template <typename T>
+inline typename std::enable_if<std::is_integral<T>::value, void>::type
+append_status(std::string &out, T value) {
+  out.append(std::to_string(value));
+}
+
+template <typename... Args>
+inline void append_status_formatted(std::string &out, const char *format,
+                                    Args... args) {
+  char buffer[kStatusFormatBufferSize];
+  const int written = std::snprintf(buffer, sizeof(buffer), format, args...);
+  if (written <= 0) {
+    return;
+  }
+  const size_t length = written < kStatusFormatBufferSize
+                            ? static_cast<size_t>(written)
+                            : sizeof(buffer) - 1;
+  out.append(buffer, length);
+}
+
+inline void append_status(std::string &out, float value) {
+  append_status_formatted(out, "%g", static_cast<double>(value));
+}
+
+inline void append_status(std::string &out, double value) {
+  append_status_formatted(out, "%g", value);
+}
+
+inline void append_status(std::string &out, long double value) {
+  append_status_formatted(out, "%Lg", value);
+}
+
+/// Scoped enums, and unscoped enums that do not implicitly convert to int.
+template <typename T>
+inline typename std::enable_if<
+    std::is_enum<T>::value && !std::is_convertible<T, int>::value, void>::type
+append_status(std::string &out, T value) {
+  append_status(out,
+                static_cast<typename std::underlying_type<T>::type>(value));
+}
+
+/// Unscoped enums convert like the integral type they decay to.
+template <typename T>
+inline typename std::enable_if<
+    std::is_enum<T>::value && std::is_convertible<T, int>::value, void>::type
+append_status(std::string &out, T value) {
+  append_status(out, static_cast<int>(value));
+}
+
+/// Character literals are ambiguous next to string literals; require `"x"`.
+void append_status(std::string &out, char value) = delete;
+
+/// Concatenates any number of arguments into a single string.
+template <typename... Args>
+inline std::string concat_status(Args &&...args) {
+  std::string out;
+  if constexpr (sizeof...(Args) > 0) {
+    (append_status(out, std::forward<Args>(args)), ...);
+  }
+  return out;
+}
+
+/// @}
+
+}  // namespace detail
 
 class ZVEC_API Status;
 template <typename T>
@@ -179,7 +270,7 @@ class ZVEC_API Status {
   /// @brief Helper: concatenate any number of arguments into a string
   template <typename... Args>
   static std::string concat(Args &&...args) {
-    return ailego::StringHelper::Concat(std::forward<Args>(args)...);
+    return detail::concat_status(std::forward<Args>(args)...);
   }
 
   StatusCode code_;
