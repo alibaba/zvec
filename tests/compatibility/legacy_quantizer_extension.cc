@@ -13,3 +13,6 @@ INDEX_FACTORY_REGISTER_QUANTIZER_ALIAS(LegacyArchiveQuantizer,
                                        turbo::Fp32Quantizer);
 INDEX_FACTORY_REGISTER_QUANTIZER_ALIAS(Fp32Quantizer, LegacyArchiveOverride);
 }  // namespace zvec::core
+
+// Retain this translation unit without changing the legacy registration macros.
+extern "C" void RegisterLegacyQuantizerExtension() {}

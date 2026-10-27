@@ -21,20 +21,38 @@ endfunction()
 add_library(legacy_quantizer_extension STATIC EXCLUDE_FROM_ALL legacy_quantizer_extension.cc)
 target_include_directories(legacy_quantizer_extension PRIVATE ${PROJECT_ROOT_DIR}/src)
 target_link_libraries(legacy_quantizer_extension PRIVATE zvec_turbo)
-add_compatibility_test(component_factory_test core_metric core_framework
+add_compatibility_test(component_factory_test core_metric_static core_framework
   legacy_quantizer_extension zvec_turbo zvec_ailego)
+zvec_link_static_extension(TARGET component_factory_test
+  LIBRARY legacy_quantizer_extension INITIALIZER RegisterLegacyQuantizerExtension)
 add_compatibility_test(turbo_factory_test zvec_turbo zvec_ailego)
+add_compatibility_test(component_registry_test core_metric_static core_framework)
+add_compatibility_test(legacy_builtin_test zvec_core zvec_turbo zvec_ailego)
+target_sources(legacy_builtin_test PRIVATE legacy_builtin_client.cc)
+set_target_properties(legacy_builtin_test PROPERTIES INTERPROCEDURAL_OPTIMIZATION FALSE)
 
 add_library(prebuilt_extension_source STATIC EXCLUDE_FROM_ALL prebuilt_extension.cc)
 target_include_directories(prebuilt_extension_source PRIVATE ${PROJECT_ROOT_DIR}/src)
 add_library(prebuilt_extension STATIC IMPORTED)
-# Use a real imported archive, so the test cannot rely on source scanning it.
+# Use a real imported archive with an explicitly referenced C++ initializer.
 set_target_properties(prebuilt_extension PROPERTIES IMPORTED_LOCATION
   "${CMAKE_ARCHIVE_OUTPUT_DIRECTORY}/${CMAKE_STATIC_LIBRARY_PREFIX}prebuilt_extension_source${CMAKE_STATIC_LIBRARY_SUFFIX}")
 add_dependencies(prebuilt_extension prebuilt_extension_source)
 add_compatibility_test(prebuilt_extension_test zvec_core zvec_turbo zvec_ailego)
 zvec_link_static_extension(TARGET prebuilt_extension_test LIBRARY prebuilt_extension
   INITIALIZER RegisterCompatibilityExtension)
+
+# Let CMake handle transitive/conditional links itself, including a registration
+# initializer propagated through an interface target. Reuse the behavior check.
+add_library(prebuilt_extension_interface INTERFACE)
+zvec_link_static_extension(TARGET prebuilt_extension_interface
+  LIBRARY prebuilt_extension INITIALIZER RegisterCompatibilityExtension)
+add_executable(conditional_extension_test EXCLUDE_FROM_ALL prebuilt_extension_test.cc)
+target_include_directories(conditional_extension_test PRIVATE ${PROJECT_ROOT_DIR}/src)
+target_link_libraries(conditional_extension_test PRIVATE zvec_core zvec_turbo
+  zvec_ailego "$<$<BOOL:1>:prebuilt_extension_interface>")
+add_dependencies(unittest conditional_extension_test)
+add_test(NAME conditional_extension_test COMMAND conditional_extension_test)
 
 cc_library(NAME legacy_initializer STATIC ALWAYS_LINK
   SRCS_NO_GLOB SRCS legacy_initializer.cc)
@@ -44,4 +62,5 @@ cc_test(NAME quantizer_compatibility_test STRICT SRCS quantizer_compatibility_te
   LIBS zvec_core zvec_turbo zvec_ailego gtest gtest_main INCS ${PROJECT_ROOT_DIR}/src)
 set_tests_properties(factory_abi_test component_factory_test turbo_factory_test
   prebuilt_extension_test legacy_initializer_test quantizer_compatibility_test
+  component_registry_test legacy_builtin_test conditional_extension_test
   PROPERTIES TIMEOUT 90)

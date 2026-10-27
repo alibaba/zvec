@@ -147,9 +147,10 @@ int main() {
   ok &= CheckFamily("metric", IndexFactory::CreateMetric,
                     IndexFactory::HasMetric, IndexFactory::AllMetrics,
                     {"SquaredEuclidean", "Euclidean", "SquaredEuclideanSparse",
-                     "InnerProduct", "NormalizedCosine", "Cosine",
-                     "QuantizedInteger", "UniformUint4", "UniformUint7",
-                     "UniformUint8", "StaticLinkCustomMetric"});
+                     "InnerProduct", "InnerProductSparse", "NormalizedCosine",
+                     "MipsSquaredEuclidean", "MipsSquaredEuclideanSparse",
+                     "Cosine", "QuantizedInteger", "UniformUint4",
+                     "UniformUint7", "UniformUint8", "StaticLinkCustomMetric"});
   ok &= CheckFamily(
       "storage", IndexFactory::CreateStorage, IndexFactory::HasStorage,
       IndexFactory::AllStorages,
@@ -158,16 +159,27 @@ int main() {
   ok &=
       CheckFamily("dumper", IndexFactory::CreateDumper, IndexFactory::HasDumper,
                   IndexFactory::AllDumpers, {"MemoryDumper", "FileDumper"});
-  ok &= CheckFamily("converter", IndexFactory::CreateConverter,
-                    IndexFactory::HasConverter, IndexFactory::AllConverters,
-                    {"HalfFloatConverter", "BinaryConverter", "MipsConverter",
-                     "Int8QuantizerConverter", "Int4QuantizerConverter",
-                     "CosineFp16Converter", "UniformUint7Converter"});
-  ok &= CheckFamily("reformer", IndexFactory::CreateReformer,
-                    IndexFactory::HasReformer, IndexFactory::AllReformers,
-                    {"HalfFloatReformer", "BinaryReformer", "MipsReformer",
-                     "Int8QuantizerReformer", "Int4QuantizerReformer",
-                     "CosineFp16Reformer", "UniformUint7Reformer"});
+  ok &= CheckFamily(
+      "converter", IndexFactory::CreateConverter, IndexFactory::HasConverter,
+      IndexFactory::AllConverters,
+      {"HalfFloatConverter", "HalfFloatSparseConverter", "BinaryConverter",
+       "MipsConverter", "RawUint8Converter", "Int8QuantizerConverter",
+       "Int4QuantizerConverter", "Int8StreamingConverter",
+       "Int4StreamingConverter", "CosineNormalizeConverter",
+       "CosineFp32Converter", "CosineFp16Converter", "CosineRawFp16Converter",
+       "CosineInt8Converter", "CosineInt4Converter", "CosineHalfFloatConverter",
+       "UniformUint4Converter", "UniformUint7Converter",
+       "UniformUint8Converter"});
+  ok &= CheckFamily(
+      "reformer", IndexFactory::CreateReformer, IndexFactory::HasReformer,
+      IndexFactory::AllReformers,
+      {"HalfFloatReformer", "HalfFloatSparseReformer", "BinaryReformer",
+       "MipsReformer", "RawUint8Reformer", "Int8QuantizerReformer",
+       "Int4QuantizerReformer", "Int8StreamingReformer",
+       "Int4StreamingReformer", "CosineNormalizeReformer", "CosineFp32Reformer",
+       "CosineFp16Reformer", "CosineRawFp16Reformer", "CosineInt8Reformer",
+       "CosineInt4Reformer", "CosineHalfFloatReformer", "UniformUint4Reformer",
+       "UniformUint7Reformer", "UniformUint8Reformer"});
   ok &= CheckFamily("trainer", IndexFactory::CreateTrainer,
                     IndexFactory::HasTrainer, IndexFactory::AllTrainers,
                     {"StratifiedClusterTrainer"});

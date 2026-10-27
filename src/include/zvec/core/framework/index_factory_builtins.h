@@ -38,6 +38,22 @@ class IndexTrainer;
 ZVEC_CORE_API void RegisterBuiltinIndexModules();
 ZVEC_TURBO_API void RegisterBuiltinQuantizers();
 
+//! Module entry points for explicit C++ registry composition.
+ZVEC_CORE_API void RegisterBuiltinMetrics();
+ZVEC_CORE_API void RegisterBuiltinConvertersAndReformers();
+ZVEC_CORE_API void RegisterBuiltinUtilities();
+ZVEC_CORE_API void RegisterBuiltinMixedReducers();
+ZVEC_CORE_API void RegisterBuiltinClusters();
+ZVEC_CORE_API void RegisterBuiltinFlat();
+ZVEC_CORE_API void RegisterBuiltinFlatSparse();
+ZVEC_CORE_API void RegisterBuiltinHnsw();
+ZVEC_CORE_API void RegisterBuiltinHnswSparse();
+ZVEC_CORE_API void RegisterBuiltinIVF();
+ZVEC_CORE_API void RegisterBuiltinVamana();
+ZVEC_CORE_API void RegisterBuiltinDiskAnn();
+ZVEC_CORE_API void RegisterBuiltinHnswRabitq();
+ZVEC_CORE_API void RegisterBuiltinIvfRabitq();
+
 }  // namespace core
 namespace turbo {
 class Quantizer;

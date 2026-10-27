@@ -307,7 +307,7 @@
 
 cmake_minimum_required(VERSION 3.13 FATAL_ERROR)
 include(CMakeParseArguments)
-include(${CMAKE_CURRENT_LIST_DIR}/builtin_registry.cmake)
+include(${CMAKE_CURRENT_LIST_DIR}/static_extensions.cmake)
 
 # Using AppleClang instead of Clang (Compiler id)
 if(POLICY CMP0025)
@@ -694,7 +694,6 @@ endfunction()
 function(_target_link_libraries _NAME)
   zvec_resolve_component_libraries(LINK_LIBS ${ARGN})
   target_link_libraries(${_NAME} ${LINK_LIBS})
-  zvec_defer_component_finalization(${_NAME})
 endfunction()
 
 ## Add a subdirectory to the build
@@ -725,10 +724,6 @@ function(_cc_target_properties)
       ("${TARGET_TYPE}" STREQUAL "STATIC_LIBRARY") OR
       ("${TARGET_TYPE}" STREQUAL "EXECUTABLE"))
     set(TARGET_LINKABLE TRUE)
-  endif()
-
-  if(CC_ARGS_ALWAYS_LINK)
-    set_property(TARGET ${CC_ARGS_NAME} PROPERTY ALWAYS_LINK TRUE)
   endif()
 
   # Set the warning level of compiling
@@ -821,14 +816,13 @@ function(_cc_target_properties)
       CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
       WINDOWS_EXPORT_ALL_SYMBOLS ON
     )
-  zvec_defer_component_finalization(${CC_ARGS_NAME})
 endfunction()
 
 ## Build a C/C++ static or shared library
 function(cc_library)
   cmake_parse_arguments(
     CC_ARGS
-      "STATIC;SHARED;OBJECTS;EXCLUDE;PACKED;SRCS_NO_GLOB"
+      "STATIC;SHARED;OBJECTS;EXCLUDE;PACKED;SRCS_NO_GLOB;ALWAYS_LINK"
       "NAME;VERSION;EXPORT_DEF"
       "SRCS;INCS;PUBINCS;DEFS;LIBS;CFLAGS;CXXFLAGS;LDFLAGS;DEPS;PACKED_EXCLUDES"
       ${ARGN}
@@ -858,17 +852,6 @@ function(cc_library)
     endif()
   endif()
 
-  zvec_collect_source_builtins(BUILTIN_SYMBOLS ${SOURCE_FILES})
-  if(CC_ARGS_NAME STREQUAL "zvec_core")
-    set(REGISTRY_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/zvec_core_builtin_registry.cc")
-    zvec_write_builtin_registry("${REGISTRY_SOURCE}" ${BUILTIN_SYMBOLS})
-    list(APPEND SOURCE_FILES "${REGISTRY_SOURCE}")
-  elseif(CC_ARGS_NAME STREQUAL "zvec_turbo")
-    set(REGISTRY_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/zvec_quantizer_registry.cc")
-    zvec_write_builtin_registry("${REGISTRY_SOURCE}" ${BUILTIN_SYMBOLS})
-    list(APPEND SOURCE_FILES "${REGISTRY_SOURCE}")
-  endif()
-
   if(CC_ARGS_VERSION)
     string(REPLACE "-" "_" MACRO_PREFIX "${CC_ARGS_NAME}")
     list(APPEND CC_ARGS_DEFS ${MACRO_PREFIX}_VERSION="${CC_ARGS_VERSION}")
@@ -876,6 +859,14 @@ function(cc_library)
 
   if(CC_ARGS_EXCLUDE)
     set(EXCLUDE_OPTION EXCLUDE_FROM_ALL)
+  endif()
+
+  # Legacy registration-only sources can be forwarded as ordinary object files.
+  # This preserves ALWAYS_LINK without archive-forcing flags or source scanning.
+  if(CC_ARGS_ALWAYS_LINK AND NOT CC_ARGS_SHARED AND
+     (CC_ARGS_STATIC OR NOT BUILD_SHARED_LIBS))
+    set(CC_ARGS_STATIC TRUE)
+    set(CC_ARGS_OBJECTS TRUE)
   endif()
 
   if(CC_ARGS_OBJECTS AND (NOT CC_ARGS_STATIC OR CC_ARGS_SHARED))
@@ -895,21 +886,6 @@ function(cc_library)
   else()
     add_library(${CC_ARGS_NAME} ${EXCLUDE_OPTION} ${SOURCE_FILES})
   endif()
-
-  foreach(BUILTIN_TARGET ${CC_ARGS_NAME} ${CC_ARGS_NAME}_static ${CC_ARGS_NAME}_objects)
-    if(TARGET ${BUILTIN_TARGET})
-      get_target_property(ALIASED_TARGET ${BUILTIN_TARGET} ALIASED_TARGET)
-      if(ALIASED_TARGET)
-        continue()
-      endif()
-      set_property(TARGET ${BUILTIN_TARGET} PROPERTY ZVEC_BUILTIN_SYMBOLS "${BUILTIN_SYMBOLS}")
-      if(CC_ARGS_NAME STREQUAL "core_framework")
-        set_property(TARGET ${BUILTIN_TARGET} PROPERTY ZVEC_USES_INDEX_FACTORY TRUE)
-      elseif(CC_ARGS_NAME STREQUAL "zvec_core")
-        set_property(TARGET ${BUILTIN_TARGET} PROPERTY ZVEC_HAS_BUILTIN_REGISTRY TRUE)
-      endif()
-    endif()
-  endforeach()
 
   if(TARGET ${CC_ARGS_NAME}_objects)
     _cc_target_properties(
@@ -980,6 +956,20 @@ function(cc_library)
       VERSION "${CC_ARGS_VERSION}"
       "${CC_ARGS_UNPARSED_ARGUMENTS}"
   )
+  if(CC_ARGS_ALWAYS_LINK)
+    get_target_property(LIBRARY_TYPE ${CC_ARGS_NAME} TYPE)
+    if(LIBRARY_TYPE STREQUAL "STATIC_LIBRARY")
+      set_property(TARGET ${CC_ARGS_NAME} APPEND PROPERTY
+        INTERFACE_LINK_LIBRARIES $<TARGET_OBJECTS:${CC_ARGS_NAME}_objects>)
+    endif()
+    if(TARGET ${CC_ARGS_NAME}_static)
+      _has_own_static_variant(HAS_STATIC ${CC_ARGS_NAME})
+      if(HAS_STATIC)
+        set_property(TARGET ${CC_ARGS_NAME}_static APPEND PROPERTY
+          INTERFACE_LINK_LIBRARIES $<TARGET_OBJECTS:${CC_ARGS_NAME}_objects>)
+      endif()
+    endif()
+  endif()
   if(CC_ARGS_PACKED)
     install(
         TARGETS ${CC_ARGS_NAME}
