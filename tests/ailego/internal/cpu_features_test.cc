@@ -15,7 +15,141 @@
 #include <ailego/internal/cpu_features.h>
 #include <gtest/gtest.h>
 
+namespace zvec {
+namespace ailego {
+namespace internal {
+
+// Decode synthetic CPU/OS combinations without executing their instructions.
+class CpuFeaturesTestPeer {
+ public:
+  CpuFeaturesTestPeer(uint32_t leaf1_ecx, uint32_t leaf7_ebx,
+                      uint32_t extended_ecx, uint64_t xcr0,
+                      bool darwin_avx512 = false)
+      : saved_(CpuFeatures::flags_) {
+    CpuFeatures::flags_.L1_ECX = leaf1_ecx;
+    CpuFeatures::flags_.L7_EBX = leaf7_ebx;
+    CpuFeatures::flags_.L80000001_ECX = extended_ecx;
+    CpuFeatures::flags_.XCR0 = xcr0;
+    CpuFeatures::flags_.DARWIN_AVX512 = darwin_avx512;
+  }
+
+  ~CpuFeaturesTestPeer() {
+    CpuFeatures::flags_ = saved_;
+  }
+
+  CpuFeaturesTestPeer(const CpuFeaturesTestPeer &) = delete;
+  CpuFeaturesTestPeer &operator=(const CpuFeaturesTestPeer &) = delete;
+
+ private:
+  CpuFeatures::CpuFlags saved_;
+};
+
+}  // namespace internal
+}  // namespace ailego
+}  // namespace zvec
+
 using namespace zvec::ailego::internal;
+
+TEST(CpuFeatures, VectorStateRequiresCpuAndOsXsave) {
+  constexpr uint32_t kXsave = 1u << 26;
+  constexpr uint32_t kOsxsave = 1u << 27;
+  constexpr uint32_t kAvx = 1u << 28;
+  constexpr uint32_t kAvx2AndAvx512 = (1u << 5) | (1u << 16);
+
+  for (uint32_t xsave_flags : {0u, kXsave, kOsxsave, kXsave | kOsxsave}) {
+    SCOPED_TRACE(xsave_flags);
+    const CpuFeaturesTestPeer cpu(xsave_flags | kAvx, kAvx2AndAvx512, 0, 0xe6u);
+    const bool enabled = xsave_flags == (kXsave | kOsxsave);
+    EXPECT_EQ(CpuFeatures::OSXSAVE(), (xsave_flags & kOsxsave) != 0);
+    EXPECT_EQ(CpuFeatures::AVX_STATE(), enabled);
+    EXPECT_EQ(CpuFeatures::AVX512_STATE(), enabled);
+    // Hardware features keep their previous CPUID semantics when the OS cannot
+    // save vector registers. Callers combine these bits with the state flags.
+    EXPECT_TRUE(CpuFeatures::AVX());
+    EXPECT_TRUE(CpuFeatures::AVX2());
+    EXPECT_TRUE(CpuFeatures::AVX512F());
+  }
+}
+
+TEST(CpuFeatures, DarwinLazyAvx512StillRequiresUsableAvxState) {
+  constexpr uint32_t kXsaveAndOsxsave = (1u << 26) | (1u << 27);
+  for (uint64_t xcr0 : {0u, 2u, 4u, 6u}) {
+    const CpuFeaturesTestPeer cpu(kXsaveAndOsxsave, 0, 0, xcr0, true);
+    EXPECT_EQ(CpuFeatures::AVX512_STATE(), xcr0 == 6u);
+  }
+  {
+    const CpuFeaturesTestPeer cpu(kXsaveAndOsxsave, 0, 0, 6u, false);
+    EXPECT_FALSE(CpuFeatures::AVX512_STATE());
+  }
+  {
+    const CpuFeaturesTestPeer cpu(0, 0, 0, 6u, true);
+    EXPECT_FALSE(CpuFeatures::AVX512_STATE());
+  }
+}
+
+TEST(CpuFeatures, VectorStateRequiresEveryRegisterComponent) {
+  constexpr uint32_t kXsaveAndOsxsave = (1u << 26) | (1u << 27);
+  struct TestCase {
+    uint64_t xcr0;
+    bool avx;
+    bool avx512;
+  };
+  const TestCase cases[] = {
+      {0, false, false},     // No enabled vector state.
+      {0xe4, false, false},  // Missing XMM.
+      {0xe2, false, false},  // Missing YMM.
+      {0xc6, true, false},   // Missing opmask.
+      {0xa6, true, false},   // Missing ZMM high halves.
+      {0x66, true, false},   // Missing upper ZMM registers.
+      {0x6, true, false},    // AVX-only OS support.
+      {0xe6, true, true},    // All required vector state.
+      {0x1e7, true, true},   // Other enabled state does not prevent AVX-512.
+      {1ull << 32, false, false},
+  };
+  for (const auto &test : cases) {
+    SCOPED_TRACE(test.xcr0);
+    const CpuFeaturesTestPeer cpu(kXsaveAndOsxsave, 0, 0, test.xcr0);
+    EXPECT_EQ(CpuFeatures::AVX_STATE(), test.avx);
+    EXPECT_EQ(CpuFeatures::AVX512_STATE(), test.avx512);
+  }
+}
+
+TEST(CpuFeatures, LzcntUsesExtendedLeaf) {
+  {
+    // BMI1 has a different CPUID location and does not imply LZCNT.
+    const CpuFeaturesTestPeer cpu(1u << 5, (1u << 3) | (1u << 5), 0, 0);
+    EXPECT_TRUE(CpuFeatures::BMI1());
+    EXPECT_FALSE(CpuFeatures::LZCNT());
+  }
+  {
+    const CpuFeaturesTestPeer cpu(0, 0, 1u << 5, 0);
+    EXPECT_TRUE(CpuFeatures::LZCNT());
+    EXPECT_FALSE(CpuFeatures::BMI1());
+    EXPECT_FALSE(CpuFeatures::AVX2());
+  }
+}
+
+TEST(CpuFeatures, CachedVectorState) {
+  const auto &flags = CpuFeatures::static_flags_;
+  EXPECT_EQ(flags.OSXSAVE, CpuFeatures::OSXSAVE());
+  EXPECT_EQ(flags.AVX_STATE, CpuFeatures::AVX_STATE());
+  EXPECT_EQ(flags.AVX512_STATE, CpuFeatures::AVX512_STATE());
+  EXPECT_EQ(flags.LZCNT, CpuFeatures::LZCNT());
+  if (flags.AVX_STATE) {
+    EXPECT_TRUE(flags.XSAVE);
+    EXPECT_TRUE(flags.OSXSAVE);
+  }
+  if (flags.AVX512_STATE) {
+    EXPECT_TRUE(flags.AVX_STATE);
+  }
+#if !defined(__x86_64__) && !defined(__i386__) && !defined(_M_IX86) && \
+    !defined(_M_X64)
+  EXPECT_FALSE(flags.OSXSAVE);
+  EXPECT_FALSE(flags.AVX_STATE);
+  EXPECT_FALSE(flags.AVX512_STATE);
+  EXPECT_FALSE(flags.LZCNT);
+#endif
+}
 
 TEST(CpuFeatures, General) {
   std::cout << "* Intrinsics:       " << CpuFeatures::Intrinsics() << std::endl;
