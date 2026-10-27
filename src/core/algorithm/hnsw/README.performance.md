@@ -6,6 +6,9 @@ snapshot: 768-dimensional inline FP32 vectors, cosine distance, and a matching
 projected-router model. Ordinary HNSW remains the default. Mutable collection
 and Python configuration are not extended by this change.
 
+For the mathematical derivation, search pipeline, and limits of the guarantees,
+see the [Chinese algorithm article](quantized_graph_principles.zh-CN.md).
+
 ## Execution
 
 1. Normalize the query through the existing cosine pipeline. Apply the seeded
