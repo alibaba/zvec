@@ -198,4 +198,9 @@ INSTANTIATE_TEST_SUITE_P(
 
 }  // namespace
 }  // namespace zvec::core_interface
+#else
+// Keep unsupported builds visible as skipped instead of empty test suites.
+TEST(HnswRabitqIndexTest, UnsupportedPlatform) {
+  GTEST_SKIP() << "RaBitQ support is disabled for this platform";
+}
 #endif  // RABITQ_SUPPORTED
