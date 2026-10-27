@@ -407,6 +407,9 @@ struct ZVEC_CORE_API IVFIndexParam : public BaseIndexParam {
 };
 
 struct ZVEC_CORE_API HNSWIndexParam : public BaseIndexParam {
+  // Optional projected-router model for immutable 768D FP32 cosine snapshots.
+  // Empty preserves ordinary HNSW; see algorithm/hnsw/README.performance.md.
+  std::string quantized_graph_model;
   using Pointer = std::shared_ptr<HNSWIndexParam>;
   int m = kDefaultHnswNeighborCnt;
   int ef_construction = kDefaultHnswEfConstruction;

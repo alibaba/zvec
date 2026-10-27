@@ -97,6 +97,10 @@ class HnswDistCalculator {
     dim_ = dim;
   }
 
+  const void *query() const {
+    return query_;
+  }
+
   //! Reset query vector data
   inline void reset_query(const void *query) {
     error_ = false;

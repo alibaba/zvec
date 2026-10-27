@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <shared_mutex>
 #include <ailego/parallel/lock.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_provider.h>
@@ -267,6 +268,10 @@ class HnswStreamer : public IndexStreamer {
     }
   };
 
+  std::string quantized_graph_model_;
+  bool quantized_graph_enabled_{false};
+  std::shared_ptr<HnswQuantizedGraph> quantized_graph_;
+  mutable std::shared_mutex quantized_graph_mutex_;
   std::unique_ptr<HnswStreamerEntity> entity_;
   HnswAlgorithmBase::UPointer alg_;
   IndexMeta meta_{};

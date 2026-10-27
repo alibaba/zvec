@@ -12,6 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "hnsw_streamer.h"
+#if RABITQ_SUPPORTED
+#include <rabitqlib/utils/cpu_features.hpp>
+#endif
+#include <chrono>
 #include <iostream>
 #include <ailego/internal/cpu_features.h>
 #include <ailego/pattern/defer.h>
@@ -76,6 +80,41 @@ void HnswStreamer::merge_trained_meta(const IndexMeta &trained_meta) {
 }
 
 int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
+  quantized_graph_model_.clear();
+  params.get(PARAM_HNSW_QUANTIZED_GRAPH_MODEL, &quantized_graph_model_);
+  quantized_graph_enabled_ = !quantized_graph_model_.empty();
+  bool external = false;
+  params.get(PARAM_HNSW_STREAMER_USE_EXTERNAL_VECTOR, &external);
+  if (quantized_graph_enabled_) {
+    if (!HnswQuantizedGraph::supported()) {
+      LOG_ERROR("QuantizedGraph requires AVX512/VNNI and a RaBitQ build");
+      return IndexError_Unsupported;
+    }
+    const bool cosine = imeta.metric_name() == "Cosine";
+    // Legacy cosine counts the norm in dimension; Turbo puts it in extras.
+    const bool turbo = quantizer_ != nullptr;
+    const size_t extra_dimension = cosine && !turbo ? 1 : 0;
+    const size_t expected_extras = cosine && turbo ? sizeof(float) : 0;
+    const bool supported_quantizer =
+        turbo ? quantizer_->type() == zvec::turbo::QuantizeType::kFp32 &&
+                    (imeta.quantizer_name().empty() ||
+                     imeta.quantizer_name() == "Fp32Quantizer") &&
+                    quantizer_->meta().dimension() == imeta.dimension() &&
+                    quantizer_->meta().metric_name() == imeta.metric_name() &&
+                    quantizer_->quantized_datapoint_vector_length() ==
+                        imeta.element_size() &&
+                    quantizer_->quantized_query_vector_length() ==
+                        imeta.element_size()
+              : imeta.quantizer_name().empty();
+    if (external || !supported_quantizer ||
+        imeta.extra_meta_size() != expected_extras ||
+        imeta.unit_size() != sizeof(float) ||
+        imeta.data_type() != IndexMeta::DataType::DT_FP32 || !cosine ||
+        imeta.dimension() != 768 + extra_dimension) {
+      LOG_ERROR("QuantizedGraph requires inline 768D FP32 cosine vectors");
+      return IndexError_Unsupported;
+    }
+  }
   meta_ = imeta;
   meta_.set_streamer("HnswStreamer", HnswEntity::kRevision, params);
 
@@ -241,6 +280,8 @@ int HnswStreamer::cleanup() {
 
   LOG_INFO("HnswStreamer cleanup");
 
+  quantized_graph_.reset();
+  quantized_graph_enabled_ = false;
   meta_.clear();
   metric_.reset();
   quantizer_.reset();
@@ -576,6 +617,25 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
     return ret;
   }
 
+  if (quantized_graph_enabled_) {
+    const bool cosine = meta_.metric_name() == "Cosine";
+    const size_t dimension =
+        meta_.dimension() - (cosine && !quantizer_ ? 1 : 0);
+    quantized_graph_ = std::make_shared<HnswQuantizedGraph>(
+        dimension, 32, cosine, meta_.element_size() / sizeof(float),
+        quantized_graph_model_);
+    const auto prebuild_start = std::chrono::steady_clock::now();
+    ret = quantized_graph_->prebuild(*entity_, entity_->doc_cnt(), 8);
+    if (ret != 0) {
+      return ret;
+    }
+    LOG_INFO(
+        "HnswStreamer quantized_graph prebuild done, cost_ms=%d",
+        static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - prebuild_start)
+                             .count()));
+    alg_->set_quantized_graph(quantized_graph_);
+  }
   state_ = STATE_OPENED;
   magic_ = IndexContext::GenerateMagic();
 
@@ -584,6 +644,9 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
 
 int HnswStreamer::close() {
   LOG_INFO("HnswStreamer close");
+  std::unique_lock<std::shared_mutex> qg_lock(quantized_graph_mutex_);
+  if (alg_) alg_->set_quantized_graph(nullptr);
+  quantized_graph_.reset();
 
   stats_.clear();
   if (metric_) {
@@ -721,6 +784,13 @@ void HnswStreamer::bind_search_dist_space(HnswContext *ctx) const {
 int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
                                    const IndexQueryMeta &qmeta,
                                    IndexStreamer::Context::Pointer &context) {
+  if (quantized_graph_enabled_) {
+    LOG_ERROR(
+        "QuantizedGraph snapshots are immutable; reopen without the model to "
+        "modify");
+    return IndexError_Unsupported;
+  }
+
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) {
     return ret;
@@ -823,6 +893,13 @@ int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
 int HnswStreamer::add_impl(uint64_t pkey, const void *query,
                            const IndexQueryMeta &qmeta,
                            IndexStreamer::Context::Pointer &context) {
+  if (quantized_graph_enabled_) {
+    LOG_ERROR(
+        "QuantizedGraph snapshots are immutable; reopen without the model to "
+        "modify");
+    return IndexError_Unsupported;
+  }
+
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) {
     return ret;
@@ -941,6 +1018,9 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
     return IndexError_Cast;
   }
 
+  std::shared_lock<std::shared_mutex> qg_lock(quantized_graph_mutex_,
+                                              std::defer_lock);
+  if (quantized_graph_enabled_) qg_lock.lock();
   if (entity_->doc_cnt() <= ctx->get_bruteforce_threshold()) {
     return search_bf_impl(query, qmeta, count, context);
   }
@@ -972,7 +1052,6 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   if (ailego_unlikely(ctx->error())) {
     return IndexError_Runtime;
   }
-
   return 0;
 }
 
@@ -999,6 +1078,10 @@ int HnswStreamer::search_candidates_impl(
     return IndexRunner::search_candidates_impl(query, qmeta, keys, context,
                                                scores);
   }
+
+  std::shared_lock<std::shared_mutex> qg_lock(quantized_graph_mutex_,
+                                              std::defer_lock);
+  if (quantized_graph_enabled_) qg_lock.lock();
 
   if (ctx->magic() != magic_) {
     ret = update_context(ctx);

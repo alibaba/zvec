@@ -18,6 +18,9 @@
 namespace zvec {
 namespace core {
 
+const std::string PARAM_HNSW_QUANTIZED_GRAPH_MODEL =
+    "proxima.hnsw.quantized_graph.model";
+
 static const std::string PARAM_HNSW_BUILDER_THREAD_COUNT(
     "proxima.hnsw.builder.thread_count");
 static const std::string PARAM_HNSW_BUILDER_MEMORY_QUOTA(
