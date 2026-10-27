@@ -26,13 +26,13 @@ enum class RabitqMetricType {
 };
 
 // RaBitQ Converter parameters
-static const std::string PARAM_RABITQ_NUM_CLUSTERS(
+inline const std::string PARAM_RABITQ_NUM_CLUSTERS(
     "proxima.rabitq.num_clusters");
-static const std::string PARAM_RABITQ_TOTAL_BITS("proxima.rabitq.total_bits");
-static const std::string PARAM_RABITQ_METRIC_NAME("proxima.rabitq.metric_name");
-static const std::string PARAM_RABITQ_ROTATOR_TYPE(
+inline const std::string PARAM_RABITQ_TOTAL_BITS("proxima.rabitq.total_bits");
+inline const std::string PARAM_RABITQ_METRIC_NAME("proxima.rabitq.metric_name");
+inline const std::string PARAM_RABITQ_ROTATOR_TYPE(
     "proxima.rabitq.rotator.type");
-static const std::string PARAM_RABITQ_SAMPLE_COUNT(
+inline const std::string PARAM_RABITQ_SAMPLE_COUNT(
     "proxima.rabitq.sample_count");
 
 // Default values
@@ -52,7 +52,7 @@ constexpr char kRabitqUnsupportedPlatform[] =
 
 // Original vector dimension before converter (e.g., CosineNormalizeConverter)
 // modifies it. Used by IVF-RaBitQ to ignore extra dimensions from converter.
-static const std::string PARAM_RABITQ_GENERAL_DIMENSION(
+inline const std::string PARAM_RABITQ_GENERAL_DIMENSION(
     "proxima.rabitq.general.dimension");
 
 }  // namespace core
