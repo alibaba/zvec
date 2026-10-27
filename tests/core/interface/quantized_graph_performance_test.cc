@@ -203,7 +203,7 @@ TEST(QuantizedGraphPerformance, SnapshotSearchAndMutationGuard) {
     const float *v = ordinary.stored_vector(id);
     ASSERT_NE(v, nullptr);
     training.ids.push_back(id);
-    training.vectors.emplace_back();
+    training.vectors.emplace_back(768);
     std::copy_n(v, 768, training.vectors.back().begin());
     double norm = 0;
     for (size_t d = 0; d < 768; ++d) norm += double(v[d]) * v[d];

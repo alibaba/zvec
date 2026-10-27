@@ -22,6 +22,7 @@
 #include <limits>
 #include <vector>
 #include "quantized_graph_integer_center.h"
+#include "quantized_graph_router_format.h"
 
 namespace zvec::core {
 // Database-trained hierarchy. Scores only select a graph entry;
@@ -34,7 +35,7 @@ class QuantizedGraphIntegerRouter {
   static constexpr size_t kWidth = 16, kMaxBeam = 4;
   static constexpr int32_t kInvalid = INT32_MIN;
   struct alignas(64) Group {
-    uint8_t codes[kWidth][kDim]{};
+    std::vector<uint8_t> codes;
     float scale[kWidth]{}, offset[kWidth]{}, mean_dot[kWidth]{};
     int32_t target[kWidth]{};
     uint32_t count = 0;
@@ -51,17 +52,30 @@ class QuantizedGraphIntegerRouter {
   const Group &group(size_t i) const {
     return groups_[i];
   }
-  static bool read_mean(const char *path, size_t docs,
-                        std::vector<float> &mean) {
+  size_t dimension() const {
+    return format_.dimension;
+  }
+  size_t projected_dimension() const {
+    return format_.projected;
+  }
+  size_t code_stride() const {
+    return format_.stride;
+  }
+  bool cosine() const {
+    return format_.metric == 0;
+  }
+  static bool read_mean(const char *path, size_t docs, std::vector<float> &mean,
+                        size_t dimension = 768, bool cosine = true) {
+    if (!path) return false;
     FILE *f = std::fopen(path, "rb");
     if (!f) return false;
-    uint32_t header[5]{};
-    std::vector<float> parsed(768);
-    bool ok = std::fread(header, sizeof(header), 1, f) == 1 &&
-              header[0] == 0x51475259 && header[1] == kVersion &&
-              header[2] == kDim && header[3] > 0 && header[3] <= 100000 &&
-              header[4] == docs &&
-              std::fread(parsed.data(), sizeof(float), 768, f) == 768;
+    QuantizedGraphRouterFormat header;
+    bool ok = header.read(f) && header.docs == docs &&
+              header.dimension == dimension &&
+              header.metric == (cosine ? 0u : 1u);
+    std::vector<float> parsed(ok ? dimension : 0);
+    ok = ok &&
+         std::fread(parsed.data(), sizeof(float), dimension, f) == dimension;
     ok = std::fclose(f) == 0 && ok;
     for (float value : parsed) ok = ok && std::isfinite(value);
     if (ok) mean = std::move(parsed);
@@ -70,41 +84,52 @@ class QuantizedGraphIntegerRouter {
   template <class Graph>
   bool load(const char *path, const std::vector<float> &mean,
             const Graph &entity, size_t docs,
-            const std::vector<float> *rotated_mean = nullptr) {
+            const std::vector<float> *rotated_mean = nullptr,
+            bool cosine = true) {
     clear();
-    if (!path) return false;
-    if (mean.size() != 768 || !__builtin_cpu_supports("avx512vnni"))
-      return false;
+    if (!path || !__builtin_cpu_supports("avx512vnni")) return false;
     FILE *f = std::fopen(path, "rb");
     if (!f) return false;
     auto read = [f](void *p, size_t bytes) {
       return std::fread(p, 1, bytes, f) == bytes;
     };
-    uint32_t header[5]{};
-    std::array<float, 768> stored_mean{};
-    bool ok =
-        read(header, sizeof(header)) && header[0] == 0x51475259 &&
-        header[1] == kVersion && header[2] == kDim && header[3] > 0 &&
-        header[3] <= 100000 && header[4] == docs &&
-        read(stored_mean.data(), sizeof(stored_mean)) &&
-        std::memcmp(stored_mean.data(), mean.data(), sizeof(stored_mean)) == 0;
+    QuantizedGraphRouterFormat header;
+    bool ok = header.read(f) && header.docs == docs &&
+              header.dimension == mean.size() &&
+              header.metric == (cosine ? 0u : 1u);
+    // Check the complete file size before allocating group code buffers.
+    const long prefix = std::ftell(f);
+    const uint64_t expected =
+        uint64_t(prefix < 0 ? 0 : prefix) +
+        uint64_t(header.dimension + header.rotated) * sizeof(float) + 4 +
+        uint64_t(header.groups) * (4 + 16 * 16 + uint64_t(16) * header.stride);
+    ok = ok && prefix >= 0 && std::fseek(f, 0, SEEK_END) == 0;
+    const long length = std::ftell(f);
+    ok = ok && length >= 0 && uint64_t(length) == expected &&
+         std::fseek(f, prefix, SEEK_SET) == 0;
+    std::vector<float> stored_mean(ok ? header.dimension : 0);
+    ok = ok && read(stored_mean.data(), stored_mean.size() * sizeof(float)) &&
+         std::memcmp(stored_mean.data(), mean.data(),
+                     stored_mean.size() * sizeof(float)) == 0;
     uint32_t tag = 0;
-    std::array<float, 768> projected_mean{};
-    ok = ok && rotated_mean && rotated_mean->size() == 768 &&
+    std::vector<float> projected_mean(ok ? header.rotated : 0);
+    ok = ok && rotated_mean && rotated_mean->size() == header.rotated &&
          read(&tag, sizeof(tag)) && tag == kTransform &&
-         read(projected_mean.data(), sizeof(projected_mean)) &&
+         read(projected_mean.data(), projected_mean.size() * sizeof(float)) &&
          std::memcmp(projected_mean.data(), rotated_mean->data(),
-                     sizeof(projected_mean)) == 0;
-    if (ok) projected_mean_ = projected_mean;
-    std::vector<Group> parsed(ok ? header[3] : 0);
+                     projected_mean.size() * sizeof(float)) == 0;
+    for (float v : stored_mean) ok = ok && std::isfinite(v);
+    for (float v : projected_mean) ok = ok && std::isfinite(v);
+    std::vector<Group> parsed(ok ? header.groups : 0);
     std::vector<unsigned> parents(parsed.size(), 0), depth(parsed.size(), 0);
     for (size_t i = 0; ok && i < parsed.size(); ++i) {
       Group &g = parsed[i];
+      g.codes.resize(kWidth * header.stride);
       ok = read(&g.count, sizeof(g.count)) && g.count > 0 &&
            g.count <= kWidth && read(g.target, sizeof(g.target)) &&
            read(g.scale, sizeof(g.scale)) && read(g.offset, sizeof(g.offset)) &&
            read(g.mean_dot, sizeof(g.mean_dot)) &&
-           read(g.codes, sizeof(g.codes));
+           read(g.codes.data(), g.codes.size());
       for (size_t j = 0; ok && j < g.count; ++j) {
         ok = std::isfinite(g.scale[j]) && g.scale[j] >= 0 &&
              std::isfinite(g.offset[j]) && std::isfinite(g.mean_dot[j]);
@@ -125,21 +150,27 @@ class QuantizedGraphIntegerRouter {
     }
     ok = ok && std::fgetc(f) == EOF && !std::ferror(f);
     ok = std::fclose(f) == 0 && ok;
-    if (ok) groups_ = std::move(parsed);
+    if (ok) {
+      format_ = header;
+      projected_mean_ = std::move(projected_mean);
+      groups_ = std::move(parsed);
+    }
     return ok;
   }
-  __attribute__((target("avx512f,avx512bw,avx512vnni,fma"))) static void score(
+  template <size_t FixedStride = 0>
+  __attribute__((target("avx512f,avx512bw,avx512vnni,fma"))) void score_impl(
       const Group &g, const IntegerCenter::Query &q, float *scores,
-      int32_t *products = nullptr) {
+      int32_t *products = nullptr) const {
+    const size_t stride = FixedStride ? FixedStride : format_.stride;
     __m512i acc[16];
 #pragma GCC unroll 16
     for (size_t i = 0; i < 16; ++i) acc[i] = _mm512_setzero_si512();
-    for (size_t d = 0; d < kDim; d += 64) {
+    for (size_t d = 0; d < stride; d += 64) {
       const __m512i query = _mm512_loadu_si512(q.codes.data() + d);
 #pragma GCC unroll 16
       for (size_t i = 0; i < 16; ++i)
-        acc[i] = _mm512_dpbusd_epi32(acc[i], _mm512_loadu_si512(g.codes[i] + d),
-                                     query);
+        acc[i] = _mm512_dpbusd_epi32(
+            acc[i], _mm512_loadu_si512(g.codes.data() + i * stride + d), query);
     }
     alignas(64) int32_t dots[16];
 #pragma GCC unroll 16
@@ -149,33 +180,66 @@ class QuantizedGraphIntegerRouter {
         _mm512_loadu_ps(g.scale), _mm512_cvtepi32_ps(_mm512_load_si512(dots)),
         _mm512_mul_ps(_mm512_loadu_ps(g.offset),
                       _mm512_set1_ps(float(q.code_sum))));
-    const __m512 value = _mm512_fmadd_ps(_mm512_set1_ps(q.scale * kFactor),
-                                         residual, _mm512_loadu_ps(g.mean_dot));
-    _mm512_storeu_ps(scores, _mm512_sub_ps(_mm512_setzero_ps(), value));
+    const float factor = float(format_.rotated) / format_.projected;
+    const __m512 value = _mm512_fmadd_ps(
+        _mm512_set1_ps(q.scale * factor * (cosine() ? 1.f : -2.f)), residual,
+        _mm512_loadu_ps(g.mean_dot));
+    _mm512_storeu_ps(
+        scores, cosine() ? _mm512_sub_ps(_mm512_setzero_ps(), value) : value);
     for (size_t i = g.count; i < 16; ++i)
       scores[i] = std::numeric_limits<float>::infinity();
+  }
+  void score(const Group &g, const IntegerCenter::Query &q, float *scores,
+             int32_t *products = nullptr) const {
+    switch (format_.stride) {
+      case 384:
+        score_impl<384>(g, q, scores, products);
+        break;
+      case 512:
+        score_impl<512>(g, q, scores, products);
+        break;
+      case 768:
+        score_impl<768>(g, q, scores, products);
+        break;
+      case 1024:
+        score_impl<1024>(g, q, scores, products);
+        break;
+      default:
+        score_impl(g, q, scores, products);
+        break;
+    }
   }
   // Heuristic routing codes only: no terminal-refinement error bound is
   // implied.
   __attribute__((target("avx512f,avx512bw"))) bool prepare_projected(
       const float *rotated_query, IntegerCenter::Query &q) const {
     if (!rotated_query || empty()) return false;
-    q.codes.resize(kDim);
+    const size_t projected = format_.projected;
+    const size_t vectorized = projected & ~size_t{15};
+    q.codes.resize(format_.stride);
+    std::fill(q.codes.begin() + vectorized, q.codes.end(), int8_t{0});
     __m512 maximum = _mm512_setzero_ps();
-    for (size_t d = 0; d < kDim; d += 16) {
+    for (size_t d = 0; d < vectorized; d += 16) {
       const __m512 r =
           _mm512_sub_ps(_mm512_loadu_ps(rotated_query + d),
                         _mm512_loadu_ps(projected_mean_.data() + d));
+      if (_mm512_cmp_ps_mask(r, r, _CMP_UNORD_Q)) return false;
       maximum =
           _mm512_max_ps(maximum, _mm512_castsi512_ps(_mm512_andnot_si512(
                                      _mm512_set1_epi32(int32_t(0x80000000u)),
                                      _mm512_castps_si512(r))));
     }
-    q.scale = _mm512_reduce_max_ps(maximum) / 127.f;
+    float max_abs = _mm512_reduce_max_ps(maximum);
+    for (size_t d = vectorized; d < projected; ++d) {
+      const float r = rotated_query[d] - projected_mean_[d];
+      if (!std::isfinite(r)) return false;
+      max_abs = std::max(max_abs, std::abs(r));
+    }
+    q.scale = max_abs / 127.f;
     if (!std::isfinite(q.scale)) return false;
     const __m512 inverse = _mm512_set1_ps(q.scale > 0 ? 1.f / q.scale : 0.f);
     __m512i sum = _mm512_setzero_si512();
-    for (size_t d = 0; d < kDim; d += 16) {
+    for (size_t d = 0; d < vectorized; d += 16) {
       const __m512 r =
           _mm512_sub_ps(_mm512_loadu_ps(rotated_query + d),
                         _mm512_loadu_ps(projected_mean_.data() + d));
@@ -189,11 +253,17 @@ class QuantizedGraphIntegerRouter {
       sum = _mm512_add_epi32(sum, k);
     }
     q.code_sum = _mm512_reduce_add_epi32(sum);
+    for (size_t d = vectorized; d < projected; ++d) {
+      const float v = (rotated_query[d] - projected_mean_[d]) *
+                      (q.scale > 0 ? 1.f / q.scale : 0.f);
+      q.codes[d] = int8_t(std::clamp(std::nearbyint(v), -127.f, 127.f));
+      q.code_sum += q.codes[d];
+    }
     return true;
   }
   uint32_t choose(const IntegerCenter::Query &q, size_t beam,
                   size_t *groups_scored = nullptr) const {
-    if (empty() || q.codes.size() != kDim) return UINT32_MAX;
+    if (empty() || q.codes.size() != format_.stride) return UINT32_MAX;
     beam = std::clamp(beam, size_t{1}, kMaxBeam);
     std::array<uint32_t, kMaxBeam> current{};
     size_t count = 1, visits = 0;
@@ -235,6 +305,7 @@ class QuantizedGraphIntegerRouter {
 
  private:
   std::vector<Group> groups_;
-  std::array<float, 768> projected_mean_{};
+  std::vector<float> projected_mean_;
+  QuantizedGraphRouterFormat format_;
 };
 }  // namespace zvec::core

@@ -16,12 +16,14 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <ailego/math/euclidean_distance_matrix.h>
 #include <ailego/math/inner_product_matrix.h>
 #include "turbo/preprocessor/symphony_qg_rotator/symphony_qg_rotator.h"
+#include "quantized_graph_router_format.h"
 
 namespace zvec::core {
 
-// Offline spherical k-means hierarchy for the 768D cosine snapshot preset.
+// Offline spherical k-means (cosine) or ordinary k-means (squared L2).
 // Leaves are GRAPH INTERNAL IDs, never external keys or training-row offsets.
 // The training algorithm matches train_router59.py, but mt19937_64 and the
 // native dot-product reduction do not reproduce NumPy PCG64/BLAS bit for bit.
@@ -29,16 +31,18 @@ class QuantizedGraphRouterBuilder {
  public:
   static constexpr size_t kDim = 768, kProjected = 384, kWidth = 16;
   static constexpr size_t kMaxAnchors = 65536;
-  using Vector = std::array<float, kDim>;
+  using Vector = std::vector<float>;
   struct Data {
     uint32_t docs = 0;
-    Vector mean{};
+    Vector mean = Vector(kDim);
+    bool cosine = true;
     std::vector<uint32_t> ids;
     std::vector<Vector> vectors;
   };
   struct Options {
     uint64_t seed = 202610261259ULL;
     size_t iterations = 10;
+    size_t projected = 0;  // Zero selects half the original dimension.
   };
   struct Group {
     std::array<Vector, kWidth> centers{};
@@ -50,13 +54,24 @@ class QuantizedGraphRouterBuilder {
   };
   struct Model {
     uint32_t docs = 0;
-    Vector mean{};
+    Vector mean = Vector(kDim);
+    bool cosine = true;
     std::vector<Group> groups;
     size_t max_depth = 0, balanced_splits = 0, anchors = 0;
+    size_t projected = kProjected;
 
-    // Version 2, little-endian format consumed by IntegerRouter. The caller
+    // V2 for the legacy 768/384 cosine layout, otherwise V3. The caller
     // owns publication/overwrite policy; stream failures are never ignored.
-    void write(std::ostream &out) const {
+    void write(std::ostream &out, size_t projection = 0) const {
+      const size_t dim = mean.size();
+      if (projection == 0) projection = projected;
+      turbo::SymphonyQGRotation rotate(dim);
+      const size_t rotated_dim = rotate.padded_dim();
+      if (projection == 0 || projection > rotated_dim)
+        throw std::invalid_argument("invalid router projection");
+      const size_t stride = (projection + 63) & ~size_t{63};
+      const uint32_t version =
+          dim == 768 && projection == 384 && cosine ? 2 : 3;
       const uint32_t endian = 1;
       if (*reinterpret_cast<const uint8_t *>(&endian) != 1)
         throw std::runtime_error("router writer requires little-endian host");
@@ -66,36 +81,44 @@ class QuantizedGraphRouterBuilder {
         out.write(static_cast<const char *>(p), n);
         if (!out) throw std::runtime_error("writing router model failed");
       };
-      const uint32_t header[]{0x51475259, 2, kProjected,
+      const uint32_t header[]{0x51475259, version, uint32_t(projection),
                               uint32_t(groups.size()), docs};
       const uint32_t tag = 0x53514701;
-      turbo::SymphonyQGRotation rotate(kDim);
       std::vector<float> rotated_mean;
       rotate.rotate(mean.data(), rotated_mean);
       put(header, sizeof(header));
-      put(mean.data(), sizeof(mean));
+      if (version == 3) {
+        const uint32_t extra[]{uint32_t(dim), cosine ? 0u : 1u,
+                               uint32_t(rotated_dim), uint32_t(stride)};
+        put(extra, sizeof(extra));
+      }
+      put(mean.data(), dim * sizeof(float));
       put(&tag, sizeof(tag));
-      put(rotated_mean.data(), kDim * sizeof(float));
+      put(rotated_mean.data(), rotated_dim * sizeof(float));
       for (const auto &group : groups) {
         std::array<float, kWidth> scales{}, offsets{}, mean_dot{};
-        std::array<uint8_t, kWidth * kProjected> codes{};
+        std::vector<uint8_t> codes(kWidth * stride);
+        const Vector zero(dim);
         for (size_t j = 0; j < kWidth; ++j) {
           std::vector<float> rotated;
-          rotate.rotate(group.centers[j].data(), rotated);
+          const auto &center = j < group.count ? group.centers[j] : zero;
+          rotate.rotate(center.data(), rotated);
           double dot = 0;
-          for (size_t d = 0; d < kDim; ++d) {
+          for (size_t d = 0; d < rotated_dim; ++d)
             rotated[d] -= rotated_mean[d];
-            dot += double(mean[d]) * group.centers[j][d];
+          for (size_t d = 0; d < dim; ++d) {
+            const double residual = double(center[d]) - mean[d];
+            dot += cosine ? double(mean[d]) * center[d] : residual * residual;
           }
           mean_dot[j] = float(dot);
           auto range = std::minmax_element(rotated.begin(),
-                                           rotated.begin() + kProjected);
+                                           rotated.begin() + projection);
           offsets[j] = *range.first;
           scales[j] = (*range.second - *range.first) / 255.f;
           const float inverse = scales[j] > 0 ? 1.f / scales[j] : 0.f;
-          for (size_t d = 0; d < kProjected; ++d) {
+          for (size_t d = 0; d < projection; ++d) {
             const float code = (rotated[d] - offsets[j]) * inverse;
-            codes[j * kProjected + d] =
+            codes[j * stride + d] =
                 uint8_t(std::clamp(std::nearbyint(code), 0.f, 255.f));
           }
         }
@@ -104,30 +127,38 @@ class QuantizedGraphRouterBuilder {
         put(scales.data(), sizeof(scales));
         put(offsets.data(), sizeof(offsets));
         put(mean_dot.data(), sizeof(mean_dot));
-        put(codes.data(), sizeof(codes));
+        put(codes.data(), codes.size());
       }
     }
   };
 
   static void validate(const Data &data) {
+    const size_t dim = data.mean.size();
+    if (dim == 0 || dim > QuantizedGraphRouterFormat::kMaxDimension)
+      throw std::invalid_argument("router dimension must be in [1, 4096]");
     if (data.docs == 0 || data.docs > uint32_t(INT32_MAX) || data.ids.empty() ||
         data.ids.size() > kMaxAnchors || data.ids.size() != data.vectors.size())
       throw std::invalid_argument("invalid router training shape");
     for (float v : data.mean)
-      if (!std::isfinite(v) || std::abs(v) > 1.0001f)
+      if (!std::isfinite(v) || (data.cosine && std::abs(v) > 1.0001f))
         throw std::invalid_argument("invalid normalized corpus mean");
     std::unordered_set<uint32_t> seen;
     for (size_t i = 0; i < data.ids.size(); ++i) {
       if (data.ids[i] >= data.docs || !seen.insert(data.ids[i]).second)
         throw std::invalid_argument("invalid or duplicate anchor internal ID");
+      if (data.vectors[i].size() != dim)
+        throw std::invalid_argument("anchor dimension mismatch");
       double norm = 0;
       for (float v : data.vectors[i]) {
         if (!std::isfinite(v))
           throw std::invalid_argument("nonfinite anchor vector");
         norm += double(v) * v;
       }
-      if (std::abs(std::sqrt(norm) - 1.) > 1e-4)
-        throw std::invalid_argument("anchors must be unit 768D FP32 vectors");
+      if (!std::isfinite(norm) ||
+          norm > std::numeric_limits<float>::max() / 16.)
+        throw std::invalid_argument("anchor norm overflows FP32 distance");
+      if (data.cosine && std::abs(std::sqrt(norm) - 1.) > 1e-4)
+        throw std::invalid_argument("cosine anchors must be unit FP32 vectors");
     }
   }
 
@@ -135,7 +166,13 @@ class QuantizedGraphRouterBuilder {
     validate(data);
     if (options.iterations == 0 || options.iterations > 100)
       throw std::invalid_argument("iterations must be in [1, 100]");
+    const size_t projected = options.projected
+                                 ? options.projected
+                                 : std::max(size_t{1}, data.mean.size() / 2);
+    if (projected > turbo::SymphonyQGRotation(data.mean.size()).padded_dim())
+      throw std::invalid_argument("projection exceeds rotated dimension");
     QuantizedGraphRouterBuilder builder(data, options);
+    builder.model_.projected = projected;
     std::vector<size_t> rows(data.ids.size());
     std::iota(rows.begin(), rows.end(), size_t{0});
     builder.split(rows, 0);
@@ -147,6 +184,7 @@ class QuantizedGraphRouterBuilder {
       : data_(data), options_(options), rng_(options.seed) {
     model_.docs = data.docs;
     model_.mean = data.mean;
+    model_.cosine = data.cosine;
     model_.anchors = data.ids.size();
   }
 
@@ -161,17 +199,19 @@ class QuantizedGraphRouterBuilder {
   }
 
   Vector center(const std::vector<size_t> &rows) const {
-    std::array<double, kDim> sum{};
+    const size_t dim = data_.mean.size();
+    std::vector<double> sum(dim);
     for (size_t row : rows)
-      for (size_t d = 0; d < kDim; ++d) sum[d] += data_.vectors[row][d];
-    Vector result;
+      for (size_t d = 0; d < dim; ++d) sum[d] += data_.vectors[row][d];
+    Vector result(dim);
     double norm = 0;
-    for (size_t d = 0; d < kDim; ++d) {
+    for (size_t d = 0; d < dim; ++d) {
       result[d] = float(sum[d] / rows.size());
       norm += double(result[d]) * result[d];
     }
     const float scale = float(std::max(std::sqrt(norm), 1e-30));
-    for (float &v : result) v /= scale;
+    if (data_.cosine)
+      for (float &v : result) v /= scale;
     return result;
   }
 
@@ -184,8 +224,16 @@ class QuantizedGraphRouterBuilder {
       float best_dot = -std::numeric_limits<float>::infinity();
       for (size_t j = 0; j < centers.size(); ++j) {
         float dot;
-        ailego::InnerProductMatrix<float, 1, 1>::Compute(
-            data_.vectors[row].data(), centers[j].data(), kDim, &dot);
+        if (data_.cosine) {
+          ailego::InnerProductMatrix<float, 1, 1>::Compute(
+              data_.vectors[row].data(), centers[j].data(), data_.mean.size(),
+              &dot);
+        } else {
+          ailego::SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
+              data_.vectors[row].data(), centers[j].data(), data_.mean.size(),
+              &dot);
+          dot = -dot;
+        }
         if (dot > best_dot) {
           best = j;
           best_dot = dot;

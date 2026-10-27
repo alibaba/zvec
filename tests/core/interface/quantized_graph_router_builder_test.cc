@@ -20,7 +20,7 @@ Builder::Data data(size_t count, bool identical = false) {
   Builder::Data result;
   result.docs = 4096;
   for (size_t i = 0; i < count; ++i) {
-    Builder::Vector v{};
+    Builder::Vector v(768);
     v[identical ? 0 : i % 16] = 1.f;
     result.vectors.push_back(v);
     result.ids.push_back(4095 - uint32_t(i) * 3);
@@ -116,7 +116,7 @@ TEST(QuantizedGraphRouterBuilder, RejectsInvalidTrainingDataAndWriteErrors) {
   input.ids[0] = input.docs;
   EXPECT_THROW(Builder::train(input, {}), std::invalid_argument);
   input = data(32);
-  input.vectors[0].fill(0);
+  std::fill(input.vectors[0].begin(), input.vectors[0].end(), 0);
   EXPECT_THROW(Builder::train(input, {}), std::invalid_argument);
   input = data(32);
   input.vectors[0][0] = std::numeric_limits<float>::quiet_NaN();
@@ -136,6 +136,95 @@ TEST(QuantizedGraphRouterBuilder, RejectsInvalidTrainingDataAndWriteErrors) {
 
 #if RABITQ_SUPPORTED && defined(__x86_64__) && \
     (defined(__GNUC__) || defined(__clang__))
+TEST(QuantizedGraphRouterBuilder, GenericMetricsDimensionsAndScalarScores) {
+  if (!__builtin_cpu_supports("avx512vnni")) GTEST_SKIP();
+  for (size_t dim : {size_t{33}, size_t{768}, size_t{960}}) {
+    for (bool cosine : {true, false}) {
+      Builder::Data input;
+      input.docs = 64;
+      input.cosine = cosine;
+      input.mean.assign(dim, 0);
+      for (size_t i = 0; i < 16; ++i) {
+        Builder::Vector v(dim);
+        v[i] = cosine ? 1.f : float(i + 1);
+        input.ids.push_back(63 - i);
+        for (size_t d = 0; d < dim; ++d) input.mean[d] += v[d] / 16;
+        input.vectors.push_back(v);
+      }
+      Builder::Options options;
+      options.projected = dim == 33 ? 17 : dim / 2;
+      const auto model = Builder::train(input, options);
+      std::string pattern = (std::filesystem::temp_directory_path() /
+                             "zvec-generic-router-XXXXXX")
+                                .string();
+      std::vector<char> name(pattern.begin(), pattern.end());
+      name.push_back('\0');
+      const int fd = mkstemp(name.data());
+      ASSERT_GE(fd, 0);
+      close(fd);
+      struct Cleanup {
+        const char *p;
+        ~Cleanup() {
+          unlink(p);
+        }
+      } cleanup{name.data()};
+      {
+        std::ofstream out(name.data(), std::ios::binary);
+        model.write(out);
+      }
+      struct Valid {
+        bool valid(uint32_t id) const {
+          return id < 64;
+        }
+      } valid;
+      zvec::turbo::SymphonyQGRotation rotation(dim);
+      std::vector<float> rm;
+      rotation.rotate(input.mean.data(), rm);
+      zvec::core::QuantizedGraphIntegerRouter router;
+      ASSERT_TRUE(router.load(name.data(), input.mean, valid, 64, &rm, cosine));
+      EXPECT_EQ(router.dimension(), dim);
+      EXPECT_EQ(router.projected_dimension(), options.projected);
+      for (const auto &v : input.vectors) {
+        std::vector<float> rq;
+        rotation.rotate(v.data(), rq);
+        zvec::core::IntegerCenter::Query query;
+        ASSERT_TRUE(router.prepare_projected(rq.data(), query));
+        for (size_t d = options.projected; d < query.codes.size(); ++d)
+          EXPECT_EQ(query.codes[d], 0);
+        float scores[16];
+        int32_t products[16];
+        router.score(router.group(0), query, scores, products);
+        std::pair<double, uint32_t> expected{INFINITY, UINT32_MAX};
+        const auto &g = router.group(0);
+        for (size_t j = 0; j < 16; ++j) {
+          int32_t dot = 0;
+          for (size_t d = 0; d < options.projected; ++d)
+            dot +=
+                int32_t(g.codes[j * router.code_stride() + d]) * query.codes[d];
+          EXPECT_EQ(dot, products[j]);
+          const double residual =
+              double(query.scale) *
+              (double(g.scale[j]) * dot + double(g.offset[j]) * query.code_sum);
+          const double factor =
+              double(rotation.padded_dim()) / options.projected;
+          const double score = cosine ? -g.mean_dot[j] - factor * residual
+                                      : g.mean_dot[j] - 2 * factor * residual;
+          EXPECT_NEAR(scores[j], score, 2e-5 * std::max(1., std::abs(score)));
+          expected = std::min(expected, std::make_pair(score, input.ids[j]));
+        }
+        EXPECT_EQ(router.choose(query, 1), expected.second);
+      }
+      EXPECT_FALSE(
+          router.load(name.data(), input.mean, valid, 64, &rm, !cosine));
+      // Invalid projection/stride and truncated files must fail before large
+      // allocations.
+      std::filesystem::resize_file(name.data(), 40);
+      EXPECT_FALSE(
+          router.load(name.data(), input.mean, valid, 64, &rm, cosine));
+    }
+  }
+}
+
 TEST(QuantizedGraphRouterBuilder, ProductionLoaderAndEntrySelection) {
   if (!__builtin_cpu_supports("avx512vnni") ||
       !__builtin_cpu_supports("avx512bw")) {
