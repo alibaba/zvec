@@ -55,7 +55,7 @@ class IVFEntity {
              const IndexFilter &filter, uint32_t *scan_count,
              IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;
 
-  //! search in inverted list without filter
+  //! Search without filter; call retrieve_keys after completing the scan.
   int search(size_t inverted_list_id, const void *query, uint32_t *scan_count,
              IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;
 
@@ -63,7 +63,7 @@ class IVFEntity {
   int search(const void *query, const IndexFilter &filter,
              IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;
 
-  //! search all inverted list without filter
+  //! Search all lists without filter; call retrieve_keys before using keys.
   int search(const void *query, IndexDocumentHeap *heap,
              IndexContext::Stats *context_stats) const;
 
@@ -357,6 +357,8 @@ class IVFEntity {
   };
 
  private:
+  friend class IVFEntityTestPeer;
+
   //! Load the segment by seg_id in expect_size segment size
   IndexStorage::Segment::Pointer load_segment(const std::string &seg_id,
                                               size_t expect_size) const;
@@ -373,6 +375,31 @@ class IVFEntity {
   int key_to_id(uint64_t key, uint32_t *id) const;
 
   int key_normalize_value(uint32_t id, float *value) const;
+
+  // Each storage/layout path has its own bounded distance/heap loop.
+  int search_contiguous_rows_all_valid(
+      const InvertedListMeta *list_meta, const uint8_t *base, const void *query,
+      float norm_val, IndexDocumentHeap *heap,
+      IndexContext::Stats *context_stats) const;
+  template <typename TopK>
+  int search_contiguous_rows_all_valid_impl(
+      const InvertedListMeta *list_meta, const uint8_t *base, const void *query,
+      float norm_val, IndexDocumentHeap *heap,
+      IndexContext::Stats *context_stats) const;
+  int search_contiguous_rows(const InvertedListMeta *list_meta,
+                             const uint8_t *base, const void *query,
+                             float norm_val, IndexDocumentHeap *heap,
+                             IndexContext::Stats *context_stats) const;
+  int search_scattered_rows(const InvertedListMeta *list_meta,
+                            const void *query, float norm_val,
+                            IndexDocumentHeap *heap,
+                            IndexContext::Stats *context_stats) const;
+  int search_padded_rows(const InvertedListMeta *list_meta, const void *query,
+                         float norm_val, IndexDocumentHeap *heap,
+                         IndexContext::Stats *context_stats) const;
+  int search_column_major(const InvertedListMeta *list_meta, const void *query,
+                          float norm_val, IndexDocumentHeap *heap,
+                          IndexContext::Stats *context_stats) const;
 
   void query_features_distance(const void *query, const void *features,
                                size_t count, float *out) const {
@@ -414,6 +441,8 @@ class IVFEntity {
   mutable std::vector<uint8_t> scatter_vector_{};
   float norm_value_{0.0f};  // normalize the inverted vector to orignal score
   bool norm_value_sqrt_{false};  // does the norm value need to sqrt
+  // Stored keys are immutable; document deletions are handled by query filters.
+  bool all_keys_valid_{false};
   InvertedIndexHeader header_;
 };
 
