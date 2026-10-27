@@ -60,6 +60,61 @@ platforms can still use ordinary HNSW.
 
 ## Model compatibility
 
+### Build a router in C++
+
+With `BUILD_TOOLS=ON`, build the standalone offline trainer:
+
+```sh
+cmake --build "$BUILD_DIR" --target quantized_graph_router -j 8
+"$BUILD_DIR/bin/quantized_graph_router" build \
+  /path/cohere.index /path/router384.bin
+```
+
+This reads the existing inline FP32 768D cosine snapshot in read-only mode,
+computes its full-corpus mean, samples up to 65,536 internal node IDs, and trains
+a 16-way spherical k-means hierarchy with ten iterations per split. It then
+rotates/projects the centers to 384 dimensions, quantizes them, and writes the
+version-2 model used directly by `quantized_graph_model`. Training, conversion,
+and query execution require no Python or NumPy. The source index is unchanged.
+The output directory must already exist; an existing output is never replaced.
+Incomplete output is not published.
+
+Optional positional arguments are the anchor count (1–65,536, capped at the
+document count) and seed (default `202610261259`):
+
+```sh
+"$BUILD_DIR/bin/quantized_graph_router" build \
+  /path/cohere.index /path/router384.bin 65536 202610261259
+```
+
+The tool currently requires readable, nonzero normalized vectors at every
+internal ID in the snapshot. It does not add mutable-index training or a Python
+collection API. Training is single-threaded and uses native dispatched FP32 dot
+products, FP64 center accumulation, and `std::mt19937_64` initialization. Repeated
+runs with the same input/seed/build are deterministic; NumPy PCG64/BLAS and other
+SIMD/build combinations need not produce the same tree. Degenerate splits use
+balanced partitions, with a depth guard to satisfy the loader's depth limit.
+
+For migration checks, the tool also accepts the historical anchor export and
+mean, keeping those training inputs fixed:
+
+```sh
+"$BUILD_DIR/bin/quantized_graph_router" train \
+  /path/anchors.bin /path/mean.f32 /path/router384.bin 202610261259
+```
+
+`anchors.bin` is little-endian: five uint32 values (magic `0x51474159`, version 1,
+anchor count, dimension 768, graph document count), followed by packed records
+of uint32 internal ID, uint64 external key, and 768 FP32 coordinates.
+`mean.f32` contains exactly 768 FP32 values. IDs must be unique and in range;
+vectors must be finite and normalized. External keys are not substituted for
+internal IDs. The caller must ensure these files belong to the intended graph.
+The historical mean was estimated from 65,536 database samples, while `build`
+computes the full-corpus mean: use `train` when isolating the trainer migration
+from this input difference. Neither mode reads queries or ground truth.
+
+### Load and pair the model
+
 The external model is the little-endian projected-router version 2 format:
 magic `0x51475259`, projected dimension 384, graph document count, original
 768D mean, transform tag `0x53514701`, rotated 768D mean, and 16-way quantized

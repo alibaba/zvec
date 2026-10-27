@@ -1,0 +1,258 @@
+// Copyright 2025-present the zvec project
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
+#pragma once
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <numeric>
+#include <ostream>
+#include <random>
+#include <stdexcept>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+#include <ailego/math/inner_product_matrix.h>
+#include "turbo/preprocessor/symphony_qg_rotator/symphony_qg_rotator.h"
+
+namespace zvec::core {
+
+// Offline spherical k-means hierarchy for the 768D cosine snapshot preset.
+// Leaves are GRAPH INTERNAL IDs, never external keys or training-row offsets.
+// The training algorithm matches train_router59.py, but mt19937_64 and the
+// native dot-product reduction do not reproduce NumPy PCG64/BLAS bit for bit.
+class QuantizedGraphRouterBuilder {
+ public:
+  static constexpr size_t kDim = 768, kProjected = 384, kWidth = 16;
+  static constexpr size_t kMaxAnchors = 65536;
+  using Vector = std::array<float, kDim>;
+  struct Data {
+    uint32_t docs = 0;
+    Vector mean{};
+    std::vector<uint32_t> ids;
+    std::vector<Vector> vectors;
+  };
+  struct Options {
+    uint64_t seed = 202610261259ULL;
+    size_t iterations = 10;
+  };
+  struct Group {
+    std::array<Vector, kWidth> centers{};
+    std::array<int32_t, kWidth> targets{};
+    uint32_t count = 0;
+    Group() {
+      targets.fill(INT32_MIN);
+    }
+  };
+  struct Model {
+    uint32_t docs = 0;
+    Vector mean{};
+    std::vector<Group> groups;
+    size_t max_depth = 0, balanced_splits = 0, anchors = 0;
+
+    // Version 2, little-endian format consumed by IntegerRouter. The caller
+    // owns publication/overwrite policy; stream failures are never ignored.
+    void write(std::ostream &out) const {
+      const uint32_t endian = 1;
+      if (*reinterpret_cast<const uint8_t *>(&endian) != 1)
+        throw std::runtime_error("router writer requires little-endian host");
+      if (groups.empty() || groups.size() > 100000)
+        throw std::runtime_error("invalid router group count");
+      auto put = [&](const void *p, size_t n) {
+        out.write(static_cast<const char *>(p), n);
+        if (!out) throw std::runtime_error("writing router model failed");
+      };
+      const uint32_t header[]{0x51475259, 2, kProjected,
+                              uint32_t(groups.size()), docs};
+      const uint32_t tag = 0x53514701;
+      turbo::SymphonyQGRotation rotate(kDim);
+      std::vector<float> rotated_mean;
+      rotate.rotate(mean.data(), rotated_mean);
+      put(header, sizeof(header));
+      put(mean.data(), sizeof(mean));
+      put(&tag, sizeof(tag));
+      put(rotated_mean.data(), kDim * sizeof(float));
+      for (const auto &group : groups) {
+        std::array<float, kWidth> scales{}, offsets{}, mean_dot{};
+        std::array<uint8_t, kWidth * kProjected> codes{};
+        for (size_t j = 0; j < kWidth; ++j) {
+          std::vector<float> rotated;
+          rotate.rotate(group.centers[j].data(), rotated);
+          double dot = 0;
+          for (size_t d = 0; d < kDim; ++d) {
+            rotated[d] -= rotated_mean[d];
+            dot += double(mean[d]) * group.centers[j][d];
+          }
+          mean_dot[j] = float(dot);
+          auto range = std::minmax_element(rotated.begin(),
+                                           rotated.begin() + kProjected);
+          offsets[j] = *range.first;
+          scales[j] = (*range.second - *range.first) / 255.f;
+          const float inverse = scales[j] > 0 ? 1.f / scales[j] : 0.f;
+          for (size_t d = 0; d < kProjected; ++d) {
+            const float code = (rotated[d] - offsets[j]) * inverse;
+            codes[j * kProjected + d] =
+                uint8_t(std::clamp(std::nearbyint(code), 0.f, 255.f));
+          }
+        }
+        put(&group.count, sizeof(group.count));
+        put(group.targets.data(), sizeof(group.targets));
+        put(scales.data(), sizeof(scales));
+        put(offsets.data(), sizeof(offsets));
+        put(mean_dot.data(), sizeof(mean_dot));
+        put(codes.data(), sizeof(codes));
+      }
+    }
+  };
+
+  static void validate(const Data &data) {
+    if (data.docs == 0 || data.docs > uint32_t(INT32_MAX) || data.ids.empty() ||
+        data.ids.size() > kMaxAnchors || data.ids.size() != data.vectors.size())
+      throw std::invalid_argument("invalid router training shape");
+    for (float v : data.mean)
+      if (!std::isfinite(v) || std::abs(v) > 1.0001f)
+        throw std::invalid_argument("invalid normalized corpus mean");
+    std::unordered_set<uint32_t> seen;
+    for (size_t i = 0; i < data.ids.size(); ++i) {
+      if (data.ids[i] >= data.docs || !seen.insert(data.ids[i]).second)
+        throw std::invalid_argument("invalid or duplicate anchor internal ID");
+      double norm = 0;
+      for (float v : data.vectors[i]) {
+        if (!std::isfinite(v))
+          throw std::invalid_argument("nonfinite anchor vector");
+        norm += double(v) * v;
+      }
+      if (std::abs(std::sqrt(norm) - 1.) > 1e-4)
+        throw std::invalid_argument("anchors must be unit 768D FP32 vectors");
+    }
+  }
+
+  static Model train(const Data &data, const Options &options) {
+    validate(data);
+    if (options.iterations == 0 || options.iterations > 100)
+      throw std::invalid_argument("iterations must be in [1, 100]");
+    QuantizedGraphRouterBuilder builder(data, options);
+    std::vector<size_t> rows(data.ids.size());
+    std::iota(rows.begin(), rows.end(), size_t{0});
+    builder.split(rows, 0);
+    return std::move(builder.model_);
+  }
+
+ private:
+  QuantizedGraphRouterBuilder(const Data &data, const Options &options)
+      : data_(data), options_(options), rng_(options.seed) {
+    model_.docs = data.docs;
+    model_.mean = data.mean;
+    model_.anchors = data.ids.size();
+  }
+
+  // Rejection sampling rather than implementation-defined distributions.
+  size_t random_below(size_t n) {
+    const uint64_t bound = uint64_t(n), threshold = -bound % bound;
+    uint64_t value;
+    do {
+      value = rng_();
+    } while (value < threshold);
+    return value % bound;
+  }
+
+  Vector center(const std::vector<size_t> &rows) const {
+    std::array<double, kDim> sum{};
+    for (size_t row : rows)
+      for (size_t d = 0; d < kDim; ++d) sum[d] += data_.vectors[row][d];
+    Vector result;
+    double norm = 0;
+    for (size_t d = 0; d < kDim; ++d) {
+      result[d] = float(sum[d] / rows.size());
+      norm += double(result[d]) * result[d];
+    }
+    const float scale = float(std::max(std::sqrt(norm), 1e-30));
+    for (float &v : result) v /= scale;
+    return result;
+  }
+
+  std::vector<std::vector<size_t>> assign(
+      const std::vector<size_t> &rows,
+      const std::vector<Vector> &centers) const {
+    std::vector<std::vector<size_t>> parts(centers.size());
+    for (size_t row : rows) {
+      size_t best = 0;
+      float best_dot = -std::numeric_limits<float>::infinity();
+      for (size_t j = 0; j < centers.size(); ++j) {
+        float dot;
+        ailego::InnerProductMatrix<float, 1, 1>::Compute(
+            data_.vectors[row].data(), centers[j].data(), kDim, &dot);
+        if (dot > best_dot) {
+          best = j;
+          best_dot = dot;
+        }
+      }
+      parts[best].push_back(row);
+    }
+    parts.erase(std::remove_if(parts.begin(), parts.end(),
+                               [](const auto &p) { return p.empty(); }),
+                parts.end());
+    return parts;
+  }
+
+  size_t split(const std::vector<size_t> &rows, size_t depth) {
+    const size_t group = model_.groups.size();
+    model_.groups.emplace_back();
+    model_.max_depth = std::max(model_.max_depth, depth);
+    if (rows.size() <= kWidth) {
+      auto &g = model_.groups[group];
+      g.count = rows.size();
+      for (size_t j = 0; j < rows.size(); ++j) {
+        g.centers[j] = data_.vectors[rows[j]];
+        g.targets[j] = -int32_t(data_.ids[rows[j]]) - 1;
+      }
+      return group;
+    }
+    std::vector<size_t> shuffled(rows);
+    std::vector<Vector> centers;
+    for (size_t j = 0; j < kWidth; ++j) {
+      std::swap(shuffled[j], shuffled[j + random_below(rows.size() - j)]);
+      centers.push_back(data_.vectors[shuffled[j]]);
+    }
+    for (size_t i = 0; i < options_.iterations; ++i) {
+      auto parts = assign(rows, centers);
+      centers.clear();
+      for (const auto &part : parts) centers.push_back(center(part));
+    }
+    auto parts = assign(rows, centers);
+    // As in Python, degenerate splits are balanced contiguous partitions.
+    // Also bound pathological chains: with <=65536 anchors, balancing from
+    // depth 11 reaches leaves by depth 14, within the loader's <16 limit.
+    if (parts.size() < 2 || depth >= 11) {
+      ++model_.balanced_splits;
+      parts.assign(kWidth, {});
+      size_t start = 0;
+      for (size_t j = 0; j < kWidth; ++j) {
+        size_t count = rows.size() / kWidth + (j < rows.size() % kWidth);
+        parts[j].assign(rows.begin() + start, rows.begin() + start + count);
+        start += count;
+      }
+    }
+    model_.groups[group].count = parts.size();
+    for (size_t j = 0; j < parts.size(); ++j) {
+      const auto &part = parts[j];
+      model_.groups[group].centers[j] =
+          part.size() == 1 ? data_.vectors[part[0]] : center(part);
+      // Recursive push_back may reallocate groups_: never keep a reference.
+      const int32_t target = part.size() == 1 ? -int32_t(data_.ids[part[0]]) - 1
+                                              : int32_t(split(part, depth + 1));
+      model_.groups[group].targets[j] = target;
+    }
+    return group;
+  }
+
+  const Data &data_;
+  Options options_;
+  std::mt19937_64 rng_;
+  Model model_;
+};
+}  // namespace zvec::core

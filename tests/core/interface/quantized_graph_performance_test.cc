@@ -15,6 +15,7 @@
 #if RABITQ_SUPPORTED && defined(__x86_64__) && \
     (defined(__GNUC__) || defined(__clang__))
 #include "algorithm/quantized_graph/quantized_graph_integer_router.h"
+#include "algorithm/quantized_graph/quantized_graph_router_builder.h"
 #include "algorithm/quantized_graph/quantized_graph_sq8_center.h"
 #include "turbo/preprocessor/symphony_qg_rotator/symphony_qg_rotator.h"
 #endif
@@ -23,6 +24,9 @@ namespace ci = zvec::core_interface;
 using namespace zvec::core;
 struct TestHnswIndex : ci::HNSWIndex {
   using ci::HNSWIndex::init;
+  const float *stored_vector(uint32_t id) const {
+    return static_cast<const float *>(streamer_->get_vector_by_id(id));
+  }
 };
 
 TEST(QuantizedGraphPerformance, ParameterRoundTripAndUnsupportedLayouts) {
@@ -190,9 +194,32 @@ TEST(QuantizedGraphPerformance, SnapshotSearchAndMutationGuard) {
   ASSERT_EQ(0, ordinary.open(index_path, options));
   for (size_t i = 0; i < count; ++i)
     ASSERT_EQ(0, ordinary.add({ci::DenseVector{vectors[i].data()}}, i));
+  QuantizedGraphRouterBuilder::Data training;
+  training.docs = count;
+  std::array<double, 768> mean{};
+  for (size_t i = 0; i < count; ++i) {
+    // Deliberately reverse training order: row offsets are not graph IDs.
+    const uint32_t id = count - i - 1;
+    const float *v = ordinary.stored_vector(id);
+    ASSERT_NE(v, nullptr);
+    training.ids.push_back(id);
+    training.vectors.emplace_back();
+    std::copy_n(v, 768, training.vectors.back().begin());
+    double norm = 0;
+    for (size_t d = 0; d < 768; ++d) norm += double(v[d]) * v[d];
+    ASSERT_NEAR(std::sqrt(norm), 1., 1e-4) << "internal ID " << id;
+    for (size_t d = 0; d < 768; ++d) mean[d] += v[d];
+  }
+  for (size_t d = 0; d < 768; ++d) training.mean[d] = float(mean[d] / count);
   ASSERT_EQ(0, ordinary.flush());
   ASSERT_EQ(0, ordinary.close());
-  WriteModel(model_path, count);
+  {
+    const auto model = QuantizedGraphRouterBuilder::train(training, {});
+    std::ofstream out(model_path, std::ios::binary);
+    model.write(out);
+    out.close();
+    ASSERT_TRUE(out.good());
+  }
   options.create_new = false;
   p.quantized_graph_model = model_path;
   TestHnswIndex optimized;
