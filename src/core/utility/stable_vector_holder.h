@@ -13,32 +13,23 @@
 // limitations under the License.
 #pragma once
 
-#include <cstdint>
 #include <memory>
-#include <vector>
 
 namespace zvec {
 namespace core {
 
-// Vectors and keys are in holder iteration order. Owners keep the backing
-// allocations/mappings alive independently of the holder and its iterators.
-// The caller must keep the source immutable (including no explicit close)
-// while using the view. All vector addresses remain valid across reads and
-// may be read concurrently until the view is released.
-struct StableVectorView {
-  std::vector<uint64_t> keys{};
-  std::vector<const void *> vectors{};
-  std::vector<std::shared_ptr<const void>> owners{};
-};
-
 // Optional internal capability; does not change the public IndexHolder ABI.
-// Unlike OrdinalAccessHolder, this never exposes reusable scratch or evictable
-// pages. Errors leave the output unchanged. Only NotImplemented permits the
-// caller to fall back to copying; read errors must be propagated.
+// On success, lifetime is non-null and keeps all data returned by the holder's
+// existing iterators alive across reads and iterator/provider destruction.
+// Addresses may be read concurrently until lifetime is released. The caller
+// must keep the source immutable, including no explicit close, during that
+// time. Acquiring a lifetime reads no vectors and does not evaluate filters.
+// Errors leave the output unchanged. Only NotImplemented allows copying as a
+// fallback; other errors must propagate.
 class StableVectorHolder {
  public:
   virtual ~StableVectorHolder() = default;
-  virtual int get_stable_vectors(StableVectorView *view) = 0;
+  virtual int retain_stable_data(std::shared_ptr<const void> *lifetime) = 0;
 };
 
 }  // namespace core

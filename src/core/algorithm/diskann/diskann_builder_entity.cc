@@ -14,7 +14,6 @@
 
 #include "diskann_builder_entity.h"
 #include <iostream>
-#include <limits>
 #include <numeric>
 #include <ailego/pattern/defer.h>
 #include "utility/ordinal_access_holder.h"
@@ -67,47 +66,31 @@ int DiskAnnBuilderEntity::init(const IndexMeta &meta, uint32_t max_degree,
 
 void DiskAnnBuilderEntity::release_vectors() {
   std::string().swap(vectors_buffer_);
-  vector_view_ = {};
+  std::vector<const void *>().swap(vector_ptrs_);
+  vector_lifetime_.reset();
 }
 
-int DiskAnnBuilderEntity::reserve_space(uint32_t docs) {
-  if (vector_view_.vectors.empty()) {
+int DiskAnnBuilderEntity::reserve_space(uint32_t docs,
+                                        std::shared_ptr<const void> lifetime) {
+  if (doc_cnt() != 0) return IndexError_InvalidArgument;
+  vector_lifetime_ = std::move(lifetime);
+  if (vector_lifetime_) {
+    vector_ptrs_.reserve(docs);
+  } else {
     vectors_buffer_.reserve(meta_.element_size() * docs);
   }
   keys_buffer_.reserve(sizeof(diskann_key_t) * docs);
   neighbors_buffer_.reserve(static_cast<size_t>(neighbor_size_) * docs);
-
-  return 0;
-}
-
-int DiskAnnBuilderEntity::use_vector_view(StableVectorView view) {
-  if (doc_cnt() != 0 || view.vectors.empty() ||
-      view.vectors.size() != view.keys.size() ||
-      view.vectors.size() > std::numeric_limits<uint32_t>::max()) {
-    return IndexError_InvalidArgument;
-  }
-  for (const void *vector : view.vectors) {
-    if (!vector) return IndexError_ReadData;
-  }
-  vector_view_ = std::move(view);
-  int ret = reserve_space(static_cast<uint32_t>(vector_view_.vectors.size()));
-  if (ret != 0) return ret;
-  for (size_t i = 0; i < vector_view_.vectors.size(); ++i) {
-    ret = add_vector(vector_view_.keys[i], vector_view_.vectors[i]);
-    if (ret != 0) return ret;
-  }
-  std::vector<uint64_t>().swap(vector_view_.keys);
   return 0;
 }
 
 int DiskAnnBuilderEntity::add_vector(diskann_key_t key, const void *vec) {
   if (!vec) return IndexError_ReadData;
-  if (vector_view_.vectors.empty()) {
+  if (vector_lifetime_) {
+    vector_ptrs_.push_back(vec);
+  } else {
     vectors_buffer_.append(reinterpret_cast<const char *>(vec),
                            meta_.element_size());
-  } else if (doc_cnt() >= vector_view_.vectors.size() ||
-             vec != vector_view_.vectors[doc_cnt()]) {
-    return IndexError_Mismatch;
   }
   keys_buffer_.append(reinterpret_cast<const char *>(&key), sizeof(key));
 
@@ -122,7 +105,7 @@ int DiskAnnBuilderEntity::add_vector(diskann_key_t key, const void *vec) {
 }
 
 const void *DiskAnnBuilderEntity::get_vector(diskann_id_t id) const {
-  if (!vector_view_.vectors.empty()) return vector_view_.vectors[id];
+  if (vector_lifetime_) return vector_ptrs_[id];
   size_t offset = (size_t)id * meta_.element_size();
   return vectors_buffer_.data() + offset;
 }

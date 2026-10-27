@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include "utility/stable_vector_holder.h"
 #include "flat_distance_matrix.h"
 #include "flat_searcher.h"
 #include "flat_streamer.h"
@@ -41,8 +42,8 @@ class FlatStreamerProvider : public IndexProvider, public StableVectorHolder {
     return owner_->entity().creater_iterator();
   }
 
-  int get_stable_vectors(StableVectorView *view) override {
-    return owner_->entity().get_stable_vectors(view);
+  int retain_stable_data(std::shared_ptr<const void> *lifetime) override {
+    return owner_->entity().retain_stable_data(lifetime);
   }
 
   //! Retrieve count of vectors

@@ -28,6 +28,7 @@
 #include <zvec/core/interface/index_factory.h>
 #include "algorithm/cluster/vector_mean.h"
 #include "utility/prefix_index_holder.h"
+#include "utility/stable_vector_holder.h"
 #include "diskann_context.h"
 #include "diskann_params.h"
 #include "diskann_util.h"
@@ -728,42 +729,42 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
     return IndexError_Runtime;
   }
 
-  StableVectorView vector_view;
+  std::shared_ptr<const void> lifetime;
   auto *stable = dynamic_cast<StableVectorHolder *>(holder.get());
-  int ret = stable ? stable->get_stable_vectors(&vector_view)
+  int ret = stable ? stable->retain_stable_data(&lifetime)
                    : IndexError_NotImplemented;
-  error_ = false;
   if (ret == 0) {
-    if (vector_view.vectors.size() != holder->count()) {
-      return IndexError_Mismatch;
-    }
-    ret = entity_.use_vector_view(std::move(vector_view));
-    if (ret != 0) return ret;
-    LOG_INFO("Using stable source vectors for graph: count=%zu, saved_bytes=%zu",
-             holder->count(), holder->count() * raw_meta_.element_size());
+    if (!lifetime) return IndexError_Runtime;
+    LOG_INFO(
+        "Using stable source vectors for graph: count=%zu, saved_bytes=%zu",
+        holder->count(), holder->count() * raw_meta_.element_size());
   } else if (ret == IndexError_NotImplemented) {
-    auto iter = holder->create_iterator();
-    if (!iter) {
-      LOG_ERROR("Create iterator for holder failed");
-      return IndexError_Runtime;
-    }
-    ret = entity_.reserve_space(holder->count());
-    if (ret != 0) return ret;
-    while (iter->is_valid()) {
-      if (iter->status() != 0) return iter->status();
-      if (entity_.doc_cnt() >= holder->count()) return IndexError_Mismatch;
-      const void *data = iter->data();
-      if (iter->status() != 0) return iter->status();
-      ret = entity_.add_vector(iter->key(), data);
-      if (ret != 0) return ret;
-      iter->next();
-    }
-    if (iter->status() != 0) return iter->status();
+    lifetime.reset();
   } else {
     return ret;
   }
-
+  auto iter = holder->create_iterator();
+  if (!iter) {
+    LOG_ERROR("Create iterator for holder failed");
+    return IndexError_Runtime;
+  }
+  ret = entity_.reserve_space(holder->count(), std::move(lifetime));
+  if (ret != 0) return ret;
+  error_ = false;
+  while (iter->is_valid()) {
+    if (iter->status() != 0) return iter->status();
+    if (entity_.doc_cnt() >= holder->count()) return IndexError_Mismatch;
+    const uint64_t key = iter->key();
+    if (iter->status() != 0) return iter->status();
+    const void *data = iter->data();
+    if (iter->status() != 0) return iter->status();
+    ret = entity_.add_vector(key, data);
+    if (ret != 0) return ret;
+    iter->next();
+  }
+  if (iter->status() != 0) return iter->status();
   if (entity_.doc_cnt() != holder->count()) return IndexError_Mismatch;
+  iter.reset();
   LOG_INFO("Finished saving vector");
 
   LOG_INFO("Start to calculate entrypoint");

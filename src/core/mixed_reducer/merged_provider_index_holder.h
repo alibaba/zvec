@@ -74,7 +74,7 @@ class MergedProviderIndexHolder final : public IndexHolder,
   IndexHolder::Iterator::Pointer create_iterator() override;
   int create_ordinal_reader(
       OrdinalAccessHolder::Reader::Pointer *reader) override;
-  int get_stable_vectors(StableVectorView *view) override;
+  int retain_stable_data(std::shared_ptr<const void> *lifetime) override;
 
   size_t filtered_count() const;
   int status() const;
