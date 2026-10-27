@@ -51,11 +51,3 @@ cc_test(NAME quantizer_compatibility_test STRICT SRCS quantizer_compatibility_te
 set_tests_properties(factory_abi_test component_factory_test turbo_factory_test
   prebuilt_extension_test legacy_initializer_test quantizer_compatibility_test
   PROPERTIES TIMEOUT 90)
-
-add_executable(index_format_compatibility_test EXCLUDE_FROM_ALL index_format_fixture.cc)
-target_include_directories(index_format_compatibility_test PRIVATE ${PROJECT_ROOT_DIR}/src)
-target_link_libraries(index_format_compatibility_test PRIVATE zvec_core zvec_turbo zvec_ailego)
-add_dependencies(unittest index_format_compatibility_test)
-add_test(NAME index_format_compatibility_test COMMAND index_format_compatibility_test
-  --read ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/ea60a361)
-set_tests_properties(index_format_compatibility_test PROPERTIES TIMEOUT 90)

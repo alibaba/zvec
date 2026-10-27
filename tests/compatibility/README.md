@@ -75,37 +75,6 @@ persisted Flat indexes, and high-level index creation/reopening with an override
 postings and rejects unknown names. The Flat persistence cases cover both the
 current quantizer metadata field and the legacy reformer-name field.
 
-The macOS arm64 validation passed 26 CTest programs, 26 selected IVF cases,
-two HNSW provider/distance cases, and 24 Python collection mutation cases. Static
-consumers, shared SDKs, the C binding and the Python extension were built; their
-generated dependency/link commands contained no archive-forcing flags.
-
-## Frozen pre-refactor files
-
-`fixtures/ea60a361` was generated using the original shared core SDK at commit
-`ea60a361`, before either factory refactor, on macOS arm64 with Clang 18.1.8.
-`SHA256SUMS` records each file. All seven built-in quantizers and one custom alias
-have serialized state and reference distances; the four scalar formats and the
-alias also have Flat index files containing 17 vectors. PQ FastScan distances
-use its packed-block interface. Normal tests only read these files.
-
-To reproduce, build the **old revision** with `BUILD_ZVEC_CORE_SHARED=ON`, then
-compile the current `index_format_fixture.cc` against that revision's headers
-and shared library (do not compile against the current SDK):
-
-```sh
-c++ -std=c++17 -O2 \
-  -I"$OLD_SOURCE/src/include" -I"$OLD_SOURCE/src" -I"$OLD_SOURCE/src/turbo" \
-  tests/compatibility/index_format_fixture.cc \
-  -L"$OLD_BUILD/lib" -Wl,-rpath,"$OLD_BUILD/lib" -lzvec_core \
-  -o old_index_fixture
-./old_index_fixture --write tests/compatibility/fixtures/ea60a361
-./old_index_fixture --read tests/compatibility/fixtures/ea60a361
-```
-
-Supply the platform's usual compiler, SDK, threading and C++ runtime options.
-Use `index_format_compatibility_test` to read the files with the current build.
-For a separate shared-library replacement check on macOS, the same old binary
-can be run with `DYLD_LIBRARY_PATH` pointing at the current shared SDK; this was
-also validated during the compatibility repair. Linux and Windows execution
-were not available in that local validation environment.
+Persistence tests generate their indexes at runtime. The suite does not include
+checked-in pre-refactor binary fixtures or a cross-version serialized-format
+reader test. The legacy-header ABI tests remain independent of index files.
