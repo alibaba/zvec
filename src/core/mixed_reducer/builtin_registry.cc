@@ -18,10 +18,10 @@ namespace zvec {
 namespace core {
 
 // Keep this list explicit: add new built-ins here beside their module.
-void RegisterBuiltinSTREAMER_REDUCER_MixedStreamerReducer();
+void RegisterBuiltinStreamerReducerMixedStreamerReducer();
 
 void RegisterBuiltinMixedReducers() {
-  RegisterBuiltinSTREAMER_REDUCER_MixedStreamerReducer();
+  RegisterBuiltinStreamerReducerMixedStreamerReducer();
 }
 
 }  // namespace core

@@ -18,34 +18,34 @@ namespace zvec {
 namespace core {
 
 // Keep this list explicit: add new built-ins here beside their module.
-void RegisterBuiltinMETRIC_Cosine();
-void RegisterBuiltinMETRIC_Euclidean();
-void RegisterBuiltinMETRIC_InnerProduct();
-void RegisterBuiltinMETRIC_InnerProductSparse();
-void RegisterBuiltinMETRIC_MipsSquaredEuclidean();
-void RegisterBuiltinMETRIC_MipsSquaredEuclideanSparse();
-void RegisterBuiltinMETRIC_NormalizedCosine();
-void RegisterBuiltinMETRIC_QuantizedInteger();
-void RegisterBuiltinMETRIC_SquaredEuclidean();
-void RegisterBuiltinMETRIC_SquaredEuclideanSparse();
-void RegisterBuiltinMETRIC_UniformUint4();
-void RegisterBuiltinMETRIC_UniformUint7();
-void RegisterBuiltinMETRIC_UniformUint8();
+void RegisterBuiltinMetricCosine();
+void RegisterBuiltinMetricEuclidean();
+void RegisterBuiltinMetricInnerProduct();
+void RegisterBuiltinMetricInnerProductSparse();
+void RegisterBuiltinMetricMipsSquaredEuclidean();
+void RegisterBuiltinMetricMipsSquaredEuclideanSparse();
+void RegisterBuiltinMetricNormalizedCosine();
+void RegisterBuiltinMetricQuantizedInteger();
+void RegisterBuiltinMetricSquaredEuclidean();
+void RegisterBuiltinMetricSquaredEuclideanSparse();
+void RegisterBuiltinMetricUniformUint4();
+void RegisterBuiltinMetricUniformUint7();
+void RegisterBuiltinMetricUniformUint8();
 
 void RegisterBuiltinMetrics() {
-  RegisterBuiltinMETRIC_Cosine();
-  RegisterBuiltinMETRIC_Euclidean();
-  RegisterBuiltinMETRIC_InnerProduct();
-  RegisterBuiltinMETRIC_InnerProductSparse();
-  RegisterBuiltinMETRIC_MipsSquaredEuclidean();
-  RegisterBuiltinMETRIC_MipsSquaredEuclideanSparse();
-  RegisterBuiltinMETRIC_NormalizedCosine();
-  RegisterBuiltinMETRIC_QuantizedInteger();
-  RegisterBuiltinMETRIC_SquaredEuclidean();
-  RegisterBuiltinMETRIC_SquaredEuclideanSparse();
-  RegisterBuiltinMETRIC_UniformUint4();
-  RegisterBuiltinMETRIC_UniformUint7();
-  RegisterBuiltinMETRIC_UniformUint8();
+  RegisterBuiltinMetricCosine();
+  RegisterBuiltinMetricEuclidean();
+  RegisterBuiltinMetricInnerProduct();
+  RegisterBuiltinMetricInnerProductSparse();
+  RegisterBuiltinMetricMipsSquaredEuclidean();
+  RegisterBuiltinMetricMipsSquaredEuclideanSparse();
+  RegisterBuiltinMetricNormalizedCosine();
+  RegisterBuiltinMetricQuantizedInteger();
+  RegisterBuiltinMetricSquaredEuclidean();
+  RegisterBuiltinMetricSquaredEuclideanSparse();
+  RegisterBuiltinMetricUniformUint4();
+  RegisterBuiltinMetricUniformUint7();
+  RegisterBuiltinMetricUniformUint8();
 }
 
 }  // namespace core

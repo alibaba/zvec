@@ -18,14 +18,14 @@ namespace zvec {
 namespace core {
 
 // Keep this list explicit: add new built-ins here beside their module.
-void RegisterBuiltinCONVERTER_RabitqConverter();
-void RegisterBuiltinREFORMER_RabitqReformer();
-void RegisterBuiltinSTREAMER_HnswRabitqStreamer();
+void RegisterBuiltinConverterRabitqConverter();
+void RegisterBuiltinReformerRabitqReformer();
+void RegisterBuiltinStreamerHnswRabitqStreamer();
 
 void RegisterBuiltinHnswRabitq() {
-  RegisterBuiltinCONVERTER_RabitqConverter();
-  RegisterBuiltinREFORMER_RabitqReformer();
-  RegisterBuiltinSTREAMER_HnswRabitqStreamer();
+  RegisterBuiltinConverterRabitqConverter();
+  RegisterBuiltinReformerRabitqReformer();
+  RegisterBuiltinStreamerHnswRabitqStreamer();
 }
 
 }  // namespace core

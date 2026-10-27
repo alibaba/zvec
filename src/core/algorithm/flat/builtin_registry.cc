@@ -18,32 +18,32 @@ namespace zvec {
 namespace core {
 
 // Keep this list explicit: add new built-ins here beside their module.
-void RegisterBuiltinBUILDER_FlatBuilder();
-void RegisterBuiltinBUILDER_FlatBuilder16();
-void RegisterBuiltinBUILDER_FlatBuilder32();
-void RegisterBuiltinBUILDER_LinearBuilder();
-void RegisterBuiltinSEARCHER_FlatSearcher();
-void RegisterBuiltinSEARCHER_FlatSearcher16();
-void RegisterBuiltinSEARCHER_FlatSearcher32();
-void RegisterBuiltinSEARCHER_LinearSearcher();
-void RegisterBuiltinSTREAMER_FlatStreamer();
-void RegisterBuiltinSTREAMER_FlatStreamer16();
-void RegisterBuiltinSTREAMER_FlatStreamer32();
-void RegisterBuiltinSTREAMER_LinearStreamer();
+void RegisterBuiltinBuilderFlatBuilder();
+void RegisterBuiltinBuilderFlatBuilder16();
+void RegisterBuiltinBuilderFlatBuilder32();
+void RegisterBuiltinBuilderLinearBuilder();
+void RegisterBuiltinSearcherFlatSearcher();
+void RegisterBuiltinSearcherFlatSearcher16();
+void RegisterBuiltinSearcherFlatSearcher32();
+void RegisterBuiltinSearcherLinearSearcher();
+void RegisterBuiltinStreamerFlatStreamer();
+void RegisterBuiltinStreamerFlatStreamer16();
+void RegisterBuiltinStreamerFlatStreamer32();
+void RegisterBuiltinStreamerLinearStreamer();
 
 void RegisterBuiltinFlat() {
-  RegisterBuiltinBUILDER_FlatBuilder();
-  RegisterBuiltinBUILDER_FlatBuilder16();
-  RegisterBuiltinBUILDER_FlatBuilder32();
-  RegisterBuiltinBUILDER_LinearBuilder();
-  RegisterBuiltinSEARCHER_FlatSearcher();
-  RegisterBuiltinSEARCHER_FlatSearcher16();
-  RegisterBuiltinSEARCHER_FlatSearcher32();
-  RegisterBuiltinSEARCHER_LinearSearcher();
-  RegisterBuiltinSTREAMER_FlatStreamer();
-  RegisterBuiltinSTREAMER_FlatStreamer16();
-  RegisterBuiltinSTREAMER_FlatStreamer32();
-  RegisterBuiltinSTREAMER_LinearStreamer();
+  RegisterBuiltinBuilderFlatBuilder();
+  RegisterBuiltinBuilderFlatBuilder16();
+  RegisterBuiltinBuilderFlatBuilder32();
+  RegisterBuiltinBuilderLinearBuilder();
+  RegisterBuiltinSearcherFlatSearcher();
+  RegisterBuiltinSearcherFlatSearcher16();
+  RegisterBuiltinSearcherFlatSearcher32();
+  RegisterBuiltinSearcherLinearSearcher();
+  RegisterBuiltinStreamerFlatStreamer();
+  RegisterBuiltinStreamerFlatStreamer16();
+  RegisterBuiltinStreamerFlatStreamer32();
+  RegisterBuiltinStreamerLinearStreamer();
 }
 
 }  // namespace core

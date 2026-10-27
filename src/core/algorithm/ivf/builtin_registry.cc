@@ -18,14 +18,14 @@ namespace zvec {
 namespace core {
 
 // Keep this list explicit: add new built-ins here beside their module.
-void RegisterBuiltinBUILDER_IVFBuilder();
-void RegisterBuiltinSEARCHER_IVFSearcher();
-void RegisterBuiltinSTREAMER_IVFStreamer();
+void RegisterBuiltinBuilderIVFBuilder();
+void RegisterBuiltinSearcherIVFSearcher();
+void RegisterBuiltinStreamerIVFStreamer();
 
 void RegisterBuiltinIVF() {
-  RegisterBuiltinBUILDER_IVFBuilder();
-  RegisterBuiltinSEARCHER_IVFSearcher();
-  RegisterBuiltinSTREAMER_IVFStreamer();
+  RegisterBuiltinBuilderIVFBuilder();
+  RegisterBuiltinSearcherIVFSearcher();
+  RegisterBuiltinStreamerIVFStreamer();
 }
 
 }  // namespace core

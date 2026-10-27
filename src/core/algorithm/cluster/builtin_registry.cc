@@ -18,18 +18,18 @@ namespace zvec {
 namespace core {
 
 // Keep this list explicit: add new built-ins here beside their module.
-void RegisterBuiltinCLUSTER_BatchKmeansCluster();
-void RegisterBuiltinCLUSTER_KmeansCluster();
-void RegisterBuiltinCLUSTER_OptKmeansCluster();
-void RegisterBuiltinCLUSTER_StratifiedCluster();
-void RegisterBuiltinTRAINER_StratifiedClusterTrainer();
+void RegisterBuiltinClusterBatchKmeansCluster();
+void RegisterBuiltinClusterKmeansCluster();
+void RegisterBuiltinClusterOptKmeansCluster();
+void RegisterBuiltinClusterStratifiedCluster();
+void RegisterBuiltinTrainerStratifiedClusterTrainer();
 
 void RegisterBuiltinClusters() {
-  RegisterBuiltinCLUSTER_BatchKmeansCluster();
-  RegisterBuiltinCLUSTER_KmeansCluster();
-  RegisterBuiltinCLUSTER_OptKmeansCluster();
-  RegisterBuiltinCLUSTER_StratifiedCluster();
-  RegisterBuiltinTRAINER_StratifiedClusterTrainer();
+  RegisterBuiltinClusterBatchKmeansCluster();
+  RegisterBuiltinClusterKmeansCluster();
+  RegisterBuiltinClusterOptKmeansCluster();
+  RegisterBuiltinClusterStratifiedCluster();
+  RegisterBuiltinTrainerStratifiedClusterTrainer();
 }
 
 }  // namespace core

@@ -18,16 +18,16 @@ namespace zvec {
 namespace core {
 
 // Keep this list explicit: add new built-ins here beside their module.
-void RegisterBuiltinBUILDER_DiskAnnBuilder();
-void RegisterBuiltinREDUCER_DiskAnnReducer();
-void RegisterBuiltinSEARCHER_DiskAnnSearcher();
-void RegisterBuiltinSTREAMER_DiskAnnStreamer();
+void RegisterBuiltinBuilderDiskAnnBuilder();
+void RegisterBuiltinReducerDiskAnnReducer();
+void RegisterBuiltinSearcherDiskAnnSearcher();
+void RegisterBuiltinStreamerDiskAnnStreamer();
 
 void RegisterBuiltinDiskAnn() {
-  RegisterBuiltinBUILDER_DiskAnnBuilder();
-  RegisterBuiltinREDUCER_DiskAnnReducer();
-  RegisterBuiltinSEARCHER_DiskAnnSearcher();
-  RegisterBuiltinSTREAMER_DiskAnnStreamer();
+  RegisterBuiltinBuilderDiskAnnBuilder();
+  RegisterBuiltinReducerDiskAnnReducer();
+  RegisterBuiltinSearcherDiskAnnSearcher();
+  RegisterBuiltinStreamerDiskAnnStreamer();
 }
 
 }  // namespace core

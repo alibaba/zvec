@@ -18,26 +18,26 @@ namespace zvec {
 namespace core {
 
 // Keep this list explicit: add new built-ins here beside their module.
-void RegisterBuiltinDUMPER_FileDumper();
-void RegisterBuiltinDUMPER_MemoryDumper();
-void RegisterBuiltinREFINER_BasicRefiner();
-void RegisterBuiltinSTORAGE_BufferReadStorage();
-void RegisterBuiltinSTORAGE_BufferStorage();
-void RegisterBuiltinSTORAGE_FileReadStorage();
-void RegisterBuiltinSTORAGE_MMapFileReadStorage();
-void RegisterBuiltinSTORAGE_MMapFileStorage();
-void RegisterBuiltinSTORAGE_MemoryReadStorage();
+void RegisterBuiltinDumperFileDumper();
+void RegisterBuiltinDumperMemoryDumper();
+void RegisterBuiltinRefinerBasicRefiner();
+void RegisterBuiltinStorageBufferReadStorage();
+void RegisterBuiltinStorageBufferStorage();
+void RegisterBuiltinStorageFileReadStorage();
+void RegisterBuiltinStorageMMapFileReadStorage();
+void RegisterBuiltinStorageMMapFileStorage();
+void RegisterBuiltinStorageMemoryReadStorage();
 
 void RegisterBuiltinUtilities() {
-  RegisterBuiltinDUMPER_FileDumper();
-  RegisterBuiltinDUMPER_MemoryDumper();
-  RegisterBuiltinREFINER_BasicRefiner();
-  RegisterBuiltinSTORAGE_BufferReadStorage();
-  RegisterBuiltinSTORAGE_BufferStorage();
-  RegisterBuiltinSTORAGE_FileReadStorage();
-  RegisterBuiltinSTORAGE_MMapFileReadStorage();
-  RegisterBuiltinSTORAGE_MMapFileStorage();
-  RegisterBuiltinSTORAGE_MemoryReadStorage();
+  RegisterBuiltinDumperFileDumper();
+  RegisterBuiltinDumperMemoryDumper();
+  RegisterBuiltinRefinerBasicRefiner();
+  RegisterBuiltinStorageBufferReadStorage();
+  RegisterBuiltinStorageBufferStorage();
+  RegisterBuiltinStorageFileReadStorage();
+  RegisterBuiltinStorageMMapFileReadStorage();
+  RegisterBuiltinStorageMMapFileStorage();
+  RegisterBuiltinStorageMemoryReadStorage();
 }
 
 }  // namespace core

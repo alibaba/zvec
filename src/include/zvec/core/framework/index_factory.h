@@ -175,105 +175,105 @@ struct IndexFactory {
 //! Invoke these macros in namespace zvec::core, beside the concrete type.
 #define INDEX_FACTORY_DEFINE_BUILTIN(__CATEGORY__, __NAME__, __BASE__,      \
                                      __IMPL__, ...)                         \
-  void RegisterBuiltin##__CATEGORY__##_##__NAME__() {                       \
+  void RegisterBuiltin##__CATEGORY__##__NAME__() {                          \
     static ailego::Factory<__BASE__>::Register<__IMPL__> registration(      \
         ailego::Factory<__BASE__>::BuiltinTag{}, #__NAME__, ##__VA_ARGS__); \
     (void)registration;                                                     \
   }
 
 #define INDEX_FACTORY_DEFINE_METRIC_ALIAS(__NAME__, __IMPL__, ...)      \
-  INDEX_FACTORY_DEFINE_BUILTIN(METRIC, __NAME__, IndexMetric, __IMPL__, \
+  INDEX_FACTORY_DEFINE_BUILTIN(Metric, __NAME__, IndexMetric, __IMPL__, \
                                ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_METRIC(__IMPL__, ...) \
   INDEX_FACTORY_DEFINE_METRIC_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_QUANTIZER_ALIAS(__NAME__, __IMPL__, ...) \
-  INDEX_FACTORY_DEFINE_BUILTIN(QUANTIZER, __NAME__, turbo::Quantizer, \
+  INDEX_FACTORY_DEFINE_BUILTIN(Quantizer, __NAME__, turbo::Quantizer, \
                                __IMPL__, ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_QUANTIZER(__IMPL__, ...) \
   INDEX_FACTORY_DEFINE_QUANTIZER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_DUMPER_ALIAS(__NAME__, __IMPL__, ...)      \
-  INDEX_FACTORY_DEFINE_BUILTIN(DUMPER, __NAME__, IndexDumper, __IMPL__, \
+  INDEX_FACTORY_DEFINE_BUILTIN(Dumper, __NAME__, IndexDumper, __IMPL__, \
                                ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_DUMPER(__IMPL__, ...) \
   INDEX_FACTORY_DEFINE_DUMPER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_STORAGE_ALIAS(__NAME__, __IMPL__, ...)       \
-  INDEX_FACTORY_DEFINE_BUILTIN(STORAGE, __NAME__, IndexStorage, __IMPL__, \
+  INDEX_FACTORY_DEFINE_BUILTIN(Storage, __NAME__, IndexStorage, __IMPL__, \
                                ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_STORAGE(__IMPL__, ...) \
   INDEX_FACTORY_DEFINE_STORAGE_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_CONVERTER_ALIAS(__NAME__, __IMPL__, ...)         \
-  INDEX_FACTORY_DEFINE_BUILTIN(CONVERTER, __NAME__, IndexConverter, __IMPL__, \
+  INDEX_FACTORY_DEFINE_BUILTIN(Converter, __NAME__, IndexConverter, __IMPL__, \
                                ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_CONVERTER(__IMPL__, ...) \
   INDEX_FACTORY_DEFINE_CONVERTER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_REFORMER_ALIAS(__NAME__, __IMPL__, ...)        \
-  INDEX_FACTORY_DEFINE_BUILTIN(REFORMER, __NAME__, IndexReformer, __IMPL__, \
+  INDEX_FACTORY_DEFINE_BUILTIN(Reformer, __NAME__, IndexReformer, __IMPL__, \
                                ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_REFORMER(__IMPL__, ...) \
   INDEX_FACTORY_DEFINE_REFORMER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_TRAINER_ALIAS(__NAME__, __IMPL__, ...)       \
-  INDEX_FACTORY_DEFINE_BUILTIN(TRAINER, __NAME__, IndexTrainer, __IMPL__, \
+  INDEX_FACTORY_DEFINE_BUILTIN(Trainer, __NAME__, IndexTrainer, __IMPL__, \
                                ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_TRAINER(__IMPL__, ...) \
   INDEX_FACTORY_DEFINE_TRAINER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_BUILDER_ALIAS(__NAME__, __IMPL__, ...)       \
-  INDEX_FACTORY_DEFINE_BUILTIN(BUILDER, __NAME__, IndexBuilder, __IMPL__, \
+  INDEX_FACTORY_DEFINE_BUILTIN(Builder, __NAME__, IndexBuilder, __IMPL__, \
                                ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_BUILDER(__IMPL__, ...) \
   INDEX_FACTORY_DEFINE_BUILDER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_SEARCHER_ALIAS(__NAME__, __IMPL__, ...)        \
-  INDEX_FACTORY_DEFINE_BUILTIN(SEARCHER, __NAME__, IndexSearcher, __IMPL__, \
+  INDEX_FACTORY_DEFINE_BUILTIN(Searcher, __NAME__, IndexSearcher, __IMPL__, \
                                ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_SEARCHER(__IMPL__, ...) \
   INDEX_FACTORY_DEFINE_SEARCHER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_STREAMER_ALIAS(__NAME__, __IMPL__, ...)        \
-  INDEX_FACTORY_DEFINE_BUILTIN(STREAMER, __NAME__, IndexStreamer, __IMPL__, \
+  INDEX_FACTORY_DEFINE_BUILTIN(Streamer, __NAME__, IndexStreamer, __IMPL__, \
                                ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_STREAMER(__IMPL__, ...) \
   INDEX_FACTORY_DEFINE_STREAMER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_REDUCER_ALIAS(__NAME__, __IMPL__, ...)       \
-  INDEX_FACTORY_DEFINE_BUILTIN(REDUCER, __NAME__, IndexReducer, __IMPL__, \
+  INDEX_FACTORY_DEFINE_BUILTIN(Reducer, __NAME__, IndexReducer, __IMPL__, \
                                ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_REDUCER(__IMPL__, ...) \
   INDEX_FACTORY_DEFINE_REDUCER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_STREAMER_REDUCER_ALIAS(__NAME__, __IMPL__, ...) \
-  INDEX_FACTORY_DEFINE_BUILTIN(STREAMER_REDUCER, __NAME__,                   \
+  INDEX_FACTORY_DEFINE_BUILTIN(StreamerReducer, __NAME__,                    \
                                IndexStreamerReducer, __IMPL__, ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_STREAMER_REDUCER(__IMPL__, ...) \
   INDEX_FACTORY_DEFINE_STREAMER_REDUCER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_CLUSTER_ALIAS(__NAME__, __IMPL__, ...)       \
-  INDEX_FACTORY_DEFINE_BUILTIN(CLUSTER, __NAME__, IndexCluster, __IMPL__, \
+  INDEX_FACTORY_DEFINE_BUILTIN(Cluster, __NAME__, IndexCluster, __IMPL__, \
                                ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_CLUSTER(__IMPL__, ...) \
   INDEX_FACTORY_DEFINE_CLUSTER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_REFINER_ALIAS(__NAME__, __IMPL__, ...)       \
-  INDEX_FACTORY_DEFINE_BUILTIN(REFINER, __NAME__, IndexRefiner, __IMPL__, \
+  INDEX_FACTORY_DEFINE_BUILTIN(Refiner, __NAME__, IndexRefiner, __IMPL__, \
                                ##__VA_ARGS__)
 
 #define INDEX_FACTORY_DEFINE_REFINER(__IMPL__, ...) \

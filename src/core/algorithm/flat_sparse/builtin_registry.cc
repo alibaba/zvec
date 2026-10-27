@@ -18,14 +18,14 @@ namespace zvec {
 namespace core {
 
 // Keep this list explicit: add new built-ins here beside their module.
-void RegisterBuiltinBUILDER_FlatSparseBuilder();
-void RegisterBuiltinSEARCHER_FlatSparseSearcher();
-void RegisterBuiltinSTREAMER_FlatSparseStreamer();
+void RegisterBuiltinBuilderFlatSparseBuilder();
+void RegisterBuiltinSearcherFlatSparseSearcher();
+void RegisterBuiltinStreamerFlatSparseStreamer();
 
 void RegisterBuiltinFlatSparse() {
-  RegisterBuiltinBUILDER_FlatSparseBuilder();
-  RegisterBuiltinSEARCHER_FlatSparseSearcher();
-  RegisterBuiltinSTREAMER_FlatSparseStreamer();
+  RegisterBuiltinBuilderFlatSparseBuilder();
+  RegisterBuiltinSearcherFlatSparseSearcher();
+  RegisterBuiltinStreamerFlatSparseStreamer();
 }
 
 }  // namespace core

@@ -18,23 +18,23 @@ namespace zvec {
 namespace core {
 
 // Keep this list explicit: add new built-ins here beside their module.
-void RegisterBuiltinQUANTIZER_Fp16Quantizer();
-void RegisterBuiltinQUANTIZER_Fp32Quantizer();
-void RegisterBuiltinQUANTIZER_Int4Quantizer();
-void RegisterBuiltinQUANTIZER_Int8Quantizer();
-void RegisterBuiltinQUANTIZER_PqFastQuantizer();
-void RegisterBuiltinQUANTIZER_PqInt4Quantizer();
-void RegisterBuiltinQUANTIZER_PqInt8Quantizer();
+void RegisterBuiltinQuantizerFp16Quantizer();
+void RegisterBuiltinQuantizerFp32Quantizer();
+void RegisterBuiltinQuantizerInt4Quantizer();
+void RegisterBuiltinQuantizerInt8Quantizer();
+void RegisterBuiltinQuantizerPqFastQuantizer();
+void RegisterBuiltinQuantizerPqInt4Quantizer();
+void RegisterBuiltinQuantizerPqInt8Quantizer();
 
 void RegisterBuiltinQuantizers() {
   static const bool initialized = [] {
-    RegisterBuiltinQUANTIZER_Fp16Quantizer();
-    RegisterBuiltinQUANTIZER_Fp32Quantizer();
-    RegisterBuiltinQUANTIZER_Int4Quantizer();
-    RegisterBuiltinQUANTIZER_Int8Quantizer();
-    RegisterBuiltinQUANTIZER_PqFastQuantizer();
-    RegisterBuiltinQUANTIZER_PqInt4Quantizer();
-    RegisterBuiltinQUANTIZER_PqInt8Quantizer();
+    RegisterBuiltinQuantizerFp16Quantizer();
+    RegisterBuiltinQuantizerFp32Quantizer();
+    RegisterBuiltinQuantizerInt4Quantizer();
+    RegisterBuiltinQuantizerInt8Quantizer();
+    RegisterBuiltinQuantizerPqFastQuantizer();
+    RegisterBuiltinQuantizerPqInt4Quantizer();
+    RegisterBuiltinQuantizerPqInt8Quantizer();
     return true;
   }();
   (void)initialized;

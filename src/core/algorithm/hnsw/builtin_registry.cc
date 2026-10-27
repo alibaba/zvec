@@ -18,10 +18,10 @@ namespace zvec {
 namespace core {
 
 // Keep this list explicit: add new built-ins here beside their module.
-void RegisterBuiltinSTREAMER_HnswStreamer();
+void RegisterBuiltinStreamerHnswStreamer();
 
 void RegisterBuiltinHnsw() {
-  RegisterBuiltinSTREAMER_HnswStreamer();
+  RegisterBuiltinStreamerHnswStreamer();
 }
 
 }  // namespace core
