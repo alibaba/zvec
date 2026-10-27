@@ -15,6 +15,7 @@
 #include "flat_streamer_entity.h"
 #include <cstdint>
 #include <zvec/core/framework/index_error.h>
+#include "utility/batch_topk.h"
 #include "utility/legacy_read_buffer.h"
 #include "flat_utility.h"
 
@@ -428,11 +429,7 @@ void FlatStreamerEntity::search_block(const void *query,
   this->get_block_keys(bl, keys_block);
   const uint64_t *keys = reinterpret_cast<const uint64_t *>(keys_block.data());
   row_major_distance(query, vecs, hd->vector_count, distances.data());
-  for (size_t k = 0; k < hd->vector_count; ++k) {
-    if (keys[k] != kInvalidKey) {
-      heap->emplace(keys[k], distances[k] * norm_val);
-    }
-  }
+  BatchTopKHeapPush(distances.data(), keys, hd->vector_count, norm_val, heap);
 }
 
 //! Search in a block with filter

@@ -18,6 +18,7 @@
 #include <core/quantizer/quantizer_params.h>
 #include <turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h>
 #include "metric/metric_params.h"
+#include "utility/batch_topk.h"
 #include "ivf_utility.h"
 namespace zvec {
 namespace core {
@@ -1041,12 +1042,9 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
         query_features_distance(query, block_data, vecs_count,
                                 distances.data());
       }
-      for (size_t k = 0; k < vecs_count; ++k) {
-        if (block_keys[k] != kInvalidKey) {
-          uint32_t id = list_meta->id_offset + (i + b) * block_vecs + k;
-          heap->emplace(block_keys[k], distances[k] * norm_val, id);
-        }
-      }
+      const uint32_t first_id = list_meta->id_offset + (i + b) * block_vecs;
+      BatchTopKHeapPush(distances.data(), block_keys, vecs_count, first_id,
+                        norm_val, heap);
       *(context_stats->mutable_dist_calced_count()) += vecs_count;
     }
   }

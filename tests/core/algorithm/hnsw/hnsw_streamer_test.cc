@@ -4586,6 +4586,234 @@ TEST_F(HnswStreamerTest, TestCompareFromOriginalVsBaseline) {
   EXPECT_GT(topk1_recall_b, 0.90f);
 }
 
+namespace {
+
+class CountingDatapointBatchQuantizer : public turbo::Quantizer {
+ public:
+  CountingDatapointBatchQuantizer(const Pointer &delegate, bool enable_batch)
+      : Quantizer(delegate->type()),
+        delegate_(delegate),
+        enable_batch_(enable_batch) {}
+
+  int init(const IndexMeta &meta, const ailego::Params &params) override {
+    return delegate_->init(meta, params);
+  }
+  const IndexMeta &meta() const override {
+    return delegate_->meta();
+  }
+  turbo::DataType input_data_type() const override {
+    return delegate_->input_data_type();
+  }
+  int dim() const override {
+    return delegate_->dim();
+  }
+  bool require_train() const override {
+    return delegate_->require_train();
+  }
+  size_t quantized_datapoint_vector_length() const override {
+    return delegate_->quantized_datapoint_vector_length();
+  }
+  size_t quantized_query_vector_length() const override {
+    return delegate_->quantized_query_vector_length();
+  }
+  void quantize_data(const void *input, void *output) const override {
+    delegate_->quantize_data(input, output);
+  }
+  void quantize_query(const void *input, void *output) const override {
+    delegate_->quantize_query(input, output);
+  }
+  int quantize(const void *query, const IndexQueryMeta &qmeta, std::string *out,
+               IndexQueryMeta *out_qmeta) const override {
+    return delegate_->quantize(query, qmeta, out, out_qmeta);
+  }
+  float calc_distance_dp_query(const void *dp,
+                               const void *query) const override {
+    return delegate_->calc_distance_dp_query(dp, query);
+  }
+  void calc_distance_dp_query_batch(const void *const *dp_list, int dp_num,
+                                    const void *query,
+                                    float *dist_list) const override {
+    ++query_batch_calls;
+    max_query_batch = std::max(max_query_batch, dp_num);
+    delegate_->calc_distance_dp_query_batch(dp_list, dp_num, query, dist_list);
+  }
+  float calc_distance_dp_query_unquantized(const void *dp,
+                                           const void *query) const override {
+    return delegate_->calc_distance_dp_query_unquantized(dp, query);
+  }
+  void calc_distance_dp_query_batch_unquantized(
+      const void *const *dp_list, int dp_num, const void *query,
+      float *dist_list) const override {
+    delegate_->calc_distance_dp_query_batch_unquantized(dp_list, dp_num, query,
+                                                        dist_list);
+  }
+  float calc_distance_dp_dp(const void *lhs, const void *rhs) const override {
+    ++datapoint_calls;
+    return delegate_->calc_distance_dp_dp(lhs, rhs);
+  }
+  void calc_distance_dp_dp_batch(const void *const *dp_list, int dp_num,
+                                 const void *dp,
+                                 float *dist_list) const override {
+    if (!enable_batch_) {
+      Quantizer::calc_distance_dp_dp_batch(dp_list, dp_num, dp, dist_list);
+      return;
+    }
+    ++datapoint_batch_calls;
+    max_datapoint_batch = std::max(max_datapoint_batch, dp_num);
+    delegate_->calc_distance_dp_dp_batch(dp_list, dp_num, dp, dist_list);
+  }
+
+  mutable size_t datapoint_calls{0};
+  mutable size_t datapoint_batch_calls{0};
+  mutable size_t query_batch_calls{0};
+  mutable int max_datapoint_batch{0};
+  mutable int max_query_batch{0};
+
+ private:
+  Pointer delegate_;
+  bool enable_batch_;
+};
+
+}  // namespace
+
+TEST_F(HnswStreamerTest, TestTurboDatapointBatchOverrideAndFallback) {
+  constexpr size_t kDimension = 8;
+  IndexMeta raw_meta(IndexMeta::DataType::DT_FP32, kDimension);
+  raw_meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+
+  for (bool enable_batch : {false, true}) {
+    SCOPED_TRACE(testing::Message() << "enable_batch=" << enable_batch);
+    auto fp32 = IndexFactory::CreateQuantizer("Fp32Quantizer");
+    ASSERT_NE(nullptr, fp32);
+    auto quantizer =
+        make_shared<CountingDatapointBatchQuantizer>(fp32, enable_batch);
+    ASSERT_EQ(0, quantizer->init(raw_meta, ailego::Params()));
+
+    auto streamer = IndexFactory::CreateStreamer("HnswStreamer");
+    ASSERT_NE(nullptr, streamer);
+    ASSERT_EQ(0,
+              streamer->init(quantizer->meta(), ailego::Params(), quantizer));
+    auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(ailego::Params()));
+    ASSERT_EQ(0, storage->open(dir_ + "turbo_dp_batch_" +
+                                   std::to_string(enable_batch) + ".index",
+                               true));
+    ASSERT_EQ(0, streamer->open(storage));
+
+    std::vector<std::string> codes(
+        4, std::string(quantizer->quantized_datapoint_vector_length(), '\0'));
+    for (size_t i = 0; i < codes.size(); ++i) {
+      std::vector<float> input(kDimension, static_cast<float>(i));
+      quantizer->quantize_data(input.data(), codes[i].data());
+    }
+    IndexQueryMeta qmeta(quantizer->meta().data_type(),
+                         quantizer->meta().dimension());
+    auto context = streamer->create_context();
+    ASSERT_NE(nullptr, context);
+    auto *ctx = dynamic_cast<HnswContext *>(context.get());
+    ASSERT_NE(nullptr, ctx);
+    ASSERT_EQ(0, streamer->add_impl(0, codes[0].data(), qmeta, context));
+
+    quantizer->datapoint_calls = 0;
+    quantizer->datapoint_batch_calls = 0;
+    quantizer->query_batch_calls = 0;
+    ctx->dist_calculator().reset_query(codes[3].data());
+    const void *candidates[] = {codes[0].data(), codes[1].data(),
+                                codes[2].data()};
+    float distances[3];
+    ctx->dist_calculator().batch_dist(candidates, 3, distances, nullptr);
+    EXPECT_FLOAT_EQ(72.0f, distances[0]);
+    EXPECT_FLOAT_EQ(32.0f, distances[1]);
+    EXPECT_FLOAT_EQ(8.0f, distances[2]);
+    EXPECT_EQ(enable_batch ? 0U : 3U, quantizer->datapoint_calls);
+    EXPECT_EQ(enable_batch ? 1U : 0U, quantizer->datapoint_batch_calls);
+    EXPECT_EQ(0U, quantizer->query_batch_calls);
+
+    // Reusing the context for search must restore the query batch binding.
+    context->set_topk(1);
+    ASSERT_EQ(0, streamer->search_bf_impl(codes[3].data(), qmeta, context));
+    quantizer->query_batch_calls = 0;
+    ctx->dist_calculator().batch_dist(candidates, 3, distances, nullptr);
+    EXPECT_FLOAT_EQ(72.0f, distances[0]);
+    EXPECT_FLOAT_EQ(32.0f, distances[1]);
+    EXPECT_FLOAT_EQ(8.0f, distances[2]);
+    EXPECT_EQ(1U, quantizer->query_batch_calls);
+    EXPECT_EQ(enable_batch ? 0U : 3U, quantizer->datapoint_calls);
+    EXPECT_EQ(enable_batch ? 1U : 0U, quantizer->datapoint_batch_calls);
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, storage->close());
+  }
+}
+
+TEST_F(HnswStreamerTest, TestTurboFp32BatchBuildAndSearch) {
+  constexpr size_t kDimension = 256;
+  constexpr size_t kCount = 96;
+  IndexQueryMeta raw_qmeta(IndexMeta::DataType::DT_FP32, kDimension);
+
+  for (const char *metric : {"Cosine", "InnerProduct", "SquaredEuclidean"}) {
+    SCOPED_TRACE(metric);
+    IndexMeta raw_meta(IndexMeta::DataType::DT_FP32, kDimension);
+    raw_meta.set_metric(metric, 0, ailego::Params());
+    auto fp32 = IndexFactory::CreateQuantizer("Fp32Quantizer");
+    ASSERT_NE(nullptr, fp32);
+    auto quantizer = make_shared<CountingDatapointBatchQuantizer>(fp32, true);
+    ASSERT_EQ(0, quantizer->init(raw_meta, ailego::Params()));
+    std::mt19937 random(2026);
+    std::uniform_int_distribution<int> sign(0, 1);
+    std::vector<std::string> codes(kCount);
+    IndexQueryMeta qmeta;
+    for (size_t i = 0; i < kCount; ++i) {
+      // Equal unit norms give all metrics a unique exact self-match.
+      std::vector<float> input(kDimension);
+      for (float &value : input) {
+        value = sign(random) ? 0.0625f : -0.0625f;
+      }
+      ASSERT_EQ(
+          0, quantizer->quantize(input.data(), raw_qmeta, &codes[i], &qmeta));
+    }
+
+    auto streamer = IndexFactory::CreateStreamer("HnswStreamer");
+    ASSERT_NE(nullptr, streamer);
+    ailego::Params params;
+    params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 32U);
+    params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 128U);
+    params.set(PARAM_HNSW_STREAMER_EF, 128U);
+    params.set(PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
+    ASSERT_EQ(0, streamer->init(quantizer->meta(), params, quantizer));
+    auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(ailego::Params()));
+    ASSERT_EQ(
+        0, storage->open(dir_ + "turbo_fp32_batch_" + metric + ".index", true));
+    ASSERT_EQ(0, streamer->open(storage));
+    auto context = streamer->create_context();
+    ASSERT_NE(nullptr, context);
+    for (size_t i = 0; i < kCount; ++i) {
+      ASSERT_EQ(0, streamer->add_impl(i, codes[i].data(), qmeta, context));
+    }
+    // Exercise the size used by the SME2 batch path where available, without
+    // relying on SME2 hardware for this graph/Quantizer contract test.
+    EXPECT_GE(quantizer->max_datapoint_batch, 16);
+    EXPECT_GT(quantizer->datapoint_batch_calls, 0U);
+    EXPECT_EQ(0U, quantizer->query_batch_calls);
+
+    context->set_topk(1);
+    for (size_t probe : {size_t{0}, size_t{17}, kCount - 1}) {
+      ASSERT_EQ(0, streamer->search_impl(codes[probe].data(), qmeta, context));
+      ASSERT_EQ(1U, context->result().size());
+      EXPECT_EQ(probe, context->result()[0].key());
+      EXPECT_NEAR(quantizer->calc_distance_dp_query(codes[probe].data(),
+                                                    codes[probe].data()),
+                  context->result()[0].score(), 1e-5f);
+    }
+    EXPECT_GE(quantizer->max_query_batch, 16);
+    EXPECT_GT(quantizer->query_batch_calls, 0U);
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, storage->close());
+  }
+}
+
 TEST_F(HnswStreamerTest, TestTurboSearchWithFp16ProviderBuildFallback) {
   constexpr size_t kProviderDim = 8;
   constexpr size_t kCount = 64;

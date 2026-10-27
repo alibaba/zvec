@@ -14,6 +14,7 @@
 
 #include <cassert>
 #include <ailego/internal/cpu_features.h>
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/turbo/turbo.h>
 #include "avx2/fp16/cosine.h"
 #include "avx2/fp16/inner_product.h"
@@ -97,6 +98,10 @@
 #include "scalar/record_quantized_int8/squared_euclidean.h"
 #include "scalar/rotate/fht/fht.h"
 #include "scalar/rotate/opq/opq.h"
+#if defined(ZVEC_HAVE_SME2)
+#include "sme2/fp32/cosine.h"
+#include "sme2/fp32/inner_product.h"
+#endif
 #include "sse2/fp16/distance.h"
 #include "sse2/fp32/distance.h"
 #include "sse2/record_quantized_int4/distance.h"
@@ -110,35 +115,110 @@ static bool IsArchMatch(CpuArchType actual, CpuArchType target) {
   return actual == CpuArchType::kAuto || actual == target;
 }
 
-// Single place that maps a CpuArchType to its runtime CPU-feature gate.
+// ISA selection requires both a compiled implementation and CPU/OS support.
+// CPUID alone does not mean the OS saves the YMM/ZMM state used by AVX kernels.
 static bool CpuSupports(CpuArchType arch) {
   const auto &flags = zvec::ailego::internal::CpuFeatures::static_flags_;
+  [[maybe_unused]] const bool avx2 =
+      flags.AVX && flags.AVX2 && flags.AVX_STATE && flags.FMA && flags.F16C &&
+      flags.SSE2 && flags.SSE3 && flags.SSSE3 && flags.SSE4_1 && flags.SSE4_2 &&
+      flags.POPCNT
+#if defined(_MSC_VER)
+      // These are implied by MSVC's /arch:AVX2 profile.
+      && flags.BMI1 && flags.BMI2 && flags.LZCNT
+#endif
+      ;
+  [[maybe_unused]] const bool avx512 = avx2 && flags.AVX512_STATE &&
+                                       flags.AVX512F && flags.AVX512BW &&
+                                       flags.AVX512DQ && flags.AVX512VL
+#if defined(_MSC_VER)
+                                       && flags.AVX512CD
+#endif
+      ;
   switch (arch) {
     case CpuArchType::kScalar:
       return true;
     case CpuArchType::kSSE2:
+#if defined(__SSE2__) || defined(_M_X64) || \
+    (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
       return flags.SSE2;
+#else
+      return false;
+#endif
     case CpuArchType::kAVX2:
-      return flags.AVX2;
+#if defined(ZVEC_HAVE_AVX2_KERNEL)
+      return avx2;
+#else
+      return false;
+#endif
     case CpuArchType::kAVX512:
-      return flags.AVX512F;
+#if defined(ZVEC_HAVE_AVX512_KERNEL)
+      return avx512;
+#else
+      return false;
+#endif
     case CpuArchType::kAVX512VNNI:
-      return flags.AVX512_VNNI;
+#if defined(ZVEC_HAVE_VNNI_KERNEL)
+      return avx512 && flags.AVX512_VNNI;
+#else
+      return false;
+#endif
     case CpuArchType::kAVX512FP16:
-      // CPUID says the CPU can run FP16 instructions; the extra call checks
-      // that the FP16 kernels were actually compiled in (needs GCC >= 12 /
-      // Clang >= 14), otherwise they are no-op stubs. See
-      // avx512_fp16/fp16/inner_product.h.
-      return flags.AVX512F && flags.AVX512_FP16 &&
+#if defined(ZVEC_HAVE_FP16_KERNEL)
+      return avx512 && flags.AVX512_FP16 &&
              avx512_fp16::fp16_distance_kernels_available();
+#else
+      return false;
+#endif
     case CpuArchType::kNEON:
+#if defined(AILEGO_ARM64_NEON)
       return flags.NEON;
+#else
+      return false;
+#endif
+    case CpuArchType::kSME2:
+#if defined(ZVEC_HAVE_SME2)
+      return flags.NEON && flags.SME2;
+#else
+      return false;
+#endif
     default:
       return false;
   }
 }
 
 namespace {
+
+#if defined(ZVEC_HAVE_SME2)
+void InnerProductFp32Batch(const void *const *vectors, const void *query,
+                           size_t n, size_t dim, float *distances,
+                           const void *const *extra_values) {
+  // Streaming/ZA setup is not amortized by short rows or tiny batches.
+  // Keep a conservative crossover based on rotating FP32 measurements;
+  // it is not intended to predict cache residency or every CPU's optimum.
+  if (n < 16 || dim < 256) {
+    neon::inner_product_fp32_batch_distance(vectors, query, n, dim, distances,
+                                            extra_values);
+    return;
+  }
+  // Keep the tail in the same streaming region. Switching immediately back
+  // to a NEON tail adds overhead even when only one candidate remains.
+  sme2::inner_product_fp32_batch_distance(vectors, query, n, dim, distances,
+                                          extra_values);
+}
+
+void CosineFp32Batch(const void *const *vectors, const void *query, size_t n,
+                     size_t dim, float *distances,
+                     const void *const *extra_values) {
+  if (n < 16 || dim < 256) {
+    neon::cosine_fp32_batch_distance(vectors, query, n, dim, distances,
+                                     extra_values);
+    return;
+  }
+  sme2::cosine_fp32_batch_distance(vectors, query, n, dim, distances,
+                                   extra_values);
+}
+#endif
 
 // Raw kernel signatures (function pointers, so the registry can be a
 // constexpr-friendly static table; they convert to the std::function-based
@@ -430,7 +510,15 @@ constexpr KernelSet kKernelTable[] = {
      MetricType::kInnerProduct, scalar::inner_product_fp16_distance,
      scalar::inner_product_fp16_batch_distance, nullptr},
 
-    // --- fp32 (AVX512, AVX2, SSE2, NEON, scalar) ---
+// --- fp32 (SME2 batch, AVX512, AVX2, SSE2, NEON, scalar) ---
+#if defined(ZVEC_HAVE_SME2)
+    // Pairwise remains NEON; SME2 shares query loads across many output rows.
+    {QuantizeType::kFp32, DataType::kFp32, CpuArchType::kSME2,
+     MetricType::kInnerProduct, neon::inner_product_fp32_distance,
+     InnerProductFp32Batch, nullptr},
+    {QuantizeType::kFp32, DataType::kFp32, CpuArchType::kSME2,
+     MetricType::kCosine, neon::cosine_fp32_distance, CosineFp32Batch, nullptr},
+#endif
     {QuantizeType::kFp32, DataType::kFp32, CpuArchType::kAVX512,
      MetricType::kSquaredEuclidean,
      avx512::squared_euclidean_fp32_distance_avx512,
@@ -575,7 +663,7 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type) {
     // Quantize uses AVX-512F (no VNNI required), but we gate on the same
     // AVX512_VNNI flag for now since the kernel lives in the avx512_vnni
     // directory and is compiled with the same march flag.
-    if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+    if (CpuSupports(CpuArchType::kAVX512VNNI)) {
       return avx512_vnni::uniform_uint7_quantize;
     }
   }
@@ -585,8 +673,7 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type) {
 UniformUint4QuantizeFunc get_uniform_uint4_quantize_func(DataType data_type) {
   // TODO: unify uniform_uint4_quantize/uniform_uint4_quantize param list and
   // merge get_uniform_quantize_func/get_uniform_uint4_quantize_func
-  if (data_type == DataType::kUint4 &&
-      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
+  if (data_type == DataType::kUint4 && CpuSupports(CpuArchType::kAVX512VNNI)) {
     return avx512_vnni::uniform_uint4_quantize;
   }
   return nullptr;
