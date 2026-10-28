@@ -14,10 +14,10 @@
 
 #include <stdlib.h>
 #include <random>
-#include <ailego/algorithm/integer_quantizer.h>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/entropy_integer_quantizer/integer_quantizer.h>
 
-namespace zvec::ailego {
+namespace zvec::turbo {
 
 TEST(IntegerQuantizer, INT8_Uniform_Distribution) {
   std::vector<size_t> tests = {1, 100, 1000, 10000, 100000};
@@ -561,4 +561,4 @@ TEST(IntegerQuantizer, UINT4_Poisson_Distribution) {
 #endif
   EXPECT_LT(var / COUNT, 350);
 }
-}  // namespace zvec::ailego
+}  // namespace zvec::turbo

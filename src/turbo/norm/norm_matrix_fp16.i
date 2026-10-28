@@ -77,8 +77,8 @@
 //! Compute the norm of vectors (FP16, M=1)
 #define NORM_FP16_1_AVX(m, dim, out, _NORM)                                  \
   MATRIX_VAR_INIT(1, 1, __m256, ymm_sum, _mm256_setzero_ps())                \
-  const Float16 *last = m + dim;                                             \
-  const Float16 *last_aligned = m + ((dim >> 4) << 4);                       \
+  const ailego::Float16 *last = m + dim;                                             \
+  const ailego::Float16 *last_aligned = m + ((dim >> 4) << 4);                       \
   if (((uintptr_t)m & 0x1f) == 0) {                                          \
     for (; m != last_aligned; m += 16) {                                     \
       __m256i ymm_mi = _mm256_load_si256((const __m256i *)m);                \
@@ -112,8 +112,8 @@
 //! Compute the norm of vectors (FP16, M=1)
 #define NORM_FP16_1_AVX512(m, dim, out, _NORM)                                \
   MATRIX_VAR_INIT(1, 2, __m512, zmm_sum, _mm512_setzero_ps())                 \
-  const Float16 *last = m + dim;                                              \
-  const Float16 *last_aligned = m + ((dim >> 5) << 5);                        \
+  const ailego::Float16 *last = m + dim;                                              \
+  const ailego::Float16 *last_aligned = m + ((dim >> 5) << 5);                        \
   if (((uintptr_t)m & 0x3f) == 0) {                                           \
     for (; m != last_aligned; m += 32) {                                      \
       __m512i zmm_mi = _mm512_load_si512((const __m512i *)m);                 \
@@ -159,8 +159,8 @@
 //! Compute the norm of vectors (FP16, M=1)
 #define NORM_FP16_1_NEON(m, dim, out, _NORM)                                 \
   MATRIX_VAR_INIT(1, 1, float16x8_t, v_sum, vdupq_n_f16(0))                  \
-  const Float16 *last = m + dim;                                             \
-  const Float16 *last_aligned = m + ((dim >> 3) << 3);                       \
+  const ailego::Float16 *last = m + dim;                                             \
+  const ailego::Float16 *last_aligned = m + ((dim >> 3) << 3);                       \
   for (; m != last_aligned; m += 8) {                                        \
     float16x8_t v_m = vld1q_f16((const float16_t *)m);                       \
     NORM_FP16_STEP_NEON(v_m, v_sum_0_0)                                      \
@@ -189,8 +189,8 @@
 //! Compute the norm of vectors (FP16, M=1)
 #define NORM_FP16_1_NEON(m, dim, out, _NORM)                        \
   MATRIX_VAR_INIT(1, 2, float32x4_t, v_sum, vdupq_n_f32(0))         \
-  const Float16 *last = m + dim;                                    \
-  const Float16 *last_aligned = m + ((dim >> 3) << 3);              \
+  const ailego::Float16 *last = m + dim;                                    \
+  const ailego::Float16 *last_aligned = m + ((dim >> 3) << 3);              \
   for (; m != last_aligned; m += 8) {                               \
     float16x8_t v_m = vld1q_f16((const float16_t *)m);              \
     float32x4_t v_n_0 = vcvt_f32_f16(vget_low_f16(v_m));            \

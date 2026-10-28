@@ -16,8 +16,8 @@
 #include <array>
 #include <string>
 #include <vector>
-#include <ailego/math/norm2_matrix.h>
 #include <ailego/utility/math_helper.h>
+#include <turbo/norm/norm2_matrix.h>
 #include <zvec/ailego/utility/type_helper.h>
 
 namespace zvec::turbo {
@@ -515,12 +515,12 @@ struct MipsSquaredEuclideanSparseDistanceMatrix {
     }
 
     float l2_m{0.0f};
-    ailego::SquaredNorm2Matrix<ValueType, 1>::Compute(m_sparse_value,
-                                                      m_sparse_count, &l2_m);
+    turbo::SquaredNorm2Matrix<ValueType, 1>::Compute(m_sparse_value,
+                                                     m_sparse_count, &l2_m);
 
     float l2_q{0.0f};
-    ailego::SquaredNorm2Matrix<ValueType, 1>::Compute(q_sparse_value,
-                                                      q_sparse_count, &l2_q);
+    turbo::SquaredNorm2Matrix<ValueType, 1>::Compute(q_sparse_value,
+                                                     q_sparse_count, &l2_q);
 
     *out = static_cast<float>(2.0 - 2.0 * ip / std::max(l2_m, l2_q));
   }

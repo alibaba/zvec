@@ -15,9 +15,8 @@
 #include <random>
 #include <ailego/container/bitmap.h>
 #include <ailego/internal/cpu_features.h>
-#include <ailego/math/norm_matrix.h>
-#include <ailego/utility/math_helper.h>
 #include <gtest/gtest.h>
+#include <turbo/norm/norm_matrix.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/ailego/utility/time_helper.h>
 
@@ -27,7 +26,7 @@ static inline const char *IntelIntrinsics() {
   return internal::CpuFeatures::Intrinsics();
 }
 
-static inline void MatrixTranspose(float *dst, const float *src, size_t m,
+static inline void MatrixTranspose(Float16 *dst, const Float16 *src, size_t m,
                                    size_t n) {
   for (size_t idx = 0; idx < n * m; idx++) {
     size_t i = idx / n;
@@ -36,32 +35,32 @@ static inline void MatrixTranspose(float *dst, const float *src, size_t m,
   }
 }
 
-static float Norm1(const std::vector<float> &vec) {
+static float Norm1(const std::vector<Float16> &vec) {
   float out = 0.0f;
-  Norm1Matrix<float, 1>::Compute(vec.data(), vec.size(), &out);
+  zvec::turbo::Norm1Matrix<Float16, 1>::Compute(vec.data(), vec.size(), &out);
   return out;
 }
 
-static float Norm2(const std::vector<float> &vec) {
+static float Norm2(const std::vector<Float16> &vec) {
   float out = 0.0f;
-  Norm2Matrix<float, 1>::Compute(vec.data(), vec.size(), &out);
+  zvec::turbo::Norm2Matrix<Float16, 1>::Compute(vec.data(), vec.size(), &out);
   return out;
 }
 
 TEST(NormMatrix, Norm1_General) {
   std::mt19937 gen((std::random_device())());
-  std::uniform_real_distribution<float> dist(0.0, 1.0);
+  std::uniform_real_distribution<float> dist(0.0, 0.5);
 
   for (size_t d = 1; d < 100; ++d) {
-    std::vector<float> vec;
-    double result = 0.0f;
+    std::vector<Float16> vec;
+    float result = 0.0f;
     for (size_t i = 0; i < d; ++i) {
-      float val = dist(gen);
-      result += std::abs(val);
+      Float16 val = dist(gen);
+      result += Float16::Absolute(val);
       vec.push_back(val);
     }
-    EXPECT_FLOAT_EQ(Norm1(vec), (float)result);
-    // EXPECT_GE(0.00002, std::abs(Norm1(vec) - result));
+    // EXPECT_FLOAT_EQ(result, Norm1(vec));
+    EXPECT_GT(0.005, std::abs((Norm1(vec) - result) / result));
   }
 }
 
@@ -70,15 +69,16 @@ TEST(NormMatrix, Norm2_General) {
   std::uniform_real_distribution<float> dist(0.0, 1.0);
 
   for (size_t d = 1; d < 100; ++d) {
-    std::vector<float> vec;
-    double result = 0.0f;
+    std::vector<Float16> vec;
+    float result = 0.0f;
     for (size_t i = 0; i < d; ++i) {
-      float val = dist(gen);
+      Float16 val = dist(gen);
       result += val * val;
       vec.push_back(val);
     }
-    EXPECT_FLOAT_EQ(Norm2(vec), (float)std::sqrt(result));
-    // EXPECT_GE(0.00002, std::abs(Norm2(vec) - std::sqrt(result)));
+    result = std::sqrt(result);
+    // EXPECT_FLOAT_EQ(result, Norm2(vec));
+    EXPECT_GT(0.005, std::abs((Norm2(vec) - result) / result));
   }
 }
 
@@ -90,25 +90,27 @@ void TestNorm1Matrix() {
   size_t dimension = (std::uniform_int_distribution<size_t>(1, 65))(gen);
   size_t matrix_size = batch_size * dimension;
 
-  std::vector<float> matrix1(matrix_size);
-  std::vector<float> matrix2(matrix_size);
+  std::vector<Float16> matrix1(matrix_size);
+  std::vector<Float16> matrix2(matrix_size);
   std::vector<float> result1(batch_size);
   std::vector<float> result2(batch_size);
 
-  std::uniform_real_distribution<float> dist(0.0, 0.5);
+  std::uniform_real_distribution<float> dist(0.0, 1.0);
   for (size_t i = 0; i < matrix_size; ++i) {
     matrix1[i] = dist(gen);
   }
   MatrixTranspose(&matrix2[0], matrix1.data(), dimension, batch_size);
 
   for (size_t j = 0; j < batch_size; ++j) {
-    Norm1Matrix<float, 1>::Compute(&matrix1[j * dimension], dimension,
-                                   &result1[j]);
+    zvec::turbo::Norm1Matrix<Float16, 1>::Compute(&matrix1[j * dimension],
+                                                  dimension, &result1[j]);
   }
-  Norm1Matrix<float, batch_size>::Compute(&matrix2[0], dimension, &result2[0]);
+  zvec::turbo::Norm1Matrix<Float16, batch_size>::Compute(&matrix2[0], dimension,
+                                                         &result2[0]);
 
   for (size_t i = 0; i < batch_size; ++i) {
-    EXPECT_GE(0.00002, std::abs((double)result1[i] - (double)result2[i]));
+    // EXPECT_FLOAT_EQ(result1[i], result2[i]);
+    EXPECT_GT(0.005, std::abs((result1[i] - result2[i]) / result1[i]));
   }
 }
 
@@ -120,8 +122,8 @@ void TestNorm2Matrix() {
   size_t dimension = (std::uniform_int_distribution<size_t>(1, 65))(gen);
   size_t matrix_size = batch_size * dimension;
 
-  std::vector<float> matrix1(matrix_size);
-  std::vector<float> matrix2(matrix_size);
+  std::vector<Float16> matrix1(matrix_size);
+  std::vector<Float16> matrix2(matrix_size);
   std::vector<float> result1(batch_size);
   std::vector<float> result2(batch_size);
 
@@ -132,13 +134,15 @@ void TestNorm2Matrix() {
   MatrixTranspose(&matrix2[0], matrix1.data(), dimension, batch_size);
 
   for (size_t j = 0; j < batch_size; ++j) {
-    Norm2Matrix<float, 1>::Compute(&matrix1[j * dimension], dimension,
-                                   &result1[j]);
+    zvec::turbo::Norm2Matrix<Float16, 1>::Compute(&matrix1[j * dimension],
+                                                  dimension, &result1[j]);
   }
-  Norm2Matrix<float, batch_size>::Compute(&matrix2[0], dimension, &result2[0]);
+  zvec::turbo::Norm2Matrix<Float16, batch_size>::Compute(&matrix2[0], dimension,
+                                                         &result2[0]);
 
   for (size_t i = 0; i < batch_size; ++i) {
-    EXPECT_GE(0.00002, std::abs((double)result1[i] - (double)result2[i]));
+    // EXPECT_FLOAT_EQ(result1[i], result2[i]);
+    EXPECT_GT(0.005, std::abs((result1[i] - result2[i]) / result1[i]));
   }
 }
 
@@ -150,26 +154,26 @@ void TestSquaredNorm2Matrix() {
   size_t dimension = (std::uniform_int_distribution<size_t>(1, 65))(gen);
   size_t matrix_size = batch_size * dimension;
 
-  std::vector<float> matrix1(matrix_size);
-  std::vector<float> matrix2(matrix_size);
+  std::vector<Float16> matrix1(matrix_size);
+  std::vector<Float16> matrix2(matrix_size);
   std::vector<float> result1(batch_size);
   std::vector<float> result2(batch_size);
 
-  std::uniform_real_distribution<float> dist(0.0, 0.5);
+  std::uniform_real_distribution<float> dist(0.0, 1.0);
   for (size_t i = 0; i < matrix_size; ++i) {
     matrix1[i] = dist(gen);
   }
   MatrixTranspose(&matrix2[0], matrix1.data(), dimension, batch_size);
 
   for (size_t j = 0; j < batch_size; ++j) {
-    SquaredNorm2Matrix<float, 1>::Compute(&matrix1[j * dimension], dimension,
-                                          &result1[j]);
+    zvec::turbo::SquaredNorm2Matrix<Float16, 1>::Compute(
+        &matrix1[j * dimension], dimension, &result1[j]);
   }
-  SquaredNorm2Matrix<float, batch_size>::Compute(&matrix2[0], dimension,
-                                                 &result2[0]);
+  zvec::turbo::SquaredNorm2Matrix<Float16, batch_size>::Compute(
+      &matrix2[0], dimension, &result2[0]);
 
   for (size_t i = 0; i < batch_size; ++i) {
-    EXPECT_GE(0.00002, std::abs((double)result1[i] - (double)result2[i]));
+    EXPECT_GT(0.005, std::abs((result1[i] - result2[i]) / result1[i]));
   }
 }
 
@@ -231,8 +235,8 @@ void Norm1Benchmark() {
   const size_t block_size = B;
   const size_t matrix_size = block_size * batch_size * dimension;
 
-  std::vector<float> matrix1(matrix_size);
-  std::vector<float> matrix2(matrix_size);
+  std::vector<Float16> matrix1(matrix_size);
+  std::vector<Float16> matrix2(matrix_size);
 
   std::mt19937 gen((std::random_device())());
   std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
@@ -249,15 +253,15 @@ void Norm1Benchmark() {
   ElapsedTime elapsed_time;
   std::vector<float> results(batch_size);
 
-  std::cout << "# (" << IntelIntrinsics() << ") FP32 " << dimension << "d, "
+  std::cout << "# (" << IntelIntrinsics() << ") FP16 " << dimension << "d, "
             << batch_size << " * " << block_size << std::endl;
 
   // 1 Batched Norm1
   elapsed_time.reset();
   for (size_t i = 0; i < block_size; ++i) {
-    const float *matrix_batch = &matrix2[i * batch_size * dimension];
-    Norm1Matrix<float, batch_size>::Compute(matrix_batch, dimension,
-                                            &results[0]);
+    const Float16 *matrix_batch = &matrix2[i * batch_size * dimension];
+    zvec::turbo::Norm1Matrix<Float16, batch_size>::Compute(
+        matrix_batch, dimension, &results[0]);
   }
   std::cout << "* Batched Norm1 (us) \t" << elapsed_time.micro_seconds()
             << std::endl;
@@ -265,10 +269,10 @@ void Norm1Benchmark() {
   // Unbatched Norm1
   elapsed_time.reset();
   for (size_t i = 0; i < block_size; ++i) {
-    const float *matrix_batch = &matrix1[i * batch_size * dimension];
+    const Float16 *matrix_batch = &matrix1[i * batch_size * dimension];
     for (size_t k = 0; k < batch_size; ++k) {
-      Norm1Matrix<float, 1>::Compute(&matrix_batch[k * dimension], dimension,
-                                     &results[k]);
+      zvec::turbo::Norm1Matrix<Float16, 1>::Compute(
+          &matrix_batch[k * dimension], dimension, &results[k]);
     }
   }
   std::cout << "* Unbatched Norm1 (us) \t" << elapsed_time.micro_seconds()
@@ -282,8 +286,8 @@ void Norm2Benchmark() {
   const size_t block_size = B;
   const size_t matrix_size = block_size * batch_size * dimension;
 
-  std::vector<float> matrix1(matrix_size);
-  std::vector<float> matrix2(matrix_size);
+  std::vector<Float16> matrix1(matrix_size);
+  std::vector<Float16> matrix2(matrix_size);
 
   std::mt19937 gen((std::random_device())());
   std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
@@ -300,15 +304,15 @@ void Norm2Benchmark() {
   ElapsedTime elapsed_time;
   std::vector<float> results(batch_size);
 
-  std::cout << "# (" << IntelIntrinsics() << ") FP32 " << dimension << "d, "
+  std::cout << "# (" << IntelIntrinsics() << ") FP16 " << dimension << "d, "
             << batch_size << " * " << block_size << std::endl;
 
   // 1 Batched Norm2
   elapsed_time.reset();
   for (size_t i = 0; i < block_size; ++i) {
-    const float *matrix_batch = &matrix2[i * batch_size * dimension];
-    Norm2Matrix<float, batch_size>::Compute(matrix_batch, dimension,
-                                            &results[0]);
+    const Float16 *matrix_batch = &matrix2[i * batch_size * dimension];
+    zvec::turbo::Norm2Matrix<Float16, batch_size>::Compute(
+        matrix_batch, dimension, &results[0]);
   }
   std::cout << "* Batched Norm2 (us) \t" << elapsed_time.micro_seconds()
             << std::endl;
@@ -316,10 +320,10 @@ void Norm2Benchmark() {
   // Unbatched Norm2
   elapsed_time.reset();
   for (size_t i = 0; i < block_size; ++i) {
-    const float *matrix_batch = &matrix1[i * batch_size * dimension];
+    const Float16 *matrix_batch = &matrix1[i * batch_size * dimension];
     for (size_t k = 0; k < batch_size; ++k) {
-      Norm2Matrix<float, 1>::Compute(&matrix_batch[k * dimension], dimension,
-                                     &results[k]);
+      zvec::turbo::Norm2Matrix<Float16, 1>::Compute(
+          &matrix_batch[k * dimension], dimension, &results[k]);
     }
   }
   std::cout << "* Unbatched Norm2 (us) \t" << elapsed_time.micro_seconds()

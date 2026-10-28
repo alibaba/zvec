@@ -17,7 +17,7 @@
 #include "norm_matrix_fp32.i"
 
 namespace zvec {
-namespace ailego {
+namespace turbo {
 
 #define NORM_FP32_STEP_GENERAL SS_FP32_GENERAL
 #define NORM_FP32_STEP_SSE SS_FP32_SSE
@@ -89,5 +89,5 @@ void SquaredNorm2Matrix<float, 1>::Compute(const ValueType *m, size_t dim,
 }
 #endif  // __SSE__ || AILEGO_ARM64_NEON
 
-}  // namespace ailego
+}  // namespace turbo
 }  // namespace zvec

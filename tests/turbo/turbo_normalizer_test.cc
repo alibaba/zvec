@@ -15,8 +15,8 @@
 #include <random>
 #include <ailego/container/bitmap.h>
 #include <ailego/internal/cpu_features.h>
-#include <ailego/math/normalizer.h>
 #include <gtest/gtest.h>
+#include <turbo/norm/normalizer.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/ailego/utility/time_helper.h>
 
@@ -35,14 +35,14 @@ TEST(Normalizer, FP32_General) {
       vec2.push_back(val);
     }
 
-    Normalizer<float>::Compute(vec1.data(), vec1.size(), 1.1f);
+    zvec::turbo::Normalizer<float>::Compute(vec1.data(), vec1.size(), 1.1f);
     for (size_t j = 0; j < vec1.size(); ++j) {
       EXPECT_FLOAT_EQ(vec1[j] * 1.1f, vec2[j]);
     }
 
     float l1 = 0.0f, l2 = 0.0f;
-    Normalizer<float>::L1(vec1.data(), vec1.size(), &l1);
-    Normalizer<float>::L2(vec2.data(), vec2.size(), &l2);
+    zvec::turbo::Normalizer<float>::L1(vec1.data(), vec1.size(), &l1);
+    zvec::turbo::Normalizer<float>::L2(vec2.data(), vec2.size(), &l2);
   }
 }
 
@@ -59,14 +59,14 @@ TEST(Normalizer, FP16_General) {
       vec2.push_back(val);
     }
 
-    Normalizer<Float16>::Compute(vec1.data(), vec1.size(), 1.0f);
+    zvec::turbo::Normalizer<Float16>::Compute(vec1.data(), vec1.size(), 1.0f);
     for (size_t j = 0; j < vec1.size(); ++j) {
       EXPECT_FLOAT_EQ(vec1[j], vec2[j]);
     }
 
     float l1 = 0.0f, l2 = 0.0f;
-    Normalizer<Float16>::L1(vec1.data(), vec1.size(), &l1);
-    Normalizer<Float16>::L2(vec2.data(), vec2.size(), &l2);
+    zvec::turbo::Normalizer<Float16>::L1(vec1.data(), vec1.size(), &l1);
+    zvec::turbo::Normalizer<Float16>::L2(vec2.data(), vec2.size(), &l2);
   }
 }
 
@@ -79,8 +79,8 @@ TEST(Normalizer, FP32_Zero) {
   std::vector<float> vec2(dimension, 0.0f);
 
   float norm;
-  Normalizer<float>::L1(vec1.data(), vec1.size(), &norm);
-  Normalizer<float>::L2(vec2.data(), vec2.size(), &norm);
+  zvec::turbo::Normalizer<float>::L1(vec1.data(), vec1.size(), &norm);
+  zvec::turbo::Normalizer<float>::L2(vec2.data(), vec2.size(), &norm);
   for (auto v : vec1) {
     EXPECT_FALSE(std::isnan(v));
   }
@@ -98,8 +98,8 @@ TEST(Normalizer, FP16_Zero) {
   std::vector<Float16> vec2(dimension, 0.0f);
 
   float norm;
-  Normalizer<Float16>::L2(vec1.data(), vec1.size(), &norm);
-  Normalizer<Float16>::L2(vec2.data(), vec2.size(), &norm);
+  zvec::turbo::Normalizer<Float16>::L2(vec1.data(), vec1.size(), &norm);
+  zvec::turbo::Normalizer<Float16>::L2(vec2.data(), vec2.size(), &norm);
   for (auto v : vec1) {
     EXPECT_FALSE(std::isnan(v));
   }

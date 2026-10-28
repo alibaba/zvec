@@ -16,7 +16,7 @@
 #include <cmath>
 #include <cstring>
 #include <vector>
-#include <ailego/math/normalizer.h>
+#include <turbo/norm/normalizer.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_factory.h>
 
@@ -177,7 +177,7 @@ float Fp16Quantizer::quantize_cosine(const float *input, size_t dim,
   }
 
   float norm = 0.0f;
-  ailego::Normalizer<float>::L2(normalized.data(), dim, &norm);
+  turbo::Normalizer<float>::L2(normalized.data(), dim, &norm);
   ailego::FloatHelper::ToFP16(normalized.data(), dim, output);
   return norm;
 }

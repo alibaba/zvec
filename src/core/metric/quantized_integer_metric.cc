@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <cstring>
-#include <ailego/math/norm2_matrix.h>
+#include <turbo/norm/norm2_matrix.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/turbo/turbo.h>

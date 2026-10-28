@@ -21,7 +21,7 @@
 #include <random>
 #include <vector>
 #include <ailego/algorithm/kmeans.h>
-#include <ailego/math/normalizer.h>
+#include <turbo/norm/normalizer.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_threads.h>
 
@@ -1132,7 +1132,7 @@ template <typename T>
 void PqInt4Quantizer::normalize(T *data, size_t num) const {
   for (size_t i = 0; i < num; ++i) {
     float norm = 0.0f;
-    ailego::Normalizer<T>::L2(data + i * original_dim_, original_dim_, &norm);
+    turbo::Normalizer<T>::L2(data + i * original_dim_, original_dim_, &norm);
   }
 }
 
@@ -1159,7 +1159,7 @@ void PqInt4Quantizer::compute_and_subtract_center(T *data, size_t num) {
 template <typename T>
 void PqInt4Quantizer::normalize(T *vec, float *norm_out) const {
   float norm = 0.0f;
-  ailego::Normalizer<T>::L2(vec, original_dim_, &norm);
+  turbo::Normalizer<T>::L2(vec, original_dim_, &norm);
   if (norm_out) {
     *norm_out = norm;
   }

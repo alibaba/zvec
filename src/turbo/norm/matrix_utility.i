@@ -19,7 +19,7 @@
 // NOLINTBEGIN(readability-identifier-naming): SIMD intrinsic helpers use the
 // deliberate Operation_TYPE_WIDTH convention (e.g. HorizontalMax_FP32_V128).
 namespace zvec {
-namespace ailego {
+namespace turbo {
 
 //! Absolute value of a float
 static inline float FastAbs(float x) {
@@ -263,6 +263,6 @@ static inline float HorizontalAdd_FP16_V512(__m512h v) {
 }
 #endif  // __AVX512FP16__
 
-} // namespace ailego
+} // namespace turbo
 } // namespace zvec
 // NOLINTEND(readability-identifier-naming)

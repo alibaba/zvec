@@ -18,7 +18,7 @@
 #include "norm_matrix_fp16.i"
 
 namespace zvec {
-namespace ailego {
+namespace turbo {
 
 #define NORM_FP32_STEP_GENERAL SS_FP32_GENERAL
 #define NORM_FP32_STEP_SSE SS_FP32_SSE
@@ -56,8 +56,8 @@ namespace ailego {
 // kernel is gated to gcc/clang aarch64.
 #if (defined(__F16C__) && defined(__AVX__)) || defined(AILEGO_ARM64_GNU_LIKE)
 //! Compute the L2-norm of vectors (FP16, M=1)
-void Norm2Matrix<Float16, 1>::Compute(const ValueType *m, size_t dim,
-                                      float *out) {
+void Norm2Matrix<ailego::Float16, 1>::Compute(const ValueType *m, size_t dim,
+                                              float *out) {
 #if defined(AILEGO_ARM64_GNU_LIKE)
   NORM_FP16_1_NEON(m, dim, out, std::sqrt)
 #else
@@ -72,8 +72,8 @@ void Norm2Matrix<Float16, 1>::Compute(const ValueType *m, size_t dim,
 }
 
 //! Compute the L2-norm of vectors (FP16, M=1)
-void SquaredNorm2Matrix<Float16, 1>::Compute(const ValueType *m, size_t dim,
-                                             float *out) {
+void SquaredNorm2Matrix<ailego::Float16, 1>::Compute(const ValueType *m,
+                                                     size_t dim, float *out) {
 #if defined(AILEGO_ARM64_GNU_LIKE)
   NORM_FP16_1_NEON(m, dim, out, )
 #else
@@ -88,5 +88,5 @@ void SquaredNorm2Matrix<Float16, 1>::Compute(const ValueType *m, size_t dim,
 }
 #endif  // (__F16C__ && __AVX__) || AILEGO_ARM64_GNU_LIKE
 
-}  // namespace ailego
+}  // namespace turbo
 }  // namespace zvec

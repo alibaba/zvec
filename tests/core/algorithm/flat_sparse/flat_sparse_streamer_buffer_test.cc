@@ -14,11 +14,11 @@
 
 #include <string>
 #include <vector>
-#include <ailego/math/norm2_matrix.h>
 #include <ailego/utility/math_helper.h>
 #include <ailego/utility/memory_helper.h>
 #include <algorithm/flat_sparse/flat_sparse_utility.h>
 #include <gtest/gtest.h>
+#include <turbo/norm/norm2_matrix.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
 #include "tests/test_util.h"
@@ -70,8 +70,8 @@ void FlatSparseStreamerTest::generate_sparse_data(
     }
 
     float norm;
-    ailego::Norm2Matrix<float, 1>::Compute(sparse_vec.data(), sparse_dim_count,
-                                           &norm);
+    turbo::Norm2Matrix<float, 1>::Compute(sparse_vec.data(), sparse_dim_count,
+                                          &norm);
     for (size_t j = 0; j < sparse_dim_count; ++j) {
       sparse_vec[j] = sparse_vec[j] / norm;
     }

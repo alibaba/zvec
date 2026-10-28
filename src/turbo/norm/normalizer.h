@@ -17,12 +17,13 @@
 #include "norm_matrix.h"
 
 namespace zvec {
-namespace ailego {
+namespace turbo {
 
 /*! Normalizer
  */
 template <typename T,
-          typename = typename std::enable_if<IsFloatingPoint<T>::value>::type>
+          typename =
+              typename std::enable_if<ailego::IsFloatingPoint<T>::value>::type>
 struct Normalizer {
   //! Type of value
   using ValueType = typename std::remove_cv<T>::type;
@@ -81,14 +82,14 @@ struct Normalizer<float> {
 #endif  // __SSE__ || AILEGO_ARM64_NEON
 
 // MSVC ARM64 lacks `float16_t` without ARMv8.2 FP16, so the FP16 NEON
-// `Normalizer<Float16>` specialization is gated to gcc/clang aarch64.
+// `Normalizer<ailego::Float16>` specialization is gated to gcc/clang aarch64.
 #if (defined(__F16C__) && defined(__AVX__)) || defined(AILEGO_ARM64_GNU_LIKE)
 /*! Normalizer (FP16)
  */
 template <>
-struct Normalizer<Float16> {
+struct Normalizer<ailego::Float16> {
   //! Type of value
-  using ValueType = Float16;
+  using ValueType = ailego::Float16;
 
   //! Compute the norm of vector
   static void Compute(ValueType *arr, size_t dim, float norm);
@@ -111,5 +112,5 @@ struct Normalizer<Float16> {
 };
 #endif  // (__F16C__ && __AVX__) || AILEGO_ARM64_GNU_LIKE
 
-}  // namespace ailego
+}  // namespace turbo
 }  // namespace zvec

@@ -11,8 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include <ailego/math/norm2_matrix.h>
 #include <turbo/distance/sparse/sparse_distance.h>
+#include <turbo/norm/norm2_matrix.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include "metric_params.h"
@@ -66,22 +66,22 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
     switch (data_type_) {
       case IndexMeta::DataType::DT_FP32:
         squared_norm2_handle_ = reinterpret_cast<SquaredNorm2Handle>(
-            ailego::SquaredNorm2Matrix<float, 1>::Compute);
+            turbo::SquaredNorm2Matrix<float, 1>::Compute);
         break;
 
       case IndexMeta::DataType::DT_FP16:
         squared_norm2_handle_ = reinterpret_cast<SquaredNorm2Handle>(
-            ailego::SquaredNorm2Matrix<ailego::Float16, 1>::Compute);
+            turbo::SquaredNorm2Matrix<ailego::Float16, 1>::Compute);
         break;
 
       case IndexMeta::DataType::DT_INT8:
         squared_norm2_handle_ = reinterpret_cast<SquaredNorm2Handle>(
-            ailego::SquaredNorm2Matrix<int8_t, 1>::Compute);
+            turbo::SquaredNorm2Matrix<int8_t, 1>::Compute);
         break;
 
       case IndexMeta::DataType::DT_INT4:
         squared_norm2_handle_ = reinterpret_cast<SquaredNorm2Handle>(
-            ailego::SquaredNorm2Matrix<uint8_t, 1>::Compute);
+            turbo::SquaredNorm2Matrix<uint8_t, 1>::Compute);
         break;
 
       default:

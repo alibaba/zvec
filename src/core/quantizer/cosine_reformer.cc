@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <memory>
-#include <ailego/algorithm/integer_quantizer.h>
-#include <ailego/math/norm2_matrix.h>
-#include <ailego/math/normalizer.h>
+#include <turbo/norm/norm2_matrix.h>
+#include <turbo/norm/normalizer.h>
+#include <turbo/quantizer/entropy_integer_quantizer/integer_quantizer.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/turbo/turbo.h>
@@ -130,7 +130,7 @@ class CosineReformer : public IndexReformer {
       if (raw_fp16_storage_) {
         auto *buf = reinterpret_cast<ailego::Float16 *>(out->data());
         fp16_convert_func_(vec, origin_dimension, buf);
-        ailego::Normalizer<ailego::Float16>::L2(buf, origin_dimension, &norm);
+        turbo::Normalizer<ailego::Float16>::L2(buf, origin_dimension, &norm);
         ::memcpy(out->data() + ometa->element_size() - NORM_SIZE, &norm,
                  NORM_SIZE);
         return 0;
@@ -144,7 +144,7 @@ class CosineReformer : public IndexReformer {
       if (enable_rotate_ && rotator_) {
         rotator_->rotate(vec, buf);
       }
-      ailego::Normalizer<float>::L2(buf, origin_dimension, &norm);
+      turbo::Normalizer<float>::L2(buf, origin_dimension, &norm);
       vec = buf;
 
       ::memcpy(reinterpret_cast<uint8_t *>(&(*out)[0]) + ometa->element_size() -
@@ -183,7 +183,7 @@ class CosineReformer : public IndexReformer {
 
       float norm = 0.0f;
       auto data = reinterpret_cast<ailego::Float16 *>(&(*out)[0]);
-      ailego::Normalizer<ailego::Float16>::L2(
+      turbo::Normalizer<ailego::Float16>::L2(
           data,
           ometa->dimension() - ExtraDimension(IndexMeta::DataType::DT_FP16),
           &norm);
