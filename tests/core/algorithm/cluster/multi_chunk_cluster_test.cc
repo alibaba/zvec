@@ -66,18 +66,19 @@ TEST(MultiChunkCluster, General) {
   std::vector<uint32_t> labels;
 
   ASSERT_EQ(0, cluster.cluster(nullptr, centroids));
+  std::cout << "Clustering summary: samples=" << count
+            << ", dimensions=" << dimension << ", chunks=" << chunk_count
+            << ", clusters/chunk=" << cluster_count
+            << ", centroids=" << centroids.size() << '\n';
 
   for (size_t chunk = 0; chunk < chunk_count; ++chunk) {
     for (size_t cluster = 0; cluster < cluster_count; ++cluster) {
       size_t idx = chunk * cluster_count + cluster;
       const auto &cent = centroids[idx];
-      const auto &vec = cent.vector<float>();
-
-      std::cout << "chunk: " << chunk << ", cluster: " << cluster
-                << ", dim: " << vec.size() << ", count: " << cent.follows()
-                << " (" << cent.score() << ") { " << vec[0] << "," << vec[1]
-                << " }" << std::endl;
-      ASSERT_EQ(0u, cent.similars().size());
+      ASSERT_EQ(0u, cent.similars().size())
+          << "chunk=" << chunk << ", cluster=" << cluster
+          << ", dimensions=" << cent.vector<float>().size()
+          << ", count=" << cent.follows() << ", score=" << cent.score();
     }
   }
 
@@ -127,18 +128,19 @@ TEST(MultiChunkCluster, TestChunk) {
   std::vector<uint32_t> labels;
 
   ASSERT_EQ(0, cluster.cluster(nullptr, centroids));
+  std::cout << "Clustering summary: samples=" << count
+            << ", dimensions=" << dimension << ", chunks=" << chunk_count
+            << ", clusters/chunk=" << cluster_count
+            << ", centroids=" << centroids.size() << '\n';
 
   for (size_t chunk = 0; chunk < chunk_count; ++chunk) {
     for (size_t cluster = 0; cluster < cluster_count; ++cluster) {
       size_t idx = chunk * cluster_count + cluster;
       const auto &cent = centroids[idx];
-      const auto &vec = cent.vector<float>();
-
-      std::cout << "chunk: " << chunk << ", cluster: " << cluster
-                << ", dim: " << vec.size() << ", count: " << cent.follows()
-                << " (" << cent.score() << ") { " << vec[0] << "," << vec[1]
-                << " }" << std::endl;
-      ASSERT_EQ(0u, cent.similars().size());
+      ASSERT_EQ(0u, cent.similars().size())
+          << "chunk=" << chunk << ", cluster=" << cluster
+          << ", dimensions=" << cent.vector<float>().size()
+          << ", count=" << cent.follows() << ", score=" << cent.score();
     }
   }
 
@@ -201,19 +203,19 @@ TEST(MultiChunkCluster, General_InnerProduct) {
   std::vector<uint32_t> labels;
 
   ASSERT_EQ(0, cluster.cluster(nullptr, centroids));
+  std::cout << "Clustering summary: samples=" << count
+            << ", dimensions=" << dimension << ", chunks=" << chunk_count
+            << ", clusters/chunk=" << cluster_count
+            << ", centroids=" << centroids.size() << '\n';
 
   for (size_t chunk = 0; chunk < chunk_count; ++chunk) {
     for (size_t cluster = 0; cluster < cluster_count; ++cluster) {
       size_t idx = chunk * cluster_count + cluster;
       const auto &cent = centroids[idx];
-      const auto &vec = cent.vector<float>();
-
-      std::cout << "chunk: " << chunk << ", cluster: " << cluster
-                << ", dim: " << vec.size() << ", count: " << cent.follows()
-                << " (" << cent.score() << ") { " << vec[0] << ", " << vec[1]
-                << ", " << vec[2] << ", ... , " << vec[vec.size() - 2] << ", "
-                << vec[vec.size() - 1] << " }" << std::endl;
-      ASSERT_EQ(0u, cent.similars().size());
+      ASSERT_EQ(0u, cent.similars().size())
+          << "chunk=" << chunk << ", cluster=" << cluster
+          << ", dimensions=" << cent.vector<float>().size()
+          << ", count=" << cent.follows() << ", score=" << cent.score();
     }
   }
 

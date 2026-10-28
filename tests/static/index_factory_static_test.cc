@@ -20,6 +20,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <gtest/gtest.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_factory.h>
 
@@ -142,7 +143,7 @@ bool CheckConcurrentFirstUse() {
 
 }  // namespace
 
-int main() {
+TEST(IndexFactoryStatic, OrdinaryArchiveLinking) {
   bool ok = CheckConcurrentFirstUse();
   ok &= CheckFamily("metric", IndexFactory::CreateMetric,
                     IndexFactory::HasMetric, IndexFactory::AllMetrics,
@@ -275,5 +276,5 @@ int main() {
   ok &= Check(overridden && overridden->init({}, {}) == 31 &&
                   overridden->name() == "SquaredEuclidean",
               "Custom registration cannot override a built-in metric");
-  return ok ? 0 : 1;
+  EXPECT_TRUE(ok);
 }
