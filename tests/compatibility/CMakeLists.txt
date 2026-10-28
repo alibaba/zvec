@@ -12,6 +12,7 @@ endif()
 # Keep native CMake link coverage while sharing only test setup.
 function(add_compatibility_test NAME)
   add_executable(${NAME} EXCLUDE_FROM_ALL ${NAME}.cc)
+  target_compile_features(${NAME} PRIVATE cxx_std_17)
   target_include_directories(${NAME} PRIVATE ${PROJECT_ROOT_DIR}/src)
   target_link_libraries(${NAME} PRIVATE ${ARGN})
   add_dependencies(unittest ${NAME})
@@ -19,6 +20,7 @@ function(add_compatibility_test NAME)
 endfunction()
 
 add_library(legacy_quantizer_extension STATIC EXCLUDE_FROM_ALL legacy_quantizer_extension.cc)
+target_compile_features(legacy_quantizer_extension PRIVATE cxx_std_17)
 target_include_directories(legacy_quantizer_extension PRIVATE ${PROJECT_ROOT_DIR}/src)
 target_link_libraries(legacy_quantizer_extension PRIVATE zvec_turbo)
 add_compatibility_test(component_factory_test core_metric_static core_framework
@@ -32,6 +34,9 @@ target_sources(legacy_builtin_test PRIVATE legacy_builtin_client.cc)
 set_target_properties(legacy_builtin_test PROPERTIES INTERPROCEDURAL_OPTIMIZATION FALSE)
 
 add_library(prebuilt_extension_source STATIC EXCLUDE_FROM_ALL prebuilt_extension.cc)
+# This archive intentionally has no SDK link dependency. Declare its language
+# requirement directly instead of inheriting it from another target/compiler.
+target_compile_features(prebuilt_extension_source PRIVATE cxx_std_17)
 target_include_directories(prebuilt_extension_source PRIVATE ${PROJECT_ROOT_DIR}/src)
 add_library(prebuilt_extension STATIC IMPORTED)
 # Use a real imported archive with an explicitly referenced C++ initializer.
@@ -48,6 +53,7 @@ add_library(prebuilt_extension_interface INTERFACE)
 zvec_link_static_extension(TARGET prebuilt_extension_interface
   LIBRARY prebuilt_extension INITIALIZER RegisterCompatibilityExtension)
 add_executable(conditional_extension_test EXCLUDE_FROM_ALL prebuilt_extension_test.cc)
+target_compile_features(conditional_extension_test PRIVATE cxx_std_17)
 target_include_directories(conditional_extension_test PRIVATE ${PROJECT_ROOT_DIR}/src)
 target_link_libraries(conditional_extension_test PRIVATE zvec_core zvec_turbo
   zvec_ailego "$<$<BOOL:1>:prebuilt_extension_interface>")
