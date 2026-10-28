@@ -197,6 +197,31 @@ TEST_F(DiskAnnMmapViewTest, CancellationDoesNotChangeLifetime) {
   EXPECT_EQ(IndexError_Canceled, holder->status());
 }
 
+TEST_F(DiskAnnMmapViewTest, BuilderCopiesMixedStorageForGraphAndDumps) {
+  ailego::MemoryLimitPool::get_instance().init(64 * 1024UL * 1024UL);
+  auto a = source("a", "MMapFileStorage");
+  auto b = source("b", "BufferStorage", 100);
+  auto holder = std::make_shared<MergedProviderIndexHolder>(
+      IndexQueryMeta(IndexMeta::DT_FP32, 16),
+      std::vector<MergedProviderIndexHolder::Source>{merged_source(a),
+                                                     merged_source(b)});
+  ASSERT_EQ(0, holder->init(IndexFilter()));
+  auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+  ailego::Params params;
+  params.set("zvec.diskann.builder.threads", 2U);
+  params.set("zvec.diskann.builder.pq_chunk_num", 4U);
+  ASSERT_EQ(0, builder->init(meta, params));
+  ASSERT_EQ(0, builder->train(holder));
+  ASSERT_EQ(0, builder->build(holder));
+  EXPECT_EQ(140U, builder->stats().built_count());
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_EQ(0, dumper->create(path + "copied.index"));
+  ASSERT_EQ(0, builder->dump(dumper));
+  ASSERT_EQ(0, dumper->close());
+  EXPECT_EQ(140U, builder->stats().dumped_count());
+  ASSERT_EQ(0, builder->cleanup());
+}
+
 class FailedStableHolder : public MultiPassIndexHolder<IndexMeta::DT_FP32>,
                            public StableVectorHolder {
  public:

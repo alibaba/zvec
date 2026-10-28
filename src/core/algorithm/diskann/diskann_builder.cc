@@ -27,6 +27,7 @@
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/interface/index_factory.h>
 #include "algorithm/cluster/vector_mean.h"
+#include "utility/owned_vector_holder.h"
 #include "utility/prefix_index_holder.h"
 #include "utility/stable_vector_holder.h"
 #include "diskann_context.h"
@@ -729,6 +730,10 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
     return IndexError_Runtime;
   }
 
+  // The graph may need an owned snapshot of temporary iterator buffers.
+  // Keep holder_ as the original source for PQ encoding and deferred dump
+  // reads.
+  IndexHolder::Pointer graph_holder = holder;
   std::shared_ptr<const void> lifetime;
   auto *stable = dynamic_cast<StableVectorHolder *>(holder.get());
   int ret = stable ? stable->retain_stable_data(&lifetime)
@@ -739,11 +744,19 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
         "Using stable source vectors for graph: count=%zu, saved_bytes=%zu",
         holder->count(), holder->count() * raw_meta_.element_size());
   } else if (ret == IndexError_NotImplemented) {
-    lifetime.reset();
+    OwnedVectorHolder::Pointer owned;
+    ret = OwnedVectorHolder::CopyFrom(holder, &owned);
+    if (ret != 0) return ret;
+    ret = owned->retain_stable_data(&lifetime);
+    if (ret != 0) return ret;
+    graph_holder = std::move(owned);
+    LOG_INFO("Copied source vectors into owned graph holder: count=%zu",
+             graph_holder->count());
   } else {
     return ret;
   }
-  auto iter = holder->create_iterator();
+  if (!lifetime) return IndexError_Runtime;
+  auto iter = graph_holder->create_iterator();
   if (!iter) {
     LOG_ERROR("Create iterator for holder failed");
     return IndexError_Runtime;
@@ -765,6 +778,7 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
   if (iter->status() != 0) return iter->status();
   if (entity_.doc_cnt() != holder->count()) return IndexError_Mismatch;
   iter.reset();
+  graph_holder.reset();
   LOG_INFO("Finished saving vector");
 
   LOG_INFO("Start to calculate entrypoint");

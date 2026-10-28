@@ -65,33 +65,24 @@ int DiskAnnBuilderEntity::init(const IndexMeta &meta, uint32_t max_degree,
 }
 
 void DiskAnnBuilderEntity::release_vectors() {
-  std::string().swap(vectors_buffer_);
   std::vector<const void *>().swap(vector_ptrs_);
   vector_lifetime_.reset();
 }
 
 int DiskAnnBuilderEntity::reserve_space(uint32_t docs,
                                         std::shared_ptr<const void> lifetime) {
-  if (doc_cnt() != 0) return IndexError_InvalidArgument;
+  if (doc_cnt() != 0 || !lifetime) return IndexError_InvalidArgument;
   vector_lifetime_ = std::move(lifetime);
-  if (vector_lifetime_) {
-    vector_ptrs_.reserve(docs);
-  } else {
-    vectors_buffer_.reserve(meta_.element_size() * docs);
-  }
+  vector_ptrs_.reserve(docs);
   keys_buffer_.reserve(sizeof(diskann_key_t) * docs);
   neighbors_buffer_.reserve(static_cast<size_t>(neighbor_size_) * docs);
   return 0;
 }
 
 int DiskAnnBuilderEntity::add_vector(diskann_key_t key, const void *vec) {
+  if (!vector_lifetime_) return IndexError_NoReady;
   if (!vec) return IndexError_ReadData;
-  if (vector_lifetime_) {
-    vector_ptrs_.push_back(vec);
-  } else {
-    vectors_buffer_.append(reinterpret_cast<const char *>(vec),
-                           meta_.element_size());
-  }
+  vector_ptrs_.push_back(vec);
   keys_buffer_.append(reinterpret_cast<const char *>(&key), sizeof(key));
 
   uint32_t neighbor_cnt = 0;
@@ -105,9 +96,7 @@ int DiskAnnBuilderEntity::add_vector(diskann_key_t key, const void *vec) {
 }
 
 const void *DiskAnnBuilderEntity::get_vector(diskann_id_t id) const {
-  if (vector_lifetime_) return vector_ptrs_[id];
-  size_t offset = (size_t)id * meta_.element_size();
-  return vectors_buffer_.data() + offset;
+  return vector_ptrs_[id];
 }
 
 diskann_key_t DiskAnnBuilderEntity::get_key(diskann_id_t id) const {
