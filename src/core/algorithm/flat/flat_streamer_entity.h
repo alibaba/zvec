@@ -97,14 +97,14 @@ class FlatStreamerEntity {
   //! Search in a block
   void search_block(const void *query, const BlockLocation &bl,
                     const BlockHeader *hd, float norm_val,
-                    IndexDocumentHeap *heap, BatchTopK *topk = nullptr) const;
+                    IndexDocumentHeap *heap) const;
 
   //! Search in a block with filter
   void search_block(const void *query, const BlockLocation &bl,
                     const BlockHeader *hd, float norm_val,
                     const IndexFilter &filter, const DeletionMap *deletion_map,
-                    IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
-                    BatchTopK *topk = nullptr) const;
+                    IndexDocumentHeap *heap,
+                    IndexContext::Stats *context_stats) const;
 
   //! Flat Search with filter
   int search_bf(const void *query, const IndexFilter &filter,
@@ -265,6 +265,11 @@ class FlatStreamerEntity {
   FlatStreamerEntity &operator=(const FlatStreamerEntity &) = delete;
 
  private:
+  int search_batch_rows(const void *query, const IndexFilter &filter,
+                        uint32_t *scan_count, IndexDocumentHeap *heap,
+                        IndexContext::Stats *context_stats,
+                        FlatSearchScratch *scratch) const;
+
   /*! Iterator of all the linear list
    */
   class Iterator : public IndexProvider::Iterator {

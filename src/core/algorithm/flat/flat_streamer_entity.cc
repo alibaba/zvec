@@ -358,6 +358,15 @@ int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
                                IndexContext::Stats *context_stats,
                                FlatSearchScratch *scratch,
                                size_t /*batch_size*/) const {
+  if (quantizer_ && index_meta_.major_order() == IndexMeta::MO_ROW) {
+    if (scratch) {
+      return search_batch_rows(query, filter, scan_count, heap, context_stats,
+                               scratch);
+    }
+    FlatSearchScratch local_scratch;
+    return search_batch_rows(query, filter, scan_count, heap, context_stats,
+                             &local_scratch);
+  }
   IndexStorage::MemoryBlock head_block;
   this->get_head_block(head_block);
   const BlockLocation *bl =
@@ -369,34 +378,67 @@ int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
 
   BlockLocation block = *bl;
 
-  const size_t block_rows = block_vector_count();
-  const size_t stride = index_meta_.element_size();
-  const size_t rows = quantizer_ && !filter.is_valid() &&
-                              index_meta_.major_order() == IndexMeta::MO_ROW
-                          ? BatchDistanceRows(quantizer_->meta())
-                          : 32;
-  size_t group_blocks = 1;
-  IndexStorage::Segment::Pointer segment;
-  const uint8_t *base = nullptr;
-  auto segment_id = block.segment_id;
-  if (is_valid_block(block) && block_rows != 0 && rows > 32 &&
-      rows / block_rows > 1) {
-    segment = get_segment(segment_id);
-    if (segment && (base = segment->base_data())) {
-      const size_t stored_blocks =
-          std::max(size_t{1}, (vector_count() + block_rows - 1) / block_rows);
-      group_blocks = std::min(rows / block_rows, stored_blocks);
+  while (this->is_valid_block(block)) {
+    IndexStorage::MemoryBlock block_header_block;
+    this->get_block_header(block, block_header_block);
+    const BlockHeader *hd =
+        reinterpret_cast<const BlockHeader *>(block_header_block.data());
+    if (ailego_unlikely(hd == nullptr)) {
+      LOG_ERROR("Failed to get block header");
+      return IndexError_ReadData;
     }
+
+    if (hd->vector_count > 0) {
+      *scan_count += hd->vector_count;
+      IndexStorage::MemoryBlock deletion_map_block;
+      this->get_block_deletion_map(block, deletion_map_block);
+      const DeletionMap *deletion_map =
+          reinterpret_cast<const DeletionMap *>(deletion_map_block.data());
+      if (filter.is_valid() || deletion_map->is_dirty()) {
+        this->search_block(query, block, hd, 1.0, filter, deletion_map, heap,
+                           context_stats);
+      } else {
+        *(context_stats->mutable_dist_calced_count()) += hd->vector_count;
+        this->search_block(query, block, hd, 1.0, heap);
+      }
+    }
+    block = hd->next;
   }
-  const size_t capacity = group_blocks > 1 ? group_blocks * block_rows : 0;
-  std::vector<const void *> pointers(capacity);
-  std::vector<uint64_t> keys(capacity);
-  std::vector<float> distances(capacity);
-  FlatSearchScratch local_scratch;
-  if (!scratch) scratch = &local_scratch;
-  const bool use_topk = quantizer_ &&
-                        index_meta_.major_order() == IndexMeta::MO_ROW &&
-                        heap->limit() < vector_count() && heap->limit() != 0;
+  return 0;
+}
+
+int FlatStreamerEntity::search_batch_rows(const void *query,
+                                          const IndexFilter &filter,
+                                          uint32_t *scan_count,
+                                          IndexDocumentHeap *heap,
+                                          IndexContext::Stats *context_stats,
+                                          FlatSearchScratch *scratch) const {
+  const size_t stride = index_meta_.element_size();
+  const size_t block_rows = block_vector_count();
+  const size_t block_size = linear_block_size();
+  const size_t metadata_size = sizeof(DeletionMap) + sizeof(BlockHeader);
+  if (stride == 0 || block_rows == 0 || block_size < metadata_size ||
+      block_rows > (block_size - metadata_size) / (stride + sizeof(uint64_t))) {
+    return IndexError_InvalidFormat;
+  }
+  BlockLocation block;
+  {
+    IndexStorage::MemoryBlock head;
+    if (get_head_block(head) != 0 || !head.data()) return IndexError_ReadData;
+    std::memcpy(&block, head.data(), sizeof(block));
+  }
+  if (!is_valid_block(block)) return 0;
+
+  const size_t capacity =
+      std::max(size_t{1},
+               std::min(BatchDistanceRows(quantizer_->meta()), vector_count()));
+  auto &pointers = scratch->vector_ptrs;
+  auto &keys = scratch->vector_keys;
+  auto &distances = scratch->distances;
+  if (pointers.size() < capacity) pointers.resize(capacity);
+  if (keys.size() < capacity) keys.resize(capacity);
+  if (distances.size() < capacity) distances.resize(capacity);
+  const bool use_topk = heap->limit() < vector_count() && heap->limit() != 0;
   auto &topk = scratch->batch_topk;
   if (use_topk) {
     float bound = heap->threshold();
@@ -407,7 +449,8 @@ int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
     }
     topk.reset(std::min(heap->limit(), vector_count()), bound, strict);
   }
-  auto evaluate = [&](size_t &count) {
+  size_t count = 0;
+  auto flush = [&]() {
     if (count == 0) return;
     if (count == 1) {
       distances[0] = quantizer_->calc_distance_dp_query(pointers[0], query);
@@ -415,79 +458,64 @@ int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
       quantizer_->calc_distance_dp_query_batch(
           pointers.data(), static_cast<int>(count), query, distances.data());
     }
+    *context_stats->mutable_dist_calced_count() += count;
     if (use_topk) {
-      for (size_t i = 0; i < count; ++i)
-        if (keys[i] == kInvalidKey)
-          distances[i] = std::numeric_limits<float>::quiet_NaN();
       topk.push_block(distances.data(), keys.data(), count);
     } else {
-      for (size_t i = 0; i < count; ++i)
-        if (keys[i] != kInvalidKey) heap->emplace(keys[i], distances[i]);
+      for (size_t i = 0; i < count; ++i) heap->emplace(keys[i], distances[i]);
     }
     count = 0;
   };
 
-  while (this->is_valid_block(block)) {
-    size_t count = 0;
-    for (size_t b = 0; b < group_blocks && is_valid_block(block); ++b) {
-      IndexStorage::MemoryBlock block_header_block;
-      this->get_block_header(block, block_header_block);
-      const BlockHeader *hd =
-          reinterpret_cast<const BlockHeader *>(block_header_block.data());
-      if (ailego_unlikely(hd == nullptr)) {
-        LOG_ERROR("Failed to get block header");
-        return IndexError_ReadData;
-      }
-
-      if (hd->vector_count > 0) {
-        *scan_count += hd->vector_count;
-        IndexStorage::MemoryBlock deletion_map_block;
-        this->get_block_deletion_map(block, deletion_map_block);
-        const DeletionMap *deletion_map =
-            reinterpret_cast<const DeletionMap *>(deletion_map_block.data());
-        if (filter.is_valid() || deletion_map->is_dirty()) {
-          evaluate(count);
-          this->search_block(query, block, hd, 1.0, filter, deletion_map, heap,
-                             context_stats, use_topk ? &topk : nullptr);
-        } else {
-          *(context_stats->mutable_dist_calced_count()) += hd->vector_count;
-          if (group_blocks > 1) {
-            if (block.segment_id != segment_id) {
-              segment_id = block.segment_id;
-              segment = get_segment(segment_id);
-              base = segment ? segment->base_data() : nullptr;
-            }
-            if (base) {
-              const size_t offset = get_block_offset(block.block_index);
-              if (hd->vector_count > block_rows ||
-                  offset > segment->data_size() ||
-                  linear_block_size() > segment->data_size() - offset)
-                return IndexError_ReadData;
-              // Cached segments own these stable mappings. No evictable
-              // read or row copy is retained across physical blocks.
-              const auto *data = base + offset;
-              for (size_t row = 0; row < hd->vector_count; ++row) {
-                pointers[count + row] = data + row * stride;
-                std::memcpy(&keys[count + row],
-                            data + block_rows * stride + row * sizeof(uint64_t),
-                            sizeof(uint64_t));
-              }
-              count += hd->vector_count;
-            } else {
-              evaluate(count);
-              this->search_block(query, block, hd, 1.0, heap,
-                                 use_topk ? &topk : nullptr);
-            }
-          } else {
-            this->search_block(query, block, hd, 1.0, heap,
-                               use_topk ? &topk : nullptr);
-          }
-        }
-      }
-      block = hd->next;
+  IndexStorage::Segment::Pointer segment;
+  uint32_t segment_id = 0;
+  const uint8_t *base = nullptr;
+  while (is_valid_block(block)) {
+    if (block.segment_id != segment_id) {
+      segment_id = block.segment_id;
+      segment = get_segment(segment_id);
+      if (!segment) return IndexError_ReadData;
+      base = segment->base_data();
     }
-    evaluate(count);
+    const size_t offset = get_block_offset(block.block_index);
+    if (offset > segment->data_size() ||
+        block_size > segment->data_size() - offset) {
+      return IndexError_ReadData;
+    }
+    IndexStorage::MemoryBlock data;
+    const uint8_t *body = base ? base + offset : nullptr;
+    if (!body) {
+      if (segment->read(offset, data, block_size) != block_size || !data.data())
+        return IndexError_ReadData;
+      body = static_cast<const uint8_t *>(data.data());
+    }
+    BlockHeader header;
+    DeletionMap deleted;
+    std::memcpy(&header, body + block_size - sizeof(header), sizeof(header));
+    std::memcpy(deleted.bitset.data(), body + block_size - metadata_size,
+                sizeof(deleted));
+    if (header.vector_count > block_rows) return IndexError_ReadData;
+    *scan_count += header.vector_count;
+    for (size_t row = 0; row < header.vector_count; ++row) {
+      uint64_t key;
+      std::memcpy(&key, body + block_rows * stride + row * sizeof(key),
+                  sizeof(key));
+      if (key == kInvalidKey || deleted.test(row) ||
+          (filter.is_valid() && filter(key))) {
+        ++(*context_stats->mutable_filtered_count());
+        continue;
+      }
+      pointers[count] = body + row * stride;
+      keys[count] = key;
+      if (++count == capacity) flush();
+    }
+    // Stable mappings are owned by the entity's segment cache. Other rows
+    // must be consumed before this MemoryBlock is released; never copy them
+    // into an arena just to fill a batch.
+    if (!base) flush();
+    block = header.next;
   }
+  flush();
   if (use_topk) {
     topk.finish();
     for (size_t i = 0; i < topk.size(); ++i)
@@ -521,8 +549,7 @@ int FlatStreamerEntity::search_by_p_keys(const void *query,
 void FlatStreamerEntity::search_block(const void *query,
                                       const BlockLocation &bl,
                                       const BlockHeader *hd, float norm_val,
-                                      IndexDocumentHeap *heap,
-                                      BatchTopK *topk) const {
+                                      IndexDocumentHeap *heap) const {
   std::vector<float> distances(block_vector_count());
   IndexStorage::MemoryBlock vecs_block;
   this->get_block_vectors(bl, vecs_block);
@@ -551,14 +578,6 @@ void FlatStreamerEntity::search_block(const void *query,
   } else {
     row_major_distance(query, vecs, hd->vector_count, distances.data());
   }
-  if (topk) {
-    for (size_t k = 0; k < hd->vector_count; ++k)
-      distances[k] = keys[k] == kInvalidKey
-                         ? std::numeric_limits<float>::quiet_NaN()
-                         : distances[k] * norm_val;
-    topk->push_block(distances.data(), keys, hd->vector_count);
-    return;
-  }
   for (size_t k = 0; k < hd->vector_count; ++k) {
     if (keys[k] != kInvalidKey) {
       heap->emplace(keys[k], distances[k] * norm_val);
@@ -570,8 +589,7 @@ void FlatStreamerEntity::search_block(const void *query,
 void FlatStreamerEntity::search_block(
     const void *query, const BlockLocation &bl, const BlockHeader *hd,
     float norm_val, const IndexFilter &filter, const DeletionMap *deletion_map,
-    IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
-    BatchTopK *topk) const {
+    IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const {
   std::vector<float> distances(block_vector_count());
 
   IndexStorage::MemoryBlock vecs_block;
@@ -600,18 +618,6 @@ void FlatStreamerEntity::search_block(
       row_major_distance(query, cur_vec, 1, distances.data() + k);
       ++(*context_stats->mutable_dist_calced_count());
     }
-  }
-  if (topk) {
-    for (size_t k = 0; k < hd->vector_count; ++k) {
-      if (keeps.test(k)) {
-        distances[k] *= norm_val;
-      } else {
-        distances[k] = std::numeric_limits<float>::quiet_NaN();
-        ++(*context_stats->mutable_filtered_count());
-      }
-    }
-    topk->push_block(distances.data(), keys, hd->vector_count);
-    return;
   }
   for (size_t k = 0; k < hd->vector_count; ++k) {
     if (keeps.test(k)) {

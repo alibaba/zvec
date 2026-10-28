@@ -447,41 +447,32 @@ void CheckBudgetStreamer(size_t dim, size_t count, const char *storage_name,
     quantizer->pairwise_calls = 0;
     ASSERT_EQ(0, streamer->search_bf_impl(query.data(), qmeta, 1, context));
     check_results(filtered);
-    size_t expected_pairwise =
-        snapshot || !filtered ? 0 : context->result().size();
-    if (!filtered) {
+    size_t calculated = quantizer->pairwise_calls;
+    for (int n : quantizer->batches) calculated += n;
+    EXPECT_EQ(context->result().size(), calculated);
+    if (!snapshot && !filtered) {
       std::vector<int> expected;
-      if (snapshot) {
-        for (size_t begin = 0; begin < count; begin += rows)
-          expected.push_back(std::min(rows, count - begin));
-      } else {
-        std::vector<size_t> physical;
-        if (count % 32) physical.push_back(count % 32);
-        physical.insert(physical.end(), count / 32, 32);
-        const bool mapped_group =
-            std::string(storage_name) == "MMapFileStorage" && rows / 32 > 1;
-        const size_t group_blocks = mapped_group ? rows / 32 : 1;
-        const size_t call_rows =
-            mapped_group ? rows : std::min(size_t{32}, rows);
-        for (size_t begin = 0; begin < physical.size(); begin += group_blocks) {
-          size_t n = 0;
-          for (size_t i = begin;
-               i < std::min(physical.size(), begin + group_blocks); ++i)
-            n += physical[i];
-          for (size_t offset = 0; offset < n; offset += call_rows) {
-            const size_t batch = std::min(call_rows, n - offset);
-            if (batch == 1)
-              ++expected_pairwise;
-            else
-              expected.push_back(batch);
-          }
+      size_t expected_pairwise = 0;
+      const auto append = [&](size_t n) {
+        while (n != 0) {
+          const size_t batch = std::min(rows, n);
+          if (batch == 1)
+            ++expected_pairwise;
+          else
+            expected.push_back(batch);
+          n -= batch;
         }
+      };
+      if (std::string(storage_name) == "MMapFileStorage") {
+        append(count);
+      } else {
+        if (count % 32) append(count % 32);
+        for (size_t i = 0; i < count / 32; ++i) append(32);
       }
       EXPECT_EQ(expected, quantizer->batches);
-    } else if (!snapshot || filtered == 2) {
-      EXPECT_TRUE(quantizer->batches.empty());
+      EXPECT_EQ(expected_pairwise, quantizer->pairwise_calls);
     }
-    EXPECT_EQ(expected_pairwise, quantizer->pairwise_calls);
+    if (filtered == 2) EXPECT_TRUE(quantizer->batches.empty());
   }
   // Reuse one query scratch across changing limits, thresholds and prefilled
   // result heaps. The heap must retain its key and inclusive threshold
@@ -544,12 +535,12 @@ void CheckBudgetStreamer(size_t dim, size_t count, const char *storage_name,
         ASSERT_TRUE(ReadBudgetSegment(segment, key_offset, &key, sizeof(key)));
         excluded.push_back(key);
         if (block_number == 2) {
-          // Invalid keys in clean blocks are still calculated, then skipped.
+          // Invalid keys are excluded before distance calculation.
           const uint64_t invalid = kInvalidKey;
           ASSERT_EQ(sizeof(invalid),
                     segment->write(key_offset, &invalid, sizeof(invalid)));
         } else {
-          // Flush the preceding clean blocks before the original dirty path.
+          // A dirty block must exclude deleted rows from the same scratch path.
           DeletionMap deleted;
           deleted.set(0);
           ASSERT_EQ(sizeof(deleted),
@@ -568,9 +559,9 @@ void CheckBudgetStreamer(size_t dim, size_t count, const char *storage_name,
     quantizer->pairwise_calls = 0;
     ASSERT_EQ(0, streamer->search_bf_impl(query.data(), qmeta, 1, context));
     check_results(0);
-    // The dirty block keeps its original 31 pairwise calls; clean blocks
-    // may also use pairwise calls when the byte budget admits only one row.
-    EXPECT_GE(quantizer->pairwise_calls, 31u);
+    size_t calculated = quantizer->pairwise_calls;
+    for (int n : quantizer->batches) calculated += n;
+    EXPECT_EQ(count - excluded.size(), calculated);
   }
   ASSERT_EQ(0, streamer->close());
   ASSERT_EQ(0, storage->close());
@@ -578,7 +569,7 @@ void CheckBudgetStreamer(size_t dim, size_t count, const char *storage_name,
 }  // namespace
 
 TEST(FlatQuantizerDistance,
-     ByteBudgetGroupsStableBlocksAndPreservesFilteredPaths) {
+     ScratchBatchesOnlyValidRowsAndPreservesStorageLifetimes) {
   for (const char *storage : {"MMapFileStorage", "BufferStorage"}) {
     for (bool contiguous : {false, true}) {
       CheckBudgetStreamer(256, 1073, storage, contiguous);
