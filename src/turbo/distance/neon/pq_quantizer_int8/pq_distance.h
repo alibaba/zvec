@@ -38,4 +38,10 @@ void pq_adc_int8_batch_distance_neon(const void **candidates, const void *lut,
                                      size_t num, size_t num_chunk, float *out,
                                      const void **extra_values);
 
+// Batch SDC: four candidate codes share query decoding and table offsets.
+void pq_sdc_int8_batch_distance_neon(const void *const *vectors,
+                                     const void *query, const void *dist_table,
+                                     size_t count, size_t num_chunk,
+                                     float *out);
+
 }  // namespace zvec::turbo::neon

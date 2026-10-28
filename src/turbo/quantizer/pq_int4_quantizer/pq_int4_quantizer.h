@@ -259,6 +259,7 @@ class PqInt4Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   //! ISA-dispatched kernel function pointers (ADC / SDC / Batch ADC).
   CodebookAsymmetricDistanceFunc adc_fn_{nullptr};
   CodebookSymmetricDistanceFunc sdc_fn_{nullptr};
+  CodebookBatchSymmetricDistanceFunc batch_sdc_fn_{nullptr};
   CodebookBatchAsymmetricDistanceFunc batch_adc_fn_{nullptr};
 
   //! Metric-aware batch distance function for search-side LUT
