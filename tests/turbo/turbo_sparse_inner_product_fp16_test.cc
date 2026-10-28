@@ -20,12 +20,13 @@
 #include <vector>
 #include <ailego/container/bitmap.h>
 #include <ailego/internal/cpu_features.h>
-#include <ailego/math/sparse_distance.h>
 #include <gtest/gtest.h>
+#include <turbo/distance/sparse/sparse_distance.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/ailego/utility/time_helper.h>
 
 using namespace zvec::ailego;
+using zvec::turbo::MinusInnerProductSparseMatrix;
 
 static inline float SparseDistanceCommon(uint32_t count1, uint32_t *index1,
                                          Float16 *value1, uint32_t count2,

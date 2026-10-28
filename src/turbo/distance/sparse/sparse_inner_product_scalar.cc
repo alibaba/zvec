@@ -15,7 +15,7 @@
 #include "sparse_distance.h"
 
 namespace zvec {
-namespace ailego {
+namespace turbo {
 // Sparse
 //--------------------------------------------------
 float ComputeInnerProductSparseInSegmentFp32(uint32_t m_sparse_count,
@@ -25,12 +25,10 @@ float ComputeInnerProductSparseInSegmentFp32(uint32_t m_sparse_count,
                                              const uint16_t *q_sparse_index,
                                              const float *q_sparse_value);
 
-float ComputeInnerProductSparseInSegmentFp16(uint32_t m_sparse_count,
-                                             const uint16_t *m_sparse_index,
-                                             const Float16 *m_sparse_value,
-                                             uint32_t q_sparse_count,
-                                             const uint16_t *q_sparse_index,
-                                             const Float16 *q_sparse_value);
+float ComputeInnerProductSparseInSegmentFp16(
+    uint32_t m_sparse_count, const uint16_t *m_sparse_index,
+    const ailego::Float16 *m_sparse_value, uint32_t q_sparse_count,
+    const uint16_t *q_sparse_index, const ailego::Float16 *q_sparse_value);
 
 template <typename T>
 float ComputeInnerProductSparseInSegment(uint32_t m_sparse_count,
@@ -53,10 +51,10 @@ float ComputeInnerProductSparseInSegment<float>(uint32_t m_sparse_count,
 }
 
 template <>
-float ComputeInnerProductSparseInSegment<Float16>(
+float ComputeInnerProductSparseInSegment<ailego::Float16>(
     uint32_t m_sparse_count, const uint16_t *m_sparse_index,
-    const Float16 *m_sparse_value, uint32_t q_sparse_count,
-    const uint16_t *q_sparse_index, const Float16 *q_sparse_value) {
+    const ailego::Float16 *m_sparse_value, uint32_t q_sparse_count,
+    const uint16_t *q_sparse_index, const ailego::Float16 *q_sparse_value) {
   return ComputeInnerProductSparseInSegmentFp16(m_sparse_count, m_sparse_index,
                                                 m_sparse_value, q_sparse_count,
                                                 q_sparse_index, q_sparse_value);
@@ -146,7 +144,7 @@ float ComputeSegments(const void *m_sparse_data_in,
 
 float MinusInnerProductSparseFp16Scalar(const void *m_sparse_data_in,
                                         const void *q_sparse_data_in) {
-  return ComputeSegments<Float16>(m_sparse_data_in, q_sparse_data_in);
+  return ComputeSegments<ailego::Float16>(m_sparse_data_in, q_sparse_data_in);
 }
 
 float MinusInnerProductSparseFp32Scalar(const void *m_sparse_data_in,
@@ -154,12 +152,10 @@ float MinusInnerProductSparseFp32Scalar(const void *m_sparse_data_in,
   return ComputeSegments<float>(m_sparse_data_in, q_sparse_data_in);
 }
 
-float InnerProductSparseInSegmentFp16Scalar(uint32_t m_sparse_count,
-                                            const uint16_t *m_sparse_index,
-                                            const Float16 *m_sparse_value,
-                                            uint32_t q_sparse_count,
-                                            const uint16_t *q_sparse_index,
-                                            const Float16 *q_sparse_value) {
+float InnerProductSparseInSegmentFp16Scalar(
+    uint32_t m_sparse_count, const uint16_t *m_sparse_index,
+    const ailego::Float16 *m_sparse_value, uint32_t q_sparse_count,
+    const uint16_t *q_sparse_index, const ailego::Float16 *q_sparse_value) {
   float sum = 0.0f;
 
   size_t m_i = 0;
@@ -206,5 +202,5 @@ float InnerProductSparseInSegmentFp32Scalar(uint32_t m_sparse_count,
   return sum;
 }
 
-}  // namespace ailego
+}  // namespace turbo
 }  // namespace zvec

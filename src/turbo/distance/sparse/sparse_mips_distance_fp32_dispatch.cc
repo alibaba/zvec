@@ -15,7 +15,7 @@
 #include "sparse_distance.h"
 
 namespace zvec {
-namespace ailego {
+namespace turbo {
 float ComputeInnerProductSparseInSegmentFp32(
     uint32_t m_count, const uint16_t *m_index, const float *m_value,
     uint32_t q_count, const uint16_t *q_index, const float *q_value);
@@ -31,5 +31,5 @@ float MipsSquaredEuclideanSparseDistanceMatrix<
   return ComputeInnerProductSparseInSegmentFp32(m_count, m_index, m_value,
                                                 q_count, q_index, q_value);
 }
-}  // namespace ailego
+}  // namespace turbo
 }  // namespace zvec

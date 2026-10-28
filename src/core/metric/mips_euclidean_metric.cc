@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <ailego/math/norm2_matrix.h>
-#include <ailego/math/sparse_distance.h>
+#include <turbo/distance/sparse/sparse_distance.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include "metric_params.h"
@@ -187,7 +187,7 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
   MatrixSparseDistance sparse_distance() const override {
     if (injection_ == Injection::kLocalizedSpherical) {
       return [&](const void *m_sparse, const void *q_sparse, float *out) {
-        ailego::MipsSquaredEuclideanSparseDistanceMatrix<float>::Compute(
+        turbo::MipsSquaredEuclideanSparseDistanceMatrix<float>::Compute(
             m_sparse, q_sparse, out);
       };
     }

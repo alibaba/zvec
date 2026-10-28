@@ -15,10 +15,10 @@
 #include "sparse_distance.h"
 
 namespace zvec {
-namespace ailego {
+namespace turbo {
 // Sparse
 //--------------------------------------------------
-#if defined(__SSE4_1__)
+#if defined(ZVEC_TURBO_SPARSE_HAVE_SSE4) || defined(__SSE4_1__)
 float InnerProductSparseInSegmentFp32SSE(uint32_t m_sparse_count,
                                          const uint16_t *m_sparse_index,
                                          const float *m_sparse_value,
@@ -48,8 +48,9 @@ float ComputeInnerProductSparseInSegmentFp32(uint32_t m_sparse_count,
                                              uint32_t q_sparse_count,
                                              const uint16_t *q_sparse_index,
                                              const float *q_sparse_value) {
-#if defined(__SSE4_1__)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.SSE4_1) {
+#if defined(ZVEC_TURBO_SPARSE_HAVE_SSE4) || defined(__SSE4_1__)
+  const auto &flags = ailego::internal::CpuFeatures::static_flags_;
+  if (flags.SSE4_2 && flags.POPCNT) {
     return InnerProductSparseInSegmentFp32SSE(m_sparse_count, m_sparse_index,
                                               m_sparse_value, q_sparse_count,
                                               q_sparse_index, q_sparse_value);
@@ -59,5 +60,5 @@ float ComputeInnerProductSparseInSegmentFp32(uint32_t m_sparse_count,
                                                m_sparse_value, q_sparse_count,
                                                q_sparse_index, q_sparse_value);
 }
-}  // namespace ailego
+}  // namespace turbo
 }  // namespace zvec

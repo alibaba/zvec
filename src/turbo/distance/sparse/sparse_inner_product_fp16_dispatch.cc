@@ -15,58 +15,53 @@
 #include "sparse_distance.h"
 
 namespace zvec {
-namespace ailego {
+namespace turbo {
 // Sparse
 //--------------------------------------------------
-#if defined(__AVX512FP16__)
-float InnerProductSparseInSegmentFp16AVX512FP16(uint32_t m_sparse_count,
-                                                const uint16_t *m_sparse_index,
-                                                const Float16 *m_sparse_value,
-                                                uint32_t q_sparse_count,
-                                                const uint16_t *q_sparse_index,
-                                                const Float16 *q_sparse_value);
-#endif  //__AVX512FP16__
+#if defined(ZVEC_TURBO_SPARSE_HAVE_AVX512FP16) || defined(__AVX512FP16__)
+float InnerProductSparseInSegmentFp16AVX512FP16(
+    uint32_t m_sparse_count, const uint16_t *m_sparse_index,
+    const ailego::Float16 *m_sparse_value, uint32_t q_sparse_count,
+    const uint16_t *q_sparse_index, const ailego::Float16 *q_sparse_value);
+#endif
 
-#if defined(__AVX__)
+#if defined(ZVEC_TURBO_SPARSE_HAVE_AVX) || defined(__AVX__)
 float InnerProductSparseInSegmentFp16AVX(uint32_t m_sparse_count,
                                          const uint16_t *m_sparse_index,
-                                         const Float16 *m_sparse_value,
+                                         const ailego::Float16 *m_sparse_value,
                                          uint32_t q_sparse_count,
                                          const uint16_t *q_sparse_index,
-                                         const Float16 *q_sparse_value);
-#endif  //__AVX__
+                                         const ailego::Float16 *q_sparse_value);
+#endif
 
-float InnerProductSparseInSegmentFp16Scalar(uint32_t m_sparse_count,
-                                            const uint16_t *m_sparse_index,
-                                            const Float16 *m_sparse_value,
-                                            uint32_t q_sparse_count,
-                                            const uint16_t *q_sparse_index,
-                                            const Float16 *q_sparse_value);
+float InnerProductSparseInSegmentFp16Scalar(
+    uint32_t m_sparse_count, const uint16_t *m_sparse_index,
+    const ailego::Float16 *m_sparse_value, uint32_t q_sparse_count,
+    const uint16_t *q_sparse_index, const ailego::Float16 *q_sparse_value);
 
 float MinusInnerProductSparseFp16Scalar(const void *m_sparse_data_in,
                                         const void *q_sparse_data_in);
 
 //! Compute the distance between matrix and query
-void MinusInnerProductSparseMatrix<Float16>::Compute(
+void MinusInnerProductSparseMatrix<ailego::Float16>::Compute(
     const void *m_sparse_data_in, const void *q_sparse_data_in, float *out) {
   *out = MinusInnerProductSparseFp16Scalar(m_sparse_data_in, q_sparse_data_in);
 }
 
-float ComputeInnerProductSparseInSegmentFp16(uint32_t m_sparse_count,
-                                             const uint16_t *m_sparse_index,
-                                             const Float16 *m_sparse_value,
-                                             uint32_t q_sparse_count,
-                                             const uint16_t *q_sparse_index,
-                                             const Float16 *q_sparse_value) {
-#if defined(__AVX512FP16__)
+float ComputeInnerProductSparseInSegmentFp16(
+    uint32_t m_sparse_count, const uint16_t *m_sparse_index,
+    const ailego::Float16 *m_sparse_value, uint32_t q_sparse_count,
+    const uint16_t *q_sparse_index, const ailego::Float16 *q_sparse_value) {
+#if defined(ZVEC_TURBO_SPARSE_HAVE_AVX512FP16) || defined(__AVX512FP16__)
   if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_FP16) {
     return InnerProductSparseInSegmentFp16AVX512FP16(
         m_sparse_count, m_sparse_index, m_sparse_value, q_sparse_count,
         q_sparse_index, q_sparse_value);
   }
 #endif
-#if defined(__AVX__)
-  if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX) {
+#if defined(ZVEC_TURBO_SPARSE_HAVE_AVX) || defined(__AVX__)
+  const auto &flags = ailego::internal::CpuFeatures::static_flags_;
+  if (flags.AVX2 && flags.F16C && flags.SSE4_2 && flags.POPCNT) {
     return InnerProductSparseInSegmentFp16AVX(m_sparse_count, m_sparse_index,
                                               m_sparse_value, q_sparse_count,
                                               q_sparse_index, q_sparse_value);
@@ -77,5 +72,5 @@ float ComputeInnerProductSparseInSegmentFp16(uint32_t m_sparse_count,
                                                q_sparse_index, q_sparse_value);
 }
 
-}  // namespace ailego
+}  // namespace turbo
 }  // namespace zvec
