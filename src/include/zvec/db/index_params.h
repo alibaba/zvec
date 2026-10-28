@@ -660,12 +660,7 @@ class ZVEC_API IVFIndexParams : public VectorIndexParams {
     std::ostringstream oss;
     oss << base_str << ",n_list:" << n_list_ << ",n_iters:" << n_iters_
         << ",enable_rotate:"
-        << (quantizer_param_.enable_rotate() ? "true" : "false")
-        << ",num_chunk:" << quantizer_param_.num_chunk()
-        << ",num_bits:" << quantizer_param_.num_bits()
-        << ",fast_scan:" << quantizer_param_.fast_scan()
-        << ",opq_iter:" << quantizer_param_.opq_iter()
-        << ",opq_pq_iter:" << quantizer_param_.opq_pq_iter() << "}";
+        << (quantizer_param_.enable_rotate() ? "true" : "false") << "}";
     return oss.str();
   }
 
