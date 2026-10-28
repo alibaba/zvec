@@ -3,30 +3,6 @@
 
 This directory contains benchmarking scripts and reproducing steps.
 
-## DiskANN toolset smoke test
-
-From the repository root, build and test the command-line tools on a supported
-desktop platform:
-
-```bash
-cmake -S . -B build -DBUILD_TOOLS=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release --target txt2vecs local_builder local_builder_original recall_original bench_original --parallel 2
-ctest --test-dir build -C Release -R '^diskann_toolset_smoke$' --output-on-failure
-```
-
-The test generates 256 deterministic 16-dimensional vectors with non-contiguous
-keys and runs both builder tools with `DiskAnnBuilder`. It covers FP32 input,
-`HalfFloatConverter`, and a `MaxDocs`/`KeepDocs` selection. Each saved index is
-loaded by `recall_original` with `DiskAnnSearcher` and `MMapFileReadStorage` to
-check eight known self-query IDs, then by `bench_original` for 16 queries. These
-inputs exercise the owned holder fallback used when a tool's input holder has no
-stable-data capability.
-
-No Python, downloaded data, or external plugins are required. Generated data,
-YAML configurations, and command logs are retained in
-`build/tools/core/diskann_toolset_smoke`. The test is registered with CTest when
-DiskANN and the desktop tools are enabled, and is included by `ctest -R diskann`.
-
 ## COHERE experiments
 
 ### Getting COHERE Data
