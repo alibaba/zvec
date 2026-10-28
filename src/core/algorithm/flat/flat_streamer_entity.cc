@@ -15,6 +15,7 @@
 #include "flat_streamer_entity.h"
 #include <cstdint>
 #include <zvec/core/framework/index_error.h>
+#include "utility/batch_distance_budget.h"
 #include "utility/legacy_read_buffer.h"
 #include "flat_utility.h"
 
@@ -30,6 +31,9 @@ int FlatContiguousStreamerEntity::evaluate_distances(
       !heap) {
     return IndexError_InvalidArgument;
   }
+
+  if (quantizer() && !p_keys)
+    batch_size = BatchDistanceRows(quantizer()->meta());
 
   auto &vector_ptrs = scratch->vector_ptrs;
   auto &extra_values = scratch->extra_values;
@@ -365,31 +369,100 @@ int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
 
   BlockLocation block = *bl;
 
-  while (this->is_valid_block(block)) {
-    IndexStorage::MemoryBlock block_header_block;
-    this->get_block_header(block, block_header_block);
-    const BlockHeader *hd =
-        reinterpret_cast<const BlockHeader *>(block_header_block.data());
-    if (ailego_unlikely(hd == nullptr)) {
-      LOG_ERROR("Failed to get block header");
-      return IndexError_ReadData;
+  const size_t block_rows = block_vector_count();
+  const size_t stride = index_meta_.element_size();
+  const size_t rows = quantizer_ && !filter.is_valid() &&
+                              index_meta_.major_order() == IndexMeta::MO_ROW
+                          ? BatchDistanceRows(quantizer_->meta())
+                          : 32;
+  size_t group_blocks = 1;
+  IndexStorage::Segment::Pointer segment;
+  const uint8_t *base = nullptr;
+  auto segment_id = block.segment_id;
+  if (is_valid_block(block) && block_rows != 0 && rows > 32 &&
+      rows / block_rows > 1) {
+    segment = get_segment(segment_id);
+    if (segment && (base = segment->base_data())) {
+      const size_t stored_blocks =
+          std::max(size_t{1}, (vector_count() + block_rows - 1) / block_rows);
+      group_blocks = std::min(rows / block_rows, stored_blocks);
     }
+  }
+  const size_t capacity = group_blocks > 1 ? group_blocks * block_rows : 0;
+  std::vector<const void *> pointers(capacity);
+  std::vector<uint64_t> keys(capacity);
+  std::vector<float> distances(capacity);
+  auto evaluate = [&](size_t &count) {
+    if (count == 0) return;
+    if (count == 1) {
+      distances[0] = quantizer_->calc_distance_dp_query(pointers[0], query);
+    } else {
+      quantizer_->calc_distance_dp_query_batch(
+          pointers.data(), static_cast<int>(count), query, distances.data());
+    }
+    for (size_t i = 0; i < count; ++i)
+      if (keys[i] != kInvalidKey) heap->emplace(keys[i], distances[i]);
+    count = 0;
+  };
 
-    if (hd->vector_count > 0) {
-      *scan_count += hd->vector_count;
-      IndexStorage::MemoryBlock deletion_map_block;
-      this->get_block_deletion_map(block, deletion_map_block);
-      const DeletionMap *deletion_map =
-          reinterpret_cast<const DeletionMap *>(deletion_map_block.data());
-      if (filter.is_valid() || deletion_map->is_dirty()) {
-        this->search_block(query, block, hd, 1.0, filter, deletion_map, heap,
-                           context_stats);
-      } else {
-        *(context_stats->mutable_dist_calced_count()) += hd->vector_count;
-        this->search_block(query, block, hd, 1.0, heap);
+  while (this->is_valid_block(block)) {
+    size_t count = 0;
+    for (size_t b = 0; b < group_blocks && is_valid_block(block); ++b) {
+      IndexStorage::MemoryBlock block_header_block;
+      this->get_block_header(block, block_header_block);
+      const BlockHeader *hd =
+          reinterpret_cast<const BlockHeader *>(block_header_block.data());
+      if (ailego_unlikely(hd == nullptr)) {
+        LOG_ERROR("Failed to get block header");
+        return IndexError_ReadData;
       }
+
+      if (hd->vector_count > 0) {
+        *scan_count += hd->vector_count;
+        IndexStorage::MemoryBlock deletion_map_block;
+        this->get_block_deletion_map(block, deletion_map_block);
+        const DeletionMap *deletion_map =
+            reinterpret_cast<const DeletionMap *>(deletion_map_block.data());
+        if (filter.is_valid() || deletion_map->is_dirty()) {
+          evaluate(count);
+          this->search_block(query, block, hd, 1.0, filter, deletion_map, heap,
+                             context_stats);
+        } else {
+          *(context_stats->mutable_dist_calced_count()) += hd->vector_count;
+          if (group_blocks > 1) {
+            if (block.segment_id != segment_id) {
+              segment_id = block.segment_id;
+              segment = get_segment(segment_id);
+              base = segment ? segment->base_data() : nullptr;
+            }
+            if (base) {
+              const size_t offset = get_block_offset(block.block_index);
+              if (hd->vector_count > block_rows ||
+                  offset > segment->data_size() ||
+                  linear_block_size() > segment->data_size() - offset)
+                return IndexError_ReadData;
+              // Cached segments own these stable mappings. No evictable
+              // read or row copy is retained across physical blocks.
+              const auto *data = base + offset;
+              for (size_t row = 0; row < hd->vector_count; ++row) {
+                pointers[count + row] = data + row * stride;
+                std::memcpy(&keys[count + row],
+                            data + block_rows * stride + row * sizeof(uint64_t),
+                            sizeof(uint64_t));
+              }
+              count += hd->vector_count;
+            } else {
+              evaluate(count);
+              this->search_block(query, block, hd, 1.0, heap);
+            }
+          } else {
+            this->search_block(query, block, hd, 1.0, heap);
+          }
+        }
+      }
+      block = hd->next;
     }
-    block = hd->next;
+    evaluate(count);
   }
   return 0;
 }
@@ -427,7 +500,27 @@ void FlatStreamerEntity::search_block(const void *query,
   IndexStorage::MemoryBlock keys_block;
   this->get_block_keys(bl, keys_block);
   const uint64_t *keys = reinterpret_cast<const uint64_t *>(keys_block.data());
-  row_major_distance(query, vecs, hd->vector_count, distances.data());
+  const size_t rows =
+      quantizer_ && index_meta_.major_order() == IndexMeta::MO_ROW
+          ? BatchDistanceRows(quantizer_->meta())
+          : 32;
+  if (rows < 32) {
+    const void *pointers[32];
+    for (size_t offset = 0; offset < hd->vector_count; offset += rows) {
+      const size_t n = std::min(rows, size_t{hd->vector_count} - offset);
+      for (size_t j = 0; j < n; ++j)
+        pointers[j] = vecs + (offset + j) * index_meta_.element_size();
+      if (n == 1) {
+        distances[offset] =
+            quantizer_->calc_distance_dp_query(pointers[0], query);
+      } else {
+        quantizer_->calc_distance_dp_query_batch(
+            pointers, static_cast<int>(n), query, distances.data() + offset);
+      }
+    }
+  } else {
+    row_major_distance(query, vecs, hd->vector_count, distances.data());
+  }
   for (size_t k = 0; k < hd->vector_count; ++k) {
     if (keys[k] != kInvalidKey) {
       heap->emplace(keys[k], distances[k] * norm_val);

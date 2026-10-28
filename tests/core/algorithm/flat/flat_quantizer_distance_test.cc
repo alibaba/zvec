@@ -11,11 +11,19 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <random>
 #include <gtest/gtest.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/core/framework/index_factory.h>
 #include "flat/flat_distance_matrix.h"
+#include "flat/flat_streamer.h"
 #include "quantizer/distance_quantizer.h"
+#include "quantizer/fp32_quantizer/fp32_quantizer.h"
+#include "tests/test_util.h"
+#include "utility/batch_distance_budget.h"
 
 using namespace zvec;
 using namespace zvec::core;
@@ -278,6 +286,269 @@ TEST(FlatQuantizerDistance, EncodedFp16SearcherMatchesLegacyAndReopens) {
   for (auto order : {IndexMeta::MO_ROW, IndexMeta::MO_COLUMN}) {
     for (const auto *metric : {"SquaredEuclidean", "InnerProduct", "Cosine"}) {
       CheckEncodedSearcher<IndexMeta::DT_FP16, ailego::Float16>(metric, order);
+    }
+  }
+}
+
+namespace {
+class BudgetFp32Quantizer : public turbo::Fp32Quantizer {
+ public:
+  float calc_distance_dp_query(const void *row,
+                               const void *query) const override {
+    ++pairwise_calls;
+    return Fp32Quantizer::calc_distance_dp_query(row, query);
+  }
+  void calc_distance_dp_query_batch(const void *const *rows, int count,
+                                    const void *query,
+                                    float *output) const override {
+    EXPECT_GT(count, 0);
+    EXPECT_LE(static_cast<size_t>(count),
+              std::max(size_t{32}, BatchDistanceRows(meta())));
+    batches.push_back(count);
+    Fp32Quantizer::calc_distance_dp_query_batch(rows, count, query, output);
+  }
+  mutable std::vector<int> batches;
+  mutable size_t pairwise_calls{0};
+};
+
+struct BudgetTestCleanup {
+  explicit BudgetTestCleanup(std::string value)
+      : path(std::move(value)),
+        capacity(ailego::MemoryLimitPool::get_instance().capacity()) {
+    test_util::RemoveTestPath(path);
+  }
+  ~BudgetTestCleanup() {
+    test_util::RemoveTestPath(path);
+    ailego::MemoryLimitPool::get_instance().init(capacity);
+  }
+  std::string path;
+  size_t capacity;
+};
+
+bool ReadBudgetSegment(const IndexStorage::Segment::Pointer &segment,
+                       size_t offset, void *output, size_t bytes) {
+  IndexStorage::MemoryBlock data;
+  if (!segment || segment->read(offset, data, bytes) != bytes || !data.data())
+    return false;
+  std::memcpy(output, data.data(), bytes);
+  return true;
+}
+
+void CheckBudgetStreamer(size_t dim, size_t count, const char *storage_name,
+                         bool contiguous) {
+  SCOPED_TRACE(dim);
+  SCOPED_TRACE(storage_name);
+  SCOPED_TRACE(contiguous);
+  BudgetTestCleanup cleanup("flat_byte_budget_test");
+  // Writable storage also reserves writeback buffers. Reopen below with a
+  // smaller read-only pool to test the query's bounded page lifetime.
+  ailego::MemoryLimitPool::get_instance().init(64 * 1024 * 1024UL);
+  auto storage = IndexFactory::CreateStorage(storage_name);
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(cleanup.path + "/index", true));
+  auto quantizer = std::make_shared<BudgetFp32Quantizer>();
+  IndexMeta raw_meta(IndexMeta::DT_FP32, dim);
+  raw_meta.set_metric("Cosine", 0, ailego::Params());
+  ASSERT_EQ(0, quantizer->init(raw_meta, ailego::Params()));
+  IndexMeta meta = quantizer->meta();
+  meta.set_quantizer("Fp32Quantizer", 0, ailego::Params());
+  EXPECT_EQ(dim * sizeof(float) + sizeof(float), meta.element_size());
+  const size_t rows = BatchDistanceRows(meta);
+  EXPECT_EQ(std::max(size_t{1}, kBatchDistanceBytes / (dim * sizeof(float))),
+            rows);
+  ailego::Params params;
+  params.set(PARAM_FLAT_USE_CONTIGUOUS_MEMORY, contiguous);
+  auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+  ASSERT_NE(nullptr, streamer);
+  ASSERT_EQ(0, streamer->init(meta, params, quantizer));
+  ASSERT_EQ(0, streamer->open(storage));
+  auto context = streamer->create_context();
+  ASSERT_NE(nullptr, context);
+  context->set_topk(count);
+  constexpr uint64_t first_key = uint64_t{1} << 44;
+  std::mt19937 random(20261028);
+  std::uniform_real_distribution<float> uniform(-1, 1);
+  std::vector<float> raw(dim);
+  for (auto &value : raw) value = uniform(random);
+  std::string query;
+  IndexQueryMeta qmeta;
+  ASSERT_EQ(0, quantizer->quantize(raw.data(),
+                                   IndexQueryMeta(IndexMeta::DT_FP32, dim),
+                                   &query, &qmeta));
+  std::vector<std::string> codes(count, std::string(meta.element_size(), '\0'));
+  for (size_t i = 0; i < count; ++i) {
+    for (auto &value : raw) value = uniform(random);
+    quantizer->quantize_data(raw.data(), codes[i].data());
+    ASSERT_EQ(0, streamer->add_impl(first_key + i * 17, codes[i].data(), qmeta,
+                                    context));
+  }
+  ASSERT_EQ(0, streamer->flush(0));
+  auto reopen = [&](bool writable, size_t memory_limit) {
+    context.reset();
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, storage->close());
+    ailego::MemoryLimitPool::get_instance().init(memory_limit);
+    ASSERT_EQ(0, storage->open(cleanup.path + "/index", writable));
+    ASSERT_EQ(0, streamer->open(storage));
+    context = streamer->create_context();
+    ASSERT_NE(nullptr, context);
+    context->set_topk(count);
+  };
+  // Exercise temporary page-backed reads with a small read-only pool.
+  reopen(false, 512 * 1024UL);
+  ASSERT_NE(nullptr, context);
+  auto *flat = dynamic_cast<FlatStreamer<32> *>(streamer.get());
+  ASSERT_NE(nullptr, flat);
+  EXPECT_EQ(32U, flat->entity().block_vector_count());
+  const bool snapshot =
+      dynamic_cast<const FlatContiguousStreamerEntity *>(&flat->entity());
+  std::vector<uint64_t> excluded;
+  auto check_results = [&](int filter_mode) {
+    size_t expected_count = 0;
+    for (size_t i = 0; i < count; ++i) {
+      if (filter_mode == 2 || (filter_mode == 1 && i % 3 == 0) ||
+          std::find(excluded.begin(), excluded.end(), first_key + i * 17) !=
+              excluded.end())
+        continue;
+      ++expected_count;
+    }
+    ASSERT_EQ(expected_count, context->result().size());
+    std::vector<bool> seen(count, false);
+    for (const auto &hit : context->result()) {
+      ASSERT_GE(hit.key(), first_key);
+      const size_t id = (hit.key() - first_key) / 17;
+      ASSERT_LT(id, count);
+      EXPECT_EQ(first_key + id * 17, hit.key());
+      EXPECT_EQ(excluded.end(),
+                std::find(excluded.begin(), excluded.end(), hit.key()));
+      EXPECT_FALSE(seen[id]);
+      seen[id] = true;
+      if (filter_mode == 1) EXPECT_NE(0U, id % 3);
+      const auto *row = reinterpret_cast<const float *>(codes[id].data());
+      const auto *q = reinterpret_cast<const float *>(query.data());
+      double expected = 1;
+      for (size_t d = 0; d < dim; ++d) expected -= double(row[d]) * q[d];
+      EXPECT_NEAR(expected, hit.score(), 2e-6);
+    }
+  };
+  for (int filtered : {0, 1, 2, 0}) {
+    SCOPED_TRACE(filtered);
+    if (filtered == 1) {
+      context->set_filter(
+          [](uint64_t key) { return ((key - first_key) / 17) % 3 == 0; });
+    } else if (filtered == 2) {
+      context->set_filter([](uint64_t) { return true; });
+    } else {
+      context->reset_filter();
+    }
+    quantizer->batches.clear();
+    quantizer->pairwise_calls = 0;
+    ASSERT_EQ(0, streamer->search_bf_impl(query.data(), qmeta, 1, context));
+    check_results(filtered);
+    size_t expected_pairwise =
+        snapshot || !filtered ? 0 : context->result().size();
+    if (!filtered) {
+      std::vector<int> expected;
+      if (snapshot) {
+        for (size_t begin = 0; begin < count; begin += rows)
+          expected.push_back(std::min(rows, count - begin));
+      } else {
+        std::vector<size_t> physical;
+        if (count % 32) physical.push_back(count % 32);
+        physical.insert(physical.end(), count / 32, 32);
+        const bool mapped_group =
+            std::string(storage_name) == "MMapFileStorage" && rows / 32 > 1;
+        const size_t group_blocks = mapped_group ? rows / 32 : 1;
+        const size_t call_rows =
+            mapped_group ? rows : std::min(size_t{32}, rows);
+        for (size_t begin = 0; begin < physical.size(); begin += group_blocks) {
+          size_t n = 0;
+          for (size_t i = begin;
+               i < std::min(physical.size(), begin + group_blocks); ++i)
+            n += physical[i];
+          for (size_t offset = 0; offset < n; offset += call_rows) {
+            const size_t batch = std::min(call_rows, n - offset);
+            if (batch == 1)
+              ++expected_pairwise;
+            else
+              expected.push_back(batch);
+          }
+        }
+      }
+      EXPECT_EQ(expected, quantizer->batches);
+    } else if (!snapshot || filtered == 2) {
+      EXPECT_TRUE(quantizer->batches.empty());
+    }
+    EXPECT_EQ(expected_pairwise, quantizer->pairwise_calls);
+  }
+  if (!snapshot) {
+    reopen(true, 64 * 1024 * 1024UL);
+    ASSERT_NE(nullptr, context);
+    StreamerLinearMeta linear;
+    BlockLocation block;
+    ASSERT_TRUE(ReadBudgetSegment(storage->get(FLAT_LINEAR_META_SEG_ID), 0,
+                                  &linear, sizeof(linear)));
+    ASSERT_TRUE(ReadBudgetSegment(storage->get(FLAT_LINEAR_LIST_HEAD_SEG_ID), 0,
+                                  &block, sizeof(block)));
+    size_t block_number = 0;
+    while (block.segment_id != 0) {
+      auto segment = storage->get(FLAT_SEGMENT_FEATURES_SEG_ID +
+                                  std::to_string(block.segment_id));
+      const size_t start = block.block_index * linear.header.block_size;
+      const size_t header_offset =
+          start + linear.header.block_size - sizeof(BlockHeader);
+      BlockHeader header;
+      ASSERT_TRUE(
+          ReadBudgetSegment(segment, header_offset, &header, sizeof(header)));
+      ++block_number;
+      if (block_number == 2 || block_number == 3) {
+        uint64_t key;
+        const size_t key_offset = start + 32 * meta.element_size();
+        ASSERT_TRUE(ReadBudgetSegment(segment, key_offset, &key, sizeof(key)));
+        excluded.push_back(key);
+        if (block_number == 2) {
+          // Invalid keys in clean blocks are still calculated, then skipped.
+          const uint64_t invalid = kInvalidKey;
+          ASSERT_EQ(sizeof(invalid),
+                    segment->write(key_offset, &invalid, sizeof(invalid)));
+        } else {
+          // Flush the preceding clean blocks before the original dirty path.
+          DeletionMap deleted;
+          deleted.set(0);
+          ASSERT_EQ(sizeof(deleted),
+                    segment->write(header_offset - sizeof(deleted),
+                                   deleted.bitset.data(), sizeof(deleted)));
+          break;
+        }
+      }
+      block = header.next;
+    }
+    ASSERT_EQ(2u, excluded.size());
+    ASSERT_EQ(0, storage->flush());
+    reopen(false, 512 * 1024UL);
+    ASSERT_NE(nullptr, context);
+    quantizer->batches.clear();
+    quantizer->pairwise_calls = 0;
+    ASSERT_EQ(0, streamer->search_bf_impl(query.data(), qmeta, 1, context));
+    check_results(0);
+    // The dirty block keeps its original 31 pairwise calls; clean blocks
+    // may also use pairwise calls when the byte budget admits only one row.
+    EXPECT_GE(quantizer->pairwise_calls, 31u);
+  }
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, storage->close());
+}
+}  // namespace
+
+TEST(FlatQuantizerDistance,
+     ByteBudgetGroupsStableBlocksAndPreservesFilteredPaths) {
+  for (const char *storage : {"MMapFileStorage", "BufferStorage"}) {
+    for (bool contiguous : {false, true}) {
+      CheckBudgetStreamer(256, 1073, storage, contiguous);
+      // Sub-block budgets split within the original read, without retaining
+      // temporary addresses or changing one-row calls to batch calls.
+      CheckBudgetStreamer(8192, 65, storage, contiguous);
     }
   }
 }
