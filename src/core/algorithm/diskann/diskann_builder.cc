@@ -395,6 +395,9 @@ int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer threads) {
       1, std::min<size_t>(build_thread_count_, threads->count())));
   qp.set("thread_count", pq_thread_count);
   qp.set("use_zero_mean", false);
+  // Graph construction uses raw vectors; encoding and ADC search do not need
+  // the num_chunk * 256 * 256 SDC table.
+  qp.set("precompute_sdc", false);
   int ret = quantizer_->init(build_meta_, qp);
   if (ret != 0) {
     LOG_ERROR("PqInt8Quantizer init failed, ret=%d", ret);
