@@ -5495,7 +5495,7 @@ class QuantizedGraphBudgetTest : public testing::TestWithParam<MetricType> {
     index_.close();
     zvec::test_util::RemoveTestFiles(path_ + "*");
   }
-  void Search(uint32_t cap, uint32_t topk,
+  void search(uint32_t cap, uint32_t topk,
               std::function<bool(uint64_t)> excluded) {
     auto param = std::make_shared<HNSWQueryParam>();
     param->topk = topk;
@@ -5517,14 +5517,14 @@ class QuantizedGraphBudgetTest : public testing::TestWithParam<MetricType> {
 };
 
 TEST_P(QuantizedGraphBudgetTest, AllFilteredHonorsExpansionCap) {
-  Search(16, 10, [](uint64_t) { return true; });
+  search(16, 10, [](uint64_t) { return true; });
   EXPECT_TRUE(result_.doc_list_.empty());
   // Filtered nodes do not consume the exact-distance scan budget.
   EXPECT_EQ(0u, index_.comparisons);
 }
 
 TEST_P(QuantizedGraphBudgetTest, FewerThanTopKHonorsExpansionCap) {
-  Search(16, 10, [](uint64_t key) { return key >= 3; });
+  search(16, 10, [](uint64_t key) { return key >= 3; });
   EXPECT_LE(result_.doc_list_.size(), 3u);
   for (const auto &doc : result_.doc_list_) EXPECT_LT(doc.key(), 3u);
 }
@@ -5535,7 +5535,7 @@ TEST_P(QuantizedGraphBudgetTest, SmallCapsOverrideMinimumExpansions) {
       for (bool filtered : {false, true}) {
         SCOPED_TRACE(testing::Message() << "cap=" << cap << " topk=" << topk
                                         << " filtered=" << filtered);
-        Search(cap, topk, [filtered](uint64_t) { return filtered; });
+        search(cap, topk, [filtered](uint64_t) { return filtered; });
         if (filtered) {
           EXPECT_TRUE(result_.doc_list_.empty());
           EXPECT_EQ(0u, index_.comparisons);
