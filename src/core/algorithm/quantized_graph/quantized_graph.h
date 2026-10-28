@@ -67,8 +67,7 @@ class QuantizedGraph {
   // stored_dimension defaults to dimension; larger values preserve auxiliary
   // fields following the coordinates (e.g. cosine storage's original norm).
   QuantizedGraph(size_t dimension, Codec codec, size_t max_neighbors,
-                 size_t stored_dimension, bool cosine, std::string model_path,
-                 std::string model_data = {});
+                 size_t stored_dimension, bool cosine, std::string model_data);
   void clear();
   template <class Graph>
   int prebuild(const Graph &graph, size_t doc_cnt, size_t threads);
@@ -218,7 +217,6 @@ class QuantizedGraph {
   bool build_block(const Graph &entity, NodeId id, const void *center,
                    Block *slot, Scratch &scratch, int &error) const;
 
-  std::string model_path_;
   std::string model_data_;
   size_t dimension_;
   size_t stored_dimension_;
@@ -242,10 +240,8 @@ template <class Codec>
 QuantizedGraph<Codec>::QuantizedGraph(size_t dimension, Codec codec,
                                       size_t max_neighbors,
                                       size_t stored_dimension, bool cosine,
-                                      std::string model_path,
                                       std::string model_data)
-    : model_path_(std::move(model_path)),
-      model_data_(std::move(model_data)),
+    : model_data_(std::move(model_data)),
       dimension_(dimension),
       stored_dimension_(std::max(dimension, stored_dimension)),
       codec_(std::move(codec)) {
@@ -502,9 +498,6 @@ int QuantizedGraph<Codec>::prebuild(const Graph &entity, size_t doc_cnt,
     return IndexError_Mismatch;
   static_assert(sizeof(Block) <= Block::kCenterOffset,
                 "Block header overlaps center");
-  if (model_data_.empty() && !model_path_.empty() &&
-      !ReadQuantizedGraphRouterFile(model_path_.c_str(), model_data_))
-    return IndexError_ReadData;
   center_shift_.assign(dimension_, 0.f);
   if (!model_data_.empty() &&
       !QuantizedGraphIntegerRouter::read_mean_data(
@@ -667,16 +660,6 @@ int QuantizedGraph<Codec>::search(NodeId entry, const Graph &entity,
                      static_cast<const float *>(ctx.query()),
                      center_shift_.data(), dimension_, state.integer_query))
     return IndexError_Mismatch;
-  float route_bucket_scale = std::numeric_limits<float>::quiet_NaN();
-  double query_norm2_double = 0;
-  const float *query_values = static_cast<const float *>(ctx.query());
-  if (cosine_)
-    query_norm2_double = state.integer_query.norm * state.integer_query.norm;
-  else
-    for (size_t d = 0; d < dimension_; ++d)
-      query_norm2_double += double(query_values[d]) * query_values[d];
-  const float query_norm2 = std::nextafter(
-      float(query_norm2_double), std::numeric_limits<float>::infinity());
   auto &expanded = state.expanded;
   expanded.clear();
   const auto &options = ctx.quantized_graph_options();
@@ -696,8 +679,7 @@ int QuantizedGraph<Codec>::search(NodeId entry, const Graph &entity,
   state.refine_best.clear();
   struct StopState {
     std::vector<float> &best;
-    size_t k, stale = 0, expanded = 0;
-    size_t patience = 0;
+    size_t k, expanded = 0;
     float margin = .02f;
     size_t cap = 64;
     void observe(float d, bool eligible) {
@@ -705,17 +687,12 @@ int QuantizedGraph<Codec>::search(NodeId entry, const Graph &entity,
       if (eligible && (best.size() < k || d < best.back())) {
         best.insert(std::lower_bound(best.begin(), best.end(), d), d);
         if (best.size() > k) best.pop_back();
-        stale = 0;
-      } else
-        ++stale;
+      }
     }
     bool stop(float next) const {
-      float calibrated_margin = margin;
       return best.size() == k && expanded >= 10 &&
              (expanded >= cap ||
-              (stale >= patience &&
-               next - best.back() >=
-                   calibrated_margin * std::max(best.back(), 1e-6f)));
+              next - best.back() >= margin * std::max(best.back(), 1e-6f));
     }
   };
   state.best_exact.clear();
@@ -733,17 +710,14 @@ int QuantizedGraph<Codec>::search(NodeId entry, const Graph &entity,
     typename Codec::Query &query;
     const IntegerCenter::Query &integer_query;
     std::vector<NodeId> &expanded;
-    float route_bucket_scale;
     float bucket_width;
     std::vector<std::pair<float, NodeId>> &refine_candidates;
-    float query_norm2;
     Bucket *bucket;
     StopState *stopping;
     const Block *block = nullptr;
     const NodeId *neighbors = nullptr;
     const char *codes = nullptr;
     float exact = 0;
-    float interval_upper = 0;
     float navigation_center = 0;
     int begin(NodeId id) {
       expanded.push_back(id);
@@ -795,10 +769,7 @@ int QuantizedGraph<Codec>::search(NodeId entry, const Graph &entity,
           exact = ctx.distance(raw.data());
         }
       }
-      if (expanded.size() == 1)
-        bucket->set_scale(
-            std::isfinite(route_bucket_scale) ? route_bucket_scale : exact,
-            bucket_width);
+      if (expanded.size() == 1) bucket->set_scale(exact, bucket_width);
       // Heuristic navigation threshold; interval bounds still certify terminal
       // Top-K over expanded nodes, not navigation/global recall.
       stopping->observe(exact, !ctx.excluded(id) && (index.cosine_ || refined));
@@ -835,11 +806,9 @@ int QuantizedGraph<Codec>::search(NodeId entry, const Graph &entity,
          batch_query,
          state.integer_query,
          expanded,
-         route_bucket_scale,
          options.bucket_width > 0 ? options.bucket_width
                                   : (cosine_ ? .016f : .002f),
          state.refine_candidates,
-         query_norm2,
          &beam,
          &stopping};
   struct Frontier {
@@ -897,7 +866,6 @@ int QuantizedGraph<Codec>::search(NodeId entry, const Graph &entity,
   auto &refine = state.refine_candidates;
   auto &best = state.refine_best;
   std::sort(refine.begin(), refine.end());
-  static_assert(4 >= 1 && 4 <= 16);
   for (size_t first = 0; first < refine.size(); first += 4) {
     if (best.size() == ctx.topk() && refine[first].first > best.back()) break;
     if (ctx.reach_scan_limit()) break;

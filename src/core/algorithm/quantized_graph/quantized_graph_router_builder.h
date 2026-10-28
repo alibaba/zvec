@@ -39,6 +39,52 @@ class QuantizedGraphRouterBuilder {
     std::vector<uint32_t> ids;
     std::vector<Vector> vectors;
   };
+  // Read vectors in internal-ID order to preserve deterministic anchors and
+  // full-corpus mean accumulation. The callback returns dimension floats,
+  // valid until its next call, or nullptr for an unreadable/deleted vector.
+  template <class ReadVector>
+  static Data collect(uint64_t docs, size_t dimension, bool cosine,
+                      size_t anchors, ReadVector read_vector) {
+    if (!docs || docs > uint64_t(INT32_MAX) || !dimension ||
+        dimension > QuantizedGraphRouterFormat::kMaxDimension || !anchors ||
+        anchors > kMaxAnchors)
+      throw std::invalid_argument("invalid router sampling shape");
+    Data data;
+    data.docs = docs;
+    data.cosine = cosine;
+    data.mean.resize(dimension);
+    anchors = std::min(anchors, size_t(docs));
+    data.ids.resize(anchors);
+    data.vectors.assign(anchors, Vector(dimension));
+    // Preserve the historical Cohere sequence; a coprime stride keeps IDs
+    // unique for other corpus sizes too.
+    uint64_t stride = 2654435761ULL;
+    while (std::gcd(stride, docs) != 1) ++stride;
+    std::vector<int32_t> selected(docs, -1);
+    for (size_t i = 0; i < anchors; ++i) {
+      const uint32_t id = (uint64_t(i) * stride + 7193) % docs;
+      data.ids[i] = id;
+      selected[id] = i;
+    }
+    std::vector<double> sum(dimension);
+    for (uint32_t id = 0; id < docs; ++id) {
+      const float *v = read_vector(id);
+      if (!v) throw std::domain_error("unreadable router training vector");
+      double norm = 0;
+      for (size_t d = 0; d < dimension; ++d) {
+        if (!std::isfinite(v[d]))
+          throw std::domain_error("nonfinite router training vector");
+        sum[d] += v[d];
+        norm += double(v[d]) * v[d];
+      }
+      if (cosine && std::abs(std::sqrt(norm) - 1.) > 1e-4)
+        throw std::domain_error("router training vectors must be normalized");
+      if (selected[id] >= 0)
+        std::copy_n(v, dimension, data.vectors[selected[id]].begin());
+    }
+    for (size_t d = 0; d < dimension; ++d) data.mean[d] = float(sum[d] / docs);
+    return data;
+  }
   struct Options {
     uint64_t seed = 202610261259ULL;
     size_t iterations = 10;

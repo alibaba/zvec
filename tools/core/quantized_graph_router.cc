@@ -9,7 +9,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <numeric>
 #include <string>
 #include <zvec/core/interface/index.h>
 #include "algorithm/hnsw/hnsw_context.h"
@@ -113,43 +112,13 @@ Builder::Data read_snapshot(const std::string &path, size_t count,
   check(index.open(path, storage) == 0,
         "snapshot does not match the requested inline FP32 metric/dimension");
   index.prepare_reader();
-  Builder::Data data;
-  const uint64_t docs = index.get_doc_count();
-  check(docs > 0 && docs <= uint64_t(INT32_MAX), "unsupported document count");
-  data.docs = docs;
-  data.cosine = cosine;
-  data.mean.resize(dimension);
-  count = std::min(count, size_t(docs));
-  data.ids.resize(count);
-  data.vectors.assign(count, Builder::Vector(dimension));
-  // Preserve the historical Cohere sampling sequence. Make the stride
-  // coprime for other corpus sizes so anchors are always unique.
-  uint64_t stride = 2654435761ULL;
-  while (std::gcd(stride, docs) != 1) ++stride;
-  std::vector<int32_t> selected(docs, -1);
-  for (size_t i = 0; i < count; ++i) {
-    const uint32_t id = (uint64_t(i) * stride + 7193) % docs;
-    data.ids[i] = id;
-    selected[id] = i;
-  }
-  std::vector<double> sum(dimension);
-  for (uint32_t id = 0; id < docs; ++id) {
-    zvec::core::IndexStorage::MemoryBlock block;
-    check(index.vector(id, block) == 0 && block.data() != nullptr,
-          "snapshot must contain readable vectors at every internal ID");
-    const auto *v = static_cast<const float *>(block.data());
-    double norm = 0;
-    for (size_t d = 0; d < dimension; ++d) {
-      check(std::isfinite(v[d]), "nonfinite snapshot vector");
-      norm += double(v[d]) * v[d];
-      sum[d] += v[d];
-    }
-    check(!cosine || std::abs(std::sqrt(norm) - 1.) <= 1e-4,
-          "snapshot vectors must be normalized and nonzero");
-    if (selected[id] >= 0)
-      std::copy_n(v, dimension, data.vectors[selected[id]].begin());
-  }
-  for (size_t d = 0; d < dimension; ++d) data.mean[d] = float(sum[d] / docs);
+  zvec::core::IndexStorage::MemoryBlock block;
+  auto data = Builder::collect(
+      index.get_doc_count(), dimension, cosine, count, [&](uint32_t id) {
+        if (index.vector(id, block) != 0)
+          return static_cast<const float *>(nullptr);
+        return static_cast<const float *>(block.data());
+      });
   check(index.close() == 0, "closing snapshot failed");
   return data;
 }

@@ -26,16 +26,13 @@ class HnswContext;
 class HnswQuantizedGraph {
  public:
   HnswQuantizedGraph(size_t dimension, size_t max_neighbors, bool cosine,
-                     size_t stored_dimension, const std::string &model_path,
-                     const std::string &model_data = {});
+                     size_t stored_dimension, const std::string &model_data);
   static bool supported();
   static int train_router(const HnswEntity &entity, size_t dimension,
                           bool cosine, size_t anchors, size_t projected,
                           uint64_t seed, std::string &data);
   ~HnswQuantizedGraph();
   int search(uint32_t entry, HnswContext &ctx) const;
-  int search(uint32_t entry, HnswContext &ctx, size_t doc_cnt) const;
-  void clear();
   int prebuild(const HnswEntity &entity, size_t doc_cnt, size_t threads);
   uint32_t entry() const;
 

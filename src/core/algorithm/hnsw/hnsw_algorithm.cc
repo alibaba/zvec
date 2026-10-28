@@ -82,7 +82,7 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
   if (quantized_graph_ && !ctx->group_by_search()) {
     const node_id_t qg_entry = quantized_graph_->entry();
     if (qg_entry == kInvalidNodeId) return IndexError_Mismatch;
-    return quantized_graph_->search(qg_entry, *ctx, entity_.doc_cnt());
+    return quantized_graph_->search(qg_entry, *ctx);
   }
 
   dist_t dist = ctx->dist_calculator().dist(entry_point);

@@ -26,8 +26,7 @@ namespace zvec::core {
 struct HnswQuantizedGraph::Impl {
   virtual ~Impl() = default;
   virtual int prebuild(const HnswEntity &, size_t, size_t) = 0;
-  virtual int search(uint32_t, HnswContext &, size_t) const = 0;
-  virtual void clear() = 0;
+  virtual int search(uint32_t, HnswContext &) const = 0;
   virtual uint32_t entry() const = 0;
 };
 
@@ -83,21 +82,16 @@ struct HnswQueryAdapter {
 template <class Codec>
 struct HnswQuantizedGraph::Model final : Impl {
   Model(size_t dimension, size_t max_neighbors, bool cosine,
-        size_t stored_dimension, const std::string &model_path,
-        const std::string &model_data)
+        size_t stored_dimension, const std::string &model_data)
       : graph(dimension, Codec(dimension, cosine), max_neighbors,
-              stored_dimension, cosine, model_path, model_data) {}
+              stored_dimension, cosine, model_data) {}
   int prebuild(const HnswEntity &entity, size_t count,
                size_t threads) override {
-    int ret = graph.prebuild(HnswGraphAdapter{entity}, count, threads);
-    return ret;
+    return graph.prebuild(HnswGraphAdapter{entity}, count, threads);
   }
-  int search(uint32_t entry_id, HnswContext &ctx, size_t) const override {
+  int search(uint32_t entry_id, HnswContext &ctx) const override {
     HnswQueryAdapter query{ctx};
     return graph.search(entry_id, HnswGraphAdapter{ctx.get_entity()}, query);
-  }
-  void clear() override {
-    graph.clear();
   }
   uint32_t entry() const override {
     return graph.entry();
@@ -119,14 +113,12 @@ bool HnswQuantizedGraph::supported() {
 }
 HnswQuantizedGraph::HnswQuantizedGraph(size_t dimension, size_t max_neighbors,
                                        bool cosine, size_t stored_dimension,
-                                       const std::string &model_path,
                                        const std::string &model_data) {
 #if ZVEC_PROJECTED_QG_SUPPORTED
   if (supported() && dimension > 0 && dimension <= 4096 &&
       max_neighbors == 32) {
-    impl_ = std::make_unique<Model<SymphonyQGCodec>>(dimension, max_neighbors,
-                                                     cosine, stored_dimension,
-                                                     model_path, model_data);
+    impl_ = std::make_unique<Model<SymphonyQGCodec>>(
+        dimension, max_neighbors, cosine, stored_dimension, model_data);
   }
 #endif
 }
@@ -142,41 +134,14 @@ int HnswQuantizedGraph::train_router(const HnswEntity &entity, size_t dimension,
       entity.doc_cnt() > uint32_t(INT32_MAX))
     return IndexError_InvalidArgument;
   try {
-    Builder::Data training;
-    training.docs = entity.doc_cnt();
-    training.cosine = cosine;
-    training.mean.assign(dimension, 0);
-    anchors = std::min(anchors, size_t(training.docs));
-    training.ids.resize(anchors);
-    training.vectors.assign(anchors, Builder::Vector(dimension));
-    uint64_t stride = 2654435761ULL;
-    while (std::gcd(stride, uint64_t(training.docs)) != 1) ++stride;
-    std::vector<int32_t> selected(training.docs, -1);
-    for (size_t i = 0; i < anchors; ++i) {
-      const uint32_t id = (i * stride + 7193) % training.docs;
-      training.ids[i] = id;
-      selected[id] = i;
-    }
-    std::vector<double> sum(dimension);
-    for (uint32_t id = 0; id < training.docs; ++id) {
-      IndexStorage::MemoryBlock block;
-      if (entity.get_key(id) == kInvalidKey ||
-          entity.get_vector(id, block) != 0 || !block.data())
-        return IndexError_Mismatch;
-      const auto *v = static_cast<const float *>(block.data());
-      double norm = 0;
-      for (size_t d = 0; d < dimension; ++d) {
-        if (!std::isfinite(v[d])) return IndexError_Mismatch;
-        sum[d] += v[d];
-        norm += double(v[d]) * v[d];
-      }
-      if (cosine && std::abs(std::sqrt(norm) - 1.) > 1e-4)
-        return IndexError_Mismatch;
-      if (selected[id] >= 0)
-        std::copy_n(v, dimension, training.vectors[selected[id]].begin());
-    }
-    for (size_t d = 0; d < dimension; ++d)
-      training.mean[d] = float(sum[d] / training.docs);
+    IndexStorage::MemoryBlock block;
+    const auto training = Builder::collect(
+        entity.doc_cnt(), dimension, cosine, anchors, [&](uint32_t id) {
+          if (entity.get_key(id) == kInvalidKey ||
+              entity.get_vector(id, block) != 0)
+            return static_cast<const float *>(nullptr);
+          return static_cast<const float *>(block.data());
+        });
     Builder::Options options;
     options.projected = projected;
     options.seed = seed;
@@ -185,6 +150,9 @@ int HnswQuantizedGraph::train_router(const HnswEntity &entity, size_t dimension,
     model.write(out);
     data = out.str();
     return 0;
+  } catch (const std::domain_error &e) {
+    LOG_ERROR("Invalid router training data: %s", e.what());
+    return IndexError_Mismatch;
   } catch (const std::exception &e) {
     LOG_ERROR("Router training failed: %s", e.what());
     return IndexError_Runtime;
@@ -199,14 +167,7 @@ int HnswQuantizedGraph::prebuild(const HnswEntity &entity, size_t count,
                : IndexError_Unsupported;
 }
 int HnswQuantizedGraph::search(uint32_t entry_id, HnswContext &ctx) const {
-  return search(entry_id, ctx, ctx.get_entity().doc_cnt());
-}
-int HnswQuantizedGraph::search(uint32_t entry_id, HnswContext &ctx,
-                               size_t doc_cnt) const {
-  return impl_ ? impl_->search(entry_id, ctx, doc_cnt) : IndexError_Unsupported;
-}
-void HnswQuantizedGraph::clear() {
-  if (impl_) impl_->clear();
+  return impl_ ? impl_->search(entry_id, ctx) : IndexError_Unsupported;
 }
 uint32_t HnswQuantizedGraph::entry() const {
   return impl_ ? impl_->entry() : UINT32_MAX;

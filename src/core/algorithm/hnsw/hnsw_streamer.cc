@@ -654,7 +654,7 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
     const size_t dimension =
         meta_.dimension() - (cosine && !quantizer_ ? 1 : 0);
     quantized_graph_ = std::make_shared<HnswQuantizedGraph>(
-        dimension, 32, cosine, meta_.element_size() / sizeof(float), "",
+        dimension, 32, cosine, meta_.element_size() / sizeof(float),
         quantized_graph_router_data_);
     const auto prebuild_start = std::chrono::steady_clock::now();
     ret = quantized_graph_->prebuild(*entity_, entity_->doc_cnt(), 8);
