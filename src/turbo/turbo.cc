@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <cassert>
+#include <cstdint>
 #include <ailego/internal/cpu_features.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/turbo/turbo.h>
@@ -99,6 +100,10 @@
 #include "scalar/record_quantized_int8/squared_euclidean.h"
 #include "scalar/rotate/fht/fht.h"
 #include "scalar/rotate/opq/opq.h"
+#if defined(ZVEC_HAVE_SME2)
+#include "sme2/fp32/cosine.h"
+#include "sme2/fp32/inner_product.h"
+#endif
 #include "sse2/fp16/distance.h"
 #include "sse2/fp32/distance.h"
 #include "sse2/record_quantized_int4/distance.h"
@@ -173,12 +178,61 @@ static bool CpuSupports(CpuArchType arch) {
 #else
       return false;
 #endif
+    case CpuArchType::kSME2:
+#if defined(ZVEC_HAVE_SME2)
+      return flags.NEON && flags.SME2;
+#else
+      return false;
+#endif
     default:
       return false;
   }
 }
 
 namespace {
+
+#if defined(ZVEC_HAVE_SME2)
+bool UseSme2Fp32Batch(const void *const *vectors, size_t n, size_t dim) {
+  if (n <= 4 || dim < 128) return false;
+  const size_t min_count = dim >= 1024 ? 16 : dim >= 512 ? 32 : 64;
+  if (dim >= 256 && n >= min_count) return true;
+
+  // A regular three-address prefix is only a locality hint. Small scans of
+  // nearby rows favor NEON, while scattered rows can benefit from SME2 at
+  // the same n/dim. Both kernels still use every supplied row pointer.
+  // Unsigned address differences also handle reverse order and duplicates.
+  const auto first = reinterpret_cast<std::uintptr_t>(vectors[0]);
+  const auto second = reinterpret_cast<std::uintptr_t>(vectors[1]);
+  const auto third = reinterpret_cast<std::uintptr_t>(vectors[2]);
+  return second - first != third - second;
+}
+
+void InnerProductFp32Batch(const void *const *vectors, const void *query,
+                           size_t n, size_t dim, float *distances,
+                           const void *const *extra_values) {
+  if (!UseSme2Fp32Batch(vectors, n, dim)) {
+    neon::inner_product_fp32_batch_distance(vectors, query, n, dim, distances,
+                                            extra_values);
+    return;
+  }
+  // Keep the tail in the same streaming region. Switching immediately back
+  // to a NEON tail adds overhead even when only one candidate remains.
+  sme2::inner_product_fp32_batch_distance(vectors, query, n, dim, distances,
+                                          extra_values);
+}
+
+void CosineFp32Batch(const void *const *vectors, const void *query, size_t n,
+                     size_t dim, float *distances,
+                     const void *const *extra_values) {
+  if (!UseSme2Fp32Batch(vectors, n, dim)) {
+    neon::cosine_fp32_batch_distance(vectors, query, n, dim, distances,
+                                     extra_values);
+    return;
+  }
+  sme2::cosine_fp32_batch_distance(vectors, query, n, dim, distances,
+                                   extra_values);
+}
+#endif
 
 // Raw kernel signatures (function pointers, so the registry can be a
 // constexpr-friendly static table; they convert to the std::function-based
@@ -488,7 +542,15 @@ constexpr KernelSet kKernelTable[] = {
      MetricType::kInnerProduct, scalar::inner_product_fp16_distance,
      scalar::inner_product_fp16_batch_distance, nullptr},
 
-    // --- fp32 (AVX512, AVX2, SSE2, NEON, scalar) ---
+// --- fp32 (SME2 batch, AVX512, AVX2, SSE2, NEON, scalar) ---
+#if defined(ZVEC_HAVE_SME2)
+    // Pairwise remains NEON; SME2 shares query loads across many output rows.
+    {QuantizeType::kFp32, DataType::kFp32, CpuArchType::kSME2,
+     MetricType::kInnerProduct, neon::inner_product_fp32_distance,
+     InnerProductFp32Batch, nullptr},
+    {QuantizeType::kFp32, DataType::kFp32, CpuArchType::kSME2,
+     MetricType::kCosine, neon::cosine_fp32_distance, CosineFp32Batch, nullptr},
+#endif
     {QuantizeType::kFp32, DataType::kFp32, CpuArchType::kAVX512,
      MetricType::kSquaredEuclidean,
      avx512::squared_euclidean_fp32_distance_avx512,

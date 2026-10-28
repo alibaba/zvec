@@ -428,6 +428,20 @@ bool CpuFeatures::FP16() {
 #endif
 }
 
+bool CpuFeatures::SME2() {
+#if defined(__aarch64__) && defined(__APPLE__)
+  // Query the OS capability, never infer SME2 from the build host or model.
+  // A missing sysctl (including older macOS) leaves the NEON fallback enabled.
+  int enabled = 0;
+  size_t size = sizeof(enabled);
+  return sysctlbyname("hw.optional.arm.FEAT_SME2", &enabled, &size, nullptr,
+                      0) == 0 &&
+         size == sizeof(enabled) && enabled == 1;
+#else
+  return false;
+#endif
+}
+
 const char *CpuFeatures::Intrinsics() {
   return ""
 #if defined(AILEGO_HAVE_NEON)

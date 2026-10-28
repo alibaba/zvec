@@ -552,3 +552,93 @@ TEST(FlatQuantizerDistance,
     }
   }
 }
+
+namespace {
+void CheckBudgetSearcher(size_t dim, size_t count) {
+  SCOPED_TRACE(dim);
+  BudgetTestCleanup cleanup("flat_static_byte_budget_test");
+  const std::string path = cleanup.path + "/index";
+  IndexMeta meta(IndexMeta::DT_FP32, dim);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+  auto holder = std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(dim);
+  constexpr uint64_t first_key = uint64_t{1} << 45;
+  for (size_t i = 0; i < count; ++i) {
+    ailego::NumericalVector<float> row(dim);
+    std::fill(row.data(), row.data() + dim, 0.0f);
+    row[0] = static_cast<float>(i) * 0.25f;
+    ASSERT_TRUE(holder->emplace(first_key + i * 19, row));
+  }
+  auto builder = IndexFactory::CreateBuilder("FlatBuilder");
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_NE(nullptr, builder);
+  ASSERT_NE(nullptr, dumper);
+  ASSERT_EQ(0, builder->init(meta, ailego::Params()));
+  ASSERT_EQ(0, dumper->create(path));
+  ASSERT_EQ(0, IndexBuilder::TrainBuildAndDump(builder, holder, dumper));
+  ASSERT_EQ(0, dumper->close());
+  const size_t rows = BatchDistanceRows(meta);
+  // Add one physical block after a full budget, or use one physical block
+  // when high-dimensional rows require smaller batches within that read.
+  const size_t read_rows = (rows / 32 + 1) * 32;
+  std::vector<int> expected_batches;
+  for (size_t begin = 0; begin < count; begin += read_rows) {
+    const size_t available = std::min(read_rows, count - begin);
+    for (size_t offset = 0; offset < available; offset += rows)
+      expected_batches.push_back(std::min(rows, available - offset));
+  }
+  for (const char *storage_name :
+       {"MMapFileReadStorage", "FileReadStorage", "BufferReadStorage"}) {
+    SCOPED_TRACE(storage_name);
+    ailego::MemoryLimitPool::get_instance().init(4 * 1024 * 1024UL);
+    auto storage = IndexFactory::CreateStorage(storage_name);
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(ailego::Params()));
+    ASSERT_EQ(0, storage->open(path, false));
+    auto quantizer = std::make_shared<BudgetFp32Quantizer>();
+    ASSERT_EQ(0, quantizer->init(meta, ailego::Params()));
+    auto searcher = IndexFactory::CreateSearcher("FlatSearcher");
+    ASSERT_NE(nullptr, searcher);
+    ailego::Params params;
+    params.set(PARAM_FLAT_READ_BLOCK_SIZE,
+               static_cast<uint32_t>(read_rows * meta.element_size()));
+    ASSERT_EQ(0, searcher->init(params, quantizer));
+    ASSERT_EQ(0, searcher->load(storage, nullptr));
+    auto context = searcher->create_context();
+    ASSERT_NE(nullptr, context);
+    context->set_topk(count);
+    std::vector<float> query(dim, 0.0f);
+    for (bool filtered : {false, true, false}) {
+      if (filtered) {
+        context->set_filter(
+            [](uint64_t key) { return ((key - first_key) / 19) % 2 == 0; });
+      } else {
+        context->reset_filter();
+      }
+      quantizer->batches.clear();
+      ASSERT_EQ(0, searcher->search_impl(
+                       query.data(), IndexQueryMeta(IndexMeta::DT_FP32, dim),
+                       context));
+      EXPECT_EQ(filtered ? std::vector<int>{} : expected_batches,
+                quantizer->batches);
+      ASSERT_EQ(filtered ? count / 2 : count, context->result().size());
+      for (size_t rank = 0; rank < context->result().size(); ++rank) {
+        const size_t id = filtered ? rank * 2 + 1 : rank;
+        const auto &hit = context->result()[rank];
+        EXPECT_EQ(first_key + id * 19, hit.key());
+        EXPECT_EQ(id, hit.index());
+        EXPECT_FLOAT_EQ(static_cast<float>(id * id) * 0.0625f, hit.score());
+      }
+    }
+    context.reset();
+    ASSERT_EQ(0, searcher->cleanup());
+    ASSERT_EQ(0, storage->close());
+  }
+}
+}  // namespace
+
+TEST(FlatQuantizerDistance, ByteBudgetSearcherKeepsReadLocalTails) {
+  CheckBudgetSearcher(256, 1073);
+  CheckBudgetSearcher(256, 65);
+  CheckBudgetSearcher(256, 17);
+  CheckBudgetSearcher(8193, 65);
+}

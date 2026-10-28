@@ -130,7 +130,55 @@ if(NOT IOS AND NOT MSVC AND
     "native kernels: ${ZVEC_TURBO_ARM_FP16_SUPPORTED}")
 endif()
 
+option(ZVEC_TURBO_ENABLE_SME2 "Build runtime-gated Apple SME2 batch kernels" ON)
+set(ZVEC_TURBO_HAVE_SME2 OFF CACHE INTERNAL "Turbo SME2 kernels built" FORCE)
+unset(ZVEC_TURBO_COMPILER_SUPPORTS_SME2 CACHE)
+# Test the target toolchain, not the host CPU. Older SDKs and non-Apple targets
+# retain the NEON/scalar dispatch without a dependency on SME support routines.
+if(ZVEC_TURBO_ENABLE_SME2 AND APPLE AND NOT IOS AND
+   CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND
+   _TURBO_TARGET_ARCH STREQUAL "arm64" AND
+   CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  block(SCOPE_FOR VARIABLES)
+    cmake_reset_check_state()
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE EXECUTABLE)
+    # Apple only supports streaming SVE. armv9-a would allow illegal ordinary
+    # SVE instructions in an otherwise non-streaming function's prologue.
+    set(CMAKE_REQUIRED_FLAGS "-march=armv8.6-a+sme2")
+    check_cxx_source_compiles([=[
+      #include <arm_sme.h>
+      #if !defined(__aarch64__) || defined(__ARM_FEATURE_SVE)
+      #error Requires AArch64 SME2 without non-streaming SVE
+      #endif
+      __arm_locally_streaming __arm_new("za")
+      __attribute__((noinline)) void probe(float *p) {
+        svzero_za();
+        const auto v = svld1_f32_x4(svptrue_c32(), p);
+        svmls_single_za32_f32_vg1x4(0, v, svget4_f32(v, 0));
+        svmls_za32_f32_vg1x4(0, v, v);
+        svadd_za32_f32_vg1x4(0, svread_za32_f32_vg1x4(0));
+        const auto r = svread_za32_f32_vg1x4(0);
+        svst1_f32(svptrue_b32(), p, svget4_f32(r, 0));
+      }
+      int main() { float p[256] = {}; probe(p); return int(p[0]); }
+    ]=] ZVEC_TURBO_COMPILER_SUPPORTS_SME2)
+  endblock()
+  if(ZVEC_TURBO_COMPILER_SUPPORTS_SME2)
+    set(ZVEC_TURBO_HAVE_SME2 ON CACHE INTERNAL "Turbo SME2 kernels built" FORCE)
+  endif()
+endif()
+message(STATUS "turbo: SME2 FP32 batch kernels: ${ZVEC_TURBO_HAVE_SME2}")
+
 file(GLOB_RECURSE ALL_SRCS *.cc *.c *.h)
+file(GLOB_RECURSE SME2_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/sme2/*.cc)
+if(ZVEC_TURBO_HAVE_SME2)
+  # Only the kernel TU gets SME2 instructions. The public dispatcher, callers
+  # and tests must remain runnable on every supported Apple Silicon Mac.
+  set_source_files_properties(${SME2_SRCS} PROPERTIES
+      COMPILE_FLAGS "-march=armv8.6-a+sme2")
+elseif(SME2_SRCS)
+  list(REMOVE_ITEM ALL_SRCS ${SME2_SRCS})
+endif()
 
 # Set per-file compile flags for SIMD sources.
 # set_source_files_properties is directory-scoped, so it must be called in the
@@ -202,6 +250,9 @@ foreach(_isa AVX2 AVX512 VNNI FP16)
     list(APPEND ZVEC_TURBO_DEFS ZVEC_HAVE_${_isa}_KERNEL=1)
   endif()
 endforeach()
+if(ZVEC_TURBO_HAVE_SME2)
+    list(APPEND ZVEC_TURBO_DEFS ZVEC_HAVE_SME2=1)
+endif()
 if(ZVEC_TURBO_ARM_FP16_SUPPORTED)
     list(APPEND ZVEC_TURBO_DEFS ZVEC_HAVE_ARM_FP16_KERNEL=1)
 endif()

@@ -16,6 +16,7 @@
 
 #include <zvec/core/framework/index_document.h>
 #include <zvec/core/framework/index_error.h>
+#include "utility/batch_distance_budget.h"
 #include "flat_index_format.h"
 #include "flat_searcher.h"
 #include "flat_utility.h"
@@ -280,16 +281,28 @@ class FlatSearcherContext : public IndexSearcher::Context {
   //! Enqueue a chunk of contiguous row features into the heap (no filter)
   void enqueue_row_chunk(const void *data, size_t size, const void *query,
                          const IndexQueryMeta &qmeta, size_t *feature_index,
-                         IndexDocumentHeap *heap) {
+                         IndexDocumentHeap *heap, size_t distance_batch_rows,
+                         std::vector<const void *> &pointers,
+                         std::vector<float> &distances) {
     if (quantizer_) {
       size_t count = size / feature_size_;
-      for (size_t i = 0; i < count; i += BATCH_SIZE) {
-        size_t num = std::min<size_t>(count - i, BATCH_SIZE);
-        this->quantized_batch_distance(
-            static_cast<const char *>(data) + i * feature_size_, num, query,
-            scores_);
+      for (size_t i = 0; i < count; i += distance_batch_rows) {
+        size_t num = std::min(count - i, distance_batch_rows);
+        const auto *features =
+            static_cast<const char *>(data) + i * feature_size_;
+        float *output = scores_;
+        if (num <= BATCH_SIZE) {
+          // Retain the original stack-buffer path for small batches.
+          this->quantized_batch_distance(features, num, query, output);
+        } else {
+          for (size_t j = 0; j < num; ++j)
+            pointers[j] = features + j * feature_size_;
+          output = distances.data();
+          quantizer_->calc_distance_dp_query_batch(
+              pointers.data(), static_cast<int>(num), query, output);
+        }
         for (size_t j = 0; j != num; ++j) {
-          heap->emplace(0, scores_[j], (*feature_index)++);
+          heap->emplace(0, output[j], (*feature_index)++);
         }
       }
     } else {
@@ -652,6 +665,20 @@ int FlatSearcherContext<BATCH_SIZE>::search_row_nofilter(
   size_t left_size = features_segment_->data_size();
   size_t read_offset = 0;
   size_t feature_index = 0;
+  const size_t distance_batch_rows =
+      quantizer_ ? BatchDistanceRows(quantizer_->meta()) : BATCH_SIZE;
+  std::vector<const void *> pointers;
+  std::vector<float> distances;
+  if (distance_batch_rows > BATCH_SIZE) {
+    // Only the distance call grows; reads retain their original size/order.
+    const size_t capacity = std::min(
+        distance_batch_rows,
+        std::min(left_size, size_t{actual_read_size_}) / feature_size_);
+    if (capacity > BATCH_SIZE) {
+      pointers.resize(capacity);
+      distances.resize(capacity);
+    }
+  }
 
   while (left_size >= actual_read_size_) {
     IndexStorage::MemoryBlock data;
@@ -663,7 +690,8 @@ int FlatSearcherContext<BATCH_SIZE>::search_row_nofilter(
     }
 
     this->enqueue_row_chunk(data.data(), actual_read_size_, query, qmeta,
-                            &feature_index, heap);
+                            &feature_index, heap, distance_batch_rows, pointers,
+                            distances);
     read_offset += actual_read_size_;
     left_size -= actual_read_size_;
   }
@@ -676,7 +704,7 @@ int FlatSearcherContext<BATCH_SIZE>::search_row_nofilter(
   }
 
   this->enqueue_row_chunk(data.data(), left_size, query, qmeta, &feature_index,
-                          heap);
+                          heap, distance_batch_rows, pointers, distances);
   for (auto &it : heap->mutable_container()) {
     it.set_key(owner_->key(it.index()));
   }

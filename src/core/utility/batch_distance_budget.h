@@ -18,7 +18,7 @@
 
 namespace zvec::core {
 
-constexpr size_t kBatchDistanceBytes = 128u * 1024u;
+constexpr size_t kBatchDistanceBytes = 4096u * 1024u;
 
 // Use the stored vector/code payload. Norms and quantization tails still form
 // part of the row stride, but do not change the distance batch budget.

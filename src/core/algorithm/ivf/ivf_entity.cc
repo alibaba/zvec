@@ -18,6 +18,7 @@
 #include <core/quantizer/quantizer_params.h>
 #include <turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h>
 #include "metric/metric_params.h"
+#include "utility/batch_distance_budget.h"
 #include "ivf_utility.h"
 namespace zvec {
 namespace core {
@@ -972,21 +973,59 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
 
   IndexStorage::MemoryBlock data;
   const size_t block_vecs = header_.block_vector_count;
-  std::vector<float> distances(block_vecs);
-  const size_t batch_size = kBatchBlocks;
   const size_t block_size = header_.block_size;
   const size_t element_size = meta_.element_size();
-  const auto distance = [this, query](const void *features, size_t count,
-                                      float *out) {
-    query_features_distance(query, features, count, out);
-  };
   const bool row_major = meta_.major_order() == IndexMeta::MO_ROW;
+  const bool packed_rows =
+      quantizer_ && row_major && block_size == block_vecs * element_size;
+  const size_t batch_rows = packed_rows ? BatchDistanceRows(meta_) : 32;
+  // Only stable mappings enlarge reads; evictable storage keeps its original
+  // ten-block pin range. Every borrowed row is consumed inside its callback.
+  const size_t read_blocks =
+      packed_rows && inverted_->base_data() != nullptr
+          ? std::max(kBatchBlocks, batch_rows / block_vecs)
+          : kBatchBlocks;
+  const size_t max_read_blocks =
+      std::min(read_blocks, static_cast<size_t>(list_meta->block_count));
+  if (max_read_blocks > std::numeric_limits<size_t>::max() / block_size ||
+      max_read_blocks > std::numeric_limits<size_t>::max() / block_vecs) {
+    return IndexError_ReadData;
+  }
+  const size_t max_read_rows =
+      std::min(max_read_blocks * block_vecs,
+               static_cast<size_t>(list_meta->vector_count));
+  const bool group_rows = batch_rows > 32;
+  std::vector<float> distances(group_rows ? max_read_rows : block_vecs);
+  // Turbo physical blocks contain at most 64 rows. Preserve the existing
+  // stack buffer for callbacks within ten blocks and allocate once above it.
+  constexpr size_t kStackBatchRows = kBatchBlocks * 64;
+  const size_t pointer_capacity = std::min(batch_rows, max_read_rows);
+  std::vector<const void *> large_candidates(
+      pointer_capacity > kStackBatchRows ? pointer_capacity : 0);
+  const auto distance = [this, query, batch_rows, &large_candidates](
+                            const void *features, size_t count, float *out) {
+    if (batch_rows == 32) {
+      query_features_distance(query, features, count, out);
+      return;
+    }
+    const void *stack_candidates[kStackBatchRows];
+    const void **candidates = std::min(batch_rows, count) > kStackBatchRows
+                                  ? large_candidates.data()
+                                  : stack_candidates;
+    const auto *rows = static_cast<const uint8_t *>(features);
+    for (size_t offset = 0; offset < count; offset += batch_rows) {
+      const size_t n = std::min(batch_rows, count - offset);
+      for (size_t j = 0; j < n; ++j)
+        candidates[j] = rows + (offset + j) * meta_.element_size();
+      query_distance_.batch(candidates, n, out + offset);
+    }
+  };
   if (row_major) {
     scatter_vector_.resize(element_size);
   }
   const auto norm_val = this->inverted_list_normalize_value(inverted_list_id);
-  for (size_t i = 0; i < list_meta->block_count; i += batch_size) {
-    const size_t blocks = std::min(batch_size, list_meta->block_count - i);
+  for (size_t i = 0; i < list_meta->block_count; i += read_blocks) {
+    const size_t blocks = std::min(read_blocks, list_meta->block_count - i);
     //! Read keys
     size_t items = std::min(blocks * block_vecs,
                             list_meta->vector_count - (i * block_vecs));
@@ -1014,10 +1053,13 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
     }
     ScatterCursor scatter_cursor(scatter_data);
 
-    //! Compute distances for each block
-    for (size_t b = 0; b < blocks; ++b) {
+    // Without block padding the same cursor can consume the entire read as
+    // logical rows; resident spans and split-row scratch still stay separate.
+    for (size_t b = 0; b < (group_rows ? 1 : blocks); ++b) {
       const size_t vecs_count =
-          std::min(block_vecs, list_meta->vector_count - (i + b) * block_vecs);
+          group_rows ? items
+                     : std::min(block_vecs,
+                                list_meta->vector_count - (i + b) * block_vecs);
       auto block_keys = keys + b * block_vecs;
       const size_t block_offset = b * block_size;
       if (block_offset > size) {
@@ -1025,7 +1067,8 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
                   size);
         return IndexError_ReadData;
       }
-      const size_t serialized_size = std::min(block_size, size - block_offset);
+      const size_t serialized_size =
+          group_rows ? size : std::min(block_size, size - block_offset);
       if (row_major) {
         if (!calculate_row_major_block(&scatter_cursor, distance, vecs_count,
                                        element_size, serialized_size,

@@ -202,6 +202,9 @@ class CpuFeatures {
   //! ARM half-precision vector arithmetic (FEAT_FP16) support
   static bool FP16();
 
+  //! OS-enabled ARM Scalable Matrix Extension 2 support
+  static bool SME2();
+
   //! Intrinsics of compiling
   static const char *Intrinsics();
 
@@ -392,6 +395,9 @@ class CpuFeatures {
 
     //! ARM half-precision vector arithmetic (FEAT_FP16) support
     bool FP16 = CpuFeatures::FP16();
+
+    //! OS-enabled ARM Scalable Matrix Extension 2 support
+    bool SME2 = CpuFeatures::SME2();
 
     //! Operating system enabled XSAVE/XRSTOR
     bool OSXSAVE = CpuFeatures::OSXSAVE();

@@ -45,7 +45,7 @@ void enable_x86() {
   f.FMA = f.F16C = f.POPCNT = f.BMI1 = f.BMI2 = f.LZCNT = true;
   f.AVX512F = f.AVX512BW = f.AVX512DQ = f.AVX512VL = f.AVX512CD = true;
   f.AVX512_VNNI = true;
-  f.NEON = false;
+  f.NEON = f.SME2 = false;
 }
 
 TEST(TurboKernelDispatch, CompiledAndRuntimeCapabilitiesAreBothRequired) {
@@ -117,7 +117,8 @@ TEST(TurboKernelDispatch, MissingCompilerImpliedFeaturesRejectsAvx) {
 TEST(TurboKernelDispatch, SelectedNativeBackendComputesEveryOutput) {
   for (auto arch :
        {CpuArchType::kAuto, CpuArchType::kScalar, CpuArchType::kSSE2,
-        CpuArchType::kAVX2, CpuArchType::kAVX512, CpuArchType::kNEON}) {
+        CpuArchType::kAVX2, CpuArchType::kAVX512, CpuArchType::kNEON,
+        CpuArchType::kSME2}) {
     const auto kernel = fp32(arch);
     if (!kernel.batch) continue;
     constexpr size_t kDim = 257, kRows = 33;
