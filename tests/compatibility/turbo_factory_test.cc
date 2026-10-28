@@ -1,7 +1,7 @@
 // Copyright 2025-present the zvec project
 // Licensed under the Apache License, Version 2.0.
 #include <turbo/quantizer/quantizer.h>
-int main() {
+int RunCompatibilityTest() {
   using Factory = zvec::ailego::Factory<zvec::turbo::Quantizer>;
   if (Factory::Classes().size() != 7) return 1;
   for (const auto &name : Factory::Classes()) {

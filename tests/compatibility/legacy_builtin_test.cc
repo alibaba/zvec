@@ -4,7 +4,7 @@
 
 bool LegacyBuiltinsAvailable();
 
-int main() {
+int RunCompatibilityTest() {
   // Query from old inline code before any call to a modern lazy loader.
   if (!LegacyBuiltinsAvailable()) return 1;
   // Ordinary references retain both SDK catalogs; no forced archive loading.

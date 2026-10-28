@@ -1038,6 +1038,32 @@ function(cc_binary)
     )
 endfunction()
 
+## Apply the iOS runtime setup to either cc_test or native CMake test targets.
+function(zvec_configure_ios_test TARGET)
+  if(NOT IOS)
+    return()
+  endif()
+  set_target_properties(${TARGET} PROPERTIES
+    MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_INFO_PLIST "${PROJECT_ROOT_DIR}/cmake/iOSBundleInfo.plist.in"
+  )
+  target_sources(${TARGET} PRIVATE "${PROJECT_ROOT_DIR}/tests/ios_test_sandbox.cc")
+  # Arrow's iOS code references Apple frameworks. Keep each framework option
+  # paired when CMake de-duplicates link options.
+  target_link_options(${TARGET} PRIVATE
+    "SHELL:-framework CoreFoundation"
+    "SHELL:-framework CoreGraphics"
+    "SHELL:-framework CoreData"
+    "SHELL:-framework CoreText"
+    "SHELL:-framework Security"
+    "SHELL:-framework Foundation"
+    -Wl,-U,_MallocExtension_ReleaseFreeMemory
+    -Wl,-U,_ProfilerStart
+    -Wl,-U,_ProfilerStop
+    -Wl,-U,_RegisterThriftProtocol
+  )
+endfunction()
+
 ## Build a C/C++ executable test program
 function(cc_test)
   cmake_parse_arguments(
@@ -1058,32 +1084,8 @@ function(cc_test)
     string(REPLACE "-" "_" MACRO_PREFIX "${CC_ARGS_NAME}")
     list(APPEND CC_ARGS_DEFS ${MACRO_PREFIX}_VERSION="${CC_ARGS_VERSION}")
   endif()
-  # iOS: add sandbox helper to redirect CWD to writable directory
-  if(IOS)
-    list(APPEND CC_ARGS_SRCS "${PROJECT_ROOT_DIR}/tests/ios_test_sandbox.cc")
-    # Arrow's iOS code references CoreFoundation symbols; link Apple frameworks
-    list(APPEND CC_ARGS_LDFLAGS
-      -framework CoreFoundation
-      -framework CoreGraphics
-      -framework CoreData
-      -framework CoreText
-      -framework Security
-      -framework Foundation
-      -Wl,-U,_MallocExtension_ReleaseFreeMemory
-      -Wl,-U,_ProfilerStart
-      -Wl,-U,_ProfilerStop
-      -Wl,-U,_RegisterThriftProtocol
-    )
-  endif()
-
   add_executable(${CC_ARGS_NAME} EXCLUDE_FROM_ALL ${CC_ARGS_SRCS})
-
-  # iOS: set bundle properties for simulator/device installation
-  if(IOS)
-    set_target_properties(${CC_ARGS_NAME} PROPERTIES
-      MACOSX_BUNDLE_INFO_PLIST "${PROJECT_ROOT_DIR}/cmake/iOSBundleInfo.plist.in"
-    )
-  endif()
+  zvec_configure_ios_test(${CC_ARGS_NAME})
 
   _cc_target_properties(
       NAME "${CC_ARGS_NAME}"

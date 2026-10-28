@@ -10,7 +10,7 @@ void RegisterBuiltinIndexModules() {
 }
 }  // namespace zvec::core
 
-int main() {
+int RunCompatibilityTest() {
   using zvec::core::IndexFactory;
   using MetricFactory = zvec::ailego::Factory<zvec::core::IndexMetric>;
   if (!MetricFactory::MakeUnique("SquaredEuclidean")) return 1;

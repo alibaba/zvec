@@ -3,7 +3,7 @@
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_metric.h>
-int main() {
+int RunCompatibilityTest() {
   // Query the generic factory before invoking the facade.
   if (!zvec::ailego::Factory<zvec::core::IndexMetric>::Has("SquaredEuclidean"))
     return 1;

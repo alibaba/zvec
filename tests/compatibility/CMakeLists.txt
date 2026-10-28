@@ -17,10 +17,11 @@ endif()
 
 # Keep native CMake link coverage while sharing only test setup.
 function(add_compatibility_test NAME)
-  add_executable(${NAME} EXCLUDE_FROM_ALL ${NAME}.cc)
+  add_executable(${NAME} EXCLUDE_FROM_ALL ${NAME}.cc native_test_main.cc)
+  zvec_configure_ios_test(${NAME})
   target_compile_features(${NAME} PRIVATE cxx_std_17)
   target_include_directories(${NAME} PRIVATE ${PROJECT_ROOT_DIR}/src)
-  target_link_libraries(${NAME} PRIVATE ${ARGN})
+  target_link_libraries(${NAME} PRIVATE ${ARGN} gtest gtest_main)
   add_dependencies(unittest ${NAME})
   add_test(NAME ${NAME} COMMAND ${NAME})
 endfunction()
@@ -58,11 +59,13 @@ zvec_link_static_extension(TARGET prebuilt_extension_test LIBRARY prebuilt_exten
 add_library(prebuilt_extension_interface INTERFACE)
 zvec_link_static_extension(TARGET prebuilt_extension_interface
   LIBRARY prebuilt_extension INITIALIZER RegisterCompatibilityExtension)
-add_executable(conditional_extension_test EXCLUDE_FROM_ALL prebuilt_extension_test.cc)
+add_executable(conditional_extension_test EXCLUDE_FROM_ALL
+  prebuilt_extension_test.cc native_test_main.cc)
+zvec_configure_ios_test(conditional_extension_test)
 target_compile_features(conditional_extension_test PRIVATE cxx_std_17)
 target_include_directories(conditional_extension_test PRIVATE ${PROJECT_ROOT_DIR}/src)
 target_link_libraries(conditional_extension_test PRIVATE zvec_core zvec_turbo
-  zvec_ailego "$<$<BOOL:1>:prebuilt_extension_interface>")
+  zvec_ailego "$<$<BOOL:1>:prebuilt_extension_interface>" gtest gtest_main)
 add_dependencies(unittest conditional_extension_test)
 add_test(NAME conditional_extension_test COMMAND conditional_extension_test)
 
