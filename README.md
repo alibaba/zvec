@@ -13,9 +13,7 @@
   <a href="https://codecov.io/github/alibaba/zvec"><img src="https://codecov.io/github/alibaba/zvec/graph/badge.svg?token=O81CT45B66" alt="Code Coverage"/></a>
   <a href="https://github.com/alibaba/zvec/actions/workflows/01-ci-pipeline.yml"><img src="https://github.com/alibaba/zvec/actions/workflows/01-ci-pipeline.yml/badge.svg?branch=main" alt="Main"/></a>
   <a href="https://github.com/alibaba/zvec/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"/></a>
-  <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/pypi/v/zvec.svg" alt="PyPI Release"/></a>
-  <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/badge/python-3.10%20~%203.14-blue.svg" alt="Python Versions"/></a>
-  <a href="https://www.npmjs.com/package/@zvec/zvec"><img src="https://img.shields.io/npm/v/@zvec/zvec.svg" alt="npm Release"/></a>
+  <a href="https://github.com/alibaba/zvec/releases/latest"><img src="https://img.shields.io/github/v/release/alibaba/zvec?label=release" alt="Latest Release"/></a>
 </p>
 
 <p align="center">
@@ -64,11 +62,16 @@
 
 Zvec offers official SDKs across multiple languages:
 
-- **[Python](https://pypi.org/project/zvec/)**: `pip install zvec` (requires 64-bit Python 3.10–3.14)
-- **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**: `npm install @zvec/zvec`
-- **[Go](https://github.com/zvec-ai/zvec-go)**: High-performance Go bindings.
-- **[Rust](https://crates.io/crates/zvec-rust)**: `cargo add zvec-rust`
-- **[Dart/Flutter](https://pub.dev/packages/zvec)**: `flutter pub add zvec`
+| SDK | Install / Dependency | Source |
+| --- | --- | --- |
+| [Python](https://pypi.org/project/zvec/) | `pip install zvec` | [Source](https://github.com/alibaba/zvec/tree/main/python/zvec) |
+| [Node.js](https://www.npmjs.com/package/@zvec/zvec) | `npm install @zvec/zvec` | [Source](https://github.com/zvec-ai/zvec-node) |
+| [Go](https://pkg.go.dev/github.com/zvec-ai/zvec-go) | [Installation guide](https://github.com/zvec-ai/zvec-go#installation) | [Source](https://github.com/zvec-ai/zvec-go) |
+| [Rust](https://crates.io/crates/zvec-rust) | `cargo add zvec-rust` | [Source](https://github.com/zvec-ai/zvec-rust) |
+| [Java](https://central.sonatype.com/artifact/org.zvec/zvec-java) | `org.zvec:zvec-java` (Maven) | [Source](https://github.com/zvec-ai/zvec-java) |
+| [Dart / Flutter](https://pub.dev/packages/zvec) | `flutter pub add zvec` | [Source](https://github.com/zvec-ai/zvec-dart) |
+
+Python requires 64-bit Python 3.10–3.14; Java requires Java 8+.
 
 Searching code or documents? Try **[zvec-grep](https://github.com/zvec-ai/zvec-grep)** (`zg`) — a local-first search CLI that unifies ripgrep, BM25, and vector search, built for humans and AI agents.
 
