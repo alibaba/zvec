@@ -62,7 +62,9 @@ if(ZVEC_INSTALL_ENGINE_HEADERS)
                 ${ZVEC_INCLUDE_ROOT}/zvec/ailego
                 ${ZVEC_INCLUDE_ROOT}/zvec/turbo
       DESTINATION "${CMAKE_INSTALL_INCDIR}/zvec"
-      FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp"
+      # Same suffixes cc_library(PACKED) used to install, so turning the
+      # switch on yields exactly the header set the SDK shipped before.
+      FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp" PATTERN "*.hxx"
   )
 endif()
 
