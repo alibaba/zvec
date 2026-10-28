@@ -120,6 +120,12 @@ HnswQuantizedGraph::HnswQuantizedGraph(size_t dimension, size_t max_neighbors,
     impl_ = std::make_unique<Model<turbo::SymphonyQGBlockQuantizer>>(
         dimension, max_neighbors, cosine, stored_dimension, model_data);
   }
+#else
+  (void)dimension;
+  (void)max_neighbors;
+  (void)cosine;
+  (void)stored_dimension;
+  (void)model_data;
 #endif
 }
 int HnswQuantizedGraph::train_router(const HnswEntity &entity, size_t dimension,
@@ -158,6 +164,13 @@ int HnswQuantizedGraph::train_router(const HnswEntity &entity, size_t dimension,
     return IndexError_Runtime;
   }
 #else
+  (void)entity;
+  (void)dimension;
+  (void)cosine;
+  (void)anchors;
+  (void)projected;
+  (void)seed;
+  (void)data;
   return IndexError_Unsupported;
 #endif
 }

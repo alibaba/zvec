@@ -789,8 +789,7 @@ int QuantizedGraph<Codec>::search(NodeId entry, const Graph &entity,
     }
     void prepare_batch(size_t) {}
     void stage(NodeId, size_t, size_t) {}
-    int score(size_t offset, const NodeId *ids, size_t count,
-              float *distances) {
+    int score(size_t offset, const NodeId *, size_t, float *distances) {
       float center_score = exact;
       if (index.compressed_center_) center_score = navigation_center;
       index.codec_.scan(
