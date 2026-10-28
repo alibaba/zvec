@@ -356,7 +356,7 @@ int FlatStreamerEntity::add(uint64_t key, const void *vec, size_t size) {
 int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
                                uint32_t *scan_count, IndexDocumentHeap *heap,
                                IndexContext::Stats *context_stats,
-                               FlatSearchScratch * /*scratch*/,
+                               FlatSearchScratch *scratch,
                                size_t /*batch_size*/) const {
   IndexStorage::MemoryBlock head_block;
   this->get_head_block(head_block);
@@ -392,6 +392,21 @@ int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
   std::vector<const void *> pointers(capacity);
   std::vector<uint64_t> keys(capacity);
   std::vector<float> distances(capacity);
+  FlatSearchScratch local_scratch;
+  if (!scratch) scratch = &local_scratch;
+  const bool use_topk = quantizer_ &&
+                        index_meta_.major_order() == IndexMeta::MO_ROW &&
+                        heap->limit() < vector_count() && heap->limit() != 0;
+  auto &topk = scratch->batch_topk;
+  if (use_topk) {
+    float bound = heap->threshold();
+    bool strict = false;
+    if (heap->full() && heap->front().score() <= bound) {
+      bound = heap->front().score();
+      strict = true;
+    }
+    topk.reset(std::min(heap->limit(), vector_count()), bound, strict);
+  }
   auto evaluate = [&](size_t &count) {
     if (count == 0) return;
     if (count == 1) {
@@ -400,8 +415,15 @@ int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
       quantizer_->calc_distance_dp_query_batch(
           pointers.data(), static_cast<int>(count), query, distances.data());
     }
-    for (size_t i = 0; i < count; ++i)
-      if (keys[i] != kInvalidKey) heap->emplace(keys[i], distances[i]);
+    if (use_topk) {
+      for (size_t i = 0; i < count; ++i)
+        if (keys[i] == kInvalidKey)
+          distances[i] = std::numeric_limits<float>::quiet_NaN();
+      topk.push_block(distances.data(), keys.data(), count);
+    } else {
+      for (size_t i = 0; i < count; ++i)
+        if (keys[i] != kInvalidKey) heap->emplace(keys[i], distances[i]);
+    }
     count = 0;
   };
 
@@ -426,7 +448,7 @@ int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
         if (filter.is_valid() || deletion_map->is_dirty()) {
           evaluate(count);
           this->search_block(query, block, hd, 1.0, filter, deletion_map, heap,
-                             context_stats);
+                             context_stats, use_topk ? &topk : nullptr);
         } else {
           *(context_stats->mutable_dist_calced_count()) += hd->vector_count;
           if (group_blocks > 1) {
@@ -453,16 +475,23 @@ int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
               count += hd->vector_count;
             } else {
               evaluate(count);
-              this->search_block(query, block, hd, 1.0, heap);
+              this->search_block(query, block, hd, 1.0, heap,
+                                 use_topk ? &topk : nullptr);
             }
           } else {
-            this->search_block(query, block, hd, 1.0, heap);
+            this->search_block(query, block, hd, 1.0, heap,
+                               use_topk ? &topk : nullptr);
           }
         }
       }
       block = hd->next;
     }
     evaluate(count);
+  }
+  if (use_topk) {
+    topk.finish();
+    for (size_t i = 0; i < topk.size(); ++i)
+      heap->emplace(topk.data()[i].id, topk.data()[i].score);
   }
   return 0;
 }
@@ -492,7 +521,8 @@ int FlatStreamerEntity::search_by_p_keys(const void *query,
 void FlatStreamerEntity::search_block(const void *query,
                                       const BlockLocation &bl,
                                       const BlockHeader *hd, float norm_val,
-                                      IndexDocumentHeap *heap) const {
+                                      IndexDocumentHeap *heap,
+                                      BatchTopK *topk) const {
   std::vector<float> distances(block_vector_count());
   IndexStorage::MemoryBlock vecs_block;
   this->get_block_vectors(bl, vecs_block);
@@ -521,6 +551,14 @@ void FlatStreamerEntity::search_block(const void *query,
   } else {
     row_major_distance(query, vecs, hd->vector_count, distances.data());
   }
+  if (topk) {
+    for (size_t k = 0; k < hd->vector_count; ++k)
+      distances[k] = keys[k] == kInvalidKey
+                         ? std::numeric_limits<float>::quiet_NaN()
+                         : distances[k] * norm_val;
+    topk->push_block(distances.data(), keys, hd->vector_count);
+    return;
+  }
   for (size_t k = 0; k < hd->vector_count; ++k) {
     if (keys[k] != kInvalidKey) {
       heap->emplace(keys[k], distances[k] * norm_val);
@@ -532,7 +570,8 @@ void FlatStreamerEntity::search_block(const void *query,
 void FlatStreamerEntity::search_block(
     const void *query, const BlockLocation &bl, const BlockHeader *hd,
     float norm_val, const IndexFilter &filter, const DeletionMap *deletion_map,
-    IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const {
+    IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
+    BatchTopK *topk) const {
   std::vector<float> distances(block_vector_count());
 
   IndexStorage::MemoryBlock vecs_block;
@@ -561,6 +600,18 @@ void FlatStreamerEntity::search_block(
       row_major_distance(query, cur_vec, 1, distances.data() + k);
       ++(*context_stats->mutable_dist_calced_count());
     }
+  }
+  if (topk) {
+    for (size_t k = 0; k < hd->vector_count; ++k) {
+      if (keeps.test(k)) {
+        distances[k] *= norm_val;
+      } else {
+        distances[k] = std::numeric_limits<float>::quiet_NaN();
+        ++(*context_stats->mutable_filtered_count());
+      }
+    }
+    topk->push_block(distances.data(), keys, hd->vector_count);
+    return;
   }
   for (size_t k = 0; k < hd->vector_count; ++k) {
     if (keeps.test(k)) {

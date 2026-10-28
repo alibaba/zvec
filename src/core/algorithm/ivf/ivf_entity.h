@@ -13,14 +13,23 @@
 // limitations under the License.
 #pragma once
 
+#include <vector>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_framework.h>
+#include "utility/batch_topk.h"
 #include "ivf_distance_calculator.h"
 #include "ivf_index_format.h"
 #include "ivf_params.h"
 
 namespace zvec {
 namespace core {
+
+//! Per-context top-k storage; each list merges its retained results into the
+//! existing heap before returning.
+struct IVFSearchScratch {
+  BatchTopK topk;
+  std::vector<uint64_t> posting_ids;
+};
 
 /*! IVF Entity
  */
@@ -53,19 +62,23 @@ class IVFEntity {
   //! search in inverted list with filter
   int search(size_t inverted_list_id, const void *query,
              const IndexFilter &filter, uint32_t *scan_count,
-             IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;
+             IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
+             IVFSearchScratch &scratch) const;
 
   //! search in inverted list without filter
   int search(size_t inverted_list_id, const void *query, uint32_t *scan_count,
-             IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;
+             IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
+             IVFSearchScratch &scratch) const;
 
   //! search all inverted list with filter
   int search(const void *query, const IndexFilter &filter,
-             IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;
+             IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
+             IVFSearchScratch &scratch) const;
 
   //! search all inverted list without filter
   int search(const void *query, IndexDocumentHeap *heap,
-             IndexContext::Stats *context_stats) const;
+             IndexContext::Stats *context_stats,
+             IVFSearchScratch &scratch) const;
 
   //! Search only the specified primary keys, using posting-space distances.
   int search_by_p_keys(const void *query, const std::vector<uint64_t> &p_keys,
@@ -357,6 +370,8 @@ class IVFEntity {
   };
 
  private:
+  int merge_topk_results(BatchTopK &topk, IndexDocumentHeap *heap) const;
+
   //! Load the segment by seg_id in expect_size segment size
   IndexStorage::Segment::Pointer load_segment(const std::string &seg_id,
                                               size_t expect_size) const;

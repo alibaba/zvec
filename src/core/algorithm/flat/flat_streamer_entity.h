@@ -26,6 +26,7 @@
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
+#include "utility/batch_topk.h"
 #include "flat_index_format.h"
 #include "flat_utility.h"
 
@@ -39,6 +40,7 @@ struct FlatSearchScratch {
   std::vector<uint64_t> vector_keys{};
   std::vector<float> distances{};
   std::vector<uint8_t> query_buffer{};
+  BatchTopK batch_topk;
 };
 
 /*! Flat Streamer Entity
@@ -95,14 +97,14 @@ class FlatStreamerEntity {
   //! Search in a block
   void search_block(const void *query, const BlockLocation &bl,
                     const BlockHeader *hd, float norm_val,
-                    IndexDocumentHeap *heap) const;
+                    IndexDocumentHeap *heap, BatchTopK *topk = nullptr) const;
 
   //! Search in a block with filter
   void search_block(const void *query, const BlockLocation &bl,
                     const BlockHeader *hd, float norm_val,
                     const IndexFilter &filter, const DeletionMap *deletion_map,
-                    IndexDocumentHeap *heap,
-                    IndexContext::Stats *context_stats) const;
+                    IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
+                    BatchTopK *topk = nullptr) const;
 
   //! Flat Search with filter
   int search_bf(const void *query, const IndexFilter &filter,

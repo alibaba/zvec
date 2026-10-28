@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
@@ -482,6 +483,41 @@ void CheckBudgetStreamer(size_t dim, size_t count, const char *storage_name,
     }
     EXPECT_EQ(expected_pairwise, quantizer->pairwise_calls);
   }
+  // Reuse one query scratch across changing limits, thresholds and prefilled
+  // result heaps. The heap must retain its key and inclusive threshold
+  // contract.
+  if (!snapshot) {
+    const auto all = context->result();
+    FlatSearchScratch scratch;
+    for (size_t limit : {size_t{7}, size_t{129}, size_t{7}}) {
+      for (bool bounded : {false, true}) {
+        const float threshold = bounded ? all[all.size() / 2].score()
+                                        : std::numeric_limits<float>::max();
+        IndexDocumentHeap expected(limit, threshold);
+        IndexDocumentHeap actual(limit, threshold);
+        for (size_t i = 0; i < limit; ++i) {
+          const uint64_t key = first_key - 1 - i;
+          const float score = i == 0 ? -5.0f : 10.0f + float(i) * 0.01f;
+          expected.emplace(key, score);
+          actual.emplace(key, score);
+        }
+        for (const auto &hit : all) expected.emplace(hit.key(), hit.score());
+        uint32_t scanned = 0;
+        IndexContext::Stats stats;
+        ASSERT_EQ(0,
+                  flat->entity().search(query.data(), IndexFilter(), &scanned,
+                                        &actual, &stats, &scratch));
+        EXPECT_EQ(count, scanned);
+        expected.sort();
+        actual.sort();
+        ASSERT_EQ(expected.size(), actual.size());
+        for (size_t i = 0; i < expected.size(); ++i) {
+          EXPECT_EQ(expected[i].key(), actual[i].key());
+          EXPECT_NEAR(expected[i].score(), actual[i].score(), 2e-6);
+        }
+      }
+    }
+  }
   if (!snapshot) {
     reopen(true, 64 * 1024 * 1024UL);
     ASSERT_NE(nullptr, context);
@@ -629,6 +665,31 @@ void CheckBudgetSearcher(size_t dim, size_t count) {
         EXPECT_FLOAT_EQ(static_cast<float>(id * id) * 0.0625f, hit.score());
       }
     }
+    // Exercise selection and query-state reuse separately from the all-row
+    // checks above, including the small input and changing-k fallback.
+    for (size_t limit : {size_t{1}, size_t{7}, size_t{129}, size_t{1}}) {
+      context->set_topk(limit);
+      for (bool bounded : {false, true}) {
+        if (bounded)
+          context->set_threshold(0.5625f);
+        else
+          context->reset_threshold();
+        quantizer->batches.clear();
+        ASSERT_EQ(0, searcher->search_impl(
+                         query.data(), IndexQueryMeta(IndexMeta::DT_FP32, dim),
+                         context));
+        EXPECT_EQ(expected_batches, quantizer->batches);
+        const size_t eligible = bounded ? std::min(count, size_t{4}) : count;
+        ASSERT_EQ(std::min(limit, eligible), context->result().size());
+        for (size_t rank = 0; rank < context->result().size(); ++rank) {
+          const auto &hit = context->result()[rank];
+          EXPECT_EQ(first_key + rank * 19, hit.key());
+          EXPECT_EQ(rank, hit.index());
+          EXPECT_FLOAT_EQ(static_cast<float>(rank * rank) * 0.0625f,
+                          hit.score());
+        }
+      }
+    }
     context.reset();
     ASSERT_EQ(0, searcher->cleanup());
     ASSERT_EQ(0, storage->close());
@@ -637,6 +698,7 @@ void CheckBudgetSearcher(size_t dim, size_t count) {
 }  // namespace
 
 TEST(FlatQuantizerDistance, ByteBudgetSearcherKeepsReadLocalTails) {
+  CheckBudgetSearcher(256, 3);
   CheckBudgetSearcher(256, 1073);
   CheckBudgetSearcher(256, 65);
   CheckBudgetSearcher(256, 17);

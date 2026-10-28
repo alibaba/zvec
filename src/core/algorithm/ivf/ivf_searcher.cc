@@ -207,9 +207,10 @@ int IVFSearcher::search_bf(
       ret = entity->search_by_p_keys(query, (*p_keys)[q], filter, &heap,
                                      &context_stats);
     } else if (!filter.is_valid()) {
-      ret = entity->search(query, &heap, &context_stats);
+      ret = entity->search(query, &heap, &context_stats, ctx->search_scratch());
     } else {
-      ret = entity->search(query, filter, &heap, &context_stats);
+      ret = entity->search(query, filter, &heap, &context_stats,
+                           ctx->search_scratch());
     }
     ivf_check_with_msg(ret, "Failed to search in entity for %s",
                        IndexError::What(ret));
@@ -285,10 +286,11 @@ int IVFSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
       auto cid = centroids[i].key();
       uint32_t scan_count = 0;
       if (!filter.is_valid()) {
-        ret = entity->search(cid, query, &scan_count, &heap, &context_stats);
+        ret = entity->search(cid, query, &scan_count, &heap, &context_stats,
+                             ctx->search_scratch());
       } else {
         ret = entity->search(cid, query, filter, &scan_count, &heap,
-                             &context_stats);
+                             &context_stats, ctx->search_scratch());
       }
       ivf_check_with_msg(ret, "Failed to search in entity for %s",
                          IndexError::What(ret));

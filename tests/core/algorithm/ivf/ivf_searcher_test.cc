@@ -4271,15 +4271,30 @@ class ObservedBudgetIVFEntity : public IVFEntity {
         },
         original.query_storage(), original.dim());
   }
-  size_t resident_span_count(size_t list_id) const {
+  size_t pin_resident_span_count(
+      size_t list_id, std::vector<IndexStorage::MemoryBlock> &pins) const {
     IndexStorage::MemoryBlock meta;
-    const auto *list = inverted_list_meta(list_id, meta);
-    if (!list) return 0;
-    IndexStorage::Segment::ScatterBlock data;
+    const auto *loaded = inverted_list_meta(list_id, meta);
+    if (!loaded) return 0;
+    const InvertedListMeta list = *loaded;
+    meta.reset();
     const size_t bytes = std::min(
-        std::min(size_t{10}, size_t{list->block_count}) * header_.block_size,
-        static_cast<size_t>(header_.inverted_body_size - list->offset));
-    if (inverted_->read_scatter(list->offset, data, bytes) != bytes) return 0;
+        std::min(size_t{10}, size_t{list.block_count}) * header_.block_size,
+        static_cast<size_t>(header_.inverted_body_size - list.offset));
+    // Explicit single-page reads admit and pin this one read group. Keep the
+    // leases through the searches, so multi-span coverage does not depend on
+    // best-effort warmup or subsequent cache eviction.
+    for (size_t off = list.offset; off < list.offset + bytes;) {
+      const size_t available =
+          kVectorPageSize - (inverted_->data_offset() + off) % kVectorPageSize;
+      const size_t size =
+          std::min<size_t>(available, list.offset + bytes - off);
+      pins.emplace_back();
+      if (inverted_->read(off, pins.back(), size) != size) return 0;
+      off += size;
+    }
+    IndexStorage::Segment::ScatterBlock data;
+    if (inverted_->read_scatter(list.offset, data, bytes) != bytes) return 0;
     return data.spans.size();
   }
 
@@ -4380,7 +4395,10 @@ TEST(IVFBatchDistanceBudget, PreservesReadGroupsAndResidentSpanBoundaries) {
       const bool resident_pages =
           std::string(backend.first) == "BufferReadStorage" &&
           backend.second == resident_pool;
-      if (resident_pages) EXPECT_GT(entity.resident_span_count(1), 1u);
+      std::vector<IndexStorage::MemoryBlock> resident_pins;
+      if (resident_pages)
+        EXPECT_GT(entity.pin_resident_span_count(1, resident_pins), 1u);
+      IVFSearchScratch scratch;
       for (bool filtered : {false, true}) {
         SCOPED_TRACE(filtered);
         IndexFilter keep_all;
@@ -4410,17 +4428,21 @@ TEST(IVFBatchDistanceBudget, PreservesReadGroupsAndResidentSpanBoundaries) {
                            vector.data(),
                            IndexQueryMeta(IndexMeta::DT_FP32, test.dim)));
           entity.observe(codes);
-          IndexDocumentHeap heap(17);
+          const size_t heap_limit =
+              query_value == 0.25f ? 17u : std::numeric_limits<size_t>::max();
+          IndexDocumentHeap heap;
+          if (heap_limit != std::numeric_limits<size_t>::max())
+            heap.limit(heap_limit);
           heap.emplace(key_base - 1, -1.0f,
                        std::numeric_limits<uint32_t>::max());
           IndexContext::Stats stats;
           for (size_t list = 0; list < 2; ++list) {
             uint32_t scanned = 0;
-            const int ret = filtered
-                                ? entity.search(list, vector.data(), keep_all,
-                                                &scanned, &heap, &stats)
-                                : entity.search(list, vector.data(), &scanned,
-                                                &heap, &stats);
+            const int ret =
+                filtered ? entity.search(list, vector.data(), keep_all,
+                                         &scanned, &heap, &stats, scratch)
+                         : entity.search(list, vector.data(), &scanned, &heap,
+                                         &stats, scratch);
             ASSERT_EQ(0, ret);
             EXPECT_EQ(list == 0 ? first_count : second_count, scanned);
           }
@@ -4452,7 +4474,7 @@ TEST(IVFBatchDistanceBudget, PreservesReadGroupsAndResidentSpanBoundaries) {
           }
           std::sort(scores.begin(), scores.end());
           heap.sort();
-          ASSERT_EQ(17u, heap.size());
+          ASSERT_EQ(std::min(heap_limit, scores.size()), heap.size());
           EXPECT_EQ(key_base - 1, heap[0].key());
           for (size_t rank = 1; rank < heap.size(); ++rank) {
             EXPECT_EQ(entity.get_key(heap[rank].index()), heap[rank].key());
@@ -4460,6 +4482,20 @@ TEST(IVFBatchDistanceBudget, PreservesReadGroupsAndResidentSpanBoundaries) {
             EXPECT_NEAR(scores[rank], heap[rank].score(),
                         1e-4f * std::max(1.0f, std::abs(scores[rank])));
           }
+          IndexDocumentHeap full(1);
+          full.set_threshold(-1.0f);
+          full.emplace(key_base - 2, -1.0f,
+                       std::numeric_limits<uint32_t>::max());
+          IndexContext::Stats full_stats;
+          ASSERT_EQ(0, entity.bind_query(
+                           vector.data(),
+                           IndexQueryMeta(IndexMeta::DT_FP32, test.dim)));
+          uint32_t full_scanned = 0;
+          ASSERT_EQ(0, entity.search(0, vector.data(), &full_scanned, &full,
+                                     &full_stats, scratch));
+          ASSERT_EQ(1u, full.size());
+          EXPECT_EQ(key_base - 2, full[0].key());
+          EXPECT_EQ(std::numeric_limits<uint32_t>::max(), full[0].index());
         }
       }
     }
@@ -4666,6 +4702,35 @@ class IVFTurboTest : public testing::TestWithParam<TurboCase> {
          {},
          {Key(19), Key(44)}});
     EXPECT_EQ(original_queries, queries_);
+
+    // Contexts keep separate query bindings and reusable distance buffers.
+    // Alternate filters while both workers scan the same read-only storage.
+    auto first = searcher->create_context();
+    auto second = searcher->create_context();
+    ASSERT_NE(nullptr, first);
+    ASSERT_NE(nullptr, second);
+    first->set_topk(kTopK);
+    second->set_topk(kTopK);
+    std::promise<void> start;
+    auto ready = start.get_future().share();
+    const auto run = [&](auto &ctx, size_t q) {
+      ready.wait();
+      for (size_t repeat = 0; repeat < 4; ++repeat) {
+        ctx->set_filter(
+            [repeat](uint64_t key) { return repeat % 2 != 0 && key % 2 == 0; });
+        const int ret =
+            searcher->search_impl(queries_.data() + q * kDimension, qmeta, ctx);
+        if (ret != 0) return ret;
+      }
+      return 0;
+    };
+    auto one = std::async(std::launch::async, [&]() { return run(first, 0); });
+    auto two = std::async(std::launch::async, [&]() { return run(second, 1); });
+    start.set_value();
+    EXPECT_EQ(0, one.get());
+    EXPECT_EQ(0, two.get());
+    check_result(first->result(), queries_.data(), true);
+    check_result(second->result(), queries_.data() + kDimension, true);
   }
 
   void check_decoded_provider(IndexProvider::Pointer provider) const {

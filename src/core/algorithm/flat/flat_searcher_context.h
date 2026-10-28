@@ -17,6 +17,7 @@
 #include <zvec/core/framework/index_document.h>
 #include <zvec/core/framework/index_error.h>
 #include "utility/batch_distance_budget.h"
+#include "utility/batch_topk.h"
 #include "flat_index_format.h"
 #include "flat_searcher.h"
 #include "flat_utility.h"
@@ -283,7 +284,7 @@ class FlatSearcherContext : public IndexSearcher::Context {
                          const IndexQueryMeta &qmeta, size_t *feature_index,
                          IndexDocumentHeap *heap, size_t distance_batch_rows,
                          std::vector<const void *> &pointers,
-                         std::vector<float> &distances) {
+                         std::vector<float> &distances, BatchTopK *batch_topk) {
     if (quantizer_) {
       size_t count = size / feature_size_;
       for (size_t i = 0; i < count; i += distance_batch_rows) {
@@ -301,8 +302,15 @@ class FlatSearcherContext : public IndexSearcher::Context {
           quantizer_->calc_distance_dp_query_batch(
               pointers.data(), static_cast<int>(num), query, output);
         }
-        for (size_t j = 0; j != num; ++j) {
-          heap->emplace(0, output[j], (*feature_index)++);
+        if (batch_topk) {
+          if (row_batch_indices_.size() < num) row_batch_indices_.resize(num);
+          for (size_t j = 0; j < num; ++j)
+            row_batch_indices_[j] = (*feature_index)++;
+          batch_topk->push_block(output, row_batch_indices_.data(), num);
+        } else {
+          for (size_t j = 0; j != num; ++j) {
+            heap->emplace(0, output[j], (*feature_index)++);
+          }
         }
       }
     } else {
@@ -493,6 +501,8 @@ class FlatSearcherContext : public IndexSearcher::Context {
   std::shared_ptr<zvec::turbo::Quantizer> quantizer_{};
   std::vector<IndexDocumentHeap> result_heaps_{1};
   std::string batch_queries_{};
+  BatchTopK row_topk_;
+  std::vector<uint64_t> row_batch_indices_{};
   float scores_[BATCH_SIZE * BATCH_SIZE];
   bool fetch_vector_{false};
 
@@ -661,6 +671,14 @@ int FlatSearcherContext<BATCH_SIZE>::search_row_nofilter(
   heap->clear();
   heap->limit(topk_);
   heap->set_threshold(this->threshold());
+  BatchTopK *batch_topk = nullptr;
+  if (quantizer_ &&
+      heap->limit() < features_segment_->data_size() / feature_size_) {
+    row_topk_.reset(
+        std::min(heap->limit(), features_segment_->data_size() / feature_size_),
+        heap->threshold());
+    batch_topk = &row_topk_;
+  }
 
   size_t left_size = features_segment_->data_size();
   size_t read_offset = 0;
@@ -691,7 +709,7 @@ int FlatSearcherContext<BATCH_SIZE>::search_row_nofilter(
 
     this->enqueue_row_chunk(data.data(), actual_read_size_, query, qmeta,
                             &feature_index, heap, distance_batch_rows, pointers,
-                            distances);
+                            distances, batch_topk);
     read_offset += actual_read_size_;
     left_size -= actual_read_size_;
   }
@@ -704,7 +722,15 @@ int FlatSearcherContext<BATCH_SIZE>::search_row_nofilter(
   }
 
   this->enqueue_row_chunk(data.data(), left_size, query, qmeta, &feature_index,
-                          heap, distance_batch_rows, pointers, distances);
+                          heap, distance_batch_rows, pointers, distances,
+                          batch_topk);
+  if (batch_topk) {
+    batch_topk->finish();
+    for (size_t i = 0; i < batch_topk->size(); ++i) {
+      const auto &candidate = batch_topk->data()[i];
+      heap->emplace(0, candidate.score, static_cast<uint32_t>(candidate.id));
+    }
+  }
   for (auto &it : heap->mutable_container()) {
     it.set_key(owner_->key(it.index()));
   }

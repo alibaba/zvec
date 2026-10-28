@@ -834,10 +834,23 @@ int IVFEntity::load(const IndexStorage::Pointer &container) {
   return 0;
 }
 
+int IVFEntity::merge_topk_results(BatchTopK &topk,
+                                  IndexDocumentHeap *heap) const {
+  topk.finish();
+  for (size_t i = 0; i < topk.size(); ++i) {
+    const auto &candidate = topk.data()[i];
+    const uint64_t key = get_key(candidate.id);
+    if (key == kInvalidKey) return IndexError_ReadData;
+    heap->emplace(key, candidate.score, static_cast<uint32_t>(candidate.id));
+  }
+  return 0;
+}
+
 int IVFEntity::search(size_t inverted_list_id, const void *query,
                       const IndexFilter &filter, uint32_t *scan_count,
                       IndexDocumentHeap *heap,
-                      IndexContext::Stats *context_stats) const {
+                      IndexContext::Stats *context_stats,
+                      IVFSearchScratch &scratch) const {
   if (quantizer_ && !query_distance_.valid()) {
     return IndexError_InvalidArgument;
   }
@@ -847,9 +860,23 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
   auto list_meta = this->inverted_list_meta(inverted_list_id, meta_block);
   ivf_assert(list_meta, IndexError_ReadData);
 
+  const bool use_topk = quantizer_ &&
+                        meta_.major_order() == IndexMeta::MO_ROW &&
+                        heap->limit() < size_t{list_meta->vector_count};
+  if (use_topk) {
+    float bound = heap->threshold();
+    const bool strict =
+        !heap->empty() && heap->full() && heap->front().score() <= bound;
+    if (strict) bound = heap->front().score();
+    scratch.topk.reset(std::min(heap->limit(), size_t{list_meta->vector_count}),
+                       bound, strict);
+  }
+
   IndexStorage::MemoryBlock data;
   const size_t block_vecs = header_.block_vector_count;
   std::vector<float> distances(block_vecs);
+  if (use_topk && scratch.posting_ids.size() < block_vecs)
+    scratch.posting_ids.resize(block_vecs);
   const size_t batch_size = kBatchBlocks;
   const size_t block_size = header_.block_size;
   const size_t element_size = meta_.element_size();
@@ -944,10 +971,19 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
       *(context_stats->mutable_dist_calced_count()) += vecs_count;
 
       uint32_t id_off = list_meta->id_offset + (i + b) * block_vecs;
-      for (size_t k = 0; k < vecs_count; ++k) {
-        if (keeps & (1ULL << k)) {
-          if (block_keys[k] != kInvalidKey) {
-            heap->emplace(block_keys[k], distances[k] * norm_val, id_off + k);
+      if (use_topk) {
+        for (size_t k = 0; k < vecs_count; ++k) {
+          scratch.posting_ids[k] = id_off + k;
+          if (!(keeps & (1ULL << k)) || block_keys[k] == kInvalidKey)
+            distances[k] = std::numeric_limits<float>::quiet_NaN();
+        }
+        scratch.topk.push_block(distances.data(), scratch.posting_ids.data(),
+                                vecs_count);
+      } else {
+        for (size_t k = 0; k < vecs_count; ++k) {
+          if (keeps & (1ULL << k)) {
+            if (block_keys[k] != kInvalidKey)
+              heap->emplace(block_keys[k], distances[k] * norm_val, id_off + k);
           }
         }
       }
@@ -955,13 +991,15 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
   }
 
   *scan_count = list_meta->vector_count;
-  return 0;
+  meta_block.reset();
+  return use_topk ? merge_topk_results(scratch.topk, heap) : 0;
 }
 
 //! search in inverted list without filter
 int IVFEntity::search(size_t inverted_list_id, const void *query,
                       uint32_t *scan_count, IndexDocumentHeap *heap,
-                      IndexContext::Stats *context_stats) const {
+                      IndexContext::Stats *context_stats,
+                      IVFSearchScratch &scratch) const {
   if (quantizer_ && !query_distance_.valid()) {
     return IndexError_InvalidArgument;
   }
@@ -970,6 +1008,18 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
   IndexStorage::MemoryBlock meta_block;
   auto list_meta = inverted_list_meta(inverted_list_id, meta_block);
   ivf_assert(list_meta, IndexError_ReadData);
+
+  const bool use_topk = quantizer_ &&
+                        meta_.major_order() == IndexMeta::MO_ROW &&
+                        heap->limit() < size_t{list_meta->vector_count};
+  if (use_topk) {
+    float bound = heap->threshold();
+    const bool strict =
+        !heap->empty() && heap->full() && heap->front().score() <= bound;
+    if (strict) bound = heap->front().score();
+    scratch.topk.reset(std::min(heap->limit(), size_t{list_meta->vector_count}),
+                       bound, strict);
+  }
 
   IndexStorage::MemoryBlock data;
   const size_t block_vecs = header_.block_vector_count;
@@ -996,6 +1046,8 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
                static_cast<size_t>(list_meta->vector_count));
   const bool group_rows = batch_rows > 32;
   std::vector<float> distances(group_rows ? max_read_rows : block_vecs);
+  if (use_topk && scratch.posting_ids.size() < distances.size())
+    scratch.posting_ids.resize(distances.size());
   // Turbo physical blocks contain at most 64 rows. Preserve the existing
   // stack buffer for callbacks within ten blocks and allocate once above it.
   constexpr size_t kStackBatchRows = kBatchBlocks * 64;
@@ -1084,10 +1136,21 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
         query_features_distance(query, block_data, vecs_count,
                                 distances.data());
       }
-      for (size_t k = 0; k < vecs_count; ++k) {
-        if (block_keys[k] != kInvalidKey) {
-          uint32_t id = list_meta->id_offset + (i + b) * block_vecs + k;
-          heap->emplace(block_keys[k], distances[k] * norm_val, id);
+      if (use_topk) {
+        for (size_t k = 0; k < vecs_count; ++k) {
+          scratch.posting_ids[k] =
+              list_meta->id_offset + (i + b) * block_vecs + k;
+          if (block_keys[k] == kInvalidKey)
+            distances[k] = std::numeric_limits<float>::quiet_NaN();
+        }
+        scratch.topk.push_block(distances.data(), scratch.posting_ids.data(),
+                                vecs_count);
+      } else {
+        for (size_t k = 0; k < vecs_count; ++k) {
+          if (block_keys[k] != kInvalidKey) {
+            uint32_t id = list_meta->id_offset + (i + b) * block_vecs + k;
+            heap->emplace(block_keys[k], distances[k] * norm_val, id);
+          }
         }
       }
       *(context_stats->mutable_dist_calced_count()) += vecs_count;
@@ -1095,16 +1158,19 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
   }
 
   *scan_count = list_meta->vector_count;
-  return 0;
+  meta_block.reset();
+  return use_topk ? merge_topk_results(scratch.topk, heap) : 0;
 }
 
 //! search all inverted list with filter
 int IVFEntity::search(const void *query, const IndexFilter &filter,
                       IndexDocumentHeap *heap,
-                      IndexContext::Stats *context_stats) const {
+                      IndexContext::Stats *context_stats,
+                      IVFSearchScratch &scratch) const {
   for (size_t i = 0; i < header_.inverted_list_count; ++i) {
     uint32_t scan_count;
-    int ret = this->search(i, query, filter, &scan_count, heap, context_stats);
+    int ret = this->search(i, query, filter, &scan_count, heap, context_stats,
+                           scratch);
     if (ret != 0) {
       return ret;
     }
@@ -1115,10 +1181,11 @@ int IVFEntity::search(const void *query, const IndexFilter &filter,
 
 //! search all inverted list without filter
 int IVFEntity::search(const void *query, IndexDocumentHeap *heap,
-                      IndexContext::Stats *context_stats) const {
+                      IndexContext::Stats *context_stats,
+                      IVFSearchScratch &scratch) const {
   for (size_t i = 0; i < header_.inverted_list_count; ++i) {
     uint32_t scan_count;
-    int ret = this->search(i, query, &scan_count, heap, context_stats);
+    int ret = this->search(i, query, &scan_count, heap, context_stats, scratch);
     if (ret != 0) {
       return ret;
     }
