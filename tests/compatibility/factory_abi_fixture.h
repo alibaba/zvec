@@ -25,6 +25,10 @@ struct FactoryABIValue : FactoryABIBase<Order> {
   int value_;
 };
 
+// The legacy client only registers in this category. It must not instantiate
+// Make/produce, so the reentrancy test always exercises the current reader.
+constexpr int kReentrantFactoryOrder = 2;
+
 struct LegacyArgumentState {
   void (*on_copy)(){nullptr};
   void (*on_destroy)(){nullptr};

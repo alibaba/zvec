@@ -11,6 +11,8 @@ namespace {
 template <int Order>
 using CurrentFactory = ailego::Factory<FactoryABIBase<Order>>;
 
+using ReentrantFactory = CurrentFactory<kReentrantFactoryOrder>;
+
 template <int Order>
 struct CurrentAccess : CurrentFactory<Order> {
   static const void *Address() {
@@ -54,8 +56,8 @@ void CheckBothDirections() {
 }
 
 void QueryCurrentFactory() {
-  CurrentFactory<0>::Has("LegacyReentrantArgument");
-  CurrentFactory<0>::Classes();
+  ReentrantFactory::Has("LegacyReentrantArgument");
+  ReentrantFactory::Classes();
 }
 
 }  // namespace
@@ -78,16 +80,18 @@ TEST(FactoryABI, LegacyCallableCanReenterCurrentFactory) {
   const auto copies = state.copies;
   const auto destructions = state.destructions;
 
-  auto result = CurrentFactory<0>::MakeUnique("LegacyReentrantArgument");
+  auto result = ReentrantFactory::MakeUnique("LegacyReentrantArgument");
   ASSERT_NE(nullptr, result);
   EXPECT_EQ(73, result->value());
   EXPECT_GT(state.copies, copies);
   EXPECT_GT(state.destructions, destructions);
 
   // Release the legacy callback while its stack-owned test state is alive.
-  CurrentFactory<0>::Register<FactoryABIValue<0, false>> replacement(
-      "LegacyReentrantArgument", 83);
-  EXPECT_EQ(83, LegacyFactoryCreate(0, "LegacyReentrantArgument"));
+  ReentrantFactory::Register<FactoryABIValue<kReentrantFactoryOrder, false>>
+      replacement("LegacyReentrantArgument", 83);
+  result = ReentrantFactory::MakeUnique("LegacyReentrantArgument");
+  ASSERT_NE(nullptr, result);
+  EXPECT_EQ(83, result->value());
 }
 
 }  // namespace zvec::compatibility

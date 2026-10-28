@@ -3,6 +3,7 @@
 
 // This is the unmodified Factory header from ea60a361. Compile this translation
 // unit separately from factory_abi_test.cc: it represents an existing client.
+#include <utility>
 #include "legacy/include/zvec/ailego/pattern/factory.h"
 #include "factory_abi_fixture.h"
 
@@ -36,7 +37,7 @@ struct LegacyArgument {
   LegacyArgumentState *state;
 };
 
-struct LegacyArgumentValue : FactoryABIBase<0> {
+struct LegacyArgumentValue : FactoryABIBase<kReentrantFactoryOrder> {
   explicit LegacyArgumentValue(const LegacyArgument &) {}
   int value() const override {
     return 73;
@@ -54,12 +55,14 @@ size_t LegacyFactorySize() {
 }
 
 void LegacyFactoryRegister(int order, const char *key, int value) {
+  // MSVC without /Zc:rvalueCast can deduce int{value} as int& here, leaving
+  // the legacy tuple with a reference to this local after registration returns.
   if (order == 0) {
     LegacyFactory<0>::Register<FactoryABIValue<0, true>> registration(
-        key, int{value});
+        key, std::move(value));
   } else {
     LegacyFactory<1>::Register<FactoryABIValue<1, true>> registration(
-        key, int{value});
+        key, std::move(value));
   }
 }
 
@@ -83,8 +86,8 @@ size_t LegacyFactoryClassCount(int order) {
 
 void LegacyFactoryRegisterArgument(const char *key,
                                    LegacyArgumentState *state) {
-  LegacyFactory<0>::Register<LegacyArgumentValue> registration(
-      key, LegacyArgument{state});
+  LegacyFactory<kReentrantFactoryOrder>::Register<LegacyArgumentValue>
+      registration(key, LegacyArgument{state});
 }
 
 }  // namespace zvec::compatibility

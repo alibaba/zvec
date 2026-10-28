@@ -1,12 +1,18 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 
-cc_test(NAME factory_abi_test STRICT
-  SRCS factory_abi_test.cc factory_abi_legacy.cc
-  LIBS gtest gtest_main zvec_ailego)
-# Exercise code compiled from both headers, without LTO merging their bodies.
-set_target_properties(factory_abi_test PROPERTIES INTERPROCEDURAL_OPTIMIZATION FALSE)
-if(NOT MSVC)
-  target_compile_options(factory_abi_test PRIVATE -O2)
+foreach(NAME factory_abi_test factory_abi_noinline_test)
+  cc_test(NAME ${NAME} STRICT
+    SRCS factory_abi_test.cc factory_abi_legacy.cc
+    LIBS gtest gtest_main zvec_ailego)
+  # Compile both header versions separately, without LTO merging their bodies.
+  set_target_properties(${NAME} PROPERTIES INTERPROCEDURAL_OPTIMIZATION FALSE)
+endforeach()
+# ABI checks must also work when old/new inline functions are emitted and the
+# linker can select either body. Do not rely on optimization to isolate them.
+if(MSVC)
+  target_compile_options(factory_abi_noinline_test PRIVATE /Od /Ob0)
+else()
+  target_compile_options(factory_abi_noinline_test PRIVATE -O0 -fno-inline)
 endif()
 
 # Keep native CMake link coverage while sharing only test setup.
@@ -66,7 +72,8 @@ add_compatibility_test(legacy_initializer_test legacy_initializer)
 
 cc_test(NAME quantizer_compatibility_test STRICT SRCS quantizer_compatibility_test.cc
   LIBS zvec_core zvec_turbo zvec_ailego gtest gtest_main INCS ${PROJECT_ROOT_DIR}/src)
-set_tests_properties(factory_abi_test component_factory_test turbo_factory_test
+set_tests_properties(factory_abi_test factory_abi_noinline_test
+  component_factory_test turbo_factory_test
   prebuilt_extension_test legacy_initializer_test quantizer_compatibility_test
   component_registry_test legacy_builtin_test conditional_extension_test
   PROPERTIES TIMEOUT 90)
