@@ -63,15 +63,16 @@ TEST(DiskAnnOwnedHolder, OwnedVectorsSurviveCacheHolderAndIteratorRelease) {
   iter.reset();
   std::vector<std::future<bool>> readers;
   for (int thread = 0; thread < 4; ++thread) {
-    readers.emplace_back(std::async(std::launch::async, [&keys, &pointers]() {
-      for (size_t i = 0; i < pointers.size(); ++i) {
-        auto *data = static_cast<const float *>(pointers[i]);
-        for (size_t d = 0; d < kDimension; ++d) {
-          if (data[d] != static_cast<float>(keys[i])) return false;
-        }
-      }
-      return true;
-    }));
+    readers.emplace_back(std::async(
+        std::launch::async, [&keys, &pointers, dimension = kDimension]() {
+          for (size_t i = 0; i < pointers.size(); ++i) {
+            auto *data = static_cast<const float *>(pointers[i]);
+            for (size_t d = 0; d < dimension; ++d) {
+              if (data[d] != static_cast<float>(keys[i])) return false;
+            }
+          }
+          return true;
+        }));
   }
   for (auto &reader : readers) EXPECT_TRUE(reader.get());
 
