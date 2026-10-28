@@ -691,8 +691,7 @@ int QuantizedGraph<Codec>::search(NodeId entry, const Graph &entity,
     }
     bool stop(float next) const {
       return best.size() == k && expanded >= 10 &&
-             (expanded >= cap ||
-              next - best.back() >= margin * std::max(best.back(), 1e-6f));
+             next - best.back() >= margin * std::max(best.back(), 1e-6f);
     }
   };
   state.best_exact.clear();
@@ -819,6 +818,9 @@ int QuantizedGraph<Codec>::search(NodeId entry, const Graph &entity,
     LocalVisitSet *visited;
     NodeId prefetched = kInvalidNodeId;
     bool has_next() const {
+      // Enforce the hard budget before processing any more frontier entries.
+      // Filtered nodes need not fill best or consume the exact-scan budget.
+      if (stopping->expanded >= stopping->cap) return false;
       while (beam.has_next()) {
         const NodeId next = beam.next_id_at(0);
         if (visited->visited(next)) {

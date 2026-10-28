@@ -254,6 +254,7 @@ struct ZVEC_CORE_API HNSWQueryParam : public BaseIndexQueryParam {
   // Quantized graph controls; defaults retain the metric-specific preset.
   float quantized_graph_margin = -1;
   float quantized_graph_bucket_width = 0;
+  // Hard expansion cap, even with fewer than topk matches; 0: metric default.
   uint32_t quantized_graph_max_expansions = 0;
   uint32_t quantized_graph_route_beam = 1;  // 0 disables entry routing.
   using Pointer = std::shared_ptr<HNSWQueryParam>;

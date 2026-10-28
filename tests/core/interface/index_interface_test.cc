@@ -42,6 +42,7 @@
 #include "algorithm/cluster/cluster_params.h"
 #include "algorithm/hnsw/hnsw_entity.h"
 #include "algorithm/hnsw/hnsw_params.h"
+#include "algorithm/hnsw/hnsw_quantized_graph.h"
 #include "algorithm/hnsw/hnsw_streamer.h"
 #include "algorithm/ivf/ivf_params.h"
 #include "algorithm/vamana/vamana_entity.h"
@@ -5432,3 +5433,125 @@ TEST(IndexInterface, NativeFp16CandidateBatchAroundTwelveIsExact) {
     zvec::test_util::RemoveTestFiles(path);
   }
 }
+
+namespace {
+// Observe the real search before Index::search resets its pooled context.
+class BudgetHnswIndex : public HNSWIndex {
+ public:
+  using HNSWIndex::init;
+  uint32_t expanded = 0;
+  size_t comparisons = 0;
+
+ protected:
+  int _dense_search(const VectorData &query,
+                    const BaseIndexQueryParam::Pointer &param,
+                    SearchResult *result,
+                    zvec::core::IndexContext::Pointer &context) override {
+    context->set_debug_mode(true);
+    // Small fixtures otherwise take the streamer's brute-force shortcut.
+    context->set_bruteforce_threshold(0);
+    const int ret = HNSWIndex::_dense_search(query, param, result, context);
+    auto *ctx = dynamic_cast<zvec::core::HnswContext *>(context.get());
+    if (ctx) {
+      expanded = *ctx->mutable_stats_get_neighbors();
+      comparisons = ctx->get_scan_num();
+    }
+    context->set_debug_mode(false);
+    return ret;
+  }
+};
+
+class QuantizedGraphBudgetTest : public testing::TestWithParam<MetricType> {
+ protected:
+  void SetUp() override {
+    if (!zvec::core::HnswQuantizedGraph::supported())
+      GTEST_SKIP() << "Quantized graph requires AVX512/VNNI";
+    zvec::test_util::RemoveTestFiles(path_ + "*");
+    HNSWIndexParam param(GetParam(), kDimension, 16, 100);
+    param.data_type = DataType::DT_FP32;
+    param.use_id_map = true;
+    BudgetHnswIndex builder;
+    ASSERT_EQ(0, builder.init(param));
+    ASSERT_EQ(0, builder.open(path_, {StorageOptions::StorageType::kMMAP,
+                                      /*create_new=*/true}));
+    std::mt19937 rng(17);
+    std::uniform_real_distribution<float> random(0, 1);
+    std::array<float, kDimension> vector;
+    for (uint32_t id = 0; id < 128; ++id) {
+      for (float &v : vector) v = random(rng);
+      if (id == 0) query_ = vector;
+      ASSERT_EQ(0, builder.add({DenseVector{vector.data()}}, id));
+    }
+    ASSERT_EQ(0, builder.flush());
+    ASSERT_EQ(0, builder.close());
+    param.use_quantized_graph = true;
+    ASSERT_EQ(0, index_.init(param));
+    StorageOptions storage;
+    storage.type = StorageOptions::StorageType::kMMAP;
+    storage.read_only = true;
+    ASSERT_EQ(0, index_.open(path_, storage));
+  }
+  void TearDown() override {
+    index_.close();
+    zvec::test_util::RemoveTestFiles(path_ + "*");
+  }
+  void Search(uint32_t cap, uint32_t topk,
+              std::function<bool(uint64_t)> excluded) {
+    auto param = std::make_shared<HNSWQueryParam>();
+    param->topk = topk;
+    param->ef_search = 800;
+    param->quantized_graph_max_expansions = cap;
+    // Disable distance-based early stopping to exercise the expansion cap.
+    param->quantized_graph_margin = 1e6f;
+    param->filter = std::make_shared<IndexFilter>();
+    param->filter->set(std::move(excluded));
+    result_.doc_list_.clear();
+    ASSERT_EQ(0, index_.search({DenseVector{query_.data()}}, param, &result_));
+    EXPECT_EQ(cap, index_.expanded);
+  }
+  static constexpr size_t kDimension = 64;
+  const std::string path_ = "test_quantized_graph_budget.index";
+  std::array<float, kDimension> query_{};
+  BudgetHnswIndex index_;
+  SearchResult result_;
+};
+
+TEST_P(QuantizedGraphBudgetTest, AllFilteredHonorsExpansionCap) {
+  Search(16, 10, [](uint64_t) { return true; });
+  EXPECT_TRUE(result_.doc_list_.empty());
+  // Filtered nodes do not consume the exact-distance scan budget.
+  EXPECT_EQ(0u, index_.comparisons);
+}
+
+TEST_P(QuantizedGraphBudgetTest, FewerThanTopKHonorsExpansionCap) {
+  Search(16, 10, [](uint64_t key) { return key >= 3; });
+  EXPECT_LE(result_.doc_list_.size(), 3u);
+  for (const auto &doc : result_.doc_list_) EXPECT_LT(doc.key(), 3u);
+}
+
+TEST_P(QuantizedGraphBudgetTest, SmallCapsOverrideMinimumExpansions) {
+  for (uint32_t cap : {1u, 3u, 9u}) {
+    for (uint32_t topk : {1u, 10u}) {
+      for (bool filtered : {false, true}) {
+        SCOPED_TRACE(testing::Message() << "cap=" << cap << " topk=" << topk
+                                        << " filtered=" << filtered);
+        Search(cap, topk, [filtered](uint64_t) { return filtered; });
+        if (filtered) {
+          EXPECT_TRUE(result_.doc_list_.empty());
+          EXPECT_EQ(0u, index_.comparisons);
+        } else {
+          EXPECT_FALSE(result_.doc_list_.empty());
+        }
+      }
+    }
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(CosineAndL2, QuantizedGraphBudgetTest,
+                         testing::Values(MetricType::kCosine,
+                                         MetricType::kL2sq),
+                         [](const testing::TestParamInfo<MetricType> &info) {
+                           return info.param == MetricType::kCosine ? "Cosine"
+                                                                    : "L2";
+                         });
+}  // namespace
