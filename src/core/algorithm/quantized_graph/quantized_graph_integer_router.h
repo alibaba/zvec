@@ -66,17 +66,20 @@ class QuantizedGraphIntegerRouter {
   }
   static bool read_mean(const char *path, size_t docs, std::vector<float> &mean,
                         size_t dimension = 768, bool cosine = true) {
-    if (!path) return false;
-    FILE *f = std::fopen(path, "rb");
-    if (!f) return false;
+    std::string data;
+    return ReadQuantizedGraphRouterFile(path, data) &&
+           read_mean_data(data, docs, mean, dimension, cosine);
+  }
+  static bool read_mean_data(std::string_view data, size_t docs,
+                             std::vector<float> &mean, size_t dimension = 768,
+                             bool cosine = true) {
+    QuantizedGraphRouterReader read{data};
     QuantizedGraphRouterFormat header;
-    bool ok = header.read(f) && header.docs == docs &&
+    bool ok = header.read_bytes(read) && header.docs == docs &&
               header.dimension == dimension &&
               header.metric == (cosine ? 0u : 1u);
     std::vector<float> parsed(ok ? dimension : 0);
-    ok = ok &&
-         std::fread(parsed.data(), sizeof(float), dimension, f) == dimension;
-    ok = std::fclose(f) == 0 && ok;
+    ok = ok && read(parsed.data(), dimension * sizeof(float));
     for (float value : parsed) ok = ok && std::isfinite(value);
     if (ok) mean = std::move(parsed);
     return ok;
@@ -86,27 +89,30 @@ class QuantizedGraphIntegerRouter {
             const Graph &entity, size_t docs,
             const std::vector<float> *rotated_mean = nullptr,
             bool cosine = true) {
+    std::string data;
+    if (!ReadQuantizedGraphRouterFile(path, data)) {
+      clear();
+      return false;
+    }
+    return load_data(data, mean, entity, docs, rotated_mean, cosine);
+  }
+  template <class Graph>
+  bool load_data(std::string_view data, const std::vector<float> &mean,
+                 const Graph &entity, size_t docs,
+                 const std::vector<float> *rotated_mean = nullptr,
+                 bool cosine = true) {
     clear();
-    if (!path || !__builtin_cpu_supports("avx512vnni")) return false;
-    FILE *f = std::fopen(path, "rb");
-    if (!f) return false;
-    auto read = [f](void *p, size_t bytes) {
-      return std::fread(p, 1, bytes, f) == bytes;
-    };
+    if (!__builtin_cpu_supports("avx512vnni")) return false;
+    QuantizedGraphRouterReader read{data};
     QuantizedGraphRouterFormat header;
-    bool ok = header.read(f) && header.docs == docs &&
+    bool ok = header.read_bytes(read) && header.docs == docs &&
               header.dimension == mean.size() &&
               header.metric == (cosine ? 0u : 1u);
-    // Check the complete file size before allocating group code buffers.
-    const long prefix = std::ftell(f);
     const uint64_t expected =
-        uint64_t(prefix < 0 ? 0 : prefix) +
+        read.offset +
         uint64_t(header.dimension + header.rotated) * sizeof(float) + 4 +
         uint64_t(header.groups) * (4 + 16 * 16 + uint64_t(16) * header.stride);
-    ok = ok && prefix >= 0 && std::fseek(f, 0, SEEK_END) == 0;
-    const long length = std::ftell(f);
-    ok = ok && length >= 0 && uint64_t(length) == expected &&
-         std::fseek(f, prefix, SEEK_SET) == 0;
+    ok = ok && data.size() == expected;
     std::vector<float> stored_mean(ok ? header.dimension : 0);
     ok = ok && read(stored_mean.data(), stored_mean.size() * sizeof(float)) &&
          std::memcmp(stored_mean.data(), mean.data(),
@@ -148,8 +154,7 @@ class QuantizedGraphIntegerRouter {
       }
       if (ok && i > 0) ok = parents[i] == 1;
     }
-    ok = ok && std::fgetc(f) == EOF && !std::ferror(f);
-    ok = std::fclose(f) == 0 && ok;
+    ok = ok && read.offset == data.size();
     if (ok) {
       format_ = header;
       projected_mean_ = std::move(projected_mean);

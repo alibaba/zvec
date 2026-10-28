@@ -12,12 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "hnsw_quantized_graph.h"
+#include <sstream>
 #include <zvec/core/framework/index_error.h>
 #include "hnsw_context.h"
 #if RABITQ_SUPPORTED && defined(__x86_64__) && \
     (defined(__GNUC__) || defined(__clang__))
 #define ZVEC_PROJECTED_QG_SUPPORTED 1
 #include "algorithm/quantized_graph/quantized_graph.h"
+#include "algorithm/quantized_graph/quantized_graph_router_builder.h"
 #include "algorithm/quantized_graph/symphony_qg_codec.h"
 #endif
 namespace zvec::core {
@@ -81,9 +83,10 @@ struct HnswQueryAdapter {
 template <class Codec>
 struct HnswQuantizedGraph::Model final : Impl {
   Model(size_t dimension, size_t max_neighbors, bool cosine,
-        size_t stored_dimension, const std::string &model_path)
+        size_t stored_dimension, const std::string &model_path,
+        const std::string &model_data)
       : graph(dimension, Codec(dimension, cosine), max_neighbors,
-              stored_dimension, cosine, model_path) {}
+              stored_dimension, cosine, model_path, model_data) {}
   int prebuild(const HnswEntity &entity, size_t count,
                size_t threads) override {
     int ret = graph.prebuild(HnswGraphAdapter{entity}, count, threads);
@@ -116,13 +119,78 @@ bool HnswQuantizedGraph::supported() {
 }
 HnswQuantizedGraph::HnswQuantizedGraph(size_t dimension, size_t max_neighbors,
                                        bool cosine, size_t stored_dimension,
-                                       const std::string &model_path) {
+                                       const std::string &model_path,
+                                       const std::string &model_data) {
 #if ZVEC_PROJECTED_QG_SUPPORTED
   if (supported() && dimension > 0 && dimension <= 4096 &&
       max_neighbors == 32) {
-    impl_ = std::make_unique<Model<SymphonyQGCodec>>(
-        dimension, max_neighbors, cosine, stored_dimension, model_path);
+    impl_ = std::make_unique<Model<SymphonyQGCodec>>(dimension, max_neighbors,
+                                                     cosine, stored_dimension,
+                                                     model_path, model_data);
   }
+#endif
+}
+int HnswQuantizedGraph::train_router(const HnswEntity &entity, size_t dimension,
+                                     bool cosine, size_t anchors,
+                                     size_t projected, uint64_t seed,
+                                     std::string &data) {
+#if ZVEC_PROJECTED_QG_SUPPORTED
+  using Builder = QuantizedGraphRouterBuilder;
+  if (!supported()) return IndexError_Unsupported;
+  if (!anchors || anchors > Builder::kMaxAnchors || !dimension ||
+      dimension > 4096 || !entity.doc_cnt() ||
+      entity.doc_cnt() > uint32_t(INT32_MAX))
+    return IndexError_InvalidArgument;
+  try {
+    Builder::Data training;
+    training.docs = entity.doc_cnt();
+    training.cosine = cosine;
+    training.mean.assign(dimension, 0);
+    anchors = std::min(anchors, size_t(training.docs));
+    training.ids.resize(anchors);
+    training.vectors.assign(anchors, Builder::Vector(dimension));
+    uint64_t stride = 2654435761ULL;
+    while (std::gcd(stride, uint64_t(training.docs)) != 1) ++stride;
+    std::vector<int32_t> selected(training.docs, -1);
+    for (size_t i = 0; i < anchors; ++i) {
+      const uint32_t id = (i * stride + 7193) % training.docs;
+      training.ids[i] = id;
+      selected[id] = i;
+    }
+    std::vector<double> sum(dimension);
+    for (uint32_t id = 0; id < training.docs; ++id) {
+      IndexStorage::MemoryBlock block;
+      if (entity.get_key(id) == kInvalidKey ||
+          entity.get_vector(id, block) != 0 || !block.data())
+        return IndexError_Mismatch;
+      const auto *v = static_cast<const float *>(block.data());
+      double norm = 0;
+      for (size_t d = 0; d < dimension; ++d) {
+        if (!std::isfinite(v[d])) return IndexError_Mismatch;
+        sum[d] += v[d];
+        norm += double(v[d]) * v[d];
+      }
+      if (cosine && std::abs(std::sqrt(norm) - 1.) > 1e-4)
+        return IndexError_Mismatch;
+      if (selected[id] >= 0)
+        std::copy_n(v, dimension, training.vectors[selected[id]].begin());
+    }
+    for (size_t d = 0; d < dimension; ++d)
+      training.mean[d] = float(sum[d] / training.docs);
+    Builder::Options options;
+    options.projected = projected;
+    options.seed = seed;
+    const auto model = Builder::train(training, options);
+    std::ostringstream out(std::ios::out | std::ios::binary);
+    model.write(out);
+    data = out.str();
+    return 0;
+  } catch (const std::exception &e) {
+    LOG_ERROR("Router training failed: %s", e.what());
+    return IndexError_Runtime;
+  }
+#else
+  return IndexError_Unsupported;
 #endif
 }
 int HnswQuantizedGraph::prebuild(const HnswEntity &entity, size_t count,

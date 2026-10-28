@@ -415,8 +415,9 @@ struct ZVEC_CORE_API HNSWIndexParam : public BaseIndexParam {
   // Immutable FP32 cosine/L2 graph; a model also implicitly enables it.
   bool use_quantized_graph = false;
   // Optional database-trained entry router, matched to this graph snapshot.
-  // Empty uses a centroid entry when use_quantized_graph is enabled; otherwise
-  // ordinary HNSW. See algorithm/hnsw/README.performance.md.
+  // Empty loads the embedded router when use_quantized_graph is enabled,
+  // falling back to a centroid entry if absent. An explicit path overrides it.
+  // With neither option enabled, search uses ordinary HNSW.
   std::string quantized_graph_model;
   using Pointer = std::shared_ptr<HNSWIndexParam>;
   int m = kDefaultHnswNeighborCnt;

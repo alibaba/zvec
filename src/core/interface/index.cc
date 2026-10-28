@@ -553,6 +553,18 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
 
   // read_options.create_new
   int ret = storage_->open(file_path, storage_options.create_new);
+  // FileDumper snapshots have their segment directory at the end of the file,
+  // whereas mutable MMapFileStorage requires a directory address in the header.
+  // Read-only consumers can load the same native chunks through ReadStorage.
+  if (ret == core::IndexError_Unsupported && storage_options.read_only &&
+      !storage_options.create_new &&
+      storage_options.type == StorageOptions::StorageType::kMMAP) {
+    storage_ = core::IndexFactory::CreateStorage("MMapFileReadStorage");
+    if (!storage_) return core::IndexError_Runtime;
+    ret = storage_->init(storage_params);
+    if (ret == 0) ret = storage_->open(file_path, false);
+  }
+
   if (ret != 0) {
     LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path.c_str(),
               core::IndexError::What(ret));

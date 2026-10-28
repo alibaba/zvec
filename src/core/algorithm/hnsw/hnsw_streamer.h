@@ -33,6 +33,14 @@ class HnswStreamer : public IndexStreamer {
   HnswStreamer(const HnswStreamer &streamer) = delete;
   HnswStreamer &operator=(const HnswStreamer &streamer) = delete;
 
+  // Native chunk snapshot, loadable by HnswStreamer/HNSWIndex. Unlike dump(),
+  // this preserves internal IDs and the streaming storage layout.
+  int dump_snapshot(const IndexDumper::Pointer &dumper);
+  // Call after construction has finished, with no concurrent mutations.
+  // The trained router freezes further insertion; publish it via dump_snapshot.
+  int train_quantized_graph_router(size_t anchors = 65536, size_t projected = 0,
+                                   uint64_t seed = 202610261259ULL);
+
   void merge_trained_meta(const IndexMeta &meta) override;
 
   //! Bind a provider which supplies the original vectors, so the graph is
@@ -269,6 +277,8 @@ class HnswStreamer : public IndexStreamer {
   };
 
   std::string quantized_graph_model_;
+  std::string quantized_graph_router_data_;
+  IndexStorage::Pointer snapshot_storage_;
   bool quantized_graph_enabled_{false};
   std::shared_ptr<HnswQuantizedGraph> quantized_graph_;
   mutable std::shared_mutex quantized_graph_mutex_;

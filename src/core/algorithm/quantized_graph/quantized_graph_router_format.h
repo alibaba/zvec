@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include "turbo/preprocessor/symphony_qg_rotator/symphony_qg_rotator.h"
+#include "quantized_graph_router_io.h"
 
 namespace zvec::core {
 // V2: fixed 768D cosine. V3 additionally records original dimension, metric,
@@ -27,16 +28,22 @@ struct QuantizedGraphRouterFormat {
             (dimension == 768 && metric == 0 && projected == 384));
   }
   bool read(FILE *f) {
+    auto reader = [f](void *p, size_t n) {
+      return f && std::fread(p, 1, n, f) == n;
+    };
+    return read_bytes(reader);
+  }
+  template <class Reader>
+  bool read_bytes(Reader &reader) {
     uint32_t h[5];
-    if (!f || std::fread(h, sizeof(h), 1, f) != 1 || h[0] != kMagic)
-      return false;
+    if (!reader(h, sizeof(h)) || h[0] != kMagic) return false;
     version = h[1];
     projected = h[2];
     groups = h[3];
     docs = h[4];
     if (version == 3) {
       uint32_t extra[4];
-      if (std::fread(extra, sizeof(extra), 1, f) != 1) return false;
+      if (!reader(extra, sizeof(extra))) return false;
       dimension = extra[0];
       metric = extra[1];
       rotated = extra[2];

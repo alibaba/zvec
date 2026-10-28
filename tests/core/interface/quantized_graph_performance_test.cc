@@ -13,6 +13,8 @@
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
 #include "algorithm/hnsw/hnsw_quantized_graph.h"
+#include "algorithm/hnsw/hnsw_streamer.h"
+#include "algorithm/quantized_graph/quantized_graph_router_io.h"
 #if RABITQ_SUPPORTED && defined(__x86_64__) && \
     (defined(__GNUC__) || defined(__clang__))
 #include "algorithm/quantized_graph/quantized_graph_integer_router.h"
@@ -25,6 +27,19 @@ namespace ci = zvec::core_interface;
 using namespace zvec::core;
 struct TestHnswIndex : ci::HNSWIndex {
   using ci::HNSWIndex::init;
+  int train_router(size_t anchors, size_t projected) {
+    return dynamic_cast<HnswStreamer *>(streamer_.get())
+        ->train_quantized_graph_router(anchors, projected);
+  }
+  int snapshot(const std::string &path) {
+    auto dumper = zvec::core::IndexFactory::CreateDumper("FileDumper");
+    if (!dumper || dumper->init({}) != 0 || dumper->create(path) != 0)
+      return -1;
+    int ret =
+        dynamic_cast<HnswStreamer *>(streamer_.get())->dump_snapshot(dumper);
+    int closed = dumper->close();
+    return ret ? ret : closed;
+  }
   const float *stored_vector(uint32_t id) const {
     return static_cast<const float *>(streamer_->get_vector_by_id(id));
   }
@@ -310,6 +325,143 @@ TEST(QuantizedGraphPerformance, SnapshotSearchAndMutationGuard) {
   WriteModel(model_path, count + 1);
   ASSERT_EQ(0, optimized.init(p));
   EXPECT_NE(0, optimized.open(index_path, options));
+}
+
+TEST(QuantizedGraphPerformance, EmbeddedRouterSnapshotRoundTrip) {
+  if (!HnswQuantizedGraph::supported()) GTEST_SKIP();
+  for (bool cosine : {false, true}) {
+    TemporaryFiles tmp;
+    const size_t dim = cosine ? 768 : 960, count = 128;
+    const auto source = (tmp.dir / "source").string();
+    const auto snapshot = (tmp.dir / "snapshot").string();
+    const auto second = (tmp.dir / "second").string();
+    const auto external = (tmp.dir / "router.bin").string();
+    std::mt19937 rng(17);
+    std::uniform_real_distribution<float> random(0, 1);
+    std::vector<std::vector<float>> vectors(count, std::vector<float>(dim));
+    ci::HNSWIndexParam p(
+        cosine ? ci::MetricType::kCosine : ci::MetricType::kL2sq, dim, 16, 100);
+    p.data_type = ci::DataType::DT_FP32;
+    p.use_id_map = true;
+    ci::StorageOptions options;
+    options.type = ci::StorageOptions::StorageType::kMMAP;
+    options.create_new = true;
+    TestHnswIndex builder;
+    ASSERT_EQ(0, builder.init(p));
+    ASSERT_EQ(0, builder.open(source, options));
+    for (size_t i = 0; i < count; ++i) {
+      for (float &v : vectors[i]) v = random(rng);
+      ASSERT_EQ(0, builder.add({ci::DenseVector{vectors[i].data()}}, i));
+    }
+    EXPECT_NE(0, builder.train_router(0, 256));
+    const auto plain = (tmp.dir / "plain").string();
+    ASSERT_EQ(0, builder.snapshot(plain));
+    {
+      TestHnswIndex no_router;
+      auto qp = std::make_shared<ci::HNSWQueryParam>();
+      qp->topk = 10;
+      qp->ef_search = 800;
+      auto read_options = options;
+      read_options.create_new = false;
+      read_options.read_only = true;
+      auto read_params = p;
+      read_params.use_quantized_graph = true;
+      ASSERT_EQ(0, no_router.init(read_params));
+      ASSERT_EQ(0, no_router.open(plain, read_options));
+      ci::SearchResult result;
+      ASSERT_EQ(0, no_router.search({ci::DenseVector{vectors[0].data()}}, qp,
+                                    &result));
+      ASSERT_EQ(10u, result.doc_list_.size());
+      EXPECT_EQ(0u, result.doc_list_[0].key());
+      ASSERT_EQ(0, no_router.close());
+    }
+    ASSERT_EQ(0, builder.train_router(count, 256));
+    EXPECT_NE(0, builder.add({ci::DenseVector{vectors[0].data()}}, 99999));
+    ASSERT_EQ(0, builder.snapshot(snapshot));
+    ASSERT_EQ(0, builder.close());
+    // Extract a reference copy to compare legacy-file and embedded loaders.
+    auto storage =
+        zvec::core::IndexFactory::CreateStorage("MMapFileReadStorage");
+    ASSERT_NE(storage, nullptr);
+    ASSERT_EQ(0, storage->init({}));
+    ASSERT_EQ(0, storage->open(snapshot, false));
+    auto segment = storage->get(kQuantizedGraphRouterSegment);
+    ASSERT_NE(segment, nullptr);
+    IndexStorage::MemoryBlock bytes;
+    ASSERT_EQ(segment->data_size(),
+              segment->read(0, bytes, segment->data_size()));
+    const std::string payload(static_cast<const char *>(bytes.data()),
+                              segment->data_size());
+    const auto corrupt_offset = segment->data_offset();
+    {
+      std::ofstream out(external, std::ios::binary);
+      out.write(payload.data(), payload.size());
+      ASSERT_TRUE(out.good());
+    }
+    ASSERT_EQ(0, storage->close());
+    options.create_new = false;
+    options.read_only = true;
+    p.use_quantized_graph = true;
+    auto qp = std::make_shared<ci::HNSWQueryParam>();
+    qp->topk = 10;
+    qp->ef_search = 800;
+    std::vector<std::vector<std::pair<uint64_t, float>>> expected;
+    for (int pass = 0; pass < 3; ++pass) {
+      p.quantized_graph_model = pass == 0 ? external : "";
+      TestHnswIndex loaded;
+      ASSERT_EQ(0, loaded.init(p));
+      ASSERT_EQ(0, loaded.open(pass == 2 ? second : snapshot, options));
+      for (size_t i = 0; i < 16; ++i) {
+        ci::SearchResult result;
+        ASSERT_EQ(0, loaded.search({ci::DenseVector{vectors[i].data()}}, qp,
+                                   &result));
+        ASSERT_EQ(10u, result.doc_list_.size());
+        std::vector<std::pair<uint64_t, float>> actual;
+        for (const auto &doc : result.doc_list_)
+          actual.emplace_back(doc.key(), doc.score());
+        if (pass == 0)
+          expected.push_back(actual);
+        else
+          EXPECT_EQ(expected[i], actual);
+        EXPECT_EQ(i, actual.front().first);
+      }
+      if (pass == 1) {
+        ASSERT_EQ(0, loaded.snapshot(second));
+      }
+      ASSERT_EQ(0, loaded.close());
+      if (pass == 0) {
+        ASSERT_TRUE(std::filesystem::remove(external));
+      }
+    }
+    // Native search can read the same snapshot but cannot stale its router by
+    // inserting.
+    p.use_quantized_graph = false;
+    options.read_only = true;
+    TestHnswIndex native;
+    ASSERT_EQ(0, native.init(p));
+    ASSERT_EQ(0, native.open(second, options));
+    ci::SearchResult native_result;
+    ASSERT_EQ(0, native.search({ci::DenseVector{vectors[0].data()}}, qp,
+                               &native_result));
+    ASSERT_EQ(10u, native_result.doc_list_.size());
+    EXPECT_EQ(0u, native_result.doc_list_[0].key());
+    EXPECT_NE(0, native.add({ci::DenseVector{vectors[0].data()}}, 99999));
+    ASSERT_EQ(0, native.close());
+    // Damage just the embedded payload, leaving the index directory checksum
+    // intact.
+    {
+      std::fstream file(snapshot,
+                        std::ios::in | std::ios::out | std::ios::binary);
+      file.seekp(corrupt_offset);
+      file.put('!');
+      ASSERT_TRUE(file.good());
+    }
+    p.use_quantized_graph = true;
+    options.read_only = true;
+    TestHnswIndex corrupt;
+    ASSERT_EQ(0, corrupt.init(p));
+    EXPECT_NE(0, corrupt.open(snapshot, options));
+  }
 }
 
 TEST(QuantizedGraphPerformance, GenericRoutingAndNoRouterSearch) {

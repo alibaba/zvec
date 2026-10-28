@@ -67,7 +67,8 @@ class QuantizedGraph {
   // stored_dimension defaults to dimension; larger values preserve auxiliary
   // fields following the coordinates (e.g. cosine storage's original norm).
   QuantizedGraph(size_t dimension, Codec codec, size_t max_neighbors,
-                 size_t stored_dimension, bool cosine, std::string model_path);
+                 size_t stored_dimension, bool cosine, std::string model_path,
+                 std::string model_data = {});
   void clear();
   template <class Graph>
   int prebuild(const Graph &graph, size_t doc_cnt, size_t threads);
@@ -218,6 +219,7 @@ class QuantizedGraph {
                    Block *slot, Scratch &scratch, int &error) const;
 
   std::string model_path_;
+  std::string model_data_;
   size_t dimension_;
   size_t stored_dimension_;
   size_t stored_center_bytes_;
@@ -240,8 +242,10 @@ template <class Codec>
 QuantizedGraph<Codec>::QuantizedGraph(size_t dimension, Codec codec,
                                       size_t max_neighbors,
                                       size_t stored_dimension, bool cosine,
-                                      std::string model_path)
+                                      std::string model_path,
+                                      std::string model_data)
     : model_path_(std::move(model_path)),
+      model_data_(std::move(model_data)),
       dimension_(dimension),
       stored_dimension_(std::max(dimension, stored_dimension)),
       codec_(std::move(codec)) {
@@ -498,21 +502,24 @@ int QuantizedGraph<Codec>::prebuild(const Graph &entity, size_t doc_cnt,
     return IndexError_Mismatch;
   static_assert(sizeof(Block) <= Block::kCenterOffset,
                 "Block header overlaps center");
+  if (model_data_.empty() && !model_path_.empty() &&
+      !ReadQuantizedGraphRouterFile(model_path_.c_str(), model_data_))
+    return IndexError_ReadData;
   center_shift_.assign(dimension_, 0.f);
-  if (!model_path_.empty() &&
-      !QuantizedGraphIntegerRouter::read_mean(
-          model_path_.c_str(), doc_cnt, center_shift_, dimension_, cosine_))
+  if (!model_data_.empty() &&
+      !QuantizedGraphIntegerRouter::read_mean_data(
+          model_data_, doc_cnt, center_shift_, dimension_, cosine_))
     return IndexError_Mismatch;
   center_shift_norm2_ = 0;
   for (float v : center_shift_) {
     if (!std::isfinite(v)) return IndexError_Mismatch;
     center_shift_norm2_ += double(v) * v;
   }
-  if (!model_path_.empty()) {
+  if (!model_data_.empty()) {
     std::vector<float> route_mean;
     codec_.transform(center_shift_.data(), route_mean);
-    if (!integer_router_.load(model_path_.c_str(), center_shift_, entity,
-                              doc_cnt, &route_mean, cosine_))
+    if (!integer_router_.load_data(model_data_, center_shift_, entity, doc_cnt,
+                                   &route_mean, cosine_))
       return IndexError_Mismatch;
   }
   const size_t nthreads =
