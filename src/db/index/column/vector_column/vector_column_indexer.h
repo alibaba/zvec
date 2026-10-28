@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #pragma once
+#include <shared_mutex>
 #include <string>
 #include <utility>
 #include <variant>
+#include <roaring.hh>
 #include <ailego/parallel/lock.h>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/ailego/utility/string_helper.h>
@@ -76,6 +78,16 @@ class VectorColumnIndexer {
   //! Insert vector
   Status insert(const vector_column_params::VectorData &vector_data,
                 uint32_t doc_id);
+  Status insert_null(uint32_t doc_id);
+
+  // Logical rows include NULLs; core IDs in new nullable indexes are ranks
+  // in the validity bitmap, so the core only ever indexes real vectors.
+  uint32_t row_count() const {
+    return row_count_;
+  }
+  bool has_validity() const {
+    return field_schema_.nullable();
+  }
   // TODO: batch insert
 
   virtual Result<IndexResults::Ptr> search(
@@ -128,13 +140,21 @@ class VectorColumnIndexer {
   VectorColumnIndexer() = default;
 
  private:
+  Status load_validity(const vector_column_params::ReadOptions &options);
+  Status flush_validity();
+  Status ensure_empty_index();
+  Status recreate_empty_index(bool use_empty_flat);
+  bool has_vector(uint32_t row) const;
+  uint32_t physical_id(uint32_t row) const;
+  bool logical_id(uint64_t physical, uint32_t *row) const;
   // protected:
   //  virtual bool init_proxima_params() = 0;
 
   // proxima or other engine index param like VSAGE
   // build proxima index
   Status create_proxima_index(
-      const vector_column_params::ReadOptions &read_options);
+      const vector_column_params::ReadOptions &read_options,
+      bool use_empty_flat = true);
 
  protected:
   friend ProximaEngineHelper;
@@ -146,6 +166,14 @@ class VectorColumnIndexer {
   std::string engine_name_ = "proxima";
   bool is_sparse_{false};  // TODO: eliminate the dynamic flag and make it
                            // static/template/seperate class
+  mutable std::shared_mutex validity_mutex_;
+  roaring::Roaring valid_rows_;
+  uint32_t row_count_{0};
+  bool compact_ids_{false};
+  bool validity_dirty_{false};
+  bool read_only_{false};
+  bool use_mmap_{true};
+  bool empty_flat_index_{false};
 };
 
 

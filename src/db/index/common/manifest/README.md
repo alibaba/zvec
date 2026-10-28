@@ -72,3 +72,23 @@ numbers. Unknown values read from disk are preserved as-is and mapped to
 
 `pbwire::Writer` does not sort fields. Each message's encode function must
 write fields in ascending field-number order to produce canonical bytes.
+
+### Nullable vector blocks
+
+`BlockMeta` field 7 (`vector_validity`) marks vector blocks that require a
+`<index path>.validity` sidecar. Missing or corrupt required sidecars are errors;
+they must not be interpreted as an all-NULL column or as a legacy index.
+
+The sidecar contains `ZVECNV01`, a little-endian uint32 logical row count and
+uint32 ID-layout flag, a portable Roaring bitmap of rows with vectors, and a
+CRC32C of all preceding bytes. In layout 1, core vector IDs are bitmap ranks;
+NULL rows have no core index entry. Read, search, filtering, grouping, and merge
+translate IDs at the column layer. An all-NULL column uses an empty Flat backing
+even when its declared index requires training. The sidecar is flushed and
+published before the manifest references the block.
+
+Readers can reconstruct layout 0 for legacy blocks from stored keys and the
+manifest row count. Numeric zero is never a missing-value marker. Markers already
+lost by historical index rebuilds cannot be recovered from vector values alone.
+Unknown-field skipping preserves manifest decoding, but older binaries do not
+understand layout 1 and must not be used to query newly written nullable blocks.

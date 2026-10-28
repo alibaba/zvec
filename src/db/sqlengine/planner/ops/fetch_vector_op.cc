@@ -34,6 +34,10 @@ Result<std::shared_ptr<arrow::Array>> fetch_dense_vector_helper(
   for (Iter i = begin; i != end; ++i) {
     auto vector_res = indexer->fetch(*i);
     if (!vector_res) {
+      if (vector_res.error().code() == StatusCode::NOT_FOUND) {
+        CHECK_ARROW_STATUS("Append null failed:", vector_builder.AppendNull());
+        continue;
+      }
       return tl::make_unexpected(vector_res.error());
     }
     const auto &data = std::get<vector_column_params::DenseVectorBuffer>(
@@ -90,6 +94,10 @@ Result<std::shared_ptr<arrow::Array>> fetch_sparse_vector_helper(
   for (auto i = begin; i != end; i++) {
     auto vector_res = indexer->fetch(*i);
     if (!vector_res) {
+      if (vector_res.error().code() == StatusCode::NOT_FOUND) {
+        CHECK_ARROW_STATUS("Append null failed:", sparse_builder->AppendNull());
+        continue;
+      }
       return tl::make_unexpected(vector_res.error());
     }
     const auto &data = std::get<vector_column_params::SparseVectorBuffer>(

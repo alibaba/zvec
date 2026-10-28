@@ -753,6 +753,10 @@ Status SegmentImpl::insert_vector(VectorColumnIndexer::Ptr &indexer,
 
     return indexer->insert(vector_data, block_doc_id);
   } else {
+    if (field->nullable()) {
+      return indexer->insert_null(
+          segment_meta_->writing_forward_block()->doc_count_);
+    }
     LOG_WARN("Field %s not found or is null for doc: %s", field->name().c_str(),
              doc.to_detail_string().c_str());
   }
@@ -1342,6 +1346,10 @@ Doc::Ptr SegmentImpl::fetch(
         auto vector_indexer = vector_indexers[block_idx];
         auto fetch_result = vector_indexer->fetch(block_doc_id);
         if (!fetch_result) {
+          if (fetch_result.error().code() == StatusCode::NOT_FOUND) {
+            doc->set_null(field->name());
+            continue;
+          }
           LOG_ERROR(
               "vector indexer fetch failed, block_doc_id: %d, block_idx: %d, "
               "segment_doc_id: %d",
@@ -1374,6 +1382,10 @@ Doc::Ptr SegmentImpl::fetch(
           auto vector_indexer = iter->second;
           auto fetch_result = vector_indexer->fetch(block_doc_id);
           if (!fetch_result.has_value()) {
+            if (fetch_result.error().code() == StatusCode::NOT_FOUND) {
+              doc->set_null(field->name());
+              continue;
+            }
             LOG_ERROR(
                 "vector indexer fetch failed, column: %s, doc_count: %lu, "
                 "mem_block_offset: %d, block_doc_id: %d",
@@ -1632,6 +1644,7 @@ Status SegmentImpl::create_vector_index(
     block.set_min_doc_id(doc_ids_.front());
     block.set_max_doc_id(doc_ids_.back());
     block.set_doc_count(doc_ids_.size());
+    block.set_vector_validity(field->nullable());
     new_segment_meta->add_persisted_block(block);
 
     *segment_meta = new_segment_meta;
@@ -1660,7 +1673,8 @@ Status SegmentImpl::create_vector_index(
             ? current_flat_params->storage_data_type()
             : field->data_type();
 
-    if (!(vector_index_params->metric_type() ==
+    if (field->nullable() ||
+        !(vector_index_params->metric_type() ==
               original_index_params->metric_type() &&
           vector_indexers_[column].size() == 1 &&
           current_flat_data_type == desired_flat_data_type)) {
@@ -1698,6 +1712,7 @@ Status SegmentImpl::create_vector_index(
       block.set_min_doc_id(meta()->min_doc_id());
       block.set_max_doc_id(meta()->max_doc_id());
       block.set_doc_count(meta()->doc_count());
+      block.set_vector_validity(field->nullable());
       new_segment_meta->add_persisted_block(block);
       if (vector_index_params->type() == IndexType::HNSW_RABITQ) {
         raw_vector_provider = vector_indexer.value()->create_index_provider();
@@ -1774,6 +1789,7 @@ Status SegmentImpl::create_vector_index(
     block.set_min_doc_id(meta()->min_doc_id());
     block.set_max_doc_id(meta()->max_doc_id());
     block.set_doc_count(meta()->doc_count());
+    block.set_vector_validity(field->nullable());
     new_segment_meta->add_persisted_block(block);
 
     *segment_meta = new_segment_meta;
@@ -1829,6 +1845,7 @@ Status SegmentImpl::drop_vector_index(
   block.set_min_doc_id(meta()->min_doc_id());
   block.set_max_doc_id(meta()->max_doc_id());
   block.set_doc_count(meta()->doc_count());
+  block.set_vector_validity(field->nullable());
   new_segment_meta->add_persisted_block(block);
 
   *segment_meta = new_segment_meta;
@@ -4125,7 +4142,8 @@ Status SegmentImpl::load_vector_index_blocks() {
       auto vector_indexer =
           std::make_shared<VectorColumnIndexer>(index_path, new_field_params);
       auto s = vector_indexer->open(vector_column_params::ReadOptions{
-          options_.enable_mmap_, false, true});
+          options_.enable_mmap_, false, true, block.doc_count(),
+          block.vector_validity()});
       CHECK_RETURN_STATUS(s);
 
       if (block.type_ == BlockType::VECTOR_INDEX) {
@@ -4500,6 +4518,7 @@ Status SegmentImpl::finish_memory_components() {
     BlockMeta vb =
         BlockMeta{block_id,          BlockType::VECTOR_INDEX, block.min_doc_id_,
                   block.max_doc_id_, block.doc_count_,        {column_name}};
+    vb.set_vector_validity(indexer->has_validity());
     auto it = vector_indexers_.find(column_name);
     if (it == vector_indexers_.end()) {
       std::vector<VectorColumnIndexer::Ptr> vector_indexers{indexer};
@@ -4516,6 +4535,7 @@ Status SegmentImpl::finish_memory_components() {
     BlockMeta block_meta(block_id, BlockType::VECTOR_INDEX_QUANTIZE,
                          block.min_doc_id_, block.max_doc_id_, block.doc_count_,
                          {column_name});
+    block_meta.set_vector_validity(indexer->has_validity());
 
     auto it = quant_vector_indexers_.find(column_name);
     if (it == quant_vector_indexers_.end()) {

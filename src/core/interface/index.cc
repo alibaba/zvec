@@ -261,6 +261,10 @@ core::IndexProvider::Pointer Index::create_index_provider() const {
   return streamer_->create_provider();
 }
 
+core::IndexSparseProvider::Pointer Index::create_sparse_index_provider() const {
+  return streamer_->create_sparse_provider();
+}
+
 int Index::parse_metric_name(const BaseIndexParam &param) {
   std::string metric_name;
   if (is_sparse_) {

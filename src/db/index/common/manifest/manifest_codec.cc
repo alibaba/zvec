@@ -131,6 +131,7 @@ constexpr uint32_t kMinDocId = 3;
 constexpr uint32_t kMaxDocId = 4;
 constexpr uint32_t kDocCount = 5;
 constexpr uint32_t kColumns = 6;
+constexpr uint32_t kVectorValidity = 7;
 }  // namespace f_block
 namespace f_segment {
 constexpr uint32_t kSegmentId = 1;
@@ -841,6 +842,7 @@ void ManifestCodec::EncodeBlockMeta(const BlockMeta &meta, std::string *out) {
   for (const auto &column : meta.columns()) {
     w.add_string(f_block::kColumns, column);
   }
+  w.put_bool(f_block::kVectorValidity, meta.vector_validity());
 }
 
 BlockMeta::Ptr ManifestCodec::DecodeBlockMeta(std::string_view buf) {
@@ -866,6 +868,9 @@ BlockMeta::Ptr ManifestCodec::DecodeBlockMeta(std::string_view buf) {
         break;
       case f_block::kColumns:
         meta->add_column(r.string_value());
+        break;
+      case f_block::kVectorValidity:
+        meta->set_vector_validity(r.bool_value());
         break;
       default:
         break;

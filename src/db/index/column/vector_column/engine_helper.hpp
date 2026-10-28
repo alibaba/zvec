@@ -13,6 +13,8 @@
 // limitations under the License.
 #pragma once
 
+#include <algorithm>
+#include <limits>
 #include <memory>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/core/interface/index.h>
@@ -103,6 +105,7 @@ class ProximaEngineHelper {
       const QueryParams::Ptr &query_params, uint32_t topk,
       const IndexFilter *filter, const VectorColumnIndexer *reference_indexer,
       int64_t *output_ids, float *output_scores) {
+    std::shared_lock lock(indexer.validity_mutex_);
     auto *index = indexer.index.get();
     if (!index) return Status::InvalidArgument("Index not opened");
     auto search = [&](auto engine_query_param) -> Status {
@@ -112,7 +115,15 @@ class ProximaEngineHelper {
             query_params->type(), query_params, &engine_query_param, nullptr);
         if (!status.ok()) return status;
       }
-      if (filter) {
+      if (indexer.has_validity()) {
+        engine_query_param.filter =
+            std::make_shared<core_interface::IndexFilter>();
+        engine_query_param.filter->set([&indexer, filter](uint64_t id) {
+          uint32_t row;
+          return !indexer.logical_id(id, &row) ||
+                 (filter && filter->is_filtered(row));
+        });
+      } else if (filter) {
         engine_query_param.filter =
             ProximaEngineHelper::convert_to_engine_filter(filter);
       }
@@ -131,9 +142,25 @@ class ProximaEngineHelper {
       // search.
       const core_interface::BaseIndexQueryParam::Pointer params(
           core_interface::BaseIndexQueryParam::Pointer{}, &engine_query_param);
+      if (indexer.has_validity() && indexer.valid_rows_.isEmpty()) {
+        std::fill(output_ids, output_ids + topk, int64_t{-1});
+        if (output_scores)
+          std::fill(output_scores, output_scores + topk,
+                    std::numeric_limits<float>::quiet_NaN());
+        return Status::OK();
+      }
       if (index->search_internal_ids(vector_data, params, output_ids,
                                      output_scores) != 0) {
         return Status::InternalError("Failed to search vector");
+      }
+      if (indexer.has_validity()) {
+        for (uint32_t i = 0; i < topk; ++i) {
+          if (output_ids[i] < 0) continue;
+          uint32_t row;
+          if (!indexer.logical_id(output_ids[i], &row))
+            return Status::InternalError("Invalid vector result ID");
+          output_ids[i] = row;
+        }
       }
       return Status::OK();
     };
@@ -503,7 +530,8 @@ class ProximaEngineHelper {
     }
     auto index_param_builder = std::make_shared<IndexParamBuilderType>();
 
-    // db will ensure the id is consecutive
+    // The column layer assigns consecutive core IDs, translating nullable
+    // logical rows through its validity bitmap.
     index_param_builder->with_use_id_map(false);
 
     index_param_builder->with_is_sparse(field_schema.is_sparse_vector())
