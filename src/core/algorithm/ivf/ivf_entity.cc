@@ -1050,7 +1050,7 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
     scratch.posting_ids.resize(distances.size());
   // Turbo physical blocks contain at most 64 rows. Preserve the existing
   // stack buffer for callbacks within ten blocks and allocate once above it.
-  constexpr size_t kStackBatchRows = kBatchBlocks * 64;
+  static constexpr size_t kStackBatchRows = kBatchBlocks * 64;
   const size_t pointer_capacity = std::min(batch_rows, max_read_rows);
   std::vector<const void *> large_candidates(
       pointer_capacity > kStackBatchRows ? pointer_capacity : 0);
