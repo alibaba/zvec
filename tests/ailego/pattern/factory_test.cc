@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <thread>
+#include <utility>
 #include <gtest/gtest.h>
 #include <zvec/ailego/pattern/factory.h>
 
@@ -179,6 +180,28 @@ TEST(Factory, IgnoredBuiltinArgumentDestructorCanQuerySameFactory) {
   EXPECT_EQ(19, value->value());
 }
 
+TEST(Factory, RvalueRegistrationOwnsArgument) {
+  {
+    int value = 7;
+    ValueFactory::Register<Value> extension("OwnedExtension", std::move(value));
+    ValueFactory::Register<Value> builtin(ValueFactory::BuiltinTag{},
+                                          "OwnedBuiltin", std::move(value));
+    value = 142;
+    auto extension_value = ValueFactory::MakeShared("OwnedExtension");
+    auto builtin_value = ValueFactory::MakeShared("OwnedBuiltin");
+    ASSERT_NE(nullptr, extension_value);
+    ASSERT_NE(nullptr, builtin_value);
+    EXPECT_EQ(7, extension_value->value());
+    EXPECT_EQ(7, builtin_value->value());
+  }
+  auto extension_value = ValueFactory::MakeShared("OwnedExtension");
+  auto builtin_value = ValueFactory::MakeShared("OwnedBuiltin");
+  ASSERT_NE(nullptr, extension_value);
+  ASSERT_NE(nullptr, builtin_value);
+  EXPECT_EQ(7, extension_value->value());
+  EXPECT_EQ(7, builtin_value->value());
+}
+
 TEST(Factory, ConcurrentRegistrationAndLookup) {
   std::vector<std::thread> workers;
   for (int worker = 0; worker < 8; ++worker) {
@@ -186,8 +209,11 @@ TEST(Factory, ConcurrentRegistrationAndLookup) {
       for (size_t iteration = 0; iteration < 128; ++iteration) {
         ValueFactory::Register<Value> builtin(ValueFactory::BuiltinTag{},
                                               "ConcurrentBuiltin", 3);
+        // MSVC without /Zc:rvalueCast can preserve a reference for int{worker}.
+        // The registered creator must own its value after this thread exits.
+        int value = worker;
         ValueFactory::Register<Value> extension("ConcurrentExtension",
-                                                int{worker});
+                                                std::move(value));
         EXPECT_TRUE(ValueFactory::Has("ConcurrentBuiltin"));
         auto names = ValueFactory::Classes();
         EXPECT_NE(names.end(),
