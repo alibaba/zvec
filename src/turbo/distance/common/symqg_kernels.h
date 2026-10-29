@@ -19,7 +19,7 @@
 namespace zvec::turbo {
 
 // Runtime-dispatched AVX512 kernels for the SymphonyQG query path. The build
-// compiles symphony_qg_kernels_avx512.cc with an AVX512-capable -march; each
+// compiles symqg_kernels_avx512.cc with an AVX512-capable -march; each
 // entry point returns false when AVX512 is unavailable at runtime or the
 // arguments do not meet the kernel's constraints, leaving outputs untouched
 // so callers can fall back to the reference scalar path.

@@ -19,7 +19,7 @@
 // because a binary built on an AVX512 host may run on a lower-arch machine.
 
 #include <ailego/internal/cpu_features.h>
-#include <turbo/distance/common/symphony_qg_kernels.h>
+#include <turbo/distance/common/symqg_kernels.h>
 #include <zvec/ailego/internal/platform.h>
 
 #if defined(__AVX512F__) && defined(__AVX512BW__)

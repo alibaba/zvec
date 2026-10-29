@@ -18,7 +18,7 @@
 #include <cmath>
 #include <random>
 #include <vector>
-#include <turbo/distance/common/symphony_qg_kernels.h>
+#include <turbo/distance/common/symqg_kernels.h>
 
 namespace zvec::turbo {
 // Randomized normalized Hadamard passes form an orthogonal rotation. A single
@@ -28,10 +28,10 @@ namespace zvec::turbo {
 // the source graph storage format. Zero padding preserves original L2
 // distances. The 1/sqrt(padded) normalization is folded into the signs so the
 // hot path is one element-wise multiply plus the transform.
-class SymphonyQGRotation {
+class SymQGRotation {
  public:
   static constexpr size_t kPasses = 1;
-  explicit SymphonyQGRotation(size_t dimension) : dimension_(dimension) {
+  explicit SymQGRotation(size_t dimension) : dimension_(dimension) {
     padded_ = 64;
     while (padded_ < dimension) padded_ *= 2;
     if (dimension == 768) padded_ = 768;

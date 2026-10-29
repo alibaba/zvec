@@ -18,7 +18,7 @@
 #if RABITQ_SUPPORTED && defined(__x86_64__) && \
     (defined(__GNUC__) || defined(__clang__))
 #define ZVEC_PROJECTED_QG_SUPPORTED 1
-#include <turbo/quantizer/symphony_qg_quantizer/symphony_qg_quantizer.h>
+#include <turbo/quantizer/symqg_quantizer/symqg_quantizer.h>
 #include "algorithm/quantized_graph/quantized_graph.h"
 #include "algorithm/quantized_graph/quantized_graph_router_builder.h"
 #endif
@@ -117,7 +117,7 @@ HnswQuantizedGraph::HnswQuantizedGraph(size_t dimension, size_t max_neighbors,
 #if ZVEC_PROJECTED_QG_SUPPORTED
   if (supported() && dimension > 0 && dimension <= 4096 &&
       max_neighbors == 32) {
-    impl_ = std::make_unique<Model<turbo::SymphonyQGBlockQuantizer>>(
+    impl_ = std::make_unique<Model<turbo::SymQGBlockQuantizer>>(
         dimension, max_neighbors, cosine, stored_dimension, model_data);
   }
 #else

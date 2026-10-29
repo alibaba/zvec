@@ -20,7 +20,7 @@
 #include <numeric>
 #include <type_traits>
 #include <vector>
-#include <turbo/distance/common/symphony_qg_kernels.h>
+#include <turbo/distance/common/symqg_kernels.h>
 #if RABITQ_SUPPORTED
 #include <rabitqlib/fastscan/encoder.hpp>
 #include <rabitqlib/fastscan/fastscan.hpp>
@@ -34,10 +34,10 @@ namespace zvec::turbo {
 // handles zero vectors, for which simply halving L2 would be incorrect.
 // The caller supplies normalized coordinates, without any norm metadata.
 template <class AddFactors, class ScaleFactors>
-inline void ConvertSymphonyQGCosineFactors(const float *center,
-                                           const float *vectors, size_t count,
-                                           size_t dimension, AddFactors f_add,
-                                           ScaleFactors f_rescale) {
+inline void ConvertSymQGCosineFactors(const float *center, const float *vectors,
+                                      size_t count, size_t dimension,
+                                      AddFactors f_add,
+                                      ScaleFactors f_rescale) {
   const float center_norm =
       std::inner_product(center, center + dimension, center, 0.0f);
   for (size_t i = 0; i < count; ++i) {
@@ -57,7 +57,7 @@ inline void ConvertSymphonyQGCosineFactors(const float *center,
 // AVX512 kernel builds them in two fused passes over the rotated query (the
 // 16 entries of each 4-dim codebook are the full subset-sum lattice of four
 // query values), and the rabitqlib Lut path is the reference fallback.
-class SymQuery {
+class SymQGQuery {
  public:
   void reset(const float *rotated_query, size_t padded_dim) {
     g_add_ = 0;
@@ -114,8 +114,8 @@ class SymQuery {
 // At most 256 four-dimensional LUT entries (1024 dimensions) fit without
 // overflow: 256 * 255 < 65536. Accumulate slices and widen between slices to
 // support all zvec RaBitQ dimensions, including padding to 4096.
-inline void ScanSymphonyQGBatch(const char *codes, const SymQuery &query,
-                                size_t padded_dim, float *distances) {
+inline void ScanSymQGBatch(const char *codes, const SymQGQuery &query,
+                           size_t padded_dim, float *distances) {
   constexpr size_t batch_size = rabitqlib::fastscan::kBatchSize;
   rabitqlib::ConstQGBatchDataMap<float> batch(codes, padded_dim);
   // RaBitQ 0.7 factors are packed byte views, not live float arrays.

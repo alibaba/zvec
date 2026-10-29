@@ -89,7 +89,7 @@ file(GLOB_RECURSE ALL_SRCS *.cc *.c *.h)
 # These options supplement the per-source SIMD architecture flags below.
 if(NOT MSVC)
   set_property(SOURCE
-    distance/avx512/symphony_qg/symphony_qg_kernels_avx512.cc
+    distance/avx512/symqg/symqg_kernels_avx512.cc
     APPEND PROPERTY COMPILE_OPTIONS -ffp-contract=off)
 endif()
 

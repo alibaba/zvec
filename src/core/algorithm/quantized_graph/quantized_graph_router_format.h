@@ -4,7 +4,7 @@
 #pragma once
 #include <cstdint>
 #include <cstdio>
-#include "turbo/preprocessor/symphony_qg_rotator/symphony_qg_rotator.h"
+#include "turbo/preprocessor/symqg_rotator/symqg_rotator.h"
 #include "quantized_graph_router_io.h"
 
 namespace zvec::core {
@@ -22,7 +22,7 @@ struct QuantizedGraphRouterFormat {
         projected > rotated || stride != ((projected + 63u) & ~63u) ||
         groups == 0 || groups > 100000 || docs == 0 || docs > INT32_MAX)
       return false;
-    turbo::SymphonyQGRotation rotation(dimension);
+    turbo::SymQGRotation rotation(dimension);
     return rotated == rotation.padded_dim() &&
            (version != 2 ||
             (dimension == 768 && metric == 0 && projected == 384));
