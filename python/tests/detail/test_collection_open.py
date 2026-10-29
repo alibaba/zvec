@@ -947,8 +947,9 @@ class TestCollectionOpen:
         # Keep collection metadata valid and fail specifically in IDMap's
         # RocksDB manifest recovery, after the collection lock is acquired.
         current = path / "idmap.0" / "CURRENT"
-        original = current.read_text(encoding="utf-8")
-        current.write_text("MANIFEST-999999\n", encoding="utf-8")
+        # RocksDB requires an LF terminator, including on Windows.
+        original = current.read_bytes()
+        current.write_bytes(b"MANIFEST-999999\n")
 
         with pytest.raises(RuntimeError, match="recovery idmap failed") as error:
             zvec.open(
@@ -958,7 +959,7 @@ class TestCollectionOpen:
         assert "Failed to list RocksDB column families" in str(error.value)
         assert "MANIFEST-999999" in str(error.value)
 
-        current.write_text(original, encoding="utf-8")
+        current.write_bytes(original)
         reopened = zvec.open(
             path=str(path),
             option=CollectionOption(read_only=read_only, enable_mmap=False),
