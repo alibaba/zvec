@@ -932,6 +932,39 @@ class TestCollectionOpen:
         cleanup_coll = zvec.open(path=str(collection_path), option=collection_option)
         cleanup_coll.destroy()
 
+    @pytest.mark.parametrize("read_only", [False, True])
+    def test_open_reports_idmap_recovery_error(
+        self, tmp_path, collection_schema, read_only
+    ):
+        zvec.init()
+        path = tmp_path / "collection"
+        created = zvec.create_and_open(
+            path=str(path),
+            schema=collection_schema,
+            option=CollectionOption(enable_mmap=False),
+        )
+        created.close()
+        # Keep collection metadata valid and fail specifically in IDMap's
+        # RocksDB manifest recovery, after the collection lock is acquired.
+        current = path / "idmap.0" / "CURRENT"
+        original = current.read_text(encoding="utf-8")
+        current.write_text("MANIFEST-999999\n", encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="recovery idmap failed") as error:
+            zvec.open(
+                path=str(path),
+                option=CollectionOption(read_only=read_only, enable_mmap=False),
+            )
+        assert "Failed to list RocksDB column families" in str(error.value)
+        assert "MANIFEST-999999" in str(error.value)
+
+        current.write_text(original, encoding="utf-8")
+        reopened = zvec.open(
+            path=str(path),
+            option=CollectionOption(read_only=read_only, enable_mmap=False),
+        )
+        reopened.close()
+
     def test_open_with_corrupted_files(self, tmp_path_factory):
         # First create a collection
         collection_schema = zvec.CollectionSchema(
