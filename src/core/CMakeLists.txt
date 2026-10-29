@@ -52,12 +52,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND ZVEC_CORE_LIBS ${CMAKE_DL_LIBS})
 endif()
 
+set(ZVEC_CORE_LIBRARY_OPTIONS)
+
+# The archive follows the headers.  ZVEC_INSTALL_ENGINE_HEADERS=OFF publishes a
+# stable-API-only SDK, and an installed libzvec_core.a whose zvec/core/**
+# declarations were not installed is a library that cannot be called -- the same
+# mistake the shared-library switch avoids, one layer down.  The archive is still
+# *built*: libzvec and libzvec_c_api whole-archive it, and in-tree tests,
+# examples and subproject-integration link the target directly.
+if(NOT ZVEC_INSTALL_ENGINE_HEADERS)
+  list(APPEND ZVEC_CORE_LIBRARY_OPTIONS SKIP_ARCHIVE_INSTALL)
+endif()
+
 # EXPORT_DEF is not gated on BUILD_ZVEC_CORE_SHARED: libzvec whole-archives
 # zvec_core and, now that the standalone library is optional in the package, is
 # the only DLL a Windows consumer is guaranteed to get.  Without the dllexport
 # pass the engine API would be present in zvec.dll but unreachable from it.
 # Same shape as src/ailego/CMakeLists.txt.
-set(ZVEC_CORE_LIBRARY_OPTIONS)
 if(WIN32 AND (BUILD_ZVEC_CORE_SHARED OR BUILD_ZVEC_SHARED))
   list(APPEND ZVEC_CORE_LIBRARY_OPTIONS
     OBJECTS

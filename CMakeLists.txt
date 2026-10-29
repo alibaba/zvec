@@ -165,8 +165,12 @@ option(BUILD_CPP_EXAMPLES "Build C++ examples" OFF)
 #
 # Both libraries are still *built* either way: libzvec and libzvec_c_api
 # whole-archive them, and in-tree tests, examples and subproject-integration
-# link the targets directly.  The static archives keep installing through
-# cc_library(PACKED) for static and mobile-SDK consumers.
+# link the targets directly.
+#
+# The static archives follow the engine headers, not this switch: they install
+# through cc_library(PACKED) unless ZVEC_INSTALL_ENGINE_HEADERS is off, because
+# an installed libzvec_core.a without zvec/core/** is a library that cannot be
+# called.  libzvec.a always installs, since zvec/db/** always does.
 #
 # core and ailego cannot be split into separate *header* switches: zvec/core/**
 # pulls in 31 of the 35 zvec/ailego headers transitively (measured), so
@@ -176,12 +180,31 @@ option(BUILD_CPP_EXAMPLES "Build C++ examples" OFF)
 # Turning ZVEC_INSTALL_ENGINE_HEADERS off removes a published capability and
 # needs a major version; turning the library switch off does not, because
 # libzvec exports the same symbols.
+#
+# Resulting packages (headers / shared libraries / static archives, measured):
+#   ON  / OFF (default)   95 headers, 2 shared libraries, 4 archives
+#   ON  / ON              95 headers, 4 shared libraries, 4 archives
+#   OFF / OFF             18 headers, 2 shared libraries, libzvec.a only
+#   OFF / ON              configuration error (guarded below)
 option(ZVEC_INSTALL_ENGINE_HEADERS
        "Install the advanced zvec/core, zvec/ailego, zvec/turbo headers"
        ON)
 option(ZVEC_INSTALL_ENGINE_SHARED_LIBRARIES
        "Also install the standalone libzvec_core / libzvec_ailego shared libraries"
        OFF)
+
+# Invariant: the install tree never carries an engine artifact whose headers are
+# absent.  A shared libzvec_core without zvec/core/** is a library that cannot be
+# called, which is the exact coupling the two switches were split to relax -- it
+# only ever needed relaxing in the other direction (headers without libraries is
+# fine, because libzvec exports the same symbols).
+if(ZVEC_INSTALL_ENGINE_SHARED_LIBRARIES AND NOT ZVEC_INSTALL_ENGINE_HEADERS)
+  message(FATAL_ERROR
+      "ZVEC_INSTALL_ENGINE_SHARED_LIBRARIES=ON requires "
+      "ZVEC_INSTALL_ENGINE_HEADERS=ON: installing libzvec_core / libzvec_ailego "
+      "without the zvec/core, zvec/ailego and zvec/turbo headers that declare "
+      "their API would publish libraries that cannot be called.")
+endif()
 
 message(STATUS "BUILD_ZVEC_SHARED:${BUILD_ZVEC_SHARED}")
 message(STATUS "BUILD_ZVEC_AILEGO_SHARED:${BUILD_ZVEC_AILEGO_SHARED}")

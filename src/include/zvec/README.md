@@ -43,10 +43,14 @@ by default; pass `-DZVEC_INSTALL_ENGINE_SHARED_LIBRARIES=ON` to install them.
 If you linked `-lzvec_core` or `-lzvec_ailego`, link `-lzvec` instead: same
 symbols, one library.
 
-The static archives (`libzvec.a`, `libzvec_core.a`, …) still install, for static
-and mobile consumers; the mobile SDK targets `zvec::static`, `zvec::core_static`
-and `zvec::ailego_static` are build-tree only and read headers from this
-directory rather than from an install tree.
+The static archives follow the *headers*, not the library switch: `libzvec.a`
+always installs (since `zvec/db/**` always does), and `libzvec_core.a` /
+`libzvec_ailego.a` / `libzvec_turbo.a` install only with
+`ZVEC_INSTALL_ENGINE_HEADERS=ON` — an archive whose declarations were not
+installed is a library that cannot be called. The mobile SDK targets
+`zvec::static`, `zvec::core_static` and `zvec::ailego_static` are build-tree only
+and read headers from this directory rather than from an install tree, so
+neither switch reaches them.
 
 ## Stable public API
 

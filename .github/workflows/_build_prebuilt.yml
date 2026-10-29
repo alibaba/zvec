@@ -317,6 +317,29 @@ jobs:
           test -f "$TRIMMED/include/zvec/ailego/pattern/expected.hpp"
           test ! -e "$TRIMMED/include/zvec/core/framework"
           test ! -e "$TRIMMED/include/zvec/ailego/logger"
+
+          # The engine *archives* follow the engine headers.  cc_library(PACKED)
+          # installs them, and an installed libzvec_core.a whose zvec/core/**
+          # declarations were not installed is a library that cannot be called --
+          # the same mistake the shared-library switch avoids, one layer down.
+          # libzvec.a stays: zvec/db/** is always installed.
+          for name in zvec_core zvec_ailego zvec_turbo; do
+            for ext in a lib; do
+              if ls "$TRIMMED"/lib/*"$name"."$ext" >/dev/null 2>&1; then
+                echo "::error::engine archive $name must not be installed when the engine headers are off"
+                exit 1
+              fi
+            done
+          done
+          # ls with several operands exits non-zero if any is missing, so collect
+          # instead of testing the exit status: only one of these exists per
+          # platform (libzvec.a on Unix, zvec.lib on Windows).
+          DB_ARCHIVE=$(ls "$TRIMMED"/lib/*zvec.a "$TRIMMED"/lib/zvec.lib 2>/dev/null | head -1)
+          if [ -z "$DB_ARCHIVE" ]; then
+            echo "::error::the db-layer archive must still be installed"
+            exit 1
+          fi
+
           python3 scripts/check_public_headers.py --verbose --compile-check
 
           TRIMMED_SMOKE="$RUNNER_TEMP/sdk-smoke-trimmed"

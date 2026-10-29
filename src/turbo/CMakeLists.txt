@@ -281,9 +281,20 @@ if(ZVEC_TURBO_ARM_FP16_SUPPORTED)
     list(APPEND ZVEC_TURBO_DEFS ZVEC_HAVE_ARM_FP16_KERNEL=1)
 endif()
 
+set(ZVEC_TURBO_LIBRARY_OPTIONS)
+
+# The archive follows the headers.  ZVEC_INSTALL_ENGINE_HEADERS=OFF publishes a
+# stable-API-only SDK, and an installed libzvec_turbo.a whose zvec/turbo/**
+# declarations were not installed is a library that cannot be called -- the same
+# mistake the shared-library switch avoids, one layer down.  The archive is still
+# *built*: libzvec and libzvec_c_api whole-archive it, and in-tree tests,
+# examples and subproject-integration link the target directly.
+if(NOT ZVEC_INSTALL_ENGINE_HEADERS)
+  list(APPEND ZVEC_TURBO_LIBRARY_OPTIONS SKIP_ARCHIVE_INSTALL)
+endif()
+
 # See zvec_core: libzvec is the DLL a Windows consumer is guaranteed to get, so
 # the dllexport pass cannot depend on the standalone engine library being built.
-set(ZVEC_TURBO_LIBRARY_OPTIONS)
 if(WIN32 AND (BUILD_ZVEC_CORE_SHARED OR BUILD_ZVEC_SHARED))
   list(APPEND ZVEC_TURBO_LIBRARY_OPTIONS
     OBJECTS

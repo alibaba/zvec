@@ -382,8 +382,12 @@ endif()
 #
 # Both are still *built* either way, since libzvec and libzvec_c_api
 # whole-archive them and in-tree tests, examples and subproject-integration link
-# the targets directly.  The static archives keep installing through
-# cc_library(PACKED) for static and mobile-SDK consumers.
+# the targets directly.
+#
+# The static archives follow the engine *headers*, not this switch: they install
+# through cc_library(PACKED) unless ZVEC_INSTALL_ENGINE_HEADERS is off, because
+# an installed libzvec_core.a without zvec/core/** is a library that cannot be
+# called.  libzvec.a always installs, since zvec/db/** always does.
 set(ZVEC_ENGINE_SHARED_INSTALL_OPTIONS)
 if(NOT ZVEC_INSTALL_ENGINE_SHARED_LIBRARIES)
   set(ZVEC_ENGINE_SHARED_INSTALL_OPTIONS SKIP_INSTALL)
