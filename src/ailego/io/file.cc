@@ -34,6 +34,9 @@ namespace ailego {
 #if !defined(_WIN64) && !defined(_WIN32)
 
 static inline int OpenSafely(const char *path, int flags) {
+  // Set close-on-exec atomically with open: a later fcntl can race with a
+  // concurrent process launch and leave the child holding collection locks.
+  flags |= O_CLOEXEC;
   int fd = open(path, flags, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
   while (fd == -1 && errno == EINTR) {
     fd = open(path, flags, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
@@ -424,6 +427,8 @@ bool File::create(const char *path, size_t len, bool direct) {
   ailego_false_if_false(Utf8PathOk(path, wpath));
 
   // Try opening or creating the file
+  // Null security attributes make this handle and the direct-I/O reopen below
+  // non-inheritable, even when the child process enables handle inheritance.
   HANDLE file_handle =
       ::CreateFileW(wpath.c_str(), GENERIC_WRITE | GENERIC_READ,
                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -470,6 +475,7 @@ bool File::open(const char *path, bool rdonly, bool direct) {
   if (direct) {
     flags |= FILE_FLAG_NO_BUFFERING;
   }
+  // Null security attributes keep this handle non-inheritable.
   HANDLE file_handle = ::CreateFileW(
       wpath.c_str(), (rdonly ? GENERIC_READ : GENERIC_READ | GENERIC_WRITE),
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
