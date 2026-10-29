@@ -682,8 +682,16 @@ void MemoryLimitPool::background_evict_loop() {
     }
     // Reclaim proactively down to the low watermark so the foreground path
     // finds ready buffers on the free-list instead of evicting inline.
-    while (bg_running_.load() && used_size_.load() > low) {
-      size_t n = BlockEvictionQueue::get_instance().batch_recycle(64);
+    while (bg_running_.load()) {
+      const size_t used = used_size_.load();
+      if (used <= low) {
+        break;
+      }
+      // A full batch can drain a small pool well below the low watermark.
+      // Round up to whole pages, and recheck usage after each bounded batch.
+      const size_t pages = (used - low - 1) / page_buffer_size() + 1;
+      const size_t n = BlockEvictionQueue::get_instance().batch_recycle(
+          std::min<size_t>(64, pages));
       if (n == 0) {
         // Back off when pressure remains but eviction makes no progress.
         bg_no_progress_sleeps_.fetch_add(1, std::memory_order_relaxed);

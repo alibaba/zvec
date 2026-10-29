@@ -2142,6 +2142,38 @@ TEST_F(BufferPoolTest, BackgroundReclaimsToLowWatermark) {
   EXPECT_GT(mp.stats().bg_evicted_buffers, 0u);
 }
 
+TEST_F(BufferPoolTest, BackgroundReclaimPreservesTinyWorkingSet) {
+  constexpr size_t kCapacityPages = 3;
+  init_vec_pool(kCapacityPages, /*file_pages=*/kCapacityPages);
+  std::string file = new_file(kCapacityPages);
+
+  VecBufferPool pool(file, /*writable=*/false);
+  ASSERT_EQ(pool.init(), 0);
+  auto handle = pool.get_handle();
+  auto &memory_pool = MemoryLimitPool::get_instance();
+  const uint64_t evicted_before = memory_pool.stats().bg_evicted_buffers;
+
+  // The first two pages are released before the third allocation triggers
+  // reclaim. A fixed 64-page batch would evict both (and possibly the third),
+  // although freeing one page is enough to reach the 2.25-page low watermark.
+  std::vector<char> data(kVectorPageSize);
+  for (size_t page = 0; page < kCapacityPages; ++page) {
+    ASSERT_TRUE(handle.read_range(page * kVectorPageSize, kVectorPageSize,
+                                  data.data()));
+    ExpectPageContent(data.data(), page);
+  }
+
+  // Observe completion of the batch, not just its first buffer release.
+  for (int i = 0;
+       i < 200 && memory_pool.stats().bg_evicted_buffers == evicted_before;
+       ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  const auto stats = memory_pool.stats();
+  EXPECT_EQ(1u, stats.bg_evicted_buffers - evicted_before);
+  EXPECT_EQ(2 * kVectorPageSize, stats.page_used);
+}
+
 TEST_F(BufferPoolTest, BackgroundBacksOffWhenAllPagesArePinned) {
   constexpr size_t kPageCount = 4;
   init_vec_pool(/*capacity_pages=*/kPageCount, /*file_pages=*/kPageCount);
