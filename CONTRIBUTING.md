@@ -87,12 +87,17 @@ CMAKE_BUILD_TYPE=Debug CMAKE_GENERATOR="Unix Makefiles" pip install -v .
 
 Only `src/include/zvec/db/*.h` and `src/include/zvec/c_api.h` are the stable,
 versioned API. `src/include/zvec/{core,ailego,turbo}/**` are the engine and may
-change at any time; they are installed only because `libzvec_core` /
-`libzvec_ailego` are published alongside them, and `-DZVEC_INSTALL_ENGINE_HEADERS=OFF`
+change at any time; they are installed by default for consumers that
+deliberately build against the engine, and `-DZVEC_INSTALL_ENGINE_HEADERS=OFF`
 produces a stable-API-only SDK. See
 [`src/include/zvec/README.md`](src/include/zvec/README.md) for the boundary rules
 (where internal helpers go, how to hide engine types, how to keep the include
 budget in check).
+
+A released package carries two shared libraries, `libzvec` and `libzvec_c_api`.
+`libzvec` serves the engine headers too, so the standalone `libzvec_core` /
+`libzvec_ailego` are built but not packaged; `-DZVEC_INSTALL_ENGINE_SHARED_LIBRARIES=ON`
+installs them for consumers that want the engine without the db layer.
 
 The rules are enforced by `scripts/check_public_headers.py`, which runs in
 pre-commit and in the Lint workflow:

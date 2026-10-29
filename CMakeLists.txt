@@ -143,23 +143,45 @@ option(BUILD_C_BINDINGS "Build C bindings" ON)
 option(BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(BUILD_CPP_EXAMPLES "Build C++ examples" OFF)
 
-# SDK surface policy.
+# SDK surface policy.  Two independent switches, because headers and libraries
+# stopped having to travel together: libzvec whole-archives every component and
+# exports exactly what the published headers declare (see
+# scripts/generate_export_whitelist.py), so it can serve the engine API that
+# libzvec_core and libzvec_ailego used to serve on their own.
 #
-# ON  (default, unchanged behaviour): install everything under src/include plus
-#     the standalone libzvec_core / libzvec_ailego shared libraries.
-# OFF (trimmed SDK): install only the stable API -- zvec/db/**, zvec/c_api.h,
-#     zvec/export.h and the engine headers they transitively need, listed in
-#     cmake/zvec_public_headers.cmake -- and stop installing libzvec_core /
-#     libzvec_ailego, whose API would otherwise ship without headers.
+# ZVEC_INSTALL_ENGINE_HEADERS
+#   ON  (default): install everything under src/include -- 95 headers.
+#   OFF (trimmed): install only the stable API -- zvec/db/**, zvec/c_api.h,
+#       zvec/export.h and the engine headers they transitively need, listed in
+#       cmake/zvec_public_headers.cmake -- 18 headers.
 #
-# core and ailego cannot be split into separate switches: zvec/core/** pulls in
-# 31 of the 35 zvec/ailego headers transitively (measured), so trimming ailego
-# while publishing core saves 3 headers out of 95.  Treat the engine surface as
-# one unit.  Flipping the default to OFF removes a published capability and
-# needs the release workflows' libzvec_core/libzvec_ailego assertions updated.
+# ZVEC_INSTALL_ENGINE_SHARED_LIBRARIES
+#   OFF (default): ship libzvec and libzvec_c_api only.  Every engine symbol a
+#       published header declares comes out of libzvec, so nothing is lost --
+#       the migration for a consumer that linked -lzvec_core or -lzvec_ailego is
+#       to link -lzvec instead.
+#   ON : also install the standalone libzvec_core / libzvec_ailego, for
+#       consumers that want the engine without the db layer.
+#
+# Both libraries are still *built* either way: libzvec and libzvec_c_api
+# whole-archive them, and in-tree tests, examples and subproject-integration
+# link the targets directly.  The static archives keep installing through
+# cc_library(PACKED) for static and mobile-SDK consumers.
+#
+# core and ailego cannot be split into separate *header* switches: zvec/core/**
+# pulls in 31 of the 35 zvec/ailego headers transitively (measured), so
+# publishing core without ailego saves 3 headers out of 95 and ships core
+# headers that do not compile.  Treat the engine header surface as one unit.
+#
+# Turning ZVEC_INSTALL_ENGINE_HEADERS off removes a published capability and
+# needs a major version; turning the library switch off does not, because
+# libzvec exports the same symbols.
 option(ZVEC_INSTALL_ENGINE_HEADERS
-       "Install the advanced zvec/core, zvec/ailego, zvec/turbo headers and their standalone shared libraries"
+       "Install the advanced zvec/core, zvec/ailego, zvec/turbo headers"
        ON)
+option(ZVEC_INSTALL_ENGINE_SHARED_LIBRARIES
+       "Also install the standalone libzvec_core / libzvec_ailego shared libraries"
+       OFF)
 
 message(STATUS "BUILD_ZVEC_SHARED:${BUILD_ZVEC_SHARED}")
 message(STATUS "BUILD_ZVEC_AILEGO_SHARED:${BUILD_ZVEC_AILEGO_SHARED}")
@@ -169,6 +191,7 @@ message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
 message(STATUS "BUILD_BENCHMARKS:${BUILD_BENCHMARKS}")
 message(STATUS "BUILD_CPP_EXAMPLES:${BUILD_CPP_EXAMPLES}")
 message(STATUS "ZVEC_INSTALL_ENGINE_HEADERS:${ZVEC_INSTALL_ENGINE_HEADERS}")
+message(STATUS "ZVEC_INSTALL_ENGINE_SHARED_LIBRARIES:${ZVEC_INSTALL_ENGINE_SHARED_LIBRARIES}")
 
 # RaBitQ support:
 #   - Linux x86_64 and ARM64 with GCC/Clang

@@ -281,14 +281,14 @@ if(ZVEC_TURBO_ARM_FP16_SUPPORTED)
     list(APPEND ZVEC_TURBO_DEFS ZVEC_HAVE_ARM_FP16_KERNEL=1)
 endif()
 
+# See zvec_core: libzvec is the DLL a Windows consumer is guaranteed to get, so
+# the dllexport pass cannot depend on the standalone engine library being built.
 set(ZVEC_TURBO_LIBRARY_OPTIONS)
 if(WIN32 AND (BUILD_ZVEC_CORE_SHARED OR BUILD_ZVEC_SHARED))
-  list(APPEND ZVEC_TURBO_LIBRARY_OPTIONS OBJECTS)
-  if(BUILD_ZVEC_CORE_SHARED)
-    list(APPEND ZVEC_TURBO_LIBRARY_OPTIONS
-      EXPORT_DEF ZVEC_TURBO_BUILD_SHARED
-    )
-  endif()
+  list(APPEND ZVEC_TURBO_LIBRARY_OPTIONS
+    OBJECTS
+    EXPORT_DEF ZVEC_TURBO_BUILD_SHARED
+  )
 endif()
 
 set(ZVEC_TURBO_RABITQ_LIBS "")

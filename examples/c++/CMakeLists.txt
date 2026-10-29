@@ -41,6 +41,14 @@ if(ANDROID OR IOS)
 elseif(TARGET zvec_shared AND TARGET zvec_core_shared)
     # An in-tree desktop build can link targets directly; the shared-library
     # files do not need to exist yet during CMake configuration.
+    #
+    # All three examples link the all-in-one library, which is what a released
+    # SDK contains: libzvec whole-archives every component and exports exactly
+    # what the published headers declare, engine headers included.  The
+    # standalone libzvec_core / libzvec_ailego are built but not packaged by
+    # default (-DZVEC_INSTALL_ENGINE_SHARED_LIBRARIES=ON to get them), so an
+    # example that linked them would teach a link line that does not work
+    # against a downloaded SDK.
     add_library(zvec-lib INTERFACE)
     target_link_libraries(zvec-lib INTERFACE zvec_shared)
 
@@ -48,7 +56,7 @@ elseif(TARGET zvec_shared AND TARGET zvec_core_shared)
     target_link_libraries(zvec-ailego-lib INTERFACE zvec_shared)
 
     add_library(zvec-core-lib INTERFACE)
-    target_link_libraries(zvec-core-lib INTERFACE zvec_core_shared)
+    target_link_libraries(zvec-core-lib INTERFACE zvec_shared)
 else()
     set(ZVEC_LIB_DIR ${ZVEC_ROOT_DIR}/${HOST_BUILD_DIR}/lib)
     set(ZVEC_LIB_SEARCH_DIRS ${ZVEC_LIB_DIR})
@@ -101,10 +109,10 @@ else()
         set(${OUT_VAR} "${${OUT_VAR}}" PARENT_SCOPE)
     endfunction()
 
+    # Only libzvec is required: it is the single public all-in-one shared
+    # library, and the standalone engine libraries are not packaged by default.
     zvec_require_shared_library(ZVEC_SHARED_LIBRARY zvec)
-    zvec_require_shared_library(ZVEC_CORE_SHARED_LIBRARY zvec_core)
 
-    # Desktop examples keep using the public all-in-one shared libraries.
     add_library(zvec-lib INTERFACE)
     target_link_libraries(zvec-lib INTERFACE "${ZVEC_SHARED_LIBRARY}")
 
@@ -112,7 +120,7 @@ else()
     target_link_libraries(zvec-ailego-lib INTERFACE "${ZVEC_SHARED_LIBRARY}")
 
     add_library(zvec-core-lib INTERFACE)
-    target_link_libraries(zvec-core-lib INTERFACE "${ZVEC_CORE_SHARED_LIBRARY}")
+    target_link_libraries(zvec-core-lib INTERFACE "${ZVEC_SHARED_LIBRARY}")
 endif()
 
 # --- Executables ---

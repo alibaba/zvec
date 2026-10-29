@@ -371,15 +371,21 @@ if(ANDROID OR IOS)
     add_library(zvec::ailego_static ALIAS zvec_ailego_static_sdk)
 endif()
 
-# Standalone engine libraries are part of the advanced surface: their headers are
-# only installed together with ZVEC_INSTALL_ENGINE_HEADERS, so the libraries must
-# follow the same switch.  Publishing libzvec_core without zvec/core/** would
-# ship a library that cannot be called; both are still *built* either way, since
-# libzvec and libzvec_c_api whole-archive them and in-tree tests, examples and
-# subproject-integration link the targets directly.  The static archives keep
-# installing through cc_library(PACKED) for static and mobile-SDK consumers.
+# The standalone engine libraries are optional in the package.  They used to be
+# tied to ZVEC_INSTALL_ENGINE_HEADERS because publishing libzvec_core without
+# zvec/core/** ships a library that cannot be called -- but that coupling only
+# ever protected one direction.  With the generated export whitelist libzvec
+# exports every symbol the published headers declare, engine ones included, so
+# the headers can ship while the standalone libraries do not: a consumer links
+# -lzvec and gets the same API.  That is the default, and it is what makes the
+# released package two shared libraries wide instead of four.
+#
+# Both are still *built* either way, since libzvec and libzvec_c_api
+# whole-archive them and in-tree tests, examples and subproject-integration link
+# the targets directly.  The static archives keep installing through
+# cc_library(PACKED) for static and mobile-SDK consumers.
 set(ZVEC_ENGINE_SHARED_INSTALL_OPTIONS)
-if(NOT ZVEC_INSTALL_ENGINE_HEADERS)
+if(NOT ZVEC_INSTALL_ENGINE_SHARED_LIBRARIES)
   set(ZVEC_ENGINE_SHARED_INSTALL_OPTIONS SKIP_INSTALL)
 endif()
 
@@ -416,7 +422,9 @@ if(BUILD_ZVEC_SHARED)
             zvec_turbo
         EXPORT_COMPONENTS
             zvec
+            zvec_core
             zvec_ailego
+            zvec_turbo
         EXPORT_SYMBOLS
             ${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols_zvec
     )

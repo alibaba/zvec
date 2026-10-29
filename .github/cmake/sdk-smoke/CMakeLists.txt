@@ -60,21 +60,45 @@ set_tests_properties(cpp_smoke PROPERTIES ENVIRONMENT "ZVEC_JIEBA_DICT_DIR=")
 # ---------------------------------------------------------------------------
 # Advanced engine headers (optional in the package)
 # ---------------------------------------------------------------------------
-# libzvec_core is published as its own library, so when the package carries the
-# engine headers we must prove they still compile and link.  ZVEC_REQUIRE_CORE
-# turns "absent" into a hard error so CI can pin the expected package shape.
+# The engine headers have to compile and link against *something* in the
+# package.  By default that is libzvec, which whole-archives every component and
+# exports exactly what the published headers declare; a package configured with
+# -DZVEC_INSTALL_ENGINE_SHARED_LIBRARIES=ON also carries the standalone
+# libzvec_core, which is preferred here so that shape stays exercised.
+# ZVEC_REQUIRE_CORE turns "engine headers absent" into a hard error so CI can
+# pin the expected package shape.
 set(_core_header "${ZVEC_SDK_DIR}/include/zvec/core/interface/index_factory.h")
 if(EXISTS "${_core_header}")
+  # Shared libraries only.  The package also keeps the static archives for
+  # static and mobile consumers, and those are not self-contained -- rocksdb,
+  # arrow and protobuf are not installed -- so letting find_library() pick up
+  # libzvec_core.a would produce a link that cannot resolve.  On Windows the
+  # DLL's import library is zvec_core_shared.lib and the static zvec_core.lib is
+  # dropped during staging, which is why zvec_core_shared comes first.
+  set(_saved_library_suffixes "${CMAKE_FIND_LIBRARY_SUFFIXES}")
+  if(WIN32)
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".lib")
+  else()
+    set(CMAKE_FIND_LIBRARY_SUFFIXES ".dylib;.so")
+  endif()
   find_library(ZVEC_SDK_CORE_LIBRARY
-    NAMES zvec_core
+    NAMES zvec_core_shared zvec_core
     PATHS "${ZVEC_SDK_DIR}/lib"
     NO_DEFAULT_PATH
-    CMAKE_FIND_ROOT_PATH_BOTH
-    REQUIRED)
+    CMAKE_FIND_ROOT_PATH_BOTH)
+  set(CMAKE_FIND_LIBRARY_SUFFIXES "${_saved_library_suffixes}")
+
+  if(ZVEC_SDK_CORE_LIBRARY)
+    set(_core_smoke_library "${ZVEC_SDK_CORE_LIBRARY}")
+    message(STATUS "core_smoke: linking the standalone libzvec_core")
+  else()
+    set(_core_smoke_library "${ZVEC_SDK_LIBRARY}")
+    message(STATUS "core_smoke: linking libzvec (no standalone libzvec_core)")
+  endif()
 
   add_executable(core_smoke core_smoke.cc)
   target_include_directories(core_smoke PRIVATE "${ZVEC_SDK_DIR}/include")
-  target_link_libraries(core_smoke PRIVATE "${ZVEC_SDK_CORE_LIBRARY}")
+  target_link_libraries(core_smoke PRIVATE "${_core_smoke_library}")
   if(NOT WIN32)
     set_target_properties(core_smoke PROPERTIES
       BUILD_RPATH "${ZVEC_SDK_DIR}/lib")
@@ -89,20 +113,24 @@ else()
   message(STATUS "engine headers absent from the package; skipping core_smoke")
 endif()
 
-# The shared libzvec_ailego is built but deliberately not installed: ailego is
-# an internal foundation library whose symbols are whole-archived into libzvec,
-# and a trimmed package (ZVEC_INSTALL_ENGINE_HEADERS=OFF) ships only the headers
-# the stable API needs.  Guard that decision so it cannot silently come back.
-# The *static* libzvec_ailego.a is intentionally kept for static and mobile-SDK
-# consumers, so match shared-library suffixes only.
-file(GLOB _ailego_shared_libraries
+# The standalone engine shared libraries are built but, by default, not
+# installed: libzvec whole-archives both and exports their public API, so a
+# package carrying them as well would ship two ways to call the same code and
+# twice the ABI to keep compatible.  Guard that decision so it cannot silently
+# come back.  The *static* archives are intentionally kept for static and
+# mobile-SDK consumers, so match shared-library suffixes only.
+file(GLOB _engine_shared_libraries
+  "${ZVEC_SDK_DIR}/lib/*zvec_core*.so"
+  "${ZVEC_SDK_DIR}/lib/*zvec_core*.so.*"
+  "${ZVEC_SDK_DIR}/lib/*zvec_core*.dylib"
+  "${ZVEC_SDK_DIR}/lib/*zvec_core*.dll"
   "${ZVEC_SDK_DIR}/lib/*zvec_ailego*.so"
   "${ZVEC_SDK_DIR}/lib/*zvec_ailego*.so.*"
   "${ZVEC_SDK_DIR}/lib/*zvec_ailego*.dylib"
   "${ZVEC_SDK_DIR}/lib/*zvec_ailego*.dll"
 )
-if(_ailego_shared_libraries AND ZVEC_FORBID_AILEGO_LIBRARY)
+if(_engine_shared_libraries AND ZVEC_FORBID_ENGINE_LIBRARIES)
   message(FATAL_ERROR
-    "shared libzvec_ailego must not be packaged, found: "
-    "${_ailego_shared_libraries}")
+    "standalone engine shared libraries must not be packaged, found: "
+    "${_engine_shared_libraries}")
 endif()

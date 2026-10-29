@@ -52,14 +52,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND ZVEC_CORE_LIBS ${CMAKE_DL_LIBS})
 endif()
 
+# EXPORT_DEF is not gated on BUILD_ZVEC_CORE_SHARED: libzvec whole-archives
+# zvec_core and, now that the standalone library is optional in the package, is
+# the only DLL a Windows consumer is guaranteed to get.  Without the dllexport
+# pass the engine API would be present in zvec.dll but unreachable from it.
+# Same shape as src/ailego/CMakeLists.txt.
 set(ZVEC_CORE_LIBRARY_OPTIONS)
 if(WIN32 AND (BUILD_ZVEC_CORE_SHARED OR BUILD_ZVEC_SHARED))
-  list(APPEND ZVEC_CORE_LIBRARY_OPTIONS OBJECTS)
-  if(BUILD_ZVEC_CORE_SHARED)
-    list(APPEND ZVEC_CORE_LIBRARY_OPTIONS
-      EXPORT_DEF ZVEC_CORE_BUILD_SHARED
-    )
-  endif()
+  list(APPEND ZVEC_CORE_LIBRARY_OPTIONS
+    OBJECTS
+    EXPORT_DEF ZVEC_CORE_BUILD_SHARED
+  )
 endif()
 
 cc_library(

@@ -126,7 +126,9 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES=x86_64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
-            -DZVEC_SDK_DIR="$ZVEC_DIST_DIR"
+            -DZVEC_SDK_DIR="$ZVEC_DIST_DIR" \
+            -DZVEC_REQUIRE_CORE=ON \
+            -DZVEC_FORBID_ENGINE_LIBRARIES=ON
           cmake --build "$SMOKE_BUILD" --parallel 2
           ctest --test-dir "$SMOKE_BUILD" --output-on-failure
 

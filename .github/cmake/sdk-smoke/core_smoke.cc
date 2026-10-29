@@ -1,10 +1,11 @@
-// Exercises the *advanced* engine headers, which the package only carries when
-// it was configured with -DZVEC_INSTALL_CORE_HEADERS=ON (the default).
+// Exercises the *advanced* engine headers, which the package carries when it was
+// configured with -DZVEC_INSTALL_ENGINE_HEADERS=ON (the default).
 //
-// libzvec_core is published as its own library on every platform, so shipping
-// it without headers that actually compile and link would be a silent
-// regression the stable-API smoke test cannot catch.  This builds a one-doc
-// HNSW index through the public engine API to prove both.
+// The engine API is served by libzvec -- or by the standalone libzvec_core when
+// the package was built with -DZVEC_INSTALL_ENGINE_SHARED_LIBRARIES=ON -- so
+// shipping those headers without symbols that actually resolve would be a silent
+// regression the stable-API smoke test cannot catch.  This builds a one-doc HNSW
+// index through the public engine API to prove both the headers and the exports.
 #include <cstdint>
 #include <filesystem>
 #include <iostream>

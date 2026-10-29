@@ -125,7 +125,9 @@ jobs:
           SMOKE_BUILD="$RUNNER_TEMP/release-sdk-smoke-build"
           cmake -S .github/cmake/sdk-smoke -B "$SMOKE_BUILD" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DZVEC_SDK_DIR="$GITHUB_WORKSPACE/$SDK_DIR/extracted"
+            -DZVEC_SDK_DIR="$GITHUB_WORKSPACE/$SDK_DIR/extracted" \
+            -DZVEC_REQUIRE_CORE=ON \
+            -DZVEC_FORBID_ENGINE_LIBRARIES=ON
           cmake --build "$SMOKE_BUILD" --parallel 2
           ctest --test-dir "$SMOKE_BUILD" --output-on-failure
 
