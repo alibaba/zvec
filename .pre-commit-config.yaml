@@ -56,6 +56,18 @@ repos:
         pass_filenames: false
         files: ^(src/|scripts/check_public_headers\.py)
 
+      - id: export-whitelist-check
+        name: libzvec export whitelist
+        description: >-
+          Keeps src/exported_symbols_zvec.* in sync with the published C++
+          headers. The whitelist is what libzvec exports, so every public
+          declaration must be regenerable from the headers alone. Needs clang
+          (the check is skipped, not failed, when clang++ is missing).
+        entry: python3 scripts/generate_export_whitelist.py
+        language: system
+        pass_filenames: false
+        files: ^(src/include/|scripts/generate_export_whitelist\.py|src/exported_symbols_zvec\.)
+
       - id: clang-tidy
         name: clang-tidy (C++)
         description: >-

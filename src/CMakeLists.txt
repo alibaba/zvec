@@ -69,9 +69,15 @@ if(ZVEC_INSTALL_ENGINE_HEADERS)
 endif()
 
 function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
-    cmake_parse_arguments(ZVEC_ALLIN "SKIP_INSTALL" "" "LIBS;EXPORT_COMPONENTS" ${ARGN})
+    cmake_parse_arguments(ZVEC_ALLIN "SKIP_INSTALL" "EXPORT_SYMBOLS"
+        "LIBS;EXPORT_COMPONENTS" ${ARGN})
     if(NOT ZVEC_ALLIN_LIBS)
         message(FATAL_ERROR "zvec_add_all_in_one_shared requires LIBS")
+    endif()
+    # Base path (without .txt / .lds) of the link-time export whitelist.
+    if(NOT ZVEC_ALLIN_EXPORT_SYMBOLS)
+        set(ZVEC_ALLIN_EXPORT_SYMBOLS
+            ${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols_cpp)
     endif()
 
     foreach(ZVEC_ALLIN_LIB ${ZVEC_ALLIN_LIBS})
@@ -193,22 +199,35 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
         endif()
     endif()
 
-    # Restrict exported symbols to zvec's own public C++ API (namespace zvec,
-    # which includes nested zvec::ailego / zvec::core / zvec::turbo /
-    # zvec::reranker). All third-party symbols (arrow, rocksdb, parquet,
-    # antlr4) are hidden, and unreferenced code is dead-stripped to
-    # reduce the shared library size. The public C++ headers never expose
-    # third-party types, so hiding them is safe for external C++ consumers.
+    # Restrict the exported symbols to zvec's own public C++ API.  All
+    # third-party symbols (arrow, rocksdb, parquet, antlr4) are hidden, and
+    # unreferenced code is dead-stripped to reduce the shared library size.
+    # The public C++ headers never expose third-party types, so hiding them is
+    # safe for external C++ consumers.
+    #
+    # Two granularities, selected per target through EXPORT_SYMBOLS:
+    #   exported_symbols_cpp.*  namespace-wide ("__ZN4zvec*").  Used by the
+    #                           standalone engine libraries, whose whole
+    #                           zvec::core / zvec::ailego / zvec::turbo surface
+    #                           is their API.
+    #   exported_symbols_zvec.* generated from the published headers, so libzvec
+    #                           exports exactly what a consumer can name --
+    #                           measured 10784 -> 2602 symbols.  Regenerate with
+    #                           scripts/generate_export_whitelist.py --write.
+    #
+    # Note the lists are only applied to non-Debug builds: Debug keeps the full
+    # symbol table so that in-tree debugging and crash symbolication are not
+    # affected.  A consequence is that Debug exports a superset of Release.
     if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
         if(APPLE)
-            set(_ZVEC_ALLIN_EXPORTS ${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols_cpp.txt)
+            set(_ZVEC_ALLIN_EXPORTS ${ZVEC_ALLIN_EXPORT_SYMBOLS}.txt)
             target_link_options(${TARGET_NAME} PRIVATE
                 "-Wl,-exported_symbols_list,${_ZVEC_ALLIN_EXPORTS}"
                 "-Wl,-dead_strip")
             set_property(TARGET ${TARGET_NAME} APPEND PROPERTY
                 LINK_DEPENDS ${_ZVEC_ALLIN_EXPORTS})
         elseif(UNIX)
-            set(_ZVEC_ALLIN_EXPORTS ${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols_cpp.lds)
+            set(_ZVEC_ALLIN_EXPORTS ${ZVEC_ALLIN_EXPORT_SYMBOLS}.lds)
             target_link_options(${TARGET_NAME} PRIVATE
                 "-Wl,--version-script,${_ZVEC_ALLIN_EXPORTS}"
                 "-Wl,--gc-sections")
@@ -398,5 +417,7 @@ if(BUILD_ZVEC_SHARED)
         EXPORT_COMPONENTS
             zvec
             zvec_ailego
+        EXPORT_SYMBOLS
+            ${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols_zvec
     )
 endif()

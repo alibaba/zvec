@@ -113,6 +113,30 @@ A manifest diff means the SDK's header set changed, so call it out in the PR
 description: every header that enters the closure ships in every package from
 then on.
 
+### Exported symbols
+
+`libzvec` whole-archives every component plus rocksdb, arrow, antlr and
+protobuf, so it links with an exported-symbol whitelist rather than exporting
+everything. `src/exported_symbols_zvec.{txt,lds}` is *generated* from the
+published headers -- it is the list of names a consumer can actually write --
+and is what keeps engine internals such as `zvec::sqlengine` out of the ABI
+surface (measured 10784 -> 2602 exports on macOS/arm64).
+
+The pre-commit hook and the Lint workflow check it for drift. After changing a
+published header, regenerate it and commit the diff:
+
+```bash
+python scripts/generate_export_whitelist.py --write
+git diff src/exported_symbols_zvec.txt
+```
+
+This needs `clang++` (the header set is parsed with a clang AST dump); without
+it the check skips locally and fails in CI. The standalone engine libraries
+(`libzvec_core`, `libzvec_ailego`) keep the coarser namespace-wide
+`src/exported_symbols_cpp.*`, since their whole `zvec::core` / `zvec::ailego`
+surface is their API. The lists apply to non-Debug builds only, so Debug keeps
+full symbols for in-tree debugging and crash symbolication.
+
 ---
 
 ## Submitting Changes

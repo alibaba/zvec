@@ -216,6 +216,43 @@ jobs:
             rm -rf "${ZVEC_DIST_DIR:?}/bin"
           fi
 
+      # The export whitelist is generated, not reviewed symbol by symbol, so
+      # the shipped binary is the only ground truth for what libzvec exposes.
+      # Assert the measured surface (2602 exports on macOS/arm64) stayed within
+      # budget and that no engine-internal entity leaked out -- a glob typo
+      # would silently widen the ABI surface instead of failing the build.
+      #
+      # The leak probes match the *entity's own* qualified name, which in the
+      # Itanium encoding always starts at "_ZN4zvec".  Grepping the bare name
+      # ("9sqlengine") is not enough: it also matches template *arguments* of
+      # legitimately public templates, e.g. Status::concat<sqlengine::...>.
+      - name: Check libzvec exported symbol surface
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          LIB=$(ls "$ZVEC_DIST_DIR"/lib/libzvec.so "$ZVEC_DIST_DIR"/lib/libzvec.dylib 2>/dev/null | head -1)
+          test -n "$LIB" || { echo "libzvec not found in $ZVEC_DIST_DIR/lib"; exit 1; }
+          SYMS="$RUNNER_TEMP/libzvec_symbols.txt"
+          if [ "$(uname)" = "Darwin" ]; then
+            nm -gU "$LIB" > "$SYMS"
+          else
+            nm -D --defined-only "$LIB" > "$SYMS"
+          fi
+          INTERNAL='4zvec9sqlengine\|4zvec3fts\|4zvec11SegmentImpl\|4zvec14CollectionImpl'
+          TOTAL=$(wc -l < "$SYMS" | tr -d ' ')
+          LEAKED=$(grep -c "$INTERNAL" "$SYMS" || true)
+          echo "libzvec exported symbols: $TOTAL (budget 3200); engine-internal leaks: $LEAKED (must be 0)"
+          if [ "$LEAKED" -ne 0 ]; then
+            echo "engine-internal entities are exported:"
+            grep "$INTERNAL" "$SYMS" | head -20
+            exit 1
+          fi
+          if [ "$TOTAL" -gt 3200 ]; then
+            echo "exported symbol surface grew past the 3200 budget;"
+            echo "regenerate with scripts/generate_export_whitelist.py --write"
+            exit 1
+          fi
+
       - name: Smoke-test staged SDK
         shell: bash
         run: |

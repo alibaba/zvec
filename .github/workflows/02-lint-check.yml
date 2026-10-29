@@ -37,6 +37,19 @@ jobs:
         run: python scripts/check_public_headers.py --verbose --compile-check
         shell: bash
 
+      # libzvec exports exactly what this list allows, and the list is derived
+      # from the published headers, so a public header edit that forgets a
+      # regeneration would ship a library that cannot satisfy its own headers.
+      # Clang is required (the AST dump is clang-only); ubuntu runners ship it,
+      # but install it rather than silently skip if a future image drops it.
+      - name: Check libzvec Export Whitelist
+        run: |
+          if ! command -v clang++ >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y clang
+          fi
+          python scripts/generate_export_whitelist.py --require-clang --verbose
+        shell: bash
+
       - name: Run clang-format Check
         run: |
           CPP_FILES=$(find . -type f \( -name "*.cpp" -o -name "*.h" -o -name "*.hpp" -o -name "*.cc" -o -name "*.cxx" \) \
