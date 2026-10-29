@@ -15,12 +15,14 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
 #include <random>
 #include <vector>
 #include <gtest/gtest.h>
 #include "distance/neon/fp32/cosine.h"
 #include "distance/neon/fp32/inner_product.h"
 #include "distance/neon/fp32/squared_euclidean.h"
+#include "distance/scalar/fp32/inner_product.h"
 
 namespace zvec::turbo {
 namespace {
@@ -45,6 +47,24 @@ constexpr std::array<Metric, 3> kMetrics = {{
     {"Cosine", neon::cosine_fp32_distance, neon::cosine_fp32_batch_distance,
      false, true},
 }};
+
+double ReferenceTolerance(const Metric &metric, size_t dim, double reference,
+                          double absolute_product_sum) {
+  const double relative_tolerance = 2e-5 * std::max(1.0, std::abs(reference));
+  if (metric.squared_euclidean) {
+    return relative_tolerance;
+  }
+  // On non-NEON hosts these entry points use sequential scalar FP32 sums.
+  // Cancellation can make the final dot arbitrarily small without reducing
+  // rounding error. Use the forward-error bound gamma_k * sum(abs(a[i]*b[i])),
+  // with k covering the products, accumulation and final cosine subtraction.
+  // The batch/single EXPECT_FLOAT_EQ below remains a separate strict check.
+  constexpr double u = std::numeric_limits<float>::epsilon() / 2.0;
+  const double ku = (static_cast<double>(dim) + 2.0) * u;
+  const double gamma = ku / (1.0 - ku);
+  const double scale = absolute_product_sum + (metric.cosine ? 1.0 : 0.0);
+  return std::max(relative_tolerance, gamma * scale);
+}
 
 TEST(NeonFp32Batch, EmptyBatchDoesNotAccessBuffers) {
   for (const auto &metric : kMetrics) {
@@ -98,17 +118,58 @@ TEST(NeonFp32Batch, MatchesSingleAndDoubleReference) {
           EXPECT_FLOAT_EQ(single, output[i + 1]);
           const float *row = static_cast<const float *>(rows[i]);
           double reference = 0.0;
+          double absolute_product_sum = 0.0;
           for (size_t d = 0; d < dim; ++d) {
             const double a = row[d];
             const double b = query[d];
             reference += metric.squared_euclidean ? (a - b) * (a - b) : a * b;
+            absolute_product_sum += std::abs(a * b);
           }
           if (!metric.squared_euclidean) {
             reference = (metric.cosine ? 1.0 : 0.0) - reference;
           }
-          EXPECT_NEAR(reference, output[i + 1],
-                      2e-5 * std::max(1.0, std::abs(reference)));
+          EXPECT_NEAR(
+              reference, output[i + 1],
+              ReferenceTolerance(metric, dim, reference, absolute_product_sum));
         }
+      }
+    }
+  }
+}
+
+TEST(NeonFp32Batch, CancellationAllowsScalarRoundingError) {
+  constexpr size_t dim = 4097;
+  const float small = std::ldexp(1.0f, -24);
+  std::vector<float> query(dim, 1.0f);
+  std::vector<float> row(dim, small);
+  row.front() = 1.0f;
+  row.back() = -1.0f;
+  // All products are exact. Sequential FP32 addition can round away the
+  // small contributions before the final -1 cancels the leading +1.
+  const double dot = static_cast<double>(dim - 2) * small;
+  const double absolute_product_sum = 2.0 + dot;
+  float scalar_ip;
+  scalar::inner_product_fp32_distance(row.data(), query.data(), dim,
+                                      &scalar_ip);
+  const void *rows[] = {row.data(), row.data(), row.data(), row.data(),
+                        row.data(), row.data(), row.data()};
+  for (const auto &metric : kMetrics) {
+    if (metric.squared_euclidean) continue;
+    SCOPED_TRACE(metric.name);
+    const double reference = (metric.cosine ? 1.0 : 0.0) - dot;
+    const double tolerance =
+        ReferenceTolerance(metric, dim, reference, absolute_product_sum);
+    const float scalar = metric.cosine ? 1.0f + scalar_ip : scalar_ip;
+    EXPECT_NEAR(reference, scalar, tolerance);
+    for (size_t n : {1, 2, 3, 4, 5, 6, 7}) {
+      SCOPED_TRACE(n);
+      std::array<float, 7> output{};
+      metric.batch(rows, query.data(), n, dim, output.data(), nullptr);
+      float single;
+      metric.single(row.data(), query.data(), dim, &single);
+      for (size_t i = 0; i < n; ++i) {
+        EXPECT_FLOAT_EQ(single, output[i]);
+        EXPECT_NEAR(reference, output[i], tolerance);
       }
     }
   }
