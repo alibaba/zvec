@@ -51,6 +51,7 @@ int PqInt4Quantizer::setup_functions() {
   auto pq_k = get_pq_kernels(DataType::kInt4);
   adc_fn_ = pq_k.asymmetric_distance;
   sdc_fn_ = pq_k.symmetric_distance;
+  batch_sdc_fn_ = pq_k.batch_symmetric_distance;
   batch_adc_fn_ = pq_k.batch_asymmetric_distance;
 
   // L2-only batch distance for encoding and KMeans training: the PQ codebook
@@ -967,9 +968,17 @@ DistanceImpl PqInt4Quantizer::sym_distance(const void *query,
   size_t code_bytes = quantized_datapoint_vector_length();
   std::string code_storage(static_cast<const char *>(query), code_bytes);
 
-  // SDC has no batch kernel — use the 3-arg constructor.
-  return DistanceImpl(std::move(sdc_func), std::move(code_storage),
-                      static_cast<size_t>(num_chunk_));
+  BatchDistanceFunc batch_func;
+  if (batch_sdc_fn_) {
+    batch_func = [batch_sdc = batch_sdc_fn_, dt](
+                     const void *const *vectors, const void *query_code,
+                     size_t count, size_t chunks, float *out,
+                     const void *const *) {
+      batch_sdc(vectors, query_code, dt, count, chunks, out);
+    };
+  }
+  return DistanceImpl(std::move(sdc_func), std::move(batch_func),
+                      std::move(code_storage), static_cast<size_t>(num_chunk_));
 }
 
 // ---------------------------------------------------------------------------

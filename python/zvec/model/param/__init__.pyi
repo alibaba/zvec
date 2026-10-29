@@ -426,9 +426,11 @@ class HnswQueryParam(QueryParam):
         prefetch_offset (int, optional): Graph prefetch offset (PO) used by the
             HNSW fast path. ``0`` disables prefetching. Default is ``8``.
             Values are clamped to ``256``.
-        prefetch_lines (int, optional): Number of 64B cache lines to prefetch
-            per neighbour vector (PL). ``0`` (default) uses the auto-derived
-            value ``ceil(vector_size/64)``. Values are clamped to ``256``.
+        prefetch_lines (int, optional): Number of cache lines to prefetch per
+            neighbour vector (PL). Cache-line size follows the build target:
+            normally 128 bytes on Apple ARM64 and 64 bytes elsewhere.
+            ``0`` (default) uses ``ceil(vector_size/cache_line_size)``.
+            Values are clamped to ``256``.
 
     Examples:
         >>> params = HnswQueryParam(ef=300)
@@ -461,8 +463,10 @@ class HnswQueryParam(QueryParam):
             extra_params (dict, optional): Additional search parameters. Supported keys:
                 - ``prefetch_offset`` (int): Graph prefetch offset (PO).
                   ``0`` disables prefetching. Default is ``8``.
-                - ``prefetch_lines`` (int): Number of 64B cache lines to prefetch
-                  per neighbour vector (PL). ``0`` (default) means auto-derive from vector size.
+                - ``prefetch_lines`` (int): Number of cache lines to prefetch
+                  per neighbour vector (PL), normally 128 bytes on Apple ARM64
+                  and 64 bytes elsewhere. ``0`` (default) uses
+                  ``ceil(vector_size/cache_line_size)``.
         """
 
     def __repr__(self) -> str: ...
@@ -830,7 +834,7 @@ class VamanaIndexParam(VectorIndexParam):
         use_id_map (bool): Reserved flag for id remapping. Default is False.
         quantize_type (QuantizeType): Vector quantization type. Default is ``QuantizeType.UNDEFINED``.
         quantizer_param (QuantizerParam): Optional quantizer configuration.
-        two_pass_build (bool): Run a full-graph second Vamana construction pass. Default is False.
+        two_pass_build (bool): Run a full-graph second Vamana construction pass. Default is True.
         use_flat_contiguous_memory (bool): Allocate contiguous memory for the
             refine Flat reference index. Default is False.
         flat_data_type (DataType): Physical type stored by the refine Flat
@@ -853,7 +857,7 @@ class VamanaIndexParam(VectorIndexParam):
         use_id_map: bool = False,
         quantize_type: zvec._zvec.typing.QuantizeType = ...,
         quantizer_param: QuantizerParam = ...,
-        two_pass_build: bool = False,
+        two_pass_build: bool = True,
         use_flat_contiguous_memory: bool = False,
         flat_data_type: zvec._zvec.typing.DataType = ...,
     ) -> None: ...
@@ -909,8 +913,10 @@ class VamanaQueryParam(QueryParam):
         prefetch_offset (int): Pool-phase vector-prefetch prefix size (PO).
             The shared default 8 is resolved using a nominal 6 KiB budget
             for this phase only; this is not a global prefetch limit.
-        prefetch_lines (int): Cache lines to prefetch per vector (PL). The
-            shared default value 0 makes Vamana use at most two lines.
+        prefetch_lines (int): Cache lines to prefetch per vector (PL), normally
+            128 bytes on Apple ARM64 and 64 bytes elsewhere. The shared default
+            value 0 makes Vamana use at most two lines. The nominal 6 KiB
+            prefix budget uses the build target's cache-line size.
 
     Examples:
         >>> params = VamanaQueryParam(ef_search=200)
@@ -944,7 +950,9 @@ class VamanaQueryParam(QueryParam):
                   a nominal 6 KiB budget for this phase only. ``0`` disables this
                   prefix, not local-descent, graph-row, or kernel prefetching.
                 - ``prefetch_lines`` (int): Cache lines to prefetch per vector (PL).
-                  The default ``0`` makes Vamana use at most two lines.
+                  Normally each line is 128 bytes on Apple ARM64 and 64 bytes
+                  elsewhere. The default ``0`` makes Vamana use at most two
+                  lines, counted at this size against the nominal 6 KiB budget.
         """
 
     def __repr__(self) -> str: ...
@@ -989,9 +997,11 @@ class FtsIndexParam(IndexParam):
                       all valid UTF-8 characters). custom_token_chars is not
                       supported.
                 jieba:
-                    - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
-                      hmm_model.utf8).
-                    - "user_dict_path" (user dictionary path).
+                    - "jieba_dict_dir" (optional external directory containing
+                      jieba.dict.utf8 and hmm_model.utf8; priority: field value >
+                      ZVEC_JIEBA_DICT_DIR > embedded defaults).
+                    - "user_dict_path" (user dictionary path; augments the selected
+                      dictionary, including the embedded default).
                     - "cut_mode" ("search", "mix", "full", or "hmm"; default
                       "search").
                 whitespace:
@@ -1043,8 +1053,11 @@ class FtsIndexParam(IndexParam):
                           keeps all valid UTF-8 characters). custom_token_chars
                           is not supported.
                     jieba:
-                        - "jieba_dict_dir".
-                        - "user_dict_path".
+                        - "jieba_dict_dir" (optional external directory
+                          override; priority: field value > ZVEC_JIEBA_DICT_DIR >
+                          embedded defaults).
+                        - "user_dict_path" (augments the selected dictionary,
+                          including the embedded default).
                         - "cut_mode" ("search", "mix", "full", or "hmm";
                           default "search").
                     whitespace:

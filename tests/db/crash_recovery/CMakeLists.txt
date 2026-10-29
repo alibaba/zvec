@@ -27,16 +27,7 @@ endif()
 # Common libraries
 set(CRASH_RECOVERY_COMMON_LIBS
     zvec
-    core_knn_flat
-    core_knn_flat_sparse
-    core_knn_hnsw
-    core_knn_hnsw_sparse
-    core_knn_ivf
-    core_knn_hnsw_rabitq
-    core_mix_reducer
-    core_metric
-    core_utility
-    core_quantizer
+    zvec_core
     ${CMAKE_THREAD_LIBS_INIT}
     ${CMAKE_DL_LIBS}
 )
@@ -51,6 +42,7 @@ cc_binary(
     LDFLAGS ${APPLE_FRAMEWORK_LIBS}
 )
 set_target_properties(data_generator PROPERTIES EXCLUDE_FROM_ALL TRUE)
+db_test_force_load_core(data_generator)
 
 
 # Build collection_optimizer executable
@@ -62,6 +54,7 @@ cc_binary(
     LDFLAGS ${APPLE_FRAMEWORK_LIBS}
 )
 set_target_properties(collection_optimizer PROPERTIES EXCLUDE_FROM_ALL TRUE)
+db_test_force_load_core(collection_optimizer)
 
 
 # Build test executables
@@ -75,6 +68,7 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
         INCS .. ../../src
         LDFLAGS ${APPLE_FRAMEWORK_LIBS}
     )
+    db_test_force_load_core(${CC_TARGET})
     add_dependencies(${CC_TARGET} data_generator)
     add_dependencies(${CC_TARGET} collection_optimizer)
     set_tests_properties(${CC_TARGET} PROPERTIES

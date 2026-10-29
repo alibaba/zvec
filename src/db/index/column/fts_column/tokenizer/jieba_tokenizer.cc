@@ -14,8 +14,9 @@
 
 #include "jieba_tokenizer.h"
 #include <cstdlib>
+#include <fstream>
 #include <zvec/ailego/logger/logger.h>
-#include <zvec/db/config.h>
+#include "jieba_embedded_dict.h"
 
 namespace zvec::fts {
 
@@ -32,7 +33,7 @@ static std::string get_string_or_default(const ailego::JsonObject &config,
   return default_value;
 }
 
-// Priority: per-field config > ZVEC_JIEBA_DICT_DIR > GlobalConfig.
+// Priority: per-field config > ZVEC_JIEBA_DICT_DIR > embedded defaults.
 static std::string resolve_jieba_dict_dir(const ailego::JsonObject &config) {
   std::string dir = get_string_or_default(config, "jieba_dict_dir", "");
   if (!dir.empty()) {
@@ -41,10 +42,30 @@ static std::string resolve_jieba_dict_dir(const ailego::JsonObject &config) {
   if (const char *env = std::getenv("ZVEC_JIEBA_DICT_DIR"); env && *env) {
     return env;
   }
-  return GlobalConfig::Instance().jieba_dict_dir();
+  return {};
+}
+
+// cppjieba aborts when a file cannot be opened. Validate configured paths
+// before constructing its dictionary or model, preserving UTF-8 path support.
+static Status check_jieba_file(const std::string &path, bool allow_empty) {
+  std::ifstream stream;
+  cppjieba::OpenInputFile(stream, path);
+  if (!stream.is_open()) {
+    return Status::InvalidArgument("JiebaTokenizer: cannot read file '", path,
+                                   "'");
+  }
+  auto first = stream.peek();
+  if (stream.bad() ||
+      (!allow_empty && first == std::ifstream::traits_type::eof())) {
+    return Status::InvalidArgument(
+        "JiebaTokenizer: cannot read nonempty file '", path, "'");
+  }
+  return Status::OK();
 }
 
 Status JiebaTokenizer::init(const ailego::JsonObject &config) {
+  reset();
+
   std::string user_dict_path =
       get_string_or_default(config, "user_dict_path", "");
 
@@ -66,26 +87,58 @@ Status JiebaTokenizer::init(const ailego::JsonObject &config) {
   bool needs_model = cut_mode_ != CutMode::kFull;
 
   std::string dict_dir = resolve_jieba_dict_dir(config);
-  if ((needs_dict || needs_model) && dict_dir.empty()) {
-    return Status::InvalidArgument(
-        "JiebaTokenizer: jieba_dict_dir not configured. Set via "
-        "extra_params.jieba_dict_dir, ZVEC_JIEBA_DICT_DIR env var, "
-        "or zvec.set_default_jieba_dict_dir() / "
-        "zvec.init(jieba_dict_dir=...).");
-  }
 
   std::string dict_path = needs_dict ? dict_dir + "/jieba.dict.utf8" : "";
   std::string model_path = needs_model ? dict_dir + "/hmm_model.utf8" : "";
 
-  reset();
+  if (!dict_dir.empty()) {
+    if (needs_dict) {
+      auto status = check_jieba_file(dict_path, false);
+      if (!status.ok()) {
+        return status;
+      }
+    }
+    if (needs_model) {
+      auto status = check_jieba_file(model_path, false);
+      if (!status.ok()) {
+        return status;
+      }
+    }
+  }
+  if (needs_dict && !user_dict_path.empty()) {
+    for (const auto &path : limonp::Split(user_dict_path, "|;")) {
+      auto status = check_jieba_file(path, true);
+      if (!status.ok()) {
+        return status;
+      }
+    }
+  }
 
   try {
     if (needs_dict) {
-      dict_trie_ =
-          std::make_unique<cppjieba::DictTrie>(dict_path, user_dict_path);
+      if (dict_dir.empty()) {
+        auto dict = get_embedded_jieba_dict();
+        if (!dict) {
+          return dict.error();
+        }
+        dict_trie_ =
+            std::make_unique<cppjieba::DictTrie>(**dict, user_dict_path);
+      } else {
+        dict_trie_ =
+            std::make_unique<cppjieba::DictTrie>(dict_path, user_dict_path);
+      }
     }
     if (needs_model) {
-      hmm_model_ = std::make_unique<cppjieba::HMMModel>(model_path);
+      if (dict_dir.empty()) {
+        auto model = get_embedded_jieba_hmm_model();
+        if (!model) {
+          reset();
+          return model.error();
+        }
+        hmm_model_ = *model;
+      } else {
+        hmm_model_ = std::make_shared<const cppjieba::HMMModel>(model_path);
+      }
     }
     switch (cut_mode_) {
       case CutMode::kSearch:

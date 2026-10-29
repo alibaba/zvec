@@ -13,9 +13,7 @@
   <a href="https://codecov.io/github/alibaba/zvec"><img src="https://codecov.io/github/alibaba/zvec/graph/badge.svg?token=O81CT45B66" alt="Code Coverage"/></a>
   <a href="https://github.com/alibaba/zvec/actions/workflows/01-ci-pipeline.yml"><img src="https://github.com/alibaba/zvec/actions/workflows/01-ci-pipeline.yml/badge.svg?branch=main" alt="Main"/></a>
   <a href="https://github.com/alibaba/zvec/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"/></a>
-  <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/pypi/v/zvec.svg" alt="PyPI Release"/></a>
-  <a href="https://pypi.org/project/zvec/"><img src="https://img.shields.io/badge/python-3.10%20~%203.14-blue.svg" alt="Python Versions"/></a>
-  <a href="https://www.npmjs.com/package/@zvec/zvec"><img src="https://img.shields.io/npm/v/@zvec/zvec.svg" alt="npm Release"/></a>
+  <a href="https://github.com/alibaba/zvec/releases/latest"><img src="https://img.shields.io/github/v/release/alibaba/zvec?label=release" alt="Latest Release"/></a>
 </p>
 
 <p align="center">
@@ -35,17 +33,19 @@
 **Zvec** is an open-source, in-process vector database — lightweight, lightning-fast, and designed to embed directly into applications. Battle-tested within Alibaba Group, it delivers production-grade, low-latency and scalable similarity search with minimal setup.
 
 > [!Important]
-> 🚀 **v0.7.0 (August 24, 2026)**
+> 🚀 **v0.8.0**
 >
-> - **[zvec-grep](https://github.com/zvec-ai/zvec-grep) (`zg`)**: Local-first workspace search that unifies ripgrep, BM25, and vector search behind one CLI — built for humans and AI agents.
-> - **[ReMe](https://github.com/agentscope-ai/ReMe) integration**: zvec is now a file store backend in ReMe, the memory management kit for agents, providing in-process HNSW ANN search.
-> - **DiskANN productionization**: Adds **Linux ARM64 / macOS ARM64** support and an **io_uring** async I/O backend, with automatic fallback to the best available I/O option — no user intervention needed.
-> - **Index optimization**: New **IVF-RaBitQ** index and **PQ-INT8** quantizer; RaBitQ supports runtime **AVX2 / AVX512** dispatch, so the same binary automatically picks the best path on each CPU.
-> - **Deployment experience improved**: Prebuilt dynamic libraries slimmed significantly (macOS arm64 C API library 37→22 MB, **-40%**); new **musl libc / Alpine Linux** support; prebuilt SDK binaries for Linux (glibc/musl), macOS, Windows, Android, and iOS published with every release.
-> - **DocIterator**: New iterator for streaming full-collection document traversal across C++, C, and Python.
-> - **Full-text search**: New **N-gram tokenizer**, better suited for phrase, code, and short-text search.
+> - **Broader platform support**: Added **Intel Mac** and **Windows ARM64** builds, wheels, and SDKs; extended **DiskANN to Windows, Android, and iOS**, and **RaBitQ to Windows x86_64**.
+> - **Chinese FTS ready to use**: Embedded the default **Jieba dictionary and HMM model**, so Chinese tokenization needs no separate dictionary files or path configuration.
+> - **Lower index build costs**: Reduced peak memory during **IVF / DiskANN** builds and merges, and accelerated **HNSW RaBitQ** construction through vector reuse and batched lookups. Build and nested training tasks now enforce configured thread limits more strictly.
+> - **Faster distance computation**: Extensively refactored quantizers and distance calculations to benefit multiple
+    quantization types and metrics, with major improvements to **INT4 kernels** and **Linux ARM64** performance.
+> - **Faster search**: Added faster **Uniform quantizers** and optimized **Vamana** graph layout and prefetching. Uniform quantization avoids per-point score reconstruction, though a shared min/max range can increase quantization error and reduce recall.
+> - **Bug fixes and improvements**: Added more flexible **UTF-8 document IDs** up to 1,024 bytes; fixed concurrent reads during segment switches, index rebuilding with deleted rows, and correctness issues in **LIKE** and floating-point range filters.
 >
-> 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.7.0) | [View Roadmap 📍](https://github.com/alibaba/zvec/issues/309)
+> 👉 [Read the Release Notes](https://github.com/alibaba/zvec/releases/tag/v0.8.0)
+
+[^query-performance]: Measured on GIST 1M with L2 distance, INT8 quantization, and HNSW on a 16-core Linux ARM64 system.
 
 ## 💫 Features
 
@@ -62,27 +62,33 @@
 
 Zvec offers official SDKs across multiple languages:
 
-- **[Python](https://pypi.org/project/zvec/)**: `pip install zvec` (requires 64-bit Python 3.10–3.14)
-- **[Node.js](https://www.npmjs.com/package/@zvec/zvec)**: `npm install @zvec/zvec`
-- **[Go](https://github.com/zvec-ai/zvec-go)**: High-performance Go bindings.
-- **[Rust](https://crates.io/crates/zvec-rust)**: `cargo add zvec-rust`
-- **[Dart/Flutter](https://pub.dev/packages/zvec)**: `flutter pub add zvec`
+| SDK | Install / Dependency | Source |
+| --- | --- | --- |
+| [Python](https://pypi.org/project/zvec/) | `pip install zvec` | [Source](https://github.com/alibaba/zvec/tree/main/python/zvec) |
+| [Node.js](https://www.npmjs.com/package/@zvec/zvec) | `npm install @zvec/zvec` | [Source](https://github.com/zvec-ai/zvec-node) |
+| [Go](https://pkg.go.dev/github.com/zvec-ai/zvec-go) | [Installation guide](https://github.com/zvec-ai/zvec-go#installation) | [Source](https://github.com/zvec-ai/zvec-go) |
+| [Rust](https://crates.io/crates/zvec-rust) | `cargo add zvec-rust` | [Source](https://github.com/zvec-ai/zvec-rust) |
+| [Java](https://central.sonatype.com/artifact/org.zvec/zvec-java) | `org.zvec:zvec-java` (Maven) | [Source](https://github.com/zvec-ai/zvec-java) |
+| [Dart / Flutter](https://pub.dev/packages/zvec) | `flutter pub add zvec` | [Source](https://github.com/zvec-ai/zvec-dart) |
+
+Python requires 64-bit Python 3.10–3.14; Java requires Java 8+.
 
 Searching code or documents? Try **[zvec-grep](https://github.com/zvec-ai/zvec-grep)** (`zg`) — a local-first search CLI that unifies ripgrep, BM25, and vector search, built for humans and AI agents.
 
 Prefer a visual tool? Try **[Zvec Studio](https://github.com/zvec-ai/zvec-studio)** to browse data and debug queries — no code required.
 
-### ✅ Supported Platforms
+### ✅ Cross-Platform Support
 
-- Linux (x86_64, ARM64; glibc & musl)
-- macOS (ARM64, x86_64)
-- Windows (x86_64)
+**Linux · macOS · Windows · Android · iOS**
+
+Zvec supports all major platforms — from servers and desktops to mobile devices.<br>
+For more details, please see the [platform support documentation](https://zvec.org/en/docs/db/platforms/).
 
 ### 🛠️ Building from Source
 
 If you prefer to build Zvec from source, please check the [Building from Source](https://zvec.org/en/docs/db/build/) guide.
 
-## ⚡ One-Minute Example
+## ⚡ One-Minute Python Example
 
 ```python
 import zvec

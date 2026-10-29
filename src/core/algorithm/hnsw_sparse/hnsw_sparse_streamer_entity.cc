@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <iostream>
 #include <ailego/utility/memory_helper.h>
+#include "utility/legacy_read_buffer.h"
 #include "utility/sparse_utility.h"
 #include "hnsw_sparse_dist_calculator.h"
 
@@ -136,21 +137,12 @@ const Neighbors HnswSparseStreamerEntity::get_neighbors(level_t level,
 
 //! Get vector feature data by key
 const void *HnswSparseStreamerEntity::get_vector_meta(node_id_t id) const {
-  auto loc = get_vector_chunk_loc(id);
-  const void *vec = nullptr;
-  ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
-  ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
-                     "invalid chunk offset");
-
-  size_t read_size = sparse_meta_size();
-
-  size_t ret = node_chunks_[loc.first]->read(loc.second, &vec, read_size);
-  if (ailego_unlikely(ret != read_size)) {
-    LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",
-              loc.second, read_size, ret);
-  }
-
-  return vec;
+  // Keep the legacy pointer valid until the next call on this thread.
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock block;
+  return get_vector_meta(id, block) == 0
+             ? buffer.assign(block, sparse_meta_size())
+             : nullptr;
 }
 
 int HnswSparseStreamerEntity::get_vector_meta(
@@ -175,22 +167,17 @@ int HnswSparseStreamerEntity::get_vector_meta(
 int HnswSparseStreamerEntity::get_vector_metas(const node_id_t *ids,
                                                uint32_t count,
                                                const void **vecs) const {
-  for (auto i = 0U; i < count; ++i) {
-    auto loc = get_vector_chunk_loc(ids[i]);
-    ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
-    ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
-                       "invalid chunk offset");
-
-    size_t read_size = sparse_meta_size();
-
-    size_t ret = node_chunks_[loc.first]->read(loc.second, &vecs[i], read_size);
-    if (ailego_unlikely(ret != read_size)) {
-      LOG_ERROR("Read vector failed, offset=%u, read size=%zu, ret=%zu",
-                loc.second, read_size, ret);
-      return IndexError_ReadData;
-    }
+  // Retain every result independently until the next batch on this thread.
+  static thread_local std::vector<LegacyReadBuffer> buffers;
+  std::vector<IndexStorage::MemoryBlock> blocks;
+  int ret = get_vector_metas(ids, count, blocks);
+  if (ret != 0) {
+    return ret;
   }
-
+  buffers.resize(count);
+  for (uint32_t i = 0; i < count; ++i) {
+    vecs[i] = buffers[i].assign(blocks[i], sparse_meta_size());
+  }
   return 0;
 }
 
@@ -221,23 +208,11 @@ int HnswSparseStreamerEntity::get_vector_metas(
 //! Get vector feature data by key
 const void *HnswSparseStreamerEntity::get_sparse_data(uint64_t offset,
                                                       uint32_t len) const {
-  uint32_t chunk_index = offset >> 32;
-  uint32_t chunk_offset = offset & 0xFFFFFFFF;
-
-  auto loc = get_sparse_chunk_loc(chunk_index, chunk_offset);
-  const void *data = nullptr;
-
-  ailego_assert_with(loc.first < sparse_node_chunks_.size(),
-                     "invalid chunk idx");
-  ailego_assert_with(loc.second < sparse_node_chunks_[loc.first]->data_size(),
-                     "invalid chunk offset");
-
-  size_t ret = sparse_node_chunks_[loc.first]->read(loc.second, &data, len);
-  if (ailego_unlikely(ret != len)) {
-    LOG_ERROR("Read sparse vector failed, offset=%zu, read size=%u, ret=%zu",
-              (size_t)offset, len, ret);
-  }
-  return data;
+  // Keep the legacy pointer valid until the next call on this thread.
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock block;
+  return get_sparse_data(offset, len, block) == 0 ? buffer.assign(block, len)
+                                                  : nullptr;
 }
 
 int HnswSparseStreamerEntity::get_sparse_data(

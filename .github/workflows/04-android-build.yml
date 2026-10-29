@@ -116,9 +116,10 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
           if [ "${{ matrix.abi }}" = "arm64-v8a" ]; then
-            echo "Building focused DiskAnn tests and public C++ examples for arm64-v8a..."
+            echo "Building focused ARM64 index tests and public C++ examples..."
             cmake --build "$BUILD_DIR" \
-              --target diskann_mobile_compat_test diskann_mobile_collection_test zvec_cpp_examples \
+              --target diskann_mobile_compat_test diskann_mobile_collection_test \
+                hnsw_rabitq_streamer_test ivf_rabitq_streamer_test zvec_cpp_examples \
               --parallel
             exit 0
           fi
@@ -298,6 +299,15 @@ jobs:
           DEVICE_TEST_DIR="/data/local/tmp/zvec_tests"
           DEVICE_LIB_DIR="$DEVICE_TEST_DIR/lib"
           adb shell "mkdir -p $DEVICE_TEST_DIR $DEVICE_LIB_DIR"
+
+          # Original Jieba resources are comparison fixtures, not SDK data.
+          # Tests read ../jieba_dict from their isolated working directories.
+          DEVICE_JIEBA_DICT_DIR="$DEVICE_TEST_DIR/jieba_dict"
+          adb shell "mkdir -p $DEVICE_JIEBA_DICT_DIR"
+          for dict_file in jieba.dict.utf8 hmm_model.utf8; do
+            adb push "thirdparty/cppjieba/cppjieba-5.6.7/dict/$dict_file" \
+              "$DEVICE_JIEBA_DICT_DIR/$dict_file" > /dev/null
+          done
 
           # Push shared libraries
           echo "Pushing shared libraries..."

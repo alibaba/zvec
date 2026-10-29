@@ -20,12 +20,13 @@
 #include <numeric>
 #include <string>
 #include <vector>
-#include <rabitqlib/defines.hpp>
-#include <rabitqlib/index/estimator.hpp>
-#include <rabitqlib/index/query.hpp>
-#include <rabitqlib/quantization/data_layout.hpp>
-#include <rabitqlib/quantization/rabitq.hpp>
-#include <rabitqlib/utils/rotator.hpp>
+#include <rabitqlib/core/metric.hpp>
+#include <rabitqlib/core/query.hpp>
+#include <rabitqlib/core/rotator.hpp>
+#include <rabitqlib/fastscan/data_layout.hpp>
+#include <rabitqlib/fastscan/encoder.hpp>
+#include <rabitqlib/fastscan/estimator.hpp>
+#include <rabitqlib/fastscan/query.hpp>
 #include <rabitqlib/utils/space.hpp>
 #include <zvec/ailego/logger/logger.h>
 #include "algorithm/hnsw_rabitq/rabitq_utils.h"
@@ -438,19 +439,18 @@ int IvfRabitqReformer::create_query_state(const float *query,
   state->query_norm_sq =
       std::inner_product(query, query + impl_->dimension, query, 0.0f);
 
-  // Create SplitBatchQuery on first use, then reuse its LUT buffers.
+  state->lut_scratch.resize(impl_->padded_dim * 4);
+  state->hacc_scratch.resize(impl_->padded_dim * 4);
   auto batch_query =
       std::static_pointer_cast<rabitqlib::SplitBatchQuery<float>>(
           state->batch_query);
   if (!batch_query) {
-    batch_query = std::make_shared<rabitqlib::SplitBatchQuery<float>>(
-        state->rotated_query.data(), impl_->padded_dim, impl_->ex_bits,
-        impl_->metric_type, true /* use_hacc */);
-    state->batch_query = batch_query;
-  } else {
-    batch_query->reset(state->rotated_query.data(), impl_->padded_dim,
-                       impl_->ex_bits, impl_->metric_type, true /* use_hacc */);
+    batch_query = std::make_shared<rabitqlib::SplitBatchQuery<float>>();
   }
+  batch_query->reset(state->rotated_query.data(), impl_->padded_dim,
+                     impl_->ex_bits, state->lut_scratch.data(),
+                     state->hacc_scratch.data(), impl_->metric_type, true);
+  state->batch_query = std::move(batch_query);
 
   return 0;
 }
