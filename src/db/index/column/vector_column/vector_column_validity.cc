@@ -15,7 +15,6 @@
 #include <fstream>
 #include <iterator>
 #include <mutex>
-#include <type_traits>
 #include <zvec/ailego/hash/crc32c.h>
 #include "db/common/file_helper.h"
 #include "vector_column_indexer.h"
@@ -38,14 +37,16 @@ bool VectorColumnIndexer::has_vector(uint32_t row) const {
 }
 
 uint32_t VectorColumnIndexer::physical_id(uint32_t row) const {
-  return compact_ids_ ? static_cast<uint32_t>(valid_rows_.rank(row) - 1) : row;
+  return static_cast<uint32_t>(valid_rows_.rank(row) - 1);
 }
 
 bool VectorColumnIndexer::logical_id(uint64_t physical, uint32_t *row) const {
   if (physical > UINT32_MAX) return false;
-  if (compact_ids_) return valid_rows_.select(physical, row);
-  *row = physical;
-  return has_vector(*row);
+  if (!has_validity()) {
+    *row = physical;
+    return true;
+  }
+  return valid_rows_.select(physical, row);
 }
 
 Status VectorColumnIndexer::insert_null(uint32_t doc_id) {
@@ -69,7 +70,6 @@ Status VectorColumnIndexer::load_validity(
   if (!has_validity()) return Status::OK();
   valid_rows_ = roaring::Roaring{};
   row_count_ = 0;
-  compact_ids_ = options.create_new;
   validity_dirty_ = options.create_new;
   const auto path = index_file_path_ + ".validity";
   if (options.create_new) {
@@ -79,6 +79,18 @@ Status VectorColumnIndexer::load_validity(
                                    path);
     return Status::OK();
   }
+  auto unsupported_legacy = [&] {
+    auto status = Status::NotSupported(
+        "Legacy index detected for nullable vector field '",
+        field_schema_.name(), "' at ", index_file_path_,
+        ". If NULL vectors were inserted in an older version, "
+        "vector-to-document "
+        "mappings may be incorrect. You may need to reinsert the original data "
+        "into a new collection. For help or feedback, please open an issue at "
+        "https://github.com/alibaba/zvec/issues.");
+    LOG_ERROR("%s", status.message().c_str());
+    return status;
+  };
   if (FileHelper::FileExists(path)) {
     std::ifstream in(ailego::FileHelper::PathFromUtf8(path), std::ios::binary);
     if (!in)
@@ -90,8 +102,8 @@ Status VectorColumnIndexer::load_validity(
             ailego::Crc32c::Hash(bytes.data(), bytes.size() - 4)) {
       return Status::InternalError("Invalid vector validity: ", path);
     }
+    if (Get32(bytes.data() + 12) == 0) return unsupported_legacy();
     row_count_ = Get32(bytes.data() + 8);
-    compact_ids_ = Get32(bytes.data() + 12) != 0;
     try {
       valid_rows_ =
           roaring::Roaring::readSafe(bytes.data() + 16, bytes.size() - 20);
@@ -100,7 +112,7 @@ Status VectorColumnIndexer::load_validity(
     }
     if ((!valid_rows_.isEmpty() && valid_rows_.maximum() >= row_count_) ||
         (options.row_count && *options.row_count != row_count_) ||
-        (index && compact_ids_ && valid_rows_.cardinality() != doc_count())) {
+        (index && valid_rows_.cardinality() != doc_count())) {
       return Status::InternalError(
           "Vector validity disagrees with block/index: ", path);
     }
@@ -109,46 +121,14 @@ Status VectorColumnIndexer::load_validity(
   if (options.require_validity)
     return Status::InternalError("Missing vector validity: ", path);
 
-  // Legacy blocks have identity IDs. Recover missingness from their stored
-  // keys, never from the vector's numeric value (a real zero vector is valid).
-  row_count_ = options.row_count.value_or(doc_count());
-  auto recover = [&](const auto &provider) -> Status {
-    if (!provider)
-      return Status::InternalError("Missing legacy vector provider");
-    auto iter = provider->create_iterator();
-    if (!iter) return Status::InternalError("Missing legacy vector iterator");
-    auto failed = [&] {
-      if constexpr (std::is_same_v<std::decay_t<decltype(provider)>,
-                                   core::IndexProvider::Pointer>)
-        return iter->status() != 0;
-      return false;
-    };
-    size_t visited = 0;
-    for (; iter->is_valid(); iter->next()) {
-      ++visited;
-      const auto key = iter->key();
-      if (failed())
-        return Status::InternalError("Failed to read legacy vector keys");
-      if (key == UINT64_MAX) continue;
-      if (key >= row_count_)
-        return Status::InternalError("Legacy vector key outside block");
-      valid_rows_.add(key);
-    }
-    if (failed())
-      return Status::InternalError("Failed to read legacy vector keys");
-    if (visited != provider->count())
-      return Status::InternalError("Incomplete legacy vector keys");
-    return Status::OK();
-  };
-  return is_sparse_ ? recover(index->create_sparse_index_provider())
-                    : recover(index->create_index_provider());
+  return unsupported_legacy();
 }
 
 Status VectorColumnIndexer::flush_validity() {
   if (!has_validity() || read_only_ || !validity_dirty_) return Status::OK();
   std::string bytes("ZVECNV01", 8);
   Put32(&bytes, row_count_);
-  Put32(&bytes, compact_ids_ ? 1 : 0);
+  Put32(&bytes, 1);  // Only compact vector IDs are supported.
   const auto offset = bytes.size();
   bytes.resize(offset + valid_rows_.getSizeInBytes());
   valid_rows_.write(bytes.data() + offset);

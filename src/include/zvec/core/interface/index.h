@@ -169,7 +169,6 @@ class ZVEC_CORE_API Index {
   core::IndexStreamer::Pointer index_searcher();
 
   core::IndexProvider::Pointer create_index_provider() const;
-  core::IndexSparseProvider::Pointer create_sparse_index_provider() const;
 
   static std::string get_metric_name(MetricType metric_type, bool is_sparse);
 

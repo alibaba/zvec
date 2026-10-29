@@ -154,7 +154,7 @@ class VectorColumnIndexer {
   // build proxima index
   Status create_proxima_index(
       const vector_column_params::ReadOptions &read_options,
-      bool use_empty_flat = true);
+      bool use_empty_flat);
 
  protected:
   friend ProximaEngineHelper;
@@ -169,7 +169,6 @@ class VectorColumnIndexer {
   mutable std::shared_mutex validity_mutex_;
   roaring::Roaring valid_rows_;
   uint32_t row_count_{0};
-  bool compact_ids_{false};
   bool validity_dirty_{false};
   bool read_only_{false};
   bool use_mmap_{true};

@@ -34,16 +34,14 @@ Status VectorColumnIndexer::open(
     if (read_options.create_new) {
       valid_rows_ = roaring::Roaring{};
       row_count_ = 0;
-      compact_ids_ = false;
     }
     // Empty builder-backed indexes have no trained index file. Their bitmap
     // selects a persisted empty Flat backing before opening the core index.
-    if (has_validity() && !read_options.create_new &&
-        FileHelper::FileExists(index_file_path_ + ".validity")) {
+    if (has_validity() && !read_options.create_new) {
       auto status = load_validity(read_options);
       if (!status.ok()) return status;
     }
-    auto status = create_proxima_index(read_options);
+    auto status = create_proxima_index(read_options, !read_options.create_new);
     if (!status.ok()) return status;
     status = load_validity(read_options);
     if (!status.ok()) {
@@ -60,8 +58,7 @@ Status VectorColumnIndexer::create_proxima_index(
     const vector_column_params::ReadOptions &read_options,
     bool use_empty_flat) {
   FieldSchema storage_field(field_schema_);
-  empty_flat_index_ =
-      use_empty_flat && has_validity() && compact_ids_ && valid_rows_.isEmpty();
+  empty_flat_index_ = use_empty_flat && has_validity() && valid_rows_.isEmpty();
   if (empty_flat_index_) {
     auto params = std::dynamic_pointer_cast<VectorIndexParams>(
         field_schema_.index_params());
@@ -127,7 +124,7 @@ Status VectorColumnIndexer::close() {
 }
 
 Status VectorColumnIndexer::ensure_empty_index() {
-  if (has_validity() && compact_ids_ && valid_rows_.isEmpty() && !read_only_ &&
+  if (has_validity() && valid_rows_.isEmpty() && !read_only_ &&
       !empty_flat_index_) {
     return recreate_empty_index(true);
   }
@@ -188,9 +185,6 @@ Status VectorColumnIndexer::merge(
   roaring::Roaring merged_validity = valid_rows_;
   uint32_t merged_rows = row_count_;
   if (has_validity()) {
-    if (!compact_ids_)
-      return Status::InvalidArgument(
-          "Merge target must use compact vector IDs");
     struct Source {
       VectorColumnIndexer::Ptr indexer;
       uint64_t physical_offset;
@@ -275,7 +269,7 @@ Status VectorColumnIndexer::insert(
     auto status = recreate_empty_index(false);
     if (!status.ok()) return status;
   }
-  const auto id = has_validity() && compact_ids_
+  const auto id = has_validity()
                       ? (has_vector(doc_id) ? physical_id(doc_id)
                                             : valid_rows_.cardinality())
                       : doc_id;

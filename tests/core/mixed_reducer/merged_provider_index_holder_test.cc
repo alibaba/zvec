@@ -1020,35 +1020,6 @@ TEST(MergedProviderIndexHolderTest, FiltersRewritesIdsAndSupportsMultiPass) {
   EXPECT_EQ(0, holder.status());
 }
 
-TEST(MergedProviderIndexHolderTest, InvalidPaddingNeverBecomesTrainingData) {
-  for (bool filtered : {false, true}) {
-    SCOPED_TRACE(filtered);
-    MergedProviderIndexHolder holder(
-        IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
-        {MakeSource(MakeStreamer({{0, 0.0f}, {UINT64_MAX, 99.0f}})),
-         MakeSource(MakeStreamer({{0, 2.0f}, {UINT64_MAX, 99.0f}}))});
-    IndexFilter filter;
-    if (filtered) filter.set([](uint64_t row) { return row == 0; });
-    ASSERT_EQ(0, holder.init(filter));
-    const std::vector<std::pair<uint64_t, float>> expected =
-        filtered
-            ? std::vector<std::pair<uint64_t, float>>{{0, 2.0f}}
-            : std::vector<std::pair<uint64_t, float>>{{0, 0.0f}, {1, 2.0f}};
-    EXPECT_EQ(holder.count(), expected.size());
-    EXPECT_EQ(ReadAll(&holder), expected);
-    EXPECT_EQ(ReadAll(&holder), expected);
-    OrdinalAccessHolder::Reader::Pointer reader;
-    ASSERT_EQ(0, holder.create_ordinal_reader(&reader));
-    for (size_t i = 0; i < expected.size(); ++i) {
-      uint64_t key;
-      const void *data;
-      ASSERT_EQ(0, reader->read(i, &key, &data));
-      EXPECT_EQ(key, expected[i].first);
-      EXPECT_FLOAT_EQ(*static_cast<const float *>(data), expected[i].second);
-    }
-  }
-}
-
 TEST(MergedProviderIndexHolderTest, RejectsUnreformedMetaMismatch) {
   std::vector<MergedProviderIndexHolder::Source> sources;
   sources.emplace_back(MakeSource(MakeStreamer({{0, 10.0f}})));

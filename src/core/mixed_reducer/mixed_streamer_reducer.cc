@@ -407,7 +407,7 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     if (iterator->status() != 0) {
       return iterator->status();
     }
-    if (key == UINT64_MAX || filter(key + (uint64_t)id_offset)) {
+    if (filter(key + (uint64_t)id_offset)) {
       (*stats_.mutable_filtered_count())++;
       iterator->next();
       continue;
@@ -623,8 +623,7 @@ int MixedStreamerReducer::read_sparse_vec(size_t source_streamer_index,
       LOG_DEBUG("read_sparse_vec cancelled.");
       return 0;
     }
-    if (iterator->key() == UINT64_MAX ||
-        filter(iterator->key() + (uint64_t)id_offset)) {
+    if (filter(iterator->key() + (uint64_t)id_offset)) {
       (*stats_.mutable_filtered_count())++;
       iterator->next();
       continue;

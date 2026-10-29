@@ -19,6 +19,7 @@
 #include <tuple>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/hash/crc32c.h>
 #include <zvec/db/collection.h>
 #include "db/common/file_helper.h"
 #include "db/index/column/vector_column/vector_column_indexer.h"
@@ -345,29 +346,31 @@ class NullableVectorStorageTest : public ::testing::Test {
   }
 };
 
-TEST_F(NullableVectorStorageTest, LegacyPaddingAndTrailingNullsSurviveMerge) {
-  const std::string path = "test_nullable_legacy";
+TEST_F(NullableVectorStorageTest, NullableRowsPreserveIdsAcrossMerge) {
+  const std::string path = "test_nullable_merge";
   FileHelper::RemoveDirectory(path);
   ASSERT_TRUE(FileHelper::CreateDirectory(path));
-  FieldSchema legacy("vec", DataType::VECTOR_FP32, 16, false,
-                     std::make_shared<FlatIndexParams>(MetricType::L2));
-  FieldSchema nullable(legacy);
-  nullable.set_nullable(true);
+  FieldSchema nullable("vec", DataType::VECTOR_FP32, 16, true,
+                       std::make_shared<FlatIndexParams>(MetricType::L2));
   std::vector<VectorColumnIndexer::Ptr> sources;
   for (uint32_t i = 0; i < 2; ++i) {
     const auto file = path + "/source" + std::to_string(i);
-    VectorColumnIndexer old(file, legacy);
-    ASSERT_TRUE(old.open({true, true}).ok());
+    VectorColumnIndexer writer(file, nullable);
+    ASSERT_TRUE(writer.open({true, true}).ok());
     std::vector<float> data(16, 0);
     data[0] = i * 4;
     ASSERT_TRUE(
-        old.insert({vector_column_params::DenseVector{data.data()}}, 0).ok());
+        writer.insert({vector_column_params::DenseVector{data.data()}}, 0)
+            .ok());
+    ASSERT_TRUE(writer.insert_null(1).ok());
     data[0] = i * 4 + 2;
     ASSERT_TRUE(
-        old.insert({vector_column_params::DenseVector{data.data()}}, 2).ok());
-    ASSERT_TRUE(old.close().ok());
+        writer.insert({vector_column_params::DenseVector{data.data()}}, 2)
+            .ok());
+    ASSERT_TRUE(writer.insert_null(3).ok());
+    ASSERT_TRUE(writer.close().ok());
     auto source = std::make_shared<VectorColumnIndexer>(file, nullable);
-    ASSERT_TRUE(source->open({true, false, true, 4, false}).ok());
+    ASSERT_TRUE(source->open({true, false, true, 4, true}).ok());
     for (uint32_t missing : {1U, 3U}) {
       auto fetched = source->fetch(missing);
       ASSERT_FALSE(fetched);
@@ -484,6 +487,90 @@ TEST_F(NullableVectorStorageTest, AllNullBackingAcceptsLaterVectors) {
   }
 }
 
+TEST_F(NullableVectorStorageTest, LegacyNullableIndexesAreRejected) {
+  const std::string path = "test_nullable_legacy";
+  for (int kind : {0, 1, 2}) {
+    for (bool mmap : {false, true}) {
+      SCOPED_TRACE(kind);
+      SCOPED_TRACE(mmap);
+      FileHelper::RemoveDirectory(path);
+      ASSERT_TRUE(FileHelper::CreateDirectory(path));
+      const bool sparse = kind == 1;
+      FieldSchema field(
+          "vec", sparse ? DataType::SPARSE_VECTOR_FP32 : DataType::VECTOR_FP32,
+          sparse ? 0 : 16, false,
+          std::make_shared<FlatIndexParams>(MetricType::IP));
+      const auto file = path + "/index";
+      // A non-nullable writer produces the old core-only format, without
+      // validity metadata. Include intermediate padding and trailing NULLs.
+      VectorColumnIndexer writer(file, field);
+      ASSERT_TRUE(writer.open({mmap, true}).ok());
+      if (kind != 2) {
+        std::vector<float> data(16, 0);
+        const uint32_t index = 1;
+        const float value = 1;
+        for (uint32_t row : {0U, 2U}) {
+          vector_column_params::VectorData vector;
+          if (sparse)
+            vector.vector =
+                vector_column_params::SparseVector{1, &index, &value};
+          else
+            vector.vector = vector_column_params::DenseVector{data.data()};
+          ASSERT_TRUE(writer.insert(vector, row).ok());
+        }
+      }
+      ASSERT_TRUE(writer.close().ok());
+      FieldSchema nullable(field);
+      nullable.set_nullable(true);
+      for (bool read_only : {false, true}) {
+        VectorColumnIndexer rejected(file, nullable);
+        auto status = rejected.open({mmap, false, read_only, 4, false});
+        EXPECT_EQ(status.code(), StatusCode::NOT_SUPPORTED);
+        EXPECT_EQ(rejected.debug_get_index(), nullptr);
+        EXPECT_FALSE(FileHelper::FileExists(file + ".validity"));
+      }
+      // Legacy non-nullable fields continue to use their existing read path.
+      VectorColumnIndexer non_nullable(file, field);
+      ASSERT_TRUE(non_nullable.open({mmap, false, true, 4, false}).ok());
+      if (kind != 2) {
+        EXPECT_TRUE(non_nullable.fetch(0));
+        EXPECT_TRUE(non_nullable.fetch(2));
+      }
+      ASSERT_TRUE(non_nullable.close().ok());
+      FileHelper::RemoveDirectory(path);
+    }
+  }
+}
+
+TEST_F(NullableVectorStorageTest, LegacyIdentityValidityIsRejected) {
+  const std::string path = "test_nullable_identity";
+  FileHelper::RemoveDirectory(path);
+  ASSERT_TRUE(FileHelper::CreateDirectory(path));
+  FieldSchema field("vec", DataType::VECTOR_FP32, 16, true,
+                    std::make_shared<FlatIndexParams>(MetricType::L2));
+  const auto file = path + "/index";
+  VectorColumnIndexer writer(file, field);
+  ASSERT_TRUE(writer.open({true, true}).ok());
+  ASSERT_TRUE(writer.insert_null(0).ok());
+  ASSERT_TRUE(writer.close().ok());
+  ailego::File validity;
+  ASSERT_TRUE(validity.open(file + ".validity", false));
+  std::string bytes(validity.size(), '\0');
+  ASSERT_EQ(validity.read(0, bytes.data(), bytes.size()), bytes.size());
+  std::memset(bytes.data() + 12, 0, 4);  // Legacy identity-ID layout.
+  const uint32_t crc = ailego::Crc32c::Hash(bytes.data(), bytes.size() - 4);
+  for (unsigned i = 0; i < 4; ++i) bytes[bytes.size() - 4 + i] = crc >> (i * 8);
+  ASSERT_EQ(validity.write(0, bytes.data(), bytes.size()), bytes.size());
+  validity.close();
+  for (bool read_only : {false, true}) {
+    VectorColumnIndexer rejected(file, field);
+    EXPECT_EQ(rejected.open({true, false, read_only, 1, true}).code(),
+              StatusCode::NOT_SUPPORTED);
+    EXPECT_EQ(rejected.debug_get_index(), nullptr);
+  }
+  FileHelper::RemoveDirectory(path);
+}
+
 TEST_F(NullableVectorStorageTest, MissingOrCorruptValidityIsAnError) {
   const std::string path = "test_nullable_corrupt";
   FileHelper::RemoveDirectory(path);
@@ -501,10 +588,12 @@ TEST_F(NullableVectorStorageTest, MissingOrCorruptValidityIsAnError) {
   ASSERT_EQ(validity.write(0, &bad, 1), 1U);
   validity.close();
   VectorColumnIndexer corrupt(file, field);
-  EXPECT_FALSE(corrupt.open({true, false, true, 1, true}).ok());
+  EXPECT_EQ(corrupt.open({true, false, true, 1, true}).code(),
+            StatusCode::INTERNAL_ERROR);
   ASSERT_TRUE(FileHelper::RemoveFile(file + ".validity"));
   VectorColumnIndexer missing(file, field);
-  EXPECT_FALSE(missing.open({true, false, true, 1, true}).ok());
+  EXPECT_EQ(missing.open({true, false, true, 1, true}).code(),
+            StatusCode::INTERNAL_ERROR);
   FileHelper::RemoveDirectory(path);
 }
 

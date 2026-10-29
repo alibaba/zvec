@@ -386,9 +386,7 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
   }
 
   stop_flag_ = stop_flag;
-  // Persist keep decisions even without a user filter: legacy Flat providers
-  // expose invalid-key padding slots, which must never become training data.
-  has_filter_ = true;
+  has_filter_ = filter.is_valid();
   uint64_t logical_id_base = 0;
 
   for (size_t source_index = 0; source_index < sources_.size();
@@ -449,14 +447,12 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
         this->set_status(iter->status());
         return this->status();
       }
-      if (key != UINT64_MAX &&
-          key > std::numeric_limits<uint64_t>::max() - source.logical_id_base) {
+      if (key > std::numeric_limits<uint64_t>::max() - source.logical_id_base) {
         this->set_status(IndexError_Overflow);
         return this->status();
       }
 
-      bool keep_item =
-          key != UINT64_MAX && !filter(source.logical_id_base + key);
+      bool keep_item = !has_filter_ || !filter(source.logical_id_base + key);
       if (has_filter_) {
         AppendBit(&source.keep_bits, ordinal, keep_item);
       }
