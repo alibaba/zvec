@@ -100,7 +100,8 @@ TEST(VectorColumnIndexerTest, BaseQueryParametersForFlatFallback) {
                     std::make_shared<FlatIndexParams>(MetricType::L2));
   for (auto type :
        {IndexType::HNSW, IndexType::HNSW_RABITQ, IndexType::VAMANA,
-        IndexType::IVF, IndexType::IVF_RABITQ, IndexType::DISKANN}) {
+        IndexType::IVF, IndexType::IVF_RABITQ, IndexType::DISKANN,
+        IndexType::OMEGA}) {
     SCOPED_TRACE(static_cast<int>(type));
     vector_column_params::QueryParams query;
     query.topk = 7;
@@ -120,6 +121,42 @@ TEST(VectorColumnIndexerTest, BaseQueryParametersForFlatFallback) {
                      type, query.query_params, nullptr, nullptr)
                      .ok());
   }
+}
+
+
+TEST(VectorColumnIndexerTest, ReusedOmegaQueryParametersRestoreDefaults) {
+  FieldSchema field("vector", DataType::VECTOR_FP32, 32, false,
+                    std::make_shared<OmegaIndexParams>(MetricType::L2));
+  vector_column_params::QueryParams query;
+  auto result =
+      ProximaEngineHelper::convert_to_engine_query_param(field, query);
+  ASSERT_TRUE(result);
+  auto *engine =
+      dynamic_cast<core_interface::OmegaQueryParam *>(result->get());
+  ASSERT_NE(engine, nullptr);
+  const auto defaults = *engine;
+  auto params = std::make_shared<OmegaQueryParams>(128, 0.8f);
+  params->set_training_query_id(42);
+  params->set_prefetch_offset(3);
+  params->set_prefetch_lines(2);
+  params->set_radius(1.25f);
+  params->set_is_linear(true);
+  ASSERT_TRUE(ProximaEngineHelper::update_engine_query_param(
+                  IndexType::OMEGA, params, engine, &defaults)
+                  .ok());
+  EXPECT_EQ(engine->ef_search, 128U);
+  EXPECT_FLOAT_EQ(engine->target_recall, 0.8f);
+  EXPECT_EQ(engine->training_query_id, 42);
+  ASSERT_TRUE(ProximaEngineHelper::update_engine_query_param(
+                  IndexType::OMEGA, nullptr, engine, &defaults)
+                  .ok());
+  EXPECT_EQ(engine->ef_search, defaults.ef_search);
+  EXPECT_FLOAT_EQ(engine->target_recall, defaults.target_recall);
+  EXPECT_EQ(engine->training_query_id, defaults.training_query_id);
+  EXPECT_EQ(engine->prefetch_offset, defaults.prefetch_offset);
+  EXPECT_EQ(engine->prefetch_lines, defaults.prefetch_lines);
+  EXPECT_FLOAT_EQ(engine->radius, defaults.radius);
+  EXPECT_EQ(engine->is_linear, defaults.is_linear);
 }
 
 

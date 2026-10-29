@@ -262,6 +262,20 @@ class ProximaEngineHelper {
               e->ef_search = p ? p->ef() : d->ef_search;
             });
         break;
+      case IndexType::OMEGA:
+        valid = _update_query_param<OmegaQueryParams,
+                                    core_interface::OmegaQueryParam>(
+            params, engine, defaults,
+            [](const auto *p, auto *e, const auto *d) {
+              e->ef_search = p ? p->ef() : d->ef_search;
+              e->target_recall = p ? p->target_recall() : d->target_recall;
+              e->training_query_id =
+                  p ? p->training_query_id() : d->training_query_id;
+              e->prefetch_offset =
+                  p ? p->prefetch_offset() : d->prefetch_offset;
+              e->prefetch_lines = p ? p->prefetch_lines() : d->prefetch_lines;
+            });
+        break;
       case IndexType::IVF:
         valid =
             _update_query_param<IVFQueryParams, core_interface::IVFQueryParam>(
@@ -355,6 +369,19 @@ class ProximaEngineHelper {
         }
         auto &hnsw_query_param = hnsw_query_param_result.value();
         return std::move(hnsw_query_param);
+      }
+
+      case IndexType::OMEGA: {
+        auto omega_query_param_result =
+            _build_common_query_param<core_interface::OmegaQueryParam>(
+                query_params);
+        if (!omega_query_param_result.has_value()) {
+          return tl::make_unexpected(Status::InvalidArgument(
+              "failed to build query param: " +
+              omega_query_param_result.error().message()));
+        }
+        auto &omega_query_param = omega_query_param_result.value();
+        return std::move(omega_query_param);
       }
 
       case IndexType::HNSW_RABITQ: {
@@ -593,6 +620,35 @@ class ProximaEngineHelper {
         index_param_builder->with_use_contiguous_memory(
             db_index_params->use_contiguous_memory());
 
+        return index_param_builder->build();
+      }
+
+      case IndexType::OMEGA: {
+        auto index_param_builder_result =
+            _build_common_index_param<OmegaIndexParams,
+                                      core_interface::OmegaIndexParamBuilder>(
+                field_schema);
+        if (!index_param_builder_result.has_value()) {
+          return tl::make_unexpected(Status::InvalidArgument(
+              "failed to build index param: " +
+              index_param_builder_result.error().message()));
+        }
+        auto index_param_builder = index_param_builder_result.value();
+
+        auto db_index_params = dynamic_cast<const OmegaIndexParams *>(
+            field_schema.index_params().get());
+        index_param_builder->with_m(db_index_params->m());
+        index_param_builder->with_ef_construction(
+            db_index_params->ef_construction());
+        index_param_builder->with_min_vector_threshold(
+            db_index_params->min_vector_threshold());
+        index_param_builder->with_num_training_queries(
+            db_index_params->num_training_queries());
+        index_param_builder->with_ef_training(db_index_params->ef_training());
+        index_param_builder->with_window_size(db_index_params->window_size());
+        index_param_builder->with_ef_groundtruth(
+            db_index_params->ef_groundtruth());
+        index_param_builder->with_k_train(db_index_params->k_train());
         return index_param_builder->build();
       }
 

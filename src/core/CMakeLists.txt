@@ -35,6 +35,11 @@ file(GLOB_RECURSE ALL_CORE_SRCS *.cc *.c *.h)
 # Remove algorithm/hnsw_rabitq implementation files if not supported.
 # interface/indexes/hnsw_rabitq_index.cc is kept because it provides the vtable
 # for HNSWRabitqIndex and guards rabitqlib usage with #if RABITQ_SUPPORTED.
+if(NOT ZVEC_ENABLE_OMEGA)
+  list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/omega/.*")
+  list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/interface/indexes/omega_.*")
+endif()
+
 if(NOT RABITQ_SUPPORTED)
   list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/hnsw_rabitq/.*")
   list(FILTER ALL_CORE_SRCS EXCLUDE REGEX ".*/algorithm/ivf_rabitq/.*")
@@ -50,6 +55,9 @@ set(ZVEC_CORE_LIBS zvec_ailego zvec_turbo sparsehash magic_enum rabitqlib)
 # The DiskAnn runtime loader uses dlopen/dlsym, so link libdl on Linux.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND ZVEC_CORE_LIBS ${CMAKE_DL_LIBS})
+endif()
+if(ZVEC_ENABLE_OMEGA)
+  list(APPEND ZVEC_CORE_LIBS omega)
 endif()
 
 set(ZVEC_CORE_LIBRARY_OPTIONS)
@@ -69,3 +77,11 @@ cc_library(
     INCS . ${PROJECT_ROOT_DIR}/src/core
     VERSION "${ZVEC_VERSION_STRING}"
 )
+
+if(ZVEC_ENABLE_OMEGA AND TARGET zvec_core)
+  target_compile_options(zvec_core PRIVATE
+      "$<$<CXX_COMPILER_ID:Clang>:-Wno-unknown-pragmas>"
+      "$<$<CXX_COMPILER_ID:AppleClang>:-Wno-unknown-pragmas>"
+      "$<$<CXX_COMPILER_ID:GNU>:-Wno-unknown-pragmas>"
+    )
+endif()

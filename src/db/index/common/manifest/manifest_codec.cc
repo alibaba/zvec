@@ -111,7 +111,20 @@ constexpr uint32_t kVamana = 6;
 constexpr uint32_t kFts = 7;
 constexpr uint32_t kDiskann = 8;
 constexpr uint32_t kIvfRabitq = 9;
+constexpr uint32_t kOmega = 10;
 }  // namespace f_index_params
+namespace f_omega {
+constexpr uint32_t kBase = 1;
+constexpr uint32_t kM = 2;
+constexpr uint32_t kEfConstruction = 3;
+constexpr uint32_t kMinVectorThreshold = 4;
+// Field 5 was reserved for model_dir in the original OMEGA protobuf schema.
+constexpr uint32_t kNumTrainingQueries = 6;
+constexpr uint32_t kEfTraining = 7;
+constexpr uint32_t kWindowSize = 8;
+constexpr uint32_t kEfGroundtruth = 9;
+constexpr uint32_t kKTrain = 10;
+}  // namespace f_omega
 namespace f_field {
 constexpr uint32_t kName = 1;
 constexpr uint32_t kDataType = 2;
@@ -234,6 +247,78 @@ void EncodeHnsw(const HnswIndexParams *params, std::string *out) {
                  static_cast<uint64_t>(wire::ToNumber(
                      DataTypeCodeBook::Get(params->flat_data_type()))));
   }
+}
+
+void EncodeOmega(const OmegaIndexParams *params, std::string *out) {
+  BaseParams base;
+  base.metric_type = params->metric_type();
+  base.quantize_type = params->quantize_type();
+  std::string encoded_base;
+  EncodeBase(base, &encoded_base);
+  Writer w(out);
+  w.put_message(f_omega::kBase, encoded_base);
+  w.put_varint(f_omega::kM, static_cast<uint64_t>(params->m()));
+  w.put_varint(f_omega::kEfConstruction,
+               static_cast<uint64_t>(params->ef_construction()));
+  w.put_varint(f_omega::kMinVectorThreshold, params->min_vector_threshold());
+  w.put_varint(f_omega::kNumTrainingQueries, params->num_training_queries());
+  w.put_varint(f_omega::kEfTraining,
+               static_cast<uint64_t>(params->ef_training()));
+  w.put_varint(f_omega::kWindowSize,
+               static_cast<uint64_t>(params->window_size()));
+  w.put_varint(f_omega::kEfGroundtruth,
+               static_cast<uint64_t>(params->ef_groundtruth()));
+  w.put_varint(f_omega::kKTrain, static_cast<uint64_t>(params->k_train()));
+}
+
+OmegaIndexParams::OPtr DecodeOmega(std::string_view buf) {
+  BaseParams base;
+  int32_t m = 0;
+  int32_t ef_construction = 0;
+  uint32_t min_vector_threshold = 0;
+  uint32_t num_training_queries = 0;
+  int32_t ef_training = 0;
+  int32_t window_size = 0;
+  int32_t ef_groundtruth = 0;
+  int32_t k_train = 0;
+  Reader r(buf);
+  while (r.next()) {
+    switch (r.field()) {
+      case f_omega::kBase:
+        base = DecodeBase(r.bytes());
+        break;
+      case f_omega::kM:
+        m = r.int32_value();
+        break;
+      case f_omega::kEfConstruction:
+        ef_construction = r.int32_value();
+        break;
+      case f_omega::kMinVectorThreshold:
+        min_vector_threshold = r.uint32_value();
+        break;
+      case f_omega::kNumTrainingQueries:
+        num_training_queries = r.uint32_value();
+        break;
+      case f_omega::kEfTraining:
+        ef_training = r.int32_value();
+        break;
+      case f_omega::kWindowSize:
+        window_size = r.int32_value();
+        break;
+      case f_omega::kEfGroundtruth:
+        ef_groundtruth = r.int32_value();
+        break;
+      case f_omega::kKTrain:
+        k_train = r.int32_value();
+        break;
+      default:
+        break;
+    }
+  }
+  return std::make_shared<OmegaIndexParams>(
+      base.metric_type, m, ef_construction, base.quantize_type,
+      min_vector_threshold, num_training_queries, ef_training, window_size,
+      ef_groundtruth, k_train);
 }
 
 HnswIndexParams::OPtr DecodeHnsw(std::string_view buf) {
@@ -647,6 +732,12 @@ void ManifestCodec::EncodeIndexParams(const IndexParams *params,
   Writer w(out);
   std::string payload;
   switch (params->type()) {
+    case IndexType::OMEGA:
+      if (auto *p = dynamic_cast<const OmegaIndexParams *>(params)) {
+        EncodeOmega(p, &payload);
+        w.put_message(f_index_params::kOmega, payload);
+      }
+      break;
     case IndexType::INVERT:
       if (auto *p = dynamic_cast<const InvertIndexParams *>(params)) {
         EncodeInvert(p, &payload);
@@ -714,6 +805,9 @@ IndexParams::Ptr ManifestCodec::DecodeIndexParams(std::string_view buf) {
     switch (r.field()) {
       case f_index_params::kInvert:
         params = DecodeInvert(r.bytes());
+        break;
+      case f_index_params::kOmega:
+        params = DecodeOmega(r.bytes());
         break;
       case f_index_params::kHnsw:
         params = DecodeHnsw(r.bytes());

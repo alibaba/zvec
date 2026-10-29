@@ -23,6 +23,7 @@
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
 #include "mixed_reducer/mixed_reducer_params.h"
+#include "mixed_reducer/mixed_streamer_reducer.h"
 #include "utility/utility_params.h"
 
 namespace zvec::core_interface {
@@ -503,6 +504,8 @@ int Index::init(const BaseIndexParam &param) {
 
 
 int Index::open(const std::string &file_path, StorageOptions storage_options) {
+  file_path_ = file_path;
+
   ailego::Params storage_params;
   // storage_params.set("proxima.mmap_file.storage.memory_warmup", true);
   // storage_params.set("proxima.mmap_file.storage.segment_meta_capacity",
@@ -1522,6 +1525,7 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
     return core::IndexError_Runtime;
   }
   is_trained_ = true;
+
   return 0;
 }
 

@@ -36,8 +36,6 @@ from zvec._zvec import io_backend_description, io_backend_type
 # Public API — grouped by category
 # ==============================
 from . import model as model
-
-# —— Extensions ——
 from .extension import (
     BM25EmbeddingFunction,
     DefaultLocalDenseEmbedding,
@@ -56,12 +54,8 @@ from .extension import (
     SparseEmbeddingFunction,
     WeightedReRanker,
 )
-
-# —— Typing ——
 from .model import param as param
 from .model import schema as schema
-
-# —— Core data structures ——
 from .model.collection import Collection
 from .model.doc import Doc, DocList, GroupResult
 
@@ -84,6 +78,8 @@ from .model.param import (
     InvertIndexParam,
     IVFIndexParam,
     IVFQueryParam,
+    OmegaIndexParam,
+    OmegaQueryParam,
     IvfRabitqIndexParam,
     IvfRabitqQueryParam,
     OptimizeOption,
@@ -95,8 +91,6 @@ from .model.param.query import Fts, Query, VectorQuery
 
 # —— Schema & field definitions ——
 from .model.schema import CollectionSchema, CollectionStats, FieldSchema, VectorSchema
-
-# —— tools ——
 from .tool import require_module
 from .typing import (
     DataType,
@@ -108,13 +102,8 @@ from .typing import (
     StatusCode,
 )
 from .typing.enum import LogLevel, LogType
-
-# —— lifecycle ——
 from .zvec import create_and_open, init, open
 
-# ==============================
-# Public interface declaration
-# ==============================
 __all__ = [
     # Zvec functions
     "create_and_open",
@@ -144,6 +133,7 @@ __all__ = [
     "IvfRabitqIndexParam",
     "FlatIndexParam",
     "IVFIndexParam",
+    "OmegaIndexParam",
     "DiskAnnIndexParam",
     "DiskAnnQueryParam",
     "CollectionOption",
@@ -155,6 +145,7 @@ __all__ = [
     "HnswRabitqQueryParam",
     "IvfRabitqQueryParam",
     "IVFQueryParam",
+    "OmegaQueryParam",
     "QuantizerParam",
     "VamanaIndexParam",
     "VamanaQueryParam",
