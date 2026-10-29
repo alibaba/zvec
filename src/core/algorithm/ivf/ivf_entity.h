@@ -24,11 +24,14 @@
 namespace zvec {
 namespace core {
 
-//! Per-context top-k storage; each list merges its retained results into the
-//! existing heap before returning.
+//! Per-context scan buffers and top-k storage; each list merges its retained
+//! results into the existing heap before returning.
 struct IVFSearchScratch {
   BatchTopK topk;
+  std::vector<const void *> pointers;
   std::vector<uint64_t> posting_ids;
+  std::vector<float> distances;
+  std::vector<uint8_t> split_row;
 };
 
 /*! IVF Entity
@@ -370,6 +373,11 @@ class IVFEntity {
   };
 
  private:
+  int search_turbo_rows(size_t inverted_list_id, const IndexFilter &filter,
+                        uint32_t *scan_count, IndexDocumentHeap *heap,
+                        IndexContext::Stats *context_stats,
+                        IVFSearchScratch &scratch) const;
+
   int merge_topk_results(BatchTopK &topk, IndexDocumentHeap *heap) const;
 
   //! Load the segment by seg_id in expect_size segment size

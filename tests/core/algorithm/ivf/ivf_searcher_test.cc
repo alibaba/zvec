@@ -4251,19 +4251,24 @@ TEST(IVFBatchDistanceBudget, UsesEncodedPayloadWithoutMetadata) {
 
 class ObservedBudgetIVFEntity : public IVFEntity {
  public:
-  void observe(const std::vector<std::string> &codes) {
+  void observe(const std::vector<std::string> &codes,
+               const std::vector<size_t> &expected_ids) {
     batches.clear();
+    batch_id_ranges.clear();
     observed_rows = 0;
     const auto original = query_distance_;
     query_distance_ = zvec::turbo::DistanceImpl(
         original.func(),
-        [this, original, &codes](const void **vectors, const void *,
-                                 size_t count, size_t, float *out,
-                                 const void **) {
+        [this, original, &codes, &expected_ids](
+            const void **vectors, const void *, size_t count, size_t,
+            float *out, const void **) {
           batches.push_back(count);
-          ASSERT_LE(observed_rows + count, codes.size());
+          ASSERT_GT(count, 0u);
+          ASSERT_LE(observed_rows + count, expected_ids.size());
+          batch_id_ranges.emplace_back(expected_ids[observed_rows],
+                                       expected_ids[observed_rows + count - 1]);
           for (size_t i = 0; i < count; ++i) {
-            const auto &expected = codes[observed_rows++];
+            const auto &expected = codes[expected_ids[observed_rows++]];
             EXPECT_EQ(
                 0, std::memcmp(vectors[i], expected.data(), expected.size()));
           }
@@ -4299,6 +4304,7 @@ class ObservedBudgetIVFEntity : public IVFEntity {
   }
 
   std::vector<size_t> batches;
+  std::vector<std::pair<size_t, size_t>> batch_id_ranges;
   size_t observed_rows{0};
 };
 
@@ -4319,10 +4325,12 @@ TEST(IVFBatchDistanceBudget, PreservesReadGroupsAndResidentSpanBoundaries) {
     EXPECT_EQ(0u, pool.used());
     EXPECT_EQ(0, pool.init(previous_capacity));
   });
-  for (const auto &test : {Case{256, 4, "Cosine"}, Case{256, 32, "Cosine"},
-                           Case{large_batch_dim, 32, "Cosine"},
-                           Case{split_dim, 32, "SquaredEuclidean"},
-                           Case{split_dim / 2, 32, "SquaredEuclidean"}}) {
+  for (const auto &test :
+       {Case{256, 4, "Cosine"}, Case{256, 32, "Cosine"},
+        Case{256, 64, "Cosine"}, Case{large_batch_dim, 32, "Cosine"},
+        Case{split_dim, 32, "SquaredEuclidean"},
+        Case{split_dim + 1, 32, "SquaredEuclidean"},
+        Case{split_dim / 2, 32, "SquaredEuclidean"}}) {
     SCOPED_TRACE(testing::Message() << test.dim << "/" << test.block_rows);
     const std::string path = "ivf_byte_budget.index";
     auto cleanup = ScopeGuard::Make([&]() { File::RemovePath(path); });
@@ -4399,10 +4407,38 @@ TEST(IVFBatchDistanceBudget, PreservesReadGroupsAndResidentSpanBoundaries) {
       if (resident_pages)
         EXPECT_GT(entity.pin_resident_span_count(1, resident_pins), 1u);
       IVFSearchScratch scratch;
-      for (bool filtered : {false, true}) {
-        SCOPED_TRACE(filtered);
-        IndexFilter keep_all;
-        keep_all.set([](uint64_t) { return false; });
+      enum class FilterMode { None, Partial, All, KeepAll };
+      // Reuse the same entity/scratch across empty and nonempty selections.
+      for (FilterMode mode :
+           {FilterMode::None, FilterMode::Partial, FilterMode::All,
+            FilterMode::KeepAll, FilterMode::None}) {
+        SCOPED_TRACE(static_cast<int>(mode));
+        const bool filtered = mode != FilterMode::None;
+        const auto excluded = [&](size_t id) {
+          if (mode == FilterMode::All) return true;
+          if (mode != FilterMode::Partial) return false;
+          if (id >= first_count) {
+            const size_t block = (id - first_count) / test.block_rows;
+            // Empty physical block and read-group holes must not lose later
+            // retained rows.
+            if (block == 1 || block / 10 == 1) return true;
+          }
+          return id % 3 == 1;
+        };
+        std::vector<size_t> expected_ids;
+        std::vector<uint64_t> expected_filter_keys;
+        size_t expected_filtered = 0;
+        for (size_t id = 0; id < count; ++id) {
+          if (!filtered) {
+            expected_ids.push_back(id);
+          } else if (key(id) != kInvalidKey) {
+            expected_filter_keys.push_back(key(id));
+            if (excluded(id))
+              ++expected_filtered;
+            else
+              expected_ids.push_back(id);
+          }
+        }
         std::vector<size_t> expected_batches;
         const bool mapped = std::string(backend.first) == "MMapFileReadStorage";
         const size_t read_blocks =
@@ -4412,7 +4448,7 @@ TEST(IVFBatchDistanceBudget, PreservesReadGroupsAndResidentSpanBoundaries) {
         const size_t logical_rows = !filtered && !padded && rows > 32
                                         ? read_blocks * test.block_rows
                                         : test.block_rows;
-        const size_t call_rows = filtered || padded ? 32 : rows;
+        const size_t call_rows = filtered ? rows : (padded ? 32 : rows);
         for (size_t list_count : {first_count, second_count}) {
           for (size_t offset = 0; offset < list_count; offset += logical_rows) {
             const size_t available =
@@ -4427,7 +4463,16 @@ TEST(IVFBatchDistanceBudget, PreservesReadGroupsAndResidentSpanBoundaries) {
           ASSERT_EQ(0, entity.bind_query(
                            vector.data(),
                            IndexQueryMeta(IndexMeta::DT_FP32, test.dim)));
-          entity.observe(codes);
+          entity.observe(codes, expected_ids);
+          std::vector<uint64_t> filter_keys;
+          IndexFilter filter;
+          filter.set([&](uint64_t candidate_key) {
+            EXPECT_NE(kInvalidKey, candidate_key);
+            filter_keys.push_back(candidate_key);
+            if (candidate_key == kInvalidKey) return false;
+            const size_t id = count - (candidate_key - key_base) / 17;
+            return excluded(id);
+          });
           const size_t heap_limit =
               query_value == 0.25f ? 17u : std::numeric_limits<size_t>::max();
           IndexDocumentHeap heap;
@@ -4439,21 +4484,56 @@ TEST(IVFBatchDistanceBudget, PreservesReadGroupsAndResidentSpanBoundaries) {
           for (size_t list = 0; list < 2; ++list) {
             uint32_t scanned = 0;
             const int ret =
-                filtered ? entity.search(list, vector.data(), keep_all,
-                                         &scanned, &heap, &stats, scratch)
+                filtered ? entity.search(list, vector.data(), filter, &scanned,
+                                         &heap, &stats, scratch)
                          : entity.search(list, vector.data(), &scanned, &heap,
                                          &stats, scratch);
             ASSERT_EQ(0, ret);
             EXPECT_EQ(list == 0 ? first_count : second_count, scanned);
           }
-          if (std::string(backend.first) != "BufferReadStorage") {
+          if (!filtered && std::string(backend.first) != "BufferReadStorage") {
             EXPECT_EQ(expected_batches, entity.batches);
           }
           // A later BufferReadStorage read may use an owned contiguous
           // fallback even when the earlier probe returned resident pages.
           for (size_t n : entity.batches) {
             EXPECT_LE(n, call_rows);
-            EXPECT_LE(n, read_blocks * test.block_rows);
+            if (!filtered || !mapped)
+              EXPECT_LE(n, read_blocks * test.block_rows);
+          }
+          if (filtered) {
+            const auto read_group = [&](size_t id) {
+              const size_t list = id < first_count ? 0 : 1;
+              const size_t offset = list == 0 ? id : id - first_count;
+              return std::make_pair(list, offset / (10 * test.block_rows));
+            };
+            for (const auto &range : entity.batch_id_ranges) {
+              const auto first = read_group(range.first);
+              const auto last = read_group(range.second);
+              EXPECT_EQ(first.first, last.first);
+              // Only stable mappings can retain pointers across reads.
+              if (!mapped) EXPECT_EQ(first.second, last.second);
+            }
+            if (mode == FilterMode::KeepAll && rows > test.block_rows &&
+                std::string(backend.first) != "BufferReadStorage") {
+              ASSERT_FALSE(entity.batches.empty());
+              EXPECT_GT(*std::max_element(entity.batches.begin(),
+                                          entity.batches.end()),
+                        test.block_rows);
+            }
+            if (mode == FilterMode::KeepAll && mapped &&
+                rows > 10 * test.block_rows) {
+              ASSERT_FALSE(entity.batches.empty());
+              EXPECT_GT(*std::max_element(entity.batches.begin(),
+                                          entity.batches.end()),
+                        10 * test.block_rows);
+              EXPECT_TRUE(std::any_of(entity.batch_id_ranges.begin(),
+                                      entity.batch_id_ranges.end(),
+                                      [&](const auto &range) {
+                                        return read_group(range.first).second !=
+                                               read_group(range.second).second;
+                                      }));
+            }
           }
           if (mapped && !filtered && !padded && rows > 640 &&
               logical_rows > 640) {
@@ -4463,12 +4543,14 @@ TEST(IVFBatchDistanceBudget, PreservesReadGroupsAndResidentSpanBoundaries) {
                 640u);
             EXPECT_EQ(7u, entity.batches.back());
           }
-          EXPECT_EQ(count, entity.observed_rows);
-          EXPECT_EQ(count, stats.dist_calced_count());
-          EXPECT_EQ(0u, stats.filtered_count());
+          EXPECT_EQ(expected_ids.size(), entity.observed_rows);
+          EXPECT_EQ(expected_ids.size(), stats.dist_calced_count());
+          EXPECT_EQ(expected_filtered, stats.filtered_count());
+          EXPECT_EQ(expected_filter_keys, filter_keys);
+          if (expected_ids.empty()) EXPECT_TRUE(entity.batches.empty());
           std::vector<float> scores{-1.0f};
           for (size_t id = 0; id < count; ++id) {
-            if (key(id) != kInvalidKey)
+            if (key(id) != kInvalidKey && (!filtered || !excluded(id)))
               scores.push_back(quantizer->calc_distance_dp_query_unquantized(
                   codes[id].data(), vector.data()));
           }
@@ -4477,6 +4559,9 @@ TEST(IVFBatchDistanceBudget, PreservesReadGroupsAndResidentSpanBoundaries) {
           ASSERT_EQ(std::min(heap_limit, scores.size()), heap.size());
           EXPECT_EQ(key_base - 1, heap[0].key());
           for (size_t rank = 1; rank < heap.size(); ++rank) {
+            ASSERT_LT(heap[rank].index(), count);
+            EXPECT_EQ(key(heap[rank].index()), heap[rank].key());
+            if (filtered) EXPECT_FALSE(excluded(heap[rank].index()));
             EXPECT_EQ(entity.get_key(heap[rank].index()), heap[rank].key());
             EXPECT_GT(heap[rank].key(), key_base);
             EXPECT_NEAR(scores[rank], heap[rank].score(),
@@ -4491,8 +4576,11 @@ TEST(IVFBatchDistanceBudget, PreservesReadGroupsAndResidentSpanBoundaries) {
                            vector.data(),
                            IndexQueryMeta(IndexMeta::DT_FP32, test.dim)));
           uint32_t full_scanned = 0;
-          ASSERT_EQ(0, entity.search(0, vector.data(), &full_scanned, &full,
-                                     &full_stats, scratch));
+          ASSERT_EQ(0, filtered ? entity.search(0, vector.data(), filter,
+                                                &full_scanned, &full,
+                                                &full_stats, scratch)
+                                : entity.search(0, vector.data(), &full_scanned,
+                                                &full, &full_stats, scratch));
           ASSERT_EQ(1u, full.size());
           EXPECT_EQ(key_base - 2, full[0].key());
           EXPECT_EQ(std::numeric_limits<uint32_t>::max(), full[0].index());

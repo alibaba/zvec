@@ -851,6 +851,10 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
                       IndexDocumentHeap *heap,
                       IndexContext::Stats *context_stats,
                       IVFSearchScratch &scratch) const {
+  if (quantizer_ && meta_.major_order() == IndexMeta::MO_ROW) {
+    return search_turbo_rows(inverted_list_id, filter, scan_count, heap,
+                             context_stats, scratch);
+  }
   if (quantizer_ && !query_distance_.valid()) {
     return IndexError_InvalidArgument;
   }
@@ -860,23 +864,9 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
   auto list_meta = this->inverted_list_meta(inverted_list_id, meta_block);
   ivf_assert(list_meta, IndexError_ReadData);
 
-  const bool use_topk = quantizer_ &&
-                        meta_.major_order() == IndexMeta::MO_ROW &&
-                        heap->limit() < size_t{list_meta->vector_count};
-  if (use_topk) {
-    float bound = heap->threshold();
-    const bool strict =
-        !heap->empty() && heap->full() && heap->front().score() <= bound;
-    if (strict) bound = heap->front().score();
-    scratch.topk.reset(std::min(heap->limit(), size_t{list_meta->vector_count}),
-                       bound, strict);
-  }
-
   IndexStorage::MemoryBlock data;
   const size_t block_vecs = header_.block_vector_count;
   std::vector<float> distances(block_vecs);
-  if (use_topk && scratch.posting_ids.size() < block_vecs)
-    scratch.posting_ids.resize(block_vecs);
   const size_t batch_size = kBatchBlocks;
   const size_t block_size = header_.block_size;
   const size_t element_size = meta_.element_size();
@@ -971,19 +961,10 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
       *(context_stats->mutable_dist_calced_count()) += vecs_count;
 
       uint32_t id_off = list_meta->id_offset + (i + b) * block_vecs;
-      if (use_topk) {
-        for (size_t k = 0; k < vecs_count; ++k) {
-          scratch.posting_ids[k] = id_off + k;
-          if (!(keeps & (1ULL << k)) || block_keys[k] == kInvalidKey)
-            distances[k] = std::numeric_limits<float>::quiet_NaN();
-        }
-        scratch.topk.push_block(distances.data(), scratch.posting_ids.data(),
-                                vecs_count);
-      } else {
-        for (size_t k = 0; k < vecs_count; ++k) {
-          if (keeps & (1ULL << k)) {
-            if (block_keys[k] != kInvalidKey)
-              heap->emplace(block_keys[k], distances[k] * norm_val, id_off + k);
+      for (size_t k = 0; k < vecs_count; ++k) {
+        if (keeps & (1ULL << k)) {
+          if (block_keys[k] != kInvalidKey) {
+            heap->emplace(block_keys[k], distances[k] * norm_val, id_off + k);
           }
         }
       }
@@ -991,7 +972,171 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
   }
 
   *scan_count = list_meta->vector_count;
+  return 0;
+}
+
+int IVFEntity::search_turbo_rows(size_t inverted_list_id,
+                                 const IndexFilter &filter,
+                                 uint32_t *scan_count, IndexDocumentHeap *heap,
+                                 IndexContext::Stats *context_stats,
+                                 IVFSearchScratch &scratch) const {
+  if (!query_distance_.valid()) return IndexError_InvalidArgument;
+  ailego_assert_with(inverted_list_id < header_.inverted_list_count,
+                     "invalid id");
+  IndexStorage::MemoryBlock meta_block;
+  const auto *list_meta = inverted_list_meta(inverted_list_id, meta_block);
+  ivf_assert(list_meta, IndexError_ReadData);
+  const InvertedListMeta list = *list_meta;
   meta_block.reset();
+
+  const bool use_topk = heap->limit() < size_t{list.vector_count};
+  if (use_topk) {
+    float bound = heap->threshold();
+    const bool strict =
+        !heap->empty() && heap->full() && heap->front().score() <= bound;
+    if (strict) bound = heap->front().score();
+    scratch.topk.reset(heap->limit(), bound, strict);
+  }
+
+  const size_t block_vecs = header_.block_vector_count;
+  const size_t block_size = header_.block_size;
+  const size_t element_size = meta_.element_size();
+  const size_t batch_rows = std::min(BatchDistanceRows(meta_),
+                                     static_cast<size_t>(list.vector_count));
+  if (scratch.pointers.size() < batch_rows) scratch.pointers.resize(batch_rows);
+  if (scratch.posting_ids.size() < batch_rows)
+    scratch.posting_ids.resize(batch_rows);
+  if (scratch.distances.size() < batch_rows)
+    scratch.distances.resize(batch_rows);
+
+  const uint8_t *row_base = inverted_->base_data();
+  const auto *key_base = reinterpret_cast<const uint64_t *>(keys_->base_data());
+  // Stable mappings let a computation batch span native storage reads.
+  const bool stable_batch = row_base && (use_topk || key_base);
+  const uint64_t *batch_keys = key_base;
+  size_t batch_key_offset = 0;
+  size_t count = 0;
+  const auto flush = [&]() {
+    if (count == 0) return;
+    query_distance_.batch(scratch.pointers.data(), count,
+                          scratch.distances.data());
+    *context_stats->mutable_dist_calced_count() += count;
+    if (use_topk) {
+      scratch.topk.push_block(scratch.distances.data(),
+                              scratch.posting_ids.data(), count);
+    } else {
+      for (size_t k = 0; k < count; ++k) {
+        const uint32_t id = static_cast<uint32_t>(scratch.posting_ids[k]);
+        heap->emplace(batch_keys[id - batch_key_offset], scratch.distances[k],
+                      id);
+      }
+    }
+    count = 0;
+  };
+
+  for (size_t i = 0; i < list.block_count; i += kBatchBlocks) {
+    const size_t blocks = std::min(kBatchBlocks, list.block_count - i);
+    const size_t items =
+        std::min(blocks * block_vecs, list.vector_count - i * block_vecs);
+    const size_t first_id = list.id_offset + i * block_vecs;
+    IndexStorage::MemoryBlock keys_block;
+    const auto *keys = get_keys(first_id, items, keys_block);
+    if (!keys) return IndexError_ReadData;
+    if (!key_base) {
+      batch_keys = keys;
+      batch_key_offset = first_id;
+    }
+
+    // Keep the existing ten-block read range and read keys before pinning rows.
+    const size_t off = list.offset + i * block_size;
+    if (off > header_.inverted_body_size) return IndexError_ReadData;
+    const size_t size =
+        std::min(blocks * block_size,
+                 static_cast<size_t>(header_.inverted_body_size - off));
+    IndexStorage::Segment::ScatterBlock data;
+    if (!row_base) {
+      if (inverted_->read_scatter(off, data, size) != size) {
+        LOG_ERROR("Failed to scatter-read block, off=%zu, size=%zu", off, size);
+        return IndexError_ReadData;
+      }
+      size_t covered = 0;
+      for (const auto &span : data.spans) {
+        if (span.size > size - covered || (span.size && !span.data))
+          return IndexError_ReadData;
+        covered += span.size;
+      }
+      if (covered != size) return IndexError_ReadData;
+    }
+
+    // Storage blocks determine row offsets, not computation batch boundaries.
+    size_t span_index = 0;
+    size_t span_begin = 0;
+    for (size_t b = 0; b < blocks; ++b) {
+      const size_t block_offset = b * block_size;
+      const size_t vecs_count = std::min(block_vecs, items - b * block_vecs);
+      if (block_offset > size ||
+          vecs_count > (size - block_offset) / element_size)
+        return IndexError_ReadData;
+      for (size_t k = 0; k < vecs_count; ++k) {
+        const size_t row = b * block_vecs + k;
+        const uint64_t key = keys[row];
+        if (key == kInvalidKey) continue;
+        if (filter(key)) {
+          ++(*context_stats->mutable_filtered_count());
+          continue;
+        }
+
+        const size_t row_offset = block_offset + k * element_size;
+        const uint8_t *vector =
+            row_base ? row_base + off + row_offset : nullptr;
+        if (!vector) {
+          while (span_index < data.spans.size() &&
+                 row_offset - span_begin >= data.spans[span_index].size) {
+            span_begin += data.spans[span_index++].size;
+          }
+          if (span_index == data.spans.size()) return IndexError_ReadData;
+          const auto &span = data.spans[span_index];
+          const size_t in_span = row_offset - span_begin;
+          if (element_size <= span.size - in_span) {
+            vector = span.data + in_span;
+          } else {
+            // A single split row needs contiguous storage for the kernel.
+            // Consume it immediately; never copy spans just to assemble a
+            // larger batch.
+            flush();
+            if (scratch.split_row.size() < element_size)
+              scratch.split_row.resize(element_size);
+            size_t copied = 0;
+            size_t source_offset = in_span;
+            for (size_t s = span_index; copied < element_size; ++s) {
+              if (s == data.spans.size()) return IndexError_ReadData;
+              const auto &source = data.spans[s];
+              const size_t bytes =
+                  std::min(element_size - copied, source.size - source_offset);
+              if (bytes != 0)
+                std::memcpy(scratch.split_row.data() + copied,
+                            source.data + source_offset, bytes);
+              copied += bytes;
+              source_offset = 0;
+            }
+            scratch.pointers[0] = scratch.split_row.data();
+            scratch.posting_ids[0] = first_id + row;
+            count = 1;
+            flush();
+            continue;
+          }
+        }
+        scratch.pointers[count] = vector;
+        scratch.posting_ids[count++] = first_id + row;
+        if (count == batch_rows) flush();
+      }
+    }
+    // A transient read owns its pointers; consume them before its release.
+    if (!stable_batch) flush();
+  }
+  flush();
+
+  *scan_count = list.vector_count;
   return use_topk ? merge_topk_results(scratch.topk, heap) : 0;
 }
 
