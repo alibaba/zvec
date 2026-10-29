@@ -17,6 +17,7 @@
 
 #if defined(AILEGO_ARM64_NEON)
 #include <arm_neon.h>
+#include "neon/fp32/batch.h"
 #else
 #include "scalar/fp32/inner_product.h"
 #endif
@@ -58,7 +59,14 @@ void inner_product_fp32_batch_distance(const void *const *vectors,
                                        const void *query, size_t n, size_t dim,
                                        float *distances,
                                        const void *const * /*extra_values*/) {
-  for (size_t i = 0; i < n; ++i) {
+  size_t i = 0;
+#if defined(AILEGO_ARM64_NEON)
+  for (; n - i >= 4; i += 4) {
+    detail::fp32_distance_batch4<false>(
+        vectors + i, static_cast<const float *>(query), dim, distances + i);
+  }
+#endif
+  for (; i < n; ++i) {
     inner_product_fp32_distance(vectors[i], query, dim, &distances[i]);
   }
 }

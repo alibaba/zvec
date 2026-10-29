@@ -66,6 +66,7 @@
 #include "neon/fp32/cosine.h"
 #include "neon/fp32/inner_product.h"
 #include "neon/fp32/squared_euclidean.h"
+#include "neon/integer/squared_euclidean.h"
 #include "neon/pq_quantizer_fast/pq_distance.h"
 #include "neon/pq_quantizer_int4/pq_distance.h"
 #include "neon/pq_quantizer_int8/pq_distance.h"
@@ -199,6 +200,9 @@ constexpr KernelSet kKernelTable[] = {
      avx512_vnni::squared_euclidean_fp16_distance,
      avx512_vnni::squared_euclidean_fp16_batch_distance, nullptr,
      kCpuFeatureAvx512Dq | kCpuFeatureF16c},
+    {QuantizeType::kRaw, DataType::kUint8, CpuArchType::kNEON,
+     MetricType::kSquaredEuclidean, neon::squared_euclidean_raw_uint8_distance,
+     neon::squared_euclidean_raw_uint8_batch_distance, nullptr},
     // Raw storage widens operands so squaring cannot overflow in FP16.
     {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kNEON,
      MetricType::kSquaredEuclidean, neon::squared_euclidean_fp16_distance,
@@ -335,13 +339,13 @@ constexpr KernelSet kKernelTable[] = {
      MetricType::kInnerProduct, scalar::inner_product_int4_distance,
      scalar::inner_product_int4_batch_distance, nullptr},
 
-    // --- uniform-quantized uint7 (stored as int8; AVX512-VNNI only) ---
+    // --- uniform-quantized uint7 (stored as int8; AVX512-VNNI) ---
     {QuantizeType::kUniform, DataType::kInt8, CpuArchType::kAVX512VNNI,
      MetricType::kSquaredEuclidean,
      avx512_vnni::uniform_squared_euclidean_uint7_distance,
      avx512_vnni::uniform_squared_euclidean_uint7_batch_distance, nullptr},
 
-    // --- uniform-quantized uint8 (AVX512-VNNI only) ---
+    // --- uniform-quantized uint8 (AVX512-VNNI) ---
     {QuantizeType::kUniformUint8, DataType::kInt8, CpuArchType::kAVX512VNNI,
      MetricType::kSquaredEuclidean,
      avx512_vnni::uniform_squared_euclidean_uint8_distance,
@@ -349,11 +353,26 @@ constexpr KernelSet kKernelTable[] = {
      avx512_vnni::uniform_squared_euclidean_uint8_query_preprocess,
      kCpuFeatureNone},
 
-    // --- uniform-quantized uint4 (packed; AVX512-VNNI only) ---
+    // --- uniform-quantized uint4 (packed; AVX512-VNNI) ---
     {QuantizeType::kUniformUint4, DataType::kInt4, CpuArchType::kAVX512VNNI,
      MetricType::kSquaredEuclidean,
      avx512_vnni::uniform_squared_euclidean_uint4_distance,
      avx512_vnni::uniform_squared_euclidean_uint4_batch_distance, nullptr},
+
+    // ARM uniform kernels preserve the existing encoded layouts.
+    {QuantizeType::kUniform, DataType::kInt8, CpuArchType::kNEON,
+     MetricType::kSquaredEuclidean,
+     neon::uniform_squared_euclidean_uint7_distance,
+     neon::uniform_squared_euclidean_uint7_batch_distance, nullptr},
+    {QuantizeType::kUniformUint8, DataType::kInt8, CpuArchType::kNEON,
+     MetricType::kSquaredEuclidean,
+     neon::uniform_squared_euclidean_uint8_distance,
+     neon::uniform_squared_euclidean_uint8_batch_distance,
+     neon::uniform_squared_euclidean_uint8_query_preprocess},
+    {QuantizeType::kUniformUint4, DataType::kInt4, CpuArchType::kNEON,
+     MetricType::kSquaredEuclidean,
+     neon::uniform_squared_euclidean_uint4_distance,
+     neon::uniform_squared_euclidean_uint4_batch_distance, nullptr},
 
     // --- fp16 (AVX512, AVX2, SSE2, NEON-FP16, NEON, scalar) ---
     // NOTE: the AVX512-FP16 kernels under distance/avx512_fp16/ are not
@@ -642,7 +661,8 @@ CodebookKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
             IsArchMatch(cpu_arch_type, CpuArchType::kNEON)) {
           return {neon::pq_adc_int4_distance_neon,
                   neon::pq_sdc_int4_distance_neon,
-                  neon::pq_adc_int4_batch_distance_neon};
+                  neon::pq_adc_int4_batch_distance_neon, nullptr,
+                  neon::pq_sdc_int4_batch_distance_neon};
         }
         return {scalar::pq_adc_int4_distance, scalar::pq_sdc_int4_distance,
                 scalar::pq_adc_int4_batch_distance};
@@ -663,7 +683,8 @@ CodebookKernels get_pq_kernels(DataType data_type, QuantizeType quantize_type,
           IsArchMatch(cpu_arch_type, CpuArchType::kNEON)) {
         return {neon::pq_adc_int8_distance_neon,
                 neon::pq_sdc_int8_distance_neon,
-                neon::pq_adc_int8_batch_distance_neon};
+                neon::pq_adc_int8_batch_distance_neon, nullptr,
+                neon::pq_sdc_int8_batch_distance_neon};
       }
       return {scalar::pq_adc_int8_distance, scalar::pq_sdc_int8_distance,
               scalar::pq_adc_int8_batch_distance};
