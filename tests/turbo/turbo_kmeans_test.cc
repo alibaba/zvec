@@ -20,18 +20,18 @@
 
 #define protected public
 #define private public
-#include <ailego/algorithm/kmeans.h>
+#include <turbo/algorithm/kmeans.h>
 
 using namespace zvec;
 
 using SmallInnerProductKmeansContext =
-    ailego::NumericalInnerProductKmeansContext<float, 2>;
+    turbo::NumericalInnerProductKmeansContext<float, 2>;
 using SmallInnerProductKmeans =
     ailego::LloydCluster<float, ailego::ThreadPool,
                          SmallInnerProductKmeansContext,
                          ailego::NumericalVectorArray<float>>;
 using SmallInnerProductKmc2Generator =
-    ailego::Kmc2CentroidsGenerator<SmallInnerProductKmeans, ailego::ThreadPool>;
+    turbo::Kmc2CentroidsGenerator<SmallInnerProductKmeans, ailego::ThreadPool>;
 
 TEST(NumericalInnerProductKmeans, Kmc2UsesCosineWeightForNormalizedVectors) {
   SmallInnerProductKmeans kmeans(1, 2, true);
@@ -140,7 +140,7 @@ TEST(NumericalKmeans, FP32_General) {
   const size_t K_VALUE = 20;
   const size_t COUNT = 20000u;
 
-  ailego::NumericalKmeans<float, ailego::ThreadPool> kmeans;
+  turbo::NumericalKmeans<float, ailego::ThreadPool> kmeans;
   kmeans.reset(K_VALUE, DIMENSION);
 
   std::random_device rd;
@@ -174,7 +174,7 @@ TEST(NumericalKmeans, FP16_General) {
   const size_t K_VALUE = 20;
   const size_t COUNT = 20000u;
 
-  ailego::NumericalKmeans<ailego::Float16, ailego::ThreadPool> kmeans;
+  turbo::NumericalKmeans<ailego::Float16, ailego::ThreadPool> kmeans;
   kmeans.reset(K_VALUE, DIMENSION);
 
   std::random_device rd;
@@ -208,7 +208,7 @@ TEST(NumericalKmeans, INT8_General) {
   const size_t K_VALUE = 20;
   const size_t COUNT = 20000u;
 
-  ailego::NumericalKmeans<int8_t, ailego::ThreadPool> kmeans;
+  turbo::NumericalKmeans<int8_t, ailego::ThreadPool> kmeans;
   kmeans.reset(K_VALUE, DIMENSION);
 
   std::random_device rd;
@@ -242,8 +242,8 @@ TEST(NibbleKmeans, INT4_General) {
   const size_t K_VALUE = 63;
   const size_t COUNT = 40000u;
 
-  ailego::NumericalKmeans<int8_t, ailego::ThreadPool> kmeans1;
-  ailego::NibbleKmeans<int32_t, ailego::ThreadPool> kmeans2;
+  turbo::NumericalKmeans<int8_t, ailego::ThreadPool> kmeans1;
+  turbo::NibbleKmeans<int32_t, ailego::ThreadPool> kmeans2;
   kmeans1.reset(K_VALUE, DIMENSION);
   kmeans2.reset(K_VALUE, DIMENSION);
 
@@ -266,9 +266,9 @@ TEST(NibbleKmeans, INT4_General) {
 
   ailego::ThreadPool pool;
   {
-    const ailego::NumericalKmeans<int8_t, ailego::ThreadPool> &kmeans1_ref =
+    const turbo::NumericalKmeans<int8_t, ailego::ThreadPool> &kmeans1_ref =
         kmeans1;
-    ailego::Kmc2CentroidsGenerator<decltype(kmeans1_ref), ailego::ThreadPool> g;
+    turbo::Kmc2CentroidsGenerator<decltype(kmeans1_ref), ailego::ThreadPool> g;
 
     kmeans1.init_centroids(pool);
 
@@ -322,7 +322,7 @@ TEST(NumericalKmeans, FP32_General_InnerProduct) {
   const size_t K_VALUE = 20;
   const size_t COUNT = 20000u;
 
-  ailego::NumericalInnerProductKmeans<float, ailego::ThreadPool> kmeans;
+  turbo::NumericalInnerProductKmeans<float, ailego::ThreadPool> kmeans;
   kmeans.reset(K_VALUE, DIMENSION);
 
   std::random_device rd;
@@ -355,7 +355,7 @@ TEST(NumericalInnerProductKmeansContext, NormalizeFloatingPointCentroid) {
   float centroid[] = {3.0f, 4.0f};
   float norm = 0.0f;
 
-  ailego::NumericalInnerProductKmeansContext<float>::Norm2(centroid, 2, &norm);
+  turbo::NumericalInnerProductKmeansContext<float>::Norm2(centroid, 2, &norm);
 
   EXPECT_FLOAT_EQ(norm, 5.0f);
   EXPECT_FLOAT_EQ(centroid[0], 0.6f);
@@ -366,7 +366,7 @@ TEST(NumericalKmeansContext, NormalizeFloatingPointCentroid) {
   float centroid[] = {3.0f, 4.0f};
   float norm = 0.0f;
 
-  ailego::NumericalKmeansContext<float>::Norm2(centroid, 2, &norm);
+  turbo::NumericalKmeansContext<float>::Norm2(centroid, 2, &norm);
 
   EXPECT_FLOAT_EQ(norm, 5.0f);
   EXPECT_FLOAT_EQ(centroid[0], 0.6f);
@@ -377,7 +377,7 @@ TEST(NumericalKmeansContext, KeepIntegerCentroidUnchanged) {
   int8_t centroid[] = {3, 4};
   float norm = 1.0f;
 
-  ailego::NumericalKmeansContext<int8_t>::Norm2(centroid, 2, &norm);
+  turbo::NumericalKmeansContext<int8_t>::Norm2(centroid, 2, &norm);
 
   EXPECT_FLOAT_EQ(norm, 0.0f);
   EXPECT_EQ(centroid[0], 3);
@@ -389,7 +389,7 @@ TEST(NumericalKmeans, FP16_General_InnerProduct) {
   const size_t K_VALUE = 20;
   const size_t COUNT = 20000u;
 
-  ailego::NumericalInnerProductKmeans<ailego::Float16, ailego::ThreadPool>
+  turbo::NumericalInnerProductKmeans<ailego::Float16, ailego::ThreadPool>
       kmeans;
   kmeans.reset(K_VALUE, DIMENSION);
 
@@ -424,7 +424,7 @@ TEST(NumericalKmeans, INT8_General_InnerProduct) {
   const size_t K_VALUE = 20;
   const size_t COUNT = 20000u;
 
-  ailego::NumericalInnerProductKmeans<int8_t, ailego::ThreadPool> kmeans;
+  turbo::NumericalInnerProductKmeans<int8_t, ailego::ThreadPool> kmeans;
   kmeans.reset(K_VALUE, DIMENSION);
 
   std::random_device rd;
@@ -458,7 +458,7 @@ TEST(NumericalKmeans, FP32_General_InnerProduct_Spherical) {
   const size_t K_VALUE = 20;
   const size_t COUNT = 20000u;
 
-  ailego::NumericalInnerProductKmeans<float, ailego::ThreadPool> kmeans;
+  turbo::NumericalInnerProductKmeans<float, ailego::ThreadPool> kmeans;
   kmeans.reset(K_VALUE, DIMENSION, true);
 
   std::random_device rd;

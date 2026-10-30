@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <random>
+#include <ailego/algorithm/lloyd_cluster.h>
 #include <ailego/container/vector_array.h>
 #include <ailego/utility/matrix_helper.h>
 #include <turbo/distance/matrix.h>
@@ -26,10 +27,9 @@
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/ailego/utility/type_helper.h>
-#include "lloyd_cluster.h"
 
 namespace zvec {
-namespace ailego {
+namespace turbo {
 
 /*! K-MC2 Centroids Generator
  */
@@ -114,9 +114,9 @@ class Kmc2CentroidsGenerator {
       // Update bench scores
       scores.resize(benches.count());
       for (size_t j = 0; j != scores.size(); ++j) {
-        group->submit(Closure::New(&Kmc2CentroidsGenerator::UpdateBenchScores,
-                                   owner, benches[j], centroid_norms.data(),
-                                   &scores[j]));
+        group->submit(ailego::Closure::New(
+            &Kmc2CentroidsGenerator::UpdateBenchScores, owner, benches[j],
+            centroid_norms.data(), &scores[j]));
       }
       group->wait_finish();
 
@@ -154,17 +154,20 @@ class Kmc2CentroidsGenerator {
       size_t m = n / c * c;
 
       for (size_t i = 0; i != m; i += c) {
-        group->submit(Closure::New(&Kmc2CentroidsGenerator::UpdateMatrixScores,
-                                   owner, i, i + c, &probs[0]));
+        group->submit(
+            ailego::Closure::New(&Kmc2CentroidsGenerator::UpdateMatrixScores,
+                                 owner, i, i + c, &probs[0]));
       }
       for (size_t i = m; i != n; i += 1) {
-        group->submit(Closure::New(&Kmc2CentroidsGenerator::UpdateMatrixScores,
-                                   owner, i, i + 1, &probs[0]));
+        group->submit(
+            ailego::Closure::New(&Kmc2CentroidsGenerator::UpdateMatrixScores,
+                                 owner, i, i + 1, &probs[0]));
       }
     }
     if (!cache.empty()) {
-      group->submit(Closure::New(&Kmc2CentroidsGenerator::UpdateCacheScores,
-                                 owner, &probs[matrix.count()]));
+      group->submit(
+          ailego::Closure::New(&Kmc2CentroidsGenerator::UpdateCacheScores,
+                               owner, &probs[matrix.count()]));
     }
     group->wait_finish();
 
@@ -186,9 +189,9 @@ class Kmc2CentroidsGenerator {
       // Update bench scores
       scores.resize(benches.count());
       for (size_t j = 0; j != scores.size(); ++j) {
-        group->submit(Closure::New(&Kmc2CentroidsGenerator::UpdateBenchScores,
-                                   owner, benches[j], centroid_norms.data(),
-                                   &scores[j]));
+        group->submit(ailego::Closure::New(
+            &Kmc2CentroidsGenerator::UpdateBenchScores, owner, benches[j],
+            centroid_norms.data(), &scores[j]));
       }
       group->wait_finish();
 
@@ -375,7 +378,7 @@ class Kmc2CentroidsGenerator {
     std::uniform_real_distribution<float> dist(0.0, 1.0);
 
     // Sample features
-    KeyValueHeap<size_t, double, std::greater<double>> samples(k);
+    ailego::KeyValueHeap<size_t, double, std::greater<double>> samples(k);
     for (size_t i = 0; i < probs.size(); ++i) {
       samples.emplace(i, std::pow(dist(mt), 1.0 / probs[i]));
     }
@@ -422,7 +425,7 @@ class NumericalKmeansContext {
   using StoreType = typename std::remove_cv<T>::type;
 
   // Check supporting type
-  static_assert(IsSignedArithmetic<ValueType>::value,
+  static_assert(ailego::IsSignedArithmetic<ValueType>::value,
                 "ValueType must be signed arithmetic");
 
   /*! K-Means Context Cluster
@@ -506,7 +509,7 @@ class NumericalKmeansContext {
     }
 
    private:
-    SpinMutex mutex_{};
+    ailego::SpinMutex mutex_{};
     double cost_{0.0};
     size_t count_{0u};
     std::vector<double> accum_{};
@@ -557,33 +560,34 @@ class NumericalKmeansContext {
   template <typename U>
   static auto MatrixTranspose(const U *src, size_t dim, T *dst) ->
       typename std::enable_if<sizeof(U) >= 2>::type {
-    MatrixHelper::Transpose<U, BatchCount>(src, dim, dst);
+    ailego::MatrixHelper::Transpose<U, BatchCount>(src, dim, dst);
   }
 
   //! Transpose a matrix
   template <typename U>
   static auto MatrixTranspose(const U *src, size_t dim, U *dst) ->
       typename std::enable_if<sizeof(U) == 1>::type {
-    MatrixHelper::Transpose<uint32_t, BatchCount>(src, dim >> 2, dst);
+    ailego::MatrixHelper::Transpose<uint32_t, BatchCount>(src, dim >> 2, dst);
   }
 
   //! Reverse transpose a matrix
   template <typename U>
   static auto MatrixReverseTranspose(const U *src, size_t dim, U *dst) ->
       typename std::enable_if<sizeof(U) >= 2>::type {
-    MatrixHelper::ReverseTranspose<U, BatchCount>(src, dim, dst);
+    ailego::MatrixHelper::ReverseTranspose<U, BatchCount>(src, dim, dst);
   }
 
   //! Reverse transpose a matrix
   template <typename U>
   static auto MatrixReverseTranspose(const U *src, size_t dim, U *dst) ->
       typename std::enable_if<sizeof(U) == 1>::type {
-    MatrixHelper::ReverseTranspose<uint32_t, BatchCount>(src, dim >> 2, dst);
+    ailego::MatrixHelper::ReverseTranspose<uint32_t, BatchCount>(src, dim >> 2,
+                                                                 dst);
   }
 
   //! Normalize with L2 norm for floating-point values, otherwise do nothing
   static void Norm2(ValueType *data, size_t dim, float *norm) {
-    if constexpr (IsFloatingPoint<ValueType>::value) {
+    if constexpr (ailego::IsFloatingPoint<ValueType>::value) {
       zvec::turbo::Normalizer<ValueType>::L2(data, dim, norm);
     } else {
       (void)data;
@@ -691,7 +695,7 @@ class NibbleKmeansContext {
     }
 
    private:
-    SpinMutex mutex_{};
+    ailego::SpinMutex mutex_{};
     double cost_{0.0};
     size_t count_{0u};
     std::vector<double> accum_{};
@@ -743,13 +747,14 @@ class NibbleKmeansContext {
   //! Transpose a matrix
   static void MatrixTranspose(const StoreType *src, size_t dim,
                               StoreType *dst) {
-    MatrixHelper::Transpose<uint32_t, BatchCount>(src, dim >> 3, dst);
+    ailego::MatrixHelper::Transpose<uint32_t, BatchCount>(src, dim >> 3, dst);
   }
 
   //! Reverse transpose a matrix
   static void MatrixReverseTranspose(const StoreType *src, size_t dim,
                                      StoreType *dst) {
-    MatrixHelper::ReverseTranspose<uint32_t, BatchCount>(src, dim >> 3, dst);
+    ailego::MatrixHelper::ReverseTranspose<uint32_t, BatchCount>(src, dim >> 3,
+                                                                 dst);
   }
 
   //! Compute and do norm2
@@ -770,14 +775,14 @@ class NumericalInnerProductKmeansContext {
   //! constexpr variables
   constexpr static size_t BatchCount = BATCH_COUNT;
   constexpr static bool NeedsSphericalKmc2Weight =
-      IsFloatingPoint<typename std::remove_cv<T>::type>::value;
+      ailego::IsFloatingPoint<typename std::remove_cv<T>::type>::value;
 
   //! Type of values
   using ValueType = typename std::remove_cv<T>::type;
   using StoreType = typename std::remove_cv<T>::type;
 
   // Check supporting type
-  static_assert(IsSignedArithmetic<ValueType>::value,
+  static_assert(ailego::IsSignedArithmetic<ValueType>::value,
                 "ValueType must be signed arithmetic");
 
   /*! K-Means Context Cluster
@@ -861,7 +866,7 @@ class NumericalInnerProductKmeansContext {
     }
 
    private:
-    SpinMutex mutex_{};
+    ailego::SpinMutex mutex_{};
     double cost_{0.0};
     size_t count_{0u};
     std::vector<double> accum_{};
@@ -931,33 +936,34 @@ class NumericalInnerProductKmeansContext {
   template <typename U>
   static auto MatrixTranspose(const U *src, size_t dim, T *dst) ->
       typename std::enable_if<sizeof(U) >= 2>::type {
-    MatrixHelper::Transpose<U, BatchCount>(src, dim, dst);
+    ailego::MatrixHelper::Transpose<U, BatchCount>(src, dim, dst);
   }
 
   //! Transpose a matrix
   template <typename U>
   static auto MatrixTranspose(const U *src, size_t dim, U *dst) ->
       typename std::enable_if<sizeof(U) == 1>::type {
-    MatrixHelper::Transpose<uint32_t, BatchCount>(src, dim >> 2, dst);
+    ailego::MatrixHelper::Transpose<uint32_t, BatchCount>(src, dim >> 2, dst);
   }
 
   //! Reverse transpose a matrix
   template <typename U>
   static auto MatrixReverseTranspose(const U *src, size_t dim, U *dst) ->
       typename std::enable_if<sizeof(U) >= 2>::type {
-    MatrixHelper::ReverseTranspose<U, BatchCount>(src, dim, dst);
+    ailego::MatrixHelper::ReverseTranspose<U, BatchCount>(src, dim, dst);
   }
 
   //! Reverse transpose a matrix
   template <typename U>
   static auto MatrixReverseTranspose(const U *src, size_t dim, U *dst) ->
       typename std::enable_if<sizeof(U) == 1>::type {
-    MatrixHelper::ReverseTranspose<uint32_t, BatchCount>(src, dim >> 2, dst);
+    ailego::MatrixHelper::ReverseTranspose<uint32_t, BatchCount>(src, dim >> 2,
+                                                                 dst);
   }
 
   //! Normalize with L2 norm for floating-point values, otherwise do nothing
   static void Norm2(ValueType *data, size_t dim, float *norm) {
-    if constexpr (IsFloatingPoint<ValueType>::value) {
+    if constexpr (ailego::IsFloatingPoint<ValueType>::value) {
       zvec::turbo::Normalizer<ValueType>::L2(data, dim, norm);
     } else {
       (void)data;
@@ -1065,7 +1071,7 @@ class NibbleInnerProductKmeansContext {
     }
 
    private:
-    SpinMutex mutex_{};
+    ailego::SpinMutex mutex_{};
     double cost_{0.0};
     size_t count_{0u};
     std::vector<double> accum_{};
@@ -1117,13 +1123,14 @@ class NibbleInnerProductKmeansContext {
   //! Transpose a matrix
   static void MatrixTranspose(const StoreType *src, size_t dim,
                               StoreType *dst) {
-    MatrixHelper::Transpose<uint32_t, BatchCount>(src, dim >> 3, dst);
+    ailego::MatrixHelper::Transpose<uint32_t, BatchCount>(src, dim >> 3, dst);
   }
 
   //! Reverse transpose a matrix
   static void MatrixReverseTranspose(const StoreType *src, size_t dim,
                                      StoreType *dst) {
-    MatrixHelper::ReverseTranspose<uint32_t, BatchCount>(src, dim >> 3, dst);
+    ailego::MatrixHelper::ReverseTranspose<uint32_t, BatchCount>(src, dim >> 3,
+                                                                 dst);
   }
 
   //! Compute Norm2
@@ -1141,27 +1148,28 @@ class NibbleInnerProductKmeansContext {
 template <typename T, typename TPool,
           typename TContext = NumericalKmeansContext<T>>
 using NumericalKmeans =
-    LloydCluster<T, TPool, TContext, NumericalVectorArray<T>>;
+    ailego::LloydCluster<T, TPool, TContext, ailego::NumericalVectorArray<T>>;
 
 /*! Nibble K-Means cluster algorithm
  */
 template <typename T, typename TPool,
           typename TContext = NibbleKmeansContext<T>>
-using NibbleKmeans = LloydCluster<T, TPool, TContext, NibbleVectorArray<T>>;
+using NibbleKmeans =
+    ailego::LloydCluster<T, TPool, TContext, ailego::NibbleVectorArray<T>>;
 
 /*! Numerical K-Means cluster algorithm
  */
 template <typename T, typename TPool,
           typename TContext = NumericalInnerProductKmeansContext<T>>
 using NumericalInnerProductKmeans =
-    LloydCluster<T, TPool, TContext, NumericalVectorArray<T>>;
+    ailego::LloydCluster<T, TPool, TContext, ailego::NumericalVectorArray<T>>;
 
 /*! Nibble K-Means cluster algorithm
  */
 template <typename T, typename TPool,
           typename TContext = NibbleInnerProductKmeansContext<T>>
 using NibbleInnerProductKmeans =
-    LloydCluster<T, TPool, TContext, NibbleVectorArray<T>>;
+    ailego::LloydCluster<T, TPool, TContext, ailego::NibbleVectorArray<T>>;
 
-}  // namespace ailego
+}  // namespace turbo
 }  // namespace zvec

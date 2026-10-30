@@ -14,6 +14,7 @@
 
 #include "neon/fp16/squared_euclidean.h"
 #include <zvec/ailego/internal/platform.h>
+#include "neon/fp16/batch.h"
 
 #if defined(AILEGO_ARM64_GNU_LIKE)
 #include <arm_neon.h>
@@ -65,9 +66,7 @@ void squared_euclidean_fp16_distance(const void *a, const void *b, size_t dim,
 void squared_euclidean_fp16_batch_distance(
     const void *const *vectors, const void *query, size_t n, size_t dim,
     float *distances, const void *const * /*extra_values*/) {
-  for (size_t i = 0; i < n; ++i) {
-    squared_euclidean_fp16_distance(vectors[i], query, dim, &distances[i]);
-  }
+  detail::fp16_distance_batch<true>(vectors, query, n, dim, distances);
 }
 
 }  // namespace zvec::turbo::neon

@@ -117,6 +117,9 @@ class FlatStreamerEntity {
     return meta_.header.total_vector_count;
   }
 
+  // Retain the mmap backing for data read through existing iterators.
+  int retain_stable_data(std::shared_ptr<const void> *lifetime) const;
+
   //! Retrieve the linear list count
   size_t linear_list_count() const {
     return meta_.header.linear_list_count;

@@ -25,6 +25,7 @@
 #include <zvec/core/framework/index_reformer.h>
 #include <zvec/core/framework/index_streamer.h>
 #include "utility/ordinal_access_holder.h"
+#include "utility/stable_vector_holder.h"
 
 namespace zvec {
 namespace turbo {
@@ -36,7 +37,8 @@ namespace core {
  *  sequence without materializing all source vectors.
  */
 class MergedProviderIndexHolder final : public IndexHolder,
-                                        public OrdinalAccessHolder {
+                                        public OrdinalAccessHolder,
+                                        public StableVectorHolder {
  public:
   typedef std::shared_ptr<MergedProviderIndexHolder> Pointer;
 
@@ -72,6 +74,7 @@ class MergedProviderIndexHolder final : public IndexHolder,
   IndexHolder::Iterator::Pointer create_iterator() override;
   int create_ordinal_reader(
       OrdinalAccessHolder::Reader::Pointer *reader) override;
+  int retain_stable_data(std::shared_ptr<const void> *lifetime) override;
 
   size_t filtered_count() const;
   int status() const;

@@ -21,7 +21,7 @@
 #include <limits>
 #include <random>
 #include <vector>
-#include <ailego/algorithm/kmeans.h>
+#include <turbo/algorithm/kmeans.h>
 #include <turbo/norm/normalizer.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_threads.h>
@@ -194,7 +194,7 @@ void PqFastQuantizer::train_subquantizer(const T *data, size_t num,
 
   // Non-spherical L2 KMeans: the PQ codebook must minimize L2 reconstruction
   // error, so centroids are the true (magnitude-preserving) means.
-  ailego::NumericalKmeans<T, SingleQueueIndexThreads> algorithm(k, d);
+  turbo::NumericalKmeans<T, SingleQueueIndexThreads> algorithm(k, d);
 
   // Append sub-vectors (NumericalKmeans handles transpose internally)
   for (size_t i = 0; i < num; ++i) {
@@ -209,8 +209,8 @@ void PqFastQuantizer::train_subquantizer(const T *data, size_t num,
   auto local_threads = std::make_shared<SingleQueueIndexThreads>(1, false);
 
   // KMC2 centroid initialization.
-  ailego::Kmc2CentroidsGenerator<
-      ailego::NumericalKmeans<T, SingleQueueIndexThreads>,
+  turbo::Kmc2CentroidsGenerator<
+      turbo::NumericalKmeans<T, SingleQueueIndexThreads>,
       SingleQueueIndexThreads>
       gen;
   gen.set_chain_length(markov_chain_length_);

@@ -25,6 +25,8 @@
 #include <sys/types.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <fstream>
+#include <iterator>
 #include <gtest/gtest.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/ailego/utility/string_helper.h>
@@ -48,6 +50,56 @@ class WalFileTest : public testing::Test {
 
   void TearDown() override {}
 };
+
+TEST_F(WalFileTest, ReadOnlyRejectsWritesAndPreservesRecords) {
+  const std::string path = "./data.wal.readonly";
+  auto wal = WalFile::Create(path);
+  WalOptions options;
+  options.create_new = true;
+  ASSERT_EQ(0, wal->open(options));
+  ASSERT_EQ(0, wal->append("record"));
+  ASSERT_EQ(0, wal->flush());
+  ASSERT_EQ(0, wal->close());
+  auto snapshot = [&]() {
+    std::ifstream file(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(file),
+                       std::istreambuf_iterator<char>());
+  };
+  const auto before = snapshot();
+
+  options.create_new = false;
+  options.read_only = true;
+  ASSERT_EQ(0, wal->open(options));
+  ASSERT_TRUE(wal->has_record());
+  EXPECT_NE(0, wal->append("forbidden"));
+  EXPECT_NE(0, wal->flush());
+  EXPECT_NE(0, wal->remove());
+  ASSERT_EQ(0, wal->prepare_for_read());
+  EXPECT_EQ("record", wal->next());
+  EXPECT_TRUE(wal->next().empty());
+  ASSERT_EQ(0, wal->close());
+  EXPECT_NE(0, wal->remove());
+  EXPECT_EQ(before, snapshot());
+
+  options.read_only = false;
+  ASSERT_EQ(0, wal->open(options));
+  ASSERT_EQ(0, wal->append("writable again"));
+  ASSERT_EQ(0, wal->prepare_for_read());
+  EXPECT_EQ("record", wal->next());
+  EXPECT_EQ("writable again", wal->next());
+  EXPECT_TRUE(wal->next().empty());
+  EXPECT_EQ(0, wal->remove());
+}
+
+TEST_F(WalFileTest, ReadOnlyCannotCreateWal) {
+  const std::string path = "./data.wal.readonly_create";
+  auto wal = WalFile::Create(path);
+  WalOptions options;
+  options.create_new = true;
+  options.read_only = true;
+  EXPECT_NE(0, wal->open(options));
+  EXPECT_FALSE(FileHelper::FileExists(path));
+}
 
 TEST_F(WalFileTest, TestGeneral) {
   std::string dir_path = "./";

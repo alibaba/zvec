@@ -137,6 +137,10 @@ int DiskAnnIndex::create_and_init_streamer(const BaseIndexParam &param) {
 
 int DiskAnnIndex::open(const std::string &file_path,
                        StorageOptions storage_options) {
+  if (storage_options.read_only && storage_options.create_new) {
+    LOG_ERROR("Cannot create storage for a read-only index");
+    return core::IndexError_Runtime;
+  }
   ailego::Params storage_params;
   file_path_ = file_path;
   is_read_only_ = storage_options.read_only;
@@ -200,6 +204,7 @@ int DiskAnnIndex::generate_holder() {
 }
 
 int DiskAnnIndex::add(const VectorData &vector, uint32_t doc_id) {
+  if (!is_open_ || is_read_only_) return core::IndexError_NoReady;
   if (is_trained_ || build_stage_ != BuildStage::kCollecting) {
     LOG_ERROR("this diskann index is trained or has a pending build");
     return core::IndexError_Runtime;
@@ -223,6 +228,7 @@ int DiskAnnIndex::add(const VectorData &vector, uint32_t doc_id) {
 
 int DiskAnnIndex::train() {
   if (is_trained_) return 0;
+  if (!is_open_ || is_read_only_) return core::IndexError_NoReady;
   if (build_stage_ == BuildStage::kCollecting) {
     int ret = reset_builder();
     if (ret != 0) return ret;

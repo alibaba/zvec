@@ -27,7 +27,9 @@
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/interface/index_factory.h>
 #include "algorithm/cluster/vector_mean.h"
+#include "utility/owned_vector_holder.h"
 #include "utility/prefix_index_holder.h"
+#include "utility/stable_vector_holder.h"
 #include "diskann_context.h"
 #include "diskann_params.h"
 #include "diskann_util.h"
@@ -393,6 +395,9 @@ int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer threads) {
       1, std::min<size_t>(build_thread_count_, threads->count())));
   qp.set("thread_count", pq_thread_count);
   qp.set("use_zero_mean", false);
+  // Graph construction uses raw vectors; encoding and ADC search do not need
+  // the num_chunk * 256 * 256 SDC table.
+  qp.set("precompute_sdc", false);
   int ret = quantizer_->init(build_meta_, qp);
   if (ret != 0) {
     LOG_ERROR("PqInt8Quantizer init failed, ret=%d", ret);
@@ -719,12 +724,6 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
     }
   }
 
-  auto iter = holder->create_iterator();
-  if (!iter) {
-    LOG_ERROR("Create iterator for holder failed");
-    return IndexError_Runtime;
-  }
-
   if (!holder->is_matched(raw_meta_) || !holder->multipass() ||
       holder->count() > std::numeric_limits<uint32_t>::max()) {
     return IndexError_Mismatch;
@@ -734,22 +733,55 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
     return IndexError_Runtime;
   }
 
-  int ret = entity_.reserve_space(holder->count());
+  // The graph may need an owned snapshot of temporary iterator buffers.
+  // Keep holder_ as the original source for PQ encoding and deferred dump
+  // reads.
+  IndexHolder::Pointer graph_holder = holder;
+  std::shared_ptr<const void> lifetime;
+  auto *stable = dynamic_cast<StableVectorHolder *>(holder.get());
+  int ret = stable ? stable->retain_stable_data(&lifetime)
+                   : IndexError_NotImplemented;
+  if (ret == 0) {
+    if (!lifetime) return IndexError_Runtime;
+    LOG_INFO(
+        "Using stable source vectors for graph: count=%zu, saved_bytes=%zu",
+        holder->count(), holder->count() * raw_meta_.element_size());
+  } else if (ret == IndexError_NotImplemented) {
+    OwnedVectorHolder::Pointer owned;
+    ret = OwnedVectorHolder::CopyFrom(holder, &owned);
+    if (ret != 0) return ret;
+    ret = owned->retain_stable_data(&lifetime);
+    if (ret != 0) return ret;
+    graph_holder = std::move(owned);
+    LOG_INFO("Copied source vectors into owned graph holder: count=%zu",
+             graph_holder->count());
+  } else {
+    return ret;
+  }
+  if (!lifetime) return IndexError_Runtime;
+  auto iter = graph_holder->create_iterator();
+  if (!iter) {
+    LOG_ERROR("Create iterator for holder failed");
+    return IndexError_Runtime;
+  }
+  ret = entity_.reserve_space(holder->count(), std::move(lifetime));
   if (ret != 0) return ret;
-
   error_ = false;
   while (iter->is_valid()) {
+    if (iter->status() != 0) return iter->status();
     if (entity_.doc_cnt() >= holder->count()) return IndexError_Mismatch;
-    ret = entity_.add_vector(iter->key(), iter->data());
-    if (ailego_unlikely(ret != 0)) {
-      return ret;
-    }
-
+    const uint64_t key = iter->key();
+    if (iter->status() != 0) return iter->status();
+    const void *data = iter->data();
+    if (iter->status() != 0) return iter->status();
+    ret = entity_.add_vector(key, data);
+    if (ret != 0) return ret;
     iter->next();
   }
-
+  if (iter->status() != 0) return iter->status();
   if (entity_.doc_cnt() != holder->count()) return IndexError_Mismatch;
   iter.reset();
+  graph_holder.reset();
   LOG_INFO("Finished saving vector");
 
   LOG_INFO("Start to calculate entrypoint");
@@ -771,7 +803,7 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
   }
 
   // All graph workers have joined. Subsequent stages consume holder_, so
-  // release the full vector copy before allocating PQ buffers.
+  // release the vector copy or borrowed view before allocating PQ buffers.
   entity_.release_vectors();
   LOG_INFO("Start to generate quantized data");
   ret = generate_quantized_data(threads);

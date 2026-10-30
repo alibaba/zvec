@@ -227,6 +227,10 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   //! from all vectors (train, encode, query) and added back on dequantize.
   bool use_zero_mean_{false};
 
+  //! Precompute the SDC table after training (default). ADC-only builders
+  //! can opt out; SDC then computes distances directly from the codebook.
+  bool precompute_sdc_{true};
+
   //! Set by a successful init().  deserialize() requires it: the metric policy
   //! comes from meta_, and a default-constructed IndexMeta silently reports
   //! "SquaredEuclidean", so its value cannot tell initialized from fresh.
@@ -266,6 +270,7 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   //! ISA-dispatched kernel function pointers (ADC / SDC / Batch ADC).
   CodebookAsymmetricDistanceFunc adc_fn_{nullptr};
   CodebookSymmetricDistanceFunc sdc_fn_{nullptr};
+  CodebookBatchSymmetricDistanceFunc batch_sdc_fn_{nullptr};
   CodebookBatchAsymmetricDistanceFunc batch_adc_fn_{nullptr};
 
   //! Metric-aware batch distance function for search-side LUT
