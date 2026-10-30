@@ -112,7 +112,7 @@ TEST(InnerProductMetric, RawFp16BatchMatchesStoredValues) {
     for (size_t row = 0; row < kCount; ++row) {
       pointers[row] = rows[(row * 7) % kCount].data() + 1;
     }
-    for (size_t count : {1u, 3u, 4u, 7u, 8u, 9u, 15u, 16u, 17u, 32u, 33u}) {
+    for (size_t count : {1u, 3u, 4u, 5u, 7u, 8u, 9u, 15u, 16u, 17u, 32u, 33u}) {
       SCOPED_TRACE(testing::Message() << "count=" << count);
       std::vector<float> scores(count + 1, 12345.0f);
       batch(pointers.data(), query.data() + 1, count, dim, scores.data(),

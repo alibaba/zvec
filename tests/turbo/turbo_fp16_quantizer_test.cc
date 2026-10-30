@@ -373,9 +373,9 @@ TEST(Fp16Quantizer, StoragePrecisionConvertsBeforeCosineNormalization) {
     distances[2][id] = quantizer->calc_distance_dp_query_unquantized(
         candidates[id], input.data());
   }
-  quantizer->calc_distance_dp_query_batch(
-      candidates.data(), static_cast<int>(kCandidateCount), encoded.data(),
-      distances[1].data());
+  quantizer->calc_distance_dp_query_batch(candidates.data(),
+                                          static_cast<int>(kCandidateCount),
+                                          encoded.data(), distances[1].data());
   quantizer->calc_distance_dp_query_batch_unquantized(
       candidates.data(), static_cast<int>(kCandidateCount), input.data(),
       distances[3].data());
