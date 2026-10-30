@@ -657,6 +657,27 @@ int main(int argc, char **argv) {
     MUST(a, "INSERT OR REPLACE INTO w VALUES('k2', 'u1', " V_X ")");
     EXPECT_ONE(a, "SELECT zvec_sync('wi')",
                "{\"upserted\":1,\"deleted\":1,\"skipped\":0}");
+
+    // The probe must use the collation of the UNIQUE index, not BINARY.
+    MUST(a,
+         "CREATE TABLE n(id INTEGER PRIMARY KEY, name TEXT UNIQUE COLLATE "
+         "NOCASE, tag TEXT, v BLOB)");
+    MUST(a, "CREATE UNIQUE INDEX n_tag ON n(tag COLLATE NOCASE)");
+    MUST(a, "INSERT INTO n VALUES(1, 'Alice', 'T1', " V_X ")");
+    MUST(a,
+         "CREATE VIRTUAL TABLE ni USING zvec(base=n, key=id, column=v, dim=4, "
+         "metric=l2)");
+    EXPECT_ONE(a, "SELECT zvec_sync('ni')",
+               "{\"upserted\":1,\"deleted\":0,\"skipped\":0}");
+    MUST(a, "INSERT OR REPLACE INTO n VALUES(2, 'ALICE', 'x', " V_X ")");
+    EXPECT_ONE(a, "SELECT zvec_sync('ni')",
+               "{\"upserted\":1,\"deleted\":1,\"skipped\":0}");
+    MUST(a, "INSERT OR REPLACE INTO n VALUES(3, 'bob', 'X', " V_X ")");
+    EXPECT_ONE(a, "SELECT zvec_sync('ni')",
+               "{\"upserted\":1,\"deleted\":1,\"skipped\":0}");
+    EXPECT_ONE(a, "SELECT zvec_check('ni')",
+               "{\"status\":\"ok\",\"base\":1,\"indexed\":1,\"stale\":0,"
+               "\"missing\":0,\"pending\":0}");
 #undef PKEYS
     sqlite3_close(a);
   }
