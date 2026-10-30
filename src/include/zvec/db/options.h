@@ -23,6 +23,7 @@ namespace zvec {
 const uint32_t DEFAULT_MAX_BUFFER_SIZE = 64 * 1024 * 1024;  // 64M
 
 struct CollectionOptions {
+  // Pending WAL records require a writable open and close before read-only.
   bool read_only_{false};
   bool enable_mmap_{true};  // ignored when load collection
   uint32_t max_buffer_size_{

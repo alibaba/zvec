@@ -2403,11 +2403,14 @@ Status CollectionImpl::recover_idmap_and_delete_store() {
   // idmap
   std::string idmap_path =
       FileHelper::MakeFilePath(path_, FileID::ID_FILE, v.id_map_path_suffix());
-  id_map_ = IDMap::CreateAndOpen(schema_->name(), idmap_path, false,
-                                 options_.read_only_);
-  if (!id_map_) {
-    return Status::InternalError("recovery idmap failed, path: ", idmap_path);
+  auto id_map = std::make_shared<IDMap>(schema_->name());
+  const auto status = id_map->open(idmap_path, false, options_.read_only_);
+  if (!status.ok()) {
+    return Status::InternalError("recovery idmap failed, path: ", idmap_path,
+                                 ", reason: ", GetDefaultMessage(status.code()),
+                                 ": ", status.message());
   }
+  id_map_ = std::move(id_map);
 
   // delete store
   std::string delete_store_path = FileHelper::MakeFilePath(

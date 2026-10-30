@@ -370,6 +370,41 @@ int MergedProviderIndexHolder::create_ordinal_reader(
   return ret;
 }
 
+int MergedProviderIndexHolder::retain_stable_data(
+    std::shared_ptr<const void> *lifetime) {
+  if (!lifetime || !initialized_) return IndexError_InvalidArgument;
+  if (status() != 0) return status();
+  for (const auto &source : sources_) {
+    if (source.need_revert) return IndexError_NotImplemented;
+  }
+  auto owners = std::make_shared<std::vector<std::shared_ptr<const void>>>();
+  owners->reserve(sources_.size());
+  for (size_t i = 0; i < sources_.size(); ++i) {
+    if (canceled()) {
+      set_status(IndexError_Canceled);
+      return status();
+    }
+    auto provider = acquire_provider(i, true);
+    if (!provider) return status();
+    auto *stable = dynamic_cast<StableVectorHolder *>(provider.get());
+    if (!stable) return IndexError_NotImplemented;
+    std::shared_ptr<const void> owner;
+    int ret = stable->retain_stable_data(&owner);
+    if (ret == IndexError_NotImplemented) return ret;
+    if (ret != 0 || !owner) {
+      set_status(ret != 0 ? ret : IndexError_Runtime);
+      return status();
+    }
+    owners->emplace_back(std::move(owner));
+  }
+  if (canceled()) {
+    set_status(IndexError_Canceled);
+    return status();
+  }
+  *lifetime = std::move(owners);
+  return 0;
+}
+
 MergedProviderIndexHolder::MergedProviderIndexHolder(
     IndexQueryMeta output_meta, std::vector<Source> sources)
     : output_meta_(output_meta), sources_(std::move(sources)) {}

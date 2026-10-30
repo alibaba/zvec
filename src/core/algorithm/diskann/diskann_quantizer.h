@@ -75,6 +75,8 @@ class DiskAnnQuantizer {
       settings_.set("num_chunk", chunks);
       settings_.set("thread_count", std::max(1U, thread_count));
       settings_.set("use_zero_mean", false);
+      // Graph construction uses raw vectors; ADC does not need the SDC table.
+      settings_.set("precompute_sdc", false);
       int ret = create();
       if (ret != 0) return ret;
     }

@@ -1738,6 +1738,104 @@ TEST(PqInt8Quantizer, StreamingSamplePreservesLegacyOrder) {
   }
 }
 
+TEST(PqInt8Quantizer, SkippingSdcPrecomputePreservesEncodingAndDistances) {
+  constexpr size_t kDim = 17, kChunks = 4, kCount = 512;
+  for (auto type : {IndexMeta::DT_FP32, IndexMeta::DT_FP16}) {
+    for (const char *metric : {"SquaredEuclidean", "InnerProduct", "Cosine"}) {
+      SCOPED_TRACE(static_cast<int>(type));
+      SCOPED_TRACE(metric);
+      IndexMeta meta(type, kDim);
+      meta.set_metric(metric, 0, Params());
+      Params params;
+      params.set("num_chunk", static_cast<uint32_t>(kChunks));
+      params.set("thread_count", uint32_t{1});
+      auto cached = std::make_shared<turbo::PqInt8Quantizer>();
+      auto direct = std::make_shared<turbo::PqInt8Quantizer>();
+      ASSERT_EQ(0, cached->init(meta, params));
+      params.set("precompute_sdc", false);
+      ASSERT_EQ(0, direct->init(meta, params));
+      IndexHolder::Pointer holder;
+      if (type == IndexMeta::DT_FP32) {
+        holder = make_random_holder(kCount, kDim);
+      } else {
+        holder = make_random_fp16_holder(kCount, kDim);
+      }
+      ASSERT_EQ(0, cached->train(holder));
+      ASSERT_EQ(0, direct->train(holder));
+      std::string cached_meta, direct_meta;
+      ASSERT_EQ(0, cached->serialize(&cached_meta));
+      ASSERT_EQ(0, direct->serialize(&direct_meta));
+      auto iter = holder->create_iterator();
+      std::vector<uint8_t> trained_code(
+          direct->quantized_datapoint_vector_length());
+      direct->quantize_data(iter->data(), trained_code.data());
+      EXPECT_TRUE(std::isfinite(direct->calc_distance_dp_dp(
+          trained_code.data(), trained_code.data())));
+      // KMeans initialization is randomized. Compare both distance paths
+      // using the same learned codebook, rather than independent trainings.
+      ASSERT_EQ(0, direct->deserialize(cached_meta));
+      ASSERT_EQ(0, direct->serialize(&direct_meta));
+      EXPECT_EQ(cached_meta, direct_meta);
+
+      auto restored = std::make_shared<turbo::PqInt8Quantizer>();
+      ASSERT_EQ(0, restored->init(meta, params));
+      ASSERT_EQ(0, restored->deserialize(direct_meta));
+      std::vector<uint8_t> query(cached->quantized_datapoint_vector_length());
+      cached->quantize_data(iter->data(), query.data());
+      std::vector<uint8_t> lut(cached->quantized_query_vector_length());
+      cached->quantize_query(iter->data(), lut.data());
+      IndexQueryMeta qmeta(type, kDim);
+      auto symmetric = direct->sym_distance(query.data(), qmeta);
+      ASSERT_TRUE(symmetric.valid());
+      for (size_t i = 0; i < 8; ++i, iter->next()) {
+        std::vector<uint8_t> code(query.size()), actual(query.size());
+        cached->quantize_data(iter->data(), code.data());
+        direct->quantize_data(iter->data(), actual.data());
+        EXPECT_EQ(code, actual);
+        restored->quantize_data(iter->data(), actual.data());
+        EXPECT_EQ(code, actual);
+        const float expected =
+            cached->calc_distance_dp_dp(query.data(), code.data());
+        const float tolerance = 1e-3F * (1.0F + std::abs(expected));
+        EXPECT_NEAR(expected,
+                    direct->calc_distance_dp_dp(query.data(), code.data()),
+                    tolerance);
+        EXPECT_NEAR(expected, symmetric(code.data()), tolerance);
+        EXPECT_NEAR(expected,
+                    restored->calc_distance_dp_dp(query.data(), code.data()),
+                    tolerance);
+        EXPECT_FLOAT_EQ(
+            cached->calc_distance_dp_query(code.data(), lut.data()),
+            direct->calc_distance_dp_query(code.data(), lut.data()));
+        EXPECT_FLOAT_EQ(
+            cached->calc_distance_dp_query(code.data(), lut.data()),
+            restored->calc_distance_dp_query(code.data(), lut.data()));
+      }
+    }
+  }
+}
+
+TEST(PqInt8Quantizer, ReplacingCodebookInvalidatesSdcTable) {
+  constexpr size_t kDim = 17, kChunks = 4;
+  auto quantizer = std::make_shared<turbo::PqInt8Quantizer>();
+  IndexMeta meta(IndexMeta::DT_FP32, kDim);
+  meta.set_metric("SquaredEuclidean", 0, Params());
+  Params params;
+  params.set("num_chunk", uint32_t{kChunks});
+  params.set("thread_count", uint32_t{1});
+  ASSERT_EQ(0, quantizer->init(meta, params));
+  ASSERT_EQ(0, quantizer->train(make_random_holder(512, kDim)));
+  std::vector<float> codebook(kDim * 256, 0.0F);
+  ASSERT_EQ(0, quantizer->import_codebook(codebook.data(),
+                                          codebook.size() * sizeof(float)));
+  std::vector<uint8_t> a(kChunks, 0), b(kChunks, 255);
+  EXPECT_FLOAT_EQ(0.0F, quantizer->calc_distance_dp_dp(a.data(), b.data()));
+  auto distance = quantizer->sym_distance(
+      a.data(), IndexQueryMeta(IndexMeta::DT_FP32, kDim));
+  ASSERT_TRUE(distance.valid());
+  EXPECT_FLOAT_EQ(0.0F, distance(b.data()));
+}
+
 // Exercise build-time SDC and search-time ADC through DistanceImpl. Five
 // chunks cover both SIMD and packed-code tails.
 TEST(PqInt8Quantizer, SymmetricBatchAndRestoredAdc) {
@@ -1795,8 +1893,8 @@ TEST(PqInt8Quantizer, SymmetricBatchAndRestoredAdc) {
         }
       }
     }
-    // Deserialization deliberately omits the build-only SDC table. Verify
-    // its supported search path instead of calling SDC without that table.
+    // Deserialization deliberately omits the build-only SDC table; its ADC
+    // batch path should still agree with the original quantizer.
     auto query_iter = holder->create_iterator();
     ASSERT_TRUE(query_iter->is_valid());
     std::string lut(original->quantized_query_vector_length(), '\0');

@@ -17,8 +17,51 @@
 #include <ailego/utility/memory_helper.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/io/file.h>
+#if defined(_WIN64) || defined(_WIN32)
+#include <Windows.h>
+#ifdef RemoveDirectory
+#undef RemoveDirectory
+#endif
+#else
+#include <fcntl.h>
+#endif
 
 using namespace zvec::ailego;
+
+namespace {
+
+void ExpectNonInheritable(const File &file) {
+#if defined(_WIN64) || defined(_WIN32)
+  DWORD flags = 0;
+  ASSERT_TRUE(GetHandleInformation(file.native_handle(), &flags));
+  EXPECT_EQ(0u, flags & HANDLE_FLAG_INHERIT);
+#else
+  int flags = fcntl(file.native_handle(), F_GETFD);
+  ASSERT_NE(-1, flags);
+  EXPECT_NE(0, flags & FD_CLOEXEC);
+#endif
+}
+
+}  // namespace
+
+TEST(File, HandlesAreNotInherited) {
+  const char *path = "file_inheritance_test.dat";
+  for (bool direct : {false, true}) {
+    SCOPED_TRACE(direct);
+    File file;
+    ASSERT_TRUE(file.create(path, 4096, direct));
+    ExpectNonInheritable(file);
+    file.close();
+
+    for (bool read_only : {false, true}) {
+      SCOPED_TRACE(read_only);
+      ASSERT_TRUE(file.open(path, read_only, direct));
+      ExpectNonInheritable(file);
+      file.close();
+    }
+  }
+  EXPECT_TRUE(File::Delete(path));
+}
 
 TEST(File, General) {
   EXPECT_TRUE(File::IsDirectory("."));
