@@ -224,7 +224,9 @@ cleanup:
 // ---- tests -----------------------------------------------------------------
 
 static const char *metric_name(int m) {
-  return m == ZVEC_METRIC_TYPE_L2 ? "L2" : m == ZVEC_METRIC_TYPE_IP ? "IP" : "COSINE";
+  return m == ZVEC_METRIC_TYPE_L2   ? "L2"
+         : m == ZVEC_METRIC_TYPE_IP ? "IP"
+                                    : "COSINE";
 }
 
 // Recall, distance ordering/accuracy, self-hit and scalar column.
@@ -364,8 +366,8 @@ static void test_errors(sqlite3 *db, const char *missing_path) {
     CHECK(msg[0] != '\0', "%s: empty error message", cases[i].what);
   }
 
-  char *sql = sqlite3_mprintf("CREATE VIRTUAL TABLE x USING zvec('%q')",
-                              missing_path);
+  char *sql =
+      sqlite3_mprintf("CREATE VIRTUAL TABLE x USING zvec('%q')", missing_path);
   rc = exec_msg(db, sql, msg, sizeof msg);
   sqlite3_free(sql);
   CHECK(rc != SQLITE_OK, "CREATE on a missing collection succeeded");
@@ -447,7 +449,8 @@ int main(int argc, char **argv) {
       return 1;
     }
     sqlite3 *db = open_db(ext_path);
-    char *sql = sqlite3_mprintf("CREATE VIRTUAL TABLE p USING zvec('%q')", path);
+    char *sql =
+        sqlite3_mprintf("CREATE VIRTUAL TABLE p USING zvec('%q')", path);
     char msg[256];
     int rc = exec_msg(db, sql, msg, sizeof msg);
     sqlite3_free(sql);

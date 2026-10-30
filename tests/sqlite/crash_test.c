@@ -20,7 +20,8 @@
 //
 // Usage: crash_test <path-to-zvec-extension>
 // Environment: ZVEC_CRASH_ITERATIONS (default 12 per mode), ZVEC_CRASH_SEED.
-// Exit codes: 0 pass, 1 fail, 77 skipped (no POSIX fork, or no extension loading).
+// Exit codes: 0 pass, 1 fail, 77 skipped (no POSIX fork, or no extension
+// loading).
 
 #define _XOPEN_SOURCE 700
 
@@ -36,10 +37,10 @@ int main(void) {
 }
 #else
 
-#include <ftw.h>
-#include <signal.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <ftw.h>
+#include <signal.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -69,7 +70,8 @@ static sqlite3 *open_db(const char *file) {
   }
   sqlite3_busy_timeout(db, 2000);
 #ifdef SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION
-  int rc = sqlite3_db_config(db, SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, 1, NULL);
+  int rc =
+      sqlite3_db_config(db, SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, 1, NULL);
 #else
   int rc = sqlite3_enable_load_extension(db, 1);
 #endif
@@ -78,7 +80,8 @@ static sqlite3 *open_db(const char *file) {
     exit(SKIP_EXIT_CODE);
   }
   char *err = NULL;
-  if (sqlite3_load_extension(db, g_ext, "sqlite3_zvec_init", &err) != SQLITE_OK) {
+  if (sqlite3_load_extension(db, g_ext, "sqlite3_zvec_init", &err) !=
+      SQLITE_OK) {
     fprintf(stderr, "cannot load %s: %s\n", g_ext, err ? err : "?");
     exit(1);
   }
@@ -104,7 +107,8 @@ static const char *one(sqlite3 *db, const char *sql) {
   return buf;
 }
 
-static int rm_cb(const char *p, const struct stat *sb, int flag, struct FTW *ftw) {
+static int rm_cb(const char *p, const struct stat *sb, int flag,
+                 struct FTW *ftw) {
   (void)sb;
   (void)flag;
   (void)ftw;
@@ -122,16 +126,20 @@ static void vec_for(float *v, long id, long version) {
 static void child_main(const char *dbfile, int query_mode) {
   sqlite3 *db = open_db(dbfile);
   sqlite3_stmt *ins = NULL, *upd = NULL, *del = NULL, *srch = NULL;
-  sqlite3_prepare_v2(db, "INSERT INTO docs(id, embedding) VALUES(?1, ?2)", -1, &ins, NULL);
-  sqlite3_prepare_v2(db, "UPDATE docs SET embedding = ?2 WHERE id = ?1", -1, &upd, NULL);
+  sqlite3_prepare_v2(db, "INSERT INTO docs(id, embedding) VALUES(?1, ?2)", -1,
+                     &ins, NULL);
+  sqlite3_prepare_v2(db, "UPDATE docs SET embedding = ?2 WHERE id = ?1", -1,
+                     &upd, NULL);
   sqlite3_prepare_v2(db, "DELETE FROM docs WHERE id = ?1", -1, &del, NULL);
   sqlite3_prepare_v2(db,
-                     "SELECT count(*) FROM (SELECT pk FROM docs_idx WHERE embedding MATCH ?1 AND k = 3)",
+                     "SELECT count(*) FROM (SELECT pk FROM docs_idx WHERE "
+                     "embedding MATCH ?1 AND k = 3)",
                      -1, &srch, NULL);
   long next = atol(one(db, "SELECT coalesce(max(id), 0) + 1 FROM docs"));
   unsigned seed = (unsigned)getpid();
   for (long round = 1;; round++) {
-    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) continue;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK)
+      continue;
     float v[DIM];
     for (int j = 0; j < 20; j++, next++) {
       vec_for(v, next, 0);
@@ -169,26 +177,34 @@ static void child_main(const char *dbfile, int query_mode) {
 static void verify(const char *dbfile, int iter, int query_mode) {
   sqlite3 *db = open_db(dbfile);
   const char *r = one(db, "SELECT zvec_check('docs_idx')");
-  CHECK(strncmp(r, "ERR", 3) != 0, "iter %d: zvec_check failed after the crash: %s", iter, r);
+  CHECK(strncmp(r, "ERR", 3) != 0,
+        "iter %d: zvec_check failed after the crash: %s", iter, r);
   r = one(db, "SELECT zvec_sync('docs_idx')");
-  CHECK(strncmp(r, "ERR", 3) != 0, "iter %d: sync failed after the crash: %s", iter, r);
+  CHECK(strncmp(r, "ERR", 3) != 0, "iter %d: sync failed after the crash: %s",
+        iter, r);
   r = one(db, "SELECT zvec_check('docs_idx')");
-  CHECK(strstr(r, "\"status\":\"ok\"") != NULL, "iter %d (%s): index differs from the table after a sync: %s", iter,
+  CHECK(strstr(r, "\"status\":\"ok\"") != NULL,
+        "iter %d (%s): index differs from the table after a sync: %s", iter,
         query_mode ? "sync=query" : "sync=manual", r);
 
   // Spot-check searches: a stored vector must find its own row first.
   sqlite3_stmt *pick = NULL, *find = NULL;
-  sqlite3_prepare_v2(db, "SELECT id, embedding FROM docs ORDER BY random() LIMIT 5", -1, &pick, NULL);
   sqlite3_prepare_v2(db,
-                     "SELECT pk FROM docs_idx WHERE embedding MATCH ?1 AND k = 1",
-                     -1, &find, NULL);
+                     "SELECT id, embedding FROM docs ORDER BY random() LIMIT 5",
+                     -1, &pick, NULL);
+  sqlite3_prepare_v2(
+      db, "SELECT pk FROM docs_idx WHERE embedding MATCH ?1 AND k = 1", -1,
+      &find, NULL);
   while (sqlite3_step(pick) == SQLITE_ROW) {
     sqlite3_int64 id = sqlite3_column_int64(pick, 0);
     sqlite3_reset(find);
-    sqlite3_bind_blob(find, 1, sqlite3_column_blob(pick, 1), sqlite3_column_bytes(pick, 1), SQLITE_TRANSIENT);
+    sqlite3_bind_blob(find, 1, sqlite3_column_blob(pick, 1),
+                      sqlite3_column_bytes(pick, 1), SQLITE_TRANSIENT);
     int rc = sqlite3_step(find);
-    const char *pk = rc == SQLITE_ROW ? (const char *)sqlite3_column_text(find, 0) : "";
-    CHECK(rc == SQLITE_ROW && atoll(pk) == id, "iter %d: row %lld not found by its own vector (got %s)", iter,
+    const char *pk =
+        rc == SQLITE_ROW ? (const char *)sqlite3_column_text(find, 0) : "";
+    CHECK(rc == SQLITE_ROW && atoll(pk) == id,
+          "iter %d: row %lld not found by its own vector (got %s)", iter,
           (long long)id, pk);
   }
   sqlite3_finalize(pick);
@@ -198,11 +214,13 @@ static void verify(const char *dbfile, int iter, int query_mode) {
 
 static void run_mode(const char *dir, int query_mode, int iterations) {
   char dbfile[512], buf[512];
-  snprintf(dbfile, sizeof dbfile, "%s/%s.db", dir, query_mode ? "query" : "manual");
+  snprintf(dbfile, sizeof dbfile, "%s/%s.db", dir,
+           query_mode ? "query" : "manual");
   sqlite3 *db = open_db(dbfile);
   snprintf(buf, sizeof buf,
            "CREATE TABLE docs(id INTEGER PRIMARY KEY, embedding BLOB);"
-           "CREATE VIRTUAL TABLE docs_idx USING zvec(base=docs, key=id, column=embedding, "
+           "CREATE VIRTUAL TABLE docs_idx USING zvec(base=docs, key=id, "
+           "column=embedding, "
            "dim=%d, metric=l2, sync=%s)",
            DIM, query_mode ? "query" : "manual");
   char *err = NULL;
@@ -223,12 +241,14 @@ static void run_mode(const char *dir, int query_mode, int iterations) {
     kill(pid, SIGKILL);
     int status = 0;
     waitpid(pid, &status, 0);
-    CHECK(WIFSIGNALED(status), "iter %d: the writer exited by itself (status %d)", i, status);
+    CHECK(WIFSIGNALED(status),
+          "iter %d: the writer exited by itself (status %d)", i, status);
     verify(dbfile, i, query_mode);
   }
   db = open_db(dbfile);
-  printf("%s: %d kills survived, %s rows, index consistent\n", query_mode ? "sync=query " : "sync=manual",
-         iterations, one(db, "SELECT count(*) FROM docs"));
+  printf("%s: %d kills survived, %s rows, index consistent\n",
+         query_mode ? "sync=query " : "sync=manual", iterations,
+         one(db, "SELECT count(*) FROM docs"));
   sqlite3_close(db);
 }
 

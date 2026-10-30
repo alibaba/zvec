@@ -19,7 +19,7 @@
 #include <stdint.h>
 
 // Element type of the vector BLOB stored in the base table.
-typedef enum zvec_elem {
+typedef enum ZvecElem {
   ZVEC_ELEM_F32 = 0,
   ZVEC_ELEM_F16,
   ZVEC_ELEM_F64,
@@ -28,7 +28,7 @@ typedef enum zvec_elem {
 
 // Scalar columns mirrored into the index so searches can be filtered.
 #define ZVEC_MAX_FILTER 8
-typedef enum zvec_ftype {
+typedef enum ZvecFtype {
   ZVEC_FT_UNKNOWN =
       0,  // not resolved yet: taken from the base column's affinity
   ZVEC_FT_INT,
@@ -36,7 +36,7 @@ typedef enum zvec_ftype {
   ZVEC_FT_TEXT
 } zvec_ftype;
 
-typedef struct zvec_args {
+typedef struct ZvecArgs {
   int attach;  // 1: legacy USING zvec('path') -- open an existing collection
   char *path;  // attach: required; derived mode: optional
   char *base;  // derived mode only from here down

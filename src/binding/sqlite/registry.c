@@ -1,43 +1,43 @@
 #define _XOPEN_SOURCE 700
+#include "registry.h"
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "registry.h"
 
 #ifdef _WIN32
-#include<windows.h>
+#include <windows.h>
 static SRWLOCK g_lock = SRWLOCK_INIT;
 #define LOCK() AcquireSRWLockExclusive(&g_lock);
 #define UNLOCK() ReleaseSRWLockExclusive(&g_lock);
 #else
-#include<pthread.h>
+#include <pthread.h>
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 #define LOCK() pthread_mutex_lock(&g_lock)
 #define UNLOCK() pthread_mutex_unlock(&g_lock)
 #endif
 
 #ifdef ZVEC_SQLITE_TRACE
-#define ZTRACE(...)                                  \
-  do {                                               \
-    fprintf(stderr, "[zvec_sqlite] " __VA_ARGS__);   \
-    fputc('\n', stderr);                             \
+#define ZTRACE(...)                                \
+  do {                                             \
+    fprintf(stderr, "[zvec_sqlite] " __VA_ARGS__); \
+    fputc('\n', stderr);                           \
   } while (0)
 #else
 #define ZTRACE(...) ((void)0)
 #endif
 
-struct zvec_shared {
+struct ZvecShared {
   char *path;             /* normalized key (heap copy) */
   zvec_collection_t *col; /* shared handle */
   int refcount;
-  struct zvec_shared *next;
+  struct ZvecShared *next;
 };
 
-static struct zvec_shared *g_head = NULL;
+static struct ZvecShared *g_head = NULL;
 
-static struct zvec_shared *find_locked(const char *key) {
-  for (struct zvec_shared *e = g_head; e != NULL; e=e->next) {
+static struct ZvecShared *find_locked(const char *key) {
+  for (struct ZvecShared *e = g_head; e != NULL; e = e->next) {
     if (strcmp(e->path, key) == 0) return e;
   }
   return NULL;
@@ -51,23 +51,30 @@ static void set_err(char *err, size_t len, const char *msg) {
 
 static void set_err_from_zvec(char *err, size_t len) {
   zvec_error_details_t d = {0};
-  if (zvec_get_last_error_details(&d) == ZVEC_OK) set_err(err, len, d.message);
-  else set_err(err, len, "unknown error");
+  if (zvec_get_last_error_details(&d) == ZVEC_OK)
+    set_err(err, len, d.message);
+  else
+    set_err(err, len, "unknown error");
 }
 
-static zvec_error_code_t normalize_path(const char *path, char *out, size_t out_len) {
-  if (path == NULL || path[0] == '\0' || out == NULL || out_len == 0) return ZVEC_ERROR_INVALID_ARGUMENT;
+static zvec_error_code_t normalize_path(const char *path, char *out,
+                                        size_t out_len) {
+  if (path == NULL || path[0] == '\0' || out == NULL || out_len == 0)
+    return ZVEC_ERROR_INVALID_ARGUMENT;
 
 #ifdef _WIN32
   return _fullpath(out, path, out_len) ? ZVEC_OK : ZVEC_ERROR_NOT_FOUND;
 #else
-  #ifndef PATH_MAX
-  #define PATH_MAX 4096
-  #endif
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
   char resolved[PATH_MAX];
-  if (realpath(path, resolved) != NULL) return snprintf(out, out_len, "%s", resolved) < (int)out_len ? ZVEC_OK : ZVEC_ERROR_NOT_FOUND;
-  
+  if (realpath(path, resolved) != NULL)
+    return snprintf(out, out_len, "%s", resolved) < (int)out_len
+               ? ZVEC_OK
+               : ZVEC_ERROR_NOT_FOUND;
+
   char tmp[PATH_MAX];
   size_t len = strlen(path);
   if (len >= sizeof tmp) return ZVEC_ERROR_INVALID_ARGUMENT;
@@ -90,21 +97,21 @@ static zvec_error_code_t normalize_path(const char *path, char *out, size_t out_
   }
   if (base[0] == '\0') return ZVEC_ERROR_NOT_FOUND;
 
-  if (realpath(parent,resolved) == NULL) return ZVEC_ERROR_NOT_FOUND;
+  if (realpath(parent, resolved) == NULL) return ZVEC_ERROR_NOT_FOUND;
   const char *sep = strcmp(resolved, "/") == 0 ? "" : "/";
   int n = snprintf(out, out_len, "%s%s%s", resolved, sep, base);
 
-  return (n < 0 || (size_t)n >= out_len ) ? ZVEC_ERROR_NOT_FOUND : ZVEC_OK;  
+  return (n < 0 || (size_t)n >= out_len) ? ZVEC_ERROR_NOT_FOUND : ZVEC_OK;
 #endif
 }
 
-static zvec_error_code_t acquire(const char *path, 
-    const zvec_collection_schema_t *schema, 
-    zvec_shared **out, char *err, size_t err_len) {
+static zvec_error_code_t acquire(const char *path,
+                                 const zvec_collection_schema_t *schema,
+                                 zvec_shared **out, char *err, size_t err_len) {
   char key[PATH_MAX];
   zvec_collection_t *col = NULL;
   zvec_error_code_t rc;
-  
+
   if (out == NULL) {
     set_err(err, err_len, "out parameter is NULL");
     return ZVEC_ERROR_NOT_FOUND;
@@ -120,7 +127,7 @@ static zvec_error_code_t acquire(const char *path,
   LOCK();
 
   zvec_shared *node = find_locked(key);
-  
+
   if (node != NULL) {
     if (schema != NULL) {
       set_err(err, err_len, "collection is already open in this process");
@@ -131,11 +138,11 @@ static zvec_error_code_t acquire(const char *path,
       rc = ZVEC_OK;
     }
     goto done;
-  } 
-  
+  }
+
   rc = (schema != NULL)
-    ? zvec_collection_create_and_open(key, schema, NULL, &col)
-    : zvec_collection_open(key, NULL, &col);
+           ? zvec_collection_create_and_open(key, schema, NULL, &col)
+           : zvec_collection_open(key, NULL, &col);
   if (rc != ZVEC_OK) {
     set_err_from_zvec(err, err_len);
     goto done;
@@ -145,7 +152,7 @@ static zvec_error_code_t acquire(const char *path,
   if (node != NULL) {
     node->path = strdup(key);
   }
-  
+
   if (node == NULL || node->path == NULL) {
     free(node);
     zvec_collection_close(col);

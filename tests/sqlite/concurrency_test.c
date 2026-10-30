@@ -34,9 +34,9 @@ int main(void) {
 }
 #else
 
+#include <sys/stat.h>
 #include <ftw.h>
 #include <pthread.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #define SKIP_EXIT_CODE 77
@@ -71,7 +71,8 @@ static sqlite3 *open_db(void) {
   }
   sqlite3_busy_timeout(db, 10000);
 #ifdef SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION
-  int rc = sqlite3_db_config(db, SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, 1, NULL);
+  int rc =
+      sqlite3_db_config(db, SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, 1, NULL);
 #else
   int rc = sqlite3_enable_load_extension(db, 1);
 #endif
@@ -80,7 +81,8 @@ static sqlite3 *open_db(void) {
     exit(SKIP_EXIT_CODE);
   }
   char *err = NULL;
-  if (sqlite3_load_extension(db, g_ext, "sqlite3_zvec_init", &err) != SQLITE_OK) {
+  if (sqlite3_load_extension(db, g_ext, "sqlite3_zvec_init", &err) !=
+      SQLITE_OK) {
     fprintf(stderr, "cannot load %s: %s\n", g_ext, err ? err : "?");
     exit(1);
   }
@@ -109,7 +111,8 @@ static void *writer(void *arg) {
   long w = (long)arg;
   sqlite3 *db = open_db();
   sqlite3_stmt *ins = NULL;
-  sqlite3_prepare_v2(db, "INSERT INTO docs(id, embedding) VALUES(?1, ?2)", -1, &ins, NULL);
+  sqlite3_prepare_v2(db, "INSERT INTO docs(id, embedding) VALUES(?1, ?2)", -1,
+                     &ins, NULL);
   char buf[512];
   for (int i = 0; i < ROWS_PER_WRITER; i++) {
     float v[4] = {(float)w, (float)i, 1.0f, 0.0f};
@@ -117,11 +120,14 @@ static void *writer(void *arg) {
     sqlite3_bind_int64(ins, 1, w * 100000 + i);
     sqlite3_bind_blob(ins, 2, v, sizeof v, SQLITE_TRANSIENT);
     int rc = sqlite3_step(ins);
-    CHECK(rc == SQLITE_DONE, "writer %ld: insert failed: %s", w, sqlite3_errmsg(db));
+    CHECK(rc == SQLITE_DONE, "writer %ld: insert failed: %s", w,
+          sqlite3_errmsg(db));
     if (i % 25 == 24) {
       const char *r = one(db, "SELECT zvec_sync('docs_idx')", buf, sizeof buf);
-      // Losing the write-lock race to another connection is fine: the queue stays.
-      CHECK(strncmp(r, "ERR", 3) != 0 || strstr(r, "locked") != NULL, "writer %ld: sync: %s", w, r);
+      // Losing the write-lock race to another connection is fine: the queue
+      // stays.
+      CHECK(strncmp(r, "ERR", 3) != 0 || strstr(r, "locked") != NULL,
+            "writer %ld: sync: %s", w, r);
     }
   }
   sqlite3_finalize(ins);
@@ -134,15 +140,18 @@ static void *reader(void *arg) {
   sqlite3 *db = open_db();
   sqlite3_stmt *st = NULL;
   sqlite3_prepare_v2(db,
-                     "SELECT count(*) FROM (SELECT pk FROM docs_idx WHERE embedding MATCH ?1 AND k = 5)",
+                     "SELECT count(*) FROM (SELECT pk FROM docs_idx WHERE "
+                     "embedding MATCH ?1 AND k = 5)",
                      -1, &st, NULL);
   unsigned seed = (unsigned)r + 7;
   while (!__atomic_load_n(&g_writers_done, __ATOMIC_ACQUIRE)) {
-    float v[4] = {(float)(rand_r(&seed) % WRITERS), (float)(rand_r(&seed) % ROWS_PER_WRITER), 1.0f, 0.0f};
+    float v[4] = {(float)(rand_r(&seed) % WRITERS),
+                  (float)(rand_r(&seed) % ROWS_PER_WRITER), 1.0f, 0.0f};
     sqlite3_reset(st);
     sqlite3_bind_blob(st, 1, v, sizeof v, SQLITE_TRANSIENT);
     int rc = sqlite3_step(st);
-    CHECK(rc == SQLITE_ROW || rc == SQLITE_DONE, "reader %ld: search failed: %s", r, sqlite3_errmsg(db));
+    CHECK(rc == SQLITE_ROW || rc == SQLITE_DONE,
+          "reader %ld: search failed: %s", r, sqlite3_errmsg(db));
     pthread_mutex_lock(&g_mu);
     g_searches++;
     pthread_mutex_unlock(&g_mu);
@@ -152,7 +161,8 @@ static void *reader(void *arg) {
   return NULL;
 }
 
-static int rm_cb(const char *p, const struct stat *sb, int flag, struct FTW *ftw) {
+static int rm_cb(const char *p, const struct stat *sb, int flag,
+                 struct FTW *ftw) {
   (void)sb;
   (void)flag;
   (void)ftw;
@@ -174,17 +184,21 @@ int main(int argc, char **argv) {
 
   sqlite3 *db = open_db();
   char *err = NULL;
-  int rc = sqlite3_exec(db,
-                        "CREATE TABLE docs(id INTEGER PRIMARY KEY, embedding BLOB);"
-                        "CREATE VIRTUAL TABLE docs_idx USING zvec(base=docs, key=id, column=embedding, dim=4, metric=l2)",
-                        NULL, NULL, &err);
+  int rc =
+      sqlite3_exec(db,
+                   "CREATE TABLE docs(id INTEGER PRIMARY KEY, embedding BLOB);"
+                   "CREATE VIRTUAL TABLE docs_idx USING zvec(base=docs, "
+                   "key=id, column=embedding, dim=4, metric=l2)",
+                   NULL, NULL, &err);
   CHECK(rc == SQLITE_OK, "setup: %s", err ? err : "?");
   sqlite3_free(err);
   sqlite3_close(db);
 
   pthread_t tw[WRITERS], tr[READERS];
-  for (long i = 0; i < READERS; i++) pthread_create(&tr[i], NULL, reader, (void *)i);
-  for (long i = 0; i < WRITERS; i++) pthread_create(&tw[i], NULL, writer, (void *)i);
+  for (long i = 0; i < READERS; i++)
+    pthread_create(&tr[i], NULL, reader, (void *)i);
+  for (long i = 0; i < WRITERS; i++)
+    pthread_create(&tw[i], NULL, writer, (void *)i);
   for (int i = 0; i < WRITERS; i++) pthread_join(tw[i], NULL);
   __atomic_store_n(&g_writers_done, 1, __ATOMIC_RELEASE);
   for (int i = 0; i < READERS; i++) pthread_join(tr[i], NULL);
@@ -194,13 +208,15 @@ int main(int argc, char **argv) {
   one(db, "SELECT zvec_sync('docs_idx')", buf, sizeof buf);
   CHECK(strncmp(buf, "ERR", 3) != 0, "final sync: %s", buf);
   one(db, "SELECT zvec_check('docs_idx')", buf, sizeof buf);
-  CHECK(strstr(buf, "\"status\":\"ok\"") != NULL, "index differs from the table: %s", buf);
+  CHECK(strstr(buf, "\"status\":\"ok\"") != NULL,
+        "index differs from the table: %s", buf);
   char want[64];
   snprintf(want, sizeof want, "\"base\":%d,", WRITERS * ROWS_PER_WRITER);
   CHECK(strstr(buf, want) != NULL, "row count: %s", buf);
   sqlite3_close(db);
   nftw(dir, rm_cb, 16, FTW_DEPTH | FTW_PHYS);
-  printf("%d writers x %d rows, %d readers, %d searches: %s\n", WRITERS, ROWS_PER_WRITER, READERS, g_searches, buf);
+  printf("%d writers x %d rows, %d readers, %d searches: %s\n", WRITERS,
+         ROWS_PER_WRITER, READERS, g_searches, buf);
   printf("%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

@@ -36,7 +36,7 @@
 
 SQLITE_EXTENSION_INIT3
 
-typedef struct zvec_vtab {
+typedef struct ZvecVtab {
   sqlite3_vtab base;
   sqlite3 *db;          // needed by xDestroy to drop the shadow tables
   char *schema;         // "main", "temp", ...
@@ -59,7 +59,7 @@ typedef struct zvec_vtab {
   zvec_data_type_t *vec_types;
 } zvec_vtab;
 
-typedef struct zvec_cursor {
+typedef struct ZvecCursor {
   sqlite3_vtab_cursor base;  // must be first
   zvec_doc_t **docs;         // query results, owned by the cursor
   size_t n_docs;
@@ -603,7 +603,7 @@ static const char *shadow_elem_name(zvec_elem e) {
 // Partial and expression indexes cannot be probed this way: they are counted
 // in *n_unsupported and left to recursive_triggers and zvec_check.
 
-typedef struct unique_index {
+typedef struct UniqueIndex {
   int n;
   char *cols[8];
   char *colls[8];
@@ -1628,7 +1628,7 @@ static int zvec_destroy(sqlite3_vtab *p_vtab) {
 
 enum { SYNC_BATCH = 500 };
 
-typedef struct sync_stats {
+typedef struct SyncStats {
   sqlite3_int64 upserted;
   sqlite3_int64 deleted;
   sqlite3_int64 skipped;
@@ -1689,7 +1689,8 @@ static int sync_add_filter_values(zvec_doc_t *doc, const zvec_args *cfg,
 static int sync_apply_batch(sqlite3 *db, zvec_collection_t *col,
                             const zvec_args *cfg, sqlite3_stmt *fetch,
                             char **pks, int n, sync_stats *stats, char **err) {
-  const zvec_doc_t **docs = sqlite3_malloc64((sqlite3_uint64)n * sizeof *docs);
+  const zvec_doc_t **docs =
+      sqlite3_malloc64((sqlite3_uint64)n * sizeof(void *));
   const char **del = sqlite3_malloc64((sqlite3_uint64)n * sizeof *del);
   int n_docs = 0, n_del = 0, rc = SQLITE_OK;
   sqlite3_int64 skipped = 0;
@@ -2105,7 +2106,7 @@ static void zvec_drop_index_fn(sqlite3_context *ctx, int argc,
 // every base row. The repair for anything sync cannot see (REPLACE
 // conflicts, rolled-back syncs, an index restored from a backup).
 
-typedef struct scan_result {
+typedef struct ScanResult {
   sqlite3_int64 base;     // base rows holding a vector of the right size
   sqlite3_int64 indexed;  // documents in the index
   sqlite3_int64 stale;    // indexed, but no valid base row

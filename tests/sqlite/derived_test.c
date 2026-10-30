@@ -243,15 +243,15 @@ int main(int argc, char **argv) {
 
   // ---- join back to the base table; a lagging index never leaks deleted rows
   // ----
-  const char *kJoin =
+  const char *join_sql =
       "SELECT coalesce(group_concat(body, ','), '') FROM (SELECT d.body AS "
       "body "
       "FROM docs_idx i JOIN docs d ON d.id = i.pk WHERE i.embedding MATCH " V_X
       " AND i.k = 5 ORDER BY i.distance)";
-  EXPECT_ONE(db, kJoin, "a2,h");
+  EXPECT_ONE(db, join_sql, "a2,h");
   MUST(db, "DELETE FROM docs WHERE id = 8");  // no sync yet
   EXPECT_ONE(db, kKeysX, "7,8");              // index lags ...
-  EXPECT_ONE(db, kJoin, "a2");                // ... the join hides it
+  EXPECT_ONE(db, join_sql, "a2");             // ... the join hides it
   EXPECT_ONE(db, "SELECT zvec_sync('docs_idx')",
              "{\"upserted\":0,\"deleted\":1,\"skipped\":0}");
   EXPECT_ONE(db, kKeysX, "7");
