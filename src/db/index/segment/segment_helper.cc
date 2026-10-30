@@ -703,11 +703,13 @@ Status SegmentHelper::ReduceVectorIndex(
       // IVF trains from the input segments' quantized indexers, not this new
       // raw Flat. Flush and close it inside MergeWithOptionalReuse so its
       // storage does not overlap the IVF training and dump working sets.
-      // HNSW_RABITQ training relies on the raw provider held by the flat
+      // HNSW RaBitQ training relies on the raw provider held by the flat
       // indexer, so its Close() is deferred until after the quantize indexer
       // is written.
       core::IndexProvider::Pointer raw_vector_provider;
-      if (vector_index_params->type() == IndexType::HNSW_RABITQ) {
+      if (vector_index_params->type() == IndexType::HNSW_RABITQ ||
+          (vector_index_params->type() == IndexType::HNSW &&
+           vector_index_params->quantize_type() == QuantizeType::RABITQ)) {
         raw_vector_provider = vector_indexer->create_index_provider();
       }
 
@@ -878,7 +880,9 @@ Status SegmentHelper::PrepareQuantizeField(
   (void)raw_vector_provider;
   return Status::NotSupported(core::kRabitqUnsupportedPlatform);
 #else
-  if (vector_index_params->type() == IndexType::IVF_RABITQ) {
+  if (vector_index_params->type() == IndexType::IVF_RABITQ ||
+      vector_index_params->type() == IndexType::IVF ||
+      vector_index_params->type() == IndexType::DISKANN) {
     *out_field = field_clone;
     return Status::OK();
   }
@@ -886,6 +890,16 @@ Status SegmentHelper::PrepareQuantizeField(
   if (raw_vector_provider == nullptr) {
     return Status::InvalidArgument(
         "raw_vector_provider is required for RABITQ training");
+  }
+
+  if (vector_index_params->type() == IndexType::HNSW) {
+    auto params = std::dynamic_pointer_cast<HnswIndexParams>(
+        vector_index_params->clone());
+    if (!params) return Status::InvalidArgument("Expected HnswIndexParams");
+    params->set_raw_vector_provider(raw_vector_provider);
+    field_clone->set_index_params(params);
+    *out_field = std::move(field_clone);
+    return Status::OK();
   }
 
   auto rabitq_params = std::dynamic_pointer_cast<HnswRabitqIndexParams>(

@@ -218,6 +218,12 @@ class IVFDumper {
   //! Persist Turbo training state separately from the posting metadata.
   int dump_turbo_quantizer(const turbo::Quantizer::Pointer &quantizer);
 
+  void enable_block_scan(const turbo::Quantizer::Pointer &quantizer) {
+    if (quantizer && quantizer->scan_block_size() &&
+        block_vector_count_ <= 32 && meta_.major_order() == IndexMeta::MO_ROW)
+      scan_quantizer_ = quantizer;
+  }
+
   //! Dump the original vector, which doesnot been quantized
   int dump_original_vector(const void *data, size_t size);
 
@@ -266,6 +272,8 @@ class IVFDumper {
   uint32_t dumped_feature_count_{0};
   size_t dumped_features_size_{0};
   mutable size_t dumped_size_{0};
+  turbo::Quantizer::Pointer scan_quantizer_{};
+  std::vector<char> scan_blocks_{};
   InvertedIndexHeader header_;
 };
 

@@ -989,6 +989,25 @@ ZVEC_EXPORT zvec_quantize_type_t ZVEC_CALL
 zvec_index_params_get_quantize_type(const zvec_index_params_t *params);
 
 /**
+ * Configure Turbo RaBitQ for an ordinary HNSW, IVF or DiskANN index whose
+ * quantize type is RABITQ. total_bits: 1..9; num_clusters/n_iters: positive;
+ * sample_count: nonnegative (0 uses all training vectors). This does not change
+ * IVF n_list. For IVF this also sets its legacy total_bits and sample_count
+ * fields. Invalid inputs leave the parameters unchanged.
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_index_params_set_rabitq_quantizer_params(zvec_index_params_t *params,
+                                              int total_bits, int num_clusters,
+                                              int sample_count, int n_iters);
+
+/** Get effective Turbo RaBitQ settings. Each output pointer may be NULL. */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_index_params_get_rabitq_quantizer_params(const zvec_index_params_t *params,
+                                              int *total_bits,
+                                              int *num_clusters,
+                                              int *sample_count, int *n_iters);
+
+/**
  * @brief Set enable_rotate for quantizer (only effective with INT8/INT4
  * quantize type)
  *
@@ -1148,10 +1167,11 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_ivf_params(
 
 /**
  * @brief Set IVF RaBitQ specific parameters
- * @param params Index parameters (must be IVF_RABITQ type)
- * @param nlist Number of cluster centers
- * @param total_bits Total bits for RaBitQ quantization
- * @param sample_count Sample count for training, 0 means use all vectors
+ * @param params IVF_RABITQ parameters, or IVF parameters with RABITQ
+ * quantization
+ * @param nlist Number of cluster centers (must be positive)
+ * @param total_bits Total bits for RaBitQ quantization (1-9)
+ * @param sample_count Sample count for training, 0 selects automatic sampling
  * @return ZVEC_OK on success, error code on failure
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_ivf_rabitq_params(
@@ -1159,7 +1179,8 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_ivf_rabitq_params(
 
 /**
  * @brief Get IVF RaBitQ parameters (all at once)
- * @param params Index parameters (must be IVF_RABITQ type)
+ * @param params IVF_RABITQ parameters, or IVF parameters with RABITQ
+ * quantization
  * @param out_nlist Output parameter for nlist
  * @param out_total_bits Output parameter for total_bits
  * @param out_sample_count Output parameter for sample_count

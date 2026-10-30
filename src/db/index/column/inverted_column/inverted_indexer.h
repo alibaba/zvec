@@ -46,10 +46,14 @@ class InvertedIndexer {
                            const std::string &working_dir,
                            const bool create_dir_if_missing,
                            const std::vector<FieldSchema> &fields,
-                           bool read_only) {
+                           bool read_only, Status *open_status = nullptr) {
     Ptr indexer =
         std::make_shared<InvertedIndexer>(collection_name, working_dir, fields);
-    if (indexer->open(create_dir_if_missing, read_only).ok()) {
+    auto status = indexer->open(create_dir_if_missing, read_only);
+    if (open_status != nullptr) {
+      *open_status = status;
+    }
+    if (status.ok()) {
       return indexer;
     } else {
       return nullptr;

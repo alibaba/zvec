@@ -198,6 +198,9 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
     if (!omit_empty_value || param.nprobe != 0) {
       json_obj.set("nprobe", ailego::JsonValue(param.nprobe));
     }
+    json_obj.set("rabitq_pruning", ailego::JsonValue(param.rabitq_pruning));
+    json_obj.set("rabitq_reuse_coarse_dot",
+                 ailego::JsonValue(param.rabitq_reuse_coarse_dot));
     index_type = IndexType::kIVF;
     // json_obj.set("l1QueryParam",
     // ailego::JsonValue(QueryParamSerializeToJson(param.l1QueryParam)));
@@ -334,6 +337,14 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
         LOG_ERROR("Failed to deserialize nprobe");
         return nullptr;
       }
+      if (!extract_value_from_json(json_obj, "rabitq_pruning",
+                                   param->rabitq_pruning, tmp_json_value) ||
+          !extract_value_from_json(json_obj, "rabitq_reuse_coarse_dot",
+                                   param->rabitq_reuse_coarse_dot,
+                                   tmp_json_value)) {
+        LOG_ERROR("Failed to deserialize Turbo IVF scan options");
+        return nullptr;
+      }
       return param;
     } else if (index_type == IndexType::kHNSWRabitq) {
       auto param = std::make_shared<HNSWRabitqQueryParam>();
@@ -422,6 +433,14 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
       if (!extract_value_from_json(json_obj, "nprobe", param->nprobe,
                                    tmp_json_value)) {
         LOG_ERROR("Failed to deserialize nprobe");
+        return nullptr;
+      }
+      if (!extract_value_from_json(json_obj, "rabitq_pruning",
+                                   param->rabitq_pruning, tmp_json_value) ||
+          !extract_value_from_json(json_obj, "rabitq_reuse_coarse_dot",
+                                   param->rabitq_reuse_coarse_dot,
+                                   tmp_json_value)) {
+        LOG_ERROR("Failed to deserialize Turbo IVF scan options");
         return nullptr;
       }
     } else if constexpr (std::is_same_v<QueryParamType, HNSWRabitqQueryParam>) {

@@ -79,13 +79,18 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
     return 0;
   }
 
-  dist_t dist = ctx->dist_calculator().dist(entry_point);
+  auto &dc = ctx->dist_calculator();
+  dist_t dist =
+      dc.has_refinement() ? dc.estimate(entry_point) : dc.dist(entry_point);
   for (level_t cur_level = max_level; cur_level >= 1; --cur_level) {
     select_entry_point(cur_level, &entry_point, &dist, ctx);
   }
 
+  // Upper levels navigate with the cheap estimate. At level zero every heap
+  // score, including the entry point, must use the complete estimate.
+  if (dc.has_refinement()) dist = dc.dist(entry_point);
   const uint32_t capacity = std::max(ctx->topk(), ctx->ef());
-  if (!ctx->filter().is_valid()) {
+  if (!ctx->filter().is_valid() && !dc.has_refinement()) {
     ctx->search_heap().reset_pool(capacity, entity_.max_degree(0));
     const int ret = dispatch_search_neighbors(entry_point, dist, ctx);
     if (ailego_unlikely(ret != 0)) return ret;
@@ -157,8 +162,15 @@ void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
       }
     }
 
-    dc.batch_dist(neighbor_vecs.data(), size, dists.data(),
-                  has_extra_values ? neighbor_extra_values.data() : nullptr);
+    if (dc.has_refinement()) {
+      for (uint32_t i = 0; i < size; ++i) {
+        float lower;
+        dists[i] = dc.estimate(neighbor_vecs[i], &lower);
+      }
+    } else {
+      dc.batch_dist(neighbor_vecs.data(), size, dists.data(),
+                    has_extra_values ? neighbor_extra_values.data() : nullptr);
+    }
 
     for (uint32_t i = 0; i < size; ++i) {
       dist_t cur_dist = dists[i];
@@ -494,14 +506,29 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
       ailego_prefetch_lines(neighbor_vecs[i], prefetch_lines);
     }
 
-    dc.batch_dist(neighbor_vecs.data(), size, dists.data(),
-                  has_extra_values ? neighbor_extra_values.data() : nullptr);
+    if (!dc.has_refinement()) {
+      dc.batch_dist(neighbor_vecs.data(), size, dists.data(),
+                    has_extra_values ? neighbor_extra_values.data() : nullptr);
+    }
 
     for (uint32_t i = 0; i < size; ++i) {
       node_id_t node = neighbor_ids[i];
-      dist_t cur_dist = dists[i];
+      dist_t cur_dist;
+      if (dc.has_refinement()) {
+        float lower;
+        dc.estimate(neighbor_vecs[i], &lower);
+        if (topk.full() && lower >= topk[0].second) {
+          dc.note_bound_pruned();
+          continue;
+        }
+        cur_dist = dc.refine(neighbor_vecs[i]);
+      } else {
+        cur_dist = dists[i];
+      }
 
-      if ((!topk.full()) || cur_dist < topk[0].second) {
+      // Match HNSW-RaBitQ: a candidate passing the bound may still extend the
+      // traversal even when its full estimate cannot improve the result heap.
+      if (dc.has_refinement() || (!topk.full()) || cur_dist < topk[0].second) {
         candidates.emplace(node, cur_dist);
         // update entry_point for next level scan
         if (cur_dist < *dist) {

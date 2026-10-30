@@ -203,7 +203,8 @@ jobs:
               SUMMARY_FOUND=0
               if grep -Eq '^\[==========\][[:space:]]+[0-9]+ tests?[[:space:]]+from[[:space:]]+[0-9]+ test (suites?|cases?)[[:space:]]+ran\.' "$LOG_FILE"; then
                 SUMMARY_FOUND=1
-              elif [ "$TEST_NAME" = "c_api_test" ] && grep -Eq '^Failed: [0-9]+[[:space:]]*$' "$LOG_FILE"; then
+              elif { [ "$TEST_NAME" = "c_api_test" ] || [ "$TEST_NAME" = "c_api_rabitq_test" ]; } && \
+                   grep -Eq '^Failed: [0-9]+[[:space:]]*$' "$LOG_FILE"; then
                 SUMMARY_FOUND=1
               fi
 
@@ -271,10 +272,10 @@ jobs:
               elif [ "$TEST_NAME" = "diskann_mobile_collection_test" ]; then
                 DISKANN_COLLECTION_PASSED=1
               fi
-            elif [ "$TEST_NAME" = "c_api_test" ] && \
+            elif { [ "$TEST_NAME" = "c_api_test" ] || [ "$TEST_NAME" = "c_api_rabitq_test" ]; } && \
                  grep -Eq '^Passed: [1-9][0-9]*[[:space:]]*$' "$LOG_FILE" && \
                  grep -Eq '^Failed: 0[[:space:]]*$' "$LOG_FILE"; then
-              # c_api_test uses a custom test framework (not GTest)
+              # C API tests use custom summaries rather than GTest.
               PASSED=$((PASSED + 1))
             else
               echo "::error::${TEST_NAME} produced no recognisable passing test summary"

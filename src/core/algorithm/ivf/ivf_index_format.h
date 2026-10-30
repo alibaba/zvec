@@ -167,6 +167,9 @@ const std::string IVF_FEATURES_SEG_ID("ivf.features");
 const std::string IVF_INT8_QUANTIZED_PARAMS_SEG_ID("ivf.int8_quantized_params");
 const std::string IVF_INT4_QUANTIZED_PARAMS_SEG_ID("ivf.int4_quantized_params");
 const std::string IVF_TURBO_QUANTIZER_SEG_ID("ivf.turbo_quantizer");
+// Optional fixed-width coarse blocks, in the same order as posting blocks.
+// Row records remain authoritative for fetch, merge and old-file fallback.
+const std::string IVF_TURBO_SCAN_SEG_ID("ivf.turbo_scan.v1");
 
 // Stored in posting IndexMeta attributes; quantizer_name also exists in legacy
 // indexes and cannot identify the posting format on its own.

@@ -4079,6 +4079,41 @@ void test_index_params_api_functions(void) {
   TEST_ASSERT(total_bits == 6);
   TEST_ASSERT(sample_count == 4096);
 
+  // The same RaBitQ accessors configure the ordinary IVF entry point.
+  TEST_ASSERT(zvec_index_params_set_ivf_rabitq_params(
+                  ivf_params, 256, 6, 4096) == ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_index_params_set_quantize_type(
+                  ivf_params, ZVEC_QUANTIZE_TYPE_RABITQ) == ZVEC_OK);
+  TEST_ASSERT(zvec_index_params_set_ivf_params(ivf_params, 200, 20, false) ==
+              ZVEC_OK);
+  TEST_ASSERT(zvec_index_params_set_ivf_rabitq_params(ivf_params, 256, 6,
+                                                      4096) == ZVEC_OK);
+  TEST_ASSERT(zvec_index_params_get_ivf_rabitq_params(
+                  ivf_params, &nlist, &total_bits, &sample_count) == ZVEC_OK);
+  TEST_ASSERT(nlist == 256 && total_bits == 6 && sample_count == 4096);
+  TEST_ASSERT(zvec_index_params_get_type(ivf_params) == ZVEC_INDEX_TYPE_IVF);
+  TEST_ASSERT(zvec_index_params_get_ivf_params(ivf_params, &n_list, &n_iters,
+                                               &use_soar) == ZVEC_OK);
+  TEST_ASSERT(n_list == 256 && n_iters == 20 && !use_soar);
+  TEST_ASSERT(zvec_index_params_set_ivf_rabitq_params(ivf_params, 0, 6, 4096) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_index_params_set_ivf_rabitq_params(
+                  ivf_params, 32, 10, 4096) == ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_index_params_set_ivf_rabitq_params(ivf_params, 32, 6, -1) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_index_params_get_ivf_rabitq_params(
+                  ivf_params, &nlist, &total_bits, &sample_count) == ZVEC_OK);
+  TEST_ASSERT(nlist == 256 && total_bits == 6 && sample_count == 4096);
+  TEST_ASSERT(zvec_index_params_get_ivf_rabitq_params(ivf_params, NULL, NULL,
+                                                      NULL) == ZVEC_OK);
+  TEST_ASSERT(zvec_index_params_get_ivf_rabitq_params(NULL, NULL, NULL, NULL) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_index_params_set_ivf_rabitq_params(NULL, 32, 6, 0) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(
+      zvec_index_params_get_ivf_rabitq_params(hnsw_params, NULL, NULL, NULL) ==
+      ZVEC_ERROR_INVALID_ARGUMENT);
+
   // Test zvec_index_params_create for INVERT
   zvec_index_params_t *invert_params =
       zvec_index_params_create(ZVEC_INDEX_TYPE_INVERT);

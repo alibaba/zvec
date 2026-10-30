@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <functional>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_framework.h>
 #include "ivf_distance_calculator.h"
@@ -50,27 +51,55 @@ class IVFEntity {
     return quantizer_;
   }
 
+  // Diagnostic A/B switch: keep the same codes, candidates and distance
+  // estimators, but refine every unfiltered candidate when disabled.
+  void set_packed_scan_pruning(bool enabled) {
+    packed_scan_pruning_ = enabled;
+  }
+
+  void set_packed_scan_reuse_dot(bool enabled) {
+    packed_scan_reuse_dot_ = enabled;
+  }
+
+  struct CandidateVisitor {
+    std::function<void(uint64_t, float)> consume;
+    // Threshold in internal distance units for this candidate's group.
+    // An absent callback disables pruning by the grouped result collector.
+    std::function<float(uint64_t)> threshold;
+    explicit operator bool() const {
+      return bool(consume);
+    }
+    void operator()(uint64_t key, float score) const {
+      consume(key, score);
+    }
+  };
+
   //! search in inverted list with filter
   int search(size_t inverted_list_id, const void *query,
              const IndexFilter &filter, uint32_t *scan_count,
-             IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;
+             IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
+             const CandidateVisitor &visitor = {}) const;
 
   //! search in inverted list without filter
   int search(size_t inverted_list_id, const void *query, uint32_t *scan_count,
-             IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;
+             IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
+             const CandidateVisitor &visitor = {}) const;
 
   //! search all inverted list with filter
   int search(const void *query, const IndexFilter &filter,
-             IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;
+             IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
+             const CandidateVisitor &visitor = {}) const;
 
   //! search all inverted list without filter
   int search(const void *query, IndexDocumentHeap *heap,
-             IndexContext::Stats *context_stats) const;
+             IndexContext::Stats *context_stats,
+             const CandidateVisitor &visitor = {}) const;
 
   //! Search only the specified primary keys, using posting-space distances.
   int search_by_p_keys(const void *query, const std::vector<uint64_t> &p_keys,
                        const IndexFilter &filter, IndexDocumentHeap *heap,
-                       IndexContext::Stats *context_stats) const;
+                       IndexContext::Stats *context_stats,
+                       const CandidateVisitor &visitor = {}) const;
 
   //! Clone the entity
   virtual IVFEntity::Pointer clone() const;
@@ -401,6 +430,22 @@ class IVFEntity {
   turbo::Quantizer::Pointer quantizer_{};
   // Each context owns its entity clone and therefore its query buffer/LUT.
   turbo::DistanceImpl query_distance_{};
+  std::unique_ptr<turbo::BlockScanner> block_scanner_{};
+  IndexStorage::Segment::Pointer scan_blocks_{};
+  std::shared_ptr<const std::vector<size_t>> scan_list_offsets_{};
+  int search_packed(size_t list_id, const IndexFilter *filter,
+                    uint32_t *scan_count, IndexDocumentHeap *heap,
+                    IndexContext::Stats *stats,
+                    const CandidateVisitor &visitor) const;
+  template <bool HasFilter, bool HasVisitor>
+  int search_packed_impl(size_t list_id, const IndexFilter *filter,
+                         uint32_t *scan_count, IndexDocumentHeap *heap,
+                         IndexContext::Stats *stats,
+                         const CandidateVisitor &visitor) const;
+  bool packed_scan_pruning_{true};
+  bool packed_scan_reuse_dot_{false};
+  mutable std::vector<uint64_t> scan_keys_{};
+  mutable std::vector<char> scan_buffer_{};
   IndexStorage::Pointer container_{};
   IndexStorage::Segment::Pointer inverted_{};
   IndexStorage::Segment::Pointer inverted_meta_{};

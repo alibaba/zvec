@@ -426,7 +426,9 @@ Args:
 Parameters for quantizer configuration.
 
 Encapsulates quantization-related settings such as enable_rotate.
-Designed for future extensibility.
+For RABITQ, total_bits (1-9), num_clusters, sample_count (0 uses all vectors),
+and n_iters configure training. IVFIndexParam.total_bits/sample_count override
+these two quantizer settings; num_clusters is independent of IVF n_list.
 
 Attributes:
     enable_rotate (bool): Whether to apply random rotation before INT8/INT4
@@ -438,7 +440,15 @@ Examples:
     >>> print(qp.enable_rotate)
     True
 )pbdoc");
-  quantizer_param.def(py::init<bool>(), py::arg("enable_rotate") = false)
+  quantizer_param
+      .def(py::init<bool, int, int, int, int>(),
+           py::arg("enable_rotate") = false, py::arg("total_bits") = 7,
+           py::arg("num_clusters") = 16, py::arg("sample_count") = 0,
+           py::arg("n_iters") = 20)
+      .def_property_readonly("total_bits", &QuantizerParam::total_bits)
+      .def_property_readonly("num_clusters", &QuantizerParam::num_clusters)
+      .def_property_readonly("sample_count", &QuantizerParam::sample_count)
+      .def_property_readonly("n_iters", &QuantizerParam::n_iters)
       .def_property_readonly(
           "enable_rotate",
           [](const QuantizerParam &self) -> bool {
@@ -451,14 +461,23 @@ Examples:
           [](const QuantizerParam &self) -> py::dict {
             py::dict dict;
             dict["enable_rotate"] = self.enable_rotate();
+            dict["total_bits"] = self.total_bits();
+            dict["num_clusters"] = self.num_clusters();
+            dict["sample_count"] = self.sample_count();
+            dict["n_iters"] = self.n_iters();
             return dict;
           },
           "Convert to dictionary with all fields")
-      .def("__repr__",
-           [](const QuantizerParam &self) -> std::string {
-             return "{\"enable_rotate\":" +
-                    std::string(self.enable_rotate() ? "true" : "false") + "}";
-           })
+      .def(
+          "__repr__",
+          [](const QuantizerParam &self) -> std::string {
+            return "{\"enable_rotate\":" +
+                   std::string(self.enable_rotate() ? "true" : "false") +
+                   ", \"total_bits\":" + std::to_string(self.total_bits()) +
+                   ", \"num_clusters\":" + std::to_string(self.num_clusters()) +
+                   ", \"sample_count\":" + std::to_string(self.sample_count()) +
+                   ", \"n_iters\":" + std::to_string(self.n_iters()) + "}";
+          })
       .def(
           "__eq__",
           [](const QuantizerParam &self, const py::object &other) {
@@ -468,12 +487,18 @@ Examples:
           py::is_operator())
       .def(py::pickle(
           [](const QuantizerParam &self) {
-            return py::make_tuple(self.enable_rotate());
+            return py::make_tuple(self.enable_rotate(), self.total_bits(),
+                                  self.num_clusters(), self.sample_count(),
+                                  self.n_iters());
           },
           [](py::tuple t) {
-            if (t.size() != 1)
+            if (t.size() != 1 && t.size() != 5)
               throw std::runtime_error("Invalid state for QuantizerParam");
-            return std::make_shared<QuantizerParam>(t[0].cast<bool>());
+            return std::make_shared<QuantizerParam>(
+                t[0].cast<bool>(), t.size() == 5 ? t[1].cast<int>() : 7,
+                t.size() == 5 ? t[2].cast<int>() : 16,
+                t.size() == 5 ? t[3].cast<int>() : 0,
+                t.size() == 5 ? t[4].cast<int>() : 20);
           }));
 
   // binding base vector index params
@@ -518,6 +543,10 @@ Attributes:
                 quantize_type_to_string(self.quantize_type());
             py::dict qp_dict;
             qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
+            qp_dict["total_bits"] = self.quantizer_param().total_bits();
+            qp_dict["num_clusters"] = self.quantizer_param().num_clusters();
+            qp_dict["sample_count"] = self.quantizer_param().sample_count();
+            qp_dict["n_iters"] = self.quantizer_param().n_iters();
             dict["quantizer_param"] = qp_dict;
             return dict;
           },
@@ -628,6 +657,10 @@ Examples:
             dict["flat_data_type"] = data_type_to_string(self.flat_data_type());
             py::dict qp_dict;
             qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
+            qp_dict["total_bits"] = self.quantizer_param().total_bits();
+            qp_dict["num_clusters"] = self.quantizer_param().num_clusters();
+            qp_dict["sample_count"] = self.quantizer_param().sample_count();
+            qp_dict["n_iters"] = self.quantizer_param().n_iters();
             dict["quantizer_param"] = qp_dict;
             return dict;
           },
@@ -658,13 +691,16 @@ Examples:
             return py::make_tuple(
                 self.metric_type(), self.m(), self.ef_construction(),
                 self.quantize_type(), self.use_contiguous_memory(),
-                self.quantizer_param().enable_rotate(),
-                self.use_flat_contiguous_memory(), self.flat_data_type());
+                self.quantizer_param(), self.use_flat_contiguous_memory(),
+                self.flat_data_type());
           },
           [](py::tuple t) {
             if (t.size() < 5 || t.size() > 8)
               throw std::runtime_error("Invalid state for HnswIndexParams");
-            QuantizerParam qp(t.size() >= 6 ? t[5].cast<bool>() : false);
+            QuantizerParam qp =
+                t.size() >= 6 && py::isinstance<QuantizerParam>(t[5])
+                    ? t[5].cast<QuantizerParam>()
+                    : QuantizerParam(t.size() >= 6 ? t[5].cast<bool>() : false);
             return std::make_shared<HnswIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<QuantizeType>(), t[4].cast<bool>(), qp,
@@ -1180,15 +1216,18 @@ Examples:
   ivf_params
       .def(py::init([](MetricType metric_type, int n_list, int n_iters,
                        bool use_soar, QuantizeType quantize_type,
-                       QuantizerParam quantizer_param) {
+                       QuantizerParam quantizer_param, int total_bits,
+                       int sample_count) {
              return std::make_shared<IVFIndexParams>(
                  metric_type, n_list, n_iters, use_soar, quantize_type,
-                 quantizer_param);
+                 quantizer_param, total_bits, sample_count);
            }),
            py::arg("metric_type") = MetricType::IP, py::arg("n_list") = 10,
            py::arg("n_iters") = 10, py::arg("use_soar") = false,
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("quantizer_param") = QuantizerParam(),
+           py::arg("total_bits") = core_interface::kDefaultRabitqTotalBits,
+           py::arg("sample_count") = 0,
            R"pbdoc(
 Constructs an IVFIndexParam instance.
 
@@ -1201,9 +1240,13 @@ Args:
     use_soar (bool, optional): Enable SOAR optimization. Defaults to False.
     quantize_type (QuantizeType, optional): Vector quantization type.
         Defaults to QuantizeType.UNDEFINED.
+    total_bits (int, optional): RaBitQ bits per dimension, from 1 to 9.
+    sample_count (int, optional): RaBitQ training sample count; 0 selects automatically.
     quantizer_param (QuantizerParam, optional): Quantizer configuration.
         Defaults to QuantizerParam().
 )pbdoc")
+      .def_property_readonly("total_bits", &IVFIndexParams::total_bits)
+      .def_property_readonly("sample_count", &IVFIndexParams::sample_count)
       .def_property_readonly("n_list", &IVFIndexParams::n_list,
                              "int: Number of inverted lists.")
       .def_property_readonly(
@@ -1217,6 +1260,8 @@ Args:
             py::dict dict;
             dict["type"] = index_type_to_string(self.type());
             dict["metric_type"] = metric_type_to_string(self.metric_type());
+            dict["total_bits"] = self.total_bits();
+            dict["sample_count"] = self.sample_count();
             dict["n_list"] = self.n_list();
             dict["n_iters"] = self.n_iters();
             dict["use_soar"] = self.use_soar();
@@ -1224,6 +1269,10 @@ Args:
                 quantize_type_to_string(self.quantize_type());
             py::dict qp_dict;
             qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
+            qp_dict["total_bits"] = self.quantizer_param().total_bits();
+            qp_dict["num_clusters"] = self.quantizer_param().num_clusters();
+            qp_dict["sample_count"] = self.quantizer_param().sample_count();
+            qp_dict["n_iters"] = self.quantizer_param().n_iters();
             dict["quantizer_param"] = qp_dict;
             return dict;
           },
@@ -1234,6 +1283,8 @@ Args:
             return "{"
                    "\"metric_type\":" +
                    metric_type_to_string(self.metric_type()) +
+                   ", \"total_bits\":" + std::to_string(self.total_bits()) +
+                   ", \"sample_count\":" + std::to_string(self.sample_count()) +
                    ", \"n_list\":" + std::to_string(self.n_list()) +
                    ", \"n_iters\":" + std::to_string(self.n_iters()) +
                    ", \"use_soar\":" + std::to_string(self.use_soar()) +
@@ -1247,16 +1298,22 @@ Args:
           [](const IVFIndexParams &self) {
             return py::make_tuple(self.metric_type(), self.n_list(),
                                   self.n_iters(), self.use_soar(),
-                                  self.quantize_type(),
-                                  self.quantizer_param().enable_rotate());
+                                  self.quantize_type(), self.quantizer_param(),
+                                  self.total_bits(), self.sample_count());
           },
           [](py::tuple t) {
-            if (t.size() != 5 && t.size() != 6)
+            if (t.size() != 5 && t.size() != 6 && t.size() != 8)
               throw std::runtime_error("Invalid state for IVFIndexParams");
-            QuantizerParam qp(t.size() >= 6 ? t[5].cast<bool>() : false);
+            QuantizerParam qp =
+                t.size() >= 6 && py::isinstance<QuantizerParam>(t[5])
+                    ? t[5].cast<QuantizerParam>()
+                    : QuantizerParam(t.size() >= 6 ? t[5].cast<bool>() : false);
             return std::make_shared<IVFIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
-                t[3].cast<bool>(), t[4].cast<QuantizeType>(), qp);
+                t[3].cast<bool>(), t[4].cast<QuantizeType>(), qp,
+                t.size() == 8 ? t[6].cast<int>()
+                              : core_interface::kDefaultRabitqTotalBits,
+                t.size() == 8 ? t[7].cast<int>() : 0);
           }));
 
   // DiskAnnIndexParams
@@ -1318,11 +1375,12 @@ Args:
         construction. Clamped to [10, 100]. Defaults to 50.
     pq_chunk_num (int, optional): Number of PQ chunks for product
         quantization. ``0`` means auto-pick based on dimension.
-        Clamped to [1, 1024]. Defaults to 0.
+        Clamped to [1, 1024]. Ignored with RABITQ. Defaults to 0.
     quantize_type (QuantizeType, optional): Vector quantization type.
         Defaults to QuantizeType.UNDEFINED.
     quantizer_param (QuantizerParam, optional): Quantizer configuration.
-        Defaults to QuantizerParam().
+        Defaults to QuantizerParam(). With RABITQ, configures in-memory
+        candidate codes; disk vectors retain FP32 precision.
 )pbdoc")
       .def_property_readonly("max_degree", &DiskAnnIndexParams::max_degree,
                              "int: max node degree.")
@@ -1347,6 +1405,10 @@ Args:
                 quantize_type_to_string(self.quantize_type());
             py::dict qp_dict;
             qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
+            qp_dict["total_bits"] = self.quantizer_param().total_bits();
+            qp_dict["num_clusters"] = self.quantizer_param().num_clusters();
+            qp_dict["sample_count"] = self.quantizer_param().sample_count();
+            qp_dict["n_iters"] = self.quantizer_param().n_iters();
             dict["quantizer_param"] = qp_dict;
             return dict;
           },
@@ -1370,13 +1432,15 @@ Args:
           [](const DiskAnnIndexParams &self) {
             return py::make_tuple(self.metric_type(), self.max_degree(),
                                   self.list_size(), self.pq_chunk_num(),
-                                  self.quantize_type(),
-                                  self.quantizer_param().enable_rotate());
+                                  self.quantize_type(), self.quantizer_param());
           },
           [](py::tuple t) {
             if (t.size() != 5 && t.size() != 6)
               throw std::runtime_error("Invalid state for DiskAnnIndexParams");
-            QuantizerParam qp(t.size() >= 6 ? t[5].cast<bool>() : false);
+            QuantizerParam qp =
+                t.size() >= 6 && py::isinstance<QuantizerParam>(t[5])
+                    ? t[5].cast<QuantizerParam>()
+                    : QuantizerParam(t.size() >= 6 ? t[5].cast<bool>() : false);
             return std::make_shared<DiskAnnIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<int>(), t[4].cast<QuantizeType>(), qp);

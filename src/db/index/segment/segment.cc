@@ -1698,10 +1698,14 @@ Status SegmentImpl::create_vector_index(
       block.set_max_doc_id(meta()->max_doc_id());
       block.set_doc_count(meta()->doc_count());
       new_segment_meta->add_persisted_block(block);
-      if (vector_index_params->type() == IndexType::HNSW_RABITQ) {
+      if (vector_index_params->type() == IndexType::HNSW_RABITQ ||
+          (vector_index_params->type() == IndexType::HNSW &&
+           vector_index_params->quantize_type() == QuantizeType::RABITQ)) {
         raw_vector_provider = vector_indexer.value()->create_index_provider();
       }
-    } else if (vector_index_params->type() == IndexType::HNSW_RABITQ) {
+    } else if (vector_index_params->type() == IndexType::HNSW_RABITQ ||
+               (vector_index_params->type() == IndexType::HNSW &&
+                vector_index_params->quantize_type() == QuantizeType::RABITQ)) {
       raw_vector_provider =
           vector_indexers_[column][0]->create_index_provider();
     }
@@ -1709,9 +1713,9 @@ Status SegmentImpl::create_vector_index(
     auto field_with_new_index_params = std::make_shared<FieldSchema>(*field);
     field_with_new_index_params->set_index_params(index_params);
 
-    // For HNSW_RABITQ, PrepareQuantizeField trains a reformer with
-    // raw_vector_provider. IVF_RABITQ trains inside its builder. For other
-    // quantize types, field_with_new_index_params is reused as-is.
+    // HNSW RaBitQ needs raw vectors before graph insertion: the native path
+    // trains a reformer here; Turbo trains when opening the target streamer.
+    // IVF trains inside its builder.
     std::shared_ptr<FieldSchema> field_for_quantize;
     {
       auto s = SegmentHelper::PrepareQuantizeField(*field_with_new_index_params,
@@ -4043,11 +4047,14 @@ Status SegmentImpl::load_scalar_index_blocks(bool create) {
     auto block_id = allocate_block_id();
     auto invert_path = FileHelper::MakeInvertIndexPath(path_, id(), block_id);
     auto collection_name = collection_schema_->name();
+    Status open_status;
     invert_indexers_ = InvertedIndexer::CreateAndOpen(
-        collection_name, invert_path, true, fields, options_.read_only_);
+        collection_name, invert_path, true, fields, options_.read_only_,
+        &open_status);
     if (!invert_indexers_) {
       LOG_ERROR("Failed to open scalar indexer");
-      return Status::InternalError("Failed to open scalar indexer");
+      return Status::InternalError("Failed to open scalar indexer [",
+                                   invert_path, "]: ", open_status.message());
     }
 
     // scalar index block
@@ -4062,11 +4069,15 @@ Status SegmentImpl::load_scalar_index_blocks(bool create) {
         auto invert_path =
             FileHelper::MakeInvertIndexPath(path_, id(), block_id);
         auto collection_name = collection_schema_->name();
+        Status open_status;
         invert_indexers_ = InvertedIndexer::CreateAndOpen(
-            collection_name, invert_path, false, fields, options_.read_only_);
+            collection_name, invert_path, false, fields, options_.read_only_,
+            &open_status);
         if (!invert_indexers_) {
           LOG_ERROR("Failed to open scalar indexer");
-          return Status::InternalError("Failed to open scalar indexer");
+          return Status::InternalError("Failed to open scalar indexer [",
+                                       invert_path,
+                                       "]: ", open_status.message());
         }
         return Status::OK();
       }

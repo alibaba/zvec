@@ -209,6 +209,23 @@ class TestFlatIndexParam:
 # Ivf Index Param Test Case
 # ----------------------------
 class TestIVFIndexParam:
+    def test_rabitq_round_trip(self):
+        import pickle
+
+        param = IVFIndexParam(
+            metric_type=MetricType.COSINE,
+            n_list=32,
+            n_iters=7,
+            quantize_type=QuantizeType.RABITQ,
+            total_bits=9,
+            sample_count=1024,
+        )
+        restored = pickle.loads(pickle.dumps(param))
+        assert restored.to_dict() == param.to_dict()
+        assert restored.type == IndexType.IVF
+        assert restored.total_bits == 9
+        assert restored.sample_count == 1024
+
     def test_default(self):
         param = IVFIndexParam()
         assert param.metric_type == MetricType.IP
