@@ -333,7 +333,7 @@ class HnswContext : public IndexContext {
   //! The active layout is bound together with the distance functions because
   //! graph construction may use records supplied by an external provider.
   inline const void *get_extra_values(const void *vector) const {
-    return extra_values_size_ == 0
+    return extra_values_size_ == 0 || vector == nullptr
                ? nullptr
                : static_cast<const char *>(vector) + vector_data_size_;
   }
@@ -353,6 +353,25 @@ class HnswContext : public IndexContext {
     const void *vector = vector_block.data();
     return dc_.batch_dist(
         vector, vector == nullptr ? nullptr : get_extra_values(vector));
+  }
+
+  //! Query-only distance: an unavailable external record is skipped, while
+  //! storage errors and missing internal records still fail the query.
+  inline bool try_batch_dist(node_id_t id, dist_t &distance,
+                             bool skip_missing_vectors = false) {
+    IndexStorage::MemoryBlock block;
+    if (ailego_unlikely(dc_.get_vector(id, block) != 0)) {
+      LOG_ERROR("Failed to get vector, id=%u", id);
+      dc_.set_error();
+      return false;
+    }
+    const void *vector = block.data();
+    if (ailego_unlikely(vector == nullptr && skip_missing_vectors)) {
+      LOG_ERROR("Skip nullptr external vector, id=%u", id);
+      return false;
+    }
+    distance = dc_.batch_dist(vector, get_extra_values(vector));
+    return !dc_.error();
   }
 
   inline TopkHeap &update_heap() {

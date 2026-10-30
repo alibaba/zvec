@@ -958,9 +958,16 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   bind_search_dist_space(ctx);
   ctx->resize_results(count);
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
+  const void *queries = query;
   for (size_t q = 0; q < count; ++q) {
     ctx->reset_query(query, meta_);
     ret = alg_->search(ctx);
+    if (ailego_unlikely(ctx->dist_calculator().missing_vector() &&
+                        storage_mode() == HnswStorageMode::kExternal)) {
+      // Missing graph nodes can include the entry point or disconnect the
+      // route to valid neighbors. Retry the batch against available records.
+      return search_bf_impl(queries, qmeta, count, context);
+    }
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Hnsw searcher fast search failed");
       return ret;
@@ -1012,6 +1019,10 @@ int HnswStreamer::search_candidates_impl(
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
   ctx->reset_query(query, meta_);
   ret = alg_->search(ctx);
+  if (ailego_unlikely(ctx->dist_calculator().missing_vector() &&
+                      storage_mode() == HnswStorageMode::kExternal)) {
+    ret = search_bf_impl(query, qmeta, 1, context);
+  }
   if (ailego_unlikely(ret != 0)) {
     LOG_ERROR("Hnsw searcher fast search failed");
     return ret;
@@ -1079,6 +1090,8 @@ int HnswStreamer::search_bf_impl(
   bind_search_dist_space(ctx);
   ctx->resize_results(count);
 
+  const bool skip_missing_vectors =
+      storage_mode() == HnswStorageMode::kExternal;
   if (ctx->group_by_search()) {
     if (!ctx->group_by().is_valid()) {
       LOG_ERROR("Invalid group-by function");
@@ -1099,7 +1112,11 @@ int HnswStreamer::search_bf_impl(
         }
 
         if (!ctx->filter().is_valid() || !ctx->filter()(entity_->get_key(id))) {
-          dist_t dist = ctx->batch_dist(id);
+          dist_t dist;
+          if (!ctx->try_batch_dist(id, dist, skip_missing_vectors)) {
+            if (ctx->error()) return IndexError_Runtime;
+            continue;
+          }
 
           std::string group_id = group_by(id);
 
@@ -1126,7 +1143,11 @@ int HnswStreamer::search_bf_impl(
         }
 
         if (!filter.is_valid() || !filter(entity_->get_key(id))) {
-          dist_t dist = ctx->batch_dist(id);
+          dist_t dist;
+          if (!ctx->try_batch_dist(id, dist, skip_missing_vectors)) {
+            if (ctx->error()) return IndexError_Runtime;
+            continue;
+          }
           topk.emplace(id, dist);
         }
       }
@@ -1174,6 +1195,8 @@ int HnswStreamer::search_bf_by_p_keys_impl(
   bind_search_dist_space(ctx);
   ctx->resize_results(count);
 
+  const bool skip_missing_vectors =
+      storage_mode() == HnswStorageMode::kExternal;
   if (ctx->group_by_search()) {
     if (!ctx->group_by().is_valid()) {
       LOG_ERROR("Invalid group-by function");
@@ -1193,7 +1216,11 @@ int HnswStreamer::search_bf_by_p_keys_impl(
         if (!ctx->filter().is_valid() || !ctx->filter()(pk)) {
           node_id_t id = entity_->get_id(pk);
           if (id != kInvalidNodeId) {
-            dist_t dist = ctx->batch_dist(id);
+            dist_t dist;
+            if (!ctx->try_batch_dist(id, dist, skip_missing_vectors)) {
+              if (ctx->error()) return IndexError_Runtime;
+              continue;
+            }
             std::string group_id = group_by(id);
 
             auto &topk_heap = ctx->group_topk_heaps()[group_id];
@@ -1219,7 +1246,11 @@ int HnswStreamer::search_bf_by_p_keys_impl(
         if (!filter.is_valid() || !filter(pk)) {
           node_id_t id = entity_->get_id(pk);
           if (id != kInvalidNodeId) {
-            dist_t dist = ctx->batch_dist(id);
+            dist_t dist;
+            if (!ctx->try_batch_dist(id, dist, skip_missing_vectors)) {
+              if (ctx->error()) return IndexError_Runtime;
+              continue;
+            }
             topk.emplace(id, dist);
           }
         }
