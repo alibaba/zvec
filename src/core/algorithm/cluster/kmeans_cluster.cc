@@ -651,8 +651,20 @@ int KmeansCluster::init_seeker() {
 }
 
 int KmeansCluster::build_seeker(const IndexCluster::CentroidList &cents) {
-  int result =
-      seeker_->mount(std::make_shared<KmeansCentroidFeatures>(meta_, cents));
+  // One LinearSeeker batch can reuse a compact snapshot throughout this pass.
+  constexpr size_t kSmallCentroidBatchSize = 32;
+  IndexFeatures::Pointer features;
+  if (cents.size() <= kSmallCentroidBatchSize) {
+    auto compact = std::make_shared<CompactIndexFeatures>(meta_);
+    compact->reserve(cents.size());
+    for (const auto &centroid : cents) {
+      compact->emplace(centroid.feature());
+    }
+    features = std::move(compact);
+  } else {
+    features = std::make_shared<KmeansCentroidFeatures>(meta_, cents);
+  }
+  int result = seeker_->mount(std::move(features));
   if (result != 0) {
     LOG_ERROR("Failed to mount features for linear seeker.");
     return result;

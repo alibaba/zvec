@@ -193,6 +193,8 @@ int IVFStreamer::search_bf(
   ctx->reset_results(count);
   auto &entity = ctx->entity();
   auto &filter = ctx->filter();
+  const bool turbo_rows =
+      entity->quantizer() && entity->meta().major_order() == IndexMeta::MO_ROW;
 
   //! Transform the querys for querying in inverted vector index later
   IndexQueryMeta iv_qmeta;
@@ -209,6 +211,14 @@ int IVFStreamer::search_bf(
     if (p_keys) {
       ret = entity->search_by_p_keys(query, (*p_keys)[q], filter, &heap,
                                      &context_stats);
+    } else if (turbo_rows) {
+      if (filter.is_valid()) {
+        ret = entity->search_turbo_rows(filter, &heap, &context_stats,
+                                        ctx->search_scratch());
+      } else {
+        ret = entity->search_turbo_rows(&heap, &context_stats,
+                                        ctx->search_scratch());
+      }
     } else if (!filter.is_valid()) {
       ret = entity->search(query, &heap, &context_stats);
     } else {
@@ -264,6 +274,8 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   ctx->reset_results(count);
   auto &entity = ctx->entity();
   auto &filter = ctx->filter();
+  const bool turbo_rows =
+      entity->quantizer() && entity->meta().major_order() == IndexMeta::MO_ROW;
 
   auto &centroid_index_ctx = ctx->centroid_searcher_ctx();
   int ret = centroid_index_->search(query, qmeta, count, centroid_index_ctx);
@@ -287,7 +299,16 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
          ++i) {
       auto cid = centroids[i].key();
       uint32_t scan_count = 0;
-      if (!filter.is_valid()) {
+      if (turbo_rows) {
+        if (filter.is_valid()) {
+          ret =
+              entity->search_turbo_rows(cid, filter, &scan_count, &heap,
+                                        &context_stats, ctx->search_scratch());
+        } else {
+          ret = entity->search_turbo_rows(
+              cid, &scan_count, &heap, &context_stats, ctx->search_scratch());
+        }
+      } else if (!filter.is_valid()) {
         ret = entity->search(cid, query, &scan_count, &heap, &context_stats);
       } else {
         ret = entity->search(cid, query, filter, &scan_count, &heap,

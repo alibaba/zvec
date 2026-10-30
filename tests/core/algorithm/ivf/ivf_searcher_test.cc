@@ -26,6 +26,7 @@
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/core/framework/index_segment_storage.h>
+#include "utility/batch_distance_budget.h"
 #include "zvec/core/framework/index_framework.h"
 #include "ivf_builder.h"
 #include "ivf_dumper.h"
@@ -4211,6 +4212,385 @@ uint64_t Key(size_t i) {
 
 using TurboCase = std::tuple<const char *, const char *>;
 
+TEST(IVFBatchDistanceBudget, UsesEncodedPayloadWithoutMetadata) {
+  struct Case {
+    IndexMeta::DataType type;
+    uint32_t dim;
+    uint32_t extra;
+    size_t payload;
+  };
+  const Case cases[] = {
+      {IndexMeta::DT_FP32, 256, 0, 1024},
+      {IndexMeta::DT_FP32, 256, 4, 1024},
+      {IndexMeta::DT_FP32, 128, 4, 512},
+      {IndexMeta::DT_FP32, 512, 4, 2048},
+      {IndexMeta::DT_FP32, 768, 4, 3072},
+      {IndexMeta::DT_FP32, 1024, 4, 4096},
+      {IndexMeta::DT_FP32, 8192, 0, 32768},
+      {IndexMeta::DT_FP16, 256, 4, 512},
+      {IndexMeta::DT_INT8, 256, 16, 256},
+      {IndexMeta::DT_INT4, 256, 16, 128},
+      // PQ metadata describes the encoded chunks, not the input dimension.
+      {IndexMeta::DT_INT4, 31, 4, 16},
+      {IndexMeta::DT_INT8, 31, 4, 31},
+      {IndexMeta::DT_BINARY32, 257, 0, 36},
+  };
+  for (const auto &test : cases) {
+    SCOPED_TRACE(testing::Message() << test.type << "/" << test.dim);
+    IndexMeta meta(test.type, test.dim);
+    meta.set_extra_meta_size(test.extra);
+    EXPECT_EQ(kBatchDistanceBytes / test.payload, BatchDistanceRows(meta));
+  }
+  IndexMeta empty(IndexMeta::DT_FP32, 0);
+  empty.set_extra_meta_size(4);
+  EXPECT_EQ(1u, BatchDistanceRows(empty));
+  IndexMeta huge(IndexMeta::DT_FP32,
+                 std::numeric_limits<uint32_t>::max() / sizeof(float));
+  EXPECT_EQ(1u, BatchDistanceRows(huge));
+}
+
+class ObservedBudgetIVFEntity : public IVFEntity {
+ public:
+  void observe(const std::vector<std::string> &codes,
+               const std::vector<size_t> &expected_ids) {
+    batches.clear();
+    batch_id_ranges.clear();
+    observed_rows = 0;
+    const auto original = query_distance_;
+    query_distance_ = zvec::turbo::DistanceImpl(
+        original.func(),
+        [this, original, &codes, &expected_ids](
+            const void **vectors, const void *, size_t count, size_t,
+            float *out, const void **) {
+          batches.push_back(count);
+          ASSERT_GT(count, 0u);
+          ASSERT_LE(observed_rows + count, expected_ids.size());
+          batch_id_ranges.emplace_back(expected_ids[observed_rows],
+                                       expected_ids[observed_rows + count - 1]);
+          for (size_t i = 0; i < count; ++i) {
+            const auto &expected = codes[expected_ids[observed_rows++]];
+            EXPECT_EQ(
+                0, std::memcmp(vectors[i], expected.data(), expected.size()));
+          }
+          original.batch(vectors, count, out);
+        },
+        original.query_storage(), original.dim());
+  }
+  size_t pin_resident_span_count(
+      size_t list_id, std::vector<IndexStorage::MemoryBlock> &pins) const {
+    IndexStorage::MemoryBlock meta;
+    const auto *loaded = inverted_list_meta(list_id, meta);
+    if (!loaded) return 0;
+    const InvertedListMeta list = *loaded;
+    meta.reset();
+    const size_t bytes = std::min(
+        std::min(size_t{10}, size_t{list.block_count}) * header_.block_size,
+        static_cast<size_t>(header_.inverted_body_size - list.offset));
+    // Explicit single-page reads admit and pin this one read group. Keep the
+    // leases through the searches, so multi-span coverage does not depend on
+    // best-effort warmup or subsequent cache eviction.
+    for (size_t off = list.offset; off < list.offset + bytes;) {
+      const size_t available =
+          kVectorPageSize - (inverted_->data_offset() + off) % kVectorPageSize;
+      const size_t size =
+          std::min<size_t>(available, list.offset + bytes - off);
+      pins.emplace_back();
+      if (inverted_->read(off, pins.back(), size) != size) return 0;
+      off += size;
+    }
+    IndexStorage::Segment::ScatterBlock data;
+    if (inverted_->read_scatter(list.offset, data, bytes) != bytes) return 0;
+    return data.spans.size();
+  }
+
+  std::vector<size_t> batches;
+  std::vector<std::pair<size_t, size_t>> batch_id_ranges;
+  size_t observed_rows{0};
+};
+
+TEST(IVFBatchDistanceBudget, PreservesReadGroupsAndResidentSpanBoundaries) {
+  struct Case {
+    uint32_t dim;
+    uint32_t block_rows;
+    const char *metric;
+  };
+  constexpr uint32_t split_dim = kBatchDistanceBytes / (16 * sizeof(float));
+  // Always exercise a 1024-row batch, including with smaller budget variants.
+  constexpr uint32_t large_batch_dim =
+      kBatchDistanceBytes / (1024 * sizeof(float));
+  auto &pool = MemoryLimitPool::get_instance();
+  const size_t previous_capacity = pool.capacity();
+  ASSERT_EQ(0u, pool.used());
+  auto restore_pool = ScopeGuard::Make([&]() {
+    EXPECT_EQ(0u, pool.used());
+    EXPECT_EQ(0, pool.init(previous_capacity));
+  });
+  for (const auto &test :
+       {Case{256, 4, "Cosine"}, Case{256, 32, "Cosine"},
+        Case{256, 64, "Cosine"}, Case{large_batch_dim, 32, "Cosine"},
+        Case{split_dim, 32, "SquaredEuclidean"},
+        Case{split_dim + 1, 32, "SquaredEuclidean"},
+        Case{split_dim / 2, 32, "SquaredEuclidean"}}) {
+    SCOPED_TRACE(testing::Message() << test.dim << "/" << test.block_rows);
+    const std::string path = "ivf_byte_budget.index";
+    auto cleanup = ScopeGuard::Make([&]() { File::RemovePath(path); });
+    IndexMeta meta(IndexMeta::DT_FP32, test.dim);
+    meta.set_metric(test.metric, 0, Params());
+    meta.set_quantizer("Fp32Quantizer", 0, Params());
+    auto quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+    ASSERT_NE(nullptr, quantizer);
+    ASSERT_EQ(0, quantizer->init(meta, Params()));
+    auto posting_meta = quantizer->meta();
+    posting_meta.set_major_order(IndexMeta::MO_ROW);
+    posting_meta.mutable_attributes()->set(IVF_TURBO_FORMAT_VERSION_ATTRIBUTE,
+                                           kIVFTurboFormatVersion);
+    IVFDumper::Block block;
+    block.init(posting_meta, test.block_rows);
+    const bool padded =
+        block.block_size() != test.block_rows * posting_meta.element_size();
+    EXPECT_EQ(test.block_rows == 4, padded);
+    const size_t rows = BatchDistanceRows(posting_meta);
+    const size_t first_count = 13;
+    const size_t fixture_blocks =
+        rows <= 32 ? 1
+                   : std::max(size_t{10}, padded ? 0 : rows / test.block_rows);
+    const size_t second_count = 2 * test.block_rows * fixture_blocks + 7;
+    const size_t count = first_count + second_count;
+    constexpr uint64_t key_base = uint64_t{1} << 44;
+    const auto key = [&](size_t id) {
+      return id == 0 || id == first_count + 1 || id + 1 == count
+                 ? kInvalidKey
+                 : key_base + 17 * (count - id);
+    };
+    std::vector<std::string> codes;
+    auto dumper = IndexFactory::CreateDumper("FileDumper");
+    ASSERT_NE(nullptr, dumper);
+    ASSERT_EQ(0, dumper->create(path));
+    IVFDumper postings(posting_meta, dumper, 2, test.block_rows);
+    std::vector<float> vector(test.dim, 0.0f);
+    for (size_t id = 0; id < count; ++id) {
+      vector[0] = static_cast<float>(id + 1);
+      vector[1] = static_cast<float>(id % 17 + 1);
+      codes.emplace_back(quantizer->quantized_datapoint_vector_length(), '\0');
+      quantizer->quantize_data(vector.data(), codes.back().data());
+      ASSERT_EQ(0, postings.dump_inverted_vector(id < first_count ? 0 : 1,
+                                                 key(id), codes.back().data()));
+    }
+    ASSERT_EQ(0, postings.dump_inverted_vector_finished());
+    ASSERT_EQ(0, postings.dump_turbo_quantizer(quantizer));
+    ASSERT_EQ(0, IndexHelper::SerializeToDumper(meta, dumper.get()));
+    ASSERT_EQ(0, dumper->close());
+    const size_t resident_pool =
+        std::max(size_t{8 * 1024 * 1024},
+                 2 * count * posting_meta.element_size() + 1024 * 1024);
+    for (const auto &backend :
+         {std::make_pair("MMapFileReadStorage", resident_pool),
+          std::make_pair("FileReadStorage", resident_pool),
+          std::make_pair("BufferReadStorage", resident_pool),
+          std::make_pair("BufferReadStorage", kVectorPageSize),
+          std::make_pair("BufferReadStorage", 2 * kVectorPageSize)}) {
+      SCOPED_TRACE(backend.first);
+      SCOPED_TRACE(backend.second);
+      ASSERT_EQ(0, pool.init(backend.second));
+      auto storage = IndexFactory::CreateStorage(backend.first);
+      ASSERT_NE(nullptr, storage);
+      Params options;
+      options.set("proxima.buffer.read_storage.warmup_mode", "sequential");
+      ASSERT_EQ(0, storage->init(options));
+      ASSERT_EQ(0, storage->open(path, false));
+      ObservedBudgetIVFEntity entity;
+      ASSERT_EQ(0, entity.load(storage));
+      const bool resident_pages =
+          std::string(backend.first) == "BufferReadStorage" &&
+          backend.second == resident_pool;
+      std::vector<IndexStorage::MemoryBlock> resident_pins;
+      if (resident_pages)
+        EXPECT_GT(entity.pin_resident_span_count(1, resident_pins), 1u);
+      IVFSearchScratch scratch;
+      enum class FilterMode { None, Partial, All, KeepAll };
+      // Reuse the same entity/scratch across empty and nonempty selections.
+      for (FilterMode mode :
+           {FilterMode::None, FilterMode::Partial, FilterMode::All,
+            FilterMode::KeepAll, FilterMode::None}) {
+        SCOPED_TRACE(static_cast<int>(mode));
+        const bool filtered = mode != FilterMode::None;
+        const auto excluded = [&](size_t id) {
+          if (mode == FilterMode::All) return true;
+          if (mode != FilterMode::Partial) return false;
+          if (id >= first_count) {
+            const size_t block = (id - first_count) / test.block_rows;
+            // Empty physical block and read-group holes must not lose later
+            // retained rows.
+            if (block == 1 || block / 10 == 1) return true;
+          }
+          return id % 3 == 1;
+        };
+        std::vector<size_t> expected_ids;
+        std::vector<uint64_t> expected_filter_keys;
+        size_t expected_filtered = 0;
+        for (size_t id = 0; id < count; ++id) {
+          if (!filtered) {
+            expected_ids.push_back(id);
+          } else if (key(id) != kInvalidKey) {
+            expected_filter_keys.push_back(key(id));
+            if (excluded(id))
+              ++expected_filtered;
+            else
+              expected_ids.push_back(id);
+          }
+        }
+        std::vector<size_t> expected_batches;
+        const bool mapped = std::string(backend.first) == "MMapFileReadStorage";
+        const size_t read_blocks =
+            mapped && !filtered && !padded
+                ? std::max(size_t{10}, rows / test.block_rows)
+                : 10;
+        const size_t logical_rows = !filtered && !padded && rows > 32
+                                        ? read_blocks * test.block_rows
+                                        : test.block_rows;
+        const size_t call_rows = filtered ? rows : (padded ? 32 : rows);
+        for (size_t list_count : {first_count, second_count}) {
+          for (size_t offset = 0; offset < list_count; offset += logical_rows) {
+            const size_t available =
+                std::min(logical_rows, list_count - offset);
+            for (size_t i = 0; i < available; i += call_rows)
+              expected_batches.push_back(std::min(call_rows, available - i));
+          }
+        }
+        for (float query_value : {0.25f, 17.0f}) {
+          vector[0] = query_value;
+          vector[1] = 1.0f;
+          ASSERT_EQ(0, entity.bind_query(
+                           vector.data(),
+                           IndexQueryMeta(IndexMeta::DT_FP32, test.dim)));
+          entity.observe(codes, expected_ids);
+          std::vector<uint64_t> filter_keys;
+          IndexFilter filter;
+          filter.set([&](uint64_t candidate_key) {
+            EXPECT_NE(kInvalidKey, candidate_key);
+            filter_keys.push_back(candidate_key);
+            if (candidate_key == kInvalidKey) return false;
+            const size_t id = count - (candidate_key - key_base) / 17;
+            return excluded(id);
+          });
+          const size_t heap_limit =
+              query_value == 0.25f ? 17u : std::numeric_limits<size_t>::max();
+          IndexDocumentHeap heap;
+          if (heap_limit != std::numeric_limits<size_t>::max())
+            heap.limit(heap_limit);
+          heap.emplace(key_base - 1, -1.0f,
+                       std::numeric_limits<uint32_t>::max());
+          IndexContext::Stats stats;
+          for (size_t list = 0; list < 2; ++list) {
+            uint32_t scanned = 0;
+            const int ret =
+                filtered ? entity.search_turbo_rows(list, filter, &scanned,
+                                                    &heap, &stats, scratch)
+                         : entity.search_turbo_rows(list, &scanned, &heap,
+                                                    &stats, scratch);
+            ASSERT_EQ(0, ret);
+            EXPECT_EQ(list == 0 ? first_count : second_count, scanned);
+          }
+          if (!filtered && std::string(backend.first) != "BufferReadStorage") {
+            EXPECT_EQ(expected_batches, entity.batches);
+          }
+          // A later BufferReadStorage read may use an owned contiguous
+          // fallback even when the earlier probe returned resident pages.
+          for (size_t n : entity.batches) {
+            EXPECT_LE(n, call_rows);
+            if (!filtered || !mapped)
+              EXPECT_LE(n, read_blocks * test.block_rows);
+          }
+          if (filtered) {
+            const auto read_group = [&](size_t id) {
+              const size_t list = id < first_count ? 0 : 1;
+              const size_t offset = list == 0 ? id : id - first_count;
+              return std::make_pair(list, offset / (10 * test.block_rows));
+            };
+            for (const auto &range : entity.batch_id_ranges) {
+              const auto first = read_group(range.first);
+              const auto last = read_group(range.second);
+              EXPECT_EQ(first.first, last.first);
+              // Only stable mappings can retain pointers across reads.
+              if (!mapped) EXPECT_EQ(first.second, last.second);
+            }
+            if (mode == FilterMode::KeepAll && rows > test.block_rows &&
+                std::string(backend.first) != "BufferReadStorage") {
+              ASSERT_FALSE(entity.batches.empty());
+              EXPECT_GT(*std::max_element(entity.batches.begin(),
+                                          entity.batches.end()),
+                        test.block_rows);
+            }
+            if (mode == FilterMode::KeepAll && mapped &&
+                rows > 10 * test.block_rows) {
+              ASSERT_FALSE(entity.batches.empty());
+              EXPECT_GT(*std::max_element(entity.batches.begin(),
+                                          entity.batches.end()),
+                        10 * test.block_rows);
+              EXPECT_TRUE(std::any_of(entity.batch_id_ranges.begin(),
+                                      entity.batch_id_ranges.end(),
+                                      [&](const auto &range) {
+                                        return read_group(range.first).second !=
+                                               read_group(range.second).second;
+                                      }));
+            }
+          }
+          if (mapped && !filtered && !padded && rows > 640 &&
+              logical_rows > 640) {
+            ASSERT_FALSE(entity.batches.empty());
+            EXPECT_GT(
+                *std::max_element(entity.batches.begin(), entity.batches.end()),
+                640u);
+            EXPECT_EQ(7u, entity.batches.back());
+          }
+          EXPECT_EQ(expected_ids.size(), entity.observed_rows);
+          EXPECT_EQ(expected_ids.size(), stats.dist_calced_count());
+          EXPECT_EQ(expected_filtered, stats.filtered_count());
+          EXPECT_EQ(expected_filter_keys, filter_keys);
+          if (expected_ids.empty()) EXPECT_TRUE(entity.batches.empty());
+          std::vector<float> scores{-1.0f};
+          for (size_t id = 0; id < count; ++id) {
+            if (key(id) != kInvalidKey && (!filtered || !excluded(id)))
+              scores.push_back(quantizer->calc_distance_dp_query_unquantized(
+                  codes[id].data(), vector.data()));
+          }
+          std::sort(scores.begin(), scores.end());
+          heap.sort();
+          ASSERT_EQ(std::min(heap_limit, scores.size()), heap.size());
+          EXPECT_EQ(key_base - 1, heap[0].key());
+          for (size_t rank = 1; rank < heap.size(); ++rank) {
+            ASSERT_LT(heap[rank].index(), count);
+            EXPECT_EQ(key(heap[rank].index()), heap[rank].key());
+            if (filtered) EXPECT_FALSE(excluded(heap[rank].index()));
+            EXPECT_EQ(entity.get_key(heap[rank].index()), heap[rank].key());
+            EXPECT_GT(heap[rank].key(), key_base);
+            EXPECT_NEAR(scores[rank], heap[rank].score(),
+                        1e-4f * std::max(1.0f, std::abs(scores[rank])));
+          }
+          IndexDocumentHeap full(1);
+          full.set_threshold(-1.0f);
+          full.emplace(key_base - 2, -1.0f,
+                       std::numeric_limits<uint32_t>::max());
+          IndexContext::Stats full_stats;
+          ASSERT_EQ(0, entity.bind_query(
+                           vector.data(),
+                           IndexQueryMeta(IndexMeta::DT_FP32, test.dim)));
+          uint32_t full_scanned = 0;
+          ASSERT_EQ(
+              0, filtered
+                     ? entity.search_turbo_rows(0, filter, &full_scanned, &full,
+                                                &full_stats, scratch)
+                     : entity.search_turbo_rows(0, &full_scanned, &full,
+                                                &full_stats, scratch));
+          ASSERT_EQ(1u, full.size());
+          EXPECT_EQ(key_base - 2, full[0].key());
+          EXPECT_EQ(std::numeric_limits<uint32_t>::max(), full[0].index());
+        }
+      }
+    }
+  }
+}
+
 // Preserve the file's structure while withholding the serialized codebook.
 class MissingQuantizerStateDumper : public IndexDumper {
  public:
@@ -4411,6 +4791,35 @@ class IVFTurboTest : public testing::TestWithParam<TurboCase> {
          {},
          {Key(19), Key(44)}});
     EXPECT_EQ(original_queries, queries_);
+
+    // Contexts keep separate query bindings and reusable distance buffers.
+    // Alternate filters while both workers scan the same read-only storage.
+    auto first = searcher->create_context();
+    auto second = searcher->create_context();
+    ASSERT_NE(nullptr, first);
+    ASSERT_NE(nullptr, second);
+    first->set_topk(kTopK);
+    second->set_topk(kTopK);
+    std::promise<void> start;
+    auto ready = start.get_future().share();
+    const auto run = [&](auto &ctx, size_t q) {
+      ready.wait();
+      for (size_t repeat = 0; repeat < 4; ++repeat) {
+        ctx->set_filter(
+            [repeat](uint64_t key) { return repeat % 2 != 0 && key % 2 == 0; });
+        const int ret =
+            searcher->search_impl(queries_.data() + q * kDimension, qmeta, ctx);
+        if (ret != 0) return ret;
+      }
+      return 0;
+    };
+    auto one = std::async(std::launch::async, [&]() { return run(first, 0); });
+    auto two = std::async(std::launch::async, [&]() { return run(second, 1); });
+    start.set_value();
+    EXPECT_EQ(0, one.get());
+    EXPECT_EQ(0, two.get());
+    check_result(first->result(), queries_.data(), true);
+    check_result(second->result(), queries_.data() + kDimension, true);
   }
 
   void check_decoded_provider(IndexProvider::Pointer provider) const {

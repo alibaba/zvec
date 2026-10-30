@@ -197,7 +197,8 @@ enum class CpuArchType {
   // ARM SIMD
   kNEON,
   kSVE,
-  kSVE2
+  kSVE2,
+  kSME2
 };
 
 ZVEC_TURBO_API DistanceFunc get_distance_func(

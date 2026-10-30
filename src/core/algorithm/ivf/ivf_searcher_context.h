@@ -57,6 +57,10 @@ class IVFSearcherContext : public IndexSearcher::Context {
     return &result_heap_;
   }
 
+  IVFSearchScratch &search_scratch() {
+    return search_scratch_;
+  }
+
   //! Update the parameters of context
   int update(const ailego::Params &params) override {
     params.get(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD,
@@ -224,6 +228,7 @@ class IVFSearcherContext : public IndexSearcher::Context {
   IVFEntity::Pointer entity_{};
   IndexSearcher::Context::Pointer centroid_searcher_ctx_{};
   IndexDocumentHeap result_heap_;
+  IVFSearchScratch search_scratch_;
   std::vector<IndexDocumentList> results_{};
   std::vector<Stats> stats_vec_{};
 
