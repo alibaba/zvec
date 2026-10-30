@@ -86,9 +86,8 @@ void CheckStoredPairsAndBatchRemainders(bool explicit_vnni) {
     GTEST_SKIP() << "Requires an AVX-512 VNNI CPU";
   }
 
-  // RecordQuantizer maps records to [-127, 127]. The legacy SSE/AVX2
-  // stored-pair kernel relies on that range for its sign/abs arithmetic.
-  // Exercise the additional -128 boundary only through explicit VNNI kernels.
+  // Cover the quantizer output range, and the additional -128 boundary
+  // through the explicit VNNI kernel checks.
   const int min_code = explicit_vnni ? -128 : -127;
   std::mt19937 generator(20260825);
   std::uniform_int_distribution<int> code_distribution(min_code, 127);
@@ -114,9 +113,14 @@ void CheckStoredPairsAndBatchRemainders(bool explicit_vnni) {
     }
     ASSERT_TRUE(static_cast<bool>(distance));
     ASSERT_TRUE(static_cast<bool>(batch_distance));
-    ASSERT_TRUE(static_cast<bool>(preprocess));
+    const auto selected = turbo::get_distance_kernels(
+        turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
+        turbo::QuantizeType::kRecord,
+        explicit_vnni ? turbo::CpuArchType::kAVX512VNNI
+                      : turbo::CpuArchType::kAuto);
+    EXPECT_EQ(selected.preprocess, preprocess);
 
-    // Cover repeated VNNI batches (2/4) and legacy batches (12), plus tails.
+    // Cover multiple SIMD batches and every remainder.
     constexpr size_t kVectorCount = 25;
     const size_t encoded_dimension = dimension + kTailBytes;
     std::vector<int8_t> query(encoded_dimension, 0);
@@ -153,7 +157,7 @@ void CheckStoredPairsAndBatchRemainders(bool explicit_vnni) {
     }
 
     std::vector<int8_t> prepared_query = query;
-    preprocess(prepared_query.data(), encoded_dimension);
+    if (preprocess) preprocess(prepared_query.data(), encoded_dimension);
     for (size_t count = 1; count <= kVectorCount; ++count) {
       std::vector<float> actual(count, 0.0f);
       batch_distance(vectors.data(), prepared_query.data(), count,

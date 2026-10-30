@@ -16,7 +16,7 @@
 #include <cmath>
 #include <cstring>
 #include <vector>
-#include <ailego/math/normalizer.h>
+#include <turbo/norm/normalizer.h>
 #include <zvec/core/framework/index_factory.h>
 #include "core/quantizer/record_quantizer.h"
 
@@ -77,7 +77,7 @@ void Int4Quantizer::quantize_one(const void *input, void *output) const {
     // L2-normalize before quantization; the norm is stored after the record
     // tail so the original vector can be reconstructed during dequantize.
     normalized.assign(vec, vec + original_dim_);
-    ailego::Normalizer<float>::L2(normalized.data(), original_dim_, &norm);
+    turbo::Normalizer<float>::L2(normalized.data(), original_dim_, &norm);
     vec = normalized.data();
   }
 

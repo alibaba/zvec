@@ -203,6 +203,7 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
                 index_meta_.element_size(), extra_values_size_);
       return IndexError_InvalidArgument;
     }
+    metric_ = std::move(metric);
   }
 
   LOG_DEBUG("Open storage %s done, metric=%s", storage_->name().c_str(),
@@ -226,7 +227,11 @@ int FlatStreamerEntity::close() {
   meta_.header.block_count = 0;
   meta_.header.block_size = 0;
   meta_.header.linear_body_size = 0;
+  row_distance_ = nullptr;
+  column_distance_ = nullptr;
+  batch_distance_ = nullptr;
   batch_query_preprocess_ = nullptr;
+  metric_.reset();
   extra_values_size_ = 0;
   meta_dirty_ = false;
 

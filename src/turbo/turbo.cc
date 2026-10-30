@@ -24,6 +24,7 @@
 #include "avx2/pq_quantizer_fast/pq_distance.h"
 #include "avx2/pq_quantizer_int4/pq_distance.h"
 #include "avx2/pq_quantizer_int8/pq_distance.h"
+#include "avx2/raw_int8/distance.h"
 #include "avx2/record_quantized_int4/cosine.h"
 #include "avx2/record_quantized_int4/inner_product.h"
 #include "avx2/record_quantized_int4/squared_euclidean.h"
@@ -41,6 +42,7 @@
 #include "avx512/pq_quantizer_fast/pq_distance.h"
 #include "avx512/pq_quantizer_int4/pq_distance.h"
 #include "avx512/pq_quantizer_int8/pq_distance.h"
+#include "avx512/raw_int8/distance.h"
 #include "avx512/record_quantized_int4/cosine.h"
 #include "avx512/record_quantized_int4/inner_product.h"
 #include "avx512/record_quantized_int4/squared_euclidean.h"
@@ -70,6 +72,7 @@
 #include "neon/pq_quantizer_fast/pq_distance.h"
 #include "neon/pq_quantizer_int4/pq_distance.h"
 #include "neon/pq_quantizer_int8/pq_distance.h"
+#include "neon/raw_int8/distance.h"
 #include "neon/record_quantized_int4/cosine.h"
 #include "neon/record_quantized_int4/inner_product.h"
 #include "neon/record_quantized_int4/squared_euclidean.h"
@@ -89,6 +92,7 @@
 #include "scalar/pq_quantizer_fast/pq_distance.h"
 #include "scalar/pq_quantizer_int4/pq_distance.h"
 #include "scalar/pq_quantizer_int8/pq_distance.h"
+#include "scalar/raw_numeric.h"
 #include "scalar/raw_uint8/squared_euclidean.h"
 #include "scalar/record_quantized_int4/cosine.h"
 #include "scalar/record_quantized_int4/inner_product.h"
@@ -100,6 +104,7 @@
 #include "scalar/rotate/opq/opq.h"
 #include "sse2/fp16/distance.h"
 #include "sse2/fp32/distance.h"
+#include "sse2/raw_int8/distance.h"
 #include "sse2/record_quantized_int4/distance.h"
 #include "sse2/record_quantized_int8/distance.h"
 #include "sse2/rotate/fht/fht.h"
@@ -182,12 +187,45 @@ struct KernelSet {
   RawBatchDistanceFn batch;
   QueryPreprocessFunc preprocess;  //!< non-null: batch needs preprocessing
   CpuFeatureMask required_cpu_features{kCpuFeatureNone};
+  bool (*compiled)(){nullptr};  //!< optional per-TU ISA availability check
 };
 
 // Dispatch registry, SIMD rows before their scalar
 // fallbacks (row order encodes priority), then metric in enum order.
 constexpr KernelSet kKernelTable[] = {
     // --- raw physical storage (SIMD, then scalar fallback) ---
+    {QuantizeType::kRaw, DataType::kInt8, CpuArchType::kAVX512,
+     MetricType::kSquaredEuclidean, avx512::raw_int8_squared_euclidean,
+     avx512::raw_int8_squared_euclidean_batch, nullptr, kCpuFeatureAvx512Bw,
+     avx512::raw_int8_kernels_available},
+    {QuantizeType::kRaw, DataType::kInt8, CpuArchType::kAVX512,
+     MetricType::kInnerProduct, avx512::raw_int8_inner_product,
+     avx512::raw_int8_inner_product_batch, nullptr, kCpuFeatureAvx512Bw,
+     avx512::raw_int8_kernels_available},
+    {QuantizeType::kRaw, DataType::kInt8, CpuArchType::kAVX2,
+     MetricType::kSquaredEuclidean, avx2::raw_int8_squared_euclidean,
+     avx2::raw_int8_squared_euclidean_batch, nullptr, kCpuFeatureNone,
+     avx2::raw_int8_kernels_available},
+    {QuantizeType::kRaw, DataType::kInt8, CpuArchType::kAVX2,
+     MetricType::kInnerProduct, avx2::raw_int8_inner_product,
+     avx2::raw_int8_inner_product_batch, nullptr, kCpuFeatureNone,
+     avx2::raw_int8_kernels_available},
+    {QuantizeType::kRaw, DataType::kInt8, CpuArchType::kSSE2,
+     MetricType::kSquaredEuclidean, sse2::raw_int8_squared_euclidean,
+     sse2::raw_int8_squared_euclidean_batch, nullptr, kCpuFeatureNone,
+     sse2::raw_int8_kernels_available},
+    {QuantizeType::kRaw, DataType::kInt8, CpuArchType::kSSE2,
+     MetricType::kInnerProduct, sse2::raw_int8_inner_product,
+     sse2::raw_int8_inner_product_batch, nullptr, kCpuFeatureNone,
+     sse2::raw_int8_kernels_available},
+    {QuantizeType::kRaw, DataType::kInt8, CpuArchType::kNEON,
+     MetricType::kSquaredEuclidean, neon::raw_int8_squared_euclidean,
+     neon::raw_int8_squared_euclidean_batch, nullptr, kCpuFeatureNone,
+     neon::raw_int8_kernels_available},
+    {QuantizeType::kRaw, DataType::kInt8, CpuArchType::kNEON,
+     MetricType::kInnerProduct, neon::raw_int8_inner_product,
+     neon::raw_int8_inner_product_batch, nullptr, kCpuFeatureNone,
+     neon::raw_int8_kernels_available},
     // Raw FP16 distances always use FP32 arithmetic. Cosine receives vectors
     // normalized by Fp16Quantizer after conversion to physical FP16 storage.
     {QuantizeType::kRaw, DataType::kUint8, CpuArchType::kAVX512VNNI,
@@ -496,6 +534,50 @@ constexpr KernelSet kKernelTable[] = {
     {QuantizeType::kFp32, DataType::kFp32, CpuArchType::kScalar,
      MetricType::kInnerProduct, scalar::inner_product_fp32_distance,
      scalar::inner_product_fp32_batch_distance, nullptr},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kAVX512,
+     MetricType::kInnerProduct, avx512::inner_product_fp16_distance_avx512,
+     avx512::inner_product_fp16_batch_distance_avx512, nullptr,
+     kCpuFeatureF16c},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kAVX2,
+     MetricType::kInnerProduct, avx2::inner_product_fp16_distance_avx2,
+     avx2::inner_product_fp16_batch_distance_avx2, nullptr, kCpuFeatureF16c},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kSSE2,
+     MetricType::kInnerProduct, sse2::inner_product_fp16_distance_sse2,
+     sse2::inner_product_fp16_batch_distance_sse2, nullptr},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kNEON,
+     MetricType::kInnerProduct, neon::inner_product_fp16_distance,
+     neon::inner_product_fp16_batch_distance, nullptr},
+    {QuantizeType::kRaw, DataType::kFp16, CpuArchType::kScalar,
+     MetricType::kInnerProduct, scalar::inner_product_fp16_distance,
+     scalar::inner_product_fp16_batch_distance, nullptr},
+    {QuantizeType::kRaw, DataType::kInt8, CpuArchType::kScalar,
+     MetricType::kSquaredEuclidean, scalar::raw_integer_distance<false, false>,
+     scalar::raw_integer_batch_distance<false, false>, nullptr},
+    {QuantizeType::kRaw, DataType::kInt8, CpuArchType::kScalar,
+     MetricType::kInnerProduct, scalar::raw_integer_distance<false, true>,
+     scalar::raw_integer_batch_distance<false, true>, nullptr},
+    {QuantizeType::kRaw, DataType::kInt4, CpuArchType::kScalar,
+     MetricType::kSquaredEuclidean, scalar::raw_integer_distance<true, false>,
+     scalar::raw_integer_batch_distance<true, false>, nullptr},
+    {QuantizeType::kRaw, DataType::kInt4, CpuArchType::kScalar,
+     MetricType::kInnerProduct, scalar::raw_integer_distance<true, true>,
+     scalar::raw_integer_batch_distance<true, true>, nullptr},
+    {QuantizeType::kUniform, DataType::kInt8, CpuArchType::kScalar,
+     MetricType::kSquaredEuclidean, scalar::raw_integer_distance<false, false>,
+     scalar::raw_integer_batch_distance<false, false>, nullptr},
+    {QuantizeType::kRaw, DataType::kFp64, CpuArchType::kScalar,
+     MetricType::kSquaredEuclidean, scalar::raw_numeric_distance<double, false>,
+     scalar::raw_numeric_batch_distance<double, false>, nullptr},
+    {QuantizeType::kRaw, DataType::kFp64, CpuArchType::kScalar,
+     MetricType::kInnerProduct, scalar::raw_numeric_distance<double, true>,
+     scalar::raw_numeric_batch_distance<double, true>, nullptr},
+    {QuantizeType::kRaw, DataType::kInt16, CpuArchType::kScalar,
+     MetricType::kSquaredEuclidean,
+     scalar::raw_numeric_distance<int16_t, false>,
+     scalar::raw_numeric_batch_distance<int16_t, false>, nullptr},
+    {QuantizeType::kRaw, DataType::kInt16, CpuArchType::kScalar,
+     MetricType::kInnerProduct, scalar::raw_numeric_distance<int16_t, true>,
+     scalar::raw_numeric_batch_distance<int16_t, true>, nullptr},
 };
 
 struct ConvertKernel {
@@ -520,12 +602,17 @@ constexpr ConvertKernel kConvertKernelTable[] = {
 const KernelSet *FindKernel(MetricType metric_type, DataType data_type,
                             QuantizeType quantize_type,
                             CpuArchType cpu_arch_type) {
+  // Raw FP32 and identity FP32 quantization use the same physical layout.
+  if (quantize_type == QuantizeType::kRaw && data_type == DataType::kFp32) {
+    quantize_type = QuantizeType::kFp32;
+  }
   for (const auto &k : kKernelTable) {
     if (k.metric != metric_type || k.dtype != data_type ||
         k.quantize != quantize_type) {
       continue;
     }
-    if (CanUseKernel(cpu_arch_type, k.arch, k.required_cpu_features)) {
+    if (CanUseKernel(cpu_arch_type, k.arch, k.required_cpu_features) &&
+        (!k.compiled || k.compiled())) {
       return &k;
     }
   }

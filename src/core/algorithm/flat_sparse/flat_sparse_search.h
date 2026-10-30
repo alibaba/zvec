@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include <ailego/math/inner_product_matrix.h>
+#include <turbo/distance/sparse/sparse_distance.h>
 #include "flat_sparse_context.h"
 
 namespace zvec {
@@ -86,7 +86,7 @@ static inline int FlatSearch(const uint32_t *sparse_count,
 
     for (size_t q = 0; q < count; ++q) {
       std::string sparse_query_buffer;
-      ailego::MinusInnerProductSparseMatrix<float>::transform_sparse_format(
+      turbo::MinusInnerProductSparseMatrix<float>::transform_sparse_format(
           sparse_count[q], sparse_indices_tmp, sparse_query_tmp,
           sparse_query_buffer);
 
@@ -141,7 +141,7 @@ static inline int FlatSearch(const uint32_t *sparse_count,
   } else {
     for (size_t q = 0; q < count; ++q) {
       std::string sparse_query_buffer;
-      ailego::MinusInnerProductSparseMatrix<float>::transform_sparse_format(
+      turbo::MinusInnerProductSparseMatrix<float>::transform_sparse_format(
           sparse_count[q], sparse_indices_tmp, sparse_query_tmp,
           sparse_query_buffer);
 
