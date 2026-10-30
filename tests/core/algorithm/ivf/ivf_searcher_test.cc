@@ -2017,6 +2017,76 @@ TEST_F(IVFSearcherTest, TestRowMajorFp16WithBuildMemory) {
   EXPECT_EQ(0, ret);
 }
 
+TEST_F(IVFSearcherTest, NativeFp16RowBatchAcrossStoragePagesAndFilter) {
+  constexpr size_t kCount = 67;
+  constexpr size_t kTopK = 10;
+  dimension_ = 257;
+  index_meta_.set_meta(IndexMeta::DT_FP32, dimension_);
+  index_meta_.set_major_order(IndexMeta::MO_ROW);
+  prepare_fp16_index_holder(0, kCount);
+  index_meta_.set_meta(IndexMeta::DT_FP16, dimension_);
+  Params build_params;
+  build_params.set(PARAM_IVF_BUILDER_CENTROID_COUNT, "1");
+  IVFBuilder builder;
+  ASSERT_EQ(0, builder.init(index_meta_, build_params));
+  ASSERT_EQ(0, builder.train(threads_, holder_));
+  ASSERT_EQ(0, builder.build(threads_, holder_));
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_NE(nullptr, dumper);
+  ASSERT_EQ(0, dumper->create(index_path_));
+  ASSERT_EQ(0, builder.dump(dumper));
+  ASSERT_EQ(0, dumper->close());
+  ASSERT_EQ(0, builder.cleanup());
+
+  const uint16_t query_value = FloatHelper::ToFP16(-0.1f);
+  const std::vector<uint16_t> query(dimension_, query_value);
+  const IndexQueryMeta qmeta(IndexMeta::DT_FP16, dimension_);
+  // 514-byte records do not divide storage pages; 67 rows also leave a
+  // three-row final physical block. These are native FP16 postings, without
+  // a Turbo quantizer or an FP32 query conversion in the search path.
+  for (const char *storage_name :
+       {"MMapFileReadStorage", "BufferReadStorage"}) {
+    SCOPED_TRACE(storage_name);
+    auto storage = IndexFactory::CreateStorage(storage_name);
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(Params()));
+    ASSERT_EQ(0, storage->open(index_path_, false));
+    Params search_params;
+    search_params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 1.0);
+    search_params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1);
+    IVFSearcher searcher;
+    ASSERT_EQ(0, searcher.init(search_params));
+    ASSERT_EQ(0, searcher.load(storage, IndexMetric::Pointer()));
+    for (bool filtered : {false, true}) {
+      SCOPED_TRACE(filtered);
+      auto context = searcher.create_context();
+      ASSERT_NE(nullptr, context);
+      context->set_topk(kTopK);
+      if (filtered)
+        context->set_filter([](uint64_t key) { return key % 2 == 0; });
+      for (bool brute_force : {false, true}) {
+        SCOPED_TRACE(brute_force);
+        ASSERT_EQ(0, brute_force
+                         ? searcher.search_bf_impl(query.data(), qmeta, context)
+                         : searcher.search_impl(query.data(), qmeta, context));
+        const auto &result = context->result(0);
+        ASSERT_EQ(kTopK, result.size());
+        for (size_t i = 0; i < kTopK; ++i) {
+          const uint64_t key = filtered ? 2 * i + 1 : i;
+          EXPECT_EQ(key, result[i].key());
+          const double value =
+              FloatHelper::ToFP32(FloatHelper::ToFP16(0.01f * key));
+          const double delta = value - FloatHelper::ToFP32(query_value);
+          const double expected = dimension_ * delta * delta;
+          EXPECT_NEAR(expected, result[i].score(),
+                      2.0e-6 * std::max(1.0, expected));
+        }
+      }
+    }
+    ASSERT_EQ(0, searcher.unload());
+  }
+}
+
 TEST_F(IVFSearcherTest, TestColumnMajorFloatWithHnswGraphType) {
   IVFBuilder builder;
   params_.set("proxima.ivf.builder.graph_type", "hnsw");
