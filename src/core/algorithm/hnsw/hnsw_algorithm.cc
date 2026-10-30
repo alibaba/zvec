@@ -79,6 +79,12 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
     return 0;
   }
 
+  if (quantized_graph_ && !ctx->group_by_search()) {
+    const node_id_t qg_entry = quantized_graph_->entry();
+    if (qg_entry == kInvalidNodeId) return IndexError_Mismatch;
+    return quantized_graph_->search(qg_entry, *ctx);
+  }
+
   dist_t dist = ctx->dist_calculator().dist(entry_point);
   for (level_t cur_level = max_level; cur_level >= 1; --cur_level) {
     select_entry_point(cur_level, &entry_point, &dist, ctx);

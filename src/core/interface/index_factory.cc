@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cmath>
+#include <limits>
 #include <zvec/ailego/container/params.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_meta.h>
@@ -20,6 +22,36 @@
 #include "core/interface/utils/utils.h"
 
 namespace zvec::core_interface {
+namespace {
+bool parse_quantized_graph_query(const ailego::JsonObject &json,
+                                 HNSWQueryParam &param) {
+  ailego::JsonValue value;
+  int64_t beam = param.quantized_graph_route_beam;
+  int64_t cap = param.quantized_graph_max_expansions;
+  if (!extract_value_from_json(json, "quantized_graph_margin",
+                               param.quantized_graph_margin, value) ||
+      !extract_value_from_json(json, "quantized_graph_bucket_width",
+                               param.quantized_graph_bucket_width, value) ||
+      !extract_value_from_json(json, "quantized_graph_route_beam", beam,
+                               value) ||
+      !extract_value_from_json(json, "quantized_graph_max_expansions", cap,
+                               value))
+    return false;
+  if (!std::isfinite(param.quantized_graph_margin) ||
+      (param.quantized_graph_margin < 0 &&
+       param.quantized_graph_margin != -1) ||
+      !std::isfinite(param.quantized_graph_bucket_width) ||
+      param.quantized_graph_bucket_width < 0 ||
+      param.quantized_graph_bucket_width > 1 || beam < 0 || beam > 4 ||
+      cap < 0 || cap > std::numeric_limits<uint32_t>::max()) {
+    LOG_ERROR("Invalid quantized graph query options");
+    return false;
+  }
+  param.quantized_graph_route_beam = static_cast<uint32_t>(beam);
+  param.quantized_graph_max_expansions = static_cast<uint32_t>(cap);
+  return true;
+}
+}  // namespace
 
 
 Index::Pointer IndexFactory::CreateAndInitIndex(const BaseIndexParam &param) {
@@ -184,6 +216,22 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
     // index_type
     index_type = IndexType::kFlat;
   } else if constexpr (std::is_same_v<QueryParamType, HNSWQueryParam>) {
+    if (!omit_empty_value || param.quantized_graph_margin != -1) {
+      json_obj.set("quantized_graph_margin",
+                   ailego::JsonValue(param.quantized_graph_margin));
+    }
+    if (!omit_empty_value || param.quantized_graph_bucket_width != 0) {
+      json_obj.set("quantized_graph_bucket_width",
+                   ailego::JsonValue(param.quantized_graph_bucket_width));
+    }
+    if (!omit_empty_value || param.quantized_graph_max_expansions != 0) {
+      json_obj.set("quantized_graph_max_expansions",
+                   ailego::JsonValue(param.quantized_graph_max_expansions));
+    }
+    if (!omit_empty_value || param.quantized_graph_route_beam != 1) {
+      json_obj.set("quantized_graph_route_beam",
+                   ailego::JsonValue(param.quantized_graph_route_beam));
+    }
     if (!omit_empty_value || param.ef_search != 0) {
       json_obj.set("ef_search", ailego::JsonValue(param.ef_search));
     }
@@ -305,6 +353,7 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
       return param;
     } else if (index_type == IndexType::kHNSW) {
       auto param = std::make_shared<HNSWQueryParam>();
+      if (!parse_quantized_graph_query(json_obj, *param)) return nullptr;
       if (!parse_common_fields(param)) {
         return nullptr;
       }
@@ -403,6 +452,7 @@ typename QueryParamType::Pointer IndexFactory::QueryParamDeserializeFromJson(
     }
     if constexpr (std::is_same_v<QueryParamType, FlatQueryParam>) {
     } else if constexpr (std::is_same_v<QueryParamType, HNSWQueryParam>) {
+      if (!parse_quantized_graph_query(json_obj, *param)) return nullptr;
       if (!extract_value_from_json(json_obj, "ef_search", param->ef_search,
                                    tmp_json_value)) {
         LOG_ERROR("Failed to deserialize ef_search");

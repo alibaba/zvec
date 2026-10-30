@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #pragma once
-
 #include <zvec/core/framework/index_context.h>
+#include "algorithm/quantized_graph/quantized_graph_options.h"
 #include "utility/search_heap.h"
 #include "utility/sparse_utility.h"
 #include "utility/visit_filter.h"
@@ -398,6 +398,12 @@ class HnswContext : public IndexContext {
     min_scan_limit_ = min_scan_limit;
   }
 
+  const QuantizedGraphSearchOptions &quantized_graph_options() const {
+    return qg_options_;
+  }
+  void set_quantized_graph_options(const QuantizedGraphSearchOptions &options) {
+    qg_options_ = options;
+  }
   inline void set_ef(uint32_t v) {
     ef_ = v;
   }
@@ -636,6 +642,7 @@ class HnswContext : public IndexContext {
   constexpr static uint32_t kInvalidMgic = -1U;
 
  private:
+  QuantizedGraphSearchOptions qg_options_;
   HnswEntity::Pointer entity_;
   HnswDistCalculator dc_;
   IndexMetric::Pointer metric_;

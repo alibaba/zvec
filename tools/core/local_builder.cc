@@ -28,6 +28,7 @@
 #include "algorithm/hnsw_rabitq/rabitq_converter.h"
 #endif
 #include "algorithm/hnsw/hnsw_params.h"
+#include "algorithm/hnsw/hnsw_snapshot.h"
 #include "zvec/ailego/logger/logger.h"
 #include "zvec/core/framework/index_dumper.h"
 #include "zvec/core/framework/index_factory.h"
@@ -1230,6 +1231,23 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
     return -1;
   }
   cout << "Created builder " << builder_class << endl;
+  const bool native_snapshot =
+      config_common["DumpFormat"] &&
+      config_common["DumpFormat"].as<string>() == "streamer";
+  const auto router_config = config_root["QuantizedGraphRouter"];
+  const bool hnsw_streamer = builder_class == "HnswStreamer" && streamer;
+  if (config_common["DumpFormat"] && !native_snapshot &&
+      config_common["DumpFormat"].as<string>() != "compact") {
+    LOG_ERROR("DumpFormat must be compact or streamer");
+    return -1;
+  }
+  if ((native_snapshot && !hnsw_streamer) ||
+      (router_config &&
+       (!router_config.IsMap() || !native_snapshot || !hnsw_streamer))) {
+    LOG_ERROR(
+        "QuantizedGraphRouter requires HnswStreamer and DumpFormat: streamer");
+    return -1;
+  }
 
 
   IndexConverter::Pointer build_converter;
@@ -1488,6 +1506,29 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   cout << "Build finished, consume " << build_time << "ms." << endl;
   signal(SIGINT, SIG_DFL);
 
+  if (router_config) {
+    const int64_t anchors = router_config["Anchors"]
+                                ? router_config["Anchors"].as<int64_t>()
+                                : 65536;
+    const int64_t projected =
+        router_config["ProjectedDimension"]
+            ? router_config["ProjectedDimension"].as<int64_t>()
+            : 0;
+    if (anchors <= 0 || anchors > 65536 || projected < 0 || projected > 4096)
+      return -1;
+    const uint64_t seed = router_config["Seed"]
+                              ? router_config["Seed"].as<uint64_t>()
+                              : 202610261259ULL;
+    timer.reset();
+    ret = TrainHnswSnapshotRouter(*streamer, anchors, projected, seed);
+    if (ret != 0) {
+      LOG_ERROR("Router training failed, ret=%d", ret);
+      return -1;
+    }
+    cout << "Router trained for embedded snapshot, cost_ms="
+         << timer.milli_seconds() << endl;
+  }
+
   // DUMP
   IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
   if (!dumper) {
@@ -1501,7 +1542,9 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
     return -1;
   }
   timer.reset();
-  ret = streamer ? streamer->dump(dumper) : builder->dump(dumper);
+  ret = native_snapshot
+            ? DumpHnswSnapshot(*streamer, dumper)
+            : (streamer ? streamer->dump(dumper) : builder->dump(dumper));
   size_t dump_time = timer.milli_seconds();
   if (ret == IndexError_NotImplemented) {
     LOG_WARN("Dump index not implemented");

@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cmath>
 #include <memory>
 #include <string>
 #include <turbo/quantizer/quantizer.h>
@@ -188,6 +189,23 @@ int HNSWIndex::search_with_source(
 
 int HNSWIndex::create_and_init_streamer(const BaseIndexParam &param) {
   param_ = dynamic_cast<const HNSWIndexParam &>(param);
+  if ((param_.use_quantized_graph || !param_.quantized_graph_model.empty()) &&
+      (param_.is_sparse || param_.use_external_vector ||
+       ((param_.metric_type != MetricType::kCosine &&
+         param_.metric_type != MetricType::kL2sq) ||
+        param_.dimension == 0 || param_.dimension > 4096) ||
+       param_.data_type != DataType::DT_FP32 ||
+       (param_.quantizer_param &&
+        param_.quantizer_param->type != QuantizerType::kNone))) {
+    LOG_ERROR(
+        "QuantizedGraph requires inline FP32 cosine/L2 HNSW, dimension "
+        "1..4096");
+    return core::IndexError_Unsupported;
+  }
+  proxima_index_params_.set(core::PARAM_HNSW_QUANTIZED_GRAPH_ENABLED,
+                            param_.use_quantized_graph);
+  proxima_index_params_.set(core::PARAM_HNSW_QUANTIZED_GRAPH_MODEL,
+                            param_.quantized_graph_model);
 
   // valid
   param_.ef_construction = std::max(1, std::min(2048, param_.ef_construction));
@@ -276,6 +294,18 @@ int HNSWIndex::_prepare_for_search(
     LOG_ERROR(
         "ef_search must be greater than 0 and less than or equal to 2048.");
     return core::IndexError_Runtime;
+  }
+
+  const float margin = hnsw_search_param->quantized_graph_margin;
+  const float width = hnsw_search_param->quantized_graph_bucket_width;
+  if (!std::isfinite(margin) || (margin < 0 && margin != -1) ||
+      !std::isfinite(width) || width < 0 || width > 1 ||
+      hnsw_search_param->quantized_graph_route_beam > 4)
+    return core::IndexError_InvalidArgument;
+  if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
+    ctx->set_quantized_graph_options(
+        {margin, width, hnsw_search_param->quantized_graph_max_expansions,
+         hnsw_search_param->quantized_graph_route_beam});
   }
 
   // Set group state first so set_topk() derives the effective candidate count.

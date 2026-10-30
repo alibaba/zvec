@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <string>
 #include <magic_enum/magic_enum.hpp>
 #include <zvec/ailego/encoding/json.h>
 #include <zvec/ailego/logger/logger.h>
@@ -56,6 +57,15 @@ constexpr bool extract_value_from_json(const ailego::JsonObject &json_obj,
       } else {
         LOG_ERROR("Invalid json field type for key: %s; expected: boolean",
                   key);
+        return false;
+      }
+    } else if constexpr (std::is_same_v<T, std::string>) {
+      if (tmp_json_value.is_string()) {
+        value = ailego::JsonString(tmp_json_value.as_stl_string())
+                    .decode()
+                    .as_stl_string();
+      } else {
+        LOG_ERROR("Invalid json field type for key: %s; expected: string", key);
         return false;
       }
     } else if constexpr (std::is_floating_point_v<T>) {
