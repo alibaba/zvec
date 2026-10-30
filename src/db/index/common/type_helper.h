@@ -480,6 +480,8 @@ struct QuantizeTypeCodeBook {
         return QuantizeType::UNIFORM_UINT7;
       case wire::QuantizeType::QT_UNIFORM_UINT8:
         return QuantizeType::UNIFORM_UINT8;
+      case wire::QuantizeType::QT_PQ:
+        return QuantizeType::PQ;
       case wire::QuantizeType::QT_UNIFORM_UINT4:
         return QuantizeType::UNIFORM_UINT4;
       default:
@@ -501,6 +503,8 @@ struct QuantizeTypeCodeBook {
         return wire::QuantizeType::QT_UNIFORM_UINT7;
       case QuantizeType::UNIFORM_UINT8:
         return wire::QuantizeType::QT_UNIFORM_UINT8;
+      case QuantizeType::PQ:
+        return wire::QuantizeType::QT_PQ;
       case QuantizeType::UNIFORM_UINT4:
         return wire::QuantizeType::QT_UNIFORM_UINT4;
       default:
@@ -522,6 +526,8 @@ struct QuantizeTypeCodeBook {
         return "UNIFORM_UINT7";
       case QuantizeType::UNIFORM_UINT8:
         return "UNIFORM_UINT8";
+      case QuantizeType::PQ:
+        return "PQ";
       case QuantizeType::UNIFORM_UINT4:
         return "UNIFORM_UINT4";
       default:

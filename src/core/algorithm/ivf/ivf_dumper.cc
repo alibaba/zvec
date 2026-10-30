@@ -37,7 +37,8 @@ int IVFDumper::dump_inverted_block(uint32_t inverted_list_id,
   int ret = this->check_dump_inverted_list(inverted_list_id);
   ivf_check_error_code(ret);
 
-  if (block_.match_order(column_major ? IndexMeta::MajorOrder::MO_COLUMN
+  if (!dynamic_cast<turbo::PackedCodeQuantizer *>(quantizer_.get()) &&
+      block_.match_order(column_major ? IndexMeta::MajorOrder::MO_COLUMN
                                       : IndexMeta::MajorOrder::MO_ROW) &&
       vector_count == block_.capacity()) {
     // Dump the block directly
@@ -409,7 +410,19 @@ int IVFDumper::dump_block() {
   }
 
   size_t size = ailego_align(block_.bytes(), 32);
-  if (dumper_->write(block_.data(), size) != size) {
+  const void *data = block_.data();
+  std::string packed;
+  if (auto *packer =
+          dynamic_cast<turbo::PackedCodeQuantizer *>(quantizer_.get())) {
+    // Packed blocks have a fixed 32-code stride, including the final block.
+    size = block_.block_size();
+    packed.resize(size, '\0');
+    int ret = packer->pack_codes(data, block_.size(), block_.element_size(),
+                                 &packed[0]);
+    ivf_check_error_code(ret);
+    data = packed.data();
+  }
+  if (dumper_->write(data, size) != size) {
     LOG_ERROR("Failed to write data into dumper %s", dumper_->name().c_str());
     return IndexError_WriteData;
   }

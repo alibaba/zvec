@@ -16,6 +16,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <new>
 #include <magic_enum/magic_enum.hpp>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_error.h>
@@ -231,6 +232,7 @@ core::IndexContext::Pointer &Index::acquire_context() {
 }
 
 int Index::train() {
+  if (pending_quantizer_training_) return core::IndexError_NoReady;
   is_trained_ = true;
   return 0;
 }
@@ -244,6 +246,7 @@ bool Index::is_trained() const {
 }
 
 uint32_t Index::get_doc_count() const {
+  if (pending_quantizer_training_) return 0;
   if (streamer_ == nullptr) {
     return -1;
   }
@@ -258,6 +261,7 @@ core::IndexStreamer::Pointer Index::index_searcher() {
 }
 
 core::IndexProvider::Pointer Index::create_index_provider() const {
+  if (pending_quantizer_training_) return nullptr;
   return streamer_->create_provider();
 }
 
@@ -425,6 +429,32 @@ int Index::create_and_init_converter_reformer(
   return init_converter_reformer(converter_name, converter_params);
 }
 
+int Index::init_pq_quantizer(const QuantizerParam &param,
+                             const BaseIndexParam &index_param,
+                             std::shared_ptr<turbo::Quantizer> *quantizer) {
+  const auto *pq = dynamic_cast<const PqQuantizerParam *>(&param);
+  if (!pq || pq->num_chunk <= 0 || pq->num_chunk > index_param.dimension ||
+      (pq->num_bits != 4 && pq->num_bits != 8) ||
+      (pq->fast_scan &&
+       (pq->num_bits != 4 || index_param.index_type != IndexType::kIVF)) ||
+      (pq->num_bits == 4 && index_param.dimension % pq->num_chunk != 0) ||
+      (pq->enable_rotate && (pq->opq_iter == 0 || pq->opq_pq_iter == 0))) {
+    return core::IndexError_InvalidArgument;
+  }
+  const char *name = pq->fast_scan ? "PqFastQuantizer"
+                                   : (pq->num_bits == 4 ? "PqInt4Quantizer"
+                                                        : "PqInt8Quantizer");
+  ailego::Params params;
+  params.set("num_chunk", static_cast<uint32_t>(pq->num_chunk));
+  params.set("rotate_type", std::string(pq->enable_rotate ? "opq" : "none"));
+  params.set("opq_iter", pq->opq_iter);
+  params.set("opq_pq_iter", pq->opq_pq_iter);
+  proxima_index_meta_.set_quantizer(name, 0, params);
+  *quantizer = core::IndexFactory::CreateQuantizer(name);
+  return *quantizer ? (*quantizer)->init(proxima_index_meta_, params)
+                    : core::IndexError_NoExist;
+}
+
 int Index::init_converter_reformer(const std::string &converter_name,
                                    const ailego::Params &converter_params) {
   proxima_index_meta_.set_converter(converter_name, 0, converter_params);
@@ -558,7 +588,11 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
   }
 
   // read_options.create_new
-  int ret = storage_->open(file_path, storage_options.create_new);
+  // Storage's boolean also controls write access. Reopening an existing
+  // writable index must not turn BufferStorage into a read-only pool.
+  int ret = storage_->open(file_path, storage_options.create_new ||
+                                          (!storage_options.read_only &&
+                                           ailego::File::IsExist(file_path)));
   if (ret != 0) {
     LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path.c_str(),
               core::IndexError::What(ret));
@@ -568,7 +602,9 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
   if (ret != 0) {
     return ret;
   }
-  if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
+  if (!pending_quantizer_training_ &&
+      (streamer_ == nullptr ||
+       streamer_->open(storage_, storage_options.read_only) != 0)) {
     LOG_ERROR("Failed to open streamer, path: %s", file_path.c_str());
     return core::IndexError_Runtime;
   }
@@ -621,7 +657,7 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
   }
 
   // TODO: context pool
-  if (!init_context()) {  // to validate if any error, will be overwritten
+  if (!pending_quantizer_training_ && !init_context()) {
     LOG_ERROR("Failed to init context");
     return core::IndexError_Runtime;
   }
@@ -637,7 +673,7 @@ int Index::close() {
     return core::IndexError_Runtime;
   }
 
-  if (!is_read_only_) {
+  if (!is_read_only_ && !pending_quantizer_training_) {
     if (ailego_unlikely(flush() != 0)) {
       LOG_ERROR("Failed to cleanup streamer");
       return core::IndexError_Runtime;
@@ -664,6 +700,7 @@ int Index::close() {
 }
 
 int Index::flush() {
+  if (pending_quantizer_training_) return core::IndexError_NoReady;
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;
@@ -692,6 +729,7 @@ bool Index::is_dirty() const {
 }
 
 int Index::fetch(const uint32_t doc_id, VectorDataBuffer *vector_data_buffer) {
+  if (pending_quantizer_training_) return core::IndexError_NoReady;
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;
@@ -703,6 +741,7 @@ int Index::fetch(const uint32_t doc_id, VectorDataBuffer *vector_data_buffer) {
 }
 
 int Index::add(const VectorData &vector_data, const uint32_t doc_id) {
+  if (pending_quantizer_training_) return core::IndexError_NoReady;
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;
@@ -799,9 +838,9 @@ int Index::search(const VectorData &vector_data,
       context->reset();
       return core::IndexError_Runtime;
     }
-    // TODO: tackle query_param's type info loss to loosen the constraint
-    if (reference_index->param_.index_type != IndexType::kFlat) {
-      LOG_ERROR("Reference index is not flat");
+    if (reference_index->param_.index_type != IndexType::kFlat &&
+        reference_index->param_.index_type != IndexType::kIVF) {
+      LOG_ERROR("Reference index must be Flat or IVF");
       context->reset();
       return core::IndexError_Runtime;
     }
@@ -811,32 +850,44 @@ int Index::search(const VectorData &vector_data,
       context->reset();
       return coarse_topk;
     }
-    context->set_topk(coarse_topk);
-    context->set_fetch_vector(false);  // no need to fetch vector
-    std::string transformed_vector;
-    const void *query = nullptr;
-    core::IndexQueryMeta query_meta;
-    ret = _prepare_dense_query(vector_data, &transformed_vector, &query,
-                               &query_meta);
-    if (ret != 0) {
-      context->reset();
-      return ret;
-    }
-    // Refine replaces the coarse scores; only candidate membership and order
-    // cross this boundary, not document/vector materialization or
-    // normalization.
-    std::vector<std::vector<uint64_t>> keys(1);
-    if (_execute_dense_search(query, query_meta, search_param, context,
-                              &keys[0]) != 0) {
-      LOG_ERROR("Failed to search");
+    try {
+      context->set_topk(coarse_topk);
+      context->set_fetch_vector(false);  // no need to fetch vector
+      std::string transformed_vector;
+      const void *query = nullptr;
+      core::IndexQueryMeta query_meta;
+      ret = _prepare_dense_query(vector_data, &transformed_vector, &query,
+                                 &query_meta);
+      if (ret != 0) {
+        context->reset();
+        return ret;
+      }
+      // Refine replaces the coarse scores; only candidate membership and order
+      // cross this boundary, not document/vector materialization or
+      // normalization.
+      std::vector<std::vector<uint64_t>> keys(1);
+      if (_execute_dense_search(query, query_meta, search_param, context,
+                                &keys[0]) != 0) {
+        LOG_ERROR("Failed to search");
+        if (context) {
+          context->reset();
+        }
+        return core::IndexError_Runtime;
+      }
+      result->reverted_vector_list_.clear();
+      ret = reference_index->_refine_dense_candidates(vector_data, search_param,
+                                                      keys, result);
+    } catch (const std::bad_alloc &) {
+      // A huge scale factor (topk * SF up to INT_MAX) passes validation but
+      // the coarse result heap cannot be allocated; surface it as an error
+      // instead of terminating the process.
+      LOG_ERROR("Failed to allocate coarse result heap for %d candidates",
+                coarse_topk);
       if (context) {
         context->reset();
       }
-      return core::IndexError_Runtime;
+      return core::IndexError_NoMemory;
     }
-    result->reverted_vector_list_.clear();
-    ret = reference_index->_refine_dense_candidates(vector_data, search_param,
-                                                    keys, result);
   }
   if (context) {
     context->reset();
@@ -917,15 +968,11 @@ int Index::_dense_add(const VectorData &vector_data, const uint32_t doc_id,
   }
   const DenseVector &dense_vector = std::get<DenseVector>(vector_data.vector);
   if (turbo_quantizer_ != nullptr) {
-    core::IndexQueryMeta new_meta;
     auto *new_vector = context->mutable_features();
-    if (turbo_quantizer_->quantize(dense_vector.data, input_vector_meta_,
-                                   new_vector, &new_meta) != 0) {
-      LOG_ERROR("Failed to quantize vector with turbo quantizer");
-      return core::IndexError_Runtime;
-    }
-    if (streamer_->add_with_id_impl(doc_id, new_vector->data(), new_meta,
-                                    context) != 0) {
+    new_vector->resize(turbo_quantizer_->quantized_datapoint_vector_length());
+    turbo_quantizer_->quantize_data(dense_vector.data, new_vector->data());
+    if (streamer_->add_with_id_impl(doc_id, new_vector->data(),
+                                    streamer_vector_meta_, context) != 0) {
       LOG_ERROR("Failed to add vector");
       return core::IndexError_Runtime;
     }
@@ -1464,7 +1511,8 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
     LOG_ERROR("Failed to init reducer");
     return core::IndexError_Runtime;
   }
-  if (converter_ != nullptr && reformer_ == nullptr) {
+  if (pending_quantizer_training_ ||
+      (converter_ != nullptr && reformer_ == nullptr)) {
     std::vector<MergeSourceIndexHolder::Source> sources;
     sources.reserve(indexes.size());
     for (const auto &index : indexes) {
@@ -1499,19 +1547,36 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
                                                            input_vector_meta_);
     if (holder->error() != 0) return holder->error();
     if (holder->count() == 0) {
-      LOG_ERROR("No vectors available to train converter");
+      LOG_ERROR("No vectors available to train quantization");
       return core::IndexError_InvalidArgument;
     }
-    int ret = converter_->train(holder);
+    int ret = pending_quantizer_training_ ? turbo_quantizer_->train(holder)
+                                          : converter_->train(holder);
     if (holder->error() != 0) return holder->error();
     if (ret != 0) {
-      LOG_ERROR("Failed to train converter from merge sources");
+      LOG_ERROR("Failed to train quantization from merge sources");
       return ret;
     }
-    ret = CreateReformerFromConverterMeta(converter_, &proxima_index_meta_,
-                                          &streamer_vector_meta_, &reformer_);
-    if (ret != 0) return ret;
-    streamer_->merge_trained_meta(proxima_index_meta_);
+    if (pending_quantizer_training_) {
+      // Training may change the code layout. Persist the codebook before any
+      // graph nodes are inserted, using the normal streamer open path.
+      proxima_index_meta_ = turbo_quantizer_->meta();
+      streamer_vector_meta_.set_meta(
+          proxima_index_meta_.data_type(), proxima_index_meta_.dimension(),
+          static_cast<uint32_t>(turbo_quantizer_->type()),
+          proxima_index_meta_.extra_meta_size());
+      ret = streamer_->init(proxima_index_meta_, proxima_index_params_,
+                            turbo_quantizer_);
+      if (ret != 0) return ret;
+      ret = streamer_->open(storage_);
+      if (ret != 0) return ret;
+      pending_quantizer_training_ = false;
+    } else {
+      ret = CreateReformerFromConverterMeta(converter_, &proxima_index_meta_,
+                                            &streamer_vector_meta_, &reformer_);
+      if (ret != 0) return ret;
+      streamer_->merge_trained_meta(proxima_index_meta_);
+    }
   }
   if (reducer->set_target_streamer_wiht_info(builder_, streamer_, converter_,
                                              reformer_, input_vector_meta_,

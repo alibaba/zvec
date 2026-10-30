@@ -5026,6 +5026,94 @@ TEST(IndexInterface, QuantizerParamLegacyJsonCompat) {
                          param->quantizer_param));
 }
 
+TEST(IndexInterface, RefineOversizedScaleFactorDoesNotCrash) {
+  // Regression: floor(topk * SF) below INT_MAX passes validation, but the
+  // coarse result heap allocation throws std::bad_alloc (e.g. topk=50 with
+  // SF=10M reserves a ~40GB heap). The query must return an error code
+  // instead of terminating the process. On hosts with enough RAM the
+  // allocation succeeds and the query legitimately returns results; both
+  // outcomes are acceptable, a crash is not.
+  constexpr uint32_t kDimension = 17;
+  constexpr uint32_t kVectorCount = 64;
+  constexpr uint32_t kTopk = 50;
+  const std::string coarse_path{"refine_huge_sf_coarse.index"};
+  const std::string fine_path{"refine_huge_sf_fine.index"};
+  zvec::test_util::RemoveTestFiles(coarse_path);
+  zvec::test_util::RemoveTestFiles(fine_path);
+
+  std::vector<std::vector<float>> vectors(kVectorCount,
+                                          std::vector<float>(kDimension));
+  for (uint32_t i = 0; i < kVectorCount; ++i) {
+    for (uint32_t d = 0; d < kDimension; ++d) {
+      vectors[i][d] = static_cast<float>((i * 47 + d * 29) % 311) - 23.25F;
+    }
+  }
+
+  auto coarse_param = IVFIndexParamBuilder()
+                          .with_metric_type(MetricType::kL2sq)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(kDimension)
+                          .with_is_sparse(false)
+                          .with_n_list(4)
+                          .build();
+  auto coarse = IndexFactory::CreateAndInitIndex(*coarse_param);
+  ASSERT_NE(nullptr, coarse);
+  ASSERT_EQ(0, coarse->open(coarse_path,
+                            {StorageOptions::StorageType::kMMAP, true}));
+  for (uint32_t i = 0; i < kVectorCount; ++i) {
+    ASSERT_EQ(0, coarse->add(VectorData{DenseVector{vectors[i].data()}}, i));
+  }
+  ASSERT_EQ(0, coarse->train());
+
+  auto fine_param = FlatIndexParamBuilder()
+                        .with_metric_type(MetricType::kL2sq)
+                        .with_data_type(DataType::DT_FP32)
+                        .with_dimension(kDimension)
+                        .with_is_sparse(false)
+                        .build();
+  auto fine = IndexFactory::CreateAndInitIndex(*fine_param);
+  ASSERT_NE(nullptr, fine);
+  ASSERT_EQ(0, fine->open(fine_path,
+                          {StorageOptions::StorageType::kMMAP, true}));
+  for (uint32_t i = 0; i < kVectorCount; ++i) {
+    ASSERT_EQ(0, fine->add(VectorData{DenseVector{vectors[i].data()}}, i));
+  }
+  ASSERT_EQ(0, fine->train());
+
+  auto refiner = std::make_shared<RefinerParam>();
+  refiner->scale_factor_ = 10000000.0f;  // topk * SF = 500M candidates
+  refiner->reference_index = fine;
+  auto huge_param = IVFQueryParamBuilder()
+                        .with_nprobe(4)
+                        .with_topk(kTopk)
+                        .with_refiner_param(refiner)
+                        .build();
+  SearchResult result;
+  const int rc = coarse->search(
+      VectorData{DenseVector{vectors[0].data()}}, huge_param, &result);
+  if (rc != 0) {
+    EXPECT_EQ(static_cast<int>(zvec::core::IndexError_NoMemory), rc);
+  } else {
+    EXPECT_EQ(kTopk, result.doc_list_.size());
+  }
+
+  // The index must stay usable after a failed oversized allocation.
+  refiner->scale_factor_ = 4.0f;
+  auto valid_param = IVFQueryParamBuilder()
+                         .with_nprobe(4)
+                         .with_topk(kTopk)
+                         .with_refiner_param(refiner)
+                         .build();
+  ASSERT_EQ(0, coarse->search(VectorData{DenseVector{vectors[0].data()}},
+                              valid_param, &result));
+  EXPECT_EQ(kTopk, result.doc_list_.size());
+
+  ASSERT_EQ(0, coarse->close());
+  ASSERT_EQ(0, fine->close());
+  zvec::test_util::RemoveTestFiles(coarse_path);
+  zvec::test_util::RemoveTestFiles(fine_path);
+}
+
 TEST(IndexInterface, BuilderChainingReturnsCorrectType) {
   HNSWIndexParamBuilder builder;
   auto &ref = builder.with_version(1)

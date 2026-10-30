@@ -41,6 +41,13 @@ std::string VectorIndexParams::vector_index_params_to_string(
   oss << class_name << "{"
       << "metric:" << MetricTypeCodeBook::AsString(metric_type)
       << ",quantize:" << QuantizeTypeCodeBook::AsString(quantize_type);
+  if (quantize_type == QuantizeType::PQ) {
+    oss << ",num_chunk:" << quantizer_param_.num_chunk()
+        << ",num_bits:" << quantizer_param_.num_bits()
+        << ",fast_scan:" << quantizer_param_.fast_scan()
+        << ",opq_iter:" << quantizer_param_.opq_iter()
+        << ",opq_pq_iter:" << quantizer_param_.opq_pq_iter();
+  }
   return oss.str();
 }
 

@@ -655,7 +655,7 @@ int PqInt4Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
   quantize_query(query, &(*out)[0]);
 
   *ometa = qmeta;
-  ometa->set_meta(IndexMeta::DataType::DT_INT4, num_chunk_,
+  ometa->set_meta(IndexMeta::DataType::DT_FP32, original_dim_,
                   static_cast<uint32_t>(type_), 0);
   return 0;
 }
@@ -1109,8 +1109,10 @@ int PqInt4Quantizer::deserialize(const void *data, size_t len) {
       payload.rotate_type, original_dim_, ptr,
       len - static_cast<size_t>(ptr - reinterpret_cast<const char *>(data)));
   if (opq_ret != 0) return opq_ret;
-  // dist_table_ is intentionally not restored: SDC is only needed during
-  // offline build, not after deserialization (search uses ADC).
+  // ADC search only needs the codebook and a query LUT. Leave the SDC table
+  // empty; prepare_build() restores it before graph construction or inserts
+  // into a reopened index.
+  dist_table_.clear();
 
   // Re-dispatch kernels and batch distance functions.
   if (setup_functions() != 0) {

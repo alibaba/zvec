@@ -71,6 +71,13 @@ class PqInt4Quantizer : public Quantizer, public PrecomputeTableQuantizer {
 
   int train(IndexHolder::Pointer holder) override;
 
+  // Rebuild the centroid-pair table for SDC before graph inserts.
+  // Read-only ADC queries use their own LUT and do not need this table.
+  int prepare_build() override {
+    if (dist_table_.empty()) compute_dist_table();
+    return 0;
+  }
+
   size_t quantized_datapoint_vector_length() const override {
     return packed_code_length() + extra_meta_size_;
   }

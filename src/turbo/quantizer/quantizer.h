@@ -121,6 +121,11 @@ class Quantizer {
     return train(holder);
   }
 
+  //! Prepare derived state for graph construction before concurrent inserts.
+  virtual int prepare_build() {
+    return 0;
+  }
+
   //! Byte length of a quantized datapoint vector
   virtual size_t quantized_datapoint_vector_length() const = 0;
 

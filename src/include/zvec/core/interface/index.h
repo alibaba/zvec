@@ -209,11 +209,10 @@ class ZVEC_CORE_API Index {
   int _search_refine_internal_ids(
       const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
       int64_t *output_ids, float *output_scores);
-  int _collect_dense_result(const VectorData &query,
-                            const core::IndexQueryMeta &query_meta,
-                            const BaseIndexQueryParam::Pointer &search_param,
-                            SearchResult *result,
-                            core::IndexContext::Pointer &context);
+  virtual int _collect_dense_result(
+      const VectorData &query, const core::IndexQueryMeta &query_meta,
+      const BaseIndexQueryParam::Pointer &search_param, SearchResult *result,
+      core::IndexContext::Pointer &context);
   int _refine_dense_candidates(const VectorData &query,
                                const BaseIndexQueryParam::Pointer &search_param,
                                const std::vector<std::vector<uint64_t>> &keys,
@@ -242,6 +241,9 @@ class ZVEC_CORE_API Index {
   int create_and_init_metric(const BaseIndexParam &param);
   virtual int create_and_init_converter_reformer(
       const QuantizerParam &param, const BaseIndexParam &index_param);
+  int init_pq_quantizer(const QuantizerParam &param,
+                        const BaseIndexParam &index_param,
+                        std::shared_ptr<turbo::Quantizer> *quantizer);
   int init_converter_reformer(const std::string &converter_name,
                               const ailego::Params &converter_params = {});
   virtual int create_and_init_streamer(const BaseIndexParam &param) = 0;
@@ -257,6 +259,8 @@ class ZVEC_CORE_API Index {
 
  protected:
   bool is_trained_{false};
+  // Trained streaming quantizers open their empty target after merge training.
+  bool pending_quantizer_training_{false};
 
   BaseIndexParam param_;
   ailego::Params proxima_index_params_{};
@@ -333,10 +337,11 @@ class ZVEC_CORE_API IVFIndex : public Index {
       const QuantizerParam &param, const BaseIndexParam &index_param) override;
   int create_and_init_streamer(const BaseIndexParam &param) override;
 
-  int _dense_search(const VectorData &query,
-                    const BaseIndexQueryParam::Pointer &search_param,
-                    SearchResult *result,
-                    core::IndexContext::Pointer &context) override;
+  int _collect_dense_result(const VectorData &query,
+                            const core::IndexQueryMeta &query_meta,
+                            const BaseIndexQueryParam::Pointer &search_param,
+                            SearchResult *result,
+                            core::IndexContext::Pointer &context) override;
 
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,
