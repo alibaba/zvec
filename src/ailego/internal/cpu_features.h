@@ -130,18 +130,6 @@ class CpuFeatures {
   //! XSAVE/XRSTOR/XSETBV/XGETBV instructions
   static bool XSAVE();
 
-  //! Operating system enabled XSAVE/XRSTOR
-  static bool OSXSAVE();
-
-  //! Operating system enabled XMM and YMM register state
-  static bool AVX_STATE();
-
-  //! Operating system enabled XMM, YMM, opmask, and ZMM register state
-  static bool AVX512_STATE();
-
-  //! Leading zero count instruction
-  static bool LZCNT();
-
   //! Fused multiply-add
   static bool FMA();
 
@@ -206,8 +194,6 @@ class CpuFeatures {
   static const char *Intrinsics();
 
  private:
-  friend class CpuFeaturesTestPeer;
-
   struct CpuFlags {
     //! Constructor
     CpuFlags();
@@ -218,9 +204,6 @@ class CpuFeatures {
     uint32_t L7_EBX;
     uint32_t L7_ECX;
     uint32_t L7_EDX;
-    uint32_t L80000001_ECX;
-    uint64_t XCR0;
-    bool DARWIN_AVX512;
   };
 
   //! Static Members
@@ -392,18 +375,6 @@ class CpuFeatures {
 
     //! ARM half-precision vector arithmetic (FEAT_FP16) support
     bool FP16 = CpuFeatures::FP16();
-
-    //! Operating system enabled XSAVE/XRSTOR
-    bool OSXSAVE = CpuFeatures::OSXSAVE();
-
-    //! Operating system enabled XMM and YMM register state
-    bool AVX_STATE = CpuFeatures::AVX_STATE();
-
-    //! Operating system enabled XMM, YMM, opmask, and ZMM register state
-    bool AVX512_STATE = CpuFeatures::AVX512_STATE();
-
-    //! Leading zero count instruction
-    bool LZCNT = CpuFeatures::LZCNT();
   };
   static StaticFlags static_flags_;
 };

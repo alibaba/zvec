@@ -14,7 +14,6 @@
 
 #include <cassert>
 #include <ailego/internal/cpu_features.h>
-#include <zvec/ailego/internal/platform.h>
 #include <zvec/turbo/turbo.h>
 #include "avx2/fp16/cosine.h"
 #include "avx2/fp16/inner_product.h"
@@ -112,67 +111,29 @@ static bool IsArchMatch(CpuArchType actual, CpuArchType target) {
   return actual == CpuArchType::kAuto || actual == target;
 }
 
-// ISA selection requires both a compiled implementation and CPU/OS support.
-// CPUID alone does not mean the OS saves the YMM/ZMM state used by AVX kernels.
+// Single place that maps a CpuArchType to its runtime CPU-feature gate.
 static bool CpuSupports(CpuArchType arch) {
   const auto &flags = zvec::ailego::internal::CpuFeatures::static_flags_;
-  [[maybe_unused]] const bool avx2 =
-      flags.AVX && flags.AVX2 && flags.AVX_STATE && flags.FMA && flags.F16C &&
-      flags.SSE2 && flags.SSE3 && flags.SSSE3 && flags.SSE4_1 && flags.SSE4_2 &&
-      flags.POPCNT
-#if defined(_MSC_VER)
-      // These are implied by MSVC's /arch:AVX2 profile.
-      && flags.BMI1 && flags.BMI2 && flags.LZCNT
-#endif
-      ;
-  [[maybe_unused]] const bool avx512 = avx2 && flags.AVX512_STATE &&
-                                       flags.AVX512F && flags.AVX512BW &&
-                                       flags.AVX512DQ && flags.AVX512VL
-#if defined(_MSC_VER)
-                                       && flags.AVX512CD
-#endif
-      ;
   switch (arch) {
     case CpuArchType::kScalar:
       return true;
     case CpuArchType::kSSE2:
-#if defined(__SSE2__) || defined(_M_X64) || \
-    (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
       return flags.SSE2;
-#else
-      return false;
-#endif
     case CpuArchType::kAVX2:
-#if defined(ZVEC_HAVE_AVX2_KERNEL)
-      return avx2;
-#else
-      return false;
-#endif
+      return flags.AVX2;
     case CpuArchType::kAVX512:
-#if defined(ZVEC_HAVE_AVX512_KERNEL)
-      return avx512;
-#else
-      return false;
-#endif
+      return flags.AVX512F;
     case CpuArchType::kAVX512VNNI:
-#if defined(ZVEC_HAVE_VNNI_KERNEL)
-      return avx512 && flags.AVX512_VNNI;
-#else
-      return false;
-#endif
+      return flags.AVX512_VNNI;
     case CpuArchType::kAVX512FP16:
-#if defined(ZVEC_HAVE_FP16_KERNEL)
-      return avx512 && flags.AVX512_FP16 &&
+      // CPUID says the CPU can run FP16 instructions; the extra call checks
+      // that the FP16 kernels were actually compiled in (needs GCC >= 12 /
+      // Clang >= 14), otherwise they are no-op stubs. See
+      // avx512_fp16/fp16/inner_product.h.
+      return flags.AVX512F && flags.AVX512_FP16 &&
              avx512_fp16::fp16_distance_kernels_available();
-#else
-      return false;
-#endif
     case CpuArchType::kNEON:
-#if defined(AILEGO_ARM64_NEON)
       return flags.NEON;
-#else
-      return false;
-#endif
     default:
       return false;
   }
@@ -649,7 +610,7 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type) {
     // Quantize uses AVX-512F (no VNNI required), but we gate on the same
     // AVX512_VNNI flag for now since the kernel lives in the avx512_vnni
     // directory and is compiled with the same march flag.
-    if (CpuSupports(CpuArchType::kAVX512VNNI)) {
+    if (zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
       return avx512_vnni::uniform_uint7_quantize;
     }
   }
@@ -659,7 +620,8 @@ UniformQuantizeFunc get_uniform_quantize_func(DataType data_type) {
 UniformUint4QuantizeFunc get_uniform_uint4_quantize_func(DataType data_type) {
   // TODO: unify uniform_uint4_quantize/uniform_uint4_quantize param list and
   // merge get_uniform_quantize_func/get_uniform_uint4_quantize_func
-  if (data_type == DataType::kUint4 && CpuSupports(CpuArchType::kAVX512VNNI)) {
+  if (data_type == DataType::kUint4 &&
+      zvec::ailego::internal::CpuFeatures::static_flags_.AVX512_VNNI) {
     return avx512_vnni::uniform_uint4_quantize;
   }
   return nullptr;
