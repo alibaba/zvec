@@ -674,10 +674,10 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
   ailego::Params params_{};
 };
 
-INDEX_FACTORY_REGISTER_METRIC_ALIAS(MipsSquaredEuclidean,
-                                    MipsSquaredEuclideanMetric<false>);
-INDEX_FACTORY_REGISTER_METRIC_ALIAS(MipsSquaredEuclideanSparse,
-                                    MipsSquaredEuclideanMetric<true>);
+INDEX_FACTORY_DEFINE_METRIC_ALIAS(MipsSquaredEuclidean,
+                                  MipsSquaredEuclideanMetric<false>);
+INDEX_FACTORY_DEFINE_METRIC_ALIAS(MipsSquaredEuclideanSparse,
+                                  MipsSquaredEuclideanMetric<true>);
 
 }  // namespace core
 }  // namespace zvec

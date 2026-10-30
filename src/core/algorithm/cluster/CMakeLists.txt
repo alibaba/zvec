@@ -10,7 +10,7 @@ if(NOT APPLE)
 endif()
 
 cc_library(
-    NAME core_knn_cluster STATIC SHARED STRICT ALWAYS_LINK
+    NAME core_knn_cluster STATIC SHARED STRICT
     SRCS *.cc
     LIBS zvec_ailego zvec_turbo core_framework
     INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/cluster

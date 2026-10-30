@@ -13,7 +13,7 @@
 ##  1.3. Build a C/C++ static or shared library
 ##    cc_library(
 ##        NAME <name>
-##        [STATIC] [SHARED] [OBJECTS] [STRICT] [ALWAYS_LINK] [EXCLUDE] [PACKED]
+##        [STATIC] [SHARED] [OBJECTS] [STRICT] [EXCLUDE] [PACKED]
 ##        [SRCS_NO_GLOB]
 ##        SRCS <file1> [file2 ...]
 ##        [INCS dir1 ...]
@@ -144,7 +144,7 @@
 ##  2.3. Build a CUDA static or shared library
 ##    cuda_library(
 ##        NAME <name>
-##        [STATIC] [SHARED] [STRICT] [ALWAYS_LINK] [EXCLUDE] [PACKED]
+##        [STATIC] [SHARED] [STRICT] [EXCLUDE] [PACKED]
 ##        SRCS <file1> [file2 ...]
 ##        [INCS dir1 ...]
 ##        [PUBINCS public_dir1 ...]
@@ -307,6 +307,7 @@
 
 cmake_minimum_required(VERSION 3.13 FATAL_ERROR)
 include(CMakeParseArguments)
+include(${CMAKE_CURRENT_LIST_DIR}/static_extensions.cmake)
 
 # Using AppleClang instead of Clang (Compiler id)
 if(POLICY CMP0025)
@@ -691,146 +692,8 @@ endfunction()
 
 ## Link libraries
 function(_target_link_libraries _NAME)
-  function(_collect_always_link_libs LIB_LIST RESULT_VAR)
-    if(NOT _COLLECT_ALWAYS_LINK_VISITED)
-      set(_COLLECT_ALWAYS_LINK_VISITED "" PARENT_SCOPE)
-    endif()
-
-    set(LOCAL_RESULT "")
-    foreach(LIB ${LIB_LIST})
-      if(NOT TARGET ${LIB})
-        continue()
-      endif()
-
-      list(FIND _COLLECT_ALWAYS_LINK_VISITED ${LIB} ALREADY_VISITED)
-      if(NOT ALREADY_VISITED EQUAL -1)
-        continue()
-      endif()
-
-      list(APPEND _COLLECT_ALWAYS_LINK_VISITED ${LIB})
-      set(_COLLECT_ALWAYS_LINK_VISITED "${_COLLECT_ALWAYS_LINK_VISITED}" PARENT_SCOPE)
-
-      get_target_property(ALWAYS_LINK ${LIB} ALWAYS_LINK)
-      if(ALWAYS_LINK)
-        list(APPEND LOCAL_RESULT ${LIB})
-      elseif(MSVC AND TARGET ${LIB}_static)
-        get_target_property(_SIBLING_AL ${LIB}_static ALWAYS_LINK)
-        if(_SIBLING_AL)
-          list(APPEND LOCAL_RESULT ${LIB}_static)
-        endif()
-      endif()
-
-      get_target_property(DEP_LIBS ${LIB} INTERFACE_LINK_LIBRARIES)
-      if(DEP_LIBS)
-        _collect_always_link_libs("${DEP_LIBS}" DEP_ALWAYS_LINK_LIBS)
-        list(APPEND LOCAL_RESULT ${DEP_ALWAYS_LINK_LIBS})
-      endif()
-
-      get_target_property(LINK_LIBS ${LIB} LINK_LIBRARIES)
-      if(LINK_LIBS)
-        _collect_always_link_libs("${LINK_LIBS}" LINK_ALWAYS_LINK_LIBS)
-        list(APPEND LOCAL_RESULT ${LINK_ALWAYS_LINK_LIBS})
-      endif()
-    endforeach()
-
-    list(REMOVE_DUPLICATES LOCAL_RESULT)
-    set(${RESULT_VAR} "${LOCAL_RESULT}" PARENT_SCOPE)
-  endfunction()
-
-  _collect_always_link_libs("${ARGN}" ALL_ALWAYS_LINK_LIBS)
-
-  set(ALL_LIBS_TO_PROCESS ${ARGN})
-  foreach(ALWAYS_LIB ${ALL_ALWAYS_LINK_LIBS})
-    list(FIND ARGN ${ALWAYS_LIB} FOUND_INDEX)
-    if(FOUND_INDEX EQUAL -1)
-      list(APPEND ALL_LIBS_TO_PROCESS ${ALWAYS_LIB})
-    endif()
-  endforeach()
-
-  list(REMOVE_DUPLICATES ALL_LIBS_TO_PROCESS)
-
-  # On MSVC, each DLL has its own copy of template statics (e.g. Factory
-  # singletons), so registrations inside a DLL are invisible to the exe.
-  # Substitute SHARED libs with their ALWAYS_LINK _static counterparts and
-  # use /WHOLEARCHIVE so all registration code lives in the same module.
-  if(MSVC)
-    set(_SUBSTITUTED_LIBS "")
-    foreach(LIB ${ALL_LIBS_TO_PROCESS})
-      if(TARGET ${LIB} AND TARGET ${LIB}_static)
-        get_target_property(_LIB_TYPE ${LIB} TYPE)
-        get_target_property(_STATIC_AL ${LIB}_static ALWAYS_LINK)
-        if("${_LIB_TYPE}" STREQUAL "SHARED_LIBRARY" AND _STATIC_AL)
-          list(APPEND _SUBSTITUTED_LIBS ${LIB}_static)
-          list(APPEND ALL_ALWAYS_LINK_LIBS ${LIB}_static)
-          continue()
-        endif()
-      endif()
-      list(APPEND _SUBSTITUTED_LIBS ${LIB})
-    endforeach()
-    set(ALL_LIBS_TO_PROCESS ${_SUBSTITUTED_LIBS})
-    if(ALL_ALWAYS_LINK_LIBS)
-      list(REMOVE_DUPLICATES ALL_ALWAYS_LINK_LIBS)
-    endif()
-  endif()
-
-  foreach(LIB ${ALL_LIBS_TO_PROCESS})
-    if(NOT TARGET ${LIB})
-      list(APPEND LINK_LIBS ${LIB})
-      continue()
-    endif()
-
-    list(FIND ALL_ALWAYS_LINK_LIBS ${LIB} IS_ALWAYS_LINK)
-    if(IS_ALWAYS_LINK EQUAL -1)
-      list(APPEND LINK_LIBS ${LIB})
-      continue()
-    endif()
-
-    if(NOT MSVC)
-      if(ANDROID AND ANDROID_STL STREQUAL "c++_static")
-        # Keep the target in the normal link graph so CMake can resolve its
-        # transitive dependencies, but force-load the archive exactly once via
-        # a link option. Wrapping the target directly in --whole-archive here
-        # lets CMake emit another transitive occurrence later; lld then loads
-        # the same objects twice and reports duplicate symbols.
-        list(APPEND LINK_LIBS ${LIB})
-        list(APPEND ANDROID_WHOLEARCHIVE_OPTS
-             -Wl,--whole-archive,$<TARGET_FILE:${LIB}>,--no-whole-archive)
-      elseif(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin" AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "iOS")
-        list(APPEND LINK_LIBS -Wl,--whole-archive ${LIB} -Wl,--no-whole-archive)
-      else()
-        list(APPEND LINK_LIBS -Wl,-force_load ${LIB})
-      endif()
-    else()
-      # TODO(windows): revert maybe
-      list(APPEND MSVC_WHOLEARCHIVE_OPTS /WHOLEARCHIVE:$<TARGET_FILE:${LIB}>)
-      get_target_property(OTHER_LINK_LIBS ${LIB} INTERFACE_LINK_LIBRARIES)
-      if(OTHER_LINK_LIBS)
-        foreach(OTHER_LIB ${OTHER_LINK_LIBS})
-          list(FIND ALL_LIBS_TO_PROCESS ${OTHER_LIB} FOUND_INDEX)
-          if(FOUND_INDEX EQUAL -1)
-            list(APPEND LINK_LIBS ${OTHER_LIB})
-          endif()
-        endforeach()
-      endif()
-      list(APPEND LIBS_DEPS ${LIB})
-      list(
-          APPEND LIBS_INCS
-          "$<TARGET_PROPERTY:${LIB},INTERFACE_INCLUDE_DIRECTORIES>"
-        )
-    endif()
-  endforeach()
-
+  zvec_resolve_component_libraries(LINK_LIBS ${ARGN})
   target_link_libraries(${_NAME} ${LINK_LIBS})
-  if(ANDROID_WHOLEARCHIVE_OPTS)
-    target_link_options(${_NAME} PRIVATE ${ANDROID_WHOLEARCHIVE_OPTS})
-  endif()
-  if(MSVC_WHOLEARCHIVE_OPTS)
-    target_link_options(${_NAME} PRIVATE ${MSVC_WHOLEARCHIVE_OPTS})
-  endif()
-  if(LIBS_DEPS)
-    add_dependencies(${_NAME} ${LIBS_DEPS})
-    target_include_directories(${_NAME} PRIVATE "${LIBS_INCS}")
-  endif()
 endfunction()
 
 ## Add a subdirectory to the build
@@ -861,13 +724,6 @@ function(_cc_target_properties)
       ("${TARGET_TYPE}" STREQUAL "STATIC_LIBRARY") OR
       ("${TARGET_TYPE}" STREQUAL "EXECUTABLE"))
     set(TARGET_LINKABLE TRUE)
-  endif()
-
-  if(CC_ARGS_ALWAYS_LINK)
-    if(("${TARGET_TYPE}" STREQUAL "STATIC_LIBRARY") OR
-        ("${TARGET_TYPE}" STREQUAL "OBJECT_LIBRARY"))
-      set_property(TARGET ${CC_ARGS_NAME} PROPERTY ALWAYS_LINK TRUE)
-    endif()
   endif()
 
   # Set the warning level of compiling
@@ -921,6 +777,7 @@ function(_cc_target_properties)
   endif()
 
   if(CC_ARGS_LIBS)
+    zvec_resolve_component_libraries(CC_ARGS_LIBS ${CC_ARGS_LIBS})
     if("${TARGET_TYPE}" STREQUAL "OBJECT_LIBRARY")
       target_link_libraries(${CC_ARGS_NAME} PRIVATE ${CC_ARGS_LIBS})
     elseif(NOT TARGET_LINKABLE)
@@ -965,7 +822,7 @@ endfunction()
 function(cc_library)
   cmake_parse_arguments(
     CC_ARGS
-      "STATIC;SHARED;OBJECTS;EXCLUDE;PACKED;SRCS_NO_GLOB"
+      "STATIC;SHARED;OBJECTS;EXCLUDE;PACKED;SRCS_NO_GLOB;ALWAYS_LINK"
       "NAME;VERSION;EXPORT_DEF"
       "SRCS;INCS;PUBINCS;DEFS;LIBS;CFLAGS;CXXFLAGS;LDFLAGS;DEPS;PACKED_EXCLUDES"
       ${ARGN}
@@ -1002,6 +859,14 @@ function(cc_library)
 
   if(CC_ARGS_EXCLUDE)
     set(EXCLUDE_OPTION EXCLUDE_FROM_ALL)
+  endif()
+
+  # Legacy registration-only sources can be forwarded as ordinary object files.
+  # This preserves ALWAYS_LINK without archive-forcing flags or source scanning.
+  if(CC_ARGS_ALWAYS_LINK AND NOT CC_ARGS_SHARED AND
+     (CC_ARGS_STATIC OR NOT BUILD_SHARED_LIBS))
+    set(CC_ARGS_STATIC TRUE)
+    set(CC_ARGS_OBJECTS TRUE)
   endif()
 
   if(CC_ARGS_OBJECTS AND (NOT CC_ARGS_STATIC OR CC_ARGS_SHARED))
@@ -1091,6 +956,20 @@ function(cc_library)
       VERSION "${CC_ARGS_VERSION}"
       "${CC_ARGS_UNPARSED_ARGUMENTS}"
   )
+  if(CC_ARGS_ALWAYS_LINK)
+    get_target_property(LIBRARY_TYPE ${CC_ARGS_NAME} TYPE)
+    if(LIBRARY_TYPE STREQUAL "STATIC_LIBRARY")
+      set_property(TARGET ${CC_ARGS_NAME} APPEND PROPERTY
+        INTERFACE_LINK_LIBRARIES $<TARGET_OBJECTS:${CC_ARGS_NAME}_objects>)
+    endif()
+    if(TARGET ${CC_ARGS_NAME}_static)
+      _has_own_static_variant(HAS_STATIC ${CC_ARGS_NAME})
+      if(HAS_STATIC)
+        set_property(TARGET ${CC_ARGS_NAME}_static APPEND PROPERTY
+          INTERFACE_LINK_LIBRARIES $<TARGET_OBJECTS:${CC_ARGS_NAME}_objects>)
+      endif()
+    endif()
+  endif()
   if(CC_ARGS_PACKED)
     install(
         TARGETS ${CC_ARGS_NAME}
@@ -1159,6 +1038,32 @@ function(cc_binary)
     )
 endfunction()
 
+## Apply the iOS runtime setup to either cc_test or native CMake test targets.
+function(zvec_configure_ios_test TARGET)
+  if(NOT IOS)
+    return()
+  endif()
+  set_target_properties(${TARGET} PROPERTIES
+    MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_INFO_PLIST "${PROJECT_ROOT_DIR}/cmake/iOSBundleInfo.plist.in"
+  )
+  target_sources(${TARGET} PRIVATE "${PROJECT_ROOT_DIR}/tests/ios_test_sandbox.cc")
+  # Arrow's iOS code references Apple frameworks. Keep each framework option
+  # paired when CMake de-duplicates link options.
+  target_link_options(${TARGET} PRIVATE
+    "SHELL:-framework CoreFoundation"
+    "SHELL:-framework CoreGraphics"
+    "SHELL:-framework CoreData"
+    "SHELL:-framework CoreText"
+    "SHELL:-framework Security"
+    "SHELL:-framework Foundation"
+    -Wl,-U,_MallocExtension_ReleaseFreeMemory
+    -Wl,-U,_ProfilerStart
+    -Wl,-U,_ProfilerStop
+    -Wl,-U,_RegisterThriftProtocol
+  )
+endfunction()
+
 ## Build a C/C++ executable test program
 function(cc_test)
   cmake_parse_arguments(
@@ -1179,32 +1084,8 @@ function(cc_test)
     string(REPLACE "-" "_" MACRO_PREFIX "${CC_ARGS_NAME}")
     list(APPEND CC_ARGS_DEFS ${MACRO_PREFIX}_VERSION="${CC_ARGS_VERSION}")
   endif()
-  # iOS: add sandbox helper to redirect CWD to writable directory
-  if(IOS)
-    list(APPEND CC_ARGS_SRCS "${PROJECT_ROOT_DIR}/tests/ios_test_sandbox.cc")
-    # Arrow's iOS code references CoreFoundation symbols; link Apple frameworks
-    list(APPEND CC_ARGS_LDFLAGS
-      -framework CoreFoundation
-      -framework CoreGraphics
-      -framework CoreData
-      -framework CoreText
-      -framework Security
-      -framework Foundation
-      -Wl,-U,_MallocExtension_ReleaseFreeMemory
-      -Wl,-U,_ProfilerStart
-      -Wl,-U,_ProfilerStop
-      -Wl,-U,_RegisterThriftProtocol
-    )
-  endif()
-
   add_executable(${CC_ARGS_NAME} EXCLUDE_FROM_ALL ${CC_ARGS_SRCS})
-
-  # iOS: set bundle properties for simulator/device installation
-  if(IOS)
-    set_target_properties(${CC_ARGS_NAME} PROPERTIES
-      MACOSX_BUNDLE_INFO_PLIST "${PROJECT_ROOT_DIR}/cmake/iOSBundleInfo.plist.in"
-    )
-  endif()
+  zvec_configure_ios_test(${CC_ARGS_NAME})
 
   _cc_target_properties(
       NAME "${CC_ARGS_NAME}"
@@ -1711,7 +1592,7 @@ endfunction()
 ## Set the properties of cuda target
 function(_cuda_target_properties)
   cmake_parse_arguments(
-      CUDA_ARGS "STRICT;ALWAYS_LINK" "NAME;VERSION;C_STANDARD;CXX_STANDARD"
+      CUDA_ARGS "STRICT" "NAME;VERSION;C_STANDARD;CXX_STANDARD"
       "INCS;PUBINCS;DEFS;LIBS;CFLAGS;CXXFLAGS;CUDAFLAGS;LDFLAGS;DEPS" ${ARGN}
     )
 
@@ -1724,13 +1605,6 @@ function(_cuda_target_properties)
       ("${TARGET_TYPE}" STREQUAL "STATIC_LIBRARY") OR
       ("${TARGET_TYPE}" STREQUAL "EXECUTABLE"))
     set(TARGET_LINKABLE TRUE)
-  endif()
-
-  if(CUDA_ARGS_ALWAYS_LINK)
-    if(("${TARGET_TYPE}" STREQUAL "STATIC_LIBRARY") OR
-        ("${TARGET_TYPE}" STREQUAL "OBJECT_LIBRARY"))
-      set_property(TARGET ${CUDA_ARGS_NAME} PROPERTY ALWAYS_LINK TRUE)
-    endif()
   endif()
 
   # Set the warning level of compiling

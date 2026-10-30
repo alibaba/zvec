@@ -344,28 +344,28 @@ class CosineReformer : public IndexReformer {
   std::shared_ptr<Rotator> rotator_{};
 };
 
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(CosineNormalizeReformer, CosineReformer,
-                                      IndexMeta::DataType::DT_FP32);
+INDEX_FACTORY_DEFINE_REFORMER_ALIAS(CosineNormalizeReformer, CosineReformer,
+                                    IndexMeta::DataType::DT_FP32);
 
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(CosineFp32Reformer, CosineReformer,
-                                      IndexMeta::DataType::DT_FP32);
+INDEX_FACTORY_DEFINE_REFORMER_ALIAS(CosineFp32Reformer, CosineReformer,
+                                    IndexMeta::DataType::DT_FP32);
 
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(CosineFp16Reformer, CosineReformer,
-                                      IndexMeta::DataType::DT_FP16);
+INDEX_FACTORY_DEFINE_REFORMER_ALIAS(CosineFp16Reformer, CosineReformer,
+                                    IndexMeta::DataType::DT_FP16);
 
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(CosineInt8Reformer, CosineReformer,
-                                      IndexMeta::DataType::DT_INT8);
+INDEX_FACTORY_DEFINE_REFORMER_ALIAS(CosineInt8Reformer, CosineReformer,
+                                    IndexMeta::DataType::DT_INT8);
 
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(CosineInt4Reformer, CosineReformer,
-                                      IndexMeta::DataType::DT_INT4);
+INDEX_FACTORY_DEFINE_REFORMER_ALIAS(CosineInt4Reformer, CosineReformer,
+                                    IndexMeta::DataType::DT_INT4);
 
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(CosineHalfFloatReformer, CosineReformer,
-                                      IndexMeta::DataType::DT_FP16,
-                                      IndexMeta::DataType::DT_FP16);
+INDEX_FACTORY_DEFINE_REFORMER_ALIAS(CosineHalfFloatReformer, CosineReformer,
+                                    IndexMeta::DataType::DT_FP16,
+                                    IndexMeta::DataType::DT_FP16);
 
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(CosineRawFp16Reformer, CosineReformer,
-                                      IndexMeta::DataType::DT_FP32,
-                                      IndexMeta::DataType::DT_FP16, true);
+INDEX_FACTORY_DEFINE_REFORMER_ALIAS(CosineRawFp16Reformer, CosineReformer,
+                                    IndexMeta::DataType::DT_FP32,
+                                    IndexMeta::DataType::DT_FP16, true);
 
 }  // namespace core
 }  // namespace zvec

@@ -122,6 +122,12 @@ struct ZVEC_AILEGO_API Logger {
                    va_list args) = 0;
 };
 
+//! Explicitly load the built-in logger when the logger factory is queried.
+template <>
+struct FactoryBuiltinLoader<Logger> {
+  static ZVEC_AILEGO_API void Load();
+};
+
 /*! Index Logger Broker
  */
 class ZVEC_AILEGO_API LoggerBroker {
@@ -176,11 +182,7 @@ class ZVEC_AILEGO_API LoggerBroker {
   LoggerBroker(LoggerBroker &&) = delete;
 
  private:
-  //! Accessors of logger state (Meyers singleton to avoid multiple
-  //! __cxa_atexit registrations when logger.cc is compiled into multiple
-  //! shared libraries via --whole-archive; the guard variable is shared
-  //! across all modules through .dynsym, ensuring initialization and
-  //! destruction happen exactly once)
+  //! Accessors of logger state, initialized on first use.
   static int &LoggerLevel() {
     static int logger_level = Logger::LEVEL_WARN;
     return logger_level;

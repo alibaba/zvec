@@ -22,6 +22,7 @@
 #include <zvec/db/status.h>
 #include "db/common/constants.h"
 #include "error_code.h"
+#include "glogger.h"
 
 namespace zvec {
 
@@ -40,6 +41,11 @@ class LogUtil {
       }
     }
 
+    // Explicitly referenced from the logging entry point, so file logging
+    // works even when config.cc is not extracted from a static archive.
+    static ailego::Factory<ailego::Logger>::Register<AppendLogger> registration(
+        ailego::Factory<ailego::Logger>::BuiltinTag{}, "AppendLogger");
+    (void)registration;
     auto logger =
         ailego::Factory<ailego::Logger>::MakeShared(logger_type.c_str());
     if (!logger) {

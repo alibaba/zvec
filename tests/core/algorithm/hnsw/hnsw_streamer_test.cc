@@ -16,6 +16,8 @@
 #include <sys/types.h>
 #include <atomic>
 #include <cstdlib>
+#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
+#include <turbo/quantizer/int8_quantizer/int8_quantizer.h>
 #ifndef _MSC_VER
 #include <fcntl.h>
 #include <unistd.h>
@@ -4744,7 +4746,8 @@ TEST_F(HnswStreamerTest, TestTurboSearchWithFp16ProviderBuildFallback) {
         provider_meta.set_metric("SquaredEuclidean", 0, ailego::Params());
       }
 
-      auto quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+      zvec::turbo::Quantizer::Pointer quantizer =
+          std::make_shared<zvec::turbo::Fp32Quantizer>();
       ASSERT_NE(nullptr, quantizer);
       ASSERT_EQ(0, quantizer->init(raw_meta, ailego::Params()));
       auto streamer = IndexFactory::CreateStreamer("HnswStreamer");
@@ -4816,7 +4819,8 @@ TEST_F(HnswStreamerTest, TestTurboInt8QuantizerDistance) {
 
   IndexMeta raw_meta(IndexMeta::DataType::DT_FP32, kTurboDim);
   raw_meta.set_metric("SquaredEuclidean", 0, ailego::Params());
-  auto quantizer = IndexFactory::CreateQuantizer("Int8Quantizer");
+  zvec::turbo::Quantizer::Pointer quantizer =
+      std::make_shared<zvec::turbo::Int8Quantizer>();
   ASSERT_NE(nullptr, quantizer);
   ASSERT_EQ(0, quantizer->init(raw_meta, ailego::Params()));
 

@@ -13,10 +13,70 @@
 // limitations under the License.
 
 #include "zvec/db/config.h"
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <gtest/gtest.h>
+#include "db/common/logger.h"
 #include "zvec/db/status.h"
 
 using namespace zvec;
+
+class LogUtilTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    while (previous_level_ <= ailego::Logger::LEVEL_FATAL &&
+           !ailego::LoggerBroker::IsLevelEnabled(previous_level_)) {
+      ++previous_level_;
+    }
+    previous_logger_ = ailego::LoggerBroker::Register(nullptr);
+    log_dir_ =
+        std::filesystem::path(::testing::TempDir()) /
+        ("zvec-append-logger-" +
+         std::to_string(
+             std::chrono::steady_clock::now().time_since_epoch().count()));
+  }
+
+  void TearDown() override {
+    LogUtil::Shutdown();
+    ailego::LoggerBroker::Register(std::move(previous_logger_));
+    ailego::LoggerBroker::SetLevel(previous_level_);
+    std::error_code error;
+    std::filesystem::remove_all(log_dir_, error);
+  }
+
+  std::filesystem::path log_dir_;
+  ailego::Logger::Pointer previous_logger_;
+  int previous_level_ = ailego::Logger::LEVEL_DEBUG;
+};
+
+TEST_F(LogUtilTest, FileLoggerWritesMessagesWithoutGlobalConfigInitialization) {
+  // Exercise the file-logging entry point directly: GlobalConfig's singleton
+  // can make repeated initialize() calls no-ops in the configuration tests.
+  auto status =
+      LogUtil::Init(log_dir_.string(), "factory-static-link-test",
+                    ailego::Logger::LEVEL_INFO, FILE_LOG_TYPE_NAME, 1, 1);
+  ASSERT_TRUE(status.ok()) << status.message();
+
+  constexpr char marker[] = "append-logger-explicit-registration-test";
+  ailego::LoggerBroker::Log(ailego::Logger::LEVEL_INFO, __FILE__, __LINE__,
+                            "%s", marker);
+  google::FlushLogFiles(google::GLOG_INFO);
+
+  bool found = false;
+  for (const auto &entry : std::filesystem::directory_iterator(log_dir_)) {
+    if (!entry.is_regular_file()) {
+      continue;
+    }
+    std::ifstream file(entry.path());
+    const std::string contents{std::istreambuf_iterator<char>(file),
+                               std::istreambuf_iterator<char>()};
+    found |= contents.find(marker) != std::string::npos;
+  }
+  EXPECT_TRUE(found) << "AppendLogger did not write the message to "
+                     << log_dir_;
+}
 
 class ConfigTest : public ::testing::Test {
  protected:

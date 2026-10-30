@@ -127,7 +127,7 @@ class UniformUint4Metric : public IndexMetric {
   ailego::Params params_{};
 };
 
-INDEX_FACTORY_REGISTER_METRIC_ALIAS(UniformUint4, UniformUint4Metric);
+INDEX_FACTORY_DEFINE_METRIC_ALIAS(UniformUint4, UniformUint4Metric);
 
 }  // namespace core
 }  // namespace zvec

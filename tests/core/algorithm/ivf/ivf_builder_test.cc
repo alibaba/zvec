@@ -19,6 +19,8 @@
 #include <limits>
 #include <vector>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
+#include <turbo/quantizer/int8_quantizer/int8_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_helper.h>
@@ -710,7 +712,7 @@ TEST_F(IVFBuilderTest, OrdinalSourceIsReadAtDumpAndRetainedForRepeatedDumps) {
       zvec::turbo::Quantizer::Pointer quantizer;
       if (turbo) {
         meta.set_quantizer("Fp32Quantizer", 0, Params());
-        quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+        quantizer = std::make_shared<zvec::turbo::Fp32Quantizer>();
         ASSERT_NE(nullptr, quantizer);
         ASSERT_EQ(0, quantizer->init(meta, Params()));
       }
@@ -1276,7 +1278,8 @@ TEST(IVFTurboConfiguration, RejectsColumnOrderAndLegacyPostingQuantization) {
   meta.set_meta(IndexMeta::DataType::DT_FP32, kDimension);
   meta.set_metric("SquaredEuclidean", 0, ailego::Params());
   meta.set_quantizer("Int8Quantizer", 0, ailego::Params());
-  auto quantizer = IndexFactory::CreateQuantizer("Int8Quantizer");
+  zvec::turbo::Quantizer::Pointer quantizer =
+      std::make_shared<zvec::turbo::Int8Quantizer>();
   ASSERT_NE(nullptr, quantizer);
   ASSERT_EQ(0, quantizer->init(meta, ailego::Params()));
   ailego::Params params;

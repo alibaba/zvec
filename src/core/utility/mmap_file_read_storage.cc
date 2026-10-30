@@ -288,7 +288,7 @@ class MMapFileReadStorage : public IndexStorage {
   std::shared_ptr<ailego::MMapFile> file_ptr_{nullptr};
 };
 
-INDEX_FACTORY_REGISTER_STORAGE(MMapFileReadStorage);
+INDEX_FACTORY_DEFINE_STORAGE(MMapFileReadStorage);
 
 }  // namespace core
 }  // namespace zvec

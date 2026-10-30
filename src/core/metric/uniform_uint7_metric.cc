@@ -159,7 +159,7 @@ class UniformUint7Metric : public IndexMetric {
   ailego::Params params_{};
 };
 
-INDEX_FACTORY_REGISTER_METRIC_ALIAS(UniformUint7, UniformUint7Metric);
+INDEX_FACTORY_DEFINE_METRIC_ALIAS(UniformUint7, UniformUint7Metric);
 
 }  // namespace core
 }  // namespace zvec

@@ -910,8 +910,8 @@ void KmeansCluster::update_labels_thread(size_t index_begin, size_t index_end,
   }
 }
 
-INDEX_FACTORY_REGISTER_CLUSTER_ALIAS(KmeansCluster, KmeansCluster, false);
-INDEX_FACTORY_REGISTER_CLUSTER_ALIAS(BatchKmeansCluster, KmeansCluster, true);
+INDEX_FACTORY_DEFINE_CLUSTER_ALIAS(KmeansCluster, KmeansCluster, false);
+INDEX_FACTORY_DEFINE_CLUSTER_ALIAS(BatchKmeansCluster, KmeansCluster, true);
 
 }  // namespace core
 }  // namespace zvec

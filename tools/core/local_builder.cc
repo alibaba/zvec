@@ -20,6 +20,7 @@
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/utility/time_helper.h>
+#include <zvec/core/framework/index_factory.h>
 #include "algorithm/flat/flat_utility.h"
 #include "algorithm/hnsw_rabitq/hnsw_rabitq_params.h"
 #include "algorithm/hnsw_rabitq/rabitq_params.h"

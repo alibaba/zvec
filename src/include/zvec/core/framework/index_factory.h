@@ -20,6 +20,7 @@
 #include <zvec/core/framework/index_cluster.h>
 #include <zvec/core/framework/index_converter.h>
 #include <zvec/core/framework/index_dumper.h>
+#include <zvec/core/framework/index_factory_builtins.h>
 #include <zvec/core/framework/index_metric.h>
 #include <zvec/core/framework/index_reducer.h>
 #include <zvec/core/framework/index_refiner.h>
@@ -28,12 +29,6 @@
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/framework/index_streamer.h>
 #include <zvec/core/framework/index_trainer.h>
-
-namespace zvec {
-namespace turbo {
-class Quantizer;
-}  // namespace turbo
-}  // namespace zvec
 
 namespace zvec {
 namespace core {
@@ -165,16 +160,124 @@ struct IndexFactory {
   //! Retrieve all refiner classes
   static std::vector<std::string> AllRefiners();
 
-  //! Create a quantizer by name
-  static std::shared_ptr<zvec::turbo::Quantizer> CreateQuantizer(
+  //! Create a quantizer by its persisted or application-registered name.
+  static std::shared_ptr<turbo::Quantizer> CreateQuantizer(
       const std::string &name);
 
-  //! Test if the quantizer exists
+  //! Test if the quantizer exists.
   static bool HasQuantizer(const std::string &name);
 
-  //! Retrieve all quantizer classes
+  //! Retrieve all quantizer classes.
   static std::vector<std::string> AllQuantizers();
 };
+
+//! Define an explicitly referenced built-in registration entry point.
+//! Invoke these macros in namespace zvec::core, beside the concrete type.
+#define INDEX_FACTORY_DEFINE_BUILTIN(__CATEGORY__, __NAME__, __BASE__,      \
+                                     __IMPL__, ...)                         \
+  void RegisterBuiltin##__CATEGORY__##__NAME__() {                          \
+    static ailego::Factory<__BASE__>::Register<__IMPL__> registration(      \
+        ailego::Factory<__BASE__>::BuiltinTag{}, #__NAME__, ##__VA_ARGS__); \
+    (void)registration;                                                     \
+  }
+
+#define INDEX_FACTORY_DEFINE_METRIC_ALIAS(__NAME__, __IMPL__, ...)      \
+  INDEX_FACTORY_DEFINE_BUILTIN(Metric, __NAME__, IndexMetric, __IMPL__, \
+                               ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_METRIC(__IMPL__, ...) \
+  INDEX_FACTORY_DEFINE_METRIC_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_QUANTIZER_ALIAS(__NAME__, __IMPL__, ...) \
+  INDEX_FACTORY_DEFINE_BUILTIN(Quantizer, __NAME__, turbo::Quantizer, \
+                               __IMPL__, ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_QUANTIZER(__IMPL__, ...) \
+  INDEX_FACTORY_DEFINE_QUANTIZER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_DUMPER_ALIAS(__NAME__, __IMPL__, ...)      \
+  INDEX_FACTORY_DEFINE_BUILTIN(Dumper, __NAME__, IndexDumper, __IMPL__, \
+                               ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_DUMPER(__IMPL__, ...) \
+  INDEX_FACTORY_DEFINE_DUMPER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_STORAGE_ALIAS(__NAME__, __IMPL__, ...)       \
+  INDEX_FACTORY_DEFINE_BUILTIN(Storage, __NAME__, IndexStorage, __IMPL__, \
+                               ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_STORAGE(__IMPL__, ...) \
+  INDEX_FACTORY_DEFINE_STORAGE_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_CONVERTER_ALIAS(__NAME__, __IMPL__, ...)         \
+  INDEX_FACTORY_DEFINE_BUILTIN(Converter, __NAME__, IndexConverter, __IMPL__, \
+                               ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_CONVERTER(__IMPL__, ...) \
+  INDEX_FACTORY_DEFINE_CONVERTER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_REFORMER_ALIAS(__NAME__, __IMPL__, ...)        \
+  INDEX_FACTORY_DEFINE_BUILTIN(Reformer, __NAME__, IndexReformer, __IMPL__, \
+                               ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_REFORMER(__IMPL__, ...) \
+  INDEX_FACTORY_DEFINE_REFORMER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_TRAINER_ALIAS(__NAME__, __IMPL__, ...)       \
+  INDEX_FACTORY_DEFINE_BUILTIN(Trainer, __NAME__, IndexTrainer, __IMPL__, \
+                               ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_TRAINER(__IMPL__, ...) \
+  INDEX_FACTORY_DEFINE_TRAINER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_BUILDER_ALIAS(__NAME__, __IMPL__, ...)       \
+  INDEX_FACTORY_DEFINE_BUILTIN(Builder, __NAME__, IndexBuilder, __IMPL__, \
+                               ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_BUILDER(__IMPL__, ...) \
+  INDEX_FACTORY_DEFINE_BUILDER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_SEARCHER_ALIAS(__NAME__, __IMPL__, ...)        \
+  INDEX_FACTORY_DEFINE_BUILTIN(Searcher, __NAME__, IndexSearcher, __IMPL__, \
+                               ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_SEARCHER(__IMPL__, ...) \
+  INDEX_FACTORY_DEFINE_SEARCHER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_STREAMER_ALIAS(__NAME__, __IMPL__, ...)        \
+  INDEX_FACTORY_DEFINE_BUILTIN(Streamer, __NAME__, IndexStreamer, __IMPL__, \
+                               ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_STREAMER(__IMPL__, ...) \
+  INDEX_FACTORY_DEFINE_STREAMER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_REDUCER_ALIAS(__NAME__, __IMPL__, ...)       \
+  INDEX_FACTORY_DEFINE_BUILTIN(Reducer, __NAME__, IndexReducer, __IMPL__, \
+                               ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_REDUCER(__IMPL__, ...) \
+  INDEX_FACTORY_DEFINE_REDUCER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_STREAMER_REDUCER_ALIAS(__NAME__, __IMPL__, ...) \
+  INDEX_FACTORY_DEFINE_BUILTIN(StreamerReducer, __NAME__,                    \
+                               IndexStreamerReducer, __IMPL__, ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_STREAMER_REDUCER(__IMPL__, ...) \
+  INDEX_FACTORY_DEFINE_STREAMER_REDUCER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_CLUSTER_ALIAS(__NAME__, __IMPL__, ...)       \
+  INDEX_FACTORY_DEFINE_BUILTIN(Cluster, __NAME__, IndexCluster, __IMPL__, \
+                               ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_CLUSTER(__IMPL__, ...) \
+  INDEX_FACTORY_DEFINE_CLUSTER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_REFINER_ALIAS(__NAME__, __IMPL__, ...)       \
+  INDEX_FACTORY_DEFINE_BUILTIN(Refiner, __NAME__, IndexRefiner, __IMPL__, \
+                               ##__VA_ARGS__)
+
+#define INDEX_FACTORY_DEFINE_REFINER(__IMPL__, ...) \
+  INDEX_FACTORY_DEFINE_REFINER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
 //! Register Index Metric
 #define INDEX_FACTORY_REGISTER_METRIC_ALIAS(__NAME__, __IMPL__, ...) \
@@ -282,11 +385,10 @@ struct IndexFactory {
 #define INDEX_FACTORY_REGISTER_REFINER(__IMPL__, ...) \
   INDEX_FACTORY_REGISTER_REFINER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 
-//! Register Quantizer
+//! Register Quantizer (retained for application-defined types and aliases).
 #define INDEX_FACTORY_REGISTER_QUANTIZER_ALIAS(__NAME__, __IMPL__, ...) \
   AILEGO_FACTORY_REGISTER(__NAME__, turbo::Quantizer, __IMPL__, ##__VA_ARGS__)
 
-//! Register Quantizer
 #define INDEX_FACTORY_REGISTER_QUANTIZER(__IMPL__, ...) \
   INDEX_FACTORY_REGISTER_QUANTIZER_ALIAS(__IMPL__, __IMPL__, ##__VA_ARGS__)
 

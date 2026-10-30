@@ -22,6 +22,10 @@
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/fp16_quantizer/fp16_quantizer.h>
+#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
+#include <turbo/quantizer/int4_quantizer/int4_quantizer.h>
+#include <turbo/quantizer/int8_quantizer/int8_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_framework.h>
@@ -236,8 +240,16 @@ TEST_P(FlatTurboIndex, AddSearchFetchReopen) {
 
   // Initialize the reference independently from the requested input config,
   // rather than inheriting a possibly incorrect encoding from the index.
-  auto reference =
-      zvec::core::IndexFactory::CreateQuantizer(format.quantizer_name);
+  zvec::turbo::Quantizer::Pointer reference;
+  if (std::string(format.quantizer_name) == "Fp32Quantizer") {
+    reference = std::make_shared<zvec::turbo::Fp32Quantizer>();
+  } else if (std::string(format.quantizer_name) == "Fp16Quantizer") {
+    reference = std::make_shared<zvec::turbo::Fp16Quantizer>();
+  } else if (std::string(format.quantizer_name) == "Int8Quantizer") {
+    reference = std::make_shared<zvec::turbo::Int8Quantizer>();
+  } else if (std::string(format.quantizer_name) == "Int4Quantizer") {
+    reference = std::make_shared<zvec::turbo::Int4Quantizer>();
+  }
   ASSERT_NE(nullptr, reference);
   zvec::core::IndexMeta input_meta(DataType::DT_FP32, kDimension);
   input_meta.set_metric(Index::get_metric_name(test_case.metric, false), 0,

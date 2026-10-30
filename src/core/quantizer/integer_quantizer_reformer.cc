@@ -523,20 +523,20 @@ class IntegerStreamingReformer : public IndexReformer {
   std::shared_ptr<Rotator> rotator_{};
 };
 
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(
+INDEX_FACTORY_DEFINE_REFORMER_ALIAS(
     Int8QuantizerReformer,
     IntegerQuantizerReformer<ailego::EntropyInt8Quantizer>,
     IndexMeta::DataType::DT_INT8);
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(
+INDEX_FACTORY_DEFINE_REFORMER_ALIAS(
     Int4QuantizerReformer,
     IntegerQuantizerReformer<ailego::EntropyInt4Quantizer>,
     IndexMeta::DataType::DT_INT4);
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(Int8StreamingReformer,
-                                      IntegerStreamingReformer,
-                                      IndexMeta::DataType::DT_INT8);
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(Int4StreamingReformer,
-                                      IntegerStreamingReformer,
-                                      IndexMeta::DataType::DT_INT4);
+INDEX_FACTORY_DEFINE_REFORMER_ALIAS(Int8StreamingReformer,
+                                    IntegerStreamingReformer,
+                                    IndexMeta::DataType::DT_INT8);
+INDEX_FACTORY_DEFINE_REFORMER_ALIAS(Int4StreamingReformer,
+                                    IntegerStreamingReformer,
+                                    IndexMeta::DataType::DT_INT4);
 
 }  // namespace core
 }  // namespace zvec

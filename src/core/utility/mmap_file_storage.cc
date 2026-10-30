@@ -336,7 +336,7 @@ class MMapFileStorage : public IndexStorage {
   mutable std::mutex mapping_mutex_{};
 };
 
-INDEX_FACTORY_REGISTER_STORAGE(MMapFileStorage);
+INDEX_FACTORY_DEFINE_STORAGE(MMapFileStorage);
 
 }  // namespace core
 }  // namespace zvec

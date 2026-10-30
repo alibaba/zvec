@@ -26,9 +26,8 @@ namespace zvec::turbo {
 //! Turbo quantizer sources use these directly instead of the
 //! `IndexError_NotImplemented` / `IndexError_Unsupported` const objects
 //! because MSVC's WINDOWS_EXPORT_ALL_SYMBOLS does not export const data
-//! with constructors from zvec_shared.dll.  zvec_turbo is a static library
-//! linked with /WHOLEARCHIVE, so referencing those unexported symbols across
-//! the DLL boundary triggers LNK2019 on Windows.
+//! with constructors from zvec_shared.dll. Referencing those unexported
+//! const objects across the DLL boundary triggers LNK2019 on Windows.
 //!
 //! IndexError::Code stores -val in its constructor, so NotImplemented(11)
 //! yields -11 and Unsupported(12) yields -12.

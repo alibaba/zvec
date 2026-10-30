@@ -41,7 +41,7 @@ class IVFBuilder : public IndexBuilder {
 
   //! Initialize with an initialized Turbo quantizer for row-major postings.
   //! Meta describes raw input vectors, retained for centroid training and
-  //! assignment. Meta (or quantizer->meta()) must carry the matching factory
+  //! assignment. Meta (or quantizer->meta()) must carry the matching quantizer
   //! name and initialization params in its quantizer descriptor for reload.
   int init(const IndexMeta &meta, const ailego::Params &params,
            const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) override;

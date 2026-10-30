@@ -15,6 +15,7 @@
 #include <memory>
 #include <string>
 #include <turbo/quantizer/quantizer.h>
+#include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
 #include "algorithm/flat/flat_index_format.h"

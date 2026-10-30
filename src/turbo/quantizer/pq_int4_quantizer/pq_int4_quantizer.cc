@@ -1131,8 +1131,6 @@ int PqInt4Quantizer::deserialize(const void *data, size_t len) {
   return 0;
 }
 
-INDEX_FACTORY_REGISTER_QUANTIZER(PqInt4Quantizer);
-
 // ---------------------------------------------------------------------------
 // Template helper implementations (type-dispatched at call sites)
 // ---------------------------------------------------------------------------
@@ -1183,3 +1181,7 @@ void PqInt4Quantizer::subtract_center(T *vec) const {
 
 }  // namespace turbo
 }  // namespace zvec
+
+namespace zvec::core {
+INDEX_FACTORY_DEFINE_QUANTIZER_ALIAS(PqInt4Quantizer, turbo::PqInt4Quantizer);
+}  // namespace zvec::core

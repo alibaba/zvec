@@ -7,7 +7,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 
 cc_library(
-        NAME core_interface STATIC STRICT ALWAYS_LINK
+        NAME core_interface STATIC STRICT
         SRCS *.cc indexes/*.cc
         INCS . ${PROJECT_ROOT_DIR}/src/ ${PROJECT_ROOT_DIR}/src/core
         LIBS ${CORE_INTERFACE_LIBS}

@@ -405,7 +405,7 @@ int FlatSparseStreamer::do_search(
                     (FlatSparseEntity *)&entity_);
 }
 
-INDEX_FACTORY_REGISTER_STREAMER(FlatSparseStreamer);
+INDEX_FACTORY_DEFINE_STREAMER(FlatSparseStreamer);
 
 }  // namespace core
 }  // namespace zvec

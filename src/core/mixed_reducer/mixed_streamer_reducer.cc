@@ -776,8 +776,8 @@ int MixedStreamerReducer::index_build(IndexHolder::Pointer target_holder) {
   return 0;
 }
 
-INDEX_FACTORY_REGISTER_STREAMER_REDUCER_ALIAS(MixedStreamerReducer,
-                                              MixedStreamerReducer);
+INDEX_FACTORY_DEFINE_STREAMER_REDUCER_ALIAS(MixedStreamerReducer,
+                                            MixedStreamerReducer);
 
 }  // namespace core
 }  // namespace zvec

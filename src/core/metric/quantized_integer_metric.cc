@@ -366,7 +366,7 @@ class QuantizedIntegerMetric : public IndexMetric {
   MetricType origin_metric_type_{};
 };
 
-INDEX_FACTORY_REGISTER_METRIC_ALIAS(QuantizedInteger, QuantizedIntegerMetric);
+INDEX_FACTORY_DEFINE_METRIC_ALIAS(QuantizedInteger, QuantizedIntegerMetric);
 
 }  // namespace core
 }  // namespace zvec

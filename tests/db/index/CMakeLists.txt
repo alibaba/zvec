@@ -46,7 +46,6 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     INCS . .. ../../src
     LDFLAGS ${APPLE_FRAMEWORK_LIBS}
   )
-  db_test_force_load_core(${CC_TARGET})
   cc_test_suite(zvec_index ${CC_TARGET})
 endforeach()
 

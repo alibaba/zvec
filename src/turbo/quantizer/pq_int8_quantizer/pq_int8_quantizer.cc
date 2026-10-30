@@ -1242,8 +1242,6 @@ int PqInt8Quantizer::import_codebook(const void *data, size_t len) {
   return 0;
 }
 
-INDEX_FACTORY_REGISTER_QUANTIZER(PqInt8Quantizer);
-
 // ---------------------------------------------------------------------------
 // Template helper implementations (type-dispatched at call sites)
 // ---------------------------------------------------------------------------
@@ -1294,3 +1292,7 @@ void PqInt8Quantizer::subtract_center(T *vec) const {
 
 }  // namespace turbo
 }  // namespace zvec
+
+namespace zvec::core {
+INDEX_FACTORY_DEFINE_QUANTIZER_ALIAS(PqInt8Quantizer, turbo::PqInt8Quantizer);
+}  // namespace zvec::core

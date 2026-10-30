@@ -17,6 +17,7 @@
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
 #include <turbo/quantizer/quantizer.h>
+#include <zvec/core/framework/index_factory.h>
 #include "utility/sparse_utility.h"
 #include "hnsw_algorithm.h"
 #include "hnsw_context.h"
@@ -1240,7 +1241,7 @@ int HnswStreamer::search_bf_by_p_keys_impl(
 }
 
 
-INDEX_FACTORY_REGISTER_STREAMER(HnswStreamer);
+INDEX_FACTORY_DEFINE_STREAMER(HnswStreamer);
 
 }  // namespace core
 }  // namespace zvec
