@@ -1,3 +1,9 @@
+# LOCAL WORKAROUND (not part of the sqlite extension): RocksDB 8.1.1 public headers omit
+# <cstdint>; GCC >= 13 no longer includes it transitively.
+if(NOT MSVC)
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include cstdint>")
+endif()
+
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
