@@ -14,6 +14,8 @@
 
 #include "neon/record_quantized_int8/cosine.h"
 #include <cstdint>
+#include <cstring>
+#include "neon/common/record_batch.h"
 #include "neon/record_quantized_int8/common.h"
 
 namespace zvec::turbo::neon {
@@ -25,10 +27,11 @@ void cosine_int8_distance(const void *a, const void *b, size_t dim,
     return;
   }
   const float ip = internal::ip_int8_neon(a, b, original_dim);
-  const float *a_tail = reinterpret_cast<const float *>(
-      reinterpret_cast<const int8_t *>(a) + original_dim);
-  const float *b_tail = reinterpret_cast<const float *>(
-      reinterpret_cast<const int8_t *>(b) + original_dim);
+  float a_tail[3], b_tail[3];
+  std::memcpy(a_tail, static_cast<const uint8_t *>(a) + original_dim,
+              sizeof(a_tail));
+  std::memcpy(b_tail, static_cast<const uint8_t *>(b) + original_dim,
+              sizeof(b_tail));
 
   const float ma = a_tail[0];
   const float mb = a_tail[1];
@@ -44,9 +47,11 @@ void cosine_int8_distance(const void *a, const void *b, size_t dim,
 void cosine_int8_batch_distance(const void *const *vectors, const void *query,
                                 size_t n, size_t dim, float *distances,
                                 const void *const * /*extra_values*/) {
-  for (size_t i = 0; i < n; ++i) {
-    cosine_int8_distance(vectors[i], query, dim, &distances[i]);
+  if (dim <= 24) {
+    return;
   }
+  detail::record_distance_batch<8, false>(vectors, query, n, dim - 24,
+                                          distances);
 }
 
 }  // namespace zvec::turbo::neon

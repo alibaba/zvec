@@ -4088,6 +4088,121 @@ TEST_F(HnswStreamerTest, TestAddAndSearchWithID) {
   // EXPECT_GT(cost, 2.0f);
 }
 
+TEST_F(HnswStreamerTest, TestContiguousWritableReopenWithExistingContexts) {
+  constexpr uint32_t kInitialCount = 16;
+  constexpr uint32_t kTotalCount = 128;
+  IndexQueryMeta qmeta(IndexMeta::DT_FP32, dim);
+
+  for (bool explicit_id : {false, true}) {
+    SCOPED_TRACE(explicit_id);
+    const std::string path =
+        dir_ + "contiguous_writable_" + std::to_string(explicit_id) + ".index";
+    ailego::Params params;
+    params.set(PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY, true);
+    params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 16U);
+    params.set(PARAM_HNSW_STREAMER_SCALING_FACTOR, 5U);
+    params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 128U);
+    params.set(PARAM_HNSW_STREAMER_EF, 128U);
+    params.set(PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
+    auto streamer = IndexFactory::CreateStreamer("HnswStreamer");
+    ASSERT_NE(nullptr, streamer);
+    auto hnsw = std::dynamic_pointer_cast<HnswStreamer>(streamer);
+    ASSERT_NE(nullptr, hnsw);
+    ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
+    auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(ailego::Params()));
+    ASSERT_EQ(0, storage->open(path, true));
+    ASSERT_EQ(0, streamer->open(storage));
+    {
+      auto ctx = streamer->create_context();
+      ASSERT_NE(nullptr, ctx);
+      for (uint32_t id = 0; id < kInitialCount; ++id) {
+        std::vector<float> vec(dim, static_cast<float>(id));
+        ASSERT_EQ(0,
+                  explicit_id
+                      ? streamer->add_with_id_impl(id, vec.data(), qmeta, ctx)
+                      : streamer->add_impl(id, vec.data(), qmeta, ctx));
+      }
+    }
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, storage->close());
+
+    // Writable opens must preserve the flag for later read-only opens.
+    auto read_storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+    ASSERT_NE(nullptr, read_storage);
+    ASSERT_EQ(0, read_storage->init(ailego::Params()));
+    ASSERT_EQ(0, read_storage->open(path, false));
+    ASSERT_EQ(0, streamer->open(read_storage));
+    ASSERT_EQ(HnswStorageMode::kContiguous, hnsw->storage_mode());
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, read_storage->close());
+
+    ASSERT_EQ(0, storage->open(path, false));
+    ASSERT_EQ(0, streamer->open(storage));
+    ASSERT_EQ(HnswStorageMode::kMmap, hnsw->storage_mode());
+    {
+      // Keep contexts alive across appends to catch stale snapshots.
+      auto add_ctx = streamer->create_context();
+      auto query_ctx = streamer->create_context();
+      auto linear_ctx = streamer->create_context();
+      ASSERT_NE(nullptr, add_ctx);
+      ASSERT_NE(nullptr, query_ctx);
+      ASSERT_NE(nullptr, linear_ctx);
+      add_ctx->set_topk(1);
+      query_ctx->set_topk(1);
+      linear_ctx->set_topk(1);
+      std::vector<float> vec(dim, static_cast<float>(kInitialCount - 1));
+      ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, query_ctx));
+      ASSERT_EQ(1U, query_ctx->result().size());
+      ASSERT_EQ(kInitialCount - 1, query_ctx->result()[0].key());
+
+      for (uint32_t id = kInitialCount; id < kTotalCount; ++id) {
+        SCOPED_TRACE(id);
+        std::fill(vec.begin(), vec.end(), static_cast<float>(id));
+        ASSERT_EQ(
+            0, explicit_id
+                   ? streamer->add_with_id_impl(id, vec.data(), qmeta, add_ctx)
+                   : streamer->add_impl(id, vec.data(), qmeta, add_ctx));
+        ASSERT_EQ(0, streamer->search_bf_impl(vec.data(), qmeta, linear_ctx));
+        ASSERT_EQ(1U, linear_ctx->result().size());
+        ASSERT_EQ(id, linear_ctx->result()[0].key());
+        for (auto *ctx : {&add_ctx, &query_ctx}) {
+          ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, *ctx));
+          ASSERT_EQ(1U, (*ctx)->result().size());
+          EXPECT_EQ(id, (*ctx)->result()[0].key());
+          EXPECT_FLOAT_EQ(linear_ctx->result()[0].score(),
+                          (*ctx)->result()[0].score());
+        }
+      }
+      auto new_ctx = streamer->create_context();
+      ASSERT_NE(nullptr, new_ctx);
+      new_ctx->set_topk(1);
+      ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, new_ctx));
+      ASSERT_EQ(1U, new_ctx->result().size());
+      EXPECT_EQ(query_ctx->result()[0].key(), new_ctx->result()[0].key());
+    }
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, storage->close());
+
+    ASSERT_EQ(0, read_storage->open(path, false));
+    ASSERT_EQ(0, streamer->open(read_storage));
+    ASSERT_EQ(HnswStorageMode::kContiguous, hnsw->storage_mode());
+    {
+      auto ctx = streamer->create_context();
+      ASSERT_NE(nullptr, ctx);
+      ctx->set_topk(1);
+      std::vector<float> vec(dim, static_cast<float>(kTotalCount - 1));
+      ASSERT_EQ(0, streamer->search_impl(vec.data(), qmeta, ctx));
+      ASSERT_EQ(1U, ctx->result().size());
+      EXPECT_EQ(kTotalCount - 1, ctx->result()[0].key());
+      EXPECT_FLOAT_EQ(0.0f, ctx->result()[0].score());
+    }
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, read_storage->close());
+  }
+}
+
 TEST_F(HnswStreamerTest, TestContiguousMemorySearch) {
   // Build index with mmap mode
   auto storage = IndexFactory::CreateStorage("MMapFileStorage");
@@ -4133,8 +4248,15 @@ TEST_F(HnswStreamerTest, TestContiguousMemorySearch) {
   search_params.set(PARAM_HNSW_STREAMER_EF, 16U);
   search_params.set(PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD, 2000U);
   search_params.set(PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY, true);
+  ASSERT_EQ(0, storage->close());
+  storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(stg_params));
+  ASSERT_EQ(0, storage->open(dir_ + "TestContiguous.index", false));
   ASSERT_EQ(0, searcher->init(*index_meta_ptr_, search_params));
   ASSERT_EQ(0, searcher->open(storage));
+  ASSERT_EQ(HnswStorageMode::kContiguous,
+            std::dynamic_pointer_cast<HnswStreamer>(searcher)->storage_mode());
 
   size_t cnt = 3000UL;
   size_t topk = 50;
@@ -4237,8 +4359,15 @@ TEST_F(HnswStreamerTest, TestContiguousMultiThreadSearch) {
 
   auto searcher = IndexFactory::CreateStreamer("HnswStreamer");
   ASSERT_NE(nullptr, searcher);
+  ASSERT_EQ(0, storage->close());
+  storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(stg_params));
+  ASSERT_EQ(0, storage->open(dir_ + "TestContiguousMT", false));
   ASSERT_EQ(0, searcher->init(meta, search_params));
   ASSERT_EQ(0, searcher->open(storage));
+  ASSERT_EQ(HnswStorageMode::kContiguous,
+            std::dynamic_pointer_cast<HnswStreamer>(searcher)->storage_mode());
 
   // Verify data via provider
   auto provider = searcher->create_provider();

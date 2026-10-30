@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include "utility/stable_vector_holder.h"
 #include "flat_distance_matrix.h"
 #include "flat_searcher.h"
 #include "flat_streamer.h"
@@ -26,7 +27,7 @@ namespace core {
  */
 
 template <size_t BATCH_SIZE>
-class FlatStreamerProvider : public IndexProvider {
+class FlatStreamerProvider : public IndexProvider, public StableVectorHolder {
  public:
   //! Constructor
   FlatStreamerProvider(const FlatStreamer<BATCH_SIZE> *owner) {
@@ -39,6 +40,10 @@ class FlatStreamerProvider : public IndexProvider {
   //! Create a new iterator
   IndexProvider::Iterator::Pointer create_iterator() override {
     return owner_->entity().creater_iterator();
+  }
+
+  int retain_stable_data(std::shared_ptr<const void> *lifetime) override {
+    return owner_->entity().retain_stable_data(lifetime);
   }
 
   //! Retrieve count of vectors
