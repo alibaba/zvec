@@ -177,51 +177,6 @@ TEST(HnswDistCalculatorTest, PassesNullWhenMetricHasNoExtraValues) {
   EXPECT_FLOAT_EQ(0.0f, distance);
 }
 
-TEST(HnswDistCalculatorTest, RejectsNullBatchRecordsBeforeCallingMetric) {
-  auto metric = CreateMetric();
-  float query = 0.0f;
-  float vector = 1.0f;
-  HnswDistCalculator calculator(nullptr, metric, 1, &query);
-  bool called = false;
-  calculator.update_distance(metric->distance(),
-                             [&](const void **, const void *, size_t, size_t,
-                                 float *, const void **) { called = true; });
-  for (size_t missing = 0; missing < 3; ++missing) {
-    const void *vectors[] = {&vector, &vector, &vector};
-    vectors[missing] = nullptr;
-    float distances[] = {1.0f, 1.0f, 1.0f};
-    calculator.reset_query(&query);
-    calculator.batch_dist(vectors, 3, distances, nullptr);
-    EXPECT_TRUE(calculator.error());
-    EXPECT_TRUE(calculator.missing_vector());
-    EXPECT_FALSE(called);
-  }
-  calculator.clear();
-  EXPECT_FALSE(calculator.error());
-  EXPECT_FALSE(calculator.missing_vector());
-
-  calculator.reset_query(nullptr);
-  const void *vectors[] = {&vector};
-  float distance = 1.0f;
-  calculator.batch_dist(vectors, 1, &distance, nullptr);
-  EXPECT_TRUE(calculator.error());
-  EXPECT_FALSE(calculator.missing_vector());
-  EXPECT_FALSE(called);
-}
-
-TEST(HnswDistCalculatorTest, QueryDistancePreservesInternalReadErrors) {
-  auto entity = std::make_shared<InlineVectorHnswEntity>(
-      std::vector<InlineVectorHnswEntity::Record>(1));
-  auto metric = CreateMetric();
-  HnswContext context(1, metric, entity);
-  float query = 0.0f;
-  context.dist_calculator().reset_query(&query);
-  float distance = 0.0f;
-  EXPECT_FALSE(context.try_batch_dist(1, distance));
-  EXPECT_TRUE(context.error());
-  EXPECT_FALSE(context.dist_calculator().missing_vector());
-}
-
 }  // namespace
 }  // namespace core
 }  // namespace zvec

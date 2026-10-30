@@ -100,7 +100,6 @@ class HnswDistCalculator {
   //! Reset query vector data
   inline void reset_query(const void *query) {
     error_ = false;
-    missing_vector_ = false;
     query_ = query;
   }
 
@@ -145,7 +144,6 @@ class HnswDistCalculator {
     if (ailego_unlikely(feat == nullptr)) {
       LOG_ERROR("Get nullptr vector, id=%u", id);
       error_ = true;
-      missing_vector_ = true;
       return 0.0f;
     }
 
@@ -199,23 +197,6 @@ class HnswDistCalculator {
                   const void **extra_values) {
     compare_cnt_++;
 
-    if (num == 0) return;
-    if (ailego_unlikely(vecs == nullptr || query_ == nullptr)) {
-      LOG_ERROR("Nullptr of dense vector batch or query");
-      error_ = true;
-      std::fill(distances, distances + num, 0.0f);
-      return;
-    }
-    for (size_t i = 0; i < num; ++i) {
-      if (ailego_unlikely(vecs[i] == nullptr)) {
-        LOG_ERROR("Get nullptr vector in batch, offset=%zu", i);
-        error_ = true;
-        missing_vector_ = true;
-        std::fill(distances, distances + num, 0.0f);
-        return;
-      }
-    }
-
     if (ailego_unlikely(!batch_distance_)) {
       LOG_ERROR("Batch distance function is not initialized");
       error_ = true;
@@ -228,7 +209,7 @@ class HnswDistCalculator {
   inline dist_t batch_dist(const void *feat, const void *extra_values) {
     compare_cnt_++;
 
-    if (ailego_unlikely(feat == nullptr || query_ == nullptr)) {
+    if (ailego_unlikely(feat == nullptr)) {
       LOG_ERROR("Get nullptr vector");
       error_ = true;
       return 0.0f;
@@ -251,7 +232,6 @@ class HnswDistCalculator {
   inline void clear() {
     compare_cnt_ = 0;
     error_ = false;
-    missing_vector_ = false;
   }
 
   inline void clear_compare_cnt() {
@@ -260,11 +240,6 @@ class HnswDistCalculator {
 
   inline bool error() const {
     return error_;
-  }
-
-  //! A graph query hit an unavailable record and needs a linear retry.
-  inline bool missing_vector() const {
-    return missing_vector_;
   }
 
   inline void set_error() {
@@ -332,7 +307,6 @@ class HnswDistCalculator {
   uint32_t compare_cnt_;  // record distance compute times
   // uint32_t compare_cnt_batch_;  // record batch distance compute time
   bool error_{false};
-  bool missing_vector_{false};
 
   // get original vector, used to build graph
   IndexProvider::Pointer provider_{};
