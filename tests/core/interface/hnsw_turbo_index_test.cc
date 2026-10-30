@@ -97,6 +97,32 @@ class TestExternalVectorSource final : public zvec::core::VectorSource {
   const std::vector<std::vector<float>> *vectors_;
 };
 
+class TestContiguousVectorSource final
+    : public zvec::core::ContiguousVectorSource {
+ public:
+  TestContiguousVectorSource(const std::vector<std::vector<float>> &vectors,
+                             size_t padding)
+      : stride_elements_(kDimension + padding),
+        data_(vectors.size() * stride_elements_, -999.0f) {
+    for (size_t i = 0; i < vectors.size(); ++i) {
+      std::copy(vectors[i].begin(), vectors[i].end(),
+                data_.begin() + i * stride_elements_);
+    }
+  }
+
+  zvec::core::ContiguousBatch get_contiguous_view() const override {
+    return {data_.data(),
+            0,
+            static_cast<uint32_t>(data_.size() / stride_elements_),
+            stride_elements_ * sizeof(float),
+            {}};
+  }
+
+ private:
+  size_t stride_elements_;
+  std::vector<float> data_;
+};
+
 std::vector<std::vector<float>> RandomVectors(size_t count = kVectorCount) {
   std::mt19937 gen(2026);
   std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
@@ -111,6 +137,19 @@ std::vector<std::vector<float>> RandomVectors(size_t count = kVectorCount) {
     norm = std::sqrt(norm);
     for (float &value : vector) {
       value /= norm;
+    }
+  }
+  return vectors;
+}
+
+std::vector<std::vector<float>> ExternalVectors(MetricType metric) {
+  auto vectors = RandomVectors(kGraphVectorCount);
+  if (metric == MetricType::kCosine) {
+    for (size_t i = 0; i < vectors.size(); ++i) {
+      const float scale = static_cast<float>(i % 7 + 1);
+      for (float &value : vectors[i]) {
+        value *= scale;
+      }
     }
   }
   return vectors;
@@ -294,21 +333,11 @@ void CheckTurboAddSearchReopen(MetricType metric, QuantizerType quantizer,
   zvec::test_util::RemoveTestFiles(path);
 }
 
-void CheckExternalTurboAddSearchReopen(MetricType metric,
-                                       QuantizerType quantizer,
-                                       const char *quantizer_name,
-                                       const std::string &path) {
+void CheckExternalTurboAddSearchReopen(
+    MetricType metric, QuantizerType quantizer, const char *quantizer_name,
+    const std::string &path, const std::vector<std::vector<float>> &vectors,
+    const zvec::core::VectorSource &source) {
   zvec::test_util::RemoveTestFiles(path);
-  auto vectors = RandomVectors(kGraphVectorCount);
-  if (metric == MetricType::kCosine) {
-    for (size_t i = 0; i < vectors.size(); ++i) {
-      const float scale = static_cast<float>(i % 7 + 1);
-      for (float &value : vectors[i]) {
-        value *= scale;
-      }
-    }
-  }
-  TestExternalVectorSource source(&vectors);
   auto param = MakeParam(metric, quantizer);
   param->use_external_vector = true;
 
@@ -641,8 +670,22 @@ TEST_P(HnswTurboIndexTest, AddSearchReopenFetch) {
 
 TEST_P(HnswTurboIndexTest, ExternalVectorsUseTurbo) {
   const auto &[quantizer, metric] = GetParam();
+  auto vectors = ExternalVectors(metric.type);
+  TestExternalVectorSource source(&vectors);
   CheckExternalTurboAddSearchReopen(metric.type, quantizer.type, quantizer.name,
-                                    index_path("external"));
+                                    index_path("external"), vectors, source);
+}
+
+TEST_P(HnswTurboIndexTest, ContiguousExternalVectorsUseTurbo) {
+  const auto &[quantizer, metric] = GetParam();
+  auto vectors = ExternalVectors(metric.type);
+  for (size_t padding : {0, 3}) {
+    SCOPED_TRACE(padding);
+    TestContiguousVectorSource source(vectors, padding);
+    ASSERT_NO_FATAL_FAILURE(CheckExternalTurboAddSearchReopen(
+        metric.type, quantizer.type, quantizer.name,
+        index_path("contiguous_external"), vectors, source));
+  }
 }
 
 TEST_P(HnswTurboIndexTest, OriginalProviderBuildUsesTurbo) {

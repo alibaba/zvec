@@ -34,6 +34,8 @@ static const std::string FLAT_SEGMENT_FEATURES_SEG_ID("flat.features");
 static const std::string FLAT_SEGMENT_MAPPING_SEG_ID("flat.mapping");
 
 // index params
+static const std::string PARAM_FLAT_USE_EXTERNAL_VECTOR(
+    "proxima.flat.use_external_vector");
 static const std::string PARAM_FLAT_COLUMN_MAJOR_ORDER(
     "proxima.flat.column_major_order");
 static const std::string PARAM_FLAT_BATCH_SIZE("proxima.flat.batch_size");

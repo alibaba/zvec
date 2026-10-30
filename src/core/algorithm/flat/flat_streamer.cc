@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "flat_streamer.h"
+#include <limits>
 #include <zvec/core/framework/index_factory.h>
 #include "flat_streamer_context.h"
 #include "flat_streamer_dumper.h"
@@ -109,6 +110,21 @@ int FlatStreamer<BATCH_SIZE>::init(const IndexMeta &imeta,
   params.get(PARAM_FLAT_USE_ID_MAP, &use_key_info_map_);
   params.get(PARAM_FLAT_USE_CONTIGUOUS_MEMORY, &use_contiguous_memory_);
 
+  use_external_vector_ = false;
+  params.get(PARAM_FLAT_USE_EXTERNAL_VECTOR, &use_external_vector_);
+  if (use_external_vector_) {
+    if (use_contiguous_memory_ || meta_.major_order() != IndexMeta::MO_ROW ||
+        meta_.data_type() != IndexMeta::DT_FP32 ||
+        meta_.meta_type() != IndexMeta::MT_DENSE || meta_.dimension() == 0 ||
+        meta_.element_size() != meta_.dimension() * sizeof(float) ||
+        (meta_.metric_name() != "SquaredEuclidean" &&
+         meta_.metric_name() != "InnerProduct") ||
+        (quantizer_ && meta_.quantizer_name() != "Fp32Quantizer")) {
+      return IndexError_Unsupported;
+    }
+    use_key_info_map_ = true;
+  }
+
   state_ = STATE_INITED;
 
   return 0;
@@ -182,6 +198,7 @@ int FlatStreamer<BATCH_SIZE>::open(IndexStorage::Pointer stg) {
   entity_->enable_filter_same_key(true);
   entity_->set_linear_list_count(1);
   entity_->set_use_key_info_map(use_key_info_map_);
+  entity_->set_use_external_vector(use_external_vector_);
   entity_->set_quantizer(quantizer_);
   *entity_->mutable_meta() = meta_;
 
@@ -236,6 +253,7 @@ int FlatStreamer<BATCH_SIZE>::flush(uint64_t checkpoint) {
 
 template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::dump(const IndexDumper::Pointer &dumper) {
+  if (use_external_vector_) return IndexError_Unsupported;
   std::string searcher_name = "FlatSearcher";
   if constexpr (BATCH_SIZE == 16) {
     searcher_name = "FlatSearcher16";
@@ -288,6 +306,10 @@ int FlatStreamer<BATCH_SIZE>::add_impl(uint64_t pkey, const void *query,
     (*stats_.mutable_discarded_count())++;
     return IndexError_Cast;
   }
+  if (use_external_vector_) {
+    if (pkey >= kInvalidNodeId) return IndexError_InvalidArgument;
+    return add_with_id_impl(static_cast<uint32_t>(pkey), query, qmeta, context);
+  }
   READ_LOCK_GUARD_DEFER(dump_mutex_, dump_lock);
 
   if (!dump_lock.try_lock()) {
@@ -337,6 +359,12 @@ int FlatStreamer<BATCH_SIZE>::add_with_id_impl(uint32_t id, const void *query,
     (*stats_.mutable_discarded_count())++;
     return IndexError_Cast;
   }
+  if (use_external_vector_) {
+    if (state_ != STATE_OPENED || !ctx->vector_source())
+      return IndexError_NoReady;
+    if (id == kInvalidNodeId) return IndexError_InvalidArgument;
+    if (!ctx->vector_source()->get_vector(id)) return IndexError_NoExist;
+  }
   READ_LOCK_GUARD_DEFER(dump_mutex_, dump_lock);
 
   if (!dump_lock.try_lock()) {
@@ -360,6 +388,10 @@ int FlatStreamer<BATCH_SIZE>::search_bf_impl(const void *query,
                                              const IndexQueryMeta &qmeta,
                                              uint32_t count,
                                              Context::Pointer &context) const {
+  if (use_external_vector_) {
+    if (state_ != STATE_OPENED) return IndexError_NoReady;
+    return search_external(query, qmeta, count, nullptr, context);
+  }
   if (state_ != STATE_OPENED) return IndexError_NoReady;
   ailego_assert(query && count && !!context);
   ailego_assert(quantizer_ || metric_->is_matched(meta_, qmeta));
@@ -408,6 +440,10 @@ int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
     const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
     const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
+  if (use_external_vector_) {
+    if (state_ != STATE_OPENED) return IndexError_NoReady;
+    return search_external(query, qmeta, count, &p_keys, context);
+  }
   if (state_ != STATE_OPENED) return IndexError_NoReady;
   if (count == 0 || count > p_keys.size()) return IndexError_InvalidArgument;
   ailego_assert(query && count && !!context);
@@ -453,11 +489,202 @@ int FlatStreamer<BATCH_SIZE>::search_bf_by_p_keys_impl(
 }
 
 template <size_t BATCH_SIZE>
+int FlatStreamer<BATCH_SIZE>::search_external(
+    const void *query, const IndexQueryMeta &qmeta, uint32_t count,
+    const std::vector<std::vector<uint64_t>> *keys,
+    Context::Pointer &context) const {
+  auto *ctx = dynamic_cast<FlatStreamerContext<BATCH_SIZE> *>(context.get());
+  if (!ctx || !query || !count || (keys && keys->size() < count) ||
+      qmeta.meta_type() != meta_.meta_type() ||
+      qmeta.data_type() != meta_.data_type() ||
+      qmeta.dimension() != meta_.dimension() ||
+      qmeta.element_size() != meta_.element_size()) {
+    return IndexError_InvalidArgument;
+  }
+  if (ctx->magic() != magic_) ctx->reset(this);
+  const auto *source = ctx->vector_source();
+  if (!source || !ctx->threshold_is_valid()) return IndexError_NoReady;
+  if (ctx->group_by_search()) return IndexError_Unsupported;
+  ctx->reset_results(count);
+  // Bound both pointer scratch space and per-request pinned vector bytes.
+  const uint32_t batch_limit = static_cast<uint32_t>(std::min<size_t>(
+      1024,
+      std::max<size_t>(BATCH_SIZE, read_block_size_ / meta_.element_size())));
+  auto *scratch = ctx->search_scratch();
+
+  for (uint32_t q = 0; q < count; ++q) {
+    const void *current_query =
+        static_cast<const char *>(query) + q * qmeta.element_size();
+    auto *heap = ctx->result_heap();
+    heap->clear();
+    // Destroy the outstanding lease before its cursor, including on errors.
+    VectorIterator::Pointer cursor;
+    VectorBatch batch;
+    if (!keys) cursor = source->create_iterator();
+    auto clear_batch = [&]() {
+      if (auto *pointers = std::get_if<PointerBatch>(&batch)) {
+        pointers->ids.clear();
+        pointers->vectors.clear();
+        pointers->lease.reset();
+      } else {
+        std::get<ContiguousBatch>(batch) = {};
+      }
+    };
+    auto consume = [&]() -> int {
+      const auto *contiguous = std::get_if<ContiguousBatch>(&batch);
+      const auto *pointers = std::get_if<PointerBatch>(&batch);
+      if (!contiguous && !pointers) return IndexError_ReadData;
+      const size_t batch_size =
+          contiguous ? contiguous->count : pointers->ids.size();
+      if (batch_size > batch_limit) return IndexError_ReadData;
+      if (contiguous) {
+        if (batch_size &&
+            (!contiguous->data || contiguous->stride < meta_.element_size() ||
+             batch_size - 1 >
+                 (std::numeric_limits<size_t>::max() - meta_.element_size()) /
+                     contiguous->stride ||
+             contiguous->first_id >= kInvalidNodeId ||
+             batch_size > kInvalidNodeId - contiguous->first_id))
+          return IndexError_ReadData;
+      } else if (pointers->ids.size() != pointers->vectors.size()) {
+        return IndexError_ReadData;
+      }
+      const auto *ids = pointers ? pointers->ids.data() : nullptr;
+      const uint32_t first_id = contiguous ? contiguous->first_id : 0;
+      scratch->vector_ptrs.clear();
+      scratch->vector_keys.clear();
+      scratch->vector_ptrs.reserve(batch_size);
+      scratch->vector_keys.reserve(batch_size);
+      if (cursor)
+        entity_->key_presence(ids, batch_size, first_id,
+                              &scratch->key_presence);
+      for (size_t i = 0; i < batch_size; ++i) {
+        const auto id = ids ? ids[i] : first_id + static_cast<uint32_t>(i);
+        if (id == kInvalidNodeId) return IndexError_ReadData;
+        if (cursor && (!scratch->key_presence[i] ||
+                       (ctx->filter().is_valid() && ctx->filter()(id)))) {
+          ++*ctx->mutable_stats(q)->mutable_filtered_count();
+          continue;
+        }
+        // Invisible or unregistered rows need not have a readable vector.
+        const void *vector = contiguous
+                                 ? static_cast<const char *>(contiguous->data) +
+                                       i * contiguous->stride
+                                 : pointers->vectors[i];
+        if (!vector) return IndexError_ReadData;
+        scratch->vector_ptrs.push_back(vector);
+        scratch->vector_keys.push_back(id);
+      }
+      const size_t size = scratch->vector_ptrs.size();
+      if (!size) return 0;
+      scratch->distances.resize(size);
+      if (quantizer_) {
+        quantizer_->calc_distance_dp_query_batch(
+            scratch->vector_ptrs.data(), static_cast<int>(size), current_query,
+            scratch->distances.data());
+      } else if (auto distance = metric_->batch_distance()) {
+        distance(scratch->vector_ptrs.data(), current_query, size,
+                 meta_.dimension(), scratch->distances.data(), nullptr);
+      } else {
+        auto scalar_distance = metric_->distance();
+        for (size_t i = 0; i < size; ++i) {
+          scalar_distance(current_query, scratch->vector_ptrs[i],
+                          meta_.dimension(), &scratch->distances[i]);
+        }
+      }
+      *ctx->mutable_stats(q)->mutable_dist_calced_count() += size;
+      for (size_t i = 0; i < size; ++i) {
+        const auto id = scratch->vector_keys[i];
+        const auto distance = scratch->distances[i];
+        heap->emplace(id, distance);
+      }
+      return 0;
+    };
+
+    if (cursor) {
+      while (true) {
+        clear_batch();
+        int ret = cursor->next_batch(batch_limit, &batch);
+        if (ret != 0) return ret;
+        ret = consume();
+        if (ret != 0) return ret;
+        const auto *contiguous = std::get_if<ContiguousBatch>(&batch);
+        if (contiguous ? contiguous->count == 0
+                       : std::get<PointerBatch>(batch).ids.empty())
+          break;
+      }
+    } else {
+      std::vector<uint32_t> ids;
+      ids.reserve(batch_limit);
+      auto read_batch = [&]() -> int {
+        if (ids.empty()) return 0;
+        clear_batch();
+        auto &pointers = std::get<PointerBatch>(batch);
+        pointers.ids = ids;
+        pointers.vectors.resize(ids.size());
+        source->get_vectors(ids.data(), ids.size(), pointers.vectors.data());
+        int ret = consume();
+        ids.clear();
+        return ret;
+      };
+      auto read_candidates = [&](const std::vector<uint64_t> &candidates) {
+        for (auto key : candidates) {
+          if (key >= kInvalidNodeId || (keys && !entity_->contains_key(key)))
+            continue;
+          if (ctx->filter().is_valid() && ctx->filter()(key)) {
+            if (!keys) ++*ctx->mutable_stats(q)->mutable_filtered_count();
+            continue;
+          }
+          ids.push_back(static_cast<uint32_t>(key));
+          if (ids.size() == batch_limit) {
+            int ret = read_batch();
+            if (ret != 0) return ret;
+          }
+        }
+        return read_batch();
+      };
+      if (keys) {
+        int ret = read_candidates((*keys)[q]);
+        if (ret != 0) return ret;
+      } else {
+        // Sources without a scan cursor can use the existing random reads.
+        // Fix the scan length and copy only one batch of registered IDs.
+        const size_t registered_count = entity_->registered_key_count();
+        std::vector<uint64_t> registered_keys;
+        for (size_t offset = 0; offset < registered_count;
+             offset += batch_limit) {
+          entity_->get_registered_keys(
+              offset, std::min<size_t>(batch_limit, registered_count - offset),
+              &registered_keys);
+          int ret = read_candidates(registered_keys);
+          if (ret != 0) return ret;
+        }
+      }
+    }
+    clear_batch();
+    ctx->take_topk_result(q);
+    if (ctx->fetch_vector()) {
+      // Match HNSW's borrowed random-access result contract. Scan pages have
+      // already been released, so result pointers must come from the source.
+      for (auto &doc : *ctx->mutable_result(q)) {
+        const void *vector = source->get_vector(doc.key());
+        if (!vector) return IndexError_NoExist;
+        IndexStorage::MemoryBlock block;
+        block.reset(const_cast<void *>(vector));
+        doc = IndexDocument(doc.key(), doc.score(), doc.index(), block);
+      }
+    }
+  }
+  return 0;
+}
+
+template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::search_by_p_keys_fast(
     const void *query, const std::vector<uint64_t> &keys, int64_t *output_ids,
     float *output_scores, size_t topk, const IndexQueryMeta &qmeta,
     Context::UPointer &context) const {
   if (state_ != STATE_OPENED) return IndexError_NoReady;
+  if (use_external_vector_) return IndexError_NotImplemented;
   if (!query || !output_ids || topk == 0 || !context) {
     return IndexError_InvalidArgument;
   }
@@ -487,6 +714,7 @@ template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::group_by_search_impl(
     const void *query, const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
+  if (use_external_vector_) return IndexError_Unsupported;
   FlatStreamerContext<BATCH_SIZE> *bf_context =
       dynamic_cast<FlatStreamerContext<BATCH_SIZE> *>(context.get());
   if (!bf_context) {
@@ -535,6 +763,7 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_p_keys_impl(
     const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
     const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
+  if (use_external_vector_) return IndexError_Unsupported;
   if (count == 0 || count > p_keys.size()) return IndexError_InvalidArgument;
   FlatStreamerContext<BATCH_SIZE> *bf_context =
       dynamic_cast<FlatStreamerContext<BATCH_SIZE> *>(context.get());

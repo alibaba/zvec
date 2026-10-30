@@ -1428,6 +1428,16 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
   if (indexes.empty()) {
     return core::IndexError_Success;
   }
+  // External Flat providers contain IDs only; merge has no bound source.
+  if (param_.index_type == IndexType::kFlat && param_.use_external_vector) {
+    return core::IndexError_Unsupported;
+  }
+  for (const auto &index : indexes) {
+    if (index && index->param_.index_type == IndexType::kFlat &&
+        index->param_.use_external_vector) {
+      return core::IndexError_Unsupported;
+    }
+  }
   // ivf need builder
   auto reducer =
       core::IndexFactory::CreateStreamerReducer("MixedStreamerReducer");
