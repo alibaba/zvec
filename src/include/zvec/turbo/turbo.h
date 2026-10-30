@@ -48,6 +48,11 @@ using DistanceFunc =
 using BatchDistanceFunc =
     std::function<void(const void **m, const void *q, size_t num, size_t dim,
                        float *out, const void **extra_values)>;
+//! Row-major codes at base + i * stride_bytes, including any metadata/padding.
+//! The query, dim and extra_values follow the matching batch kernel's contract.
+using StridedBatchDistanceFunc = std::function<void(
+    const void *base, size_t stride_bytes, const void *q, size_t num,
+    size_t dim, float *out, const void **extra_values)>;
 using QueryPreprocessFunc =
     zvec::ailego::distance_batch::DistanceBatchQueryPreprocessFunc;
 
@@ -208,21 +213,28 @@ ZVEC_TURBO_API BatchDistanceFunc get_batch_distance_func(
     MetricType metric_type, DataType data_type, QuantizeType quantize_type,
     CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
+//! Optional native strided kernel. Returns null when the selected family has
+//! none; Quantizer and DistanceImpl then fall back to the gather batch kernel.
+ZVEC_TURBO_API StridedBatchDistanceFunc get_strided_batch_distance_func(
+    MetricType metric_type, DataType data_type, QuantizeType quantize_type,
+    CpuArchType cpu_arch_type = CpuArchType::kAuto);
+
 ZVEC_TURBO_API QueryPreprocessFunc get_query_preprocess_func(
     MetricType metric_type, DataType data_type, QuantizeType quantize_type,
     CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
 // All kernels of a single dispatched kernel family. `preprocess` is non-null
-// when the batch kernel requires the query to be preprocessed first (e.g.
+// when the batch kernels require the query to be preprocessed first (e.g.
 // the AVX512-VNNI int8 kernels expect a +128 uint8-shifted query).
 struct DistanceKernels {
   DistanceFunc dist{};
   BatchDistanceFunc batch{};
   QueryPreprocessFunc preprocess = nullptr;
+  StridedBatchDistanceFunc batch_strided{};  //!< optional native implementation
 };
 
-// Aggregate lookup: resolves dist/batch/preprocess in one pass so callers
-// cannot pair functions from different kernel families.
+// Aggregate lookup: resolves all kernels and preprocessing in one pass so
+// callers cannot pair functions from different kernel families.
 ZVEC_TURBO_API DistanceKernels get_distance_kernels(
     MetricType metric_type, DataType data_type, QuantizeType quantize_type,
     CpuArchType cpu_arch_type = CpuArchType::kAuto);

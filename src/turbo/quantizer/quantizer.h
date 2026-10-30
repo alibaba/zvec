@@ -146,6 +146,17 @@ class Quantizer {
                                             int dp_num, const void *query,
                                             float *dist_list) const = 0;
 
+  //! Batched distance for row-major quantized datapoints at
+  //! base + i * stride_bytes. The stride includes metadata tails and padding;
+  //! query has the same quantized layout as calc_distance_dp_query_batch().
+  //! The default gathers bounded chunks for the existing batch implementation.
+  //! dp_num <= 0 is a no-op. Packed-block layouts use PackedCodeQuantizer.
+  virtual void calc_distance_dp_query_batch_strided(const void *base,
+                                                    size_t stride_bytes,
+                                                    int dp_num,
+                                                    const void *query,
+                                                    float *dist_list) const;
+
   //! Distance between a quantized datapoint and an unquantized query
   virtual float calc_distance_dp_query_unquantized(const void *dp,
                                                    const void *query) const = 0;
