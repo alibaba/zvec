@@ -58,6 +58,7 @@
 #include "db/index/storage/memory_forward_store.h"
 #include "db/index/storage/mmap_forward_store.h"
 #include "db/index/storage/store_helper.h"
+#include "db/index/storage/wal/local_wal_file.h"
 #include "db/index/storage/wal/wal_file.h"
 #include "zvec/core/framework/index_provider.h"
 #include "column_merging_reader.h"
@@ -4297,6 +4298,22 @@ Status SegmentImpl::recover() {
   if (!FileHelper::FileExists(wal_file_path)) {
     LOG_INFO("WAL recovery skipped: no WAL file exists [%s]",
              wal_file_path.c_str());
+    return Status::OK();
+  }
+  // A crash between creating the WAL file and writing its header leaves a
+  // file shorter than the header. Records follow the header, so the file
+  // holds none. A writable open removes it, so that the next write creates
+  // the WAL again instead of appending after a partial header.
+  size_t wal_file_size = 0;
+  if (ailego::FileHelper::GetFileSize(wal_file_path.c_str(), &wal_file_size) &&
+      wal_file_size < sizeof(WalHeader)) {
+    LOG_WARN("WAL recovery skipped: WAL file is shorter than its header [%s]",
+             wal_file_path.c_str());
+    if (!options_.read_only_ && !FileHelper::RemoveFile(wal_file_path)) {
+      return Status::InternalError(
+          "Failed to remove incomplete WAL file: ", wal_file_path,
+          ", error: ", ailego::FileHelper::GetLastErrorString());
+    }
     return Status::OK();
   }
 
