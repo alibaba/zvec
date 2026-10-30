@@ -29,12 +29,6 @@ IVFDistanceCalculator::IVFDistanceCalculator(const IndexMeta &meta,
     return;
   }
   row_distance_ = metric->distance();
-  // Keep query-specific and auxiliary-data metrics on their original
-  // query-first pairwise path.
-  if (meta.data_type() == IndexMeta::DT_FP16 && !metric->query_metric() &&
-      metric->extra_values_size_per_vector() == 0) {
-    row_batch_distance_ = metric->batch_distance();
-  }
   distance_xx1 = metric->distance_matrix(block_vec_cnt, 1);
   distances_.resize(33);
   for (size_t b = 32; b != 0; b /= 2) {
@@ -44,7 +38,6 @@ IVFDistanceCalculator::IVFDistanceCalculator(const IndexMeta &meta,
 
 IVFDistanceCalculator::~IVFDistanceCalculator() {
   row_distance_ = nullptr;
-  row_batch_distance_ = nullptr;
   distance_xx1 = nullptr;
   distances_.clear();
 }

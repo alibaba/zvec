@@ -77,7 +77,6 @@ class IVFDistanceCalculator {
  protected:
   IndexMetric::Pointer metric_ptr_{};
   IndexMetric::MatrixDistance row_distance_{nullptr};
-  IndexMetric::MatrixBatchDistance row_batch_distance_{nullptr};
   IndexMetric::MatrixDistance distance_xx1{nullptr};
   std::vector<IndexMetric::MatrixDistance> distances_{};
 
@@ -176,10 +175,14 @@ void IVFDistanceCalculator::batch_query_centroids_distance(const void *query,
 void IVFDistanceCalculator::row_major_distance(const void *query, size_t qnum,
                                                const void *feature, size_t fnum,
                                                float *out) {
-  if (fnum == 0) return;
   const uint8_t *cur_query = reinterpret_cast<const uint8_t *>(query);
   for (size_t q = 0; q < qnum; ++q) {
-    row_major_distance(cur_query, feature, fnum, out + q * fnum);
+    const uint8_t *tmp_feature = reinterpret_cast<const uint8_t *>(feature);
+    float *cur_out = out + q * fnum;
+    for (size_t f = 0; f < fnum; ++f) {
+      row_distance_(cur_query, tmp_feature, dimension_, cur_out + f);
+      tmp_feature += element_size_;
+    }
     cur_query += element_size_;
   }
 }
@@ -187,26 +190,7 @@ void IVFDistanceCalculator::row_major_distance(const void *query, size_t qnum,
 void IVFDistanceCalculator::row_major_distance(const void *query,
                                                const void *feature, size_t fnum,
                                                float *out) {
-  if (fnum == 0) return;
   const uint8_t *cur_feature = reinterpret_cast<const uint8_t *>(feature);
-  if (row_batch_distance_ && fnum > 1) {
-    const void *candidates[32];
-    for (size_t offset = 0; offset < fnum;) {
-      const size_t count = std::min(size_t(32), fnum - offset);
-      if (count == 1) {
-        row_distance_(query, cur_feature, dimension_, out + offset);
-      } else {
-        for (size_t i = 0; i < count; ++i) {
-          candidates[i] = cur_feature + i * element_size_;
-        }
-        row_batch_distance_(candidates, query, count, dimension_, out + offset,
-                            nullptr);
-      }
-      cur_feature += count * element_size_;
-      offset += count;
-    }
-    return;
-  }
   for (size_t f = 0; f < fnum; ++f) {
     row_distance_(query, cur_feature, dimension_, out + f);
     cur_feature += element_size_;
