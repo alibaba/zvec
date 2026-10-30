@@ -42,13 +42,17 @@ elseif(TARGET zvec_shared AND TARGET zvec_core_shared)
     # An in-tree desktop build can link targets directly; the shared-library
     # files do not need to exist yet during CMake configuration.
     #
-    # All three examples link the all-in-one library, which is what a released
-    # SDK contains: libzvec whole-archives every component and exports exactly
-    # what the published headers declare, engine headers included.  The
-    # standalone libzvec_core / libzvec_ailego are built but not packaged by
-    # default (-DZVEC_INSTALL_ENGINE_SHARED_LIBRARIES=ON to get them), so an
-    # example that linked them would teach a link line that does not work
-    # against a downloaded SDK.
+    # All three examples link the all-in-one library.  libzvec whole-archives
+    # every component and its export whitelist is generated at the full engine
+    # surface, so the engine API resolves out of it even though a default
+    # prebuilt package installs only the 18 stable headers.
+    #
+    # That makes db-example buildable against a downloaded SDK, while
+    # ailego-example and core-example are source-tree only: they include
+    # zvec/ailego/** and zvec/core/** straight from src/include above, headers a
+    # default package does not carry.  Linking the standalone libzvec_core /
+    # libzvec_ailego instead would not change that -- those are not packaged by
+    # default either -- so one library keeps the link line uniform.
     add_library(zvec-lib INTERFACE)
     target_link_libraries(zvec-lib INTERFACE zvec_shared)
 
@@ -109,8 +113,10 @@ else()
         set(${OUT_VAR} "${${OUT_VAR}}" PARENT_SCOPE)
     endfunction()
 
-    # Only libzvec is required: it is the single public all-in-one shared
-    # library, and the standalone engine libraries are not packaged by default.
+    # Only libzvec is required: it is the single all-in-one shared library in a
+    # default package, the standalone engine libraries are not packaged.  The
+    # engine examples still build here because their headers come from
+    # src/include above, not from an install tree.
     zvec_require_shared_library(ZVEC_SHARED_LIBRARY zvec)
 
     add_library(zvec-lib INTERFACE)

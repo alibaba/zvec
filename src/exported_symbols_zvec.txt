@@ -3,9 +3,14 @@
 #   python3 scripts/generate_export_whitelist.py --write
 #
 # Link-time export whitelist for the all-in-one libzvec shared library: every
-# symbol a published header declares, and nothing else.  Derived from the clang
-# AST of the published header set, so adding a public class or method needs a
-# regeneration (scripts/generate_export_whitelist.py --check fails otherwise).
+# symbol a public header under src/include declares, and nothing else.  Derived
+# from the clang AST of that header set, so adding a public class or method
+# needs a regeneration (the default --check mode fails otherwise).
+#
+# This is deliberately wider than the installed header set: the default package
+# ships only the stable closure (ZVEC_INSTALL_ENGINE_HEADERS=OFF), but a
+# source-tree consumer reads the engine headers from src/include and links
+# libzvec.  See the module docstring for the trade-off.
 #
 # Patterns are mangled-name globs.  An Itanium nested name is length prefixed,
 # so "_ZN4zvec3Doc*" matches members of zvec::Doc only -- zvec::Document would
@@ -13,7 +18,7 @@
 # vtables/typeinfo/VTT (TVN/TIN/TSN/TTN), guard variables (GVN), function-local
 # entities such as lambdas and static locals (ZN/ZNK/GVZN/GVZNK) and thunks.
 #
-# Surface: engine -- 95 published headers, 378 entity
+# Surface: engine -- 95 public headers, 378 entity
 # prefixes, 4914 patterns.
 #
 # Keep this list globs-only: lld's default --no-undefined-version rejects a

@@ -87,17 +87,21 @@ CMAKE_BUILD_TYPE=Debug CMAKE_GENERATOR="Unix Makefiles" pip install -v .
 
 Only `src/include/zvec/db/*.h` and `src/include/zvec/c_api.h` are the stable,
 versioned API. `src/include/zvec/{core,ailego,turbo}/**` are the engine and may
-change at any time; they are installed by default for consumers that
-deliberately build against the engine, and `-DZVEC_INSTALL_ENGINE_HEADERS=OFF`
-produces a stable-API-only SDK. See
+change at any time; they are **not installed by default**, and
+`-DZVEC_INSTALL_ENGINE_HEADERS=ON` adds them for consumers that deliberately
+build against the engine. In-tree code always sees them: `src/include` is on the
+compile include path regardless of the switch. See
 [`src/include/zvec/README.md`](src/include/zvec/README.md) for the boundary rules
 (where internal helpers go, how to hide engine types, how to keep the include
 budget in check).
 
-A released package carries two shared libraries, `libzvec` and `libzvec_c_api`.
-`libzvec` serves the engine headers too, so the standalone `libzvec_core` /
-`libzvec_ailego` are built but not packaged; `-DZVEC_INSTALL_ENGINE_SHARED_LIBRARIES=ON`
-installs them for consumers that want the engine without the db layer.
+A released package carries two shared libraries, `libzvec` and `libzvec_c_api`,
+and 18 headers. `libzvec` serves the engine headers too when they are installed,
+so the standalone `libzvec_core` / `libzvec_ailego` are built but not packaged;
+getting them needs `-DZVEC_INSTALL_ENGINE_HEADERS=ON` *and*
+`-DZVEC_INSTALL_ENGINE_SHARED_LIBRARIES=ON`. The invariant behind both switches
+is that the install tree never carries an engine artifact whose headers are
+absent — an installed library that cannot be called is worse than no library.
 
 The rules are enforced by `scripts/check_public_headers.py`, which runs in
 pre-commit and in the Lint workflow:
@@ -136,11 +140,15 @@ git diff src/exported_symbols_zvec.txt
 ```
 
 This needs `clang++` (the header set is parsed with a clang AST dump); without
-it the check skips locally and fails in CI. The standalone engine libraries
-(`libzvec_core`, `libzvec_ailego`) keep the coarser namespace-wide
-`src/exported_symbols_cpp.*`, since their whole `zvec::core` / `zvec::ailego`
-surface is their API. The lists apply to non-Debug builds only, so Debug keeps
-full symbols for in-tree debugging and crash symbolication.
+it the check skips locally and fails in CI. The list is generated at the *engine*
+surface — all 95 public headers — even though a default package installs 18, so
+that in-tree and `add_subdirectory` consumers can still link the engine API out
+of `libzvec`; `--surface stable` is the tighter alternative if that ever stops
+being wanted. The standalone engine libraries (`libzvec_core`, `libzvec_ailego`)
+keep the coarser namespace-wide `src/exported_symbols_cpp.*`, since their whole
+`zvec::core` / `zvec::ailego` surface is their API. The lists apply to non-Debug
+builds only, so Debug keeps full symbols for in-tree debugging and crash
+symbolication.
 
 ---
 

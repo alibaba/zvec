@@ -1,5 +1,6 @@
-// Exercises the *advanced* engine headers, which the package carries when it was
-// configured with -DZVEC_INSTALL_ENGINE_HEADERS=ON (the default).
+// Exercises the *advanced* engine headers, which the package carries only when
+// it was configured with -DZVEC_INSTALL_ENGINE_HEADERS=ON; the default package
+// does not, and this test is skipped there.
 //
 // The engine API is served by libzvec -- or by the standalone libzvec_core when
 // the package was built with -DZVEC_INSTALL_ENGINE_SHARED_LIBRARIES=ON -- so

@@ -17,9 +17,12 @@ engine internals. CMake installs two different sets.
   python3 scripts/check_public_headers.py --write-install-manifest
   ```
 
-- **Installed only with `-DZVEC_INSTALL_ENGINE_HEADERS=ON`** (the current
-  default) — the remaining `zvec/core/**`, `zvec/ailego/**` and `zvec/turbo/**`
-  headers. Turning it off yields a 95 → 18 header SDK.
+- **Installed only with `-DZVEC_INSTALL_ENGINE_HEADERS=ON`** (*not* the default)
+  — the remaining `zvec/core/**`, `zvec/ailego/**` and `zvec/turbo/**` headers,
+  taking the package from 18 to 95. Turn it on only if you deliberately want to
+  build against the engine; see "Advanced, unstable headers" below for what that
+  costs you in stability. Building zvec from source needs no switch: the engine
+  headers are right here in the source tree.
 
   `core` and `ailego` are one switch, not two: `zvec/core/**` reaches 31 of the
   35 `zvec/ailego/**` headers transitively, so publishing core without ailego
@@ -32,16 +35,22 @@ served by them:
 
 | Library | Serves |
 |---------|--------|
-| `libzvec` | the whole published C++ surface — `zvec/db/**`, `zvec/c_api.h`'s C++ neighbours, and the engine headers |
+| `libzvec` | the whole C++ surface — `zvec/db/**` and `zvec/c_api.h`'s C++ neighbours, plus the engine headers when they are installed |
 | `libzvec_c_api` | the C API |
 
 `libzvec` whole-archives every component and links against a whitelist generated
-from these headers (`scripts/generate_export_whitelist.py`), so it exports
-exactly what a consumer can name here — engine API included — and nothing else.
+from these headers (`scripts/generate_export_whitelist.py`), so it exports what a
+consumer can name here and nothing else — no `zvec::sqlengine`, no `zvec::fts`,
+no `*Impl`. The whitelist is generated at the *engine* surface (all 95 headers)
+even though a default package ships 18, so a source-tree consumer that sees the
+engine headers can still link the engine API out of `libzvec`; from a prebuilt
+package those extra exports are simply unreachable, because nothing there
+declares them.
+
 The standalone `libzvec_core` / `libzvec_ailego` are built but **not packaged**
-by default; pass `-DZVEC_INSTALL_ENGINE_SHARED_LIBRARIES=ON` to install them.
-If you linked `-lzvec_core` or `-lzvec_ailego`, link `-lzvec` instead: same
-symbols, one library.
+by default; they need `-DZVEC_INSTALL_ENGINE_HEADERS=ON` *and*
+`-DZVEC_INSTALL_ENGINE_SHARED_LIBRARIES=ON`. If you linked `-lzvec_core` or
+`-lzvec_ailego`, link `-lzvec` instead: same symbols, one library.
 
 The static archives follow the *headers*, not the library switch: `libzvec.a`
 always installs (since `zvec/db/**` always does), and `libzvec_core.a` /
@@ -77,11 +86,13 @@ major version.
 ## Advanced, unstable headers
 
 `zvec/core/**`, `zvec/ailego/**` and `zvec/turbo/**` are the engine framework,
-the base library and the SIMD kernels. They ship by default and are callable
-through `libzvec` (see `examples/c++/core`, which links `-lzvec` alone), **but
-they are internal APIs**: they may change or disappear in any release without
-notice, and they are not covered by the compatibility promise above. Being
-exported is not the same as being supported.
+the base library and the SIMD kernels. They are **not installed by default** —
+pass `-DZVEC_INSTALL_ENGINE_HEADERS=ON`, or build zvec from source, where
+`examples/c++/core` and `examples/c++/ailego` link them out of `libzvec`.
+
+Either way they are **internal APIs**: they may change or disappear in any
+release without notice, and they are not covered by the compatibility promise
+above. Being exported is not the same as being supported.
 
 Do not include them from application code unless you deliberately want to build
 against the engine itself. In particular, `zvec/db/**` must not depend on

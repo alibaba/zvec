@@ -6,14 +6,14 @@ protobuf, so without a filter it would export the entire engine.  The existing
 ``src/exported_symbols_cpp.txt`` already hides third-party symbols, but its
 granularity is ``__ZN4zvec*`` -- the whole ``zvec`` namespace -- which measured
 **10784** exported symbols on macOS, of which only ~2600 are declared by a
-published header.  Everything else (``zvec::sqlengine``, ``zvec::fts``,
+public header.  Everything else (``zvec::sqlengine``, ``zvec::fts``,
 ``zvec::SegmentImpl``, ``zvec::CollectionImpl``, ``zvec::core`` internals ...)
 is implementation detail a consumer can accidentally link against.
 
-This script derives a whitelist from *what the published headers actually
+This script derives a whitelist from *what the public headers actually
 declare* instead of a hand-maintained list:
 
-1. Collect the published header set (the stable closure from
+1. Collect the public header set (the stable closure from
    ``cmake/zvec_public_headers.cmake``, plus ``zvec/core``/``zvec/ailego``/
    ``zvec/turbo`` when the engine surface is published).
 2. Ask clang for the declarations in those headers
@@ -40,10 +40,21 @@ Run from the repository root::
     python3 scripts/generate_export_whitelist.py --write    # regenerate
     python3 scripts/generate_export_whitelist.py --surface stable --write
 
-``--surface engine`` (the default) matches ``ZVEC_INSTALL_ENGINE_HEADERS=ON``,
-the current release shape.  A build with that switch OFF ships fewer headers, so
-the engine list is a harmless superset there; regenerate with
-``--surface stable`` when the default is flipped.
+``--surface engine`` (the default) covers every public header under
+``src/include``.  That is deliberately *wider* than the default package, which
+ships the 18 header stable closure because ``ZVEC_INSTALL_ENGINE_HEADERS`` is
+off: a source-tree consumer -- ``add_subdirectory(zvec)``, or the in-tree
+``examples/c++`` -- reads the engine headers straight from ``src/include`` and
+links ``zvec_shared``, so narrowing the list to the installed subset would make
+the engine API unlinkable for exactly the consumers who can still see its
+declarations.  The extra exports cost nothing at runtime and are unreachable
+from a prebuilt package, which carries no header that declares them.
+
+``--surface stable`` (366 symbols, measured) is the tighter option if the engine
+surface is ever withdrawn from source-tree consumers too; switching to it means
+repointing ``examples/c++`` and ``subproject-integration`` at
+``zvec_core_shared`` / ``zvec_ailego_shared``, which keep the namespace-wide
+list.
 
 Exit status is 0 when the checked-in lists are up to date and 1 otherwise.
 """
@@ -177,9 +188,14 @@ HEADER = """\
 #   python3 scripts/generate_export_whitelist.py --write
 #
 # Link-time export whitelist for the all-in-one libzvec shared library: every
-# symbol a published header declares, and nothing else.  Derived from the clang
-# AST of the published header set, so adding a public class or method needs a
-# regeneration (scripts/generate_export_whitelist.py --check fails otherwise).
+# symbol a public header under src/include declares, and nothing else.  Derived
+# from the clang AST of that header set, so adding a public class or method
+# needs a regeneration (the default --check mode fails otherwise).
+#
+# This is deliberately wider than the installed header set: the default package
+# ships only the stable closure (ZVEC_INSTALL_ENGINE_HEADERS=OFF), but a
+# source-tree consumer reads the engine headers from src/include and links
+# libzvec.  See the module docstring for the trade-off.
 #
 # Patterns are mangled-name globs.  An Itanium nested name is length prefixed,
 # so "_ZN4zvec3Doc*" matches members of zvec::Doc only -- zvec::Document would
@@ -187,7 +203,7 @@ HEADER = """\
 # vtables/typeinfo/VTT (TVN/TIN/TSN/TTN), guard variables (GVN), function-local
 # entities such as lambdas and static locals (ZN/ZNK/GVZN/GVZNK) and thunks.
 #
-# Surface: {surface} -- {header_count} published headers, {prefix_count} entity
+# Surface: {surface} -- {header_count} public headers, {prefix_count} entity
 # prefixes, {pattern_count} patterns.
 #
 # Keep this list globs-only: lld's default --no-undefined-version rejects a
@@ -238,7 +254,7 @@ def public_headers(surface: str) -> list[str]:
         headers.update(engine_headers())
     missing = [h for h in sorted(headers) if not (INCLUDE_ROOT / h).is_file()]
     if missing:
-        msg = f"published headers missing from {INCLUDE_ROOT}: {missing[:5]}"
+        msg = f"public headers missing from {INCLUDE_ROOT}: {missing[:5]}"
         raise SystemExit(msg)
     return sorted(headers)
 
@@ -258,7 +274,7 @@ def find_clang() -> str | None:
 def dump_ast(headers: list[str], compiler: str, workdir: Path) -> Path:
     """Run clang's filtered AST dump over one TU that includes every header."""
     probe = workdir / "export_whitelist_probe.cc"
-    lines = ["// Generated probe TU: one include per published header."]
+    lines = ["// Generated probe TU: one include per public header."]
     lines += [f"#include <{header}>" for header in headers]
     lines.append("int main() { return 0; }")
     probe.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -292,7 +308,7 @@ def dump_ast(headers: list[str], compiler: str, workdir: Path) -> Path:
     ]
     if result.returncode != 0 or errors:
         detail = errors[0] if errors else f"clang exited with {result.returncode}"
-        msg = f"the published headers do not compile as one TU: {detail}"
+        msg = f"the public headers do not compile as one TU: {detail}"
         raise SystemExit(msg)
     return ast_path
 
@@ -412,7 +428,7 @@ def render_linux(prefixes: list[str], surface: str, header_count: int) -> str:
     lines = [
         "/* GENERATED -- do not edit by hand.",
         "   python3 scripts/generate_export_whitelist.py --write",
-        f"   Surface: {surface} -- {header_count} published headers,",
+        f"   Surface: {surface} -- {header_count} public headers,",
         f"   {len(prefixes)} entity prefixes, {len(body)} patterns.",
         "   Rationale and variant legend: src/exported_symbols_zvec.txt. */",
         "{",
@@ -431,7 +447,7 @@ def main(argv: list[str] | None = None) -> int:
         "--surface",
         choices=("engine", "stable"),
         default="engine",
-        help="published header set to derive the whitelist from "
+        help="public header set to derive the whitelist from "
         "(engine = ZVEC_INSTALL_ENGINE_HEADERS=ON, the release default)",
     )
     parser.add_argument(
@@ -467,7 +483,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     headers = public_headers(args.surface)
-    _out(f"published headers ({args.surface} surface): {len(headers)}")
+    _out(f"public headers ({args.surface} surface): {len(headers)}")
 
     with tempfile.TemporaryDirectory() as tmp:
         ast_path = dump_ast(headers, compiler, Path(tmp))
@@ -503,10 +519,10 @@ def main(argv: list[str] | None = None) -> int:
         if _read_text(path) != rendered[name]
     ]
     if stale:
-        _out(f"DRIFT: {' and '.join(stale)} do not match the published headers")
+        _out(f"DRIFT: {' and '.join(stale)} do not match the public headers")
         _out("  regenerate with: python3 scripts/generate_export_whitelist.py --write")
         return 1
-    _out("export whitelist matches the published headers")
+    _out("export whitelist matches the public headers")
     return 0
 
 

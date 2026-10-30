@@ -113,6 +113,17 @@ else()
   message(STATUS "engine headers absent from the package; skipping core_smoke")
 endif()
 
+# The mirror image of ZVEC_REQUIRE_CORE, and the one the *default* package must
+# satisfy: ZVEC_INSTALL_ENGINE_HEADERS is OFF by default, so a release that
+# started shipping zvec/core/framework/** again would be widening the published
+# surface silently.  Pin the trimmed shape the same way ZVEC_REQUIRE_CORE pins
+# the full one.
+if(ZVEC_FORBID_ENGINE_HEADERS AND EXISTS "${_core_header}")
+  message(FATAL_ERROR
+    "ZVEC_FORBID_ENGINE_HEADERS is set but the package carries engine headers "
+    "(found ${_core_header})")
+endif()
+
 # The standalone engine shared libraries are built but, by default, not
 # installed: libzvec whole-archives both and exports their public API, so a
 # package carrying them as well would ship two ways to call the same code and
