@@ -4047,11 +4047,14 @@ Status SegmentImpl::load_scalar_index_blocks(bool create) {
     auto block_id = allocate_block_id();
     auto invert_path = FileHelper::MakeInvertIndexPath(path_, id(), block_id);
     auto collection_name = collection_schema_->name();
+    Status open_status;
     invert_indexers_ = InvertedIndexer::CreateAndOpen(
-        collection_name, invert_path, true, fields, options_.read_only_);
+        collection_name, invert_path, true, fields, options_.read_only_,
+        &open_status);
     if (!invert_indexers_) {
       LOG_ERROR("Failed to open scalar indexer");
-      return Status::InternalError("Failed to open scalar indexer");
+      return Status::InternalError("Failed to open scalar indexer [",
+                                   invert_path, "]: ", open_status.message());
     }
 
     // scalar index block
@@ -4066,11 +4069,15 @@ Status SegmentImpl::load_scalar_index_blocks(bool create) {
         auto invert_path =
             FileHelper::MakeInvertIndexPath(path_, id(), block_id);
         auto collection_name = collection_schema_->name();
+        Status open_status;
         invert_indexers_ = InvertedIndexer::CreateAndOpen(
-            collection_name, invert_path, false, fields, options_.read_only_);
+            collection_name, invert_path, false, fields, options_.read_only_,
+            &open_status);
         if (!invert_indexers_) {
           LOG_ERROR("Failed to open scalar indexer");
-          return Status::InternalError("Failed to open scalar indexer");
+          return Status::InternalError("Failed to open scalar indexer [",
+                                       invert_path,
+                                       "]: ", open_status.message());
         }
         return Status::OK();
       }

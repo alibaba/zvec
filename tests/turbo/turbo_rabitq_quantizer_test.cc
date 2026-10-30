@@ -552,6 +552,7 @@ TEST(RabitqQuantizer, PackedScanUsesEachRowsModelCentroid) {
   std::mt19937 rng(1234);
   std::normal_distribution<float> random;
   for (const char *metric : {"SquaredEuclidean", "InnerProduct", "Cosine"}) {
+    SCOPED_TRACE(metric);
     IndexMeta meta(IndexMeta::DT_FP32, dim);
     meta.set_metric(metric, 0, ailego::Params{});
     ailego::Params params;
@@ -628,11 +629,39 @@ TEST(RabitqQuantizer, PackedScanUsesEachRowsModelCentroid) {
           EXPECT_FLOAT_EQ(quantizer.calc_distance_dp_query(row, encoded.data()),
                           scanner->refine(row, estimates[i]));
           ASSERT_TRUE(scanner->set_reuse_coarse_dot(true));
+          const char *ex_data = row + 8 + padded / 8 + 12;
+          const auto ex_ip = rabitqlib::select_excode_ipfunc(6);
           const float boosted = rabitqlib::split_distance_boosting(
-              row + 8 + padded / 8 + 12, rabitqlib::select_excode_ipfunc(6),
-              reference_query, padded, 6, dot[i]);
+              ex_data, ex_ip, reference_query, padded, 6, dot[i]);
+          // As in the single-centroid test, bound FMA/non-FMA roundoff by
+          // intermediate magnitudes. IP terms can cancel to nearly zero;
+          // scaling only by the final score underestimates that error.
+          constexpr float roundoff = 4 * std::numeric_limits<float>::epsilon();
+          const float lut_offset = reference_query.sum_vl_lut();
+          const float dot_tolerance =
+              roundoff * std::max(1.0f, std::abs(dot[i] - lut_offset) +
+                                            std::abs(lut_offset));
+          EXPECT_NEAR(dot[i], estimates[i].coarse_dot, dot_tolerance);
+          const float correction_error =
+              roundoff * std::abs(reference_query.g_add());
+          EXPECT_NEAR(scalars[4 + c], reference_query.g_add(),
+                      correction_error);
+          rabitqlib::ConstExDataMap<float> ex(ex_data, padded, 6);
+          const float extra_dot =
+              ex_ip(reference_query.rotated_query(), ex.ex_code(), padded);
+          const float scale = std::abs(ex.f_rescale_ex());
+          const float refine_tolerance =
+              correction_error + scale * std::ldexp(dot_tolerance, 6) +
+              roundoff *
+                  std::max(1.0f,
+                           std::abs(ex.f_add_ex()) +
+                               std::abs(reference_query.g_add()) +
+                               scale * (std::abs(std::ldexp(dot[i], 6)) +
+                                        std::abs(extra_dot) +
+                                        std::abs(reference_query.kbxsumq())) +
+                               offset);
           EXPECT_NEAR(boosted - offset, scanner->refine(row, estimates[i]),
-                      1e-5f * std::max(1.0f, std::abs(boosted)));
+                      refine_tolerance);
           ASSERT_TRUE(scanner->set_reuse_coarse_dot(false));
         }
       }
