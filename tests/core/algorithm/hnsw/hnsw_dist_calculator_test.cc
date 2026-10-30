@@ -193,20 +193,26 @@ TEST(HnswDistCalculatorTest, RejectsNullBatchRecordsBeforeCallingMetric) {
     calculator.reset_query(&query);
     calculator.batch_dist(vectors, 3, distances, nullptr);
     EXPECT_TRUE(calculator.error());
-    EXPECT_TRUE(calculator.missing_vector());
+    EXPECT_EQ(HnswDistCalculator::Status::kMissingVector, calculator.status());
     EXPECT_FALSE(called);
   }
   calculator.clear();
   EXPECT_FALSE(calculator.error());
-  EXPECT_FALSE(calculator.missing_vector());
+  EXPECT_EQ(HnswDistCalculator::Status::kOk, calculator.status());
 
   calculator.reset_query(nullptr);
   const void *vectors[] = {&vector};
   float distance = 1.0f;
   calculator.batch_dist(vectors, 1, &distance, nullptr);
   EXPECT_TRUE(calculator.error());
-  EXPECT_FALSE(calculator.missing_vector());
+  EXPECT_EQ(HnswDistCalculator::Status::kError, calculator.status());
   EXPECT_FALSE(called);
+
+  calculator.reset_query(&query);
+  calculator.batch_dist(vectors, 1, &distance, nullptr);
+  EXPECT_FALSE(calculator.error());
+  EXPECT_EQ(HnswDistCalculator::Status::kOk, calculator.status());
+  EXPECT_TRUE(called);
 }
 
 TEST(HnswDistCalculatorTest, QueryDistancePreservesInternalReadErrors) {
@@ -219,7 +225,8 @@ TEST(HnswDistCalculatorTest, QueryDistancePreservesInternalReadErrors) {
   float distance = 0.0f;
   EXPECT_FALSE(context.try_batch_dist(1, distance));
   EXPECT_TRUE(context.error());
-  EXPECT_FALSE(context.dist_calculator().missing_vector());
+  EXPECT_EQ(HnswDistCalculator::Status::kError,
+            context.dist_calculator().status());
 }
 
 }  // namespace

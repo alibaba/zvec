@@ -965,7 +965,8 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   for (size_t q = 0; q < count; ++q) {
     ctx->reset_query(query, meta_);
     ret = alg_->search(ctx);
-    if (ailego_unlikely(ctx->dist_calculator().missing_vector() &&
+    if (ailego_unlikely(ctx->dist_calculator().status() ==
+                            HnswDistCalculator::Status::kMissingVector &&
                         storage_mode() == HnswStorageMode::kExternal)) {
       // Missing graph nodes can include the entry point or disconnect the
       // route to valid neighbors. Retry the batch against available records.
@@ -1022,7 +1023,8 @@ int HnswStreamer::search_candidates_impl(
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
   ctx->reset_query(query, meta_);
   ret = alg_->search(ctx);
-  if (ailego_unlikely(ctx->dist_calculator().missing_vector() &&
+  if (ailego_unlikely(ctx->dist_calculator().status() ==
+                          HnswDistCalculator::Status::kMissingVector &&
                       storage_mode() == HnswStorageMode::kExternal)) {
     ret = search_bf_impl(query, qmeta, 1, context);
   }

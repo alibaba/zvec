@@ -34,6 +34,8 @@ class HnswDistCalculator {
     DIST_SPARSE = 3
   };
 
+  enum class Status { kOk, kError, kMissingVector };
+
  public:
   //! Constructor
   HnswDistCalculator(const HnswEntity *entity,
@@ -99,8 +101,7 @@ class HnswDistCalculator {
 
   //! Reset query vector data
   inline void reset_query(const void *query) {
-    error_ = false;
-    missing_vector_ = false;
+    status_ = Status::kOk;
     query_ = query;
   }
 
@@ -108,7 +109,7 @@ class HnswDistCalculator {
   inline dist_t dist(const void *vec_lhs, const void *vec_rhs) {
     if (ailego_unlikely(vec_lhs == nullptr || vec_rhs == nullptr)) {
       LOG_ERROR("Nullptr of dense vector");
-      error_ = true;
+      status_ = Status::kError;
       return 0.0f;
     }
 
@@ -116,7 +117,7 @@ class HnswDistCalculator {
 
     if (ailego_unlikely(!distance_)) {
       LOG_ERROR("Distance function is not initialized");
-      error_ = true;
+      status_ = Status::kError;
       return 0.0f;
     }
     distance_(vec_lhs, vec_rhs, dim_, &score);
@@ -138,14 +139,13 @@ class HnswDistCalculator {
     int ret = get_vector(id, vec_block);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Get nullptr vector, id=%u", id);
-      error_ = true;
+      status_ = Status::kError;
       return 0.0f;
     }
     const void *feat = vec_block.data();
     if (ailego_unlikely(feat == nullptr)) {
       LOG_ERROR("Get nullptr vector, id=%u", id);
-      error_ = true;
-      missing_vector_ = true;
+      status_ = Status::kMissingVector;
       return 0.0f;
     }
 
@@ -161,7 +161,7 @@ class HnswDistCalculator {
     int ret = get_vector(lhs, vec_block_feat);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Get nullptr vector, id=%u", lhs);
-      error_ = true;
+      status_ = Status::kError;
       return 0.0f;
     }
     const void *feat = vec_block_feat.data();
@@ -170,13 +170,13 @@ class HnswDistCalculator {
     ret = get_vector(rhs, vec_block_query);
     if (ailego_unlikely(ret != 0)) {
       LOG_ERROR("Get nullptr vector, id=%u", rhs);
-      error_ = true;
+      status_ = Status::kError;
       return 0.0f;
     }
     const void *query = vec_block_query.data();
     if (ailego_unlikely(feat == nullptr || query == nullptr)) {
       LOG_ERROR("Get nullptr vector");
-      error_ = true;
+      status_ = Status::kError;
       return 0.0f;
     }
 
@@ -202,15 +202,14 @@ class HnswDistCalculator {
     if (num == 0) return;
     if (ailego_unlikely(vecs == nullptr || query_ == nullptr)) {
       LOG_ERROR("Nullptr of dense vector batch or query");
-      error_ = true;
+      status_ = Status::kError;
       std::fill(distances, distances + num, 0.0f);
       return;
     }
     for (size_t i = 0; i < num; ++i) {
       if (ailego_unlikely(vecs[i] == nullptr)) {
         LOG_ERROR("Get nullptr vector in batch, offset=%zu", i);
-        error_ = true;
-        missing_vector_ = true;
+        status_ = Status::kMissingVector;
         std::fill(distances, distances + num, 0.0f);
         return;
       }
@@ -218,7 +217,7 @@ class HnswDistCalculator {
 
     if (ailego_unlikely(!batch_distance_)) {
       LOG_ERROR("Batch distance function is not initialized");
-      error_ = true;
+      status_ = Status::kError;
       std::fill(distances, distances + num, 0.0f);
       return;
     }
@@ -230,13 +229,13 @@ class HnswDistCalculator {
 
     if (ailego_unlikely(feat == nullptr || query_ == nullptr)) {
       LOG_ERROR("Get nullptr vector");
-      error_ = true;
+      status_ = Status::kError;
       return 0.0f;
     }
     dist_t score = 0;
     if (ailego_unlikely(!batch_distance_)) {
       LOG_ERROR("Batch distance function is not initialized");
-      error_ = true;
+      status_ = Status::kError;
       return 0.0f;
     }
     if (extra_values != nullptr) {
@@ -250,25 +249,25 @@ class HnswDistCalculator {
 
   inline void clear() {
     compare_cnt_ = 0;
-    error_ = false;
-    missing_vector_ = false;
+    status_ = Status::kOk;
   }
 
   inline void clear_compare_cnt() {
     compare_cnt_ = 0;
   }
 
+  //! Both failure states stop graph traversal. External-vector queries may
+  //! retry kMissingVector with a linear scan.
   inline bool error() const {
-    return error_;
+    return status_ != Status::kOk;
   }
 
-  //! A graph query hit an unavailable record and needs a linear retry.
-  inline bool missing_vector() const {
-    return missing_vector_;
+  inline Status status() const {
+    return status_;
   }
 
   inline void set_error() {
-    error_ = true;
+    status_ = Status::kError;
   }
 
   //! Get distances compute times
@@ -331,8 +330,7 @@ class HnswDistCalculator {
 
   uint32_t compare_cnt_;  // record distance compute times
   // uint32_t compare_cnt_batch_;  // record batch distance compute time
-  bool error_{false};
-  bool missing_vector_{false};
+  Status status_{Status::kOk};
 
   // get original vector, used to build graph
   IndexProvider::Pointer provider_{};
