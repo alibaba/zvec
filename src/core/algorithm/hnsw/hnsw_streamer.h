@@ -190,6 +190,7 @@ class HnswStreamer : public IndexStreamer {
 
   //! Open index from file path
   int open(IndexStorage::Pointer stg) override;
+  int open(IndexStorage::Pointer stg, bool read_only) override;
 
   //! Close file
   int close() override;
@@ -302,6 +303,7 @@ class HnswStreamer : public IndexStreamer {
 
   uint32_t magic_{0U};
   State state_{STATE_INIT};
+  bool read_only_{false};
   bool bf_enabled_{false};
   bool check_crc_enabled_{false};
   bool filter_same_key_{false};

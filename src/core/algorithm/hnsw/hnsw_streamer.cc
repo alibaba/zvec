@@ -445,6 +445,10 @@ int HnswStreamer::setup_entity() {
 }
 
 int HnswStreamer::open(IndexStorage::Pointer stg) {
+  return open(std::move(stg), false);
+}
+
+int HnswStreamer::open(IndexStorage::Pointer stg, bool read_only) {
   LOG_INFO("HnswStreamer open");
 
   if (ailego_unlikely(state_ != STATE_INITED)) {
@@ -545,8 +549,12 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
     if (dynamic_cast<turbo::PackedCodeQuantizer *>(quantizer_.get())) {
       return IndexError_Unsupported;
     }
-    ret = quantizer_->prepare_build();
-    if (ret != 0) return ret;
+    // Read-only queries use ADC; the centroid-pair SDC table is only needed
+    // for graph construction. Prepare it before admitting concurrent inserts.
+    if (!read_only) {
+      ret = quantizer_->prepare_build();
+      if (ret != 0) return ret;
+    }
     if (use_external_vector_) {
       // External records and build queries are raw; search queries are encoded.
       BindTurboDistances<&TurboQuantizer::calc_distance_input_input,
@@ -737,6 +745,7 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
     return ret;
   }
 
+  read_only_ = read_only;
   state_ = STATE_OPENED;
   magic_ = IndexContext::GenerateMagic();
 
@@ -897,6 +906,7 @@ void HnswStreamer::bind_search_dist_space(HnswContext *ctx) const {
 int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
                                    const IndexQueryMeta &qmeta,
                                    IndexStreamer::Context::Pointer &context) {
+  if (read_only_) return IndexError_Unsupported;
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) {
     return ret;
@@ -999,6 +1009,7 @@ int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
 int HnswStreamer::add_impl(uint64_t pkey, const void *query,
                            const IndexQueryMeta &qmeta,
                            IndexStreamer::Context::Pointer &context) {
+  if (read_only_) return IndexError_Unsupported;
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) {
     return ret;

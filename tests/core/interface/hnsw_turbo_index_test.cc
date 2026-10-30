@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/core/framework/index_framework.h>
@@ -1047,6 +1048,58 @@ INSTANTIATE_TEST_SUITE_P(AddApis, HnswExternalCoreCompatibilityTest,
 }  // namespace core
 }  // namespace zvec
 
+TEST(HnswPqIndexTest, ReadOnlyOpenSkipsBuildPreparation) {
+  using namespace zvec;
+  class CountingQuantizer : public turbo::Fp32Quantizer {
+   public:
+    int prepare_build() override {
+      ++prepare_count;
+      return 0;
+    }
+    int prepare_count{0};
+  };
+
+  const std::string path = "hnsw_read_only_prepare.index";
+  test_util::RemoveTestFiles(path);
+  core::IndexMeta meta(core::IndexMeta::DT_FP32, kDimension);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+  auto quantizer = std::make_shared<CountingQuantizer>();
+  ASSERT_EQ(0, quantizer->init(meta, ailego::Params()));
+  auto param = MakeParam(MetricType::kL2sq, QuantizerType::kNone);
+  auto seed = IndexFactory::CreateAndInitIndex(*param);
+  core::IndexStreamer::Pointer streamer = std::make_shared<core::HnswStreamer>();
+  ASSERT_EQ(0, streamer->init(
+                   meta, seed->index_searcher()->meta().streamer_params(),
+                   quantizer));
+  auto storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(path, true));
+  ASSERT_EQ(0, streamer->open(storage));
+  EXPECT_EQ(1, quantizer->prepare_count);
+  ASSERT_EQ(0, streamer->close());
+
+  quantizer->prepare_count = 0;
+  ASSERT_EQ(0, streamer->open(storage, true));
+  EXPECT_EQ(0, quantizer->prepare_count);
+  auto context = streamer->create_context();
+  std::vector<float> vector(kDimension, 1.0f);
+  core::IndexQueryMeta qmeta;
+  qmeta.set_meta(meta.data_type(), meta.dimension());
+  EXPECT_NE(0, streamer->add_impl(0, vector.data(), qmeta, context));
+  EXPECT_NE(0, streamer->add_with_id_impl(0, vector.data(), qmeta, context));
+  ASSERT_EQ(0, streamer->close());
+
+  // The legacy open entry point still means writable, including after a
+  // read-only open on the same streamer.
+  ASSERT_EQ(0, streamer->open(storage));
+  EXPECT_EQ(1, quantizer->prepare_count);
+  context = streamer->create_context();
+  ASSERT_EQ(0, streamer->add_with_id_impl(0, vector.data(), qmeta, context));
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, storage->close());
+  test_util::RemoveTestFiles(path);
+}
+
 TEST(HnswPqIndexTest, ReopenAndAddUsesDataCodes) {
   using namespace zvec;
   const std::string path = "hnsw_pq_reopen_test.index";
@@ -1145,8 +1198,16 @@ TEST_P(HnswPqLifecycleTest, TrainMergeReopenAndAppend) {
   ASSERT_EQ(0, index->merge({raw}, IndexFilter()));
   EXPECT_EQ(vectors.size(), index->get_doc_count());
   auto before = SearchRows(index.get(), vectors[11], true);
+  auto graph_before = SearchRows(index.get(), vectors[11], false);
   ASSERT_FALSE(before.empty());
   ASSERT_EQ(0, index->close());
+  index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_EQ(0, index->open(pq_path, {storage_type, false, true}));
+  EXPECT_EQ(before, SearchRows(index.get(), vectors[11], true));
+  EXPECT_EQ(graph_before, SearchRows(index.get(), vectors[11], false));
+  EXPECT_NE(0, index->add(VectorData{DenseVector{vectors[0].data()}}, 300));
+  ASSERT_EQ(0, index->close());
+  // A writable reopen must restore the SDC table before adding vectors.
   index = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_EQ(0, index->open(pq_path, {storage_type, false}));
   EXPECT_EQ(before, SearchRows(index.get(), vectors[11], true));

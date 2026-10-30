@@ -597,7 +597,8 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
     return ret;
   }
   if (!pending_quantizer_training_ &&
-      (streamer_ == nullptr || streamer_->open(storage_) != 0)) {
+      (streamer_ == nullptr ||
+       streamer_->open(storage_, storage_options.read_only) != 0)) {
     LOG_ERROR("Failed to open streamer, path: %s", file_path.c_str());
     return core::IndexError_Runtime;
   }
