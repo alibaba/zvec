@@ -225,6 +225,16 @@ float Fp16Quantizer::calc_distance_dp_dp(const void *dp1,
   return calc_distance_dp_query(dp1, dp2);
 }
 
+void Fp16Quantizer::calc_distance_dp_dp_batch(const void *const *dp_list,
+                                              int dp_num, const void *dp,
+                                              float *dist_list) const {
+  if (dp_num <= 0) {
+    return;
+  }
+  // Encoded FP16 datapoints and queries have the same layout and arithmetic.
+  calc_distance_dp_query_batch(dp_list, dp_num, dp, dist_list);
+}
+
 INDEX_FACTORY_REGISTER_QUANTIZER(Fp16Quantizer);
 
 }  // namespace turbo

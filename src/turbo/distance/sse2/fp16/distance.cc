@@ -70,7 +70,9 @@ void batch_impl(const ailego::Float16 *query,
     const __m128 q = internal::load_fp16_4(query + d);
     if (prefetch[0]) {
       for (size_t i = 0; i < kBatch; ++i) {
-        ailego_prefetch(prefetch[i] + d);
+        if (prefetch[i]) {
+          ailego_prefetch(prefetch[i] + d);
+        }
       }
     }
     for (size_t i = 0; i < kBatch; ++i) {
