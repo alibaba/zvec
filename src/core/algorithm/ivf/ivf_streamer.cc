@@ -193,6 +193,8 @@ int IVFStreamer::search_bf(
   ctx->reset_results(count);
   auto &entity = ctx->entity();
   auto &filter = ctx->filter();
+  const bool turbo_rows =
+      entity->quantizer() && entity->meta().major_order() == IndexMeta::MO_ROW;
 
   //! Transform the querys for querying in inverted vector index later
   IndexQueryMeta iv_qmeta;
@@ -211,9 +213,11 @@ int IVFStreamer::search_bf(
                                      &context_stats);
     } else if (!filter.is_valid()) {
       ret = entity->search(query, &heap, &context_stats, ctx->search_scratch());
+    } else if (turbo_rows) {
+      ret = entity->search_turbo_rows(filter, &heap, &context_stats,
+                                      ctx->search_scratch());
     } else {
-      ret = entity->search(query, filter, &heap, &context_stats,
-                           ctx->search_scratch());
+      ret = entity->search(query, filter, &heap, &context_stats);
     }
     ivf_check_with_msg(ret, "Failed to search in entity for %s",
                        IndexError::What(ret));
@@ -265,6 +269,8 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   ctx->reset_results(count);
   auto &entity = ctx->entity();
   auto &filter = ctx->filter();
+  const bool turbo_rows =
+      entity->quantizer() && entity->meta().major_order() == IndexMeta::MO_ROW;
 
   auto &centroid_index_ctx = ctx->centroid_searcher_ctx();
   int ret = centroid_index_->search(query, qmeta, count, centroid_index_ctx);
@@ -291,9 +297,12 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
       if (!filter.is_valid()) {
         ret = entity->search(cid, query, &scan_count, &heap, &context_stats,
                              ctx->search_scratch());
+      } else if (turbo_rows) {
+        ret = entity->search_turbo_rows(cid, filter, &scan_count, &heap,
+                                        &context_stats, ctx->search_scratch());
       } else {
         ret = entity->search(cid, query, filter, &scan_count, &heap,
-                             &context_stats, ctx->search_scratch());
+                             &context_stats);
       }
       ivf_check_with_msg(ret, "Failed to search in entity for %s",
                          IndexError::What(ret));

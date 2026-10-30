@@ -849,12 +849,7 @@ int IVFEntity::merge_topk_results(BatchTopK &topk,
 int IVFEntity::search(size_t inverted_list_id, const void *query,
                       const IndexFilter &filter, uint32_t *scan_count,
                       IndexDocumentHeap *heap,
-                      IndexContext::Stats *context_stats,
-                      IVFSearchScratch &scratch) const {
-  if (quantizer_ && meta_.major_order() == IndexMeta::MO_ROW) {
-    return search_turbo_rows(inverted_list_id, filter, scan_count, heap,
-                             context_stats, scratch);
-  }
+                      IndexContext::Stats *context_stats) const {
   if (quantizer_ && !query_distance_.valid()) {
     return IndexError_InvalidArgument;
   }
@@ -980,7 +975,10 @@ int IVFEntity::search_turbo_rows(size_t inverted_list_id,
                                  uint32_t *scan_count, IndexDocumentHeap *heap,
                                  IndexContext::Stats *context_stats,
                                  IVFSearchScratch &scratch) const {
-  if (!query_distance_.valid()) return IndexError_InvalidArgument;
+  if (!quantizer_ || meta_.major_order() != IndexMeta::MO_ROW ||
+      !query_distance_.valid()) {
+    return IndexError_InvalidArgument;
+  }
   ailego_assert_with(inverted_list_id < header_.inverted_list_count,
                      "invalid id");
   IndexStorage::MemoryBlock meta_block;
@@ -1138,6 +1136,21 @@ int IVFEntity::search_turbo_rows(size_t inverted_list_id,
 
   *scan_count = list.vector_count;
   return use_topk ? merge_topk_results(scratch.topk, heap) : 0;
+}
+
+int IVFEntity::search_turbo_rows(const IndexFilter &filter,
+                                 IndexDocumentHeap *heap,
+                                 IndexContext::Stats *context_stats,
+                                 IVFSearchScratch &scratch) const {
+  for (size_t i = 0; i < header_.inverted_list_count; ++i) {
+    uint32_t scan_count;
+    int ret =
+        search_turbo_rows(i, filter, &scan_count, heap, context_stats, scratch);
+    if (ret != 0) {
+      return ret;
+    }
+  }
+  return 0;
 }
 
 //! search in inverted list without filter
@@ -1310,12 +1323,10 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
 //! search all inverted list with filter
 int IVFEntity::search(const void *query, const IndexFilter &filter,
                       IndexDocumentHeap *heap,
-                      IndexContext::Stats *context_stats,
-                      IVFSearchScratch &scratch) const {
+                      IndexContext::Stats *context_stats) const {
   for (size_t i = 0; i < header_.inverted_list_count; ++i) {
     uint32_t scan_count;
-    int ret = this->search(i, query, filter, &scan_count, heap, context_stats,
-                           scratch);
+    int ret = this->search(i, query, filter, &scan_count, heap, context_stats);
     if (ret != 0) {
       return ret;
     }

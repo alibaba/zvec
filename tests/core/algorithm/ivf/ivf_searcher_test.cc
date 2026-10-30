@@ -4484,8 +4484,8 @@ TEST(IVFBatchDistanceBudget, PreservesReadGroupsAndResidentSpanBoundaries) {
           for (size_t list = 0; list < 2; ++list) {
             uint32_t scanned = 0;
             const int ret =
-                filtered ? entity.search(list, vector.data(), filter, &scanned,
-                                         &heap, &stats, scratch)
+                filtered ? entity.search_turbo_rows(list, filter, &scanned,
+                                                    &heap, &stats, scratch)
                          : entity.search(list, vector.data(), &scanned, &heap,
                                          &stats, scratch);
             ASSERT_EQ(0, ret);
@@ -4576,9 +4576,9 @@ TEST(IVFBatchDistanceBudget, PreservesReadGroupsAndResidentSpanBoundaries) {
                            vector.data(),
                            IndexQueryMeta(IndexMeta::DT_FP32, test.dim)));
           uint32_t full_scanned = 0;
-          ASSERT_EQ(0, filtered ? entity.search(0, vector.data(), filter,
-                                                &full_scanned, &full,
-                                                &full_stats, scratch)
+          ASSERT_EQ(0, filtered ? entity.search_turbo_rows(0, filter,
+                                                           &full_scanned, &full,
+                                                           &full_stats, scratch)
                                 : entity.search(0, vector.data(), &full_scanned,
                                                 &full, &full_stats, scratch));
           ASSERT_EQ(1u, full.size());
