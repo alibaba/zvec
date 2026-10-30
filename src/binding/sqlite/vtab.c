@@ -592,9 +592,254 @@ static const char *shadow_elem_name(zvec_elem e) {
 // transaction as the change itself. The outbox stores no vectors: sync reads
 // the base table's current state for each queued key, so replays are harmless.
 // Trigger bodies may not qualify table names, hence the bare "<t>_outbox".
-static char *shadow_trigger_sql(const char *schema, const char *table,
-                                const zvec_args *a) {
+// ---- UNIQUE conflicts --------------------------------------------------
+// INSERT OR REPLACE / UPDATE OR REPLACE delete the rows that conflict on a
+// UNIQUE constraint, and SQLite does not run DELETE triggers for those deletes
+// unless recursive_triggers is on. The index would keep a document for a row
+// that no longer exists. So, for every plain UNIQUE index of the base table,
+// BEFORE triggers queue the key of whatever row currently holds the same
+// value. Sync always applies the *current* state of a key, so queueing a row
+// that survives (INSERT OR IGNORE, or the row itself) is harmless.
+// Partial and expression indexes cannot be probed this way: they are counted
+// in *n_unsupported and left to recursive_triggers and zvec_check.
+
+typedef struct unique_index {
+  int n;
+  char *cols[8];
+  char *colls[8];
+} unique_index;
+
+static void unique_index_free(unique_index *u, int n) {
+  for (int i = 0; i < n; i++) {
+    for (int j = 0; j < u[i].n; j++) {
+      sqlite3_free(u[i].cols[j]);
+      sqlite3_free(u[i].colls[j]);
+    }
+  }
+  sqlite3_free(u);
+}
+
+enum { MAX_UNIQUE = 16 };
+
+static int list_unique_indexes(sqlite3 *db, const char *schema,
+                               const zvec_args *a, unique_index **out,
+                               int *n_out, int *n_unsupported, char **err) {
+  *out = NULL;
+  *n_out = 0;
+  *n_unsupported = 0;
+  char *names[MAX_UNIQUE];
+  int partial[MAX_UNIQUE];
+  int n = 0, rc;
+  sqlite3_stmt *st = NULL;
+  rc = sqlite3_prepare_v2(db,
+                          "SELECT name, partial FROM pragma_index_list(?1, ?2) "
+                          "WHERE \"unique\" = 1 AND origin <> 'pk'",
+                          -1, &st, NULL);
+  if (rc != SQLITE_OK)
+    return shadow_fail(err, rc, "zvec: %s%s", sqlite3_errmsg(db), NULL);
+  sqlite3_bind_text(st, 1, a->base, -1, SQLITE_STATIC);
+  sqlite3_bind_text(st, 2, schema, -1, SQLITE_STATIC);
+  while ((rc = sqlite3_step(st)) == SQLITE_ROW) {
+    if (n >= MAX_UNIQUE) {
+      (*n_unsupported)++;
+      continue;
+    }
+    names[n] = sqlite3_mprintf("%s", (const char *)sqlite3_column_text(st, 0));
+    partial[n] = sqlite3_column_int(st, 1);
+    if (names[n] == NULL) {
+      rc = SQLITE_NOMEM;
+      break;
+    }
+    n++;
+  }
+  sqlite3_finalize(st);
+  unique_index *u = NULL;
+  if (rc == SQLITE_DONE) {
+    rc = SQLITE_OK;
+    u = sqlite3_malloc64((sqlite3_uint64)(n > 0 ? n : 1) * sizeof *u);
+    if (u == NULL) rc = SQLITE_NOMEM;
+    if (u != NULL) memset(u, 0, (size_t)(n > 0 ? n : 1) * sizeof *u);
+  }
+  int used = 0;
+  for (int i = 0; i < n && rc == SQLITE_OK; i++) {
+    sqlite3_stmt *xi = NULL;
+    rc = sqlite3_prepare_v2(
+        db,
+        "SELECT cid, name, coll FROM pragma_index_xinfo(?1, ?2) "
+        "WHERE key = 1 ORDER BY seqno",
+        -1, &xi, NULL);
+    if (rc != SQLITE_OK) break;
+    sqlite3_bind_text(xi, 1, names[i], -1, SQLITE_STATIC);
+    sqlite3_bind_text(xi, 2, schema, -1, SQLITE_STATIC);
+    unique_index cur;
+    memset(&cur, 0, sizeof cur);
+    int supported = !partial[i];
+    while ((rc = sqlite3_step(xi)) == SQLITE_ROW) {
+      const char *cn = (const char *)sqlite3_column_text(xi, 1);
+      const char *coll = (const char *)sqlite3_column_text(xi, 2);
+      if (sqlite3_column_int(xi, 0) < 0 || cn == NULL || cur.n >= 8) {
+        supported = 0;  // expression or rowid column, or too wide
+        continue;
+      }
+      cur.cols[cur.n] = sqlite3_mprintf("%s", cn);
+      cur.colls[cur.n] = sqlite3_mprintf("%s", coll != NULL ? coll : "BINARY");
+      if (cur.cols[cur.n] == NULL || cur.colls[cur.n] == NULL) {
+        sqlite3_free(cur.cols[cur.n]);
+        sqlite3_free(cur.colls[cur.n]);
+        rc = SQLITE_NOMEM;
+        break;
+      }
+      cur.n++;
+    }
+    sqlite3_finalize(xi);
+    if (rc == SQLITE_DONE) rc = SQLITE_OK;
+    if (rc != SQLITE_OK) {
+      for (int j = 0; j < cur.n; j++) {
+        sqlite3_free(cur.cols[j]);
+        sqlite3_free(cur.colls[j]);
+      }
+      break;
+    }
+    if (supported && cur.n > 0) {
+      u[used++] = cur;
+    } else {
+      for (int j = 0; j < cur.n; j++) {
+        sqlite3_free(cur.cols[j]);
+        sqlite3_free(cur.colls[j]);
+      }
+      (*n_unsupported)++;
+    }
+  }
+  for (int i = 0; i < n; i++) sqlite3_free(names[i]);
+  if (rc != SQLITE_OK) {
+    unique_index_free(u, used);
+    return shadow_fail(
+        err, rc, "zvec: %s%s",
+        rc == SQLITE_NOMEM ? "out of memory" : sqlite3_errmsg(db), NULL);
+  }
+  *out = u;
+  *n_out = used;
+  return SQLITE_OK;
+}
+
+// The statements that queue the rows holding the same value as `new`.
+static char *unique_probe_sql(const char *table, const zvec_args *a,
+                              const unique_index *u, int n, int with_rowid) {
   sqlite3_str *q = sqlite3_str_new(NULL);
+  for (int i = 0; i < n; i++) {
+    sqlite3_str_appendf(q,
+                        "INSERT INTO \"%w_outbox\"(op, pk) SELECT 2, "
+                        "CAST(\"%w\" AS TEXT) FROM \"%w\" WHERE ",
+                        table, a->key, a->base);
+    for (int j = 0; j < u[i].n; j++) {
+      sqlite3_str_appendf(q, "%s\"%w\" = new.\"%w\" COLLATE \"%w\"",
+                          j ? " AND " : "", u[i].cols[j], u[i].cols[j],
+                          u[i].colls[j]);
+    }
+    sqlite3_str_appendall(q, "; ");
+  }
+  if (with_rowid) {
+    sqlite3_str_appendf(q,
+                        "INSERT INTO \"%w_outbox\"(op, pk) SELECT 2, "
+                        "CAST(\"%w\" AS TEXT) FROM \"%w\" WHERE rowid = "
+                        "new.rowid; ",
+                        table, a->key, a->base);
+  }
+  return str_done(q);
+}
+
+static int is_rowid_table(sqlite3 *db, const char *schema, const char *base) {
+  sqlite3_stmt *st = NULL;
+  char *sql = sqlite3_mprintf(
+      "SELECT sql FROM \"%w\".sqlite_master WHERE type='table' AND name=%Q",
+      schema, base);
+  if (sql == NULL) return 0;
+  int rc = sqlite3_prepare_v2(db, sql, -1, &st, NULL);
+  sqlite3_free(sql);
+  if (rc != SQLITE_OK) return 0;
+  int rowid = 1;
+  if (sqlite3_step(st) == SQLITE_ROW) {
+    const char *text = (const char *)sqlite3_column_text(st, 0);
+    // "WITHOUT ROWID" can only follow the closing parenthesis.
+    const char *close = text != NULL ? strrchr(text, ')') : NULL;
+    if (close != NULL) {
+      for (const char *p = close + 1; *p != '\0'; p++) {
+        if (sqlite3_strnicmp(p, "WITHOUT", 7) == 0) {
+          rowid = 0;
+          break;
+        }
+      }
+    }
+  }
+  sqlite3_finalize(st);
+  return rowid;
+}
+
+// True when the key is the table's INTEGER PRIMARY KEY (an alias of rowid), so
+// a rowid conflict is a conflict on the key itself.
+static int key_is_rowid_alias(sqlite3 *db, const char *schema,
+                              const zvec_args *a) {
+  sqlite3_stmt *st = NULL;
+  int alias = 0;
+  if (sqlite3_prepare_v2(db,
+                         "SELECT type FROM pragma_table_xinfo(?1, ?2) WHERE "
+                         "name = ?3 COLLATE nocase AND pk = 1",
+                         -1, &st, NULL) != SQLITE_OK)
+    return 0;
+  sqlite3_bind_text(st, 1, a->base, -1, SQLITE_STATIC);
+  sqlite3_bind_text(st, 2, schema, -1, SQLITE_STATIC);
+  sqlite3_bind_text(st, 3, a->key, -1, SQLITE_STATIC);
+  if (sqlite3_step(st) == SQLITE_ROW) {
+    const char *t = (const char *)sqlite3_column_text(st, 0);
+    alias = t != NULL && sqlite3_stricmp(t, "INTEGER") == 0;
+  }
+  sqlite3_finalize(st);
+  return alias;
+}
+
+static char *shadow_trigger_sql(sqlite3 *db, const char *schema,
+                                const char *table, const zvec_args *a,
+                                char **err) {
+  unique_index *uniq = NULL;
+  int n_uniq = 0, n_unsupported = 0;
+  if (list_unique_indexes(db, schema, a, &uniq, &n_uniq, &n_unsupported, err) !=
+      SQLITE_OK)
+    return NULL;
+  int with_rowid =
+      is_rowid_table(db, schema, a->base) && !key_is_rowid_alias(db, schema, a);
+  char *probes = unique_probe_sql(table, a, uniq, n_uniq, with_rowid);
+  if (probes == NULL) {
+    unique_index_free(uniq, n_uniq);
+    *err = sqlite3_mprintf("zvec: out of memory");
+    return NULL;
+  }
+  sqlite3_str *q = sqlite3_str_new(NULL);
+  if (probes[0] != '\0') {
+    sqlite3_str_appendf(q,
+                        "CREATE TRIGGER \"%w\".\"%w_zvec_bi\" BEFORE INSERT ON "
+                        "\"%w\" BEGIN %s END;",
+                        schema, table, a->base, probes);
+  }
+  if (n_uniq > 0) {
+    sqlite3_str_appendf(
+        q, "CREATE TRIGGER \"%w\".\"%w_zvec_bu\" BEFORE UPDATE OF ", schema,
+        table);
+    int first = 1;
+    for (int i = 0; i < n_uniq; i++) {
+      for (int j = 0; j < uniq[i].n; j++) {
+        sqlite3_str_appendf(q, "%s\"%w\"", first ? "" : ", ", uniq[i].cols[j]);
+        first = 0;
+      }
+    }
+    // The rowid probe is only meaningful for INSERT.
+    char *update_probes = unique_probe_sql(table, a, uniq, n_uniq, 0);
+    sqlite3_str_appendf(q, " ON \"%w\" BEGIN %s END;", a->base,
+                        update_probes != NULL ? update_probes : "");
+    sqlite3_free(update_probes);
+  }
+  sqlite3_free(probes);
+  unique_index_free(uniq, n_uniq);
+
   sqlite3_str_appendf(
       q,
       "CREATE TRIGGER \"%w\".\"%w_zvec_ai\" AFTER INSERT ON \"%w\" BEGIN "
@@ -707,7 +952,9 @@ static int zvec_shadow_create(sqlite3 *db, const char *schema,
   }
   sqlite3_finalize(st);
   sqlite3_free(filter_list);
-  rc = shadow_exec(db, shadow_trigger_sql(schema, table, a), err);
+  char *trigger_sql = shadow_trigger_sql(db, schema, table, a, err);
+  if (trigger_sql == NULL) return *err != NULL ? SQLITE_ERROR : SQLITE_NOMEM;
+  rc = shadow_exec(db, trigger_sql, err);
   if (rc != SQLITE_OK) return rc;
   // Rows that already exist are queued too, so the first sync builds the index.
   return shadow_exec(
@@ -789,11 +1036,14 @@ static int zvec_shadow_drop(sqlite3 *db, const char *schema, const char *table,
       sqlite3_mprintf("DROP TRIGGER IF EXISTS \"%w\".\"%w_zvec_ai\";"
                       "DROP TRIGGER IF EXISTS \"%w\".\"%w_zvec_au\";"
                       "DROP TRIGGER IF EXISTS \"%w\".\"%w_zvec_ad\";"
+                      "DROP TRIGGER IF EXISTS \"%w\".\"%w_zvec_bi\";"
+                      "DROP TRIGGER IF EXISTS \"%w\".\"%w_zvec_bu\";"
                       "DROP TABLE IF EXISTS \"%w\".\"%w_outbox\";"
                       "DROP TABLE IF EXISTS \"%w\".\"%w_state\";"
                       "DROP TABLE IF EXISTS \"%w\".\"%w_config\";",
                       schema, table, schema, table, schema, table, schema,
-                      table, schema, table, schema, table),
+                      table, schema, table, schema, table, schema, table,
+                      schema, table),
       err);
 }
 
@@ -1660,6 +1910,19 @@ static int sync_run(sqlite3 *db, const char *schema, const char *name,
 }
 
 // zvec_sync(name [, schema]) -> '{"upserted":N,"deleted":N,"skipped":N}'
+// The index cannot take part in a transaction. Applying changes that this
+// connection has not committed yet would leave documents in the index for rows
+// that a ROLLBACK then removes, so nothing is synced while the connection has
+// uncommitted writes. A plain read transaction is fine.
+static int has_uncommitted_changes(sqlite3 *db) {
+#ifdef SQLITE_TXN_WRITE
+  if (sqlite3_libversion_number() >= 3034000) {
+    return sqlite3_txn_state(db, NULL) == SQLITE_TXN_WRITE;
+  }
+#endif
+  return !sqlite3_get_autocommit(db);
+}
+
 static int refuse_if_read_only(sqlite3_context *ctx, sqlite3 *db,
                                const char *schema, const char *fn) {
   if (sqlite3_db_readonly(db, schema) != 1) return 0;
@@ -1682,6 +1945,14 @@ static void zvec_sync_fn(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     return;
   }
   if (refuse_if_read_only(ctx, db, schema, "zvec_sync")) return;
+  if (has_uncommitted_changes(db)) {
+    sqlite3_result_error(
+        ctx,
+        "zvec_sync: this connection has uncommitted changes; commit first "
+        "(the index cannot be rolled back)",
+        -1);
+    return;
+  }
   sync_stats stats = {0, 0, 0};
   char *err = NULL;
   if (sync_run(db, schema, name, NULL, &stats, &err) != SQLITE_OK) {
@@ -2428,6 +2699,7 @@ static int zvec_filter(sqlite3_vtab_cursor *p_cursor, int idx_num,
   // opened read-only cannot be synced; it is searched as it is.
   if (vtab->derived && vtab->sync_query && vtab->shared != NULL &&
       sqlite3_db_readonly(vtab->db, vtab->schema) != 1 &&
+      !has_uncommitted_changes(vtab->db) &&
       outbox_pending(vtab->db, vtab->schema, vtab->name)) {
     sync_stats stats = {0, 0, 0};
     char *err = NULL;
