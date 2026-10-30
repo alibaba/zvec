@@ -30,8 +30,7 @@ set(ZVEC_STABLE_PUBLIC_HEADERS
     zvec/db/status.h
     zvec/db/type.h
 
-    zvec/core/interface/constants.h
-
-    zvec/ailego/pattern/expected.hpp
-    zvec/ailego/utility/float_helper.h
+    zvec/detail/expected.hpp
+    zvec/detail/float_helper.h
+    zvec/detail/index_defaults.h
 )

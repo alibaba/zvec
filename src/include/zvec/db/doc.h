@@ -19,10 +19,10 @@
 #include <string>
 #include <unordered_map>
 #include <variant>
-#include <zvec/ailego/utility/float_helper.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
+#include <zvec/detail/float_helper.h>
 #include <zvec/export.h>
 
 namespace zvec {

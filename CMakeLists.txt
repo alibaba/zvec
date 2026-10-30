@@ -151,9 +151,10 @@ option(BUILD_CPP_EXAMPLES "Build C++ examples" OFF)
 #
 # ZVEC_INSTALL_ENGINE_HEADERS
 #   OFF (default): install only the stable API -- zvec/db/**, zvec/c_api.h,
-#       zvec/export.h and the three engine headers they transitively need,
-#       listed in cmake/zvec_public_headers.cmake -- 18 headers.
-#   ON : also install zvec/core/**, zvec/ailego/** and zvec/turbo/** -- 95
+#       zvec/export.h and the three zvec/detail/** headers they transitively
+#       need, listed in cmake/zvec_public_headers.cmake -- 18 headers, and no
+#       zvec/core, zvec/ailego or zvec/turbo directory at all.
+#   ON : also install zvec/core/**, zvec/ailego/** and zvec/turbo/** -- 98
 #       headers -- for consumers that deliberately build against the engine.
 #
 # ZVEC_INSTALL_ENGINE_SHARED_LIBRARIES
@@ -180,18 +181,30 @@ option(BUILD_CPP_EXAMPLES "Build C++ examples" OFF)
 # on, because an installed libzvec_core.a without zvec/core/** is a library that
 # cannot be called.  libzvec.a always installs, since zvec/db/** always does.
 #
+# zvec/detail/ holds the three headers the stable API cannot do without: the
+# vendored tl::expected behind Result<T>, the Float16 storage type inside
+# Doc::Value, and the constexpr index defaults used as default arguments.  They
+# used to live under zvec/ailego/ and zvec/core/, which forced every package to
+# carry engine directories; a neutral directory lets both layers include them
+# without inverting the layer order, and their old paths remain as shims so no
+# engine source had to change.  Namespaces are untouched (zvec::ailego::Float16
+# is mangled into Doc's members), so the move is ABI-neutral.
+# scripts/check_public_headers.py rule 6 fails if the stable closure ever
+# reaches zvec/core, zvec/ailego or zvec/turbo again.
+#
 # core and ailego cannot be split into separate *header* switches: zvec/core/**
-# pulls in 31 of the 35 zvec/ailego headers transitively (measured), so
-# publishing core without ailego saves 3 headers out of 95 and ships core
-# headers that do not compile.  Treat the engine header surface as one unit.
+# reaches most of zvec/ailego/** transitively (measured: 31 of the 35 headers,
+# before zvec/detail/ absorbed three of them), so publishing core without ailego
+# saves a handful of headers and ships core headers that do not compile.  Treat
+# the engine header surface as one unit.
 #
 # Resulting packages (headers / shared libraries / static archives, measured):
 #   OFF / OFF (default)   18 headers, 2 shared libraries, libzvec.a only
-#   ON  / OFF             95 headers, 2 shared libraries, 4 archives
-#   ON  / ON              95 headers, 4 shared libraries, 4 archives
+#   ON  / OFF             98 headers, 2 shared libraries, 4 archives
+#   ON  / ON              98 headers, 4 shared libraries, 4 archives
 #   OFF / ON              configuration error (guarded below)
 #
-# The libzvec export whitelist is generated at the *engine* surface (95 headers)
+# The libzvec export whitelist is generated at the *engine* surface (98 headers)
 # even though the default package ships 18, so a source-tree consumer that gets
 # the engine headers from src/include can still link them out of libzvec.  See
 # scripts/generate_export_whitelist.py for the trade-off.

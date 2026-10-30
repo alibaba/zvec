@@ -17,6 +17,10 @@ engine internals. CMake installs two different sets.
   python3 scripts/check_public_headers.py --write-install-manifest
   ```
 
+  Concretely that is `zvec/db/**`, `zvec/c_api.h`, `zvec/export.h` and the three
+  `zvec/detail/**` headers they reach — and nothing else. A default package
+  carries no `zvec/core/**`, `zvec/ailego/**` or `zvec/turbo/**` at all.
+
 - **Installed only with `-DZVEC_INSTALL_ENGINE_HEADERS=ON`** (*not* the default)
   — the remaining `zvec/core/**`, `zvec/ailego/**` and `zvec/turbo/**` headers,
   taking the package from 18 to 95. Turn it on only if you deliberately want to
@@ -96,13 +100,29 @@ above. Being exported is not the same as being supported.
 
 Do not include them from application code unless you deliberately want to build
 against the engine itself. In particular, `zvec/db/**` must not depend on
-`zvec/core/framework/**`.
+any of them; `scripts/check_public_headers.py` enforces that.
 
-Three engine headers are the exception: `zvec/core/interface/constants.h`,
-`zvec/ailego/pattern/expected.hpp` and `zvec/ailego/utility/float_helper.h` are
-reached from `zvec/db/**` itself, so they always ship. They are still not API —
-treat them as implementation detail that happens to be visible. Removing them
-from the closure is tracked in the header-governance doc (`Result<T>` and
+## `zvec/detail/**` — installed, but not API
+
+Three headers outside `zvec/db/**` are reached from the stable API itself, so
+they always ship: `zvec/detail/expected.hpp` (the vendored `tl::expected` behind
+`Result<T>`), `zvec/detail/float_helper.h` (`zvec::ailego::Float16`, the storage
+type inside `Doc::Value`) and `zvec/detail/index_defaults.h` (the `constexpr`
+knob defaults the index and query parameter constructors use).
+
+They live under `zvec/detail/` rather than in the engine directories so that a
+default package installs no engine header at all, while the engine can still
+include them without depending on the db layer — `zvec/core/framework/**` needs
+`tl::expected`, `zvec/core/**` and `zvec/turbo/**` both need `Float16`. Two of
+them keep an engine-era spelling because that spelling is part of the ABI:
+`zvec::ailego::Float16` is mangled into `Doc`'s members and
+`zvec::core_interface::kDefault*` are the default arguments of the stable
+constructors, so only the header paths moved.
+
+Treat them as implementation detail that happens to be visible. Include
+`zvec/db/status.h`, `zvec/db/doc.h` or `zvec/db/index_params.h` instead, and do
+not rely on these paths or their contents staying put. Removing them from the
+closure entirely is tracked in the header-governance doc (`Result<T>` and
 `float16_t` are what keep them there).
 
 ## Rules for contributors

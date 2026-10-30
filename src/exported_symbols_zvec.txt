@@ -18,7 +18,7 @@
 # vtables/typeinfo/VTT (TVN/TIN/TSN/TTN), guard variables (GVN), function-local
 # entities such as lambdas and static locals (ZN/ZNK/GVZN/GVZNK) and thunks.
 #
-# Surface: engine -- 95 public headers, 378 entity
+# Surface: engine -- 98 public headers, 378 entity
 # prefixes, 4914 patterns.
 #
 # Keep this list globs-only: lld's default --no-undefined-version rejects a

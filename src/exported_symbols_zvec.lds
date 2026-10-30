@@ -1,6 +1,6 @@
 /* GENERATED -- do not edit by hand.
    python3 scripts/generate_export_whitelist.py --write
-   Surface: engine -- 95 public headers,
+   Surface: engine -- 98 public headers,
    378 entity prefixes, 4914 patterns.
    Rationale and variant legend: src/exported_symbols_zvec.txt. */
 {

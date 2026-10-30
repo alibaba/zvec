@@ -65,6 +65,12 @@ set_tests_properties(cpp_smoke PROPERTIES ENVIRONMENT "ZVEC_JIEBA_DICT_DIR=")
 # exports exactly what the published headers declare; a package configured with
 # -DZVEC_INSTALL_ENGINE_SHARED_LIBRARIES=ON also carries the standalone
 # libzvec_core, which is preferred here so that shape stays exercised.
+#
+# The libzvec fallback depends on its export whitelist being generated at the
+# *engine* surface (scripts/generate_export_whitelist.py, the default).  If that
+# list ever narrows to --surface stable, engine headers without a standalone
+# libzvec_core would compile and then fail to link, and this fallback has to
+# become an error instead.
 # ZVEC_REQUIRE_CORE turns "engine headers absent" into a hard error so CI can
 # pin the expected package shape.
 set(_core_header "${ZVEC_SDK_DIR}/include/zvec/core/interface/index_factory.h")
@@ -115,13 +121,22 @@ endif()
 
 # The mirror image of ZVEC_REQUIRE_CORE, and the one the *default* package must
 # satisfy: ZVEC_INSTALL_ENGINE_HEADERS is OFF by default, so a release that
-# started shipping zvec/core/framework/** again would be widening the published
-# surface silently.  Pin the trimmed shape the same way ZVEC_REQUIRE_CORE pins
-# the full one.
-if(ZVEC_FORBID_ENGINE_HEADERS AND EXISTS "${_core_header}")
-  message(FATAL_ERROR
-    "ZVEC_FORBID_ENGINE_HEADERS is set but the package carries engine headers "
-    "(found ${_core_header})")
+# started shipping zvec/core/**, zvec/ailego/** or zvec/turbo/** again would be
+# widening the published surface silently.  Pin the trimmed shape the same way
+# ZVEC_REQUIRE_CORE pins the full one.
+#
+# Assert on the directories, not on a probe header.  The stable closure reaches
+# no engine header at all (scripts/check_public_headers.py rule 6), so a default
+# package must not contain an engine header *directory* either -- not even a
+# partially populated one, which a single-file probe would walk straight past.
+if(ZVEC_FORBID_ENGINE_HEADERS)
+  foreach(_engine_dir core ailego turbo)
+    if(EXISTS "${ZVEC_SDK_DIR}/include/zvec/${_engine_dir}")
+      message(FATAL_ERROR
+        "ZVEC_FORBID_ENGINE_HEADERS is set but the package carries an engine "
+        "header directory: include/zvec/${_engine_dir}")
+    endif()
+  endforeach()
 endif()
 
 # The standalone engine shared libraries are built but, by default, not

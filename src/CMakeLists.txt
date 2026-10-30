@@ -23,7 +23,7 @@ find_package(Threads REQUIRED)
 # =============================================================================
 # src/include is a *build* directory, not the published API surface: it also
 # holds the engine internals (zvec/core/framework/**, most of zvec/ailego/**).
-# Installing it wholesale ships 95 headers where the stable API only needs 18,
+# Installing it wholesale ships 98 headers where the stable API only needs 18,
 # inviting users to depend on an unstable surface.  The stable closure is
 # therefore installed from an explicit manifest -- the whitelist approach LevelDB
 # uses, and the opposite of Arrow's ARROW_INSTALL_ALL_HEADERS -- while the

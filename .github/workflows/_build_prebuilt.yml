@@ -294,6 +294,18 @@ jobs:
           fi
           echo "engine artifacts absent, db-layer archive present: $(basename "$DB_ARCHIVE")"
 
+          # No engine header directory either.  The stable closure reaches none
+          # of them (scripts/check_public_headers.py rule 6), so a default
+          # package must not contain include/zvec/{core,ailego,turbo} at all --
+          # assert on the directories, not on a probe header, so a partially
+          # populated one cannot slip through.
+          for engine_dir in core ailego turbo; do
+            if [ -e "$ZVEC_INSTALL_DIR/include/zvec/$engine_dir" ]; then
+              echo "::error::engine header directory zvec/$engine_dir must not be installed by default"
+              exit 1
+            fi
+          done
+
       - name: Smoke-test staged SDK
         shell: bash
         run: |
@@ -779,7 +791,7 @@ jobs:
           # The iOS job installs with the default configuration, so the engine
           # headers must be absent here too -- same shape the desktop job pins
           # with ZVEC_FORBID_ENGINE_HEADERS.
-          for engine_dir in core/framework ailego/logger; do
+          for engine_dir in core ailego turbo; do
             if [ -e "$ZVEC_DIST_DIR/include/zvec/$engine_dir" ]; then
               echo "::error::engine headers zvec/$engine_dir must not be packaged by default"
               exit 1

@@ -17,9 +17,9 @@
 #include <sstream>
 #include <string>
 #include <vector>
-#include <zvec/core/interface/constants.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
+#include <zvec/detail/index_defaults.h>
 #include <zvec/export.h>
 
 namespace zvec {

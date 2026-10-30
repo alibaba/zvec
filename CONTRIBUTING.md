@@ -90,7 +90,19 @@ versioned API. `src/include/zvec/{core,ailego,turbo}/**` are the engine and may
 change at any time; they are **not installed by default**, and
 `-DZVEC_INSTALL_ENGINE_HEADERS=ON` adds them for consumers that deliberately
 build against the engine. In-tree code always sees them: `src/include` is on the
-compile include path regardless of the switch. See
+compile include path regardless of the switch.
+
+Three headers the stable API cannot do without live in `src/include/zvec/detail/`:
+the vendored `tl::expected` behind `Result<T>`, the `Float16` storage type inside
+`Doc::Value`, and the `constexpr` index defaults used as default arguments. They
+are installed but are **not** API. They sit outside `zvec/{core,ailego,turbo}` so
+a default package contains no engine directory at all, and their old engine paths
+remain as shims, so engine code includes them exactly as before. The namespaces
+did not move — `zvec::ailego::Float16` is mangled into `Doc`'s members — so the
+relocation is ABI-neutral. `check_public_headers.py` fails if the stable closure
+reaches an engine header again.
+
+See
 [`src/include/zvec/README.md`](src/include/zvec/README.md) for the boundary rules
 (where internal helpers go, how to hide engine types, how to keep the include
 budget in check).
@@ -141,7 +153,7 @@ git diff src/exported_symbols_zvec.txt
 
 This needs `clang++` (the header set is parsed with a clang AST dump); without
 it the check skips locally and fails in CI. The list is generated at the *engine*
-surface — all 95 public headers — even though a default package installs 18, so
+surface — all 98 public headers — even though a default package installs 18, so
 that in-tree and `add_subdirectory` consumers can still link the engine API out
 of `libzvec`; `--surface stable` is the tighter alternative if that ever stops
 being wanted. The standalone engine libraries (`libzvec_core`, `libzvec_ailego`)

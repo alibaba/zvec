@@ -16,7 +16,7 @@
 #include <iosfwd>
 #include <string>
 #include <type_traits>
-#include <zvec/ailego/pattern/expected.hpp>
+#include <zvec/detail/expected.hpp>
 #include <zvec/export.h>
 
 namespace zvec {

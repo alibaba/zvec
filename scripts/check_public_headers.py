@@ -8,10 +8,18 @@ stable surface from silently absorbing engine internals, the way
 ``ARROW_INSTALL_ALL_HEADERS`` does for Apache Arrow and the explicit
 ``install(FILES ...)`` whitelist does for LevelDB.
 
+The stable closure is engine-free: the three headers it used to need from
+``zvec/core`` and ``zvec/ailego`` now live under ``zvec/detail/``, a neutral
+home both the stable API and the engine may include without inverting the layer
+order.  Their old paths remain as shims so engine code keeps compiling, but the
+shims are not in the closure, so a default package installs no ``zvec/core/**``,
+``zvec/ailego/**`` or ``zvec/turbo/**`` at all.  Rule 6 fails if that regresses.
+
 Checks
 ------
 1. ``zvec/db/*.h`` must not include an internal header (``*_internal.h``) nor
-   anything from ``zvec/core/framework/**``.
+   anything from the engine directories (``zvec/core/**``, ``zvec/ailego/**``,
+   ``zvec/turbo/**``).
 2. Every non-``zvec/db`` include reached from ``zvec/db/*.h`` must appear in
    ``ALLOWED_STABLE_DEPS``, so new cross-layer dependencies need a reviewed
    allowlist change.
@@ -24,10 +32,10 @@ Checks
    no internal header directory.  Skipped gracefully when no C++ compiler is
    available.
 6. The stable API's transitive include closure must be fully listed in
-   ``ALLOWED_STABLE_DEPS`` / ``INDIRECT_STABLE_DEPS``.  That closure *is* the
-   minimal installable SDK header set, so an unlisted member means a trimmed
-   install would ship headers that do not compile.  The measured footprint is
-   reported on every run.
+   ``ALLOWED_STABLE_DEPS`` / ``INDIRECT_STABLE_DEPS``, and must contain no
+   engine header.  That closure *is* the minimal installable SDK header set, so
+   an unlisted member means a trimmed install would ship headers that do not
+   compile.  The measured footprint is reported on every run.
 7. ``cmake/zvec_public_headers.cmake`` -- the manifest CMake actually installs --
    must list exactly that closure, so the install rules cannot drift from the
    include graph.
@@ -66,14 +74,19 @@ INSTALL_MANIFEST = Path("cmake/zvec_public_headers.cmake")
 MANIFEST_VAR = "ZVEC_STABLE_PUBLIC_HEADERS"
 
 # Non-zvec/db includes the stable API may depend on, with the reason each one is
-# currently unavoidable.  Keep this list short.
+# currently unavoidable.  Keep this list short.  Every entry is either a
+# top-level zvec header or lives under zvec/detail/ -- none of them is an engine
+# header, so a default package carries no zvec/core, zvec/ailego or zvec/turbo.
 ALLOWED_STABLE_DEPS: dict[str, str] = {
     "zvec/export.h": "ZVEC_API visibility macro",
-    "zvec/core/interface/constants.h": (
+    "zvec/detail/index_defaults.h": (
         "leaf header (<cstdint> only) providing default index knobs"
     ),
-    "zvec/ailego/pattern/expected.hpp": "backs Result<T> = tl::expected<T, Status>",
-    "zvec/ailego/utility/float_helper.h": "ailego::Float16 in Doc::Value",
+    "zvec/detail/expected.hpp": "backs Result<T> = tl::expected<T, Status>",
+    "zvec/detail/float_helper.h": (
+        "zvec::ailego::Float16 in Doc::Value; the namespace is part of the ABI, "
+        "only the header path moved"
+    ),
 }
 
 # Headers the allowlisted ones drag in transitively.  Users never include these
@@ -105,14 +118,20 @@ INSTALL_FOOTPRINT_BUDGET: tuple[int, int] = (19, 11200)
 THIRD_PARTY_HEADERS: frozenset[str] = frozenset(
     {
         "zvec/ailego/buffer/concurrentqueue.h",  # moodycamel (BSD-2)
-        "zvec/ailego/pattern/expected.hpp",  # tl::expected (Boost SL 1.0)
+        "zvec/detail/expected.hpp",  # tl::expected (Boost SL 1.0)
     }
 )
 
 LICENSE_MARKER = "Licensed under the Apache License, Version 2.0"
 INCLUDE_RE = re.compile(r"""^\s*#\s*include\s*[<"]([^">]+)[">]""", re.MULTILINE)
 GUARD_RE = re.compile(r"^\s*#\s*ifndef\s+\S+", re.MULTILINE)
-FORBIDDEN_PREFIXES: tuple[str, ...] = ("zvec/core/framework/",)
+# Everything under these directories is the advanced engine surface.  The stable
+# API may not reach any of it, directly or transitively (rules 1 and 6).
+FORBIDDEN_PREFIXES: tuple[str, ...] = (
+    "zvec/core/",
+    "zvec/ailego/",
+    "zvec/turbo/",
+)
 
 
 def _out(message: str = "") -> None:
@@ -168,9 +187,9 @@ def check_stable_deps(
                 )
             elif dep.startswith(FORBIDDEN_PREFIXES):
                 errors.append(
-                    f"{rel}: stable public header includes engine framework "
-                    f"header {dep}; hide it behind an opaque member or an "
-                    f"internal header"
+                    f"{rel}: stable public header includes engine header {dep}; "
+                    f"hide it behind an opaque member or an internal header, or "
+                    f"move it to zvec/detail/ if the stable API genuinely needs it"
                 )
             elif dep not in ALLOWED_STABLE_DEPS:
                 errors.append(
@@ -281,12 +300,20 @@ def check_install_closure(
         _read_text(INCLUDE_ROOT / member).count("\n") + 1 for member in closure
     )
     max_headers, max_lines = INSTALL_FOOTPRINT_BUDGET
+    non_db = sorted(m for m in closure if not m.startswith(STABLE_PREFIX))
+    engine = [m for m in non_db if m.startswith(FORBIDDEN_PREFIXES)]
+    if engine:
+        errors.append(
+            "the stable closure reaches engine headers "
+            f"({', '.join(engine)}); a default package must install nothing "
+            "under zvec/core, zvec/ailego or zvec/turbo, so move whatever the "
+            "stable API needs to zvec/detail/ instead"
+        )
     report = [
         f"  installable stable surface: {len(closure)} headers, "
         f"{total_lines} lines (budget {max_headers}/{max_lines})",
-        f"  of which engine headers: "
-        f"{len([m for m in closure if not m.startswith(STABLE_PREFIX)])} "
-        f"(shipped headers total {len(headers)})",
+        f"  of which outside zvec/db: {len(non_db)} "
+        f"(engine headers: {len(engine)}; shipped headers total {len(headers)})",
     ]
     if verbose:
         for member in sorted(closure):
