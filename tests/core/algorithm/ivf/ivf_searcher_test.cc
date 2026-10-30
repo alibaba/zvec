@@ -4486,8 +4486,8 @@ TEST(IVFBatchDistanceBudget, PreservesReadGroupsAndResidentSpanBoundaries) {
             const int ret =
                 filtered ? entity.search_turbo_rows(list, filter, &scanned,
                                                     &heap, &stats, scratch)
-                         : entity.search(list, vector.data(), &scanned, &heap,
-                                         &stats, scratch);
+                         : entity.search_turbo_rows(list, &scanned, &heap,
+                                                    &stats, scratch);
             ASSERT_EQ(0, ret);
             EXPECT_EQ(list == 0 ? first_count : second_count, scanned);
           }
@@ -4576,11 +4576,12 @@ TEST(IVFBatchDistanceBudget, PreservesReadGroupsAndResidentSpanBoundaries) {
                            vector.data(),
                            IndexQueryMeta(IndexMeta::DT_FP32, test.dim)));
           uint32_t full_scanned = 0;
-          ASSERT_EQ(0, filtered ? entity.search_turbo_rows(0, filter,
-                                                           &full_scanned, &full,
-                                                           &full_stats, scratch)
-                                : entity.search(0, vector.data(), &full_scanned,
-                                                &full, &full_stats, scratch));
+          ASSERT_EQ(
+              0, filtered
+                     ? entity.search_turbo_rows(0, filter, &full_scanned, &full,
+                                                &full_stats, scratch)
+                     : entity.search_turbo_rows(0, &full_scanned, &full,
+                                                &full_stats, scratch));
           ASSERT_EQ(1u, full.size());
           EXPECT_EQ(key_base - 2, full[0].key());
           EXPECT_EQ(std::numeric_limits<uint32_t>::max(), full[0].index());

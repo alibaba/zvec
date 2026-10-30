@@ -69,8 +69,7 @@ class IVFEntity {
 
   //! search in inverted list without filter
   int search(size_t inverted_list_id, const void *query, uint32_t *scan_count,
-             IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
-             IVFSearchScratch &scratch) const;
+             IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;
 
   //! search all inverted list with filter
   int search(const void *query, const IndexFilter &filter,
@@ -78,8 +77,7 @@ class IVFEntity {
 
   //! search all inverted list without filter
   int search(const void *query, IndexDocumentHeap *heap,
-             IndexContext::Stats *context_stats,
-             IVFSearchScratch &scratch) const;
+             IndexContext::Stats *context_stats) const;
 
   //! Search row-major Turbo postings with a filter after bind_query.
   int search_turbo_rows(size_t inverted_list_id, const IndexFilter &filter,
@@ -89,6 +87,18 @@ class IVFEntity {
 
   //! Search all row-major Turbo posting lists with a filter after bind_query.
   int search_turbo_rows(const IndexFilter &filter, IndexDocumentHeap *heap,
+                        IndexContext::Stats *context_stats,
+                        IVFSearchScratch &scratch) const;
+
+  //! Search row-major Turbo postings without a filter after bind_query.
+  int search_turbo_rows(size_t inverted_list_id, uint32_t *scan_count,
+                        IndexDocumentHeap *heap,
+                        IndexContext::Stats *context_stats,
+                        IVFSearchScratch &scratch) const;
+
+  //! Search all row-major Turbo posting lists without a filter after
+  //! bind_query.
+  int search_turbo_rows(IndexDocumentHeap *heap,
                         IndexContext::Stats *context_stats,
                         IVFSearchScratch &scratch) const;
 

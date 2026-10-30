@@ -211,11 +211,16 @@ int IVFStreamer::search_bf(
     if (p_keys) {
       ret = entity->search_by_p_keys(query, (*p_keys)[q], filter, &heap,
                                      &context_stats);
-    } else if (!filter.is_valid()) {
-      ret = entity->search(query, &heap, &context_stats, ctx->search_scratch());
     } else if (turbo_rows) {
-      ret = entity->search_turbo_rows(filter, &heap, &context_stats,
-                                      ctx->search_scratch());
+      if (filter.is_valid()) {
+        ret = entity->search_turbo_rows(filter, &heap, &context_stats,
+                                        ctx->search_scratch());
+      } else {
+        ret = entity->search_turbo_rows(&heap, &context_stats,
+                                        ctx->search_scratch());
+      }
+    } else if (!filter.is_valid()) {
+      ret = entity->search(query, &heap, &context_stats);
     } else {
       ret = entity->search(query, filter, &heap, &context_stats);
     }
@@ -294,12 +299,17 @@ int IVFStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
          ++i) {
       auto cid = centroids[i].key();
       uint32_t scan_count = 0;
-      if (!filter.is_valid()) {
-        ret = entity->search(cid, query, &scan_count, &heap, &context_stats,
-                             ctx->search_scratch());
-      } else if (turbo_rows) {
-        ret = entity->search_turbo_rows(cid, filter, &scan_count, &heap,
+      if (turbo_rows) {
+        if (filter.is_valid()) {
+          ret =
+              entity->search_turbo_rows(cid, filter, &scan_count, &heap,
                                         &context_stats, ctx->search_scratch());
+        } else {
+          ret = entity->search_turbo_rows(
+              cid, &scan_count, &heap, &context_stats, ctx->search_scratch());
+        }
+      } else if (!filter.is_valid()) {
+        ret = entity->search(cid, query, &scan_count, &heap, &context_stats);
       } else {
         ret = entity->search(cid, query, filter, &scan_count, &heap,
                              &context_stats);
