@@ -195,6 +195,8 @@ class CollectionImpl : public Collection {
 
   void cleanup_orphan_segment_dirs(const Version &version);
 
+  void cleanup_orphan_index_dirs(const Version &version);
+
   Status acquire_file_lock(bool create = false);
 
   Status init_version_manager();
@@ -2364,6 +2366,7 @@ Status CollectionImpl::recovery() {
   // a shared lock and must not modify the collection.
   if (!options_.read_only_) {
     cleanup_orphan_segment_dirs(v);
+    cleanup_orphan_index_dirs(v);
   }
 
   SegmentOptions seg_options;
@@ -2510,6 +2513,115 @@ void CollectionImpl::cleanup_orphan_segment_dirs(const Version &version) {
           "Recovery failed to remove orphan segment directory not referenced "
           "by manifest: path=%s, error=%s",
           orphan_path.c_str(), error.c_str());
+    }
+  }
+}
+
+// Removes scalar and FTS index directories inside the referenced segments
+// that `version` does not reference: `scalar.index.<block id>.rocksdb` and
+// `fts.<block id>.rocksdb` whose block is not in the segment's persisted
+// blocks, plus their `.tmp` names, under which a RocksDB checkpoint is built
+// before it is renamed. They are left by an index build that crashed before
+// it published the manifest. Segments open these indexes only from the
+// blocks the manifest lists, so nothing reads them, but block ids restart
+// from the manifest after a crash and the next build would fail on the
+// existing directory. Best-effort, like cleanup_orphan_segment_dirs(). Must be
+// called with the exclusive collection file lock held.
+void CollectionImpl::cleanup_orphan_index_dirs(const Version &version) {
+  // A name matches only if it is "<prefix><block id>.rocksdb" or that name
+  // plus ".tmp", with the block id formatted as the collection formats it
+  // (all digits, no leading zeros, fits BlockID).
+  auto parse_index_dir = [](const std::string &name, const std::string &prefix,
+                            BlockID *id, bool *is_tmp) {
+    const std::string suffix = ".rocksdb";
+    std::string stem = name;
+    *is_tmp = false;
+    if (stem.size() > 4 && stem.compare(stem.size() - 4, 4, ".tmp") == 0) {
+      stem.resize(stem.size() - 4);
+      *is_tmp = true;
+    }
+    if (stem.size() <= prefix.size() + suffix.size() ||
+        stem.compare(0, prefix.size(), prefix) != 0 ||
+        stem.compare(stem.size() - suffix.size(), suffix.size(), suffix) != 0) {
+      return false;
+    }
+    const std::string digits =
+        stem.substr(prefix.size(), stem.size() - prefix.size() - suffix.size());
+    if (digits.size() > 10) {
+      return false;
+    }
+    uint64_t value = 0;
+    for (char c : digits) {
+      if (c < '0' || c > '9') {
+        return false;
+      }
+      value = value * 10 + (c - '0');
+    }
+    if (value > std::numeric_limits<BlockID>::max() ||
+        std::to_string(value) != digits) {
+      return false;
+    }
+    *id = static_cast<BlockID>(value);
+    return true;
+  };
+
+  auto segment_metas = version.persisted_segment_metas();
+  if (version.writing_segment_meta()) {
+    segment_metas.push_back(version.writing_segment_meta());
+  }
+  for (const auto &meta : segment_metas) {
+    std::unordered_set<BlockID> scalar_index_blocks;
+    std::unordered_set<BlockID> fts_index_blocks;
+    for (const auto &block : meta->persisted_blocks()) {
+      if (block.type() == BlockType::SCALAR_INDEX) {
+        scalar_index_blocks.insert(block.id());
+      } else if (block.type() == BlockType::FTS_INDEX) {
+        fts_index_blocks.insert(block.id());
+      }
+    }
+
+    const auto segment_path = FileHelper::MakeSegmentPath(path_, meta->id());
+    std::vector<std::string> orphan_names;
+    std::error_code ec;
+    std::filesystem::directory_iterator it(
+        ailego::FileHelper::PathFromUtf8(segment_path), ec);
+    std::filesystem::directory_iterator end;
+    while (!ec && it != end) {
+      std::error_code entry_ec;
+      if (it->is_directory(entry_ec) && !entry_ec) {
+        const std::string name =
+            ailego::FileHelper::PathToUtf8(it->path().filename());
+        BlockID block_id = 0;
+        bool is_tmp = false;
+        if ((parse_index_dir(name, "scalar.index.", &block_id, &is_tmp) &&
+             (is_tmp || scalar_index_blocks.count(block_id) == 0)) ||
+            (parse_index_dir(name, "fts.", &block_id, &is_tmp) &&
+             (is_tmp || fts_index_blocks.count(block_id) == 0))) {
+          orphan_names.push_back(name);
+        }
+      }
+      it.increment(ec);
+    }
+    if (ec) {
+      LOG_WARN("Failed to list segment directory for orphan cleanup: %s, %s",
+               segment_path.c_str(), ec.message().c_str());
+      continue;
+    }
+
+    for (const auto &name : orphan_names) {
+      auto orphan_path = ailego::FileHelper::PathJoin(segment_path, name);
+      if (FileHelper::RemoveDirectory(orphan_path)) {
+        LOG_WARN(
+            "Recovery removed orphan index directory not referenced by "
+            "manifest: path=%s",
+            orphan_path.c_str());
+      } else {
+        const auto error = ailego::FileHelper::GetLastErrorString();
+        LOG_WARN(
+            "Recovery failed to remove orphan index directory not referenced "
+            "by manifest: path=%s, error=%s",
+            orphan_path.c_str(), error.c_str());
+      }
     }
   }
 }
