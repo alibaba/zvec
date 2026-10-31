@@ -118,6 +118,26 @@ TEST(RerankRrfTest, DefaultParams) {
   ASSERT_EQ(result.value().size(), 2u);
 }
 
+TEST(RerankRrfTest, NegativeRankConstantError) {
+  // RRF score formula: 1 / (rank_constant + rank + 1).
+  std::vector<DocPtrList> results;
+  results.push_back({MakeDoc("a", 0.9f), MakeDoc("b", 0.8f)});
+  auto result =
+      reranker::rerank(reranker::RrfParams{/*rank_constant=*/-1}, results,
+                       /*fields=*/{}, /*topn=*/10);
+  ASSERT_FALSE(result.has_value());
+  
+  result = reranker::rerank(reranker::RrfParams{/*rank_constant=*/0}, results,
+                            /*fields=*/{}, /*topn=*/10);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result.value().size(), 2u);
+
+  result = reranker::rerank(reranker::RrfParams{/*rank_constant=*/1}, results,
+                            /*fields=*/{}, /*topn=*/10);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result.value().size(), 2u);
+}
+
 // ==================== Weighted Tests ====================
 
 TEST(RerankWeightedTest, BasicWeighted) {
