@@ -213,9 +213,8 @@ class UniformUint8Reformer : public IndexReformer {
   bool initialized_{false};
 };
 
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(UniformUint8Reformer,
-                                      UniformUint8Reformer,
-                                      IndexMeta::DataType::DT_INT8);
+INDEX_FACTORY_DEFINE_REFORMER_ALIAS(UniformUint8Reformer, UniformUint8Reformer,
+                                    IndexMeta::DataType::DT_INT8);
 
 }  // namespace core
 }  // namespace zvec

@@ -42,7 +42,6 @@ cc_binary(
     LDFLAGS ${APPLE_FRAMEWORK_LIBS}
 )
 set_target_properties(data_generator PROPERTIES EXCLUDE_FROM_ALL TRUE)
-db_test_force_load_core(data_generator)
 
 
 # Build collection_optimizer executable
@@ -54,7 +53,6 @@ cc_binary(
     LDFLAGS ${APPLE_FRAMEWORK_LIBS}
 )
 set_target_properties(collection_optimizer PROPERTIES EXCLUDE_FROM_ALL TRUE)
-db_test_force_load_core(collection_optimizer)
 
 
 # Build test executables
@@ -68,7 +66,6 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
         INCS .. ../../src
         LDFLAGS ${APPLE_FRAMEWORK_LIBS}
     )
-    db_test_force_load_core(${CC_TARGET})
     add_dependencies(${CC_TARGET} data_generator)
     add_dependencies(${CC_TARGET} collection_optimizer)
     set_tests_properties(${CC_TARGET} PROPERTIES

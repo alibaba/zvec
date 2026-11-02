@@ -524,11 +524,10 @@ class InnerProductSparseMetric : public IndexMetric {
   ailego::Params params_{};
 };
 
-INDEX_FACTORY_REGISTER_METRIC_ALIAS(InnerProduct, InnerProductMetric);
-INDEX_FACTORY_REGISTER_METRIC_ALIAS(NormalizedCosine, NormalizedCosineMetric);
+INDEX_FACTORY_DEFINE_METRIC_ALIAS(InnerProduct, InnerProductMetric);
+INDEX_FACTORY_DEFINE_METRIC_ALIAS(NormalizedCosine, NormalizedCosineMetric);
 
-INDEX_FACTORY_REGISTER_METRIC_ALIAS(InnerProductSparse,
-                                    InnerProductSparseMetric);
+INDEX_FACTORY_DEFINE_METRIC_ALIAS(InnerProductSparse, InnerProductSparseMetric);
 
 }  // namespace core
 }  // namespace zvec

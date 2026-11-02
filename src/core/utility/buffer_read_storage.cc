@@ -687,7 +687,7 @@ class BufferReadStorage : public IndexStorage {
   bool cache_enabled_{false};
 };
 
-INDEX_FACTORY_REGISTER_STORAGE(BufferReadStorage);
+INDEX_FACTORY_DEFINE_STORAGE(BufferReadStorage);
 
 }  // namespace core
 }  // namespace zvec

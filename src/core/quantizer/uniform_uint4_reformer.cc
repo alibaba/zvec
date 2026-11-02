@@ -200,9 +200,8 @@ class UniformUint4Reformer : public IndexReformer {
   turbo::UniformUint4QuantizeFunc quantize_func_{nullptr};
 };
 
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(UniformUint4Reformer,
-                                      UniformUint4Reformer,
-                                      IndexMeta::DataType::DT_INT8);
+INDEX_FACTORY_DEFINE_REFORMER_ALIAS(UniformUint4Reformer, UniformUint4Reformer,
+                                    IndexMeta::DataType::DT_INT8);
 
 }  // namespace core
 }  // namespace zvec

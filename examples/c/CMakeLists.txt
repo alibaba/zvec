@@ -44,7 +44,7 @@ endif()
 find_package(Threads REQUIRED)
 
 # Create INTERFACE target for zvec_c_api (fat shared library)
-# No whole-archive flags needed — all symbols are already resolved in the .so/.dylib
+# All implementation symbols are already resolved in the shared library.
 add_library(zvec-c-api INTERFACE)
 target_link_libraries(zvec-c-api INTERFACE
     zvec_c_api

@@ -129,7 +129,7 @@ struct FileDumper : public IndexDumper {
   IndexPacker packer_{};
 };
 
-INDEX_FACTORY_REGISTER_DUMPER(FileDumper);
+INDEX_FACTORY_DEFINE_DUMPER(FileDumper);
 
 }  // namespace core
 }  // namespace zvec

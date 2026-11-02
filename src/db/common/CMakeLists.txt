@@ -3,7 +3,7 @@ include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
 # proxima_zvec_store library
 cc_library(
-    NAME zvec_common STATIC STRICT ALWAYS_LINK
+    NAME zvec_common STATIC STRICT
     SRCS *.cc
     LIBS    glog
             zvec_ailego

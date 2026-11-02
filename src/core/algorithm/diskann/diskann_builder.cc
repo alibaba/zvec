@@ -24,6 +24,7 @@
 #include <ailego/pattern/defer.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_error.h>
+#include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/interface/index_factory.h>
 #include "algorithm/cluster/vector_mean.h"
@@ -852,7 +853,7 @@ int DiskAnnBuilder::dump(const IndexDumper::Pointer &dumper) {
   return 0;
 }
 
-INDEX_FACTORY_REGISTER_BUILDER(DiskAnnBuilder);
+INDEX_FACTORY_DEFINE_BUILDER(DiskAnnBuilder);
 
 }  // namespace core
 }  // namespace zvec

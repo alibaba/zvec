@@ -340,9 +340,9 @@ IndexSearcher::Context::Pointer FlatSearcher<BATCH_SIZE>::create_context()
       new FlatSearcherContext<BATCH_SIZE>(this));
 }
 
-INDEX_FACTORY_REGISTER_SEARCHER_ALIAS(LinearSearcher, FlatSearcher<32>);
-INDEX_FACTORY_REGISTER_SEARCHER_ALIAS(FlatSearcher, FlatSearcher<32>);
-INDEX_FACTORY_REGISTER_SEARCHER_ALIAS(FlatSearcher16, FlatSearcher<16>);
-INDEX_FACTORY_REGISTER_SEARCHER_ALIAS(FlatSearcher32, FlatSearcher<32>);
+INDEX_FACTORY_DEFINE_SEARCHER_ALIAS(LinearSearcher, FlatSearcher<32>);
+INDEX_FACTORY_DEFINE_SEARCHER_ALIAS(FlatSearcher, FlatSearcher<32>);
+INDEX_FACTORY_DEFINE_SEARCHER_ALIAS(FlatSearcher16, FlatSearcher<16>);
+INDEX_FACTORY_DEFINE_SEARCHER_ALIAS(FlatSearcher32, FlatSearcher<32>);
 }  // namespace core
 }  // namespace zvec

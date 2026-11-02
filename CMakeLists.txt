@@ -280,7 +280,6 @@ if(BUILD_PYTHON_BINDINGS)
     install(TARGETS _zvec LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec
             COMPONENT python)
 
-    # DiskAnn is now statically linked into _zvec.so via --whole-archive
-    # (see src/binding/python/CMakeLists.txt -> core_knn_diskann_static),
+    # DiskAnn is statically linked through the explicit zvec_core registry,
     # so no separate runtime .so needs to be installed in the wheel.
 endif()

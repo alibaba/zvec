@@ -102,7 +102,7 @@ class BinaryReformer : public IndexReformer {
   ailego::BinaryQuantizer quantizer_{};
 };
 
-INDEX_FACTORY_REGISTER_REFORMER(BinaryReformer);
+INDEX_FACTORY_DEFINE_REFORMER(BinaryReformer);
 
 }  // namespace core
 }  // namespace zvec

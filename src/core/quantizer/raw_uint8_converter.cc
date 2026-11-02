@@ -263,8 +263,8 @@ class RawUint8Reformer : public IndexReformer {
   turbo::ConvertFunc convert_func_{nullptr};
 };
 
-INDEX_FACTORY_REGISTER_CONVERTER(RawUint8Converter);
-INDEX_FACTORY_REGISTER_REFORMER(RawUint8Reformer);
+INDEX_FACTORY_DEFINE_CONVERTER(RawUint8Converter);
+INDEX_FACTORY_DEFINE_REFORMER(RawUint8Reformer);
 
 }  // namespace core
 }  // namespace zvec

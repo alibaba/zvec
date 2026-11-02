@@ -32,7 +32,6 @@
 #include "distance/scalar/pq_quantizer_int8/pq_distance.h"
 #include "quantizer/common/pq_training_samples.h"
 #include "quantizer/pq_int8_quantizer/pq_int8_quantizer.h"
-#include "zvec/core/framework/index_factory.h"
 
 using namespace zvec;
 using namespace zvec::core;
@@ -50,10 +49,11 @@ static float reference_sq_euclidean(const float *a, const float *b,
   return sum;
 }
 
-// Helper to create a PqInt8Quantizer via the factory.
+// Helper to create a PqInt8Quantizer.
 static std::shared_ptr<zvec::turbo::Quantizer> make_pq_quantizer(
     size_t dim, size_t num_chunk) {
-  auto q = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  zvec::turbo::Quantizer::Pointer q =
+      std::make_shared<zvec::turbo::PqInt8Quantizer>();
   if (!q) return nullptr;
 
   IndexMeta meta;
@@ -91,7 +91,8 @@ TEST(PqInt8Quantizer, InitInvalidParams) {
   EXPECT_EQ(make_pq_quantizer(0, 1), nullptr);
 
   // num_chunk = 0
-  auto q2 = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  zvec::turbo::Quantizer::Pointer q2 =
+      std::make_shared<zvec::turbo::PqInt8Quantizer>();
   ASSERT_TRUE(q2);
   IndexMeta meta;
   meta.set_meta(IndexMeta::DataType::DT_FP32, 16);
@@ -299,7 +300,8 @@ TEST(PqInt8Quantizer, SerializeDeserialize) {
 TEST(PqInt8Quantizer, OpqSerializeDeserializeUniformAndNonUniformChunks) {
   for (uint32_t dim : {8u, 9u}) {
     SCOPED_TRACE(dim);
-    auto quantizer = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+    zvec::turbo::Quantizer::Pointer quantizer =
+        std::make_shared<zvec::turbo::PqInt8Quantizer>();
     ASSERT_TRUE(quantizer);
 
     IndexMeta meta;
@@ -406,7 +408,8 @@ TEST(PqInt8Quantizer, ImportCodebookRejectsWrongSize) {
   const size_t NSQ = 4;
 
   // Without init() the geometry is unknown, so there is nothing to import into.
-  auto uninitialized = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  zvec::turbo::Quantizer::Pointer uninitialized =
+      std::make_shared<zvec::turbo::PqInt8Quantizer>();
   ASSERT_TRUE(uninitialized);
   std::vector<float> codebook(NSQ * 256 * (DIM / NSQ), 0.0f);
   EXPECT_EQ(zvec::turbo::kErrUnsupported,
@@ -658,7 +661,8 @@ TEST(PqInt8SimdConsistency, DispatchedMatchesScalar) {
 // Helper to create a PqInt8Quantizer with Cosine metric.
 static std::shared_ptr<zvec::turbo::Quantizer> make_pq_cosine_quantizer(
     size_t dim, size_t num_chunk) {
-  auto q = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  zvec::turbo::Quantizer::Pointer q =
+      std::make_shared<zvec::turbo::PqInt8Quantizer>();
   if (!q) return nullptr;
 
   IndexMeta meta;
@@ -900,7 +904,8 @@ TEST(PqInt8Quantizer, L2Dequantize) {
 // Helper to create a PqInt8Quantizer with InnerProduct metric.
 static std::shared_ptr<zvec::turbo::Quantizer> make_pq_ip_quantizer(
     size_t dim, size_t num_chunk) {
-  auto q = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  zvec::turbo::Quantizer::Pointer q =
+      std::make_shared<zvec::turbo::PqInt8Quantizer>();
   if (!q) return nullptr;
 
   IndexMeta meta;
@@ -1017,7 +1022,8 @@ TEST(PqInt8Quantizer, InnerProductDequantize) {
 // Helper to create a PqInt8Quantizer with zero-mean centering enabled.
 static std::shared_ptr<zvec::turbo::Quantizer> make_pq_zero_mean_quantizer(
     size_t dim, size_t num_chunk) {
-  auto q = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  zvec::turbo::Quantizer::Pointer q =
+      std::make_shared<zvec::turbo::PqInt8Quantizer>();
   if (!q) return nullptr;
 
   IndexMeta meta;
@@ -1335,7 +1341,8 @@ TEST(PqInt8Quantizer, PrecomputeZeroMeanGates) {
 // Helper to create a PqInt8Quantizer with FP16 input type.
 static std::shared_ptr<zvec::turbo::Quantizer> make_pq_fp16_quantizer(
     size_t dim, size_t num_chunk, const char *metric = "SquaredEuclidean") {
-  auto q = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  zvec::turbo::Quantizer::Pointer q =
+      std::make_shared<zvec::turbo::PqInt8Quantizer>();
   if (!q) return nullptr;
 
   IndexMeta meta;

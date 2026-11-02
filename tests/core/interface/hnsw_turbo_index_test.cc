@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/int8_quantizer/int8_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/core/framework/index_framework.h>
@@ -940,7 +941,7 @@ class HnswExternalCoreCompatibilityTest : public testing::TestWithParam<bool> {
     IndexMeta meta(IndexMeta::DataType::DT_FP32, kDimension);
     meta.set_metric("SquaredEuclidean", 0, ailego::Params());
     if (turbo) {
-      quantizer_ = IndexFactory::CreateQuantizer("Int8Quantizer");
+      quantizer_ = std::make_shared<zvec::turbo::Int8Quantizer>();
       ASSERT_NE(nullptr, quantizer_);
       ASSERT_EQ(0, quantizer_->init(meta, ailego::Params()));
       meta = quantizer_->meta();

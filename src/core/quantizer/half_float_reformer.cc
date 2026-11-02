@@ -252,8 +252,8 @@ class HalfFloatSparseReformer : public IndexReformer {
   }
 };
 
-INDEX_FACTORY_REGISTER_REFORMER(HalfFloatReformer);
-INDEX_FACTORY_REGISTER_REFORMER(HalfFloatSparseReformer);
+INDEX_FACTORY_DEFINE_REFORMER(HalfFloatReformer);
+INDEX_FACTORY_DEFINE_REFORMER(HalfFloatSparseReformer);
 
 }  // namespace core
 }  // namespace zvec

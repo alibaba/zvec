@@ -587,9 +587,9 @@ template int FlatStreamer<32>::search_by_p_keys_fast(
     const void *, const std::vector<uint64_t> &, int64_t *, float *, size_t,
     const IndexQueryMeta &, Context::UPointer &) const;
 
-INDEX_FACTORY_REGISTER_STREAMER_ALIAS(LinearStreamer, FlatStreamer<32>);
-INDEX_FACTORY_REGISTER_STREAMER_ALIAS(FlatStreamer, FlatStreamer<32>);
-INDEX_FACTORY_REGISTER_STREAMER_ALIAS(FlatStreamer16, FlatStreamer<16>);
-INDEX_FACTORY_REGISTER_STREAMER_ALIAS(FlatStreamer32, FlatStreamer<32>);
+INDEX_FACTORY_DEFINE_STREAMER_ALIAS(LinearStreamer, FlatStreamer<32>);
+INDEX_FACTORY_DEFINE_STREAMER_ALIAS(FlatStreamer, FlatStreamer<32>);
+INDEX_FACTORY_DEFINE_STREAMER_ALIAS(FlatStreamer16, FlatStreamer<16>);
+INDEX_FACTORY_DEFINE_STREAMER_ALIAS(FlatStreamer32, FlatStreamer<32>);
 }  // namespace core
 }  // namespace zvec

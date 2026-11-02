@@ -306,7 +306,7 @@ class UniformUint8Metric : public UniformUint8QueryMetric {
   }
 };
 
-INDEX_FACTORY_REGISTER_METRIC_ALIAS(UniformUint8, UniformUint8Metric);
+INDEX_FACTORY_DEFINE_METRIC_ALIAS(UniformUint8, UniformUint8Metric);
 
 }  // namespace core
 }  // namespace zvec

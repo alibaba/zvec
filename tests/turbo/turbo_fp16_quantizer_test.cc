@@ -25,11 +25,11 @@
 #include <ailego/math/normalizer.h>
 #include <gtest/gtest.h>
 #include <turbo/distance/neon_fp16/fp16/cosine.h>
+#include <turbo/quantizer/fp16_quantizer/fp16_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/turbo/turbo.h>
-#include "zvec/core/framework/index_factory.h"
 
 using namespace zvec;
 using namespace zvec::core;
@@ -172,7 +172,8 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
       IndexMeta meta;
       meta.set_meta(IndexMeta::DataType::DT_FP32, static_cast<uint32_t>(dim));
       meta.set_metric(metric.name, 0, Params());
-      auto quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+      zvec::turbo::Quantizer::Pointer quantizer =
+          std::make_shared<zvec::turbo::Fp16Quantizer>();
       ASSERT_TRUE(quantizer);
       ASSERT_EQ(0, quantizer->init(meta, Params()));
 
@@ -247,7 +248,8 @@ TEST(Fp16Quantizer, General) {
   meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
   meta.set_metric("Cosine", 0, Params());
 
-  auto quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+  zvec::turbo::Quantizer::Pointer quantizer =
+      std::make_shared<zvec::turbo::Fp16Quantizer>();
   ASSERT_TRUE(quantizer);
   zvec::ailego::Params params;
   ASSERT_EQ(0, quantizer->init(meta, params));
@@ -314,7 +316,8 @@ TEST(Fp16Quantizer, StoragePrecisionConvertsBeforeCosineNormalization) {
   meta.set_meta(IndexMeta::DataType::DT_FP32, kDimension);
   meta.set_metric("Cosine", 0, Params());
 
-  auto quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+  zvec::turbo::Quantizer::Pointer quantizer =
+      std::make_shared<zvec::turbo::Fp16Quantizer>();
   ASSERT_TRUE(quantizer);
   Params params;
   params.set(turbo::QUANTIZER_STORAGE_DATA_TYPE,
@@ -372,9 +375,9 @@ TEST(Fp16Quantizer, StoragePrecisionConvertsBeforeCosineNormalization) {
     distances[2][id] = quantizer->calc_distance_dp_query_unquantized(
         candidates[id], input.data());
   }
-  quantizer->calc_distance_dp_query_batch(
-      candidates.data(), static_cast<int>(kCandidateCount), encoded.data(),
-      distances[1].data());
+  quantizer->calc_distance_dp_query_batch(candidates.data(),
+                                          static_cast<int>(kCandidateCount),
+                                          encoded.data(), distances[1].data());
   quantizer->calc_distance_dp_query_batch_unquantized(
       candidates.data(), static_cast<int>(kCandidateCount), input.data(),
       distances[3].data());
@@ -409,7 +412,8 @@ TEST(Fp16Quantizer, Score) {
   meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
   meta.set_metric("Cosine", 0, Params());
 
-  auto quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+  zvec::turbo::Quantizer::Pointer quantizer =
+      std::make_shared<zvec::turbo::Fp16Quantizer>();
   ASSERT_TRUE(quantizer);
   zvec::ailego::Params params;
   ASSERT_EQ(0, quantizer->init(meta, params));
@@ -517,7 +521,8 @@ TEST(Fp16Quantizer, ScoreSquaredEuclidean) {
   meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
   meta.set_metric("SquaredEuclidean", 0, Params());
 
-  auto quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+  zvec::turbo::Quantizer::Pointer quantizer =
+      std::make_shared<zvec::turbo::Fp16Quantizer>();
   ASSERT_TRUE(quantizer);
   zvec::ailego::Params params;
   ASSERT_EQ(0, quantizer->init(meta, params));
@@ -642,7 +647,8 @@ TEST(Fp16Quantizer, NeonBatchMatchesSingleAcrossBoundaries) {
     for (size_t dim : dimensions) {
       SCOPED_TRACE(testing::Message()
                    << "metric=" << metric.name << ", dim=" << dim);
-      auto quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+      zvec::turbo::Quantizer::Pointer quantizer =
+          std::make_shared<zvec::turbo::Fp16Quantizer>();
       ASSERT_TRUE(quantizer);
       // Dimension zero is a kernel boundary case, not a valid index shape.
       if (dim != 0) {
@@ -752,7 +758,8 @@ static void check_quantizer_distances(
   IndexMeta meta;
   meta.set_meta(IndexMeta::DataType::DT_FP32, static_cast<uint32_t>(dim));
   meta.set_metric(metric_name, 0, Params());
-  auto quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+  zvec::turbo::Quantizer::Pointer quantizer =
+      std::make_shared<zvec::turbo::Fp16Quantizer>();
   ASSERT_TRUE(quantizer);
   ASSERT_EQ(0, quantizer->init(meta, Params()));
 

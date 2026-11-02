@@ -60,64 +60,43 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
     endif()
     target_compile_features(${TARGET_NAME} PUBLIC cxx_std_17)
 
-    if(WIN32)
-        foreach(ZVEC_ALLIN_LIB ${ZVEC_ALLIN_LIBS})
-            if(ZVEC_ALLIN_LIB IN_LIST ZVEC_ALLIN_EXPORT_COMPONENTS)
-                set(ZVEC_ALLIN_OBJECT_TARGET ${ZVEC_ALLIN_LIB}_export_objects)
-            else()
-                set(ZVEC_ALLIN_OBJECT_TARGET ${ZVEC_ALLIN_LIB}_objects)
-            endif()
-            if(NOT TARGET ${ZVEC_ALLIN_OBJECT_TARGET})
-                message(FATAL_ERROR
-                    "Object target ${ZVEC_ALLIN_OBJECT_TARGET} is required by ${TARGET_NAME}")
-            endif()
-            target_sources(${TARGET_NAME} PRIVATE
-                $<TARGET_OBJECTS:${ZVEC_ALLIN_OBJECT_TARGET}>
-            )
-        endforeach()
-
-        set(ZVEC_ALLIN_LINK_LIBS)
-        foreach(ZVEC_ALLIN_LIB ${ZVEC_ALLIN_LIBS})
-            get_target_property(ZVEC_ALLIN_LIB_DEPS ${ZVEC_ALLIN_LIB} LINK_LIBRARIES)
-            if(NOT ZVEC_ALLIN_LIB_DEPS)
-                continue()
-            endif()
-            foreach(ZVEC_ALLIN_LIB_DEP ${ZVEC_ALLIN_LIB_DEPS})
-                if(NOT ZVEC_ALLIN_LIB_DEP IN_LIST ZVEC_ALLIN_LIBS)
-                    list(APPEND ZVEC_ALLIN_LINK_LIBS ${ZVEC_ALLIN_LIB_DEP})
-                endif()
-            endforeach()
-        endforeach()
-        list(APPEND ZVEC_ALLIN_LINK_LIBS Threads::Threads)
-        list(REMOVE_DUPLICATES ZVEC_ALLIN_LINK_LIBS)
-        target_link_libraries(${TARGET_NAME}
-            PRIVATE
-                ${ZVEC_ALLIN_LINK_LIBS}
+    # A shared SDK exports APIs that may have no internal callers. Include
+    # the component objects explicitly so those API definitions enter the DLL;
+    # ordinary static-library consumers still link archives on demand.
+    foreach(ZVEC_ALLIN_LIB ${ZVEC_ALLIN_LIBS})
+        if(WIN32 AND ZVEC_ALLIN_LIB IN_LIST ZVEC_ALLIN_EXPORT_COMPONENTS)
+            set(ZVEC_ALLIN_OBJECT_TARGET ${ZVEC_ALLIN_LIB}_export_objects)
+        else()
+            set(ZVEC_ALLIN_OBJECT_TARGET ${ZVEC_ALLIN_LIB}_objects)
+        endif()
+        if(NOT TARGET ${ZVEC_ALLIN_OBJECT_TARGET})
+            message(FATAL_ERROR
+                "Object target ${ZVEC_ALLIN_OBJECT_TARGET} is required by ${TARGET_NAME}")
+        endif()
+        target_sources(${TARGET_NAME} PRIVATE
+            $<TARGET_OBJECTS:${ZVEC_ALLIN_OBJECT_TARGET}>
         )
-    elseif(APPLE)
-        foreach(ZVEC_ALLIN_LIB ${ZVEC_ALLIN_LIBS})
-            list(APPEND ZVEC_ALLIN_WA_OPTIONS
-                -Wl,-force_load,$<TARGET_FILE:${ZVEC_ALLIN_LIB}>
-            )
+    endforeach()
+
+    # Object expressions do not propagate their libraries' usage requirements.
+    # Link only dependencies outside the components already included above.
+    set(ZVEC_ALLIN_LINK_LIBS)
+    foreach(ZVEC_ALLIN_LIB ${ZVEC_ALLIN_LIBS})
+        get_target_property(ZVEC_ALLIN_LIB_DEPS ${ZVEC_ALLIN_LIB} LINK_LIBRARIES)
+        if(NOT ZVEC_ALLIN_LIB_DEPS)
+            continue()
+        endif()
+        foreach(ZVEC_ALLIN_LIB_DEP ${ZVEC_ALLIN_LIB_DEPS})
+            if(NOT ZVEC_ALLIN_LIB_DEP IN_LIST ZVEC_ALLIN_LIBS)
+                list(APPEND ZVEC_ALLIN_LINK_LIBS ${ZVEC_ALLIN_LIB_DEP})
+            endif()
         endforeach()
+    endforeach()
+    list(APPEND ZVEC_ALLIN_LINK_LIBS Threads::Threads ${CMAKE_DL_LIBS})
+    list(REMOVE_DUPLICATES ZVEC_ALLIN_LINK_LIBS)
+    target_link_libraries(${TARGET_NAME} PRIVATE ${ZVEC_ALLIN_LINK_LIBS})
 
-        target_link_options(${TARGET_NAME} PRIVATE ${ZVEC_ALLIN_WA_OPTIONS})
-        target_link_libraries(${TARGET_NAME}
-            PRIVATE
-                ${ZVEC_ALLIN_LIBS}
-                Threads::Threads
-                ${CMAKE_DL_LIBS}
-        )
-    else()
-        target_link_libraries(${TARGET_NAME}
-            PRIVATE
-                -Wl,--whole-archive
-                    ${ZVEC_ALLIN_LIBS}
-                -Wl,--no-whole-archive
-                Threads::Threads
-                ${CMAKE_DL_LIBS}
-        )
-
+    if(NOT WIN32 AND NOT APPLE)
         # Try static linking of libstdc++ and libgcc for better portability.
         set(ALLIN_STATIC_LIBS_FOUND FALSE)
         execute_process(
@@ -217,8 +196,8 @@ endfunction()
 
 # Mobile public C++ API.  These build-tree targets keep the application and
 # zvec in one C++ runtime when the NDK/iOS toolchain uses a static libc++.
-# Whole-archive is required because module registration is performed by static
-# initializers that otherwise have no referenced symbol at link time.
+# Built-in constructors are explicitly referenced by the core registry, so
+# applications can use ordinary archive linking with these targets.
 function(zvec_add_mobile_static_sdk TARGET_NAME)
     cmake_parse_arguments(ZVEC_STATIC_SDK "" "" "LIBS" ${ARGN})
     if(NOT ZVEC_STATIC_SDK_LIBS)
@@ -240,47 +219,17 @@ function(zvec_add_mobile_static_sdk TARGET_NAME)
             $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src/include>
     )
 
+    target_link_libraries(${TARGET_NAME}
+        INTERFACE
+            ${ZVEC_STATIC_SDK_LIBS}
+            Threads::Threads
+            ${CMAKE_DL_LIBS}
+    )
     if(IOS)
-        set(ZVEC_STATIC_SDK_LINK_OPTIONS)
-        foreach(ZVEC_STATIC_SDK_LIB ${ZVEC_STATIC_SDK_LIBS})
-            list(APPEND ZVEC_STATIC_SDK_LINK_OPTIONS
-                -Wl,-force_load,$<TARGET_FILE:${ZVEC_STATIC_SDK_LIB}>
-            )
-        endforeach()
-        target_link_options(${TARGET_NAME}
-            INTERFACE ${ZVEC_STATIC_SDK_LINK_OPTIONS}
-        )
-        target_link_libraries(${TARGET_NAME}
-            INTERFACE
-                ${ZVEC_STATIC_SDK_LIBS}
-                Threads::Threads
-                ${CMAKE_DL_LIBS}
-                # Arrow's iOS timezone implementation uses CoreFoundation.
-                "-framework CoreFoundation"
-        )
-    else()
-        # Keep whole-archive scoped to the SDK archives themselves.  Putting
-        # these flags in target_link_libraries() also encloses transitive
-        # dependencies inserted by CMake, which forces both Arrow's bundled
-        # utf8proc and zvec's standalone utf8proc into the executable.
-        set(ZVEC_STATIC_SDK_LINK_OPTIONS)
-        foreach(ZVEC_STATIC_SDK_LIB ${ZVEC_STATIC_SDK_LIBS})
-            list(APPEND ZVEC_STATIC_SDK_LINK_OPTIONS
-                -Wl,--whole-archive,$<TARGET_FILE:${ZVEC_STATIC_SDK_LIB}>,--no-whole-archive
-            )
-        endforeach()
-        target_link_options(${TARGET_NAME}
-            INTERFACE ${ZVEC_STATIC_SDK_LINK_OPTIONS}
-        )
-        target_link_libraries(${TARGET_NAME}
-            INTERFACE
-                ${ZVEC_STATIC_SDK_LIBS}
-                Threads::Threads
-                ${CMAKE_DL_LIBS}
-        )
-        if(ANDROID)
-            target_link_libraries(${TARGET_NAME} INTERFACE log)
-        endif()
+        # Arrow's iOS timezone implementation uses CoreFoundation.
+        target_link_libraries(${TARGET_NAME} INTERFACE "-framework CoreFoundation")
+    elseif(ANDROID)
+        target_link_libraries(${TARGET_NAME} INTERFACE log)
     endif()
 endfunction()
 

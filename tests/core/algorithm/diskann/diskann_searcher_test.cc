@@ -24,6 +24,8 @@
 #include <unordered_set>
 #include <ailego/math/distance.h>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/fp16_quantizer/fp16_quantizer.h>
+#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_framework.h>
@@ -218,10 +220,12 @@ class DiskAnnSearcherTest : public testing::Test {
   //! through the base-class init overloads.
   static zvec::turbo::Quantizer::Pointer make_turbo_quantizer(
       const IndexMeta &meta) {
-    const char *name = meta.data_type() == IndexMeta::DataType::DT_FP16
-                           ? "Fp16Quantizer"
-                           : "Fp32Quantizer";
-    auto quantizer = IndexFactory::CreateQuantizer(name);
+    zvec::turbo::Quantizer::Pointer quantizer;
+    if (meta.data_type() == IndexMeta::DataType::DT_FP16) {
+      quantizer = std::make_shared<zvec::turbo::Fp16Quantizer>();
+    } else {
+      quantizer = std::make_shared<zvec::turbo::Fp32Quantizer>();
+    }
     EXPECT_NE(quantizer, nullptr);
     if (quantizer) {
       EXPECT_EQ(0, quantizer->init(meta, meta.metric_params()));

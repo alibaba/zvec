@@ -71,80 +71,20 @@ endif()
 
 find_package(Threads REQUIRED)
 
-# Static linking of C++ standard library is handled in platform-specific sections
-
-# Determine whole-archive flag for current platform
+# The C API entry points and explicit built-in registry reference the needed
+# objects in the static SDK archives. Keep third-party dependencies transitive.
+target_link_libraries(zvec_c_api
+    PRIVATE
+        zvec
+        zvec_core
+        zvec_ailego
+        zvec_turbo
+        Threads::Threads
+        ${CMAKE_DL_LIBS}
+)
 if(MSVC)
-    # MSVC uses /WHOLEARCHIVE:filename syntax
-    set(ZVEC_WHOLE_ARCHIVE_PREFIX "/WHOLEARCHIVE:")
-    set(ZVEC_NO_WHOLE_ARCHIVE_SUFFIX "")
-elseif(APPLE)
-    # macOS uses -Wl,-force_load,filename
-    set(ZVEC_WHOLE_ARCHIVE_PREFIX "-Wl,-force_load,")
-    set(ZVEC_NO_WHOLE_ARCHIVE_SUFFIX "")
-else()
-    # Linux/Unix uses -Wl,--whole-archive and -Wl,--no-whole-archive
-    set(ZVEC_WHOLE_ARCHIVE_PREFIX "-Wl,--whole-archive")
-    set(ZVEC_NO_WHOLE_ARCHIVE_SUFFIX "-Wl,--no-whole-archive")
-endif()
-
-# FAT mode: embed ALL libraries (including third-party) statically
-# This creates a truly self-contained library with zero external dependencies
-# Users only need to link libzvec_c_api.so without installing any dependencies
-if(MSVC)
-    target_link_options(zvec_c_api PRIVATE
-        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec>
-        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_core>
-        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_ailego>
-        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_turbo>
-    )
-
-    target_link_libraries(zvec_c_api
-        PRIVATE
-            zvec
-            zvec_core
-            zvec_ailego
-            zvec_turbo
-            ${ZVEC_CXX_STD_LIB}
-            Threads::Threads
-    )
-elseif(APPLE)
-    target_link_options(zvec_c_api PRIVATE
-        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec>
-        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_core>
-        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_ailego>
-        ${ZVEC_WHOLE_ARCHIVE_PREFIX}$<TARGET_FILE:zvec_turbo>
-    )
-    
-    # Link the libraries themselves (without force_load flags)
-    target_link_libraries(zvec_c_api
-        PRIVATE
-            zvec
-            zvec_core
-            zvec_ailego
-            zvec_turbo
-            Threads::Threads
-            ${CMAKE_DL_LIBS}
-    )
-    
-    # Optional: Static link libc++ for better portability (uncomment if needed)
-    # target_link_options(zvec_c_api PRIVATE -static-libstdc++)
-
-else()
-    # Linux and other Unix-like systems
-    target_link_libraries(zvec_c_api
-        PRIVATE
-            # Force load all zvec internal libraries (extract all objects)
-            ${ZVEC_WHOLE_ARCHIVE_PREFIX}
-                zvec
-                zvec_core
-                zvec_ailego
-                zvec_turbo  # Required by zvec_core (metric module)
-            ${ZVEC_NO_WHOLE_ARCHIVE_SUFFIX}
-            Threads::Threads
-            ${CMAKE_DL_LIBS}
-    )
-    
+    target_link_libraries(zvec_c_api PRIVATE ${ZVEC_CXX_STD_LIB})
+elseif(NOT APPLE)
     # Link C++ standard library appropriately for the platform
     # On Linux, we need to explicitly link libstdc++
     # Try static linking first, fall back to dynamic

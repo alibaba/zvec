@@ -40,7 +40,6 @@ foreach(UTF8_ACP_VARIANT ${UTF8_ACP_VARIANTS})
     INCS ${CMAKE_CURRENT_SOURCE_DIR}/..
     DEFS ZVEC_TEST_EXPECTED_ACP=${ZVEC_ACP_CODE}
   )
-  db_test_force_load_core(${ZVEC_ACP_TARGET})
 
   # CMake otherwise performs another mt.exe pass for incremental linking. The
   # manifest is already embedded explicitly, so disable that redundant pass.

@@ -303,10 +303,10 @@ int FlatBuilder<BATCH_SIZE>::write_row_index(IndexDumper *dumper,
                         features_padding_size, 0);
 }
 
-INDEX_FACTORY_REGISTER_BUILDER_ALIAS(LinearBuilder, FlatBuilder<32>);
-INDEX_FACTORY_REGISTER_BUILDER_ALIAS(FlatBuilder, FlatBuilder<32>);
-INDEX_FACTORY_REGISTER_BUILDER_ALIAS(FlatBuilder16, FlatBuilder<16>);
-INDEX_FACTORY_REGISTER_BUILDER_ALIAS(FlatBuilder32, FlatBuilder<32>);
+INDEX_FACTORY_DEFINE_BUILDER_ALIAS(LinearBuilder, FlatBuilder<32>);
+INDEX_FACTORY_DEFINE_BUILDER_ALIAS(FlatBuilder, FlatBuilder<32>);
+INDEX_FACTORY_DEFINE_BUILDER_ALIAS(FlatBuilder16, FlatBuilder<16>);
+INDEX_FACTORY_DEFINE_BUILDER_ALIAS(FlatBuilder32, FlatBuilder<32>);
 
 }  // namespace core
 }  // namespace zvec

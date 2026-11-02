@@ -21,10 +21,10 @@
 #include <string>
 #include <vector>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/turbo/turbo.h>
-#include "zvec/core/framework/index_factory.h"
 
 using namespace zvec;
 using namespace zvec::core;
@@ -95,7 +95,8 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
       IndexMeta meta;
       meta.set_meta(IndexMeta::DataType::DT_FP32, static_cast<uint32_t>(dim));
       meta.set_metric(metric.name, 0, Params());
-      auto quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+      zvec::turbo::Quantizer::Pointer quantizer =
+          std::make_shared<zvec::turbo::Fp32Quantizer>();
       ASSERT_TRUE(quantizer);
       ASSERT_EQ(0, quantizer->init(meta, Params()));
 
@@ -151,7 +152,8 @@ TEST(Fp32Quantizer, General) {
   meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
   meta.set_metric("Cosine", 0, Params());
 
-  auto quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+  zvec::turbo::Quantizer::Pointer quantizer =
+      std::make_shared<zvec::turbo::Fp32Quantizer>();
   ASSERT_TRUE(quantizer);
   zvec::ailego::Params params;
   ASSERT_EQ(0u, quantizer->init(meta, params));
@@ -211,7 +213,8 @@ TEST(Fp32Quantizer, Score) {
   meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
   meta.set_metric("Cosine", 0, Params());
 
-  auto quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+  zvec::turbo::Quantizer::Pointer quantizer =
+      std::make_shared<zvec::turbo::Fp32Quantizer>();
   ASSERT_TRUE(quantizer);
   zvec::ailego::Params params;
   ASSERT_EQ(0u, quantizer->init(meta, params));
@@ -331,7 +334,8 @@ TEST(Fp32Quantizer, SquaredEuclideanScore) {
   meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
   meta.set_metric("SquaredEuclidean", 0, Params());
 
-  auto quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+  zvec::turbo::Quantizer::Pointer quantizer =
+      std::make_shared<zvec::turbo::Fp32Quantizer>();
   ASSERT_TRUE(quantizer);
   ASSERT_EQ(0u, quantizer->init(meta, Params()));
   ASSERT_EQ(DIMENSION * sizeof(float),
@@ -392,7 +396,8 @@ TEST(Fp32Quantizer, QueryDatapointLayoutConsistency) {
     meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
     meta.set_metric(metric, 0, Params());
 
-    auto quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+    zvec::turbo::Quantizer::Pointer quantizer =
+        std::make_shared<zvec::turbo::Fp32Quantizer>();
     ASSERT_TRUE(quantizer);
     ASSERT_EQ(0u, quantizer->init(meta, Params()));
 

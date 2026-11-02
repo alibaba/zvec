@@ -8,7 +8,7 @@ endif()
 
 cc_library(
     NAME core_metric 
-    STATIC SHARED STRICT ALWAYS_LINK
+    STATIC SHARED STRICT
     SRCS *.cc
     LIBS zvec_ailego zvec_turbo core_framework 
     INCS . ${PROJECT_ROOT_DIR}/src/core

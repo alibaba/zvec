@@ -23,6 +23,11 @@
 #include <vector>
 #include <ailego/pattern/scope_guard.h>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/fp16_quantizer/fp16_quantizer.h>
+#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
+#include <turbo/quantizer/int4_quantizer/int4_quantizer.h>
+#include <turbo/quantizer/int8_quantizer/int8_quantizer.h>
+#include <turbo/quantizer/pq_int4_quantizer/pq_int4_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/core/framework/index_segment_storage.h>
@@ -4263,7 +4268,19 @@ class IVFTurboTest : public testing::TestWithParam<TurboCase> {
       quantizer_params.set("thread_count", 1U);
     }
     meta_.set_quantizer(std::get<0>(GetParam()), 0, quantizer_params);
-    quantizer_ = IndexFactory::CreateQuantizer(std::get<0>(GetParam()));
+    if (std::string(std::get<0>(GetParam())) == "Fp32Quantizer") {
+      quantizer_ = std::make_shared<zvec::turbo::Fp32Quantizer>();
+    } else if (std::string(std::get<0>(GetParam())) == "Fp16Quantizer") {
+      quantizer_ = std::make_shared<zvec::turbo::Fp16Quantizer>();
+    } else if (std::string(std::get<0>(GetParam())) == "Int8Quantizer") {
+      quantizer_ = std::make_shared<zvec::turbo::Int8Quantizer>();
+    } else if (std::string(std::get<0>(GetParam())) == "Int4Quantizer") {
+      quantizer_ = std::make_shared<zvec::turbo::Int4Quantizer>();
+    } else if (std::string(std::get<0>(GetParam())) == "PqInt4Quantizer") {
+      quantizer_ = std::make_shared<zvec::turbo::PqInt4Quantizer>();
+    } else {
+      quantizer_.reset();
+    }
     ASSERT_NE(nullptr, quantizer_);
     ASSERT_EQ(0, quantizer_->init(meta_, quantizer_params));
 
@@ -4495,6 +4512,79 @@ TEST_P(IVFTurboTest, PostingFormatDetection) {
   }
 }
 
+TEST_P(IVFTurboTest, RejectsUnknownQuantizerName) {
+  auto posting_meta = quantizer_->meta();
+  posting_meta.set_quantizer("UnknownQuantizer", 0, meta_.quantizer_params());
+  posting_meta.set_major_order(IndexMeta::MO_ROW);
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_NE(nullptr, dumper);
+  ASSERT_EQ(0, dumper->create(path_ + ".format"));
+  IVFDumper postings(posting_meta, dumper, 1, 8);
+  for (size_t i = 0; i < codes_.size(); ++i) {
+    ASSERT_EQ(0, postings.dump_inverted_vector(0, Key(i), codes_[i].data()));
+  }
+  ASSERT_EQ(0, postings.dump_inverted_vector_finished());
+  ASSERT_EQ(0, postings.dump_turbo_quantizer(quantizer_));
+  ASSERT_EQ(0, IndexHelper::SerializeToDumper(meta_, dumper.get()));
+  ASSERT_EQ(0, dumper->close());
+
+  auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(path_ + ".format", false));
+  IVFEntity entity;
+  EXPECT_EQ(IndexError_NoExist, entity.load(storage));
+}
+
+TEST_P(IVFTurboTest, RestoresCustomQuantizerAlias) {
+  using Factory = ailego::Factory<zvec::turbo::Quantizer>;
+  if (std::string(std::get<0>(GetParam())) == "Fp32Quantizer") {
+    Factory::Register<zvec::turbo::Fp32Quantizer> registration(
+        "CompatibilityIVFAlias");
+  } else if (std::string(std::get<0>(GetParam())) == "Fp16Quantizer") {
+    Factory::Register<zvec::turbo::Fp16Quantizer> registration(
+        "CompatibilityIVFAlias");
+  } else if (std::string(std::get<0>(GetParam())) == "Int8Quantizer") {
+    Factory::Register<zvec::turbo::Int8Quantizer> registration(
+        "CompatibilityIVFAlias");
+  } else if (std::string(std::get<0>(GetParam())) == "Int4Quantizer") {
+    Factory::Register<zvec::turbo::Int4Quantizer> registration(
+        "CompatibilityIVFAlias");
+  } else if (std::string(std::get<0>(GetParam())) == "PqInt4Quantizer") {
+    Factory::Register<zvec::turbo::PqInt4Quantizer> registration(
+        "CompatibilityIVFAlias");
+  }
+  auto posting_meta = quantizer_->meta();
+  posting_meta.set_quantizer("CompatibilityIVFAlias", 0,
+                             meta_.quantizer_params());
+  posting_meta.set_major_order(IndexMeta::MO_ROW);
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_NE(nullptr, dumper);
+  ASSERT_EQ(0, dumper->create(path_ + ".format"));
+  IVFDumper postings(posting_meta, dumper, 1, 8);
+  for (size_t i = 0; i < codes_.size(); ++i) {
+    ASSERT_EQ(0, postings.dump_inverted_vector(0, Key(i), codes_[i].data()));
+  }
+  ASSERT_EQ(0, postings.dump_inverted_vector_finished());
+  ASSERT_EQ(0, postings.dump_turbo_quantizer(quantizer_));
+  ASSERT_EQ(0, IndexHelper::SerializeToDumper(meta_, dumper.get()));
+  ASSERT_EQ(0, dumper->close());
+
+  auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(path_ + ".format", false));
+  IVFEntity entity;
+  ASSERT_EQ(0, entity.load(storage));
+  ASSERT_NE(nullptr, entity.quantizer());
+  for (size_t i = 0; i < codes_.size(); ++i) {
+    IndexStorage::MemoryBlock code;
+    ASSERT_EQ(0, entity.get_vector_by_key(Key(i), code));
+    ASSERT_NE(nullptr, code.data());
+    EXPECT_EQ(0, std::memcmp(codes_[i].data(), code.data(), codes_[i].size()));
+  }
+}
+
 TEST_P(IVFTurboTest, ProviderConcurrentReadsKeepReturnedBytesStable) {
   for (const char *storage_name :
        {"FileReadStorage", "MMapFileReadStorage", "BufferReadStorage"}) {
@@ -4694,7 +4784,8 @@ TEST(IVFTurboCentroids, CosineNprobeUsesEveryCoordinateAndIgnoresVectorNorm) {
   meta.set_meta(IndexMeta::DT_FP32, dim);
   meta.set_metric("Cosine", 0, ailego::Params());
   meta.set_quantizer("Int8Quantizer", 0, ailego::Params());
-  auto quantizer = IndexFactory::CreateQuantizer("Int8Quantizer");
+  zvec::turbo::Quantizer::Pointer quantizer =
+      std::make_shared<zvec::turbo::Int8Quantizer>();
   ASSERT_NE(nullptr, quantizer);
   ASSERT_EQ(0, quantizer->init(meta, ailego::Params()));
 

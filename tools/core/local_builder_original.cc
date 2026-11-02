@@ -21,6 +21,7 @@
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/utility/time_helper.h>
+#include <zvec/core/framework/index_factory.h>
 #if RABITQ_SUPPORTED
 #include "algorithm/hnsw_rabitq/hnsw_rabitq_streamer.h"
 #include "algorithm/hnsw_rabitq/rabitq_converter.h"

@@ -20,6 +20,7 @@
 #include <vector>
 #include <ailego/internal/cpu_features.h>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/pq_int4_quantizer/pq_int4_quantizer.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/turbo/turbo.h>
 #include "distance/avx2/pq_quantizer_fast/pq_distance.h"
@@ -28,7 +29,6 @@
 #include "distance/neon/pq_quantizer_fast/pq_distance.h"
 #include "distance/scalar/pq_quantizer_fast/pq_distance.h"
 #include "quantizer/pq_fast_quantizer/pq_fast_quantizer.h"
-#include "zvec/core/framework/index_factory.h"
 
 using namespace zvec;
 using namespace zvec::core;
@@ -59,11 +59,12 @@ static float reference_neg_ip(const float *a, const float *b, size_t dim) {
   return -dot;
 }
 
-// Helper to create a PqFastQuantizer via the factory.
+// Helper to create a PqFastQuantizer.
 static std::shared_ptr<zvec::turbo::Quantizer> make_pqfs_quantizer(
     size_t dim, size_t num_chunk,
     const std::string &metric = "SquaredEuclidean") {
-  auto q = IndexFactory::CreateQuantizer("PqFastQuantizer");
+  zvec::turbo::Quantizer::Pointer q =
+      std::make_shared<zvec::turbo::PqFastQuantizer>();
   if (!q) return nullptr;
 
   IndexMeta meta;
@@ -79,7 +80,8 @@ static std::shared_ptr<zvec::turbo::Quantizer> make_pqfs_quantizer(
 // Same, with zero-mean centering enabled.
 static std::shared_ptr<zvec::turbo::Quantizer> make_pqfs_zero_mean_quantizer(
     size_t dim, size_t num_chunk) {
-  auto q = IndexFactory::CreateQuantizer("PqFastQuantizer");
+  zvec::turbo::Quantizer::Pointer q =
+      std::make_shared<zvec::turbo::PqFastQuantizer>();
   if (!q) return nullptr;
 
   IndexMeta meta;
@@ -195,7 +197,8 @@ TEST(PqFastQuantizer, InitInvalidParams) {
   EXPECT_EQ(nullptr, make_pqfs_quantizer(10, 3));
 
   // num_chunk = 0
-  auto q = IndexFactory::CreateQuantizer("PqFastQuantizer");
+  zvec::turbo::Quantizer::Pointer q =
+      std::make_shared<zvec::turbo::PqFastQuantizer>();
   ASSERT_TRUE(q);
   IndexMeta meta;
   meta.set_meta(IndexMeta::DataType::DT_FP32, 16);
@@ -937,7 +940,8 @@ TEST(PqFastQuantizer, SerializeDeserialize) {
   ASSERT_EQ(0, q1->serialize(&blob));
   ASSERT_FALSE(blob.empty());
 
-  auto q2 = IndexFactory::CreateQuantizer("PqFastQuantizer");
+  zvec::turbo::Quantizer::Pointer q2 =
+      std::make_shared<zvec::turbo::PqFastQuantizer>();
   ASSERT_TRUE(q2);
   IndexMeta meta;
   meta.set_meta(IndexMeta::DataType::DT_FP32, DIM);
@@ -971,13 +975,15 @@ TEST(PqFastQuantizer, SerializeDeserialize) {
   }
 
   // A wrong-type blob must be rejected.
-  auto q3 = IndexFactory::CreateQuantizer("PqInt4Quantizer");
+  zvec::turbo::Quantizer::Pointer q3 =
+      std::make_shared<zvec::turbo::PqInt4Quantizer>();
   ASSERT_TRUE(q3);
   ASSERT_EQ(0, q3->init(meta, params));
   ASSERT_EQ(0, q3->train(holder));
   std::string int4_blob;
   ASSERT_EQ(0, q3->serialize(&int4_blob));
-  auto q4 = IndexFactory::CreateQuantizer("PqFastQuantizer");
+  zvec::turbo::Quantizer::Pointer q4 =
+      std::make_shared<zvec::turbo::PqFastQuantizer>();
   ASSERT_EQ(0, q4->init(meta, params));
   EXPECT_NE(0, q4->deserialize(int4_blob));
 }
@@ -991,7 +997,8 @@ TEST(PqFastQuantizer, Fp16Input) {
   const size_t NSQ = 8;
   const size_t COUNT = 500;
 
-  auto q = IndexFactory::CreateQuantizer("PqFastQuantizer");
+  zvec::turbo::Quantizer::Pointer q =
+      std::make_shared<zvec::turbo::PqFastQuantizer>();
   ASSERT_TRUE(q);
   IndexMeta meta;
   meta.set_meta(IndexMeta::DataType::DT_FP16, DIM);

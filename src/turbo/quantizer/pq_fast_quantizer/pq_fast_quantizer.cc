@@ -1079,8 +1079,6 @@ int PqFastQuantizer::deserialize(const void *data, size_t len) {
   return 0;
 }
 
-INDEX_FACTORY_REGISTER_QUANTIZER(PqFastQuantizer);
-
 // ---------------------------------------------------------------------------
 // Template helper implementations (type-dispatched at call sites)
 // ---------------------------------------------------------------------------
@@ -1131,3 +1129,7 @@ void PqFastQuantizer::normalize_single(T *vec, float *norm_out) const {
 
 }  // namespace turbo
 }  // namespace zvec
+
+namespace zvec::core {
+INDEX_FACTORY_DEFINE_QUANTIZER_ALIAS(PqFastQuantizer, turbo::PqFastQuantizer);
+}  // namespace zvec::core

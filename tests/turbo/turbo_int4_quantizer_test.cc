@@ -20,10 +20,10 @@
 #include <string>
 #include <vector>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/int4_quantizer/int4_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/params.h>
 #include <zvec/turbo/turbo.h>
-#include "zvec/core/framework/index_factory.h"
 
 using namespace zvec;
 using namespace zvec::core;
@@ -86,7 +86,8 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
       IndexMeta meta;
       meta.set_meta(IndexMeta::DataType::DT_FP32, static_cast<uint32_t>(dim));
       meta.set_metric(metric.name, 0, Params());
-      auto quantizer = IndexFactory::CreateQuantizer("Int4Quantizer");
+      zvec::turbo::Quantizer::Pointer quantizer =
+          std::make_shared<zvec::turbo::Int4Quantizer>();
       ASSERT_TRUE(quantizer);
       ASSERT_EQ(0, quantizer->init(meta, Params()));
 
@@ -147,7 +148,8 @@ TEST(Int4Quantizer, General) {
   meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
   meta.set_metric("Cosine", 0, Params());
 
-  auto quantizer = IndexFactory::CreateQuantizer("Int4Quantizer");
+  zvec::turbo::Quantizer::Pointer quantizer =
+      std::make_shared<zvec::turbo::Int4Quantizer>();
   ASSERT_TRUE(quantizer);
   zvec::ailego::Params params;
   ASSERT_EQ(0, quantizer->init(meta, params));
@@ -205,7 +207,8 @@ TEST(Int4Quantizer, OddDimensionRejected) {
   meta.set_meta(IndexMeta::DataType::DT_FP32, 13);
   meta.set_metric("Cosine", 0, Params());
 
-  auto quantizer = IndexFactory::CreateQuantizer("Int4Quantizer");
+  zvec::turbo::Quantizer::Pointer quantizer =
+      std::make_shared<zvec::turbo::Int4Quantizer>();
   ASSERT_TRUE(quantizer);
   zvec::ailego::Params params;
   EXPECT_NE(0, quantizer->init(meta, params));
@@ -222,7 +225,8 @@ TEST(Int4Quantizer, Score) {
   meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
   meta.set_metric("Cosine", 0, Params());
 
-  auto quantizer = IndexFactory::CreateQuantizer("Int4Quantizer");
+  zvec::turbo::Quantizer::Pointer quantizer =
+      std::make_shared<zvec::turbo::Int4Quantizer>();
   ASSERT_TRUE(quantizer);
   zvec::ailego::Params params;
   ASSERT_EQ(0, quantizer->init(meta, params));
@@ -330,7 +334,8 @@ TEST(Int4Quantizer, ScoreSquaredEuclidean) {
   meta.set_meta(IndexMeta::DataType::DT_FP32, DIMENSION);
   meta.set_metric("SquaredEuclidean", 0, Params());
 
-  auto quantizer = IndexFactory::CreateQuantizer("Int4Quantizer");
+  zvec::turbo::Quantizer::Pointer quantizer =
+      std::make_shared<zvec::turbo::Int4Quantizer>();
   ASSERT_TRUE(quantizer);
   zvec::ailego::Params params;
   ASSERT_EQ(0, quantizer->init(meta, params));

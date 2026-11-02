@@ -17,6 +17,7 @@
 #include <cstring>
 #include <vector>
 #include <ailego/math/normalizer.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_factory.h>
 #include "core/quantizer/record_quantizer.h"
 
@@ -224,7 +225,9 @@ float Int4Quantizer::calc_distance_dp_dp(const void *dp1,
   return calc_distance_dp_query(dp1, dp2);
 }
 
-INDEX_FACTORY_REGISTER_QUANTIZER(Int4Quantizer);
-
 }  // namespace turbo
 }  // namespace zvec
+
+namespace zvec::core {
+INDEX_FACTORY_DEFINE_QUANTIZER_ALIAS(Int4Quantizer, turbo::Int4Quantizer);
+}  // namespace zvec::core

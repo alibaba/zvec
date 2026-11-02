@@ -19,6 +19,7 @@ namespace zvec {
 namespace core {
 
 IndexMetric::Pointer IndexFactory::CreateMetric(const std::string &name) {
+  RegisterBuiltinIndexModules();
   IndexMetric::Pointer obj =
       ailego::Factory<IndexMetric>::MakeShared(name.c_str());
   if (obj) {
@@ -28,14 +29,17 @@ IndexMetric::Pointer IndexFactory::CreateMetric(const std::string &name) {
 }
 
 bool IndexFactory::HasMetric(const std::string &name) {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexMetric>::Has(name.c_str());
 }
 
 std::vector<std::string> IndexFactory::AllMetrics() {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexMetric>::Classes();
 }
 
 IndexDumper::Pointer IndexFactory::CreateDumper(const std::string &name) {
+  RegisterBuiltinIndexModules();
   IndexDumper::Pointer obj =
       ailego::Factory<IndexDumper>::MakeShared(name.c_str());
   if (obj) {
@@ -45,14 +49,17 @@ IndexDumper::Pointer IndexFactory::CreateDumper(const std::string &name) {
 }
 
 bool IndexFactory::HasDumper(const std::string &name) {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexDumper>::Has(name.c_str());
 }
 
 std::vector<std::string> IndexFactory::AllDumpers() {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexDumper>::Classes();
 }
 
 IndexStorage::Pointer IndexFactory::CreateStorage(const std::string &name) {
+  RegisterBuiltinIndexModules();
   IndexStorage::Pointer obj =
       ailego::Factory<IndexStorage>::MakeShared(name.c_str());
   if (obj) {
@@ -62,14 +69,17 @@ IndexStorage::Pointer IndexFactory::CreateStorage(const std::string &name) {
 }
 
 bool IndexFactory::HasStorage(const std::string &name) {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexStorage>::Has(name.c_str());
 }
 
 std::vector<std::string> IndexFactory::AllStorages() {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexStorage>::Classes();
 }
 
 IndexConverter::Pointer IndexFactory::CreateConverter(const std::string &name) {
+  RegisterBuiltinIndexModules();
   IndexConverter::Pointer obj =
       ailego::Factory<IndexConverter>::MakeShared(name.c_str());
   if (obj) {
@@ -79,14 +89,17 @@ IndexConverter::Pointer IndexFactory::CreateConverter(const std::string &name) {
 }
 
 bool IndexFactory::HasConverter(const std::string &name) {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexConverter>::Has(name.c_str());
 }
 
 std::vector<std::string> IndexFactory::AllConverters() {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexConverter>::Classes();
 }
 
 IndexReformer::Pointer IndexFactory::CreateReformer(const std::string &name) {
+  RegisterBuiltinIndexModules();
   IndexReformer::Pointer obj =
       ailego::Factory<IndexReformer>::MakeShared(name.c_str());
   if (obj) {
@@ -96,14 +109,17 @@ IndexReformer::Pointer IndexFactory::CreateReformer(const std::string &name) {
 }
 
 bool IndexFactory::HasReformer(const std::string &name) {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexReformer>::Has(name.c_str());
 }
 
 std::vector<std::string> IndexFactory::AllReformers() {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexReformer>::Classes();
 }
 
 IndexTrainer::Pointer IndexFactory::CreateTrainer(const std::string &name) {
+  RegisterBuiltinIndexModules();
   IndexTrainer::Pointer obj =
       ailego::Factory<IndexTrainer>::MakeShared(name.c_str());
   if (obj) {
@@ -113,14 +129,17 @@ IndexTrainer::Pointer IndexFactory::CreateTrainer(const std::string &name) {
 }
 
 bool IndexFactory::HasTrainer(const std::string &name) {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexTrainer>::Has(name.c_str());
 }
 
 std::vector<std::string> IndexFactory::AllTrainers() {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexTrainer>::Classes();
 }
 
 IndexBuilder::Pointer IndexFactory::CreateBuilder(const std::string &name) {
+  RegisterBuiltinIndexModules();
   IndexBuilder::Pointer obj =
       ailego::Factory<IndexBuilder>::MakeShared(name.c_str());
   if (obj) {
@@ -130,14 +149,17 @@ IndexBuilder::Pointer IndexFactory::CreateBuilder(const std::string &name) {
 }
 
 bool IndexFactory::HasBuilder(const std::string &name) {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexBuilder>::Has(name.c_str());
 }
 
 std::vector<std::string> IndexFactory::AllBuilders() {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexBuilder>::Classes();
 }
 
 IndexSearcher::Pointer IndexFactory::CreateSearcher(const std::string &name) {
+  RegisterBuiltinIndexModules();
   IndexSearcher::Pointer obj =
       ailego::Factory<IndexSearcher>::MakeShared(name.c_str());
   if (obj) {
@@ -147,14 +169,17 @@ IndexSearcher::Pointer IndexFactory::CreateSearcher(const std::string &name) {
 }
 
 bool IndexFactory::HasSearcher(const std::string &name) {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexSearcher>::Has(name.c_str());
 }
 
 std::vector<std::string> IndexFactory::AllSearchers() {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexSearcher>::Classes();
 }
 
 IndexStreamer::Pointer IndexFactory::CreateStreamer(const std::string &name) {
+  RegisterBuiltinIndexModules();
   IndexStreamer::Pointer obj =
       ailego::Factory<IndexStreamer>::MakeShared(name.c_str());
   if (obj) {
@@ -164,14 +189,17 @@ IndexStreamer::Pointer IndexFactory::CreateStreamer(const std::string &name) {
 }
 
 bool IndexFactory::HasStreamer(const std::string &name) {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexStreamer>::Has(name.c_str());
 }
 
 std::vector<std::string> IndexFactory::AllStreamers() {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexStreamer>::Classes();
 }
 
 IndexReducer::Pointer IndexFactory::CreateReducer(const std::string &name) {
+  RegisterBuiltinIndexModules();
   IndexReducer::Pointer obj =
       ailego::Factory<IndexReducer>::MakeShared(name.c_str());
   if (obj) {
@@ -181,15 +209,18 @@ IndexReducer::Pointer IndexFactory::CreateReducer(const std::string &name) {
 }
 
 bool IndexFactory::HasReducer(const std::string &name) {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexReducer>::Has(name.c_str());
 }
 
 std::vector<std::string> IndexFactory::AllReducers() {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexReducer>::Classes();
 }
 
 
 IndexCluster::Pointer IndexFactory::CreateCluster(const std::string &name) {
+  RegisterBuiltinIndexModules();
   IndexCluster::Pointer obj =
       ailego::Factory<IndexCluster>::MakeShared(name.c_str());
   if (obj) {
@@ -199,15 +230,18 @@ IndexCluster::Pointer IndexFactory::CreateCluster(const std::string &name) {
 }
 
 bool IndexFactory::HasCluster(const std::string &name) {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexCluster>::Has(name.c_str());
 }
 
 std::vector<std::string> IndexFactory::AllClusters() {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexCluster>::Classes();
 }
 
 IndexStreamerReducer::Pointer IndexFactory::CreateStreamerReducer(
     const std::string &name) {
+  RegisterBuiltinIndexModules();
   IndexStreamerReducer::Pointer obj =
       ailego::Factory<IndexStreamerReducer>::MakeShared(name.c_str());
   if (obj) {
@@ -217,14 +251,17 @@ IndexStreamerReducer::Pointer IndexFactory::CreateStreamerReducer(
 }
 
 bool IndexFactory::HasStreamerReducer(const std::string &name) {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexStreamerReducer>::Has(name.c_str());
 }
 
 std::vector<std::string> IndexFactory::AllStreamerReducers() {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexStreamerReducer>::Classes();
 }
 
 IndexRefiner::Pointer IndexFactory::CreateRefiner(const std::string &name) {
+  RegisterBuiltinIndexModules();
   IndexRefiner::Pointer obj =
       ailego::Factory<IndexRefiner>::MakeShared(name.c_str());
   if (obj) {
@@ -234,16 +271,18 @@ IndexRefiner::Pointer IndexFactory::CreateRefiner(const std::string &name) {
 }
 
 bool IndexFactory::HasRefiner(const std::string &name) {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexRefiner>::Has(name.c_str());
 }
 
 std::vector<std::string> IndexFactory::AllRefiners() {
+  RegisterBuiltinIndexModules();
   return ailego::Factory<IndexRefiner>::Classes();
 }
 
 std::shared_ptr<turbo::Quantizer> IndexFactory::CreateQuantizer(
     const std::string &name) {
-  return ailego::Factory<zvec::turbo::Quantizer>::MakeShared(name.c_str());
+  return ailego::Factory<turbo::Quantizer>::MakeShared(name.c_str());
 }
 
 bool IndexFactory::HasQuantizer(const std::string &name) {

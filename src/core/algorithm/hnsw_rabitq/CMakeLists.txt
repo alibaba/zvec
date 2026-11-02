@@ -8,7 +8,7 @@ endif()
 
 cc_library(
     NAME core_knn_hnsw_rabitq
-    STATIC SHARED STRICT ALWAYS_LINK
+    STATIC SHARED STRICT
     SRCS *.cc
     LIBS core_framework core_knn_cluster rabitqlib sparsehash
     INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm

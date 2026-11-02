@@ -457,7 +457,7 @@ class MipsReformer : public IndexReformer {
   float l2_norm_{0.0f};
 };
 
-INDEX_FACTORY_REGISTER_REFORMER(MipsReformer);
+INDEX_FACTORY_DEFINE_REFORMER(MipsReformer);
 
 }  // namespace core
 }  // namespace zvec

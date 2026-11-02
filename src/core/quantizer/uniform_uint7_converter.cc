@@ -36,7 +36,7 @@ namespace core {
 class UniformUint7Converter : public IndexConverter {
  public:
   //! Constructor.
-  //! `dst_type` is required by the INDEX_FACTORY_REGISTER_CONVERTER_ALIAS
+  //! `dst_type` is required by the INDEX_FACTORY_DEFINE_CONVERTER_ALIAS
   //! macro signature but is unused here: the output type is always
   //! IndexMeta::DataType::DT_INT8, hard-coded in init().
   UniformUint7Converter(IndexMeta::DataType /*dst_type*/) {}
@@ -364,9 +364,9 @@ class UniformUint7Converter : public IndexConverter {
   float bias_{0.0f};
 };
 
-INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(UniformUint7Converter,
-                                       UniformUint7Converter,
-                                       IndexMeta::DataType::DT_INT8);
+INDEX_FACTORY_DEFINE_CONVERTER_ALIAS(UniformUint7Converter,
+                                     UniformUint7Converter,
+                                     IndexMeta::DataType::DT_INT8);
 
 }  // namespace core
 }  // namespace zvec

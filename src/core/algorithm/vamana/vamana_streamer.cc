@@ -917,7 +917,7 @@ int VamanaStreamer::search_bf_by_p_keys_impl(
   return 0;
 }
 
-INDEX_FACTORY_REGISTER_STREAMER(VamanaStreamer);
+INDEX_FACTORY_DEFINE_STREAMER(VamanaStreamer);
 
 }  // namespace core
 }  // namespace zvec

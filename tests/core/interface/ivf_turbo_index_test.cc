@@ -20,6 +20,8 @@
 #include <tuple>
 #include <vector>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
+#include <turbo/quantizer/int8_quantizer/int8_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/interface/index.h>
@@ -58,9 +60,11 @@ class IVFTurboIndexTest : public testing::TestWithParam<TestCase> {
     core::IndexMeta meta;
     meta.set_meta(core::IndexMeta::DT_FP32, kDimension);
     meta.set_metric(MetricName(std::get<1>(GetParam())), 0, ailego::Params());
-    quantizer_ = core::IndexFactory::CreateQuantizer(
-        std::get<0>(GetParam()) == QuantizerType::kNone ? "Fp32Quantizer"
-                                                        : "Int8Quantizer");
+    if (std::get<0>(GetParam()) == QuantizerType::kNone) {
+      quantizer_ = std::make_shared<turbo::Fp32Quantizer>();
+    } else {
+      quantizer_ = std::make_shared<turbo::Int8Quantizer>();
+    }
     ASSERT_NE(nullptr, quantizer_);
     ASSERT_EQ(0, quantizer_->init(meta, ailego::Params()));
     std::mt19937 random(8121);
@@ -220,7 +224,8 @@ TEST_P(IVFTurboIndexTest, MergeDecodesSourceVectorsBeforeRebuilding) {
       std::memcpy(merged_vectors.back().data(), decoded.data(), decoded.size());
     }
   }
-  auto fp32 = core::IndexFactory::CreateQuantizer("Fp32Quantizer");
+  zvec::turbo::Quantizer::Pointer fp32 =
+      std::make_shared<zvec::turbo::Fp32Quantizer>();
   ASSERT_NE(nullptr, fp32);
   core::IndexMeta meta;
   meta.set_meta(core::IndexMeta::DT_FP32, kDimension);

@@ -631,7 +631,7 @@ int IvfRabitqStreamer::cleanup() {
   return 0;
 }
 
-INDEX_FACTORY_REGISTER_STREAMER(IvfRabitqStreamer);
+INDEX_FACTORY_DEFINE_STREAMER(IvfRabitqStreamer);
 
 }  // namespace core
 }  // namespace zvec

@@ -17,8 +17,8 @@
 
 namespace zvec::core {
 
-INDEX_FACTORY_REGISTER_STREAMER(HnswRabitqStreamer);
-INDEX_FACTORY_REGISTER_REFORMER_ALIAS(RabitqReformer, RabitqReformer);
-INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(RabitqConverter, RabitqConverter);
+INDEX_FACTORY_DEFINE_STREAMER(HnswRabitqStreamer);
+INDEX_FACTORY_DEFINE_REFORMER_ALIAS(RabitqReformer, RabitqReformer);
+INDEX_FACTORY_DEFINE_CONVERTER_ALIAS(RabitqConverter, RabitqConverter);
 
 }  // namespace zvec::core

@@ -28,7 +28,7 @@ endif()
 
 cc_library(
     NAME core_utility 
-    STATIC SHARED STRICT ALWAYS_LINK
+    STATIC SHARED STRICT
     SRCS *.cc
     LIBS zvec_ailego core_framework
     INCS . ${PROJECT_ROOT_DIR}/src/core

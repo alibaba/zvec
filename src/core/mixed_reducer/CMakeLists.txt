@@ -7,7 +7,7 @@ if(NOT APPLE)
 endif()
 
 cc_library(
-  NAME core_mix_reducer STATIC SHARED STRICT ALWAYS_LINK
+  NAME core_mix_reducer STATIC SHARED STRICT
   SRCS *.cc
   LIBS zvec_ailego core_framework
   INCS . ${PROJECT_ROOT_DIR}/src/core

@@ -473,7 +473,7 @@ IndexSearcher::Context::Pointer DiskAnnSearcher::create_context() const {
   return Context::Pointer(ctx);
 }
 
-INDEX_FACTORY_REGISTER_SEARCHER(DiskAnnSearcher);
+INDEX_FACTORY_DEFINE_SEARCHER(DiskAnnSearcher);
 
 }  // namespace core
 }  // namespace zvec

@@ -485,30 +485,28 @@ class CosineConverter : public IndexConverter {
   turbo::ConvertFunc fp16_convert_func_{nullptr};
 };
 
-INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(CosineNormalizeConverter,
-                                       CosineConverter,
-                                       IndexMeta::DataType::DT_FP32);
+INDEX_FACTORY_DEFINE_CONVERTER_ALIAS(CosineNormalizeConverter, CosineConverter,
+                                     IndexMeta::DataType::DT_FP32);
 
-INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(CosineFp32Converter, CosineConverter,
-                                       IndexMeta::DataType::DT_FP32);
+INDEX_FACTORY_DEFINE_CONVERTER_ALIAS(CosineFp32Converter, CosineConverter,
+                                     IndexMeta::DataType::DT_FP32);
 
-INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(CosineFp16Converter, CosineConverter,
-                                       IndexMeta::DataType::DT_FP16);
+INDEX_FACTORY_DEFINE_CONVERTER_ALIAS(CosineFp16Converter, CosineConverter,
+                                     IndexMeta::DataType::DT_FP16);
 
-INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(CosineRawFp16Converter, CosineConverter,
-                                       IndexMeta::DataType::DT_FP32,
-                                       IndexMeta::DataType::DT_FP16, true);
+INDEX_FACTORY_DEFINE_CONVERTER_ALIAS(CosineRawFp16Converter, CosineConverter,
+                                     IndexMeta::DataType::DT_FP32,
+                                     IndexMeta::DataType::DT_FP16, true);
 
-INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(CosineInt8Converter, CosineConverter,
-                                       IndexMeta::DataType::DT_INT8);
+INDEX_FACTORY_DEFINE_CONVERTER_ALIAS(CosineInt8Converter, CosineConverter,
+                                     IndexMeta::DataType::DT_INT8);
 
-INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(CosineInt4Converter, CosineConverter,
-                                       IndexMeta::DataType::DT_INT4);
+INDEX_FACTORY_DEFINE_CONVERTER_ALIAS(CosineInt4Converter, CosineConverter,
+                                     IndexMeta::DataType::DT_INT4);
 
-INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(CosineHalfFloatConverter,
-                                       CosineConverter,
-                                       IndexMeta::DataType::DT_FP16,
-                                       IndexMeta::DataType::DT_FP16);
+INDEX_FACTORY_DEFINE_CONVERTER_ALIAS(CosineHalfFloatConverter, CosineConverter,
+                                     IndexMeta::DataType::DT_FP16,
+                                     IndexMeta::DataType::DT_FP16);
 
 }  // namespace core
 }  // namespace zvec

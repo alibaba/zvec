@@ -264,7 +264,7 @@ class BasicRefiner : public IndexRefiner {
   IndexRunner::Pointer refine_runner_{nullptr};
 };
 
-INDEX_FACTORY_REGISTER_REFINER(BasicRefiner);
+INDEX_FACTORY_DEFINE_REFINER(BasicRefiner);
 
 }  // namespace core
 }  // namespace zvec

@@ -432,9 +432,9 @@ class UniformUint4Converter : public IndexConverter {
   float range_{0.0f};
 };
 
-INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(UniformUint4Converter,
-                                       UniformUint4Converter,
-                                       IndexMeta::DataType::DT_INT8);
+INDEX_FACTORY_DEFINE_CONVERTER_ALIAS(UniformUint4Converter,
+                                     UniformUint4Converter,
+                                     IndexMeta::DataType::DT_INT8);
 
 }  // namespace core
 }  // namespace zvec

@@ -548,7 +548,7 @@ IndexSearcher::Context::Pointer DiskAnnStreamer::create_context() const {
   return Context::Pointer(ctx);
 }
 
-INDEX_FACTORY_REGISTER_STREAMER(DiskAnnStreamer);
+INDEX_FACTORY_DEFINE_STREAMER(DiskAnnStreamer);
 
 }  // namespace core
 }  // namespace zvec

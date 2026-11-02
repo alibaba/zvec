@@ -15,6 +15,7 @@
 
 #include <memory>
 #include <string>
+#include <zvec/core/framework/index_factory_builtins.h>
 
 namespace zvec {
 namespace core {

@@ -331,9 +331,9 @@ class UniformUint8Converter : public IndexConverter {
   float bias_{0.0f};
 };
 
-INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(UniformUint8Converter,
-                                       UniformUint8Converter,
-                                       IndexMeta::DataType::DT_INT8);
+INDEX_FACTORY_DEFINE_CONVERTER_ALIAS(UniformUint8Converter,
+                                     UniformUint8Converter,
+                                     IndexMeta::DataType::DT_INT8);
 
 }  // namespace core
 }  // namespace zvec

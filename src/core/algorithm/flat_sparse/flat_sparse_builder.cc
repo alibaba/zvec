@@ -332,7 +332,7 @@ int FlatSparseBuilder::dump_mapping(const std::vector<uint64_t> &keys,
                         mapping_padding_size, 0);
 }
 
-INDEX_FACTORY_REGISTER_BUILDER(FlatSparseBuilder);
+INDEX_FACTORY_DEFINE_BUILDER(FlatSparseBuilder);
 
 }  // namespace core
 }  // namespace zvec

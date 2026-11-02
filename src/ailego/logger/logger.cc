@@ -68,8 +68,11 @@ Logger::Pointer LoggerBroker::MakeDefaultLogger() {
   return std::make_shared<ConsoleLogger>();
 }
 
-//! Register Console Logger in Factory
-FACTORY_REGISTER_LOGGER(ConsoleLogger);
+void FactoryBuiltinLoader<Logger>::Load() {
+  static Factory<Logger>::Register<ConsoleLogger> registration(
+      Factory<Logger>::BuiltinTag{}, "ConsoleLogger");
+  (void)registration;
+}
 
 }  // namespace ailego
 }  // namespace zvec

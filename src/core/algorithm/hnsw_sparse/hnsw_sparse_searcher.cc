@@ -558,7 +558,7 @@ int HnswSparseSearcher::get_sparse_vector(
       key, sparse_count, sparse_indices_buffer, sparse_values_buffer);
 }
 
-INDEX_FACTORY_REGISTER_SEARCHER(HnswSparseSearcher);
+INDEX_FACTORY_DEFINE_SEARCHER(HnswSparseSearcher);
 
 }  // namespace core
 }  // namespace zvec

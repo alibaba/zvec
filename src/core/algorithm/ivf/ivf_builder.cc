@@ -1087,7 +1087,7 @@ int IVFBuilder::prepare_quantizer(IndexThreads *threads) {
   return 0;
 }
 
-INDEX_FACTORY_REGISTER_BUILDER(IVFBuilder);
+INDEX_FACTORY_DEFINE_BUILDER(IVFBuilder);
 
 }  // namespace core
 }  // namespace zvec

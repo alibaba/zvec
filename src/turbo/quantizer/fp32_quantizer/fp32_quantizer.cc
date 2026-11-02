@@ -30,7 +30,6 @@ int Fp32Quantizer::init(const IndexMeta &meta,
 
   meta_.set_meta(IndexMeta::DataType::DT_FP32, meta.dimension());
 
-
   original_dim_ = meta.dimension();
   auto metric_name = meta.metric_name();
   if (metric_name == "Cosine") {
@@ -224,7 +223,9 @@ void Fp32Quantizer::calc_distance_input_input_batch(const void *const *dp_list,
   Quantizer::calc_distance_input_input_batch(dp_list, dp_num, query, dist_list);
 }
 
-INDEX_FACTORY_REGISTER_QUANTIZER(Fp32Quantizer);
-
 }  // namespace turbo
 }  // namespace zvec
+
+namespace zvec::core {
+INDEX_FACTORY_DEFINE_QUANTIZER_ALIAS(Fp32Quantizer, turbo::Fp32Quantizer);
+}  // namespace zvec::core

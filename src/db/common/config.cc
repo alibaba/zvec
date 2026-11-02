@@ -20,7 +20,6 @@
 #include "db/common/global_resource.h"
 #include "cgroup_util.h"
 #include "global_resource.h"
-#include "glogger.h"
 #include "logger.h"
 #include "typedef.h"
 
@@ -144,7 +143,5 @@ Status GlobalConfig::initialize(const ConfigData &config) {
 uint64_t GlobalConfig::memory_limit_bytes() const noexcept {
   return config_.memory_limit_bytes;
 }
-
-FACTORY_REGISTER_LOGGER(AppendLogger);
 
 }  // namespace zvec

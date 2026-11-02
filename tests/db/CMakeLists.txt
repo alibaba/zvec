@@ -1,20 +1,6 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
-function(db_test_force_load_core TARGET)
-  # Include core registries and keep their RTTI in the test executable.
-  if(MSVC)
-    target_link_options(${TARGET} PRIVATE
-      "/WHOLEARCHIVE:$<TARGET_FILE:zvec_core>")
-  elseif(APPLE)
-    target_link_options(${TARGET} PRIVATE
-      "-Wl,-force_load,$<TARGET_FILE:zvec_core>")
-  else()
-    target_link_options(${TARGET} PRIVATE
-      "-Wl,--whole-archive,$<TARGET_FILE:zvec_core>,--no-whole-archive")
-  endif()
-endfunction()
-
 cc_directory(common)
 cc_directories(crash_recovery)
 cc_directory(sqlengine)
@@ -59,6 +45,5 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     INCS . .. ../../src
     LDFLAGS ${APPLE_FRAMEWORK_LIBS}
   )
-  db_test_force_load_core(${CC_TARGET})
   cc_test_suite(zvec ${CC_TARGET})
 endforeach()

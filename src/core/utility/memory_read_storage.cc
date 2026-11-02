@@ -233,7 +233,7 @@ class MemoryReadStorage : public IndexStorage {
   IndexMemory::Rope::Pointer rope_{};
 };
 
-INDEX_FACTORY_REGISTER_STORAGE(MemoryReadStorage);
+INDEX_FACTORY_DEFINE_STORAGE(MemoryReadStorage);
 
 }  // namespace core
 }  // namespace zvec

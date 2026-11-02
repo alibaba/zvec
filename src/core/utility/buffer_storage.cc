@@ -1870,7 +1870,7 @@ class BufferStorage : public IndexStorage {
   std::vector<MetaChain> meta_chains_{};
 };
 
-INDEX_FACTORY_REGISTER_STORAGE(BufferStorage);
+INDEX_FACTORY_DEFINE_STORAGE(BufferStorage);
 
 }  // namespace core
 }  // namespace zvec

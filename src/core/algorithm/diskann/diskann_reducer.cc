@@ -185,7 +185,7 @@ int DiskAnnReducer::dump(const IndexDumper::Pointer &dumper) {
   return 0;
 }
 
-INDEX_FACTORY_REGISTER_REDUCER(DiskAnnReducer);
+INDEX_FACTORY_DEFINE_REDUCER(DiskAnnReducer);
 
 }  // namespace core
 }  // namespace zvec

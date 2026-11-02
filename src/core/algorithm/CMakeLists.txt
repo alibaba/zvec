@@ -31,7 +31,7 @@ else()
     # ($<TARGET_FILE:> supports ALIAS targets since CMake 3.18.)
     cc_library(
         NAME core_knn_diskann
-        STATIC STRICT ALWAYS_LINK
+        STATIC STRICT
         SRCS ${CMAKE_CURRENT_BINARY_DIR}/diskann_stub.cc
         LIBS core_framework
         INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
@@ -41,7 +41,7 @@ else()
   else()
     cc_library(
         NAME core_knn_diskann
-        STATIC SHARED STRICT ALWAYS_LINK
+        STATIC SHARED STRICT
         SRCS ${CMAKE_CURRENT_BINARY_DIR}/diskann_stub.cc
         LIBS core_framework
         INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
@@ -65,7 +65,7 @@ else()
 
   cc_library(
       NAME core_knn_hnsw_rabitq
-      STATIC SHARED STRICT ALWAYS_LINK
+      STATIC SHARED STRICT
       SRCS ${CMAKE_CURRENT_BINARY_DIR}/rabitq_stub.cc
       LIBS core_framework
       INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
@@ -83,7 +83,7 @@ else()
     # cross-platform static target name expected by the Python binding.
     cc_library(
         NAME core_knn_ivf_rabitq
-        STATIC STRICT ALWAYS_LINK
+        STATIC STRICT
         SRCS ${CMAKE_CURRENT_BINARY_DIR}/ivf_rabitq_stub.cc
         LIBS core_framework
         INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
@@ -93,7 +93,7 @@ else()
   else()
     cc_library(
         NAME core_knn_ivf_rabitq
-        STATIC SHARED STRICT ALWAYS_LINK
+        STATIC SHARED STRICT
         SRCS ${CMAKE_CURRENT_BINARY_DIR}/ivf_rabitq_stub.cc
         LIBS core_framework
         INCS . ${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm

@@ -109,7 +109,7 @@ struct MemoryDumper : public IndexDumper {
   IndexPacker packer_{};
 };
 
-INDEX_FACTORY_REGISTER_DUMPER(MemoryDumper);
+INDEX_FACTORY_DEFINE_DUMPER(MemoryDumper);
 
 }  // namespace core
 }  // namespace zvec

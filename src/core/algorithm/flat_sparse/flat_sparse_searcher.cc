@@ -176,7 +176,7 @@ int FlatSparseSearcher::do_search(
                     (FlatSparseEntity *)&entity_);
 }
 
-INDEX_FACTORY_REGISTER_SEARCHER(FlatSparseSearcher);
+INDEX_FACTORY_DEFINE_SEARCHER(FlatSparseSearcher);
 
 }  // namespace core
 }  // namespace zvec

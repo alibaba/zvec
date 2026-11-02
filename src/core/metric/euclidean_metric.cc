@@ -853,11 +853,11 @@ class SquaredEuclideanSparseMetric : public IndexMetric {
   ailego::Params params_{};
 };
 
-INDEX_FACTORY_REGISTER_METRIC_ALIAS(SquaredEuclidean, SquaredEuclideanMetric);
-INDEX_FACTORY_REGISTER_METRIC_ALIAS(Euclidean, EuclideanMetric);
+INDEX_FACTORY_DEFINE_METRIC_ALIAS(SquaredEuclidean, SquaredEuclideanMetric);
+INDEX_FACTORY_DEFINE_METRIC_ALIAS(Euclidean, EuclideanMetric);
 
-INDEX_FACTORY_REGISTER_METRIC_ALIAS(SquaredEuclideanSparse,
-                                    SquaredEuclideanSparseMetric);
+INDEX_FACTORY_DEFINE_METRIC_ALIAS(SquaredEuclideanSparse,
+                                  SquaredEuclideanSparseMetric);
 
 }  // namespace core
 }  // namespace zvec
