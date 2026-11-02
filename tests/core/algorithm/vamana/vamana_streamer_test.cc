@@ -112,7 +112,7 @@ TEST(VamanaQueryPrefetchTest, ResolvesSharedDefaultsFromStoredVectorSchema) {
     EXPECT_EQ(
         std::make_pair(std::min(64U, kPrefetchBudgetLines / lines), lines),
         VamanaContext::resolve_query_prefetch(bytes, 64, default_offset,
-                                               default_lines));
+                                              default_lines));
   }
 }
 
@@ -124,21 +124,21 @@ TEST(VamanaQueryPrefetchTest, CacheLineBoundaryAndByteBudget) {
   for (size_t bytes : {line - 1, line}) {
     EXPECT_EQ(std::make_pair(kPrefetchBudgetLines, 1U),
               VamanaContext::resolve_query_prefetch(bytes, 256, default_offset,
-                                                     default_lines));
+                                                    default_lines));
   }
   for (size_t bytes : {line + 1, 2 * line}) {
     EXPECT_EQ(std::make_pair(kPrefetchBudgetLines / 2, 2U),
               VamanaContext::resolve_query_prefetch(bytes, 256, default_offset,
-                                                     default_lines));
+                                                    default_lines));
   }
   // An explicit line request is clamped to the stored body, including a
   // partial final line. The automatic prefix still obeys the 6 KiB budget.
   EXPECT_EQ(std::make_pair(kPrefetchBudgetLines / 3, 3U),
             VamanaContext::resolve_query_prefetch(2 * line + 1, 256,
-                                                   default_offset, 4));
+                                                  default_offset, 4));
   EXPECT_EQ(std::make_pair(0U, 0U),
             VamanaContext::resolve_query_prefetch(line, 0, default_offset,
-                                                   default_lines));
+                                                  default_lines));
 }
 
 TEST(VamanaQueryPrefetchTest, ManualFieldsOverrideDefaultsIndependently) {
@@ -1001,7 +1001,8 @@ TEST_F(VamanaStreamerTest, TestContiguousPackedGraphAndExtraValuesLayout) {
   constexpr size_t kCount = 192;
   constexpr uint64_t kKeyBase = 10000;
   constexpr uint32_t kExpectedLines =
-      (kOriginalDimension + AILEGO_CACHE_LINE_SIZE - 1) / AILEGO_CACHE_LINE_SIZE;
+      (kOriginalDimension + AILEGO_CACHE_LINE_SIZE - 1) /
+      AILEGO_CACHE_LINE_SIZE;
   constexpr uint32_t kExpectedOffset =
       std::min(32U, kPrefetchBudgetLines / kExpectedLines);
 
@@ -1202,14 +1203,13 @@ TEST_F(VamanaStreamerTest, TestContiguousKeepsInt8RecordTailInline) {
     // the inline quantizer tail must remain byte-for-byte unchanged.
     const void *stored = contiguous_entity->get_vector_ptr(probe);
     ASSERT_NE(nullptr, stored);
-    EXPECT_EQ(0U,
-              reinterpret_cast<uintptr_t>(stored) % AILEGO_CACHE_LINE_SIZE);
+    EXPECT_EQ(0U, reinterpret_cast<uintptr_t>(stored) % AILEGO_CACHE_LINE_SIZE);
     std::string expected_record;
     IndexQueryMeta encoded_meta;
     ASSERT_EQ(0, reformer->convert(vectors[probe].data(), raw_query_meta,
                                    &expected_record, &encoded_meta));
-    EXPECT_EQ(0, std::memcmp(stored, expected_record.data(),
-                             expected_record.size()));
+    EXPECT_EQ(
+        0, std::memcmp(stored, expected_record.data(), expected_record.size()));
 
     std::string query;
     IndexQueryMeta query_meta;
