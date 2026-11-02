@@ -1067,10 +1067,11 @@ TEST(HnswPqIndexTest, ReadOnlyOpenSkipsBuildPreparation) {
   ASSERT_EQ(0, quantizer->init(meta, ailego::Params()));
   auto param = MakeParam(MetricType::kL2sq, QuantizerType::kNone);
   auto seed = IndexFactory::CreateAndInitIndex(*param);
-  core::IndexStreamer::Pointer streamer = std::make_shared<core::HnswStreamer>();
-  ASSERT_EQ(0, streamer->init(
-                   meta, seed->index_searcher()->meta().streamer_params(),
-                   quantizer));
+  core::IndexStreamer::Pointer streamer =
+      std::make_shared<core::HnswStreamer>();
+  ASSERT_EQ(
+      0, streamer->init(meta, seed->index_searcher()->meta().streamer_params(),
+                        quantizer));
   auto storage = core::IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_EQ(0, storage->init(ailego::Params()));
   ASSERT_EQ(0, storage->open(path, true));

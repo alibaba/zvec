@@ -5058,8 +5058,8 @@ TEST(IndexInterface, RefineOversizedScaleFactorDoesNotCrash) {
                           .build();
   auto coarse = IndexFactory::CreateAndInitIndex(*coarse_param);
   ASSERT_NE(nullptr, coarse);
-  ASSERT_EQ(0, coarse->open(coarse_path,
-                            {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(
+      0, coarse->open(coarse_path, {StorageOptions::StorageType::kMMAP, true}));
   for (uint32_t i = 0; i < kVectorCount; ++i) {
     ASSERT_EQ(0, coarse->add(VectorData{DenseVector{vectors[i].data()}}, i));
   }
@@ -5073,8 +5073,8 @@ TEST(IndexInterface, RefineOversizedScaleFactorDoesNotCrash) {
                         .build();
   auto fine = IndexFactory::CreateAndInitIndex(*fine_param);
   ASSERT_NE(nullptr, fine);
-  ASSERT_EQ(0, fine->open(fine_path,
-                          {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(0,
+            fine->open(fine_path, {StorageOptions::StorageType::kMMAP, true}));
   for (uint32_t i = 0; i < kVectorCount; ++i) {
     ASSERT_EQ(0, fine->add(VectorData{DenseVector{vectors[i].data()}}, i));
   }
@@ -5089,8 +5089,8 @@ TEST(IndexInterface, RefineOversizedScaleFactorDoesNotCrash) {
                         .with_refiner_param(refiner)
                         .build();
   SearchResult result;
-  const int rc = coarse->search(
-      VectorData{DenseVector{vectors[0].data()}}, huge_param, &result);
+  const int rc = coarse->search(VectorData{DenseVector{vectors[0].data()}},
+                                huge_param, &result);
   if (rc != 0) {
     EXPECT_EQ(static_cast<int>(zvec::core::IndexError_NoMemory), rc);
   } else {
