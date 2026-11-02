@@ -58,105 +58,46 @@ add_test(NAME cpp_smoke COMMAND cpp_smoke)
 set_tests_properties(cpp_smoke PROPERTIES ENVIRONMENT "ZVEC_JIEBA_DICT_DIR=")
 
 # ---------------------------------------------------------------------------
-# Advanced engine headers (optional in the package)
+# Package shape: the stable API only, always
 # ---------------------------------------------------------------------------
-# The engine headers have to compile and link against *something* in the
-# package.  By default that is libzvec, which whole-archives every component and
-# exports exactly what the published headers declare; a package configured with
-# -DZVEC_INSTALL_ENGINE_SHARED_LIBRARIES=ON also carries the standalone
-# libzvec_core, which is preferred here so that shape stays exercised.
+# There is exactly one package shape -- 18 stable headers, libzvec and
+# libzvec_c_api, libzvec.a -- so these assertions run unconditionally on every
+# staged tree instead of hiding behind opt-in flags.  They check the *install
+# result*, not the install rules, which is the only place a stray copy, a new
+# install(DIRECTORY) or a staging script can widen the published surface without
+# touching anything the header checker sees.
 #
-# The libzvec fallback depends on its export whitelist being generated at the
-# *engine* surface (scripts/generate_export_whitelist.py, the default).  If that
-# list ever narrows to --surface stable, engine headers without a standalone
-# libzvec_core would compile and then fail to link, and this fallback has to
-# become an error instead.
-# ZVEC_REQUIRE_CORE turns "engine headers absent" into a hard error so CI can
-# pin the expected package shape.
-set(_core_header "${ZVEC_SDK_DIR}/include/zvec/core/interface/index_factory.h")
-if(EXISTS "${_core_header}")
-  # Shared libraries only.  The package also keeps the static archives for
-  # static and mobile consumers, and those are not self-contained -- rocksdb,
-  # arrow and protobuf are not installed -- so letting find_library() pick up
-  # libzvec_core.a would produce a link that cannot resolve.  On Windows the
-  # DLL's import library is zvec_core_shared.lib and the static zvec_core.lib is
-  # dropped during staging, which is why zvec_core_shared comes first.
-  set(_saved_library_suffixes "${CMAKE_FIND_LIBRARY_SUFFIXES}")
-  if(WIN32)
-    set(CMAKE_FIND_LIBRARY_SUFFIXES ".lib")
-  else()
-    set(CMAKE_FIND_LIBRARY_SUFFIXES ".dylib;.so")
-  endif()
-  find_library(ZVEC_SDK_CORE_LIBRARY
-    NAMES zvec_core_shared zvec_core
-    PATHS "${ZVEC_SDK_DIR}/lib"
-    NO_DEFAULT_PATH
-    CMAKE_FIND_ROOT_PATH_BOTH)
-  set(CMAKE_FIND_LIBRARY_SUFFIXES "${_saved_library_suffixes}")
-
-  if(ZVEC_SDK_CORE_LIBRARY)
-    set(_core_smoke_library "${ZVEC_SDK_CORE_LIBRARY}")
-    message(STATUS "core_smoke: linking the standalone libzvec_core")
-  else()
-    set(_core_smoke_library "${ZVEC_SDK_LIBRARY}")
-    message(STATUS "core_smoke: linking libzvec (no standalone libzvec_core)")
-  endif()
-
-  add_executable(core_smoke core_smoke.cc)
-  target_include_directories(core_smoke PRIVATE "${ZVEC_SDK_DIR}/include")
-  target_link_libraries(core_smoke PRIVATE "${_core_smoke_library}")
-  if(NOT WIN32)
-    set_target_properties(core_smoke PROPERTIES
-      BUILD_RPATH "${ZVEC_SDK_DIR}/lib")
-  endif()
-
-  add_test(NAME core_smoke COMMAND core_smoke)
-elseif(ZVEC_REQUIRE_CORE)
-  message(FATAL_ERROR
-    "ZVEC_REQUIRE_CORE is set but the package has no engine headers "
-    "(expected ${_core_header})")
-else()
-  message(STATUS "engine headers absent from the package; skipping core_smoke")
-endif()
-
-# The mirror image of ZVEC_REQUIRE_CORE, and the one the *default* package must
-# satisfy: ZVEC_INSTALL_ENGINE_HEADERS is OFF by default, so a release that
-# started shipping zvec/core/**, zvec/ailego/** or zvec/turbo/** again would be
-# widening the published surface silently.  Pin the trimmed shape the same way
-# ZVEC_REQUIRE_CORE pins the full one.
-#
-# Assert on the directories, not on a probe header.  The stable closure reaches
-# no engine header at all (scripts/check_public_headers.py rule 6), so a default
+# Assert on the directories, not on a probe header: the stable closure reaches
+# no engine header at all (scripts/check_public_headers.py rule 6), so the
 # package must not contain an engine header *directory* either -- not even a
 # partially populated one, which a single-file probe would walk straight past.
-if(ZVEC_FORBID_ENGINE_HEADERS)
-  foreach(_engine_dir core ailego turbo)
-    if(EXISTS "${ZVEC_SDK_DIR}/include/zvec/${_engine_dir}")
-      message(FATAL_ERROR
-        "ZVEC_FORBID_ENGINE_HEADERS is set but the package carries an engine "
-        "header directory: include/zvec/${_engine_dir}")
-    endif()
-  endforeach()
-endif()
+foreach(_engine_dir core ailego turbo)
+  if(EXISTS "${ZVEC_SDK_DIR}/include/zvec/${_engine_dir}")
+    message(FATAL_ERROR
+      "the package carries an engine header directory: "
+      "include/zvec/${_engine_dir}")
+  endif()
+endforeach()
 
-# The standalone engine shared libraries are built but, by default, not
-# installed: libzvec whole-archives both and exports their public API, so a
-# package carrying them as well would ship two ways to call the same code and
-# twice the ABI to keep compatible.  Guard that decision so it cannot silently
-# come back.  The *static* archives are intentionally kept for static and
-# mobile-SDK consumers, so match shared-library suffixes only.
-file(GLOB _engine_shared_libraries
-  "${ZVEC_SDK_DIR}/lib/*zvec_core*.so"
-  "${ZVEC_SDK_DIR}/lib/*zvec_core*.so.*"
-  "${ZVEC_SDK_DIR}/lib/*zvec_core*.dylib"
-  "${ZVEC_SDK_DIR}/lib/*zvec_core*.dll"
-  "${ZVEC_SDK_DIR}/lib/*zvec_ailego*.so"
-  "${ZVEC_SDK_DIR}/lib/*zvec_ailego*.so.*"
-  "${ZVEC_SDK_DIR}/lib/*zvec_ailego*.dylib"
-  "${ZVEC_SDK_DIR}/lib/*zvec_ailego*.dll"
-)
-if(_engine_shared_libraries AND ZVEC_FORBID_ENGINE_LIBRARIES)
+# No engine library in any form.  libzvec whole-archives all three components and
+# exports the engine API, so packaging them separately would ship two ways to
+# call one implementation and twice the ABI to keep compatible; the archives are
+# equally unc callable, because the headers that declare them are not installed.
+# Shared *and* static suffixes, since neither may appear.  The names are specific
+# enough not to match the installed libzvec.a / zvec.lib.
+set(_engine_libraries)
+foreach(_engine_name zvec_core zvec_ailego zvec_turbo)
+  file(GLOB _found_engine_libraries
+    "${ZVEC_SDK_DIR}/lib/*${_engine_name}*.so"
+    "${ZVEC_SDK_DIR}/lib/*${_engine_name}*.so.*"
+    "${ZVEC_SDK_DIR}/lib/*${_engine_name}*.dylib"
+    "${ZVEC_SDK_DIR}/lib/*${_engine_name}*.dll"
+    "${ZVEC_SDK_DIR}/lib/*${_engine_name}*.a"
+    "${ZVEC_SDK_DIR}/lib/*${_engine_name}*.lib")
+  list(APPEND _engine_libraries ${_found_engine_libraries})
+endforeach()
+if(_engine_libraries)
   message(FATAL_ERROR
-    "standalone engine shared libraries must not be packaged, found: "
-    "${_engine_shared_libraries}")
+    "the package carries engine libraries, which are built but never installed: "
+    "${_engine_libraries}")
 endif()

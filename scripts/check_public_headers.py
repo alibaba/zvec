@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """Header-hygiene guard for the public C++ API under ``src/include/zvec``.
 
-The stable C++ API is ``zvec/db/*.h`` (plus ``zvec/c_api.h`` for C).  The rest
-of what ships from ``src/include`` -- ``zvec/core/**``, ``zvec/ailego/**``,
-``zvec/turbo/**`` -- is an advanced, unstable surface.  This script keeps the
-stable surface from silently absorbing engine internals, the way
-``ARROW_INSTALL_ALL_HEADERS`` does for Apache Arrow and the explicit
+The stable C++ API is ``zvec/db/*.h`` (plus ``zvec/c_api.h`` for C), and it is
+the only part of ``src/include`` that installs.  The rest -- ``zvec/core/**``,
+``zvec/ailego/**``, ``zvec/turbo/**`` -- is an advanced, unstable surface that
+stays in the build tree: public to a source-tree consumer and to nothing else.
+This script keeps the stable surface from silently absorbing engine internals,
+the way ``ARROW_INSTALL_ALL_HEADERS`` does for Apache Arrow and the explicit
 ``install(FILES ...)`` whitelist does for LevelDB.
 
 The stable closure is engine-free: the three headers it used to need from
 ``zvec/core`` and ``zvec/ailego`` now live under ``zvec/detail/``, a neutral
 home both the stable API and the engine may include without inverting the layer
 order.  Their old paths remain as shims so engine code keeps compiling, but the
-shims are not in the closure, so a default package installs no ``zvec/core/**``,
+shims are not in the closure, so no package installs ``zvec/core/**``,
 ``zvec/ailego/**`` or ``zvec/turbo/**`` at all.  Rule 6 fails if that regresses.
 
 Checks
@@ -64,6 +65,16 @@ from pathlib import Path
 
 INCLUDE_ROOT = Path("src/include")
 STABLE_PREFIX = "zvec/db/"
+
+# What counts as a header.  Keep in sync with ``ENGINE_SUFFIXES`` in
+# scripts/generate_export_whitelist.py and the ``FILES_MATCHING`` patterns in
+# cmake/bazel.cmake: all three decide "is this file part of the published
+# surface".  A narrower set here than there means a ``.hxx`` in the stable
+# closure is invisible to rules 1-7 while every install rule still expects it --
+# the manifest would omit a header the package needs, and the only symptom would
+# be an indirect "installed 97, expected 98" in CI.
+HEADER_SUFFIXES = frozenset({".h", ".hpp", ".hxx"})
+
 # Entry points of the published API.  ``zvec/db/**`` is the stable C++ surface;
 # ``c_api.h`` is the stable C surface; ``export.h`` carries the visibility macro
 # both of them use.
@@ -94,9 +105,11 @@ ALLOWED_STABLE_DEPS: dict[str, str] = {
 # stop compiling.  Kept separate so a *direct* db -> engine edge stays reviewable.
 #
 # Currently empty: every allowlisted header is a leaf.  ailego/internal/platform.h
-# and the four ailego string headers used to live here until the Status message
+# and the four ailego string headers used to live here, until the Status message
 # formatting, the GlobalConfig singleton and the Float16 storage guard were made
-# self-contained (see the header-governance doc, section 6.6).
+# self-contained and the stable closure moved into zvec/detail/.  Nothing outside
+# zvec/db and zvec/detail is reached indirectly any more; an entry reappearing here
+# means a new cross-layer edge and needs review.
 INDIRECT_STABLE_DEPS: dict[str, str] = {}
 
 # Transitive-include budget for the headers a typical user includes, as
@@ -147,7 +160,7 @@ def _scan_headers() -> list[str]:
     headers = [
         path.relative_to(INCLUDE_ROOT).as_posix()
         for path in INCLUDE_ROOT.rglob("*")
-        if path.suffix in {".h", ".hpp"} and path.is_file()
+        if path.suffix in HEADER_SUFFIXES and path.is_file()
     ]
     return sorted(headers)
 
@@ -179,13 +192,20 @@ def check_stable_deps(
         if not rel.startswith(STABLE_PREFIX):
             continue
         for dep in _direct_includes(rel, known):
-            if dep.startswith(STABLE_PREFIX):
-                continue
-            if dep.endswith("_internal.h"):
+            # The internal-header test comes first on purpose.  A
+            # ``zvec/db/xxx_internal.h`` sitting in the public include tree is
+            # exactly the mistake this rule exists to catch, and the
+            # stable-prefix skip below would wave it through -- into the install
+            # closure as well, since rule 6 walks the same graph.  Matching on
+            # the stem keeps ``.hpp`` / ``.hxx`` spellings covered.
+            if Path(dep).stem.endswith("_internal"):
                 errors.append(
                     f"{rel}: stable public header includes internal header {dep}"
                 )
-            elif dep.startswith(FORBIDDEN_PREFIXES):
+                continue
+            if dep.startswith(STABLE_PREFIX):
+                continue
+            if dep.startswith(FORBIDDEN_PREFIXES):
                 errors.append(
                     f"{rel}: stable public header includes engine header {dep}; "
                     f"hide it behind an opaque member or an internal header, or "
@@ -271,10 +291,11 @@ def check_install_closure(
 ) -> tuple[list[str], list[str]]:
     """Rule 6: the stable API's include closure is the minimal SDK header set.
 
-    A trimmed ``install(DIRECTORY ...)`` (see the P1 item in the header-governance
-    doc) can only ship this closure.  Any member that is neither under
-    ``zvec/db/`` nor allowlisted would silently disappear from the package and
-    break compilation for SDK users, so it has to be listed with a reason.
+    The install rule ships exactly this closure -- an explicit manifest loop over
+    ``cmake/zvec_public_headers.cmake``, not a directory copy -- so any member
+    that is neither under ``zvec/db/`` nor allowlisted would silently disappear
+    from the package and break compilation for SDK users.  List it with a reason
+    instead.
     """
     closure = _stable_closure(headers)
 
@@ -361,10 +382,11 @@ MANIFEST_TEMPLATE = """\
 # set CMake always installs.  scripts/check_public_headers.py recomputes the
 # closure from the sources and fails when this list drifts.
 #
-# Paths are relative to src/include/.  The zvec/core and zvec/ailego entries are
-# unavoidable implementation detail reached from the stable headers; they install
-# regardless of ZVEC_INSTALL_ENGINE_HEADERS, which only controls the *remaining*
-# advanced engine headers.
+# Paths are relative to src/include/.  The closure reaches no engine header
+# (rule 6): the three zvec/detail/ entries are the only implementation detail it
+# needs, and they deliberately live outside zvec/core, zvec/ailego and
+# zvec/turbo.  This list is the complete installed header set: the engine
+# directories are build-tree only, and no package carries them.
 set(ZVEC_STABLE_PUBLIC_HEADERS
 {entries}
 )
@@ -429,7 +451,14 @@ def check_install_manifest(headers: Sequence[str]) -> tuple[list[str], list[str]
     if len(listed) != len(manifest):
         errors.append(f"{INSTALL_MANIFEST}: {MANIFEST_VAR} contains duplicates")
 
-    report = [f"  install manifest: {len(listed)} headers (matches closure)"]
+    report = [
+        f"  install manifest: {len(listed)} headers "
+        + (
+            f"(DRIFTS from the {len(closure)} header closure)"
+            if errors
+            else "(matches closure)"
+        )
+    ]
     return errors, report
 
 

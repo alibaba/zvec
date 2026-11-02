@@ -7,10 +7,10 @@
 # from the clang AST of that header set, so adding a public class or method
 # needs a regeneration (the default --check mode fails otherwise).
 #
-# This is deliberately wider than the installed header set: the default package
-# ships only the stable closure (ZVEC_INSTALL_ENGINE_HEADERS=OFF), but a
-# source-tree consumer reads the engine headers from src/include and links
-# libzvec.  See the module docstring for the trade-off.
+# This is deliberately wider than the installed header set: the package ships
+# only the stable closure and no engine header, but a source-tree consumer reads
+# the engine headers from src/include and links libzvec.  See the module
+# docstring for the trade-off.
 #
 # Patterns are mangled-name globs.  An Itanium nested name is length prefixed,
 # so "_ZN4zvec3Doc*" matches members of zvec::Doc only -- zvec::Document would

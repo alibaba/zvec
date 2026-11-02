@@ -270,15 +270,15 @@ jobs:
             exit 1
           fi
 
-          # ZVEC_INSTALL_ENGINE_HEADERS is off by default, so no engine artifact
-          # may reach the install tree: neither the standalone shared libraries
-          # nor the archives, whose declaring headers are not installed either.
-          # Staging already dropped lib/*.a from $ZVEC_DIST_DIR, so read the
-          # archive set from the raw install prefix instead.
+          # No engine artifact may reach the install tree: neither the standalone
+          # shared libraries nor the archives, whose declaring headers are not
+          # installed either.  Staging already dropped lib/*.a from
+          # $ZVEC_DIST_DIR, so read the archive set from the raw install prefix
+          # instead.
           for name in zvec_core zvec_ailego zvec_turbo; do
             for ext in a lib so dylib dll; do
               if ls "$ZVEC_INSTALL_DIR"/lib/*"$name"*."$ext" >/dev/null 2>&1; then
-                echo "::error::engine artifact $name must not be installed by default"
+                echo "::error::engine artifact $name must not be installed"
                 exit 1
               fi
             done
@@ -294,13 +294,13 @@ jobs:
           echo "engine artifacts absent, db-layer archive present: $(basename "$DB_ARCHIVE")"
 
           # No engine header directory either.  The stable closure reaches none
-          # of them (scripts/check_public_headers.py rule 6), so a default
-          # package must not contain include/zvec/{core,ailego,turbo} at all --
-          # assert on the directories, not on a probe header, so a partially
-          # populated one cannot slip through.
+          # of them (scripts/check_public_headers.py rule 6), so the package must
+          # not contain include/zvec/{core,ailego,turbo} at all -- assert on the
+          # directories, not on a probe header, so a partially populated one
+          # cannot slip through.
           for engine_dir in core ailego turbo; do
             if [ -e "$ZVEC_INSTALL_DIR/include/zvec/$engine_dir" ]; then
-              echo "::error::engine header directory zvec/$engine_dir must not be installed by default"
+              echo "::error::engine header directory zvec/$engine_dir must not be installed"
               exit 1
             fi
           done
@@ -315,71 +315,21 @@ jobs:
           SMOKE_BUILD="$RUNNER_TEMP/sdk-smoke-build"
           cmake -S .github/cmake/sdk-smoke -B "$SMOKE_BUILD" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DZVEC_SDK_DIR="$ZVEC_DIST_DIR" \
-            -DZVEC_FORBID_ENGINE_HEADERS=ON \
-            -DZVEC_FORBID_ENGINE_LIBRARIES=ON
+            -DZVEC_SDK_DIR="$ZVEC_DIST_DIR"
           cmake --build "$SMOKE_BUILD" --parallel 2
           # Windows loads the DLLs via PATH; Unix uses BUILD_RPATH.
           export PATH="$ZVEC_DIST_DIR/lib:$PATH"
           ctest --test-dir "$SMOKE_BUILD" --output-on-failure
 
-      - name: Verify full SDK configuration
+      - name: Verify the public headers compile standalone
         shell: bash
         run: |
-          # The default package is the trimmed one, so everything above already
-          # covers it.  ZVEC_INSTALL_ENGINE_HEADERS=ON is the opt-in shape for
-          # consumers that deliberately build against the engine, and nothing
-          # else exercises it, so it would rot silently.  Reconfiguring only
-          # changes install rules -- no rebuild.
-          cmake -S . -B build \
-            -DZVEC_INSTALL_ENGINE_HEADERS=ON \
-            -DZVEC_INSTALL_ENGINE_SHARED_LIBRARIES=ON
-          FULL="$RUNNER_TEMP/sdk-full"
-          cmake --install build --prefix "$FULL"
-
-          # Every header under src/include must be installed, byte for byte: the
-          # engine install rule is a directory copy with suffix filters, so a
-          # new suffix or a stray exclusion would silently drop headers.
-          INSTALLED=$(find "$FULL/include" -type f \( -name '*.h' -o -name '*.hpp' -o -name '*.hxx' \) | wc -l | tr -d ' ')
-          SOURCED=$(find src/include -type f \( -name '*.h' -o -name '*.hpp' -o -name '*.hxx' \) | wc -l | tr -d ' ')
-          echo "installed headers: $INSTALLED, source headers: $SOURCED"
-          if [ "$INSTALLED" -ne "$SOURCED" ]; then
-            echo "::error::expected all $SOURCED headers to be installed, got $INSTALLED"
-            exit 1
-          fi
-          test -d "$FULL/include/zvec/core/framework"
-          test -d "$FULL/include/zvec/ailego/logger"
-
-          # With the engine headers on, the engine artifacts must come back too:
-          # the invariant is "an engine artifact installs only when its headers
-          # do", which cuts both ways.
-          for name in zvec_core zvec_ailego zvec_turbo; do
-            ARCHIVE=$(ls "$FULL"/lib/*"$name".a "$FULL"/lib/"$name".lib 2>/dev/null | head -1)
-            if [ -z "$ARCHIVE" ]; then
-              echo "::error::engine archive $name must be installed with the engine headers on"
-              exit 1
-            fi
-          done
-
+          # --compile-check builds every published header as its own translation
+          # unit, which is the only place a header that compiles inside the
+          # engine but not on its own gets caught.  02-lint-check runs the same
+          # check on ubuntu; running it here puts it through this matrix entry's
+          # compiler and standard library as well (Apple clang, MSVC).
           python3 scripts/check_public_headers.py --verbose --compile-check
-
-          # core_smoke must find the standalone libzvec_core here and link it,
-          # which is the only coverage that shape has.
-          FULL_SMOKE="$RUNNER_TEMP/sdk-smoke-full"
-          cmake -S .github/cmake/sdk-smoke -B "$FULL_SMOKE" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DZVEC_SDK_DIR="$FULL" \
-            -DZVEC_REQUIRE_CORE=ON
-          cmake --build "$FULL_SMOKE" --parallel 2
-          export PATH="$FULL/lib:$PATH"
-          ctest --test-dir "$FULL_SMOKE" --output-on-failure
-
-          # Leave build/ at the release configuration: the reconfigure above only
-          # touched install rules, but a later step that reinstalls from this
-          # directory would otherwise produce the opt-in package.
-          cmake -S . -B build \
-            -DZVEC_INSTALL_ENGINE_HEADERS=OFF \
-            -DZVEC_INSTALL_ENGINE_SHARED_LIBRARIES=OFF
 
       - name: Package SDK (Unix)
         if: runner.os != 'Windows'
@@ -497,9 +447,7 @@ jobs:
           docker exec "$MUSL_CONTAINER" sh -c '
             cmake -S .github/cmake/sdk-smoke -B /work/smoke-build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
-              -DZVEC_SDK_DIR=/work/dist \
-              -DZVEC_FORBID_ENGINE_HEADERS=ON \
-              -DZVEC_FORBID_ENGINE_LIBRARIES=ON
+              -DZVEC_SDK_DIR=/work/dist
             cmake --build /work/smoke-build --parallel "$(nproc)"
             ctest --test-dir /work/smoke-build --output-on-failure
           '
@@ -645,9 +593,7 @@ jobs:
             -DANDROID_ABI="$ZVEC_ANDROID_ABI" \
             -DANDROID_NATIVE_API_LEVEL="$ZVEC_ANDROID_API_LEVEL" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DZVEC_SDK_DIR="$ZVEC_DIST_DIR" \
-            -DZVEC_FORBID_ENGINE_HEADERS=ON \
-            -DZVEC_FORBID_ENGINE_LIBRARIES=ON
+            -DZVEC_SDK_DIR="$ZVEC_DIST_DIR"
           cmake --build build_smoke --parallel 2
 
       - name: Package SDK
@@ -787,12 +733,11 @@ jobs:
             echo "missing C++ headers under include/zvec/db/"
             exit 1
           }
-          # The iOS job installs with the default configuration, so the engine
-          # headers must be absent here too -- same shape the desktop job pins
-          # with ZVEC_FORBID_ENGINE_HEADERS.
+          # The engine headers are never installed, so they must be absent here
+          # too -- the same shape the desktop job's smoke test asserts.
           for engine_dir in core ailego turbo; do
             if [ -e "$ZVEC_DIST_DIR/include/zvec/$engine_dir" ]; then
-              echo "::error::engine headers zvec/$engine_dir must not be packaged by default"
+              echo "::error::engine headers zvec/$engine_dir must not be packaged"
               exit 1
             fi
           done
