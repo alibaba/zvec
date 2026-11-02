@@ -16,6 +16,7 @@
 #include <ailego/math_batch/distance_batch.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
+#include <zvec/turbo/turbo.h>
 
 namespace zvec {
 namespace core {
@@ -178,9 +179,19 @@ class CosineMetric : public IndexMetric {
   //! Retrieve distance function for query
   MatrixDistance distance() const override {
     switch (data_type_) {
-      case IndexMeta::DataType::DT_FP16:
-        return reinterpret_cast<MatrixDistanceHandle>(
-            ailego::CosineDistanceMatrix<ailego::Float16, 1, 1>::Compute);
+      case IndexMeta::DataType::DT_FP16: {
+        const auto kernel =
+            turbo::get_distance_kernels(turbo::MetricType::kCosine,
+                                        turbo::DataType::kFp16,
+                                        turbo::QuantizeType::kRaw)
+                .dist;
+        return [kernel](const void *m, const void *q, size_t dim, float *out) {
+          // The existing cosine record ends with a float norm, represented
+          // by two FP16 slots. Turbo consumes only the normalized payload.
+          constexpr size_t extra_dim = sizeof(float) / sizeof(uint16_t);
+          kernel(m, q, dim > extra_dim ? dim - extra_dim : 0, out);
+        };
+      }
       case IndexMeta::DataType::DT_FP32:
         return reinterpret_cast<MatrixDistanceHandle>(
             ailego::CosineDistanceMatrix<float, 1, 1>::Compute);
@@ -205,10 +216,19 @@ class CosineMetric : public IndexMetric {
         return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
             ailego::BaseDistance<ailego::CosineDistanceMatrix, float, 12,
                                  2>::ComputeBatch);
-      case IndexMeta::DataType::DT_FP16:
-        return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-            ailego::BaseDistance<ailego::CosineDistanceMatrix, ailego::Float16,
-                                 12, 2>::ComputeBatch);
+      case IndexMeta::DataType::DT_FP16: {
+        const auto kernel =
+            turbo::get_distance_kernels(turbo::MetricType::kCosine,
+                                        turbo::DataType::kFp16,
+                                        turbo::QuantizeType::kRaw)
+                .batch;
+        return [kernel](const void **m, const void *q, size_t num, size_t dim,
+                        float *out, const void **extra_values) {
+          constexpr size_t extra_dim = sizeof(float) / sizeof(uint16_t);
+          kernel(m, q, num, dim > extra_dim ? dim - extra_dim : 0, out,
+                 extra_values);
+        };
+      }
       default:
         return nullptr;
     }

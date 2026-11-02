@@ -212,7 +212,9 @@ inner_product_fp16_batch_avx2_impl(
 
     if (prefetch_ptrs[0]) {
       for (size_t i = 0; i < dp_batch; ++i) {
-        ailego_prefetch(prefetch_ptrs[i] + dim);
+        if (prefetch_ptrs[i]) {
+          ailego_prefetch(prefetch_ptrs[i] + dim);
+        }
       }
     }
 

@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
@@ -51,6 +52,15 @@ static float reference_squared_euclidean(const float *a, const float *b,
     sum += diff * diff;
   }
   return sum;
+}
+
+static float reference_inner_product(const float *a, const float *b,
+                                     size_t dim) {
+  float dot = 0.0f;
+  for (size_t i = 0; i < dim; ++i) {
+    dot += a[i] * b[i];
+  }
+  return -dot;
 }
 
 // SIMD kernels may reorder accumulation; allow a small relative tolerance.
@@ -315,6 +325,107 @@ TEST(Fp32Quantizer, SseDistanceMatchesScalar) {
 
 TEST(Fp32Quantizer, Avx512DistanceMatchesScalar) {
   check_simd_distance_matches_scalar(turbo::CpuArchType::kAVX512);
+}
+
+TEST(Fp32Quantizer, NeonDistanceMatchesScalar) {
+  check_simd_distance_matches_scalar(turbo::CpuArchType::kNEON);
+}
+
+TEST(Fp32Quantizer, DatapointBatchMatchesPairwiseAndReference) {
+  const struct {
+    const char *name;
+    float (*reference)(const float *, const float *, size_t);
+  } metrics[] = {
+      {"Cosine", reference_cosine},
+      {"InnerProduct", reference_inner_product},
+      {"SquaredEuclidean", reference_squared_euclidean},
+  };
+  for (const auto &metric : metrics) {
+    for (size_t dim : {3u, 16u, 33u, 255u, 256u, 257u}) {
+      SCOPED_TRACE(testing::Message()
+                   << "metric=" << metric.name << ", dim=" << dim);
+      IndexMeta meta;
+      meta.set_meta(IndexMeta::DataType::DT_FP32, dim);
+      meta.set_metric(metric.name, 0, Params());
+      auto quantizer = IndexFactory::CreateQuantizer("Fp32Quantizer");
+      ASSERT_TRUE(quantizer);
+      ASSERT_EQ(0, quantizer->init(meta, Params()));
+      // Non-positive counts must not read any input or output pointer.
+      quantizer->calc_distance_dp_dp_batch(nullptr, 0, nullptr, nullptr);
+      quantizer->calc_distance_dp_dp_batch(nullptr, -1, nullptr, nullptr);
+
+      constexpr size_t kCount = 33;
+      std::mt19937 gen(static_cast<uint32_t>(dim));
+      std::uniform_real_distribution<float> dist(-3.0f, 4.0f);
+      std::vector<std::vector<float>> raw(kCount + 1, std::vector<float>(dim));
+      std::vector<std::string> encoded(
+          kCount + 1,
+          std::string(quantizer->quantized_datapoint_vector_length(), '\0'));
+      for (size_t i = 0; i <= kCount; ++i) {
+        for (float &value : raw[i]) {
+          value = dist(gen);
+        }
+        quantizer->quantize_data(raw[i].data(), encoded[i].data());
+        if (std::string(metric.name) == "Cosine") {
+          ASSERT_EQ((dim + 1) * sizeof(float), encoded[i].size());
+          // The trailing reconstruction norm is not a distance coordinate.
+          const float norm = i % 2 == 0
+                                 ? std::numeric_limits<float>::quiet_NaN()
+                                 : std::numeric_limits<float>::infinity();
+          std::memcpy(encoded[i].data() + dim * sizeof(float), &norm,
+                      sizeof(norm));
+        }
+      }
+      std::vector<const void *> candidates(kCount);
+      for (size_t i = 0; i < kCount; ++i) {
+        candidates[i] = encoded[i + 1].data();
+      }
+      for (int count : {1, 4, 5, 9, 15, 16, 17, 32, 33}) {
+        SCOPED_TRACE(testing::Message() << "count=" << count);
+        std::vector<float> actual(count);
+        quantizer->calc_distance_dp_dp_batch(candidates.data(), count,
+                                             encoded[0].data(), actual.data());
+        for (int i = 0; i < count; ++i) {
+          const float expected =
+              metric.reference(raw[i + 1].data(), raw[0].data(), dim);
+          expect_simd_near(actual[i], expected);
+          expect_simd_near(actual[i], quantizer->calc_distance_dp_dp(
+                                          candidates[i], encoded[0].data()));
+        }
+      }
+    }
+  }
+}
+
+TEST(Quantizer, DatapointBatchDefaultsToPairwise) {
+  IndexMeta meta;
+  meta.set_meta(IndexMeta::DataType::DT_FP32, 3);
+  meta.set_metric("SquaredEuclidean", 0, Params());
+  auto quantizer = IndexFactory::CreateQuantizer("Int8Quantizer");
+  ASSERT_TRUE(quantizer);
+  ASSERT_EQ(0, quantizer->init(meta, Params()));
+  quantizer->calc_distance_dp_dp_batch(nullptr, 0, nullptr, nullptr);
+  quantizer->calc_distance_dp_dp_batch(nullptr, -1, nullptr, nullptr);
+
+  const float raw[][3] = {
+      {1.0f, -2.0f, 3.0f}, {-4.0f, 1.5f, 0.5f}, {2.0f, 3.0f, -1.0f}};
+  constexpr int kCount = 3;
+  std::vector<std::string> encoded(
+      kCount,
+      std::string(quantizer->quantized_datapoint_vector_length(), '\0'));
+  std::vector<const void *> candidates(kCount);
+  for (int i = 0; i < kCount; ++i) {
+    quantizer->quantize_data(raw[i], encoded[i].data());
+    candidates[i] = encoded[i].data();
+  }
+  std::vector<float> actual(kCount, std::numeric_limits<float>::quiet_NaN());
+  quantizer->calc_distance_dp_dp_batch(candidates.data(), kCount,
+                                       encoded[0].data(), actual.data());
+  for (int i = 0; i < kCount; ++i) {
+    EXPECT_FLOAT_EQ(
+        quantizer->calc_distance_dp_dp(candidates[i], encoded[0].data()),
+        actual[i]);
+  }
 }
 
 // Under SquaredEuclidean the quantizer is an identity transform; the
