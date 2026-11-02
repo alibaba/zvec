@@ -317,6 +317,10 @@ endif()
 enable_testing()
 
 # Add unittest target
+if(NOT TARGET unittest_build)
+  # Compile tests separately from executing them so CI can measure both phases.
+  add_custom_target(unittest_build)
+endif()
 if(NOT TARGET unittest)
   if(IOS)
     # iOS: build-only target; tests are run on simulator separately
@@ -339,6 +343,7 @@ if(NOT TARGET unittest)
       )
   endif()
 endif()
+add_dependencies(unittest unittest_build)
 
 # Directories of target output
 if(NOT CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
@@ -1162,7 +1167,7 @@ endfunction()
 ## Build a C/C++ executable test program
 function(cc_test)
   cmake_parse_arguments(
-      CC_ARGS "" "NAME;VERSION"
+      CC_ARGS "" "NAME;VERSION;SHARDS"
       "SRCS;INCS;DEFS;LIBS;CFLAGS;CXXFLAGS;LDFLAGS;DEPS;ARGS" ${ARGN}
     )
 
@@ -1217,7 +1222,7 @@ function(cc_test)
       DEPS "${CC_ARGS_DEPS}"
       "${CC_ARGS_UNPARSED_ARGUMENTS}"
     )
-  add_dependencies(unittest ${CC_ARGS_NAME})
+  add_dependencies(unittest_build ${CC_ARGS_NAME})
   set(TEST_WORKING_DIR "${CMAKE_BINARY_DIR}/test_tmp/${CC_ARGS_NAME}")
   file(MAKE_DIRECTORY "${TEST_WORKING_DIR}")
   add_custom_target(
@@ -1226,11 +1231,32 @@ function(cc_test)
       WORKING_DIRECTORY ${TEST_WORKING_DIR}
       DEPENDS ${CC_ARGS_NAME}
     )
-  add_test(
-      NAME ${CC_ARGS_NAME}
-      COMMAND $<TARGET_FILE:${CC_ARGS_NAME}> "${CC_ARGS_ARGS}"
-      WORKING_DIRECTORY ${TEST_WORKING_DIR}
-    )
+  if("${CC_ARGS_SHARDS}" STREQUAL "")
+    set(CC_ARGS_SHARDS 1)
+  endif()
+  if(NOT CC_ARGS_SHARDS MATCHES "^[1-9][0-9]*$")
+    message(FATAL_ERROR "Invalid test shard count: ${CC_ARGS_SHARDS}")
+  endif()
+  if(CC_ARGS_SHARDS GREATER 1)
+    math(EXPR _last_shard "${CC_ARGS_SHARDS} - 1")
+    foreach(_shard RANGE 0 ${_last_shard})
+      set(_shard_dir "${TEST_WORKING_DIR}/shard_${_shard}")
+      file(MAKE_DIRECTORY "${_shard_dir}")
+      set(_shard_name "${CC_ARGS_NAME}.shard_${_shard}")
+      add_test(NAME ${_shard_name}
+        COMMAND $<TARGET_FILE:${CC_ARGS_NAME}> "${CC_ARGS_ARGS}"
+        WORKING_DIRECTORY "${_shard_dir}")
+      # Each process needs its own working directory: DB tests use relative paths.
+      set_tests_properties(${_shard_name} PROPERTIES ENVIRONMENT
+        "GTEST_TOTAL_SHARDS=${CC_ARGS_SHARDS};GTEST_SHARD_INDEX=${_shard}")
+    endforeach()
+  else()
+    add_test(
+        NAME ${CC_ARGS_NAME}
+        COMMAND $<TARGET_FILE:${CC_ARGS_NAME}> "${CC_ARGS_ARGS}"
+        WORKING_DIRECTORY ${TEST_WORKING_DIR}
+      )
+  endif()
 endfunction()
 
 ## Add existing test cases to a test suite
@@ -1402,13 +1428,14 @@ endfunction()
 ## Build a C/C++ executable google test program
 function(cc_gtest)
   cmake_parse_arguments(
-    CC_ARGS "" "NAME;VERSION"
+    CC_ARGS "" "NAME;VERSION;SHARDS"
     "SRCS;INCS;DEFS;LIBS;CFLAGS;CXXFLAGS;LDFLAGS;DEPS;ARGS" ${ARGN}
   )
   _find_gtest()
   cc_test(
       NAME "${CC_ARGS_NAME}"
       VERSION "${CC_ARGS_VERSION}"
+      SHARDS "${CC_ARGS_SHARDS}"
       SRCS "${CC_ARGS_SRCS}"
       INCS "${CC_ARGS_INCS};${FIND_GTEST_INCS}"
       DEFS "${CC_ARGS_DEFS}"
@@ -1460,13 +1487,14 @@ endfunction()
 ## Build a C/C++ executable google mock program
 function(cc_gmock)
   cmake_parse_arguments(
-    CC_ARGS "" "NAME;VERSION"
+    CC_ARGS "" "NAME;VERSION;SHARDS"
     "SRCS;INCS;DEFS;LIBS;CFLAGS;CXXFLAGS;LDFLAGS;DEPS;ARGS" ${ARGN}
   )
   _find_gmock()
   cc_test(
       NAME "${CC_ARGS_NAME}"
       VERSION "${CC_ARGS_VERSION}"
+      SHARDS "${CC_ARGS_SHARDS}"
       SRCS "${CC_ARGS_SRCS}"
       INCS "${CC_ARGS_INCS};${FIND_GMOCK_INCS}"
       DEFS "${CC_ARGS_DEFS}"
@@ -2036,7 +2064,7 @@ function(cuda_test)
       DEPS "${CUDA_ARGS_DEPS}"
       "${CUDA_ARGS_UNPARSED_ARGUMENTS}"
     )
-  add_dependencies(unittest ${CUDA_ARGS_NAME})
+  add_dependencies(unittest_build ${CUDA_ARGS_NAME})
   set(TEST_WORKING_DIR "${CMAKE_BINARY_DIR}/test_tmp/${CUDA_ARGS_NAME}")
   file(MAKE_DIRECTORY "${TEST_WORKING_DIR}")
   add_custom_target(

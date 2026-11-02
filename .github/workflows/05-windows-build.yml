@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Windows build and test matrix
   build-and-test-windows:
@@ -18,25 +22,35 @@ jobs:
       matrix:
         include:
           - platform: windows-2022
+            vs_version: '17.0'
+            vs_year: '2022'
             msvc_arch: x64
             python_version: '3.10'
-          - platform: windows-2025
+          - platform: windows-2025-vs2026
+            vs_version: '18.0'
+            vs_year: '2026'
             msvc_arch: x64
             python_version: '3.10'
           # Windows ARM64: Python 3.10 has no official ARM64 installer;
           # 3.11 is the first CPython release with a Windows-on-ARM build.
-          - platform: windows-11-arm
+          - platform: windows-11-vs2026-arm
+            vs_version: '18.0'
+            vs_year: '2026'
             msvc_arch: arm64
             python_version: '3.11'
 
     env:
-      SCCACHE_GHA_ENABLED: "true"
+      CCACHE_MAXSIZE: 1G
+      CCACHE_COMPILERCHECK: content
+      # MSVC supports depend mode through /showIncludes. Avoid a separate
+      # preprocessing pass on misses as well as on direct cache hits.
+      CCACHE_DEPEND: 'true'
+      NINJA_STATUS: '[%f/%t %es] '
 
     steps:
       - name: Show env info
         run: |
           Get-CimInstance -ClassName Win32_Processor
-          where cl
           & "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -all -products * -prerelease -format json
         shell: powershell
 
@@ -50,17 +64,11 @@ jobs:
           git submodule foreach --recursive 'git reset --hard && git clean -ffdx'
         shell: powershell
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.11
-        with:
-          # The explicit statistics steps below are best-effort. Do not let
-          # the action's post-run statistics fail an otherwise successful job.
-          disable_annotations: true
-
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python_version }}
+          architecture: ${{ matrix.msvc_arch }}
           cache: 'pip'
           cache-dependency-path: 'pyproject.toml'
 
@@ -68,6 +76,47 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: ${{ matrix.msvc_arch }}
+          # Runner labels select the VS family; verify it below because this
+          # action's explicit version lookup predates VS 2026.
+
+      - name: Verify MSVC toolchain
+        id: toolchain
+        shell: powershell
+        env:
+          EXPECTED_VS_VERSION: ${{ matrix.vs_version }}
+        run: |
+          if ($env:VisualStudioVersion -ne $env:EXPECTED_VS_VERSION) {
+            throw "Expected VS $env:EXPECTED_VS_VERSION, got $env:VisualStudioVersion"
+          }
+          $toolsetPrefix = if ($env:EXPECTED_VS_VERSION -eq '18.0') { '14.5' } else { '14.4' }
+          if (-not $env:VCToolsVersion.StartsWith($toolsetPrefix)) {
+            throw "Unexpected MSVC toolset: $env:VCToolsVersion (expected $toolsetPrefix*)"
+          }
+          where.exe cl
+          cl /Bv
+          # cl without an input reports an error; /Bv above is diagnostic only.
+          $global:LASTEXITCODE = 0
+          $sdk = $env:WindowsSDKVersion.TrimEnd('\')
+          "cache-key=vs${{ matrix.vs_year }}-${{ matrix.msvc_arch }}-$env:VCToolsVersion-$sdk" >> $env:GITHUB_OUTPUT
+
+      - name: Install ccache
+        shell: powershell
+        run: ./.github/scripts/setup-windows-ccache.ps1
+
+      # sccache's MSVC hits still run cl's preprocessor for every translation
+      # unit. ccache direct mode can validate headers without that work.
+      - name: Restore compiler cache
+        id: compiler-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: windows-ccache-v1-${{ steps.toolchain.outputs.cache-key }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            windows-ccache-v1-${{ steps.toolchain.outputs.cache-key }}-
+
+      - name: Reset compiler cache statistics
+        run: ccache --zero-stats
+        shell: powershell
 
       - name: Set up environment variables
         run: |
@@ -97,32 +146,46 @@ jobs:
             --no-build-isolation `
             --config-settings='cmake.define.BUILD_TOOLS=ON' `
             --config-settings='cmake.define.ENABLE_WERROR=ON' `
-            --config-settings='cmake.define.CMAKE_C_COMPILER_LAUNCHER=sccache' `
-            --config-settings='cmake.define.CMAKE_CXX_COMPILER_LAUNCHER=sccache'
+            --config-settings="cmake.define.ZVEC_COLLECTION_TEST_SHARDS=$env:NPROC" `
+            --config-settings='cmake.define.CMAKE_C_COMPILER_LAUNCHER=ccache' `
+            --config-settings='cmake.define.CMAKE_CXX_COMPILER_LAUNCHER=ccache'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         shell: powershell
 
-      - name: Show sccache statistics after pip install
+      - name: Show compiler cache statistics after pip install
         if: always()
         continue-on-error: true
-        run: sccache --show-stats
+        run: ccache --show-stats --verbose
         shell: powershell
 
-      - name: Run C++ Tests
+      - name: Build C++ tests
         run: |
           cd "$env:GITHUB_WORKSPACE\build"
-          cmake --build . --target unittest --config Release --parallel $env:NPROC
+          cmake --build . --target unittest_build --config Release --parallel $env:NPROC
         shell: powershell
 
-      - name: Show sccache statistics after tests
+      - name: Show compiler cache statistics after test compilation
         if: always()
         continue-on-error: true
-        run: sccache --show-stats
+        run: ccache --show-stats --verbose
+        shell: powershell
+
+      # Save before running tests: a test failure must not discard successful
+      # compilation work. Each run gets an immutable cache snapshot.
+      - name: Save compiler cache
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
+
+      - name: Run C++ Tests
+        run: ctest --test-dir build --build-config Release --output-on-failure --parallel $env:NPROC
         shell: powershell
 
       - name: Run Python Tests
         run: |
           cd "$env:GITHUB_WORKSPACE"
-          python -m pytest python/tests/ --basetemp=./.pytest_tmp
+          python -m pytest python/tests/ --basetemp=./.pytest_tmp --durations=10
         shell: powershell
 
       - name: Run C++ Examples
@@ -173,8 +236,24 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         shell: powershell
 
-      - name: Show sccache statistics
+      - name: Install and test C/C++ SDK
+        shell: powershell
+        run: |
+          $sdkDir = Join-Path $env:RUNNER_TEMP 'zvec-sdk'
+          $smokeDir = Join-Path $env:RUNNER_TEMP 'zvec-sdk-smoke'
+          cmake --install build --prefix $sdkDir --config Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake -S .github/cmake/sdk-smoke -B $smokeDir -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release "-DZVEC_SDK_DIR=$sdkDir"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build $smokeDir --parallel $env:NPROC
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:PATH = "$sdkDir\bin;$env:PATH"
+          ctest --test-dir $smokeDir --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Show compiler cache statistics
         if: always()
         continue-on-error: true
-        run: sccache --show-stats
+        run: ccache --show-stats --verbose
         shell: powershell
