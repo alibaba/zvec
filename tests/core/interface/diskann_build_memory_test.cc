@@ -101,8 +101,8 @@ TEST(DiskAnnBuildMemory, ReleaseStateAndReopenDirectAndMerged) {
     for (bool fp16 : {false, true}) {
       for (bool merge : {false, true}) {
         for (auto metric : {MetricType::kL2sq, MetricType::kCosine}) {
-          SCOPED_TRACE(::testing::Message()
-                       << partitioned << " " << fp16 << " " << merge << " " << int(metric));
+          SCOPED_TRACE(::testing::Message() << partitioned << " " << fp16 << " "
+                                            << merge << " " << int(metric));
           const std::string path = "diskann_memory_target",
                             source_path = "diskann_memory_source";
           test_util::RemoveTestFiles(path);

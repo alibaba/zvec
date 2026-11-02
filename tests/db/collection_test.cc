@@ -81,7 +81,7 @@ class CollectionTest : public ::testing::Test {
   }
 
   CollectionSchema make_schema(const std::string &name = "x",
-                              const std::string &field = "value") {
+                               const std::string &field = "value") {
     CollectionSchema schema(name);
     EXPECT_TRUE(schema
                     .add_field(std::make_shared<FieldSchema>(
@@ -104,7 +104,7 @@ class CollectionTest : public ::testing::Test {
   }
 
   Doc make_doc(const std::string &id, int32_t value,
-              const std::string &field = "value") {
+               const std::string &field = "value") {
     Doc doc;
     doc.set_pk(id);
     EXPECT_TRUE(doc.set<int32_t>(field, value));
@@ -120,7 +120,7 @@ class CollectionTest : public ::testing::Test {
   }
 
   void expect_value(const std::string &id, int32_t expected,
-                   const std::string &field = "value") {
+                    const std::string &field = "value") {
     auto result = collection_->fetch({id});
     ASSERT_TRUE(result.has_value()) << result.error().message();
     ASSERT_EQ(result.value().size(), 1u);

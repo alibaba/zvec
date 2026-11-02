@@ -599,20 +599,28 @@ def test_partition_config_optimize_and_reopen(tmp_path, enabled):
     scratch = tmp_path / "scratch space"
     scratch.mkdir()
     param = DiskAnnIndexParam(
-        metric_type=MetricType.L2, max_degree=16, list_size=32, pq_chunk_num=4,
-        partitioned_build=enabled, build_memory_budget_gb=0.125,
+        metric_type=MetricType.L2,
+        max_degree=16,
+        list_size=32,
+        pq_chunk_num=4,
+        partitioned_build=enabled,
+        build_memory_budget_gb=0.125,
         build_temp_dir=str(scratch),
     )
     schema = zvec.CollectionSchema(
         name="partition_config",
-        vectors=[VectorSchema("embedding", DataType.VECTOR_FP32,
-                              dimension=16, index_param=param)],
+        vectors=[
+            VectorSchema(
+                "embedding", DataType.VECTOR_FP32, dimension=16, index_param=param
+            )
+        ],
     )
     path = str(tmp_path / "collection")
     coll = zvec.create_and_open(path=path, schema=schema)
     vectors = np.random.default_rng(42).normal(size=(256, 16)).astype("float32")
-    docs = [Doc(id=str(i), vectors={"embedding": v.tolist()})
-            for i, v in enumerate(vectors)]
+    docs = [
+        Doc(id=str(i), vectors={"embedding": v.tolist()}) for i, v in enumerate(vectors)
+    ]
     assert all(result.ok() for result in coll.insert(docs))
     coll.optimize()
     del coll
@@ -625,8 +633,12 @@ def test_partition_config_optimize_and_reopen(tmp_path, enabled):
     assert restored.build_memory_budget_gb == 0.125
     assert restored.build_temp_dir == str(scratch)
     result = coll.query(
-        queries=Query(field_name="embedding", vector=vectors[0].tolist(),
-                      param=DiskAnnQueryParam(list_size=128)), topk=1,
+        queries=Query(
+            field_name="embedding",
+            vector=vectors[0].tolist(),
+            param=DiskAnnQueryParam(list_size=128),
+        ),
+        topk=1,
     )
     assert result[0].id == "0"
 
@@ -636,19 +648,27 @@ def test_partition_temp_dir_missing_fails_build(tmp_path):
 
     scratch = tmp_path / "missing_scratch"
     param = DiskAnnIndexParam(
-        metric_type=MetricType.L2, max_degree=16, list_size=32, pq_chunk_num=4,
-        partitioned_build=True, build_memory_budget_gb=0.125,
+        metric_type=MetricType.L2,
+        max_degree=16,
+        list_size=32,
+        pq_chunk_num=4,
+        partitioned_build=True,
+        build_memory_budget_gb=0.125,
         build_temp_dir=str(scratch),
     )
     schema = zvec.CollectionSchema(
         name="temp_dir_failure",
-        vectors=[VectorSchema("embedding", DataType.VECTOR_FP32,
-                              dimension=16, index_param=param)],
+        vectors=[
+            VectorSchema(
+                "embedding", DataType.VECTOR_FP32, dimension=16, index_param=param
+            )
+        ],
     )
     coll = zvec.create_and_open(path=str(tmp_path / "collection"), schema=schema)
     vectors = np.random.default_rng(42).normal(size=(256, 16)).astype("float32")
-    docs = [Doc(id=str(i), vectors={"embedding": v.tolist()})
-            for i, v in enumerate(vectors)]
+    docs = [
+        Doc(id=str(i), vectors={"embedding": v.tolist()}) for i, v in enumerate(vectors)
+    ]
     assert all(result.ok() for result in coll.insert(docs))
     with pytest.raises(RuntimeError):
         coll.optimize()
@@ -656,8 +676,12 @@ def test_partition_temp_dir_missing_fails_build(tmp_path):
     scratch.mkdir()
     coll.optimize()
     result = coll.query(
-        queries=Query(field_name="embedding", vector=vectors[0].tolist(),
-                      param=DiskAnnQueryParam(list_size=128)), topk=1,
+        queries=Query(
+            field_name="embedding",
+            vector=vectors[0].tolist(),
+            param=DiskAnnQueryParam(list_size=128),
+        ),
+        topk=1,
     )
     assert result[0].id == "0"
     assert list(scratch.iterdir()) == []
