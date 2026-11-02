@@ -607,7 +607,10 @@ TEST(RabitqQuantizer, PackedScanUsesEachRowsModelCentroid) {
       // The reference uses the same 16-bit LUT estimator, rather than comparing
       // it with an exact floating-point dot product at an arbitrary tolerance.
       // Evaluate each model centroid independently, then select its own lanes.
+      rabitqlib::ConstBatchDataMap<float> batch(
+          block.data() + 32 * sizeof(uint32_t), padded);
       for (uint32_t c = 0; c < clusters; ++c) {
+        SCOPED_TRACE(c);
         reference_query.set_g_add(scalars[4 + clusters + c], -scalars[4 + c]);
         float expected[32], lower[32], dot[32];
         rabitqlib::split_batch_estdist(block.data() + 32 * sizeof(uint32_t),
@@ -622,17 +625,8 @@ TEST(RabitqQuantizer, PackedScanUsesEachRowsModelCentroid) {
             EXPECT_EQ(i, cluster);
           }
           if (cluster != c) continue;
+          SCOPED_TRACE(i);
           const float offset = std::strcmp(metric, "InnerProduct") == 0 ? 1 : 0;
-          const float tolerance = 1e-5f * std::max(1.0f, std::abs(expected[i]));
-          EXPECT_NEAR(expected[i] - offset, estimates[i].distance, tolerance);
-          EXPECT_NEAR(lower[i] - offset, estimates[i].lower_bound, tolerance);
-          EXPECT_FLOAT_EQ(quantizer.calc_distance_dp_query(row, encoded.data()),
-                          scanner->refine(row, estimates[i]));
-          ASSERT_TRUE(scanner->set_reuse_coarse_dot(true));
-          const char *ex_data = row + 8 + padded / 8 + 12;
-          const auto ex_ip = rabitqlib::select_excode_ipfunc(6);
-          const float boosted = rabitqlib::split_distance_boosting(
-              ex_data, ex_ip, reference_query, padded, 6, dot[i]);
           // As in the single-centroid test, bound FMA/non-FMA roundoff by
           // intermediate magnitudes. IP terms can cancel to nearly zero;
           // scaling only by the final score underestimates that error.
@@ -646,6 +640,28 @@ TEST(RabitqQuantizer, PackedScanUsesEachRowsModelCentroid) {
               roundoff * std::abs(reference_query.g_add());
           EXPECT_NEAR(scalars[4 + c], reference_query.g_add(),
                       correction_error);
+          const float batch_scale = std::abs(batch.f_rescale()[i]);
+          const float tolerance =
+              correction_error + batch_scale * dot_tolerance +
+              roundoff *
+                  std::max(1.0f, std::abs(batch.f_add()[i]) +
+                                     std::abs(reference_query.g_add()) +
+                                     batch_scale *
+                                         (std::abs(dot[i]) +
+                                          std::abs(reference_query.k1xsumq())) +
+                                     offset);
+          EXPECT_NEAR(expected[i] - offset, estimates[i].distance, tolerance);
+          EXPECT_NEAR(
+              lower[i] - offset, estimates[i].lower_bound,
+              tolerance + roundoff * std::abs(batch.f_error()[i] *
+                                              reference_query.g_error()));
+          EXPECT_FLOAT_EQ(quantizer.calc_distance_dp_query(row, encoded.data()),
+                          scanner->refine(row, estimates[i]));
+          ASSERT_TRUE(scanner->set_reuse_coarse_dot(true));
+          const char *ex_data = row + 8 + padded / 8 + 12;
+          const auto ex_ip = rabitqlib::select_excode_ipfunc(6);
+          const float boosted = rabitqlib::split_distance_boosting(
+              ex_data, ex_ip, reference_query, padded, 6, dot[i]);
           rabitqlib::ConstExDataMap<float> ex(ex_data, padded, 6);
           const float extra_dot =
               ex_ip(reference_query.rotated_query(), ex.ex_code(), padded);
