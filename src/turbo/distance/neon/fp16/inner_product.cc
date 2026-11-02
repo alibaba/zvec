@@ -15,6 +15,7 @@
 #include "neon/fp16/inner_product.h"
 #include <zvec/ailego/internal/platform.h>
 #include "neon/fp16/batch.h"
+#include "neon/one_to_many.h"
 
 // MSVC may lack of fp16 support, fallback to scalar for now
 #if defined(AILEGO_ARM64_GNU_LIKE)
@@ -63,7 +64,20 @@ void inner_product_fp16_batch_distance(const void *const *vectors,
                                        const void *query, size_t n, size_t dim,
                                        float *distances,
                                        const void *const * /*extra_values*/) {
-  detail::fp16_distance_batch<false>(vectors, query, n, dim, distances);
+  if (dim == 0) {
+    for (size_t i = 0; i < n; ++i) {
+      distances[i] = 0.0f;
+    }
+    return;
+  }
+  size_t i = 0;
+#if defined(AILEGO_ARM64_GNU_LIKE)
+  i = detail::batch_groups<float16_t, false>(vectors, query, n, dim, distances);
+#endif
+  if (i < n) {
+    detail::fp16_distance_batch<false>(vectors + i, query, n - i, dim,
+                                       distances + i);
+  }
 }
 
 }  // namespace zvec::turbo::neon

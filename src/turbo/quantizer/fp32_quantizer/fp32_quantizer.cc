@@ -186,6 +186,16 @@ float Fp32Quantizer::calc_distance_dp_dp(const void *dp1,
   return calc_distance_dp_query(dp1, dp2);
 }
 
+void Fp32Quantizer::calc_distance_dp_dp_batch(const void *const *dp_list,
+                                              int dp_num, const void *dp,
+                                              float *dist_list) const {
+  if (dp_num <= 0) {
+    return;
+  }
+  // FP32 datapoints and queries share the same encoding.
+  calc_distance_dp_query_batch(dp_list, dp_num, dp, dist_list);
+}
+
 float Fp32Quantizer::calc_distance_input_query(const void *dp,
                                                const void *query) const {
   if (meta_.metric_name() != "Cosine") {
