@@ -11,7 +11,12 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <iostream>
+#include <vector>
 #include <ailego/math/norm_matrix.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/utility/float_helper.h>
@@ -604,5 +609,69 @@ TEST(CosineMeasure_General_Test, TestDistanceBatch) {
       calculate_distance(a, b, dimension, IndexMeta::DT_FP16, 2, 0.2803060f,
                          0.001f);
     }
+  }
+}
+
+TEST(CosineMeasure_General_Test, RawFp16BatchPreservesRecordLayout) {
+  constexpr size_t kCount = 33;
+  constexpr size_t kNormSlots = sizeof(float) / sizeof(uint16_t);
+  for (size_t dim :
+       {0u, 1u, 3u, 7u, 8u, 15u, 16u, 17u, 31u, 32u, 33u, 255u, 256u, 257u}) {
+    SCOPED_TRACE(testing::Message() << "payload_dim=" << dim);
+    auto metric = IndexFactory::CreateMetric("Cosine");
+    ASSERT_TRUE(metric);
+    ASSERT_EQ(0, metric->init(IndexMeta(IndexMeta::DT_FP16, dim + kNormSlots),
+                              Params()));
+    const auto single = metric->distance();
+    const auto batch = metric->batch_distance();
+    ASSERT_TRUE(single);
+    ASSERT_TRUE(batch);
+    std::vector<uint16_t> query(dim + kNormSlots + 2, 0);
+    std::vector<std::vector<uint16_t>> rows(
+        kCount, std::vector<uint16_t>(dim + kNormSlots + 2, 0));
+    const float scale = dim == 0 ? 0.0f : 0.25f / std::sqrt(float(dim));
+    for (size_t d = 0; d < dim; ++d) {
+      query[d + 1] = FloatHelper::ToFP16((static_cast<int>(d % 7) - 3) * scale);
+      for (size_t row = 1; row < kCount; ++row) {
+        rows[row][d + 1] = FloatHelper::ToFP16(
+            (static_cast<int>((d * 3 + row) % 9) - 4) * scale);
+      }
+    }
+    // Norm bytes are for reconstruction, not distance arithmetic. Use a
+    // hostile bit pattern to detect accidentally including the extra slots.
+    const uint32_t norm_bits = 0x7fff7fffu;
+    std::memcpy(query.data() + 1 + dim, &norm_bits, sizeof(norm_bits));
+    std::vector<const void *> pointers(kCount);
+    for (size_t row = 0; row < kCount; ++row) {
+      std::memcpy(rows[row].data() + 1 + dim, &norm_bits, sizeof(norm_bits));
+      pointers[row] = rows[(row * 7) % kCount].data() + 1;
+    }
+    for (size_t count : {1u, 3u, 4u, 5u, 7u, 8u, 9u, 15u, 16u, 17u, 32u, 33u}) {
+      std::vector<float> scores(count + 1, 12345.0f);
+      batch(pointers.data(), query.data() + 1, count, dim + kNormSlots,
+            scores.data(), nullptr);
+      EXPECT_FLOAT_EQ(12345.0f, scores.back());
+      for (size_t row = 0; row < count; ++row) {
+        const auto *values = static_cast<const uint16_t *>(pointers[row]);
+        double expected = 1.0, magnitude = 0.0;
+        for (size_t d = 0; d < dim; ++d) {
+          const double term =
+              static_cast<double>(FloatHelper::ToFP32(values[d])) *
+              FloatHelper::ToFP32(query[d + 1]);
+          expected -= term;
+          magnitude += std::abs(term);
+        }
+        const double tolerance = 2.0e-6 * std::max(1.0, magnitude);
+        float pair = 0.0f;
+        single(pointers[row], query.data() + 1, dim + kNormSlots, &pair);
+        EXPECT_NEAR(expected, pair, tolerance);
+        EXPECT_NEAR(expected, scores[row], tolerance);
+        EXPECT_NEAR(pair, scores[row], 2 * tolerance);
+      }
+      EXPECT_FLOAT_EQ(1.0f, scores[0]);  // Zero payload remains distance one.
+    }
+    float untouched = 12345.0f;
+    batch(nullptr, nullptr, 0, dim + kNormSlots, &untouched, nullptr);
+    EXPECT_FLOAT_EQ(12345.0f, untouched);
   }
 }
