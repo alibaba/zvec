@@ -278,6 +278,10 @@ class DiskAnnIndexParamBuilder
     param->build_memory_budget_gb = budget;
     return *this;
   }
+  DiskAnnIndexParamBuilder &with_build_temp_dir(const std::string &directory) {
+    param->build_temp_dir = directory;
+    return *this;
+  }
   std::shared_ptr<DiskAnnIndexParam> build() override {
     return param;
   }

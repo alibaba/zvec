@@ -664,14 +664,16 @@ class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {
                      QuantizeType quantize_type = QuantizeType::UNDEFINED,
                      QuantizerParam quantizer_param = {},
                      bool partitioned_build = false,
-                     float build_memory_budget_gb = 0.25f)
+                     float build_memory_budget_gb = 0.25f,
+                     std::string build_temp_dir = {})
       : VectorIndexParams(IndexType::DISKANN, metric_type, quantize_type,
                           quantizer_param),
         max_degree_{max_degree},
         list_size_{list_size},
         pq_chunk_num_{pq_chunk_num},
         partitioned_build_{partitioned_build},
-        build_memory_budget_gb_{build_memory_budget_gb} {}
+        build_memory_budget_gb_{build_memory_budget_gb},
+        build_temp_dir_{std::move(build_temp_dir)} {}
 
   using OPtr = std::shared_ptr<DiskAnnIndexParams>;
 
@@ -679,7 +681,8 @@ class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {
   Ptr clone() const override {
     return std::make_shared<DiskAnnIndexParams>(
         metric_type_, max_degree_, list_size_, pq_chunk_num_, quantize_type_,
-        quantizer_param_, partitioned_build_, build_memory_budget_gb_);
+        quantizer_param_, partitioned_build_, build_memory_budget_gb_,
+        build_temp_dir_);
   }
 
   std::string to_string() const override {
@@ -690,7 +693,7 @@ class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {
         << ",list_size:" << list_size_ << ", pq_chunk_num:" << pq_chunk_num_
         << ",partitioned_build:" << (partitioned_build_ ? "true" : "false")
         << ",build_memory_budget_gb:" << build_memory_budget_gb_
-        << ",enable_rotate:"
+        << ",build_temp_dir:" << build_temp_dir_ << ",enable_rotate:"
         << (quantizer_param_.enable_rotate() ? "true" : "false") << "}";
     return oss.str();
   }
@@ -732,6 +735,14 @@ class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {
   void set_build_memory_budget_gb(float budget) {
     build_memory_budget_gb_ = budget;
   }
+  // Existing directory for partition-build scratch files; empty uses the
+  // system tmpfile() default. Relative paths resolve at train/build time.
+  const std::string &build_temp_dir() const {
+    return build_temp_dir_;
+  }
+  void set_build_temp_dir(const std::string &directory) {
+    build_temp_dir_ = directory;
+  }
 
   bool operator==(const IndexParams &other) const override {
     return type() == other.type() &&
@@ -748,6 +759,8 @@ class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {
            build_memory_budget_gb_ ==
                static_cast<const DiskAnnIndexParams &>(other)
                    .build_memory_budget_gb_ &&
+           build_temp_dir_ ==
+               static_cast<const DiskAnnIndexParams &>(other).build_temp_dir_ &&
            quantize_type() ==
                static_cast<const DiskAnnIndexParams &>(other).quantize_type() &&
            quantizer_param_ ==
@@ -760,6 +773,7 @@ class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {
   int pq_chunk_num_;
   bool partitioned_build_;
   float build_memory_budget_gb_;
+  std::string build_temp_dir_;
 };
 
 /*

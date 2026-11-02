@@ -682,6 +682,8 @@ class ProximaEngineHelper {
             db_index_params->partitioned_build());
         index_param_builder->with_build_memory_budget_gb(
             db_index_params->build_memory_budget_gb());
+        index_param_builder->with_build_temp_dir(
+            db_index_params->build_temp_dir());
 
         return index_param_builder->build();
       }

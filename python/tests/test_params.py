@@ -722,23 +722,29 @@ def test_diskann_partition_config_roundtrip(enabled):
         metric_type=MetricType.L2,
         partitioned_build=enabled,
         build_memory_budget_gb=0.03125,
+        build_temp_dir="scratch space",
     )
     for value in (param, param.clone(), pickle.loads(pickle.dumps(param))):
         assert value.partitioned_build is enabled
         assert value.build_memory_budget_gb == 0.03125
+        assert value.build_temp_dir == "scratch space"
+        assert value.to_dict()["build_temp_dir"] == value.build_temp_dir
+        assert "build_temp_dir" in repr(value)
         assert value.to_dict()["partitioned_build"] is enabled
         assert value.to_dict()["build_memory_budget_gb"] == 0.03125
         assert "partitioned_build" in repr(value)
     default = DiskAnnIndexParam()
     assert default.partitioned_build is False
     assert default.build_memory_budget_gb == 0.25
+    assert default.build_temp_dir == ""
 
 
-@pytest.mark.parametrize("length", [5, 6])
+@pytest.mark.parametrize("length", [5, 6, 8])
 def test_diskann_legacy_pickle_defaults(length):
-    legacy = (MetricType.L2, 16, 32, 4, QuantizeType.UNDEFINED, True)
+    legacy = (MetricType.L2, 16, 32, 4, QuantizeType.UNDEFINED, True, True, 0.125)
     restored = DiskAnnIndexParam.__new__(DiskAnnIndexParam)
     restored.__setstate__(legacy[:length])
-    assert restored.partitioned_build is False
-    assert restored.build_memory_budget_gb == 0.25
-    assert restored.quantizer_param.enable_rotate is (length == 6)
+    assert restored.partitioned_build is (length == 8)
+    assert restored.build_memory_budget_gb == (0.125 if length == 8 else 0.25)
+    assert restored.quantizer_param.enable_rotate is (length >= 6)
+    assert restored.build_temp_dir == ""

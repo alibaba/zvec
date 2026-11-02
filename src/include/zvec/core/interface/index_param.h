@@ -563,6 +563,7 @@ struct ZVEC_CORE_API DiskAnnIndexParam : public BaseIndexParam {
 
   bool partitioned_build = false;
   float build_memory_budget_gb = 0.25f;
+  std::string build_temp_dir;
 
   // Constructors with delegation
   DiskAnnIndexParam() : BaseIndexParam(IndexType::kDiskAnn) {}

@@ -85,6 +85,7 @@ constexpr uint32_t kListSize = 3;
 constexpr uint32_t kPqChunkNum = 4;
 constexpr uint32_t kPartitionedBuild = 5;
 constexpr uint32_t kBuildMemoryBudgetGb = 6;
+constexpr uint32_t kBuildTempDir = 7;
 }  // namespace f_diskann
 namespace f_vamana {
 constexpr uint32_t kBase = 1;
@@ -477,6 +478,8 @@ void EncodeDiskAnn(const DiskAnnIndexParams *params, std::string *out) {
   if (params->build_memory_budget_gb() != 0.25f)
     w.put_float(f_diskann::kBuildMemoryBudgetGb,
                 params->build_memory_budget_gb());
+  if (!params->build_temp_dir().empty())
+    w.put_string(f_diskann::kBuildTempDir, params->build_temp_dir());
 }
 
 DiskAnnIndexParams::OPtr DecodeDiskAnn(std::string_view buf) {
@@ -486,6 +489,7 @@ DiskAnnIndexParams::OPtr DecodeDiskAnn(std::string_view buf) {
   int32_t pq_chunk_num = 0;
   bool partitioned_build = false;
   float build_memory_budget_gb = 0.25f;
+  std::string build_temp_dir;
   Reader r(buf);
   while (r.next()) {
     switch (r.field()) {
@@ -507,6 +511,9 @@ DiskAnnIndexParams::OPtr DecodeDiskAnn(std::string_view buf) {
       case f_diskann::kBuildMemoryBudgetGb:
         build_memory_budget_gb = r.float_value();
         break;
+      case f_diskann::kBuildTempDir:
+        build_temp_dir = r.string_value();
+        break;
       default:
         break;
     }
@@ -514,7 +521,7 @@ DiskAnnIndexParams::OPtr DecodeDiskAnn(std::string_view buf) {
   return std::make_shared<DiskAnnIndexParams>(
       base.metric_type, max_degree, list_size, pq_chunk_num, base.quantize_type,
       QuantizerParam(base.enable_rotate), partitioned_build,
-      build_memory_budget_gb);
+      build_memory_budget_gb, std::move(build_temp_dir));
 }
 
 void EncodeVamana(const VamanaIndexParams *params, std::string *out) {

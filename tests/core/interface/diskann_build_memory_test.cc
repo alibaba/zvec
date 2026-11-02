@@ -71,6 +71,31 @@ TEST(DiskAnnBuildMemory, ReadOnlyCannotCreateStorage) {
     test_util::RemoveTestFiles(path);
   }
 }
+TEST(DiskAnnBuildMemory, TempDirectoryJsonCompatibility) {
+  auto param = DiskAnnIndexParamBuilder()
+                   .with_dimension(16)
+                   .with_build_temp_dir("scratch space")
+                   .build();
+  ailego::JsonValue json;
+  ASSERT_TRUE(json.parse(param->serialize_to_json()));
+  auto restored = std::dynamic_pointer_cast<DiskAnnIndexParam>(
+      IndexFactory::DeserializeIndexParamFromJson(
+          json.as_json_string().as_stl_string()));
+  ASSERT_NE(nullptr, restored);
+  EXPECT_EQ(param->build_temp_dir, restored->build_temp_dir);
+  json.as_object().unset("build_temp_dir");
+  restored = std::dynamic_pointer_cast<DiskAnnIndexParam>(
+      IndexFactory::DeserializeIndexParamFromJson(
+          json.as_json_string().as_stl_string()));
+  ASSERT_NE(nullptr, restored);
+  EXPECT_TRUE(restored->build_temp_dir.empty());
+  for (const auto &invalid :
+       {ailego::JsonValue(42), ailego::JsonValue(std::string("a\0b", 3))}) {
+    json.as_object().set("build_temp_dir", invalid);
+    EXPECT_EQ(nullptr, IndexFactory::DeserializeIndexParamFromJson(
+                           json.as_json_string().as_stl_string()));
+  }
+}
 TEST(DiskAnnBuildMemory, ReleaseStateAndReopenDirectAndMerged) {
   for (bool partitioned : {false, true}) {
     for (bool fp16 : {false, true}) {
@@ -85,6 +110,7 @@ TEST(DiskAnnBuildMemory, ReleaseStateAndReopenDirectAndMerged) {
           auto param = parameter(fp16, metric);
           param->partitioned_build = partitioned;
           param->build_memory_budget_gb = 0.03125f;
+          param->build_temp_dir = ".";
           auto roundtrip = IndexFactory::DeserializeIndexParamFromJson(
               param->serialize_to_json());
           auto restored =
@@ -92,6 +118,7 @@ TEST(DiskAnnBuildMemory, ReleaseStateAndReopenDirectAndMerged) {
           ASSERT_NE(restored, nullptr);
           EXPECT_EQ(partitioned, restored->partitioned_build);
           EXPECT_FLOAT_EQ(0.03125f, restored->build_memory_budget_gb);
+          EXPECT_EQ(".", restored->build_temp_dir);
           param = restored;
           auto inspected = std::make_shared<InspectableDiskAnn>();
           ASSERT_EQ(0, inspected->initialize(*param));

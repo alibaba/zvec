@@ -92,6 +92,15 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
     memory_limit_set_ = true;
   }
 
+  build_temp_dir_.clear();
+  if (params.has(PARAM_DISKANN_BUILDER_TEMP_DIR) &&
+      (!params.get<std::string>(PARAM_DISKANN_BUILDER_TEMP_DIR,
+                                &build_temp_dir_) ||
+       build_temp_dir_.find('\0') != std::string::npos)) {
+    LOG_ERROR("DiskAnn temp_dir must be a string without NUL bytes");
+    return IndexError_InvalidArgument;
+  }
+
   bool partitioned_build = params.has(PARAM_DISKANN_BUILDER_MEMORY_BUDGET);
   if (params.has(PARAM_DISKANN_BUILDER_PARTITIONED_BUILD) &&
       !params.get<bool>(PARAM_DISKANN_BUILDER_PARTITIONED_BUILD,
@@ -183,6 +192,7 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params,
 int DiskAnnBuilder::cleanup() {
   partition_build_.reset();
   build_memory_budget_ = 0;
+  build_temp_dir_.clear();
   holder_.reset();
   algo_.reset();
   quantizer_.reset();
@@ -661,6 +671,11 @@ int DiskAnnBuilder::train(const IndexTrainer::Pointer & /*trainer*/) {
 
   LOG_INFO("Begin DiskAnnBuilder::train by trainer");
 
+  if (build_memory_budget_) {
+    int ret = DiskAnnPartitionBuild::check_temp_directory(build_temp_dir_);
+    if (ret != 0) return ret;
+  }
+
   stats_.set_trained_count(0UL);
   stats_.set_trained_costtime(0UL);
   state_ = BUILD_STATE_TRAINED;
@@ -682,6 +697,10 @@ int DiskAnnBuilder::train(IndexThreads::Pointer threads,
   }
 
   if (!holder->is_matched(raw_meta_)) return IndexError_Mismatch;
+  if (build_memory_budget_) {
+    int ret = DiskAnnPartitionBuild::check_temp_directory(build_temp_dir_);
+    if (ret != 0) return ret;
+  }
   LOG_INFO("Begin DiskAnnBuilder::train");
 
   auto start_time = ailego::Monotime::MilliSeconds();

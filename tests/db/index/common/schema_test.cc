@@ -1369,3 +1369,15 @@ TEST(FieldSchemaTest, DiskAnnBuildBudgetValidation) {
     EXPECT_EQ(StatusCode::INVALID_ARGUMENT, field.validate().code());
   }
 }
+
+TEST(FieldSchemaTest, DiskAnnTempDirectoryValidation) {
+  auto params = std::make_shared<DiskAnnIndexParams>(MetricType::L2);
+  params->set_partitioned_build(true);
+  // Do not probe filesystem availability while reading or validating schema.
+  params->set_build_temp_dir("not-created-yet");
+  FieldSchema field("disk_vector", DataType::VECTOR_FP32, 32, false, params);
+  EXPECT_TRUE(field.validate().ok());
+  params->set_build_temp_dir(std::string("path\0suffix", 11));
+  field.set_index_params(params);
+  EXPECT_EQ(StatusCode::INVALID_ARGUMENT, field.validate().code());
+}

@@ -406,6 +406,7 @@ void ExpectRichSchemaFields(const CollectionSchema &schema,
   EXPECT_EQ(diskann->pq_chunk_num(), 16);
   EXPECT_FALSE(diskann->partitioned_build());
   EXPECT_FLOAT_EQ(diskann->build_memory_budget_gb(), 0.25f);
+  EXPECT_TRUE(diskann->build_temp_dir().empty());
 
   size_t plain_index = 8;
   if (with_ivf_rabitq) {
@@ -1157,6 +1158,12 @@ TEST(ManifestCodecGolden, DiskAnnPartitionedBuild) {
       std::string encoded;
       ManifestCodec::EncodeIndexParams(&params, &encoded);
       auto decoded = ManifestCodec::DecodeIndexParams(encoded);
+      ASSERT_NE(decoded, nullptr);
+      EXPECT_EQ(params, *decoded);
+      params.set_build_temp_dir("scratch space");
+      encoded.clear();
+      ManifestCodec::EncodeIndexParams(&params, &encoded);
+      decoded = ManifestCodec::DecodeIndexParams(encoded);
       ASSERT_NE(decoded, nullptr);
       EXPECT_EQ(params, *decoded);
     }

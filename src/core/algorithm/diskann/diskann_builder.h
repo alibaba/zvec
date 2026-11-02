@@ -112,6 +112,7 @@ class DiskAnnBuilder : public IndexBuilder {
   double memory_limit_{0.0};
   bool memory_limit_set_{false};
   size_t build_memory_budget_{0};
+  std::string build_temp_dir_;
   std::unique_ptr<DiskAnnPartitionBuild> partition_build_;
   uint32_t max_pq_chunk_num_{kDefaultPqChunkNum};
   uint32_t pq_chunk_num_{kDefaultPqChunkNum};

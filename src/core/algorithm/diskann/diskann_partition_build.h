@@ -14,6 +14,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <zvec/core/framework/index_builder.h>
 
 namespace zvec::core {
@@ -25,6 +26,7 @@ class DiskAnnPartitionBuild {
  public:
   explicit DiskAnnPartitionBuild(DiskAnnBuilder &owner);
   ~DiskAnnPartitionBuild();
+  static int check_temp_directory(const std::string &directory);
   static int train_quantizer(DiskAnnBuilder &owner,
                              IndexThreads::Pointer threads);
   int build(IndexThreads::Pointer threads, IndexHolder::Pointer holder);

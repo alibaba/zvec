@@ -15,7 +15,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <ailego/math/euclidean_distance_matrix.h>
 #include <gtest/gtest.h>
@@ -24,6 +26,9 @@
 #include "diskann_params.h"
 #ifndef _WIN32
 #include <sys/resource.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <csignal>
 #endif
 
 namespace zvec::core {
@@ -60,6 +65,7 @@ class GeneratedHolder : public IndexHolder {
       fill();
     }
     const void *data() const override {
+      if (holder_.on_read_) holder_.on_read_();
       return holder_.type_ == IndexMeta::DT_FP32
                  ? static_cast<const void *>(fp32_.data())
                  : fp16_.data();
@@ -113,6 +119,7 @@ class GeneratedHolder : public IndexHolder {
     return std::make_unique<Iterator>(*this);
   }
   bool fail_{false};
+  std::function<void()> on_read_;
 
  private:
   size_t count_, dim_;
@@ -316,6 +323,196 @@ TEST(DiskAnnPartition, ExplicitBuildModeValidation) {
   params.set(PARAM_DISKANN_BUILDER_PARTITIONED_BUILD, false);
   EXPECT_EQ(0, builder->init(meta, params));
 }
+
+#ifndef _WIN32
+// POSIX scratch files are already unlinked, so directory enumeration alone
+// cannot prove where they were created or whether their descriptors leaked.
+size_t ScratchDescriptors(const std::string &directory) {
+  size_t count = 0;
+  struct rlimit limit;
+  if (getrlimit(RLIMIT_NOFILE, &limit) != 0) return 0;
+  for (int fd = 0;
+       fd < static_cast<int>(std::min<rlim_t>(limit.rlim_cur, 4096)); ++fd) {
+    if (fcntl(fd, F_GETFD) < 0) continue;
+    std::string path;
+    if (ailego::FileHelper::GetFilePath(fd, &path) &&
+        path.find(directory + "/zvec-diskann-") == 0) {
+      EXPECT_NE(0, fcntl(fd, F_GETFD) & FD_CLOEXEC);
+      ++count;
+    }
+  }
+  return count;
+}
+#endif
+
+TEST(DiskAnnPartition, TempDirectoryAndCleanup) {
+  TestPath path("scratch space");
+  const auto native_path = ailego::FileHelper::PathFromUtf8(path.path);
+  std::filesystem::create_directories(native_path);
+  const auto directory = std::filesystem::canonical(native_path).u8string();
+  auto params = BuildParams();
+  params.set(PARAM_DISKANN_BUILDER_TEMP_DIR, directory);
+  auto holder = std::make_shared<GeneratedHolder>(513, 32);
+  IndexMeta meta(IndexMeta::DT_FP32, 32);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+  auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+  ASSERT_EQ(0, builder->init(meta, params));
+  ASSERT_EQ(0, builder->train(holder));
+#ifndef _WIN32
+  bool observed = false;
+  holder->on_read_ = [&]() {
+    if (!observed) {
+      // Five persistent files plus the initial key-sort run.
+      EXPECT_GE(ScratchDescriptors(directory), 6u);
+      observed = true;
+    }
+  };
+#endif
+  holder->fail_ = true;
+  EXPECT_EQ(IndexError_ReadData, builder->build(holder));
+  EXPECT_TRUE(std::filesystem::is_empty(native_path));
+#ifndef _WIN32
+  EXPECT_TRUE(observed);
+  EXPECT_EQ(0u, ScratchDescriptors(directory));
+#endif
+  holder->fail_ = false;
+  ASSERT_EQ(0, builder->build(holder));
+#ifndef _WIN32
+  EXPECT_EQ(5u, ScratchDescriptors(directory));
+#endif
+  TestPath first("temp_dir_dump"), second("temp_dir_repeat");
+  Dump(builder, first.path);
+  Dump(builder, second.path);
+  CheckGraph(first.path, *holder);
+  builder.reset();
+  EXPECT_TRUE(std::filesystem::is_empty(native_path));
+#ifndef _WIN32
+  EXPECT_EQ(0u, ScratchDescriptors(directory));
+#endif
+}
+
+TEST(DiskAnnPartition, UnusableTempDirectoryDoesNotFallBack) {
+  TestPath parent("missing_scratch");
+  zvec::test_util::RemoveTestPath(parent.path);
+  auto params = BuildParams();
+  params.set(PARAM_DISKANN_BUILDER_TEMP_DIR, parent.path);
+  auto holder = std::make_shared<GeneratedHolder>(65, 16);
+  IndexMeta meta(IndexMeta::DT_FP32, 16);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+  auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+  ASSERT_EQ(0, builder->init(meta, params));
+  size_t reads = 0;
+  holder->on_read_ = [&]() { ++reads; };
+  EXPECT_EQ(IndexError_OpenFile, builder->train(IndexTrainer::Pointer{}));
+  EXPECT_EQ(IndexError_OpenFile, builder->train(holder));
+  EXPECT_EQ(0u, reads);
+  EXPECT_FALSE(std::filesystem::exists(parent.path));
+  std::filesystem::create_directories(parent.path);
+#ifndef _WIN32
+  if (geteuid() != 0) {
+    std::filesystem::permissions(parent.path,
+                                 std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_exec);
+    const int ret = builder->train(holder);
+    std::filesystem::permissions(parent.path,
+                                 std::filesystem::perms::owner_all);
+    EXPECT_EQ(IndexError_OpenFile, ret);
+    EXPECT_EQ(0u, reads);
+    EXPECT_TRUE(std::filesystem::is_empty(parent.path));
+  }
+#endif
+  ASSERT_EQ(0, builder->train(holder));
+  EXPECT_GT(reads, 0u);
+  EXPECT_TRUE(std::filesystem::is_empty(parent.path));
+#ifndef _WIN32
+  EXPECT_EQ(0u, ScratchDescriptors(
+                    std::filesystem::canonical(parent.path).u8string()));
+#endif
+  // A successful preflight cannot replace checks at build time.
+  std::filesystem::remove(parent.path);
+  EXPECT_EQ(IndexError_OpenFile, builder->build(holder));
+  std::filesystem::create_directories(parent.path);
+  ASSERT_EQ(0, builder->build(holder));
+  ASSERT_EQ(0, builder->cleanup());
+  EXPECT_TRUE(std::filesystem::is_empty(parent.path));
+
+  const auto file_path = parent.path + "/regular_file";
+  {
+    std::ofstream file(file_path);
+    file << "keep";
+  }
+  params.set(PARAM_DISKANN_BUILDER_TEMP_DIR, file_path);
+  ASSERT_EQ(0, builder->init(meta, params));
+  reads = 0;
+  EXPECT_EQ(IndexError_OpenFile, builder->train(holder));
+  EXPECT_EQ(0u, reads);
+  EXPECT_EQ(4u, std::filesystem::file_size(file_path));
+  ASSERT_EQ(0, builder->cleanup());
+
+  // A disabled partition path must not require access to its saved directory.
+  params.set(PARAM_DISKANN_BUILDER_PARTITIONED_BUILD, false);
+  ASSERT_EQ(0, builder->init(meta, params));
+  ASSERT_EQ(0, builder->train(holder));
+  EXPECT_EQ(0, builder->build(holder));
+}
+
+TEST(DiskAnnPartition, InvalidTempDirectoryParameter) {
+  IndexMeta meta(IndexMeta::DT_FP32, 16);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+  auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+  auto params = BuildParams();
+  params.set(PARAM_DISKANN_BUILDER_TEMP_DIR, 42);
+  EXPECT_EQ(IndexError_InvalidArgument, builder->init(meta, params));
+  params.set(PARAM_DISKANN_BUILDER_TEMP_DIR, std::string("path\0suffix", 11));
+  EXPECT_EQ(IndexError_InvalidArgument, builder->init(meta, params));
+}
+
+#if !defined(_WIN32) && GTEST_HAS_DEATH_TEST
+TEST(DiskAnnPartition, ScratchWriteFailureCleansUpAndCanRetry) {
+  // Limit only an exec'ed child: exercise a real filesystem write/flush
+  // failure without filling the machine's disk or altering the test runner.
+  ::testing::FLAGS_gtest_death_test_style = "threadsafe";
+  TestPath path("write_failure_scratch");
+  std::filesystem::create_directories(path.path);
+  const auto directory = std::filesystem::canonical(path.path).u8string();
+  for (bool before_training : {false, true}) {
+    ASSERT_EXIT(
+        {
+          auto params = BuildParams();
+          params.set(PARAM_DISKANN_BUILDER_TEMP_DIR, directory);
+          auto holder = std::make_shared<GeneratedHolder>(65, 32);
+          IndexMeta meta(IndexMeta::DT_FP32, 32);
+          meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+          auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+          if (builder->init(meta, params)) _exit(1);
+          size_t reads = 0;
+          holder->on_read_ = [&]() { ++reads; };
+          if (!before_training && builder->train(holder)) _exit(1);
+          struct rlimit previous;
+          if (getrlimit(RLIMIT_FSIZE, &previous)) _exit(2);
+          auto limited = previous;
+          limited.rlim_cur = 1024;
+          signal(SIGXFSZ, SIG_IGN);
+          if (setrlimit(RLIMIT_FSIZE, &limited)) _exit(3);
+          const int ret =
+              before_training ? builder->train(holder) : builder->build(holder);
+          if (setrlimit(RLIMIT_FSIZE, &previous)) _exit(4);
+          if (ret != IndexError_WriteData || ScratchDescriptors(directory))
+            _exit(5);
+          if (before_training) {
+            if (reads != 0 || builder->build(holder) != IndexError_NoReady)
+              _exit(8);
+            if (builder->train(holder)) _exit(9);
+          }
+          if (builder->build(holder) || builder->cleanup()) _exit(6);
+          _exit(ScratchDescriptors(directory) == 0 ? 0 : 7);
+        },
+        ::testing::ExitedWithCode(0),
+        "DiskAnn temporary file (write|flush) failed");
+  }
+  EXPECT_TRUE(std::filesystem::is_empty(path.path));
+}
+#endif
 
 TEST(DiskAnnPartition, RejectsOversizedWorkerScratchWithoutOverflow) {
   auto holder = std::make_shared<GeneratedHolder>(8, 16);

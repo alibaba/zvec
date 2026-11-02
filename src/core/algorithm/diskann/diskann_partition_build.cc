@@ -13,14 +13,27 @@
 // limitations under the License.
 
 #include "diskann_partition_build.h"
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <algorithm>
+#include <atomic>
+#include <cerrno>
+#include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <numeric>
 #include <random>
 #include <vector>
 #include <ailego/pattern/defer.h>
+#include <zvec/ailego/utility/file_helper.h>
 #include <zvec/ailego/utility/time_helper.h>
+#if defined(_WIN32)
+#include <io.h>
+#include <share.h>
+#else
+#include <unistd.h>
+#endif
 #include "algorithm/cluster/vector_mean.h"
 #include "diskann_builder.h"
 #include "diskann_params.h"
@@ -32,7 +45,10 @@ namespace {
 // fclose, including on failed builds. Files survive dump failures for retry.
 class ScratchFile {
  public:
-  ScratchFile() : file_(std::tmpfile(), &std::fclose) {}
+  explicit ScratchFile(const std::string &directory)
+      : directory_(directory), file_(open(directory), &std::fclose) {
+    if (!file_) error("create", IndexError_OpenFile);
+  }
   bool valid() const {
     return file_ != nullptr;
   }
@@ -43,24 +59,26 @@ class ScratchFile {
 #ifdef _WIN32
     return _fseeki64(file_.get(), static_cast<int64_t>(offset), SEEK_SET) == 0
                ? 0
-               : IndexError_ReadData;
+               : error("seek", IndexError_ReadData);
 #else
     return fseeko(file_.get(), static_cast<off_t>(offset), SEEK_SET) == 0
                ? 0
-               : IndexError_ReadData;
+               : error("seek", IndexError_ReadData);
 #endif
   }
   int read(void *data, size_t bytes) {
     if (!file_) return IndexError_OpenFile;
+    errno = 0;
     return std::fread(data, 1, bytes, file_.get()) == bytes
                ? 0
-               : IndexError_ReadData;
+               : error("read", IndexError_ReadData);
   }
   int write(const void *data, size_t bytes) {
     if (!file_) return IndexError_OpenFile;
+    errno = 0;
     return std::fwrite(data, 1, bytes, file_.get()) == bytes
                ? 0
-               : IndexError_WriteData;
+               : error("write", IndexError_WriteData);
   }
   int read_at(uint64_t offset, void *data, size_t bytes) {
     int ret = seek(offset);
@@ -71,10 +89,91 @@ class ScratchFile {
     return ret ? ret : write(data, bytes);
   }
   int flush() {
-    return file_ && std::fflush(file_.get()) == 0 ? 0 : IndexError_WriteData;
+    errno = 0;
+    return file_ && std::fflush(file_.get()) == 0
+               ? 0
+               : error("flush", IndexError_WriteData);
+  }
+  int close() {
+    if (!file_) return 0;
+    errno = 0;
+    return std::fclose(file_.release()) == 0
+               ? 0
+               : error("close", IndexError_WriteData);
   }
 
  private:
+  // Exclusive creation avoids overwriting an existing file. POSIX unlinks
+  // immediately; Windows deletes on close. Never fall back from an explicit
+  // directory, and never create or remove the caller's directory itself.
+  static FILE *open(const std::string &directory) {
+    if (directory.empty()) return std::tmpfile();
+    static std::atomic<uint64_t> sequence{0};
+    for (unsigned attempt = 0; attempt < 128; ++attempt) {
+      const auto stamp =
+          std::chrono::steady_clock::now().time_since_epoch().count();
+      const std::string path = directory + "/zvec-diskann-" +
+                               std::to_string(stamp) + "-" +
+                               std::to_string(sequence.fetch_add(1)) + ".tmp";
+      int fd = -1;
+#ifdef _WIN32
+      const auto wide = ailego::FileHelper::Utf8ToWide(path);
+      if (wide.empty()) {
+        errno = EINVAL;
+        return nullptr;
+      }
+      const int ret = _wsopen_s(&fd, wide.c_str(),
+                                _O_RDWR | _O_CREAT | _O_EXCL | _O_BINARY |
+                                    _O_TEMPORARY | _O_NOINHERIT,
+                                _SH_DENYRW, _S_IREAD | _S_IWRITE);
+      if (ret != 0) {
+        if (ret == EEXIST) continue;
+        errno = ret;
+        return nullptr;
+      }
+      FILE *file = _fdopen(fd, "w+b");
+      if (!file) {
+        const int saved = errno;
+        _close(fd);
+        errno = saved;
+      }
+#else
+      fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC,
+                  S_IRUSR | S_IWUSR);
+      if (fd == -1) {
+        if (errno == EEXIST) continue;
+        return nullptr;
+      }
+      if (::unlink(path.c_str()) != 0) {
+        const int saved = errno;
+        ::close(fd);
+        errno = saved;
+        return nullptr;
+      }
+      FILE *file = ::fdopen(fd, "w+b");
+      if (!file) {
+        const int saved = errno;
+        ::close(fd);
+        errno = saved;
+      }
+#endif
+      return file;
+    }
+    errno = EEXIST;
+    return nullptr;
+  }
+
+  int error(const char *operation, int code) const {
+    const int saved = errno ? errno : EIO;
+    LOG_ERROR(
+        "DiskAnn temporary file %s failed in directory '%s': %s "
+        "(errno=%d)",
+        operation, directory_.empty() ? "<system default>" : directory_.c_str(),
+        std::strerror(saved), saved);
+    return code;
+  }
+
+  std::string directory_;
   std::unique_ptr<FILE, decltype(&std::fclose)> file_;
 };
 
@@ -201,7 +300,13 @@ class TrainingSample : public IndexHolder {
 }  // namespace
 
 struct DiskAnnPartitionBuild::Impl {
-  explicit Impl(DiskAnnBuilder &builder) : owner(builder) {}
+  explicit Impl(DiskAnnBuilder &builder)
+      : owner(builder),
+        vectors(builder.build_temp_dir_),
+        keys(builder.build_temp_dir_),
+        graph(builder.build_temp_dir_),
+        codes(builder.build_temp_dir_),
+        mapping(builder.build_temp_dir_) {}
   DiskAnnBuilder &owner;
   ScratchFile vectors, keys, graph, codes, mapping;
   size_t count{0}, element{0}, capacity{0};
@@ -216,7 +321,7 @@ struct DiskAnnPartitionBuild::Impl {
 
   int sort_keys(std::unique_ptr<ScratchFile> runs) {
     for (uint64_t width = capacity; width < count; width *= 2) {
-      auto output = std::make_unique<ScratchFile>();
+      auto output = std::make_unique<ScratchFile>(owner.build_temp_dir_);
       if (!output->valid()) return IndexError_OpenFile;
       for (uint64_t start = 0; start < count; start += 2 * width) {
         KeyRun left{*runs, start, std::min<uint64_t>(start + width, count)};
@@ -249,7 +354,7 @@ struct DiskAnnPartitionBuild::Impl {
   }
 
   int snapshot(IndexHolder::Pointer holder) {
-    auto runs = std::make_unique<ScratchFile>();
+    auto runs = std::make_unique<ScratchFile>(owner.build_temp_dir_);
     if (!runs->valid()) return IndexError_OpenFile;
     auto iter = holder->create_iterator();
     if (!iter) return IndexError_Runtime;
@@ -395,7 +500,7 @@ struct DiskAnnPartitionBuild::Impl {
     std::vector<std::unique_ptr<ScratchFile>> shards;
     std::vector<size_t> sizes(shard_count, 0);
     for (size_t c = 0; c < shard_count; ++c) {
-      shards.push_back(std::make_unique<ScratchFile>());
+      shards.push_back(std::make_unique<ScratchFile>(owner.build_temp_dir_));
       if (!shards.back()->valid()) return IndexError_OpenFile;
     }
     std::vector<uint8_t> vector(element);
@@ -695,6 +800,22 @@ struct DiskAnnPartitionBuild::Impl {
 DiskAnnPartitionBuild::DiskAnnPartitionBuild(DiskAnnBuilder &owner)
     : impl_(std::make_unique<Impl>(owner)) {}
 DiskAnnPartitionBuild::~DiskAnnPartitionBuild() = default;
+int DiskAnnPartitionBuild::check_temp_directory(const std::string &directory) {
+  try {
+    // Use the same creation and cleanup path as the build. A small flushed
+    // write detects immediate I/O failures, but does not reserve build space.
+    ScratchFile probe(directory);
+    if (!probe.valid()) return IndexError_OpenFile;
+    const char data[4096] = {};
+    PARTITION_TRY(probe.write(data, sizeof(data)));
+    PARTITION_TRY(probe.flush());
+    return probe.close();
+  } catch (const std::bad_alloc &) {
+    return IndexError_NoMemory;
+  } catch (const std::length_error &) {
+    return IndexError_NoMemory;
+  }
+}
 int DiskAnnPartitionBuild::train_quantizer(DiskAnnBuilder &owner,
                                            IndexThreads::Pointer threads) {
   auto source = owner.holder_;
