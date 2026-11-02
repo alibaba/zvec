@@ -59,6 +59,10 @@ class ZVEC_CORE_API VectorSource {
 
   // Borrowed random-access pointers. Keep all get_vectors() results valid
   // through consumption; fetch_vector results also borrow this memory.
+  // During HNSW queries, nullptr marks an unavailable record, which is logged
+  // and excluded. A graph query encountering one retries with a linear scan
+  // of available records. Availability must remain stable through the query.
+  // During insertion, all records used in graph construction must be available.
   virtual const void *get_vector(uint32_t node_id) const = 0;
 
   virtual void get_vectors(const uint32_t *ids, uint32_t count,

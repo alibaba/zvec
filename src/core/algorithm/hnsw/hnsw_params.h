@@ -18,104 +18,104 @@
 namespace zvec {
 namespace core {
 
-static const std::string PARAM_HNSW_BUILDER_THREAD_COUNT(
+inline const std::string PARAM_HNSW_BUILDER_THREAD_COUNT(
     "proxima.hnsw.builder.thread_count");
-static const std::string PARAM_HNSW_BUILDER_MEMORY_QUOTA(
+inline const std::string PARAM_HNSW_BUILDER_MEMORY_QUOTA(
     "proxima.hnsw.builder.memory_quota");
-static const std::string PARAM_HNSW_BUILDER_EFCONSTRUCTION(
+inline const std::string PARAM_HNSW_BUILDER_EFCONSTRUCTION(
     "proxima.hnsw.builder.efconstruction");
-static const std::string PARAM_HNSW_BUILDER_SCALING_FACTOR(
+inline const std::string PARAM_HNSW_BUILDER_SCALING_FACTOR(
     "proxima.hnsw.builder.scaling_factor");
-static const std::string PARAM_HNSW_BUILDER_CHECK_INTERVAL_SECS(
+inline const std::string PARAM_HNSW_BUILDER_CHECK_INTERVAL_SECS(
     "proxima.hnsw.builder.check_interval_secs");
-static const std::string PARAM_HNSW_BUILDER_NEIGHBOR_PRUNE_MULTIPLIER(
+inline const std::string PARAM_HNSW_BUILDER_NEIGHBOR_PRUNE_MULTIPLIER(
     "proxima.hnsw.builder.neighbor_prune_multiplier");
-static const std::string PARAM_HNSW_BUILDER_MIN_NEIGHBOR_COUNT(
+inline const std::string PARAM_HNSW_BUILDER_MIN_NEIGHBOR_COUNT(
     "proxima.hnsw.builder.min_neighbor_count");
-static const std::string PARAM_HNSW_BUILDER_MAX_NEIGHBOR_COUNT(
+inline const std::string PARAM_HNSW_BUILDER_MAX_NEIGHBOR_COUNT(
     "proxima.hnsw.builder.max_neighbor_count");
-static const std::string PARAM_HNSW_BUILDER_L0_MAX_NEIGHBOR_COUNT_MULTIPLIER(
+inline const std::string PARAM_HNSW_BUILDER_L0_MAX_NEIGHBOR_COUNT_MULTIPLIER(
     "proxima.hnsw.builder.l0_max_neighbor_count_multiplier");
 
-static const std::string PARAM_HNSW_SEARCHER_EF("proxima.hnsw.searcher.ef");
-static const std::string PARAM_HNSW_SEARCHER_PO("proxima.hnsw.searcher.po");
-static const std::string PARAM_HNSW_SEARCHER_PL("proxima.hnsw.searcher.pl");
-static const std::string PARAM_HNSW_SEARCHER_BRUTE_FORCE_THRESHOLD(
+inline const std::string PARAM_HNSW_SEARCHER_EF("proxima.hnsw.searcher.ef");
+inline const std::string PARAM_HNSW_SEARCHER_PO("proxima.hnsw.searcher.po");
+inline const std::string PARAM_HNSW_SEARCHER_PL("proxima.hnsw.searcher.pl");
+inline const std::string PARAM_HNSW_SEARCHER_BRUTE_FORCE_THRESHOLD(
     "proxima.hnsw.searcher.brute_force_threshold");
-static const std::string PARAM_HNSW_SEARCHER_NEIGHBORS_IN_MEMORY_ENABLE(
+inline const std::string PARAM_HNSW_SEARCHER_NEIGHBORS_IN_MEMORY_ENABLE(
     "proxima.hnsw.searcher.neighbors_in_memory_enable");
-static const std::string PARAM_HNSW_SEARCHER_MAX_SCAN_RATIO(
+inline const std::string PARAM_HNSW_SEARCHER_MAX_SCAN_RATIO(
     "proxima.hnsw.searcher.max_scan_ratio");
-static const std::string PARAM_HNSW_SEARCHER_CHECK_CRC_ENABLE(
+inline const std::string PARAM_HNSW_SEARCHER_CHECK_CRC_ENABLE(
     "proxima.hnsw.searcher.check_crc_enable");
-static const std::string PARAM_HNSW_SEARCHER_VISIT_BLOOMFILTER_ENABLE(
+inline const std::string PARAM_HNSW_SEARCHER_VISIT_BLOOMFILTER_ENABLE(
     "proxima.hnsw.searcher.visit_bloomfilter_enable");
-static const std::string PARAM_HNSW_SEARCHER_VISIT_BLOOMFILTER_NEGATIVE_PROB(
+inline const std::string PARAM_HNSW_SEARCHER_VISIT_BLOOMFILTER_NEGATIVE_PROB(
     "proxima.hnsw.searcher.visit_bloomfilter_negative_prob");
-static const std::string PARAM_HNSW_SEARCHER_FORCE_PADDING_RESULT_ENABLE(
+inline const std::string PARAM_HNSW_SEARCHER_FORCE_PADDING_RESULT_ENABLE(
     "proxima.hnsw.searcher.force_padding_result_enable");
 
-static const std::string PARAM_HNSW_STREAMER_MAX_SCAN_RATIO(
+inline const std::string PARAM_HNSW_STREAMER_MAX_SCAN_RATIO(
     "proxima.hnsw.streamer.max_scan_ratio");
-static const std::string PARAM_HNSW_STREAMER_MIN_SCAN_LIMIT(
+inline const std::string PARAM_HNSW_STREAMER_MIN_SCAN_LIMIT(
     "proxima.hnsw.streamer.min_scan_limit");
-static const std::string PARAM_HNSW_STREAMER_MAX_SCAN_LIMIT(
+inline const std::string PARAM_HNSW_STREAMER_MAX_SCAN_LIMIT(
     "proxima.hnsw.streamer.max_scan_limit");
-static const std::string PARAM_HNSW_STREAMER_EF("proxima.hnsw.streamer.ef");
-static const std::string PARAM_HNSW_STREAMER_PO("proxima.hnsw.streamer.po");
-static const std::string PARAM_HNSW_STREAMER_PL("proxima.hnsw.streamer.pl");
-static const std::string PARAM_HNSW_STREAMER_EFCONSTRUCTION(
+inline const std::string PARAM_HNSW_STREAMER_EF("proxima.hnsw.streamer.ef");
+inline const std::string PARAM_HNSW_STREAMER_PO("proxima.hnsw.streamer.po");
+inline const std::string PARAM_HNSW_STREAMER_PL("proxima.hnsw.streamer.pl");
+inline const std::string PARAM_HNSW_STREAMER_EFCONSTRUCTION(
     "proxima.hnsw.streamer.efconstruction");
-static const std::string PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT(
+inline const std::string PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT(
     "proxima.hnsw.streamer.max_neighbor_count");
-static const std::string PARAM_HNSW_STREAMER_L0_MAX_NEIGHBOR_COUNT_MULTIPLIER(
+inline const std::string PARAM_HNSW_STREAMER_L0_MAX_NEIGHBOR_COUNT_MULTIPLIER(
     "proxima.hnsw.streamer.l0_max_neighbor_count_multiplier");
-static const std::string PARAM_HNSW_STREAMER_SCALING_FACTOR(
+inline const std::string PARAM_HNSW_STREAMER_SCALING_FACTOR(
     "proxima.hnsw.streamer.scaling_factor");
-static const std::string PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD(
+inline const std::string PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD(
     "proxima.hnsw.streamer.brute_force_threshold");
-static const std::string PARAM_HNSW_STREAMER_DOCS_HARD_LIMIT(
+inline const std::string PARAM_HNSW_STREAMER_DOCS_HARD_LIMIT(
     "proxima.hnsw.streamer.docs_hard_limit");
-static const std::string PARAM_HNSW_STREAMER_DOCS_SOFT_LIMIT(
+inline const std::string PARAM_HNSW_STREAMER_DOCS_SOFT_LIMIT(
     "proxima.hnsw.streamer.docs_soft_limit");
-static const std::string PARAM_HNSW_STREAMER_MAX_INDEX_SIZE(
+inline const std::string PARAM_HNSW_STREAMER_MAX_INDEX_SIZE(
     "proxima.hnsw.streamer.max_index_size");
-static const std::string PARAM_HNSW_STREAMER_VISIT_BLOOMFILTER_ENABLE(
+inline const std::string PARAM_HNSW_STREAMER_VISIT_BLOOMFILTER_ENABLE(
     "proxima.hnsw.streamer.visit_bloomfilter_enable");
-static const std::string PARAM_HNSW_STREAMER_VISIT_BLOOMFILTER_NEGATIVE_PROB(
+inline const std::string PARAM_HNSW_STREAMER_VISIT_BLOOMFILTER_NEGATIVE_PROB(
     "proxima.hnsw.streamer.visit_bloomfilter_negative_prob");
-static const std::string PARAM_HNSW_STREAMER_CHECK_CRC_ENABLE(
+inline const std::string PARAM_HNSW_STREAMER_CHECK_CRC_ENABLE(
     "proxima.hnsw.streamer.check_crc_enable");
-static const std::string PARAM_HNSW_STREAMER_NEIGHBOR_PRUNE_MULTIPLIER(
+inline const std::string PARAM_HNSW_STREAMER_NEIGHBOR_PRUNE_MULTIPLIER(
     "proxima.hnsw.streamer.neighbor_prune_multiplier");
-static const std::string PARAM_HNSW_STREAMER_CHUNK_SIZE(
+inline const std::string PARAM_HNSW_STREAMER_CHUNK_SIZE(
     "proxima.hnsw.streamer.chunk_size");
-static const std::string PARAM_HNSW_STREAMER_FILTER_SAME_KEY(
+inline const std::string PARAM_HNSW_STREAMER_FILTER_SAME_KEY(
     "proxima.hnsw.streamer.filter_same_key");
-static const std::string PARAM_HNSW_STREAMER_GET_VECTOR_ENABLE(
+inline const std::string PARAM_HNSW_STREAMER_GET_VECTOR_ENABLE(
     "proxima.hnsw.streamer.get_vector_enable");
-static const std::string PARAM_HNSW_STREAMER_MIN_NEIGHBOR_COUNT(
+inline const std::string PARAM_HNSW_STREAMER_MIN_NEIGHBOR_COUNT(
     "proxima.hnsw.streamer.min_neighbor_count");
-static const std::string PARAM_HNSW_STREAMER_FORCE_PADDING_RESULT_ENABLE(
+inline const std::string PARAM_HNSW_STREAMER_FORCE_PADDING_RESULT_ENABLE(
     "proxima.hnsw.streamer.force_padding_result_enable");
-static const std::string PARAM_HNSW_STREAMER_ESTIMATE_DOC_COUNT(
+inline const std::string PARAM_HNSW_STREAMER_ESTIMATE_DOC_COUNT(
     "proxima.hnsw.streamer.estimate_doc_count");
-static const std::string PARAM_HNSW_STREAMER_USE_ID_MAP(
+inline const std::string PARAM_HNSW_STREAMER_USE_ID_MAP(
     "proxima.hnsw.streamer.use_id_map");
 
-static const std::string PARAM_HNSW_REDUCER_WORKING_PATH(
+inline const std::string PARAM_HNSW_REDUCER_WORKING_PATH(
     "proxima.hnsw.reducer.working_path");
-static const std::string PARAM_HNSW_REDUCER_NUM_OF_ADD_THREADS(
+inline const std::string PARAM_HNSW_REDUCER_NUM_OF_ADD_THREADS(
     "proxima.hnsw.reducer.num_of_add_threads");
-static const std::string PARAM_HNSW_REDUCER_INDEX_NAME(
+inline const std::string PARAM_HNSW_REDUCER_INDEX_NAME(
     "proxima.hnsw.reducer.index_name");
-static const std::string PARAM_HNSW_REDUCER_EFCONSTRUCTION(
+inline const std::string PARAM_HNSW_REDUCER_EFCONSTRUCTION(
     "proxima.hnsw.reducer.efconstruction");
 
-static const std::string PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY(
+inline const std::string PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY(
     "proxima.hnsw.streamer.use_contiguous_memory");
 
-static const std::string PARAM_HNSW_STREAMER_USE_EXTERNAL_VECTOR(
+inline const std::string PARAM_HNSW_STREAMER_USE_EXTERNAL_VECTOR(
     "proxima.hnsw.streamer.use_external_vector");
 
 }  // namespace core

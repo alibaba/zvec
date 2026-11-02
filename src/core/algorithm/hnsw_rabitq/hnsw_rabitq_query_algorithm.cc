@@ -61,6 +61,11 @@ int HnswRabitqQueryAlgorithm::search(HnswRabitqQueryEntity *entity,
     select_entry_point(cur_level, &entry_point, &curest, ctx, entity);
   }
 
+  if (ex_bits_ > 0) {
+    // Use all quantization bits for the final entry before inserting it.
+    get_full_est(entity_.get_vector(entry_point), curest, *entity);
+  }
+
   auto &topk_heap = ctx->topk_heap();
   topk_heap.clear();
   search_neighbors(0, &entry_point, &curest, topk_heap, ctx, entity);

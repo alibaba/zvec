@@ -170,6 +170,10 @@ int IVFIndex::load_streamer() {
 
 int IVFIndex::open(const std::string &file_path,
                    StorageOptions storage_options) {
+  if (storage_options.read_only && storage_options.create_new) {
+    LOG_ERROR("Cannot create storage for a read-only index");
+    return core::IndexError_Runtime;
+  }
   ailego::Params storage_params;
   file_path_ = file_path;
   is_read_only_ = storage_options.read_only;
@@ -239,6 +243,7 @@ int IVFIndex::generate_holder() {
 }
 
 int IVFIndex::add(const VectorData &vector, uint32_t doc_id) {
+  if (!is_open_ || is_read_only_) return core::IndexError_NoReady;
   if (is_trained_ || build_stage_ != BuildStage::kCollecting) {
     LOG_ERROR("this IVF index is trained or has a pending build");
     return core::IndexError_Runtime;

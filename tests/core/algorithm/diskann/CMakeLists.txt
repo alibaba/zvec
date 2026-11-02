@@ -26,10 +26,14 @@ endif()
 
 foreach(CC_SRCS ${ALL_TEST_SRCS})
   get_filename_component(CC_TARGET ${CC_SRCS} NAME_WE)
+  set(EXTRA_TEST_LIBS)
+  if(CC_TARGET STREQUAL "diskann_mmap_view_test")
+    set(EXTRA_TEST_LIBS core_knn_flat core_mix_reducer)
+  endif()
   cc_gtest(
       NAME ${CC_TARGET}
       STRICT
-      LIBS zvec_ailego core_framework core_utility core_metric core_quantizer core_knn_cluster core_knn_diskann
+      LIBS zvec_ailego core_framework core_utility core_metric core_quantizer core_knn_cluster core_knn_diskann ${EXTRA_TEST_LIBS}
       SRCS ${CC_SRCS}
       INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm/diskann ${PROJECT_ROOT_DIR}/src/turbo
     )

@@ -4446,9 +4446,9 @@ TEST(IndexInterface, ContiguousMemoryEndToEnd) {
         {
           auto index = IndexFactory::CreateAndInitIndex(*param);
           ASSERT_NE(nullptr, index);
-          ASSERT_EQ(0,
-                    index->open(index_name,
-                                {StorageOptions::StorageType::kMMAP, false}));
+          ASSERT_EQ(0, index->open(index_name,
+                                   {StorageOptions::StorageType::kMMAP, false,
+                                    /*read_only=*/true}));
 
           std::vector<float> q(kDimension);
           for (uint32_t i = 0; i < kNumDocs; i += 50) {
