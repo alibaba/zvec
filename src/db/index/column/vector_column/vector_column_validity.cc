@@ -21,6 +21,104 @@
 
 namespace zvec {
 namespace {
+// Expose only real vectors to quantizer training and external-vector builds.
+// Keys stay equal to document IDs; this view never rewrites them.
+class NonNullVectorProvider final : public core::IndexProvider {
+ public:
+  NonNullVectorProvider(core::IndexProvider::Pointer provider,
+                        const roaring::Roaring &nulls, uint32_t rows)
+      : provider_(std::move(provider)),
+        nulls_(std::make_shared<const roaring::Roaring>(nulls)),
+        rows_(rows) {}
+
+  size_t count() const override {
+    return rows_ - nulls_->cardinality();
+  }
+  size_t dimension() const override {
+    return provider_->dimension();
+  }
+  core::IndexMeta::DataType data_type() const override {
+    return provider_->data_type();
+  }
+  size_t element_size() const override {
+    return provider_->element_size();
+  }
+  const std::string &owner_class() const override {
+    return provider_->owner_class();
+  }
+  const void *get_vector(uint64_t key) const override {
+    return key < rows_ && !nulls_->contains(key) ? provider_->get_vector(key)
+                                                 : nullptr;
+  }
+  int get_vector(uint64_t key,
+                 core::IndexStorage::MemoryBlock &block) const override {
+    if (key >= rows_ || nulls_->contains(key)) return core::IndexError_NoExist;
+    return provider_->get_vector(key, block);
+  }
+
+  class Iterator final : public core::IndexHolder::Iterator {
+   public:
+    Iterator(core::IndexProvider::Pointer provider,
+             core::IndexHolder::Iterator::Pointer iter,
+             std::shared_ptr<const roaring::Roaring> nulls, uint32_t rows)
+        : provider_(std::move(provider)),
+          iter_(std::move(iter)),
+          nulls_(std::move(nulls)),
+          rows_(rows) {
+      seek();
+    }
+    const void *data() const override {
+      return iter_->data();
+    }
+    bool is_valid() const override {
+      return status() == 0 && iter_->is_valid();
+    }
+    int status() const override {
+      return status_ ? status_ : iter_->status();
+    }
+    uint64_t key() const override {
+      return iter_->key();
+    }
+    void next() override {
+      iter_->next();
+      seek();
+    }
+
+   private:
+    void seek() {
+      while (iter_->is_valid() && iter_->status() == 0) {
+        const auto key = iter_->key();
+        if (iter_->status() != 0) return;
+        if (key != UINT64_MAX) {
+          if (key >= rows_) {
+            status_ = core::IndexError_InvalidFormat;
+            return;
+          }
+          if (!nulls_->contains(key)) return;
+        }
+        iter_->next();
+      }
+    }
+    core::IndexProvider::Pointer provider_;
+    core::IndexHolder::Iterator::Pointer iter_;
+    std::shared_ptr<const roaring::Roaring> nulls_;
+    uint32_t rows_;
+    int status_{0};
+  };
+
+  core::IndexHolder::Iterator::Pointer create_iterator() override {
+    auto iter = provider_->create_iterator();
+    if (!iter) return nullptr;
+    return std::make_unique<Iterator>(provider_, std::move(iter), nulls_,
+                                      rows_);
+  }
+
+ private:
+  core::IndexProvider::Pointer provider_;
+  std::shared_ptr<const roaring::Roaring> nulls_;
+  uint32_t rows_;
+};
+
 void Put32(std::string *out, uint32_t value) {
   for (unsigned i = 0; i < 4; ++i) out->push_back(value >> (i * 8));
 }
@@ -32,51 +130,51 @@ uint32_t Get32(const char *in) {
 }
 }  // namespace
 
+core::IndexProvider::Pointer VectorColumnIndexer::create_index_provider()
+    const {
+  std::shared_lock lock(nulls_mutex_);
+  if (!index) return nullptr;
+  auto provider = index->create_index_provider();
+  if (!provider || !has_null_bitmap()) return provider;
+  return std::make_shared<NonNullVectorProvider>(std::move(provider),
+                                                 null_rows_, row_count_);
+}
+
 bool VectorColumnIndexer::has_vector(uint32_t row) const {
-  return !has_validity() || (row < row_count_ && valid_rows_.contains(row));
-}
-
-uint32_t VectorColumnIndexer::physical_id(uint32_t row) const {
-  return static_cast<uint32_t>(valid_rows_.rank(row) - 1);
-}
-
-bool VectorColumnIndexer::logical_id(uint64_t physical, uint32_t *row) const {
-  if (physical > UINT32_MAX) return false;
-  if (!has_validity()) {
-    *row = physical;
-    return true;
-  }
-  return valid_rows_.select(physical, row);
+  return !has_null_bitmap() || (row < row_count_ && !null_rows_.contains(row));
 }
 
 Status VectorColumnIndexer::insert_null(uint32_t doc_id) {
-  std::unique_lock lock(validity_mutex_);
+  std::unique_lock lock(nulls_mutex_);
   if (!index || read_only_)
     return Status::InvalidArgument("Index is not writable");
-  if (!has_validity())
+  if (!has_null_bitmap())
     return Status::InvalidArgument("Vector field is not nullable");
   if (doc_id == UINT32_MAX)
     return Status::InvalidArgument("Vector row ID is out of range");
   if (doc_id < row_count_)
     return Status::InvalidArgument("Vector rows must be appended");
+  null_rows_.addRange(row_count_, uint64_t{doc_id} + 1);
   row_count_ = doc_id + 1;
-  validity_dirty_ = true;
+  nulls_dirty_ = true;
   return Status::OK();
 }
 
-Status VectorColumnIndexer::load_validity(
+Status VectorColumnIndexer::load_nulls(
     const vector_column_params::ReadOptions &options) {
   read_only_ = options.read_only;
-  if (!has_validity()) return Status::OK();
-  valid_rows_ = roaring::Roaring{};
+  if (!has_null_bitmap()) return Status::OK();
+  null_rows_ = roaring::Roaring{};
   row_count_ = 0;
-  validity_dirty_ = options.create_new;
-  const auto path = index_file_path_ + ".validity";
+  nulls_dirty_ = options.create_new;
+  const auto path = index_file_path_ + ".nulls";
   if (options.create_new) {
     // A new block may replace an abandoned, unpublished block after recovery.
-    if (FileHelper::FileExists(path) && !FileHelper::RemoveFile(path))
-      return Status::InternalError("Failed to remove stale vector validity: ",
-                                   path);
+    for (const auto &stale : {path, index_file_path_ + ".validity"}) {
+      if (FileHelper::FileExists(stale) && !FileHelper::RemoveFile(stale))
+        return Status::InternalError(
+            "Failed to remove stale vector NULL bitmap: ", stale);
+    }
     return Status::OK();
   }
   auto unsupported_legacy = [&] {
@@ -91,59 +189,77 @@ Status VectorColumnIndexer::load_validity(
     LOG_ERROR("%s", status.message().c_str());
     return status;
   };
+  if (FileHelper::FileExists(index_file_path_ + ".validity"))
+    return unsupported_legacy();
   if (FileHelper::FileExists(path)) {
     std::ifstream in(ailego::FileHelper::PathFromUtf8(path), std::ios::binary);
     if (!in)
-      return Status::InternalError("Failed to read vector validity: ", path);
+      return Status::InternalError("Failed to read vector NULL bitmap: ", path);
     std::string bytes((std::istreambuf_iterator<char>(in)), {});
-    if (in.bad() || bytes.size() < 20 || bytes.compare(0, 8, "ZVECNV01") != 0 ||
-        Get32(bytes.data() + 12) > 1 ||
+    if (in.bad() || bytes.size() < 20 || bytes.compare(0, 8, "ZVECNL01") != 0 ||
         Get32(bytes.data() + bytes.size() - 4) !=
             ailego::Crc32c::Hash(bytes.data(), bytes.size() - 4)) {
-      return Status::InternalError("Invalid vector validity: ", path);
+      return Status::InternalError("Invalid vector NULL bitmap: ", path);
     }
-    if (Get32(bytes.data() + 12) == 0) return unsupported_legacy();
+    if (Get32(bytes.data() + 12) != 2) return unsupported_legacy();
     row_count_ = Get32(bytes.data() + 8);
     try {
-      valid_rows_ =
+      null_rows_ =
           roaring::Roaring::readSafe(bytes.data() + 16, bytes.size() - 20);
     } catch (const std::exception &) {
-      return Status::InternalError("Corrupt vector validity bitmap: ", path);
+      return Status::InternalError("Corrupt vector NULL bitmap: ", path);
     }
-    if ((!valid_rows_.isEmpty() && valid_rows_.maximum() >= row_count_) ||
+    if ((!null_rows_.isEmpty() && null_rows_.maximum() >= row_count_) ||
         (options.row_count && *options.row_count != row_count_) ||
-        (index && valid_rows_.cardinality() != doc_count())) {
+        (index && doc_count() > row_count_)) {
       return Status::InternalError(
-          "Vector validity disagrees with block/index: ", path);
+          "Vector NULL bitmap disagrees with block/index: ", path);
+    }
+    if (index) {
+      uint32_t expected = row_count_ - null_rows_.cardinality();
+      const auto type = field_schema_.index_type();
+      if (type == IndexType::FLAT || type == IndexType::HNSW ||
+          type == IndexType::HNSW_RABITQ || type == IndexType::VAMANA) {
+        // Streamer storage reserves IDs through the last real vector. NULL
+        // tails remain represented by row_count_ and the NULL bitmap.
+        if (expected != 0) {
+          expected = row_count_;
+          while (expected > 0 && null_rows_.contains(expected - 1)) --expected;
+        }
+      }
+      if (doc_count() != expected)
+        return Status::InternalError(
+            "Vector NULL bitmap disagrees with index: ", path);
     }
     return Status::OK();
   }
   if (options.require_validity)
-    return Status::InternalError("Missing vector validity: ", path);
+    return Status::InternalError("Missing vector NULL bitmap: ", path);
 
   return unsupported_legacy();
 }
 
-Status VectorColumnIndexer::flush_validity() {
-  if (!has_validity() || read_only_ || !validity_dirty_) return Status::OK();
-  std::string bytes("ZVECNV01", 8);
+Status VectorColumnIndexer::flush_nulls() {
+  if (!has_null_bitmap() || read_only_ || !nulls_dirty_) return Status::OK();
+  std::string bytes("ZVECNL01", 8);
   Put32(&bytes, row_count_);
-  Put32(&bytes, 1);  // Only compact vector IDs are supported.
+  Put32(&bytes, 2);  // NULL bits and document IDs, including NULL gaps.
   const auto offset = bytes.size();
-  bytes.resize(offset + valid_rows_.getSizeInBytes());
-  valid_rows_.write(bytes.data() + offset);
+  bytes.resize(offset + null_rows_.getSizeInBytes());
+  null_rows_.write(bytes.data() + offset);
   Put32(&bytes, ailego::Crc32c::Hash(bytes.data(), bytes.size()));
-  const auto path = index_file_path_ + ".validity";
+  const auto path = index_file_path_ + ".nulls";
   const auto tmp = path + ".tmp";
   ailego::File file;
   if (!file.create(tmp, 0) ||
       file.write(bytes.data(), bytes.size()) != bytes.size() || !file.flush()) {
-    return Status::InternalError("Failed to write vector validity: ", path);
+    return Status::InternalError("Failed to write vector NULL bitmap: ", path);
   }
   file.close();
   if (!FileHelper::MoveFile(tmp, path))
-    return Status::InternalError("Failed to publish vector validity: ", path);
-  validity_dirty_ = false;
+    return Status::InternalError("Failed to publish vector NULL bitmap: ",
+                                 path);
+  nulls_dirty_ = false;
   return Status::OK();
 }
 }  // namespace zvec

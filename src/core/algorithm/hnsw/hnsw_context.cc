@@ -306,7 +306,8 @@ void HnswContext::fill_random_to_topk_full() {
          static_cast<size_t>(heap.size()) < capacity && i < entity_->doc_cnt();
          ++i) {
       const auto id = gen();
-      if (!visit_filter_.visited(id) && !myfilter(id)) {
+      if (!visit_filter_.visited(id) && entity_->get_key(id) != kInvalidKey &&
+          !myfilter(id)) {
         visit_filter_.set_visited(id);
         SearchHeap::emplace(heap, id, dc_.dist(id));
       }

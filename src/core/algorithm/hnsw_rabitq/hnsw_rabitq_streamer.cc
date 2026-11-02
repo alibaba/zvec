@@ -313,6 +313,7 @@ int HnswRabitqStreamer::open(IndexStorage::Pointer stg) {
     }
   }
 
+  entity_.set_allow_id_gaps(allow_id_gaps_);
   int ret = entity_.open(std::move(stg), max_index_size_, check_crc_enabled_);
   if (ret != 0) {
     return ret;

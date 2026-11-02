@@ -423,6 +423,70 @@ TEST_F(NullableVectorStorageTest, NullableRowsPreserveIdsAcrossMerge) {
   FileHelper::RemoveDirectory(path);
 }
 
+TEST_F(NullableVectorStorageTest, CoreKeysStayEqualToDocumentIds) {
+  const std::string path = "test_nullable_document_ids";
+  for (bool graph : {false, true}) {
+    FileHelper::RemoveDirectory(path);
+    ASSERT_TRUE(FileHelper::CreateDirectory(path));
+    FieldSchema field("vec", DataType::VECTOR_FP32, 16, true,
+                      std::make_shared<FlatIndexParams>(MetricType::L2));
+    if (graph)
+      field.set_index_params(std::make_shared<HnswIndexParams>(MetricType::L2));
+    VectorColumnIndexer indexer(path + "/index", field);
+    ASSERT_TRUE(indexer.open({true, true}).ok());
+    std::vector<float> data(16, 0);
+    for (uint32_t row = 0; row < 6; ++row) {
+      if (row == 1 || row == 3) {
+        data[0] = row;
+        ASSERT_TRUE(
+            indexer
+                .insert({vector_column_params::DenseVector{data.data()}}, row)
+                .ok());
+      } else {
+        ASSERT_TRUE(indexer.insert_null(row).ok());
+      }
+    }
+    auto check = [&] {
+      // Bypass the column layer: core fetch must already accept document IDs.
+      for (uint32_t row : {1U, 3U}) {
+        core_interface::VectorDataBuffer buffer;
+        ASSERT_EQ(0, indexer.debug_get_index()->fetch(row, &buffer));
+        const auto &bytes =
+            std::get<core_interface::DenseVectorBuffer>(buffer.vector_buffer)
+                .data;
+        float first;
+        std::memcpy(&first, bytes.data(), sizeof(first));
+        EXPECT_EQ(first, row);
+      }
+      auto provider = indexer.create_index_provider();
+      ASSERT_NE(provider, nullptr);
+      EXPECT_EQ(provider->count(), 2U);
+      auto iter = provider->create_iterator();
+      ASSERT_NE(iter, nullptr);
+      std::set<uint64_t> keys;
+      for (; iter->is_valid(); iter->next()) keys.insert(iter->key());
+      EXPECT_EQ(keys, (std::set<uint64_t>{1, 3}));
+      EXPECT_EQ(iter->status(), 0);
+    };
+    check();
+    ASSERT_TRUE(indexer.close().ok());
+    ailego::File bitmap_file;
+    ASSERT_TRUE(bitmap_file.open(path + "/index.nulls", true));
+    std::string bytes(bitmap_file.size(), '\0');
+    ASSERT_EQ(bitmap_file.read(0, bytes.data(), bytes.size()), bytes.size());
+    auto nulls =
+        roaring::Roaring::readSafe(bytes.data() + 16, bytes.size() - 20);
+    EXPECT_EQ(nulls.cardinality(), 4U);
+    for (uint32_t row = 0; row < 6; ++row)
+      EXPECT_EQ(nulls.contains(row), row != 1 && row != 3);
+    bitmap_file.close();
+    ASSERT_TRUE(indexer.open({true, false, true, 6, true}).ok());
+    check();
+    ASSERT_TRUE(indexer.close().ok());
+    FileHelper::RemoveDirectory(path);
+  }
+}
+
 TEST_F(NullableVectorStorageTest, AllNullBackingAcceptsLaterVectors) {
   const std::string path = "test_nullable_empty_backing";
   for (bool ivf : {false, true}) {
@@ -527,7 +591,7 @@ TEST_F(NullableVectorStorageTest, LegacyNullableIndexesAreRejected) {
         auto status = rejected.open({mmap, false, read_only, 4, false});
         EXPECT_EQ(status.code(), StatusCode::NOT_SUPPORTED);
         EXPECT_EQ(rejected.debug_get_index(), nullptr);
-        EXPECT_FALSE(FileHelper::FileExists(file + ".validity"));
+        EXPECT_FALSE(FileHelper::FileExists(file + ".nulls"));
       }
       // Legacy non-nullable fields continue to use their existing read path.
       VectorColumnIndexer non_nullable(file, field);
@@ -542,7 +606,7 @@ TEST_F(NullableVectorStorageTest, LegacyNullableIndexesAreRejected) {
   }
 }
 
-TEST_F(NullableVectorStorageTest, LegacyIdentityValidityIsRejected) {
+TEST_F(NullableVectorStorageTest, LegacyVectorLayoutsAreRejected) {
   const std::string path = "test_nullable_identity";
   FileHelper::RemoveDirectory(path);
   ASSERT_TRUE(FileHelper::CreateDirectory(path));
@@ -554,7 +618,7 @@ TEST_F(NullableVectorStorageTest, LegacyIdentityValidityIsRejected) {
   ASSERT_TRUE(writer.insert_null(0).ok());
   ASSERT_TRUE(writer.close().ok());
   ailego::File validity;
-  ASSERT_TRUE(validity.open(file + ".validity", false));
+  ASSERT_TRUE(validity.open(file + ".nulls", false));
   std::string bytes(validity.size(), '\0');
   ASSERT_EQ(validity.read(0, bytes.data(), bytes.size()), bytes.size());
   std::memset(bytes.data() + 12, 0, 4);  // Legacy identity-ID layout.
@@ -568,10 +632,16 @@ TEST_F(NullableVectorStorageTest, LegacyIdentityValidityIsRejected) {
               StatusCode::NOT_SUPPORTED);
     EXPECT_EQ(rejected.debug_get_index(), nullptr);
   }
+  // The previous compact-ID format used a .validity sidecar. It remains
+  // unsupported even when the manifest requires nullable metadata.
+  ASSERT_TRUE(FileHelper::MoveFile(file + ".nulls", file + ".validity"));
+  VectorColumnIndexer compact(file, field);
+  EXPECT_EQ(compact.open({true, false, true, 1, true}).code(),
+            StatusCode::NOT_SUPPORTED);
   FileHelper::RemoveDirectory(path);
 }
 
-TEST_F(NullableVectorStorageTest, MissingOrCorruptValidityIsAnError) {
+TEST_F(NullableVectorStorageTest, MissingOrCorruptNullBitmapIsAnError) {
   const std::string path = "test_nullable_corrupt";
   FileHelper::RemoveDirectory(path);
   ASSERT_TRUE(FileHelper::CreateDirectory(path));
@@ -583,21 +653,21 @@ TEST_F(NullableVectorStorageTest, MissingOrCorruptValidityIsAnError) {
   ASSERT_TRUE(indexer.insert_null(0).ok());
   ASSERT_TRUE(indexer.close().ok());
   ailego::File validity;
-  ASSERT_TRUE(validity.open(file + ".validity", false));
+  ASSERT_TRUE(validity.open(file + ".nulls", false));
   const char bad = 0;
   ASSERT_EQ(validity.write(0, &bad, 1), 1U);
   validity.close();
   VectorColumnIndexer corrupt(file, field);
   EXPECT_EQ(corrupt.open({true, false, true, 1, true}).code(),
             StatusCode::INTERNAL_ERROR);
-  ASSERT_TRUE(FileHelper::RemoveFile(file + ".validity"));
+  ASSERT_TRUE(FileHelper::RemoveFile(file + ".nulls"));
   VectorColumnIndexer missing(file, field);
   EXPECT_EQ(missing.open({true, false, true, 1, true}).code(),
             StatusCode::INTERNAL_ERROR);
   FileHelper::RemoveDirectory(path);
 }
 
-TEST_F(NullableVectorStorageTest, ValidityRequirementRoundTripsInManifest) {
+TEST_F(NullableVectorStorageTest, NullBitmapRequirementRoundTripsInManifest) {
   BlockMeta meta(5, BlockType::VECTOR_INDEX, 0, 3, 4, {"vec"});
   meta.set_vector_validity(true);
   std::string encoded;
@@ -633,7 +703,7 @@ TEST_F(NullableVectorStorageTest, SparseNullsSurviveReindexAndReopen) {
       doc.set_pk("d" + std::to_string(i));
       doc.set<int32_t>("ordinal", i);
       pks.push_back(doc.pk());
-      if (i % 2 == 0) {
+      if (i % 2 == 1 && i != 7) {
         Sparse value{{1, 3}, {float(i), float(i + 1)}};
         doc.set("vec", value);
         vectors[doc.pk()] = value;
@@ -739,7 +809,7 @@ void WriteUnflushedNullableCollection() {
   std::_Exit(0);  // No destructor/flush: replay the committed WAL on reopen.
 }
 
-TEST(NullableVectorRecoveryTest, WalRebuildsValidityIncludingTrailingNull) {
+TEST(NullableVectorRecoveryTest, WalRebuildsNullBitmapIncludingTrailingNull) {
   const std::string path = "test_nullable_recovery";
   FileHelper::RemoveDirectory(path);
   const auto style = ::testing::FLAGS_gtest_death_test_style;

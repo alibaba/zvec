@@ -85,7 +85,14 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
 
   void set_use_key_info_map(bool use_id_map) {
     use_key_info_map_ = use_id_map;
+    read_stored_keys_ = use_id_map || allow_id_gaps_;
     LOG_DEBUG("use_key_info_map_: %d", (int)use_key_info_map_);
+  }
+
+  // NULL slots retain kInvalidKey even when keys otherwise equal node IDs.
+  void set_allow_id_gaps(bool allow) {
+    allow_id_gaps_ = allow;
+    read_stored_keys_ = use_key_info_map_ || allow;
   }
 
  public:
@@ -241,6 +248,7 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
         filter_same_key_(filter_same_key),
         get_vector_enabled_(get_vector_enabled),
         use_key_info_map_(use_key_info_map),
+        read_stored_keys_(use_key_info_map),
         upper_neighbor_rw_mutex_(upper_neighbor_rw_mutex),
         upper_neighbor_index_(upper_neighbor_index),
         keys_map_lock_(keys_map_lock),
@@ -540,6 +548,8 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
   bool filter_same_key_{false};
   bool get_vector_enabled_{false};
   bool use_key_info_map_{true};
+  bool read_stored_keys_{true};
+  bool allow_id_gaps_{false};
 
   // Shared via shared_ptr so that all cloned entities synchronize against
   // the SAME mutex instance. A plain std::shared_mutex member would be

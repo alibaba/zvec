@@ -44,6 +44,7 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
     core::IndexReformer::Pointer reformer;
     std::shared_ptr<turbo::Quantizer> quantizer;
     core::IndexQueryMeta stored_meta;
+    std::shared_ptr<const std::vector<uint32_t>> id_map{};
   };
 
   class Iterator final : public core::IndexHolder::Iterator {
@@ -74,7 +75,9 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
       if (owner_->error_ == 0) {
         owner_->error_ = source_iter_->status();
       }
-      return result;
+      return source_->id_map && result < source_->id_map->size()
+                 ? (*source_->id_map)[result]
+                 : result;
     }
 
     void next() override {
@@ -86,19 +89,37 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
     void advance_to_valid_source() {
       data_ = nullptr;
       if (owner_->error_ != 0) return;
-      while (!source_iter_ || !source_iter_->is_valid()) {
-        if (source_iter_ && source_iter_->status() != 0) {
+      for (;;) {
+        while (!source_iter_ || !source_iter_->is_valid()) {
+          if (source_iter_ && source_iter_->status() != 0) {
+            owner_->error_ = source_iter_->status();
+            return;
+          }
+          source_iter_.reset();
+          if (source_index_ >= owner_->sources_.size()) return;
+          source_ = &owner_->sources_[source_index_++];
+          source_iter_ = source_->holder->create_iterator();
+          if (!source_iter_) {
+            owner_->error_ = core::IndexError_ReadData;
+            return;
+          }
+        }
+        if (source_iter_->status() != 0) {
           owner_->error_ = source_iter_->status();
           return;
         }
-        source_iter_.reset();
-        if (source_index_ >= owner_->sources_.size()) return;
-        source_ = &owner_->sources_[source_index_++];
-        source_iter_ = source_->holder->create_iterator();
-        if (!source_iter_) {
-          owner_->error_ = core::IndexError_ReadData;
+        if (!source_->id_map) break;
+        const auto key = source_iter_->key();
+        if (source_iter_->status() != 0) {
+          owner_->error_ = source_iter_->status();
           return;
         }
+        if (key != UINT64_MAX && key >= source_->id_map->size()) {
+          owner_->error_ = core::IndexError_InvalidFormat;
+          return;
+        }
+        if (key != UINT64_MAX && (*source_->id_map)[key] != UINT32_MAX) break;
+        source_iter_->next();
       }
       if (source_iter_->status() != 0) {
         owner_->error_ = source_iter_->status();
@@ -144,12 +165,16 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
                          core::IndexQueryMeta source_meta)
       : sources_(std::move(sources)), source_meta_(std::move(source_meta)) {
     for (const auto &source : sources_) {
-      if (source.holder->count() >
-          (std::numeric_limits<size_t>::max)() - count_) {
+      const auto count =
+          source.id_map
+              ? std::count_if(source.id_map->begin(), source.id_map->end(),
+                              [](uint32_t id) { return id != UINT32_MAX; })
+              : source.holder->count();
+      if (count > (std::numeric_limits<size_t>::max)() - count_) {
         error_ = core::IndexError_InvalidArgument;
         return;
       }
-      count_ += source.holder->count();
+      count_ += count;
     }
   }
 
@@ -562,6 +587,9 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
   if (ret != 0) {
     return ret;
   }
+  if (streamer_) {
+    streamer_->set_allow_id_gaps(storage_options.allow_id_gaps);
+  }
   if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
     LOG_ERROR("Failed to open streamer, path: %s", file_path.c_str());
     return core::IndexError_Runtime;
@@ -847,8 +875,11 @@ int Index::_dense_fetch(const uint32_t doc_id,
     LOG_ERROR("Failed to fetch vector, doc_id: %u", doc_id);
     return core::IndexError_Runtime;
   }
-  const void *vector = vector_block.data();
+  return _decode_dense_vector(vector_block.data(), vector_data_buffer);
+}
 
+int Index::_decode_dense_vector(const void *vector,
+                                VectorDataBuffer *vector_data_buffer) {
   DenseVectorBuffer dense_vector_buffer;
   std::string &out_vector_buffer = dense_vector_buffer.data;
   // for int4, unit_size * dim != element_size
@@ -1418,6 +1449,12 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
   if (indexes.empty()) {
     return core::IndexError_Success;
   }
+  if (!options.source_id_maps.empty() &&
+      (options.source_id_maps.size() != indexes.size() ||
+       std::any_of(options.source_id_maps.begin(), options.source_id_maps.end(),
+                   [](const auto &map) { return map == nullptr; }))) {
+    return core::IndexError_InvalidArgument;
+  }
   // ivf need builder
   auto reducer =
       core::IndexFactory::CreateStreamerReducer("MixedStreamerReducer");
@@ -1454,6 +1491,7 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
     LOG_ERROR("Failed to init reducer");
     return core::IndexError_Runtime;
   }
+  reducer->set_source_id_maps(options.source_id_maps);
   if (converter_ != nullptr && reformer_ == nullptr) {
     std::vector<MergeSourceIndexHolder::Source> sources;
     sources.reserve(indexes.size());
@@ -1482,8 +1520,12 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
               ? static_cast<uint32_t>(index->turbo_quantizer_->type())
               : 0,
           meta.extra_meta_size()};
+      auto id_map = options.source_id_maps.empty()
+                        ? nullptr
+                        : options.source_id_maps[sources.size()];
       sources.push_back({std::move(provider), index->reformer_,
-                         index->turbo_quantizer_, std::move(stored_meta)});
+                         index->turbo_quantizer_, std::move(stored_meta),
+                         std::move(id_map)});
     }
     auto holder = std::make_shared<MergeSourceIndexHolder>(std::move(sources),
                                                            input_vector_meta_);

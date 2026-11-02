@@ -49,11 +49,18 @@ struct StorageOptions {
   // true : MAP_PRIVATE on a writable file. Flush/close forces dirty pages
   //        back to disk via explicit pwrite.
   bool copy_on_write = false;
+
+  // Preserve invalid-key slots when document IDs contain NULL-vector gaps.
+  // This keeps direct ID addressing without enabling a key-to-ID hash map.
+  bool allow_id_gaps = false;
 };
 
 struct MergeOptions {
   uint32_t write_concurrency = 1;
   ailego::ThreadPool *pool = nullptr;
+  // Optional document-ID maps, one per input index. UINT32_MAX drops a row;
+  // other values are its output document ID, which may have NULL gaps.
+  std::vector<std::shared_ptr<const std::vector<uint32_t>>> source_id_maps{};
 };
 
 using IndexMeta = core::IndexMeta;

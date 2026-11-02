@@ -3975,6 +3975,49 @@ TEST_F(HnswStreamerTest, TestGroupInBruteforceSearch) {
   }
 }
 
+TEST_F(HnswStreamerTest, NullGapsStayOutOfGraphAndPaddedResults) {
+  auto streamer = IndexFactory::CreateStreamer("HnswStreamer");
+  ASSERT_NE(streamer, nullptr);
+  ailego::Params params;
+  params.set(PARAM_HNSW_STREAMER_MAX_NEIGHBOR_COUNT, 16U);
+  params.set(PARAM_HNSW_STREAMER_EFCONSTRUCTION, 32U);
+  params.set(PARAM_HNSW_STREAMER_EF, 32U);
+  params.set(PARAM_HNSW_STREAMER_BRUTE_FORCE_THRESHOLD, 0U);
+  params.set(PARAM_HNSW_STREAMER_FORCE_PADDING_RESULT_ENABLE, true);
+  params.set(PARAM_HNSW_STREAMER_USE_ID_MAP, false);
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(storage, nullptr);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "null-gaps.index", true));
+  ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
+  streamer->set_allow_id_gaps(true);
+  ASSERT_EQ(0, streamer->open(storage));
+  auto context = streamer->create_context();
+  ASSERT_NE(context, nullptr);
+  IndexQueryMeta meta(IndexMeta::DataType::DT_FP32, dim);
+  NumericalVector<float> vector(dim);
+  for (auto id : {2U, 5U}) {
+    std::fill(vector.data(), vector.data() + dim, float(id));
+    ASSERT_EQ(0, streamer->add_with_id_impl(id, vector.data(), meta, context));
+  }
+  auto provider = streamer->create_provider();
+  ASSERT_NE(provider, nullptr);
+  auto iter = provider->create_iterator();
+  ASSERT_NE(iter, nullptr);
+  std::set<uint64_t> keys;
+  for (; iter->is_valid(); iter->next()) keys.insert(iter->key());
+  EXPECT_EQ(keys, (std::set<uint64_t>{2, 5}));
+  context->set_topk(10);
+  for (int repeat = 0; repeat < 8; ++repeat) {
+    ASSERT_EQ(0, streamer->search_impl(vector.data(), meta, context));
+    keys.clear();
+    for (const auto &doc : context->result()) keys.insert(doc.key());
+    EXPECT_EQ(keys, (std::set<uint64_t>{2, 5}));
+  }
+  ASSERT_EQ(0, streamer->flush(0));
+  ASSERT_EQ(0, streamer->cleanup());
+}
+
 TEST_F(HnswStreamerTest, TestAddAndSearchWithID) {
   IndexStreamer::Pointer streamer =
       IndexFactory::CreateStreamer("HnswStreamer");

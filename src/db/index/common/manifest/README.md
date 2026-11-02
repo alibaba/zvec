@@ -76,24 +76,30 @@ write fields in ascending field-number order to produce canonical bytes.
 ### Nullable vector blocks
 
 `BlockMeta` field 7 (`vector_validity`) marks vector blocks that require a
-`<index path>.validity` sidecar. Missing or corrupt required sidecars are errors;
-they must not be interpreted as an all-NULL column or as a legacy index.
+`<index path>.nulls` sidecar. Missing or corrupt required sidecars are errors.
 
-The sidecar contains `ZVECNV01`, a little-endian uint32 logical row count and
-uint32 ID-layout flag, a portable Roaring bitmap of rows with vectors, and a
-CRC32C of all preceding bytes. Only layout 1 is supported: core vector IDs are
-bitmap ranks; NULL rows have no core index entry. Read, search, filtering,
-grouping, and merge translate IDs at the column layer. An all-NULL column uses an
-empty Flat backing even when its declared index requires training. The sidecar
-is flushed and published before the manifest references the block.
+The sidecar contains `ZVECNL01`, a little-endian uint32 logical row count and
+uint32 ID-layout flag (2), a portable Roaring bitmap of NULL rows, and a CRC32C
+of all preceding bytes. A set bit means NULL, as in scalar inverted columns.
+The logical row count includes trailing NULLs, even when no vector slot exists.
 
-Legacy nullable vector blocks without a validity sidecar, and sidecars with
-layout 0 (identity IDs), are unsupported. Opening them logs an error and returns
-`NotSupported`. The message identifies the field and index path, explains that
-NULL vectors inserted in older versions may have caused incorrect
-vector-to-document mappings, and suggests reinserting the original data into a
-new collection if needed. It links to GitHub issues for help or feedback.
-Readers do not infer missingness or convert the old index. Scalar nullable fields
-and legacy non-nullable vector blocks retain their existing read paths.
-Unknown-field skipping preserves manifest decoding, but older binaries do not
-understand layout 1 and must not be used to query newly written nullable blocks.
+Vector keys equal document row IDs. Flat and graph streamers represent gaps
+with invalid keys; invalid slots are excluded from results, graph construction
+and training. Search, filters, grouping and fetch use document IDs directly,
+without rank/select translation. Merge maps source document rows to surviving
+output document rows, reserving row IDs for NULL documents. The mapping is used
+only while rebuilding indexes; unfiltered non-nullable merges retain their
+existing path. Training providers expose only real vectors with original keys.
+
+An all-NULL column uses an empty Flat backing even when its declared index
+requires training. The sidecar is flushed and published before the manifest
+references the block.
+
+Legacy nullable vector blocks without a NULL bitmap, and the previous
+`.validity` format with compact vector IDs, are unsupported. Opening them logs
+an error and returns `NotSupported`. The error identifies the field and index
+path, explains the risk of incorrect vector-to-document mappings in older
+versions, suggests reinserting original data into a new collection if needed,
+and links to GitHub issues for help or feedback. Scalar nullable fields and
+legacy non-nullable vector blocks retain their existing read paths.
+Older binaries do not understand the new nullable format.

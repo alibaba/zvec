@@ -50,6 +50,7 @@ class MergedProviderIndexHolder final : public IndexHolder,
     IndexQueryMeta provider_meta{};
     // Decode with the quantizer (preferred) or the legacy reformer.
     bool need_revert{false};
+    std::shared_ptr<const std::vector<uint32_t>> id_map{};
 
     // Filled by init() and consumed by each merged iterator.
     uint64_t logical_id_base{0};

@@ -451,10 +451,10 @@ void FlatStreamerEntity::search_block(
 
   DeletionMap keeps;
   for (size_t k = 0; k < hd->vector_count; ++k) {
+    if (keys[k] == kInvalidKey) continue;
     const bool condition1 = !deletion_map->test(k);
     const bool condition2 = filter.is_valid() ? !filter(keys[k]) : true;
-    const bool condition3 = keys[k] != kInvalidKey;
-    if (condition1 && condition2 && condition3) {
+    if (condition1 && condition2) {
       keeps.set(k);
     }
   }

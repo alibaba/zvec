@@ -303,7 +303,7 @@ int HnswBufferPoolStreamerEntity::get_vector_for_prune(
 }
 
 key_t HnswStreamerEntity::get_key(node_id_t id) const {
-  if (use_key_info_map_) {
+  if (read_stored_keys_) {
     auto loc = get_key_chunk_loc(id);
     ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
 
@@ -837,6 +837,7 @@ const HnswEntity::Pointer HnswStreamerEntity::clone() const {
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("HnswStreamerEntity new failed");
   }
+  if (entity) entity->set_allow_id_gaps(allow_id_gaps_);
   return HnswEntity::Pointer(entity);
 }
 
@@ -870,6 +871,7 @@ const HnswEntity::Pointer HnswMmapStreamerEntity::clone() const {
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("HnswMmapStreamerEntity new failed");
   }
+  if (entity) entity->set_allow_id_gaps(allow_id_gaps_);
   return HnswEntity::Pointer(entity);
 }
 
@@ -903,6 +905,7 @@ const HnswEntity::Pointer HnswBufferPoolStreamerEntity::clone() const {
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("HnswBufferPoolStreamerEntity new failed");
   }
+  if (entity) entity->set_allow_id_gaps(allow_id_gaps_);
   return HnswEntity::Pointer(entity);
 }
 
@@ -948,6 +951,7 @@ const HnswEntity::Pointer HnswContiguousStreamerEntity::clone() const {
   entity->upper_neighbor_base_ = upper_neighbor_base_;
   entity->upper_chunk_offsets_ = upper_chunk_offsets_;
 
+  if (entity) entity->set_allow_id_gaps(allow_id_gaps_);
   return HnswEntity::Pointer(entity);
 }
 
@@ -983,6 +987,7 @@ const HnswEntity::Pointer HnswExternalStreamerEntity::clone() const {
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("HnswExternalStreamerEntity new failed");
   }
+  if (entity) entity->set_allow_id_gaps(allow_id_gaps_);
   return HnswEntity::Pointer(entity);
 }
 

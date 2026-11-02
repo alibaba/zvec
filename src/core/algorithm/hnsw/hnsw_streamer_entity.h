@@ -107,7 +107,14 @@ class HnswStreamerEntity : public HnswEntity {
 
   void set_use_key_info_map(bool use_id_map) {
     use_key_info_map_ = use_id_map;
+    read_stored_keys_ = use_id_map || allow_id_gaps_;
     LOG_DEBUG("use_key_info_map_: %d", (int)use_key_info_map_);
+  }
+
+  // NULL slots retain kInvalidKey even when keys otherwise equal node IDs.
+  void set_allow_id_gaps(bool allow) {
+    allow_id_gaps_ = allow;
+    read_stored_keys_ = use_key_info_map_ || allow;
   }
 
  public:
@@ -287,6 +294,7 @@ class HnswStreamerEntity : public HnswEntity {
         filter_same_key_(filter_same_key),
         get_vector_enabled_(get_vector_enabled),
         use_key_info_map_(use_key_info_map),
+        read_stored_keys_(use_key_info_map),
         upper_neighbor_index_(upper_neighbor_index),
         keys_map_lock_(keys_map_lock),
         keys_map_(keys_map),
@@ -603,6 +611,8 @@ class HnswStreamerEntity : public HnswEntity {
   bool filter_same_key_{false};
   bool get_vector_enabled_{false};
   bool use_key_info_map_{true};
+  bool read_stored_keys_{true};
+  bool allow_id_gaps_{false};
 
   NIHashMapPointer upper_neighbor_index_{};
 
@@ -791,7 +801,7 @@ inline int HnswStreamerEntity::get_vector_typed<BufferPoolMemoryBlock>(
 template <>
 inline key_t HnswStreamerEntity::get_key_typed<MmapMemoryBlock>(
     node_id_t id) const {
-  if (!use_key_info_map_) {
+  if (!read_stored_keys_) {
     return id;
   }
   auto loc = get_key_chunk_loc(id);
@@ -811,7 +821,7 @@ inline key_t HnswStreamerEntity::get_key_typed<MmapMemoryBlock>(
 template <>
 inline key_t HnswStreamerEntity::get_key_typed<BufferPoolMemoryBlock>(
     node_id_t id) const {
-  if (!use_key_info_map_) {
+  if (!read_stored_keys_) {
     return id;
   }
   auto loc = get_key_chunk_loc(id);
@@ -885,7 +895,7 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
   }
 
   ailego_force_inline key_t get_key_typed(node_id_t id) const {
-    if (!use_key_info_map_) {
+    if (!read_stored_keys_) {
       return id;
     }
     uint32_t chunk_idx = id >> node_index_mask_bits_;
@@ -1084,7 +1094,7 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
 
   ailego_force_inline key_t get_key_typed(node_id_t id) const {
     if (ailego_likely(graph_base_ != nullptr)) {
-      if (!use_key_info_map_) {
+      if (!read_stored_keys_) {
         return id;
       }
       const char *ptr = graph_base_ + static_cast<size_t>(id) * graph_stride_;

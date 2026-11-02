@@ -84,6 +84,8 @@ class FlatSparseIndexProvider : public IndexSparseProvider {
     Iterator(const std::shared_ptr<FlatSparseEntityType> &entity,
              const IndexMeta &meta)
         : entity_(entity), meta_(meta), cur_id_(0U), valid_(false) {
+      cur_id_ = get_next_valid_id(0);
+      if (cur_id_ >= entity_->doc_cnt()) return;
       IndexStorage::MemoryBlock sparse_data_block;
       entity_->get_sparse_vector(cur_id_, sparse_data_block);
       const void *sparse_data = sparse_data_block.data();
@@ -151,6 +153,10 @@ class FlatSparseIndexProvider : public IndexSparseProvider {
     //! Reset the iterator
     void reset() {
       cur_id_ = get_next_valid_id(0);
+      if (cur_id_ >= entity_->doc_cnt()) {
+        valid_ = false;
+        return;
+      }
       IndexStorage::MemoryBlock sparse_data_block;
       entity_->get_sparse_vector(cur_id_, sparse_data_block);
       const void *sparse_data = sparse_data_block.data();
@@ -166,7 +172,7 @@ class FlatSparseIndexProvider : public IndexSparseProvider {
    private:
     node_id_t get_next_valid_id(node_id_t start_id) {
       for (node_id_t i = start_id; i < entity_->doc_cnt(); i++) {
-        if (entity_->get_key(i) != kInvalidNodeId) {
+        if (entity_->get_key(i) != kInvalidKey) {
           return i;
         }
       }

@@ -182,6 +182,8 @@ class ZVEC_CORE_API Index {
                     VectorDataBuffer *vector_data_buffer);
   virtual int _dense_fetch(const uint32_t doc_id,
                            VectorDataBuffer *vector_data_buffer);
+  int _decode_dense_vector(const void *vector,
+                           VectorDataBuffer *vector_data_buffer);
 
   int _sparse_add(const VectorData &vector, const uint32_t doc_id,
                   core::IndexContext::Pointer &context);

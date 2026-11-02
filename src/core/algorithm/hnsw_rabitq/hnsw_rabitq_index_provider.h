@@ -78,7 +78,9 @@ class HnswRabitqIndexProvider : public IndexProvider {
   class Iterator : public IndexProvider::Iterator {
    public:
     Iterator(const HnswRabitqEntity::Pointer &entity)
-        : entity_(entity), cur_id_(0U) {}
+        : entity_(entity), cur_id_(0U) {
+      cur_id_ = get_next_valid_id(0);
+    }
 
     //! Retrieve pointer of data
     //! NOTICE: the vec feature will be changed after iterating to next, so
@@ -112,7 +114,7 @@ class HnswRabitqIndexProvider : public IndexProvider {
    private:
     node_id_t get_next_valid_id(node_id_t start_id) {
       for (node_id_t i = start_id; i < entity_->doc_cnt(); i++) {
-        if (entity_->get_key(i) != kInvalidNodeId) {
+        if (entity_->get_key(i) != kInvalidKey) {
           cur_id_ = i;
           return i;
         }

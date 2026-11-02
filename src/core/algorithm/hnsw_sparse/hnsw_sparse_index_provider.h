@@ -67,6 +67,11 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
    public:
     Iterator(const HnswSparseEntity::Pointer &entity)
         : entity_(entity), cur_id_(0U), valid_(false) {
+      cur_id_ = get_next_valid_id(0);
+      if (cur_id_ >= entity_->doc_cnt()) {
+        valid_ = false;
+        return;
+      }
       const void *sparse_data = entity_->get_sparse_data(cur_id_);
       if (sparse_data != nullptr) {
         valid_ = true;
@@ -129,6 +134,10 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
     //! Reset the iterator
     void reset() {
       cur_id_ = get_next_valid_id(0);
+      if (cur_id_ >= entity_->doc_cnt()) {
+        valid_ = false;
+        return;
+      }
       const void *sparse_data = entity_->get_sparse_data(cur_id_);
       if (sparse_data != nullptr) {
         valid_ = true;
@@ -142,7 +151,7 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
    private:
     node_id_t get_next_valid_id(node_id_t start_id) {
       for (node_id_t i = start_id; i < entity_->doc_cnt(); i++) {
-        if (entity_->get_key(i) != kInvalidNodeId) {
+        if (entity_->get_key(i) != kInvalidKey) {
           return i;
         }
       }

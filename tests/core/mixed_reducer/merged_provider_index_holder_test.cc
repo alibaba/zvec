@@ -1020,6 +1020,60 @@ TEST(MergedProviderIndexHolderTest, FiltersRewritesIdsAndSupportsMultiPass) {
   EXPECT_EQ(0, holder.status());
 }
 
+TEST(MergedProviderIndexHolderTest, DocumentIdMapsPreserveNullGaps) {
+  auto first = MakeSource(MakeStreamer({{UINT64_MAX, 99}, {1, 1}, {3, 3}}));
+  first.id_map = std::make_shared<const std::vector<uint32_t>>(
+      std::vector<uint32_t>{UINT32_MAX, 0, UINT32_MAX, 2, UINT32_MAX});
+  auto second = MakeSource(MakeStreamer({{0, 10}, {2, 12}, {UINT64_MAX, 99}}));
+  second.id_map = std::make_shared<const std::vector<uint32_t>>(
+      std::vector<uint32_t>{4, UINT32_MAX, 6, UINT32_MAX});
+  MergedProviderIndexHolder holder(
+      IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+      {first, second});
+  ASSERT_EQ(0, holder.init(IndexFilter()));
+  const std::vector<std::pair<uint64_t, float>> expected{
+      {0, 1}, {2, 3}, {4, 10}, {6, 12}};
+  EXPECT_EQ(expected.size(), holder.count());
+  EXPECT_EQ(expected, ReadAll(&holder));
+  EXPECT_EQ(expected, ReadAll(&holder));
+  OrdinalAccessHolder::Reader::Pointer reader;
+  ASSERT_EQ(0, holder.create_ordinal_reader(&reader));
+  for (size_t ordinal = 0; ordinal < expected.size(); ++ordinal) {
+    uint64_t key;
+    const void *data;
+    ASSERT_EQ(0, reader->read(ordinal, &key, &data));
+    EXPECT_EQ(key, expected[ordinal].first);
+    EXPECT_FLOAT_EQ(*static_cast<const float *>(data),
+                    expected[ordinal].second);
+  }
+}
+
+TEST(MergedProviderIndexHolderTest, DocumentIdMapsUseLogicalSourceSpans) {
+  auto first = MakeSource(MakeStreamer({{1, 1}}));
+  first.id_map = std::make_shared<const std::vector<uint32_t>>(
+      std::vector<uint32_t>{UINT32_MAX, 0, UINT32_MAX, UINT32_MAX});
+  auto second = MakeSource(MakeStreamer({{0, 10}, {1, 11}}));
+  second.id_map = std::make_shared<const std::vector<uint32_t>>(
+      std::vector<uint32_t>{3, 4, UINT32_MAX});
+  IndexFilter filter;
+  filter.set([](uint64_t id) { return id == 4; });
+  MergedProviderIndexHolder holder(
+      IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+      {first, second});
+  ASSERT_EQ(0, holder.init(filter));
+  const std::vector<std::pair<uint64_t, float>> expected{{0, 1}, {4, 11}};
+  EXPECT_EQ(expected, ReadAll(&holder));
+}
+
+TEST(MergedProviderIndexHolderTest, DocumentIdMapsRejectOutOfRangeKeys) {
+  auto source = MakeSource(MakeStreamer({{3, 3}}));
+  source.id_map = std::make_shared<const std::vector<uint32_t>>(
+      std::vector<uint32_t>{0, 1});
+  MergedProviderIndexHolder holder(
+      IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension), {source});
+  EXPECT_EQ(IndexError_InvalidFormat, holder.init(IndexFilter()));
+}
+
 TEST(MergedProviderIndexHolderTest, RejectsUnreformedMetaMismatch) {
   std::vector<MergedProviderIndexHolder::Source> sources;
   sources.emplace_back(MakeSource(MakeStreamer({{0, 10.0f}})));

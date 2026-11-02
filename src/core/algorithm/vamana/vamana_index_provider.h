@@ -98,7 +98,7 @@ class VamanaIndexProvider : public IndexProvider {
    private:
     node_id_t get_next_valid_id(node_id_t start_id) {
       for (node_id_t i = start_id; i < entity_->doc_cnt(); i++) {
-        if (entity_->get_key(i) != kInvalidNodeId) {
+        if (entity_->get_key(i) != kInvalidKey) {
           return i;
         }
       }

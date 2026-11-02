@@ -218,6 +218,7 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
     return ret;
   }
 
+  entity_->set_allow_id_gaps(allow_id_gaps_);
   ret = entity_->open(std::move(stg), max_index_size_, check_crc_enabled_);
   if (ret != 0) {
     cleanup_on_error();

@@ -4518,7 +4518,7 @@ Status SegmentImpl::finish_memory_components() {
     BlockMeta vb =
         BlockMeta{block_id,          BlockType::VECTOR_INDEX, block.min_doc_id_,
                   block.max_doc_id_, block.doc_count_,        {column_name}};
-    vb.set_vector_validity(indexer->has_validity());
+    vb.set_vector_validity(indexer->has_null_bitmap());
     auto it = vector_indexers_.find(column_name);
     if (it == vector_indexers_.end()) {
       std::vector<VectorColumnIndexer::Ptr> vector_indexers{indexer};
@@ -4535,7 +4535,7 @@ Status SegmentImpl::finish_memory_components() {
     BlockMeta block_meta(block_id, BlockType::VECTOR_INDEX_QUANTIZE,
                          block.min_doc_id_, block.max_doc_id_, block.doc_count_,
                          {column_name});
-    block_meta.set_vector_validity(indexer->has_validity());
+    block_meta.set_vector_validity(indexer->has_null_bitmap());
 
     auto it = quant_vector_indexers_.find(column_name);
     if (it == quant_vector_indexers_.end()) {

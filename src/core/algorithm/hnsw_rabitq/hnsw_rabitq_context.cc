@@ -285,7 +285,8 @@ void HnswRabitqContext::fill_random_to_topk_full() {
 
   for (size_t i = 0; !topk_heap_.full() && i < entity_->doc_cnt(); ++i) {
     const auto id = gen();
-    if (!visit_filter_.visited(id) && !myfilter(id)) {
+    if (!visit_filter_.visited(id) && entity_->get_key(id) != kInvalidKey &&
+        !myfilter(id)) {
       visit_filter_.set_visited(id);
       topk_heap_.emplace(id, dc().dist(id));
     }

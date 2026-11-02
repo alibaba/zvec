@@ -304,7 +304,10 @@ int DiskAnnIndex::dump_and_open() {
 int DiskAnnIndex::_dense_fetch(const uint32_t doc_id,
                                VectorDataBuffer *vector_data_buffer) {
   if (is_trained_) {
-    return Index::_dense_fetch(doc_id, vector_data_buffer);
+    core::IndexStorage::MemoryBlock block;
+    int ret = streamer_->get_vector_by_key(doc_id, block);
+    if (ret != 0) return ret;
+    return _decode_dense_vector(block.data(), vector_data_buffer);
   } else {
     std::lock_guard<std::mutex> lock(mutex_);
     if (doc_id >= doc_cache_.size()) return core::IndexError_OutOfRange;

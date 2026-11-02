@@ -14,6 +14,10 @@
 
 #pragma once
 
+#include <cstdint>
+#include <memory>
+#include <utility>
+#include <vector>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/core/framework/index_builder.h>
 #include <zvec/core/framework/index_converter.h>
@@ -213,6 +217,11 @@ class IndexStreamerReducer : public IndexReducerBase {
   //! Index Reducer Pointer
   typedef std::shared_ptr<IndexStreamerReducer> Pointer;
 
+  void set_source_id_maps(
+      std::vector<std::shared_ptr<const std::vector<uint32_t>>> maps) {
+    source_id_maps_ = std::move(maps);
+  }
+
   virtual int set_target_streamer_wiht_info(
       const IndexBuilder::Pointer builder,
       const IndexStreamer::Pointer streamer,
@@ -225,6 +234,9 @@ class IndexStreamerReducer : public IndexReducerBase {
       const std::shared_ptr<zvec::turbo::Quantizer> &quantizer = nullptr) = 0;
 
   ~IndexStreamerReducer() override = default;
+
+ protected:
+  std::vector<std::shared_ptr<const std::vector<uint32_t>>> source_id_maps_{};
 };
 }  // namespace core
 }  // namespace zvec

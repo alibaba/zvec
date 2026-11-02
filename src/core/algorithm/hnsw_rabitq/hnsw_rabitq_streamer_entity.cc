@@ -200,7 +200,7 @@ int HnswRabitqStreamerEntity::get_vector(
 }
 
 key_t HnswRabitqStreamerEntity::get_key(node_id_t id) const {
-  if (use_key_info_map_) {
+  if (read_stored_keys_) {
     auto loc = get_key_chunk_loc(id);
     IndexStorage::MemoryBlock key_block;
     ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
@@ -691,6 +691,7 @@ const HnswRabitqEntity::Pointer HnswRabitqStreamerEntity::clone() const {
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("HnswRabitqStreamerEntity new failed");
   }
+  if (entity) entity->set_allow_id_gaps(allow_id_gaps_);
   return HnswRabitqEntity::Pointer(entity);
 }
 

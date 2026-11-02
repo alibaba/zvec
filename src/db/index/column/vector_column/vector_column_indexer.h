@@ -80,12 +80,11 @@ class VectorColumnIndexer {
                 uint32_t doc_id);
   Status insert_null(uint32_t doc_id);
 
-  // Logical rows include NULLs; core IDs in new nullable indexes are ranks
-  // in the validity bitmap, so the core only ever indexes real vectors.
+  // Vector keys preserve logical document IDs, including gaps for NULL rows.
   uint32_t row_count() const {
     return row_count_;
   }
-  bool has_validity() const {
+  bool has_null_bitmap() const {
     return field_schema_.nullable();
   }
   // TODO: batch insert
@@ -109,9 +108,8 @@ class VectorColumnIndexer {
   // Result<VectorDataset> BatchFetch(const std::vector<uint32_t> &doc_ids)
   // const;
 
-  core::IndexProvider::Pointer create_index_provider() const {
-    return index->create_index_provider();
-  }
+  // Training view: omit NULL slots while preserving document keys.
+  core::IndexProvider::Pointer create_index_provider() const;
 
  public:
   std::string index_file_path() const {
@@ -140,13 +138,14 @@ class VectorColumnIndexer {
   VectorColumnIndexer() = default;
 
  private:
-  Status load_validity(const vector_column_params::ReadOptions &options);
-  Status flush_validity();
+  Status load_nulls(const vector_column_params::ReadOptions &options);
+  Status flush_nulls();
   Status ensure_empty_index();
   Status recreate_empty_index(bool use_empty_flat);
   bool has_vector(uint32_t row) const;
-  uint32_t physical_id(uint32_t row) const;
-  bool logical_id(uint64_t physical, uint32_t *row) const;
+  bool all_null() const {
+    return null_rows_.cardinality() == row_count_;
+  }
   // protected:
   //  virtual bool init_proxima_params() = 0;
 
@@ -166,10 +165,10 @@ class VectorColumnIndexer {
   std::string engine_name_ = "proxima";
   bool is_sparse_{false};  // TODO: eliminate the dynamic flag and make it
                            // static/template/seperate class
-  mutable std::shared_mutex validity_mutex_;
-  roaring::Roaring valid_rows_;
+  mutable std::shared_mutex nulls_mutex_;
+  roaring::Roaring null_rows_;
   uint32_t row_count_{0};
-  bool validity_dirty_{false};
+  bool nulls_dirty_{false};
   bool read_only_{false};
   bool use_mmap_{true};
   bool empty_flat_index_{false};

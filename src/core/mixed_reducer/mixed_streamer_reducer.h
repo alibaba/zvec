@@ -64,11 +64,11 @@ class MixedStreamerReducer : public IndexStreamerReducer {
   int reduce_with_builder(const IndexFilter &filter);
   int read_vec(size_t source_streamer_index,
                const IndexProvider::Pointer &provider,
-               const IndexFilter &filter, const uint32_t id_offset,
+               const IndexFilter &filter, const uint64_t id_offset,
                uint32_t *next_id);
   void add_vec(int *result);
   int read_sparse_vec(size_t source_streamer_index, const IndexFilter &filter,
-                      const uint32_t id_offset, uint32_t *next_id);
+                      const uint64_t id_offset, uint32_t *next_id);
   void add_sparse_vec(int *result);
 
   int index_build(IndexHolder::Pointer target_holder);

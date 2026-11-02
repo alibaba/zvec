@@ -110,7 +110,18 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
   }
 
   uint64_t key() const override {
-    return output_key_;
+    const auto &source = owner_->sources_[source_index_];
+    if (!source.id_map) return output_key_;
+    const auto key = source_iter_->key();
+    if (source_iter_->status() != 0) {
+      owner_->set_status(source_iter_->status());
+      return UINT64_MAX;
+    }
+    if (key >= source.id_map->size() || (*source.id_map)[key] == UINT32_MAX) {
+      owner_->set_status(IndexError_Mismatch);
+      return UINT64_MAX;
+    }
+    return (*source.id_map)[key];
   }
 
   void next() override {
@@ -316,7 +327,8 @@ class MergedProviderIndexHolder::OrdinalReader final
     if (!*data) {
       return fail(IndexError_Runtime);
     }
-    *key = ordinal;  // Same dense rewritten key as the merged iterator.
+    const auto &source = owner_->sources_[source_index];
+    *key = source.id_map ? (*source.id_map)[keys_[ordinal]] : ordinal;
     return 0;
   }
 
@@ -386,7 +398,10 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
   }
 
   stop_flag_ = stop_flag;
-  has_filter_ = filter.is_valid();
+  has_filter_ =
+      filter.is_valid() ||
+      std::any_of(sources_.begin(), sources_.end(),
+                  [](const auto &source) { return source.id_map != nullptr; });
   uint64_t logical_id_base = 0;
 
   for (size_t source_index = 0; source_index < sources_.size();
@@ -409,8 +424,9 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
       return this->status();
     }
     source.provider_count = provider->count();
-    if (source.provider_count >
-        std::numeric_limits<uint64_t>::max() - logical_id_base) {
+    const auto source_rows =
+        source.id_map ? source.id_map->size() : source.provider_count;
+    if (source_rows > std::numeric_limits<uint64_t>::max() - logical_id_base) {
       this->set_status(IndexError_Overflow);
       return this->status();
     }
@@ -447,12 +463,22 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
         this->set_status(iter->status());
         return this->status();
       }
-      if (key > std::numeric_limits<uint64_t>::max() - source.logical_id_base) {
-        this->set_status(IndexError_Overflow);
-        return this->status();
+      bool keep_item;
+      if (source.id_map) {
+        if (key != UINT64_MAX && key >= source.id_map->size()) {
+          this->set_status(IndexError_InvalidFormat);
+          return this->status();
+        }
+        keep_item = key != UINT64_MAX && (*source.id_map)[key] != UINT32_MAX &&
+                    !filter(source.logical_id_base + key);
+      } else {
+        if (key >
+            std::numeric_limits<uint64_t>::max() - source.logical_id_base) {
+          this->set_status(IndexError_Overflow);
+          return this->status();
+        }
+        keep_item = !has_filter_ || !filter(source.logical_id_base + key);
       }
-
-      bool keep_item = !has_filter_ || !filter(source.logical_id_base + key);
       if (has_filter_) {
         AppendBit(&source.keep_bits, ordinal, keep_item);
       }
@@ -507,7 +533,7 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
       return this->status();
     }
     source.iterated_count = ordinal;
-    logical_id_base += source.provider_count;
+    logical_id_base += source_rows;
   }
 
   initialized_ = true;

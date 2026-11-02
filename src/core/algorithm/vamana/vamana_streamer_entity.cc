@@ -48,7 +48,7 @@ int VamanaStreamerEntity::init(size_t /*max_doc_cnt*/) {
 }
 
 key_t VamanaStreamerEntity::get_key(node_id_t id) const {
-  if (!use_key_info_map_) return id;
+  if (!read_stored_keys_) return id;
   auto loc = get_key_chunk_loc(id);
   if (ailego_unlikely(loc.first >= node_chunks_.size())) return kInvalidKey;
   IndexStorage::MemoryBlock ptr;
@@ -505,6 +505,7 @@ const VamanaEntity::Pointer VamanaStreamerEntity::clone() const {
   } else {
     entity->set_extra_values_size(extra_values_size());
   }
+  if (entity) entity->set_allow_id_gaps(allow_id_gaps_);
   return VamanaEntity::Pointer(entity);
 }
 
@@ -528,6 +529,7 @@ const VamanaEntity::Pointer VamanaMmapStreamerEntity::clone() const {
   } else {
     entity->set_extra_values_size(extra_values_size());
   }
+  if (entity) entity->set_allow_id_gaps(allow_id_gaps_);
   return VamanaEntity::Pointer(entity);
 }
 
@@ -564,6 +566,7 @@ const VamanaEntity::Pointer VamanaContiguousStreamerEntity::clone() const {
   entity->extra_values_base_ = extra_values_base_;
   entity->extra_values_stride_ = extra_values_stride_;
 
+  if (entity) entity->set_allow_id_gaps(allow_id_gaps_);
   return VamanaEntity::Pointer(entity);
 }
 
