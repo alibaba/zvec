@@ -2,7 +2,18 @@ name: Windows Build
 
 on:
   workflow_call:
+    inputs:
+      run_tests:
+        description: 'Run tests and SDK smoke checks after compilation'
+        required: false
+        type: boolean
+        default: true
   workflow_dispatch:
+    inputs:
+      run_tests:
+        description: 'Run tests and SDK smoke checks after compilation'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -10,7 +21,7 @@ permissions:
 jobs:
   # Windows build and test matrix
   build-and-test-windows:
-    name: Build & Test (${{ matrix.platform }})
+    name: ${{ inputs.run_tests && 'Build & Test' || 'Warm compiler cache' }} (${{ matrix.platform }})
     runs-on: ${{ matrix.platform }}
 
     strategy:
@@ -174,18 +185,21 @@ jobs:
           key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
 
       - name: Run C++ Tests
+        if: inputs.run_tests
         run: |
           $testJobs = [Math]::Max(1, [int]$env:NPROC - 1)
           ctest --test-dir build --build-config Release --output-on-failure --parallel $testJobs
         shell: powershell
 
       - name: Run Python Tests
+        if: inputs.run_tests
         run: |
           cd "$env:GITHUB_WORKSPACE"
           python -m pytest python/tests/ --basetemp=./.pytest_tmp --durations=10
         shell: powershell
 
       - name: Run C++ Examples
+        if: inputs.run_tests
         run: |
           cd "$env:GITHUB_WORKSPACE\examples\c++"
           mkdir build
@@ -234,6 +248,7 @@ jobs:
         shell: powershell
 
       - name: Install and test C/C++ SDK
+        if: inputs.run_tests
         shell: powershell
         run: |
           $sdkDir = Join-Path $env:RUNNER_TEMP 'zvec-sdk'
