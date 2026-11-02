@@ -319,7 +319,7 @@ TEST_F(ExternalFlatTest, RegistrationDoesNotCopyVectorPayload) {
   auto &context = index->acquire_context();
   ASSERT_NE(nullptr, context);
   *context->mutable_features() = "unchanged";
-  add_vectors(index.get(), source);
+  ASSERT_NO_FATAL_FAILURE(add_vectors(index.get(), source));
   ASSERT_EQ("unchanged", *context->mutable_features());
   EXPECT_EQ(source.rows.size(), index->get_doc_count());
 
@@ -340,8 +340,8 @@ TEST_F(ExternalFlatTest, FullScanAppliesSnapshotFilterBeforeReadingVectors) {
   BatchSource source(30);
   auto external = open_index(Param(true), test_path("external"));
   auto embedded = open_index(Param(false), test_path("embedded"));
-  add_vectors(external.get(), source);
-  add_vectors(embedded.get(), source, false);
+  ASSERT_NO_FATAL_FAILURE(add_vectors(external.get(), source));
+  ASSERT_NO_FATAL_FAILURE(add_vectors(embedded.get(), source, false));
   // Model an immutable snapshot whose invisible rows have no usable pointer.
   const std::set<uint32_t> invisible{3, 16, 42};
   source.null_scan_ids = invisible;
@@ -361,7 +361,7 @@ TEST_F(ExternalFlatTest, FullScanAppliesSnapshotFilterBeforeReadingVectors) {
   for (int i = 0; i < 2; ++i) {
     ASSERT_EQ(0,
               external->search_with_source(Vector(query), qp, source, &actual));
-    SameResults(expected, actual);
+    ASSERT_NO_FATAL_FAILURE(SameResults(expected, actual));
     EXPECT_TRUE(qp->filter->is_valid());
   }
 }
@@ -376,8 +376,8 @@ TEST_F(ExternalFlatTest, ScanMatchesEmbeddedAndBorrowsReturnedVectors) {
           open_index(Param(true, metric, id_map), test_path(suffix + "ext"));
       auto embedded =
           open_index(Param(false, metric, id_map), test_path(suffix + "base"));
-      add_vectors(external.get(), source);
-      add_vectors(embedded.get(), source, false);
+      ASSERT_NO_FATAL_FAILURE(add_vectors(external.get(), source));
+      ASSERT_NO_FATAL_FAILURE(add_vectors(embedded.get(), source, false));
       ASSERT_EQ(source.rows.size(), external->get_doc_count());
       source.rows[99999] = std::vector<float>(kDimension, 0.3f);
       std::vector<float> query(kDimension, 0.3f);
@@ -387,7 +387,7 @@ TEST_F(ExternalFlatTest, ScanMatchesEmbeddedAndBorrowsReturnedVectors) {
       ASSERT_EQ(0, embedded->search(Vector(query), qp, &want));
       ASSERT_EQ(0,
                 external->search_with_source(Vector(query), qp, source, &got));
-      SameResults(want, got);
+      ASSERT_NO_FATAL_FAILURE(SameResults(want, got));
       EXPECT_EQ(1, source.scans);
       EXPECT_EQ(0, source.batch_reads);
       close_index(external);
@@ -411,8 +411,8 @@ TEST_F(ExternalFlatTest, FullScanWithOnlyGetVector) {
   EXPECT_EQ(nullptr, source.create_iterator());
   auto external = open_index(Param(true), test_path("external"));
   auto embedded = open_index(Param(false), test_path("embedded"));
-  add_vectors(external.get(), data);
-  add_vectors(embedded.get(), data, false);
+  ASSERT_NO_FATAL_FAILURE(add_vectors(external.get(), data));
+  ASSERT_NO_FATAL_FAILURE(add_vectors(embedded.get(), data, false));
   // Invisible rows must be excluded before calling the source.
   const std::set<uint32_t> invisible{3, 16, 42};
   for (auto id : invisible) data.rows.erase(id);
@@ -424,7 +424,7 @@ TEST_F(ExternalFlatTest, FullScanWithOnlyGetVector) {
   SearchResult want, got;
   ASSERT_EQ(0, embedded->search(Vector(query), qp, &want));
   ASSERT_EQ(0, external->search_with_source(Vector(query), qp, source, &got));
-  SameResults(want, got);
+  ASSERT_NO_FATAL_FAILURE(SameResults(want, got));
   EXPECT_EQ(27, source.reads.size());
   for (auto id : source.reads) {
     EXPECT_EQ(0, invisible.count(id));
@@ -478,7 +478,7 @@ TEST_F(ExternalFlatTest, ContiguousScanMatchesEmbeddedAndSkipsDeletedRows) {
         ASSERT_EQ(0, embedded->search(Vector(query), qp, &want));
         ASSERT_EQ(
             0, external->search_with_source(Vector(query), qp, source, &got));
-        SameResults(want, got);
+        ASSERT_NO_FATAL_FAILURE(SameResults(want, got));
         for (const auto &doc : got.doc_list_) {
           EXPECT_EQ(source.get_vector(doc.key()), doc.vector());
           EXPECT_NE(kFirstId + kRowCount - 1, doc.key());
@@ -489,7 +489,7 @@ TEST_F(ExternalFlatTest, ContiguousScanMatchesEmbeddedAndSkipsDeletedRows) {
         ASSERT_EQ(0, embedded->search(Vector(query), qp, &want));
         ASSERT_EQ(
             0, external->search_with_source(Vector(query), qp, source, &got));
-        SameResults(want, got);
+        ASSERT_NO_FATAL_FAILURE(SameResults(want, got));
       }
     }
   }
@@ -500,15 +500,15 @@ TEST_F(ExternalFlatTest, ContiguousScanLeasesAndMixedBatches) {
   source.lease_pages = source.mixed_batches = true;
   auto external = open_index(Param(true), test_path("external"));
   auto embedded = open_index(Param(false), test_path("embedded"));
-  add_vectors(external.get(), source);
-  add_vectors(embedded.get(), source, false);
+  ASSERT_NO_FATAL_FAILURE(add_vectors(external.get(), source));
+  ASSERT_NO_FATAL_FAILURE(add_vectors(embedded.get(), source, false));
   auto qp =
       FlatQueryParamBuilder().with_topk(10).with_fetch_vector(true).build();
   std::vector<float> query(kDimension, 0.3f);
   SearchResult want, got;
   ASSERT_EQ(0, embedded->search(Vector(query), qp, &want));
   ASSERT_EQ(0, external->search_with_source(Vector(query), qp, source, &got));
-  SameResults(want, got);
+  ASSERT_NO_FATAL_FAILURE(SameResults(want, got));
   EXPECT_EQ(5, source.scan_batches);
   for (const auto &doc : got.doc_list_) {
     EXPECT_EQ(source.get_vector(doc.key()), doc.vector());
@@ -528,7 +528,7 @@ TEST_F(ExternalFlatTest, RejectsMalformedContiguousBatches) {
   ContiguousSource source(10);
   source.lease_pages = true;
   auto index = open_index(Param(true), test_path("index"));
-  add_vectors(index.get(), source);
+  ASSERT_NO_FATAL_FAILURE(add_vectors(index.get(), source));
   auto qp = FlatQueryParamBuilder().with_topk(3).build();
   std::vector<float> query(kDimension, 0.3f);
   SearchResult result;
@@ -733,8 +733,8 @@ TEST_F(ExternalFlatTest, FallbackMatchesEmbeddedUsesBatchesAndReopens) {
       auto external = open_index(param, path);
       auto embedded =
           open_index(Param(false, metric, id_map), test_path(suffix + "base"));
-      add_vectors(external.get(), source);
-      add_vectors(embedded.get(), source, false);
+      ASSERT_NO_FATAL_FAILURE(add_vectors(external.get(), source));
+      ASSERT_NO_FATAL_FAILURE(add_vectors(embedded.get(), source, false));
       source.rows[99999] = std::vector<float>(kDimension, 0.3f);
       auto qp =
           FlatQueryParamBuilder().with_topk(11).with_fetch_vector(true).build();
@@ -745,7 +745,7 @@ TEST_F(ExternalFlatTest, FallbackMatchesEmbeddedUsesBatchesAndReopens) {
         source.batch_reads = 0;
         ASSERT_EQ(
             0, external->search_with_source(Vector(query), qp, source, &got));
-        SameResults(want, got);
+        ASSERT_NO_FATAL_FAILURE(SameResults(want, got));
         EXPECT_GE(source.batch_reads.load(), 3u);
         for (auto &doc : got.doc_list_) {
           EXPECT_EQ(source.get_vector(doc.key()), doc.vector());
@@ -766,7 +766,7 @@ TEST_F(ExternalFlatTest, CandidateLookupFilterRadiusAndFetch) {
   BatchSource source;
   source.supports_scan = false;
   auto index = open_index(Param(true), test_path("index"));
-  add_vectors(index.get(), source);
+  ASSERT_NO_FATAL_FAILURE(add_vectors(index.get(), source));
   auto qp =
       FlatQueryParamBuilder().with_topk(5).with_fetch_vector(true).build();
   qp->radius = 0.5f;
@@ -792,11 +792,44 @@ TEST_F(ExternalFlatTest, CandidateLookupFilterRadiusAndFetch) {
   EXPECT_NE(0, index->search(Vector(query), qp, &result));
 }
 
+TEST_F(ExternalFlatTest, CandidateBatchesSkipUnregisteredAndFilteredIds) {
+  BatchSource source(2103);
+  auto external = open_index(Param(true), test_path("external"));
+  auto embedded = open_index(Param(false), test_path("embedded"));
+  ASSERT_NO_FATAL_FAILURE(add_vectors(external.get(), source));
+  ASSERT_NO_FATAL_FAILURE(add_vectors(embedded.get(), source, false));
+  auto qp = FlatQueryParamBuilder().with_topk(10).build();
+  qp->filter = std::make_shared<IndexFilter>();
+  qp->filter->set([](uint64_t id) { return id <= 1023 * 13 + 3; });
+  qp->bf_pks = std::make_shared<std::vector<uint64_t>>();
+  for (const auto &[id, row] : source.rows) {
+    qp->bf_pks->push_back(id);
+    qp->bf_pks->push_back(id + 1);
+  }
+  qp->bf_pks->push_back(UINT32_MAX);
+  qp->bf_pks->push_back(1ull << 40);
+  std::vector<float> query(kDimension, 0.3f);
+  const uint32_t unregistered_id = 1024 * 13 + 4;
+  source.rows[unregistered_id] = query;
+  SearchResult expected, actual;
+  ASSERT_EQ(0, embedded->search(Vector(query), qp, &expected));
+  ASSERT_EQ(0,
+            external->search_with_source(Vector(query), qp, source, &actual));
+  ASSERT_NO_FATAL_FAILURE(SameResults(expected, actual));
+  EXPECT_EQ(0, source.scans);
+  EXPECT_GT(source.batch_reads, 1);
+  ASSERT_FALSE(actual.doc_list_.empty());
+  for (const auto &doc : actual.doc_list_) {
+    EXPECT_GT(doc.key(), 1023 * 13 + 3);
+    EXPECT_NE(unregistered_id, doc.key());
+  }
+}
+
 TEST_F(ExternalFlatTest, ReopenUpdatesAndRejectsWrongStorageMode) {
   BatchSource source;
   auto path = test_path("index");
   auto index = open_index(Param(true, MetricType::kL2sq, false), path);
-  add_vectors(index.get(), source);
+  ASSERT_NO_FATAL_FAILURE(add_vectors(index.get(), source));
   auto *streamer =
       dynamic_cast<core::FlatStreamer<32> *>(index->index_searcher().get());
   ASSERT_NE(nullptr, streamer);
@@ -838,7 +871,7 @@ TEST_F(ExternalFlatTest, ReopenUpdatesAndRejectsWrongStorageMode) {
 TEST_F(ExternalFlatTest, RejectsReadFailuresAndClearsRequestSource) {
   BatchSource source;
   auto index = open_index(Param(true), test_path("index"));
-  add_vectors(index.get(), source);
+  ASSERT_NO_FATAL_FAILURE(add_vectors(index.get(), source));
   auto qp = FlatQueryParamBuilder().with_topk(3).build();
   std::vector<float> query(kDimension, 0.3f);
   SearchResult result;
@@ -875,7 +908,7 @@ TEST_F(ExternalFlatTest, ConcurrentRequestsKeepTheirSourceAndCursor) {
   BatchSource first(50), second(50, 2.0f);
   second.supports_scan = false;
   auto index = open_index(Param(true), test_path("index"));
-  add_vectors(index.get(), first);
+  ASSERT_NO_FATAL_FAILURE(add_vectors(index.get(), first));
   std::vector<float> query(kDimension, 0.3f);
   SearchResult expected[2];
   BatchSource *sources[] = {&first, &second};
@@ -892,7 +925,7 @@ TEST_F(ExternalFlatTest, ConcurrentRequestsKeepTheirSourceAndCursor) {
         SearchResult result;
         ASSERT_EQ(0, index->search_with_source(Vector(query), local_qp,
                                                *sources[i % 2], &result));
-        SameResults(expected[i % 2], result);
+        ASSERT_NO_FATAL_FAILURE(SameResults(expected[i % 2], result));
       }
     });
   }
@@ -918,7 +951,7 @@ TEST_F(ExternalFlatTest, RejectsUnsupportedFormatsAndUnboundOperations) {
   }
   BatchSource source(1);
   auto index = open_index(Param(true), test_path("index"));
-  add_vectors(index.get(), source);
+  ASSERT_NO_FATAL_FAILURE(add_vectors(index.get(), source));
   EXPECT_NE(0, index->index_searcher()->dump(nullptr));
   auto provider = index->create_index_provider();
   ASSERT_NE(nullptr, provider);
@@ -928,7 +961,7 @@ TEST_F(ExternalFlatTest, RejectsUnsupportedFormatsAndUnboundOperations) {
   EXPECT_NE(0, index->merge({index}, IndexFilter{}));
   EXPECT_EQ(0, index->merge({}, IndexFilter{}));
   auto embedded = open_index(Param(false), test_path("embedded"));
-  add_vectors(embedded.get(), source, false);
+  ASSERT_NO_FATAL_FAILURE(add_vectors(embedded.get(), source, false));
   EXPECT_NE(0, embedded->merge({index}, IndexFilter{}));
 
   auto qp = FlatQueryParamBuilder().with_topk(1).build();
@@ -942,18 +975,91 @@ TEST_F(ExternalFlatTest, RejectsUnsupportedFormatsAndUnboundOperations) {
             index->search_with_source(query, qp, source, &result));
   EXPECT_TRUE(result.group_doc_list_.empty());
   qp->group_by_param.reset();
+  EXPECT_EQ(core::IndexError_Unsupported,
+            embedded->search_with_source(query, qp, source, &result));
+  EXPECT_EQ(core::IndexError_Unsupported,
+            embedded->add_with_source(query, 3, source));
   // The existing refine entry point has no source binding for external Flat.
   qp->refiner_param = std::make_shared<RefinerParam>();
   qp->refiner_param->scale_factor_ = 1;
   qp->refiner_param->reference_index = index;
-  EXPECT_NE(0, embedded->search(query, qp, &result));
+  EXPECT_EQ(core::IndexError_Unsupported, embedded->search(query, qp, &result));
+}
+
+TEST_F(ExternalFlatTest, RejectsExternalRefinement) {
+  BatchSource source(10), reference_source(10, 2.0f);
+  auto external = open_index(Param(true), test_path("external"));
+  auto external_reference =
+      open_index(Param(true), test_path("external_reference"));
+  auto embedded = open_index(Param(false), test_path("embedded"));
+  auto embedded_reference =
+      open_index(Param(false), test_path("embedded_reference"));
+  ASSERT_NO_FATAL_FAILURE(add_vectors(external.get(), source));
+  ASSERT_NO_FATAL_FAILURE(
+      add_vectors(external_reference.get(), reference_source));
+  ASSERT_NO_FATAL_FAILURE(add_vectors(embedded.get(), source, false));
+  ASSERT_NO_FATAL_FAILURE(
+      add_vectors(embedded_reference.get(), reference_source, false));
+
+  const auto query = Vector(reference_source.rows.at(3));
+  auto qp = FlatQueryParamBuilder().with_topk(3).build();
+  SearchResult expected, actual;
+  ASSERT_EQ(0, embedded_reference->search(query, qp, &expected));
+  ASSERT_EQ(3, expected.doc_list_.size());
+  qp->refiner_param = std::make_shared<RefinerParam>();
+  qp->refiner_param->scale_factor_ = 10;
+  qp->refiner_param->reference_index = embedded_reference;
+  ASSERT_EQ(0, embedded->search(query, qp, &actual));
+  ASSERT_NO_FATAL_FAILURE(SameResults(expected, actual));
+
+  EXPECT_EQ(core::IndexError_Unsupported,
+            external->search_with_source(query, qp, source, &actual));
+  qp->refiner_param->reference_index = external_reference;
+  EXPECT_EQ(core::IndexError_Unsupported,
+            external->search_with_source(query, qp, source, &actual));
+  EXPECT_EQ(core::IndexError_Unsupported, embedded->search(query, qp, &actual));
+  int64_t ids[3];
+  EXPECT_EQ(core::IndexError_Unsupported,
+            embedded->search_internal_ids(query, qp, ids, nullptr));
+  EXPECT_EQ(0, source.scans);
+
+  qp->refiner_param.reset();
+  ASSERT_EQ(0, embedded->search(query, qp, &expected));
+  ASSERT_EQ(0, external->search_with_source(query, qp, source, &actual));
+  ASSERT_NO_FATAL_FAILURE(SameResults(expected, actual));
+}
+
+TEST_F(ExternalFlatTest, EmbeddedRefinementKeepsQueryFilter) {
+  BatchSource source(10), reference_source(10, 2.0f);
+  auto coarse = open_index(Param(false), test_path("coarse"));
+  auto reference = open_index(Param(false), test_path("reference"));
+  ASSERT_NO_FATAL_FAILURE(add_vectors(coarse.get(), source, false));
+  ASSERT_NO_FATAL_FAILURE(
+      add_vectors(reference.get(), reference_source, false));
+  const auto query = Vector(reference_source.rows.at(3));
+  auto qp = FlatQueryParamBuilder().with_topk(3).build();
+  qp->filter = std::make_shared<IndexFilter>();
+  qp->filter->set([invisible = std::set<uint64_t>{3}](uint64_t id) {
+    return invisible.count(id);
+  });
+  SearchResult expected, actual;
+  ASSERT_EQ(0, reference->search(query, qp, &expected));
+  ASSERT_EQ(3, expected.doc_list_.size());
+  qp->refiner_param = std::make_shared<RefinerParam>();
+  qp->refiner_param->scale_factor_ = 10;
+  qp->refiner_param->reference_index = reference;
+  for (int i = 0; i < 2; ++i) {
+    ASSERT_EQ(0, coarse->search(query, qp, &actual));
+    ASSERT_NO_FATAL_FAILURE(SameResults(expected, actual));
+    ASSERT_TRUE(qp->filter->is_valid());
+  }
 }
 
 TEST_F(ExternalFlatTest, BufferPoolReopen) {
   BatchSource source(40);
   auto path = test_path("index");
   auto index = open_index(Param(true), path);
-  add_vectors(index.get(), source);
+  ASSERT_NO_FATAL_FAILURE(add_vectors(index.get(), source));
   close_index(index);
   index = IndexFactory::CreateAndInitIndex(*Param(true));
   ASSERT_NE(nullptr, index);

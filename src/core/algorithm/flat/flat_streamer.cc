@@ -618,6 +618,22 @@ int FlatStreamer<BATCH_SIZE>::search_external(
       ids.reserve(batch_limit);
       auto read_batch = [&]() -> int {
         if (ids.empty()) return 0;
+        if (keys) {
+          entity_->key_presence(ids.data(), ids.size(), 0,
+                                &scratch->key_presence);
+        }
+        size_t visible = 0;
+        for (size_t i = 0; i < ids.size(); ++i) {
+          const auto id = ids[i];
+          if (keys && !scratch->key_presence[i]) continue;
+          if (ctx->filter().is_valid() && ctx->filter()(id)) {
+            if (!keys) ++*ctx->mutable_stats(q)->mutable_filtered_count();
+            continue;
+          }
+          ids[visible++] = id;
+        }
+        ids.resize(visible);
+        if (ids.empty()) return 0;
         clear_batch();
         auto &pointers = std::get<PointerBatch>(batch);
         pointers.ids = ids;
@@ -629,12 +645,7 @@ int FlatStreamer<BATCH_SIZE>::search_external(
       };
       auto read_candidates = [&](const std::vector<uint64_t> &candidates) {
         for (auto key : candidates) {
-          if (key >= kInvalidNodeId || (keys && !entity_->contains_key(key)))
-            continue;
-          if (ctx->filter().is_valid() && ctx->filter()(key)) {
-            if (!keys) ++*ctx->mutable_stats(q)->mutable_filtered_count();
-            continue;
-          }
+          if (key >= kInvalidNodeId) continue;
           ids.push_back(static_cast<uint32_t>(key));
           if (ids.size() == batch_limit) {
             int ret = read_batch();

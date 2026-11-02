@@ -289,6 +289,8 @@ class ZVEC_CORE_API FlatIndex : public Index {
 
   // External Flat supports raw row-major FP32 L2/IP. Register IDs after
   // writing the source; vector bytes and subsequent updates stay in the source.
+  // Re-registering an ID succeeds without adding an entry or increasing
+  // added_count.
   // doc_id is the source ID with either use_id_map setting.
   int add_with_source(const VectorData &vector, uint32_t doc_id,
                       const core::VectorSource &src) override;
@@ -298,7 +300,8 @@ class ZVEC_CORE_API FlatIndex : public Index {
   // Bind the source, scan and filter to one stable snapshot.
   // With fetch_vector, returned pointers borrow source memory;
   // keep that memory valid while using the results, as with external HNSW.
-  // External Flat does not support group-by or binding a source for refinement.
+  // External Flat does not support group-by or acting as either the coarse or
+  // reference index for refinement.
   int search_with_source(const VectorData &query,
                          const BaseIndexQueryParam::Pointer &search_param,
                          const core::VectorSource &src,

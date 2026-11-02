@@ -405,7 +405,8 @@ int FlatIndex::_prepare_for_search(
     return core::IndexError_Runtime;
   }
 
-  if (param_.use_external_vector && flat_search_param->group_by_param) {
+  if (param_.use_external_vector &&
+      (flat_search_param->group_by_param || search_param->refiner_param)) {
     return core::IndexError_Unsupported;
   }
 

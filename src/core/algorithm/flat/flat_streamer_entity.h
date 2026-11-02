@@ -174,12 +174,6 @@ class FlatStreamerEntity {
     meta_.header.reserved_[0] = enabled ? 1 : 0;
   }
 
-  bool contains_key(uint64_t key) const {
-    ailego::ReadLock lock(*key_info_map_lock_);
-    std::lock_guard<ailego::ReadLock> guard(lock);
-    return key_info_map_.find(key) != key_info_map_.end();
-  }
-
   // A null keys pointer denotes consecutive IDs starting at first_key.
   void key_presence(const uint32_t *keys, size_t count, uint32_t first_key,
                     std::vector<uint8_t> *present) const {
