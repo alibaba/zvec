@@ -3,13 +3,40 @@ name: Windows Build
 on:
   workflow_call:
   workflow_dispatch:
+    inputs:
+      benchmark_storage:
+        description: 'Run paired NTFS / Dev Drive build measurements instead of tests'
+        type: boolean
+        default: false
+      source_ref:
+        description: 'Source revision for the storage benchmark'
+        type: string
+        default: 'f1510cd3a97784db4ed5ee097abaa00e5f112436'
+      perf_jobs:
+        description: 'Parallel jobs for the storage benchmark'
+        type: string
+        default: '4'
+      perf_order:
+        description: 'Volume order for the paired benchmark'
+        type: choice
+        default: ntfs-first
+        options: [ntfs-first, devdrive-first]
 
 permissions:
   contents: read
 
 jobs:
+  storage-benchmark:
+    if: inputs.benchmark_storage == true
+    uses: ./.github/workflows/windows-build-perf.yml
+    with:
+      source_ref: ${{ inputs.source_ref }}
+      jobs: ${{ inputs.perf_jobs }}
+      order: ${{ inputs.perf_order }}
+
   # Windows build and test matrix
   build-and-test-windows:
+    if: inputs.benchmark_storage != true
     name: Build & Test (${{ matrix.platform }})
     runs-on: ${{ matrix.platform }}
 

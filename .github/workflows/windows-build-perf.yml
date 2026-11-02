@@ -1,0 +1,107 @@
+name: Windows Build Performance
+
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        required: true
+        type: string
+      jobs:
+        default: '4'
+        type: string
+      order:
+        default: ntfs-first
+        type: string
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'Source revision to measure (same revision on both volumes)'
+        default: 'f1510cd3a97784db4ed5ee097abaa00e5f112436'
+        required: true
+        type: string
+      jobs:
+        description: 'Parallel compiler jobs'
+        default: '4'
+        required: true
+        type: string
+      order:
+        description: 'Paired measurements on the same VM; reverse for a repeat'
+        default: ntfs-first
+        type: choice
+        options: [ntfs-first, devdrive-first]
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: Build perf (${{ matrix.platform }})
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-2022
+            vs_version: '17.0'
+            arch: x64
+            python: '3.10'
+          - platform: windows-2025-vs2026
+            vs_version: '18.0'
+            arch: x64
+            python: '3.10'
+          - platform: windows-11-vs2026-arm
+            vs_version: '18.0'
+            arch: arm64
+            python: '3.11'
+    env:
+      PERF_JOBS: ${{ inputs.jobs }}
+      PERF_ORDER: ${{ inputs.order }}
+      PERF_PLATFORM: ${{ matrix.platform }}
+      PERF_VS_VERSION: ${{ matrix.vs_version }}
+    steps:
+      - name: Enable long paths
+        shell: powershell
+        run: git config --global core.longpaths true
+      - name: Checkout benchmark harness
+        uses: actions/checkout@v7
+        with:
+          path: harness
+      - name: Checkout source revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref }}
+          submodules: recursive
+          path: source
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: ${{ matrix.arch }}
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1.13.0
+        with:
+          arch: ${{ matrix.arch }}
+      - name: Install fixed build tools
+        shell: powershell
+        run: |
+          python -m pip install pybind11==3.0.0 cmake==3.30.0 ninja==1.11.1 `
+            scikit-build-core==1.1.1 setuptools_scm==10.3.4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Create isolated ReFS / Dev Drive VHDX
+        shell: powershell
+        run: ./harness/.github/scripts/windows-perf-drive.ps1 -Action Create
+      - name: Measure paired builds through pip
+        shell: powershell
+        run: ./harness/.github/scripts/windows-build-perf.ps1
+      - name: Upload timing, commands, and resource samples
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-perf-${{ matrix.platform }}-${{ inputs.order }}
+          path: ${{ runner.temp }}/zvec-build-perf-results
+          retention-days: 7
+      - name: Detach benchmark VHDX
+        if: always()
+        shell: powershell
+        run: ./harness/.github/scripts/windows-perf-drive.ps1 -Action Detach
