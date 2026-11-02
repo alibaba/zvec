@@ -7244,6 +7244,10 @@ zvec_error_code_t convert_document_results(
     const std::vector<std::shared_ptr<zvec::Doc>> &query_results,
     zvec_doc_t ***results, size_t *result_count) {
   *result_count = query_results.size();
+  if (*result_count == 0) {
+    *results = nullptr;
+    return ZVEC_OK;
+  }
   *results =
       static_cast<zvec_doc_t **>(malloc(*result_count * sizeof(zvec_doc_t *)));
 

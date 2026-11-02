@@ -5439,6 +5439,70 @@ static int execute_multi_query_with_rerank(
 
 // ==================== Multi-query reranker tests ====================
 
+void test_empty_query_results(void) {
+  TEST_START();
+
+  multi_query_fixture_t f;
+  int ready = setup_multi_query_fixture(&f, "zvec_test_query_empty_results",
+                                        "query_empty_results");
+  TEST_ASSERT(ready);
+  if (!ready) {
+    TEST_END();
+    return;
+  }
+
+  const char *empty_path = "./zvec_test_empty_collection_queries";
+  zvec_collection_t *empty_collection = NULL;
+  TEST_ASSERT(zvec_collection_create_and_open(empty_path, f.schema, NULL,
+                                              &empty_collection) == ZVEC_OK);
+
+  zvec_vector_query_t *query = zvec_vector_query_create();
+  TEST_ASSERT(zvec_vector_query_set_field_name(query, "embedding1") == ZVEC_OK);
+  TEST_ASSERT(zvec_vector_query_set_query_vector(query, f.e1_v1,
+                                                 sizeof(f.e1_v1)) == ZVEC_OK);
+  TEST_ASSERT(zvec_vector_query_set_topk(query, 3) == ZVEC_OK);
+
+  zvec_multi_query_t *multi_query = zvec_multi_query_create();
+  TEST_ASSERT(zvec_multi_query_set_topk(multi_query, 3) == ZVEC_OK);
+  TEST_ASSERT(zvec_multi_query_set_rerank_rrf(multi_query, 60) == ZVEC_OK);
+  for (int i = 0; i < 2; ++i) {
+    zvec_sub_query_t *sub = zvec_sub_query_create();
+    TEST_ASSERT(zvec_sub_query_set_field_name(
+                    sub, i == 0 ? "embedding1" : "embedding2") == ZVEC_OK);
+    TEST_ASSERT(zvec_sub_query_set_query_vector(sub, i == 0 ? f.e1_v1 : f.e2_v1,
+                                                sizeof(f.e1_v1)) == ZVEC_OK);
+    TEST_ASSERT(zvec_multi_query_add_sub_query(multi_query, sub) == ZVEC_OK);
+    zvec_sub_query_destroy(sub);
+  }
+
+  // No hits from either an empty collection or a filter excluding all docs.
+  zvec_collection_t *collections[] = {empty_collection, f.collection};
+  for (size_t i = 0; i < 2; ++i) {
+    const char *filter = i == 0 ? "" : "id > 100";
+    TEST_ASSERT(zvec_vector_query_set_filter(query, filter) == ZVEC_OK);
+    TEST_ASSERT(zvec_multi_query_set_filter(multi_query, filter) == ZVEC_OK);
+    zvec_doc_t **results = NULL;
+    size_t count = 99;
+    TEST_ASSERT(zvec_collection_query(collections[i], query, &results,
+                                      &count) == ZVEC_OK);
+    TEST_ASSERT(results == NULL && count == 0);
+    zvec_docs_free(results, count);
+
+    count = 99;
+    TEST_ASSERT(zvec_collection_multi_query(collections[i], multi_query,
+                                            &results, &count) == ZVEC_OK);
+    TEST_ASSERT(results == NULL && count == 0);
+    zvec_docs_free(results, count);
+  }
+
+  zvec_vector_query_destroy(query);
+  zvec_multi_query_destroy(multi_query);
+  zvec_collection_destroy(empty_collection);
+  cleanup_temp_directory(empty_path);
+  teardown_multi_query_fixture(&f);
+  TEST_END();
+}
+
 void test_multi_vector_query_with_rrf_reranker(void) {
   TEST_START();
 
@@ -7365,6 +7429,7 @@ int main(void) {
   test_diskann_query_params_functions();
   test_diskann_wiring_on_vector_query();
 
+  test_empty_query_results();
   test_multi_vector_query_with_rrf_reranker();
   test_multi_vector_query_with_weighted_reranker();
   // Performance tests

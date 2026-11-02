@@ -3735,8 +3735,9 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_delete_by_filter(
  * @param collection Collection handle
  * @param query Query parameters pointer
  * @param[out] results Returned document array (needs to be freed by calling
- * zvec_docs_free)
- * @param[out] result_count Number of returned results
+ * zvec_docs_free); NULL when no documents match
+ * @param[out] result_count Number of returned results; zero when no documents
+ * match
  * @return zvec_error_code_t Error code
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_query(
@@ -3784,8 +3785,9 @@ ZVEC_EXPORT void ZVEC_CALL zvec_group_results_free(zvec_group_result_t *results,
  * @param collection Collection handle
  * @param query Multi-query query parameters pointer
  * @param[out] results Returned document array (needs to be freed by calling
- * zvec_docs_free)
- * @param[out] result_count Number of returned results
+ * zvec_docs_free); NULL when no documents match
+ * @param[out] result_count Number of returned results; zero when no documents
+ * match
  * @return zvec_error_code_t Error code
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_multi_query(

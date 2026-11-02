@@ -177,7 +177,6 @@
     zvec_get_version_major;
     zvec_get_version_minor;
     zvec_get_version_patch;
-    zvec_group_results_free;
     zvec_group_by_vector_query_create;
     zvec_group_by_vector_query_destroy;
     zvec_group_by_vector_query_get_field_name;
@@ -202,6 +201,7 @@
     zvec_group_by_vector_query_set_query_vector;
     zvec_group_by_vector_query_set_topk_per_group;
     zvec_group_by_vector_query_set_vamana_params;
+    zvec_group_results_free;
     zvec_index_params_create;
     zvec_index_params_destroy;
     zvec_index_params_get_diskann_list_size;
