@@ -58,6 +58,12 @@ repointing ``examples/c++`` and ``subproject-integration`` at
 ``zvec_core_shared`` / ``zvec_ailego_shared``, which keep the namespace-wide
 list.
 
+The derived list must also not depend on *where* it was generated, because the
+same checked-in files are regenerated on macOS and verified by Linux CI.  A few
+declarations are guarded by platform macros and so appear in one platform's AST
+dump only; those are listed in ``PLATFORM_SPECIFIC_INTERNALS`` and dropped, which
+makes every platform derive the identical list.
+
 Exit status is 0 when the checked-in lists are up to date and 1 otherwise.
 """
 
@@ -105,6 +111,25 @@ THUNK_VARIANTS = ("Thn", "Tv")
 # and namespaces emit no symbol of their own; methods are already covered by
 # their class prefix.
 PATTERN_KINDS = frozenset({"class", "function", "variable"})
+
+# Declarations a public header makes on *some platforms only*, as
+# ``(DECL_KINDS value, qualified name)``.  The AST dump reflects the host
+# platform, so without this list the generated whitelist -- and the drift check
+# against it -- would differ between macOS, where it is usually regenerated, and
+# Linux CI, where it is verified.  ``zvec::ailego::IoUringRing`` alone accounts
+# for one prefix, i.e. 13 of the 4914 patterns.
+#
+# They are dropped rather than force-added, which is both the portable and the
+# tighter answer: each one is *defined* in a private header outside src/include
+# (``IoUringRing`` lives in src/ailego/io/iouring_loader.h, and
+# src/include/zvec/ailego/buffer/vector_page_table.h forward declares it under
+# ``#if defined(__linux__) && !defined(__ANDROID__)`` only to name a private
+# ``std::unique_ptr`` member), so no consumer of the published headers can call
+# it.  Nothing outside libzvec needs its symbols either -- that member's deleter
+# is instantiated in ``~VecBufferPool``, which vector_page_table.cc defines out
+# of line.  Tests that do use IoUringRing link the zvec_ailego component, which
+# keeps the namespace-wide list.
+PLATFORM_SPECIFIC_INTERNALS = frozenset({("class", "zvec::ailego::IoUringRing")})
 
 DECL_KINDS = {
     "NamespaceDecl": "namespace",
@@ -366,7 +391,7 @@ def collect_entities(ast_path: Path) -> list[tuple[str, str]]:
     entities: list[tuple[str, str]] = []
     for document in iter_json_documents(text):
         walk(document, [], entities)
-    return entities
+    return [entity for entity in entities if entity not in PLATFORM_SPECIFIC_INTERNALS]
 
 
 def mangled_components(qualified: str) -> str | None:

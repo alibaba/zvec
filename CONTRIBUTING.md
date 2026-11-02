@@ -152,7 +152,11 @@ git diff src/exported_symbols_zvec.txt
 ```
 
 This needs `clang++` (the header set is parsed with a clang AST dump); without
-it the check skips locally and fails in CI. The list is generated at the *engine*
+it the check skips locally and fails in CI. The dump reflects the host platform,
+so a declaration a public header only makes under a platform macro would make the
+list depend on where it was generated; those are dropped via
+`PLATFORM_SPECIFIC_INTERNALS` in the script, and a macOS regeneration is
+byte-identical to what Linux CI derives. The list is generated at the *engine*
 surface — all 98 public headers — even though the package installs 18, so
 that in-tree and `add_subdirectory` consumers can still link the engine API out
 of `libzvec`; `--surface stable` is the tighter alternative if that ever stops
