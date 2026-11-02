@@ -47,18 +47,10 @@ else()
   set(DISKANN_STRESS_TESTS 1)
 endif()
 
-# Opt in on CI to split the long-running collection suite without recompiling
-# the binary or dropping any cases. Local builds keep a single CTest entry.
-set(ZVEC_COLLECTION_TEST_SHARDS 1 CACHE STRING "Number of collection_test shards")
 foreach(CC_SRCS ${ALL_TEST_SRCS})
   get_filename_component(CC_TARGET ${CC_SRCS} NAME_WE)
-  set(_test_shards 1)
-  if(CC_TARGET STREQUAL "collection_test")
-    set(_test_shards ${ZVEC_COLLECTION_TEST_SHARDS})
-  endif()
   cc_gmock(
     NAME ${CC_TARGET} STRICT
-    SHARDS ${_test_shards}
     DEFS DISKANN_STRESS_TESTS=${DISKANN_STRESS_TESTS}
     LIBS zvec zvec_core
     ${CMAKE_THREAD_LIBS_INIT}

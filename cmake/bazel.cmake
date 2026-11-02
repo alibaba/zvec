@@ -1167,7 +1167,7 @@ endfunction()
 ## Build a C/C++ executable test program
 function(cc_test)
   cmake_parse_arguments(
-      CC_ARGS "" "NAME;VERSION;SHARDS"
+      CC_ARGS "" "NAME;VERSION"
       "SRCS;INCS;DEFS;LIBS;CFLAGS;CXXFLAGS;LDFLAGS;DEPS;ARGS" ${ARGN}
     )
 
@@ -1231,32 +1231,11 @@ function(cc_test)
       WORKING_DIRECTORY ${TEST_WORKING_DIR}
       DEPENDS ${CC_ARGS_NAME}
     )
-  if("${CC_ARGS_SHARDS}" STREQUAL "")
-    set(CC_ARGS_SHARDS 1)
-  endif()
-  if(NOT CC_ARGS_SHARDS MATCHES "^[1-9][0-9]*$")
-    message(FATAL_ERROR "Invalid test shard count: ${CC_ARGS_SHARDS}")
-  endif()
-  if(CC_ARGS_SHARDS GREATER 1)
-    math(EXPR _last_shard "${CC_ARGS_SHARDS} - 1")
-    foreach(_shard RANGE 0 ${_last_shard})
-      set(_shard_dir "${TEST_WORKING_DIR}/shard_${_shard}")
-      file(MAKE_DIRECTORY "${_shard_dir}")
-      set(_shard_name "${CC_ARGS_NAME}.shard_${_shard}")
-      add_test(NAME ${_shard_name}
-        COMMAND $<TARGET_FILE:${CC_ARGS_NAME}> "${CC_ARGS_ARGS}"
-        WORKING_DIRECTORY "${_shard_dir}")
-      # Each process needs its own working directory: DB tests use relative paths.
-      set_tests_properties(${_shard_name} PROPERTIES ENVIRONMENT
-        "GTEST_TOTAL_SHARDS=${CC_ARGS_SHARDS};GTEST_SHARD_INDEX=${_shard}")
-    endforeach()
-  else()
-    add_test(
-        NAME ${CC_ARGS_NAME}
-        COMMAND $<TARGET_FILE:${CC_ARGS_NAME}> "${CC_ARGS_ARGS}"
-        WORKING_DIRECTORY ${TEST_WORKING_DIR}
-      )
-  endif()
+  add_test(
+      NAME ${CC_ARGS_NAME}
+      COMMAND $<TARGET_FILE:${CC_ARGS_NAME}> "${CC_ARGS_ARGS}"
+      WORKING_DIRECTORY ${TEST_WORKING_DIR}
+    )
 endfunction()
 
 ## Add existing test cases to a test suite
@@ -1428,14 +1407,13 @@ endfunction()
 ## Build a C/C++ executable google test program
 function(cc_gtest)
   cmake_parse_arguments(
-    CC_ARGS "" "NAME;VERSION;SHARDS"
+    CC_ARGS "" "NAME;VERSION"
     "SRCS;INCS;DEFS;LIBS;CFLAGS;CXXFLAGS;LDFLAGS;DEPS;ARGS" ${ARGN}
   )
   _find_gtest()
   cc_test(
       NAME "${CC_ARGS_NAME}"
       VERSION "${CC_ARGS_VERSION}"
-      SHARDS "${CC_ARGS_SHARDS}"
       SRCS "${CC_ARGS_SRCS}"
       INCS "${CC_ARGS_INCS};${FIND_GTEST_INCS}"
       DEFS "${CC_ARGS_DEFS}"
@@ -1487,14 +1465,13 @@ endfunction()
 ## Build a C/C++ executable google mock program
 function(cc_gmock)
   cmake_parse_arguments(
-    CC_ARGS "" "NAME;VERSION;SHARDS"
+    CC_ARGS "" "NAME;VERSION"
     "SRCS;INCS;DEFS;LIBS;CFLAGS;CXXFLAGS;LDFLAGS;DEPS;ARGS" ${ARGN}
   )
   _find_gmock()
   cc_test(
       NAME "${CC_ARGS_NAME}"
       VERSION "${CC_ARGS_VERSION}"
-      SHARDS "${CC_ARGS_SHARDS}"
       SRCS "${CC_ARGS_SRCS}"
       INCS "${CC_ARGS_INCS};${FIND_GMOCK_INCS}"
       DEFS "${CC_ARGS_DEFS}"

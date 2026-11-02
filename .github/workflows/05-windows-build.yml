@@ -142,7 +142,6 @@ jobs:
             --no-build-isolation `
             --config-settings='cmake.define.BUILD_TOOLS=ON' `
             --config-settings='cmake.define.ENABLE_WERROR=ON' `
-            --config-settings="cmake.define.ZVEC_COLLECTION_TEST_SHARDS=$env:NPROC" `
             --config-settings='cmake.define.CMAKE_C_COMPILER_LAUNCHER=ccache' `
             --config-settings='cmake.define.CMAKE_CXX_COMPILER_LAUNCHER=ccache'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -175,7 +174,9 @@ jobs:
           key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
 
       - name: Run C++ Tests
-        run: ctest --test-dir build --build-config Release --output-on-failure --parallel $env:NPROC
+        run: |
+          $testJobs = [Math]::Max(1, [int]$env:NPROC - 1)
+          ctest --test-dir build --build-config Release --output-on-failure --parallel $testJobs
         shell: powershell
 
       - name: Run Python Tests
