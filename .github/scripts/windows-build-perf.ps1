@@ -24,6 +24,7 @@ $machine = [ordered]@{
     tools = @(& python -m pip freeze)
 }
 try { $machine.defender = Get-MpComputerStatus | Select-Object AntivirusEnabled, RealTimeProtectionEnabled } catch { $machine.defender = "$($_.Exception.Message)" }
+try { $machine.defender_preferences = Get-MpPreference | Select-Object PerformanceModeStatus } catch { $machine.defender_preferences = "$($_.Exception.Message)" }
 $machine | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "$results/machine.json" -Encoding utf8
 
 function Save-BuildSnapshot($BuildDir, $Destination) {
@@ -34,9 +35,9 @@ function Save-BuildSnapshot($BuildDir, $Destination) {
         lz4 = Join-Path $BuildDir 'thirdparty/lz4/lz4/src/Lz4.BUILD-build'
     }
     foreach ($name in $dirs.Keys) {
-        foreach ($file in @('.ninja_log', 'CMakeCache.txt', 'compile_commands.json')) {
+        foreach ($file in @('.ninja_log', 'CMakeCache.txt', 'compile_commands.json', 'build.ninja', 'CMakeFiles/rules.ninja')) {
             $path = Join-Path $dirs[$name] $file
-            if (Test-Path -LiteralPath $path) { Copy-Item -LiteralPath $path -Destination "$Destination/$name-$file" }
+            if (Test-Path -LiteralPath $path) { Copy-Item -LiteralPath $path -Destination "$Destination/$name-$([IO.Path]::GetFileName($file))" }
         }
     }
 }
@@ -65,10 +66,19 @@ foreach ($case in $cases) {
     $out = Join-Path $results $case
     New-Item -ItemType Directory -Path $source, $out, "$caseRoot/tmp", "$caseRoot/wheels" -Force | Out-Null
     if (Test-Path -LiteralPath "$source/CMakeLists.txt") { throw "Refusing to reuse a source/build tree: $source" }
-    # Two independent, pristine source copies. Git metadata is unnecessary: both
-    # builds use the same explicit version and retain source_sha in machine.json.
-    & robocopy.exe $seed $source /E /XD .git /XF .git /NFL /NDL /NJH /NJS /NP
+    # Keep each submodule's Git metadata: apply_patch_once invokes git apply
+    # from nested source directories and relies on the submodule root.
+    & robocopy.exe $seed $source /E /NFL /NDL /NJH /NJS /NP
     if ($LASTEXITCODE -ge 8) { throw "Source copy failed for $case" }
+    $copiedSha = & git -C $source rev-parse HEAD
+    if ($LASTEXITCODE -ne 0 -or $copiedSha -ne $sourceSha) { throw 'Source copy revision mismatch' }
+    $moduleRoots = @(& git -C $source submodule foreach --quiet --recursive 'git rev-parse --show-toplevel')
+    if ($LASTEXITCODE -ne 0 -or -not $moduleRoots.Count) { throw 'Could not validate copied submodules' }
+    foreach ($moduleRoot in $moduleRoots) {
+        if (-not $moduleRoot.Replace('\', '/').StartsWith($source.Replace('\', '/') + '/', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Submodule still points outside the copied source: $moduleRoot"
+        }
+    }
     $saved = @{}
     $envValues = @{
         CMAKE_GENERATOR = 'Ninja'; CMAKE_BUILD_PARALLEL_LEVEL = $env:PERF_JOBS

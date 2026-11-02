@@ -61,7 +61,7 @@ def compilation_commands(path: Path, source_root: str) -> tuple[dict, dict]:
                 sources[normalize(output)[len(directory) :]] = source
         for flag in ("/MT", "/MD", "/MP", "/O2", "/Ob2", "/showIncludes"):
             if re.search(
-                r"(?:^|\s)" + re.escape(flag) + r"(?:d|\d+)?(?:\s|$)", command
+                r"(?:^|\s)[/-]" + re.escape(flag[1:]) + r"(?:d|\d+)?(?:\s|$)", command
             ):
                 flag_counts[flag] = flag_counts.get(flag, 0) + 1
     return sources, flag_counts
