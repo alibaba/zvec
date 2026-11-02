@@ -112,6 +112,10 @@ if(MSVC)
             CMAKE_ARGS
             -DCMAKE_INSTALL_PREFIX=${EXTERNAL_BINARY_DIR}/usr/local
             -DCMAKE_INSTALL_LIBDIR=lib
+            # Ninja selects its configuration at configure time, not via --config.
+            -DCMAKE_BUILD_TYPE=$<CONFIG>
+            # LZ4's old policy baseline otherwise ignores the CRT setting below.
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
             -DCMAKE_MSVC_RUNTIME_LIBRARY=${CMAKE_MSVC_RUNTIME_LIBRARY}
             -DBUILD_SHARED_LIBS=OFF
             -DBUILD_STATIC_LIBS=ON

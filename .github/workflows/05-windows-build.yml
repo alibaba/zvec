@@ -173,9 +173,12 @@ jobs:
           foreach ($cache in $caches) {
             if (Test-Path $cache) {
               Write-Host "Build backend: $cache"
-              Select-String -Path $cache -Pattern '^CMAKE_GENERATOR:INTERNAL=', '^CMAKE_MAKE_PROGRAM:'
+              Select-String -Path $cache -Pattern '^CMAKE_GENERATOR:INTERNAL=', '^CMAKE_MAKE_PROGRAM:', '^CMAKE_BUILD_TYPE:', '^CMAKE_MSVC_RUNTIME_LIBRARY:'
               if (-not (Select-String -Path $cache -Pattern '^CMAKE_GENERATOR:INTERNAL=Ninja$' -Quiet)) {
                 throw "Expected Ninja in $cache"
+              }
+              if (-not (Select-String -Path $cache -Pattern '^CMAKE_BUILD_TYPE:[^=]+=Release$' -Quiet)) {
+                throw "Expected Release in $cache"
               }
             }
           }
