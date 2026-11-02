@@ -46,7 +46,7 @@ namespace {
 class ScratchFile {
  public:
   explicit ScratchFile(const std::string &directory)
-      : directory_(directory), file_(open(directory), &std::fclose) {
+      : directory_(directory), file_(open(directory)) {
     if (!file_) error("create", IndexError_OpenFile);
   }
   bool valid() const {
@@ -173,8 +173,16 @@ class ScratchFile {
     return code;
   }
 
+  // Avoid using fclose's attributed function type as a template argument:
+  // GCC can reject it with -Werror=ignored-attributes on glibc platforms.
+  struct FileCloser {
+    void operator()(FILE *file) const noexcept {
+      std::fclose(file);
+    }
+  };
+
   std::string directory_;
-  std::unique_ptr<FILE, decltype(&std::fclose)> file_;
+  std::unique_ptr<FILE, FileCloser> file_;
 };
 
 struct KeyId {
