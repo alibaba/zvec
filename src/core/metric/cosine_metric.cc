@@ -63,7 +63,7 @@ class CosineMetric : public IndexMetric {
     if (!distance) return nullptr;
     // CosineConverter appends a float norm to the normalized vector.
     return [=](const void *m, const void *q, size_t dim, float *out) {
-      distance(m, q, dim - extra, out);
+      distance(m, q, dim > extra ? dim - extra : 0, out);
     };
   }
 
@@ -82,7 +82,7 @@ class CosineMetric : public IndexMetric {
     if (!batch) return nullptr;
     return [=](const void **m, const void *q, size_t count, size_t dim,
                float *out, const void **values) {
-      batch(m, q, count, dim - extra, out, values);
+      batch(m, q, count, dim > extra ? dim - extra : 0, out, values);
     };
   }
 
