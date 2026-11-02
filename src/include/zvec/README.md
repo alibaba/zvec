@@ -1,15 +1,15 @@
 # Zvec C++ / C headers
 
 This directory is the SDK's `include/` source tree. Not everything in it carries
-the same stability promise, and not everything in it is installed by default, so
-read this before including a header or adding one.
+the same stability promise, and not everything in it is installed, so read this
+before including a header or adding one.
 
 ## What actually ships
 
 `src/include` is a build directory, not the published surface: it also holds the
-engine internals. CMake installs two different sets.
+engine internals. CMake installs one set out of it.
 
-- **Always installed** — the stable API and its transitive include closure,
+- **Installed** — the stable API and its transitive include closure,
   listed in `cmake/zvec_public_headers.cmake` (18 headers today). That manifest
   is generated, not hand-edited:
 
@@ -18,19 +18,14 @@ engine internals. CMake installs two different sets.
   ```
 
   Concretely that is `zvec/db/**`, `zvec/c_api.h`, `zvec/export.h` and the three
-  `zvec/detail/**` headers they reach — and nothing else. A default package
-  carries no `zvec/core/**`, `zvec/ailego/**` or `zvec/turbo/**` at all.
+  `zvec/detail/**` headers they reach — and nothing else. A package carries no
+  `zvec/core/**`, `zvec/ailego/**` or `zvec/turbo/**` at all.
 
-- **Installed only with `-DZVEC_INSTALL_ENGINE_HEADERS=ON`** (*not* the default)
-  — the remaining `zvec/core/**`, `zvec/ailego/**` and `zvec/turbo/**` headers,
-  taking the package from 18 to 95. Turn it on only if you deliberately want to
-  build against the engine; see "Advanced, unstable headers" below for what that
-  costs you in stability. Building zvec from source needs no switch: the engine
-  headers are right here in the source tree.
-
-  `core` and `ailego` are one switch, not two: `zvec/core/**` reaches 31 of the
-  35 `zvec/ailego/**` headers transitively, so publishing core without ailego
-  would ship headers that do not compile.
+- **Never installed** — the remaining 80 headers: `zvec/core/**`,
+  `zvec/ailego/**` and `zvec/turbo/**`. There is no switch that adds them, and
+  no released package has ever carried them. They are still public to anyone
+  building zvec from source, where they sit right here in the source tree; see
+  "Advanced, unstable headers" below for what relying on them costs you.
 
 ## Libraries
 
@@ -39,31 +34,30 @@ served by them:
 
 | Library | Serves |
 |---------|--------|
-| `libzvec` | the whole C++ surface — `zvec/db/**` and `zvec/c_api.h`'s C++ neighbours, plus the engine headers when they are installed |
+| `libzvec` | the whole C++ surface — `zvec/db/**` and `zvec/c_api.h`'s C++ neighbours, plus the engine API for source-tree consumers |
 | `libzvec_c_api` | the C API |
 
 `libzvec` whole-archives every component and links against a whitelist generated
 from these headers (`scripts/generate_export_whitelist.py`), so it exports what a
 consumer can name here and nothing else — no `zvec::sqlengine`, no `zvec::fts`,
-no `*Impl`. The whitelist is generated at the *engine* surface (all 95 headers)
-even though a default package ships 18, so a source-tree consumer that sees the
+no `*Impl`. The whitelist is generated at the *engine* surface (all 98 headers)
+even though the package ships 18, so a source-tree consumer that sees the
 engine headers can still link the engine API out of `libzvec`; from a prebuilt
 package those extra exports are simply unreachable, because nothing there
 declares them.
 
-The standalone `libzvec_core` / `libzvec_ailego` are built but **not packaged**
-by default; they need `-DZVEC_INSTALL_ENGINE_HEADERS=ON` *and*
-`-DZVEC_INSTALL_ENGINE_SHARED_LIBRARIES=ON`. If you linked `-lzvec_core` or
-`-lzvec_ailego`, link `-lzvec` instead: same symbols, one library.
+The standalone `libzvec_core` / `libzvec_ailego` are built but **never
+packaged**: `libzvec` whole-archives both and exports the same symbols, so
+shipping them too would publish two ways to call one implementation and twice
+the ABI to keep compatible. If you linked `-lzvec_core` or `-lzvec_ailego`, link
+`-lzvec` instead: same symbols, one library.
 
-The static archives follow the *headers*, not the library switch: `libzvec.a`
-always installs (since `zvec/db/**` always does), and `libzvec_core.a` /
-`libzvec_ailego.a` / `libzvec_turbo.a` install only with
-`ZVEC_INSTALL_ENGINE_HEADERS=ON` — an archive whose declarations were not
-installed is a library that cannot be called. The mobile SDK targets
-`zvec::static`, `zvec::core_static` and `zvec::ailego_static` are build-tree only
-and read headers from this directory rather than from an install tree, so
-neither switch reaches them.
+`libzvec.a` installs, since `zvec/db/**` does. `libzvec_core.a`,
+`libzvec_ailego.a` and `libzvec_turbo.a` do not: an archive whose declaring
+headers are not installed is a library that cannot be called. The mobile SDK
+targets `zvec::static`, `zvec::core_static` and `zvec::ailego_static` are
+build-tree only and read headers from this directory rather than from an install
+tree, so they are unaffected.
 
 ## Stable public API
 
@@ -84,17 +78,40 @@ neither switch reaches them.
 | `zvec/c_api.h` | The C API. This is what every language SDK binds to. |
 | `zvec/export.h` | Visibility macros (`ZVEC_API` and friends) |
 
-These follow semantic versioning: they stay source- and ABI-compatible within a
-major version.
+### What is promised
+
+zvec is pre-1.0, so semver's `0.x` rule applies and the surface may still change
+between minor releases. What that means in practice:
+
+- **Source compatibility within a patch series.** A patch release will not remove
+  or re-signature anything in the table above. Breaking changes land in a minor
+  bump and are listed in that release's notes.
+- **No binary (ABI) compatibility, at any version. Rebuild when you upgrade.**
+  The classes here are allocated in *your* translation unit: `Doc`,
+  `HnswRabitqIndexParams` and the rest of the `*IndexParams` family have inline
+  constructors, inline setters and an inline `clone()`, and are handed around as
+  `std::shared_ptr`, so their `sizeof` and member offsets come from the header you
+  compiled against, not from the library. A layout change therefore does not fail
+  to link — an old binary loaded against a newer `libzvec` reads the wrong member
+  and keeps going. Never mix one package's headers with another package's
+  libraries.
+- **The C API is the same story in a milder form.** The long-lived objects
+  (`zvec_collection_t`, `zvec_index_params_t`, …) are opaque handles, but
+  `zvec_error_details_t`, `zvec_string_t` and the array views are value structs
+  whose layout is part of the interface. Call `zvec_check_version()` at startup
+  to assert the minimum library your binding needs.
+
+The intent is for these headers to become ABI-stable within a major version once
+1.0 lands. Until then, treat every release as a rebuild.
 
 ## Advanced, unstable headers
 
 `zvec/core/**`, `zvec/ailego/**` and `zvec/turbo/**` are the engine framework,
-the base library and the SIMD kernels. They are **not installed by default** —
-pass `-DZVEC_INSTALL_ENGINE_HEADERS=ON`, or build zvec from source, where
-`examples/c++/core` and `examples/c++/ailego` link them out of `libzvec`.
+the base library and the SIMD kernels. They are **never installed** — to use
+them, build zvec from source, where `examples/c++/core` and `examples/c++/ailego`
+link them out of `libzvec`.
 
-Either way they are **internal APIs**: they may change or disappear in any
+They are **internal APIs**: they may change or disappear in any
 release without notice, and they are not covered by the compatibility promise
 above. Being exported is not the same as being supported.
 
@@ -121,9 +138,9 @@ constructors, so only the header paths moved.
 
 Treat them as implementation detail that happens to be visible. Include
 `zvec/db/status.h`, `zvec/db/doc.h` or `zvec/db/index_params.h` instead, and do
-not rely on these paths or their contents staying put. Removing them from the
-closure entirely is tracked in the header-governance doc (`Result<T>` and
-`float16_t` are what keep them there).
+not rely on these paths or their contents staying put. Leaving the closure is not
+planned for them: `Result<T>` and `float16_t` are part of the stable API's own
+vocabulary, so the headers that define them ship for as long as those types do.
 
 ## Rules for contributors
 

@@ -87,16 +87,15 @@ CMAKE_BUILD_TYPE=Debug CMAKE_GENERATOR="Unix Makefiles" pip install -v .
 
 Only `src/include/zvec/db/*.h` and `src/include/zvec/c_api.h` are the stable,
 versioned API. `src/include/zvec/{core,ailego,turbo}/**` are the engine and may
-change at any time; they are **not installed by default**, and
-`-DZVEC_INSTALL_ENGINE_HEADERS=ON` adds them for consumers that deliberately
-build against the engine. In-tree code always sees them: `src/include` is on the
-compile include path regardless of the switch.
+change at any time; they are **never installed**, so a consumer that wants them
+builds zvec from source. In-tree code always sees them: `src/include` is on the
+compile include path.
 
 Three headers the stable API cannot do without live in `src/include/zvec/detail/`:
 the vendored `tl::expected` behind `Result<T>`, the `Float16` storage type inside
 `Doc::Value`, and the `constexpr` index defaults used as default arguments. They
 are installed but are **not** API. They sit outside `zvec/{core,ailego,turbo}` so
-a default package contains no engine directory at all, and their old engine paths
+a package contains no engine directory at all, and their old engine paths
 remain as shims, so engine code includes them exactly as before. The namespaces
 did not move — `zvec::ailego::Float16` is mangled into `Doc`'s members — so the
 relocation is ABI-neutral. `check_public_headers.py` fails if the stable closure
@@ -108,12 +107,13 @@ See
 budget in check).
 
 A released package carries two shared libraries, `libzvec` and `libzvec_c_api`,
-and 18 headers. `libzvec` serves the engine headers too when they are installed,
-so the standalone `libzvec_core` / `libzvec_ailego` are built but not packaged;
-getting them needs `-DZVEC_INSTALL_ENGINE_HEADERS=ON` *and*
-`-DZVEC_INSTALL_ENGINE_SHARED_LIBRARIES=ON`. The invariant behind both switches
-is that the install tree never carries an engine artifact whose headers are
-absent — an installed library that cannot be called is worse than no library.
+18 headers and `libzvec.a`. `libzvec` whole-archives every component and exports
+the engine API too, so the standalone `libzvec_core` / `libzvec_ailego` — and
+their archives — are built but never packaged. The invariant is that the install
+tree never carries an engine artifact whose headers are absent: an installed
+library that cannot be called is worse than no library. Both halves are asserted
+on every staged package, in `.github/cmake/sdk-smoke/CMakeLists.txt` and in the
+prebuilt workflow.
 
 The rules are enforced by `scripts/check_public_headers.py`, which runs in
 pre-commit and in the Lint workflow:
@@ -153,14 +153,19 @@ git diff src/exported_symbols_zvec.txt
 
 This needs `clang++` (the header set is parsed with a clang AST dump); without
 it the check skips locally and fails in CI. The list is generated at the *engine*
-surface — all 98 public headers — even though a default package installs 18, so
+surface — all 98 public headers — even though the package installs 18, so
 that in-tree and `add_subdirectory` consumers can still link the engine API out
 of `libzvec`; `--surface stable` is the tighter alternative if that ever stops
 being wanted. The standalone engine libraries (`libzvec_core`, `libzvec_ailego`)
 keep the coarser namespace-wide `src/exported_symbols_cpp.*`, since their whole
-`zvec::core` / `zvec::ailego` surface is their API. The lists apply to non-Debug
-builds only, so Debug keeps full symbols for in-tree debugging and crash
-symbolication.
+`zvec::core` / `zvec::ailego` surface is their API. Both lists apply to non-Debug
+configurations only, so Debug keeps full symbols for in-tree debugging and crash
+symbolication. That test is a `$<CONFIG:Debug>` generator expression, not
+`if(CMAKE_BUILD_TYPE ...)`: a multi-config generator (Xcode, Visual Studio, Ninja
+Multi-Config) has no `CMAKE_BUILD_TYPE` at configure time, so a plain `if()` reads
+"not Debug" and whitelists the Debug configuration too. The hand-written binding
+lists under `src/binding/` are unconditional — `libzvec_c_api` and the Python
+module only ever export their binding surface, in every configuration.
 
 ---
 

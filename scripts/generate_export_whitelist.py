@@ -13,9 +13,11 @@ is implementation detail a consumer can accidentally link against.
 This script derives a whitelist from *what the public headers actually
 declare* instead of a hand-maintained list:
 
-1. Collect the public header set (the stable closure from
-   ``cmake/zvec_public_headers.cmake``, plus ``zvec/core``/``zvec/ailego``/
-   ``zvec/turbo`` when the engine surface is published).
+1. Collect the public header set: the stable closure from
+   ``cmake/zvec_public_headers.cmake`` plus every header under
+   ``zvec/core``/``zvec/ailego``/``zvec/turbo``.  The engine directories are
+   build-tree only -- no package installs them -- but they are still public to
+   anyone reading ``src/include``.
 2. Ask clang for the declarations in those headers
    (``-Xclang -ast-dump=json -Xclang -ast-dump-filter zvec``).
 3. Turn every declared class / function / namespace-scope variable into
@@ -41,14 +43,14 @@ Run from the repository root::
     python3 scripts/generate_export_whitelist.py --surface stable --write
 
 ``--surface engine`` (the default) covers every public header under
-``src/include``.  That is deliberately *wider* than the default package, which
-ships the 18 header stable closure because ``ZVEC_INSTALL_ENGINE_HEADERS`` is
-off: a source-tree consumer -- ``add_subdirectory(zvec)``, or the in-tree
-``examples/c++`` -- reads the engine headers straight from ``src/include`` and
-links ``zvec_shared``, so narrowing the list to the installed subset would make
-the engine API unlinkable for exactly the consumers who can still see its
-declarations.  The extra exports cost nothing at runtime and are unreachable
-from a prebuilt package, which carries no header that declares them.
+``src/include``.  That is deliberately *wider* than the package, which ships the
+18 header stable closure and no engine header at all: a source-tree consumer --
+``add_subdirectory(zvec)``, or the in-tree ``examples/c++`` -- reads the engine
+headers straight from ``src/include`` and links ``zvec_shared``, so narrowing the
+list to the installed subset would make the engine API unlinkable for exactly the
+consumers who can still see its declarations.  The extra exports cost nothing at
+runtime and are unreachable from a prebuilt package, which carries no header that
+declares them.
 
 ``--surface stable`` (366 symbols, measured) is the tighter option if the engine
 surface is ever withdrawn from source-tree consumers too; switching to it means
@@ -192,10 +194,10 @@ HEADER = """\
 # from the clang AST of that header set, so adding a public class or method
 # needs a regeneration (the default --check mode fails otherwise).
 #
-# This is deliberately wider than the installed header set: the default package
-# ships only the stable closure (ZVEC_INSTALL_ENGINE_HEADERS=OFF), but a
-# source-tree consumer reads the engine headers from src/include and links
-# libzvec.  See the module docstring for the trade-off.
+# This is deliberately wider than the installed header set: the package ships
+# only the stable closure and no engine header, but a source-tree consumer reads
+# the engine headers from src/include and links libzvec.  See the module
+# docstring for the trade-off.
 #
 # Patterns are mangled-name globs.  An Itanium nested name is length prefixed,
 # so "_ZN4zvec3Doc*" matches members of zvec::Doc only -- zvec::Document would
@@ -238,7 +240,7 @@ def stable_headers() -> list[str]:
 
 
 def engine_headers() -> list[str]:
-    """Headers the ZVEC_INSTALL_ENGINE_HEADERS=ON install rule publishes."""
+    """Engine headers: build-tree only, never installed, still exported."""
     found = []
     for directory in ENGINE_DIRS:
         root = INCLUDE_ROOT / directory
@@ -448,7 +450,7 @@ def main(argv: list[str] | None = None) -> int:
         choices=("engine", "stable"),
         default="engine",
         help="public header set to derive the whitelist from "
-        "(engine = ZVEC_INSTALL_ENGINE_HEADERS=ON, the release default)",
+        "(engine = every header under src/include, the default)",
     )
     parser.add_argument(
         "--write",

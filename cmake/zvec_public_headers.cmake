@@ -8,10 +8,11 @@
 # set CMake always installs.  scripts/check_public_headers.py recomputes the
 # closure from the sources and fails when this list drifts.
 #
-# Paths are relative to src/include/.  The zvec/core and zvec/ailego entries are
-# unavoidable implementation detail reached from the stable headers; they install
-# regardless of ZVEC_INSTALL_ENGINE_HEADERS, which only controls the *remaining*
-# advanced engine headers.
+# Paths are relative to src/include/.  The closure reaches no engine header
+# (rule 6): the three zvec/detail/ entries are the only implementation detail it
+# needs, and they deliberately live outside zvec/core, zvec/ailego and
+# zvec/turbo.  This list is the complete installed header set: the engine
+# directories are build-tree only, and no package carries them.
 set(ZVEC_STABLE_PUBLIC_HEADERS
     zvec/c_api.h
     zvec/export.h
