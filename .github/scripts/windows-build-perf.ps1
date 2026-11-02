@@ -16,6 +16,7 @@ $machine = [ordered]@{
     order = $env:PERF_ORDER
     jobs = [int]$env:PERF_JOBS
     requested_defender_performance_mode = ($env:PERF_DEFENDER_PERFORMANCE_MODE -eq 'true')
+    defender_enabled_value = $env:PERF_DEFENDER_ENABLED_VALUE
     image_version = $env:ImageVersion
     runner_arch = $env:RUNNER_ARCH
     cpu = @(Get-CimInstance Win32_Processor | Select-Object Name, Manufacturer, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed)
@@ -43,8 +44,9 @@ function Get-DefenderSnapshot {
 function Assert-DefenderExperiment($Snapshot) {
     if ($env:PERF_DEFENDER_PERFORMANCE_MODE -eq 'true' -and
         (-not $Snapshot.AntivirusEnabled -or -not $Snapshot.RealTimeProtectionEnabled -or
-         $Snapshot.PerformanceModeStatus -ne 0)) {
-        throw 'Defender experiment requires real-time protection ON and performance mode Enabled (0)'
+         $env:PERF_DEFENDER_ENABLED_VALUE -notmatch '^\d+$' -or
+         $Snapshot.PerformanceModeStatus -ne [int]$env:PERF_DEFENDER_ENABLED_VALUE)) {
+        throw 'Defender experiment requires real-time protection ON and performance mode Enabled per runner enum'
     }
 }
 

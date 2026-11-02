@@ -44,6 +44,14 @@ if ((Get-Volume -DriveLetter $partition.DriveLetter).FileSystemType -ne 'ReFS') 
 # It never disables Defender or detaches antivirus filters.
 if ($env:PERF_DEFENDER_PERFORMANCE_MODE -eq 'true') {
     if (-not $native) { throw 'Defender performance mode requires native Dev Drive' }
+    $setupStarted = Get-Date
+    $performanceType = (Get-Command Set-MpPreference).Parameters['PerformanceModeStatus'].ParameterType
+    $enabledValue = [int][Enum]::Parse($performanceType, 'Enabled')
+    $enumValues = @([Enum]::GetValues($performanceType) | ForEach-Object {
+        [pscustomobject]@{ Name = $_.ToString(); Value = [int]$_ }
+    })
+    Write-Host "Runner performance-mode enum: $($enumValues | ConvertTo-Json -Compress)"
+    "PERF_DEFENDER_ENABLED_VALUE=$enabledValue" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
     Start-Service -Name WinDefend
     Set-MpPreference -DisableRealtimeMonitoring $false
     Set-MpPreference -PerformanceModeStatus Enabled
@@ -63,22 +71,38 @@ if ($env:PERF_DEFENDER_PERFORMANCE_MODE -eq 'true') {
             IsTamperProtected = $defender.IsTamperProtected
             DisableRealtimeMonitoring = $preference.DisableRealtimeMonitoring
             PerformanceModeStatus = [int]$preference.PerformanceModeStatus
+            ExpectedEnabledValue = $enabledValue
         }
         $states += $state
         Write-Host ($state | ConvertTo-Json -Compress)
-        # The PowerShell enum is Enabled=0, Disabled=1 (not a Boolean).
         $enabled = $state.AntivirusEnabled -and $state.RealTimeProtectionEnabled -and
-            $state.PerformanceModeStatus -eq 0
+            $state.PerformanceModeStatus -eq $enabledValue
         if ($enabled) { break }
         Start-Sleep -Seconds 5
     } while ([DateTime]::UtcNow -lt $deadline)
     $setupResults = Join-Path $env:RUNNER_TEMP 'zvec-build-perf-results'
     New-Item -ItemType Directory -Path $setupResults -Force | Out-Null
     $states | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$setupResults/defender-setup.json" -Encoding utf8
+    $policies = foreach ($path in @(
+        'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection',
+        'HKLM:\SOFTWARE\Microsoft\Windows Defender\Real-Time Protection',
+        'HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Defender'
+    )) {
+        $setting = Get-ItemProperty -LiteralPath $path -Name PerformanceModeStatus -ErrorAction SilentlyContinue
+        if ($null -ne $setting) { [pscustomobject]@{ Path = $path; PerformanceModeStatus = $setting.PerformanceModeStatus } }
+    }
+    $events = @(Get-WinEvent -FilterHashtable @{
+        LogName = 'Microsoft-Windows-Windows Defender/Operational'
+        Id = @(5007, 5013); StartTime = $setupStarted.AddMinutes(-2)
+    } -ErrorAction SilentlyContinue | Where-Object { $_.Message -match 'PerformanceMode' } |
+        Select-Object -First 20 TimeCreated, Id, Message)
+    $diagnostics = [ordered]@{ enum = $enumValues; policies = @($policies); events = $events; final_state = $state }
+    $diagnostics | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath "$setupResults/defender-diagnostics.json" -Encoding utf8
+    Write-Host ($diagnostics | ConvertTo-Json -Depth 7 -Compress)
     if (-not $enabled) {
         throw "Defender setup did not settle after 90 seconds: $($state | ConvertTo-Json -Compress)"
     }
-    Write-Host 'Defender: real-time protection ON; performance mode Enabled (0)'
+    Write-Host "Defender: real-time protection ON; performance mode Enabled ($enabledValue)"
 }
 if ($native) {
     & fsutil.exe devdrv query $root
