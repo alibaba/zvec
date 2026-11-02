@@ -16,6 +16,7 @@
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_metric.h>
+#include <zvec/turbo/turbo.h>
 
 namespace zvec {
 namespace core {
@@ -303,8 +304,10 @@ class InnerProductMetric : public IndexMetric {
   MatrixDistance distance() const override {
     switch (data_type_) {
       case IndexMeta::DataType::DT_FP16:
-        return reinterpret_cast<MatrixDistanceHandle>(
-            ailego::MinusInnerProductMatrix<ailego::Float16, 1, 1>::Compute);
+        return turbo::get_distance_kernels(turbo::MetricType::kInnerProduct,
+                                           turbo::DataType::kFp16,
+                                           turbo::QuantizeType::kRaw)
+            .dist;
 
       case IndexMeta::DataType::DT_FP32:
         return reinterpret_cast<MatrixDistanceHandle>(
@@ -333,7 +336,8 @@ class InnerProductMetric : public IndexMetric {
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
     switch (data_type_) {
       case IndexMeta::DataType::DT_FP16:
-        return MinusInnerProductMatrixFp16(m, n);
+        return m == 1 && n == 1 ? distance()
+                                : MinusInnerProductMatrixFp16(m, n);
 
       case IndexMeta::DataType::DT_FP32:
         return MinusInnerProductMatrixFp32(m, n);
@@ -357,9 +361,10 @@ class InnerProductMetric : public IndexMetric {
             ailego::BaseDistance<ailego::MinusInnerProductMatrix, float, 1,
                                  1>::ComputeBatch);
       case IndexMeta::DataType::DT_FP16:
-        return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-            ailego::BaseDistance<ailego::MinusInnerProductMatrix,
-                                 ailego::Float16, 1, 1>::ComputeBatch);
+        return turbo::get_distance_kernels(turbo::MetricType::kInnerProduct,
+                                           turbo::DataType::kFp16,
+                                           turbo::QuantizeType::kRaw)
+            .batch;
       case IndexMeta::DataType::DT_INT8:
         return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
             ailego::BaseDistance<ailego::MinusInnerProductMatrix, int8_t, 1,
