@@ -15,6 +15,7 @@ $machine = [ordered]@{
     platform = $env:PERF_PLATFORM
     order = $env:PERF_ORDER
     jobs = [int]$env:PERF_JOBS
+    requested_defender_performance_mode = ($env:PERF_DEFENDER_PERFORMANCE_MODE -eq 'true')
     image_version = $env:ImageVersion
     runner_arch = $env:RUNNER_ARCH
     cpu = @(Get-CimInstance Win32_Processor | Select-Object Name, Manufacturer, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed)
@@ -26,6 +27,26 @@ $machine = [ordered]@{
 try { $machine.defender = Get-MpComputerStatus | Select-Object AntivirusEnabled, RealTimeProtectionEnabled } catch { $machine.defender = "$($_.Exception.Message)" }
 try { $machine.defender_preferences = Get-MpPreference | Select-Object PerformanceModeStatus } catch { $machine.defender_preferences = "$($_.Exception.Message)" }
 $machine | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "$results/machine.json" -Encoding utf8
+
+function Get-DefenderSnapshot {
+    try {
+        $status = Get-MpComputerStatus
+        $preference = Get-MpPreference
+        return [pscustomobject]@{
+            AntivirusEnabled = $status.AntivirusEnabled
+            RealTimeProtectionEnabled = $status.RealTimeProtectionEnabled
+            PerformanceModeStatus = [int]$preference.PerformanceModeStatus
+        }
+    } catch { return [pscustomobject]@{ error = $_.Exception.Message } }
+}
+
+function Assert-DefenderExperiment($Snapshot) {
+    if ($env:PERF_DEFENDER_PERFORMANCE_MODE -eq 'true' -and
+        (-not $Snapshot.AntivirusEnabled -or -not $Snapshot.RealTimeProtectionEnabled -or
+         $Snapshot.PerformanceModeStatus -ne 0)) {
+        throw 'Defender experiment requires real-time protection ON and performance mode Enabled (0)'
+    }
+}
 
 function Save-BuildSnapshot($BuildDir, $Destination) {
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
@@ -116,6 +137,8 @@ foreach ($case in $cases) {
     }
     $record = [ordered]@{ case = $case; source_sha = $sourceSha; source = $source; jobs = [int]$env:PERF_JOBS; compiler_cache = 'disabled'; status = 'running' }
     try {
+        $record.defender_before = Get-DefenderSnapshot
+        Assert-DefenderExperiment $record.defender_before
         $record.volume = Get-Volume -DriveLetter $caseDrive.Substring(0, 1) | Select-Object DriveLetter, FileSystemType, Size, SizeRemaining
         $record.native_dev_drive = ($case -eq 'devdrive') -and ($env:PERF_NATIVE_DEV_DRIVE -eq 'True')
         if ($case -eq 'devdrive' -and $env:PERF_NATIVE_DEV_DRIVE -eq 'True') { & fsutil.exe devdrv query $env:PERF_DEV_ROOT | Out-File "$out/devdrive.txt" }
@@ -134,6 +157,8 @@ foreach ($case in $cases) {
             Save-BuildSnapshot $build "$out/tests"
             & ctest --test-dir $build --show-only=json-v1 | Set-Content -LiteralPath "$out/tests.json" -Encoding utf8
             if ($LASTEXITCODE -ne 0) { throw 'Could not list the compiled tests' }
+            $record.defender_after = Get-DefenderSnapshot
+            Assert-DefenderExperiment $record.defender_after
             $record.status = 'success'
         } finally { Pop-Location }
     } catch {
@@ -141,6 +166,7 @@ foreach ($case in $cases) {
         $failures += "$case`: $($_.Exception.Message)"
         Write-Warning $record.error
     } finally {
+        if (-not $record.Contains('defender_after')) { $record.defender_after = Get-DefenderSnapshot }
         Stop-Job $sampler
         Receive-Job $sampler | Out-File "$out/sampler-output.txt"
         Remove-Job $sampler

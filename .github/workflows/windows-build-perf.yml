@@ -12,6 +12,9 @@ on:
       order:
         default: ntfs-first
         type: string
+      defender_performance_mode:
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       source_ref:
@@ -29,6 +32,10 @@ on:
         default: ntfs-first
         type: choice
         options: [ntfs-first, devdrive-first]
+      defender_performance_mode:
+        description: 'ARM-only measurement with Defender real-time protection and performance mode enabled'
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -41,24 +48,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: windows-2022
-            vs_version: '17.0'
-            arch: x64
-            python: '3.10'
-          - platform: windows-2025-vs2026
-            vs_version: '18.0'
-            arch: x64
-            python: '3.10'
-          - platform: windows-11-vs2026-arm
-            vs_version: '18.0'
-            arch: arm64
-            python: '3.11'
+        platform: ${{ fromJSON(inputs.defender_performance_mode && '["windows-11-vs2026-arm"]' || '["windows-2022","windows-2025-vs2026","windows-11-vs2026-arm"]') }}
     env:
       PERF_JOBS: ${{ inputs.jobs }}
       PERF_ORDER: ${{ inputs.order }}
       PERF_PLATFORM: ${{ matrix.platform }}
-      PERF_VS_VERSION: ${{ matrix.vs_version }}
+      PERF_VS_VERSION: ${{ matrix.platform == 'windows-2022' && '17.0' || '18.0' }}
+      PERF_DEFENDER_PERFORMANCE_MODE: ${{ inputs.defender_performance_mode }}
     steps:
       - name: Enable long paths
         shell: powershell
@@ -76,12 +72,12 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
-          python-version: ${{ matrix.python }}
-          architecture: ${{ matrix.arch }}
+          python-version: ${{ matrix.platform == 'windows-11-vs2026-arm' && '3.11' || '3.10' }}
+          architecture: ${{ matrix.platform == 'windows-11-vs2026-arm' && 'arm64' || 'x64' }}
       - name: Set up MSVC
         uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
-          arch: ${{ matrix.arch }}
+          arch: ${{ matrix.platform == 'windows-11-vs2026-arm' && 'arm64' || 'x64' }}
       - name: Install fixed build tools
         shell: powershell
         run: |

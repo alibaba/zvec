@@ -21,6 +21,10 @@ on:
         type: choice
         default: ntfs-first
         options: [ntfs-first, devdrive-first]
+      perf_defender_mode:
+        description: 'ARM-only benchmark with Defender real-time protection and performance mode enabled'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,6 +37,7 @@ jobs:
       source_ref: ${{ inputs.source_ref }}
       jobs: ${{ inputs.perf_jobs }}
       order: ${{ inputs.perf_order }}
+      defender_performance_mode: ${{ inputs.perf_defender_mode }}
 
   # Windows build and test matrix
   build-and-test-windows:

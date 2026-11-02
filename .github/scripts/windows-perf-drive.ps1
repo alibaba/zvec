@@ -39,7 +39,23 @@ if ((Get-Volume -DriveLetter $partition.DriveLetter).FileSystemType -ne 'ReFS') 
 }
 "PERF_DEV_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 "PERF_NATIVE_DEV_DRIVE=$native" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-# Preserve the runner's Defender configuration; do not disable AV filters.
+# Default runs preserve Defender. The optional ARM experiment enables both
+# real-time protection (for NTFS) and performance mode (for trusted Dev Drive).
+# It never disables Defender or detaches antivirus filters.
+if ($env:PERF_DEFENDER_PERFORMANCE_MODE -eq 'true') {
+    if (-not $native) { throw 'Defender performance mode requires native Dev Drive' }
+    Start-Service -Name WinDefend
+    Set-MpPreference -DisableRealtimeMonitoring $false
+    Set-MpPreference -PerformanceModeStatus Enabled
+    $defender = Get-MpComputerStatus
+    $preference = Get-MpPreference
+    # The PowerShell enum is Enabled=0, Disabled=1 (not a Boolean).
+    if (-not $defender.AntivirusEnabled -or -not $defender.RealTimeProtectionEnabled -or
+        [int]$preference.PerformanceModeStatus -ne 0) {
+        throw 'Could not enable Defender real-time protection and performance mode'
+    }
+    Write-Host 'Defender: real-time protection ON; performance mode Enabled (0)'
+}
 if ($native) {
     & fsutil.exe devdrv query $root
     if ($LASTEXITCODE -ne 0) { throw 'Native Dev Drive verification failed' }
