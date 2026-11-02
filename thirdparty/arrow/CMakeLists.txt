@@ -145,6 +145,11 @@ elseif(IOS)
                 LOG_OUTPUT_ON_FAILURE ON
         )
 elseif (MSVC)
+    # The custom configure command bypasses ExternalProject's generator
+    # propagation. A fresh Ninja build on a VS 2026-only machine must not
+    # fall back to CMake 3.x's default VS 2022 generator. Use the environment
+    # default so existing Arrow build directories retain their cached generator.
+    list(APPEND CONFIGURE_ENV_LIST "CMAKE_GENERATOR=${CMAKE_GENERATOR}")
     if(ZVEC_USE_STATIC_CRT)
         set(_ARROW_CRT_FLAG "/MT")
         set(_ARROW_MSVC_RUNTIME "MultiThreaded$<$<CONFIG:Debug>:Debug>")
