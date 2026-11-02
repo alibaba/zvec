@@ -47,12 +47,36 @@ if ($env:PERF_DEFENDER_PERFORMANCE_MODE -eq 'true') {
     Start-Service -Name WinDefend
     Set-MpPreference -DisableRealtimeMonitoring $false
     Set-MpPreference -PerformanceModeStatus Enabled
-    $defender = Get-MpComputerStatus
-    $preference = Get-MpPreference
-    # The PowerShell enum is Enabled=0, Disabled=1 (not a Boolean).
-    if (-not $defender.AntivirusEnabled -or -not $defender.RealTimeProtectionEnabled -or
-        [int]$preference.PerformanceModeStatus -ne 0) {
-        throw 'Could not enable Defender real-time protection and performance mode'
+    # Defender applies changes asynchronously. Keep a short status history so
+    # a runner policy override can be distinguished from service startup lag.
+    $deadline = [DateTime]::UtcNow.AddSeconds(90)
+    $states = @()
+    $enabled = $false
+    do {
+        $defender = Get-MpComputerStatus
+        $preference = Get-MpPreference
+        $state = [pscustomobject]@{
+            utc = [DateTime]::UtcNow.ToString('o')
+            AntivirusEnabled = $defender.AntivirusEnabled
+            RealTimeProtectionEnabled = $defender.RealTimeProtectionEnabled
+            AMRunningMode = $defender.AMRunningMode
+            IsTamperProtected = $defender.IsTamperProtected
+            DisableRealtimeMonitoring = $preference.DisableRealtimeMonitoring
+            PerformanceModeStatus = [int]$preference.PerformanceModeStatus
+        }
+        $states += $state
+        Write-Host ($state | ConvertTo-Json -Compress)
+        # The PowerShell enum is Enabled=0, Disabled=1 (not a Boolean).
+        $enabled = $state.AntivirusEnabled -and $state.RealTimeProtectionEnabled -and
+            $state.PerformanceModeStatus -eq 0
+        if ($enabled) { break }
+        Start-Sleep -Seconds 5
+    } while ([DateTime]::UtcNow -lt $deadline)
+    $setupResults = Join-Path $env:RUNNER_TEMP 'zvec-build-perf-results'
+    New-Item -ItemType Directory -Path $setupResults -Force | Out-Null
+    $states | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$setupResults/defender-setup.json" -Encoding utf8
+    if (-not $enabled) {
+        throw "Defender setup did not settle after 90 seconds: $($state | ConvertTo-Json -Compress)"
     }
     Write-Host 'Defender: real-time protection ON; performance mode Enabled (0)'
 }
