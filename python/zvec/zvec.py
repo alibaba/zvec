@@ -219,6 +219,9 @@ def open(path: str, option: CollectionOption = CollectionOption()) -> Collection
 
     The collection must have been previously created with ``create_and_open``.
 
+    Pending WAL recovery requires opening and closing the collection with
+    ``CollectionOption(read_only=False)`` before a read-only open.
+
     Args:
         path (str): Path or name of the existing collection.
         option (CollectionOption, optional): Configuration options

@@ -33,7 +33,7 @@ int ReadPersistedFlatIndexMeta(const std::string &file_path,
   const char *storage_name = nullptr;
   switch (storage_options.type) {
     case StorageOptions::StorageType::kMMAP:
-      storage_name = "MMapFileStorage";
+      storage_name = "MMapFileReadStorage";
       break;
     case StorageOptions::StorageType::kBufferPool:
       storage_name = "BufferStorage";

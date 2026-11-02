@@ -19,31 +19,31 @@ namespace zvec {
 namespace core {
 
 //! MipsEuclideanMetric
-static const std::string MIPS_EUCLIDEAN_METRIC_M_VALUE =
+inline const std::string MIPS_EUCLIDEAN_METRIC_M_VALUE =
     "mips_euclidean.metric.m_value";
-static const std::string MIPS_EUCLIDEAN_METRIC_U_VALUE =
+inline const std::string MIPS_EUCLIDEAN_METRIC_U_VALUE =
     "mips_euclidean.metric.u_value";
-static const std::string MIPS_EUCLIDEAN_METRIC_MAX_L2_NORM =
+inline const std::string MIPS_EUCLIDEAN_METRIC_MAX_L2_NORM =
     "mips_euclidean.metric.max_l2_norm";
-static const std::string MIPS_EUCLIDEAN_METRIC_INJECTION_TYPE =
+inline const std::string MIPS_EUCLIDEAN_METRIC_INJECTION_TYPE =
     "mips_euclidean.metric.injection_type";
 
 //! QuantizedInteger Metric
-static const std::string QUANTIZED_INTEGER_METRIC_ORIGIN_METRIC_NAME =
+inline const std::string QUANTIZED_INTEGER_METRIC_ORIGIN_METRIC_NAME =
     "proxima.quantized_integer.metric.origin_metric_name";
-static const std::string QUANTIZED_INTEGER_METRIC_ORIGIN_METRIC_PARAMS =
+inline const std::string QUANTIZED_INTEGER_METRIC_ORIGIN_METRIC_PARAMS =
     "proxima.quantized_integer.metric.origin_metric_params";
 
 //! UniformUint7 Metric
-static const std::string UNIFORM_UINT7_METRIC_ORIGIN_METRIC_NAME =
+inline const std::string UNIFORM_UINT7_METRIC_ORIGIN_METRIC_NAME =
     "proxima.uniform_uint7.metric.origin_metric_name";
 
 //! UniformUint8 Metric
-static const std::string UNIFORM_UINT8_METRIC_ORIGIN_METRIC_NAME =
+inline const std::string UNIFORM_UINT8_METRIC_ORIGIN_METRIC_NAME =
     "proxima.uniform_uint8.metric.origin_metric_name";
 
 //! UniformUint4 Metric
-static const std::string UNIFORM_UINT4_METRIC_ORIGIN_METRIC_NAME =
+inline const std::string UNIFORM_UINT4_METRIC_ORIGIN_METRIC_NAME =
     "proxima.uniform_uint4.metric.origin_metric_name";
 
 }  // namespace core

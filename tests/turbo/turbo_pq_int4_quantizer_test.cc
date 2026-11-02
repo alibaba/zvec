@@ -1491,3 +1491,76 @@ TEST(PqInt4Fp16, ConsistencyWithFp32) {
   // Int4 has fewer centroids so slightly lower correlation expected.
   EXPECT_GT(tau, 0.4) << "Kendall tau=" << tau;
 }
+
+// Exercise build-time SDC and search-time ADC through DistanceImpl. Five
+// chunks cover both SIMD and packed-code tails.
+TEST(PqInt4Quantizer, SymmetricBatchAndRestoredAdc) {
+  constexpr size_t dim = 20, chunks = 5, count = 17;
+  for (const char *metric : {"SquaredEuclidean", "InnerProduct", "Cosine"}) {
+    SCOPED_TRACE(metric);
+    IndexMeta meta;
+    meta.set_meta(IndexMeta::DataType::DT_FP32, dim);
+    meta.set_metric(metric, 0, Params());
+    Params params;
+    params.set("num_chunk", static_cast<uint32_t>(chunks));
+    auto original = IndexFactory::CreateQuantizer("PqInt4Quantizer");
+    ASSERT_TRUE(original);
+    ASSERT_EQ(0, original->init(meta, params));
+    auto holder = make_random_holder(512, dim);
+    ASSERT_EQ(0, original->train(holder));
+    std::string blob;
+    ASSERT_EQ(0, original->serialize(&blob));
+    auto restored = IndexFactory::CreateQuantizer("PqInt4Quantizer");
+    ASSERT_TRUE(restored);
+    ASSERT_EQ(0, restored->init(meta, params));
+    ASSERT_EQ(0, restored->deserialize(blob));
+
+    std::vector<std::vector<uint8_t>> codes(
+        count + 1,
+        std::vector<uint8_t>(original->quantized_datapoint_vector_length()));
+    auto iter = holder->create_iterator();
+    for (size_t i = 0; i < codes.size(); ++i, iter->next()) {
+      ASSERT_TRUE(iter->is_valid());
+      original->quantize_data(iter->data(), codes[i].data());
+    }
+    std::vector<const void *> rows;
+    for (size_t i = 1; i < codes.size(); ++i) rows.push_back(codes[i].data());
+    IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dim);
+    {
+      auto pq =
+          std::dynamic_pointer_cast<zvec::turbo::PqInt4Quantizer>(original);
+      ASSERT_TRUE(pq);
+      auto distance = pq->sym_distance(codes[0].data(), qmeta);
+      ASSERT_TRUE(distance.valid());
+      if (ailego::internal::CpuFeatures::static_flags_.NEON) {
+        ASSERT_TRUE(distance.batch_valid());
+      }
+      distance.batch(nullptr, 0, nullptr);
+      for (size_t n : {1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 17}) {
+        std::vector<float> out(n + 2, -12345.0f);
+        distance.batch(rows.data(), n, out.data() + 1);
+        EXPECT_EQ(-12345.0f, out.front());
+        EXPECT_EQ(-12345.0f, out.back());
+        for (size_t i = 0; i < n; ++i) {
+          const float expected =
+              original->calc_distance_dp_dp(rows[i], codes[0].data());
+          EXPECT_NEAR(expected, out[i + 1],
+                      1e-5f * std::max(1.0f, std::fabs(expected)));
+        }
+      }
+    }
+    // Deserialization deliberately omits the build-only SDC table. Verify
+    // its supported search path instead of calling SDC without that table.
+    auto query_iter = holder->create_iterator();
+    ASSERT_TRUE(query_iter->is_valid());
+    std::string lut(original->quantized_query_vector_length(), '\0');
+    original->quantize_query(query_iter->data(), &lut[0]);
+    auto original_adc = original->distance(lut.data(), qmeta);
+    auto restored_adc = restored->distance(lut.data(), qmeta);
+    ASSERT_TRUE(restored_adc.batch_valid());
+    std::vector<float> out(count);
+    restored_adc.batch(rows.data(), count, out.data());
+    for (size_t i = 0; i < count; ++i)
+      EXPECT_NEAR(original_adc(rows[i]), out[i], 1e-4f);
+  }
+}

@@ -898,6 +898,18 @@ int FlatStreamerEntity::get_vectors_by_key(
   return 0;
 }
 
+int FlatStreamerEntity::retain_stable_data(
+    std::shared_ptr<const void> *lifetime) const {
+  if (!lifetime) return IndexError_InvalidArgument;
+  // MBT_MMAP also describes caller-managed scratch, so its tag alone cannot
+  // establish that iterator data remains valid across reads.
+  if (!storage_ || storage_->name() != "MMapFileStorage") {
+    return IndexError_NotImplemented;
+  }
+  *lifetime = storage_;
+  return 0;
+}
+
 IndexProvider::Iterator::Pointer FlatStreamerEntity::creater_iterator() const {
   auto entity = this->clone();
   if (!entity) {

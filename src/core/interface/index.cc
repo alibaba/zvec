@@ -503,6 +503,10 @@ int Index::init(const BaseIndexParam &param) {
 
 
 int Index::open(const std::string &file_path, StorageOptions storage_options) {
+  if (storage_options.read_only && storage_options.create_new) {
+    LOG_ERROR("Cannot create storage for a read-only index");
+    return core::IndexError_Runtime;
+  }
   ailego::Params storage_params;
   // storage_params.set("proxima.mmap_file.storage.memory_warmup", true);
   // storage_params.set("proxima.mmap_file.storage.segment_meta_capacity",
@@ -519,14 +523,16 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
 
   switch (storage_options.type) {
     case StorageOptions::StorageType::kMMAP: {
-      storage_ = core::IndexFactory::CreateStorage("MMapFileStorage");
+      const char *storage_name =
+          storage_options.read_only ? "MMapFileReadStorage" : "MMapFileStorage";
+      storage_ = core::IndexFactory::CreateStorage(storage_name);
       if (storage_ == nullptr) {
-        LOG_ERROR("Failed to create MMapFileStorage");
+        LOG_ERROR("Failed to create %s", storage_name);
         return core::IndexError_Runtime;
       }
       int ret = storage_->init(storage_params);
       if (ret != 0) {
-        LOG_ERROR("Failed to init MMapFileStorage, path: %s, err: %s",
+        LOG_ERROR("Failed to init %s, path: %s, err: %s", storage_name,
                   file_path.c_str(), core::IndexError::What(ret));
         return ret;
       }
@@ -1415,6 +1421,10 @@ int Index::_sparse_search(const VectorData &vector_data,
 
 int Index::merge(const std::vector<Index::Pointer> &indexes,
                  const IndexFilter &filter, const MergeOptions &options) {
+  if (!is_open_ || is_read_only_) {
+    LOG_ERROR("Cannot merge into an index that is closed or read-only");
+    return core::IndexError_Runtime;
+  }
   if (indexes.empty()) {
     return core::IndexError_Success;
   }
