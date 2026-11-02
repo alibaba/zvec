@@ -287,7 +287,7 @@ void HnswContext::fill_random_to_topk_full() {
     std::function<bool(node_id_t)> myfilter = [](node_id_t) { return false; };
     if (this->filter().is_valid()) {
       myfilter = [&](node_id_t id) {
-        return this->filter()(entity_->get_key(id));
+        return this->filter()(entity_->key_of_existing_node(id));
       };
     }
 
@@ -306,7 +306,7 @@ void HnswContext::fill_random_to_topk_full() {
          static_cast<size_t>(heap.size()) < capacity && i < entity_->doc_cnt();
          ++i) {
       const auto id = gen();
-      if (!visit_filter_.visited(id) && entity_->get_key(id) != kInvalidKey &&
+      if (!visit_filter_.visited(id) && entity_->contains_node(id) &&
           !myfilter(id)) {
         visit_filter_.set_visited(id);
         SearchHeap::emplace(heap, id, dc_.dist(id));

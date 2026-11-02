@@ -49,10 +49,6 @@ struct StorageOptions {
   // true : MAP_PRIVATE on a writable file. Flush/close forces dirty pages
   //        back to disk via explicit pwrite.
   bool copy_on_write = false;
-
-  // Preserve invalid-key slots when document IDs contain NULL-vector gaps.
-  // This keeps direct ID addressing without enabling a key-to-ID hash map.
-  bool allow_id_gaps = false;
 };
 
 struct MergeOptions {

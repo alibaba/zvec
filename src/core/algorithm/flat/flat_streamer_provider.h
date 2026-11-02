@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <mutex>
 #include "flat_distance_matrix.h"
 #include "flat_searcher.h"
 #include "flat_streamer.h"
@@ -43,6 +44,14 @@ class FlatStreamerProvider : public IndexProvider {
 
   //! Retrieve count of vectors
   size_t count() const override {
+    std::call_once(count_once_, [&] {
+      for (uint32_t id = 0; id < total_vector_count_; ++id)
+        if (owner_->entity().contains_node(id)) ++vector_count_;
+    });
+    return vector_count_;
+  }
+
+  size_t slot_count() const override {
     return total_vector_count_;
   }
 
@@ -98,6 +107,8 @@ class FlatStreamerProvider : public IndexProvider {
   const FlatStreamer<BATCH_SIZE> *owner_{nullptr};
   IndexStorage::Segment::Pointer features_segment_{};
   uint32_t feature_size_{0};
+  mutable std::once_flag count_once_;
+  mutable size_t vector_count_{0};
   uint32_t total_vector_count_{0};
   mutable std::vector<uint8_t> block_buffer_{};
 };

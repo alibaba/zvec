@@ -536,7 +536,7 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
 
   if (ctx->filter().is_valid()) {
     auto filter = [&](node_id_t id) {
-      return ctx->filter()(entity.get_key_typed(id));
+      return ctx->filter()(entity.key_of_existing_node_typed(id));
     };
     run_with_filter(filter);
   } else {
@@ -586,7 +586,7 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
 
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   std::function<std::string(node_id_t)> group_by = [&](node_id_t id) {
-    return ctx->group_by()(entity.get_key_typed(id));
+    return ctx->group_by()(entity.key_of_existing_node_typed(id));
   };
 
   // devide into groups
@@ -611,7 +611,7 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
     std::function<bool(node_id_t)> filter = [](node_id_t) { return false; };
     if (ctx->filter().is_valid()) {
       filter = [&](node_id_t id) {
-        return ctx->filter()(entity.get_key_typed(id));
+        return ctx->filter()(entity.key_of_existing_node_typed(id));
       };
     }
 

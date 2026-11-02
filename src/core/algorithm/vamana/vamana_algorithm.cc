@@ -533,7 +533,7 @@ int VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
 
     if (index_filter.is_valid()) {
       auto filter = [&](node_id_t id) {
-        return index_filter(entity.get_key_typed(id));
+        return index_filter(entity.key_of_existing_node_typed(id));
       };
       run_with_filter(filter);
     } else {

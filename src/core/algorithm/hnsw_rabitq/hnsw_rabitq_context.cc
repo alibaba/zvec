@@ -268,7 +268,7 @@ void HnswRabitqContext::fill_random_to_topk_full() {
   std::function<bool(node_id_t)> myfilter = [](node_id_t) { return false; };
   if (this->filter().is_valid()) {
     myfilter = [&](node_id_t id) {
-      return this->filter()(entity_->get_key(id));
+      return this->filter()(entity_->key_of_existing_node(id));
     };
   }
 
@@ -285,7 +285,7 @@ void HnswRabitqContext::fill_random_to_topk_full() {
 
   for (size_t i = 0; !topk_heap_.full() && i < entity_->doc_cnt(); ++i) {
     const auto id = gen();
-    if (!visit_filter_.visited(id) && entity_->get_key(id) != kInvalidKey &&
+    if (!visit_filter_.visited(id) && entity_->contains_node(id) &&
         !myfilter(id)) {
       visit_filter_.set_visited(id);
       topk_heap_.emplace(id, dc().dist(id));

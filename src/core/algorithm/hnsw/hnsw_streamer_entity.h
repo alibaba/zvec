@@ -26,6 +26,7 @@
 #include <sparsehash/dense_hash_set>
 #include <zvec/ailego/container/heap.h>
 #include <zvec/core/framework/index_framework.h>
+#include "utility/node_key_map.h"
 #include "hnsw_chunk.h"
 #include "hnsw_entity.h"
 #include "hnsw_index_hash.h"
@@ -56,6 +57,7 @@ class HnswStreamerEntity : public HnswEntity {
 
   //! Get primary key of the node id
   key_t get_key(node_id_t id) const override;
+  virtual key_t read_stored_key(node_id_t id) const;
 
   //! Get vector feature data by key
   const void *get_vector(node_id_t id) const override;
@@ -106,15 +108,15 @@ class HnswStreamerEntity : public HnswEntity {
   }
 
   void set_use_key_info_map(bool use_id_map) {
-    use_key_info_map_ = use_id_map;
-    read_stored_keys_ = use_id_map || allow_id_gaps_;
-    LOG_DEBUG("use_key_info_map_: %d", (int)use_key_info_map_);
+    key_map_.set_enabled(use_id_map);
   }
 
-  // NULL slots retain kInvalidKey even when keys otherwise equal node IDs.
-  void set_allow_id_gaps(bool allow) {
-    allow_id_gaps_ = allow;
-    read_stored_keys_ = use_key_info_map_ || allow;
+  key_t key_of_existing_node(node_id_t id) const override {
+    return key_map_.enabled() ? read_stored_key(id) : id;
+  }
+
+  key_t key_of_existing_node_typed(node_id_t id) const {
+    return key_map_.enabled() ? read_stored_key(id) : id;
   }
 
  public:
@@ -136,7 +138,7 @@ class HnswStreamerEntity : public HnswEntity {
     if (id != kInvalidNodeId) {
       return get_vector(id, block);
     } else {
-      return IndexError_InvalidArgument;
+      return IndexError_NoExist;
     }
   }
 
@@ -186,31 +188,21 @@ class HnswStreamerEntity : public HnswEntity {
   }
 
   //! Get vector local id by key
+  node_id_t find_node(key_t key) const {
+    if (key == kInvalidKey) return kInvalidNodeId;
+    if (key_map_.enabled()) {
+      const auto id = key_map_.find(key);
+      return id < doc_cnt() && get_key(id) == key ? id : kInvalidNodeId;
+    }
+    if (key >= doc_cnt()) return kInvalidNodeId;
+    const auto id = static_cast<node_id_t>(key);
+    return id < doc_cnt() && get_key(id) == key ? id : kInvalidNodeId;
+  }
+
   inline node_id_t get_id(key_t key) const {
-    if (use_key_info_map_) {
-      keys_map_lock_->lock_shared();
-      auto it = keys_map_->find(key);
-      node_id_t id = it == keys_map_->end() ? kInvalidNodeId : it->second;
-      keys_map_lock_->unlock_shared();
-      return id;
-    } else {
-      return key;
-    }
+    return find_node(key);
   }
 
-  void print_key_map() const {
-    std::cout << "key map begins" << std::endl;
-
-    auto iter = keys_map_->begin();
-    while (iter != keys_map_->end()) {
-      std::cout << "key: " << iter->first << ", id: " << iter->second
-                << std::endl;
-      ;
-      iter++;
-    }
-
-    std::cout << "key map ends" << std::endl;
-  }
 
   //! Typed get_neighbors: returns NeighborsT<MemBlock> without runtime
   //! branching on MemoryBlock type. MmapMemoryBlock specialization uses
@@ -276,9 +268,7 @@ class HnswStreamerEntity : public HnswEntity {
       bool filter_same_key, bool get_vector_enabled,
       const NIHashMapPointer &upper_neighbor_index,
       const std::shared_ptr<std::shared_mutex> &upper_neighbor_rw_mutex,
-      std::shared_ptr<ailego::SharedMutex> &keys_map_lock,
-      const HashMapPointer<key_t, node_id_t> &keys_map, bool use_key_info_map,
-      std::vector<Chunk::Pointer> &&node_chunks,
+      const NodeKeyMap &key_map, std::vector<Chunk::Pointer> &&node_chunks,
       std::vector<Chunk::Pointer> &&upper_neighbor_chunks,
       const ChunkBroker::Pointer &broker,
       std::shared_ptr<std::vector<const uint8_t *>> node_bases,
@@ -293,11 +283,8 @@ class HnswStreamerEntity : public HnswEntity {
         upper_neighbor_mask_((1U << upper_neighbor_mask_bits_) - 1),
         filter_same_key_(filter_same_key),
         get_vector_enabled_(get_vector_enabled),
-        use_key_info_map_(use_key_info_map),
-        read_stored_keys_(use_key_info_map),
         upper_neighbor_index_(upper_neighbor_index),
-        keys_map_lock_(keys_map_lock),
-        keys_map_(keys_map),
+        key_map_(key_map),
         node_chunks_(std::move(node_chunks)),
         upper_neighbor_chunks_(std::move(upper_neighbor_chunks)),
         broker_(broker) {
@@ -610,14 +597,10 @@ class HnswStreamerEntity : public HnswEntity {
   uint32_t upper_neighbor_mask_{0U};
   bool filter_same_key_{false};
   bool get_vector_enabled_{false};
-  bool use_key_info_map_{true};
-  bool read_stored_keys_{true};
-  bool allow_id_gaps_{false};
 
   NIHashMapPointer upper_neighbor_index_{};
 
-  mutable std::shared_ptr<ailego::SharedMutex> keys_map_lock_{};
-  HashMapPointer<key_t, node_id_t> keys_map_{};
+  NodeKeyMap key_map_;
 
   //! the chunks will be changed in searcher, so need mutable
   //! data chunk include: vector, key, level 0 neighbors
@@ -801,9 +784,6 @@ inline int HnswStreamerEntity::get_vector_typed<BufferPoolMemoryBlock>(
 template <>
 inline key_t HnswStreamerEntity::get_key_typed<MmapMemoryBlock>(
     node_id_t id) const {
-  if (!read_stored_keys_) {
-    return id;
-  }
   auto loc = get_key_chunk_loc(id);
   ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
   ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
@@ -821,9 +801,6 @@ inline key_t HnswStreamerEntity::get_key_typed<MmapMemoryBlock>(
 template <>
 inline key_t HnswStreamerEntity::get_key_typed<BufferPoolMemoryBlock>(
     node_id_t id) const {
-  if (!read_stored_keys_) {
-    return id;
-  }
   auto loc = get_key_chunk_loc(id);
   ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
   ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
@@ -895,9 +872,6 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
   }
 
   ailego_force_inline key_t get_key_typed(node_id_t id) const {
-    if (!read_stored_keys_) {
-      return id;
-    }
     uint32_t chunk_idx = id >> node_index_mask_bits_;
     uint32_t offset = (id & node_index_mask_) * node_size() + vector_size();
     const char *base = get_node_chunk_base(chunk_idx);
@@ -1094,9 +1068,6 @@ class HnswContiguousStreamerEntity : public HnswMmapStreamerEntity {
 
   ailego_force_inline key_t get_key_typed(node_id_t id) const {
     if (ailego_likely(graph_base_ != nullptr)) {
-      if (!read_stored_keys_) {
-        return id;
-      }
       const char *ptr = graph_base_ + static_cast<size_t>(id) * graph_stride_;
       return *reinterpret_cast<const key_t *>(ptr);
     }

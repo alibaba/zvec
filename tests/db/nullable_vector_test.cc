@@ -461,6 +461,7 @@ TEST_F(NullableVectorStorageTest, CoreKeysStayEqualToDocumentIds) {
       auto provider = indexer.create_index_provider();
       ASSERT_NE(provider, nullptr);
       EXPECT_EQ(provider->count(), 2U);
+      EXPECT_EQ(provider->slot_count(), 4U);
       auto iter = provider->create_iterator();
       ASSERT_NE(iter, nullptr);
       std::set<uint64_t> keys;

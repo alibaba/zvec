@@ -268,7 +268,7 @@ class HnswDistCalculator {
   //! Get a vector by node id, from the provider when set
   int get_vector(node_id_t id, IndexStorage::MemoryBlock &block) const {
     if (provider_) {
-      key_t key = entity_->get_key(id);
+      key_t key = entity_->key_of_existing_node(id);
       if (ailego_unlikely(key == kInvalidKey)) {
         return IndexError_NoExist;
       }

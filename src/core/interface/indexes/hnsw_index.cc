@@ -199,6 +199,8 @@ int HNSWIndex::create_and_init_streamer(const BaseIndexParam &param) {
       LOG_ERROR("Provider is not supported by sparse HNSW index");
       return core::IndexError_Unsupported;
     }
+    proxima_index_params_.set(core::PARAM_HNSW_SPARSE_STREAMER_USE_ID_MAP,
+                              param_.use_id_map);
     proxima_index_params_.set(core::PARAM_HNSW_SPARSE_STREAMER_EFCONSTRUCTION,
                               param_.ef_construction);
     proxima_index_params_.set(

@@ -164,7 +164,9 @@ void HnswRabitqAlgorithm::search_neighbors(level_t level,
   CandidateHeap &candidates = ctx->candidates();
   std::function<bool(node_id_t)> filter = [](node_id_t) { return false; };
   if (ctx->filter().is_valid()) {
-    filter = [&](node_id_t id) { return ctx->filter()(entity.get_key(id)); };
+    filter = [&](node_id_t id) {
+      return ctx->filter()(entity.key_of_existing_node(id));
+    };
   }
 
   candidates.clear();

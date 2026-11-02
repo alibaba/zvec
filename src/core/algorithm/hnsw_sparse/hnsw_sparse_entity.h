@@ -448,6 +448,15 @@ class HnswSparseEntity {
   //! Get primary key of the node id
   virtual key_t get_key(node_id_t id) const = 0;
 
+  bool contains_node(node_id_t id) const {
+    return id < doc_cnt() && get_key(id) != kInvalidKey;
+  }
+
+  virtual key_t key_of_existing_node(node_id_t id) const {
+    return get_key(id);
+  }
+
+
   //! Get vector feature data by key
   virtual const void *get_vector_meta(node_id_t id) const = 0;
 

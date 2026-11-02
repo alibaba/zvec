@@ -521,10 +521,18 @@ FlatStreamerEntity::Pointer FlatStreamerEntity::clone() const {
   return FlatStreamerEntity::Pointer(entity);
 }
 
+const void *FlatStreamerEntity::get_vector_by_position(uint32_t id) const {
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock block;
+  return get_vector_by_position(id, block) == 0
+             ? buffer.assign(block, index_meta_.element_size())
+             : nullptr;
+}
+
 int FlatStreamerEntity::get_vector_by_position(
     uint32_t id, IndexStorage::MemoryBlock &block) const {
-  if (id >= withid_key_info_map_.size()) {
-    return -1;
+  if (id >= withid_key_info_map_.size() || !contains_node(id)) {
+    return IndexError_NoExist;
   }
   const VectorLocation &loc = withid_key_info_map_[id];
   auto segment = this->get_segment(loc.segment_id);
@@ -715,6 +723,7 @@ int FlatContiguousStreamerEntity::build_contiguous_memory() {
   storage->position_to_key.assign(count, static_cast<uint64_t>(kInvalidKey));
 
   for (uint32_t id = 0; id < count; ++id) {
+    if (!contains_node(id)) continue;
     IndexStorage::MemoryBlock block;
     uint64_t vector_key = kInvalidKey;
     int ret = 0;
@@ -812,6 +821,7 @@ const void *FlatStreamerEntity::get_vector_by_key(uint64_t key) const {
 
 int FlatStreamerEntity::get_vector_by_key(
     const uint64_t key, IndexStorage::MemoryBlock &block) const {
+  if (key == kInvalidKey) return IndexError_NoExist;
   VectorLocation loc{};
   key_info_map_lock_->lock_shared();
   if (use_key_info_map_) {
@@ -822,7 +832,7 @@ int FlatStreamerEntity::get_vector_by_key(
     }
     loc = iterator->second;
   } else {
-    if (key < withid_key_info_map_.size()) {
+    if (key < withid_key_info_map_.size() && contains_node(key)) {
       loc = withid_key_info_map_[key];
     } else {
       key_info_map_lock_->unlock_shared();
@@ -847,6 +857,10 @@ int FlatStreamerEntity::get_vectors_by_key(
   key_info_map_lock_->lock_shared();
   if (use_key_info_map_) {
     for (uint32_t i = 0; i < count; ++i) {
+      if (keys[i] == kInvalidKey) {
+        key_info_map_lock_->unlock_shared();
+        return IndexError_NoExist;
+      }
       auto iterator = key_info_map_.find(keys[i]);
       if (iterator == key_info_map_.end()) {
         key_info_map_lock_->unlock_shared();
@@ -856,7 +870,7 @@ int FlatStreamerEntity::get_vectors_by_key(
     }
   } else {
     for (uint32_t i = 0; i < count; ++i) {
-      if (keys[i] >= withid_key_info_map_.size()) {
+      if (keys[i] >= withid_key_info_map_.size() || !contains_node(keys[i])) {
         key_info_map_lock_->unlock_shared();
         return -1;
       }
@@ -937,6 +951,9 @@ void FlatStreamerEntity::Iterator::read_next_block() {
     keys_ = reinterpret_cast<const uint64_t *>(
         reinterpret_cast<const char *>(data_) +
         elemsize * entity_->block_vector_count());
+    deleted_ = reinterpret_cast<const DeletionMap *>(
+        static_cast<const char *>(data_) + block_size - sizeof(BlockHeader) -
+        sizeof(DeletionMap));
     return;
   }
 
@@ -1101,44 +1118,10 @@ int FlatStreamerEntity::load_linear_meta(IndexStorage::Pointer storage) {
   return 0;
 }
 
-int FlatStreamerEntity::load_segment_keys_to_map(BlockLocation block) {
-  while (this->is_valid_block(block)) {
-    auto segment = this->get_segment(block.segment_id);
-
-    IndexStorage::MemoryBlock block_header_block;
-    this->get_block_header(block, block_header_block);
-    const BlockHeader *hd =
-        reinterpret_cast<const BlockHeader *>(block_header_block.data());
-    if (ailego_unlikely(hd == nullptr)) {
-      LOG_ERROR("Failed to get block header");
-      return IndexError_ReadData;
-    }
-    IndexStorage::MemoryBlock keys_block;
-    this->get_block_keys(block, keys_block);
-    const uint64_t *keys =
-        reinterpret_cast<const uint64_t *>(keys_block.data());
-    IndexStorage::MemoryBlock deletion_map_block;
-    this->get_block_deletion_map(block, deletion_map_block);
-    const DeletionMap *deletion_map =
-        reinterpret_cast<const DeletionMap *>(deletion_map_block.data());
-
-    for (uint32_t vector_index = 0; vector_index < hd->vector_count;
-         ++vector_index) {
-      if (deletion_map->test(vector_index)) {
-        continue;
-      }
-      size_t vector_off =
-          this->get_block_vector_offset(block.block_index, vector_index);
-      key_info_map_[keys[vector_index]] =
-          VectorLocation(block.segment_id, false, vector_off);
-      id_key_vector_.push_back(keys[vector_index]);
-    }
-    block = hd->next;
-  }
-  return 0;
-}
-
 int FlatStreamerEntity::load_segment_keys_to_vector() {
+  IndexStorage::MemoryBlock keys_block, deletion_block;
+  const uint64_t *keys = nullptr;
+  const DeletionMap *deleted = nullptr;
   for (uint32_t i = 0; i < meta_.header.total_vector_count; i++) {
     size_t block_id = i / block_vector_count();
     uint32_t vector_index = i % block_vector_count();
@@ -1148,13 +1131,26 @@ int FlatStreamerEntity::load_segment_keys_to_vector() {
         segments_[1]->data_size() / linear_block_size();
     size_t segment_id = block_id / segment_block_count + 1;
     size_t real_block_id = block_id % segment_block_count;
-    size_t vector_off =
-        this->get_block_vector_offset(real_block_id, vector_index);
-
+    size_t vector_off = get_block_vector_offset(real_block_id, vector_index);
+    if (vector_index == 0) {
+      BlockLocation location;
+      location.segment_id = segment_id;
+      location.block_index = real_block_id;
+      if (get_block_keys(location, keys_block) != 0 ||
+          get_block_deletion_map(location, deletion_block) != 0)
+        return IndexError_ReadData;
+      keys = static_cast<const uint64_t *>(keys_block.data());
+      deleted = static_cast<const DeletionMap *>(deletion_block.data());
+    }
     withid_key_info_map_.push_back(
         VectorLocation(segment_id, false, vector_off));
-    size_t key_off = get_block_key_offset(real_block_id, vector_index);
-    withid_key_map_.push_back(key_off);
+    withid_key_map_.push_back(
+        get_block_key_offset(real_block_id, vector_index));
+    uint64_t key =
+        deleted->test(vector_index) ? kInvalidKey : keys[vector_index];
+    id_key_vector_.push_back(key);
+    if (use_key_info_map_ && key != kInvalidKey)
+      key_info_map_[key] = withid_key_info_map_.back();
   }
   return 0;
 }
@@ -1202,12 +1198,7 @@ int FlatStreamerEntity::load_storage(IndexStorage::Pointer storage) {
       LOG_ERROR("Failed to get block loc");
       return IndexError_ReadData;
     }
-    BlockLocation block = *bl;
-    if (use_key_info_map_) {
-      ret = this->load_segment_keys_to_map(block);
-    } else {
-      ret = this->load_segment_keys_to_vector();
-    }
+    ret = this->load_segment_keys_to_vector();
     if (ailego_unlikely(ret != 0)) {
       return ret;
     }
@@ -1401,7 +1392,7 @@ int FlatStreamerEntity::add_to_block(const BlockLocation &block, uint64_t key,
 
   VectorLocation loc(block.segment_id, false, vector_off);
   key_info_map_lock_->lock();
-  key_info_map_[key] = loc;
+  if (use_key_info_map_ && key != kInvalidKey) key_info_map_[key] = loc;
   id_key_vector_.push_back(key);
   withid_key_info_map_.push_back(loc);
   withid_key_map_.push_back(key_off);
@@ -1499,7 +1490,8 @@ int FlatStreamerEntity::add_vector_with_id(const uint32_t id, const void *query,
       return IndexError_WriteData;
     }
     key_info_map_lock_->lock();
-    key_info_map_[key] = vector_loc;
+    if (use_key_info_map_) key_info_map_[key] = vector_loc;
+    id_key_vector_[id] = key;
     key_info_map_lock_->unlock();
   }
   (*stats_.mutable_added_count())++;

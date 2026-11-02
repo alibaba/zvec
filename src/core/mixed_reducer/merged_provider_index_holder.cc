@@ -425,7 +425,7 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
     }
     source.provider_count = provider->count();
     const auto source_rows =
-        source.id_map ? source.id_map->size() : source.provider_count;
+        source.id_map ? source.id_map->size() : provider->slot_count();
     if (source_rows > std::numeric_limits<uint64_t>::max() - logical_id_base) {
       this->set_status(IndexError_Overflow);
       return this->status();

@@ -84,7 +84,7 @@ Status VectorColumnIndexer::create_proxima_index(
 
   if (0 != index->open(this->index_file_path(),
                        {storage_type, read_options.create_new,
-                        read_options.read_only, false, has_null_bitmap()})) {
+                        read_options.read_only})) {
     return Status::InternalError("Failed to open index");
   }
 

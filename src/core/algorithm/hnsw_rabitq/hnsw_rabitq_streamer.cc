@@ -313,7 +313,6 @@ int HnswRabitqStreamer::open(IndexStorage::Pointer stg) {
     }
   }
 
-  entity_.set_allow_id_gaps(allow_id_gaps_);
   int ret = entity_.open(std::move(stg), max_index_size_, check_crc_enabled_);
   if (ret != 0) {
     return ret;
@@ -534,6 +533,7 @@ int HnswRabitqStreamer::update_context(HnswRabitqContext *ctx) const {
 int HnswRabitqStreamer::add_with_id_impl(
     uint32_t id, const void *query, const IndexQueryMeta &qmeta,
     IndexStreamer::Context::Pointer &context) {
+  if (id == kInvalidNodeId) return IndexError_InvalidArgument;
   if (!provider_) {
     LOG_ERROR("Provider is nullptr, cannot add vector");
     return IndexError_InvalidArgument;
@@ -630,6 +630,12 @@ int HnswRabitqStreamer::add_with_id_impl(
 int HnswRabitqStreamer::add_impl(uint64_t pkey, const void *query,
                                  const IndexQueryMeta &qmeta,
                                  IndexStreamer::Context::Pointer &context) {
+  if (!use_id_map_) {
+    if (pkey >= UINT32_MAX) return IndexError_InvalidArgument;
+    return add_with_id_impl(static_cast<uint32_t>(pkey), query, qmeta, context);
+  }
+  if (pkey == kInvalidKey) return IndexError_InvalidArgument;
+
   if (!provider_) {
     LOG_ERROR("Provider is nullptr, cannot add vector");
     return IndexError_InvalidArgument;
@@ -786,7 +792,7 @@ int HnswRabitqStreamer::search_impl(
 
 void HnswRabitqStreamer::print_debug_info() {
   for (node_id_t id = 0; id < entity_.doc_cnt(); ++id) {
-    if (entity_.get_key(id) == kInvalidKey) {
+    if (!entity_.contains_node(id)) {
       continue;
     }
     Neighbors neighbours = entity_.get_neighbors(0, id);
@@ -857,7 +863,7 @@ int HnswRabitqStreamer::search_bf_impl(
       ctx->group_topk_heaps().clear();
 
       for (node_id_t id = 0; id < entity_.doc_cnt(); ++id) {
-        if (entity_.get_key(id) == kInvalidKey) {
+        if (!entity_.contains_node(id)) {
           continue;
         }
 
@@ -888,7 +894,7 @@ int HnswRabitqStreamer::search_bf_impl(
       ctx->reset_query(query);
       ctx->topk_heap().clear();
       for (node_id_t id = 0; id < entity_.doc_cnt(); ++id) {
-        if (entity_.get_key(id) == kInvalidKey) {
+        if (!entity_.contains_node(id)) {
           continue;
         }
         if (!ctx->filter().is_valid() || !ctx->filter()(entity_.get_key(id))) {

@@ -164,7 +164,11 @@ class ZVEC_CORE_API Index {
 
   bool is_dirty() const;
 
+  // Legacy alias for get_slot_count(); DB logical rows may include NULL tails.
   uint32_t get_doc_count() const;
+  // Addressable slots, including gaps, versus vectors that can be retrieved.
+  uint32_t get_slot_count() const;
+  uint32_t get_vector_count() const;
 
   core::IndexStreamer::Pointer index_searcher();
 

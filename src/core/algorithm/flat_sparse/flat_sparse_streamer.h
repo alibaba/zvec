@@ -114,12 +114,9 @@ class FlatSparseStreamer : public IndexStreamer {
                         std::string *sparse_indices_buffer,
                         std::string *sparse_values_buffer) const override;
 
-  int get_sparse_vector_by_id(
-      uint32_t id, uint32_t *sparse_count, std::string *sparse_indices_buffer,
-      std::string *sparse_values_buffer) const override {
-    return get_sparse_vector(id, sparse_count, sparse_indices_buffer,
-                             sparse_values_buffer);
-  }
+  int get_sparse_vector_by_id(uint32_t id, uint32_t *sparse_count,
+                              std::string *sparse_indices_buffer,
+                              std::string *sparse_values_buffer) const override;
 
   //! Retrieve statistics
   const Stats &stats() const override {
@@ -163,6 +160,7 @@ class FlatSparseStreamer : public IndexStreamer {
 
   uint32_t magic_{0U};
   State state_{STATE_INIT};
+  bool use_id_map_{true};
 
   //! avoid add vector while dumping index
   ailego::SharedMutex shared_mutex_{};

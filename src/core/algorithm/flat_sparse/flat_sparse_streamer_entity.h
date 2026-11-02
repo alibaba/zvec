@@ -25,6 +25,7 @@
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/framework/index_streamer.h>
+#include "utility/node_key_map.h"
 #include "flat_sparse_entity.h"
 #include "flat_sparse_index_format.h"
 #include "flat_sparse_utility.h"
@@ -96,12 +97,22 @@ class FlatSparseStreamerEntity : public FlatSparseEntity {
     return sparse_unit_size_;
   }
 
+  void set_use_id_map(bool enabled) {
+    key_map_.set_enabled(enabled);
+  }
+
+  node_id_t find_node(uint64_t key) const {
+    if (key == kInvalidKey) return kInvalidNodeId;
+    if (key_map_.enabled()) {
+      node_id_t id = key_map_.find(key);
+      return contains_node(id) && get_key(id) == key ? id : kInvalidNodeId;
+    }
+    if (key >= doc_cnt()) return kInvalidNodeId;
+    node_id_t id = static_cast<node_id_t>(key);
+    return contains_node(id) && get_key(id) == key ? id : kInvalidNodeId;
+  }
   inline node_id_t get_id(uint64_t key) const override {
-    keys_map_lock_->lock_shared();
-    auto it = keys_map_->find(key);
-    node_id_t id = it == keys_map_->end() ? kInvalidNodeId : it->second;
-    keys_map_lock_->unlock_shared();
-    return id;
+    return find_node(key);
   }
 
   uint64_t get_key(node_id_t node_id) const override;
@@ -215,18 +226,16 @@ class FlatSparseStreamerEntity : public FlatSparseEntity {
 
 
  private:
-  FlatSparseStreamerEntity(
-      IndexStreamer::Stats &stats, const FlatSparseMeta &meta,
-      const FlatSparseStreamerMeta &streamer_meta,
-      std::shared_ptr<ailego::SharedMutex> keys_map_lock,
-      std::shared_ptr<std::map<uint64_t, node_id_t>> keys_map,
-      std::vector<Chunk::Pointer> sparse_data_chunks,
-      std::vector<Chunk::Pointer> sparse_offset_chunks)
+  FlatSparseStreamerEntity(IndexStreamer::Stats &stats,
+                           const FlatSparseMeta &meta,
+                           const FlatSparseStreamerMeta &streamer_meta,
+                           const NodeKeyMap &key_map,
+                           std::vector<Chunk::Pointer> sparse_data_chunks,
+                           std::vector<Chunk::Pointer> sparse_offset_chunks)
       : stats_(stats),
         meta_(meta),
         streamer_meta_(streamer_meta),
-        keys_map_lock_(keys_map_lock),
-        keys_map_(keys_map),
+        key_map_(key_map),
         sparse_data_chunks_(std::move(sparse_data_chunks)),
         sparse_offset_chunks_(std::move(sparse_offset_chunks)) {}
 
@@ -245,8 +254,7 @@ class FlatSparseStreamerEntity : public FlatSparseEntity {
   std::mutex mutex_{};
 
   // keys map
-  mutable std::shared_ptr<ailego::SharedMutex> keys_map_lock_{};
-  std::shared_ptr<std::map<uint64_t, node_id_t>> keys_map_{};
+  NodeKeyMap key_map_;
 
   // chunks
   mutable std::vector<Chunk::Pointer> sparse_data_chunks_{};

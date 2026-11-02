@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <mutex>
 #include <zvec/core/framework/index_provider.h>
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_streamer.h>
@@ -39,6 +40,14 @@ class HnswIndexProvider : public IndexProvider {
 
   //! Retrieve count of vectors
   size_t count() const override {
+    std::call_once(count_once_, [&] {
+      for (uint32_t id = 0; id < entity_->doc_cnt(); ++id)
+        if (entity_->contains_node(id)) ++vector_count_;
+    });
+    return vector_count_;
+  }
+
+  size_t slot_count() const override {
     return entity_->doc_cnt();
   }
 
@@ -112,7 +121,7 @@ class HnswIndexProvider : public IndexProvider {
    private:
     node_id_t get_next_valid_id(node_id_t start_id) {
       for (node_id_t i = start_id; i < entity_->doc_cnt(); i++) {
-        if (entity_->get_key(i) != kInvalidKey) {
+        if (entity_->contains_node(i)) {
           cur_id_ = i;
           return i;
         }
@@ -127,6 +136,8 @@ class HnswIndexProvider : public IndexProvider {
   };
 
  private:
+  mutable std::once_flag count_once_;
+  mutable size_t vector_count_{0};
   const IndexMeta &meta_;
   const HnswEntity::Pointer entity_;
   const std::string owner_class_;

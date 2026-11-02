@@ -91,6 +91,19 @@ output document rows, reserving row IDs for NULL documents. The mapping is used
 only while rebuilding indexes; unfiltered non-nullable merges retain their
 existing path. Training providers expose only real vectors with original keys.
 
+Core key mapping and node existence are independent. Identity addressing uses
+no key hash table, while external-key indexes rebuild their optional map from
+stored keys on open. Checked lookup and fetch reject invalid slots in either
+mode. Graph traversal uses a separate accessor for nodes already known to
+exist, retaining direct identity-key access without validity lookups.
+Providers report valid vectors with `count()` and addressable slots with
+`slot_count()`. The legacy `Index::get_doc_count()` retains slot-span semantics;
+`get_vector_count()` reports valid vectors. Provider counts are computed lazily
+and cached for the provider's view; metadata and merge offsets use slot spans
+without scanning vectors. No additional core file fields or format versions
+are needed for this separation.
+
+
 An all-NULL column uses an empty Flat backing even when its declared index
 requires training. The sidecar is flushed and published before the manifest
 references the block.

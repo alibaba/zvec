@@ -253,10 +253,10 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
   if (target_builder_ == nullptr) {
     if (is_sparse_) {
       auto provider = target_streamer_->create_sparse_provider();
-      if (provider) next_id = provider->count();
+      if (provider) next_id = provider->slot_count();
     } else {
       auto provider = target_streamer_->create_provider();
-      if (provider) next_id = provider->count();
+      if (provider) next_id = provider->slot_count();
     }
   }
 
@@ -270,7 +270,7 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
       // due to filter, producing can't be parallel
       read_results[i] = read_sparse_vec(i, filter, id_offset, &next_id);
       id_offset += source_id_maps_.empty()
-                       ? streamers_[i]->create_sparse_provider()->count()
+                       ? streamers_[i]->create_sparse_provider()->slot_count()
                        : source_id_maps_[i]->size();
     }
 
@@ -293,7 +293,7 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
       if (read_results[i] != 0) {
         break;
       }
-      id_offset += source_id_maps_.empty() ? provider->count()
+      id_offset += source_id_maps_.empty() ? provider->slot_count()
                                            : source_id_maps_[i]->size();
     }
 

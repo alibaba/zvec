@@ -269,13 +269,19 @@ bool Index::is_trained() const {
 }
 
 uint32_t Index::get_doc_count() const {
-  if (streamer_ == nullptr) {
-    return -1;
-  }
-  if (is_sparse_) {
-    return streamer_->create_sparse_provider()->count();
-  }
-  return streamer_->create_provider()->count();
+  return get_slot_count();
+}
+
+uint32_t Index::get_slot_count() const {
+  if (!streamer_) return UINT32_MAX;
+  return is_sparse_ ? streamer_->create_sparse_provider()->slot_count()
+                    : streamer_->create_provider()->slot_count();
+}
+
+uint32_t Index::get_vector_count() const {
+  if (!streamer_) return UINT32_MAX;
+  return is_sparse_ ? streamer_->create_sparse_provider()->count()
+                    : streamer_->create_provider()->count();
 }
 
 core::IndexStreamer::Pointer Index::index_searcher() {
@@ -586,9 +592,6 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
   ret = prepare_streamer_open(storage_options);
   if (ret != 0) {
     return ret;
-  }
-  if (streamer_) {
-    streamer_->set_allow_id_gaps(storage_options.allow_id_gaps);
   }
   if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
     LOG_ERROR("Failed to open streamer, path: %s", file_path.c_str());

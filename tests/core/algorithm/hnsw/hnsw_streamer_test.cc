@@ -3990,7 +3990,6 @@ TEST_F(HnswStreamerTest, NullGapsStayOutOfGraphAndPaddedResults) {
   ASSERT_EQ(0, storage->init(ailego::Params()));
   ASSERT_EQ(0, storage->open(dir_ + "null-gaps.index", true));
   ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
-  streamer->set_allow_id_gaps(true);
   ASSERT_EQ(0, streamer->open(storage));
   auto context = streamer->create_context();
   ASSERT_NE(context, nullptr);
@@ -4007,6 +4006,8 @@ TEST_F(HnswStreamerTest, NullGapsStayOutOfGraphAndPaddedResults) {
   std::set<uint64_t> keys;
   for (; iter->is_valid(); iter->next()) keys.insert(iter->key());
   EXPECT_EQ(keys, (std::set<uint64_t>{2, 5}));
+  context = streamer->create_context();
+  ASSERT_NE(context, nullptr);
   context->set_topk(10);
   for (int repeat = 0; repeat < 8; ++repeat) {
     ASSERT_EQ(0, streamer->search_impl(vector.data(), meta, context));

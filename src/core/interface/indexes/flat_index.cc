@@ -19,6 +19,7 @@
 #include <zvec/core/interface/index.h>
 #include "algorithm/flat/flat_index_format.h"
 #include "algorithm/flat/flat_utility.h"
+#include "algorithm/flat_sparse/flat_sparse_utility.h"
 
 namespace zvec::core_interface {
 
@@ -302,6 +303,8 @@ int FlatIndex::create_and_init_streamer(const BaseIndexParam &param) {
   proxima_index_params_.set(core::PARAM_FLAT_USE_CONTIGUOUS_MEMORY,
                             param_.use_contiguous_memory);
   if (is_sparse_) {
+    proxima_index_params_.set(core::PARAM_FLAT_SPARSE_USE_ID_MAP,
+                              param_.use_id_map);
     streamer_ = core::IndexFactory::CreateStreamer("FlatSparseStreamer");
   } else {
     streamer_ = core::IndexFactory::CreateStreamer("FlatStreamer");

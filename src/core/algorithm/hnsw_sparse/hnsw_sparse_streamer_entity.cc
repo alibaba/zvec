@@ -38,13 +38,11 @@ int HnswSparseStreamerEntity::init(uint64_t max_index_size,
   std::lock_guard<std::mutex> lock(mutex_);
   broker_ = std::make_shared<SparseChunkBroker>(stats_);
   upper_neighbor_index_ = std::make_shared<NIHashMap>();
-  keys_map_lock_ = std::make_shared<ailego::SharedMutex>();
-  keys_map_ = std::make_shared<HashMap<key_t, node_id_t>>();
-  if (!keys_map_ || !upper_neighbor_index_ || !broker_ || !keys_map_lock_) {
+  key_map_.set_enabled(key_map_.enabled());
+  if (!upper_neighbor_index_ || !broker_) {
     LOG_ERROR("HnswSparseStreamerEntity new object failed");
     return IndexError_NoMemory;
   }
-  keys_map_->set_empty_key(kInvalidKey);
 
   neighbor_size_ = neighbors_size();
   upper_neighbor_size_ = upper_neighbors_size();
@@ -70,9 +68,7 @@ int HnswSparseStreamerEntity::cleanup() {
   if (upper_neighbor_index_) {
     upper_neighbor_index_->cleanup();
   }
-  if (keys_map_) {
-    keys_map_->clear();
-  }
+  key_map_.clear();
   node_chunks_.clear();
   upper_neighbor_chunks_.clear();
   filter_same_key_ = false;
@@ -294,6 +290,11 @@ int HnswSparseStreamerEntity::get_sparse_data_from_vector(
 }
 
 key_t HnswSparseStreamerEntity::get_key(node_id_t id) const {
+  if (id >= doc_cnt()) return kInvalidKey;
+  return read_stored_key(id);
+}
+
+key_t HnswSparseStreamerEntity::read_stored_key(node_id_t id) const {
   auto loc = get_key_chunk_loc(id);
   IndexStorage::MemoryBlock key_block;
   ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
@@ -456,9 +457,9 @@ int HnswSparseStreamerEntity::open(IndexStorage::Pointer stg, bool check_crc) {
     LOG_WARN("Index closed abnormally, using totalVecs as curDocCnt");
     *mutable_doc_cnt() = total_vecs;
   }
-  if (filter_same_key_ || get_vector_enabled_) {
+  if (key_map_.enabled()) {
     for (node_id_t id = 0U; id < doc_cnt(); ++id) {
-      (*keys_map_)[get_key(id)] = id;
+      if (contains_node(id)) key_map_.insert(get_key(id), id);
     }
   }
 
@@ -474,7 +475,7 @@ int HnswSparseStreamerEntity::close() {
   flush_header();
   mutable_header()->reset();
   upper_neighbor_index_->cleanup();
-  keys_map_->clear();
+  key_map_.clear();
   header_.clear();
   node_chunks_.clear();
   upper_neighbor_chunks_.clear();
@@ -698,11 +699,7 @@ int HnswSparseStreamerEntity::add_vector(level_t level, key_t key,
     return IndexError_Runtime;
   }
 
-  if (filter_same_key_ || get_vector_enabled_) {
-    keys_map_lock_->lock();
-    (*keys_map_)[key] = local_id;
-    keys_map_lock_->unlock();
-  }
+  key_map_.insert(key, local_id);
 
   *mutable_doc_cnt() += 1;
   *mutable_total_sparse_count() += sparse_count;
@@ -716,6 +713,7 @@ int HnswSparseStreamerEntity::add_vector(level_t level, key_t key,
 int HnswSparseStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
                                                  const std::string &sparse_vec,
                                                  uint32_t sparse_count) {
+  if (id == kInvalidNodeId) return IndexError_InvalidArgument;
   key_t key = id;
   SparseChunk::Pointer node_chunk;
   SparseChunk::Pointer sparse_node_chunk;
@@ -877,11 +875,7 @@ int HnswSparseStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
   }
   *mutable_total_sparse_count() += sparse_count;
 
-  if (filter_same_key_ || get_vector_enabled_) {
-    keys_map_lock_->lock();
-    (*keys_map_)[key] = id;
-    keys_map_lock_->unlock();
-  }
+  key_map_.insert(key, id);
 
   broker_->mark_dirty();
 
@@ -931,7 +925,7 @@ const HnswSparseEntity::Pointer HnswSparseStreamerEntity::clone() const {
       new (std::nothrow) HnswSparseStreamerEntity(
           stats_, header(), chunk_size_, node_index_mask_bits_,
           upper_neighbor_mask_bits_, filter_same_key_, get_vector_enabled_,
-          sparse_chunk_size_, upper_neighbor_index_, keys_map_lock_, keys_map_,
+          sparse_chunk_size_, upper_neighbor_index_, key_map_,
           std::move(node_chunks), std::move(upper_neighbor_chunks),
           std::move(sparse_node_chunks), broker_);
   if (ailego_unlikely(!entity)) {
@@ -958,6 +952,7 @@ int HnswSparseStreamerEntity::get_sparse_vector_by_key(
 int HnswSparseStreamerEntity::get_sparse_vector_by_id(
     node_id_t id, uint32_t *sparse_count, std::string *sparse_indices_buffer,
     std::string *sparse_values_buffer) const {
+  if (!contains_node(id)) return IndexError_NoExist;
   IndexStorage::MemoryBlock block;
   get_sparse_data(id, block);
   const void *sparse_data = block.data();

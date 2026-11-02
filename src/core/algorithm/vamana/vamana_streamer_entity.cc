@@ -22,9 +22,6 @@ namespace core {
 
 VamanaStreamerEntity::VamanaStreamerEntity(IndexStreamer::Stats &stats)
     : stats_(stats) {
-  keys_map_lock_ = std::make_shared<ailego::SharedMutex>();
-  keys_map_ = std::make_shared<HashMap<key_t, node_id_t>>();
-  keys_map_->set_empty_key(kInvalidKey);
   broker_ = std::make_shared<ChunkBroker>(stats);
 }
 
@@ -32,9 +29,7 @@ VamanaStreamerEntity::~VamanaStreamerEntity() = default;
 
 int VamanaStreamerEntity::cleanup() {
   node_chunks_.clear();
-  if (keys_map_) {
-    keys_map_->clear();
-  }
+  key_map_.clear();
   header_.clear();
   extra_values_size_ = 0;
   return 0;
@@ -48,7 +43,11 @@ int VamanaStreamerEntity::init(size_t /*max_doc_cnt*/) {
 }
 
 key_t VamanaStreamerEntity::get_key(node_id_t id) const {
-  if (!read_stored_keys_) return id;
+  if (id >= doc_cnt()) return kInvalidKey;
+  return read_stored_key(id);
+}
+
+key_t VamanaStreamerEntity::read_stored_key(node_id_t id) const {
   auto loc = get_key_chunk_loc(id);
   if (ailego_unlikely(loc.first >= node_chunks_.size())) return kInvalidKey;
   IndexStorage::MemoryBlock ptr;
@@ -184,11 +183,7 @@ int VamanaStreamerEntity::add_vector(key_t key, const void *vec,
     return IndexError_Runtime;
   }
 
-  if (use_key_info_map_) {
-    keys_map_lock_->lock();
-    (*keys_map_)[key] = local_id;
-    keys_map_lock_->unlock();
-  }
+  key_map_.insert(key, local_id);
 
   *mutable_doc_cnt() += 1;
   broker_->mark_dirty();
@@ -276,11 +271,7 @@ int VamanaStreamerEntity::add_vector_with_id(node_id_t id, const void *vec) {
     }
   }
 
-  if (use_key_info_map_) {
-    keys_map_lock_->lock();
-    (*keys_map_)[key] = id;
-    keys_map_lock_->unlock();
-  }
+  key_map_.insert(key, id);
 
   broker_->mark_dirty();
   return 0;
@@ -403,12 +394,10 @@ int VamanaStreamerEntity::open(IndexStorage::Pointer stg,
   }
 
   // Rebuild key map
-  if (use_key_info_map_) {
+  if (key_map_.enabled()) {
     for (node_id_t i = 0; i < doc_cnt(); ++i) {
-      key_t k = get_key(i);
-      if (k != kInvalidKey) {
-        (*keys_map_)[k] = i;
-      }
+      const auto key = get_key(i);
+      if (key != kInvalidKey) key_map_.insert(key, i);
     }
   }
 
@@ -458,7 +447,7 @@ int VamanaStreamerEntity::close() {
   std::lock_guard<std::mutex> lock(mutex_);
   flush_header();
   mutable_header()->reset();
-  keys_map_->clear();
+  key_map_.clear();
   header_.clear();
   node_chunks_.clear();
   dist_chunks_.clear();
@@ -498,14 +487,12 @@ const VamanaEntity::Pointer VamanaStreamerEntity::clone() const {
 
   auto *entity = new (std::nothrow) VamanaStreamerEntity(
       stats_, header(), chunk_size_, node_index_mask_bits_, get_vector_enabled_,
-      use_key_info_map_, keys_map_lock_, keys_map_, std::move(cloned_chunks),
-      broker_);
+      key_map_, std::move(cloned_chunks), broker_);
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("VamanaStreamerEntity new failed");
   } else {
     entity->set_extra_values_size(extra_values_size());
   }
-  if (entity) entity->set_allow_id_gaps(allow_id_gaps_);
   return VamanaEntity::Pointer(entity);
 }
 
@@ -522,14 +509,12 @@ const VamanaEntity::Pointer VamanaMmapStreamerEntity::clone() const {
 
   auto *entity = new (std::nothrow) VamanaMmapStreamerEntity(
       stats_, header(), chunk_size_, node_index_mask_bits_, get_vector_enabled_,
-      use_key_info_map_, keys_map_lock_, keys_map_, std::move(cloned_chunks),
-      broker_);
+      key_map_, std::move(cloned_chunks), broker_);
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("VamanaMmapStreamerEntity new failed");
   } else {
     entity->set_extra_values_size(extra_values_size());
   }
-  if (entity) entity->set_allow_id_gaps(allow_id_gaps_);
   return VamanaEntity::Pointer(entity);
 }
 
@@ -546,8 +531,7 @@ const VamanaEntity::Pointer VamanaContiguousStreamerEntity::clone() const {
 
   auto *entity = new (std::nothrow) VamanaContiguousStreamerEntity(
       stats_, header(), chunk_size_, node_index_mask_bits_, get_vector_enabled_,
-      use_key_info_map_, keys_map_lock_, keys_map_, std::move(cloned_chunks),
-      broker_);
+      key_map_, std::move(cloned_chunks), broker_);
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("VamanaContiguousStreamerEntity new failed");
     return VamanaEntity::Pointer();
@@ -566,7 +550,6 @@ const VamanaEntity::Pointer VamanaContiguousStreamerEntity::clone() const {
   entity->extra_values_base_ = extra_values_base_;
   entity->extra_values_stride_ = extra_values_stride_;
 
-  if (entity) entity->set_allow_id_gaps(allow_id_gaps_);
   return VamanaEntity::Pointer(entity);
 }
 

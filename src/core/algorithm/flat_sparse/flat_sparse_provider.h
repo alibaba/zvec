@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <mutex>
 #include <string>
 #include <utility/sparse_utility.h>
 #include <zvec/ailego/logger/logger.h>
@@ -42,6 +43,14 @@ class FlatSparseIndexProvider : public IndexSparseProvider {
 
   //! Retrieve count of vectors
   size_t count() const override {
+    std::call_once(count_once_, [&] {
+      for (uint32_t id = 0; id < entity_->doc_cnt(); ++id)
+        if (entity_->contains_node(id)) ++vector_count_;
+    });
+    return vector_count_;
+  }
+
+  size_t slot_count() const override {
     return entity_->doc_cnt();
   }
 
@@ -172,7 +181,7 @@ class FlatSparseIndexProvider : public IndexSparseProvider {
    private:
     node_id_t get_next_valid_id(node_id_t start_id) {
       for (node_id_t i = start_id; i < entity_->doc_cnt(); i++) {
-        if (entity_->get_key(i) != kInvalidKey) {
+        if (entity_->contains_node(i)) {
           return i;
         }
       }
@@ -180,6 +189,8 @@ class FlatSparseIndexProvider : public IndexSparseProvider {
     }
 
    private:
+    mutable std::once_flag count_once_;
+    mutable size_t vector_count_{0};
     const std::shared_ptr<FlatSparseEntityType> entity_{nullptr};
     const IndexMeta &meta_;
     node_id_t cur_id_;
@@ -190,6 +201,8 @@ class FlatSparseIndexProvider : public IndexSparseProvider {
   };
 
  private:
+  mutable std::once_flag count_once_;
+  mutable size_t vector_count_{0};
   const std::shared_ptr<FlatSparseEntityType> entity_{nullptr};
   const IndexMeta &meta_;
   const std::string owner_class_;

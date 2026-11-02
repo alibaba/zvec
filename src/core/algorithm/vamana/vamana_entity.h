@@ -233,6 +233,17 @@ class VamanaEntity {
 
   // Pure virtual interface
   virtual key_t get_key(node_id_t id) const = 0;
+
+  // Existence is independent of external-key mapping.
+  bool contains_node(node_id_t id) const {
+    return id < doc_cnt() && get_key(id) != kInvalidKey;
+  }
+
+  // Graph traversal may use this after establishing that the node exists.
+  virtual key_t key_of_existing_node(node_id_t id) const {
+    return get_key(id);
+  }
+
   virtual const void *get_vector(node_id_t id) const = 0;
   virtual const void *get_extra_values(node_id_t id) const = 0;
   virtual int get_vector(const node_id_t id,

@@ -166,12 +166,12 @@ class FlatStreamer : public IndexStreamer {
     return entity_->get_vector_by_key(key, block);
   }
   const void *get_vector_by_id(uint32_t id) const override {
-    return get_vector_by_key(id);
+    return entity_->get_vector_by_position(id);
   }
 
   int get_vector_by_id(const uint32_t id,
                        IndexStorage::MemoryBlock &block) const override {
-    return get_vector_by_key(id, block);
+    return entity_->get_vector_by_position(id, block);
   }
 
   uint32_t magic() const {

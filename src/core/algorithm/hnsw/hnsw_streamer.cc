@@ -338,7 +338,6 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
     return ret;
   }
 
-  entity_->set_allow_id_gaps(allow_id_gaps_);
   ret = entity_->open(std::move(stg), max_index_size_, check_crc_enabled_);
   if (ret != 0) {
     return ret;
@@ -628,6 +627,7 @@ int HnswStreamer::dump(const IndexDumper::Pointer &dumper) {
 }
 
 IndexStreamer::Context::Pointer HnswStreamer::create_context() const {
+  std::lock_guard<std::mutex> lock(mutex_);
   if (ailego_unlikely(state_ != STATE_OPENED)) {
     LOG_ERROR("Create context failed, open storage first!");
     return Context::Pointer();
@@ -674,6 +674,7 @@ IndexStreamer::Context::Pointer HnswStreamer::create_context() const {
 }
 
 IndexProvider::Pointer HnswStreamer::create_provider() const {
+  std::lock_guard<std::mutex> lock(mutex_);
   LOG_DEBUG("HnswStreamer create provider");
 
   auto entity = entity_->clone();
@@ -685,7 +686,21 @@ IndexProvider::Pointer HnswStreamer::create_provider() const {
       new HnswIndexProvider(meta_, entity, "HnswStreamer"));
 }
 
+void HnswStreamer::prepare_write() {
+  if (!entity_ || entity_->storage_mode() != HnswStorageMode::kContiguous)
+    return;
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto &contiguous = static_cast<HnswContiguousStreamerEntity &>(*entity_);
+  if (contiguous.is_contiguous()) {
+    contiguous.degrade_to_mmap();
+    // Cached contexts share the previous immutable generation. Refresh them
+    // before any query can observe newly populated or rewritten slots.
+    magic_ = IndexContext::GenerateMagic();
+  }
+}
+
 int HnswStreamer::update_context(HnswContext *ctx) const {
+  std::lock_guard<std::mutex> lock(mutex_);
   const HnswEntity::Pointer entity = entity_->clone();
   if (!entity) {
     LOG_ERROR("Failed to clone search context entity");
@@ -722,6 +737,7 @@ void HnswStreamer::bind_search_dist_space(HnswContext *ctx) const {
 int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
                                    const IndexQueryMeta &qmeta,
                                    IndexStreamer::Context::Pointer &context) {
+  if (id == kInvalidNodeId) return IndexError_InvalidArgument;
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) {
     return ret;
@@ -732,6 +748,7 @@ int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
     LOG_ERROR("Cast context to HnswContext failed");
     return IndexError_Cast;
   }
+  prepare_write();
   if (ctx->magic() != magic_) {
     //! context is created by another searcher or streamer
     ret = update_context(ctx);
@@ -824,6 +841,12 @@ int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
 int HnswStreamer::add_impl(uint64_t pkey, const void *query,
                            const IndexQueryMeta &qmeta,
                            IndexStreamer::Context::Pointer &context) {
+  if (!use_id_map_) {
+    if (pkey >= UINT32_MAX) return IndexError_InvalidArgument;
+    return add_with_id_impl(static_cast<uint32_t>(pkey), query, qmeta, context);
+  }
+  if (pkey == kInvalidKey) return IndexError_InvalidArgument;
+
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) {
     return ret;
@@ -834,6 +857,7 @@ int HnswStreamer::add_impl(uint64_t pkey, const void *query,
     LOG_ERROR("Cast context to HnswContext failed");
     return IndexError_Cast;
   }
+  prepare_write();
   if (ctx->magic() != magic_) {
     //! context is created by another searcher or streamer
     ret = update_context(ctx);
@@ -1029,7 +1053,7 @@ int HnswStreamer::search_candidates_impl(
 
 void HnswStreamer::print_debug_info() {
   for (node_id_t id = 0; id < entity_->doc_cnt(); ++id) {
-    if (entity_->get_key(id) == kInvalidKey) {
+    if (!entity_->contains_node(id)) {
       continue;
     }
     Neighbors neighbours = entity_->get_neighbors(0, id);
@@ -1095,7 +1119,7 @@ int HnswStreamer::search_bf_impl(
       ctx->group_topk_heaps().clear();
 
       for (node_id_t id = 0; id < entity_->doc_cnt(); ++id) {
-        if (entity_->get_key(id) == kInvalidKey) {
+        if (!entity_->contains_node(id)) {
           continue;
         }
 
@@ -1122,7 +1146,7 @@ int HnswStreamer::search_bf_impl(
       ctx->reset_query(query, meta_);
       topk.clear();
       for (node_id_t id = 0; id < entity_->doc_cnt(); ++id) {
-        if (entity_->get_key(id) == kInvalidKey) {
+        if (!entity_->contains_node(id)) {
           continue;
         }
 

@@ -718,9 +718,9 @@ class ProximaEngineHelper {
         index_param_builder->with_two_pass_build(
             db_index_params->two_pass_build());
         // db_index_params->use_id_map() is intentionally ignored here:
-        // db ensures id is consecutive (see _build_common_index_param), so
-        // the engine-level use_id_map is forced to false in the common
-        // builder. The flag is preserved on the db-side params for schema
+        // db uses document IDs directly as node IDs, including NULL gaps,
+        // so the engine-level key mapping is disabled in the common builder.
+        // The flag is preserved on the db-side params for schema
         // round-trip / introspection only.
 
         return index_param_builder->build();

@@ -34,6 +34,9 @@ class NonNullVectorProvider final : public core::IndexProvider {
   size_t count() const override {
     return rows_ - nulls_->cardinality();
   }
+  size_t slot_count() const override {
+    return provider_->slot_count();
+  }
   size_t dimension() const override {
     return provider_->dimension();
   }

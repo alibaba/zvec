@@ -270,6 +270,11 @@ template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::add_impl(uint64_t pkey, const void *query,
                                        const IndexQueryMeta &qmeta,
                                        Context::UPointer &context) {
+  if (!use_key_info_map_) {
+    if (pkey >= UINT32_MAX) return IndexError_InvalidArgument;
+    return add_with_id_impl(static_cast<uint32_t>(pkey), query, qmeta, context);
+  }
+  if (pkey == kInvalidKey) return IndexError_InvalidArgument;
   if (!query || qmeta.dimension() != meta_.dimension() ||
       qmeta.data_type() != meta_.data_type() ||
       qmeta.element_size() != meta_.element_size()) {
@@ -319,6 +324,7 @@ template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::add_with_id_impl(uint32_t id, const void *query,
                                                const IndexQueryMeta &qmeta,
                                                Context::Pointer &context) {
+  if (id == kInvalidNodeId) return IndexError_InvalidArgument;
   if (!query || qmeta.dimension() != meta_.dimension() ||
       qmeta.data_type() != meta_.data_type() ||
       qmeta.element_size() != meta_.element_size()) {

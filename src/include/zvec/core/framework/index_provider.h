@@ -31,6 +31,12 @@ struct IndexProvider : public IndexHolder {
   //! Destructor
   ~IndexProvider() override = default;
 
+  // Addressable physical slots, including gaps. count() is the number of
+  // vectors yielded by the iterator; it must not be used as an ID offset.
+  virtual size_t slot_count() const {
+    return count();
+  }
+
   bool multipass() const override {
     return true;
   }
@@ -71,6 +77,10 @@ struct IndexSparseProvider : IndexSparseHolder {
 
   //! Destructor
   ~IndexSparseProvider() override = default;
+
+  virtual size_t slot_count() const {
+    return count();
+  }
 
   bool multipass() const override {
     return true;

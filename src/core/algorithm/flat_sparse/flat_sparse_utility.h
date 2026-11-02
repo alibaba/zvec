@@ -42,6 +42,9 @@ static const std::string PARAM_FLAT_SPARSE_DUMP_MAPPING_SEG_ID =
     "bruteforce_sparse_searcher_mapping_segment";
 
 // streamer
+static const std::string PARAM_FLAT_SPARSE_USE_ID_MAP(
+    "proxima.flat_sparse.use_id_map");
+
 static const std::string PARAM_FLAT_SPARSE_STREAMER_OFFSET_CHUNK_SIZE(
     "proxima.bruteforce.sparse_streamer.offset_chunk_size");
 

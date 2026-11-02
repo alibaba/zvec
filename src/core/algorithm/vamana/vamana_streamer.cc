@@ -218,7 +218,6 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
     return ret;
   }
 
-  entity_->set_allow_id_gaps(allow_id_gaps_);
   ret = entity_->open(std::move(stg), max_index_size_, check_crc_enabled_);
   if (ret != 0) {
     cleanup_on_error();
@@ -499,6 +498,7 @@ int VamanaStreamer::finalize_build_locked() {
 }
 
 IndexStreamer::Context::Pointer VamanaStreamer::create_context() const {
+  std::lock_guard<std::mutex> lock(mutex_);
   if (ailego_unlikely(state_ != STATE_OPENED)) {
     LOG_ERROR("Create context failed, open storage first!");
     return Context::Pointer();
@@ -537,6 +537,7 @@ IndexStreamer::Context::Pointer VamanaStreamer::create_context() const {
 }
 
 IndexProvider::Pointer VamanaStreamer::create_provider() const {
+  std::lock_guard<std::mutex> lock(mutex_);
   LOG_DEBUG("VamanaStreamer create provider");
 
   auto entity = entity_->clone();
@@ -548,7 +549,21 @@ IndexProvider::Pointer VamanaStreamer::create_provider() const {
       new VamanaIndexProvider(meta_, entity, "VamanaStreamer"));
 }
 
+void VamanaStreamer::prepare_write() {
+  if (!entity_ || entity_->storage_mode() != VamanaStorageMode::kContiguous)
+    return;
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto &contiguous = static_cast<VamanaContiguousStreamerEntity &>(*entity_);
+  if (contiguous.is_contiguous()) {
+    contiguous.degrade_to_mmap();
+    // Cached contexts share the previous immutable generation. Refresh them
+    // before any query can observe newly populated or rewritten slots.
+    magic_ = IndexContext::GenerateMagic();
+  }
+}
+
 int VamanaStreamer::update_context(VamanaContext *ctx) const {
+  std::lock_guard<std::mutex> lock(mutex_);
   const VamanaEntity::Pointer entity = entity_->clone();
   if (!entity) {
     LOG_ERROR("Failed to clone search context entity");
@@ -565,6 +580,12 @@ int VamanaStreamer::update_context(VamanaContext *ctx) const {
 int VamanaStreamer::add_impl(uint64_t pkey, const void *query,
                              const IndexQueryMeta &qmeta,
                              Context::Pointer &context) {
+  if (!use_id_map_) {
+    if (pkey >= UINT32_MAX) return IndexError_InvalidArgument;
+    return add_with_id_impl(static_cast<uint32_t>(pkey), query, qmeta, context);
+  }
+  if (pkey == kInvalidKey) return IndexError_InvalidArgument;
+
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) return ret;
 
@@ -573,6 +594,7 @@ int VamanaStreamer::add_impl(uint64_t pkey, const void *query,
     LOG_ERROR("Cast context to VamanaContext failed");
     return IndexError_Cast;
   }
+  prepare_write();
   if (ctx->magic() != magic_) {
     ret = update_context(ctx);
     if (ret != 0) return ret;
@@ -638,6 +660,7 @@ int VamanaStreamer::add_impl(uint64_t pkey, const void *query,
 int VamanaStreamer::add_with_id_impl(uint32_t id, const void *query,
                                      const IndexQueryMeta &qmeta,
                                      Context::Pointer &context) {
+  if (id == kInvalidNodeId) return IndexError_InvalidArgument;
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) return ret;
 
@@ -646,6 +669,7 @@ int VamanaStreamer::add_with_id_impl(uint32_t id, const void *query,
     LOG_ERROR("Cast context to VamanaContext failed");
     return IndexError_Cast;
   }
+  prepare_write();
   if (ctx->magic() != magic_) {
     ret = update_context(ctx);
     if (ret != 0) return ret;
@@ -807,7 +831,7 @@ int VamanaStreamer::search_candidates_impl(const void *query,
 
 void VamanaStreamer::print_debug_info() {
   for (node_id_t id = 0; id < entity_->doc_cnt(); ++id) {
-    if (entity_->get_key(id) == kInvalidKey) continue;
+    if (!entity_->contains_node(id)) continue;
     Neighbors neighbours = entity_->get_neighbors(id);
     std::cout << "node: " << id << "; ";
     if (neighbours.size() == 0) {
@@ -859,7 +883,7 @@ int VamanaStreamer::search_bf_impl(const void *query,
     ctx->reset_query(query);
     topk.clear();
     for (node_id_t id = 0; id < entity_->doc_cnt(); ++id) {
-      if (entity_->get_key(id) == kInvalidKey) continue;
+      if (!entity_->contains_node(id)) continue;
       if (!filter.is_valid() || !filter(entity_->get_key(id))) {
         dist_t dist = ctx->dist_calculator().batch_dist(id);
         topk.emplace(id, dist);

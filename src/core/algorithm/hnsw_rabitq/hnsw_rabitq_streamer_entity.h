@@ -20,6 +20,7 @@
 #include <sparsehash/dense_hash_map>
 #include <sparsehash/dense_hash_set>
 #include <zvec/ailego/container/heap.h>
+#include "utility/node_key_map.h"
 #include "zvec/core/framework/index_framework.h"
 #include "hnsw_rabitq_chunk.h"
 #include "hnsw_rabitq_entity.h"
@@ -42,6 +43,7 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
 
   //! Get primary key of the node id
   key_t get_key(node_id_t id) const override;
+  virtual key_t read_stored_key(node_id_t id) const;
 
   //! Get vector feature data by key
   const void *get_vector(node_id_t id) const override;
@@ -84,15 +86,15 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
   void update_ep_and_level(node_id_t ep, level_t level) override;
 
   void set_use_key_info_map(bool use_id_map) {
-    use_key_info_map_ = use_id_map;
-    read_stored_keys_ = use_id_map || allow_id_gaps_;
-    LOG_DEBUG("use_key_info_map_: %d", (int)use_key_info_map_);
+    key_map_.set_enabled(use_id_map);
   }
 
-  // NULL slots retain kInvalidKey even when keys otherwise equal node IDs.
-  void set_allow_id_gaps(bool allow) {
-    allow_id_gaps_ = allow;
-    read_stored_keys_ = use_key_info_map_ || allow;
+  key_t key_of_existing_node(node_id_t id) const override {
+    return key_map_.enabled() ? read_stored_key(id) : id;
+  }
+
+  key_t key_of_existing_node_typed(node_id_t id) const {
+    return key_map_.enabled() ? read_stored_key(id) : id;
   }
 
  public:
@@ -114,7 +116,7 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
     if (id != kInvalidNodeId) {
       return get_vector(id, block);
     } else {
-      return IndexError_InvalidArgument;
+      return IndexError_NoExist;
     }
   }
 
@@ -164,31 +166,21 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
   }
 
   //! Get vector local id by key
+  node_id_t find_node(key_t key) const {
+    if (key == kInvalidKey) return kInvalidNodeId;
+    if (key_map_.enabled()) {
+      const auto id = key_map_.find(key);
+      return id < doc_cnt() && get_key(id) == key ? id : kInvalidNodeId;
+    }
+    if (key >= doc_cnt()) return kInvalidNodeId;
+    const auto id = static_cast<node_id_t>(key);
+    return id < doc_cnt() && get_key(id) == key ? id : kInvalidNodeId;
+  }
+
   inline node_id_t get_id(key_t key) const {
-    if (use_key_info_map_) {
-      keys_map_lock_->lock_shared();
-      auto it = keys_map_->find(key);
-      node_id_t id = it == keys_map_->end() ? kInvalidNodeId : it->second;
-      keys_map_lock_->unlock_shared();
-      return id;
-    } else {
-      return key;
-    }
+    return find_node(key);
   }
 
-  void print_key_map() const {
-    std::cout << "key map begins" << std::endl;
-
-    auto iter = keys_map_->begin();
-    while (iter != keys_map_->end()) {
-      std::cout << "key: " << iter->first << ", id: " << iter->second
-                << std::endl;
-      ;
-      iter++;
-    }
-
-    std::cout << "key map ends" << std::endl;
-  }
 
   //! Get l0 neighbors size
   inline size_t neighbors_size() const {
@@ -233,9 +225,7 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
       bool filter_same_key, bool get_vector_enabled,
       const NIHashMapPointer &upper_neighbor_index,
       const std::shared_ptr<std::shared_mutex> &upper_neighbor_rw_mutex,
-      std::shared_ptr<ailego::SharedMutex> &keys_map_lock,
-      const HashMapPointer<key_t, node_id_t> &keys_map, bool use_key_info_map,
-      std::vector<Chunk::Pointer> &&node_chunks,
+      const NodeKeyMap &key_map, std::vector<Chunk::Pointer> &&node_chunks,
       std::vector<Chunk::Pointer> &&upper_neighbor_chunks,
       const HnswRabitqChunkBroker::Pointer &broker)
       : stats_(stats),
@@ -247,12 +237,9 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
         upper_neighbor_mask_((1U << upper_neighbor_mask_bits_) - 1),
         filter_same_key_(filter_same_key),
         get_vector_enabled_(get_vector_enabled),
-        use_key_info_map_(use_key_info_map),
-        read_stored_keys_(use_key_info_map),
         upper_neighbor_rw_mutex_(upper_neighbor_rw_mutex),
         upper_neighbor_index_(upper_neighbor_index),
-        keys_map_lock_(keys_map_lock),
-        keys_map_(keys_map),
+        key_map_(key_map),
         node_chunks_(std::move(node_chunks)),
         upper_neighbor_chunks_(std::move(upper_neighbor_chunks)),
         broker_(broker) {
@@ -547,9 +534,6 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
   uint32_t upper_neighbor_mask_{0U};
   bool filter_same_key_{false};
   bool get_vector_enabled_{false};
-  bool use_key_info_map_{true};
-  bool read_stored_keys_{true};
-  bool allow_id_gaps_{false};
 
   // Shared via shared_ptr so that all cloned entities synchronize against
   // the SAME mutex instance. A plain std::shared_mutex member would be
@@ -558,8 +542,7 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
   mutable std::shared_ptr<std::shared_mutex> upper_neighbor_rw_mutex_{};
   NIHashMapPointer upper_neighbor_index_{};
 
-  mutable std::shared_ptr<ailego::SharedMutex> keys_map_lock_{};
-  HashMapPointer<key_t, node_id_t> keys_map_{};
+  NodeKeyMap key_map_;
 
   //! the chunks will be changed in searcher, so need mutable
   //! data chunk include: vector, key, level 0 neighbors

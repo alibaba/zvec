@@ -59,10 +59,6 @@ class IndexStreamer : public IndexRunner {
   //! Open a index from storage
   virtual int open(IndexStorage::Pointer stg) = 0;
 
-  void set_allow_id_gaps(bool allow) {
-    allow_id_gaps_ = allow;
-  }
-
   //! Flush index
   virtual int flush(uint64_t check_point) = 0;
 
@@ -74,9 +70,6 @@ class IndexStreamer : public IndexRunner {
 
   //! Retrieve meta of index
   virtual const IndexMeta &meta() const = 0;
-
- protected:
-  bool allow_id_gaps_{false};
 };
 
 }  // namespace core

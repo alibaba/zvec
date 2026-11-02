@@ -36,13 +36,10 @@ int HnswRabitqStreamerEntity::init(size_t max_doc_cnt) {
   broker_ = std::make_shared<HnswRabitqChunkBroker>(stats_);
   upper_neighbor_index_ = std::make_shared<NIHashMap>();
   upper_neighbor_rw_mutex_ = std::make_shared<std::shared_mutex>();
-  keys_map_lock_ = std::make_shared<ailego::SharedMutex>();
-  keys_map_ = std::make_shared<HashMap<key_t, node_id_t>>();
-  if (!keys_map_ || !upper_neighbor_index_ || !broker_ || !keys_map_lock_) {
+  if (!upper_neighbor_index_ || !broker_) {
     LOG_ERROR("HnswRabitqStreamerEntity new object failed");
     return IndexError_NoMemory;
   }
-  keys_map_->set_empty_key(kInvalidKey);
 
   neighbor_size_ = neighbors_size();
   upper_neighbor_size_ = upper_neighbors_size();
@@ -67,9 +64,7 @@ int HnswRabitqStreamerEntity::cleanup() {
   if (upper_neighbor_index_) {
     upper_neighbor_index_->cleanup();
   }
-  if (keys_map_) {
-    keys_map_->clear();
-  }
+  key_map_.clear();
   node_chunks_.clear();
   upper_neighbor_chunks_.clear();
   filter_same_key_ = false;
@@ -200,23 +195,24 @@ int HnswRabitqStreamerEntity::get_vector(
 }
 
 key_t HnswRabitqStreamerEntity::get_key(node_id_t id) const {
-  if (read_stored_keys_) {
-    auto loc = get_key_chunk_loc(id);
-    IndexStorage::MemoryBlock key_block;
-    ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
-    ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
-                       "invalid chunk offset");
-    size_t ret =
-        node_chunks_[loc.first]->read(loc.second, key_block, sizeof(key_t));
-    if (ailego_unlikely(ret != sizeof(key_t))) {
-      LOG_ERROR("Read vector failed, ret=%zu", ret);
-      return kInvalidKey;
-    }
+  if (id >= doc_cnt()) return kInvalidKey;
+  return read_stored_key(id);
+}
 
-    return *reinterpret_cast<const key_t *>(key_block.data());
-  } else {
-    return id;
+key_t HnswRabitqStreamerEntity::read_stored_key(node_id_t id) const {
+  auto loc = get_key_chunk_loc(id);
+  IndexStorage::MemoryBlock key_block;
+  ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
+  ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
+                     "invalid chunk offset");
+  size_t ret =
+      node_chunks_[loc.first]->read(loc.second, key_block, sizeof(key_t));
+  if (ailego_unlikely(ret != sizeof(key_t))) {
+    LOG_ERROR("Read vector failed, ret=%zu", ret);
+    return kInvalidKey;
   }
+
+  return *reinterpret_cast<const key_t *>(key_block.data());
 }
 
 void HnswRabitqStreamerEntity::add_neighbor(level_t level, node_id_t id,
@@ -361,14 +357,10 @@ int HnswRabitqStreamerEntity::open(IndexStorage::Pointer stg,
     LOG_WARN("Index closed abnormally, using totalVecs as curDocCnt");
     *mutable_doc_cnt() = total_vecs;
   }
-  if (filter_same_key_ || get_vector_enabled_) {
-    if (use_key_info_map_) {
-      for (node_id_t id = 0U; id < doc_cnt(); ++id) {
-        if (get_key(id) == kInvalidKey) {
-          continue;
-        }
-        (*keys_map_)[get_key(id)] = id;
-      }
+  if (key_map_.enabled()) {
+    for (node_id_t id = 0; id < doc_cnt(); ++id) {
+      const auto key = get_key(id);
+      if (key != kInvalidKey) key_map_.insert(key, id);
     }
   }
 
@@ -384,7 +376,7 @@ int HnswRabitqStreamerEntity::close() {
   flush_header();
   mutable_header()->reset();
   upper_neighbor_index_->cleanup();
-  keys_map_->clear();
+  key_map_.clear();
   header_.clear();
   node_chunks_.clear();
   upper_neighbor_chunks_.clear();
@@ -534,13 +526,7 @@ int HnswRabitqStreamerEntity::add_vector(level_t level, key_t key,
     LOG_ERROR("Chunk resize to %zu failed", chunk_offset);
     return IndexError_Runtime;
   }
-  if (filter_same_key_ || get_vector_enabled_) {
-    if (use_key_info_map_) {
-      keys_map_lock_->lock();
-      (*keys_map_)[key] = local_id;
-      keys_map_lock_->unlock();
-    }
-  }
+  key_map_.insert(key, local_id);
 
   *mutable_doc_cnt() += 1;
   broker_->mark_dirty();
@@ -639,13 +625,7 @@ int HnswRabitqStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
     }
   }
 
-  if (filter_same_key_ || get_vector_enabled_) {
-    if (use_key_info_map_) {
-      keys_map_lock_->lock();
-      (*keys_map_)[key] = id;
-      keys_map_lock_->unlock();
-    }
-  }
+  key_map_.insert(key, id);
 
   broker_->mark_dirty();
 
@@ -685,13 +665,11 @@ const HnswRabitqEntity::Pointer HnswRabitqStreamerEntity::clone() const {
       new (std::nothrow) HnswRabitqStreamerEntity(
           stats_, header(), chunk_size_, node_index_mask_bits_,
           upper_neighbor_mask_bits_, filter_same_key_, get_vector_enabled_,
-          upper_neighbor_index_, upper_neighbor_rw_mutex_, keys_map_lock_,
-          keys_map_, use_key_info_map_, std::move(node_chunks),
-          std::move(upper_neighbor_chunks), broker_);
+          upper_neighbor_index_, upper_neighbor_rw_mutex_, key_map_,
+          std::move(node_chunks), std::move(upper_neighbor_chunks), broker_);
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("HnswRabitqStreamerEntity new failed");
   }
-  if (entity) entity->set_allow_id_gaps(allow_id_gaps_);
   return HnswRabitqEntity::Pointer(entity);
 }
 
