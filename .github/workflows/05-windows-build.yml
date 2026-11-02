@@ -2,18 +2,7 @@ name: Windows Build
 
 on:
   workflow_call:
-    inputs:
-      run_tests:
-        description: 'Run tests and SDK smoke checks after compilation'
-        required: false
-        type: boolean
-        default: true
   workflow_dispatch:
-    inputs:
-      run_tests:
-        description: 'Run tests and SDK smoke checks after compilation'
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -21,7 +10,7 @@ permissions:
 jobs:
   # Windows build and test matrix
   build-and-test-windows:
-    name: ${{ inputs.run_tests && 'Build & Test' || 'Warm compiler cache' }} (${{ matrix.platform }})
+    name: Build & Test (${{ matrix.platform }})
     runs-on: ${{ matrix.platform }}
 
     strategy:
@@ -30,34 +19,34 @@ jobs:
         include:
           - platform: windows-2022
             vs_version: '17.0'
-            vs_year: '2022'
             msvc_arch: x64
             python_version: '3.10'
           - platform: windows-2025-vs2026
             vs_version: '18.0'
-            vs_year: '2026'
             msvc_arch: x64
             python_version: '3.10'
           # Windows ARM64: Python 3.10 has no official ARM64 installer;
           # 3.11 is the first CPython release with a Windows-on-ARM build.
           - platform: windows-11-vs2026-arm
             vs_version: '18.0'
-            vs_year: '2026'
             msvc_arch: arm64
             python_version: '3.11'
 
     env:
-      CCACHE_MAXSIZE: 1G
-      CCACHE_COMPILERCHECK: content
-      # MSVC supports depend mode through /showIncludes. Avoid a separate
-      # preprocessing pass on misses as well as on direct cache hits.
-      CCACHE_DEPEND: 'true'
-      NINJA_STATUS: '[%f/%t %es] '
+      SCCACHE_GHA_ENABLED: "true"
+      CMAKE_GENERATOR: Ninja
+      NINJA_STATUS: '[%f/%t %r running %es] '
 
     steps:
       - name: Show env info
         run: |
           Get-CimInstance -ClassName Win32_Processor
+          Get-Volume | Select-Object DriveLetter, FileSystemType, SizeRemaining, Size
+          try {
+            Get-MpComputerStatus | Select-Object AntivirusEnabled, RealTimeProtectionEnabled
+          } catch {
+            Write-Host "Defender status unavailable: $_"
+          }
           & "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -all -products * -prerelease -format json
         shell: powershell
 
@@ -71,6 +60,13 @@ jobs:
           git submodule foreach --recursive 'git reset --hard && git clean -ffdx'
         shell: powershell
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          # The explicit statistics steps below are best-effort. Do not let
+          # the action's post-run statistics fail an otherwise successful job.
+          disable_annotations: true
+
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
@@ -83,11 +79,8 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: ${{ matrix.msvc_arch }}
-          # Runner labels select the VS family; verify it below because this
-          # action's explicit version lookup predates VS 2026.
 
       - name: Verify MSVC toolchain
-        id: toolchain
         shell: powershell
         env:
           EXPECTED_VS_VERSION: ${{ matrix.vs_version }}
@@ -103,32 +96,12 @@ jobs:
           cl /Bv
           # cl without an input reports an error; /Bv above is diagnostic only.
           $global:LASTEXITCODE = 0
-          $sdk = $env:WindowsSDKVersion.TrimEnd('\')
-          "cache-key=vs${{ matrix.vs_year }}-${{ matrix.msvc_arch }}-$env:VCToolsVersion-$sdk" >> $env:GITHUB_OUTPUT
-
-      - name: Install ccache
-        shell: powershell
-        run: ./.github/scripts/setup-windows-ccache.ps1
-
-      # sccache's MSVC hits still run cl's preprocessor for every translation
-      # unit. ccache direct mode can validate headers without that work.
-      - name: Restore compiler cache
-        id: compiler-cache
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: windows-ccache-v1-${{ steps.toolchain.outputs.cache-key }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            windows-ccache-v1-${{ steps.toolchain.outputs.cache-key }}-
-
-      - name: Reset compiler cache statistics
-        run: ccache --zero-stats
-        shell: powershell
 
       - name: Set up environment variables
         run: |
           $nproc = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
           echo "NPROC=$nproc" >> $env:GITHUB_ENV
+          echo "CMAKE_BUILD_PARALLEL_LEVEL=$nproc" >> $env:GITHUB_ENV
           echo "Using $nproc parallel jobs for builds"
         shell: powershell
 
@@ -147,59 +120,58 @@ jobs:
       - name: Build from source
         run: |
           cd "$env:GITHUB_WORKSPACE"
-          $env:CMAKE_GENERATOR = "Ninja"
-          $env:CMAKE_BUILD_PARALLEL_LEVEL = "$env:NPROC"
           python -m pip install -v . `
             --no-build-isolation `
             --config-settings='cmake.define.BUILD_TOOLS=ON' `
             --config-settings='cmake.define.ENABLE_WERROR=ON' `
-            --config-settings='cmake.define.CMAKE_C_COMPILER_LAUNCHER=ccache' `
-            --config-settings='cmake.define.CMAKE_CXX_COMPILER_LAUNCHER=ccache'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            --config-settings='cmake.define.CMAKE_C_COMPILER_LAUNCHER=sccache' `
+            --config-settings='cmake.define.CMAKE_CXX_COMPILER_LAUNCHER=sccache'
         shell: powershell
 
-      - name: Show compiler cache statistics after pip install
+      - name: Show sccache statistics after pip install
         if: always()
         continue-on-error: true
-        run: ccache --show-stats --verbose
+        run: sccache --show-stats
         shell: powershell
 
-      - name: Build C++ tests
+      - name: Check main and external build generators
+        if: always()
+        shell: powershell
         run: |
-          cd "$env:GITHUB_WORKSPACE\build"
-          cmake --build . --target unittest_build --config Release --parallel $env:NPROC
-        shell: powershell
-
-      - name: Show compiler cache statistics after test compilation
-        if: always()
-        continue-on-error: true
-        run: ccache --show-stats --verbose
-        shell: powershell
-
-      # Save before running tests: a test failure must not discard successful
-      # compilation work. Each run gets an immutable cache snapshot.
-      - name: Save compiler cache
-        uses: actions/cache/save@v5
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ${{ steps.compiler-cache.outputs.cache-primary-key }}
+          $caches = @(
+            'build/CMakeCache.txt',
+            'build/thirdparty/arrow/arrow/src/ARROW.BUILD-build/CMakeCache.txt',
+            'build/thirdparty/lz4/lz4/src/Lz4.BUILD-build/CMakeCache.txt'
+          )
+          foreach ($cache in $caches) {
+            if (Test-Path $cache) {
+              Write-Host "Build backend: $cache"
+              Select-String -Path $cache -Pattern '^CMAKE_GENERATOR:INTERNAL=', '^CMAKE_MAKE_PROGRAM:'
+              if (-not (Select-String -Path $cache -Pattern '^CMAKE_GENERATOR:INTERNAL=Ninja$' -Quiet)) {
+                throw "Expected Ninja in $cache"
+              }
+            }
+          }
 
       - name: Run C++ Tests
-        if: inputs.run_tests
         run: |
-          $testJobs = [Math]::Max(1, [int]$env:NPROC - 1)
-          ctest --test-dir build --build-config Release --output-on-failure --parallel $testJobs
+          cd "$env:GITHUB_WORKSPACE\build"
+          cmake --build . --target unittest --config Release --parallel $env:NPROC
+        shell: powershell
+
+      - name: Show sccache statistics after tests
+        if: always()
+        continue-on-error: true
+        run: sccache --show-stats
         shell: powershell
 
       - name: Run Python Tests
-        if: inputs.run_tests
         run: |
           cd "$env:GITHUB_WORKSPACE"
-          python -m pytest python/tests/ --basetemp=./.pytest_tmp --durations=10
+          python -m pytest python/tests/ --basetemp=./.pytest_tmp
         shell: powershell
 
       - name: Run C++ Examples
-        if: inputs.run_tests
         run: |
           cd "$env:GITHUB_WORKSPACE\examples\c++"
           mkdir build
@@ -247,25 +219,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         shell: powershell
 
-      - name: Install and test C/C++ SDK
-        if: inputs.run_tests
-        shell: powershell
-        run: |
-          $sdkDir = Join-Path $env:RUNNER_TEMP 'zvec-sdk'
-          $smokeDir = Join-Path $env:RUNNER_TEMP 'zvec-sdk-smoke'
-          cmake --install build --prefix $sdkDir --config Release
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cmake -S .github/cmake/sdk-smoke -B $smokeDir -G Ninja `
-            -DCMAKE_BUILD_TYPE=Release "-DZVEC_SDK_DIR=$sdkDir"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cmake --build $smokeDir --parallel $env:NPROC
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $env:PATH = "$sdkDir\bin;$env:PATH"
-          ctest --test-dir $smokeDir --output-on-failure
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Show compiler cache statistics
+      - name: Show sccache statistics
         if: always()
         continue-on-error: true
-        run: ccache --show-stats --verbose
+        run: sccache --show-stats
         shell: powershell

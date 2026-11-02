@@ -123,13 +123,10 @@ jobs:
     uses: ./.github/workflows/04-android-build.yml
 
   build-and-test-on-windows:
-    name: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'Warm compiler cache (Windows)' || 'Build & Test (Windows)' }}
+    if: github.event_name != 'push' || github.ref != 'refs/heads/main'
+    name: Build & Test (Windows)
     needs: [lint, clang-tidy]
     uses: ./.github/workflows/05-windows-build.yml
-    with:
-      # PR caches are scoped to their merge ref. Seed the default branch so
-      # new PRs can restore compiled objects without repeating runtime tests.
-      run_tests: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' }}
 
   build-ios:
     if: github.event_name != 'push' || github.ref != 'refs/heads/main'

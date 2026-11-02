@@ -150,6 +150,13 @@ elseif (MSVC)
     # fall back to CMake 3.x's default VS 2022 generator. Use the environment
     # default so existing Arrow build directories retain their cached generator.
     list(APPEND CONFIGURE_ENV_LIST "CMAKE_GENERATOR=${CMAKE_GENERATOR}")
+    set(_ARROW_BUILD_JOBS ${NPROC})
+    if("$ENV{CMAKE_BUILD_PARALLEL_LEVEL}" MATCHES "^[1-9][0-9]*$")
+        set(_ARROW_BUILD_JOBS "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
+    endif()
+    if(_ARROW_BUILD_JOBS LESS 1)
+        set(_ARROW_BUILD_JOBS 1)
+    endif()
     if(ZVEC_USE_STATIC_CRT)
         set(_ARROW_CRT_FLAG "/MT")
         set(_ARROW_MSVC_RUNTIME "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -177,7 +184,7 @@ elseif (MSVC)
                 DOWNLOAD_COMMAND ""
                 BUILD_IN_SOURCE false
                 CONFIGURE_COMMAND "${CMAKE_COMMAND}" -E env ${CONFIGURE_ENV_LIST} "${CMAKE_COMMAND}" ${CMAKE_CACHE_ARGS} ${ARROW_EXTRA_CMAKE_ARGS} ${_ARROW_COMPILER_LAUNCHER_ARGS} ${_ARROW_COMPILER_ARGS} -DCMAKE_BUILD_TYPE=$<CONFIG> -DCMAKE_DEBUG_POSTFIX= -DARROW_BUILD_SHARED=OFF -DARROW_ACERO=ON -DARROW_FILESYSTEM=ON -DARROW_DATASET=OFF -DARROW_PARQUET=ON -DARROW_COMPUTE=ON -DARROW_WITH_ZLIB=OFF -DARROW_DEPENDENCY_SOURCE=BUNDLED -DWITH_OPENSSL=OFF -DARROW_MIMALLOC=OFF -DCMAKE_INSTALL_LIBDIR=lib "<SOURCE_DIR>/cpp"
-                BUILD_COMMAND "${CMAKE_COMMAND}" --build . -j ${NPROC} --config $<CONFIG>
+                BUILD_COMMAND "${CMAKE_COMMAND}" --build . --parallel ${_ARROW_BUILD_JOBS} --config $<CONFIG>
                 INSTALL_COMMAND "${CMAKE_COMMAND}" --install "<BINARY_DIR>" --prefix=${EXTERNAL_BINARY_DIR}/usr/local --config $<CONFIG>
                 BYPRODUCTS ${LIB_PARQUET} ${LIB_ARROW} ${LIB_COMPUTE} ${LIB_ACERO} ${LIB_ARROW_DEPENDS}
                 LOG_DOWNLOAD ON

@@ -96,6 +96,14 @@ else()
 endif()
 
 if(MSVC)
+    include(ProcessorCount)
+    ProcessorCount(_LZ4_BUILD_JOBS)
+    if("$ENV{CMAKE_BUILD_PARALLEL_LEVEL}" MATCHES "^[1-9][0-9]*$")
+        set(_LZ4_BUILD_JOBS "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
+    endif()
+    if(_LZ4_BUILD_JOBS LESS 1)
+        set(_LZ4_BUILD_JOBS 1)
+    endif()
     ExternalProject_Add(
             Lz4.BUILD
             PREFIX lz4
@@ -112,7 +120,7 @@ if(MSVC)
             -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
             -DCMAKE_POLICY_DEFAULT_CMP0141=NEW
             -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
-            BUILD_COMMAND "${CMAKE_COMMAND}" --build . --config $<CONFIG> -j
+            BUILD_COMMAND "${CMAKE_COMMAND}" --build . --config $<CONFIG> --parallel ${_LZ4_BUILD_JOBS}
             INSTALL_COMMAND "${CMAKE_COMMAND}" --install . --config $<CONFIG>
             BUILD_IN_SOURCE OFF
             LOG_DOWNLOAD ON

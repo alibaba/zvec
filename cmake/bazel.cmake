@@ -317,10 +317,6 @@ endif()
 enable_testing()
 
 # Add unittest target
-if(NOT TARGET unittest_build)
-  # Compile tests separately from executing them so CI can measure both phases.
-  add_custom_target(unittest_build)
-endif()
 if(NOT TARGET unittest)
   if(IOS)
     # iOS: build-only target; tests are run on simulator separately
@@ -343,7 +339,6 @@ if(NOT TARGET unittest)
       )
   endif()
 endif()
-add_dependencies(unittest unittest_build)
 
 # Directories of target output
 if(NOT CMAKE_ARCHIVE_OUTPUT_DIRECTORY)
@@ -1222,7 +1217,7 @@ function(cc_test)
       DEPS "${CC_ARGS_DEPS}"
       "${CC_ARGS_UNPARSED_ARGUMENTS}"
     )
-  add_dependencies(unittest_build ${CC_ARGS_NAME})
+  add_dependencies(unittest ${CC_ARGS_NAME})
   set(TEST_WORKING_DIR "${CMAKE_BINARY_DIR}/test_tmp/${CC_ARGS_NAME}")
   file(MAKE_DIRECTORY "${TEST_WORKING_DIR}")
   add_custom_target(
@@ -2041,7 +2036,7 @@ function(cuda_test)
       DEPS "${CUDA_ARGS_DEPS}"
       "${CUDA_ARGS_UNPARSED_ARGUMENTS}"
     )
-  add_dependencies(unittest_build ${CUDA_ARGS_NAME})
+  add_dependencies(unittest ${CUDA_ARGS_NAME})
   set(TEST_WORKING_DIR "${CMAKE_BINARY_DIR}/test_tmp/${CUDA_ARGS_NAME}")
   file(MAKE_DIRECTORY "${TEST_WORKING_DIR}")
   add_custom_target(
