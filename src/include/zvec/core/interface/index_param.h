@@ -561,6 +561,10 @@ struct ZVEC_CORE_API DiskAnnIndexParam : public BaseIndexParam {
   int list_size = kDefaultDiskAnnListSize;
   int pq_chunk_num = kDefaultDiskAnnPqChunkNum;
 
+  bool partitioned_build = false;
+  float build_memory_budget_gb = 0.25f;
+  std::string build_temp_dir;
+
   // Constructors with delegation
   DiskAnnIndexParam() : BaseIndexParam(IndexType::kDiskAnn) {}
 

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "zvec/db/schema.h"
+#include <limits>
 #include <gtest/gtest.h>
 #include "zvec/db/index_params.h"
 #include "zvec/db/status.h"
@@ -1355,4 +1356,38 @@ TEST(FieldSchemaTest, HnswRabitqIndexValidation_UnsupportedDataTypes) {
         << "Error message should mention sparse vector index support, got: "
         << status.message();
   }
+}
+
+TEST(FieldSchemaTest, DiskAnnBuildBudgetValidation) {
+  for (float budget :
+       {-1.0f, 0.0f, 0.001f, std::numeric_limits<float>::infinity(),
+        std::numeric_limits<float>::quiet_NaN()}) {
+    auto params = std::make_shared<DiskAnnIndexParams>(MetricType::L2);
+    params->set_partitioned_build(true);
+    params->set_build_memory_budget_gb(budget);
+    FieldSchema field("disk_vector", DataType::VECTOR_FP32, 32, false, params);
+    EXPECT_EQ(StatusCode::INVALID_ARGUMENT, field.validate().code());
+  }
+}
+
+TEST(FieldSchemaTest, DiskAnnTempDirectoryValidation) {
+  auto params = std::make_shared<DiskAnnIndexParams>(MetricType::L2);
+  params->set_partitioned_build(true);
+  // Do not probe filesystem availability while reading or validating schema.
+  params->set_build_temp_dir("not-created-yet");
+  FieldSchema field("disk_vector", DataType::VECTOR_FP32, 32, false, params);
+  auto status = field.validate();
+#if DISKANN_SUPPORTED
+  EXPECT_TRUE(status.ok()) << status.message();
+#else
+  EXPECT_EQ(StatusCode::NOT_SUPPORTED, status.code()) << status.message();
+  EXPECT_NE(status.message().find("DiskAnn is not supported on this platform"),
+            std::string::npos);
+#endif
+  params->set_build_temp_dir(std::string("path\0suffix", 11));
+  field.set_index_params(params);
+  status = field.validate();
+  EXPECT_EQ(StatusCode::INVALID_ARGUMENT, status.code()) << status.message();
+  EXPECT_NE(status.message().find("build_temp_dir must not contain NUL bytes"),
+            std::string::npos);
 }

@@ -270,6 +270,18 @@ class DiskAnnIndexParamBuilder
     param->pq_chunk_num = pq_chunk_num;
     return *this;
   }
+  DiskAnnIndexParamBuilder &with_partitioned_build(bool enabled) {
+    param->partitioned_build = enabled;
+    return *this;
+  }
+  DiskAnnIndexParamBuilder &with_build_memory_budget_gb(float budget) {
+    param->build_memory_budget_gb = budget;
+    return *this;
+  }
+  DiskAnnIndexParamBuilder &with_build_temp_dir(const std::string &directory) {
+    param->build_temp_dir = directory;
+    return *this;
+  }
   std::shared_ptr<DiskAnnIndexParam> build() override {
     return param;
   }

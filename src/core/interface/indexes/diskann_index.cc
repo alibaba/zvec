@@ -104,6 +104,12 @@ int DiskAnnIndex::create_and_init_streamer(const BaseIndexParam &param) {
                             param_.list_size);
   proxima_index_params_.set(core::PARAM_DISKANN_BUILDER_MAX_PQ_CHUNK_NUM,
                             param_.pq_chunk_num);
+  proxima_index_params_.set(core::PARAM_DISKANN_BUILDER_PARTITIONED_BUILD,
+                            param_.partitioned_build);
+  proxima_index_params_.set(core::PARAM_DISKANN_BUILDER_MEMORY_BUDGET,
+                            static_cast<double>(param_.build_memory_budget_gb));
+  proxima_index_params_.set(core::PARAM_DISKANN_BUILDER_TEMP_DIR,
+                            param_.build_temp_dir);
   builder_ = core::IndexFactory::CreateBuilder("DiskAnnBuilder");
   streamer_ = core::IndexFactory::CreateStreamer("DiskAnnStreamer");
 

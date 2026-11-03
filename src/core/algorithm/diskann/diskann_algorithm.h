@@ -22,6 +22,8 @@ namespace zvec {
 namespace core {
 
 class DiskAnnAlgorithm {
+  friend class DiskAnnPartitionBuild;
+
  public:
   typedef std::unique_ptr<DiskAnnAlgorithm> UPointer;
 

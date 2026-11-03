@@ -71,75 +71,117 @@ TEST(DiskAnnBuildMemory, ReadOnlyCannotCreateStorage) {
     test_util::RemoveTestFiles(path);
   }
 }
+TEST(DiskAnnBuildMemory, TempDirectoryJsonCompatibility) {
+  auto param = DiskAnnIndexParamBuilder()
+                   .with_dimension(16)
+                   .with_build_temp_dir("scratch space")
+                   .build();
+  ailego::JsonValue json;
+  ASSERT_TRUE(json.parse(param->serialize_to_json()));
+  auto restored = std::dynamic_pointer_cast<DiskAnnIndexParam>(
+      IndexFactory::DeserializeIndexParamFromJson(
+          json.as_json_string().as_stl_string()));
+  ASSERT_NE(nullptr, restored);
+  EXPECT_EQ(param->build_temp_dir, restored->build_temp_dir);
+  json.as_object().unset("build_temp_dir");
+  restored = std::dynamic_pointer_cast<DiskAnnIndexParam>(
+      IndexFactory::DeserializeIndexParamFromJson(
+          json.as_json_string().as_stl_string()));
+  ASSERT_NE(nullptr, restored);
+  EXPECT_TRUE(restored->build_temp_dir.empty());
+  for (const auto &invalid :
+       {ailego::JsonValue(42), ailego::JsonValue(std::string("a\0b", 3))}) {
+    json.as_object().set("build_temp_dir", invalid);
+    EXPECT_EQ(nullptr, IndexFactory::DeserializeIndexParamFromJson(
+                           json.as_json_string().as_stl_string()));
+  }
+}
 TEST(DiskAnnBuildMemory, ReleaseStateAndReopenDirectAndMerged) {
-  for (bool fp16 : {false, true}) {
-    for (bool merge : {false, true}) {
-      for (auto metric : {MetricType::kL2sq, MetricType::kCosine}) {
-        SCOPED_TRACE(::testing::Message()
-                     << fp16 << " " << merge << " " << int(metric));
-        const std::string path = "diskann_memory_target",
-                          source_path = "diskann_memory_source";
-        test_util::RemoveTestFiles(path);
-        test_util::RemoveTestFiles(source_path);
-        auto param = parameter(fp16, metric);
-        auto inspected = std::make_shared<InspectableDiskAnn>();
-        ASSERT_EQ(0, inspected->initialize(*param));
-        Index::Pointer target = inspected;
-        auto converter = inspected->converter();
-        ASSERT_EQ(
-            0, target->open(path, {StorageOptions::StorageType::kMMAP, true}));
-        auto flat = FlatIndexParamBuilder()
-                        .with_dimension(16)
-                        .with_metric_type(metric)
-                        .with_data_type(DataType::DT_FP32)
-                        .build();
-        auto source = IndexFactory::CreateAndInitIndex(*flat);
-        ASSERT_EQ(0, source->open(source_path,
-                                  {StorageOptions::StorageType::kMMAP, true}));
-        for (uint32_t id = 0; id < 64; ++id) {
-          auto data = values(id);
-          ASSERT_EQ(0, (merge ? source : target)
-                           ->add(VectorData{DenseVector{data.data()}}, id));
+  for (bool partitioned : {false, true}) {
+    for (bool fp16 : {false, true}) {
+      for (bool merge : {false, true}) {
+        for (auto metric : {MetricType::kL2sq, MetricType::kCosine}) {
+          SCOPED_TRACE(::testing::Message() << partitioned << " " << fp16 << " "
+                                            << merge << " " << int(metric));
+          const std::string path = "diskann_memory_target",
+                            source_path = "diskann_memory_source";
+          test_util::RemoveTestFiles(path);
+          test_util::RemoveTestFiles(source_path);
+          auto param = parameter(fp16, metric);
+          param->partitioned_build = partitioned;
+          param->build_memory_budget_gb = 0.03125f;
+          param->build_temp_dir = ".";
+          auto roundtrip = IndexFactory::DeserializeIndexParamFromJson(
+              param->serialize_to_json());
+          auto restored =
+              std::dynamic_pointer_cast<DiskAnnIndexParam>(roundtrip);
+          ASSERT_NE(restored, nullptr);
+          EXPECT_EQ(partitioned, restored->partitioned_build);
+          EXPECT_FLOAT_EQ(0.03125f, restored->build_memory_budget_gb);
+          EXPECT_EQ(".", restored->build_temp_dir);
+          param = restored;
+          auto inspected = std::make_shared<InspectableDiskAnn>();
+          ASSERT_EQ(0, inspected->initialize(*param));
+          Index::Pointer target = inspected;
+          auto converter = inspected->converter();
+          ASSERT_EQ(0, target->open(
+                           path, {StorageOptions::StorageType::kMMAP, true}));
+          auto flat = FlatIndexParamBuilder()
+                          .with_dimension(16)
+                          .with_metric_type(metric)
+                          .with_data_type(DataType::DT_FP32)
+                          .build();
+          auto source = IndexFactory::CreateAndInitIndex(*flat);
+          ASSERT_EQ(0,
+                    source->open(source_path,
+                                 {StorageOptions::StorageType::kMMAP, true}));
+          for (uint32_t id = 0; id < 64; ++id) {
+            auto data = values(id);
+            ASSERT_EQ(0, (merge ? source : target)
+                             ->add(VectorData{DenseVector{data.data()}}, id));
+          }
+          ASSERT_EQ(0, merge ? target->merge({source}, {}) : target->train());
+          EXPECT_TRUE(converter.expired());
+          EXPECT_EQ(nullptr, inspected->converted());
+          EXPECT_EQ(0U, inspected->builder().lock()->stats().built_count());
+          EXPECT_EQ(64U, target->get_doc_count());
+          std::weak_ptr<core::IndexStreamer> source_state =
+              source->index_searcher();
+          ASSERT_EQ(0, source->close());
+          source.reset();
+          EXPECT_TRUE(source_state.expired());
+          EXPECT_EQ(0, target->train());
+          EXPECT_EQ(0, target->merge({}, {}));
+          VectorDataBuffer before;
+          ASSERT_EQ(0, target->fetch(7, &before));
+          const auto data = values(7);
+          const auto &bytes =
+              std::get<DenseVectorBuffer>(before.vector_buffer).data;
+          ASSERT_EQ(data.size() * sizeof(float), bytes.size());
+          for (size_t d = 0; d < data.size(); ++d) {
+            EXPECT_NEAR(data[d],
+                        reinterpret_cast<const float *>(bytes.data())[d],
+                        fp16 ? 0.002 : 0.00001);
+          }
+          ASSERT_EQ(0, target->close());
+          target = IndexFactory::CreateAndInitIndex(*param);
+          ASSERT_EQ(0, target->open(path, {StorageOptions::StorageType::kMMAP,
+                                           false, true}));
+          VectorDataBuffer after;
+          ASSERT_EQ(0, target->fetch(7, &after));
+          EXPECT_EQ(bytes,
+                    std::get<DenseVectorBuffer>(after.vector_buffer).data);
+          auto query = std::make_shared<DiskAnnQueryParam>();
+          query->topk = 5;
+          SearchResult result;
+          ASSERT_EQ(0, target->search(VectorData{DenseVector{data.data()}},
+                                      query, &result));
+          ASSERT_FALSE(result.doc_list_.empty());
+          EXPECT_EQ(7U, result.doc_list_[0].key());
+          ASSERT_EQ(0, target->close());
+          test_util::RemoveTestFiles(path);
+          test_util::RemoveTestFiles(source_path);
         }
-        ASSERT_EQ(0, merge ? target->merge({source}, {}) : target->train());
-        EXPECT_TRUE(converter.expired());
-        EXPECT_EQ(nullptr, inspected->converted());
-        EXPECT_EQ(0U, inspected->builder().lock()->stats().built_count());
-        EXPECT_EQ(64U, target->get_doc_count());
-        std::weak_ptr<core::IndexStreamer> source_state =
-            source->index_searcher();
-        ASSERT_EQ(0, source->close());
-        source.reset();
-        EXPECT_TRUE(source_state.expired());
-        EXPECT_EQ(0, target->train());
-        EXPECT_EQ(0, target->merge({}, {}));
-        VectorDataBuffer before;
-        ASSERT_EQ(0, target->fetch(7, &before));
-        const auto data = values(7);
-        const auto &bytes =
-            std::get<DenseVectorBuffer>(before.vector_buffer).data;
-        ASSERT_EQ(data.size() * sizeof(float), bytes.size());
-        for (size_t d = 0; d < data.size(); ++d) {
-          EXPECT_NEAR(data[d], reinterpret_cast<const float *>(bytes.data())[d],
-                      fp16 ? 0.002 : 0.00001);
-        }
-        ASSERT_EQ(0, target->close());
-        target = IndexFactory::CreateAndInitIndex(*param);
-        ASSERT_EQ(0, target->open(path, {StorageOptions::StorageType::kMMAP,
-                                         false, true}));
-        VectorDataBuffer after;
-        ASSERT_EQ(0, target->fetch(7, &after));
-        EXPECT_EQ(bytes, std::get<DenseVectorBuffer>(after.vector_buffer).data);
-        auto query = std::make_shared<DiskAnnQueryParam>();
-        query->topk = 5;
-        SearchResult result;
-        ASSERT_EQ(0, target->search(VectorData{DenseVector{data.data()}}, query,
-                                    &result));
-        ASSERT_FALSE(result.doc_list_.empty());
-        EXPECT_EQ(7U, result.doc_list_[0].key());
-        ASSERT_EQ(0, target->close());
-        test_util::RemoveTestFiles(path);
-        test_util::RemoveTestFiles(source_path);
       }
     }
   }

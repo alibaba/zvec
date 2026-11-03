@@ -438,6 +438,21 @@ bool DiskAnnIndexParam::deserialize_from_json_object(
   DESERIALIZE_VALUE_FIELD(json_obj, max_degree);
   DESERIALIZE_VALUE_FIELD(json_obj, list_size);
   DESERIALIZE_VALUE_FIELD(json_obj, pq_chunk_num);
+  DESERIALIZE_VALUE_FIELD(json_obj, partitioned_build);
+  DESERIALIZE_VALUE_FIELD(json_obj, build_memory_budget_gb);
+  if (json_obj.has("build_temp_dir")) {
+    ailego::JsonValue directory;
+    json_obj.get("build_temp_dir", &directory);
+    if (!directory.is_string()) {
+      LOG_ERROR("DiskAnn build_temp_dir must be a string");
+      return false;
+    }
+    build_temp_dir = directory.as_stl_string();
+    if (build_temp_dir.find('\0') != std::string::npos) {
+      LOG_ERROR("DiskAnn build_temp_dir must not contain NUL bytes");
+      return false;
+    }
+  }
 
   return true;
 }
@@ -448,6 +463,10 @@ ailego::JsonObject DiskAnnIndexParam::serialize_to_json_object(
   json_obj.set("max_degree", ailego::JsonValue(max_degree));
   json_obj.set("list_size", ailego::JsonValue(list_size));
   json_obj.set("pq_chunk_num", ailego::JsonValue(pq_chunk_num));
+  json_obj.set("partitioned_build", ailego::JsonValue(partitioned_build));
+  json_obj.set("build_memory_budget_gb",
+               ailego::JsonValue(build_memory_budget_gb));
+  json_obj.set("build_temp_dir", ailego::JsonValue(build_temp_dir));
   return json_obj;
 }
 

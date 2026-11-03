@@ -211,11 +211,31 @@ TEST(IndexParamsTest, DiskAnnIndexParams) {
   EXPECT_EQ(QuantizeType::FP16, params.quantize_type());
   EXPECT_TRUE(params.quantizer_param().enable_rotate());
 
+  EXPECT_FALSE(params.partitioned_build());
+  EXPECT_FLOAT_EQ(0.25f, params.build_memory_budget_gb());
+  EXPECT_TRUE(params.build_temp_dir().empty());
+  params.set_partitioned_build(true);
+  params.set_build_memory_budget_gb(0.03125f);
+  params.set_build_temp_dir("scratch space");
   auto cloned = params.clone();
   auto *cloned_diskann = dynamic_cast<DiskAnnIndexParams *>(cloned.get());
   ASSERT_NE(nullptr, cloned_diskann);
   EXPECT_EQ(params, *cloned_diskann);
 
+  EXPECT_TRUE(cloned_diskann->partitioned_build());
+  EXPECT_FLOAT_EQ(0.03125f, cloned_diskann->build_memory_budget_gb());
+  EXPECT_EQ("scratch space", cloned_diskann->build_temp_dir());
+  EXPECT_NE(params.to_string().find("build_temp_dir:scratch space"),
+            std::string::npos);
+  cloned_diskann->set_build_temp_dir("elsewhere");
+  EXPECT_NE(params, *cloned_diskann);
+  cloned_diskann->set_build_temp_dir(params.build_temp_dir());
+  cloned_diskann->set_partitioned_build(false);
+  EXPECT_NE(params, *cloned_diskann);
+  cloned_diskann->set_partitioned_build(true);
+  cloned_diskann->set_build_memory_budget_gb(0.5f);
+  EXPECT_NE(params, *cloned_diskann);
+  cloned_diskann->set_build_memory_budget_gb(0.03125f);
   cloned_diskann->set_list_size(40);
   EXPECT_NE(params, *cloned_diskann);
 }

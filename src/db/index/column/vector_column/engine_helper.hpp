@@ -678,6 +678,12 @@ class ProximaEngineHelper {
         index_param_builder->with_max_degree(db_index_params->max_degree());
         index_param_builder->with_list_size(db_index_params->list_size());
         index_param_builder->with_pq_chunk_num(db_index_params->pq_chunk_num());
+        index_param_builder->with_partitioned_build(
+            db_index_params->partitioned_build());
+        index_param_builder->with_build_memory_budget_gb(
+            db_index_params->build_memory_budget_gb());
+        index_param_builder->with_build_temp_dir(
+            db_index_params->build_temp_dir());
 
         return index_param_builder->build();
       }

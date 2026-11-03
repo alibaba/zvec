@@ -87,8 +87,8 @@ class FlatQueryCopyTestMetric : public IndexMetric {
               size_t dimension, float *distances, const void **) {
       const auto *prepared_query = static_cast<const float *>(query);
       for (size_t i = 0; i < count; ++i) {
-        EXPECT_EQ(0U, reinterpret_cast<uintptr_t>(rows[i]) %
-                          AILEGO_CACHE_LINE_SIZE);
+        EXPECT_EQ(
+            0U, reinterpret_cast<uintptr_t>(rows[i]) % AILEGO_CACHE_LINE_SIZE);
         const auto *row = static_cast<const float *>(rows[i]);
         double sum = 0;
         for (size_t d = 0; d < dimension; ++d) {

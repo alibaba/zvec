@@ -182,6 +182,9 @@ class DiskAnnIndexParam(VectorIndexParam):
         pq_chunk_num: typing.SupportsInt = 0,
         quantize_type: zvec._zvec.typing.QuantizeType = ...,
         quantizer_param: QuantizerParam = ...,
+        partitioned_build: bool = False,
+        build_memory_budget_gb: float = 0.25,
+        build_temp_dir: str = "",
     ) -> None:
         """
 
@@ -200,6 +203,14 @@ class DiskAnnIndexParam(VectorIndexParam):
                 Defaults to QuantizeType.UNDEFINED.
             quantizer_param (QuantizerParam, optional): Quantizer configuration.
                 Defaults to QuantizerParam().
+            partitioned_build (bool, optional): Enable partitioned construction.
+                Defaults to False.
+            build_memory_budget_gb (float, optional): Working-memory target in GiB,
+                not a hard RSS limit. Defaults to 0.25.
+            build_temp_dir (str, optional): Existing partition-build scratch
+                directory. Empty uses the system default. Relative paths resolve
+                at train/build time. The directory is checked before training;
+                failures do not fall back.
         """
 
     def __repr__(self) -> str: ...
@@ -208,6 +219,18 @@ class DiskAnnIndexParam(VectorIndexParam):
         """
         Convert to dictionary with all fields
         """
+
+    @property
+    def partitioned_build(self) -> bool:
+        """Enable partitioned graph construction; default False."""
+
+    @property
+    def build_temp_dir(self) -> str:
+        """Existing scratch directory; empty uses the system default."""
+
+    @property
+    def build_memory_budget_gb(self) -> float:
+        """Build working-memory target in GiB; minimum 0.015625, default 0.25."""
 
     @property
     def max_degree(self) -> int:

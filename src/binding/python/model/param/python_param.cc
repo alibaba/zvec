@@ -1298,17 +1298,23 @@ Examples:
   diskann_params
       .def(py::init([](MetricType metric_type, int max_degree, int list_size,
                        int pq_chunk_num, QuantizeType quantize_type,
-                       QuantizerParam quantizer_param) {
+                       QuantizerParam quantizer_param, bool partitioned_build,
+                       float build_memory_budget_gb,
+                       const std::string &build_temp_dir) {
              return std::make_shared<DiskAnnIndexParams>(
                  metric_type, max_degree, list_size, pq_chunk_num,
-                 quantize_type, quantizer_param);
+                 quantize_type, quantizer_param, partitioned_build,
+                 build_memory_budget_gb, build_temp_dir);
            }),
            py::arg("metric_type") = MetricType::IP, py::arg("max_degree") = 100,
            py::arg("list_size") = 50, py::arg("pq_chunk_num") = 0,
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("quantizer_param") = QuantizerParam(),
+           py::arg("partitioned_build") = false,
+           py::arg("build_memory_budget_gb") = 0.25f,
+           py::arg("build_temp_dir") = "",
            R"pbdoc(
-Constructs an DiskAnnIndexParams instance.
+Constructs a DiskAnnIndexParams instance.
 
 Args:
     metric_type (MetricType, optional): Distance metric. Defaults to MetricType.IP.
@@ -1323,7 +1329,24 @@ Args:
         Defaults to QuantizeType.UNDEFINED.
     quantizer_param (QuantizerParam, optional): Quantizer configuration.
         Defaults to QuantizerParam().
+    partitioned_build (bool, optional): Enable partitioned construction. Defaults to False.
+    build_memory_budget_gb (float, optional): Build working-memory target in GiB,
+        not a hard RSS cap. Minimum 0.015625; defaults to 0.25.
+    build_temp_dir (str, optional): Existing directory for partition-build scratch
+        files. Empty uses the system default. Relative paths resolve at train/build
+        time. The directory is checked before training; failures do not fall back.
 )pbdoc")
+      .def_property_readonly(
+          "partitioned_build", &DiskAnnIndexParams::partitioned_build,
+          "bool: Enable partitioned graph construction; default false.")
+      .def_property_readonly("build_memory_budget_gb",
+                             &DiskAnnIndexParams::build_memory_budget_gb,
+                             "float: Build working-memory target in GiB; "
+                             "minimum 0.015625, default 0.25.")
+      .def_property_readonly(
+          "build_temp_dir", &DiskAnnIndexParams::build_temp_dir,
+          "str: Partition-build scratch directory; empty uses "
+          "the system default.")
       .def_property_readonly("max_degree", &DiskAnnIndexParams::max_degree,
                              "int: max node degree.")
       .def_property_readonly("list_size", &DiskAnnIndexParams::list_size,
@@ -1343,6 +1366,9 @@ Args:
             dict["max_degree"] = self.max_degree();
             dict["list_size"] = self.list_size();
             dict["pq_chunk_num"] = self.pq_chunk_num();
+            dict["partitioned_build"] = self.partitioned_build();
+            dict["build_memory_budget_gb"] = self.build_memory_budget_gb();
+            dict["build_temp_dir"] = self.build_temp_dir();
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
             py::dict qp_dict;
@@ -1360,6 +1386,13 @@ Args:
                    ", \"max_degree\":" + std::to_string(self.max_degree()) +
                    ", \"list_size\":" + std::to_string(self.list_size()) +
                    ", \"pq_chunk_num\":" + std::to_string(self.pq_chunk_num()) +
+                   ", \"partitioned_build\":" +
+                   (self.partitioned_build() ? "true" : "false") +
+                   ", \"build_memory_budget_gb\":" +
+                   std::to_string(self.build_memory_budget_gb()) +
+                   ", \"build_temp_dir\":" +
+                   py::repr(py::str(self.build_temp_dir()))
+                       .cast<std::string>() +
                    ", \"quantize_type\":" +
                    quantize_type_to_string(self.quantize_type()) +
                    ", \"quantizer_param\":{" + "\"enable_rotate\":" +
@@ -1368,18 +1401,24 @@ Args:
           })
       .def(py::pickle(
           [](const DiskAnnIndexParams &self) {
-            return py::make_tuple(self.metric_type(), self.max_degree(),
-                                  self.list_size(), self.pq_chunk_num(),
-                                  self.quantize_type(),
-                                  self.quantizer_param().enable_rotate());
+            return py::make_tuple(
+                self.metric_type(), self.max_degree(), self.list_size(),
+                self.pq_chunk_num(), self.quantize_type(),
+                self.quantizer_param().enable_rotate(),
+                self.partitioned_build(), self.build_memory_budget_gb(),
+                self.build_temp_dir());
           },
           [](py::tuple t) {
-            if (t.size() != 5 && t.size() != 6)
+            if (t.size() != 5 && t.size() != 6 && t.size() != 8 &&
+                t.size() != 9)
               throw std::runtime_error("Invalid state for DiskAnnIndexParams");
             QuantizerParam qp(t.size() >= 6 ? t[5].cast<bool>() : false);
             return std::make_shared<DiskAnnIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
-                t[3].cast<int>(), t[4].cast<QuantizeType>(), qp);
+                t[3].cast<int>(), t[4].cast<QuantizeType>(), qp,
+                t.size() >= 8 ? t[6].cast<bool>() : false,
+                t.size() >= 8 ? t[7].cast<float>() : 0.25f,
+                t.size() == 9 ? t[8].cast<std::string>() : "");
           }));
 }
 

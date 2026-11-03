@@ -26,6 +26,15 @@ inline const std::string PARAM_DISKANN_BUILDER_MEMORY_LIMIT(
     "zvec.diskann.builder.memory_limit");
 inline const std::string PARAM_DISKANN_BUILDER_MEMORY_BUDGET(
     "zvec.diskann.builder.memory_budget");
+inline const std::string PARAM_DISKANN_BUILDER_PARTITIONED_BUILD(
+    "zvec.diskann.builder.partitioned_build");
+// Existing scratch directory for partitioned builds. Empty uses tmpfile().
+inline const std::string PARAM_DISKANN_BUILDER_TEMP_DIR(
+    "zvec.diskann.builder.temp_dir");
+// Explicit override: true requires memory_budget; false selects the original
+// builder. When omitted, supplying memory_budget enables partitioned builds.
+// memory_budget is an opt-in partitioned build working-memory target in GiB
+// (minimum 16 MiB), distinct from memory_limit, the search PQ-code budget.
 inline const std::string PARAM_DISKANN_BUILDER_DISK_PQ_DIM(
     "zvec.diskann.builder.disk_pq_dim");
 inline const std::string PARAM_DISKANN_BUILDER_THREAD_COUNT(

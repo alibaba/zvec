@@ -32,10 +32,14 @@
 #include "utility/stable_vector_holder.h"
 #include "diskann_context.h"
 #include "diskann_params.h"
+#include "diskann_partition_build.h"
 #include "diskann_util.h"
 
 namespace zvec {
 namespace core {
+
+DiskAnnBuilder::DiskAnnBuilder() = default;
+DiskAnnBuilder::~DiskAnnBuilder() = default;
 
 int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
   LOG_INFO("Begin DiskAnnBuilder::init");
@@ -86,6 +90,44 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
     }
 
     memory_limit_set_ = true;
+  }
+
+  build_temp_dir_.clear();
+  if (params.has(PARAM_DISKANN_BUILDER_TEMP_DIR) &&
+      (!params.get<std::string>(PARAM_DISKANN_BUILDER_TEMP_DIR,
+                                &build_temp_dir_) ||
+       build_temp_dir_.find('\0') != std::string::npos)) {
+    LOG_ERROR("DiskAnn temp_dir must be a string without NUL bytes");
+    return IndexError_InvalidArgument;
+  }
+
+  bool partitioned_build = params.has(PARAM_DISKANN_BUILDER_MEMORY_BUDGET);
+  if (params.has(PARAM_DISKANN_BUILDER_PARTITIONED_BUILD) &&
+      !params.get<bool>(PARAM_DISKANN_BUILDER_PARTITIONED_BUILD,
+                        &partitioned_build)) {
+    return IndexError_InvalidArgument;
+  }
+  if (partitioned_build && !params.has(PARAM_DISKANN_BUILDER_MEMORY_BUDGET)) {
+    LOG_ERROR("Partitioned DiskAnn build requires memory_budget");
+    return IndexError_InvalidArgument;
+  }
+  if (params.has(PARAM_DISKANN_BUILDER_MEMORY_BUDGET)) {
+    double gib = 0;
+    if (!params.get(PARAM_DISKANN_BUILDER_MEMORY_BUDGET, &gib) ||
+        !std::isfinite(gib) || gib < 1.0 / 64 ||
+        gib >= static_cast<double>(std::numeric_limits<size_t>::max()) /
+                   (1024.0 * 1024 * 1024)) {
+      LOG_ERROR("DiskAnn build memory_budget must be finite and >= 16 MiB");
+      return IndexError_InvalidArgument;
+    }
+    if (partitioned_build && (max_degree_ < 2 || max_degree_ > 1024 ||
+                              list_size_ == 0 || meta.element_size() == 0 ||
+                              (meta.data_type() != IndexMeta::DT_FP32 &&
+                               meta.data_type() != IndexMeta::DT_FP16))) {
+      return IndexError_InvalidArgument;
+    }
+    if (partitioned_build)
+      build_memory_budget_ = static_cast<size_t>(get_memory_in_bytes(gib));
   }
 
   if (params.has(PARAM_DISKANN_BUILDER_MAX_TRAIN_SAMPLE_COUNT)) {
@@ -148,6 +190,9 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params,
 }
 
 int DiskAnnBuilder::cleanup() {
+  partition_build_.reset();
+  build_memory_budget_ = 0;
+  build_temp_dir_.clear();
   holder_.reset();
   algo_.reset();
   quantizer_.reset();
@@ -311,6 +356,9 @@ int DiskAnnBuilder::build_internal(IndexThreads::Pointer threads) {
   }
 
   std::atomic<uint64_t> finished{0};
+  // Shard builders may be destroyed immediately on error. Join before their
+  // entity, contexts, and progress counter go out of scope on every exit.
+  AILEGO_DEFER([&]() { task_group->wait_finish(); });
   for (size_t i = 0; i < threads->count(); ++i) {
     task_group->submit(ailego::Closure ::New(this, &DiskAnnBuilder::do_build, i,
                                              threads->count(), &finished));
@@ -335,8 +383,6 @@ int DiskAnnBuilder::build_internal(IndexThreads::Pointer threads) {
     LOG_ERROR("Failed to build index while waiting finish");
     return errcode_;
   }
-  task_group->wait_finish();
-
   return 0;
 }
 
@@ -348,6 +394,7 @@ int DiskAnnBuilder::prune_internal(IndexThreads::Pointer threads) {
   }
 
   std::atomic<uint64_t> finished{0};
+  AILEGO_DEFER([&]() { task_group->wait_finish(); });
   for (size_t i = 0; i < threads->count(); ++i) {
     task_group->submit(ailego::Closure ::New(this, &DiskAnnBuilder::do_prune, i,
                                              threads->count(), &finished));
@@ -372,8 +419,6 @@ int DiskAnnBuilder::prune_internal(IndexThreads::Pointer threads) {
     LOG_ERROR("Failed to prune index while waiting finish");
     return errcode_;
   }
-  task_group->wait_finish();
-
   return 0;
 }
 
@@ -626,6 +671,11 @@ int DiskAnnBuilder::train(const IndexTrainer::Pointer & /*trainer*/) {
 
   LOG_INFO("Begin DiskAnnBuilder::train by trainer");
 
+  if (build_memory_budget_) {
+    int ret = DiskAnnPartitionBuild::check_temp_directory(build_temp_dir_);
+    if (ret != 0) return ret;
+  }
+
   stats_.set_trained_count(0UL);
   stats_.set_trained_costtime(0UL);
   state_ = BUILD_STATE_TRAINED;
@@ -647,6 +697,10 @@ int DiskAnnBuilder::train(IndexThreads::Pointer threads,
   }
 
   if (!holder->is_matched(raw_meta_)) return IndexError_Mismatch;
+  if (build_memory_budget_) {
+    int ret = DiskAnnPartitionBuild::check_temp_directory(build_temp_dir_);
+    if (ret != 0) return ret;
+  }
   LOG_INFO("Begin DiskAnnBuilder::train");
 
   auto start_time = ailego::Monotime::MilliSeconds();
@@ -667,7 +721,9 @@ int DiskAnnBuilder::train(IndexThreads::Pointer threads,
     }
   }
 
-  ret = train_quantized_data(threads);
+  ret = build_memory_budget_
+            ? DiskAnnPartitionBuild::train_quantizer(*this, threads)
+            : train_quantized_data(threads);
   if (ailego_unlikely(ret != 0)) {
     return ret;
   }
@@ -731,6 +787,19 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
   if (ailego_unlikely(holder->count() == 0)) {
     LOG_ERROR("Holder is empty");
     return IndexError_Runtime;
+  }
+
+  if (build_memory_budget_) {
+    auto partition = std::make_unique<DiskAnnPartitionBuild>(*this);
+    int ret = partition->build(threads, holder);
+    if (ret != 0) return ret;
+    partition_build_ = std::move(partition);
+    // The temporary snapshot owns everything needed for repeatable dumps.
+    holder_.reset();
+    state_ = BUILD_STATE_BUILT;
+    stats_.set_built_count(holder->count());
+    stats_.set_built_costtime(ailego::Monotime::MilliSeconds() - start_time);
+    return 0;
   }
 
   // The graph may need an owned snapshot of temporary iterator buffers.
@@ -838,13 +907,14 @@ int DiskAnnBuilder::dump(const IndexDumper::Pointer &dumper) {
     return ret;
   }
 
-  ret = entity_.dump(holder_, raw_meta_, dumper);
+  ret = partition_build_ ? partition_build_->dump(dumper)
+                         : entity_.dump(holder_, raw_meta_, dumper);
   if (ret != 0) {
     LOG_ERROR("Index dump failed, ret: %d", ret);
     return ret;
   }
 
-  stats_.set_dumped_count(holder_->count());
+  stats_.set_dumped_count(stats_.built_count());
   stats_.set_dumped_costtime(ailego::Monotime::MilliSeconds() - start_time);
 
   LOG_INFO("DiskAnnBuilder::dump");

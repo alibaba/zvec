@@ -23,10 +23,15 @@
 namespace zvec {
 namespace core {
 
+class DiskAnnPartitionBuild;
+
 class DiskAnnBuilder : public IndexBuilder {
+  friend class DiskAnnPartitionBuild;
+
  public:
   //! Constructor
-  DiskAnnBuilder() = default;
+  DiskAnnBuilder();
+  ~DiskAnnBuilder() override;
 
   //! Initialize the builder
   int init(const IndexMeta &meta, const ailego::Params &params) override;
@@ -106,6 +111,9 @@ class DiskAnnBuilder : public IndexBuilder {
   uint32_t list_size_{kDefaultListSize};
   double memory_limit_{0.0};
   bool memory_limit_set_{false};
+  size_t build_memory_budget_{0};
+  std::string build_temp_dir_;
+  std::unique_ptr<DiskAnnPartitionBuild> partition_build_;
   uint32_t max_pq_chunk_num_{kDefaultPqChunkNum};
   uint32_t pq_chunk_num_{kDefaultPqChunkNum};
   uint32_t build_thread_count_{0};

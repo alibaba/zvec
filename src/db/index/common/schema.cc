@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cmath>
+#include <limits>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -215,6 +217,25 @@ Status FieldSchema::validate() const {
       }
 
       if (index_params_->type() == IndexType::DISKANN) {
+        const auto *diskann =
+            static_cast<const DiskAnnIndexParams *>(index_params_.get());
+        if (diskann->build_temp_dir().find('\0') != std::string::npos) {
+          return Status::InvalidArgument(
+              "DiskAnn build_temp_dir must not contain NUL bytes");
+        }
+        const double budget = diskann->build_memory_budget_gb();
+        if (!std::isfinite(budget) || budget < 1.0 / 64 ||
+            budget >= static_cast<double>(std::numeric_limits<size_t>::max()) /
+                          (1024.0 * 1024 * 1024)) {
+          return Status::InvalidArgument(
+              "DiskAnn build_memory_budget_gb must be finite and >= 0.015625 "
+              "GiB");
+        }
+        if (diskann->partitioned_build() &&
+            (diskann->max_degree() < 2 || diskann->list_size() <= 0)) {
+          return Status::InvalidArgument(
+              "Partitioned DiskAnn requires max_degree >= 2 and list_size > 0");
+        }
         // DiskAnn also uses the portable synchronous pread backend on 64-bit
         // Android and iOS.
         // The CMake variable

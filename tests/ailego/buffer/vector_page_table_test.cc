@@ -271,13 +271,12 @@ version_t FindLiveVersion(SizedExternalCache &cache, eviction_key_t owner_key) {
 TEST_F(BufferPoolTest, HeapAllocatedOwnersPreserveCacheLineAlignment) {
   auto table = std::make_unique<VectorPageTable>();
   auto shared_table = std::make_shared<VectorPageTable>();
-  EXPECT_EQ(0U, reinterpret_cast<uintptr_t>(table.get()) %
-                    AILEGO_CACHE_LINE_SIZE);
+  EXPECT_EQ(0U,
+            reinterpret_cast<uintptr_t>(table.get()) % AILEGO_CACHE_LINE_SIZE);
   EXPECT_EQ(0U, reinterpret_cast<uintptr_t>(shared_table.get()) %
                     AILEGO_CACHE_LINE_SIZE);
-  EXPECT_EQ(0U,
-            reinterpret_cast<uintptr_t>(&MemoryLimitPool::get_instance()) %
-                AILEGO_CACHE_LINE_SIZE);
+  EXPECT_EQ(0U, reinterpret_cast<uintptr_t>(&MemoryLimitPool::get_instance()) %
+                    AILEGO_CACHE_LINE_SIZE);
 }
 
 TEST_F(BufferPoolTest, AdmissionControlRejectsFirstColdMissAfterPressure) {
