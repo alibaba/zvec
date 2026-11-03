@@ -1184,3 +1184,73 @@ TEST(ManifestCodecRabitqTest, QuantizerSettingsRoundTrip) {
     EXPECT_TRUE(*params == *decoded);
   }
 }
+
+TEST(ManifestCodecTest, IvfPqParametersSurvivePersistence) {
+  for (bool rotate : {false, true}) {
+    for (int mode = 0; mode < 3; ++mode) {
+      const QuantizerParam qp(rotate, 4, mode == 0 ? 8 : 4, mode == 2,
+                              rotate ? 3 : 0, rotate ? 2 : 0);
+      IVFIndexParams params(MetricType::COSINE, 16, 7, false, QuantizeType::PQ,
+                            qp);
+      std::string encoded;
+      ManifestCodec::EncodeIndexParams(&params, &encoded);
+      const auto restored = std::dynamic_pointer_cast<IVFIndexParams>(
+          ManifestCodec::DecodeIndexParams(encoded));
+      ASSERT_NE(nullptr, restored);
+      EXPECT_EQ(params, *restored);
+      EXPECT_EQ(qp, restored->quantizer_param());
+      std::string reencoded;
+      ManifestCodec::EncodeIndexParams(restored.get(), &reencoded);
+      EXPECT_EQ(encoded, reencoded);
+    }
+  }
+}
+
+TEST(ManifestCodecTest, QuantizerFieldsBeforeTypePreserveBothFormats) {
+  // These overlapping tags predate the merge: RaBitQ interprets them as
+  // bits/clusters/samples/iterations, PQ as chunks/bits/fast-scan/OPQ.
+  for (const auto type : {QuantizeType::RABITQ, QuantizeType::PQ}) {
+    const QuantizerParam qp = type == QuantizeType::RABITQ
+                                  ? QuantizerParam(false, 3, 4, 24, 6)
+                                  : QuantizerParam(false, 4, 4, true, 0, 0);
+    IVFIndexParams params(MetricType::L2, 8, 10, false, type, qp);
+    std::string encoded;
+    ManifestCodec::EncodeIndexParams(&params, &encoded);
+    pbwire::Reader outer(encoded);
+    ASSERT_TRUE(outer.next());
+    ASSERT_EQ(outer.field(), 4u);  // IVFIndexParams
+    pbwire::Reader ivf(outer.bytes());
+    std::string reordered_ivf;
+    pbwire::Writer iw(&reordered_ivf);
+    while (ivf.next()) {
+      if (ivf.field() != 1) {
+        iw.put_varint(ivf.field(), ivf.varint(), false);
+        continue;
+      }
+      pbwire::Reader base(ivf.bytes());
+      std::string fields, quantizer_first;
+      pbwire::Writer fw(&fields), qw(&quantizer_first);
+      while (base.next()) {
+        if (base.field() == 4) {
+          qw.put_message(4, std::string(base.bytes()));
+        } else {
+          fw.put_varint(base.field(), base.varint(), false);
+        }
+      }
+      ASSERT_TRUE(base.ok());
+      quantizer_first += fields;
+      iw.put_message(1, quantizer_first);
+    }
+    ASSERT_TRUE(ivf.ok());
+    std::string reordered;
+    pbwire::Writer(&reordered).put_message(4, reordered_ivf);
+    auto restored = std::dynamic_pointer_cast<IVFIndexParams>(
+        ManifestCodec::DecodeIndexParams(reordered));
+    ASSERT_NE(restored, nullptr);
+    EXPECT_EQ(params, *restored);
+    EXPECT_EQ(qp, restored->quantizer_param());
+    std::string reencoded;
+    ManifestCodec::EncodeIndexParams(restored.get(), &reencoded);
+    EXPECT_EQ(encoded, reencoded);
+  }
+}

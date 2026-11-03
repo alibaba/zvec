@@ -55,6 +55,11 @@ def test_rabitq_parameter_pickle(kind):
         "num_clusters": 4,
         "sample_count": 128,
         "n_iters": 6,
+        "num_chunk": 8,
+        "num_bits": 8,
+        "fast_scan": False,
+        "opq_iter": 5,
+        "opq_pq_iter": 4,
     }
 
 

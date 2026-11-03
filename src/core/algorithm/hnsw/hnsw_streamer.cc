@@ -16,6 +16,7 @@
 #include <ailego/internal/cpu_features.h>
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
+#include <turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include "utility/sparse_utility.h"
 #include "hnsw_algorithm.h"
@@ -45,7 +46,104 @@ void BindTurboDistances(TurboQuantizer::Pointer quantizer,
   };
 }
 
+const std::string HNSW_TURBO_QUANTIZER_SEG_ID = "hnsw.turbo_quantizer";
+
+int DumpTurboQuantizerSegment(const IndexStorage::Pointer &storage,
+                              const zvec::turbo::Quantizer &quantizer) {
+  if (!quantizer.require_train()) return 0;
+  std::string state;
+  int ret = quantizer.serialize(&state);
+  if (ret != 0) return ret;
+  if (state.empty()) return IndexError_InvalidFormat;
+  ret = storage->append(HNSW_TURBO_QUANTIZER_SEG_ID,
+                        (state.size() + 31u) & ~size_t(31u));
+  if (ret != 0) return ret;
+  auto segment = storage->get(HNSW_TURBO_QUANTIZER_SEG_ID);
+  if (!segment ||
+      segment->write(0, state.data(), state.size()) != state.size() ||
+      segment->resize(state.size()) != state.size()) {
+    return IndexError_WriteData;
+  }
+  segment->update_data_crc(ailego::Crc32c::Hash(state.data(), state.size(), 0));
+  return 0;
+}
+
 }  // namespace
+
+int HnswStreamer::RestoreQuantizer(
+    const IndexStorage::Pointer &storage, const IndexMeta &quantized_meta,
+    std::shared_ptr<zvec::turbo::Quantizer> *out_quantizer) {
+  if (!storage || out_quantizer == nullptr ||
+      quantized_meta.quantizer_name().empty()) {
+    return IndexError_NoExist;
+  }
+  std::shared_ptr<zvec::turbo::Quantizer> quantizer =
+      *out_quantizer
+          ? *out_quantizer
+          : IndexFactory::CreateQuantizer(quantized_meta.quantizer_name());
+  if (!quantizer) {
+    LOG_ERROR("Failed to create turbo quantizer %s",
+              quantized_meta.quantizer_name().c_str());
+    return IndexError_NoExist;
+  }
+
+  // The quantized meta records the raw input layout next to the quantizer
+  // params, so init() can rebuild the code layout before the state is
+  // deserialized on top.
+  const ailego::Params &params = quantized_meta.quantizer_params();
+  int64_t input_dim = 0;
+  int64_t input_type = IndexMeta::DataType::DT_FP32;
+  if (!params.get("input_dimension", &input_dim) || input_dim <= 0) {
+    LOG_ERROR("Quantizer %s misses the recorded input dimension",
+              quantized_meta.quantizer_name().c_str());
+    return IndexError_InvalidFormat;
+  }
+  params.get("input_data_type", &input_type);
+  IndexMeta raw_meta;
+  raw_meta.set_meta(static_cast<IndexMeta::DataType>(input_type),
+                    static_cast<uint32_t>(input_dim));
+  raw_meta.set_metric(quantized_meta.metric_name(), 0,
+                      quantized_meta.metric_params());
+  int ret = quantizer->init(raw_meta, params);
+  if (ret != 0) {
+    LOG_ERROR("Failed to init turbo quantizer %s, ret=%d",
+              quantized_meta.quantizer_name().c_str(), ret);
+    return ret;
+  }
+
+  auto segment = storage->get(HNSW_TURBO_QUANTIZER_SEG_ID);
+  if (quantizer->require_train() && (!segment || !segment->data_size())) {
+    LOG_ERROR("Missing trained HNSW quantizer state");
+    return IndexError_InvalidFormat;
+  }
+  if (segment && segment->data_size()) {
+    IndexStorage::MemoryBlock block;
+    const size_t size = segment->data_size();
+    if (segment->read(0, block, size) != size) {
+      return IndexError_ReadData;
+    }
+    if (segment->data_crc() &&
+        ailego::Crc32c::Hash(block.data(), size, 0) != segment->data_crc()) {
+      return IndexError_InvalidChecksum;
+    }
+    ret = quantizer->deserialize(block.data(), size);
+    if (ret != 0) return ret;
+  }
+  // Deserialization may change the layout; validate the restored state.
+  const IndexMeta &rebuilt = quantizer->meta();
+  if (rebuilt.data_type() != quantized_meta.data_type() ||
+      rebuilt.dimension() != quantized_meta.dimension() ||
+      rebuilt.element_size() != quantized_meta.element_size() ||
+      rebuilt.extra_meta_size() != quantized_meta.extra_meta_size() ||
+      quantizer->quantized_datapoint_vector_length() !=
+          quantized_meta.element_size() ||
+      quantizer->dim() != input_dim) {
+    return IndexError_Mismatch;
+  }
+
+  *out_quantizer = quantizer;
+  return 0;
+}
 
 HnswStreamer::HnswStreamer() = default;
 
@@ -66,6 +164,49 @@ void HnswStreamer::merge_trained_meta(const IndexMeta &trained_meta) {
                         trained_meta.converter_revision(),
                         trained_meta.converter_params());
   }
+}
+
+int HnswStreamer::check_params(const void *query, const IndexQueryMeta &qmeta,
+                               bool search) const {
+  if (ailego_unlikely(!query)) {
+    LOG_ERROR("null query");
+    return IndexError_InvalidArgument;
+  }
+  if (quantizer_ && quantizer_->requires_original_vectors() &&
+      quantizer_->require_train())
+    return IndexError_NoReady;
+  if (!search && quantizer_ && quantizer_->requires_original_vectors() &&
+      !provider_) {
+    LOG_ERROR(
+        "This quantizer requires an original-vector provider for graph "
+        "construction");
+    return IndexError_Unsupported;
+  }
+  if (search && quantizer_ && quantizer_->requires_original_vectors()) {
+    const auto expected = quantizer_->quantized_query_meta();
+    return qmeta.dimension() == expected.dimension() &&
+                   qmeta.data_type() == expected.data_type() &&
+                   qmeta.element_size() == expected.element_size()
+               ? 0
+               : IndexError_Mismatch;
+  }
+  if (ailego_unlikely(qmeta.dimension() != meta_.dimension() ||
+                      qmeta.data_type() != meta_.data_type() ||
+                      qmeta.element_size() != meta_.element_size())) {
+    // A query prepared by the active turbo quantizer may keep the
+    // quantizer's raw input layout instead of the stored code layout
+    // (e.g. a PQ lookup table); identify it by the quantizer stamp.
+    const bool quantizer_query =
+        search && quantizer_ != nullptr && quantizer_->dim() > 0 &&
+        qmeta.data_type() == IndexMeta::DT_FP32 &&
+        qmeta.quantize_type() == static_cast<uint32_t>(quantizer_->type()) &&
+        qmeta.dimension() == static_cast<uint32_t>(quantizer_->dim());
+    if (ailego_unlikely(!quantizer_query)) {
+      LOG_ERROR("Unsupported query meta");
+      return IndexError_Mismatch;
+    }
+  }
+  return 0;
 }
 
 int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
@@ -228,8 +369,21 @@ int HnswStreamer::init(
     return IndexError_InvalidArgument;
   }
 
+  if (dynamic_cast<turbo::PackedCodeQuantizer *>(quantizer.get()) ||
+      (quantizer->require_train() && imeta.quantizer_name().empty())) {
+    return IndexError_Unsupported;
+  }
   quantizer_ = quantizer;
-  int ret = this->init(imeta, params);
+  IndexMeta meta = imeta;
+  auto qparams = meta.quantizer_params();
+  qparams.set("input_dimension", static_cast<int64_t>(quantizer->dim()));
+  qparams.set("input_data_type",
+              static_cast<int64_t>(quantizer->input_data_type() ==
+                                           turbo::DataType::kFp16
+                                       ? IndexMeta::DT_FP16
+                                       : IndexMeta::DT_FP32));
+  meta.set_quantizer(meta.quantizer_name(), meta.quantizer_revision(), qparams);
+  int ret = this->init(meta, params);
   if (ret == 0 && quantizer->requires_original_vectors() &&
       use_external_vector_) {
     LOG_ERROR("This quantizer requires in-index vector storage");
@@ -352,34 +506,11 @@ int HnswStreamer::open_quantizer(const IndexStorage::Pointer &storage,
   return quantizer_->deserialize(block.data(), size);
 }
 
-int HnswStreamer::check_params(const void *query, const IndexQueryMeta &qmeta,
-                               bool search) const {
-  if (!query) return IndexError_InvalidArgument;
-  if (quantizer_ && quantizer_->requires_original_vectors() &&
-      quantizer_->require_train())
-    return IndexError_NoReady;
-  if (!search && quantizer_ && quantizer_->requires_original_vectors() &&
-      !provider_) {
-    LOG_ERROR(
-        "This quantizer requires an original-vector provider for graph "
-        "construction");
-    return IndexError_Unsupported;
-  }
-  if (search && quantizer_) {
-    const auto expected = quantizer_->quantized_query_meta();
-    if (qmeta.dimension() != expected.dimension() ||
-        qmeta.data_type() != expected.data_type() ||
-        qmeta.element_size() != expected.element_size())
-      return IndexError_Mismatch;
-  } else if (qmeta.dimension() != meta_.dimension() ||
-             qmeta.data_type() != meta_.data_type() ||
-             qmeta.element_size() != meta_.element_size()) {
-    return IndexError_Mismatch;
-  }
-  return 0;
+int HnswStreamer::open(IndexStorage::Pointer stg) {
+  return open(std::move(stg), false);
 }
 
-int HnswStreamer::open(IndexStorage::Pointer stg) {
+int HnswStreamer::open(IndexStorage::Pointer stg, bool read_only) {
   LOG_INFO("HnswStreamer open");
 
   if (ailego_unlikely(state_ != STATE_INITED)) {
@@ -412,7 +543,10 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
     return ret;
   }
 
-  ret = entity_->open(stg, max_index_size_, check_crc_enabled_);
+  // The entity takes ownership of the storage handle; keep a reference for
+  // the quantizer state restore below.
+  IndexStorage::Pointer stg_ref = stg;
+  ret = entity_->open(std::move(stg), max_index_size_, check_crc_enabled_);
   if (ret != 0) {
     return ret;
   }
@@ -420,8 +554,19 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
   ret = entity_->get_index_meta(&index_meta);
   const bool new_index = ret == IndexError_NoExist;
   if (new_index) {
-    ret = open_quantizer(stg, true);
-    if (ret != 0) return ret;
+    if (quantizer_ && quantizer_->requires_original_vectors()) {
+      ret = open_quantizer(stg_ref, true);
+      if (ret != 0) return ret;
+    } else {
+      if (!quantizer_ && !meta_.quantizer_name().empty()) {
+        ret = RestoreQuantizer(stg_ref, meta_, &quantizer_);
+        if (ret != 0) return ret;
+      }
+      if (quantizer_) {
+        ret = DumpTurboQuantizerSegment(stg_ref, *quantizer_);
+        if (ret != 0) return ret;
+      }
+    }
     // Set IndexMeta for the new index
     ret = entity_->set_index_meta(meta_);
     if (ret != 0) {
@@ -439,6 +584,16 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
         index_meta.quantizer_name() != meta_.quantizer_name()) {
       LOG_ERROR("IndexMeta mismatch from the previous in index");
       return IndexError_Mismatch;
+    }
+    if (!index_meta.quantizer_name().empty()) {
+      meta_.set_quantizer(index_meta.quantizer_name(),
+                          index_meta.quantizer_revision(),
+                          index_meta.quantizer_params());
+      if (!quantizer_ || (quantizer_->require_train() &&
+                          !quantizer_->requires_original_vectors())) {
+        ret = RestoreQuantizer(stg_ref, meta_, &quantizer_);
+        if (ret != 0) return ret;
+      }
     }
     // The IndexMetric Params may be updated like MipsSquaredEuclidean
     auto metric_params = index_meta.metric_params();
@@ -458,8 +613,8 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
     }
   }
 
-  if (!new_index) {
-    ret = open_quantizer(stg, false);
+  if (!new_index && quantizer_ && quantizer_->requires_original_vectors()) {
+    ret = open_quantizer(stg_ref, false);
     if (ret != 0) return ret;
   }
 
@@ -468,6 +623,15 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
   };
 
   if (quantizer_) {
+    if (dynamic_cast<turbo::PackedCodeQuantizer *>(quantizer_.get())) {
+      return IndexError_Unsupported;
+    }
+    // Read-only queries use ADC; the centroid-pair SDC table is only needed
+    // for graph construction. Prepare it before admitting concurrent inserts.
+    if (!read_only) {
+      ret = quantizer_->prepare_build();
+      if (ret != 0) return ret;
+    }
     if (use_external_vector_) {
       // External records and build queries are raw; search queries are encoded.
       BindTurboDistances<&TurboQuantizer::calc_distance_input_input,
@@ -659,6 +823,7 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
     return ret;
   }
 
+  read_only_ = read_only;
   state_ = STATE_OPENED;
   magic_ = IndexContext::GenerateMagic();
 
@@ -706,19 +871,23 @@ int HnswStreamer::dump(const IndexDumper::Pointer &dumper) {
     LOG_ERROR("Failed to serialize meta into dumper.");
     return ret;
   }
-  if (quantizer_) {
+  if (quantizer_ && (quantizer_->require_train() ||
+                     quantizer_->requires_original_vectors())) {
     std::string state;
     ret = quantizer_->serialize(&state);
     if (ret != 0) return ret;
-    if (!state.empty()) {
-      const size_t data_size = state.size();
-      const uint32_t crc = ailego::Crc32c::Hash(state.data(), data_size, 0);
-      state.resize((data_size + 31u) & ~size_t{31u});
-      if (dumper->write(state.data(), state.size()) != state.size() ||
-          dumper->append("hnsw.quantizer", data_size, state.size() - data_size,
-                         crc) != 0)
-        return IndexError_WriteData;
+    if (state.empty()) return IndexError_InvalidFormat;
+    const size_t size = state.size();
+    const uint32_t crc = ailego::Crc32c::Hash(state.data(), size, 0);
+    state.resize((size + 31u) & ~size_t(31u));
+    if (dumper->write(state.data(), state.size()) != state.size()) {
+      return IndexError_WriteData;
     }
+    ret = dumper->append(quantizer_->requires_original_vectors()
+                             ? "hnsw.quantizer"
+                             : HNSW_TURBO_QUANTIZER_SEG_ID,
+                         size, state.size() - size, crc);
+    if (ret != 0) return ret;
   }
   return entity_->dump(dumper);
 }
@@ -827,6 +996,7 @@ void HnswStreamer::bind_search_dist_space(HnswContext *ctx) const {
 int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
                                    const IndexQueryMeta &qmeta,
                                    IndexStreamer::Context::Pointer &context) {
+  if (read_only_) return IndexError_Unsupported;
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) {
     return ret;
@@ -929,6 +1099,7 @@ int HnswStreamer::add_with_id_impl(uint32_t id, const void *query,
 int HnswStreamer::add_impl(uint64_t pkey, const void *query,
                            const IndexQueryMeta &qmeta,
                            IndexStreamer::Context::Pointer &context) {
+  if (read_only_) return IndexError_Unsupported;
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) {
     return ret;
@@ -1080,7 +1251,9 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
       return ret;
     }
     ctx->topk_to_result(q);
-    query = static_cast<const char *>(query) + qmeta.element_size();
+    query = static_cast<const char *>(query) +
+            (quantizer_ ? quantizer_->quantized_query_vector_length()
+                        : qmeta.element_size());
   }
 
   if (ailego_unlikely(ctx->error())) {
@@ -1236,7 +1409,9 @@ int HnswStreamer::search_bf_impl(
         }
       }
       ctx->topk_to_result(q);
-      query = static_cast<const char *>(query) + qmeta.element_size();
+      query = static_cast<const char *>(query) +
+              (quantizer_ ? quantizer_->quantized_query_vector_length()
+                          : qmeta.element_size());
     }
   } else {
     auto &filter = ctx->filter();
@@ -1260,7 +1435,9 @@ int HnswStreamer::search_bf_impl(
         }
       }
       ctx->topk_to_result(q);
-      query = static_cast<const char *>(query) + qmeta.element_size();
+      query = static_cast<const char *>(query) +
+              (quantizer_ ? quantizer_->quantized_query_vector_length()
+                          : qmeta.element_size());
     }
   }
 
@@ -1340,7 +1517,9 @@ int HnswStreamer::search_bf_by_p_keys_impl(
         }
       }
       ctx->topk_to_result(q);
-      query = static_cast<const char *>(query) + qmeta.element_size();
+      query = static_cast<const char *>(query) +
+              (quantizer_ ? quantizer_->quantized_query_vector_length()
+                          : qmeta.element_size());
     }
   } else {
     auto &filter = ctx->filter();
@@ -1364,7 +1543,9 @@ int HnswStreamer::search_bf_by_p_keys_impl(
         }
       }
       ctx->topk_to_result(q);
-      query = static_cast<const char *>(query) + qmeta.element_size();
+      query = static_cast<const char *>(query) +
+              (quantizer_ ? quantizer_->quantized_query_vector_length()
+                          : qmeta.element_size());
     }
   }
 

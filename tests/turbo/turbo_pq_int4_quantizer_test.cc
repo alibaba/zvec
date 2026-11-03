@@ -341,9 +341,15 @@ TEST(PqInt4Quantizer, SerializeDeserialize) {
   float adc2 = q2->calc_distance_dp_query(code2.data(), lut2.data());
   EXPECT_NEAR(adc1, adc2, 1e-6f);
 
-  // Note: SDC (calc_distance_dp_dp) is intentionally NOT tested after
-  // deserialization because dist_table_ is a build-phase-only structure
-  // and is not persisted.
+  // Reopening for writes restores SDC separately; ADC above needs no prepare.
+  iter->next();
+  ASSERT_TRUE(iter->is_valid());
+  quantizer->quantize_data(iter->data(), code2.data());
+  const float sdc = quantizer->calc_distance_dp_dp(code1.data(), code2.data());
+  ASSERT_EQ(0, q2->prepare_build());
+  EXPECT_NEAR(sdc, q2->calc_distance_dp_dp(code1.data(), code2.data()), 1e-6f);
+  ASSERT_EQ(0, q2->prepare_build());  // Safe to prepare again.
+  EXPECT_NEAR(sdc, q2->calc_distance_dp_dp(code1.data(), code2.data()), 1e-6f);
 }
 
 // ---------------------------------------------------------------------------

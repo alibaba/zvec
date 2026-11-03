@@ -60,10 +60,27 @@ static std::string metric_type_to_string(const MetricType type) {
   }
 }
 
+static py::dict quantizer_param_to_dict(const QuantizerParam &params) {
+  py::dict result;
+  result["enable_rotate"] = params.enable_rotate();
+  result["num_chunk"] = params.num_chunk();
+  result["num_bits"] = params.num_bits();
+  result["fast_scan"] = params.fast_scan();
+  result["opq_iter"] = params.opq_iter();
+  result["opq_pq_iter"] = params.opq_pq_iter();
+  result["total_bits"] = params.total_bits();
+  result["num_clusters"] = params.num_clusters();
+  result["sample_count"] = params.sample_count();
+  result["n_iters"] = params.n_iters();
+  return result;
+}
+
 static std::string quantize_type_to_string(const QuantizeType type) {
   switch (type) {
     case QuantizeType::UNDEFINED:
       return "UNDEFINED";
+    case QuantizeType::PQ:
+      return "PQ";
     case QuantizeType::INT8:
       return "INT8";
     case QuantizeType::INT4:
@@ -429,11 +446,17 @@ Encapsulates quantization-related settings such as enable_rotate.
 For RABITQ, total_bits (1-9), num_clusters, sample_count (0 uses all vectors),
 and n_iters configure training. IVFIndexParam.total_bits/sample_count override
 these two quantizer settings; num_clusters is independent of IVF n_list.
+For HNSW/IVF PQ, configure subquantizers, code width, FastScan and learned OPQ.
 
 Attributes:
     enable_rotate (bool): Whether to apply random rotation before INT8/INT4
         quantization to reduce quantization error.
-        Only effective with quantize_type=INT8 or INT4. Defaults to False.
+        With quantize_type=PQ, enables learned OPQ. Defaults to False.
+    num_chunk (int): PQ subquantizers; default 8. PQ4 requires dimension divisible by this value.
+    num_bits (int): Bits per PQ code, 4 or 8; default 8.
+    fast_scan (bool): Enable packed IVF PQ4 scans; default False.
+    opq_iter (int): OPQ training iterations; default 5, positive when OPQ is enabled.
+    opq_pq_iter (int): PQ iterations per OPQ iteration; default 4, positive when OPQ is enabled.
 
 Examples:
     >>> qp = QuantizerParam(enable_rotate=True)
@@ -441,31 +464,43 @@ Examples:
     True
 )pbdoc");
   quantizer_param
-      .def(py::init<bool, int, int, int, int>(),
+      .def(py::init([](bool rotate, int bits, int clusters, int samples,
+                       int iters, int chunks, int pq_bits, bool fast_scan,
+                       uint32_t opq_iter, uint32_t opq_pq_iter) {
+             auto q = std::make_shared<QuantizerParam>(rotate, bits, clusters,
+                                                       samples, iters);
+             q->set_num_chunk(chunks);
+             q->set_num_bits(pq_bits);
+             q->set_fast_scan(fast_scan);
+             q->set_opq_iter(opq_iter);
+             q->set_opq_pq_iter(opq_pq_iter);
+             return q;
+           }),
            py::arg("enable_rotate") = false, py::arg("total_bits") = 7,
            py::arg("num_clusters") = 16, py::arg("sample_count") = 0,
-           py::arg("n_iters") = 20)
+           py::arg("n_iters") = 20, py::kw_only(), py::arg("num_chunk") = 8,
+           py::arg("num_bits") = 8, py::arg("fast_scan") = false,
+           py::arg("opq_iter") = 5, py::arg("opq_pq_iter") = 4)
       .def_property_readonly("total_bits", &QuantizerParam::total_bits)
       .def_property_readonly("num_clusters", &QuantizerParam::num_clusters)
       .def_property_readonly("sample_count", &QuantizerParam::sample_count)
       .def_property_readonly("n_iters", &QuantizerParam::n_iters)
+      .def_property_readonly("num_chunk", &QuantizerParam::num_chunk)
+      .def_property_readonly("num_bits", &QuantizerParam::num_bits)
+      .def_property_readonly("fast_scan", &QuantizerParam::fast_scan)
+      .def_property_readonly("opq_iter", &QuantizerParam::opq_iter)
+      .def_property_readonly("opq_pq_iter", &QuantizerParam::opq_pq_iter)
       .def_property_readonly(
           "enable_rotate",
           [](const QuantizerParam &self) -> bool {
             return self.enable_rotate();
           },
-          "bool: Whether random rotation is enabled before INT8/INT4 "
-          "quantization.")
+          "bool: Enable random rotation for scalar quantizers or learned OPQ "
+          "for PQ.")
       .def(
           "to_dict",
           [](const QuantizerParam &self) -> py::dict {
-            py::dict dict;
-            dict["enable_rotate"] = self.enable_rotate();
-            dict["total_bits"] = self.total_bits();
-            dict["num_clusters"] = self.num_clusters();
-            dict["sample_count"] = self.sample_count();
-            dict["n_iters"] = self.n_iters();
-            return dict;
+            return quantizer_param_to_dict(self);
           },
           "Convert to dictionary with all fields")
       .def(
@@ -473,6 +508,11 @@ Examples:
           [](const QuantizerParam &self) -> std::string {
             return "{\"enable_rotate\":" +
                    std::string(self.enable_rotate() ? "true" : "false") +
+                   ", \"num_chunk\":" + std::to_string(self.num_chunk()) +
+                   ", \"num_bits\":" + std::to_string(self.num_bits()) +
+                   ", \"fast_scan\":" + std::to_string(self.fast_scan()) +
+                   ", \"opq_iter\":" + std::to_string(self.opq_iter()) +
+                   ", \"opq_pq_iter\":" + std::to_string(self.opq_pq_iter()) +
                    ", \"total_bits\":" + std::to_string(self.total_bits()) +
                    ", \"num_clusters\":" + std::to_string(self.num_clusters()) +
                    ", \"sample_count\":" + std::to_string(self.sample_count()) +
@@ -489,16 +529,33 @@ Examples:
           [](const QuantizerParam &self) {
             return py::make_tuple(self.enable_rotate(), self.total_bits(),
                                   self.num_clusters(), self.sample_count(),
-                                  self.n_iters());
+                                  self.n_iters(), self.num_chunk(),
+                                  self.num_bits(), self.fast_scan(),
+                                  self.opq_iter(), self.opq_pq_iter());
           },
           [](py::tuple t) {
-            if (t.size() != 1 && t.size() != 5)
+            if (t.size() != 1 && t.size() != 5 && t.size() != 6 &&
+                t.size() != 10)
               throw std::runtime_error("Invalid state for QuantizerParam");
-            return std::make_shared<QuantizerParam>(
-                t[0].cast<bool>(), t.size() == 5 ? t[1].cast<int>() : 7,
-                t.size() == 5 ? t[2].cast<int>() : 16,
-                t.size() == 5 ? t[3].cast<int>() : 0,
-                t.size() == 5 ? t[4].cast<int>() : 20);
+            if (t.size() == 6) {
+              return std::make_shared<QuantizerParam>(
+                  t[0].cast<bool>(), t[1].cast<int>(), t[2].cast<int>(),
+                  t[3].cast<bool>(), t[4].cast<uint32_t>(),
+                  t[5].cast<uint32_t>());
+            }
+            auto q = std::make_shared<QuantizerParam>(
+                t[0].cast<bool>(), t.size() >= 5 ? t[1].cast<int>() : 7,
+                t.size() >= 5 ? t[2].cast<int>() : 16,
+                t.size() >= 5 ? t[3].cast<int>() : 0,
+                t.size() >= 5 ? t[4].cast<int>() : 20);
+            if (t.size() == 10) {
+              q->set_num_chunk(t[5].cast<int>());
+              q->set_num_bits(t[6].cast<int>());
+              q->set_fast_scan(t[7].cast<bool>());
+              q->set_opq_iter(t[8].cast<uint32_t>());
+              q->set_opq_pq_iter(t[9].cast<uint32_t>());
+            }
+            return q;
           }));
 
   // binding base vector index params
@@ -541,13 +598,8 @@ Attributes:
             dict["metric_type"] = metric_type_to_string(self.metric_type());
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
-            py::dict qp_dict;
-            qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
-            qp_dict["total_bits"] = self.quantizer_param().total_bits();
-            qp_dict["num_clusters"] = self.quantizer_param().num_clusters();
-            qp_dict["sample_count"] = self.quantizer_param().sample_count();
-            qp_dict["n_iters"] = self.quantizer_param().n_iters();
-            dict["quantizer_param"] = qp_dict;
+            dict["quantizer_param"] =
+                quantizer_param_to_dict(self.quantizer_param());
             return dict;
           },
           "Convert to dictionary with all fields")
@@ -582,13 +634,17 @@ Attributes:
         neighbors during index construction. Larger values yield better
         graph quality at the cost of slower build time. Default is 500.
     quantize_type (QuantizeType): Optional quantization type for vector
-        compression (e.g., FP16, INT8). Default is `QuantizeType.UNDEFINED` to
+        compression (FP16, INT8, INT4, or PQ). Default is `QuantizeType.UNDEFINED` to
         disable quantization.
     use_flat_contiguous_memory (bool): Whether the Flat reference index used
         for refine should use contiguous vector memory.
     flat_data_type (DataType): Physical data type stored by the Flat reference
         index. Defaults to ``VECTOR_FP32``; ``VECTOR_FP16`` and
         ``VECTOR_UINT8`` are also supported.
+
+PQ learns its codebook during Collection.optimize(). Before optimization,
+writes remain searchable through Flat. Configure PQ4/PQ8 and optional OPQ
+with QuantizerParam; fast_scan is supported only by IVF.
 
 Examples:
     >>> from zvec.typing import MetricType, QuantizeType
@@ -655,50 +711,47 @@ Examples:
             dict["use_flat_contiguous_memory"] =
                 self.use_flat_contiguous_memory();
             dict["flat_data_type"] = data_type_to_string(self.flat_data_type());
-            py::dict qp_dict;
-            qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
-            qp_dict["total_bits"] = self.quantizer_param().total_bits();
-            qp_dict["num_clusters"] = self.quantizer_param().num_clusters();
-            qp_dict["sample_count"] = self.quantizer_param().sample_count();
-            qp_dict["n_iters"] = self.quantizer_param().n_iters();
-            dict["quantizer_param"] = qp_dict;
+            dict["quantizer_param"] =
+                quantizer_param_to_dict(self.quantizer_param());
             return dict;
           },
           "Convert to dictionary with all fields")
-      .def(
-          "__repr__",
-          [](const HnswIndexParams &self) -> std::string {
-            return "{"
-                   "\"metric_type\":" +
-                   metric_type_to_string(self.metric_type()) +
-                   ", \"m\":" + std::to_string(self.m()) +
-                   ", \"ef_construction\":" +
-                   std::to_string(self.ef_construction()) +
-                   ", \"quantize_type\":" +
-                   quantize_type_to_string(self.quantize_type()) +
-                   ", \"use_contiguous_memory\":" +
-                   (self.use_contiguous_memory() ? "true" : "false") +
-                   ", \"use_flat_contiguous_memory\":" +
-                   (self.use_flat_contiguous_memory() ? "true" : "false") +
-                   ", \"flat_data_type\":\"" +
-                   data_type_to_string(self.flat_data_type()) + "\"" +
-                   ", \"quantizer_param\":{" + "\"enable_rotate\":" +
-                   (self.quantizer_param().enable_rotate() ? "true" : "false") +
-                   "}}";
-          })
+      .def("__repr__",
+           [](const HnswIndexParams &self) -> std::string {
+             return "{"
+                    "\"metric_type\":" +
+                    metric_type_to_string(self.metric_type()) +
+                    ", \"m\":" + std::to_string(self.m()) +
+                    ", \"ef_construction\":" +
+                    std::to_string(self.ef_construction()) +
+                    ", \"quantize_type\":" +
+                    quantize_type_to_string(self.quantize_type()) +
+                    ", \"use_contiguous_memory\":" +
+                    (self.use_contiguous_memory() ? "true" : "false") +
+                    ", \"use_flat_contiguous_memory\":" +
+                    (self.use_flat_contiguous_memory() ? "true" : "false") +
+                    ", \"flat_data_type\":\"" +
+                    data_type_to_string(self.flat_data_type()) + "\"" +
+                    ", \"quantizer_param\":" +
+                    py::str(py::cast(self.quantizer_param()))
+                        .cast<std::string>() +
+                    "}";
+           })
       .def(py::pickle(
           [](const HnswIndexParams &self) {
             return py::make_tuple(
                 self.metric_type(), self.m(), self.ef_construction(),
                 self.quantize_type(), self.use_contiguous_memory(),
-                self.quantizer_param(), self.use_flat_contiguous_memory(),
-                self.flat_data_type());
+                self.quantizer_param().enable_rotate(),
+                self.use_flat_contiguous_memory(), self.flat_data_type(),
+                self.quantizer_param());
           },
           [](py::tuple t) {
-            if (t.size() < 5 || t.size() > 8)
+            if (t.size() < 5 || t.size() > 9)
               throw std::runtime_error("Invalid state for HnswIndexParams");
             QuantizerParam qp =
-                t.size() >= 6 && py::isinstance<QuantizerParam>(t[5])
+                t.size() == 9 ? t[8].cast<QuantizerParam>()
+                : t.size() >= 6 && py::isinstance<QuantizerParam>(t[5])
                     ? t[5].cast<QuantizerParam>()
                     : QuantizerParam(t.size() >= 6 ? t[5].cast<bool>() : false);
             return std::make_shared<HnswIndexParams>(
@@ -1024,9 +1077,8 @@ Examples:
             dict["flat_data_type"] = data_type_to_string(self.flat_data_type());
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
-            py::dict qp_dict;
-            qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
-            dict["quantizer_param"] = qp_dict;
+            dict["quantizer_param"] =
+                quantizer_param_to_dict(self.quantizer_param());
             return dict;
           },
           "Convert to dictionary with all fields")
@@ -1145,9 +1197,8 @@ Args:
             dict["metric_type"] = metric_type_to_string(self.metric_type());
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
-            py::dict qp_dict;
-            qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
-            dict["quantizer_param"] = qp_dict;
+            dict["quantizer_param"] =
+                quantizer_param_to_dict(self.quantizer_param());
             dict["use_contiguous_memory"] = self.use_contiguous_memory();
             return dict;
           },
@@ -1267,13 +1318,8 @@ Args:
             dict["use_soar"] = self.use_soar();
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
-            py::dict qp_dict;
-            qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
-            qp_dict["total_bits"] = self.quantizer_param().total_bits();
-            qp_dict["num_clusters"] = self.quantizer_param().num_clusters();
-            qp_dict["sample_count"] = self.quantizer_param().sample_count();
-            qp_dict["n_iters"] = self.quantizer_param().n_iters();
-            dict["quantizer_param"] = qp_dict;
+            dict["quantizer_param"] =
+                quantizer_param_to_dict(self.quantizer_param());
             return dict;
           },
           "Convert to dictionary with all fields")
@@ -1290,9 +1336,10 @@ Args:
                    ", \"use_soar\":" + std::to_string(self.use_soar()) +
                    ", \"quantize_type\":" +
                    quantize_type_to_string(self.quantize_type()) +
-                   ", \"quantizer_param\":{" + "\"enable_rotate\":" +
-                   (self.quantizer_param().enable_rotate() ? "true" : "false") +
-                   "}}";
+                   ", \"quantizer_param\":" +
+                   py::str(py::cast(self.quantizer_param()))
+                       .cast<std::string>() +
+                   "}";
           })
       .def(py::pickle(
           [](const IVFIndexParams &self) {
@@ -1302,10 +1349,12 @@ Args:
                                   self.total_bits(), self.sample_count());
           },
           [](py::tuple t) {
-            if (t.size() != 5 && t.size() != 6 && t.size() != 8)
+            if (t.size() != 5 && t.size() != 6 && t.size() != 7 &&
+                t.size() != 8)
               throw std::runtime_error("Invalid state for IVFIndexParams");
             QuantizerParam qp =
-                t.size() >= 6 && py::isinstance<QuantizerParam>(t[5])
+                t.size() == 7 ? t[6].cast<QuantizerParam>()
+                : t.size() >= 6 && py::isinstance<QuantizerParam>(t[5])
                     ? t[5].cast<QuantizerParam>()
                     : QuantizerParam(t.size() >= 6 ? t[5].cast<bool>() : false);
             return std::make_shared<IVFIndexParams>(
@@ -1403,13 +1452,8 @@ Args:
             dict["pq_chunk_num"] = self.pq_chunk_num();
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
-            py::dict qp_dict;
-            qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
-            qp_dict["total_bits"] = self.quantizer_param().total_bits();
-            qp_dict["num_clusters"] = self.quantizer_param().num_clusters();
-            qp_dict["sample_count"] = self.quantizer_param().sample_count();
-            qp_dict["n_iters"] = self.quantizer_param().n_iters();
-            dict["quantizer_param"] = qp_dict;
+            dict["quantizer_param"] =
+                quantizer_param_to_dict(self.quantizer_param());
             return dict;
           },
           "Convert to dictionary with all fields")
