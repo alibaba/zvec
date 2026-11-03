@@ -58,6 +58,19 @@ std::vector<float> values(uint32_t id, size_t dim = 16) {
   for (size_t d = 0; d < dim; ++d) data[d] = std::sin(float(id * 13 + d + 1));
   return data;
 }
+TEST(DiskAnnBuildMemory, ReadOnlyCannotCreateStorage) {
+  for (auto storage : {StorageOptions::StorageType::kMMAP,
+                       StorageOptions::StorageType::kBufferPool}) {
+    const std::string path = "diskann_readonly_create";
+    test_util::RemoveTestFiles(path);
+    auto index = IndexFactory::CreateAndInitIndex(*parameter(false));
+    ASSERT_NE(nullptr, index);
+    EXPECT_NE(0, index->open(path, {storage, true, true}));
+    EXPECT_FALSE(ailego::File::IsExist(path));
+    index.reset();
+    test_util::RemoveTestFiles(path);
+  }
+}
 TEST(DiskAnnBuildMemory, ReleaseStateAndReopenDirectAndMerged) {
   for (bool fp16 : {false, true}) {
     for (bool merge : {false, true}) {

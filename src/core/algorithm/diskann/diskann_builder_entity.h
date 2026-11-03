@@ -62,7 +62,11 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
   int dump_entrypoint_segment(const IndexDumper::Pointer &dumper) const;
   int dump_key_segment(const IndexDumper::Pointer &dumper) const;
 
-  int reserve_space(uint32_t docs);
+  // Keeps the storage behind borrowed vector pointers alive until
+  // release_vectors(), even after the holder or iterator is destroyed.
+  // The owner may be mmap storage, a holder, or an owned snapshot; the
+  // shared_ptr retains its deleter without exposing its type here.
+  int reserve_space(uint32_t docs, std::shared_ptr<const void> lifetime);
 
   // Graph construction is the only consumer of these vectors. PQ encoding
   // and dump read the retained source holder instead.
@@ -88,7 +92,8 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
   std::string mem_index_file_{""};
   std::string index_path_prefix_{""};
 
-  std::string vectors_buffer_{};
+  std::shared_ptr<const void> vector_lifetime_{};
+  std::vector<const void *> vector_ptrs_{};
   std::string keys_buffer_{};
   std::string neighbors_buffer_{};
   std::vector<diskann_id_t> entrypoints_{};

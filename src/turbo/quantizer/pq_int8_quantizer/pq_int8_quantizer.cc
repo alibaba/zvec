@@ -57,6 +57,7 @@ int PqInt8Quantizer::setup_functions() {
   auto pq_k = get_pq_kernels(DataType::kInt8);
   adc_fn_ = pq_k.asymmetric_distance;
   sdc_fn_ = pq_k.symmetric_distance;
+  batch_sdc_fn_ = pq_k.batch_symmetric_distance;
   batch_adc_fn_ = pq_k.batch_asymmetric_distance;
 
   // L2-only batch distance for encoding: the PQ codebook is trained in L2
@@ -143,6 +144,11 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   params.get("markov_chain_length", &markov_chain_length_);
   params.get("epsilon", &epsilon_);
   params.get("use_zero_mean", &use_zero_mean_);
+  precompute_sdc_ = true;
+  params.get("precompute_sdc", &precompute_sdc_);
+  // Reinitialization must release a previously trained table, including its
+  // capacity, before allocating training samples for the new codebook.
+  std::vector<float>().swap(dist_table_);
 
   int opq_ret = opq_.init(original_dim_, input_data_type_, params);
   if (opq_ret != 0) return opq_ret;
@@ -307,8 +313,8 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
   // Pre-build centroid pointer cache (needed by compute_dist_table).
   build_centroid_ptrs_cache();
 
-  // Pre-compute SDC dist_table.
-  compute_dist_table();
+  // ADC-only consumers need the codebook, but not the quadratic SDC table.
+  if (precompute_sdc_) compute_dist_table();
 
   // Pre-compute sub-centroid norms for the precomputed residual table.
   compute_sub_centroid_norms();
@@ -630,6 +636,19 @@ void PqInt8Quantizer::calc_distance_dp_query_batch_unquantized(
 
 float PqInt8Quantizer::calc_distance_dp_dp(const void *dp1,
                                            const void *dp2) const {
+  if (dist_table_.empty()) {
+    const auto *a = static_cast<const uint8_t *>(dp1);
+    const auto *b = static_cast<const uint8_t *>(dp2);
+    float distance = 0.0f;
+    for (uint32_t m = 0; m < num_chunk_; ++m) {
+      const void *candidate = centroid_ptrs_cache_[m][b[m]];
+      float part = 0.0f;
+      batch_fn_(&candidate, centroid_ptrs_cache_[m][a[m]], 1, chunk_dim(m),
+                &part, nullptr);
+      distance += part;
+    }
+    return distance;
+  }
   float d = 0.0f;
   sdc_fn_(reinterpret_cast<const uint8_t *>(dp1),
           reinterpret_cast<const uint8_t *>(dp2), dist_table_.data(),
@@ -962,6 +981,17 @@ DistanceImpl PqInt8Quantizer::sym_distance(const void *query,
                                            const IndexQueryMeta &qmeta) const {
   (void)qmeta;
 
+  if (dist_table_.empty()) {
+    DistanceFunc direct = [this](const void *a, const void *b, size_t,
+                                 float *out) {
+      *out = calc_distance_dp_dp(a, b);
+    };
+    return DistanceImpl(std::move(direct),
+                        std::string(static_cast<const char *>(query),
+                                    quantized_datapoint_vector_length()),
+                        static_cast<size_t>(num_chunk_));
+  }
+
   // SDC kernel needs a lambda: 5 parameters (extra dist_table pointer)
   // vs DistanceFunc's 4.
   auto sdc = sdc_fn_;
@@ -974,9 +1004,17 @@ DistanceImpl PqInt8Quantizer::sym_distance(const void *query,
   size_t code_bytes = quantized_datapoint_vector_length();
   std::string code_storage(static_cast<const char *>(query), code_bytes);
 
-  // SDC has no batch kernel -- use the 3-arg constructor.
-  return DistanceImpl(std::move(sdc_func), std::move(code_storage),
-                      static_cast<size_t>(num_chunk_));
+  BatchDistanceFunc batch_func;
+  if (batch_sdc_fn_) {
+    batch_func = [batch_sdc = batch_sdc_fn_, dt](
+                     const void *const *vectors, const void *query_code,
+                     size_t count, size_t chunks, float *out,
+                     const void *const *) {
+      batch_sdc(vectors, query_code, dt, count, chunks, out);
+    };
+  }
+  return DistanceImpl(std::move(sdc_func), std::move(batch_func),
+                      std::move(code_storage), static_cast<size_t>(num_chunk_));
 }
 
 // ---------------------------------------------------------------------------
@@ -1166,7 +1204,7 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   if (opq_ret != 0) return opq_ret;
   // dist_table_ is intentionally not restored: SDC is only needed during
   // offline build, not after deserialization (search uses ADC).
-  dist_table_.clear();
+  std::vector<float>().swap(dist_table_);
 
   // Re-dispatch kernels and batch distance functions.
   if (setup_functions() != 0) {
@@ -1195,8 +1233,9 @@ int PqInt8Quantizer::import_codebook(const void *data, size_t len) {
 
   std::memcpy(centroids_.data(), data, len);
 
-  // Same derivations as deserialize(); dist_table_ stays unbuilt because SDC is
-  // only used while building.
+  // Discard derivatives of the old codebook, including an allocated SDC table.
+  // SDC can compute directly from the newly imported centroids.
+  std::vector<float>().swap(dist_table_);
   build_centroid_ptrs_cache();
   compute_sub_centroid_norms();
 

@@ -14,6 +14,8 @@
 
 #include "neon/record_quantized_int4/inner_product.h"
 #include <cstdint>
+#include <cstring>
+#include "neon/common/record_batch.h"
 #include "neon/record_quantized_int4/common.h"
 
 namespace zvec::turbo::neon {
@@ -23,10 +25,11 @@ void MinusInnerProductInt4(const void *a, const void *b, size_t original_dim,
                            float *distance) {
   const size_t params_offset = original_dim >> 1;
   const float ip = internal::ip_int4_neon(a, b, original_dim);
-  const float *a_tail = reinterpret_cast<const float *>(
-      reinterpret_cast<const uint8_t *>(a) + params_offset);
-  const float *b_tail = reinterpret_cast<const float *>(
-      reinterpret_cast<const uint8_t *>(b) + params_offset);
+  float a_tail[3], b_tail[3];
+  std::memcpy(a_tail, static_cast<const uint8_t *>(a) + params_offset,
+              sizeof(a_tail));
+  std::memcpy(b_tail, static_cast<const uint8_t *>(b) + params_offset,
+              sizeof(b_tail));
 
   const float ma = a_tail[0];
   const float mb = a_tail[1];
@@ -54,9 +57,11 @@ void inner_product_int4_batch_distance(const void *const *vectors,
                                        const void *query, size_t n, size_t dim,
                                        float *distances,
                                        const void *const * /*extra_values*/) {
-  for (size_t i = 0; i < n; ++i) {
-    inner_product_int4_distance(vectors[i], query, dim, &distances[i]);
+  if (dim <= 32) {
+    return;
   }
+  detail::record_distance_batch<4, false>(vectors, query, n, dim - 32,
+                                          distances);
 }
 
 }  // namespace zvec::turbo::neon
