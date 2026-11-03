@@ -991,11 +991,12 @@ zvec_string_array_t *zvec_string_array_create_from_strings(const char **strings,
  */
 void zvec_string_array_add(zvec_string_array_t *array, size_t idx,
                            const char *str) {
+  if (!array || !str) return;
   if (idx >= array->count) return;
   size_t len = strlen(str);
-  array->strings[idx].data = (char *)malloc(len + 1);
-  if (!array->strings[idx].data) return;
-  memcpy(array->strings[idx].data, str, len + 1);
+  char *buf = (char *)malloc(len + 1);
+  if (!buf) return;
+  array->strings[idx].data = buf;
   array->strings[idx].length = len;
   array->strings[idx].capacity = len + 1;
 }
