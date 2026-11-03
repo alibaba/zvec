@@ -12,7 +12,7 @@ file(GLOB_RECURSE ALL_SRCS *.cc *.c)
 # io_uring uses raw Linux syscalls and has no liburing dependency. libaio is
 # loaded at runtime via dlopen()/dlsym() (see libaio_loader.h), so we do NOT
 # link against -laio. On Linux, ${CMAKE_DL_LIBS} provides the system-level
-# dependency for dlopen/dlsym/dlclose. macOS ARM64 uses pread and needs no
+# dependency for dlopen/dlsym/dlclose. macOS uses pread and needs no
 # extra I/O backend library. Windows overlapped I/O is built in and likewise
 # needs no extra backend library.
 set(CORE_KNN_DISKANN_LIBS zvec_ailego core_framework core_knn_cluster)

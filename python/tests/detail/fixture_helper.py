@@ -1,14 +1,12 @@
 import pytest
 import logging
 import platform
+import struct
 
 DISKANN_SUPPORTED = (
-    (
-        platform.system() == "Linux"
-        and platform.machine() in ("x86_64", "AMD64", "aarch64", "arm64")
-    )
-    or (platform.system() == "Darwin" and platform.machine() in ("aarch64", "arm64"))
-    or (platform.system() == "Windows" and platform.machine() in ("x86_64", "AMD64"))
+    struct.calcsize("P") == 8
+    and platform.system() in ("Linux", "Darwin", "Windows")
+    and platform.machine().lower() in ("x86_64", "amd64", "aarch64", "arm64")
 )
 
 from typing import Any, Generator
@@ -30,8 +28,7 @@ def _ensure_diskann_runtime_or_reason() -> str | None:
 
     if not DISKANN_SUPPORTED:
         _DISKANN_PRELOAD_REASON = (
-            "DiskAnn is supported on Linux (x86_64/ARM64), macOS ARM64, "
-            "and Windows x86_64"
+            "DiskAnn is supported on Linux/macOS/Windows (x86_64/ARM64)"
         )
         return _DISKANN_PRELOAD_REASON
     _DISKANN_PRELOAD_REASON = None

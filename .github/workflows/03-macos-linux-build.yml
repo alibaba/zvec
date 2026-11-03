@@ -150,9 +150,11 @@ jobs:
           cd "$GITHUB_WORKSPACE/build"
           cmake --build . \
             --target shared_api_test c_api_test \
+              diskann_file_reader_test diskann_builder_test \
+              diskann_searcher_test diskann_mobile_collection_test \
             --parallel "$NPROC"
-          ctest --output-on-failure \
-            -R '^(shared_api_test|c_api_test)$' \
+          ctest --output-on-failure --no-tests=error \
+            -R '^(shared_api_test|c_api_test|diskann_file_reader_test|diskann_builder_test|diskann_searcher_test|diskann_mobile_collection_test)$' \
             --parallel 1
         shell: bash
 
@@ -170,6 +172,14 @@ jobs:
           python -X faulthandler -c \
             "import platform, zvec; print('Imported zvec on', platform.machine(), zvec.__version__)"
           python -X faulthandler .github/scripts/macos_x64_python_smoke.py
+        shell: bash
+
+      - name: Run required macOS x64 DiskAnn lifecycle tests
+        if: matrix.platform == 'macos-x64'
+        env:
+          ZVEC_REQUIRE_DISKANN: '1'
+        run: |
+          python -m pytest python/tests/test_collection_diskann.py -n 2 -v
         shell: bash
 
       - name: Diagnose macOS x64 Python native crash
@@ -200,6 +210,9 @@ jobs:
           ./db-example
           ./core-example
           ./ailego-example
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            ./diskann-core-example
+          fi
         shell: bash
 
       - name: Run C Examples

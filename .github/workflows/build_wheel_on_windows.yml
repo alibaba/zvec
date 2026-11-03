@@ -62,6 +62,8 @@ jobs:
   build_wheels_windows:
     name: Build wheels on ${{ matrix.runner }} (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
+    env:
+      ZVEC_REQUIRE_DISKANN: '1'
     strategy:
       fail-fast: false
       matrix:
@@ -162,6 +164,11 @@ jobs:
           & $venvPython -m pip install $wheelPath
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $venvPython -c "import zvec; print('Import OK:', zvec.__version__)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $venvPython -m pip install pytest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $venvPython -m pytest python/tests/test_collection_diskann.py::test_native_platform_lifecycle -o addopts= -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Log wheel variables
         id: log_vars

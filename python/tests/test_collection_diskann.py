@@ -15,16 +15,18 @@
 
 Mirrors ``test_collection_hnsw_rabitq.py`` but targets the DiskAnn index.
 
-DiskAnn must be built for Linux (x86_64/ARM64), macOS ARM64, or Windows
-x86_64. Other platforms are skipped wholesale. Linux selects io_uring,
+DiskAnn must be built for Linux, macOS, or Windows on x86_64/ARM64.
+Other platforms are skipped wholesale. Linux selects io_uring,
 libaio, or pread; macOS uses pread; Windows uses overlapped I/O.
 """
 
 from __future__ import annotations
 
 import math
+import os
 import platform
-import sys
+import random
+import struct
 
 import pytest
 
@@ -32,17 +34,13 @@ import pytest
 # Platform gating (must happen BEFORE we touch zvec).
 # --------------------------------------------------------------------------- #
 pytestmark = pytest.mark.skipif(
-    not (
-        (
-            sys.platform == "linux"
-            and platform.machine() in ("x86_64", "AMD64", "aarch64", "arm64")
-        )
-        or (sys.platform == "darwin" and platform.machine() in ("aarch64", "arm64"))
-        or (sys.platform == "win32" and platform.machine() in ("x86_64", "AMD64"))
+    os.environ.get("ZVEC_REQUIRE_DISKANN") != "1"
+    and not (
+        struct.calcsize("P") == 8
+        and platform.system() in ("Linux", "Darwin", "Windows")
+        and platform.machine().lower() in ("x86_64", "amd64", "aarch64", "arm64")
     ),
-    reason=(
-        "DiskAnn is supported on Linux (x86_64/ARM64), macOS ARM64, and Windows x86_64"
-    ),
+    reason="DiskAnn is supported on Linux/macOS/Windows (x86_64/ARM64)",
 )
 
 import zvec  # noqa: E402
@@ -60,6 +58,92 @@ from zvec import (  # noqa: E402
     VectorSchema,
 )
 from zvec.typing import QuantizeType  # noqa: E402
+
+
+@pytest.mark.parametrize("enable_mmap", [False, True], ids=["buffer", "mmap"])
+@pytest.mark.parametrize(
+    "metric",
+    [MetricType.L2, MetricType.COSINE, MetricType.IP],
+    ids=["l2", "cosine", "ip"],
+)
+@pytest.mark.parametrize(
+    "dtype", [DataType.VECTOR_FP32, DataType.VECTOR_FP16], ids=["fp32", "fp16"]
+)
+def test_native_platform_lifecycle(tmp_path, enable_mmap, metric, dtype):
+    """Exercise the compiled index and its disk reader, including read-only reopen.
+
+    CI sets ZVEC_REQUIRE_DISKANN=1 so a broken platform gate fails instead of
+    silently skipping this contract. Normalized vectors have an unambiguous
+    self-match for all three metrics, including after FP16 conversion.
+    """
+    rng = random.Random(2026)
+    vectors = []
+    for _ in range(48):
+        vector = [rng.uniform(-1, 1) for _ in range(16)]
+        norm = math.sqrt(sum(value * value for value in vector))
+        vectors.append([value / norm for value in vector])
+
+    schema = zvec.CollectionSchema(
+        name="diskann_platform",
+        fields=[FieldSchema("bucket", DataType.INT32, nullable=False)],
+        vectors=[
+            VectorSchema(
+                "embedding",
+                dtype,
+                dimension=16,
+                index_param=DiskAnnIndexParam(
+                    metric_type=metric, max_degree=16, list_size=64, pq_chunk_num=2
+                ),
+            )
+        ],
+    )
+    path = str(tmp_path / "collection")
+    options = CollectionOption(enable_mmap=enable_mmap)
+    collection = zvec.create_and_open(path=path, schema=schema, option=options)
+    try:
+        writes = collection.insert(
+            [
+                Doc(
+                    id=str(i),
+                    fields={"bucket": i % 4},
+                    vectors={"embedding": vector},
+                )
+                for i, vector in enumerate(vectors)
+            ]
+        )
+        assert len(writes) == len(vectors)
+        assert all(write.ok() for write in writes)
+        collection.flush()
+        collection.optimize()
+        assert collection.stats.index_completeness["embedding"] == 1
+
+        def check_query(coll):
+            hits = coll.query(
+                queries=Query(
+                    field_name="embedding",
+                    vector=vectors[17],
+                    param=DiskAnnQueryParam(list_size=64),
+                ),
+                filter="bucket = 1",
+                topk=5,
+            )
+            assert hits and hits[0].id == "17"
+            assert all(hit.field("bucket") == 1 for hit in hits)
+            assert all(math.isfinite(hit.score) for hit in hits)
+
+        check_query(collection)
+    finally:
+        collection.close()
+
+    reopened = zvec.open(
+        path=path,
+        option=CollectionOption(read_only=True, enable_mmap=enable_mmap),
+    )
+    try:
+        assert reopened.stats.doc_count == len(vectors)
+        check_query(reopened)
+    finally:
+        reopened.close()
 
 
 @pytest.fixture(scope="session")
