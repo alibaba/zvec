@@ -21,6 +21,7 @@
     zvec_collection_get_options;
     zvec_collection_get_schema;
     zvec_collection_get_stats;
+    zvec_collection_group_by_query;
     zvec_collection_insert;
     zvec_collection_insert_with_results;
     zvec_collection_multi_query;
@@ -200,6 +201,7 @@
     zvec_group_by_vector_query_set_query_vector;
     zvec_group_by_vector_query_set_topk_per_group;
     zvec_group_by_vector_query_set_vamana_params;
+    zvec_group_results_free;
     zvec_index_params_create;
     zvec_index_params_destroy;
     zvec_index_params_get_diskann_list_size;
