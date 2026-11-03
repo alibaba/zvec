@@ -1136,6 +1136,7 @@ int Index::_refine_dense_candidates(
     const VectorData &vector_data,
     const BaseIndexQueryParam::Pointer &search_param,
     const std::vector<std::vector<uint64_t>> &keys, SearchResult *result) {
+  if (param_.use_external_vector) return core::IndexError_Unsupported;
   if (!is_open_ || is_sparse_) {
     LOG_ERROR("Reference index must be open and dense");
     return core::IndexError_Runtime;
@@ -1150,7 +1151,7 @@ int Index::_refine_dense_candidates(
   context->set_topk(search_param->topk);
   context->set_fetch_vector(search_param->fetch_vector);
   if (search_param->filter && search_param->filter->is_valid()) {
-    context->set_filter(std::move(*search_param->filter));
+    context->set_filter(*search_param->filter);
   } else {
     context->reset_filter();
   }
@@ -1473,6 +1474,16 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
   }
   if (indexes.empty()) {
     return core::IndexError_Success;
+  }
+  // External Flat providers contain IDs only; merge has no bound source.
+  if (param_.index_type == IndexType::kFlat && param_.use_external_vector) {
+    return core::IndexError_Unsupported;
+  }
+  for (const auto &index : indexes) {
+    if (index && index->param_.index_type == IndexType::kFlat &&
+        index->param_.use_external_vector) {
+      return core::IndexError_Unsupported;
+    }
   }
   // ivf need builder
   auto reducer =
