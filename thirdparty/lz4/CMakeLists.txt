@@ -10,6 +10,15 @@ else()
 endif()
 
 include(ExternalProject)
+include(ProcessorCount)
+
+ProcessorCount(_LZ4_BUILD_JOBS)
+if("$ENV{CMAKE_BUILD_PARALLEL_LEVEL}" MATCHES "^[1-9][0-9]*$")
+    set(_LZ4_BUILD_JOBS "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
+endif()
+if(_LZ4_BUILD_JOBS LESS 1)
+    set(_LZ4_BUILD_JOBS 1)
+endif()
 
 set(_lz4_env "")
 if(ANDROID)
@@ -96,14 +105,6 @@ else()
 endif()
 
 if(MSVC)
-    include(ProcessorCount)
-    ProcessorCount(_LZ4_BUILD_JOBS)
-    if("$ENV{CMAKE_BUILD_PARALLEL_LEVEL}" MATCHES "^[1-9][0-9]*$")
-        set(_LZ4_BUILD_JOBS "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
-    endif()
-    if(_LZ4_BUILD_JOBS LESS 1)
-        set(_LZ4_BUILD_JOBS 1)
-    endif()
     ExternalProject_Add(
             Lz4.BUILD
             PREFIX lz4
@@ -139,7 +140,7 @@ else()
       PREFIX lz4
       URL "${CMAKE_CURRENT_SOURCE_DIR}/lz4-1.9.4"
       CONFIGURE_COMMAND ""
-        BUILD_COMMAND env ${_lz4_env} BUILD_SHARED=no make -j
+      BUILD_COMMAND env ${_lz4_env} BUILD_SHARED=no make -j ${_LZ4_BUILD_JOBS}
       INSTALL_COMMAND make DESTDIR=${EXTERNAL_BINARY_DIR} BUILD_SHARED=no install
       BUILD_IN_SOURCE ON
       LOG_DOWNLOAD ON
