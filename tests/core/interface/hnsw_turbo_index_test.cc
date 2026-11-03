@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <optional>
 #include <random>
 #include <string>
 #include <tuple>
@@ -431,14 +432,13 @@ void CheckExternalTurboAddSearchReopen(
   zvec::test_util::RemoveTestFiles(path);
 }
 
-void CheckOriginalProviderUsesTurbo(MetricType metric, QuantizerType quantizer,
-                                    const char *quantizer_name,
-                                    const std::string &path,
-                                    int rabitq_bits = 7,
-                                    StorageOptions::StorageType storage_type =
-                                        StorageOptions::StorageType::kMMAP,
-                                    bool contiguous = false,
-                                    bool merge_from_flat = false) {
+void CheckOriginalProviderUsesTurbo(
+    MetricType metric, QuantizerType quantizer, const char *quantizer_name,
+    const std::string &path, int rabitq_bits = 7,
+    StorageOptions::StorageType storage_type =
+        StorageOptions::StorageType::kMMAP,
+    bool contiguous = false, bool merge_from_flat = false,
+    std::optional<QuantizerType> reopen_quantizer = std::nullopt) {
   zvec::test_util::RemoveTestFiles(path);
   auto vectors = RandomVectors(kGraphVectorCount);
   if (metric == MetricType::kCosine) {
@@ -535,6 +535,7 @@ void CheckOriginalProviderUsesTurbo(MetricType metric, QuantizerType quantizer,
   ASSERT_EQ(0, index->close());
 
   if (quantizer == QuantizerType::kRabitq) param->provider.reset();
+  if (reopen_quantizer) param = MakeParam(metric, *reopen_quantizer);
   auto reopened = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, reopened);
   ASSERT_EQ(0, reopened->open(path, {storage_type, false}));
@@ -1202,6 +1203,25 @@ TEST(HnswTurboRabitq, BuildsFromOriginalAndReopensWithoutProvider) {
       CheckOriginalProviderUsesTurbo(metric, QuantizerType::kRabitq,
                                      "RabitqQuantizer",
                                      "hnsw_turbo_rabitq.index", bits);
+    }
+  }
+}
+
+TEST(HnswTurboRabitq, RestoresPersistedQuantizerWithDifferentConfiguration) {
+  for (auto metric :
+       {MetricType::kL2sq, MetricType::kCosine, MetricType::kInnerProduct}) {
+    for (int bits : {3, 9}) {
+      // kNone restores from the default FP32 configuration; kRabitq restores
+      // from a different code width (the default is 7 bits).
+      for (auto reopen : {QuantizerType::kNone, QuantizerType::kRabitq}) {
+        SCOPED_TRACE(static_cast<int>(metric));
+        SCOPED_TRACE(bits);
+        SCOPED_TRACE(static_cast<int>(reopen));
+        CheckOriginalProviderUsesTurbo(
+            metric, QuantizerType::kRabitq, "RabitqQuantizer",
+            "hnsw_turbo_rabitq_restore.index", bits,
+            StorageOptions::StorageType::kMMAP, false, false, reopen);
+      }
     }
   }
 }

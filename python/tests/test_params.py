@@ -654,6 +654,41 @@ class TestVectorQueryDeprecated:
 
 
 class TestQuantizerParam:
+    @pytest.mark.parametrize(
+        "args, kwargs",
+        [
+            ((False, 4, 4), {"enable_rotate": False, "num_chunk": 4, "num_bits": 4}),
+            (
+                (True, 4, 4, True, 2, 3),
+                {
+                    "enable_rotate": True,
+                    "num_chunk": 4,
+                    "num_bits": 4,
+                    "fast_scan": True,
+                    "opq_iter": 2,
+                    "opq_pq_iter": 3,
+                },
+            ),
+        ],
+    )
+    def test_pq_positional_compatibility(self, args, kwargs):
+        qp = QuantizerParam(*args)
+        assert qp == QuantizerParam(**kwargs)
+        assert qp.total_bits == 7
+        assert qp.num_clusters == 16
+        assert pickle.loads(pickle.dumps(qp)) == qp
+
+    def test_rabitq_keyword_parameters(self):
+        qp = QuantizerParam(total_bits=3, num_clusters=4, sample_count=128, n_iters=6)
+        assert (qp.total_bits, qp.num_clusters, qp.sample_count, qp.n_iters) == (
+            3,
+            4,
+            128,
+            6,
+        )
+        assert (qp.num_chunk, qp.num_bits, qp.fast_scan) == (8, 8, False)
+        assert pickle.loads(pickle.dumps(qp)) == qp
+
     def test_default(self):
         qp = QuantizerParam()
         assert qp.enable_rotate is False

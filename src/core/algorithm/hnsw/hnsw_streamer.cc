@@ -111,7 +111,10 @@ int HnswStreamer::RestoreQuantizer(
     return ret;
   }
 
-  auto segment = storage->get(HNSW_TURBO_QUANTIZER_SEG_ID);
+  // Keep the existing RaBitQ segment name so persisted indexes remain readable.
+  auto segment = storage->get(quantizer->requires_original_vectors()
+                                  ? "hnsw.quantizer"
+                                  : HNSW_TURBO_QUANTIZER_SEG_ID);
   if (quantizer->require_train() && (!segment || !segment->data_size())) {
     LOG_ERROR("Missing trained HNSW quantizer state");
     return IndexError_InvalidFormat;

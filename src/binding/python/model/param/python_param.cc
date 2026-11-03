@@ -443,8 +443,9 @@ Args:
 Parameters for quantizer configuration.
 
 Encapsulates quantization-related settings such as enable_rotate.
-For RABITQ, total_bits (1-9), num_clusters, sample_count (0 uses all vectors),
-and n_iters configure training. IVFIndexParam.total_bits/sample_count override
+For RABITQ, the keyword-only parameters total_bits (1-9), num_clusters,
+sample_count (0 uses all vectors), and n_iters configure training.
+IVFIndexParam.total_bits/sample_count override
 these two quantizer settings; num_clusters is independent of IVF n_list.
 For HNSW/IVF PQ, configure subquantizers, code width, FastScan and learned OPQ.
 
@@ -464,9 +465,9 @@ Examples:
     True
 )pbdoc");
   quantizer_param
-      .def(py::init([](bool rotate, int bits, int clusters, int samples,
-                       int iters, int chunks, int pq_bits, bool fast_scan,
-                       uint32_t opq_iter, uint32_t opq_pq_iter) {
+      .def(py::init([](bool rotate, int chunks, int pq_bits, bool fast_scan,
+                       uint32_t opq_iter, uint32_t opq_pq_iter, int bits,
+                       int clusters, int samples, int iters) {
              auto q = std::make_shared<QuantizerParam>(rotate, bits, clusters,
                                                        samples, iters);
              q->set_num_chunk(chunks);
@@ -476,11 +477,11 @@ Examples:
              q->set_opq_pq_iter(opq_pq_iter);
              return q;
            }),
-           py::arg("enable_rotate") = false, py::arg("total_bits") = 7,
-           py::arg("num_clusters") = 16, py::arg("sample_count") = 0,
-           py::arg("n_iters") = 20, py::kw_only(), py::arg("num_chunk") = 8,
+           py::arg("enable_rotate") = false, py::arg("num_chunk") = 8,
            py::arg("num_bits") = 8, py::arg("fast_scan") = false,
-           py::arg("opq_iter") = 5, py::arg("opq_pq_iter") = 4)
+           py::arg("opq_iter") = 5, py::arg("opq_pq_iter") = 4, py::kw_only(),
+           py::arg("total_bits") = 7, py::arg("num_clusters") = 16,
+           py::arg("sample_count") = 0, py::arg("n_iters") = 20)
       .def_property_readonly("total_bits", &QuantizerParam::total_bits)
       .def_property_readonly("num_clusters", &QuantizerParam::num_clusters)
       .def_property_readonly("sample_count", &QuantizerParam::sample_count)

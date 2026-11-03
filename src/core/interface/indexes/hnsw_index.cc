@@ -108,8 +108,11 @@ int HNSWIndex::prepare_streamer_open(const StorageOptions &options) {
     use_legacy_pipeline_ = true;
     return Index::init(param_);
   }
-  // RaBitQ keeps its existing model segment and restores it in streamer::open.
-  if (turbo_quantizer_ && turbo_quantizer_->requires_original_vectors()) {
+  // Older RaBitQ descriptors omit the raw input layout. Preserve their
+  // configured restore path; newer descriptors are authoritative below.
+  if (turbo_quantizer_ && turbo_quantizer_->requires_original_vectors() &&
+      persisted_meta.quantizer_name() == proxima_index_meta_.quantizer_name() &&
+      !persisted_meta.quantizer_params().has("input_dimension")) {
     return 0;
   }
   // The persisted descriptor decides the search pipeline, including when a

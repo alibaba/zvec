@@ -1424,19 +1424,22 @@ class QuantizerParam:
     def __init__(
         self,
         enable_rotate: bool = False,
-        total_bits: int = 7,
-        num_clusters: int = 16,
-        sample_count: int = 0,
-        n_iters: int = 20,
-        *,
         num_chunk: int = 8,
         num_bits: int = 8,
         fast_scan: bool = False,
         opq_iter: int = 5,
         opq_pq_iter: int = 4,
+        *,
+        total_bits: int = 7,
+        num_clusters: int = 16,
+        sample_count: int = 0,
+        n_iters: int = 20,
     ) -> None:
         """
         Constructs a QuantizerParam instance.
+
+        PQ parameters accept positional arguments. RaBitQ training parameters
+        (total_bits, num_clusters, sample_count, n_iters) are keyword-only.
 
         Args:
             num_chunk (int): PQ subquantizers; default 8.
