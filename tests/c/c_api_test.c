@@ -4820,6 +4820,415 @@ void test_actual_vector_queries(void) {
 }
 
 // =============================================================================
+// Sparse vector query tests (zvec_vector_query_set_sparse_vector and
+// zvec_group_by_vector_query_set_sparse_vector)
+// =============================================================================
+
+// Builds the [nnz(uint32)][indices(uint32)...][values(float)...] buffer that
+// zvec_doc_add_field_by_value() expects for SPARSE_VECTOR_FP32 fields. The
+// caller releases the returned buffer with free().
+static void *make_sparse_fp32_buffer(const uint32_t *indices,
+                                     const float *values, size_t nnz,
+                                     size_t *buffer_size) {
+  size_t size = sizeof(uint32_t) + nnz * (sizeof(uint32_t) + sizeof(float));
+  char *buffer = (char *)malloc(size);
+  if (!buffer) {
+    *buffer_size = 0;
+    return NULL;
+  }
+  uint32_t nnz32 = (uint32_t)nnz;
+  memcpy(buffer, &nnz32, sizeof(nnz32));
+  memcpy(buffer + sizeof(nnz32), indices, nnz * sizeof(uint32_t));
+  memcpy(buffer + sizeof(nnz32) + nnz * sizeof(uint32_t), values,
+         nnz * sizeof(float));
+  *buffer_size = size;
+  return buffer;
+}
+
+static int64_t read_int64_field(const zvec_doc_t *doc, const char *field_name) {
+  int64_t value = -1;
+  zvec_doc_get_field_value_basic(doc, field_name, ZVEC_DATA_TYPE_INT64, &value,
+                                 sizeof(value));
+  return value;
+}
+
+void test_vector_query_set_sparse_vector_validation(void) {
+  TEST_START();
+
+  uint32_t indices[] = {1, 3, 7};
+  float values[] = {0.5f, 0.25f, 1.0f};
+  const char *null_message = "Vector query, indices or values pointer is null";
+
+  // A NULL query is rejected before anything else is looked at.
+  TEST_ASSERT(zvec_vector_query_set_sparse_vector(NULL, indices, values, 3) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, null_message);
+
+  zvec_vector_query_t *query = zvec_vector_query_create();
+  TEST_ASSERT(query != NULL);
+  if (!query) {
+    TEST_END();
+    return;
+  }
+
+  // A NULL buffer is only acceptable together with count == 0.
+  TEST_ASSERT(zvec_vector_query_set_sparse_vector(query, NULL, values, 3) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, null_message);
+  TEST_ASSERT(zvec_vector_query_set_sparse_vector(query, indices, NULL, 3) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, null_message);
+
+  // Well-formed payloads are accepted.
+  TEST_ASSERT(zvec_vector_query_set_sparse_vector(query, indices, values, 3) ==
+              ZVEC_OK);
+  TEST_ASSERT(zvec_vector_query_set_sparse_vector(query, indices, values, 1) ==
+              ZVEC_OK);
+
+  // count == 0 clears the payload and tolerates NULL buffers.
+  TEST_ASSERT(zvec_vector_query_set_sparse_vector(query, NULL, NULL, 0) ==
+              ZVEC_OK);
+  TEST_ASSERT(zvec_vector_query_set_sparse_vector(query, indices, values, 0) ==
+              ZVEC_OK);
+
+  // The sparse payload coexists with the other vector-query properties.
+  TEST_ASSERT(zvec_vector_query_set_field_name(query, "sparse") == ZVEC_OK);
+  TEST_ASSERT(zvec_vector_query_set_topk(query, 5) == ZVEC_OK);
+  TEST_ASSERT(zvec_vector_query_set_sparse_vector(query, indices, values, 3) ==
+              ZVEC_OK);
+  TEST_ASSERT(strcmp(zvec_vector_query_get_field_name(query), "sparse") == 0);
+  TEST_ASSERT(zvec_vector_query_get_topk(query) == 5);
+
+  // Like the other vector mutators, setting a sparse vector replaces an
+  // attached FTS clause with a vector clause.
+  zvec_fts_t *fts = zvec_fts_create();
+  TEST_ASSERT(fts != NULL);
+  if (fts) {
+    TEST_ASSERT(zvec_fts_set_query_string(fts, "hello") == ZVEC_OK);
+    TEST_ASSERT(zvec_vector_query_set_fts(query, fts) == ZVEC_OK);
+    TEST_ASSERT(zvec_vector_query_get_fts(query) != NULL);
+    TEST_ASSERT(zvec_vector_query_set_sparse_vector(query, indices, values,
+                                                    2) == ZVEC_OK);
+    TEST_ASSERT(zvec_vector_query_get_fts(query) == NULL);
+    zvec_fts_destroy(fts);
+  }
+
+  zvec_vector_query_destroy(query);
+  zvec_vector_query_destroy(NULL);
+
+  TEST_END();
+}
+
+void test_vector_query_sparse_vector_end_to_end(void) {
+  TEST_START();
+
+  char temp_dir[] = "./zvec_test_sparse_vector_query";
+  cleanup_temp_directory(temp_dir);
+
+  zvec_collection_schema_t *schema =
+      zvec_collection_schema_create("sparse_query_test");
+  TEST_ASSERT(schema != NULL);
+  if (!schema) {
+    TEST_END();
+    return;
+  }
+
+  zvec_field_schema_t *id_field =
+      zvec_field_schema_create("id", ZVEC_DATA_TYPE_INT64, false, 0);
+  TEST_ASSERT(id_field != NULL);
+  zvec_collection_schema_add_field(schema, id_field);
+
+  zvec_index_params_t *sparse_params =
+      zvec_index_params_create(ZVEC_INDEX_TYPE_HNSW);
+  TEST_ASSERT(sparse_params != NULL);
+  zvec_index_params_set_metric_type(sparse_params, ZVEC_METRIC_TYPE_IP);
+  zvec_index_params_set_hnsw_params(sparse_params, 16, 100);
+  zvec_field_schema_t *sparse_field = zvec_field_schema_create(
+      "sparse", ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32, false, 0);
+  TEST_ASSERT(sparse_field != NULL);
+  zvec_field_schema_set_index_params(sparse_field, sparse_params);
+  zvec_collection_schema_add_field(schema, sparse_field);
+  zvec_index_params_destroy(sparse_params);
+
+  zvec_collection_t *collection = NULL;
+  zvec_error_code_t err =
+      zvec_collection_create_and_open(temp_dir, schema, NULL, &collection);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(collection != NULL);
+  if (!collection) {
+    zvec_collection_schema_destroy(schema);
+    cleanup_temp_directory(temp_dir);
+    TEST_END();
+    return;
+  }
+
+  // Inner products against the query below: id 1 -> 1.25, id 4 -> 0.8,
+  // id 2 -> 0.6, id 3 -> 0.0 (its indices are disjoint from the query).
+  uint32_t doc1_indices[] = {1, 3};
+  float doc1_values[] = {1.0f, 0.5f};
+  uint32_t doc2_indices[] = {1, 3};
+  float doc2_values[] = {0.4f, 0.4f};
+  uint32_t doc3_indices[] = {5, 9};
+  float doc3_values[] = {1.0f, 1.0f};
+  uint32_t doc4_indices[] = {1, 5};
+  float doc4_values[] = {0.8f, 0.1f};
+  const uint32_t *doc_indices[] = {doc1_indices, doc2_indices, doc3_indices,
+                                   doc4_indices};
+  const float *doc_values[] = {doc1_values, doc2_values, doc3_values,
+                               doc4_values};
+  const size_t doc_count = 4;
+
+  zvec_doc_t *docs[4] = {NULL, NULL, NULL, NULL};
+  for (size_t i = 0; i < doc_count; i++) {
+    docs[i] = zvec_doc_create();
+    TEST_ASSERT(docs[i] != NULL);
+    if (!docs[i]) {
+      continue;
+    }
+    char pk[32];
+    snprintf(pk, sizeof(pk), "sparse_doc_%zu", i + 1);
+    zvec_doc_set_pk(docs[i], pk);
+    int64_t id = (int64_t)(i + 1);
+    err = zvec_doc_add_field_by_value(docs[i], "id", ZVEC_DATA_TYPE_INT64, &id,
+                                      sizeof(id));
+    TEST_ASSERT(err == ZVEC_OK);
+    size_t buffer_size = 0;
+    void *buffer =
+        make_sparse_fp32_buffer(doc_indices[i], doc_values[i], 2, &buffer_size);
+    TEST_ASSERT(buffer != NULL);
+    if (buffer) {
+      err = zvec_doc_add_field_by_value(docs[i], "sparse",
+                                        ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32,
+                                        buffer, buffer_size);
+      TEST_ASSERT(err == ZVEC_OK);
+      free(buffer);
+    }
+  }
+
+  size_t success_count = 0;
+  size_t error_count = 0;
+  err = zvec_collection_insert(collection, (const zvec_doc_t **)docs, doc_count,
+                               &success_count, &error_count);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(success_count == doc_count);
+  TEST_ASSERT(error_count == 0);
+  TEST_ASSERT(zvec_collection_flush(collection) == ZVEC_OK);
+  TEST_ASSERT(zvec_collection_optimize(collection) == ZVEC_OK);
+
+  zvec_vector_query_t *query = zvec_vector_query_create();
+  TEST_ASSERT(query != NULL);
+  zvec_vector_query_set_field_name(query, "sparse");
+  zvec_vector_query_set_topk(query, 3);
+  zvec_vector_query_set_include_doc_id(query, true);
+
+  // Without a sparse payload the field cannot be searched.
+  zvec_doc_t **results = NULL;
+  size_t result_count = 0;
+  err = zvec_collection_query(collection, query, &results, &result_count);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(results == NULL);
+  TEST_ASSERT(result_count == 0);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, "missing query clause");
+
+  // Exact-match sparse query: document 1 carries the very same vector.
+  uint32_t query_indices[] = {1, 3};
+  float query_values[] = {1.0f, 0.5f};
+  err = zvec_vector_query_set_sparse_vector(query, query_indices, query_values,
+                                            2);
+  TEST_ASSERT(err == ZVEC_OK);
+
+  // The payload is copied, so wiping the caller buffers changes nothing.
+  memset(query_indices, 0, sizeof(query_indices));
+  memset(query_values, 0, sizeof(query_values));
+
+  zvec_vector_query_set_include_vector(query, true);
+  err = zvec_collection_query(collection, query, &results, &result_count);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(result_count == 3);
+  if (result_count == 3) {
+    TEST_ASSERT(read_int64_field(results[0], "id") == 1);
+    int seen_id2 = 0;
+    int seen_id3 = 0;
+    int seen_id4 = 0;
+    for (size_t i = 0; i < result_count; i++) {
+      int64_t id = read_int64_field(results[i], "id");
+      if (id == 2) seen_id2 = 1;
+      if (id == 3) seen_id3 = 1;
+      if (id == 4) seen_id4 = 1;
+    }
+    TEST_ASSERT(seen_id2 == 1);
+    TEST_ASSERT(seen_id4 == 1);
+    TEST_ASSERT(seen_id3 == 0);
+
+    // include_vector=true returns the stored vector of the best match in the
+    // [nnz(size_t)][indices(uint32)...][values(float)...] layout.
+    void *sparse_value = NULL;
+    size_t sparse_size = 0;
+    err = zvec_doc_get_field_value_copy(results[0], "sparse",
+                                        ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32,
+                                        &sparse_value, &sparse_size);
+    TEST_ASSERT(err == ZVEC_OK);
+    TEST_ASSERT(sparse_value != NULL);
+    if (sparse_value) {
+      size_t nnz = *(size_t *)sparse_value;
+      TEST_ASSERT(nnz == 2);
+      if (nnz == 2) {
+        uint32_t *got_indices =
+            (uint32_t *)((char *)sparse_value + sizeof(size_t));
+        float *got_values = (float *)((char *)sparse_value + sizeof(size_t) +
+                                      nnz * sizeof(uint32_t));
+        TEST_ASSERT(got_indices[0] == 1);
+        TEST_ASSERT(got_indices[1] == 3);
+        TEST_ASSERT(fabs(got_values[0] - 1.0f) < 1e-5f);
+        TEST_ASSERT(fabs(got_values[1] - 0.5f) < 1e-5f);
+      }
+      zvec_free(sparse_value);
+    }
+  }
+  zvec_docs_free(results, result_count);
+
+  // Unsorted indices are sorted before searching (values follow their index),
+  // so the outcome matches the sorted query above.
+  uint32_t unsorted_indices[] = {3, 1};
+  float unsorted_values[] = {0.5f, 1.0f};
+  err = zvec_vector_query_set_sparse_vector(query, unsorted_indices,
+                                            unsorted_values, 2);
+  TEST_ASSERT(err == ZVEC_OK);
+  results = NULL;
+  result_count = 0;
+  err = zvec_collection_query(collection, query, &results, &result_count);
+  TEST_ASSERT(err == ZVEC_OK);
+  TEST_ASSERT(result_count == 3);
+  if (result_count > 0) {
+    TEST_ASSERT(read_int64_field(results[0], "id") == 1);
+  }
+  zvec_docs_free(results, result_count);
+
+  // Duplicate indices are rejected by query validation.
+  uint32_t duplicate_indices[] = {1, 1};
+  float duplicate_values[] = {1.0f, 0.5f};
+  err = zvec_vector_query_set_sparse_vector(query, duplicate_indices,
+                                            duplicate_values, 2);
+  TEST_ASSERT(err == ZVEC_OK);
+  results = NULL;
+  result_count = 0;
+  err = zvec_collection_query(collection, query, &results, &result_count);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(result_count == 0);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, "duplicate indices");
+
+  // A sparse payload combines with a scalar filter.
+  uint32_t filtered_indices[] = {1, 3};
+  float filtered_values[] = {1.0f, 0.5f};
+  err = zvec_vector_query_set_sparse_vector(query, filtered_indices,
+                                            filtered_values, 2);
+  TEST_ASSERT(err == ZVEC_OK);
+  zvec_vector_query_set_filter(query, "id > 2");
+  results = NULL;
+  result_count = 0;
+  err = zvec_collection_query(collection, query, &results, &result_count);
+  TEST_ASSERT(err == ZVEC_OK);
+  // Documents 3 and 4 are the only ones matching "id > 2".
+  TEST_ASSERT(result_count > 0);
+  TEST_ASSERT(result_count <= 2);
+  for (size_t i = 0; i < result_count; i++) {
+    TEST_ASSERT(read_int64_field(results[i], "id") > 2);
+  }
+  zvec_docs_free(results, result_count);
+
+  // count == 0 clears the payload, which makes the query invalid again.
+  zvec_vector_query_set_filter(query, NULL);
+  err = zvec_vector_query_set_sparse_vector(query, NULL, NULL, 0);
+  TEST_ASSERT(err == ZVEC_OK);
+  results = NULL;
+  result_count = 0;
+  err = zvec_collection_query(collection, query, &results, &result_count);
+  TEST_ASSERT(err == ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(result_count == 0);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, "missing query clause");
+
+  zvec_vector_query_destroy(query);
+  for (size_t i = 0; i < doc_count; i++) {
+    zvec_doc_destroy(docs[i]);
+  }
+  zvec_collection_destroy(collection);
+  zvec_collection_schema_destroy(schema);
+  cleanup_temp_directory(temp_dir);
+
+  TEST_END();
+}
+
+// The C API exposes zvec_group_by_vector_query_t as a builder only (there is no
+// collection entry point that executes it), so this covers the setter contract
+// rather than a search round-trip.
+void test_group_by_vector_query_set_sparse_vector(void) {
+  TEST_START();
+
+  uint32_t indices[] = {2, 5, 9};
+  float values[] = {1.0f, 0.5f, 0.25f};
+  const char *null_message =
+      "GroupByVectorQuery, indices or values pointer is null";
+
+  // A NULL query is rejected before anything else is looked at.
+  TEST_ASSERT(zvec_group_by_vector_query_set_sparse_vector(
+                  NULL, indices, values, 3) == ZVEC_ERROR_INVALID_ARGUMENT);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, null_message);
+
+  zvec_group_by_vector_query_t *query = zvec_group_by_vector_query_create();
+  TEST_ASSERT(query != NULL);
+  if (!query) {
+    TEST_END();
+    return;
+  }
+
+  // A NULL buffer is only acceptable together with count == 0.
+  TEST_ASSERT(zvec_group_by_vector_query_set_sparse_vector(
+                  query, NULL, values, 3) == ZVEC_ERROR_INVALID_ARGUMENT);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, null_message);
+  TEST_ASSERT(zvec_group_by_vector_query_set_sparse_vector(
+                  query, indices, NULL, 3) == ZVEC_ERROR_INVALID_ARGUMENT);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, null_message);
+
+  // Well-formed payloads are accepted.
+  TEST_ASSERT(zvec_group_by_vector_query_set_sparse_vector(
+                  query, indices, values, 3) == ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_sparse_vector(
+                  query, indices, values, 1) == ZVEC_OK);
+
+  // count == 0 clears the payload and tolerates NULL buffers.
+  TEST_ASSERT(zvec_group_by_vector_query_set_sparse_vector(query, NULL, NULL,
+                                                           0) == ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_sparse_vector(
+                  query, indices, values, 0) == ZVEC_OK);
+
+  // The sparse payload coexists with the other group-by properties.
+  TEST_ASSERT(zvec_group_by_vector_query_set_field_name(query, "sparse") ==
+              ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_group_by_field_name(
+                  query, "category") == ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_group_count(query, 4) == ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_topk_per_group(query, 2) ==
+              ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_filter(query, "id > 1") ==
+              ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_sparse_vector(
+                  query, indices, values, 3) == ZVEC_OK);
+  TEST_ASSERT(
+      strcmp(zvec_group_by_vector_query_get_field_name(query), "sparse") == 0);
+  TEST_ASSERT(strcmp(zvec_group_by_vector_query_get_group_by_field_name(query),
+                     "category") == 0);
+  TEST_ASSERT(zvec_group_by_vector_query_get_group_count(query) == 4);
+  TEST_ASSERT(zvec_group_by_vector_query_get_topk_per_group(query) == 2);
+  TEST_ASSERT(strcmp(zvec_group_by_vector_query_get_filter(query), "id > 1") ==
+              0);
+
+  zvec_group_by_vector_query_destroy(query);
+  zvec_group_by_vector_query_destroy(NULL);
+
+  TEST_END();
+}
+
+// =============================================================================
 // FTS (full-text search) tests
 // =============================================================================
 
@@ -7123,6 +7532,9 @@ int main(void) {
   // Query tests
   test_query_params_functions();
   test_actual_vector_queries();
+  test_vector_query_set_sparse_vector_validation();
+  test_vector_query_sparse_vector_end_to_end();
+  test_group_by_vector_query_set_sparse_vector();
 
   // Document iterator tests
   test_iterator_basic();

@@ -5589,6 +5589,29 @@ zvec_error_code_t zvec_vector_query_set_query_vector(zvec_vector_query_t *query,
   return ZVEC_OK;
 }
 
+zvec_error_code_t zvec_vector_query_set_sparse_vector(
+    zvec_vector_query_t *query, const uint32_t *indices, const float *values,
+    size_t count) {
+  if (!query || (!indices && count > 0) || (!values && count > 0)) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Vector query, indices or values pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::SearchQuery *>(query);
+  // Copies into VectorClause (see zvec_vector_query_set_query_vector); an
+  // empty sparse vector (count == 0) clears whatever was set before.
+  if (count == 0) {
+    ptr->target_.set_sparse_vector(std::string(), std::string());
+    return ZVEC_OK;
+  }
+  ptr->target_.set_sparse_vector(
+      std::string(reinterpret_cast<const char *>(indices),
+                  count * sizeof(uint32_t)),
+      std::string(reinterpret_cast<const char *>(values),
+                  count * sizeof(float)));
+  return ZVEC_OK;
+}
+
 zvec_error_code_t zvec_vector_query_set_filter(zvec_vector_query_t *query,
                                            const char *filter) {
   if (!query) {
@@ -6112,6 +6135,29 @@ zvec_error_code_t zvec_group_by_vector_query_set_query_vector(
   auto *ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
   // Copies into VectorClause — see comment on zvec_vector_query_set_query_vector.
   ptr->target_.set_vector(std::string(static_cast<const char *>(data), size));
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_group_by_vector_query_set_sparse_vector(
+    zvec_group_by_vector_query_t *query, const uint32_t *indices,
+    const float *values, size_t count) {
+  if (!query || (!indices && count > 0) || (!values && count > 0)) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "GroupByVectorQuery, indices or values pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  auto *ptr = reinterpret_cast<zvec::GroupByVectorQuery *>(query);
+  // Copies into VectorClause (see zvec_vector_query_set_sparse_vector); an
+  // empty sparse vector (count == 0) clears whatever was set before.
+  if (count == 0) {
+    ptr->target_.set_sparse_vector(std::string(), std::string());
+    return ZVEC_OK;
+  }
+  ptr->target_.set_sparse_vector(
+      std::string(reinterpret_cast<const char *>(indices),
+                  count * sizeof(uint32_t)),
+      std::string(reinterpret_cast<const char *>(values),
+                  count * sizeof(float)));
   return ZVEC_OK;
 }
 

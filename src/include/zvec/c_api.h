@@ -2065,6 +2065,23 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_query_vector(
     zvec_vector_query_t *query, const void *data, size_t size);
 
 /**
+ * @brief Set sparse vector indices and values
+ *
+ * Both arrays are copied, so `indices` and `values` may be released as soon as
+ * this call returns. Only ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32 fields are
+ * supported. Passing `count == 0` clears a previously set sparse vector.
+ *
+ * @param query Vector query pointer
+ * @param indices Array of uint32_t indices
+ * @param values Array of float values
+ * @param count Number of sparse vector entries
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_vector_query_set_sparse_vector(
+    zvec_vector_query_t *query, const uint32_t *indices, const float *values,
+    size_t count);
+
+/**
  * @brief Set filter expression
  * @param query Vector query pointer
  * @param filter Filter expression string
@@ -2383,6 +2400,24 @@ ZVEC_EXPORT uint32_t ZVEC_CALL zvec_group_by_vector_query_get_topk_per_group(
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
 zvec_group_by_vector_query_set_query_vector(zvec_group_by_vector_query_t *query,
                                             const void *data, size_t size);
+
+/**
+ * @brief Set sparse vector indices and values
+ *
+ * Both arrays are copied, so `indices` and `values` may be released as soon as
+ * this call returns. Only ZVEC_DATA_TYPE_SPARSE_VECTOR_FP32 fields are
+ * supported. Passing `count == 0` clears a previously set sparse vector.
+ *
+ * @param query Group by vector query pointer
+ * @param indices Array of uint32_t indices
+ * @param values Array of float values
+ * @param count Number of sparse vector entries
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_group_by_vector_query_set_sparse_vector(
+    zvec_group_by_vector_query_t *query, const uint32_t *indices,
+    const float *values, size_t count);
 
 /**
  * @brief Set filter expression
