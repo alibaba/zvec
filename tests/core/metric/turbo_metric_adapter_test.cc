@@ -146,3 +146,88 @@ TEST(TurboMetricAdapter, MipsInjectionsKeepTheirDistanceSemantics) {
     EXPECT_NEAR(0.0f, batch[1], 1e-6f);
   }
 }
+
+TEST(TurboMetricAdapter, CachedMipsCallbacksObserveTrainingAndRetainLifetime) {
+  const float a[] = {1, 2, 3}, b[] = {2, 1, -1};
+  const float interleaved[] = {1, 1, 2, 2, 3, 3};
+  const void *rows[] = {a, a};
+  for (int injection : {1, 2}) {
+    SCOPED_TRACE(injection);
+    ailego::Params params;
+    params.set(MIPS_EUCLIDEAN_METRIC_INJECTION_TYPE, injection);
+    params.set(MIPS_EUCLIDEAN_METRIC_M_VALUE, 2);
+    params.set(MIPS_EUCLIDEAN_METRIC_U_VALUE, 0.5f);
+    params.set(MIPS_EUCLIDEAN_METRIC_MAX_L2_NORM, 4.0f);
+    auto metric = IndexFactory::CreateMetric("MipsSquaredEuclidean");
+    ASSERT_TRUE(metric);
+    ASSERT_EQ(0, metric->init(IndexMeta(IndexMeta::DT_FP32, 3), params));
+    ASSERT_TRUE(metric->support_train());
+    const auto scalar = metric->distance();
+    const auto batch = metric->batch_distance();
+    const auto matrix = metric->distance_matrix(2, 1);
+    const auto pair_matrix = metric->distance_matrix(1, 1);
+    ASSERT_TRUE(scalar);
+    ASSERT_TRUE(batch);
+    ASSERT_TRUE(matrix);
+    ASSERT_TRUE(pair_matrix);
+    const auto reference = [injection](double max_norm) {
+      const double eta = 0.25 / (max_norm * max_norm);
+      const double u2 = 14.0 * eta, v2 = 6.0 * eta;
+      if (injection == 1) {
+        return 2.0 * (1.0 - eta - std::sqrt((1.0 - u2) * (1.0 - v2)));
+      }
+      return 18.0 * eta + (u2 - v2) * (u2 - v2) +
+             (u2 * u2 - v2 * v2) * (u2 * u2 - v2 * v2);
+    };
+    const auto check_cached = [&](double max_norm) {
+      const double expected = reference(max_norm);
+      float pair = 0.0f, batch_results[2], matrix_results[2];
+      scalar(a, b, 3, &pair);
+      EXPECT_NEAR(expected, pair, 1e-6);
+      pair_matrix(a, b, 3, &pair);
+      EXPECT_NEAR(expected, pair, 1e-6);
+      batch(rows, b, 2, 3, batch_results, nullptr);
+      matrix(interleaved, b, 3, matrix_results);
+      for (size_t i = 0; i < 2; ++i) {
+        EXPECT_NEAR(expected, batch_results[i], 1e-6);
+        EXPECT_NEAR(expected, matrix_results[i], 1e-6);
+      }
+    };
+    check_cached(4.0);
+    for (float norm : {8.0f, 16.0f, 4.0f}) {
+      const float training[] = {norm, 0, 0};
+      ASSERT_EQ(0, metric->train(training, 3));
+      const double max_norm = norm == 8.0f ? 8.0 : 16.0;
+      check_cached(max_norm);
+      float fresh = 0.0f;
+      metric->distance()(a, b, 3, &fresh);
+      EXPECT_NEAR(reference(max_norm), fresh, 1e-6);
+    }
+    // Reinitialization detaches the old callbacks from the new training run,
+    // whether or not the caller explicitly cleans up first.
+    for (bool cleanup : {false, true}) {
+      if (cleanup) ASSERT_EQ(0, metric->cleanup());
+      check_cached(16.0);
+      ASSERT_EQ(0, metric->init(IndexMeta(IndexMeta::DT_FP32, 3), params));
+      const float training[] = {32, 0, 0};
+      ASSERT_EQ(0, metric->train(training, 3));
+      float fresh = 0.0f;
+      metric->distance()(a, b, 3, &fresh);
+      EXPECT_NEAR(reference(32.0), fresh, 1e-6);
+      check_cached(16.0);
+    }
+    const auto trained = metric->distance();
+    ASSERT_TRUE(trained);
+    ASSERT_EQ(0, metric->cleanup());
+    EXPECT_FALSE(metric->support_train());
+    float retained = 0.0f;
+    trained(a, b, 3, &retained);
+    EXPECT_NEAR(reference(32.0), retained, 1e-6);
+    std::weak_ptr<IndexMetric> weak_metric = metric;
+    metric.reset();
+    EXPECT_TRUE(weak_metric.expired());
+    trained(a, b, 3, &retained);
+    EXPECT_NEAR(reference(32.0), retained, 1e-6);
+    check_cached(16.0);
+  }
+}

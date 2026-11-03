@@ -11,6 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <atomic>
+#include <memory>
 #include <turbo/distance/sparse/sparse_distance.h>
 #include <turbo/norm/norm2_matrix.h>
 #include <zvec/core/framework/index_error.h>
@@ -28,6 +30,9 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
  public:
   //! Initialize Metric
   int init(const IndexMeta &meta, const ailego::Params &index_params) override {
+    // Each initialization owns a new training state; existing callbacks keep
+    // the state from their original initialization.
+    training_state_ = std::make_shared<TrainingState>();
     data_type_ = meta.data_type();
     dimension_ = meta.dimension();
 
@@ -56,11 +61,12 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
     max_squared_l2_norm_ = max_l2_norm * max_l2_norm;
     if (injection_ == Injection::kIdentity ||
         injection_ == Injection::kLocalizedSpherical) {
-      eta_ = 0.0f;
+      training_state_->eta.store(0.0f, std::memory_order_relaxed);
     } else if (max_squared_l2_norm_ < std::numeric_limits<float>::epsilon()) {
-      eta_ = kDefaultEta;
+      training_state_->eta.store(kDefaultEta, std::memory_order_relaxed);
     } else {
-      eta_ = squared_u_value_ / max_squared_l2_norm_;
+      training_state_->eta.store(squared_u_value_ / max_squared_l2_norm_,
+                                 std::memory_order_relaxed);
     }
 
     switch (data_type_) {
@@ -104,7 +110,8 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
 
   //! Cleanup Metric
   int cleanup() override {
-    eta_ = 0.0f;
+    // Detach rather than reset the state retained by cached callbacks.
+    training_state_ = std::make_shared<TrainingState>();
     m_value_ = 0;
     squared_u_value_ = 0.0f;
     max_squared_l2_norm_ = 0.0f;
@@ -147,13 +154,15 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
         RawKernels(turbo::MetricType::kSquaredEuclidean, data_type_).dist;
     if (injection_ == Injection::kIdentity) return l2;
     if (!ip || !l2) return nullptr;
-    // Callers may keep the distance function after destroying the metric.
+    // Callbacks share training updates without retaining the metric itself.
+    // Capture the immutable configuration by value and load eta on each call.
     const auto norm = squared_norm2_handle_;
     const auto injection = injection_;
-    const auto eta = eta_;
+    const auto state = training_state_;
     const auto repeats = m_value_;
-    return [norm, injection, eta, repeats, ip, l2](const void *m, const void *q,
-                                                   size_t dim, float *out) {
+    return [norm, injection, state, repeats, ip, l2](
+               const void *m, const void *q, size_t dim, float *out) {
+      const float eta = state->eta.load(std::memory_order_relaxed);
       float u2, v2;
       norm(m, dim, &u2);
       norm(q, dim, &v2);
@@ -247,7 +256,8 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
 
   //! Train the metric
   int train(const void *vec, size_t dim) override {
-    if (eta_ == 0.0f) {  // No global norm scaling => no training.
+    // No global norm scaling => no training.
+    if (training_state_->eta.load(std::memory_order_relaxed) == 0.0f) {
       return 0;
     }
     if (!squared_norm2_handle_) {
@@ -265,15 +275,16 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
         squared_u_value_ = max_squared_l2_norm_;
         params_.set(MIPS_EUCLIDEAN_METRIC_U_VALUE, max_l2_norm);
       }
-      eta_ = squared_u_value_ / max_squared_l2_norm_;
+      training_state_->eta.store(squared_u_value_ / max_squared_l2_norm_,
+                                 std::memory_order_relaxed);
     }
     return 0;
   }
 
   //! Retrieve if it supports training
   bool support_train() const override {
-    // No global norm scaling => eta_ == 0 => no training.
-    return eta_ != 0.0f;
+    // No global norm scaling => eta == 0 => no training.
+    return training_state_->eta.load(std::memory_order_relaxed) != 0.0f;
   }
 
   //! Retrieve query metric object of this index metric
@@ -402,7 +413,12 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
 
   //! Members
   SquaredNorm2Handle squared_norm2_handle_{nullptr};
-  float eta_{0.0f};
+  struct TrainingState {
+    // Training can run while another thread invokes a cached callback.
+    std::atomic<float> eta{0.0f};
+  };
+  std::shared_ptr<TrainingState> training_state_{
+      std::make_shared<TrainingState>()};
   uint32_t m_value_{0};
   float squared_u_value_{0.0f};
   float max_squared_l2_norm_{0.0f};
