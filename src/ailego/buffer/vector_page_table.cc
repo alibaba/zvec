@@ -83,6 +83,9 @@ constexpr size_t kBlockingAioBatchSize = VecBufferPool::kWritebackBatchPages;
 }
 
 VecBufferPool::~VecBufferPool() {
+  // Wait for in-flight eviction and stop new callbacks before draining pages.
+  // Otherwise CLOCK can spare a page after the forced cleanup scan skips it.
+  BlockEvictionQueue::get_instance().set_invalid(&page_table_);
   // Finish queued writes before page buffers, latches, and descriptors go
   // away. The synchronous pass below catches any prior writeback error.
   stop_writeback();
