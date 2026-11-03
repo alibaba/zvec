@@ -13,6 +13,7 @@
 // limitations under the License.
 #include <cstdlib>
 #include <new>
+#include <type_traits>
 #include <vector>
 #include <gtest/gtest.h>
 #include <turbo/distance/matrix.h>
@@ -75,10 +76,10 @@ void CheckMatrices() {
           for (size_t i = 0; i < count; ++i) {
             for (size_t d = 0; d < dim; ++d) {
               const float v = value(i, d, salt);
-              if constexpr (int4) {
+              if constexpr (std::is_same_v<T, uint8_t>) {
                 data[(d / 8 * count + i) * 4 + d % 8 / 2] |= (int(v) & 15)
                                                              << (4 * (d % 2));
-              } else if constexpr (int8) {
+              } else if constexpr (std::is_same_v<T, int8_t>) {
                 data[(d / 4 * count + i) * 4 + d % 4] = T(v);
               } else {
                 data[d * count + i] = T(v);
