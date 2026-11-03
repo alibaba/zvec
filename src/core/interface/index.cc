@@ -587,16 +587,15 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
       return core::IndexError_Unsupported;
   }
 
-  // read_options.create_new
-  // Storage's boolean also controls write access. Reopening an existing
-  // writable index must not turn BufferStorage into a read-only pool.
-  int ret = storage_->open(file_path, storage_options.create_new ||
-                                          (!storage_options.read_only &&
-                                           ailego::File::IsExist(file_path)));
+  const core::IndexStorage::OpenOptions open_options{storage_options.create_new,
+                                                     storage_options.read_only};
+  int ret = storage_options.type == StorageOptions::StorageType::kBufferPool
+                ? storage_->open(file_path, open_options)
+                : storage_->open(file_path, storage_options.create_new);
   if (ret != 0) {
     LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path.c_str(),
               core::IndexError::What(ret));
-    return core::IndexError_Runtime;
+    return ret;
   }
   ret = prepare_streamer_open(storage_options);
   if (ret != 0) {
