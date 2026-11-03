@@ -49,13 +49,16 @@ class BufferStorageWriteTest : public ::testing::Test {
     ailego::File::Delete(file_path_);
   }
 
-  // Open BufferStorage in writable mode (create_if_missing=true)
+  // Open BufferStorage in writable mode, creating it when missing.
   IndexStorage::Pointer open_writable() {
     auto storage = IndexFactory::CreateStorage("BufferStorage");
     if (!storage) return nullptr;
     ailego::Params params;
     storage->init(params);
-    if (storage->open(file_path_, true) != 0) return nullptr;
+    if (storage->open(file_path_, IndexStorage::OpenOptions{true, false}) !=
+        0) {
+      return nullptr;
+    }
     return storage;
   }
 
@@ -65,12 +68,127 @@ class BufferStorageWriteTest : public ::testing::Test {
     if (!storage) return nullptr;
     ailego::Params params;
     storage->init(params);
-    if (storage->open(file_path_, false) != 0) return nullptr;
+    if (storage->open(file_path_, IndexStorage::OpenOptions{false, true}) !=
+        0) {
+      return nullptr;
+    }
     return storage;
   }
 
   std::string file_path_;
 };
+
+TEST_F(BufferStorageWriteTest, WritableReopenWithoutCreationPersistsChanges) {
+  {
+    auto storage = open_writable();
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->append("payload", 4096));
+    auto segment = storage->get("payload");
+    ASSERT_NE(nullptr, segment);
+    const std::string original = "original";
+    ASSERT_EQ(original.size(),
+              segment->write(0, original.data(), original.size()));
+    ASSERT_EQ(0, storage->close());
+  }
+
+  const std::string expected = "updated after writable reopen";
+  {
+    auto storage = IndexFactory::CreateStorage("BufferStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(ailego::Params{}));
+    ASSERT_EQ(
+        0, storage->open(file_path_, IndexStorage::OpenOptions{false, false}));
+    ASSERT_TRUE(storage->vec_buffer_pool()->writable());
+    auto segment = storage->get("payload");
+    ASSERT_NE(nullptr, segment);
+    ASSERT_EQ(expected.size(),
+              segment->write(0, expected.data(), expected.size()));
+    ASSERT_EQ(0, storage->append("appended", 4096));
+    ASSERT_EQ(0, storage->flush());
+    ASSERT_EQ(0, storage->close());
+  }
+
+  auto storage = open_read_only();
+  ASSERT_NE(nullptr, storage);
+  EXPECT_FALSE(storage->vec_buffer_pool()->writable());
+  EXPECT_TRUE(storage->has("appended"));
+  auto segment = storage->get("payload");
+  ASSERT_NE(nullptr, segment);
+  std::string actual(expected.size(), '\0');
+  ASSERT_EQ(actual.size(), segment->fetch(0, actual.data(), actual.size()));
+  EXPECT_EQ(expected, actual);
+  ASSERT_EQ(0, storage->close());
+}
+
+TEST_F(BufferStorageWriteTest,
+       WritableOpenWithoutCreationRequiresExistingFile) {
+  auto storage = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(ailego::Params{}));
+  EXPECT_EQ(IndexError_OpenFile,
+            storage->open(file_path_, IndexStorage::OpenOptions{false, false}));
+  EXPECT_FALSE(ailego::File::IsExist(file_path_));
+  EXPECT_EQ(nullptr, storage->vec_buffer_pool());
+
+  ASSERT_EQ(0,
+            storage->open(file_path_, IndexStorage::OpenOptions{true, false}));
+  EXPECT_TRUE(storage->vec_buffer_pool()->writable());
+  ASSERT_EQ(0, storage->close());
+}
+
+TEST_F(BufferStorageWriteTest, ReadOnlyOpenCannotCreateFile) {
+  auto storage = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(ailego::Params{}));
+  EXPECT_EQ(IndexError_InvalidArgument,
+            storage->open(file_path_, IndexStorage::OpenOptions{true, true}));
+  EXPECT_FALSE(ailego::File::IsExist(file_path_));
+  EXPECT_EQ(nullptr, storage->vec_buffer_pool());
+}
+
+TEST_F(BufferStorageWriteTest, LegacyOpenPreservesAccessModes) {
+  auto storage = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(ailego::Params{}));
+  ASSERT_EQ(0, storage->open(file_path_, true));
+  EXPECT_TRUE(storage->vec_buffer_pool()->writable());
+  ASSERT_EQ(0, storage->close());
+  ASSERT_EQ(0, storage->open(file_path_, false));
+  EXPECT_FALSE(storage->vec_buffer_pool()->writable());
+  ASSERT_EQ(0, storage->close());
+}
+
+TEST_F(BufferStorageWriteTest, ExplicitOpenRequiresImplementationSupport) {
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(ailego::Params{}));
+  EXPECT_EQ(IndexError_Unsupported,
+            storage->open(file_path_, IndexStorage::OpenOptions{true, false}));
+  EXPECT_FALSE(ailego::File::IsExist(file_path_));
+}
+
+TEST_F(BufferStorageWriteTest, WritableReopenNeedsCacheAndAllowsRetry) {
+  {
+    auto storage = open_writable();
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->close());
+  }
+  auto &pool = ailego::MemoryLimitPool::get_instance();
+  AILEGO_DEFER([&]() { EXPECT_EQ(0, pool.init(64UL * 1024UL * 1024UL)); });
+  ASSERT_EQ(0, pool.init(ailego::kVectorPageSize));
+  auto storage = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(ailego::Params{}));
+  EXPECT_EQ(IndexError_NoMemory,
+            storage->open(file_path_, IndexStorage::OpenOptions{false, false}));
+  EXPECT_EQ(nullptr, storage->vec_buffer_pool());
+
+  ASSERT_EQ(0, pool.init(64UL * 1024UL * 1024UL));
+  ASSERT_EQ(0,
+            storage->open(file_path_, IndexStorage::OpenOptions{false, false}));
+  EXPECT_TRUE(storage->vec_buffer_pool()->writable());
+  ASSERT_EQ(0, storage->close());
+}
 
 TEST_F(BufferStorageWriteTest, MissingFileReturnsErrorAndAllowsRetry) {
   auto storage = IndexFactory::CreateStorage("BufferStorage");
