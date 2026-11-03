@@ -14,8 +14,10 @@
 
 #pragma once
 
+#include <array>
 #include <zvec/core/framework/index_document.h>
 #include <zvec/core/framework/index_error.h>
+#include "utility/batch_topk.h"
 #include "flat_index_format.h"
 #include "flat_searcher.h"
 #include "flat_utility.h"
@@ -212,6 +214,15 @@ class FlatSearcherContext : public IndexSearcher::Context {
     features_segment_ = owner->clone_features_segment();
     quantizer_ = owner->quantizer();
     owner_ = owner;
+    row_batch_distance_ = nullptr;
+    row_query_preprocess_ = nullptr;
+    row_extra_size_ = 0;
+    if (!quantizer_ && owner->metric()) {
+      row_batch_distance_ = owner->metric()->batch_distance();
+      row_query_preprocess_ = owner->metric()->get_query_preprocess_func();
+      row_extra_size_ = owner->metric()->extra_values_size_per_vector();
+      if (row_extra_size_ >= feature_size_) row_batch_distance_ = nullptr;
+    }
     if (quantizer_) {
       this->update_index_quantizer(quantizer_);
     } else {
@@ -221,6 +232,12 @@ class FlatSearcherContext : public IndexSearcher::Context {
 
   //! Similarity search
   int search_row(const void *query, const IndexQueryMeta &qmeta) {
+    if ((quantizer_ || row_batch_distance_) &&
+        topk_ < features_segment_->data_size() / feature_size_) {
+      return this->filter().is_valid()
+                 ? this->search_row_topk<true>(query, qmeta, 1)
+                 : this->search_row_topk<false>(query, qmeta, 1);
+    }
     return (this->filter().is_valid()
                 ? this->search_row_filter(query, qmeta)
                 : this->search_row_nofilter(query, qmeta));
@@ -228,6 +245,12 @@ class FlatSearcherContext : public IndexSearcher::Context {
 
   //! Similarity search
   int search_row(const void *query, const IndexQueryMeta &qmeta, size_t count) {
+    if ((quantizer_ || row_batch_distance_) &&
+        topk_ < features_segment_->data_size() / feature_size_) {
+      return this->filter().is_valid()
+                 ? this->search_row_topk<true>(query, qmeta, count)
+                 : this->search_row_topk<false>(query, qmeta, count);
+    }
     return (this->filter().is_valid()
                 ? this->batch_search_row_filter(query, qmeta, count)
                 : this->batch_search_row_nofilter(query, qmeta, count));
@@ -441,6 +464,86 @@ class FlatSearcherContext : public IndexSearcher::Context {
   }
 
  protected:
+  // Each storage read owns its rows until the pending batch is consumed.
+  // Filtering happens before distance calculation and IDs remain row indices
+  // until the final selected rows are mapped to primary keys.
+  template <bool Filter>
+  int search_row_topk(const void *query, const IndexQueryMeta &qmeta,
+                      size_t query_count) {
+    result_heaps_.resize(query_count);
+    for (size_t q = 0; q < query_count; ++q) {
+      auto &heap = result_heaps_[q];
+      heap.clear();
+      heap.limit(topk_);
+      heap.set_threshold(this->threshold());
+      row_topk_.reset(heap.limit(), this->threshold());
+      size_t feature_index = 0;
+      size_t pending = 0;
+      const void *batch_query = query;
+      if (row_query_preprocess_) {
+        row_query_buffer_.resize(qmeta.element_size());
+        std::memcpy(row_query_buffer_.data(), query, qmeta.element_size());
+        row_query_preprocess_(row_query_buffer_.data(), qmeta.dimension());
+        batch_query = row_query_buffer_.data();
+      }
+      auto flush = [&]() {
+        if (pending == 0) return;
+        if (quantizer_) {
+          quantizer_->calc_distance_dp_query_batch(row_batch_pointers_.data(),
+                                                   static_cast<int>(pending),
+                                                   query, scores_);
+        } else {
+          row_batch_distance_(
+              row_batch_pointers_.data(), batch_query, pending,
+              qmeta.dimension(), scores_,
+              row_extra_size_ ? row_batch_extras_.data() : nullptr);
+        }
+        row_topk_.push_block(scores_, row_batch_indices_.data(), pending);
+        pending = 0;
+      };
+      for (size_t offset = 0; offset < features_segment_->data_size();) {
+        const size_t size = std::min(size_t{actual_read_size_},
+                                     features_segment_->data_size() - offset);
+        IndexStorage::MemoryBlock data;
+        if (features_segment_->read(offset, data, size) != size ||
+            !data.data()) {
+          LOG_ERROR("Failed to read data (%zu bytes) from features segment",
+                    size);
+          return IndexError_ReadData;
+        }
+        const auto *rows = static_cast<const char *>(data.data());
+        for (size_t row_offset = 0; row_offset < size;
+             row_offset += feature_size_, ++feature_index) {
+          if constexpr (Filter) {
+            if (this->filter()(owner_->key(feature_index))) continue;
+          }
+          row_batch_pointers_[pending] = rows + row_offset;
+          if (row_extra_size_) {
+            row_batch_extras_[pending] =
+                rows + row_offset + feature_size_ - row_extra_size_;
+          }
+          row_batch_indices_[pending] = feature_index;
+          if (++pending == BATCH_SIZE) flush();
+        }
+        // Do not retain pointers across storage reads or copy vector payloads
+        // merely to fill a batch.
+        flush();
+        offset += size;
+      }
+      row_topk_.finish();
+      auto &documents = heap.mutable_container();
+      documents.reserve(row_topk_.size());
+      for (size_t i = 0; i < row_topk_.size(); ++i) {
+        const auto candidate = row_topk_.result(i);
+        const auto index = static_cast<uint32_t>(candidate.id);
+        documents.emplace_back(owner_->key(index), candidate.score, index);
+      }
+      heap.sort();
+      query = static_cast<const char *>(query) + qmeta.element_size();
+    }
+    return 0;
+  }
+
   //! Similarity search (1 column without filter)
   int search_column_nofilter(const void *query, const IndexQueryMeta &qmeta);
 
@@ -480,6 +583,14 @@ class FlatSearcherContext : public IndexSearcher::Context {
   std::shared_ptr<zvec::turbo::Quantizer> quantizer_{};
   std::vector<IndexDocumentHeap> result_heaps_{1};
   std::string batch_queries_{};
+  BatchTopK row_topk_;
+  IndexMetric::MatrixBatchDistance row_batch_distance_{};
+  IndexMetric::DistanceBatchQueryPreprocessFunc row_query_preprocess_{};
+  size_t row_extra_size_{0};
+  std::vector<uint8_t> row_query_buffer_{};
+  std::array<const void *, BATCH_SIZE> row_batch_pointers_{};
+  std::array<const void *, BATCH_SIZE> row_batch_extras_{};
+  std::array<uint64_t, BATCH_SIZE> row_batch_indices_{};
   float scores_[BATCH_SIZE * BATCH_SIZE];
   bool fetch_vector_{false};
 
