@@ -1202,8 +1202,9 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   int opq_ret = opq_.deserialize(payload.rotate_type, original_dim_, ptr,
                                  static_cast<size_t>(preprocessor_bytes));
   if (opq_ret != 0) return opq_ret;
-  // dist_table_ is intentionally not restored: SDC is only needed during
-  // offline build, not after deserialization (search uses ADC).
+  // ADC search only needs the codebook and a query LUT. Release the SDC table;
+  // prepare_build() restores it before graph construction or inserts into a
+  // reopened writable index.
   std::vector<float>().swap(dist_table_);
 
   // Re-dispatch kernels and batch distance functions.

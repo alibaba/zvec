@@ -337,7 +337,8 @@ TEST_F(InvertedIndexTest, SEALED) {
 
 TEST_F(InvertedIndexTest, SNAPSHOT) {
 #ifdef __ANDROID__
-  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink support (needed by RocksDB checkpoint)";
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
 #endif
   ASSERT_TRUE(indexer_);
 
