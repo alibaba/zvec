@@ -4958,6 +4958,11 @@ TEST(IndexInterface, IsDirty) {
 TEST(IndexInterface, IsDirtyBufferPool) {
   constexpr uint32_t kDimension = 16;
   const std::string index_name{"test_is_dirty_bp.index"};
+  auto &pool = zvec::ailego::MemoryLimitPool::get_instance();
+  const size_t previous_capacity = pool.capacity();
+  ASSERT_EQ(0, pool.init(64UL * 1024UL * 1024UL));
+  auto restore = zvec::ailego::ScopeGuard::Make(
+      [&]() { EXPECT_EQ(0, pool.init(previous_capacity)); });
 
   zvec::test_util::RemoveTestFiles(index_name);
 
@@ -4971,15 +4976,16 @@ TEST(IndexInterface, IsDirtyBufferPool) {
                      .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
-    index->open(index_name, {StorageOptions::StorageType::kMMAP, true});
+    ASSERT_EQ(
+        0, index->open(index_name, {StorageOptions::StorageType::kMMAP, true}));
     std::vector<float> vec(kDimension, 1.0f);
     VectorData vd;
     vd.vector = DenseVector{vec.data()};
     ASSERT_EQ(0, index->add(vd, 1));
-    index->close();
+    ASSERT_EQ(0, index->close());
   }
 
-  // Reopen with BufferPool storage in writable mode
+  // Reopen an existing file for writing without permitting file creation.
   {
     auto param = FlatIndexParamBuilder()
                      .with_metric_type(MetricType::kInnerProduct)
@@ -4989,7 +4995,9 @@ TEST(IndexInterface, IsDirtyBufferPool) {
                      .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
-    index->open(index_name, {StorageOptions::StorageType::kBufferPool, true});
+    ASSERT_EQ(0,
+              index->open(index_name, {StorageOptions::StorageType::kBufferPool,
+                                       false, false}));
 
     ASSERT_FALSE(index->is_dirty());
 
@@ -5002,10 +5010,76 @@ TEST(IndexInterface, IsDirtyBufferPool) {
     ASSERT_EQ(0, index->flush());
     ASSERT_FALSE(index->is_dirty());
 
-    index->close();
+    ASSERT_EQ(0, index->close());
+  }
+
+  // Both the original and appended vectors must survive another reopen.
+  {
+    auto param = FlatIndexParamBuilder()
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(kDimension)
+                     .with_is_sparse(false)
+                     .build();
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(0,
+              index->open(index_name, {StorageOptions::StorageType::kBufferPool,
+                                       false, true}));
+    for (uint32_t id : {1U, 2U}) {
+      VectorDataBuffer fetched;
+      ASSERT_EQ(0, index->fetch(id, &fetched));
+      const auto &data =
+          std::get<DenseVectorBuffer>(fetched.vector_buffer).data;
+      const std::vector<float> expected(kDimension, static_cast<float>(id));
+      ASSERT_EQ(expected.size() * sizeof(float), data.size());
+      EXPECT_EQ(0, std::memcmp(expected.data(), data.data(), data.size()));
+    }
+    ASSERT_EQ(0, index->close());
   }
 
   zvec::test_util::RemoveTestFiles(index_name);
+}
+
+TEST(IndexInterface, BufferPoolOpenPreservesCreationAndMemoryErrors) {
+  using zvec::core::IndexError_NoMemory;
+  using zvec::core::IndexError_OpenFile;
+  const std::string path = "buffer_pool_open_errors.index";
+  zvec::test_util::RemoveTestFiles(path);
+  auto remove = zvec::ailego::ScopeGuard::Make(
+      [&]() { zvec::test_util::RemoveTestFiles(path); });
+  auto &pool = zvec::ailego::MemoryLimitPool::get_instance();
+  const size_t previous_capacity = pool.capacity();
+  auto restore = zvec::ailego::ScopeGuard::Make(
+      [&]() { EXPECT_EQ(0, pool.init(previous_capacity)); });
+  ASSERT_EQ(0, pool.init(64UL * 1024UL * 1024UL));
+  auto param = FlatIndexParamBuilder()
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(16)
+                   .with_is_sparse(false)
+                   .build();
+  {
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    EXPECT_EQ(IndexError_OpenFile,
+              index->open(path, {StorageOptions::StorageType::kBufferPool,
+                                 false, false}));
+    EXPECT_FALSE(zvec::ailego::File::IsExist(path));
+  }
+  {
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(
+        0, index->open(path, {StorageOptions::StorageType::kBufferPool, true}));
+    ASSERT_EQ(0, index->close());
+  }
+  ASSERT_EQ(0, pool.init(zvec::ailego::kVectorPageSize));
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  EXPECT_EQ(IndexError_NoMemory,
+            index->open(path, {StorageOptions::StorageType::kBufferPool, false,
+                               false}));
 }
 
 TEST(IndexInterface, BuilderSetsAllBaseFields) {
