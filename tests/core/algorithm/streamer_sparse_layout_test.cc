@@ -72,10 +72,14 @@ TEST(StreamerLayoutGrowth, LegacySparseHugePageMetadataUsesLogicalPage) {
               storage->get("HnswT2S0")->fetch(0, words, sizeof(words)));
     EXPECT_EQ(3 * 1024 * 1024u, words[8]);
     EXPECT_EQ(page, words[14]);
+    const auto original = storage->segments.at("HnswT2S0")->bytes;
+    const int flushes = storage->flushes;
     HnswSparseStreamerEntity reopened(stats);
     ASSERT_EQ(0, InitSparseLayoutEntity(reopened));
     ASSERT_EQ(0, reopened.open(storage, false));
     EXPECT_EQ(0, reopened.close());
+    EXPECT_EQ(flushes, storage->flushes);
+    EXPECT_EQ(original, storage->segments.at("HnswT2S0")->bytes);
   }
 }
 
@@ -87,6 +91,8 @@ TEST(StreamerLayoutGrowth, InvalidLegacySparseHugePageLayoutIsNotRewritten) {
   uint64_t invalid_total = 4097;
   meta->write(9 * sizeof(uint64_t), &invalid_total, sizeof(invalid_total));
   const auto original = meta->bytes;
+  // Dirty storage must not cause an unverified layout to be flushed on failure.
+  storage->dirty = true;
   IndexStreamer::Stats stats;
   HnswSparseStreamerEntity entity(stats);
   ASSERT_EQ(0, InitSparseLayoutEntity(entity));

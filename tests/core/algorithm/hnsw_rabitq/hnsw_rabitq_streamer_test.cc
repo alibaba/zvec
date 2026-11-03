@@ -46,8 +46,9 @@ std::string HnswRabitqStreamerTest::dir_("hnswRabitqStreamerTest");
 shared_ptr<IndexMeta> HnswRabitqStreamerTest::index_meta_ptr_;
 
 void HnswRabitqStreamerTest::SetUp() {
-  if (!rabitqlib::cpu::has_avx512_core() && !rabitqlib::cpu::has_avx2()) {
-    GTEST_SKIP() << "CPU does not support AVX2/FMA or AVX512F/BW/DQ";
+  if (!rabitqlib::cpu::has_avx512_core() && !rabitqlib::cpu::has_avx2() &&
+      !rabitqlib::cpu::has_neon()) {
+    GTEST_SKIP() << "CPU does not support AVX2/FMA, AVX512F/BW/DQ, or NEON";
   }
 
   index_meta_ptr_.reset(new (nothrow)

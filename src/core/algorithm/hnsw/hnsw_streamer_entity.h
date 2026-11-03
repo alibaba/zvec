@@ -148,6 +148,11 @@ class HnswStreamerEntity : public HnswEntity {
   //! return 0 on success, or errCode in failure
   int close();
 
+  //! Whether vectors have been modified since opening the entity.
+  bool dirty() const {
+    return broker_->dirty();
+  }
+
   //! Set meta information from entity
   int set_index_meta(const IndexMeta &meta) const {
     return IndexHelper::SerializeToStorage(meta, broker_->storage().get());

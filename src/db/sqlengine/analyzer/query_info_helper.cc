@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include "query_info_helper.h"
+#include <cstdio>
+#include <limits>
 #include <memory>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/string_helper.h>
@@ -80,6 +82,16 @@ bool QueryInfoHelper::text_2_data_buf(const std::string &text,
   return false;
 }
 
+// StringHelper::ToString() keeps six decimals. Print enough significant
+// digits that the text reads back as the same value.
+template <typename T>
+static std::string exact_text(T val) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.*g", std::numeric_limits<T>::max_digits10,
+                static_cast<double>(val));
+  return buf;
+}
+
 bool QueryInfoHelper::data_buf_2_text(const std::string &data_buf,
                                       zvec::DataType data_type,
                                       std::string *text) {
@@ -104,12 +116,12 @@ bool QueryInfoHelper::data_buf_2_text(const std::string &data_buf,
   }
 
   if (data_type == zvec::DataType::FLOAT) {
-    *text = ailego::StringHelper::ToString(*(float *)data_buf.data());
+    *text = exact_text(*(float *)data_buf.data());
     return true;
   }
 
   if (data_type == zvec::DataType::DOUBLE) {
-    *text = ailego::StringHelper::ToString(*(double *)data_buf.data());
+    *text = exact_text(*(double *)data_buf.data());
     return true;
   }
 

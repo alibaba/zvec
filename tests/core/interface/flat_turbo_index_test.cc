@@ -14,6 +14,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <random>
 #include <string>
 #include <utility>
@@ -573,3 +576,62 @@ TEST(FlatTurboInt8Index, CosineLegacyLayoutReopenFallsBack) {
 TEST(FlatTurboInt8Index, L2LegacyLayoutReopenFallsBack) {
   CheckLegacyLayoutReopen(MetricType::kL2sq);
 }
+
+class FlatLegacyReadOnlyTest : public testing::TestWithParam<MetricType> {
+ protected:
+  void TearDown() override {
+    std::error_code ec;
+    std::filesystem::permissions(path_, std::filesystem::perms::owner_all,
+                                 std::filesystem::perm_options::add, ec);
+    zvec::test_util::RemoveTestFiles(path_);
+  }
+
+  std::string contents() const {
+    std::ifstream input(path_, std::ios::binary);
+    return {std::istreambuf_iterator<char>(input),
+            std::istreambuf_iterator<char>()};
+  }
+
+  const std::string path_{"flat_legacy_readonly.index"};
+};
+
+TEST_P(FlatLegacyReadOnlyTest, ReopensWithoutWritePermission) {
+  auto vectors = RandomVectors(kVectorCount, kDimension);
+  BuildLegacyInt8IndexFile(path_, GetParam(), vectors);
+  ASSERT_FALSE(testing::Test::HasFatalFailure());
+  const auto before = contents();
+  const auto mtime = std::filesystem::last_write_time(path_);
+  std::filesystem::permissions(path_, std::filesystem::perms::owner_read |
+                                          std::filesystem::perms::group_read |
+                                          std::filesystem::perms::others_read);
+  std::fstream write_probe(path_,
+                           std::ios::in | std::ios::out | std::ios::binary);
+  if (write_probe.is_open()) {
+    GTEST_SKIP() << "File permissions do not block writes";
+  }
+
+  for (auto storage : {StorageOptions::StorageType::kMMAP,
+                       StorageOptions::StorageType::kBufferPool}) {
+    auto index = IndexFactory::CreateAndInitIndex(
+        *MakeParam(GetParam(), QuantizerType::kInt8));
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(0, index->open(path_, {storage, false, true}));
+    auto result = RunSearch(index.get(), vectors[7]);
+    ASSERT_EQ(kTopK, result.rows.size());
+    EXPECT_EQ(7u, result.rows.front().first);
+    VectorDataBuffer fetched;
+    ASSERT_EQ(0, index->fetch(7, &fetched));
+    const auto *values = reinterpret_cast<const float *>(
+        std::get<DenseVectorBuffer>(fetched.vector_buffer).data.data());
+    for (uint32_t i = 0; i < kDimension; ++i) {
+      EXPECT_NEAR(vectors[7][i], values[i], 5e-2f);
+    }
+    ASSERT_EQ(0, index->close());
+    EXPECT_EQ(before, contents());
+    EXPECT_EQ(mtime, std::filesystem::last_write_time(path_));
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(LegacyInt8, FlatLegacyReadOnlyTest,
+                         testing::Values(MetricType::kCosine,
+                                         MetricType::kL2sq));

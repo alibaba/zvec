@@ -375,8 +375,9 @@ class ExternalCache : public EvictableBlockOwner {
     eviction_key_t owner_key{0};
     bool loading{false};
     std::shared_ptr<LoadState> load_state{};
-    alignas(64) std::atomic<int> ref_count{std::numeric_limits<int>::min()};
-    alignas(64) std::atomic<version_t> generation{0};
+    alignas(AILEGO_CACHE_LINE_SIZE) std::atomic<int> ref_count{
+        std::numeric_limits<int>::min()};
+    alignas(AILEGO_CACHE_LINE_SIZE) std::atomic<version_t> generation{0};
     std::atomic<bool> in_evict_queue{false};
   };
 

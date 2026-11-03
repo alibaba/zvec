@@ -259,6 +259,27 @@ static inline int ailego_clz64(uint64_t x) {
 #define ailego_prefetch(p) (__builtin_prefetch((p)))
 #endif  // _MSC_VER
 
+//! Target cache-line size in bytes, shared by prefetch and in-memory alignment.
+//! Keep this a compile-time constant for alignas and constant-folded hot loops.
+//! Apple ARM64 defaults to 128; other targets retain the 64-byte default.
+//! Targets with a different line size may override it with
+//! -DAILEGO_CACHE_LINE_SIZE=... consistently across the library and consumers:
+//! changing it changes the layout of cache-line-aligned in-memory types.
+//! This is a target build setting, not a runtime hardware-size query, SIMD
+//! register width, or an on-disk format alignment.
+#ifndef AILEGO_CACHE_LINE_SIZE
+#if defined(__APPLE__) && defined(AILEGO_ARM64)
+#define AILEGO_CACHE_LINE_SIZE 128
+#else
+#define AILEGO_CACHE_LINE_SIZE 64
+#endif
+#endif
+
+#if AILEGO_CACHE_LINE_SIZE < 64 || \
+    (AILEGO_CACHE_LINE_SIZE & (AILEGO_CACHE_LINE_SIZE - 1)) != 0
+#error "AILEGO_CACHE_LINE_SIZE must be a power of two of at least 64 bytes"
+#endif
+
 //! Force-inline hint: use on hot-path accessors (3-5 instructions).
 #ifdef _MSC_VER
 #define ailego_force_inline __forceinline
@@ -266,13 +287,19 @@ static inline int ailego_clz64(uint64_t x) {
 #define ailego_force_inline inline __attribute__((always_inline))
 #endif
 
-//! Prefetch `lines` consecutive 64-byte cache lines starting at `ptr`.
+//! Convert bytes to a cache-line count, rounding up without overflow.
+//! Zero bytes require zero lines; any starting-address offset is excluded.
+static ailego_force_inline size_t ailego_cache_line_count(size_t bytes) {
+  return bytes / AILEGO_CACHE_LINE_SIZE + (bytes % AILEGO_CACHE_LINE_SIZE != 0);
+}
+
+//! Prefetch `lines` consecutive target cache lines starting at `ptr`.
 //! Uses the same cache hint as ailego_prefetch; zero lines is a no-op.
 static ailego_force_inline void ailego_prefetch_lines(const void *ptr,
                                                       size_t lines) {
   const char *data = (const char *)ptr;
   for (size_t line = 0; line < lines; ++line) {
-    ailego_prefetch(data + line * 64);
+    ailego_prefetch(data + line * AILEGO_CACHE_LINE_SIZE);
   }
 }
 

@@ -118,6 +118,48 @@ TYPED_TEST(StreamerLayoutTest, NewIndexRecordsLayoutWithoutChangingMetaSize) {
   EXPECT_EQ(0, reopened.close());
 }
 
+TYPED_TEST(StreamerLayoutTest, UnmodifiedClosePreservesLegacyMetadata) {
+  auto storage = std::make_shared<LayoutTestStorage>();
+  storage->seed_legacy(4096);
+  const auto original = storage->segments.at("HnswT2S0")->bytes;
+  IndexStreamer::Stats stats;
+  TypeParam broker(stats);
+  ASSERT_EQ(0, OpenBroker(broker, storage));
+  EXPECT_EQ(4096u, broker.layout_page_size());
+  ASSERT_EQ(0, broker.close());
+  EXPECT_EQ(0, storage->flushes);
+  EXPECT_EQ(original, storage->segments.at("HnswT2S0")->bytes);
+}
+
+TYPED_TEST(StreamerLayoutTest, CloseFlushesNewStorageWithoutVectorChanges) {
+  auto storage = std::make_shared<LayoutTestStorage>();
+  IndexStreamer::Stats stats;
+  TypeParam broker(stats);
+  ASSERT_EQ(0, OpenBroker(broker, storage));
+  EXPECT_FALSE(broker.dirty());
+  ASSERT_TRUE(storage->is_dirty());
+  ASSERT_EQ(0, broker.close());
+  EXPECT_EQ(1, storage->flushes);
+  EXPECT_FALSE(storage->is_dirty());
+}
+
+TYPED_TEST(StreamerLayoutTest, DirtyClosePersistsRecoveredWriterLayout) {
+  auto storage = std::make_shared<LayoutTestStorage>();
+  storage->seed_legacy(4096);
+  IndexStreamer::Stats stats;
+  TypeParam broker(stats);
+  ASSERT_EQ(0, OpenBroker(broker, storage));
+  ASSERT_FALSE(storage->is_dirty());
+  broker.mark_dirty();
+  ASSERT_EQ(0, broker.close());
+  EXPECT_EQ(1, storage->flushes);
+  uint64_t words[16]{};
+  ASSERT_EQ(sizeof(words),
+            storage->get("HnswT2S0")->fetch(0, words, sizeof(words)));
+  EXPECT_EQ(kStreamerLayoutV1, words[13]);
+  EXPECT_EQ(4096u, words[14]);
+}
+
 TEST(StreamerLayoutGrowth, DenseNeighborsDoNotConsumeReaderPadding) {
   auto storage = std::make_shared<LayoutTestStorage>();
   storage->seed_legacy(4096);

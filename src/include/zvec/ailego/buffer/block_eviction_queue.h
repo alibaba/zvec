@@ -407,7 +407,7 @@ class MemoryLimitPool {
 
   // Shard the aligned free list to reduce allocation-path contention.
   static constexpr size_t kNumFreeShards = 64;
-  struct alignas(64) FreeShard {
+  struct alignas(AILEGO_CACHE_LINE_SIZE) FreeShard {
     std::mutex mutex;
     char *head{nullptr};
     std::atomic<size_t> count{0};

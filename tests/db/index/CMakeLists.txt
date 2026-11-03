@@ -38,19 +38,15 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     NAME ${CC_TARGET} STRICT
     LIBS zvec
     zvec_ailego
-          core_knn_diskann
-    core_metric_static
-    core_utility_static
-    core_quantizer_static
-    core_knn_hnsw core_knn_hnsw_sparse sparsehash
-    core_knn_flat core_knn_flat_sparse core_knn_ivf
-    core_knn_hnsw_rabitq core_knn_ivf_rabitq core_mix_reducer
+    zvec_core
+    sparsehash
     ${CMAKE_THREAD_LIBS_INIT}
     ${CMAKE_DL_LIBS}
     SRCS ${CC_SRCS} utils/utils.cc
     INCS . .. ../../src
     LDFLAGS ${APPLE_FRAMEWORK_LIBS}
   )
+  db_test_force_load_core(${CC_TARGET})
   cc_test_suite(zvec_index ${CC_TARGET})
 endforeach()
 

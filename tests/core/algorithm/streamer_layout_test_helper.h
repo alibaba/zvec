@@ -91,13 +91,18 @@ class LayoutTestStorage : public IndexStorage {
   }
   int flush() override {
     ++flushes;
+    dirty = false;
     return 0;
+  }
+  bool is_dirty() const override {
+    return dirty;
   }
   int append(const std::string &id, size_t size) override {
     ++appends;
     if (has(id)) return IndexError_Duplicate;
     size = (size + physical_page - 1) / physical_page * physical_page;
     segments[id] = std::make_shared<LayoutTestSegment>(size);
+    dirty = true;
     return 0;
   }
   void refresh(uint64_t) override {}
@@ -127,6 +132,7 @@ class LayoutTestStorage : public IndexStorage {
   std::map<std::string, std::shared_ptr<LayoutTestSegment>> segments;
   size_t physical_page{16384};
   bool unreadable{false};
+  bool dirty{false};
   int appends{0};
   int flushes{0};
 };

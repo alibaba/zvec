@@ -268,6 +268,18 @@ version_t FindLiveVersion(SizedExternalCache &cache, eviction_key_t owner_key) {
 
 }  // namespace
 
+TEST_F(BufferPoolTest, HeapAllocatedOwnersPreserveCacheLineAlignment) {
+  auto table = std::make_unique<VectorPageTable>();
+  auto shared_table = std::make_shared<VectorPageTable>();
+  EXPECT_EQ(0U, reinterpret_cast<uintptr_t>(table.get()) %
+                    AILEGO_CACHE_LINE_SIZE);
+  EXPECT_EQ(0U, reinterpret_cast<uintptr_t>(shared_table.get()) %
+                    AILEGO_CACHE_LINE_SIZE);
+  EXPECT_EQ(0U,
+            reinterpret_cast<uintptr_t>(&MemoryLimitPool::get_instance()) %
+                AILEGO_CACHE_LINE_SIZE);
+}
+
 TEST_F(BufferPoolTest, AdmissionControlRejectsFirstColdMissAfterPressure) {
   init_vec_pool(/*capacity_pages=*/1, /*file_pages=*/4);
   std::string file = new_file(/*num_pages=*/4);
@@ -1762,30 +1774,45 @@ TEST_F(BufferPoolTest, ReusedGhostAdmissionRenewsHotHistory) {
 
 TEST_F(BufferPoolTest, ReusedPageSurvivesContinuousColdStream) {
   constexpr size_t kFilePages = 32;
-  init_vec_pool(/*capacity_pages=*/3, /*file_pages=*/kFilePages);
+  // Keep three resident pages at the low watermark of a four-page pool.
+  // Reclaim one page explicitly per cold read so background scheduling cannot
+  // change the policy assertions below.
+  init_vec_pool(/*capacity_pages=*/4, /*file_pages=*/kFilePages);
   std::string file = new_file(kFilePages);
 
   VecBufferPool pool(file, /*writable=*/false);
   ASSERT_EQ(pool.init(), 0);
   auto handle = pool.get_handle();
   std::vector<char> data(kVectorPageSize);
+  auto &queue = BlockEvictionQueue::get_instance();
 
-  for (size_t page = 1; page <= 4; ++page) {
+  for (size_t page = 1; page <= 3; ++page) {
     ASSERT_TRUE(handle.read_range(page * kVectorPageSize, kVectorPageSize,
                                   data.data()));
   }
-  ASSERT_GT(pool.stats().evict, 0u);
+  ASSERT_EQ(1u, queue.batch_recycle(1));
   ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
-  ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
-  for (size_t page = 5; page < kFilePages; ++page) {
-    ASSERT_TRUE(handle.read_range(page * kVectorPageSize, kVectorPageSize,
-                                  data.data()));
+  ASSERT_TRUE(MemoryLimitPool::get_instance().under_cache_pressure());
+  // Cover the thread-local sampling phase before testing retention. The hot
+  // page remains unpinned during every eviction in the cold stream.
+  for (size_t i = 0; i < 16; ++i) {
     ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
   }
+  ASSERT_EQ(VecBufferPool::kNormalPriority,
+            pool.page_table_.eviction_priority(0));
 
-  EXPECT_TRUE(pool.is_page_resident(0));
+  for (size_t page = 4; page < kFilePages; ++page) {
+    ASSERT_EQ(1u, queue.batch_recycle(1));
+    ASSERT_TRUE(pool.is_page_resident(0));
+    ASSERT_TRUE(handle.read_range(page * kVectorPageSize, kVectorPageSize,
+                                  data.data()));
+    ExpectPageContent(data.data(), page);
+    ASSERT_TRUE(handle.read_range(0, kVectorPageSize, data.data()));
+    ExpectPageContent(data.data(), 0);
+  }
+
   const auto stats = pool.stats();
-  EXPECT_LT(stats.miss, kFilePages + kFilePages / 2);
+  EXPECT_EQ(kFilePages, stats.miss);
   EXPECT_GT(stats.priority_promotions[VecBufferPool::kNormalPriority], 0u);
   EXPECT_GT(stats.evictions_by_priority[VecBufferPool::kLowPriority], 0u);
   EXPECT_EQ(0u, stats.evictions_by_priority[VecBufferPool::kNormalPriority]);

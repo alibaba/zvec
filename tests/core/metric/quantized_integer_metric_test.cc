@@ -344,62 +344,86 @@ TEST(QuantizedIntegerMetric, TestInt8SquaredEuclideanMetric) {
 }
 
 TEST(QuantizedIntegerMetric, TestInt4SquaredEuclidean) {
-  std::random_device rd;
-  std::mt19937 gen(rd());
+  std::mt19937 gen(42);
   std::uniform_real_distribution<float> dist(-1.0, 2.0);
-
-  const size_t DIMENSION = std::uniform_int_distribution<int>(1, 128)(gen) * 2;
   const size_t COUNT = 1000;
-  IndexMeta meta;
-  meta.set_meta(IndexMeta::DT_FP32, DIMENSION);
-  auto converter = IndexFactory::CreateConverter("Int4StreamingConverter");
-  ASSERT_TRUE(!!converter);
-  ASSERT_EQ(0u, converter->init(meta, Params()));
 
-  auto holder = GetHolder(DIMENSION, COUNT, dist);
-  ASSERT_EQ(0u, IndexConverter::TrainAndTransform(converter, holder));
-  auto holder2 = converter->result();
-  EXPECT_EQ(COUNT, holder2->count());
-  EXPECT_EQ(IndexMeta::DT_INT4, holder2->data_type());
-  auto &meta2 = converter->meta();
+  for (const size_t dimension : {2, 4, 8, 14, 32, 128, 256}) {
+    SCOPED_TRACE(dimension);
+    IndexMeta meta;
+    meta.set_meta(IndexMeta::DT_FP32, dimension);
+    auto converter = IndexFactory::CreateConverter("Int4StreamingConverter");
+    ASSERT_TRUE(converter);
+    ASSERT_EQ(0u, converter->init(meta, Params()));
 
-  auto reformer = IndexFactory::CreateReformer(meta2.reformer_name());
-  ASSERT_TRUE(reformer);
-  ASSERT_EQ(0u, reformer->init(meta2.reformer_params()));
+    auto holder =
+        std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(dimension);
+    for (size_t i = 0; i < COUNT; ++i) {
+      ailego::NumericalVector<float> row(dimension);
+      for (size_t j = 0; j < dimension; ++j) row[j] = dist(gen);
+      if (dimension == 4 && i == 0) {
+        row = ailego::NumericalVector<float>{-0.4362f, 1.95854f, 1.87264f,
+                                             1.43786f};
+      }
+      holder->emplace(i, row);
+    }
+    ASSERT_EQ(0u, IndexConverter::TrainAndTransform(converter, holder));
+    auto holder2 = converter->result();
+    EXPECT_EQ(COUNT, holder2->count());
+    EXPECT_EQ(IndexMeta::DT_INT4, holder2->data_type());
+    auto &meta2 = converter->meta();
 
-  ailego::NumericalVector<float> vec(DIMENSION);
-  for (size_t j = 0; j < DIMENSION; ++j) {
-    vec[j] = dist(gen);
-  }
-  IndexQueryMeta qmeta;
-  qmeta.set_meta(IndexMeta::DT_FP32, DIMENSION);
-  IndexQueryMeta qmeta2;
-  std::string out;
-  ASSERT_EQ(0, reformer->transform(vec.data(), qmeta, &out, &qmeta2));
-  ASSERT_EQ(qmeta2.dimension(), meta2.dimension());
+    auto reformer = IndexFactory::CreateReformer(meta2.reformer_name());
+    ASSERT_TRUE(reformer);
+    ASSERT_EQ(0u, reformer->init(meta2.reformer_params()));
 
-  auto iter = holder->create_iterator();
-  auto iter2 = holder2->create_iterator();
-  auto metric = IndexFactory::CreateMetric(meta2.metric_name());
-  ASSERT_TRUE(!!metric);
-  ASSERT_EQ(0, metric->init(meta2, meta2.metric_params()));
-  auto compute = metric->distance();
-  ASSERT_TRUE(compute);
+    ailego::NumericalVector<float> vec(dimension);
+    for (size_t j = 0; j < dimension; ++j) vec[j] = dist(gen);
+    if (dimension == 4) {
+      vec = ailego::NumericalVector<float>{-0.95011f, 0.08062f, -0.86274f,
+                                           1.42267f};
+    }
+    IndexQueryMeta qmeta(IndexMeta::DT_FP32, dimension);
+    IndexQueryMeta qmeta2;
+    std::string out;
+    ASSERT_EQ(0, reformer->transform(vec.data(), qmeta, &out, &qmeta2));
+    ASSERT_EQ(qmeta2.dimension(), meta2.dimension());
+    std::string restored_query;
+    ASSERT_EQ(0, reformer->revert(out.data(), qmeta2, &restored_query));
 
-  for (; iter->is_valid(); iter->next(), iter2->next()) {
-    const float *mf = (const float *)iter->data();
-    const int8_t *mi = (const int8_t *)iter2->data();
-    const int8_t *qi = reinterpret_cast<const int8_t *>(&out[0]);
-    float v1 =
-        ailego::Distance::SquaredEuclidean(mf, vec.data(), holder->dimension());
-    float v2;
-    compute(mi, qi, holder2->dimension(), &v2);
-    ASSERT_NEAR(v1, v2, 0.2 * DIMENSION);
+    auto iter = holder->create_iterator();
+    auto iter2 = holder2->create_iterator();
+    auto metric = IndexFactory::CreateMetric(meta2.metric_name());
+    ASSERT_TRUE(metric);
+    ASSERT_EQ(0, metric->init(meta2, meta2.metric_params()));
+    auto compute = metric->distance();
+    ASSERT_TRUE(compute);
 
-    std::string out2;
-    ASSERT_EQ(0, reformer->convert(iter->data(), qmeta, &out2, &qmeta2));
-    ASSERT_EQ(out2.size(), holder2->element_size());
-    ASSERT_EQ(0, std::memcmp(out2.data(), iter2->data(), out2.size()));
+    for (; iter->is_valid(); iter->next(), iter2->next()) {
+      SCOPED_TRACE(iter->key());
+      std::string restored_row;
+      ASSERT_EQ(0, reformer->revert(iter2->data(), qmeta2, &restored_row));
+      // Validate the metric against decoded vectors. Lossy INT4 rounding does
+      // not guarantee the former 0.2 * dimension bound against raw vectors.
+      const float expected = ailego::Distance::SquaredEuclidean(
+          reinterpret_cast<const float *>(restored_row.data()),
+          reinterpret_cast<const float *>(restored_query.data()), dimension);
+      float actual;
+      compute(iter2->data(), out.data(), holder2->dimension(), &actual);
+      ASSERT_NEAR(expected, actual, 1e-5 * dimension);
+
+      if (dimension == 4 && iter->key() == 0) {
+        // This fixed pair exceeds the old tolerance with a correct metric.
+        const float raw = ailego::Distance::SquaredEuclidean(
+            static_cast<const float *>(iter->data()), vec.data(), dimension);
+        ASSERT_GT(std::abs(raw - expected), 0.2 * dimension);
+      }
+
+      std::string out2;
+      ASSERT_EQ(0, reformer->convert(iter->data(), qmeta, &out2, &qmeta2));
+      ASSERT_EQ(out2.size(), holder2->element_size());
+      ASSERT_EQ(0, std::memcmp(out2.data(), iter2->data(), out2.size()));
+    }
   }
 }
 

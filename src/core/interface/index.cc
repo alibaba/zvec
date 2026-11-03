@@ -503,6 +503,10 @@ int Index::init(const BaseIndexParam &param) {
 
 
 int Index::open(const std::string &file_path, StorageOptions storage_options) {
+  if (storage_options.read_only && storage_options.create_new) {
+    LOG_ERROR("Cannot create storage for a read-only index");
+    return core::IndexError_Runtime;
+  }
   ailego::Params storage_params;
   // storage_params.set("proxima.mmap_file.storage.memory_warmup", true);
   // storage_params.set("proxima.mmap_file.storage.segment_meta_capacity",
@@ -519,14 +523,16 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
 
   switch (storage_options.type) {
     case StorageOptions::StorageType::kMMAP: {
-      storage_ = core::IndexFactory::CreateStorage("MMapFileStorage");
+      const char *storage_name =
+          storage_options.read_only ? "MMapFileReadStorage" : "MMapFileStorage";
+      storage_ = core::IndexFactory::CreateStorage(storage_name);
       if (storage_ == nullptr) {
-        LOG_ERROR("Failed to create MMapFileStorage");
+        LOG_ERROR("Failed to create %s", storage_name);
         return core::IndexError_Runtime;
       }
       int ret = storage_->init(storage_params);
       if (ret != 0) {
-        LOG_ERROR("Failed to init MMapFileStorage, path: %s, err: %s",
+        LOG_ERROR("Failed to init %s, path: %s, err: %s", storage_name,
                   file_path.c_str(), core::IndexError::What(ret));
         return ret;
       }
@@ -551,12 +557,15 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
       return core::IndexError_Unsupported;
   }
 
-  // read_options.create_new
-  int ret = storage_->open(file_path, storage_options.create_new);
+  const core::IndexStorage::OpenOptions open_options{storage_options.create_new,
+                                                     storage_options.read_only};
+  int ret = storage_options.type == StorageOptions::StorageType::kBufferPool
+                ? storage_->open(file_path, open_options)
+                : storage_->open(file_path, storage_options.create_new);
   if (ret != 0) {
     LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path.c_str(),
               core::IndexError::What(ret));
-    return core::IndexError_Runtime;
+    return ret;
   }
   ret = prepare_streamer_open(storage_options);
   if (ret != 0) {
@@ -1084,6 +1093,7 @@ int Index::_refine_dense_candidates(
     const VectorData &vector_data,
     const BaseIndexQueryParam::Pointer &search_param,
     const std::vector<std::vector<uint64_t>> &keys, SearchResult *result) {
+  if (param_.use_external_vector) return core::IndexError_Unsupported;
   if (!is_open_ || is_sparse_) {
     LOG_ERROR("Reference index must be open and dense");
     return core::IndexError_Runtime;
@@ -1098,7 +1108,7 @@ int Index::_refine_dense_candidates(
   context->set_topk(search_param->topk);
   context->set_fetch_vector(search_param->fetch_vector);
   if (search_param->filter && search_param->filter->is_valid()) {
-    context->set_filter(std::move(*search_param->filter));
+    context->set_filter(*search_param->filter);
   } else {
     context->reset_filter();
   }
@@ -1415,8 +1425,22 @@ int Index::_sparse_search(const VectorData &vector_data,
 
 int Index::merge(const std::vector<Index::Pointer> &indexes,
                  const IndexFilter &filter, const MergeOptions &options) {
+  if (!is_open_ || is_read_only_) {
+    LOG_ERROR("Cannot merge into an index that is closed or read-only");
+    return core::IndexError_Runtime;
+  }
   if (indexes.empty()) {
     return core::IndexError_Success;
+  }
+  // External Flat providers contain IDs only; merge has no bound source.
+  if (param_.index_type == IndexType::kFlat && param_.use_external_vector) {
+    return core::IndexError_Unsupported;
+  }
+  for (const auto &index : indexes) {
+    if (index && index->param_.index_type == IndexType::kFlat &&
+        index->param_.use_external_vector) {
+      return core::IndexError_Unsupported;
+    }
   }
   // ivf need builder
   auto reducer =

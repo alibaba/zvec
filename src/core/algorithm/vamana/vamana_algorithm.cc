@@ -162,13 +162,13 @@ int VamanaAlgorithm<EntityType>::search(VamanaContext *ctx) const {
 // Prefetch all cache lines covering a packed contiguous graph row.
 ailego_force_inline void prefetch_graph_row(
     const VamanaContiguousStreamerEntity &entity, node_id_t node) {
-  constexpr uintptr_t kCacheLineMask = ~uintptr_t{63};
+  constexpr uintptr_t kCacheLineMask = ~uintptr_t{AILEGO_CACHE_LINE_SIZE - 1};
   const char *data = entity.graph_prefetch_data(node);
   if (ailego_unlikely(data == nullptr)) return;
   const uintptr_t begin = reinterpret_cast<uintptr_t>(data) & kCacheLineMask;
   const uintptr_t end =
       reinterpret_cast<uintptr_t>(data) + entity.graph_prefetch_size();
-  const size_t lines = (end - begin + 63) / 64;
+  const size_t lines = ailego_cache_line_count(end - begin);
   ailego_prefetch_lines(reinterpret_cast<const void *>(begin), lines);
 }
 
@@ -392,11 +392,10 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
                              VamanaDistCalculator &dc, node_id_t entry_point,
                              FilterFn &&filter) {
   const uint32_t prefetch_offset = ctx->po();
-  const uint32_t vector_body_lines =
-      static_cast<uint32_t>((entity.vector_data_size() + 63) / 64);
-  const uint32_t prefetch_lines = ctx->pl() > 0
-                                      ? std::min(ctx->pl(), vector_body_lines)
-                                      : vector_body_lines;
+  const size_t vector_lines =
+      ailego_cache_line_count(entity.vector_data_size());
+  const uint32_t prefetch_lines =
+      ctx->pl() > 0 ? std::min<size_t>(ctx->pl(), vector_lines) : vector_lines;
 
   uint32_t buf_capacity = entity.max_degree();
   std::vector<node_id_t> neighbor_ids(buf_capacity);
@@ -474,11 +473,8 @@ void dual_heap_greedy_search(const EntityType &entity, VamanaContext *ctx,
     if (ailego_unlikely(ret != 0)) break;
 
     for (uint32_t i = 0; i < std::min(prefetch_offset, unvisited_count); ++i) {
-      const char *base =
-          static_cast<const char *>(neighbor_vec_blocks[i].data());
-      for (uint32_t cl = 0; cl < prefetch_lines; ++cl) {
-        ailego_prefetch(base + cl * 64);
-      }
+      const void *vector = neighbor_vec_blocks[i].data();
+      ailego_prefetch_lines(vector, prefetch_lines);
     }
 
     // Batch distance computation (reuse pre-allocated buffers).
@@ -522,11 +518,10 @@ int VamanaAlgorithm<EntityType>::greedy_search(node_id_t entry_point,
   const IndexFilter &index_filter =
       static_cast<const IndexContext *>(ctx)->filter();
 
-  const uint32_t vector_body_lines =
-      static_cast<uint32_t>((entity.vector_data_size() + 63) / 64);
-  const uint32_t prefetch_lines = ctx->pl() > 0
-                                      ? std::min(ctx->pl(), vector_body_lines)
-                                      : vector_body_lines;
+  const size_t vector_lines =
+      ailego_cache_line_count(entity.vector_data_size());
+  const uint32_t prefetch_lines =
+      ctx->pl() > 0 ? std::min<size_t>(ctx->pl(), vector_lines) : vector_lines;
 
   if (!use_pool || index_filter.is_valid()) {
     // Fallback path used by add_node (use_pool=false) and filtered search.

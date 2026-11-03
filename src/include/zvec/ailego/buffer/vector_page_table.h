@@ -47,8 +47,8 @@ class IoUringRing;
 
 class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   // Keep every field used by the resident hit/release path in one compact
-  // object. Four entries fit in a 64-byte cache line and no entry straddles a
-  // line, so pinning a page also brings its resident pointer into cache.
+  // object. Each cache line holds several complete entries, so pinning a
+  // page also brings its resident pointer into cache.
   struct alignas(16) Entry {
     std::atomic<char *> buffer{nullptr};
     std::atomic<int> ref_count;
@@ -451,7 +451,7 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
 
   // Shard relaxed statistics to avoid hot-path cache-line contention.
   static constexpr size_t kCounterShards = 64;  // power of two for masking
-  struct alignas(64) CounterShard {
+  struct alignas(AILEGO_CACHE_LINE_SIZE) CounterShard {
     std::atomic<uint64_t> hit{0};
     std::atomic<uint64_t> evict{0};
     std::atomic<uint64_t> second_chance{0};

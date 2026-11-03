@@ -145,14 +145,30 @@ message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
 message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
 message(STATUS "BUILD_CPP_EXAMPLES:${BUILD_CPP_EXAMPLES}")
 
-# RaBitQ support (rabitqlib ships x86-64 AVX2/AVX-512 kernels with runtime dispatch):
-#   - Linux x86_64 with GCC/Clang
-#   - Windows x86_64 with MSVC (added upstream in v0.3.8)
-# Everything else (ARM, Android, iOS, 32-bit) falls back to the stub libraries.
+# RaBitQ support:
+#   - Linux x86_64 and ARM64 with GCC/Clang
+#   - macOS x86_64 and ARM64 with AppleClang
+#   - Windows x86_64 with MSVC
+#   - Android ARM64 and iOS ARM64 with Clang
+# ARM64 uses NEON; x86-64 uses runtime AVX2/AVX-512 dispatch.
+# Other targets, including Android x86_64, iOS x86_64, Windows ARM64, and
+# 32-bit platforms, use stub libraries.
+set(RABITQ_TARGET_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")
+if(APPLE AND CMAKE_OSX_ARCHITECTURES)
+  set(RABITQ_TARGET_PROCESSOR "${CMAKE_OSX_ARCHITECTURES}")
+endif()
+string(TOLOWER "${RABITQ_TARGET_PROCESSOR}" RABITQ_TARGET_PROCESSOR)
 set(RABITQ_SUPPORTED OFF)
-if(NOT ANDROID AND NOT IOS AND CMAKE_SIZEOF_VOID_P EQUAL 8
-   AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$"
-   AND (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR (WIN32 AND MSVC)))
+if(CMAKE_SIZEOF_VOID_P EQUAL 8
+   AND RABITQ_TARGET_PROCESSOR MATCHES "^(arm64|aarch64)$"
+   AND (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
+        CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR
+        (ANDROID AND ANDROID_ABI STREQUAL "arm64-v8a") OR IOS))
+  set(RABITQ_SUPPORTED ON)
+elseif(NOT ANDROID AND NOT IOS AND CMAKE_SIZEOF_VOID_P EQUAL 8
+   AND RABITQ_TARGET_PROCESSOR MATCHES "^(x86_64|amd64)$"
+   AND (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
+        CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR (WIN32 AND MSVC)))
   if(MSVC)
     # /arch:AVX512 turns on the complete F/CD/VL/BW/DQ group. MSVC has no
     # separate switch for VPOPCNTDQ, so the popcount backend is compiled with
@@ -181,15 +197,15 @@ if(NOT ANDROID AND NOT IOS AND CMAKE_SIZEOF_VOID_P EQUAL 8
   endforeach()
   unset(_rabitq_probe)
 
-  if(RABITQ_SUPPORTED)
-    add_definitions(-DRABITQ_SUPPORTED=1)
-  else()
-    add_definitions(-DRABITQ_SUPPORTED=0)
+  if(NOT RABITQ_SUPPORTED)
     message(STATUS "RaBitQ support disabled - compiler cannot build all runtime dispatch variants")
   endif()
+endif()
+if(RABITQ_SUPPORTED)
+  add_definitions(-DRABITQ_SUPPORTED=1)
 else()
   add_definitions(-DRABITQ_SUPPORTED=0)
-  message(STATUS "RaBitQ support disabled - only supported on Linux x86_64 and Windows x86_64 (MSVC)")
+  message(STATUS "RaBitQ support disabled - unsupported platform or compiler")
 endif()
 message(STATUS "RABITQ_SUPPORTED: ${RABITQ_SUPPORTED}")
 

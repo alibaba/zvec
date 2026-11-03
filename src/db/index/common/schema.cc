@@ -180,9 +180,10 @@ Status FieldSchema::validate() const {
         const bool supports_rabitq_avx2 = flags.AVX2 && flags.FMA;
         const bool supports_rabitq_avx512 =
             flags.AVX512F && flags.AVX512BW && flags.AVX512DQ;
-        if (!supports_rabitq_avx2 && !supports_rabitq_avx512) {
+        if (!supports_rabitq_avx2 && !supports_rabitq_avx512 && !flags.NEON) {
           return Status::NotSupported(
-              "RabitQ requires AVX2/FMA or AVX512F/BW/DQ to be supported");
+              "RabitQ requires AVX2/FMA, AVX512F/BW/DQ, or NEON to be "
+              "supported");
         }
       }
 
