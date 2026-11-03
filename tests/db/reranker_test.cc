@@ -126,7 +126,7 @@ TEST(RerankRrfTest, NegativeRankConstantError) {
       reranker::rerank(reranker::RrfParams{/*rank_constant=*/-1}, results,
                        /*fields=*/{}, /*topn=*/10);
   ASSERT_FALSE(result.has_value());
-  
+
   result = reranker::rerank(reranker::RrfParams{/*rank_constant=*/0}, results,
                             /*fields=*/{}, /*topn=*/10);
   ASSERT_TRUE(result.has_value());

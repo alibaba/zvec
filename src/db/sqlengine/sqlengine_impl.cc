@@ -300,17 +300,6 @@ Result<QueryInfo::Ptr> SQLEngineImpl::build_query_info(
           "Invalid filter [", request.filter_, "]: ", parser->err_msg()));
     }
   }
-  if (group_by) {
-    auto &group = *group_by;
-    if (group.group_by_field.empty() || group.group_count == 0 ||
-        group.group_topk == 0) {
-      return tl::make_unexpected(Status::InvalidArgument(
-          "Invalid group_by request: group_by_field='", group.group_by_field,
-          "', group_count=", group.group_count,
-          ", group_topk=", group.group_topk));
-    }
-  }
-
   FtsCondInfo::Ptr fts_cond_info;
   if (const auto *fts_clause = request.target_.get_fts_clause()) {
     auto fts_result =

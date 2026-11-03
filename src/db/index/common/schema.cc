@@ -35,7 +35,8 @@ std::unordered_map<DataType, std::set<QuantizeType>> quantize_type_map = {
     {DataType::VECTOR_FP32,
      {QuantizeType::FP16, QuantizeType::INT4, QuantizeType::INT8,
       QuantizeType::RABITQ, QuantizeType::UNIFORM_UINT7,
-      QuantizeType::UNIFORM_UINT8, QuantizeType::UNIFORM_UINT4}},
+      QuantizeType::UNIFORM_UINT8, QuantizeType::UNIFORM_UINT4,
+      QuantizeType::PQ}},
     // {DataType::VECTOR_FP64, {QuantizeType::FP16}},
     {DataType::SPARSE_VECTOR_FP32, {QuantizeType::FP16}},
 };
@@ -263,6 +264,30 @@ Status FieldSchema::validate() const {
 
       if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED) {
         const auto quantize_type = vector_index_params->quantize_type();
+        if (quantize_type == QuantizeType::PQ) {
+          const auto &pq = vector_index_params->quantizer_param();
+          const auto metric = vector_index_params->metric_type();
+          if ((index_params_->type() != IndexType::IVF &&
+               index_params_->type() != IndexType::HNSW) ||
+              data_type_ != DataType::VECTOR_FP32 ||
+              (metric != MetricType::L2 && metric != MetricType::IP &&
+               metric != MetricType::COSINE)) {
+            return Status::InvalidArgument(
+                "PQ requires an IVF or HNSW FP32 field with L2, IP or COSINE "
+                "metric");
+          }
+          if (pq.num_chunk() <= 0 ||
+              static_cast<uint32_t>(pq.num_chunk()) > dimension_ ||
+              (pq.num_bits() != 4 && pq.num_bits() != 8) ||
+              (pq.fast_scan() && (pq.num_bits() != 4 ||
+                                  index_params_->type() != IndexType::IVF)) ||
+              (pq.num_bits() == 4 && dimension_ % pq.num_chunk() != 0) ||
+              (pq.enable_rotate() &&
+               (pq.opq_iter() == 0 || pq.opq_pq_iter() == 0))) {
+            return Status::InvalidArgument(
+                "Invalid PQ/OPQ parameters; FastScan requires IVF PQ4");
+          }
+        }
         const bool is_uniform = quantize_type == QuantizeType::UNIFORM_UINT7 ||
                                 quantize_type == QuantizeType::UNIFORM_UINT8 ||
                                 quantize_type == QuantizeType::UNIFORM_UINT4;

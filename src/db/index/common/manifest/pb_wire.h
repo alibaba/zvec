@@ -59,8 +59,9 @@ class Writer {
 
   //! Writes a varint field. Skipped when the value is zero, matching proto3
   //! semantics where default-valued singular fields are not serialized.
-  void put_varint(uint32_t field, uint64_t value) {
-    if (value == 0) {
+  // Set omit_zero=false for explicitly present fields with nonzero defaults.
+  void put_varint(uint32_t field, uint64_t value, bool omit_zero = true) {
+    if (omit_zero && value == 0) {
       return;
     }
     put_varint_always(field, value);

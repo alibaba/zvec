@@ -197,6 +197,8 @@ class IVFSearcherContext : public IndexSearcher::Context {
     bruteforce_threshold_ = kDefaultBfThreshold;
     int ret = apply_params(params);
     ivf_check_error_code(ret);
+    // Reapply explicit requests, including the unclamped nprobe, against the
+    // new entity without retaining the previous index's defaults.
     if (!query_params_.empty()) {
       ret = apply_params(query_params_);
       ivf_check_error_code(ret);

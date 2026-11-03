@@ -1888,14 +1888,14 @@ TEST_F(IVFSearcherTest, TestRowMajorFp16WithBuildMemory) {
   IVFBuilder builder;
   index_meta_.set_meta(IndexMeta::DataType::DT_FP16, dimension_);
   int ret = builder.init(index_meta_, params_);
-  EXPECT_EQ(0, ret);
+  ASSERT_EQ(0, ret);
   ret = builder.train(threads_, holder_);
-  EXPECT_EQ(0, ret);
+  ASSERT_EQ(0, ret);
   ret = builder.build(threads_, holder_);
-  EXPECT_EQ(0, ret);
+  ASSERT_EQ(0, ret);
   IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
   ret = dumper->create(index_path_);
-  EXPECT_EQ(0, ret);
+  ASSERT_EQ(0, ret);
 
   ret = builder.dump(dumper);
   EXPECT_EQ((size_t)1000, builder.stats().built_count());
@@ -1909,7 +1909,7 @@ TEST_F(IVFSearcherTest, TestRowMajorFp16WithBuildMemory) {
   params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1);
 
   ret = searcher.init(params);
-  EXPECT_EQ(0, ret);
+  ASSERT_EQ(0, ret);
 
   IndexStorage::Pointer container =
       IndexFactory::CreateStorage("MMapFileReadStorage");
@@ -1919,10 +1919,38 @@ TEST_F(IVFSearcherTest, TestRowMajorFp16WithBuildMemory) {
   container_params.set("proxima.mmap_file.container.memory_warmup", true);
   container->init(container_params);
   ret = container->open(index_path_, false);
-  EXPECT_EQ(0, ret);
+  ASSERT_EQ(0, ret);
 
   ret = searcher.load(container, IndexMetric::Pointer());
-  EXPECT_EQ(0, ret);
+  ASSERT_EQ(0, ret);
+
+  // A distance-only helper must leave legacy providers in the FP16 domain.
+  auto check_provider = [&](const IndexProvider::Pointer &provider) {
+    ASSERT_NE(nullptr, provider);
+    ASSERT_EQ(IndexMeta::DT_FP16, provider->data_type());
+    ASSERT_EQ(dimension_, provider->dimension());
+    ASSERT_EQ(dimension_ * sizeof(Float16), provider->element_size());
+    ASSERT_EQ(1000u, provider->count());
+    for (size_t key = 0; key < provider->count(); ++key) {
+      std::vector<Float16> expected(dimension_, Float16(0.01f * key));
+      const void *data = provider->get_vector(key);
+      ASSERT_NE(nullptr, data);
+      EXPECT_EQ(0, std::memcmp(expected.data(), data, provider->element_size()))
+          << "key=" << key;
+    }
+    auto iter = provider->create_iterator();
+    ASSERT_NE(nullptr, iter);
+    size_t count = 0;
+    for (; iter->is_valid(); iter->next(), ++count) {
+      std::vector<Float16> expected(dimension_, Float16(0.01f * iter->key()));
+      ASSERT_NE(nullptr, iter->data());
+      EXPECT_EQ(0, std::memcmp(expected.data(), iter->data(),
+                               provider->element_size()))
+          << "key=" << iter->key();
+    }
+    EXPECT_EQ(provider->count(), count);
+  };
+  check_provider(searcher.create_provider());
 
   std::vector<float> query;
   for (size_t i = 0; i < dimension_; ++i) {
@@ -1954,10 +1982,10 @@ TEST_F(IVFSearcherTest, TestRowMajorFp16WithBuildMemory) {
     size_t topk = 1000;
     context->set_topk(topk);
     ret = searcher.search_bf_impl(query_buf.data(), qmeta, context);
-    EXPECT_EQ(0, ret);
+    ASSERT_EQ(0, ret);
 
     const IndexDocumentList &result = context->result(0);
-    EXPECT_EQ((size_t)topk, result.size());
+    ASSERT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)i, result[i].key());
       EXPECT_NEAR((float)(0.01f * i + 0.1) * (0.01f * i + 0.1) * dimension_ /
@@ -1971,11 +1999,11 @@ TEST_F(IVFSearcherTest, TestRowMajorFp16WithBuildMemory) {
     size_t topk = 1;
     context->set_topk(topk);
     ret = searcher.search_bf_impl(query1_buf.data(), qmeta, qnum, context);
-    EXPECT_EQ(0, ret);
+    ASSERT_EQ(0, ret);
 
     for (size_t q = 0; q < qnum; ++q) {
       const IndexDocumentList &result = context->result(q);
-      EXPECT_EQ((size_t)topk, result.size());
+      ASSERT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
       EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
@@ -1986,10 +2014,10 @@ TEST_F(IVFSearcherTest, TestRowMajorFp16WithBuildMemory) {
     size_t topk = 100;
     context->set_topk(topk);
     ret = searcher.search_impl(query_buf.data(), qmeta, context);
-    EXPECT_EQ(0, ret);
+    ASSERT_EQ(0, ret);
 
     const IndexDocumentList &result = context->result(0);
-    EXPECT_EQ((size_t)topk, result.size());
+    ASSERT_EQ((size_t)topk, result.size());
     for (size_t i = 0; i < topk; ++i) {
       EXPECT_EQ((uint64_t)i, result[i].key());
       EXPECT_NEAR((float)(0.01f * i + 0.1) * (0.01f * i + 0.1) * dimension_ /
@@ -2003,18 +2031,41 @@ TEST_F(IVFSearcherTest, TestRowMajorFp16WithBuildMemory) {
     size_t topk = 1;
     context->set_topk(topk);
     ret = searcher.search_impl(query1_buf.data(), qmeta, qnum, context);
-    EXPECT_EQ(0, ret);
+    ASSERT_EQ(0, ret);
 
     for (size_t q = 0; q < qnum; ++q) {
       const IndexDocumentList &result = context->result(q);
-      EXPECT_EQ((size_t)topk, result.size());
+      ASSERT_EQ((size_t)topk, result.size());
       EXPECT_EQ((uint64_t)q, result[0].key());
       EXPECT_FLOAT_EQ((float)0, result[0].score());
     }
   }
 
+  IVFStreamer streamer;
+  ASSERT_EQ(0, streamer.init(index_meta_, params));
+  ASSERT_EQ(0, streamer.open(container));
+  check_provider(streamer.create_provider());
+  auto streamer_context = streamer.create_context();
+  ASSERT_NE(nullptr, streamer_context);
+  streamer_context->set_topk(1);
+  for (bool brute_force : {false, true}) {
+    SCOPED_TRACE(brute_force);
+    ret = brute_force ? streamer.search_bf_impl(query1_buf.data(), qmeta, qnum,
+                                                streamer_context)
+                      : streamer.search_impl(query1_buf.data(), qmeta, qnum,
+                                             streamer_context);
+    ASSERT_EQ(0, ret);
+    for (size_t q = 0; q < qnum; ++q) {
+      const auto &result = streamer_context->result(q);
+      ASSERT_EQ(1u, result.size());
+      EXPECT_EQ(q, result[0].key());
+      EXPECT_FLOAT_EQ(0.0f, result[0].score());
+    }
+  }
+  ASSERT_EQ(0, streamer.close());
+
   ret = searcher.unload();
-  EXPECT_EQ(0, ret);
+  ASSERT_EQ(0, ret);
 }
 
 TEST_F(IVFSearcherTest, TestColumnMajorFloatWithHnswGraphType) {
