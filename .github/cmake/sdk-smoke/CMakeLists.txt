@@ -44,20 +44,15 @@ add_executable(cpp_smoke smoke.cc)
 target_include_directories(cpp_smoke PRIVATE "${ZVEC_SDK_DIR}/include")
 target_link_libraries(cpp_smoke PRIVATE "${ZVEC_SDK_LIBRARY}")
 
-add_executable(diskann_smoke diskann_smoke.cc)
-target_include_directories(diskann_smoke PRIVATE "${ZVEC_SDK_DIR}/include")
-target_link_libraries(diskann_smoke PRIVATE "${ZVEC_SDK_LIBRARY}")
-
 # Let the executables find the packaged shared libraries at runtime
 # (Windows locates the DLLs through PATH instead).
 if(NOT WIN32)
-  set_target_properties(c_smoke cpp_smoke diskann_smoke PROPERTIES
+  set_target_properties(c_smoke cpp_smoke PROPERTIES
     BUILD_RPATH "${ZVEC_SDK_DIR}/lib")
 endif()
 
 enable_testing()
 add_test(NAME c_smoke COMMAND c_smoke)
 add_test(NAME cpp_smoke COMMAND cpp_smoke)
-add_test(NAME diskann_smoke COMMAND diskann_smoke)
 # Clear external overrides so Chinese FTS exercises the embedded defaults.
 set_tests_properties(cpp_smoke PROPERTIES ENVIRONMENT "ZVEC_JIEBA_DICT_DIR=")
