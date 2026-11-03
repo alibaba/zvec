@@ -372,6 +372,7 @@
     zvec_vector_query_set_output_fields;
     zvec_vector_query_set_query_params;
     zvec_vector_query_set_query_vector;
+    zvec_vector_query_set_sparse_vector;
     zvec_vector_query_set_topk;
     zvec_vector_query_set_vamana_params;
     zvec_write_results_free;
