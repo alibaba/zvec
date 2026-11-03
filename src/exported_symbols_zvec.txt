@@ -18,8 +18,8 @@
 # vtables/typeinfo/VTT (TVN/TIN/TSN/TTN), guard variables (GVN), function-local
 # entities such as lambdas and static locals (ZN/ZNK/GVZN/GVZNK) and thunks.
 #
-# Surface: engine -- 98 public headers, 378 entity
-# prefixes, 4914 patterns.
+# Surface: engine -- 98 public headers, 370 entity
+# prefixes, 4810 patterns.
 #
 # Keep this list globs-only: lld's default --no-undefined-version rejects a
 # version-script entry that matches no symbol, so literal names would break the
@@ -132,7 +132,6 @@ __ZGVN4zvec17MIN_LOG_FILE_SIZE*
 __ZGVN4zvec17VamanaIndexParams*
 __ZGVN4zvec17VamanaQueryParams*
 __ZGVN4zvec17VectorIndexParams*
-__ZGVN4zvec17set_sparse_vector2vc*
 __ZGVN4zvec18AlterColumnOptions*
 __ZGVN4zvec18CreateIndexOptions*
 __ZGVN4zvec18DiskAnnIndexParams*
@@ -313,12 +312,6 @@ __ZGVN4zvec6ailego10JsonParser*
 __ZGVN4zvec6ailego10JsonString*
 __ZGVN4zvec6ailego10StringView*
 __ZGVN4zvec6ailego10ThreadPool*
-__ZGVN4zvec6ailego10operator==2ld*
-__ZGVN4zvec6ailego10operator==2ls*
-__ZGVN4zvec6ailego10operator==2rd*
-__ZGVN4zvec6ailego10operator==2rs*
-__ZGVN4zvec6ailego10operator==4diff*
-__ZGVN4zvec6ailego10operator==4self*
 __ZGVN4zvec6ailego11ElapsedTime*
 __ZGVN4zvec6ailego11FixedVector*
 __ZGVN4zvec6ailego11FloatHelper*
@@ -357,7 +350,6 @@ __ZGVN4zvec6ailego3New*
 __ZGVN4zvec6ailego4Cube*
 __ZGVN4zvec6ailego4File*
 __ZGVN4zvec6ailego4Heap*
-__ZGVN4zvec6ailego6Concat6result*
 __ZGVN4zvec6ailego6Crc32c*
 __ZGVN4zvec6ailego6Logger*
 __ZGVN4zvec6ailego6Params*
@@ -510,7 +502,6 @@ __ZGVZN4zvec17MIN_LOG_FILE_SIZE*
 __ZGVZN4zvec17VamanaIndexParams*
 __ZGVZN4zvec17VamanaQueryParams*
 __ZGVZN4zvec17VectorIndexParams*
-__ZGVZN4zvec17set_sparse_vector2vc*
 __ZGVZN4zvec18AlterColumnOptions*
 __ZGVZN4zvec18CreateIndexOptions*
 __ZGVZN4zvec18DiskAnnIndexParams*
@@ -691,12 +682,6 @@ __ZGVZN4zvec6ailego10JsonParser*
 __ZGVZN4zvec6ailego10JsonString*
 __ZGVZN4zvec6ailego10StringView*
 __ZGVZN4zvec6ailego10ThreadPool*
-__ZGVZN4zvec6ailego10operator==2ld*
-__ZGVZN4zvec6ailego10operator==2ls*
-__ZGVZN4zvec6ailego10operator==2rd*
-__ZGVZN4zvec6ailego10operator==2rs*
-__ZGVZN4zvec6ailego10operator==4diff*
-__ZGVZN4zvec6ailego10operator==4self*
 __ZGVZN4zvec6ailego11ElapsedTime*
 __ZGVZN4zvec6ailego11FixedVector*
 __ZGVZN4zvec6ailego11FloatHelper*
@@ -735,7 +720,6 @@ __ZGVZN4zvec6ailego3New*
 __ZGVZN4zvec6ailego4Cube*
 __ZGVZN4zvec6ailego4File*
 __ZGVZN4zvec6ailego4Heap*
-__ZGVZN4zvec6ailego6Concat6result*
 __ZGVZN4zvec6ailego6Crc32c*
 __ZGVZN4zvec6ailego6Logger*
 __ZGVZN4zvec6ailego6Params*
@@ -888,7 +872,6 @@ __ZGVZNK4zvec17MIN_LOG_FILE_SIZE*
 __ZGVZNK4zvec17VamanaIndexParams*
 __ZGVZNK4zvec17VamanaQueryParams*
 __ZGVZNK4zvec17VectorIndexParams*
-__ZGVZNK4zvec17set_sparse_vector2vc*
 __ZGVZNK4zvec18AlterColumnOptions*
 __ZGVZNK4zvec18CreateIndexOptions*
 __ZGVZNK4zvec18DiskAnnIndexParams*
@@ -1069,12 +1052,6 @@ __ZGVZNK4zvec6ailego10JsonParser*
 __ZGVZNK4zvec6ailego10JsonString*
 __ZGVZNK4zvec6ailego10StringView*
 __ZGVZNK4zvec6ailego10ThreadPool*
-__ZGVZNK4zvec6ailego10operator==2ld*
-__ZGVZNK4zvec6ailego10operator==2ls*
-__ZGVZNK4zvec6ailego10operator==2rd*
-__ZGVZNK4zvec6ailego10operator==2rs*
-__ZGVZNK4zvec6ailego10operator==4diff*
-__ZGVZNK4zvec6ailego10operator==4self*
 __ZGVZNK4zvec6ailego11ElapsedTime*
 __ZGVZNK4zvec6ailego11FixedVector*
 __ZGVZNK4zvec6ailego11FloatHelper*
@@ -1113,7 +1090,6 @@ __ZGVZNK4zvec6ailego3New*
 __ZGVZNK4zvec6ailego4Cube*
 __ZGVZNK4zvec6ailego4File*
 __ZGVZNK4zvec6ailego4Heap*
-__ZGVZNK4zvec6ailego6Concat6result*
 __ZGVZNK4zvec6ailego6Crc32c*
 __ZGVZNK4zvec6ailego6Logger*
 __ZGVZNK4zvec6ailego6Params*
@@ -1266,7 +1242,6 @@ __ZN4zvec17MIN_LOG_FILE_SIZE*
 __ZN4zvec17VamanaIndexParams*
 __ZN4zvec17VamanaQueryParams*
 __ZN4zvec17VectorIndexParams*
-__ZN4zvec17set_sparse_vector2vc*
 __ZN4zvec18AlterColumnOptions*
 __ZN4zvec18CreateIndexOptions*
 __ZN4zvec18DiskAnnIndexParams*
@@ -1447,12 +1422,6 @@ __ZN4zvec6ailego10JsonParser*
 __ZN4zvec6ailego10JsonString*
 __ZN4zvec6ailego10StringView*
 __ZN4zvec6ailego10ThreadPool*
-__ZN4zvec6ailego10operator==2ld*
-__ZN4zvec6ailego10operator==2ls*
-__ZN4zvec6ailego10operator==2rd*
-__ZN4zvec6ailego10operator==2rs*
-__ZN4zvec6ailego10operator==4diff*
-__ZN4zvec6ailego10operator==4self*
 __ZN4zvec6ailego11ElapsedTime*
 __ZN4zvec6ailego11FixedVector*
 __ZN4zvec6ailego11FloatHelper*
@@ -1491,7 +1460,6 @@ __ZN4zvec6ailego3New*
 __ZN4zvec6ailego4Cube*
 __ZN4zvec6ailego4File*
 __ZN4zvec6ailego4Heap*
-__ZN4zvec6ailego6Concat6result*
 __ZN4zvec6ailego6Crc32c*
 __ZN4zvec6ailego6Logger*
 __ZN4zvec6ailego6Params*
@@ -1644,7 +1612,6 @@ __ZNK4zvec17MIN_LOG_FILE_SIZE*
 __ZNK4zvec17VamanaIndexParams*
 __ZNK4zvec17VamanaQueryParams*
 __ZNK4zvec17VectorIndexParams*
-__ZNK4zvec17set_sparse_vector2vc*
 __ZNK4zvec18AlterColumnOptions*
 __ZNK4zvec18CreateIndexOptions*
 __ZNK4zvec18DiskAnnIndexParams*
@@ -1825,12 +1792,6 @@ __ZNK4zvec6ailego10JsonParser*
 __ZNK4zvec6ailego10JsonString*
 __ZNK4zvec6ailego10StringView*
 __ZNK4zvec6ailego10ThreadPool*
-__ZNK4zvec6ailego10operator==2ld*
-__ZNK4zvec6ailego10operator==2ls*
-__ZNK4zvec6ailego10operator==2rd*
-__ZNK4zvec6ailego10operator==2rs*
-__ZNK4zvec6ailego10operator==4diff*
-__ZNK4zvec6ailego10operator==4self*
 __ZNK4zvec6ailego11ElapsedTime*
 __ZNK4zvec6ailego11FixedVector*
 __ZNK4zvec6ailego11FloatHelper*
@@ -1869,7 +1830,6 @@ __ZNK4zvec6ailego3New*
 __ZNK4zvec6ailego4Cube*
 __ZNK4zvec6ailego4File*
 __ZNK4zvec6ailego4Heap*
-__ZNK4zvec6ailego6Concat6result*
 __ZNK4zvec6ailego6Crc32c*
 __ZNK4zvec6ailego6Logger*
 __ZNK4zvec6ailego6Params*
@@ -2022,7 +1982,6 @@ __ZTIN4zvec17MIN_LOG_FILE_SIZE*
 __ZTIN4zvec17VamanaIndexParams*
 __ZTIN4zvec17VamanaQueryParams*
 __ZTIN4zvec17VectorIndexParams*
-__ZTIN4zvec17set_sparse_vector2vc*
 __ZTIN4zvec18AlterColumnOptions*
 __ZTIN4zvec18CreateIndexOptions*
 __ZTIN4zvec18DiskAnnIndexParams*
@@ -2203,12 +2162,6 @@ __ZTIN4zvec6ailego10JsonParser*
 __ZTIN4zvec6ailego10JsonString*
 __ZTIN4zvec6ailego10StringView*
 __ZTIN4zvec6ailego10ThreadPool*
-__ZTIN4zvec6ailego10operator==2ld*
-__ZTIN4zvec6ailego10operator==2ls*
-__ZTIN4zvec6ailego10operator==2rd*
-__ZTIN4zvec6ailego10operator==2rs*
-__ZTIN4zvec6ailego10operator==4diff*
-__ZTIN4zvec6ailego10operator==4self*
 __ZTIN4zvec6ailego11ElapsedTime*
 __ZTIN4zvec6ailego11FixedVector*
 __ZTIN4zvec6ailego11FloatHelper*
@@ -2247,7 +2200,6 @@ __ZTIN4zvec6ailego3New*
 __ZTIN4zvec6ailego4Cube*
 __ZTIN4zvec6ailego4File*
 __ZTIN4zvec6ailego4Heap*
-__ZTIN4zvec6ailego6Concat6result*
 __ZTIN4zvec6ailego6Crc32c*
 __ZTIN4zvec6ailego6Logger*
 __ZTIN4zvec6ailego6Params*
@@ -2400,7 +2352,6 @@ __ZTSN4zvec17MIN_LOG_FILE_SIZE*
 __ZTSN4zvec17VamanaIndexParams*
 __ZTSN4zvec17VamanaQueryParams*
 __ZTSN4zvec17VectorIndexParams*
-__ZTSN4zvec17set_sparse_vector2vc*
 __ZTSN4zvec18AlterColumnOptions*
 __ZTSN4zvec18CreateIndexOptions*
 __ZTSN4zvec18DiskAnnIndexParams*
@@ -2581,12 +2532,6 @@ __ZTSN4zvec6ailego10JsonParser*
 __ZTSN4zvec6ailego10JsonString*
 __ZTSN4zvec6ailego10StringView*
 __ZTSN4zvec6ailego10ThreadPool*
-__ZTSN4zvec6ailego10operator==2ld*
-__ZTSN4zvec6ailego10operator==2ls*
-__ZTSN4zvec6ailego10operator==2rd*
-__ZTSN4zvec6ailego10operator==2rs*
-__ZTSN4zvec6ailego10operator==4diff*
-__ZTSN4zvec6ailego10operator==4self*
 __ZTSN4zvec6ailego11ElapsedTime*
 __ZTSN4zvec6ailego11FixedVector*
 __ZTSN4zvec6ailego11FloatHelper*
@@ -2625,7 +2570,6 @@ __ZTSN4zvec6ailego3New*
 __ZTSN4zvec6ailego4Cube*
 __ZTSN4zvec6ailego4File*
 __ZTSN4zvec6ailego4Heap*
-__ZTSN4zvec6ailego6Concat6result*
 __ZTSN4zvec6ailego6Crc32c*
 __ZTSN4zvec6ailego6Logger*
 __ZTSN4zvec6ailego6Params*
@@ -2778,7 +2722,6 @@ __ZTTN4zvec17MIN_LOG_FILE_SIZE*
 __ZTTN4zvec17VamanaIndexParams*
 __ZTTN4zvec17VamanaQueryParams*
 __ZTTN4zvec17VectorIndexParams*
-__ZTTN4zvec17set_sparse_vector2vc*
 __ZTTN4zvec18AlterColumnOptions*
 __ZTTN4zvec18CreateIndexOptions*
 __ZTTN4zvec18DiskAnnIndexParams*
@@ -2959,12 +2902,6 @@ __ZTTN4zvec6ailego10JsonParser*
 __ZTTN4zvec6ailego10JsonString*
 __ZTTN4zvec6ailego10StringView*
 __ZTTN4zvec6ailego10ThreadPool*
-__ZTTN4zvec6ailego10operator==2ld*
-__ZTTN4zvec6ailego10operator==2ls*
-__ZTTN4zvec6ailego10operator==2rd*
-__ZTTN4zvec6ailego10operator==2rs*
-__ZTTN4zvec6ailego10operator==4diff*
-__ZTTN4zvec6ailego10operator==4self*
 __ZTTN4zvec6ailego11ElapsedTime*
 __ZTTN4zvec6ailego11FixedVector*
 __ZTTN4zvec6ailego11FloatHelper*
@@ -3003,7 +2940,6 @@ __ZTTN4zvec6ailego3New*
 __ZTTN4zvec6ailego4Cube*
 __ZTTN4zvec6ailego4File*
 __ZTTN4zvec6ailego4Heap*
-__ZTTN4zvec6ailego6Concat6result*
 __ZTTN4zvec6ailego6Crc32c*
 __ZTTN4zvec6ailego6Logger*
 __ZTTN4zvec6ailego6Params*
@@ -3156,7 +3092,6 @@ __ZTVN4zvec17MIN_LOG_FILE_SIZE*
 __ZTVN4zvec17VamanaIndexParams*
 __ZTVN4zvec17VamanaQueryParams*
 __ZTVN4zvec17VectorIndexParams*
-__ZTVN4zvec17set_sparse_vector2vc*
 __ZTVN4zvec18AlterColumnOptions*
 __ZTVN4zvec18CreateIndexOptions*
 __ZTVN4zvec18DiskAnnIndexParams*
@@ -3337,12 +3272,6 @@ __ZTVN4zvec6ailego10JsonParser*
 __ZTVN4zvec6ailego10JsonString*
 __ZTVN4zvec6ailego10StringView*
 __ZTVN4zvec6ailego10ThreadPool*
-__ZTVN4zvec6ailego10operator==2ld*
-__ZTVN4zvec6ailego10operator==2ls*
-__ZTVN4zvec6ailego10operator==2rd*
-__ZTVN4zvec6ailego10operator==2rs*
-__ZTVN4zvec6ailego10operator==4diff*
-__ZTVN4zvec6ailego10operator==4self*
 __ZTVN4zvec6ailego11ElapsedTime*
 __ZTVN4zvec6ailego11FixedVector*
 __ZTVN4zvec6ailego11FloatHelper*
@@ -3381,7 +3310,6 @@ __ZTVN4zvec6ailego3New*
 __ZTVN4zvec6ailego4Cube*
 __ZTVN4zvec6ailego4File*
 __ZTVN4zvec6ailego4Heap*
-__ZTVN4zvec6ailego6Concat6result*
 __ZTVN4zvec6ailego6Crc32c*
 __ZTVN4zvec6ailego6Logger*
 __ZTVN4zvec6ailego6Params*
@@ -3534,7 +3462,6 @@ __ZThn*_N4zvec17MIN_LOG_FILE_SIZE*
 __ZThn*_N4zvec17VamanaIndexParams*
 __ZThn*_N4zvec17VamanaQueryParams*
 __ZThn*_N4zvec17VectorIndexParams*
-__ZThn*_N4zvec17set_sparse_vector2vc*
 __ZThn*_N4zvec18AlterColumnOptions*
 __ZThn*_N4zvec18CreateIndexOptions*
 __ZThn*_N4zvec18DiskAnnIndexParams*
@@ -3715,12 +3642,6 @@ __ZThn*_N4zvec6ailego10JsonParser*
 __ZThn*_N4zvec6ailego10JsonString*
 __ZThn*_N4zvec6ailego10StringView*
 __ZThn*_N4zvec6ailego10ThreadPool*
-__ZThn*_N4zvec6ailego10operator==2ld*
-__ZThn*_N4zvec6ailego10operator==2ls*
-__ZThn*_N4zvec6ailego10operator==2rd*
-__ZThn*_N4zvec6ailego10operator==2rs*
-__ZThn*_N4zvec6ailego10operator==4diff*
-__ZThn*_N4zvec6ailego10operator==4self*
 __ZThn*_N4zvec6ailego11ElapsedTime*
 __ZThn*_N4zvec6ailego11FixedVector*
 __ZThn*_N4zvec6ailego11FloatHelper*
@@ -3759,7 +3680,6 @@ __ZThn*_N4zvec6ailego3New*
 __ZThn*_N4zvec6ailego4Cube*
 __ZThn*_N4zvec6ailego4File*
 __ZThn*_N4zvec6ailego4Heap*
-__ZThn*_N4zvec6ailego6Concat6result*
 __ZThn*_N4zvec6ailego6Crc32c*
 __ZThn*_N4zvec6ailego6Logger*
 __ZThn*_N4zvec6ailego6Params*
@@ -3912,7 +3832,6 @@ __ZTv*_N4zvec17MIN_LOG_FILE_SIZE*
 __ZTv*_N4zvec17VamanaIndexParams*
 __ZTv*_N4zvec17VamanaQueryParams*
 __ZTv*_N4zvec17VectorIndexParams*
-__ZTv*_N4zvec17set_sparse_vector2vc*
 __ZTv*_N4zvec18AlterColumnOptions*
 __ZTv*_N4zvec18CreateIndexOptions*
 __ZTv*_N4zvec18DiskAnnIndexParams*
@@ -4093,12 +4012,6 @@ __ZTv*_N4zvec6ailego10JsonParser*
 __ZTv*_N4zvec6ailego10JsonString*
 __ZTv*_N4zvec6ailego10StringView*
 __ZTv*_N4zvec6ailego10ThreadPool*
-__ZTv*_N4zvec6ailego10operator==2ld*
-__ZTv*_N4zvec6ailego10operator==2ls*
-__ZTv*_N4zvec6ailego10operator==2rd*
-__ZTv*_N4zvec6ailego10operator==2rs*
-__ZTv*_N4zvec6ailego10operator==4diff*
-__ZTv*_N4zvec6ailego10operator==4self*
 __ZTv*_N4zvec6ailego11ElapsedTime*
 __ZTv*_N4zvec6ailego11FixedVector*
 __ZTv*_N4zvec6ailego11FloatHelper*
@@ -4137,7 +4050,6 @@ __ZTv*_N4zvec6ailego3New*
 __ZTv*_N4zvec6ailego4Cube*
 __ZTv*_N4zvec6ailego4File*
 __ZTv*_N4zvec6ailego4Heap*
-__ZTv*_N4zvec6ailego6Concat6result*
 __ZTv*_N4zvec6ailego6Crc32c*
 __ZTv*_N4zvec6ailego6Logger*
 __ZTv*_N4zvec6ailego6Params*
@@ -4290,7 +4202,6 @@ __ZZN4zvec17MIN_LOG_FILE_SIZE*
 __ZZN4zvec17VamanaIndexParams*
 __ZZN4zvec17VamanaQueryParams*
 __ZZN4zvec17VectorIndexParams*
-__ZZN4zvec17set_sparse_vector2vc*
 __ZZN4zvec18AlterColumnOptions*
 __ZZN4zvec18CreateIndexOptions*
 __ZZN4zvec18DiskAnnIndexParams*
@@ -4471,12 +4382,6 @@ __ZZN4zvec6ailego10JsonParser*
 __ZZN4zvec6ailego10JsonString*
 __ZZN4zvec6ailego10StringView*
 __ZZN4zvec6ailego10ThreadPool*
-__ZZN4zvec6ailego10operator==2ld*
-__ZZN4zvec6ailego10operator==2ls*
-__ZZN4zvec6ailego10operator==2rd*
-__ZZN4zvec6ailego10operator==2rs*
-__ZZN4zvec6ailego10operator==4diff*
-__ZZN4zvec6ailego10operator==4self*
 __ZZN4zvec6ailego11ElapsedTime*
 __ZZN4zvec6ailego11FixedVector*
 __ZZN4zvec6ailego11FloatHelper*
@@ -4515,7 +4420,6 @@ __ZZN4zvec6ailego3New*
 __ZZN4zvec6ailego4Cube*
 __ZZN4zvec6ailego4File*
 __ZZN4zvec6ailego4Heap*
-__ZZN4zvec6ailego6Concat6result*
 __ZZN4zvec6ailego6Crc32c*
 __ZZN4zvec6ailego6Logger*
 __ZZN4zvec6ailego6Params*
@@ -4668,7 +4572,6 @@ __ZZNK4zvec17MIN_LOG_FILE_SIZE*
 __ZZNK4zvec17VamanaIndexParams*
 __ZZNK4zvec17VamanaQueryParams*
 __ZZNK4zvec17VectorIndexParams*
-__ZZNK4zvec17set_sparse_vector2vc*
 __ZZNK4zvec18AlterColumnOptions*
 __ZZNK4zvec18CreateIndexOptions*
 __ZZNK4zvec18DiskAnnIndexParams*
@@ -4849,12 +4752,6 @@ __ZZNK4zvec6ailego10JsonParser*
 __ZZNK4zvec6ailego10JsonString*
 __ZZNK4zvec6ailego10StringView*
 __ZZNK4zvec6ailego10ThreadPool*
-__ZZNK4zvec6ailego10operator==2ld*
-__ZZNK4zvec6ailego10operator==2ls*
-__ZZNK4zvec6ailego10operator==2rd*
-__ZZNK4zvec6ailego10operator==2rs*
-__ZZNK4zvec6ailego10operator==4diff*
-__ZZNK4zvec6ailego10operator==4self*
 __ZZNK4zvec6ailego11ElapsedTime*
 __ZZNK4zvec6ailego11FixedVector*
 __ZZNK4zvec6ailego11FloatHelper*
@@ -4893,7 +4790,6 @@ __ZZNK4zvec6ailego3New*
 __ZZNK4zvec6ailego4Cube*
 __ZZNK4zvec6ailego4File*
 __ZZNK4zvec6ailego4Heap*
-__ZZNK4zvec6ailego6Concat6result*
 __ZZNK4zvec6ailego6Crc32c*
 __ZZNK4zvec6ailego6Logger*
 __ZZNK4zvec6ailego6Params*

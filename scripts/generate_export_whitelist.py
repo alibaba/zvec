@@ -23,7 +23,9 @@ declare* instead of a hand-maintained list:
 3. Turn every declared class / function / namespace-scope variable into
    mangled-name *glob* patterns, one per Itanium encoding variant
    (``_ZN``, ``_ZNK``, ``_ZTV``, ``_ZTI``, ``_ZTS``, ``_ZTT``, ``_ZGV``,
-   ``_ZZ``, thunks ...).
+   ``_ZZ``, thunks ...).  Function bodies are not traversed: a local cannot be
+   named by a consumer, and the symbols of function-local entities are already
+   covered by the ``_ZZ``/``_ZGVZ`` variants of the enclosing prefix.
 
 Globs rather than literal symbol names, for two reasons: an Itanium nested name
 is length prefixed, so ``_ZN4zvec3Doc*`` can only ever match members of
@@ -74,6 +76,7 @@ import json
 import os
 import re
 import shutil
+import string
 import subprocess
 import sys
 import tempfile
@@ -117,7 +120,7 @@ PATTERN_KINDS = frozenset({"class", "function", "variable"})
 # platform, so without this list the generated whitelist -- and the drift check
 # against it -- would differ between macOS, where it is usually regenerated, and
 # Linux CI, where it is verified.  ``zvec::ailego::IoUringRing`` alone accounts
-# for one prefix, i.e. 13 of the 4914 patterns.
+# for one prefix, i.e. 13 patterns.
 #
 # They are dropped rather than force-added, which is both the portable and the
 # tighter answer: each one is *defined* in a private header outside src/include
@@ -164,6 +167,32 @@ TEMPLATE_DECL_KINDS = {
     "TypeAliasTemplateDecl": "TypeAliasDecl",
     "VarTemplateDecl": "VarDecl",
 }
+
+# Declaration kinds whose *body* is not API surface.  The entity itself is still
+# recorded; its children are not visited, so local variables, local classes and
+# lambda closure types stay out of the list.  A consumer cannot name any of
+# them, and their symbols are already covered by the "_ZZ"/"_ZGVZ" variants of
+# the enclosing entity's prefix.
+#
+# Walking into bodies was also actively harmful.  A local inside a
+# namespace-scope operator is not shadowed by an enclosing class prefix, and
+# ``mangled_components`` only spells an operator as its Itanium encoding
+# ("eq") in final position -- anywhere else it length-encodes the spelling, so
+# the local became prefix "4zvec6ailego10operator==2ld".  macOS ld tolerates
+# that in an -exported_symbols_list, but GNU ld rejects "=" outright:
+#   ld: .../exported_symbols_zvec.lds:297: ignoring invalid character `='
+#   ld: .../exported_symbols_zvec.lds:297: syntax error in VERSION script
+# which failed the libzvec link on every Linux and musllinux job.
+BODYLESS_KINDS = frozenset(
+    {
+        "FunctionDecl",
+        "FunctionTemplateDecl",
+        "CXXMethodDecl",
+        "CXXConstructorDecl",
+        "CXXDestructorDecl",
+        "CXXConversionDecl",
+    }
+)
 
 # Itanium ABI operator encodings.  Only namespace-scope operators need them: a
 # member operator already falls under its class prefix.
@@ -374,6 +403,8 @@ def walk(
     qualified = "::".join([*stack, name] if pushes else stack)
     if kind in DECL_KINDS and name and not node.get("isImplicit"):
         entities.append((DECL_KINDS[kind], qualified))
+    if kind in BODYLESS_KINDS:
+        return
     templated_child = TEMPLATE_DECL_KINDS.get(kind)
     child_stack = [*stack, name] if pushes else stack
     for position, child in enumerate(node.get("inner") or []):
@@ -430,6 +461,25 @@ def minimal_prefixes(entities: list[tuple[str, str]]) -> list[str]:
         for prefix in ordered
         if not any(other != prefix and prefix.startswith(other) for other in ordered)
     ]
+
+
+# What a GNU ld version script accepts inside a pattern.  macOS ld is far more
+# permissive with -exported_symbols_list, so an invalid character passes on a
+# developer machine and only breaks the Linux link -- with a message that points
+# at a line number in a 4900-line generated file and no hint where it came from.
+# Reject it here instead, on every platform.
+VERSION_SCRIPT_CHARS = frozenset(string.ascii_letters + string.digits + "_.$*")
+
+
+def check_linker_syntax(prefixes: list[str]) -> None:
+    rejected = sorted({c for p in prefixes for c in p if c not in VERSION_SCRIPT_CHARS})
+    if rejected:
+        msg = (
+            "entity prefixes contain characters a GNU ld version script rejects: "
+            f"{rejected}.  A prefix usually picks these up from a declaration "
+            "inside a function body -- see BODYLESS_KINDS."
+        )
+        raise SystemExit(msg)
 
 
 def patterns_for(prefix: str) -> list[str]:
@@ -517,6 +567,7 @@ def main(argv: list[str] | None = None) -> int:
         entities = collect_entities(ast_path)
 
     prefixes = minimal_prefixes(entities)
+    check_linker_syntax(prefixes)
     _out(f"declared entities: {len(entities)}")
     _out(f"export prefixes: {len(prefixes)} (after minimisation)")
 

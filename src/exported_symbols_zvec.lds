@@ -1,7 +1,7 @@
 /* GENERATED -- do not edit by hand.
    python3 scripts/generate_export_whitelist.py --write
    Surface: engine -- 98 public headers,
-   378 entity prefixes, 4914 patterns.
+   370 entity prefixes, 4810 patterns.
    Rationale and variant legend: src/exported_symbols_zvec.txt. */
 {
   global:
@@ -113,7 +113,6 @@
     _ZGVN4zvec17VamanaIndexParams*;
     _ZGVN4zvec17VamanaQueryParams*;
     _ZGVN4zvec17VectorIndexParams*;
-    _ZGVN4zvec17set_sparse_vector2vc*;
     _ZGVN4zvec18AlterColumnOptions*;
     _ZGVN4zvec18CreateIndexOptions*;
     _ZGVN4zvec18DiskAnnIndexParams*;
@@ -294,12 +293,6 @@
     _ZGVN4zvec6ailego10JsonString*;
     _ZGVN4zvec6ailego10StringView*;
     _ZGVN4zvec6ailego10ThreadPool*;
-    _ZGVN4zvec6ailego10operator==2ld*;
-    _ZGVN4zvec6ailego10operator==2ls*;
-    _ZGVN4zvec6ailego10operator==2rd*;
-    _ZGVN4zvec6ailego10operator==2rs*;
-    _ZGVN4zvec6ailego10operator==4diff*;
-    _ZGVN4zvec6ailego10operator==4self*;
     _ZGVN4zvec6ailego11ElapsedTime*;
     _ZGVN4zvec6ailego11FixedVector*;
     _ZGVN4zvec6ailego11FloatHelper*;
@@ -338,7 +331,6 @@
     _ZGVN4zvec6ailego4Cube*;
     _ZGVN4zvec6ailego4File*;
     _ZGVN4zvec6ailego4Heap*;
-    _ZGVN4zvec6ailego6Concat6result*;
     _ZGVN4zvec6ailego6Crc32c*;
     _ZGVN4zvec6ailego6Logger*;
     _ZGVN4zvec6ailego6Params*;
@@ -491,7 +483,6 @@
     _ZGVZN4zvec17VamanaIndexParams*;
     _ZGVZN4zvec17VamanaQueryParams*;
     _ZGVZN4zvec17VectorIndexParams*;
-    _ZGVZN4zvec17set_sparse_vector2vc*;
     _ZGVZN4zvec18AlterColumnOptions*;
     _ZGVZN4zvec18CreateIndexOptions*;
     _ZGVZN4zvec18DiskAnnIndexParams*;
@@ -672,12 +663,6 @@
     _ZGVZN4zvec6ailego10JsonString*;
     _ZGVZN4zvec6ailego10StringView*;
     _ZGVZN4zvec6ailego10ThreadPool*;
-    _ZGVZN4zvec6ailego10operator==2ld*;
-    _ZGVZN4zvec6ailego10operator==2ls*;
-    _ZGVZN4zvec6ailego10operator==2rd*;
-    _ZGVZN4zvec6ailego10operator==2rs*;
-    _ZGVZN4zvec6ailego10operator==4diff*;
-    _ZGVZN4zvec6ailego10operator==4self*;
     _ZGVZN4zvec6ailego11ElapsedTime*;
     _ZGVZN4zvec6ailego11FixedVector*;
     _ZGVZN4zvec6ailego11FloatHelper*;
@@ -716,7 +701,6 @@
     _ZGVZN4zvec6ailego4Cube*;
     _ZGVZN4zvec6ailego4File*;
     _ZGVZN4zvec6ailego4Heap*;
-    _ZGVZN4zvec6ailego6Concat6result*;
     _ZGVZN4zvec6ailego6Crc32c*;
     _ZGVZN4zvec6ailego6Logger*;
     _ZGVZN4zvec6ailego6Params*;
@@ -869,7 +853,6 @@
     _ZGVZNK4zvec17VamanaIndexParams*;
     _ZGVZNK4zvec17VamanaQueryParams*;
     _ZGVZNK4zvec17VectorIndexParams*;
-    _ZGVZNK4zvec17set_sparse_vector2vc*;
     _ZGVZNK4zvec18AlterColumnOptions*;
     _ZGVZNK4zvec18CreateIndexOptions*;
     _ZGVZNK4zvec18DiskAnnIndexParams*;
@@ -1050,12 +1033,6 @@
     _ZGVZNK4zvec6ailego10JsonString*;
     _ZGVZNK4zvec6ailego10StringView*;
     _ZGVZNK4zvec6ailego10ThreadPool*;
-    _ZGVZNK4zvec6ailego10operator==2ld*;
-    _ZGVZNK4zvec6ailego10operator==2ls*;
-    _ZGVZNK4zvec6ailego10operator==2rd*;
-    _ZGVZNK4zvec6ailego10operator==2rs*;
-    _ZGVZNK4zvec6ailego10operator==4diff*;
-    _ZGVZNK4zvec6ailego10operator==4self*;
     _ZGVZNK4zvec6ailego11ElapsedTime*;
     _ZGVZNK4zvec6ailego11FixedVector*;
     _ZGVZNK4zvec6ailego11FloatHelper*;
@@ -1094,7 +1071,6 @@
     _ZGVZNK4zvec6ailego4Cube*;
     _ZGVZNK4zvec6ailego4File*;
     _ZGVZNK4zvec6ailego4Heap*;
-    _ZGVZNK4zvec6ailego6Concat6result*;
     _ZGVZNK4zvec6ailego6Crc32c*;
     _ZGVZNK4zvec6ailego6Logger*;
     _ZGVZNK4zvec6ailego6Params*;
@@ -1247,7 +1223,6 @@
     _ZN4zvec17VamanaIndexParams*;
     _ZN4zvec17VamanaQueryParams*;
     _ZN4zvec17VectorIndexParams*;
-    _ZN4zvec17set_sparse_vector2vc*;
     _ZN4zvec18AlterColumnOptions*;
     _ZN4zvec18CreateIndexOptions*;
     _ZN4zvec18DiskAnnIndexParams*;
@@ -1428,12 +1403,6 @@
     _ZN4zvec6ailego10JsonString*;
     _ZN4zvec6ailego10StringView*;
     _ZN4zvec6ailego10ThreadPool*;
-    _ZN4zvec6ailego10operator==2ld*;
-    _ZN4zvec6ailego10operator==2ls*;
-    _ZN4zvec6ailego10operator==2rd*;
-    _ZN4zvec6ailego10operator==2rs*;
-    _ZN4zvec6ailego10operator==4diff*;
-    _ZN4zvec6ailego10operator==4self*;
     _ZN4zvec6ailego11ElapsedTime*;
     _ZN4zvec6ailego11FixedVector*;
     _ZN4zvec6ailego11FloatHelper*;
@@ -1472,7 +1441,6 @@
     _ZN4zvec6ailego4Cube*;
     _ZN4zvec6ailego4File*;
     _ZN4zvec6ailego4Heap*;
-    _ZN4zvec6ailego6Concat6result*;
     _ZN4zvec6ailego6Crc32c*;
     _ZN4zvec6ailego6Logger*;
     _ZN4zvec6ailego6Params*;
@@ -1625,7 +1593,6 @@
     _ZNK4zvec17VamanaIndexParams*;
     _ZNK4zvec17VamanaQueryParams*;
     _ZNK4zvec17VectorIndexParams*;
-    _ZNK4zvec17set_sparse_vector2vc*;
     _ZNK4zvec18AlterColumnOptions*;
     _ZNK4zvec18CreateIndexOptions*;
     _ZNK4zvec18DiskAnnIndexParams*;
@@ -1806,12 +1773,6 @@
     _ZNK4zvec6ailego10JsonString*;
     _ZNK4zvec6ailego10StringView*;
     _ZNK4zvec6ailego10ThreadPool*;
-    _ZNK4zvec6ailego10operator==2ld*;
-    _ZNK4zvec6ailego10operator==2ls*;
-    _ZNK4zvec6ailego10operator==2rd*;
-    _ZNK4zvec6ailego10operator==2rs*;
-    _ZNK4zvec6ailego10operator==4diff*;
-    _ZNK4zvec6ailego10operator==4self*;
     _ZNK4zvec6ailego11ElapsedTime*;
     _ZNK4zvec6ailego11FixedVector*;
     _ZNK4zvec6ailego11FloatHelper*;
@@ -1850,7 +1811,6 @@
     _ZNK4zvec6ailego4Cube*;
     _ZNK4zvec6ailego4File*;
     _ZNK4zvec6ailego4Heap*;
-    _ZNK4zvec6ailego6Concat6result*;
     _ZNK4zvec6ailego6Crc32c*;
     _ZNK4zvec6ailego6Logger*;
     _ZNK4zvec6ailego6Params*;
@@ -2003,7 +1963,6 @@
     _ZTIN4zvec17VamanaIndexParams*;
     _ZTIN4zvec17VamanaQueryParams*;
     _ZTIN4zvec17VectorIndexParams*;
-    _ZTIN4zvec17set_sparse_vector2vc*;
     _ZTIN4zvec18AlterColumnOptions*;
     _ZTIN4zvec18CreateIndexOptions*;
     _ZTIN4zvec18DiskAnnIndexParams*;
@@ -2184,12 +2143,6 @@
     _ZTIN4zvec6ailego10JsonString*;
     _ZTIN4zvec6ailego10StringView*;
     _ZTIN4zvec6ailego10ThreadPool*;
-    _ZTIN4zvec6ailego10operator==2ld*;
-    _ZTIN4zvec6ailego10operator==2ls*;
-    _ZTIN4zvec6ailego10operator==2rd*;
-    _ZTIN4zvec6ailego10operator==2rs*;
-    _ZTIN4zvec6ailego10operator==4diff*;
-    _ZTIN4zvec6ailego10operator==4self*;
     _ZTIN4zvec6ailego11ElapsedTime*;
     _ZTIN4zvec6ailego11FixedVector*;
     _ZTIN4zvec6ailego11FloatHelper*;
@@ -2228,7 +2181,6 @@
     _ZTIN4zvec6ailego4Cube*;
     _ZTIN4zvec6ailego4File*;
     _ZTIN4zvec6ailego4Heap*;
-    _ZTIN4zvec6ailego6Concat6result*;
     _ZTIN4zvec6ailego6Crc32c*;
     _ZTIN4zvec6ailego6Logger*;
     _ZTIN4zvec6ailego6Params*;
@@ -2381,7 +2333,6 @@
     _ZTSN4zvec17VamanaIndexParams*;
     _ZTSN4zvec17VamanaQueryParams*;
     _ZTSN4zvec17VectorIndexParams*;
-    _ZTSN4zvec17set_sparse_vector2vc*;
     _ZTSN4zvec18AlterColumnOptions*;
     _ZTSN4zvec18CreateIndexOptions*;
     _ZTSN4zvec18DiskAnnIndexParams*;
@@ -2562,12 +2513,6 @@
     _ZTSN4zvec6ailego10JsonString*;
     _ZTSN4zvec6ailego10StringView*;
     _ZTSN4zvec6ailego10ThreadPool*;
-    _ZTSN4zvec6ailego10operator==2ld*;
-    _ZTSN4zvec6ailego10operator==2ls*;
-    _ZTSN4zvec6ailego10operator==2rd*;
-    _ZTSN4zvec6ailego10operator==2rs*;
-    _ZTSN4zvec6ailego10operator==4diff*;
-    _ZTSN4zvec6ailego10operator==4self*;
     _ZTSN4zvec6ailego11ElapsedTime*;
     _ZTSN4zvec6ailego11FixedVector*;
     _ZTSN4zvec6ailego11FloatHelper*;
@@ -2606,7 +2551,6 @@
     _ZTSN4zvec6ailego4Cube*;
     _ZTSN4zvec6ailego4File*;
     _ZTSN4zvec6ailego4Heap*;
-    _ZTSN4zvec6ailego6Concat6result*;
     _ZTSN4zvec6ailego6Crc32c*;
     _ZTSN4zvec6ailego6Logger*;
     _ZTSN4zvec6ailego6Params*;
@@ -2759,7 +2703,6 @@
     _ZTTN4zvec17VamanaIndexParams*;
     _ZTTN4zvec17VamanaQueryParams*;
     _ZTTN4zvec17VectorIndexParams*;
-    _ZTTN4zvec17set_sparse_vector2vc*;
     _ZTTN4zvec18AlterColumnOptions*;
     _ZTTN4zvec18CreateIndexOptions*;
     _ZTTN4zvec18DiskAnnIndexParams*;
@@ -2940,12 +2883,6 @@
     _ZTTN4zvec6ailego10JsonString*;
     _ZTTN4zvec6ailego10StringView*;
     _ZTTN4zvec6ailego10ThreadPool*;
-    _ZTTN4zvec6ailego10operator==2ld*;
-    _ZTTN4zvec6ailego10operator==2ls*;
-    _ZTTN4zvec6ailego10operator==2rd*;
-    _ZTTN4zvec6ailego10operator==2rs*;
-    _ZTTN4zvec6ailego10operator==4diff*;
-    _ZTTN4zvec6ailego10operator==4self*;
     _ZTTN4zvec6ailego11ElapsedTime*;
     _ZTTN4zvec6ailego11FixedVector*;
     _ZTTN4zvec6ailego11FloatHelper*;
@@ -2984,7 +2921,6 @@
     _ZTTN4zvec6ailego4Cube*;
     _ZTTN4zvec6ailego4File*;
     _ZTTN4zvec6ailego4Heap*;
-    _ZTTN4zvec6ailego6Concat6result*;
     _ZTTN4zvec6ailego6Crc32c*;
     _ZTTN4zvec6ailego6Logger*;
     _ZTTN4zvec6ailego6Params*;
@@ -3137,7 +3073,6 @@
     _ZTVN4zvec17VamanaIndexParams*;
     _ZTVN4zvec17VamanaQueryParams*;
     _ZTVN4zvec17VectorIndexParams*;
-    _ZTVN4zvec17set_sparse_vector2vc*;
     _ZTVN4zvec18AlterColumnOptions*;
     _ZTVN4zvec18CreateIndexOptions*;
     _ZTVN4zvec18DiskAnnIndexParams*;
@@ -3318,12 +3253,6 @@
     _ZTVN4zvec6ailego10JsonString*;
     _ZTVN4zvec6ailego10StringView*;
     _ZTVN4zvec6ailego10ThreadPool*;
-    _ZTVN4zvec6ailego10operator==2ld*;
-    _ZTVN4zvec6ailego10operator==2ls*;
-    _ZTVN4zvec6ailego10operator==2rd*;
-    _ZTVN4zvec6ailego10operator==2rs*;
-    _ZTVN4zvec6ailego10operator==4diff*;
-    _ZTVN4zvec6ailego10operator==4self*;
     _ZTVN4zvec6ailego11ElapsedTime*;
     _ZTVN4zvec6ailego11FixedVector*;
     _ZTVN4zvec6ailego11FloatHelper*;
@@ -3362,7 +3291,6 @@
     _ZTVN4zvec6ailego4Cube*;
     _ZTVN4zvec6ailego4File*;
     _ZTVN4zvec6ailego4Heap*;
-    _ZTVN4zvec6ailego6Concat6result*;
     _ZTVN4zvec6ailego6Crc32c*;
     _ZTVN4zvec6ailego6Logger*;
     _ZTVN4zvec6ailego6Params*;
@@ -3515,7 +3443,6 @@
     _ZThn*_N4zvec17VamanaIndexParams*;
     _ZThn*_N4zvec17VamanaQueryParams*;
     _ZThn*_N4zvec17VectorIndexParams*;
-    _ZThn*_N4zvec17set_sparse_vector2vc*;
     _ZThn*_N4zvec18AlterColumnOptions*;
     _ZThn*_N4zvec18CreateIndexOptions*;
     _ZThn*_N4zvec18DiskAnnIndexParams*;
@@ -3696,12 +3623,6 @@
     _ZThn*_N4zvec6ailego10JsonString*;
     _ZThn*_N4zvec6ailego10StringView*;
     _ZThn*_N4zvec6ailego10ThreadPool*;
-    _ZThn*_N4zvec6ailego10operator==2ld*;
-    _ZThn*_N4zvec6ailego10operator==2ls*;
-    _ZThn*_N4zvec6ailego10operator==2rd*;
-    _ZThn*_N4zvec6ailego10operator==2rs*;
-    _ZThn*_N4zvec6ailego10operator==4diff*;
-    _ZThn*_N4zvec6ailego10operator==4self*;
     _ZThn*_N4zvec6ailego11ElapsedTime*;
     _ZThn*_N4zvec6ailego11FixedVector*;
     _ZThn*_N4zvec6ailego11FloatHelper*;
@@ -3740,7 +3661,6 @@
     _ZThn*_N4zvec6ailego4Cube*;
     _ZThn*_N4zvec6ailego4File*;
     _ZThn*_N4zvec6ailego4Heap*;
-    _ZThn*_N4zvec6ailego6Concat6result*;
     _ZThn*_N4zvec6ailego6Crc32c*;
     _ZThn*_N4zvec6ailego6Logger*;
     _ZThn*_N4zvec6ailego6Params*;
@@ -3893,7 +3813,6 @@
     _ZTv*_N4zvec17VamanaIndexParams*;
     _ZTv*_N4zvec17VamanaQueryParams*;
     _ZTv*_N4zvec17VectorIndexParams*;
-    _ZTv*_N4zvec17set_sparse_vector2vc*;
     _ZTv*_N4zvec18AlterColumnOptions*;
     _ZTv*_N4zvec18CreateIndexOptions*;
     _ZTv*_N4zvec18DiskAnnIndexParams*;
@@ -4074,12 +3993,6 @@
     _ZTv*_N4zvec6ailego10JsonString*;
     _ZTv*_N4zvec6ailego10StringView*;
     _ZTv*_N4zvec6ailego10ThreadPool*;
-    _ZTv*_N4zvec6ailego10operator==2ld*;
-    _ZTv*_N4zvec6ailego10operator==2ls*;
-    _ZTv*_N4zvec6ailego10operator==2rd*;
-    _ZTv*_N4zvec6ailego10operator==2rs*;
-    _ZTv*_N4zvec6ailego10operator==4diff*;
-    _ZTv*_N4zvec6ailego10operator==4self*;
     _ZTv*_N4zvec6ailego11ElapsedTime*;
     _ZTv*_N4zvec6ailego11FixedVector*;
     _ZTv*_N4zvec6ailego11FloatHelper*;
@@ -4118,7 +4031,6 @@
     _ZTv*_N4zvec6ailego4Cube*;
     _ZTv*_N4zvec6ailego4File*;
     _ZTv*_N4zvec6ailego4Heap*;
-    _ZTv*_N4zvec6ailego6Concat6result*;
     _ZTv*_N4zvec6ailego6Crc32c*;
     _ZTv*_N4zvec6ailego6Logger*;
     _ZTv*_N4zvec6ailego6Params*;
@@ -4271,7 +4183,6 @@
     _ZZN4zvec17VamanaIndexParams*;
     _ZZN4zvec17VamanaQueryParams*;
     _ZZN4zvec17VectorIndexParams*;
-    _ZZN4zvec17set_sparse_vector2vc*;
     _ZZN4zvec18AlterColumnOptions*;
     _ZZN4zvec18CreateIndexOptions*;
     _ZZN4zvec18DiskAnnIndexParams*;
@@ -4452,12 +4363,6 @@
     _ZZN4zvec6ailego10JsonString*;
     _ZZN4zvec6ailego10StringView*;
     _ZZN4zvec6ailego10ThreadPool*;
-    _ZZN4zvec6ailego10operator==2ld*;
-    _ZZN4zvec6ailego10operator==2ls*;
-    _ZZN4zvec6ailego10operator==2rd*;
-    _ZZN4zvec6ailego10operator==2rs*;
-    _ZZN4zvec6ailego10operator==4diff*;
-    _ZZN4zvec6ailego10operator==4self*;
     _ZZN4zvec6ailego11ElapsedTime*;
     _ZZN4zvec6ailego11FixedVector*;
     _ZZN4zvec6ailego11FloatHelper*;
@@ -4496,7 +4401,6 @@
     _ZZN4zvec6ailego4Cube*;
     _ZZN4zvec6ailego4File*;
     _ZZN4zvec6ailego4Heap*;
-    _ZZN4zvec6ailego6Concat6result*;
     _ZZN4zvec6ailego6Crc32c*;
     _ZZN4zvec6ailego6Logger*;
     _ZZN4zvec6ailego6Params*;
@@ -4649,7 +4553,6 @@
     _ZZNK4zvec17VamanaIndexParams*;
     _ZZNK4zvec17VamanaQueryParams*;
     _ZZNK4zvec17VectorIndexParams*;
-    _ZZNK4zvec17set_sparse_vector2vc*;
     _ZZNK4zvec18AlterColumnOptions*;
     _ZZNK4zvec18CreateIndexOptions*;
     _ZZNK4zvec18DiskAnnIndexParams*;
@@ -4830,12 +4733,6 @@
     _ZZNK4zvec6ailego10JsonString*;
     _ZZNK4zvec6ailego10StringView*;
     _ZZNK4zvec6ailego10ThreadPool*;
-    _ZZNK4zvec6ailego10operator==2ld*;
-    _ZZNK4zvec6ailego10operator==2ls*;
-    _ZZNK4zvec6ailego10operator==2rd*;
-    _ZZNK4zvec6ailego10operator==2rs*;
-    _ZZNK4zvec6ailego10operator==4diff*;
-    _ZZNK4zvec6ailego10operator==4self*;
     _ZZNK4zvec6ailego11ElapsedTime*;
     _ZZNK4zvec6ailego11FixedVector*;
     _ZZNK4zvec6ailego11FloatHelper*;
@@ -4874,7 +4771,6 @@
     _ZZNK4zvec6ailego4Cube*;
     _ZZNK4zvec6ailego4File*;
     _ZZNK4zvec6ailego4Heap*;
-    _ZZNK4zvec6ailego6Concat6result*;
     _ZZNK4zvec6ailego6Crc32c*;
     _ZZNK4zvec6ailego6Logger*;
     _ZZNK4zvec6ailego6Params*;
