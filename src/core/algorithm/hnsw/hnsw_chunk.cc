@@ -146,8 +146,9 @@ int ChunkBroker::open(IndexStorage::Pointer stg, uint32_t &chunk_size,
 int ChunkBroker::close() {
   // A loaded, unmodified index must not acquire a new timestamp on close.
   // Storage can still be dirty for a newly created index with no vectors.
-  const int ret =
-      stg_ && chunk_meta_segment_ && (dirty_ || stg_->is_dirty()) ? flush(0UL) : 0;
+  const int ret = stg_ && chunk_meta_segment_ && (dirty_ || stg_->is_dirty())
+                      ? flush(0UL)
+                      : 0;
   chunk_meta_segment_.reset();
   stg_.reset();
   check_crc_ = false;
