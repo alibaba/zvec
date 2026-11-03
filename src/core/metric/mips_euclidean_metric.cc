@@ -76,8 +76,16 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
         break;
 
       case IndexMeta::DataType::DT_FP16:
-        squared_norm2_handle_ = reinterpret_cast<SquaredNorm2Handle>(
-            turbo::SquaredNorm2Matrix<ailego::Float16, 1>::Compute);
+        // Raw FP16 inner products widen to FP32. Use the same kernel for the
+        // norm (including training) so native FP16 norm accumulation cannot
+        // saturate or round differently and produce negative self-distances.
+        squared_norm2_handle_ = [](const void *m, size_t dim, float *out) {
+          static const auto ip =
+              RawKernels(turbo::MetricType::kInnerProduct, IndexMeta::DT_FP16)
+                  .dist;
+          ip(m, m, dim, out);
+          *out = -*out;
+        };
         break;
 
       case IndexMeta::DataType::DT_INT8:

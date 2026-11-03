@@ -15,6 +15,7 @@
 #include <cstring>
 #include <vector>
 #include <gtest/gtest.h>
+#include <zvec/ailego/utility/type_helper.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/turbo/turbo.h>
 #include "metric/metric_params.h"
@@ -229,5 +230,107 @@ TEST(TurboMetricAdapter, CachedMipsCallbacksObserveTrainingAndRetainLifetime) {
     trained(a, b, 3, &retained);
     EXPECT_NEAR(reference(32.0), retained, 1e-6);
     check_cached(16.0);
+  }
+}
+
+TEST(TurboMetricAdapter, Fp16MipsHighDimensionNormsMatchInnerProduct) {
+  for (size_t dim : {1024U, 8192U, 32768U, 32769U}) {
+    for (float value : {1.0f, 0.3f, 300.0f}) {
+      SCOPED_TRACE(testing::Message() << "dim=" << dim << " value=" << value);
+      std::vector<ailego::Float16> a(dim, ailego::Float16(value)), b(dim);
+      std::vector<ailego::Float16> interleaved(2 * dim);
+      double norm_a = 0.0, norm_b = 0.0, dot = 0.0;
+      for (size_t d = 0; d < dim; ++d) {
+        b[d] = ailego::Float16(value * (d % 2 ? -1.0f : 0.5f));
+        interleaved[2 * d] = a[d];
+        interleaved[2 * d + 1] = b[d];
+        const double x = float(a[d]), y = float(b[d]);
+        norm_a += x * x;
+        norm_b += y * y;
+        dot += x * y;
+      }
+      const double expected = 2.0 - 2.0 * dot / std::max(norm_a, norm_b);
+      auto metric = IndexFactory::CreateMetric("MipsSquaredEuclidean");
+      ASSERT_TRUE(metric);
+      ASSERT_EQ(0, metric->init(IndexMeta(IndexMeta::DT_FP16, dim),
+                                ailego::Params()));
+      const auto scalar = metric->distance();
+      const auto batch = metric->batch_distance();
+      const auto pair_matrix = metric->distance_matrix(1, 1);
+      const auto matrix = metric->distance_matrix(2, 1);
+      ASSERT_TRUE(scalar);
+      ASSERT_TRUE(batch);
+      ASSERT_TRUE(pair_matrix);
+      ASSERT_TRUE(matrix);
+      float result;
+      scalar(a.data(), a.data(), dim, &result);
+      EXPECT_FLOAT_EQ(0.0f, result);
+      pair_matrix(a.data(), a.data(), dim, &result);
+      EXPECT_FLOAT_EQ(0.0f, result);
+      scalar(b.data(), a.data(), dim, &result);
+      EXPECT_NEAR(expected, result, 1e-4);
+      const void *rows[] = {a.data(), b.data()};
+      float results[2];
+      batch(rows, a.data(), 2, dim, results, nullptr);
+      EXPECT_FLOAT_EQ(0.0f, results[0]);
+      EXPECT_NEAR(expected, results[1], 1e-4);
+      matrix(interleaved.data(), a.data(), dim, results);
+      EXPECT_FLOAT_EQ(0.0f, results[0]);
+      EXPECT_NEAR(expected, results[1], 1e-4);
+    }
+  }
+}
+
+TEST(TurboMetricAdapter, Fp16MipsTrainingUsesFp32Norms) {
+  constexpr size_t dim = 32768;
+  for (int injection : {1, 2}) {
+    for (float value : {1.0f, 0.3f, 300.0f}) {
+      SCOPED_TRACE(testing::Message()
+                   << "injection=" << injection << " value=" << value);
+      std::vector<ailego::Float16> a(dim, ailego::Float16(value));
+      std::vector<ailego::Float16> b(dim, ailego::Float16(value * 0.5f));
+      const double x = float(a[0]), y = float(b[0]);
+      const double norm_a = dim * x * x, norm_b = dim * y * y;
+      const double eta = 0.25 / norm_a;
+      const double u2 = eta * norm_a, v2 = eta * norm_b;
+      const double expected =
+          injection == 1
+              ? 2.0 * (1.0 - eta * dim * x * y - std::sqrt((1 - u2) * (1 - v2)))
+              : eta * dim * (x - y) * (x - y) + (u2 - v2) * (u2 - v2) +
+                    (u2 * u2 - v2 * v2) * (u2 * u2 - v2 * v2);
+      ailego::Params params;
+      params.set(MIPS_EUCLIDEAN_METRIC_INJECTION_TYPE, injection);
+      params.set(MIPS_EUCLIDEAN_METRIC_M_VALUE, 2);
+      params.set(MIPS_EUCLIDEAN_METRIC_U_VALUE, 0.5f);
+      params.set(MIPS_EUCLIDEAN_METRIC_MAX_L2_NORM, 1.0f);
+      auto metric = IndexFactory::CreateMetric("MipsSquaredEuclidean");
+      ASSERT_TRUE(metric);
+      ASSERT_EQ(0, metric->init(IndexMeta(IndexMeta::DT_FP16, dim), params));
+      const auto scalar = metric->distance();
+      const auto batch = metric->batch_distance();
+      const auto matrix = metric->distance_matrix(2, 1);
+      ASSERT_TRUE(scalar);
+      ASSERT_TRUE(batch);
+      ASSERT_TRUE(matrix);
+      ASSERT_EQ(0, metric->train(a.data(), dim));
+      float trained_norm = 0.0f;
+      ASSERT_TRUE(metric->params().get(MIPS_EUCLIDEAN_METRIC_MAX_L2_NORM,
+                                       &trained_norm));
+      EXPECT_NEAR(std::sqrt(norm_a), trained_norm, 1e-4 * std::sqrt(norm_a));
+      // Training must remain visible to callbacks cached before train(), and
+      // cleanup must leave their last trained state usable.
+      ASSERT_EQ(0, metric->cleanup());
+      metric.reset();
+      float pair = 0.0f;
+      scalar(b.data(), a.data(), dim, &pair);
+      EXPECT_NEAR(expected, pair, 1e-4);
+      const void *rows[] = {b.data(), b.data()};
+      float results[2];
+      batch(rows, a.data(), 2, dim, results, nullptr);
+      for (float result : results) EXPECT_NEAR(expected, result, 1e-4);
+      const std::vector<ailego::Float16> interleaved(2 * dim, b[0]);
+      matrix(interleaved.data(), a.data(), dim, results);
+      for (float result : results) EXPECT_NEAR(expected, result, 1e-4);
+    }
   }
 }
