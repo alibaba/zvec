@@ -2228,6 +2228,14 @@ Result<GroupResults> CollectionImpl::group_by_query(
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
+  if (query.group_by_field_name_.empty() || query.group_count_ == 0 ||
+      query.topk_per_group_ == 0) {
+    return tl::make_unexpected(Status::InvalidArgument(
+        "Invalid group_by request: group_by_field='",
+        query.group_by_field_name_, "', group_count=", query.group_count_,
+        ", group_topk=", query.topk_per_group_));
+  }
+
   auto segments = get_all_segments();
   if (segments.empty()) {
     return GroupResults();
