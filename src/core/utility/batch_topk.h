@@ -41,7 +41,7 @@ class BatchTopK {
     uint64_t id;
   };
 
-  BatchTopK() noexcept {}
+  BatchTopK() noexcept;
   BatchTopK(const BatchTopK &) = delete;
   BatchTopK &operator=(const BatchTopK &) = delete;
 
@@ -105,5 +105,9 @@ class BatchTopK {
   const batch_topk_internal::Ops *ops_{nullptr};
   Push push_{nullptr};
 };
+
+// Default after the first declaration to keep this constructor user-provided:
+// value-initialization must not zero the scratch arrays before reset().
+inline BatchTopK::BatchTopK() noexcept = default;
 }  // namespace core
 }  // namespace zvec
