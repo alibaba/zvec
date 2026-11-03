@@ -137,15 +137,6 @@ class ZVEC_API Collection {
   // must outlive its iterators.
   virtual Result<DocIterator::Ptr> create_iterator(
       const IteratorOptions &options = {}) = 0;
-
- public:
-  //! Debug-only: retrieve the storage mode string of an HNSW index on the
-  //! given vector column. Returns one of {"mmap", "buffer_pool",
-  //! "contiguous"}. Returns an error Status when the column does not exist,
-  //! has no index, or the index is not an HNSW index. Intended for
-  //! introspection and testing; not part of the stable public API.
-  virtual Result<std::string> debug_get_hnsw_storage_mode(
-      const std::string &column_name) const = 0;
 };
 
 }  // namespace zvec

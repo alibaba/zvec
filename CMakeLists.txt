@@ -137,6 +137,64 @@ option(BUILD_C_BINDINGS "Build C bindings" ON)
 option(BUILD_TOOLS "Build tools" ON)
 option(BUILD_CPP_EXAMPLES "Build C++ examples" OFF)
 
+# SDK surface policy.  The installed package is always the stable API, and there
+# is no switch to widen it: the engine surface was never a published capability
+# and is not planned to become one, so keeping it installable would keep alive a
+# second package shape that CI would have to build, smoke-test and keep
+# compatible forever.
+#
+# What installs (measured): 18 headers -- zvec/db/**, zvec/c_api.h,
+# zvec/export.h and the three zvec/detail/** headers they transitively need,
+# listed in cmake/zvec_public_headers.cmake -- two shared libraries (libzvec and
+# libzvec_c_api) and one archive (libzvec.a).  No include/zvec/core,
+# include/zvec/ailego or include/zvec/turbo directory, and no libzvec_core,
+# libzvec_ailego or libzvec_turbo in any form.
+#
+# Every engine component is still *built*: libzvec and libzvec_c_api
+# whole-archive them, and in-tree tests, examples and subproject-integration
+# link the targets directly.  Only the install rules are gone.  A consumer that
+# wants the engine API builds zvec from source, where src/include carries all 98
+# headers and libzvec exports the engine symbols either way.
+#
+# Publishing none of it costs nobody a capability.  src/include/zvec/README.md
+# -- which ships in the package -- states that zvec/core/**, zvec/ailego/** and
+# zvec/turbo/** "may change or disappear in any release without notice, and are
+# not covered by the compatibility promise"; no release note, README or SDK
+# document ever described building against them; and examples/c++ reads them from
+# the source tree rather than from an install tree.  The standalone
+# libzvec_core / libzvec_ailego were equally unadvertised, and libzvec serves
+# the same symbols, so "-lzvec instead of -lzvec_core" is the whole migration.
+#
+# zvec/detail/ holds the three headers the stable API cannot do without: the
+# vendored tl::expected behind Result<T>, the Float16 storage type inside
+# Doc::Value, and the constexpr index defaults used as default arguments.  They
+# used to live under zvec/ailego/ and zvec/core/, which forced every package to
+# carry engine directories; a neutral directory lets both layers include them
+# without inverting the layer order, and their old paths remain as shims so no
+# engine source had to change.  Namespaces are untouched (zvec::ailego::Float16
+# is mangled into Doc's members), so the move is ABI-neutral.
+# scripts/check_public_headers.py rule 6 fails if the stable closure ever
+# reaches zvec/core, zvec/ailego or zvec/turbo again.
+#
+# The libzvec export whitelist is still generated at the *engine* surface (98
+# headers) even though the package ships 18, so a source-tree consumer that gets
+# the engine headers from src/include can still link them out of libzvec.  See
+# scripts/generate_export_whitelist.py for the trade-off.
+
+# The removed switches error out rather than being silently ignored, so a stale
+# CI command line or an old integration script fails loudly instead of producing
+# a trimmed package that looks like it was configured for the full one.  Passing
+# them as OFF is accepted: that asks for the shape that now always ships.
+if(ZVEC_INSTALL_ENGINE_HEADERS OR ZVEC_INSTALL_ENGINE_SHARED_LIBRARIES)
+  message(FATAL_ERROR
+      "ZVEC_INSTALL_ENGINE_HEADERS and ZVEC_INSTALL_ENGINE_SHARED_LIBRARIES were "
+      "removed: the installed package is always the stable API surface (18 "
+      "headers, libzvec and libzvec_c_api, libzvec.a). Build zvec from source if "
+      "you need the zvec/core, zvec/ailego or zvec/turbo headers -- libzvec "
+      "exports the engine API either way, so link -lzvec instead of -lzvec_core "
+      "or -lzvec_ailego.")
+endif()
+
 message(STATUS "BUILD_ZVEC_SHARED:${BUILD_ZVEC_SHARED}")
 message(STATUS "BUILD_ZVEC_AILEGO_SHARED:${BUILD_ZVEC_AILEGO_SHARED}")
 message(STATUS "BUILD_ZVEC_CORE_SHARED:${BUILD_ZVEC_CORE_SHARED}")

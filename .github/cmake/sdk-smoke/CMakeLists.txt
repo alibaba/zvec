@@ -56,3 +56,48 @@ add_test(NAME c_smoke COMMAND c_smoke)
 add_test(NAME cpp_smoke COMMAND cpp_smoke)
 # Clear external overrides so Chinese FTS exercises the embedded defaults.
 set_tests_properties(cpp_smoke PROPERTIES ENVIRONMENT "ZVEC_JIEBA_DICT_DIR=")
+
+# ---------------------------------------------------------------------------
+# Package shape: the stable API only, always
+# ---------------------------------------------------------------------------
+# There is exactly one package shape -- 18 stable headers, libzvec and
+# libzvec_c_api, libzvec.a -- so these assertions run unconditionally on every
+# staged tree instead of hiding behind opt-in flags.  They check the *install
+# result*, not the install rules, which is the only place a stray copy, a new
+# install(DIRECTORY) or a staging script can widen the published surface without
+# touching anything the header checker sees.
+#
+# Assert on the directories, not on a probe header: the stable closure reaches
+# no engine header at all (scripts/check_public_headers.py rule 6), so the
+# package must not contain an engine header *directory* either -- not even a
+# partially populated one, which a single-file probe would walk straight past.
+foreach(_engine_dir core ailego turbo)
+  if(EXISTS "${ZVEC_SDK_DIR}/include/zvec/${_engine_dir}")
+    message(FATAL_ERROR
+      "the package carries an engine header directory: "
+      "include/zvec/${_engine_dir}")
+  endif()
+endforeach()
+
+# No engine library in any form.  libzvec whole-archives all three components and
+# exports the engine API, so packaging them separately would ship two ways to
+# call one implementation and twice the ABI to keep compatible; the archives are
+# equally unc callable, because the headers that declare them are not installed.
+# Shared *and* static suffixes, since neither may appear.  The names are specific
+# enough not to match the installed libzvec.a / zvec.lib.
+set(_engine_libraries)
+foreach(_engine_name zvec_core zvec_ailego zvec_turbo)
+  file(GLOB _found_engine_libraries
+    "${ZVEC_SDK_DIR}/lib/*${_engine_name}*.so"
+    "${ZVEC_SDK_DIR}/lib/*${_engine_name}*.so.*"
+    "${ZVEC_SDK_DIR}/lib/*${_engine_name}*.dylib"
+    "${ZVEC_SDK_DIR}/lib/*${_engine_name}*.dll"
+    "${ZVEC_SDK_DIR}/lib/*${_engine_name}*.a"
+    "${ZVEC_SDK_DIR}/lib/*${_engine_name}*.lib")
+  list(APPEND _engine_libraries ${_found_engine_libraries})
+endforeach()
+if(_engine_libraries)
+  message(FATAL_ERROR
+    "the package carries engine libraries, which are built but never installed: "
+    "${_engine_libraries}")
+endif()

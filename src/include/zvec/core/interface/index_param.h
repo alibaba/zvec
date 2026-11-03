@@ -23,7 +23,7 @@
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/core/framework/index_filter.h>
 #include <zvec/core/framework/index_meta.h>
-#include <zvec/core/interface/constants.h>
+#include <zvec/detail/index_defaults.h>
 #include <zvec/export.h>
 #include "zvec/core/framework/index_framework.h"
 

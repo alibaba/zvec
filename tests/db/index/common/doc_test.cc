@@ -18,6 +18,8 @@
 #include <limits>
 #include <gtest/gtest.h>
 #include <zvec/ailego/utility/float_helper.h>
+#include "db/index/common/doc_internal.h"
+#include "db/index/common/query_internal.h"
 #include "utils/utils.h"
 #include "zvec/db/index_params.h"
 #include "zvec/db/status.h"
@@ -540,11 +542,11 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
 
-    auto s = doc.validate_and_sanitize(schema);
+    auto s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_TRUE(s.ok());
 
     doc = test::TestHelper::CreateDocNull(1, *schema);
-    s = doc.validate_and_sanitize(schema);
+    s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_FALSE(s.ok());
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -554,11 +556,11 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
     auto schema = test::TestHelper::CreateNormalSchema(true);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
 
-    auto s = doc.validate_and_sanitize(schema);
+    auto s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_TRUE(s.ok());
 
     doc = test::TestHelper::CreateDocNull(1, *schema);
-    s = doc.validate_and_sanitize(schema);
+    s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_TRUE(s.ok());
   }
 
@@ -566,11 +568,11 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
-    auto s = doc.validate_and_sanitize(schema);
+    auto s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_TRUE(s.ok());
 
     doc.set("another_field", 1);
-    s = doc.validate_and_sanitize(schema);
+    s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_FALSE(s.ok());
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -579,11 +581,11 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
-    auto s = doc.validate_and_sanitize(schema);
+    auto s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_TRUE(s.ok());
 
     doc.set("int32", std::string("1"));
-    s = doc.validate_and_sanitize(schema);
+    s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_FALSE(s.ok());
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -592,7 +594,7 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
-    auto s = doc.validate_and_sanitize(schema);
+    auto s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_TRUE(s.ok());
 
     std::string field = "dense_fp32";
@@ -600,7 +602,7 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
     ASSERT_NE(field_schema, nullptr);
 
     doc.set(field, std::vector<int16_t>(field_schema->dimension(), 1));
-    s = doc.validate_and_sanitize(schema);
+    s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_FALSE(s.ok());
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -609,7 +611,7 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
-    auto s = doc.validate_and_sanitize(schema);
+    auto s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_TRUE(s.ok());
 
     std::string field = "dense_fp32";
@@ -617,12 +619,12 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
     ASSERT_NE(field_schema, nullptr);
 
     doc.set(field, std::vector<float>(field_schema->dimension() - 1, 1.0));
-    s = doc.validate_and_sanitize(schema);
+    s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_FALSE(s.ok());
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
     doc.set(field, std::vector<float>());
-    s = doc.validate_and_sanitize(schema);
+    s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_FALSE(s.ok());
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -631,7 +633,7 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
-    auto s = doc.validate_and_sanitize(schema);
+    auto s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_TRUE(s.ok());
 
     std::string field = "sparse_fp32";
@@ -639,7 +641,7 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
     ASSERT_NE(field_schema, nullptr);
 
     doc.set(field, std::vector<int16_t>(field_schema->dimension(), 1));
-    s = doc.validate_and_sanitize(schema);
+    s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_FALSE(s.ok());
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -648,7 +650,7 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
   {
     auto schema = test::TestHelper::CreateNormalSchema(false);
     auto doc = test::TestHelper::CreateDoc(1, *schema);
-    auto s = doc.validate_and_sanitize(schema);
+    auto s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_TRUE(s.ok());
 
     std::string field = "sparse_fp32";
@@ -666,7 +668,7 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
         indices, values};
     doc.set<std::pair<std::vector<uint32_t>, std::vector<float>>>(
         field, sparse_float_vec);
-    s = doc.validate_and_sanitize(schema);
+    s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_FALSE(s.ok());
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -682,7 +684,7 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
         {0.7f, 0.1f, 0.9f, 0.2f, 0.5f, 0.3f, 0.6f}};
     doc.set<std::pair<std::vector<uint32_t>, std::vector<float>>>("sparse_fp32",
                                                                   unsorted);
-    auto s = doc.validate_and_sanitize(schema);
+    auto s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_TRUE(s.ok()) << s.message();
     const auto sorted_opt =
         doc.get<std::pair<std::vector<uint32_t>, std::vector<float>>>(
@@ -699,7 +701,7 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
         {0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f, 0.7f}};
     doc.set<std::pair<std::vector<uint32_t>, std::vector<float>>>("sparse_fp32",
                                                                   dup);
-    s = doc.validate_and_sanitize(schema);
+    s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_FALSE(s.ok());
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -708,18 +710,18 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
   {
     Doc doc;
     // null schema
-    auto s = doc.validate_and_sanitize(nullptr);
+    auto s = internal::DocAccess::validate_and_sanitize(doc, nullptr);
     ASSERT_EQ(s.code(), StatusCode::INTERNAL_ERROR);
 
     // doc has no pk field
     auto schema = test::TestHelper::CreateNormalSchema(false);
-    s = doc.validate_and_sanitize(schema);
+    s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
     // schema contains a field with an undefined data type
     schema->add_field(
         std::make_shared<FieldSchema>("undefined", DataType::UNDEFINED, true));
-    s = doc.validate_and_sanitize(schema);
+    s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
 
@@ -767,7 +769,7 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
 
     auto doc = test::TestHelper::CreateDoc(1, *schema);
 
-    auto s = doc.validate_and_sanitize(schema);
+    auto s = internal::DocAccess::validate_and_sanitize(doc, schema);
     ASSERT_TRUE(s.ok());
   }
 
@@ -816,7 +818,7 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
     };
     for (auto pk : valid_names) {
       auto doc = test::TestHelper::CreateDoc(1, *schema, pk);
-      auto s = doc.validate_and_sanitize(schema);
+      auto s = internal::DocAccess::validate_and_sanitize(doc, schema);
       ASSERT_TRUE(s.ok()) << "expected valid pk: " << pk
                           << ", got: " << s.message();
     }
@@ -853,7 +855,7 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
     };
     for (const auto &pk : valid_names) {
       auto doc = test::TestHelper::CreateDoc(1, *schema, pk);
-      auto s = doc.validate_and_sanitize(schema);
+      auto s = internal::DocAccess::validate_and_sanitize(doc, schema);
       ASSERT_TRUE(s.ok()) << "expected valid pk: " << pk << ": " << s.message();
     }
   }
@@ -874,7 +876,7 @@ TEST_F(DocDetailedTest, ValidateAndSanitization) {
     for (const auto &pk : invalid_ids) {
       auto doc = test::TestHelper::CreateDoc(1, *schema, pk);
       doc.set_pk(pk);  // The helper generates a default ID for an empty input.
-      auto s = doc.validate_and_sanitize(schema);
+      auto s = internal::DocAccess::validate_and_sanitize(doc, schema);
       ASSERT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
       EXPECT_EQ(s.message().find("Invalid doc: "), 0u);
       EXPECT_EQ(s.message().find("offset"), std::string::npos);
@@ -1246,7 +1248,7 @@ TEST(SearchQuery, ValidateAndSanitize) {
     SearchQuery query;
     query.topk_ = 10;
     query.target_.field_name_ = "field_name";
-    auto s = query.validate(nullptr, nullptr);
+    auto s = internal::validate_search_query(query, nullptr, nullptr);
     EXPECT_TRUE(s.ok());
   }
 
@@ -1260,7 +1262,7 @@ TEST(SearchQuery, ValidateAndSanitize) {
         std::string(reinterpret_cast<char *>(query_vector.data()),
                     query_vector.size() * sizeof(float));
     query.target_.set_vector(query_vector_str);
-    auto s = query.validate(nullptr, nullptr);
+    auto s = internal::validate_search_query(query, nullptr, nullptr);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -1272,7 +1274,7 @@ TEST(SearchQuery, ValidateAndSanitize) {
     query.topk_ = 10;
     query.output_fields_ = std::vector<std::string>(1025);
     FieldSchema schema = FieldSchema("field_name", DataType::INT32);
-    auto s = query.validate(&schema, nullptr);
+    auto s = internal::validate_search_query(query, &schema, nullptr);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -1289,11 +1291,11 @@ TEST(SearchQuery, ValidateAndSanitize) {
     query.target_.set_vector(query_vector_str);
     FieldSchema schema =
         FieldSchema("field_name", DataType::VECTOR_FP32, 4, true);
-    auto s = query.validate(&schema, nullptr);
+    auto s = internal::validate_search_query(query, &schema, nullptr);
     EXPECT_TRUE(s.ok());
 
     query.target_.set_vector(query_vector_str.substr(0, 3));
-    s = query.validate(&schema, nullptr);
+    s = internal::validate_search_query(query, &schema, nullptr);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -1312,7 +1314,7 @@ TEST(SearchQuery, ValidateAndSanitize) {
                     query_values.size() * sizeof(float)));
     FieldSchema schema =
         FieldSchema("field_name", DataType::SPARSE_VECTOR_FP32);
-    auto s = query.validate(&schema, nullptr);
+    auto s = internal::validate_search_query(query, &schema, nullptr);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
@@ -1322,7 +1324,7 @@ TEST(SearchQuery, ValidateAndSanitize) {
     query.target_.set_sparse_vector(
         std::string(reinterpret_cast<char *>(&one_index), sizeof(uint32_t)),
         std::string(reinterpret_cast<char *>(&one_value), sizeof(float)));
-    s = query.validate(&schema, nullptr);
+    s = internal::validate_search_query(query, &schema, nullptr);
     EXPECT_TRUE(s.ok());
   }
 
@@ -1365,12 +1367,12 @@ TEST(SearchQuery, ValidateAndSanitize) {
       query.target_.set_sparse_vector(pack_idx({42u, 7u, 128u, 3u, 99u}),
                                       pack_val({0.1f, 0.2f, 0.3f, 0.4f, 0.5f}));
       bool need_sanitize = false;
-      auto s = query.validate(&schema, &need_sanitize);
+      auto s = internal::validate_search_query(query, &schema, &need_sanitize);
       EXPECT_TRUE(s.ok()) << s.message();
       EXPECT_TRUE(need_sanitize);
 
       VectorClause vc = *query.target_.get_vector_clause();
-      s = sanitize_sparse_vector(vc, &schema);
+      s = internal::sanitize_sparse_vector(vc, &schema);
       EXPECT_TRUE(s.ok()) << s.message();
       EXPECT_EQ(decode_idx(vc.sparse_indices_),
                 (std::vector<uint32_t>{3u, 7u, 42u, 99u, 128u}));
@@ -1386,7 +1388,7 @@ TEST(SearchQuery, ValidateAndSanitize) {
       query.target_.set_sparse_vector(pack_idx({3u, 7u, 42u, 42u, 99u}),
                                       pack_val({0.1f, 0.2f, 0.3f, 0.4f, 0.5f}));
       bool need_sanitize = false;
-      auto s = query.validate(&schema, &need_sanitize);
+      auto s = internal::validate_search_query(query, &schema, &need_sanitize);
       EXPECT_FALSE(s.ok());
       EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
       EXPECT_FALSE(need_sanitize);
@@ -1400,12 +1402,12 @@ TEST(SearchQuery, ValidateAndSanitize) {
       query.target_.set_sparse_vector(pack_idx({42u, 3u, 7u, 42u, 99u}),
                                       pack_val({0.1f, 0.2f, 0.3f, 0.4f, 0.5f}));
       bool need_sanitize = false;
-      auto s = query.validate(&schema, &need_sanitize);
+      auto s = internal::validate_search_query(query, &schema, &need_sanitize);
       EXPECT_TRUE(s.ok());
       EXPECT_TRUE(need_sanitize);
 
       VectorClause vc = *query.target_.get_vector_clause();
-      s = sanitize_sparse_vector(vc, &schema);
+      s = internal::sanitize_sparse_vector(vc, &schema);
       EXPECT_FALSE(s.ok());
       EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
     }
@@ -1418,7 +1420,7 @@ TEST(SearchQuery, ValidateAndSanitize) {
       query.target_.set_sparse_vector(pack_idx({1u, 2u, 3u, 4u}),
                                       pack_val({0.1f, 0.2f, 0.3f, 0.4f}));
       bool need_sanitize = false;
-      auto s = query.validate(&schema, &need_sanitize);
+      auto s = internal::validate_search_query(query, &schema, &need_sanitize);
       EXPECT_TRUE(s.ok()) << s.message();
       EXPECT_FALSE(need_sanitize);
     }
@@ -1430,7 +1432,7 @@ TEST(SearchQuery, ValidateAndSanitize) {
       query.topk_ = 100;
       query.target_.set_sparse_vector(pack_idx({1u, 2u, 3u, 4u}),
                                       pack_val({0.1f, 0.2f, 0.3f}));
-      auto s = query.validate(&schema, nullptr);
+      auto s = internal::validate_search_query(query, &schema, nullptr);
       EXPECT_FALSE(s.ok());
       EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
     }
@@ -1450,16 +1452,16 @@ TEST(SearchQuery, ValidateAndSanitize) {
                     std::make_shared<HnswIndexParams>(MetricType::L2));
 
     query.target_.query_params_ = std::make_shared<HnswQueryParams>(150);
-    auto s = query.validate(&schema, nullptr);
+    auto s = internal::validate_search_query(query, &schema, nullptr);
     EXPECT_TRUE(s.ok());
 
     query.target_.query_params_ = std::make_shared<IVFQueryParams>(50);
-    s = query.validate(&schema, nullptr);
+    s = internal::validate_search_query(query, &schema, nullptr);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
     query.target_.query_params_ = nullptr;
-    s = query.validate(&schema, nullptr);
+    s = internal::validate_search_query(query, &schema, nullptr);
     EXPECT_TRUE(s.ok());
   }
 
@@ -1477,21 +1479,21 @@ TEST(SearchQuery, ValidateAndSanitize) {
                     std::make_shared<IvfRabitqIndexParams>(MetricType::L2));
 
     query.target_.query_params_ = std::make_shared<IvfRabitqQueryParams>(0);
-    auto s = query.validate(&schema, nullptr);
+    auto s = internal::validate_search_query(query, &schema, nullptr);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
     query.target_.query_params_ = std::make_shared<IvfRabitqQueryParams>(-1);
-    s = query.validate(&schema, nullptr);
+    s = internal::validate_search_query(query, &schema, nullptr);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
     query.target_.query_params_ = std::make_shared<IvfRabitqQueryParams>(1025);
-    s = query.validate(&schema, nullptr);
+    s = internal::validate_search_query(query, &schema, nullptr);
     EXPECT_TRUE(s.ok()) << s.message();
 
     query.target_.query_params_ = std::make_shared<IvfRabitqQueryParams>(1024);
-    s = query.validate(&schema, nullptr);
+    s = internal::validate_search_query(query, &schema, nullptr);
     EXPECT_TRUE(s.ok()) << s.message();
   }
 
@@ -1507,18 +1509,18 @@ TEST(SearchQuery, ValidateAndSanitize) {
     FtsClause fts_test;
     fts_test.query_string_ = "test";
     fts_only.target_.clause_ = fts_test;
-    auto s = fts_only.validate(&fts_schema, nullptr);
+    auto s = internal::validate_search_query(fts_only, &fts_schema, nullptr);
     EXPECT_TRUE(s.ok());
 
     // FTS query with nullptr schema -> fail (field not found)
-    s = fts_only.validate(nullptr, nullptr);
+    s = internal::validate_search_query(fts_only, nullptr, nullptr);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
 
     // FTS query with vector field schema -> fail (type mismatch)
     FieldSchema vec_schema("embedding", DataType::VECTOR_FP32, 128, false,
                            std::make_shared<HnswIndexParams>(MetricType::L2));
-    s = fts_only.validate(&vec_schema, nullptr);
+    s = internal::validate_search_query(fts_only, &vec_schema, nullptr);
     EXPECT_FALSE(s.ok());
     EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
   }
@@ -1539,7 +1541,7 @@ TEST(SearchQuery, ValidateAndSanitize) {
       query.topk_ = 10;
       query.target_.clause_ =
           VectorViewClause{vec_data, std::string_view{}, std::string_view{}};
-      auto s = query.validate(&schema, nullptr);
+      auto s = internal::validate_search_query(query, &schema, nullptr);
       EXPECT_TRUE(s.ok()) << s.message();
     }
 
@@ -1551,7 +1553,7 @@ TEST(SearchQuery, ValidateAndSanitize) {
       std::string short_vec = vec_data.substr(0, sizeof(float) * 2);
       query.target_.clause_ =
           VectorViewClause{short_vec, std::string_view{}, std::string_view{}};
-      auto s = query.validate(&schema, nullptr);
+      auto s = internal::validate_search_query(query, &schema, nullptr);
       EXPECT_FALSE(s.ok());
       EXPECT_EQ(s.code(), StatusCode::INVALID_ARGUMENT);
     }
@@ -1573,7 +1575,8 @@ TEST(SearchQuery, ValidateAndSanitize) {
       query.target_.clause_ =
           VectorViewClause{std::string_view{}, idx_data, val_data};
       bool need_sanitize = false;
-      auto s = query.validate(&sparse_schema, &need_sanitize);
+      auto s = internal::validate_search_query(query, &sparse_schema,
+                                               &need_sanitize);
       EXPECT_TRUE(s.ok()) << s.message();
       EXPECT_TRUE(need_sanitize);
     }
@@ -1696,7 +1699,7 @@ TEST_F(DocDetailedTest, ValidationErrorsEscapeAndBoundDocumentAndFieldNames) {
     Doc doc;
     doc.set_pk(std::string(1024, 'd'));
     doc.set(name, int32_t{42});
-    const auto status = doc.validate_and_sanitize(schema);
+    const auto status = internal::DocAccess::validate_and_sanitize(doc, schema);
     EXPECT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
     EXPECT_EQ(status.message().find("Invalid doc["), 0u);
     EXPECT_NE(status.message().find("does not exist"), std::string::npos);

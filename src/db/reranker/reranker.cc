@@ -12,9 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <algorithm>
-#include "zvec/db/status.h"
+// MSVC hides M_PI behind _USE_MATH_DEFINES, and the macro only takes effect if
+// it is set before the first inclusion of <math.h> or <cmath>.  Any earlier
+// include that drags those in closes the guard and leaves M_PI undefined, and
+// zvec/db/status.h -- the only non-standard header above <cmath> -- started
+// doing exactly that, which is what broke the Windows build.  So this goes
+// first, not next to <cmath> where it reads better.
 #define _USE_MATH_DEFINES
+
+#include <algorithm>
 #include <cmath>
 #include <queue>
 #include <unordered_map>
@@ -23,6 +29,7 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/index_params.h>
 #include <zvec/db/reranker.h>
+#include "zvec/db/status.h"
 
 namespace zvec {
 namespace {

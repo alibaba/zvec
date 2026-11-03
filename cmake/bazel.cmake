@@ -14,6 +14,7 @@
 ##    cc_library(
 ##        NAME <name>
 ##        [STATIC] [SHARED] [OBJECTS] [STRICT] [ALWAYS_LINK] [EXCLUDE] [PACKED]
+##        [SKIP_HEADER_INSTALL] [SKIP_ARCHIVE_INSTALL]
 ##        [SRCS_NO_GLOB]
 ##        SRCS <file1> [file2 ...]
 ##        [INCS dir1 ...]
@@ -30,6 +31,11 @@
 ##      )
 ##    OBJECTS creates <name>_objects for a static library. EXPORT_DEF also
 ##    creates <name>_export_objects from the same sources and build settings.
+##    SKIP_HEADER_INSTALL keeps PUBINCS on the compile include path but lets the
+##    caller install a curated subset instead of the whole directory.
+##    SKIP_ARCHIVE_INSTALL still builds the library but does not install it, for
+##    a component whose headers are optional: shipping an archive without the
+##    headers that declare its API publishes something that cannot be called.
 ##
 ##  1.4. Build a C/C++ executable program
 ##    cc_binary(
@@ -965,7 +971,7 @@ endfunction()
 function(cc_library)
   cmake_parse_arguments(
     CC_ARGS
-      "STATIC;SHARED;OBJECTS;EXCLUDE;PACKED;SRCS_NO_GLOB"
+      "STATIC;SHARED;OBJECTS;EXCLUDE;PACKED;SRCS_NO_GLOB;SKIP_HEADER_INSTALL;SKIP_ARCHIVE_INSTALL"
       "NAME;VERSION;EXPORT_DEF"
       "SRCS;INCS;PUBINCS;DEFS;LIBS;CFLAGS;CXXFLAGS;LDFLAGS;DEPS;PACKED_EXCLUDES"
       ${ARGN}
@@ -1070,7 +1076,7 @@ function(cc_library)
         DEPS "${CC_ARGS_DEPS}"
         "${CC_ARGS_UNPARSED_ARGUMENTS}"
     )
-    if(CC_ARGS_PACKED)
+    if(CC_ARGS_PACKED AND NOT CC_ARGS_SKIP_ARCHIVE_INSTALL)
       install(
         TARGETS ${CC_ARGS_NAME}_static
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
@@ -1092,12 +1098,14 @@ function(cc_library)
       "${CC_ARGS_UNPARSED_ARGUMENTS}"
   )
   if(CC_ARGS_PACKED)
-    install(
-        TARGETS ${CC_ARGS_NAME}
-        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-        LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
-    )
-    if(CC_ARGS_PUBINCS)
+    if(NOT CC_ARGS_SKIP_ARCHIVE_INSTALL)
+      install(
+          TARGETS ${CC_ARGS_NAME}
+          ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+          LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+      )
+    endif()
+    if(CC_ARGS_PUBINCS AND NOT CC_ARGS_SKIP_HEADER_INSTALL)
       foreach(PACKED_EXCLUDE ${CC_ARGS_PACKED_EXCLUDES})
         list(APPEND PATTERN_EXCLUDES "PATTERN;${PACKED_EXCLUDE};EXCLUDE")
       endforeach()

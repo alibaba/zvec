@@ -14,7 +14,7 @@
 #pragma once
 
 #include <map>
-#include <zvec/ailego/pattern/expected.hpp>
+#include <zvec/detail/expected.hpp>
 
 namespace zvec {
 namespace core {

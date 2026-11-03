@@ -83,6 +83,96 @@ CMAKE_BUILD_TYPE=Debug CMAKE_GENERATOR="Unix Makefiles" pip install -v .
 
 ---
 
+## C++ Public API
+
+Only `src/include/zvec/db/*.h` and `src/include/zvec/c_api.h` are the stable,
+versioned API. `src/include/zvec/{core,ailego,turbo}/**` are the engine and may
+change at any time; they are **never installed**, so a consumer that wants them
+builds zvec from source. In-tree code always sees them: `src/include` is on the
+compile include path.
+
+Three headers the stable API cannot do without live in `src/include/zvec/detail/`:
+the vendored `tl::expected` behind `Result<T>`, the `Float16` storage type inside
+`Doc::Value`, and the `constexpr` index defaults used as default arguments. They
+are installed but are **not** API. They sit outside `zvec/{core,ailego,turbo}` so
+a package contains no engine directory at all, and their old engine paths
+remain as shims, so engine code includes them exactly as before. The namespaces
+did not move — `zvec::ailego::Float16` is mangled into `Doc`'s members — so the
+relocation is ABI-neutral. `check_public_headers.py` fails if the stable closure
+reaches an engine header again.
+
+See
+[`src/include/zvec/README.md`](src/include/zvec/README.md) for the boundary rules
+(where internal helpers go, how to hide engine types, how to keep the include
+budget in check).
+
+A released package carries two shared libraries, `libzvec` and `libzvec_c_api`,
+18 headers and `libzvec.a`. `libzvec` whole-archives every component and exports
+the engine API too, so the standalone `libzvec_core` / `libzvec_ailego` — and
+their archives — are built but never packaged. The invariant is that the install
+tree never carries an engine artifact whose headers are absent: an installed
+library that cannot be called is worse than no library. Both halves are asserted
+on every staged package, in `.github/cmake/sdk-smoke/CMakeLists.txt` and in the
+prebuilt workflow.
+
+The rules are enforced by `scripts/check_public_headers.py`, which runs in
+pre-commit and in the Lint workflow:
+
+```bash
+python scripts/check_public_headers.py --verbose --compile-check
+```
+
+It also owns the install manifest. After adding, removing or re-including a
+public header, regenerate it and commit the diff:
+
+```bash
+python scripts/check_public_headers.py --write-install-manifest
+git diff cmake/zvec_public_headers.cmake
+```
+
+A manifest diff means the SDK's header set changed, so call it out in the PR
+description: every header that enters the closure ships in every package from
+then on.
+
+### Exported symbols
+
+`libzvec` whole-archives every component plus rocksdb, arrow, antlr and
+protobuf, so it links with an exported-symbol whitelist rather than exporting
+everything. `src/exported_symbols_zvec.{txt,lds}` is *generated* from the
+published headers -- it is the list of names a consumer can actually write --
+and is what keeps engine internals such as `zvec::sqlengine` out of the ABI
+surface (measured 10784 -> 2602 exports on macOS/arm64).
+
+The pre-commit hook and the Lint workflow check it for drift. After changing a
+published header, regenerate it and commit the diff:
+
+```bash
+python scripts/generate_export_whitelist.py --write
+git diff src/exported_symbols_zvec.txt
+```
+
+This needs `clang++` (the header set is parsed with a clang AST dump); without
+it the check skips locally and fails in CI. The dump reflects the host platform,
+so a declaration a public header only makes under a platform macro would make the
+list depend on where it was generated; those are dropped via
+`PLATFORM_SPECIFIC_INTERNALS` in the script, and a macOS regeneration is
+byte-identical to what Linux CI derives. The list is generated at the *engine*
+surface — all 98 public headers — even though the package installs 18, so
+that in-tree and `add_subdirectory` consumers can still link the engine API out
+of `libzvec`; `--surface stable` is the tighter alternative if that ever stops
+being wanted. The standalone engine libraries (`libzvec_core`, `libzvec_ailego`)
+keep the coarser namespace-wide `src/exported_symbols_cpp.*`, since their whole
+`zvec::core` / `zvec::ailego` surface is their API. Both lists apply to non-Debug
+configurations only, so Debug keeps full symbols for in-tree debugging and crash
+symbolication. That test is a `$<CONFIG:Debug>` generator expression, not
+`if(CMAKE_BUILD_TYPE ...)`: a multi-config generator (Xcode, Visual Studio, Ninja
+Multi-Config) has no `CMAKE_BUILD_TYPE` at configure time, so a plain `if()` reads
+"not Debug" and whitelists the Debug configuration too. The hand-written binding
+lists under `src/binding/` are unconditional — `libzvec_c_api` and the Python
+module only ever export their binding surface, in every configuration.
+
+---
+
 ## Submitting Changes
 
 1. Fork the repo and create a feature branch (`feat/...`, `fix/...`, `docs/...`)

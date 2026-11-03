@@ -36,6 +36,7 @@
 #include "db/index/column/inverted_column/inverted_indexer.h"
 #include "db/index/column/vector_column/engine_helper.hpp"
 #include "db/index/column/vector_column/vector_column_indexer.h"
+#include "db/index/common/hnsw_rabitq_params_internal.h"
 #include "db/index/common/index_filter.h"
 #include "db/index/common/meta.h"
 #include "db/index/storage/forward_writer.h"
@@ -926,8 +927,8 @@ Status SegmentHelper::PrepareQuantizeField(
   if (int ret = converter->to_reformer(&reformer); ret != 0) {
     return Status::InternalError("Failed to to get rabitq reformer:", ret);
   }
-  rabitq_params->set_rabitq_reformer(reformer);
-  rabitq_params->set_raw_vector_provider(raw_vector_provider);
+  detail::HnswRabitqRuntimeAccess::set(*rabitq_params, raw_vector_provider,
+                                       reformer);
 
   field_clone->set_index_params(rabitq_params);
   *out_field = field_clone;

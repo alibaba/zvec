@@ -17,7 +17,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <zvec/ailego/pattern/singleton.h>
+#include <type_traits>
 #include <zvec/db/status.h>
 #include <zvec/export.h>
 
@@ -31,10 +31,29 @@ const std::string FILE_LOG_TYPE_NAME = "AppendLogger";
 const std::string DEFAULT_LOG_DIR = "./logs";
 const std::string DEFAULT_LOG_BASENAME = "zvec.log";
 
-class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
-  friend class ailego::Singleton<GlobalConfig>;
-
+class ZVEC_API GlobalConfig {
  public:
+  /// Retrieves the process-wide instance.
+  ///
+  /// This replaces the `ailego::Singleton<GlobalConfig>` CRTP base so the
+  /// published header no longer reaches into the engine's ailego layer.  The
+  /// semantics are the ones that base provided: a thread-safe C++11 function
+  /// local static, and a non-copyable, non-movable type.
+  static GlobalConfig &Instance() noexcept(
+      std::is_nothrow_constructible<GlobalConfig>::value) {
+    static GlobalConfig instance;
+    return instance;
+  }
+
+  // Explicit because the deleted copy/move operations below would otherwise
+  // suppress it.  Public, matching the implicit constructor the CRTP base left
+  // in place.
+  GlobalConfig() = default;
+  GlobalConfig(GlobalConfig const &) = delete;
+  GlobalConfig(GlobalConfig &&) = delete;
+  GlobalConfig &operator=(GlobalConfig const &) = delete;
+  GlobalConfig &operator=(GlobalConfig &&) = delete;
+
   enum class LogLevel : uint8_t {
     kDebug = 0,
     kInfo,

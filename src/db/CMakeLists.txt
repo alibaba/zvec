@@ -33,7 +33,10 @@ if(WIN32 AND BUILD_ZVEC_SHARED)
 endif()
 
 cc_library(
-  NAME zvec STATIC STRICT SRCS_NO_GLOB PACKED ${ZVEC_DB_LIBRARY_OPTIONS}
+  # SKIP_HEADER_INSTALL: src/CMakeLists.txt installs a curated header set
+  # (cmake/zvec_public_headers.cmake) instead of the whole src/include tree.
+  NAME zvec STATIC STRICT SRCS_NO_GLOB PACKED SKIP_HEADER_INSTALL
+       ${ZVEC_DB_LIBRARY_OPTIONS}
   SRCS ${ALL_DB_SRCS}
   INCS . ${CMAKE_CURRENT_BINARY_DIR}
   PUBINCS ${PROJECT_ROOT_DIR}/src/include/

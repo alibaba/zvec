@@ -215,6 +215,96 @@ jobs:
             rm -rf "${ZVEC_DIST_DIR:?}/bin"
           fi
 
+      # The export whitelist is generated, not reviewed symbol by symbol, so
+      # the shipped binary is the only ground truth for what libzvec exposes.
+      # Assert the measured surface (2602 exports on macOS/arm64) stayed within
+      # budget and that no engine-internal entity leaked out -- a glob typo
+      # would silently widen the ABI surface instead of failing the build.
+      #
+      # The leak probes match the *entity's own* qualified name, which in the
+      # Itanium encoding always starts at "_ZN4zvec".  Grepping the bare name
+      # ("9sqlengine") is not enough: it also matches template *arguments* of
+      # legitimately public templates, e.g. Status::concat<sqlengine::...>.
+      - name: Check libzvec exported symbol surface
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          LIB=$(ls "$ZVEC_DIST_DIR"/lib/libzvec.so "$ZVEC_DIST_DIR"/lib/libzvec.dylib 2>/dev/null | head -1)
+          test -n "$LIB" || { echo "libzvec not found in $ZVEC_DIST_DIR/lib"; exit 1; }
+          SYMS="$RUNNER_TEMP/libzvec_symbols.txt"
+          if [ "$(uname)" = "Darwin" ]; then
+            nm -gU "$LIB" > "$SYMS"
+          else
+            nm -D --defined-only "$LIB" > "$SYMS"
+          fi
+          INTERNAL='4zvec9sqlengine\|4zvec3fts\|4zvec11SegmentImpl\|4zvec14CollectionImpl'
+          TOTAL=$(wc -l < "$SYMS" | tr -d ' ')
+          LEAKED=$(grep -c "$INTERNAL" "$SYMS" || true)
+          echo "libzvec exported symbols: $TOTAL (budget 3200); engine-internal leaks: $LEAKED (must be 0)"
+          if [ "$LEAKED" -ne 0 ]; then
+            echo "engine-internal entities are exported:"
+            grep "$INTERNAL" "$SYMS" | head -20
+            exit 1
+          fi
+          if [ "$TOTAL" -gt 3200 ]; then
+            echo "exported symbol surface grew past the 3200 budget;"
+            echo "regenerate with scripts/generate_export_whitelist.py --write"
+            exit 1
+          fi
+
+      # The released package is two shared libraries wide: libzvec serves the
+      # published C++ API and libzvec_c_api serves the C one.  The engine
+      # components are still built -- both all-in-one libraries whole-archive
+      # them -- but are packaged neither as shared libraries nor as archives,
+      # so assert that on the trees themselves rather than trusting the install
+      # rules.
+      - name: Verify packaged artifact set
+        shell: bash
+        run: |
+          SHARED=$(cd "$ZVEC_DIST_DIR/lib" && ls -1 | grep -E '\.(so|dylib|dll)$|\.so\.[0-9]' | sort)
+          echo "packaged shared libraries:"
+          echo "$SHARED"
+          COUNT=$(echo "$SHARED" | grep -c . || true)
+          if [ "$COUNT" -ne 2 ]; then
+            echo "::error::expected exactly 2 shared libraries (zvec, zvec_c_api), found $COUNT"
+            exit 1
+          fi
+
+          # No engine artifact may reach the install tree: neither the standalone
+          # shared libraries nor the archives, whose declaring headers are not
+          # installed either.  Staging already dropped lib/*.a from
+          # $ZVEC_DIST_DIR, so read the archive set from the raw install prefix
+          # instead.
+          for name in zvec_core zvec_ailego zvec_turbo; do
+            for ext in a lib so dylib dll; do
+              if ls "$ZVEC_INSTALL_DIR"/lib/*"$name"*."$ext" >/dev/null 2>&1; then
+                echo "::error::engine artifact $name must not be installed"
+                exit 1
+              fi
+            done
+          done
+          # ls with several operands exits non-zero if any is missing, so collect
+          # instead of testing the exit status: only one of these exists per
+          # platform (libzvec.a on Unix, zvec.lib on Windows).
+          DB_ARCHIVE=$(ls "$ZVEC_INSTALL_DIR"/lib/*zvec.a "$ZVEC_INSTALL_DIR"/lib/zvec.lib 2>/dev/null | head -1)
+          if [ -z "$DB_ARCHIVE" ]; then
+            echo "::error::the db-layer archive must still be installed"
+            exit 1
+          fi
+          echo "engine artifacts absent, db-layer archive present: $(basename "$DB_ARCHIVE")"
+
+          # No engine header directory either.  The stable closure reaches none
+          # of them (scripts/check_public_headers.py rule 6), so the package must
+          # not contain include/zvec/{core,ailego,turbo} at all -- assert on the
+          # directories, not on a probe header, so a partially populated one
+          # cannot slip through.
+          for engine_dir in core ailego turbo; do
+            if [ -e "$ZVEC_INSTALL_DIR/include/zvec/$engine_dir" ]; then
+              echo "::error::engine header directory zvec/$engine_dir must not be installed"
+              exit 1
+            fi
+          done
+
       - name: Smoke-test staged SDK
         shell: bash
         run: |
@@ -230,6 +320,16 @@ jobs:
           # Windows loads the DLLs via PATH; Unix uses BUILD_RPATH.
           export PATH="$ZVEC_DIST_DIR/lib:$PATH"
           ctest --test-dir "$SMOKE_BUILD" --output-on-failure
+
+      - name: Verify the public headers compile standalone
+        shell: bash
+        run: |
+          # --compile-check builds every published header as its own translation
+          # unit, which is the only place a header that compiles inside the
+          # engine but not on its own gets caught.  02-lint-check runs the same
+          # check on ubuntu; running it here puts it through this matrix entry's
+          # compiler and standard library as well (Apple clang, MSVC).
+          python3 scripts/check_public_headers.py --verbose --compile-check
 
       - name: Package SDK (Unix)
         if: runner.os != 'Windows'
@@ -603,7 +703,7 @@ jobs:
         run: |
           # Every XCFramework must carry both slices, and headers must live
           # at include/zvec/ (guards against a nested include/include/).
-          for fw in libzvec libzvec_core libzvec_ailego libzvec_c_api; do
+          for fw in libzvec libzvec_c_api; do
             for slice in ios-arm64 ios-arm64-simulator; do
               if [ ! -d "$ZVEC_DIST_DIR/${fw}.xcframework/${slice}" ]; then
                 echo "missing slice: ${fw}.xcframework/${slice}"
@@ -611,6 +711,20 @@ jobs:
               fi
             done
           done
+          # Two frameworks, not four: the standalone engine libraries are not
+          # installed by default, and the xcframework loop above is driven by
+          # whatever dylibs the install produced.
+          for fw in libzvec_core libzvec_ailego; do
+            if [ -e "$ZVEC_DIST_DIR/${fw}.xcframework" ]; then
+              echo "::error::${fw}.xcframework must not be packaged"
+              exit 1
+            fi
+          done
+          XCFW_COUNT=$(find "$ZVEC_DIST_DIR" -maxdepth 1 -name '*.xcframework' | wc -l | tr -d ' ')
+          if [ "$XCFW_COUNT" -ne 2 ]; then
+            echo "::error::expected exactly 2 xcframeworks, found $XCFW_COUNT"
+            exit 1
+          fi
           if [ ! -f "$ZVEC_DIST_DIR/include/zvec/c_api.h" ]; then
             echo "missing include/zvec/c_api.h"
             exit 1
@@ -619,6 +733,14 @@ jobs:
             echo "missing C++ headers under include/zvec/db/"
             exit 1
           }
+          # The engine headers are never installed, so they must be absent here
+          # too -- the same shape the desktop job's smoke test asserts.
+          for engine_dir in core ailego turbo; do
+            if [ -e "$ZVEC_DIST_DIR/include/zvec/$engine_dir" ]; then
+              echo "::error::engine headers zvec/$engine_dir must not be packaged"
+              exit 1
+            fi
+          done
 
       - name: Package SDK
         shell: bash

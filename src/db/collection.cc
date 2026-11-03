@@ -48,9 +48,11 @@
 #include "db/doc_iterator_internal.h"
 #include "db/index/column/vector_column/engine_helper.hpp"
 #include "db/index/common/delete_store.h"
+#include "db/index/common/doc_internal.h"
 #include "db/index/common/id_map.h"
 #include "db/index/common/identifier_validation.h"
 #include "db/index/common/index_filter.h"
+#include "db/index/common/query_internal.h"
 #include "db/index/common/type_helper.h"
 #include "db/index/common/version_manager.h"
 #include "db/index/segment/segment.h"
@@ -153,7 +155,7 @@ class CollectionImpl : public Collection {
       const IteratorOptions &options = {}) override;
 
   Result<std::string> debug_get_hnsw_storage_mode(
-      const std::string &column_name) const override;
+      const std::string &column_name) const;
 
   // Execute a query and capture the docs together with a shared_ptr snapshot of
   // schema_, all within a single shared lock on schema_handle_mtx_. Used by the
@@ -1657,7 +1659,8 @@ Result<WriteResults> CollectionImpl::write_impl(std::vector<Doc> &docs,
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
   for (auto &&doc : docs) {
-    auto s = doc.validate_and_sanitize(schema_, mode == WriteMode::UPDATE);
+    auto s = internal::DocAccess::validate_and_sanitize(
+        doc, schema_, mode == WriteMode::UPDATE);
     CHECK_RETURN_STATUS_EXPECTED(s);
   }
 
@@ -1938,7 +1941,8 @@ Result<InternalIdsQueryResult> CollectionImpl::query_internal_ids(
     return query_internal_ids_fallback(query, return_scores);
   }
   const auto *field_schema = field->second.schema;
-  const auto query_status = query.validate(field_schema, nullptr);
+  const auto query_status =
+      internal::validate_search_query(query, field_schema, nullptr);
   CHECK_RETURN_STATUS_EXPECTED(query_status);
   const auto vector_view = query.target_.get_vector_view();
   const void *query_vector = vector_view->query_vector_.data();
@@ -2114,7 +2118,7 @@ Result<DocPtrList> CollectionImpl::query_unsafe(
   const FieldSchema *field_schema =
       field_name.empty() ? nullptr : schema_->get_field(field_name);
   bool need_sanitize = false;
-  auto s = query.validate(field_schema, &need_sanitize);
+  auto s = internal::validate_search_query(query, field_schema, &need_sanitize);
   CHECK_RETURN_STATUS_EXPECTED(s);
 
   auto segments = get_all_segments();
@@ -2128,7 +2132,8 @@ Result<DocPtrList> CollectionImpl::query_unsafe(
 
   // Sparse needs sanitization: make a mutable copy and sort indices in place.
   SearchQuery sanitized_query = query;
-  auto ss = sanitize_sparse_vector(sanitized_query.target_, field_schema);
+  auto ss =
+      internal::sanitize_sparse_vector(sanitized_query.target_, field_schema);
   CHECK_RETURN_STATUS_EXPECTED(ss);
   return sql_engine_->execute(schema_, std::move(sanitized_query), segments);
 }
@@ -2140,7 +2145,8 @@ Result<DocPtrList> CollectionImpl::query_unsafe(const MultiQuery &query) const {
         query.queries.size()));
   }
 
-  if (auto s = validate_topk_and_output_fields(query.topk, query.output_fields);
+  if (auto s = internal::validate_topk_and_output_fields(query.topk,
+                                                         query.output_fields);
       !s.ok()) {
     return tl::make_unexpected(s);
   }
@@ -2166,7 +2172,8 @@ Result<DocPtrList> CollectionImpl::query_unsafe(const MultiQuery &query) const {
     auto *field_schema = field_ptr.get();
 
     bool need_sanitize = false;
-    auto s = target.validate(field_schema, &need_sanitize);
+    auto s =
+        internal::validate_query_target(target, field_schema, &need_sanitize);
     CHECK_RETURN_STATUS_EXPECTED(s);
 
     SearchQuery sq;
@@ -2178,7 +2185,7 @@ Result<DocPtrList> CollectionImpl::query_unsafe(const MultiQuery &query) const {
     sq.output_fields_ = query.output_fields;
 
     if (need_sanitize) {
-      auto ss = sanitize_sparse_vector(sq.target_, field_schema);
+      auto ss = internal::sanitize_sparse_vector(sq.target_, field_schema);
       CHECK_RETURN_STATUS_EXPECTED(ss);
     }
     pending_queries.push_back(std::move(sq));
@@ -2237,7 +2244,8 @@ Result<GroupResults> CollectionImpl::group_by_query(
   const FieldSchema *field_schema =
       schema_->get_field(query.target_.field_name_);
   bool need_sanitize = false;
-  auto s = query.target_.validate(field_schema, &need_sanitize);
+  auto s = internal::validate_query_target(query.target_, field_schema,
+                                           &need_sanitize);
   CHECK_RETURN_STATUS_EXPECTED(s);
 
   if (!need_sanitize) {
@@ -2246,7 +2254,8 @@ Result<GroupResults> CollectionImpl::group_by_query(
 
   // Sparse needs sanitization: make a mutable copy and sort indices in place.
   GroupByVectorQuery sanitized_query = query;
-  auto ss = sanitize_sparse_vector(sanitized_query.target_, field_schema);
+  auto ss =
+      internal::sanitize_sparse_vector(sanitized_query.target_, field_schema);
   CHECK_RETURN_STATUS_EXPECTED(ss);
   return sql_engine_->execute_group_by(schema_, sanitized_query, segments);
 }
@@ -2717,6 +2726,16 @@ Result<QueryResultSnapshot> query_result_snapshot(const Collection &collection,
 Result<QueryResultSnapshot> query_result_snapshot(const Collection &collection,
                                                   const MultiQuery &query) {
   return query_result_snapshot_dispatch(collection, query);
+}
+
+Result<std::string> debug_get_hnsw_storage_mode(
+    const Collection &collection, const std::string &column_name) {
+  const auto *impl = dynamic_cast<const CollectionImpl *>(&collection);
+  if (impl == nullptr) {
+    return tl::make_unexpected(
+        Status::NotSupported("Unsupported Collection implementation"));
+  }
+  return impl->debug_get_hnsw_storage_mode(column_name);
 }
 
 }  // namespace internal

@@ -16,16 +16,18 @@
 #include <zvec/db/query.h>
 #include <zvec/db/schema.h>
 #include "db/common/constants.h"
+#include "db/index/common/query_internal.h"
 #include "db/index/common/type_helper.h"
 
 namespace zvec {
+namespace internal {
 
-Status QueryTarget::validate(const FieldSchema *schema,
-                             bool *need_sanitize) const {
-  auto opt_view = get_vector_view();
-  auto *fc = get_fts_clause();
-  auto &field_name = field_name_;
-  auto &query_params = query_params_;
+Status validate_query_target(const QueryTarget &target,
+                             const FieldSchema *schema, bool *need_sanitize) {
+  auto opt_view = target.get_vector_view();
+  auto *fc = target.get_fts_clause();
+  auto &field_name = target.field_name_;
+  auto &query_params = target.query_params_;
   // A "scalar-only filter" query has no vector payload — either the clause
   // is not a VectorClause (e.g., FtsClause) or its fields are all empty.
   bool no_vector_payload = !opt_view || (opt_view->query_vector_.empty() &&
@@ -209,16 +211,16 @@ Status validate_topk_and_output_fields(
   return Status::OK();
 }
 
-Status SearchQuery::validate(const FieldSchema *schema,
-                             bool *need_sanitize) const {
+Status validate_search_query(const SearchQuery &query,
+                             const FieldSchema *schema, bool *need_sanitize) {
   if (need_sanitize) {
     *need_sanitize = false;
   }
-  auto s = validate_topk_and_output_fields(topk_, output_fields_);
+  auto s = validate_topk_and_output_fields(query.topk_, query.output_fields_);
   if (!s.ok()) {
     return s;
   }
-  return target_.validate(schema, need_sanitize);
+  return validate_query_target(query.target_, schema, need_sanitize);
 }
 
 Status sanitize_sparse_vector(VectorClause &vc, const FieldSchema *schema) {
@@ -259,4 +261,5 @@ Status sanitize_sparse_vector(QueryTarget &target, const FieldSchema *schema) {
   return sanitize_sparse_vector(*target.get_vector_clause(), schema);
 }
 
+}  // namespace internal
 }  // namespace zvec

@@ -17,6 +17,7 @@
 #include <unistd.h>
 #endif
 #include <filesystem>
+#include <iostream>
 #include <zvec/db/collection.h>
 #include <zvec/db/options.h>
 #include "zvec/ailego/logger/logger.h"

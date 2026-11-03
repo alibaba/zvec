@@ -146,14 +146,21 @@ if(ZVEC_TURBO_ARM_FP16_SUPPORTED)
     list(APPEND ZVEC_TURBO_DEFS ZVEC_HAVE_ARM_FP16_KERNEL=1)
 endif()
 
-set(ZVEC_TURBO_LIBRARY_OPTIONS)
+# The archive is built but never installed.  The SDK publishes the stable API
+# only, so zvec/turbo/** is not in the package, and an installed libzvec_turbo.a
+# whose declaring headers are absent is a library that cannot be called.  It
+# still has to exist in the build tree: libzvec and libzvec_c_api whole-archive
+# it, and in-tree tests, examples and subproject-integration link the target
+# directly.
+set(ZVEC_TURBO_LIBRARY_OPTIONS SKIP_ARCHIVE_INSTALL)
+
+# See zvec_core: libzvec is the DLL a Windows consumer is guaranteed to get, so
+# the dllexport pass cannot depend on the standalone engine library being built.
 if(WIN32 AND (BUILD_ZVEC_CORE_SHARED OR BUILD_ZVEC_SHARED))
-  list(APPEND ZVEC_TURBO_LIBRARY_OPTIONS OBJECTS)
-  if(BUILD_ZVEC_CORE_SHARED)
-    list(APPEND ZVEC_TURBO_LIBRARY_OPTIONS
-      EXPORT_DEF ZVEC_TURBO_BUILD_SHARED
-    )
-  endif()
+  list(APPEND ZVEC_TURBO_LIBRARY_OPTIONS
+    OBJECTS
+    EXPORT_DEF ZVEC_TURBO_BUILD_SHARED
+  )
 endif()
 
 set(ZVEC_TURBO_RABITQ_LIBS "")

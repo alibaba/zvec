@@ -18,10 +18,58 @@ cc_directory(binding)
 include(GNUInstallDirs)
 find_package(Threads REQUIRED)
 
+# =============================================================================
+# Public header installation
+# =============================================================================
+# src/include is a *build* directory, not the published API surface: it also
+# holds the engine internals (zvec/core/framework/**, most of zvec/ailego/**).
+# Installing it wholesale ships 98 headers where the stable API only needs 18,
+# inviting users to depend on an unstable surface.  The stable closure is
+# therefore installed from an explicit manifest -- the whitelist approach LevelDB
+# uses, and the opposite of Arrow's ARROW_INSTALL_ALL_HEADERS -- and the engine
+# headers are not installed at all.  They were never a published capability, and
+# libzvec exports the engine API regardless, so a consumer that wants them builds
+# zvec from source and reads them straight out of this directory.
+#
+# cmake/zvec_public_headers.cmake mirrors the real include graph and is kept
+# honest by scripts/check_public_headers.py (rules 6 and 7).
+include(${PROJECT_ROOT_DIR}/cmake/zvec_public_headers.cmake)
+
+set(ZVEC_INCLUDE_ROOT ${PROJECT_ROOT_DIR}/src/include)
+foreach(ZVEC_PUBLIC_HEADER ${ZVEC_STABLE_PUBLIC_HEADERS})
+  if(NOT EXISTS ${ZVEC_INCLUDE_ROOT}/${ZVEC_PUBLIC_HEADER})
+    message(FATAL_ERROR
+        "ZVEC_STABLE_PUBLIC_HEADERS lists a missing header: ${ZVEC_PUBLIC_HEADER}")
+  endif()
+  get_filename_component(ZVEC_PUBLIC_HEADER_DIR ${ZVEC_PUBLIC_HEADER} DIRECTORY)
+  install(
+      FILES ${ZVEC_INCLUDE_ROOT}/${ZVEC_PUBLIC_HEADER}
+      DESTINATION "${CMAKE_INSTALL_INCDIR}/${ZVEC_PUBLIC_HEADER_DIR}"
+  )
+endforeach()
+
+install(
+    FILES ${PROJECT_ROOT_DIR}/src/include/zvec/README.md
+    DESTINATION "${CMAKE_INSTALL_INCDIR}/zvec"
+)
+
+# No engine header directory is installed: not zvec/core, not zvec/ailego, not
+# zvec/turbo.  The manifest above is the complete header set, and it reaches no
+# engine header -- the three zvec/detail/ headers absorbed what zvec/db/** used
+# to need from zvec/core and zvec/ailego.  .github/cmake/sdk-smoke asserts the
+# absence of all three directories on every packaged tree, so a future install
+# rule that reintroduces one fails CI instead of widening the surface silently.
+
 function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
-    cmake_parse_arguments(ZVEC_ALLIN "" "" "LIBS;EXPORT_COMPONENTS" ${ARGN})
+    cmake_parse_arguments(ZVEC_ALLIN "SKIP_INSTALL" "EXPORT_SYMBOLS"
+        "LIBS;EXPORT_COMPONENTS" ${ARGN})
     if(NOT ZVEC_ALLIN_LIBS)
         message(FATAL_ERROR "zvec_add_all_in_one_shared requires LIBS")
+    endif()
+    # Base path (without .txt / .lds) of the link-time export whitelist.
+    if(NOT ZVEC_ALLIN_EXPORT_SYMBOLS)
+        set(ZVEC_ALLIN_EXPORT_SYMBOLS
+            ${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols_cpp)
     endif()
 
     foreach(ZVEC_ALLIN_LIB ${ZVEC_ALLIN_LIBS})
@@ -143,28 +191,47 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
         endif()
     endif()
 
-    # Restrict exported symbols to zvec's own public C++ API (namespace zvec,
-    # which includes nested zvec::ailego / zvec::core / zvec::turbo /
-    # zvec::reranker). All third-party symbols (arrow, rocksdb, parquet,
-    # antlr4) are hidden, and unreferenced code is dead-stripped to
-    # reduce the shared library size. The public C++ headers never expose
-    # third-party types, so hiding them is safe for external C++ consumers.
-    if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
-        if(APPLE)
-            set(_ZVEC_ALLIN_EXPORTS ${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols_cpp.txt)
-            target_link_options(${TARGET_NAME} PRIVATE
-                "-Wl,-exported_symbols_list,${_ZVEC_ALLIN_EXPORTS}"
-                "-Wl,-dead_strip")
-            set_property(TARGET ${TARGET_NAME} APPEND PROPERTY
-                LINK_DEPENDS ${_ZVEC_ALLIN_EXPORTS})
-        elseif(UNIX)
-            set(_ZVEC_ALLIN_EXPORTS ${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols_cpp.lds)
-            target_link_options(${TARGET_NAME} PRIVATE
-                "-Wl,--version-script,${_ZVEC_ALLIN_EXPORTS}"
-                "-Wl,--gc-sections")
-            set_property(TARGET ${TARGET_NAME} APPEND PROPERTY
-                LINK_DEPENDS ${_ZVEC_ALLIN_EXPORTS})
-        endif()
+    # Restrict the exported symbols to zvec's own public C++ API.  All
+    # third-party symbols (arrow, rocksdb, parquet, antlr4) are hidden, and
+    # unreferenced code is dead-stripped to reduce the shared library size.
+    # The public C++ headers never expose third-party types, so hiding them is
+    # safe for external C++ consumers.
+    #
+    # Two granularities, selected per target through EXPORT_SYMBOLS:
+    #   exported_symbols_cpp.*  namespace-wide ("__ZN4zvec*").  Used by the
+    #                           standalone engine libraries, whose whole
+    #                           zvec::core / zvec::ailego / zvec::turbo surface
+    #                           is their API.
+    #   exported_symbols_zvec.* generated from the published headers, so libzvec
+    #                           exports exactly what a consumer can name --
+    #                           measured 10784 -> 2602 symbols.  Regenerate with
+    #                           scripts/generate_export_whitelist.py --write.
+    #
+    # Note the lists are only applied to non-Debug builds: Debug keeps the full
+    # symbol table so that in-tree debugging and crash symbolication are not
+    # affected.  A consequence is that Debug exports a superset of Release.
+    #
+    # The Debug test is a per-configuration generator expression rather than
+    # if(CMAKE_BUILD_TYPE ...): a multi-config generator (Xcode, Visual Studio,
+    # Ninja Multi-Config) leaves CMAKE_BUILD_TYPE empty at configure time, so a
+    # plain if() sees "not Debug" and applies the whitelist to every
+    # configuration -- silently retracting the promise above for exactly the
+    # developers it was written for.  $<CONFIG:Debug> is evaluated per
+    # configuration instead, and is equally correct for single-config generators.
+    if(APPLE)
+        set(_ZVEC_ALLIN_EXPORTS ${ZVEC_ALLIN_EXPORT_SYMBOLS}.txt)
+        target_link_options(${TARGET_NAME} PRIVATE
+            "$<$<NOT:$<CONFIG:Debug>>:-Wl,-exported_symbols_list,${_ZVEC_ALLIN_EXPORTS}>"
+            "$<$<NOT:$<CONFIG:Debug>>:-Wl,-dead_strip>")
+        set_property(TARGET ${TARGET_NAME} APPEND PROPERTY
+            LINK_DEPENDS ${_ZVEC_ALLIN_EXPORTS})
+    elseif(UNIX)
+        set(_ZVEC_ALLIN_EXPORTS ${ZVEC_ALLIN_EXPORT_SYMBOLS}.lds)
+        target_link_options(${TARGET_NAME} PRIVATE
+            "$<$<NOT:$<CONFIG:Debug>>:-Wl,--version-script,${_ZVEC_ALLIN_EXPORTS}>"
+            "$<$<NOT:$<CONFIG:Debug>>:-Wl,--gc-sections>")
+        set_property(TARGET ${TARGET_NAME} APPEND PROPERTY
+            LINK_DEPENDS ${_ZVEC_ALLIN_EXPORTS})
     endif()
 
     target_include_directories(${TARGET_NAME}
@@ -193,26 +260,36 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
         target_compile_definitions(${TARGET_NAME} INTERFACE ${ZVEC_ALLIN_USE_DEFS})
     endif()
 
-    # Strip symbols in release builds to reduce library size.
-    if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
-        if(UNIX AND NOT APPLE)
-            # add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
-            #     COMMAND ${CMAKE_STRIP} $<TARGET_FILE:${TARGET_NAME}>
-            #     COMMENT "Stripping symbols from $<TARGET_FILE_NAME:${TARGET_NAME}>"
-            # )
-        elseif(APPLE)
-            add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
-                COMMAND /usr/bin/strip -x $<TARGET_FILE:${TARGET_NAME}>
-                COMMENT "Stripping symbols from $<TARGET_FILE_NAME:${TARGET_NAME}>"
-            )
-        endif()
+    # Strip symbols in release builds to reduce library size.  Same
+    # per-configuration reasoning as the whitelist above: if(CMAKE_BUILD_TYPE)
+    # cannot see the configuration of a multi-config generator, and stripping a
+    # Debug library defeats the point of building one.  The Debug branch runs
+    # "cmake -E true" so the POST_BUILD step stays a single command that is a
+    # no-op exactly when it should be; empty generator expressions drop out of
+    # the argument list.
+    if(UNIX AND NOT APPLE)
+        # add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+        #     COMMAND ${CMAKE_STRIP} $<TARGET_FILE:${TARGET_NAME}>
+        #     COMMENT "Stripping symbols from $<TARGET_FILE_NAME:${TARGET_NAME}>"
+        # )
+    elseif(APPLE)
+        add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+            COMMAND $<IF:$<CONFIG:Debug>,${CMAKE_COMMAND},/usr/bin/strip>
+                    $<$<CONFIG:Debug>:-E>
+                    $<$<CONFIG:Debug>:true>
+                    $<$<NOT:$<CONFIG:Debug>>:-x>
+                    $<$<NOT:$<CONFIG:Debug>>:$<TARGET_FILE:${TARGET_NAME}>>
+            COMMENT "Stripping symbols from $<TARGET_FILE_NAME:${TARGET_NAME}> (skipped in Debug)"
+        )
     endif()
 
-    install(TARGETS ${TARGET_NAME}
-        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    )
+    if(NOT ZVEC_ALLIN_SKIP_INSTALL)
+        install(TARGETS ${TARGET_NAME}
+            LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        )
+    endif()
 endfunction()
 
 # Mobile public C++ API.  These build-tree targets keep the application and
@@ -300,12 +377,27 @@ if(ANDROID OR IOS)
     add_library(zvec::ailego_static ALIAS zvec_ailego_static_sdk)
 endif()
 
+# The standalone engine libraries are built but never installed.  libzvec
+# whole-archives both and, with the generated export whitelist, exports every
+# symbol the engine headers declare, so a consumer links -lzvec and gets the same
+# API: packaging libzvec_core and libzvec_ailego as well would ship two ways to
+# call one implementation and twice the ABI to keep compatible.  That is what
+# keeps the released package two shared libraries wide instead of four.
+#
+# They are still *built*, since libzvec and libzvec_c_api whole-archive them and
+# in-tree tests, examples and subproject-integration link the targets directly.
+# The static archives are not installed either -- see src/core, src/ailego and
+# src/turbo -- because an archive whose declaring headers are not installed is a
+# library that cannot be called.  libzvec.a always installs, since zvec/db/**
+# always does.
+
 if(BUILD_ZVEC_AILEGO_SHARED)
     zvec_add_all_in_one_shared(zvec_ailego_shared zvec_ailego
         LIBS
             zvec_ailego
         EXPORT_COMPONENTS
             zvec_ailego
+        SKIP_INSTALL
     )
 endif()
 
@@ -319,6 +411,7 @@ if(BUILD_ZVEC_CORE_SHARED)
             zvec_core
             zvec_ailego
             zvec_turbo
+        SKIP_INSTALL
     )
 endif()
 
@@ -331,6 +424,10 @@ if(BUILD_ZVEC_SHARED)
             zvec_turbo
         EXPORT_COMPONENTS
             zvec
+            zvec_core
             zvec_ailego
+            zvec_turbo
+        EXPORT_SYMBOLS
+            ${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols_zvec
     )
 endif()

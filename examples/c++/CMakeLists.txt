@@ -20,9 +20,7 @@ set(ZVEC_INCLUDE_DIR ${ZVEC_ROOT_DIR}/src/include)
 include_directories(${ZVEC_INCLUDE_DIR})
 
 if(ANDROID OR IOS)
-    if(NOT TARGET zvec::static OR
-       NOT TARGET zvec::core_static OR
-       NOT TARGET zvec::ailego_static)
+    if(NOT TARGET zvec::static OR NOT TARGET zvec::core_static)
         message(FATAL_ERROR
             "Mobile C++ examples must be built from the zvec root with "
             "-DBUILD_CPP_EXAMPLES=ON so they use the static SDK targets.")
@@ -31,24 +29,38 @@ if(ANDROID OR IOS)
     add_library(zvec-lib INTERFACE)
     target_link_libraries(zvec-lib INTERFACE zvec::static)
 
+    # ailego is an internal foundation library: libzvec_ailego is built but not
+    # published, and its symbols are whole-archived into libzvec.  The example
+    # only uses ailego/utility/string_helper.h, which the stable API closure
+    # ships anyway, so linking the all-in-one library is enough.
     add_library(zvec-ailego-lib INTERFACE)
-    target_link_libraries(zvec-ailego-lib INTERFACE zvec::ailego_static)
+    target_link_libraries(zvec-ailego-lib INTERFACE zvec::static)
 
     add_library(zvec-core-lib INTERFACE)
     target_link_libraries(zvec-core-lib INTERFACE zvec::core_static)
-elseif(TARGET zvec_shared AND
-       TARGET zvec_core_shared AND
-       TARGET zvec_ailego_shared)
+elseif(TARGET zvec_shared AND TARGET zvec_core_shared)
     # An in-tree desktop build can link targets directly; the shared-library
     # files do not need to exist yet during CMake configuration.
+    #
+    # All three examples link the all-in-one library.  libzvec whole-archives
+    # every component and its export whitelist is generated at the full engine
+    # surface, so the engine API resolves out of it even though a default
+    # prebuilt package installs only the 18 stable headers.
+    #
+    # That makes db-example buildable against a downloaded SDK, while
+    # ailego-example and core-example are source-tree only: they include
+    # zvec/ailego/** and zvec/core/** straight from src/include above, headers a
+    # default package does not carry.  Linking the standalone libzvec_core /
+    # libzvec_ailego instead would not change that -- those are not packaged by
+    # default either -- so one library keeps the link line uniform.
     add_library(zvec-lib INTERFACE)
     target_link_libraries(zvec-lib INTERFACE zvec_shared)
 
     add_library(zvec-ailego-lib INTERFACE)
-    target_link_libraries(zvec-ailego-lib INTERFACE zvec_ailego_shared)
+    target_link_libraries(zvec-ailego-lib INTERFACE zvec_shared)
 
     add_library(zvec-core-lib INTERFACE)
-    target_link_libraries(zvec-core-lib INTERFACE zvec_core_shared)
+    target_link_libraries(zvec-core-lib INTERFACE zvec_shared)
 else()
     set(ZVEC_LIB_DIR ${ZVEC_ROOT_DIR}/${HOST_BUILD_DIR}/lib)
     set(ZVEC_LIB_SEARCH_DIRS ${ZVEC_LIB_DIR})
@@ -101,19 +113,20 @@ else()
         set(${OUT_VAR} "${${OUT_VAR}}" PARENT_SCOPE)
     endfunction()
 
+    # Only libzvec is required: it is the single all-in-one shared library in a
+    # default package, the standalone engine libraries are not packaged.  The
+    # engine examples still build here because their headers come from
+    # src/include above, not from an install tree.
     zvec_require_shared_library(ZVEC_SHARED_LIBRARY zvec)
-    zvec_require_shared_library(ZVEC_AILEGO_SHARED_LIBRARY zvec_ailego)
-    zvec_require_shared_library(ZVEC_CORE_SHARED_LIBRARY zvec_core)
 
-    # Desktop examples keep using the public all-in-one shared libraries.
     add_library(zvec-lib INTERFACE)
     target_link_libraries(zvec-lib INTERFACE "${ZVEC_SHARED_LIBRARY}")
 
     add_library(zvec-ailego-lib INTERFACE)
-    target_link_libraries(zvec-ailego-lib INTERFACE "${ZVEC_AILEGO_SHARED_LIBRARY}")
+    target_link_libraries(zvec-ailego-lib INTERFACE "${ZVEC_SHARED_LIBRARY}")
 
     add_library(zvec-core-lib INTERFACE)
-    target_link_libraries(zvec-core-lib INTERFACE "${ZVEC_CORE_SHARED_LIBRARY}")
+    target_link_libraries(zvec-core-lib INTERFACE "${ZVEC_SHARED_LIBRARY}")
 endif()
 
 # --- Executables ---

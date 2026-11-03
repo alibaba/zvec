@@ -1,0 +1,263 @@
+// Copyright 2025-present the zvec project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <zvec/export.h>
+
+// Float16 storage plus the FP16 <-> FP32 conversion helpers.  This used to be
+// <zvec/ailego/utility/float_helper.h> and moved here because zvec/db/doc.h
+// needs zvec::ailego::Float16 for Doc::Value while a default package must not
+// carry zvec/ailego/**.  The namespace and the class names are unchanged, so
+// the move is source- and ABI-compatible: only the include path differs.  The
+// out-of-line FloatHelper definitions stay in
+// src/ailego/utility/float_helper.cc because the engine (core, turbo) calls
+// them as well.
+
+// Selects the storage type of Float16::value_ below: __fp16 on ARM64 with NEON
+// under a GNU-like compiler, the portable uint16_t path everywhere else (MSVC
+// lacks __fp16 even on ARM64).
+//
+// This duplicates AILEGO_ARM64_GNU_LIKE from the internal
+// <zvec/ailego/internal/platform.h>, which must not ship with the stable public
+// API.  Keep the condition identical to platform.h's and to the guard in
+// float_helper.cc that picks the matching implementation -- a mismatch would
+// change the class layout between this header and the compiled library.
+#if defined(__ARM_NEON) && defined(__aarch64__)
+#define ZVEC_FLOAT16_ARM64_GNU_LIKE 1
+#endif
+
+namespace zvec {
+namespace ailego {
+
+/*! Float Helper
+ */
+struct ZVEC_AILEGO_API FloatHelper {
+  //! Convert FP16 to FP32
+  static float ToFP32(uint16_t val);
+
+  //! Convert FP16 to FP32 (array)
+  static void ToFP32(const uint16_t *arr, size_t size, float *out);
+
+  //! Convert FP16 to FP32 with normalization (array)
+  static void ToFP32(const uint16_t *arr, size_t size, float norm, float *out);
+
+  //! Convert FP32 to FP16
+  static uint16_t ToFP16(float val);
+
+  //! Convert FP32 to FP16 (array)
+  static void ToFP16(const float *arr, size_t size, uint16_t *out);
+
+  //! Convert FP32 to FP16 with normalization (array)
+  static void ToFP16(const float *arr, size_t size, float norm, uint16_t *out);
+
+  //! Convert FP16 to FP32 with normalization
+  static inline float ToFP32(uint16_t val, float norm) {
+    return (FloatHelper::ToFP32(val) / norm);
+  }
+
+  //! Convert FP32 to FP16 with normalization
+  static inline uint16_t ToFP16(float val, float norm) {
+    return FloatHelper::ToFP16(val / norm);
+  }
+};
+
+// The `#else` branch below stores `Float16::value_` as `__fp16`, a GCC/Clang
+// extension MSVC lacks even on ARM64. Keep the uint16_t storage path there so
+// the wrapper still compiles. Must match the guard in float_helper.cc.
+#if !defined(ZVEC_FLOAT16_ARM64_GNU_LIKE)
+/*! Half-Precision Floating Point
+ */
+class Float16 {
+ public:
+  //! Constructor
+  Float16() : value_(0) {}
+
+  //! Constructor
+  Float16(float val) : value_(FloatHelper::ToFP16(val)) {}
+
+  //! Constructor
+  Float16(double val) : value_(FloatHelper::ToFP16(static_cast<float>(val))) {}
+
+  //! Assigment
+  Float16 &operator=(float val) {
+    this->value_ = FloatHelper::ToFP16(val);
+    return *this;
+  }
+
+  //! Assigment
+  Float16 &operator+=(float val) {
+    this->value_ = FloatHelper::ToFP16(FloatHelper::ToFP32(this->value_) + val);
+    return *this;
+  }
+
+  //! Assigment
+  Float16 &operator-=(float val) {
+    this->value_ = FloatHelper::ToFP16(FloatHelper::ToFP32(this->value_) - val);
+    return *this;
+  }
+
+  //! Assigment
+  Float16 &operator*=(float val) {
+    this->value_ = FloatHelper::ToFP16(FloatHelper::ToFP32(this->value_) * val);
+    return *this;
+  }
+
+  //! Assigment
+  Float16 &operator/=(float val) {
+    this->value_ = FloatHelper::ToFP16(FloatHelper::ToFP32(this->value_) / val);
+    return *this;
+  }
+
+  //! Retrieve value in FP32
+  operator float() const {
+    return FloatHelper::ToFP32(this->value_);
+  }
+
+  //! Equal operator
+  bool operator==(const Float16 &rhs) const {
+    return this->value_ == rhs.value_;
+  }
+
+  //! No equal operator
+  bool operator!=(const Float16 &rhs) const {
+    return this->value_ != rhs.value_;
+  }
+
+  //! Less than operator
+  bool operator<(const Float16 &rhs) const {
+    return FloatHelper::ToFP32(this->value_) < FloatHelper::ToFP32(rhs.value_);
+  }
+
+  //! Less than or equal operator
+  bool operator<=(const Float16 &rhs) const {
+    return FloatHelper::ToFP32(this->value_) <= FloatHelper::ToFP32(rhs.value_);
+  }
+
+  //! Greater than operator
+  bool operator>(const Float16 &rhs) const {
+    return FloatHelper::ToFP32(this->value_) > FloatHelper::ToFP32(rhs.value_);
+  }
+
+  //! Greater than or equal operator
+  bool operator>=(const Float16 &rhs) const {
+    return FloatHelper::ToFP32(this->value_) >= FloatHelper::ToFP32(rhs.value_);
+  }
+
+  //! Calculate the absolute value
+  static inline Float16 Absolute(const Float16 &x) {
+    Float16 abs;
+    abs.value_ = static_cast<uint16_t>(x.value_ & 0x7fff);
+    return abs;
+  }
+
+ private:
+  uint16_t value_;
+};
+#else
+/*! Half-Precision Floating Point
+ */
+class Float16 {
+ public:
+  //! Constructor
+  Float16() : value_(0) {}
+
+  //! Constructor
+  Float16(__fp16 val) : value_(val) {}
+
+  //! Assigment
+  Float16 &operator=(__fp16 val) {
+    this->value_ = val;
+    return *this;
+  }
+
+  //! Assigment
+  Float16 &operator+=(__fp16 val) {
+    this->value_ = this->value_ + val;
+    return *this;
+  }
+
+  //! Assigment
+  Float16 &operator-=(__fp16 val) {
+    this->value_ = this->value_ - val;
+    return *this;
+  }
+
+  //! Assigment
+  Float16 &operator*=(__fp16 val) {
+    this->value_ = this->value_ * val;
+    return *this;
+  }
+
+  //! Assigment
+  Float16 &operator/=(__fp16 val) {
+    this->value_ = this->value_ / val;
+    return *this;
+  }
+
+  //! Retrieve value in FP16
+  operator __fp16() const {
+    return this->value_;
+  }
+
+  //! Equal operator
+  bool operator==(const Float16 &rhs) const {
+    return this->value_ == rhs.value_;
+  }
+
+  //! No equal operator
+  bool operator!=(const Float16 &rhs) const {
+    return this->value_ != rhs.value_;
+  }
+
+  //! Less than operator
+  bool operator<(const Float16 &rhs) const {
+    return this->value_ < rhs.value_;
+  }
+
+  //! Less than or equal operator
+  bool operator<=(const Float16 &rhs) const {
+    return this->value_ <= rhs.value_;
+  }
+
+  //! Greater than operator
+  bool operator>(const Float16 &rhs) const {
+    return this->value_ > rhs.value_;
+  }
+
+  //! Greater than or equal operator
+  bool operator>=(const Float16 &rhs) const {
+    return this->value_ >= rhs.value_;
+  }
+
+  //! Calculate the absolute value
+  static inline Float16 Absolute(const Float16 &x) {
+    Float16 abs(x.value_);
+    uint16_t *p = reinterpret_cast<uint16_t *>(&abs.value_);
+    *p &= 0x7fff;
+    return abs;
+  }
+
+ private:
+  __fp16 value_;
+};
+#endif  // !ZVEC_FLOAT16_ARM64_GNU_LIKE
+
+// Check size of Float16
+static_assert(sizeof(Float16) == 2, "Float16 must be aligned with 2 bytes");
+
+}  // namespace ailego
+}  // namespace zvec

@@ -20,6 +20,7 @@
 #include <zvec/db/doc.h>
 #include <zvec/db/query_params.h>
 #include <zvec/db/status.h>
+#include "db/index/common/hnsw_rabitq_params_internal.h"
 #include "zvec/db/index_params.h"
 #include "zvec/db/type.h"
 #include "vector_column_indexer.h"
@@ -616,8 +617,10 @@ class ProximaEngineHelper {
         index_param_builder->with_num_clusters(db_index_params->num_clusters());
         index_param_builder->with_sample_count(db_index_params->sample_count());
         index_param_builder->with_provider(
-            db_index_params->raw_vector_provider());
-        index_param_builder->with_reformer(db_index_params->rabitq_reformer());
+            detail::HnswRabitqRuntimeAccess::raw_vector_provider(
+                *db_index_params));
+        index_param_builder->with_reformer(
+            detail::HnswRabitqRuntimeAccess::rabitq_reformer(*db_index_params));
 
         return index_param_builder->build();
       }

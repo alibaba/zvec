@@ -106,11 +106,6 @@ struct ZVEC_API QueryTarget {
         clause_);
   }
 
-  // Read-only validation of vector/FTS target (dimension, types, sizes).
-  // For sparse vectors, checks if indices are sorted; sets *need_sanitize=true
-  // if sorting is needed (when need_sanitize is non-null).
-  Status validate(const FieldSchema *schema, bool *need_sanitize) const;
-
  private:
   // Resets clause_ to an empty VectorClause unless it already holds one.
   VectorClause &ensure_vector_clause() {
@@ -149,25 +144,7 @@ struct ZVEC_API SearchQuery {
   //   empty     -> select no field
   //   non-empty -> select only the listed fields
   std::optional<std::vector<std::string>> output_fields_;
-
-  // Read-only validation (topk, output_fields, target).
-  // For sparse vectors: sets *need_sanitize=true if indices are not sorted.
-  Status validate(const FieldSchema *schema, bool *need_sanitize) const;
 };
-
-// Validate topk and output_fields bounds.
-ZVEC_API Status validate_topk_and_output_fields(
-    int topk, const std::optional<std::vector<std::string>> &output_fields);
-
-// Sort sparse indices in-place and check for duplicates.
-// Returns error if duplicates are found after sorting.
-ZVEC_API Status sanitize_sparse_vector(VectorClause &vc,
-                                       const FieldSchema *schema);
-
-// Materializes VectorViewClause into VectorClause if needed, then sorts
-// sparse indices in place.  Operates on the QueryTarget's clause_ variant.
-ZVEC_API Status sanitize_sparse_vector(QueryTarget &target,
-                                       const FieldSchema *schema);
 
 struct GroupByVectorQuery {
   QueryTarget target_;

@@ -1,0 +1,52 @@
+// Copyright 2025-present the zvec project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#pragma once
+
+#include <cstdint>
+
+// Default values for the index and query knobs.  These live here rather than
+// under zvec/core/interface/ because the stable API exposes them as default
+// arguments (zvec/db/index_params.h, zvec/db/query_params.h) and a default
+// package must not carry zvec/core/**.  The namespace stays
+// zvec::core_interface so the engine headers that have always spelled them that
+// way keep compiling.  Everything here is constexpr, so the relocation has no
+// symbol and no ABI consequence.
+namespace zvec::core_interface {
+
+constexpr static uint32_t kDefaultHnswEfConstruction = 500;
+constexpr static uint32_t kDefaultHnswNeighborCnt = 50;
+
+constexpr static uint32_t kDefaultHnswEfSearch = 300;
+constexpr static uint32_t kDefaultPrefetchOffset = 8;
+constexpr static uint32_t kDefaultPrefetchLines = 0;
+
+constexpr static uint32_t kDefaultVamanaMaxDegree = 64;
+constexpr static uint32_t kDefaultVamanaSearchListSize = 100;
+constexpr static float kDefaultVamanaAlpha = 1.2f;
+constexpr static uint32_t kDefaultVamanaEfSearch = 200;
+constexpr static uint32_t kDefaultVamanaMaxOcclusionSize = 750;
+constexpr static bool kDefaultVamanaSaturateGraph = false;
+
+constexpr const uint32_t kDefaultRabitqTotalBits = 7;
+constexpr const uint32_t kDefaultRabitqNumClusters = 16;
+
+constexpr const uint32_t kDefaultIvfRabitqNlist = 1024;
+constexpr const uint32_t kDefaultIvfRabitqNprobe = 10;
+
+constexpr const uint32_t kDefaultDiskAnnMaxDegree = 100;
+constexpr const uint32_t kDefaultDiskAnnListSize = 200;
+constexpr const uint32_t kDefaultDiskAnnPqChunkNum = 16;
+
+}  // namespace zvec::core_interface
