@@ -4820,7 +4820,8 @@ void test_actual_vector_queries(void) {
 }
 
 // =============================================================================
-// Sparse vector query tests (zvec_vector_query_set_sparse_vector)
+// Sparse vector query tests (zvec_vector_query_set_sparse_vector and
+// zvec_group_by_vector_query_set_sparse_vector)
 // =============================================================================
 
 // Builds the [nnz(uint32)][indices(uint32)...][values(float)...] buffer that
@@ -5153,6 +5154,76 @@ void test_vector_query_sparse_vector_end_to_end(void) {
   zvec_collection_destroy(collection);
   zvec_collection_schema_destroy(schema);
   cleanup_temp_directory(temp_dir);
+
+  TEST_END();
+}
+
+// The C API exposes zvec_group_by_vector_query_t as a builder only (there is no
+// collection entry point that executes it), so this covers the setter contract
+// rather than a search round-trip.
+void test_group_by_vector_query_set_sparse_vector(void) {
+  TEST_START();
+
+  uint32_t indices[] = {2, 5, 9};
+  float values[] = {1.0f, 0.5f, 0.25f};
+  const char *null_message =
+      "GroupByVectorQuery, indices or values pointer is null";
+
+  // A NULL query is rejected before anything else is looked at.
+  TEST_ASSERT(zvec_group_by_vector_query_set_sparse_vector(
+                  NULL, indices, values, 3) == ZVEC_ERROR_INVALID_ARGUMENT);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, null_message);
+
+  zvec_group_by_vector_query_t *query = zvec_group_by_vector_query_create();
+  TEST_ASSERT(query != NULL);
+  if (!query) {
+    TEST_END();
+    return;
+  }
+
+  // A NULL buffer is only acceptable together with count == 0.
+  TEST_ASSERT(zvec_group_by_vector_query_set_sparse_vector(
+                  query, NULL, values, 3) == ZVEC_ERROR_INVALID_ARGUMENT);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, null_message);
+  TEST_ASSERT(zvec_group_by_vector_query_set_sparse_vector(
+                  query, indices, NULL, 3) == ZVEC_ERROR_INVALID_ARGUMENT);
+  check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, null_message);
+
+  // Well-formed payloads are accepted.
+  TEST_ASSERT(zvec_group_by_vector_query_set_sparse_vector(
+                  query, indices, values, 3) == ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_sparse_vector(
+                  query, indices, values, 1) == ZVEC_OK);
+
+  // count == 0 clears the payload and tolerates NULL buffers.
+  TEST_ASSERT(zvec_group_by_vector_query_set_sparse_vector(query, NULL, NULL,
+                                                           0) == ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_sparse_vector(
+                  query, indices, values, 0) == ZVEC_OK);
+
+  // The sparse payload coexists with the other group-by properties.
+  TEST_ASSERT(zvec_group_by_vector_query_set_field_name(query, "sparse") ==
+              ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_group_by_field_name(
+                  query, "category") == ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_group_count(query, 4) == ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_topk_per_group(query, 2) ==
+              ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_filter(query, "id > 1") ==
+              ZVEC_OK);
+  TEST_ASSERT(zvec_group_by_vector_query_set_sparse_vector(
+                  query, indices, values, 3) == ZVEC_OK);
+  TEST_ASSERT(
+      strcmp(zvec_group_by_vector_query_get_field_name(query), "sparse") == 0);
+  TEST_ASSERT(strcmp(zvec_group_by_vector_query_get_group_by_field_name(query),
+                     "category") == 0);
+  TEST_ASSERT(zvec_group_by_vector_query_get_group_count(query) == 4);
+  TEST_ASSERT(zvec_group_by_vector_query_get_topk_per_group(query) == 2);
+  TEST_ASSERT(strcmp(zvec_group_by_vector_query_get_filter(query), "id > 1") ==
+              0);
+
+  zvec_group_by_vector_query_destroy(query);
+  zvec_group_by_vector_query_destroy(NULL);
 
   TEST_END();
 }
@@ -7463,6 +7534,7 @@ int main(void) {
   test_actual_vector_queries();
   test_vector_query_set_sparse_vector_validation();
   test_vector_query_sparse_vector_end_to_end();
+  test_group_by_vector_query_set_sparse_vector();
 
   // Document iterator tests
   test_iterator_basic();
