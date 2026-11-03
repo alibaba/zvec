@@ -996,6 +996,7 @@ void zvec_string_array_add(zvec_string_array_t *array, size_t idx,
   size_t len = strlen(str);
   char *buf = (char *)malloc(len + 1);
   if (!buf) return;
+  memcpy(buf, str, len + 1);
   array->strings[idx].data = buf;
   array->strings[idx].length = len;
   array->strings[idx].capacity = len + 1;
