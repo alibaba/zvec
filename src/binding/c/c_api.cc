@@ -3806,6 +3806,7 @@ const char *zvec_doc_get_pk_copy(const zvec_doc_t *doc) {
   if (pk.empty()) return nullptr;
 
   char *result = static_cast<char *>(malloc(pk.length() + 1));
+  if (!result) return nullptr;
   strcpy(result, pk.c_str());
   return result;
 }
