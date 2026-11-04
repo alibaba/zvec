@@ -498,6 +498,77 @@ TEST(DiskAnnFileReaderTest, MacOSBatchUsesSynchronousPread) {
 #endif
 
 #if defined(__APPLE__)
+TEST(DiskAnnFileReaderTest, ParallelReadsDrainErrorsAndPreserveOrder) {
+  TemporaryFile file;
+  std::vector<uint8_t> source(kPageSize * 16);
+  for (size_t i = 0; i < source.size(); ++i) source[i] = i / kPageSize;
+  ASSERT_TRUE(file.write_all(source.data(), source.size()));
+  LinuxAlignedFileReader reader;
+  reader.open(file.path());
+  EXPECT_NE(reader.configure_read_workers(0), 0);
+  EXPECT_NE(reader.configure_read_workers(9), 0);
+  ASSERT_EQ(reader.configure_read_workers(4), 0);
+  ASSERT_EQ(reader.configure_read_cache(64 * 1024), 0);
+  auto output = make_aligned_buffer(source.size());
+  ASSERT_NE(output, nullptr);
+  std::vector<AlignedRead> requests;
+  for (size_t i = 0; i < 16; ++i)
+    requests.emplace_back((15 - i) * kPageSize, kPageSize,
+                          static_cast<uint8_t *>(output.get()) + i * kPageSize);
+  IOContext ctx{};
+  PendingBatch batch;
+  ASSERT_EQ(reader.submit(batch, requests, ctx), 0);
+  std::vector<uint32_t> completed;
+  ASSERT_EQ(reader.get_completed(batch, ctx, 1, completed), 16);
+  for (size_t i = 0; i < 16; ++i) {
+    EXPECT_EQ(completed[i], i);
+    EXPECT_EQ(static_cast<uint8_t *>(output.get())[i * kPageSize], 15 - i);
+  }
+  requests[0].offset = source.size();
+  EXPECT_NE(reader.submit(batch, requests, ctx), 0);
+  EXPECT_EQ(batch.n_submitted, 0u);
+  requests[0].offset = 0;
+  EXPECT_EQ(reader.submit(batch, requests, ctx), 0);
+  // Aliased destinations retain serial last-write behavior.
+  requests = {{0, kPageSize, output.get()},
+              {kPageSize, kPageSize, output.get()}};
+  EXPECT_EQ(reader.read(requests, ctx), 0);
+  EXPECT_EQ(static_cast<uint8_t *>(output.get())[0], 1);
+  reader.close();
+  EXPECT_EQ(reader.read_workers(), 1u);
+  reader.open(file.path());
+  EXPECT_EQ(reader.read_workers(), 1u);
+  EXPECT_EQ(reader.read_cache_bytes(), 0u);
+}
+
+TEST(DiskAnnFileReaderTest, ParallelConcurrentCallersShareBoundedWorkers) {
+  TemporaryFile file;
+  std::vector<uint8_t> source(kPageSize * 16);
+  for (size_t i = 0; i < source.size(); ++i) source[i] = i / kPageSize;
+  ASSERT_TRUE(file.write_all(source.data(), source.size()));
+  LinuxAlignedFileReader reader;
+  reader.open(file.path());
+  ASSERT_EQ(reader.configure_read_workers(4), 0);
+  ASSERT_EQ(reader.configure_read_cache(64 * 1024), 0);
+  std::vector<std::thread> callers;
+  for (size_t c = 0; c < 8; ++c)
+    callers.emplace_back([&] {
+      auto output = make_aligned_buffer(source.size());
+      ASSERT_NE(output, nullptr);
+      std::vector<AlignedRead> requests;
+      for (size_t i = 0; i < 16; ++i)
+        requests.emplace_back(
+            i * kPageSize, kPageSize,
+            static_cast<uint8_t *>(output.get()) + i * kPageSize);
+      IOContext ctx{};
+      for (size_t repeat = 0; repeat < 10; ++repeat) {
+        ASSERT_EQ(reader.read(requests, ctx), 0);
+        EXPECT_EQ(std::memcmp(output.get(), source.data(), source.size()), 0);
+      }
+    });
+  for (auto &caller : callers) caller.join();
+}
+
 TEST(DiskAnnFileReaderTest, ReadCacheReopenAndSubmitPreserveIdentity) {
   TemporaryFile first, second;
   std::vector<uint8_t> source(kPageSize * 2, 17);

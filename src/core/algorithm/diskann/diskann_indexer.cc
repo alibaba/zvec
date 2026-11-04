@@ -270,9 +270,18 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
     auto *file_reader = static_cast<LinuxAlignedFileReader *>(reader_.get());
     ret = file_reader->configure_read_cache(cache_bytes);
     if (ret != 0) return ret;
+    size_t workers = 0;
+    if (!DiskAnnReadExecutor::parse_workers(
+            std::getenv("ZVEC_DISKANN_READ_WORKERS"), &workers)) {
+      LOG_ERROR("ZVEC_DISKANN_READ_WORKERS must be an integer in [1, 8]");
+      return IndexError_InvalidArgument;
+    }
+    ret = file_reader->configure_read_workers(workers);
+    if (ret != 0) return ret;
     LOG_INFO(
-        "DiskAnn node-sector read cache: budget_bytes=%zu allocated_bytes=%zu",
-        cache_bytes, file_reader->read_cache_bytes());
+        "DiskAnn node-sector read cache: budget_bytes=%zu allocated_bytes=%zu "
+        "read_workers=%zu",
+        cache_bytes, file_reader->read_cache_bytes(), workers);
 #endif
   }
 

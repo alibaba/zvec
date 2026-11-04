@@ -17,6 +17,7 @@
 
 #include <fcntl.h>
 #include <array>
+#include <atomic>
 
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <ailego/io/iouring_loader.h>  // raw-syscall io_uring wrapper (IoUringRing)
@@ -51,6 +52,7 @@
 #include "diskann_util.h"
 #if defined(__APPLE__)
 #include "diskann_read_cache.h"
+#include "diskann_read_executor.h"
 #endif
 
 namespace zvec {
@@ -169,6 +171,12 @@ class LinuxAlignedFileReader : public AlignedFileReader {
   int file_desc;
 #if defined(__APPLE__)
   std::unique_ptr<DiskAnnReadCache> read_cache_;
+  std::unique_ptr<DiskAnnReadExecutor> read_executor_;
+  bool profile_reads_{false};
+  std::atomic<uint64_t> profile_batches_{0}, profile_requests_{0},
+      profile_requested_bytes_{0}, profile_misses_{0}, profile_read_bytes_{0},
+      profile_syscalls_{0}, profile_read_ns_{0}, profile_batch_ns_{0};
+  int read_cached(const AlignedRead &req);
 #endif
 
  public:
@@ -188,6 +196,10 @@ class LinuxAlignedFileReader : public AlignedFileReader {
   // Configure only while no operations are active; open/close discard cached
   // data so sectors can never leak across different file identities.
   int configure_read_cache(size_t budget_bytes);
+  int configure_read_workers(size_t workers);
+  size_t read_workers() const {
+    return read_executor_ ? read_executor_->workers() : 1;
+  }
   size_t read_cache_bytes() const {
     return read_cache_ ? read_cache_->allocated_bytes() : 0;
   }
