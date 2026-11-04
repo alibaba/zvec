@@ -49,6 +49,9 @@
 #include <zvec/ailego/io/io_backend.h>
 #include <zvec/core/framework/index_context.h>
 #include "diskann_util.h"
+#if defined(__APPLE__)
+#include "diskann_read_cache.h"
+#endif
 
 namespace zvec {
 namespace ailego {
@@ -164,6 +167,9 @@ class AlignedFileReader {
 class LinuxAlignedFileReader : public AlignedFileReader {
  private:
   int file_desc;
+#if defined(__APPLE__)
+  std::unique_ptr<DiskAnnReadCache> read_cache_;
+#endif
 
  public:
   LinuxAlignedFileReader();
@@ -178,6 +184,14 @@ class LinuxAlignedFileReader : public AlignedFileReader {
   // the same file object even if fname is atomically replaced.
   int open_from_handle(const std::string &fname, int source_fd);
   void close() override;
+#if defined(__APPLE__)
+  // Configure only while no operations are active; open/close discard cached
+  // data so sectors can never leak across different file identities.
+  int configure_read_cache(size_t budget_bytes);
+  size_t read_cache_bytes() const {
+    return read_cache_ ? read_cache_->allocated_bytes() : 0;
+  }
+#endif
 
   int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
            bool async = false) override;

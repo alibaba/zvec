@@ -496,3 +496,42 @@ TEST(DiskAnnFileReaderTest, MacOSBatchUsesSynchronousPread) {
   reader.close();
 }
 #endif
+
+#if defined(__APPLE__)
+TEST(DiskAnnFileReaderTest, ReadCacheReopenAndSubmitPreserveIdentity) {
+  TemporaryFile first, second;
+  std::vector<uint8_t> source(kPageSize * 2, 17);
+  ASSERT_TRUE(first.write_all(source.data(), source.size()));
+  std::fill(source.begin(), source.end(), 29);
+  ASSERT_TRUE(second.write_all(source.data(), source.size()));
+  auto output = make_aligned_buffer(kPageSize * 2);
+  ASSERT_NE(output, nullptr);
+  std::vector<AlignedRead> requests{
+      {0, kPageSize, output.get()},
+      {0, kPageSize, static_cast<uint8_t *>(output.get()) + kPageSize}};
+  LinuxAlignedFileReader reader;
+  reader.open(first.path());
+  ASSERT_EQ(reader.configure_read_cache(64 * 1024), 0);
+  EXPECT_GT(reader.read_cache_bytes(), 0u);
+  EXPECT_LE(reader.read_cache_bytes(), 64u * 1024);
+  IOContext ctx{};
+  PendingBatch batch;
+  ASSERT_EQ(reader.submit(batch, requests, ctx), 0);
+  std::vector<uint32_t> completed;
+  ASSERT_EQ(reader.get_completed(batch, ctx, 1, completed), 2);
+  EXPECT_EQ(completed, (std::vector<uint32_t>{0, 1}));
+  EXPECT_EQ(static_cast<uint8_t *>(output.get())[0], 17);
+  EXPECT_EQ(static_cast<uint8_t *>(output.get())[kPageSize], 17);
+  reader.open(second.path());
+  EXPECT_EQ(reader.read_cache_bytes(), 0u);
+  ASSERT_EQ(reader.configure_read_cache(64 * 1024), 0);
+  ASSERT_EQ(reader.read(requests, ctx), 0);
+  EXPECT_EQ(static_cast<uint8_t *>(output.get())[0], 29);
+  requests = {{kPageSize * 2, kPageSize, output.get()}};
+  EXPECT_NE(reader.submit(batch, requests, ctx), 0);
+  EXPECT_EQ(batch.n_submitted, 0u);
+  reader.close();
+  EXPECT_EQ(reader.read_cache_bytes(), 0u);
+  EXPECT_NE(reader.read(requests, ctx), 0);
+}
+#endif

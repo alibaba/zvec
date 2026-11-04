@@ -12,13 +12,95 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <atomic>
 #include <limits>
+#include <thread>
 #include <gtest/gtest.h>
 #include <zvec/core/framework/index_factory.h>
 #include "diskann_params.h"
+#include "diskann_read_cache.h"
 #include "diskann_util.h"
 
 using namespace zvec::core;
+
+TEST(DiskAnnReadCacheTest, BudgetValidation) {
+  size_t bytes = 123;
+  EXPECT_TRUE(DiskAnnReadCache::parse_budget_mib(nullptr, &bytes));
+  EXPECT_EQ(bytes, 32u * 1024 * 1024);
+  EXPECT_TRUE(DiskAnnReadCache::parse_budget_mib("0", &bytes));
+  EXPECT_EQ(bytes, 0u);
+  EXPECT_TRUE(DiskAnnReadCache::parse_budget_mib("1024", &bytes));
+  EXPECT_EQ(bytes, 1024u * 1024 * 1024);
+  for (const char *bad :
+       {"", "-1", "+1", "1M", " 1", "1025", "99999999999999999999999999"}) {
+    EXPECT_FALSE(DiskAnnReadCache::parse_budget_mib(bad, &bytes));
+  }
+}
+
+TEST(DiskAnnReadCacheTest, HitsFailuresEvictionAndMemoryBound) {
+  constexpr size_t budget = 64 * 1024;
+  DiskAnnReadCache cache(budget);
+  EXPECT_LE(cache.allocated_bytes(), budget);
+  size_t reads = 0;
+  bool fail = false;
+  auto reader = [&](uint64_t offset, size_t length, void *out) {
+    ++reads;
+    if (fail) return -7;
+    std::memset(out, (offset / 4096) % 251, length);
+    return 0;
+  };
+  std::array<uint8_t, 8192> output;
+  // Non-aligned segment offsets, multi-sector nodes, and duplicate reads.
+  ASSERT_EQ(cache.read(123, output.size(), output.data(), reader), 0);
+  EXPECT_EQ(reads, 2u);
+  ASSERT_EQ(cache.read(123, output.size(), output.data(), reader), 0);
+  EXPECT_EQ(reads, 2u);
+  EXPECT_EQ(output[0], 0);
+  EXPECT_EQ(output[4096], 1);
+  fail = true;
+  EXPECT_EQ(cache.read(123 + 8192, 4096, output.data(), reader), -7);
+  EXPECT_EQ(reads, 3u);
+  fail = false;
+  EXPECT_EQ(cache.read(123 + 8192, 4096, output.data(), reader), 0);
+  EXPECT_EQ(reads, 4u);
+  for (uint64_t i = 0; i < 10000; ++i) {
+    ASSERT_EQ(cache.read(123 + i * 4096, 4096, output.data(), reader), 0);
+    ASSERT_EQ(output[0], i % 251);
+    ASSERT_EQ(output[4095], i % 251);
+  }
+  EXPECT_LE(cache.allocated_bytes(), budget);
+  ASSERT_EQ(cache.read(123, output.size(), output.data(), reader), 0);
+  EXPECT_EQ(output[0], 0);
+  EXPECT_EQ(output[4096], 1);
+  // Partial requests must bypass, rather than silently over-read the file.
+  size_t before = reads;
+  EXPECT_EQ(cache.read(17, 5, output.data(), reader), 0);
+  EXPECT_EQ(cache.read(17, 5, output.data(), reader), 0);
+  EXPECT_EQ(reads, before + 2);
+}
+
+TEST(DiskAnnReadCacheTest, ConcurrentEvictionPreservesBytes) {
+  DiskAnnReadCache cache(64 * 1024);
+  std::atomic<size_t> errors{0};
+  std::vector<std::thread> threads;
+  for (size_t thread = 0; thread < 8; ++thread) {
+    threads.emplace_back([&, thread]() {
+      std::array<uint8_t, 4096> out;
+      for (size_t i = 0; i < 3000; ++i) {
+        uint64_t offset = ((i * 7 + thread * 3) % 67) * 4096;
+        auto reader = [](uint64_t pos, size_t len, void *dst) {
+          std::memset(dst, pos / 4096, len);
+          return 0;
+        };
+        if (cache.read(offset, out.size(), out.data(), reader) != 0) ++errors;
+        for (auto byte : out)
+          if (byte != offset / 4096) ++errors;
+      }
+    });
+  }
+  for (auto &thread : threads) thread.join();
+  EXPECT_EQ(errors.load(), 0u);
+}
 
 TEST(DiskAnnCachePreloadTest, BoundsBatchByScratchBufferCapacity) {
   EXPECT_EQ(DiskAnnUtil::cache_load_batch_size(0), 1u);

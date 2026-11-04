@@ -23,6 +23,10 @@
 #include <tuple>
 #include <unordered_set>
 #include <vector>
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#include <cstdlib>
+#endif
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/file.h>
 
@@ -157,6 +161,9 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
   quant_codes_ = entity.pq_codes();
 
   index_segment_offset_ = vector_segment->data_offset();
+#if defined(__APPLE__) && TARGET_OS_OSX
+  const size_t vector_segment_bytes = vector_segment->data_size();
+#endif
 
   const auto file_path = storage->file_path();
   int ret = 0;
@@ -248,6 +255,25 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
     // Releasing the last internal reference closes the buffered source handle.
     // POSIX caller-owned aliases remain valid; Windows has rejected them above.
     cached_file.reset();
+#if defined(__APPLE__) && TARGET_OS_OSX
+    // The graph file is immutable. Cache its node sectors within a fixed
+    // per-reader budget, while retaining F_NOCACHE for misses. BufferPool
+    // storage already has its own cache and must not allocate a second one.
+    size_t cache_bytes = 0;
+    if (!DiskAnnReadCache::parse_budget_mib(
+            std::getenv("ZVEC_DISKANN_READ_CACHE_MIB"), &cache_bytes)) {
+      LOG_ERROR("ZVEC_DISKANN_READ_CACHE_MIB must be an integer in [0, 1024]");
+      return IndexError_InvalidArgument;
+    }
+    // Small indexes must not each reserve the full default budget.
+    cache_bytes = std::min(cache_bytes, vector_segment_bytes);
+    auto *file_reader = static_cast<LinuxAlignedFileReader *>(reader_.get());
+    ret = file_reader->configure_read_cache(cache_bytes);
+    if (ret != 0) return ret;
+    LOG_INFO(
+        "DiskAnn node-sector read cache: budget_bytes=%zu allocated_bytes=%zu",
+        cache_bytes, file_reader->read_cache_bytes());
+#endif
   }
 
   if (reader_->requires_io_context()) {

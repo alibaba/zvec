@@ -645,6 +645,7 @@ static void configure_macos_reader(int file_desc, const std::string &fname) {
 #endif
 
 void LinuxAlignedFileReader::open(const std::string &fname) {
+  close();
   int flags = O_RDONLY;
 
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -742,11 +743,27 @@ int LinuxAlignedFileReader::open_from_handle(const std::string &fname,
 }
 
 void LinuxAlignedFileReader::close() {
+#if defined(__APPLE__)
+  read_cache_.reset();
+#endif
   if (file_desc >= 0) {
     ::close(file_desc);
     file_desc = -1;
   }
 }
+
+#if defined(__APPLE__)
+int LinuxAlignedFileReader::configure_read_cache(size_t budget_bytes) {
+  try {
+    std::unique_ptr<DiskAnnReadCache> next;
+    if (budget_bytes) next.reset(new DiskAnnReadCache(budget_bytes));
+    read_cache_ = std::move(next);
+    return 0;
+  } catch (const std::bad_alloc &) {
+    return IndexError_NoMemory;
+  }
+}
+#endif
 
 int LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
                                  IOContext &ctx, bool async) {
@@ -759,6 +776,19 @@ int LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     return IndexError_Runtime;
   }
 
+#if defined(__APPLE__)
+  if (read_cache_) {
+    for (const auto &req : read_reqs) {
+      int ret = read_cache_->read(
+          req.offset, req.len, req.buf,
+          [this](uint64_t offset, size_t len, void *buf) {
+            return execute_one_pread(file_desc, AlignedRead(offset, len, buf));
+          });
+      if (ret != 0) return ret;
+    }
+    return 0;
+  }
+#endif
   int ret = execute_io(ctx, this->file_desc, read_reqs);
 
   return ret;
