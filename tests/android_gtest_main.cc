@@ -5,10 +5,10 @@
 // (exit code 139) or aborts (134/135) during teardown even when all tests
 // passed.  Using _exit() skips the static destructor phase entirely.
 
+#include <unistd.h>
 #include <cstdio>
 #include <cstdlib>
 #include <iostream>
-#include <unistd.h>
 #include "gtest/gtest.h"
 
 GTEST_API_ int main(int argc, char **argv) {

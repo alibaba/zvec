@@ -4868,6 +4868,11 @@ TEST(IndexInterface, IsDirty) {
 TEST(IndexInterface, IsDirtyBufferPool) {
   constexpr uint32_t kDimension = 16;
   const std::string index_name{"test_is_dirty_bp.index"};
+  auto &pool = zvec::ailego::MemoryLimitPool::get_instance();
+  const size_t previous_capacity = pool.capacity();
+  ASSERT_EQ(0, pool.init(64UL * 1024UL * 1024UL));
+  auto restore = zvec::ailego::ScopeGuard::Make(
+      [&]() { EXPECT_EQ(0, pool.init(previous_capacity)); });
 
   zvec::test_util::RemoveTestFiles(index_name);
 
@@ -4881,15 +4886,16 @@ TEST(IndexInterface, IsDirtyBufferPool) {
                      .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
-    index->open(index_name, {StorageOptions::StorageType::kMMAP, true});
+    ASSERT_EQ(
+        0, index->open(index_name, {StorageOptions::StorageType::kMMAP, true}));
     std::vector<float> vec(kDimension, 1.0f);
     VectorData vd;
     vd.vector = DenseVector{vec.data()};
     ASSERT_EQ(0, index->add(vd, 1));
-    index->close();
+    ASSERT_EQ(0, index->close());
   }
 
-  // Reopen with BufferPool storage in writable mode
+  // Reopen an existing file for writing without permitting file creation.
   {
     auto param = FlatIndexParamBuilder()
                      .with_metric_type(MetricType::kInnerProduct)
@@ -4899,7 +4905,9 @@ TEST(IndexInterface, IsDirtyBufferPool) {
                      .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
-    index->open(index_name, {StorageOptions::StorageType::kBufferPool, true});
+    ASSERT_EQ(0,
+              index->open(index_name, {StorageOptions::StorageType::kBufferPool,
+                                       false, false}));
 
     ASSERT_FALSE(index->is_dirty());
 
@@ -4912,10 +4920,76 @@ TEST(IndexInterface, IsDirtyBufferPool) {
     ASSERT_EQ(0, index->flush());
     ASSERT_FALSE(index->is_dirty());
 
-    index->close();
+    ASSERT_EQ(0, index->close());
+  }
+
+  // Both the original and appended vectors must survive another reopen.
+  {
+    auto param = FlatIndexParamBuilder()
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(kDimension)
+                     .with_is_sparse(false)
+                     .build();
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(0,
+              index->open(index_name, {StorageOptions::StorageType::kBufferPool,
+                                       false, true}));
+    for (uint32_t id : {1U, 2U}) {
+      VectorDataBuffer fetched;
+      ASSERT_EQ(0, index->fetch(id, &fetched));
+      const auto &data =
+          std::get<DenseVectorBuffer>(fetched.vector_buffer).data;
+      const std::vector<float> expected(kDimension, static_cast<float>(id));
+      ASSERT_EQ(expected.size() * sizeof(float), data.size());
+      EXPECT_EQ(0, std::memcmp(expected.data(), data.data(), data.size()));
+    }
+    ASSERT_EQ(0, index->close());
   }
 
   zvec::test_util::RemoveTestFiles(index_name);
+}
+
+TEST(IndexInterface, BufferPoolOpenPreservesCreationAndMemoryErrors) {
+  using zvec::core::IndexError_NoMemory;
+  using zvec::core::IndexError_OpenFile;
+  const std::string path = "buffer_pool_open_errors.index";
+  zvec::test_util::RemoveTestFiles(path);
+  auto remove = zvec::ailego::ScopeGuard::Make(
+      [&]() { zvec::test_util::RemoveTestFiles(path); });
+  auto &pool = zvec::ailego::MemoryLimitPool::get_instance();
+  const size_t previous_capacity = pool.capacity();
+  auto restore = zvec::ailego::ScopeGuard::Make(
+      [&]() { EXPECT_EQ(0, pool.init(previous_capacity)); });
+  ASSERT_EQ(0, pool.init(64UL * 1024UL * 1024UL));
+  auto param = FlatIndexParamBuilder()
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(16)
+                   .with_is_sparse(false)
+                   .build();
+  {
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    EXPECT_EQ(IndexError_OpenFile,
+              index->open(path, {StorageOptions::StorageType::kBufferPool,
+                                 false, false}));
+    EXPECT_FALSE(zvec::ailego::File::IsExist(path));
+  }
+  {
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(
+        0, index->open(path, {StorageOptions::StorageType::kBufferPool, true}));
+    ASSERT_EQ(0, index->close());
+  }
+  ASSERT_EQ(0, pool.init(zvec::ailego::kVectorPageSize));
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  EXPECT_EQ(IndexError_NoMemory,
+            index->open(path, {StorageOptions::StorageType::kBufferPool, false,
+                               false}));
 }
 
 TEST(IndexInterface, BuilderSetsAllBaseFields) {
@@ -5024,6 +5098,94 @@ TEST(IndexInterface, QuantizerParamLegacyJsonCompat) {
   EXPECT_TRUE(param->quantizer_param->enable_rotate);
   EXPECT_EQ(nullptr, std::dynamic_pointer_cast<PqQuantizerParam>(
                          param->quantizer_param));
+}
+
+TEST(IndexInterface, RefineOversizedScaleFactorDoesNotCrash) {
+  // Regression: floor(topk * SF) below INT_MAX passes validation, but the
+  // coarse result heap allocation throws std::bad_alloc (e.g. topk=50 with
+  // SF=10M reserves a ~40GB heap). The query must return an error code
+  // instead of terminating the process. On hosts with enough RAM the
+  // allocation succeeds and the query legitimately returns results; both
+  // outcomes are acceptable, a crash is not.
+  constexpr uint32_t kDimension = 17;
+  constexpr uint32_t kVectorCount = 64;
+  constexpr uint32_t kTopk = 50;
+  const std::string coarse_path{"refine_huge_sf_coarse.index"};
+  const std::string fine_path{"refine_huge_sf_fine.index"};
+  zvec::test_util::RemoveTestFiles(coarse_path);
+  zvec::test_util::RemoveTestFiles(fine_path);
+
+  std::vector<std::vector<float>> vectors(kVectorCount,
+                                          std::vector<float>(kDimension));
+  for (uint32_t i = 0; i < kVectorCount; ++i) {
+    for (uint32_t d = 0; d < kDimension; ++d) {
+      vectors[i][d] = static_cast<float>((i * 47 + d * 29) % 311) - 23.25F;
+    }
+  }
+
+  auto coarse_param = IVFIndexParamBuilder()
+                          .with_metric_type(MetricType::kL2sq)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(kDimension)
+                          .with_is_sparse(false)
+                          .with_n_list(4)
+                          .build();
+  auto coarse = IndexFactory::CreateAndInitIndex(*coarse_param);
+  ASSERT_NE(nullptr, coarse);
+  ASSERT_EQ(
+      0, coarse->open(coarse_path, {StorageOptions::StorageType::kMMAP, true}));
+  for (uint32_t i = 0; i < kVectorCount; ++i) {
+    ASSERT_EQ(0, coarse->add(VectorData{DenseVector{vectors[i].data()}}, i));
+  }
+  ASSERT_EQ(0, coarse->train());
+
+  auto fine_param = FlatIndexParamBuilder()
+                        .with_metric_type(MetricType::kL2sq)
+                        .with_data_type(DataType::DT_FP32)
+                        .with_dimension(kDimension)
+                        .with_is_sparse(false)
+                        .build();
+  auto fine = IndexFactory::CreateAndInitIndex(*fine_param);
+  ASSERT_NE(nullptr, fine);
+  ASSERT_EQ(0,
+            fine->open(fine_path, {StorageOptions::StorageType::kMMAP, true}));
+  for (uint32_t i = 0; i < kVectorCount; ++i) {
+    ASSERT_EQ(0, fine->add(VectorData{DenseVector{vectors[i].data()}}, i));
+  }
+  ASSERT_EQ(0, fine->train());
+
+  auto refiner = std::make_shared<RefinerParam>();
+  refiner->scale_factor_ = 10000000.0f;  // topk * SF = 500M candidates
+  refiner->reference_index = fine;
+  auto huge_param = IVFQueryParamBuilder()
+                        .with_nprobe(4)
+                        .with_topk(kTopk)
+                        .with_refiner_param(refiner)
+                        .build();
+  SearchResult result;
+  const int rc = coarse->search(VectorData{DenseVector{vectors[0].data()}},
+                                huge_param, &result);
+  if (rc != 0) {
+    EXPECT_EQ(static_cast<int>(zvec::core::IndexError_NoMemory), rc);
+  } else {
+    EXPECT_EQ(kTopk, result.doc_list_.size());
+  }
+
+  // The index must stay usable after a failed oversized allocation.
+  refiner->scale_factor_ = 4.0f;
+  auto valid_param = IVFQueryParamBuilder()
+                         .with_nprobe(4)
+                         .with_topk(kTopk)
+                         .with_refiner_param(refiner)
+                         .build();
+  ASSERT_EQ(0, coarse->search(VectorData{DenseVector{vectors[0].data()}},
+                              valid_param, &result));
+  EXPECT_EQ(kTopk, result.doc_list_.size());
+
+  ASSERT_EQ(0, coarse->close());
+  ASSERT_EQ(0, fine->close());
+  zvec::test_util::RemoveTestFiles(coarse_path);
+  zvec::test_util::RemoveTestFiles(fine_path);
 }
 
 TEST(IndexInterface, BuilderChainingReturnsCorrectType) {

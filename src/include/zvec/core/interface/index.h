@@ -209,11 +209,10 @@ class ZVEC_CORE_API Index {
   int _search_refine_internal_ids(
       const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
       int64_t *output_ids, float *output_scores);
-  int _collect_dense_result(const VectorData &query,
-                            const core::IndexQueryMeta &query_meta,
-                            const BaseIndexQueryParam::Pointer &search_param,
-                            SearchResult *result,
-                            core::IndexContext::Pointer &context);
+  virtual int _collect_dense_result(
+      const VectorData &query, const core::IndexQueryMeta &query_meta,
+      const BaseIndexQueryParam::Pointer &search_param, SearchResult *result,
+      core::IndexContext::Pointer &context);
   int _refine_dense_candidates(const VectorData &query,
                                const BaseIndexQueryParam::Pointer &search_param,
                                const std::vector<std::vector<uint64_t>> &keys,
@@ -242,6 +241,9 @@ class ZVEC_CORE_API Index {
   int create_and_init_metric(const BaseIndexParam &param);
   virtual int create_and_init_converter_reformer(
       const QuantizerParam &param, const BaseIndexParam &index_param);
+  int init_pq_quantizer(const QuantizerParam &param,
+                        const BaseIndexParam &index_param,
+                        std::shared_ptr<turbo::Quantizer> *quantizer);
   int init_converter_reformer(const std::string &converter_name,
                               const ailego::Params &converter_params = {});
   virtual int create_and_init_streamer(const BaseIndexParam &param) = 0;
@@ -257,6 +259,8 @@ class ZVEC_CORE_API Index {
 
  protected:
   bool is_trained_{false};
+  // Trained streaming quantizers open their empty target after merge training.
+  bool pending_quantizer_training_{false};
 
   BaseIndexParam param_;
   ailego::Params proxima_index_params_{};
@@ -286,6 +290,26 @@ class ZVEC_CORE_API Index {
 class ZVEC_CORE_API FlatIndex : public Index {
  public:
   FlatIndex() = default;
+
+  // External Flat supports raw row-major FP32 L2/IP. Register IDs after
+  // writing the source; vector bytes and subsequent updates stay in the source.
+  // Re-registering an ID succeeds without adding an entry or increasing
+  // added_count.
+  // doc_id is the source ID with either use_id_map setting.
+  int add_with_source(const VectorData &vector, uint32_t doc_id,
+                      const core::VectorSource &src) override;
+  // Full scans prefer the source iterator, intersecting its visible IDs with
+  // registered IDs and the request filter. Without an iterator, registered IDs
+  // are filtered and read through get_vectors(), as in candidate searches.
+  // Bind the source, scan and filter to one stable snapshot.
+  // With fetch_vector, returned pointers borrow source memory;
+  // keep that memory valid while using the results, as with external HNSW.
+  // External Flat does not support group-by or acting as either the coarse or
+  // reference index for refinement.
+  int search_with_source(const VectorData &query,
+                         const BaseIndexQueryParam::Pointer &search_param,
+                         const core::VectorSource &src,
+                         SearchResult *result) override;
   // FlatIndex(const FlatIndexParam &param) : param_(param) {}
   // FlatIndex(FlatIndexParam &&param) : param(std::move(param)) {}
 
@@ -321,6 +345,9 @@ class ZVEC_CORE_API FlatIndex : public Index {
   int create_and_init_legacy_converter_reformer(
       const QuantizerParam &param, const BaseIndexParam &index_param);
 
+  int bind_vector_source(const core::VectorSource &source,
+                         core::IndexContext::Pointer &context);
+
   FlatIndexParam param_{};
 };
 
@@ -333,10 +360,11 @@ class ZVEC_CORE_API IVFIndex : public Index {
       const QuantizerParam &param, const BaseIndexParam &index_param) override;
   int create_and_init_streamer(const BaseIndexParam &param) override;
 
-  int _dense_search(const VectorData &query,
-                    const BaseIndexQueryParam::Pointer &search_param,
-                    SearchResult *result,
-                    core::IndexContext::Pointer &context) override;
+  int _collect_dense_result(const VectorData &query,
+                            const core::IndexQueryMeta &query_meta,
+                            const BaseIndexQueryParam::Pointer &search_param,
+                            SearchResult *result,
+                            core::IndexContext::Pointer &context) override;
 
   int _prepare_for_search(const VectorData &query,
                           const BaseIndexQueryParam::Pointer &search_param,

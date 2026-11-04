@@ -11,13 +11,14 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include <ailego/math/euclidean_distance_matrix.h>
-#include <ailego/math/inner_product_matrix.h>
-#include <ailego/math/mips_euclidean_distance_matrix.h>
-#include <ailego/math/norm2_matrix.h>
+#include <atomic>
+#include <memory>
+#include <turbo/distance/sparse/sparse_distance.h>
+#include <turbo/norm/norm2_matrix.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include "metric_params.h"
+#include "turbo_metric.h"
 
 namespace zvec {
 namespace core {
@@ -29,6 +30,9 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
  public:
   //! Initialize Metric
   int init(const IndexMeta &meta, const ailego::Params &index_params) override {
+    // Each initialization owns a new training state; existing callbacks keep
+    // the state from their original initialization.
+    training_state_ = std::make_shared<TrainingState>();
     data_type_ = meta.data_type();
     dimension_ = meta.dimension();
 
@@ -57,32 +61,41 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
     max_squared_l2_norm_ = max_l2_norm * max_l2_norm;
     if (injection_ == Injection::kIdentity ||
         injection_ == Injection::kLocalizedSpherical) {
-      eta_ = 0.0f;
+      training_state_->eta.store(0.0f, std::memory_order_relaxed);
     } else if (max_squared_l2_norm_ < std::numeric_limits<float>::epsilon()) {
-      eta_ = kDefaultEta;
+      training_state_->eta.store(kDefaultEta, std::memory_order_relaxed);
     } else {
-      eta_ = squared_u_value_ / max_squared_l2_norm_;
+      training_state_->eta.store(squared_u_value_ / max_squared_l2_norm_,
+                                 std::memory_order_relaxed);
     }
 
     switch (data_type_) {
       case IndexMeta::DataType::DT_FP32:
         squared_norm2_handle_ = reinterpret_cast<SquaredNorm2Handle>(
-            ailego::SquaredNorm2Matrix<float, 1>::Compute);
+            turbo::SquaredNorm2Matrix<float, 1>::Compute);
         break;
 
       case IndexMeta::DataType::DT_FP16:
-        squared_norm2_handle_ = reinterpret_cast<SquaredNorm2Handle>(
-            ailego::SquaredNorm2Matrix<ailego::Float16, 1>::Compute);
+        // Raw FP16 inner products widen to FP32. Use the same kernel for the
+        // norm (including training) so native FP16 norm accumulation cannot
+        // saturate or round differently and produce negative self-distances.
+        squared_norm2_handle_ = [](const void *m, size_t dim, float *out) {
+          static const auto ip =
+              RawKernels(turbo::MetricType::kInnerProduct, IndexMeta::DT_FP16)
+                  .dist;
+          ip(m, m, dim, out);
+          *out = -*out;
+        };
         break;
 
       case IndexMeta::DataType::DT_INT8:
         squared_norm2_handle_ = reinterpret_cast<SquaredNorm2Handle>(
-            ailego::SquaredNorm2Matrix<int8_t, 1>::Compute);
+            turbo::SquaredNorm2Matrix<int8_t, 1>::Compute);
         break;
 
       case IndexMeta::DataType::DT_INT4:
         squared_norm2_handle_ = reinterpret_cast<SquaredNorm2Handle>(
-            ailego::SquaredNorm2Matrix<uint8_t, 1>::Compute);
+            turbo::SquaredNorm2Matrix<uint8_t, 1>::Compute);
         break;
 
       default:
@@ -105,7 +118,8 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
 
   //! Cleanup Metric
   int cleanup() override {
-    eta_ = 0.0f;
+    // Detach rather than reset the state retained by cached callbacks.
+    training_state_ = std::make_shared<TrainingState>();
     m_value_ = 0;
     squared_u_value_ = 0.0f;
     max_squared_l2_norm_ = 0.0f;
@@ -142,145 +156,55 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
 
   //! Retrieve distance function for query
   MatrixDistance distance() const override {
-    if (injection_ == Injection::kLocalizedSpherical) {
-      switch (data_type_) {
-        case IndexMeta::DataType::DT_FP32:
-          return [&](const void *m, const void *q, size_t dim, float *out) {
-            ailego::MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
-                reinterpret_cast<const float *>(m),
-                reinterpret_cast<const float *>(q), dim, 0.0f, out);
-          };
-
-        case IndexMeta::DataType::DT_FP16:
-          return [&](const void *m, const void *q, size_t dim, float *out) {
-            ailego::MipsSquaredEuclideanDistanceMatrix<ailego::Float16, 1, 1>::
-                Compute(reinterpret_cast<const ailego::Float16 *>(m),
-                        reinterpret_cast<const ailego::Float16 *>(q), dim, 0.0f,
-                        out);
-          };
-
-        case IndexMeta::DataType::DT_INT8:
-          return [&](const void *m, const void *q, size_t dim, float *out) {
-            ailego::MipsSquaredEuclideanDistanceMatrix<int8_t, 1, 1>::Compute(
-                reinterpret_cast<const int8_t *>(m),
-                reinterpret_cast<const int8_t *>(q), dim, 0.0f, out);
-          };
-
-        case IndexMeta::DataType::DT_INT4:
-          return [&](const void *m, const void *q, size_t dim, float *out) {
-            ailego::MipsSquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute(
-                reinterpret_cast<const uint8_t *>(m),
-                reinterpret_cast<const uint8_t *>(q), dim, 0.0f, out);
-          };
-
-        default:
-          return nullptr;
+    const auto ip =
+        RawKernels(turbo::MetricType::kInnerProduct, data_type_).dist;
+    const auto l2 =
+        RawKernels(turbo::MetricType::kSquaredEuclidean, data_type_).dist;
+    if (injection_ == Injection::kIdentity) return l2;
+    if (!ip || !l2) return nullptr;
+    // Callbacks share training updates without retaining the metric itself.
+    // Capture the immutable configuration by value and load eta on each call.
+    const auto norm = squared_norm2_handle_;
+    const auto injection = injection_;
+    const auto state = training_state_;
+    const auto repeats = m_value_;
+    return [norm, injection, state, repeats, ip, l2](
+               const void *m, const void *q, size_t dim, float *out) {
+      const float eta = state->eta.load(std::memory_order_relaxed);
+      float u2, v2;
+      norm(m, dim, &u2);
+      norm(q, dim, &v2);
+      if (injection == Injection::kRepeatedQuadratic) {
+        l2(m, q, dim, out);
+        *out *= eta;
+        u2 *= eta;
+        v2 *= eta;
+        for (size_t i = 0; i < repeats; ++i) {
+          *out += (u2 - v2) * (u2 - v2);
+          u2 *= u2;
+          v2 *= v2;
+        }
+      } else {
+        float negative_ip;
+        ip(m, q, dim, &negative_ip);
+        if (injection == Injection::kLocalizedSpherical || eta == 0.0f) {
+          *out = static_cast<float>(2.0 + 2.0 * negative_ip / std::max(u2, v2));
+        } else {
+          const double product =
+              (1.0 - double(eta) * u2) * (1.0 - double(eta) * v2);
+          *out = static_cast<float>(
+              2.0 * (1.0 + double(eta) * negative_ip -
+                     (product > 0.0 ? std::sqrt(product) : 0.0)));
+        }
       }
-    }
-
-    if (injection_ == Injection::kRepeatedQuadratic) {
-      switch (data_type_) {
-        case IndexMeta::DataType::DT_FP32:
-          return [&](const void *m, const void *q, size_t dim, float *out) {
-            ailego::MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
-                reinterpret_cast<const float *>(m),
-                reinterpret_cast<const float *>(q), dim, m_value_, eta_, out);
-          };
-
-        case IndexMeta::DataType::DT_FP16:
-          return [&](const void *m, const void *q, size_t dim, float *out) {
-            ailego::MipsSquaredEuclideanDistanceMatrix<ailego::Float16, 1, 1>::
-                Compute(reinterpret_cast<const ailego::Float16 *>(m),
-                        reinterpret_cast<const ailego::Float16 *>(q), dim,
-                        m_value_, eta_, out);
-          };
-
-        case IndexMeta::DataType::DT_INT8:
-          return [&](const void *m, const void *q, size_t dim, float *out) {
-            ailego::MipsSquaredEuclideanDistanceMatrix<int8_t, 1, 1>::Compute(
-                reinterpret_cast<const int8_t *>(m),
-                reinterpret_cast<const int8_t *>(q), dim, m_value_, eta_, out);
-          };
-
-        case IndexMeta::DataType::DT_INT4:
-          return [&](const void *m, const void *q, size_t dim, float *out) {
-            ailego::MipsSquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute(
-                reinterpret_cast<const uint8_t *>(m),
-                reinterpret_cast<const uint8_t *>(q), dim, m_value_, eta_, out);
-          };
-
-        default:
-          return nullptr;
-      }
-    }
-
-    if (injection_ == Injection::kSpherical) {
-      switch (data_type_) {
-        case IndexMeta::DataType::DT_FP32:
-          return [&](const void *m, const void *q, size_t dim, float *out) {
-            ailego::MipsSquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
-                reinterpret_cast<const float *>(m),
-                reinterpret_cast<const float *>(q), dim, eta_, out);
-          };
-
-        case IndexMeta::DataType::DT_FP16:
-          return [&](const void *m, const void *q, size_t dim, float *out) {
-            ailego::MipsSquaredEuclideanDistanceMatrix<ailego::Float16, 1, 1>::
-                Compute(reinterpret_cast<const ailego::Float16 *>(m),
-                        reinterpret_cast<const ailego::Float16 *>(q), dim, eta_,
-                        out);
-          };
-
-        case IndexMeta::DataType::DT_INT8:
-          return [&](const void *m, const void *q, size_t dim, float *out) {
-            ailego::MipsSquaredEuclideanDistanceMatrix<int8_t, 1, 1>::Compute(
-                reinterpret_cast<const int8_t *>(m),
-                reinterpret_cast<const int8_t *>(q), dim, eta_, out);
-          };
-
-        case IndexMeta::DataType::DT_INT4:
-          return [&](const void *m, const void *q, size_t dim, float *out) {
-            ailego::MipsSquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute(
-                reinterpret_cast<const uint8_t *>(m),
-                reinterpret_cast<const uint8_t *>(q), dim, eta_, out);
-          };
-
-        default:
-          return nullptr;
-      }
-    }
-
-    if (injection_ == Injection::kIdentity) {
-      switch (data_type_) {
-        case IndexMeta::DataType::DT_FP32:
-          return reinterpret_cast<MatrixDistanceHandle>(
-              ailego::SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute);
-
-        case IndexMeta::DataType::DT_FP16:
-          return reinterpret_cast<MatrixDistanceHandle>(
-              ailego::SquaredEuclideanDistanceMatrix<ailego::Float16, 1,
-                                                     1>::Compute);
-
-        case IndexMeta::DataType::DT_INT8:
-          return reinterpret_cast<MatrixDistanceHandle>(
-              ailego::SquaredEuclideanDistanceMatrix<int8_t, 1, 1>::Compute);
-
-        case IndexMeta::DataType::DT_INT4:
-          return reinterpret_cast<MatrixDistanceHandle>(
-              ailego::SquaredEuclideanDistanceMatrix<uint8_t, 1, 1>::Compute);
-
-        default:
-          return nullptr;
-      }
-    }
-    return nullptr;
+    };
   }
 
   //! Retrieve distance function for query
   MatrixSparseDistance sparse_distance() const override {
     if (injection_ == Injection::kLocalizedSpherical) {
       return [&](const void *m_sparse, const void *q_sparse, float *out) {
-        ailego::MipsSquaredEuclideanSparseDistanceMatrix<float>::Compute(
+        turbo::MipsSquaredEuclideanSparseDistanceMatrix<float>::Compute(
             m_sparse, q_sparse, out);
       };
     }
@@ -314,120 +238,8 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
 
   //! Retrieve matrix distance function for index features
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
-    if (injection_ == Injection::kLocalizedSpherical) {
-      SphericalHandle<void> compute;
-      switch (data_type_) {
-        case IndexMeta::DataType::DT_FP32:
-          compute =
-              DistanceMatrixCompute<ailego::MipsSquaredEuclideanDistanceMatrix,
-                                    float, SphericalHandle>(m, n);
-          break;
-        case IndexMeta::DataType::DT_FP16:
-          compute =
-              DistanceMatrixCompute<ailego::MipsSquaredEuclideanDistanceMatrix,
-                                    ailego::Float16, SphericalHandle>(m, n);
-          break;
-        case IndexMeta::DataType::DT_INT8:
-          compute =
-              DistanceMatrixCompute<ailego::MipsSquaredEuclideanDistanceMatrix,
-                                    int8_t, SphericalHandle>(m, n);
-          break;
-        case IndexMeta::DataType::DT_INT4:
-          compute =
-              DistanceMatrixCompute<ailego::MipsSquaredEuclideanDistanceMatrix,
-                                    uint8_t, SphericalHandle>(m, n);
-          break;
-        default:
-          return nullptr;
-      }
-      return [=](const void *d, const void *q, size_t dim, float *out) {
-        compute(d, q, dim, 0.0f, out);
-      };
-    }
-
-    if (injection_ == Injection::kRepeatedQuadratic) {
-      RepeatedQuadraticHandle<void> compute;
-      switch (data_type_) {
-        case IndexMeta::DataType::DT_FP32:
-          compute =
-              DistanceMatrixCompute<ailego::MipsSquaredEuclideanDistanceMatrix,
-                                    float, RepeatedQuadraticHandle>(m, n);
-          break;
-        case IndexMeta::DataType::DT_FP16:
-          compute =
-              DistanceMatrixCompute<ailego::MipsSquaredEuclideanDistanceMatrix,
-                                    ailego::Float16, RepeatedQuadraticHandle>(
-                  m, n);
-          break;
-        case IndexMeta::DataType::DT_INT8:
-          compute =
-              DistanceMatrixCompute<ailego::MipsSquaredEuclideanDistanceMatrix,
-                                    int8_t, RepeatedQuadraticHandle>(m, n);
-          break;
-        case IndexMeta::DataType::DT_INT4:
-          compute =
-              DistanceMatrixCompute<ailego::MipsSquaredEuclideanDistanceMatrix,
-                                    uint8_t, RepeatedQuadraticHandle>(m, n);
-          break;
-        default:
-          return nullptr;
-      }
-      return [=](const void *d, const void *q, size_t dim, float *out) {
-        compute(d, q, dim, m_value_, eta_, out);
-      };
-    }
-
-    if (injection_ == Injection::kSpherical) {
-      SphericalHandle<void> compute;
-      switch (data_type_) {
-        case IndexMeta::DataType::DT_FP32:
-          compute =
-              DistanceMatrixCompute<ailego::MipsSquaredEuclideanDistanceMatrix,
-                                    float, SphericalHandle>(m, n);
-          break;
-        case IndexMeta::DataType::DT_FP16:
-          compute =
-              DistanceMatrixCompute<ailego::MipsSquaredEuclideanDistanceMatrix,
-                                    ailego::Float16, SphericalHandle>(m, n);
-          break;
-        case IndexMeta::DataType::DT_INT8:
-          compute =
-              DistanceMatrixCompute<ailego::MipsSquaredEuclideanDistanceMatrix,
-                                    int8_t, SphericalHandle>(m, n);
-          break;
-        case IndexMeta::DataType::DT_INT4:
-          compute =
-              DistanceMatrixCompute<ailego::MipsSquaredEuclideanDistanceMatrix,
-                                    uint8_t, SphericalHandle>(m, n);
-          break;
-        default:
-          return nullptr;
-      }
-      return [=](const void *d, const void *q, size_t dim, float *out) {
-        compute(d, q, dim, eta_, out);
-      };
-    }
-
-    if (injection_ == Injection::kIdentity) {
-      switch (data_type_) {
-        case IndexMeta::DataType::DT_FP32:
-          return DistanceMatrixCompute<ailego::SquaredEuclideanDistanceMatrix,
-                                       float, TypedDistanceHandle>(m, n);
-        case IndexMeta::DataType::DT_FP16:
-          return DistanceMatrixCompute<ailego::SquaredEuclideanDistanceMatrix,
-                                       ailego::Float16, TypedDistanceHandle>(m,
-                                                                             n);
-        case IndexMeta::DataType::DT_INT8:
-          return DistanceMatrixCompute<ailego::SquaredEuclideanDistanceMatrix,
-                                       int8_t, TypedDistanceHandle>(m, n);
-        case IndexMeta::DataType::DT_INT4:
-          return DistanceMatrixCompute<ailego::SquaredEuclideanDistanceMatrix,
-                                       uint8_t, TypedDistanceHandle>(m, n);
-        default:
-          return nullptr;
-      }
-    }
-    return nullptr;
+    return turbo::MakeDistanceMatrix(distance(), m, n,
+                                     TurboDataType(data_type_));
   }
 
   //! Normalize result
@@ -452,7 +264,8 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
 
   //! Train the metric
   int train(const void *vec, size_t dim) override {
-    if (eta_ == 0.0f) {  // No global norm scaling => no training.
+    // No global norm scaling => no training.
+    if (training_state_->eta.load(std::memory_order_relaxed) == 0.0f) {
       return 0;
     }
     if (!squared_norm2_handle_) {
@@ -470,15 +283,16 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
         squared_u_value_ = max_squared_l2_norm_;
         params_.set(MIPS_EUCLIDEAN_METRIC_U_VALUE, max_l2_norm);
       }
-      eta_ = squared_u_value_ / max_squared_l2_norm_;
+      training_state_->eta.store(squared_u_value_ / max_squared_l2_norm_,
+                                 std::memory_order_relaxed);
     }
     return 0;
   }
 
   //! Retrieve if it supports training
   bool support_train() const override {
-    // No global norm scaling => eta_ == 0 => no training.
-    return eta_ != 0.0f;
+    // No global norm scaling => eta == 0 => no training.
+    return training_state_->eta.load(std::memory_order_relaxed) != 0.0f;
   }
 
   //! Retrieve query metric object of this index metric
@@ -487,19 +301,6 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
   }
 
  private:
-  //! Type of MipsSquaredEuclideanDistanceMatrix::Compute overloaded for
-  //  Spherical injection and LocalizedSpherical nonmetric.
-  template <typename T>
-  using SphericalHandle = void (*)(const T *m, const T *q, size_t dim,
-                                   float eta, float *out);
-
-  //! Type of MipsSquaredEuclideanDistanceMatrix::Compute overloaded for
-  //  RepeatedQuadratic injection.
-  template <typename T>
-  using RepeatedQuadraticHandle = void (*)(const T *m, const T *q, size_t dim,
-                                           size_t m_value, float eta,
-                                           float *out);
-
   //! Type of squared L2 norm function.
   using SquaredNorm2Handle = void (*)(const void *m, size_t dim, float *out);
 
@@ -608,49 +409,6 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
   }
 
  private:
-  //! Type of basic DistanceMatrix::Compute function with typed parameter.
-  template <typename T>
-  using TypedDistanceHandle = void (*)(const T *m, const T *q, size_t dim,
-                                       float *out);
-
-  //! Returns m x n distance matrix compute function.
-  //  Handle is used to resolve potential DistanceMatrix<T>::Compute overload.
-  template <template <typename, size_t, size_t, typename = void>
-            class DistanceMatrix,
-            typename T, template <typename> class Handle = TypedDistanceHandle>
-  static Handle<void> DistanceMatrixCompute(size_t m, size_t n) {
-    static Handle<T> distance_table[6][6] = {
-        {DistanceMatrix<T, 1, 1, void>::Compute, nullptr, nullptr, nullptr,
-         nullptr, nullptr},
-        {DistanceMatrix<T, 2, 1, void>::Compute,
-         DistanceMatrix<T, 2, 2, void>::Compute, nullptr, nullptr, nullptr,
-         nullptr},
-        {DistanceMatrix<T, 4, 1, void>::Compute,
-         DistanceMatrix<T, 4, 2, void>::Compute,
-         DistanceMatrix<T, 4, 4, void>::Compute, nullptr, nullptr, nullptr},
-        {DistanceMatrix<T, 8, 1, void>::Compute,
-         DistanceMatrix<T, 8, 2, void>::Compute,
-         DistanceMatrix<T, 8, 4, void>::Compute,
-         DistanceMatrix<T, 8, 8, void>::Compute, nullptr, nullptr},
-        {DistanceMatrix<T, 16, 1, void>::Compute,
-         DistanceMatrix<T, 16, 2, void>::Compute,
-         DistanceMatrix<T, 16, 4, void>::Compute,
-         DistanceMatrix<T, 16, 8, void>::Compute,
-         DistanceMatrix<T, 16, 16, void>::Compute, nullptr},
-        {DistanceMatrix<T, 32, 1, void>::Compute,
-         DistanceMatrix<T, 32, 2, void>::Compute,
-         DistanceMatrix<T, 32, 4, void>::Compute,
-         DistanceMatrix<T, 32, 8, void>::Compute,
-         DistanceMatrix<T, 32, 16, void>::Compute,
-         DistanceMatrix<T, 32, 32, void>::Compute}};
-    if (m > 32 || n > 32 || ailego_popcount(m) != 1 ||
-        ailego_popcount(n) != 1) {
-      return nullptr;
-    }
-    return reinterpret_cast<Handle<void> >(
-        distance_table[ailego_ctz(m)][ailego_ctz(n)]);
-  }
-
   //! Constants
   // If the training data is not provided, we use a max squared l2 norm which
   // is as big as possible but also keep the precision, so estimate eta =  U /
@@ -663,7 +421,12 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
 
   //! Members
   SquaredNorm2Handle squared_norm2_handle_{nullptr};
-  float eta_{0.0f};
+  struct TrainingState {
+    // Training can run while another thread invokes a cached callback.
+    std::atomic<float> eta{0.0f};
+  };
+  std::shared_ptr<TrainingState> training_state_{
+      std::make_shared<TrainingState>()};
   uint32_t m_value_{0};
   float squared_u_value_{0.0f};
   float max_squared_l2_norm_{0.0f};

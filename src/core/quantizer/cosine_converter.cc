@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <iterator>
-#include <ailego/algorithm/integer_quantizer.h>
-#include <ailego/math/norm2_matrix.h>
-#include <ailego/math/normalizer.h>
 #include <ailego/pattern/defer.h>
 #include <core/quantizer/quantizer_params.h>
+#include <turbo/norm/norm2_matrix.h>
+#include <turbo/norm/normalizer.h>
+#include <turbo/quantizer/entropy_integer_quantizer/integer_quantizer.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/turbo/turbo.h>
 #include "rotator/rotator.h"
@@ -135,8 +135,7 @@ class CosineConverterHolder : public IndexHolder {
             reinterpret_cast<ailego::Float16 *>(&normalize_buffer_[0]);
 
         float norm = 0.0f;
-        ailego::Normalizer<ailego::Float16>::L2(buf, original_dimension_,
-                                                &norm);
+        turbo::Normalizer<ailego::Float16>::L2(buf, original_dimension_, &norm);
 
         ::memcpy(reinterpret_cast<uint16_t *>(&normalize_buffer_[0]) +
                      original_dimension_,
@@ -147,8 +146,7 @@ class CosineConverterHolder : public IndexHolder {
                                    original_dimension_, buf);
 
         float norm = 0.0F;
-        ailego::Normalizer<ailego::Float16>::L2(buf, original_dimension_,
-                                                &norm);
+        turbo::Normalizer<ailego::Float16>::L2(buf, original_dimension_, &norm);
         ::memcpy(buffer_.data() + element_size - NORM_SIZE, &norm, NORM_SIZE);
       } else {  // original_type_ == IndexMeta::DataType::DT_FP32
         ::memcpy(reinterpret_cast<char *>(&normalize_buffer_[0]),
@@ -163,8 +161,8 @@ class CosineConverterHolder : public IndexHolder {
         }
 
         float norm = 0.0f;
-        ailego::Normalizer<float>::L2(const_cast<float *>(vec),
-                                      original_dimension_, &norm);
+        turbo::Normalizer<float>::L2(const_cast<float *>(vec),
+                                     original_dimension_, &norm);
 
         if (type_ == IndexMeta::DataType::DT_FP32) {
           ::memcpy(reinterpret_cast<float *>(&normalize_buffer_[0]), vec,

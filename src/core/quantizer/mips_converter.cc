@@ -11,8 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include <ailego/math/norm2_matrix.h>
 #include <core/quantizer/quantizer_params.h>
+#include <turbo/norm/norm2_matrix.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/ailego/utility/type_helper.h>
 #include <zvec/core/framework/index_factory.h>
@@ -566,7 +566,7 @@ class MipsConverter : public IndexConverter {
       case IndexMeta::DataType::DT_FP16:
         for (; iter->is_valid(); iter->next()) {
           float score = 0.0f;
-          ailego::Norm2Matrix<ailego::Float16, 1>::Compute(
+          turbo::Norm2Matrix<ailego::Float16, 1>::Compute(
               reinterpret_cast<const ailego::Float16 *>(iter->data()), dim,
               &score);
 
@@ -583,7 +583,7 @@ class MipsConverter : public IndexConverter {
       case IndexMeta::DataType::DT_FP32:
         for (; iter->is_valid(); iter->next()) {
           float score = 0.0f;
-          ailego::Norm2Matrix<float, 1>::Compute(
+          turbo::Norm2Matrix<float, 1>::Compute(
               reinterpret_cast<const float *>(iter->data()), dim, &score);
 
           if (score > l2_norm_) {
