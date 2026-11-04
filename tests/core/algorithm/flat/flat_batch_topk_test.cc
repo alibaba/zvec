@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <future>
 #include <set>
 #include <ailego/utility/memory_helper.h>
@@ -150,17 +151,28 @@ void CheckStatic() {
           }
           context->set_topk(topk);
           context->set_threshold(40.0f);
+          size_t filtered_calls = 0;
           if (mode == 0)
             context->reset_filter();
           else
-            context->set_filter([excluded](uint64_t key) {
+            context->set_filter([excluded, &filtered_calls](uint64_t key) {
+              ++filtered_calls;
               return excluded.count(Id(key)) != 0;
             });
-          ASSERT_EQ(0, searcher->search_impl(data.data(), qmeta, 3, context));
-          for (size_t q = 0; q < 3; ++q) {
-            Check(context->result(q), data, data.data() + q * kDimension, topk,
-                  40.0f, excluded, false, true);
+          // Grow, shrink and reuse the per-query selectors, including both
+          // the single-query specialization and a partial final data batch.
+          for (uint32_t query_count : {3U, 7U, 2U, 1U, 7U}) {
+            SCOPED_TRACE(query_count);
+            filtered_calls = 0;
+            ASSERT_EQ(0, searcher->search_impl(data.data(), qmeta, query_count,
+                                               context));
+            EXPECT_EQ(mode == 0 ? 0U : kCount, filtered_calls);
+            for (size_t q = 0; q < query_count; ++q) {
+              Check(context->result(q), data, data.data() + q * kDimension,
+                    topk, 40.0f, excluded, false, true);
+            }
           }
+          context->reset_filter();
         }
       }
       context->reset_filter();
@@ -309,6 +321,89 @@ TEST(FlatBatchTopK, Fp32StaticStorageFilteringAndReuse) {
 }
 TEST(FlatBatchTopK, Fp16StaticStorageFilteringAndReuse) {
   CheckStatic<IndexMeta::DT_FP16, ailego::Float16>();
+}
+TEST(FlatBatchTopK, StaticMultiQueryPreprocessingAndExtraValues) {
+  constexpr size_t kEncodedDimension = kDimension + sizeof(uint32_t);
+  Cleanup cleanup{"flat_batch_topk_static_preprocess"};
+  test_util::RemoveTestPath(cleanup.path);
+  ailego::MemoryLimitPool::get_instance().init(64UL * 1024 * 1024);
+  ailego::Params metric_params;
+  metric_params.set("proxima.uniform_uint8.metric.origin_metric_name",
+                    std::string("SquaredEuclidean"));
+  IndexMeta meta(IndexMeta::DT_INT8, kEncodedDimension);
+  meta.set_metric("UniformUint8", 0, metric_params);
+  meta.set_major_order(IndexMeta::MO_ROW);
+  auto metric = IndexFactory::CreateMetric("UniformUint8");
+  ASSERT_TRUE(metric);
+  ASSERT_EQ(0, metric->init(meta, metric_params));
+  ASSERT_TRUE(metric->batch_distance());
+  ASSERT_TRUE(metric->get_query_preprocess_func());
+  ASSERT_EQ(sizeof(uint32_t), metric->extra_values_size_per_vector());
+
+  std::vector<int8_t> data(kCount * kDimension);
+  std::string queries;
+  auto holder = std::make_shared<MultiPassIndexHolder<IndexMeta::DT_INT8>>(
+      kEncodedDimension);
+  for (size_t i = 0; i < kCount; ++i) {
+    ailego::NumericalVector<int8_t> row(kEncodedDimension);
+    uint32_t sum_squared = 0;
+    for (size_t d = 0; d < kDimension; ++d) {
+      const uint8_t code = static_cast<uint8_t>(i * 73 + d * 29 + d * i * 3);
+      row[d] = static_cast<int8_t>(static_cast<int>(code) - 128);
+      data[i * kDimension + d] = row[d];
+      sum_squared += static_cast<uint32_t>(code) * code;
+    }
+    std::memcpy(row.data() + kDimension, &sum_squared, sizeof(sum_squared));
+    ASSERT_TRUE(holder->emplace(Key(i), row));
+    if (i < 7) {
+      queries.append(reinterpret_cast<const char *>(row.data()),
+                     kEncodedDimension);
+    }
+  }
+  const auto original_queries = queries;
+  auto builder = IndexFactory::CreateBuilder("FlatBuilder");
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_EQ(0, builder->init(meta, ailego::Params()));
+  ASSERT_EQ(0, dumper->create(cleanup.path + "/index"));
+  ASSERT_EQ(0, IndexBuilder::TrainBuildAndDump(builder, holder, dumper));
+  ASSERT_EQ(0, dumper->close());
+  auto storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(cleanup.path + "/index", false));
+  auto searcher = IndexFactory::CreateSearcher("FlatSearcher");
+  ailego::Params params;
+  params.set(PARAM_FLAT_READ_BLOCK_SIZE, uint32_t{32 * kEncodedDimension});
+  ASSERT_EQ(0, searcher->init(params));
+  ASSERT_EQ(0, searcher->load(storage, nullptr));
+  auto context = searcher->create_context();
+  context->set_topk(10);
+  IndexQueryMeta qmeta(IndexMeta::DT_INT8, kEncodedDimension);
+  for (bool filtered : {false, true}) {
+    SCOPED_TRACE(filtered);
+    std::set<size_t> excluded;
+    if (filtered) {
+      for (size_t i = 0; i < kCount; i += 3) excluded.insert(i);
+      context->set_filter([](uint64_t key) { return Id(key) % 3 == 0; });
+    } else {
+      context->reset_filter();
+    }
+    // Unaligned norm tails and distinct queries exercise both byte strides.
+    for (uint32_t count : {3U, 7U, 2U, 1U, 7U}) {
+      SCOPED_TRACE(count);
+      ASSERT_EQ(0,
+                searcher->search_impl(queries.data(), qmeta, count, context));
+      EXPECT_EQ(original_queries, queries);
+      for (size_t q = 0; q < count; ++q) {
+        Check(context->result(q), data,
+              reinterpret_cast<const int8_t *>(queries.data()) +
+                  q * kEncodedDimension,
+              10, std::numeric_limits<float>::max(), excluded, false, true);
+      }
+    }
+  }
+  context.reset();
+  ASSERT_EQ(0, searcher->unload());
+  ASSERT_EQ(0, storage->close());
 }
 TEST(FlatBatchTopK, Fp32StreamerFilteringStatsAndVectors) {
   CheckStreamer<IndexMeta::DT_FP32, float>();
