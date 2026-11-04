@@ -791,6 +791,15 @@ bool CanReuseFirstIndexer(const std::vector<VectorColumnIndexer::Ptr> &indexers,
         std::dynamic_pointer_cast<VectorIndexParams>(f.index_params());
     return params ? params->quantize_type() : QuantizeType::UNDEFINED;
   };
+  if (quantize_type_of(output_field) == QuantizeType::PQ) {
+    const auto &first =
+        static_cast<const VectorIndexParams &>(*first_field.index_params());
+    const auto &output =
+        static_cast<const VectorIndexParams &>(*output_field.index_params());
+    if (first.metric_type() != output.metric_type() ||
+        first.quantizer_param() != output.quantizer_param())
+      return false;
+  }
   return quantize_type_of(first_field) == quantize_type_of(output_field);
 }
 

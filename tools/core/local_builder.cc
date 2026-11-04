@@ -528,7 +528,8 @@ int do_build_by_streamer(
     IndexStreamer::Pointer &streamer, uint32_t thread_count,
     RetrievalMode retrieval_mode,
     const IndexStorage::Pointer &storage = nullptr,
-    const std::shared_ptr<zvec::turbo::Quantizer> &quantizer = nullptr) {
+    const std::shared_ptr<zvec::turbo::Quantizer> &quantizer = nullptr,
+    const IndexQueryMeta &quantized_qmeta = IndexQueryMeta()) {
   int ret;
   std::atomic<size_t> finished{0};
   std::atomic<int> errcode{0};
@@ -600,18 +601,17 @@ int do_build_by_streamer(
     }
     std::string ovec;
     IndexQueryMeta ometa;
+    std::string code_buffer;
+    if (quantizer) {
+      code_buffer.resize(quantizer->quantized_datapoint_vector_length());
+    }
     for (uint32_t id = idx; id < end_cursor && !stop_now &&
                             errcode.load(std::memory_order_acquire) == 0;
          id += thread_count) {
       uint64_t key = holder->get_key(id);
       int task_ret = 0;
       if (retrieval_mode == RM_DENSE) {
-        if (quantizer) {
-          task_ret = quantizer->quantize(holder->get_vector_by_index(id), qmeta,
-                                         &ovec, &ometa);
-          if (task_ret == 0)
-            task_ret = add_to_streamer(key, ovec.data(), ometa, ctx);
-        } else if (reformer) {
+        if (reformer) {
           task_ret = reformer->convert(holder->get_vector_by_index(id), qmeta,
                                        &ovec, &ometa);
           if (task_ret != 0) {
@@ -623,6 +623,13 @@ int do_build_by_streamer(
             return;
           }
           task_ret = add_to_streamer(key, ovec.data(), ometa, ctx);
+        } else if (quantizer) {
+          // The streamer stores the quantized codes; quantize each original
+          // vector on the fly so the graph is built with quantizer distances.
+          quantizer->quantize_data(holder->get_vector_by_index(id),
+                                   code_buffer.data());
+          task_ret =
+              add_to_streamer(key, code_buffer.data(), quantized_qmeta, ctx);
         } else {
           task_ret =
               add_to_streamer(key, holder->get_vector_by_index(id), qmeta, ctx);
@@ -737,10 +744,17 @@ int build_by_streamer(
     retrieval_mode = RM_SPARSE;
   }
 
+  IndexQueryMeta quantized_qmeta;
+  if (quantizer) {
+    quantized_qmeta.set_meta(meta.data_type(), meta.dimension(),
+                             static_cast<uint32_t>(quantizer->type()),
+                             meta.extra_meta_size());
+  }
+
   LOG_DEBUG("thread count: %zu, retrieval mode: %s", thread_count,
             retrieval_mode == 1 ? "Dense" : "Sparse");
   return do_build_by_streamer(streamer, thread_count, retrieval_mode, storage,
-                              quantizer);
+                              quantizer, quantized_qmeta);
 }
 
 IndexSparseHolder::Pointer convert_sparse_holder(
@@ -873,7 +887,8 @@ IndexHolder::Pointer fill_quantized_holder(
 IndexHolder::Pointer quantize_holder(
     const std::string &name, const ailego::Params &params,
     VecsIndexHolder::Pointer &in_holder, IndexMeta &index_meta,
-    std::shared_ptr<zvec::turbo::Quantizer> *out_quantizer) {
+    std::shared_ptr<zvec::turbo::Quantizer> *out_quantizer,
+    bool materialize = true) {
   IndexHolder::Pointer cast_holder =
       std::dynamic_pointer_cast<IndexHolder>(in_holder);
   if (name.empty()) {
@@ -915,7 +930,7 @@ IndexHolder::Pointer quantize_holder(
   }
   uint32_t alloc_dim = static_cast<uint32_t>(code_bytes / unit);
 
-  if (!quantizer->require_train()) {
+  if (!quantizer->require_train() || !materialize) {
     out_meta.set_quantizer(name, 0, params);
   } else {
     LOG_WARN(
@@ -923,6 +938,12 @@ IndexHolder::Pointer quantize_holder(
         "recorded in the index meta",
         name.c_str());
   }
+
+  if (out_quantizer) {
+    *out_quantizer = quantizer;
+  }
+  index_meta = out_meta;
+  if (!materialize) return cast_holder;
 
   IndexHolder::Pointer result;
   switch (out_meta.data_type()) {
@@ -948,10 +969,6 @@ IndexHolder::Pointer quantize_holder(
     return IndexHolder::Pointer();
   }
 
-  if (out_quantizer) {
-    *out_quantizer = quantizer;
-  }
-  index_meta = out_meta;
   return result;
 }
 
@@ -1263,24 +1280,9 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   std::shared_ptr<zvec::turbo::Quantizer> build_quantizer;
   IndexHolder::Pointer cv_build_holder;
   if (!quantizer_name.empty()) {
-    if (!builder) {
-      // Stream from FP32 input, quantizing each record once in its worker.
-      // Avoid materializing a second, fully quantized training holder.
-      if (!hnsw_streamer || quantizer_name != "Fp16Quantizer") {
-        LOG_ERROR("Streamer QuantizerName requires HnswStreamer/Fp16Quantizer");
-        return -1;
-      }
-      build_quantizer = IndexFactory::CreateQuantizer(quantizer_name);
-      if (!build_quantizer ||
-          build_quantizer->init(meta, quantizer_params) != 0)
-        return -1;
-      meta = build_quantizer->meta();
-      meta.set_quantizer(quantizer_name, 0, quantizer_params);
-      cv_build_holder = build_holder;
-    } else {
-      cv_build_holder = quantize_holder(quantizer_name, quantizer_params,
-                                        build_holder, meta, &build_quantizer);
-    }
+    cv_build_holder =
+        quantize_holder(quantizer_name, quantizer_params, build_holder, meta,
+                        &build_quantizer, builder != nullptr);
     if (!cv_build_holder) {
       LOG_ERROR("Quantize holder failed.");
       return -1;
@@ -1328,8 +1330,11 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
       ret = builder->init(meta, params);
     }
   } else {
-    ret = build_quantizer ? streamer->init(meta, params, build_quantizer)
-                          : streamer->init(meta, params);
+    if (build_quantizer) {
+      ret = streamer->init(meta, params, build_quantizer);
+    } else {
+      ret = streamer->init(meta, params);
+    }
   }
   if (ret < 0) {
     LOG_ERROR("Failed to init builder, ret=%d", ret);

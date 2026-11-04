@@ -161,8 +161,11 @@ struct ZVEC_CORE_API QuantizerParam : public SerializableBase {
 
 //! Product-Quantization specific params
 struct PqQuantizerParam : public QuantizerParam {
-  int num_chunk = 8;  // M: number of chunks
-  int num_bits = 8;   // bits per chunk
+  int num_chunk = 8;       // M: number of chunks
+  int num_bits = 8;        // bits per chunk
+  bool fast_scan = false;  // IVF packed PQ4 scan; requires num_bits == 4
+  uint32_t opq_iter = 5;
+  uint32_t opq_pq_iter = 4;
 
   // Constructors
   PqQuantizerParam(int chunks = 8, int bits = 8, bool rotate = false)

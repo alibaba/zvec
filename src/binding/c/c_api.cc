@@ -1539,6 +1539,40 @@ bool zvec_index_params_get_quantizer_enable_rotate(
   return false;
 }
 
+zvec_error_code_t zvec_index_params_set_quantizer_pq(
+    zvec_index_params_t *params, const zvec_pq_quantizer_params_t *pq) {
+  auto *ivf = params ? dynamic_cast<zvec::IVFIndexParams *>(
+                          reinterpret_cast<zvec::IndexParams *>(params)) : nullptr;
+  if (!ivf || !pq) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "IVF index params and PQ params are required");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (pq->num_chunk <= 0 || (pq->num_bits != 4 && pq->num_bits != 8) ||
+      (pq->fast_scan && pq->num_bits != 4) ||
+      (pq->enable_rotate && (pq->opq_iter == 0 || pq->opq_pq_iter == 0))) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Invalid PQ/OPQ/FastScan parameters");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  ivf->set_quantizer_param(zvec::QuantizerParam(
+      pq->enable_rotate, pq->num_chunk, pq->num_bits, pq->fast_scan,
+      pq->opq_iter, pq->opq_pq_iter));
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_index_params_get_quantizer_pq(
+    const zvec_index_params_t *params, zvec_pq_quantizer_params_t *pq) {
+  const auto *ivf = params ? dynamic_cast<const zvec::IVFIndexParams *>(
+      reinterpret_cast<const zvec::IndexParams *>(params)) : nullptr;
+  if (!ivf || !pq) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "IVF index params and PQ output are required");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  const auto &qp = ivf->quantizer_param();
+  *pq = {qp.num_chunk(), qp.num_bits(), qp.enable_rotate(), qp.fast_scan(),
+         qp.opq_iter(), qp.opq_pq_iter()};
+  return ZVEC_OK;
+}
+
 /**
  * @brief Get index type from index parameters
  * @param params Index parameters
@@ -7244,6 +7278,10 @@ zvec_error_code_t convert_document_results(
     const std::vector<std::shared_ptr<zvec::Doc>> &query_results,
     zvec_doc_t ***results, size_t *result_count) {
   *result_count = query_results.size();
+  if (*result_count == 0) {
+    *results = nullptr;
+    return ZVEC_OK;
+  }
   *results =
       static_cast<zvec_doc_t **>(malloc(*result_count * sizeof(zvec_doc_t *)));
 
@@ -7398,6 +7436,69 @@ zvec_error_code_t zvec_collection_query(const zvec_collection_t *collection,
       }
 
       return error_code;)
+}
+
+void zvec_group_results_free(zvec_group_result_t *results, size_t result_count) {
+  if (!results) return;
+  for (size_t i = 0; i < result_count; ++i) {
+    free(results[i].group_by_value);
+    zvec_docs_free(results[i].docs, results[i].doc_count);
+  }
+  free(results);
+}
+
+zvec_error_code_t zvec_collection_group_by_query(
+    const zvec_collection_t *collection,
+    const zvec_group_by_vector_query_t *query, zvec_group_result_t **results,
+    size_t *result_count) {
+  if (results) *results = nullptr;
+  if (result_count) *result_count = 0;
+  if (!collection || !query || !results || !result_count) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Collection, query, results or result_count pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Failed to execute grouped vector query",
+      auto *coll_ptr =
+          reinterpret_cast<const std::shared_ptr<zvec::Collection> *>(collection);
+      auto *internal_query =
+          reinterpret_cast<const zvec::GroupByVectorQuery *>(query);
+
+      auto result = (*coll_ptr)->group_by_query(*internal_query);
+      auto error_code = handle_expected_result(result);
+      if (error_code != ZVEC_OK) return error_code;
+      auto &groups = result.value();
+      if (groups.empty()) return ZVEC_OK;
+
+      // Keep partially built results owned locally until every group succeeds.
+      // Zero initialization allows the deleter to clean up on any exception.
+      auto cleanup = [&groups](zvec_group_result_t *ptr) {
+        zvec_group_results_free(ptr, groups.size());
+      };
+      std::unique_ptr<zvec_group_result_t, decltype(cleanup)> converted(
+          static_cast<zvec_group_result_t *>(
+              calloc(groups.size(), sizeof(zvec_group_result_t))), cleanup);
+      if (!converted) throw std::bad_alloc();
+      for (size_t i = 0; i < groups.size(); ++i) {
+        auto &group = groups[i];
+        auto &out = converted.get()[i];
+        out.group_by_value = strdup(group.group_by_value_.c_str());
+        if (!out.group_by_value) throw std::bad_alloc();
+        if (group.docs_.empty()) continue;
+        out.docs = static_cast<zvec_doc_t **>(
+            calloc(group.docs_.size(), sizeof(zvec_doc_t *)));
+        if (!out.docs) throw std::bad_alloc();
+        for (auto &doc : group.docs_) {
+          auto owned_doc = std::make_unique<zvec::Doc>(std::move(doc));
+          out.docs[out.doc_count++] =
+              reinterpret_cast<zvec_doc_t *>(owned_doc.release());
+        }
+      }
+      *results = converted.release();
+      *result_count = groups.size();
+      return ZVEC_OK;)
 }
 
 zvec_error_code_t zvec_collection_multi_query(

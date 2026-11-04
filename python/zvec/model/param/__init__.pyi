@@ -335,7 +335,7 @@ class HnswIndexParam(VectorIndexParam):
             neighbors during index construction. Larger values yield better
             graph quality at the cost of slower build time. Default is 500.
         quantize_type (QuantizeType): Optional quantization type for vector
-            compression (e.g., FP16, INT8). Default is `QuantizeType.UNDEFINED` to
+            compression (FP16, INT8, INT4, or PQ). Default is `QuantizeType.UNDEFINED` to
             disable quantization.
         use_contiguous_memory (bool): If True, the HNSW streamer allocates a
             single contiguous memory arena for all graph nodes, improving cache
@@ -346,6 +346,10 @@ class HnswIndexParam(VectorIndexParam):
         flat_data_type (DataType): Physical type stored by the refine Flat
             reference index. Defaults to ``VECTOR_FP32``; ``VECTOR_FP16`` and
             ``VECTOR_UINT8`` are also supported.
+
+    PQ learns its codebook during Collection.optimize(). Before optimization,
+    writes remain searchable through Flat. Configure PQ4/PQ8 and optional OPQ
+    with QuantizerParam; fast_scan is supported only by IVF.
 
     Examples:
         >>> from zvec.typing import MetricType, QuantizeType
@@ -1401,7 +1405,7 @@ class QuantizerParam:
     Attributes:
         enable_rotate (bool): Whether to apply random rotation before INT8/INT4
             quantization to reduce quantization error.
-            Only effective with quantize_type=INT8 or INT4. Defaults to False.
+            For PQ, enables learned OPQ. Defaults to False.
 
     Examples:
         >>> qp = QuantizerParam(enable_rotate=True)
@@ -1410,13 +1414,26 @@ class QuantizerParam:
     """
 
     def __getstate__(self) -> tuple: ...
-    def __init__(self, enable_rotate: bool = False) -> None:
+    def __init__(
+        self,
+        enable_rotate: bool = False,
+        num_chunk: int = 8,
+        num_bits: int = 8,
+        fast_scan: bool = False,
+        opq_iter: int = 5,
+        opq_pq_iter: int = 4,
+    ) -> None:
         """
         Constructs a QuantizerParam instance.
 
         Args:
+            num_chunk (int): PQ subquantizers; default 8.
+            num_bits (int): PQ bits per code, 4 or 8; default 8.
+            fast_scan (bool): Packed IVF PQ4 scan; default False.
+            opq_iter (int): OPQ iterations; default 5.
+            opq_pq_iter (int): PQ iterations per OPQ iteration; default 4.
             enable_rotate (bool, optional): Whether to apply random rotation
-                before INT8/INT4 quantization. Defaults to False.
+                before INT8/INT4 quantization, or learned OPQ for PQ. Defaults to False.
         """
 
     def __repr__(self) -> str: ...
@@ -1430,8 +1447,19 @@ class QuantizerParam:
     @property
     def enable_rotate(self) -> bool:
         """
-        bool: Whether random rotation is enabled before INT8/INT4 quantization.
+        bool: Enable random rotation for INT8/INT4 or learned OPQ for PQ.
         """
+
+    @property
+    def num_chunk(self) -> int: ...
+    @property
+    def num_bits(self) -> int: ...
+    @property
+    def fast_scan(self) -> bool: ...
+    @property
+    def opq_iter(self) -> int: ...
+    @property
+    def opq_pq_iter(self) -> int: ...
 
 class VectorIndexParam(IndexParam):
     """

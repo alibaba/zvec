@@ -16,8 +16,7 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
-#include <ailego/math/euclidean_distance_matrix.h>
-#include <ailego/math/inner_product_matrix.h>
+#include <turbo/distance/matrix.h>
 #include "turbo/preprocessor/symqg_rotator/symqg_rotator.h"
 #include "quantized_graph_router_format.h"
 
@@ -271,15 +270,16 @@ class QuantizedGraphRouterBuilder {
       for (size_t j = 0; j < centers.size(); ++j) {
         float dot;
         if (data_.cosine) {
-          ailego::InnerProductMatrix<float, 1, 1>::Compute(
+          turbo::MinusInnerProductMatrix<float, 1, 1>::Compute(
               data_.vectors[row].data(), centers[j].data(), data_.mean.size(),
               &dot);
         } else {
-          ailego::SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
+          turbo::SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
               data_.vectors[row].data(), centers[j].data(), data_.mean.size(),
               &dot);
-          dot = -dot;
         }
+        // Turbo returns negative inner product and positive squared L2.
+        dot = -dot;
         if (dot > best_dot) {
           best = j;
           best_dot = dot;
