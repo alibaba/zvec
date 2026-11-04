@@ -41,6 +41,10 @@ class HnswQuantizedGraph {
   struct Impl;
   template <bool Fp16>
   struct Model;
+  static std::unique_ptr<Impl> make_fp16(size_t dimension, size_t max_neighbors,
+                                         bool cosine,
+                                         size_t stored_vector_bytes,
+                                         const std::string &model_data);
   std::unique_ptr<Impl> impl_;
 };
 }  // namespace zvec::core
