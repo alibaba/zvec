@@ -97,6 +97,7 @@ class DiskAnnIndexer {
   int cache_bfs_levels(uint64_t num_nodes_to_cache, CacheLoadState &state);
   void reset_cache_storage();
   int cached_beam_search_impl(DiskAnnContext *ctx);
+  AlignedRead node_read(diskann_id_t id, uint8_t *sector_buffer) const;
 
   DiskAnnEntity::Pointer entity_{};
   IndexStorage::Pointer storage_{};
@@ -106,6 +107,7 @@ class DiskAnnIndexer {
   uint32_t max_degree_{0};
   uint32_t node_per_sector_{0};
   uint32_t max_node_size_{0};
+  bool node_record_reads_{false};
   uint64_t quant_code_size_{0};
   uint64_t disk_bytes_per_point_{0};
   uint64_t index_segment_offset_{0};

@@ -498,6 +498,73 @@ TEST(DiskAnnFileReaderTest, MacOSBatchUsesSynchronousPread) {
 #endif
 
 #if defined(__APPLE__)
+TEST(DiskAnnFileReaderTest, SectorTransferCachesOnlyLogicalNode) {
+  TemporaryFile file;
+  std::vector<uint8_t> source(8192);
+  for (size_t i = 0; i < source.size(); ++i) source[i] = i % 251;
+  ASSERT_TRUE(file.write_all(source.data(), source.size()));
+  LinuxAlignedFileReader reader;
+  reader.open(file.path());
+  ASSERT_EQ(reader.configure_read_cache(64 * 1024, 1668), 0);
+  ASSERT_EQ(reader.configure_read_workers(4), 0);
+  std::vector<uint8_t> out(4096, 0xa5);
+  AlignedRead node(123 + 1668, 1668, out.data() + 1668);
+  node.enclosing_offset = 123;
+  node.enclosing_len = 4096;
+  node.enclosing_buf = out.data();
+  std::vector<AlignedRead> reqs{node};
+  IOContext ctx{};
+  ASSERT_EQ(reader.read(reqs, ctx), 0);
+  EXPECT_EQ(std::memcmp(out.data(), source.data() + 123, 4096), 0);
+  std::fill(out.begin(), out.end(), 0xa5);
+  ASSERT_EQ(reader.read(reqs, ctx), 0);
+  EXPECT_EQ(std::memcmp(out.data() + 1668, source.data() + 123 + 1668, 1668),
+            0);
+  EXPECT_EQ(out.front(), 0xa5);
+  EXPECT_EQ(out.back(), 0xa5);
+  // Invalid enclosing ranges must not dispatch a read or publish cache data.
+  reqs[0].enclosing_offset = 124;
+  EXPECT_NE(reader.read(reqs, ctx), 0);
+  reqs[0] = node;
+  reqs[0].enclosing_len = 100;
+  EXPECT_NE(reader.read(reqs, ctx), 0);
+  reqs[0] = node;
+  reqs[0].enclosing_buf = out.data() + 1;
+  EXPECT_NE(reader.read(reqs, ctx), 0);
+  reqs[0] = node;
+  ASSERT_EQ(reader.configure_read_cache(0, 1668), 0);
+  ASSERT_EQ(reader.configure_read_workers(1), 0);
+  ASSERT_EQ(reader.read(reqs, ctx), 0);
+  EXPECT_EQ(std::memcmp(out.data(), source.data() + 123, 4096), 0);
+}
+
+TEST(DiskAnnFileReaderTest, PackedUnalignedReadsPreserveUntouchedBytes) {
+  TemporaryFile file;
+  std::vector<uint8_t> source(32768);
+  for (size_t i = 0; i < source.size(); ++i) source[i] = i % 251;
+  ASSERT_TRUE(file.write_all(source.data(), source.size()));
+  LinuxAlignedFileReader reader;
+  reader.open(file.path());
+  ASSERT_EQ(reader.configure_read_workers(4), 0);
+  for (size_t bytes : {1668u, 8196u}) {
+    ASSERT_EQ(reader.configure_read_cache(64 * 1024, bytes), 0);
+    std::vector<uint8_t> output(bytes * 2 + 16, 0xa5);
+    std::vector<AlignedRead> reqs{{123, bytes, output.data() + 4},
+                                  {4321, bytes, output.data() + 8 + bytes}};
+    IOContext ctx{};
+    for (size_t repeat = 0; repeat < 3; ++repeat) {
+      ASSERT_EQ(reader.read(reqs, ctx), 0);
+      EXPECT_EQ(std::memcmp(output.data() + 4, source.data() + 123, bytes), 0);
+      EXPECT_EQ(
+          std::memcmp(output.data() + 8 + bytes, source.data() + 4321, bytes),
+          0);
+      EXPECT_EQ(output.front(), 0xa5);
+      EXPECT_EQ(output[4 + bytes], 0xa5);
+      EXPECT_EQ(output.back(), 0xa5);
+    }
+  }
+}
+
 TEST(DiskAnnFileReaderTest, ParallelReadsDrainErrorsAndPreserveOrder) {
   TemporaryFile file;
   std::vector<uint8_t> source(kPageSize * 16);

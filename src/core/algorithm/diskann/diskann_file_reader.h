@@ -107,6 +107,12 @@ struct AlignedRead {
   uint64_t offset;
   uint64_t len;
   void *buf;
+#if defined(__APPLE__)
+  // Optional enclosing disk transfer. The logical request above remains the
+  // cache key/payload; its destination must be the matching subrange here.
+  uint64_t enclosing_offset{0}, enclosing_len{0};
+  void *enclosing_buf{nullptr};
+#endif
 
   AlignedRead() : offset(0), len(0), buf(nullptr) {}
 
@@ -195,7 +201,9 @@ class LinuxAlignedFileReader : public AlignedFileReader {
 #if defined(__APPLE__)
   // Configure only while no operations are active; open/close discard cached
   // data so sectors can never leak across different file identities.
-  int configure_read_cache(size_t budget_bytes);
+  int configure_read_cache(
+      size_t budget_bytes,
+      size_t record_bytes = DiskAnnReadCache::kSectorBytes);
   int configure_read_workers(size_t workers);
   size_t read_workers() const {
     return read_executor_ ? read_executor_->workers() : 1;

@@ -17,6 +17,7 @@
 #include <thread>
 #include <gtest/gtest.h>
 #include <zvec/core/framework/index_factory.h>
+#include "diskann_indexer.h"
 #include "diskann_params.h"
 #include "diskann_read_cache.h"
 #include "diskann_util.h"
@@ -36,6 +37,126 @@ TEST(DiskAnnReadCacheTest, BudgetValidation) {
     EXPECT_FALSE(DiskAnnReadCache::parse_budget_mib(bad, &bytes));
   }
 }
+
+TEST(DiskAnnReadCacheTest, PackedRecordsKeepBoundsAndSupportHitProbe) {
+  constexpr size_t bytes = 1668, budget = 64 * 1024;
+  DiskAnnReadCache cache(budget, bytes), pages(budget);
+  EXPECT_LE(cache.allocated_bytes(), budget);
+  EXPECT_GT(cache.capacity(), pages.capacity() * 2);
+  std::array<uint8_t, bytes * 2> out{};
+  size_t reads = 0;
+  auto read = [&](uint64_t offset, size_t length, void *dst) {
+    ++reads;
+    EXPECT_EQ(length, bytes);
+    std::memset(dst, offset % 251, length);
+    return 0;
+  };
+  EXPECT_FALSE(cache.try_read(123, bytes, out.data()));
+  ASSERT_EQ(cache.read(123, bytes, out.data(), read), 0);
+  EXPECT_TRUE(cache.try_read(123, bytes, out.data()));
+  EXPECT_FALSE(cache.try_read(123, bytes * 2, out.data()));
+  ASSERT_EQ(cache.read(123, bytes * 2, out.data(), read), 0);
+  EXPECT_EQ(reads, 2u);
+  EXPECT_TRUE(cache.try_read(123, bytes * 2, out.data()));
+  EXPECT_EQ(out.front(), 123);
+  EXPECT_EQ(out.back(), (123 + bytes) % 251);
+  EXPECT_FALSE(cache.try_read(123, bytes - 1, out.data()));
+  for (size_t i = 0; i < 2000; ++i) {
+    const auto offset = 123 + i * bytes;
+    ASSERT_EQ(cache.read(offset, bytes, out.data(), read), 0);
+    EXPECT_EQ(out[bytes - 1], offset % 251);
+  }
+  DiskAnnReadCache invalid(budget, 0);
+  EXPECT_EQ(invalid.capacity(), 0u);
+  EXPECT_FALSE(invalid.try_read(0, 1, out.data()));
+  DiskAnnReadCache huge(budget, std::numeric_limits<size_t>::max());
+  EXPECT_EQ(huge.capacity(), 0u);
+}
+
+TEST(DiskAnnReadCacheTest, ConcurrentPackedAndMultiSectorRecords) {
+  for (size_t bytes : {1668u, 8196u}) {
+    DiskAnnReadCache cache(64 * 1024, bytes);
+    std::atomic<size_t> errors{0};
+    std::vector<std::thread> threads;
+    for (size_t t = 0; t < 8; ++t)
+      threads.emplace_back([&, t] {
+        std::vector<uint8_t> out(bytes);
+        for (size_t i = 0; i < 1000; ++i) {
+          const uint64_t key = 123 + ((i * 7 + t * 3) % 67) * bytes;
+          auto reader = [](uint64_t p, size_t n, void *out) {
+            std::memset(out, p % 251, n);
+            return 0;
+          };
+          if (cache.read(key, bytes, out.data(), reader)) ++errors;
+          for (auto byte : out)
+            if (byte != key % 251) ++errors;
+        }
+      });
+    for (auto &t : threads) t.join();
+    EXPECT_EQ(errors.load(), 0u);
+  }
+}
+
+TEST(DiskAnnReadCacheTest, SmallBudgetRetainsLargeRecord) {
+  constexpr size_t bytes = 8196, budget = bytes + 1024;
+  DiskAnnReadCache cache(budget, bytes);
+  EXPECT_GT(cache.capacity(), 0u);
+  EXPECT_LE(cache.allocated_bytes(), budget);
+  std::vector<uint8_t> out(bytes);
+  size_t reads = 0;
+  auto reader = [&](uint64_t offset, size_t len, void *buf) {
+    ++reads;
+    std::memset(buf, offset % 251, len);
+    return 0;
+  };
+  EXPECT_EQ(cache.read(123, bytes, out.data(), reader), 0);
+  EXPECT_EQ(cache.read(123, bytes, out.data(), reader), 0);
+  EXPECT_EQ(reads, 1u);
+  EXPECT_EQ(out.back(), 123);
+}
+
+#if defined(__APPLE__)
+namespace zvec {
+namespace core {
+class DiskAnnCacheTestPeer {
+ public:
+  static AlignedRead node_read(size_t bytes, diskann_id_t id, bool records,
+                               uint8_t *buffer) {
+    IndexMeta meta(IndexMeta::DataType::DT_FP32, 8);
+    DiskAnnIndexer index(meta);
+    index.max_node_size_ = bytes;
+    index.node_per_sector_ = bytes <= 4096 ? 4096 / bytes : 0;
+    index.sector_num_per_node_ = (bytes + 4095) / 4096;
+    index.index_segment_offset_ = 123;
+    index.node_record_reads_ = records;
+    return index.node_read(id, buffer);
+  }
+};
+}  // namespace core
+}  // namespace zvec
+TEST(DiskAnnReadCacheTest, NodeReadPreservesScratchOffsetsAndSectorFallback) {
+  std::array<uint8_t, 16384> buffer{};
+  auto first = DiskAnnCacheTestPeer::node_read(1668, 1, true, buffer.data());
+  EXPECT_EQ(first.offset, 123u + 1668);
+  EXPECT_EQ(first.len, 1668u);
+  EXPECT_EQ(first.buf, buffer.data() + 1668);
+  EXPECT_EQ(first.enclosing_offset, 123u);
+  EXPECT_EQ(first.enclosing_len, 4096u);
+  EXPECT_EQ(first.enclosing_buf, buffer.data());
+  auto next = DiskAnnCacheTestPeer::node_read(1668, 2, true, buffer.data());
+  EXPECT_EQ(next.offset, 123u + 4096);
+  EXPECT_EQ(next.buf, buffer.data());
+  auto big = DiskAnnCacheTestPeer::node_read(8196, 2, true, buffer.data());
+  EXPECT_EQ(big.offset, 123u + 6 * 4096);
+  EXPECT_EQ(big.len, 8196u);
+  EXPECT_EQ(big.buf, buffer.data());
+  EXPECT_EQ(big.enclosing_len, 3u * 4096);
+  auto aligned = DiskAnnCacheTestPeer::node_read(1668, 1, false, buffer.data());
+  EXPECT_EQ(aligned.offset, 123u);
+  EXPECT_EQ(aligned.len, 4096u);
+  EXPECT_EQ(aligned.buf, buffer.data());
+}
+#endif
 
 TEST(DiskAnnReadCacheTest, HitsFailuresEvictionAndMemoryBound) {
   constexpr size_t budget = 64 * 1024;

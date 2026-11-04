@@ -774,10 +774,13 @@ void LinuxAlignedFileReader::close() {
 }
 
 #if defined(__APPLE__)
-int LinuxAlignedFileReader::configure_read_cache(size_t budget_bytes) {
+int LinuxAlignedFileReader::configure_read_cache(size_t budget_bytes,
+                                                 size_t record_bytes) {
+  if (!record_bytes) return IndexError_InvalidArgument;
   try {
     std::unique_ptr<DiskAnnReadCache> next;
-    if (budget_bytes) next.reset(new DiskAnnReadCache(budget_bytes));
+    if (budget_bytes)
+      next.reset(new DiskAnnReadCache(budget_bytes, record_bytes));
     read_cache_ = std::move(next);
     const char *profile = std::getenv("ZVEC_DISKANN_PROFILE_READS");
     profile_reads_ = profile && std::strcmp(profile, "1") == 0;
@@ -788,19 +791,22 @@ int LinuxAlignedFileReader::configure_read_cache(size_t budget_bytes) {
 }
 
 int LinuxAlignedFileReader::read_cached(const AlignedRead &req) {
-  const auto read_one = [this](uint64_t offset, size_t len, void *buf) {
-    if (!profile_reads_)
-      return execute_one_pread(file_desc, AlignedRead(offset, len, buf));
+  const auto read_one = [this, &req](uint64_t offset, size_t len, void *buf) {
+    const AlignedRead transfer =
+        req.enclosing_len ? AlignedRead(req.enclosing_offset, req.enclosing_len,
+                                        req.enclosing_buf)
+                          : AlignedRead(offset, len, buf);
+    if (!profile_reads_) return execute_one_pread(file_desc, transfer);
     const auto begin = std::chrono::steady_clock::now();
-    int ret = execute_one_pread(file_desc, AlignedRead(offset, len, buf),
-                                &profile_syscalls_);
+    int ret = execute_one_pread(file_desc, transfer, &profile_syscalls_);
     profile_read_ns_.fetch_add(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - begin)
             .count(),
         std::memory_order_relaxed);
     profile_misses_.fetch_add(1, std::memory_order_relaxed);
-    if (!ret) profile_read_bytes_.fetch_add(len, std::memory_order_relaxed);
+    if (!ret)
+      profile_read_bytes_.fetch_add(transfer.len, std::memory_order_relaxed);
     return ret;
   };
   if (read_cache_)
@@ -836,7 +842,10 @@ int LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
   }
 
 #if defined(__APPLE__)
-  if (read_cache_ || read_executor_ || profile_reads_) {
+  if (read_cache_ || read_executor_ || profile_reads_ ||
+      std::any_of(
+          read_reqs.begin(), read_reqs.end(),
+          [](const AlignedRead &req) { return req.enclosing_len != 0; })) {
     const auto begin = profile_reads_ ? std::chrono::steady_clock::now()
                                       : std::chrono::steady_clock::time_point{};
     bool parallel = read_executor_ && read_reqs.size() > 1;
@@ -844,21 +853,47 @@ int LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     // A conservative bounding interval avoids quadratic overlap checks.
     uintptr_t begin_buffer = UINTPTR_MAX, end_buffer = 0;
     for (const auto &req : read_reqs) {
-      const uintptr_t begin = reinterpret_cast<uintptr_t>(req.buf);
-      if (req.len > UINTPTR_MAX - begin) {
+      if (req.enclosing_len) {
+        const uintptr_t logical = reinterpret_cast<uintptr_t>(req.buf);
+        const uintptr_t physical =
+            reinterpret_cast<uintptr_t>(req.enclosing_buf);
+        if (req.offset < req.enclosing_offset || req.len > req.enclosing_len ||
+            req.offset - req.enclosing_offset > req.enclosing_len - req.len ||
+            logical < physical ||
+            logical - physical != req.offset - req.enclosing_offset)
+          return IndexError_InvalidArgument;
+      }
+      const uintptr_t begin = reinterpret_cast<uintptr_t>(
+          req.enclosing_len ? req.enclosing_buf : req.buf);
+      const uint64_t length = req.enclosing_len ? req.enclosing_len : req.len;
+      if (length > UINTPTR_MAX - begin) {
         parallel = false;
         break;
       }
-      const uintptr_t end = begin + req.len;
+      const uintptr_t end = begin + length;
       if (begin < end_buffer && end > begin_buffer) parallel = false;
       begin_buffer = std::min(begin_buffer, begin);
       end_buffer = std::max(end_buffer, end);
     }
     if (parallel) {
+      std::vector<size_t> misses;
+      misses.reserve(read_reqs.size());
+      for (size_t i = 0; i < read_reqs.size(); ++i) {
+        const auto &req = read_reqs[i];
+        if (!read_cache_ ||
+            !read_cache_->try_read(req.offset, req.len, req.buf))
+          misses.push_back(i);
+      }
       std::vector<int> errors(read_reqs.size(), 0);
-      read_executor_->run(read_reqs.size(), [&](size_t i) {
+      if (misses.size() == 1) {
+        const size_t i = misses.front();
         errors[i] = read_cached(read_reqs[i]);
-      });
+      } else if (!misses.empty()) {
+        read_executor_->run(misses.size(), [&](size_t position) {
+          const size_t i = misses[position];
+          errors[i] = read_cached(read_reqs[i]);
+        });
+      }
       // All requests have completed, including after an error. Return the
       // first error in submission order, without leaving pending writes.
       for (int ret : errors)

@@ -269,8 +269,7 @@ TEST(DiskAnnMobileCompatTest, PortableReaderSupportsConcurrentReads) {
   reader.close();
 }
 
-TEST(DiskAnnMobileCompatTest, BuildDumpLoadAndSearch) {
-  constexpr size_t kDimension = 10;
+static void build_dump_load_and_search(size_t kDimension) {
   constexpr size_t kDocCount = 64;
   constexpr uint64_t kExpectedKey = 12;
 
@@ -416,6 +415,14 @@ TEST(DiskAnnMobileCompatTest, BuildDumpLoadAndSearch) {
       std::find_if(context->result().begin(), context->result().end(),
                    [](const auto &item) { return item.key() == kExpectedKey; }),
       context->result().end());
+}
+
+TEST(DiskAnnMobileCompatTest, BuildDumpLoadAndSearch) {
+  build_dump_load_and_search(10);
+}
+
+TEST(DiskAnnMobileCompatTest, BuildDumpLoadAndSearchMultiSectorNodes) {
+  build_dump_load_and_search(2304);
 }
 
 }  // namespace

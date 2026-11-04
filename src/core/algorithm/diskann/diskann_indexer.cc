@@ -77,6 +77,7 @@ DiskAnnIndexer::~DiskAnnIndexer() {
 
 int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
                          turbo::Quantizer::Pointer quantizer) {
+  node_record_reads_ = false;
   auto storage = entity.get_storage();
   auto vector_segment = entity.get_vector_segment();
   if (!storage || !vector_segment) {
@@ -256,7 +257,7 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
     // POSIX caller-owned aliases remain valid; Windows has rejected them above.
     cached_file.reset();
 #if defined(__APPLE__) && TARGET_OS_OSX
-    // The graph file is immutable. Cache its node sectors within a fixed
+    // The graph file is immutable. Cache its node records within a fixed
     // per-reader budget, while retaining F_NOCACHE for misses. BufferPool
     // storage already has its own cache and must not allocate a second one.
     size_t cache_bytes = 0;
@@ -268,8 +269,9 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
     // Small indexes must not each reserve the full default budget.
     cache_bytes = std::min(cache_bytes, vector_segment_bytes);
     auto *file_reader = static_cast<LinuxAlignedFileReader *>(reader_.get());
-    ret = file_reader->configure_read_cache(cache_bytes);
+    ret = file_reader->configure_read_cache(cache_bytes, max_node_size_);
     if (ret != 0) return ret;
+    node_record_reads_ = true;
     size_t workers = 0;
     if (!DiskAnnReadExecutor::parse_workers(
             std::getenv("ZVEC_DISKANN_READ_WORKERS"), &workers)) {
@@ -279,9 +281,9 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
     ret = file_reader->configure_read_workers(workers);
     if (ret != 0) return ret;
     LOG_INFO(
-        "DiskAnn node-sector read cache: budget_bytes=%zu allocated_bytes=%zu "
-        "read_workers=%zu",
-        cache_bytes, file_reader->read_cache_bytes(), workers);
+        "DiskAnn node-record read cache: budget_bytes=%zu allocated_bytes=%zu "
+        "record_bytes=%u read_workers=%zu",
+        cache_bytes, file_reader->read_cache_bytes(), max_node_size_, workers);
 #endif
   }
 
@@ -324,6 +326,34 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
   }
 
   return 0;
+}
+
+AlignedRead DiskAnnIndexer::node_read(diskann_id_t id,
+                                      uint8_t *sector_buffer) const {
+  const uint64_t sector_offset =
+      index_segment_offset_ +
+      DiskAnnUtil::get_node_sector(node_per_sector_, max_node_size_,
+                                   DiskAnnUtil::kSectorSize, id) *
+          DiskAnnUtil::kSectorSize;
+#if defined(__APPLE__)
+  if (node_record_reads_) {
+    // Keep sector-sized disk transfers, but retain only the requested node
+    // in the cache. Existing scratch offsets and graph decoding stay intact.
+    const size_t within =
+        node_per_sector_
+            ? static_cast<size_t>(id % node_per_sector_) * max_node_size_
+            : 0;
+    AlignedRead read(sector_offset + within, max_node_size_,
+                     sector_buffer + within);
+    read.enclosing_offset = sector_offset;
+    read.enclosing_len = sector_num_per_node_ * DiskAnnUtil::kSectorSize;
+    read.enclosing_buf = sector_buffer;
+    return read;
+  }
+#endif
+  return AlignedRead(sector_offset,
+                     sector_num_per_node_ * DiskAnnUtil::kSectorSize,
+                     sector_buffer);
 }
 
 int DiskAnnIndexer::use_medroids_data_as_centroids() {
@@ -393,15 +423,8 @@ std::vector<bool> DiskAnnIndexer::read_nodes(
   for (size_t i = 0; i < node_ids.size(); ++i) {
     auto node_id = node_ids[i];
 
-    AlignedRead read;
-    read.len = sector_num * DiskAnnUtil::kSectorSize;
-    read.buf = buf + i * sector_num * DiskAnnUtil::kSectorSize;
-    read.offset =
-        index_segment_offset_ +
-        DiskAnnUtil::get_node_sector(node_per_sector_, max_node_size_,
-                                     DiskAnnUtil::kSectorSize, node_id) *
-            DiskAnnUtil::kSectorSize;
-    read_reqs.push_back(read);
+    read_reqs.push_back(
+        node_read(node_id, buf + i * sector_num * DiskAnnUtil::kSectorSize));
   }
 
   int read_ret = reader_->read(read_reqs, init_ctx_);
@@ -884,13 +907,8 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
 
         sector_buffer_idx++;
 
-        frontier_read_reqs.emplace_back(
-            index_segment_offset_ +
-                DiskAnnUtil::get_node_sector(node_per_sector_, max_node_size_,
-                                             DiskAnnUtil::kSectorSize, cur_id) *
-                    DiskAnnUtil::kSectorSize,
-            sector_num_per_node * DiskAnnUtil::kSectorSize,
-            frontier_neighbor.second);
+        frontier_read_reqs.push_back(
+            node_read(cur_id, frontier_neighbor.second));
 
         stats.disk_page_reads++;
         stats.io_num++;
@@ -1043,13 +1061,8 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
 
         sector_buffer_idx++;
 
-        frontier_read_reqs.emplace_back(
-            index_segment_offset_ +
-                DiskAnnUtil::get_node_sector(node_per_sector_, max_node_size_,
-                                             DiskAnnUtil::kSectorSize, cur_id) *
-                    DiskAnnUtil::kSectorSize,
-            sector_num_per_node * DiskAnnUtil::kSectorSize,
-            frontier_neighbor.second);
+        frontier_read_reqs.push_back(
+            node_read(cur_id, frontier_neighbor.second));
 
         stats.disk_page_reads++;
         stats.io_num++;
@@ -1179,12 +1192,7 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
     frontier_neighbor.second = sector_buffer;
     frontier_neighbors.push_back(frontier_neighbor);
 
-    frontier_read_reqs.emplace_back(
-        index_segment_offset_ +
-            DiskAnnUtil::get_node_sector(node_per_sector_, max_node_size_,
-                                         DiskAnnUtil::kSectorSize, id) *
-                DiskAnnUtil::kSectorSize,
-        sector_read_size, frontier_neighbor.second);
+    frontier_read_reqs.push_back(node_read(id, frontier_neighbor.second));
 
     stats.disk_page_reads++;
     stats.io_num++;
@@ -1371,13 +1379,8 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
 
         sector_buffer_idx++;
 
-        frontier_read_reqs.emplace_back(
-            index_segment_offset_ +
-                DiskAnnUtil::get_node_sector(node_per_sector_, max_node_size_,
-                                             DiskAnnUtil::kSectorSize, cur_id) *
-                    DiskAnnUtil::kSectorSize,
-            sector_num_per_node * DiskAnnUtil::kSectorSize,
-            frontier_neighbor.second);
+        frontier_read_reqs.push_back(
+            node_read(cur_id, frontier_neighbor.second));
 
         stats.disk_page_reads++;
         stats.io_num++;
@@ -1616,13 +1619,8 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
 
           sector_buffer_idx++;
 
-          frontier_read_reqs.emplace_back(
-              index_segment_offset_ + DiskAnnUtil::get_node_sector(
-                                          node_per_sector_, max_node_size_,
-                                          DiskAnnUtil::kSectorSize, cur_id) *
-                                          DiskAnnUtil::kSectorSize,
-              sector_num_per_node * DiskAnnUtil::kSectorSize,
-              frontier_neighbor.second);
+          frontier_read_reqs.push_back(
+              node_read(cur_id, frontier_neighbor.second));
 
           stats.disk_page_reads++;
           stats.io_num++;
