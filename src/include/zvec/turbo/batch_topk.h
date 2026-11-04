@@ -18,9 +18,10 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <zvec/export.h>
 
 namespace zvec {
-namespace core {
+namespace turbo {
 namespace batch_topk_internal {
 enum class Isa : uint8_t;
 struct Ops;
@@ -47,8 +48,9 @@ class BatchTopK {
 
   // Reuses allocations. The initial bound is inclusive unless strict is set.
   // k == 0 accepts nothing; small selections need no dynamic allocation.
-  void reset(size_t k, float threshold = std::numeric_limits<float>::max(),
-             bool strict = false);
+  ZVEC_TURBO_API void reset(
+      size_t k, float threshold = std::numeric_limits<float>::max(),
+      bool strict = false);
   // Nonempty inputs must be valid. Accepted values are copied, so callers may
   // reuse the input buffers immediately. IDs need not be ordered or unique.
   void push_block(const float *distances, const uint64_t *ids, size_t count) {
@@ -62,7 +64,7 @@ class BatchTopK {
   }
   // Call before consuming size()/result(); further pushes and repeated finish
   // are valid. result(i) requires i < size() after finish().
-  void finish();
+  ZVEC_TURBO_API void finish();
   size_t size() const {
     return size_;
   }
@@ -109,5 +111,5 @@ class BatchTopK {
 // Default after the first declaration to keep this constructor user-provided:
 // value-initialization must not zero the scratch arrays before reset().
 inline BatchTopK::BatchTopK() noexcept = default;
-}  // namespace core
+}  // namespace turbo
 }  // namespace zvec

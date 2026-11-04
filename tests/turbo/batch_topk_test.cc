@@ -11,11 +11,14 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include "utility/batch_topk.h"
+#include <zvec/turbo/batch_topk.h>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <iterator>
 #include <limits>
@@ -28,10 +31,10 @@
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
-#include "utility/batch_topk_internal.h"
+#include "topk/batch_topk_internal.h"
 
 namespace zvec {
-namespace core {
+namespace turbo {
 
 // Production consumers cannot select a layout or bypass runtime ISA checks.
 class BatchTopKTestAccess {
@@ -44,16 +47,22 @@ class BatchTopKTestAccess {
   static size_t Capacity(const BatchTopK &topk) {
     return topk.capacity_;
   }
+
+  static void ResetProduction(BatchTopK &topk, size_t k,
+                              batch_topk_internal::Isa isa) {
+    Reset(topk, k, std::numeric_limits<float>::max(), false, isa,
+          k <= BatchTopK::kSmallLimit);
+  }
 };
 
-}  // namespace core
+}  // namespace turbo
 }  // namespace zvec
 
 namespace {
 
-using zvec::core::BatchTopK;
-using zvec::core::BatchTopKTestAccess;
-namespace internal = zvec::core::batch_topk_internal;
+using zvec::turbo::BatchTopK;
+using zvec::turbo::BatchTopKTestAccess;
+namespace internal = zvec::turbo::batch_topk_internal;
 
 constexpr float kDefaultBound = std::numeric_limits<float>::max();
 constexpr internal::Isa kImplementations[] = {
@@ -424,6 +433,90 @@ TEST(BatchTopK, CollectionInsideSimdGroupRefreshesItsBoundSafely) {
         const Input input(std::move(scores));
         ASSERT_NO_FATAL_FAILURE(
             FeedAndCheck(topk, input, k, {capacity - 1, 16, 3}));
+      }
+    }
+  }
+}
+
+// Run an optimized build with --gtest_also_run_disabled_tests
+// --gtest_filter=BatchTopK.DISABLED_IsaBenchmark. AVX2/AVX512 comparisons require
+// a native x86 machine supporting both; unavailable implementations are skipped.
+TEST(BatchTopK, DISABLED_IsaBenchmark) {
+  using Clock = std::chrono::steady_clock;
+  constexpr size_t kCount = 65536;
+  constexpr double kMinimumTimeNs = 100e6;  // 100 ms per ISA/configuration/round.
+  constexpr size_t kRounds = 6;
+  struct Implementation {
+    internal::Isa isa;
+    const char *name;
+  };
+  const Implementation candidates[] = {
+      {internal::Isa::kScalar, "scalar"}, {internal::Isa::kSSE2, "sse2"},
+      {internal::Isa::kAVX2, "avx2"},     {internal::Isa::kAVX512, "avx512"},
+      {internal::Isa::kNEON, "neon"}};
+  std::vector<Implementation> implementations;
+  for (const auto &candidate : candidates) {
+    if (internal::Supported(candidate.isa)) {
+      implementations.push_back(candidate);
+    } else {
+      std::printf("# unavailable ISA %s\n", candidate.name);
+    }
+  }
+  const Input input(Scores(kCount, 4, 719));
+  std::printf("isa,k,batch_size,batch_count,count,repetitions,round,"
+              "insert_ns_per_batch,finish_export_ns_per_query,checksum\n");
+  for (size_t k : {10U, 64U, 65U, 1000U}) {
+    for (size_t batch_size : {32U, 128U, 512U}) {
+      const size_t batch_count = (kCount + batch_size - 1) / batch_size;
+      for (size_t round = 0; round < kRounds; ++round) {
+        for (const auto &implementation : implementations) {
+          BatchTopK topk;
+          std::vector<BatchTopK::Candidate> exported(k);
+          const auto insert = [&]() {
+            for (size_t offset = 0; offset < kCount; offset += batch_size) {
+              topk.push_block(input.scores.data() + offset,
+                              input.ids.data() + offset,
+                              std::min(batch_size, kCount - offset));
+            }
+          };
+          // Allocate and warm this policy before timing. Every ISA sees the
+          // same inputs and production AoS/SoA crossover.
+          BatchTopKTestAccess::ResetProduction(topk, k, implementation.isa);
+          insert();
+          topk.finish();
+          double insert_ns = 0.0, finish_export_ns = 0.0;
+          uint64_t checksum = 0;
+          size_t repetitions = 0;
+          do {
+            BatchTopKTestAccess::ResetProduction(topk, k, implementation.isa);
+            const auto begin = Clock::now();
+            insert();
+            const auto inserted = Clock::now();
+            topk.finish();
+            for (size_t i = 0; i < topk.size(); ++i) exported[i] = topk.result(i);
+            std::atomic_signal_fence(std::memory_order_seq_cst);
+            const auto finished = Clock::now();
+            insert_ns +=
+                std::chrono::duration<double, std::nano>(inserted - begin).count();
+            finish_export_ns +=
+                std::chrono::duration<double, std::nano>(finished - inserted)
+                    .count();
+            // Consume exported output outside the measured interval.
+            for (const auto &candidate : exported) {
+              checksum += candidate.id ^ Bits(candidate.score);
+            }
+            ++repetitions;
+          } while (insert_ns + finish_export_ns < kMinimumTimeNs);
+          ASSERT_NO_FATAL_FAILURE(Check(topk, input, kCount, k));
+          std::printf("%s,%zu,%zu,%zu,%zu,%zu,%zu,%.3f,%.3f,%llu\n",
+                      implementation.name, k, batch_size, batch_count, kCount,
+                      repetitions, round,
+                      insert_ns / (repetitions * batch_count),
+                      finish_export_ns / repetitions,
+                      static_cast<unsigned long long>(checksum));
+        }
+        // Alternate forward/reverse ISA order for paired rounds.
+        std::reverse(implementations.begin(), implementations.end());
       }
     }
   }

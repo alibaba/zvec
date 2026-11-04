@@ -205,6 +205,7 @@ void CheckStatic() {
 
 template <IndexMeta::DataType Type, typename T>
 void CheckStreamer() {
+  constexpr uint32_t kQueryCount = 3;
   Cleanup cleanup{"flat_batch_topk_streamer"};
   test_util::RemoveTestPath(cleanup.path);
   ailego::MemoryLimitPool::get_instance().init(64UL * 1024 * 1024);
@@ -264,8 +265,16 @@ void CheckStreamer() {
       auto *flat_context =
           dynamic_cast<FlatStreamerContext<32> *>(context.get());
       ASSERT_NE(nullptr, flat_context);
+      std::multiset<uint64_t> expected_filter_keys;
+      for (size_t i = 0; i < kCount; ++i) {
+        if (i == 7 || i == 34 || i == 98) continue;
+        for (uint32_t q = 0; q < kQueryCount; ++q) {
+          expected_filter_keys.insert(Key(i));
+        }
+      }
       for (uint32_t topk : {1U, 10U, 65U, 120U, 10U}) {
         for (int mode : {0, 1, 2}) {
+          std::multiset<uint64_t> filter_keys;
           std::set<size_t> excluded{7, 34, 98};
           for (size_t i = 0; i < kCount; ++i) {
             if (mode == 2 || (mode == 1 && i % 3 == 0)) excluded.insert(i);
@@ -276,12 +285,20 @@ void CheckStreamer() {
           if (mode == 0)
             context->reset_filter();
           else
-            context->set_filter([excluded](uint64_t key) {
+            context->set_filter([excluded, &filter_keys](uint64_t key) {
+              filter_keys.insert(key);
               return excluded.count(Id(key)) != 0;
             });
-          ASSERT_EQ(0,
-                    streamer->search_bf_impl(data.data(), qmeta, 3, context));
-          for (size_t q = 0; q < 3; ++q) {
+          ASSERT_EQ(0, streamer->search_bf_impl(data.data(), qmeta, kQueryCount,
+                                              context));
+          // Batch scans call the filter once per live, valid row per query,
+          // including rows rejected by the filter and the partial last block.
+          // The legacy K>=N block path retains its original callback order.
+          if (mode != 0 && topk < kCount) {
+            EXPECT_EQ(expected_filter_keys, filter_keys);
+          }
+          context->reset_filter();
+          for (size_t q = 0; q < kQueryCount; ++q) {
             Check(context->result(q), data, data.data() + q * kDimension, topk,
                   40.0f, excluded, true);
             // Contiguous reconstruction omits the two deleted rows entirely.

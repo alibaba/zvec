@@ -1,7 +1,5 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
-include(${PROJECT_ROOT_DIR}/cmake/batch_topk.cmake)
-zvec_configure_batch_topk()
 
 if(NOT APPLE)
   set(CORE_UTILITY_LDFLAGS

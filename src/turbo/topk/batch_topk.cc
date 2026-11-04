@@ -27,7 +27,7 @@
 #endif
 
 namespace zvec {
-namespace core {
+namespace turbo {
 namespace batch_topk_internal {
 namespace {
 struct Capabilities {
@@ -323,5 +323,5 @@ void BatchTopK::compact_aos() {
 void BatchTopK::finish() {
   if (ops_ != nullptr) ops_->finish(*this);
 }
-}  // namespace core
+}  // namespace turbo
 }  // namespace zvec

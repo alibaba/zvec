@@ -1,7 +1,5 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
-include(${PROJECT_ROOT_DIR}/cmake/batch_topk.cmake)
-zvec_configure_batch_topk()
 
 # utility/block_heap.cc uses AVX2 intrinsics guarded by __AVX2__. When the
 # host toolchain supports it, compile this source with an AVX2-capable

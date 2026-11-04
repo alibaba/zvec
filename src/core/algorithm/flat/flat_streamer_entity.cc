@@ -23,7 +23,7 @@ namespace core {
 namespace {
 // A search may add to a caller-owned heap. Bound the new selection using its
 // current worst score, then merge only the winners through the existing heap.
-void ResetBatchTopK(BatchTopK *topk, const IndexDocumentHeap &heap) {
+void ResetBatchTopK(turbo::BatchTopK *topk, const IndexDocumentHeap &heap) {
   float bound = heap.threshold();
   bool strict = false;
   if (heap.full() && heap.front().score() <= bound) {
@@ -33,7 +33,7 @@ void ResetBatchTopK(BatchTopK *topk, const IndexDocumentHeap &heap) {
   topk->reset(heap.limit(), bound, strict);
 }
 
-void MergeBatchTopK(BatchTopK *topk, IndexDocumentHeap *heap) {
+void MergeBatchTopK(turbo::BatchTopK *topk, IndexDocumentHeap *heap) {
   topk->finish();
   for (size_t i = 0; i < topk->size(); ++i) {
     const auto candidate = topk->result(i);
@@ -76,7 +76,7 @@ int FlatContiguousStreamerEntity::evaluate_distances(
   if (has_extra_values) extra_values.reserve(batch_size);
   vector_keys.reserve(batch_size);
   const size_t candidate_count = p_keys ? p_keys->size() : storage.vector_count;
-  const bool use_topk = heap->limit() != 0 && heap->limit() < candidate_count;
+  const bool use_topk = heap->limit() < candidate_count;
   auto &topk = scratch->batch_topk;
   if (use_topk) ResetBatchTopK(&topk, *heap);
 
@@ -142,6 +142,8 @@ int FlatContiguousStreamerEntity::evaluate_distances(
   } else {
     for (size_t position = 0; position < storage.vector_count; ++position) {
       const uint64_t vector_key = storage.position_to_key[position];
+      // Cache reconstruction omits deleted rows. Reject invalid keys before
+      // invoking the user filter and count each remaining rejected row once.
       if (vector_key == kInvalidKey ||
           (filter.is_valid() && filter(vector_key))) {
         if (context_stats) {
@@ -391,7 +393,7 @@ int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
                                size_t batch_size) const {
   if (use_external_vector_) return IndexError_Unsupported;
   if ((quantizer_ || batch_distance_) &&
-      index_meta_.major_order() == IndexMeta::MO_ROW && heap->limit() != 0 &&
+      index_meta_.major_order() == IndexMeta::MO_ROW &&
       heap->limit() < vector_count()) {
     if (scratch) {
       return search_batch_rows(query, filter, scan_count, heap, context_stats,
@@ -539,6 +541,8 @@ int FlatStreamerEntity::search_batch_rows(
       uint64_t key;
       std::memcpy(&key, body + block_rows * stride + row * sizeof(key),
                   sizeof(key));
+      // User filters see only live, valid keys. Each rejected row contributes
+      // once to filtered_count; only accepted rows reach the distance counter.
       if (key == kInvalidKey || deleted.test(row) ||
           (filter.is_valid() && filter(key))) {
         ++(*context_stats->mutable_filtered_count());

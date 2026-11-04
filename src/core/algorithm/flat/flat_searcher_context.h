@@ -18,7 +18,7 @@
 #include <memory>
 #include <zvec/core/framework/index_document.h>
 #include <zvec/core/framework/index_error.h>
-#include "utility/batch_topk.h"
+#include <zvec/turbo/batch_topk.h>
 #include "flat_index_format.h"
 #include "flat_searcher.h"
 #include "flat_utility.h"
@@ -545,7 +545,7 @@ class FlatSearcherContext : public IndexSearcher::Context {
   int batch_search_row_topk(const void *query, const IndexQueryMeta &qmeta,
                             size_t query_count) {
     if (query_count > row_topks_capacity_) {
-      row_topks_ = std::make_unique<BatchTopK[]>(query_count);
+      row_topks_ = std::make_unique<turbo::BatchTopK[]>(query_count);
       row_topks_capacity_ = query_count;
     }
     auto *topks = row_topks_.get();
@@ -672,7 +672,7 @@ class FlatSearcherContext : public IndexSearcher::Context {
   std::shared_ptr<zvec::turbo::Quantizer> quantizer_{};
   std::vector<IndexDocumentHeap> result_heaps_{1};
   std::string batch_queries_{};
-  BatchTopK row_topk_;
+  turbo::BatchTopK row_topk_;
   IndexMetric::MatrixBatchDistance row_batch_distance_{};
   IndexMetric::DistanceBatchQueryPreprocessFunc row_query_preprocess_{};
   size_t row_extra_size_{0};
@@ -687,7 +687,7 @@ class FlatSearcherContext : public IndexSearcher::Context {
   uint32_t group_num_{0}, group_topk_{0};
   std::map<std::string, TopkHeap> group_topk_heaps_{};
   std::vector<IndexGroupDocumentList> group_results_{};
-  std::unique_ptr<BatchTopK[]> row_topks_;
+  std::unique_ptr<turbo::BatchTopK[]> row_topks_;
   size_t row_topks_capacity_{0};
 };
 

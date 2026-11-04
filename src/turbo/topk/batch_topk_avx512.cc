@@ -16,7 +16,7 @@
 
 #if defined(__AVX512F__)
 namespace zvec {
-namespace core {
+namespace turbo {
 namespace batch_topk_internal {
 namespace {
 struct Avx512 {
@@ -42,6 +42,6 @@ const Ops &Avx512Ops(bool small) {
                : Engine<Avx512, false>::Operations();
 }
 }  // namespace batch_topk_internal
-}  // namespace core
+}  // namespace turbo
 }  // namespace zvec
 #endif

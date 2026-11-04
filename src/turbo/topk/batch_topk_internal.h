@@ -14,10 +14,10 @@
 
 #pragma once
 #include <zvec/ailego/internal/platform.h>
-#include "batch_topk.h"
+#include <zvec/turbo/batch_topk.h>
 
 namespace zvec {
-namespace core {
+namespace turbo {
 namespace batch_topk_internal {
 // Private implementation/test surface: it is not a caller-facing ISA API.
 enum class Isa : uint8_t { kScalar, kSSE2, kAVX2, kAVX512, kNEON };
@@ -242,5 +242,5 @@ struct Engine {
   }
 };
 }  // namespace batch_topk_internal
-}  // namespace core
+}  // namespace turbo
 }  // namespace zvec

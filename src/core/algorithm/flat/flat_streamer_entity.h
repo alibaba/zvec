@@ -27,7 +27,7 @@
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
-#include "utility/batch_topk.h"
+#include <zvec/turbo/batch_topk.h>
 #include "flat_index_format.h"
 #include "flat_utility.h"
 
@@ -42,7 +42,7 @@ struct FlatSearchScratch {
   std::vector<float> distances{};
   std::vector<uint8_t> query_buffer{};
   std::vector<uint8_t> key_presence{};
-  BatchTopK batch_topk;
+  turbo::BatchTopK batch_topk;
 };
 
 /*! Flat Streamer Entity

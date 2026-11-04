@@ -14,39 +14,40 @@
 
 #include "batch_topk_internal.h"
 
-#if defined(__SSE2__) || defined(_M_X64) || \
-    (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#if defined(AILEGO_ARM64_NEON)
 namespace zvec {
-namespace core {
+namespace turbo {
 namespace batch_topk_internal {
 namespace {
-struct Sse2 {
+struct Neon {
   static constexpr unsigned kWidth = 4;
-  static __m128 Broadcast(float value) {
-    return _mm_set1_ps(value);
+  static float32x4_t Broadcast(float value) {
+    return vdupq_n_f32(value);
   }
-  static __m128 Load(const float *values) {
-    return _mm_loadu_ps(values);
+  static float32x4_t Load(const float *values) {
+    return vld1q_f32(values);
+  }
+  static uint32_t Mask(uint32x4_t matches) {
+    const uint32_t bits[4] = {1, 2, 4, 8};
+    return vaddvq_u32(vandq_u32(matches, vld1q_u32(bits)));
   }
   template <bool Strict>
-  static uint32_t Compare(__m128 values, __m128 bound) {
+  static uint32_t Compare(float32x4_t values, float32x4_t bound) {
     if constexpr (Strict)
-      return static_cast<uint32_t>(
-          _mm_movemask_ps(_mm_cmplt_ps(values, bound)));
+      return Mask(vcltq_f32(values, bound));
     else
-      return static_cast<uint32_t>(
-          _mm_movemask_ps(_mm_cmple_ps(values, bound)));
+      return Mask(vcleq_f32(values, bound));
   }
-  static uint32_t Equal(__m128 values, __m128 bound) {
-    return static_cast<uint32_t>(_mm_movemask_ps(_mm_cmpeq_ps(values, bound)));
+  static uint32_t Equal(float32x4_t values, float32x4_t bound) {
+    return Mask(vceqq_f32(values, bound));
   }
 };
 }  // namespace
-const Ops &Sse2Ops(bool small) {
-  return small ? Engine<Sse2, true>::Operations()
-               : Engine<Sse2, false>::Operations();
+const Ops &NeonOps(bool small) {
+  return small ? Engine<Neon, true>::Operations()
+               : Engine<Neon, false>::Operations();
 }
 }  // namespace batch_topk_internal
-}  // namespace core
+}  // namespace turbo
 }  // namespace zvec
 #endif
