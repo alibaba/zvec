@@ -48,9 +48,9 @@ class BatchTopK {
 
   // Reuses allocations. The initial bound is inclusive unless strict is set.
   // k == 0 accepts nothing; small selections need no dynamic allocation.
-  ZVEC_TURBO_API void reset(
-      size_t k, float threshold = std::numeric_limits<float>::max(),
-      bool strict = false);
+  ZVEC_TURBO_API void reset(size_t k,
+                            float threshold = std::numeric_limits<float>::max(),
+                            bool strict = false);
   // Nonempty inputs must be valid. Accepted values are copied, so callers may
   // reuse the input buffers immediately. IDs need not be ordered or unique.
   void push_block(const float *distances, const uint64_t *ids, size_t count) {
