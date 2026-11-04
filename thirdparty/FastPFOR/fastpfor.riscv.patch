@@ -1,13 +1,8 @@
 diff --git a/headers/common.h b/headers/common.h
-index 1234567..abcdefg 100644
 --- a/headers/common.h
 +++ b/headers/common.h
-@@ -12,7 +12,7 @@
- #include <fcntl.h>
- #if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
- #include <immintrin.h>
+@@ -15,3 +15,3 @@
 -#elif defined(__GNUC__) && defined(__aarch64__)
 +#elif defined(__GNUC__) && (defined(__aarch64__) || defined(__riscv))
  #include <simde/x86/sse4.1.h>
  #endif
-
