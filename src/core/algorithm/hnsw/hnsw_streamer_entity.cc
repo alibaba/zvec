@@ -96,10 +96,15 @@ int HnswStreamerEntity::update_neighbors(
   }
 
   auto loc = get_neighbor_chunk_loc(level, id);
-  size_t size = reinterpret_cast<char *>(&hd->neighbors[i]) - buffer.data();
-  size_t ret = loc.first->write(loc.second, hd, size);
-  if (ailego_unlikely(ret != size)) {
-    LOG_ERROR("Write neighbor header failed, ret=%zu", ret);
+  // A reverse link can make this node visible before its initial adjacency
+  // is filled. Publish the IDs before the count so readers cannot follow
+  // zero-filled slots into a node that has no upper layer.
+  IndexStorage::SegmentData writes[2];
+  writes[0] = {loc.second + sizeof(NeighborsHeader), i * sizeof(node_id_t),
+               hd->neighbors};
+  writes[1] = {loc.second, sizeof(hd->neighbor_cnt), &hd->neighbor_cnt};
+  if (ailego_unlikely(!loc.first->write_batch(writes, 2))) {
+    LOG_ERROR("Write neighbor list failed");
 
     return IndexError_Runtime;
   }

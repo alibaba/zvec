@@ -847,6 +847,9 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
       MmapMemoryBlock block(const_cast<char *>(base + offset));
       return TypedNeighbors(std::move(block));
     }
+    // Synchronize with add_upper_neighbor(), including slot allocation and
+    // publication. The typed mmap path bypasses get_upper_neighbor_chunk_loc.
+    std::shared_lock<std::shared_mutex> lk(*upper_neighbor_rw_mutex_);
     // Upper level: use index to locate chunk and offset
     auto it = upper_neighbor_index_->find(id);
     ailego_assert_abort(it != upper_neighbor_index_->end(),
