@@ -13,8 +13,8 @@
 // limitations under the License.
 #pragma once
 
-#include <ailego/algorithm/kmeans.h>
 #include <ailego/parallel/multi_thread_list.h>
+#include <turbo/algorithm/kmeans.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/core/framework/index_cluster.h>
 #include <zvec/core/framework/index_error.h>
@@ -169,8 +169,8 @@ void MultiChunkNumericalAlgorithm<T>::do_cluster(
   for (size_t chunk = idx; chunk < chunk_count_; chunk += chunk_step) {
     auto chunk_dim = chunk_dims_[chunk];
 
-    ailego::NumericalKmeans<T, IndexThreads> algorithm(cluster_count_,
-                                                       chunk_dim);
+    turbo::NumericalKmeans<T, IndexThreads> algorithm(cluster_count_,
+                                                      chunk_dim);
 
     // mount features into algorithm
     auto features_count = features_->count();
@@ -189,8 +189,8 @@ void MultiChunkNumericalAlgorithm<T>::do_cluster(
       return;
     }
 
-    ailego::Kmc2CentroidsGenerator<ailego::NumericalKmeans<T, IndexThreads>,
-                                   IndexThreads>
+    turbo::Kmc2CentroidsGenerator<turbo::NumericalKmeans<T, IndexThreads>,
+                                  IndexThreads>
         cent_gen;
     cent_gen.set_chain_length(markov_chain_length_);
     cent_gen.set_assumption_free(assumption_free_);
@@ -319,7 +319,7 @@ void MultiChunkNumericalInnerProductAlgorithm<T>::do_cluster(
   for (size_t chunk = idx; chunk < chunk_count_; chunk += chunk_step) {
     auto chunk_dim = chunk_dims_[chunk];
 
-    ailego::NumericalInnerProductKmeans<T, IndexThreads> algorithm(
+    turbo::NumericalInnerProductKmeans<T, IndexThreads> algorithm(
         cluster_count_, chunk_dim);
 
     // mount features into algorithm
@@ -339,8 +339,8 @@ void MultiChunkNumericalInnerProductAlgorithm<T>::do_cluster(
       return;
     }
 
-    ailego::Kmc2CentroidsGenerator<
-        ailego::NumericalInnerProductKmeans<T, IndexThreads>, IndexThreads>
+    turbo::Kmc2CentroidsGenerator<
+        turbo::NumericalInnerProductKmeans<T, IndexThreads>, IndexThreads>
         cent_gen;
     cent_gen.set_chain_length(markov_chain_length_);
     cent_gen.set_assumption_free(assumption_free_);

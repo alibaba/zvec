@@ -17,8 +17,8 @@
 #include <cstring>
 #include <iostream>
 #include <vector>
-#include <ailego/math/norm_matrix.h>
 #include <gtest/gtest.h>
+#include <turbo/norm/norm_matrix.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include "zvec/core/framework/index_factory.h"
 
@@ -32,7 +32,7 @@ static void Norm2(std::vector<Float16> &vec, std::string *out) {
 
   out->resize(vec.size() * sizeof(Float16) + sizeof(float));
 
-  Norm2Matrix<Float16, 1>::Compute(vec.data(), vec.size(), &norm);
+  zvec::turbo::Norm2Matrix<Float16, 1>::Compute(vec.data(), vec.size(), &norm);
 
   Float16 *buf = reinterpret_cast<Float16 *>(&(*out)[0]);
 
@@ -51,7 +51,7 @@ static void Norm2(std::vector<float> &vec, std::string *out) {
 
   out->resize((vec.size() + 1) * sizeof(float));
 
-  Norm2Matrix<float, 1>::Compute(vec.data(), vec.size(), &norm);
+  zvec::turbo::Norm2Matrix<float, 1>::Compute(vec.data(), vec.size(), &norm);
 
   float *buf = reinterpret_cast<float *>(&(*out)[0]);
   for (uint32_t i = 0; i < vec.size(); ++i) {
@@ -673,5 +673,30 @@ TEST(CosineMeasure_General_Test, RawFp16BatchPreservesRecordLayout) {
     float untouched = 12345.0f;
     batch(nullptr, nullptr, 0, dim + kNormSlots, &untouched, nullptr);
     EXPECT_FLOAT_EQ(12345.0f, untouched);
+  }
+}
+
+TEST(CosineMeasure_General_Test, ShortRecordsDoNotUnderflowPayloadDimension) {
+  for (const auto type : {IndexMeta::DT_FP16, IndexMeta::DT_FP32}) {
+    const size_t norm_slots = sizeof(float) / IndexMeta::UnitSizeof(type);
+    for (size_t dim = 0; dim <= norm_slots; ++dim) {
+      SCOPED_TRACE(testing::Message() << "type=" << type << " dim=" << dim);
+      auto metric = IndexFactory::CreateMetric("Cosine");
+      ASSERT_TRUE(metric);
+      ASSERT_EQ(0, metric->init(IndexMeta(type, dim), Params()));
+      const auto single = metric->distance();
+      const auto batch = metric->batch_distance();
+      ASSERT_TRUE(single);
+      ASSERT_TRUE(batch);
+      const float record = 123.0f;
+      const void *rows[] = {&record, &record, &record};
+      float pair = 0.0f;
+      single(&record, &record, dim, &pair);
+      EXPECT_FLOAT_EQ(1.0f, pair);
+      float scores[] = {0.0f, 0.0f, 0.0f, 12345.0f};
+      batch(rows, &record, 3, dim, scores, nullptr);
+      for (size_t row = 0; row < 3; ++row) EXPECT_FLOAT_EQ(1.0f, scores[row]);
+      EXPECT_FLOAT_EQ(12345.0f, scores[3]);
+    }
   }
 }
