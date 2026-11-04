@@ -196,10 +196,10 @@ void PqInt8Quantizer::train_chunk(const T *data, size_t num, size_t stride,
 
   // Append sub-vectors (NumericalKmeans handles transpose internally)
   for (size_t i = 0; i < num; ++i) {
-    const T *row = rows ? static_cast<const T *>(rows[i])
-                        : reinterpret_cast<const T *>(
-                              reinterpret_cast<const uint8_t *>(data) +
-                              i * stride);
+    const T *row =
+        rows ? static_cast<const T *>(rows[i])
+             : reinterpret_cast<const T *>(
+                   reinterpret_cast<const uint8_t *>(data) + i * stride);
     algorithm.append(row + offset, d);
   }
 
@@ -271,7 +271,7 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
     std::vector<const void *> rows;
     std::shared_ptr<const void> lifetime;
     int ret = BorrowPqTrainingSamples(holder, kMaxTrainVectors, vec_bytes,
-                                     &rows, &lifetime);
+                                      &rows, &lifetime);
     if (ret == 0) {
       holder.reset();
       train_all_chunks(nullptr, num, 0, kMaxKmeansIters, rows.data());
@@ -357,8 +357,8 @@ void PqInt8Quantizer::train_all_chunks(const void *data, size_t num,
     using T = std::remove_const_t<std::remove_pointer_t<decltype(typed_data)>>;
     for (size_t i = 0; i < pool_count; ++i) {
       task_group->submit(
-          ailego::Closure::New([this, typed_data, num, stride, rows, i, pool_count,
-                                max_iters, &finished]() {
+          ailego::Closure::New([this, typed_data, num, stride, rows, i,
+                                pool_count, max_iters, &finished]() {
             for (uint32_t m = static_cast<uint32_t>(i); m < num_chunk_;
                  m += static_cast<uint32_t>(pool_count)) {
               train_chunk<T>(typed_data, num, stride, m, max_iters, rows);

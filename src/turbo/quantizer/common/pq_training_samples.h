@@ -34,7 +34,8 @@ inline int CollectPqTrainingSamplesImpl(
     size_t items_per_sample, Buffer *output, Store store) {
   if (!holder || !output || !limit || !vec_bytes)
     return core::IndexError_InvalidArgument;
-  if (vec_bytes > holder->element_size()) return core::IndexError_InvalidArgument;
+  if (vec_bytes > holder->element_size())
+    return core::IndexError_InvalidArgument;
   const size_t input_count = holder->count();
   const size_t num = std::min(input_count, limit);
   if (!num || num > std::numeric_limits<size_t>::max() / vec_bytes)
@@ -101,10 +102,10 @@ inline bool CollectPqTrainingSamples(const core::IndexHolder::Pointer &holder,
 // Borrow only from sources that explicitly guarantee immutable, stable data.
 // NotImplemented permits the copying fallback; other errors must propagate.
 // On failure both outputs remain unchanged.
-inline int BorrowPqTrainingSamples(
-    const core::IndexHolder::Pointer &holder, size_t limit, size_t vec_bytes,
-    std::vector<const void *> *output,
-    std::shared_ptr<const void> *lifetime) {
+inline int BorrowPqTrainingSamples(const core::IndexHolder::Pointer &holder,
+                                   size_t limit, size_t vec_bytes,
+                                   std::vector<const void *> *output,
+                                   std::shared_ptr<const void> *lifetime) {
   if (!holder || !output || !lifetime || !limit || !vec_bytes)
     return core::IndexError_InvalidArgument;
   auto *stable = dynamic_cast<core::StableVectorHolder *>(holder.get());
