@@ -13,6 +13,7 @@
 // limitations under the License.
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/utility/type_helper.h>
@@ -22,6 +23,15 @@
 
 using namespace zvec;
 using namespace zvec::core;
+
+namespace {
+// Products of the finite FP16 inputs below are exact in FP32. A sequential
+// FP32 sum has error at most gamma_n times the sum of absolute terms.
+double Fp32SumRelativeError(size_t dim) {
+  const double nu = dim * (std::numeric_limits<float>::epsilon() / 2.0);
+  return nu / (1.0 - nu);
+}
+}  // namespace
 
 TEST(TurboMetricAdapter, RawSignedIntegerExtremesAndOddDimensions) {
   for (auto type : {turbo::DataType::kInt8, turbo::DataType::kInt4}) {
@@ -250,6 +260,26 @@ TEST(TurboMetricAdapter, Fp16MipsHighDimensionNormsMatchInnerProduct) {
         dot += x * y;
       }
       const double expected = 2.0 - 2.0 * dot / std::max(norm_a, norm_b);
+      // For M = max(norm_a, norm_b), |dot| and sum(|a_i*b_i|) are <= M.
+      // Propagating the dot/norm sum errors through 2 - 2*dot/M therefore
+      // gives 4*gamma_n/(1-gamma_n), plus final arithmetic rounding.
+      const double gamma = Fp32SumRelativeError(dim);
+      const double tolerance = 4.0 * gamma / (1.0 - gamma) +
+                               8.0 * std::numeric_limits<float>::epsilon();
+      // MSVC ARM64 uses this scalar FP16 fallback. Exercise it explicitly on
+      // SIMD hosts too so their shorter reduction chains cannot hide failures.
+      const auto scalar_ip = turbo::get_distance_func(
+          turbo::MetricType::kInnerProduct, turbo::DataType::kFp16,
+          turbo::QuantizeType::kRaw, turbo::CpuArchType::kScalar);
+      ASSERT_TRUE(scalar_ip);
+      float negative_norm_a, negative_norm_b, negative_dot;
+      scalar_ip(a.data(), a.data(), dim, &negative_norm_a);
+      scalar_ip(b.data(), b.data(), dim, &negative_norm_b);
+      scalar_ip(b.data(), a.data(), dim, &negative_dot);
+      const float scalar_distance = static_cast<float>(
+          2.0 +
+          2.0 * negative_dot / std::max(-negative_norm_a, -negative_norm_b));
+      EXPECT_NEAR(expected, scalar_distance, tolerance);
       auto metric = IndexFactory::CreateMetric("MipsSquaredEuclidean");
       ASSERT_TRUE(metric);
       ASSERT_EQ(0, metric->init(IndexMeta(IndexMeta::DT_FP16, dim),
@@ -268,15 +298,15 @@ TEST(TurboMetricAdapter, Fp16MipsHighDimensionNormsMatchInnerProduct) {
       pair_matrix(a.data(), a.data(), dim, &result);
       EXPECT_FLOAT_EQ(0.0f, result);
       scalar(b.data(), a.data(), dim, &result);
-      EXPECT_NEAR(expected, result, 1e-4);
+      EXPECT_NEAR(expected, result, tolerance);
       const void *rows[] = {a.data(), b.data()};
       float results[2];
       batch(rows, a.data(), 2, dim, results, nullptr);
       EXPECT_FLOAT_EQ(0.0f, results[0]);
-      EXPECT_NEAR(expected, results[1], 1e-4);
+      EXPECT_NEAR(expected, results[1], tolerance);
       matrix(interleaved.data(), a.data(), dim, results);
       EXPECT_FLOAT_EQ(0.0f, results[0]);
-      EXPECT_NEAR(expected, results[1], 1e-4);
+      EXPECT_NEAR(expected, results[1], tolerance);
     }
   }
 }
@@ -316,7 +346,19 @@ TEST(TurboMetricAdapter, Fp16MipsTrainingUsesFp32Norms) {
       float trained_norm = 0.0f;
       ASSERT_TRUE(metric->params().get(MIPS_EUCLIDEAN_METRIC_MAX_L2_NORM,
                                        &trained_norm));
-      EXPECT_NEAR(std::sqrt(norm_a), trained_norm, 1e-4 * std::sqrt(norm_a));
+      // sqrt reduces the relative sum error; gamma_n is a conservative bound
+      // for both the scalar and SIMD reductions, including final rounding.
+      const double norm_tolerance =
+          (Fp32SumRelativeError(dim) + std::numeric_limits<float>::epsilon()) *
+          std::sqrt(norm_a);
+      EXPECT_NEAR(std::sqrt(norm_a), trained_norm, norm_tolerance);
+      const auto scalar_ip = turbo::get_distance_func(
+          turbo::MetricType::kInnerProduct, turbo::DataType::kFp16,
+          turbo::QuantizeType::kRaw, turbo::CpuArchType::kScalar);
+      ASSERT_TRUE(scalar_ip);
+      float negative_norm;
+      scalar_ip(a.data(), a.data(), dim, &negative_norm);
+      EXPECT_NEAR(std::sqrt(norm_a), std::sqrt(-negative_norm), norm_tolerance);
       // Training must remain visible to callbacks cached before train(), and
       // cleanup must leave their last trained state usable.
       ASSERT_EQ(0, metric->cleanup());
