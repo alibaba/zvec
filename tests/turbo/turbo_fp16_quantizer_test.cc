@@ -22,9 +22,9 @@
 #include <random>
 #include <string>
 #include <vector>
-#include <ailego/math/normalizer.h>
 #include <gtest/gtest.h>
 #include <turbo/distance/neon_fp16/fp16/cosine.h>
+#include <turbo/norm/normalizer.h>
 #include <turbo/quantizer/fp16_quantizer/fp16_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/params.h>
@@ -331,7 +331,8 @@ TEST(Fp16Quantizer, StoragePrecisionConvertsBeforeCosineNormalization) {
   FloatHelper::ToFP32(native_input.data(), kDimension,
                       expected_normalized.data());
   float expected_norm = 0.0f;
-  Normalizer<float>::L2(expected_normalized.data(), kDimension, &expected_norm);
+  zvec::turbo::Normalizer<float>::L2(expected_normalized.data(), kDimension,
+                                     &expected_norm);
   std::array<Float16, kDimension> expected{};
   FloatHelper::ToFP16(expected_normalized.data(), kDimension,
                       reinterpret_cast<uint16_t *>(expected.data()));

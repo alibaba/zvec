@@ -30,7 +30,14 @@ namespace {
 
 constexpr size_t kTailBytes = sizeof(uint32_t);
 
-std::vector<int8_t> EncodeRecord(const std::vector<uint8_t> &codes) {
+#if defined(_MSC_VER) && defined(_M_ARM64) && !defined(__clang__)
+// MSVC 14.51 ARM64 reports C1001 in this test helper's encoding/reduction loop
+// with /O2. Keep the workaround local; distance kernels remain optimized.
+#pragma optimize("", off)
+__declspec(noinline)
+#endif
+std::vector<int8_t>
+EncodeRecord(const std::vector<uint8_t> &codes) {
   std::vector<int8_t> encoded(codes.size() + kTailBytes, 0);
   int64_t sum_squared = 0;
   for (size_t i = 0; i < codes.size(); ++i) {
@@ -41,6 +48,9 @@ std::vector<int8_t> EncodeRecord(const std::vector<uint8_t> &codes) {
   std::memcpy(encoded.data() + codes.size(), &tail, sizeof(tail));
   return encoded;
 }
+#if defined(_MSC_VER) && defined(_M_ARM64) && !defined(__clang__)
+#pragma optimize("", on)
+#endif
 
 std::vector<int8_t> EncodeQuery(const std::vector<uint8_t> &codes) {
   return EncodeRecord(codes);

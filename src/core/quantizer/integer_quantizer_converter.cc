@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <iterator>
-#include <ailego/algorithm/integer_quantizer.h>
-#include <ailego/math/norm2_matrix.h>
-#include <ailego/math/normalizer.h>
 #include <ailego/pattern/defer.h>
 #include <core/quantizer/quantizer_params.h>
+#include <turbo/norm/norm2_matrix.h>
+#include <turbo/norm/normalizer.h>
+#include <turbo/quantizer/entropy_integer_quantizer/integer_quantizer.h>
 #include <zvec/core/framework/index_factory.h>
 #include "rotator/rotator.h"
 #include "record_quantizer.h"
@@ -564,8 +564,8 @@ class IntegerStreamingConverter : public IndexConverter {
           if (owner_->enable_normalize_) {
             float norm = 0.0;
             memcpy((void *)normalize_buffer_.data(), vec, dim * sizeof(float));
-            ailego::Normalizer<float>::L2((float *)normalize_buffer_.data(),
-                                          dim, &norm);
+            turbo::Normalizer<float>::L2((float *)normalize_buffer_.data(), dim,
+                                         &norm);
             vec = (float *)normalize_buffer_.data();
           }
 
@@ -662,11 +662,11 @@ class IntegerStreamingConverter : public IndexConverter {
 
 INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(
     Int8QuantizerConverter,
-    IntegerQuantizerConverter<ailego::EntropyInt8Quantizer>,
+    IntegerQuantizerConverter<turbo::EntropyInt8Quantizer>,
     IndexMeta::DataType::DT_INT8);
 INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(
     Int4QuantizerConverter,
-    IntegerQuantizerConverter<ailego::EntropyInt4Quantizer>,
+    IntegerQuantizerConverter<turbo::EntropyInt4Quantizer>,
     IndexMeta::DataType::DT_INT4);
 INDEX_FACTORY_REGISTER_CONVERTER_ALIAS(Int8StreamingConverter,
                                        IntegerStreamingConverter,
