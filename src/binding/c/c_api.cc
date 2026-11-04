@@ -952,6 +952,8 @@ void zvec_free_string(zvec_string_t *str) {
  * @return New string array, or NULL on failure
  */
 zvec_string_array_t *zvec_string_array_create(size_t count) {
+  if (count > SIZE_MAX / sizeof(zvec_string_t)) return nullptr;
+  
   zvec_string_array_t *array = (zvec_string_array_t *)malloc(sizeof(zvec_string_array_t));
   if (!array) return nullptr;
   array->count = count;
