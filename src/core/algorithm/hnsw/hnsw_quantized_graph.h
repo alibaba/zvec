@@ -26,11 +26,12 @@ class HnswContext;
 class HnswQuantizedGraph {
  public:
   HnswQuantizedGraph(size_t dimension, size_t max_neighbors, bool cosine,
-                     size_t stored_dimension, const std::string &model_data);
+                     size_t stored_vector_bytes, const std::string &model_data,
+                     bool fp16 = false);
   static bool supported();
   static int train_router(const HnswEntity &entity, size_t dimension,
                           bool cosine, size_t anchors, size_t projected,
-                          uint64_t seed, std::string &data);
+                          uint64_t seed, std::string &data, bool fp16 = false);
   ~HnswQuantizedGraph();
   int search(uint32_t entry, HnswContext &ctx) const;
   int prebuild(const HnswEntity &entity, size_t doc_cnt, size_t threads);
@@ -38,7 +39,7 @@ class HnswQuantizedGraph {
 
  private:
   struct Impl;
-  template <class Codec>
+  template <bool Fp16>
   struct Model;
   std::unique_ptr<Impl> impl_;
 };

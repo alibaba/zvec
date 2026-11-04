@@ -42,9 +42,11 @@
 
 namespace zvec::core {
 
-// Fixed-batch quantized neighbor search over an externally owned FP32 graph.
+// Fixed-batch quantized neighbor search over an externally owned graph.
 // Graph: valid(id), neighbors(id) (size/index access), and get_vector(id,
-// Vector&). A Graph::Vector owns/pins its FP32 data until destruction; data()
+// Vector&). Training adapters expose FP32 coordinates; query adapters retain
+// the stored precision. A Graph::Vector owns/pins its data until destruction;
+// data()
 // exposes it. IDs occupy [0, doc_cnt), with holes reported by valid(). Reads
 // must be safe across prebuild workers and concurrent searches. Codec:
 // kBatchSize, encoded_dim(), batch_bytes(), transform(), encode(), and
@@ -64,10 +66,10 @@ class QuantizedGraph {
   using NodeId = uint32_t;
   static constexpr NodeId kInvalidNodeId = std::numeric_limits<NodeId>::max();
 
-  // stored_dimension defaults to dimension; larger values preserve auxiliary
-  // fields following the coordinates (e.g. cosine storage's original norm).
+  // Raw vector byte length controls prefetching during exact refinement.
   QuantizedGraph(size_t dimension, Codec codec, size_t max_neighbors,
-                 size_t stored_dimension, bool cosine, std::string model_data);
+                 size_t stored_vector_bytes, bool cosine,
+                 std::string model_data);
   void clear();
   template <class Graph>
   int prebuild(const Graph &graph, size_t doc_cnt, size_t threads);
@@ -219,7 +221,7 @@ class QuantizedGraph {
 
   std::string model_data_;
   size_t dimension_;
-  size_t stored_dimension_;
+  size_t stored_vector_bytes_;
   size_t stored_center_bytes_;
   bool compressed_center_{false};
   std::vector<float> center_shift_;
@@ -239,14 +241,14 @@ class QuantizedGraph {
 template <class Codec>
 QuantizedGraph<Codec>::QuantizedGraph(size_t dimension, Codec codec,
                                       size_t max_neighbors,
-                                      size_t stored_dimension, bool cosine,
+                                      size_t stored_vector_bytes, bool cosine,
                                       std::string model_data)
     : model_data_(std::move(model_data)),
       dimension_(dimension),
-      stored_dimension_(std::max(dimension, stored_dimension)),
+      stored_vector_bytes_(stored_vector_bytes),
       codec_(std::move(codec)) {
   cosine_ = cosine;
-  stored_center_bytes_ = stored_dimension_ * sizeof(float);
+  stored_center_bytes_ = stored_vector_bytes_;
   compressed_center_ = true;
   if (compressed_center_) {
     stored_center_bytes_ = (dimension_ + 63) & ~size_t{63};
@@ -443,7 +445,7 @@ bool QuantizedGraph<Codec>::build_block(const Graph &entity, NodeId id,
       return false;
     }
   } else
-    std::copy(center, center + stored_dimension_,
+    std::copy(center, center + stored_vector_bytes_ / sizeof(float),
               const_cast<float *>(block->center()));
   std::copy(scratch.neighbors.begin(), scratch.neighbors.end(),
             const_cast<NodeId *>(block->neighbors()));
@@ -879,7 +881,7 @@ int QuantizedGraph<Codec>::search(NodeId entry, const Graph &entity,
       if (ret) return ret;
       if (raw[count].data() == nullptr) return IndexError_Mismatch;
       const char *ptr = static_cast<const char *>(raw[count].data());
-      for (size_t off = 0; off < stored_dimension_ * sizeof(float); off += 64)
+      for (size_t off = 0; off < stored_vector_bytes_; off += 64)
         __builtin_prefetch(ptr + off, 0, 2);
     }
     for (size_t i = 0; i < count; ++i) {

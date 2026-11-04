@@ -483,6 +483,14 @@ class HnswContext : public IndexContext {
     return fetch_vector_;
   }
 
+  // Borrowed FP32 interface query; survives clear(), released by reset().
+  void set_quantized_graph_fp32_query(const float *query) {
+    quantized_graph_fp32_query_ = query;
+  }
+  const float *quantized_graph_fp32_query() const {
+    return quantized_graph_fp32_query_;
+  }
+
   //! Reset context
   void reset() override {
     this->clear();
@@ -493,6 +501,7 @@ class HnswContext : public IndexContext {
     reset_group_by();
     set_vector_source(nullptr);
     set_external_build_query(nullptr);
+    set_quantized_graph_fp32_query(nullptr);
     dc_.set_provider(nullptr);
   }
 
@@ -667,6 +676,7 @@ class HnswContext : public IndexContext {
   IndexMetric::Pointer metric_;
   const VectorSource *vector_source_{nullptr};
   const void *external_build_query_{nullptr};
+  const float *quantized_graph_fp32_query_{nullptr};
   size_t vector_data_size_{0};
   size_t extra_values_size_{0};
 

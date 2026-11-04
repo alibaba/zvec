@@ -196,9 +196,11 @@ int HNSWIndex::create_and_init_streamer(const BaseIndexParam &param) {
         param_.dimension == 0 || param_.dimension > 4096) ||
        param_.data_type != DataType::DT_FP32 ||
        (param_.quantizer_param &&
-        param_.quantizer_param->type != QuantizerType::kNone))) {
+        param_.quantizer_param->type != QuantizerType::kNone &&
+        param_.quantizer_param->type != QuantizerType::kFP16))) {
     LOG_ERROR(
-        "QuantizedGraph requires inline FP32 cosine/L2 HNSW, dimension "
+        "QuantizedGraph requires inline FP32 input with FP32/FP16 storage, "
+        "cosine/L2, dimension "
         "1..4096");
     return core::IndexError_Unsupported;
   }
@@ -278,7 +280,7 @@ int HNSWIndex::create_and_init_streamer(const BaseIndexParam &param) {
 
 
 int HNSWIndex::_prepare_for_search(
-    const VectorData & /*vector_data*/,
+    const VectorData &vector_data,
     const BaseIndexQueryParam::Pointer &search_param,
     core::IndexContext::Pointer &context) {
   const auto &hnsw_search_param =
@@ -303,6 +305,13 @@ int HNSWIndex::_prepare_for_search(
       hnsw_search_param->quantized_graph_route_beam > 4)
     return core::IndexError_InvalidArgument;
   if (auto *ctx = dynamic_cast<core::HnswContext *>(context.get())) {
+    ctx->set_quantized_graph_fp32_query(
+        turbo_quantizer_ &&
+                turbo_quantizer_->type() == zvec::turbo::QuantizeType::kFp16 &&
+                std::holds_alternative<DenseVector>(vector_data.vector)
+            ? static_cast<const float *>(
+                  std::get<DenseVector>(vector_data.vector).data)
+            : nullptr);
     ctx->set_quantized_graph_options(
         {margin, width, hnsw_search_param->quantized_graph_max_expansions,
          hnsw_search_param->quantized_graph_route_beam});

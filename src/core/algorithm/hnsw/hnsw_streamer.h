@@ -217,11 +217,17 @@ class HnswStreamer : public IndexStreamer {
   void print_debug_info() override;
 
  private:
-  inline int check_params(const void *query,
-                          const IndexQueryMeta &qmeta) const {
+  inline int check_params(const void *query, const IndexQueryMeta &qmeta,
+                          bool allow_fp32_query = false) const {
     if (ailego_unlikely(!query)) {
       LOG_ERROR("null query");
       return IndexError_InvalidArgument;
+    }
+    if (allow_fp32_query && qmeta.meta_type() == IndexMeta::MT_DENSE &&
+        qmeta.data_type() == IndexMeta::DT_FP32 &&
+        qmeta.dimension() == meta_.dimension() &&
+        qmeta.element_size() == size_t(meta_.dimension()) * sizeof(float)) {
+      return 0;
     }
     if (ailego_unlikely(qmeta.dimension() != meta_.dimension() ||
                         qmeta.data_type() != meta_.data_type() ||

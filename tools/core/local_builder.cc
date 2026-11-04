@@ -524,9 +524,11 @@ int build_sparse_by_streamer(IndexStreamer::Pointer &streamer,
   return 0;
 }
 
-int do_build_by_streamer(IndexStreamer::Pointer &streamer,
-                         uint32_t thread_count, RetrievalMode retrieval_mode,
-                         const IndexStorage::Pointer &storage = nullptr) {
+int do_build_by_streamer(
+    IndexStreamer::Pointer &streamer, uint32_t thread_count,
+    RetrievalMode retrieval_mode,
+    const IndexStorage::Pointer &storage = nullptr,
+    const std::shared_ptr<zvec::turbo::Quantizer> &quantizer = nullptr) {
   int ret;
   std::atomic<size_t> finished{0};
   std::atomic<int> errcode{0};
@@ -604,7 +606,12 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
       uint64_t key = holder->get_key(id);
       int task_ret = 0;
       if (retrieval_mode == RM_DENSE) {
-        if (reformer) {
+        if (quantizer) {
+          task_ret = quantizer->quantize(holder->get_vector_by_index(id), qmeta,
+                                         &ovec, &ometa);
+          if (task_ret == 0)
+            task_ret = add_to_streamer(key, ovec.data(), ometa, ctx);
+        } else if (reformer) {
           task_ret = reformer->convert(holder->get_vector_by_index(id), qmeta,
                                        &ovec, &ometa);
           if (task_ret != 0) {
@@ -674,9 +681,10 @@ int do_build_by_streamer(IndexStreamer::Pointer &streamer,
   return 0;
 }
 
-int build_by_streamer(IndexStreamer::Pointer &streamer,
-                      YAML::Node &config_common,
-                      const IndexConverter::Pointer &converter) {
+int build_by_streamer(
+    IndexStreamer::Pointer &streamer, YAML::Node &config_common,
+    const IndexConverter::Pointer &converter,
+    const std::shared_ptr<zvec::turbo::Quantizer> &quantizer = nullptr) {
   if (!config_common["IndexPath"]) {
     LOG_ERROR("Miss params IndexPath for Streamer");
     return IndexError_InvalidArgument;
@@ -731,7 +739,8 @@ int build_by_streamer(IndexStreamer::Pointer &streamer,
 
   LOG_DEBUG("thread count: %zu, retrieval mode: %s", thread_count,
             retrieval_mode == 1 ? "Dense" : "Sparse");
-  return do_build_by_streamer(streamer, thread_count, retrieval_mode, storage);
+  return do_build_by_streamer(streamer, thread_count, retrieval_mode, storage,
+                              quantizer);
 }
 
 IndexSparseHolder::Pointer convert_sparse_holder(
@@ -1254,16 +1263,24 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
   std::shared_ptr<zvec::turbo::Quantizer> build_quantizer;
   IndexHolder::Pointer cv_build_holder;
   if (!quantizer_name.empty()) {
-    // Quantizer path: only supported with IndexBuilder classes.  The
-    // streamer path feeds raw vectors from the global holder and relies on
-    // reformer info in the meta, which a quantizer does not provide.
     if (!builder) {
-      LOG_ERROR("QuantizerName is not supported with streamer class %s",
-                builder_class.c_str());
-      return -1;
+      // Stream from FP32 input, quantizing each record once in its worker.
+      // Avoid materializing a second, fully quantized training holder.
+      if (!hnsw_streamer || quantizer_name != "Fp16Quantizer") {
+        LOG_ERROR("Streamer QuantizerName requires HnswStreamer/Fp16Quantizer");
+        return -1;
+      }
+      build_quantizer = IndexFactory::CreateQuantizer(quantizer_name);
+      if (!build_quantizer ||
+          build_quantizer->init(meta, quantizer_params) != 0)
+        return -1;
+      meta = build_quantizer->meta();
+      meta.set_quantizer(quantizer_name, 0, quantizer_params);
+      cv_build_holder = build_holder;
+    } else {
+      cv_build_holder = quantize_holder(quantizer_name, quantizer_params,
+                                        build_holder, meta, &build_quantizer);
     }
-    cv_build_holder = quantize_holder(quantizer_name, quantizer_params,
-                                      build_holder, meta, &build_quantizer);
     if (!cv_build_holder) {
       LOG_ERROR("Quantize holder failed.");
       return -1;
@@ -1311,7 +1328,8 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
       ret = builder->init(meta, params);
     }
   } else {
-    ret = streamer->init(meta, params);
+    ret = build_quantizer ? streamer->init(meta, params, build_quantizer)
+                          : streamer->init(meta, params);
   }
   if (ret < 0) {
     LOG_ERROR("Failed to init builder, ret=%d", ret);
@@ -1496,7 +1514,8 @@ int do_build(YAML::Node &config_root, YAML::Node &config_common) {
       retrieval_mode = "dense";
     }
 
-    ret = build_by_streamer(streamer, config_common, build_converter);
+    ret = build_by_streamer(streamer, config_common, build_converter,
+                            build_quantizer);
   }
   size_t build_time = timer.milli_seconds();
   if (ret < 0) {

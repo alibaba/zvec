@@ -19,6 +19,7 @@
 #endif
 #include <chrono>
 #include <iostream>
+#include <optional>
 #include <ailego/internal/cpu_features.h>
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
@@ -35,6 +36,44 @@ namespace core {
 namespace {
 
 using TurboQuantizer = zvec::turbo::Quantizer;
+
+// One storage contract for graph loading and router training. Legacy cosine
+// stores its norm as an extra dimension; Turbo uses separate metadata.
+struct QuantizedGraphLayout {
+  size_t dimension, vector_bytes;
+  bool cosine, fp16;
+};
+std::optional<QuantizedGraphLayout> quantized_graph_layout(
+    const IndexMeta &meta, const TurboQuantizer *quantizer) {
+  const bool cosine = meta.metric_name() == "Cosine";
+  const bool fp16 = meta.data_type() == IndexMeta::DT_FP16;
+  const size_t extra = cosine && !quantizer ? 1 : 0;
+  if ((!cosine && meta.metric_name() != "SquaredEuclidean") ||
+      (meta.data_type() != IndexMeta::DT_FP32 && !fp16) ||
+      meta.unit_size() != (fp16 ? sizeof(uint16_t) : sizeof(float)) ||
+      meta.extra_meta_size() != (cosine && quantizer ? sizeof(float) : 0) ||
+      meta.dimension() <= extra || meta.dimension() - extra > 4096)
+    return std::nullopt;
+  const auto &name = meta.quantizer_name();
+  if (quantizer) {
+    const auto type = fp16 ? zvec::turbo::QuantizeType::kFp16
+                           : zvec::turbo::QuantizeType::kFp32;
+    if (quantizer->type() != type ||
+        (fp16 ? name != "Fp16Quantizer"
+              : !name.empty() && name != "Fp32Quantizer") ||
+        quantizer->meta().dimension() != meta.dimension() ||
+        quantizer->meta().metric_name() != meta.metric_name() ||
+        quantizer->quantized_datapoint_vector_length() != meta.element_size() ||
+        quantizer->quantized_query_vector_length() != meta.element_size())
+      return std::nullopt;
+  } else if (fp16 || !name.empty()) {
+    return std::nullopt;
+  }
+  const size_t dimension = meta.dimension() - extra;
+  return QuantizedGraphLayout{
+      dimension, fp16 ? dimension * sizeof(uint16_t) : meta.element_size(),
+      cosine, fp16};
+}
 
 // Adapt Turbo's typed operations to the callbacks used by graph traversal.
 template <auto Distance, auto BatchDistance>
@@ -89,35 +128,14 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
       LOG_ERROR("QuantizedGraph requires AVX512/VNNI and a RaBitQ build");
       return IndexError_Unsupported;
     }
-    const bool cosine = imeta.metric_name() == "Cosine";
-    // Legacy cosine counts the norm in dimension; Turbo puts it in extras.
-    const bool turbo = quantizer_ != nullptr;
-    const size_t extra_dimension = cosine && !turbo ? 1 : 0;
-    const size_t expected_extras = cosine && turbo ? sizeof(float) : 0;
-    const bool supported_quantizer =
-        turbo ? quantizer_->type() == zvec::turbo::QuantizeType::kFp32 &&
-                    (imeta.quantizer_name().empty() ||
-                     imeta.quantizer_name() == "Fp32Quantizer") &&
-                    quantizer_->meta().dimension() == imeta.dimension() &&
-                    quantizer_->meta().metric_name() == imeta.metric_name() &&
-                    quantizer_->quantized_datapoint_vector_length() ==
-                        imeta.element_size() &&
-                    quantizer_->quantized_query_vector_length() ==
-                        imeta.element_size()
-              : imeta.quantizer_name().empty();
-    if (external || !supported_quantizer ||
-        imeta.extra_meta_size() != expected_extras ||
-        imeta.unit_size() != sizeof(float) ||
-        imeta.data_type() != IndexMeta::DataType::DT_FP32 ||
-        (!cosine && imeta.metric_name() != "SquaredEuclidean") ||
-        imeta.dimension() <= extra_dimension ||
-        imeta.dimension() - extra_dimension > 4096) {
+    if (external || !quantized_graph_layout(imeta, quantizer_.get())) {
       LOG_ERROR(
-          "QuantizedGraph requires inline FP32 cosine/L2 vectors, dimension "
-          "1..4096");
+          "QuantizedGraph requires inline FP32/FP16 cosine/L2 vectors, "
+          "dimension 1..4096");
       return IndexError_Unsupported;
     }
   }
+
   meta_ = imeta;
   meta_.set_streamer("HnswStreamer", HnswEntity::kRevision, params);
 
@@ -647,12 +665,11 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
   }
 
   if (quantized_graph_enabled_) {
-    const bool cosine = meta_.metric_name() == "Cosine";
-    const size_t dimension =
-        meta_.dimension() - (cosine && !quantizer_ ? 1 : 0);
+    const auto layout = quantized_graph_layout(meta_, quantizer_.get());
+    if (!layout) return IndexError_Unsupported;
     quantized_graph_ = std::make_shared<HnswQuantizedGraph>(
-        dimension, 32, cosine, meta_.element_size() / sizeof(float),
-        quantized_graph_router_data_);
+        layout->dimension, 32, layout->cosine, layout->vector_bytes,
+        quantized_graph_router_data_, layout->fp16);
     const auto prebuild_start = std::chrono::steady_clock::now();
     ret = quantized_graph_->prebuild(*entity_, entity_->doc_cnt(), 8);
     if (ret != 0) {
@@ -751,17 +768,12 @@ int HnswStreamer::train_quantized_graph_router(size_t anchors, size_t projected,
                                                uint64_t seed) {
   if (state_ != STATE_OPENED || quantized_graph_enabled_)
     return IndexError_NoReady;
-  const bool cosine = meta_.metric_name() == "Cosine";
-  const size_t extra = cosine && !quantizer_ ? 1 : 0;
-  if (use_external_vector_ || meta_.data_type() != IndexMeta::DT_FP32 ||
-      meta_.unit_size() != sizeof(float) || meta_.dimension() <= extra ||
-      (!cosine && meta_.metric_name() != "SquaredEuclidean") ||
-      (quantizer_ && quantizer_->type() != zvec::turbo::QuantizeType::kFp32))
-    return IndexError_Unsupported;
+  const auto layout = quantized_graph_layout(meta_, quantizer_.get());
+  if (use_external_vector_ || !layout) return IndexError_Unsupported;
   std::string data;
-  const int ret =
-      HnswQuantizedGraph::train_router(*entity_, meta_.dimension() - extra,
-                                       cosine, anchors, projected, seed, data);
+  const int ret = HnswQuantizedGraph::train_router(
+      *entity_, layout->dimension, layout->cosine, anchors, projected, seed,
+      data, layout->fp16);
   if (ret == 0) quantized_graph_router_data_ = std::move(data);
   return ret;
 }
@@ -1120,10 +1132,6 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
 int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
                               uint32_t count,
                               IndexStreamer::Context::Pointer &context) const {
-  int ret = check_params(query, qmeta);
-  if (ailego_unlikely(ret != 0)) {
-    return ret;
-  }
   HnswContext *ctx = dynamic_cast<HnswContext *>(context.get());
   ailego_do_if_false(ctx) {
     LOG_ERROR("Cast context to HnswContext failed");
@@ -1133,7 +1141,15 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   std::shared_lock<std::shared_mutex> qg_lock(quantized_graph_mutex_,
                                               std::defer_lock);
   if (quantized_graph_enabled_) qg_lock.lock();
-  if (entity_->doc_cnt() <= ctx->get_bruteforce_threshold()) {
+  const bool fp32_query = quantized_graph_enabled_ && quantized_graph_ &&
+                          meta_.data_type() == IndexMeta::DT_FP16 &&
+                          qmeta.data_type() == IndexMeta::DT_FP32 &&
+                          !ctx->group_by_search();
+  int ret = check_params(query, qmeta, fp32_query);
+  if (ailego_unlikely(ret != 0)) return ret;
+  if (entity_->doc_cnt() <= ctx->get_bruteforce_threshold() &&
+      !(quantized_graph_enabled_ && meta_.data_type() == IndexMeta::DT_FP16 &&
+        !ctx->group_by_search())) {
     return search_bf_impl(query, qmeta, count, context);
   }
 
@@ -1152,8 +1168,15 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
   ctx->check_need_adjuct_ctx(entity_->doc_cnt());
   const void *queries = query;
   for (size_t q = 0; q < count; ++q) {
-    ctx->reset_query(query, meta_);
+    const float *original = ctx->quantized_graph_fp32_query();
+    if (fp32_query) {
+      ctx->set_quantized_graph_fp32_query(static_cast<const float *>(query));
+      ctx->reset_query_raw(query, meta_);
+    } else {
+      ctx->reset_query(query, meta_);
+    }
     ret = alg_->search(ctx);
+    if (fp32_query) ctx->set_quantized_graph_fp32_query(original);
     if (ailego_unlikely(ctx->dist_calculator().status() ==
                             HnswDistCalculator::Status::kMissingVector &&
                         storage_mode() == HnswStorageMode::kExternal)) {
@@ -1194,7 +1217,9 @@ int HnswStreamer::search_candidates_impl(
     return IndexError_InvalidArgument;
   }
 
-  if (entity_->doc_cnt() <= ctx->get_bruteforce_threshold()) {
+  if (entity_->doc_cnt() <= ctx->get_bruteforce_threshold() &&
+      !(quantized_graph_enabled_ && meta_.data_type() == IndexMeta::DT_FP16 &&
+        !ctx->group_by_search())) {
     return IndexRunner::search_candidates_impl(query, qmeta, keys, context,
                                                scores);
   }
