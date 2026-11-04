@@ -30,8 +30,9 @@ class HTTPDenseEmbedding(DenseEmbeddingFunction[TEXT]):
     (LM Studio, Ollama, vLLM, LocalAI, etc.) using only the Python standard
     library — no extra dependencies are required.
 
-    The embedding dimension is detected automatically from the first server
-    response.
+    The embedding dimension is detected automatically from the first successful
+    server response. Accessing ``dimension`` before embedding any text uses a
+    probe request.
 
     Args:
         base_url (str, optional): Base URL of the embedding server.
@@ -121,8 +122,9 @@ class HTTPDenseEmbedding(DenseEmbeddingFunction[TEXT]):
 
         Raises:
             TypeError: If *input* is not a string.
-            ValueError: If *input* is empty/whitespace-only or the server
-                returns an unexpected response format.
+            ValueError: If *input* is empty/whitespace-only, the server
+                returns an unexpected response format, or the embedding
+                dimension differs from previous responses.
             RuntimeError: If the HTTP request fails.
         """
         if not isinstance(input, TEXT):
@@ -154,9 +156,18 @@ class HTTPDenseEmbedding(DenseEmbeddingFunction[TEXT]):
 
         try:
             vector: list[float] = body["data"][0]["embedding"]
-        except (KeyError, IndexError) as exc:
+        except (KeyError, IndexError, TypeError) as exc:
             raise ValueError(
                 f"Unexpected response format from embedding server: {body}"
             ) from exc
 
+        if not isinstance(vector, list) or not vector:
+            raise ValueError(
+                f"Unexpected response format from embedding server: {body}"
+            )
+        if self._dimension is not None and len(vector) != self._dimension:
+            raise ValueError(
+                f"Dimension mismatch: expected {self._dimension}, got {len(vector)}"
+            )
+        self._dimension = len(vector)
         return vector
