@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cmath>
 #include <functional>
 #include <random>
 #include <string>
@@ -20,6 +21,7 @@
 #include <ailego/container/bitmap.h>
 #include <ailego/internal/cpu_features.h>
 #include <ailego/math/distance.h>
+#include <ailego/math_batch/euclidean_distance_batch.h>
 #include <ailego/utility/math_helper.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
@@ -792,5 +794,48 @@ TEST(DistanceMatrix, DISABLED_SquaredEuclidean_BenchmarkSimple) {
   for (size_t i = 0; i < loop_cnt; ++i) {
     SquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(&data[0], &query[0],
                                                            dimension, &result);
+  }
+}
+
+// Skewed vectors of norm 4 (cosine ~0.89) give squared distances ~3.5.
+// Subtracting and accumulating in FP16 costs ~4e-4 per score, while widening
+// to FP32 first stays below 1e-6.
+TEST(DistanceMatrix, SquaredEuclidean_Fp32Accumulation) {
+  const size_t dim = 1024, num = 13;  // one batch of 12 plus a tail
+  std::vector<std::vector<Float16>> docs(num, std::vector<Float16>(dim));
+  std::vector<Float16> query(dim);
+  auto fill = [&](std::vector<Float16> &v, double phase, double freq) {
+    std::vector<double> x(dim);
+    double norm = 0.0;
+    for (size_t i = 0; i < dim; ++i) {
+      x[i] = 1.0 + 0.5 * std::sin(i * freq + phase);
+      norm += x[i] * x[i];
+    }
+    for (size_t i = 0; i < dim; ++i) {
+      v[i] = static_cast<float>(4.0 * x[i] / std::sqrt(norm));
+    }
+  };
+  fill(query, 0.0, 0.71);
+  std::vector<const Float16 *> ptrs(num);
+  for (size_t k = 0; k < num; ++k) {
+    fill(docs[k], static_cast<double>(k), 0.37);
+    ptrs[k] = docs[k].data();
+  }
+
+  std::vector<float> batch(num);
+  distance_batch::SquaredEuclideanDistanceBatch<Float16, 12, 2>::ComputeBatch(
+      ptrs.data(), query.data(), num, dim, batch.data(), nullptr);
+  for (size_t k = 0; k < num; ++k) {
+    double expected = 0.0;
+    for (size_t i = 0; i < dim; ++i) {
+      double diff = static_cast<double>(static_cast<float>(docs[k][i])) -
+                    static_cast<float>(query[i]);
+      expected += diff * diff;
+    }
+    float single = 0.0f;
+    SquaredEuclideanDistanceMatrix<Float16, 1, 1>::Compute(
+        docs[k].data(), query.data(), dim, &single);
+    EXPECT_NEAR(expected, single, 4e-5) << IntelIntrinsics() << " doc " << k;
+    EXPECT_NEAR(expected, batch[k], 4e-5) << IntelIntrinsics() << " doc " << k;
   }
 }
