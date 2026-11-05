@@ -829,6 +829,115 @@ TEST(HnswBulkMergeTest, DumperRejectsUnderestimatedMetadataBudget) {
             dumper.append("HnswT3S0", sizeof(value), 0, 0));
 }
 
+TEST(HnswBulkMergeTest, AlignedChunkCapacitySurvivesPackingAndAppend) {
+  namespace core = zvec::core;
+  namespace ailego = zvec::ailego;
+  const std::string graph_path = "hnsw_bulk_capacity_graph.index";
+  const std::string packed_path = "hnsw_bulk_capacity_packed.index";
+  const std::string meta_path = "hnsw_bulk_capacity_meta.index";
+  AILEGO_DEFER([&]() {
+    for (const auto &path : {graph_path, packed_path, meta_path}) {
+      zvec::test_util::RemoveTestFiles(path);
+    }
+  });
+  // m=50 rounds each compact node chunk from 2 MiB to 3.25 MiB. Use two
+  // chunks so accounting must remove the actual capacity of every old chunk.
+  constexpr uint32_t count = 8193;
+  auto vectors = RandomVectors(count);
+  TestExternalVectorSource source(&vectors);
+  auto init_entity = [&](core::HnswStreamerEntity &entity, size_t vector_size) {
+    entity.set_vector_size(vector_size);
+    entity.set_l0_neighbor_cnt(100);
+    entity.set_upper_neighbor_cnt(50);
+    entity.set_scaling_factor(50);
+    return entity.init(count);
+  };
+  auto graph_storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, graph_storage);
+  ASSERT_EQ(0, graph_storage->init({}));
+  ASSERT_EQ(0, graph_storage->open(graph_path, true));
+  core::IndexStreamer::Stats graph_stats;
+  core::HnswExternalStreamerEntity graph(graph_stats);
+  graph.set_packed_vector_size(kDimension * sizeof(float));
+  ASSERT_EQ(0, init_entity(graph, 0));
+  ASSERT_EQ(0, graph.open(graph_storage, 128U << 20, false));
+  for (uint32_t id = 0; id < count; ++id) {
+    ASSERT_EQ(0, graph.add_vector_with_id(0, id, vectors[id].data()));
+  }
+  graph.update_ep_and_level(0, 0);
+  size_t old_node_chunks = 0;
+  for (;; ++old_node_chunks) {
+    auto chunk = graph_storage->get(core::ChunkBroker::make_segment_id(
+        core::ChunkBroker::CHUNK_TYPE_NODE, old_node_chunks));
+    if (!chunk) break;
+    ASSERT_GT(chunk->capacity(), core::HnswEntity::kDefaultChunkSize);
+  }
+  ASSERT_EQ(2U, old_node_chunks);
+  auto dumper =
+      std::make_shared<core::HnswBuildDumper>(1 + graph.packed_chunk_count());
+  ASSERT_EQ(0, dumper->create(packed_path));
+  ASSERT_EQ(
+      0, graph.dump_with_vectors(dumper, source, kDimension * sizeof(float)));
+  ASSERT_EQ(0, dumper->close());
+
+  auto packed_storage =
+      core::IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_NE(nullptr, packed_storage);
+  ASSERT_EQ(0, packed_storage->init({}));
+  ASSERT_EQ(0, packed_storage->open(packed_path, false));
+  size_t total_capacity = 0;
+  size_t node_capacity = 0;
+  size_t node_chunks = 0;
+  for (const auto &[name, chunk] : packed_storage->get_all()) {
+    if (name.rfind("HnswT", 0) == 0) total_capacity += chunk->capacity();
+    if (name.rfind("HnswT3S", 0) == 0) {
+      node_capacity = chunk->capacity();
+      ++node_chunks;
+    }
+  }
+  ASSERT_GT(node_chunks, old_node_chunks);
+  ASSERT_EQ(0, packed_storage->close());
+  // The exact output capacity is full; one extra byte is sufficient to pack.
+  // Compute the budget from real segments, independently of dump_meta().
+  core::IndexStreamer::Stats meta_stats;
+  core::ChunkBroker broker(meta_stats);
+  uint32_t configured_chunk_size = core::HnswEntity::kDefaultChunkSize;
+  ASSERT_EQ(0, broker.open(graph_storage, configured_chunk_size, false));
+  auto meta_dumper = std::make_shared<core::HnswBuildDumper>(2);
+  ASSERT_EQ(0, meta_dumper->create(meta_path));
+  EXPECT_EQ(core::IndexError_IndexFull,
+            broker.dump_meta(meta_dumper, node_chunks, node_capacity,
+                             total_capacity));
+  EXPECT_EQ(0, broker.dump_meta(meta_dumper, node_chunks, node_capacity,
+                                total_capacity + 1));
+  ASSERT_EQ(0, meta_dumper->close());
+  ASSERT_EQ(0, broker.close());
+  ASSERT_EQ(0, graph.close());
+  ASSERT_EQ(0, graph_storage->close());
+
+  packed_storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, packed_storage);
+  ASSERT_EQ(0, packed_storage->init({}));
+  ASSERT_EQ(0, packed_storage->open(packed_path, false));
+  core::IndexStreamer::Stats reopened_stats;
+  core::HnswMmapStreamerEntity reopened(reopened_stats);
+  ASSERT_EQ(0, init_entity(reopened, kDimension * sizeof(float)));
+  ASSERT_EQ(0, reopened.open(packed_storage, total_capacity + node_capacity + 1,
+                             false));
+  const uint32_t nodes_per_chunk = node_capacity / reopened.node_size();
+  const uint32_t next_chunk_id = node_chunks * nodes_per_chunk;
+  ASSERT_GT(next_chunk_id, count);
+  // Force allocation of one more node chunk after loading the persisted
+  // total_size. An overestimated total would reject this append too early.
+  EXPECT_EQ(
+      0, reopened.add_vector_with_id(0, next_chunk_id, vectors.front().data()));
+  EXPECT_EQ(core::IndexError_IndexFull,
+            reopened.add_vector_with_id(0, next_chunk_id + nodes_per_chunk,
+                                        vectors.front().data()));
+  ASSERT_EQ(0, reopened.close());
+  ASSERT_EQ(0, packed_storage->close());
+}
+
 struct BulkContextState {
   size_t workers;
   bool fail_first;

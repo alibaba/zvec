@@ -28,7 +28,15 @@ int ChunkBroker::dump_meta(const IndexDumper::Pointer &dumper,
                            size_t node_chunks, size_t node_chunk_size,
                            size_t max_index_size) const {
   auto meta = chunk_meta_;
-  meta.total_size -= meta.chunk_cnts[CHUNK_TYPE_NODE] * meta.chunk_size;
+  // The configured chunk size precedes node-count and page alignment. Remove
+  // the capacities actually allocated before adding the packed node region.
+  for (size_t seq = 0; seq < meta.chunk_cnts[CHUNK_TYPE_NODE]; ++seq) {
+    auto chunk = get_chunk(CHUNK_TYPE_NODE, seq);
+    if (!chunk || chunk->capacity() > meta.total_size) {
+      return IndexError_InvalidFormat;
+    }
+    meta.total_size -= chunk->capacity();
+  }
   meta.total_size += node_chunks * node_chunk_size;
   meta.chunk_size = node_chunk_size;
   meta.chunk_cnts[CHUNK_TYPE_NODE] = node_chunks;
