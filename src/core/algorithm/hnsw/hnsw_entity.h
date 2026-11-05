@@ -20,7 +20,7 @@
 #include <zvec/core/framework/index_dumper.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_storage.h>
-#include <zvec/core/framework/vector_source.h>
+#include <zvec/core/interface/vector_source.h>
 
 namespace zvec {
 namespace core {

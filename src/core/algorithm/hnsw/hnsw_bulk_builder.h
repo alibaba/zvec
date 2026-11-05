@@ -20,18 +20,19 @@
 #include <zvec/core/framework/index_filter.h>
 #include <zvec/core/framework/index_provider.h>
 #include <zvec/core/framework/index_streamer.h>
-#include <zvec/core/framework/vector_source.h>
 
 namespace zvec::core {
 
+class VectorSource;
+
 // Internal fresh-build path. Source records must already match the target's
 // stored encoding and remain immutable until the builder is destroyed.
-class HnswBulkBuilder final : private VectorSource {
+class HnswBulkBuilder final {
  public:
   HnswBulkBuilder(const IndexMeta &meta, const ailego::Params &params,
                   std::shared_ptr<turbo::Quantizer> quantizer,
                   const IndexQueryMeta &vector_meta);
-  ~HnswBulkBuilder() override;
+  ~HnswBulkBuilder();
 
   HnswBulkBuilder(const HnswBulkBuilder &) = delete;
   HnswBulkBuilder &operator=(const HnswBulkBuilder &) = delete;
@@ -45,17 +46,19 @@ class HnswBulkBuilder final : private VectorSource {
 
   // Owns scratch files, including the packed output until its caller renames
   // it over the unpublished target. Does not open or replace the target.
-  int build(const std::string &target_path, uint32_t write_concurrency,
-            ailego::ThreadPool *pool);
+  int build(const std::string &target_path, const VectorSource &source,
+            uint32_t write_concurrency, ailego::ThreadPool *pool);
   const std::string &packed_path() const {
     return packed_path_;
   }
 
- private:
-  const void *get_vector(uint32_t id) const override {
+  // The caller's VectorSource adapter exposes these retained records to the
+  // graph without making the algorithm library instantiate interface objects.
+  const void *get_vector(uint32_t id) const {
     return id < vectors_.size() ? vectors_[id] : nullptr;
   }
 
+ private:
   IndexMeta meta_;
   ailego::Params params_;
   std::shared_ptr<turbo::Quantizer> quantizer_;

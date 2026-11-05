@@ -17,7 +17,7 @@
 #include <memory>
 #include <ailego/parallel/lock.h>
 #include <zvec/core/framework/index_streamer.h>
-#include <zvec/core/framework/vector_source.h>
+#include <zvec/core/interface/vector_source.h>
 #include "flat_streamer_entity.h"
 #include "flat_utility.h"
 

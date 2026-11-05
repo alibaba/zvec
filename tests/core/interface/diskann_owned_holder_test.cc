@@ -19,7 +19,7 @@
 #include <gtest/gtest.h>
 #include <zvec/core/framework/index_framework.h>
 #include "algorithm/diskann/diskann_builder_entity.h"
-#include "interface/utils/holder_builder.h"
+#include "interface/indexes/holder_builder.h"
 #include "utility/owned_vector_holder.h"
 
 #if DISKANN_SUPPORTED

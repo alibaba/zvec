@@ -81,6 +81,7 @@ int HnswBulkBuilder::prepare(const IndexFilter &filter) {
 }
 
 int HnswBulkBuilder::build(const std::string &target_path,
+                           const VectorSource &source,
                            uint32_t write_concurrency,
                            ailego::ThreadPool *pool) {
   // A new attempt must not be blocked by scratch left by a crashed optimize.
@@ -112,7 +113,7 @@ int HnswBulkBuilder::build(const std::string &target_path,
   if (ret != 0) return ret;
   ret = build->init(meta_, params_, quantizer_);
   if (ret != 0) return ret;
-  ret = graph->open_with_borrowed_vectors(graph_storage, this);
+  ret = graph->open_with_borrowed_vectors(graph_storage, &source);
   if (ret != 0) return ret;
 
   std::unique_ptr<ailego::ThreadPool> local_pool;

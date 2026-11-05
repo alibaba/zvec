@@ -28,6 +28,21 @@ namespace zvec::core_interface {
 
 namespace {
 
+// Construct the public source adapter at the interface boundary. The builder
+// owns the retained vectors and the graph only borrows this view while
+// building.
+class HnswBuildVectorSource final : public core::VectorSource {
+ public:
+  explicit HnswBuildVectorSource(const core::HnswBulkBuilder &builder)
+      : builder_(builder) {}
+
+  const void *get_vector(uint32_t id) const override {
+    return builder_.get_vector(id);
+  }
+
+ private:
+  const core::HnswBulkBuilder &builder_;
+};
 
 const char *ResolveTurboQuantizerName(const QuantizerParam &quantizer_param,
                                       const HNSWIndexParam &hnsw_param) {
@@ -137,7 +152,9 @@ int HNSWIndex::merge(const std::vector<Index::Pointer> &indexes,
     is_trained_ = true;
     return 0;
   }
-  ret = builder.build(file_path_, options.write_concurrency, options.pool);
+  HnswBuildVectorSource source(builder);
+  ret = builder.build(file_path_, source, options.write_concurrency,
+                      options.pool);
   if (ret != 0) return ret;
 
   ret = close();

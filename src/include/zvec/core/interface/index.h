@@ -32,8 +32,8 @@
 #include <zvec/core/framework/index_reformer.h>
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_storage.h>
-#include <zvec/core/framework/vector_source.h>
 #include <zvec/core/interface/index_param.h>
+#include <zvec/core/interface/vector_source.h>
 #include <zvec/export.h>
 #include "zvec/core/framework/index_provider.h"
 
