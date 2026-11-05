@@ -30,13 +30,16 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
   }
   spin_lock_.unlock();
 
+  // Search and pruning may allocate while a new top level is being built.
+  // Release the promotion lock on exceptions as well as on normal returns.
+  std::unique_lock<std::mutex> level_lock(mutex_, std::defer_lock);
   if (ailego_unlikely(level > cur_max_level)) {
-    mutex_.lock();
+    level_lock.lock();
     // re-check max level
     cur_max_level = entity_.cur_max_level();
     entry_point = entity_.entry_point();
     if (level <= cur_max_level) {
-      mutex_.unlock();
+      level_lock.unlock();
     }
   }
 
@@ -62,7 +65,6 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
     spin_lock_.lock();
     entity_.update_ep_and_level(id, level);
     spin_lock_.unlock();
-    mutex_.unlock();
   }
 
   return 0;

@@ -37,6 +37,7 @@
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
+#include "algorithm/hnsw/hnsw_algorithm.h"
 #include "algorithm/hnsw/hnsw_build_dumper.h"
 #include "algorithm/hnsw/hnsw_context.h"
 #include "algorithm/hnsw/hnsw_params.h"
@@ -44,8 +45,8 @@
 #include "tests/test_util.h"
 #include "utility/stable_vector_holder.h"
 
-// Fault injection is confined to allocations on the test's calling thread.
-// Other tests and worker allocations use the normal malloc/free path.
+// Fault injection is opt-in and thread-local. All other allocations use the
+// normal malloc/free path.
 namespace bulk_alloc_test {
 thread_local size_t countdown = 0;
 thread_local void (*before_failure)() = nullptr;
@@ -853,6 +854,87 @@ bool WaitForFlag(const std::atomic<bool> &flag) {
     std::this_thread::yield();
   }
   return flag.load();
+}
+
+TEST(HnswBulkMergeDeathTest, AllocationFailureReleasesLevelPromotionLock) {
+  namespace core = zvec::core;
+  namespace ailego = zvec::ailego;
+  const std::string path = "hnsw_bulk_level_lock.index";
+  AILEGO_DEFER([&]() { zvec::test_util::RemoveTestFiles(path); });
+  auto vectors = RandomVectors(3);
+  TestExternalVectorSource source(&vectors);
+  auto storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init({}));
+  ASSERT_EQ(0, storage->open(path, true));
+  core::IndexStreamer::Stats stats;
+  auto entity = std::make_shared<core::HnswExternalStreamerEntity>(stats);
+  entity->set_vector_size(0);
+  entity->set_packed_vector_size(kDimension * sizeof(float));
+  entity->set_chunk_size(1U << 20);
+  entity->set_l0_neighbor_cnt(2);
+  entity->set_upper_neighbor_cnt(2);
+  entity->set_scaling_factor(5);
+  entity->set_ef_construction(4);
+  ASSERT_EQ(0, entity->init(4));
+  ASSERT_EQ(0, entity->open(storage, 8U << 20, false));
+  for (uint32_t id = 0; id < 3; ++id) {
+    ASSERT_EQ(
+        0, entity->add_vector_with_id(id == 0 ? 0 : 1, id, vectors[id].data()));
+  }
+  entity->update_ep_and_level(0, 0);
+  core::IndexMeta meta(core::IndexMeta::DataType::DT_FP32, kDimension);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params{});
+  auto metric = core::IndexFactory::CreateMetric("SquaredEuclidean");
+  ASSERT_NE(nullptr, metric);
+  ASSERT_EQ(0, metric->init(meta, {}));
+  std::array<std::unique_ptr<core::HnswContext>, 2> contexts;
+  for (size_t i = 0; i < contexts.size(); ++i) {
+    contexts[i] = std::make_unique<core::HnswContext>(kDimension, metric,
+                                                      entity->clone());
+    contexts[i]->set_min_scan_limit(4);
+    contexts[i]->set_max_scan_limit(4);
+    ASSERT_EQ(0, contexts[i]->init(core::HnswContext::kStreamerContext));
+    contexts[i]->set_vector_source(&source);
+    contexts[i]->reset_query_raw(vectors[i + 1].data(), meta);
+  }
+  core::HnswAlgorithm<core::HnswExternalStreamerEntity> algorithm(*entity);
+  // Isolate a regressed deadlock so the timeout fails this test instead of
+  // leaving the suite blocked or detaching a worker from its live context.
+  ASSERT_EXIT(
+      {
+        bool failed = false;
+        std::thread first([&]() {
+          bulk_alloc_test::countdown = 1;
+          try {
+            // The first allocation grows level_topk after acquiring the
+            // promotion lock, inside the real insertion implementation.
+            algorithm.add_node(1, 1, contexts[0].get());
+          } catch (const std::bad_alloc &) {
+            failed = true;
+          }
+          bulk_alloc_test::Reset();
+        });
+        first.join();
+        if (!failed || entity->cur_max_level() != 0) std::_Exit(2);
+        std::atomic<bool> completed{false};
+        int result = core::IndexError_Runtime;
+        std::thread second([&]() {
+          result = algorithm.add_node(2, 1, contexts[1].get());
+          completed.store(true);
+        });
+        if (!WaitForFlag(completed)) std::_Exit(3);
+        second.join();
+        if (result != 0 || contexts[1]->error() ||
+            entity->cur_max_level() != 1 || entity->entry_point() != 2) {
+          std::_Exit(4);
+        }
+        std::_Exit(0);
+      },
+      ::testing::ExitedWithCode(0), "");
+  contexts = {};
+  ASSERT_EQ(0, entity->close());
+  ASSERT_EQ(0, storage->close());
 }
 
 void BeforeBulkAllocationFailure() {
