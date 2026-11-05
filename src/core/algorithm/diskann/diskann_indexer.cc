@@ -1321,8 +1321,18 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
   uint32_t max_beam_width =
       std::max(1u, static_cast<uint32_t>(DiskAnnUtil::kMaxSectorReadNum /
                                          sector_num_per_node));
-  uint32_t effective_beam_width = std::min(
-      std::max(8u, std::min(ctx->list_size() / 5, 32u)), max_beam_width);
+  // Wide portable read pools can overlap more cache misses in one search hop.
+  // Preserve the original beam for narrow pools and other storage paths.
+  uint32_t beam_divisor = 5;
+#if defined(__APPLE__) && TARGET_OS_OSX
+  if (node_record_reads_ &&
+      static_cast<LinuxAlignedFileReader *>(reader_.get())->read_workers() >=
+          24)
+    beam_divisor = 3;
+#endif
+  uint32_t effective_beam_width =
+      std::min(std::max(8u, std::min(ctx->list_size() / beam_divisor, 32u)),
+               max_beam_width);
 
   std::vector<diskann_id_t> frontier;
   frontier.reserve(2 * effective_beam_width);

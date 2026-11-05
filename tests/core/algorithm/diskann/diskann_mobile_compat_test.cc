@@ -19,14 +19,18 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <limits>
+#include <numeric>
 #include <string>
 #include <thread>
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
+#include <zvec/ailego/hash/crc32c.h>
 #include <zvec/core/framework/index_framework.h>
 #include "diskann_builder.h"
 #include "diskann_file_reader.h"
+#include "diskann_searcher_entity.h"
 #include "diskann_util.h"
 
 namespace zvec::core {
@@ -415,6 +419,93 @@ static void build_dump_load_and_search(size_t kDimension) {
       std::find_if(context->result().begin(), context->result().end(),
                    [](const auto &item) { return item.key() == kExpectedKey; }),
       context->result().end());
+}
+
+// Exercise persisted metadata directly, independently of graph construction.
+static bool write_key_fixture(const char *path,
+                              const std::vector<diskann_key_t> &keys,
+                              const std::vector<diskann_id_t> &mapping,
+                              size_t count) {
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  if (!dumper || dumper->create(path) != 0) return false;
+  auto append = [&](const std::string &name, const void *data, size_t bytes) {
+    return dumper->write(data, bytes) == bytes &&
+           dumper->append(name, bytes, 0, ailego::Crc32c::Hash(data, bytes)) ==
+               0;
+  };
+  DiskAnnMetaHeader header;
+  header.doc_cnt = count;
+  header.ndims = 4;
+  DiskAnnPqMeta pq;
+  pq.chunk_num = 1;
+  pq.quantizer_meta_buffer_size = sizeof(turbo::QuantizerSerHeader);
+  std::string codes(count, '\0');
+  const uint32_t zero = 0;
+  return append(DiskAnnEntity::kDiskAnnMetaSegmentId, &header,
+                sizeof(header)) &&
+         append(DiskAnnEntity::kDiskAnnPqMetaSegmentId, &pq, sizeof(pq)) &&
+         append(DiskAnnEntity::kDiskAnnPqDataSegmentId, codes.data(),
+                codes.size()) &&
+         append(DiskAnnEntity::kDiskAnnKeySegmentId, keys.data(),
+                keys.size() * sizeof(keys[0])) &&
+         append(DiskAnnEntity::kDiskAnnKeyMappingSegmentId, mapping.data(),
+                mapping.size() * sizeof(mapping[0])) &&
+         append(DiskAnnEntity::kDiskAnnEntryPointSegmentId, &zero,
+                sizeof(zero)) &&
+         append(DiskAnnEntity::kDiskAnnVectorSegmentId, &zero, sizeof(zero)) &&
+         dumper->close() == 0;
+}
+
+TEST(DiskAnnMobileCompatTest, CompactKeysAndFallbackSurviveCloneAndReload) {
+  std::vector<diskann_key_t> sequential(2051);
+  std::iota(sequential.begin(), sequential.end(), uint64_t{100});
+  const uint64_t high = std::numeric_limits<uint64_t>::max();
+  const std::vector<std::vector<diskann_key_t>> cases{
+      sequential,          {8, 12, 31}, {90, 4, 77}, {high - 2, high - 1, high},
+      {high - 1, high, 0}, {42}};
+  DiskAnnSearcherEntity entity;
+  IndexMeta meta(IndexMeta::DataType::DT_FP32, 4);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+  for (const auto &keys : cases) {
+    TemporaryFile file;
+    std::vector<diskann_id_t> mapping(keys.size());
+    std::iota(mapping.begin(), mapping.end(), 0);
+    std::sort(mapping.begin(), mapping.end(),
+              [&](auto a, auto b) { return keys[a] < keys[b]; });
+    ASSERT_TRUE(write_key_fixture(file.path(), keys, mapping, keys.size()));
+    auto storage = IndexFactory::CreateStorage("FileReadStorage");
+    ASSERT_EQ(storage->open(file.path(), false), 0);
+    ASSERT_EQ(entity.load(meta, storage), 0);
+    auto clone = entity.clone();
+    ASSERT_NE(clone, nullptr);
+    entity.clear();
+    storage.reset();
+    for (size_t i = 0; i < keys.size(); ++i) {
+      EXPECT_EQ(clone->get_key(i), keys[i]);
+      EXPECT_EQ(clone->get_id(keys[i]), i);
+    }
+    EXPECT_EQ(clone->get_id(3), kInvalidId);
+    EXPECT_EQ(clone->get_id(99), kInvalidId);
+  }
+}
+
+TEST(DiskAnnMobileCompatTest, CompactKeysRejectTruncatedSegments) {
+  IndexMeta meta(IndexMeta::DataType::DT_FP32, 4);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+  for (bool truncate_keys : {false, true}) {
+    TemporaryFile file;
+    std::vector<diskann_key_t> keys{100, 101, 102};
+    std::vector<diskann_id_t> mapping{0, 1, 2};
+    if (truncate_keys)
+      keys.pop_back();
+    else
+      mapping.pop_back();
+    ASSERT_TRUE(write_key_fixture(file.path(), keys, mapping, 3));
+    auto storage = IndexFactory::CreateStorage("FileReadStorage");
+    ASSERT_EQ(storage->open(file.path(), false), 0);
+    DiskAnnSearcherEntity entity;
+    EXPECT_NE(entity.load(meta, storage), 0);
+  }
 }
 
 TEST(DiskAnnMobileCompatTest, BuildDumpLoadAndSearch) {

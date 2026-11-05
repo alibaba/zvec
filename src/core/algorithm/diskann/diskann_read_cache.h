@@ -7,6 +7,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -19,7 +20,8 @@ namespace core {
 
 // A per-file cache for immutable, fixed-size DiskANN records. Clock replacement
 // gives repeatedly hit nodes up to three chances to survive one-time scans.
-// sets bound both payload and bookkeeping; no per-hit heap allocation or
+// A small bounded admission history protects residents from one-time scans.
+// Sets bound both payload and bookkeeping; no per-hit heap allocation or
 // whole-index table. I/O happens outside the set lock. Concurrent misses may
 // duplicate a read, but never publish partial data or retain caller buffers.
 class DiskAnnReadCache {
@@ -108,6 +110,19 @@ class DiskAnnReadCache {
           }
         }
         if (published) continue;
+        // Admission history uses metadata only. Once a set is full, a node
+        // seen twice competes with its residents; most one-time scans bypass
+        // the payload cache. Periodic admission lets obsolete residents age.
+        bool seen = false;
+        for (size_t i = 0; i < set.ghost_count; ++i)
+          seen = seen || set.ghosts[i] == key;
+        if (!seen) {
+          set.ghosts[set.ghost_hand] = key;
+          set.ghost_hand = (set.ghost_hand + 1) % set.ghosts.size();
+          set.ghost_count = std::min(set.ghost_count + 1, set.ghosts.size());
+        }
+        if (set.entries[set.hand].valid && !seen && (++set.misses % 16 != 0))
+          continue;
         while (set.entries[set.hand].valid &&
                set.entries[set.hand].chances) {
           --set.entries[set.hand].chances;
@@ -151,6 +166,8 @@ class DiskAnnReadCache {
     std::mutex mutex;
     std::array<Entry, 16> entries;
     size_t hand{0};
+    std::array<uint64_t, 32> ghosts{};
+    size_t ghost_hand{0}, ghost_count{0}, misses{0};
   };
   static uint64_t hash(uint64_t key) {
     // Mix the full offset: vector segments need not start at file offset 0.
