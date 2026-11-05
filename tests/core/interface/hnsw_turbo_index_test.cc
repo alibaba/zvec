@@ -49,21 +49,22 @@
 // normal malloc/free path.
 namespace bulk_alloc_test {
 thread_local size_t countdown = 0;
-thread_local void (*before_failure)() = nullptr;
+thread_local bool (*should_fail)() = nullptr;
 thread_local void (*on_delete)(void *) = nullptr;
 thread_local void *state = nullptr;
 
 void Reset() {
   countdown = 0;
-  before_failure = nullptr;
+  should_fail = nullptr;
   on_delete = nullptr;
   state = nullptr;
 }
 }  // namespace bulk_alloc_test
 
 void *operator new(std::size_t size) {
-  if (bulk_alloc_test::countdown && --bulk_alloc_test::countdown == 0) {
-    if (bulk_alloc_test::before_failure) bulk_alloc_test::before_failure();
+  if ((bulk_alloc_test::countdown && --bulk_alloc_test::countdown == 0) ||
+      (bulk_alloc_test::should_fail && bulk_alloc_test::should_fail())) {
+    bulk_alloc_test::should_fail = nullptr;
     throw std::bad_alloc();
   }
   if (void *ptr = std::malloc(size ? size : 1)) return ptr;
@@ -947,6 +948,7 @@ struct BulkContextState {
   std::atomic<size_t> premature_adds{0};
   bool fail_worker_allocation{false};
   bool fail_task_allocation{false};
+  zvec::ailego::ThreadPool *pool{nullptr};
   std::array<const void *, 4> context_ptrs{};
   std::atomic<size_t> active_adds{0};
   std::atomic<size_t> context_deletes{0};
@@ -966,88 +968,98 @@ bool WaitForFlag(const std::atomic<bool> &flag) {
 }
 
 TEST(HnswBulkMergeDeathTest, AllocationFailureReleasesLevelPromotionLock) {
+#if GTEST_HAS_DEATH_TEST
   namespace core = zvec::core;
   namespace ailego = zvec::ailego;
   const std::string path = "hnsw_bulk_level_lock.index";
   AILEGO_DEFER([&]() { zvec::test_util::RemoveTestFiles(path); });
-  auto vectors = RandomVectors(3);
-  TestExternalVectorSource source(&vectors);
-  auto storage = core::IndexFactory::CreateStorage("MMapFileStorage");
-  ASSERT_NE(nullptr, storage);
-  ASSERT_EQ(0, storage->init({}));
-  ASSERT_EQ(0, storage->open(path, true));
-  core::IndexStreamer::Stats stats;
-  auto entity = std::make_shared<core::HnswExternalStreamerEntity>(stats);
-  entity->set_vector_size(0);
-  entity->set_packed_vector_size(kDimension * sizeof(float));
-  entity->set_chunk_size(1U << 20);
-  entity->set_l0_neighbor_cnt(2);
-  entity->set_upper_neighbor_cnt(2);
-  entity->set_scaling_factor(5);
-  entity->set_ef_construction(4);
-  ASSERT_EQ(0, entity->init(4));
-  ASSERT_EQ(0, entity->open(storage, 8U << 20, false));
-  for (uint32_t id = 0; id < 3; ++id) {
-    ASSERT_EQ(
-        0, entity->add_vector_with_id(id == 0 ? 0 : 1, id, vectors[id].data()));
-  }
-  entity->update_ep_and_level(0, 0);
-  core::IndexMeta meta(core::IndexMeta::DataType::DT_FP32, kDimension);
-  meta.set_metric("SquaredEuclidean", 0, ailego::Params{});
-  auto metric = core::IndexFactory::CreateMetric("SquaredEuclidean");
-  ASSERT_NE(nullptr, metric);
-  ASSERT_EQ(0, metric->init(meta, {}));
-  std::array<std::unique_ptr<core::HnswContext>, 2> contexts;
-  for (size_t i = 0; i < contexts.size(); ++i) {
-    contexts[i] = std::make_unique<core::HnswContext>(kDimension, metric,
-                                                      entity->clone());
-    contexts[i]->set_min_scan_limit(4);
-    contexts[i]->set_max_scan_limit(4);
-    ASSERT_EQ(0, contexts[i]->init(core::HnswContext::kStreamerContext));
-    contexts[i]->set_vector_source(&source);
-    contexts[i]->reset_query_raw(vectors[i + 1].data(), meta);
-  }
-  core::HnswAlgorithm<core::HnswExternalStreamerEntity> algorithm(*entity);
+  // Windows and threadsafe death tests re-execute the test binary. Only the
+  // child may open this file, so it cannot reopen the parent's live mapping.
+  const auto run = [&]() {
+    auto vectors = RandomVectors(3);
+    TestExternalVectorSource source(&vectors);
+    auto storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init({}));
+    ASSERT_EQ(0, storage->open(path, true));
+    core::IndexStreamer::Stats stats;
+    auto entity = std::make_shared<core::HnswExternalStreamerEntity>(stats);
+    entity->set_vector_size(0);
+    entity->set_packed_vector_size(kDimension * sizeof(float));
+    entity->set_chunk_size(1U << 20);
+    entity->set_l0_neighbor_cnt(2);
+    entity->set_upper_neighbor_cnt(2);
+    entity->set_scaling_factor(5);
+    entity->set_ef_construction(4);
+    ASSERT_EQ(0, entity->init(4));
+    ASSERT_EQ(0, entity->open(storage, 8U << 20, false));
+    for (uint32_t id = 0; id < 3; ++id) {
+      ASSERT_EQ(0, entity->add_vector_with_id(id == 0 ? 0 : 1, id,
+                                              vectors[id].data()));
+    }
+    entity->update_ep_and_level(0, 0);
+    core::IndexMeta meta(core::IndexMeta::DataType::DT_FP32, kDimension);
+    meta.set_metric("SquaredEuclidean", 0, ailego::Params{});
+    auto metric = core::IndexFactory::CreateMetric("SquaredEuclidean");
+    ASSERT_NE(nullptr, metric);
+    ASSERT_EQ(0, metric->init(meta, {}));
+    std::array<std::unique_ptr<core::HnswContext>, 2> contexts;
+    for (size_t i = 0; i < contexts.size(); ++i) {
+      contexts[i] = std::make_unique<core::HnswContext>(kDimension, metric,
+                                                        entity->clone());
+      contexts[i]->set_min_scan_limit(4);
+      contexts[i]->set_max_scan_limit(4);
+      ASSERT_EQ(0, contexts[i]->init(core::HnswContext::kStreamerContext));
+      contexts[i]->set_vector_source(&source);
+      contexts[i]->reset_query_raw(vectors[i + 1].data(), meta);
+    }
+    core::HnswAlgorithm<core::HnswExternalStreamerEntity> algorithm(*entity);
+    bool failed = false;
+    std::thread first([&]() {
+      bulk_alloc_test::countdown = 1;
+      try {
+        // The first allocation grows level_topk after acquiring the
+        // promotion lock, inside the real insertion implementation.
+        algorithm.add_node(1, 1, contexts[0].get());
+      } catch (const std::bad_alloc &) {
+        failed = true;
+      }
+      bulk_alloc_test::Reset();
+    });
+    first.join();
+    if (!failed || entity->cur_max_level() != 0) std::_Exit(2);
+    std::atomic<bool> completed{false};
+    int result = core::IndexError_Runtime;
+    std::thread second([&]() {
+      result = algorithm.add_node(2, 1, contexts[1].get());
+      completed.store(true);
+    });
+    if (!WaitForFlag(completed)) std::_Exit(3);
+    second.join();
+    if (result != 0 || contexts[1]->error() || entity->cur_max_level() != 1 ||
+        entity->entry_point() != 2) {
+      std::_Exit(4);
+    }
+    contexts = {};
+    ASSERT_EQ(0, entity->close());
+    ASSERT_EQ(0, storage->close());
+    std::_Exit(0);
+  };
   // Isolate a regressed deadlock so the timeout fails this test instead of
   // leaving the suite blocked or detaching a worker from its live context.
-  ASSERT_EXIT(
-      {
-        bool failed = false;
-        std::thread first([&]() {
-          bulk_alloc_test::countdown = 1;
-          try {
-            // The first allocation grows level_topk after acquiring the
-            // promotion lock, inside the real insertion implementation.
-            algorithm.add_node(1, 1, contexts[0].get());
-          } catch (const std::bad_alloc &) {
-            failed = true;
-          }
-          bulk_alloc_test::Reset();
-        });
-        first.join();
-        if (!failed || entity->cur_max_level() != 0) std::_Exit(2);
-        std::atomic<bool> completed{false};
-        int result = core::IndexError_Runtime;
-        std::thread second([&]() {
-          result = algorithm.add_node(2, 1, contexts[1].get());
-          completed.store(true);
-        });
-        if (!WaitForFlag(completed)) std::_Exit(3);
-        second.join();
-        if (result != 0 || contexts[1]->error() ||
-            entity->cur_max_level() != 1 || entity->entry_point() != 2) {
-          std::_Exit(4);
-        }
-        std::_Exit(0);
-      },
-      ::testing::ExitedWithCode(0), "");
-  contexts = {};
-  ASSERT_EQ(0, entity->close());
-  ASSERT_EQ(0, storage->close());
+  ASSERT_EXIT(run(), ::testing::ExitedWithCode(0), "");
+#else
+  GTEST_SKIP() << "Requires death-test support to isolate a possible deadlock";
+#endif
 }
 
-void BeforeBulkAllocationFailure() {
+bool ShouldFailBulkTaskAllocation() {
   auto *state = static_cast<BulkContextState *>(bulk_alloc_test::state);
+  // Deque allocation behavior varies between standard libraries. Wait until
+  // one task has been submitted before failing another allocation.
+  if (state->pool->pending_count() == 0 && state->pool->active_count() == 0) {
+    return false;
+  }
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(2);
   while (state->active_adds.load() == 0 &&
@@ -1056,6 +1068,7 @@ void BeforeBulkAllocationFailure() {
   }
   state->failed_with_worker_active.store(state->active_adds.load() != 0);
   state->failure_triggered.store(true);
+  return true;
 }
 
 void CheckBulkContextDeletion(void *ptr) {
@@ -1092,11 +1105,8 @@ class CheckedBulkStreamer : public zvec::core::HnswStreamer {
       const auto ready = state_->contexts_ready.fetch_add(1) + 1;
       if (state_->fail_task_allocation && ready == state_->workers) {
         bulk_alloc_test::state = state_;
-        bulk_alloc_test::before_failure = BeforeBulkAllocationFailure;
+        bulk_alloc_test::should_fail = ShouldFailBulkTaskAllocation;
         bulk_alloc_test::on_delete = CheckBulkContextDeletion;
-        // One group allocation, the first closure, then the second closure.
-        // The external pool's deque is primed before this fault is armed.
-        bulk_alloc_test::countdown = 3;
       }
     }
     return context;
@@ -1197,7 +1207,7 @@ TEST(HnswBulkMergeTest, TaskAllocationFailureWaitsBeforeDestroyingContexts) {
   if (pool.count() < 2) GTEST_SKIP() << "Requires two workers";
   state.workers = pool.count();
   state.fail_task_allocation = true;
-  pool.execute_and_wait([]() {});
+  state.pool = &pool;
   const std::string source_path = "hnsw_bulk_task_source.index";
   const std::string target_path = "hnsw_bulk_task_target.index";
   AILEGO_DEFER([&]() {
@@ -1220,12 +1230,18 @@ TEST(HnswBulkMergeTest, TaskAllocationFailureWaitsBeforeDestroyingContexts) {
       0, target->open(target_path, {StorageOptions::StorageType::kMMAP, true}));
   auto vectors = RandomVectors();
   AddVectors(source.get(), vectors);
+  std::atomic<bool> merge_finished{false};
   std::thread controller([&]() {
+    while (state.contexts_ready.load() < state.workers &&
+           !merge_finished.load()) {
+      std::this_thread::yield();
+    }
     WaitForFlag(state.failure_triggered);
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
     state.release_worker.store(true);
   });
   AILEGO_DEFER([&]() {
+    merge_finished.store(true);
     state.release_worker.store(true);
     if (controller.joinable()) controller.join();
   });
@@ -1235,8 +1251,11 @@ TEST(HnswBulkMergeTest, TaskAllocationFailureWaitsBeforeDestroyingContexts) {
     ret = target->merge({source}, IndexFilter(), {2, &pool});
     bulk_alloc_test::Reset();
   }
+  merge_finished.store(true);
   controller.join();
   EXPECT_EQ(zvec::core::IndexError_NoMemory, ret);
+  EXPECT_EQ(state.workers, state.context_calls.load());
+  EXPECT_EQ(state.workers, state.contexts_ready.load());
   EXPECT_TRUE(state.failure_triggered.load());
   EXPECT_TRUE(state.failed_with_worker_active.load());
   EXPECT_EQ(state.workers, state.context_deletes.load());
