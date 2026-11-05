@@ -24,6 +24,12 @@ namespace core {
 
 class HnswStreamer : public IndexStreamer {
  public:
+  // Internal bulk-build mode: source vectors already have meta()'s stored
+  // encoding. Keep the source immutable and alive through dump_with_vectors().
+  virtual int open_with_borrowed_vectors(IndexStorage::Pointer storage,
+                                         const VectorSource *source);
+  virtual int dump_with_vectors(const IndexDumper::Pointer &dumper);
+
   using ContextPointer = IndexStreamer::Context::Pointer;
 
   HnswStreamer();
@@ -312,6 +318,7 @@ class HnswStreamer : public IndexStreamer {
   bool use_id_map_{true};
   bool use_contiguous_memory_{false};
   bool use_external_vector_{false};
+  const VectorSource *build_vector_source_{nullptr};
 
   //! avoid add vector while dumping index
   ailego::SharedMutex shared_mutex_{};

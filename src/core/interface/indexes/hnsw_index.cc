@@ -12,20 +12,110 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <atomic>
+#include <chrono>
+#include <limits>
 #include <memory>
 #include <string>
 #include <turbo/quantizer/quantizer.h>
+#include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/core/framework/index_helper.h>
+#include <zvec/core/framework/index_mapping.h>
+#include <zvec/core/framework/index_version.h>
 #include <zvec/core/interface/index.h>
 #include "algorithm/hnsw/hnsw_context.h"
 #include "algorithm/hnsw/hnsw_params.h"
 #include "algorithm/hnsw/hnsw_streamer.h"
 #include "algorithm/hnsw/hnsw_streamer_entity.h"
 #include "algorithm/hnsw_sparse/hnsw_sparse_params.h"
+#include "utility/stable_vector_holder.h"
 
 namespace zvec::core_interface {
 
 namespace {
+
+class StoredVectorSource final : public core::VectorSource {
+ public:
+  const void *get_vector(uint32_t id) const override {
+    return id < vectors.size() ? vectors[id] : nullptr;
+  }
+
+  std::vector<const void *> vectors;
+  std::vector<std::shared_ptr<const void>> lifetimes;
+};
+
+// The mutable mmap format keeps its segment table before the payload. Write
+// payloads through the file, touching only the metadata mapping; mapping the
+// completed vectors during packing would recreate the resident duplicate.
+class HnswBuildDumper final : public core::IndexDumper {
+ public:
+  ~HnswBuildDumper() override {
+    close();
+  }
+  int init(const ailego::Params &) override {
+    return 0;
+  }
+  int cleanup() override {
+    return close();
+  }
+  int create(const std::string &path) override {
+    opened_ = true;
+    int ret = mapping_.create(path, 1U << 20);
+    if (ret != 0) return ret;
+    if (!file_.open(path.c_str(), false, false))
+      return core::IndexError_OpenFile;
+    const char *version = core::IndexVersion::Details();
+    const size_t bytes = std::strlen(version);
+    if (write(version, bytes) != bytes) return core::IndexError_WriteData;
+    return append("IndexVersion", bytes, 0,
+                  ailego::Crc32c::Hash(version, bytes, 0));
+  }
+  int close() override {
+    int ret = 0;
+    if (opened_) {
+      mapping_.refresh(0);
+      ret = mapping_.flush();
+      mapping_.close();
+      file_.close();
+      opened_ = false;
+    }
+    return ret;
+  }
+  size_t write(const void *data, size_t bytes) override {
+    const size_t result =
+        file_.write(mapping_.index_size() + pending_, data, bytes);
+    pending_ += result;
+    return result;
+  }
+  int append(const std::string &id, size_t data_size, size_t padding_size,
+             uint32_t crc) override {
+    if (pending_ != data_size + padding_size)
+      return core::IndexError_InvalidFormat;
+    int ret = mapping_.append(id, pending_);
+    if (ret != 0) return ret;
+    auto segment = mapping_.map(id, false, false);
+    if (!segment) return core::IndexError_MMapFile;
+    auto meta = segment->meta();
+    meta->padding_size += meta->data_size;
+    meta->data_size = data_size;
+    meta->padding_size -= data_size;
+    // Mutable HNSW chunks use the native format's optional checksum (zero).
+    // Subsequent mmap appends update their bytes without recomputing a CRC.
+    meta->data_crc = id.rfind("HnswT", 0) == 0 ? 0 : crc;
+    mapping_.unmap(id);
+    pending_ = 0;
+    return 0;
+  }
+  uint32_t magic() const override {
+    return mapping_.magic();
+  }
+
+ private:
+  core::IndexMapping mapping_;
+  ailego::File file_;
+  size_t pending_{0};
+  bool opened_{false};
+};
 
 const char *ResolveTurboQuantizerName(const QuantizerParam &quantizer_param,
                                       const HNSWIndexParam &hnsw_param) {
@@ -78,6 +168,186 @@ const char *ResolveTurboQuantizerName(const QuantizerParam &quantizer_param,
 }
 
 }  // namespace
+
+int HNSWIndex::open(const std::string &file_path,
+                    StorageOptions storage_options) {
+  int ret = Index::open(file_path, storage_options);
+  if (ret == 0) {
+    file_path_ = file_path;
+    storage_options_ = storage_options;
+  }
+  return ret;
+}
+
+int HNSWIndex::merge(const std::vector<Index::Pointer> &indexes,
+                     const IndexFilter &filter, const MergeOptions &options) {
+  // Reusing an existing graph is an append operation. Only an unpublished,
+  // empty mmap target can replace its temporary graph with a packed index.
+  if (!is_open_ || is_read_only_ || indexes.empty() || is_sparse_ ||
+      !storage_options_.create_new ||
+      storage_options_.type != StorageOptions::StorageType::kMMAP ||
+      get_doc_count() != 0 || param_.use_external_vector || param_.provider ||
+      param_.use_contiguous_memory || !turbo_quantizer_ ||
+      proxima_index_meta_.quantizer_name() != "Fp32Quantizer") {
+    return Index::merge(indexes, filter, options);
+  }
+  if (options.write_concurrency == 0 ||
+      (options.pool && options.pool->count() == 0)) {
+    return core::IndexError_InvalidArgument;
+  }
+
+  StoredVectorSource source;
+  std::vector<core::IndexProvider::Pointer> providers;
+  for (const auto &index : indexes) {
+    if (!index || index.get() == this) return core::IndexError_InvalidArgument;
+    const auto &meta = index->index_searcher()->meta();
+    // Borrow encoded records only when they mean exactly the same thing to
+    // both indexes, including cosine's normalized values and norm tail.
+    if (meta.quantizer_name() != "Fp32Quantizer" ||
+        meta.quantizer_revision() != proxima_index_meta_.quantizer_revision() ||
+        meta.data_type() != proxima_index_meta_.data_type() ||
+        meta.dimension() != proxima_index_meta_.dimension() ||
+        meta.element_size() != proxima_index_meta_.element_size() ||
+        meta.metric_name() != proxima_index_meta_.metric_name() ||
+        meta.meta_type() != core::IndexMeta::MT_DENSE) {
+      return Index::merge(indexes, filter, options);
+    }
+    auto provider = index->create_index_provider();
+    auto *stable = dynamic_cast<core::StableVectorHolder *>(provider.get());
+    if (!stable) return Index::merge(indexes, filter, options);
+    std::shared_ptr<const void> lifetime;
+    int ret = stable->retain_stable_data(&lifetime);
+    if (ret == core::IndexError_NotImplemented) {
+      return Index::merge(indexes, filter, options);
+    }
+    if (ret != 0) return ret;
+    if (!lifetime) return core::IndexError_Runtime;
+    source.lifetimes.emplace_back(std::move(lifetime));
+    providers.emplace_back(std::move(provider));
+  }
+
+  // Establish capabilities before evaluating any filters. Cache decisions
+  // once, using the same source-key offsets and dense output IDs as reduce().
+  uint64_t base = 0;
+  for (const auto &provider : providers) {
+    if (provider->count() > std::numeric_limits<uint32_t>::max() - base) {
+      return core::IndexError_Overflow;
+    }
+    auto iter = provider->create_iterator();
+    if (!iter) return core::IndexError_Runtime;
+    for (; iter->is_valid(); iter->next()) {
+      const uint64_t key = iter->key();
+      if (iter->status() != 0) return iter->status();
+      if (key > std::numeric_limits<uint32_t>::max() - base) {
+        return core::IndexError_Overflow;
+      }
+      if (filter.is_valid() && filter(base + key)) continue;
+      const void *data = iter->data();
+      if (iter->status() != 0) return iter->status();
+      if (!data) return core::IndexError_ReadData;
+      if (source.vectors.size() >= std::numeric_limits<uint32_t>::max()) {
+        return core::IndexError_Overflow;
+      }
+      source.vectors.emplace_back(data);
+    }
+    if (iter->status() != 0) return iter->status();
+    base += provider->count();
+  }
+  if (source.vectors.empty()) {
+    is_trained_ = true;
+    return 0;
+  }
+
+  // A new attempt must not be blocked by scratch left by a crashed optimize.
+  const std::string suffix = std::to_string(
+      std::chrono::steady_clock::now().time_since_epoch().count());
+  const std::string graph_path = file_path_ + ".hnsw-build." + suffix;
+  const std::string packed_path = file_path_ + ".hnsw-pack." + suffix;
+  if (ailego::File::IsExist(graph_path) || ailego::File::IsExist(packed_path)) {
+    return core::IndexError_Duplicate;
+  }
+  auto graph_storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+  auto graph_owner = core::IndexFactory::CreateStreamer("HnswStreamer");
+  core::IndexStreamer *build = graph_owner.get();
+  auto *graph = dynamic_cast<core::HnswStreamer *>(build);
+  auto dumper = std::make_shared<HnswBuildDumper>();
+  if (!graph_storage || !graph) return core::IndexError_NoMemory;
+  // Declare cleanup after owners so mappings and file handles are released
+  // before removing scratch files, including on failed builds and writes.
+  AILEGO_DEFER([&]() {
+    build->cleanup();
+    graph_storage->close();
+    dumper->close();
+    ailego::File::Delete(graph_path);
+    ailego::File::Delete(packed_path);
+  });
+  int ret = graph_storage->init(ailego::Params{});
+  if (ret != 0) return ret;
+  ret = graph_storage->open(graph_path, true);
+  if (ret != 0) return ret;
+  ret =
+      build->init(proxima_index_meta_, proxima_index_params_, turbo_quantizer_);
+  if (ret != 0) return ret;
+  ret = graph->open_with_borrowed_vectors(graph_storage, &source);
+  if (ret != 0) return ret;
+
+  std::unique_ptr<ailego::ThreadPool> local_pool;
+  auto *pool = options.pool;
+  if (!pool) {
+    local_pool =
+        std::make_unique<ailego::ThreadPool>(options.write_concurrency, false);
+    pool = local_pool.get();
+  }
+  const uint32_t workers =
+      std::min<uint32_t>(options.write_concurrency, pool->count());
+  std::atomic<size_t> next{0};
+  std::atomic<int> status{0};
+  auto group = pool->make_group();
+  for (uint32_t worker = 0; worker < workers; ++worker) {
+    group->submit(ailego::Closure::New([&]() {
+      auto context = build->create_context();
+      if (!context) {
+        status.store(core::IndexError_NoMemory);
+        return;
+      }
+      while (status.load() == 0) {
+        const size_t id = next.fetch_add(1);
+        if (id >= source.vectors.size()) break;
+        const int result = build->add_with_id_impl(
+            id, source.vectors[id], streamer_vector_meta_, context);
+        if (result != 0) status.store(result);
+      }
+    }));
+  }
+  group->wait_finish();
+  if (status.load() != 0) return status.load();
+
+  ret = dumper->init(ailego::Params{});
+  if (ret != 0) return ret;
+  ret = dumper->create(packed_path);
+  if (ret != 0) return ret;
+  ret = graph->dump_with_vectors(dumper);
+  if (ret != 0) return ret;
+  ret = dumper->close();
+  if (ret != 0) return ret;
+
+  ret = close();
+  if (ret != 0) return ret;
+  // The target is still unpublished and empty. Remove it before renaming so
+  // replacement also works on platforms whose rename cannot overwrite files.
+  if (!ailego::File::Delete(file_path_)) return core::IndexError_WriteData;
+  if (!ailego::File::Rename(packed_path, file_path_)) {
+    return core::IndexError_WriteData;
+  }
+  auto reopen_options = storage_options_;
+  reopen_options.create_new = false;
+  // Reinitialize to discard the closed streamer's entity and cached context.
+  ret = Index::init(param_);
+  if (ret != 0) return ret;
+  ret = open(file_path_, reopen_options);
+  if (ret == 0) is_trained_ = true;
+  return ret;
+}
 
 int HNSWIndex::prepare_streamer_open(const StorageOptions &options) {
   if (options.create_new) {

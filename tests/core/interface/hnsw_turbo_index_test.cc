@@ -26,6 +26,7 @@
 #include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_factory.h>
@@ -34,6 +35,7 @@
 #include "algorithm/hnsw/hnsw_params.h"
 #include "algorithm/hnsw/hnsw_streamer.h"
 #include "tests/test_util.h"
+#include "utility/stable_vector_holder.h"
 
 using namespace zvec::core_interface;
 
@@ -734,6 +736,202 @@ TEST_P(HnswTurboIndexTest, MergePreservesTurboLayout) {
   ASSERT_EQ(kTopK, rows.size());
   EXPECT_EQ(73U, rows[0].first);
 
+  ASSERT_EQ(0, target->close());
+  ASSERT_EQ(0, source->close());
+  zvec::test_util::RemoveTestFiles(source_path);
+  zvec::test_util::RemoveTestFiles(target_path);
+}
+
+class HnswBulkMergeTest
+    : public testing::TestWithParam<std::tuple<MetricType, bool, bool>> {};
+
+TEST_P(HnswBulkMergeTest, FilteredMixedSourcesReopenAndAppend) {
+  const auto &[metric, graph_source, read_only_source] = GetParam();
+  const std::string prefix =
+      "hnsw_bulk_" + std::to_string(static_cast<int>(metric)) + "_" +
+      std::to_string(graph_source) + "_" + std::to_string(read_only_source);
+  const std::string source_path = prefix + "_source.index";
+  const std::string tail_path = prefix + "_tail.index";
+  const std::string target_path = prefix + "_target.index";
+  for (const auto &path : {source_path, tail_path, target_path}) {
+    zvec::test_util::RemoveTestFiles(path + "*");
+  }
+  // The retained output spans multiple ordinary node chunks even though the
+  // graph-only build fits in one. Scale cosine inputs to exercise norm tails.
+  auto vectors = RandomVectors(14000);
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    for (float &value : vectors[i]) value *= static_cast<float>(i % 7 + 1);
+  }
+  auto flat_param = FlatIndexParamBuilder()
+                        .with_metric_type(metric)
+                        .with_data_type(DataType::DT_FP32)
+                        .with_dimension(kDimension)
+                        .build();
+  auto graph_param = MakeParam(metric, QuantizerType::kNone);
+  BaseIndexParam::Pointer source_param =
+      graph_source ? std::static_pointer_cast<BaseIndexParam>(graph_param)
+                   : std::static_pointer_cast<BaseIndexParam>(flat_param);
+  auto source = IndexFactory::CreateAndInitIndex(*source_param);
+  auto tail = IndexFactory::CreateAndInitIndex(*flat_param);
+  ASSERT_NE(nullptr, source);
+  ASSERT_NE(nullptr, tail);
+  ASSERT_EQ(
+      0, source->open(source_path, {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(0,
+            tail->open(tail_path, {StorageOptions::StorageType::kMMAP, true}));
+  constexpr size_t kSplit = 9000;
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    auto &index = i < kSplit ? source : tail;
+    ASSERT_EQ(0, index->add({DenseVector{vectors[i].data()}},
+                            i < kSplit ? i : i - kSplit));
+  }
+  if (read_only_source) {
+    ASSERT_EQ(0, source->close());
+    ASSERT_EQ(0, tail->close());
+    source = IndexFactory::CreateAndInitIndex(*source_param);
+    tail = IndexFactory::CreateAndInitIndex(*flat_param);
+    ASSERT_EQ(0, source->open(source_path, {StorageOptions::StorageType::kMMAP,
+                                            false, true}));
+    ASSERT_EQ(0, tail->open(tail_path,
+                            {StorageOptions::StorageType::kMMAP, false, true}));
+  }
+  auto provider = source->create_index_provider();
+  auto *stable = dynamic_cast<zvec::core::StableVectorHolder *>(provider.get());
+  ASSERT_NE(nullptr, stable);
+  std::shared_ptr<const void> lifetime;
+  ASSERT_EQ(0, stable->retain_stable_data(&lifetime));
+  auto iterator = provider->create_iterator();
+  ASSERT_TRUE(iterator->is_valid());
+  const auto *first = static_cast<const float *>(iterator->data());
+  std::vector<float> saved(first, first + kDimension);
+  for (size_t i = 0; i < kSplit; ++i) {
+    ASSERT_TRUE(iterator->is_valid());
+    ASSERT_NE(nullptr, iterator->data());
+    iterator->next();
+  }
+  iterator.reset();
+  provider.reset();
+  EXPECT_TRUE(std::equal(saved.begin(), saved.end(), first));
+
+  auto target = IndexFactory::CreateAndInitIndex(*graph_param);
+  ASSERT_EQ(
+      0, target->open(target_path, {StorageOptions::StorageType::kMMAP, true}));
+  std::vector<uint32_t> calls(vectors.size(), 0);
+  IndexFilter filter;
+  filter.set([&](uint64_t key) {
+    EXPECT_LT(key, calls.size());
+    if (key >= calls.size()) return true;
+    ++calls[key];
+    return key % 4 == 1;
+  });
+  zvec::ailego::ThreadPool pool(4, false);
+  ASSERT_EQ(0, target->merge({source, tail}, filter, {4, &pool}));
+  EXPECT_TRUE(std::all_of(calls.begin(), calls.end(),
+                          [](uint32_t count) { return count == 1; }));
+  ASSERT_EQ(10500U, target->get_doc_count());
+  std::vector<size_t> kept;
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    if (i % 4 != 1) kept.push_back(i);
+  }
+  std::vector<SearchRowList> rows_before_reopen;
+  auto check = [&](bool reopened) {
+    size_t query_index = 0;
+    for (size_t id : {size_t{0}, size_t{4095}, kept.size() - 1}) {
+      VectorDataBuffer fetched;
+      ASSERT_EQ(0, target->fetch(id, &fetched));
+      const auto &bytes =
+          std::get<DenseVectorBuffer>(fetched.vector_buffer).data;
+      ASSERT_EQ(kDimension * sizeof(float), bytes.size());
+      for (size_t dim = 0; dim < kDimension; ++dim) {
+        float value;
+        std::memcpy(&value, bytes.data() + dim * sizeof(float), sizeof(float));
+        EXPECT_NEAR(vectors[kept[id]][dim], value, 2e-6f);
+      }
+      auto graph = SearchRows(target.get(), vectors[kept[id]], false);
+      ASSERT_EQ(kTopK, graph.size());
+      if (reopened) {
+        EXPECT_EQ(rows_before_reopen[query_index], graph);
+      } else {
+        rows_before_reopen.push_back(graph);
+      }
+      ++query_index;
+    }
+  };
+  ASSERT_NO_FATAL_FAILURE(check(false));
+  ASSERT_EQ(0, target->close());
+  target = IndexFactory::CreateAndInitIndex(*graph_param);
+  ASSERT_EQ(0, target->open(target_path,
+                            {StorageOptions::StorageType::kMMAP, false}));
+  ASSERT_NO_FATAL_FAILURE(check(true));
+  const uint32_t appended_id = kept.size();
+  ASSERT_EQ(0, target->add({DenseVector{vectors[1].data()}}, appended_id));
+  // A subsequent merge must append using the ordinary mutable format.
+  ASSERT_EQ(0, target->merge({tail}, IndexFilter(), {2, nullptr}));
+  EXPECT_EQ(15501U, target->get_doc_count());
+  ASSERT_EQ(0, target->close());
+  auto storage = zvec::core::IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_EQ(0, storage->init(zvec::ailego::Params{}));
+  ASSERT_EQ(0, storage->open(target_path, false));
+  for (const auto &[name, segment] : storage->get_all()) {
+    if (name.rfind("HnswT", 0) == 0) {
+      EXPECT_EQ(0U, segment->data_crc());
+    }
+    if (segment->data_crc() != 0) {
+      zvec::core::IndexStorage::MemoryBlock block;
+      ASSERT_EQ(segment->data_size(),
+                segment->read(0, block, segment->data_size()));
+      EXPECT_EQ(
+          segment->data_crc(),
+          zvec::ailego::Crc32c::Hash(block.data(), segment->data_size(), 0));
+    }
+  }
+  ASSERT_EQ(0, storage->close());
+  ASSERT_EQ(0, source->close());
+  ASSERT_EQ(0, tail->close());
+  lifetime.reset();
+  for (const auto &path : {source_path, tail_path, target_path}) {
+    zvec::test_util::RemoveTestFiles(path);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    StableSources, HnswBulkMergeTest,
+    testing::Combine(testing::Values(MetricType::kL2sq, MetricType::kCosine,
+                                     MetricType::kInnerProduct),
+                     testing::Bool(), testing::Bool()));
+
+TEST(HnswBulkMergeTest, EmptyFilterAndCrashResidueKeepTargetUsable) {
+  const std::string source_path = "hnsw_bulk_empty_source.index";
+  const std::string target_path = "hnsw_bulk_empty_target.index";
+  zvec::test_util::RemoveTestFiles(source_path + "*");
+  zvec::test_util::RemoveTestFiles(target_path + "*");
+  auto param = MakeParam(MetricType::kL2sq, QuantizerType::kNone);
+  auto source = IndexFactory::CreateAndInitIndex(*param);
+  auto target = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_EQ(
+      0, source->open(source_path, {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(
+      0, target->open(target_path, {StorageOptions::StorageType::kMMAP, true}));
+  auto vectors = RandomVectors();
+  AddVectors(source.get(), vectors);
+  size_t calls = 0;
+  IndexFilter all;
+  all.set([&](uint64_t) {
+    ++calls;
+    return true;
+  });
+  ASSERT_EQ(0, target->merge({source}, all));
+  EXPECT_EQ(kVectorCount, calls);
+  EXPECT_EQ(0U, target->get_doc_count());
+  EXPECT_TRUE(target->is_trained());
+  // Scratch from an interrupted attempt must neither block the next build
+  // nor be mistaken for files owned by the current attempt.
+  const std::string residue = target_path + ".hnsw-pack.stale";
+  ASSERT_TRUE(zvec::ailego::File::MakePath(residue));
+  ASSERT_EQ(0, target->merge({source}, IndexFilter()));
+  EXPECT_EQ(kVectorCount, target->get_doc_count());
+  EXPECT_TRUE(zvec::ailego::File::IsExist(residue));
+  zvec::test_util::RemoveTestPath(residue);
   ASSERT_EQ(0, target->close());
   ASSERT_EQ(0, source->close());
   zvec::test_util::RemoveTestFiles(source_path);
