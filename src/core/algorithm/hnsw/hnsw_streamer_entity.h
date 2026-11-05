@@ -892,6 +892,7 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
       return TypedNeighbors(std::move(block));
     }
     // Upper level: use index to locate chunk and offset
+    std::shared_lock<std::shared_mutex> lk(*upper_neighbor_rw_mutex_);
     auto it = upper_neighbor_index_->find(id);
     ailego_assert_abort(it != upper_neighbor_index_->end(),
                         "Get upper neighbor header failed");
