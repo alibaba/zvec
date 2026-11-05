@@ -17,12 +17,12 @@
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_helper.h>
 #include <zvec/core/interface/index.h>
+#include "algorithm/hnsw/hnsw_bulk_builder.h"
 #include "algorithm/hnsw/hnsw_context.h"
 #include "algorithm/hnsw/hnsw_params.h"
 #include "algorithm/hnsw/hnsw_streamer.h"
 #include "algorithm/hnsw/hnsw_streamer_entity.h"
 #include "algorithm/hnsw_sparse/hnsw_sparse_params.h"
-#include "interface/utils/hnsw_bulk_builder.h"
 
 namespace zvec::core_interface {
 

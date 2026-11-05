@@ -20,7 +20,7 @@
 #include <zvec/core/framework/index_filter.h>
 #include <zvec/core/framework/index_provider.h>
 #include <zvec/core/framework/index_streamer.h>
-#include <zvec/core/interface/vector_source.h>
+#include <zvec/core/framework/vector_source.h>
 
 namespace zvec::core {
 

@@ -17,9 +17,9 @@
 #include <chrono>
 #include <limits>
 #include <zvec/core/framework/index_framework.h>
-#include "algorithm/hnsw/hnsw_build_dumper.h"
-#include "algorithm/hnsw/hnsw_streamer.h"
 #include "utility/stable_vector_holder.h"
+#include "hnsw_build_dumper.h"
+#include "hnsw_streamer.h"
 
 namespace zvec::core {
 
