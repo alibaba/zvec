@@ -48,7 +48,8 @@ int DiskAnnAlgorithm::add_node(diskann_id_t id, DiskAnnContext *ctx) {
 
   {
     auto lock = lock_for(id);
-    entity_.set_neighbors(id, pruned_list);
+    ret = entity_.set_neighbors(id, pruned_list);
+    if (ret != 0) return ret;
   }
 
   return inter_insert(id, pruned_list, ctx);
@@ -80,7 +81,8 @@ int DiskAnnAlgorithm::prune_node(diskann_id_t id, DiskAnnContext *ctx) {
 
     {
       auto lock = lock_for(id);
-      entity_.set_neighbors(id, new_out_neighbors);
+      int ret = entity_.set_neighbors(id, new_out_neighbors);
+      if (ret != 0) return ret;
     }
   }
 
@@ -113,7 +115,8 @@ int DiskAnnAlgorithm::inter_insert(diskann_id_t id,
         if (neighbors.first <
             static_cast<uint64_t>(DiskAnnEntity::kDefaultGraphSlackFactor *
                                   max_degree_)) {
-          entity_.add_neighbor(des, id);
+          int ret = entity_.add_neighbor(des, id);
+          if (ret != 0) return ret;
           need_prune = false;
         } else {
           new_neighbors.resize(neighbors.first + 1);
@@ -149,7 +152,8 @@ int DiskAnnAlgorithm::inter_insert(diskann_id_t id,
 
       {
         auto lock = lock_for(des);
-        entity_.set_neighbors(des, new_pruned_neighbors);
+        int ret = entity_.set_neighbors(des, new_pruned_neighbors);
+        if (ret != 0) return ret;
       }
     }
   }
