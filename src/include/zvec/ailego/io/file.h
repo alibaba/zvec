@@ -161,7 +161,9 @@ class ZVEC_AILEGO_API File {
     return File::MemoryMap(native_handle_, off, len, opts);
   }
 
-  //! Map a region of file into memory
+  //! Map a region of file into memory. Ordinary mappings accept arbitrary
+  //! byte offsets; unmap/flush must use the returned pointer and logical
+  //! length.
   static void *MemoryMap(NativeHandle handle, ssize_t off, size_t len,
                          int opts);
 

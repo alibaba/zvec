@@ -56,6 +56,16 @@ class ChunkBroker {
 
   int flush(uint64_t checkpoint);
 
+  // Use the writer's alignment for logical chunk addressing and growth.
+  size_t align_size(size_t size) const {
+    return (size + page_mask_) & ~page_mask_;
+  }
+
+  size_t layout_page_size() const {
+    return page_mask_ + 1;
+  }
+
+
   //! alloc a new chunk with size, not thread-safe
   std::pair<int, Chunk::Pointer> alloc_chunk(int type, uint64_t seq_id,
                                              size_t size);

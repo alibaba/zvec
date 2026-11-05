@@ -55,7 +55,9 @@ int HnswSparseStreamerEntity::init(uint64_t max_index_size,
   size = AlignSize(size);
   set_node_size(size);
 
-  return init_chunk_params(max_index_size);
+  configured_chunk_size_ = chunk_size_;
+  configured_max_index_size_ = max_index_size;
+  return init_chunk_params(max_index_size, ailego::MemoryHelper::PageSize());
 }
 
 int HnswSparseStreamerEntity::cleanup() {
@@ -394,12 +396,52 @@ int HnswSparseStreamerEntity::init_chunks(
 
 int HnswSparseStreamerEntity::open(IndexStorage::Pointer stg, bool check_crc) {
   std::lock_guard<std::mutex> lock(mutex_);
-  int ret =
-      broker_->open(std::move(stg), max_index_size_, chunk_size_, check_crc);
+  if (broker_->storage()) {
+    return IndexError_Duplicate;
+  }
+  // A previous open may have changed the derived sizes to a foreign layout.
+  // New metadata must be created from the configured size and local page.
+  chunk_size_ = configured_chunk_size_;
+  int ret = init_chunk_params(configured_max_index_size_,
+                              ailego::MemoryHelper::PageSize());
+  if (ret != 0) {
+    return ret;
+  }
+  ret = broker_->open(std::move(stg), max_index_size_, chunk_size_, check_crc);
   if (ailego_unlikely(ret != 0)) {
     LOG_ERROR("Open index failed for %s", IndexError::What(ret));
     return ret;
   }
+  if (broker_->needs_legacy_layout()) {
+    // Metadata capacity cannot identify an ordinary page on hugetlbfs.
+    // The recorded logical allocation total distinguishes candidate layouts:
+    // it increases strictly with page size, including the metadata page.
+    for (size_t page = 4096; page < ailego::MemoryHelper::HugePageSize();
+         page *= 2) {
+      chunk_size_ = configured_chunk_size_;
+      ret = init_chunk_params(configured_max_index_size_, page);
+      if (ret != 0) {
+        break;
+      }
+      if (broker_->resolve_legacy_layout(page, chunk_size_,
+                                         upper_neighbor_chunk_size_,
+                                         sparse_chunk_size_)) {
+        break;
+      }
+    }
+    if (broker_->needs_legacy_layout()) {
+      broker_->close();  // Do not rewrite metadata with an unverified layout.
+      return ret != 0 ? ret : IndexError_InvalidFormat;
+    }
+  }
+  // Recompute from the file's layout before interpreting persisted locations.
+  chunk_size_ = configured_chunk_size_;
+  ret = init_chunk_params(configured_max_index_size_,
+                          broker_->layout_page_size());
+  if (ret != 0 || chunk_size_ != broker_->chunk_size()) {
+    return ret != 0 ? ret : IndexError_Mismatch;
+  }
+  broker_->set_max_chunks_size(max_index_size_);
   ret = upper_neighbor_index_->init(broker_, upper_neighbor_chunk_size_,
                                     scaling_factor(), estimate_doc_capacity(),
                                     kUpperHashMemoryInflateRatio);
@@ -475,7 +517,6 @@ int HnswSparseStreamerEntity::close() {
   mutable_header()->reset();
   upper_neighbor_index_->cleanup();
   keys_map_->clear();
-  header_.clear();
   node_chunks_.clear();
   upper_neighbor_chunks_.clear();
 

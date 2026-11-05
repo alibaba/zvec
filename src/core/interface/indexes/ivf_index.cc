@@ -453,7 +453,9 @@ int IVFIndex::_prepare_for_search(
   }
 
   ailego::Params params;
-  params.set(core::PARAM_IVF_SEARCHER_NPROBE, ivf_search_param->nprobe);
+  // Zero explicitly restores scan_ratio instead of retaining a previous query.
+  params.set(core::PARAM_IVF_SEARCHER_NPROBE,
+             static_cast<uint32_t>(std::max(0, ivf_search_param->nprobe)));
   return context->update(params);
 }
 

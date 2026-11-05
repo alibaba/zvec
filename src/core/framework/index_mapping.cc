@@ -134,13 +134,8 @@ int IndexMapping::create(const std::string &path, size_t seg_meta_capacity) {
 }
 
 int IndexMapping::init_meta_section() {
-  if (current_header_start_offset_ % ailego::MemoryHelper::PageSize() != 0) {
-    LOG_ERROR("File offset %zu is not a multiple of the page size: %zu",
-              (size_t)current_header_start_offset_,
-              ailego::MemoryHelper::PageSize());
-    return IndexError_InvalidValue;
-  }
-
+  // Existing files may end on a smaller writer-page boundary. MemoryMap
+  // handles the host-page alignment when a new metadata section is appended.
   auto &path = path_;
   size_t len =
       CalcPageAlignedSize(seg_meta_capacity_ + sizeof(IndexFormat::MetaHeader) +
@@ -250,6 +245,7 @@ void IndexMapping::close() {
   header_ = nullptr;
   header_addr_map_.clear();
   footer_ = nullptr;
+  current_header_start_offset_ = 0;
   index_size_ = 0u;
   segments_.clear();
   file_.close();
@@ -445,7 +441,9 @@ int IndexMapping::flush() {
         return IndexError_WriteData;
       }
     } else {
-      ailego::File::MemoryFlush(item->data(), segment_size);
+      if (!ailego::File::MemoryFlush(item->data(), segment_size)) {
+        return IndexError_WriteData;
+      }
     }
     item->reset_dirty();
   }
@@ -454,7 +452,6 @@ int IndexMapping::flush() {
     return 0;
   }
 
-  header_dirty_ = false;
   if (full_mode_ && copy_on_write_) {
     for (auto item : header_addr_map_) {
       auto header_start_offset = item.first;
@@ -470,13 +467,21 @@ int IndexMapping::flush() {
   } else {
     for (auto item : header_addr_map_) {
       auto header = item.second;
-      ailego::File::MemoryFlush(header, header->content_offset);
+      if (!ailego::File::MemoryFlush(header, header->content_offset)) {
+        return IndexError_WriteData;
+      }
     }
   }
+  header_dirty_ = false;
   return 0;
 }
 
 int IndexMapping::init_index_mapping(size_t len) {
+  const size_t file_size = file_.size();
+  if (current_header_start_offset_ > file_size ||
+      len > file_size - current_header_start_offset_) {
+    return IndexError_InvalidLength;
+  }
   int opts =
       copy_on_write_ ? ailego::File::MMAP_POPULATE : ailego::File::MMAP_SHARED;
   if (huge_page_) {
@@ -590,10 +595,19 @@ int IndexMapping::init_index_mapping(size_t len) {
   // }
 
   if (footer_->next_meta_header_offset > 0) {
+    if (footer_->next_meta_header_offset <= current_header_start_offset_) {
+      return IndexError_InvalidFormat;
+    }
     current_header_start_offset_ = footer_->next_meta_header_offset;
-    // Meta sections have all the same size, so we can use the same size to map
-    // the next meta section
-    return this->init_index_mapping(len);
+    // Growth on a different platform can use a different metadata page size.
+    // Read each section's own length instead of reusing the first one's.
+    if (!file_.seek(current_header_start_offset_,
+                    ailego::File::Origin::Begin)) {
+      return IndexError_SeekFile;
+    }
+    size_t next_len = 0;
+    int ret = UnpackMappingSize(file_, &next_len);
+    return ret == 0 ? this->init_index_mapping(next_len) : ret;
   }
 
   return 0;

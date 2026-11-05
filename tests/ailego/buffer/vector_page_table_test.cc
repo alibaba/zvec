@@ -1611,6 +1611,48 @@ TEST_F(BufferPoolTest, ReusedReadOnlyPagePromotesAfterPressure) {
   EXPECT_EQ(1u, stats.priority_promotions[VecBufferPool::kNormalPriority]);
 }
 
+TEST_F(BufferPoolTest, DestructionReleasesPagesDuringConcurrentEviction) {
+  constexpr size_t kPages = 8;
+  init_vec_pool(/*capacity_pages=*/64, /*file_pages=*/kPages);
+  const std::string file = new_file(kPages);
+  std::atomic<bool> stop{false};
+  std::thread evictor([&] {
+    while (!stop.load(std::memory_order_acquire)) {
+      BlockEvictionQueue::get_instance().batch_recycle(64);
+      std::this_thread::yield();
+    }
+  });
+  auto join_evictor = ScopeGuard::Make([&] {
+    stop.store(true, std::memory_order_release);
+    evictor.join();
+  });
+
+  for (size_t iteration = 0; iteration < 256; ++iteration) {
+    SCOPED_TRACE(iteration);
+    {
+      VecBufferPool pool(file, /*writable=*/false);
+      ASSERT_EQ(0, pool.init());
+      auto handle = pool.get_handle();
+      std::array<block_id_t, kPages> ids;
+      std::array<char *, kPages> pages;
+      for (size_t page = 0; page < kPages; ++page) {
+        ids[page] = page;
+      }
+      ASSERT_TRUE(handle.acquire_pages(ids.data(), kPages, pages.data()));
+      for (size_t page = 0; page < kPages; ++page) {
+        ExpectPageContent(pages[page], page);
+        pool.page_table_.promote_evict_priority(page,
+                                                VecBufferPool::kNormalPriority);
+      }
+      // Release the pins together so teardown overlaps CLOCK's second chance.
+      handle.release_pages(ids.data(), kPages);
+    }
+    // A CLOCK pass may spare a page. Destruction must still release its budget
+    // before returning, even if that pass overlaps the forced cleanup scan.
+    ASSERT_EQ(0u, MemoryLimitPool::get_instance().stats().used);
+  }
+}
+
 // Keep one resident page below the background-reclaim high watermark so these
 // tests can advance the CLOCK/ghost policy deterministically by hand.
 constexpr size_t kManualEvictionCapacityPages = 2;
