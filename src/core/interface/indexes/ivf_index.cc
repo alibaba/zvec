@@ -20,8 +20,8 @@
 #include "algorithm/cluster/cluster_params.h"
 #include "algorithm/ivf/ivf_params.h"
 #include "algorithm/ivf/ivf_streamer.h"
+#include "interface/utils/holder_builder.h"
 #include "utility/utility_params.h"
-#include "holder_builder.h"
 
 namespace zvec::core_interface {
 

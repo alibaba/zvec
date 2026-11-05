@@ -22,7 +22,7 @@
 #include "algorithm/hnsw/hnsw_streamer.h"
 #include "algorithm/hnsw/hnsw_streamer_entity.h"
 #include "algorithm/hnsw_sparse/hnsw_sparse_params.h"
-#include "hnsw_bulk_builder.h"
+#include "interface/utils/hnsw_bulk_builder.h"
 
 namespace zvec::core_interface {
 

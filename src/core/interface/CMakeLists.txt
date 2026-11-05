@@ -8,7 +8,7 @@ endif()
 
 cc_library(
         NAME core_interface STATIC STRICT ALWAYS_LINK
-        SRCS *.cc indexes/*.cc
+        SRCS *.cc indexes/*.cc utils/*.cc
         INCS . ${PROJECT_ROOT_DIR}/src/ ${PROJECT_ROOT_DIR}/src/core
         LIBS ${CORE_INTERFACE_LIBS}
         VERSION "${PROXIMA_ZVEC_VERSION}"

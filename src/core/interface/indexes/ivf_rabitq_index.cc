@@ -17,9 +17,9 @@
 #include <string>
 #include <zvec/core/interface/index.h>
 #include "algorithm/hnsw_rabitq/rabitq_params.h"
+#include "interface/utils/holder_builder.h"
 #include "zvec/ailego/io/file.h"
 #include "zvec/core/framework/index_error.h"
-#include "holder_builder.h"
 
 #if RABITQ_SUPPORTED
 #include "algorithm/hnsw_rabitq/hnsw_rabitq_params.h"

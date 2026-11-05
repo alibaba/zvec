@@ -19,8 +19,8 @@
 #include <zvec/core/interface/index.h>
 #if DISKANN_SUPPORTED
 #include "algorithm/diskann/diskann_params.h"
+#include "interface/utils/holder_builder.h"
 #include "utility/utility_params.h"
-#include "holder_builder.h"
 #endif
 
 namespace zvec::core_interface {
