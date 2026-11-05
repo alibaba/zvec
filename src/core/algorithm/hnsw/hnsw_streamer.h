@@ -29,6 +29,7 @@ class HnswStreamer : public IndexStreamer {
   virtual int open_with_borrowed_vectors(IndexStorage::Pointer storage,
                                          const VectorSource *source);
   virtual int dump_with_vectors(const IndexDumper::Pointer &dumper);
+  size_t packed_segment_count() const;
 
   using ContextPointer = IndexStreamer::Context::Pointer;
 

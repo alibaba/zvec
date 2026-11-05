@@ -101,6 +101,7 @@ class HnswStreamerEntity : public HnswEntity {
   // Write the ordinary mutable chunk format using bounded scratch space.
   int dump_with_vectors(const IndexDumper::Pointer &dumper,
                         const VectorSource &source, size_t vector_size);
+  size_t packed_chunk_count() const;
   int retain_stable_data(std::shared_ptr<const void> *lifetime) const;
 
   void update_ep_and_level(node_id_t ep, level_t level) override;

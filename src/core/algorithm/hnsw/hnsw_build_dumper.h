@@ -23,6 +23,10 @@ namespace zvec::core {
 // process. Only the segment table is mapped while packing the completed graph.
 class HnswBuildDumper final : public IndexDumper {
  public:
+  // Includes IndexVersion, IndexMeta and every packed HNSW chunk. Reserve the
+  // table before writing payloads so append() never inserts metadata over them.
+  explicit HnswBuildDumper(size_t segment_count)
+      : segment_count_(segment_count) {}
   ~HnswBuildDumper() override;
   int init(const ailego::Params &) override;
   int cleanup() override;
@@ -36,6 +40,8 @@ class HnswBuildDumper final : public IndexDumper {
  private:
   IndexMapping mapping_;
   ailego::File file_;
+  const size_t segment_count_;
+  size_t metadata_remaining_{0};
   size_t pending_{0};
   bool opened_{false};
 };

@@ -13,7 +13,10 @@
 // limitations under the License.
 
 #include "hnsw_build_dumper.h"
+#include <algorithm>
 #include <cstring>
+#include <limits>
+#include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/hash/crc32c.h>
 #include <zvec/core/framework/index_version.h>
 
@@ -32,8 +35,19 @@ int HnswBuildDumper::cleanup() {
 }
 
 int HnswBuildDumper::create(const std::string &path) {
+  // HnswT<type>S<sequence> uses at most 27 bytes plus its terminator, even
+  // with a uint64_t sequence. IndexVersion and IndexMeta are shorter.
+  constexpr size_t entry_size = sizeof(IndexFormat::SegmentMeta) + 32;
+  const size_t max_capacity = std::numeric_limits<uint32_t>::max() -
+                              sizeof(IndexFormat::MetaHeader) -
+                              sizeof(IndexFormat::MetaFooter) -
+                              std::max(ailego::MemoryHelper::PageSize(),
+                                       ailego::MemoryHelper::HugePageSize());
+  if (segment_count_ == 0) return IndexError_InvalidArgument;
+  if (segment_count_ > max_capacity / entry_size) return IndexError_Overflow;
+  metadata_remaining_ = segment_count_ * entry_size;
   opened_ = true;
-  int ret = mapping_.create(path, 1U << 20);
+  int ret = mapping_.create(path, metadata_remaining_);
   if (ret != 0) return ret;
   if (!file_.open(path.c_str(), false, false)) return IndexError_OpenFile;
   const char *version = IndexVersion::Details();
@@ -65,8 +79,11 @@ size_t HnswBuildDumper::write(const void *data, size_t bytes) {
 int HnswBuildDumper::append(const std::string &id, size_t data_size,
                             size_t padding_size, uint32_t crc) {
   if (pending_ != data_size + padding_size) return IndexError_InvalidFormat;
+  const size_t metadata_size = sizeof(IndexFormat::SegmentMeta) + id.size() + 1;
+  if (metadata_size > metadata_remaining_) return IndexError_IndexFull;
   int ret = mapping_.append(id, pending_);
   if (ret != 0) return ret;
+  metadata_remaining_ -= metadata_size;
   auto segment = mapping_.map(id, false, false);
   if (!segment) return IndexError_MMapFile;
   auto meta = segment->meta();

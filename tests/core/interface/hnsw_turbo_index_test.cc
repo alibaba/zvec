@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -31,6 +32,7 @@
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
+#include "algorithm/hnsw/hnsw_build_dumper.h"
 #include "algorithm/hnsw/hnsw_context.h"
 #include "algorithm/hnsw/hnsw_params.h"
 #include "algorithm/hnsw/hnsw_streamer.h"
@@ -740,6 +742,155 @@ TEST_P(HnswTurboIndexTest, MergePreservesTurboLayout) {
   ASSERT_EQ(0, source->close());
   zvec::test_util::RemoveTestFiles(source_path);
   zvec::test_util::RemoveTestFiles(target_path);
+}
+
+TEST(HnswBulkMergeTest, DumperPreservesPayloadsBeyondFormerMetadataLimit) {
+  namespace ailego = zvec::ailego;
+  const std::string path = "hnsw_bulk_many_segments.index";
+  AILEGO_DEFER([&]() { zvec::test_util::RemoveTestFiles(path); });
+  constexpr uint32_t kSegments = 30000;
+  // Include the version segment. The former fixed 1 MiB table overwrote
+  // HnswT3S23907 when it grew; every record must survive reopening.
+  zvec::core::HnswBuildDumper dumper(kSegments + 1);
+  ASSERT_EQ(0, dumper.create(path));
+  for (uint32_t i = 0; i < kSegments; ++i) {
+    uint32_t payload[16];
+    std::fill(std::begin(payload), std::end(payload), i + 1);
+    ASSERT_EQ(sizeof(payload), dumper.write(payload, sizeof(payload)));
+    ASSERT_EQ(
+        0, dumper.append("HnswT3S" + std::to_string(i), sizeof(payload), 0, 0));
+  }
+  ASSERT_EQ(0, dumper.close());
+  auto storage = zvec::core::IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init({}));
+  ASSERT_EQ(0, storage->open(path, false));
+  EXPECT_EQ(kSegments + 1, storage->get_all().size());
+  for (uint32_t i = 0; i < kSegments; ++i) {
+    auto segment = storage->get("HnswT3S" + std::to_string(i));
+    ASSERT_NE(nullptr, segment);
+    zvec::core::IndexStorage::MemoryBlock block;
+    ASSERT_EQ(64U, segment->read(0, block, 64));
+    const auto *values = static_cast<const uint32_t *>(block.data());
+    for (size_t j = 0; j < 16; ++j) ASSERT_EQ(i + 1, values[j]) << i;
+  }
+  ASSERT_EQ(0, storage->close());
+}
+
+TEST(HnswBulkMergeTest, DumperRejectsUnderestimatedMetadataBudget) {
+  namespace ailego = zvec::ailego;
+  const std::string path = "hnsw_bulk_metadata_budget.index";
+  AILEGO_DEFER([&]() { zvec::test_util::RemoveTestFiles(path); });
+  zvec::core::HnswBuildDumper dumper(1);
+  ASSERT_EQ(0, dumper.create(path));
+  const uint32_t value = 42;
+  ASSERT_EQ(sizeof(value), dumper.write(&value, sizeof(value)));
+  EXPECT_EQ(zvec::core::IndexError_IndexFull,
+            dumper.append("HnswT3S0", sizeof(value), 0, 0));
+}
+
+struct BulkContextState {
+  size_t workers;
+  bool fail_first;
+  mutable std::atomic<size_t> context_calls{0};
+  mutable std::atomic<size_t> contexts_ready{0};
+  std::atomic<size_t> adds{0};
+  std::atomic<size_t> premature_adds{0};
+};
+
+class CheckedBulkStreamer : public zvec::core::HnswStreamer {
+ public:
+  explicit CheckedBulkStreamer(BulkContextState *state) : state_(state) {}
+
+  int open_with_borrowed_vectors(
+      zvec::core::IndexStorage::Pointer storage,
+      const zvec::core::VectorSource *source) override {
+    const int ret = HnswStreamer::open_with_borrowed_vectors(storage, source);
+    borrowed_build_ = ret == 0;
+    return ret;
+  }
+
+  zvec::core::IndexStreamer::Context::Pointer create_context() const override {
+    if (!borrowed_build_) return HnswStreamer::create_context();
+    const auto call = state_->context_calls.fetch_add(1);
+    if (state_->fail_first && call == 0) return nullptr;
+    auto context = HnswStreamer::create_context();
+    if (context) state_->contexts_ready.fetch_add(1);
+    return context;
+  }
+
+  int add_with_id_impl(
+      uint32_t id, const void *data, const zvec::core::IndexQueryMeta &meta,
+      zvec::core::IndexStreamer::Context::Pointer &context) override {
+    if (state_->contexts_ready.load() != state_->workers) {
+      state_->premature_adds.fetch_add(1);
+    }
+    state_->adds.fetch_add(1);
+    return HnswStreamer::add_with_id_impl(id, data, meta, context);
+  }
+
+ private:
+  BulkContextState *state_;
+  bool borrowed_build_{false};
+};
+
+class ScopedBulkStreamerFactory {
+ public:
+  explicit ScopedBulkStreamerFactory(BulkContextState *state) {
+    zvec::ailego::Factory<zvec::core::IndexStreamer>::Register<
+        CheckedBulkStreamer>
+        replace("HnswStreamer", static_cast<BulkContextState *>(state));
+  }
+  ~ScopedBulkStreamerFactory() {
+    zvec::ailego::Factory<zvec::core::IndexStreamer>::Register<
+        zvec::core::HnswStreamer>
+        restore("HnswStreamer");
+  }
+};
+
+TEST(HnswBulkMergeTest, PreparesAllContextsBeforeWritesAndPropagatesFailure) {
+  for (bool fail_first : {false, true}) {
+    namespace ailego = zvec::ailego;
+    const std::string source_path = "hnsw_bulk_context_source.index";
+    const std::string target_path = "hnsw_bulk_context_target.index";
+    AILEGO_DEFER([&]() {
+      zvec::test_util::RemoveTestFiles(source_path);
+      zvec::test_util::RemoveTestFiles(target_path);
+    });
+    zvec::ailego::ThreadPool pool(4, false);
+    BulkContextState state{std::min<size_t>(4, pool.count()), fail_first};
+    auto flat_param = FlatIndexParamBuilder()
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(kDimension)
+                          .with_metric_type(MetricType::kL2sq)
+                          .build();
+    auto source = IndexFactory::CreateAndInitIndex(*flat_param);
+    auto target = IndexFactory::CreateAndInitIndex(
+        *MakeParam(MetricType::kL2sq, QuantizerType::kNone));
+    ASSERT_NE(nullptr, source);
+    ASSERT_NE(nullptr, target);
+    ASSERT_EQ(0, source->open(source_path,
+                              {StorageOptions::StorageType::kMMAP, true}));
+    ASSERT_EQ(0, target->open(target_path,
+                              {StorageOptions::StorageType::kMMAP, true}));
+    auto vectors = RandomVectors();
+    AddVectors(source.get(), vectors);
+    {
+      ScopedBulkStreamerFactory factory(&state);
+      EXPECT_EQ(fail_first ? zvec::core::IndexError_NoMemory : 0,
+                target->merge({source}, IndexFilter(), {4, &pool}));
+    }
+    EXPECT_EQ(fail_first ? 1U : state.workers, state.context_calls.load());
+    EXPECT_EQ(0U, state.premature_adds.load());
+    EXPECT_EQ(fail_first ? 0U : kVectorCount, state.adds.load());
+    EXPECT_EQ(fail_first ? 0U : kVectorCount, target->get_doc_count());
+    if (fail_first) {
+      // The original empty target remains open and can accept a later write.
+      EXPECT_EQ(0, target->add({DenseVector{vectors[0].data()}}, 0));
+    }
+    EXPECT_EQ(0, target->close());
+    EXPECT_EQ(0, source->close());
+  }
 }
 
 class HnswBulkMergeTest

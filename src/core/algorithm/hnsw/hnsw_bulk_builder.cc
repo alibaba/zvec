@@ -97,14 +97,12 @@ int HnswBulkBuilder::build(const std::string &target_path,
   auto graph_owner = IndexFactory::CreateStreamer("HnswStreamer");
   IndexStreamer *build = graph_owner.get();
   auto *graph = dynamic_cast<HnswStreamer *>(build);
-  auto dumper = std::make_shared<HnswBuildDumper>();
   if (!graph_storage || !graph) return IndexError_NoMemory;
   // Release mappings and file handles before removing scratch files, including
   // on failed builds and writes. The packed file stays owned by this builder.
   AILEGO_DEFER([&]() {
     build->cleanup();
     graph_storage->close();
-    dumper->close();
     ailego::File::Delete(graph_path);
   });
   int ret = graph_storage->init(ailego::Params{});
@@ -122,16 +120,19 @@ int HnswBulkBuilder::build(const std::string &target_path,
     pool = local_pool.get();
   }
   const uint32_t workers = std::min<uint32_t>(write_concurrency, pool->count());
+  // clone() traverses the main entity's chunk containers. Finish every clone
+  // before the first insertion can grow those containers on a worker thread.
+  std::vector<IndexStreamer::Context::Pointer> contexts(workers);
+  for (auto &context : contexts) {
+    context = build->create_context();
+    if (!context) return IndexError_NoMemory;
+  }
   std::atomic<size_t> next{0};
   std::atomic<int> status{0};
   auto group = pool->make_group();
   for (uint32_t worker = 0; worker < workers; ++worker) {
-    group->submit(ailego::Closure::New([&]() {
-      auto context = build->create_context();
-      if (!context) {
-        status.store(IndexError_NoMemory);
-        return;
-      }
+    group->submit(ailego::Closure::New([&, worker]() {
+      auto &context = contexts[worker];
       while (status.load() == 0) {
         const size_t id = next.fetch_add(1);
         if (id >= vectors_.size()) break;
@@ -144,6 +145,8 @@ int HnswBulkBuilder::build(const std::string &target_path,
   group->wait_finish();
   if (status.load() != 0) return status.load();
 
+  auto dumper =
+      std::make_shared<HnswBuildDumper>(graph->packed_segment_count());
   ret = dumper->init(ailego::Params{});
   if (ret != 0) return ret;
   ret = dumper->create(packed_path_);

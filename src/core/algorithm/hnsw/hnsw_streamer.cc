@@ -455,6 +455,12 @@ int HnswStreamer::open_with_borrowed_vectors(IndexStorage::Pointer storage,
   return open(std::move(storage));
 }
 
+size_t HnswStreamer::packed_segment_count() const {
+  if (state_ != STATE_OPENED || !build_vector_source_) return 0;
+  // IndexVersion and IndexMeta precede the entity's packed chunks.
+  return 2 + entity_->packed_chunk_count();
+}
+
 int HnswStreamer::dump_with_vectors(const IndexDumper::Pointer &dumper) {
   if (state_ != STATE_OPENED || !build_vector_source_) {
     return IndexError_NoReady;

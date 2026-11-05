@@ -45,6 +45,18 @@ int HnswStreamerEntity::retain_stable_data(
   return 0;
 }
 
+size_t HnswStreamerEntity::packed_chunk_count() const {
+  if (packed_nodes_per_chunk_ == 0 || !broker_) return 0;
+  // Header and chunk metadata, followed by packed nodes and unchanged chunks.
+  size_t count = 2 + doc_cnt() / packed_nodes_per_chunk_ +
+                 (doc_cnt() % packed_nodes_per_chunk_ != 0);
+  for (int type = ChunkBroker::CHUNK_TYPE_UPPER_NEIGHBOR;
+       type < ChunkBroker::CHUNK_TYPE_MAX; ++type) {
+    count += broker_->get_chunk_cnt(type);
+  }
+  return count;
+}
+
 int HnswStreamerEntity::dump_with_vectors(const IndexDumper::Pointer &dumper,
                                           const VectorSource &source,
                                           size_t stored_vector_size) {
