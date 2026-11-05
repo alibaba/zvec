@@ -13,13 +13,18 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iterator>
+#include <new>
 #include <random>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -38,6 +43,40 @@
 #include "algorithm/hnsw/hnsw_streamer.h"
 #include "tests/test_util.h"
 #include "utility/stable_vector_holder.h"
+
+// Fault injection is confined to allocations on the test's calling thread.
+// Other tests and worker allocations use the normal malloc/free path.
+namespace bulk_alloc_test {
+thread_local size_t countdown = 0;
+thread_local void (*before_failure)() = nullptr;
+thread_local void (*on_delete)(void *) = nullptr;
+thread_local void *state = nullptr;
+
+void Reset() {
+  countdown = 0;
+  before_failure = nullptr;
+  on_delete = nullptr;
+  state = nullptr;
+}
+}  // namespace bulk_alloc_test
+
+void *operator new(std::size_t size) {
+  if (bulk_alloc_test::countdown && --bulk_alloc_test::countdown == 0) {
+    if (bulk_alloc_test::before_failure) bulk_alloc_test::before_failure();
+    throw std::bad_alloc();
+  }
+  if (void *ptr = std::malloc(size ? size : 1)) return ptr;
+  throw std::bad_alloc();
+}
+
+void operator delete(void *ptr) noexcept {
+  if (ptr && bulk_alloc_test::on_delete) bulk_alloc_test::on_delete(ptr);
+  std::free(ptr);
+}
+
+void operator delete(void *ptr, std::size_t) noexcept {
+  ::operator delete(ptr);
+}
 
 using namespace zvec::core_interface;
 
@@ -796,7 +835,49 @@ struct BulkContextState {
   mutable std::atomic<size_t> contexts_ready{0};
   std::atomic<size_t> adds{0};
   std::atomic<size_t> premature_adds{0};
+  bool fail_worker_allocation{false};
+  bool fail_task_allocation{false};
+  std::array<const void *, 4> context_ptrs{};
+  std::atomic<size_t> active_adds{0};
+  std::atomic<size_t> context_deletes{0};
+  std::atomic<size_t> early_context_deletes{0};
+  std::atomic<bool> failure_triggered{false};
+  std::atomic<bool> failed_with_worker_active{false};
+  std::atomic<bool> release_worker{false};
 };
+
+bool WaitForFlag(const std::atomic<bool> &flag) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!flag.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  return flag.load();
+}
+
+void BeforeBulkAllocationFailure() {
+  auto *state = static_cast<BulkContextState *>(bulk_alloc_test::state);
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (state->active_adds.load() == 0 &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  state->failed_with_worker_active.store(state->active_adds.load() != 0);
+  state->failure_triggered.store(true);
+}
+
+void CheckBulkContextDeletion(void *ptr) {
+  auto *state = static_cast<BulkContextState *>(bulk_alloc_test::state);
+  for (const void *context : state->context_ptrs) {
+    if (context == ptr) {
+      state->context_deletes.fetch_add(1);
+      if (state->active_adds.load() != 0) {
+        state->early_context_deletes.fetch_add(1);
+      }
+    }
+  }
+}
 
 class CheckedBulkStreamer : public zvec::core::HnswStreamer {
  public:
@@ -815,7 +896,18 @@ class CheckedBulkStreamer : public zvec::core::HnswStreamer {
     const auto call = state_->context_calls.fetch_add(1);
     if (state_->fail_first && call == 0) return nullptr;
     auto context = HnswStreamer::create_context();
-    if (context) state_->contexts_ready.fetch_add(1);
+    if (context) {
+      state_->context_ptrs[call] = context.get();
+      const auto ready = state_->contexts_ready.fetch_add(1) + 1;
+      if (state_->fail_task_allocation && ready == state_->workers) {
+        bulk_alloc_test::state = state_;
+        bulk_alloc_test::before_failure = BeforeBulkAllocationFailure;
+        bulk_alloc_test::on_delete = CheckBulkContextDeletion;
+        // One group allocation, the first closure, then the second closure.
+        // The external pool's deque is primed before this fault is armed.
+        bulk_alloc_test::countdown = 3;
+      }
+    }
     return context;
   }
 
@@ -826,6 +918,13 @@ class CheckedBulkStreamer : public zvec::core::HnswStreamer {
       state_->premature_adds.fetch_add(1);
     }
     state_->adds.fetch_add(1);
+    if (state_->fail_worker_allocation) throw std::bad_alloc();
+    if (state_->fail_task_allocation) {
+      state_->active_adds.fetch_add(1);
+      while (!state_->release_worker.load()) std::this_thread::yield();
+      state_->active_adds.fetch_sub(1);
+      return zvec::core::IndexError_Runtime;
+    }
     return HnswStreamer::add_with_id_impl(id, data, meta, context);
   }
 
@@ -849,7 +948,7 @@ class ScopedBulkStreamerFactory {
 };
 
 TEST(HnswBulkMergeTest, PreparesAllContextsBeforeWritesAndPropagatesFailure) {
-  for (bool fail_first : {false, true}) {
+  for (int failure : {0, 1, 2}) {
     namespace ailego = zvec::ailego;
     const std::string source_path = "hnsw_bulk_context_source.index";
     const std::string target_path = "hnsw_bulk_context_target.index";
@@ -858,7 +957,9 @@ TEST(HnswBulkMergeTest, PreparesAllContextsBeforeWritesAndPropagatesFailure) {
       zvec::test_util::RemoveTestFiles(target_path);
     });
     zvec::ailego::ThreadPool pool(4, false);
+    const bool fail_first = failure == 1;
     BulkContextState state{std::min<size_t>(4, pool.count()), fail_first};
+    state.fail_worker_allocation = failure == 2;
     auto flat_param = FlatIndexParamBuilder()
                           .with_data_type(DataType::DT_FP32)
                           .with_dimension(kDimension)
@@ -877,20 +978,137 @@ TEST(HnswBulkMergeTest, PreparesAllContextsBeforeWritesAndPropagatesFailure) {
     AddVectors(source.get(), vectors);
     {
       ScopedBulkStreamerFactory factory(&state);
-      EXPECT_EQ(fail_first ? zvec::core::IndexError_NoMemory : 0,
+      EXPECT_EQ(failure ? zvec::core::IndexError_NoMemory : 0,
                 target->merge({source}, IndexFilter(), {4, &pool}));
     }
     EXPECT_EQ(fail_first ? 1U : state.workers, state.context_calls.load());
     EXPECT_EQ(0U, state.premature_adds.load());
-    EXPECT_EQ(fail_first ? 0U : kVectorCount, state.adds.load());
-    EXPECT_EQ(fail_first ? 0U : kVectorCount, target->get_doc_count());
-    if (fail_first) {
+    if (state.fail_worker_allocation) {
+      EXPECT_GT(state.adds.load(), 0U);
+    } else {
+      EXPECT_EQ(fail_first ? 0U : kVectorCount, state.adds.load());
+    }
+    EXPECT_EQ(failure ? 0U : kVectorCount, target->get_doc_count());
+    if (failure) {
       // The original empty target remains open and can accept a later write.
       EXPECT_EQ(0, target->add({DenseVector{vectors[0].data()}}, 0));
     }
     EXPECT_EQ(0, target->close());
     EXPECT_EQ(0, source->close());
   }
+}
+
+TEST(HnswBulkMergeTest, TaskAllocationFailureWaitsBeforeDestroyingContexts) {
+  namespace ailego = zvec::ailego;
+  BulkContextState state{0, false};
+  AILEGO_DEFER([]() { bulk_alloc_test::Reset(); });
+  ailego::ThreadPool pool(2, false);
+  if (pool.count() < 2) GTEST_SKIP() << "Requires two workers";
+  state.workers = pool.count();
+  state.fail_task_allocation = true;
+  pool.execute_and_wait([]() {});
+  const std::string source_path = "hnsw_bulk_task_source.index";
+  const std::string target_path = "hnsw_bulk_task_target.index";
+  AILEGO_DEFER([&]() {
+    zvec::test_util::RemoveTestFiles(source_path);
+    zvec::test_util::RemoveTestFiles(target_path);
+  });
+  auto flat_param = FlatIndexParamBuilder()
+                        .with_data_type(DataType::DT_FP32)
+                        .with_dimension(kDimension)
+                        .with_metric_type(MetricType::kL2sq)
+                        .build();
+  auto source = IndexFactory::CreateAndInitIndex(*flat_param);
+  auto target = IndexFactory::CreateAndInitIndex(
+      *MakeParam(MetricType::kL2sq, QuantizerType::kNone));
+  ASSERT_NE(nullptr, source);
+  ASSERT_NE(nullptr, target);
+  ASSERT_EQ(
+      0, source->open(source_path, {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(
+      0, target->open(target_path, {StorageOptions::StorageType::kMMAP, true}));
+  auto vectors = RandomVectors();
+  AddVectors(source.get(), vectors);
+  std::thread controller([&]() {
+    WaitForFlag(state.failure_triggered);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    state.release_worker.store(true);
+  });
+  AILEGO_DEFER([&]() {
+    state.release_worker.store(true);
+    if (controller.joinable()) controller.join();
+  });
+  int ret;
+  {
+    ScopedBulkStreamerFactory factory(&state);
+    ret = target->merge({source}, IndexFilter(), {2, &pool});
+    bulk_alloc_test::Reset();
+  }
+  controller.join();
+  EXPECT_EQ(zvec::core::IndexError_NoMemory, ret);
+  EXPECT_TRUE(state.failure_triggered.load());
+  EXPECT_TRUE(state.failed_with_worker_active.load());
+  EXPECT_EQ(state.workers, state.context_deletes.load());
+  EXPECT_EQ(0U, state.early_context_deletes.load());
+  EXPECT_EQ(0U, state.active_adds.load());
+  EXPECT_EQ(0U, target->get_doc_count());
+  bool reused = false;
+  pool.execute_and_wait([&]() { reused = true; });
+  EXPECT_TRUE(reused);
+  EXPECT_EQ(0, target->add({DenseVector{vectors[0].data()}}, 0));
+  EXPECT_EQ(0, target->close());
+  EXPECT_EQ(0, source->close());
+}
+
+TEST(HnswBulkMergeTest, FailedQueueAllocationLeavesPoolReusable) {
+  namespace ailego = zvec::ailego;
+  std::atomic<bool> release{false};
+  std::atomic<bool> started{false};
+  std::atomic<size_t> completed{0};
+  ailego::ThreadPool pool(1, false);
+  AILEGO_DEFER([&]() {
+    bulk_alloc_test::Reset();
+    pool.stop();
+    release.store(true);
+  });
+  auto blockers = pool.make_group();
+  blockers->submit(ailego::Closure::New([&]() {
+    started.store(true);
+    while (!release.load()) std::this_thread::yield();
+  }));
+  ASSERT_TRUE(WaitForFlag(started));
+  auto group = pool.make_group();
+  std::vector<ailego::ClosureHandler> tasks;
+  tasks.reserve(1024);
+  for (size_t i = 0; i < 1024; ++i) {
+    tasks.push_back(ailego::Closure::New([&]() { completed.fetch_add(1); }));
+  }
+  size_t accepted = 0;
+  bool failed = false;
+  bulk_alloc_test::countdown = 1;
+  try {
+    for (auto &task : tasks) {
+      group->submit(std::move(task));
+      ++accepted;
+    }
+  } catch (const std::bad_alloc &) {
+    failed = true;
+  }
+  bulk_alloc_test::Reset();
+  EXPECT_TRUE(failed);
+  EXPECT_EQ(accepted, group->pending_count());
+  EXPECT_EQ(accepted, pool.pending_count());
+  // Avoid hanging the test if counter consistency regresses.
+  if (group->pending_count() != accepted || pool.pending_count() != accepted) {
+    return;
+  }
+  release.store(true);
+  blockers->wait_finish();
+  group->wait_finish();
+  EXPECT_EQ(accepted, completed.load());
+  bool reused = false;
+  pool.execute_and_wait([&]() { reused = true; });
+  EXPECT_TRUE(reused);
 }
 
 class HnswBulkMergeTest

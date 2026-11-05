@@ -16,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <limits>
+#include <new>
 #include <zvec/core/framework/index_framework.h>
 #include "utility/stable_vector_holder.h"
 #include "hnsw_build_dumper.h"
@@ -83,7 +84,7 @@ int HnswBulkBuilder::prepare(const IndexFilter &filter) {
 int HnswBulkBuilder::build(const std::string &target_path,
                            const VectorSource &source,
                            uint32_t write_concurrency,
-                           ailego::ThreadPool *pool) {
+                           ailego::ThreadPool *pool) try {
   // A new attempt must not be blocked by scratch left by a crashed optimize.
   const std::string suffix = std::to_string(
       std::chrono::steady_clock::now().time_since_epoch().count());
@@ -130,19 +131,37 @@ int HnswBulkBuilder::build(const std::string &target_path,
   std::atomic<size_t> next{0};
   std::atomic<int> status{0};
   auto group = pool->make_group();
+  bool joined = false;
+  // Keep contexts, counters and graph storage alive if task creation or
+  // submission throws after earlier workers have already started.
+  AILEGO_DEFER([&]() {
+    if (!joined) {
+      status.store(IndexError_Runtime);
+      group->wait_finish();
+    }
+  });
   for (uint32_t worker = 0; worker < workers; ++worker) {
     group->submit(ailego::Closure::New([&, worker]() {
-      auto &context = contexts[worker];
-      while (status.load() == 0) {
-        const size_t id = next.fetch_add(1);
-        if (id >= vectors_.size()) break;
-        const int result =
-            build->add_with_id_impl(id, vectors_[id], vector_meta_, context);
-        if (result != 0) status.store(result);
+      try {
+        auto &context = contexts[worker];
+        while (status.load() == 0) {
+          const size_t id = next.fetch_add(1);
+          if (id >= vectors_.size()) break;
+          const int result =
+              build->add_with_id_impl(id, vectors_[id], vector_meta_, context);
+          if (result != 0) {
+            int expected = 0;
+            status.compare_exchange_strong(expected, result);
+          }
+        }
+      } catch (const std::bad_alloc &) {
+        int expected = 0;
+        status.compare_exchange_strong(expected, IndexError_NoMemory);
       }
     }));
   }
   group->wait_finish();
+  joined = true;
   if (status.load() != 0) return status.load();
 
   auto dumper =
@@ -153,6 +172,8 @@ int HnswBulkBuilder::build(const std::string &target_path,
   if (ret != 0) return ret;
   ret = graph->dump_with_vectors(dumper);
   return ret != 0 ? ret : dumper->close();
+} catch (const std::bad_alloc &) {
+  return IndexError_NoMemory;
 }
 
 }  // namespace zvec::core
