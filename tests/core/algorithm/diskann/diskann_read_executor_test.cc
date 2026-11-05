@@ -14,9 +14,9 @@ TEST(DiskAnnReadExecutorTest, ValidatesWorkerLimit) {
   size_t workers = 0;
   EXPECT_TRUE(DiskAnnReadExecutor::parse_workers(nullptr, &workers));
   EXPECT_EQ(workers, 4u);
-  for (auto text : {"1", "2", "4", "8"})
+  for (auto text : {"1", "2", "4", "8", "9", "16", "24", "32"})
     EXPECT_TRUE(DiskAnnReadExecutor::parse_workers(text, &workers));
-  for (auto text : {"", "0", "9", "-1", "+2", " 4", "4x", "44", "99999999"})
+  for (auto text : {"", "0", "33", "-1", "+2", " 4", "4x", "44", "99999999"})
     EXPECT_FALSE(DiskAnnReadExecutor::parse_workers(text, &workers));
 }
 
@@ -76,4 +76,31 @@ TEST(DiskAnnReadExecutorTest, ExceptionDrainsAndPoolRemainsUsable) {
   EXPECT_EQ(calls.load(), 100u);
   pool.run(10, [&](size_t) { ++calls; });
   EXPECT_EQ(calls.load(), 110u);
+}
+
+TEST(DiskAnnReadExecutorTest, WidePoolExecutesEachIndexExactlyOnce) {
+  DiskAnnReadExecutor pool(32);
+  for (size_t count : {1u, 2u, 7u, 32u, 33u, 97u}) {
+    for (size_t repeat = 0; repeat < 20; ++repeat) {
+      std::array<std::atomic<size_t>, 97> calls{};
+      pool.run(count, [&](size_t i) {
+        ASSERT_LT(i, count);
+        ++calls[i];
+      });
+      for (size_t i = 0; i < calls.size(); ++i)
+        EXPECT_EQ(calls[i].load(), i < count ? 1u : 0u);
+    }
+  }
+}
+
+TEST(DiskAnnReadExecutorTest, ShortExceptionalBatchDrainsWithWidePool) {
+  DiskAnnReadExecutor pool(32);
+  std::atomic<size_t> calls{0};
+  EXPECT_THROW(pool.run(3, [&](size_t i) {
+    ++calls;
+    if (i == 0) throw std::runtime_error("first request failed");
+  }), std::runtime_error);
+  EXPECT_EQ(calls.load(), 3u);
+  pool.run(100, [&](size_t) { ++calls; });
+  EXPECT_EQ(calls.load(), 103u);
 }

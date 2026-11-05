@@ -815,7 +815,7 @@ int LinuxAlignedFileReader::read_cached(const AlignedRead &req) {
 }
 
 int LinuxAlignedFileReader::configure_read_workers(size_t workers) {
-  if (workers < 1 || workers > 8) return IndexError_InvalidArgument;
+  if (workers < 1 || workers > 32) return IndexError_InvalidArgument;
   try {
     std::unique_ptr<DiskAnnReadExecutor> next;
     if (workers > 1) next.reset(new DiskAnnReadExecutor(workers));

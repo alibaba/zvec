@@ -18,6 +18,7 @@ namespace zvec {
 namespace core {
 
 // A per-file cache for immutable, fixed-size DiskANN records. Clock replacement
+// gives repeatedly hit nodes up to three chances to survive one-time scans.
 // sets bound both payload and bookkeeping; no per-hit heap allocation or
 // whole-index table. I/O happens outside the set lock. Concurrent misses may
 // duplicate a read, but never publish partial data or retain caller buffers.
@@ -67,7 +68,7 @@ class DiskAnnReadCache {
         auto &entry = set.entries[i];
         if (entry.valid && entry.offset == key) {
           std::memcpy(out + consumed, payload(slot, i), record_bytes_);
-          entry.referenced = true;
+          if (entry.chances < 3) ++entry.chances;
           found = true;
           break;
         }
@@ -101,21 +102,22 @@ class DiskAnnReadCache {
         for (size_t i = 0; i < ways_; ++i) {
           auto &entry = set.entries[i];
           if (entry.valid && entry.offset == key) {
-            entry.referenced = true;
+            if (entry.chances < 3) ++entry.chances;
             published = true;
             break;
           }
         }
         if (published) continue;
         while (set.entries[set.hand].valid &&
-               set.entries[set.hand].referenced) {
-          set.entries[set.hand].referenced = false;
+               set.entries[set.hand].chances) {
+          --set.entries[set.hand].chances;
           set.hand = (set.hand + 1) % ways_;
         }
         auto &entry = set.entries[set.hand];
         std::memcpy(payload(slot, set.hand), out + consumed, record_bytes_);
         entry.offset = key;
-        entry.valid = entry.referenced = true;
+        entry.valid = true;
+        entry.chances = 1;
         set.hand = (set.hand + 1) % ways_;
       }
     }
@@ -143,7 +145,7 @@ class DiskAnnReadCache {
   struct Entry {
     uint64_t offset{0};
     bool valid{false};
-    bool referenced{false};
+    uint8_t chances{0};
   };
   struct Set {
     std::mutex mutex;

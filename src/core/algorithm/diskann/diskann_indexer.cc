@@ -275,7 +275,7 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
     size_t workers = 0;
     if (!DiskAnnReadExecutor::parse_workers(
             std::getenv("ZVEC_DISKANN_READ_WORKERS"), &workers)) {
-      LOG_ERROR("ZVEC_DISKANN_READ_WORKERS must be an integer in [1, 8]");
+      LOG_ERROR("ZVEC_DISKANN_READ_WORKERS must be an integer in [1, 32]");
       return IndexError_InvalidArgument;
     }
     ret = file_reader->configure_read_workers(workers);
@@ -1337,6 +1337,35 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
       cached_neighbors;
   cached_neighbors.reserve(2 * effective_beam_width);
 
+  // Previously visited neighbors cannot enter the candidate queue again.
+  // Filter them before the PQ lookup, retaining the first-visit order, and
+  // reuse the temporary arrays across all expanded nodes in this query.
+  std::vector<diskann_id_t> unseen_neighbors;
+  std::vector<float> neighbor_distances;
+  unseen_neighbors.reserve(max_degree_);
+  neighbor_distances.reserve(max_degree_);
+  const auto expand_neighbors = [&](const diskann_id_t *neighbors,
+                                    uint32_t count) {
+    cpu_timer.reset();
+    unseen_neighbors.clear();
+    for (uint32_t i = 0; i < count; ++i) {
+      const auto id = neighbors[i];
+      if (!visit_filter.visited(id)) {
+        visit_filter.set_visited(id);
+        unseen_neighbors.push_back(id);
+      }
+    }
+    if (!unseen_neighbors.empty()) {
+      neighbor_distances.resize(unseen_neighbors.size());
+      dc.quantized_dist(unseen_neighbors.data(), unseen_neighbors.size(),
+                        neighbor_distances.data());
+      stats.dist_num += unseen_neighbors.size();
+      for (size_t i = 0; i < unseen_neighbors.size(); ++i)
+        candidates.insert(Neighbor(unseen_neighbors[i], neighbor_distances[i]));
+    }
+    stats.cpu_us += cpu_timer.micro_seconds();
+  };
+
   PendingBatch pending;
 
   while (candidates.has_unexpanded_node() && num_ios < io_limit_) {
@@ -1405,30 +1434,18 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
 
       if (!ctx->filter().is_valid() ||
           !ctx->filter()(get_key(std::get<0>(cached_neighbor)))) {
-        topk_heap.emplace(std::get<0>(cached_neighbor),
-                          VectorInfo(cur_expanded_dist,
-                                     make_vector_copy(node_fp_coords_copy)));
+        if (!topk_heap.full() ||
+            cur_expanded_dist < topk_heap.front().second.dist_) {
+          topk_heap.emplace(std::get<0>(cached_neighbor),
+                            VectorInfo(cur_expanded_dist,
+                                       make_vector_copy(node_fp_coords_copy)));
+        }
       }
 
       uint32_t neighbor_num = std::get<1>(cached_neighbor);
       diskann_id_t *node_neighbors = std::get<2>(cached_neighbor);
 
-      cpu_timer.reset();
-
-      std::vector<float> distances(neighbor_num);
-      dc.quantized_dist(node_neighbors, neighbor_num, distances.data());
-
-      stats.dist_num += neighbor_num;
-      stats.cpu_us += cpu_timer.micro_seconds();
-
-      for (uint64_t m = 0; m < neighbor_num; ++m) {
-        diskann_id_t id = node_neighbors[m];
-        if (!visit_filter.visited(id)) {
-          visit_filter.set_visited(id);
-          Neighbor nn(id, distances[m]);
-          candidates.insert(nn);
-        }
-      }
+      expand_neighbors(node_neighbors, neighbor_num);
     }
 
     if (!frontier.empty()) {
@@ -1459,33 +1476,18 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
 
           if (!ctx->filter().is_valid() ||
               !ctx->filter()(get_key(frontier_neighbor.first))) {
-            topk_heap.emplace(frontier_neighbor.first,
-                              VectorInfo(cur_expanded_dist,
-                                         make_vector_copy(node_fp_coords)));
+            if (!topk_heap.full() ||
+                cur_expanded_dist < topk_heap.front().second.dist_) {
+              topk_heap.emplace(frontier_neighbor.first,
+                                VectorInfo(cur_expanded_dist,
+                                           make_vector_copy(node_fp_coords)));
+            }
           }
 
           diskann_id_t *node_neighbors =
               reinterpret_cast<diskann_id_t *>(node_buf + 1);
 
-          cpu_timer.reset();
-          std::vector<float> distances(neighbor_num);
-          dc.quantized_dist(node_neighbors, neighbor_num, distances.data());
-
-          stats.dist_num += neighbor_num;
-          stats.cpu_us += cpu_timer.micro_seconds();
-
-          cpu_timer.reset();
-          for (uint64_t m = 0; m < neighbor_num; ++m) {
-            diskann_id_t id = node_neighbors[m];
-            if (!visit_filter.visited(id)) {
-              visit_filter.set_visited(id);
-              stats.dist_num++;
-              Neighbor nn(id, distances[m]);
-              candidates.insert(nn);
-            }
-          }
-
-          stats.cpu_us += cpu_timer.micro_seconds();
+          expand_neighbors(node_neighbors, neighbor_num);
         }
       }
     }

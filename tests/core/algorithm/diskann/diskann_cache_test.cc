@@ -38,6 +38,31 @@ TEST(DiskAnnReadCacheTest, BudgetValidation) {
   }
 }
 
+TEST(DiskAnnReadCacheTest, RepeatedHitsSurviveOneTimeScans) {
+  constexpr size_t bytes = 32, budget = 1024;
+  DiskAnnReadCache cache(budget, bytes);
+  ASSERT_EQ(cache.capacity(), 16u);  // Exactly one replacement set.
+  EXPECT_LE(cache.allocated_bytes(), budget);
+  std::array<uint8_t, bytes> out{};
+  auto read = [](uint64_t offset, size_t length, void *dst) {
+    std::memset(dst, offset / bytes, length);
+    return 0;
+  };
+  for (size_t i = 0; i < cache.capacity(); ++i)
+    ASSERT_EQ(cache.read(i * bytes, bytes, out.data(), read), 0);
+  // Many hits must saturate, rather than overflow the small credit counter.
+  for (size_t i = 0; i < 1000; ++i)
+    ASSERT_TRUE(cache.try_read(0, bytes, out.data()));
+  for (size_t i = cache.capacity(); i < 2 * cache.capacity() - 1; ++i)
+    ASSERT_EQ(cache.read(i * bytes, bytes, out.data(), read), 0);
+  EXPECT_TRUE(cache.try_read(0, bytes, out.data()));
+  EXPECT_EQ(out.front(), 0);
+  // A formerly hot record must still be evictable as the workload changes.
+  for (size_t i = 32; i < 256; ++i)
+    ASSERT_EQ(cache.read(i * bytes, bytes, out.data(), read), 0);
+  EXPECT_FALSE(cache.try_read(0, bytes, out.data()));
+}
+
 TEST(DiskAnnReadCacheTest, PackedRecordsKeepBoundsAndSupportHitProbe) {
   constexpr size_t bytes = 1668, budget = 64 * 1024;
   DiskAnnReadCache cache(budget, bytes), pages(budget);

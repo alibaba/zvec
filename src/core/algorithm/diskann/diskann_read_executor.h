@@ -7,6 +7,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #pragma once
 
+#include <algorithm>
+#include <atomic>
 #include <condition_variable>
 #include <cstddef>
 #include <exception>
@@ -20,7 +22,8 @@ namespace core {
 
 // A fixed per-reader pool for portable pread batches. No per-request tasks or
 // threads are allocated. Concurrent callers share the same workers; queued
-// batches rotate fairly. run() drains every request before returning/throwing,
+// batch assignments rotate. Workers claim request indices atomically, avoiding
+// a contended queue lock around every pread. run() drains the batch before returning/throwing,
 // so workers never retain caller buffers. Configure/close requires no callers.
 class DiskAnnReadExecutor {
  public:
@@ -50,11 +53,15 @@ class DiskAnnReadExecutor {
       for (size_t i = 0; i < count; ++i) callback(i);
       return;
     }
-    Batch batch(count, callback);
+    Batch batch(count, std::min(count, threads_.size()), callback);
     std::unique_lock<std::mutex> lock(mutex_);
     append(&batch);
-    ready_.notify_all();
-    finished_.wait(lock, [&] { return batch.completed == count; });
+    if (batch.workers == threads_.size()) {
+      ready_.notify_all();
+    } else {
+      for (size_t i = 0; i < batch.workers; ++i) ready_.notify_one();
+    }
+    finished_.wait(lock, [&] { return batch.completed == batch.workers; });
     if (batch.error) std::rethrow_exception(batch.error);
   }
 
@@ -63,18 +70,27 @@ class DiskAnnReadExecutor {
       *workers = 4;
       return true;
     }
-    if (value[0] < '1' || value[0] > '8' || value[1] != '\0') return false;
-    *workers = static_cast<size_t>(value[0] - '0');
+    if (!*value) return false;
+    size_t parsed = 0;
+    for (const char *p = value; *p; ++p) {
+      if (*p < '0' || *p > '9') return false;
+      parsed = parsed * 10 + static_cast<size_t>(*p - '0');
+      if (parsed > 32) return false;
+    }
+    if (!parsed) return false;
+    *workers = parsed;
     return true;
   }
 
  private:
   struct Batch {
-    Batch(size_t n, const std::function<void(size_t)> &fn)
-        : count(n), callback(fn) {}
+    Batch(size_t n, size_t w, const std::function<void(size_t)> &fn)
+        : count(n), workers(w), callback(fn) {}
     const size_t count;
+    const size_t workers;
     const std::function<void(size_t)> &callback;
-    size_t next{0}, completed{0};
+    std::atomic<size_t> next{0};
+    size_t assigned{0}, completed{0};
     Batch *link{nullptr};
     std::exception_ptr error;
   };
@@ -94,18 +110,21 @@ class DiskAnnReadExecutor {
       Batch *batch = head_;
       head_ = batch->link;
       if (!head_) tail_ = nullptr;
-      const size_t index = batch->next++;
-      if (batch->next < batch->count) append(batch);
+      if (++batch->assigned < batch->workers) append(batch);
       lock.unlock();
       std::exception_ptr error;
-      try {
-        batch->callback(index);
-      } catch (...) {
-        error = std::current_exception();
+      for (;;) {
+        const size_t index = batch->next.fetch_add(1, std::memory_order_relaxed);
+        if (index >= batch->count) break;
+        try {
+          batch->callback(index);
+        } catch (...) {
+          if (!error) error = std::current_exception();
+        }
       }
       lock.lock();
       if (error && !batch->error) batch->error = error;
-      const bool completed = ++batch->completed == batch->count;
+      const bool completed = ++batch->completed == batch->workers;
       // No access to batch after releasing the lock: its caller may return.
       lock.unlock();
       if (completed) finished_.notify_all();

@@ -573,7 +573,7 @@ TEST(DiskAnnFileReaderTest, ParallelReadsDrainErrorsAndPreserveOrder) {
   LinuxAlignedFileReader reader;
   reader.open(file.path());
   EXPECT_NE(reader.configure_read_workers(0), 0);
-  EXPECT_NE(reader.configure_read_workers(9), 0);
+  EXPECT_NE(reader.configure_read_workers(33), 0);
   ASSERT_EQ(reader.configure_read_workers(4), 0);
   ASSERT_EQ(reader.configure_read_cache(64 * 1024), 0);
   auto output = make_aligned_buffer(source.size());
