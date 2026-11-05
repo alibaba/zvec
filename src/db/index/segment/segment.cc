@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <map>
 #include <memory>
@@ -3728,6 +3729,12 @@ void SegmentImpl::fresh_persist_chunked_array() {
     persist_chunk_layout_ids_.clear();
     all_columns_same_chunk_layout_ = false;
 
+    // Bounded IPC stores deliberately expose no permanently retained table.
+    // Route these through the regular per-store fetch path instead.
+    for (const auto &store : persist_stores_) {
+      if (!store->get_table()) return;
+    }
+
     std::vector<std::vector<std::shared_ptr<arrow::ChunkedArray>>> chunk_arrays;
     auto fields = collection_schema_->forward_field_names();
     fields.insert(fields.begin(), USER_ID);
@@ -3976,6 +3983,29 @@ const std::vector<BlockMeta> &SegmentImpl::get_persist_block_metas(
 }
 
 Status SegmentImpl::load_persist_scalar_blocks() {
+  size_t scalar_cache_bytes = 0;
+  const auto vector_fields = collection_schema_->vector_fields();
+  const bool has_diskann = std::any_of(
+      vector_fields.begin(), vector_fields.end(),
+      [](const auto &field) { return field->index_type() == IndexType::DISKANN; });
+  if (options_.read_only_ && has_diskann) {
+    const char *setting = std::getenv("ZVEC_DISKANN_SCALAR_CACHE_MIB");
+    if (setting && *setting) {
+      size_t mib = 0;
+      for (const char *p = setting; *p; ++p) {
+        if (*p < '0' || *p > '9' || mib > 64) {
+          return Status::InvalidArgument(
+              "ZVEC_DISKANN_SCALAR_CACHE_MIB must be in [0, 64]");
+        }
+        mib = mib * 10 + (*p - '0');
+      }
+      if (mib > 64) {
+        return Status::InvalidArgument(
+            "ZVEC_DISKANN_SCALAR_CACHE_MIB must be in [0, 64]");
+      }
+      scalar_cache_bytes = mib * 1024 * 1024;
+    }
+  }
   doc_ids_.reserve(segment_meta_->doc_count());
   for (const auto &block : segment_meta_->persisted_blocks()) {
     if (block.type() == BlockType::SCALAR) {
@@ -3984,7 +4014,8 @@ Status SegmentImpl::load_persist_scalar_blocks() {
 
       BaseForwardStore::Ptr forward_store;
       if (options_.enable_mmap_) {
-        forward_store = std::make_shared<MmapForwardStore>(forward_path);
+        forward_store = std::make_shared<MmapForwardStore>(forward_path,
+                                                           scalar_cache_bytes);
       } else {
         forward_store = std::make_shared<BufferPoolForwardStore>(forward_path);
       }

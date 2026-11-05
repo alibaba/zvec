@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
@@ -20,6 +21,7 @@
 #include <arrow/api.h>
 #include <arrow/result.h>
 #include <arrow/table.h>
+#include <arrow/util/compression.h>
 #include <gtest/gtest.h>
 #include "db/common/constants.h"
 #include "db/index/storage/chunked_file_writer.h"
@@ -717,4 +719,195 @@ TEST_F(MmapStoreTest, ConstructorAndPhysicSchema) {
 TEST_F(MmapStoreTest, DeleteDestructs) {
   MmapForwardStore *store = new MmapForwardStore(ipc_path);
   delete store;
+}
+
+namespace {
+
+arrow::Status WriteBufferedCacheFixture(const std::string &path) {
+  auto schema = arrow::schema({arrow::field("id", arrow::uint64()),
+                               arrow::field("text", arrow::utf8())});
+  auto writer = ChunkedFileWriter::Open(path, schema, FileFormat::IPC);
+  if (!writer) return arrow::Status::IOError("open fixture");
+  int32_t id = 0;
+  for (int rows : {7, 19, 3, 32, 5, 29}) {
+    arrow::UInt64Builder ids;
+    arrow::StringBuilder strings;
+    for (int i = 0; i < rows; ++i, ++id) {
+      ARROW_RETURN_NOT_OK(ids.Append(id));
+      if (id % 5 == 0) {
+        ARROW_RETURN_NOT_OK(strings.AppendNull());
+      } else {
+        // Empty strings and strings spanning several cache pages.
+        const size_t length = id % 11 == 0 ? 0 : (id % 13 == 0 ? 9000 : 200);
+        ARROW_RETURN_NOT_OK(strings.Append(std::string(length, 'a' + id % 26)));
+      }
+    }
+    ARROW_ASSIGN_OR_RAISE(auto id_array, ids.Finish());
+    ARROW_ASSIGN_OR_RAISE(auto text_array, strings.Finish());
+    ARROW_RETURN_NOT_OK(writer->write(
+        *arrow::RecordBatch::Make(schema, rows, {id_array, text_array})));
+  }
+  return writer->close();
+}
+
+}  // namespace
+
+TEST_F(MmapStoreTest, BufferedIPCMatchesMappedRowsAndBoundsCache) {
+  ASSERT_TRUE(WriteBufferedCacheFixture(uneven_ipc_path).ok());
+  MmapForwardStore mapped(uneven_ipc_path);
+  MmapForwardStore bounded(uneven_ipc_path, 8192);
+  ASSERT_TRUE(mapped.open().ok());
+  ASSERT_TRUE(bounded.open().ok());
+  EXPECT_EQ(bounded.get_table(), nullptr);
+  EXPECT_TRUE(bounded.paged_ipc_);
+  EXPECT_EQ(
+      std::dynamic_pointer_cast<arrow::io::MemoryMappedFile>(bounded.file_),
+      nullptr);
+  const std::vector<std::string> columns{"text", LOCAL_ROW_ID, "id"};
+  for (int pass = 0; pass < 3; ++pass) {
+    for (int row = 0; row < 95; ++row) {
+      std::vector<int> indices{94 - row, 0, row, 50, row};
+      auto expected = mapped.fetch(columns, indices);
+      auto actual = bounded.fetch(columns, indices);
+      ASSERT_NE(actual, nullptr);
+      ASSERT_TRUE(actual->Equals(*expected));
+      EXPECT_LE(bounded.ipc_cache_bytes_, bounded.ipc_cache_budget_);
+      auto single = bounded.fetch({"text", "id"}, row);
+      auto reference = mapped.fetch({"text", "id"}, row);
+      ASSERT_NE(single, nullptr);
+      EXPECT_TRUE(single->Equals(*reference));
+    }
+  }
+  EXPECT_LE(bounded.pages_.size(), 8192 / bounded.kPageCharge);
+  EXPECT_EQ(bounded.fetch(columns, std::vector<int>{95}), nullptr);
+  EXPECT_EQ(bounded.fetch(columns, std::vector<int>{-1}), nullptr);
+  EXPECT_EQ(bounded.fetch({"missing"}, std::vector<int>{0}), nullptr);
+  auto empty = bounded.fetch(columns, std::vector<int>{});
+  ASSERT_NE(empty, nullptr);
+  EXPECT_EQ(empty->num_rows(), 0);
+}
+
+TEST_F(MmapStoreTest, BufferedIPCOversizedBatchBypassesCacheAndOwnsResults) {
+  ASSERT_TRUE(WriteBufferedCacheFixture(uneven_ipc_path).ok());
+  MmapForwardStore bounded(uneven_ipc_path, 1);
+  ASSERT_TRUE(bounded.open().ok());
+  auto first = bounded.fetch({"text"}, 1);
+  ASSERT_NE(first, nullptr);
+  for (int row = 2; row < 95; ++row) {
+    ASSERT_NE(bounded.fetch({"text"}, row), nullptr);
+  }
+  EXPECT_TRUE(bounded.ipc_cache_.empty());
+  EXPECT_EQ(bounded.ipc_cache_bytes_, 0);
+  auto value =
+      std::dynamic_pointer_cast<arrow::StringScalar>(first->values[0].scalar());
+  ASSERT_NE(value, nullptr);
+  EXPECT_EQ(value->view(), std::string(200, 'b'));
+  // The scalar owns just its materialized result, not a source batch buffer.
+  auto root = value->value;
+  while (root->parent()) root = root->parent();
+  EXPECT_LE(root->size(), 256);
+}
+
+TEST_F(MmapStoreTest, BufferedIPCConcurrentFetchAndEviction) {
+  ASSERT_TRUE(WriteBufferedCacheFixture(uneven_ipc_path).ok());
+  MmapForwardStore bounded(uneven_ipc_path, 8192);
+  ASSERT_TRUE(bounded.open().ok());
+  std::atomic<bool> correct{true};
+  std::vector<std::thread> threads;
+  for (int worker = 0; worker < 8; ++worker) {
+    threads.emplace_back([&, worker]() {
+      for (int i = 0; i < 100; ++i) {
+        int row = (i * 13 + worker * 7) % 95;
+        auto batch = bounded.fetch({"id"}, row);
+        if (!batch || batch->values[0].scalar_as<arrow::UInt64Scalar>().value !=
+                          static_cast<uint64_t>(row))
+          correct = false;
+      }
+    });
+  }
+  for (auto &thread : threads) thread.join();
+  EXPECT_TRUE(correct);
+  EXPECT_LE(bounded.ipc_cache_bytes_, bounded.ipc_cache_budget_);
+}
+
+TEST_F(MmapStoreTest, BufferedIPCScanBypassesCacheAndOutlivesStore) {
+  ASSERT_TRUE(WriteBufferedCacheFixture(uneven_ipc_path).ok());
+  auto bounded = std::make_shared<MmapForwardStore>(uneven_ipc_path, 8192);
+  ASSERT_TRUE(bounded->open().ok());
+  ASSERT_NE(bounded->fetch({"id"}, 1), nullptr);
+  auto cached_bytes = bounded->ipc_cache_bytes_;
+  auto scan = bounded->scan({"text", "id"});
+  ASSERT_NE(scan, nullptr);
+  std::shared_ptr<arrow::RecordBatch> batch;
+  ASSERT_TRUE(scan->ReadNext(&batch).ok());
+  ASSERT_NE(batch, nullptr);
+  EXPECT_EQ(bounded->ipc_cache_bytes_, cached_bytes);
+  int64_t rows = batch->num_rows();
+  bounded.reset();
+  while (true) {
+    ASSERT_TRUE(scan->ReadNext(&batch).ok());
+    if (!batch) break;
+    rows += batch->num_rows();
+  }
+  EXPECT_EQ(rows, 95);
+}
+
+TEST_F(MmapStoreTest, BufferedIPCDetectsReadFailureAfterOpen) {
+  ASSERT_TRUE(WriteBufferedCacheFixture(uneven_ipc_path).ok());
+  MmapForwardStore bounded(uneven_ipc_path, 8192);
+  ASSERT_TRUE(bounded.open().ok());
+  std::filesystem::resize_file(uneven_ipc_path, 200);
+  EXPECT_EQ(bounded.fetch({"id"}, 94), nullptr);
+  EXPECT_TRUE(bounded.ipc_cache_.empty());
+}
+
+TEST_F(MmapStoreTest, BufferedIPCGeneralTypeFallbackAndStableDescriptor) {
+  ASSERT_TRUE(WriteUnevenBatchIPC(uneven_ipc_path).ok());
+  MmapForwardStore mapped(uneven_ipc_path);
+  MmapForwardStore bounded(uneven_ipc_path, 1024);
+  ASSERT_TRUE(mapped.open().ok());
+  ASSERT_TRUE(bounded.open().ok());
+  EXPECT_FALSE(bounded.paged_ipc_);
+  const std::vector<int> rows{6, 0, 2, 3, 6};
+  auto expected = mapped.fetch({"id", LOCAL_ROW_ID}, rows);
+  ASSERT_NE(expected, nullptr);
+  // Keep the old descriptor valid across replacement of the path.
+  std::filesystem::rename(uneven_ipc_path, uneven_ipc_path + ".old");
+  ASSERT_TRUE(WriteBufferedCacheFixture(uneven_ipc_path).ok());
+  auto actual = bounded.fetch({"id", LOCAL_ROW_ID}, rows);
+  ASSERT_NE(actual, nullptr);
+  EXPECT_TRUE(actual->Equals(*expected));
+  EXPECT_LE(bounded.ipc_cache_bytes_, 1024);
+  EXPECT_FALSE(bounded.ipc_cache_.empty());
+  std::filesystem::remove(uneven_ipc_path + ".old");
+}
+
+TEST_F(MmapStoreTest, BufferedIPCCompressedBuffersUseBatchFallback) {
+  const auto codec = arrow::util::Codec::IsAvailable(arrow::Compression::LZ4_FRAME)
+                         ? arrow::Compression::LZ4_FRAME
+                         : arrow::Compression::ZSTD;
+  if (!arrow::util::Codec::IsAvailable(codec)) {
+    GTEST_SKIP() << "Arrow IPC compression codecs are not built";
+  }
+  ASSERT_TRUE(WriteBufferedCacheFixture(uneven_ipc_path).ok());
+  MmapForwardStore original(uneven_ipc_path);
+  ASSERT_TRUE(original.open().ok());
+  auto table = original.get_table();
+  const auto path = uneven_ipc_path + ".compressed.ipc";
+  auto sink = arrow::io::FileOutputStream::Open(path).ValueOrDie();
+  auto options = arrow::ipc::IpcWriteOptions::Defaults();
+  options.codec = arrow::util::Codec::Create(codec).ValueOrDie();
+  auto writer = arrow::ipc::MakeFileWriter(sink, table->schema(), options).ValueOrDie();
+  ASSERT_TRUE(writer->WriteTable(*table).ok());
+  ASSERT_TRUE(writer->Close().ok());
+  ASSERT_TRUE(sink->Close().ok());
+  MmapForwardStore bounded(path, 8192);
+  ASSERT_TRUE(bounded.open().ok());
+  EXPECT_FALSE(bounded.paged_ipc_);
+  const std::vector<int> rows{94, 13, 0, 11, 4, 13};
+  auto result = bounded.fetch({"text", "id"}, rows);
+  ASSERT_NE(result, nullptr);
+  EXPECT_TRUE(result->Equals(*original.fetch({"text", "id"}, rows)));
+  EXPECT_LE(bounded.ipc_cache_bytes_, 8192);
+  std::filesystem::remove(path);
 }

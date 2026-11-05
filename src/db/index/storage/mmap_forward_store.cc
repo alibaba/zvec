@@ -13,11 +13,19 @@
 // limitations under the License.
 
 #include "mmap_forward_store.h"
+#include <limits>
+#include <map>
 #include <memory>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 #include <arrow/acero/options.h>
 #include <arrow/compute/api.h>
 #include <arrow/datum.h>
 #include <arrow/filesystem/localfs.h>
+#include <arrow/util/byte_size.h>
 #include <zvec/ailego/logger/logger.h>
 #include "db/index/storage/base_forward_store.h"
 #include "lazy_record_batch_reader.h"
@@ -25,7 +33,11 @@
 
 namespace zvec {
 
-MmapForwardStore::MmapForwardStore(const std::string &uri) : file_path_(uri) {}
+MmapForwardStore::MmapForwardStore(const std::string &uri,
+                                   size_t ipc_cache_bytes)
+    : ipc_cache_budget_(
+          InferFileFormat(uri) == FileFormat::IPC ? ipc_cache_bytes : 0),
+      file_path_(uri) {}
 
 Status MmapForwardStore::open() {
   std::string uri = file_path_;
@@ -101,6 +113,99 @@ arrow::Status MmapForwardStore::open_ipc(
   ARROW_RETURN_NOT_OK(result.status());
   reader = std::move(result).ValueOrDie();
   ipc_file_reader_ = std::move(reader);
+  if (ipc_cache_budget_ != 0) {
+    physic_schema_ = ipc_file_reader_->schema();
+    if (physic_schema_->num_fields() == 0) {
+      return arrow::Status::Invalid("IPC file has no columns");
+    }
+    auto mapping = std::dynamic_pointer_cast<arrow::io::MemoryMappedFile>(file);
+    std::shared_ptr<arrow::Buffer> mapped_bytes;
+    if (mapping) {
+      ARROW_ASSIGN_OR_RAISE(auto size, mapping->GetSize());
+      ARROW_ASSIGN_OR_RAISE(mapped_bytes, mapping->ReadAt(0, size));
+    }
+    const uint16_t native_endian = 1;
+    paged_ipc_ =
+        mapping && *reinterpret_cast<const uint8_t *>(&native_endian) == 1;
+    for (const auto &field : physic_schema_->fields()) {
+      paged_ipc_ = paged_ipc_ && (field->type()->id() == arrow::Type::UINT64 ||
+                                  field->type()->id() == arrow::Type::STRING);
+    }
+    // Only keep the row layout, not the file's batches. Older IPC files can
+    // have uneven batches, so validate each batch rather than infer its size.
+    const int count = ipc_file_reader_->num_record_batches();
+    for (int i = 0; i < count; ++i) {
+      ARROW_ASSIGN_OR_RAISE(auto batch, ipc_file_reader_->ReadRecordBatch(i));
+      if (paged_ipc_) {
+        std::vector<PagedColumn> columns;
+        for (const auto &array : batch->columns()) {
+          PagedColumn column;
+          column.array_offset = array->offset();
+          for (const auto &buffer : array->data()->buffers) {
+            FileBuffer location;
+            if (buffer && buffer->size() != 0) {
+              const auto begin =
+                  reinterpret_cast<uintptr_t>(mapped_bytes->data());
+              const auto address = reinterpret_cast<uintptr_t>(buffer->data());
+              if (address < begin ||
+                  address - begin >
+                      static_cast<uint64_t>(mapped_bytes->size()) ||
+                  static_cast<uint64_t>(buffer->size()) >
+                      static_cast<uint64_t>(mapped_bytes->size()) -
+                          (address - begin)) {
+                // Compressed/converted arrays own heap buffers and must use
+                // the general batch reader instead of file offsets.
+                paged_ipc_ = false;
+                break;
+              }
+              location = {static_cast<int64_t>(address - begin),
+                          buffer->size()};
+            }
+            column.buffers.push_back(location);
+          }
+          columns.push_back(std::move(column));
+        }
+        paged_columns_.push_back(std::move(columns));
+      }
+      const auto rows = batch->num_rows();
+      if (rows <= 0 || rows > std::numeric_limits<int64_t>::max() - num_rows_) {
+        return arrow::Status::Invalid("Invalid IPC batch row count");
+      }
+      chunk_index_map_.emplace_back(num_rows_, num_rows_ + rows - 1);
+      num_rows_ += rows;
+      if (fixed_batch_size_ == -1) {
+        fixed_batch_size_ = rows;
+      } else if (rows != fixed_batch_size_ &&
+                 (i != count - 1 || rows > fixed_batch_size_)) {
+        is_fixed_batch_size_ = false;
+      }
+    }
+    if (!paged_ipc_) paged_columns_.clear();
+    if (mapping) {
+      // Duplicate the already-open descriptor, not the path: a concurrent
+      // rename must not make metadata and reads refer to different files.
+#ifdef _WIN32
+      int fd = ::_dup(mapping->file_descriptor());
+#else
+      int fd = ::dup(mapping->file_descriptor());
+#endif
+      if (fd < 0) return arrow::Status::IOError("duplicate IPC descriptor");
+      auto opened = arrow::io::ReadableFile::Open(fd);
+      if (!opened.ok()) {
+#ifdef _WIN32
+        ::_close(fd);
+#else
+        ::close(fd);
+#endif
+        return opened.status();
+      }
+      file_ = opened.ValueOrDie();
+      ARROW_ASSIGN_OR_RAISE(ipc_file_reader_,
+                            arrow::ipc::RecordBatchFileReader::Open(file_));
+    }
+    // No mapping, batch, or Arrow array survives this initialization path.
+    return arrow::Status::OK();
+  }
   PARQUET_ASSIGN_OR_THROW(table_, ipc_file_reader_->ToTable());
 
   if (table_->num_columns() == 0) {
@@ -179,6 +284,14 @@ RecordBatchReaderPtr MmapForwardStore::scan_parquet(
 
 RecordBatchReaderPtr MmapForwardStore::scan_ipc(
     const std::vector<std::string> &columns) {
+  if (ipc_cache_budget_ != 0) {
+    // Scans stream through a separate reader and never pollute the point-read
+    // cache. The reader owns the file and remains valid after this store dies.
+    auto reader = arrow::ipc::RecordBatchFileReader::Open(file_);
+    if (!reader.ok()) return nullptr;
+    return std::make_shared<IPCRecordBatchReader>(reader.ValueOrDie(), columns,
+                                                  physic_schema_);
+  }
   std::vector<int> col_indices;
   for (auto &column : columns) {
     int idx = physic_schema_->GetFieldIndex(column);
@@ -383,6 +496,7 @@ ExecBatchPtr MmapForwardStore::fetch_parquet(
 
 TablePtr MmapForwardStore::fetch_ipc(const std::vector<std::string> &columns,
                                      const std::vector<int> &indices) {
+  if (ipc_cache_budget_ != 0) return fetch_buffered_ipc(columns, indices);
   std::vector<std::pair<int64_t, int64_t>> indices_in_table;
   auto chunked_array = table_->column(0);
   for (const auto &target_index : indices) {
@@ -443,6 +557,19 @@ TablePtr MmapForwardStore::fetch_ipc(const std::vector<std::string> &columns,
 
 ExecBatchPtr MmapForwardStore::fetch_ipc(
     const std::vector<std::string> &columns, int index) {
+  if (ipc_cache_budget_ != 0) {
+    // Materialize only the requested row. A returned string scalar must not
+    // keep an entire evicted batch alive in a caller's result cache.
+    auto table = fetch_buffered_ipc(columns, {index});
+    if (!table) return nullptr;
+    std::vector<arrow::Datum> scalars;
+    for (const auto &column : table->columns()) {
+      auto value = column->GetScalar(0);
+      if (!value.ok()) return nullptr;
+      scalars.emplace_back(value.ValueOrDie());
+    }
+    return std::make_shared<arrow::compute::ExecBatch>(std::move(scalars), 1);
+  }
   // Extract scalars
   std::vector<arrow::Datum> scalars;
   scalars.reserve(columns.size());
@@ -461,6 +588,184 @@ ExecBatchPtr MmapForwardStore::fetch_ipc(
   }
 
   return std::make_shared<arrow::compute::ExecBatch>(std::move(scalars), 1);
+}
+
+arrow::Result<std::shared_ptr<arrow::RecordBatch>>
+MmapForwardStore::read_cached_batch(int index) {
+  // Serialize reader access as well as LRU mutations; eviction never
+  // invalidates a batch held by an in-flight fetch.
+  std::lock_guard<std::mutex> lock(ipc_cache_mutex_);
+  auto found = ipc_cache_.find(index);
+  if (found != ipc_cache_.end()) {
+    ipc_lru_.splice(ipc_lru_.begin(), ipc_lru_, found->second.lru);
+    return found->second.batch;
+  }
+  ARROW_ASSIGN_OR_RAISE(auto batch, ipc_file_reader_->ReadRecordBatch(index));
+  const auto bytes = static_cast<size_t>(arrow::util::TotalBufferSize(*batch));
+  // Oversized batches bypass the cache. Charge a small per-entry allowance
+  // too, so empty/small buffers cannot create an unbounded metadata cache.
+  constexpr size_t kEntryAllowance = 512;
+  if (bytes > ipc_cache_budget_ || kEntryAllowance > ipc_cache_budget_ - bytes)
+    return batch;
+  const size_t charge = bytes + kEntryAllowance;
+  while (ipc_cache_bytes_ > ipc_cache_budget_ - charge) {
+    const int victim = ipc_lru_.back();
+    ipc_cache_bytes_ -= ipc_cache_.at(victim).bytes;
+    ipc_cache_.erase(victim);
+    ipc_lru_.pop_back();
+  }
+  ipc_lru_.push_front(index);
+  ipc_cache_.emplace(index, CachedBatch{batch, charge, ipc_lru_.begin()});
+  ipc_cache_bytes_ += charge;
+  return batch;
+}
+
+TablePtr MmapForwardStore::fetch_buffered_ipc(
+    const std::vector<std::string> &columns, const std::vector<int> &indices) {
+  // Group rows to read each source batch once, preserving duplicates and
+  // caller order. Only result scalars are retained across source batches.
+  std::map<int, std::vector<std::pair<size_t, int64_t>>> groups;
+  for (size_t i = 0; i < indices.size(); ++i) {
+    int chunk = -1;
+    int64_t offset = -1;
+    if (!find_target_chunk(indices[i], chunk_index_map_.size(), &chunk,
+                           &offset))
+      return nullptr;
+    groups[chunk].emplace_back(i, offset);
+  }
+  std::vector<std::unique_ptr<arrow::ArrayBuilder>> builders;
+  for (const auto &field : SelectFields(physic_schema_, columns)) {
+    auto result = arrow::MakeBuilder(field->type());
+    if (!result.ok()) return nullptr;
+    builders.push_back(std::move(result).ValueOrDie());
+  }
+  // Build in grouped order and use an inverse permutation to restore order.
+  std::vector<int32_t> permutation(indices.size());
+  int32_t output = 0;
+  for (const auto &group : groups) {
+    std::shared_ptr<arrow::RecordBatch> batch;
+    if (!paged_ipc_) {
+      auto result = read_cached_batch(group.first);
+      if (!result.ok()) return nullptr;
+      batch = result.ValueOrDie();
+    }
+    for (const auto &row : group.second) {
+      permutation[row.first] = output++;
+      for (size_t c = 0; c < columns.size(); ++c) {
+        auto scalar =
+            columns[c] == LOCAL_ROW_ID
+                ? arrow::Result<std::shared_ptr<arrow::Scalar>>(
+                      std::make_shared<arrow::UInt64Scalar>(indices[row.first]))
+                : (paged_ipc_ ? read_paged_scalar(
+                                    group.first,
+                                    physic_schema_->GetFieldIndex(columns[c]),
+                                    row.second)
+                              : batch->GetColumnByName(columns[c])
+                                    ->GetScalar(row.second));
+        if (!scalar.ok() ||
+            !builders[c]->AppendScalar(*scalar.ValueOrDie()).ok())
+          return nullptr;
+      }
+    }
+  }
+  std::vector<std::shared_ptr<arrow::Array>> arrays;
+  for (auto &builder : builders) {
+    auto array = builder->Finish();
+    if (!array.ok()) return nullptr;
+    auto ordered = SelectArrayByIndices(array.ValueOrDie(), permutation);
+    if (!ordered.ok()) return nullptr;
+    arrays.push_back(ordered.ValueOrDie());
+  }
+  auto fields = SelectFields(physic_schema_, columns);
+  for (auto &field : fields) {
+    if (field->name() == LOCAL_ROW_ID) field = field->WithNullable(false);
+  }
+  return arrow::Table::Make(arrow::schema(fields), arrays, indices.size());
+}
+
+arrow::Status MmapForwardStore::read_cached_bytes(int64_t offset, int64_t size,
+                                                  void *out) {
+  if (offset < 0 || size < 0 ||
+      size > std::numeric_limits<int64_t>::max() - offset)
+    return arrow::Status::Invalid("Invalid IPC byte range");
+  std::lock_guard<std::mutex> lock(ipc_cache_mutex_);
+  auto *dest = static_cast<uint8_t *>(out);
+  if (ipc_cache_budget_ < kPageCharge) {
+    ARROW_ASSIGN_OR_RAISE(auto read, file_->ReadAt(offset, size, out));
+    return read == size ? arrow::Status::OK()
+                        : arrow::Status::IOError("Short IPC read");
+  }
+  while (size > 0) {
+    const int64_t page = offset / kPageBytes * kPageBytes;
+    auto found = pages_.find(page);
+    if (found == pages_.end()) {
+      ARROW_ASSIGN_OR_RAISE(auto data, file_->ReadAt(page, kPageBytes));
+      if (data->size() <= offset - page)
+        return arrow::Status::IOError("Short IPC page");
+      while (ipc_cache_bytes_ > ipc_cache_budget_ - kPageCharge) {
+        pages_.erase(page_lru_.back());
+        page_lru_.pop_back();
+        ipc_cache_bytes_ -= kPageCharge;
+      }
+      page_lru_.push_front(page);
+      found = pages_.emplace(page, CachedPage{data, page_lru_.begin()}).first;
+      ipc_cache_bytes_ += kPageCharge;
+    } else {
+      page_lru_.splice(page_lru_.begin(), page_lru_, found->second.lru);
+    }
+    const int64_t available = found->second.data->size() - (offset - page);
+    if (available <= 0) return arrow::Status::IOError("Short IPC page");
+    const int64_t take = std::min(size, available);
+    std::memcpy(dest, found->second.data->data() + offset - page, take);
+    size -= take;
+    offset += take;
+    dest += take;
+  }
+  return arrow::Status::OK();
+}
+
+arrow::Result<std::shared_ptr<arrow::Scalar>>
+MmapForwardStore::read_paged_scalar(int batch, int column, int64_t row) {
+  const auto &layout = paged_columns_[batch][column];
+  const auto &type = physic_schema_->field(column)->type();
+  if (layout.array_offset < 0 || row < 0 ||
+      row > std::numeric_limits<int64_t>::max() - layout.array_offset ||
+      layout.buffers.size() < (type->id() == arrow::Type::STRING ? 3u : 2u))
+    return arrow::Status::Invalid("Invalid IPC array layout");
+  row += layout.array_offset;
+  const auto read = [&](size_t buffer, int64_t offset, int64_t size,
+                        void *out) {
+    if (buffer >= layout.buffers.size())
+      return arrow::Status::Invalid("Missing IPC buffer");
+    const auto &source = layout.buffers[buffer];
+    if (offset < 0 || size < 0 || offset > source.size ||
+        size > source.size - offset || (size != 0 && source.offset < 0))
+      return arrow::Status::Invalid("IPC buffer bounds");
+    if (size == 0) return arrow::Status::OK();
+    return read_cached_bytes(source.offset + offset, size, out);
+  };
+  if (layout.buffers[0].size != 0) {
+    uint8_t valid = 0;
+    ARROW_RETURN_NOT_OK(read(0, row / 8, 1, &valid));
+    if (!(valid & (1 << (row % 8)))) return arrow::MakeNullScalar(type);
+  }
+  if (type->id() == arrow::Type::UINT64) {
+    if (row > std::numeric_limits<int64_t>::max() / 8)
+      return arrow::Status::Invalid("IPC row overflow");
+    uint64_t value = 0;
+    ARROW_RETURN_NOT_OK(read(1, row * 8, 8, &value));
+    return std::make_shared<arrow::UInt64Scalar>(value);
+  }
+  if (row > (std::numeric_limits<int64_t>::max() - 8) / 4)
+    return arrow::Status::Invalid("IPC row overflow");
+  int32_t offsets[2];
+  ARROW_RETURN_NOT_OK(read(1, row * 4, 8, offsets));
+  if (offsets[0] < 0 || offsets[1] < offsets[0] ||
+      offsets[1] > layout.buffers[2].size)
+    return arrow::Status::Invalid("Invalid IPC string offsets");
+  std::string value(static_cast<size_t>(offsets[1] - offsets[0]), '\0');
+  ARROW_RETURN_NOT_OK(read(2, offsets[0], value.size(), value.data()));
+  return std::make_shared<arrow::StringScalar>(std::move(value));
 }
 
 int MmapForwardStore::find_row_group_for_row(int64_t row) {
