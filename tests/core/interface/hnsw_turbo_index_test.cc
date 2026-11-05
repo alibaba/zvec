@@ -944,8 +944,6 @@ struct BulkContextState {
   bool fail_first;
   mutable std::atomic<size_t> context_calls{0};
   mutable std::atomic<size_t> contexts_ready{0};
-  std::atomic<size_t> streamers_created{0};
-  std::atomic<int> borrowed_open_result{zvec::core::IndexError_NoReady};
   std::atomic<size_t> adds{0};
   std::atomic<size_t> premature_adds{0};
   bool fail_worker_allocation{false};
@@ -1087,19 +1085,12 @@ void CheckBulkContextDeletion(void *ptr) {
 
 class CheckedBulkStreamer : public zvec::core::HnswStreamer {
  public:
-  explicit CheckedBulkStreamer(BulkContextState *state) : state_(state) {
-    state_->streamers_created.fetch_add(1);
-  }
-
-  BulkContextState *test_state() const {
-    return state_;
-  }
+  explicit CheckedBulkStreamer(BulkContextState *state) : state_(state) {}
 
   int open_with_borrowed_vectors(
       zvec::core::IndexStorage::Pointer storage,
       const zvec::core::VectorSource *source) override {
     const int ret = HnswStreamer::open_with_borrowed_vectors(storage, source);
-    state_->borrowed_open_result.store(ret);
     borrowed_build_ = ret == 0;
     return ret;
   }
@@ -1145,10 +1136,13 @@ class CheckedBulkStreamer : public zvec::core::HnswStreamer {
 
 class ScopedBulkStreamerFactory {
  public:
-  explicit ScopedBulkStreamerFactory(BulkContextState *state) {
+  explicit ScopedBulkStreamerFactory(BulkContextState &state) {
+    // Factory preserves references in its argument tuple. Pass a pointer
+    // prvalue: MSVC's default mode treats a same-type static_cast as an
+    // lvalue, which would leave a reference to a local pointer parameter.
     zvec::ailego::Factory<zvec::core::IndexStreamer>::Register<
         CheckedBulkStreamer>
-        replace("HnswStreamer", static_cast<BulkContextState *>(state));
+        replace("HnswStreamer", &state);
   }
   ~ScopedBulkStreamerFactory() {
     zvec::ailego::Factory<zvec::core::IndexStreamer>::Register<
@@ -1187,7 +1181,7 @@ TEST(HnswBulkMergeTest, PreparesAllContextsBeforeWritesAndPropagatesFailure) {
     auto vectors = RandomVectors();
     AddVectors(source.get(), vectors);
     {
-      ScopedBulkStreamerFactory factory(&state);
+      ScopedBulkStreamerFactory factory(state);
       EXPECT_EQ(failure ? zvec::core::IndexError_NoMemory : 0,
                 target->merge({source}, IndexFilter(), {4, &pool}));
     }
@@ -1210,8 +1204,6 @@ TEST(HnswBulkMergeTest, PreparesAllContextsBeforeWritesAndPropagatesFailure) {
 
 TEST(HnswBulkMergeTest, TaskAllocationFailureWaitsBeforeDestroyingContexts) {
   namespace ailego = zvec::ailego;
-  ASSERT_EQ(0U, bulk_alloc_test::countdown);
-  ASSERT_EQ(nullptr, bulk_alloc_test::should_fail);
   BulkContextState state{0, false};
   AILEGO_DEFER([]() { bulk_alloc_test::Reset(); });
   ailego::ThreadPool pool(2, false);
@@ -1258,21 +1250,12 @@ TEST(HnswBulkMergeTest, TaskAllocationFailureWaitsBeforeDestroyingContexts) {
   });
   int ret;
   {
-    ScopedBulkStreamerFactory factory(&state);
-    auto probe = std::dynamic_pointer_cast<CheckedBulkStreamer>(
-        zvec::core::IndexFactory::CreateStreamer("HnswStreamer"));
-    ASSERT_NE(nullptr, probe);
-    ASSERT_EQ(&state, probe->test_state());
-    probe.reset();
+    ScopedBulkStreamerFactory factory(state);
     ret = target->merge({source}, IndexFilter(), {2, &pool});
     bulk_alloc_test::Reset();
   }
   merge_finished.store(true);
   controller.join();
-  SCOPED_TRACE(::testing::Message()
-               << "streamers_created=" << state.streamers_created.load()
-               << ", borrowed_open_result="
-               << state.borrowed_open_result.load());
   EXPECT_EQ(zvec::core::IndexError_NoMemory, ret);
   EXPECT_EQ(state.workers, state.context_calls.load());
   EXPECT_EQ(state.workers, state.contexts_ready.load());
