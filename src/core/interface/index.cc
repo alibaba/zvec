@@ -485,6 +485,25 @@ int Index::init_converter_reformer(const std::string &converter_name,
 }
 
 int Index::init(const BaseIndexParam &param) {
+  if (param.quantizer_param &&
+      param.quantizer_param->type == QuantizerType::kRabitq) {
+    switch (param.index_type) {
+      case IndexType::kHNSW:
+      case IndexType::kIVF:
+      case IndexType::kDiskAnn:
+        if (param.quantizer_param->enable_rotate) {
+          LOG_ERROR("RABITQ does not support additional enable_rotate");
+          return core::IndexError_Unsupported;
+        }
+        break;
+      case IndexType::kHNSWRabitq:
+      case IndexType::kIVFRabitq:
+        break;  // Preserve the dedicated indexes' parameter handling.
+      default:
+        LOG_ERROR("RABITQ is unsupported for this index type");
+        return core::IndexError_Unsupported;
+    }
+  }
   param_ = param;  // will lose the original type info
 
   is_sparse_ = param.is_sparse;
@@ -790,7 +809,7 @@ int Index::search(const VectorData &vector_data,
   }
 
   const bool has_group_by = has_group_by_search(search_param);
-  if (has_group_by && is_group_by_unsupported_index(param_.index_type)) {
+  if (has_group_by && !supports_group_by()) {
     LOG_ERROR("group_by search is not supported for this index type");
     return core::IndexError_Unsupported;
   }
@@ -968,10 +987,21 @@ int Index::_dense_add(const VectorData &vector_data, const uint32_t doc_id,
   const DenseVector &dense_vector = std::get<DenseVector>(vector_data.vector);
   if (turbo_quantizer_ != nullptr) {
     auto *new_vector = context->mutable_features();
-    new_vector->resize(turbo_quantizer_->quantized_datapoint_vector_length());
-    turbo_quantizer_->quantize_data(dense_vector.data, new_vector->data());
-    if (streamer_->add_with_id_impl(doc_id, new_vector->data(),
-                                    streamer_vector_meta_, context) != 0) {
+    core::IndexQueryMeta new_meta;
+    if (turbo_quantizer_->requires_original_vectors()) {
+      if (turbo_quantizer_->quantize_datapoint(dense_vector.data,
+                                               input_vector_meta_, new_vector,
+                                               &new_meta) != 0) {
+        LOG_ERROR("Failed to quantize vector with turbo quantizer");
+        return core::IndexError_Runtime;
+      }
+    } else {
+      new_vector->resize(turbo_quantizer_->quantized_datapoint_vector_length());
+      turbo_quantizer_->quantize_data(dense_vector.data, new_vector->data());
+      new_meta = streamer_vector_meta_;
+    }
+    if (streamer_->add_with_id_impl(doc_id, new_vector->data(), new_meta,
+                                    context) != 0) {
       LOG_ERROR("Failed to add vector");
       return core::IndexError_Runtime;
     }

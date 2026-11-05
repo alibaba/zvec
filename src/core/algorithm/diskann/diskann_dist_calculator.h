@@ -125,11 +125,13 @@ class DistCalculator {
     quant_code_size_ = code_size;
   }
 
-  void quantize_query(const void *query_rotated) {
+  int quantize_query(const void *query_rotated) {
+    if (!quantizer_ || !query_rotated) return IndexError_InvalidArgument;
     quant_query_scratch_.resize(quantizer_->quantized_query_vector_length());
     quantizer_->quantize_query(query_rotated, quant_query_scratch_.data());
-    quant_dist_impl_ =
-        quantizer_->distance(quant_query_scratch_.data(), IndexQueryMeta());
+    quant_dist_impl_ = quantizer_->distance(quant_query_scratch_.data(),
+                                            quantizer_->quantized_query_meta());
+    return quant_dist_impl_.valid() ? 0 : IndexError_Unsupported;
   }
 
   void quantized_dist(const diskann_id_t *ids, uint32_t n, float *dists) {

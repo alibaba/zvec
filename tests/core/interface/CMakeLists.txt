@@ -10,6 +10,6 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
       LIBS zvec_ailego core_framework core_metric core_interface core_knn_flat core_utility core_quantizer sparsehash core_knn_hnsw core_mix_reducer
           core_knn_flat_sparse core_knn_hnsw_sparse core_knn_ivf core_knn_hnsw_rabitq core_knn_ivf_rabitq core_knn_vamana core_knn_diskann zvec_turbo
       SRCS ${CC_SRCS}
-      INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm
+      INCS . ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR}/src/core/algorithm ${PROJECT_ROOT_DIR}/src/turbo
     )
 endforeach()

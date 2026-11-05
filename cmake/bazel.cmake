@@ -726,10 +726,18 @@ function(_target_link_libraries _NAME)
         list(APPEND LOCAL_RESULT ${DEP_ALWAYS_LINK_LIBS})
       endif()
 
-      get_target_property(LINK_LIBS ${LIB} LINK_LIBRARIES)
-      if(LINK_LIBS)
-        _collect_always_link_libs("${LINK_LIBS}" LINK_ALWAYS_LINK_LIBS)
-        list(APPEND LOCAL_RESULT ${LINK_ALWAYS_LINK_LIBS})
+      # A shared library already contains its PRIVATE static dependencies.
+      # Force-loading those archives again in a consumer duplicates registration
+      # state and can reference symbols hidden by the shared library's ABI.
+      # Public/interface dependencies above still propagate normally.
+      get_target_property(LIB_TYPE ${LIB} TYPE)
+      if(NOT LIB_TYPE STREQUAL "SHARED_LIBRARY" AND
+         NOT LIB_TYPE STREQUAL "MODULE_LIBRARY")
+        get_target_property(LINK_LIBS ${LIB} LINK_LIBRARIES)
+        if(LINK_LIBS)
+          _collect_always_link_libs("${LINK_LIBS}" LINK_ALWAYS_LINK_LIBS)
+          list(APPEND LOCAL_RESULT ${LINK_ALWAYS_LINK_LIBS})
+        endif()
       endif()
     endforeach()
 

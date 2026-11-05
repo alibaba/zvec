@@ -15,6 +15,7 @@
 #include <memory>
 #include <string>
 #include <turbo/quantizer/quantizer.h>
+#include <turbo/quantizer/rabitq_quantizer/rabitq_params.h>
 #include <zvec/core/framework/index_helper.h>
 #include <zvec/core/interface/index.h>
 #include "algorithm/hnsw/hnsw_context.h"
@@ -59,7 +60,8 @@ const char *ResolveTurboQuantizerName(const QuantizerParam &quantizer_param,
   }
 
   // Rotation is still implemented by the legacy integer converters.
-  if (quantizer_param.enable_rotate) {
+  if (quantizer_param.enable_rotate &&
+      quantizer_param.type != QuantizerType::kRabitq) {
     return nullptr;
   }
 
@@ -72,6 +74,8 @@ const char *ResolveTurboQuantizerName(const QuantizerParam &quantizer_param,
       return "Int8Quantizer";
     case QuantizerType::kInt4:
       return "Int4Quantizer";
+    case QuantizerType::kRabitq:
+      return hnsw_param.use_external_vector ? nullptr : "RabitqQuantizer";
     default:
       return nullptr;
   }
@@ -103,6 +107,13 @@ int HNSWIndex::prepare_streamer_open(const StorageOptions &options) {
     proxima_index_meta_.clear();
     use_legacy_pipeline_ = true;
     return Index::init(param_);
+  }
+  // Older RaBitQ descriptors omit the raw input layout. Preserve their
+  // configured restore path; newer descriptors are authoritative below.
+  if (turbo_quantizer_ && turbo_quantizer_->requires_original_vectors() &&
+      persisted_meta.quantizer_name() == proxima_index_meta_.quantizer_name() &&
+      !persisted_meta.quantizer_params().has("input_dimension")) {
+    return 0;
   }
   // The persisted descriptor decides the search pipeline, including when a
   // caller reopens an index with a different quantizer configuration: a
@@ -162,6 +173,12 @@ int HNSWIndex::prepare_streamer_open(const StorageOptions &options) {
 
 int HNSWIndex::create_and_init_converter_reformer(
     const QuantizerParam &quantizer_param, const BaseIndexParam &index_param) {
+#if !RABITQ_SUPPORTED
+  if (quantizer_param.type == QuantizerType::kRabitq) {
+    LOG_ERROR("RaBitQ is not supported on this platform (Linux x86_64 only)");
+    return core::IndexError_Unsupported;
+  }
+#endif
   const auto &hnsw_param = dynamic_cast<const HNSWIndexParam &>(index_param);
   if (quantizer_param.type == QuantizerType::kPQ) {
     if (hnsw_param.is_sparse || hnsw_param.data_type != DataType::DT_FP32 ||
@@ -192,20 +209,33 @@ int HNSWIndex::create_and_init_converter_reformer(
       LOG_ERROR("Failed to create turbo quantizer %s", quantizer_name);
       return core::IndexError_Runtime;
     }
-    if (turbo_quantizer_->init(proxima_index_meta_, ailego::Params{}) != 0) {
+    ailego::Params quantizer_params;
+    if (quantizer_param.type == QuantizerType::kRabitq) {
+      const auto *rabitq =
+          dynamic_cast<const RabitqQuantizerParam *>(&quantizer_param);
+      quantizer_params =
+          (rabitq ? *rabitq : RabitqQuantizerParam{}).to_params();
+    }
+    if (turbo_quantizer_->init(proxima_index_meta_, quantizer_params) != 0) {
       LOG_ERROR("Failed to init turbo quantizer %s", quantizer_name);
       turbo_quantizer_.reset();
       return core::IndexError_Runtime;
     }
 
     proxima_index_meta_ = turbo_quantizer_->meta();
-    proxima_index_meta_.set_quantizer(quantizer_name, 0, ailego::Params{});
+    proxima_index_meta_.set_quantizer(quantizer_name, 0, quantizer_params);
     streamer_vector_meta_.set_meta(
         proxima_index_meta_.data_type(), proxima_index_meta_.dimension(),
         static_cast<uint32_t>(turbo_quantizer_->type()),
         proxima_index_meta_.extra_meta_size());
     streamer_vector_meta_.set_meta_type(proxima_index_meta_.meta_type());
     return core::IndexError_Success;
+  }
+  if (quantizer_param.type == QuantizerType::kRabitq) {
+    LOG_ERROR(
+        "RaBitQ HNSW requires dense FP32 vectors, an L2/IP/Cosine metric, and "
+        "in-index storage");
+    return core::IndexError_Unsupported;
   }
   return Index::create_and_init_converter_reformer(quantizer_param,
                                                    index_param);

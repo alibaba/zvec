@@ -96,6 +96,10 @@ class IVFStreamer : public IndexStreamer {
     return quantizer_;
   }
 
+  bool owns_context(const IVFSearcherContext &context) const {
+    return context.magic() == magic_;
+  }
+
   const IndexMeta &posting_meta() const {
     return entity_ ? entity_->meta() : meta_;
   }

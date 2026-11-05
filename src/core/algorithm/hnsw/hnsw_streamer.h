@@ -214,6 +214,8 @@ class HnswStreamer : public IndexStreamer {
   void print_debug_info() override;
 
  private:
+  int open_quantizer(const IndexStorage::Pointer &storage, bool create);
+
   int check_params(const void *query, const IndexQueryMeta &qmeta,
                    bool search = false) const;
 

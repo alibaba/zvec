@@ -307,3 +307,33 @@ def test_hnsw_pq_rejects_invalid_configuration(tmp_path, kwargs):
     with pytest.raises(ValueError, match="PQ"):
         coll = zvec.create_and_open(str(tmp_path / "index"), schema)
         coll.close()
+
+
+@pytest.mark.parametrize(
+    "state,expected",
+    [
+        (
+            (False, 3, 4, 128, 6),
+            {"total_bits": 3, "num_clusters": 4, "sample_count": 128, "n_iters": 6},
+        ),
+        (
+            (True, 4, 4, True, 2, 3),
+            {
+                "num_chunk": 4,
+                "num_bits": 4,
+                "fast_scan": True,
+                "opq_iter": 2,
+                "opq_pq_iter": 3,
+            },
+        ),
+    ],
+)
+def test_quantizer_pickle_before_pq_rabitq_merge(state, expected):
+    qp = zvec.QuantizerParam.__new__(zvec.QuantizerParam)
+    qp.__setstate__(state)
+    for name, value in expected.items():
+        assert getattr(qp, name) == value
+    assert pickle.loads(pickle.dumps(qp)) == qp
+    for kind in ("ivf", "hnsw"):
+        param = index_param(kind, quantizer_param=qp)
+        assert pickle.loads(pickle.dumps(param)).quantizer_param == qp

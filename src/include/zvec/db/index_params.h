@@ -16,6 +16,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <vector>
 #include <zvec/core/interface/constants.h>
 #include <zvec/db/status.h>
@@ -122,6 +123,8 @@ class ZVEC_API InvertIndexParams : public IndexParams {
 
 /*
  * Quantizer parameters for vector indexes.
+ * Encapsulates quantization-related settings such as enable_rotate.
+ * Also configures Turbo RaBitQ training for standard HNSW, IVF, and DiskANN.
  * Rotation settings and IVF product-quantization configuration.
  * PQ fields apply when quantize_type is PQ; enable_rotate selects learned OPQ.
  */
@@ -137,6 +140,43 @@ class QuantizerParam {
         fast_scan_(fast_scan),
         opq_iter_(opq_iter),
         opq_pq_iter_(opq_pq_iter) {}
+  // Preserve the RaBitQ overload; a boolean fourth argument selects PQ.
+  template <typename SampleCount,
+            std::enable_if_t<std::is_integral_v<SampleCount> &&
+                                 !std::is_same_v<SampleCount, bool>,
+                             int> = 0>
+  QuantizerParam(bool enable_rotate, int total_bits, int num_clusters,
+                 SampleCount sample_count, int n_iters = 20)
+      : enable_rotate_(enable_rotate),
+        total_bits_(total_bits),
+        num_clusters_(num_clusters),
+        sample_count_(sample_count),
+        n_iters_(n_iters) {}
+
+  int total_bits() const {
+    return total_bits_;
+  }
+  void set_total_bits(int value) {
+    total_bits_ = value;
+  }
+  int num_clusters() const {
+    return num_clusters_;
+  }
+  void set_num_clusters(int value) {
+    num_clusters_ = value;
+  }
+  int sample_count() const {
+    return sample_count_;
+  }
+  void set_sample_count(int value) {
+    sample_count_ = value;
+  }
+  int n_iters() const {
+    return n_iters_;
+  }
+  void set_n_iters(int value) {
+    n_iters_ = value;
+  }
 
   bool enable_rotate() const {
     return enable_rotate_;
@@ -183,6 +223,9 @@ class QuantizerParam {
 
   bool operator==(const QuantizerParam &other) const {
     return enable_rotate_ == other.enable_rotate_ &&
+           total_bits_ == other.total_bits_ &&
+           num_clusters_ == other.num_clusters_ &&
+           sample_count_ == other.sample_count_ && n_iters_ == other.n_iters_ &&
            num_chunk_ == other.num_chunk_ && num_bits_ == other.num_bits_ &&
            fast_scan_ == other.fast_scan_ && opq_iter_ == other.opq_iter_ &&
            opq_pq_iter_ == other.opq_pq_iter_;
@@ -195,6 +238,12 @@ class QuantizerParam {
  private:
   // Random rotation for scalar quantizers; learned OPQ for PQ.
   bool enable_rotate_{false};
+  // Used by standard HNSW/IVF/DiskANN with RABITQ; IVF's top-level bits and
+  // sample count remain authoritative for compatibility with its existing API.
+  int total_bits_{7};
+  int num_clusters_{16};
+  int sample_count_{0};
+  int n_iters_{20};
   int num_chunk_{8};
   int num_bits_{8};
   bool fast_scan_{false};
@@ -292,10 +341,7 @@ class ZVEC_API HnswIndexParams : public VectorIndexParams {
 
  public:
   Ptr clone() const override {
-    return std::make_shared<HnswIndexParams>(
-        metric_type_, m_, ef_construction_, quantize_type_,
-        use_contiguous_memory_, quantizer_param_, use_flat_contiguous_memory_,
-        flat_data_type_);
+    return std::make_shared<HnswIndexParams>(*this);
   }
 
   std::string to_string() const override {
@@ -368,7 +414,16 @@ class ZVEC_API HnswIndexParams : public VectorIndexParams {
     return flat_data_type_;
   }
 
+  // Build-only provider: shared while training/building, never persisted.
+  const core::IndexProvider::Pointer &raw_vector_provider() const {
+    return raw_vector_provider_;
+  }
+  void set_raw_vector_provider(core::IndexProvider::Pointer provider) {
+    raw_vector_provider_ = std::move(provider);
+  }
+
  protected:
+  core::IndexProvider::Pointer raw_vector_provider_;
   int m_;
   int ef_construction_;
   // When enabled, HNSW streamer allocates a single contiguous memory arena
@@ -630,6 +685,11 @@ inline FlatIndexParams MakeDefaultVectorIndexParams(
 inline FlatIndexParams MakeDefaultQuantVectorIndexParams(
     MetricType metric_type, QuantizeType quantize_type,
     QuantizerParam quantizer_param = {}) {
+  // RaBitQ needs dataset training during optimize. Its temporary Flat stores
+  // raw vectors, including when reopening an existing unindexed block.
+  if (quantize_type == QuantizeType::RABITQ) {
+    return MakeDefaultVectorIndexParams(metric_type);
+  }
   return FlatIndexParams(metric_type, quantize_type, quantizer_param);
 }
 
@@ -638,20 +698,24 @@ class ZVEC_API IVFIndexParams : public VectorIndexParams {
   IVFIndexParams(MetricType metric_type, int n_list = 1024, int n_iters = 10,
                  bool use_soar = false,
                  QuantizeType quantize_type = QuantizeType::UNDEFINED,
-                 QuantizerParam quantizer_param = {})
+                 QuantizerParam quantizer_param = {},
+                 int total_bits = core_interface::kDefaultRabitqTotalBits,
+                 int sample_count = 0)
       : VectorIndexParams(IndexType::IVF, metric_type, quantize_type,
                           quantizer_param),
         n_list_(n_list),
         n_iters_(n_iters),
-        use_soar_(use_soar) {}
+        use_soar_(use_soar),
+        total_bits_(total_bits),
+        sample_count_(sample_count) {}
 
   using OPtr = std::shared_ptr<IVFIndexParams>;
 
  public:
   Ptr clone() const override {
-    return std::make_shared<IVFIndexParams>(metric_type_, n_list_, n_iters_,
-                                            use_soar_, quantize_type_,
-                                            quantizer_param_);
+    return std::make_shared<IVFIndexParams>(
+        metric_type_, n_list_, n_iters_, use_soar_, quantize_type_,
+        quantizer_param_, total_bits_, sample_count_);
   }
 
   std::string to_string() const override {
@@ -659,6 +723,7 @@ class ZVEC_API IVFIndexParams : public VectorIndexParams {
                                                   metric_type_, quantize_type_);
     std::ostringstream oss;
     oss << base_str << ",n_list:" << n_list_ << ",n_iters:" << n_iters_
+        << ",total_bits:" << total_bits_ << ",sample_count:" << sample_count_
         << ",enable_rotate:"
         << (quantizer_param_.enable_rotate() ? "true" : "false") << "}";
     return oss.str();
@@ -688,6 +753,19 @@ class ZVEC_API IVFIndexParams : public VectorIndexParams {
     use_soar_ = use_soar;
   }
 
+  int total_bits() const {
+    return total_bits_;
+  }
+  void set_total_bits(int value) {
+    total_bits_ = value;
+  }
+  int sample_count() const {
+    return sample_count_;
+  }
+  void set_sample_count(int value) {
+    sample_count_ = value;
+  }
+
   bool operator==(const IndexParams &other) const override {
     return type() == other.type() &&
            metric_type() ==
@@ -695,6 +773,10 @@ class ZVEC_API IVFIndexParams : public VectorIndexParams {
            n_list_ == static_cast<const IVFIndexParams &>(other).n_list_ &&
            n_iters_ == static_cast<const IVFIndexParams &>(other).n_iters_ &&
            use_soar_ == static_cast<const IVFIndexParams &>(other).use_soar_ &&
+           total_bits_ ==
+               static_cast<const IVFIndexParams &>(other).total_bits_ &&
+           sample_count_ ==
+               static_cast<const IVFIndexParams &>(other).sample_count_ &&
            quantize_type() ==
                static_cast<const IVFIndexParams &>(other).quantize_type() &&
            quantizer_param_ ==
@@ -705,6 +787,8 @@ class ZVEC_API IVFIndexParams : public VectorIndexParams {
   int n_list_;
   int n_iters_;
   bool use_soar_;
+  int total_bits_;
+  int sample_count_;
 };
 
 class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {

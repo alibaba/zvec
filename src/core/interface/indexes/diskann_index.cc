@@ -104,6 +104,26 @@ int DiskAnnIndex::create_and_init_streamer(const BaseIndexParam &param) {
                             param_.list_size);
   proxima_index_params_.set(core::PARAM_DISKANN_BUILDER_MAX_PQ_CHUNK_NUM,
                             param_.pq_chunk_num);
+  if (param_.quantizer_param &&
+      param_.quantizer_param->type == QuantizerType::kRabitq) {
+#if !RABITQ_SUPPORTED
+    return core::IndexError_Unsupported;
+#else
+    if (param_.data_type != DataType::DT_FP32 ||
+        param_.quantizer_param->enable_rotate ||
+        (param_.metric_type != MetricType::kL2sq &&
+         param_.metric_type != MetricType::kInnerProduct &&
+         param_.metric_type != MetricType::kCosine))
+      return core::IndexError_Unsupported;
+    const auto *settings = dynamic_cast<const RabitqQuantizerParam *>(
+        param_.quantizer_param.get());
+    proxima_index_params_.set(core::PARAM_DISKANN_BUILDER_QUANTIZER_CLASS,
+                              "RabitqQuantizer");
+    proxima_index_params_.set(
+        core::PARAM_DISKANN_BUILDER_QUANTIZER_PARAMS,
+        (settings ? *settings : RabitqQuantizerParam{}).to_params());
+#endif
+  }
   builder_ = core::IndexFactory::CreateBuilder("DiskAnnBuilder");
   streamer_ = core::IndexFactory::CreateStreamer("DiskAnnStreamer");
 

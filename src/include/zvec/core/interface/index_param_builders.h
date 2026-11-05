@@ -144,6 +144,14 @@ class IVFIndexParamBuilder
     param->niters = niters;
     return *this;
   }
+  IVFIndexParamBuilder &with_total_bits(int total_bits) {
+    param->total_bits = total_bits;
+    return *this;
+  }
+  IVFIndexParamBuilder &with_sample_count(int sample_count) {
+    param->sample_count = sample_count;
+    return *this;
+  }
   IVFIndexParamBuilder &with_l1_index(const BaseIndexParam &l1_index) {
     param->l1_index = std::make_shared<BaseIndexParam>(l1_index);
     return *this;

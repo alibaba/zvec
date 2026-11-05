@@ -296,7 +296,8 @@ class SegmentHelper {
   //   - HNSW_RABITQ: clones index params, trains a RabitqConverter against
   //     `raw_vector_provider`, and attaches the resulting reformer and
   //     provider to the cloned params.
-  //   - IVF_RABITQ: uses the cloned field unchanged because its builder owns
+  //   - IVF + RABITQ (and legacy IVF_RABITQ): uses the cloned field unchanged
+  //     because its builder owns
   //     KMeans and RaBitQ training.
   //   - Other quantize types: clones the field with its current index_params
   //     unchanged.

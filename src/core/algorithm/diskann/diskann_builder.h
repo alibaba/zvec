@@ -19,6 +19,7 @@
 #include <zvec/core/framework/index_factory.h>
 #include "diskann_algorithm.h"
 #include "diskann_builder_entity.h"
+#include "diskann_quantizer.h"
 
 namespace zvec {
 namespace core {
@@ -63,7 +64,7 @@ class DiskAnnBuilder : public IndexBuilder {
   int do_norm(const void *data_ptr, std::string *norm_data);
 
  private:
-  int train_quantized_data(IndexThreads::Pointer threads);
+  int train_quantized_data();
   int generate_quantized_data(IndexThreads::Pointer threads);
 
   void encode_pq_batch(const uint8_t *block_data, uint64_t block_start_id,
@@ -78,8 +79,6 @@ class DiskAnnBuilder : public IndexBuilder {
                 std::atomic<uint64_t> *finished);
 
   int calculate_entry_point();
-
-  int calculate_pq_chunk_num();
 
   double get_memory_in_bytes(double search_ram_budget) {
     return search_ram_budget * 1024 * 1024 * 1024;
@@ -96,7 +95,6 @@ class DiskAnnBuilder : public IndexBuilder {
   constexpr static uint32_t kDefaultLogIntervalSecs = 15U;
   constexpr static uint32_t kDefaultListSize = 50U;
   constexpr static uint32_t kDefaultMaxDegree = 100U;
-  constexpr static uint32_t kDefaultPqChunkNum = -1U;
   constexpr static uint32_t kDefaultMaxTrainSampleCount = 200000U;
   constexpr static double kDefaultTrainSampleRatio = 1.0;
 
@@ -106,8 +104,7 @@ class DiskAnnBuilder : public IndexBuilder {
   uint32_t list_size_{kDefaultListSize};
   double memory_limit_{0.0};
   bool memory_limit_set_{false};
-  uint32_t max_pq_chunk_num_{kDefaultPqChunkNum};
-  uint32_t pq_chunk_num_{kDefaultPqChunkNum};
+  uint32_t code_size_{0};
   uint32_t build_thread_count_{0};
   uint32_t max_train_sample_count_{kDefaultMaxTrainSampleCount};
   double train_sample_ratio_{kDefaultTrainSampleRatio};
@@ -134,7 +131,7 @@ class DiskAnnBuilder : public IndexBuilder {
   IndexHolder::Pointer holder_;
 
   DiskAnnAlgorithm::UPointer algo_;
-  turbo::Quantizer::Pointer quantizer_;
+  DiskAnnQuantizer candidate_quantizer_;
 
   //! Externally constructed quantizer for the full-precision distance used
   //! during graph construction, forwarded to every build context's

@@ -27,3 +27,31 @@ TEST(QuantizerParam, SerializesCanonicalUniformNames) {
 
 }  // namespace
 }  // namespace zvec::core_interface
+
+TEST(RabitqQuantizerParam, CloneAndJsonPreserveRabitqConfiguration) {
+  using namespace zvec::core_interface;
+  RabitqQuantizerParam param(4);
+  param.num_clusters = 8;
+  param.sample_count = 200;
+  param.niters = 6;
+  auto copy = std::dynamic_pointer_cast<RabitqQuantizerParam>(param.clone());
+  ASSERT_NE(nullptr, copy);
+  EXPECT_EQ(4, copy->total_bits);
+  EXPECT_EQ(8, copy->num_clusters);
+  EXPECT_EQ(200, copy->sample_count);
+  EXPECT_EQ(6, copy->niters);
+  auto restored = QuantizerParam::Create(QuantizerType::kRabitq);
+  ASSERT_TRUE(restored->deserialize_from_json(param.serialize_to_json()));
+  auto rabitq = std::dynamic_pointer_cast<RabitqQuantizerParam>(restored);
+  ASSERT_NE(nullptr, rabitq);
+  EXPECT_EQ(4, rabitq->total_bits);
+  EXPECT_EQ(8, rabitq->num_clusters);
+  EXPECT_EQ(200, rabitq->sample_count);
+  EXPECT_EQ(6, rabitq->niters);
+  EXPECT_TRUE(restored->deserialize_from_json(
+      RabitqQuantizerParam(9).serialize_to_json()));
+  EXPECT_FALSE(restored->deserialize_from_json(
+      RabitqQuantizerParam(10).serialize_to_json()));
+  param.num_clusters = 0;
+  EXPECT_FALSE(restored->deserialize_from_json(param.serialize_to_json()));
+}

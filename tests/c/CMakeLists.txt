@@ -40,3 +40,8 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     )
   endif()
 endforeach()
+
+# The RaBitQ integration fixture normalizes its deterministic input vectors.
+if(TARGET c_api_rabitq_test AND UNIX)
+  target_link_libraries(c_api_rabitq_test m)
+endif()
