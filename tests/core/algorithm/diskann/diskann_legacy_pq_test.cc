@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/turbo/turbo.h>
+#include "diskann_dist_calculator.h"
 #include "diskann_util.h"
 
 namespace zvec {
@@ -268,6 +269,57 @@ TEST(DiskAnnLegacyPq, DetectsQuantizerHeader) {
   ++old_header.full_pivot_data_size;
   std::memcpy(static_cast<void *>(&header), &old_header, sizeof(header));
   EXPECT_NE(0, DiskAnnUtil::normalize_pq_meta(meta, &header, &legacy));
+}
+
+TEST(DiskAnnLegacyPqTest, CosineNavigationAndMetricOverride) {
+  auto pq_meta = make_meta(2);
+  auto pq = std::make_shared<turbo::PqInt8Quantizer>();
+  ailego::Params params;
+  params.set("num_chunk", uint32_t{1});
+  ASSERT_EQ(0, pq->init(pq_meta, params));
+  std::vector<float> book(256 * 2, 0.0f);
+  book[0] = 2.0f;
+  book[1] = 1.0f;
+  book[2] = 0.5f;
+  book[3] = 0.5f;
+  ASSERT_EQ(0, pq->import_codebook(book.data(), book.size() * sizeof(float)));
+  auto meta = make_meta(2);
+  meta.set_metric("Cosine", 0, ailego::Params());
+  auto metric = IndexFactory::CreateMetric("Cosine");
+  ASSERT_TRUE(metric);
+  ASSERT_EQ(0, metric->init(meta, meta.metric_params()));
+  DistCalculator dc(nullptr, meta, metric);
+  const uint8_t codes[] = {0, 1};
+  const diskann_id_t ids[] = {0, 1};
+  const float query[] = {1, 0};
+  float distances[2];
+  dc.bind_quantizer(pq.get(), codes, 1);
+  dc.quantize_query(query);
+  dc.quantized_dist(ids, 2, distances);
+  EXPECT_NEAR(1 - 2 / std::sqrt(5.0f), distances[0], 1e-6f);
+  EXPECT_NEAR(1 - 1 / std::sqrt(2.0f), distances[1], 1e-6f);
+  EXPECT_LT(distances[0], distances[1]);
+  float inverse_norms[2];
+  ASSERT_TRUE(pq->cosine_inverse_norms(codes, 2, 1, inverse_norms));
+  dc.bind_quantizer(pq.get(), codes, 1, inverse_norms);
+  dc.quantize_query(query);
+  dc.quantized_dist(ids, 2, distances);
+  EXPECT_NEAR(1 - 2 / std::sqrt(5.0f), distances[0], 1e-6f);
+  EXPECT_NEAR(1 - 1 / std::sqrt(2.0f), distances[1], 1e-6f);
+  auto l2 = IndexFactory::CreateMetric("SquaredEuclidean");
+  ASSERT_TRUE(l2);
+  ASSERT_EQ(0, l2->init(pq_meta, pq_meta.metric_params()));
+  dc.update(nullptr, meta, l2);
+  dc.quantize_query(query);
+  dc.quantized_dist(ids, 2, distances);
+  EXPECT_FLOAT_EQ(2.0f, distances[0]);
+  EXPECT_FLOAT_EQ(0.5f, distances[1]);
+  dc.update(nullptr, meta, metric);
+  dc.update_distance(l2->distance());
+  dc.quantize_query(query);
+  dc.quantized_dist(ids, 2, distances);
+  EXPECT_FLOAT_EQ(2.0f, distances[0]);
+  EXPECT_FLOAT_EQ(0.5f, distances[1]);
 }
 
 }  // namespace core

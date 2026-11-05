@@ -514,8 +514,14 @@ TEST(DiskAnnFileReaderTest, SectorTransferCachesOnlyLogicalNode) {
   node.enclosing_buf = out.data();
   std::vector<AlignedRead> reqs{node};
   IOContext ctx{};
+  EXPECT_FALSE(reader.try_read_cached(node));
   ASSERT_EQ(reader.read(reqs, ctx), 0);
   EXPECT_EQ(std::memcmp(out.data(), source.data() + 123, 4096), 0);
+  std::fill(out.begin(), out.end(), 0xa5);
+  ASSERT_TRUE(reader.try_read_cached(node));
+  EXPECT_EQ(std::memcmp(out.data() + 1668, source.data() + 1791, 1668), 0);
+  EXPECT_EQ(out.front(), 0xa5);
+  EXPECT_EQ(out.back(), 0xa5);
   std::fill(out.begin(), out.end(), 0xa5);
   ASSERT_EQ(reader.read(reqs, ctx), 0);
   EXPECT_EQ(std::memcmp(out.data() + 1668, source.data() + 123 + 1668, 1668),

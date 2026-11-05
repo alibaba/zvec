@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -1906,5 +1907,112 @@ TEST(PqInt8Quantizer, SymmetricBatchAndRestoredAdc) {
     restored_adc.batch(rows.data(), count, out.data());
     for (size_t i = 0; i < count; ++i)
       EXPECT_NEAR(original_adc(rows[i]), out[i], 1e-4f);
+  }
+}
+
+// DiskANN's stored PQ codebook is L2 even when its final metric is cosine.
+// Compare the optional ADC against decoded vectors with unequal lengths,
+// including zero vectors, non-unit queries, uneven chunks and SIMD tails.
+TEST(PqInt8Quantizer, DiskAnnCosineAdcMatchesReconstruction) {
+  // Cross the inverse-norm helper's 256-code batch boundary twice.
+  constexpr size_t dim = 17, chunks = 5, count = 531;
+  for (auto type : {IndexMeta::DT_FP32, IndexMeta::DT_FP16}) {
+    SCOPED_TRACE(type);
+    IndexMeta meta(type, dim);
+    meta.set_metric("SquaredEuclidean", 0, Params());
+    Params params;
+    params.set("num_chunk", uint32_t{chunks});
+    auto q = std::make_shared<turbo::PqInt8Quantizer>();
+    ASSERT_EQ(0, q->init(meta, params));
+    std::vector<float> book(dim * 256);
+    size_t offset = 0;
+    for (size_t m = 0; m < chunks; ++m) {
+      const size_t width = dim / chunks + (m < dim % chunks ? 1 : 0);
+      for (size_t c = 0; c < 256; ++c)
+        for (size_t d = 0; d < width; ++d)
+          book[offset++] = c ? (int((c * 7 + d * 11 + m) % 23) - 11) *
+                                   (0.03125f * (1 + c % 5))
+                             : 0.0f;
+    }
+    std::vector<Float16> half_book(book.begin(), book.end());
+    ASSERT_EQ(0, q->import_codebook(
+                     type == IndexMeta::DT_FP32
+                         ? static_cast<void *>(book.data())
+                         : static_cast<void *>(half_book.data()),
+                     dim * 256 * (type == IndexMeta::DT_FP32 ? 4 : 2)));
+    std::string serialized;
+    ASSERT_EQ(0, q->serialize(&serialized));
+    auto restored = std::make_shared<turbo::PqInt8Quantizer>();
+    ASSERT_EQ(0, restored->init(meta, params));
+    ASSERT_EQ(0, restored->deserialize(serialized));
+    std::vector<uint8_t> codes(count * chunks);
+    std::vector<const void *> rows;
+    for (size_t i = 0; i < count; ++i) {
+      for (size_t m = 0; m < chunks; ++m)
+        codes[i * chunks + m] = i ? (i * 19 + m * 7) % 256 : 0;
+      rows.push_back(codes.data() + i * chunks);
+    }
+    for (float scale : {0.0f, 1.0f, 4.0f}) {
+      std::vector<float> query(dim);
+      for (size_t j = 0; j < dim; ++j) query[j] = (int(j % 7) - 3) * scale;
+      std::vector<Float16> half_query(query.begin(), query.end());
+      const void *input = type == IndexMeta::DT_FP32
+                              ? static_cast<void *>(query.data())
+                              : static_cast<void *>(half_query.data());
+      std::vector<float> lut(2 * chunks * 256), actual(count),
+          restored_actual(count);
+      ASSERT_TRUE(q->quantize_cosine_query(input, lut.data()));
+      q->cosine_distance_batch(rows.data(), lut.data(), count, actual.data());
+      std::vector<float> inverse_norms(count), cached_norm_actual(count);
+      ASSERT_TRUE(q->cosine_inverse_norms(codes.data(), count, chunks,
+                                          inverse_norms.data()));
+      ASSERT_TRUE(q->quantize_cosine_query(input, lut.data(), false));
+      q->calc_distance_dp_query_batch(rows.data(), count, lut.data(),
+                                      cached_norm_actual.data());
+      for (size_t i = 0; i < count; ++i)
+        EXPECT_NEAR(actual[i], 1 + cached_norm_actual[i] * inverse_norms[i],
+                    2e-5f);
+      ASSERT_TRUE(restored->quantize_cosine_query(input, lut.data()));
+      restored->cosine_distance_batch(rows.data(), lut.data(), count,
+                                      restored_actual.data());
+      for (size_t i = 0; i < count; ++i) {
+        std::string decoded;
+        ASSERT_EQ(0,
+                  q->dequantize(rows[i], IndexQueryMeta(type, dim), &decoded));
+        double dot = 0, qnorm = 0, vnorm = 0;
+        for (size_t j = 0; j < dim; ++j) {
+          const float v = reinterpret_cast<const float *>(decoded.data())[j];
+          dot += query[j] * v;
+          qnorm += query[j] * query[j];
+          vnorm += v * v;
+        }
+        const float expected =
+            qnorm > 0 && vnorm > 0 ? 1 - dot / std::sqrt(qnorm * vnorm) : 1;
+        EXPECT_NEAR(expected, actual[i], 2e-5f) << i;
+        EXPECT_FLOAT_EQ(actual[i], restored_actual[i]);
+      }
+    }
+  }
+}
+
+TEST(PqInt8Quantizer, DiskAnnCosineAdcRejectsUnsupportedPreprocessing) {
+  std::vector<float> input(8, 1), output(2 * 2 * 256);
+  std::array<uint8_t, 2> codes{};
+  turbo::PqInt8Quantizer uninitialized;
+  EXPECT_FALSE(
+      uninitialized.quantize_cosine_query(input.data(), output.data()));
+  EXPECT_FALSE(
+      uninitialized.cosine_inverse_norms(codes.data(), 1, 2, output.data()));
+  for (bool centered : {false, true}) {
+    IndexMeta meta(IndexMeta::DT_FP32, 8);
+    meta.set_metric("SquaredEuclidean", 0, Params());
+    Params params;
+    params.set("num_chunk", uint32_t{2});
+    params.set("use_zero_mean", centered);
+    if (!centered) params.set("rotate_type", "opq");
+    turbo::PqInt8Quantizer q;
+    ASSERT_EQ(0, q.init(meta, params));
+    EXPECT_FALSE(q.quantize_cosine_query(input.data(), output.data()));
+    EXPECT_FALSE(q.cosine_inverse_norms(codes.data(), 1, 2, output.data()));
   }
 }

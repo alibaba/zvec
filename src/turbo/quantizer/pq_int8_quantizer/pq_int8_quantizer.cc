@@ -22,6 +22,7 @@
 #include <vector>
 #include <ailego/algorithm/kmeans.h>
 #include <ailego/math/normalizer.h>
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_threads.h>
 #include "quantizer/common/pq_training_samples.h"
@@ -586,6 +587,100 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
     for (size_t i = 0; i < lut_size; ++i) {
       lut[i] *= 0.5f;
     }
+  }
+}
+
+bool PqInt8Quantizer::quantize_cosine_query(const void *input,
+                                            void *output, bool include_norms) const {
+  if (!num_chunk_ || use_zero_mean_ || opq_.enabled() || !input || !output ||
+      sub_centroid_norms_.size() !=
+          static_cast<size_t>(num_chunk_) * kNumCentroids)
+    return false;
+  const auto *bytes = static_cast<const uint8_t *>(input);
+  auto *lut = static_cast<float *>(output);
+  float squared_norm = 0.0f;
+  for (uint32_t i = 0; i < original_dim_; ++i) {
+    const float value =
+        input_data_type_ == DataType::kFp16
+            ? static_cast<float>(static_cast<const ailego::Float16 *>(input)[i])
+            : static_cast<const float *>(input)[i];
+    squared_norm += value * value;
+  }
+  const float inverse_norm =
+      squared_norm > 0.0f ? 1.0f / std::sqrt(squared_norm) : 0.0f;
+  for (uint32_t m = 0; m < num_chunk_; ++m) {
+    ip_batch_fn_(
+        const_cast<const void **>(centroid_ptrs_cache_[m].data()),
+        bytes + static_cast<size_t>(chunk_offsets_[m]) * element_size(),
+        kNumCentroids, chunk_dim(m), lut + m * kNumCentroids, nullptr);
+  }
+  if (!include_norms) {
+    for (size_t i = 0; i < static_cast<size_t>(num_chunk_) * kNumCentroids; ++i)
+      lut[i] *= inverse_norm;
+    return true;
+  }
+  // Expand backward in the caller's double-sized buffer, without a temporary
+  // allocation. Keeping each dot/norm pair together halves code traversals.
+  for (size_t i = static_cast<size_t>(num_chunk_) * kNumCentroids; i-- > 0;) {
+    lut[2 * i] = lut[i] * inverse_norm;
+    lut[2 * i + 1] = sub_centroid_norms_[i];
+  }
+  return true;
+}
+
+bool PqInt8Quantizer::cosine_inverse_norms(const uint8_t *codes, size_t count,
+                                           size_t stride, float *output) const {
+  if (!num_chunk_ || use_zero_mean_ || opq_.enabled() || !codes || !output ||
+      stride < num_chunk_ ||
+      sub_centroid_norms_.size() != static_cast<size_t>(num_chunk_) * kNumCentroids)
+    return false;
+  const void *batch[256];
+  for (size_t first = 0; first < count; first += 256) {
+    const size_t n = std::min<size_t>(256, count - first);
+    for (size_t i = 0; i < n; ++i) batch[i] = codes + (first + i) * stride;
+    batch_adc_fn_(batch, sub_centroid_norms_.data(), n, num_chunk_,
+                   output + first, nullptr);
+    for (size_t i = 0; i < n; ++i) {
+      float &v = output[first + i];
+      v = v > 0.0f ? 1.0f / std::sqrt(v) : 0.0f;
+    }
+  }
+  return true;
+}
+
+void PqInt8Quantizer::cosine_distance_batch(const void *const *codes,
+                                            const void *query_lut, size_t count,
+                                            float *distances) const {
+  const auto *lut = static_cast<const float *>(query_lut);
+  for (size_t i = 0; i < count; ++i) {
+    const auto *code = static_cast<const uint8_t *>(codes[i]);
+    float dot = 0.0f, norm = 0.0f;
+#if defined(AILEGO_ARM64_NEON)
+    float32x2_t a = vdup_n_f32(0), b = a, c = a, d = a;
+    size_t m = 0;
+    for (; m + 4 <= num_chunk_; m += 4) {
+      a = vadd_f32(a,
+                   vld1_f32(lut + 2 * ((m + 0) * kNumCentroids + code[m + 0])));
+      b = vadd_f32(b,
+                   vld1_f32(lut + 2 * ((m + 1) * kNumCentroids + code[m + 1])));
+      c = vadd_f32(c,
+                   vld1_f32(lut + 2 * ((m + 2) * kNumCentroids + code[m + 2])));
+      d = vadd_f32(d,
+                   vld1_f32(lut + 2 * ((m + 3) * kNumCentroids + code[m + 3])));
+    }
+    auto sum = vadd_f32(vadd_f32(a, c), vadd_f32(b, d));
+    for (; m < num_chunk_; ++m)
+      sum = vadd_f32(sum, vld1_f32(lut + 2 * (m * kNumCentroids + code[m])));
+    dot = vget_lane_f32(sum, 0);
+    norm = vget_lane_f32(sum, 1);
+#else
+    for (size_t m = 0; m < num_chunk_; ++m) {
+      const auto *pair = lut + 2 * (m * kNumCentroids + code[m]);
+      dot += pair[0];
+      norm += pair[1];
+    }
+#endif
+    distances[i] = norm > 0.0f ? 1.0f + dot / std::sqrt(norm) : 1.0f;
   }
 }
 

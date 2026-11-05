@@ -208,6 +208,11 @@ class LinuxAlignedFileReader : public AlignedFileReader {
   size_t read_workers() const {
     return read_executor_ ? read_executor_->workers() : 1;
   }
+  // Copy a cached node without scheduling I/O; callers may expand it before
+  // choosing the rest of the disk frontier. No cache-owned pointer escapes.
+  bool try_read_cached(const AlignedRead &req) {
+    return read_cache_ && read_cache_->try_read(req.offset, req.len, req.buf);
+  }
   size_t read_cache_bytes() const {
     return read_cache_ ? read_cache_->allocated_bytes() : 0;
   }
