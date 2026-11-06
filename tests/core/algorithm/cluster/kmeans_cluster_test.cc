@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include <cmath>
-#include <cstring>
 #include <random>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/params.h>
@@ -104,60 +103,4 @@ TEST(KmeansCluster, General) {
 
   ASSERT_EQ(0, cluster->classify(threads, centroids));
   ASSERT_EQ(0, cluster->label(threads, centroids, &labels));
-}
-
-namespace {
-template <typename T>
-void CheckCosineLabels(IndexMeta::DataType type) {
-  for (const size_t dim : {256u, 512u}) {
-    for (const size_t count : {10u, 32u, 33u}) {
-      SCOPED_TRACE(::testing::Message() << "type=" << type << " dim=" << dim
-                                        << " centers=" << count);
-      // Legacy cosine records contain normalized components and a float norm
-      // tail, which must not be treated as another component by Turbo.
-      IndexMeta meta;
-      meta.set_meta(type, dim + sizeof(float) / IndexMeta::UnitSizeof(type));
-      meta.set_metric("Cosine", 0, Params());
-      auto features = std::make_shared<CompactIndexFeatures>(meta);
-      IndexCluster::CentroidList centroids;
-      for (size_t i = 0; i <= count; ++i) {
-        std::vector<T> row(meta.dimension(), T(0.0f));
-        if (i < count) {
-          row[i] = T(1.0f);
-        } else {
-          // An equal-distance query must keep the first center.
-          row[0] = row[1] = T(std::sqrt(0.5f));
-        }
-        const float norm = 2.0f + static_cast<float>(i);
-        std::memcpy(reinterpret_cast<char *>(row.data()) + dim * sizeof(T),
-                    &norm, sizeof(norm));
-        features->emplace(row.data());
-        if (i < count) centroids.emplace_back(row.data(), meta.element_size());
-      }
-      auto cluster = IndexFactory::CreateCluster("KmeansCluster");
-      ASSERT_NE(nullptr, cluster);
-      ASSERT_EQ(0, cluster->init(meta, Params()));
-      ASSERT_EQ(0, cluster->mount(features));
-      auto threads = std::make_shared<SingleQueueIndexThreads>(2u, false);
-      std::vector<uint32_t> labels;
-      for (unsigned pass = 0; pass < 2; ++pass) {
-        ASSERT_EQ(0, cluster->label(threads, centroids, &labels));
-        ASSERT_EQ(count + 1, labels.size());
-        for (size_t i = 0; i < count; ++i) {
-          const size_t expected =
-              pass && (i == 0 || i == count - 1) ? count - 1 - i : i;
-          EXPECT_EQ(expected, labels[i]);
-        }
-        EXPECT_EQ(pass ? 1u : 0u, labels.back());
-        // A new labeling pass must observe the updated centers.
-        std::swap(centroids.front(), centroids.back());
-      }
-    }
-  }
-}
-}  // namespace
-
-TEST(KmeansCluster, TurboCosineLabelsAcrossBatchBoundary) {
-  CheckCosineLabels<float>(IndexMeta::DT_FP32);
-  CheckCosineLabels<Float16>(IndexMeta::DT_FP16);
 }

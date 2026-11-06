@@ -392,15 +392,13 @@ class IVFEntity {
 
   int key_normalize_value(uint32_t id, float *value) const;
 
-  bool use_row_batch() const;
-
   template <typename Results>
   int search_filtered(size_t inverted_list_id, const void *query,
                       const IndexFilter &filter, uint32_t *scan_count,
                       Results *results,
                       IndexContext::Stats *context_stats) const;
 
-  template <bool BatchRows, typename Results>
+  template <typename Results>
   int search_blocks(size_t inverted_list_id, const void *query,
                     uint32_t *scan_count, Results *results,
                     IndexContext::Stats *context_stats) const;

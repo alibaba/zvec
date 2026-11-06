@@ -270,11 +270,7 @@ TEST(IVFRowBatch, ContiguousNormTailsAndClusterTails) {
       ASSERT_FALSE(entity.batches.empty());
       const size_t largest =
           *std::max_element(entity.batches.begin(), entity.batches.end());
-      if (type == IndexMeta::DT_FP32) {
-        EXPECT_GT(largest, 32u);
-      } else {
-        EXPECT_LE(largest, 32u);
-      }
+      EXPECT_LE(largest, 32u);
       EXPECT_EQ(entity.split_rows, 0u);
     }
 }
@@ -291,27 +287,20 @@ TEST(IVFRowBatch, ScatterSpansOnlyCopySplitRows) {
   }
 }
 
-TEST(IVFRowBatch, PayloadBudgetAdaptsToDimension) {
-  // A batch never combines clusters, includes padding, or splits a storage
-  // block just to meet the target. Odd dimensions keep their norm-tail stride.
-  const std::pair<size_t, size_t> cases[] = {{256, 355},  {1024, 256},
-                                             {1537, 160}, {4096, 64},
-                                             {8192, 32},  {16384, 32}};
-  for (const auto &test : cases) {
-    RowBatchEntity entity;
-    ASSERT_NO_FATAL_FAILURE(
-        entity.prepare(IndexMeta::DT_FP32, false, 0, false, test.first));
-    CheckSearch(entity);
-    ASSERT_FALSE(entity.batches.empty());
-    EXPECT_EQ(*std::max_element(entity.batches.begin(), entity.batches.end()),
-              test.second);
-    EXPECT_EQ(entity.split_rows, 0u);
+TEST(IVFRowBatch, PhysicalBlocksRetainedAcrossDimensions) {
+  // Row batches respect physical blocks regardless of vector width. Odd
+  // dimensions must still account for the norm tail in the row stride.
+  for (auto type : {IndexMeta::DT_FP32, IndexMeta::DT_FP16}) {
+    for (size_t dimension : {256u, 1024u, 1537u, 4096u, 8192u, 16384u}) {
+      RowBatchEntity entity;
+      ASSERT_NO_FATAL_FAILURE(entity.prepare(type, false, 0, false, dimension));
+      CheckSearch(entity);
+      ASSERT_FALSE(entity.batches.empty());
+      EXPECT_EQ(*std::max_element(entity.batches.begin(), entity.batches.end()),
+                32u);
+      EXPECT_EQ(entity.split_rows, 0u);
+    }
   }
-  RowBatchEntity half;
-  ASSERT_NO_FATAL_FAILURE(
-      half.prepare(IndexMeta::DT_FP16, false, 0, false, 1024));
-  CheckSearch(half);
-  EXPECT_LE(*std::max_element(half.batches.begin(), half.batches.end()), 32u);
 }
 
 TEST(IVFRowBatch, PhysicalPaddingRetainsOriginalBlocks) {
@@ -336,7 +325,7 @@ TEST(IVFRowBatch, FilterRetainsOriginalBlocksAndStats) {
   }
 }
 
-TEST(IVFRowBatch, CalculatorRetainsDefault32AndAcceptsCallerCapacity) {
+TEST(IVFRowBatch, CalculatorRetainsDefault32AndTail) {
   IndexMeta meta;
   meta.set_meta(IndexMeta::DT_FP32, 9);
   IVFDistanceCalculator calculator(meta, nullptr, 32);
@@ -354,11 +343,6 @@ TEST(IVFRowBatch, CalculatorRetainsDefault32AndAcceptsCallerCapacity) {
   turbo::DistanceImpl distance({}, batch, {}, 8);
   calculator.query_features_distance(distance, rows.data(), 97, output.data());
   EXPECT_EQ(calls, (std::vector<size_t>{32, 32, 32, 1}));
-  calls.clear();
-  const void *pointers[64];
-  calculator.query_features_distance(distance, rows.data(), 97, output.data(),
-                                     pointers, 64);
-  EXPECT_EQ(calls, (std::vector<size_t>{64, 33}));
   for (size_t i = 0; i < output.size(); ++i)
     EXPECT_FLOAT_EQ(output[i], float(i));
 }

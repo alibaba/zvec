@@ -47,21 +47,6 @@ class IVFDistanceCalculator {
     }
   }
 
-  //! Caller-owned pointers let contiguous row scans use a larger batch.
-  void query_features_distance(const turbo::DistanceImpl &distance,
-                               const void *feature, size_t fnum, float *out,
-                               const void **candidates, size_t capacity) const {
-    ailego_assert_with(capacity != 0, "empty candidate buffer");
-    const auto *rows = static_cast<const char *>(feature);
-    for (size_t offset = 0; offset < fnum; offset += capacity) {
-      const size_t count = std::min(capacity, fnum - offset);
-      for (size_t i = 0; i < count; ++i) {
-        candidates[i] = rows + (offset + i) * element_size_;
-      }
-      distance.batch(candidates, count, out + offset);
-    }
-  }
-
   inline void query_centroids_distance(const void *query, size_t qnum,
                                        const void *feature, size_t fnum,
                                        float *distances);

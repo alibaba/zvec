@@ -26,10 +26,6 @@ namespace core {
 
 namespace {
 
-// Target FP32 vector payload per call, rounded down to whole storage blocks.
-// Keep at least one block; norm tails remain part of the actual row stride.
-constexpr size_t kRowBatchBytes = 1024u * 1024u;
-
 // Both collectors consume the same posting-space scores. Compact only valid,
 // accepted results; global posting IDs remain unique across inverted lists.
 template <bool Filtered, typename Results>
@@ -1061,30 +1057,8 @@ int IVFEntity::search_filtered(size_t inverted_list_id, const void *query,
 int IVFEntity::search(size_t inverted_list_id, const void *query,
                       uint32_t *scan_count, IndexDocumentHeap *heap,
                       IndexContext::Stats *context_stats) const {
-  if (use_row_batch()) {
-    return search_blocks<true>(inverted_list_id, query, scan_count, heap,
-                               context_stats);
-  }
-  return search_blocks<false>(inverted_list_id, query, scan_count, heap,
-                              context_stats);
-}
-
-bool IVFEntity::use_row_batch() const {
-  const auto *row_quantizer =
-      quantizer_ ? quantizer_.get() : distance_quantizer_.get();
-  // This selects a batch-size policy, not a kernel. Turbo still dispatches
-  // every distance call; FP16 and other layouts retain their original blocks.
-  return meta_.data_type() == IndexMeta::DT_FP32 &&
-         meta_.major_order() == IndexMeta::MO_ROW && !packed_quantizer_ &&
-         query_distance_.valid() && row_quantizer && row_quantizer->dim() > 0 &&
-         row_quantizer->type() == turbo::QuantizeType::kFp32 &&
-         meta_.reformer_name().empty() &&
-         header_.block_size ==
-             header_.block_vector_count * meta_.element_size() &&
-         header_.block_vector_count != 0 &&
-         kRowBatchBytes / sizeof(float) / row_quantizer->dim() /
-                 header_.block_vector_count >
-             1;
+  return search_blocks(inverted_list_id, query, scan_count, heap,
+                       context_stats);
 }
 
 int IVFEntity::search_topk(size_t inverted_list_id, const void *query,
@@ -1095,12 +1069,8 @@ int IVFEntity::search_topk(size_t inverted_list_id, const void *query,
     return search_filtered(inverted_list_id, query, filter, scan_count, topk,
                            context_stats);
   }
-  if (use_row_batch()) {
-    return search_blocks<true>(inverted_list_id, query, scan_count, topk,
-                               context_stats);
-  }
-  return search_blocks<false>(inverted_list_id, query, scan_count, topk,
-                              context_stats);
+  return search_blocks(inverted_list_id, query, scan_count, topk,
+                       context_stats);
 }
 
 int IVFEntity::search_topk(const void *query, const IndexFilter &filter,
@@ -1115,7 +1085,7 @@ int IVFEntity::search_topk(const void *query, const IndexFilter &filter,
   return 0;
 }
 
-template <bool BatchRows, typename Results>
+template <typename Results>
 int IVFEntity::search_blocks(size_t inverted_list_id, const void *query,
                              uint32_t *scan_count, Results *results,
                              IndexContext::Stats *context_stats) const {
@@ -1134,30 +1104,13 @@ int IVFEntity::search_blocks(size_t inverted_list_id, const void *query,
   const size_t block_size = header_.block_size;
   const size_t element_size = meta_.element_size();
   const bool row_major = meta_.major_order() == IndexMeta::MO_ROW;
-  size_t blocks_per_distance = 1;
-  if constexpr (BatchRows) {
-    const auto *row_quantizer =
-        quantizer_ ? quantizer_.get() : distance_quantizer_.get();
-    const size_t payload_size =
-        static_cast<size_t>(row_quantizer->dim()) * sizeof(float);
-    blocks_per_distance = std::max(
-        size_t(1), std::min(kRowBatchBytes / payload_size / block_vecs,
-                            static_cast<size_t>(list_meta->block_count)));
-  }
-  const size_t capacity = blocks_per_distance * block_vecs;
-  std::vector<float> distances(capacity);
-  std::vector<uint64_t> ids(std::is_same_v<Results, turbo::BatchTopK> ? capacity
-                                                                      : 0);
-  std::vector<const void *> candidates(BatchRows ? capacity : 0);
-  const size_t batch_size = std::max(kBatchBlocks, blocks_per_distance);
-  const auto distance = [&](const void *features, size_t count, float *out) {
-    if constexpr (BatchRows) {
-      calculator_->query_features_distance(query_distance_, features, count,
-                                           out, candidates.data(),
-                                           candidates.size());
-    } else {
-      query_features_distance(query, features, count, out);
-    }
+  std::vector<float> distances(block_vecs);
+  std::vector<uint64_t> ids(
+      std::is_same_v<Results, turbo::BatchTopK> ? block_vecs : 0);
+  const size_t batch_size = kBatchBlocks;
+  const auto distance = [this, query](const void *features, size_t count,
+                                      float *out) {
+    query_features_distance(query, features, count, out);
   };
   if (row_major) {
     scatter_vector_.resize(packed_quantizer_ ? block_size : element_size);
@@ -1192,15 +1145,10 @@ int IVFEntity::search_blocks(size_t inverted_list_id, const void *query,
     }
     ScatterCursor scatter_cursor(scatter_data);
 
-    //! Dense rows can share one distance call across adjacent logical blocks.
-    for (size_t b = 0; b < blocks; b += blocks_per_distance) {
-      size_t grouped_blocks = 1;
-      if constexpr (BatchRows) {
-        grouped_blocks = std::min(blocks_per_distance, blocks - b);
-      }
+    //! Compute distances for each block
+    for (size_t b = 0; b < blocks; ++b) {
       const size_t vecs_count =
-          std::min(grouped_blocks * block_vecs,
-                   list_meta->vector_count - (i + b) * block_vecs);
+          std::min(block_vecs, list_meta->vector_count - (i + b) * block_vecs);
       auto block_keys = keys + b * block_vecs;
       const size_t block_offset = b * block_size;
       if (block_offset > size) {
@@ -1208,8 +1156,7 @@ int IVFEntity::search_blocks(size_t inverted_list_id, const void *query,
                   size);
         return IndexError_ReadData;
       }
-      const size_t serialized_size =
-          std::min(grouped_blocks * block_size, size - block_offset);
+      const size_t serialized_size = std::min(block_size, size - block_offset);
       if (row_major) {
         if (!calculate_row_major_block(&scatter_cursor, distance, vecs_count,
                                        element_size, serialized_size,
