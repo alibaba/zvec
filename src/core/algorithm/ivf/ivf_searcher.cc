@@ -203,7 +203,13 @@ int IVFSearcher::search_bf(
     auto &context_stats = ctx->mutable_stats(q);
     auto &heap = ctx->mutable_result_heap();
     heap.clear();
-    if (p_keys) {
+    auto *topk = !p_keys && heap.limit() < entity->vector_count()
+                     ? &ctx->mutable_batch_topk()
+                     : nullptr;
+    if (topk) topk->reset(heap.limit(), heap.threshold());
+    if (topk) {
+      ret = entity->search_topk(query, filter, topk, &context_stats);
+    } else if (p_keys) {
       ret = entity->search_by_p_keys(query, (*p_keys)[q], filter, &heap,
                                      &context_stats);
     } else if (!filter.is_valid()) {
@@ -213,8 +219,12 @@ int IVFSearcher::search_bf(
     }
     ivf_check_with_msg(ret, "Failed to search in entity for %s",
                        IndexError::What(ret));
+    if (topk) {
+      ret = ctx->batch_topk_to_heap();
+      ivf_check_error_code(ret);
+    }
     heap.sort();  // sort the results
-    if (!p_keys && !filter.is_valid()) {
+    if (!topk && !p_keys && !filter.is_valid()) {
       // mapping the local id to key if query without filter
       ret = entity->retrieve_keys(&heap);
       ivf_check_error_code(ret);
@@ -278,13 +288,20 @@ int IVFSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
     auto &context_stats = ctx->mutable_stats(q);
     auto &heap = ctx->mutable_result_heap();
     heap.clear();
+    auto *topk = heap.limit() < entity->vector_count()
+                     ? &ctx->mutable_batch_topk()
+                     : nullptr;
+    if (topk) topk->reset(heap.limit(), heap.threshold());
     size_t total_scan_count = 0;
     for (size_t i = 0;
          i < centroids.size() && total_scan_count < ctx->max_scan_count();
          ++i) {
       auto cid = centroids[i].key();
       uint32_t scan_count = 0;
-      if (!filter.is_valid()) {
+      if (topk) {
+        ret = entity->search_topk(cid, query, filter, &scan_count, topk,
+                                  &context_stats);
+      } else if (!filter.is_valid()) {
         ret = entity->search(cid, query, &scan_count, &heap, &context_stats);
       } else {
         ret = entity->search(cid, query, filter, &scan_count, &heap,
@@ -294,8 +311,12 @@ int IVFSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
                          IndexError::What(ret));
       total_scan_count += scan_count;
     }
+    if (topk) {
+      ret = ctx->batch_topk_to_heap();
+      ivf_check_error_code(ret);
+    }
     heap.sort();  // sort the results
-    if (!filter.is_valid()) {
+    if (!topk && !filter.is_valid()) {
       // mapping the local id to key if query without filter
       ret = entity->retrieve_keys(&heap);
       ivf_check_error_code(ret);

@@ -15,6 +15,7 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <type_traits>
 #include <core/quantizer/distance_quantizer.h>
 #include <core/quantizer/quantizer_params.h>
 #include <turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h>
@@ -28,6 +29,32 @@ namespace {
 // Target FP32 vector payload per call, rounded down to whole storage blocks.
 // Keep at least one block; norm tails remain part of the actual row stride.
 constexpr size_t kRowBatchBytes = 1024u * 1024u;
+
+// Both collectors consume the same posting-space scores. Compact only valid,
+// accepted results; global posting IDs remain unique across inverted lists.
+template <bool Filtered, typename Results>
+void PushDistances(Results *results, float *distances, uint64_t *ids,
+                   const uint64_t *keys, size_t count, uint32_t first_id,
+                   float norm, uint64_t keeps = 0) {
+  size_t accepted = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if constexpr (Filtered) {
+      if ((keeps & (uint64_t{1} << i)) == 0) continue;
+    }
+    if (keys[i] == kInvalidKey) continue;
+    const uint32_t id = first_id + i;
+    const float score = distances[i] * norm;
+    if constexpr (std::is_same_v<Results, turbo::BatchTopK>) {
+      distances[accepted] = score;
+      ids[accepted++] = id;
+    } else {
+      results->emplace(keys[i], score, id);
+    }
+  }
+  if constexpr (std::is_same_v<Results, turbo::BatchTopK>) {
+    results->push_block(distances, ids, accepted);
+  }
+}
 
 //! Cursor over a scatter read. IVF blocks and vectors are logical byte
 //! ranges, so neither needs to be aligned with an underlying storage page.
@@ -902,6 +929,15 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
                       const IndexFilter &filter, uint32_t *scan_count,
                       IndexDocumentHeap *heap,
                       IndexContext::Stats *context_stats) const {
+  return search_filtered(inverted_list_id, query, filter, scan_count, heap,
+                         context_stats);
+}
+
+template <typename Results>
+int IVFEntity::search_filtered(size_t inverted_list_id, const void *query,
+                               const IndexFilter &filter, uint32_t *scan_count,
+                               Results *results,
+                               IndexContext::Stats *context_stats) const {
   if ((quantizer_ || distance_quantizer_) && !query_distance_.valid() &&
       packed_query_.empty()) {
     return IndexError_InvalidArgument;
@@ -915,6 +951,8 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
   IndexStorage::MemoryBlock data;
   const size_t block_vecs = header_.block_vector_count;
   std::vector<float> distances(block_vecs);
+  std::vector<uint64_t> ids(
+      std::is_same_v<Results, turbo::BatchTopK> ? block_vecs : 0);
   const size_t batch_size = kBatchBlocks;
   const size_t block_size = header_.block_size;
   const size_t element_size = meta_.element_size();
@@ -1010,13 +1048,8 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
       *(context_stats->mutable_dist_calced_count()) += vecs_count;
 
       uint32_t id_off = list_meta->id_offset + (i + b) * block_vecs;
-      for (size_t k = 0; k < vecs_count; ++k) {
-        if (keeps & (1ULL << k)) {
-          if (block_keys[k] != kInvalidKey) {
-            heap->emplace(block_keys[k], distances[k] * norm_val, id_off + k);
-          }
-        }
-      }
+      PushDistances<true>(results, distances.data(), ids.data(), block_keys,
+                          vecs_count, id_off, norm_val, keeps);
     }
   }
 
@@ -1028,22 +1061,7 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
 int IVFEntity::search(size_t inverted_list_id, const void *query,
                       uint32_t *scan_count, IndexDocumentHeap *heap,
                       IndexContext::Stats *context_stats) const {
-  const auto *row_quantizer =
-      quantizer_ ? quantizer_.get() : distance_quantizer_.get();
-  // This selects a batch-size policy, not a kernel. Turbo still dispatches
-  // every distance call; FP16 and other layouts retain their original blocks.
-  const bool batch_rows =
-      meta_.data_type() == IndexMeta::DT_FP32 &&
-      meta_.major_order() == IndexMeta::MO_ROW && !packed_quantizer_ &&
-      query_distance_.valid() && row_quantizer && row_quantizer->dim() > 0 &&
-      row_quantizer->type() == turbo::QuantizeType::kFp32 &&
-      meta_.reformer_name().empty() &&
-      header_.block_size == header_.block_vector_count * meta_.element_size() &&
-      header_.block_vector_count != 0 &&
-      kRowBatchBytes / sizeof(float) / row_quantizer->dim() /
-              header_.block_vector_count >
-          1;
-  if (batch_rows) {
+  if (use_row_batch()) {
     return search_blocks<true>(inverted_list_id, query, scan_count, heap,
                                context_stats);
   }
@@ -1051,9 +1069,55 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
                               context_stats);
 }
 
-template <bool BatchRows>
+bool IVFEntity::use_row_batch() const {
+  const auto *row_quantizer =
+      quantizer_ ? quantizer_.get() : distance_quantizer_.get();
+  // This selects a batch-size policy, not a kernel. Turbo still dispatches
+  // every distance call; FP16 and other layouts retain their original blocks.
+  return meta_.data_type() == IndexMeta::DT_FP32 &&
+         meta_.major_order() == IndexMeta::MO_ROW && !packed_quantizer_ &&
+         query_distance_.valid() && row_quantizer && row_quantizer->dim() > 0 &&
+         row_quantizer->type() == turbo::QuantizeType::kFp32 &&
+         meta_.reformer_name().empty() &&
+         header_.block_size ==
+             header_.block_vector_count * meta_.element_size() &&
+         header_.block_vector_count != 0 &&
+         kRowBatchBytes / sizeof(float) / row_quantizer->dim() /
+                 header_.block_vector_count >
+             1;
+}
+
+int IVFEntity::search_topk(size_t inverted_list_id, const void *query,
+                           const IndexFilter &filter, uint32_t *scan_count,
+                           turbo::BatchTopK *topk,
+                           IndexContext::Stats *context_stats) const {
+  if (filter.is_valid()) {
+    return search_filtered(inverted_list_id, query, filter, scan_count, topk,
+                           context_stats);
+  }
+  if (use_row_batch()) {
+    return search_blocks<true>(inverted_list_id, query, scan_count, topk,
+                               context_stats);
+  }
+  return search_blocks<false>(inverted_list_id, query, scan_count, topk,
+                              context_stats);
+}
+
+int IVFEntity::search_topk(const void *query, const IndexFilter &filter,
+                           turbo::BatchTopK *topk,
+                           IndexContext::Stats *context_stats) const {
+  for (size_t i = 0; i < header_.inverted_list_count; ++i) {
+    uint32_t scan_count;
+    const int ret =
+        search_topk(i, query, filter, &scan_count, topk, context_stats);
+    if (ret != 0) return ret;
+  }
+  return 0;
+}
+
+template <bool BatchRows, typename Results>
 int IVFEntity::search_blocks(size_t inverted_list_id, const void *query,
-                             uint32_t *scan_count, IndexDocumentHeap *heap,
+                             uint32_t *scan_count, Results *results,
                              IndexContext::Stats *context_stats) const {
   if ((quantizer_ || distance_quantizer_) && !query_distance_.valid() &&
       packed_query_.empty()) {
@@ -1082,6 +1146,8 @@ int IVFEntity::search_blocks(size_t inverted_list_id, const void *query,
   }
   const size_t capacity = blocks_per_distance * block_vecs;
   std::vector<float> distances(capacity);
+  std::vector<uint64_t> ids(std::is_same_v<Results, turbo::BatchTopK> ? capacity
+                                                                      : 0);
   std::vector<const void *> candidates(BatchRows ? capacity : 0);
   const size_t batch_size = std::max(kBatchBlocks, blocks_per_distance);
   const auto distance = [&](const void *features, size_t count, float *out) {
@@ -1159,12 +1225,9 @@ int IVFEntity::search_blocks(size_t inverted_list_id, const void *query,
         query_features_distance(query, block_data, vecs_count,
                                 distances.data());
       }
-      for (size_t k = 0; k < vecs_count; ++k) {
-        if (block_keys[k] != kInvalidKey) {
-          uint32_t id = list_meta->id_offset + (i + b) * block_vecs + k;
-          heap->emplace(block_keys[k], distances[k] * norm_val, id);
-        }
-      }
+      const uint32_t first_id = list_meta->id_offset + (i + b) * block_vecs;
+      PushDistances<false>(results, distances.data(), ids.data(), block_keys,
+                           vecs_count, first_id, norm_val);
       *(context_stats->mutable_dist_calced_count()) += vecs_count;
     }
   }

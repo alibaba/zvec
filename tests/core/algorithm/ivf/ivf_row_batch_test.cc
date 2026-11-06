@@ -13,10 +13,13 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <vector>
 #include <gtest/gtest.h>
+#include <zvec/turbo/batch_topk.h>
 #include "algorithm/ivf/ivf_entity.h"
 #include "quantizer/distance_quantizer.h"
 
@@ -182,7 +185,7 @@ class RowBatchEntity : public IVFEntity {
         std::memcpy(&row, rows[i], sizeof(row));
         EXPECT_LT(row, kCount);  // Padding/next-cluster records must not leak.
         seen.push_back(row);
-        out[i] = static_cast<float>(row);
+        out[i] = row_score(row);
         if (postings_->contains(rows[i], stride)) {
           if (i)
             EXPECT_EQ(static_cast<const uint8_t *>(rows[i]),
@@ -197,6 +200,14 @@ class RowBatchEntity : public IVFEntity {
     query_distance_ = turbo::DistanceImpl(scalar, batch, {}, dimension);
   }
 
+  float row_score(uint32_t row) const {
+    return row_scores.empty() ? static_cast<float>(row) : row_scores.at(row);
+  }
+  void set_normalization(float value) {
+    norm_value_ = value;
+  }
+
+  std::vector<float> row_scores;
   std::vector<size_t> batches;
   std::vector<uint32_t> seen;
   size_t split_rows = 0;
@@ -350,6 +361,200 @@ TEST(IVFRowBatch, CalculatorRetainsDefault32AndAcceptsCallerCapacity) {
   EXPECT_EQ(calls, (std::vector<size_t>{64, 33}));
   for (size_t i = 0; i < output.size(); ++i)
     EXPECT_FLOAT_EQ(output[i], float(i));
+}
+
+using RowResults = std::map<uint64_t, float>;
+
+RowResults ExpectedTopK(
+    const RowBatchEntity &entity, size_t k, float norm,
+    const IndexFilter &filter = {},
+    float threshold = std::numeric_limits<float>::infinity(),
+    bool strict = false) {
+  std::vector<std::pair<float, uint64_t>> sorted;
+  for (uint32_t row = 0; row < RowBatchEntity::kCount; ++row) {
+    if (RowBatchEntity::Invalid(row) || filter(RowBatchEntity::Key(row)))
+      continue;
+    const float score = entity.row_score(row) * norm;
+    if (std::isnan(score) ||
+        (strict ? !(score < threshold) : !(score <= threshold)))
+      continue;
+    sorted.emplace_back(score, RowBatchEntity::kIdOffset + row);
+  }
+  std::sort(sorted.begin(), sorted.end());
+  RowResults expected;
+  for (size_t i = 0; i < std::min(k, sorted.size()); ++i)
+    expected.emplace(sorted[i].second, sorted[i].first);
+  return expected;
+}
+
+RowResults TopKResults(const RowBatchEntity &entity, turbo::BatchTopK &topk) {
+  topk.finish();
+  RowResults results;
+  for (size_t i = 0; i < topk.size(); ++i) {
+    const auto candidate = topk.result(i);
+    if (candidate.id < RowBatchEntity::kIdOffset ||
+        candidate.id >= RowBatchEntity::kIdOffset + RowBatchEntity::kCount) {
+      ADD_FAILURE() << "Not a global posting ID: " << candidate.id;
+      continue;
+    }
+    const auto row =
+        static_cast<uint32_t>(candidate.id - RowBatchEntity::kIdOffset);
+    EXPECT_FALSE(RowBatchEntity::Invalid(row));
+    EXPECT_EQ(RowBatchEntity::Key(row), entity.get_key(candidate.id));
+    EXPECT_TRUE(results.emplace(candidate.id, candidate.score).second);
+  }
+  return results;
+}
+
+RowResults HeapResults(const RowBatchEntity &entity,
+                       const IndexDocumentHeap &heap) {
+  RowResults results;
+  for (const auto &document : heap) {
+    EXPECT_EQ(entity.get_key(document.index()), document.key());
+    EXPECT_TRUE(results.emplace(document.index(), document.score()).second);
+  }
+  return results;
+}
+
+void SetInterleavedScores(RowBatchEntity &entity) {
+  entity.row_scores.resize(RowBatchEntity::kCount);
+  // Best candidates alternate between the two lists. Scanning list 1 first
+  // exercises replacement by list 0 without any score ties or local-ID reuse.
+  for (uint32_t row = 0; row < RowBatchEntity::kCount; ++row)
+    entity.row_scores[row] =
+        static_cast<float>(row < 355 ? 2 * row : 2 * (row - 355) + 1);
+  entity.row_scores[17] = -1000.0f;
+  entity.row_scores[366] = -2000.0f;
+}
+
+TEST(IVFRowBatch, TopKMatchesHeapAcrossLayoutsAndLists) {
+  for (auto type : {IndexMeta::DT_FP32, IndexMeta::DT_FP16})
+    for (unsigned layout = 0; layout < 4; ++layout)
+      for (size_t k : {7u, 91u}) {
+        SCOPED_TRACE(::testing::Message()
+                     << "type=" << type << " layout=" << layout << " k=" << k);
+        RowBatchEntity entity;
+        ASSERT_NO_FATAL_FAILURE(entity.prepare(
+            type, layout == 2, layout == 3 ? 16 : 0, layout == 1));
+        SetInterleavedScores(entity);
+        constexpr float norm = 0.25f;
+        entity.set_normalization(norm);
+        IndexDocumentHeap heap(k);
+        turbo::BatchTopK topk;
+        topk.reset(k);
+        IndexContext::Stats heap_stats, topk_stats;
+        for (size_t list : {1u, 0u}) {
+          uint32_t heap_scanned = 0, topk_scanned = 0;
+          ASSERT_EQ(0, entity.search(list, nullptr, &heap_scanned, &heap,
+                                     &heap_stats));
+          ASSERT_EQ(0, entity.search_topk(list, nullptr, IndexFilter{},
+                                          &topk_scanned, &topk, &topk_stats));
+          EXPECT_EQ(list == 0 ? 355u : 37u, topk_scanned);
+          EXPECT_EQ(heap_scanned, topk_scanned);
+        }
+        const auto expected = ExpectedTopK(entity, k, norm);
+        EXPECT_EQ(expected, HeapResults(entity, heap));
+        EXPECT_EQ(expected, TopKResults(entity, topk));
+        EXPECT_EQ(RowBatchEntity::kCount, topk_stats.dist_calced_count());
+        EXPECT_EQ(heap_stats.dist_calced_count(),
+                  topk_stats.dist_calced_count());
+        EXPECT_EQ(heap_stats.filtered_count(), topk_stats.filtered_count());
+      }
+}
+
+TEST(IVFRowBatch, TopKFilteringPreservesTraversalAndStats) {
+  for (auto type : {IndexMeta::DT_FP32, IndexMeta::DT_FP16})
+    for (unsigned layout = 0; layout < 3; ++layout)
+      for (bool reject_all : {false, true}) {
+        SCOPED_TRACE(::testing::Message()
+                     << "type=" << type << " layout=" << layout
+                     << " reject_all=" << reject_all);
+        RowBatchEntity entity;
+        ASSERT_NO_FATAL_FAILURE(
+            entity.prepare(type, layout == 1, layout == 2 ? 16 : 0));
+        SetInterleavedScores(entity);
+        IndexFilter filter;
+        filter.set([reject_all](uint64_t key) {
+          const uint64_t row = (key - 1000) / 13;
+          // Include fully rejected blocks, partially rejected blocks, and
+          // rejected invalid keys so filtered_count retains its old meaning.
+          return reject_all || key == kInvalidKey || row < 64 || row % 5 == 0;
+        });
+        IndexDocumentHeap heap(91);
+        IndexContext::Stats heap_stats, topk_stats;
+        ASSERT_EQ(0, entity.search(nullptr, filter, &heap, &heap_stats));
+        const auto seen = entity.seen;
+        const auto batches = entity.batches;
+        entity.seen.clear();
+        entity.batches.clear();
+        turbo::BatchTopK topk;
+        topk.reset(91);
+        ASSERT_EQ(0, entity.search_topk(nullptr, filter, &topk, &topk_stats));
+        const auto expected = ExpectedTopK(entity, 91, 1.0f, filter);
+        EXPECT_EQ(expected, HeapResults(entity, heap));
+        EXPECT_EQ(expected, TopKResults(entity, topk));
+        EXPECT_EQ(heap_stats.filtered_count(), topk_stats.filtered_count());
+        EXPECT_EQ(heap_stats.dist_calced_count(),
+                  topk_stats.dist_calced_count());
+        EXPECT_EQ(seen, entity.seen);
+        EXPECT_EQ(batches, entity.batches);
+        if (reject_all) {
+          EXPECT_TRUE(expected.empty());
+          EXPECT_EQ(RowBatchEntity::kCount, topk_stats.filtered_count());
+          EXPECT_EQ(0u, topk_stats.dist_calced_count());
+          EXPECT_TRUE(entity.seen.empty());
+        }
+      }
+}
+
+TEST(IVFRowBatch, TopKThresholdNonFiniteScoresAndReset) {
+  for (auto type : {IndexMeta::DT_FP32, IndexMeta::DT_FP16}) {
+    RowBatchEntity entity;
+    ASSERT_NO_FATAL_FAILURE(entity.prepare(type));
+    const float infinity = std::numeric_limits<float>::infinity();
+    entity.row_scores.assign(RowBatchEntity::kCount, infinity);
+    entity.row_scores[0] = std::numeric_limits<float>::quiet_NaN();
+    entity.row_scores[1] = -infinity;
+    entity.row_scores[3] = entity.row_scores[4] = 4.0f;
+    entity.row_scores[5] = 2.0f;
+    entity.row_scores[6] = -3.0f;
+    entity.row_scores[17] = entity.row_scores[366] = -infinity;
+    constexpr float norm = 0.5f;
+    entity.set_normalization(norm);
+    turbo::BatchTopK topk;
+    for (bool strict : {false, true}) {
+      topk.reset(91, 2.0f, strict);
+      IndexContext::Stats stats;
+      ASSERT_EQ(0, entity.search_topk(nullptr, IndexFilter{}, &topk, &stats));
+      const auto expected = ExpectedTopK(entity, 91, norm, {}, 2.0f, strict);
+      EXPECT_EQ(strict ? 3u : 5u, expected.size());
+      EXPECT_EQ(expected, TopKResults(entity, topk));
+    }
+    topk.reset(4, 2.0f);
+    IndexContext::Stats tie_stats;
+    ASSERT_EQ(0, entity.search_topk(nullptr, IndexFilter{}, &topk, &tie_stats));
+    const auto tied = TopKResults(entity, topk);
+    ASSERT_EQ(4u, tied.size());
+    for (uint32_t row : {1u, 5u, 6u})
+      EXPECT_EQ(1u, tied.count(RowBatchEntity::kIdOffset + row));
+    EXPECT_EQ(1u, tied.count(RowBatchEntity::kIdOffset + 3) +
+                      tied.count(RowBatchEntity::kIdOffset + 4));
+    for (const auto &result : tied)
+      EXPECT_FLOAT_EQ(
+          entity.row_score(result.first - RowBatchEntity::kIdOffset) * norm,
+          result.second);
+    // Accept positive infinity with an inclusive infinite bound, and then
+    // reuse the same collector with a small k after changing the scores.
+    topk.reset(RowBatchEntity::kCount, infinity);
+    IndexContext::Stats stats;
+    ASSERT_EQ(0, entity.search_topk(nullptr, IndexFilter{}, &topk, &stats));
+    EXPECT_EQ(ExpectedTopK(entity, RowBatchEntity::kCount, norm),
+              TopKResults(entity, topk));
+    SetInterleavedScores(entity);
+    topk.reset(7);
+    ASSERT_EQ(0, entity.search_topk(nullptr, IndexFilter{}, &topk, &stats));
+    EXPECT_EQ(ExpectedTopK(entity, 7, norm), TopKResults(entity, topk));
+  }
 }
 
 }  // namespace
