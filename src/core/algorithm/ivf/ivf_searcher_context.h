@@ -140,6 +140,29 @@ class IVFSearcherContext : public IndexSearcher::Context {
     return result_heap_;
   }
 
+  turbo::BatchTopK &mutable_batch_topk() {
+    return batch_topk_;
+  }
+
+  //! Export once after all selected lists, mapping only the retained IDs.
+  int batch_topk_to_heap() {
+    batch_topk_.finish();
+    auto &documents = result_heap_.mutable_container();
+    documents.clear();
+    documents.reserve(batch_topk_.size());
+    for (size_t i = 0; i < batch_topk_.size(); ++i) {
+      const auto candidate = batch_topk_.result(i);
+      const auto id = static_cast<uint32_t>(candidate.id);
+      const auto key = entity_->get_key(id);
+      if (key == kInvalidKey) {
+        documents.clear();
+        return IndexError_ReadData;
+      }
+      documents.emplace_back(key, candidate.score, id);
+    }
+    return 0;
+  }
+
   void set_fetch_vector(bool v) override {
     fetch_vector_ = v;
   }
@@ -229,6 +252,7 @@ class IVFSearcherContext : public IndexSearcher::Context {
   IVFEntity::Pointer entity_{};
   IndexSearcher::Context::Pointer centroid_searcher_ctx_{};
   IndexDocumentHeap result_heap_;
+  turbo::BatchTopK batch_topk_;
   std::vector<IndexDocumentList> results_{};
   std::vector<Stats> stats_vec_{};
 
