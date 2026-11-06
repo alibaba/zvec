@@ -11,3 +11,14 @@ cc_binary(
     INCS . ${PROJECT_SOURCE_DIR}/src
     LDFLAGS ${APPLE_FRAMEWORK_LIBS}
 )
+
+# The diagnostic benchmark uses POSIX resource and thread CPU clocks.
+if(UNIX)
+    cc_binary(
+        NAME inverted_range_cache_bench PACKED
+        SRCS inverted_range_cache_bench.cc
+        LIBS zvec roaring rocksdb
+        INCS . ${PROJECT_SOURCE_DIR}/src
+        LDFLAGS ${APPLE_FRAMEWORK_LIBS}
+    )
+endif()
