@@ -1033,3 +1033,55 @@ TEST(OptKmeansCluster, DistanceQuantizerTracksTrainingDimension) {
   CheckQuantizerDimensionChanges<float>();
   CheckQuantizerDimensionChanges<Float16>();
 }
+
+namespace {
+template <typename T, bool InnerProduct>
+void CheckTurboBatchLayout() {
+  using Context = TurboKmeansContext<T, InnerProduct>;
+  constexpr size_t count = Context::BatchCount;
+  constexpr size_t queries = 2;
+  for (const size_t dim : {256u, 512u}) {
+    SCOPED_TRACE(::testing::Message() << "unit=" << sizeof(T) << " ip="
+                                      << InnerProduct << " dim=" << dim);
+    std::vector<T> rows(count * dim), query(queries * dim);
+    for (size_t i = 0; i < rows.size(); ++i) {
+      rows[i] =
+          T(static_cast<float>(static_cast<int>((i * 17 + i / dim) % 31) - 15) /
+            16.0f);
+    }
+    for (size_t i = 0; i < query.size(); ++i) {
+      query[i] =
+          T(static_cast<float>(static_cast<int>((i * 11 + i / dim) % 23) - 11) /
+            16.0f);
+    }
+    std::vector<float> scores(count * queries + 2, -12345.0f);
+    Context::template BatchDistance<queries>(rows.data(), query.data(), dim,
+                                             scores.data() + 1);
+    EXPECT_FLOAT_EQ(-12345.0f, scores.front());
+    EXPECT_FLOAT_EQ(-12345.0f, scores.back());
+    for (size_t q = 0; q < queries; ++q) {
+      for (size_t r = 0; r < count; ++r) {
+        double expected = 0.0, magnitude = 0.0;
+        for (size_t d = 0; d < dim; ++d) {
+          const double a = static_cast<float>(rows[r * dim + d]);
+          const double b = static_cast<float>(query[q * dim + d]);
+          const double term = InnerProduct ? -a * b : (a - b) * (a - b);
+          expected += term;
+          magnitude += std::abs(term);
+        }
+        // Allow reduction-order differences using the absolute products,
+        // rather than the final dot sum, to scale the tolerance.
+        EXPECT_NEAR(expected, scores[1 + q * count + r],
+                    2e-6 + 3e-6 * magnitude);
+      }
+    }
+  }
+}
+}  // namespace
+
+TEST(OptKmeansCluster, TurboBatchPreservesRowsAndQueryOrder) {
+  CheckTurboBatchLayout<float, false>();
+  CheckTurboBatchLayout<float, true>();
+  CheckTurboBatchLayout<Float16, false>();
+  CheckTurboBatchLayout<Float16, true>();
+}

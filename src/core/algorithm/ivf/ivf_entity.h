@@ -381,6 +381,11 @@ class IVFEntity {
 
   int key_normalize_value(uint32_t id, float *value) const;
 
+  template <bool BatchRows>
+  int search_blocks(size_t inverted_list_id, const void *query,
+                    uint32_t *scan_count, IndexDocumentHeap *heap,
+                    IndexContext::Stats *context_stats) const;
+
   void query_features_distance(const void *query, const void *features,
                                size_t count, float *out) const {
     if (packed_quantizer_) {
