@@ -22,6 +22,79 @@
 
 namespace zvec {
 namespace core {
+namespace {
+using MatrixNorm = void (*)(const void *, size_t, float *);
+using Int8NormAndDot = void (*)(const void *, const void *, size_t, float *,
+                                float *, float *);
+
+template <size_t Rows>
+void ComputeInt8NormAndDot(const void *m, const void *q, size_t dim, float *out,
+                           float *row_norms, float *query_norm) {
+  turbo::InterleavedDistanceMatrix<int8_t, Rows,
+                                   turbo::MetricType::kInnerProduct>::
+      template ComputeSingleColumn<true>(static_cast<const int8_t *>(m),
+                                         static_cast<const int8_t *>(q), dim,
+                                         out, 1, row_norms, query_norm);
+}
+
+Int8NormAndDot SelectInt8NormAndDot(size_t rows) {
+  switch (rows) {
+    case 2:
+      return ComputeInt8NormAndDot<2>;
+    case 4:
+      return ComputeInt8NormAndDot<4>;
+    case 8:
+      return ComputeInt8NormAndDot<8>;
+    case 16:
+      return ComputeInt8NormAndDot<16>;
+    case 32:
+      return ComputeInt8NormAndDot<32>;
+    default:
+      return nullptr;
+  }
+}
+
+template <typename T, size_t Rows>
+void InterleavedNorm(const void *data, size_t dim, float *out) {
+  turbo::InterleavedDistanceMatrix<T, Rows, turbo::MetricType::kInnerProduct>::
+      SquaredNorms(static_cast<const T *>(data), dim, out);
+}
+
+template <typename T>
+MatrixNorm SelectMatrixNorm(size_t rows) {
+  switch (rows) {
+    case 1:
+      return InterleavedNorm<T, 1>;
+    case 2:
+      return InterleavedNorm<T, 2>;
+    case 4:
+      return InterleavedNorm<T, 4>;
+    case 8:
+      return InterleavedNorm<T, 8>;
+    case 16:
+      return InterleavedNorm<T, 16>;
+    case 32:
+      return InterleavedNorm<T, 32>;
+    default:
+      return nullptr;
+  }
+}
+
+MatrixNorm SelectMatrixNorm(IndexMeta::DataType type, size_t rows) {
+  switch (type) {
+    case IndexMeta::DT_FP32:
+      return SelectMatrixNorm<float>(rows);
+    case IndexMeta::DT_FP16:
+      return SelectMatrixNorm<ailego::Float16>(rows);
+    case IndexMeta::DT_INT8:
+      return SelectMatrixNorm<int8_t>(rows);
+    case IndexMeta::DT_INT4:
+      return SelectMatrixNorm<uint8_t>(rows);
+    default:
+      return nullptr;
+  }
+}
+}  // namespace
 
 /*! Mips Squared Euclidean Metric
  */
@@ -238,8 +311,63 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
 
   //! Retrieve matrix distance function for index features
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
-    return turbo::MakeDistanceMatrix(distance(), m, n,
-                                     TurboDataType(data_type_));
+    if (m == 1 && n == 1) return distance();
+    const auto type = TurboDataType(data_type_);
+    auto l2 =
+        turbo::MakeRawDistanceMatrix<turbo::MetricType::kSquaredEuclidean>(
+            m, n, type);
+    if (!l2 || injection_ == Injection::kIdentity) return l2;
+    auto ip = turbo::MakeRawDistanceMatrix<turbo::MetricType::kInnerProduct>(
+        m, n, type);
+    const auto row_norm = SelectMatrixNorm(data_type_, m);
+    const auto query_norm = SelectMatrixNorm(data_type_, n);
+    const auto injection = injection_;
+    const auto state = training_state_;
+    const auto repeats = m_value_;
+    const auto fused = data_type_ == IndexMeta::DT_INT8 && n == 1 &&
+                               injection != Injection::kRepeatedQuadratic
+                           ? SelectInt8NormAndDot(m)
+                           : nullptr;
+    return [=](const void *rows, const void *queries, size_t dim, float *out) {
+      // Reuse each norm for all pairs, without transposing or allocating.
+      float row_norms[32], query_norms[32];
+      if (fused) {
+        fused(rows, queries, dim, out, row_norms, query_norms);
+      } else {
+        row_norm(rows, dim, row_norms);
+        query_norm(queries, dim, query_norms);
+        if (injection == Injection::kRepeatedQuadratic)
+          l2(rows, queries, dim, out);
+        else
+          ip(rows, queries, dim, out);
+      }
+      const float eta = state->eta.load(std::memory_order_relaxed);
+      for (size_t j = 0; j < n; ++j) {
+        for (size_t i = 0; i < m; ++i) {
+          float u2 = row_norms[i], v2 = query_norms[j];
+          float &score = out[j * m + i];
+          if (injection == Injection::kRepeatedQuadratic) {
+            score *= eta;
+            u2 *= eta;
+            v2 *= eta;
+            for (size_t k = 0; k < repeats; ++k) {
+              score += (u2 - v2) * (u2 - v2);
+              u2 *= u2;
+              v2 *= v2;
+            }
+          } else if (injection == Injection::kLocalizedSpherical ||
+                     eta == 0.0f) {
+            score = static_cast<float>(2.0 + 2.0 * score / std::max(u2, v2));
+          } else {
+            const double product =
+                (1.0 - double(eta) * u2) * (1.0 - double(eta) * v2);
+            score = static_cast<float>(
+                2.0 * (1.0 + double(eta) * score -
+                       (product > 0.0 ? std::sqrt(product) : 0.0)));
+          }
+        }
+      }
+    };
   }
 
   //! Normalize result

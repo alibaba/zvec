@@ -110,6 +110,81 @@ TEST(TurboMetricAdapter, InterleavedMatricesKeepQueryMajorOutput) {
   }
 }
 
+TEST(TurboMetricAdapter, MipsMatricesMatchPairsAcrossLayouts) {
+  for (auto type : {IndexMeta::DT_FP32, IndexMeta::DT_FP16, IndexMeta::DT_INT8,
+                    IndexMeta::DT_INT4}) {
+    for (size_t dim : {8U, 128U}) {
+      const IndexMeta meta(type, dim);
+      const size_t bytes = meta.element_size();
+      const size_t unit = type == IndexMeta::DT_FP16 ? 2 : 4;
+      auto fill = [&](size_t count, int salt) {
+        std::vector<uint8_t> data(count * bytes);
+        for (size_t i = 0; i < count; ++i) {
+          for (size_t d = 0; d < dim; ++d) {
+            auto *p = data.data() + i * bytes;
+            const int value = int((i * 7 + d * 3 + salt) % 16) - 8;
+            if (type == IndexMeta::DT_FP32) {
+              const float v = value / 7.0f;
+              std::memcpy(p + d * 4, &v, 4);
+            } else if (type == IndexMeta::DT_FP16) {
+              const ailego::Float16 v(value / 7.0f);
+              std::memcpy(p + d * 2, &v, 2);
+            } else if (type == IndexMeta::DT_INT8) {
+              p[d] = uint8_t(value);
+            } else {
+              p[d / 2] |= (value & 15) << (4 * (d % 2));
+            }
+          }
+        }
+        return data;
+      };
+      auto interleave = [&](const std::vector<uint8_t> &data, size_t count) {
+        std::vector<uint8_t> result(data.size());
+        for (size_t d = 0; d < bytes / unit; ++d)
+          for (size_t i = 0; i < count; ++i)
+            std::memcpy(result.data() + (d * count + i) * unit,
+                        data.data() + i * bytes + d * unit, unit);
+        return result;
+      };
+      for (int injection = 0; injection < 4; ++injection) {
+        ailego::Params params;
+        params.set(MIPS_EUCLIDEAN_METRIC_INJECTION_TYPE, injection);
+        params.set(MIPS_EUCLIDEAN_METRIC_M_VALUE, 2);
+        params.set(MIPS_EUCLIDEAN_METRIC_U_VALUE, 0.5f);
+        params.set(MIPS_EUCLIDEAN_METRIC_MAX_L2_NORM, 256.0f);
+        auto metric = IndexFactory::CreateMetric("MipsSquaredEuclidean");
+        ASSERT_TRUE(metric);
+        ASSERT_EQ(0, metric->init(meta, params));
+        const auto pair = metric->distance();
+        for (size_t m : {2U, 4U, 8U, 16U, 32U}) {
+          const auto rows = fill(m, 0), packed_rows = interleave(rows, m);
+          for (size_t n = 1; n <= m; n *= 2) {
+            SCOPED_TRACE(testing::Message()
+                         << int(type) << " dim=" << dim
+                         << " injection=" << injection << " " << m << "x" << n);
+            const auto queries = fill(n, 5),
+                       packed_queries = interleave(queries, n);
+            std::vector<float> output(m * n);
+            auto matrix = metric->distance_matrix(m, n);
+            ASSERT_TRUE(matrix);
+            matrix(packed_rows.data(), packed_queries.data(), dim,
+                   output.data());
+            for (size_t j = 0; j < n; ++j) {
+              for (size_t i = 0; i < m; ++i) {
+                float expected;
+                pair(rows.data() + i * bytes, queries.data() + j * bytes, dim,
+                     &expected);
+                EXPECT_NEAR(expected, output[j * m + i],
+                            1e-5f * std::max(1.0f, std::abs(expected)));
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 TEST(TurboMetricAdapter, MipsInjectionsKeepTheirDistanceSemantics) {
   const float a[] = {1, 2, 3}, b[] = {2, 1, -1};
   for (int injection = 0; injection < 4; ++injection) {

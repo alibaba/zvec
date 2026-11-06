@@ -11,12 +11,18 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdlib>
+#include <memory>
 #include <new>
 #include <type_traits>
 #include <vector>
+#include <core/metric/metric_params.h>
 #include <gtest/gtest.h>
 #include <turbo/distance/matrix.h>
+#include <zvec/core/framework/index_factory.h>
 
 namespace {
 thread_local bool count_allocations = false;
@@ -54,9 +60,9 @@ using namespace zvec;
 
 template <typename T>
 void CheckMatrices() {
-  for (size_t rows : {2U, 4U, 8U, 16U, 32U}) {
+  for (size_t rows : {1U, 2U, 4U, 8U, 16U, 32U}) {
     for (size_t columns = 1; columns <= rows; columns *= 2) {
-      for (size_t dim : {1U, 3U, 8U, 32U, 128U}) {
+      for (size_t dim : {0U, 1U, 3U, 4U, 7U, 8U, 9U, 17U, 32U, 128U, 513U}) {
         SCOPED_TRACE(::testing::Message()
                      << rows << "x" << columns << " dim=" << dim);
         constexpr bool int4 = std::is_same_v<T, uint8_t>;
@@ -128,6 +134,140 @@ TEST(TurboMatrix, DirectInterleavedLayoutsAndNoAllocations) {
   CheckMatrices<uint8_t>();
 }
 
+template <typename T, size_t Rows, turbo::MetricType Metric>
+void CheckSingleColumnTails() {
+  constexpr bool int4 = std::is_same_v<T, uint8_t>;
+  constexpr bool int8 = std::is_same_v<T, int8_t>;
+  for (size_t dim : {0U,  1U,  2U,  3U,  4U,   5U,   7U,   8U,   9U,   15U, 16U,
+                     17U, 31U, 32U, 33U, 127U, 128U, 129U, 511U, 512U, 513U}) {
+    SCOPED_TRACE(::testing::Message() << "rows=" << Rows << " dim=" << dim);
+    const size_t stride = int4   ? (dim + 7) / 8 * 4
+                          : int8 ? (dim + 3) / 4 * 4
+                                 : dim;
+    // Poison padded dimensions, and give the query exactly its logical size.
+    // ASan can then detect a full-word read past a partial final query word.
+    std::vector<T> matrix(Rows * stride, T(7));
+    const size_t query_size = int4 ? (dim + 1) / 2 : dim;
+    auto query = std::make_unique<T[]>(query_size);
+    std::vector<double> expected(Rows, 0);
+    auto value = [](size_t row, size_t d, bool is_query) -> float {
+      const size_t index = is_query ? d / 16 : row + d;
+      if constexpr (int4) {
+        return float(int(index % 16) - 8);
+      } else if constexpr (int8) {
+        constexpr int values[] = {-128, 127, -1, 0, 1, 64, -64};
+        return float(values[index % 7]);
+      } else {
+        constexpr float values[] = {-65504, 65504, -0.5f, 0, 0.5f, 3, -3};
+        return float(T(values[index % 7]));
+      }
+    };
+    for (size_t d = 0; d < dim; ++d) {
+      const float q = value(0, d, true);
+      if constexpr (int4) {
+        query[d / 2] |= (int(q) & 15) << (4 * (d % 2));
+      } else {
+        query[d] = T(q);
+      }
+      for (size_t i = 0; i < Rows; ++i) {
+        const float m = value(i, d, false);
+        if constexpr (int4) {
+          const size_t offset = (d / 8 * Rows + i) * 4 + d % 8 / 2;
+          const size_t shift = 4 * (d % 2);
+          matrix[offset] =
+              (matrix[offset] & ~(15 << shift)) | ((int(m) & 15) << shift);
+        } else if constexpr (int8) {
+          matrix[(d / 4 * Rows + i) * 4 + d % 4] = T(m);
+        } else {
+          matrix[d * Rows + i] = T(m);
+        }
+        const double delta = double(m) - q;
+        expected[i] += Metric == turbo::MetricType::kSquaredEuclidean
+                           ? delta * delta
+                           : -double(m) * q;
+      }
+    }
+    auto kernel = turbo::MakeRawDistanceMatrix<Metric>(
+        Rows, 1, turbo::MatrixDataType<T>());
+    ASSERT_TRUE(kernel);
+    std::array<float, Rows + 2> dynamic, direct;
+    dynamic.fill(-12345);
+    direct.fill(-12345);
+    allocation_count = 0;
+    count_allocations = true;
+    kernel(matrix.data(), query.get(), dim, dynamic.data() + 1);
+    turbo::DistanceMatrix<T, Rows, 1, Metric>::Compute(
+        matrix.data(), query.get(), dim, direct.data() + 1);
+    count_allocations = false;
+    EXPECT_EQ(0U, allocation_count);
+    EXPECT_EQ(-12345, dynamic.front());
+    EXPECT_EQ(-12345, dynamic.back());
+    EXPECT_EQ(-12345, direct.front());
+    EXPECT_EQ(-12345, direct.back());
+    for (size_t i = 0; i < Rows; ++i) {
+      EXPECT_NEAR(expected[i], dynamic[i + 1],
+                  std::max(1e-5, std::abs(expected[i]) * 1e-5));
+      EXPECT_FLOAT_EQ(dynamic[i + 1], direct[i + 1]);
+    }
+  }
+}
+
+template <size_t Rows>
+void CheckSingleColumnTypes() {
+  CheckSingleColumnTails<ailego::Float16, Rows,
+                         turbo::MetricType::kSquaredEuclidean>();
+  CheckSingleColumnTails<int8_t, Rows, turbo::MetricType::kInnerProduct>();
+  CheckSingleColumnTails<int8_t, Rows, turbo::MetricType::kSquaredEuclidean>();
+  CheckSingleColumnTails<uint8_t, Rows, turbo::MetricType::kSquaredEuclidean>();
+  CheckSingleColumnTails<uint8_t, Rows, turbo::MetricType::kInnerProduct>();
+}
+
+TEST(TurboMatrix, SingleColumnExtremesTailsAndNoAllocations) {
+  CheckSingleColumnTypes<1>();
+  CheckSingleColumnTypes<2>();
+  CheckSingleColumnTypes<4>();
+  CheckSingleColumnTypes<8>();
+  CheckSingleColumnTypes<16>();
+  CheckSingleColumnTypes<32>();
+}
+
+TEST(TurboMatrix, Int16ExtremaMatchIndependentReference) {
+  for (size_t rows : {1U, 2U, 4U, 8U, 16U, 32U}) {
+    for (size_t columns = 1; columns <= rows; columns *= 2) {
+      for (size_t dim : {3U, 33U}) {
+        std::vector<int16_t> data(rows * dim), query(columns * dim);
+        for (size_t d = 0; d < dim; ++d) {
+          for (size_t i = 0; i < rows; ++i)
+            data[d * rows + i] = (i + d) % 2 ? INT16_MIN : INT16_MAX;
+          for (size_t j = 0; j < columns; ++j)
+            query[d * columns + j] = (j + d) % 2 ? INT16_MAX : INT16_MIN;
+        }
+        for (bool ip : {false, true}) {
+          auto kernel = ip ? turbo::MakeRawDistanceMatrix<
+                                 turbo::MetricType::kInnerProduct>(
+                                 rows, columns, turbo::DataType::kInt16)
+                           : turbo::MakeRawDistanceMatrix<
+                                 turbo::MetricType::kSquaredEuclidean>(
+                                 rows, columns, turbo::DataType::kInt16);
+          std::vector<float> output(rows * columns);
+          kernel(data.data(), query.data(), dim, output.data());
+          for (size_t j = 0; j < columns; ++j) {
+            for (size_t i = 0; i < rows; ++i) {
+              double expected = 0;
+              for (size_t d = 0; d < dim; ++d) {
+                const double a = data[d * rows + i], b = query[d * columns + j];
+                expected += ip ? -a * b : (a - b) * (a - b);
+              }
+              EXPECT_NEAR(expected, output[j * rows + i],
+                          std::max(1.0, std::abs(expected) * 1e-6));
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 TEST(TurboMatrix, KmeansTemplateDoesNotAllocate) {
   float rows[32 * 128]{}, queries[32 * 128]{}, output[32 * 32];
   allocation_count = 0;
@@ -139,5 +279,84 @@ TEST(TurboMatrix, KmeansTemplateDoesNotAllocate) {
   count_allocations = false;
   EXPECT_EQ(0U, allocation_count);
   for (float distance : output) EXPECT_FLOAT_EQ(0.0f, distance);
+}
+
+TEST(TurboMatrix, RecordAndMipsFastMatricesDoNotAllocate) {
+  using namespace zvec::core;
+  for (auto type : {IndexMeta::DT_INT8, IndexMeta::DT_INT4}) {
+    for (bool record : {false, true}) {
+      for (const char *name :
+           {"SquaredEuclidean", "InnerProduct", "MipsSquaredEuclidean",
+            "NormalizedCosine", "Cosine"}) {
+        if (!record && std::strcmp(name, "MipsSquaredEuclidean")) continue;
+        const size_t payload = type == IndexMeta::DT_INT4 ? 4 : 8;
+        const bool cosine = !std::strcmp(name, "Cosine");
+        const size_t tail_bytes =
+            record ? (type == IndexMeta::DT_INT4 ? 16 : 20) + (cosine ? 4 : 0)
+                   : 0;
+        const size_t bytes = payload + tail_bytes;
+        const size_t dim = type == IndexMeta::DT_INT4 ? bytes * 2 : bytes;
+        ailego::Params params;
+        if (record)
+          params.set(QUANTIZED_INTEGER_METRIC_ORIGIN_METRIC_NAME, name);
+        auto metric =
+            IndexFactory::CreateMetric(record ? "QuantizedInteger" : name);
+        ASSERT_TRUE(metric);
+        ASSERT_EQ(0, metric->init(IndexMeta(type, dim), params));
+        std::vector<uint8_t> data(bytes * 32, 0);
+        for (size_t i = 0; i < 32; ++i) {
+          for (size_t word = 0; word < payload / 4; ++word)
+            std::memset(data.data() + (word * 32 + i) * 4,
+                        type == IndexMeta::DT_INT4 ? 0x11 : 0x01, 4);
+          if (record) {
+            const float tail[] = {0.5f, 1.0f, 8.0f, 8.0f};
+            for (size_t k = 0; k < 4; ++k)
+              std::memcpy(data.data() + ((payload / 4 + k) * 32 + i) * 4,
+                          tail + k, 4);
+            const int32_t code_sum = 8;
+            if (type == IndexMeta::DT_INT8 ||
+                (std::strcmp(name, "SquaredEuclidean") &&
+                 std::strcmp(name, "MipsSquaredEuclidean"))) {
+              const size_t k = type == IndexMeta::DT_INT8 ? 4 : 3;
+              std::memcpy(data.data() + ((payload / 4 + k) * 32 + i) * 4,
+                          &code_sum, 4);
+            }
+            if (cosine) {
+              const float norm = 1.0f;
+              std::memcpy(data.data() + ((bytes / 4 - 1) * 32 + i) * 4, &norm,
+                          4);
+            }
+          }
+        }
+        std::vector<uint8_t> row(bytes);
+        for (size_t word = 0; word < bytes / 4; ++word)
+          std::memcpy(row.data() + word * 4, data.data() + word * 32 * 4, 4);
+        float expected;
+        metric->distance()(row.data(), row.data(), dim, &expected);
+        for (size_t columns : {1U, 2U, 4U, 8U, 16U, 32U}) {
+          // Multi-query INT4 records retain the faster contiguous SIMD path.
+          if (record && type == IndexMeta::DT_INT4 && columns > 1) continue;
+          std::vector<uint8_t> query(bytes * columns);
+          for (size_t word = 0; word < bytes / 4; ++word)
+            for (size_t j = 0; j < columns; ++j)
+              std::memcpy(query.data() + (word * columns + j) * 4,
+                          data.data() + word * 32 * 4, 4);
+          auto matrix = metric->distance_matrix(32, columns);
+          ASSERT_TRUE(matrix);
+          std::vector<float> output(32 * columns);
+          allocation_count = 0;
+          count_allocations = true;
+          matrix(data.data(), query.data(), dim, output.data());
+          count_allocations = false;
+          EXPECT_EQ(0U, allocation_count) << name << " columns=" << columns;
+          for (float value : output) {
+            EXPECT_TRUE(std::isfinite(value));
+            EXPECT_NEAR(expected, value,
+                        1e-5f * std::max(1.0f, std::abs(expected)));
+          }
+        }
+      }
+    }
+  }
 }
 }  // namespace
