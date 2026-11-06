@@ -1416,10 +1416,10 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
       return ret;
     }
     ctx->topk_to_result(q);
-    query = static_cast<const char *>(query) +
-            (quantizer_ && !fp32_query
-                 ? quantizer_->quantized_query_vector_length()
-                 : qmeta.element_size());
+    query =
+        static_cast<const char *>(query) +
+        (quantizer_ && !fp32_query ? quantizer_->quantized_query_vector_length()
+                                   : qmeta.element_size());
   }
 
   if (ailego_unlikely(ctx->error())) {
