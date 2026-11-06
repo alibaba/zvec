@@ -914,7 +914,8 @@ int FlatStreamerEntity::retain_stable_data(
   if (!lifetime) return IndexError_InvalidArgument;
   // MBT_MMAP also describes caller-managed scratch, so its tag alone cannot
   // establish that iterator data remains valid across reads.
-  if (!storage_ || storage_->name() != "MMapFileStorage") {
+  if (!storage_ || (storage_->name() != "MMapFileStorage" &&
+                    storage_->name() != "MMapFileReadStorage")) {
     return IndexError_NotImplemented;
   }
   *lifetime = storage_;
