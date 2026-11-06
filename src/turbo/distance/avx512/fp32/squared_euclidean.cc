@@ -25,20 +25,49 @@ namespace zvec::turbo::avx512 {
 namespace {
 
 float squared_euclidean(const float *a, const float *b, size_t dim) {
-  __m512 accumulator = _mm512_setzero_ps();
+  __m512 acc0 = _mm512_setzero_ps();
+  __m512 acc1 = _mm512_setzero_ps();
+  __m512 acc2 = _mm512_setzero_ps();
+  __m512 acc3 = _mm512_setzero_ps();
   size_t i = 0;
-  for (; i + 16 <= dim; i += 16) {
+  for (; i + 64 <= dim; i += 64) {
+    const __m512 diff0 =
+        _mm512_sub_ps(_mm512_loadu_ps(a + i), _mm512_loadu_ps(b + i));
+    acc0 = _mm512_fmadd_ps(diff0, diff0, acc0);
+    const __m512 diff1 =
+        _mm512_sub_ps(_mm512_loadu_ps(a + i + 16), _mm512_loadu_ps(b + i + 16));
+    acc1 = _mm512_fmadd_ps(diff1, diff1, acc1);
+    const __m512 diff2 =
+        _mm512_sub_ps(_mm512_loadu_ps(a + i + 32), _mm512_loadu_ps(b + i + 32));
+    acc2 = _mm512_fmadd_ps(diff2, diff2, acc2);
+    const __m512 diff3 =
+        _mm512_sub_ps(_mm512_loadu_ps(a + i + 48), _mm512_loadu_ps(b + i + 48));
+    acc3 = _mm512_fmadd_ps(diff3, diff3, acc3);
+  }
+  if (i + 32 <= dim) {
+    const __m512 diff0 =
+        _mm512_sub_ps(_mm512_loadu_ps(a + i), _mm512_loadu_ps(b + i));
+    acc0 = _mm512_fmadd_ps(diff0, diff0, acc0);
+    const __m512 diff1 =
+        _mm512_sub_ps(_mm512_loadu_ps(a + i + 16), _mm512_loadu_ps(b + i + 16));
+    acc1 = _mm512_fmadd_ps(diff1, diff1, acc1);
+    i += 32;
+  }
+  if (i + 16 <= dim) {
     const __m512 diff =
         _mm512_sub_ps(_mm512_loadu_ps(a + i), _mm512_loadu_ps(b + i));
-    accumulator = _mm512_add_ps(accumulator, _mm512_mul_ps(diff, diff));
+    acc2 = _mm512_fmadd_ps(diff, diff, acc2);
+    i += 16;
+  }
+  if (i < dim) {
+    const __mmask16 mask = static_cast<__mmask16>((1u << (dim - i)) - 1);
+    const __m512 diff = _mm512_sub_ps(_mm512_maskz_loadu_ps(mask, a + i),
+                                      _mm512_maskz_loadu_ps(mask, b + i));
+    acc3 = _mm512_fmadd_ps(diff, diff, acc3);
   }
 
-  float sum = _mm512_reduce_add_ps(accumulator);
-  for (; i < dim; ++i) {
-    const float diff = a[i] - b[i];
-    sum += diff * diff;
-  }
-  return sum;
+  __m512 acc = _mm512_add_ps(_mm512_add_ps(acc0, acc1), _mm512_add_ps(acc2, acc3));
+  return _mm512_reduce_add_ps(acc);
 }
 
 // One-to-many squared euclidean kernel: the query block is loaded once per
