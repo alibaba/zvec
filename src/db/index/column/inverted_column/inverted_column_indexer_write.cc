@@ -22,6 +22,68 @@
 namespace zvec {
 
 
+namespace {
+
+// Empties a column family. Normally in place, with one range tombstone that
+// is flushed at once: the indexes write without a write-ahead log, so the
+// flush makes the clear durable before the seal publishes anything after it,
+// as the drop it replaces did. Dropping and recreating the family instead
+// rewrites the MANIFEST and the OPTIONS file with several syncs, and a crash
+// between the drop and the create leaves the family missing.
+//
+// Every key is read first. If a block cannot be read (for example, it fails
+// its checksum), the family is dropped and recreated without reading it, as
+// before: a range tombstone would not stop the flush and compaction from
+// reading that block again. That fallback keeps the crash window of the drop.
+Status ClearColumnFamily(RocksdbContext &ctx, const std::string &name,
+                         rocksdb::ColumnFamilyHandle **cf) {
+  bool empty = true;
+  std::string first, last;
+  rocksdb::Status rs;
+  {
+    std::unique_ptr<rocksdb::Iterator> it(
+        ctx.db_->NewIterator(ctx.read_opts_, *cf));
+    for (it->SeekToFirst(); it->Valid(); it->Next()) {
+      if (empty) {
+        first = it->key().ToString();
+        empty = false;
+      }
+      last = it->key().ToString();
+    }
+    rs = it->status();
+  }
+  if (!rs.ok()) {
+    LOG_WARN("Failed to read cf[%s], code[%d], reason[%s]; recreating it",
+             name.c_str(), rs.code(), rs.ToString().c_str());
+    if (!ctx.reset_cf(name).ok()) {
+      return Status::InternalError();
+    }
+    *cf = ctx.get_cf(name);
+    return *cf ? Status::OK() : Status::InternalError();
+  }
+  if (empty) {
+    return Status::OK();
+  }
+  // Both bounds come from the family's own iterator, so they are ordered
+  // under its comparator. DeleteRange excludes its end key.
+  rs = ctx.db_->DeleteRange(ctx.write_opts_, *cf, first, last);
+  if (rs.ok()) {
+    rs = ctx.db_->Delete(ctx.write_opts_, *cf, last);
+  }
+  if (rs.ok()) {
+    rs = ctx.db_->Flush(ctx.flush_opts_, *cf);
+  }
+  if (!rs.ok()) {
+    LOG_ERROR("Failed to clear cf[%s], code[%d], reason[%s]", name.c_str(),
+              rs.code(), rs.ToString().c_str());
+    return Status::InternalError();
+  }
+  return Status::OK();
+}
+
+}  // namespace
+
+
 Status InvertedColumnIndexer::insert(uint32_t id, const std::string &value) {
   if (read_only_) {
     return Status::PermissionDenied();
@@ -247,14 +309,14 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
     return Status::PermissionDenied();
   }
 
-  if (!ctx_.reset_cf(cf_name_ranges()).ok()) {
-    // Reset the range index in case it is corrupted
-    LOG_ERROR("Failed to reset range index");
-    return Status::InternalError();
-  }
   cf_ranges_ = ctx_.get_cf(cf_name_ranges());
   if (!cf_ranges_) {
     LOG_ERROR("Failed to get column families for %s", id().c_str());
+    return Status::InternalError();
+  }
+  // Clear leftovers of an interrupted earlier seal before rebuilding.
+  if (!ClearColumnFamily(ctx_, cf_name_ranges(), &cf_ranges_).ok()) {
+    LOG_ERROR("Failed to reset range index");
     return Status::InternalError();
   }
 
@@ -392,13 +454,8 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
     LOG_DEBUG(
         "Drop range index in %s, range_slot_count[%ld] vs term_count[%ld].",
         id().c_str(), num_range_slot_created, term_count);
-    if (!ctx_.reset_cf(cf_name_ranges()).ok()) {
+    if (!ClearColumnFamily(ctx_, cf_name_ranges(), &cf_ranges_).ok()) {
       LOG_ERROR("Failed to drop range index");
-      return Status::InternalError();
-    }
-    cf_ranges_ = ctx_.get_cf(cf_name_ranges());
-    if (!cf_ranges_) {
-      LOG_ERROR("Failed to get cf_ranges for %s", id().c_str());
       return Status::InternalError();
     }
   }
