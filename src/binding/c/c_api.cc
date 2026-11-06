@@ -952,9 +952,16 @@ void zvec_free_string(zvec_string_t *str) {
  * @return New string array, or NULL on failure
  */
 zvec_string_array_t *zvec_string_array_create(size_t count) {
+  if (count > SIZE_MAX / sizeof(zvec_string_t)) return nullptr;
+  
   zvec_string_array_t *array = (zvec_string_array_t *)malloc(sizeof(zvec_string_array_t));
+  if (!array) return nullptr;
   array->count = count;
   array->strings = (zvec_string_t *)malloc(sizeof(zvec_string_t) * count);
+  if (!array->strings) {
+    free(array);
+    return nullptr;
+  }
   memset(array->strings, 0, sizeof(zvec_string_t) * count);
   return array;
 }
@@ -971,6 +978,7 @@ zvec_string_array_t *zvec_string_array_create_from_strings(const char **strings,
     return nullptr;
   }
   zvec_string_array_t *array = zvec_string_array_create(count);
+  if (!array) return nullptr;
   for (size_t i = 0; i < count; ++i) {
     zvec_string_array_add(array, i, strings[i]);
   }
@@ -985,10 +993,13 @@ zvec_string_array_t *zvec_string_array_create_from_strings(const char **strings,
  */
 void zvec_string_array_add(zvec_string_array_t *array, size_t idx,
                            const char *str) {
+  if (!array || !str) return;
   if (idx >= array->count) return;
   size_t len = strlen(str);
-  array->strings[idx].data = (char *)malloc(len + 1);
-  memcpy(array->strings[idx].data, str, len + 1);
+  char *buf = (char *)malloc(len + 1);
+  if (!buf) return;
+  memcpy(buf, str, len + 1);
+  array->strings[idx].data = buf;
   array->strings[idx].length = len;
   array->strings[idx].capacity = len + 1;
 }
@@ -3806,6 +3817,7 @@ const char *zvec_doc_get_pk_copy(const zvec_doc_t *doc) {
   if (pk.empty()) return nullptr;
 
   char *result = static_cast<char *>(malloc(pk.length() + 1));
+  if (!result) return nullptr;
   strcpy(result, pk.c_str());
   return result;
 }

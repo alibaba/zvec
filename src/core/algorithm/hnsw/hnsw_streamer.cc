@@ -481,6 +481,7 @@ int HnswStreamer::cleanup() {
   bf_negative_prob_ = HnswEntity::kDefaultBFNegativeProbability;
   max_scan_ratio_ = HnswEntity::kDefaultScanRatio;
   state_ = STATE_INIT;
+  build_vector_source_ = nullptr;
   check_crc_enabled_ = false;
   filter_same_key_ = false;
   get_vector_enabled_ = false;
@@ -499,7 +500,10 @@ int HnswStreamer::setup_entity() {
   // vector_size to 0 so all inherited offset computations (key / neighbors /
   // node_size) are correct and add_vector writes no vector bytes. The distance
   // dimension is taken from meta.dimension(), not from vector_size().
-  entity_->set_vector_size(use_external_vector_ ? 0 : meta_.element_size());
+  entity_->set_vector_size(
+      use_external_vector_ || build_vector_source_ ? 0 : meta_.element_size());
+  entity_->set_packed_vector_size(build_vector_source_ ? meta_.element_size()
+                                                       : 0);
   entity_->set_chunk_size(chunk_size_);
   entity_->set_filter_same_key(filter_same_key_);
   entity_->set_get_vector(get_vector_enabled_);
@@ -514,6 +518,32 @@ int HnswStreamer::setup_entity() {
 
 int HnswStreamer::open(IndexStorage::Pointer stg) {
   return open(std::move(stg), false);
+}
+
+int HnswStreamer::open_with_borrowed_vectors(IndexStorage::Pointer storage,
+                                             const VectorSource *source) {
+  if (state_ != STATE_INITED || !storage || !source || use_external_vector_ ||
+      provider_ || storage->name() != "MMapFileStorage") {
+    return IndexError_InvalidArgument;
+  }
+  build_vector_source_ = source;
+  return open(std::move(storage));
+}
+
+size_t HnswStreamer::packed_segment_count() const {
+  if (state_ != STATE_OPENED || !build_vector_source_) return 0;
+  // IndexVersion and IndexMeta precede the entity's packed chunks.
+  return 2 + entity_->packed_chunk_count();
+}
+
+int HnswStreamer::dump_with_vectors(const IndexDumper::Pointer &dumper) {
+  if (state_ != STATE_OPENED || !build_vector_source_) {
+    return IndexError_NoReady;
+  }
+  int ret = IndexHelper::SerializeToDumper(meta_, dumper.get());
+  return ret != 0 ? ret
+                  : entity_->dump_with_vectors(dumper, *build_vector_source_,
+                                               meta_.element_size());
 }
 
 int HnswStreamer::open(IndexStorage::Pointer stg, bool read_only) {
@@ -553,7 +583,7 @@ int HnswStreamer::open(IndexStorage::Pointer stg, bool read_only) {
       break;
     }
     default: {
-      if (use_external_vector_) {
+      if (use_external_vector_ || build_vector_source_) {
         entity_ = std::make_unique<HnswExternalStreamerEntity>(stats_);
       } else if (use_contiguous_memory_ &&
                  stg->name() == "MMapFileReadStorage") {
@@ -1049,6 +1079,8 @@ IndexStreamer::Context::Pointer HnswStreamer::create_context() const {
   }
   ctx->check_need_adjuct_ctx(std::max(entity_->doc_cnt(), estimate_doc_count));
 
+  if (build_vector_source_) ctx->set_vector_source(build_vector_source_);
+
   return Context::Pointer(ctx);
 }
 
@@ -1060,8 +1092,10 @@ IndexProvider::Pointer HnswStreamer::create_provider() const {
     LOG_ERROR("Clone HnswEntity failed");
     return nullptr;
   }
-  return Provider::Pointer(
-      new HnswIndexProvider(meta_, entity, "HnswStreamer"));
+  std::shared_ptr<const void> lifetime;
+  entity_->retain_stable_data(&lifetime);
+  return Provider::Pointer(new HnswIndexProvider(meta_, entity, "HnswStreamer",
+                                                 std::move(lifetime)));
 }
 
 int HnswStreamer::update_context(HnswContext *ctx) const {

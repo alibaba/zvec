@@ -13,12 +13,18 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iterator>
+#include <new>
 #include <random>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -26,14 +32,53 @@
 #include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
+#include "algorithm/hnsw/hnsw_algorithm.h"
+#include "algorithm/hnsw/hnsw_build_dumper.h"
 #include "algorithm/hnsw/hnsw_context.h"
 #include "algorithm/hnsw/hnsw_params.h"
 #include "algorithm/hnsw/hnsw_streamer.h"
 #include "tests/test_util.h"
+#include "utility/stable_vector_holder.h"
+
+// Fault injection is opt-in and thread-local. All other allocations use the
+// normal malloc/free path.
+namespace bulk_alloc_test {
+thread_local size_t countdown = 0;
+thread_local bool (*should_fail)() = nullptr;
+thread_local void (*on_delete)(void *) = nullptr;
+thread_local void *state = nullptr;
+
+void Reset() {
+  countdown = 0;
+  should_fail = nullptr;
+  on_delete = nullptr;
+  state = nullptr;
+}
+}  // namespace bulk_alloc_test
+
+void *operator new(std::size_t size) {
+  if ((bulk_alloc_test::countdown && --bulk_alloc_test::countdown == 0) ||
+      (bulk_alloc_test::should_fail && bulk_alloc_test::should_fail())) {
+    bulk_alloc_test::should_fail = nullptr;
+    throw std::bad_alloc();
+  }
+  if (void *ptr = std::malloc(size ? size : 1)) return ptr;
+  throw std::bad_alloc();
+}
+
+void operator delete(void *ptr) noexcept {
+  if (ptr && bulk_alloc_test::on_delete) bulk_alloc_test::on_delete(ptr);
+  std::free(ptr);
+}
+
+void operator delete(void *ptr, std::size_t) noexcept {
+  ::operator delete(ptr);
+}
 
 using namespace zvec::core_interface;
 
@@ -734,6 +779,871 @@ TEST_P(HnswTurboIndexTest, MergePreservesTurboLayout) {
   ASSERT_EQ(kTopK, rows.size());
   EXPECT_EQ(73U, rows[0].first);
 
+  ASSERT_EQ(0, target->close());
+  ASSERT_EQ(0, source->close());
+  zvec::test_util::RemoveTestFiles(source_path);
+  zvec::test_util::RemoveTestFiles(target_path);
+}
+
+TEST(HnswBulkMergeTest, DumperPreservesPayloadsBeyondFormerMetadataLimit) {
+  namespace ailego = zvec::ailego;
+  const std::string path = "hnsw_bulk_many_segments.index";
+  AILEGO_DEFER([&]() { zvec::test_util::RemoveTestFiles(path); });
+  constexpr uint32_t kSegments = 30000;
+  // Include the version segment. The former fixed 1 MiB table overwrote
+  // HnswT3S23907 when it grew; every record must survive reopening.
+  zvec::core::HnswBuildDumper dumper(kSegments + 1);
+  ASSERT_EQ(0, dumper.create(path));
+  for (uint32_t i = 0; i < kSegments; ++i) {
+    uint32_t payload[16];
+    std::fill(std::begin(payload), std::end(payload), i + 1);
+    ASSERT_EQ(sizeof(payload), dumper.write(payload, sizeof(payload)));
+    ASSERT_EQ(
+        0, dumper.append("HnswT3S" + std::to_string(i), sizeof(payload), 0, 0));
+  }
+  ASSERT_EQ(0, dumper.close());
+  auto storage = zvec::core::IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init({}));
+  ASSERT_EQ(0, storage->open(path, false));
+  EXPECT_EQ(kSegments + 1, storage->get_all().size());
+  for (uint32_t i = 0; i < kSegments; ++i) {
+    auto segment = storage->get("HnswT3S" + std::to_string(i));
+    ASSERT_NE(nullptr, segment);
+    zvec::core::IndexStorage::MemoryBlock block;
+    ASSERT_EQ(64U, segment->read(0, block, 64));
+    const auto *values = static_cast<const uint32_t *>(block.data());
+    for (size_t j = 0; j < 16; ++j) ASSERT_EQ(i + 1, values[j]) << i;
+  }
+  ASSERT_EQ(0, storage->close());
+}
+
+TEST(HnswBulkMergeTest, DumperRejectsUnderestimatedMetadataBudget) {
+  namespace ailego = zvec::ailego;
+  const std::string path = "hnsw_bulk_metadata_budget.index";
+  AILEGO_DEFER([&]() { zvec::test_util::RemoveTestFiles(path); });
+  zvec::core::HnswBuildDumper dumper(1);
+  ASSERT_EQ(0, dumper.create(path));
+  const uint32_t value = 42;
+  ASSERT_EQ(sizeof(value), dumper.write(&value, sizeof(value)));
+  EXPECT_EQ(zvec::core::IndexError_IndexFull,
+            dumper.append("HnswT3S0", sizeof(value), 0, 0));
+}
+
+TEST(HnswBulkMergeTest, AlignedChunkCapacitySurvivesPackingAndAppend) {
+  namespace core = zvec::core;
+  namespace ailego = zvec::ailego;
+  const std::string graph_path = "hnsw_bulk_capacity_graph.index";
+  const std::string packed_path = "hnsw_bulk_capacity_packed.index";
+  const std::string meta_path = "hnsw_bulk_capacity_meta.index";
+  AILEGO_DEFER([&]() {
+    for (const auto &path : {graph_path, packed_path, meta_path}) {
+      zvec::test_util::RemoveTestFiles(path);
+    }
+  });
+  // m=50 rounds each compact node chunk from 2 MiB to 3.25 MiB. Use two
+  // chunks so accounting must remove the actual capacity of every old chunk.
+  constexpr uint32_t count = 8193;
+  auto vectors = RandomVectors(count);
+  TestExternalVectorSource source(&vectors);
+  auto init_entity = [&](core::HnswStreamerEntity &entity, size_t vector_size) {
+    entity.set_vector_size(vector_size);
+    entity.set_l0_neighbor_cnt(100);
+    entity.set_upper_neighbor_cnt(50);
+    entity.set_scaling_factor(50);
+    return entity.init(count);
+  };
+  auto graph_storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, graph_storage);
+  ASSERT_EQ(0, graph_storage->init({}));
+  ASSERT_EQ(0, graph_storage->open(graph_path, true));
+  core::IndexStreamer::Stats graph_stats;
+  core::HnswExternalStreamerEntity graph(graph_stats);
+  graph.set_packed_vector_size(kDimension * sizeof(float));
+  ASSERT_EQ(0, init_entity(graph, 0));
+  ASSERT_EQ(0, graph.open(graph_storage, 128U << 20, false));
+  for (uint32_t id = 0; id < count; ++id) {
+    ASSERT_EQ(0, graph.add_vector_with_id(0, id, vectors[id].data()));
+  }
+  graph.update_ep_and_level(0, 0);
+  size_t old_node_chunks = 0;
+  for (;; ++old_node_chunks) {
+    auto chunk = graph_storage->get(core::ChunkBroker::make_segment_id(
+        core::ChunkBroker::CHUNK_TYPE_NODE, old_node_chunks));
+    if (!chunk) break;
+    ASSERT_GT(chunk->capacity(), core::HnswEntity::kDefaultChunkSize);
+  }
+  ASSERT_EQ(2U, old_node_chunks);
+  auto dumper =
+      std::make_shared<core::HnswBuildDumper>(1 + graph.packed_chunk_count());
+  ASSERT_EQ(0, dumper->create(packed_path));
+  ASSERT_EQ(
+      0, graph.dump_with_vectors(dumper, source, kDimension * sizeof(float)));
+  ASSERT_EQ(0, dumper->close());
+
+  auto packed_storage =
+      core::IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_NE(nullptr, packed_storage);
+  ASSERT_EQ(0, packed_storage->init({}));
+  ASSERT_EQ(0, packed_storage->open(packed_path, false));
+  size_t total_capacity = 0;
+  size_t node_capacity = 0;
+  size_t node_chunks = 0;
+  for (const auto &[name, chunk] : packed_storage->get_all()) {
+    if (name.rfind("HnswT", 0) == 0) total_capacity += chunk->capacity();
+    if (name.rfind("HnswT3S", 0) == 0) {
+      node_capacity = chunk->capacity();
+      ++node_chunks;
+    }
+  }
+  ASSERT_GT(node_chunks, old_node_chunks);
+  ASSERT_EQ(0, packed_storage->close());
+  // The exact output capacity is full; one extra byte is sufficient to pack.
+  // Compute the budget from real segments, independently of dump_meta().
+  core::IndexStreamer::Stats meta_stats;
+  core::ChunkBroker broker(meta_stats);
+  uint32_t configured_chunk_size = core::HnswEntity::kDefaultChunkSize;
+  ASSERT_EQ(0, broker.open(graph_storage, configured_chunk_size, false));
+  auto meta_dumper = std::make_shared<core::HnswBuildDumper>(2);
+  ASSERT_EQ(0, meta_dumper->create(meta_path));
+  EXPECT_EQ(core::IndexError_IndexFull,
+            broker.dump_meta(meta_dumper, node_chunks, node_capacity,
+                             total_capacity));
+  EXPECT_EQ(0, broker.dump_meta(meta_dumper, node_chunks, node_capacity,
+                                total_capacity + 1));
+  ASSERT_EQ(0, meta_dumper->close());
+  ASSERT_EQ(0, broker.close());
+  ASSERT_EQ(0, graph.close());
+  ASSERT_EQ(0, graph_storage->close());
+
+  packed_storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, packed_storage);
+  ASSERT_EQ(0, packed_storage->init({}));
+  ASSERT_EQ(0, packed_storage->open(packed_path, false));
+  core::IndexStreamer::Stats reopened_stats;
+  core::HnswMmapStreamerEntity reopened(reopened_stats);
+  ASSERT_EQ(0, init_entity(reopened, kDimension * sizeof(float)));
+  ASSERT_EQ(0, reopened.open(packed_storage, total_capacity + node_capacity + 1,
+                             false));
+  const uint32_t nodes_per_chunk = node_capacity / reopened.node_size();
+  const uint32_t next_chunk_id = node_chunks * nodes_per_chunk;
+  ASSERT_GT(next_chunk_id, count);
+  // Force allocation of one more node chunk after loading the persisted
+  // total_size. An overestimated total would reject this append too early.
+  EXPECT_EQ(
+      0, reopened.add_vector_with_id(0, next_chunk_id, vectors.front().data()));
+  EXPECT_EQ(core::IndexError_IndexFull,
+            reopened.add_vector_with_id(0, next_chunk_id + nodes_per_chunk,
+                                        vectors.front().data()));
+  ASSERT_EQ(0, reopened.close());
+  ASSERT_EQ(0, packed_storage->close());
+}
+
+// Exercise huge-page segment capacities without requiring a hugetlbfs mount.
+// The underlying mmap storage still performs the real file I/O and reopening.
+class HugePageTestStorage final : public zvec::core::IndexStorage {
+ public:
+  HugePageTestStorage()
+      : storage_(zvec::core::IndexFactory::CreateStorage("MMapFileStorage")) {}
+
+  int init(const zvec::ailego::Params &params) override {
+    return storage_ ? storage_->init(params) : zvec::core::IndexError_NoMemory;
+  }
+  int cleanup() override {
+    return storage_->cleanup();
+  }
+  int open(const std::string &path, bool create_if_missing) override {
+    return storage_->open(path, create_if_missing);
+  }
+  int flush() override {
+    return storage_->flush();
+  }
+  int close() override {
+    return storage_->close();
+  }
+  int append(const std::string &id, size_t size) override {
+    return storage_->append(
+        id, zvec::ailego::MemoryHelper::AlignHugePageSize(size));
+  }
+  void refresh(uint64_t checkpoint) override {
+    storage_->refresh(checkpoint);
+  }
+  uint64_t check_point() const override {
+    return storage_->check_point();
+  }
+  Segment::Pointer get(const std::string &id, int level = -1) override {
+    return storage_->get(id, level);
+  }
+  bool has(const std::string &id) const override {
+    return storage_->has(id);
+  }
+  uint32_t magic() const override {
+    return storage_->magic();
+  }
+  bool is_huge_page() const override {
+    return true;
+  }
+  bool is_dirty() const override {
+    return storage_->is_dirty();
+  }
+
+ private:
+  zvec::core::IndexStorage::Pointer storage_;
+};
+
+TEST(HnswBulkMergeTest, HugePagePackingPreservesLayoutAcrossReopenAndAppend) {
+  namespace core = zvec::core;
+  namespace ailego = zvec::ailego;
+  const std::string graph_path = "hnsw_bulk_huge_graph.index";
+  const std::string packed_path = "hnsw_bulk_huge_packed.index";
+  AILEGO_DEFER([&]() {
+    zvec::test_util::RemoveTestFiles(graph_path);
+    zvec::test_util::RemoveTestFiles(packed_path);
+  });
+  // With m=50 and 36 dimensions, 4096 packed nodes occupy 2.25 MiB,
+  // rounded to a 4 MiB huge-page capacity. Reusing that capacity as the
+  // logical chunk size would incorrectly yield 8192 nodes after reopening.
+  constexpr uint32_t count = 8193;
+  constexpr uint32_t appended_count = 12289;
+  constexpr size_t vector_size = kDimension * sizeof(float);
+  auto vectors = RandomVectors(appended_count);
+  TestExternalVectorSource source(&vectors);
+  auto init_entity = [&](core::HnswStreamerEntity &entity, size_t bytes) {
+    entity.set_vector_size(bytes);
+    entity.set_l0_neighbor_cnt(100);
+    entity.set_upper_neighbor_cnt(50);
+    entity.set_scaling_factor(50);
+    return entity.init(appended_count);
+  };
+  auto graph_storage = std::make_shared<HugePageTestStorage>();
+  ASSERT_EQ(0, graph_storage->init({}));
+  ASSERT_EQ(0, graph_storage->open(graph_path, true));
+  core::IndexStreamer::Stats graph_stats;
+  core::HnswExternalStreamerEntity graph(graph_stats);
+  graph.set_packed_vector_size(vector_size);
+  ASSERT_EQ(0, init_entity(graph, 0));
+  ASSERT_EQ(0, graph.open(graph_storage, 128U << 20, false));
+  for (uint32_t id = 0; id < count; ++id) {
+    ASSERT_EQ(0, graph.add_vector_with_id(0, id, vectors[id].data()));
+  }
+  graph.update_ep_and_level(0, 0);
+  auto dumper =
+      std::make_shared<core::HnswBuildDumper>(1 + graph.packed_chunk_count());
+  ASSERT_EQ(0, dumper->create(packed_path));
+  ASSERT_EQ(0, graph.dump_with_vectors(dumper, source, vector_size));
+  ASSERT_EQ(0, dumper->close());
+  ASSERT_EQ(0, graph.close());
+  ASSERT_EQ(0, graph_storage->close());
+
+  for (bool append : {true, false}) {
+    auto storage = std::make_shared<HugePageTestStorage>();
+    ASSERT_EQ(0, storage->init({}));
+    ASSERT_EQ(0, storage->open(packed_path, false));
+    core::IndexStreamer::Stats stats;
+    core::HnswMmapStreamerEntity reopened(stats);
+    ASSERT_EQ(0, init_entity(reopened, vector_size));
+    ASSERT_EQ(0, reopened.open(storage, 128U << 20, false));
+    const uint32_t expected_count = append ? count : appended_count;
+    ASSERT_EQ(expected_count, reopened.doc_cnt());
+    for (uint32_t id = 0; id < expected_count; ++id) {
+      EXPECT_EQ(id, reopened.get_key(id));
+      core::IndexStorage::MemoryBlock block;
+      ASSERT_EQ(0, reopened.get_vector(id, block));
+      ASSERT_NE(nullptr, block.data());
+      ASSERT_EQ(0, std::memcmp(vectors[id].data(), block.data(), vector_size))
+          << "id=" << id;
+    }
+    if (append) {
+      // Fill the last packed chunk, then allocate a new one after reopening.
+      // add_vector also verifies that the next automatic id is unchanged.
+      for (uint32_t id = count; id < appended_count; ++id) {
+        core::node_id_t assigned = core::kInvalidNodeId;
+        ASSERT_EQ(0, reopened.add_vector(0, id, vectors[id].data(), &assigned));
+        ASSERT_EQ(id, assigned);
+      }
+      ASSERT_EQ(appended_count, reopened.doc_cnt());
+      ASSERT_TRUE(storage->has("HnswT3S3"));
+    }
+    ASSERT_EQ(0, reopened.close());
+    ASSERT_EQ(0, storage->close());
+  }
+}
+
+struct BulkContextState {
+  size_t workers;
+  bool fail_first;
+  mutable std::atomic<size_t> context_calls{0};
+  mutable std::atomic<size_t> contexts_ready{0};
+  std::atomic<size_t> adds{0};
+  std::atomic<size_t> premature_adds{0};
+  bool fail_worker_allocation{false};
+  bool fail_task_allocation{false};
+  zvec::ailego::ThreadPool *pool{nullptr};
+  std::array<const void *, 4> context_ptrs{};
+  std::atomic<size_t> active_adds{0};
+  std::atomic<size_t> context_deletes{0};
+  std::atomic<size_t> early_context_deletes{0};
+  std::atomic<bool> failure_triggered{false};
+  std::atomic<bool> failed_with_worker_active{false};
+  std::atomic<bool> release_worker{false};
+};
+
+bool WaitForFlag(const std::atomic<bool> &flag) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!flag.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  return flag.load();
+}
+
+TEST(HnswBulkMergeDeathTest, AllocationFailureReleasesLevelPromotionLock) {
+#if GTEST_HAS_DEATH_TEST
+  namespace core = zvec::core;
+  namespace ailego = zvec::ailego;
+  const std::string path = "hnsw_bulk_level_lock.index";
+  AILEGO_DEFER([&]() { zvec::test_util::RemoveTestFiles(path); });
+  // Windows and threadsafe death tests re-execute the test binary. Only the
+  // child may open this file, so it cannot reopen the parent's live mapping.
+  const auto run = [&]() {
+    auto vectors = RandomVectors(3);
+    TestExternalVectorSource source(&vectors);
+    auto storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init({}));
+    ASSERT_EQ(0, storage->open(path, true));
+    core::IndexStreamer::Stats stats;
+    auto entity = std::make_shared<core::HnswExternalStreamerEntity>(stats);
+    entity->set_vector_size(0);
+    entity->set_packed_vector_size(kDimension * sizeof(float));
+    entity->set_chunk_size(1U << 20);
+    entity->set_l0_neighbor_cnt(2);
+    entity->set_upper_neighbor_cnt(2);
+    entity->set_scaling_factor(5);
+    entity->set_ef_construction(4);
+    ASSERT_EQ(0, entity->init(4));
+    ASSERT_EQ(0, entity->open(storage, 8U << 20, false));
+    for (uint32_t id = 0; id < 3; ++id) {
+      ASSERT_EQ(0, entity->add_vector_with_id(id == 0 ? 0 : 1, id,
+                                              vectors[id].data()));
+    }
+    entity->update_ep_and_level(0, 0);
+    core::IndexMeta meta(core::IndexMeta::DataType::DT_FP32, kDimension);
+    meta.set_metric("SquaredEuclidean", 0, ailego::Params{});
+    auto metric = core::IndexFactory::CreateMetric("SquaredEuclidean");
+    ASSERT_NE(nullptr, metric);
+    ASSERT_EQ(0, metric->init(meta, {}));
+    std::array<std::unique_ptr<core::HnswContext>, 2> contexts;
+    for (size_t i = 0; i < contexts.size(); ++i) {
+      contexts[i] = std::make_unique<core::HnswContext>(kDimension, metric,
+                                                        entity->clone());
+      contexts[i]->set_min_scan_limit(4);
+      contexts[i]->set_max_scan_limit(4);
+      ASSERT_EQ(0, contexts[i]->init(core::HnswContext::kStreamerContext));
+      contexts[i]->set_vector_source(&source);
+      contexts[i]->reset_query_raw(vectors[i + 1].data(), meta);
+    }
+    core::HnswAlgorithm<core::HnswExternalStreamerEntity> algorithm(*entity);
+    bool failed = false;
+    std::thread first([&]() {
+      bulk_alloc_test::countdown = 1;
+      try {
+        // The first allocation grows level_topk after acquiring the
+        // promotion lock, inside the real insertion implementation.
+        algorithm.add_node(1, 1, contexts[0].get());
+      } catch (const std::bad_alloc &) {
+        failed = true;
+      }
+      bulk_alloc_test::Reset();
+    });
+    first.join();
+    if (!failed || entity->cur_max_level() != 0) std::_Exit(2);
+    std::atomic<bool> completed{false};
+    int result = core::IndexError_Runtime;
+    std::thread second([&]() {
+      result = algorithm.add_node(2, 1, contexts[1].get());
+      completed.store(true);
+    });
+    if (!WaitForFlag(completed)) std::_Exit(3);
+    second.join();
+    if (result != 0 || contexts[1]->error() || entity->cur_max_level() != 1 ||
+        entity->entry_point() != 2) {
+      std::_Exit(4);
+    }
+    contexts = {};
+    ASSERT_EQ(0, entity->close());
+    ASSERT_EQ(0, storage->close());
+    std::_Exit(0);
+  };
+  // Isolate a regressed deadlock so the timeout fails this test instead of
+  // leaving the suite blocked or detaching a worker from its live context.
+  ASSERT_EXIT(run(), ::testing::ExitedWithCode(0), "");
+#else
+  GTEST_SKIP() << "Requires death-test support to isolate a possible deadlock";
+#endif
+}
+
+bool ShouldFailBulkTaskAllocation() {
+  auto *state = static_cast<BulkContextState *>(bulk_alloc_test::state);
+  // Deque allocation behavior varies between standard libraries. Wait until
+  // one task has been submitted before failing another allocation.
+  if (state->pool->pending_count() == 0 && state->pool->active_count() == 0) {
+    return false;
+  }
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (state->active_adds.load() == 0 &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  state->failed_with_worker_active.store(state->active_adds.load() != 0);
+  state->failure_triggered.store(true);
+  return true;
+}
+
+void CheckBulkContextDeletion(void *ptr) {
+  auto *state = static_cast<BulkContextState *>(bulk_alloc_test::state);
+  for (const void *context : state->context_ptrs) {
+    if (context == ptr) {
+      state->context_deletes.fetch_add(1);
+      if (state->active_adds.load() != 0) {
+        state->early_context_deletes.fetch_add(1);
+      }
+    }
+  }
+}
+
+class CheckedBulkStreamer : public zvec::core::HnswStreamer {
+ public:
+  explicit CheckedBulkStreamer(BulkContextState *state) : state_(state) {}
+
+  int open_with_borrowed_vectors(
+      zvec::core::IndexStorage::Pointer storage,
+      const zvec::core::VectorSource *source) override {
+    const int ret = HnswStreamer::open_with_borrowed_vectors(storage, source);
+    borrowed_build_ = ret == 0;
+    return ret;
+  }
+
+  zvec::core::IndexStreamer::Context::Pointer create_context() const override {
+    if (!borrowed_build_) return HnswStreamer::create_context();
+    const auto call = state_->context_calls.fetch_add(1);
+    if (state_->fail_first && call == 0) return nullptr;
+    auto context = HnswStreamer::create_context();
+    if (context) {
+      state_->context_ptrs[call] = context.get();
+      const auto ready = state_->contexts_ready.fetch_add(1) + 1;
+      if (state_->fail_task_allocation && ready == state_->workers) {
+        bulk_alloc_test::state = state_;
+        bulk_alloc_test::should_fail = ShouldFailBulkTaskAllocation;
+        bulk_alloc_test::on_delete = CheckBulkContextDeletion;
+      }
+    }
+    return context;
+  }
+
+  int add_with_id_impl(
+      uint32_t id, const void *data, const zvec::core::IndexQueryMeta &meta,
+      zvec::core::IndexStreamer::Context::Pointer &context) override {
+    if (state_->contexts_ready.load() != state_->workers) {
+      state_->premature_adds.fetch_add(1);
+    }
+    state_->adds.fetch_add(1);
+    if (state_->fail_worker_allocation) throw std::bad_alloc();
+    if (state_->fail_task_allocation) {
+      state_->active_adds.fetch_add(1);
+      while (!state_->release_worker.load()) std::this_thread::yield();
+      state_->active_adds.fetch_sub(1);
+      return zvec::core::IndexError_Runtime;
+    }
+    return HnswStreamer::add_with_id_impl(id, data, meta, context);
+  }
+
+ private:
+  BulkContextState *state_;
+  bool borrowed_build_{false};
+};
+
+class ScopedBulkStreamerFactory {
+ public:
+  explicit ScopedBulkStreamerFactory(BulkContextState &state) {
+    // Factory preserves references in its argument tuple. Pass a pointer
+    // prvalue: MSVC's default mode treats a same-type static_cast as an
+    // lvalue, which would leave a reference to a local pointer parameter.
+    zvec::ailego::Factory<zvec::core::IndexStreamer>::Register<
+        CheckedBulkStreamer>
+        replace("HnswStreamer", &state);
+  }
+  ~ScopedBulkStreamerFactory() {
+    zvec::ailego::Factory<zvec::core::IndexStreamer>::Register<
+        zvec::core::HnswStreamer>
+        restore("HnswStreamer");
+  }
+};
+
+TEST(HnswBulkMergeTest, PreparesAllContextsBeforeWritesAndPropagatesFailure) {
+  for (int failure : {0, 1, 2}) {
+    namespace ailego = zvec::ailego;
+    const std::string source_path = "hnsw_bulk_context_source.index";
+    const std::string target_path = "hnsw_bulk_context_target.index";
+    AILEGO_DEFER([&]() {
+      zvec::test_util::RemoveTestFiles(source_path);
+      zvec::test_util::RemoveTestFiles(target_path);
+    });
+    zvec::ailego::ThreadPool pool(4, false);
+    const bool fail_first = failure == 1;
+    BulkContextState state{std::min<size_t>(4, pool.count()), fail_first};
+    state.fail_worker_allocation = failure == 2;
+    auto flat_param = FlatIndexParamBuilder()
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(kDimension)
+                          .with_metric_type(MetricType::kL2sq)
+                          .build();
+    auto source = IndexFactory::CreateAndInitIndex(*flat_param);
+    auto target = IndexFactory::CreateAndInitIndex(
+        *MakeParam(MetricType::kL2sq, QuantizerType::kNone));
+    ASSERT_NE(nullptr, source);
+    ASSERT_NE(nullptr, target);
+    ASSERT_EQ(0, source->open(source_path,
+                              {StorageOptions::StorageType::kMMAP, true}));
+    ASSERT_EQ(0, target->open(target_path,
+                              {StorageOptions::StorageType::kMMAP, true}));
+    auto vectors = RandomVectors();
+    AddVectors(source.get(), vectors);
+    {
+      ScopedBulkStreamerFactory factory(state);
+      EXPECT_EQ(failure ? zvec::core::IndexError_NoMemory : 0,
+                target->merge({source}, IndexFilter(), {4, &pool}));
+    }
+    EXPECT_EQ(fail_first ? 1U : state.workers, state.context_calls.load());
+    EXPECT_EQ(0U, state.premature_adds.load());
+    if (state.fail_worker_allocation) {
+      EXPECT_GT(state.adds.load(), 0U);
+    } else {
+      EXPECT_EQ(fail_first ? 0U : kVectorCount, state.adds.load());
+    }
+    EXPECT_EQ(failure ? 0U : kVectorCount, target->get_doc_count());
+    if (failure) {
+      // The original empty target remains open and can accept a later write.
+      EXPECT_EQ(0, target->add({DenseVector{vectors[0].data()}}, 0));
+    }
+    EXPECT_EQ(0, target->close());
+    EXPECT_EQ(0, source->close());
+  }
+}
+
+TEST(HnswBulkMergeTest, TaskAllocationFailureWaitsBeforeDestroyingContexts) {
+  namespace ailego = zvec::ailego;
+  BulkContextState state{0, false};
+  AILEGO_DEFER([]() { bulk_alloc_test::Reset(); });
+  ailego::ThreadPool pool(2, false);
+  if (pool.count() < 2) GTEST_SKIP() << "Requires two workers";
+  state.workers = pool.count();
+  state.fail_task_allocation = true;
+  state.pool = &pool;
+  const std::string source_path = "hnsw_bulk_task_source.index";
+  const std::string target_path = "hnsw_bulk_task_target.index";
+  AILEGO_DEFER([&]() {
+    zvec::test_util::RemoveTestFiles(source_path);
+    zvec::test_util::RemoveTestFiles(target_path);
+  });
+  auto flat_param = FlatIndexParamBuilder()
+                        .with_data_type(DataType::DT_FP32)
+                        .with_dimension(kDimension)
+                        .with_metric_type(MetricType::kL2sq)
+                        .build();
+  auto source = IndexFactory::CreateAndInitIndex(*flat_param);
+  auto target = IndexFactory::CreateAndInitIndex(
+      *MakeParam(MetricType::kL2sq, QuantizerType::kNone));
+  ASSERT_NE(nullptr, source);
+  ASSERT_NE(nullptr, target);
+  ASSERT_EQ(
+      0, source->open(source_path, {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(
+      0, target->open(target_path, {StorageOptions::StorageType::kMMAP, true}));
+  auto vectors = RandomVectors();
+  AddVectors(source.get(), vectors);
+  std::atomic<bool> merge_finished{false};
+  std::thread controller([&]() {
+    while (state.contexts_ready.load() < state.workers &&
+           !merge_finished.load()) {
+      std::this_thread::yield();
+    }
+    WaitForFlag(state.failure_triggered);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    state.release_worker.store(true);
+  });
+  AILEGO_DEFER([&]() {
+    merge_finished.store(true);
+    state.release_worker.store(true);
+    if (controller.joinable()) controller.join();
+  });
+  int ret;
+  {
+    ScopedBulkStreamerFactory factory(state);
+    ret = target->merge({source}, IndexFilter(), {2, &pool});
+    bulk_alloc_test::Reset();
+  }
+  merge_finished.store(true);
+  controller.join();
+  EXPECT_EQ(zvec::core::IndexError_NoMemory, ret);
+  EXPECT_EQ(state.workers, state.context_calls.load());
+  EXPECT_EQ(state.workers, state.contexts_ready.load());
+  EXPECT_TRUE(state.failure_triggered.load());
+  EXPECT_TRUE(state.failed_with_worker_active.load());
+  EXPECT_EQ(state.workers, state.context_deletes.load());
+  EXPECT_EQ(0U, state.early_context_deletes.load());
+  EXPECT_EQ(0U, state.active_adds.load());
+  EXPECT_EQ(0U, target->get_doc_count());
+  bool reused = false;
+  pool.execute_and_wait([&]() { reused = true; });
+  EXPECT_TRUE(reused);
+  EXPECT_EQ(0, target->add({DenseVector{vectors[0].data()}}, 0));
+  EXPECT_EQ(0, target->close());
+  EXPECT_EQ(0, source->close());
+}
+
+TEST(HnswBulkMergeTest, FailedQueueAllocationLeavesPoolReusable) {
+  namespace ailego = zvec::ailego;
+  std::atomic<bool> release{false};
+  std::atomic<bool> started{false};
+  std::atomic<size_t> completed{0};
+  ailego::ThreadPool pool(1, false);
+  AILEGO_DEFER([&]() {
+    bulk_alloc_test::Reset();
+    pool.stop();
+    release.store(true);
+  });
+  auto blockers = pool.make_group();
+  blockers->submit(ailego::Closure::New([&]() {
+    started.store(true);
+    while (!release.load()) std::this_thread::yield();
+  }));
+  ASSERT_TRUE(WaitForFlag(started));
+  auto group = pool.make_group();
+  std::vector<ailego::ClosureHandler> tasks;
+  tasks.reserve(1024);
+  for (size_t i = 0; i < 1024; ++i) {
+    tasks.push_back(ailego::Closure::New([&]() { completed.fetch_add(1); }));
+  }
+  size_t accepted = 0;
+  bool failed = false;
+  bulk_alloc_test::countdown = 1;
+  try {
+    for (auto &task : tasks) {
+      group->submit(std::move(task));
+      ++accepted;
+    }
+  } catch (const std::bad_alloc &) {
+    failed = true;
+  }
+  bulk_alloc_test::Reset();
+  EXPECT_TRUE(failed);
+  EXPECT_EQ(accepted, group->pending_count());
+  EXPECT_EQ(accepted, pool.pending_count());
+  // Avoid hanging the test if counter consistency regresses.
+  if (group->pending_count() != accepted || pool.pending_count() != accepted) {
+    return;
+  }
+  release.store(true);
+  blockers->wait_finish();
+  group->wait_finish();
+  EXPECT_EQ(accepted, completed.load());
+  bool reused = false;
+  pool.execute_and_wait([&]() { reused = true; });
+  EXPECT_TRUE(reused);
+}
+
+class HnswBulkMergeTest
+    : public testing::TestWithParam<std::tuple<MetricType, bool, bool>> {};
+
+TEST_P(HnswBulkMergeTest, FilteredMixedSourcesReopenAndAppend) {
+  const auto &[metric, graph_source, read_only_source] = GetParam();
+  const std::string prefix =
+      "hnsw_bulk_" + std::to_string(static_cast<int>(metric)) + "_" +
+      std::to_string(graph_source) + "_" + std::to_string(read_only_source);
+  const std::string source_path = prefix + "_source.index";
+  const std::string tail_path = prefix + "_tail.index";
+  const std::string target_path = prefix + "_target.index";
+  for (const auto &path : {source_path, tail_path, target_path}) {
+    zvec::test_util::RemoveTestFiles(path + "*");
+  }
+  // The retained output spans multiple ordinary node chunks even though the
+  // graph-only build fits in one. Scale cosine inputs to exercise norm tails.
+  auto vectors = RandomVectors(14000);
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    for (float &value : vectors[i]) value *= static_cast<float>(i % 7 + 1);
+  }
+  auto flat_param = FlatIndexParamBuilder()
+                        .with_metric_type(metric)
+                        .with_data_type(DataType::DT_FP32)
+                        .with_dimension(kDimension)
+                        .build();
+  auto graph_param = MakeParam(metric, QuantizerType::kNone);
+  BaseIndexParam::Pointer source_param =
+      graph_source ? std::static_pointer_cast<BaseIndexParam>(graph_param)
+                   : std::static_pointer_cast<BaseIndexParam>(flat_param);
+  auto source = IndexFactory::CreateAndInitIndex(*source_param);
+  auto tail = IndexFactory::CreateAndInitIndex(*flat_param);
+  ASSERT_NE(nullptr, source);
+  ASSERT_NE(nullptr, tail);
+  ASSERT_EQ(
+      0, source->open(source_path, {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(0,
+            tail->open(tail_path, {StorageOptions::StorageType::kMMAP, true}));
+  constexpr size_t kSplit = 9000;
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    auto &index = i < kSplit ? source : tail;
+    ASSERT_EQ(0, index->add({DenseVector{vectors[i].data()}},
+                            i < kSplit ? i : i - kSplit));
+  }
+  if (read_only_source) {
+    ASSERT_EQ(0, source->close());
+    ASSERT_EQ(0, tail->close());
+    source = IndexFactory::CreateAndInitIndex(*source_param);
+    tail = IndexFactory::CreateAndInitIndex(*flat_param);
+    ASSERT_EQ(0, source->open(source_path, {StorageOptions::StorageType::kMMAP,
+                                            false, true}));
+    ASSERT_EQ(0, tail->open(tail_path,
+                            {StorageOptions::StorageType::kMMAP, false, true}));
+  }
+  auto provider = source->create_index_provider();
+  auto *stable = dynamic_cast<zvec::core::StableVectorHolder *>(provider.get());
+  ASSERT_NE(nullptr, stable);
+  std::shared_ptr<const void> lifetime;
+  ASSERT_EQ(0, stable->retain_stable_data(&lifetime));
+  auto iterator = provider->create_iterator();
+  ASSERT_TRUE(iterator->is_valid());
+  const auto *first = static_cast<const float *>(iterator->data());
+  std::vector<float> saved(first, first + kDimension);
+  for (size_t i = 0; i < kSplit; ++i) {
+    ASSERT_TRUE(iterator->is_valid());
+    ASSERT_NE(nullptr, iterator->data());
+    iterator->next();
+  }
+  iterator.reset();
+  provider.reset();
+  EXPECT_TRUE(std::equal(saved.begin(), saved.end(), first));
+
+  auto target = IndexFactory::CreateAndInitIndex(*graph_param);
+  ASSERT_EQ(
+      0, target->open(target_path, {StorageOptions::StorageType::kMMAP, true}));
+  std::vector<uint32_t> calls(vectors.size(), 0);
+  IndexFilter filter;
+  filter.set([&](uint64_t key) {
+    EXPECT_LT(key, calls.size());
+    if (key >= calls.size()) return true;
+    ++calls[key];
+    return key % 4 == 1;
+  });
+  zvec::ailego::ThreadPool pool(4, false);
+  ASSERT_EQ(0, target->merge({source, tail}, filter, {4, &pool}));
+  EXPECT_TRUE(std::all_of(calls.begin(), calls.end(),
+                          [](uint32_t count) { return count == 1; }));
+  ASSERT_EQ(10500U, target->get_doc_count());
+  std::vector<size_t> kept;
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    if (i % 4 != 1) kept.push_back(i);
+  }
+  std::vector<SearchRowList> rows_before_reopen;
+  auto check = [&](bool reopened) {
+    size_t query_index = 0;
+    for (size_t id : {size_t{0}, size_t{4095}, kept.size() - 1}) {
+      VectorDataBuffer fetched;
+      ASSERT_EQ(0, target->fetch(id, &fetched));
+      const auto &bytes =
+          std::get<DenseVectorBuffer>(fetched.vector_buffer).data;
+      ASSERT_EQ(kDimension * sizeof(float), bytes.size());
+      for (size_t dim = 0; dim < kDimension; ++dim) {
+        float value;
+        std::memcpy(&value, bytes.data() + dim * sizeof(float), sizeof(float));
+        EXPECT_NEAR(vectors[kept[id]][dim], value, 2e-6f);
+      }
+      auto graph = SearchRows(target.get(), vectors[kept[id]], false);
+      ASSERT_EQ(kTopK, graph.size());
+      if (reopened) {
+        EXPECT_EQ(rows_before_reopen[query_index], graph);
+      } else {
+        rows_before_reopen.push_back(graph);
+      }
+      ++query_index;
+    }
+  };
+  ASSERT_NO_FATAL_FAILURE(check(false));
+  ASSERT_EQ(0, target->close());
+  target = IndexFactory::CreateAndInitIndex(*graph_param);
+  ASSERT_EQ(0, target->open(target_path,
+                            {StorageOptions::StorageType::kMMAP, false}));
+  ASSERT_NO_FATAL_FAILURE(check(true));
+  const uint32_t appended_id = kept.size();
+  ASSERT_EQ(0, target->add({DenseVector{vectors[1].data()}}, appended_id));
+  // A subsequent merge must append using the ordinary mutable format.
+  ASSERT_EQ(0, target->merge({tail}, IndexFilter(), {2, nullptr}));
+  EXPECT_EQ(15501U, target->get_doc_count());
+  ASSERT_EQ(0, target->close());
+  auto storage = zvec::core::IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_EQ(0, storage->init(zvec::ailego::Params{}));
+  ASSERT_EQ(0, storage->open(target_path, false));
+  for (const auto &[name, segment] : storage->get_all()) {
+    if (name.rfind("HnswT", 0) == 0) {
+      EXPECT_EQ(0U, segment->data_crc());
+    }
+    if (segment->data_crc() != 0) {
+      zvec::core::IndexStorage::MemoryBlock block;
+      ASSERT_EQ(segment->data_size(),
+                segment->read(0, block, segment->data_size()));
+      EXPECT_EQ(
+          segment->data_crc(),
+          zvec::ailego::Crc32c::Hash(block.data(), segment->data_size(), 0));
+    }
+  }
+  ASSERT_EQ(0, storage->close());
+  ASSERT_EQ(0, source->close());
+  ASSERT_EQ(0, tail->close());
+  lifetime.reset();
+  for (const auto &path : {source_path, tail_path, target_path}) {
+    zvec::test_util::RemoveTestFiles(path);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    StableSources, HnswBulkMergeTest,
+    testing::Combine(testing::Values(MetricType::kL2sq, MetricType::kCosine,
+                                     MetricType::kInnerProduct),
+                     testing::Bool(), testing::Bool()));
+
+TEST(HnswBulkMergeTest, EmptyFilterAndCrashResidueKeepTargetUsable) {
+  const std::string source_path = "hnsw_bulk_empty_source.index";
+  const std::string target_path = "hnsw_bulk_empty_target.index";
+  zvec::test_util::RemoveTestFiles(source_path + "*");
+  zvec::test_util::RemoveTestFiles(target_path + "*");
+  auto param = MakeParam(MetricType::kL2sq, QuantizerType::kNone);
+  auto source = IndexFactory::CreateAndInitIndex(*param);
+  auto target = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_EQ(
+      0, source->open(source_path, {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(
+      0, target->open(target_path, {StorageOptions::StorageType::kMMAP, true}));
+  auto vectors = RandomVectors();
+  AddVectors(source.get(), vectors);
+  size_t calls = 0;
+  IndexFilter all;
+  all.set([&](uint64_t) {
+    ++calls;
+    return true;
+  });
+  ASSERT_EQ(0, target->merge({source}, all));
+  EXPECT_EQ(kVectorCount, calls);
+  EXPECT_EQ(0U, target->get_doc_count());
+  EXPECT_TRUE(target->is_trained());
+  // Scratch from an interrupted attempt must neither block the next build
+  // nor be mistaken for files owned by the current attempt.
+  const std::string residue = target_path + ".hnsw-pack.stale";
+  ASSERT_TRUE(zvec::ailego::File::MakePath(residue));
+  ASSERT_EQ(0, target->merge({source}, IndexFilter()));
+  EXPECT_EQ(kVectorCount, target->get_doc_count());
+  EXPECT_TRUE(zvec::ailego::File::IsExist(residue));
+  zvec::test_util::RemoveTestPath(residue);
   ASSERT_EQ(0, target->close());
   ASSERT_EQ(0, source->close());
   zvec::test_util::RemoveTestFiles(source_path);

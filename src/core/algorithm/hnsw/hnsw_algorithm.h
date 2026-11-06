@@ -98,6 +98,8 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   //! Generate a random level
   //! return graph level
   uint32_t get_random_level() const override {
+    // Parallel construction shares this generator across workers.
+    std::lock_guard<ailego::SpinMutex> lock(spin_lock_);
     // gen rand float (0, 1)
     double f = mt_() / static_cast<float>(mt_.max());
     for (size_t level = 0; level < level_probas_.size(); level++) {
@@ -163,7 +165,7 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   mutable ailego::SpinMutex spin_lock_{};  // global spin lock
   std::mutex mutex_{};                     // global mutex
   // TODO: spin lock?
-  std::vector<std::mutex> lock_pool_{};
+  mutable std::vector<std::mutex> lock_pool_{};
 };
 
 }  // namespace core

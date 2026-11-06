@@ -30,12 +30,13 @@ void DiskAnnBuilderEntity::clear() {
   num_threads_ = 0;
   max_build_degree_ = 0;
   max_observed_degree_ = 0;
-  neighbor_size_ = 0;
   mem_index_file_.clear();
   index_path_prefix_.clear();
   release_vectors();
   std::string().swap(keys_buffer_);
-  std::string().swap(neighbors_buffer_);
+  neighbor_pool_.clear();
+  neighbors_compacted_ = false;
+  reserved_docs_ = 0;
   entrypoints_.clear();
   meta_.clear();
   std::string().swap(pq_quantizer_meta_buffer_);
@@ -59,8 +60,6 @@ int DiskAnnBuilderEntity::init(const IndexMeta &meta, uint32_t max_degree,
 
   max_build_degree_ = max_degree_ * kDefaultGraphSlackFactor;
 
-  neighbor_size_ = sizeof(uint32_t) + max_build_degree_ * sizeof(diskann_id_t);
-
   return 0;
 }
 
@@ -71,24 +70,24 @@ void DiskAnnBuilderEntity::release_vectors() {
 
 int DiskAnnBuilderEntity::reserve_space(uint32_t docs,
                                         std::shared_ptr<const void> lifetime) {
-  if (doc_cnt() != 0 || !lifetime) return IndexError_InvalidArgument;
+  if (doc_cnt() != 0 || !lifetime || neighbors_compacted_) {
+    return IndexError_InvalidArgument;
+  }
+  int ret = neighbor_pool_.reserve(docs, max_build_degree_);
+  if (ret != 0) return ret;
+  reserved_docs_ = docs;
   vector_lifetime_ = std::move(lifetime);
   vector_ptrs_.reserve(docs);
   keys_buffer_.reserve(sizeof(diskann_key_t) * docs);
-  neighbors_buffer_.reserve(static_cast<size_t>(neighbor_size_) * docs);
   return 0;
 }
 
 int DiskAnnBuilderEntity::add_vector(diskann_key_t key, const void *vec) {
-  if (!vector_lifetime_) return IndexError_NoReady;
+  if (!vector_lifetime_ || neighbors_compacted_) return IndexError_NoReady;
   if (!vec) return IndexError_ReadData;
+  if (doc_cnt() >= reserved_docs_) return IndexError_InvalidLength;
   vector_ptrs_.push_back(vec);
   keys_buffer_.append(reinterpret_cast<const char *>(&key), sizeof(key));
-
-  uint32_t neighbor_cnt = 0;
-  neighbors_buffer_.append(reinterpret_cast<const char *>(&neighbor_cnt),
-                           sizeof(uint32_t));
-  neighbors_buffer_.append(sizeof(diskann_id_t) * max_build_degree_, '\0');
 
   (*mutable_doc_cnt())++;
 
@@ -114,59 +113,45 @@ diskann_id_t DiskAnnBuilderEntity::get_id(diskann_key_t /*key*/) const {
 
 std::pair<uint32_t, const diskann_id_t *> DiskAnnBuilderEntity::get_neighbors(
     diskann_id_t id) const {
-  size_t offset = (size_t)id * neighbor_size_;
-
-  const uint8_t *start_ptr =
-      reinterpret_cast<const uint8_t *>(neighbors_buffer_.data()) + offset;
-
-  uint32_t neighbor_cnt = *(reinterpret_cast<const uint32_t *>(start_ptr));
-
-  const diskann_id_t *neighbors =
-      reinterpret_cast<const diskann_id_t *>(start_ptr + sizeof(uint32_t));
-
-  return std::make_pair(neighbor_cnt, neighbors);
+  return neighbor_pool_.get(id);
 }
 
 int DiskAnnBuilderEntity::set_neighbors(
     diskann_id_t id, const std::vector<diskann_id_t> &neighbor_ids) {
-  size_t offset = (size_t)id * neighbor_size_;
-
-  uint8_t *start_ptr =
-      reinterpret_cast<uint8_t *>(&neighbors_buffer_[0]) + offset;
-
-  uint32_t neighbor_cnt = neighbor_ids.size();
-
-  memcpy(start_ptr + sizeof(uint32_t), neighbor_ids.data(),
-         sizeof(diskann_id_t) * neighbor_cnt);
-  memcpy(start_ptr, &neighbor_cnt, sizeof(uint32_t));
-
-  if (max_observed_degree_ < neighbor_cnt) {
-    max_observed_degree_ = neighbor_cnt;
+  if (neighbors_compacted_) return IndexError_NoReady;
+  if (id >= doc_cnt() || neighbor_ids.size() > max_build_degree_) {
+    return IndexError_InvalidLength;
   }
-
-  return 0;
+  int ret = neighbor_pool_.set(id, neighbor_ids.data(), neighbor_ids.size());
+  if (ret == 0) observe_degree(static_cast<uint32_t>(neighbor_ids.size()));
+  return ret;
 }
 
 int DiskAnnBuilderEntity::add_neighbor(diskann_id_t id,
                                        diskann_id_t neighbor_id) {
-  size_t offset = (size_t)id * neighbor_size_;
+  if (neighbors_compacted_) return IndexError_NoReady;
+  if (id >= doc_cnt()) return IndexError_InvalidLength;
+  int ret = neighbor_pool_.append(id, neighbor_id);
+  if (ret == 0) observe_degree(neighbor_pool_.get(id).first);
+  return ret;
+}
 
-  uint8_t *start_ptr =
-      reinterpret_cast<uint8_t *>(&neighbors_buffer_[0]) + offset;
-
-  uint32_t neighbor_cnt = *reinterpret_cast<uint32_t *>(start_ptr);
-
-  memcpy(start_ptr + sizeof(uint32_t) + sizeof(diskann_id_t) * neighbor_cnt,
-         &neighbor_id, sizeof(diskann_id_t));
-
-  neighbor_cnt += 1;
-
-  memcpy(start_ptr, &neighbor_cnt, sizeof(uint32_t));
-
-  if (max_observed_degree_ < neighbor_cnt) {
-    max_observed_degree_ = neighbor_cnt;
+void DiskAnnBuilderEntity::observe_degree(uint32_t degree) {
+  uint32_t observed = max_observed_degree_.load(std::memory_order_relaxed);
+  while (degree > observed &&
+         !max_observed_degree_.compare_exchange_weak(
+             observed, degree, std::memory_order_relaxed)) {
   }
+}
 
+int DiskAnnBuilderEntity::compact_neighbors() {
+  const size_t before = neighbor_memory_size();
+  int ret = neighbor_pool_.compact(max_degree_);
+  if (ret != 0) return ret;
+  neighbors_compacted_ = true;
+  // Preserve the historical maximum for the existing serialized layout.
+  LOG_INFO("Compacted DiskAnn neighbors: %zu -> %zu bytes", before,
+           neighbor_memory_size());
   return 0;
 }
 
