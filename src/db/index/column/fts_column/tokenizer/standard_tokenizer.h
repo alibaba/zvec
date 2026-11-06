@@ -43,6 +43,9 @@ class StandardTokenizer : public Tokenizer {
     return "standard";
   }
 
+  // Share the Unicode ideograph classification with composite tokenizers.
+  static bool is_ideographic(uint32_t codepoint);
+
  private:
   // Word tokens with more codepoints than this value are split.
   uint32_t max_token_length_{255};
