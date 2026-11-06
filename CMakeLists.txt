@@ -212,18 +212,36 @@ message(STATUS "RABITQ_SUPPORTED: ${RABITQ_SUPPORTED}")
 # DiskAnn support:
 #   - Linux x86_64 and ARM64 with io_uring, libaio, or pread
 #   - 64-bit Android and iOS with the portable synchronous pread backend
-#   - macOS ARM64 (Apple Silicon) with synchronous pread
-#   - Windows x86_64 with overlapped I/O
-if((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|aarch64|arm64)$" AND NOT ANDROID AND NOT IOS)
-    OR (CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$" AND NOT IOS)
-    OR ((ANDROID OR IOS) AND CMAKE_SIZEOF_VOID_P EQUAL 8)
-    OR (WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$"))
+#   - macOS x86_64 and ARM64 with synchronous pread
+#   - Windows x86_64 and ARM64 with overlapped I/O
+# Validate every selected Apple architecture, including universal macOS builds.
+set(DISKANN_TARGET_PROCESSORS "${CMAKE_SYSTEM_PROCESSOR}")
+if(APPLE AND CMAKE_OSX_ARCHITECTURES)
+  set(DISKANN_TARGET_PROCESSORS "${CMAKE_OSX_ARCHITECTURES}")
+endif()
+string(TOLOWER "${DISKANN_TARGET_PROCESSORS}" DISKANN_TARGET_PROCESSORS)
+set(DISKANN_PROCESSORS_SUPPORTED OFF)
+if(DISKANN_TARGET_PROCESSORS)
+  set(DISKANN_PROCESSORS_SUPPORTED ON)
+  foreach(DISKANN_TARGET_PROCESSOR IN LISTS DISKANN_TARGET_PROCESSORS)
+    if(NOT DISKANN_TARGET_PROCESSOR MATCHES "^(x86_64|amd64|aarch64|arm64)$")
+      set(DISKANN_PROCESSORS_SUPPORTED OFF)
+      break()
+    endif()
+  endforeach()
+endif()
+if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND
+   (((CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
+      CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR WIN32) AND
+     DISKANN_PROCESSORS_SUPPORTED AND
+     NOT ANDROID AND NOT IOS)
+    OR ANDROID OR IOS))
   set(DISKANN_SUPPORTED ON)
   add_definitions(-DDISKANN_SUPPORTED=1)
 else()
   set(DISKANN_SUPPORTED OFF)
   add_definitions(-DDISKANN_SUPPORTED=0)
-  message(STATUS "DiskAnn support disabled for ${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}")
+  message(STATUS "DiskAnn support disabled for ${CMAKE_SYSTEM_NAME}/${DISKANN_TARGET_PROCESSORS}")
 endif()
 message(STATUS "DISKANN_SUPPORTED: ${DISKANN_SUPPORTED}")
 

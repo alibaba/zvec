@@ -232,8 +232,7 @@ Status FieldSchema::validate() const {
 #if !DISKANN_SUPPORTED
         return Status::NotSupported(
             "DiskAnn is not supported on this platform. It is available on "
-            "Linux (x86_64/ARM64), macOS (ARM64), 64-bit Android/iOS, and "
-            "Windows (x86_64).");
+            "Linux/macOS/Windows (x86_64/ARM64), and 64-bit Android/iOS.");
 #endif
       }
 
