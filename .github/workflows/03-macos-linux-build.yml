@@ -150,11 +150,14 @@ jobs:
           cd "$GITHUB_WORKSPACE/build"
           cmake --build . \
             --target shared_api_test c_api_test \
-              diskann_file_reader_test diskann_builder_test \
-              diskann_searcher_test diskann_mobile_collection_test \
+              diskann_builder_test diskann_build_memory_test \
+              diskann_cache_test diskann_file_reader_test \
+              diskann_legacy_pq_test diskann_mmap_view_test \
+              diskann_mobile_collection_test diskann_mobile_compat_test \
+              diskann_owned_holder_test diskann_searcher_test \
             --parallel "$NPROC"
           ctest --output-on-failure --no-tests=error \
-            -R '^(shared_api_test|c_api_test|diskann_file_reader_test|diskann_builder_test|diskann_searcher_test|diskann_mobile_collection_test)$' \
+            -R '^(shared_api_test|c_api_test|diskann_.*_test)$' \
             --parallel 1
         shell: bash
 
@@ -176,8 +179,6 @@ jobs:
 
       - name: Run required macOS x64 DiskAnn lifecycle tests
         if: matrix.platform == 'macos-x64'
-        env:
-          ZVEC_REQUIRE_DISKANN: '1'
         run: |
           python -m pytest python/tests/test_collection_diskann.py -n 2 -v
         shell: bash
