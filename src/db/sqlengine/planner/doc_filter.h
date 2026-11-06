@@ -16,7 +16,7 @@
 
 #include <memory>
 #include <arrow/acero/api.h>
-#include <arrow/chunked_array.h>
+#include <arrow/array/array_primitive.h>
 #include <zvec/db/status.h>
 #include "db/index/column/inverted_column/inverted_search_result.h"
 #include "db/index/common/index_filter.h"
@@ -26,7 +26,8 @@
 
 namespace zvec::sqlengine {
 
-class DocFilter : public IndexFilter {
+class DocFilter : public IndexFilter,
+                  public std::enable_shared_from_this<DocFilter> {
  public:
   using Ptr = std::shared_ptr<DocFilter>;
 
@@ -40,7 +41,7 @@ class DocFilter : public IndexFilter {
         forward_plan_(std::move(forward_plan)),
         forward_filter_expr_(std::move(forward_filter)) {}
 
-  Status compute_filter();
+  arrow::Future<> compute_filter_async();
 
   bool is_filtered(uint64_t id) const override;
 
@@ -53,7 +54,6 @@ class DocFilter : public IndexFilter {
   bool empty() const;
 
  private:
-  std::optional<bool> get_forward_bit(uint64_t id) const;
   std::optional<bool> is_matched_by_forward_filter(uint64_t id) const;
 
  private:
@@ -68,7 +68,7 @@ class DocFilter : public IndexFilter {
   InvertedSearchResult::Ptr invert_result_;
   IndexFilter::Ptr invert_filter_{nullptr};
 
-  std::shared_ptr<arrow::ChunkedArray> forward_bitmap_;
+  std::shared_ptr<arrow::BooleanArray> forward_bitmap_;
 };
 
 }  // namespace zvec::sqlengine

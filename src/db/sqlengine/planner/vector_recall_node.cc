@@ -18,6 +18,7 @@
 #include <string>
 #include <arrow/array/builder_binary.h>
 #include <arrow/result.h>
+#include <arrow/util/thread_pool.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/core/framework/index_meta.h>
@@ -68,34 +69,47 @@ arrow::AsyncGenerator<std::optional<cp::ExecBatch>> VectorRecallNode::gen() {
   auto state_ptr = std::make_shared<State>(shared_from_this());
   return [state_ptr = std::move(state_ptr)]() mutable
          -> arrow::Future<std::optional<cp::ExecBatch>> {
-    auto &state = *state_ptr;
-    if (!state.iter_) {
-      auto vector_ret = state.self_->prepare();
-      if (!vector_ret) {
-        return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-            arrow::Status::ExecutionError("prepare vector failed:",
-                                          vector_ret.error().c_str()));
+    auto next_batch =
+        [state_ptr]() -> arrow::Future<std::optional<cp::ExecBatch>> {
+      auto &state = *state_ptr;
+      if (!state.iter_) {
+        auto vector_ret = state.self_->prepare();
+        if (!vector_ret) {
+          return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+              arrow::Status::ExecutionError("prepare vector failed:",
+                                            vector_ret.error().c_str()));
+        }
+        state.vector_result_ = vector_ret.value();
+        state.iter_ = state.vector_result_->create_iterator();
       }
-      state.vector_result_ = vector_ret.value();
-      state.iter_ = state.vector_result_->create_iterator();
-    }
 
-    // check if there is any data
-    if (!state.iter_->valid()) {
-      // return empty optional to indicate end
-      return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-          std::nullopt);
-    }
+      // check if there is any data
+      if (!state.iter_->valid()) {
+        // return empty optional to indicate end
+        return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+            std::nullopt);
+      }
 
-    auto record_batch = state.collect_batch();
-    if (!record_batch.ok()) {
+      auto record_batch = state.collect_batch();
+      if (!record_batch.ok()) {
+        return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+            arrow::Status::ExecutionError("collect batch failed:",
+                                          record_batch.status().ToString()));
+      }
+      cp::ExecBatch exec_batch(*record_batch.ValueOrDie());
       return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-          arrow::Status::ExecutionError("collect batch failed:",
-                                        record_batch.status().ToString()));
+          std::move(exec_batch));
+    };
+    if (state_ptr->iter_) {
+      return next_batch();
     }
-    cp::ExecBatch exec_batch(*record_batch.ValueOrDie());
-    return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-        std::move(exec_batch));
+    // Suspend this source until its filter is ready. Resume CPU work on the
+    // Arrow executor even if the last filter task finishes on an I/O thread.
+    arrow::CallbackOptions options;
+    options.executor = arrow::internal::GetCpuThreadPool();
+    options.should_schedule = arrow::ShouldSchedule::IfDifferentExecutor;
+    return state_ptr->self_->doc_filter_->compute_filter_async().Then(
+        std::move(next_batch), {}, options);
   };
 }
 
@@ -135,10 +149,6 @@ std::string decode_group_id_from_forward(const FieldSchema *schema,
 }
 
 Result<IndexResults::Ptr> VectorRecallNode::prepare() {
-  auto filter_status = doc_filter_->compute_filter();
-  if (!filter_status.ok()) {
-    return tl::make_unexpected(filter_status);
-  }
   auto &vector_cond = query_info_->vector_cond_info();
   CombinedVectorColumnIndexer::Ptr vector_indexer;
   if (auto *vector_params = dynamic_cast<const VectorIndexParams *>(
