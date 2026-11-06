@@ -75,7 +75,8 @@ if(USE_OSS_MIRROR)
         )
         message(STATUS "Using OSS mirror for third-party downloads")
 elseif(NOT DEFINED ENV{ARROW_THRIFT_URL})
-        # Escape the generated semicolon so ExternalProject passes one environment argument.
+        # Arrow's pinned Thrift release is no longer on Apache's live mirrors.
+        # Keep explicit caller URLs and the OSS mirror option unchanged.
         list(APPEND CONFIGURE_ENV_LIST
                 "ARROW_THRIFT_URL=https://archive.apache.org/dist/thrift/0.22.0/thrift-0.22.0.tar.gz\\$<SEMICOLON>${_ARROW_THRIFT_OSS_URL}")
 endif()
