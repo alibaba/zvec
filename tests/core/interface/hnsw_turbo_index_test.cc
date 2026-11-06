@@ -939,6 +939,136 @@ TEST(HnswBulkMergeTest, AlignedChunkCapacitySurvivesPackingAndAppend) {
   ASSERT_EQ(0, packed_storage->close());
 }
 
+// Exercise huge-page segment capacities without requiring a hugetlbfs mount.
+// The underlying mmap storage still performs the real file I/O and reopening.
+class HugePageTestStorage final : public zvec::core::IndexStorage {
+ public:
+  HugePageTestStorage()
+      : storage_(zvec::core::IndexFactory::CreateStorage("MMapFileStorage")) {}
+
+  int init(const zvec::ailego::Params &params) override {
+    return storage_ ? storage_->init(params) : zvec::core::IndexError_NoMemory;
+  }
+  int cleanup() override {
+    return storage_->cleanup();
+  }
+  int open(const std::string &path, bool create_if_missing) override {
+    return storage_->open(path, create_if_missing);
+  }
+  int flush() override {
+    return storage_->flush();
+  }
+  int close() override {
+    return storage_->close();
+  }
+  int append(const std::string &id, size_t size) override {
+    return storage_->append(
+        id, zvec::ailego::MemoryHelper::AlignHugePageSize(size));
+  }
+  void refresh(uint64_t checkpoint) override {
+    storage_->refresh(checkpoint);
+  }
+  uint64_t check_point() const override {
+    return storage_->check_point();
+  }
+  Segment::Pointer get(const std::string &id, int level = -1) override {
+    return storage_->get(id, level);
+  }
+  bool has(const std::string &id) const override {
+    return storage_->has(id);
+  }
+  uint32_t magic() const override {
+    return storage_->magic();
+  }
+  bool is_huge_page() const override {
+    return true;
+  }
+  bool is_dirty() const override {
+    return storage_->is_dirty();
+  }
+
+ private:
+  zvec::core::IndexStorage::Pointer storage_;
+};
+
+TEST(HnswBulkMergeTest, HugePagePackingPreservesLayoutAcrossReopenAndAppend) {
+  namespace core = zvec::core;
+  namespace ailego = zvec::ailego;
+  const std::string graph_path = "hnsw_bulk_huge_graph.index";
+  const std::string packed_path = "hnsw_bulk_huge_packed.index";
+  AILEGO_DEFER([&]() {
+    zvec::test_util::RemoveTestFiles(graph_path);
+    zvec::test_util::RemoveTestFiles(packed_path);
+  });
+  // With m=50 and 36 dimensions, 4096 packed nodes occupy 2.25 MiB,
+  // rounded to a 4 MiB huge-page capacity. Reusing that capacity as the
+  // logical chunk size would incorrectly yield 8192 nodes after reopening.
+  constexpr uint32_t count = 8193;
+  constexpr uint32_t appended_count = 12289;
+  constexpr size_t vector_size = kDimension * sizeof(float);
+  auto vectors = RandomVectors(appended_count);
+  TestExternalVectorSource source(&vectors);
+  auto init_entity = [&](core::HnswStreamerEntity &entity, size_t bytes) {
+    entity.set_vector_size(bytes);
+    entity.set_l0_neighbor_cnt(100);
+    entity.set_upper_neighbor_cnt(50);
+    entity.set_scaling_factor(50);
+    return entity.init(appended_count);
+  };
+  auto graph_storage = std::make_shared<HugePageTestStorage>();
+  ASSERT_EQ(0, graph_storage->init({}));
+  ASSERT_EQ(0, graph_storage->open(graph_path, true));
+  core::IndexStreamer::Stats graph_stats;
+  core::HnswExternalStreamerEntity graph(graph_stats);
+  graph.set_packed_vector_size(vector_size);
+  ASSERT_EQ(0, init_entity(graph, 0));
+  ASSERT_EQ(0, graph.open(graph_storage, 128U << 20, false));
+  for (uint32_t id = 0; id < count; ++id) {
+    ASSERT_EQ(0, graph.add_vector_with_id(0, id, vectors[id].data()));
+  }
+  graph.update_ep_and_level(0, 0);
+  auto dumper =
+      std::make_shared<core::HnswBuildDumper>(1 + graph.packed_chunk_count());
+  ASSERT_EQ(0, dumper->create(packed_path));
+  ASSERT_EQ(0, graph.dump_with_vectors(dumper, source, vector_size));
+  ASSERT_EQ(0, dumper->close());
+  ASSERT_EQ(0, graph.close());
+  ASSERT_EQ(0, graph_storage->close());
+
+  for (bool append : {true, false}) {
+    auto storage = std::make_shared<HugePageTestStorage>();
+    ASSERT_EQ(0, storage->init({}));
+    ASSERT_EQ(0, storage->open(packed_path, false));
+    core::IndexStreamer::Stats stats;
+    core::HnswMmapStreamerEntity reopened(stats);
+    ASSERT_EQ(0, init_entity(reopened, vector_size));
+    ASSERT_EQ(0, reopened.open(storage, 128U << 20, false));
+    const uint32_t expected_count = append ? count : appended_count;
+    ASSERT_EQ(expected_count, reopened.doc_cnt());
+    for (uint32_t id = 0; id < expected_count; ++id) {
+      EXPECT_EQ(id, reopened.get_key(id));
+      core::IndexStorage::MemoryBlock block;
+      ASSERT_EQ(0, reopened.get_vector(id, block));
+      ASSERT_NE(nullptr, block.data());
+      ASSERT_EQ(0, std::memcmp(vectors[id].data(), block.data(), vector_size))
+          << "id=" << id;
+    }
+    if (append) {
+      // Fill the last packed chunk, then allocate a new one after reopening.
+      // add_vector also verifies that the next automatic id is unchanged.
+      for (uint32_t id = count; id < appended_count; ++id) {
+        core::node_id_t assigned = core::kInvalidNodeId;
+        ASSERT_EQ(0, reopened.add_vector(0, id, vectors[id].data(), &assigned));
+        ASSERT_EQ(id, assigned);
+      }
+      ASSERT_EQ(appended_count, reopened.doc_cnt());
+      ASSERT_TRUE(storage->has("HnswT3S3"));
+    }
+    ASSERT_EQ(0, reopened.close());
+    ASSERT_EQ(0, storage->close());
+  }
+}
+
 struct BulkContextState {
   size_t workers;
   bool fail_first;

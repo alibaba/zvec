@@ -38,7 +38,8 @@ int ChunkBroker::dump_meta(const IndexDumper::Pointer &dumper,
     meta.total_size -= chunk->capacity();
   }
   meta.total_size += node_chunks * node_chunk_size;
-  meta.chunk_size = node_chunk_size;
+  // Preserve the logical chunk size used to derive nodes per chunk on reopen.
+  // Huge-page padding belongs to the capacity budget, not the node layout.
   meta.chunk_cnts[CHUNK_TYPE_NODE] = node_chunks;
   if (meta.total_size >= max_index_size) return IndexError_IndexFull;
   const size_t capacity = chunk_meta_segment_->capacity();
