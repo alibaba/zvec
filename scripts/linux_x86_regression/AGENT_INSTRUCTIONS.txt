@@ -1,0 +1,222 @@
+zvec 旧矩阵距离路径 Linux x86 正确性与性能验证任务说明
+
+请在 Linux x86_64 实机上执行以下验证，并交付实测结论与原始结果。
+这是执行任务，不要只返回计划或命令。请先读完本说明和随附脚本。
+
+一、任务目标与输入
+
+验证 fix/legacy-matrix-distance-performance 分支对旧矩阵距离调用链的修复，
+重点检查旧记录量化 INT8/INT4 的 32×1 路径、原始矩阵内核和 MIPS 适配层。
+分别回答：
+1. 修复版本是否通过本次相关正确性回归？
+2. 重构前生成的旧索引能否被修复版本正确读取和查询？
+3. 相比修复前恢复了多少性能？相比重构前还剩哪些回退？
+
+工具位于本分支的 scripts/linux_x86_regression/，包含 CMakeLists.txt、run.py、
+matrix_sweep.cc、adapter_sweep.cc、ivf_legacy_matrix_test.cc、计时头文件和说明。
+拉取本分支最新提交即可获得工具，无需下载额外压缩包。执行脚本来自包含工具
+的当前 checkout；待测生产源码仍固定为下列三个提交。
+
+仓库：https://github.com/richyreachy/zvec.git
+分支：fix/legacy-matrix-distance-performance
+
+二、固定版本与比较含义
+
+parent  499eab892c750ecf60f314b3d24cccad888f5af2
+        重构前基线，是删除旧内核提交 35fbfc06 的父提交。
+before  f7bd575f09b622a6dd387bcc266d2f3b53fd47c7
+        本次修复前的 Git 版本。
+fixed   955ae841ddb8f10b2ae6e82a50720e2419741ccd
+        本次待验证的修复提交，包含实现修改和仓库内验证测试。
+
+固定上述提交，不要用浮动的 main 或分支最新提交替代。before 也不是此前本地
+已经包含部分单列优化的中间快照，不能与那个快照的测量混称同一基线。
+
+三个版本采用独立 detached worktree 和独立构建目录，使用同一编译器、依赖、
+Release 配置和同一套测试输入。工具包将同一份 IVF 测试源码分别链接到三个
+版本，不向旧版本 cherry-pick 任何修复实现。
+
+三、验证范围与结论边界
+
+这是相关模块的独立构建，覆盖 metric、Turbo、Flat、聚类和旧 IVF。
+RABITQ_SUPPORTED=0、DISKANN_SUPPORTED=0；不是整仓或完整产品验证。
+不包含生产规模数据、召回率、并发吞吐以及自动 ASan/UBSan 检查。
+
+当前普通行式 IVF 的 Turbo quantizer 路径与旧列式、旧记录量化兼容路径需要
+区分。这里的旧 IVF 测量不能泛化为所有 IVF 查询收益。MIPS 微基准测量的是
+矩阵适配层；MIPS IVF 查询使用 inner-product query metric，不能把前者的
+提速直接解释为 MIPS IVF 查询提速。
+
+工具包此前只做过脚本语法和 CMake 配置检查，尚无 Linux 执行结果。
+macOS 的 497 项通过、0 失败不能替代本次 Linux 验证，也不是必须匹配的计数；
+不同架构的条件跳过项可能不同。
+
+四、准备环境与工作目录
+
+要求：Linux x86_64、Git、Python 3、CMake >= 3.26、Ninja、支持 C++17 的
+GCC/G++ 或 Clang、taskset（util-linux）。需要能下载依赖子模块。
+
+先检出上述分支最新版本，并在仓库根目录执行。如果没有已有仓库，可在新目录
+运行 git clone --branch fix/legacy-matrix-distance-performance 上述仓库地址。
+保留用户已有工作区改动，不使用 reset --hard 或 clean。
+以下命令在同一个 Bash 会话执行；跨会话时恢复 RUN 和 BUNDLE 的实际路径。
+
+  set -euo pipefail
+  REPO="$(git rev-parse --show-toplevel)"
+  BUNDLE="$REPO/scripts/linux_x86_regression"
+  test "$(uname -s)" = Linux
+  test "$(uname -m)" = x86_64
+  test -f "$BUNDLE/run.py"
+  git -C "$REPO" rev-parse --show-toplevel
+  RUN="$(mktemp -d "$(dirname "$REPO")/zvec-x86-regression.XXXXXX")"
+
+  # 使用明确的远程地址，避免依赖已有仓库 origin 的指向。
+  git -C "$REPO" fetch https://github.com/richyreachy/zvec.git \
+    fix/legacy-matrix-distance-performance
+  git -C "$REPO" worktree add --detach "$RUN/fixed" \
+    955ae841ddb8f10b2ae6e82a50720e2419741ccd
+  git -C "$REPO" worktree add --detach "$RUN/before" \
+    f7bd575f09b622a6dd387bcc266d2f3b53fd47c7
+  git -C "$REPO" worktree add --detach "$RUN/parent" \
+    499eab892c750ecf60f314b3d24cccad888f5af2
+
+  # 三个版本使用同一份测试依赖源码。
+  git -C "$RUN/fixed" submodule update --init --recursive -- \
+    thirdparty/googletest/googletest-1.10.0 \
+    thirdparty/RaBitQ-Library/RaBitQ-Library-0.7.0
+
+  export CC=gcc CXX=g++
+  unset CFLAGS CXXFLAGS LDFLAGS
+  mkdir -p "$RUN/results"
+  {
+    uname -a
+    lscpu
+    "$CC" --version
+    "$CXX" --version
+    cmake --version
+    ninja --version
+    python3 --version
+    git -C "$RUN/fixed" submodule status --recursive
+  } > "$RUN/results/toolchain.txt" 2>&1
+  printf 'RUN=%s\nBUNDLE=%s\n' "$RUN" "$BUNDLE"
+
+如果改用 Clang，三个版本一起使用相同的 clang/clang++。
+确认环境没有通过 LD_LIBRARY_PATH/LD_PRELOAD 加载另一份 zvec 或额外分析库；
+保留必要的工具链路径，并记录任何环境调整。
+
+五、编译
+
+  python3 "$BUNDLE/run.py" build --root "$RUN" --jobs 8
+
+根据内存调整 --jobs，三个版本的编译配置保持一致。脚本使用 Release，关闭
+LTO/OpenMP，并保留仓库 AUTO_DETECT_ARCH 的分 ISA 编译及运行时分派方式。
+不要只给其中一个版本增加 -march=native、AVX2/AVX512 或 fast-math 参数。
+
+编译失败时检查 results/*_configure.log 和 *_build.log，记录失败版本、命令和
+首个有效错误。可修复工具包的环境适配问题并保留补丁，所有版本公平应用；
+不要为了让测试通过修改生产实现、降低编译要求的比较口径或放宽数值容差。
+
+六、正确性回归
+
+  python3 "$BUNDLE/run.py" correctness --root "$RUN"
+
+脚本在 fixed 运行 44 个相关测试程序：
+  - 全部 10 个 metric、27 个 Turbo 测试程序。
+  - 2 个 Flat、3 个聚类测试程序。
+  - 新增旧 IVF 测试及现有 IVFSearcher 的 13 个指定测试。
+
+还会运行 parent_write、fixed_read_parent、before_ivf：
+  - parent 写出 200 份旧格式索引到 parent-fixtures/。
+  - fixed 读取同一批旧索引，按确定性输入和独立参考值校验。
+  - before 执行相同 IVF 正确性测试，以帮助区分既有问题。
+
+每轮完整旧 IVF fixture 测试核对 28,800 组结果，覆盖 31/32/33 行边界、尾块、
+空倒排、单查询/批查询、search_impl/search_bf_impl、过滤、不同 top-k，以及
+MMapFileReadStorage、FileReadStorage、BufferReadStorage。
+
+验收时同时检查退出码和 XML：不能只看日志最后一行，也不能把 skipped 或
+disabled 算作 passed。任何崩溃、缺失 XML、未执行、非零退出码都要单独报告。
+44 个 fixed 测试程序的统计与额外的跨版本测试统计分开，避免重复计数。
+
+失败时保留首个复现用例及日志，不放宽容差、不跳过失败类型。可以单独复现，
+但不得用通过的子集覆盖原始全范围结果。若基线也失败，明确标记基线问题；
+正确性未通过时，不给出“验证通过”的总评。性能仅可作为标注清楚的诊断数据。
+
+七、性能回归
+
+等所有编译和正确性测试结束后，选择一个允许使用且空闲的逻辑 CPU。查看：
+
+  python3 -c 'import os; print(sorted(os.sched_getaffinity(0)))'
+  lscpu -e=CPU,CORE,SOCKET,ONLINE
+
+执行下面命令；脚本默认选择 affinity 列表中的第一个 CPU。如需指定，统一
+增加 --cpu N。避免同一物理核的 SMT 同胞上运行其他负载。
+
+  python3 "$BUNDLE/run.py" perf --root "$RUN"
+
+不要并发执行不同版本的基准，不要边编译边跑基准，也不要使用 sanitizer 或
+Debug 二进制测性能。脚本将所有基准固定在同一 CPU，并按轮换顺序串行运行。
+
+测量规模与方法：
+  matrix：504 组，6 类型 × L2/IP × 21 个矩阵形状 × 128/512 维。
+  adapter：32 组，MIPS 和旧记录量化，32×1/32×32，128/512 维。
+  ivf：24 组，8193 条记录、单倒排、16 个查询、top-k=10、scan_ratio=1。
+
+matrix/adapter 使用线程 CPU 时间，每次自适应重复到至少 2 ms，取 5 轮中位数。
+IVF 预热后只计查询，取 7 轮的墙钟时间中位数。
+每类每版本再运行 3 个新进程，最终取三个进程结果的中位数并保存最小/最大值。
+
+parent 的原始 FP16 1×1 内核精度较低，因此微基准跳过其该项参考值断言；
+parent FP16 适配层与 pair 的比较容差为 1%。fixed 保持严格检查。
+不要把旧 FP16 的性能数字解释为与修复版本具有相同精度的基线。
+
+八、结果判读和优先检查项
+
+输出目录：RUN/results。
+  correctness.json 与逐测试 XML/log：正确性结论。
+  matrix_comparison.csv：原始矩阵，单位 ns/矩阵，线程 CPU 时间。
+  adapter_comparison.csv：适配层，单位 ns/矩阵，线程 CPU 时间。
+  ivf_comparison.csv：旧 IVF，单位 μs/查询，墙钟时间。
+  performance.json：含相对 parent 中位数慢超过 5% 的组合列表。
+  environment.json、lscpu.txt、benchmark_cpu.json、toolchain.txt：运行环境。
+
+fixed_vs_parent = fixed 耗时 / 重构前耗时。
+fixed_vs_before = fixed 耗时 / 修复前耗时。
+比例 <1 表示变快，>1 表示变慢。
+change_vs_*_pct 是耗时变化百分比，正值表示回退，负值表示改善。
+时间减少百分比不等于吞吐提升百分比；报告时写清楚使用哪一种。
+
+优先检查并单独列出：
+  1. 旧记录 INT8/INT4，L2/IP，32×1，128/512 维。
+  2. 原始 INT4 IP 32×1，以及 INT8 L2/IP、FP16 L2 单查询路径。
+  3. MIPS INT8/INT4 32×1，区分已恢复的主要开销与剩余差距。
+  4. FP32 L2 16×4；另关注 4×2/512 维和 32×8/128 维。
+  5. INT4 多查询，以及全部 504/32/24 组中的其他回退。
+
+比较三轮区间与中位数，不把一次波动直接认定为回退。超过 5% 只是复查提示，
+并非自动失败阈值，也不能据此声称其余组合“零回退”。对可疑组合保留原始
+结果，再在相同条件下补测，保存到新的结果目录，避免挑选最佳一轮代替报告。
+不要用 Linux 的绝对耗时直接对比 macOS，也不要把旧 IVF 收益泛化到所有 IVF。
+
+九、交付要求
+
+请完成实际执行后返回一份中文报告，至少包含：
+  - CPU 型号、Linux/编译器版本、三版提交、编译参数和绑定 CPU。
+  - fixed 44 个测试程序的 passed/skipped/disabled/failed 数量与失败明细。
+  - parent 旧索引生成、fixed 重载以及 before IVF 各自的结果。
+  - 504/32/24 组实际完成数量，未完成项及原因。
+  - 上述优先项的 parent/before/fixed 耗时、两种比例和三轮范围。
+  - 尚存回退、波动无法确认的项，以及是否存在正确性或构建阻断。
+  - 明确结论适用范围；不要把未运行项目写成通过。
+
+打包原始证据：
+
+  tar -czf "$RUN/linux-x86-results.tar.gz" \
+    -C "$RUN" results \
+    build-parent/CMakeCache.txt build-parent/compile_commands.json \
+    build-before/CMakeCache.txt build-before/compile_commands.json \
+    build-fixed/CMakeCache.txt build-fixed/compile_commands.json
+
+如果构建失败导致部分文件未生成，按实际存在的文件打包并列明缺失项。
+保留工作目录和旧索引用于复现，不自动清理。不创建 PR、不提交或推送代码。
+若需要进一步修复实现，先交付失败证据和定位结论，交由用户决定后续改动。

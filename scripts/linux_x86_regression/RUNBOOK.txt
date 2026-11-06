@@ -1,0 +1,107 @@
+Linux x86_64 regression bundle for commit 955ae841
+
+Scope
+  Focused standalone CMake build: metric, Turbo, Flat, clustering and legacy IVF.
+  RABITQ_SUPPORTED=0 and DISKANN_SUPPORTED=0, matching the previous macOS harness.
+  This is not a full repository/product/recall/concurrent-throughput validation.
+  Use the normal root CMake/CI build separately for product integration coverage.
+
+Requirements
+  Linux x86_64; git; Python 3; CMake >= 3.26; Ninja; C++17 GCC or Clang;
+  taskset (util-linux). Use the same compiler/environment for all versions.
+  Internet access is needed to fetch the two dependency submodules.
+
+The driver makes no git commits or pushes, and does not install dependencies.
+This portable bundle was syntax checked and CMake-configured on macOS; Linux
+execution has not yet been performed. Do not treat this as a Linux pass result.
+
+Versions (three detached worktrees)
+  parent: 499eab892c750ecf60f314b3d24cccad888f5af2, before refactor #796
+  before: f7bd575f09b622a6dd387bcc266d2f3b53fd47c7, parent of the fix branch commit
+  fixed:  955ae841, fix/legacy-matrix-distance-performance
+  Note: 'before' is the checked-in pre-fix HEAD, not the prior local intermediate
+  snapshot which already had four raw single-column fixes.
+
+Setup: check out the latest fix/legacy-matrix-distance-performance branch and
+run the following from the repository root, with origin pointing to richyreachy/zvec.
+The tools live in scripts/linux_x86_regression; no separate archive is required.
+Use the tools from this checkout and the pinned production revisions below.
+
+  set -euo pipefail
+  REPO="$(git rev-parse --show-toplevel)"
+  RUN="$(mktemp -d "$(dirname "$REPO")/zvec-x86-regression.XXXXXX")"
+  BUNDLE="$REPO/scripts/linux_x86_regression"
+  git -C "$REPO" fetch origin fix/legacy-matrix-distance-performance
+  git -C "$REPO" worktree add --detach "$RUN/fixed" 955ae841
+  git -C "$REPO" worktree add --detach "$RUN/before" f7bd575f09b622a6dd387bcc266d2f3b53fd47c7
+  git -C "$REPO" worktree add --detach "$RUN/parent" 499eab892c750ecf60f314b3d24cccad888f5af2
+  git -C "$RUN/fixed" submodule update --init --recursive -- \
+    thirdparty/googletest/googletest-1.10.0 \
+    thirdparty/RaBitQ-Library/RaBitQ-Library-0.7.0
+  export CC=gcc CXX=g++
+  unset CFLAGS CXXFLAGS LDFLAGS
+  printf '%s\n' "$RUN"
+
+Build and correctness (same shell)
+  python3 "$BUNDLE/run.py" build --root "$RUN" --jobs 8
+  python3 "$BUNDLE/run.py" correctness --root "$RUN"
+
+Correctness builds/runs all 10 metric and 27 Turbo test executables plus two
+Flat tests, three clustering tests, the new legacy IVF test, and 13 selected
+existing IVF searcher tests (44 executables). Additional executions write 200
+fixtures with the pre-refactor implementation, read them with fixed code, and
+check before-version IVF. Each IVF fixture pass checks 28,800 result lists.
+Architecture-dependent skip/pass counts may differ from macOS.
+
+Performance (run only after builds/tests finish; no concurrent benchmark jobs)
+  python3 "$BUNDLE/run.py" perf --root "$RUN"
+  # Optional: select a quiet allowed logical CPU, e.g. --cpu 2.
+
+The default is the lowest CPU in sched_getaffinity(0). All versions are pinned to
+the same CPU via taskset and run serially. Avoid another workload on that CPU
+or its SMT sibling. Build flags use the repository's AUTO_DETECT_ARCH path;
+per-ISA objects and runtime dispatch are retained. Do not change ISA flags for
+only one version. Generic and -march=native builds are different experiments.
+
+Microbenchmark scope: 504 raw cases (6 types x 2 metrics x 21 shapes x 2 dims)
+and 32 MIPS/record adapter cases, dimensions 128 and 512. Each uses adaptive
+repetitions >= 2 ms thread CPU time and median of five rounds.
+IVF scope: 24 cases, 8193 rows, one list, 16 queries, top-k 10, scan_ratio=1,
+warm-up queries and median of seven rounds. Timings are wall-clock us/query.
+Every group runs three fresh processes per version in rotated order.
+
+The same copied IVF source and benchmark sources are compiled against all
+versions; no fixes are cherry-picked into parent or before. LEGACY only selects
+the old raw matrix API and its FP16 reference limitations. Parent FP16 1x1 raw
+oracle checks are skipped due to reduced precision; parent FP16 adapters allow
+1% pair-reference tolerance. Fixed code retains strict checks. Performance
+equality with parent FP16 therefore is not an accuracy-equivalent comparison.
+
+Results
+  results/correctness.json and per-test XML/logs
+  results/matrix_comparison.csv, adapter_comparison.csv, ivf_comparison.csv
+  results/performance.json (includes >5% median residuals)
+  results/environment.json, lscpu.txt, benchmark_cpu.json
+  results/*_configure.log, *_build.log and raw benchmark logs
+  build-{parent,before,fixed}/CMakeCache.txt and compile_commands.json
+
+For every comparison CSV:
+  fixed_vs_parent = fixed / pre-refactor time
+  fixed_vs_before = fixed / pre-fix time
+  < 1 means faster; > 1 means slower; change_*_pct is percentage time change.
+  Inspect min/max across the three process medians as well as the median ratio.
+  Do not compare Linux absolute timing against macOS or infer equivalence from
+  one percentage cutoff. Any correctness failure must be investigated.
+
+Optional manual IVF run after build (each invocation has its own working dir):
+  mkdir -p "$RUN/manual-ivf"
+  (
+    cd "$RUN/manual-ivf"
+    "$RUN/build-fixed/bin/legacy_ivf_comparison"
+    "$RUN/build-fixed/bin/legacy_ivf_comparison" \
+      --gtest_also_run_disabled_tests --gtest_filter='*Warm*Benchmark*'
+  )
+
+This bundle does not run ASan/UBSan. Run sanitizers as a separate correctness
+build; never use sanitizer binaries for timing. The previous macOS result was
+UBSan success, while ASan failed during host runtime initialization.
