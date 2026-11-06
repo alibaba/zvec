@@ -26,8 +26,6 @@ endif()
 # Trim unused compute kernels to reduce binary size (~14MB savings)
 set(ARROW_SLIM_COMPUTE_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.slim_compute.patch)
 apply_patch_once("arrow_slim_compute" "${ARROW_SRC_DIR}" "${ARROW_SLIM_COMPUTE_PATCH}")
-apply_patch_once("arrow_thrift_download" "${ARROW_SRC_DIR}"
-                 "${CMAKE_CURRENT_SOURCE_DIR}/arrow.thrift-download.patch")
 
 include(ExternalProject)
 include(ProcessorCount)
