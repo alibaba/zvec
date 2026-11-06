@@ -23,29 +23,11 @@ libaio, or pread; macOS uses pread; Windows uses overlapped I/O.
 from __future__ import annotations
 
 import math
-import os
-import platform
 import random
-import struct
 
 import pytest
-
-# --------------------------------------------------------------------------- #
-# Platform gating (must happen BEFORE we touch zvec).
-# --------------------------------------------------------------------------- #
-pytestmark = pytest.mark.skipif(
-    os.environ.get("ZVEC_REQUIRE_DISKANN") != "1"
-    and not (
-        struct.calcsize("P") == 8
-        and platform.system() in ("Linux", "Darwin", "Windows")
-        and platform.machine().lower() in ("x86_64", "amd64", "aarch64", "arm64")
-    ),
-    reason="DiskAnn is supported on Linux/macOS/Windows (x86_64/ARM64)",
-)
-
-import zvec  # noqa: E402
-
-from zvec import (  # noqa: E402
+import zvec
+from zvec import (
     Collection,
     CollectionOption,
     DataType,
@@ -57,7 +39,9 @@ from zvec import (  # noqa: E402
     Query,
     VectorSchema,
 )
-from zvec.typing import QuantizeType  # noqa: E402
+from zvec.typing import QuantizeType
+
+pytestmark = pytest.mark.usefixtures("require_diskann")
 
 
 @pytest.mark.parametrize("enable_mmap", [False, True], ids=["buffer", "mmap"])
@@ -72,9 +56,8 @@ from zvec.typing import QuantizeType  # noqa: E402
 def test_native_platform_lifecycle(tmp_path, enable_mmap, metric, dtype):
     """Exercise the compiled index and its disk reader, including read-only reopen.
 
-    CI sets ZVEC_REQUIRE_DISKANN=1 so a broken platform gate fails instead of
-    silently skipping this contract. Normalized vectors have an unambiguous
-    self-match for all three metrics, including after FP16 conversion.
+    Normalized vectors have an unambiguous self-match for all three metrics,
+    including after FP16 conversion.
     """
     rng = random.Random(2026)
     vectors = []

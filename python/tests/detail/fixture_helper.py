@@ -1,42 +1,13 @@
 import pytest
 import logging
-import platform
-import struct
-
-DISKANN_SUPPORTED = (
-    struct.calcsize("P") == 8
-    and platform.system() in ("Linux", "Darwin", "Windows")
-    and platform.machine().lower() in ("x86_64", "amd64", "aarch64", "arm64")
-)
 
 from typing import Any, Generator
 from zvec.typing import DataType, StatusCode, MetricType, QuantizeType
 import zvec
 
-_DISKANN_PRELOAD_REASON: str | None = None
-_DISKANN_PRELOAD_DONE: bool = False
-
-
-def _ensure_diskann_runtime_or_reason() -> str | None:
-    """Check whether DiskAnn is available on this platform and return None
-    on success or a human-readable skip reason on failure. Idempotent across
-    calls."""
-    global _DISKANN_PRELOAD_DONE, _DISKANN_PRELOAD_REASON
-    if _DISKANN_PRELOAD_DONE:
-        return _DISKANN_PRELOAD_REASON
-    _DISKANN_PRELOAD_DONE = True
-
-    if not DISKANN_SUPPORTED:
-        _DISKANN_PRELOAD_REASON = (
-            "DiskAnn is supported on Linux/macOS/Windows (x86_64/ARM64)"
-        )
-        return _DISKANN_PRELOAD_REASON
-    _DISKANN_PRELOAD_REASON = None
-    return None
-
-
 from zvec import (
     CollectionOption,
+    DiskAnnIndexParam,
     InvertIndexParam,
     HnswIndexParam,
     FlatIndexParam,
@@ -128,13 +99,8 @@ def full_schema_new(request) -> CollectionSchema:
     else:
         nullable, has_index, vector_index = True, False, HnswIndexParam()
 
-    # Skip DiskAnn tests on unsupported platforms.
-    from zvec.model.param import DiskAnnIndexParam
-
     if isinstance(vector_index, DiskAnnIndexParam):
-        skip_reason = _ensure_diskann_runtime_or_reason()
-        if skip_reason is not None:
-            pytest.skip(skip_reason)
+        request.getfixturevalue("require_diskann")
 
     scalar_index_param = None
     vector_index_param = None

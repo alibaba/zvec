@@ -31,8 +31,6 @@ jobs:
 
     env:
       SCCACHE_GHA_ENABLED: "true"
-      # A missing DiskAnn implementation must fail, never skip the contract.
-      ZVEC_REQUIRE_DISKANN: "1"
 
     steps:
       - name: Show env info
@@ -171,6 +169,8 @@ jobs:
           .\db-example.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\core-example.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\diskann-core-example.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\ailego-example.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
