@@ -26,6 +26,8 @@ endif()
 # Trim unused compute kernels to reduce binary size (~14MB savings)
 set(ARROW_SLIM_COMPUTE_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.slim_compute.patch)
 apply_patch_once("arrow_slim_compute" "${ARROW_SRC_DIR}" "${ARROW_SLIM_COMPUTE_PATCH}")
+apply_patch_once("arrow_thrift_download" "${ARROW_SRC_DIR}"
+                 "${CMAKE_CURRENT_SOURCE_DIR}/arrow.thrift-download.patch")
 
 include(ExternalProject)
 include(ProcessorCount)
@@ -72,11 +74,6 @@ if(USE_OSS_MIRROR)
                 "ARROW_ZLIB_URL=https://zvec-bj.oss-cn-beijing.aliyuncs.com/thirdparty/zlib-1.3.1.tar.gz"
         )
         message(STATUS "Using OSS mirror for third-party downloads")
-elseif(NOT DEFINED ENV{ARROW_THRIFT_URL})
-        # Arrow's pinned Thrift release is no longer on Apache's live mirrors.
-        # Keep explicit caller URLs and the OSS mirror option unchanged.
-        list(APPEND CONFIGURE_ENV_LIST
-                "ARROW_THRIFT_URL=https://archive.apache.org/dist/thrift/0.22.0/thrift-0.22.0.tar.gz")
 endif()
 
 # Propagate compiler launcher (ccache/sccache) to Arrow's ExternalProject

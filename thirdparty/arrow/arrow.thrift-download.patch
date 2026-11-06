@@ -1,0 +1,27 @@
+diff --git a/cpp/cmake_modules/ThirdpartyToolchain.cmake b/cpp/cmake_modules/ThirdpartyToolchain.cmake
+--- a/cpp/cmake_modules/ThirdpartyToolchain.cmake
++++ b/cpp/cmake_modules/ThirdpartyToolchain.cmake
+@@ -799,9 +799,11 @@
+ if(DEFINED ENV{ARROW_THRIFT_URL})
+   set(THRIFT_SOURCE_URL "$ENV{ARROW_THRIFT_URL}")
+ else()
++  # The pinned release moved off the live Apache mirrors. Use the project
++  # mirror if the official archive is unreachable.
+   set(THRIFT_SOURCE_URL
+-      "https://www.apache.org/dyn/closer.lua/thrift/${ARROW_THRIFT_BUILD_VERSION}/thrift-${ARROW_THRIFT_BUILD_VERSION}.tar.gz?action=download"
+-      "https://dlcdn.apache.org/thrift/${ARROW_THRIFT_BUILD_VERSION}/thrift-${ARROW_THRIFT_BUILD_VERSION}.tar.gz"
++      "https://archive.apache.org/dist/thrift/${ARROW_THRIFT_BUILD_VERSION}/thrift-${ARROW_THRIFT_BUILD_VERSION}.tar.gz"
++      "https://zvec-bj.oss-cn-beijing.aliyuncs.com/thirdparty/thrift-${ARROW_THRIFT_BUILD_VERSION}.tar.gz"
+   )
+ endif()
+
+@@ -1741,7 +1743,8 @@
+   fetchcontent_declare(thrift
+                        ${FC_DECLARE_COMMON_OPTIONS}
+                        URL ${THRIFT_SOURCE_URL}
+-                       URL_HASH "SHA256=${ARROW_THRIFT_BUILD_SHA256_CHECKSUM}")
++                       URL_HASH "SHA256=${ARROW_THRIFT_BUILD_SHA256_CHECKSUM}"
++                       TIMEOUT 60)
+
+   prepare_fetchcontent()
+   set(BUILD_COMPILER OFF)
