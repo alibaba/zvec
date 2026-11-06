@@ -521,6 +521,8 @@ Status RocksdbContext::reset_cf(const std::string &cf_name) {
     LOG_DEBUG("Reset cf[%s] in RocksDB[%s]", cf_name.c_str(), db_path_.c_str());
     return Status::OK();
   } else {
+    // The family is dropped and its handle deleted, as in drop_cf().
+    cf_handles_.erase(cf_handles_.begin() + index);
     LOG_ERROR("Failed to create cf[%s] in RocksDB[%s], code[%d], reason[%s]",
               cf_name.c_str(), db_path_.c_str(), s.code(),
               s.ToString().c_str());

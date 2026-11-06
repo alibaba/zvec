@@ -380,6 +380,14 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
     bitmap_cur = nullptr;
     iter_term->Next();
   }
+  // An iterator also stops at a read error; ranges built from part of the
+  // terms would make range queries miss documents.
+  if (!iter_term->status().ok()) {
+    LOG_ERROR("Failed to scan terms in %s, code[%d], reason[%s]", id().c_str(),
+              iter_term->status().code(),
+              iter_term->status().ToString().c_str());
+    return Status::InternalError();
+  }
 
 
   // Finalize
@@ -405,6 +413,12 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
 
   if (cdf_slot_initialized) {
     iter_term->SeekToLast();
+    if (!iter_term->Valid()) {
+      LOG_ERROR("Failed to seek to the last term in %s, code[%d], reason[%s]",
+                id().c_str(), iter_term->status().code(),
+                iter_term->status().ToString().c_str());
+      return Status::InternalError();
+    }
     create_cdf_slot();
   }
   ailego::JsonObject cdf_json_obj;
@@ -433,6 +447,20 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
 
 
 Status InvertedColumnIndexer::seal() {
+  Status status = prepare_seal();
+  if (!status.ok()) {
+    return status;
+  }
+  // The data prepare_seal() wrote must be durable before the marker.
+  if (status = ctx_.flush(); !status.ok()) {
+    LOG_ERROR("Failed to flush %s before sealing it", id().c_str());
+    return status;
+  }
+  return mark_sealed();
+}
+
+
+Status InvertedColumnIndexer::prepare_seal() {
   if (read_only_) {
     return Status::PermissionDenied();
   }
@@ -449,6 +477,14 @@ Status InvertedColumnIndexer::seal() {
       LOG_ERROR("Failed to generate statistical indexes in %s", id().c_str());
       return status;
     }
+  }
+  return Status::OK();
+}
+
+
+Status InvertedColumnIndexer::mark_sealed() {
+  if (read_only_) {
+    return Status::PermissionDenied();
   }
 
   auto rs = ctx_.db_->Put(ctx_.write_opts_, key_sealed(), "sealed");
