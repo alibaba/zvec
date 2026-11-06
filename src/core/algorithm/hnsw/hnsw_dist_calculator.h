@@ -99,6 +99,14 @@ class HnswDistCalculator {
     dim_ = dim;
   }
 
+  const void *query() const {
+    return query_;
+  }
+
+  void record_comparison() {
+    ++compare_cnt_;
+  }
+
   //! Reset query vector data
   inline void reset_query(const void *query) {
     status_ = Status::kOk;

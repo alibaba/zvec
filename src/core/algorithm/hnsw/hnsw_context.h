@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #pragma once
-
 #include <zvec/core/framework/index_context.h>
+#include "algorithm/quantized_graph/quantized_graph_options.h"
 #include "utility/search_heap.h"
 #include "utility/sparse_utility.h"
 #include "utility/visit_filter.h"
@@ -417,6 +417,12 @@ class HnswContext : public IndexContext {
     min_scan_limit_ = min_scan_limit;
   }
 
+  const QuantizedGraphSearchOptions &quantized_graph_options() const {
+    return qg_options_;
+  }
+  void set_quantized_graph_options(const QuantizedGraphSearchOptions &options) {
+    qg_options_ = options;
+  }
   inline void set_ef(uint32_t v) {
     ef_ = v;
   }
@@ -477,6 +483,14 @@ class HnswContext : public IndexContext {
     return fetch_vector_;
   }
 
+  // Borrowed FP32 interface query; survives clear(), released by reset().
+  void set_quantized_graph_fp32_query(const float *query) {
+    quantized_graph_fp32_query_ = query;
+  }
+  const float *quantized_graph_fp32_query() const {
+    return quantized_graph_fp32_query_;
+  }
+
   //! Reset context
   void reset() override {
     this->clear();
@@ -487,6 +501,7 @@ class HnswContext : public IndexContext {
     reset_group_by();
     set_vector_source(nullptr);
     set_external_build_query(nullptr);
+    set_quantized_graph_fp32_query(nullptr);
     dc_.set_provider(nullptr);
   }
 
@@ -655,11 +670,13 @@ class HnswContext : public IndexContext {
   constexpr static uint32_t kInvalidMgic = -1U;
 
  private:
+  QuantizedGraphSearchOptions qg_options_;
   HnswEntity::Pointer entity_;
   HnswDistCalculator dc_;
   IndexMetric::Pointer metric_;
   const VectorSource *vector_source_{nullptr};
   const void *external_build_query_{nullptr};
+  const float *quantized_graph_fp32_query_{nullptr};
   size_t vector_data_size_{0};
   size_t extra_values_size_{0};
 
