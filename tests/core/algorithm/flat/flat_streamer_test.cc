@@ -2118,12 +2118,14 @@ TEST_F(FlatStreamerTest, TurboCandidateDirectOutputMatchesOrdinarySearch) {
                    &query_code, &qmeta));
         std::vector<float> row(dimension);
         std::string code(quantizer->quantized_datapoint_vector_length(), '\0');
+        std::vector<std::string> row_codes(kCount);
         for (size_t id = 0; id < kCount; ++id) {
-          // Duplicate pairs also check the ordinary path's tie ordering.
+          // Duplicate pairs exercise ties, including the selection cutoff.
           for (size_t d = 0; d < dimension; ++d) {
             row[d] = float(((id / 2) * 37 + d * 13) % 251) / 129.3f;
           }
           quantizer->quantize_data(row.data(), code.data());
+          row_codes[id] = code;
           ASSERT_EQ(
               0, streamer->add_with_id_impl(id, code.data(), qmeta, context));
         }
@@ -2144,10 +2146,32 @@ TEST_F(FlatStreamerTest, TurboCandidateDirectOutputMatchesOrdinarySearch) {
           SCOPED_TRACE(count);
           std::vector<uint64_t> keys(count);
           for (size_t i = 0; i < count; ++i) keys[i] = (i * 7) % kCount;
+          std::vector<const void *> pointers(count);
+          std::vector<float> distances(count), score_by_key(kCount);
+          for (size_t i = 0; i < count; ++i) {
+            pointers[i] = row_codes[keys[i]].data();
+          }
+          flat->quantizer()->calc_distance_dp_query_batch(
+              pointers.data(), static_cast<int>(count), query_code.data(),
+              distances.data());
+          for (size_t i = 0; i < count; ++i) {
+            score_by_key[keys[i]] = distances[i];
+          }
+          std::sort(distances.begin(), distances.end());
           ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(
                            query_code.data(), {keys}, qmeta, 1, context));
           const auto expected = context->result();
           ASSERT_EQ(kTopk, expected.size());
+          std::vector<bool> ordinary_seen(kCount, false);
+          for (size_t rank = 0; rank < kTopk; ++rank) {
+            const uint64_t key = expected[rank].key();
+            ASSERT_LT(key, kCount);
+            ASSERT_NE(keys.end(), std::find(keys.begin(), keys.end(), key));
+            EXPECT_FALSE(ordinary_seen[key]);
+            ordinary_seen[key] = true;
+            EXPECT_FLOAT_EQ(distances[rank], expected[rank].score());
+            EXPECT_FLOAT_EQ(score_by_key[key], expected[rank].score());
+          }
           for (bool return_scores : {false, true, false}) {
             std::vector<int64_t> ids(kTopk + 1, -2);
             std::vector<float> scores(kTopk + 1, -123.0f);
@@ -2157,10 +2181,19 @@ TEST_F(FlatStreamerTest, TurboCandidateDirectOutputMatchesOrdinarySearch) {
                              query_code.data(), keys, ids.data(),
                              return_scores ? scores.data() : nullptr, kTopk,
                              qmeta, context));
+            std::vector<bool> seen(kCount, false);
             for (size_t rank = 0; rank < kTopk; ++rank) {
-              EXPECT_EQ(static_cast<int64_t>(expected[rank].key()), ids[rank]);
+              ASSERT_GE(ids[rank], 0);
+              ASSERT_LT(static_cast<uint64_t>(ids[rank]), kCount);
+              const uint64_t key = static_cast<uint64_t>(ids[rank]);
+              ASSERT_NE(keys.end(), std::find(keys.begin(), keys.end(), key));
+              EXPECT_FALSE(seen[key]);
+              seen[key] = true;
+              // Equal-score IDs may differ between collectors. Check each
+              // returned ID's actual distance and rank, even without scores.
+              EXPECT_FLOAT_EQ(distances[rank], score_by_key[key]);
               if (return_scores) {
-                EXPECT_FLOAT_EQ(expected[rank].score(), scores[rank]);
+                EXPECT_FLOAT_EQ(score_by_key[key], scores[rank]);
               }
             }
             EXPECT_EQ(-2, ids[kTopk]);
