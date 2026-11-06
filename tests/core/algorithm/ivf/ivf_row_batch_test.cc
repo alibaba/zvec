@@ -17,6 +17,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <memory>
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/turbo/batch_topk.h>
@@ -24,7 +25,6 @@
 #include "quantizer/distance_quantizer.h"
 
 namespace zvec::core {
-namespace {
 
 // Separate page allocations expose accidental reads through span boundaries.
 class RowBatchSegment : public IndexStorage::Segment {
@@ -114,7 +114,9 @@ std::vector<uint8_t> Bytes(const std::vector<T> &values) {
   return bytes;
 }
 
-class RowBatchEntity : public IVFEntity {
+// MSVC cannot derive from IVFEntity because its header contains a flexible
+// array. Own the real entity instead, keeping the same instrumented scans.
+class IVFRowBatchTestPeer {
  public:
   static constexpr uint32_t kCount = 392;
   static constexpr uint32_t kIdOffset = 9;
@@ -130,19 +132,19 @@ class RowBatchEntity : public IVFEntity {
                size_t dimension = 8) {
     const size_t unit = type == IndexMeta::DT_FP16 ? 2 : 4;
     // Legacy cosine describes its float norm tail as additional dimensions.
-    meta_.set_meta(type, dimension + sizeof(float) / unit);
-    meta_.set_metric("Cosine", 0, ailego::Params());
-    meta_.set_major_order(IndexMeta::MO_ROW);
-    distance_quantizer_ = CreateDistanceQuantizer(meta_);
-    ASSERT_TRUE(distance_quantizer_);
-    ASSERT_EQ(distance_quantizer_->dim(), dimension);
-    const size_t stride = meta_.element_size();
+    entity_->meta_.set_meta(type, dimension + sizeof(float) / unit);
+    entity_->meta_.set_metric("Cosine", 0, ailego::Params());
+    entity_->meta_.set_major_order(IndexMeta::MO_ROW);
+    entity_->distance_quantizer_ = CreateDistanceQuantizer(entity_->meta_);
+    ASSERT_TRUE(entity_->distance_quantizer_);
+    ASSERT_EQ(entity_->distance_quantizer_->dim(), dimension);
+    const size_t stride = entity_->meta_.element_size();
     ASSERT_EQ(stride, dimension * unit + sizeof(float));
-    header_.block_vector_count = 32;
-    header_.block_size = 32 * stride + block_padding;
-    header_.total_vector_count = kIdOffset + kCount;
-    header_.inverted_list_count = 2;
-    norm_value_ = 1.f;
+    entity_->header_.block_vector_count = 32;
+    entity_->header_.block_size = 32 * stride + block_padding;
+    entity_->header_.total_vector_count = kIdOffset + kCount;
+    entity_->header_.inverted_list_count = 2;
+    entity_->norm_value_ = 1.f;
 
     std::vector<InvertedListMeta> lists(2);
     std::vector<uint8_t> body;
@@ -154,11 +156,12 @@ class RowBatchEntity : public IVFEntity {
       meta.vector_count = counts[list];
       meta.block_count = (counts[list] + 31) / 32;
       meta.id_offset = kIdOffset + ordinal;
-      header_.block_count += meta.block_count;
+      entity_->header_.block_count += meta.block_count;
       for (uint32_t block = 0; block < meta.block_count; ++block) {
         const size_t rows = std::min(uint32_t(32), counts[list] - block * 32);
-        const size_t size =
-            (pad_tail || block_padding) ? header_.block_size : rows * stride;
+        const size_t size = (pad_tail || block_padding)
+                                ? entity_->header_.block_size
+                                : rows * stride;
         const size_t start = body.size();
         body.resize(start + size, 0xee);
         for (size_t row = 0; row < rows; ++row, ++ordinal)
@@ -166,16 +169,17 @@ class RowBatchEntity : public IVFEntity {
                       sizeof(ordinal));
       }
     }
-    header_.inverted_body_size = body.size();
+    entity_->header_.inverted_body_size = body.size();
     postings_ = std::make_shared<RowBatchSegment>(std::move(body),
                                                   paged ? 5 * stride + 4 : 0);
-    inverted_ = postings_;
-    inverted_meta_ = std::make_shared<RowBatchSegment>(Bytes(lists));
+    entity_->inverted_ = postings_;
+    entity_->inverted_meta_ = std::make_shared<RowBatchSegment>(Bytes(lists));
     std::vector<uint64_t> keys(kIdOffset + kCount, kInvalidKey);
     for (uint32_t row = 0; row < kCount; ++row)
       keys[kIdOffset + row] = Invalid(row) ? kInvalidKey : Key(row);
-    keys_ = std::make_shared<RowBatchSegment>(Bytes(keys));
-    calculator_ = std::make_shared<IVFDistanceCalculator>(meta_, nullptr, 32);
+    entity_->keys_ = std::make_shared<RowBatchSegment>(Bytes(keys));
+    entity_->calculator_ =
+        std::make_shared<IVFDistanceCalculator>(entity_->meta_, nullptr, 32);
     const auto scalar = [](const void *, const void *, size_t, float *) {};
     const auto batch = [this, stride](const void **rows, const void *, size_t n,
                                       size_t, float *out, const void **) {
@@ -197,14 +201,19 @@ class RowBatchEntity : public IVFEntity {
       }
       if (n > 1) EXPECT_TRUE(postings_->contains(rows[0], n * stride));
     };
-    query_distance_ = turbo::DistanceImpl(scalar, batch, {}, dimension);
+    entity_->query_distance_ =
+        turbo::DistanceImpl(scalar, batch, {}, dimension);
+  }
+
+  const IVFEntity &index() const {
+    return *entity_;
   }
 
   float row_score(uint32_t row) const {
     return row_scores.empty() ? static_cast<float>(row) : row_scores.at(row);
   }
   void set_normalization(float value) {
-    norm_value_ = value;
+    entity_->norm_value_ = value;
   }
 
   std::vector<float> row_scores;
@@ -214,7 +223,12 @@ class RowBatchEntity : public IVFEntity {
 
  private:
   std::shared_ptr<RowBatchSegment> postings_;
+  // The callbacks capture this fixture, so its address must remain stable.
+  const std::unique_ptr<IVFEntity> entity_{std::make_unique<IVFEntity>()};
 };
+
+namespace {
+using RowBatchEntity = IVFRowBatchTestPeer;
 
 void CheckSearch(RowBatchEntity &entity, bool filtered = false,
                  bool reject_all = false) {
@@ -226,9 +240,10 @@ void CheckSearch(RowBatchEntity &entity, bool filtered = false,
   });
   for (size_t list = 0; list < 2; ++list) {
     uint32_t scanned = 0;
-    const int result =
-        filtered ? entity.search(list, nullptr, filter, &scanned, &heap, &stats)
-                 : entity.search(list, nullptr, &scanned, &heap, &stats);
+    const int result = filtered ? entity.index().search(list, nullptr, filter,
+                                                        &scanned, &heap, &stats)
+                                : entity.index().search(list, nullptr, &scanned,
+                                                        &heap, &stats);
     ASSERT_EQ(result, 0);
     EXPECT_EQ(scanned, list == 0 ? 355u : 37u);
   }
@@ -384,7 +399,7 @@ RowResults TopKResults(const RowBatchEntity &entity, turbo::BatchTopK &topk) {
     const auto row =
         static_cast<uint32_t>(candidate.id - RowBatchEntity::kIdOffset);
     EXPECT_FALSE(RowBatchEntity::Invalid(row));
-    EXPECT_EQ(RowBatchEntity::Key(row), entity.get_key(candidate.id));
+    EXPECT_EQ(RowBatchEntity::Key(row), entity.index().get_key(candidate.id));
     EXPECT_TRUE(results.emplace(candidate.id, candidate.score).second);
   }
   return results;
@@ -394,7 +409,7 @@ RowResults HeapResults(const RowBatchEntity &entity,
                        const IndexDocumentHeap &heap) {
   RowResults results;
   for (const auto &document : heap) {
-    EXPECT_EQ(entity.get_key(document.index()), document.key());
+    EXPECT_EQ(entity.index().get_key(document.index()), document.key());
     EXPECT_TRUE(results.emplace(document.index(), document.score()).second);
   }
   return results;
@@ -429,10 +444,11 @@ TEST(IVFRowBatch, TopKMatchesHeapAcrossLayoutsAndLists) {
         IndexContext::Stats heap_stats, topk_stats;
         for (size_t list : {1u, 0u}) {
           uint32_t heap_scanned = 0, topk_scanned = 0;
-          ASSERT_EQ(0, entity.search(list, nullptr, &heap_scanned, &heap,
-                                     &heap_stats));
-          ASSERT_EQ(0, entity.search_topk(list, nullptr, IndexFilter{},
-                                          &topk_scanned, &topk, &topk_stats));
+          ASSERT_EQ(0, entity.index().search(list, nullptr, &heap_scanned,
+                                             &heap, &heap_stats));
+          ASSERT_EQ(
+              0, entity.index().search_topk(list, nullptr, IndexFilter{},
+                                            &topk_scanned, &topk, &topk_stats));
           EXPECT_EQ(list == 0 ? 355u : 37u, topk_scanned);
           EXPECT_EQ(heap_scanned, topk_scanned);
         }
@@ -466,14 +482,16 @@ TEST(IVFRowBatch, TopKFilteringPreservesTraversalAndStats) {
         });
         IndexDocumentHeap heap(91);
         IndexContext::Stats heap_stats, topk_stats;
-        ASSERT_EQ(0, entity.search(nullptr, filter, &heap, &heap_stats));
+        ASSERT_EQ(0,
+                  entity.index().search(nullptr, filter, &heap, &heap_stats));
         const auto seen = entity.seen;
         const auto batches = entity.batches;
         entity.seen.clear();
         entity.batches.clear();
         turbo::BatchTopK topk;
         topk.reset(91);
-        ASSERT_EQ(0, entity.search_topk(nullptr, filter, &topk, &topk_stats));
+        ASSERT_EQ(
+            0, entity.index().search_topk(nullptr, filter, &topk, &topk_stats));
         const auto expected = ExpectedTopK(entity, 91, 1.0f, filter);
         EXPECT_EQ(expected, HeapResults(entity, heap));
         EXPECT_EQ(expected, TopKResults(entity, topk));
@@ -509,14 +527,16 @@ TEST(IVFRowBatch, TopKThresholdNonFiniteScoresAndReset) {
     for (bool strict : {false, true}) {
       topk.reset(91, 2.0f, strict);
       IndexContext::Stats stats;
-      ASSERT_EQ(0, entity.search_topk(nullptr, IndexFilter{}, &topk, &stats));
+      ASSERT_EQ(
+          0, entity.index().search_topk(nullptr, IndexFilter{}, &topk, &stats));
       const auto expected = ExpectedTopK(entity, 91, norm, {}, 2.0f, strict);
       EXPECT_EQ(strict ? 3u : 5u, expected.size());
       EXPECT_EQ(expected, TopKResults(entity, topk));
     }
     topk.reset(4, 2.0f);
     IndexContext::Stats tie_stats;
-    ASSERT_EQ(0, entity.search_topk(nullptr, IndexFilter{}, &topk, &tie_stats));
+    ASSERT_EQ(0, entity.index().search_topk(nullptr, IndexFilter{}, &topk,
+                                            &tie_stats));
     const auto tied = TopKResults(entity, topk);
     ASSERT_EQ(4u, tied.size());
     for (uint32_t row : {1u, 5u, 6u})
@@ -531,12 +551,14 @@ TEST(IVFRowBatch, TopKThresholdNonFiniteScoresAndReset) {
     // reuse the same collector with a small k after changing the scores.
     topk.reset(RowBatchEntity::kCount, infinity);
     IndexContext::Stats stats;
-    ASSERT_EQ(0, entity.search_topk(nullptr, IndexFilter{}, &topk, &stats));
+    ASSERT_EQ(
+        0, entity.index().search_topk(nullptr, IndexFilter{}, &topk, &stats));
     EXPECT_EQ(ExpectedTopK(entity, RowBatchEntity::kCount, norm),
               TopKResults(entity, topk));
     SetInterleavedScores(entity);
     topk.reset(7);
-    ASSERT_EQ(0, entity.search_topk(nullptr, IndexFilter{}, &topk, &stats));
+    ASSERT_EQ(
+        0, entity.index().search_topk(nullptr, IndexFilter{}, &topk, &stats));
     EXPECT_EQ(ExpectedTopK(entity, 7, norm), TopKResults(entity, topk));
   }
 }

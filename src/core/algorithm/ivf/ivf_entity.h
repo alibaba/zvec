@@ -27,6 +27,8 @@ namespace core {
 /*! IVF Entity
  */
 class IVFEntity {
+  friend class IVFRowBatchTestPeer;
+
  public:
   typedef std::shared_ptr<IVFEntity> Pointer;
 
