@@ -148,17 +148,20 @@ jobs:
           test "$(uname -m)" = "x86_64"
           df -h /
           cd "$GITHUB_WORKSPACE/build"
-          cmake --build . \
-            --target shared_api_test c_api_test \
-              diskann_builder_test diskann_build_memory_test \
-              diskann_cache_test diskann_file_reader_test \
-              diskann_legacy_pq_test diskann_mmap_view_test \
-              diskann_mobile_collection_test diskann_mobile_compat_test \
-              diskann_owned_holder_test diskann_searcher_test \
-            --parallel "$NPROC"
-          ctest --output-on-failure --no-tests=error \
-            -R '^(shared_api_test|c_api_test|diskann_.*_test)$' \
-            --parallel 1
+          test_regex='^(shared_api_test|c_api_test|diskann_.*_test)$'
+          # Build the same targets CTest will run, including tests added on main.
+          test_targets=$(ctest --show-only=json-v1 -R "$test_regex" | python -c '
+          import json
+          import sys
+
+          names = [test["name"] for test in json.load(sys.stdin)["tests"]]
+          if not names:
+              sys.exit("No macOS x64 compatibility tests registered")
+          print(" ".join(names))
+          ')
+          read -r -a targets <<< "$test_targets"
+          cmake --build . --target "${targets[@]}" --parallel "$NPROC"
+          ctest --output-on-failure --no-tests=error -R "$test_regex" --parallel 1
         shell: bash
 
       - name: Run Python Tests
