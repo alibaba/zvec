@@ -116,7 +116,7 @@ void CheckCosineLabels(IndexMeta::DataType type) {
       // Legacy cosine records contain normalized components and a float norm
       // tail, which must not be treated as another component by Turbo.
       IndexMeta meta;
-      meta.set_meta(type, dim + sizeof(float) / sizeof(T));
+      meta.set_meta(type, dim + sizeof(float) / IndexMeta::UnitSizeof(type));
       meta.set_metric("Cosine", 0, Params());
       auto features = std::make_shared<CompactIndexFeatures>(meta);
       IndexCluster::CentroidList centroids;
