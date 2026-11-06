@@ -58,6 +58,9 @@ class IDMap {
 
   Status flush();
 
+  // Merge all runs of adjacent small SSTs; full-size SSTs are left alone
+  Status compact();
+
   Status upsert(const std::string &key, uint64_t doc_id);
 
   void remove(const std::string &key);
@@ -82,8 +85,14 @@ class IDMap {
 
 
  private:
+  friend class IDMapTest;
+
   using FILE = ailego::File;
 
+  Status merge_small_files(size_t min_files, bool size_ratio);
+
+  // Small runs left behind by flush() until this many have piled up
+  static constexpr size_t kFlushCompactMinFiles = 8;
 
   const std::string collection_name_{};
   std::string working_dir_{};

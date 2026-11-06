@@ -984,11 +984,16 @@ Status CollectionImpl::optimize(const OptimizeOptions &options) {
   }
 
   // Phase 2: lock-free optimize. Readers and writers proceed freely.
+  // Merge the small ID-map SSTs that flushes leave below their threshold.
+  // Compact first so a failure leaves no tmp segment dirs behind.
+  auto s = id_map_->compact();
+  CHECK_RETURN_STATUS(s);
+
   auto delete_store_clone = delete_store_->clone();
   auto tasks =
       build_compact_task(schema_, persist_segments, options.concurrency_,
                          delete_store_clone->make_filter());
-  auto s = execute_compact_task(tasks);
+  s = execute_compact_task(tasks);
   CHECK_RETURN_STATUS(s);
 
   // End of phase 2 (still lock-free): move built tmp segments to their
