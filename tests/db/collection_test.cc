@@ -49,6 +49,7 @@
 #include "db/common/file_helper.h"
 #include "db/index/common/type_helper.h"
 #include "db/index/common/version_manager.h"
+#include "db/index/storage/wal/wal_file.h"
 #include "index/utils/utils.h"
 #include "zvec/ailego/utility/float_helper.h"
 #include "zvec/db/doc.h"
@@ -3359,6 +3360,97 @@ TEST_F(CollectionTest, Feature_Optimize_Superseded_Index_File_Removed) {
     ASSERT_NE(doc, nullptr);
     ASSERT_EQ(*doc, expect_doc);
   }
+}
+
+TEST_F(CollectionTest, Feature_Recovery_Wal_Shorter_Than_Header_Skipped) {
+  namespace fs = std::filesystem;
+  int doc_count = 100;
+
+  auto schema = TestHelper::CreateSchemaWithScalarIndex();
+  auto options = CollectionOptions{false, true, 64 * 1024 * 1024};
+  auto ro_options = CollectionOptions{true, true, 64 * 1024 * 1024};
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      col_path, *schema, options, 0, doc_count, false);
+  ASSERT_NE(collection, nullptr);
+  // Closing flushes the writing block; its successor gets a WAL file only
+  // on the first write.
+  collection.reset();
+
+  // The WAL path of the writing block in the published manifest. Each close
+  // flushes the writing block and starts a new one.
+  auto writing_wal_path = []() {
+    auto version_manager = VersionManager::Recovery(col_path);
+    EXPECT_TRUE(version_manager.has_value());
+    if (!version_manager.has_value()) return std::string();
+    auto version = version_manager.value()->get_current_version();
+    auto writing_segment = version.writing_segment_meta();
+    return FileHelper::MakeWalPath(
+        col_path, writing_segment->id(),
+        writing_segment->writing_forward_block()->id());
+  };
+
+  auto doc_count_of = [](const Collection::Ptr &c) {
+    auto stats = c->stats();
+    return stats.has_value() ? stats.value().doc_count : ~0ull;
+  };
+
+  // A crash between creating the WAL file and writing its 64-byte header
+  // leaves an empty file or a partial header.
+  for (size_t size : {size_t{0}, size_t{10}}) {
+    const auto wal_path = writing_wal_path();
+    ASSERT_FALSE(wal_path.empty());
+    ASSERT_FALSE(fs::exists(wal_path));
+    {
+      std::ofstream wal(wal_path, std::ios::binary | std::ios::trunc);
+      wal << std::string(size, '\0');
+    }
+    ASSERT_EQ(fs::file_size(wal_path), size);
+
+    // A read-only open skips the file and modifies nothing.
+    {
+      auto result = Collection::Open(col_path, ro_options);
+      ASSERT_TRUE(result.has_value()) << result.error().message();
+      ASSERT_EQ(doc_count_of(result.value()), (uint64_t)doc_count);
+    }
+    ASSERT_TRUE(fs::exists(wal_path));
+
+    // A writable open removes it.
+    auto result = Collection::Open(col_path, options);
+    ASSERT_TRUE(result.has_value()) << result.error().message();
+    collection = std::move(result.value());
+    ASSERT_FALSE(fs::exists(wal_path));
+    ASSERT_EQ(doc_count_of(collection), (uint64_t)doc_count);
+
+    // The next write creates the WAL again with a complete header, and its
+    // record is the first one after the header.
+    ASSERT_TRUE(
+        TestHelper::CollectionInsertDoc(collection, doc_count, doc_count + 1)
+            .ok());
+    {
+      WalFilePtr wal;
+      ASSERT_EQ(WalFile::CreateAndOpen(wal_path, WalOptions{0, false}, &wal),
+                0);
+      ASSERT_EQ(wal->prepare_for_read(), 0);
+      auto record = wal->next();
+      auto doc = Doc::deserialize(
+          reinterpret_cast<const uint8_t *>(record.data()), record.size());
+      ASSERT_NE(doc, nullptr);
+      ASSERT_EQ(doc->pk(), TestHelper::MakePK(doc_count));
+      ASSERT_TRUE(wal->next().empty());
+      wal->close();
+    }
+    collection.reset();
+    ++doc_count;
+  }
+
+  // A complete but damaged header still fails the open.
+  const auto wal_path = writing_wal_path();
+  {
+    std::ofstream wal(wal_path, std::ios::binary | std::ios::trunc);
+    wal << std::string(64, '\xff');
+  }
+  ASSERT_FALSE(Collection::Open(col_path, options).has_value());
+  ASSERT_TRUE(fs::exists(wal_path));
 }
 
 TEST_F(CollectionTest, Feature_Recovery_Orphan_Segment_Dirs_Removed) {
