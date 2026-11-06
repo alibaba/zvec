@@ -401,6 +401,31 @@ struct InterleavedDistanceMatrix {
       std::fill_n(out, Rows * columns, 0.0f);
       return;
     }
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || \
+    defined(_M_IX86)
+    if constexpr (std::is_same_v<T, ailego::Float16>) {
+      // Scalar Float16 conversion uses a software lookup on x86. Convert the
+      // interleaved buffers in bounded stack tiles with the SIMD converter,
+      // then reuse the FP32 kernel without a transpose or heap allocation.
+      constexpr size_t tile = 64;
+      float matrix[Rows * tile], query[Columns * tile];
+      float partial[Rows * Columns];
+      for (size_t d = 0; d < dim; d += tile) {
+        const size_t count = std::min(tile, dim - d);
+        ailego::FloatHelper::ToFP32(
+            reinterpret_cast<const uint16_t *>(m + d * Rows), Rows * count,
+            matrix);
+        ailego::FloatHelper::ToFP32(
+            reinterpret_cast<const uint16_t *>(q + d * Columns),
+            Columns * count, query);
+        InterleavedDistanceMatrix<float, Rows, Metric>::template Compute<
+            Columns>(matrix, query, count, d == 0 ? out : partial);
+        if (d != 0)
+          for (size_t i = 0; i < Rows * Columns; ++i) out[i] += partial[i];
+      }
+      return;
+    }
+#endif
     if constexpr (std::is_same_v<T, uint8_t> && Columns > 1) {
       // Reuse each packed matrix word across queries. Partial
       // words retain the bounds-safe single-column implementation below.

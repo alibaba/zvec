@@ -63,6 +63,8 @@ def main():
                         help='Absolute directory containing parent/, before/, fixed/ worktrees')
     parser.add_argument('--jobs', type=int, default=8)
     parser.add_argument('--cpu', type=int, help='Allowed logical CPU for serial benchmarks')
+    parser.add_argument('--deps', type=pathlib.Path,
+                        help='Checkout with initialized submodules (default: fixed/)')
     args = parser.parse_args()
     if platform.system() != 'Linux' or platform.machine().lower() not in ('x86_64', 'amd64'):
         parser.error('Run on Linux x86_64; this script does not cross-compile.')
@@ -70,6 +72,7 @@ def main():
     results = root / 'results'
     results.mkdir(parents=True, exist_ok=True)
     trees = {name: root / name for name in REVISIONS}
+    deps = args.deps.resolve() if args.deps else trees['fixed']
     builds = {name: root / ('build-' + name) for name in REVISIONS}
     runtime = root / 'runtime'
     runtime.mkdir(exist_ok=True)
@@ -93,6 +96,7 @@ def main():
                 'opt_kmeans_cluster_test', 'ivf_legacy_matrix_test', 'ivf_searcher_test']
     assert len(targets) == 44, targets
     metadata = {'versions': versions, 'uname': list(platform.uname()),
+                'dependency_checkout': str(deps),
                 'bundle_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                                   for p in BUNDLE.iterdir() if p.is_file()},
                 'scope': 'Focused metric/Turbo/Flat/clustering/legacy IVF; not full repository.',
@@ -108,7 +112,7 @@ def main():
                      '-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF', '-DENABLE_OPENMP=OFF',
                      '-DAUTO_DETECT_ARCH=ON', '-DENABLE_NATIVE=OFF',
                      '-DPROJECT_ROOT_DIR=' + str(tree),
-                     '-DVALIDATION_DEPS=' + str(trees['fixed']),
+                     '-DVALIDATION_DEPS=' + str(deps),
                      '-DVALIDATION_LEGACY=' + ('ON' if name == 'parent' else 'OFF'),
                      '-DVALIDATION_FIXED=' + ('ON' if name == 'fixed' else 'OFF')],
                     root, results / (name + '_configure.log'))

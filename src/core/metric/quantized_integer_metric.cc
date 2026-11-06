@@ -117,6 +117,13 @@ class QuantizedIntegerMetric : public IndexMetric {
     // For multiple INT4 queries, transpose once and reuse the contiguous
     // SIMD pair kernel. Its throughput outweighs the transpose overhead.
     if (meta_.data_type() == IndexMeta::DT_INT4 && n > 1) return fallback;
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    // On x86 the contiguous SIMD kernels also win for single-query INT4
+    // records and multi-query INT8 records, including the transpose cost.
+    if (meta_.data_type() == IndexMeta::DT_INT4 ||
+        (meta_.data_type() == IndexMeta::DT_INT8 && n > 1))
+      return fallback;
+#endif
     auto dot = turbo::MakeRawDistanceMatrix<turbo::MetricType::kInnerProduct>(
         m, n, type);
     const bool int4 = meta_.data_type() == IndexMeta::DT_INT4;
