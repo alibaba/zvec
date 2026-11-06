@@ -146,7 +146,7 @@ void CheckSingleColumnTails() {
                                  : dim;
     // Poison padded dimensions, and give the query exactly its logical size.
     // ASan can then detect a full-word read past a partial final query word.
-    std::vector<T> matrix(Rows * stride, T(7));
+    std::vector<T> matrix(Rows * stride, T(7.0f));
     const size_t query_size = int4 ? (dim + 1) / 2 : dim;
     auto query = std::make_unique<T[]>(query_size);
     std::vector<double> expected(Rows, 0);

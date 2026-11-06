@@ -78,9 +78,14 @@ def main():
         revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=tree, text=True).strip()
         if not revision.startswith(REVISIONS[name]):
             raise RuntimeError(f'{name}: expected {REVISIONS[name]}, got {revision}')
-        subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--'], cwd=tree,
-                       stdout=subprocess.DEVNULL, check=True)
-        versions[name] = revision
+        diff = subprocess.check_output(['git', 'diff', 'HEAD', '--'], cwd=tree, text=True)
+        patch = results / (name + '_worktree.patch')
+        if diff:
+            patch.write_text(diff)
+            print(f'WARNING: {name} worktree has local changes; recorded in {patch}', flush=True)
+        elif patch.exists():
+            patch.unlink()
+        versions[name] = {'revision': revision, 'worktree_patch': patch.name if diff else None}
     targets = [p.stem for directory in ['tests/core/metric', 'tests/turbo']
                for p in sorted((trees['fixed'] / directory).glob('*_test.cc'))]
     targets += ['legacy_quantized_index_test', 'flat_quantizer_distance_test',

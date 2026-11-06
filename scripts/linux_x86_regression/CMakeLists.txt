@@ -14,6 +14,12 @@ set(ZVEC_VERSION_STRING "0.2.0")
 set(PROXIMA_ZVEC_VERSION "0.2.0")
 # Match the previous focused regression scope, not the full product build.
 add_definitions(-DRABITQ_SUPPORTED=0 -DDISKANN_SUPPORTED=0)
+# Match the repository root CMakeLists: Ubuntu GCC defaults to --as-needed,
+# which drops factory-registering shared libraries from DT_NEEDED.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,--no-as-needed")
+  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--no-as-needed")
+endif()
 include_directories(${PROJECT_ROOT_DIR}/src ${PROJECT_ROOT_DIR}/src/include
                     ${PROJECT_ROOT_DIR}/src/core ${PROJECT_ROOT_DIR})
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
