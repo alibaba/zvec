@@ -24,6 +24,7 @@ import pytest
 from zvec.executor.query_executor import (
     QueryContext,
     QueryExecutor,
+    convert_to_numpy,
 )
 from zvec import (
     RrfReRanker,
@@ -368,3 +369,86 @@ class TestQueryExecutor:
 
         assert query.fts.match_string == "\u00a0vector search  "
         assert query.fts.query_string == ""
+
+
+DENSE_TYPES = [
+    (DataType.VECTOR_FP16, np.float16),
+    (DataType.VECTOR_FP32, np.float32),
+    (DataType.VECTOR_FP64, np.float64),
+    (DataType.VECTOR_INT8, np.int8),
+]
+
+
+@pytest.mark.parametrize("data_type,dtype", DENSE_TYPES)
+def test_same_dtype_positive_stride_normalized(data_type, dtype):
+    base = np.array([1, 99, 3, 99, 5, 99], dtype=dtype)
+    view = base[::2]
+    assert not view.flags.c_contiguous
+    result = convert_to_numpy(view, dtype)
+    np.testing.assert_array_equal(result, [1, 3, 5])
+    assert result.dtype == dtype
+    assert result.flags.c_contiguous
+    assert not np.shares_memory(result, base)
+
+
+@pytest.mark.parametrize("data_type,dtype", DENSE_TYPES)
+def test_same_dtype_contiguous_keeps_identity(data_type, dtype):
+    vector = np.array([1, 3, 5], dtype=dtype)
+    assert convert_to_numpy(vector, dtype) is vector
+
+
+@pytest.mark.parametrize("data_type,dtype", DENSE_TYPES)
+def test_executor_positive_stride_reaches_native_as_logical_values(data_type, dtype):
+    vector_schema = VectorSchema("vector", data_type, dimension=3)
+    schema = CollectionSchema(name="stride_query", vectors=[vector_schema])
+    native_query = _SearchQuery()
+    base = np.array([1, 99, 3, 99, 5, 99], dtype=dtype)
+    view = base[::2]
+    # Explicit-vector path never dereferences collection; None is not a mock.
+    QueryExecutor(schema).set_query_vector(
+        Query("vector", vector=view), native_query, None
+    )
+    actual = native_query.get_vector(vector_schema._get_object())
+    np.testing.assert_array_equal(actual, [1, 3, 5])
+
+
+def test_list_input_still_converts_to_fp32():
+    result = convert_to_numpy([1, 3, 5], np.float32)
+    assert result.dtype == np.float32
+    assert result.ndim == 1
+    assert result.flags.c_contiguous
+    np.testing.assert_array_equal(result, [1, 3, 5])
+
+
+def test_different_dtype_still_converts_to_fp32():
+    vector = np.array([1, 3, 5], dtype=np.float64)
+    result = convert_to_numpy(vector, np.float32)
+    assert result.dtype == np.float32
+    assert result.ndim == 1
+    assert result.flags.c_contiguous
+    np.testing.assert_array_equal(result, [1, 3, 5])
+    np.testing.assert_array_equal(vector, [1, 3, 5])
+    assert vector.dtype == np.float64
+
+
+def test_two_dimensional_input_still_flattens():
+    vector = np.array([[1, 3], [5, 7]], dtype=np.float32)
+    result = convert_to_numpy(vector, np.float32)
+    assert result.dtype == np.float32
+    assert result.shape == (4,)
+    assert result.flags.c_contiguous
+    np.testing.assert_array_equal(result, [1, 3, 5, 7])
+    assert vector.shape == (2, 2)
+
+
+def test_executor_sparse_dictionary_still_reaches_native():
+    vector_schema = VectorSchema("vector", DataType.SPARSE_VECTOR_FP32)
+    schema = CollectionSchema(name="sparse_query", vectors=[vector_schema])
+    native_query = _SearchQuery()
+    vector = {1: 1.0, 3: 3.0, 5: 5.0}
+    # Explicit-vector route needs no Collection and must bypass dense conversion.
+    QueryExecutor(schema).set_query_vector(
+        Query("vector", vector=vector), native_query, None
+    )
+    actual = native_query.get_vector(vector_schema._get_object())
+    assert actual == vector
