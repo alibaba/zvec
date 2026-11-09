@@ -22,6 +22,10 @@
 #include <zvec/ailego/utility/type_helper.h>
 #include <zvec/turbo/turbo.h>
 
+#if defined(AILEGO_ARM64_GNU_LIKE)
+#include "neon/fp16/inner_product.h"
+#endif
+
 namespace zvec::turbo {
 
 template <typename T>
@@ -141,12 +145,6 @@ struct InterleavedDistanceMatrix {
   }
 
   template <size_t Columns>
-#if defined(__GNUC__) && !defined(__clang__) && \
-    (defined(__x86_64__) || defined(__i386__))
-  // Keep the packed hot loops independent of the surrounding FP16 template
-  // layout. A function alignment alone is lost if this kernel is inlined.
-  __attribute__((noinline, aligned(64), optimize("align-loops=64")))
-#endif
   static void ComputePackedColumns(const T *m, const T *q, size_t dim,
                                    float *out) {
     const auto &table = PackedDistances();
@@ -154,21 +152,67 @@ struct InterleavedDistanceMatrix {
     // Keep accumulators disjoint from byte inputs so alias checks do not
     // prevent reuse of each packed word across the query tile.
     float sums[Rows * Columns]{};
-    while (q != q_end) {
-      for (size_t i = 0; i < Rows; ++i) {
-        uint32_t word;
-        std::memcpy(&word, m + i * 4, 4);
+    if constexpr (Rows <= 4
+#if defined(__aarch64__) || defined(_M_ARM64)
+                  // Large query tiles spill their expanded nibbles to the
+                  // stack on ARM64; extracting packed words is faster.
+                  || Columns >= 16
+#endif
+    ) {
+      // Small blocks are fully unrolled; the expanded form below would spill
+      // its byte tile into stack slots and lose to the direct extraction.
+      while (q != q_end) {
+        for (size_t i = 0; i < Rows; ++i) {
+          uint32_t word;
+          std::memcpy(&word, m + i * 4, 4);
+          for (size_t j = 0; j < Columns; ++j) {
+            uint32_t query;
+            std::memcpy(&query, q + j * 4, 4);
+            int sum = 0;
+            for (size_t shift = 0; shift < 32; shift += 4)
+              sum +=
+                  table[((word >> shift) & 15) * 16 + ((query >> shift) & 15)];
+            sums[j * Rows + i] += float(sum);
+          }
+        }
+        m += Rows * 4;
+        q += Columns * 4;
+      }
+    } else {
+      while (q != q_end) {
+        // Expand the query tile once per word position and each matrix word
+        // once per row, so every pair of nibbles costs a byte load and a
+        // table load instead of re-extracting both nibbles from the packed
+        // words. Even nibbles land in bytes 0-3 and odd nibbles in bytes 4-7;
+        // the row pointers use the same order (words are little-endian, as
+        // in Value()).
+        uint8_t query_nibbles[Columns * 8];
         for (size_t j = 0; j < Columns; ++j) {
           uint32_t query;
           std::memcpy(&query, q + j * 4, 4);
-          int sum = 0;
-          for (size_t shift = 0; shift < 32; shift += 4)
-            sum += table[((word >> shift) & 15) * 16 + ((query >> shift) & 15)];
-          sums[j * Rows + i] += float(sum);
+          const uint32_t even = query & 0x0F0F0F0Fu;
+          const uint32_t odd = (query >> 4) & 0x0F0F0F0Fu;
+          std::memcpy(query_nibbles + j * 8, &even, 4);
+          std::memcpy(query_nibbles + j * 8 + 4, &odd, 4);
         }
+        for (size_t i = 0; i < Rows; ++i) {
+          uint32_t word;
+          std::memcpy(&word, m + i * 4, 4);
+          decltype(table.data()) rows[8];
+          for (size_t k = 0; k < 4; ++k) {
+            rows[k] = table.data() + ((word >> (8 * k)) & 15) * 16;
+            rows[k + 4] = table.data() + ((word >> (8 * k + 4)) & 15) * 16;
+          }
+          for (size_t j = 0; j < Columns; ++j) {
+            const uint8_t *nibbles = query_nibbles + j * 8;
+            int sum = 0;
+            for (size_t s = 0; s < 8; ++s) sum += rows[s][nibbles[s]];
+            sums[j * Rows + i] += float(sum);
+          }
+        }
+        m += Rows * 4;
+        q += Columns * 4;
       }
-      m += Rows * 4;
-      q += Columns * 4;
     }
     std::copy_n(sums, Rows * Columns, out);
   }
@@ -177,10 +221,6 @@ struct InterleavedDistanceMatrix {
   // strided query also serves one column of a many-to-many matrix. Keep
   // integer products in word-sized groups before converting to FP32.
   template <bool WithNorms = false>
-#if defined(__GNUC__) && !defined(__clang__) && \
-    (defined(__x86_64__) || defined(__i386__))
-  __attribute__((noinline, aligned(64), optimize("align-loops=64")))
-#endif
   static void ComputeSingleColumn(const T *m, const T *q, size_t dim,
                                   float *out, size_t query_stride = 1,
                                   float *row_norms = nullptr,
@@ -256,15 +296,19 @@ struct InterleavedDistanceMatrix {
         for (; d + 8 <= dim; d += 8) {
           uint32_t query;
           std::memcpy(&query, q + d / 2 * query_stride, sizeof(query));
+          // The pair table is symmetric, so index it by the query nibble
+          // first and resolve those eight rows once per word position.
+          decltype(distance_table.data()) query_rows[8];
+          for (size_t s = 0; s < 8; ++s)
+            query_rows[s] =
+                distance_table.data() + ((query >> (4 * s)) & 15) * 16;
           const auto *block = m + d / 2 * Rows;
           for (size_t i = 0; i < Rows; ++i) {
             uint32_t word;
             std::memcpy(&word, block + i * 4, sizeof(word));
             int sum = 0;
-            for (size_t shift = 0; shift < 32; shift += 4) {
-              sum += distance_table[((word >> shift) & 15) * 16 +
-                                    ((query >> shift) & 15)];
-            }
+            for (size_t s = 0; s < 8; ++s)
+              sum += query_rows[s][(word >> (4 * s)) & 15];
             out[i] += float(sum);
           }
         }
@@ -586,6 +630,15 @@ struct DistanceMatrix {
     static_assert(
         M > 0 && M <= 32 && N > 0 && N <= M && !(M & (M - 1)) && !(N & (N - 1)),
         "Unsupported matrix shape");
+#if defined(AILEGO_ARM64_GNU_LIKE)
+    if constexpr (M == 1 && std::is_same_v<T, ailego::Float16> &&
+                  Metric == MetricType::kInnerProduct) {
+      // ARM64 uses this raw kernel without optional ISA features. Avoid the
+      // std::function dispatch overhead for a single FP16 vector pair.
+      neon::inner_product_fp16_distance(m, q, dim, out);
+      return;
+    }
+#endif
     if constexpr (M == 1) {
       static const auto distance =
           get_distance_func(Metric, MatrixDataType<T>(), QuantizeType::kRaw);
