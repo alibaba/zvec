@@ -1,3 +1,27 @@
+Current final handoff (2026-11-09)
+=================================
+Production commit 008fbdc36737e0b4b70ee2e29a3ff12889f8061a now includes the
+Linux final INT4 kernels and both macOS ARM64 corrections (large query tiles
+and FP16 1x1 IP direct calls). Start with ../FINAL_X86_AGENT_START_HERE_zh.txt.
+Reports and the historical/final status map: ../reports/README_zh.md.
+
+New checked-in evidence archives (each has a .sha256 sidecar):
+  macos-residual-final-evidence-20261109.tar.gz
+  macos-arm64-guard-evidence-20261109.tar.gz
+  macos-fp16-pair-evidence-20261109.tar.gz
+Each contains raw measurements, correctness XML/logs, 200 parent fixtures,
+disassembly, build information and EVIDENCE_SHA256SUMS. The final package also
+contains the dispatch probe and unchanged x86 cross-compiled objects.
+
+The original packages and sections below are historical snapshots. Statements
+such as "NOT applied" or "pending macOS" refer to their preparation time.
+Do not apply their candidate patches on top of the current branch. New server
+baseline patches are under ../final_revalidation/ and target detached 955 trees.
+Linux server revalidation of the newly committed final tree remains pending.
+
+Historical handoffs
+===================
+
 x86 follow-up handoff, prepared 2026-11-06
 
 x86-followup-handoff.tar.gz contains the candidate patch against 955ae841,

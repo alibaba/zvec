@@ -1,3 +1,7 @@
+CURRENT ENTRY: FINAL_X86_AGENT_START_HERE_zh.txt (production 008fbdc3).
+This file is a historical execution record; its pinned revisions/status are not the current task.
+See reports/README_zh.md for the complete chronology.
+
 zvec 旧矩阵距离路径 Linux x86 正确性与性能验证任务说明
 
 请在 Linux x86_64 实机上执行以下验证，并交付实测结论与原始结果。
