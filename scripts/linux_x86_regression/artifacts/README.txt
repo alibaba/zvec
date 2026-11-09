@@ -20,3 +20,13 @@ to the branch checkout which already contains the candidate changes.
 Validation status: macOS correctness passed; x86 execution is pending.
 One macOS INT16 IP microbenchmark still needs investigation. See
 MACOS_STATUS.txt for scope and results; this is not a two-platform pass.
+
+Residual follow-up, prepared 2026-11-09
+------------------------------------
+residual-performance-handoff.tar.gz contains the next incremental candidate,
+baseline patches, toolkit and macOS evidence. Start with
+../RESIDUAL_START_HERE_zh.txt, then follow the detailed instructions in the
+extracted package. Verify residual-performance-handoff.tar.gz.sha256 first.
+This archive was frozen before its commit; its preparation-time status text
+does not mean that the checked-in candidate still needs to be committed.
+Linux GCC/x86 validation remains pending.

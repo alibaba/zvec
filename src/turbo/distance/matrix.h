@@ -141,6 +141,12 @@ struct InterleavedDistanceMatrix {
   }
 
   template <size_t Columns>
+#if defined(__GNUC__) && !defined(__clang__) && \
+    (defined(__x86_64__) || defined(__i386__))
+  // Keep the packed hot loops independent of the surrounding FP16 template
+  // layout. A function alignment alone is lost if this kernel is inlined.
+  __attribute__((noinline, aligned(64), optimize("align-loops=64")))
+#endif
   static void ComputePackedColumns(const T *m, const T *q, size_t dim,
                                    float *out) {
     const auto &table = PackedDistances();
@@ -171,6 +177,10 @@ struct InterleavedDistanceMatrix {
   // strided query also serves one column of a many-to-many matrix. Keep
   // integer products in word-sized groups before converting to FP32.
   template <bool WithNorms = false>
+#if defined(__GNUC__) && !defined(__clang__) && \
+    (defined(__x86_64__) || defined(__i386__))
+  __attribute__((noinline, aligned(64), optimize("align-loops=64")))
+#endif
   static void ComputeSingleColumn(const T *m, const T *q, size_t dim,
                                   float *out, size_t query_stride = 1,
                                   float *row_norms = nullptr,

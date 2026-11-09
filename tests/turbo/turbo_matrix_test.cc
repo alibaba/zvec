@@ -368,6 +368,10 @@ TEST(TurboMatrix, RecordAndMipsFastMatricesDoNotAllocate) {
           // SIMD adapter, which owns a matrix buffer and a query buffer.
           if (record && (type == IndexMeta::DT_INT4 || columns > 1))
             expected_allocations = 2;
+          if (record && type == IndexMeta::DT_INT4 && columns == 1 &&
+              (!std::strcmp(name, "SquaredEuclidean") ||
+               !std::strcmp(name, "InnerProduct")))
+            expected_allocations = 1;  // Batch path only materializes records.
 #endif
           EXPECT_EQ(expected_allocations, allocation_count)
               << name << " columns=" << columns;

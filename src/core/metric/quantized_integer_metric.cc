@@ -13,6 +13,7 @@
 // limitations under the License.
 #include <array>
 #include <cstring>
+#include <vector>
 #include <turbo/norm/norm2_matrix.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
@@ -118,6 +119,34 @@ class QuantizedIntegerMetric : public IndexMetric {
     // SIMD pair kernel. Its throughput outweighs the transpose overhead.
     if (meta_.data_type() == IndexMeta::DT_INT4 && n > 1) return fallback;
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    if (meta_.data_type() == IndexMeta::DT_INT4 && n == 1 &&
+        (origin_metric_type_ == MetricType::kSquaredEuclidean ||
+         origin_metric_type_ == MetricType::kInnerProduct)) {
+      auto batch = record_kernels().batch;
+      if (batch) {
+        // Reuse the query and its metadata across the block. The batch kernel
+        // preserves stored record moments, and needs one indirect call rather
+        // than m pair calls. A single query already has contiguous layout.
+        return [batch, fallback, m](const void *rows, const void *query,
+                                    size_t dim, float *out) {
+          if (dim <= 32 || dim % 8 != 0) {
+            fallback(rows, query, dim, out);
+            return;
+          }
+          const size_t words = dim / 8;
+          std::vector<uint32_t> matrix(words * m);
+          const void *vectors[32];
+          for (size_t i = 0; i < m; ++i) {
+            vectors[i] = matrix.data() + i * words;
+            for (size_t d = 0; d < words; ++d)
+              std::memcpy(matrix.data() + i * words + d,
+                          static_cast<const char *>(rows) + (d * m + i) * 4,
+                          4);
+          }
+          batch(vectors, query, m, dim, out, nullptr);
+        };
+      }
+    }
     // On x86 the contiguous SIMD kernels also win for single-query INT4
     // records and multi-query INT8 records, including the transpose cost.
     if (meta_.data_type() == IndexMeta::DT_INT4 ||
