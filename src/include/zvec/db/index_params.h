@@ -116,8 +116,8 @@ class ZVEC_API InvertIndexParams : public IndexParams {
   }
 
  private:
-  bool enable_range_optimization_{false};
-  bool enable_extended_wildcard_{false};
+  bool enable_range_optimization_;
+  bool enable_extended_wildcard_;
 };
 
 /*
@@ -128,9 +128,12 @@ class ZVEC_API InvertIndexParams : public IndexParams {
 class QuantizerParam {
  public:
   QuantizerParam() = default;
-  explicit QuantizerParam(bool enable_rotate, int num_chunk = 8,
-                          int num_bits = 8, bool fast_scan = false,
-                          uint32_t opq_iter = 5, uint32_t opq_pq_iter = 4)
+  explicit QuantizerParam(
+      bool enable_rotate, int num_chunk = core_interface::kDefaultPqNumChunks,
+      int num_bits = core_interface::kDefaultPqNumBits,
+      bool fast_scan = core_interface::kDefaultPqFastScan,
+      uint32_t opq_iter = core_interface::kDefaultOpqNumIterations,
+      uint32_t opq_pq_iter = core_interface::kDefaultOpqPqNumIterations)
       : enable_rotate_(enable_rotate),
         num_chunk_(num_chunk),
         num_bits_(num_bits),
@@ -194,12 +197,12 @@ class QuantizerParam {
 
  private:
   // Random rotation for scalar quantizers; learned OPQ for PQ.
-  bool enable_rotate_{false};
-  int num_chunk_{8};
-  int num_bits_{8};
-  bool fast_scan_{false};
-  uint32_t opq_iter_{5};
-  uint32_t opq_pq_iter_{4};
+  bool enable_rotate_{core_interface::kDefaultQuantizerEnableRotate};
+  int num_chunk_{core_interface::kDefaultPqNumChunks};
+  int num_bits_{core_interface::kDefaultPqNumBits};
+  bool fast_scan_{core_interface::kDefaultPqFastScan};
+  uint32_t opq_iter_{core_interface::kDefaultOpqNumIterations};
+  uint32_t opq_pq_iter_{core_interface::kDefaultOpqPqNumIterations};
 };
 
 /*
@@ -272,7 +275,7 @@ class ZVEC_API VectorIndexParams : public IndexParams {
 class ZVEC_API HnswIndexParams : public VectorIndexParams {
  public:
   HnswIndexParams(
-      MetricType metric_type, int m = core_interface::kDefaultHnswNeighborCnt,
+      MetricType metric_type, int m = core_interface::kDefaultHnswNeighborCount,
       int ef_construction = core_interface::kDefaultHnswEfConstruction,
       QuantizeType quantize_type = QuantizeType::UNDEFINED,
       bool use_contiguous_memory = false, QuantizerParam quantizer_param = {},
@@ -385,10 +388,10 @@ class ZVEC_API HnswRabitqIndexParams : public VectorIndexParams {
   HnswRabitqIndexParams(
       MetricType metric_type,
       int total_bits = core_interface::kDefaultRabitqTotalBits,
-      int num_clusters = core_interface::kDefaultRabitqNumClusters,
-      int m = core_interface::kDefaultHnswNeighborCnt,
+      int num_clusters = core_interface::kDefaultHnswRabitqNumClusters,
+      int m = core_interface::kDefaultHnswNeighborCount,
       int ef_construction = core_interface::kDefaultHnswEfConstruction,
-      int sample_count = 0)
+      int sample_count = core_interface::kDefaultRabitqSampleCount)
       : VectorIndexParams(IndexType::HNSW_RABITQ, metric_type,
                           QuantizeType::RABITQ),
         total_bits_(total_bits),
@@ -494,10 +497,11 @@ class ZVEC_API HnswRabitqIndexParams : public VectorIndexParams {
 
 class ZVEC_API IvfRabitqIndexParams : public VectorIndexParams {
  public:
-  IvfRabitqIndexParams(MetricType metric_type,
-                       int nlist = core_interface::kDefaultIvfRabitqNlist,
-                       int total_bits = core_interface::kDefaultRabitqTotalBits,
-                       int sample_count = 0)
+  IvfRabitqIndexParams(
+      MetricType metric_type,
+      int nlist = core_interface::kDefaultIvfRabitqNumLists,
+      int total_bits = core_interface::kDefaultRabitqTotalBits,
+      int sample_count = core_interface::kDefaultRabitqSampleCount)
       : VectorIndexParams(IndexType::IVF_RABITQ, metric_type,
                           QuantizeType::RABITQ),
         nlist_(nlist),
@@ -635,8 +639,10 @@ inline FlatIndexParams MakeDefaultQuantVectorIndexParams(
 
 class ZVEC_API IVFIndexParams : public VectorIndexParams {
  public:
-  IVFIndexParams(MetricType metric_type, int n_list = 1024, int n_iters = 10,
-                 bool use_soar = false,
+  IVFIndexParams(MetricType metric_type,
+                 int n_list = core_interface::kDefaultIvfNumLists,
+                 int n_iters = core_interface::kDefaultIvfNumIterations,
+                 bool use_soar = core_interface::kDefaultIvfUseSoar,
                  QuantizeType quantize_type = QuantizeType::UNDEFINED,
                  QuantizerParam quantizer_param = {})
       : VectorIndexParams(IndexType::IVF, metric_type, quantize_type,
@@ -709,10 +715,13 @@ class ZVEC_API IVFIndexParams : public VectorIndexParams {
 
 class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {
  public:
-  DiskAnnIndexParams(MetricType metric_type, int max_degree = 100,
-                     int list_size = 50, int pq_chunk_num = 0,
-                     QuantizeType quantize_type = QuantizeType::UNDEFINED,
-                     QuantizerParam quantizer_param = {})
+  DiskAnnIndexParams(
+      MetricType metric_type,
+      int max_degree = core_interface::kDefaultDiskAnnMaxDegree,
+      int list_size = core_interface::kDefaultDiskAnnBuildListSize,
+      int pq_chunk_num = core_interface::kDefaultDiskAnnPqNumChunks,
+      QuantizeType quantize_type = QuantizeType::UNDEFINED,
+      QuantizerParam quantizer_param = {})
       : VectorIndexParams(IndexType::DISKANN, metric_type, quantize_type,
                           quantizer_param),
         max_degree_{max_degree},
@@ -793,12 +802,13 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
   VamanaIndexParams(
       MetricType metric_type,
       int max_degree = core_interface::kDefaultVamanaMaxDegree,
-      int search_list_size = core_interface::kDefaultVamanaSearchListSize,
+      int search_list_size = core_interface::kDefaultVamanaBuildListSize,
       float alpha = core_interface::kDefaultVamanaAlpha,
       bool saturate_graph = core_interface::kDefaultVamanaSaturateGraph,
       bool use_contiguous_memory = false, bool use_id_map = false,
       QuantizeType quantize_type = QuantizeType::UNDEFINED,
-      QuantizerParam quantizer_param = {}, bool two_pass_build = true,
+      QuantizerParam quantizer_param = {},
+      bool two_pass_build = core_interface::kDefaultVamanaTwoPassBuild,
       bool use_flat_contiguous_memory = false,
       DataType flat_data_type = DataType::VECTOR_FP32)
       : VectorIndexParams(IndexType::VAMANA, metric_type, quantize_type,

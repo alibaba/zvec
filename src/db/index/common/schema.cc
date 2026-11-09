@@ -20,7 +20,9 @@
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
 #include "ailego/internal/cpu_features.h"
+#if !RABITQ_SUPPORTED
 #include "core/algorithm/hnsw_rabitq/rabitq_params.h"
+#endif
 #include "db/common/constants.h"
 #include "db/common/typedef.h"
 #include "db/common/utils.h"
@@ -216,19 +218,6 @@ Status FieldSchema::validate() const {
       }
 
       if (index_params_->type() == IndexType::DISKANN) {
-        // DiskAnn also uses the portable synchronous pread backend on 64-bit
-        // Android and iOS.
-        // The CMake variable
-        // DISKANN_SUPPORTED (defined in the top-level CMakeLists.txt) is the
-        // single source of truth for platform eligibility — it is also used by
-        // index_factory.cc to conditionally compile the DiskAnn index
-        // registration.  Using the same macro here ensures that schema
-        // validation and index registration agree on supported platforms.
-        //
-        // On Linux, DiskAnn prefers io_uring, then libaio, and falls back to
-        // synchronous pread() if neither async backend is available. On macOS,
-        // Android and iOS, DiskAnn uses synchronous pread(); Windows uses
-        // overlapped I/O.
 #if !DISKANN_SUPPORTED
         return Status::NotSupported(
             "DiskAnn is not supported on this platform. It is available on "
@@ -752,7 +741,6 @@ void CollectionSchema::set_max_doc_count_per_segment(
 
 Status CollectionSchema::add_index(const std::string &column,
                                    const IndexParams::Ptr &index_params) {
-  // Get field and set index params
   auto field = get_field(column);
   if (field) {
     field->set_index_params(index_params);
@@ -765,7 +753,6 @@ Status CollectionSchema::add_index(const std::string &column,
 }
 
 Status CollectionSchema::drop_index(const std::string &column) {
-  // Get field and clear index params
   auto field = get_field(column);
   if (field) {
     if (field->is_vector_field()) {

@@ -230,6 +230,7 @@ class DiskAnnQueryParam(QueryParam):
         type (IndexType): Always ``IndexType.DISKANN``.
         list_size (int): Beam-search candidate list size used at query time.
             Higher values improve recall but increase latency. Default is 300.
+        scale_factor (float): Inherited refine candidate multiplier. Default is 10.
 
     Examples:
         >>> params = DiskAnnQueryParam(list_size=20)
@@ -706,7 +707,7 @@ class IVFIndexParam(VectorIndexParam):
         metric_type (MetricType): Distance metric used for similarity computation.
             Default is ``MetricType.IP`` (inner product).
         n_list (int): Number of clusters (inverted lists) to partition the dataset into.
-            Default is 10.
+            Default is 1024.
         n_iters (int): Number of iterations for k-means clustering during index training.
             Higher values yield more stable centroids. Default is 10.
         use_soar (bool): Whether to enable SOAR (Scalable Optimized Adaptive Routing)
@@ -731,7 +732,7 @@ class IVFIndexParam(VectorIndexParam):
     def __init__(
         self,
         metric_type: zvec._zvec.typing.MetricType = ...,
-        n_list: typing.SupportsInt = 10,
+        n_list: typing.SupportsInt = 1024,
         n_iters: typing.SupportsInt = 10,
         use_soar: bool = False,
         quantize_type: zvec._zvec.typing.QuantizeType = ...,
@@ -743,7 +744,7 @@ class IVFIndexParam(VectorIndexParam):
         Args:
             metric_type (MetricType, optional): Distance metric. Defaults to MetricType.IP.
             n_list (int, optional): Number of inverted lists (clusters).
-                Defaults to 10.
+                Defaults to 1024.
             n_iters (int, optional): Number of k-means iterations during training.
                 Defaults to 10.
             use_soar (bool, optional): Enable SOAR optimization. Defaults to False.

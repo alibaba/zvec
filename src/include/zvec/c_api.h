@@ -1122,7 +1122,7 @@ zvec_index_params_get_vamana_two_pass_build(const zvec_index_params_t *params);
  * @param params Index parameters (must be DiskANN type)
  * @param max_degree Graph connectivity (max degree of Vamana graph)
  * @param list_size Build-time list size (candidate list during construction)
- * @param pq_chunk_num PQ chunk count (0 disables PQ)
+ * @param pq_chunk_num PQ chunk count (0 selects the count automatically)
  * @return ZVEC_OK on success, error code on failure
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_diskann_params(
@@ -1416,7 +1416,7 @@ typedef struct zvec_sub_query_t zvec_sub_query_t;
 
 /**
  * @brief Create HNSW query parameters
- * @param ef Exploration factor during search (default: 40)
+ * @param ef Exploration factor during search (default: 300)
  * @param radius Search radius (default: 0.0)
  * @param is_linear Whether linear search (default: false)
  * @param is_using_refiner Whether using refiner (default: false)

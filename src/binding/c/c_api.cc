@@ -31,6 +31,7 @@
 #include <vector>
 #include <ailego/io/io_backend_def.h>
 #include <zvec/ailego/io/io_backend.h>
+#include <zvec/core/interface/constants.h>
 #include <zvec/db/collection.h>
 #include <zvec/db/config.h>
 #include <zvec/db/doc.h>
@@ -1334,52 +1335,23 @@ zvec_index_params_t *zvec_index_params_create(zvec_index_type_t index_type) {
           cpp_params = new zvec::FtsIndexParams();
           break;
         case ZVEC_INDEX_TYPE_HNSW:
-          cpp_params =
-              new zvec::HnswIndexParams(
-                  zvec::MetricType::L2,  // metric_type
-                  zvec::core_interface::kDefaultHnswNeighborCnt,  // m
-                  zvec::core_interface::kDefaultHnswEfConstruction,  // ef_construction
-                  zvec::QuantizeType::UNDEFINED);
+          cpp_params = new zvec::HnswIndexParams(zvec::MetricType::L2);
           break;
         case ZVEC_INDEX_TYPE_IVF:
-          cpp_params =
-              new zvec::IVFIndexParams(zvec::MetricType::L2,  // metric_type
-                                       1024,                   // n_list (default)
-                                       10,                    // n_iters (default)
-                                       false,                // use_soar (default)
-                                       zvec::QuantizeType::UNDEFINED);
+          cpp_params = new zvec::IVFIndexParams(zvec::MetricType::L2);
           break;
         case ZVEC_INDEX_TYPE_IVF_RABITQ:
-          cpp_params = new zvec::IvfRabitqIndexParams(
-              zvec::MetricType::L2, zvec::core_interface::kDefaultIvfRabitqNlist,
-              zvec::core_interface::kDefaultRabitqTotalBits, 0);
+          cpp_params = new zvec::IvfRabitqIndexParams(zvec::MetricType::L2);
           break;
         case ZVEC_INDEX_TYPE_VAMANA:
-          cpp_params =
-              new zvec::VamanaIndexParams(
-                  zvec::MetricType::L2,  // metric_type
-                  zvec::core_interface::kDefaultVamanaMaxDegree,
-                  zvec::core_interface::kDefaultVamanaSearchListSize,
-                  zvec::core_interface::kDefaultVamanaAlpha,
-                  zvec::core_interface::kDefaultVamanaSaturateGraph,
-                  false,  // use_contiguous_memory
-                  false,  // use_id_map
-                  zvec::QuantizeType::UNDEFINED);
+          cpp_params = new zvec::VamanaIndexParams(zvec::MetricType::L2);
           break;
         case ZVEC_INDEX_TYPE_FLAT:
         default:
-          cpp_params =
-              new zvec::FlatIndexParams(zvec::MetricType::L2,  // metric_type
-                                        zvec::QuantizeType::UNDEFINED);
+          cpp_params = new zvec::FlatIndexParams(zvec::MetricType::L2);
           break;
         case ZVEC_INDEX_TYPE_DISKANN:
-          cpp_params =
-              new zvec::DiskAnnIndexParams(
-                  zvec::MetricType::L2,   // metric_type
-                  100,                     // max_degree (default)
-                  50,                      // list_size (default)
-                  0,                       // pq_chunk_num (default)
-                  zvec::QuantizeType::UNDEFINED);
+          cpp_params = new zvec::DiskAnnIndexParams(zvec::MetricType::L2);
           break;
       }
 
@@ -5059,7 +5031,7 @@ zvec_error_code_t zvec_query_params_hnsw_set_radius(zvec_hnsw_query_params_t *pa
 }
 
 float zvec_query_params_hnsw_get_radius(const zvec_hnsw_query_params_t *params) {
-  if (!params) return 0.0f;
+  if (!params) return zvec::core_interface::kDefaultQueryRadius;
   auto *ptr = reinterpret_cast<const zvec::HnswQueryParams *>(params);
   return ptr->radius();
 }
@@ -5077,7 +5049,7 @@ zvec_error_code_t zvec_query_params_hnsw_set_is_linear(zvec_hnsw_query_params_t 
 }
 
 bool zvec_query_params_hnsw_get_is_linear(const zvec_hnsw_query_params_t *params) {
-  if (!params) return false;
+  if (!params) return zvec::core_interface::kDefaultQueryIsLinear;
   auto *ptr = reinterpret_cast<const zvec::HnswQueryParams *>(params);
   return ptr->is_linear();
 }
@@ -5133,7 +5105,7 @@ zvec_error_code_t zvec_query_params_diskann_set_list_size(
 
 int zvec_query_params_diskann_get_list_size(
     const zvec_diskann_query_params_t *params) {
-  if (!params) return 300;  // DiskAnnQueryParams default
+  if (!params) return zvec::core_interface::kDefaultDiskAnnSearchListSize;
   auto *ptr = reinterpret_cast<const zvec::DiskAnnQueryParams *>(params);
   return ptr->list_size();
 }
@@ -5152,7 +5124,7 @@ zvec_error_code_t zvec_query_params_diskann_set_radius(
 
 float zvec_query_params_diskann_get_radius(
     const zvec_diskann_query_params_t *params) {
-  if (!params) return 0.0f;
+  if (!params) return zvec::core_interface::kDefaultQueryRadius;
   auto *ptr = reinterpret_cast<const zvec::DiskAnnQueryParams *>(params);
   return ptr->radius();
 }
@@ -5171,7 +5143,7 @@ zvec_error_code_t zvec_query_params_diskann_set_is_linear(
 
 bool zvec_query_params_diskann_get_is_linear(
     const zvec_diskann_query_params_t *params) {
-  if (!params) return false;
+  if (!params) return zvec::core_interface::kDefaultQueryIsLinear;
   auto *ptr = reinterpret_cast<const zvec::DiskAnnQueryParams *>(params);
   return ptr->is_linear();
 }
@@ -5228,7 +5200,7 @@ zvec_error_code_t zvec_query_params_ivf_set_nprobe(zvec_ivf_query_params_t *para
 }
 
 int zvec_query_params_ivf_get_nprobe(const zvec_ivf_query_params_t *params) {
-  if (!params) return 10;
+  if (!params) return zvec::core_interface::kDefaultIvfNumProbes;
   auto *ptr = reinterpret_cast<const zvec::IVFQueryParams *>(params);
   return ptr->nprobe();
 }
@@ -5246,7 +5218,7 @@ zvec_error_code_t zvec_query_params_ivf_set_scale_factor(zvec_ivf_query_params_t
 }
 
 float zvec_query_params_ivf_get_scale_factor(const zvec_ivf_query_params_t *params) {
-  if (!params) return 10.0f;
+  if (!params) return zvec::core_interface::kDefaultIvfRefineScaleFactor;
   auto *ptr = reinterpret_cast<const zvec::IVFQueryParams *>(params);
   return ptr->scale_factor();
 }
@@ -5264,7 +5236,7 @@ zvec_error_code_t zvec_query_params_ivf_set_radius(zvec_ivf_query_params_t *para
 }
 
 float zvec_query_params_ivf_get_radius(const zvec_ivf_query_params_t *params) {
-  if (!params) return 0.0f;
+  if (!params) return zvec::core_interface::kDefaultQueryRadius;
   auto *ptr = reinterpret_cast<const zvec::IVFQueryParams *>(params);
   return ptr->radius();
 }
@@ -5282,7 +5254,7 @@ zvec_error_code_t zvec_query_params_ivf_set_is_linear(zvec_ivf_query_params_t *p
 }
 
 bool zvec_query_params_ivf_get_is_linear(const zvec_ivf_query_params_t *params) {
-  if (!params) return false;
+  if (!params) return zvec::core_interface::kDefaultQueryIsLinear;
   auto *ptr = reinterpret_cast<const zvec::IVFQueryParams *>(params);
   return ptr->is_linear();
 }
@@ -5342,7 +5314,7 @@ zvec_error_code_t zvec_query_params_ivf_rabitq_set_nprobe(
 int zvec_query_params_ivf_rabitq_get_nprobe(
     const zvec_ivf_rabitq_query_params_t *params) {
   if (!params) {
-    return zvec::core_interface::kDefaultIvfRabitqNprobe;
+    return zvec::core_interface::kDefaultIvfRabitqNumProbes;
   }
   auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
   return ptr->nprobe();
@@ -5363,7 +5335,7 @@ zvec_error_code_t zvec_query_params_ivf_rabitq_set_scale_factor(
 float zvec_query_params_ivf_rabitq_get_scale_factor(
     const zvec_ivf_rabitq_query_params_t *params) {
   if (!params) {
-    return 10.0f;
+    return zvec::core_interface::kDefaultIvfRabitqRefineScaleFactor;
   }
   auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
   return ptr->scale_factor();
@@ -5384,7 +5356,7 @@ zvec_error_code_t zvec_query_params_ivf_rabitq_set_radius(
 float zvec_query_params_ivf_rabitq_get_radius(
     const zvec_ivf_rabitq_query_params_t *params) {
   if (!params) {
-    return 0.0f;
+    return zvec::core_interface::kDefaultQueryRadius;
   }
   auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
   return ptr->radius();
@@ -5405,7 +5377,7 @@ zvec_error_code_t zvec_query_params_ivf_rabitq_set_is_linear(
 bool zvec_query_params_ivf_rabitq_get_is_linear(
     const zvec_ivf_rabitq_query_params_t *params) {
   if (!params) {
-    return false;
+    return zvec::core_interface::kDefaultQueryIsLinear;
   }
   auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
   return ptr->is_linear();
@@ -5465,7 +5437,7 @@ zvec_error_code_t zvec_query_params_flat_set_scale_factor(
 
 float zvec_query_params_flat_get_scale_factor(
     const zvec_flat_query_params_t *params) {
-  if (!params) return 10.0f;
+  if (!params) return zvec::core_interface::kDefaultFlatRefineScaleFactor;
   auto *ptr = reinterpret_cast<const zvec::FlatQueryParams *>(params);
   return ptr->scale_factor();
 }
@@ -5483,7 +5455,7 @@ zvec_error_code_t zvec_query_params_flat_set_radius(zvec_flat_query_params_t *pa
 }
 
 float zvec_query_params_flat_get_radius(const zvec_flat_query_params_t *params) {
-  if (!params) return 0.0f;
+  if (!params) return zvec::core_interface::kDefaultQueryRadius;
   auto *ptr = reinterpret_cast<const zvec::FlatQueryParams *>(params);
   return ptr->radius();
 }
@@ -5501,7 +5473,7 @@ zvec_error_code_t zvec_query_params_flat_set_is_linear(zvec_flat_query_params_t 
 }
 
 bool zvec_query_params_flat_get_is_linear(const zvec_flat_query_params_t *params) {
-  if (!params) return false;
+  if (!params) return zvec::core_interface::kDefaultQueryIsLinear;
   auto *ptr = reinterpret_cast<const zvec::FlatQueryParams *>(params);
   return ptr->is_linear();
 }
@@ -5789,7 +5761,7 @@ zvec_error_code_t zvec_query_params_vamana_set_radius(
 
 float zvec_query_params_vamana_get_radius(
     const zvec_vamana_query_params_t *params) {
-  if (!params) return 0.0f;
+  if (!params) return zvec::core_interface::kDefaultQueryRadius;
   auto *ptr = reinterpret_cast<const zvec::VamanaQueryParams *>(params);
   return ptr->radius();
 }
@@ -5808,7 +5780,7 @@ zvec_error_code_t zvec_query_params_vamana_set_is_linear(
 
 bool zvec_query_params_vamana_get_is_linear(
     const zvec_vamana_query_params_t *params) {
-  if (!params) return false;
+  if (!params) return zvec::core_interface::kDefaultQueryIsLinear;
   auto *ptr = reinterpret_cast<const zvec::VamanaQueryParams *>(params);
   return ptr->is_linear();
 }

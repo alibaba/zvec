@@ -15,7 +15,6 @@
 #include "python_param.h"
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
-#include <zvec/core/interface/constants.h>
 #include <zvec/db/index_params.h>
 #include <zvec/db/query.h>
 #include "python_doc.h"
@@ -165,6 +164,14 @@ void ZVecPyParams::Initialize(pybind11::module_ &parent) {
 }
 
 void ZVecPyParams::bind_index_params(pybind11::module_ &m) {
+  const QuantizerParam quantizer_defaults;
+  const HnswIndexParams hnsw_defaults(MetricType::IP);
+  const HnswRabitqIndexParams hnsw_rabitq_defaults(MetricType::IP);
+  const IvfRabitqIndexParams ivf_rabitq_defaults(MetricType::IP);
+  const VamanaIndexParams vamana_defaults(MetricType::IP);
+  const IVFIndexParams ivf_defaults(MetricType::IP);
+  const DiskAnnIndexParams diskann_defaults(MetricType::IP);
+
   // binding base index params
   py::class_<IndexParams, std::shared_ptr<IndexParams>> index_params(
       m, "IndexParam", R"pbdoc(
@@ -457,9 +464,12 @@ Examples:
 )pbdoc");
   quantizer_param
       .def(py::init<bool, int, int, bool, uint32_t, uint32_t>(),
-           py::arg("enable_rotate") = false, py::arg("num_chunk") = 8,
-           py::arg("num_bits") = 8, py::arg("fast_scan") = false,
-           py::arg("opq_iter") = 5, py::arg("opq_pq_iter") = 4)
+           py::arg("enable_rotate") = quantizer_defaults.enable_rotate(),
+           py::arg("num_chunk") = quantizer_defaults.num_chunk(),
+           py::arg("num_bits") = quantizer_defaults.num_bits(),
+           py::arg("fast_scan") = quantizer_defaults.fast_scan(),
+           py::arg("opq_iter") = quantizer_defaults.opq_iter(),
+           py::arg("opq_pq_iter") = quantizer_defaults.opq_pq_iter())
       .def_property_readonly("num_chunk", &QuantizerParam::num_chunk)
       .def_property_readonly("num_bits", &QuantizerParam::num_bits)
       .def_property_readonly("fast_scan", &QuantizerParam::fast_scan)
@@ -625,9 +635,8 @@ Examples:
                  use_flat_contiguous_memory, flat_data_type);
            }),
            py::arg("metric_type") = MetricType::IP,
-           py::arg("m") = core_interface::kDefaultHnswNeighborCnt,
-           py::arg("ef_construction") =
-               core_interface::kDefaultHnswEfConstruction,
+           py::arg("m") = hnsw_defaults.m(),
+           py::arg("ef_construction") = hnsw_defaults.ef_construction(),
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("use_contiguous_memory") = false,
            py::arg("quantizer_param") = QuantizerParam(),
@@ -747,12 +756,11 @@ Examples:
   hnsw_rabitq_params
       .def(py::init<MetricType, int, int, int, int, int>(),
            py::arg("metric_type") = MetricType::IP,
-           py::arg("total_bits") = core_interface::kDefaultRabitqTotalBits,
-           py::arg("num_clusters") = core_interface::kDefaultRabitqNumClusters,
-           py::arg("m") = core_interface::kDefaultHnswNeighborCnt,
-           py::arg("ef_construction") =
-               core_interface::kDefaultHnswEfConstruction,
-           py::arg("sample_count") = 0)
+           py::arg("total_bits") = hnsw_rabitq_defaults.total_bits(),
+           py::arg("num_clusters") = hnsw_rabitq_defaults.num_clusters(),
+           py::arg("m") = hnsw_rabitq_defaults.m(),
+           py::arg("ef_construction") = hnsw_rabitq_defaults.ef_construction(),
+           py::arg("sample_count") = hnsw_rabitq_defaults.sample_count())
       .def_property_readonly("m", &HnswRabitqIndexParams::m,
                              "int: Maximum number of neighbors per node.")
       .def_property_readonly(
@@ -844,9 +852,9 @@ Examples:
   ivf_rabitq_params
       .def(py::init<MetricType, int, int, int>(),
            py::arg("metric_type") = MetricType::IP,
-           py::arg("nlist") = core_interface::kDefaultIvfRabitqNlist,
-           py::arg("total_bits") = core_interface::kDefaultRabitqTotalBits,
-           py::arg("sample_count") = 0)
+           py::arg("nlist") = ivf_rabitq_defaults.nlist(),
+           py::arg("total_bits") = ivf_rabitq_defaults.total_bits(),
+           py::arg("sample_count") = ivf_rabitq_defaults.sample_count())
       .def_property_readonly("nlist", &IvfRabitqIndexParams::nlist,
                              "int: Number of IVF cluster centers.")
       .def_property_readonly("total_bits", &IvfRabitqIndexParams::total_bits,
@@ -967,17 +975,15 @@ Examples:
                      use_flat_contiguous_memory, flat_data_type);
                }),
            py::arg("metric_type") = MetricType::IP,
-           py::arg("max_degree") = core_interface::kDefaultVamanaMaxDegree,
-           py::arg("search_list_size") =
-               core_interface::kDefaultVamanaSearchListSize,
-           py::arg("alpha") = core_interface::kDefaultVamanaAlpha,
-           py::arg("saturate_graph") =
-               core_interface::kDefaultVamanaSaturateGraph,
+           py::arg("max_degree") = vamana_defaults.max_degree(),
+           py::arg("search_list_size") = vamana_defaults.search_list_size(),
+           py::arg("alpha") = vamana_defaults.alpha(),
+           py::arg("saturate_graph") = vamana_defaults.saturate_graph(),
            py::arg("use_contiguous_memory") = false,
            py::arg("use_id_map") = false,
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("quantizer_param") = QuantizerParam(),
-           py::arg("two_pass_build") = true,
+           py::arg("two_pass_build") = vamana_defaults.two_pass_build(),
            py::arg("use_flat_contiguous_memory") = false,
            py::arg("flat_data_type") = DataType::VECTOR_FP32)
       .def_property_readonly(
@@ -1198,7 +1204,7 @@ Attributes:
     metric_type (MetricType): Distance metric used for similarity computation.
         Default is ``MetricType.IP`` (inner product).
     n_list (int): Number of clusters (inverted lists) to partition the dataset into.
-        Default is 10.
+        Default is 1024.
     n_iters (int): Number of iterations for k-means clustering during index training.
         Higher values yield more stable centroids. Default is 10.
     use_soar (bool): Whether to enable SOAR (Scalable Optimized Adaptive Routing)
@@ -1226,8 +1232,10 @@ Examples:
                  metric_type, n_list, n_iters, use_soar, quantize_type,
                  quantizer_param);
            }),
-           py::arg("metric_type") = MetricType::IP, py::arg("n_list") = 10,
-           py::arg("n_iters") = 10, py::arg("use_soar") = false,
+           py::arg("metric_type") = MetricType::IP,
+           py::arg("n_list") = ivf_defaults.n_list(),
+           py::arg("n_iters") = ivf_defaults.n_iters(),
+           py::arg("use_soar") = ivf_defaults.use_soar(),
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("quantizer_param") = QuantizerParam(),
            R"pbdoc(
@@ -1236,7 +1244,7 @@ Constructs an IVFIndexParam instance.
 Args:
     metric_type (MetricType, optional): Distance metric. Defaults to MetricType.IP.
     n_list (int, optional): Number of inverted lists (clusters).
-        Defaults to 10.
+        Defaults to 1024.
     n_iters (int, optional): Number of k-means iterations during training.
         Defaults to 10.
     use_soar (bool, optional): Enable SOAR optimization. Defaults to False.
@@ -1346,8 +1354,10 @@ Examples:
                  metric_type, max_degree, list_size, pq_chunk_num,
                  quantize_type, quantizer_param);
            }),
-           py::arg("metric_type") = MetricType::IP, py::arg("max_degree") = 100,
-           py::arg("list_size") = 50, py::arg("pq_chunk_num") = 0,
+           py::arg("metric_type") = MetricType::IP,
+           py::arg("max_degree") = diskann_defaults.max_degree(),
+           py::arg("list_size") = diskann_defaults.list_size(),
+           py::arg("pq_chunk_num") = diskann_defaults.pq_chunk_num(),
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("quantizer_param") = QuantizerParam(),
            R"pbdoc(
@@ -1426,6 +1436,13 @@ Args:
 }
 
 void ZVecPyParams::bind_query_params(py::module_ &m) {
+  const HnswQueryParams hnsw_defaults;
+  const IVFQueryParams ivf_defaults;
+  const HnswRabitqQueryParams hnsw_rabitq_defaults;
+  const IvfRabitqQueryParams ivf_rabitq_defaults;
+  const DiskAnnQueryParams diskann_defaults;
+  const VamanaQueryParams vamana_defaults;
+
   // binding base query params
   py::class_<QueryParams, std::shared_ptr<QueryParams>> query_params(
       m, "QueryParam", R"pbdoc(
@@ -1521,16 +1538,18 @@ Examples:
              }
              return obj;
            }),
-           py::arg("ef") = core_interface::kDefaultHnswEfSearch,
-           py::arg("radius") = 0.0f, py::arg("is_linear") = false,
+           py::arg("ef") = hnsw_defaults.ef(),
+           py::arg("radius") = hnsw_defaults.radius(),
+           py::arg("is_linear") = hnsw_defaults.is_linear(),
            py::arg("is_using_refiner") = false,
-           py::arg("extra_params") = py::dict(), py::arg("scale_factor") = 0.0f,
+           py::arg("extra_params") = py::dict(),
+           py::arg("scale_factor") = hnsw_defaults.scale_factor(),
            R"pbdoc(
 Constructs an HnswQueryParam instance.
 
 Args:
     ef (int, optional): Search-time candidate list size.
-        Higher values improve accuracy. Defaults to 100.
+        Higher values improve accuracy. Defaults to 300.
     radius (float, optional): Search radius for range queries. Default is 0.0.
     is_linear (bool, optional): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
@@ -1626,8 +1645,10 @@ Examples:
     20
 )pbdoc");
   ivf_params
-      .def(py::init<int, bool, float>(), py::arg("nprobe") = 10,
-           py::arg("is_using_refiner") = false, py::arg("scale_factor") = 10.0f,
+      .def(py::init<int, bool, float>(),
+           py::arg("nprobe") = ivf_defaults.nprobe(),
+           py::arg("is_using_refiner") = false,
+           py::arg("scale_factor") = ivf_defaults.scale_factor(),
            R"pbdoc(
 Constructs an IVFQueryParam instance.
 
@@ -1699,9 +1720,11 @@ Examples:
 )pbdoc");
   hnsw_rabitq_query_params
       .def(py::init<int, float, bool, bool, float>(),
-           py::arg("ef") = core_interface::kDefaultHnswEfSearch,
-           py::arg("radius") = 0.0f, py::arg("is_linear") = false,
-           py::arg("is_using_refiner") = false, py::arg("scale_factor") = 0.0f,
+           py::arg("ef") = hnsw_rabitq_defaults.ef(),
+           py::arg("radius") = hnsw_rabitq_defaults.radius(),
+           py::arg("is_linear") = hnsw_rabitq_defaults.is_linear(),
+           py::arg("is_using_refiner") = false,
+           py::arg("scale_factor") = hnsw_rabitq_defaults.scale_factor(),
            R"pbdoc(
 Constructs an HnswRabitqQueryParam instance.
 
@@ -1774,9 +1797,11 @@ Examples:
 )pbdoc");
   ivf_rabitq_query_params
       .def(py::init<int, float, bool, bool, float>(),
-           py::arg("nprobe") = core_interface::kDefaultIvfRabitqNprobe,
-           py::arg("radius") = 0.0f, py::arg("is_linear") = false,
-           py::arg("is_using_refiner") = false, py::arg("scale_factor") = 10.0f,
+           py::arg("nprobe") = ivf_rabitq_defaults.nprobe(),
+           py::arg("radius") = ivf_rabitq_defaults.radius(),
+           py::arg("is_linear") = ivf_rabitq_defaults.is_linear(),
+           py::arg("is_using_refiner") = false,
+           py::arg("scale_factor") = ivf_rabitq_defaults.scale_factor(),
            R"pbdoc(
 Constructs an IvfRabitqQueryParam instance.
 
@@ -1842,7 +1867,8 @@ Query parameters for DiskAnn index.
 Attributes:
     type (IndexType): Always ``IndexType.DISKANN``.
     list_size (int): Beam-search candidate list size used at query time.
-        Higher values improve recall but increase latency. Default is 10.
+        Higher values improve recall but increase latency. Default is 300.
+    scale_factor (float): Inherited refine candidate multiplier. Default is 10.
 
 Examples:
     >>> params = DiskAnnQueryParam(list_size=20)
@@ -1850,7 +1876,8 @@ Examples:
     20
 )pbdoc");
   diskann_params
-      .def(py::init<int>(), py::arg("list_size") = 300, R"pbdoc(
+      .def(py::init<int>(), py::arg("list_size") = diskann_defaults.list_size(),
+           R"pbdoc(
 Constructs an DiskAnnQueryParams instance.
 
 Args:
@@ -1873,12 +1900,15 @@ Args:
            })
       .def(py::pickle(
           [](const DiskAnnQueryParams &self) {
-            return py::make_tuple(self.list_size());
+            return py::make_tuple(self.list_size(), self.scale_factor());
           },
           [](py::tuple t) {
-            if (t.size() != 1)
+            if (t.size() != 1 && t.size() != 2)
               throw std::runtime_error("Invalid state for DiskAnnQueryParams");
-            return std::make_shared<DiskAnnQueryParams>(t[0].cast<int>());
+            auto obj = std::make_shared<DiskAnnQueryParams>(t[0].cast<int>());
+            // Legacy state predates the index-specific refine default.
+            obj->set_scale_factor(t.size() == 1 ? 0.0f : t[1].cast<float>());
+            return obj;
           }));
 
   // binding vamana query params
@@ -1923,10 +1953,12 @@ Examples:
              }
              return obj;
            }),
-           py::arg("ef_search") = core_interface::kDefaultVamanaEfSearch,
-           py::arg("radius") = 0.0f, py::arg("is_linear") = false,
+           py::arg("ef_search") = vamana_defaults.ef_search(),
+           py::arg("radius") = vamana_defaults.radius(),
+           py::arg("is_linear") = vamana_defaults.is_linear(),
            py::arg("is_using_refiner") = false,
-           py::arg("extra_params") = py::dict(), py::arg("scale_factor") = 0.0f,
+           py::arg("extra_params") = py::dict(),
+           py::arg("scale_factor") = vamana_defaults.scale_factor(),
            R"pbdoc(
 Constructs a VamanaQueryParam instance.
 
