@@ -809,6 +809,8 @@ class IVFQueryParam(QueryParam):
             Default is 10.
         radius (float): Search radius for range queries. Default is 0.0.
         is_linear (bool): Force linear search. Default is False.
+        is_using_refiner (bool): Whether to refine candidates. Default is False.
+        scale_factor (float): Refine candidate multiplier. Default is 10.
 
     Examples:
         >>> params = IVFQueryParam(nprobe=20)
@@ -822,6 +824,9 @@ class IVFQueryParam(QueryParam):
         nprobe: typing.SupportsInt = 10,
         is_using_refiner: bool = False,
         scale_factor: typing.SupportsFloat = 10.0,
+        *,
+        radius: typing.SupportsFloat = 0.0,
+        is_linear: bool = False,
     ) -> None:
         """
         Constructs an IVFQueryParam instance.
@@ -831,6 +836,8 @@ class IVFQueryParam(QueryParam):
                 Higher values improve accuracy. Defaults to 10.
             is_using_refiner (bool, optional): Whether to refine. Default is False.
             scale_factor (float, optional): Refine candidate multiplier. Default is 10.
+            radius (float, optional): Search radius for range queries. Default is 0.0.
+            is_linear (bool, optional): Force linear search. Default is False.
         """
 
     def __repr__(self) -> str: ...

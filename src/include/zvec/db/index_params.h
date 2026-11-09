@@ -52,6 +52,10 @@ class ZVEC_API IndexParams {
     return !(*this == other);
   }
 
+  virtual Status validate() const {
+    return Status::OK();
+  }
+
   bool is_vector_index_type() const {
     return type_ == IndexType::FLAT || type_ == IndexType::HNSW ||
            type_ == IndexType::HNSW_RABITQ || type_ == IndexType::IVF ||
@@ -122,10 +126,10 @@ class ZVEC_API InvertIndexParams : public IndexParams {
 
 /*
  * Quantizer parameters for vector indexes.
- * Rotation settings and IVF product-quantization configuration.
- * PQ fields apply when quantize_type is PQ; enable_rotate selects learned OPQ.
+ * enable_rotate enables random rotation for INT4/INT8 or learned OPQ for PQ.
+ * PQ fields take effect only when quantize_type is PQ.
  */
-class QuantizerParam {
+class ZVEC_API QuantizerParam {
  public:
   QuantizerParam() = default;
   explicit QuantizerParam(
@@ -140,6 +144,8 @@ class QuantizerParam {
         fast_scan_(fast_scan),
         opq_iter_(opq_iter),
         opq_pq_iter_(opq_pq_iter) {}
+
+  Status validate() const;
 
   bool enable_rotate() const {
     return enable_rotate_;
@@ -219,6 +225,8 @@ class ZVEC_API VectorIndexParams : public IndexParams {
         quantizer_param_(quantizer_param) {}
 
   ~VectorIndexParams() override = default;
+
+  Status validate() const override;
 
   std::string vector_index_params_to_string(const std::string &class_name,
                                             MetricType metric_type,
@@ -402,6 +410,8 @@ class ZVEC_API HnswRabitqIndexParams : public VectorIndexParams {
 
   using OPtr = std::shared_ptr<HnswRabitqIndexParams>;
 
+  Status validate() const override;
+
   Ptr clone() const override {
     auto obj = std::make_shared<HnswRabitqIndexParams>(
         metric_type_, total_bits_, num_clusters_, m_, ef_construction_,
@@ -509,6 +519,8 @@ class ZVEC_API IvfRabitqIndexParams : public VectorIndexParams {
         sample_count_(sample_count) {}
 
   using OPtr = std::shared_ptr<IvfRabitqIndexParams>;
+
+  Status validate() const override;
 
   Ptr clone() const override {
     return std::make_shared<IvfRabitqIndexParams>(metric_type_, nlist_,
@@ -653,6 +665,8 @@ class ZVEC_API IVFIndexParams : public VectorIndexParams {
 
   using OPtr = std::shared_ptr<IVFIndexParams>;
 
+  Status validate() const override;
+
  public:
   Ptr clone() const override {
     return std::make_shared<IVFIndexParams>(metric_type_, n_list_, n_iters_,
@@ -729,6 +743,8 @@ class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {
         pq_chunk_num_{pq_chunk_num} {}
 
   using OPtr = std::shared_ptr<DiskAnnIndexParams>;
+
+  Status validate() const override;
 
  public:
   Ptr clone() const override {
@@ -1015,6 +1031,8 @@ class ZVEC_API FtsIndexParams : public IndexParams {
   FtsIndexParams &operator=(FtsIndexParams &&) = delete;
 
   ~FtsIndexParams() override;
+
+  Status validate() const override;
 
   Ptr clone() const override {
     return std::make_shared<FtsIndexParams>(tokenizer_name_, filters_,

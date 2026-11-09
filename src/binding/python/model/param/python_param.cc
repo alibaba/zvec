@@ -1649,10 +1649,19 @@ Examples:
     20
 )pbdoc");
   ivf_params
-      .def(py::init<int, bool, float>(),
+      .def(py::init([](int nprobe, bool is_using_refiner, float scale_factor,
+                       float radius, bool is_linear) {
+             auto obj = std::make_shared<IVFQueryParams>(
+                 nprobe, is_using_refiner, scale_factor);
+             obj->set_radius(radius);
+             obj->set_is_linear(is_linear);
+             return obj;
+           }),
            py::arg("nprobe") = ivf_defaults.nprobe(),
-           py::arg("is_using_refiner") = false,
-           py::arg("scale_factor") = ivf_defaults.scale_factor(),
+           py::arg("is_using_refiner") = ivf_defaults.is_using_refiner(),
+           py::arg("scale_factor") = ivf_defaults.scale_factor(), py::kw_only(),
+           py::arg("radius") = ivf_defaults.radius(),
+           py::arg("is_linear") = ivf_defaults.is_linear(),
            R"pbdoc(
 Constructs an IVFQueryParam instance.
 
@@ -1661,6 +1670,8 @@ Args:
         Higher values improve accuracy. Defaults to 10.
     is_using_refiner (bool, optional): Whether to refine candidates. Default is False.
     scale_factor (float, optional): Refine candidate multiplier. Default is 10.
+    radius (float, optional): Search radius for range queries. Default is 0.0.
+    is_linear (bool, optional): Force linear search. Default is False.
 )pbdoc")
       .def_property_readonly(
           "nprobe",
@@ -1672,6 +1683,8 @@ Args:
                     "\"type\":" +
                     index_type_to_string(self.type()) +
                     ", \"nprobe\":" + std::to_string(self.nprobe()) +
+                    ", \"radius\":" + std::to_string(self.radius()) +
+                    ", \"is_linear\":" + std::to_string(self.is_linear()) +
                     ", \"is_using_refiner\":" +
                     std::to_string(self.is_using_refiner()) +
                     ", \"scale_factor\":" +
