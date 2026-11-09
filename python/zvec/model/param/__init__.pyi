@@ -230,7 +230,10 @@ class DiskAnnQueryParam(QueryParam):
         type (IndexType): Always ``IndexType.DISKANN``.
         list_size (int): Beam-search candidate list size used at query time.
             Higher values improve recall but increase latency. Default is 300.
-        scale_factor (float): Inherited refine candidate multiplier. Default is 10.
+        radius (float): Search radius for range queries. Default is 0.0 (disabled).
+        is_linear (bool): Whether to force brute-force linear search. Default is False.
+        is_using_refiner (bool): Whether to refine query results. Default is False.
+        scale_factor (float): Refine candidate multiplier. Default is 10.
 
     Examples:
         >>> params = DiskAnnQueryParam(list_size=20)
@@ -239,7 +242,15 @@ class DiskAnnQueryParam(QueryParam):
     """
 
     def __getstate__(self) -> tuple: ...
-    def __init__(self, list_size: typing.SupportsInt = 300) -> None:
+    def __init__(
+        self,
+        list_size: typing.SupportsInt = 300,
+        *,
+        radius: typing.SupportsFloat = 0.0,
+        is_linear: bool = False,
+        is_using_refiner: bool = False,
+        scale_factor: typing.SupportsFloat = 10.0,
+    ) -> None:
         """
 
         Constructs a DiskAnnQueryParam instance.
@@ -248,6 +259,11 @@ class DiskAnnQueryParam(QueryParam):
             list_size (int, optional): Beam-search candidate list size during
                 graph search. Higher values improve recall at the cost of latency.
                 Defaults to 300.
+            radius (float, optional): Search radius for range queries. Default is 0.0 (disabled).
+            is_linear (bool, optional): Force brute-force linear search. Default is False.
+            is_using_refiner (bool, optional): Refine query results. Default is False.
+            scale_factor (float, optional): Refine candidate multiplier. Default is 10.
+                Ignored when is_using_refiner is False.
         """
 
     def __repr__(self) -> str: ...
@@ -1232,7 +1248,7 @@ class InvertIndexParam(IndexParam):
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
-        enable_range_optimization: bool = False,
+        enable_range_optimization: bool = True,
         enable_extended_wildcard: bool = False,
     ) -> None:
         """
@@ -1240,7 +1256,7 @@ class InvertIndexParam(IndexParam):
 
         Args:
             enable_range_optimization (bool, optional): If True, enables range query
-                optimization for the invert index. Defaults to False.
+                optimization for the invert index. Defaults to True.
             enable_extended_wildcard (bool, optional): If True, enables extended wildcard
                 search including suffix and infix patterns. Defaults to False.
         """

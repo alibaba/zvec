@@ -164,6 +164,7 @@ void ZVecPyParams::Initialize(pybind11::module_ &parent) {
 }
 
 void ZVecPyParams::bind_index_params(pybind11::module_ &m) {
+  const InvertIndexParams invert_defaults;
   const QuantizerParam quantizer_defaults;
   const HnswIndexParams hnsw_defaults(MetricType::IP);
   const HnswRabitqIndexParams hnsw_rabitq_defaults(MetricType::IP);
@@ -238,14 +239,17 @@ Examples:
     {'enable_range_optimization': True, 'enable_extended_wildcard': False}
 )pbdoc");
   invert_params
-      .def(py::init<bool, bool>(), py::arg("enable_range_optimization") = false,
-           py::arg("enable_extended_wildcard") = false,
+      .def(py::init<bool, bool>(),
+           py::arg("enable_range_optimization") =
+               invert_defaults.enable_range_optimization(),
+           py::arg("enable_extended_wildcard") =
+               invert_defaults.enable_extended_wildcard(),
            R"pbdoc(
 Constructs an InvertIndexParam instance.
 
 Args:
     enable_range_optimization (bool, optional): If True, enables range query
-        optimization for the invert index. Defaults to False.
+        optimization for the invert index. Defaults to True.
     enable_extended_wildcard (bool, optional): If True, enables extended wildcard
         search including suffix and infix patterns. Defaults to False.
 )pbdoc")
@@ -1868,7 +1872,10 @@ Attributes:
     type (IndexType): Always ``IndexType.DISKANN``.
     list_size (int): Beam-search candidate list size used at query time.
         Higher values improve recall but increase latency. Default is 300.
-    scale_factor (float): Inherited refine candidate multiplier. Default is 10.
+    radius (float): Search radius for range queries. Default is 0.0 (disabled).
+    is_linear (bool): Whether to force brute-force linear search. Default is False.
+    is_using_refiner (bool): Whether to refine query results. Default is False.
+    scale_factor (float): Refine candidate multiplier. Default is 10.
 
 Examples:
     >>> params = DiskAnnQueryParam(list_size=20)
@@ -1876,14 +1883,32 @@ Examples:
     20
 )pbdoc");
   diskann_params
-      .def(py::init<int>(), py::arg("list_size") = diskann_defaults.list_size(),
+      .def(py::init([](int list_size, float radius, bool is_linear,
+                       bool is_using_refiner, float scale_factor) {
+             auto obj = std::make_shared<DiskAnnQueryParams>(list_size);
+             obj->set_radius(radius);
+             obj->set_is_linear(is_linear);
+             obj->set_is_using_refiner(is_using_refiner);
+             obj->set_scale_factor(scale_factor);
+             return obj;
+           }),
+           py::arg("list_size") = diskann_defaults.list_size(), py::kw_only(),
+           py::arg("radius") = diskann_defaults.radius(),
+           py::arg("is_linear") = diskann_defaults.is_linear(),
+           py::arg("is_using_refiner") = diskann_defaults.is_using_refiner(),
+           py::arg("scale_factor") = diskann_defaults.scale_factor(),
            R"pbdoc(
-Constructs an DiskAnnQueryParams instance.
+Constructs a DiskAnnQueryParam instance.
 
 Args:
     list_size (int, optional): Beam-search candidate list size during
         graph search. Higher values improve recall at the cost of latency.
         Defaults to 300.
+    radius (float, optional): Search radius for range queries. Default is 0.0 (disabled).
+    is_linear (bool, optional): Force brute-force linear search. Default is False.
+    is_using_refiner (bool, optional): Refine query results. Default is False.
+    scale_factor (float, optional): Refine candidate multiplier. Default is 10.
+        Ignored when is_using_refiner is False.
 )pbdoc")
       .def_property_readonly(
           "list_size",
@@ -1896,18 +1921,33 @@ Args:
              return "{"
                     "\"type\":" +
                     index_type_to_string(self.type()) +
-                    ", \"list_size\":" + std::to_string(self.list_size()) + "}";
+                    ", \"list_size\":" + std::to_string(self.list_size()) +
+                    ", \"radius\":" + std::to_string(self.radius()) +
+                    ", \"is_linear\":" + std::to_string(self.is_linear()) +
+                    ", \"is_using_refiner\":" +
+                    std::to_string(self.is_using_refiner()) +
+                    ", \"scale_factor\":" +
+                    std::to_string(self.scale_factor()) + "}";
            })
       .def(py::pickle(
           [](const DiskAnnQueryParams &self) {
-            return py::make_tuple(self.list_size(), self.scale_factor());
+            return py::make_tuple(self.list_size(), self.radius(),
+                                  self.is_linear(), self.is_using_refiner(),
+                                  self.scale_factor());
           },
           [](py::tuple t) {
-            if (t.size() != 1 && t.size() != 2)
+            if (t.size() != 1 && t.size() != 2 && t.size() != 5)
               throw std::runtime_error("Invalid state for DiskAnnQueryParams");
             auto obj = std::make_shared<DiskAnnQueryParams>(t[0].cast<int>());
-            // Legacy state predates the index-specific refine default.
-            obj->set_scale_factor(t.size() == 1 ? 0.0f : t[1].cast<float>());
+            if (t.size() == 5) {
+              obj->set_radius(t[1].cast<float>());
+              obj->set_is_linear(t[2].cast<bool>());
+              obj->set_is_using_refiner(t[3].cast<bool>());
+              obj->set_scale_factor(t[4].cast<float>());
+            } else {
+              // The single-field state predates the index-specific scale.
+              obj->set_scale_factor(t.size() == 1 ? 0.0f : t[1].cast<float>());
+            }
             return obj;
           }));
 
