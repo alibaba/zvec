@@ -25,6 +25,7 @@
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <random>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -3824,6 +3825,106 @@ TEST_F(CollectionTest, Feature_Optimize_MetricType) {
   func(MetricType::L2, QuantizeType::FP16);
   func(MetricType::COSINE, QuantizeType::FP16);
   func(MetricType::IP, QuantizeType::FP16);
+}
+
+// Regression test for https://github.com/alibaba/zvec/issues/886: every
+// rotated INT8/INT4 index draws its own random rotation, so optimize must not
+// copy insert-time codes into an index that holds a different rotation.
+TEST_F(CollectionTest, Feature_Optimize_RotatedIntegerQuantizer) {
+  constexpr uint32_t kDim = 128;
+  constexpr int kBatch = 200;
+  std::mt19937 gen(886);
+  std::normal_distribution<float> dist(0.0f, 1.0f);
+  std::vector<std::vector<float>> vectors(kBatch * 2, std::vector<float>(kDim));
+  for (auto &vector : vectors) {
+    for (auto &value : vector) value = dist(gen);
+  }
+
+  auto func = [&](IndexType index_type, QuantizeType quantize_type,
+                  MetricType metric_type) {
+    SCOPED_TRACE(std::string(magic_enum::enum_name(index_type)) + "/" +
+                 std::string(magic_enum::enum_name(quantize_type)) + "/" +
+                 std::string(magic_enum::enum_name(metric_type)));
+    FileHelper::RemoveDirectory(col_path);
+
+    IndexParams::Ptr index_params;
+    if (index_type == IndexType::HNSW) {
+      index_params = std::make_shared<HnswIndexParams>(
+          metric_type, 16, 200, quantize_type, false, QuantizerParam(true));
+    } else {
+      index_params = std::make_shared<FlatIndexParams>(
+          metric_type, quantize_type, QuantizerParam(true));
+    }
+    CollectionSchema schema("rotate");
+    ASSERT_TRUE(
+        schema
+            .add_field(std::make_shared<FieldSchema>(
+                "dense", DataType::VECTOR_FP32, kDim, false, index_params))
+            .ok());
+    auto created = Collection::CreateAndOpen(col_path, schema, options_);
+    ASSERT_TRUE(created.has_value()) << created.error().message();
+    auto collection = std::move(created).value();
+
+    auto insert = [&](int begin, int end) {
+      std::vector<Doc> docs;
+      for (int i = begin; i < end; ++i) {
+        Doc doc;
+        doc.set_pk(std::to_string(i));
+        doc.set<std::vector<float>>("dense", vectors[i]);
+        docs.push_back(std::move(doc));
+      }
+      auto result = collection->insert(docs);
+      ASSERT_TRUE(result.has_value()) << result.error().message();
+      for (const auto &status : result.value()) {
+        ASSERT_TRUE(status.ok()) << status.message();
+      }
+    };
+    auto self_recall = [&](int begin, int end) {
+      int hits = 0;
+      for (int i = begin; i < end; ++i) {
+        SearchQuery query;
+        query.topk_ = 1;
+        query.target_.field_name_ = "dense";
+        query.target_.set_vector(
+            std::string(reinterpret_cast<const char *>(vectors[i].data()),
+                        vectors[i].size() * sizeof(float)));
+        auto result = collection->query(query);
+        EXPECT_TRUE(result.has_value()) << result.error().message();
+        if (result.has_value() && !result.value().empty() &&
+            result.value()[0]->pk() == std::to_string(i)) {
+          ++hits;
+        }
+      }
+      return hits;
+    };
+    constexpr int kMinHits = kBatch * 95 / 100;
+
+    // First optimize builds the index from a single writing segment.
+    insert(0, kBatch);
+    ASSERT_GE(self_recall(0, kBatch), kMinHits);
+    ASSERT_TRUE(collection->optimize().ok());
+    EXPECT_GE(self_recall(0, kBatch), kMinHits);
+
+    // Second optimize merges the indexed segment with a new writing segment.
+    insert(kBatch, kBatch * 2);
+    ASSERT_TRUE(collection->optimize().ok());
+    EXPECT_GE(self_recall(0, kBatch), kMinHits);
+    EXPECT_GE(self_recall(kBatch, kBatch * 2), kMinHits);
+
+    // The rebuilt index must keep its own rotation after reopen.
+    collection.reset();
+    auto reopened = Collection::Open(col_path, options_);
+    ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
+    collection = std::move(reopened).value();
+    EXPECT_GE(self_recall(0, kBatch * 2), kMinHits * 2);
+  };
+
+  for (auto index_type : {IndexType::HNSW, IndexType::FLAT}) {
+    for (auto quantize_type : {QuantizeType::INT8, QuantizeType::INT4}) {
+      func(index_type, quantize_type, MetricType::COSINE);
+      func(index_type, quantize_type, MetricType::L2);
+    }
+  }
 }
 
 TEST_F(CollectionTest, Feature_Optimize_Delete) {
