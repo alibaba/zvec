@@ -1524,22 +1524,25 @@ bool zvec_index_params_get_quantizer_enable_rotate(
 
 zvec_error_code_t zvec_index_params_set_quantizer_pq(
     zvec_index_params_t *params, const zvec_pq_quantizer_params_t *pq) {
-  auto *ivf = params ? dynamic_cast<zvec::IVFIndexParams *>(
-                          reinterpret_cast<zvec::IndexParams *>(params)) : nullptr;
-  if (!ivf || !pq) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "IVF index params and PQ params are required");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-  if (pq->num_chunk <= 0 || (pq->num_bits != 4 && pq->num_bits != 8) ||
-      (pq->fast_scan && pq->num_bits != 4) ||
-      (pq->enable_rotate && (pq->opq_iter == 0 || pq->opq_pq_iter == 0))) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Invalid PQ/OPQ/FastScan parameters");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-  ivf->set_quantizer_param(zvec::QuantizerParam(
-      pq->enable_rotate, pq->num_chunk, pq->num_bits, pq->fast_scan,
-      pq->opq_iter, pq->opq_pq_iter));
-  return ZVEC_OK;
+  ZVEC_TRY_RETURN_ERROR(
+      "Failed to set PQ quantizer parameters",
+      auto *ivf = params ? dynamic_cast<zvec::IVFIndexParams *>(
+                              reinterpret_cast<zvec::IndexParams *>(params))
+                        : nullptr;
+      if (!ivf || !pq) {
+        SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                       "IVF index params and PQ params are required");
+        return ZVEC_ERROR_INVALID_ARGUMENT;
+      }
+      zvec::QuantizerParam candidate(
+          pq->enable_rotate, pq->num_chunk, pq->num_bits, pq->fast_scan,
+          pq->opq_iter, pq->opq_pq_iter);
+      auto status = candidate.validate();
+      if (!status.ok()) {
+        return handle_status(status);
+      }
+      ivf->set_quantizer_param(candidate);
+      return ZVEC_OK;)
 }
 
 zvec_error_code_t zvec_index_params_get_quantizer_pq(

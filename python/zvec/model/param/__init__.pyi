@@ -521,7 +521,8 @@ class HnswRabitqIndexParam(VectorIndexParam):
     Attributes:
         metric_type (MetricType): Distance metric used for similarity computation.
             Default is ``MetricType.IP`` (inner product).
-        total_bits (int): Total bits for RabitQ quantization. Default is 7.
+        total_bits (int): Bits for RabitQ quantization, from 1 to 9.
+            Default is 7; 0 also selects the default of 7 bits.
         num_clusters (int): Number of clusters for RabitQ. Default is 16.
         m (int): Number of bi-directional links created for every new element
             during construction. Higher values improve accuracy but increase
@@ -577,7 +578,7 @@ class HnswRabitqIndexParam(VectorIndexParam):
     @property
     def total_bits(self) -> int:
         """
-        int: Total bits for RabitQ quantization.
+        int: RabitQ bits (1 to 9); 0 selects the default of 7 bits.
         """
 
     @property
@@ -673,7 +674,7 @@ class IvfRabitqIndexParam(VectorIndexParam):
     @property
     def total_bits(self) -> int:
         """
-        int: Total bits for RaBitQ quantization.
+        int: RaBitQ bits (1 to 9); 0 selects the default of 7 bits.
         """
 
     @property
@@ -1425,6 +1426,7 @@ class QuantizerParam:
 
     This class is only needed when customizing quantizer behavior (e.g., enabling
     random rotation). It can be omitted for default quantization settings.
+    Quantizer settings must be valid even when PQ or rotation is disabled.
 
     Attributes:
         enable_rotate (bool): Whether to apply random rotation before INT8/INT4
@@ -1451,11 +1453,15 @@ class QuantizerParam:
         Constructs a QuantizerParam instance.
 
         Args:
-            num_chunk (int): PQ subquantizers; default 8.
+            num_chunk (int): Positive number of PQ subquantizers; default 8.
+                For PQ, must not exceed dimension. PQ4 also requires dimension
+                divisible by this value.
             num_bits (int): PQ bits per code, 4 or 8; default 8.
             fast_scan (bool): Packed IVF PQ4 scan; default False.
-            opq_iter (int): OPQ iterations; default 5.
+            opq_iter (int): OPQ iterations; default 5. Must be positive even
+                when rotation is disabled.
             opq_pq_iter (int): PQ iterations per OPQ iteration; default 4.
+                Must be positive even when rotation is disabled.
             enable_rotate (bool, optional): Whether to apply random rotation
                 before INT8/INT4 quantization, or learned OPQ for PQ. Defaults to False.
         """

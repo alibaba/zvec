@@ -450,16 +450,21 @@ Args:
 Parameters for quantizer configuration.
 
 For HNSW/IVF PQ, configure subquantizers, code width, FastScan and learned OPQ.
+Quantizer settings must be valid even when PQ or rotation is disabled.
 
 Attributes:
     enable_rotate (bool): Whether to apply random rotation before INT8/INT4
         quantization to reduce quantization error.
         With quantize_type=PQ, enables learned OPQ. Defaults to False.
-    num_chunk (int): PQ subquantizers; default 8. PQ4 requires dimension divisible by this value.
+    num_chunk (int): Positive number of PQ subquantizers; default 8.
+        For PQ, must not exceed dimension. PQ4 also requires dimension
+        divisible by this value.
     num_bits (int): Bits per PQ code, 4 or 8; default 8.
     fast_scan (bool): Enable packed IVF PQ4 scans; default False.
-    opq_iter (int): OPQ training iterations; default 5, positive when OPQ is enabled.
-    opq_pq_iter (int): PQ iterations per OPQ iteration; default 4, positive when OPQ is enabled.
+    opq_iter (int): OPQ training iterations; default 5. Must be positive even
+        when rotation is disabled.
+    opq_pq_iter (int): PQ iterations per OPQ iteration; default 4.
+        Must be positive even when rotation is disabled.
 
 Examples:
     >>> qp = QuantizerParam(enable_rotate=True)
@@ -740,6 +745,8 @@ quantization method that provides high compression with minimal accuracy loss.
 Attributes:
     metric_type (MetricType): Distance metric used for similarity computation.
         Default is ``MetricType.IP`` (inner product).
+    total_bits (int): Bits for RabitQ quantization, from 1 to 9.
+        Default is 7; 0 also selects the default of 7 bits.
     m (int): Number of bi-directional links created for every new element
         during construction. Higher values improve accuracy but increase
         memory usage and construction time. Default is 50.
@@ -770,8 +777,9 @@ Examples:
       .def_property_readonly(
           "ef_construction", &HnswRabitqIndexParams::ef_construction,
           "int: Candidate list size during index construction.")
-      .def_property_readonly("total_bits", &HnswRabitqIndexParams::total_bits,
-                             "int: Total bits for RabitQ quantization.")
+      .def_property_readonly(
+          "total_bits", &HnswRabitqIndexParams::total_bits,
+          "int: RabitQ bits (1 to 9); 0 selects the default of 7 bits.")
       .def_property_readonly("num_clusters",
                              &HnswRabitqIndexParams::num_clusters,
                              "int: Number of clusters for RabitQ.")
@@ -839,7 +847,8 @@ Attributes:
     metric_type (MetricType): Distance metric used for similarity computation.
         Default is ``MetricType.IP`` (inner product).
     nlist (int): Number of IVF cluster centers. Default is 1024.
-    total_bits (int): Total bits for RaBitQ quantization. Default is 7.
+    total_bits (int): Bits for RaBitQ quantization, from 1 to 9.
+        Default is 7; 0 also selects the default of 7 bits.
     sample_count (int): Sample count for training. 0 means use all vectors.
 
 Examples:
@@ -861,8 +870,9 @@ Examples:
            py::arg("sample_count") = ivf_rabitq_defaults.sample_count())
       .def_property_readonly("nlist", &IvfRabitqIndexParams::nlist,
                              "int: Number of IVF cluster centers.")
-      .def_property_readonly("total_bits", &IvfRabitqIndexParams::total_bits,
-                             "int: Total bits for RaBitQ quantization.")
+      .def_property_readonly(
+          "total_bits", &IvfRabitqIndexParams::total_bits,
+          "int: RaBitQ bits (1 to 9); 0 selects the default of 7 bits.")
       .def_property_readonly("sample_count",
                              &IvfRabitqIndexParams::sample_count,
                              "int: Sample count for RaBitQ training.")

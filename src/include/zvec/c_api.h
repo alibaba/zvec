@@ -1015,10 +1015,9 @@ ZVEC_EXPORT bool ZVEC_CALL zvec_index_params_get_quantizer_enable_rotate(
     const zvec_index_params_t *params);
 
 /** IVF PQ configuration. Set the index quantize type to ZVEC_QUANTIZE_TYPE_PQ.
- * PQ supports FP32 IVF fields with L2, IP or COSINE metrics. num_bits is 4 or
- * 8; FastScan requires 4 bits and dimension divisible by num_chunk.
- * enable_rotate selects learned OPQ; its iteration counts must then be
- * positive.
+ * PQ supports FP32 IVF fields with L2, IP or COSINE metrics. num_chunk must be
+ * positive and num_bits must be 4 or 8. PQ4 requires dimension divisible by
+ * num_chunk; FastScan requires PQ4. enable_rotate selects learned OPQ.
  */
 typedef struct {
   int num_chunk;
@@ -1031,7 +1030,7 @@ typedef struct {
 
 #define ZVEC_PQ_QUANTIZER_PARAMS_DEFAULT {8, 8, false, false, 5, 4}
 
-/** Set IVF PQ configuration. Copies values; schema validation checks dimension.
+/** Set IVF PQ configuration.
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_quantizer_pq(
     zvec_index_params_t *params, const zvec_pq_quantizer_params_t *pq);
@@ -1180,7 +1179,7 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_ivf_params(
  * @brief Set IVF RaBitQ specific parameters
  * @param params Index parameters (must be IVF_RABITQ type)
  * @param nlist Number of cluster centers
- * @param total_bits Total bits for RaBitQ quantization
+ * @param total_bits Total bits for RaBitQ (1-9; 0 selects the default)
  * @param sample_count Sample count for training, 0 means use all vectors
  * @return ZVEC_OK on success, error code on failure
  */
