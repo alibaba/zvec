@@ -30,3 +30,13 @@ extracted package. Verify residual-performance-handoff.tar.gz.sha256 first.
 This archive was frozen before its commit; its preparation-time status text
 does not mean that the checked-in candidate still needs to be committed.
 Linux GCC/x86 validation remains pending.
+
+Residual final candidate (x86 validated), prepared 2026-11-09
+-------------------------------------------------------------
+x86-residual-final-handoff.tar.gz contains the final Linux x86 candidate
+(patches/final_vs_9819c706.patch, matrix.h only), the x86 report, two-round
+comparison tables, correctness summaries, disassembly evidence and the
+diagnostic variants. Start with ../MACOS_RESIDUAL_FINAL_START_HERE_zh.txt.
+Verify x86-residual-final-handoff.tar.gz.sha256 first. The candidate is NOT
+applied to the branch; macOS/ARM64 must re-validate it (matrix.h is shared
+code) before a two-platform pass can be claimed.
