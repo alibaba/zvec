@@ -36,6 +36,10 @@ option(ENABLE_OPENMP "Enable OpenMP support" OFF)
 ## Treat warnings as errors (for CI)
 option(ENABLE_WERROR "Treat compiler warnings as errors in strict targets" OFF)
 
+# Optional native Gandiva backend for scalar predicates. The default build does
+# not discover LLVM/OpenSSL or compile/link Gandiva.
+option(ZVEC_ENABLE_SCALAR_JIT "Enable the experimental Gandiva scalar filter backend" OFF)
+
 set(ARCH_OPTIONS
   ENABLE_NEHALEM ENABLE_SANDYBRIDGE ENABLE_HASWELL ENABLE_BROADWELL ENABLE_SKYLAKE
   ENABLE_SKYLAKE_AVX512 ENABLE_ICELAKE ENABLE_SAPPHIRERAPIDS ENABLE_EMERALDRAPIDS ENABLE_GRANITERAPIDS

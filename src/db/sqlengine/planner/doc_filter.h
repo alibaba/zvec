@@ -23,6 +23,7 @@
 #include "db/index/segment/segment.h"
 #include "db/sqlengine/analyzer/query_info.h"
 #include "db/sqlengine/analyzer/query_node.h"
+#include "db/sqlengine/planner/scalar_doc_filter.h"
 
 namespace zvec::sqlengine {
 
@@ -52,6 +53,12 @@ class DocFilter : public IndexFilter {
 
   bool empty() const;
 
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+  bool uses_scalar_jit() const {
+    return scalar_filter_ != nullptr;
+  }
+#endif
+
  private:
   std::optional<bool> get_forward_bit(uint64_t id) const;
   std::optional<bool> is_matched_by_forward_filter(uint64_t id) const;
@@ -69,6 +76,9 @@ class DocFilter : public IndexFilter {
   IndexFilter::Ptr invert_filter_{nullptr};
 
   std::shared_ptr<arrow::ChunkedArray> forward_bitmap_;
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+  std::unique_ptr<ScalarDocFilter> scalar_filter_;
+#endif
 };
 
 }  // namespace zvec::sqlengine

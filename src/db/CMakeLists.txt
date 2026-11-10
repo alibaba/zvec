@@ -5,6 +5,14 @@ cc_directory(common)
 cc_directory(index)
 cc_directory(sqlengine)
 
+set(ZVEC_SCALAR_JIT_LIBS)
+if(ZVEC_ENABLE_SCALAR_JIT)
+  # cc_library uses CMake's plain target_link_libraries signature. Keep that
+  # signature here and propagate the optional backend to index/sqlengine tests.
+  target_link_libraries(zvec_index zvec_gandiva_scalar)
+  list(APPEND ZVEC_SCALAR_JIT_LIBS zvec_gandiva_scalar)
+endif()
+
 file(GLOB_RECURSE ALL_DB_SRCS *.cc *.c *.h)
 
 # Ensure bitpacked_simd_sse41.cc is compiled with SSE4.1 flag and
@@ -53,5 +61,6 @@ cc_library(
     Arrow::arrow_compute
     Arrow::arrow_acero
     utf8proc
+    ${ZVEC_SCALAR_JIT_LIBS}
   VERSION "${PROXIMA_ZVEC_VERSION}"
 )

@@ -82,6 +82,7 @@ TEST_P(AddColumnBatchBoundariesTest,
       col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
       options_, 0, doc_count);
   ASSERT_TRUE(segment != nullptr);
+  EXPECT_EQ(segment->snapshot_forward_columns({"id"}), nullptr);
   ASSERT_TRUE(segment->dump().ok());
 
   auto writing_segment_meta = segment->meta();
@@ -221,6 +222,26 @@ TEST_P(AddColumnBatchBoundariesTest,
       fetched_added_only->GetColumnByName(added_column);
   ASSERT_TRUE(fetched_added_only_column != nullptr);
   EXPECT_EQ(fetched_added_only_column->null_count(), row_ids.size());
+
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+  auto snapshot = segment->snapshot_forward_columns({"id", added_column});
+  ASSERT_NE(snapshot, nullptr);
+  ASSERT_TRUE(snapshot->Validate().ok());
+  EXPECT_EQ(snapshot->num_rows(), doc_count);
+  EXPECT_EQ(snapshot->column(1)->null_count(), doc_count);
+  EXPECT_GT(snapshot->column(0)->num_chunks(), 1);
+  EXPECT_EQ(snapshot->column(1)->num_chunks(), 1);
+  // Local row IDs are synthetic; unsupported columns cannot be borrowed.
+  EXPECT_EQ(segment->snapshot_forward_columns({LOCAL_ROW_ID}), nullptr);
+
+  // Exported Arrow buffers own the memory mapping even after store closure.
+  auto first_value = snapshot->column(0)->GetScalar(0).ValueOrDie();
+  segment.reset();
+  EXPECT_TRUE(snapshot->column(0)->GetScalar(0).ValueOrDie()->Equals(*first_value));
+  EXPECT_FALSE(snapshot->column(1)->GetScalar(doc_count - 1).ValueOrDie()->is_valid);
+#else
+  EXPECT_EQ(segment->snapshot_forward_columns({"id", added_column}), nullptr);
+#endif
 }
 
 INSTANTIATE_TEST_SUITE_P(MMap, AddColumnBatchBoundariesTest,

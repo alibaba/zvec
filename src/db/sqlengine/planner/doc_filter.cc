@@ -61,6 +61,23 @@ Status DocFilter::compute_filter() {
                                    bind_res.status().ToString());
     }
     *forward_filter_expr_ = bind_res.MoveValueUnsafe();
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+    scalar_filter_.reset();
+    if (ScalarDocFilter::Enabled()) {
+      auto snapshot = segment_->snapshot_forward_columns(
+          query_info_->get_forward_filter_field_names());
+      auto compiled =
+          ScalarDocFilter::MakeValidated(*forward_filter_expr_, snapshot);
+      if (compiled.ok()) {
+        scalar_filter_ = std::move(compiled).ValueUnsafe();
+      } else {
+        // Unsupported semantics, layouts and compilation/binding errors all
+        // preserve the existing Arrow evaluator. JIT is an optional fast path.
+        LOG_DEBUG("Scalar JIT unavailable: %s",
+                  compiled.status().ToString().c_str());
+      }
+    }
+#endif
   }
   return Status::OK();
 }
@@ -138,6 +155,13 @@ std::optional<std::vector<uint64_t>> DocFilter::get_bf_by_keys_and_update(
 }
 
 std::optional<bool> DocFilter::is_matched_by_forward_filter(uint64_t id) const {
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+  if (scalar_filter_) {
+    if (auto result = scalar_filter_->Evaluate(id)) {
+      return result;
+    }
+  }
+#endif
   auto exec_batch =
       segment_->fetch(query_info_->get_forward_filter_field_names(), id);
   if (!exec_batch) {

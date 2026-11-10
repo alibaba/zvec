@@ -27,6 +27,11 @@ endif()
 set(ARROW_SLIM_COMPUTE_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.slim_compute.patch)
 apply_patch_once("arrow_slim_compute" "${ARROW_SRC_DIR}" "${ARROW_SLIM_COMPUTE_PATCH}")
 
+set(_ARROW_SCALAR_JIT_ARGS -DARROW_GANDIVA=OFF)
+if(ZVEC_ENABLE_SCALAR_JIT)
+    include(${PROJECT_ROOT_DIR}/thirdparty/gandiva_scalar/prepare_arrow.cmake)
+endif()
+
 include(ExternalProject)
 include(ProcessorCount)
 
@@ -194,10 +199,10 @@ else ()
             SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/apache-arrow-21.0.0
             DOWNLOAD_COMMAND ""
             BUILD_IN_SOURCE false
-            CONFIGURE_COMMAND env ${CONFIGURE_ENV_LIST} "${CMAKE_COMMAND}" ${CMAKE_CACHE_ARGS} ${_ARROW_COMPILER_LAUNCHER_ARGS} ${_ARROW_COMPILER_ARGS} ${_ARROW_SIZE_FLAGS} -DCMAKE_BUILD_TYPE=${ARROW_CMAKE_BUILD_TYPE} -DCMAKE_DEBUG_POSTFIX= -DARROW_BUILD_SHARED=OFF -DARROW_ACERO=ON -DARROW_FILESYSTEM=ON -DARROW_DATASET=OFF -DARROW_PARQUET=ON -DARROW_COMPUTE=ON -DARROW_WITH_ZLIB=OFF -DARROW_DEPENDENCY_SOURCE=BUNDLED -DWITH_OPENSSL=OFF -DARROW_MIMALLOC=OFF -DCMAKE_INSTALL_LIBDIR=lib "<SOURCE_DIR>/cpp"
+            CONFIGURE_COMMAND env ${CONFIGURE_ENV_LIST} "${CMAKE_COMMAND}" ${CMAKE_CACHE_ARGS} ${_ARROW_COMPILER_LAUNCHER_ARGS} ${_ARROW_COMPILER_ARGS} ${_ARROW_SIZE_FLAGS} -DCMAKE_BUILD_TYPE=${ARROW_CMAKE_BUILD_TYPE} -DCMAKE_DEBUG_POSTFIX= -DARROW_BUILD_SHARED=OFF -DARROW_ACERO=ON -DARROW_FILESYSTEM=ON -DARROW_DATASET=OFF -DARROW_PARQUET=ON -DARROW_COMPUTE=ON -DARROW_WITH_ZLIB=OFF -DARROW_DEPENDENCY_SOURCE=BUNDLED -DWITH_OPENSSL=OFF -DARROW_MIMALLOC=OFF -DCMAKE_INSTALL_LIBDIR=lib ${_ARROW_SCALAR_JIT_ARGS} "<SOURCE_DIR>/cpp"
             BUILD_COMMAND "${CMAKE_COMMAND}" --build . --target all -- -j ${NPROC}
             INSTALL_COMMAND "${CMAKE_COMMAND}" --install "<BINARY_DIR>" --prefix=${EXTERNAL_BINARY_DIR}/usr/local
-            BYPRODUCTS ${LIB_PARQUET} ${LIB_ARROW} ${LIB_COMPUTE} ${LIB_ACERO} ${LIB_ARROW_DEPENDS}
+            INSTALL_BYPRODUCTS ${LIB_PARQUET} ${LIB_ARROW} ${LIB_COMPUTE} ${LIB_ACERO} ${LIB_ARROW_DEPENDS} ${LIB_GANDIVA}
             LOG_DOWNLOAD ON
             LOG_CONFIGURE ON
             LOG_BUILD ON
@@ -206,6 +211,23 @@ else ()
             # pointing to log files on the temporary runner.
             LOG_OUTPUT_ON_FAILURE ON
     )
+endif()
+
+if(ZVEC_ENABLE_SCALAR_JIT)
+    # ExternalProject otherwise considers a completed build up to date even
+    # after configure_file updates its source tree. Track the overlay inputs
+    # explicitly so a future scalar ABI/codegen change rebuilds Gandiva.
+    set(_SCALAR_JIT_SOURCE_DIR ${PROJECT_ROOT_DIR}/thirdparty/gandiva_scalar)
+    ExternalProject_Add_Step(ARROW.BUILD scalar_source_overrides
+        COMMAND "${CMAKE_COMMAND}" -E true
+        DEPENDEES patch
+        DEPENDERS configure
+        DEPENDS
+            ${_SCALAR_JIT_SOURCE_DIR}/prepare_arrow.cmake
+            ${_SCALAR_JIT_SOURCE_DIR}/include/gandiva/scalar_predicate.h
+            ${_SCALAR_JIT_SOURCE_DIR}/overrides/gandiva/annotator.h
+            ${_SCALAR_JIT_SOURCE_DIR}/overrides/gandiva/llvm_generator.h
+            ${_SCALAR_JIT_SOURCE_DIR}/overrides/gandiva/llvm_generator.cc)
 endif()
 
 add_library(arrow UNKNOWN IMPORTED GLOBAL)
@@ -270,3 +292,14 @@ set_target_properties(
         INTERFACE_COMPILE_DEFINITIONS "ARROW_ACERO_STATIC"
 )
 add_dependencies(Arrow::arrow_acero ARROW.BUILD)
+
+if(ZVEC_ENABLE_SCALAR_JIT)
+    add_library(Gandiva::gandiva_static STATIC IMPORTED GLOBAL)
+    set_target_properties(Gandiva::gandiva_static PROPERTIES
+        IMPORTED_LOCATION "${LIB_GANDIVA}"
+        INTERFACE_INCLUDE_DIRECTORIES "${EXTERNAL_INC_DIR};${LLVM_INCLUDE_DIRS}"
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${EXTERNAL_INC_DIR};${LLVM_INCLUDE_DIRS}"
+        INTERFACE_COMPILE_DEFINITIONS "GANDIVA_STATIC"
+        INTERFACE_LINK_LIBRARIES "Arrow::arrow_static;LLVM;OpenSSL::SSL;OpenSSL::Crypto;Threads::Threads;${CMAKE_DL_LIBS}")
+    add_dependencies(Gandiva::gandiva_static ARROW.BUILD)
+endif()

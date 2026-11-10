@@ -255,6 +255,9 @@ class SegmentImpl : public Segment,
   ExecBatchPtr fetch(const std::vector<std::string> &columns,
                      int segment_doc_id) const override;
 
+  TablePtr snapshot_forward_columns(
+      const std::vector<std::string> &columns) const override;
+
   bool has_identity_doc_ids() const override {
     return has_identity_doc_ids_;
   }
@@ -450,6 +453,9 @@ class SegmentImpl : public Segment,
   static constexpr size_t INVALID_CHUNK_LAYOUT_ID =
       std::numeric_limits<size_t>::max();
   std::vector<std::shared_ptr<arrow::ChunkedArray>> persist_chunk_arrays_;
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+  std::vector<bool> persist_chunk_arrays_valid_;
+#endif
   std::unordered_map<std::string, int> col_idx_map_;
   std::vector<std::vector<uint64_t>> chunk_layout_offsets_;
   std::vector<size_t> persist_chunk_layout_ids_;
@@ -2731,6 +2737,48 @@ TablePtr SegmentImpl::fetch_unsafe(
   return fetch_normal(columns, result_schema, segment_doc_ids);
 }
 
+TablePtr SegmentImpl::snapshot_forward_columns(
+    const std::vector<std::string> &columns) const {
+#ifndef ZVEC_ENABLE_SCALAR_JIT
+  (void)columns;
+  return nullptr;
+#else
+  std::shared_lock<std::shared_mutex> lock(seg_mtx_);
+  if (!options_.enable_mmap_ || !options_.read_only_ || memory_store_ ||
+      columns.empty() || doc_ids_.empty()) {
+    return nullptr;
+  }
+  auto schema_table = fetch_unsafe(columns, std::vector<int>{});
+  if (!schema_table) {
+    return nullptr;
+  }
+  std::vector<std::shared_ptr<arrow::ChunkedArray>> arrays;
+  arrays.reserve(columns.size());
+  for (const auto &column : columns) {
+    const auto found = col_idx_map_.find(column);
+    if (found == col_idx_map_.end() || found->second < 0) {
+      return nullptr;
+    }
+    const auto column_index = static_cast<size_t>(found->second);
+    if (column_index >= persist_chunk_arrays_.size() ||
+        column_index >= persist_chunk_arrays_valid_.size() ||
+        !persist_chunk_arrays_valid_[column_index]) {
+      return nullptr;
+    }
+    const auto &array = persist_chunk_arrays_[column_index];
+    // Added columns occupy independent scalar blocks: meta doc_count() can
+    // count their rows again. doc_ids_ defines the actual local row space.
+    if (!array || static_cast<uint64_t>(array->length()) != doc_ids_.size() ||
+        !array->type()->Equals(schema_table->field(arrays.size())->type())) {
+      return nullptr;
+    }
+    arrays.push_back(array);
+  }
+  return arrow::Table::Make(schema_table->schema(), std::move(arrays),
+                            static_cast<int64_t>(doc_ids_.size()));
+#endif
+}
+
 ExecBatchPtr SegmentImpl::fetch(const std::vector<std::string> &columns,
                                 int segment_doc_id) const {
   std::shared_lock<std::shared_mutex> lock(seg_mtx_);
@@ -3735,6 +3783,9 @@ void SegmentImpl::fresh_persist_chunked_array() {
     fields.insert(fields.begin(), GLOBAL_DOC_ID);
     chunk_arrays.resize(fields.size());
     persist_chunk_arrays_.resize(fields.size());
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+    persist_chunk_arrays_valid_.assign(fields.size(), false);
+#endif
     persist_chunk_layout_ids_.resize(fields.size(), INVALID_CHUNK_LAYOUT_ID);
 
     for (size_t i = 0; i < fields.size(); ++i) {
@@ -3769,6 +3820,12 @@ void SegmentImpl::fresh_persist_chunked_array() {
       }
       persist_chunk_arrays_[i] =
           std::make_shared<arrow::ChunkedArray>(all_chunks);
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+      // These persisted arrays are immutable. Validate metadata at publication
+      // (open/schema refresh), not thousands of chunks on every filter query.
+      persist_chunk_arrays_valid_[i] =
+          persist_chunk_arrays_[i]->Validate().ok();
+#endif
 
       const auto &chunk_array = persist_chunk_arrays_[i];
       if (chunk_array->num_chunks() == 0 ||
