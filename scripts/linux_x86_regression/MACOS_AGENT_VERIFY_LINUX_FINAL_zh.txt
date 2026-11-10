@@ -1,0 +1,77 @@
+Linux x86 最终复验结果：macOS agent 校验说明（2026-11-10）
+==========================================================
+
+任务：校验并独立复核 Linux x86 服务器对当前候选（生产代码 008fbdc3，
+分支 HEAD a934deea）的最终复验结果。不要在 macOS 重跑 Linux 数据，不要把任何补丁
+再次应用到当前分支，不要用 x86 结果推断 ARM64。
+
+一、材料
+--------
+  REPORT  = scripts/linux_x86_regression/reports/linux_final_revalidation_20261110/REPORT_zh.md
+  TABLES  = scripts/linux_x86_regression/reports/linux_final_revalidation_20261110/PERFORMANCE_TABLES.md
+  PKG     = scripts/linux_x86_regression/artifacts/linux-x86-final-revalidation-results.tar.gz
+  PKG.sha256 同目录；包内清单为 evidence/SHA256SUMS（1698 个文件）。
+
+  cd scripts/linux_x86_regression/artifacts
+  shasum -a 256 -c linux-x86-final-revalidation-results.tar.gz.sha256
+  DIR=$(mktemp -d /tmp/linux-final-reval.XXXXXX)
+  tar -xzf linux-x86-final-revalidation-results.tar.gz -C "$DIR"
+  (cd "$DIR/evidence" && shasum -a 256 -c SHA256SUMS | grep -v ': OK$' || echo ALL_OK)
+
+二、版本核对
+------------
+  cat "$DIR/evidence/handoff_commit.txt"            # 必须为 a934deeade49138b824e2f4a1d70fd4252ddf216
+  for N in older955 reference7abc linux_final candidate; do
+    cat "$DIR/evidence/$N/version_record.txt"       # HEAD 955ae841，parent 499eab89，before f7bd575f
+    awk '{print $1}' "$DIR/evidence/$N/applied_patch.sha256"
+  done
+  shasum -a 256 scripts/linux_x86_regression/final_revalidation/patches/*.patch
+应得 older955=baseline_955_test_build.patch、reference7abc=reference_7abc_vs_955.patch、
+linux_final=reference_linux_final_vs_955.patch、candidate=candidate_vs_955.patch 的哈希；
+src/tests tree 与 final_revalidation/versions.json 一致。
+  cat "$DIR/evidence/candidate_vs_linux_final_src.diff"   # 仅 matrix.h 三处 ARM 宏内改动
+
+三、独立复算（不要只读报告数字）
+--------------------------------
+1. 性能：从 comparisons/vs_{older955,reference7abc,linux_final}_round{1,2}/
+   {matrix,adapter,ivf}_four_versions.csv 重算 candidate/previous_fix、candidate/before、
+   candidate/parent 的两轮 >5% 交集。期望：
+     vs Linux final  matrix 0 / adapter 0 / ivf 0（R1 单轮 9 项 FP16、R2 单轮 2 项）
+     vs 7abc         matrix 2（FP32 L2 1x1 d128、FP32 IP 16x4 d128）/ 0 / 0
+     vs 955          matrix 2（FP32 L2 1x1 d128、INT8 L2 2x1 d128）/ 0 / 0
+     vs before       matrix 15（INT16 14 + FP32 IP 32x4 d512）/ 0 / 0
+     vs parent       matrix 66 / 0 / 0
+   可直接运行 evidence/tools/analyze_final.py（需 TASK 环境变量指向一个含
+   comparisons/ 与四套 results_round*/ 的目录，evidence/ 布局即满足：
+   TASK="$DIR/evidence" python3 "$DIR/evidence/tools/analyze_final.py"），
+   该脚本会重写 analysis/ 下的 summary.md|json 与 PERFORMANCE_TABLES.md，先复制一份原件再 diff，
+   应逐字节一致（服务器已在解压副本上验证可复现）。
+2. 行数：每套 results_round{1,2}/{matrix,adapter,ivf}_comparison.csv 为 504/32/24 行；
+   每轮每版本 3 个 *_{parent,before,fixed}_{0,1,2}.log。
+3. 正确性：解析四套 results_round1/correctness.json 与同名 XML，确认
+   fixed 44 程序 exit 0、0 failed，总计 510/510/511/511 passed；
+   parent_write 仅失败 RawTypes/IVFLegacyMatrixTest.Persisted{ColumnBlocks,RecordQuantizedBlocks}
+   MatchIndependentReference/5；fixed_read_parent 12/4/16/0；before_ivf 12/4/16/0；
+   fixture_sha256.txt 200 行且 parent-fixtures/ 有 200 个非空 .index；
+   final_correctness_audit.json 的 status 为 fixed_pass_with_known_parent_failures。
+   例外说明：turbo_neon_distance_test 在 x86 为 0 passed/5 skipped，原
+   final_revalidation/verify_correctness.py 会拒绝（日志 verify_correctness_original_tool.log），
+   服务器使用本地副本 tools/verify_correctness_x86.py（差异 tools/verify_correctness_x86.diff）
+   仅放行该一个程序；请审阅该 diff 是否只做了这一件事。
+4. 代码一致性：codecheck/CODECHECK_SUMMARY_zh.md、codecheck.json、all_objects.json、
+   prefixmap_all.json；核对 257/257 prefix-map 后字节相同、三个可执行文件屏蔽 RIP 位移后
+   差异 0 行。analysis/localize/*.asm 为四个 fixed 二进制中内核的归一化反汇编，可直接 diff。
+   包内省略了可再生的 .ii/.o/完整可执行文件反汇编，原件保留在服务器 TASK 目录。
+
+四、与 macOS 结论的衔接
+----------------------
+- REPORT §5.1：x86 上 FP16 IP 1x1 d128 为 10.75 ns，与 Linux final 持平（1.001/1.002），
+  macOS 的 12.09→7.5 ns 收益来自 ARM64 分支，在 x86 预处理阶段被排除。请确认这与
+  reports/macos_fp16_pair_20261109 的证据一致，不需要额外动作。
+- 四个 >5% 继承项（vs 955/7abc）在 reports/linux_residual_final_20261109/REPORT_zh.md §5.5
+  均有记录；本轮相对 Linux final 无新增项。
+
+五、输出
+--------
+回传：校验是否全部通过、复算数字与报告是否一致、发现的任何不一致（含文件名与行）。
+不授权提交/推送新修复；若认为需要改动共享或 ARM 代码，另存最小 patch 并说明。

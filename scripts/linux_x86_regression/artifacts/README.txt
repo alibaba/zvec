@@ -17,7 +17,11 @@ The original packages and sections below are historical snapshots. Statements
 such as "NOT applied" or "pending macOS" refer to their preparation time.
 Do not apply their candidate patches on top of the current branch. New server
 baseline patches are under ../final_revalidation/ and target detached 955 trees.
-Linux server revalidation of the newly committed final tree remains pending.
+Linux server revalidation of the committed final tree (branch a934deea, code
+008fbdc3) was completed on 2026-11-09/10:
+  linux-x86-final-revalidation-results.tar.gz (+ .sha256, inner evidence/SHA256SUMS)
+Report: ../reports/linux_final_revalidation_20261110/REPORT_zh.md. macOS-side
+verification instructions: ../MACOS_AGENT_VERIFY_LINUX_FINAL_zh.txt.
 
 Historical handoffs
 ===================
