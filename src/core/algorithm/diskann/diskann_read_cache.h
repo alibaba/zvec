@@ -65,17 +65,9 @@ class DiskAnnReadCache {
       const size_t slot = hash(key) % set_count_;
       Set &set = sets_[slot];
       std::lock_guard<std::mutex> lock(set.mutex);
-      bool found = false;
-      for (size_t i = 0; i < ways_; ++i) {
-        auto &entry = set.entries[i];
-        if (entry.valid && entry.offset == key) {
-          std::memcpy(out + consumed, payload(slot, i), record_bytes_);
-          if (entry.chances < 3) ++entry.chances;
-          found = true;
-          break;
-        }
-      }
-      if (!found) return false;
+      const size_t entry = touch(set, key);
+      if (entry == ways_) return false;
+      std::memcpy(out + consumed, payload(slot, entry), record_bytes_);
     }
     return true;
   }
@@ -100,16 +92,7 @@ class DiskAnnReadCache {
       {
         std::lock_guard<std::mutex> lock(set.mutex);
         // Another reader may have published this immutable sector meanwhile.
-        bool published = false;
-        for (size_t i = 0; i < ways_; ++i) {
-          auto &entry = set.entries[i];
-          if (entry.valid && entry.offset == key) {
-            if (entry.chances < 3) ++entry.chances;
-            published = true;
-            break;
-          }
-        }
-        if (published) continue;
+        if (touch(set, key) != ways_) continue;
         // Admission history uses metadata only. Once a set is full, a node
         // seen twice competes with its residents; most one-time scans bypass
         // the payload cache. Periodic admission lets obsolete residents age.
@@ -169,6 +152,18 @@ class DiskAnnReadCache {
     std::array<uint64_t, 32> ghosts{};
     size_t ghost_hand{0}, ghost_count{0}, misses{0};
   };
+  // The caller holds set.mutex. Return ways_ on a miss; both a lookup hit
+  // and an already-published concurrent read renew the same Clock credit.
+  size_t touch(Set &set, uint64_t key) const {
+    for (size_t i = 0; i < ways_; ++i) {
+      auto &entry = set.entries[i];
+      if (entry.valid && entry.offset == key) {
+        if (entry.chances < 3) ++entry.chances;
+        return i;
+      }
+    }
+    return ways_;
+  }
   static uint64_t hash(uint64_t key) {
     // Mix the full offset: vector segments need not start at file offset 0.
     key ^= key >> 30;

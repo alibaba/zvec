@@ -884,15 +884,15 @@ int LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
             !read_cache_->try_read(req.offset, req.len, req.buf))
           misses.push_back(i);
       }
-      std::vector<int> errors(read_reqs.size(), 0);
+      // Misses retain submission order; hits cannot contribute an I/O error.
+      std::vector<int> errors(misses.size(), 0);
+      const auto read_miss = [&](size_t position) {
+        errors[position] = read_cached(read_reqs[misses[position]]);
+      };
       if (misses.size() == 1) {
-        const size_t i = misses.front();
-        errors[i] = read_cached(read_reqs[i]);
+        read_miss(0);
       } else if (!misses.empty()) {
-        read_executor_->run(misses.size(), [&](size_t position) {
-          const size_t i = misses[position];
-          errors[i] = read_cached(read_reqs[i]);
-        });
+        read_executor_->run(misses.size(), read_miss);
       }
       // All requests have completed, including after an error. Return the
       // first error in submission order, without leaving pending writes.
