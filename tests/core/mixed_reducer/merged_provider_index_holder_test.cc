@@ -1020,13 +1020,43 @@ TEST(MergedProviderIndexHolderTest, FiltersRewritesIdsAndSupportsMultiPass) {
   EXPECT_EQ(0, holder.status());
 }
 
-TEST(MergedProviderIndexHolderTest, DocumentIdMapsPreserveNullGaps) {
+TEST(MergedProviderIndexHolderTest, DocumentPlanRanksAcrossWordBoundaries) {
+  IndexDocumentMergePlan plan;
+  size_t calls = 0;
+  IndexFilter filter;
+  filter.set([&](uint64_t row) {
+    ++calls;
+    return row % 3 == 0;
+  });
+  ASSERT_EQ(0, plan.init({130, 71}, 7, filter));
+  uint32_t next = 7;
+  for (size_t source = 0; source < 2; ++source) {
+    for (uint32_t row = 0; row < plan.rows(source); ++row) {
+      const uint64_t global = (source == 0 ? 0 : 130) + row;
+      const uint32_t expected = global % 3 == 0 ? UINT32_MAX : next++;
+      EXPECT_EQ(expected, plan.output_id(source, row));
+    }
+  }
+  EXPECT_EQ(next, plan.output_end());
+  EXPECT_EQ(201U, calls);
+  EXPECT_EQ(UINT32_MAX, plan.output_id(0, 130));
+}
+
+TEST(MergedProviderIndexHolderTest, DocumentPlanPreservesNullGaps) {
   auto first = MakeSource(MakeStreamer({{UINT64_MAX, 99}, {1, 1}, {3, 3}}));
-  first.id_map = std::make_shared<const std::vector<uint32_t>>(
-      std::vector<uint32_t>{UINT32_MAX, 0, UINT32_MAX, 2, UINT32_MAX});
   auto second = MakeSource(MakeStreamer({{0, 10}, {2, 12}, {UINT64_MAX, 99}}));
-  second.id_map = std::make_shared<const std::vector<uint32_t>>(
-      std::vector<uint32_t>{4, UINT32_MAX, 6, UINT32_MAX});
+  auto plan = std::make_shared<IndexDocumentMergePlan>();
+  size_t calls = 0;
+  IndexFilter filter;
+  filter.set([&](uint64_t id) {
+    ++calls;
+    return id == 0;
+  });
+  ASSERT_EQ(0, plan->init({5, 4}, 0, filter));
+  EXPECT_EQ(9U, calls);
+  EXPECT_EQ(8U, plan->output_end());
+  first.document_plan = second.document_plan = plan;
+  second.plan_source = 1;
   MergedProviderIndexHolder holder(
       IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
       {first, second});
@@ -1046,29 +1076,32 @@ TEST(MergedProviderIndexHolderTest, DocumentIdMapsPreserveNullGaps) {
     EXPECT_FLOAT_EQ(*static_cast<const float *>(data),
                     expected[ordinal].second);
   }
+  EXPECT_EQ(9U, calls);
 }
 
-TEST(MergedProviderIndexHolderTest, DocumentIdMapsUseLogicalSourceSpans) {
+TEST(MergedProviderIndexHolderTest, DocumentPlanUsesLogicalSourceSpans) {
   auto first = MakeSource(MakeStreamer({{1, 1}}));
-  first.id_map = std::make_shared<const std::vector<uint32_t>>(
-      std::vector<uint32_t>{UINT32_MAX, 0, UINT32_MAX, UINT32_MAX});
   auto second = MakeSource(MakeStreamer({{0, 10}, {1, 11}}));
-  second.id_map = std::make_shared<const std::vector<uint32_t>>(
-      std::vector<uint32_t>{3, 4, UINT32_MAX});
+  auto plan = std::make_shared<IndexDocumentMergePlan>();
   IndexFilter filter;
-  filter.set([](uint64_t id) { return id == 4; });
+  filter.set([](uint64_t id) { return id == 0 || id == 4; });
+  ASSERT_EQ(0, plan->init({4, 3}, 0, filter));
+  first.document_plan = second.document_plan = plan;
+  second.plan_source = 1;
   MergedProviderIndexHolder holder(
       IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
       {first, second});
-  ASSERT_EQ(0, holder.init(filter));
-  const std::vector<std::pair<uint64_t, float>> expected{{0, 1}, {4, 11}};
+  ASSERT_EQ(0, holder.init(IndexFilter()));
+  const std::vector<std::pair<uint64_t, float>> expected{{0, 1}, {3, 11}};
   EXPECT_EQ(expected, ReadAll(&holder));
+  EXPECT_EQ(5U, plan->output_end());
 }
 
-TEST(MergedProviderIndexHolderTest, DocumentIdMapsRejectOutOfRangeKeys) {
+TEST(MergedProviderIndexHolderTest, DocumentPlanRejectsOutOfRangeKeys) {
   auto source = MakeSource(MakeStreamer({{3, 3}}));
-  source.id_map = std::make_shared<const std::vector<uint32_t>>(
-      std::vector<uint32_t>{0, 1});
+  auto plan = std::make_shared<IndexDocumentMergePlan>();
+  ASSERT_EQ(0, plan->init({2}, 0, IndexFilter()));
+  source.document_plan = plan;
   MergedProviderIndexHolder holder(
       IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension), {source});
   EXPECT_EQ(IndexError_InvalidFormat, holder.init(IndexFilter()));

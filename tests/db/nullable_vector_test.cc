@@ -530,7 +530,8 @@ TEST_F(NullableVectorStorageTest, AllNullBackingAcceptsLaterVectors) {
       const uint32_t rows = ivf ? 4 : 5;
       EXPECT_EQ(target.row_count(), rows);
       ASSERT_TRUE(target.close().ok());
-      ASSERT_TRUE(target.open({true, false, true, rows, true}).ok());
+      auto opened = target.open({true, false, true, rows, true});
+      ASSERT_TRUE(opened.ok()) << opened.message();
       for (uint32_t row = 0; row < rows; ++row) {
         const bool present = row == rows - 1 || (!ivf && row == 2);
         auto fetched = target.fetch(row);

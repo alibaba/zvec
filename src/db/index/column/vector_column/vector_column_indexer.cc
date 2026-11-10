@@ -13,6 +13,7 @@
 // limitations under the License.
 #include "vector_column_indexer.h"
 #include <mutex>
+#include <roaring64map.hh>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/db/status.h>
@@ -137,7 +138,13 @@ Status VectorColumnIndexer::recreate_empty_index(bool use_empty_flat) {
   if (FileHelper::FileExists(index_file_path_) &&
       !FileHelper::RemoveFile(index_file_path_))
     return Status::InternalError("Failed to replace empty vector index");
-  return create_proxima_index({use_mmap_, true}, use_empty_flat);
+  auto status = create_proxima_index({use_mmap_, true}, use_empty_flat);
+  if (!status.ok()) return status;
+  if (row_count_ &&
+      index->add({core_interface::NullVector{}}, row_count_ - 1) != 0)
+    return Status::InternalError(
+        "Failed to restore empty vector document range");
+  return Status::OK();
 }
 
 Status VectorColumnIndexer::destroy() {
@@ -189,32 +196,44 @@ Status VectorColumnIndexer::merge(
   roaring::Roaring merged_nulls = null_rows_;
   uint32_t merged_rows = row_count_;
   if (has_null_bitmap()) {
+    engine_options.preserve_empty_rows = true;
     uint64_t source_offset = 0;
     size_t added_vectors = 0;
+    // Evaluate the document filter once. Core consumes this stable snapshot
+    // when assigning IDs over the complete ranges, including NULL tails.
+    auto dropped = std::make_shared<roaring::Roaring64Map>();
     for (const auto &source : indexers) {
       if (source->index_file_path() == index_file_path()) continue;
       const uint32_t rows =
           source->has_null_bitmap() ? source->row_count() : source->doc_count();
-      auto id_map = std::make_shared<std::vector<uint32_t>>(rows, UINT32_MAX);
       for (uint32_t row = 0; row < rows; ++row) {
-        if (filter && filter->is_filtered(source_offset + row)) continue;
+        if (filter && filter->is_filtered(source_offset + row)) {
+          dropped->add(source_offset + row);
+          continue;
+        }
         if (merged_rows == UINT32_MAX)
           return Status::InvalidArgument("Too many vector rows to merge");
-        if (source->has_vector(row)) {
-          (*id_map)[row] = merged_rows;
+        if (source->has_vector(row))
           ++added_vectors;
-        } else {
+        else
           merged_nulls.add(merged_rows);
-        }
         ++merged_rows;
       }
       source_offset += rows;
-      engine_options.source_id_maps.push_back(std::move(id_map));
     }
-    // NULL documents retain their output row IDs but never enter the graph
-    // or training set. The map also applies the document deletion filter.
     engine_filter = std::make_shared<core_interface::IndexFilter>();
+    engine_filter->set(
+        [dropped](uint64_t row) { return dropped->contains(row); });
     if (added_vectors == 0) {
+      if (merged_rows > row_count_) {
+        if (all_null() && !empty_flat_index_) {
+          auto status = recreate_empty_index(true);
+          if (!status.ok()) return status;
+        }
+        if (index->add({core_interface::NullVector{}}, merged_rows - 1) != 0)
+          return Status::InternalError(
+              "Failed to append NULL vector documents");
+      }
       null_rows_ = std::move(merged_nulls);
       row_count_ = merged_rows;
       nulls_dirty_ = true;
@@ -254,6 +273,9 @@ Status VectorColumnIndexer::insert(
     auto status = recreate_empty_index(false);
     if (!status.ok()) return status;
   }
+  if (has_null_bitmap() && doc_id > row_count_ &&
+      index->add({core_interface::NullVector{}}, doc_id - 1) != 0)
+    return Status::InternalError("Failed to allocate skipped vector documents");
   if (index->add(engine_vector_data.value(), doc_id) != 0)
     return Status::InternalError("Failed to add vector to index");
   if (has_null_bitmap()) {

@@ -18,6 +18,8 @@
 #include <limits>
 #include <magic_enum/magic_enum.hpp>
 #include <turbo/quantizer/quantizer.h>
+#include <zvec/ailego/hash/crc32c.h>
+#include <zvec/core/framework/index_document_merge_plan.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_storage.h>
@@ -44,7 +46,8 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
     core::IndexReformer::Pointer reformer;
     std::shared_ptr<turbo::Quantizer> quantizer;
     core::IndexQueryMeta stored_meta;
-    std::shared_ptr<const std::vector<uint32_t>> id_map{};
+    core::IndexDocumentMergePlan::Pointer document_plan{};
+    size_t plan_source{0};
   };
 
   class Iterator final : public core::IndexHolder::Iterator {
@@ -75,9 +78,9 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
       if (owner_->error_ == 0) {
         owner_->error_ = source_iter_->status();
       }
-      return source_->id_map && result < source_->id_map->size()
-                 ? (*source_->id_map)[result]
-                 : result;
+      return source_->document_plan ? source_->document_plan->output_id(
+                                          source_->plan_source, result)
+                                    : result;
     }
 
     void next() override {
@@ -108,17 +111,20 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
           owner_->error_ = source_iter_->status();
           return;
         }
-        if (!source_->id_map) break;
+        if (!source_->document_plan) break;
         const auto key = source_iter_->key();
         if (source_iter_->status() != 0) {
           owner_->error_ = source_iter_->status();
           return;
         }
-        if (key != UINT64_MAX && key >= source_->id_map->size()) {
+        if (key != UINT64_MAX &&
+            key >= source_->document_plan->rows(source_->plan_source)) {
           owner_->error_ = core::IndexError_InvalidFormat;
           return;
         }
-        if (key != UINT64_MAX && (*source_->id_map)[key] != UINT32_MAX) break;
+        if (key != UINT64_MAX && source_->document_plan->output_id(
+                                     source_->plan_source, key) != UINT32_MAX)
+          break;
         source_iter_->next();
       }
       if (source_iter_->status() != 0) {
@@ -165,11 +171,30 @@ class MergeSourceIndexHolder final : public core::IndexHolder {
                          core::IndexQueryMeta source_meta)
       : sources_(std::move(sources)), source_meta_(std::move(source_meta)) {
     for (const auto &source : sources_) {
-      const auto count =
-          source.id_map
-              ? std::count_if(source.id_map->begin(), source.id_map->end(),
-                              [](uint32_t id) { return id != UINT32_MAX; })
-              : source.holder->count();
+      size_t count = source.holder->count();
+      if (source.document_plan) {
+        count = 0;
+        auto iter = source.holder->create_iterator();
+        if (!iter) {
+          error_ = core::IndexError_ReadData;
+          return;
+        }
+        for (; iter->is_valid(); iter->next()) {
+          const auto key = iter->key();
+          if (key != UINT64_MAX &&
+              key >= source.document_plan->rows(source.plan_source)) {
+            error_ = core::IndexError_InvalidFormat;
+            return;
+          }
+          if (source.document_plan->output_id(source.plan_source, key) !=
+              UINT32_MAX)
+            ++count;
+        }
+        if (iter->status() != 0) {
+          error_ = iter->status();
+          return;
+        }
+      }
       if (count > (std::numeric_limits<size_t>::max)() - count_) {
         error_ = core::IndexError_InvalidArgument;
         return;
@@ -269,6 +294,8 @@ bool Index::is_trained() const {
 }
 
 uint32_t Index::get_doc_count() const {
+  if (document_range_enabled_ || (builder_ && !is_trained_))
+    return document_count_;
   return get_slot_count();
 }
 
@@ -645,6 +672,8 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
     }
   }
 
+  ret = load_document_range();
+  if (ret != 0) return ret;
   // TODO: context pool
   if (!init_context()) {  // to validate if any error, will be overwritten
     LOG_ERROR("Failed to init context");
@@ -654,6 +683,96 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
   is_open_ = true;
   is_read_only_ = storage_options.read_only;
   return 0;
+}
+
+namespace {
+constexpr const char *kDocumentRangeSegment = "IndexDocumentRange";
+using DocumentRangeBytes = std::array<uint8_t, 16>;
+void PutRange32(uint8_t *out, uint32_t value) {
+  for (int i = 0; i < 4; ++i) out[i] = value >> (8 * i);
+}
+uint32_t GetRange32(const uint8_t *in) {
+  uint32_t value = 0;
+  for (int i = 0; i < 4; ++i) value |= uint32_t(in[i]) << (8 * i);
+  return value;
+}
+DocumentRangeBytes EncodeDocumentRange(uint32_t count) {
+  DocumentRangeBytes bytes{};
+  std::memcpy(bytes.data(), "ZVECDR01", 8);
+  PutRange32(bytes.data() + 8, count);
+  PutRange32(bytes.data() + 12, ailego::Crc32c::Hash(bytes.data(), 12));
+  return bytes;
+}
+}  // namespace
+
+void Index::record_document(uint32_t id) {
+  uint32_t current = document_count_.load();
+  while (current < id + 1 &&
+         !document_count_.compare_exchange_weak(current, id + 1)) {
+  }
+  if (current < id + 1 && document_range_enabled_.load())
+    document_range_dirty_ = true;
+}
+
+int Index::add_null(uint32_t id) {
+  if (!is_open_ || is_read_only_) return core::IndexError_NoReady;
+  if (builder_ && is_trained_) return core::IndexError_Unsupported;
+  if (id == UINT32_MAX) return core::IndexError_InvalidArgument;
+  const uint32_t count = get_doc_count();
+  // This operation appends missing vectors; it never removes an existing
+  // vector or silently changes an already allocated document.
+  if (id < count) return core::IndexError_InvalidArgument;
+  record_document(id);
+  document_range_enabled_ = document_range_dirty_ = true;
+  return 0;
+}
+
+int Index::load_document_range(bool validate_slots) {
+  document_range_enabled_ = document_range_dirty_ = false;
+  document_count_ = 0;
+  auto segment = storage_->get(kDocumentRangeSegment);
+  if (!segment)
+    return storage_->has(kDocumentRangeSegment) ? core::IndexError_ReadData : 0;
+  if (segment->data_size() != 16) return core::IndexError_InvalidFormat;
+  core::IndexStorage::MemoryBlock block;
+  if (segment->read(0, block, 16) != 16) return core::IndexError_ReadData;
+  const auto *bytes = static_cast<const uint8_t *>(block.data());
+  if (std::memcmp(bytes, "ZVECDR01", 8) != 0 ||
+      GetRange32(bytes + 12) != ailego::Crc32c::Hash(bytes, 12))
+    return core::IndexError_InvalidFormat;
+  document_count_ = GetRange32(bytes + 8);
+  document_range_enabled_ = true;
+  if (validate_slots && document_count_ < get_slot_count())
+    return core::IndexError_InvalidFormat;
+  return 0;
+}
+
+int Index::flush_document_range() {
+  if (!document_range_dirty_) return 0;
+  auto segment = storage_->get(kDocumentRangeSegment);
+  if (!segment) {
+    int ret = storage_->append(kDocumentRangeSegment, 16);
+    if (ret != 0) return ret;
+    segment = storage_->get(kDocumentRangeSegment);
+  }
+  if (!segment) return core::IndexError_WriteData;
+  auto bytes = EncodeDocumentRange(document_count_);
+  if (segment->write(0, bytes.data(), bytes.size()) != bytes.size() ||
+      segment->resize(bytes.size()) != bytes.size())
+    return core::IndexError_WriteData;
+  document_range_dirty_ = false;
+  return 0;
+}
+
+int Index::dump_document_range(const core::IndexDumper::Pointer &dumper) {
+  if (!document_range_enabled_) return 0;
+  auto bytes = EncodeDocumentRange(document_count_);
+  if (dumper->write(bytes.data(), bytes.size()) != bytes.size())
+    return core::IndexError_WriteData;
+  int ret = dumper->append(kDocumentRangeSegment, bytes.size(), 0,
+                           ailego::Crc32c::Hash(bytes.data(), bytes.size()));
+  if (ret == 0) document_range_dirty_ = false;
+  return ret;
 }
 
 int Index::close() {
@@ -702,6 +821,8 @@ int Index::flush() {
     LOG_ERROR("Failed to flush streamer");
     return core::IndexError_Runtime;
   }
+  int range_ret = flush_document_range();
+  if (range_ret != 0) return range_ret;
   if (ailego_unlikely(storage_->flush() != 0)) {
     LOG_ERROR("Failed to flush storage");
     return core::IndexError_Runtime;
@@ -713,7 +834,7 @@ bool Index::is_dirty() const {
   if (!storage_) {
     return false;
   }
-  return storage_->is_dirty();
+  return document_range_dirty_ || storage_->is_dirty();
 }
 
 int Index::fetch(const uint32_t doc_id, VectorDataBuffer *vector_data_buffer) {
@@ -728,6 +849,8 @@ int Index::fetch(const uint32_t doc_id, VectorDataBuffer *vector_data_buffer) {
 }
 
 int Index::add(const VectorData &vector_data, const uint32_t doc_id) {
+  if (std::holds_alternative<NullVector>(vector_data.vector))
+    return add_null(doc_id);
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;
@@ -751,6 +874,7 @@ int Index::add(const VectorData &vector_data, const uint32_t doc_id) {
     ret = _dense_add(vector_data, doc_id, context);
   }
   context->reset();
+  if (ret == 0) record_document(doc_id);
   return ret;
 }
 
@@ -1452,11 +1576,23 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
   if (indexes.empty()) {
     return core::IndexError_Success;
   }
-  if (!options.source_id_maps.empty() &&
-      (options.source_id_maps.size() != indexes.size() ||
-       std::any_of(options.source_id_maps.begin(), options.source_id_maps.end(),
-                   [](const auto &map) { return map == nullptr; }))) {
-    return core::IndexError_InvalidArgument;
+  if (!is_open_ || is_read_only_) return core::IndexError_NoReady;
+  for (const auto &index : indexes)
+    if (!index || !index->is_open_) return core::IndexError_NoReady;
+  core::IndexDocumentMergePlan::Pointer document_plan;
+  if (options.preserve_empty_rows || document_range_enabled_ ||
+      std::any_of(indexes.begin(), indexes.end(), [](const auto &index) {
+        return index->document_range_enabled_.load();
+      })) {
+    std::vector<uint32_t> rows;
+    for (const auto &index : indexes) {
+      rows.push_back(index->get_doc_count());
+    }
+    auto plan = std::make_shared<core::IndexDocumentMergePlan>();
+    const uint32_t base = get_doc_count();
+    int ret = plan->init(rows, base, filter);
+    if (ret != 0) return ret;
+    document_plan = std::move(plan);
   }
   // ivf need builder
   auto reducer =
@@ -1494,7 +1630,7 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
     LOG_ERROR("Failed to init reducer");
     return core::IndexError_Runtime;
   }
-  reducer->set_source_id_maps(options.source_id_maps);
+  reducer->set_document_merge_plan(document_plan);
   if (converter_ != nullptr && reformer_ == nullptr) {
     std::vector<MergeSourceIndexHolder::Source> sources;
     sources.reserve(indexes.size());
@@ -1523,12 +1659,10 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
               ? static_cast<uint32_t>(index->turbo_quantizer_->type())
               : 0,
           meta.extra_meta_size()};
-      auto id_map = options.source_id_maps.empty()
-                        ? nullptr
-                        : options.source_id_maps[sources.size()];
+      const size_t source_id = sources.size();
       sources.push_back({std::move(provider), index->reformer_,
                          index->turbo_quantizer_, std::move(stored_meta),
-                         std::move(id_map)});
+                         document_plan, source_id});
     }
     auto holder = std::make_shared<MergeSourceIndexHolder>(std::move(sources),
                                                            input_vector_meta_);
@@ -1565,6 +1699,10 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
   if (reducer->reduce(filter) != 0) {
     LOG_ERROR("Failed to reduce");
     return core::IndexError_Runtime;
+  }
+  if (document_plan) {
+    document_count_ = document_plan->output_end();
+    document_range_enabled_ = document_range_dirty_ = true;
   }
   is_trained_ = true;
   return 0;

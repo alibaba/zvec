@@ -54,9 +54,9 @@ struct StorageOptions {
 struct MergeOptions {
   uint32_t write_concurrency = 1;
   ailego::ThreadPool *pool = nullptr;
-  // Optional document-ID maps, one per input index. UINT32_MAX drops a row;
-  // other values are its output document ID, which may have NULL gaps.
-  std::vector<std::shared_ptr<const std::vector<uint32_t>>> source_id_maps{};
+  // Allocate output IDs for every retained document, including missing vectors.
+  // NullVector insertion also enables this mode automatically.
+  bool preserve_empty_rows = false;
 };
 
 using IndexMeta = core::IndexMeta;

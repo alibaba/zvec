@@ -111,17 +111,16 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
 
   uint64_t key() const override {
     const auto &source = owner_->sources_[source_index_];
-    if (!source.id_map) return output_key_;
+    if (!source.document_plan) return output_key_;
     const auto key = source_iter_->key();
     if (source_iter_->status() != 0) {
       owner_->set_status(source_iter_->status());
       return UINT64_MAX;
     }
-    if (key >= source.id_map->size() || (*source.id_map)[key] == UINT32_MAX) {
-      owner_->set_status(IndexError_Mismatch);
-      return UINT64_MAX;
-    }
-    return (*source.id_map)[key];
+    const auto output =
+        source.document_plan->output_id(source.plan_source, key);
+    if (output == UINT32_MAX) owner_->set_status(IndexError_Mismatch);
+    return output;
   }
 
   void next() override {
@@ -328,7 +327,9 @@ class MergedProviderIndexHolder::OrdinalReader final
       return fail(IndexError_Runtime);
     }
     const auto &source = owner_->sources_[source_index];
-    *key = source.id_map ? (*source.id_map)[keys_[ordinal]] : ordinal;
+    *key = source.document_plan ? source.document_plan->output_id(
+                                      source.plan_source, keys_[ordinal])
+                                : ordinal;
     return 0;
   }
 
@@ -400,8 +401,9 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
   stop_flag_ = stop_flag;
   has_filter_ =
       filter.is_valid() ||
-      std::any_of(sources_.begin(), sources_.end(),
-                  [](const auto &source) { return source.id_map != nullptr; });
+      std::any_of(sources_.begin(), sources_.end(), [](const auto &source) {
+        return source.document_plan != nullptr;
+      });
   uint64_t logical_id_base = 0;
 
   for (size_t source_index = 0; source_index < sources_.size();
@@ -425,7 +427,8 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
     }
     source.provider_count = provider->count();
     const auto source_rows =
-        source.id_map ? source.id_map->size() : provider->slot_count();
+        source.document_plan ? source.document_plan->rows(source.plan_source)
+                             : provider->slot_count();
     if (source_rows > std::numeric_limits<uint64_t>::max() - logical_id_base) {
       this->set_status(IndexError_Overflow);
       return this->status();
@@ -464,13 +467,13 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
         return this->status();
       }
       bool keep_item;
-      if (source.id_map) {
-        if (key != UINT64_MAX && key >= source.id_map->size()) {
+      if (source.document_plan) {
+        if (key != UINT64_MAX && key >= source_rows) {
           this->set_status(IndexError_InvalidFormat);
           return this->status();
         }
-        keep_item = key != UINT64_MAX && (*source.id_map)[key] != UINT32_MAX &&
-                    !filter(source.logical_id_base + key);
+        keep_item = source.document_plan->output_id(source.plan_source, key) !=
+                    UINT32_MAX;
       } else {
         if (key >
             std::numeric_limits<uint64_t>::max() - source.logical_id_base) {

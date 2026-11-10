@@ -21,6 +21,7 @@
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/core/framework/index_builder.h>
 #include <zvec/core/framework/index_converter.h>
+#include <zvec/core/framework/index_document_merge_plan.h>
 #include <zvec/core/framework/index_dumper.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_filter.h>
@@ -217,9 +218,8 @@ class IndexStreamerReducer : public IndexReducerBase {
   //! Index Reducer Pointer
   typedef std::shared_ptr<IndexStreamerReducer> Pointer;
 
-  void set_source_id_maps(
-      std::vector<std::shared_ptr<const std::vector<uint32_t>>> maps) {
-    source_id_maps_ = std::move(maps);
+  void set_document_merge_plan(IndexDocumentMergePlan::Pointer plan) {
+    document_plan_ = std::move(plan);
   }
 
   virtual int set_target_streamer_wiht_info(
@@ -236,7 +236,7 @@ class IndexStreamerReducer : public IndexReducerBase {
   ~IndexStreamerReducer() override = default;
 
  protected:
-  std::vector<std::shared_ptr<const std::vector<uint32_t>>> source_id_maps_{};
+  IndexDocumentMergePlan::Pointer document_plan_;
 };
 }  // namespace core
 }  // namespace zvec

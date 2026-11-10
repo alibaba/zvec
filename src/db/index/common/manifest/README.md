@@ -79,29 +79,35 @@ write fields in ascending field-number order to produce canonical bytes.
 `<index path>.nulls` sidecar. Missing or corrupt required sidecars are errors.
 
 The sidecar contains `ZVECNL01`, a little-endian uint32 logical row count and
-uint32 ID-layout flag (2), a portable Roaring bitmap of NULL rows, and a CRC32C
+uint32 ID-layout flag (3), a portable Roaring bitmap of NULL rows, and a CRC32C
 of all preceding bytes. A set bit means NULL, as in scalar inverted columns.
 The logical row count includes trailing NULLs, even when no vector slot exists.
 
 Vector keys equal document row IDs. Flat and graph streamers represent gaps
 with invalid keys; invalid slots are excluded from results, graph construction
 and training. Search, filters, grouping and fetch use document IDs directly,
-without rank/select translation. Merge maps source document rows to surviving
-output document rows, reserving row IDs for NULL documents. The mapping is used
-only while rebuilding indexes; unfiltered non-nullable merges retain their
-existing path. Training providers expose only real vectors with original keys.
+without rank/select translation. Core accepts an explicit `NullVector` insertion:
+it extends the document ID range without allocating a vector or graph node.
+Merge evaluates the document filter over every source row, including NULL tails,
+and reserves an output ID for each retained document. A temporary bitmap with
+word-level prefix counts translates only real vectors to those IDs; DB does not
+supply per-source ID arrays. Training providers expose only real vectors with
+original keys.
 
 Core key mapping and node existence are independent. Identity addressing uses
 no key hash table, while external-key indexes rebuild their optional map from
 stored keys on open. Checked lookup and fetch reject invalid slots in either
 mode. Graph traversal uses a separate accessor for nodes already known to
 exist, retaining direct identity-key access without validity lookups.
-Providers report valid vectors with `count()` and addressable slots with
-`slot_count()`. The legacy `Index::get_doc_count()` retains slot-span semantics;
-`get_vector_count()` reports valid vectors. Provider counts are computed lazily
-and cached for the provider's view; metadata and merge offsets use slot spans
-without scanning vectors. No additional core file fields or format versions
-are needed for this separation.
+Providers report valid vectors with `count()` and physical slot spans with
+`slot_count()`. `Index::get_doc_count()` reports the document ID upper bound,
+including explicitly inserted NULL tails; `get_vector_count()` reports actual
+vectors. Provider counts are computed lazily and cached for the provider's view.
+When NULL insertion or document-range-preserving merge is used, core persists an
+`IndexDocumentRange` segment: `ZVECDR01`, a little-endian uint32 document ID upper
+bound, and a CRC32C of the first 12 bytes (16 bytes total). It is loaded once on
+open. Existing vector and graph node layouts are unchanged; search does not read
+a separate NULL bitmap. Non-nullable legacy indexes can omit this segment.
 
 
 An all-NULL column uses an empty Flat backing even when its declared index
@@ -109,8 +115,8 @@ requires training. The sidecar is flushed and published before the manifest
 references the block.
 
 Legacy nullable vector blocks without a NULL bitmap, and the previous
-`.validity` format with compact vector IDs, are unsupported. Opening them logs
-an error and returns `NotSupported`. The error identifies the field and index
+`.validity` format with compact vector IDs or `.nulls` layout flags before 3,
+are unsupported. Opening them logs an error and returns `NotSupported`. The error identifies the field and index
 path, explains the risk of incorrect vector-to-document mappings in older
 versions, suggests reinserting original data into a new collection if needed,
 and links to GitHub issues for help or feedback. Scalar nullable fields and

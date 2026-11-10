@@ -184,11 +184,21 @@ int DiskAnnIndex::open(const std::string &file_path,
                 core::IndexError::What(ret));
       return core::IndexError_Runtime;
     }
+    // DiskAnn transfers file access to its own reader and cleans up storage
+    // during streamer open. Read wrapper metadata before that transfer.
+    ret = load_document_range(false);
+    if (ret != 0) return ret;
     if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
       LOG_ERROR("Failed to open streamer, path: %s", file_path_.c_str());
       return core::IndexError_Runtime;
     }
     is_trained_ = true;
+    if (document_range_enabled_ && document_count_ < get_slot_count())
+      return core::IndexError_InvalidFormat;
+  }
+  if (storage_options.create_new && !is_read_only_) {
+    document_count_ = 0;
+    document_range_enabled_ = document_range_dirty_ = false;
   }
   is_open_ = true;
   return 0;
@@ -204,6 +214,10 @@ int DiskAnnIndex::add(const VectorData &vector, uint32_t doc_id) {
     LOG_ERROR("this diskann index is trained or has a pending build");
     return core::IndexError_Runtime;
   }
+  if (std::holds_alternative<NullVector>(vector.vector))
+    return add_null(doc_id);
+  if (!is_open_ || is_read_only_ || doc_id == UINT32_MAX)
+    return core::IndexError_InvalidArgument;
   if (!std::holds_alternative<DenseVector>(vector.vector)) {
     LOG_ERROR("Invalid vector data");
     return core::IndexError_Runtime;
@@ -218,6 +232,7 @@ int DiskAnnIndex::add(const VectorData &vector, uint32_t doc_id) {
     doc_cache_.resize(doc_id + 1, std::make_pair(kInvalidKey, std::string{}));
   }
   doc_cache_[doc_id] = std::make_pair(doc_id, std::move(out_vector_buffer));
+  record_document(doc_id);
   return 0;
 }
 
@@ -265,6 +280,8 @@ int DiskAnnIndex::dump_and_open() {
       if (dumper) dumper->close();
     });
     ret = builder_->dump(dumper);
+    if (ret != 0) return ret;
+    ret = dump_document_range(dumper);
     if (ret != 0) return ret;
     if (converter_) {
       ret = converter_->dump(dumper);

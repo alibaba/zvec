@@ -229,6 +229,13 @@ int IVFIndex::open(const std::string &file_path,
     if (ret != 0) return ret;
     is_trained_ = true;
   }
+  if (storage_options.create_new && !is_read_only_) {
+    document_count_ = 0;
+    document_range_enabled_ = document_range_dirty_ = false;
+  } else {
+    int range_ret = load_document_range();
+    if (range_ret != 0) return range_ret;
+  }
   is_open_ = true;
   return 0;
 }
@@ -243,6 +250,10 @@ int IVFIndex::add(const VectorData &vector, uint32_t doc_id) {
     LOG_ERROR("this IVF index is trained or has a pending build");
     return core::IndexError_Runtime;
   }
+  if (std::holds_alternative<NullVector>(vector.vector))
+    return add_null(doc_id);
+  if (!is_open_ || is_read_only_ || doc_id == UINT32_MAX)
+    return core::IndexError_InvalidArgument;
   if (!std::holds_alternative<DenseVector>(vector.vector)) {
     LOG_ERROR("Invalid vector data");
     return core::IndexError_Runtime;
@@ -259,6 +270,7 @@ int IVFIndex::add(const VectorData &vector, uint32_t doc_id) {
     doc_cache_.push_back(std::make_pair(kInvalidKey, fake_data));
   }
   doc_cache_[doc_id] = std::make_pair(doc_id, out_vector_buffer);
+  record_document(doc_id);
   return 0;
 }
 
@@ -321,6 +333,8 @@ int IVFIndex::dump_and_open() {
     if (ret != 0) {
       return ret;
     }
+    ret = dump_document_range(dumper);
+    if (ret != 0) return ret;
     // Dump converter state (e.g., rotator for INT8+rotate) to dumper
     if (converter_ && converter_->dump(dumper) != 0) {
       LOG_ERROR("Failed to dump converter, path: %s", file_path_.c_str());

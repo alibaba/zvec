@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -68,8 +69,12 @@ struct SparseVector {
   }
 };
 
+// A missing vector still allocates its document ID. Zero-valued dense
+// vectors and sparse vectors with zero nonzero elements remain real vectors.
+struct NullVector {};
+
 struct VectorData {
-  std::variant<DenseVector, SparseVector> vector;
+  std::variant<DenseVector, SparseVector, NullVector> vector;
 
   // DenseVector dense_vector;
   // SparseVector sparse_vector;
@@ -135,6 +140,10 @@ class ZVEC_CORE_API Index {
   // TODO: static reduce
 
   virtual int add(const VectorData &vector, uint32_t doc_id);
+  // Append a missing vector, allocating [previous end, doc_id] as empty rows.
+  // Does not clear or replace an existing row. Builder indexes accept this
+  // only while collecting input, just like add() with a real vector.
+  int add_null(uint32_t doc_id);
 
   virtual int fetch(const uint32_t doc_id,
                     VectorDataBuffer *vector_data_buffer);
@@ -164,7 +173,8 @@ class ZVEC_CORE_API Index {
 
   bool is_dirty() const;
 
-  // Legacy alias for get_slot_count(); DB logical rows may include NULL tails.
+  // Exclusive document ID upper bound, including gaps and explicit NULL tails.
+  // This is not the number of live documents or retrievable vectors.
   uint32_t get_doc_count() const;
   // Addressable slots, including gaps, versus vectors that can be retrieved.
   uint32_t get_slot_count() const;
@@ -258,11 +268,19 @@ class ZVEC_CORE_API Index {
   }
 
  protected:
+  int load_document_range(bool validate_slots = true);
+  int flush_document_range();
+  int dump_document_range(const core::IndexDumper::Pointer &dumper);
+  void record_document(uint32_t doc_id);
+
   bool init_context();
   core::IndexContext::Pointer &acquire_context();
 
  protected:
   bool is_trained_{false};
+  std::atomic<uint32_t> document_count_{0};
+  std::atomic<bool> document_range_enabled_{false};
+  std::atomic<bool> document_range_dirty_{false};
 
   BaseIndexParam param_;
   ailego::Params proxima_index_params_{};

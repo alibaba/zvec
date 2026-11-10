@@ -157,6 +157,12 @@ Status VectorColumnIndexer::insert_null(uint32_t doc_id) {
     return Status::InvalidArgument("Vector row ID is out of range");
   if (doc_id < row_count_)
     return Status::InvalidArgument("Vector rows must be appended");
+  if (all_null() && !empty_flat_index_) {
+    auto status = recreate_empty_index(true);
+    if (!status.ok()) return status;
+  }
+  if (index->add({core_interface::NullVector{}}, doc_id) != 0)
+    return Status::InternalError("Failed to allocate NULL vector document");
   null_rows_.addRange(row_count_, uint64_t{doc_id} + 1);
   row_count_ = doc_id + 1;
   nulls_dirty_ = true;
@@ -204,7 +210,7 @@ Status VectorColumnIndexer::load_nulls(
             ailego::Crc32c::Hash(bytes.data(), bytes.size() - 4)) {
       return Status::InternalError("Invalid vector NULL bitmap: ", path);
     }
-    if (Get32(bytes.data() + 12) != 2) return unsupported_legacy();
+    if (Get32(bytes.data() + 12) != 3) return unsupported_legacy();
     row_count_ = Get32(bytes.data() + 8);
     try {
       null_rows_ =
@@ -219,20 +225,11 @@ Status VectorColumnIndexer::load_nulls(
           "Vector NULL bitmap disagrees with block/index: ", path);
     }
     if (index) {
-      uint32_t expected = row_count_ - null_rows_.cardinality();
-      const auto type = field_schema_.index_type();
-      if (type == IndexType::FLAT || type == IndexType::HNSW ||
-          type == IndexType::HNSW_RABITQ || type == IndexType::VAMANA) {
-        // Streamer storage reserves IDs through the last real vector. NULL
-        // tails remain represented by row_count_ and the NULL bitmap.
-        if (expected != 0) {
-          expected = row_count_;
-          while (expected > 0 && null_rows_.contains(expected - 1)) --expected;
-        }
-      }
+      const uint32_t expected = row_count_;
       if (doc_count() != expected)
         return Status::InternalError(
-            "Vector NULL bitmap disagrees with index: ", path);
+            "Vector NULL bitmap disagrees with index: ", path,
+            " expected rows=", expected, " actual rows=", doc_count());
     }
     return Status::OK();
   }
@@ -246,7 +243,8 @@ Status VectorColumnIndexer::flush_nulls() {
   if (!has_null_bitmap() || read_only_ || !nulls_dirty_) return Status::OK();
   std::string bytes("ZVECNL01", 8);
   Put32(&bytes, row_count_);
-  Put32(&bytes, 2);  // NULL bits and document IDs, including NULL gaps.
+  Put32(&bytes,
+        3);  // Core persists the full document range, including NULL tails.
   const auto offset = bytes.size();
   bytes.resize(offset + null_rows_.getSizeInBytes());
   null_rows_.write(bytes.data() + offset);

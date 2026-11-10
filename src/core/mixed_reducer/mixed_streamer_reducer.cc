@@ -96,7 +96,7 @@ int MixedStreamerReducer::init(const ailego::Params &params) {
 
 int MixedStreamerReducer::cleanup() {
   streamers_.clear();
-  source_id_maps_.clear();
+  document_plan_.reset();
   source_streamers_reformers_.clear();
   merged_holder_.reset();
   if (target_streamer_) {
@@ -213,14 +213,7 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
     LOG_ERROR("Thread pool is not set");
     return IndexError_Uninitialized;
   }
-  if (!source_id_maps_.empty()) {
-    if (source_id_maps_.size() != streamers_.size()) {
-      return IndexError_InvalidArgument;
-    }
-    for (const auto &map : source_id_maps_) {
-      if (!map) return IndexError_InvalidArgument;
-    }
-  }
+
 
   ailego::ElapsedTime timer;
 
@@ -269,9 +262,9 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
     for (size_t i = 0; i < streamers_.size(); i++) {
       // due to filter, producing can't be parallel
       read_results[i] = read_sparse_vec(i, filter, id_offset, &next_id);
-      id_offset += source_id_maps_.empty()
-                       ? streamers_[i]->create_sparse_provider()->slot_count()
-                       : source_id_maps_[i]->size();
+      id_offset += document_plan_
+                       ? document_plan_->rows(i)
+                       : streamers_[i]->create_sparse_provider()->slot_count();
     }
 
     sparse_mt_list_.done();
@@ -293,8 +286,8 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
       if (read_results[i] != 0) {
         break;
       }
-      id_offset += source_id_maps_.empty() ? provider->slot_count()
-                                           : source_id_maps_[i]->size();
+      id_offset +=
+          document_plan_ ? document_plan_->rows(i) : provider->slot_count();
     }
 
     mt_list_.done();
@@ -420,17 +413,16 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
       return iterator->status();
     }
     uint32_t output_id;
-    if (!source_id_maps_.empty()) {
-      const auto &map = *source_id_maps_[source_streamer_index];
-      if (key != UINT64_MAX && key >= map.size())
+    if (document_plan_) {
+      if (key != UINT64_MAX &&
+          key >= document_plan_->rows(source_streamer_index))
         return IndexError_InvalidFormat;
-      if (key == UINT64_MAX || map[key] == UINT32_MAX ||
-          filter(key + id_offset)) {
+      output_id = document_plan_->output_id(source_streamer_index, key);
+      if (output_id == UINT32_MAX) {
         (*stats_.mutable_filtered_count())++;
         iterator->next();
         continue;
       }
-      output_id = map[key];
     } else {
       if (filter(key + id_offset)) {
         (*stats_.mutable_filtered_count())++;
@@ -652,17 +644,16 @@ int MixedStreamerReducer::read_sparse_vec(size_t source_streamer_index,
     }
     const auto key = iterator->key();
     uint32_t output_id;
-    if (!source_id_maps_.empty()) {
-      const auto &map = *source_id_maps_[source_streamer_index];
-      if (key != UINT64_MAX && key >= map.size())
+    if (document_plan_) {
+      if (key != UINT64_MAX &&
+          key >= document_plan_->rows(source_streamer_index))
         return IndexError_InvalidFormat;
-      if (key == UINT64_MAX || map[key] == UINT32_MAX ||
-          filter(key + id_offset)) {
+      output_id = document_plan_->output_id(source_streamer_index, key);
+      if (output_id == UINT32_MAX) {
         (*stats_.mutable_filtered_count())++;
         iterator->next();
         continue;
       }
-      output_id = map[key];
     } else {
       if (filter(key + id_offset)) {
         (*stats_.mutable_filtered_count())++;
@@ -718,7 +709,8 @@ int MixedStreamerReducer::reduce_with_builder(const IndexFilter &filter) {
   for (size_t i = 0; i < streamers_.size(); ++i) {
     MergedProviderIndexHolder::Source source;
     source.owner = streamers_[i];
-    if (!source_id_maps_.empty()) source.id_map = source_id_maps_[i];
+    source.document_plan = document_plan_;
+    source.plan_source = i;
     source.reformer = source_streamers_reformers_[i];
     source.quantizer = source_streamers_quantizers_[i];
     const auto &meta = streamers_[i]->meta();
