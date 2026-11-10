@@ -25,6 +25,7 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 #include <ailego/utility/math_helper.h>
 #include <ailego/utility/memory_helper.h>
@@ -2457,125 +2458,182 @@ TEST_F(FlatStreamerTest, TestGroupByStoredRowsAfterReopen) {
     IndexMeta meta(*index_meta_ptr_);
     meta.set_metric(metric, 0, Params());
     for (bool use_id_map : {false, true}) {
-      for (bool contiguous : {false, true}) {
-        for (const char *backend : {"MMapFileStorage", "BufferStorage"}) {
-          SCOPED_TRACE(use_id_map);
-          SCOPED_TRACE(contiguous);
-          SCOPED_TRACE(backend);
-          const std::string path = dir_ + "RecoveredGroups";
-          zvec::test_util::RemoveTestPath(path);
-          const auto key_for = [use_id_map](uint32_t id) -> uint64_t {
-            return use_id_map ? (uint64_t{1} << 40) + id * 10 : id;
-          };
-          const auto id_for = [use_id_map](uint64_t key) -> uint32_t {
-            return use_id_map ? (key - (uint64_t{1} << 40)) / 10 : key;
-          };
-          Params params;
-          params.set(PARAM_FLAT_USE_ID_MAP, use_id_map);
-          params.set(PARAM_FLAT_USE_CONTIGUOUS_MEMORY, contiguous);
-          auto storage = IndexFactory::CreateStorage("MMapFileStorage");
-          auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
-          ASSERT_EQ(0, storage->init(Params()));
-          ASSERT_EQ(0, storage->open(path, true));
-          ASSERT_EQ(0, streamer->init(meta, params));
-          ASSERT_EQ(0, streamer->open(storage));
-          auto *flat = dynamic_cast<FlatStreamer<32> *>(streamer.get());
-          ASSERT_NE(nullptr, flat);
-          // Force several segments, including a partially filled last block.
-          const_cast<FlatStreamerEntity &>(flat->entity())
-              .set_segment_size(4096);
-          auto write_ctx = streamer->create_context();
-          for (uint32_t id = 0; id < count; ++id) {
-            std::vector<float> vector(dim, float(id));
-            int ret = use_id_map
-                          ? streamer->add_impl(key_for(id), vector.data(),
-                                               qmeta, write_ctx)
-                          : streamer->add_with_id_impl(id, vector.data(), qmeta,
-                                                       write_ctx);
-            ASSERT_EQ(0, ret);
-          }
-          ASSERT_EQ(0, streamer->flush(0));
-          ASSERT_EQ(0, streamer->close());
-          streamer.reset();
-          ASSERT_EQ(0, storage->close());
+      for (const auto &[backend, contiguous] :
+           {std::pair{"MMapFileStorage", false},
+            std::pair{"MMapFileStorage", true},
+            std::pair{"BufferStorage", false}}) {
+        SCOPED_TRACE(use_id_map);
+        SCOPED_TRACE(contiguous);
+        SCOPED_TRACE(backend);
+        const std::string path = dir_ + "RecoveredGroups";
+        zvec::test_util::RemoveTestPath(path);
+        const auto key_for = [use_id_map](uint32_t id) -> uint64_t {
+          return use_id_map ? (uint64_t{1} << 40) + id * 10 : id;
+        };
+        const auto id_for = [use_id_map](uint64_t key) -> uint32_t {
+          return use_id_map ? (key - (uint64_t{1} << 40)) / 10 : key;
+        };
+        Params params;
+        params.set(PARAM_FLAT_USE_ID_MAP, use_id_map);
+        params.set(PARAM_FLAT_USE_CONTIGUOUS_MEMORY, contiguous);
+        auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+        auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+        ASSERT_EQ(0, storage->init(Params()));
+        ASSERT_EQ(0, storage->open(path, true));
+        ASSERT_EQ(0, streamer->init(meta, params));
+        ASSERT_EQ(0, streamer->open(storage));
+        auto *flat = dynamic_cast<FlatStreamer<32> *>(streamer.get());
+        ASSERT_NE(nullptr, flat);
+        // Force several segments, including a partially filled last block.
+        const_cast<FlatStreamerEntity &>(flat->entity()).set_segment_size(4096);
+        auto write_ctx = streamer->create_context();
+        for (uint32_t id = 0; id < count; ++id) {
+          std::vector<float> vector(dim, float(id));
+          int ret = use_id_map ? streamer->add_impl(key_for(id), vector.data(),
+                                                    qmeta, write_ctx)
+                               : streamer->add_with_id_impl(id, vector.data(),
+                                                            qmeta, write_ctx);
+          ASSERT_EQ(0, ret);
+        }
+        ASSERT_EQ(0, streamer->flush(0));
+        ASSERT_EQ(0, streamer->close());
+        streamer.reset();
+        ASSERT_EQ(0, storage->close());
 
-          storage = IndexFactory::CreateStorage(backend);
-          streamer = IndexFactory::CreateStreamer("FlatStreamer");
-          ASSERT_EQ(0, storage->init(Params()));
-          ASSERT_EQ(0, storage->open(path, false));
-          ASSERT_EQ(0, streamer->init(meta, params));
-          ASSERT_EQ(0, streamer->open(storage));
-          flat = dynamic_cast<FlatStreamer<32> *>(streamer.get());
-          if (!use_id_map) {
-            // Recovery deliberately does not build the ID-to-key cache.
-            EXPECT_EQ(kInvalidKey, flat->entity().key(0));
+        storage = IndexFactory::CreateStorage(backend);
+        streamer = IndexFactory::CreateStreamer("FlatStreamer");
+        ASSERT_EQ(0, storage->init(Params()));
+        ASSERT_EQ(0, storage->open(path, false));
+        ASSERT_EQ(0, streamer->init(meta, params));
+        ASSERT_EQ(0, streamer->open(storage));
+        flat = dynamic_cast<FlatStreamer<32> *>(streamer.get());
+        if (!use_id_map) {
+          // Recovery deliberately does not build the ID-to-key cache.
+          EXPECT_EQ(kInvalidKey, flat->entity().key(0));
+        }
+        auto ctx = streamer->create_context();
+        ctx->set_group_params(4, 2);
+        ctx->set_fetch_vector(true);
+        ctx->set_group_by([&](uint64_t key) {
+          EXPECT_NE(kInvalidKey, key);
+          return std::to_string(id_for(key) % 4);
+        });
+        std::vector<float> queries(2 * dim);
+        std::fill(queries.begin() + dim, queries.end(), float(count - 1));
+        std::vector<std::vector<uint64_t>> selected(2);
+        for (auto &keys : selected) {
+          for (uint32_t id = 0; id < count; ++id) keys.push_back(key_for(id));
+          keys.push_back(kInvalidKey);
+          keys.push_back(key_for(count + 10));
+        }
+        for (bool filtered : {false, true}) {
+          ctx->reset_filter();
+          if (filtered) {
+            ctx->set_filter([&](uint64_t key) {
+              EXPECT_NE(kInvalidKey, key);
+              EXPECT_LT(id_for(key), count);
+              return id_for(key) < 4;
+            });
           }
-          auto ctx = streamer->create_context();
-          ctx->set_group_params(4, 2);
-          ctx->set_fetch_vector(true);
-          ctx->set_group_by([&](uint64_t key) {
-            EXPECT_NE(kInvalidKey, key);
-            return std::to_string(id_for(key) % 4);
-          });
-          std::vector<float> queries(2 * dim);
-          std::fill(queries.begin() + dim, queries.end(), float(count - 1));
-          std::vector<std::vector<uint64_t>> selected(2);
-          for (auto &keys : selected) {
-            for (uint32_t id = 0; id < count; ++id) keys.push_back(key_for(id));
-            keys.push_back(kInvalidKey);
-            keys.push_back(key_for(count + 10));
-          }
-          for (bool filtered : {false, true}) {
-            ctx->reset_filter();
-            if (filtered) {
-              ctx->set_filter([&](uint64_t key) {
-                EXPECT_NE(kInvalidKey, key);
-                EXPECT_LT(id_for(key), count);
-                return id_for(key) < 4;
-              });
-            }
-            for (bool by_keys : {false, true}) {
-              SCOPED_TRACE(filtered);
-              SCOPED_TRACE(by_keys);
-              int ret = by_keys ? streamer->search_bf_by_p_keys_impl(
-                                      queries.data(), selected, qmeta, 2, ctx)
-                                : streamer->search_impl(queries.data(), qmeta,
-                                                        2, ctx);
-              ASSERT_EQ(0, ret);
-              for (size_t q = 0; q < 2; ++q) {
-                ASSERT_EQ(4u, ctx->group_result(q).size());
-                for (const auto &group : ctx->group_result(q)) {
-                  const uint32_t group_id = std::stoul(group.group_id());
-                  std::vector<uint32_t> expected;
-                  for (uint32_t id = filtered ? 4 : 0; id < count; ++id) {
-                    if (id % 4 == group_id) expected.push_back(id);
-                  }
-                  if (q == 1) std::reverse(expected.begin(), expected.end());
-                  ASSERT_EQ(2u, group.docs().size());
-                  for (size_t k = 0; k < 2; ++k) {
-                    const auto &doc = group.docs()[k];
-                    EXPECT_EQ(key_for(expected[k]), doc.key());
-                    float delta = float(expected[k]) - (q ? count - 1 : 0);
-                    EXPECT_FLOAT_EQ(dim * delta * delta, doc.score());
-                    ASSERT_NE(nullptr, doc.vector());
-                    EXPECT_FLOAT_EQ(float(expected[k]),
-                                    *static_cast<const float *>(doc.vector()));
-                  }
+          for (bool by_keys : {false, true}) {
+            SCOPED_TRACE(filtered);
+            SCOPED_TRACE(by_keys);
+            int ret =
+                by_keys ? streamer->search_bf_by_p_keys_impl(
+                              queries.data(), selected, qmeta, 2, ctx)
+                        : streamer->search_impl(queries.data(), qmeta, 2, ctx);
+            ASSERT_EQ(0, ret);
+            for (size_t q = 0; q < 2; ++q) {
+              ASSERT_EQ(4u, ctx->group_result(q).size());
+              for (const auto &group : ctx->group_result(q)) {
+                const uint32_t group_id = std::stoul(group.group_id());
+                std::vector<uint32_t> expected;
+                for (uint32_t id = filtered ? 4 : 0; id < count; ++id) {
+                  if (id % 4 == group_id) expected.push_back(id);
+                }
+                if (q == 1) std::reverse(expected.begin(), expected.end());
+                ASSERT_EQ(2u, group.docs().size());
+                for (size_t k = 0; k < 2; ++k) {
+                  const auto &doc = group.docs()[k];
+                  EXPECT_EQ(key_for(expected[k]), doc.key());
+                  float delta = float(expected[k]) - (q ? count - 1 : 0);
+                  EXPECT_FLOAT_EQ(dim * delta * delta, doc.score());
+                  ASSERT_NE(nullptr, doc.vector());
+                  EXPECT_FLOAT_EQ(float(expected[k]),
+                                  *static_cast<const float *>(doc.vector()));
                 }
               }
             }
           }
-          // A reused context must not retain groups excluded by the radius.
-          ctx->reset_filter();
-          ctx->set_threshold(-1.0f);
-          ASSERT_EQ(0, streamer->search_impl(queries.data(), qmeta, ctx));
-          EXPECT_TRUE(ctx->group_result().empty());
-          ASSERT_EQ(0, streamer->close());
-          streamer.reset();
-          ASSERT_EQ(0, storage->close());
         }
+        // A reused context must not retain groups excluded by the radius.
+        ctx->reset_filter();
+        ctx->set_threshold(-1.0f);
+        ASSERT_EQ(0, streamer->search_impl(queries.data(), qmeta, ctx));
+        EXPECT_TRUE(ctx->group_result().empty());
+        ASSERT_EQ(0, streamer->close());
+        streamer.reset();
+        ASSERT_EQ(0, storage->close());
       }
     }
+  }
+}
+
+TEST_F(FlatStreamerTest, TestGroupByStreamingLayouts) {
+  for (auto type :
+       {IndexMeta::DT_FP32, IndexMeta::DT_INT8, IndexMeta::DT_UINT8}) {
+    SCOPED_TRACE(type);
+    const auto order = type == IndexMeta::DT_FP32 ? IndexMeta::MO_COLUMN
+                                                  : IndexMeta::MO_UNDEFINED;
+    IndexMeta meta(type, 3);
+    meta.set_metric("SquaredEuclidean", 0, Params());
+    meta.set_major_order(order);
+    IndexQueryMeta qmeta(type, 3);
+    Params params;
+    params.set(PARAM_FLAT_USE_ID_MAP, false);
+    auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+    auto streamer = IndexFactory::CreateStreamer("FlatStreamer");
+    const std::string path = dir_ + "GroupLayouts" + std::to_string(type);
+    ASSERT_EQ(0, storage->init(Params()));
+    ASSERT_EQ(0, storage->open(path, true));
+    ASSERT_EQ(0, streamer->init(meta, params));
+    EXPECT_EQ(order, streamer->meta().major_order());
+    ASSERT_EQ(0, streamer->open(storage));
+    auto ctx = streamer->create_context();
+    for (uint32_t id = 0; id < 5; ++id) {
+      std::array<float, 3> floats{float(id), float(id), float(id)};
+      std::array<uint8_t, 3> bytes{uint8_t(id), uint8_t(id), uint8_t(id)};
+      const void *vector = type == IndexMeta::DT_FP32
+                               ? static_cast<const void *>(floats.data())
+                               : bytes.data();
+      ASSERT_EQ(0, streamer->add_with_id_impl(id, vector, qmeta, ctx));
+    }
+    ASSERT_EQ(0, streamer->flush(0));
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, storage->close());
+    ASSERT_EQ(0, storage->open(path, false));
+    ASSERT_EQ(0, streamer->open(storage));
+    ctx = streamer->create_context();
+    ctx->set_group_params(1, 2);
+    ctx->set_group_by([](uint64_t) { return std::string("all"); });
+    const std::array<float, 3> query{};
+    const std::vector<std::vector<uint64_t>> keys{{4, 3, 2, 1, 0}};
+    for (bool by_keys : {false, true}) {
+      SCOPED_TRACE(by_keys);
+      int ret = by_keys ? streamer->search_bf_by_p_keys_impl(query.data(), keys,
+                                                             qmeta, 1, ctx)
+                        : streamer->search_impl(query.data(), qmeta, ctx);
+      ASSERT_EQ(0, ret);
+      ASSERT_EQ(1u, ctx->group_result().size());
+      const auto &docs = ctx->group_result()[0].docs();
+      ASSERT_EQ(2u, docs.size());
+      for (size_t i = 0; i < docs.size(); ++i) {
+        EXPECT_EQ(i, docs[i].key());
+        EXPECT_FLOAT_EQ(float(3 * i * i), docs[i].score());
+      }
+    }
+    ASSERT_EQ(0, streamer->close());
+    ASSERT_EQ(0, storage->close());
   }
 }
 

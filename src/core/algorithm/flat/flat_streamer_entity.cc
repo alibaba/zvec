@@ -585,8 +585,7 @@ int FlatStreamerEntity::scan_matches(
   if (!query || !on_match || !context_stats || !scratch) {
     return IndexError_InvalidArgument;
   }
-  if (stored_vector_size() == 0 || linear_block_size() == 0 ||
-      index_meta_.major_order() != IndexMeta::MO_ROW) {
+  if (stored_vector_size() == 0 || linear_block_size() == 0) {
     return IndexError_InvalidFormat;
   }
   if (!keys) {
