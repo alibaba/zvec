@@ -4,12 +4,8 @@
 // You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
 #include <cstring>
-#include <filesystem>
 #include <random>
 #include <set>
 #include <tuple>
@@ -35,7 +31,6 @@ class IVFLegacyMatrixTest
   using Bytes = std::vector<uint8_t>;
   bool record_quantized_{false};
   void Validate();
-  void Benchmark();
   IndexMeta meta_;
   std::vector<Bytes> rows_, queries_;
   std::vector<std::vector<double>> values_, query_values_;
@@ -111,8 +106,7 @@ class IVFLegacyMatrixTest
     }
   }
 
-  void write_index(size_t dim, const std::vector<size_t> &list_counts,
-                   size_t query_count = 3) {
+  void write_index(size_t dim, const std::vector<size_t> &list_counts) {
     const auto type = std::get<0>(GetParam());
     const bool ip = std::get<1>(GetParam());
     meta_.set_meta(
@@ -129,29 +123,11 @@ class IVFLegacyMatrixTest
     for (size_t n : list_counts) count += n;
     std::mt19937 rng(20261105);
     make_vectors(count, dim, rng, &rows_, &values_);
-    make_vectors(query_count, dim, rng, &queries_, &query_values_);
-    if (query_count == 3) {
-      queries_[0] = rows_.front();
-      query_values_[0] = values_.front();
-      queries_[1] = rows_.back();
-      query_values_[1] = values_.back();
-    }
-
-    std::string fixture_name = std::string(record_quantized_ ? "record_" : "") +
-                               std::to_string(int(type)) + "_" +
-                               (ip ? "ip_" : "l2_") + std::to_string(dim);
-    for (size_t n : list_counts) fixture_name += "_" + std::to_string(n);
-    fixture_name += ".index";
-    // Cross-version verification: the parent executable writes these files,
-    // then the current executable reads them against the same seeded oracle.
-    if (const char *directory = std::getenv("ZVEC_LEGACY_READ_FIXTURES")) {
-      std::error_code error;
-      std::filesystem::copy_file(
-          std::filesystem::path(directory) / fixture_name, path_,
-          std::filesystem::copy_options::overwrite_existing, error);
-      ASSERT_FALSE(error) << error.message();
-      return;
-    }
+    make_vectors(3, dim, rng, &queries_, &query_values_);
+    queries_[0] = rows_.front();
+    query_values_[0] = values_.front();
+    queries_[1] = rows_.back();
+    query_values_[1] = values_.back();
 
     IndexCluster::CentroidList centroids;
     for (size_t i = 0; i < list_counts.size(); ++i) {
@@ -178,15 +154,6 @@ class IVFLegacyMatrixTest
                                               centroid_index.size()));
     ASSERT_EQ(0, IndexHelper::SerializeToDumper(meta_, dumper.get()));
     ASSERT_EQ(0, dumper->close());
-    if (const char *directory = std::getenv("ZVEC_LEGACY_WRITE_FIXTURES")) {
-      std::error_code error;
-      std::filesystem::create_directories(directory, error);
-      ASSERT_FALSE(error) << error.message();
-      std::filesystem::copy_file(
-          path_, std::filesystem::path(directory) / fixture_name,
-          std::filesystem::copy_options::overwrite_existing, error);
-      ASSERT_FALSE(error) << error.message();
-    }
   }
 
   double reference(size_t q, size_t id) const {
@@ -328,56 +295,6 @@ void IVFLegacyMatrixTest::Validate() {
         ASSERT_EQ(0, searcher.unload());
       }
     }
-  }
-}
-
-// Opt in for measurement. Use the identical source and persisted format with
-// the parent and current implementations; time only warm search_impl calls.
-TEST_P(IVFLegacyMatrixTest, DISABLED_WarmColumnScanBenchmark) {
-  Benchmark();
-}
-
-TEST_P(IVFLegacyMatrixTest, DISABLED_WarmRecordColumnScanBenchmark) {
-  if (std::get<0>(GetParam()) != IndexMeta::DT_INT8 &&
-      std::get<0>(GetParam()) != IndexMeta::DT_INT4)
-    GTEST_SKIP();
-  record_quantized_ = true;
-  Benchmark();
-}
-
-void IVFLegacyMatrixTest::Benchmark() {
-  for (size_t dim : {128U, 512U}) {
-    ASSERT_NO_FATAL_FAILURE(write_index(dim, {8193}, 16));
-    auto storage = open_storage("MMapFileReadStorage");
-    ASSERT_NE(nullptr, storage);
-    IVFSearcher searcher;
-    ASSERT_NO_FATAL_FAILURE(init_searcher(storage, &searcher));
-    auto context = searcher.create_context();
-    ASSERT_NE(nullptr, context);
-    context->set_topk(10);
-    const IndexQueryMeta qmeta(meta_.data_type(), meta_.dimension());
-    for (const auto &query : queries_)
-      ASSERT_EQ(0, searcher.search_impl(query.data(), qmeta, context));
-    std::vector<double> timings;
-    for (size_t round = 0; round < 7; ++round) {
-      const auto start = std::chrono::steady_clock::now();
-      for (const auto &query : queries_)
-        ASSERT_EQ(0, searcher.search_impl(query.data(), qmeta, context));
-      const auto end = std::chrono::steady_clock::now();
-      timings.push_back(
-          std::chrono::duration<double, std::micro>(end - start).count() /
-          queries_.size());
-    }
-    std::sort(timings.begin(), timings.end());
-    std::printf(
-        "LEGACY_BENCH,type=%d,metric=%s,dim=%zu,count=%zu,record=%d,median_us=%"
-        ".3f,min_"
-        "us=%.3f,max_us=%.3f\n",
-        int(meta_.data_type()),
-        std::get<1>(GetParam()) ? "InnerProduct" : "SquaredEuclidean", dim,
-        rows_.size(), int(record_quantized_), timings[3], timings.front(),
-        timings.back());
-    ASSERT_EQ(0, searcher.unload());
   }
 }
 
