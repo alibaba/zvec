@@ -57,7 +57,7 @@ jobs:
 
       - name: Set up environment variables
         run: |
-          echo "NPROC=$(nproc 2>/dev/null || echo 2)" >> $GITHUB_ENV
+          "$PY_PREFIX/bin/python" .github/scripts/setup_build_env.py
           echo "$PY_PREFIX/bin" >> $GITHUB_PATH
           ccache --set-config max_size=150M
         shell: sh
@@ -65,10 +65,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install \
-            pybind11==3.0 \
-            cmake==3.30.0 \
-            ninja==1.11.1 \
+          python -m pip install --constraint .github/constraints-build.txt \
+            pybind11 \
+            cmake \
+            ninja \
             pytest \
             pytest-xdist \
             scikit-build-core \
@@ -100,7 +100,6 @@ jobs:
           cd "$GITHUB_WORKSPACE"
 
           CMAKE_GENERATOR="Ninja" \
-          CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
           python -m pip install -v . \
             --no-build-isolation \
             --config-settings='cmake.define.BUILD_TOOLS=ON' \
@@ -112,7 +111,7 @@ jobs:
       - name: Run C++ Tests
         run: |
           cd "$GITHUB_WORKSPACE/build"
-          cmake --build . --target unittest --parallel $NPROC
+          cmake --build . --target unittest
         shell: sh
 
       - name: Run Python Tests
@@ -128,7 +127,7 @@ jobs:
           cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build . --parallel $NPROC
+          cmake --build .
           ./db-example
           ./core-example
           ./ailego-example
@@ -141,7 +140,7 @@ jobs:
           cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build . --parallel $NPROC
+          cmake --build .
           ./c_api_basic_example
           ./c_api_collection_schema_example
           ./c_api_doc_example
@@ -232,17 +231,20 @@ jobs:
 
       - name: Set up environment variables
         run: |
-          echo "NPROC=$(nproc 2>/dev/null || echo 2)" >> $GITHUB_ENV
+          CMAKE_BUILD_PARALLEL_LEVEL=$(docker exec -e CMAKE_BUILD_PARALLEL_LEVEL \
+            "$MUSL_CONTAINER" python .github/scripts/setup_build_env.py --print)
+          export CMAKE_BUILD_PARALLEL_LEVEL
+          python3 .github/scripts/setup_build_env.py
         shell: bash
 
       - name: Install dependencies
         run: |
           docker exec "$MUSL_CONTAINER" apk add --no-cache ccache
           docker exec "$MUSL_CONTAINER" python -m pip install --upgrade pip
-          docker exec "$MUSL_CONTAINER" python -m pip install \
-            pybind11==3.0 \
-            cmake==3.30.0 \
-            ninja==1.11.1 \
+          docker exec "$MUSL_CONTAINER" python -m pip install --constraint .github/constraints-build.txt \
+            pybind11 \
+            cmake \
+            ninja \
             pytest \
             pytest-xdist \
             scikit-build-core \
@@ -253,7 +255,7 @@ jobs:
         run: |
           docker exec \
             -e CMAKE_GENERATOR=Ninja \
-            -e CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
+            -e CMAKE_BUILD_PARALLEL_LEVEL \
             "$MUSL_CONTAINER" python -m pip install -v . \
             --no-build-isolation \
             --config-settings='cmake.define.BUILD_TOOLS=ON' \
@@ -264,8 +266,8 @@ jobs:
 
       - name: Run C++ Tests
         run: |
-          docker exec -w /work/build "$MUSL_CONTAINER" \
-            cmake --build . --target unittest --parallel "$NPROC"
+          docker exec -e CMAKE_BUILD_PARALLEL_LEVEL -w /work/build "$MUSL_CONTAINER" \
+            cmake --build . --target unittest
         shell: bash
 
       - name: Run Python Tests
@@ -275,13 +277,13 @@ jobs:
 
       - name: Run C++ Examples
         run: |
-          docker exec "$MUSL_CONTAINER" sh -c "
+          docker exec -e CMAKE_BUILD_PARALLEL_LEVEL "$MUSL_CONTAINER" sh -c "
             cd /work/examples/c++
             mkdir build && cd build
             cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_C_COMPILER_LAUNCHER=ccache \
               -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-            cmake --build . --parallel $NPROC
+            cmake --build .
             ./db-example
             ./core-example
             ./ailego-example
@@ -290,13 +292,13 @@ jobs:
 
       - name: Run C Examples
         run: |
-          docker exec "$MUSL_CONTAINER" sh -c "
+          docker exec -e CMAKE_BUILD_PARALLEL_LEVEL "$MUSL_CONTAINER" sh -c "
             cd /work/examples/c
             mkdir build && cd build
             cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_C_COMPILER_LAUNCHER=ccache \
               -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-            cmake --build . --parallel $NPROC
+            cmake --build .
             ./c_api_basic_example
             ./c_api_collection_schema_example
             ./c_api_doc_example

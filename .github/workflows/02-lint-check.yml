@@ -25,6 +25,10 @@ jobs:
             clang-format==18.1.8
         shell: bash
 
+      - name: Check CI build environment setup
+        run: python -m unittest discover -s .github/scripts -p 'test_*.py'
+        shell: bash
+
       - name: Run Ruff Linter
         run: python -m ruff check .
         shell: bash

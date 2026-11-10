@@ -32,21 +32,22 @@ jobs:
         with:
           python-version: '3.10'
           cache: 'pip'
-          cache-dependency-path: 'pyproject.toml'
+          cache-dependency-path: |
+            pyproject.toml
+            .github/constraints-build.txt
 
       - name: Set up environment variables
         run: |
-          NPROC=$(nproc 2>/dev/null || echo 2)
-          echo "NPROC=$NPROC" >> "$GITHUB_ENV"
+          python .github/scripts/setup_build_env.py
           echo "$(python -c 'import site; print(site.USER_BASE)')/bin" >> "$GITHUB_PATH"
         shell: bash
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install \
-            cmake==3.30.0 \
-            ninja==1.11.1
+          python -m pip install --constraint .github/constraints-build.txt \
+            cmake \
+            ninja
         shell: bash
 
       - name: Configure subproject integration
@@ -82,8 +83,7 @@ jobs:
             core_knn_diskann \
             zvec_embed_db_example \
             zvec_embed_core_example \
-            zvec_embed_ailego_example \
-            --parallel "$NPROC"
+            zvec_embed_ailego_example
         shell: bash
 
       - name: Run subproject examples

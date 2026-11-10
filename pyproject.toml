@@ -88,8 +88,6 @@ requires = [
     "scikit-build-core >=0.11",
     "pybind11 >=3.0",
     "setuptools_scm>=8.0",
-    "cmake>=3.26,<4.0",
-    "ninja>=1.11",
 ]
 build-backend = "scikit_build_core.build"
 
@@ -180,13 +178,12 @@ build-frontend = "build"
 test-requires = ["pytest", "pytest-xdist", "numpy"]
 test-command = "cd {project} && pytest python/tests -v --tb=short"
 build-verbosity = 1
-# Platform environment tables do not merge. Repeat the adaptive build budget
-# below, preserving an explicit CMAKE_BUILD_PARALLEL_LEVEL from the caller.
 
 [tool.cibuildwheel.linux]
 archs = ["auto"]
-# Pass an optional host override into the container; detect CPUs inside it.
+# CI sets the budget before invoking cibuildwheel; Linux builds run in containers.
 environment-pass = ["CMAKE_BUILD_PARALLEL_LEVEL"]
+environment = { CMAKE_GENERATOR = "Unix Makefiles" }
 manylinux-x86_64-image = "manylinux_2_28"
 manylinux-aarch64-image = "manylinux_2_28"
 musllinux-x86_64-image = "quay.io/pypa/musllinux_1_2_x86_64:2026.03.01-1"
@@ -194,33 +191,22 @@ musllinux-aarch64-image = "quay.io/pypa/musllinux_1_2_aarch64:2026.03.01-1"
 # Skip 32-bit builds
 skip = ["*-manylinux_i686"]
 
-[tool.cibuildwheel.linux.environment]
-CMAKE_GENERATOR = "Unix Makefiles"
-CMAKE_BUILD_PARALLEL_LEVEL = '''$(python -c "import os; print(os.environ.get('CMAKE_BUILD_PARALLEL_LEVEL') or (len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else os.cpu_count()) or 1)")'''
-
 [tool.cibuildwheel.macos]
 # Build the native 64-bit architecture on each macOS runner.  The release
 # workflows run on both Apple Silicon and Intel hosts, producing separate
 # arm64 and x86_64 wheels that can each be tested natively.
 archs = ["auto"]
-
-[tool.cibuildwheel.macos.environment]
-CMAKE_GENERATOR = "Unix Makefiles"
-CMAKE_BUILD_PARALLEL_LEVEL = '''$(python -c "import os; print(os.environ.get('CMAKE_BUILD_PARALLEL_LEVEL') or (len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else os.cpu_count()) or 1)")'''
-MACOSX_DEPLOYMENT_TARGET = "11.0"
+environment = { CMAKE_GENERATOR = "Unix Makefiles", MACOSX_DEPLOYMENT_TARGET = "11.0" }
 
 [tool.cibuildwheel.windows]
 archs = ["auto64"]
+environment = { CMAKE_GENERATOR = "Ninja" }
 test-command = "cd /d {project} && pytest python/tests -v --tb=short --basetemp=./.pytest_tmp"
 #config-settings = { build-dir = "build/{wheel_tag}" }
 #&& if exist .pytest_tmp rmdir /s /q .pytest_tmp"
 before-build = [
     "python -c \"import shutil, glob, os; [shutil.rmtree(p, ignore_errors=True) for p in ['build', '.pytest_tmp']];\""
 ]
-
-[tool.cibuildwheel.windows.environment]
-CMAKE_GENERATOR = "Ninja"
-CMAKE_BUILD_PARALLEL_LEVEL = '''$(python -c "import os; print(os.environ.get('CMAKE_BUILD_PARALLEL_LEVEL') or (len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else os.cpu_count()) or 1)")'''
 
 
 ######################################################################################################

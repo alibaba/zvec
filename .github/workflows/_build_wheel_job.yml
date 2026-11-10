@@ -49,7 +49,10 @@ jobs:
       - name: Install cibuildwheel
         run: |
           pip install --upgrade pip
-          pip install cibuildwheel==3.4.0
+          pip install --constraint .github/constraints-build.txt cibuildwheel
+
+      - name: Set up build parallelism
+        run: python .github/scripts/setup_build_env.py
 
       - name: Build wheels using cibuildwheel
         env:

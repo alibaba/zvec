@@ -41,6 +41,9 @@ jobs:
             cmake ninja-build git ca-certificates python3 \
             build-essential make unzip curl
 
+      - name: Set up build parallelism
+        run: python3 .github/scripts/setup_build_env.py
+
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -119,16 +122,14 @@ jobs:
             echo "Building focused ARM64 index tests and public C++ examples..."
             cmake --build "$BUILD_DIR" \
               --target diskann_mobile_compat_test diskann_mobile_collection_test \
-                hnsw_rabitq_streamer_test ivf_rabitq_streamer_test zvec_cpp_examples \
-              --parallel
+                hnsw_rabitq_streamer_test ivf_rabitq_streamer_test zvec_cpp_examples
             exit 0
           fi
 
           echo "Building all x86_64 targets..."
-          cmake --build "$BUILD_DIR" --parallel
+          cmake --build "$BUILD_DIR"
           cmake --build "$BUILD_DIR" \
-            --target diskann_mobile_compat_test diskann_mobile_collection_test \
-            --parallel
+            --target diskann_mobile_compat_test diskann_mobile_collection_test
 
           # Discover test targets from ctest metadata
           echo "Discovering test targets..."
@@ -544,7 +545,7 @@ jobs:
         env:
           BUILD_DIR: build_android_${{ matrix.abi }}
         run: |
-          cmake --build "$BUILD_DIR" --target zvec_cpp_examples --parallel
+          cmake --build "$BUILD_DIR" --target zvec_cpp_examples
           READELF="$ANDROID_HOME/ndk/$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
 
           for example in ailego-example core-example external-vector-example db-example; do

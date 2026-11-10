@@ -51,7 +51,9 @@ jobs:
         with:
           python-version: '3.10'
           cache: 'pip'
-          cache-dependency-path: 'pyproject.toml'
+          cache-dependency-path: |
+            pyproject.toml
+            .github/constraints-build.txt
 
       - name: Install Clang
         if: inputs.compiler == 'clang' && runner.os == 'Linux'
@@ -67,14 +69,7 @@ jobs:
 
       - name: Set up environment variables
         run: |
-          # Set number of processors for parallel builds
-          if [[ "${{ runner.os }}" == "macOS" ]]; then
-            NPROC=$(sysctl -n hw.ncpu 2>/dev/null || echo 2)
-          else
-            NPROC=$(nproc 2>/dev/null || echo 2)
-          fi
-          echo "NPROC=$NPROC" >> $GITHUB_ENV
-          echo "Using $NPROC parallel jobs for builds"
+          python .github/scripts/setup_build_env.py
 
           # Set compiler when clang is requested
           if [[ "${{ inputs.compiler }}" == "clang" ]]; then
@@ -89,10 +84,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install \
-            pybind11==3.0 \
-            cmake==3.30.0 \
-            ninja==1.11.1 \
+          python -m pip install --constraint .github/constraints-build.txt \
+            pybind11 \
+            cmake \
+            ninja \
             pytest \
             pytest-xdist \
             scikit-build-core \
@@ -125,7 +120,6 @@ jobs:
           cd "$GITHUB_WORKSPACE"
 
           CMAKE_GENERATOR="Ninja" \
-          CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
           python -m pip install -v . \
             --no-build-isolation \
             --config-settings='cmake.define.BUILD_TOOLS=ON' \
@@ -139,7 +133,7 @@ jobs:
         if: matrix.platform != 'macos-x64'
         run: |
           cd "$GITHUB_WORKSPACE/build"
-          cmake --build . --target unittest --parallel $NPROC
+          cmake --build . --target unittest
         shell: bash
 
       - name: Run macOS x64 C++ compatibility tests
@@ -149,8 +143,7 @@ jobs:
           df -h /
           cd "$GITHUB_WORKSPACE/build"
           cmake --build . \
-            --target shared_api_test c_api_test \
-            --parallel "$NPROC"
+            --target shared_api_test c_api_test
           ctest --output-on-failure \
             -R '^(shared_api_test|c_api_test)$' \
             --parallel 1
@@ -196,7 +189,7 @@ jobs:
           cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build . --parallel $NPROC
+          cmake --build .
           ./db-example
           ./core-example
           ./ailego-example
@@ -209,7 +202,7 @@ jobs:
           cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build . --parallel $NPROC
+          cmake --build .
           ./c_api_basic_example
           ./c_api_collection_schema_example
           ./c_api_doc_example
