@@ -30,7 +30,7 @@ class IVFLegacyMatrixTest
  protected:
   using Bytes = std::vector<uint8_t>;
   bool record_quantized_{false};
-  void Validate();
+  void validate();
   IndexMeta meta_;
   std::vector<Bytes> rows_, queries_;
   std::vector<std::vector<double>> values_, query_values_;
@@ -220,7 +220,7 @@ class IVFLegacyMatrixTest
 };
 
 TEST_P(IVFLegacyMatrixTest, PersistedColumnBlocksMatchIndependentReference) {
-  Validate();
+  validate();
 }
 
 TEST_P(IVFLegacyMatrixTest,
@@ -229,10 +229,10 @@ TEST_P(IVFLegacyMatrixTest,
       std::get<0>(GetParam()) != IndexMeta::DT_INT4)
     GTEST_SKIP();
   record_quantized_ = true;
-  Validate();
+  validate();
 }
 
-void IVFLegacyMatrixTest::Validate() {
+void IVFLegacyMatrixTest::validate() {
   const bool integer = std::get<0>(GetParam()) == IndexMeta::DT_INT8 ||
                        std::get<0>(GetParam()) == IndexMeta::DT_INT4;
   for (size_t dim : {8U, 17U, 128U, 512U}) {
