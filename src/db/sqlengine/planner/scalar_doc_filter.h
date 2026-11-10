@@ -25,7 +25,6 @@ class ScalarDocFilter {
       const std::shared_ptr<arrow::Table> &snapshot);
 
   static gandiva::ScalarPredicateCacheStats CacheStats();
-  static uint64_t SuccessfulBindings();
 
   std::optional<bool> Evaluate(uint64_t id) const {
     if (id >= num_rows_) {

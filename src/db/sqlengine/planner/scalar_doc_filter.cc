@@ -3,7 +3,6 @@
 #include "db/sqlengine/planner/scalar_doc_filter.h"
 
 #ifdef ZVEC_ENABLE_SCALAR_JIT
-#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <arrow/record_batch.h>
@@ -11,8 +10,6 @@
 
 namespace zvec::sqlengine {
 namespace {
-
-std::atomic<uint64_t> successful_bindings{0};
 
 gandiva::ScalarPredicateCache &QueryCache() {
   // Compiled code only: query values and data addresses never enter the key.
@@ -23,8 +20,8 @@ gandiva::ScalarPredicateCache &QueryCache() {
 }  // namespace
 
 bool ScalarDocFilter::Enabled() {
-  // Read once at process startup/first query. This also permits an identical
-  // build to be benchmarked against the original Arrow path.
+  // Allow disabling the optional backend without rebuilding. Read once at
+  // process startup/first query.
   static const bool enabled = [] {
     const char *value = std::getenv("ZVEC_SCALAR_JIT");
     return value == nullptr || std::strcmp(value, "0") != 0;
@@ -34,10 +31,6 @@ bool ScalarDocFilter::Enabled() {
 
 gandiva::ScalarPredicateCacheStats ScalarDocFilter::CacheStats() {
   return QueryCache().stats();
-}
-
-uint64_t ScalarDocFilter::SuccessfulBindings() {
-  return successful_bindings.load(std::memory_order_relaxed);
 }
 
 arrow::Result<std::unique_ptr<ScalarDocFilter>> ScalarDocFilter::Make(
@@ -160,7 +153,6 @@ arrow::Result<std::unique_ptr<ScalarDocFilter>> ScalarDocFilter::MakeValidated(
       break;
     }
   }
-  successful_bindings.fetch_add(1, std::memory_order_relaxed);
   return result;
 }
 

@@ -33,14 +33,3 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
   db_test_force_load_core(${CC_TARGET})
   cc_test_suite(zvec_sqlengine ${CC_TARGET})
 endforeach()
-
-if(ZVEC_ENABLE_SCALAR_JIT)
-  # Internal binding benchmark needs Arrow's private/static symbols. Keep it
-  # opt-in as a build target, separate from the public shared-library tools.
-  add_executable(scalar_filter_binding_benchmark EXCLUDE_FROM_ALL
-    ${PROJECT_ROOT_DIR}/tools/scalar_filter/binding_benchmark.cc)
-  target_compile_features(scalar_filter_binding_benchmark PRIVATE cxx_std_17)
-  target_include_directories(scalar_filter_binding_benchmark PRIVATE
-    ${PROJECT_ROOT_DIR}/src)
-  target_link_libraries(scalar_filter_binding_benchmark PRIVATE zvec)
-endif()

@@ -53,12 +53,6 @@ class DocFilter : public IndexFilter {
 
   bool empty() const;
 
-#ifdef ZVEC_ENABLE_SCALAR_JIT
-  bool uses_scalar_jit() const {
-    return scalar_filter_ != nullptr;
-  }
-#endif
-
  private:
   std::optional<bool> get_forward_bit(uint64_t id) const;
   std::optional<bool> is_matched_by_forward_filter(uint64_t id) const;
