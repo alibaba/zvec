@@ -29,7 +29,7 @@ apply_patch_once("arrow_slim_compute" "${ARROW_SRC_DIR}" "${ARROW_SLIM_COMPUTE_P
 
 set(_ARROW_SCALAR_JIT_ARGS -DARROW_GANDIVA=OFF)
 if(ZVEC_ENABLE_SCALAR_JIT)
-    include(${PROJECT_ROOT_DIR}/thirdparty/gandiva_scalar/prepare_arrow.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/gandiva/prepare.cmake)
 endif()
 
 include(ExternalProject)
@@ -217,17 +217,17 @@ if(ZVEC_ENABLE_SCALAR_JIT)
     # ExternalProject otherwise considers a completed build up to date even
     # after configure_file updates its source tree. Track the overlay inputs
     # explicitly so a future scalar ABI/codegen change rebuilds Gandiva.
-    set(_SCALAR_JIT_SOURCE_DIR ${PROJECT_ROOT_DIR}/thirdparty/gandiva_scalar)
+    set(_SCALAR_JIT_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/gandiva)
     ExternalProject_Add_Step(ARROW.BUILD scalar_source_overrides
         COMMAND "${CMAKE_COMMAND}" -E true
         DEPENDEES patch
         DEPENDERS configure
         DEPENDS
-            ${_SCALAR_JIT_SOURCE_DIR}/prepare_arrow.cmake
-            ${_SCALAR_JIT_SOURCE_DIR}/include/gandiva/scalar_predicate.h
-            ${_SCALAR_JIT_SOURCE_DIR}/overrides/gandiva/annotator.h
-            ${_SCALAR_JIT_SOURCE_DIR}/overrides/gandiva/llvm_generator.h
-            ${_SCALAR_JIT_SOURCE_DIR}/overrides/gandiva/llvm_generator.cc)
+            ${_SCALAR_JIT_SOURCE_DIR}/prepare.cmake
+            ${_SCALAR_JIT_SOURCE_DIR}/overrides/scalar_predicate_abi.h
+            ${_SCALAR_JIT_SOURCE_DIR}/overrides/annotator.h
+            ${_SCALAR_JIT_SOURCE_DIR}/overrides/llvm_generator.h
+            ${_SCALAR_JIT_SOURCE_DIR}/overrides/llvm_generator.cc)
 endif()
 
 add_library(arrow UNKNOWN IMPORTED GLOBAL)

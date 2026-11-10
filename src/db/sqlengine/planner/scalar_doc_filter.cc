@@ -11,9 +11,9 @@
 namespace zvec::sqlengine {
 namespace {
 
-gandiva::ScalarPredicateCache &QueryCache() {
+scalar_jit::ScalarPredicateCache &QueryCache() {
   // Compiled code only: query values and data addresses never enter the key.
-  static gandiva::ScalarPredicateCache cache(128);
+  static scalar_jit::ScalarPredicateCache cache(128);
   return cache;
 }
 
@@ -29,7 +29,7 @@ bool ScalarDocFilter::Enabled() {
   return enabled;
 }
 
-gandiva::ScalarPredicateCacheStats ScalarDocFilter::CacheStats() {
+scalar_jit::ScalarPredicateCacheStats ScalarDocFilter::CacheStats() {
   return QueryCache().stats();
 }
 
@@ -53,7 +53,7 @@ arrow::Result<std::unique_ptr<ScalarDocFilter>> ScalarDocFilter::MakeValidated(
                                             expression, snapshot->schema()));
   ARROW_ASSIGN_OR_RAISE(
       auto prepared,
-      QueryCache().Prepare(snapshot->schema(), std::move(condition)));
+      QueryCache().prepare(snapshot->schema(), std::move(condition)));
   auto result = std::unique_ptr<ScalarDocFilter>(new ScalarDocFilter);
   result->snapshot_ = snapshot;
 
@@ -73,7 +73,7 @@ arrow::Result<std::unique_ptr<ScalarDocFilter>> ScalarDocFilter::MakeValidated(
     return arrow::Status::Invalid("Forward snapshot has no nonempty batch");
   }
   ARROW_ASSIGN_OR_RAISE(result->prototype_,
-                        prepared.Bind(std::move(first_batch)));
+                        prepared.bind(std::move(first_batch)));
   result->buffer_count_ = result->prototype_->num_buffers();
 
   struct ColumnCursor {

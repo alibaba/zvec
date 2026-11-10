@@ -103,7 +103,7 @@ class Converter {
  public:
   explicit Converter(const arrow::Schema &schema) : schema_(schema) {}
 
-  arrow::Result<gandiva::NodePtr> Convert(
+  arrow::Result<gandiva::NodePtr> convert(
       const cp::Expression &expression) const {
     if (!IsSupportedType(expression.type())) {
       return arrow::Status::NotImplemented(
@@ -169,8 +169,8 @@ class Converter {
         return arrow::Status::NotImplemented(
             "Scalar JIT requires same-type numeric comparison");
       }
-      ARROW_ASSIGN_OR_RAISE(auto left, Convert(call->arguments[0]));
-      ARROW_ASSIGN_OR_RAISE(auto right, Convert(call->arguments[1]));
+      ARROW_ASSIGN_OR_RAISE(auto left, convert(call->arguments[0]));
+      ARROW_ASSIGN_OR_RAISE(auto right, convert(call->arguments[1]));
       return TB::MakeFunction(comparison.second, {left, right},
                               arrow::boolean());
     }
@@ -182,8 +182,8 @@ class Converter {
         return arrow::Status::NotImplemented(
             "Scalar JIT requires two boolean operands");
       }
-      ARROW_ASSIGN_OR_RAISE(auto left, Convert(call->arguments[0]));
-      ARROW_ASSIGN_OR_RAISE(auto right, Convert(call->arguments[1]));
+      ARROW_ASSIGN_OR_RAISE(auto left, convert(call->arguments[0]));
+      ARROW_ASSIGN_OR_RAISE(auto right, convert(call->arguments[1]));
       return name == "and_kleene" ? TB::MakeAnd({left, right})
                                   : TB::MakeOr({left, right});
     }
@@ -194,7 +194,7 @@ class Converter {
         return arrow::Status::NotImplemented(
             "Unsupported unary scalar predicate");
       }
-      ARROW_ASSIGN_OR_RAISE(auto argument, Convert(call->arguments[0]));
+      ARROW_ASSIGN_OR_RAISE(auto argument, convert(call->arguments[0]));
       const char *target = name == "invert"
                                ? "not"
                                : (name == "is_null" ? "isnull" : "isnotnull");
@@ -229,7 +229,7 @@ arrow::Result<gandiva::ConditionPtr> MakeScalarPredicateCondition(
           "Scalar JIT rejects duplicate field names");
     }
   }
-  ARROW_ASSIGN_OR_RAISE(auto root, Converter(*schema).Convert(expression));
+  ARROW_ASSIGN_OR_RAISE(auto root, Converter(*schema).convert(expression));
   return TB::MakeCondition(std::move(root));
 }
 

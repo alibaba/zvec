@@ -157,7 +157,7 @@ std::optional<std::vector<uint64_t>> DocFilter::get_bf_by_keys_and_update(
 std::optional<bool> DocFilter::is_matched_by_forward_filter(uint64_t id) const {
 #ifdef ZVEC_ENABLE_SCALAR_JIT
   if (scalar_filter_) {
-    if (auto result = scalar_filter_->Evaluate(id)) {
+    if (auto result = scalar_filter_->evaluate(id)) {
       return result;
     }
   }

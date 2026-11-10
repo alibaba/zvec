@@ -40,7 +40,7 @@
 #include "gandiva/llvm_types.h"
 #include "gandiva/lvalue.h"
 #include "gandiva/selection_vector.h"
-#include "gandiva/scalar_predicate.h"
+#include "gandiva/scalar_predicate_abi.h"
 #include "gandiva/value_validity_pair.h"
 #include "gandiva/visibility.h"
 

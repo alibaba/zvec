@@ -1,0 +1,26 @@
+{
+  "component": "Apache Arrow Gandiva scalar execution extension",
+  "license": "Apache-2.0",
+  "notes": "Version-specific Gandiva source overrides and a minimal scalar ABI. The owning runtime and query cache are zvec code under src/db/sqlengine/scalar_jit.",
+  "upstream": {
+    "arrow": {
+      "version": "21.0.0",
+      "tag": "apache-arrow-21.0.0",
+      "url": "https://github.com/apache/arrow/archive/refs/tags/apache-arrow-21.0.0.tar.gz",
+      "sha256": "e92401790fdba33bfb4b8aa522626d800ea7fda4b6f036aaf39849927d2cf88d",
+      "zvec_submodule_commit": "ee4d09ebef61c663c1efbfa4c18e518a03b798be"
+    },
+    "llvm_major": 20
+  },
+  "sha256": {
+    "overrides/annotator.h": "6023263a8cd8a91d6dd8c62979d66c7468dd2db1e3d408a7be27a60a3b673734",
+    "overrides/llvm_generator.h": "dacb0483bfc383f6d576ea52cc28de70c7ffa553b4cf8cf9e806ef668efb7e0f",
+    "overrides/llvm_generator.cc": "8ec4f358dc59ca012736252fe17180018986fee2b688887dc772862a45c63559",
+    "overrides/scalar_predicate_abi.h": "8a22b0e1e2172f4afe797954960488a6221651a801b4f4590fdccf623a9acbbb"
+  },
+  "local_changes": [
+    "Add single-row code generation and scalar parameter binding to LLVMGenerator while preserving its batch evaluator.",
+    "Expose immutable buffer binding metadata through Annotator and LLVMGenerator.",
+    "Keep the shared evaluation signature and parameter layout independent of zvec runtime headers."
+  ]
+}

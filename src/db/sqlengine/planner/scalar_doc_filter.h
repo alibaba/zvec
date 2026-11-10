@@ -11,7 +11,7 @@
 #include <vector>
 #include <arrow/compute/expression.h>
 #include <arrow/table.h>
-#include <gandiva/scalar_predicate_cache.h>
+#include "db/sqlengine/scalar_jit/scalar_predicate_cache.h"
 
 namespace zvec::sqlengine {
 
@@ -24,9 +24,9 @@ class ScalarDocFilter {
       const arrow::compute::Expression &expression,
       const std::shared_ptr<arrow::Table> &snapshot);
 
-  static gandiva::ScalarPredicateCacheStats CacheStats();
+  static scalar_jit::ScalarPredicateCacheStats CacheStats();
 
-  std::optional<bool> Evaluate(uint64_t id) const {
+  std::optional<bool> evaluate(uint64_t id) const {
     if (id >= num_rows_) {
       return std::nullopt;
     }
@@ -57,7 +57,7 @@ class ScalarDocFilter {
       const std::shared_ptr<arrow::Table> &snapshot);
   // prototype_ owns executable code, holders and this query's scalar slots.
   // snapshot_ owns every Arrow buffer referenced by the flat descriptors.
-  std::shared_ptr<gandiva::BoundScalarPredicate> prototype_;
+  std::shared_ptr<scalar_jit::BoundScalarPredicate> prototype_;
   std::shared_ptr<arrow::Table> snapshot_;
   std::vector<const uint8_t *> buffers_;
   std::vector<int64_t> offsets_;

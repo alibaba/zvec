@@ -36,7 +36,9 @@ add_subdirectory(googletest googletest EXCLUDE_FROM_ALL)
 
 add_subdirectory(arrow arrow EXCLUDE_FROM_ALL)
 if(ZVEC_ENABLE_SCALAR_JIT)
-    add_subdirectory(gandiva_scalar gandiva_scalar EXCLUDE_FROM_ALL)
+    install(FILES arrow/gandiva/LICENSE arrow/gandiva/NOTICE
+                  arrow/gandiva/PROVENANCE.json
+        DESTINATION share/zvec/thirdparty/arrow/gandiva)
 endif()
 add_subdirectory(gflags gflags EXCLUDE_FROM_ALL)
 add_subdirectory(glog glog EXCLUDE_FROM_ALL)

@@ -7,13 +7,16 @@ cc_directory(sqlengine)
 
 set(ZVEC_SCALAR_JIT_LIBS)
 if(ZVEC_ENABLE_SCALAR_JIT)
-  # cc_library uses CMake's plain target_link_libraries signature. Keep that
-  # signature here and propagate the optional backend to index/sqlengine tests.
-  target_link_libraries(zvec_index zvec_gandiva_scalar)
-  list(APPEND ZVEC_SCALAR_JIT_LIBS zvec_gandiva_scalar)
+  # The index layer publishes immutable Arrow snapshots; only sqlengine needs
+  # the Gandiva runtime. Keep the feature flag consistent across components.
+  target_compile_definitions(zvec_index PUBLIC ZVEC_ENABLE_SCALAR_JIT=1)
+  list(APPEND ZVEC_SCALAR_JIT_LIBS Gandiva::gandiva_static)
 endif()
 
 file(GLOB_RECURSE ALL_DB_SRCS *.cc *.c *.h)
+if(NOT ZVEC_ENABLE_SCALAR_JIT)
+  list(FILTER ALL_DB_SRCS EXCLUDE REGEX "/sqlengine/scalar_jit/")
+endif()
 
 # Ensure bitpacked_simd_sse41.cc is compiled with SSE4.1 flag and
 # bitpacked_simd_avx2.cc with AVX2 flag in the packed zvec target as well
@@ -64,3 +67,7 @@ cc_library(
     ${ZVEC_SCALAR_JIT_LIBS}
   VERSION "${PROXIMA_ZVEC_VERSION}"
 )
+
+if(ZVEC_ENABLE_SCALAR_JIT)
+  target_compile_definitions(zvec PUBLIC ZVEC_ENABLE_SCALAR_JIT=1)
+endif()

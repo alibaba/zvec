@@ -38,16 +38,12 @@ file(READ "${ARROW_SRC_DIR}/cpp/CMakeLists.txt" _scalar_jit_arrow_cmake)
 if(NOT _scalar_jit_arrow_cmake MATCHES "set\\(ARROW_VERSION \"21\\.0\\.0\"\\)")
     message(FATAL_ERROR "Scalar JIT source overrides require Apache Arrow 21.0.0")
 endif()
-foreach(_scalar_jit_override annotator.h llvm_generator.h llvm_generator.cc)
+foreach(_scalar_jit_override annotator.h llvm_generator.h llvm_generator.cc
+                            scalar_predicate_abi.h)
     configure_file(
-        "${CMAKE_CURRENT_LIST_DIR}/overrides/gandiva/${_scalar_jit_override}"
+        "${CMAKE_CURRENT_LIST_DIR}/overrides/${_scalar_jit_override}"
         "${ARROW_SRC_DIR}/cpp/src/gandiva/${_scalar_jit_override}" COPYONLY)
 endforeach()
-# LLVMGenerator's new ABI uses this header. Arrow's header installer includes it
-# together with the modified private generator headers used by the facade.
-configure_file(
-    "${CMAKE_CURRENT_LIST_DIR}/include/gandiva/scalar_predicate.h"
-    "${ARROW_SRC_DIR}/cpp/src/gandiva/scalar_predicate.h" COPYONLY)
 
 set(_ARROW_SCALAR_JIT_ARGS
     -DARROW_GANDIVA=ON
@@ -63,4 +59,4 @@ set(_ARROW_SCALAR_JIT_ARGS
     "-DOPENSSL_CRYPTO_LIBRARY=${OPENSSL_CRYPTO_LIBRARY}"
     "-DOPENSSL_SSL_LIBRARY=${OPENSSL_SSL_LIBRARY}")
 set(LIB_GANDIVA "${EXTERNAL_LIB_DIR}/libgandiva.a")
-message(STATUS "Scalar JIT: vendored backend, Arrow 21 static + Gandiva static, LLVM ${LLVM_PACKAGE_VERSION} shared")
+message(STATUS "Scalar JIT: Arrow 21 static + Gandiva static, LLVM ${LLVM_PACKAGE_VERSION} shared")

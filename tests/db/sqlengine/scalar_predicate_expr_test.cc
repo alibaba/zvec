@@ -15,8 +15,8 @@
 #include <vector>
 #include <arrow/api.h>
 #include <arrow/compute/api.h>
-#include <gandiva/scalar_predicate.h>
 #include "db/sqlengine/planner/scalar_predicate_expr.h"
+#include "db/sqlengine/scalar_jit/scalar_predicate.h"
 
 namespace zvec::sqlengine {
 namespace {
@@ -82,8 +82,8 @@ void Verify(const cp::Expression &expression,
   auto bound = Unwrap(expression.Bind(*batch->schema()));
   auto condition = Unwrap(MakeScalarPredicateCondition(bound, batch->schema()));
   auto compiled =
-      Unwrap(gandiva::ScalarPredicate::Make(batch->schema(), condition));
-  auto jit = Unwrap(compiled->Bind(batch));
+      Unwrap(scalar_jit::ScalarPredicate::Make(batch->schema(), condition));
+  auto jit = Unwrap(compiled->bind(batch));
   auto oracle =
       Unwrap(cp::ExecuteScalarExpression(bound, cp::ExecBatch(*batch)));
   std::shared_ptr<arrow::BooleanArray> array;
@@ -100,7 +100,7 @@ void Verify(const cp::Expression &expression,
                 : oracle.scalar_as<arrow::BooleanScalar>().is_valid &&
                       oracle.scalar_as<arrow::BooleanScalar>().value;
       EXPECT_EQ(arrow_value, expected[row]) << "row=" << row;
-      EXPECT_EQ(jit->Evaluate(row), arrow_value) << "row=" << row;
+      EXPECT_EQ(jit->evaluate(row), arrow_value) << "row=" << row;
     }
   }
 }

@@ -80,14 +80,14 @@ void Check(const ScalarDocFilter &filter, const std::vector<bool> &expected) {
   for (int repeat = 0; repeat < 3; ++repeat) {
     for (size_t i = 0; i < expected.size(); ++i) {
       const auto row = expected.size() - i - 1;
-      auto result = filter.Evaluate(row);
+      auto result = filter.evaluate(row);
       ASSERT_TRUE(result.has_value()) << "row=" << row;
       EXPECT_EQ(*result, expected[row]) << "row=" << row;
     }
   }
-  EXPECT_FALSE(filter.Evaluate(expected.size()).has_value());
+  EXPECT_FALSE(filter.evaluate(expected.size()).has_value());
   EXPECT_FALSE(
-      filter.Evaluate(std::numeric_limits<uint64_t>::max()).has_value());
+      filter.evaluate(std::numeric_limits<uint64_t>::max()).has_value());
 }
 
 TEST_F(ScalarDocFilterTest, UniformAndIrregularChunkRoutingWithSlices) {
@@ -200,8 +200,8 @@ TEST_F(ScalarDocFilterTest, EmptyMalformedAndUnsupportedSnapshotsReturnErrors) {
   // table types and lengths are insufficient for this malformed later chunk.
   auto short_values =
       arrow::Buffer::FromString(std::string(sizeof(int32_t), '\0'));
-  auto malformed_chunk = arrow::MakeArray(arrow::ArrayData::Make(
-      arrow::int32(), 2, {nullptr, short_values}, 0));
+  auto malformed_chunk = arrow::MakeArray(
+      arrow::ArrayData::Make(arrow::int32(), 2, {nullptr, short_values}, 0));
   auto malformed_later = arrow::Table::Make(
       schema, {std::make_shared<arrow::ChunkedArray>(
                   arrow::ArrayVector{I32({1, 2}), malformed_chunk})});
@@ -397,7 +397,7 @@ TEST_F(ScalarDocFilterTest,
       for (int repeat = 0; repeat < 1000; ++repeat) {
         const auto query = (thread + repeat) % kQueries;
         for (size_t row = 0; row < expected[query].size(); ++row) {
-          auto actual = filters[query]->Evaluate(row);
+          auto actual = filters[query]->evaluate(row);
           if (!actual || *actual != expected[query][row]) ++mismatches;
         }
       }
