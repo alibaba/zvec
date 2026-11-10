@@ -41,7 +41,7 @@ struct HnswQuantizedGraph::Model<true> final : Impl {
     } else if (cosine_) {
       std::copy_n(query_values, dimension_, values.data());
       float norm;
-      ailego::Normalizer<float>::L2(values.data(), dimension_, &norm);
+      turbo::Normalizer<float>::L2(values.data(), dimension_, &norm);
       query_values = values.data();
     }
     HnswFp16QueryAdapter query{{ctx}, query_values, dimension_, cosine_};

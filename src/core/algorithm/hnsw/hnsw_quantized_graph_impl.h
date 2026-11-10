@@ -14,7 +14,7 @@
 #pragma once
 
 #include <array>
-#include <ailego/math/normalizer.h>
+#include <turbo/norm/normalizer.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_error.h>
 #include "hnsw_context.h"

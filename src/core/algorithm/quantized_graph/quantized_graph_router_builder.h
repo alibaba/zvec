@@ -91,11 +91,13 @@ class QuantizedGraphRouterBuilder {
   };
   struct Group {
     std::array<Vector, kWidth> centers{};
-    std::array<int32_t, kWidth> targets{};
+    std::array<int32_t, kWidth> targets = [] {
+      std::array<int32_t, kWidth> values{};
+      values.fill(INT32_MIN);
+      return values;
+    }();
     uint32_t count = 0;
-    Group() {
-      targets.fill(INT32_MIN);
-    }
+    Group() = default;
   };
   struct Model {
     uint32_t docs = 0;

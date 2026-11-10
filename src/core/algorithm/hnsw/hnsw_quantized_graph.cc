@@ -103,7 +103,7 @@ int HnswQuantizedGraph::train_router(const HnswEntity &entity, size_t dimension,
             // tolerance. Spherical clustering trains on unit directions.
             if (cosine) {
               float norm;
-              ailego::Normalizer<float>::L2(decoded.data(), dimension, &norm);
+              turbo::Normalizer<float>::L2(decoded.data(), dimension, &norm);
             }
             return static_cast<const float *>(decoded.data());
           }
