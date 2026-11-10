@@ -334,7 +334,8 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
     if (m == 1 && n == 1) return distance();
     const auto type = TurboDataType(data_type_);
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || \
+    defined(_M_IX86)
     // The contiguous FP16 kernels avoid scalar software conversions for both
     // norms and dot products; their throughput repays the layout conversion.
     if (data_type_ == IndexMeta::DT_FP16)

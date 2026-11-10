@@ -118,7 +118,8 @@ class QuantizedIntegerMetric : public IndexMetric {
     // For multiple INT4 queries, transpose once and reuse the contiguous
     // SIMD pair kernel. Its throughput outweighs the transpose overhead.
     if (meta_.data_type() == IndexMeta::DT_INT4 && n > 1) return fallback;
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || \
+    defined(_M_IX86)
     if (meta_.data_type() == IndexMeta::DT_INT4 && n == 1 &&
         (origin_metric_type_ == MetricType::kSquaredEuclidean ||
          origin_metric_type_ == MetricType::kInnerProduct)) {
@@ -140,8 +141,7 @@ class QuantizedIntegerMetric : public IndexMetric {
             vectors[i] = matrix.data() + i * words;
             for (size_t d = 0; d < words; ++d)
               std::memcpy(matrix.data() + i * words + d,
-                          static_cast<const char *>(rows) + (d * m + i) * 4,
-                          4);
+                          static_cast<const char *>(rows) + (d * m + i) * 4, 4);
           }
           batch(vectors, query, m, dim, out, nullptr);
         };
