@@ -218,6 +218,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\core-example.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\diskann-core-example.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\ailego-example.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         shell: powershell

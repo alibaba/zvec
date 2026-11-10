@@ -252,12 +252,12 @@ void squared_euclidean_int8_batch_distance(
       reinterpret_cast<const int8_t *const *>(vectors);
   const float *q_tail = reinterpret_cast<const float *>(
       reinterpret_cast<const int8_t *>(query) + original_dim);
-  float qA = q_tail[0];
-  float qB = q_tail[1];
-  float qS = q_tail[2];
-  float qS2 = q_tail[3];
-  const float sum = qA * qS;
-  const float sum2 = qA * qA * qS2;
+  float q_a = q_tail[0];
+  float q_b = q_tail[1];
+  float q_s = q_tail[2];
+  float q_s2 = q_tail[3];
+  const float sum = q_a * q_s;
+  const float sum2 = q_a * q_a * q_s2;
 
   if (original_dim == 960) {
     for (; i + 4 <= n; i += 4) {
@@ -268,8 +268,8 @@ void squared_euclidean_int8_batch_distance(
       float inner_products[4];
       inner_product_batch4_960(query, vectors + i, prefetch_vectors,
                                inner_products);
-      finish_distance_batch4(vectors + i, original_dim, inner_products, qA, qB,
-                             sum, sum2, distances + i);
+      finish_distance_batch4(vectors + i, original_dim, inner_products, q_a,
+                             q_b, sum, sum2, distances + i);
     }
     data_ptrs_ptr += i;
     dist_ptr += i;
@@ -290,16 +290,16 @@ void squared_euclidean_int8_batch_distance(
     for (size_t j = 0; j < batch_size; ++j) {
       const float *m_tail = reinterpret_cast<const float *>(
           reinterpret_cast<const int8_t *>(data_ptrs_ptr[j]) + original_dim);
-      float mA = m_tail[0];
-      float mB = m_tail[1];
-      float mS = m_tail[2];
-      float mS2 = m_tail[3];
+      float m_a = m_tail[0];
+      float m_b = m_tail[1];
+      float m_s = m_tail[2];
+      float m_s2 = m_tail[3];
       int int8_sum = reinterpret_cast<const int *>(m_tail)[4];
       float result = ip_dists[j];
       result -= 128.0f * static_cast<float>(int8_sum);
-      result = mA * mA * mS2 + sum2 - 2 * mA * qA * result +
-               (mB - qB) * (mB - qB) * original_dim +
-               2 * (mB - qB) * (mS * mA - sum);
+      result = m_a * m_a * m_s2 + sum2 - 2 * m_a * q_a * result +
+               (m_b - q_b) * (m_b - q_b) * original_dim +
+               2 * (m_b - q_b) * (m_s * m_a - sum);
       dist_ptr[j] = result;
     }
     dist_ptr += batch_size;
@@ -312,16 +312,16 @@ void squared_euclidean_int8_batch_distance(
         query, &vectors[i], prefetch_ptrs, original_dim, &ip_dist);
     const float *m_tail = reinterpret_cast<const float *>(
         reinterpret_cast<const int8_t *>(data_ptrs_ptr[0]) + original_dim);
-    float mA = m_tail[0];
-    float mB = m_tail[1];
-    float mS = m_tail[2];
-    float mS2 = m_tail[3];
+    float m_a = m_tail[0];
+    float m_b = m_tail[1];
+    float m_s = m_tail[2];
+    float m_s2 = m_tail[3];
     int int8_sum = reinterpret_cast<const int *>(m_tail)[4];
     float result = ip_dist;
     result -= 128.0f * static_cast<float>(int8_sum);
-    result = mA * mA * mS2 + sum2 - 2 * mA * qA * result +
-             (mB - qB) * (mB - qB) * original_dim +
-             2 * (mB - qB) * (mS * mA - sum);
+    result = m_a * m_a * m_s2 + sum2 - 2 * m_a * q_a * result +
+             (m_b - q_b) * (m_b - q_b) * original_dim +
+             2 * (m_b - q_b) * (m_s * m_a - sum);
     *dist_ptr = result;
     data_ptrs_ptr += 1;
     dist_ptr += 1;

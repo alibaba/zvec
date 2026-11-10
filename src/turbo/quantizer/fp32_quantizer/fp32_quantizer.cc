@@ -16,7 +16,7 @@
 #include <cmath>
 #include <cstring>
 #include <vector>
-#include <ailego/math/normalizer.h>
+#include <turbo/norm/normalizer.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_factory.h>
 #include "core/quantizer/record_quantizer.h"
@@ -73,7 +73,7 @@ int Fp32Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
     float *buf = reinterpret_cast<float *>(&(*out)[0]);
     std::memcpy(buf, query, raw_dim * sizeof(float));
     float norm = 0.0f;
-    ailego::Normalizer<float>::L2(buf, raw_dim, &norm);
+    turbo::Normalizer<float>::L2(buf, raw_dim, &norm);
     std::memcpy(
         reinterpret_cast<uint8_t *>(&(*out)[0]) + raw_dim * sizeof(float),
         &norm, extra_meta_size_);
@@ -135,7 +135,7 @@ void Fp32Quantizer::quantize_one(const void *input, void *output) const {
     std::memcpy(output, input, byte_size);
     float *buf = reinterpret_cast<float *>(output);
     float norm = 0.0f;
-    ailego::Normalizer<float>::L2(buf, original_dim_, &norm);
+    turbo::Normalizer<float>::L2(buf, original_dim_, &norm);
     std::memcpy(reinterpret_cast<uint8_t *>(output) + byte_size, &norm,
                 extra_meta_size_);
   } else {

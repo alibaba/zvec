@@ -142,11 +142,20 @@ jobs:
           test "$(uname -m)" = "x86_64"
           df -h /
           cd "$GITHUB_WORKSPACE/build"
-          cmake --build . \
-            --target shared_api_test c_api_test
-          ctest --output-on-failure \
-            -R '^(shared_api_test|c_api_test)$' \
-            --parallel 1
+          test_regex='^(shared_api_test|c_api_test|diskann_.*_test)$'
+          # Build the same targets CTest will run, including tests added on main.
+          test_targets=$(ctest --show-only=json-v1 -R "$test_regex" | python -c '
+          import json
+          import sys
+
+          names = [test["name"] for test in json.load(sys.stdin)["tests"]]
+          if not names:
+              sys.exit("No macOS x64 compatibility tests registered")
+          print(" ".join(names))
+          ')
+          read -r -a targets <<< "$test_targets"
+          cmake --build . --target "${targets[@]}"
+          ctest --output-on-failure --no-tests=error -R "$test_regex" --parallel 1
         shell: bash
 
       - name: Run Python Tests
@@ -163,6 +172,12 @@ jobs:
           python -X faulthandler -c \
             "import platform, zvec; print('Imported zvec on', platform.machine(), zvec.__version__)"
           python -X faulthandler .github/scripts/macos_x64_python_smoke.py
+        shell: bash
+
+      - name: Run required macOS x64 DiskAnn lifecycle tests
+        if: matrix.platform == 'macos-x64'
+        run: |
+          python -m pytest python/tests/test_collection_diskann.py -n 2 -v
         shell: bash
 
       - name: Diagnose macOS x64 Python native crash
@@ -193,6 +208,9 @@ jobs:
           ./db-example
           ./core-example
           ./ailego-example
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            ./diskann-core-example
+          fi
         shell: bash
 
       - name: Run C Examples

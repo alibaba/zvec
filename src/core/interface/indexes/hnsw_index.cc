@@ -17,6 +17,7 @@
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_helper.h>
 #include <zvec/core/interface/index.h>
+#include "algorithm/hnsw/hnsw_bulk_builder.h"
 #include "algorithm/hnsw/hnsw_context.h"
 #include "algorithm/hnsw/hnsw_params.h"
 #include "algorithm/hnsw/hnsw_streamer.h"
@@ -26,6 +27,22 @@
 namespace zvec::core_interface {
 
 namespace {
+
+// Construct the public source adapter at the interface boundary. The builder
+// owns the retained vectors and the graph only borrows this view while
+// building.
+class HnswBuildVectorSource final : public core::VectorSource {
+ public:
+  explicit HnswBuildVectorSource(const core::HnswBulkBuilder &builder)
+      : builder_(builder) {}
+
+  const void *get_vector(uint32_t id) const override {
+    return builder_.get_vector(id);
+  }
+
+ private:
+  const core::HnswBulkBuilder &builder_;
+};
 
 const char *ResolveTurboQuantizerName(const QuantizerParam &quantizer_param,
                                       const HNSWIndexParam &hnsw_param) {
@@ -79,30 +96,188 @@ const char *ResolveTurboQuantizerName(const QuantizerParam &quantizer_param,
 
 }  // namespace
 
+int HNSWIndex::open(const std::string &file_path,
+                    StorageOptions storage_options) {
+  int ret = Index::open(file_path, storage_options);
+  if (ret == 0) {
+    file_path_ = file_path;
+    storage_options_ = storage_options;
+  }
+  return ret;
+}
+
+int HNSWIndex::merge(const std::vector<Index::Pointer> &indexes,
+                     const IndexFilter &filter, const MergeOptions &options) {
+  // Reusing an existing graph is an append operation. Only an unpublished,
+  // empty mmap target can replace its temporary graph with a packed index.
+  if (!is_open_ || is_read_only_ || indexes.empty() || is_sparse_ ||
+      !storage_options_.create_new ||
+      storage_options_.type != StorageOptions::StorageType::kMMAP ||
+      get_doc_count() != 0 || param_.use_external_vector || param_.provider ||
+      param_.use_contiguous_memory || !turbo_quantizer_ ||
+      proxima_index_meta_.quantizer_name() != "Fp32Quantizer") {
+    return Index::merge(indexes, filter, options);
+  }
+  if (options.write_concurrency == 0 ||
+      (options.pool && options.pool->count() == 0)) {
+    return core::IndexError_InvalidArgument;
+  }
+
+  core::HnswBulkBuilder builder(proxima_index_meta_, proxima_index_params_,
+                                turbo_quantizer_, streamer_vector_meta_);
+  for (const auto &index : indexes) {
+    if (!index || index.get() == this) return core::IndexError_InvalidArgument;
+    const auto &meta = index->index_searcher()->meta();
+    // Borrow encoded records only when they mean exactly the same thing to
+    // both indexes, including cosine's normalized values and norm tail.
+    if (meta.quantizer_name() != "Fp32Quantizer" ||
+        meta.quantizer_revision() != proxima_index_meta_.quantizer_revision() ||
+        meta.data_type() != proxima_index_meta_.data_type() ||
+        meta.dimension() != proxima_index_meta_.dimension() ||
+        meta.element_size() != proxima_index_meta_.element_size() ||
+        meta.metric_name() != proxima_index_meta_.metric_name() ||
+        meta.meta_type() != core::IndexMeta::MT_DENSE) {
+      return Index::merge(indexes, filter, options);
+    }
+    int ret = builder.add_source(index->create_index_provider());
+    if (ret == core::IndexError_NotImplemented) {
+      return Index::merge(indexes, filter, options);
+    }
+    if (ret != 0) return ret;
+  }
+
+  int ret = builder.prepare(filter);
+  if (ret != 0) return ret;
+  if (builder.empty()) {
+    is_trained_ = true;
+    return 0;
+  }
+  HnswBuildVectorSource source(builder);
+  ret = builder.build(file_path_, source, options.write_concurrency,
+                      options.pool);
+  if (ret != 0) return ret;
+
+  ret = close();
+  if (ret != 0) return ret;
+  // The target is still unpublished and empty. Remove it before renaming so
+  // replacement also works on platforms whose rename cannot overwrite files.
+  if (!ailego::File::Delete(file_path_)) return core::IndexError_WriteData;
+  if (!ailego::File::Rename(builder.packed_path(), file_path_)) {
+    return core::IndexError_WriteData;
+  }
+  auto reopen_options = storage_options_;
+  reopen_options.create_new = false;
+  // Reinitialize to discard the closed streamer's entity and cached context.
+  ret = Index::init(param_);
+  if (ret != 0) return ret;
+  ret = open(file_path_, reopen_options);
+  if (ret == 0) is_trained_ = true;
+  return ret;
+}
+
 int HNSWIndex::prepare_streamer_open(const StorageOptions &options) {
-  if (!turbo_quantizer_ || options.create_new) {
+  if (options.create_new) {
     return 0;
   }
   core::IndexMeta persisted_meta;
   if (core::IndexHelper::DeserializeFromStorage(storage_.get(),
-                                                &persisted_meta) != 0 ||
-      !persisted_meta.quantizer_name().empty()) {
+                                                &persisted_meta) != 0) {
+    return pending_quantizer_training_ ? core::IndexError_InvalidFormat : 0;
+  }
+  if (persisted_meta.quantizer_name().empty()) {
+    if (pending_quantizer_training_) return core::IndexError_InvalidFormat;
+    if (!turbo_quantizer_) {
+      return 0;
+    }
+    // Reuse normal initialization for old indexes, without selecting Turbo
+    // again.
+    turbo_quantizer_.reset();
+    streamer_.reset();
+    converter_.reset();
+    reformer_.reset();
+    metric_.reset();
+    proxima_index_meta_.clear();
+    use_legacy_pipeline_ = true;
+    return Index::init(param_);
+  }
+  // The persisted descriptor decides the search pipeline, including when a
+  // caller reopens an index with a different quantizer configuration: a
+  // trained quantizer (e.g. PQ) is restored from its serialized state, and
+  // the streamer is re-initialized on the persisted code layout.
+  bool matches_config = false;
+  if (turbo_quantizer_) {
+    const core::IndexMeta &config_meta = turbo_quantizer_->meta();
+    matches_config =
+        !turbo_quantizer_->require_train() &&
+        proxima_index_meta_.quantizer_name() ==
+            persisted_meta.quantizer_name() &&
+        config_meta.data_type() == persisted_meta.data_type() &&
+        config_meta.dimension() == persisted_meta.dimension() &&
+        config_meta.element_size() == persisted_meta.element_size();
+  }
+  if (matches_config) {
     return 0;
   }
-  // Reuse normal initialization for old indexes, without selecting Turbo again.
-  turbo_quantizer_.reset();
-  streamer_.reset();
+
+  std::shared_ptr<zvec::turbo::Quantizer> restored;
+  int ret =
+      core::HnswStreamer::RestoreQuantizer(storage_, persisted_meta, &restored);
+  if (ret != 0) {
+    LOG_ERROR("Failed to restore turbo quantizer %s, ret=%d",
+              persisted_meta.quantizer_name().c_str(), ret);
+    return ret;
+  }
+  if (!restored) {
+    LOG_ERROR("Restored turbo quantizer %s is null",
+              persisted_meta.quantizer_name().c_str());
+    return core::IndexError_Runtime;
+  }
+
+  pending_quantizer_training_ = false;
+  turbo_quantizer_ = restored;
   converter_.reset();
   reformer_.reset();
   metric_.reset();
-  proxima_index_meta_.clear();
-  use_legacy_pipeline_ = true;
-  return Index::init(param_);
+  proxima_index_meta_ = persisted_meta;
+  streamer_vector_meta_.set_meta(
+      persisted_meta.data_type(), persisted_meta.dimension(),
+      static_cast<uint32_t>(turbo_quantizer_->type()),
+      persisted_meta.extra_meta_size());
+  streamer_vector_meta_.set_meta_type(persisted_meta.meta_type());
+  LOG_INFO("Restored turbo quantizer %s from the persisted index meta",
+           persisted_meta.quantizer_name().c_str());
+  ret = streamer_->init(proxima_index_meta_, proxima_index_params_,
+                        turbo_quantizer_);
+  if (ret != 0) {
+    LOG_ERROR("Failed to re-init streamer with restored turbo quantizer %s",
+              persisted_meta.quantizer_name().c_str());
+    return ret;
+  }
+  return 0;
 }
 
 int HNSWIndex::create_and_init_converter_reformer(
     const QuantizerParam &quantizer_param, const BaseIndexParam &index_param) {
   const auto &hnsw_param = dynamic_cast<const HNSWIndexParam &>(index_param);
+  if (quantizer_param.type == QuantizerType::kPQ) {
+    if (hnsw_param.is_sparse || hnsw_param.data_type != DataType::DT_FP32 ||
+        (hnsw_param.metric_type != MetricType::kL2sq &&
+         hnsw_param.metric_type != MetricType::kInnerProduct &&
+         hnsw_param.metric_type != MetricType::kCosine) ||
+        hnsw_param.use_external_vector || hnsw_param.provider) {
+      return core::IndexError_Unsupported;
+    }
+    int ret =
+        init_pq_quantizer(quantizer_param, index_param, &turbo_quantizer_);
+    if (ret != 0) return ret;
+    pending_quantizer_training_ = true;
+    proxima_index_meta_ = turbo_quantizer_->meta();
+    streamer_vector_meta_.set_meta(
+        proxima_index_meta_.data_type(), proxima_index_meta_.dimension(),
+        static_cast<uint32_t>(turbo_quantizer_->type()),
+        proxima_index_meta_.extra_meta_size());
+    return 0;
+  }
   const char *quantizer_name =
       use_legacy_pipeline_
           ? nullptr

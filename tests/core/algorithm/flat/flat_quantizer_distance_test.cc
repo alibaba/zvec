@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include <cmath>
+#include <set>
 #include <gtest/gtest.h>
 #include <zvec/core/framework/index_factory.h>
 #include "flat/flat_distance_matrix.h"
@@ -162,10 +163,12 @@ void CheckEncodedSearcher(const char *metric_name,
                           IndexMeta::MajorOrder order) {
   SCOPED_TRACE(std::string(metric_name) + " type=" + std::to_string(Type) +
                " order=" + std::to_string(order));
+  constexpr size_t kDimension = 17;
+  constexpr size_t kCount = 41;
   const bool cosine = std::string(metric_name) == "Cosine";
   // The FP32 norm occupies two FP16 elements or one FP32 element.
   constexpr size_t norm_elements = Type == IndexMeta::DT_FP16 ? 2 : 1;
-  const size_t dim = 17 + (cosine ? norm_elements : 0);
+  const size_t dim = kDimension + (cosine ? norm_elements : 0);
   const std::string path = "flat_encoded_centers.index";
   struct Cleanup {
     std::string path;
@@ -181,7 +184,7 @@ void CheckEncodedSearcher(const char *metric_name,
   meta.set_major_order(order);
   auto holder = std::make_shared<MultiPassIndexHolder<Type>>(dim);
   std::vector<T> queries;
-  for (size_t i = 0; i < 41; ++i) {
+  for (size_t i = 0; i < kCount; ++i) {
     ailego::NumericalVector<T> row(dim);
     for (size_t d = 0; d < dim; ++d) {
       row[d] = static_cast<T>((i + 1) * 0.03125f + d * 0.015625f);
@@ -243,14 +246,30 @@ void CheckEncodedSearcher(const char *metric_name,
         const auto &result = actual->result(j);
         ASSERT_EQ(6U, result.size());
         ASSERT_EQ(expected.size(), result.size());
+        std::set<uint64_t> selected;
         for (size_t k = 0; k < result.size(); ++k) {
-          EXPECT_EQ(expected[k].key(), result[k].key());
+          // Equal scores may select different IDs at the top-k boundary.
+          // Validate each selected key against its original row as well as
+          // comparing the sorted scores with the legacy result.
+          ASSERT_LT(result[k].key(), kCount);
+          EXPECT_TRUE(selected.insert(result[k].key()).second);
+          float scalar_score = 0.0f;
+          for (size_t d = 0; d < kDimension; ++d) {
+            const float x = static_cast<float>(static_cast<T>(
+                (result[k].key() + 1) * 0.03125f + d * 0.015625f));
+            const float y = static_cast<float>(queries[j * dim + d]);
+            scalar_score += std::string(metric_name) == "SquaredEuclidean"
+                                ? (x - y) * (x - y)
+                                : -x * y;
+          }
+          if (cosine) ++scalar_score;
           // FP16 kernels can use a different accumulation order/precision.
           const float tolerance =
               Type == IndexMeta::DT_FP16
                   ? 1e-3f * std::max(1.0f, std::abs(expected[k].score()))
                   : 1e-4f;
           EXPECT_NEAR(expected[k].score(), result[k].score(), tolerance);
+          EXPECT_NEAR(scalar_score, result[k].score(), tolerance);
         }
       }
     }

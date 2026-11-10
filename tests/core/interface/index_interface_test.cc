@@ -4868,6 +4868,11 @@ TEST(IndexInterface, IsDirty) {
 TEST(IndexInterface, IsDirtyBufferPool) {
   constexpr uint32_t kDimension = 16;
   const std::string index_name{"test_is_dirty_bp.index"};
+  auto &pool = zvec::ailego::MemoryLimitPool::get_instance();
+  const size_t previous_capacity = pool.capacity();
+  ASSERT_EQ(0, pool.init(64UL * 1024UL * 1024UL));
+  auto restore = zvec::ailego::ScopeGuard::Make(
+      [&]() { EXPECT_EQ(0, pool.init(previous_capacity)); });
 
   zvec::test_util::RemoveTestFiles(index_name);
 
@@ -4881,15 +4886,16 @@ TEST(IndexInterface, IsDirtyBufferPool) {
                      .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
-    index->open(index_name, {StorageOptions::StorageType::kMMAP, true});
+    ASSERT_EQ(
+        0, index->open(index_name, {StorageOptions::StorageType::kMMAP, true}));
     std::vector<float> vec(kDimension, 1.0f);
     VectorData vd;
     vd.vector = DenseVector{vec.data()};
     ASSERT_EQ(0, index->add(vd, 1));
-    index->close();
+    ASSERT_EQ(0, index->close());
   }
 
-  // Reopen with BufferPool storage in writable mode
+  // Reopen an existing file for writing without permitting file creation.
   {
     auto param = FlatIndexParamBuilder()
                      .with_metric_type(MetricType::kInnerProduct)
@@ -4899,7 +4905,9 @@ TEST(IndexInterface, IsDirtyBufferPool) {
                      .build();
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, index);
-    index->open(index_name, {StorageOptions::StorageType::kBufferPool, true});
+    ASSERT_EQ(0,
+              index->open(index_name, {StorageOptions::StorageType::kBufferPool,
+                                       false, false}));
 
     ASSERT_FALSE(index->is_dirty());
 
@@ -4912,10 +4920,76 @@ TEST(IndexInterface, IsDirtyBufferPool) {
     ASSERT_EQ(0, index->flush());
     ASSERT_FALSE(index->is_dirty());
 
-    index->close();
+    ASSERT_EQ(0, index->close());
+  }
+
+  // Both the original and appended vectors must survive another reopen.
+  {
+    auto param = FlatIndexParamBuilder()
+                     .with_metric_type(MetricType::kInnerProduct)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(kDimension)
+                     .with_is_sparse(false)
+                     .build();
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(0,
+              index->open(index_name, {StorageOptions::StorageType::kBufferPool,
+                                       false, true}));
+    for (uint32_t id : {1U, 2U}) {
+      VectorDataBuffer fetched;
+      ASSERT_EQ(0, index->fetch(id, &fetched));
+      const auto &data =
+          std::get<DenseVectorBuffer>(fetched.vector_buffer).data;
+      const std::vector<float> expected(kDimension, static_cast<float>(id));
+      ASSERT_EQ(expected.size() * sizeof(float), data.size());
+      EXPECT_EQ(0, std::memcmp(expected.data(), data.data(), data.size()));
+    }
+    ASSERT_EQ(0, index->close());
   }
 
   zvec::test_util::RemoveTestFiles(index_name);
+}
+
+TEST(IndexInterface, BufferPoolOpenPreservesCreationAndMemoryErrors) {
+  using zvec::core::IndexError_NoMemory;
+  using zvec::core::IndexError_OpenFile;
+  const std::string path = "buffer_pool_open_errors.index";
+  zvec::test_util::RemoveTestFiles(path);
+  auto remove = zvec::ailego::ScopeGuard::Make(
+      [&]() { zvec::test_util::RemoveTestFiles(path); });
+  auto &pool = zvec::ailego::MemoryLimitPool::get_instance();
+  const size_t previous_capacity = pool.capacity();
+  auto restore = zvec::ailego::ScopeGuard::Make(
+      [&]() { EXPECT_EQ(0, pool.init(previous_capacity)); });
+  ASSERT_EQ(0, pool.init(64UL * 1024UL * 1024UL));
+  auto param = FlatIndexParamBuilder()
+                   .with_metric_type(MetricType::kL2sq)
+                   .with_data_type(DataType::DT_FP32)
+                   .with_dimension(16)
+                   .with_is_sparse(false)
+                   .build();
+  {
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    EXPECT_EQ(IndexError_OpenFile,
+              index->open(path, {StorageOptions::StorageType::kBufferPool,
+                                 false, false}));
+    EXPECT_FALSE(zvec::ailego::File::IsExist(path));
+  }
+  {
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(
+        0, index->open(path, {StorageOptions::StorageType::kBufferPool, true}));
+    ASSERT_EQ(0, index->close());
+  }
+  ASSERT_EQ(0, pool.init(zvec::ailego::kVectorPageSize));
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  EXPECT_EQ(IndexError_NoMemory,
+            index->open(path, {StorageOptions::StorageType::kBufferPool, false,
+                               false}));
 }
 
 TEST(IndexInterface, BuilderSetsAllBaseFields) {
@@ -5026,6 +5100,94 @@ TEST(IndexInterface, QuantizerParamLegacyJsonCompat) {
                          param->quantizer_param));
 }
 
+TEST(IndexInterface, RefineOversizedScaleFactorDoesNotCrash) {
+  // Regression: floor(topk * SF) below INT_MAX passes validation, but the
+  // coarse result heap allocation throws std::bad_alloc (e.g. topk=50 with
+  // SF=10M reserves a ~40GB heap). The query must return an error code
+  // instead of terminating the process. On hosts with enough RAM the
+  // allocation succeeds and the query legitimately returns results; both
+  // outcomes are acceptable, a crash is not.
+  constexpr uint32_t kDimension = 17;
+  constexpr uint32_t kVectorCount = 64;
+  constexpr uint32_t kTopk = 50;
+  const std::string coarse_path{"refine_huge_sf_coarse.index"};
+  const std::string fine_path{"refine_huge_sf_fine.index"};
+  zvec::test_util::RemoveTestFiles(coarse_path);
+  zvec::test_util::RemoveTestFiles(fine_path);
+
+  std::vector<std::vector<float>> vectors(kVectorCount,
+                                          std::vector<float>(kDimension));
+  for (uint32_t i = 0; i < kVectorCount; ++i) {
+    for (uint32_t d = 0; d < kDimension; ++d) {
+      vectors[i][d] = static_cast<float>((i * 47 + d * 29) % 311) - 23.25F;
+    }
+  }
+
+  auto coarse_param = IVFIndexParamBuilder()
+                          .with_metric_type(MetricType::kL2sq)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(kDimension)
+                          .with_is_sparse(false)
+                          .with_n_list(4)
+                          .build();
+  auto coarse = IndexFactory::CreateAndInitIndex(*coarse_param);
+  ASSERT_NE(nullptr, coarse);
+  ASSERT_EQ(
+      0, coarse->open(coarse_path, {StorageOptions::StorageType::kMMAP, true}));
+  for (uint32_t i = 0; i < kVectorCount; ++i) {
+    ASSERT_EQ(0, coarse->add(VectorData{DenseVector{vectors[i].data()}}, i));
+  }
+  ASSERT_EQ(0, coarse->train());
+
+  auto fine_param = FlatIndexParamBuilder()
+                        .with_metric_type(MetricType::kL2sq)
+                        .with_data_type(DataType::DT_FP32)
+                        .with_dimension(kDimension)
+                        .with_is_sparse(false)
+                        .build();
+  auto fine = IndexFactory::CreateAndInitIndex(*fine_param);
+  ASSERT_NE(nullptr, fine);
+  ASSERT_EQ(0,
+            fine->open(fine_path, {StorageOptions::StorageType::kMMAP, true}));
+  for (uint32_t i = 0; i < kVectorCount; ++i) {
+    ASSERT_EQ(0, fine->add(VectorData{DenseVector{vectors[i].data()}}, i));
+  }
+  ASSERT_EQ(0, fine->train());
+
+  auto refiner = std::make_shared<RefinerParam>();
+  refiner->scale_factor_ = 10000000.0f;  // topk * SF = 500M candidates
+  refiner->reference_index = fine;
+  auto huge_param = IVFQueryParamBuilder()
+                        .with_nprobe(4)
+                        .with_topk(kTopk)
+                        .with_refiner_param(refiner)
+                        .build();
+  SearchResult result;
+  const int rc = coarse->search(VectorData{DenseVector{vectors[0].data()}},
+                                huge_param, &result);
+  if (rc != 0) {
+    EXPECT_EQ(static_cast<int>(zvec::core::IndexError_NoMemory), rc);
+  } else {
+    EXPECT_EQ(kTopk, result.doc_list_.size());
+  }
+
+  // The index must stay usable after a failed oversized allocation.
+  refiner->scale_factor_ = 4.0f;
+  auto valid_param = IVFQueryParamBuilder()
+                         .with_nprobe(4)
+                         .with_topk(kTopk)
+                         .with_refiner_param(refiner)
+                         .build();
+  ASSERT_EQ(0, coarse->search(VectorData{DenseVector{vectors[0].data()}},
+                              valid_param, &result));
+  EXPECT_EQ(kTopk, result.doc_list_.size());
+
+  ASSERT_EQ(0, coarse->close());
+  ASSERT_EQ(0, fine->close());
+  zvec::test_util::RemoveTestFiles(coarse_path);
+  zvec::test_util::RemoveTestFiles(fine_path);
+}
+
 TEST(IndexInterface, BuilderChainingReturnsCorrectType) {
   HNSWIndexParamBuilder builder;
   auto &ref = builder.with_version(1)
@@ -5046,6 +5208,41 @@ TEST(IndexInterface, BuilderChainingReturnsCorrectType) {
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic pop
 #endif
+
+namespace {
+
+void ExpectRefinedIdsMatchSearch(const SearchResult &expected,
+                               const int64_t *ids, const float *scores,
+                               bool tied, int64_t candidate_begin,
+                               int64_t candidate_end) {
+  // The fixtures below have unique coarse distances. All fine scores in a
+  // tied fixture are 1, so different selectors may choose different subsets
+  // at the top-k boundary, but every ID must be a distinct coarse candidate.
+  for (size_t rank = 0; rank < expected.doc_list_.size(); ++rank) {
+    SCOPED_TRACE(rank);
+    const auto expected_id =
+        static_cast<int64_t>(expected.doc_list_[rank].key());
+    EXPECT_GE(expected_id, candidate_begin);
+    EXPECT_LT(expected_id, candidate_end);
+    for (size_t previous = 0; previous < rank; ++previous) {
+      EXPECT_NE(expected.doc_list_[previous].key(),
+                expected.doc_list_[rank].key());
+    }
+    EXPECT_GE(ids[rank], candidate_begin);
+    EXPECT_LT(ids[rank], candidate_end);
+    EXPECT_EQ(ids + rank, std::find(ids, ids + rank, ids[rank]));
+    if (tied) {
+      EXPECT_FLOAT_EQ(1.0f, expected.doc_list_[rank].score());
+    } else {
+      EXPECT_EQ(expected_id, ids[rank]);
+    }
+    if (scores) {
+      EXPECT_FLOAT_EQ(expected.doc_list_[rank].score(), scores[rank]);
+    }
+  }
+}
+
+}  // namespace
 
 
 TEST(IndexInterface, RefineInternalIdsMatchesSearchAcrossStorageModes) {
@@ -5113,20 +5310,19 @@ TEST(IndexInterface, RefineInternalIdsMatchesSearchAcrossStorageModes) {
         for (int repeat = 0; repeat < 3; ++repeat) {
           ASSERT_EQ(0, coarse->search_internal_ids(query, param, ids.data(),
                                                    nullptr));
-          for (size_t i = 0; i < ids.size(); ++i) {
-            EXPECT_EQ(static_cast<int64_t>(expected.doc_list_[i].key()),
-                      ids[i]);
-          }
+          ExpectRefinedIdsMatchSearch(expected, ids.data(), nullptr, tied, 0,
+                                     6);
         }
         std::array<int64_t, 3> scored_ids{{-2, -2, -2}};
         std::array<float, 3> scores;
         ASSERT_EQ(0, coarse->search_internal_ids(
                          query, param, scored_ids.data(), scores.data()));
         EXPECT_EQ(ids, scored_ids);
-        for (size_t rank = 0; rank < scores.size(); ++rank) {
-          EXPECT_FLOAT_EQ(expected.doc_list_[rank].score(), scores[rank]);
-        }
-        auto expect_current_param_matches = [&]() {
+        ExpectRefinedIdsMatchSearch(expected, scored_ids.data(), scores.data(),
+                                   tied, 0, 6);
+        const auto saved_ids = scored_ids;
+        const auto saved_scores = scores;
+        auto expect_current_param_matches = [&](int64_t candidate_end) {
           SearchResult current_expected;
           ASSERT_EQ(0, coarse->search(query, param, &current_expected));
           const size_t topk = param->topk;
@@ -5140,15 +5336,10 @@ TEST(IndexInterface, RefineInternalIdsMatchesSearchAcrossStorageModes) {
             ASSERT_EQ(0, coarse->search_internal_ids(
                              query, param, current_ids.data(),
                              return_scores ? current_scores.data() : nullptr));
-            for (size_t rank = 0; rank < count; ++rank) {
-              EXPECT_EQ(
-                  static_cast<int64_t>(current_expected.doc_list_[rank].key()),
-                  current_ids[rank]);
-              if (return_scores) {
-                EXPECT_FLOAT_EQ(current_expected.doc_list_[rank].score(),
-                                current_scores[rank]);
-              }
-            }
+            ExpectRefinedIdsMatchSearch(
+                current_expected, current_ids.data(),
+                return_scores ? current_scores.data() : nullptr, tied, 0,
+                candidate_end);
             for (size_t rank = count; rank < topk; ++rank) {
               EXPECT_EQ(-1, current_ids[rank]);
               if (return_scores) {
@@ -5165,7 +5356,7 @@ TEST(IndexInterface, RefineInternalIdsMatchesSearchAcrossStorageModes) {
         ASSERT_EQ(
             0, coarse->search_internal_ids(query, param, ids.data(), nullptr));
         EXPECT_EQ((std::array<int64_t, 3>{{0, -1, -1}}), ids);
-        expect_current_param_matches();
+        expect_current_param_matches(1);
         param->radius = 0.0f;
         param->filter = std::make_shared<IndexFilter>();
         param->filter->set([](uint64_t key) { return key >= 2; });
@@ -5175,7 +5366,7 @@ TEST(IndexInterface, RefineInternalIdsMatchesSearchAcrossStorageModes) {
         std::array<int64_t, 2> filtered{{ids[0], ids[1]}};
         std::sort(filtered.begin(), filtered.end());
         EXPECT_EQ((std::array<int64_t, 2>{{0, 1}}), filtered);
-        expect_current_param_matches();
+        expect_current_param_matches(2);
         param->filter.reset();
         ASSERT_EQ(
             0, coarse->search_internal_ids(query, param, ids.data(), nullptr));
@@ -5187,13 +5378,10 @@ TEST(IndexInterface, RefineInternalIdsMatchesSearchAcrossStorageModes) {
         // the next refined query or overwrite an earlier caller's result.
         for (uint32_t topk : {11U, 1U, 3U}) {
           param->topk = topk;
-          expect_current_param_matches();
+          expect_current_param_matches(std::min(8U, 2 * topk));
         }
-        for (size_t rank = 0; rank < scores.size(); ++rank) {
-          EXPECT_EQ(static_cast<int64_t>(expected.doc_list_[rank].key()),
-                    scored_ids[rank]);
-          EXPECT_FLOAT_EQ(expected.doc_list_[rank].score(), scores[rank]);
-        }
+        EXPECT_EQ(saved_ids, scored_ids);
+        EXPECT_EQ(saved_scores, scores);
         ASSERT_EQ(0, fine->close());
         zvec::test_util::RemoveTestFiles(fine_path);
       }
@@ -5367,10 +5555,8 @@ TEST(IndexInterface, RefineInternalIdsInnerProductMatchesSearch) {
       ASSERT_EQ(3U, expected.doc_list_.size());
       ASSERT_EQ(0, coarse->search_internal_ids(query, param, ids.data(),
                                                scores.data()));
-      for (size_t i = 0; i < ids.size(); ++i) {
-        EXPECT_EQ(static_cast<int64_t>(expected.doc_list_[i].key()), ids[i]);
-        EXPECT_FLOAT_EQ(expected.doc_list_[i].score(), scores[i]);
-      }
+      ExpectRefinedIdsMatchSearch(expected, ids.data(), scores.data(), tied, 2,
+                                 8);
       // search_param owns topk; the index writes exactly that many entries.
       std::array<int64_t, 4> larger{{-2, -2, -2, -2}};
       ASSERT_EQ(

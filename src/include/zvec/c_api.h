@@ -883,6 +883,7 @@ typedef uint32_t zvec_quantize_type_t;
 #define ZVEC_QUANTIZE_TYPE_INT8 2
 #define ZVEC_QUANTIZE_TYPE_INT4 3
 #define ZVEC_QUANTIZE_TYPE_RABITQ 4
+#define ZVEC_QUANTIZE_TYPE_PQ 8
 
 // =============================================================================
 // Collection Structures (Opaque Pointer Pattern)
@@ -989,15 +990,16 @@ ZVEC_EXPORT zvec_quantize_type_t ZVEC_CALL
 zvec_index_params_get_quantize_type(const zvec_index_params_t *params);
 
 /**
- * @brief Set enable_rotate for quantizer (only effective with INT8/INT4
- * quantize type)
+ * @brief Set enable_rotate for quantizer (random rotation for INT8/INT4; OPQ
+ * for PQ, quantize type)
  *
  * When enabled, vectors are randomly rotated before INT8/INT4 quantization to
- * reduce quantization error. The rotation matrix is stored with the index
+ * reduce quantization error. With PQ, learned OPQ is used instead.
+ * The rotation matrix is stored with the index
  * and automatically applied to query vectors at search time.
  *
  * @param params Index parameters (must be vector index type)
- * @param enable_rotate Whether to enable random rotation before quantization
+ * @param enable_rotate Whether to enable rotation (learned OPQ with PQ)
  * @return ZVEC_OK on success, error code on failure
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
@@ -1011,6 +1013,34 @@ zvec_index_params_set_quantizer_enable_rotate(zvec_index_params_t *params,
  */
 ZVEC_EXPORT bool ZVEC_CALL zvec_index_params_get_quantizer_enable_rotate(
     const zvec_index_params_t *params);
+
+/** IVF PQ configuration. Set the index quantize type to ZVEC_QUANTIZE_TYPE_PQ.
+ * PQ supports FP32 IVF fields with L2, IP or COSINE metrics. num_bits is 4 or
+ * 8; FastScan requires 4 bits and dimension divisible by num_chunk.
+ * enable_rotate selects learned OPQ; its iteration counts must then be
+ * positive.
+ */
+typedef struct {
+  int num_chunk;
+  int num_bits;
+  bool enable_rotate;
+  bool fast_scan;
+  uint32_t opq_iter;
+  uint32_t opq_pq_iter;
+} zvec_pq_quantizer_params_t;
+
+#define ZVEC_PQ_QUANTIZER_PARAMS_DEFAULT {8, 8, false, false, 5, 4}
+
+/** Set IVF PQ configuration. Copies values; schema validation checks dimension.
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_quantizer_pq(
+    zvec_index_params_t *params, const zvec_pq_quantizer_params_t *pq);
+
+/** Read IVF PQ configuration. Returns INVALID_ARGUMENT for null/non-IVF params.
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_quantizer_pq(
+    const zvec_index_params_t *params, zvec_pq_quantizer_params_t *pq);
+
 
 /**
  * @brief Set HNSW specific parameters
@@ -1339,7 +1369,8 @@ typedef struct zvec_vector_query_t zvec_vector_query_t;
  * @brief Grouped vector query structure (opaque pointer)
  * Aligned with zvec::GroupByVectorQuery
  * Use zvec_group_by_vector_query_create() to create and
- * zvec_group_by_vector_query_destroy() to destroy
+ * zvec_group_by_vector_query_destroy() to destroy.
+ * Execute with zvec_collection_group_by_query().
  */
 typedef struct zvec_group_by_vector_query_t zvec_group_by_vector_query_t;
 
@@ -2287,6 +2318,7 @@ zvec_vector_query_get_fts(const zvec_vector_query_t *query);
 
 /**
  * @brief Create group by vector query
+ * Defaults to at most 2 groups and 3 documents per group.
  * @return zvec_group_by_vector_query_t* Pointer to the newly created group by
  * vector query
  */
@@ -3733,8 +3765,9 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_delete_by_filter(
  * @param collection Collection handle
  * @param query Query parameters pointer
  * @param[out] results Returned document array (needs to be freed by calling
- * zvec_docs_free)
- * @param[out] result_count Number of returned results
+ * zvec_docs_free); NULL when no documents match
+ * @param[out] result_count Number of returned results; zero when no documents
+ * match
  * @return zvec_error_code_t Error code
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_query(
@@ -3742,12 +3775,49 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_query(
     zvec_doc_t ***results, size_t *result_count);
 
 /**
+ * @brief One group of vector search results
+ * All members are owned by the result array. Release the entire array with
+ * zvec_group_results_free; do not free individual members separately.
+ */
+typedef struct {
+  char *group_by_value; /**< String representation of the grouping value */
+  zvec_doc_t **docs;    /**< Documents ordered by vector similarity */
+  size_t doc_count;     /**< Number of documents in this group */
+} zvec_group_result_t;
+
+/**
+ * @brief Vector similarity search grouped by a scalar field
+ * @param collection Collection handle
+ * @param query Grouped query specifying the vector, grouping field, maximum
+ * group count and maximum results per group
+ * @param[out] results Owned result array; release with zvec_group_results_free.
+ * NULL on failure or when no groups match. Results remain valid after the query
+ * or collection is destroyed.
+ * @param[out] result_count Number of groups; zero on failure or no matches
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_group_by_query(
+    const zvec_collection_t *collection,
+    const zvec_group_by_vector_query_t *query, zvec_group_result_t **results,
+    size_t *result_count);
+
+/**
+ * @brief Free grouped results, including grouping values and documents
+ * @param results Result array returned by zvec_collection_group_by_query;
+ * NULL is allowed
+ * @param result_count Number of groups in the array
+ */
+ZVEC_EXPORT void ZVEC_CALL zvec_group_results_free(zvec_group_result_t *results,
+                                                   size_t result_count);
+
+/**
  * @brief Multi-query with multiple sub-queries and re-ranking
  * @param collection Collection handle
  * @param query Multi-query query parameters pointer
  * @param[out] results Returned document array (needs to be freed by calling
- * zvec_docs_free)
- * @param[out] result_count Number of returned results
+ * zvec_docs_free); NULL when no documents match
+ * @param[out] result_count Number of returned results; zero when no documents
+ * match
  * @return zvec_error_code_t Error code
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_multi_query(
