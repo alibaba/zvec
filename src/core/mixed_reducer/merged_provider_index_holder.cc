@@ -111,7 +111,8 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
 
   uint64_t key() const override {
     const auto &source = owner_->sources_[source_index_];
-    if (!source.document_plan) return output_key_;
+    if (!source.document_plan || !source.document_plan->preserves_empty_rows())
+      return output_key_;
     const auto key = source_iter_->key();
     if (source_iter_->status() != 0) {
       owner_->set_status(source_iter_->status());
@@ -327,9 +328,10 @@ class MergedProviderIndexHolder::OrdinalReader final
       return fail(IndexError_Runtime);
     }
     const auto &source = owner_->sources_[source_index];
-    *key = source.document_plan ? source.document_plan->output_id(
-                                      source.plan_source, keys_[ordinal])
-                                : ordinal;
+    *key = source.document_plan && source.document_plan->preserves_empty_rows()
+               ? source.document_plan->output_id(source.plan_source,
+                                                 keys_[ordinal])
+               : ordinal;
     return 0;
   }
 
@@ -402,7 +404,8 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
   has_filter_ =
       filter.is_valid() ||
       std::any_of(sources_.begin(), sources_.end(), [](const auto &source) {
-        return source.document_plan != nullptr;
+        return source.document_plan &&
+               source.document_plan->preserves_empty_rows();
       });
   uint64_t logical_id_base = 0;
 
@@ -467,7 +470,8 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
         return this->status();
       }
       bool keep_item;
-      if (source.document_plan) {
+      if (source.document_plan &&
+          source.document_plan->preserves_empty_rows()) {
         if (key != UINT64_MAX && key >= source_rows) {
           this->set_status(IndexError_InvalidFormat);
           return this->status();

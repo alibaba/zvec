@@ -921,7 +921,7 @@ TEST(VectorColumnIndexerTest, Merge) {
           [](uint64_t key) { return key == 0; });
       ASSERT_TRUE(indexer3->merge({indexer1, indexer2}, filter).ok());
       // 0.0 -> x ; 1.0 -> 0 ; 1.1 -> 1
-      ASSERT_TRUE(indexer3->doc_count() == 2);
+      ASSERT_TRUE(indexer3->row_count() == 2);
       {
         auto fetched_data = indexer3->fetch(0);
         ASSERT_TRUE(fetched_data.has_value());
@@ -2278,7 +2278,7 @@ TEST(VectorColumnIndexerTest, Failure) {
     indexer->destroy();
   }
 
-  // Test case 12: Test doc_count() on unopened indexer
+  // Test case 12: Test row_count() on unopened indexer
   {
     auto indexer = std::make_shared<VectorColumnIndexer>(
         index_file_path,
@@ -2286,8 +2286,8 @@ TEST(VectorColumnIndexerTest, Failure) {
                     std::make_shared<FlatIndexParams>(MetricType::IP)));
     ASSERT_TRUE(indexer);
 
-    // doc_count() should return -1 for unopened indexer
-    ASSERT_EQ(indexer->doc_count(), static_cast<size_t>(-1));
+    // An unopened column has no document rows.
+    ASSERT_EQ(indexer->row_count(), 0U);
   }
 
   // Test case 13: Test Merge with empty indexers list
@@ -2529,7 +2529,7 @@ TEST(VectorColumnIndexerTest, CosineMerge) {
           [](uint64_t key) { return key == 0; });
       ASSERT_TRUE(indexer3->merge({indexer1, indexer2}, filter).ok());
       // 0.0 -> x ; 1.0 -> 0 ; 1.1 -> 1
-      ASSERT_TRUE(indexer3->doc_count() == 2);
+      ASSERT_TRUE(indexer3->row_count() == 2);
       {
         auto fetched_data = indexer3->fetch(0);
         ASSERT_TRUE(fetched_data.has_value());

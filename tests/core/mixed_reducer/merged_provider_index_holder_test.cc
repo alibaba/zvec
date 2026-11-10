@@ -1020,6 +1020,32 @@ TEST(MergedProviderIndexHolderTest, FiltersRewritesIdsAndSupportsMultiPass) {
   EXPECT_EQ(0, holder.status());
 }
 
+TEST(MergedProviderIndexHolderTest, NativeRewriteUsesLogicalSourceRanges) {
+  auto first = MakeSource(MakeStreamer({{5, 5}}));
+  auto second = MakeSource(MakeStreamer({{0, 10}}));
+  auto plan = std::make_shared<IndexDocumentMergePlan>();
+  size_t calls = 0;
+  IndexFilter filter;
+  filter.set([&](uint64_t row) {
+    ++calls;
+    return row == 8;
+  });
+  ASSERT_EQ(0, plan->init({8, 1}, 0, filter, false));
+  EXPECT_FALSE(plan->preserves_empty_rows());
+  EXPECT_EQ(0U, calls);
+  EXPECT_EQ(UINT32_MAX, plan->output_id(0, 5));
+  first.document_plan = second.document_plan = plan;
+  second.plan_source = 1;
+  MergedProviderIndexHolder holder(
+      IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+      {first, second});
+  ASSERT_EQ(0, holder.init(filter));
+  const std::vector<std::pair<uint64_t, float>> expected{{0, 5}};
+  EXPECT_EQ(expected, ReadAll(&holder));
+  EXPECT_EQ(expected, ReadAll(&holder));
+  EXPECT_EQ(2U, calls);
+}
+
 TEST(MergedProviderIndexHolderTest, DocumentPlanRanksAcrossWordBoundaries) {
   IndexDocumentMergePlan plan;
   size_t calls = 0;

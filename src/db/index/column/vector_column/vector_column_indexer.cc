@@ -204,8 +204,7 @@ Status VectorColumnIndexer::merge(
     auto dropped = std::make_shared<roaring::Roaring64Map>();
     for (const auto &source : indexers) {
       if (source->index_file_path() == index_file_path()) continue;
-      const uint32_t rows =
-          source->has_null_bitmap() ? source->row_count() : source->doc_count();
+      const uint32_t rows = source->row_count();
       for (uint32_t row = 0; row < rows; ++row) {
         if (filter && filter->is_filtered(source_offset + row)) {
           dropped->add(source_offset + row);

@@ -137,6 +137,7 @@ int IVFRabitqIndex::open(const std::string &file_path,
   if (storage_options.create_new && !is_read_only_) {
     document_count_ = 0;
     document_range_enabled_ = document_range_dirty_ = false;
+    preserve_empty_rows_ = false;
   } else {
     int range_ret = load_document_range();
     if (range_ret != 0) return range_ret;

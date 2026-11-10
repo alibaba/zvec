@@ -140,10 +140,6 @@ class ZVEC_CORE_API Index {
   // TODO: static reduce
 
   virtual int add(const VectorData &vector, uint32_t doc_id);
-  // Append a missing vector, allocating [previous end, doc_id] as empty rows.
-  // Does not clear or replace an existing row. Builder indexes accept this
-  // only while collecting input, just like add() with a real vector.
-  int add_null(uint32_t doc_id);
 
   virtual int fetch(const uint32_t doc_id,
                     VectorDataBuffer *vector_data_buffer);
@@ -174,9 +170,10 @@ class ZVEC_CORE_API Index {
   bool is_dirty() const;
 
   // Exclusive document ID upper bound, including gaps and explicit NULL tails.
+  // Legacy files without range metadata retain their native slot span.
   // This is not the number of live documents or retrievable vectors.
   uint32_t get_doc_count() const;
-  // Addressable slots, including gaps, versus vectors that can be retrieved.
+  // Built-storage counts; a collecting builder has no physical slots yet.
   uint32_t get_slot_count() const;
   uint32_t get_vector_count() const;
 
@@ -268,6 +265,8 @@ class ZVEC_CORE_API Index {
   }
 
  protected:
+  // Append an empty document range without overwriting an existing row.
+  int add_null(uint32_t doc_id);
   int load_document_range(bool validate_slots = true);
   int flush_document_range();
   int dump_document_range(const core::IndexDumper::Pointer &dumper);
@@ -281,6 +280,7 @@ class ZVEC_CORE_API Index {
   std::atomic<uint32_t> document_count_{0};
   std::atomic<bool> document_range_enabled_{false};
   std::atomic<bool> document_range_dirty_{false};
+  std::atomic<bool> preserve_empty_rows_{false};
 
   BaseIndexParam param_;
   ailego::Params proxima_index_params_{};

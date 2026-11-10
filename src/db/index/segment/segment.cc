@@ -1387,9 +1387,9 @@ Doc::Ptr SegmentImpl::fetch(
               continue;
             }
             LOG_ERROR(
-                "vector indexer fetch failed, column: %s, doc_count: %lu, "
+                "vector indexer fetch failed, column: %s, row_count: %u, "
                 "mem_block_offset: %d, block_doc_id: %d",
-                field->name().c_str(), vector_indexer->doc_count(),
+                field->name().c_str(), vector_indexer->row_count(),
                 mem_block_offset, block_doc_id);
             continue;
           }

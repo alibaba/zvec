@@ -99,14 +99,19 @@ no key hash table, while external-key indexes rebuild their optional map from
 stored keys on open. Checked lookup and fetch reject invalid slots in either
 mode. Graph traversal uses a separate accessor for nodes already known to
 exist, retaining direct identity-key access without validity lookups.
+The DB column exposes `row_count()` for its document range for both nullable
+and non-nullable fields; nullable fields use the sidecar as the source of truth.
 Providers report valid vectors with `count()` and physical slot spans with
 `slot_count()`. `Index::get_doc_count()` reports the document ID upper bound,
 including explicitly inserted NULL tails; `get_vector_count()` reports actual
 vectors. Provider counts are computed lazily and cached for the provider's view.
-When NULL insertion or document-range-preserving merge is used, core persists an
-`IndexDocumentRange` segment: `ZVECDR01`, a little-endian uint32 document ID upper
-bound, and a CRC32C of the first 12 bytes (16 bytes total). It is loaded once on
-open. Existing vector and graph node layouts are unchanged; search does not read
+Core persists document ranges for builder indexes as well as NULL insertion
+and document-range-preserving merge. The 16-byte `IndexDocumentRange` segment
+contains `ZDR2`, little-endian uint32 flags (bit 0 preserves empty rows during
+merge), a uint32 document ID upper bound, and a CRC32C of the first 12 bytes.
+The previous `ZVECDR01` record is read as preserving empty rows. Range metadata
+alone does not change a normal merge into a row-preserving merge. Records are
+loaded once on open. Existing vector and graph node layouts are unchanged; search does not read
 a separate NULL bitmap. Non-nullable legacy indexes can omit this segment.
 
 

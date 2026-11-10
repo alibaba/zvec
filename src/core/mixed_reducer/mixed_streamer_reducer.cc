@@ -413,7 +413,7 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
       return iterator->status();
     }
     uint32_t output_id;
-    if (document_plan_) {
+    if (document_plan_ && document_plan_->preserves_empty_rows()) {
       if (key != UINT64_MAX &&
           key >= document_plan_->rows(source_streamer_index))
         return IndexError_InvalidFormat;
@@ -644,7 +644,7 @@ int MixedStreamerReducer::read_sparse_vec(size_t source_streamer_index,
     }
     const auto key = iterator->key();
     uint32_t output_id;
-    if (document_plan_) {
+    if (document_plan_ && document_plan_->preserves_empty_rows()) {
       if (key != UINT64_MAX &&
           key >= document_plan_->rows(source_streamer_index))
         return IndexError_InvalidFormat;

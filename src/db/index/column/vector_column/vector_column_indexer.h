@@ -82,7 +82,8 @@ class VectorColumnIndexer {
 
   // Vector keys preserve logical document IDs, including gaps for NULL rows.
   uint32_t row_count() const {
-    return row_count_;
+    return has_null_bitmap() ? row_count_
+                             : (index ? index->get_doc_count() : 0);
   }
   bool has_null_bitmap() const {
     return field_schema_.nullable();
@@ -118,13 +119,6 @@ class VectorColumnIndexer {
 
   const FieldSchema &field_schema() const {
     return field_schema_;
-  }
-
-  size_t doc_count() const {
-    if (index == nullptr) {
-      return -1;
-    }
-    return index->get_doc_count();
   }
 
   //! Debug-only accessor for the underlying core_interface Index.

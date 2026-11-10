@@ -199,6 +199,7 @@ int DiskAnnIndex::open(const std::string &file_path,
   if (storage_options.create_new && !is_read_only_) {
     document_count_ = 0;
     document_range_enabled_ = document_range_dirty_ = false;
+    preserve_empty_rows_ = false;
   }
   is_open_ = true;
   return 0;

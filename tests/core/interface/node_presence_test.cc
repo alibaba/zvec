@@ -19,6 +19,7 @@
 #include <tuple>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/hash/crc32c.h>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
 #include "algorithm/hnsw/hnsw_params.h"
@@ -275,12 +276,12 @@ TEST_P(NodePresenceTest, NullInsertionPersistsTrailingDocumentIds) {
   open(true);
   insert(0);  // A genuine all-zero vector is still a vector.
   ASSERT_EQ(0, index_->add({NullVector{}}, 1));
-  ASSERT_EQ(0, index_->add_null(3));
+  ASSERT_EQ(0, index_->add({NullVector{}}, 3));
   EXPECT_EQ(4U, index_->get_doc_count());
   EXPECT_EQ(1U, index_->get_slot_count());
   EXPECT_EQ(1U, index_->get_vector_count());
-  EXPECT_NE(0, index_->add_null(0));
-  EXPECT_NE(0, index_->add_null(UINT32_MAX));
+  EXPECT_NE(0, index_->add({NullVector{}}, 0));
+  EXPECT_NE(0, index_->add({NullVector{}}, UINT32_MAX));
   ASSERT_EQ(0, index_->close());
   open(false);
   EXPECT_EQ(4U, index_->get_doc_count());
@@ -301,7 +302,7 @@ TEST_P(NodePresenceTest, NullInsertionPersistsTrailingDocumentIds) {
   insert(2);  // Fill an absent vector without changing the document range.
   EXPECT_EQ(4U, index_->get_doc_count());
   EXPECT_EQ(2U, index_->get_vector_count());
-  ASSERT_EQ(0, index_->add_null(4));
+  ASSERT_EQ(0, index_->add({NullVector{}}, 4));
   ASSERT_EQ(0, index_->close());
   open(false);
   EXPECT_EQ(5U, index_->get_doc_count());
@@ -309,7 +310,6 @@ TEST_P(NodePresenceTest, NullInsertionPersistsTrailingDocumentIds) {
   ASSERT_EQ(0, index_->close());
   open(false, true);
   EXPECT_NE(0, index_->add({NullVector{}}, 5));
-  EXPECT_NE(0, index_->add_null(5));
   EXPECT_EQ(5U, index_->get_doc_count());
   ASSERT_EQ(0, index_->close());
 }
@@ -348,7 +348,7 @@ TEST_P(NodePresenceTest, AllNullCoreIndexCanReopenAndAcceptAValue) {
 
 TEST_P(NodePresenceTest, MergeFiltersEveryDocumentIncludingNullTails) {
   open(true);
-  ASSERT_EQ(0, index_->add_null(0));
+  ASSERT_EQ(0, index_->add({NullVector{}}, 0));
   insert(1);
   const auto storage = std::get<2>(GetParam())
                            ? StorageOptions::StorageType::kMMAP
@@ -363,7 +363,7 @@ TEST_P(NodePresenceTest, MergeFiltersEveryDocumentIncludingNullTails) {
       std::vector<float> value(kDimension, source_id + 10);
       ASSERT_EQ(0, source->add({DenseVector{value.data()}}, 0));
     }
-    ASSERT_EQ(0, source->add_null(source_id == 0 ? 3 : 1));
+    ASSERT_EQ(0, source->add({NullVector{}}, source_id == 0 ? 3 : 1));
     sources.push_back(std::move(source));
   }
   std::vector<uint64_t> visited;
@@ -393,14 +393,14 @@ TEST_P(NodePresenceTest, MergeFiltersEveryDocumentIncludingNullTails) {
 
 TEST_P(NodePresenceTest, AllNullMergeKeepsOnlyRetainedDocumentRows) {
   open(true);
-  ASSERT_EQ(0, index_->add_null(2));
+  ASSERT_EQ(0, index_->add({NullVector{}}, 2));
   auto source = IndexFactory::CreateAndInitIndex(*param());
   ASSERT_NE(source, nullptr);
   const auto storage = std::get<2>(GetParam())
                            ? StorageOptions::StorageType::kMMAP
                            : StorageOptions::StorageType::kBufferPool;
   ASSERT_EQ(0, source->open(path_ + "/source", {storage, true}));
-  ASSERT_EQ(0, source->add_null(5));
+  ASSERT_EQ(0, source->add({NullVector{}}, 5));
   ASSERT_EQ(0, source->close());
   source = IndexFactory::CreateAndInitIndex(*param());
   ASSERT_EQ(0, source->open(path_ + "/source", {storage, false}));
@@ -586,7 +586,7 @@ TEST_P(SparseNodePresenceTest, NullInsertionPersistsTrailingSparseDocumentIds) {
   float value = 7;
   ASSERT_EQ(0, index_->add({SparseVector{1, &dimension, &value}}, 1));
   ASSERT_EQ(0, index_->add({SparseVector{0, nullptr, nullptr}}, 2));
-  ASSERT_EQ(0, index_->add_null(4));
+  ASSERT_EQ(0, index_->add({NullVector{}}, 4));
   EXPECT_EQ(5U, index_->get_doc_count());
   EXPECT_EQ(2U, index_->get_vector_count());
   ASSERT_EQ(0, index_->close());
@@ -604,7 +604,7 @@ INSTANTIATE_TEST_SUITE_P(StorageAndMapping, SparseNodePresenceTest,
                          testing::Combine(testing::Bool(), testing::Bool(),
                                           testing::Bool()));
 
-TEST(DocumentRangeTest, BuilderTrainingPersistsNullTails) {
+TEST(DocumentRangeTest, BuilderTrainingPreservesDocumentRange) {
   ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll * 1024ll);
   std::vector<BaseIndexParam::Pointer> params{
       IVFIndexParamBuilder()
@@ -629,48 +629,166 @@ TEST(DocumentRangeTest, BuilderTrainingPersistsNullTails) {
                        .with_pq_chunk_num(4)
                        .build());
 #endif
-  const std::string path = "test_builder_null_tail";
+  auto flat = FlatIndexParamBuilder()
+                  .with_dimension(64)
+                  .with_data_type(DataType::DT_FP32)
+                  .build();
+  const std::string path = "test_builder_document_range";
   for (const auto &param : params) {
     for (auto storage : {StorageOptions::StorageType::kMMAP,
                          StorageOptions::StorageType::kBufferPool}) {
-      SCOPED_TRACE(int(param->index_type));
-      SCOPED_TRACE(int(storage));
-      std::filesystem::remove_all(path);
-      auto index = IndexFactory::CreateAndInitIndex(*param);
-      ASSERT_NE(index, nullptr);
-      ASSERT_EQ(0, index->open(path, {storage, true}));
-      ASSERT_EQ(0, index->add({NullVector{}}, 0));
-      for (uint32_t id = 1; id <= 16; ++id) {
-        std::vector<float> vector(64, float(id));
-        ASSERT_EQ(0, index->add({DenseVector{vector.data()}}, id));
+      for (bool null_tail : {false, true}) {
+        SCOPED_TRACE(int(param->index_type));
+        SCOPED_TRACE(int(storage));
+        SCOPED_TRACE(null_tail);
+        std::filesystem::remove_all(path);
+        auto index = IndexFactory::CreateAndInitIndex(*param);
+        ASSERT_NE(index, nullptr);
+        ASSERT_EQ(0, index->open(path, {storage, true}));
+        for (uint32_t id = 1; id <= 16; ++id) {
+          std::vector<float> vector(64, float(id));
+          ASSERT_EQ(0, index->add({DenseVector{vector.data()}}, id * 2));
+        }
+        if (null_tail) ASSERT_EQ(0, index->add({NullVector{}}, 39));
+        const uint32_t rows = null_tail ? 40 : 33;
+        EXPECT_EQ(rows, index->get_doc_count());
+        EXPECT_EQ(0U, index->get_slot_count());
+        ASSERT_EQ(0, index->train());
+        EXPECT_EQ(rows, index->get_doc_count());
+        EXPECT_EQ(16U, index->get_slot_count());
+        EXPECT_EQ(16U, index->get_vector_count());
+        EXPECT_NE(0, index->add({NullVector{}}, rows));
+        ASSERT_EQ(0, index->close());
+        index = IndexFactory::CreateAndInitIndex(*param);
+        ASSERT_EQ(0, index->open(path, {storage, false}));
+        EXPECT_EQ(rows, index->get_doc_count());
+        EXPECT_EQ(16U, index->get_vector_count());
+        auto iter = index->create_index_provider()->create_iterator();
+        std::set<uint64_t> keys;
+        for (; iter->is_valid(); iter->next()) keys.insert(iter->key());
+        EXPECT_EQ(0, iter->status());
+        EXPECT_EQ(16U, keys.size());
+        for (uint32_t id = 1; id <= 16; ++id) EXPECT_EQ(1U, keys.count(id * 2));
+        iter.reset();
+        VectorDataBuffer value;
+        if (param->index_type != IndexType::kIVFRabitq)
+          EXPECT_EQ(0, index->fetch(2, &value));
+        EXPECT_NE(0, index->fetch(0, &value));
+        EXPECT_NE(0, index->fetch(39, &value));
+
+        if (!null_tail && param->index_type != IndexType::kIVFRabitq) {
+          const auto extra_path = path + "_extra";
+          std::filesystem::remove_all(extra_path);
+          auto extra = IndexFactory::CreateAndInitIndex(*flat);
+          ASSERT_EQ(0, extra->open(extra_path, {storage, true}));
+          std::vector<float> vector(64, 99);
+          ASSERT_EQ(0, extra->add({DenseVector{vector.data()}}, 0));
+          for (bool preserve : {false, true}) {
+            for (bool builder_target : {false, true}) {
+              SCOPED_TRACE(preserve);
+              SCOPED_TRACE(builder_target);
+              const auto target_param = builder_target ? param : flat;
+              const auto merged_path = path + "_merged";
+              std::filesystem::remove_all(merged_path);
+              auto merged = IndexFactory::CreateAndInitIndex(*target_param);
+              ASSERT_EQ(0, merged->open(merged_path, {storage, true}));
+              size_t calls = 0;
+              IndexFilter filter;
+              filter.set([&](uint64_t row) {
+                ++calls;
+                return row == 33;
+              });
+              MergeOptions options;
+              options.preserve_empty_rows = preserve;
+              ASSERT_EQ(0, merged->merge({index, extra}, filter, options));
+              EXPECT_EQ(preserve ? 34U : 17U, calls);
+              EXPECT_EQ(preserve ? 33U : 16U, merged->get_doc_count());
+              EXPECT_EQ(16U, merged->get_vector_count());
+              ASSERT_EQ(0, merged->close());
+              merged = IndexFactory::CreateAndInitIndex(*target_param);
+              ASSERT_EQ(0, merged->open(merged_path, {storage, false}));
+              EXPECT_EQ(preserve ? 33U : 16U, merged->get_doc_count());
+              auto values = merged->create_index_provider()->create_iterator();
+              std::set<uint64_t> actual;
+              for (; values->is_valid(); values->next())
+                actual.insert(values->key());
+              EXPECT_EQ(0, values->status());
+              EXPECT_EQ(16U, actual.size());
+              for (uint32_t ordinal = 0; ordinal < 16; ++ordinal)
+                EXPECT_EQ(1U,
+                          actual.count(preserve ? (ordinal + 1) * 2 : ordinal));
+              values.reset();
+              ASSERT_EQ(0, merged->close());
+              std::filesystem::remove_all(merged_path);
+            }
+          }
+          ASSERT_EQ(0, extra->close());
+          std::filesystem::remove_all(extra_path);
+        }
+        ASSERT_EQ(0, index->close());
+        std::filesystem::remove_all(path);
       }
-      ASSERT_EQ(0, index->add({NullVector{}}, 22));
-      EXPECT_EQ(23U, index->get_doc_count());
-      ASSERT_EQ(0, index->train());
-      EXPECT_EQ(23U, index->get_doc_count());
-      EXPECT_EQ(16U, index->get_vector_count());
-      EXPECT_NE(0, index->add_null(23));
-      ASSERT_EQ(0, index->close());
-      index = IndexFactory::CreateAndInitIndex(*param);
-      ASSERT_EQ(0, index->open(path, {storage, false}));
-      EXPECT_EQ(23U, index->get_doc_count());
-      EXPECT_EQ(16U, index->get_vector_count());
-      auto iter = index->create_index_provider()->create_iterator();
-      std::set<uint64_t> keys;
-      for (; iter->is_valid(); iter->next()) keys.insert(iter->key());
-      EXPECT_EQ(0, iter->status());
-      EXPECT_EQ(16U, keys.size());
-      for (uint32_t id = 1; id <= 16; ++id) EXPECT_EQ(1U, keys.count(id));
-      iter.reset();
-      VectorDataBuffer value;
-      if (param->index_type != IndexType::kIVFRabitq)
-        EXPECT_EQ(0, index->fetch(1, &value));
-      EXPECT_NE(0, index->fetch(0, &value));
-      EXPECT_NE(0, index->fetch(22, &value));
-      ASSERT_EQ(0, index->close());
-      std::filesystem::remove_all(path);
     }
   }
+}
+
+TEST(DocumentRangeTest, ReadsPreviousRangeLayoutAndRejectsUnknownFlags) {
+  ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll * 1024ll);
+  const std::string path = "test_previous_document_range";
+  const std::string target_path = path + "_merged";
+  for (const auto &file : {path, target_path})
+    std::filesystem::remove_all(file);
+  auto param = FlatIndexParamBuilder()
+                   .with_dimension(kDimension)
+                   .with_data_type(DataType::DT_FP32)
+                   .build();
+  auto source = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_EQ(0, source->open(path, {StorageOptions::StorageType::kMMAP, true}));
+  std::vector<float> vector(kDimension, 7);
+  ASSERT_EQ(0, source->add({DenseVector{vector.data()}}, 2));
+  ASSERT_EQ(0, source->add({NullVector{}}, 4));
+  ASSERT_EQ(0, source->close());
+  auto storage = core::IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_EQ(0, storage->init({}));
+  ASSERT_EQ(0, storage->open(path, false));
+  auto segment = storage->get("IndexDocumentRange");
+  ASSERT_NE(segment, nullptr);
+  const auto offset = segment->data_offset();
+  std::string bytes(16, '\0');
+  ASSERT_EQ(bytes.size(), segment->fetch(0, bytes.data(), bytes.size()));
+  segment.reset();
+  ASSERT_EQ(0, storage->close());
+  auto write = [&] {
+    const uint32_t crc = ailego::Crc32c::Hash(bytes.data(), 12);
+    for (int i = 0; i < 4; ++i) bytes[12 + i] = crc >> (8 * i);
+    std::fstream file(path, std::ios::in | std::ios::out | std::ios::binary);
+    EXPECT_TRUE(file);
+    file.seekp(offset);
+    file.write(bytes.data(), bytes.size());
+    EXPECT_TRUE(file);
+  };
+  std::memcpy(bytes.data(), "ZVECDR01", 8);
+  write();
+  source = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_EQ(
+      0, source->open(path, {StorageOptions::StorageType::kMMAP, false, true}));
+  auto target = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_EQ(
+      0, target->open(target_path, {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(0, target->merge({source}, {}));
+  EXPECT_EQ(5U, target->get_doc_count());
+  EXPECT_EQ(1U, target->get_vector_count());
+  ASSERT_EQ(0, target->close());
+  ASSERT_EQ(0, source->close());
+  std::memcpy(bytes.data(), "ZDR2", 4);
+  bytes[4] = 2;
+  bytes[5] = bytes[6] = bytes[7] = 0;
+  write();
+  source = IndexFactory::CreateAndInitIndex(*param);
+  EXPECT_NE(0, source->open(path, {StorageOptions::StorageType::kMMAP, false}));
+  source.reset();
+  for (const auto &file : {path, target_path})
+    std::filesystem::remove_all(file);
 }
 
 TEST(DocumentRangeTest, CorruptMetadataIsRejected) {
@@ -686,7 +804,7 @@ TEST(DocumentRangeTest, CorruptMetadataIsRejected) {
     auto index = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(index, nullptr);
     ASSERT_EQ(0, index->open(path, {mode, true}));
-    ASSERT_EQ(0, index->add_null(4));
+    ASSERT_EQ(0, index->add({NullVector{}}, 4));
     ASSERT_EQ(0, index->close());
     auto storage = core::IndexFactory::CreateStorage("FileReadStorage");
     ASSERT_EQ(0, storage->init({}));

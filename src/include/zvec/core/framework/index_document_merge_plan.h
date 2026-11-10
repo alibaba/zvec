@@ -27,12 +27,17 @@ class IndexDocumentMergePlan {
  public:
   using Pointer = std::shared_ptr<const IndexDocumentMergePlan>;
   int init(const std::vector<uint32_t> &rows, uint32_t output_base,
-           const IndexFilter &filter) {
+           const IndexFilter &filter, bool preserve_empty_rows = true) {
+    preserve_empty_rows_ = preserve_empty_rows;
     uint64_t input_base = 0, output = output_base;
     for (uint32_t count : rows) {
       Source source;
       source.rows = count;
       source.output_base = output;
+      if (!preserve_empty_rows_) {
+        sources_.push_back(std::move(source));
+        continue;
+      }
       source.keep.resize((uint64_t(count) + 63) / 64);
       source.prefix.resize(source.keep.size());
       uint32_t kept = 0;
@@ -51,6 +56,9 @@ class IndexDocumentMergePlan {
     output_end_ = output;
     return 0;
   }
+  bool preserves_empty_rows() const {
+    return preserve_empty_rows_;
+  }
   uint32_t rows(size_t source) const {
     return sources_.at(source).rows;
   }
@@ -58,6 +66,7 @@ class IndexDocumentMergePlan {
     return output_end_;
   }
   uint32_t output_id(size_t source, uint64_t id) const {
+    if (!preserve_empty_rows_) return UINT32_MAX;
     const auto &s = sources_.at(source);
     if (id >= s.rows) return UINT32_MAX;
     const uint64_t bit = uint64_t{1} << (id % 64);
@@ -75,5 +84,6 @@ class IndexDocumentMergePlan {
   };
   std::vector<Source> sources_;
   uint32_t output_end_{0};
+  bool preserve_empty_rows_{true};
 };
 }  // namespace zvec::core

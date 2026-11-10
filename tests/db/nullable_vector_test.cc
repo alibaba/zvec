@@ -346,6 +346,31 @@ class NullableVectorStorageTest : public ::testing::Test {
   }
 };
 
+TEST_F(NullableVectorStorageTest, NonNullableRowCountUsesCoreDocumentRange) {
+  const std::string path = "test_non_nullable_row_count";
+  FileHelper::RemoveDirectory(path);
+  ASSERT_TRUE(FileHelper::CreateDirectory(path));
+  FieldSchema field("vec", DataType::VECTOR_FP32, 16, false,
+                    std::make_shared<FlatIndexParams>(MetricType::L2));
+  const auto file = path + "/index";
+  VectorColumnIndexer writer(file, field);
+  ASSERT_TRUE(writer.open({true, true}).ok());
+  std::vector<float> values(16, 7);
+  for (uint32_t id : {5U, 2U}) {
+    ASSERT_TRUE(
+        writer.insert({vector_column_params::DenseVector{values.data()}}, id)
+            .ok());
+    EXPECT_EQ(6U, writer.row_count());
+  }
+  ASSERT_TRUE(writer.close().ok());
+  VectorColumnIndexer reader(file, field);
+  ASSERT_TRUE(reader.open({true, false, true}).ok());
+  EXPECT_EQ(6U, reader.row_count());
+  EXPECT_EQ(2U, reader.debug_get_index()->get_vector_count());
+  ASSERT_TRUE(reader.close().ok());
+  FileHelper::RemoveDirectory(path);
+}
+
 TEST_F(NullableVectorStorageTest, NullableRowsPreserveIdsAcrossMerge) {
   const std::string path = "test_nullable_merge";
   FileHelper::RemoveDirectory(path);

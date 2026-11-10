@@ -220,16 +220,17 @@ Status VectorColumnIndexer::load_nulls(
     }
     if ((!null_rows_.isEmpty() && null_rows_.maximum() >= row_count_) ||
         (options.row_count && *options.row_count != row_count_) ||
-        (index && doc_count() > row_count_)) {
+        (index && index->get_doc_count() > row_count_)) {
       return Status::InternalError(
           "Vector NULL bitmap disagrees with block/index: ", path);
     }
     if (index) {
       const uint32_t expected = row_count_;
-      if (doc_count() != expected)
+      if (index->get_doc_count() != expected)
         return Status::InternalError(
             "Vector NULL bitmap disagrees with index: ", path,
-            " expected rows=", expected, " actual rows=", doc_count());
+            " expected rows=", expected,
+            " actual rows=", index->get_doc_count());
     }
     return Status::OK();
   }
