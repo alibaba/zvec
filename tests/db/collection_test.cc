@@ -3833,6 +3833,7 @@ TEST_F(CollectionTest, Feature_Optimize_MetricType) {
 TEST_F(CollectionTest, Feature_Optimize_RotatedIntegerQuantizer) {
   constexpr uint32_t kDim = 128;
   constexpr int kBatch = 200;
+  constexpr int kMinHits = kBatch * 95 / 100;
   std::mt19937 gen(886);
   std::normal_distribution<float> dist(0.0f, 1.0f);
   std::vector<std::vector<float>> vectors(kBatch * 2, std::vector<float>(kDim));
@@ -3897,7 +3898,6 @@ TEST_F(CollectionTest, Feature_Optimize_RotatedIntegerQuantizer) {
       }
       return hits;
     };
-    constexpr int kMinHits = kBatch * 95 / 100;
 
     // First optimize builds the index from a single writing segment.
     insert(0, kBatch);
