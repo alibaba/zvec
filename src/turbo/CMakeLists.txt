@@ -1,6 +1,8 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 include(CheckCXXSourceCompiles)
+include(${PROJECT_ROOT_DIR}/cmake/batch_topk.cmake)
+zvec_configure_batch_topk()
 
 # HOST_ARCH is only populated by the shared AUTO_DETECT_ARCH path. Resolve the
 # CMake target locally as well so Turbo's ARM dispatch also works for Android
@@ -96,37 +98,35 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH AND
     # Compile sparse dispatch at the target baseline. Advertise the kernels
     # separately: compiling dispatch with the strongest ISA can emit illegal
     # instructions before the runtime CPU check on older machines.
-    function(configure_sparse_kernel source dispatcher flags feature definition)
-      set_source_files_properties(${source} PROPERTIES COMPILE_FLAGS "${flags}")
-      set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} ${flags}")
-      set(CMAKE_REQUIRED_INCLUDES "${PROJECT_ROOT_DIR}/src/include")
-      check_cxx_source_compiles("
-        #include <zvec/ailego/internal/platform.h>
-        #if !defined(${feature})
-        #error Kernel ISA unavailable
-        #endif
-        int main() { return 0; }
-      " ${definition})
-      if(${definition})
-        set_property(SOURCE ${dispatcher} APPEND PROPERTY
-                     COMPILE_DEFINITIONS ${definition}=1)
-      endif()
-    endfunction()
-
-    configure_sparse_kernel(
+    configure_simd_kernel(
         distance/sparse/sparse_inner_product_fp32_sse.cc
         distance/sparse/sparse_inner_product_fp32_dispatch.cc
-        "${TURBO_SPARSE_MARCH_FLAG_SSE}" __SSE4_1__
+        "${TURBO_SPARSE_MARCH_FLAG_SSE}" "
+        #include <zvec/ailego/internal/platform.h>
+        #if !defined(__SSE4_1__)
+        #error Kernel ISA unavailable
+        #endif
+        int main() { return 0; }"
         ZVEC_TURBO_SPARSE_HAVE_SSE4)
-    configure_sparse_kernel(
+    configure_simd_kernel(
         distance/sparse/sparse_inner_product_fp16_avx.cc
         distance/sparse/sparse_inner_product_fp16_dispatch.cc
-        "${TURBO_MARCH_FLAG_AVX2}" __AVX__
+        "${TURBO_MARCH_FLAG_AVX2}" "
+        #include <zvec/ailego/internal/platform.h>
+        #if !defined(__AVX__)
+        #error Kernel ISA unavailable
+        #endif
+        int main() { return 0; }"
         ZVEC_TURBO_SPARSE_HAVE_AVX)
-    configure_sparse_kernel(
+    configure_simd_kernel(
         distance/sparse/sparse_inner_product_fp16_avx512fp16.cc
         distance/sparse/sparse_inner_product_fp16_dispatch.cc
-        "${TURBO_MARCH_FLAG_AVX512FP16}" __AVX512FP16__
+        "${TURBO_MARCH_FLAG_AVX512FP16}" "
+        #include <zvec/ailego/internal/platform.h>
+        #if !defined(__AVX512FP16__)
+        #error Kernel ISA unavailable
+        #endif
+        int main() { return 0; }"
         ZVEC_TURBO_SPARSE_HAVE_AVX512FP16)
 
     # SSE2
