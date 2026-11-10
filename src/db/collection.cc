@@ -2081,11 +2081,6 @@ Result<DocPtrList> CollectionImpl::query_unsafe(const MultiQuery &query) const {
     return tl::make_unexpected(s);
   }
 
-  auto segments = get_all_segments();
-  if (segments.empty()) {
-    return DocPtrList();
-  }
-
   // Convert each SubQuery to a SearchQuery and validate.
   std::vector<SearchQuery> pending_queries;
   std::vector<FieldSchema::Ptr> field_schemas;
@@ -2119,6 +2114,11 @@ Result<DocPtrList> CollectionImpl::query_unsafe(const MultiQuery &query) const {
     }
     pending_queries.push_back(std::move(sq));
     field_schemas.push_back(std::move(field_ptr));
+  }
+
+  auto segments = get_all_segments();
+  if (segments.empty()) {
+    return DocPtrList();
   }
 
   auto execute_query = [&](SearchQuery &pending) -> Result<DocPtrList> {
@@ -2172,17 +2172,17 @@ Result<GroupResults> CollectionImpl::group_by_query(
         ", group_topk=", query.topk_per_group_));
   }
 
-  auto segments = get_all_segments();
-  if (segments.empty()) {
-    return GroupResults();
-  }
-
   // Determine vector data source (zero-copy for dense, copy+sort for sparse)
   const FieldSchema *field_schema =
       schema_->get_field(query.target_.field_name_);
   bool need_sanitize = false;
   auto s = query.target_.validate(field_schema, &need_sanitize);
   CHECK_RETURN_STATUS_EXPECTED(s);
+
+  auto segments = get_all_segments();
+  if (segments.empty()) {
+    return GroupResults();
+  }
 
   if (!need_sanitize) {
     return sql_engine_->execute_group_by(schema_, query, segments);

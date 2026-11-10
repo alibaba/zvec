@@ -115,7 +115,11 @@ def test_query_internal_ids_topk_contract(tmp_path, populated):
     query = Query("vector", vector=vector)
     try:
         for topk in (0, -1, -(2**80), True, False, np.int64(3), 1.5, "3", None, 100001):
-            message = "maximum allowed" if topk == 100001 else "positive integer"
+            message = (
+                r"topk must be in \[0, 100000\]; got 100001"
+                if topk == 100001
+                else "positive integer"
+            )
             with pytest.raises(ValueError, match=message):
                 reader.query(query, topk=topk)
             for scores in (False, True):
