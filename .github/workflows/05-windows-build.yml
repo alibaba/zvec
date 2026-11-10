@@ -78,10 +78,11 @@ jobs:
             .github/constraints-build.txt
 
       - name: Set up MSVC environment
+        # v1.13.0 cannot resolve VS 2026's version range and directory layout.
+        # Use the runner's latest installation, then verify its version below.
         uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: ${{ matrix.msvc_arch }}
-          vsversion: ${{ matrix.vs_version }}
 
       - name: Verify MSVC toolchain
         shell: powershell

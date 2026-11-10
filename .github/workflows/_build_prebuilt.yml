@@ -90,7 +90,6 @@ jobs:
             os_name: windows
             arch: amd64
             msvc_arch: x64
-            vs_version: '17.0'
             ext: zip
             container: ''
           - target: aarch64-pc-windows-msvc
@@ -98,7 +97,6 @@ jobs:
             os_name: windows
             arch: arm64
             msvc_arch: arm64
-            vs_version: '18.0'
             ext: zip
             container: ''
 
@@ -163,10 +161,10 @@ jobs:
 
       - name: Set up MSVC environment
         if: runner.os == 'Windows'
+        # Use the runner's VS installation; v1.13.0 cannot resolve VS 2026 by version.
         uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: ${{ matrix.msvc_arch }}
-          vsversion: ${{ matrix.vs_version }}
 
       - name: Set up build parallelism
         run: python .github/scripts/setup_build_env.py
