@@ -106,8 +106,10 @@ class FlatStreamer : public IndexStreamer {
                             size_t topk, const IndexQueryMeta &qmeta,
                             Context::UPointer &context) const;
 
-  int group_by_search_impl(const void *query, const IndexQueryMeta &qmeta,
-                           uint32_t count, Context::UPointer &context) const;
+  int group_by_search_impl(
+      const void *query, const IndexQueryMeta &qmeta, uint32_t count,
+      Context::UPointer &context,
+      const std::vector<std::vector<uint64_t>> *p_keys = nullptr) const;
 
   int group_by_search_p_keys_impl(
       const void *query, const std::vector<std::vector<uint64_t>> &p_keys,

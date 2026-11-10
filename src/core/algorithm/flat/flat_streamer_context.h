@@ -97,8 +97,16 @@ class FlatStreamerContext : public IndexStreamer::Context {
   inline uint32_t group_num() const {
     return group_num_;
   }
-  inline std::map<std::string, TopkHeap> &group_topk_heaps() {
+  using GroupTopkHeap = ailego::KeyValueHeap<uint64_t, dist_t>;
+  inline std::map<std::string, GroupTopkHeap> &group_topk_heaps() {
     return group_topk_heaps_;
+  }
+
+  void collect_group_match(uint64_t key, float score) {
+    if (!(score <= this->threshold())) return;
+    auto &heap = group_topk_heaps_[this->group_by()(key)];
+    if (heap.empty()) heap.limit(group_topk_);
+    heap.emplace(key, score);
   }
   void set_fetch_vector(bool v) override {
     fetch_vector_ = v;
@@ -161,10 +169,10 @@ class FlatStreamerContext : public IndexStreamer::Context {
     results_[idx].swap(documents);
   }
 
-  void topk_to_group_result(uint32_t idx) {
+  int topk_to_group_result(uint32_t idx) {
     ailego_assert_with(idx < group_results_.size(), "invalid idx");
     group_results_[idx].clear();
-    std::vector<std::pair<std::string, TopkHeap>> group_topk_list;
+    std::vector<std::pair<std::string, GroupTopkHeap>> group_topk_list;
     std::vector<std::pair<std::string, float>> best_score_in_groups;
     for (auto itr = group_topk_heaps_.begin(); itr != group_topk_heaps_.end();
          itr++) {
@@ -199,18 +207,20 @@ class FlatStreamerContext : public IndexStreamer::Context {
         if (score > this->threshold()) {
           break;
         }
-        node_id_t id = group_topk_list[i].second[j].first;
-        auto provider = owner_->create_provider();
+        uint64_t key = group_topk_list[i].second[j].first;
         if (fetch_vector_) {
           IndexStorage::MemoryBlock block;
-          provider->get_vector(id, block);
-          group_results_[idx][i].mutable_docs()->emplace_back(id, score, id,
-                                                              block);
+          int ret = owner_->entity().get_vector_by_key(key, block);
+          if (ret != 0) return ret;
+          group_results_[idx][i].mutable_docs()->emplace_back(
+              key, score, static_cast<uint32_t>(key), block);
         } else {
-          group_results_[idx][i].mutable_docs()->emplace_back(id, score, id);
+          group_results_[idx][i].mutable_docs()->emplace_back(
+              key, score, static_cast<uint32_t>(key));
         }
       }
     }
+    return 0;
   }
 
   //! Get if group by search
@@ -296,7 +306,7 @@ class FlatStreamerContext : public IndexStreamer::Context {
   // group
   uint32_t group_num_{0};
   uint32_t group_topk_{0};
-  std::map<std::string, TopkHeap> group_topk_heaps_{};
+  std::map<std::string, GroupTopkHeap> group_topk_heaps_{};
   std::vector<IndexGroupDocumentList> group_results_{};
 };
 

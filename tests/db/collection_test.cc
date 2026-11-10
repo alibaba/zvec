@@ -5473,7 +5473,87 @@ TEST_F(CollectionTest, Feature_MultiQuery_CallbackReranker) {
   }
 }
 
-TEST_F(CollectionTest, Feature_GroupByQuery) {}
+TEST_F(CollectionTest, Feature_GroupByQuery_ReopenedStreamingFlat) {
+  for (bool enable_mmap : {false, true}) {
+    SCOPED_TRACE(enable_mmap);
+    FileHelper::RemoveDirectory(col_path);
+    CollectionSchema schema("group_reopen");
+    ASSERT_TRUE(schema
+                    .add_field(std::make_shared<FieldSchema>(
+                        "category", DataType::STRING, false))
+                    .ok());
+    ASSERT_TRUE(schema
+                    .add_field(std::make_shared<FieldSchema>(
+                        "value", DataType::INT32, false))
+                    .ok());
+    ASSERT_TRUE(schema
+                    .add_field(std::make_shared<FieldSchema>(
+                        "vec", DataType::VECTOR_FP32, 4, true,
+                        std::make_shared<HnswIndexParams>(MetricType::L2)))
+                    .ok());
+    CollectionOptions options;
+    options.enable_mmap_ = enable_mmap;
+    auto opened = Collection::CreateAndOpen(col_path, schema, options);
+    ASSERT_TRUE(opened.has_value()) << opened.error().message();
+    auto collection = std::move(opened.value());
+    std::vector<Doc> docs;
+    for (int i = 0; i < 24; ++i) {
+      Doc doc;
+      doc.set_pk("pk_" + std::to_string(i));
+      doc.set<std::string>("category", "cat_" + std::to_string(i % 4));
+      doc.set<int32_t>("value", i);
+      // Missing vectors create physical holes in the streaming FLAT index.
+      if (i % 7 != 0)
+        doc.set<std::vector<float>>("vec", std::vector<float>(4, float(i)));
+      docs.push_back(std::move(doc));
+    }
+    auto inserted = collection->insert(docs);
+    ASSERT_TRUE(inserted.has_value()) << inserted.error().message();
+    ASSERT_TRUE(collection->flush().ok());
+    collection.reset();
+    // No optimize(): the schema is HNSW, but these persisted blocks are FLAT.
+    options.read_only_ = true;
+    opened = Collection::Open(col_path, options);
+    ASSERT_TRUE(opened.has_value()) << opened.error().message();
+    collection = std::move(opened.value());
+    for (bool filtered : {false, true}) {
+      GroupByVectorQuery query;
+      std::vector<float> vector(4, 0.0f);
+      query.target_.field_name_ = "vec";
+      query.target_.set_vector(
+          std::string(reinterpret_cast<const char *>(vector.data()),
+                      vector.size() * sizeof(float)));
+      query.group_by_field_name_ = "category";
+      query.group_count_ = 4;
+      query.topk_per_group_ = 2;
+      query.output_fields_ = std::vector<std::string>{"category", "value"};
+      if (filtered) query.filter_ = "value >= 4";
+      auto result = collection->group_by_query(query);
+      ASSERT_TRUE(result.has_value()) << result.error().message();
+      ASSERT_EQ(4u, result->size());
+      for (const auto &group : *result) {
+        ASSERT_EQ(2u, group.docs_.size());
+        std::vector<int> expected;
+        for (int i = filtered ? 4 : 0; i < 24; ++i) {
+          if (i % 7 != 0 &&
+              group.group_by_value_ == "cat_" + std::to_string(i % 4)) {
+            expected.push_back(i);
+          }
+        }
+        ASSERT_GE(expected.size(), 2u);
+        for (size_t k = 0; k < 2; ++k) {
+          const auto &doc = group.docs_[k];
+          EXPECT_EQ("pk_" + std::to_string(expected[k]), doc.pk());
+          EXPECT_EQ(group.group_by_value_,
+                    doc.get<std::string>("category").value());
+          EXPECT_EQ(expected[k], doc.get<int32_t>("value").value());
+          EXPECT_FLOAT_EQ(4.0f * expected[k] * expected[k], doc.score());
+        }
+      }
+    }
+    collection.reset();
+  }
+}
 
 TEST_F(CollectionTest, Feature_ColumnDDL_DuplicateNamesKeepData) {
   auto schema = make_schema();

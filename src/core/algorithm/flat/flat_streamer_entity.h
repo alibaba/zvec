@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -95,6 +96,15 @@ class FlatStreamerEntity {
                                     int64_t *output_ids, float *output_scores,
                                     size_t topk,
                                     FlatSearchScratch *scratch) const;
+
+  // Enumerate matches from stored rows, without an ID-to-key cache. The
+  // callback runs only for live keys and must not retain storage pointers.
+  using MatchCallback = std::function<void(uint64_t, float)>;
+  int scan_matches(const void *query, const IndexFilter &filter,
+                   const MatchCallback &on_match,
+                   IndexContext::Stats *context_stats,
+                   FlatSearchScratch *scratch, size_t batch_size,
+                   const std::vector<uint64_t> *keys = nullptr) const;
 
   //! Search in a block
   void search_block(const void *query, const BlockLocation &bl,
@@ -305,7 +315,8 @@ class FlatStreamerEntity {
   int search_batch_rows(const void *query, const IndexFilter &filter,
                         uint32_t *scan_count, IndexDocumentHeap *heap,
                         IndexContext::Stats *context_stats,
-                        FlatSearchScratch *scratch, size_t batch_size) const;
+                        FlatSearchScratch *scratch, size_t batch_size,
+                        const MatchCallback *on_match = nullptr) const;
 
   /*! Iterator of all the linear list
    */
