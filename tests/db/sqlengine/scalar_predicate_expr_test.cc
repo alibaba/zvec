@@ -15,6 +15,8 @@
 #include <vector>
 #include <arrow/api.h>
 #include <arrow/compute/api.h>
+#include <gandiva/projector.h>
+#include <gandiva/tree_expr_builder.h>
 #include "db/sqlengine/planner/scalar_predicate_expr.h"
 #include "db/sqlengine/scalar_jit/scalar_predicate.h"
 
@@ -84,6 +86,19 @@ void Verify(const cp::Expression &expression,
   auto compiled =
       Unwrap(scalar_jit::ScalarPredicate::Make(batch->schema(), condition));
   auto jit = Unwrap(compiled->bind(batch));
+  // Exercise the shared code generator's ordinary batch path as well.
+  std::shared_ptr<gandiva::Projector> projector;
+  Ok(gandiva::Projector::Make(
+      batch->schema(),
+      {gandiva::TreeExprBuilder::MakeExpression(
+          condition->root(), arrow::field("result", arrow::boolean()))},
+      &projector));
+  arrow::ArrayVector projected;
+  Ok(projector->Evaluate(*batch, arrow::default_memory_pool(), &projected));
+  ASSERT_EQ(projected.size(), 1);
+  const auto batch_result =
+      std::static_pointer_cast<arrow::BooleanArray>(projected[0]);
+  ASSERT_EQ(batch_result->length(), batch->num_rows());
   auto oracle =
       Unwrap(cp::ExecuteScalarExpression(bound, cp::ExecBatch(*batch)));
   std::shared_ptr<arrow::BooleanArray> array;
@@ -95,10 +110,18 @@ void Verify(const cp::Expression &expression,
   // Repeat in reverse order to exercise resetting intermediate validity.
   for (int repeat = 0; repeat < 3; ++repeat) {
     for (int64_t row = batch->num_rows() - 1; row >= 0; --row) {
+      const bool arrow_valid =
+          array ? array->IsValid(row)
+                : oracle.scalar_as<arrow::BooleanScalar>().is_valid;
       const bool arrow_value =
-          array ? array->IsValid(row) && array->Value(row)
-                : oracle.scalar_as<arrow::BooleanScalar>().is_valid &&
-                      oracle.scalar_as<arrow::BooleanScalar>().value;
+          arrow_valid &&
+          (array ? array->Value(row)
+                 : oracle.scalar_as<arrow::BooleanScalar>().value);
+      // Batch projection preserves NULL, while filtering maps NULL to false.
+      EXPECT_EQ(batch_result->IsValid(row), arrow_valid) << "row=" << row;
+      EXPECT_EQ(batch_result->IsValid(row) && batch_result->Value(row),
+                arrow_value)
+          << "row=" << row;
       EXPECT_EQ(arrow_value, expected[row]) << "row=" << row;
       EXPECT_EQ(jit->evaluate(row), arrow_value) << "row=" << row;
     }

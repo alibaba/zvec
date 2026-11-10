@@ -1,7 +1,7 @@
 {
   "component": "Apache Arrow Gandiva scalar execution extension",
   "license": "Apache-2.0",
-  "notes": "Version-specific Gandiva source overrides and a minimal scalar ABI. The owning runtime and query cache are zvec code under src/db/sqlengine/scalar_jit.",
+  "notes": "Minimal visitor integration patch plus an independent scalar code generation extension. The owning runtime and query cache are zvec code under src/db/sqlengine/scalar_jit.",
   "upstream": {
     "arrow": {
       "version": "21.0.0",
@@ -13,14 +13,16 @@
     "llvm_major": 20
   },
   "sha256": {
-    "overrides/annotator.h": "6023263a8cd8a91d6dd8c62979d66c7468dd2db1e3d408a7be27a60a3b673734",
-    "overrides/llvm_generator.h": "dacb0483bfc383f6d576ea52cc28de70c7ffa553b4cf8cf9e806ef668efb7e0f",
-    "overrides/llvm_generator.cc": "8ec4f358dc59ca012736252fe17180018986fee2b688887dc772862a45c63559",
-    "overrides/scalar_predicate_abi.h": "8a22b0e1e2172f4afe797954960488a6221651a801b4f4590fdccf623a9acbbb"
+    "scalar.patch": "933140245f9d6bce0ad93d723ff21b8a3b9b2f77e97cabcef77563f14ce20486",
+    "extension/scalar_codegen_context.cc": "c0affd857f0a57ed0dc5c621183e32158f609a3c3f18859d84bd28cc5245856a",
+    "extension/scalar_codegen_context.h": "3403524f84d8ad843b85ef34d7a24a60fdd9cfe3706f2eb7a5ba4c9d8b809dd7",
+    "extension/scalar_generator.cc": "a5e83be33491d80d8b01b0e7e871e7b4817b39da7e8d07a031b34ab5b23e607a",
+    "extension/scalar_generator.h": "f8a883f082c70d97091d70b9aa2403abe471dbd49ca0d7a16a039760b2b414e2",
+    "extension/scalar_predicate_abi.h": "8a22b0e1e2172f4afe797954960488a6221651a801b4f4590fdccf623a9acbbb"
   },
   "local_changes": [
-    "Add single-row code generation and scalar parameter binding to LLVMGenerator while preserving its batch evaluator.",
-    "Expose immutable buffer binding metadata through Annotator and LLVMGenerator.",
-    "Keep the shared evaluation signature and parameter layout independent of zvec runtime headers."
+    "Expose read-only Annotator metadata and let ScalarGenerator reuse the expression visitor through a compile-time scalar context.",
+    "Keep the scalar entry point, parameter metadata, raw buffer binding and intermediate validity handling in separate extension sources.",
+    "Preserve LLVMGenerator's existing instance state and public API; batch visitors use the default null context."
   ]
 }

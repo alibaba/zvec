@@ -1,0 +1,165 @@
+--- a/cpp/src/gandiva/annotator.h
++++ b/cpp/src/gandiva/annotator.h
+@@ -62,6 +62,12 @@
+
+   int buffer_count() const { return buffer_count_; }
+
++  // Scalar bindings need immutable descriptors without preparing an EvalBatch.
++  int local_bitmap_count() const { return local_bitmap_count_; }
++  const std::unordered_map<std::string, FieldDescriptorPtr>& input_descriptors() const {
++    return in_name_to_desc_;
++  }
++
+  private:
+   /// Annotate a field and return the descriptor.
+   FieldDescriptorPtr MakeDesc(FieldPtr field, bool is_output);
+--- a/cpp/src/gandiva/llvm_generator.h
++++ b/cpp/src/gandiva/llvm_generator.h
+@@ -44,6 +44,7 @@
+ namespace gandiva {
+
+ class FunctionHolder;
++class ScalarCodeGenContext;
+
+ /// Builds an LLVM module and generates code for the specified set of expressions.
+ class GANDIVA_EXPORT LLVMGenerator {
+@@ -86,6 +87,7 @@
+   const std::string& ir() { return engine_->ir(); }
+
+  private:
++  friend class ScalarGenerator;
+   explicit LLVMGenerator(bool cached,
+                          std::shared_ptr<FunctionRegistry> function_registry);
+
+@@ -107,7 +109,7 @@
+             llvm::BasicBlock* entry_block, llvm::Value* arg_addrs,
+             llvm::Value* arg_local_bitmaps, llvm::Value* arg_holder_ptrs,
+             std::vector<llvm::Value*> slice_offsets, llvm::Value* arg_context_ptr,
+-            llvm::Value* loop_var);
++            llvm::Value* loop_var, ScalarCodeGenContext* scalar_context = nullptr);
+
+     void Visit(const VectorReadValidityDex& dex) override;
+     void Visit(const VectorReadFixedLenValueDex& dex) override;
+@@ -136,6 +138,7 @@
+     bool has_arena_allocs() { return has_arena_allocs_; }
+
+    private:
++    friend class ScalarGenerator;
+     enum BufferType { kBufferTypeValidity = 0, kBufferTypeData, kBufferTypeOffsets };
+
+     llvm::IRBuilder<>* ir_builder() { return generator_->ir_builder(); }
+@@ -170,6 +173,8 @@
+
+     // Get the slice offset of the validity/value/offsets buffer
+     llvm::Value* GetSliceOffset(int idx);
++
++    llvm::Value* GetInputIndex(int buffer_idx);
+
+     // Switch to the entry_block and get reference to the local bitmap.
+     llvm::Value* GetLocalBitMapReference(int idx);
+@@ -188,6 +193,7 @@
+     llvm::Value* arg_context_ptr_;
+     llvm::Value* loop_var_;
+     bool has_arena_allocs_;
++    ScalarCodeGenContext* scalar_context_;
+   };
+
+   // Generate the code for one expression for default mode, with the output of
+--- a/cpp/src/gandiva/llvm_generator.cc
++++ b/cpp/src/gandiva/llvm_generator.cc
+@@ -31,4 +31,5 @@
+ #include "gandiva/lvalue.h"
++#include "gandiva/scalar_codegen_context.h"
+
+ namespace gandiva {
+
+@@ -572,7 +573,8 @@
+                                 llvm::Value* arg_local_bitmaps,
+                                 llvm::Value* arg_holder_ptrs,
+                                 std::vector<llvm::Value*> slice_offsets,
+-                                llvm::Value* arg_context_ptr, llvm::Value* loop_var)
++                                llvm::Value* arg_context_ptr, llvm::Value* loop_var,
++                                ScalarCodeGenContext* scalar_context)
+     : generator_(generator),
+       function_(function),
+       entry_block_(entry_block),
+@@ -582,7 +584,8 @@
+       slice_offsets_(slice_offsets),
+       arg_context_ptr_(arg_context_ptr),
+       loop_var_(loop_var),
+-      has_arena_allocs_(false) {
++      has_arena_allocs_(false),
++      scalar_context_(scalar_context) {
+   ADD_VISITOR_TRACE("Iteration %T", loop_var);
+ }
+
+@@ -590,7 +593,7 @@
+   llvm::IRBuilder<>* builder = ir_builder();
+   auto types = generator_->types();
+   llvm::Value* slot_ref = GetBufferReference(dex.DataIdx(), kBufferTypeData, dex.Field());
+-  llvm::Value* slot_index = builder->CreateAdd(loop_var_, GetSliceOffset(dex.DataIdx()));
++  llvm::Value* slot_index = GetInputIndex(dex.DataIdx());
+   llvm::Value* slot_value;
+   std::shared_ptr<LValue> lvalue;
+
+@@ -656,11 +659,9 @@
+ }
+
+ void LLVMGenerator::Visitor::Visit(const VectorReadValidityDex& dex) {
+-  llvm::IRBuilder<>* builder = ir_builder();
+   llvm::Value* slot_ref =
+       GetBufferReference(dex.ValidityIdx(), kBufferTypeValidity, dex.Field());
+-  llvm::Value* slot_index =
+-      builder->CreateAdd(loop_var_, GetSliceOffset(dex.ValidityIdx()));
++  llvm::Value* slot_index = GetInputIndex(dex.ValidityIdx());
+   llvm::Value* validity = generator_->GetPackedValidityBitValue(slot_ref, slot_index);
+
+   ADD_VISITOR_TRACE("visit validity vector " + dex.FieldName() + " value %T", validity);
+@@ -668,6 +669,11 @@
+ }
+
+ void LLVMGenerator::Visitor::Visit(const LocalBitMapValidityDex& dex) {
++  if (scalar_context_) {
++    result_ = std::make_shared<LValue>(
++        scalar_context_->ReadValidity(dex.local_bitmap_idx()));
++    return;
++  }
+   llvm::Value* slot_ref = GetLocalBitMapReference(dex.local_bitmap_idx());
+   llvm::Value* validity = generator_->GetPackedBitValue(slot_ref, loop_var_);
+
+@@ -1381,6 +1387,13 @@
+   return slice_offsets_[idx];
+ }
+
++llvm::Value* LLVMGenerator::Visitor::GetInputIndex(int buffer_idx) {
++  if (scalar_context_) {
++    return scalar_context_->InputIndex(buffer_idx, loop_var_, GetSliceOffset(buffer_idx));
++  }
++  return ir_builder()->CreateAdd(loop_var_, GetSliceOffset(buffer_idx));
++}
++
+ llvm::Value* LLVMGenerator::Visitor::GetLocalBitMapReference(int idx) {
+   llvm::IRBuilder<>* builder = ir_builder();
+
+@@ -1398,6 +1411,10 @@
+ /// The local bitmap is pre-filled with 1s. Clear only if invalid.
+ void LLVMGenerator::Visitor::ClearLocalBitMapIfNotValid(int local_bitmap_idx,
+                                                         llvm::Value* is_valid) {
++  if (scalar_context_) {
++    scalar_context_->ClearValidityIfNotValid(local_bitmap_idx, is_valid);
++    return;
++  }
+   llvm::Value* slot_ref = GetLocalBitMapReference(local_bitmap_idx);
+   generator_->ClearPackedBitValueIfFalse(slot_ref, loop_var_, is_valid);
+ }
+--- a/cpp/src/gandiva/CMakeLists.txt
++++ b/cpp/src/gandiva/CMakeLists.txt
+@@ -95,6 +95,8 @@
+     projector.cc
+     regex_util.cc
+     regex_functions_holder.cc
++    scalar_codegen_context.cc
++    scalar_generator.cc
+     selection_vector.cc
+     tree_expr_builder.cc
+     to_date_holder.cc

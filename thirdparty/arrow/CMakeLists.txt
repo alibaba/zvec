@@ -214,20 +214,13 @@ else ()
 endif()
 
 if(ZVEC_ENABLE_SCALAR_JIT)
-    # ExternalProject otherwise considers a completed build up to date even
-    # after configure_file updates its source tree. Track the overlay inputs
-    # explicitly so a future scalar ABI/codegen change rebuilds Gandiva.
-    set(_SCALAR_JIT_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/gandiva)
-    ExternalProject_Add_Step(ARROW.BUILD scalar_source_overrides
+    # Rebuild Gandiva when the patch or separate extension changes, even if
+    # ExternalProject previously completed its configure/build/install steps.
+    ExternalProject_Add_Step(ARROW.BUILD scalar_extension
         COMMAND "${CMAKE_COMMAND}" -E true
         DEPENDEES patch
         DEPENDERS configure
-        DEPENDS
-            ${_SCALAR_JIT_SOURCE_DIR}/prepare.cmake
-            ${_SCALAR_JIT_SOURCE_DIR}/overrides/scalar_predicate_abi.h
-            ${_SCALAR_JIT_SOURCE_DIR}/overrides/annotator.h
-            ${_SCALAR_JIT_SOURCE_DIR}/overrides/llvm_generator.h
-            ${_SCALAR_JIT_SOURCE_DIR}/overrides/llvm_generator.cc)
+        DEPENDS ${_SCALAR_JIT_INPUTS})
 endif()
 
 add_library(arrow UNKNOWN IMPORTED GLOBAL)

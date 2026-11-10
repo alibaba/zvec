@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Included by thirdparty/arrow after its normal Arrow 21 patches are applied.
-# This is an explicit source overlay, not symbol interposition or a separate
-# Arrow build. configure_file also tracks changes for incremental rebuilding.
+# A small patch connects Gandiva's existing expression visitor to the separate
+# scalar extension. Existing upstream files are never overwritten.
 if(ANDROID OR IOS OR WIN32 OR CMAKE_CROSSCOMPILING OR
    NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR
    NOT CMAKE_SYSTEM_NAME MATCHES "^(Darwin|Linux)$")
@@ -36,13 +36,22 @@ find_package(Threads REQUIRED GLOBAL)
 
 file(READ "${ARROW_SRC_DIR}/cpp/CMakeLists.txt" _scalar_jit_arrow_cmake)
 if(NOT _scalar_jit_arrow_cmake MATCHES "set\\(ARROW_VERSION \"21\\.0\\.0\"\\)")
-    message(FATAL_ERROR "Scalar JIT source overrides require Apache Arrow 21.0.0")
+    message(FATAL_ERROR "Scalar JIT patch is validated against Apache Arrow 21.0.0")
 endif()
-foreach(_scalar_jit_override annotator.h llvm_generator.h llvm_generator.cc
-                            scalar_predicate_abi.h)
+
+set(_SCALAR_JIT_PATCH "${CMAKE_CURRENT_LIST_DIR}/scalar.patch")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_SCALAR_JIT_PATCH}")
+apply_patch_once("arrow_gandiva_scalar" "${ARROW_SRC_DIR}" "${_SCALAR_JIT_PATCH}")
+
+set(_SCALAR_JIT_INPUTS "${CMAKE_CURRENT_LIST_FILE}" "${_SCALAR_JIT_PATCH}")
+foreach(_scalar_jit_file scalar_generator.h scalar_generator.cc
+                        scalar_codegen_context.h scalar_codegen_context.cc
+                        scalar_predicate_abi.h)
+    set(_scalar_jit_source "${CMAKE_CURRENT_LIST_DIR}/extension/${_scalar_jit_file}")
     configure_file(
-        "${CMAKE_CURRENT_LIST_DIR}/overrides/${_scalar_jit_override}"
-        "${ARROW_SRC_DIR}/cpp/src/gandiva/${_scalar_jit_override}" COPYONLY)
+        "${_scalar_jit_source}"
+        "${ARROW_SRC_DIR}/cpp/src/gandiva/${_scalar_jit_file}" COPYONLY)
+    list(APPEND _SCALAR_JIT_INPUTS "${_scalar_jit_source}")
 endforeach()
 
 set(_ARROW_SCALAR_JIT_ARGS

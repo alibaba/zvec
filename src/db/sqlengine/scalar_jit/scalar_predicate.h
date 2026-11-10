@@ -28,7 +28,7 @@
 
 namespace gandiva {
 class Condition;
-class LLVMGenerator;
+class ScalarGenerator;
 }  // namespace gandiva
 
 namespace zvec::sqlengine::scalar_jit {
@@ -166,13 +166,13 @@ class ScalarPredicate : public std::enable_shared_from_this<ScalarPredicate> {
  private:
   ScalarPredicate(std::shared_ptr<arrow::Schema> schema,
                   std::shared_ptr<arrow::Schema> parameter_schema,
-                  std::unique_ptr<gandiva::LLVMGenerator> generator,
+                  std::unique_ptr<gandiva::ScalarGenerator> generator,
                   gandiva::ScalarEvalFunction function,
                   std::vector<ScalarDataBufferBinding> data_buffer_bindings);
 
   std::shared_ptr<arrow::Schema> schema_;
   std::shared_ptr<arrow::Schema> parameter_schema_;
-  std::unique_ptr<gandiva::LLVMGenerator> generator_;
+  std::unique_ptr<gandiva::ScalarGenerator> generator_;
   gandiva::ScalarEvalFunction function_;
   std::vector<ScalarDataBufferBinding> data_buffer_bindings_;
 };

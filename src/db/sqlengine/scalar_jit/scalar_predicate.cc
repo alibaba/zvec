@@ -29,10 +29,10 @@
 #include "gandiva/field_descriptor.h"
 #include "gandiva/function_registry.h"
 #include "gandiva/function_signature.h"
-#include "gandiva/llvm_generator.h"
 #include "gandiva/native_function.h"
 #include "gandiva/node.h"
 #include "gandiva/node_visitor.h"
+#include "gandiva/scalar_generator.h"
 
 namespace zvec::sqlengine::scalar_jit {
 namespace {
@@ -237,7 +237,7 @@ arrow::Result<bool> BoundScalarPredicate::evaluate_checked(int64_t row) const {
 ScalarPredicate::ScalarPredicate(
     std::shared_ptr<arrow::Schema> schema,
     std::shared_ptr<arrow::Schema> parameter_schema,
-    std::unique_ptr<gandiva::LLVMGenerator> generator,
+    std::unique_ptr<gandiva::ScalarGenerator> generator,
     gandiva::ScalarEvalFunction function,
     std::vector<ScalarDataBufferBinding> data_buffer_bindings)
     : schema_(std::move(schema)),
@@ -292,18 +292,18 @@ ScalarPredicate::MakeParameterized(
   // Capture optimized IR for verification; only compilation is affected.
   auto configuration = std::make_shared<gandiva::Configuration>();
   configuration->set_dump_ir(true);
-  ARROW_ASSIGN_OR_RAISE(auto generator, gandiva::LLVMGenerator::Make(
-                                            configuration, false /*cached*/));
+  ARROW_ASSIGN_OR_RAISE(auto generator,
+                        gandiva::ScalarGenerator::Make(configuration));
   gandiva::ExprValidator validator(generator->types(), augmented_schema,
                                    configuration->function_registry());
   ARROW_RETURN_NOT_OK(validator.Validate(condition));
   ScalarSubsetValidator scalar_validator(configuration->function_registry());
   ARROW_RETURN_NOT_OK(condition->root()->Accept(scalar_validator));
   ARROW_ASSIGN_OR_RAISE(auto function,
-                        generator->BuildScalar(condition, parameter_names));
+                        generator->Build(condition, parameter_names));
   std::vector<ScalarDataBufferBinding> data_bindings;
-  data_bindings.reserve(generator->scalar_input_descriptors().size());
-  for (const auto &entry : generator->scalar_input_descriptors()) {
+  data_bindings.reserve(generator->input_descriptors().size());
+  for (const auto &entry : generator->input_descriptors()) {
     const int column_index = schema->GetFieldIndex(entry.first);
     if (column_index < 0) {
       ARROW_RETURN_IF(
@@ -362,13 +362,13 @@ arrow::Result<std::shared_ptr<BoundScalarPredicate>> ScalarPredicate::bind(
   }
   std::vector<const uint8_t *> buffers;
   std::vector<int64_t> offsets;
-  ARROW_RETURN_NOT_OK(generator_->BindScalarBuffers(*batch, parameter_slots,
-                                                    &buffers, &offsets));
+  ARROW_RETURN_NOT_OK(
+      generator_->BindBuffers(*batch, parameter_slots, &buffers, &offsets));
   const int64_t num_rows = batch->num_rows();
   return std::shared_ptr<BoundScalarPredicate>(new BoundScalarPredicate(
       shared_from_this(), std::move(batch), function_,
       std::move(parameter_slots), std::move(buffers), std::move(offsets),
-      generator_->scalar_holders(), num_rows));
+      generator_->holders(), num_rows));
 }
 
 int ScalarPredicate::num_parameters() const {
