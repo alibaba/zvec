@@ -102,7 +102,17 @@
    llvm::Value* slot_value;
    std::shared_ptr<LValue> lvalue;
 
-@@ -656,11 +659,9 @@
+@@ -629,8 +632,7 @@
+   llvm::Value* offsets_slot_ref =
+       GetBufferReference(dex.OffsetsIdx(), kBufferTypeOffsets, dex.Field());
+-  llvm::Value* offsets_slot_index =
+-      builder->CreateAdd(loop_var_, GetSliceOffset(dex.OffsetsIdx()));
++  llvm::Value* offsets_slot_index = GetInputIndex(dex.OffsetsIdx());
+
+   // => offset_start = offsets[loop_var]
+   slot = builder->CreateGEP(types->i32_type(), offsets_slot_ref, offsets_slot_index);
+   llvm::Value* offset_start =
+@@ -656,11 +658,9 @@
  }
 
  void LLVMGenerator::Visitor::Visit(const VectorReadValidityDex& dex) {
@@ -115,7 +125,7 @@
    llvm::Value* validity = generator_->GetPackedValidityBitValue(slot_ref, slot_index);
 
    ADD_VISITOR_TRACE("visit validity vector " + dex.FieldName() + " value %T", validity);
-@@ -668,6 +669,11 @@
+@@ -668,6 +668,11 @@
  }
 
  void LLVMGenerator::Visitor::Visit(const LocalBitMapValidityDex& dex) {
@@ -127,7 +137,7 @@
    llvm::Value* slot_ref = GetLocalBitMapReference(dex.local_bitmap_idx());
    llvm::Value* validity = generator_->GetPackedBitValue(slot_ref, loop_var_);
 
-@@ -1381,6 +1387,13 @@
+@@ -1381,6 +1386,13 @@
    return slice_offsets_[idx];
  }
 
@@ -141,7 +151,7 @@
  llvm::Value* LLVMGenerator::Visitor::GetLocalBitMapReference(int idx) {
    llvm::IRBuilder<>* builder = ir_builder();
 
-@@ -1398,6 +1411,10 @@
+@@ -1398,6 +1410,10 @@
  /// The local bitmap is pre-filled with 1s. Clear only if invalid.
  void LLVMGenerator::Visitor::ClearLocalBitMapIfNotValid(int local_bitmap_idx,
                                                          llvm::Value* is_valid) {

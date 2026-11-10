@@ -16,6 +16,7 @@ struct PreparedScalarPredicate {
   std::shared_ptr<ScalarPredicate> compiled;
   std::vector<std::shared_ptr<arrow::Scalar>> parameters;
   bool cache_hit = false;
+  std::vector<std::shared_ptr<const void>> query_owners;
 
   arrow::Result<std::shared_ptr<BoundScalarPredicate>> bind(
       std::shared_ptr<arrow::RecordBatch> batch) const;
@@ -34,17 +35,19 @@ struct ScalarPredicateCacheStats {
 
 /// Process-local, thread-safe LRU of parameterized executable predicates.
 ///
-/// prepare analyzes typed Gandiva nodes, extracts numeric/bool literals in
+/// prepare analyzes typed Gandiva nodes, extracts scalar literals in
 /// traversal order, and looks up the structural expression and exact schema.
 /// Literal values/nullness and RecordBatch addresses are not part of the key.
 /// Operators, operand order, field identities/types and tree structure are.
-/// Numeric IN sets stay compile-time constants and ARE included in the key.
+/// Adapter-generated LIKE/IN use owned query state passed as parameters;
+/// patterns and sets do not enter the key. Direct Gandiva IN nodes still carry
+/// compile-time constants, which ARE included in the key.
 /// There is no algebraic/commutative canonicalization or SQL text parser.
 ///
 /// Capacity bounds completed cached programs; in-flight compilations are
 /// coalesced per key but may temporarily exceed capacity across distinct keys.
 /// Compilation runs outside the cache mutex. Bound handles keep evicted code
-/// alive. This cache assumes Gandiva's default function registry is immutable.
+/// alive. The scalar function registry is immutable after initialization.
 class ScalarPredicateCache {
  public:
   explicit ScalarPredicateCache(size_t capacity = 128);
@@ -54,7 +57,8 @@ class ScalarPredicateCache {
 
   arrow::Result<PreparedScalarPredicate> prepare(
       std::shared_ptr<arrow::Schema> schema,
-      std::shared_ptr<gandiva::Condition> condition);
+      std::shared_ptr<gandiva::Condition> condition,
+      std::vector<std::shared_ptr<const void>> query_owners = {});
 
   ScalarPredicateCacheStats stats() const;
 

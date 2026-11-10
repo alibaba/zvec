@@ -8,12 +8,15 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <type_traits>
+#include <utility>
 #include <vector>
 #include <arrow/api.h>
 #include <arrow/compute/api.h>
@@ -88,6 +91,45 @@ void Check(const ScalarDocFilter &filter, const std::vector<bool> &expected) {
   EXPECT_FALSE(filter.evaluate(expected.size()).has_value());
   EXPECT_FALSE(
       filter.evaluate(std::numeric_limits<uint64_t>::max()).has_value());
+}
+
+using CheckedFilter =
+    std::pair<std::unique_ptr<ScalarDocFilter>, std::vector<bool>>;
+
+CheckedFilter CheckArrow(const cp::Expression &expression,
+                         const std::shared_ptr<arrow::Table> &table) {
+  SCOPED_TRACE(expression.ToString());
+  auto bound = Unwrap(expression.Bind(*table->schema()));
+  std::vector<bool> expected;
+  arrow::TableBatchReader reader(*table);
+  std::shared_ptr<arrow::RecordBatch> batch;
+  while (true) {
+    Ok(reader.ReadNext(&batch));
+    if (!batch) break;
+    auto result =
+        Unwrap(cp::ExecuteScalarExpression(bound, cp::ExecBatch(*batch)));
+    if (result.is_scalar()) {
+      const auto &scalar = result.scalar_as<arrow::BooleanScalar>();
+      expected.insert(expected.end(), batch->num_rows(),
+                      scalar.is_valid && scalar.value);
+    } else {
+      auto values =
+          std::static_pointer_cast<arrow::BooleanArray>(result.make_array());
+      for (int64_t row = 0; row < values->length(); ++row) {
+        expected.push_back(values->IsValid(row) && values->Value(row));
+      }
+    }
+  }
+  auto filter = Unwrap(ScalarDocFilter::Make(bound, table));
+  Check(*filter, expected);
+  return {std::move(filter), std::move(expected)};
+}
+
+cp::Expression In(const cp::Expression &field,
+                  const std::shared_ptr<arrow::Array> &values) {
+  return cp::call(
+      "is_in", {field},
+      cp::SetLookupOptions(values, cp::SetLookupOptions::INCONCLUSIVE));
 }
 
 TEST_F(ScalarDocFilterTest, UniformAndIrregularChunkRoutingWithSlices) {
@@ -399,6 +441,208 @@ TEST_F(ScalarDocFilterTest,
         for (size_t row = 0; row < expected[query].size(); ++row) {
           auto actual = filters[query]->evaluate(row);
           if (!actual || *actual != expected[query][row]) ++mismatches;
+        }
+      }
+    });
+  }
+  for (auto &thread : threads) thread.join();
+  EXPECT_EQ(mismatches.load(), 0u);
+}
+
+TEST_F(ScalarDocFilterTest, StringsWithIndependentChunksAndSlicedBuffers) {
+  auto schema = arrow::schema({arrow::field("text_x", arrow::utf8()),
+                               arrow::field("text_y", arrow::utf8())});
+  const std::string nul("a\0b", 3);
+  auto x = Array<arrow::StringBuilder, std::string>(
+               {"pad", "pad", "", nul, "中文", {}, "x", "é", "last"})
+               ->Slice(2);
+  auto y = Array<arrow::StringBuilder, std::string>(
+               {"pad", "", "a", "中", "x", {}, "é", "last"})
+               ->Slice(1);
+  auto table = arrow::Table::Make(
+      schema, {Chunks(x, {0, 2, 1, 4}), Chunks(y, {1, 3, 0, 3})});
+  auto expression =
+      cp::or_(cp::less(cp::field_ref("text_x"), cp::field_ref("text_y")),
+              cp::equal(cp::field_ref("text_x"), cp::literal(nul)));
+  auto checked = CheckArrow(expression, table);
+  table.reset();
+  x.reset();
+  y.reset();
+  Check(*checked.first, checked.second);
+}
+
+TEST_F(ScalarDocFilterTest, LikeMatchesArrowEscapesUnicodeAndNullSemantics) {
+  auto schema = arrow::schema({arrow::field("like_value", arrow::utf8())});
+  auto values =
+      Array<arrow::StringBuilder, std::string>({"padding",
+                                                "",
+                                                "a",
+                                                "abc",
+                                                "a_b",
+                                                "a%b",
+                                                "a\\b",
+                                                "a\nb",
+                                                "\n",
+                                                "é",
+                                                "中文",
+                                                "x\ny",
+                                                "trailing\\",
+                                                "a.b",
+                                                std::string("a\0b", 3),
+                                                {}})
+          ->Slice(1);
+  auto table = arrow::Table::Make(schema, {Chunks(values, {2, 5, 1, 7})});
+  const std::vector<std::string> patterns = {"",
+                                             "%",
+                                             "_",
+                                             "__",
+                                             "a%",
+                                             "%b",
+                                             "a_b",
+                                             "a\\_b",
+                                             "a\\%b",
+                                             "a\\\\b",
+                                             "a\\b",
+                                             "%a\\b%",
+                                             "a\\b%",
+                                             "%a\\b",
+                                             "trailing\\",
+                                             "%\n%",
+                                             "中_",
+                                             "a.b",
+                                             std::string("a\0b", 3)};
+  uint64_t compilations = 0;
+  for (size_t i = 0; i < patterns.size(); ++i) {
+    auto expression = cp::call("match_like", {cp::field_ref("like_value")},
+                               cp::MatchSubstringOptions(patterns[i]));
+    CheckArrow(expression, table);
+    CheckArrow(cp::not_(expression), table);
+    // NULL must remain unknown inside a boolean expression, not become false
+    // before NOT or Kleene OR applies.
+    CheckArrow(cp::not_(cp::or_(expression, cp::literal(false))), table);
+    if (i == 0) compilations = ScalarDocFilter::CacheStats().compilations;
+    EXPECT_EQ(ScalarDocFilter::CacheStats().compilations, compilations);
+  }
+}
+
+template <typename Builder, typename T>
+void CheckNumericIn(const std::shared_ptr<arrow::DataType> &type) {
+  SCOPED_TRACE(type->ToString());
+  const T low = std::numeric_limits<T>::lowest();
+  const T high = std::numeric_limits<T>::max();
+  std::vector<std::optional<T>> values = {low, T{0}, T{1}, high, {}};
+  std::vector<std::optional<T>> members = {T{0}, high, high};
+  if constexpr (std::is_floating_point<T>::value) {
+    const T nan = std::numeric_limits<T>::quiet_NaN();
+    using UInt = std::conditional_t<sizeof(T) == 4, uint32_t, uint64_t>;
+    UInt payload;
+    std::memcpy(&payload, &nan, sizeof(nan));
+    payload ^= 1;
+    T other_nan;
+    std::memcpy(&other_nan, &payload, sizeof(other_nan));
+    values.insert(values.end(), {T{-0.0f}, nan, other_nan,
+                                 std::numeric_limits<T>::infinity()});
+    members.push_back(nan);
+  }
+  auto schema = arrow::schema({arrow::field("in_" + type->ToString(), type)});
+  auto field = cp::field_ref(schema->field(0)->name());
+  auto array = Array<Builder>(values);
+  auto table =
+      arrow::Table::Make(schema, {Chunks(array, {1, array->length() - 1})});
+  uint64_t compilations = 0;
+  for (int variant = 0; variant < 4; ++variant) {
+    if (variant == 1) members.push_back({});
+    if (variant == 2) members = {T{1}};
+    if (variant == 3) members.clear();
+    auto expression = In(field, Array<Builder>(members));
+    CheckArrow(expression, table);
+    CheckArrow(cp::not_(expression), table);
+    CheckArrow(cp::is_null(expression), table);
+    if constexpr (std::is_same<T, int32_t>::value) {
+      CheckArrow(cp::is_valid(expression), table);
+    }
+    if (variant == 0) compilations = ScalarDocFilter::CacheStats().compilations;
+    EXPECT_EQ(ScalarDocFilter::CacheStats().compilations, compilations);
+  }
+}
+
+TEST_F(ScalarDocFilterTest, InAndNotInMatchArrowForEveryNumericType) {
+  CheckNumericIn<arrow::Int8Builder, int8_t>(arrow::int8());
+  CheckNumericIn<arrow::UInt8Builder, uint8_t>(arrow::uint8());
+  CheckNumericIn<arrow::Int16Builder, int16_t>(arrow::int16());
+  CheckNumericIn<arrow::UInt16Builder, uint16_t>(arrow::uint16());
+  CheckNumericIn<arrow::Int32Builder, int32_t>(arrow::int32());
+  CheckNumericIn<arrow::UInt32Builder, uint32_t>(arrow::uint32());
+  CheckNumericIn<arrow::Int64Builder, int64_t>(arrow::int64());
+  CheckNumericIn<arrow::UInt64Builder, uint64_t>(arrow::uint64());
+  CheckNumericIn<arrow::FloatBuilder, float>(arrow::float32());
+  CheckNumericIn<arrow::DoubleBuilder, double>(arrow::float64());
+}
+
+TEST_F(ScalarDocFilterTest, StringAndLargeInSetsAreBoundQueryParameters) {
+  const std::string nul("a\0b", 3);
+  auto schema = arrow::schema({arrow::field("string_in", arrow::utf8())});
+  auto table = arrow::Table::Make(
+      schema, {Chunks(Array<arrow::StringBuilder, std::string>(
+                          {"", "a", nul, "中文", "é", {}, "19999"}),
+                      {2, 1, 4})});
+  std::vector<std::optional<std::string>> members = {"", nul, "中文", "中文"};
+  uint64_t compilations = 0;
+  for (int variant = 0; variant < 4; ++variant) {
+    if (variant == 1) members.push_back({});
+    if (variant == 2) members = {"a", "é"};
+    if (variant == 3) {
+      members.clear();
+      for (int value = 0; value < 20000; ++value)
+        members.push_back(std::to_string(value));
+    }
+    auto expression =
+        In(cp::field_ref("string_in"), Array<arrow::StringBuilder>(members));
+    CheckArrow(expression, table);
+    CheckArrow(cp::not_(expression), table);
+    CheckArrow(cp::is_null(expression), table);
+    CheckArrow(cp::is_valid(expression), table);
+    if (variant == 0) compilations = ScalarDocFilter::CacheStats().compilations;
+    EXPECT_EQ(ScalarDocFilter::CacheStats().compilations, compilations);
+  }
+}
+
+TEST_F(ScalarDocFilterTest,
+       CachedStringsPatternsAndSetsHaveIndependentBindings) {
+  auto schema = arrow::schema({arrow::field("bound_text", arrow::utf8())});
+  std::vector<CheckedFilter> queries;
+  uint64_t compilations = 0;
+  for (int query = 0; query < 8; ++query) {
+    auto values = Array<arrow::StringBuilder, std::string>(
+        {"", "a", "ab", "b", "bc", "中文", std::string("a\0b", 3), {}});
+    auto table = arrow::Table::Make(
+        schema, {Chunks(values, query % 2 ? std::vector<int64_t>{2, 1, 5}
+                                          : std::vector<int64_t>{1, 4, 3})});
+    auto field = cp::field_ref("bound_text");
+    auto members = Array<arrow::StringBuilder, std::string>(
+        query % 2
+            ? std::vector<std::optional<std::string>>{"ab", "b"}
+            : std::vector<std::optional<std::string>>{"a", "bc", "中文", {}});
+    auto pattern = cp::call("match_like", {field},
+                            cp::MatchSubstringOptions(query % 3 ? "%b%" : "_"));
+    auto expression =
+        cp::or_(cp::less(field, cp::literal(std::string(query, 'a'))),
+                cp::and_(pattern, In(field, members)));
+    queries.push_back(CheckArrow(expression, table));
+    if (query == 0) compilations = ScalarDocFilter::CacheStats().compilations;
+    EXPECT_EQ(ScalarDocFilter::CacheStats().compilations, compilations);
+  }
+  // Query inputs, patterns, and sets have left scope; each binding still owns
+  // its parameters while all queries execute the same cached machine code.
+  std::atomic<uint64_t> mismatches{0};
+  std::vector<std::thread> threads;
+  for (size_t thread = 0; thread < queries.size(); ++thread) {
+    threads.emplace_back([&, thread] {
+      for (size_t repeat = 0; repeat < 1000; ++repeat) {
+        const auto &query = queries[(thread + repeat) % queries.size()];
+        for (size_t row = 0; row < query.second.size(); ++row) {
+          auto actual = query.first->evaluate(row);
+          if (!actual || *actual != query.second[row]) ++mismatches;
         }
       }
     });

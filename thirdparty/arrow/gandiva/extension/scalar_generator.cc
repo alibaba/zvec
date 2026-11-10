@@ -71,6 +71,9 @@ arrow::Result<ScalarEvalFunction> ScalarGenerator::Build(
     if (found != annotator.input_descriptors().end()) {
       parameter_buffers.insert(found->second->data_idx());
       parameter_buffers.insert(found->second->validity_idx());
+      if (found->second->HasOffsetsIdx()) {
+        parameter_buffers.insert(found->second->offsets_idx());
+      }
     }
   }
   auto& engine = *generator_->engine_;
@@ -96,26 +99,57 @@ arrow::Status ScalarGenerator::BindBuffers(
     auto parameter = parameter_indices_.find(entry.first);
     if (parameter != parameter_indices_.end()) {
       const auto& slot = parameters[parameter->second];
-      (*buffers)[descriptor.data_idx()] = slot.data;
+      (*buffers)[descriptor.data_idx()] =
+          descriptor.HasOffsetsIdx() ? slot.variable_data : slot.data;
       (*buffers)[descriptor.validity_idx()] = &slot.validity;
+      if (descriptor.HasOffsetsIdx()) {
+        ARROW_RETURN_IF(!slot.variable_data,
+                        arrow::Status::Invalid("Missing variable-width parameter data"));
+        (*buffers)[descriptor.offsets_idx()] =
+            reinterpret_cast<const uint8_t*>(slot.variable_offsets);
+      }
       continue;
     }
     const int column_index = batch.schema()->GetFieldIndex(entry.first);
     ARROW_RETURN_IF(column_index < 0,
                     arrow::Status::Invalid("Missing or ambiguous field: ", entry.first));
     const auto& array = *batch.column_data(column_index);
-    // The owning runtime validates fixed-width input metadata before binding.
+    // The owning runtime validates Arrow metadata before binding. Null byte
+    // storage is valid for an empty string payload, but not for nonempty data.
+    const bool variable_width = descriptor.HasOffsetsIdx();
+    const size_t value_index = variable_width ? 2 : 1;
     ARROW_RETURN_IF(
-        descriptor.HasOffsetsIdx() || array.buffers.size() < 2,
-        arrow::Status::Invalid("Expected fixed-width buffers for ", entry.first));
-    ARROW_RETURN_IF(batch.num_rows() > 0 && !array.buffers[1],
+        array.buffers.size() <= value_index,
+        arrow::Status::Invalid("Missing Arrow buffers for ", entry.first));
+    for (size_t index = 0; index <= value_index; ++index) {
+      const auto& buffer = array.buffers[index];
+      ARROW_RETURN_IF(buffer && !buffer->is_cpu(),
+                      arrow::Status::NotImplemented("Scalar inputs require CPU buffers"));
+      ARROW_RETURN_IF(buffer && buffer->size() > 0 && !buffer->data(),
+                      arrow::Status::Invalid("Arrow buffer has no data for ", entry.first));
+    }
+    const auto& values = array.buffers[value_index];
+    ARROW_RETURN_IF(batch.num_rows() > 0 &&
+                        (!values || (!values->data() && values->size() != 0) ||
+                         (!variable_width && !values->data())),
                     arrow::Status::Invalid("Missing value buffer for ", entry.first));
+    ARROW_RETURN_IF(array.null_count > 0 && !array.buffers[0],
+                    arrow::Status::Invalid("Missing validity buffer for ", entry.first));
+    static const uint8_t empty_value = 0;
     (*buffers)[descriptor.validity_idx()] =
         array.buffers[0] ? array.buffers[0]->data() : nullptr;
     (*buffers)[descriptor.data_idx()] =
-        array.buffers[1] ? array.buffers[1]->data() : nullptr;
+        values && values->data() ? values->data() : &empty_value;
     (*offsets)[descriptor.validity_idx()] = array.offset;
     (*offsets)[descriptor.data_idx()] = array.offset;
+    if (variable_width) {
+      ARROW_RETURN_IF(batch.num_rows() > 0 &&
+                          (!array.buffers[1] || !array.buffers[1]->data()),
+                      arrow::Status::Invalid("Missing offsets buffer for ", entry.first));
+      (*buffers)[descriptor.offsets_idx()] =
+          array.buffers[1] ? array.buffers[1]->data() : nullptr;
+      (*offsets)[descriptor.offsets_idx()] = array.offset;
+    }
   }
   return arrow::Status::OK();
 }

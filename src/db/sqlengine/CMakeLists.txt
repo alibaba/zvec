@@ -4,7 +4,8 @@ include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 set(SCALAR_JIT_SRCS)
 set(SCALAR_JIT_LIBS)
 if(ZVEC_ENABLE_SCALAR_JIT)
-    set(SCALAR_JIT_SRCS scalar_jit/scalar_predicate.cc scalar_jit/scalar_predicate_cache.cc)
+    set(SCALAR_JIT_SRCS scalar_jit/scalar_predicate.cc scalar_jit/scalar_predicate_cache.cc
+        scalar_jit/predicate_helpers.cc)
     set(SCALAR_JIT_LIBS Gandiva::gandiva_static)
 endif()
 

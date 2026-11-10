@@ -23,6 +23,14 @@ adapter binds immutable snapshots and falls back to Arrow for unsupported
 expressions, storage layouts or compilation/binding failures. These internal
 runtime headers are not installed as Gandiva APIs.
 
+The adapter covers numeric and string comparisons, boolean equality, nullable
+boolean logic and scalar null tests, LIKE, and numeric/string IN and NOT IN.
+LIKE matchers and IN sets are owned per query and passed as parameters, so
+changing a pattern or set reuses the compiled expression. Native helpers use
+Arrow's LIKE and set-lookup semantics; they are registered through Gandiva's
+external C function API. List operations (CONTAIN and array_length) and other
+unsupported expressions continue through Arrow.
+
 Build
 -----
 
@@ -34,10 +42,23 @@ The backend defaults to OFF. To enable it::
     -DLLVM_ROOT=/path/to/llvm-20
   cmake --build build-scalar-jit --parallel 8
 
-ON requires native 64-bit Linux/macOS, C++17, LLVM 20 with its shared library
-and matching ``clang``/``llvm-link``, and OpenSSL development files. LLVM and
-OpenSSL remain runtime dependencies. Cross, mobile, Windows and universal
-macOS builds are unsupported when ON. OFF adds no LLVM/OpenSSL dependency.
+ON requires native 64-bit Linux/macOS, C++17, LLVM 20 static libraries and
+matching ``clang``/``llvm-link``, and OpenSSL development files. The default
+link uses Arrow's required LLVM components and the native architecture backend,
+with dead-code elimination at the final link. It retains the optimizer and
+runtime CPU feature detection; ``native`` selects an architecture, not the
+build machine's CPU generation. The wheel does not require an installed LLVM.
+OpenSSL and other non-system shared dependencies must still be bundled by the
+normal wheel repair step. ``ZVEC_SCALAR_JIT_LLVM_SHARED=ON`` explicitly selects
+shared LLVM instead, which must be provided or bundled at runtime.
+
+All linked static libraries and Gandiva bitcode must be built for the wheel's
+minimum OS/ABI and CPU baseline. Static linking does not lower a dependency's
+deployment target or undo CPU-specific compiler flags. Do not use
+``-march=native`` for portable release artifacts. Runtime JIT code uses the
+execution machine's CPU features; compiled predicates are process-local and
+are not shipped in the wheel. Cross, mobile, Windows and universal macOS builds
+are unsupported when ON. OFF adds no LLVM/OpenSSL dependency.
 Set ``ZVEC_SCALAR_JIT=0`` before the first query to disable the fast path.
 
 Update the patch, extension and provenance hashes together. Apply revised

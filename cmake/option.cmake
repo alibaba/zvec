@@ -39,6 +39,7 @@ option(ENABLE_WERROR "Treat compiler warnings as errors in strict targets" OFF)
 # Optional native Gandiva backend for scalar predicates. The default build does
 # not discover LLVM/OpenSSL or compile/link Gandiva.
 option(ZVEC_ENABLE_SCALAR_JIT "Enable the experimental Gandiva scalar filter backend" OFF)
+option(ZVEC_SCALAR_JIT_LLVM_SHARED "Link scalar JIT to shared LLVM instead of native static components" OFF)
 
 set(ARCH_OPTIONS
   ENABLE_NEHALEM ENABLE_SANDYBRIDGE ENABLE_HASWELL ENABLE_BROADWELL ENABLE_SKYLAKE

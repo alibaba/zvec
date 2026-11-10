@@ -42,6 +42,8 @@ arrow::Status AddType(std::string *key, const gandiva::DataTypePtr &type) {
     case arrow::Type::UINT64:
     case arrow::Type::FLOAT:
     case arrow::Type::DOUBLE:
+    case arrow::Type::STRING:
+    case arrow::Type::BINARY:
       Token(key, std::to_string(type->id()));
       return arrow::Status::OK();
     default:
@@ -69,6 +71,8 @@ arrow::Result<std::shared_ptr<arrow::Scalar>> LiteralValue(
     SCALAR_LITERAL_CASE(UINT64, uint64_t, UInt64Scalar);
     SCALAR_LITERAL_CASE(FLOAT, float, FloatScalar);
     SCALAR_LITERAL_CASE(DOUBLE, double, DoubleScalar);
+    SCALAR_LITERAL_CASE(STRING, std::string, StringScalar);
+    SCALAR_LITERAL_CASE(BINARY, std::string, BinaryScalar);
     default:
       return arrow::Status::NotImplemented("Unsupported scalar literal");
   }
@@ -300,12 +304,13 @@ arrow::Result<std::shared_ptr<BoundScalarPredicate>>
 PreparedScalarPredicate::bind(std::shared_ptr<arrow::RecordBatch> batch) const {
   ARROW_RETURN_IF(!compiled,
                   arrow::Status::Invalid("Prepared predicate has no code"));
-  return compiled->bind(std::move(batch), parameters);
+  return compiled->bind(std::move(batch), parameters, query_owners);
 }
 
 arrow::Result<PreparedScalarPredicate> ScalarPredicateCache::prepare(
     std::shared_ptr<arrow::Schema> schema,
-    std::shared_ptr<gandiva::Condition> condition) {
+    std::shared_ptr<gandiva::Condition> condition,
+    std::vector<std::shared_ptr<const void>> query_owners) {
   ARROW_RETURN_IF(
       !schema || !condition || !condition->root(),
       arrow::Status::Invalid("Schema, condition and root are required"));
@@ -341,7 +346,8 @@ arrow::Result<PreparedScalarPredicate> ScalarPredicateCache::prepare(
       entry->last_use = ++impl_->clock;
       ARROW_RETURN_NOT_OK(entry->result.status());
       return PreparedScalarPredicate{entry->result.ValueOrDie(),
-                                     std::move(analysis.parameters), true};
+                                     std::move(analysis.parameters), true,
+                                     std::move(query_owners)};
     }
     ++impl_->stats.misses;
     ++impl_->stats.compilations;
@@ -388,7 +394,8 @@ arrow::Result<PreparedScalarPredicate> ScalarPredicateCache::prepare(
   entry->ready.notify_all();
   ARROW_RETURN_NOT_OK(program.status());
   return PreparedScalarPredicate{program.ValueOrDie(),
-                                 std::move(analysis.parameters), false};
+                                 std::move(analysis.parameters), false,
+                                 std::move(query_owners)};
 }
 
 ScalarPredicateCacheStats ScalarPredicateCache::stats() const {

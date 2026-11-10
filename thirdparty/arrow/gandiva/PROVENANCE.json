@@ -13,12 +13,12 @@
     "llvm_major": 20
   },
   "sha256": {
-    "scalar.patch": "933140245f9d6bce0ad93d723ff21b8a3b9b2f77e97cabcef77563f14ce20486",
+    "scalar.patch": "ad01072fe396d7461144f4e38d42fe7f99cc2ae337c6e050be02acf3daf0428e",
     "extension/scalar_codegen_context.cc": "c0affd857f0a57ed0dc5c621183e32158f609a3c3f18859d84bd28cc5245856a",
     "extension/scalar_codegen_context.h": "3403524f84d8ad843b85ef34d7a24a60fdd9cfe3706f2eb7a5ba4c9d8b809dd7",
-    "extension/scalar_generator.cc": "a5e83be33491d80d8b01b0e7e871e7b4817b39da7e8d07a031b34ab5b23e607a",
+    "extension/scalar_generator.cc": "c5e7ee835e6a2230573ab6c750ef55f8dd707faca58fcc28a6af56fe6351d796",
     "extension/scalar_generator.h": "f8a883f082c70d97091d70b9aa2403abe471dbd49ca0d7a16a039760b2b414e2",
-    "extension/scalar_predicate_abi.h": "8a22b0e1e2172f4afe797954960488a6221651a801b4f4590fdccf623a9acbbb"
+    "extension/scalar_predicate_abi.h": "b82e8a051090f8131a5d4ca3d00a11f32e37f49d4e34a82b7ddb2a585f836e31"
   },
   "local_changes": [
     "Expose read-only Annotator metadata and let ScalarGenerator reuse the expression visitor through a compile-time scalar context.",

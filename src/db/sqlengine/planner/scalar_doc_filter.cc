@@ -49,11 +49,14 @@ arrow::Result<std::unique_ptr<ScalarDocFilter>> ScalarDocFilter::MakeValidated(
   if (!snapshot || snapshot->num_rows() <= 0) {
     return arrow::Status::NotImplemented("No immutable forward snapshot");
   }
-  ARROW_ASSIGN_OR_RAISE(auto condition, MakeScalarPredicateCondition(
-                                            expression, snapshot->schema()));
+  std::vector<std::shared_ptr<const void>> query_owners;
+  ARROW_ASSIGN_OR_RAISE(auto condition,
+                        MakeScalarPredicateCondition(
+                            expression, snapshot->schema(), &query_owners));
   ARROW_ASSIGN_OR_RAISE(
       auto prepared,
-      QueryCache().prepare(snapshot->schema(), std::move(condition)));
+      QueryCache().prepare(snapshot->schema(), std::move(condition),
+                           std::move(query_owners)));
   auto result = std::unique_ptr<ScalarDocFilter>(new ScalarDocFilter);
   result->snapshot_ = snapshot;
 
@@ -126,14 +129,46 @@ arrow::Result<std::unique_ptr<ScalarDocFilter>> ScalarDocFilter::MakeValidated(
       const auto &cursor = cursors[binding.column_index];
       const auto &array =
           *columns[binding.column_index]->chunk(cursor.chunk)->data();
+      const bool variable_width = binding.offsets_buffer_index >= 0;
+      const size_t value_index = variable_width ? 2 : 1;
+      if (array.buffers.size() <= value_index) {
+        return arrow::Status::Invalid("Missing forward Arrow buffers");
+      }
+      for (size_t i = 0; i <= value_index; ++i) {
+        const auto &buffer = array.buffers[i];
+        if (buffer && !buffer->is_cpu()) {
+          return arrow::Status::NotImplemented(
+              "Scalar inputs require CPU buffers");
+        }
+        if (buffer && buffer->size() > 0 && !buffer->data()) {
+          return arrow::Status::Invalid("Forward Arrow buffer has no data");
+        }
+      }
+      if (!array.buffers[value_index] ||
+          (!array.buffers[value_index]->data() &&
+           (array.buffers[value_index]->size() != 0 || !variable_width)) ||
+          (array.null_count > 0 && !array.buffers[0])) {
+        return arrow::Status::Invalid("Missing forward value/validity buffer");
+      }
+      static const uint8_t empty_value = 0;
+      const auto *values = array.buffers[value_index]->data();
       result->buffers_[base + binding.data_buffer_index] =
-          array.buffers[1]->data();
+          values ? values : &empty_value;
       result->buffers_[base + binding.validity_buffer_index] =
           array.buffers[0] ? array.buffers[0]->data() : nullptr;
       result->offsets_[base + binding.data_buffer_index] =
           array.offset + cursor.offset;
       result->offsets_[base + binding.validity_buffer_index] =
           array.offset + cursor.offset;
+      if (variable_width) {
+        if (!array.buffers[1] || !array.buffers[1]->data()) {
+          return arrow::Status::Invalid("Missing forward offsets buffer");
+        }
+        result->buffers_[base + binding.offsets_buffer_index] =
+            array.buffers[1]->data();
+        result->offsets_[base + binding.offsets_buffer_index] =
+            array.offset + cursor.offset;
+      }
     }
     for (auto &cursor : cursors) cursor.offset += rows;
     result->num_rows_ += rows;

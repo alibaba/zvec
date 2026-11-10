@@ -23,6 +23,7 @@
 #include <arrow/compute/api_scalar.h>
 #include <arrow/scalar.h>
 #include <gandiva/tree_expr_builder.h>
+#include "db/sqlengine/scalar_jit/predicate_helpers.h"
 
 namespace zvec::sqlengine {
 namespace {
@@ -49,14 +50,16 @@ bool IsNumeric(const arrow::DataType *type) {
 }
 
 bool IsSupportedType(const arrow::DataType *type) {
-  return type && (type->id() == arrow::Type::BOOL || IsNumeric(type));
+  return type && (type->id() == arrow::Type::BOOL ||
+                  type->id() == arrow::Type::STRING ||
+                  type->id() == arrow::Type::BINARY || IsNumeric(type));
 }
 
 arrow::Result<gandiva::NodePtr> MakeLiteral(const arrow::Datum &literal) {
   if (!literal.is_scalar() || !literal.scalar() ||
       !IsSupportedType(literal.type().get())) {
     return arrow::Status::NotImplemented(
-        "Scalar JIT requires a fixed-width numeric/bool scalar literal");
+        "Scalar JIT requires a supported scalar literal");
   }
   const auto &scalar = *literal.scalar();
   if (!scalar.is_valid) return TB::MakeNull(scalar.type);
@@ -94,6 +97,12 @@ arrow::Result<gandiva::NodePtr> MakeLiteral(const arrow::Datum &literal) {
     case arrow::Type::DOUBLE:
       return TB::MakeLiteral(
           static_cast<const arrow::DoubleScalar &>(scalar).value);
+    case arrow::Type::STRING:
+      return TB::MakeStringLiteral(
+          std::string(static_cast<const arrow::StringScalar &>(scalar).view()));
+    case arrow::Type::BINARY:
+      return TB::MakeBinaryLiteral(
+          std::string(static_cast<const arrow::BinaryScalar &>(scalar).view()));
     default:
       return arrow::Status::NotImplemented("Unsupported scalar literal");
   }
@@ -101,7 +110,9 @@ arrow::Result<gandiva::NodePtr> MakeLiteral(const arrow::Datum &literal) {
 
 class Converter {
  public:
-  explicit Converter(const arrow::Schema &schema) : schema_(schema) {}
+  Converter(const arrow::Schema &schema,
+            std::vector<std::shared_ptr<const void>> *query_owners)
+      : schema_(schema), query_owners_(query_owners) {}
 
   arrow::Result<gandiva::NodePtr> convert(
       const cp::Expression &expression) const {
@@ -141,6 +152,51 @@ class Converter {
     if (!call)
       return arrow::Status::NotImplemented("Unsupported expression node");
     const auto &name = call->function_name;
+    if (name == "match_like" || name == "is_in") {
+      if (!query_owners_ || call->arguments.size() != 1) {
+        return arrow::Status::NotImplemented(
+            "Scalar LIKE/IN requires query state ownership and one argument");
+      }
+      std::shared_ptr<const void> context;
+      bool set_has_null = false;
+      if (name == "match_like") {
+        const auto *options = dynamic_cast<const cp::MatchSubstringOptions *>(
+            call->options.get());
+        if (!options ||
+            call->arguments[0].type()->id() != arrow::Type::STRING) {
+          return arrow::Status::NotImplemented("Unsupported LIKE options/type");
+        }
+        ARROW_ASSIGN_OR_RAISE(context, scalar_jit::MakeLikeContext(*options));
+      } else {
+        const auto *options =
+            dynamic_cast<const cp::SetLookupOptions *>(call->options.get());
+        const auto *type = call->arguments[0].type();
+        if (!options ||
+            options->GetNullMatchingBehavior() !=
+                cp::SetLookupOptions::INCONCLUSIVE ||
+            (!IsNumeric(type) && type->id() != arrow::Type::STRING) ||
+            !options->value_set.type() ||
+            !type->Equals(*options->value_set.type())) {
+          return arrow::Status::NotImplemented("Unsupported IN options/types");
+        }
+        ARROW_ASSIGN_OR_RAISE(
+            context, scalar_jit::MakeInContext(*options, &set_has_null));
+      }
+      ARROW_ASSIGN_OR_RAISE(auto value, convert(call->arguments[0]));
+      auto pointer = TB::MakeLiteral(
+          static_cast<int64_t>(reinterpret_cast<intptr_t>(context.get())));
+      query_owners_->push_back(std::move(context));
+      auto match = TB::MakeFunction(
+          name == "match_like" ? "zvec_scalar_like" : "zvec_scalar_in",
+          {value, pointer}, arrow::boolean());
+      if (name == "match_like") return match;
+      // Arrow INCONCLUSIVE: a miss becomes NULL when the set contains NULL.
+      // OR with a nullable false preserves true matches and NULL inputs with
+      // only one lookup. Cache parameterization also keeps set nullness out of
+      // the compiled structure. Gandiva's external C ABI needs no extension.
+      return TB::MakeOr({match, set_has_null ? TB::MakeNull(arrow::boolean())
+                                             : TB::MakeLiteral(false)});
+    }
     if (call->options) {
       // QueryPlanner's cp::is_null always supplies NullOptions(false).
       // Accept that exact behavior; treating NaN as NULL is a different
@@ -163,11 +219,15 @@ class Converter {
     for (const auto &comparison : comparisons) {
       if (name != comparison.first) continue;
       if (call->arguments.size() != 2 ||
-          !IsNumeric(call->arguments[0].type()) ||
-          !IsNumeric(call->arguments[1].type()) ||
+          !IsSupportedType(call->arguments[0].type()) ||
+          !IsSupportedType(call->arguments[1].type()) ||
           !call->arguments[0].type()->Equals(*call->arguments[1].type())) {
         return arrow::Status::NotImplemented(
-            "Scalar JIT requires same-type numeric comparison");
+            "Scalar JIT requires same-type comparison");
+      }
+      if (call->arguments[0].type()->id() == arrow::Type::BOOL &&
+          name != "equal" && name != "not_equal") {
+        return arrow::Status::NotImplemented("Unsupported boolean comparison");
       }
       ARROW_ASSIGN_OR_RAISE(auto left, convert(call->arguments[0]));
       ARROW_ASSIGN_OR_RAISE(auto right, convert(call->arguments[1]));
@@ -200,21 +260,22 @@ class Converter {
                                : (name == "is_null" ? "isnull" : "isnotnull");
       return TB::MakeFunction(target, {argument}, arrow::boolean());
     }
-    // No implicit broadening to arithmetic, casts, IN, strings or functions
-    // with side effects/errors. In particular Gandiva IN has different NULL
-    // behavior from QueryPlanner's Arrow INCONCLUSIVE set lookup.
+    // Lists (CONTAIN and array_length), casts and functions with side effects
+    // or errors keep the existing Arrow path.
     return arrow::Status::NotImplemented(
         "Scalar JIT does not support Arrow function: ", name);
   }
 
  private:
   const arrow::Schema &schema_;
+  std::vector<std::shared_ptr<const void>> *query_owners_;
 };
 }  // namespace
 
 arrow::Result<gandiva::ConditionPtr> MakeScalarPredicateCondition(
     const arrow::compute::Expression &expression,
-    const std::shared_ptr<arrow::Schema> &schema) {
+    const std::shared_ptr<arrow::Schema> &schema,
+    std::vector<std::shared_ptr<const void>> *query_owners) {
   if (!schema || !expression.is_valid() || !expression.IsBound()) {
     return arrow::Status::NotImplemented(
         "Scalar JIT requires a schema and bound expression");
@@ -229,7 +290,11 @@ arrow::Result<gandiva::ConditionPtr> MakeScalarPredicateCondition(
           "Scalar JIT rejects duplicate field names");
     }
   }
-  ARROW_ASSIGN_OR_RAISE(auto root, Converter(*schema).convert(expression));
+  std::vector<std::shared_ptr<const void>> owners;
+  ARROW_ASSIGN_OR_RAISE(
+      auto root,
+      Converter(*schema, query_owners ? &owners : nullptr).convert(expression));
+  if (query_owners) *query_owners = std::move(owners);
   return TB::MakeCondition(std::move(root));
 }
 

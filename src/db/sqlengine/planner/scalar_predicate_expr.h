@@ -17,6 +17,7 @@
 #ifdef ZVEC_ENABLE_SCALAR_JIT
 
 #include <memory>
+#include <vector>
 #include <arrow/compute/expression.h>
 #include <arrow/result.h>
 #include <arrow/type.h>
@@ -24,13 +25,15 @@
 
 namespace zvec::sqlengine {
 
-// Translate an already-bound Arrow predicate. Only same-type numeric
-// comparisons and nullable boolean logic/null tests are supported. Unhandled
-// expressions return NotImplemented so callers can keep the Arrow path.
+// Translate an already-bound Arrow predicate. Unhandled expressions return
+// NotImplemented so callers retain Arrow's semantics through the fallback.
 // Field identity comes from the bound FieldPath and the supplied bind schema.
+// LIKE/IN require query_owners; pass these owners to the compiled binding so
+// query-specific matchers and sets outlive all scalar evaluations.
 arrow::Result<gandiva::ConditionPtr> MakeScalarPredicateCondition(
     const arrow::compute::Expression &expression,
-    const std::shared_ptr<arrow::Schema> &schema);
+    const std::shared_ptr<arrow::Schema> &schema,
+    std::vector<std::shared_ptr<const void>> *query_owners = nullptr);
 
 }  // namespace zvec::sqlengine
 

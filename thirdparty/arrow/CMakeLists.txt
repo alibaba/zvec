@@ -27,7 +27,7 @@ endif()
 set(ARROW_SLIM_COMPUTE_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.slim_compute.patch)
 apply_patch_once("arrow_slim_compute" "${ARROW_SRC_DIR}" "${ARROW_SLIM_COMPUTE_PATCH}")
 
-set(_ARROW_SCALAR_JIT_ARGS -DARROW_GANDIVA=OFF)
+set(_ARROW_SCALAR_JIT_ARGS -DARROW_GANDIVA=OFF -DCMAKE_PROJECT_arrow_INCLUDE=)
 if(ZVEC_ENABLE_SCALAR_JIT)
     include(${CMAKE_CURRENT_SOURCE_DIR}/gandiva/prepare.cmake)
 endif()
@@ -287,12 +287,26 @@ set_target_properties(
 add_dependencies(Arrow::arrow_acero ARROW.BUILD)
 
 if(ZVEC_ENABLE_SCALAR_JIT)
+    # Use the same RE2 headers as Arrow's bundled dependency; its symbols are
+    # already included in libarrow_bundled_dependencies.a.
+    ExternalProject_Get_Property(ARROW.BUILD BINARY_DIR)
+    set(_SCALAR_JIT_RE2_INCLUDE_DIR "${BINARY_DIR}/re2_ep-install/include")
+    file(MAKE_DIRECTORY "${_SCALAR_JIT_RE2_INCLUDE_DIR}")
     add_library(Gandiva::gandiva_static STATIC IMPORTED GLOBAL)
     set_target_properties(Gandiva::gandiva_static PROPERTIES
         IMPORTED_LOCATION "${LIB_GANDIVA}"
-        INTERFACE_INCLUDE_DIRECTORIES "${EXTERNAL_INC_DIR};${LLVM_INCLUDE_DIRS}"
-        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${EXTERNAL_INC_DIR};${LLVM_INCLUDE_DIRS}"
+        INTERFACE_INCLUDE_DIRECTORIES "${EXTERNAL_INC_DIR};${LLVM_INCLUDE_DIRS};${_SCALAR_JIT_RE2_INCLUDE_DIR}"
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${EXTERNAL_INC_DIR};${LLVM_INCLUDE_DIRS};${_SCALAR_JIT_RE2_INCLUDE_DIR}"
         INTERFACE_COMPILE_DEFINITIONS "GANDIVA_STATIC"
-        INTERFACE_LINK_LIBRARIES "Arrow::arrow_static;LLVM;OpenSSL::SSL;OpenSSL::Crypto;Threads::Threads;${CMAKE_DL_LIBS}")
+        INTERFACE_LINK_LIBRARIES "Arrow::arrow_static;${_SCALAR_JIT_LLVM_LIBS};OpenSSL::SSL;OpenSSL::Crypto;Threads::Threads;${CMAKE_DL_LIBS}")
+    # The public shared libraries and Python module already restrict exports
+    # to their own APIs. Strip unreferenced LLVM/Gandiva code at the final link
+    # without dropping any optimizer passes or supported predicate functions.
+    if(APPLE)
+        target_link_options(Gandiva::gandiva_static INTERFACE
+            "LINKER:-dead_strip" "LINKER:-dead_strip_dylibs")
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(Gandiva::gandiva_static INTERFACE "LINKER:--gc-sections")
+    endif()
     add_dependencies(Gandiva::gandiva_static ARROW.BUILD)
 endif()

@@ -6,6 +6,7 @@
 #ifdef ZVEC_ENABLE_SCALAR_JIT
 
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -17,6 +18,7 @@
 #include <arrow/compute/api.h>
 #include <gandiva/projector.h>
 #include <gandiva/tree_expr_builder.h>
+#include "db/sqlengine/planner/ops/contain_op.h"
 #include "db/sqlengine/planner/scalar_predicate_expr.h"
 #include "db/sqlengine/scalar_jit/scalar_predicate.h"
 
@@ -274,6 +276,105 @@ TEST_F(ScalarPredicateExprTest, BoundFieldPathsAndDistinctArrayOffsets) {
   EXPECT_FALSE(MakeScalarPredicateCondition(bound, wrong_schema).ok());
 }
 
+TEST_F(ScalarPredicateExprTest, BooleanEqualityPreservesNulls) {
+  auto schema = arrow::schema({arrow::field("x", arrow::boolean()),
+                               arrow::field("y", arrow::boolean())});
+  auto batch =
+      arrow::RecordBatch::Make(schema, 6,
+                               {Bool({false, true, {}, false, true, {}}),
+                                Bool({false, false, true, {}, true, {}})});
+  Verify(cp::equal(cp::field_ref("x"), cp::field_ref("y")), batch,
+         {true, false, false, false, true, false});
+  Verify(cp::not_equal(cp::field_ref("x"), cp::field_ref("y")), batch,
+         {false, true, false, false, false, false});
+  Verify(cp::equal(cp::field_ref("x"), cp::literal(true)), batch,
+         {false, true, false, false, true, false});
+  Verify(cp::not_equal(cp::field_ref("x"), cp::literal(false)), batch,
+         {false, true, false, false, true, false});
+}
+
+TEST_F(ScalarPredicateExprTest, StringComparisonsUseLengthsAndSliceOffsets) {
+  const std::string nul("a\0b", 3);
+  std::vector<std::optional<std::string>> x = {"",     "a", nul, "a",   "\n",
+                                               "中文", "é", {},  "same"};
+  std::vector<std::optional<std::string>> y = {"a",  "",  "a", nul, "\n",
+                                               "中", "é", "x", {}};
+  auto schema = arrow::schema(
+      {arrow::field("x", arrow::utf8()), arrow::field("y", arrow::utf8())});
+  auto padded_x = x, padded_y = y;
+  padded_x.insert(padded_x.begin(), 3, "padding");
+  padded_y.insert(padded_y.begin(), 5, "other padding");
+  auto batch = arrow::RecordBatch::Make(
+      schema, x.size(),
+      {Array<arrow::StringBuilder>(padded_x)->Slice(3),
+       Array<arrow::StringBuilder>(padded_y)->Slice(5)});
+  for (const std::string op : {"equal", "not_equal", "less", "less_equal",
+                               "greater", "greater_equal"}) {
+    std::vector<bool> fields, literal;
+    for (size_t row = 0; row < x.size(); ++row) {
+      fields.push_back(x[row] && y[row] && Compare(op, *x[row], *y[row]));
+      literal.push_back(x[row] && Compare(op, *x[row], nul));
+    }
+    Verify(cp::call(op, {cp::field_ref("x"), cp::field_ref("y")}), batch,
+           fields);
+    Verify(cp::call(op, {cp::field_ref("x"), cp::literal(nul)}), batch,
+           literal);
+  }
+  Verify(cp::equal(cp::field_ref("x"),
+                   cp::literal(arrow::MakeNullScalar(arrow::utf8()))),
+         batch, std::vector<bool>(x.size(), false));
+  Verify(cp::is_null(cp::field_ref("x")), batch,
+         {false, false, false, false, false, false, false, true, false});
+}
+
+TEST_F(ScalarPredicateExprTest, StringParameterSnapshotsAndBroadcasts) {
+  using TB = gandiva::TreeExprBuilder;
+  const std::string first("a\0b", 3), second("a\0c", 3);
+  auto field = arrow::field("text", arrow::utf8());
+  auto parameter = arrow::field("query", arrow::utf8());
+  auto schema = arrow::schema({field});
+  auto values = Array<arrow::StringBuilder, std::string>(
+      {"padding", "padding", first, second, "", {}, first, second, "", {}});
+  auto batch = arrow::RecordBatch::Make(schema, 8, {values->Slice(2)});
+  auto condition = TB::MakeCondition(TB::MakeFunction(
+      "equal", {TB::MakeField(field), TB::MakeField(parameter)},
+      arrow::boolean()));
+  auto compiled = Unwrap(scalar_jit::ScalarPredicate::MakeParameterized(
+      schema, condition, arrow::schema({parameter})));
+
+  auto buffer =
+      std::shared_ptr<arrow::Buffer>(Unwrap(arrow::AllocateBuffer(3)));
+  std::memcpy(buffer->mutable_data(), first.data(), first.size());
+  auto argument = std::make_shared<arrow::StringScalar>(buffer);
+  auto original = Unwrap(compiled->bind(batch, {argument}));
+  buffer->mutable_data()[2] = 'c';
+  auto changed = Unwrap(compiled->bind(batch, {argument}));
+  auto empty = Unwrap(compiled->bind(
+      batch, {std::make_shared<arrow::StringScalar>(std::string{})}));
+  auto null =
+      Unwrap(compiled->bind(batch, {arrow::MakeNullScalar(arrow::utf8())}));
+
+  // Release the caller's owners as well: every binding must remain independent
+  // of both later buffer mutations and the lifetime of the input Scalar.
+  argument.reset();
+  buffer.reset();
+  const std::vector<bool> original_expected = {true, false, false, false,
+                                               true, false, false, false};
+  const std::vector<bool> changed_expected = {false, true, false, false,
+                                              false, true, false, false};
+  const std::vector<bool> empty_expected = {false, false, true, false,
+                                            false, false, true, false};
+  for (int repeat = 0; repeat < 3; ++repeat) {
+    for (int64_t row = batch->num_rows() - 1; row >= 0; --row) {
+      SCOPED_TRACE(row);
+      EXPECT_EQ(original->evaluate(row), original_expected[row]);
+      EXPECT_EQ(changed->evaluate(row), changed_expected[row]);
+      EXPECT_EQ(empty->evaluate(row), empty_expected[row]);
+      EXPECT_FALSE(null->evaluate(row));
+    }
+  }
+}
+
 TEST_F(ScalarPredicateExprTest, LiteralPredicates) {
   auto schema = arrow::schema({arrow::field("x", arrow::int32())});
   auto batch = arrow::RecordBatch::Make(schema, 3, {I32({0, {}, 1})});
@@ -298,12 +399,6 @@ TEST_F(ScalarPredicateExprTest, UnsupportedOperationsFallBack) {
       schema);
   Reject(cp::greater(x, cp::field_ref("y")),
          schema);  // Bind inserts a field cast.
-  Reject(cp::call("is_in", {x},
-                  cp::SetLookupOptions(I32({1, 2}),
-                                       cp::SetLookupOptions::INCONCLUSIVE)),
-         schema);
-  Reject(cp::equal(cp::field_ref("text"), cp::literal("hello")), schema);
-  Reject(cp::equal(cp::field_ref("flag"), cp::literal(true)), schema);
   Reject(cp::call("and", {cp::field_ref("flag"), cp::field_ref("flag")}),
          schema);
   Reject(
@@ -322,6 +417,26 @@ TEST_F(ScalarPredicateExprTest, UnsupportedOperationsFallBack) {
   EXPECT_FALSE(MakeScalarPredicateCondition(cp::literal(true), nullptr).ok());
   EXPECT_FALSE(
       MakeScalarPredicateCondition(Unwrap(x.Bind(*schema)), schema).ok());
+}
+
+TEST_F(ScalarPredicateExprTest, ListPredicatesKeepTheArrowFallback) {
+  auto schema =
+      arrow::schema({arrow::field("items", arrow::list(arrow::int32()))});
+  auto items = cp::field_ref("items");
+  Reject(cp::greater(cp::call("list_value_length", {items}),
+                     cp::literal(int32_t{1})),
+         schema);
+  Reject(cp::is_null(items), schema);
+  if (!cp::GetFunctionRegistry()->GetFunction("contain_all").ok()) {
+    Ok(ContainOp::register_op());
+  }
+  for (const std::string function : {"contain_all", "contain_any"}) {
+    auto expression =
+        cp::call(function, {items},
+                 ContainOp::Options({I32({1, 2}), DataType::ARRAY_INT32}));
+    Reject(expression, schema);
+    Reject(cp::not_(expression), schema);
+  }
 }
 
 }  // namespace

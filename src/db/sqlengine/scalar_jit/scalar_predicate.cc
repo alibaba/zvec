@@ -18,11 +18,14 @@
 #include "db/sqlengine/scalar_jit/scalar_predicate.h"
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <unordered_set>
 #include <utility>
+#include "arrow/buffer.h"
 #include "arrow/record_batch.h"
 #include "arrow/scalar.h"
 #include "arrow/type.h"
+#include "db/sqlengine/scalar_jit/predicate_helpers.h"
 #include "gandiva/condition.h"
 #include "gandiva/configuration.h"
 #include "gandiva/expr_validator.h"
@@ -51,6 +54,8 @@ arrow::Status ValidateScalarType(const std::shared_ptr<arrow::DataType> &type) {
     case arrow::Type::UINT64:
     case arrow::Type::FLOAT:
     case arrow::Type::DOUBLE:
+    case arrow::Type::STRING:
+    case arrow::Type::BINARY:
       return arrow::Status::OK();
     default:
       return arrow::Status::NotImplemented("Scalar POC does not support type ",
@@ -73,8 +78,12 @@ arrow::Status CopyParameterValue(const arrow::Scalar &parameter,
 }
 
 arrow::Status SnapshotParameter(const arrow::Scalar &parameter,
-                                gandiva::ScalarParameterSlot *slot) {
+                                gandiva::ScalarParameterSlot *slot,
+                                std::shared_ptr<arrow::Buffer> *owned_value) {
   slot->validity = parameter.is_valid ? 1 : 0;
+  // NULL and empty variable-width values still need a non-null address:
+  // Gandiva may read a value before combining its validity with the result.
+  slot->variable_data = slot->data;
   if (!parameter.is_valid) return arrow::Status::OK();
   switch (parameter.type->id()) {
     case arrow::Type::BOOL: {
@@ -105,6 +114,31 @@ arrow::Status SnapshotParameter(const arrow::Scalar &parameter,
       return CopyParameterValue<arrow::FloatScalar>(parameter, slot);
     case arrow::Type::DOUBLE:
       return CopyParameterValue<arrow::DoubleScalar>(parameter, slot);
+    case arrow::Type::STRING:
+    case arrow::Type::BINARY: {
+      const auto *typed = dynamic_cast<const arrow::BinaryScalar *>(&parameter);
+      ARROW_RETURN_IF(!typed || !typed->value,
+                      arrow::Status::Invalid("Expected binary scalar buffer"));
+      ARROW_RETURN_IF(!typed->value->is_cpu(),
+                      arrow::Status::NotImplemented(
+                          "Scalar parameters require CPU buffers"));
+      const auto size = typed->value->size();
+      ARROW_RETURN_IF(
+          size < 0 || size > std::numeric_limits<int32_t>::max(),
+          arrow::Status::Invalid("Scalar binary parameter is too large"));
+      ARROW_RETURN_IF(
+          size && !typed->value->data(),
+          arrow::Status::Invalid("Scalar binary buffer has no data"));
+      if (size) {
+        // Own a byte-for-byte snapshot, including embedded NULs, independently
+        // of the caller's Scalar and potentially mutable Arrow buffer.
+        *owned_value = arrow::Buffer::FromString(std::string(
+            reinterpret_cast<const char *>(typed->value->data()), size));
+        slot->variable_data = (*owned_value)->data();
+      }
+      slot->variable_offsets[1] = static_cast<int32_t>(size);
+      return arrow::Status::OK();
+    }
     default:
       return arrow::Status::NotImplemented("Unsupported parameter type: ",
                                            parameter.type->ToString());
@@ -162,7 +196,9 @@ class ScalarSubsetValidator : public gandiva::NodeVisitor {
         "bitwise_or",
         "bitwise_xor",
         "xor",
-        "bitwise_not"};
+        "bitwise_not",
+        "zvec_scalar_like",
+        "zvec_scalar_in"};
     ARROW_RETURN_IF(
         allowed.find(descriptor.name()) == allowed.end(),
         arrow::Status::NotImplemented("Function outside scalar POC subset: ",
@@ -215,12 +251,16 @@ BoundScalarPredicate::BoundScalarPredicate(
     std::shared_ptr<arrow::RecordBatch> batch,
     gandiva::ScalarEvalFunction function,
     std::vector<gandiva::ScalarParameterSlot> parameter_slots,
+    std::vector<std::shared_ptr<arrow::Buffer>> parameter_values,
+    std::vector<std::shared_ptr<const void>> owners,
     std::vector<const uint8_t *> buffers, std::vector<int64_t> offsets,
     const void *const *holders, int64_t num_rows)
     : compiled_(std::move(compiled)),
       batch_(std::move(batch)),
       function_(function),
       parameter_slots_(std::move(parameter_slots)),
+      parameter_values_(std::move(parameter_values)),
+      owners_(std::move(owners)),
       buffers_(std::move(buffers)),
       offsets_(std::move(offsets)),
       holders_(holders),
@@ -290,7 +330,7 @@ ScalarPredicate::MakeParameterized(
 
   // A private configuration avoids modifying Gandiva's process-wide default.
   // Capture optimized IR for verification; only compilation is affected.
-  auto configuration = std::make_shared<gandiva::Configuration>();
+  ARROW_ASSIGN_OR_RAISE(auto configuration, ScalarPredicateConfiguration());
   configuration->set_dump_ir(true);
   ARROW_ASSIGN_OR_RAISE(auto generator,
                         gandiva::ScalarGenerator::Make(configuration));
@@ -312,8 +352,9 @@ ScalarPredicate::MakeParameterized(
       continue;
     }
     const auto &descriptor = *entry.second;
-    data_bindings.push_back(
-        {column_index, descriptor.data_idx(), descriptor.validity_idx()});
+    data_bindings.push_back({column_index, descriptor.data_idx(),
+                             descriptor.validity_idx(),
+                             descriptor.offsets_idx()});
   }
   std::sort(data_bindings.begin(), data_bindings.end(),
             [](const ScalarDataBufferBinding &left,
@@ -332,7 +373,8 @@ arrow::Result<std::shared_ptr<BoundScalarPredicate>> ScalarPredicate::bind(
 
 arrow::Result<std::shared_ptr<BoundScalarPredicate>> ScalarPredicate::bind(
     std::shared_ptr<arrow::RecordBatch> batch,
-    const std::vector<std::shared_ptr<arrow::Scalar>> &params) const {
+    const std::vector<std::shared_ptr<arrow::Scalar>> &params,
+    std::vector<std::shared_ptr<const void>> owners) const {
   ARROW_RETURN_IF(
       params.size() != static_cast<size_t>(num_parameters()),
       arrow::Status::Invalid("Expected ", num_parameters(),
@@ -345,6 +387,7 @@ arrow::Result<std::shared_ptr<BoundScalarPredicate>> ScalarPredicate::bind(
   // not inspect all array values or scan the row validity bitmap.
   ARROW_RETURN_NOT_OK(batch->Validate());
   std::vector<gandiva::ScalarParameterSlot> parameter_slots(params.size());
+  std::vector<std::shared_ptr<arrow::Buffer>> parameter_values(params.size());
   for (size_t index = 0; index < params.size(); ++index) {
     const auto &parameter = params[index];
     const auto &field = parameter_schema_->field(static_cast<int>(index));
@@ -358,7 +401,8 @@ arrow::Result<std::shared_ptr<BoundScalarPredicate>> ScalarPredicate::bind(
     ARROW_RETURN_IF(!field->nullable() && !parameter->is_valid,
                     arrow::Status::Invalid("Non-nullable parameter ",
                                            field->name(), " cannot be NULL"));
-    ARROW_RETURN_NOT_OK(SnapshotParameter(*parameter, &parameter_slots[index]));
+    ARROW_RETURN_NOT_OK(SnapshotParameter(*parameter, &parameter_slots[index],
+                                          &parameter_values[index]));
   }
   std::vector<const uint8_t *> buffers;
   std::vector<int64_t> offsets;
@@ -367,7 +411,8 @@ arrow::Result<std::shared_ptr<BoundScalarPredicate>> ScalarPredicate::bind(
   const int64_t num_rows = batch->num_rows();
   return std::shared_ptr<BoundScalarPredicate>(new BoundScalarPredicate(
       shared_from_this(), std::move(batch), function_,
-      std::move(parameter_slots), std::move(buffers), std::move(offsets),
+      std::move(parameter_slots), std::move(parameter_values),
+      std::move(owners), std::move(buffers), std::move(offsets),
       generator_->holders(), num_rows));
 }
 
