@@ -26,6 +26,10 @@
 
 namespace zvec::turbo::neon {
 
+// Keep the hot FP16 loop within a 4 KiB instruction-address region.
+#if defined(__APPLE__) && defined(AILEGO_ARM64_GNU_LIKE)
+__attribute__((aligned(128)))
+#endif
 void inner_product_fp16_distance(const void *a, const void *b, size_t dim,
                                  float *distance) {
 #if defined(AILEGO_ARM64_GNU_LIKE)
