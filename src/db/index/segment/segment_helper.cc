@@ -736,7 +736,7 @@ Status SegmentHelper::ReduceVectorIndex(
       // raw Flat sources and train again for the merged segment.
       auto quant_merge_sources =
           segment_detail::CanReuseInsertTimeQuantizedVectors(
-              vector_index_params->quantize_type())
+              *vector_index_params)
               ? collect_merge_indexers(&Segment::get_quant_vector_indexer)
               : collect_merge_indexers(&Segment::get_vector_indexer);
 
