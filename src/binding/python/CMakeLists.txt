@@ -101,15 +101,16 @@ elseif (APPLE)
             core_quantizer_static
             zvec_turbo
     )
-    # Link target names as well as force-load paths so CMake tracks archive
-    # build order and re-links the module when an archive changes.
-    target_link_libraries(_zvec PRIVATE
-            ${_zvec_whole_archive_libs}
-            zvec
-    )
+    # Track build order and archive changes without propagating the static
+    # targets' link interfaces, which include internal dylibs absent from wheels.
+    add_dependencies(_zvec ${_zvec_whole_archive_libs})
+    target_link_libraries(_zvec PRIVATE zvec)
     foreach(_lib ${_zvec_whole_archive_libs})
         target_link_options(_zvec PRIVATE
                 "-Wl,-force_load,$<TARGET_FILE:${_lib}>"
+        )
+        set_property(TARGET _zvec APPEND PROPERTY LINK_DEPENDS
+                "$<TARGET_FILE:${_lib}>"
         )
     endforeach()
     target_link_libraries(_zvec PRIVATE
