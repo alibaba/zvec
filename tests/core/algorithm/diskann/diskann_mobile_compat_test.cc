@@ -273,7 +273,7 @@ TEST(DiskAnnMobileCompatTest, PortableReaderSupportsConcurrentReads) {
   reader.close();
 }
 
-static void build_dump_load_and_search(size_t kDimension) {
+static void build_dump_load_and_search(size_t dimension) {
   constexpr size_t kDocCount = 64;
   constexpr uint64_t kExpectedKey = 12;
 
@@ -281,14 +281,14 @@ static void build_dump_load_and_search(size_t kDimension) {
   ASSERT_GE(index_file.fd(), 0);
   index_file.release_descriptor_and_unlink();
 
-  IndexMeta meta(IndexMeta::DataType::DT_FP32, kDimension);
+  IndexMeta meta(IndexMeta::DataType::DT_FP32, dimension);
   meta.set_metric("SquaredEuclidean", 0, ailego::Params());
 
   auto holder =
       std::make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP32>>(
-          kDimension);
+          dimension);
   for (size_t i = 0; i < kDocCount; ++i) {
-    ailego::NumericalVector<float> vector(kDimension, static_cast<float>(i));
+    ailego::NumericalVector<float> vector(dimension, static_cast<float>(i));
     ASSERT_TRUE(holder->emplace(i, vector));
   }
 
@@ -337,8 +337,8 @@ static void build_dump_load_and_search(size_t kDimension) {
   ASSERT_NE(context, nullptr);
   context->set_topk(5);
 
-  ailego::NumericalVector<float> query(kDimension, 12.1f);
-  IndexQueryMeta query_meta(IndexMeta::DataType::DT_FP32, kDimension);
+  ailego::NumericalVector<float> query(dimension, 12.1f);
+  IndexQueryMeta query_meta(IndexMeta::DataType::DT_FP32, dimension);
   ASSERT_EQ(searcher->search_impl(query.data(), query_meta, context), 0);
 
   const auto &result = context->result();
