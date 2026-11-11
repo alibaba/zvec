@@ -41,7 +41,8 @@ void AppendBit(std::vector<uint64_t> *bits, size_t ordinal, bool value) {
 
 class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
  public:
-  explicit Iterator(MergedProviderIndexHolder *owner) : owner_(owner) {
+  explicit Iterator(MergedProviderIndexHolder *owner)
+      : owner_(owner), output_key_(owner->output_base_) {
     this->seek_to_kept();
   }
 
@@ -110,18 +111,7 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
   }
 
   uint64_t key() const override {
-    const auto &source = owner_->sources_[source_index_];
-    if (!source.document_plan || !source.document_plan->preserves_empty_rows())
-      return output_key_;
-    const auto key = source_iter_->key();
-    if (source_iter_->status() != 0) {
-      owner_->set_status(source_iter_->status());
-      return UINT64_MAX;
-    }
-    const auto output =
-        source.document_plan->output_id(source.plan_source, key);
-    if (output == UINT32_MAX) owner_->set_status(IndexError_Mismatch);
-    return output;
+    return output_key_;
   }
 
   void next() override {
@@ -151,7 +141,7 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
         if (!source_provider_) {
           return;
         }
-        source_iter_ = source_provider_->create_iterator();
+        source_iter_ = source_provider_->create_slot_iterator();
         source_ordinal_ = 0;
         if (!source_iter_) {
           LOG_ERROR("Failed to create source provider iterator, source=%zu",
@@ -175,7 +165,13 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
           return;
         }
         if (owner_->keep(source_index_, source_ordinal_)) {
-          return;
+          const auto key = source_iter_->key();
+          if (source_iter_->status() != 0) {
+            owner_->set_status(source_iter_->status());
+            return;
+          }
+          if (key != UINT64_MAX) return;
+          ++output_key_;
         }
         source_iter_->next();
         ++source_ordinal_;
@@ -236,6 +232,9 @@ class MergedProviderIndexHolder::OrdinalReader final
     // Build only a key map, on demand. Other builders pay neither this pass
     // nor these eight bytes per kept vector. Filter decisions are never rerun.
     keys_.reserve(owner_->count());
+    const bool has_empty_slots = owner_->slot_count() != owner_->count();
+    if (has_empty_slots) output_ids_.reserve(owner_->count());
+    uint64_t output_id = owner_->output_base_;
     source_ends_.reserve(owner_->sources_.size());
     for (size_t source_index = 0; source_index < owner_->sources_.size();
          ++source_index) {
@@ -243,7 +242,7 @@ class MergedProviderIndexHolder::OrdinalReader final
       if (!provider) {
         return owner_->status();
       }
-      auto iter = provider->create_iterator();
+      auto iter = provider->create_slot_iterator();
       if (!iter) {
         return fail(IndexError_Runtime);
       }
@@ -264,7 +263,11 @@ class MergedProviderIndexHolder::OrdinalReader final
           if (iter->status() != 0) {
             return fail(iter->status());
           }
-          keys_.push_back(key);
+          if (key != UINT64_MAX) {
+            keys_.push_back(key);
+            if (has_empty_slots) output_ids_.push_back(output_id);
+          }
+          ++output_id;
         }
       }
       if (iter->status() != 0) {
@@ -327,11 +330,7 @@ class MergedProviderIndexHolder::OrdinalReader final
     if (!*data) {
       return fail(IndexError_Runtime);
     }
-    const auto &source = owner_->sources_[source_index];
-    *key = source.document_plan && source.document_plan->preserves_empty_rows()
-               ? source.document_plan->output_id(source.plan_source,
-                                                 keys_[ordinal])
-               : ordinal;
+    *key = output_ids_.empty() ? ordinal : output_ids_[ordinal];
     return 0;
   }
 
@@ -350,6 +349,7 @@ class MergedProviderIndexHolder::OrdinalReader final
 
   MergedProviderIndexHolder *owner_;
   std::vector<uint64_t> keys_{};
+  std::vector<uint32_t> output_ids_{};
   std::vector<size_t> source_ends_{};
   IndexProvider::Pointer provider_{};
   IndexStorage::MemoryBlock block_{};
@@ -386,8 +386,11 @@ int MergedProviderIndexHolder::create_ordinal_reader(
 }
 
 MergedProviderIndexHolder::MergedProviderIndexHolder(
-    IndexQueryMeta output_meta, std::vector<Source> sources)
-    : output_meta_(output_meta), sources_(std::move(sources)) {}
+    IndexQueryMeta output_meta, std::vector<Source> sources,
+    uint32_t output_base)
+    : output_meta_(output_meta),
+      sources_(std::move(sources)),
+      output_base_(output_base) {}
 
 int MergedProviderIndexHolder::init(const IndexFilter &filter,
                                     std::atomic<bool> *stop_flag) {
@@ -401,12 +404,8 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
   }
 
   stop_flag_ = stop_flag;
-  has_filter_ =
-      filter.is_valid() ||
-      std::any_of(sources_.begin(), sources_.end(), [](const auto &source) {
-        return source.document_plan &&
-               source.document_plan->preserves_empty_rows();
-      });
+  has_filter_ = filter.is_valid();
+  size_t kept_slots = output_base_;
   uint64_t logical_id_base = 0;
 
   for (size_t source_index = 0; source_index < sources_.size();
@@ -429,9 +428,7 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
       return this->status();
     }
     source.provider_count = provider->count();
-    const auto source_rows =
-        source.document_plan ? source.document_plan->rows(source.plan_source)
-                             : provider->slot_count();
+    const auto source_rows = provider->slot_count();
     if (source_rows > std::numeric_limits<uint64_t>::max() - logical_id_base) {
       this->set_status(IndexError_Overflow);
       return this->status();
@@ -440,12 +437,12 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
     source.logical_id_base = logical_id_base;
     source.keep_bits.clear();
     if (has_filter_) {
-      const size_t provider_count = source.provider_count;
+      const size_t provider_count = source_rows;
       source.keep_bits.reserve(provider_count / kBitsPerWord +
                                (provider_count % kBitsPerWord != 0));
     }
 
-    auto iter = provider->create_iterator();
+    auto iter = provider->create_slot_iterator();
     if (!iter) {
       LOG_ERROR("Failed to create source provider iterator, source=%zu",
                 source_index);
@@ -469,27 +466,23 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
         this->set_status(iter->status());
         return this->status();
       }
-      bool keep_item;
-      if (source.document_plan &&
-          source.document_plan->preserves_empty_rows()) {
-        if (key != UINT64_MAX && key >= source_rows) {
-          this->set_status(IndexError_InvalidFormat);
-          return this->status();
-        }
-        keep_item = source.document_plan->output_id(source.plan_source, key) !=
-                    UINT32_MAX;
-      } else {
-        if (key >
-            std::numeric_limits<uint64_t>::max() - source.logical_id_base) {
-          this->set_status(IndexError_Overflow);
-          return this->status();
-        }
-        keep_item = !has_filter_ || !filter(source.logical_id_base + key);
+      const auto document_id = key == UINT64_MAX ? ordinal : key;
+      if (document_id >
+          std::numeric_limits<uint64_t>::max() - source.logical_id_base) {
+        this->set_status(IndexError_Overflow);
+        return this->status();
       }
+      const bool keep_item = !filter(source.logical_id_base + document_id);
       if (has_filter_) {
         AppendBit(&source.keep_bits, ordinal, keep_item);
       }
       if (keep_item) {
+        if (kept_slots == UINT32_MAX) {
+          this->set_status(IndexError_Overflow);
+          return this->status();
+        }
+        ++kept_slots;
+        if (key == UINT64_MAX) continue;
         if (!data_validated) {
           const void *source_data = iter->data();
           if (iter->status() != 0) {
@@ -539,10 +532,15 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
       this->set_status(iter->status());
       return this->status();
     }
+    if (ordinal != source_rows) {
+      this->set_status(IndexError_Mismatch);
+      return this->status();
+    }
     source.iterated_count = ordinal;
     logical_id_base += source_rows;
   }
 
+  set_slot_count(kept_slots);
   initialized_ = true;
   return 0;
 }

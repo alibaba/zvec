@@ -529,7 +529,8 @@ class HnswSparseEntity {
   //! Add vector and id
   virtual int add_vector_with_id(level_t /*level*/, node_id_t /*id*/,
                                  const std::string & /*vec*/,
-                                 uint32_t /*sparse_count*/) {
+                                 uint32_t /*sparse_count*/,
+                                 bool /*is_null*/ = false) {
     return IndexError_NotImplemented;
   }
 

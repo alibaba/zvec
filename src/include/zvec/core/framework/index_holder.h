@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstring>
 #include <list>
 #include <memory>
@@ -67,6 +68,18 @@ struct IndexHolder {
   //! Retrieve count of elements in holder (-1 indicates unknown)
   virtual size_t count() const = 0;
 
+  // Addressable document slots; training iterators still yield only values.
+  virtual size_t slot_count() const {
+    return std::max(slot_count_, count());
+  }
+  void set_slot_count(size_t count) {
+    slot_count_ = count;
+  }
+
+ private:
+  size_t slot_count_{0};
+
+ public:
   //! Retrieve dimension
   virtual size_t dimension() const = 0;
 

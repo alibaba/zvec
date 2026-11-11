@@ -282,6 +282,22 @@ int HnswRabitqStreamerEntity::init_chunks(const Chunk::Pointer &header_chunk) {
     }
   }
 
+  if (entry_point() == kInvalidNodeId) {
+    const size_t slots_per_chunk = size_t{1} << node_index_mask_bits_;
+    if (doc_cnt() > node_chunks_.size() * slots_per_chunk)
+      return IndexError_InvalidFormat;
+    for (size_t i = 0; i < node_chunks_.size(); ++i) {
+      const size_t first = i * slots_per_chunk;
+      const size_t used =
+          first < doc_cnt()
+              ? std::min<size_t>(slots_per_chunk, doc_cnt() - first)
+              : 0;
+      if (node_chunks_[i]->data_size() < used * node_size())
+        return IndexError_InvalidFormat;
+    }
+    for (node_id_t id = 0; id < doc_cnt(); ++id)
+      if (contains_node(id)) return IndexError_InvalidFormat;
+  }
   return 0;
 }
 
@@ -451,15 +467,14 @@ int HnswRabitqStreamerEntity::check_hnsw_index(const HNSWHeader *hd) const {
              hd->neighbor_prune_cnt());
     return IndexError_Mismatch;
   }
-  if ((hd->entry_point() != kInvalidNodeId &&
-       hd->entry_point() >= hd->doc_cnt()) ||
-      (hd->entry_point() == kInvalidNodeId && hd->doc_cnt() > 0U)) {
+  if (hd->entry_point() != kInvalidNodeId &&
+      hd->entry_point() >= hd->doc_cnt()) {
     LOG_WARN("Invalid entryPoint %zu, docCnt %zu",
              static_cast<size_t>(hd->entry_point()),
              static_cast<size_t>(hd->doc_cnt()));
     return IndexError_InvalidFormat;
   }
-  if (hd->entry_point() == kInvalidNodeId &&
+  if (hd->entry_point() == kInvalidNodeId && hd->doc_cnt() == 0 &&
       broker_->get_chunk_cnt(HnswRabitqChunkBroker::CHUNK_TYPE_NODE) > 0) {
     LOG_WARN("The index is broken, maybe it haven't flush");
     return IndexError_InvalidFormat;
@@ -539,12 +554,13 @@ int HnswRabitqStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
                                                  const void *vec) {
   Chunk::Pointer node_chunk;
   size_t chunk_offset = -1UL;
-  key_t key = id;
+  key_t key = vec ? id : kInvalidKey;
 
   std::lock_guard<std::mutex> lock(mutex_);
 
   // duplicate check
-  if (ailego_unlikely(filter_same_key_ && get_id(key) != kInvalidNodeId)) {
+  if (ailego_unlikely(vec && filter_same_key_ &&
+                      get_id(key) != kInvalidNodeId)) {
     LOG_WARN("Try to add duplicate key, ignore it");
     return IndexError_Duplicate;
   }
@@ -598,7 +614,8 @@ int HnswRabitqStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
     return ret;
   }
 
-  size_t size = node_chunk->write(chunk_offset, vec, vector_size());
+  size_t size =
+      vec ? node_chunk->write(chunk_offset, vec, vector_size()) : vector_size();
   if (ailego_unlikely(size != vector_size())) {
     LOG_ERROR("Chunk write vec failed, ret=%zu", size);
     return IndexError_WriteData;
@@ -611,7 +628,7 @@ int HnswRabitqStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
   }
   //! level 0 neighbors is inited to zero by default
 
-  int ret = add_upper_neighbor(level, id);
+  int ret = vec ? add_upper_neighbor(level, id) : 0;
   if (ret != 0) {
     return ret;
   }
@@ -625,7 +642,7 @@ int HnswRabitqStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
     }
   }
 
-  key_map_.insert(key, id);
+  if (vec) key_map_.insert(key, id);
 
   broker_->mark_dirty();
 

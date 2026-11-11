@@ -172,6 +172,12 @@ class DiskAnnEntity {
 
   //! Get primary key of the node id
   virtual diskann_key_t get_key(diskann_id_t id) const = 0;
+  virtual size_t slot_count() const {
+    return doc_cnt();
+  }
+  virtual diskann_id_t slot_to_id(size_t slot) const {
+    return slot;
+  }
 
  public:
   uint64_t max_node_size() const {

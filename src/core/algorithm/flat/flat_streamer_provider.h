@@ -42,6 +42,10 @@ class FlatStreamerProvider : public IndexProvider {
     return owner_->entity().creater_iterator();
   }
 
+  IndexProvider::Iterator::Pointer create_slot_iterator() override {
+    return owner_->entity().creater_iterator(true);
+  }
+
   //! Retrieve count of vectors
   size_t count() const override {
     std::call_once(count_once_, [&] {

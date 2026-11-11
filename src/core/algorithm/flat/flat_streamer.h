@@ -116,6 +116,8 @@ class FlatStreamer : public IndexStreamer {
   //! Open index from file path
   int open(IndexStorage::Pointer stg) override;
 
+  int reserve_slots(uint32_t count) override;
+
   //! Close file
   int close() override;
 

@@ -112,6 +112,8 @@ class HnswSparseStreamer : public IndexStreamer {
   int open(IndexStorage::Pointer stg) override;
 
   //! Close file
+  int reserve_slots(uint32_t count) override;
+
   int close() override;
 
   //! flush file

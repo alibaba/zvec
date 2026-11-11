@@ -912,15 +912,16 @@ int FlatStreamerEntity::get_vectors_by_key(
   return 0;
 }
 
-IndexProvider::Iterator::Pointer FlatStreamerEntity::creater_iterator() const {
+IndexProvider::Iterator::Pointer FlatStreamerEntity::creater_iterator(
+    bool include_empty) const {
   auto entity = this->clone();
   if (!entity) {
     LOG_ERROR("Failed to clone entity");
     return nullptr;
   }
 
-  return Iterator::Pointer(new (std::nothrow)
-                               FlatStreamerEntity::Iterator(std::move(entity)));
+  return Iterator::Pointer(new (std::nothrow) FlatStreamerEntity::Iterator(
+      std::move(entity), include_empty));
 }
 
 void FlatStreamerEntity::Iterator::read_next_block() {
@@ -1422,6 +1423,12 @@ int FlatStreamerEntity::add_vector_with_id(const uint32_t id, const void *query,
   }
 
 
+  const uint64_t written_key = query ? id : kInvalidKey;
+  std::vector<char> empty;
+  if (!query) {
+    empty.resize(size);
+    query = empty.data();
+  }
   meta_dirty_ = true;
   if (id >= vector_count()) {
     IndexStorage::MemoryBlock head_block;
@@ -1460,7 +1467,7 @@ int FlatStreamerEntity::add_vector_with_id(const uint32_t id, const void *query,
       }
     }
 
-    int ret = this->add_to_block(block, id, query, size);
+    int ret = this->add_to_block(block, written_key, query, size);
     if (ret == IndexError_IndexFull) {
       ret = this->alloc_block(block, &block);
       if (ailego_unlikely(ret != 0)) {
@@ -1470,7 +1477,7 @@ int FlatStreamerEntity::add_vector_with_id(const uint32_t id, const void *query,
       if (ailego_unlikely(ret != 0)) {
         return ret;
       }
-      ret = this->add_to_block(block, id, query, size);
+      ret = this->add_to_block(block, written_key, query, size);
       if (ailego_unlikely(ret != 0)) {
         return ret;
       }

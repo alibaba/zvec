@@ -593,6 +593,16 @@ template int FlatStreamer<32>::search_by_p_keys_fast(
     const void *, const std::vector<uint64_t> &, int64_t *, float *, size_t,
     const IndexQueryMeta &, Context::UPointer &) const;
 
+
+template <size_t BATCH_SIZE>
+int FlatStreamer<BATCH_SIZE>::reserve_slots(uint32_t count) {
+  if (state_ != STATE_OPENED) return IndexError_NoReady;
+  READ_LOCK_GUARD_DEFER(dump_mutex_, dump_lock);
+  if (!dump_lock.try_lock()) return IndexError_Unsupported;
+  if (count <= entity_->vector_count()) return 0;
+  return entity_->add_vector_with_id(count - 1, nullptr, meta_.element_size());
+}
+
 INDEX_FACTORY_REGISTER_STREAMER_ALIAS(LinearStreamer, FlatStreamer<32>);
 INDEX_FACTORY_REGISTER_STREAMER_ALIAS(FlatStreamer, FlatStreamer<32>);
 INDEX_FACTORY_REGISTER_STREAMER_ALIAS(FlatStreamer16, FlatStreamer<16>);

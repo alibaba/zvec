@@ -429,6 +429,15 @@ int FlatSparseStreamer::do_search(
                     (FlatSparseEntity *)&entity_);
 }
 
+
+int FlatSparseStreamer::reserve_slots(uint32_t count) {
+  if (state_ != STATE_OPENED) return IndexError_NoReady;
+  if (!shared_mutex_.try_lock_shared()) return IndexError_Unsupported;
+  AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
+  if (count <= entity_.doc_cnt()) return 0;
+  return entity_.add_vector_with_id(count - 1, {}, 0, true);
+}
+
 INDEX_FACTORY_REGISTER_STREAMER(FlatSparseStreamer);
 
 }  // namespace core

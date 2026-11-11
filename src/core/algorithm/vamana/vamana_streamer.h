@@ -103,6 +103,8 @@ class VamanaStreamer : public IndexStreamer {
 
   int open(IndexStorage::Pointer stg) override;
 
+  int reserve_slots(uint32_t count) override;
+
   int close() override;
 
   int flush(uint64_t checkpoint) override;

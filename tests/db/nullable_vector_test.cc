@@ -486,7 +486,7 @@ TEST_F(NullableVectorStorageTest, CoreKeysStayEqualToDocumentIds) {
       auto provider = indexer.create_index_provider();
       ASSERT_NE(provider, nullptr);
       EXPECT_EQ(provider->count(), 2U);
-      EXPECT_EQ(provider->slot_count(), 4U);
+      EXPECT_EQ(provider->slot_count(), 6U);
       auto iter = provider->create_iterator();
       ASSERT_NE(iter, nullptr);
       std::set<uint64_t> keys;
@@ -648,16 +648,22 @@ TEST_F(NullableVectorStorageTest, LegacyVectorLayoutsAreRejected) {
   ASSERT_TRUE(validity.open(file + ".nulls", false));
   std::string bytes(validity.size(), '\0');
   ASSERT_EQ(validity.read(0, bytes.data(), bytes.size()), bytes.size());
-  std::memset(bytes.data() + 12, 0, 4);  // Legacy identity-ID layout.
-  const uint32_t crc = ailego::Crc32c::Hash(bytes.data(), bytes.size() - 4);
-  for (unsigned i = 0; i < 4; ++i) bytes[bytes.size() - 4 + i] = crc >> (i * 8);
-  ASSERT_EQ(validity.write(0, bytes.data(), bytes.size()), bytes.size());
   validity.close();
-  for (bool read_only : {false, true}) {
-    VectorColumnIndexer rejected(file, field);
-    EXPECT_EQ(rejected.open({true, false, read_only, 1, true}).code(),
-              StatusCode::NOT_SUPPORTED);
-    EXPECT_EQ(rejected.debug_get_index(), nullptr);
+  for (uint32_t layout : {0U, 1U, 2U, 3U}) {
+    SCOPED_TRACE(layout);
+    for (unsigned i = 0; i < 4; ++i) bytes[12 + i] = layout >> (i * 8);
+    const uint32_t crc = ailego::Crc32c::Hash(bytes.data(), bytes.size() - 4);
+    for (unsigned i = 0; i < 4; ++i)
+      bytes[bytes.size() - 4 + i] = crc >> (i * 8);
+    ASSERT_TRUE(validity.open(file + ".nulls", false));
+    ASSERT_EQ(validity.write(0, bytes.data(), bytes.size()), bytes.size());
+    validity.close();
+    for (bool read_only : {false, true}) {
+      VectorColumnIndexer rejected(file, field);
+      EXPECT_EQ(rejected.open({true, false, read_only, 1, true}).code(),
+                StatusCode::NOT_SUPPORTED);
+      EXPECT_EQ(rejected.debug_get_index(), nullptr);
+    }
   }
   // The previous compact-ID format used a .validity sidecar. It remains
   // unsupported even when the manifest requires nullable metadata.

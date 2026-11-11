@@ -37,6 +37,10 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
   }
 
   //! Retrieve count of vectors
+  IndexSparseProvider::Iterator::Pointer create_slot_iterator() override {
+    return std::make_unique<Iterator>(entity_, true);
+  }
+
   size_t count() const override {
     std::call_once(count_once_, [&] {
       for (uint32_t id = 0; id < entity_->doc_cnt(); ++id)
@@ -74,11 +78,19 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
  private:
   class Iterator : public IndexSparseProvider::Iterator {
    public:
-    Iterator(const HnswSparseEntity::Pointer &entity)
-        : entity_(entity), cur_id_(0U), valid_(false) {
+    Iterator(const HnswSparseEntity::Pointer &entity,
+             bool include_empty = false)
+        : include_empty_(include_empty),
+          entity_(entity),
+          cur_id_(0U),
+          valid_(false) {
       cur_id_ = get_next_valid_id(0);
       if (cur_id_ >= entity_->doc_cnt()) {
         valid_ = false;
+        return;
+      }
+      if (include_empty_ && !entity_->contains_node(cur_id_)) {
+        valid_ = true;
         return;
       }
       const void *sparse_data = entity_->get_sparse_data(cur_id_);
@@ -124,6 +136,10 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
       cur_id_ = get_next_valid_id(cur_id_ + 1);
 
       if (cur_id_ < entity_->doc_cnt()) {
+        if (include_empty_ && !entity_->contains_node(cur_id_)) {
+          valid_ = true;
+          return;
+        }
         const void *sparse_data = entity_->get_sparse_data(cur_id_);
         if (sparse_data != nullptr) {
           valid_ = true;
@@ -147,6 +163,10 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
         valid_ = false;
         return;
       }
+      if (include_empty_ && !entity_->contains_node(cur_id_)) {
+        valid_ = true;
+        return;
+      }
       const void *sparse_data = entity_->get_sparse_data(cur_id_);
       if (sparse_data != nullptr) {
         valid_ = true;
@@ -159,6 +179,7 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
 
    private:
     node_id_t get_next_valid_id(node_id_t start_id) {
+      if (include_empty_) return start_id;
       for (node_id_t i = start_id; i < entity_->doc_cnt(); i++) {
         if (entity_->contains_node(i)) {
           return i;
@@ -168,6 +189,7 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
     }
 
    private:
+    bool include_empty_{false};
     const HnswSparseEntity::Pointer entity_;
     node_id_t cur_id_;
     uint32_t sparse_count_{0};

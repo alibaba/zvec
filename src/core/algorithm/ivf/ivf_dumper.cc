@@ -115,7 +115,7 @@ int IVFDumper::dump_container_segment(const IndexStorage::Pointer &container,
   return 0;
 }
 
-int IVFDumper::dump_inverted_vector_finished() {
+int IVFDumper::dump_inverted_vector_finished(size_t slot_count) {
   //! Dump Inverted Index Segment
   if (!block_.empty()) {
     int ret = this->dump_block();
@@ -177,7 +177,16 @@ int IVFDumper::dump_inverted_vector_finished() {
 
   //! Dump Mapping Segment
   auto mapping = std::make_shared<std::vector<uint32_t>>();
-  IVFUtility::Sort(keys_.data(), mapping.get(), keys_.size());
+  if (slot_count > keys_.size()) {
+    mapping->assign(slot_count, UINT32_MAX);
+    for (uint32_t id = 0; id < keys_.size(); ++id) {
+      if (keys_[id] >= slot_count || (*mapping)[keys_[id]] != UINT32_MAX)
+        return IndexError_InvalidArgument;
+      (*mapping)[keys_[id]] = id;
+    }
+  } else {
+    IVFUtility::Sort(keys_.data(), mapping.get(), keys_.size());
+  }
   ret = this->dump_segment(IVF_MAPPING_SEG_ID, mapping->data(),
                            mapping->size() * sizeof(uint32_t));
   ivf_check_error_code(ret);

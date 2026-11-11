@@ -18,13 +18,13 @@
 #include <limits>
 #include <magic_enum/magic_enum.hpp>
 #include <turbo/quantizer/quantizer.h>
-#include <zvec/ailego/hash/crc32c.h>
-#include <zvec/core/framework/index_document_merge_plan.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
+#include "mixed_reducer/merged_provider_index_holder.h"
 #include "mixed_reducer/mixed_reducer_params.h"
+#include "mixed_reducer/mixed_streamer_reducer.h"
 #include "utility/utility_params.h"
 
 namespace zvec::core_interface {
@@ -34,208 +34,6 @@ namespace {
 bool has_group_by_search(const BaseIndexQueryParam::Pointer &search_param) {
   return search_param->group_by_param && search_param->group_by_param->group_by;
 }
-
-// A multipass training view over merge sources. Decode through each source's
-// existing quantizer or reformer, just as the merge reducer does. This lets
-// global quantizers train from FP16/UINT8 Flat references without materializing
-// an additional full-dataset FP32 copy or adding input types to the quantizers.
-class MergeSourceIndexHolder final : public core::IndexHolder {
- public:
-  struct Source {
-    core::IndexHolder::Pointer holder;
-    core::IndexReformer::Pointer reformer;
-    std::shared_ptr<turbo::Quantizer> quantizer;
-    core::IndexQueryMeta stored_meta;
-    core::IndexDocumentMergePlan::Pointer document_plan{};
-    size_t plan_source{0};
-  };
-
-  class Iterator final : public core::IndexHolder::Iterator {
-   public:
-    explicit Iterator(MergeSourceIndexHolder *owner) : owner_(owner) {
-      advance_to_valid_source();
-    }
-
-    const void *data() const override {
-      return data_;
-    }
-
-    bool is_valid() const override {
-      if (owner_->error_ != 0 || !source_iter_) {
-        return false;
-      }
-      const bool valid = source_iter_->is_valid();
-      owner_->error_ = source_iter_->status();
-      return owner_->error_ == 0 && valid;
-    }
-
-    int status() const override {
-      return owner_->error_;
-    }
-
-    uint64_t key() const override {
-      const uint64_t result = source_iter_->key();
-      if (owner_->error_ == 0) {
-        owner_->error_ = source_iter_->status();
-      }
-      return source_->document_plan &&
-                     source_->document_plan->preserves_empty_rows()
-                 ? source_->document_plan->output_id(source_->plan_source,
-                                                     result)
-                 : result;
-    }
-
-    void next() override {
-      if (source_iter_) source_iter_->next();
-      advance_to_valid_source();
-    }
-
-   private:
-    void advance_to_valid_source() {
-      data_ = nullptr;
-      if (owner_->error_ != 0) return;
-      for (;;) {
-        while (!source_iter_ || !source_iter_->is_valid()) {
-          if (source_iter_ && source_iter_->status() != 0) {
-            owner_->error_ = source_iter_->status();
-            return;
-          }
-          source_iter_.reset();
-          if (source_index_ >= owner_->sources_.size()) return;
-          source_ = &owner_->sources_[source_index_++];
-          source_iter_ = source_->holder->create_iterator();
-          if (!source_iter_) {
-            owner_->error_ = core::IndexError_ReadData;
-            return;
-          }
-        }
-        if (source_iter_->status() != 0) {
-          owner_->error_ = source_iter_->status();
-          return;
-        }
-        if (!source_->document_plan ||
-            !source_->document_plan->preserves_empty_rows())
-          break;
-        const auto key = source_iter_->key();
-        if (source_iter_->status() != 0) {
-          owner_->error_ = source_iter_->status();
-          return;
-        }
-        if (key != UINT64_MAX &&
-            key >= source_->document_plan->rows(source_->plan_source)) {
-          owner_->error_ = core::IndexError_InvalidFormat;
-          return;
-        }
-        if (key != UINT64_MAX && source_->document_plan->output_id(
-                                     source_->plan_source, key) != UINT32_MAX)
-          break;
-        source_iter_->next();
-      }
-      if (source_iter_->status() != 0) {
-        owner_->error_ = source_iter_->status();
-        return;
-      }
-      data_ = source_iter_->data();
-      if (source_iter_->status() != 0) {
-        owner_->error_ = source_iter_->status();
-        data_ = nullptr;
-        return;
-      }
-      if (!data_) {
-        owner_->error_ = core::IndexError_ReadData;
-        return;
-      }
-      if (source_->quantizer || source_->reformer) {
-        const int ret = source_->quantizer
-                            ? source_->quantizer->dequantize(
-                                  data_, source_->stored_meta, &decoded_)
-                            : source_->reformer->revert(
-                                  data_, source_->stored_meta, &decoded_);
-        if (ret != 0) {
-          owner_->error_ = ret;
-          return;
-        }
-        if (decoded_.size() != owner_->element_size()) {
-          owner_->error_ = core::IndexError_Mismatch;
-          return;
-        }
-        data_ = decoded_.data();
-      }
-    }
-
-    MergeSourceIndexHolder *owner_;
-    const Source *source_{nullptr};
-    size_t source_index_{0};
-    core::IndexHolder::Iterator::Pointer source_iter_{};
-    std::string decoded_;
-    const void *data_{nullptr};
-  };
-
-  MergeSourceIndexHolder(std::vector<Source> sources,
-                         core::IndexQueryMeta source_meta)
-      : sources_(std::move(sources)), source_meta_(std::move(source_meta)) {
-    for (const auto &source : sources_) {
-      size_t count = source.holder->count();
-      if (source.document_plan &&
-          source.document_plan->preserves_empty_rows()) {
-        count = 0;
-        auto iter = source.holder->create_iterator();
-        if (!iter) {
-          error_ = core::IndexError_ReadData;
-          return;
-        }
-        for (; iter->is_valid(); iter->next()) {
-          const auto key = iter->key();
-          if (key != UINT64_MAX &&
-              key >= source.document_plan->rows(source.plan_source)) {
-            error_ = core::IndexError_InvalidFormat;
-            return;
-          }
-          if (source.document_plan->output_id(source.plan_source, key) !=
-              UINT32_MAX)
-            ++count;
-        }
-        if (iter->status() != 0) {
-          error_ = iter->status();
-          return;
-        }
-      }
-      if (count > (std::numeric_limits<size_t>::max)() - count_) {
-        error_ = core::IndexError_InvalidArgument;
-        return;
-      }
-      count_ += count;
-    }
-  }
-
-  size_t count() const override {
-    return count_;
-  }
-  size_t dimension() const override {
-    return source_meta_.dimension();
-  }
-  core::IndexMeta::DataType data_type() const override {
-    return source_meta_.data_type();
-  }
-  size_t element_size() const override {
-    return source_meta_.element_size();
-  }
-  bool multipass() const override {
-    return true;
-  }
-  core::IndexHolder::Iterator::Pointer create_iterator() override {
-    return std::make_unique<Iterator>(this);
-  }
-  int error() const {
-    return error_;
-  }
-
- private:
-  std::vector<Source> sources_;
-  core::IndexQueryMeta source_meta_;
-  size_t count_{0};
-  int error_{0};
-};
 
 int CreateReformerFromConverterMeta(
     const core::IndexConverter::Pointer &converter,
@@ -299,21 +97,20 @@ bool Index::is_trained() const {
 }
 
 uint32_t Index::get_doc_count() const {
-  if (document_range_enabled_ || (builder_ && !is_trained_))
-    return document_count_;
-  // shortcut: recover legacy sparse-ID bounds only if legacy range merges are
-  // needed.
   return get_slot_count();
 }
 
 uint32_t Index::get_slot_count() const {
   if (!streamer_) return 0;
+  uint32_t slots = 0;
   if (is_sparse_) {
     auto provider = streamer_->create_sparse_provider();
-    return provider ? provider->slot_count() : 0;
+    if (provider) slots = provider->slot_count();
+  } else {
+    auto provider = streamer_->create_provider();
+    if (provider) slots = provider->slot_count();
   }
-  auto provider = streamer_->create_provider();
-  return provider ? provider->slot_count() : 0;
+  return builder_ ? std::max<uint32_t>(slots, builder_->slot_count()) : slots;
 }
 
 uint32_t Index::get_vector_count() const {
@@ -687,8 +484,6 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
     }
   }
 
-  ret = load_document_range();
-  if (ret != 0) return ret;
   // TODO: context pool
   if (!init_context()) {  // to validate if any error, will be overwritten
     LOG_ERROR("Failed to init context");
@@ -700,109 +495,12 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
   return 0;
 }
 
-namespace {
-constexpr const char *kDocumentRangeSegment = "IndexDocumentRange";
-using DocumentRangeBytes = std::array<uint8_t, 16>;
-void PutRange32(uint8_t *out, uint32_t value) {
-  for (int i = 0; i < 4; ++i) out[i] = value >> (8 * i);
-}
-uint32_t GetRange32(const uint8_t *in) {
-  uint32_t value = 0;
-  for (int i = 0; i < 4; ++i) value |= uint32_t(in[i]) << (8 * i);
-  return value;
-}
-DocumentRangeBytes EncodeDocumentRange(uint32_t count,
-                                       bool preserve_empty_rows) {
-  DocumentRangeBytes bytes{};
-  std::memcpy(bytes.data(), "ZDR2", 4);
-  PutRange32(bytes.data() + 4, preserve_empty_rows ? 1 : 0);
-  PutRange32(bytes.data() + 8, count);
-  PutRange32(bytes.data() + 12, ailego::Crc32c::Hash(bytes.data(), 12));
-  return bytes;
-}
-}  // namespace
-
-void Index::record_document(uint32_t id) {
-  uint32_t current = document_count_.load();
-  while (current < id + 1 &&
-         !document_count_.compare_exchange_weak(current, id + 1)) {
-  }
-  if (current < id + 1 && (builder_ || document_range_enabled_.load())) {
-    document_range_enabled_ = document_range_dirty_ = true;
-  }
-}
-
 int Index::add_null(uint32_t id) {
   if (!is_open_ || is_read_only_) return core::IndexError_NoReady;
   if (builder_ && is_trained_) return core::IndexError_Unsupported;
-  if (id == UINT32_MAX) return core::IndexError_InvalidArgument;
-  const uint32_t count = get_doc_count();
-  // This operation appends missing vectors; it never removes an existing
-  // vector or silently changes an already allocated document.
-  if (id < count) return core::IndexError_InvalidArgument;
-  record_document(id);
-  document_range_enabled_ = document_range_dirty_ = true;
-  preserve_empty_rows_ = true;
-  return 0;
-}
-
-int Index::load_document_range(bool validate_slots) {
-  document_range_enabled_ = document_range_dirty_ = false;
-  preserve_empty_rows_ = false;
-  document_count_ = 0;
-  auto segment = storage_->get(kDocumentRangeSegment);
-  if (!segment)
-    return storage_->has(kDocumentRangeSegment) ? core::IndexError_ReadData : 0;
-  if (segment->data_size() != 16) return core::IndexError_InvalidFormat;
-  core::IndexStorage::MemoryBlock block;
-  if (segment->read(0, block, 16) != 16) return core::IndexError_ReadData;
-  const auto *bytes = static_cast<const uint8_t *>(block.data());
-  if (GetRange32(bytes + 12) != ailego::Crc32c::Hash(bytes, 12))
-    return core::IndexError_InvalidFormat;
-  if (std::memcmp(bytes, "ZDR2", 4) == 0) {
-    const auto flags = GetRange32(bytes + 4);
-    if (flags & ~uint32_t{1}) return core::IndexError_InvalidFormat;
-    preserve_empty_rows_ = (flags & 1) != 0;
-  } else if (std::memcmp(bytes, "ZVECDR01", 8) == 0) {
-    // The first layout always marked indexes that preserve empty rows.
-    preserve_empty_rows_ = true;
-  } else {
-    return core::IndexError_InvalidFormat;
-  }
-  document_count_ = GetRange32(bytes + 8);
-  document_range_enabled_ = true;
-  if (validate_slots && document_count_ < get_slot_count())
-    return core::IndexError_InvalidFormat;
-  return 0;
-}
-
-int Index::flush_document_range() {
-  // Builders persist the range together with the trained index.
-  if (!document_range_dirty_ || (builder_ && !is_trained_)) return 0;
-  auto segment = storage_->get(kDocumentRangeSegment);
-  if (!segment) {
-    int ret = storage_->append(kDocumentRangeSegment, 16);
-    if (ret != 0) return ret;
-    segment = storage_->get(kDocumentRangeSegment);
-  }
-  if (!segment) return core::IndexError_WriteData;
-  auto bytes = EncodeDocumentRange(document_count_, preserve_empty_rows_);
-  if (segment->write(0, bytes.data(), bytes.size()) != bytes.size() ||
-      segment->resize(bytes.size()) != bytes.size())
-    return core::IndexError_WriteData;
-  document_range_dirty_ = false;
-  return 0;
-}
-
-int Index::dump_document_range(const core::IndexDumper::Pointer &dumper) {
-  if (!document_range_enabled_) return 0;
-  auto bytes = EncodeDocumentRange(document_count_, preserve_empty_rows_);
-  if (dumper->write(bytes.data(), bytes.size()) != bytes.size())
-    return core::IndexError_WriteData;
-  int ret = dumper->append(kDocumentRangeSegment, bytes.size(), 0,
-                           ailego::Crc32c::Hash(bytes.data(), bytes.size()));
-  if (ret == 0) document_range_dirty_ = false;
-  return ret;
+  if (id == UINT32_MAX || id < get_slot_count())
+    return core::IndexError_InvalidArgument;
+  return streamer_->reserve_slots(id + 1);
 }
 
 int Index::close() {
@@ -851,12 +549,6 @@ int Index::flush() {
     LOG_ERROR("Failed to flush streamer");
     return core::IndexError_Runtime;
   }
-  if (!builder_ && document_range_enabled_) {
-    const auto slots = get_slot_count();
-    if (slots) record_document(slots - 1);
-  }
-  int range_ret = flush_document_range();
-  if (range_ret != 0) return range_ret;
   if (ailego_unlikely(storage_->flush() != 0)) {
     LOG_ERROR("Failed to flush storage");
     return core::IndexError_Runtime;
@@ -868,7 +560,8 @@ bool Index::is_dirty() const {
   if (!storage_) {
     return false;
   }
-  return document_range_dirty_ || storage_->is_dirty();
+  return (builder_ && !is_trained_ && get_slot_count() != 0) ||
+         storage_->is_dirty();
 }
 
 int Index::fetch(const uint32_t doc_id, VectorDataBuffer *vector_data_buffer) {
@@ -908,7 +601,6 @@ int Index::add(const VectorData &vector_data, const uint32_t doc_id) {
     ret = _dense_add(vector_data, doc_id, context);
   }
   context->reset();
-  if (ret == 0) record_document(doc_id);
   return ret;
 }
 
@@ -1613,30 +1305,7 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
   if (!is_open_ || is_read_only_) return core::IndexError_NoReady;
   for (const auto &index : indexes)
     if (!index || !index->is_open_) return core::IndexError_NoReady;
-  core::IndexDocumentMergePlan::Pointer document_plan;
-  const bool preserve_empty_rows =
-      options.preserve_empty_rows || preserve_empty_rows_ ||
-      std::any_of(indexes.begin(), indexes.end(), [](const auto &index) {
-        return index->preserve_empty_rows_.load();
-      });
-  {
-    std::vector<uint32_t> rows;
-    for (const auto &index : indexes) {
-      rows.push_back(index->get_doc_count());
-    }
-    auto plan = std::make_shared<core::IndexDocumentMergePlan>();
-    const uint32_t base = get_doc_count();
-    int ret = plan->init(rows, base, filter, preserve_empty_rows);
-    if (ret != 0) return ret;
-    document_plan = std::move(plan);
-  }
-  // ivf need builder
-  auto reducer =
-      core::IndexFactory::CreateStreamerReducer("MixedStreamerReducer");
-  if (reducer == nullptr) {
-    LOG_ERROR("Failed to create reducer");
-    return core::IndexError_Runtime;
-  }
+  auto reducer = std::make_shared<core::MixedStreamerReducer>();
 
   if (options.write_concurrency == 0) {
     LOG_ERROR("Write concurrency must be greater than 0");
@@ -1666,9 +1335,9 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
     LOG_ERROR("Failed to init reducer");
     return core::IndexError_Runtime;
   }
-  reducer->set_document_merge_plan(document_plan);
+  reducer->set_output_base(get_slot_count());
   if (converter_ != nullptr && reformer_ == nullptr) {
-    std::vector<MergeSourceIndexHolder::Source> sources;
+    std::vector<core::MergedProviderIndexHolder::Source> sources;
     sources.reserve(indexes.size());
     for (const auto &index : indexes) {
       auto provider = index->create_index_provider();
@@ -1695,20 +1364,21 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
               ? static_cast<uint32_t>(index->turbo_quantizer_->type())
               : 0,
           meta.extra_meta_size()};
-      const size_t source_id = sources.size();
-      sources.push_back({std::move(provider), index->reformer_,
+      sources.push_back({index->streamer_, index->reformer_,
                          index->turbo_quantizer_, std::move(stored_meta),
-                         document_plan, source_id});
+                         bool(index->reformer_ || index->turbo_quantizer_)});
     }
-    auto holder = std::make_shared<MergeSourceIndexHolder>(std::move(sources),
-                                                           input_vector_meta_);
-    if (holder->error() != 0) return holder->error();
+    auto holder = std::make_shared<core::MergedProviderIndexHolder>(
+        input_vector_meta_, std::move(sources), get_slot_count());
+    int init_ret = holder->init(filter);
+    if (init_ret != 0) return init_ret;
+    reducer->set_merged_holder(holder);
     if (holder->count() == 0) {
       LOG_ERROR("No vectors available to train converter");
       return core::IndexError_InvalidArgument;
     }
     int ret = converter_->train(holder);
-    if (holder->error() != 0) return holder->error();
+    if (holder->status() != 0) return holder->status();
     if (ret != 0) {
       LOG_ERROR("Failed to train converter from merge sources");
       return ret;
@@ -1735,17 +1405,6 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
   if (reducer->reduce(filter) != 0) {
     LOG_ERROR("Failed to reduce");
     return core::IndexError_Runtime;
-  }
-  if (preserve_empty_rows) {
-    document_count_ = document_plan->output_end();
-    document_range_enabled_ = document_range_dirty_ = true;
-    preserve_empty_rows_ = true;
-  } else if (builder_) {
-    document_count_ = builder_->stats().built_count();
-    document_range_enabled_ = document_range_dirty_ = true;
-  } else if (document_range_enabled_) {
-    document_count_ = get_slot_count();
-    document_range_dirty_ = true;
   }
   is_trained_ = true;
   return 0;

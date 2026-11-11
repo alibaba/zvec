@@ -39,6 +39,13 @@ class IvfRabitqIndexProvider : public IndexProvider {
     return Iterator::Pointer(new (std::nothrow) Iterator(entity_));
   }
 
+  Iterator::Pointer create_slot_iterator() override {
+    return std::make_unique<Iterator>(entity_, true);
+  }
+  size_t slot_count() const override {
+    return entity_->slot_count();
+  }
+
   //! Retrieve count of vectors
   size_t count() const override {
     return entity_->total_vector_count();
@@ -78,8 +85,9 @@ class IvfRabitqIndexProvider : public IndexProvider {
  private:
   class Iterator : public IndexProvider::Iterator {
    public:
-    explicit Iterator(const IvfRabitqEntity::Pointer &entity)
-        : entity_(entity) {}
+    explicit Iterator(const IvfRabitqEntity::Pointer &entity,
+                      bool include_empty = false)
+        : entity_(entity), include_empty_(include_empty) {}
 
     //! Retrieve pointer of data
     const void *data() const override {
@@ -88,12 +96,23 @@ class IvfRabitqIndexProvider : public IndexProvider {
 
     //! Test if the iterator is valid
     bool is_valid() const override {
-      return id_ < entity_->total_vector_count();
+      return status_ == 0 &&
+             id_ < (include_empty_ ? entity_->slot_count()
+                                   : entity_->total_vector_count());
     }
 
     //! Retrieve primary key
     uint64_t key() const override {
-      return entity_->get_key(id_);
+      uint32_t local_id = id_;
+      if (include_empty_) {
+        status_ = entity_->slot_to_id(id_, &local_id);
+        if (status_ != 0 || local_id == UINT32_MAX) return UINT64_MAX;
+      }
+      return entity_->get_key(local_id);
+    }
+
+    int status() const override {
+      return status_;
     }
 
     //! Next iterator
@@ -104,6 +123,8 @@ class IvfRabitqIndexProvider : public IndexProvider {
    private:
     IvfRabitqEntity::Pointer entity_;
     size_t id_{0};
+    bool include_empty_{false};
+    mutable int status_{0};
   };
 
  private:

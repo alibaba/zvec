@@ -25,6 +25,11 @@ namespace core {
  */
 class IVFBuilder : public IndexBuilder {
  public:
+  size_t slot_count() const override {
+    return source_holder_ ? source_holder_->slot_count()
+                          : (holder_ ? holder_->slot_count() : 0);
+  }
+
   //! Constructor
   IVFBuilder();
 

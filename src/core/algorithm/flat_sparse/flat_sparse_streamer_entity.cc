@@ -702,8 +702,8 @@ int FlatSparseStreamerEntity::add(uint64_t key,
 }
 
 int FlatSparseStreamerEntity::add_vector_with_id(
-    uint32_t id, const std::string &sparse_vector,
-    const uint32_t sparse_count) {
+    uint32_t id, const std::string &sparse_vector, const uint32_t sparse_count,
+    bool is_null) {
   if (id == kInvalidNodeId) return IndexError_InvalidArgument;
   uint32_t sparse_vector_len = sparse_vector.size();
 
@@ -729,7 +729,7 @@ int FlatSparseStreamerEntity::add_vector_with_id(
       }
       uint32_t sparse_data_chunk_index, sparse_data_chunk_offset,
           sparse_offset_chunk_index, sparse_offset_chunk_offset;
-      if (i < id) {
+      if (i < id || is_null) {
         write_sparse_vector_to_chunk("", 0, sparse_data_chunk_index,
                                      sparse_data_chunk_offset);
       } else {
@@ -742,13 +742,13 @@ int FlatSparseStreamerEntity::add_vector_with_id(
       get_new_sparse_offset_chunk(sparse_offset_chunk_index,
                                   sparse_offset_chunk_offset);
       uint64_t written_key = kInvalidKey;
-      if (i == id) {
+      if (i == id && !is_null) {
         written_key = i;
       }
-      write_sparse_offset_to_chunk(sparse_offset_chunk_index,
-                                   sparse_offset_chunk_offset, sparse_offset,
-                                   sparse_vector_len, written_key);
-      key_map_.insert(written_key, i);
+      write_sparse_offset_to_chunk(
+          sparse_offset_chunk_index, sparse_offset_chunk_offset, sparse_offset,
+          written_key == kInvalidKey ? 0 : sparse_vector_len, written_key);
+      if (written_key != kInvalidKey) key_map_.insert(written_key, i);
       inc_doc_count();
     }
   } else {

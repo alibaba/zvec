@@ -38,6 +38,10 @@ class HnswIndexProvider : public IndexProvider {
                                                     Iterator(entity_));
   }
 
+  IndexProvider::Iterator::Pointer create_slot_iterator() override {
+    return std::make_unique<Iterator>(entity_, true);
+  }
+
   //! Retrieve count of vectors
   size_t count() const override {
     std::call_once(count_once_, [&] {
@@ -85,7 +89,8 @@ class HnswIndexProvider : public IndexProvider {
  private:
   class Iterator : public IndexProvider::Iterator {
    public:
-    Iterator(const HnswEntity::Pointer &entity) : entity_(entity), cur_id_(0U) {
+    Iterator(const HnswEntity::Pointer &entity, bool include_empty = false)
+        : include_empty_(include_empty), entity_(entity), cur_id_(0U) {
       cur_id_ = get_next_valid_id(0);
     }
 
@@ -120,6 +125,7 @@ class HnswIndexProvider : public IndexProvider {
 
    private:
     node_id_t get_next_valid_id(node_id_t start_id) {
+      if (include_empty_) return start_id;
       for (node_id_t i = start_id; i < entity_->doc_cnt(); i++) {
         if (entity_->contains_node(i)) {
           cur_id_ = i;
@@ -130,6 +136,7 @@ class HnswIndexProvider : public IndexProvider {
     }
 
    private:
+    bool include_empty_{false};
     const HnswEntity::Pointer entity_;
     node_id_t cur_id_;
     mutable IndexStorage::MemoryBlock block_;

@@ -196,7 +196,6 @@ Status VectorColumnIndexer::merge(
   roaring::Roaring merged_nulls = null_rows_;
   uint32_t merged_rows = row_count_;
   if (has_null_bitmap()) {
-    engine_options.preserve_empty_rows = true;
     uint64_t source_offset = 0;
     size_t added_vectors = 0;
     // Evaluate the document filter once. Core consumes this stable snapshot

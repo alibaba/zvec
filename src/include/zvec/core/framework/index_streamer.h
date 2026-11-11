@@ -65,6 +65,11 @@ class IndexStreamer : public IndexRunner {
   //! Close index
   virtual int close() = 0;
 
+  // Append empty slots up to count, without changing any existing slot.
+  virtual int reserve_slots(uint32_t /*count*/) {
+    return IndexError_NotImplemented;
+  }
+
   //! Persist converter/reformer parameters learned after opening a target.
   virtual void merge_trained_meta(const IndexMeta & /*meta*/) {}
 

@@ -74,6 +74,17 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
 
   diskann_id_t get_id(diskann_key_t key) const override;
   diskann_key_t get_key(diskann_id_t id) const override;
+  size_t slot_count() const override {
+    return key_mapping_buffer_
+               ? key_mapping_buffer_->size() / sizeof(diskann_id_t)
+               : doc_cnt();
+  }
+  diskann_id_t slot_to_id(size_t slot) const override {
+    if (!key_mapping_buffer_ || slot >= slot_count()) return kInvalidId;
+    diskann_id_t id;
+    memcpy(&id, key_mapping_buffer_->data() + slot * sizeof(id), sizeof(id));
+    return id < doc_cnt() ? id : kInvalidId;
+  }
 
  private:
   IndexStorage::Pointer storage_{};

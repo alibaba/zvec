@@ -1020,76 +1020,25 @@ TEST(MergedProviderIndexHolderTest, FiltersRewritesIdsAndSupportsMultiPass) {
   EXPECT_EQ(0, holder.status());
 }
 
-TEST(MergedProviderIndexHolderTest, NativeRewriteUsesLogicalSourceRanges) {
-  auto first = MakeSource(MakeStreamer({{5, 5}}));
-  auto second = MakeSource(MakeStreamer({{0, 10}}));
-  auto plan = std::make_shared<IndexDocumentMergePlan>();
-  size_t calls = 0;
-  IndexFilter filter;
-  filter.set([&](uint64_t row) {
-    ++calls;
-    return row == 8;
-  });
-  ASSERT_EQ(0, plan->init({8, 1}, 0, filter, false));
-  EXPECT_FALSE(plan->preserves_empty_rows());
-  EXPECT_EQ(0U, calls);
-  EXPECT_EQ(UINT32_MAX, plan->output_id(0, 5));
-  first.document_plan = second.document_plan = plan;
-  second.plan_source = 1;
-  MergedProviderIndexHolder holder(
-      IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
-      {first, second});
-  ASSERT_EQ(0, holder.init(filter));
-  const std::vector<std::pair<uint64_t, float>> expected{{0, 5}};
-  EXPECT_EQ(expected, ReadAll(&holder));
-  EXPECT_EQ(expected, ReadAll(&holder));
-  EXPECT_EQ(2U, calls);
-}
-
-TEST(MergedProviderIndexHolderTest, DocumentPlanRanksAcrossWordBoundaries) {
-  IndexDocumentMergePlan plan;
-  size_t calls = 0;
-  IndexFilter filter;
-  filter.set([&](uint64_t row) {
-    ++calls;
-    return row % 3 == 0;
-  });
-  ASSERT_EQ(0, plan.init({130, 71}, 7, filter));
-  uint32_t next = 7;
-  for (size_t source = 0; source < 2; ++source) {
-    for (uint32_t row = 0; row < plan.rows(source); ++row) {
-      const uint64_t global = (source == 0 ? 0 : 130) + row;
-      const uint32_t expected = global % 3 == 0 ? UINT32_MAX : next++;
-      EXPECT_EQ(expected, plan.output_id(source, row));
-    }
-  }
-  EXPECT_EQ(next, plan.output_end());
-  EXPECT_EQ(201U, calls);
-  EXPECT_EQ(UINT32_MAX, plan.output_id(0, 130));
-}
-
-TEST(MergedProviderIndexHolderTest, DocumentPlanPreservesNullGaps) {
-  auto first = MakeSource(MakeStreamer({{UINT64_MAX, 99}, {1, 1}, {3, 3}}));
-  auto second = MakeSource(MakeStreamer({{0, 10}, {2, 12}, {UINT64_MAX, 99}}));
-  auto plan = std::make_shared<IndexDocumentMergePlan>();
+TEST(MergedProviderIndexHolderTest, FullSlotsPreserveNullsAndCacheFilter) {
+  auto first = MakeSource(MakeStreamer(
+      {{UINT64_MAX, 99}, {1, 1}, {UINT64_MAX, 99}, {3, 3}, {UINT64_MAX, 99}}));
+  auto second = MakeSource(
+      MakeStreamer({{0, 10}, {UINT64_MAX, 99}, {2, 12}, {UINT64_MAX, 99}}));
   size_t calls = 0;
   IndexFilter filter;
   filter.set([&](uint64_t id) {
     ++calls;
     return id == 0;
   });
-  ASSERT_EQ(0, plan->init({5, 4}, 0, filter));
-  EXPECT_EQ(9U, calls);
-  EXPECT_EQ(8U, plan->output_end());
-  first.document_plan = second.document_plan = plan;
-  second.plan_source = 1;
   MergedProviderIndexHolder holder(
       IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
       {first, second});
-  ASSERT_EQ(0, holder.init(IndexFilter()));
+  ASSERT_EQ(0, holder.init(filter));
   const std::vector<std::pair<uint64_t, float>> expected{
       {0, 1}, {2, 3}, {4, 10}, {6, 12}};
-  EXPECT_EQ(expected.size(), holder.count());
+  EXPECT_EQ(4U, holder.count());
+  EXPECT_EQ(8U, holder.slot_count());
   EXPECT_EQ(expected, ReadAll(&holder));
   EXPECT_EQ(expected, ReadAll(&holder));
   OrdinalAccessHolder::Reader::Pointer reader;
@@ -1098,39 +1047,35 @@ TEST(MergedProviderIndexHolderTest, DocumentPlanPreservesNullGaps) {
     uint64_t key;
     const void *data;
     ASSERT_EQ(0, reader->read(ordinal, &key, &data));
-    EXPECT_EQ(key, expected[ordinal].first);
-    EXPECT_FLOAT_EQ(*static_cast<const float *>(data),
-                    expected[ordinal].second);
+    EXPECT_EQ(expected[ordinal].first, key);
+    EXPECT_FLOAT_EQ(expected[ordinal].second,
+                    *static_cast<const float *>(data));
   }
   EXPECT_EQ(9U, calls);
 }
 
-TEST(MergedProviderIndexHolderTest, DocumentPlanUsesLogicalSourceSpans) {
-  auto first = MakeSource(MakeStreamer({{1, 1}}));
-  auto second = MakeSource(MakeStreamer({{0, 10}, {1, 11}}));
-  auto plan = std::make_shared<IndexDocumentMergePlan>();
+TEST(MergedProviderIndexHolderTest, FullSlotFilterCrossesWordBoundaries) {
+  std::vector<std::pair<uint64_t, float>> first, second, expected;
+  for (uint64_t i = 0; i < 201; ++i) {
+    const uint64_t local = i < 130 ? i : i - 130;
+    (i < 130 ? first : second)
+        .push_back({i % 5 ? UINT64_MAX : local, float(i)});
+    if (i % 3 && i % 5 == 0) expected.push_back({i - i / 3 - 1, float(i)});
+  }
+  size_t calls = 0;
   IndexFilter filter;
-  filter.set([](uint64_t id) { return id == 0 || id == 4; });
-  ASSERT_EQ(0, plan->init({4, 3}, 0, filter));
-  first.document_plan = second.document_plan = plan;
-  second.plan_source = 1;
+  filter.set([&](uint64_t row) {
+    ++calls;
+    return row % 3 == 0;
+  });
   MergedProviderIndexHolder holder(
-      IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
-      {first, second});
-  ASSERT_EQ(0, holder.init(IndexFilter()));
-  const std::vector<std::pair<uint64_t, float>> expected{{0, 1}, {3, 11}};
+      IndexQueryMeta(IndexMeta::DT_FP32, kDimension),
+      {MakeSource(MakeStreamer(first)), MakeSource(MakeStreamer(second))});
+  ASSERT_EQ(0, holder.init(filter));
+  EXPECT_EQ(134U, holder.slot_count());
   EXPECT_EQ(expected, ReadAll(&holder));
-  EXPECT_EQ(5U, plan->output_end());
-}
-
-TEST(MergedProviderIndexHolderTest, DocumentPlanRejectsOutOfRangeKeys) {
-  auto source = MakeSource(MakeStreamer({{3, 3}}));
-  auto plan = std::make_shared<IndexDocumentMergePlan>();
-  ASSERT_EQ(0, plan->init({2}, 0, IndexFilter()));
-  source.document_plan = plan;
-  MergedProviderIndexHolder holder(
-      IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension), {source});
-  EXPECT_EQ(IndexError_InvalidFormat, holder.init(IndexFilter()));
+  EXPECT_EQ(expected, ReadAll(&holder));
+  EXPECT_EQ(201U, calls);
 }
 
 TEST(MergedProviderIndexHolderTest, RejectsUnreformedMetaMismatch) {

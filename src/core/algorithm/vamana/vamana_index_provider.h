@@ -38,6 +38,10 @@ class VamanaIndexProvider : public IndexProvider {
                                                       Iterator(entity_));
   }
 
+  IndexProvider::Iterator::Pointer create_slot_iterator() override {
+    return std::make_unique<Iterator>(entity_, true);
+  }
+
   size_t count() const override {
     std::call_once(count_once_, [&] {
       for (uint32_t id = 0; id < entity_->doc_cnt(); ++id)
@@ -78,8 +82,8 @@ class VamanaIndexProvider : public IndexProvider {
  private:
   class Iterator : public IndexProvider::Iterator {
    public:
-    Iterator(const VamanaEntity::Pointer &entity)
-        : entity_(entity), cur_id_(0U) {
+    Iterator(const VamanaEntity::Pointer &entity, bool include_empty = false)
+        : include_empty_(include_empty), entity_(entity), cur_id_(0U) {
       cur_id_ = get_next_valid_id(0);
     }
 
@@ -106,6 +110,7 @@ class VamanaIndexProvider : public IndexProvider {
 
    private:
     node_id_t get_next_valid_id(node_id_t start_id) {
+      if (include_empty_) return start_id;
       for (node_id_t i = start_id; i < entity_->doc_cnt(); i++) {
         if (entity_->contains_node(i)) {
           return i;
@@ -114,6 +119,7 @@ class VamanaIndexProvider : public IndexProvider {
       return kInvalidNodeId;
     }
 
+    bool include_empty_{false};
     const VamanaEntity::Pointer entity_;
     node_id_t cur_id_;
     mutable IndexStorage::MemoryBlock block_;

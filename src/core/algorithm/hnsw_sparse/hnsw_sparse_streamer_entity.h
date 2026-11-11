@@ -100,8 +100,8 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
 
   //! Add vector and id to hnsw entity
   int add_vector_with_id(level_t level, node_id_t id,
-                         const std::string &sparse_vec,
-                         uint32_t sparse_count) override;
+                         const std::string &sparse_vec, uint32_t sparse_count,
+                         bool is_null = false) override;
 
   int update_neighbors(
       level_t level, node_id_t id,

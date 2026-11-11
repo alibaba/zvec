@@ -1020,5 +1020,14 @@ int HnswRabitqStreamer::search_bf_by_p_keys_impl(
 }
 
 
+int HnswRabitqStreamer::reserve_slots(uint32_t count) {
+  if (state_ != STATE_OPENED) return IndexError_NoReady;
+  if (!shared_mutex_.try_lock_shared()) return IndexError_Unsupported;
+  AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
+  if (count <= entity_.doc_cnt()) return 0;
+  if (count > docs_hard_limit_) return IndexError_IndexFull;
+  return entity_.add_vector_with_id(0, count - 1, nullptr);
+}
+
 }  // namespace core
 }  // namespace zvec

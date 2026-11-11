@@ -71,7 +71,7 @@ class FlatSparseStreamerEntity : public FlatSparseEntity {
 
   //! Add sparse vector to linear index with id
   int add_vector_with_id(uint32_t id, const std::string &sparse_vector,
-                         uint32_t sparse_count);
+                         uint32_t sparse_count, bool is_null = false);
 
   //! Clone entity
   FlatSparseStreamerEntity::Pointer clone() const;

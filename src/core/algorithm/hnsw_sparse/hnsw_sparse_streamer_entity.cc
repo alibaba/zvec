@@ -390,6 +390,22 @@ int HnswSparseStreamerEntity::init_chunks(
     }
   }
 
+  if (entry_point() == kInvalidNodeId) {
+    const size_t slots_per_chunk = size_t{1} << node_index_mask_bits_;
+    if (doc_cnt() > node_chunks_.size() * slots_per_chunk)
+      return IndexError_InvalidFormat;
+    for (size_t i = 0; i < node_chunks_.size(); ++i) {
+      const size_t first = i * slots_per_chunk;
+      const size_t used =
+          first < doc_cnt()
+              ? std::min<size_t>(slots_per_chunk, doc_cnt() - first)
+              : 0;
+      if (node_chunks_[i]->data_size() < used * node_size())
+        return IndexError_InvalidFormat;
+    }
+    for (node_id_t id = 0; id < doc_cnt(); ++id)
+      if (contains_node(id)) return IndexError_InvalidFormat;
+  }
   return 0;
 }
 
@@ -548,14 +564,13 @@ int HnswSparseStreamerEntity::check_hnsw_index(
              hd->neighbor_prune_cnt());
     return IndexError_Mismatch;
   }
-  if ((hd->entry_point() != kInvalidNodeId &&
-       hd->entry_point() >= hd->doc_cnt()) ||
-      (hd->entry_point() == kInvalidNodeId && hd->doc_cnt() > 0U)) {
+  if (hd->entry_point() != kInvalidNodeId &&
+      hd->entry_point() >= hd->doc_cnt()) {
     LOG_WARN("Invalid entryPoint %u, docCnt %u", hd->entry_point(),
              hd->doc_cnt());
     return IndexError_InvalidFormat;
   }
-  if (hd->entry_point() == kInvalidNodeId &&
+  if (hd->entry_point() == kInvalidNodeId && hd->doc_cnt() == 0 &&
       broker_->get_chunk_cnt(SparseChunkBroker::CHUNK_TYPE_NODE) > 0) {
     LOG_WARN("The index is broken, maybe it haven't flush");
     return IndexError_InvalidFormat;
@@ -712,7 +727,8 @@ int HnswSparseStreamerEntity::add_vector(level_t level, key_t key,
 
 int HnswSparseStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
                                                  const std::string &sparse_vec,
-                                                 uint32_t sparse_count) {
+                                                 uint32_t sparse_count,
+                                                 bool is_null) {
   if (id == kInvalidNodeId) return IndexError_InvalidArgument;
   key_t key = id;
   SparseChunk::Pointer node_chunk;
@@ -737,7 +753,8 @@ int HnswSparseStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
   std::lock_guard<std::mutex> lock(mutex_);
 
   // duplicate check
-  if (ailego_unlikely(filter_same_key_ && get_id(key) != kInvalidNodeId)) {
+  if (ailego_unlikely(!is_null && filter_same_key_ &&
+                      get_id(key) != kInvalidNodeId)) {
     LOG_WARN("Try to add duplicate key, ignore it");
     return IndexError_Duplicate;
   }
@@ -788,6 +805,18 @@ int HnswSparseStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
   if (auto ret = func_get_sparse_node_chunk_and_offset(id); ret != 0) {
     LOG_ERROR("func_get_sparse_node_chunk_and_offset failed");
     return ret;
+  }
+
+  if (is_null) {
+    if (node_chunk->write(chunk_offset + sparse_meta_size(), &kInvalidKey,
+                          sizeof(key_t)) != sizeof(key_t))
+      return IndexError_WriteData;
+    if (node_chunk->resize(chunk_offset + node_size()) !=
+        chunk_offset + node_size())
+      return IndexError_WriteData;
+    *mutable_doc_cnt() = id + 1;
+    broker_->mark_dirty();
+    return 0;
   }
 
   uint32_t sparse_chunk_index = sparse_node_chunks_.size() - 1U;

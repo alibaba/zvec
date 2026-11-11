@@ -210,7 +210,7 @@ Status VectorColumnIndexer::load_nulls(
             ailego::Crc32c::Hash(bytes.data(), bytes.size() - 4)) {
       return Status::InternalError("Invalid vector NULL bitmap: ", path);
     }
-    if (Get32(bytes.data() + 12) != 3) return unsupported_legacy();
+    if (Get32(bytes.data() + 12) != 4) return unsupported_legacy();
     row_count_ = Get32(bytes.data() + 8);
     try {
       null_rows_ =
@@ -245,7 +245,7 @@ Status VectorColumnIndexer::flush_nulls() {
   std::string bytes("ZVECNL01", 8);
   Put32(&bytes, row_count_);
   Put32(&bytes,
-        3);  // Core persists the full document range, including NULL tails.
+        4);  // Native slots include NULLs; no separate core range metadata.
   const auto offset = bytes.size();
   bytes.resize(offset + null_rows_.getSizeInBytes());
   null_rows_.write(bytes.data() + offset);

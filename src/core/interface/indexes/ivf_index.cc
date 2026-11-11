@@ -229,14 +229,6 @@ int IVFIndex::open(const std::string &file_path,
     if (ret != 0) return ret;
     is_trained_ = true;
   }
-  if (storage_options.create_new && !is_read_only_) {
-    document_count_ = 0;
-    document_range_enabled_ = document_range_dirty_ = false;
-    preserve_empty_rows_ = false;
-  } else {
-    int range_ret = load_document_range();
-    if (range_ret != 0) return range_ret;
-  }
   is_open_ = true;
   return 0;
 }
@@ -251,8 +243,14 @@ int IVFIndex::add(const VectorData &vector, uint32_t doc_id) {
     LOG_ERROR("this IVF index is trained or has a pending build");
     return core::IndexError_Runtime;
   }
-  if (std::holds_alternative<NullVector>(vector.vector))
-    return add_null(doc_id);
+  if (std::holds_alternative<NullVector>(vector.vector)) {
+    if (!is_open_ || is_read_only_) return core::IndexError_NoReady;
+    if (doc_id == UINT32_MAX) return core::IndexError_InvalidArgument;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (doc_id < doc_cache_.size()) return core::IndexError_InvalidArgument;
+    doc_cache_.resize(doc_id + 1, {kInvalidKey, {}});
+    return 0;
+  }
   if (!is_open_ || is_read_only_ || doc_id == UINT32_MAX)
     return core::IndexError_InvalidArgument;
   if (!std::holds_alternative<DenseVector>(vector.vector)) {
@@ -265,13 +263,9 @@ int IVFIndex::add(const VectorData &vector, uint32_t doc_id) {
       input_vector_meta_.dimension() * input_vector_meta_.unit_size());
 
   std::lock_guard<std::mutex> lock(mutex_);
-  while (doc_cache_.size() <= doc_id) {
-    std::string fake_data(
-        input_vector_meta_.dimension() * input_vector_meta_.unit_size(), 0);
-    doc_cache_.push_back(std::make_pair(kInvalidKey, fake_data));
-  }
+  if (doc_cache_.size() <= doc_id)
+    doc_cache_.resize(doc_id + 1, {kInvalidKey, {}});
   doc_cache_[doc_id] = std::make_pair(doc_id, out_vector_buffer);
-  record_document(doc_id);
   return 0;
 }
 
@@ -334,8 +328,6 @@ int IVFIndex::dump_and_open() {
     if (ret != 0) {
       return ret;
     }
-    ret = dump_document_range(dumper);
-    if (ret != 0) return ret;
     // Dump converter state (e.g., rotator for INT8+rotate) to dumper
     if (converter_ && converter_->dump(dumper) != 0) {
       LOG_ERROR("Failed to dump converter, path: %s", file_path_.c_str());
@@ -473,6 +465,11 @@ int IVFIndex::merge(const std::vector<Index::Pointer> &indexes,
     // Dumping to a loaded index would overwrite its file before the existing
     // streamer rejects open(). Rebuilding requires a separate target index.
     LOG_ERROR("Cannot merge into a trained IVF index; use a new target");
+    return core::IndexError_Unsupported;
+  }
+  if (std::any_of(doc_cache_.begin(), doc_cache_.end(),
+                  [](const auto &doc) { return doc.first != kInvalidKey; })) {
+    LOG_ERROR("Cannot merge into a builder with pending vectors");
     return core::IndexError_Unsupported;
   }
   // A new merge (including a retry) rebuilds from its explicit inputs. Do not

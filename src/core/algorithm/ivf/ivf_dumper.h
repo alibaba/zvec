@@ -206,7 +206,7 @@ class IVFDumper {
                           bool column_major);
 
   //! Finish dump the inverted vectors
-  int dump_inverted_vector_finished();
+  int dump_inverted_vector_finished(size_t slot_count = 0);
 
   //! Dump the centroids index
   int dump_centroid_index(const void *data, size_t size);

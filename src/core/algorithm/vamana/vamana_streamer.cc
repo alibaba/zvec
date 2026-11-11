@@ -942,6 +942,17 @@ int VamanaStreamer::search_bf_by_p_keys_impl(
   return 0;
 }
 
+
+int VamanaStreamer::reserve_slots(uint32_t count) {
+  if (state_ != STATE_OPENED) return IndexError_NoReady;
+  prepare_write();
+  if (!shared_mutex_.try_lock_shared()) return IndexError_Unsupported;
+  AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
+  if (count <= entity_->doc_cnt()) return 0;
+  if (count > docs_hard_limit_) return IndexError_IndexFull;
+  return entity_->add_vector_with_id(count - 1, nullptr);
+}
+
 INDEX_FACTORY_REGISTER_STREAMER(VamanaStreamer);
 
 }  // namespace core

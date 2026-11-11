@@ -47,6 +47,7 @@ inline int BuildMultiPassHolderImpl(
       return core::IndexError_Runtime;
     }
   }
+  holder->set_slot_count(doc_cache.size());
   *holder_out = holder;
   return 0;
 }
@@ -78,8 +79,11 @@ inline int BuildMultiPassHolder(
     return ret;
   }
   if (converter) {
-    core::IndexConverter::TrainAndTransform(converter, *holder);
+    ret = core::IndexConverter::TrainAndTransform(converter, *holder);
+    if (ret != 0) return ret;
     *holder = converter->result();
+    if (!*holder) return core::IndexError_Runtime;
+    (*holder)->set_slot_count(doc_cache.size());
   }
   return 0;
 }

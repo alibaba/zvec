@@ -447,6 +447,7 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
     }
   }
 
+  const size_t slot_count = holder->slot_count();
   holder_.reset();
   source_reader_.reset();
   source_holder_.reset();
@@ -515,6 +516,9 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
   }
 
   labels_.resize(centroid_index_->centroids_count());
+  converted_holder->set_slot_count(slot_count);
+  if (source_holder_) source_holder_->set_slot_count(slot_count);
+  if (holder_) holder_->set_slot_count(slot_count);
   int ret = this->build_label_index(threads.get(), converted_holder);
   ivf_check_with_msg(ret, "Failed to build index for %s",
                      IndexError::What(ret));
@@ -938,7 +942,8 @@ int IVFBuilder::dump_index(const IndexDumper::Pointer &dumper) {
     }
   }
 
-  ret = ivf_dumper->dump_inverted_vector_finished();
+  ret = ivf_dumper->dump_inverted_vector_finished(
+      (source_holder_ ? source_holder_ : holder_)->slot_count());
   ivf_check_error_code(ret);
 
   ret = ivf_dumper->dump_quantizer_params(quantizers_);

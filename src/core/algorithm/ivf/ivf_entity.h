@@ -183,6 +183,18 @@ class IVFEntity {
     return *static_cast<const uint64_t *>(data.data());
   }
 
+  size_t slot_count() const {
+    return mapping_ ? mapping_->data_size() / sizeof(uint32_t) : vector_count();
+  }
+  int slot_to_id(size_t slot, uint32_t *id) const {
+    if (slot >= slot_count()) return IndexError_OutOfRange;
+    if (!mapping_ || mapping_->fetch(slot * sizeof(uint32_t), id,
+                                     sizeof(*id)) != sizeof(*id))
+      return IndexError_ReadData;
+    if (*id == UINT32_MAX && slot_count() > vector_count()) return 0;
+    return *id < vector_count() ? 0 : IndexError_InvalidFormat;
+  }
+
   //! Test whether the sorted-rank to local-id mapping is available.
   bool has_key_order_mapping() const {
     return mapping_ != nullptr;
@@ -191,10 +203,10 @@ class IVFEntity {
   //! Fetch a range from the key-order mapping (sorted rank -> local_id).
   //! Explicit copying avoids retaining storage-owned transient pointers.
   size_t get_key_order_mapping(size_t rank, uint32_t *out, size_t count) const {
-    if (!mapping_ || !out || count == 0 || rank >= vector_count()) {
+    if (!mapping_ || !out || count == 0 || rank >= slot_count()) {
       return 0;
     }
-    count = std::min(count, vector_count() - rank);
+    count = std::min(count, slot_count() - rank);
     const size_t bytes = count * sizeof(uint32_t);
     return mapping_->fetch(rank * sizeof(uint32_t), out, bytes) /
            sizeof(uint32_t);

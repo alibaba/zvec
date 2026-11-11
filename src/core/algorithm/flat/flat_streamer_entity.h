@@ -158,7 +158,8 @@ class FlatStreamerEntity {
                          std::vector<IndexStorage::MemoryBlock> &blocks) const;
 
   //! Create a new iterator
-  IndexProvider::Iterator::Pointer creater_iterator() const;
+  IndexProvider::Iterator::Pointer creater_iterator(
+      bool include_empty = false) const;
 
 
   //! Set params
@@ -271,9 +272,10 @@ class FlatStreamerEntity {
   class Iterator : public IndexProvider::Iterator {
    public:
     //! Constructor
-    Iterator(const FlatStreamerEntity::Pointer &entity) : entity_(entity) {
+    Iterator(const FlatStreamerEntity::Pointer &entity, bool include_empty)
+        : entity_(entity), include_empty_(include_empty) {
       this->read_next_block();
-      if (is_valid_ &&
+      if (!include_empty_ && is_valid_ &&
           (key() == kInvalidKey || deleted_->test(block_vector_index_)))
         next();
     }
@@ -288,7 +290,8 @@ class FlatStreamerEntity {
     }
     //! Retrieve primary key
     uint64_t key() const override {
-      return keys_[block_vector_index_];
+      return deleted_->test(block_vector_index_) ? kInvalidKey
+                                                 : keys_[block_vector_index_];
     }
     //! Next iterator
     void next() override {
@@ -298,7 +301,7 @@ class FlatStreamerEntity {
           ++block_index_;
           this->read_next_block();
         }
-      } while (is_valid_ &&
+      } while (!include_empty_ && is_valid_ &&
                (key() == kInvalidKey || deleted_->test(block_vector_index_)));
     }
 
@@ -318,6 +321,7 @@ class FlatStreamerEntity {
     uint32_t block_vector_index_{0u};
     uint32_t block_vector_count_{0u};
     bool is_valid_{true};
+    bool include_empty_{false};
   };
 
   //! Retrive storage segment by index

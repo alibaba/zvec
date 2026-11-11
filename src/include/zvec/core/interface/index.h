@@ -169,12 +169,10 @@ class ZVEC_CORE_API Index {
 
   bool is_dirty() const;
 
-  // Exclusive document ID upper bound, including gaps and explicit NULL tails.
-  // Legacy files without range metadata retain their native slot span.
-  // This is not the number of live documents or retrievable vectors.
+  // Exclusive document ID upper bound, including empty slots. Neither count
+  // is a live-document count; get_vector_count() counts actual stored values.
   uint32_t get_doc_count() const;
-  // Built-storage counts; a collecting builder has no physical slots yet.
-  uint32_t get_slot_count() const;
+  virtual uint32_t get_slot_count() const;
   uint32_t get_vector_count() const;
 
   core::IndexStreamer::Pointer index_searcher();
@@ -265,22 +263,13 @@ class ZVEC_CORE_API Index {
   }
 
  protected:
-  // Append an empty document range without overwriting an existing row.
   int add_null(uint32_t doc_id);
-  int load_document_range(bool validate_slots = true);
-  int flush_document_range();
-  int dump_document_range(const core::IndexDumper::Pointer &dumper);
-  void record_document(uint32_t doc_id);
 
   bool init_context();
   core::IndexContext::Pointer &acquire_context();
 
  protected:
   bool is_trained_{false};
-  std::atomic<uint32_t> document_count_{0};
-  std::atomic<bool> document_range_enabled_{false};
-  std::atomic<bool> document_range_dirty_{false};
-  std::atomic<bool> preserve_empty_rows_{false};
 
   BaseIndexParam param_;
   ailego::Params proxima_index_params_{};
@@ -350,6 +339,10 @@ class ZVEC_CORE_API FlatIndex : public Index {
 
 class ZVEC_CORE_API IVFIndex : public Index {
  public:
+  uint32_t get_slot_count() const override {
+    return is_trained_ ? Index::get_slot_count() : doc_cache_.size();
+  }
+
   IVFIndex() = default;
 
  protected:
@@ -476,6 +469,10 @@ class ZVEC_CORE_API HNSWRabitqIndex : public Index {
 
 class ZVEC_CORE_API IVFRabitqIndex : public Index {
  public:
+  uint32_t get_slot_count() const override {
+    return is_trained_ ? Index::get_slot_count() : doc_cache_.size();
+  }
+
   IVFRabitqIndex() = default;
 
  protected:
@@ -505,6 +502,10 @@ class ZVEC_CORE_API IVFRabitqIndex : public Index {
 
 class ZVEC_CORE_API DiskAnnIndex : public Index {
  public:
+  uint32_t get_slot_count() const override {
+    return is_trained_ ? Index::get_slot_count() : doc_cache_.size();
+  }
+
   DiskAnnIndex() = default;
 
  protected:

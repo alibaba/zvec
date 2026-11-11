@@ -195,7 +195,7 @@ int VamanaStreamerEntity::add_vector(key_t key, const void *vec,
 int VamanaStreamerEntity::add_vector_with_id(node_id_t id, const void *vec) {
   Chunk::Pointer node_chunk;
   size_t chunk_offset = static_cast<size_t>(-1);
-  key_t key = id;
+  key_t key = vec ? id : kInvalidKey;
 
   std::lock_guard<std::mutex> lock(mutex_);
 
@@ -250,7 +250,8 @@ int VamanaStreamerEntity::add_vector_with_id(node_id_t id, const void *vec) {
   }
 
   // Write vector
-  size_t size = node_chunk->write(chunk_offset, vec, vector_size());
+  size_t size =
+      vec ? node_chunk->write(chunk_offset, vec, vector_size()) : vector_size();
   if (ailego_unlikely(size != vector_size())) {
     LOG_ERROR("Chunk write vec failed, ret=%zu", size);
     return IndexError_WriteData;
@@ -271,7 +272,7 @@ int VamanaStreamerEntity::add_vector_with_id(node_id_t id, const void *vec) {
     }
   }
 
-  key_map_.insert(key, id);
+  if (vec) key_map_.insert(key, id);
 
   broker_->mark_dirty();
   return 0;

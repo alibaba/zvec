@@ -47,6 +47,10 @@ class IndexBuilder : public IndexRunner {
     return IndexError_NotImplemented;
   }
 
+  virtual size_t slot_count() const {
+    return stats().built_count();
+  }
+
   //! Train and build the index
   static int TrainAndBuild(const IndexBuilder::Pointer &builder,
                            IndexHolder::Pointer holder) {

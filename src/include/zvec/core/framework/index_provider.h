@@ -33,8 +33,14 @@ struct IndexProvider : public IndexHolder {
 
   // Addressable physical slots, including gaps. count() is the number of
   // vectors yielded by the iterator; it must not be used as an ID offset.
-  virtual size_t slot_count() const {
-    return count();
+  size_t slot_count() const override {
+    return IndexHolder::slot_count();
+  }
+
+  // Full physical range for merge. Empty slots have key UINT64_MAX; callers
+  // must not read their payload. The regular iterator remains value-only.
+  virtual Iterator::Pointer create_slot_iterator() {
+    return create_iterator();
   }
 
   bool multipass() const override {
@@ -80,6 +86,9 @@ struct IndexSparseProvider : IndexSparseHolder {
 
   virtual size_t slot_count() const {
     return count();
+  }
+  virtual Iterator::Pointer create_slot_iterator() {
+    return create_iterator();
   }
 
   bool multipass() const override {
