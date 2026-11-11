@@ -23,17 +23,12 @@ python .github/scripts/check_scalar_jit_artifact.py jit-sdk \
   --bitcode build-jit-sdk/thirdparty/arrow/arrow/src/ARROW.BUILD-build/src/gandiva/irhelpers.bc \
   --llvm-dis /opt/llvm-20/bin/llvm-dis
 cmake -S .github/cmake/sdk-smoke -B build-jit-sdk-smoke -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release -DZVEC_SDK_DIR=/work/jit-sdk
+  -DCMAKE_BUILD_TYPE=Release -DZVEC_SDK_DIR=/work/jit-sdk \
+  -DZVEC_SDK_SCALAR_JIT_SMOKE=ON
 cmake --build build-jit-sdk-smoke --parallel 2
 ctest --test-dir build-jit-sdk-smoke --output-on-failure
-# Compile against the installed SDK, so singleton state and JIT linkage are
-# tested across the real public shared-library boundary.
-g++ -std=c++17 -O2 -march=x86-64 -pthread -static-libstdc++ -static-libgcc \
-  -Ijit-sdk/include benchmarks/pr889_linux/filter_bench.cc \
-  -Ljit-sdk/lib -Wl,-rpath,/work/jit-sdk/lib -lzvec \
-  -o build-jit-sdk-smoke/scalar_jit_bench
 python .github/scripts/scalar_jit_sdk_smoke.py \
-  --binary build-jit-sdk-smoke/scalar_jit_bench \
+  --binary build-jit-sdk-smoke/scalar_jit_smoke \
   --collection build-jit-sdk-smoke/jit-collection \
   --library-directory jit-sdk/lib --output-directory sdk-jit-build-logs
 tar czf zvec-sdk-linux-amd64-scalar-jit.tar.gz -C jit-sdk .

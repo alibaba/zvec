@@ -1,6 +1,6 @@
 """Require actual JIT execution through the installed C++ shared SDK.
 
-The benchmark executable uses only installed public headers and libzvec.so.
+The smoke executable uses only installed public headers and libzvec.so.
 Its scalar-field and result checks also run with JIT disabled, and optional
 QEMU runs must produce the same ordered IDs, scores and returned fields.
 """
@@ -56,34 +56,9 @@ def main() -> None:
         return json.loads(result.read_text()), log.read_text(errors="replace")
 
     if not collection.exists():
-        execute(
-            "build",
-            [
-                "--mode",
-                "build",
-                "--rows",
-                "2048",
-                "--workers",
-                "1",
-                "--build-workers",
-                "1",
-            ],
-            [],
-            True,
-        )
+        execute("build", ["--mode", "build"], [], True)
 
-    common = [
-        "--mode",
-        "dump",
-        "--strategy",
-        "forward",
-        "--count",
-        "16",
-        "--workers",
-        "1",
-        "--debug",
-        "1",
-    ]
+    common = ["--mode", "query"]
     runs = [("native-jit", [], True), ("native-arrow", [], False)]
     if args.qemu:
         prefix = [str(args.qemu.resolve()), "-cpu", args.cpu]
