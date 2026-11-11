@@ -221,7 +221,7 @@ arrow::Result<std::unique_ptr<ScalarDocFilter>> ScalarDocFilter::MakeValidated(
       result->buffers_.capacity() * sizeof(result->buffers_[0]) +
       result->offsets_.capacity() * sizeof(result->offsets_[0]) +
       result->ends_.capacity() * sizeof(result->ends_[0]);
-  result->memory_ticket_.Set("descriptor", bytes, 1);
+  result->memory_ticket_.set("descriptor", bytes, 1);
   return result;
 } catch (...) {
   return scalar_jit::Unavailable("binding_failed");

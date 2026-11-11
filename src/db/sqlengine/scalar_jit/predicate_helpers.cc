@@ -45,7 +45,7 @@ struct LikeContext {
   std::string literal;
   std::unique_ptr<RE2> regex;
 
-  bool Match(std::string_view value) const {
+  bool match(std::string_view value) const {
     switch (kind) {
       case Kind::kSubstring:
         return value.find(literal) != std::string_view::npos;
@@ -92,7 +92,7 @@ std::string LikeRegex(const std::string &pattern) {
 }
 
 bool Like(const char *value, int32_t length, int64_t context) {
-  return reinterpret_cast<const LikeContext *>(context)->Match(
+  return reinterpret_cast<const LikeContext *>(context)->match(
       std::string_view(value ? value : "", length));
 }
 
@@ -291,7 +291,7 @@ arrow::Result<std::shared_ptr<const void>> MakeLikeContext(
   bytes.owned_bytes = sizeof(LikeContext) + context->literal.capacity();
   if (context->regex)
     bytes.owned_bytes += sizeof(RE2) + context->regex->pattern().capacity();
-  context->memory.Set("helper", bytes);
+  context->memory.set("helper", bytes);
   return std::static_pointer_cast<const void>(context);
 }
 
@@ -333,7 +333,7 @@ arrow::Result<std::shared_ptr<const void>> MakeInContext(
                       context->strings.size() * sizeof(std::string_view);
   for (const auto &value : context->storage)
     bytes.owned_bytes += value.capacity();
-  context->memory.Set("helper", bytes);
+  context->memory.set("helper", bytes);
   return std::static_pointer_cast<const void>(context);
 }
 

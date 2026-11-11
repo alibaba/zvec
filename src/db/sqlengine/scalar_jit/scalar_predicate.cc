@@ -279,7 +279,7 @@ BoundScalarPredicate::BoundScalarPredicate(
       offsets_.capacity() * sizeof(offsets_[0]);
   for (const auto &value : parameter_values_)
     if (value) bytes.owned_bytes += value->capacity();
-  memory_ticket_.Set("binding", bytes, 1);
+  memory_ticket_.set("binding", bytes, 1);
 }
 
 ScalarPredicate::ScalarPredicate(
@@ -301,7 +301,7 @@ ScalarPredicate::ScalarPredicate(
   memory_usage_.owned_bytes =
       sizeof(*this) +
       data_buffer_bindings_.capacity() * sizeof(ScalarDataBufferBinding);
-  memory_ticket_.Set("program", memory_usage_);
+  memory_ticket_.set("program", memory_usage_);
 }
 
 ScalarPredicate::~ScalarPredicate() {
@@ -345,7 +345,7 @@ ScalarPredicate::MakeParameterized(
   ARROW_RETURN_NOT_OK(ValidatePredicateInputs(arrow::schema(validation_fields),
                                               condition, options.limits));
   CompilePermit permit;
-  ARROW_RETURN_NOT_OK(permit.Acquire());
+  ARROW_RETURN_NOT_OK(permit.acquire());
   std::unordered_set<std::string> field_names;
   for (const auto &field : schema->fields()) {
     ARROW_RETURN_IF(

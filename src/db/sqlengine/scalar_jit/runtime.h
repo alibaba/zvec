@@ -83,7 +83,7 @@ class CompilePermit {
   CompilePermit(const CompilePermit &) = delete;
   CompilePermit &operator=(const CompilePermit &) = delete;
   ~CompilePermit();
-  arrow::Status Acquire();
+  arrow::Status acquire();
 
  private:
   bool held_ = false;
@@ -96,7 +96,7 @@ class MemoryTicket {
   MemoryTicket(const MemoryTicket &) = delete;
   MemoryTicket &operator=(const MemoryTicket &) = delete;
   ~MemoryTicket();
-  void Set(const char *kind, MemoryUsage bytes, uint64_t snapshots = 0);
+  void set(const char *kind, MemoryUsage bytes, uint64_t snapshots = 0);
 
  private:
   const char *kind_ = nullptr;

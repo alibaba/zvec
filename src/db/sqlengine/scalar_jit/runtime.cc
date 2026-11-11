@@ -306,7 +306,7 @@ arrow::Status InitializeBackend(
   return status;
 }
 
-arrow::Status CompilePermit::Acquire() {
+arrow::Status CompilePermit::acquire() {
   if (held_)
     return arrow::Status::Invalid("Compilation permit already acquired");
   const auto reason = UnavailableReason();
@@ -332,7 +332,7 @@ CompilePermit::~CompilePermit() {
   --state.active;
 }
 
-void MemoryTicket::Set(const char *kind, MemoryUsage bytes,
+void MemoryTicket::set(const char *kind, MemoryUsage bytes,
                        uint64_t snapshots) {
   if (!InOriginalProcess()) return;
   auto &state = ProcessState();

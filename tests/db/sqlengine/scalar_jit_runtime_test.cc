@@ -214,11 +214,11 @@ TEST(ScalarJitRuntime, ProcessCompilationPermitsReleaseOnScopeExit) {
   CompilePermit available;
   {
     CompilePermit first, second;
-    ASSERT_TRUE(first.Acquire().ok());
-    ASSERT_TRUE(second.Acquire().ok());
-    EXPECT_EQ(FailureReason(available.Acquire()), "compilation_busy");
+    ASSERT_TRUE(first.acquire().ok());
+    ASSERT_TRUE(second.acquire().ok());
+    EXPECT_EQ(FailureReason(available.acquire()), "compilation_busy");
   }
-  EXPECT_TRUE(available.Acquire().ok());
+  EXPECT_TRUE(available.acquire().ok());
 }
 
 TEST(ScalarJitRuntime, ClockExceptionReleasesReservation) {
