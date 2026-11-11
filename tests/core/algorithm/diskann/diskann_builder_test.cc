@@ -182,6 +182,58 @@ TEST_F(DiskAnnBuilderTest, Fp16EntryPointSurvivesDistanceOverflow) {
   EXPECT_EQ(2, builder->stats().built_count());
 }
 
+TEST_F(DiskAnnBuilderTest, TwoVectorsRemainReachableWithParallelBuild) {
+  LoggerBroker::SetLevel(Logger::LEVEL_ERROR);
+  constexpr size_t dimension = 16;
+  IndexMeta meta(IndexMeta::DataType::DT_FP16, dimension);
+  meta.set_metric("SquaredEuclidean", 0, Params());
+  auto holder =
+      make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP16>>(dimension);
+  NumericalVector<Float16> first(dimension, 0.0f);
+  NumericalVector<Float16> second(dimension, 0.0f);
+  first[0] = 1.0f;
+  second[1] = 1.0f;
+  ASSERT_TRUE(holder->emplace(10, first));
+  ASSERT_TRUE(holder->emplace(20, second));
+  Params params;
+  params.set(PARAM_DISKANN_BUILDER_MAX_DEGREE, 8);
+  params.set(PARAM_DISKANN_BUILDER_LIST_SIZE, 20);
+  params.set(PARAM_DISKANN_BUILDER_MAX_PQ_CHUNK_NUM, 4);
+  params.set(PARAM_DISKANN_BUILDER_THREAD_COUNT, 4);
+  // Repeated builds exercise the seed/back-edge race under different worker
+  // schedules. Both nodes must remain reachable even when their scores tie.
+  for (size_t attempt = 0; attempt < 128; ++attempt) {
+    SCOPED_TRACE(attempt);
+    auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+    ASSERT_NE(builder, nullptr);
+    ASSERT_EQ(0, builder->init(meta, params));
+    ASSERT_EQ(0, builder->train(holder));
+    ASSERT_EQ(0, builder->build(holder));
+    const string path = _dir + "/two_vectors_" + to_string(attempt);
+    auto dumper = IndexFactory::CreateDumper("FileDumper");
+    ASSERT_NE(dumper, nullptr);
+    ASSERT_EQ(0, dumper->create(path));
+    ASSERT_EQ(0, builder->dump(dumper));
+    ASSERT_EQ(0, dumper->close());
+    auto storage = IndexFactory::CreateStorage("FileReadStorage");
+    ASSERT_NE(storage, nullptr);
+    ASSERT_EQ(0, storage->open(path, false));
+    auto searcher = IndexFactory::CreateSearcher("DiskAnnSearcher");
+    ASSERT_NE(searcher, nullptr);
+    ASSERT_EQ(0, searcher->init(Params()));
+    ASSERT_EQ(0, searcher->load(storage, IndexMetric::Pointer()));
+    auto context = searcher->create_context();
+    ASSERT_NE(context, nullptr);
+    context->set_topk(2);
+    ASSERT_EQ(0, searcher->search_impl(
+                     first.data(), IndexQueryMeta(meta.data_type(), dimension),
+                     context));
+    ASSERT_EQ(2U, context->result().size());
+    EXPECT_EQ(10U, context->result()[0].key());
+    EXPECT_EQ(20U, context->result()[1].key());
+  }
+}
+
 TEST_F(DiskAnnBuilderTest, MemoryLimitCapsPqChunkCount) {
   constexpr size_t kTestDim = 17;
   constexpr size_t kDocCnt = 16;

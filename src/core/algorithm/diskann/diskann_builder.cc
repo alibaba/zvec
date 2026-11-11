@@ -591,6 +591,13 @@ void DiskAnnBuilder::do_build(uint64_t idx, size_t step_size,
   ctx->set_list_size(list_size_);
 
   for (uint64_t id = idx; id < entity_.doc_cnt(); id += step_size) {
+    // The medoid is the initial graph seed. Its edges are supplied by the
+    // other nodes' inter_insert calls. Adding the seed concurrently can
+    // replace those edges with an empty list computed before they arrived.
+    if (id == entity_.medoid()) {
+      (*finished)++;
+      continue;
+    }
     ctx->reset_query(entity_.get_vector(id));
     ret = algo_->add_node(id, ctx);
     if (ailego_unlikely(ret != 0)) {
