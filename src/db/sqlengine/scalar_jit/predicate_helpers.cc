@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -27,6 +28,7 @@ namespace zvec::sqlengine::scalar_jit {
 namespace {
 
 struct LikeContext {
+  MemoryTicket memory;
   enum class Kind { kSubstring, kPrefix, kSuffix, kRegex };
   Kind kind = Kind::kRegex;
   std::string literal;
@@ -84,6 +86,7 @@ bool Like(const char *value, int32_t length, int64_t context) {
 }
 
 struct InContext {
+  MemoryTicket memory;
   bool has_null = false;
   std::unordered_set<uint64_t> numbers;
   std::vector<std::string> storage;
@@ -197,13 +200,60 @@ arrow::Result<std::shared_ptr<gandiva::FunctionRegistry>> MakeRegistry() {
 
 arrow::Result<std::shared_ptr<gandiva::Configuration>>
 ScalarPredicateConfiguration() {
-  static const auto registry = MakeRegistry();
-  ARROW_ASSIGN_OR_RAISE(auto functions, registry);
-  return std::make_shared<gandiva::Configuration>(true, std::move(functions));
+  if (!InOriginalProcess()) return Unavailable("forked_process");
+  struct RegistryState {
+    std::mutex mutex;
+    std::shared_ptr<gandiva::FunctionRegistry> functions;
+  };
+  static auto *state = new RegistryState;
+  std::lock_guard<std::mutex> lock(state->mutex);
+  if (!state->functions) {
+    ARROW_ASSIGN_OR_RAISE(state->functions, MakeRegistry());
+  }
+  return std::make_shared<gandiva::Configuration>(true, state->functions);
+}
+
+arrow::Result<size_t> InInputBytes(
+    const arrow::compute::SetLookupOptions &options,
+    const ExpressionLimits &limits) {
+  if (!options.value_set.is_arraylike() || !options.value_set.type())
+    return Unavailable("unsupported_expression");
+  const auto length = options.value_set.length();
+  if (length < 0 || static_cast<uint64_t>(length) > limits.in_values ||
+      static_cast<uint64_t>(length) > limits.input_bytes / sizeof(uint64_t))
+    return Unavailable("expression_limit");
+  size_t bytes = static_cast<size_t>(length) * sizeof(uint64_t);
+  auto check =
+      [&](const std::shared_ptr<arrow::ArrayData> &data) -> arrow::Status {
+    if (!data) return Unavailable("unsupported_expression");
+    if (data->type->id() == arrow::Type::STRING) {
+      for (const auto &buffer : data->buffers) {
+        if (!buffer) continue;
+        if (buffer->size() < 0 ||
+            static_cast<uint64_t>(buffer->size()) > limits.input_bytes - bytes)
+          return Unavailable("expression_limit");
+        bytes += buffer->size();
+      }
+    }
+    return arrow::Status::OK();
+  };
+  if (options.value_set.is_array()) {
+    ARROW_RETURN_NOT_OK(check(options.value_set.array()));
+  } else {
+    const auto &chunks = options.value_set.chunked_array()->chunks();
+    if (chunks.size() > limits.nodes) return Unavailable("expression_limit");
+    for (const auto &chunk : chunks) ARROW_RETURN_NOT_OK(check(chunk->data()));
+  }
+  return bytes;
 }
 
 arrow::Result<std::shared_ptr<const void>> MakeLikeContext(
     const arrow::compute::MatchSubstringOptions &options) {
+  if (!InOriginalProcess()) return Unavailable("forked_process");
+  const auto &limits = GetRuntimeConfig().limits;
+  if (limits.input_bytes < 7 ||
+      options.pattern.size() > (limits.input_bytes - 7) / 2)
+    return Unavailable("expression_limit");
   auto context = std::make_shared<LikeContext>();
   RE2::Options re_options(RE2::Quiet);
   re_options.set_encoding(RE2::Options::EncodingUTF8);
@@ -226,11 +276,19 @@ arrow::Result<std::shared_ptr<const void>> MakeLikeContext(
       return arrow::Status::Invalid("Invalid scalar LIKE pattern: ",
                                     context->regex->error());
   }
+  MemoryUsage bytes;
+  bytes.owned_bytes = sizeof(LikeContext) + context->literal.capacity();
+  if (context->regex)
+    bytes.owned_bytes += sizeof(RE2) + context->regex->pattern().capacity();
+  context->memory.Set("helper", bytes);
   return std::static_pointer_cast<const void>(context);
 }
 
 arrow::Result<std::shared_ptr<const void>> MakeInContext(
     const arrow::compute::SetLookupOptions &options, bool *has_null) {
+  if (!InOriginalProcess()) return Unavailable("forked_process");
+  ARROW_RETURN_NOT_OK(
+      InInputBytes(options, GetRuntimeConfig().limits).status());
   if (options.GetNullMatchingBehavior() !=
       arrow::compute::SetLookupOptions::INCONCLUSIVE)
     return arrow::Status::NotImplemented(
@@ -257,6 +315,14 @@ arrow::Result<std::shared_ptr<const void>> MakeInContext(
   context->strings.reserve(context->storage.size());
   for (const auto &value : context->storage) context->strings.insert(value);
   if (has_null) *has_null = context->has_null;
+  MemoryUsage bytes;
+  bytes.owned_bytes = sizeof(InContext) +
+                      context->storage.capacity() * sizeof(std::string) +
+                      context->numbers.size() * sizeof(uint64_t) +
+                      context->strings.size() * sizeof(std::string_view);
+  for (const auto &value : context->storage)
+    bytes.owned_bytes += value.capacity();
+  context->memory.Set("helper", bytes);
   return std::static_pointer_cast<const void>(context);
 }
 

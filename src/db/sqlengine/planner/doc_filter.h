@@ -56,6 +56,11 @@ class DocFilter : public IndexFilter {
  private:
   std::optional<bool> get_forward_bit(uint64_t id) const;
   std::optional<bool> is_matched_by_forward_filter(uint64_t id) const;
+  std::optional<bool> profiled_forward_filter(uint64_t id) const;
+  std::optional<bool> arrow_forward_filter(uint64_t id) const;
+  using ForwardEvaluator = std::optional<bool> (DocFilter::*)(uint64_t) const;
+  ForwardEvaluator forward_evaluator_ =
+      &DocFilter::is_matched_by_forward_filter;
 
  private:
   Segment::Ptr segment_;

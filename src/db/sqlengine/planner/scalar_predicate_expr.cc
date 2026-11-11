@@ -22,6 +22,7 @@
 #include <utility>
 #include <arrow/compute/api_scalar.h>
 #include <arrow/scalar.h>
+#include <gandiva/scalar_predicate_abi.h>
 #include <gandiva/tree_expr_builder.h>
 #include "db/sqlengine/scalar_jit/predicate_helpers.h"
 
@@ -107,6 +108,62 @@ arrow::Result<gandiva::NodePtr> MakeLiteral(const arrow::Datum &literal) {
       return arrow::Status::NotImplemented("Unsupported scalar literal");
   }
 }
+
+class InputPreflight {
+ public:
+  explicit InputPreflight(const scalar_jit::ExpressionLimits &limits)
+      : limits_(limits) {}
+  arrow::Status check(const cp::Expression &expression, size_t depth = 1) {
+    if (++nodes_ > limits_.nodes || depth > limits_.depth)
+      return scalar_jit::Unavailable("expression_limit");
+    if (const auto *literal = expression.literal()) {
+      ARROW_RETURN_NOT_OK(add(sizeof(gandiva::ScalarParameterSlot)));
+      if (literal->is_scalar() && literal->scalar() &&
+          literal->scalar()->is_valid) {
+        const auto *binary =
+            dynamic_cast<const arrow::BinaryScalar *>(literal->scalar().get());
+        if (binary && binary->value) {
+          if (binary->value->size() < 0)
+            return scalar_jit::Unavailable("unsupported_expression");
+          ARROW_RETURN_NOT_OK(add(binary->value->size()));
+        }
+      }
+    }
+    if (const auto *call = expression.call()) {
+      if (call->arguments.size() > limits_.nodes - nodes_)
+        return scalar_jit::Unavailable("expression_limit");
+      if (call->function_name.size() > limits_.key_bytes)
+        return scalar_jit::Unavailable("expression_limit");
+      if (auto *like = dynamic_cast<const cp::MatchSubstringOptions *>(
+              call->options.get())) {
+        if (limits_.input_bytes < 7 ||
+            like->pattern.size() > (limits_.input_bytes - 7) / 2)
+          return scalar_jit::Unavailable("expression_limit");
+        ARROW_RETURN_NOT_OK(add(like->pattern.size() * 2 + 7));
+      }
+      if (auto *set =
+              dynamic_cast<const cp::SetLookupOptions *>(call->options.get())) {
+        ARROW_ASSIGN_OR_RAISE(auto bytes,
+                              scalar_jit::InInputBytes(*set, limits_));
+        ARROW_RETURN_NOT_OK(add(bytes));
+      }
+      for (const auto &argument : call->arguments)
+        ARROW_RETURN_NOT_OK(check(argument, depth + 1));
+    }
+    return arrow::Status::OK();
+  }
+
+ private:
+  arrow::Status add(size_t bytes) {
+    if (bytes > limits_.input_bytes - bytes_)
+      return scalar_jit::Unavailable("expression_limit");
+    bytes_ += bytes;
+    return arrow::Status::OK();
+  }
+  scalar_jit::ExpressionLimits limits_;
+  size_t nodes_ = 0;
+  size_t bytes_ = 0;
+};
 
 class Converter {
  public:
@@ -275,7 +332,11 @@ class Converter {
 arrow::Result<gandiva::ConditionPtr> MakeScalarPredicateCondition(
     const arrow::compute::Expression &expression,
     const std::shared_ptr<arrow::Schema> &schema,
-    std::vector<std::shared_ptr<const void>> *query_owners) {
+    std::vector<std::shared_ptr<const void>> *query_owners) try {
+  if (!scalar_jit::InOriginalProcess())
+    return scalar_jit::Unavailable("forked_process");
+  const auto &limits = scalar_jit::GetRuntimeConfig().limits;
+  ARROW_RETURN_NOT_OK(InputPreflight(limits).check(expression));
   if (!schema || !expression.is_valid() || !expression.IsBound()) {
     return arrow::Status::NotImplemented(
         "Scalar JIT requires a schema and bound expression");
@@ -283,8 +344,14 @@ arrow::Result<gandiva::ConditionPtr> MakeScalarPredicateCondition(
   if (!expression.type() || expression.type()->id() != arrow::Type::BOOL) {
     return arrow::Status::NotImplemented("Scalar predicate must return bool");
   }
+  if (static_cast<size_t>(schema->num_fields()) > limits.nodes)
+    return scalar_jit::Unavailable("expression_limit");
+  size_t schema_bytes = 0;
   std::unordered_set<std::string> names;
   for (const auto &field : schema->fields()) {
+    if (field->name().size() > limits.key_bytes - schema_bytes)
+      return scalar_jit::Unavailable("expression_limit");
+    schema_bytes += field->name().size();
     if (!names.insert(field->name()).second) {
       return arrow::Status::NotImplemented(
           "Scalar JIT rejects duplicate field names");
@@ -296,6 +363,10 @@ arrow::Result<gandiva::ConditionPtr> MakeScalarPredicateCondition(
       Converter(*schema, query_owners ? &owners : nullptr).convert(expression));
   if (query_owners) *query_owners = std::move(owners);
   return TB::MakeCondition(std::move(root));
+} catch (const std::bad_alloc &) {
+  return arrow::Status::OutOfMemory("Scalar expression conversion");
+} catch (...) {
+  return scalar_jit::Unavailable("unsupported_expression");
 }
 
 }  // namespace zvec::sqlengine

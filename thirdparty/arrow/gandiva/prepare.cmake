@@ -83,6 +83,7 @@ foreach(_scalar_jit_file scalar_generator.h scalar_generator.cc
 endforeach()
 
 set(_ARROW_SCALAR_JIT_ARGS
+    -DCMAKE_EXPORT_COMPILE_COMMANDS=${CMAKE_EXPORT_COMPILE_COMMANDS}
     -DARROW_GANDIVA=ON
     -DARROW_BUILD_STATIC=ON
     -DARROW_LLVM_USE_SHARED=${ZVEC_SCALAR_JIT_LLVM_SHARED}

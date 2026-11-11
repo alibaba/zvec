@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 #include "db/sqlengine/scalar_jit/scalar_predicate.h"
@@ -24,14 +26,43 @@ struct PreparedScalarPredicate {
 
 struct ScalarPredicateCacheStats {
   uint64_t lookups = 0;  // Requests passing structural analysis.
-  uint64_t hits = 0;     // Includes requests joining an in-flight compile.
+  uint64_t hits = 0;     // Ready successful entries only.
   uint64_t misses = 0;
   uint64_t compilations = 0;  // Compile attempts, including failed attempts.
   uint64_t failed_compilations = 0;
   uint64_t evictions = 0;
-  uint64_t waits = 0;
+  uint64_t waits = 0;  // Kept for compatibility; preparation never waits.
+  uint64_t in_flight_bypasses = 0;
+  uint64_t admission_rejections = 0;
+  uint64_t backoff_hits = 0;
+  size_t active_compilations = 0;
+  size_t negative_entries = 0;
+  size_t live_programs = 0;
   size_t entries = 0;  // Completed resident entries, bounded by capacity.
+  MemoryUsage resident_memory;
+  MemoryUsage live_memory;
 };
+
+struct ScalarPredicateCacheOptions {
+  size_t capacity = 128;
+  size_t negative_capacity = 128;
+  size_t max_compilations = 2;
+  size_t max_live_programs = 256;
+  ScalarCompileOptions compile;
+  // Internal dependency-injection seams; production uses the native compiler
+  // and a monotonic clock. Neither callback is invoked under the cache mutex.
+  using Compiler =
+      std::function<arrow::Result<std::shared_ptr<ScalarPredicate>>(
+          std::shared_ptr<arrow::Schema>, std::shared_ptr<gandiva::Condition>,
+          std::shared_ptr<arrow::Schema>, const ScalarCompileOptions &)>;
+  Compiler compiler;
+  std::function<std::chrono::steady_clock::time_point()> now;
+};
+
+arrow::Status ValidatePredicateInputs(
+    const std::shared_ptr<arrow::Schema> &schema,
+    const std::shared_ptr<gandiva::Condition> &condition,
+    const ExpressionLimits &limits);
 
 /// Process-local, thread-safe LRU of parameterized executable predicates.
 ///
@@ -44,13 +75,14 @@ struct ScalarPredicateCacheStats {
 /// compile-time constants, which ARE included in the key.
 /// There is no algebraic/commutative canonicalization or SQL text parser.
 ///
-/// Capacity bounds completed cached programs; in-flight compilations are
-/// coalesced per key but may temporarily exceed capacity across distinct keys.
-/// Compilation runs outside the cache mutex. Bound handles keep evicted code
+/// Compilation runs outside the mutex with bounded single-flight admission.
+/// Busy requests return immediately for Arrow fallback. Negative entries have
+/// bounded retention/backoff. Bound handles keep evicted code and accounting
 /// alive. The scalar function registry is immutable after initialization.
 class ScalarPredicateCache {
  public:
   explicit ScalarPredicateCache(size_t capacity = 128);
+  explicit ScalarPredicateCache(ScalarPredicateCacheOptions options);
   ~ScalarPredicateCache();
   ScalarPredicateCache(const ScalarPredicateCache &) = delete;
   ScalarPredicateCache &operator=(const ScalarPredicateCache &) = delete;

@@ -1,3 +1,13 @@
+--- a/cpp/src/gandiva/engine.h
++++ b/cpp/src/gandiva/engine.h
+@@ -94,6 +94,7 @@
+   llvm::Constant* CreateGlobalStringPtr(const std::string& string);
+
+  private:
++  friend class ScalarGenerator;
+   Engine(const std::shared_ptr<Configuration>& conf,
+          std::unique_ptr<llvm::orc::LLJIT> lljit,
+          std::unique_ptr<llvm::TargetMachine> target_machine, bool cached);
 --- a/cpp/src/gandiva/annotator.h
 +++ b/cpp/src/gandiva/annotator.h
 @@ -62,6 +62,12 @@

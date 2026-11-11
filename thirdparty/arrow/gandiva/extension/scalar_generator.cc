@@ -17,6 +17,10 @@
 
 #include "gandiva/scalar_generator.h"
 
+#include <llvm/ExecutionEngine/Orc/LLJIT.h>
+#include <llvm/ExecutionEngine/Orc/ObjectTransformLayer.h>
+#include <llvm/Support/MemoryBuffer.h>
+
 #include <utility>
 
 #include "arrow/array/data.h"
@@ -31,7 +35,16 @@
 namespace gandiva {
 
 ScalarGenerator::ScalarGenerator(std::unique_ptr<LLVMGenerator> generator)
-    : generator_(std::move(generator)) {}
+    : generator_(std::move(generator)) {
+  // Only the scalar engine installs this observer. Pass ownership through
+  // without retaining another copy; ordinary batch generation is untouched.
+  generator_->engine_->lljit_->getObjTransformLayer().setTransform(
+      [this](std::unique_ptr<llvm::MemoryBuffer> object)
+          -> llvm::Expected<std::unique_ptr<llvm::MemoryBuffer>> {
+        object_bytes_ += object->getBufferSize();
+        return object;
+      });
+}
 
 ScalarGenerator::~ScalarGenerator() = default;
 
@@ -118,21 +131,21 @@ arrow::Status ScalarGenerator::BindBuffers(
     // storage is valid for an empty string payload, but not for nonempty data.
     const bool variable_width = descriptor.HasOffsetsIdx();
     const size_t value_index = variable_width ? 2 : 1;
-    ARROW_RETURN_IF(
-        array.buffers.size() <= value_index,
-        arrow::Status::Invalid("Missing Arrow buffers for ", entry.first));
+    ARROW_RETURN_IF(array.buffers.size() <= value_index,
+                    arrow::Status::Invalid("Missing Arrow buffers for ", entry.first));
     for (size_t index = 0; index <= value_index; ++index) {
       const auto& buffer = array.buffers[index];
       ARROW_RETURN_IF(buffer && !buffer->is_cpu(),
                       arrow::Status::NotImplemented("Scalar inputs require CPU buffers"));
-      ARROW_RETURN_IF(buffer && buffer->size() > 0 && !buffer->data(),
-                      arrow::Status::Invalid("Arrow buffer has no data for ", entry.first));
+      ARROW_RETURN_IF(
+          buffer && buffer->size() > 0 && !buffer->data(),
+          arrow::Status::Invalid("Arrow buffer has no data for ", entry.first));
     }
     const auto& values = array.buffers[value_index];
-    ARROW_RETURN_IF(batch.num_rows() > 0 &&
-                        (!values || (!values->data() && values->size() != 0) ||
-                         (!variable_width && !values->data())),
-                    arrow::Status::Invalid("Missing value buffer for ", entry.first));
+    ARROW_RETURN_IF(
+        batch.num_rows() > 0 && (!values || (!values->data() && values->size() != 0) ||
+                                 (!variable_width && !values->data())),
+        arrow::Status::Invalid("Missing value buffer for ", entry.first));
     ARROW_RETURN_IF(array.null_count > 0 && !array.buffers[0],
                     arrow::Status::Invalid("Missing validity buffer for ", entry.first));
     static const uint8_t empty_value = 0;
@@ -143,9 +156,9 @@ arrow::Status ScalarGenerator::BindBuffers(
     (*offsets)[descriptor.validity_idx()] = array.offset;
     (*offsets)[descriptor.data_idx()] = array.offset;
     if (variable_width) {
-      ARROW_RETURN_IF(batch.num_rows() > 0 &&
-                          (!array.buffers[1] || !array.buffers[1]->data()),
-                      arrow::Status::Invalid("Missing offsets buffer for ", entry.first));
+      ARROW_RETURN_IF(
+          batch.num_rows() > 0 && (!array.buffers[1] || !array.buffers[1]->data()),
+          arrow::Status::Invalid("Missing offsets buffer for ", entry.first));
       (*buffers)[descriptor.offsets_idx()] =
           array.buffers[1] ? array.buffers[1]->data() : nullptr;
       (*offsets)[descriptor.offsets_idx()] = array.offset;

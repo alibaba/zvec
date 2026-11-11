@@ -16,6 +16,8 @@ endif()
 file(GLOB_RECURSE ALL_DB_SRCS *.cc *.c *.h)
 if(NOT ZVEC_ENABLE_SCALAR_JIT)
   list(FILTER ALL_DB_SRCS EXCLUDE REGEX "/sqlengine/scalar_jit/")
+  # Diagnostics and Arrow execution sampling remain available in OFF builds.
+  list(APPEND ALL_DB_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/sqlengine/scalar_jit/runtime.cc")
 endif()
 
 # Ensure bitpacked_simd_sse41.cc is compiled with SSE4.1 flag and

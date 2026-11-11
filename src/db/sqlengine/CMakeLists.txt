@@ -11,7 +11,7 @@ endif()
 
 cc_library(
     NAME zvec_sqlengine STATIC STRICT
-    SRCS *.cc common/*.cc antlr/gen/*.cc parser/*.cc analyzer/*.cc planner/*.cc planner/ops/*.cc planner/physical_rules/*.cc ${SCALAR_JIT_SRCS}
+    SRCS *.cc common/*.cc antlr/gen/*.cc parser/*.cc analyzer/*.cc planner/*.cc planner/ops/*.cc planner/physical_rules/*.cc scalar_jit/runtime.cc ${SCALAR_JIT_SRCS}
     LIBS zvec_index
          zvec_common
          antlr4

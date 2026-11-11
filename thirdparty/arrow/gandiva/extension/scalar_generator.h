@@ -55,6 +55,8 @@ class GANDIVA_EXPORT ScalarGenerator {
 
   LLVMTypes* types() const;
   const std::string& ir() const;
+  // Emitted object-file bytes, not executable pages or LLVM heap usage.
+  size_t object_bytes() const { return object_bytes_; }
   const void* const* holders() const;
   const std::unordered_map<std::string, FieldDescriptorPtr>& input_descriptors() const;
 
@@ -64,6 +66,7 @@ class GANDIVA_EXPORT ScalarGenerator {
                         const std::unordered_set<int>& parameter_buffers,
                         const std::string& function_name);
 
+  size_t object_bytes_ = 0;
   std::unique_ptr<LLVMGenerator> generator_;
   // Keep decomposed expression/function holders alive for every bound query.
   ValueValidityPairPtr expression_;

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "db/sqlengine/scalar_jit/scalar_predicate_cache.h"
 #include <algorithm>
-#include <condition_variable>
+#include <chrono>
 #include <cstring>
 #include <limits>
 #include <mutex>
@@ -28,7 +28,8 @@ void Token(std::string *key, const std::string &value) {
   key->append(value);
 }
 
-arrow::Status AddType(std::string *key, const gandiva::DataTypePtr &type) {
+arrow::Status AddType(std::string *key, const gandiva::DataTypePtr &type,
+                      size_t limit) {
   ARROW_RETURN_IF(!type, arrow::Status::Invalid("Expression has a null type"));
   switch (type->id()) {
     case arrow::Type::BOOL:
@@ -43,8 +44,13 @@ arrow::Status AddType(std::string *key, const gandiva::DataTypePtr &type) {
     case arrow::Type::FLOAT:
     case arrow::Type::DOUBLE:
     case arrow::Type::STRING:
-    case arrow::Type::BINARY:
-      Token(key, std::to_string(type->id()));
+    case arrow::Type::BINARY: {
+      const auto value = std::to_string(type->id());
+      const auto bytes = std::to_string(value.size()).size() + 1 + value.size();
+      if (key->size() > limit || bytes > limit - key->size())
+        return Unavailable("expression_limit");
+      Token(key, value);
+    }
       return arrow::Status::OK();
     default:
       return arrow::Status::NotImplemented("Cached scalar type: ",
@@ -83,14 +89,26 @@ arrow::Result<std::shared_ptr<arrow::Scalar>> LiteralValue(
 // the parameterized tree on a cache miss; no temporary AST is built on hits.
 class Analyzer : public gandiva::NodeVisitor {
  public:
-  Analyzer(gandiva::SchemaPtr schema, bool materialize)
-      : schema_(std::move(schema)), materialize_(materialize) {
-    Token(&key, "gandiva21-scalar-parameter-v1");
+  Analyzer(gandiva::SchemaPtr schema, bool materialize,
+           const ExpressionLimits &limits)
+      : schema_(std::move(schema)), materialize_(materialize), limits_(limits) {
+    token("gandiva21-scalar-parameter-v1");
   }
 
   arrow::Status analyze(const gandiva::NodePtr &root) {
     ARROW_RETURN_IF(!root, arrow::Status::Invalid("Null expression node"));
-    return root->Accept(*this);
+    if (++nodes_ > limits_.nodes || depth_ >= limits_.depth)
+      return Unavailable("expression_limit");
+    ++depth_;
+    struct Pop {
+      size_t &depth;
+      ~Pop() {
+        --depth;
+      }
+    } pop{depth_};
+    ARROW_RETURN_NOT_OK(root->Accept(*this));
+    if (key.size() > limits_.key_bytes) return Unavailable("expression_limit");
+    return arrow::Status::OK();
   }
 
   arrow::Status Visit(const gandiva::FieldNode &node) override {
@@ -99,21 +117,26 @@ class Analyzer : public gandiva::NodeVisitor {
     ARROW_RETURN_IF(index < 0 || !schema_->field(index)->Equals(node.field()),
                     arrow::Status::Invalid("Field does not match data schema: ",
                                            node.field()->name()));
-    Token(&key, "field");
-    Token(&key, node.field()->name());
-    Token(&key, std::to_string(index));
-    Token(&key, node.field()->nullable() ? "nullable" : "nonnullable");
-    ARROW_RETURN_NOT_OK(AddType(&key, node.return_type()));
+    token("field");
+    token(node.field()->name());
+    token(std::to_string(index));
+    token(node.field()->nullable() ? "nullable" : "nonnullable");
+    ARROW_RETURN_NOT_OK(AddType(&key, node.return_type(), limits_.key_bytes));
     if (materialize_)
       result = gandiva::TreeExprBuilder::MakeField(node.field());
     return arrow::Status::OK();
   }
 
   arrow::Status Visit(const gandiva::LiteralNode &node) override {
-    Token(&key, "parameter");
-    ARROW_RETURN_NOT_OK(AddType(&key, node.return_type()));
+    token("parameter");
+    ARROW_RETURN_NOT_OK(AddType(&key, node.return_type(), limits_.key_bytes));
     const auto ordinal = parameters.size();
-    Token(&key, std::to_string(ordinal));
+    token(std::to_string(ordinal));
+    size_t bytes = sizeof(gandiva::ScalarParameterSlot);
+    if (!node.is_null() && (node.return_type()->id() == arrow::Type::STRING ||
+                            node.return_type()->id() == arrow::Type::BINARY))
+      bytes += std::get<std::string>(node.holder()).size();
+    ARROW_RETURN_NOT_OK(input(bytes));
     ARROW_ASSIGN_OR_RAISE(auto value, LiteralValue(node));
     parameters.push_back(std::move(value));
     if (materialize_) {
@@ -130,10 +153,10 @@ class Analyzer : public gandiva::NodeVisitor {
   arrow::Status Visit(const gandiva::FunctionNode &node) override {
     ARROW_RETURN_IF(!node.descriptor(),
                     arrow::Status::Invalid("Null function descriptor"));
-    Token(&key, "function");
-    Token(&key, node.descriptor()->name());
-    ARROW_RETURN_NOT_OK(AddType(&key, node.return_type()));
-    Token(&key, std::to_string(node.children().size()));
+    token("function");
+    token(node.descriptor()->name());
+    ARROW_RETURN_NOT_OK(AddType(&key, node.return_type(), limits_.key_bytes));
+    token(std::to_string(node.children().size()));
     gandiva::NodeVector children;
     for (const auto &child : node.children()) {
       ARROW_RETURN_NOT_OK(analyze(child));
@@ -147,8 +170,8 @@ class Analyzer : public gandiva::NodeVisitor {
   }
 
   arrow::Status Visit(const gandiva::IfNode &node) override {
-    Token(&key, "if");
-    ARROW_RETURN_NOT_OK(AddType(&key, node.return_type()));
+    token("if");
+    ARROW_RETURN_NOT_OK(AddType(&key, node.return_type(), limits_.key_bytes));
     ARROW_RETURN_NOT_OK(analyze(node.condition()));
     auto condition = result;
     ARROW_RETURN_NOT_OK(analyze(node.then_node()));
@@ -165,8 +188,8 @@ class Analyzer : public gandiva::NodeVisitor {
     ARROW_RETURN_IF(node.expr_type() != gandiva::BooleanNode::AND &&
                         node.expr_type() != gandiva::BooleanNode::OR,
                     arrow::Status::Invalid("Unknown boolean node kind"));
-    Token(&key, node.expr_type() == gandiva::BooleanNode::AND ? "and" : "or");
-    Token(&key, std::to_string(node.children().size()));
+    token(node.expr_type() == gandiva::BooleanNode::AND ? "and" : "or");
+    token(std::to_string(node.children().size()));
     gandiva::NodeVector children;
     for (const auto &child : node.children()) {
       ARROW_RETURN_NOT_OK(analyze(child));
@@ -183,20 +206,24 @@ class Analyzer : public gandiva::NodeVisitor {
   template <class T>
   arrow::Status visit_in(const gandiva::InExpressionNode<T> &node,
                          const char *type_name) {
-    Token(&key, "in");
-    Token(&key, type_name);
+    token("in");
+    token(type_name);
     // Include an explicit IN type when one was supplied, since validation and
     // native helper selection depend on it, not just on the C++ set type.
-    Token(&key, node.type() ? "explicit-type" : "default-type");
-    if (node.type()) ARROW_RETURN_NOT_OK(AddType(&key, node.type()));
+    token(node.type() ? "explicit-type" : "default-type");
+    if (node.type())
+      ARROW_RETURN_NOT_OK(AddType(&key, node.type(), limits_.key_bytes));
+    if (node.values().size() > limits_.in_values)
+      return Unavailable("expression_limit");
+    ARROW_RETURN_NOT_OK(input(node.values().size() * sizeof(T)));
     std::vector<std::string> values;
     values.reserve(node.values().size());
     for (const auto &value : node.values()) {
       values.emplace_back(reinterpret_cast<const char *>(&value), sizeof(T));
     }
     std::sort(values.begin(), values.end());
-    Token(&key, std::to_string(values.size()));
-    for (const auto &value : values) Token(&key, value);
+    token(std::to_string(values.size()));
+    for (const auto &value : values) token(value);
     ARROW_RETURN_NOT_OK(analyze(node.eval_expr()));
     if (materialize_) {
       result = std::make_shared<gandiva::InExpressionNode<T>>(
@@ -232,6 +259,25 @@ class Analyzer : public gandiva::NodeVisitor {
  private:
   gandiva::SchemaPtr schema_;
   bool materialize_;
+  ExpressionLimits limits_;
+  size_t nodes_ = 0;
+  size_t depth_ = 0;
+  size_t input_bytes_ = 0;
+
+  void token(const std::string &value) {
+    const auto prefix = std::to_string(value.size()).size() + 1;
+    if (key.size() > limits_.key_bytes ||
+        prefix > limits_.key_bytes - key.size() ||
+        value.size() > limits_.key_bytes - key.size() - prefix)
+      throw std::length_error("expression_limit");
+    Token(std::addressof(key), value);
+  }
+  arrow::Status input(size_t bytes) {
+    if (bytes > limits_.input_bytes - input_bytes_)
+      return Unavailable("expression_limit");
+    input_bytes_ += bytes;
+    return arrow::Status::OK();
+  }
 };
 
 struct CacheKey {
@@ -252,53 +298,118 @@ struct CacheKeyHash {
   }
 };
 
+arrow::Status ValidateSchema(const std::shared_ptr<arrow::Schema> &schema,
+                             const ExpressionLimits &limits) {
+  if (!schema) return arrow::Status::Invalid("Schema is required");
+  if (static_cast<size_t>(schema->num_fields()) > limits.nodes)
+    return Unavailable("expression_limit");
+  size_t bytes = 0;
+  std::unordered_set<std::string> names;
+  for (const auto &field : schema->fields()) {
+    if (!field) return arrow::Status::Invalid("Null schema field");
+    if (field->name().size() > limits.key_bytes - bytes)
+      return Unavailable("expression_limit");
+    bytes += field->name().size();
+    if (!names.insert(field->name()).second)
+      return Unavailable("unsupported_expression");
+  }
+  return arrow::Status::OK();
+}
 }  // namespace
+
+arrow::Status ValidatePredicateInputs(
+    const std::shared_ptr<arrow::Schema> &schema,
+    const std::shared_ptr<gandiva::Condition> &condition,
+    const ExpressionLimits &limits) {
+  if (!schema || !condition || !condition->root())
+    return arrow::Status::Invalid("Schema, condition and root are required");
+  try {
+    ARROW_RETURN_NOT_OK(ValidateSchema(schema, limits));
+    Analyzer analyzer(schema, false, limits);
+    return analyzer.analyze(condition->root());
+  } catch (const std::length_error &) {
+    return Unavailable("expression_limit");
+  } catch (const std::bad_alloc &) {
+    return arrow::Status::OutOfMemory("Scalar expression analysis");
+  } catch (const std::exception &) {
+    return arrow::Status::Invalid("Malformed scalar expression");
+  }
+}
 
 class ScalarPredicateCache::Impl {
  public:
-  explicit Impl(size_t capacity) : capacity(capacity) {
-    if (capacity == 0)
-      throw std::invalid_argument("Cache capacity must be positive");
+  explicit Impl(ScalarPredicateCacheOptions value) : options(std::move(value)) {
+    if (!options.capacity || !options.negative_capacity ||
+        !options.max_compilations || !options.max_live_programs)
+      throw std::invalid_argument("Scalar JIT cache limits must be positive");
+    if (!options.compiler)
+      options.compiler = ScalarPredicate::MakeParameterized;
+    if (!options.now) options.now = std::chrono::steady_clock::now;
   }
 
   struct Entry {
-    std::condition_variable ready;
     bool complete = false;
     uint64_t last_use = 0;
+    uint32_t failures = 0;
+    std::chrono::steady_clock::time_point retry_at;
     arrow::Result<std::shared_ptr<ScalarPredicate>> result =
         arrow::Status::Invalid("Compilation pending");
   };
+  struct LiveProgram {
+    std::weak_ptr<ScalarPredicate> program;
+    MemoryUsage bytes;
+  };
 
-  // LRU selection is O(capacity) only on eviction. Hits update a timestamp
-  // without allocating list nodes; neither path is used inside evaluate.
-  std::shared_ptr<Entry> evict() {
-    // One completed entry was just added under the mutex, so at most one
-    // eviction is needed. Destroy the retired LLVM engine after unlocking.
-    if (stats.entries <= capacity) return {};
+  std::shared_ptr<Entry> evict(bool negative) {
+    const auto count = negative ? stats.negative_entries : stats.entries;
+    const auto capacity =
+        negative ? options.negative_capacity : options.capacity;
+    if (count <= capacity) return {};
     auto oldest = entries.end();
     for (auto it = entries.begin(); it != entries.end(); ++it) {
-      if (!it->second->complete) continue;
+      if (!it->second->complete || it->second->result.ok() == negative)
+        continue;
       if (oldest == entries.end() ||
           it->second->last_use < oldest->second->last_use)
         oldest = it;
     }
     auto retired = std::move(oldest->second);
     entries.erase(oldest);
-    --stats.entries;
+    if (negative)
+      --stats.negative_entries;
+    else
+      --stats.entries;
     ++stats.evictions;
-    return retired;
+    return retired;  // Destroy LLVM outside the cache mutex.
   }
 
-  size_t capacity;
+  size_t prune_live() {
+    live.erase(std::remove_if(
+                   live.begin(), live.end(),
+                   [](const LiveProgram &p) { return p.program.expired(); }),
+               live.end());
+    return live.size();
+  }
+
+  ScalarPredicateCacheOptions options;
   mutable std::mutex mutex;
   uint64_t clock = 0;
   ScalarPredicateCacheStats stats;
+  std::vector<LiveProgram> live;
   std::unordered_map<CacheKey, std::shared_ptr<Entry>, CacheKeyHash> entries;
 };
 
 ScalarPredicateCache::ScalarPredicateCache(size_t capacity)
-    : impl_(std::make_unique<Impl>(capacity)) {}
-ScalarPredicateCache::~ScalarPredicateCache() = default;
+    : ScalarPredicateCache([capacity] {
+        ScalarPredicateCacheOptions options;
+        options.capacity = capacity;
+        return options;
+      }()) {}
+ScalarPredicateCache::ScalarPredicateCache(ScalarPredicateCacheOptions options)
+    : impl_(std::make_unique<Impl>(std::move(options))) {}
+ScalarPredicateCache::~ScalarPredicateCache() {
+  if (!InOriginalProcess()) (void)impl_.release();
+}
 
 arrow::Result<std::shared_ptr<BoundScalarPredicate>>
 PreparedScalarPredicate::bind(std::shared_ptr<arrow::RecordBatch> batch) const {
@@ -310,97 +421,176 @@ PreparedScalarPredicate::bind(std::shared_ptr<arrow::RecordBatch> batch) const {
 arrow::Result<PreparedScalarPredicate> ScalarPredicateCache::prepare(
     std::shared_ptr<arrow::Schema> schema,
     std::shared_ptr<gandiva::Condition> condition,
-    std::vector<std::shared_ptr<const void>> query_owners) {
-  ARROW_RETURN_IF(
-      !schema || !condition || !condition->root(),
-      arrow::Status::Invalid("Schema, condition and root are required"));
-  ARROW_RETURN_IF(
-      !condition->root()->return_type() ||
-          condition->root()->return_type()->id() != arrow::Type::BOOL,
-      arrow::Status::Invalid("Condition must return bool"));
-  std::unordered_set<std::string> names;
-  for (const auto &field : schema->fields()) {
-    ARROW_RETURN_IF(
-        !names.insert(field->name()).second,
-        arrow::Status::Invalid("Duplicate schema field: ", field->name()));
-  }
-  Analyzer analysis(schema, false);
-  try {
-    ARROW_RETURN_NOT_OK(analysis.analyze(condition->root()));
-  } catch (const std::exception &error) {
-    return arrow::Status::Invalid("Expression analysis failed: ", error.what());
-  }
+    std::vector<std::shared_ptr<const void>> query_owners) try {
+  const auto unavailable = UnavailableReason();
+  if (!unavailable.empty()) return Unavailable(unavailable.c_str());
+  const auto &options = impl_->options;
+  ARROW_RETURN_NOT_OK(ValidateSchema(schema, options.compile.limits));
+  if (!condition || !condition->root())
+    return Unavailable("unsupported_expression");
+  if (!condition->root()->return_type() ||
+      condition->root()->return_type()->id() != arrow::Type::BOOL)
+    return arrow::Status::Invalid("Condition must return bool");
+  Analyzer analysis(schema, false, options.compile.limits);
+  ARROW_RETURN_NOT_OK(analysis.analyze(condition->root()));
   CacheKey key{schema, std::move(analysis.key)};
+  const auto now = options.now();
   std::shared_ptr<Impl::Entry> entry;
+  struct Reservation {
+    Impl *impl;
+    const CacheKey &key;
+    bool active = false;
+    ~Reservation() {
+      if (!active) return;
+      std::lock_guard<std::mutex> lock(impl->mutex);
+      --impl->stats.active_compilations;
+      impl->entries.erase(key);
+    }
+  } reservation{impl_.get(), key};
   {
-    std::unique_lock<std::mutex> lock(impl_->mutex);
+    std::lock_guard<std::mutex> lock(impl_->mutex);
     ++impl_->stats.lookups;
     auto found = impl_->entries.find(key);
     if (found != impl_->entries.end()) {
-      ++impl_->stats.hits;
       entry = found->second;
-      if (!entry->complete) {
-        ++impl_->stats.waits;
-        entry->ready.wait(lock, [&entry] { return entry->complete; });
-      }
       entry->last_use = ++impl_->clock;
-      ARROW_RETURN_NOT_OK(entry->result.status());
-      return PreparedScalarPredicate{entry->result.ValueOrDie(),
-                                     std::move(analysis.parameters), true,
-                                     std::move(query_owners)};
+      if (!entry->complete) {
+        ++impl_->stats.in_flight_bypasses;
+        return Unavailable("compilation_busy");
+      }
+      if (entry->result.ok()) {
+        ++impl_->stats.hits;
+        return PreparedScalarPredicate{entry->result.ValueOrDie(),
+                                       std::move(analysis.parameters), true,
+                                       std::move(query_owners)};
+      }
+      if (entry->retry_at == std::chrono::steady_clock::time_point::max())
+        return entry->result.status();
+      if (now < entry->retry_at) {
+        ++impl_->stats.backoff_hits;
+        return Unavailable("compile_backoff");
+      }
     }
     ++impl_->stats.misses;
+    if (impl_->stats.active_compilations >= options.max_compilations) {
+      ++impl_->stats.admission_rejections;
+      return Unavailable("compilation_busy");
+    }
+    const auto live = impl_->prune_live();
+    if (live >= options.max_live_programs ||
+        impl_->stats.active_compilations >= options.max_live_programs - live) {
+      ++impl_->stats.admission_rejections;
+      return Unavailable("live_program_limit");
+    }
+    // Allocate bookkeeping before reserving a compilation slot. Publication
+    // cannot allocate even when multiple admitted compilers finish together.
+    impl_->live.reserve(live + impl_->stats.active_compilations + 1);
+    if (entry) {
+      --impl_->stats.negative_entries;
+      entry->complete = false;
+    } else {
+      entry = std::make_shared<Impl::Entry>();
+      impl_->entries.emplace(key, entry);
+    }
+    ++impl_->stats.active_compilations;
     ++impl_->stats.compilations;
-    entry = std::make_shared<Impl::Entry>();
-    impl_->entries.emplace(key, entry);
+    reservation.active = true;
   }
 
-  // Always publish success or failure and wake waiters, including C++
-  // exceptions thrown by an unsupported/malformed tree or by the compiler.
-  // Failures are not retained, so a future call can retry rather than finding a
-  // poisoned entry.
   arrow::Result<std::shared_ptr<ScalarPredicate>> program =
       arrow::Status::UnknownError("Compilation did not run");
   try {
-    Analyzer lowered(schema, true);
-    const auto status = lowered.analyze(condition->root());
-    if (!status.ok()) {
+    Analyzer lowered(schema, true, options.compile.limits);
+    const auto status = [&] {
+      StageTimer lowering("lowering");
+      return lowered.analyze(condition->root());
+    }();
+    if (!status.ok())
       program = status;
-    } else {
-      program = ScalarPredicate::MakeParameterized(
+    else
+      program = options.compiler(
           schema, gandiva::TreeExprBuilder::MakeCondition(lowered.result),
-          arrow::schema(lowered.parameter_fields));
-    }
-  } catch (const std::exception &error) {
-    program = arrow::Status::UnknownError("Scalar compilation failed: ",
-                                          error.what());
+          arrow::schema(lowered.parameter_fields), options.compile);
+    if (program.ok() && !*program)
+      program = arrow::Status::Invalid("Compiler returned an empty program");
+  } catch (const std::bad_alloc &) {
+    program =
+        arrow::Status::OutOfMemory("Scalar compilation allocation failed");
   } catch (...) {
     program = arrow::Status::UnknownError("Scalar compilation failed");
   }
+  auto finished = now;
+  try {
+    finished = options.now();
+  } catch (...) {
+    program = arrow::Status::UnknownError("Scalar clock failed");
+  }
+  const auto reason =
+      program.ok() ? std::string{} : FailureReason(program.status());
+  const bool rejected =
+      reason == "compilation_busy" || reason == "live_program_limit" ||
+      reason == "expression_limit" || reason == "initialization_failed";
+  if (!program.ok() && !rejected &&
+      (program.status().IsInvalid() || program.status().IsNotImplemented()))
+    program = Unavailable("unsupported_expression");
   std::shared_ptr<Impl::Entry> retired;
   {
     std::lock_guard<std::mutex> lock(impl_->mutex);
+    --impl_->stats.active_compilations;
+    reservation.active = false;
     entry->result = program;
     entry->complete = true;
     entry->last_use = ++impl_->clock;
     if (program.ok()) {
       ++impl_->stats.entries;
-      retired = impl_->evict();
+      impl_->live.push_back({*program, (*program)->memory_usage()});
+      retired = impl_->evict(false);
+    } else if (rejected) {
+      ++impl_->stats.admission_rejections;
+      --impl_->stats.compilations;
+      impl_->entries.erase(key);
     } else {
       ++impl_->stats.failed_compilations;
-      impl_->entries.erase(key);
+      ++impl_->stats.negative_entries;
+      const auto delay =
+          std::min<uint32_t>(60, 1u << std::min<uint32_t>(entry->failures, 6));
+      entry->failures = std::min<uint32_t>(entry->failures + 1, 7);
+      entry->retry_at =
+          program.status().IsInvalid() || program.status().IsNotImplemented()
+              ? std::chrono::steady_clock::time_point::max()
+              : finished + std::chrono::seconds(delay);
+      retired = impl_->evict(true);
     }
   }
-  entry->ready.notify_all();
   ARROW_RETURN_NOT_OK(program.status());
-  return PreparedScalarPredicate{program.ValueOrDie(),
-                                 std::move(analysis.parameters), false,
-                                 std::move(query_owners)};
+  return PreparedScalarPredicate{*program, std::move(analysis.parameters),
+                                 false, std::move(query_owners)};
+} catch (const std::length_error &) {
+  return Unavailable("expression_limit");
+} catch (const std::bad_alloc &) {
+  return arrow::Status::OutOfMemory("Scalar cache allocation");
+} catch (...) {
+  return arrow::Status::UnknownError("Scalar cache preparation failed");
 }
 
 ScalarPredicateCacheStats ScalarPredicateCache::stats() const {
+  if (!InOriginalProcess()) return {};
   std::lock_guard<std::mutex> lock(impl_->mutex);
-  return impl_->stats;
+  auto result = impl_->stats;
+  auto add = [](MemoryUsage &sum, MemoryUsage bytes) {
+    sum.object_bytes += bytes.object_bytes;
+    sum.ir_bytes += bytes.ir_bytes;
+    sum.owned_bytes += bytes.owned_bytes;
+  };
+  for (const auto &p : impl_->live) {
+    if (p.program.expired()) continue;
+    ++result.live_programs;
+    add(result.live_memory, p.bytes);
+  }
+  for (const auto &entry : impl_->entries)
+    if (entry.second->complete && entry.second->result.ok())
+      add(result.resident_memory, (*entry.second->result)->memory_usage());
+  return result;
 }
 
 }  // namespace zvec::sqlengine::scalar_jit

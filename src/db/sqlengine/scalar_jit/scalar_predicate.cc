@@ -26,6 +26,7 @@
 #include "arrow/scalar.h"
 #include "arrow/type.h"
 #include "db/sqlengine/scalar_jit/predicate_helpers.h"
+#include "db/sqlengine/scalar_jit/scalar_predicate_cache.h"
 #include "gandiva/condition.h"
 #include "gandiva/configuration.h"
 #include "gandiva/expr_validator.h"
@@ -264,7 +265,19 @@ BoundScalarPredicate::BoundScalarPredicate(
       buffers_(std::move(buffers)),
       offsets_(std::move(offsets)),
       holders_(holders),
-      num_rows_(num_rows) {}
+      num_rows_(num_rows) {
+  MemoryUsage bytes;
+  bytes.owned_bytes =
+      sizeof(*this) +
+      parameter_slots_.capacity() * sizeof(gandiva::ScalarParameterSlot) +
+      parameter_values_.capacity() * sizeof(parameter_values_[0]) +
+      owners_.capacity() * sizeof(owners_[0]) +
+      buffers_.capacity() * sizeof(buffers_[0]) +
+      offsets_.capacity() * sizeof(offsets_[0]);
+  for (const auto &value : parameter_values_)
+    if (value) bytes.owned_bytes += value->capacity();
+  memory_ticket_.Set("binding", bytes, 1);
+}
 
 arrow::Result<bool> BoundScalarPredicate::evaluate_checked(int64_t row) const {
   if (row < 0 || row >= num_rows_) {
@@ -279,27 +292,44 @@ ScalarPredicate::ScalarPredicate(
     std::shared_ptr<arrow::Schema> parameter_schema,
     std::unique_ptr<gandiva::ScalarGenerator> generator,
     gandiva::ScalarEvalFunction function,
-    std::vector<ScalarDataBufferBinding> data_buffer_bindings)
-    : schema_(std::move(schema)),
+    std::vector<ScalarDataBufferBinding> data_buffer_bindings,
+    ExpressionLimits limits)
+    : limits_(limits),
+      schema_(std::move(schema)),
       parameter_schema_(std::move(parameter_schema)),
       generator_(std::move(generator)),
       function_(function),
-      data_buffer_bindings_(std::move(data_buffer_bindings)) {}
+      data_buffer_bindings_(std::move(data_buffer_bindings)) {
+  memory_usage_.object_bytes = generator_->object_bytes();
+  memory_usage_.ir_bytes =
+      generator_->ir().empty() ? 0 : generator_->ir().capacity();
+  memory_usage_.owned_bytes =
+      sizeof(*this) +
+      data_buffer_bindings_.capacity() * sizeof(ScalarDataBufferBinding);
+  memory_ticket_.Set("program", memory_usage_);
+}
 
-ScalarPredicate::~ScalarPredicate() = default;
+ScalarPredicate::~ScalarPredicate() {
+  // LLVM teardown may take inherited locks. Never destroy it in a fork child.
+  if (!InOriginalProcess()) (void)generator_.release();
+}
 
 arrow::Result<std::shared_ptr<ScalarPredicate>> ScalarPredicate::Make(
     std::shared_ptr<arrow::Schema> schema,
-    std::shared_ptr<gandiva::Condition> condition) {
+    std::shared_ptr<gandiva::Condition> condition,
+    const ScalarCompileOptions &options) {
   return MakeParameterized(std::move(schema), std::move(condition),
-                           arrow::schema({}));
+                           arrow::schema({}), options);
 }
 
 arrow::Result<std::shared_ptr<ScalarPredicate>>
 ScalarPredicate::MakeParameterized(
     std::shared_ptr<arrow::Schema> schema,
     std::shared_ptr<gandiva::Condition> condition,
-    std::shared_ptr<arrow::Schema> parameter_schema) {
+    std::shared_ptr<arrow::Schema> parameter_schema,
+    const ScalarCompileOptions &options) try {
+  const auto unavailable = UnavailableReason();
+  if (!unavailable.empty()) return Unavailable(unavailable.c_str());
   ARROW_RETURN_IF(!schema, arrow::Status::Invalid("Schema cannot be null"));
   ARROW_RETURN_IF(!parameter_schema,
                   arrow::Status::Invalid("Parameter schema cannot be null"));
@@ -309,6 +339,18 @@ ScalarPredicate::MakeParameterized(
       !condition->root()->return_type() ||
           condition->root()->return_type()->id() != arrow::Type::BOOL,
       arrow::Status::Invalid("Scalar condition root must return bool"));
+  if (static_cast<size_t>(schema->num_fields()) > options.limits.nodes ||
+      static_cast<size_t>(parameter_schema->num_fields()) >
+          options.limits.nodes)
+    return Unavailable("expression_limit");
+  auto validation_fields = schema->fields();
+  validation_fields.insert(validation_fields.end(),
+                           parameter_schema->fields().begin(),
+                           parameter_schema->fields().end());
+  ARROW_RETURN_NOT_OK(ValidatePredicateInputs(arrow::schema(validation_fields),
+                                              condition, options.limits));
+  CompilePermit permit;
+  ARROW_RETURN_NOT_OK(permit.Acquire());
   std::unordered_set<std::string> field_names;
   for (const auto &field : schema->fields()) {
     ARROW_RETURN_IF(
@@ -329,11 +371,16 @@ ScalarPredicate::MakeParameterized(
   auto augmented_schema = arrow::schema(augmented_fields, schema->metadata());
 
   // A private configuration avoids modifying Gandiva's process-wide default.
-  // Capture optimized IR for verification; only compilation is affected.
-  ARROW_ASSIGN_OR_RAISE(auto configuration, ScalarPredicateConfiguration());
-  configuration->set_dump_ir(true);
-  ARROW_ASSIGN_OR_RAISE(auto generator,
-                        gandiva::ScalarGenerator::Make(configuration));
+  std::shared_ptr<gandiva::Configuration> configuration;
+  std::unique_ptr<gandiva::ScalarGenerator> generator;
+  ARROW_RETURN_NOT_OK(InitializeBackend([&]() -> arrow::Status {
+    ARROW_ASSIGN_OR_RAISE(configuration, ScalarPredicateConfiguration());
+    configuration->set_dump_ir(options.dump_ir);
+    ARROW_ASSIGN_OR_RAISE(generator,
+                          gandiva::ScalarGenerator::Make(configuration));
+    return arrow::Status::OK();
+  }));
+  StageTimer compilation("compilation");
   gandiva::ExprValidator validator(generator->types(), augmented_schema,
                                    configuration->function_registry());
   ARROW_RETURN_NOT_OK(validator.Validate(condition));
@@ -363,7 +410,13 @@ ScalarPredicate::MakeParameterized(
             });
   return std::shared_ptr<ScalarPredicate>(new ScalarPredicate(
       std::move(schema), std::move(parameter_schema), std::move(generator),
-      function, std::move(data_bindings)));
+      function, std::move(data_bindings), options.limits));
+} catch (const std::bad_alloc &) {
+  return arrow::Status::OutOfMemory("Scalar compilation allocation");
+} catch (const std::exception &) {
+  return arrow::Status::UnknownError("Scalar compiler exception");
+} catch (...) {
+  return arrow::Status::UnknownError("Scalar compiler exception");
 }
 
 arrow::Result<std::shared_ptr<BoundScalarPredicate>> ScalarPredicate::bind(
@@ -374,7 +427,25 @@ arrow::Result<std::shared_ptr<BoundScalarPredicate>> ScalarPredicate::bind(
 arrow::Result<std::shared_ptr<BoundScalarPredicate>> ScalarPredicate::bind(
     std::shared_ptr<arrow::RecordBatch> batch,
     const std::vector<std::shared_ptr<arrow::Scalar>> &params,
-    std::vector<std::shared_ptr<const void>> owners) const {
+    std::vector<std::shared_ptr<const void>> owners) const try {
+  if (!InOriginalProcess()) return Unavailable("forked_process");
+  if (params.size() >
+      limits_.input_bytes / sizeof(gandiva::ScalarParameterSlot))
+    return Unavailable("expression_limit");
+  size_t payload = params.size() * sizeof(gandiva::ScalarParameterSlot);
+  for (const auto &param : params) {
+    if (param && param->is_valid) {
+      const auto *binary =
+          dynamic_cast<const arrow::BinaryScalar *>(param.get());
+      if (binary && binary->value) {
+        const auto size = binary->value->size();
+        if (size < 0 ||
+            static_cast<uint64_t>(size) > limits_.input_bytes - payload)
+          return Unavailable("expression_limit");
+        payload += size;
+      }
+    }
+  }
   ARROW_RETURN_IF(
       params.size() != static_cast<size_t>(num_parameters()),
       arrow::Status::Invalid("Expected ", num_parameters(),
@@ -414,6 +485,10 @@ arrow::Result<std::shared_ptr<BoundScalarPredicate>> ScalarPredicate::bind(
       std::move(parameter_slots), std::move(parameter_values),
       std::move(owners), std::move(buffers), std::move(offsets),
       generator_->holders(), num_rows));
+} catch (const std::bad_alloc &) {
+  return arrow::Status::OutOfMemory("Scalar binding allocation");
+} catch (...) {
+  return Unavailable("binding_failed");
 }
 
 int ScalarPredicate::num_parameters() const {

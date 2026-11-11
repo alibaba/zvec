@@ -46,7 +46,12 @@ jobs:
             cmake.define.OPENSSL_ROOT_DIR=/opt/zvec-jit-openssl
             cmake.define.OPENSSL_USE_STATIC_LIBS=ON
             cmake.define.ENABLE_NATIVE=OFF
-          CIBW_ENVIRONMENT_LINUX: CMAKE_GENERATOR=Ninja CMAKE_BUILD_PARALLEL_LEVEL=2
+            cmake.define.CMAKE_EXPORT_COMPILE_COMMANDS=ON
+          CIBW_ENVIRONMENT_LINUX: CMAKE_GENERATOR=Ninja CMAKE_BUILD_PARALLEL_LEVEL=2 ZVEC_SCALAR_JIT_PROFILE=1
+          CIBW_BEFORE_TEST: >-
+            python {project}/.github/scripts/check_scalar_jit_artifact.py
+            --build-directory {project}/build --llvm-dis /opt/llvm-20/bin/llvm-dis
+            --report /host${{ github.workspace }}/wheel-build-audit.json
           CIBW_TEST_COMMAND: python {project}/.github/scripts/scalar_jit_wheel_smoke.py
           CIBW_TEST_REQUIRES: numpy
         run: |
@@ -63,7 +68,8 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/work" -w /work "$RUNTIME_IMAGE" \
             /opt/python/cp312-cp312/bin/python \
-            .github/scripts/check_scalar_jit_artifact.py wheelhouse/*.whl jit-sdk
+            .github/scripts/check_scalar_jit_artifact.py wheelhouse/*.whl jit-sdk \
+            --report artifact-audit.json
           docker run --rm -v "$PWD:/work" -w /work "$RUNTIME_IMAGE" bash -c '
             set -euo pipefail
             test ! -d /opt/llvm-20
@@ -73,7 +79,8 @@ jobs:
             fi
             /opt/python/cp312-cp312/bin/python -m venv /tmp/jit-wheel
             /tmp/jit-wheel/bin/python -m pip install /work/wheelhouse/*.whl
-            /tmp/jit-wheel/bin/python .github/scripts/scalar_jit_wheel_smoke.py --log clean-runtime.log
+            /tmp/jit-wheel/bin/python .github/scripts/scalar_jit_wheel_smoke.py \
+              --artifact /work/wheelhouse/*.whl --log clean-runtime.log --report clean-runtime.json
             /work/build-jit-sdk-smoke/c_smoke
             /work/build-jit-sdk-smoke/cpp_smoke
             /opt/python/cp312-cp312/bin/python .github/scripts/scalar_jit_sdk_smoke.py \
@@ -82,25 +89,51 @@ jobs:
               --library-directory jit-sdk/lib --output-directory sdk-jit-clean-logs
           '
 
-      - name: Test the same wheel with AVX2 and no AVX512
+      - name: Test identical artifacts on native, AVX2, and SSE4.2 CPUs
         run: |
           sudo apt-get update
           sudo apt-get install -y qemu-user
           python -m venv wheel-venv
-          wheel-venv/bin/python -m pip install wheelhouse/*.whl
-          wheel-venv/bin/python .github/scripts/scalar_jit_wheel_smoke.py --log native-cpu.log
-          qemu-x86_64 -cpu Haswell-v4 wheel-venv/bin/python \
-            .github/scripts/scalar_jit_wheel_smoke.py \
-            --expect-avx2-only --log haswell-cpu.log
-          ZVEC_SCALAR_JIT=0 qemu-x86_64 -cpu Haswell-v4 wheel-venv/bin/python \
-            .github/scripts/scalar_jit_wheel_smoke.py --expect-jit off
+          wheels=(wheelhouse/*.whl)
+          test "${#wheels[@]}" -eq 1
+          wheel-venv/bin/python -m pip install "${wheels[0]}" pytest
+          mkdir -p wheel-jit-cpu-logs
+          failed=0
+          for cpu in native Haswell-v4 Nehalem; do
+            prefix=()
+            feature=()
+            if [[ "$cpu" != native ]]; then
+              prefix=(qemu-x86_64 -cpu "$cpu")
+              if [[ "$cpu" == Haswell-v4 ]]; then
+                feature=(--expect-avx2-only)
+              else
+                feature=(--expect-sse42-only)
+              fi
+            fi
+            for mode in on off; do
+              enabled=1
+              [[ "$mode" == on ]] || enabled=0
+              ZVEC_SCALAR_JIT=$enabled ZVEC_SCALAR_JIT_PROFILE=1 \
+                timeout 15m "${prefix[@]}" wheel-venv/bin/python \
+                .github/scripts/scalar_jit_wheel_smoke.py --expect-jit "$mode" \
+                --artifact "${wheels[0]}" "${feature[@]}" \
+                --log "wheel-jit-cpu-logs/$cpu-$mode.log" \
+                --report "wheel-jit-cpu-logs/$cpu-$mode.json" || failed=1
+            done
+          done
+          # Children must run natively; they must not escape QEMU's CPUID mask.
+          wheel-venv/bin/python -m pytest python/tests/test_scalar_jit_runtime.py \
+            .github/scripts/test_scalar_jit_artifact.py -o addopts= -v \
+            --junitxml=wheel-jit-cpu-logs/lifecycle.xml || failed=1
           python .github/scripts/scalar_jit_sdk_smoke.py \
             --binary build-jit-sdk-smoke/scalar_jit_smoke \
             --collection build-jit-sdk-smoke/jit-collection \
             --library-directory jit-sdk/lib --output-directory sdk-jit-cpu-logs \
-            --qemu "$(command -v qemu-x86_64)"
+            --qemu "$(command -v qemu-x86_64)" || failed=1
+          exit "$failed"
 
       - name: Upload experimental packages and compatibility evidence
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: scalar-jit-manylinux-x64
@@ -108,8 +141,12 @@ jobs:
             wheelhouse/*.whl
             zvec-sdk-linux-amd64-scalar-jit.tar.gz
             clean-runtime.log
-            native-cpu.log
-            haswell-cpu.log
+            clean-runtime.json
+            artifact-audit.json
+            wheel-build-audit.json
+            sdk-build-audit.json
+            build-jit-sdk/scalar-tests.xml
+            wheel-jit-cpu-logs/
             sdk-jit-*-logs/
           if-no-files-found: error
           retention-days: 7

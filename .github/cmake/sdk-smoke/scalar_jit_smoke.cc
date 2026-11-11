@@ -82,7 +82,13 @@ void Build(const std::string &path) {
       "value", zvec::DataType::INT32, true,
       std::make_shared<zvec::InvertIndexParams>()));
   schema.add_field(std::make_shared<zvec::FieldSchema>(
-      "label", zvec::DataType::STRING, false));
+      "label", zvec::DataType::STRING, false,
+      std::make_shared<zvec::InvertIndexParams>()));
+  schema.add_field(std::make_shared<zvec::FieldSchema>(
+      "rating", zvec::DataType::FLOAT, true,
+      std::make_shared<zvec::InvertIndexParams>()));
+  schema.add_field(
+      std::make_shared<zvec::FieldSchema>("flag", zvec::DataType::BOOL, false));
   schema.add_field(std::make_shared<zvec::FieldSchema>(
       "vector", zvec::DataType::VECTOR_FP32, kDimension, false,
       std::make_shared<zvec::HnswIndexParams>(zvec::MetricType::L2)));
@@ -99,6 +105,11 @@ void Build(const std::string &path) {
         doc.set<int32_t>("value", id);
       }
       doc.set<std::string>("label", "label_" + std::to_string(id));
+      if (id % 17 == 0)
+        doc.set_null("rating");
+      else
+        doc.set<float>("rating", static_cast<float>(id) / 4.0F);
+      doc.set<bool>("flag", id % 7 != 0);
       doc.set<std::vector<float>>("vector", Vector(static_cast<float>(id)));
       docs.emplace_back(std::move(doc));
     }
@@ -128,6 +139,30 @@ void Query(const std::string &path, std::ostream &output) {
     zvec::SearchQuery query;
     query.topk_ = kTopk;
     query.filter_ = "value > " + std::to_string(threshold);
+    switch (q % 6) {
+      case 1:
+        query.filter_ += " AND (rating >= 0.0 OR value > 0)";
+        break;
+      case 2:
+        query.filter_ += " AND (value > 0 OR value < 1536)";
+        break;
+      case 3:
+        query.filter_ += " AND label >= 'label_0'";
+        break;
+      case 4:
+        query.filter_ += " AND label LIKE 'label_%'";
+        break;
+      case 5:
+        query.filter_ += " AND value IN (";
+        for (int32_t value = threshold + 1; value < kRows; ++value) {
+          if (value != threshold + 1) query.filter_ += ',';
+          query.filter_ += std::to_string(value);
+        }
+        query.filter_ += ')';
+        break;
+      default:
+        break;
+    }
     query.output_fields_ = {"value", "label"};
     query.target_.field_name_ = "vector";
     query.target_.query_params_ =

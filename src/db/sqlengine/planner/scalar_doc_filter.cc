@@ -13,50 +13,65 @@ namespace {
 
 scalar_jit::ScalarPredicateCache &QueryCache() {
   // Compiled code only: query values and data addresses never enter the key.
-  static scalar_jit::ScalarPredicateCache cache(128);
-  return cache;
+  static auto *cache = new scalar_jit::ScalarPredicateCache([] {
+    scalar_jit::ScalarPredicateCacheOptions options;
+    const auto &config = scalar_jit::GetRuntimeConfig();
+    options.max_compilations = config.max_compilations;
+    options.max_live_programs = config.max_live_programs;
+    options.compile.limits = config.limits;
+    options.compile.dump_ir = config.dump_ir;
+    return options;
+  }());
+  return *cache;
 }
 
 }  // namespace
 
 bool ScalarDocFilter::Enabled() {
-  // Allow disabling the optional backend without rebuilding. Read once at
-  // process startup/first query.
-  static const bool enabled = [] {
-    const char *value = std::getenv("ZVEC_SCALAR_JIT");
-    return value == nullptr || std::strcmp(value, "0") != 0;
-  }();
-  return enabled;
+  return scalar_jit::UnavailableReason().empty();
 }
 
 scalar_jit::ScalarPredicateCacheStats ScalarDocFilter::CacheStats() {
+  if (!scalar_jit::InOriginalProcess()) return {};
   return QueryCache().stats();
 }
 
 arrow::Result<std::unique_ptr<ScalarDocFilter>> ScalarDocFilter::Make(
     const arrow::compute::Expression &expression,
-    const std::shared_ptr<arrow::Table> &snapshot) {
+    const std::shared_ptr<arrow::Table> &snapshot) try {
+  const auto reason = scalar_jit::UnavailableReason();
+  if (!reason.empty()) return scalar_jit::Unavailable(reason.c_str());
   if (!snapshot || snapshot->num_rows() <= 0) {
-    return arrow::Status::NotImplemented("No immutable forward snapshot");
+    return scalar_jit::Unavailable("unsupported_snapshot");
   }
   ARROW_RETURN_NOT_OK(snapshot->Validate());
   return MakeValidated(expression, snapshot);
+} catch (...) {
+  return scalar_jit::Unavailable("unsupported_snapshot");
 }
 
 arrow::Result<std::unique_ptr<ScalarDocFilter>> ScalarDocFilter::MakeValidated(
     const arrow::compute::Expression &expression,
-    const std::shared_ptr<arrow::Table> &snapshot) {
+    const std::shared_ptr<arrow::Table> &snapshot) try {
+  const auto reason = scalar_jit::UnavailableReason();
+  if (!reason.empty()) return scalar_jit::Unavailable(reason.c_str());
   if (!snapshot || snapshot->num_rows() <= 0) {
-    return arrow::Status::NotImplemented("No immutable forward snapshot");
+    return scalar_jit::Unavailable("unsupported_snapshot");
   }
   std::vector<std::shared_ptr<const void>> query_owners;
-  ARROW_ASSIGN_OR_RAISE(auto condition,
-                        MakeScalarPredicateCondition(
-                            expression, snapshot->schema(), &query_owners));
-  ARROW_ASSIGN_OR_RAISE(
-      auto prepared,
-      QueryCache().prepare(snapshot->schema(), std::move(condition),
-                           std::move(query_owners)));
+  auto condition = MakeScalarPredicateCondition(expression, snapshot->schema(),
+                                                &query_owners);
+  if (!condition.ok())
+    return scalar_jit::Unavailable(
+        scalar_jit::FailureReason(condition.status(), "unsupported_expression")
+            .c_str());
+  auto preparation = QueryCache().prepare(snapshot->schema(), *condition,
+                                          std::move(query_owners));
+  if (!preparation.ok())
+    return scalar_jit::Unavailable(
+        scalar_jit::FailureReason(preparation.status()).c_str());
+  auto prepared = std::move(preparation).ValueUnsafe();
+  scalar_jit::StageTimer binding_timer("binding");
   auto result = std::unique_ptr<ScalarDocFilter>(new ScalarDocFilter);
   result->snapshot_ = snapshot;
 
@@ -188,7 +203,16 @@ arrow::Result<std::unique_ptr<ScalarDocFilter>> ScalarDocFilter::MakeValidated(
       break;
     }
   }
+  scalar_jit::MemoryUsage bytes;
+  bytes.owned_bytes =
+      sizeof(ScalarDocFilter) +
+      result->buffers_.capacity() * sizeof(result->buffers_[0]) +
+      result->offsets_.capacity() * sizeof(result->offsets_[0]) +
+      result->ends_.capacity() * sizeof(result->ends_[0]);
+  result->memory_ticket_.Set("descriptor", bytes, 1);
   return result;
+} catch (...) {
+  return scalar_jit::Unavailable("binding_failed");
 }
 
 }  // namespace zvec::sqlengine

@@ -57,6 +57,7 @@ class ScalarDocFilter {
       const std::shared_ptr<arrow::Table> &snapshot);
   // prototype_ owns executable code, holders and this query's scalar slots.
   // snapshot_ owns every Arrow buffer referenced by the flat descriptors.
+  scalar_jit::MemoryTicket memory_ticket_;
   std::shared_ptr<scalar_jit::BoundScalarPredicate> prototype_;
   std::shared_ptr<arrow::Table> snapshot_;
   std::vector<const uint8_t *> buffers_;

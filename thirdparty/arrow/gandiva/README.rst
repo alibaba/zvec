@@ -59,18 +59,127 @@ deployment target or undo CPU-specific compiler flags. Do not use
 execution machine's CPU features; compiled predicates are process-local and
 are not shipped in the wheel. Cross, mobile, Windows and universal macOS builds
 are unsupported when ON. OFF adds no LLVM/OpenSSL dependency.
-Set ``ZVEC_SCALAR_JIT=0`` before the first query to disable the fast path.
+Set ``ZVEC_SCALAR_JIT=0`` before loading zvec to disable the fast path.
 
 Linux release packaging is exercised by the opt-in
 ``.github/workflows/scalar-jit-linux.yml`` workflow. Its pinned manylinux_2_28
 image builds LLVM 20.1.8 and PIC OpenSSL from verified sources, then builds
 and checks both a repaired wheel and the shared SDK. It tests the same artifacts
-on the runner CPU and under QEMU Haswell with AVX2 enabled and AVX512 disabled,
-requiring successful JIT binding and matching query results in both cases.
+on the runner CPU, QEMU Haswell-v4 (AVX2, no AVX512) and QEMU Nehalem
+(SSE4.2, no AVX), with runtime ON and OFF. Acceptance requires artifact SHA-256
+identity, CPUID checks, sampled execution evidence and matching query results.
 QEMU is a compatibility check, not a hardware performance benchmark. Arrow's
 existing SSE4.2 x86 baseline is unchanged; generic LLVM/OpenSSL flags do not
 make the full package support older SSE2-only CPUs. The experimental workflow
 does not enable JIT in the normal release matrix.
+
+Initial release qualification is limited to the experimental Linux x86-64
+CPython 3.12 wheel and Linux SDK. Local macOS builds are development-only.
+The workflow audits final licenses, private LLVM symbols, ABI ceilings and
+effective runtime/helper compiler flags, with explicit dispatched-kernel
+exemptions. QEMU does not replace physical CPU performance testing or full
+release regression qualification. Ordinary wheel and SDK entry points remain
+explicitly OFF; this workflow does not publish packages.
+
+The unchanged planner only selects the callback when an entirely inverted
+condition becomes entirely forward after optimization. LIKE and IN cannot
+currently take that route. Artifact smoke checks their results on ordinary
+plans; native scalar differential tests exercise their generated helper calls.
+Other smoke predicates prove actual callback execution. A prepared binding is
+not, by itself, execution evidence.
+
+Admission and failure policy
+----------------------------
+
+Ready entries bind immediately. An admitted miss compiles synchronously outside
+the cache lock. In-flight shapes and exhausted capacity bypass JIT immediately,
+without waiting, queuing, background compilation or prewarming. Defaults are:
+
+* 128 positive and 128 negative completed entries, bounded independently.
+* Two concurrent compilations and 256 live programs, including evicted programs
+  retained by active bindings. A live slot is reserved before compilation.
+* 1,024 expression nodes, depth 64, and a 64 KiB structural key.
+* 1 MiB copied parameter/helper inputs per preparation and 4,096 IN elements.
+
+These are acceleration admission limits, not SQL-language limits. Rejected
+expressions continue through Arrow. Checks precede recursive lowering and helper
+construction and also cover direct compiler entry points. There is no hard
+byte-based cap on LLVM's heap. Unsupported/malformed compiled shapes remain in
+the bounded negative cache until eviction. Transient failures retry after
+monotonic per-shape exponential backoff from one to 60 seconds. Admission
+rejections and binding failures do not poison valid compiled shapes.
+Deterministic initialization failures disable further attempts for the process;
+allocation failures remain retryable.
+
+Set environment options before loading zvec; they are frozen on first runtime
+access and each cache retains immutable compiler options:
+
+* ``ZVEC_SCALAR_JIT=0``: disable acceleration.
+* ``ZVEC_SCALAR_JIT_MAX_COMPILATIONS`` and
+  ``ZVEC_SCALAR_JIT_MAX_LIVE_PROGRAMS``: positive decimal process limits.
+  Empty, malformed, zero and overflowing overrides disable acceleration with
+  ``invalid_configuration``.
+* ``ZVEC_SCALAR_JIT_DUMP_IR=1``: retain optimized IR, OFF by default. Internal
+  compiler options can also explicitly request capture.
+* ``ZVEC_SCALAR_JIT_PROFILE=1``: select the separate sampled evaluator at query
+  preparation. The ordinary evaluator has no clocks or diagnostic counters.
+
+Diagnostics and ownership
+-------------------------
+
+``zvec.scalar_jit_info()`` is present in ON and OFF builds and does not initialize
+LLVM. Version 1 returns ``built``, ``enabled``, ``initialized``, ``disable_reason``,
+``initialization_error`` (sanitized last status code), effective ``limits``,
+``profile``, ``dump_ir``, OS-usable x86 ``cpu_features``, ``cache``, ``timings``,
+``selections``, ``execution_samples`` and ``memory``. Counters are process-local,
+best-effort diagnostic snapshots, not an atomic transaction across all owners.
+
+Cache fields distinguish hits, misses, in-flight bypasses, admission rejections,
+compilation attempts/failures, backoff, evictions and resident counts. Selection
+counts describe preparations only. Timing categories contain counts and total
+nanoseconds for initialization, compilation, miss lowering, binding/descriptor
+construction and total preparation. Execution profiling independently samples
+the first and every 1,024th call per thread/backend (JIT and Arrow); these are
+sampled counts/times, never exact total evaluations. Unsampled calls only touch
+thread-local state. Aggregation survives normal static destruction ordering.
+
+Stable fallback identifiers are ``build_disabled``, ``runtime_disabled``,
+``invalid_configuration``, ``forked_process``, ``unsupported_expression``,
+``unsupported_snapshot``, ``expression_limit``, ``compilation_busy``,
+``live_program_limit``, ``compile_backoff``, ``initialization_failed``,
+``compile_failed`` and ``binding_failed``. JIT diagnostic messages use stable
+reasons and status codes, not literal values or addresses.
+
+Memory reporting distinguishes cache-resident program bytes from live programs,
+bindings, descriptors and helper owners. Emitted object-file bytes are a code-size
+proxy, not executable-page measurements. IR capacity and owned wrapper/vector/
+parameter storage are counted at their ownership boundaries and released only
+with the final owner, even after cache eviction or destruction. Borrowed Arrow
+column buffers are excluded; shared snapshot references are reported separately.
+LLVM heap, allocator overhead, registry, RE2 internals and hash-table overhead
+are unmeasured. Do not interpret these metrics as total JIT RSS. Object-size
+observation does not retain an extra object copy and is inactive in ordinary
+Gandiva batch generation.
+
+Process lifecycle
+-----------------
+
+Use spawn/exec workers: each initializes an independent runtime and cache. A
+native PID guard rejects entry to inherited JIT/cache/compiler state in a fork
+child before inherited locks or lazy initialization, returning ``forked_process``
+for new preparations. Inherited LLVM/cache objects are neither reset nor destroyed
+in the child. Diagnostics there report ``accounting_available=False`` and zero
+counters rather than inspect inherited owners. Reusing inherited active
+collections, bound predicates or ongoing query objects is unsupported. This is
+not a claim of general zvec fork safety.
+
+Process-level diagnostic/cache/registry owners intentionally survive static
+teardown. Applications must join query threads before orderly shutdown. There is
+no unsafe LLVM compilation cancellation during Python interpreter teardown.
+Native tests use compiler/clock injection for failures and blocked-compiler fork
+coverage; Python lifecycle tests use bounded subprocesses, spawn, quiescent fork,
+concurrent first queries, isolated parameters and drained threaded shutdown.
+Run lifecycle tests natively, outside QEMU.
 
 Update the patch, extension and provenance hashes together. Apply revised
 patches to a clean Arrow source tree; conflicts must be reviewed rather than

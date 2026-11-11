@@ -593,7 +593,7 @@ TEST_F(ScalarDocFilterTest, StringAndLargeInSetsAreBoundQueryParameters) {
     if (variant == 2) members = {"a", "é"};
     if (variant == 3) {
       members.clear();
-      for (int value = 0; value < 20000; ++value)
+      for (int value = 0; value < 4096; ++value)
         members.push_back(std::to_string(value));
     }
     auto expression =
@@ -604,6 +604,25 @@ TEST_F(ScalarDocFilterTest, StringAndLargeInSetsAreBoundQueryParameters) {
     CheckArrow(cp::is_valid(expression), table);
     if (variant == 0) compilations = ScalarDocFilter::CacheStats().compilations;
     EXPECT_EQ(ScalarDocFilter::CacheStats().compilations, compilations);
+  }
+}
+
+TEST_F(ScalarDocFilterTest, OversizedHelpersRemainValidArrowExpressions) {
+  auto schema = arrow::schema({arrow::field("text_limit", arrow::utf8())});
+  auto values = Array<arrow::StringBuilder, std::string>({"a", "b"});
+  auto table = arrow::Table::Make(schema, {Chunks(values, {2})});
+  auto field = cp::field_ref("text_limit");
+  std::vector<std::optional<std::string>> members(4097, "a");
+  for (auto expression :
+       {In(field, Array<arrow::StringBuilder>(members)),
+        cp::call("match_like", {field},
+                 cp::MatchSubstringOptions(std::string(1024 * 1024, 'a')))}) {
+    auto bound = Unwrap(expression.Bind(*schema));
+    auto filter = ScalarDocFilter::Make(bound, table);
+    EXPECT_EQ(scalar_jit::FailureReason(filter.status()), "expression_limit");
+    arrow::TableBatchReader reader(*table);
+    auto batch = Unwrap(reader.Next());
+    EXPECT_TRUE(cp::ExecuteScalarExpression(bound, cp::ExecBatch(*batch)).ok());
   }
 }
 

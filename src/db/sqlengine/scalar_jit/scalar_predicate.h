@@ -24,6 +24,7 @@
 #include <vector>
 #include "arrow/result.h"
 #include "arrow/type_fwd.h"
+#include "db/sqlengine/scalar_jit/runtime.h"
 #include "gandiva/scalar_predicate_abi.h"
 
 namespace gandiva {
@@ -34,6 +35,11 @@ class ScalarGenerator;
 namespace zvec::sqlengine::scalar_jit {
 
 class ScalarPredicate;
+
+struct ScalarCompileOptions {
+  ExpressionLimits limits;
+  bool dump_ir = GetRuntimeConfig().dump_ir;
+};
 
 // Compile-time mapping for a referenced data column. Parameter fields are
 // excluded. Indices address the same flat buffer/offset arrays exposed by a
@@ -99,6 +105,7 @@ class BoundScalarPredicate {
       std::vector<const uint8_t *> buffers, std::vector<int64_t> offsets,
       const void *const *holders, int64_t num_rows);
 
+  MemoryTicket memory_ticket_;
   std::shared_ptr<const ScalarPredicate> compiled_;
   std::shared_ptr<arrow::RecordBatch> batch_;
   gandiva::ScalarEvalFunction function_;
@@ -130,7 +137,8 @@ class ScalarPredicate : public std::enable_shared_from_this<ScalarPredicate> {
  public:
   static arrow::Result<std::shared_ptr<ScalarPredicate>> Make(
       std::shared_ptr<arrow::Schema> schema,
-      std::shared_ptr<gandiva::Condition> condition);
+      std::shared_ptr<gandiva::Condition> condition,
+      const ScalarCompileOptions &options = {});
 
   /// Parameter fields are referenced with ordinary Gandiva FieldNodes. Their
   /// names must be unique and disjoint from data fields. The expression is
@@ -140,7 +148,8 @@ class ScalarPredicate : public std::enable_shared_from_this<ScalarPredicate> {
   static arrow::Result<std::shared_ptr<ScalarPredicate>> MakeParameterized(
       std::shared_ptr<arrow::Schema> data_schema,
       std::shared_ptr<gandiva::Condition> condition,
-      std::shared_ptr<arrow::Schema> parameter_schema);
+      std::shared_ptr<arrow::Schema> parameter_schema,
+      const ScalarCompileOptions &options = {});
 
   ~ScalarPredicate();
 
@@ -175,14 +184,21 @@ class ScalarPredicate : public std::enable_shared_from_this<ScalarPredicate> {
     return function_;
   }
   const std::string &dump_ir() const;
+  MemoryUsage memory_usage() const {
+    return memory_usage_;
+  }
 
  private:
   ScalarPredicate(std::shared_ptr<arrow::Schema> schema,
                   std::shared_ptr<arrow::Schema> parameter_schema,
                   std::unique_ptr<gandiva::ScalarGenerator> generator,
                   gandiva::ScalarEvalFunction function,
-                  std::vector<ScalarDataBufferBinding> data_buffer_bindings);
+                  std::vector<ScalarDataBufferBinding> data_buffer_bindings,
+                  ExpressionLimits limits);
 
+  MemoryTicket memory_ticket_;
+  MemoryUsage memory_usage_;
+  ExpressionLimits limits_;
   std::shared_ptr<arrow::Schema> schema_;
   std::shared_ptr<arrow::Schema> parameter_schema_;
   std::unique_ptr<gandiva::ScalarGenerator> generator_;
