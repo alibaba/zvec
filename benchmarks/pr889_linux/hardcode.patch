@@ -1,0 +1,115 @@
+--- a/src/db/sqlengine/planner/scalar_doc_filter.h
++++ b/src/db/sqlengine/planner/scalar_doc_filter.h
+@@ -38,10 +38,18 @@
+     const size_t base = index * buffer_count_;
+     // The query's parameter pointers are already in each descriptor. Neither
+     // Arrow objects nor mutable shared state are touched on this path.
++#ifdef PR889_BENCH_HARDCODE
++    // Benchmark-only INT32 comparison; identical chunk routing and snapshot
++    // lifetime, no code generation, per-row Arrow access or shared-state lock.
++    const auto *values = reinterpret_cast<const int32_t *>(buffers_[base]);
++    return values[offsets_[base] + id - begin] >
++           static_cast<int32_t>(offsets_[base + 1]);
++#else
+     return prototype_->function()(
+         buffer_count_ ? buffers_.data() + base : nullptr,
+         buffer_count_ ? offsets_.data() + base : nullptr, prototype_->holders(),
+         static_cast<int64_t>(id - begin));
++#endif
+   }
+ 
+   size_t num_batches() const {
+--- a/src/db/sqlengine/planner/scalar_doc_filter.cc
++++ b/src/db/sqlengine/planner/scalar_doc_filter.cc
+@@ -6,6 +6,7 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include <arrow/record_batch.h>
++#include <arrow/scalar.h>
+ #include "db/sqlengine/planner/scalar_predicate_expr.h"
+ 
+ namespace zvec::sqlengine {
+@@ -49,6 +50,61 @@
+   if (!snapshot || snapshot->num_rows() <= 0) {
+     return arrow::Status::NotImplemented("No immutable forward snapshot");
+   }
++#ifdef PR889_BENCH_HARDCODE
++  // This binary is a benchmark comparator, not a supported execution backend.
++  // Reject every shape except a bound, non-null INT32 dataTime > INT32 literal.
++  const auto *call = expression.call();
++  if (!call || call->function_name != "greater" || call->arguments.size() != 2 ||
++      call->options || snapshot->num_columns() != 1) {
++    return arrow::Status::NotImplemented("Benchmark hardcode predicate shape");
++  }
++  const auto *parameter = call->arguments[0].parameter();
++  const auto *literal = call->arguments[1].literal();
++  if (!parameter || parameter->indices.size() != 1 ||
++      parameter->indices[0] != 0 ||
++      snapshot->schema()->field(0)->name() != "dataTime" ||
++      snapshot->schema()->field(0)->type()->id() != arrow::Type::INT32 ||
++      !literal || !literal->is_scalar() || !literal->scalar() ||
++      !literal->scalar()->is_valid || literal->type()->id() != arrow::Type::INT32) {
++    return arrow::Status::NotImplemented("Benchmark hardcode INT32 predicate");
++  }
++  const int32_t threshold = literal->scalar_as<arrow::Int32Scalar>().value;
++  auto result = std::unique_ptr<ScalarDocFilter>(new ScalarDocFilter);
++  result->snapshot_ = snapshot;
++  result->buffer_count_ = 2;
++  for (const auto &chunk : snapshot->column(0)->chunks()) {
++    if (chunk->length() == 0) continue;
++    if (chunk->null_count() != 0) {
++      return arrow::Status::NotImplemented("Benchmark hardcode null input");
++    }
++    const auto &array = *chunk->data();
++    if (array.buffers.size() < 2 || !array.buffers[1] ||
++        !array.buffers[1]->is_cpu() || !array.buffers[1]->data() ||
++        array.buffers[1]->size() < (array.offset + array.length) * 4) {
++      return arrow::Status::Invalid("Benchmark hardcode invalid INT32 buffer");
++    }
++    result->buffers_.push_back(array.buffers[1]->data());
++    result->buffers_.push_back(nullptr);
++    result->offsets_.push_back(array.offset);
++    result->offsets_.push_back(threshold);
++    result->num_rows_ += array.length;
++    result->ends_.push_back(result->num_rows_);
++  }
++  if (result->ends_.empty() ||
++      result->num_rows_ != static_cast<uint64_t>(snapshot->num_rows())) {
++    return arrow::Status::Invalid("Benchmark hardcode incomplete snapshot");
++  }
++  result->stride_ = result->ends_.front();
++  for (size_t i = 1; i < result->ends_.size(); ++i) {
++    const uint64_t rows = result->ends_[i] - result->ends_[i - 1];
++    if (rows > result->stride_ ||
++        (i + 1 < result->ends_.size() && rows != result->stride_)) {
++      result->stride_ = 0;
++      break;
++    }
++  }
++  return result;
++#else
+   std::vector<std::shared_ptr<const void>> query_owners;
+   ARROW_ASSIGN_OR_RAISE(auto condition,
+                         MakeScalarPredicateCondition(
+@@ -189,6 +245,7 @@
+     }
+   }
+   return result;
++#endif  // PR889_BENCH_HARDCODE
+ }
+ 
+ }  // namespace zvec::sqlengine
+--- a/src/db/sqlengine/planner/doc_filter.cc
++++ b/src/db/sqlengine/planner/doc_filter.cc
+@@ -70,7 +70,11 @@
+           ScalarDocFilter::MakeValidated(*forward_filter_expr_, snapshot);
+       if (compiled.ok()) {
+         scalar_filter_ = std::move(compiled).ValueUnsafe();
++#ifdef PR889_BENCH_HARDCODE
++        LOG_DEBUG("Benchmark hardcoded INT32 forward filter ready");
++#else
+         LOG_DEBUG("Scalar JIT forward filter ready");
++#endif
+       } else {
+         // Unsupported semantics, layouts and compilation/binding errors all
+         // preserve the existing Arrow evaluator. JIT is an optional fast path.

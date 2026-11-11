@@ -70,6 +70,7 @@ Status DocFilter::compute_filter() {
           ScalarDocFilter::MakeValidated(*forward_filter_expr_, snapshot);
       if (compiled.ok()) {
         scalar_filter_ = std::move(compiled).ValueUnsafe();
+        LOG_DEBUG("Scalar JIT forward filter ready");
       } else {
         // Unsupported semantics, layouts and compilation/binding errors all
         // preserve the existing Arrow evaluator. JIT is an optional fast path.
