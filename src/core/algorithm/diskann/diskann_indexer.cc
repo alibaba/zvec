@@ -460,9 +460,12 @@ std::vector<bool> DiskAnnIndexer::read_nodes(
   }
 
   for (uint32_t i = 0; i < read_reqs.size(); i++) {
+    // node_read may point req.buf at the record inside its sector. Compute
+    // the offset from the sector base so packed nodes are not offset twice.
     uint8_t *node_buf =
         DiskAnnUtil::offset_to_node(node_per_sector_, max_node_size_,
-                                    (uint8_t *)read_reqs[i].buf, node_ids[i]);
+                                    buf + i * sector_num * DiskAnnUtil::kSectorSize,
+                                    node_ids[i]);
 
     if (coord_buffers[i] != nullptr) {
       void *node_coords = node_buf;
@@ -1308,6 +1311,9 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
 
   const float *norms = nullptr;
 #if defined(__APPLE__)
+  // Decorators and injected readers still support the generic I/O path, but
+  // need not expose the concrete file reader's cache or worker pool.
+  auto *cached_reader = dynamic_cast<LinuxAlignedFileReader *>(reader_.get());
   if (!cosine_inverse_norms_.empty()) norms = cosine_inverse_norms_.data();
 #endif
   dc.bind_quantizer(quantizer_.get(), quant_codes_, quant_code_size_, norms);
@@ -1351,9 +1357,7 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
   // Preserve the original beam for narrow pools and other storage paths.
   uint32_t beam_divisor = 5;
 #if defined(__APPLE__) && TARGET_OS_OSX
-  if (node_record_reads_ &&
-      static_cast<LinuxAlignedFileReader *>(reader_.get())->read_workers() >=
-          24)
+  if (node_record_reads_ && cached_reader && cached_reader->read_workers() >= 24)
     beam_divisor = 3;
 #endif
   uint32_t effective_beam_width =
@@ -1441,10 +1445,9 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
         // No frontier I/O has been submitted yet, so the first sector is
         // scratch space. Expand resident nodes now: their better candidates
         // can displace unnecessary disk reads in this same frontier.
-        if (node_record_reads_) {
+        if (node_record_reads_ && cached_reader) {
           auto req = node_read(neighbor.id, sector_buffer);
-          if (static_cast<LinuxAlignedFileReader *>(reader_.get())
-                  ->try_read_cached(req)) {
+          if (cached_reader->try_read_cached(req)) {
             ++stats.cache_hits;
             expand_node(neighbor.id, static_cast<uint8_t *>(req.buf));
             continue;

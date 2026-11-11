@@ -43,7 +43,17 @@ inline DataType FlatStorageDataTypeForField(DataType field_data_type,
 
 // These quantizers encode each record independently and therefore produce a
 // valid quantized index during insert, before optimize sees the full dataset.
-inline bool CanReuseInsertTimeQuantizedVectors(QuantizeType quantize_type) {
+//
+// Rotated INT8/INT4 records are the exception: every index draws its own
+// random rotation, and the merge copies records whose reformer names match
+// without re-encoding them. Copying them into a new index would pair them with
+// a different rotation, so they are rebuilt from the raw Flat sources.
+inline bool CanReuseInsertTimeQuantizedVectors(
+    const VectorIndexParams &params) {
+  if (params.quantizer_param().enable_rotate()) {
+    return false;
+  }
+  const QuantizeType quantize_type = params.quantize_type();
   return quantize_type == QuantizeType::FP16 ||
          quantize_type == QuantizeType::INT8 ||
          quantize_type == QuantizeType::INT4;

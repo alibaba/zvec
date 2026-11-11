@@ -726,10 +726,18 @@ function(_target_link_libraries _NAME)
         list(APPEND LOCAL_RESULT ${DEP_ALWAYS_LINK_LIBS})
       endif()
 
-      get_target_property(LINK_LIBS ${LIB} LINK_LIBRARIES)
-      if(LINK_LIBS)
-        _collect_always_link_libs("${LINK_LIBS}" LINK_ALWAYS_LINK_LIBS)
-        list(APPEND LOCAL_RESULT ${LINK_ALWAYS_LINK_LIBS})
+      # Static libraries still need their private dependencies at the final
+      # link. Shared libraries have already linked those dependencies: pulling
+      # them into a consumer can duplicate registrations and expose references
+      # to symbols that are intentionally hidden inside the shared library.
+      get_target_property(_LIB_TYPE ${LIB} TYPE)
+      if("${_LIB_TYPE}" STREQUAL "STATIC_LIBRARY" OR
+         "${_LIB_TYPE}" STREQUAL "OBJECT_LIBRARY")
+        get_target_property(LINK_LIBS ${LIB} LINK_LIBRARIES)
+        if(LINK_LIBS)
+          _collect_always_link_libs("${LINK_LIBS}" LINK_ALWAYS_LINK_LIBS)
+          list(APPEND LOCAL_RESULT ${LINK_ALWAYS_LINK_LIBS})
+        endif()
       endif()
     endforeach()
 

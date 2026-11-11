@@ -182,10 +182,6 @@ int IVFBuilder::init(const IndexMeta &meta, const ailego::Params &params,
     LOG_ERROR("IVFBuilder state wrong. state=%d", state_);
     return IndexError_Logic;
   }
-  if (dynamic_cast<turbo::PackedCodeQuantizer *>(quantizer.get())) {
-    LOG_ERROR("Turbo IVF postings do not support packed-code quantizers");
-    return IndexError_Unsupported;
-  }
   if (meta.major_order() == IndexMeta::MO_COLUMN ||
       quantizer->meta().major_order() == IndexMeta::MO_COLUMN) {
     LOG_ERROR("Turbo IVF postings require row major order");
@@ -227,7 +223,12 @@ int IVFBuilder::init(const IndexMeta &meta, const ailego::Params &params,
   }
 
   turbo_quantizer_ = quantizer;
-  int ret = this->init(raw_meta, params);
+  ailego::Params posting_params = params;
+  if (dynamic_cast<turbo::PackedCodeQuantizer *>(quantizer.get())) {
+    posting_params.set(PARAM_IVF_BUILDER_BLOCK_VECTOR_COUNT, uint32_t{32});
+    posting_params.set(PARAM_IVF_BUILDER_STORE_ORIGINAL_FEATURES, true);
+  }
+  int ret = this->init(raw_meta, posting_params);
   if (ret != 0) {
     turbo_quantizer_.reset();
     return ret;
@@ -440,6 +441,9 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
     LOG_ERROR("Input holder doesn't match index meta while building index");
     return IndexError_Mismatch;
   }
+  if (holder->count() > std::numeric_limits<uint32_t>::max()) {
+    return IndexError_Mismatch;
+  }
   if (!threads) {
     threads = std::make_shared<SingleQueueIndexThreads>(thread_count_, false);
     if (!threads) {
@@ -475,7 +479,20 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
 
   IndexHolder::Pointer converted_holder = source_holder_;
   if (!source_holder_) {
-    holder_ = std::make_shared<RandomAccessIndexHolder>(meta_);
+    std::shared_ptr<const void> lifetime;
+    auto *stable = dynamic_cast<StableVectorHolder *>(holder.get());
+    int ret = stable ? stable->retain_stable_data(&lifetime)
+                     : IndexError_NotImplemented;
+    if (ret == 0) {
+      if (!lifetime) return IndexError_Runtime;
+      LOG_INFO(
+          "Using stable source vectors for IVF: count=%zu, saved_bytes=%zu",
+          holder->count(), holder->count() * meta_.element_size());
+    } else if (ret != IndexError_NotImplemented) {
+      return ret;
+    }
+    holder_ =
+        std::make_shared<RandomAccessIndexHolder>(meta_, std::move(lifetime));
     if (!holder_) {
       return IndexError_NoMemory;
     }
@@ -487,6 +504,8 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
       return IndexError_NoMemory;
     }
     for (; iter->is_valid(); iter->next()) {
+      if (iter->status() != 0) return iter->status();
+      if (holder_->count() >= holder->count()) return IndexError_Mismatch;
       const uint64_t key = iter->key();
       if (iter->status() != 0) {
         return iter->status();
@@ -503,6 +522,7 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
     if (iter->status() != 0) {
       return iter->status();
     }
+    if (holder_->count() != holder->count()) return IndexError_Mismatch;
     converted_holder = holder_;
   }
 
@@ -860,7 +880,7 @@ int IVFBuilder::dump_index(const IndexDumper::Pointer &dumper) {
   }
   IVFDumper::Pointer ivf_dumper = std::make_shared<IVFDumper>(
       posting_meta, dumper, centroid_index_->centroids_count(),
-      block_vector_count_);
+      block_vector_count_, turbo_quantizer_);
   if (!ivf_dumper) {
     LOG_ERROR("Alloc IVFDumper failed");
     return IndexError_NoMemory;

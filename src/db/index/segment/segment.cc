@@ -861,7 +861,8 @@ Status SegmentImpl::insert_vector_indexer(Doc &doc) {
                  vector_index_params->quantize_type() !=
                      QuantizeType::UNIFORM_UINT8 &&
                  vector_index_params->quantize_type() !=
-                     QuantizeType::UNIFORM_UINT4) {
+                     QuantizeType::UNIFORM_UINT4 &&
+                 vector_index_params->quantize_type() != QuantizeType::PQ) {
         LOG_ERROR("quant vector indexer not found for field %s",
                   field->name().c_str());
         return Status::InternalError(
@@ -1737,7 +1738,7 @@ Status SegmentImpl::create_vector_index(
     // training continue to consume the raw Flat sources.
     const auto *quantize_sources = &vector_indexers_[column];
     if (segment_detail::CanReuseInsertTimeQuantizedVectors(
-            vector_index_params->quantize_type())) {
+            *vector_index_params)) {
       auto quant_iter = quant_vector_indexers_.find(column);
       if (quant_iter != quant_vector_indexers_.end() &&
           !quant_iter->second.empty() &&
@@ -4288,11 +4289,12 @@ Status SegmentImpl::init_memory_components() {
       }
       memory_vector_indexers_.insert({field->name(), vector_indexer});
 
-      // Uniform quantizers need the full dataset to train their scale/bias.
+      // Uniform and PQ quantizers require dataset-level training.
       // Until optimize creates that index, retain only the raw writer Flat.
       if (index_params->quantize_type() == QuantizeType::UNIFORM_UINT7 ||
           index_params->quantize_type() == QuantizeType::UNIFORM_UINT8 ||
-          index_params->quantize_type() == QuantizeType::UNIFORM_UINT4) {
+          index_params->quantize_type() == QuantizeType::UNIFORM_UINT4 ||
+          index_params->quantize_type() == QuantizeType::PQ) {
         continue;
       }
 

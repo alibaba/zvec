@@ -20,6 +20,27 @@
 
 namespace zvec {
 namespace core {
+namespace {
+// A search may add to a caller-owned heap. Bound the new selection using its
+// current worst score, then merge only the winners through the existing heap.
+void ResetBatchTopK(turbo::BatchTopK *topk, const IndexDocumentHeap &heap) {
+  float bound = heap.threshold();
+  bool strict = false;
+  if (heap.full() && heap.front().score() <= bound) {
+    bound = heap.front().score();
+    strict = true;
+  }
+  topk->reset(heap.limit(), bound, strict);
+}
+
+void MergeBatchTopK(turbo::BatchTopK *topk, IndexDocumentHeap *heap) {
+  topk->finish();
+  for (size_t i = 0; i < topk->size(); ++i) {
+    const auto candidate = topk->result(i);
+    heap->emplace(candidate.id, candidate.score);
+  }
+}
+}  // namespace
 
 int FlatContiguousStreamerEntity::evaluate_distances(
     const ContiguousStorage &storage, const void *query,
@@ -54,6 +75,10 @@ int FlatContiguousStreamerEntity::evaluate_distances(
   vector_ptrs.reserve(batch_size);
   if (has_extra_values) extra_values.reserve(batch_size);
   vector_keys.reserve(batch_size);
+  const size_t candidate_count = p_keys ? p_keys->size() : storage.vector_count;
+  const bool use_topk = heap->limit() < candidate_count;
+  auto &topk = scratch->batch_topk;
+  if (use_topk) ResetBatchTopK(&topk, *heap);
 
   auto evaluate_batch = [&]() {
     if (vector_ptrs.empty()) {
@@ -81,8 +106,12 @@ int FlatContiguousStreamerEntity::evaluate_distances(
     if (context_stats) {
       *context_stats->mutable_dist_calced_count() += vector_ptrs.size();
     }
-    for (size_t i = 0; i < vector_ptrs.size(); ++i) {
-      heap->emplace(vector_keys[i], distances[i]);
+    if (use_topk) {
+      topk.push_block(distances.data(), vector_keys.data(), vector_ptrs.size());
+    } else {
+      for (size_t i = 0; i < vector_ptrs.size(); ++i) {
+        heap->emplace(vector_keys[i], distances[i]);
+      }
     }
     vector_ptrs.clear();
     extra_values.clear();
@@ -113,6 +142,8 @@ int FlatContiguousStreamerEntity::evaluate_distances(
   } else {
     for (size_t position = 0; position < storage.vector_count; ++position) {
       const uint64_t vector_key = storage.position_to_key[position];
+      // Cache reconstruction omits deleted rows. Reject invalid keys before
+      // invoking the user filter and count each remaining rejected row once.
       if (vector_key == kInvalidKey ||
           (filter.is_valid() && filter(vector_key))) {
         if (context_stats) {
@@ -131,6 +162,7 @@ int FlatContiguousStreamerEntity::evaluate_distances(
     }
   }
   evaluate_batch();
+  if (use_topk) MergeBatchTopK(&topk, heap);
   return 0;
 }
 
@@ -156,7 +188,7 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
   vec_cols_ = index_meta_.element_size() / vec_unit_size_;
   meta_.header.block_size =
       ailego_align(sizeof(BlockHeader) + sizeof(DeletionMap) +
-                       (index_meta_.element_size() + sizeof(uint64_t)) *
+                       (stored_vector_size() + sizeof(uint64_t)) *
                            meta_.header.block_vector_count,
                    32);
 
@@ -203,6 +235,7 @@ int FlatStreamerEntity::open(IndexStorage::Pointer storage,
                 index_meta_.element_size(), extra_values_size_);
       return IndexError_InvalidArgument;
     }
+    metric_ = std::move(metric);
   }
 
   LOG_DEBUG("Open storage %s done, metric=%s", storage_->name().c_str(),
@@ -226,7 +259,11 @@ int FlatStreamerEntity::close() {
   meta_.header.block_count = 0;
   meta_.header.block_size = 0;
   meta_.header.linear_body_size = 0;
+  row_distance_ = nullptr;
+  column_distance_ = nullptr;
+  batch_distance_ = nullptr;
   batch_query_preprocess_ = nullptr;
+  metric_.reset();
   extra_values_size_ = 0;
   meta_dirty_ = false;
 
@@ -352,8 +389,20 @@ int FlatStreamerEntity::add(uint64_t key, const void *vec, size_t size) {
 int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
                                uint32_t *scan_count, IndexDocumentHeap *heap,
                                IndexContext::Stats *context_stats,
-                               FlatSearchScratch * /*scratch*/,
-                               size_t /*batch_size*/) const {
+                               FlatSearchScratch *scratch,
+                               size_t batch_size) const {
+  if (use_external_vector_) return IndexError_Unsupported;
+  if ((quantizer_ || batch_distance_) &&
+      index_meta_.major_order() == IndexMeta::MO_ROW &&
+      heap->limit() < vector_count()) {
+    if (scratch) {
+      return search_batch_rows(query, filter, scan_count, heap, context_stats,
+                               scratch, batch_size);
+    }
+    FlatSearchScratch local_scratch;
+    return search_batch_rows(query, filter, scan_count, heap, context_stats,
+                             &local_scratch, batch_size);
+  }
   IndexStorage::MemoryBlock head_block;
   this->get_head_block(head_block);
   const BlockLocation *bl =
@@ -394,12 +443,136 @@ int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
   return 0;
 }
 
+int FlatStreamerEntity::search_batch_rows(
+    const void *query, const IndexFilter &filter, uint32_t *scan_count,
+    IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
+    FlatSearchScratch *scratch, size_t batch_size) const {
+  const size_t stride = index_meta_.element_size();
+  const size_t block_rows = block_vector_count();
+  const size_t block_size = linear_block_size();
+  const size_t metadata_size = sizeof(DeletionMap) + sizeof(BlockHeader);
+  if (stride == 0 || block_rows == 0 || block_rows > 32 ||
+      block_size < metadata_size ||
+      block_rows > (block_size - metadata_size) / (stride + sizeof(uint64_t))) {
+    return IndexError_InvalidFormat;
+  }
+  BlockLocation block;
+  {
+    IndexStorage::MemoryBlock head;
+    if (get_head_block(head) != 0 || !head.data()) return IndexError_ReadData;
+    std::memcpy(&block, head.data(), sizeof(block));
+  }
+  if (!is_valid_block(block)) return 0;
+
+  const size_t capacity =
+      std::max(size_t{1},
+               std::min(batch_size ? batch_size : block_rows, vector_count()));
+  auto &pointers = scratch->vector_ptrs;
+  auto &keys = scratch->vector_keys;
+  auto &distances = scratch->distances;
+  auto &extra_values = scratch->extra_values;
+  const bool has_extra_values = !quantizer_ && extra_values_size_ != 0;
+  const size_t vector_data_size = stride - extra_values_size_;
+  const void *batch_query = query;
+  if (!quantizer_ && batch_query_preprocess_) {
+    auto &query_buffer = scratch->query_buffer;
+    query_buffer.resize(stride);
+    std::memcpy(query_buffer.data(), query, stride);
+    batch_query_preprocess_(query_buffer.data(), index_meta_.dimension());
+    batch_query = query_buffer.data();
+  }
+  if (pointers.size() < capacity) pointers.resize(capacity);
+  if (keys.size() < capacity) keys.resize(capacity);
+  if (distances.size() < capacity) distances.resize(capacity);
+  if (has_extra_values && extra_values.size() < capacity)
+    extra_values.resize(capacity);
+  auto &topk = scratch->batch_topk;
+  ResetBatchTopK(&topk, *heap);
+  size_t count = 0;
+  auto flush = [&]() {
+    if (count == 0) return;
+    if (quantizer_) {
+      if (count == 1) {
+        distances[0] = quantizer_->calc_distance_dp_query(pointers[0], query);
+      } else {
+        quantizer_->calc_distance_dp_query_batch(
+            pointers.data(), static_cast<int>(count), query, distances.data());
+      }
+    } else {
+      batch_distance_(pointers.data(), batch_query, count,
+                      index_meta_.dimension(), distances.data(),
+                      has_extra_values ? extra_values.data() : nullptr);
+    }
+    *context_stats->mutable_dist_calced_count() += count;
+    topk.push_block(distances.data(), keys.data(), count);
+    count = 0;
+  };
+
+  IndexStorage::Segment::Pointer segment;
+  uint32_t segment_id = 0;
+  const uint8_t *base = nullptr;
+  while (is_valid_block(block)) {
+    if (block.segment_id != segment_id) {
+      segment_id = block.segment_id;
+      segment = get_segment(segment_id);
+      if (!segment) return IndexError_ReadData;
+      base = segment->base_data();
+    }
+    const size_t offset = get_block_offset(block.block_index);
+    if (offset > segment->data_size() ||
+        block_size > segment->data_size() - offset) {
+      return IndexError_ReadData;
+    }
+    IndexStorage::MemoryBlock data;
+    const uint8_t *body = base ? base + offset : nullptr;
+    if (!body) {
+      if (segment->read(offset, data, block_size) != block_size || !data.data())
+        return IndexError_ReadData;
+      body = static_cast<const uint8_t *>(data.data());
+    }
+    BlockHeader header;
+    DeletionMap deleted;
+    std::memcpy(&header, body + block_size - sizeof(header), sizeof(header));
+    std::memcpy(deleted.bitset.data(), body + block_size - metadata_size,
+                sizeof(deleted));
+    if (header.vector_count > block_rows) return IndexError_ReadData;
+    *scan_count += header.vector_count;
+    for (size_t row = 0; row < header.vector_count; ++row) {
+      uint64_t key;
+      std::memcpy(&key, body + block_rows * stride + row * sizeof(key),
+                  sizeof(key));
+      // User filters see only live, valid keys. Each rejected row contributes
+      // once to filtered_count; only accepted rows reach the distance counter.
+      if (key == kInvalidKey || deleted.test(row) ||
+          (filter.is_valid() && filter(key))) {
+        ++(*context_stats->mutable_filtered_count());
+        continue;
+      }
+      pointers[count] = body + row * stride;
+      if (has_extra_values) {
+        extra_values[count] = body + row * stride + vector_data_size;
+      }
+      keys[count] = key;
+      if (++count == capacity) flush();
+    }
+    // Stable mappings are owned by the entity's segment cache. Other rows
+    // must be consumed before this MemoryBlock is released; never copy them
+    // into an arena just to fill a batch.
+    if (!base) flush();
+    block = header.next;
+  }
+  flush();
+  MergeBatchTopK(&topk, heap);
+  return 0;
+}
+
 int FlatStreamerEntity::search_by_p_keys(const void *query,
                                          const std::vector<uint64_t> &p_keys,
                                          const IndexFilter &filter,
                                          IndexDocumentHeap *heap,
                                          FlatSearchScratch * /*scratch*/,
                                          size_t /*batch_size*/) const {
+  if (use_external_vector_) return IndexError_Unsupported;
   for (uint64_t key : p_keys) {
     if (filter.is_valid() && filter(key)) {
       continue;
@@ -504,6 +677,7 @@ FlatStreamerEntity::Pointer FlatStreamerEntity::clone() const {
     LOG_ERROR("Failed to New FlatStreamerEntity object");
     return nullptr;
   }
+  entity->use_external_vector_ = this->use_external_vector_;
   entity->index_meta_ = this->index_meta_;
   entity->storage_ = this->storage_;
   // entity->reformer_ = this->reformer_;
@@ -802,6 +976,7 @@ const void *FlatContiguousStreamerEntity::get_vector_ptr(
 }
 
 const void *FlatStreamerEntity::get_vector_by_key(uint64_t key) const {
+  if (use_external_vector_) return nullptr;
   // Keep the legacy pointer valid until the next call on this thread.
   static thread_local LegacyReadBuffer buffer;
   IndexStorage::MemoryBlock block;
@@ -812,6 +987,7 @@ const void *FlatStreamerEntity::get_vector_by_key(uint64_t key) const {
 
 int FlatStreamerEntity::get_vector_by_key(
     const uint64_t key, IndexStorage::MemoryBlock &block) const {
+  if (use_external_vector_) return IndexError_Unsupported;
   VectorLocation loc{};
   key_info_map_lock_->lock_shared();
   if (use_key_info_map_) {
@@ -843,6 +1019,7 @@ int FlatStreamerEntity::get_vector_by_key(
 int FlatStreamerEntity::get_vectors_by_key(
     const uint64_t *keys, uint32_t count,
     std::vector<IndexStorage::MemoryBlock> &blocks) const {
+  if (use_external_vector_) return IndexError_Unsupported;
   std::vector<VectorLocation> locations(count);
   key_info_map_lock_->lock_shared();
   if (use_key_info_map_) {
@@ -903,7 +1080,8 @@ int FlatStreamerEntity::retain_stable_data(
   if (!lifetime) return IndexError_InvalidArgument;
   // MBT_MMAP also describes caller-managed scratch, so its tag alone cannot
   // establish that iterator data remains valid across reads.
-  if (!storage_ || storage_->name() != "MMapFileStorage") {
+  if (!storage_ || (storage_->name() != "MMapFileStorage" &&
+                    storage_->name() != "MMapFileReadStorage")) {
     return IndexError_NotImplemented;
   }
   *lifetime = storage_;
@@ -911,6 +1089,8 @@ int FlatStreamerEntity::retain_stable_data(
 }
 
 IndexProvider::Iterator::Pointer FlatStreamerEntity::creater_iterator() const {
+  // An external scan requires a request-bound source.
+  if (use_external_vector_) return nullptr;
   auto entity = this->clone();
   if (!entity) {
     LOG_ERROR("Failed to clone entity");
@@ -1058,6 +1238,10 @@ int FlatStreamerEntity::load_linear_meta(IndexStorage::Pointer storage) {
     return IndexError_InvalidFormat;
   }
   auto *mt = reinterpret_cast<const decltype(meta_) *>(data_block.data());
+  if (mt->header.reserved_[0] != meta_.header.reserved_[0]) {
+    LOG_ERROR("Unmatched Flat external-vector storage mode");
+    return IndexError_Mismatch;
+  }
   if (mt->header.block_vector_count != meta_.header.block_vector_count) {
     LOG_ERROR("Unmatched BlockVecCount Setting, Index %u vs Setting %u",
               mt->header.block_vector_count, meta_.header.block_vector_count);
@@ -1391,7 +1575,7 @@ int FlatStreamerEntity::add_to_block(const BlockLocation &block, uint64_t key,
 
   size_t vector_off =
       get_block_vector_offset(block.block_index, header->vector_count);
-  if (segment->write(vector_off, data, size) != size) {
+  if (!use_external_vector_ && segment->write(vector_off, data, size) != size) {
     LOG_ERROR("Failed to write vector, off=%zu size=%zu", vector_off, size);
     return IndexError_WriteData;
   }
@@ -1425,6 +1609,11 @@ int FlatStreamerEntity::add_to_block(const BlockLocation &block, uint64_t key,
 
 int FlatStreamerEntity::add_vector_with_id(const uint32_t id, const void *query,
                                            const uint32_t size) {
+  if (use_external_vector_) {
+    // Keep sparse external IDs compact. Updates belong to the source.
+    int ret = add(id, query, size);
+    return ret == IndexError_Duplicate ? 0 : ret;
+  }
   std::lock_guard<std::mutex> lock(mutex_);
   // if (filter_same_key_) {
   //   key_info_map_lock_->lock_shared();

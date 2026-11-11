@@ -24,6 +24,36 @@
 namespace zvec {
 namespace core {
 
+int ChunkBroker::dump_meta(const IndexDumper::Pointer &dumper,
+                           size_t node_chunks, size_t node_chunk_size,
+                           size_t max_index_size) const {
+  auto meta = chunk_meta_;
+  // The configured chunk size precedes node-count and page alignment. Remove
+  // the capacities actually allocated before adding the packed node region.
+  for (size_t seq = 0; seq < meta.chunk_cnts[CHUNK_TYPE_NODE]; ++seq) {
+    auto chunk = get_chunk(CHUNK_TYPE_NODE, seq);
+    if (!chunk || chunk->capacity() > meta.total_size) {
+      return IndexError_InvalidFormat;
+    }
+    meta.total_size -= chunk->capacity();
+  }
+  meta.total_size += node_chunks * node_chunk_size;
+  // Preserve the logical chunk size used to derive nodes per chunk on reopen.
+  // Huge-page padding belongs to the capacity budget, not the node layout.
+  meta.chunk_cnts[CHUNK_TYPE_NODE] = node_chunks;
+  if (meta.total_size >= max_index_size) return IndexError_IndexFull;
+  const size_t capacity = chunk_meta_segment_->capacity();
+  if (capacity < sizeof(meta)) return IndexError_InvalidFormat;
+  std::vector<char> buffer(capacity, 0);
+  memcpy(buffer.data(), &meta, sizeof(meta));
+  if (dumper->write(buffer.data(), buffer.size()) != buffer.size()) {
+    return IndexError_WriteData;
+  }
+  return dumper->append(make_segment_id(CHUNK_TYPE_META, 0), sizeof(meta),
+                        capacity - sizeof(meta),
+                        ailego::Crc32c::Hash(&meta, sizeof(meta), 0));
+}
+
 int ChunkBroker::init_storage(uint32_t chunk_size) {
   chunk_meta_.clear();
   chunk_meta_.chunk_size = chunk_size;

@@ -67,6 +67,13 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
 
   int train(IndexHolder::Pointer holder) override;
 
+  // Rebuild the centroid-pair table for SDC before graph inserts.
+  // Read-only ADC queries use their own LUT and do not need this table.
+  int prepare_build() override {
+    if (dist_table_.empty()) compute_dist_table();
+    return 0;
+  }
+
   size_t quantized_datapoint_vector_length() const override {
     return num_chunk_ + extra_meta_size_;
   }
@@ -159,12 +166,12 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   //! iterations (the OPQ loop trains with a smaller cap per round).
   template <typename T>
   void train_chunk(const T *data, size_t num, size_t stride, size_t sub_idx,
-                   uint32_t max_iters);
+                   uint32_t max_iters, const void *const *rows);
 
   //! Train every chunk of \p data in parallel (one KMeans per chunk).
   //! This is OPQ step 2: fix the rotation matrix, train the codebook.
   void train_all_chunks(const void *data, size_t num, size_t stride,
-                        uint32_t max_iters);
+                        uint32_t max_iters, const void *const *rows = nullptr);
 
   //! Encode \p rotated with the current codebook and write the reconstruction
   //! back into \p x_hat (num * original_dim floats, rotated space).  Returns

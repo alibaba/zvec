@@ -20,9 +20,9 @@
 #include <thread>
 #include <type_traits>
 #include <vector>
-#include <ailego/math/euclidean_distance_matrix.h>
-#include <ailego/math/normalizer.h>
 #include <ailego/pattern/defer.h>
+#include <turbo/distance/matrix.h>
+#include <turbo/norm/normalizer.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_holder.h>
@@ -225,7 +225,7 @@ int DiskAnnBuilder::calculate_entry_point() {
             reinterpret_cast<const float *>(entity_.get_vector(id));
 
         float dist = 0.0f;
-        ailego::SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
+        turbo::SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
             centroid_fp32.data(), data_ptr, dimension, &dist);
 
         if (dist < min_dist) {
@@ -240,7 +240,7 @@ int DiskAnnBuilder::calculate_entry_point() {
             reinterpret_cast<const ailego::Float16 *>(entity_.get_vector(id));
 
         float dist = 0.0f;
-        ailego::SquaredEuclideanDistanceMatrix<ailego::Float16, 1, 1>::Compute(
+        turbo::SquaredEuclideanDistanceMatrix<ailego::Float16, 1, 1>::Compute(
             centroid_fp16.data(), data_ptr, dimension, &dist);
 
         if (dist < min_dist) {
@@ -357,7 +357,7 @@ int DiskAnnBuilder::build_internal(IndexThreads::Pointer threads) {
                                std::chrono::seconds(check_interval_secs_));
       if (error_.load(std::memory_order_acquire)) {
         LOG_ERROR("Failed to build index while waiting finish");
-        return errcode_;
+        break;
       }
       LOG_INFO("Built cnt %zu, finished percent %.3f%%",
                (size_t)finished.load(),
@@ -365,12 +365,13 @@ int DiskAnnBuilder::build_internal(IndexThreads::Pointer threads) {
     }
   }
 
+  // A failed row allocation must not leave workers accessing the entity
+  // after build returns. Joining also publishes the winning worker's error.
+  task_group->wait_finish();
   if (error_.load(std::memory_order_acquire)) {
     LOG_ERROR("Failed to build index while waiting finish");
     return errcode_;
   }
-  task_group->wait_finish();
-
   return 0;
 }
 
@@ -394,7 +395,7 @@ int DiskAnnBuilder::prune_internal(IndexThreads::Pointer threads) {
                                std::chrono::seconds(check_interval_secs_));
       if (error_.load(std::memory_order_acquire)) {
         LOG_ERROR("Failed to prune index while waiting finish");
-        return errcode_;
+        break;
       }
       LOG_INFO("Prune cnt %zu, finished percent %.3f%%",
                (size_t)finished.load(),
@@ -402,12 +403,11 @@ int DiskAnnBuilder::prune_internal(IndexThreads::Pointer threads) {
     }
   }
 
+  task_group->wait_finish();
   if (error_.load(std::memory_order_acquire)) {
     LOG_ERROR("Failed to prune index while waiting finish");
     return errcode_;
   }
-  task_group->wait_finish();
-
   return 0;
 }
 
@@ -591,6 +591,7 @@ void DiskAnnBuilder::do_build(uint64_t idx, size_t step_size,
   ctx->set_list_size(list_size_);
 
   for (uint64_t id = idx; id < entity_.doc_cnt(); id += step_size) {
+    if (error_.load(std::memory_order_acquire)) return;
     // The medoid is the initial graph seed. Its edges are supplied by the
     // other nodes' inter_insert calls. Adding the seed concurrently can
     // replace those edges with an empty list computed before they arrived.
@@ -645,6 +646,7 @@ void DiskAnnBuilder::do_prune(uint64_t idx, size_t step_size,
   ctx->set_list_size(list_size_);
 
   for (uint64_t id = idx; id < entity_.doc_cnt(); id += step_size) {
+    if (error_.load(std::memory_order_acquire)) return;
     ctx->reset_query(entity_.get_vector(id));
     ret = algo_->prune_node(id, ctx);
     if (ailego_unlikely(ret != 0)) {
@@ -735,7 +737,7 @@ int DiskAnnBuilder::do_norm(const void *data_ptr, std::string *norm_data) {
   std::memcpy(output_buf, float_data_ptr, dimension * sizeof(float));
 
   float norm = 0.0f;
-  ailego::Normalizer<float>::L2(output_buf, dimension, &norm);
+  turbo::Normalizer<float>::L2(output_buf, dimension, &norm);
 
   return 0;
 }
@@ -839,6 +841,11 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
 
   LOG_INFO("Start final cleanup..");
   ret = prune_internal(threads);
+  if (ret != 0) {
+    return ret;
+  }
+
+  ret = entity_.compact_neighbors();
   if (ret != 0) {
     return ret;
   }
