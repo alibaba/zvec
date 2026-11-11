@@ -8,7 +8,7 @@ ENV PATH=/opt/python/cp312-cp312/bin:$PATH
 RUN python -m pip install --no-cache-dir cmake==3.30.9 ninja==1.13.0 && \
     dnf install -y perl-IPC-Cmd perl-Pod-Html perl-Time-Piece && \
     dnf clean all
-COPY .github/scripts/prepare_scalar_jit_toolchain.sh /usr/local/bin/build-zvec-jit-toolchain
+COPY .github/scripts/scalar_jit/prepare_toolchain.sh /usr/local/bin/build-zvec-jit-toolchain
 ARG ZVEC_TOOLCHAIN_JOBS=2
 RUN ZVEC_TOOLCHAIN_WORK=/tmp/zvec-jit-toolchain \
     ZVEC_TOOLCHAIN_JOBS=${ZVEC_TOOLCHAIN_JOBS} \

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 SPEC = importlib.util.spec_from_file_location(
-    "audit", Path(__file__).with_name("check_scalar_jit_artifact.py")
+    "audit", Path(__file__).with_name("check_artifact.py")
 )
 audit = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(audit)
@@ -148,7 +148,7 @@ def test_report_written_on_failure(tmp_path, monkeypatch):
 
 
 def test_maintained_extension_provenance():
-    root = Path(__file__).resolve().parents[2] / "thirdparty/arrow/gandiva"
+    root = Path(__file__).resolve().parents[3] / "thirdparty/arrow/gandiva"
     provenance = audit.json.loads((root / "PROVENANCE.json").read_text())
     for name, expected in provenance["sha256"].items():
         assert audit.sha256(root / name) == expected, name

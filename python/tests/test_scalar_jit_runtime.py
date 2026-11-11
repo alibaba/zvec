@@ -260,7 +260,7 @@ if __name__ == "__main__":
         sys.argv = [
             str(
                 Path(__file__).resolve().parents[2]
-                / ".github/scripts/scalar_jit_wheel_smoke.py"
+                / ".github/scripts/scalar_jit/wheel_smoke.py"
             ),
             *sys.argv[2:],
         ]

@@ -49,10 +49,10 @@ jobs:
             cmake.define.CMAKE_EXPORT_COMPILE_COMMANDS=ON
           CIBW_ENVIRONMENT_LINUX: CMAKE_GENERATOR=Ninja CMAKE_BUILD_PARALLEL_LEVEL=2 ZVEC_SCALAR_JIT_PROFILE=1
           CIBW_BEFORE_TEST: >-
-            python {project}/.github/scripts/check_scalar_jit_artifact.py
+            python {project}/.github/scripts/scalar_jit/check_artifact.py
             --build-directory {project}/build --llvm-dis /opt/llvm-20/bin/llvm-dis
             --report /host${{ github.workspace }}/wheel-build-audit.json
-          CIBW_TEST_COMMAND: python {project}/.github/scripts/scalar_jit_wheel_smoke.py
+          CIBW_TEST_COMMAND: python {project}/.github/scripts/scalar_jit/wheel_smoke.py
           CIBW_TEST_REQUIRES: numpy
         run: |
           python -m pip install cibuildwheel==3.4.0
@@ -62,13 +62,13 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/work" -w /work \
             -e ZVEC_JIT_JOBS=2 "$JIT_IMAGE" \
-            bash .github/scripts/package_scalar_jit_sdk.sh
+            bash .github/scripts/scalar_jit/package_sdk.sh
 
       - name: Verify repaired artifacts without the build toolchain
         run: |
           docker run --rm -v "$PWD:/work" -w /work "$RUNTIME_IMAGE" \
             /opt/python/cp312-cp312/bin/python \
-            .github/scripts/check_scalar_jit_artifact.py wheelhouse/*.whl jit-sdk \
+            .github/scripts/scalar_jit/check_artifact.py wheelhouse/*.whl jit-sdk \
             --report artifact-audit.json
           docker run --rm -v "$PWD:/work" -w /work "$RUNTIME_IMAGE" bash -c '
             set -euo pipefail
@@ -79,11 +79,11 @@ jobs:
             fi
             /opt/python/cp312-cp312/bin/python -m venv /tmp/jit-wheel
             /tmp/jit-wheel/bin/python -m pip install /work/wheelhouse/*.whl
-            /tmp/jit-wheel/bin/python .github/scripts/scalar_jit_wheel_smoke.py \
+            /tmp/jit-wheel/bin/python .github/scripts/scalar_jit/wheel_smoke.py \
               --artifact /work/wheelhouse/*.whl --log clean-runtime.log --report clean-runtime.json
             /work/build-jit-sdk-smoke/c_smoke
             /work/build-jit-sdk-smoke/cpp_smoke
-            /opt/python/cp312-cp312/bin/python .github/scripts/scalar_jit_sdk_smoke.py \
+            /opt/python/cp312-cp312/bin/python .github/scripts/scalar_jit/sdk_smoke.py \
               --binary build-jit-sdk-smoke/scalar_jit_smoke \
               --collection build-jit-sdk-smoke/jit-collection \
               --library-directory jit-sdk/lib --output-directory sdk-jit-clean-logs
@@ -115,7 +115,7 @@ jobs:
               [[ "$mode" == on ]] || enabled=0
               ZVEC_SCALAR_JIT=$enabled ZVEC_SCALAR_JIT_PROFILE=1 \
                 timeout 15m "${prefix[@]}" wheel-venv/bin/python \
-                .github/scripts/scalar_jit_wheel_smoke.py --expect-jit "$mode" \
+                .github/scripts/scalar_jit/wheel_smoke.py --expect-jit "$mode" \
                 --artifact "${wheels[0]}" "${feature[@]}" \
                 --log "wheel-jit-cpu-logs/$cpu-$mode.log" \
                 --report "wheel-jit-cpu-logs/$cpu-$mode.json" || failed=1
@@ -123,9 +123,9 @@ jobs:
           done
           # Children must run natively; they must not escape QEMU's CPUID mask.
           wheel-venv/bin/python -m pytest python/tests/test_scalar_jit_runtime.py \
-            .github/scripts/test_scalar_jit_artifact.py -o addopts= -v \
+            .github/scripts/scalar_jit/test_artifact.py -o addopts= -v \
             --junitxml=wheel-jit-cpu-logs/lifecycle.xml || failed=1
-          python .github/scripts/scalar_jit_sdk_smoke.py \
+          python .github/scripts/scalar_jit/sdk_smoke.py \
             --binary build-jit-sdk-smoke/scalar_jit_smoke \
             --collection build-jit-sdk-smoke/jit-collection \
             --library-directory jit-sdk/lib --output-directory sdk-jit-cpu-logs \

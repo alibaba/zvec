@@ -22,7 +22,7 @@ ctest --test-dir build-jit-sdk --output-on-failure --timeout 120 \
 cmake --install build-jit-sdk --strip
 # Match _build_prebuilt.yml: the static archives are not self-contained SDKs.
 rm -f jit-sdk/lib/*.a
-python .github/scripts/check_scalar_jit_artifact.py jit-sdk \
+python .github/scripts/scalar_jit/check_artifact.py jit-sdk \
   --build-directory build-jit-sdk --report sdk-build-audit.json \
   --llvm-dis /opt/llvm-20/bin/llvm-dis
 cmake -S .github/cmake/sdk-smoke -B build-jit-sdk-smoke -G Ninja \
@@ -30,7 +30,7 @@ cmake -S .github/cmake/sdk-smoke -B build-jit-sdk-smoke -G Ninja \
   -DZVEC_SDK_SCALAR_JIT_SMOKE=ON
 cmake --build build-jit-sdk-smoke --parallel 2
 ctest --test-dir build-jit-sdk-smoke --output-on-failure
-python .github/scripts/scalar_jit_sdk_smoke.py \
+python .github/scripts/scalar_jit/sdk_smoke.py \
   --binary build-jit-sdk-smoke/scalar_jit_smoke \
   --collection build-jit-sdk-smoke/jit-collection \
   --library-directory jit-sdk/lib --output-directory sdk-jit-build-logs
