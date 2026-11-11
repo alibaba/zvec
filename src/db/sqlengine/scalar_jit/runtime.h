@@ -36,14 +36,6 @@ struct MemoryUsage {
   uint64_t owned_bytes = 0;
 };
 
-struct CpuFeatures {
-  bool sse42 = false;
-  bool avx = false;
-  bool avx2 = false;
-  bool avx512f = false;
-};
-CpuFeatures RuntimeCpuFeatures();
-
 struct RuntimeSnapshot {
   bool built = false;
   bool enabled = false;

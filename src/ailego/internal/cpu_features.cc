@@ -16,6 +16,10 @@
 #include <cstddef>
 #include <zvec/ailego/internal/platform.h>
 
+#if defined(AILEGO_MACOS_X86_64)
+#include <sys/sysctl.h>
+#endif
+
 #if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
 #include <intrin.h>
 #elif defined(__x86_64__) || defined(__i386__)
@@ -45,25 +49,31 @@ namespace internal {
 
 CpuFeatures::CpuFlags CpuFeatures::flags_;
 
+CpuFeatures::CpuFlags::CpuFlags()
+    : L1_ECX(0),
+      L1_EDX(0),
+      L7_EBX(0),
+      L7_ECX(0),
+      L7_EDX(0),
+      XCR0(0),
+      OS_AVX512(false) {
 #if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
-CpuFeatures::CpuFlags::CpuFlags()
-    : L1_ECX(0), L1_EDX(0), L7_EBX(0), L7_ECX(0), L7_EDX(0) {
-  int l1[4] = {0, 0, 0, 0};
-  int l7[4] = {0, 0, 0, 0};
-
-  __cpuidex(l1, 1, 0);
-  __cpuidex(l7, 7, 0);
-  L1_ECX = l1[2];
-  L1_EDX = l1[3];
-  L7_EBX = l7[1];
-  L7_ECX = l7[2];
-  L7_EDX = l7[3];
-}
+  int regs[4] = {};
+  __cpuidex(regs, 0, 0);
+  const auto max_leaf = static_cast<uint32_t>(regs[0]);
+  if (max_leaf >= 1) {
+    __cpuidex(regs, 1, 0);
+    L1_ECX = regs[2];
+    L1_EDX = regs[3];
+  }
+  if (max_leaf >= 7) {
+    __cpuidex(regs, 7, 0);
+    L7_EBX = regs[1];
+    L7_ECX = regs[2];
+    L7_EDX = regs[3];
+  }
 #elif defined(__x86_64__) || defined(__i386__)
-CpuFeatures::CpuFlags::CpuFlags()
-    : L1_ECX(0), L1_EDX(0), L7_EBX(0), L7_ECX(0), L7_EDX(0) {
   uint32_t eax, ebx, ecx, edx;
-
   if (__get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
     L1_ECX = ecx;
     L1_EDX = edx;
@@ -74,11 +84,51 @@ CpuFeatures::CpuFlags::CpuFlags()
     L7_ECX = ecx;
     L7_EDX = edx;
   }
-}
-#else
-CpuFeatures::CpuFlags::CpuFlags()
-    : L1_ECX(0), L1_EDX(0), L7_EBX(0), L7_ECX(0), L7_EDX(0) {}
 #endif
+
+#if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
+  if ((L1_ECX & (3u << 26)) == (3u << 26)) {
+    XCR0 = _xgetbv(0);
+  }
+#elif defined(__x86_64__) || defined(__i386__)
+  if ((L1_ECX & (3u << 26)) == (3u << 26)) {
+    // XGETBV is legal only after both XSAVE and OSXSAVE are advertised.
+    uint32_t low, high;
+    __asm__ volatile("xgetbv" : "=a"(low), "=d"(high) : "c"(0));
+    XCR0 = (static_cast<uint64_t>(high) << 32) | low;
+  }
+#endif
+#if defined(AILEGO_MACOS_X86_64)
+  // Darwin enables opmask/ZMM lazily, so an early XCR0 snapshot is incomplete.
+  if ((XCR0 & 0x6u) == 0x6u && (L7_EBX & (1u << 16)) &&
+      (XCR0 & 0xe6u) != 0xe6u) {
+    int enabled = 0;
+    size_t bytes = sizeof(enabled);
+    OS_AVX512 = sysctlbyname("hw.optional.avx512f", &enabled, &bytes, nullptr,
+                             0) == 0 &&
+                bytes == sizeof(enabled) && enabled != 0;
+  }
+#endif
+}
+
+CpuFeatures::X86Features CpuFeatures::UsableX86() {
+  return DecodeUsableX86(flags_.L1_ECX, flags_.L7_EBX, flags_.XCR0,
+                         flags_.OS_AVX512);
+}
+
+CpuFeatures::X86Features CpuFeatures::DecodeUsableX86(uint32_t leaf1_ecx,
+                                                      uint32_t leaf7_ebx,
+                                                      uint64_t xcr0,
+                                                      bool os_avx512) {
+  X86Features features;
+  features.sse42 = (leaf1_ecx & (1u << 20)) != 0;
+  const bool xsave = (leaf1_ecx & (3u << 26)) == (3u << 26);
+  features.avx = xsave && (leaf1_ecx & (1u << 28)) && (xcr0 & 0x6u) == 0x6u;
+  features.avx2 = features.avx && (leaf7_ebx & (1u << 5));
+  features.avx512f = features.avx && (leaf7_ebx & (1u << 16)) &&
+                     ((xcr0 & 0xe6u) == 0xe6u || os_avx512);
+  return features;
+}
 
 //! 16-bit FP conversions
 bool CpuFeatures::F16C() {

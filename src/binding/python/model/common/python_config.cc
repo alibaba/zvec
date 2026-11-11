@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "python_config.h"
+#include <ailego/internal/cpu_features.h>
 #include <pybind11/stl.h>
 #include <zvec/ailego/io/io_backend.h>
 #include "db/sqlengine/scalar_jit/runtime.h"
@@ -204,7 +205,7 @@ void ZVecPyConfig::Initialize(pybind11::module_ &m) {
         auto info = sqlengine::scalar_jit::GetRuntimeSnapshot();
         py::dict result, limits, cache, timings, memory, selections, execution;
         result["version"] = 1;
-        const auto features = sqlengine::scalar_jit::RuntimeCpuFeatures();
+        const auto features = ailego::internal::CpuFeatures::UsableX86();
         py::dict cpu;
         cpu["sse42"] = features.sse42;
         cpu["avx"] = features.avx;

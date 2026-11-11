@@ -7,9 +7,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
-#if defined(__x86_64__) && !defined(_MSC_VER)
-#include <cpuid.h>
-#endif
+#include <ailego/internal/cpu_features.h>
 #ifdef _WIN32
 #include <process.h>
 #else
@@ -119,26 +117,6 @@ void ChangeMemory(State &state, const char *kind, MemoryUsage bytes,
   change(state.snapshots, snapshots);
 }
 }  // namespace
-
-CpuFeatures RuntimeCpuFeatures() {
-  CpuFeatures features;
-#if defined(__x86_64__) && !defined(_MSC_VER)
-  unsigned eax, ebx, ecx, edx;
-  if (__get_cpuid(1, &eax, &ebx, &ecx, &edx)) {
-    features.sse42 = (ecx & (1u << 20)) != 0;
-    if ((ecx & (1u << 27)) && (ecx & (1u << 28))) {
-      unsigned low, high;
-      __asm__ volatile("xgetbv" : "=a"(low), "=d"(high) : "c"(0));
-      features.avx = (low & 6) == 6;
-      if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
-        features.avx2 = features.avx && (ebx & (1u << 5));
-        features.avx512f = (low & 0xe6) == 0xe6 && (ebx & (1u << 16));
-      }
-    }
-  }
-#endif
-  return features;
-}
 
 bool InOriginalProcess() {
 #ifdef _WIN32
@@ -263,7 +241,7 @@ void RecordTiming(const char *stage, uint64_t nanos) noexcept try {
 void RecordSelection(const std::string &reason) noexcept try {
   if (!InOriginalProcess()) return;
   if (GetRuntimeConfig().profile) {
-    const auto cpu = RuntimeCpuFeatures();
+    const auto cpu = ailego::internal::CpuFeatures::UsableX86();
     LOG_DEBUG("Scalar JIT CPU sse42=%d avx=%d avx2=%d avx512f=%d", cpu.sse42,
               cpu.avx, cpu.avx2, cpu.avx512f);
   }

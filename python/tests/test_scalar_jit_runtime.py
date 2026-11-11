@@ -179,6 +179,7 @@ def child_main(mode):
                 )
                 assert not child["enabled"] and not child["accounting_available"]
                 assert set(child["memory"]) == set(info["memory"])
+                assert child["cpu_features"] == info["cpu_features"]
                 os._exit(0)
             except BaseException:
                 os._exit(2)
@@ -213,6 +214,18 @@ def test_diagnostics_do_not_initialize():
     assert info["limits"]["compilations"] == 2
     assert info["limits"]["live_programs"] == 256
     assert not info["memory"]["borrowed_arrow_buffers_included"]
+
+
+def test_cpu_features_independent_of_jit_configuration():
+    enabled = run_child("info")
+    disabled = run_child("info", ZVEC_SCALAR_JIT="0", ZVEC_SCALAR_JIT_PROFILE="0")
+    assert not enabled["initialized"] and not disabled["initialized"]
+    features = enabled["cpu_features"]
+    assert features == disabled["cpu_features"]
+    assert set(features) == {"sse42", "avx", "avx2", "avx512f"}
+    assert all(isinstance(value, bool) for value in features.values())
+    assert not features["avx2"] or features["avx"]
+    assert not features["avx512f"] or features["avx"]
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "1x", "", "184467440737095516160"])
