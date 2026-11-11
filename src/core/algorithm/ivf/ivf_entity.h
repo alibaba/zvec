@@ -16,6 +16,7 @@
 #include <turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_framework.h>
+#include <zvec/turbo/batch_topk.h>
 #include "ivf_distance_calculator.h"
 #include "ivf_index_format.h"
 #include "ivf_params.h"
@@ -26,6 +27,8 @@ namespace core {
 /*! IVF Entity
  */
 class IVFEntity {
+  friend class IVFRowBatchTestPeer;
+
  public:
   typedef std::shared_ptr<IVFEntity> Pointer;
 
@@ -67,6 +70,16 @@ class IVFEntity {
   //! search all inverted list without filter
   int search(const void *query, IndexDocumentHeap *heap,
              IndexContext::Stats *context_stats) const;
+
+  //! Append posting scores/IDs to a query-owned collector across lists.
+  int search_topk(size_t inverted_list_id, const void *query,
+                  const IndexFilter &filter, uint32_t *scan_count,
+                  turbo::BatchTopK *topk,
+                  IndexContext::Stats *context_stats) const;
+
+  int search_topk(const void *query, const IndexFilter &filter,
+                  turbo::BatchTopK *topk,
+                  IndexContext::Stats *context_stats) const;
 
   //! Score only the requested IDs in this index's posting score space.
   int search_by_keys(const std::vector<uint64_t> &keys,
@@ -380,6 +393,17 @@ class IVFEntity {
   int key_to_id(uint64_t key, uint32_t *id) const;
 
   int key_normalize_value(uint32_t id, float *value) const;
+
+  template <typename Results>
+  int search_filtered(size_t inverted_list_id, const void *query,
+                      const IndexFilter &filter, uint32_t *scan_count,
+                      Results *results,
+                      IndexContext::Stats *context_stats) const;
+
+  template <typename Results>
+  int search_blocks(size_t inverted_list_id, const void *query,
+                    uint32_t *scan_count, Results *results,
+                    IndexContext::Stats *context_stats) const;
 
   void query_features_distance(const void *query, const void *features,
                                size_t count, float *out) const {
