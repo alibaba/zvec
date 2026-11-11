@@ -491,7 +491,7 @@ struct InterleavedDistanceMatrix {
       return;
     }
     if constexpr (kOptimizedSingleColumn) {
-      if (columns == 1) {
+      if constexpr (Columns == 1) {
         ComputeSingleColumn(m, q, dim, out);
         return;
       }
