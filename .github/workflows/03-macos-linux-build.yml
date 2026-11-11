@@ -51,9 +51,7 @@ jobs:
         with:
           python-version: '3.10'
           cache: 'pip'
-          cache-dependency-path: |
-            pyproject.toml
-            .github/constraints-build.txt
+          cache-dependency-path: 'pyproject.toml'
 
       - name: Install Clang
         if: inputs.compiler == 'clang' && runner.os == 'Linux'
@@ -69,7 +67,14 @@ jobs:
 
       - name: Set up environment variables
         run: |
-          python .github/scripts/setup_build_env.py
+          # Set number of processors for parallel builds
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            NPROC=$(sysctl -n hw.ncpu 2>/dev/null || echo 2)
+          else
+            NPROC=$(nproc 2>/dev/null || echo 2)
+          fi
+          echo "NPROC=$NPROC" >> $GITHUB_ENV
+          echo "Using $NPROC parallel jobs for builds"
 
           # Set compiler when clang is requested
           if [[ "${{ inputs.compiler }}" == "clang" ]]; then
@@ -84,10 +89,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --constraint .github/constraints-build.txt \
-            pybind11 \
-            cmake \
-            ninja \
+          python -m pip install \
+            pybind11==3.0 \
+            cmake==3.30.0 \
+            ninja==1.11.1 \
             pytest \
             pytest-xdist \
             scikit-build-core \
@@ -120,6 +125,7 @@ jobs:
           cd "$GITHUB_WORKSPACE"
 
           CMAKE_GENERATOR="Ninja" \
+          CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
           python -m pip install -v . \
             --no-build-isolation \
             --config-settings='cmake.define.BUILD_TOOLS=ON' \
@@ -133,7 +139,7 @@ jobs:
         if: matrix.platform != 'macos-x64'
         run: |
           cd "$GITHUB_WORKSPACE/build"
-          cmake --build . --target unittest
+          cmake --build . --target unittest --parallel $NPROC
         shell: bash
 
       - name: Run macOS x64 C++ compatibility tests
@@ -154,7 +160,7 @@ jobs:
           print(" ".join(names))
           ')
           read -r -a targets <<< "$test_targets"
-          cmake --build . --target "${targets[@]}"
+          cmake --build . --target "${targets[@]}" --parallel "$NPROC"
           ctest --output-on-failure --no-tests=error -R "$test_regex" --parallel 1
         shell: bash
 
@@ -204,7 +210,7 @@ jobs:
           cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build .
+          cmake --build . --parallel $NPROC
           ./db-example
           ./core-example
           ./ailego-example
@@ -220,7 +226,7 @@ jobs:
           cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build .
+          cmake --build . --parallel $NPROC
           ./c_api_basic_example
           ./c_api_collection_schema_example
           ./c_api_doc_example

@@ -38,14 +38,12 @@ jobs:
           key: ios-${{ matrix.platform }}
           max-size: 150M
 
-      - name: Set up build parallelism
-        run: python3 .github/scripts/setup_build_env.py
-
       - name: Configure and Build
         run: |
           git submodule foreach --recursive 'git stash --include-untracked' || true
 
           SDK_PATH=$(xcrun --sdk ${{ matrix.sdk }} --show-sdk-path)
+          NPROC=$(sysctl -n hw.ncpu)
 
           cmake -S . -B build_ios_${{ matrix.platform }} \
             -DCMAKE_SYSTEM_NAME=iOS \
@@ -66,12 +64,13 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
-          cmake --build build_ios_${{ matrix.platform }}
+          cmake --build build_ios_${{ matrix.platform }} --parallel $NPROC
 
       - name: Build public static C++ examples
         run: |
+          NPROC=$(sysctl -n hw.ncpu)
           BUILD_DIR=build_ios_${{ matrix.platform }}
-          cmake --build "$BUILD_DIR" --target zvec_cpp_examples
+          cmake --build "$BUILD_DIR" --target zvec_cpp_examples --parallel "$NPROC"
 
           for example in ailego-example core-example external-vector-example db-example; do
             example_binary="$BUILD_DIR/bin/$example.app/$example"
@@ -83,10 +82,12 @@ jobs:
 
       - name: Build required ARM64 index test targets
         run: |
+          NPROC=$(sysctl -n hw.ncpu)
           BUILD_DIR=build_ios_${{ matrix.platform }}
           cmake --build "$BUILD_DIR" \
             --target diskann_mobile_compat_test diskann_mobile_collection_test \
-              hnsw_rabitq_streamer_test ivf_rabitq_streamer_test
+              hnsw_rabitq_streamer_test ivf_rabitq_streamer_test \
+            --parallel "$NPROC"
 
           for test_name in diskann_mobile_compat_test diskann_mobile_collection_test \
             hnsw_rabitq_streamer_test ivf_rabitq_streamer_test; do
@@ -100,7 +101,8 @@ jobs:
       - name: Build test targets
         if: matrix.test_on_simulator
         run: |
-          cmake --build build_ios_${{ matrix.platform }} --target unittest
+          NPROC=$(sysctl -n hw.ncpu)
+          cmake --build build_ios_${{ matrix.platform }} --target unittest --parallel $NPROC
 
       - name: Boot iOS Simulator
         if: matrix.test_on_simulator

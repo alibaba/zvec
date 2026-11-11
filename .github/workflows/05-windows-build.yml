@@ -34,19 +34,11 @@ jobs:
 
     env:
       SCCACHE_GHA_ENABLED: "true"
-      CMAKE_GENERATOR: Ninja
-      NINJA_STATUS: '[%f/%t %r running %es] '
 
     steps:
       - name: Show env info
         run: |
           Get-CimInstance -ClassName Win32_Processor
-          Get-Volume | Select-Object DriveLetter, FileSystemType, SizeRemaining, Size
-          try {
-            Get-MpComputerStatus | Select-Object AntivirusEnabled, RealTimeProtectionEnabled
-          } catch {
-            Write-Host "Defender status unavailable: $_"
-          }
           & "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -all -products * -prerelease -format json
         shell: powershell
 
@@ -73,13 +65,10 @@ jobs:
           python-version: ${{ matrix.python_version }}
           architecture: ${{ matrix.msvc_arch }}
           cache: 'pip'
-          cache-dependency-path: |
-            pyproject.toml
-            .github/constraints-build.txt
+          cache-dependency-path: 'pyproject.toml'
 
       - name: Set up MSVC environment
-        # v1.13.0 cannot resolve VS 2026's version range and directory layout.
-        # Use the runner's latest installation, then verify its version below.
+        # Let vswhere discover VS 2026; v1.13.0 cannot resolve it by version.
         uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: ${{ matrix.msvc_arch }}
@@ -92,25 +81,22 @@ jobs:
           if ($env:VisualStudioVersion -ne $env:EXPECTED_VS_VERSION) {
             throw "Expected VS $env:EXPECTED_VS_VERSION, got $env:VisualStudioVersion"
           }
-          $toolsetPrefix = if ($env:EXPECTED_VS_VERSION -eq '18.0') { '14.5' } else { '14.4' }
-          if (-not $env:VCToolsVersion.StartsWith($toolsetPrefix)) {
-            throw "Unexpected MSVC toolset: $env:VCToolsVersion (expected $toolsetPrefix*)"
-          }
+          Write-Host "MSVC toolset: $env:VCToolsVersion"
           where.exe cl
-          cl /Bv
-          # cl without an input reports an error; /Bv above is diagnostic only.
-          $global:LASTEXITCODE = 0
 
       - name: Set up environment variables
-        run: python .github/scripts/setup_build_env.py
+        run: |
+          $nproc = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
+          echo "NPROC=$nproc" >> $env:GITHUB_ENV
+          echo "Using $nproc parallel jobs for builds"
         shell: powershell
 
       - name: Install dependencies
         run: |
-          python -m pip install --constraint .github/constraints-build.txt --upgrade pip `
-            pybind11 `
-            cmake `
-            ninja `
+          python -m pip install --upgrade pip `
+            pybind11==3.0 `
+            cmake==3.30.0 `
+            ninja==1.11.1 `
             pytest `
             pytest-xdist `
             scikit-build-core `
@@ -120,6 +106,8 @@ jobs:
       - name: Build from source
         run: |
           cd "$env:GITHUB_WORKSPACE"
+          $env:CMAKE_GENERATOR = "Ninja"
+          $env:CMAKE_BUILD_PARALLEL_LEVEL = "$env:NPROC"
           python -m pip install -v . `
             --no-build-isolation `
             --config-settings='cmake.define.BUILD_TOOLS=ON' `
@@ -134,32 +122,10 @@ jobs:
         run: sccache --show-stats
         shell: powershell
 
-      - name: Check main and external build generators
-        if: always()
-        shell: powershell
-        run: |
-          $caches = @(
-            'build/CMakeCache.txt',
-            'build/thirdparty/arrow/arrow/src/ARROW.BUILD-build/CMakeCache.txt',
-            'build/thirdparty/lz4/lz4/src/Lz4.BUILD-build/CMakeCache.txt'
-          )
-          foreach ($cache in $caches) {
-            if (Test-Path $cache) {
-              Write-Host "Build backend: $cache"
-              Select-String -Path $cache -Pattern '^CMAKE_GENERATOR:INTERNAL=', '^CMAKE_MAKE_PROGRAM:', '^CMAKE_BUILD_TYPE:', '^CMAKE_MSVC_RUNTIME_LIBRARY:'
-              if (-not (Select-String -Path $cache -Pattern '^CMAKE_GENERATOR:INTERNAL=Ninja$' -Quiet)) {
-                throw "Expected Ninja in $cache"
-              }
-              if (-not (Select-String -Path $cache -Pattern '^CMAKE_BUILD_TYPE:[^=]+=Release$' -Quiet)) {
-                throw "Expected Release in $cache"
-              }
-            }
-          }
-
       - name: Run C++ Tests
         run: |
           cd "$env:GITHUB_WORKSPACE\build"
-          cmake --build . --target unittest --config Release
+          cmake --build . --target unittest --config Release --parallel $env:NPROC
         shell: powershell
 
       - name: Show sccache statistics after tests
@@ -185,7 +151,7 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER= `
             -DCMAKE_CXX_COMPILER_LAUNCHER=
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cmake --build . --config Release
+          cmake --build . --config Release --parallel $env:NPROC
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # Copy zvec DLLs next to the example executables so Windows can find them.

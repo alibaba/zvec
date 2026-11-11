@@ -46,14 +46,11 @@ jobs:
           key: linux-riscv64-${{ runner.os }}-gcc
           max-size: 150M
 
-      - name: Set up build parallelism
-        run: |
-          "${PYTHON:-python3}" .github/scripts/setup_build_env.py
-        shell: bash
-
       - name: Build from source
         run: |
           cd "$GITHUB_WORKSPACE"
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          echo "Using $NPROC parallel jobs for builds"
           cmake -S . -B build \
             -G "Unix Makefiles" \
             -DCMAKE_BUILD_TYPE=Release \
@@ -61,7 +58,7 @@ jobs:
             -DBUILD_PYTHON_BINDINGS=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build build
+          make -C build -j"$NPROC"
         shell: bash
 
       - name: Archive entire workspace
@@ -116,11 +113,6 @@ jobs:
           key: linux-riscv64-${{ runner.os }}-gcc
           max-size: 150M
 
-      - name: Set up build parallelism
-        run: |
-          "${PYTHON:-python3}" .github/scripts/setup_build_env.py
-        shell: bash
-
       - name: Reconfigure build directory
         run: |
           cd "$GITHUB_WORKSPACE"
@@ -136,7 +128,8 @@ jobs:
       - name: Run C++ Tests
         run: |
           cd "$GITHUB_WORKSPACE/build"
-          cmake --build . --target unittest
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          make unittest -j"$NPROC"
         shell: bash
 
   python-tests:
@@ -176,7 +169,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/pip
-          key: linux-riscv64-${{ runner.os }}-pip-${{ hashFiles('pyproject.toml', '.github/constraints-build.txt') }}
+          key: linux-riscv64-${{ runner.os }}-pip-${{ hashFiles('pyproject.toml') }}
           restore-keys: |
             linux-riscv64-${{ runner.os }}-pip-
 
@@ -195,8 +188,8 @@ jobs:
             ccache libgtest-dev liburing-dev
             
           $PYTHON -m pip install --upgrade pip
-          $PYTHON -m pip install --constraint .github/constraints-build.txt numpy==2.2.2 cmake ninja --index-url "$RISE_PYPI"
-          $PYTHON -m pip install --constraint .github/constraints-build.txt pybind11 pytest scikit-build-core setuptools_scm pytest-xdist
+          $PYTHON -m pip install numpy==2.2.2 cmake==3.30.0 ninja==1.11.1.1 --index-url "$RISE_PYPI"
+          $PYTHON -m pip install pybind11==3.0 pytest scikit-build-core setuptools_scm pytest-xdist
         shell: bash
 
       - name: Setup ccache
@@ -204,11 +197,6 @@ jobs:
         with:
           key: linux-riscv64-${{ runner.os }}-gcc
           max-size: 150M
-
-      - name: Set up build parallelism
-        run: |
-          "${PYTHON:-python3}" .github/scripts/setup_build_env.py
-        shell: bash
 
       - name: Reconfigure build directory
         run: |
@@ -226,8 +214,10 @@ jobs:
       - name: Install from existing build directory
         run: |
           cd "$GITHUB_WORKSPACE"
+          NPROC=$(nproc 2>/dev/null || echo 2)
           export SKBUILD_BUILD_DIR="$GITHUB_WORKSPACE/build"
           CMAKE_GENERATOR="Unix Makefiles" \
+          CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
           $PYTHON -m pip install -v . \
             --no-build-isolation \
             --config-settings='cmake.define.BUILD_TOOLS="ON"' \
@@ -281,19 +271,15 @@ jobs:
           key: linux-riscv64-${{ runner.os }}-gcc
           max-size: 150M
 
-      - name: Set up build parallelism
-        run: |
-          "${PYTHON:-python3}" .github/scripts/setup_build_env.py
-        shell: bash
-
       - name: Run C++ Examples
         run: |
           cd "$GITHUB_WORKSPACE/examples/c++"
+          NPROC=$(nproc 2>/dev/null || echo 2)
           mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build .
+          make -j "$NPROC"
           ./db-example
           ./core-example
           ./ailego-example
@@ -338,19 +324,15 @@ jobs:
           key: linux-riscv64-${{ runner.os }}-gcc
           max-size: 150M
 
-      - name: Set up build parallelism
-        run: |
-          "${PYTHON:-python3}" .github/scripts/setup_build_env.py
-        shell: bash
-
       - name: Run C Examples
         run: |
           cd "$GITHUB_WORKSPACE/examples/c"
+          NPROC=$(nproc 2>/dev/null || echo 2)
           mkdir -p build && cd build
           cmake .. -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build .
+          make -j "$NPROC"
           ./c_api_basic_example
           ./c_api_collection_schema_example
           ./c_api_doc_example

@@ -10,7 +10,6 @@ else()
 endif()
 
 include(ExternalProject)
-set(_LZ4_BUILD_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/../../cmake/external_build.cmake")
 
 set(_lz4_env "")
 if(ANDROID)
@@ -105,10 +104,6 @@ if(MSVC)
             CMAKE_ARGS
             -DCMAKE_INSTALL_PREFIX=${EXTERNAL_BINARY_DIR}/usr/local
             -DCMAKE_INSTALL_LIBDIR=lib
-            # Ninja selects its configuration at configure time, not via --config.
-            -DCMAKE_BUILD_TYPE=$<CONFIG>
-            # LZ4's old policy baseline otherwise ignores the CRT setting below.
-            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
             -DCMAKE_MSVC_RUNTIME_LIBRARY=${CMAKE_MSVC_RUNTIME_LIBRARY}
             -DBUILD_SHARED_LIBS=OFF
             -DBUILD_STATIC_LIBS=ON
@@ -117,7 +112,7 @@ if(MSVC)
             -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
             -DCMAKE_POLICY_DEFAULT_CMP0141=NEW
             -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
-            BUILD_COMMAND "${CMAKE_COMMAND}" "-DZVEC_EXTERNAL_CONFIG=$<CONFIG>" -P "${_LZ4_BUILD_SCRIPT}"
+            BUILD_COMMAND "${CMAKE_COMMAND}" --build . --config $<CONFIG> -j
             INSTALL_COMMAND "${CMAKE_COMMAND}" --install . --config $<CONFIG>
             BUILD_IN_SOURCE OFF
             LOG_DOWNLOAD ON
@@ -132,7 +127,7 @@ else()
       PREFIX lz4
       URL "${CMAKE_CURRENT_SOURCE_DIR}/lz4-1.9.4"
       CONFIGURE_COMMAND ""
-      BUILD_COMMAND env ${_lz4_env} BUILD_SHARED=no "${CMAKE_COMMAND}" -DZVEC_EXTERNAL_MAKE=make -P "${_LZ4_BUILD_SCRIPT}"
+        BUILD_COMMAND env ${_lz4_env} BUILD_SHARED=no make -j
       INSTALL_COMMAND make DESTDIR=${EXTERNAL_BINARY_DIR} BUILD_SHARED=no install
       BUILD_IN_SOURCE ON
       LOG_DOWNLOAD ON

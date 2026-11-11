@@ -144,30 +144,26 @@ jobs:
             export PATH="$PYBIN:$PATH"
           fi
           python3 -m pip install --upgrade pip
-          python3 -m pip install --constraint .github/constraints-build.txt \
-            pybind11 \
-            cmake \
-            ninja
+          python3 -m pip install \
+            pybind11==3.0 \
+            cmake==3.30.0 \
+            ninja==1.11.1
         shell: bash
 
       - name: Install dependencies (Windows)
         if: runner.os == 'Windows'
         run: |
-          python -m pip install --constraint .github/constraints-build.txt --upgrade pip `
-            pybind11 `
-            cmake `
-            ninja
+          python -m pip install --upgrade pip `
+            pybind11==3.0 `
+            cmake==3.30.0 `
+            ninja==1.11.1
         shell: powershell
 
       - name: Set up MSVC environment
         if: runner.os == 'Windows'
-        # Use the runner's VS installation; v1.13.0 cannot resolve VS 2026 by version.
         uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: ${{ matrix.msvc_arch }}
-
-      - name: Set up build parallelism
-        run: python .github/scripts/setup_build_env.py
 
       - name: Configure CMake
         shell: bash
@@ -188,7 +184,8 @@ jobs:
       - name: Build and install SDK
         shell: bash
         run: |
-          cmake --build build --target install
+          NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+          cmake --build build --target install --parallel "$NPROC"
 
       - name: Dump third-party build logs on failure
         if: failure()
@@ -296,25 +293,17 @@ jobs:
             "$MUSL_IMAGE" sleep infinity
         shell: bash
 
-      - name: Set up build parallelism
-        run: |
-          CMAKE_BUILD_PARALLEL_LEVEL=$(docker exec -e CMAKE_BUILD_PARALLEL_LEVEL \
-            "$MUSL_CONTAINER" python .github/scripts/setup_build_env.py --print)
-          export CMAKE_BUILD_PARALLEL_LEVEL
-          python3 .github/scripts/setup_build_env.py
-        shell: bash
-
       - name: Install dependencies
         run: |
           docker exec "$MUSL_CONTAINER" python -m pip install --upgrade pip
-          docker exec "$MUSL_CONTAINER" python -m pip install --constraint .github/constraints-build.txt \
-            cmake \
-            ninja
+          docker exec "$MUSL_CONTAINER" python -m pip install \
+            cmake==3.30.0 \
+            ninja==1.11.1
         shell: bash
 
       - name: Configure CMake
         run: |
-          docker exec -e CMAKE_BUILD_PARALLEL_LEVEL "$MUSL_CONTAINER" cmake -S . -B build -G Ninja \
+          docker exec "$MUSL_CONTAINER" cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/work/install \
             -DBUILD_TOOLS=OFF \
@@ -329,8 +318,8 @@ jobs:
 
       - name: Build and install SDK
         run: |
-          docker exec -e CMAKE_BUILD_PARALLEL_LEVEL "$MUSL_CONTAINER" \
-            cmake --build build --target install
+          docker exec "$MUSL_CONTAINER" sh -c \
+            'cmake --build build --target install --parallel "$(nproc)"'
         shell: bash
 
       - name: Dump third-party build logs on failure
@@ -356,11 +345,11 @@ jobs:
 
       - name: Smoke-test staged SDK
         run: |
-          docker exec -e CMAKE_BUILD_PARALLEL_LEVEL "$MUSL_CONTAINER" sh -c '
+          docker exec "$MUSL_CONTAINER" sh -c '
             cmake -S .github/cmake/sdk-smoke -B /work/smoke-build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DZVEC_SDK_DIR=/work/dist
-            cmake --build /work/smoke-build
+            cmake --build /work/smoke-build --parallel "$(nproc)"
             ctest --test-dir /work/smoke-build --output-on-failure
           '
         shell: bash
@@ -411,21 +400,16 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
-          cache-dependency-path: |
-            pyproject.toml
-            .github/constraints-build.txt
+          cache-dependency-path: 'pyproject.toml'
 
       - name: Install dependencies
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --constraint .github/constraints-build.txt \
-            pybind11 \
-            cmake \
-            ninja
-
-      - name: Set up build parallelism
-        run: python .github/scripts/setup_build_env.py
+          python -m pip install \
+            pybind11==3.0 \
+            cmake==3.30.0 \
+            ninja==1.11.1
 
       - name: Configure CMake (Android)
         shell: bash
@@ -456,7 +440,7 @@ jobs:
       - name: Build and install SDK
         shell: bash
         run: |
-          cmake --build build --target install
+          cmake --build build --target install --parallel "$(nproc)"
 
       - name: Dump third-party build logs on failure
         if: failure()
@@ -550,25 +534,21 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
-          cache-dependency-path: |
-            pyproject.toml
-            .github/constraints-build.txt
+          cache-dependency-path: 'pyproject.toml'
 
       - name: Install dependencies
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --constraint .github/constraints-build.txt \
-            pybind11 \
-            cmake \
-            ninja
-
-      - name: Set up build parallelism
-        run: python .github/scripts/setup_build_env.py
+          python -m pip install \
+            pybind11==3.0 \
+            cmake==3.30.0 \
+            ninja==1.11.1
 
       - name: Build SDK for device and simulator
         shell: bash
         run: |
+          NPROC=$(sysctl -n hw.ncpu)
           build_slice() {
             local slice="$1" sdk="$2"
             # Reset thirdparty sources so each toolchain can patch cleanly.
@@ -589,7 +569,7 @@ jobs:
               -DBUILD_ZVEC_AILEGO_SHARED=ON \
               -DENABLE_WERROR=OFF \
               $ZVEC_VERSION_DEFINE
-            cmake --build "build_ios_${slice}" --target install
+            cmake --build "build_ios_${slice}" --target install --parallel "$NPROC"
           }
           build_slice device iphoneos
           build_slice simulator iphonesimulator

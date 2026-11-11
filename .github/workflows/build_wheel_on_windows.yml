@@ -117,9 +117,6 @@ jobs:
         run: echo "C:\Program Files\Git\usr\bin" >> $env:GITHUB_PATH
         shell: powershell
 
-      - name: Set up build parallelism
-        run: python .github/scripts/setup_build_env.py
-
       #      - name: Cache built wheels
       #        id: cache-wheels
       #        uses: actions/cache@v4
@@ -136,7 +133,7 @@ jobs:
         run: |
           # 1. Generate and capture the version from setuptools_scm
           pip install --upgrade pip
-          pip install --constraint .github/constraints-build.txt cibuildwheel
+          pip install cibuildwheel==3.4.0
           pip install 'setuptools-scm>=8.0'
           
           $SCM_VERSION = python -m setuptools_scm

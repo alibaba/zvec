@@ -53,13 +53,10 @@ jobs:
         shell: bash
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --constraint .github/constraints-build.txt \
-            pybind11 \
-            cmake \
-            ninja
-
-      - name: Set up build parallelism
-        run: python .github/scripts/setup_build_env.py
+          python -m pip install \
+            pybind11==3.0 \
+            cmake==3.30.0 \
+            ninja==1.11.1
 
       - name: Configure CMake
         shell: bash
@@ -81,7 +78,8 @@ jobs:
       - name: Build and install SDK
         shell: bash
         run: |
-          cmake --build build --target install
+          NPROC=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
+          cmake --build build --target install --parallel "$NPROC"
 
       - name: Dump third-party build logs on failure
         if: failure()

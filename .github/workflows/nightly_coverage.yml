@@ -32,13 +32,14 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
-          cache-dependency-path: |
-            pyproject.toml
-            .github/constraints-build.txt
+          cache-dependency-path: 'pyproject.toml'
 
       - name: Set up environment variables
         run: |
-          python .github/scripts/setup_build_env.py
+          # Set number of processors for parallel builds
+          NPROC=$(nproc 2>/dev/null || echo 2)
+          echo "NPROC=$NPROC" >> $GITHUB_ENV
+          echo "Using $NPROC parallel jobs for builds"
           
           # Add Python user base bin to PATH for pip-installed CLI tools
           echo "$(python -c 'import site; print(site.USER_BASE)')/bin" >> $GITHUB_PATH
@@ -53,10 +54,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --constraint .github/constraints-build.txt --upgrade pip \
-            pybind11 \
-            cmake \
-            ninja \
+          python -m pip install --upgrade pip \
+            pybind11==3.0 \
+            cmake==3.30.0 \
+            ninja==1.11.1 \
             pytest \
             pytest-cov \
             pytest-xdist \
@@ -69,6 +70,7 @@ jobs:
           cd "$GITHUB_WORKSPACE"
           
           CMAKE_GENERATOR="Unix Makefiles" \
+          CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
           python -m pip install -v . \
             --no-build-isolation \
             --config-settings="cmake.build-type=COVERAGE"
@@ -84,7 +86,7 @@ jobs:
       - name: Run C++ Tests and Generate Coverage
         run: |
           cd "$GITHUB_WORKSPACE/build"
-          cmake --build . --target unittest
+          make unittest -j$NPROC
           cd "$GITHUB_WORKSPACE"
           # Ensure gcov.sh is executable
           chmod +x scripts/gcov.sh

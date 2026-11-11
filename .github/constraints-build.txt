@@ -1,6 +1,0 @@
-# CI tool versions. Consumer build requirements remain in pyproject.toml.
-cmake==3.30.0
-ninja==1.11.1; platform_machine != "riscv64"
-ninja==1.11.1.1; platform_machine == "riscv64"
-pybind11==3.0
-cibuildwheel==3.4.0
