@@ -13,6 +13,7 @@
 // limitations under the License.
 
 
+#include <algorithm>
 #include <csignal>
 #include <filesystem>
 #include <thread>
@@ -138,6 +139,44 @@ class OptimizeRecoveryTest : public ::testing::Test {
   void TearDown() override {
     zvec::test_util::RemoveTestPath("./optimize_recovery_test_db");
   }
+
+  void expect_collection(const Collection::Ptr &collection,
+                         uint64_t doc_count) {
+    auto stats = collection->stats();
+    ASSERT_TRUE(stats.has_value()) << stats.error().message();
+    ASSERT_EQ(stats.value().doc_count, doc_count);
+    constexpr uint64_t kFetchBatchSize = 1024;
+    for (uint64_t start = 0; start < doc_count; start += kFetchBatchSize) {
+      const auto end = std::min(start + kFetchBatchSize, doc_count);
+      std::vector<Doc> expected_docs;
+      std::vector<std::string> pks;
+      for (uint64_t id = start; id < end; ++id) {
+        expected_docs.push_back(CreateTestDoc(id, 0));
+        pks.push_back(expected_docs.back().pk());
+      }
+      auto result = collection->fetch(pks);
+      ASSERT_TRUE(result.has_value()) << result.error().message();
+      ASSERT_EQ(result.value().size(), pks.size());
+      for (const auto &expected : expected_docs) {
+        auto found = result.value().find(expected.pk());
+        ASSERT_NE(found, result.value().end()) << expected.pk();
+        ASSERT_NE(found->second, nullptr) << expected.pk();
+        ASSERT_EQ(*found->second, expected)
+            << "Data mismatch for doc[" << expected.pk() << "]";
+      }
+    }
+
+    SearchQuery query;
+    query.topk_ = 10;
+    std::vector<float> feature(128, 0.0);
+    query.target_.set_vector(std::string((const char *)feature.data(),
+                                         feature.size() * sizeof(float)));
+    query.target_.field_name_ = "dense_fp32_field";
+    auto query_result = collection->query(query);
+    ASSERT_TRUE(query_result.has_value()) << query_result.error().message();
+    ASSERT_EQ(query_result.value().size(), 10);
+    ASSERT_EQ(query_result.value()[0]->pk(), "pk_0");
+  }
 };
 
 
@@ -172,37 +211,8 @@ TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
         << "Failed to reopen collection after crash. "
            "Recovery mechanism may be broken.";
     auto collection = result.value();
-    uint64_t doc_count{collection->stats().value().doc_count};
-    ASSERT_EQ(doc_count, num_batches * batch_size);
-    for (uint64_t doc_id = 0; doc_id < doc_count; doc_id++) {
-      Doc expected_doc = CreateTestDoc(doc_id, 0);
-      std::vector<std::string> pks{};
-      pks.emplace_back(expected_doc.pk());
-      if (auto res = collection->fetch(pks); res) {
-        auto map = res.value();
-        if (map.find(expected_doc.pk()) == map.end()) {
-          FAIL() << "Returned map does not contain doc[" << expected_doc.pk()
-                 << "]";
-        }
-        const auto actual_doc = map.at(expected_doc.pk());
-        ASSERT_EQ(*actual_doc, expected_doc)
-            << "Data mismatch for doc[" << expected_doc.pk() << "]";
-      } else {
-        FAIL() << "Failed to fetch doc[" << expected_doc.pk() << "]";
-      }
-    }
-
-    SearchQuery query;
-    query.topk_ = 10;
-    std::vector<float> feature(128, 0.0);
-    query.target_.set_vector(std::string((const char *)feature.data(),
-                                         feature.size() * sizeof(float)));
-    query.target_.field_name_ = "dense_fp32_field";
-    auto query_result = collection->query(query);
-    ASSERT_TRUE(query_result);
-    auto doc_list = query_result.value();
-    ASSERT_EQ(doc_list.size(), 10);
-    ASSERT_EQ(doc_list[0]->pk(), "pk_0");
+    ASSERT_NO_FATAL_FAILURE(
+        expect_collection(collection, num_batches * batch_size));
 
     // Insert some more documents
     for (int batch = num_batches; batch < num_batches + 500; batch++) {
@@ -227,37 +237,8 @@ TEST_F(OptimizeRecoveryTest, CrashDuringOptimize) {
   ASSERT_TRUE(result.has_value()) << "Failed to reopen collection after crash. "
                                      "Recovery mechanism may be broken.";
   auto collection = result.value();
-  uint64_t doc_count{collection->stats().value().doc_count};
-  ASSERT_EQ(doc_count, (num_batches + 500) * batch_size);
-  for (uint64_t doc_id = 0; doc_id < doc_count; doc_id++) {
-    Doc expected_doc = CreateTestDoc(doc_id, 0);
-    std::vector<std::string> pks{};
-    pks.emplace_back(expected_doc.pk());
-    if (auto res = collection->fetch(pks); res) {
-      auto map = res.value();
-      if (map.find(expected_doc.pk()) == map.end()) {
-        FAIL() << "Returned map does not contain doc[" << expected_doc.pk()
-               << "]";
-      }
-      const auto actual_doc = map.at(expected_doc.pk());
-      ASSERT_EQ(*actual_doc, expected_doc)
-          << "Data mismatch for doc[" << expected_doc.pk() << "]";
-    } else {
-      FAIL() << "Failed to fetch doc[" << expected_doc.pk() << "]";
-    }
-  }
-
-  SearchQuery query;
-  query.topk_ = 10;
-  std::vector<float> feature(128, 0.0);
-  query.target_.set_vector(std::string((const char *)feature.data(),
-                                       feature.size() * sizeof(float)));
-  query.target_.field_name_ = "dense_fp32_field";
-  auto query_result = collection->query(query);
-  ASSERT_TRUE(query_result);
-  auto doc_list = query_result.value();
-  ASSERT_EQ(doc_list.size(), 10);
-  ASSERT_EQ(doc_list[0]->pk(), "pk_0");
+  ASSERT_NO_FATAL_FAILURE(
+      expect_collection(collection, (num_batches + 500) * batch_size));
 }
 
 

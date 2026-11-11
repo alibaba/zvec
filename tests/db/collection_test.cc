@@ -132,6 +132,30 @@ class CollectionTest : public ::testing::Test {
     EXPECT_EQ(found->second->get<int32_t>(field), expected);
   }
 
+  static void expect_docs(const Collection::Ptr &collection,
+                          const CollectionSchema &schema, uint64_t doc_count) {
+    constexpr uint64_t kFetchBatchSize = 1024;
+    for (uint64_t start = 0; start < doc_count; start += kFetchBatchSize) {
+      const auto end = std::min(start + kFetchBatchSize, doc_count);
+      std::vector<std::string> pks;
+      for (uint64_t id = start; id < end; ++id) {
+        pks.push_back(TestHelper::MakePK(id));
+      }
+      auto result = collection->fetch(pks);
+      ASSERT_TRUE(result.has_value()) << result.error().message();
+      ASSERT_EQ(result.value().size(), pks.size());
+      for (uint64_t id = start; id < end; ++id) {
+        const auto expected = TestHelper::CreateDoc(id, schema);
+        auto found = result.value().find(expected.pk());
+        ASSERT_NE(found, result.value().end()) << expected.pk();
+        ASSERT_NE(found->second, nullptr) << expected.pk();
+        ASSERT_EQ(*found->second, expected)
+            << "doc: " << found->second->to_detail_string()
+            << "\nexpected: " << expected.to_detail_string();
+      }
+    }
+  }
+
   CollectionOptions options_;
   Collection::Ptr collection_;
 };
@@ -547,23 +571,8 @@ TEST_F(CollectionTest, Feature_CreateAndOpen_Repeated) {
   }
 
   // Final verification - check all docs are present
-  for (int i = 0; i < doc_count + loop_count; i++) {
-    auto expect_doc = TestHelper::CreateDoc(i, *schema);
-    auto result = collection->fetch({expect_doc.pk()});
-    ASSERT_TRUE(result.has_value()) << "Failed to fetch doc " << i;
-    ASSERT_EQ(result.value().size(), 1);
-    ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
-    auto doc = result.value()[expect_doc.pk()];
-    if (doc == nullptr) {
-      std::cout << "fetch failed, doc_id: " << i << std::endl;
-    }
-    ASSERT_NE(doc, nullptr);
-    if (*doc != expect_doc) {
-      std::cout << "       doc:" << doc->to_detail_string() << std::endl;
-      std::cout << "expect_doc:" << expect_doc.to_detail_string() << std::endl;
-    }
-    ASSERT_EQ(*doc, expect_doc);
-  }
+  ASSERT_NO_FATAL_FAILURE(
+      expect_docs(collection, *schema, doc_count + loop_count));
 
   // Clean up
   ASSERT_TRUE(collection->destroy().ok());
@@ -2504,21 +2513,7 @@ TEST_F(CollectionTest, Feature_CreateIndex_Scalar) {
     ASSERT_TRUE(s.ok());
     ASSERT_EQ(*new_schema, collection->schema());
 
-    for (int i = 0; i < doc_count; i++) {
-      auto expect_doc = TestHelper::CreateDoc(i, *schema);
-      auto result = collection->fetch({expect_doc.pk()});
-      ASSERT_TRUE(result.has_value());
-      ASSERT_EQ(result.value().size(), 1);
-      ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
-      auto doc = result.value()[expect_doc.pk()];
-      ASSERT_NE(doc, nullptr);
-      if (*doc != expect_doc) {
-        std::cout << "       doc:" << doc->to_detail_string() << std::endl;
-        std::cout << "expect_doc:" << expect_doc.to_detail_string()
-                  << std::endl;
-      }
-      ASSERT_EQ(*doc, expect_doc);
-    }
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
 
     collection.reset();
 
@@ -2530,21 +2525,7 @@ TEST_F(CollectionTest, Feature_CreateIndex_Scalar) {
     ASSERT_EQ(stats.doc_count, doc_count);
     ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
 
-    for (int i = 0; i < doc_count; i++) {
-      auto expect_doc = TestHelper::CreateDoc(i, *schema);
-      auto result = collection->fetch({expect_doc.pk()});
-      ASSERT_TRUE(result.has_value());
-      ASSERT_EQ(result.value().size(), 1);
-      ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
-      auto doc = result.value()[expect_doc.pk()];
-      ASSERT_NE(doc, nullptr);
-      if (*doc != expect_doc) {
-        std::cout << "       doc:" << doc->to_detail_string() << std::endl;
-        std::cout << "expect_doc:" << expect_doc.to_detail_string()
-                  << std::endl;
-      }
-      ASSERT_EQ(*doc, expect_doc);
-    }
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
 
     // insert another 100 docs
     s = TestHelper::CollectionInsertDoc(collection, doc_count, doc_count + 100,
@@ -2680,25 +2661,7 @@ TEST_F(CollectionTest, Feature_DropIndex_Vector) {
     ASSERT_EQ(stats.index_completeness[field_name], 1);
     ASSERT_EQ(collection->schema(), *schema);
 
-    auto check_doc = [&]() {
-      for (int i = 0; i < doc_count; i++) {
-        auto expect_doc = TestHelper::CreateDoc(i, *schema);
-        auto result = collection->fetch({expect_doc.pk()});
-        ASSERT_TRUE(result.has_value());
-        ASSERT_EQ(result.value().size(), 1);
-        ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
-        auto doc = result.value()[expect_doc.pk()];
-        ASSERT_NE(doc, nullptr);
-        if (*doc != expect_doc) {
-          std::cout << "       doc:" << doc->to_detail_string() << std::endl;
-          std::cout << "expect_doc:" << expect_doc.to_detail_string()
-                    << std::endl;
-        }
-        ASSERT_EQ(*doc, expect_doc);
-      }
-    };
-
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
     std::cout << "check success 1" << std::endl;
 
     // create index first
@@ -2713,7 +2676,7 @@ TEST_F(CollectionTest, Feature_DropIndex_Vector) {
     ASSERT_EQ(stats.doc_count, doc_count);
     ASSERT_EQ(stats.index_completeness[field_name], 1);
 
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
     std::cout << "check success 2" << std::endl;
 
     int new_doc_count = doc_count;
@@ -2726,7 +2689,7 @@ TEST_F(CollectionTest, Feature_DropIndex_Vector) {
     // then drop index field_name
     s = collection->drop_index(field_name);
     ASSERT_TRUE(s.ok());
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
     std::cout << "check success 3" << std::endl;
     s = new_schema->drop_index(field_name);
     ASSERT_TRUE(s.ok());
@@ -2741,7 +2704,7 @@ TEST_F(CollectionTest, Feature_DropIndex_Vector) {
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
     std::cout << "check success 3" << std::endl;
     stats = collection->stats().value();
     ASSERT_EQ(stats.doc_count, new_doc_count);
@@ -2771,25 +2734,7 @@ TEST_F(CollectionTest, Feature_DropIndex_Scalar) {
 
     ASSERT_TRUE(collection->flush().ok());
 
-    auto check_doc = [&]() {
-      for (int i = 0; i < doc_count; i++) {
-        auto expect_doc = TestHelper::CreateDoc(i, *schema);
-        auto result = collection->fetch({expect_doc.pk()});
-        ASSERT_TRUE(result.has_value());
-        ASSERT_EQ(result.value().size(), 1);
-        ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
-        auto doc = result.value()[expect_doc.pk()];
-        ASSERT_NE(doc, nullptr);
-        if (*doc != expect_doc) {
-          std::cout << "       doc:" << doc->to_detail_string() << std::endl;
-          std::cout << "expect_doc:" << expect_doc.to_detail_string()
-                    << std::endl;
-        }
-        ASSERT_EQ(*doc, expect_doc);
-      }
-    };
-
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
     std::cout << "check success 1" << std::endl;
 
     auto stats = collection->stats().value();
@@ -2803,7 +2748,7 @@ TEST_F(CollectionTest, Feature_DropIndex_Scalar) {
     ASSERT_TRUE(s.ok());
     ASSERT_EQ(*new_schema, collection->schema());
 
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
     std::cout << "check success 2" << std::endl;
     stats = collection->stats().value();
     ASSERT_EQ(stats.doc_count, doc_count);
@@ -2813,7 +2758,7 @@ TEST_F(CollectionTest, Feature_DropIndex_Scalar) {
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
     std::cout << "check success 3" << std::endl;
     stats = collection->stats().value();
     ASSERT_EQ(stats.doc_count, doc_count);
@@ -2861,16 +2806,7 @@ TEST_F(CollectionTest, Feature_DropIndex_Scalar) {
     ASSERT_EQ(*expected_schema, schema_after_drop.value());
     ASSERT_EQ(collection->stats().value().doc_count, doc_count);
 
-    for (int i = 0; i < doc_count; i++) {
-      auto expect_doc = TestHelper::CreateDoc(i, *schema);
-      auto result = collection->fetch({expect_doc.pk()});
-      ASSERT_TRUE(result.has_value());
-      ASSERT_EQ(result.value().size(), 1);
-      ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
-      auto doc = result.value()[expect_doc.pk()];
-      ASSERT_NE(doc, nullptr);
-      ASSERT_EQ(*doc, expect_doc);
-    }
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
 
     collection.reset();
     FileHelper::RemoveDirectory(col_path);
@@ -3007,25 +2943,7 @@ TEST_F(CollectionTest, Feature_DropIndex_AfterCreate) {
 
     ASSERT_TRUE(collection->flush().ok());
 
-    auto check_doc = [&]() {
-      for (int i = 0; i < doc_count; i++) {
-        auto expect_doc = TestHelper::CreateDoc(i, *schema);
-        auto result = collection->fetch({expect_doc.pk()});
-        ASSERT_TRUE(result.has_value());
-        ASSERT_EQ(result.value().size(), 1);
-        ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
-        auto doc = result.value()[expect_doc.pk()];
-        ASSERT_NE(doc, nullptr);
-        if (*doc != expect_doc) {
-          std::cout << "       doc:" << doc->to_detail_string() << std::endl;
-          std::cout << "expect_doc:" << expect_doc.to_detail_string()
-                    << std::endl;
-        }
-        ASSERT_EQ(*doc, expect_doc);
-      }
-    };
-
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
     std::cout << "check success 1" << std::endl;
 
     auto stats = collection->stats().value();
@@ -3042,12 +2960,12 @@ TEST_F(CollectionTest, Feature_DropIndex_AfterCreate) {
     ASSERT_TRUE(s.ok());
     ASSERT_EQ(*new_schema, collection->schema());
 
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
     std::cout << "check success 2" << std::endl;
 
     s = collection->drop_index(field_name);
     ASSERT_TRUE(s.ok());
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
     std::cout << "check success 3" << std::endl;
     s = new_schema->drop_index(field_name);
     ASSERT_TRUE(s.ok());
@@ -3072,25 +2990,7 @@ TEST_F(CollectionTest, Feature_Optimize_General) {
     auto collection = TestHelper::CreateCollectionWithDoc(
         col_path, *schema, options, 0, doc_count, false);
 
-    auto check_doc = [&]() {
-      for (int i = 0; i < doc_count; i++) {
-        auto expect_doc = TestHelper::CreateDoc(i, *schema);
-        auto result = collection->fetch({expect_doc.pk()});
-        ASSERT_TRUE(result.has_value());
-        ASSERT_EQ(result.value().size(), 1);
-        ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
-        auto doc = result.value()[expect_doc.pk()];
-        ASSERT_NE(doc, nullptr);
-        if (*doc != expect_doc) {
-          std::cout << "       doc:" << doc->to_detail_string() << std::endl;
-          std::cout << "expect_doc:" << expect_doc.to_detail_string()
-                    << std::endl;
-        }
-        ASSERT_EQ(*doc, expect_doc);
-      }
-    };
-
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
     std::cout << "check success 1" << std::endl;
 
     ASSERT_TRUE(collection->flush().ok());
@@ -3108,7 +3008,7 @@ TEST_F(CollectionTest, Feature_Optimize_General) {
     ASSERT_EQ(stats.doc_count, doc_count);
     ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
 
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
     std::cout << "check success 2" << std::endl;
 
     collection.reset();
@@ -3116,7 +3016,7 @@ TEST_F(CollectionTest, Feature_Optimize_General) {
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
     std::cout << "check success 3" << std::endl;
   };
 
@@ -3571,29 +3471,8 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
 
     const bool tracks_completeness = (index_params->type() != IndexType::FLAT);
 
-    auto check_doc = [&]() {
-      for (int i = 0; i < doc_count; i++) {
-        auto expect_doc = TestHelper::CreateDoc(i, *schema);
-        auto result = collection->fetch({expect_doc.pk()});
-        ASSERT_TRUE(result.has_value());
-        ASSERT_EQ(result.value().size(), 1);
-        ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
-        auto doc = result.value()[expect_doc.pk()];
-        if (doc == nullptr) {
-          std::cout << "doc is null, pk: " << expect_doc.pk() << std::endl;
-        }
-        ASSERT_NE(doc, nullptr);
-        if (*doc != expect_doc) {
-          std::cout << "       doc:" << doc->to_detail_string() << std::endl;
-          std::cout << "expect_doc:" << expect_doc.to_detail_string()
-                    << std::endl;
-        }
-        ASSERT_EQ(*doc, expect_doc);
-      }
-    };
-
     // Phase 1: docs are inserted but no index is built yet.
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
 
     ASSERT_TRUE(collection->flush().ok());
     auto stats = collection->stats().value();
@@ -3687,7 +3566,7 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
     }
 
     // Phase 6: verify all documents survived the repeated optimizes.
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
 
     // Phase 7: reopen the collection and verify the persisted state is
     // still fully built and fetchable.
@@ -3702,7 +3581,7 @@ TEST_F(CollectionTest, Feature_Optimize_Repeated) {
       ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
     }
 
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
   };
 
 
@@ -3936,25 +3815,7 @@ TEST_F(CollectionTest, Feature_Optimize_Delete) {
   auto collection = TestHelper::CreateCollectionWithDoc(
       col_path, *schema, options, 0, doc_count, false);
 
-  auto check_doc = [&]() {
-    for (int i = 0; i < doc_count; i++) {
-      auto expect_doc = TestHelper::CreateDoc(i, *schema);
-      auto result = collection->fetch({expect_doc.pk()});
-      ASSERT_TRUE(result.has_value());
-      ASSERT_EQ(result.value().size(), 1);
-      ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
-      auto doc = result.value()[expect_doc.pk()];
-      ASSERT_NE(doc, nullptr);
-      if (*doc != expect_doc) {
-        std::cout << "       doc:" << doc->to_detail_string() << std::endl;
-        std::cout << "expect_doc:" << expect_doc.to_detail_string()
-                  << std::endl;
-      }
-      ASSERT_EQ(*doc, expect_doc);
-    }
-  };
-
-  check_doc();
+  ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
   std::cout << "check success 1" << std::endl;
 
   ASSERT_TRUE(collection->flush().ok());
@@ -3972,7 +3833,7 @@ TEST_F(CollectionTest, Feature_Optimize_Delete) {
   ASSERT_EQ(stats.doc_count, doc_count);
   ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
 
-  check_doc();
+  ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
   std::cout << "check success 2" << std::endl;
 
   // delete by filter
@@ -4024,25 +3885,7 @@ TEST_F(CollectionTest, Feature_Optimize_NormalSchema) {
   auto collection = TestHelper::CreateCollectionWithDoc(
       col_path, *schema, options, 0, doc_count, false);
 
-  auto check_doc = [&]() {
-    for (int i = 0; i < doc_count; i++) {
-      auto expect_doc = TestHelper::CreateDoc(i, *schema);
-      auto result = collection->fetch({expect_doc.pk()});
-      ASSERT_TRUE(result.has_value());
-      ASSERT_EQ(result.value().size(), 1);
-      ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
-      auto doc = result.value()[expect_doc.pk()];
-      ASSERT_NE(doc, nullptr);
-      if (*doc != expect_doc) {
-        std::cout << "       doc:" << doc->to_detail_string() << std::endl;
-        std::cout << "expect_doc:" << expect_doc.to_detail_string()
-                  << std::endl;
-      }
-      ASSERT_EQ(*doc, expect_doc);
-    }
-  };
-
-  check_doc();
+  ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
   std::cout << "check success 1" << std::endl;
 
   ASSERT_TRUE(collection->flush().ok());
@@ -4060,7 +3903,7 @@ TEST_F(CollectionTest, Feature_Optimize_NormalSchema) {
   ASSERT_EQ(stats.doc_count, doc_count);
   ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
 
-  check_doc();
+  ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
   std::cout << "check success 2" << std::endl;
 
   collection.reset();
@@ -4068,7 +3911,7 @@ TEST_F(CollectionTest, Feature_Optimize_NormalSchema) {
   ASSERT_TRUE(result.has_value());
   collection = std::move(result.value());
 
-  check_doc();
+  ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
   std::cout << "check success 3" << std::endl;
 }
 
@@ -4087,30 +3930,13 @@ TEST_F(CollectionTest, Feature_Optimize_ExceedMaxDocCount) {
     auto collection = TestHelper::CreateCollectionWithDoc(col_path, *schema,
                                                           options, 0, 0, false);
 
-    auto check_doc = [&](int doc_count) {
-      for (int i = 0; i < doc_count; i++) {
-        auto expect_doc = TestHelper::CreateDoc(i, *schema);
-        auto result = collection->fetch({expect_doc.pk()});
-        ASSERT_TRUE(result.has_value());
-        ASSERT_EQ(result.value().size(), 1);
-        ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
-        auto doc = result.value()[expect_doc.pk()];
-        ASSERT_NE(doc, nullptr);
-        if (*doc != expect_doc) {
-          std::cout << "       doc:" << doc->to_detail_string() << std::endl;
-          std::cout << "expect_doc:" << expect_doc.to_detail_string()
-                    << std::endl;
-        }
-        ASSERT_EQ(*doc, expect_doc);
-      }
-    };
-
     int accu_seg_doc_count = 0;
     for (auto doc_count : segments_count) {
       auto s = TestHelper::CollectionInsertDoc(collection, accu_seg_doc_count,
                                                accu_seg_doc_count + doc_count);
 
-      check_doc(accu_seg_doc_count + doc_count);
+      ASSERT_NO_FATAL_FAILURE(
+          expect_docs(collection, *schema, accu_seg_doc_count + doc_count));
       std::cout << "check success 1" << std::endl;
 
       ASSERT_TRUE(collection->flush().ok());
@@ -4130,7 +3956,8 @@ TEST_F(CollectionTest, Feature_Optimize_ExceedMaxDocCount) {
       ASSERT_EQ(stats.doc_count, accu_seg_doc_count + doc_count);
       ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
 
-      check_doc(accu_seg_doc_count + doc_count);
+      ASSERT_NO_FATAL_FAILURE(
+          expect_docs(collection, *schema, accu_seg_doc_count + doc_count));
       std::cout << "check success 2" << std::endl;
 
       collection.reset();
@@ -4138,7 +3965,8 @@ TEST_F(CollectionTest, Feature_Optimize_ExceedMaxDocCount) {
       ASSERT_TRUE(result.has_value());
       collection = std::move(result.value());
 
-      check_doc(accu_seg_doc_count + doc_count);
+      ASSERT_NO_FATAL_FAILURE(
+          expect_docs(collection, *schema, accu_seg_doc_count + doc_count));
       std::cout << "check success 3" << std::endl;
 
       accu_seg_doc_count += doc_count;
@@ -4164,9 +3992,10 @@ TEST_F(CollectionTest, Feature_Optimize_ExceedMaxDocCount) {
     ASSERT_TRUE(s.ok());
 
     if (delete_all) {
-      check_doc(0);
+      ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, 0));
     } else {
-      check_doc(accu_seg_doc_count);
+      ASSERT_NO_FATAL_FAILURE(
+          expect_docs(collection, *schema, accu_seg_doc_count));
     }
     std::cout << "check success 3" << std::endl;
 
@@ -4497,24 +4326,6 @@ TEST_F(CollectionTest, Feature_Optimize_IndexOperation) {
   auto collection = TestHelper::CreateCollectionWithDoc(
       col_path, *schema, options, 0, max_doc_per_count / 2, false);
 
-  auto check_doc = [&](int doc_count) {
-    for (int i = 0; i < doc_count; i++) {
-      auto expect_doc = TestHelper::CreateDoc(i, *schema);
-      auto result = collection->fetch({expect_doc.pk()});
-      ASSERT_TRUE(result.has_value());
-      ASSERT_EQ(result.value().size(), 1);
-      ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
-      auto doc = result.value()[expect_doc.pk()];
-      ASSERT_NE(doc, nullptr);
-      if (*doc != expect_doc) {
-        std::cout << "       doc:" << doc->to_detail_string() << std::endl;
-        std::cout << "expect_doc:" << expect_doc.to_detail_string()
-                  << std::endl;
-      }
-      ASSERT_EQ(*doc, expect_doc);
-    }
-  };
-
   auto stats = collection->stats().value();
   ASSERT_EQ(stats.doc_count, max_doc_per_count / 2);
   ASSERT_EQ(stats.index_completeness["dense_fp32"], 0);
@@ -4545,7 +4356,8 @@ TEST_F(CollectionTest, Feature_Optimize_IndexOperation) {
   ASSERT_EQ(stats.doc_count, max_doc_per_count * 3 / 2);
   ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
 
-  check_doc(max_doc_per_count * 3 / 2);
+  ASSERT_NO_FATAL_FAILURE(
+      expect_docs(collection, *schema, max_doc_per_count * 3 / 2));
   std::cout << "check success 1" << std::endl;
 
   s = collection->optimize();
@@ -4554,7 +4366,8 @@ TEST_F(CollectionTest, Feature_Optimize_IndexOperation) {
   }
   ASSERT_TRUE(s.ok());
 
-  check_doc(max_doc_per_count * 3 / 2);
+  ASSERT_NO_FATAL_FAILURE(
+      expect_docs(collection, *schema, max_doc_per_count * 3 / 2));
   std::cout << "check success 2" << std::endl;
 
   stats = collection->stats().value();
@@ -4566,7 +4379,8 @@ TEST_F(CollectionTest, Feature_Optimize_IndexOperation) {
   auto result = Collection::Open(col_path, options);
   collection = std::move(result.value());
 
-  check_doc(max_doc_per_count * 3 / 2);
+  ASSERT_NO_FATAL_FAILURE(
+      expect_docs(collection, *schema, max_doc_per_count * 3 / 2));
   std::cout << "check success 2" << std::endl;
 
   stats = collection->stats().value();
@@ -6843,25 +6657,7 @@ TEST_F(CollectionTest, Feature_Optimize_HNSW_RABITQ) {
     auto collection = TestHelper::CreateCollectionWithDoc(
         col_path, *schema, options, 0, doc_count, false);
 
-    auto check_doc = [&]() {
-      for (int i = 0; i < doc_count; i++) {
-        auto expect_doc = TestHelper::CreateDoc(i, *schema);
-        auto result = collection->fetch({expect_doc.pk()});
-        ASSERT_TRUE(result.has_value());
-        ASSERT_EQ(result.value().size(), 1);
-        ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
-        auto doc = result.value()[expect_doc.pk()];
-        ASSERT_NE(doc, nullptr);
-        if (*doc != expect_doc) {
-          std::cout << "       doc:" << doc->to_detail_string() << std::endl;
-          std::cout << "expect_doc:" << expect_doc.to_detail_string()
-                    << std::endl;
-        }
-        ASSERT_EQ(*doc, expect_doc);
-      }
-    };
-
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
     std::cout << "check success 1" << std::endl;
 
     ASSERT_TRUE(collection->flush().ok());
@@ -6879,7 +6675,7 @@ TEST_F(CollectionTest, Feature_Optimize_HNSW_RABITQ) {
     ASSERT_EQ(stats.doc_count, doc_count);
     ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
 
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
     std::cout << "check success 2" << std::endl;
 
     collection.reset();
@@ -6887,7 +6683,7 @@ TEST_F(CollectionTest, Feature_Optimize_HNSW_RABITQ) {
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
     std::cout << "check success 3" << std::endl;
   };
 
@@ -7022,25 +6818,7 @@ TEST_F(CollectionTest, Feature_Optimize_DiskAnn) {
     auto collection = TestHelper::CreateCollectionWithDoc(
         col_path, *schema, options, 0, doc_count, false);
 
-    auto check_doc = [&]() {
-      for (int i = 0; i < doc_count; i++) {
-        auto expect_doc = TestHelper::CreateDoc(i, *schema);
-        auto result = collection->fetch({expect_doc.pk()});
-        ASSERT_TRUE(result.has_value());
-        ASSERT_EQ(result.value().size(), 1);
-        ASSERT_EQ(result.value().count(expect_doc.pk()), 1);
-        auto doc = result.value()[expect_doc.pk()];
-        ASSERT_NE(doc, nullptr);
-        if (*doc != expect_doc) {
-          std::cout << "       doc:" << doc->to_detail_string() << std::endl;
-          std::cout << "expect_doc:" << expect_doc.to_detail_string()
-                    << std::endl;
-        }
-        ASSERT_EQ(*doc, expect_doc);
-      }
-    };
-
-    check_doc();
+    ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
     std::cout << "check success 1" << std::endl;
 
     ASSERT_TRUE(collection->flush().ok());
@@ -7058,7 +6836,6 @@ TEST_F(CollectionTest, Feature_Optimize_DiskAnn) {
     ASSERT_EQ(stats.doc_count, doc_count);
     ASSERT_EQ(stats.index_completeness["dense_fp32"], 1);
 
-    // check_doc();
     std::cout << "check success 2" << std::endl;
 
     collection.reset();
@@ -7066,7 +6843,6 @@ TEST_F(CollectionTest, Feature_Optimize_DiskAnn) {
     ASSERT_TRUE(result.has_value());
     collection = std::move(result.value());
 
-    // check_doc();
     std::cout << "check success 3" << std::endl;
   };
 
@@ -8139,15 +7915,7 @@ TEST_F(CollectionTest, Feature_DropAndRecreateScalarIndex) {
   ASSERT_TRUE(s.ok()) << "Round 3 create failed: " << s.message();
 
   // Verify data integrity after multiple create/drop cycles
-  for (int i = 0; i < doc_count; i++) {
-    auto expect_doc = TestHelper::CreateDoc(i, *schema);
-    auto result = collection->fetch({expect_doc.pk()});
-    ASSERT_TRUE(result.has_value());
-    ASSERT_EQ(result.value().size(), 1);
-    auto doc = result.value()[expect_doc.pk()];
-    ASSERT_NE(doc, nullptr);
-    ASSERT_EQ(*doc, expect_doc);
-  }
+  ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
 
   // Final drop
   s = collection->drop_index("int32");
@@ -8200,13 +7968,5 @@ TEST_F(CollectionTest, Feature_DropAndRecreateScalarIndex_MultipleFields) {
                       << s.message();
 
   // Verify data integrity
-  for (int i = 0; i < doc_count; i++) {
-    auto expect_doc = TestHelper::CreateDoc(i, *schema);
-    auto result = collection->fetch({expect_doc.pk()});
-    ASSERT_TRUE(result.has_value());
-    ASSERT_EQ(result.value().size(), 1);
-    auto doc = result.value()[expect_doc.pk()];
-    ASSERT_NE(doc, nullptr);
-    ASSERT_EQ(*doc, expect_doc);
-  }
+  ASSERT_NO_FATAL_FAILURE(expect_docs(collection, *schema, doc_count));
 }

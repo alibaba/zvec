@@ -177,474 +177,72 @@ class TestCollectionOpen:
     def test_open_basic_functionality(
         self, tmp_path_factory, collection_schema, collection_option
     ):
-        import sys
-        import time
-        import os
-
-        # Create unique temp directory
-        temp_dir = tmp_path_factory.mktemp("zvec")
-        collection_path = temp_dir / "test_collection"
-
-        # Ensure the path exists
-        collection_path_str = str(collection_path)
-        print(f"DEBUG: Collection path: {collection_path_str}")
-        print(f"DEBUG: Temp directory exists: {temp_dir.exists()}")
-
-        # Create and open collection first
-        created_coll = zvec.create_and_open(
-            path=collection_path_str, schema=collection_schema, option=collection_option
-        )
-
-        assert created_coll is not None, (
-            f"Failed to create collection, returned None instead of valid Collection object. Path: {collection_path_str}"
-        )
-        assert created_coll.path == collection_path_str, (
-            f"Collection path mismatch. Expected: {collection_path_str}, Actual: {created_coll.path}"
-        )
-        assert created_coll.schema.name == "test_collection", (
-            f"Collection schema name mismatch. Expected: test_collection, Actual: {created_coll.schema.name}"
-        )
-
-        # Insert multiple documents to verify persistence
-        docs = []
-        for i in range(3):
-            doc = Doc(
-                id=f"{i}",
+        collection_path = str(tmp_path_factory.mktemp("zvec") / "test_collection")
+        docs = {
+            str(i): Doc(
+                id=str(i),
                 fields={"id": i, "name": f"test_{i}", "weight": float(i * 10)},
                 vectors={
                     "dense": [float(j + i) for j in range(128)],
                     "sparse": {j: float(j + i) for j in range(5)},
                 },
             )
-            docs.append(doc)
+            for i in range(3)
+        }
 
-        result = created_coll.insert(docs)
-        assert len(result) == 3, f"Expected 3 insertion results, but got {len(result)}"
-        for i, res in enumerate(result):
-            assert res.ok(), (
-                f"Insertion result {i} is not OK. Status code: {res.code()}, Message: {res.message()}"
-            )
+        def check_docs(results, expected_ids):
+            results = list(results)
+            assert len(results) == len(expected_ids)
+            assert {doc.id for doc in results} == expected_ids
+            for doc in results:
+                expected = docs[doc.id]
+                assert doc.fields == expected.fields
+                assert set(doc.vector_names()) == {"dense", "sparse"}
+                assert isinstance(doc.vector("dense"), list)
+                assert isinstance(doc.vector("sparse"), dict)
+                assert doc.vectors == expected.vectors
+                assert isinstance(doc.score, (int, float))
+                assert np.isfinite(doc.score)
 
-        # Verify documents were inserted using fetch interface
-        fetched_docs_after_insert = created_coll.fetch(["0", "1", "2"])
-        assert len(fetched_docs_after_insert) == 3, (
-            f"Expected 3 fetched documents after insertion, but got {len(fetched_docs_after_insert)}"
+        created_coll = zvec.create_and_open(
+            path=collection_path, schema=collection_schema, option=collection_option
         )
-        assert "0" in fetched_docs_after_insert, (
-            "Document with ID '0' not found in fetched results after insertion"
-        )
-        assert "1" in fetched_docs_after_insert, (
-            "Document with ID '1' not found in fetched results after insertion"
-        )
-        assert "2" in fetched_docs_after_insert, (
-            "Document with ID '2' not found in fetched results after insertion"
-        )
+        assert created_coll.path == collection_path
+        assert created_coll.schema.name == collection_schema.name
+        results = created_coll.insert(list(docs.values()))
+        assert len(results) == len(docs)
+        assert all(result.ok() for result in results)
+        assert created_coll.stats.doc_count == len(docs)
+        check_docs(created_coll.fetch(list(docs)).values(), set(docs))
 
-        # Verify fetched document content after insertion
-        for i in range(3):
-            doc = fetched_docs_after_insert[f"{i}"]
-            assert doc is not None, (
-                f"Fetched document with ID '{i}' is None after insertion"
-            )
-            assert doc.id == f"{i}", (
-                f"Document ID mismatch for document '{i}' after insertion. Expected: {i}, Actual: {doc.id}"
-            )
-            assert doc.field("id") == i, (
-                f"Document id field mismatch for document '{i}' after insertion. Expected: {i}, Actual: {doc.field('id')}"
-            )
-            assert doc.field("name") == f"test_{i}", (
-                f"Document name field mismatch for document '{i}' after insertion. Expected: test_{i}, Actual: {doc.field('name')}"
-            )
-            assert doc.field("weight") == float(i * 10), (
-                f"Document weight field mismatch for document '{i}' after insertion. Expected: {float(i * 10)}, Actual: {doc.field('weight')}"
-            )
-
-            # Verify vector access after insertion
-            assert doc.vector("dense") is not None, (
-                f"Document {i} should have dense vector after insertion"
-            )
-            assert doc.vector("sparse") is not None, (
-                f"Document {i} should have sparse vector after insertion"
-            )
-
-            # Verify vector types after insertion
-            assert isinstance(doc.vector("dense"), list), (
-                f"Document {i} dense vector should be dict after insertion, got {type(doc.vector('dense'))}"
-            )
-            assert isinstance(doc.vector("sparse"), dict), (
-                f"Document {i} sparse vector should be dict after insertion, got {type(doc.vector('sparse'))}"
-            )
-
-        # Verify documents were inserted using stats
-        stats = created_coll.stats
-        assert stats is not None, "Collection stats should not be None"
-        assert stats.doc_count == 3, (
-            f"Document count mismatch after insertion. Expected: 3, Actual: {stats.doc_count}"
-        )
-
-        # Store the collection path before cleanup
-        collection_path = created_coll.path
-
-        # Clean up the created collection reference
+        # Releasing the last reference must persist data and release the file lock.
         del created_coll
-
-        # Wait and verify the path still exists
-        print(f"DEBUG: Collection path after destroy: {collection_path}")
-        print(f"DEBUG: Path exists after destroy: {os.path.exists(collection_path)}")
-
-        # Now open the existing collection
+        opened_coll = zvec.open(path=collection_path, option=collection_option)
         try:
-            print(f"DEBUG: Path exists before open: {os.path.exists(collection_path)}")
-
-            # List contents of parent directory for debugging
-            parent_dir = os.path.dirname(collection_path)
-            if os.path.exists(parent_dir):
-                print(f"DEBUG: Parent directory contents: {os.listdir(parent_dir)}")
-
-            opened_coll = zvec.open(path=collection_path, option=collection_option)
-
-            assert opened_coll is not None, (
-                f"Failed to open existing collection at path: {collection_path}. Returned None instead of valid Collection object"
+            assert opened_coll.path == collection_path
+            assert opened_coll.schema.name == collection_schema.name
+            assert opened_coll.stats.doc_count == len(docs)
+            fetched = opened_coll.fetch(list(docs))
+            check_docs(fetched.values(), set(docs))
+            assert all(doc.score == 0.0 for doc in fetched.values())
+            check_docs(opened_coll.query(include_vector=True), set(docs))
+            check_docs(
+                opened_coll.query(filter="id >= 1", include_vector=True), {"1", "2"}
             )
-            assert opened_coll.path == collection_path, (
-                f"Opened collection path mismatch. Expected: {collection_path}, Actual: {opened_coll.path}"
-            )
-            assert opened_coll.schema.name == "test_collection", (
-                f"Opened collection schema name mismatch. Expected: test_collection, Actual: {opened_coll.schema.name}"
-            )
-
-            # Check reference count of opened collection
-            opened_ref_count = sys.getrefcount(opened_coll)
-            print(f"DEBUG: Reference count of opened collection: {opened_ref_count}")
-
-            # Verify data persistence
-            # Verify data persistence using fetch interface
-            fetched_docs = opened_coll.fetch(["0", "1", "2"])
-            assert len(fetched_docs) == 3, (
-                f"Expected 3 fetched documents after reopening, but got {len(fetched_docs)}"
-            )
-            assert "0" in fetched_docs, (
-                "Document with ID '0' not found in fetched results after reopening"
-            )
-            assert "1" in fetched_docs, (
-                "Document with ID '1' not found in fetched results after reopening"
-            )
-            assert "2" in fetched_docs, (
-                "Document with ID '2' not found in fetched results after reopening"
-            )
-
-            # Verify fetched document content after reopening collection
-            for i in range(3):
-                doc = fetched_docs[f"{i}"]
-                assert doc is not None, (
-                    f"Fetched document with ID '{i}' is None after reopening collection"
+            for field_name, vector in (
+                ("dense", [0.1] * 128),
+                ("sparse", {1: 1.0, 2: 2.0, 3: 3.0}),
+            ):
+                check_docs(
+                    opened_coll.query(
+                        Query(field_name=field_name, vector=vector),
+                        topk=len(docs),
+                        include_vector=True,
+                    ),
+                    set(docs),
                 )
-                assert doc.id == f"{i}", (
-                    f"Document ID mismatch for document '{i}' after reopening. Expected: {i}, Actual: {doc.id}"
-                )
-                assert doc.field("id") == i, (
-                    f"Document id field mismatch for document '{i}' after reopening. Expected: {i}, Actual: {doc.field('id')}"
-                )
-                assert doc.field("name") == f"test_{i}", (
-                    f"Document name field mismatch for document '{i}' after reopening. Expected: test_{i}, Actual: {doc.field('name')}"
-                )
-                assert doc.field("weight") == float(i * 10), (
-                    f"Document weight field mismatch for document '{i}' after reopening. Expected: {float(i * 10)}, Actual: {doc.field('weight')}"
-                )
-
-                # Verify vector access after reopening
-                assert doc.vector("dense") is not None, (
-                    f"Document {i} should have dense vector after reopening"
-                )
-                assert doc.vector("sparse") is not None, (
-                    f"Document {i} should have sparse vector after reopening"
-                )
-
-                # Verify vector types after reopening
-                assert isinstance(doc.vector("dense"), list), (
-                    f"Document {i} dense vector should be dict after reopening, got {type(doc.vector('dense'))}"
-                )
-                assert isinstance(doc.vector("sparse"), dict), (
-                    f"Document {i} sparse vector should be dict after reopening, got {type(doc.vector('sparse'))}"
-                )
-
-                # Verify score attribute exists
-                assert hasattr(doc, "score"), (
-                    f"Document {i} should have a score attribute after reopening"
-                )
-                assert isinstance(doc.score, (int, float)), (
-                    f"Document {i} score should be numeric after reopening, got {type(doc.score)}"
-                )
-                # For fetch operations, score is typically 0.0
-                assert doc.score == 0.0, (
-                    f"Document {i} score should be 0.0 for fetch operation after reopening, but got {doc.score}"
-                )
-
-            # Test query functionality
-            query_result = opened_coll.query(include_vector=True)
-            assert len(query_result) == 3, (
-                f"Expected 3 query results, but got {len(query_result)}"
-            )
-
-            # Verify query results have proper structure and content with detailed validation
-            returned_doc_ids = set()
-            for doc in query_result:
-                # Verify basic document structure
-                assert doc.id is not None, f"Query result document should have an ID"
-                assert doc.id in ["0", "1", "2"], (
-                    f"Query result document ID should be one of ['0', '1', '2'], but got {doc.id}"
-                )
-                returned_doc_ids.add(doc.id)
-
-                # Verify field access
-                assert doc.field("id") is not None, (
-                    f"Document {doc.id} should have id field"
-                )
-                assert doc.field("name") is not None, (
-                    f"Document {doc.id} should have name field"
-                )
-                assert doc.field("weight") is not None, (
-                    f"Document {doc.id} should have weight field"
-                )
-
-                # Verify field values
-                expected_id = int(doc.id)
-                assert doc.field("id") == expected_id, (
-                    f"Document {doc.id} id field mismatch. Expected: {expected_id}, Actual: {doc.field('id')}"
-                )
-                assert doc.field("name") == f"test_{expected_id}", (
-                    f"Document {doc.id} name field mismatch. Expected: test_{expected_id}, Actual: {doc.field('name')}"
-                )
-                assert doc.field("weight") == float(expected_id * 10), (
-                    f"Document {doc.id} weight field mismatch. Expected: {float(expected_id * 10)}, Actual: {doc.field('weight')}"
-                )
-
-                # Verify vector access
-                assert doc.vector("dense") is not None, (
-                    f"Document {doc.id} should have dense vector"
-                )
-                assert doc.vector("sparse") is not None, (
-                    f"Document {doc.id} should have sparse vector"
-                )
-
-                # Verify vector types
-                assert isinstance(doc.vector("dense"), list), (
-                    f"Document {doc.id} dense vector should be list, got {type(doc.vector('dense'))}"
-                )
-                assert isinstance(doc.vector("sparse"), dict), (
-                    f"Document {doc.id} sparse vector should be dict, got {type(doc.vector('sparse'))}"
-                )
-
-                # Verify score attribute exists
-                assert hasattr(doc, "score"), (
-                    f"Document {doc.id} should have a score attribute"
-                )
-                assert isinstance(doc.score, (int, float)), (
-                    f"Document {doc.id} score should be numeric, got {type(doc.score)}"
-                )
-
-            # Verify all expected documents are returned
-            expected_doc_ids = {"0", "1", "2"}
-            assert returned_doc_ids == expected_doc_ids, (
-                f"Query should return all expected documents. Expected: {expected_doc_ids}, Actual: {returned_doc_ids}"
-            )
-
-            # === Enhanced validation based on test_collection_dql_operations.py ===
-
-            # Verify vector field names accessibility for all documents
-            for doc in query_result:
-                vector_names = doc.vector_names()
-                expected_vector_names = {"dense", "sparse"}
-                assert set(vector_names) == expected_vector_names, (
-                    f"Document {doc.id} vector names mismatch. Expected: {expected_vector_names}, Actual: {set(vector_names)}"
-                )
-
-                # Verify all vector fields can be accessed
-                for vector_name in expected_vector_names:
-                    vector_data = doc.vector(vector_name)
-                    assert vector_data is not None, (
-                        f"Document {doc.id} should have accessible vector '{vector_name}'"
-                    )
-                    if vector_name == "dense":
-                        assert isinstance(vector_data, list), (
-                            f"Document {doc.id} vector '{vector_name}' should be list, got {type(vector_data)}"
-                        )
-                    else:
-                        assert isinstance(vector_data, dict), (
-                            f"Document {doc.id} vector '{vector_name}' should be dict, got {type(vector_data)}"
-                        )
-
-            # Test query with filter
-            filtered_result = opened_coll.query(filter="id >= 1", include_vector=True)
-            assert len(filtered_result) == 2, (
-                f"Expected 2 filtered query results (id >= 1), but got {len(filtered_result)}"
-            )
-
-            # Verify filtered query results
-            filtered_doc_ids = set()
-            for doc in filtered_result:
-                assert doc.id is not None, (
-                    f"Filtered query result document should have an ID"
-                )
-                assert doc.id in ["1", "2"], (
-                    f"Filtered query result document ID should be one of ['1', '2'], but got {doc.id}"
-                )
-                filtered_doc_ids.add(doc.id)
-
-                # Verify filter condition is satisfied
-                doc_id = int(doc.id)
-                assert doc_id >= 1, (
-                    f"Document {doc.id} should satisfy filter condition id >= 1"
-                )
-
-                # Verify document structure
-                assert doc.field("id") is not None, (
-                    f"Document {doc.id} should have id field"
-                )
-                assert doc.field("name") is not None, (
-                    f"Document {doc.id} should have name field"
-                )
-                assert doc.field("weight") is not None, (
-                    f"Document {doc.id} should have weight field"
-                )
-
-                # Verify field values
-                assert doc.field("id") == doc_id, (
-                    f"Document {doc.id} id field mismatch. Expected: {doc_id}, Actual: {doc.field('id')}"
-                )
-                assert doc.field("name") == f"test_{doc_id}", (
-                    f"Document {doc.id} name field mismatch. Expected: test_{doc_id}, Actual: {doc.field('name')}"
-                )
-                assert doc.field("weight") == float(doc_id * 10), (
-                    f"Document {doc.id} weight field mismatch. Expected: {float(doc_id * 10)}, Actual: {doc.field('weight')}"
-                )
-
-                # Verify vector access
-                assert doc.vector("dense") is not None, (
-                    f"Document {doc.id} should have dense vector"
-                )
-                assert doc.vector("sparse") is not None, (
-                    f"Document {doc.id} should have sparse vector"
-                )
-
-                # Verify score attribute exists
-                assert hasattr(doc, "score"), (
-                    f"Document {doc.id} should have a score attribute"
-                )
-                assert isinstance(doc.score, (int, float)), (
-                    f"Document {doc.id} score should be numeric, got {type(doc.score)}"
-                )
-
-            # Verify filtered documents
-            expected_filtered_ids = {"1", "2"}
-            assert filtered_doc_ids == expected_filtered_ids, (
-                f"Filtered query should return expected documents. Expected: {expected_filtered_ids}, Actual: {filtered_doc_ids}"
-            )
-
-            # Test vector query functionality for dense vectors
-            query_vector_dense = [0.1] * 128
-            vector_query_result = opened_coll.query(
-                Query(field_name="dense", vector=query_vector_dense)
-            )
-            assert len(vector_query_result) > 0, (
-                f"Expected at least 1 vector query result, but got {len(vector_query_result)}"
-            )
-
-            # Verify vector query results structure
-            for doc in vector_query_result[:3]:  # Check first 3 results
-                assert doc.id is not None, (
-                    f"Vector query result document should have an ID"
-                )
-                assert doc.id in ["0", "1", "2"], (
-                    f"Vector query result document ID should be one of ['0', '1', '2'], but got {doc.id}"
-                )
-
-                # Verify document structure
-                assert doc.field("id") is not None, (
-                    f"Document {doc.id} should have id field"
-                )
-                assert doc.field("name") is not None, (
-                    f"Document {doc.id} should have name field"
-                )
-                assert doc.field("weight") is not None, (
-                    f"Document {doc.id} should have weight field"
-                )
-
-                # Verify vector access
-                assert doc.vector("dense") is not None, (
-                    f"Document {doc.id} should have dense vector"
-                )
-                assert doc.vector("sparse") is not None, (
-                    f"Document {doc.id} should have sparse vector"
-                )
-
-                # Verify score attribute exists and is numeric
-                assert hasattr(doc, "score"), (
-                    f"Document {doc.id} should have a score attribute"
-                )
-                assert isinstance(doc.score, (int, float)), (
-                    f"Document {doc.id} score should be numeric, got {type(doc.score)}"
-                )
-
-                # For dense vector queries, score should typically be non-negative (depending on metric)
-                # Note: This may vary based on the metric type used
-                assert doc.score >= 0 or doc.score < 0, (
-                    f"Document {doc.id} score should be a valid number"
-                )
-
-            # Test vector query functionality for sparse vectors
-            query_vector_sparse = {1: 1.0, 2: 2.0, 3: 3.0}
-            sparse_vector_query_result = opened_coll.query(
-                Query(field_name="sparse", vector=query_vector_sparse)
-            )
-            assert len(sparse_vector_query_result) > 0, (
-                f"Expected at least 1 sparse vector query result, but got {len(sparse_vector_query_result)}"
-            )
-
-            # Verify sparse vector query results structure
-            for doc in sparse_vector_query_result[:3]:  # Check first 3 results
-                assert doc.id is not None, (
-                    f"Sparse vector query result document should have an ID"
-                )
-                assert doc.id in ["0", "1", "2"], (
-                    f"Sparse vector query result document ID should be one of ['0', '1', '2'], but got {doc.id}"
-                )
-
-                # Verify document structure
-                assert doc.field("id") is not None, (
-                    f"Document {doc.id} should have id field"
-                )
-                assert doc.field("name") is not None, (
-                    f"Document {doc.id} should have name field"
-                )
-                assert doc.field("weight") is not None, (
-                    f"Document {doc.id} should have weight field"
-                )
-
-                # Verify vector access
-                assert doc.vector("dense") is not None, (
-                    f"Document {doc.id} should have dense vector"
-                )
-                assert doc.vector("sparse") is not None, (
-                    f"Document {doc.id} should have sparse vector"
-                )
-
-                # Verify score attribute exists and is numeric
-                assert hasattr(doc, "score"), (
-                    f"Document {doc.id} should have a score attribute"
-                )
-                assert isinstance(doc.score, (int, float)), (
-                    f"Document {doc.id} score should be numeric, got {type(doc.score)}"
-                )
-
-            # Clean up
-            if hasattr(opened_coll, "destroy") and opened_coll is not None:
-                opened_coll.destroy()
-                print("DEBUG: Opened collection destroyed successfully")
-
-        except Exception as e:
-            logging.error("Exception occurred: [{}]".format(e))
-            raise e
+        finally:
+            opened_coll.destroy()
 
     @pytest.mark.parametrize(
         "read_only,enable_mmap,description", COLLECTION_OPTION_TEST_CASES_VALID

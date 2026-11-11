@@ -126,6 +126,8 @@ class IVFSearcherTest : public testing::Test {
 
   void prepare_same_index_holder(uint32_t base_key, uint32_t num);
 
+  void check_float_with_build_memory(IndexMeta::MajorOrder order);
+
   IndexMeta index_meta_;
   Params params_;
   uint32_t dimension_;
@@ -640,10 +642,10 @@ TEST_F(IVFSearcherTest, TestSimpleCosine) {
   EXPECT_EQ(0, ret);
 }
 
-TEST_F(IVFSearcherTest, TestColumnMajorFloatWithBuildMemory) {
+void IVFSearcherTest::check_float_with_build_memory(
+    IndexMeta::MajorOrder order) {
+  index_meta_.set_major_order(order);
   IVFBuilder builder;
-  //    index_meta_.set_major_order(IndexMeta::MO_ROW);
-  //    params_.set("proxima.hc.builder.thread_count", 1);
   int ret = builder.init(index_meta_, params_);
   EXPECT_EQ(0, ret);
   int total = 1000;
@@ -760,6 +762,10 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithBuildMemory) {
 
   ret = searcher.unload();
   EXPECT_EQ(0, ret);
+}
+
+TEST_F(IVFSearcherTest, TestColumnMajorFloatWithBuildMemory) {
+  check_float_with_build_memory(IndexMeta::MO_COLUMN);
 }
 
 TEST_F(IVFSearcherTest, TestColumnMajorFloatWithFilter) {
@@ -888,123 +894,7 @@ TEST_F(IVFSearcherTest, TestColumnMajorFloatWithFilter) {
 
 ///////////////////////////  row major ////////////////////////////////
 TEST_F(IVFSearcherTest, TestRowMajorFloatWithBuildMemory) {
-  index_meta_.set_major_order(IndexMeta::MO_ROW);
-  IVFBuilder builder;
-  int ret = builder.init(index_meta_, params_);
-  EXPECT_EQ(0, ret);
-  prepare_index_holder(0, 1000);
-  ret = builder.train(threads_, holder_);
-  EXPECT_EQ(0, ret);
-  ret = builder.build(threads_, holder_);
-  EXPECT_EQ(0, ret);
-  IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
-  ret = dumper->create(index_path_);
-  EXPECT_EQ(0, ret);
-
-  ret = builder.dump(dumper);
-  EXPECT_EQ(0, dumper->close());
-  EXPECT_EQ((size_t)1000, builder.stats().built_count());
-  EXPECT_EQ((size_t)1000, builder.stats().dumped_count());
-  EXPECT_EQ((size_t)0, builder.stats().discarded_count());
-
-  IVFSearcher searcher;
-  Params params;
-  params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 1.0);
-  params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1);
-
-  ret = searcher.init(params);
-  EXPECT_EQ(0, ret);
-
-  IndexStorage::Pointer container =
-      IndexFactory::CreateStorage("MMapFileReadStorage");
-  EXPECT_TRUE(!!container);
-
-  Params container_params;
-  container_params.set("proxima.mmap_file.container.memory_warmup", true);
-  container->init(container_params);
-  ret = container->open(index_path_, false);
-  EXPECT_EQ(0, ret);
-
-  ret = searcher.load(container, IndexMetric::Pointer());
-  EXPECT_EQ(0, ret);
-
-  std::vector<float> query;
-  for (size_t i = 0; i < dimension_; ++i) {
-    query.push_back(999.0f);
-  }
-
-  size_t qnum = 63;
-  std::vector<float> query1;
-  for (size_t i = 0; i < dimension_ * qnum; ++i) {
-    query1.push_back(i / dimension_);
-  }
-
-
-  auto context = searcher.create_context();
-  IndexQueryMeta qmeta(IndexMeta::DataType::DT_FP32, dimension_);
-
-  // single bf serch
-  {
-    size_t topk = 1000;
-    context->set_topk(topk);
-    ret = searcher.search_bf_impl(query.data(), qmeta, context);
-    EXPECT_EQ(0, ret);
-
-    const IndexDocumentList &result = context->result(0);
-    EXPECT_EQ((size_t)topk, result.size());
-    for (size_t i = 0; i < topk; ++i) {
-      EXPECT_EQ((uint64_t)999 - i, result[i].key());
-      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
-    }
-  }
-
-  // batch bf serch
-  {
-    size_t topk = 1;
-    context->set_topk(topk);
-    ret = searcher.search_bf_impl(query1.data(), qmeta, qnum, context);
-    EXPECT_EQ(0, ret);
-
-    for (size_t q = 0; q < qnum; ++q) {
-      const IndexDocumentList &result = context->result(q);
-      EXPECT_EQ((size_t)topk, result.size());
-      EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_FLOAT_EQ((float)0, result[0].score());
-    }
-  }
-
-  // single knn search
-  {
-    size_t topk = 100;
-    context->set_topk(topk);
-    ret = searcher.search_impl(query.data(), qmeta, context);
-    EXPECT_EQ(0, ret);
-
-    const IndexDocumentList &result = context->result(0);
-    EXPECT_EQ((size_t)topk, result.size());
-    for (size_t i = 0; i < topk; ++i) {
-      EXPECT_EQ((uint64_t)999 - i, result[i].key());
-      EXPECT_FLOAT_EQ((float)i * i * dimension_, result[i].score());
-    }
-  }
-
-  // batch knn serch
-  {
-    size_t topk = 1;
-    context->set_topk(topk);
-    ret = searcher.search_impl(query1.data(), qmeta, qnum, context);
-    EXPECT_EQ(0, ret);
-
-    for (size_t q = 0; q < qnum; ++q) {
-      const IndexDocumentList &result = context->result(q);
-      EXPECT_EQ((size_t)topk, result.size());
-      EXPECT_EQ((uint64_t)q, result[0].key());
-      EXPECT_FLOAT_EQ((float)0, result[0].score());
-    }
-  }
-
-  ret = searcher.unload();
-  EXPECT_EQ(0, ret);
+  check_float_with_build_memory(IndexMeta::MO_ROW);
 }
 
 TEST_F(IVFSearcherTest, TestRowMajorFloatWithFilter) {
