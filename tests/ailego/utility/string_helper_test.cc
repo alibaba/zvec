@@ -476,5 +476,137 @@ TEST(StringHelper, SplitWithEmptySkipped) {
   EXPECT_EQ("1", out[0]);
 }
 
+TEST(StringHelper, ToNumericConversions) {
+  // Empty string checks
+  {
+    int8_t v8;
+    EXPECT_FALSE(ailego::StringHelper::ToInt8("", &v8));
+    uint8_t u8;
+    EXPECT_FALSE(ailego::StringHelper::ToUint8("", &u8));
+    int16_t v16;
+    EXPECT_FALSE(ailego::StringHelper::ToInt16("", &v16));
+    uint16_t u16;
+    EXPECT_FALSE(ailego::StringHelper::ToUint16("", &u16));
+    int32_t v32;
+    EXPECT_FALSE(ailego::StringHelper::ToInt32("", &v32));
+    uint32_t u32;
+    EXPECT_FALSE(ailego::StringHelper::ToUint32("", &u32));
+    int64_t v64;
+    EXPECT_FALSE(ailego::StringHelper::ToInt64("", &v64));
+    uint64_t u64;
+    EXPECT_FALSE(ailego::StringHelper::ToUint64("", &u64));
+    float vf;
+    EXPECT_FALSE(ailego::StringHelper::ToFloat("", &vf));
+    double vd;
+    EXPECT_FALSE(ailego::StringHelper::ToDouble("", &vd));
+  }
+
+  // Whitespace-only string checks
+  {
+    int32_t v32;
+    EXPECT_FALSE(ailego::StringHelper::ToInt32("   ", &v32));
+    uint32_t u32;
+    EXPECT_FALSE(ailego::StringHelper::ToUint32("   ", &u32));
+  }
+
+  // ToInt8 valid & boundary & overflow checks
+  {
+    int8_t val = 0;
+    EXPECT_TRUE(ailego::StringHelper::ToInt8("0", &val));
+    EXPECT_EQ(0, val);
+    EXPECT_TRUE(ailego::StringHelper::ToInt8("127", &val));
+    EXPECT_EQ(127, val);
+    EXPECT_TRUE(ailego::StringHelper::ToInt8("-128", &val));
+    EXPECT_EQ(-128, val);
+    EXPECT_FALSE(ailego::StringHelper::ToInt8("128", &val));
+    EXPECT_FALSE(ailego::StringHelper::ToInt8("-129", &val));
+    EXPECT_FALSE(ailego::StringHelper::ToInt8("300", &val));
+    EXPECT_FALSE(ailego::StringHelper::ToInt8("12abc", &val));
+  }
+
+  // ToUint8 valid & overflow & negative checks
+  {
+    uint8_t val = 0;
+    EXPECT_TRUE(ailego::StringHelper::ToUint8("0", &val));
+    EXPECT_EQ(0u, val);
+    EXPECT_TRUE(ailego::StringHelper::ToUint8("255", &val));
+    EXPECT_EQ(255u, val);
+    EXPECT_FALSE(ailego::StringHelper::ToUint8("256", &val));
+    EXPECT_FALSE(ailego::StringHelper::ToUint8("300", &val));
+    EXPECT_FALSE(ailego::StringHelper::ToUint8("-1", &val));
+  }
+
+  // ToInt16 valid & overflow checks
+  {
+    int16_t val = 0;
+    EXPECT_TRUE(ailego::StringHelper::ToInt16("32767", &val));
+    EXPECT_EQ(32767, val);
+    EXPECT_TRUE(ailego::StringHelper::ToInt16("-32768", &val));
+    EXPECT_EQ(-32768, val);
+    EXPECT_FALSE(ailego::StringHelper::ToInt16("32768", &val));
+    EXPECT_FALSE(ailego::StringHelper::ToInt16("-32769", &val));
+    EXPECT_FALSE(ailego::StringHelper::ToInt16("70000", &val));
+  }
+
+  // ToUint16 valid & overflow & negative checks
+  {
+    uint16_t val = 0;
+    EXPECT_TRUE(ailego::StringHelper::ToUint16("65535", &val));
+    EXPECT_EQ(65535u, val);
+    EXPECT_FALSE(ailego::StringHelper::ToUint16("65536", &val));
+    EXPECT_FALSE(ailego::StringHelper::ToUint16("70000", &val));
+    EXPECT_FALSE(ailego::StringHelper::ToUint16("-1", &val));
+  }
+
+  // ToInt32 valid & overflow checks
+  {
+    int32_t val = 0;
+    EXPECT_TRUE(ailego::StringHelper::ToInt32("2147483647", &val));
+    EXPECT_EQ(2147483647, val);
+    EXPECT_TRUE(ailego::StringHelper::ToInt32("-2147483648", &val));
+    EXPECT_EQ(-2147483648, val);
+    EXPECT_FALSE(ailego::StringHelper::ToInt32("2147483648", &val));
+    EXPECT_FALSE(ailego::StringHelper::ToInt32("-2147483649", &val));
+    EXPECT_FALSE(ailego::StringHelper::ToInt32("5000000000", &val));
+  }
+
+  // ToUint32 valid & overflow & negative checks
+  {
+    uint32_t val = 0;
+    EXPECT_TRUE(ailego::StringHelper::ToUint32("4294967295", &val));
+    EXPECT_EQ(4294967295u, val);
+    EXPECT_FALSE(ailego::StringHelper::ToUint32("4294967296", &val));
+    EXPECT_FALSE(ailego::StringHelper::ToUint32("-1", &val));
+  }
+
+  // ToInt64 / ToUint64 checks
+  {
+    int64_t val = 0;
+    EXPECT_TRUE(ailego::StringHelper::ToInt64("9223372036854775807", &val));
+    EXPECT_EQ(9223372036854775807LL, val);
+    EXPECT_TRUE(ailego::StringHelper::ToInt64("-9223372036854775808", &val));
+    EXPECT_EQ(std::numeric_limits<int64_t>::min(), val);
+    EXPECT_FALSE(ailego::StringHelper::ToInt64("9223372036854775808", &val));
+
+    uint64_t uval = 0;
+    EXPECT_TRUE(ailego::StringHelper::ToUint64("18446744073709551615", &uval));
+    EXPECT_EQ(18446744073709551615ULL, uval);
+    EXPECT_FALSE(ailego::StringHelper::ToUint64("-1", &uval));
+  }
+
+  // ToFloat & ToDouble checks
+  {
+    float fval = 0.0f;
+    EXPECT_TRUE(ailego::StringHelper::ToFloat("3.14", &fval));
+    EXPECT_FLOAT_EQ(3.14f, fval);
+    EXPECT_FALSE(ailego::StringHelper::ToFloat("abc", &fval));
+
+    double dval = 0.0;
+    EXPECT_TRUE(ailego::StringHelper::ToDouble("2.718281828", &dval));
+    EXPECT_DOUBLE_EQ(2.718281828, dval);
+    EXPECT_FALSE(ailego::StringHelper::ToDouble("xyz", &dval));
+  }
+}
+
 }  // namespace testing
 }  // namespace zvec::ailego
