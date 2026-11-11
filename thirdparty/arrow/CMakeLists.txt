@@ -152,7 +152,6 @@ elseif(IOS)
                 LOG_OUTPUT_ON_FAILURE ON
         )
 elseif (MSVC)
-    # Keep CMake 3.x from defaulting to VS 2022 on VS 2026-only hosts.
     list(APPEND CONFIGURE_ENV_LIST "CMAKE_GENERATOR=${CMAKE_GENERATOR}")
     if(ZVEC_USE_STATIC_CRT)
         set(_ARROW_CRT_FLAG "/MT")
