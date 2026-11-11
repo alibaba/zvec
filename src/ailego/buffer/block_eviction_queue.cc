@@ -283,6 +283,10 @@ void BlockEvictionQueue::recycle() {
 }
 
 size_t BlockEvictionQueue::batch_recycle(size_t count) {
+  return batch_recycle(count, count >= kProtectedAgingMinBatch);
+}
+
+size_t BlockEvictionQueue::batch_recycle(size_t count, bool age_protected) {
   size_t evicted = 0;
   // Bound work when no page is currently evictable.
   const size_t max_attempts =
@@ -291,7 +295,6 @@ size_t BlockEvictionQueue::batch_recycle(size_t count) {
           : count * 4 + 16;
   size_t attempts = 0;
   bool recovered = false;
-  bool age_protected = count >= kProtectedAgingMinBatch;
   while (evicted < count && attempts < max_attempts) {
     BlockType item;
     if (!evict_block(item, attempts, max_attempts, age_protected)) {
@@ -690,8 +693,10 @@ void MemoryLimitPool::background_evict_loop() {
       // A full batch can drain a small pool well below the low watermark.
       // Round up to whole pages, and recheck usage after each bounded batch.
       const size_t pages = (used - low - 1) / page_buffer_size() + 1;
+      // Keep aging independent of the reclaim budget so small background
+      // batches can still adapt a dominant protected queue to a new workload.
       const size_t n = BlockEvictionQueue::get_instance().batch_recycle(
-          std::min<size_t>(64, pages));
+          std::min<size_t>(64, pages), /*age_protected=*/true);
       if (n == 0) {
         // Back off when pressure remains but eviction makes no progress.
         bg_no_progress_sleeps_.fetch_add(1, std::memory_order_relaxed);
