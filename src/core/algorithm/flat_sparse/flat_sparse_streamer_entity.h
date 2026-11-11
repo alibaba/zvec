@@ -116,6 +116,7 @@ class FlatSparseStreamerEntity : public FlatSparseEntity {
   }
 
   uint64_t get_key(node_id_t node_id) const override;
+  int read_key(node_id_t id, uint64_t *key) const override;
 
   int get_sparse_vector_ptr_by_id(node_id_t id, const void **sparse_vector,
                                   uint32_t *sparse_vector_len) const override;

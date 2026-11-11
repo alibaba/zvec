@@ -43,6 +43,7 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
 
   //! Get primary key of the node id
   key_t get_key(node_id_t id) const override;
+  int read_key(node_id_t id, key_t *key) const override;
   virtual key_t read_stored_key(node_id_t id) const;
 
   //! Get vector feature data by key

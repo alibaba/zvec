@@ -288,6 +288,9 @@ class FlatStreamerEntity {
     bool is_valid() const override {
       return is_valid_;
     }
+    int status() const override {
+      return status_;
+    }
     //! Retrieve primary key
     uint64_t key() const override {
       return deleted_->test(block_vector_index_) ? kInvalidKey
@@ -320,6 +323,7 @@ class FlatStreamerEntity {
     uint32_t block_index_{0u};
     uint32_t block_vector_index_{0u};
     uint32_t block_vector_count_{0u};
+    int status_{0};
     bool is_valid_{true};
     bool include_empty_{false};
   };

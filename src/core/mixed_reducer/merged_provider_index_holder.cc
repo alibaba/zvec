@@ -143,6 +143,7 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
         }
         source_iter_ = source_provider_->create_slot_iterator();
         source_ordinal_ = 0;
+        source_vector_count_ = 0;
         if (!source_iter_) {
           LOG_ERROR("Failed to create source provider iterator, source=%zu",
                     source_index_);
@@ -164,12 +165,13 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
           owner_->set_status(IndexError_Mismatch);
           return;
         }
+        const auto key = source_iter_->key();
+        if (source_iter_->status() != 0) {
+          owner_->set_status(source_iter_->status());
+          return;
+        }
+        if (key != UINT64_MAX) ++source_vector_count_;
         if (owner_->keep(source_index_, source_ordinal_)) {
-          const auto key = source_iter_->key();
-          if (source_iter_->status() != 0) {
-            owner_->set_status(source_iter_->status());
-            return;
-          }
           if (key != UINT64_MAX) return;
           ++output_key_;
         }
@@ -180,11 +182,13 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
       if (this->status() != 0) {
         return;
       }
-      if (source_ordinal_ != source.iterated_count) {
+      if (source_ordinal_ != source.iterated_count ||
+          source_vector_count_ != source.provider_count) {
         LOG_ERROR(
             "Source provider iteration changed after filter planning, "
-            "source=%zu expected=%zu actual=%zu",
-            source_index_, source.iterated_count, source_ordinal_);
+            "source=%zu slots=%zu/%zu vectors=%zu/%zu",
+            source_index_, source_ordinal_, source.iterated_count,
+            source_vector_count_, source.provider_count);
         owner_->set_status(IndexError_Mismatch);
         return;
       }
@@ -211,6 +215,7 @@ class MergedProviderIndexHolder::Iterator final : public IndexHolder::Iterator {
   MergedProviderIndexHolder *owner_{nullptr};
   size_t source_index_{0};
   size_t source_ordinal_{0};
+  size_t source_vector_count_{0};
   uint64_t output_key_{0};
   IndexProvider::Pointer source_provider_{};
   IndexHolder::Iterator::Pointer source_iter_{};
@@ -248,6 +253,7 @@ class MergedProviderIndexHolder::OrdinalReader final
       }
       const auto &source = owner_->sources_[source_index];
       size_t ordinal = 0;
+      size_t vector_count = 0;
       for (; iter->is_valid(); iter->next(), ++ordinal) {
         if (iter->status() != 0) {
           return fail(iter->status());
@@ -258,11 +264,12 @@ class MergedProviderIndexHolder::OrdinalReader final
         if (ordinal >= source.iterated_count) {
           return fail(IndexError_Mismatch);
         }
+        const uint64_t key = iter->key();
+        if (iter->status() != 0) {
+          return fail(iter->status());
+        }
+        if (key != UINT64_MAX) ++vector_count;
         if (owner_->keep(source_index, ordinal)) {
-          const uint64_t key = iter->key();
-          if (iter->status() != 0) {
-            return fail(iter->status());
-          }
           if (key != UINT64_MAX) {
             keys_.push_back(key);
             if (has_empty_slots) output_ids_.push_back(output_id);
@@ -273,7 +280,8 @@ class MergedProviderIndexHolder::OrdinalReader final
       if (iter->status() != 0) {
         return fail(iter->status());
       }
-      if (ordinal != source.iterated_count) {
+      if (ordinal != source.iterated_count ||
+          vector_count != source.provider_count) {
         return fail(IndexError_Mismatch);
       }
       source_ends_.push_back(keys_.size());
@@ -427,7 +435,7 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
     if (!provider) {
       return this->status();
     }
-    source.provider_count = provider->count();
+    source.provider_count = 0;
     const auto source_rows = provider->slot_count();
     if (source_rows > std::numeric_limits<uint64_t>::max() - logical_id_base) {
       this->set_status(IndexError_Overflow);
@@ -466,6 +474,7 @@ int MergedProviderIndexHolder::init(const IndexFilter &filter,
         this->set_status(iter->status());
         return this->status();
       }
+      if (key != UINT64_MAX) ++source.provider_count;
       const auto document_id = key == UINT64_MAX ? ordinal : key;
       if (document_id >
           std::numeric_limits<uint64_t>::max() - source.logical_id_base) {
@@ -585,7 +594,7 @@ void MergedProviderIndexHolder::set_stop_flag(std::atomic<bool> *stop_flag) {
 }
 
 IndexProvider::Pointer MergedProviderIndexHolder::acquire_provider(
-    size_t source_index, bool validate_planned_count) {
+    size_t source_index, bool validate_planned_slots) {
   if (source_index >= sources_.size()) {
     this->set_status(IndexError_OutOfRange);
     return nullptr;
@@ -633,11 +642,12 @@ IndexProvider::Pointer MergedProviderIndexHolder::acquire_provider(
     return nullptr;
   }
 
-  if (validate_planned_count && provider->count() != source.provider_count) {
+  if (validate_planned_slots &&
+      provider->slot_count() != source.iterated_count) {
     LOG_ERROR(
-        "Source provider count changed after filter planning, "
+        "Source provider slot count changed after filter planning, "
         "source=%zu expected=%zu actual=%zu",
-        source_index, source.provider_count, provider->count());
+        source_index, source.iterated_count, provider->slot_count());
     this->set_status(IndexError_Mismatch);
     return nullptr;
   }

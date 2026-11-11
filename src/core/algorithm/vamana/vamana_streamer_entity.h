@@ -47,6 +47,7 @@ class VamanaStreamerEntity : public VamanaEntity {
   int cleanup() override;
   const VamanaEntity::Pointer clone() const override;
   key_t get_key(node_id_t id) const override;
+  int read_key(node_id_t id, key_t *key) const override;
   virtual key_t read_stored_key(node_id_t id) const;
   const void *get_vector(node_id_t id) const override;
   const void *get_extra_values(node_id_t id) const override;
@@ -649,11 +650,13 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
     return VamanaMmapStreamerEntity::add_vector_with_id(id, vec);
   }
 
-  key_t read_stored_key(node_id_t id) const override {
+  int read_key(node_id_t id, key_t *key) const override {
+    *key = kInvalidKey;
     if (ailego_likely(graph_base_ != nullptr && id < graph_capacity_)) {
-      return packed_key(id);
+      *key = packed_key(id);
+      return 0;
     }
-    return VamanaMmapStreamerEntity::read_stored_key(id);
+    return VamanaMmapStreamerEntity::read_key(id, key);
   }
 
   const Neighbors get_neighbors(node_id_t id) const override {

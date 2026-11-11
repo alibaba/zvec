@@ -14,6 +14,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <map>
 #include <set>
 #include <tuple>
@@ -345,6 +346,63 @@ class NullableVectorStorageTest : public ::testing::Test {
     ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll * 1024ll);
   }
 };
+
+TEST_F(NullableVectorStorageTest, QuantizedIndexReusesNullableRawBlock) {
+  const std::string path = "test_nullable_reuse_raw";
+  FileHelper::RemoveDirectory(path);
+  CollectionSchema schema("nullable_reuse_raw");
+  ASSERT_TRUE(schema
+                  .add_field(std::make_shared<FieldSchema>(
+                      "vec", DataType::VECTOR_FP32, 16, true,
+                      std::make_shared<FlatIndexParams>(MetricType::L2)))
+                  .ok());
+  auto opened = Collection::CreateAndOpen(path, schema, {});
+  ASSERT_TRUE(opened) << opened.error().message();
+  auto collection = std::move(*opened);
+  std::vector<Doc> docs(6);
+  for (size_t i = 0; i < docs.size(); ++i) {
+    docs[i].set_pk("d" + std::to_string(i));
+    if (i % 2 == 0) docs[i].set("vec", std::vector<float>(16, i));
+  }
+  auto inserted = collection->insert(docs);
+  ASSERT_TRUE(inserted);
+  for (const auto &status : *inserted) ASSERT_TRUE(status.ok());
+  ASSERT_TRUE(collection->flush().ok());
+  auto raw_files = [&] {
+    std::set<std::string> files;
+    for (const auto &entry :
+         std::filesystem::recursive_directory_iterator(path)) {
+      const auto name = entry.path().filename().string();
+      if (name.find("vec.index.") == 0 &&
+          entry.path().extension() == ".proxima")
+        files.insert(entry.path().string());
+    }
+    return files;
+  };
+  const auto before = raw_files();
+  ASSERT_FALSE(before.empty());
+  auto status = collection->create_index(
+      "vec", std::make_shared<HnswIndexParams>(MetricType::L2, 16, 100,
+                                               QuantizeType::FP16));
+  ASSERT_TRUE(status.ok()) << status.message();
+  EXPECT_EQ(before, raw_files());
+  collection.reset();
+  opened = Collection::Open(path, {});
+  ASSERT_TRUE(opened) << opened.error().message();
+  collection = std::move(*opened);
+  for (size_t i = 0; i < docs.size(); ++i) {
+    auto fetched = collection->fetch({docs[i].pk()}, std::nullopt, true);
+    ASSERT_TRUE(fetched) << fetched.error().message();
+    ASSERT_EQ(1U, fetched->size());
+    const auto value = fetched->begin()->second->get<std::vector<float>>("vec");
+    EXPECT_EQ(i % 2 == 0, value.has_value());
+    if (value) {
+      EXPECT_EQ(std::vector<float>(16, i), *value);
+    }
+  }
+  collection.reset();
+  FileHelper::RemoveDirectory(path);
+}
 
 TEST_F(NullableVectorStorageTest, NonNullableRowCountUsesCoreDocumentRange) {
   const std::string path = "test_non_nullable_row_count";

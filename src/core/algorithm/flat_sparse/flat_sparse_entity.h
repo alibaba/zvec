@@ -219,6 +219,14 @@ class FlatSparseEntity {
 
   virtual uint64_t get_key(node_id_t id) const = 0;
 
+  virtual int read_key(node_id_t id, uint64_t *key) const {
+    *key = kInvalidKey;
+    if (id >= doc_cnt()) return IndexError_OutOfRange;
+    *key = get_key(id);
+    return 0;
+  }
+
+
   bool contains_node(node_id_t id) const {
     return id < doc_cnt() && get_key(id) != kInvalidKey;
   }

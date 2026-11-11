@@ -448,6 +448,15 @@ class HnswRabitqEntity {
   //! Get primary key of the node id
   virtual key_t get_key(node_id_t id) const = 0;
 
+  // Unlike get_key(), a failed read must not be mistaken for an empty slot.
+  virtual int read_key(node_id_t id, key_t *key) const {
+    *key = kInvalidKey;
+    if (id >= doc_cnt()) return IndexError_OutOfRange;
+    *key = get_key(id);
+    return 0;
+  }
+
+
   // Existence is independent of external-key mapping.
   bool contains_node(node_id_t id) const {
     return id < doc_cnt() && get_key(id) != kInvalidKey;

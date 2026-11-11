@@ -640,16 +640,20 @@ int MixedStreamerReducer::read_sparse_vec(size_t source_streamer_index,
 
   IndexStreamer::SparseProvider::Pointer provider =
       streamer->create_sparse_provider();
+  if (!provider) return IndexError_Runtime;
   IndexStreamer::SparseProvider::Iterator::Pointer iterator =
       provider->create_slot_iterator();
+  if (!iterator) return IndexError_Runtime;
 
   size_t ordinal = 0;
   while (iterator->is_valid()) {
+    if (iterator->status() != 0) return iterator->status();
     if (stop_flag_ != nullptr && stop_flag_->load(std::memory_order_relaxed)) {
       LOG_DEBUG("read_sparse_vec cancelled.");
       return 0;
     }
     const auto key = iterator->key();
+    if (iterator->status() != 0) return iterator->status();
     const auto document_id = key == UINT64_MAX ? ordinal : key;
     if (document_id > UINT64_MAX - id_offset) return IndexError_Overflow;
     ++ordinal;
@@ -701,6 +705,7 @@ int MixedStreamerReducer::read_sparse_vec(size_t source_streamer_index,
     }
     iterator->next();
   }
+  if (iterator->status() != 0) return iterator->status();
   return ordinal == provider->slot_count() ? 0 : IndexError_Mismatch;
 }
 

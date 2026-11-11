@@ -79,48 +79,40 @@ write fields in ascending field-number order to produce canonical bytes.
 `<index path>.nulls` sidecar. Missing or corrupt required sidecars are errors.
 
 The sidecar contains `ZVECNL01`, a little-endian uint32 logical row count and
-uint32 ID-layout flag (3), a portable Roaring bitmap of NULL rows, and a CRC32C
+uint32 ID-layout flag (4), a portable Roaring bitmap of NULL rows, and a CRC32C
 of all preceding bytes. A set bit means NULL, as in scalar inverted columns.
-The logical row count includes trailing NULLs, even when no vector slot exists.
+The row count includes trailing NULLs and agrees with the core slot count.
 
 Vector keys equal document row IDs. Flat and graph streamers represent gaps
 with invalid keys; invalid slots are excluded from results, graph construction
-and training. Search, filters, grouping and fetch use document IDs directly,
-without rank/select translation. Core accepts an explicit `NullVector` insertion:
-it extends the document ID range without allocating a vector or graph node.
-Merge evaluates the document filter over every source row, including NULL tails,
-and reserves an output ID for each retained document. A temporary bitmap with
-word-level prefix counts translates only real vectors to those IDs; DB does not
-supply per-source ID arrays. Training providers expose only real vectors with
-original keys.
+and training. Search, filters, grouping and fetch use document IDs directly.
+Core accepts an explicit `NullVector` insertion that reserves physical slots,
+including their vector storage, without adding them to the search graph.
+Merge visits every source slot, including NULL tails, and reserves an output ID
+for each retained row. Training providers expose only real vectors with their
+original keys; slot iterators expose NULL slots with an invalid key and no
+readable payload. A failed key read is an error, not a NULL slot.
 
 Core key mapping and node existence are independent. Identity addressing uses
 no key hash table, while external-key indexes rebuild their optional map from
 stored keys on open. Checked lookup and fetch reject invalid slots in either
 mode. Graph traversal uses a separate accessor for nodes already known to
 exist, retaining direct identity-key access without validity lookups.
-The DB column exposes `row_count()` for its document range for both nullable
-and non-nullable fields; nullable fields use the sidecar as the source of truth.
-Providers report valid vectors with `count()` and physical slot spans with
-`slot_count()`. `Index::get_doc_count()` reports the document ID upper bound,
-including explicitly inserted NULL tails; `get_vector_count()` reports actual
-vectors. Provider counts are computed lazily and cached for the provider's view.
-Core persists document ranges for builder indexes as well as NULL insertion
-and document-range-preserving merge. The 16-byte `IndexDocumentRange` segment
-contains `ZDR2`, little-endian uint32 flags (bit 0 preserves empty rows during
-merge), a uint32 document ID upper bound, and a CRC32C of the first 12 bytes.
-The previous `ZVECDR01` record is read as preserving empty rows. Range metadata
-alone does not change a normal merge into a row-preserving merge. Records are
-loaded once on open. Existing vector and graph node layouts are unchanged; search does not read
-a separate NULL bitmap. Non-nullable legacy indexes can omit this segment.
 
+The DB column exposes `row_count()` for its document range. Providers report
+valid vectors with `count()` and physical slot spans with `slot_count()`.
+`Index::get_doc_count()` and `get_slot_count()` include NULL slots;
+`get_vector_count()` counts actual vectors. Merge validates slot spans and
+counts values during its existing iterator passes, without an extra count scan.
+Builders preserve empty slots through their native mapping segments. There is
+no separate `IndexDocumentRange` segment. Search does not read the DB bitmap.
 
-An all-NULL column uses an empty Flat backing even when its declared index
-requires training. The sidecar is flushed and published before the manifest
-references the block.
+An all-NULL column uses a Flat backing with invalid-key slots even when its
+declared index requires training. The sidecar is flushed and published before
+the manifest references the block.
 
 Legacy nullable vector blocks without a NULL bitmap, and the previous
-`.validity` format with compact vector IDs or `.nulls` layout flags before 3,
+`.validity` format with compact vector IDs or `.nulls` layout flags before 4,
 are unsupported. Opening them logs an error and returns `NotSupported`. The error identifies the field and index
 path, explains the risk of incorrect vector-to-document mappings in older
 versions, suggests reinserting original data into a new collection if needed,

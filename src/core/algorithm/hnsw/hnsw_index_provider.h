@@ -98,47 +98,55 @@ class HnswIndexProvider : public IndexProvider {
     //! NOTICE: the vec feature will be changed after iterating to next, so
     //! the caller need to keep a copy of it before iterator to next vector
     const void *data() const override {
-      return entity_->get_vector(cur_id_, block_) == 0 ? block_.data()
-                                                       : nullptr;
+      if (!is_valid() || key_ == kInvalidKey) return nullptr;
+      status_ = entity_->get_vector(cur_id_, block_);
+      if (status_ == 0 && !block_.data()) status_ = IndexError_ReadData;
+      return status_ == 0 ? block_.data() : nullptr;
     }
 
     //! Test if the iterator is valid
     bool is_valid() const override {
-      return cur_id_ < entity_->doc_cnt();
+      return status_ == 0 && cur_id_ < entity_->doc_cnt();
     }
 
     //! Retrieve primary key
     uint64_t key() const override {
-      return entity_->get_key(cur_id_);
+      return key_;
+    }
+
+    int status() const override {
+      return status_;
     }
 
     //! Next iterator
     void next() override {
-      // cur_id_ += 1;
+      if (!is_valid()) return;
       cur_id_ = get_next_valid_id(cur_id_ + 1);
     }
 
     //! Reset the iterator
     void reset() {
+      status_ = 0;
       cur_id_ = get_next_valid_id(0);
     }
 
    private:
     node_id_t get_next_valid_id(node_id_t start_id) {
-      if (include_empty_) return start_id;
-      for (node_id_t i = start_id; i < entity_->doc_cnt(); i++) {
-        if (entity_->contains_node(i)) {
-          cur_id_ = i;
-          return i;
-        }
+      block_.reset();
+      key_ = kInvalidKey;
+      for (node_id_t id = start_id; id < entity_->doc_cnt(); ++id) {
+        status_ = entity_->read_key(id, &key_);
+        if (status_ != 0) return kInvalidNodeId;
+        if (include_empty_ || key_ != kInvalidKey) return id;
       }
       return kInvalidNodeId;
     }
 
-   private:
     bool include_empty_{false};
     const HnswEntity::Pointer entity_;
     node_id_t cur_id_;
+    key_t key_{kInvalidKey};
+    mutable int status_{0};
     mutable IndexStorage::MemoryBlock block_;
   };
 

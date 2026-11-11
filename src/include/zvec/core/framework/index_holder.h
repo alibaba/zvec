@@ -168,6 +168,11 @@ struct IndexSparseHolder {
     //! Test if the iterator is valid
     virtual bool is_valid() const = 0;
 
+    //! Retrieve a sticky read error; normal exhaustion returns zero.
+    virtual int status() const {
+      return 0;
+    }
+
     //! Retrieve primary key
     virtual uint64_t key() const = 0;
 

@@ -21,107 +21,6 @@
 
 namespace zvec {
 namespace {
-// Expose only real vectors to quantizer training and external-vector builds.
-// Keys stay equal to document IDs; this view never rewrites them.
-class NonNullVectorProvider final : public core::IndexProvider {
- public:
-  NonNullVectorProvider(core::IndexProvider::Pointer provider,
-                        const roaring::Roaring &nulls, uint32_t rows)
-      : provider_(std::move(provider)),
-        nulls_(std::make_shared<const roaring::Roaring>(nulls)),
-        rows_(rows) {}
-
-  size_t count() const override {
-    return rows_ - nulls_->cardinality();
-  }
-  size_t slot_count() const override {
-    return provider_->slot_count();
-  }
-  size_t dimension() const override {
-    return provider_->dimension();
-  }
-  core::IndexMeta::DataType data_type() const override {
-    return provider_->data_type();
-  }
-  size_t element_size() const override {
-    return provider_->element_size();
-  }
-  const std::string &owner_class() const override {
-    return provider_->owner_class();
-  }
-  const void *get_vector(uint64_t key) const override {
-    return key < rows_ && !nulls_->contains(key) ? provider_->get_vector(key)
-                                                 : nullptr;
-  }
-  int get_vector(uint64_t key,
-                 core::IndexStorage::MemoryBlock &block) const override {
-    if (key >= rows_ || nulls_->contains(key)) return core::IndexError_NoExist;
-    return provider_->get_vector(key, block);
-  }
-
-  class Iterator final : public core::IndexHolder::Iterator {
-   public:
-    Iterator(core::IndexProvider::Pointer provider,
-             core::IndexHolder::Iterator::Pointer iter,
-             std::shared_ptr<const roaring::Roaring> nulls, uint32_t rows)
-        : provider_(std::move(provider)),
-          iter_(std::move(iter)),
-          nulls_(std::move(nulls)),
-          rows_(rows) {
-      seek();
-    }
-    const void *data() const override {
-      return iter_->data();
-    }
-    bool is_valid() const override {
-      return status() == 0 && iter_->is_valid();
-    }
-    int status() const override {
-      return status_ ? status_ : iter_->status();
-    }
-    uint64_t key() const override {
-      return iter_->key();
-    }
-    void next() override {
-      iter_->next();
-      seek();
-    }
-
-   private:
-    void seek() {
-      while (iter_->is_valid() && iter_->status() == 0) {
-        const auto key = iter_->key();
-        if (iter_->status() != 0) return;
-        if (key != UINT64_MAX) {
-          if (key >= rows_) {
-            status_ = core::IndexError_InvalidFormat;
-            return;
-          }
-          if (!nulls_->contains(key)) return;
-        }
-        iter_->next();
-      }
-    }
-    core::IndexProvider::Pointer provider_;
-    core::IndexHolder::Iterator::Pointer iter_;
-    std::shared_ptr<const roaring::Roaring> nulls_;
-    uint32_t rows_;
-    int status_{0};
-  };
-
-  core::IndexHolder::Iterator::Pointer create_iterator() override {
-    auto iter = provider_->create_iterator();
-    if (!iter) return nullptr;
-    return std::make_unique<Iterator>(provider_, std::move(iter), nulls_,
-                                      rows_);
-  }
-
- private:
-  core::IndexProvider::Pointer provider_;
-  std::shared_ptr<const roaring::Roaring> nulls_;
-  uint32_t rows_;
-};
-
 void Put32(std::string *out, uint32_t value) {
   for (unsigned i = 0; i < 4; ++i) out->push_back(value >> (i * 8));
 }
@@ -136,11 +35,7 @@ uint32_t Get32(const char *in) {
 core::IndexProvider::Pointer VectorColumnIndexer::create_index_provider()
     const {
   std::shared_lock lock(nulls_mutex_);
-  if (!index) return nullptr;
-  auto provider = index->create_index_provider();
-  if (!provider || !has_null_bitmap()) return provider;
-  return std::make_shared<NonNullVectorProvider>(std::move(provider),
-                                                 null_rows_, row_count_);
+  return index ? index->create_index_provider() : nullptr;
 }
 
 bool VectorColumnIndexer::has_vector(uint32_t row) const {

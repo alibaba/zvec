@@ -87,7 +87,7 @@ class MergedProviderIndexHolder final : public IndexHolder,
   class OrdinalReader;
 
   IndexProvider::Pointer acquire_provider(size_t source_index,
-                                          bool validate_planned_count);
+                                          bool validate_planned_slots);
   bool canceled() const;
   void set_status(int status);
 

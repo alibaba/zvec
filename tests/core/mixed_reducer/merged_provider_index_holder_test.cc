@@ -55,6 +55,7 @@ struct ProviderLifetimeStats {
   size_t created_count{0};
   size_t live_count{0};
   size_t peak_live_count{0};
+  size_t count_calls{0};
 };
 
 class CountingProvider final : public IndexProvider {
@@ -73,7 +74,12 @@ class CountingProvider final : public IndexProvider {
   }
 
   size_t count() const override {
+    ++stats_->count_calls;
     return delegate_->count();
+  }
+
+  size_t slot_count() const override {
+    return delegate_->slot_count();
   }
 
   size_t dimension() const override {
@@ -1021,10 +1027,12 @@ TEST(MergedProviderIndexHolderTest, FiltersRewritesIdsAndSupportsMultiPass) {
 }
 
 TEST(MergedProviderIndexHolderTest, FullSlotsPreserveNullsAndCacheFilter) {
+  auto lifetime = std::make_shared<ProviderLifetimeStats>();
   auto first = MakeSource(MakeStreamer(
-      {{UINT64_MAX, 99}, {1, 1}, {UINT64_MAX, 99}, {3, 3}, {UINT64_MAX, 99}}));
-  auto second = MakeSource(
-      MakeStreamer({{0, 10}, {UINT64_MAX, 99}, {2, 12}, {UINT64_MAX, 99}}));
+      {{UINT64_MAX, 99}, {1, 1}, {UINT64_MAX, 99}, {3, 3}, {UINT64_MAX, 99}},
+      lifetime));
+  auto second = MakeSource(MakeStreamer(
+      {{0, 10}, {UINT64_MAX, 99}, {2, 12}, {UINT64_MAX, 99}}, lifetime));
   size_t calls = 0;
   IndexFilter filter;
   filter.set([&](uint64_t id) {
@@ -1052,6 +1060,7 @@ TEST(MergedProviderIndexHolderTest, FullSlotsPreserveNullsAndCacheFilter) {
                     *static_cast<const float *>(data));
   }
   EXPECT_EQ(9U, calls);
+  EXPECT_EQ(0U, lifetime->count_calls);
 }
 
 TEST(MergedProviderIndexHolderTest, FullSlotFilterCrossesWordBoundaries) {
@@ -1499,6 +1508,31 @@ TEST(MergedProviderIndexHolderTest, RejectsProviderCountChangeBetweenPasses) {
   EXPECT_FALSE(iter->is_valid());
   EXPECT_EQ(IndexError_Mismatch, holder.status());
   EXPECT_EQ(0u, lifetime->live_count);
+}
+
+TEST(MergedProviderIndexHolderTest, RejectsVectorCountChangesWithSameSlots) {
+  for (bool ordinal : {false, true}) {
+    auto lifetime = std::make_shared<ProviderLifetimeStats>();
+    auto owner = std::make_shared<TestStreamer>(
+        [](size_t pass) {
+          return MakeProvider({{0, 1}, {pass == 0 ? UINT64_MAX : 1, 2}});
+        },
+        lifetime);
+    MergedProviderIndexHolder holder(
+        IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension),
+        {MakeSource(owner)});
+    IndexFilter filter;
+    filter.set([](uint64_t id) { return id == 1; });
+    ASSERT_EQ(0, holder.init(filter));
+    if (ordinal) {
+      OrdinalAccessHolder::Reader::Pointer reader;
+      EXPECT_EQ(IndexError_Mismatch, holder.create_ordinal_reader(&reader));
+    } else {
+      ReadAll(&holder);
+    }
+    EXPECT_EQ(IndexError_Mismatch, holder.status());
+    EXPECT_EQ(0U, lifetime->count_calls);
+  }
 }
 
 TEST(MergedProviderIndexHolderTest, RejectsProviderMetaChangeBetweenPasses) {

@@ -48,15 +48,30 @@ key_t VamanaStreamerEntity::get_key(node_id_t id) const {
 }
 
 key_t VamanaStreamerEntity::read_stored_key(node_id_t id) const {
-  auto loc = get_key_chunk_loc(id);
-  if (ailego_unlikely(loc.first >= node_chunks_.size())) return kInvalidKey;
-  IndexStorage::MemoryBlock ptr;
-  size_t ret = node_chunks_[loc.first]->read(loc.second, ptr, sizeof(key_t));
-  if (ailego_unlikely(ret != sizeof(key_t))) {
-    LOG_ERROR("Read key failed, ret=%zu", ret);
-    return kInvalidKey;
+  key_t key = kInvalidKey;
+  read_key(id, &key);
+  return key;
+}
+
+int VamanaStreamerEntity::read_key(node_id_t id, key_t *key) const {
+  // Search contexts may retain an older doc count while their chunks grow.
+  *key = kInvalidKey;
+  const auto loc = get_key_chunk_loc(id);
+  if (loc.first >= node_chunks_.size() || !node_chunks_[loc.first] ||
+      loc.second > node_chunks_[loc.first]->data_size() ||
+      sizeof(key_t) > node_chunks_[loc.first]->data_size() - loc.second) {
+    return IndexError_ReadData;
   }
-  return *reinterpret_cast<const key_t *>(ptr.data());
+
+  IndexStorage::MemoryBlock block;
+  if (node_chunks_[loc.first]->read(loc.second, block, sizeof(key_t)) !=
+          sizeof(key_t) ||
+      !block.data()) {
+    LOG_ERROR("Read key failed, node_id=%u", id);
+    return IndexError_ReadData;
+  }
+  *key = *reinterpret_cast<const key_t *>(block.data());
+  return 0;
 }
 
 const void *VamanaStreamerEntity::get_vector(node_id_t id) const {

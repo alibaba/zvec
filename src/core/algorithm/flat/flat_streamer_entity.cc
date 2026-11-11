@@ -936,6 +936,7 @@ void FlatStreamerEntity::Iterator::read_next_block() {
     }
     if (segment->read(off, block_, block_size) != block_size) {
       LOG_ERROR("Failed to read block, off=%zu", off);
+      status_ = IndexError_ReadData;
       break;
     }
     data_ = block_.data();

@@ -1673,8 +1673,7 @@ Status SegmentImpl::create_vector_index(
             ? current_flat_params->storage_data_type()
             : field->data_type();
 
-    if (field->nullable() ||
-        !(vector_index_params->metric_type() ==
+    if (!(vector_index_params->metric_type() ==
               original_index_params->metric_type() &&
           vector_indexers_[column].size() == 1 &&
           current_flat_data_type == desired_flat_data_type)) {
