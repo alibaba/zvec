@@ -1,0 +1,194 @@
+name: Linux riscv64 RVV Cross Compile
+
+# Ported from faiss's linux-riscv64-DD-cmake job (build-pull-request.yml):
+# cross-compile on an x86_64 runner with gcc-14-riscv64-linux-gnu, then run
+# the unit tests under qemu-user.
+#
+# zvec specifics:
+#   - The apt setup follows faiss (multiarch :riscv64 packages +
+#     ubuntu-ports repo + sysroot symlink) because that package set is
+#     proven to work upstream; only libopenblas-dev and libgomp1 are
+#     dropped (zvec has no BLAS dependency and builds with
+#     ENABLE_OPENMP=OFF).
+#   - Test scope: the whole ailego unit test suite (tests/ailego/**/*_test.cc,
+#     61 targets). Those cover the RVV-relevant code paths (CpuFeatures
+#     runtime detection + math kernels) while staying cheap: every target
+#     links only the static zvec_ailego + gtest, so no heavy thirdparty
+#     (arrow/rocksdb/...) cross builds are needed. Like faiss, the full test
+#     suite is not run under qemu — that would take hours under emulation.
+#   - ENABLE_RISCV64 / ENABLE_RISCV_VECTOR / ENABLE_RISCV_ZVFH /
+#     ENABLE_RISCV_ZIHINTPAUSE are the RVV build options from the RISC-V
+#     platform support. Until that support lands on main, CMake warns about
+#     the unused variables and the job runs as a plain rv64gc cross-compile
+#     smoke test.
+#   - The runtime detection behind CpuFeatures::RISCV_VECTOR()/RISCV_ZVFH()
+#     uses the riscv_hwprobe syscall, which qemu-user only emulates since
+#     9.2 (V and ZVFH are both reported from the -cpu config there). Ubuntu
+#     24.04 ships qemu 8.2, so a newer qemu-user-static is installed from
+#     the Ubuntu package pool.
+#   - QEMU gets an explicit -cpu with the extensions the binary is built
+#     with, instead of relying on the (version-dependent) default CPU.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Linux riscv64 RVV cross-compile (cmake)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      # Apt setup follows faiss's linux-riscv64-DD-cmake job (proven
+      # upstream): enable the riscv64 multiarch architecture, add the
+      # ubuntu-ports repo, install the target libraries, and symlink the
+      # multiarch lib dir into the cross sysroot for CMake's ONLY find-root
+      # mode and the qemu -L runtime lookup. faiss's libopenblas-dev and
+      # libgomp1 are dropped: zvec has no BLAS dependency and builds with
+      # ENABLE_OPENMP=OFF.
+      - name: Set up riscv64 cross-compilation environment
+        run: |
+          sudo dpkg --add-architecture riscv64
+
+          # Ubuntu 24.04 deb822 sources: keep host packages amd64/i386 only.
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i '/^Types: deb$/a Architectures: amd64 i386' \
+              /etc/apt/sources.list.d/ubuntu.sources
+          fi
+
+          if grep -q '^deb http' /etc/apt/sources.list 2>/dev/null; then
+            sudo sed -i 's|^deb http|deb [arch=amd64,i386] http|g' \
+              /etc/apt/sources.list
+          fi
+
+          CODENAME=$(. /etc/os-release && echo "$VERSION_CODENAME")
+
+          echo "deb [arch=riscv64] http://ports.ubuntu.com/ubuntu-ports ${CODENAME} main restricted universe multiverse" \
+            | sudo tee /etc/apt/sources.list.d/riscv64-ports.list
+
+          echo "deb [arch=riscv64] http://ports.ubuntu.com/ubuntu-ports ${CODENAME}-updates main restricted universe multiverse" \
+            | sudo tee -a /etc/apt/sources.list.d/riscv64-ports.list
+
+          sudo apt-get update -qq
+
+          sudo apt-get install -y -qq \
+            cmake \
+            gcc-14-riscv64-linux-gnu \
+            g++-14-riscv64-linux-gnu \
+            libc6:riscv64 \
+            libc6-dev:riscv64 \
+            libstdc++6:riscv64 \
+            libgcc-s1:riscv64
+
+          echo "Checking GCC version:"
+          riscv64-linux-gnu-gcc-14 --version
+          riscv64-linux-gnu-g++-14 --version
+
+          # Prepare sysroot library lookup
+          sudo mkdir -p /usr/riscv64-linux-gnu/usr/lib
+
+          sudo ln -sfn /usr/lib/riscv64-linux-gnu \
+            /usr/riscv64-linux-gnu/usr/lib/riscv64-linux-gnu
+        shell: bash
+
+      # Ubuntu 24.04's qemu-user-static is 8.2, which predates qemu-user's
+      # riscv_hwprobe emulation (added in 9.2) — CpuFeatures::RISCV_VECTOR()/
+      # RISCV_ZVFH() would always report false. Install the newest static
+      # build from the Ubuntu pool instead; the -static package is
+      # self-contained, so it installs fine on 24.04.
+      - name: Install qemu-user-static >= 9.2
+        run: |
+          QEMU_DEB=$(
+            curl -sL http://archive.ubuntu.com/ubuntu/pool/universe/q/qemu/ \
+              | grep -oE 'qemu-user-static_(9\.[2-9]|[1-9][0-9]+\.)[^"]*_amd64\.deb' \
+              | sort -uV | tail -1
+          )
+          echo "Selected ${QEMU_DEB}"
+          curl -sLO "http://archive.ubuntu.com/ubuntu/pool/universe/q/qemu/${QEMU_DEB}"
+          sudo apt-get install -y "./${QEMU_DEB}"
+          qemu-riscv64-static --version
+        shell: bash
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: linux-riscv64-rvv-cross-${{ runner.os }}-gcc
+          max-size: 150M
+
+      - name: Configure (cmake)
+        run: |
+          cmake -B build \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/riscv64-linux-gnu.cmake \
+            -DCMAKE_C_COMPILER=riscv64-linux-gnu-gcc-14 \
+            -DCMAKE_CXX_COMPILER=riscv64-linux-gnu-g++-14 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TOOLS=OFF \
+            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DENABLE_RISCV64=ON \
+            -DENABLE_RISCV_VECTOR=ON \
+            -DENABLE_RISCV_ZVFH=ON \
+            -DENABLE_RISCV_ZIHINTPAUSE=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            .
+        shell: bash
+
+      # Test target names are the *_test.cc file stems
+      # (see tests/ailego/CMakeLists.txt: get_filename_component(... NAME_WE)).
+      - name: Build ailego unit tests
+        run: |
+          mapfile -t AILEGO_TESTS < <(find tests/ailego -name '*_test.cc' -exec basename {} .cc \;)
+          echo "Building ${#AILEGO_TESTS[@]} ailego test targets:"
+          printf '  %s\n' "${AILEGO_TESTS[@]}"
+          cmake --build build --target "${AILEGO_TESTS[@]}" -j"$(nproc)"
+        shell: bash
+
+      - name: Verify binary with ldd (via qemu)
+        run: |
+          file build/bin/cpu_features_test
+
+          file build/bin/cpu_features_test | grep -q "RISC-V" || \
+            { echo "ERROR: not a RISC-V binary"; exit 1; }
+
+          RISCV64_LD=$(find /usr/riscv64-linux-gnu/lib \
+            -name "ld-linux-riscv64-*.so.1" | head -1)
+
+          qemu-riscv64-static \
+            -L /usr/riscv64-linux-gnu \
+            "$RISCV64_LD" \
+            --list \
+            build/bin/cpu_features_test
+        shell: bash
+
+      # Mirrors how ctest runs these tests: each in its own
+      # build/test_tmp/<name> working directory (created at configure time).
+      # Run everything and report all failures instead of stopping at the
+      # first one.
+      - name: Run ailego unit tests (via QEMU)
+        run: |
+          FAILED=()
+          for t in $(find tests/ailego -name '*_test.cc' -exec basename {} .cc \;); do
+            echo "=== $t ==="
+            ( cd "build/test_tmp/$t" && \
+              qemu-riscv64-static \
+                -L /usr/riscv64-linux-gnu \
+                -cpu rv64,v=true,zvfh=true,zihintpause=true \
+                "$GITHUB_WORKSPACE/build/bin/$t" ) || FAILED+=("$t")
+          done
+
+          if [ ${#FAILED[@]} -ne 0 ]; then
+            echo "FAILED tests (${#FAILED[@]}):"
+            printf '  %s\n' "${FAILED[@]}"
+            exit 1
+          fi
+          echo "All ailego unit tests passed."
+        shell: bash
