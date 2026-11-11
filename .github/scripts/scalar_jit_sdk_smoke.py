@@ -11,12 +11,13 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
+import sys
+from pathlib import Path
 
 
-def main() -> None:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--collection", required=True, type=Path)
@@ -24,7 +25,11 @@ def main() -> None:
     parser.add_argument("--output-directory", required=True, type=Path)
     parser.add_argument("--qemu", type=Path)
     parser.add_argument("--cpu", default="Haswell-v4")
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
     output = args.output_directory.resolve()
     output.mkdir(parents=True, exist_ok=True)
     binary, collection = args.binary.resolve(), args.collection.resolve()
@@ -35,19 +40,50 @@ def main() -> None:
         log = output / f"{name}.log"
         result = output / f"{name}.json"
         env = dict(environment, ZVEC_SCALAR_JIT="1" if enabled else "0")
-        command = prefix + [str(binary), "--path", str(collection),
-                            "--output", str(result)] + options
+        command = [
+            *prefix,
+            str(binary),
+            "--path",
+            str(collection),
+            "--output",
+            str(result),
+            *options,
+        ]
         with log.open("wb") as stream:
-            subprocess.run(command, env=env, stdout=stream,
-                           stderr=subprocess.STDOUT, check=True)
+            subprocess.run(
+                command, env=env, stdout=stream, stderr=subprocess.STDOUT, check=True
+            )
         return json.loads(result.read_text()), log.read_text(errors="replace")
 
     if not collection.exists():
-        execute("build", ["--mode", "build", "--rows", "2048",
-                          "--workers", "1", "--build-workers", "1"], [], True)
+        execute(
+            "build",
+            [
+                "--mode",
+                "build",
+                "--rows",
+                "2048",
+                "--workers",
+                "1",
+                "--build-workers",
+                "1",
+            ],
+            [],
+            True,
+        )
 
-    common = ["--mode", "dump", "--strategy", "forward", "--count", "16",
-              "--workers", "1", "--debug", "1"]
+    common = [
+        "--mode",
+        "dump",
+        "--strategy",
+        "forward",
+        "--count",
+        "16",
+        "--workers",
+        "1",
+        "--debug",
+        "1",
+    ]
     runs = [("native-jit", [], True), ("native-arrow", [], False)]
     if args.qemu:
         prefix = [str(args.qemu.resolve()), "-cpu", args.cpu]
@@ -67,18 +103,27 @@ def main() -> None:
             assert "Detected CPU Name" in log, name
             assert "Scalar JIT unavailable" not in log, name
             if prefix:
-                assert "+avx2" in log and "-avx512f" in log, name
+                assert "+avx2" in log, name
+                assert "-avx512f" in log, name
                 assert "+avx512f" not in log, name
         else:
             assert ready == 0, (name, ready)
-        checks.append({"name": name, "queries": len(queries),
-                       "jit_bindings": ready,
-                       "cpu_names": re.findall(r"Detected CPU Name : (\S+)", log)})
+        checks.append(
+            {
+                "name": name,
+                "queries": len(queries),
+                "jit_bindings": ready,
+                "cpu_names": re.findall(r"Detected CPU Name : (\S+)", log),
+            }
+        )
     library = args.library_directory / "libzvec.so"
-    summary = {"library_sha256": hashlib.sha256(library.read_bytes()).hexdigest(),
-               "checks": checks, "all_results_equal": True}
+    summary = {
+        "library_sha256": hashlib.sha256(library.read_bytes()).hexdigest(),
+        "checks": checks,
+        "all_results_equal": True,
+    }
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-    print(json.dumps(summary, indent=2))
+    sys.stdout.write(json.dumps(summary, indent=2) + "\n")
 
 
 if __name__ == "__main__":

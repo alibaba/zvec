@@ -1,29 +1,37 @@
 #!/usr/bin/env python3
 """Generate an opt-in, benchmark-only patch; never changes the working sources."""
-from pathlib import Path
+
+from __future__ import annotations
+
 import difflib
+from pathlib import Path
+
 root = Path(__file__).resolve().parents[2]
 changes = {}
-name = 'src/db/sqlengine/planner/scalar_doc_filter.h'
+name = "src/db/sqlengine/planner/scalar_doc_filter.h"
 a = (root / name).read_text()
-needle = '''    return prototype_->function()(
+needle = """    return prototype_->function()(
         buffer_count_ ? buffers_.data() + base : nullptr,
         buffer_count_ ? offsets_.data() + base : nullptr, prototype_->holders(),
-        static_cast<int64_t>(id - begin));'''
-replacement = '''#ifdef PR889_BENCH_HARDCODE
+        static_cast<int64_t>(id - begin));"""
+replacement = (
+    """#ifdef PR889_BENCH_HARDCODE
     // Benchmark-only INT32 comparison; identical chunk routing and snapshot
     // lifetime, no code generation, per-row Arrow access or shared-state lock.
     const auto *values = reinterpret_cast<const int32_t *>(buffers_[base]);
     return values[offsets_[base] + id - begin] >
            static_cast<int32_t>(offsets_[base + 1]);
 #else
-''' + needle + '\n#endif'
+"""
+    + needle
+    + "\n#endif"
+)
 assert a.count(needle) == 1
 changes[name] = (a, a.replace(needle, replacement))
-name = 'src/db/sqlengine/planner/scalar_doc_filter.cc'
+name = "src/db/sqlengine/planner/scalar_doc_filter.cc"
 a = (root / name).read_text()
-needle = '''  std::vector<std::shared_ptr<const void>> query_owners;'''
-hardcode = '''#ifdef PR889_BENCH_HARDCODE
+needle = """  std::vector<std::shared_ptr<const void>> query_owners;"""
+hardcode = """#ifdef PR889_BENCH_HARDCODE
   // This binary is a benchmark comparator, not a supported execution backend.
   // Reject every shape except a bound, non-null INT32 dataTime > INT32 literal.
   const auto *call = expression.call();
@@ -78,28 +86,49 @@ hardcode = '''#ifdef PR889_BENCH_HARDCODE
   }
   return result;
 #else
-'''
+"""
 assert a.count(needle) == 1
 b = a.replace(needle, hardcode + needle)
-needle2 = '''  return result;
+needle2 = """  return result;
 }
 
-}  // namespace zvec::sqlengine'''
+}  // namespace zvec::sqlengine"""
 assert b.count(needle2) == 1
-b = b.replace(needle2, '''  return result;
+b = b.replace(
+    needle2,
+    """  return result;
 #endif  // PR889_BENCH_HARDCODE
 }
 
-}  // namespace zvec::sqlengine''')
+}  // namespace zvec::sqlengine""",
+)
 # Int32Scalar definition is required for the independent direct predicate.
-b = b.replace('#include <arrow/record_batch.h>', '#include <arrow/record_batch.h>\n#include <arrow/scalar.h>')
+b = b.replace(
+    "#include <arrow/record_batch.h>",
+    "#include <arrow/record_batch.h>\n#include <arrow/scalar.h>",
+)
 changes[name] = a, b
-name = 'src/db/sqlengine/planner/doc_filter.cc'
+name = "src/db/sqlengine/planner/doc_filter.cc"
 a = (root / name).read_text()
 needle = '        LOG_DEBUG("Scalar JIT forward filter ready");'
 if needle in a:
-    b = a.replace(needle, '#ifdef PR889_BENCH_HARDCODE\n        LOG_DEBUG("Benchmark hardcoded INT32 forward filter ready");\n#else\n' + needle + '\n#endif')
+    b = a.replace(
+        needle,
+        '#ifdef PR889_BENCH_HARDCODE\n        LOG_DEBUG("Benchmark hardcoded INT32 forward filter ready");\n#else\n'
+        + needle
+        + "\n#endif",
+    )
     changes[name] = a, b
-out = ''.join(''.join(difflib.unified_diff(a.splitlines(True), b.splitlines(True), fromfile='a/'+name, tofile='b/'+name)) for name, (a, b) in changes.items())
-(root / 'benchmarks/pr889_linux/hardcode.patch').write_text(out)
-print('Wrote benchmarks/pr889_linux/hardcode.patch')
+out = "".join(
+    "".join(
+        difflib.unified_diff(
+            a.splitlines(True),
+            b.splitlines(True),
+            fromfile="a/" + name,
+            tofile="b/" + name,
+        )
+    )
+    for name, (a, b) in changes.items()
+)
+(root / "benchmarks/pr889_linux/hardcode.patch").write_text(out)
+print("Wrote benchmarks/pr889_linux/hardcode.patch")  # noqa: T201 - CLI output
