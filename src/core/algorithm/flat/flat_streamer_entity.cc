@@ -891,22 +891,20 @@ int FlatContiguousStreamerEntity::build_contiguous_memory() {
   for (uint32_t id = 0; id < count; ++id) {
     IndexStorage::MemoryBlock block;
     uint64_t vector_key = kInvalidKey;
-    int ret = 0;
-    if (use_key_info_map()) {
-      vector_key = key(id);
-      ret = FlatStreamerEntity::get_vector_by_key(vector_key, block);
-      if (ret == 0) {
-        storage->key_to_position[vector_key] = id;
-      }
-    } else {
-      ret = get_vector_by_position(id, block);
-      if (ret == 0) {
-        ret = get_key_by_position(id, &vector_key);
+    int ret = get_key(id, &vector_key);
+    if (ret == 0) {
+      if (use_key_info_map()) {
+        ret = FlatStreamerEntity::get_vector_by_key(vector_key, block);
+      } else {
+        ret = get_vector_by_position(id, block);
       }
     }
     if (ret != 0 || block.data() == nullptr) {
       LOG_ERROR("Failed to load Flat vector into contiguous memory, id=%u", id);
       return IndexError_ReadData;
+    }
+    if (use_key_info_map()) {
+      storage->key_to_position[vector_key] = id;
     }
     std::memcpy(raw + static_cast<size_t>(id) * stride, block.data(),
                 vector_size);
