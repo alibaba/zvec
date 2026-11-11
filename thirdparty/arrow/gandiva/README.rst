@@ -61,6 +61,17 @@ are not shipped in the wheel. Cross, mobile, Windows and universal macOS builds
 are unsupported when ON. OFF adds no LLVM/OpenSSL dependency.
 Set ``ZVEC_SCALAR_JIT=0`` before the first query to disable the fast path.
 
+Linux release packaging is exercised by the opt-in
+``.github/workflows/scalar-jit-linux.yml`` workflow. Its pinned manylinux_2_28
+image builds LLVM 20.1.8 and PIC OpenSSL from verified sources, then builds
+and checks both a repaired wheel and the shared SDK. It tests the same artifacts
+on the runner CPU and under QEMU Haswell with AVX2 enabled and AVX512 disabled,
+requiring successful JIT binding and matching query results in both cases.
+QEMU is a compatibility check, not a hardware performance benchmark. Arrow's
+existing SSE4.2 x86 baseline is unchanged; generic LLVM/OpenSSL flags do not
+make the full package support older SSE2-only CPUs. The experimental workflow
+does not enable JIT in the normal release matrix.
+
 Update the patch, extension and provenance hashes together. Apply revised
 patches to a clean Arrow source tree; conflicts must be reviewed rather than
 overwriting upstream files. The extension still uses Gandiva internals:

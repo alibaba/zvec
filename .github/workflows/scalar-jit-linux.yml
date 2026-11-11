@@ -1,0 +1,115 @@
+name: Experimental Linux Scalar JIT Packaging
+
+# Deliberately opt-in until release size, latency and architecture coverage
+# have been accepted. Existing wheel/SDK release jobs continue to build OFF.
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  manylinux-x64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      JIT_IMAGE: zvec-scalar-jit-manylinux:local
+      RUNTIME_IMAGE: quay.io/pypa/manylinux_2_28_x86_64:2026.03.01-1@sha256:d5f19b5957cf25df7ac15465924cafe2358754a187e510af386bf9596598a372
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Build baseline LLVM and OpenSSL in manylinux
+        run: |
+          docker build \
+            -f .github/workflows/docker/Dockerfile.scalar_jit_manylinux_2_28 \
+            --build-arg ZVEC_TOOLCHAIN_JOBS=2 -t "$JIT_IMAGE" .
+
+      # Build-time OFF remains covered by the existing release jobs; the
+      # fresh-process ZVEC_SCALAR_JIT=0 runs below test this ON artifact's
+      # runtime fallback. The two switches are intentionally distinct.
+      - name: Build and repair JIT ON wheel using the existing cibuildwheel configuration
+        env:
+          CIBW_MANYLINUX_X86_64_IMAGE: zvec-scalar-jit-manylinux:local
+          CIBW_CONFIG_SETTINGS_LINUX: >-
+            cmake.define.ZVEC_ENABLE_SCALAR_JIT=ON
+            cmake.define.ZVEC_SCALAR_JIT_LLVM_SHARED=OFF
+            cmake.define.LLVM_ROOT=/opt/llvm-20
+            cmake.define.OPENSSL_ROOT_DIR=/opt/zvec-jit-openssl
+            cmake.define.OPENSSL_USE_STATIC_LIBS=ON
+            cmake.define.ENABLE_NATIVE=OFF
+          CIBW_ENVIRONMENT_LINUX: CMAKE_GENERATOR=Ninja CMAKE_BUILD_PARALLEL_LEVEL=2
+          CIBW_TEST_COMMAND: python {project}/.github/scripts/scalar_jit_wheel_smoke.py
+          CIBW_TEST_REQUIRES: numpy
+        run: |
+          python -m pip install cibuildwheel==3.4.0
+          python -m cibuildwheel --only cp312-manylinux_x86_64 --output-dir wheelhouse
+
+      - name: Build SDK and test the scalar differential suites
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work \
+            -e ZVEC_JIT_JOBS=2 "$JIT_IMAGE" \
+            bash .github/scripts/package_scalar_jit_sdk.sh
+
+      - name: Verify repaired artifacts without the build toolchain
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work "$RUNTIME_IMAGE" \
+            /opt/python/cp312-cp312/bin/python \
+            .github/scripts/check_scalar_jit_artifact.py wheelhouse/*.whl jit-sdk
+          docker run --rm -v "$PWD:/work" -w /work "$RUNTIME_IMAGE" bash -c '
+            set -euo pipefail
+            test ! -d /opt/llvm-20
+            if ldconfig -p | grep -E "libLLVM|libgandiva|libclang" >/dev/null; then
+              echo "Unexpected LLVM runtime in clean container" >&2
+              exit 1
+            fi
+            /opt/python/cp312-cp312/bin/python -m venv /tmp/jit-wheel
+            /tmp/jit-wheel/bin/python -m pip install /work/wheelhouse/*.whl
+            /tmp/jit-wheel/bin/python .github/scripts/scalar_jit_wheel_smoke.py --log clean-runtime.log
+            /work/build-jit-sdk-smoke/c_smoke
+            /work/build-jit-sdk-smoke/cpp_smoke
+            /opt/python/cp312-cp312/bin/python .github/scripts/scalar_jit_sdk_smoke.py \
+              --binary build-jit-sdk-smoke/scalar_jit_bench \
+              --collection build-jit-sdk-smoke/jit-collection \
+              --library-directory jit-sdk/lib --output-directory sdk-jit-clean-logs
+          '
+
+      - name: Test the same wheel with AVX2 and no AVX512
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user
+          python -m venv wheel-venv
+          wheel-venv/bin/python -m pip install wheelhouse/*.whl
+          wheel-venv/bin/python .github/scripts/scalar_jit_wheel_smoke.py --log native-cpu.log
+          qemu-x86_64 -cpu Haswell-v4 wheel-venv/bin/python \
+            .github/scripts/scalar_jit_wheel_smoke.py \
+            --expect-avx2-only --log haswell-cpu.log
+          ZVEC_SCALAR_JIT=0 qemu-x86_64 -cpu Haswell-v4 wheel-venv/bin/python \
+            .github/scripts/scalar_jit_wheel_smoke.py --expect-jit off
+          python .github/scripts/scalar_jit_sdk_smoke.py \
+            --binary build-jit-sdk-smoke/scalar_jit_bench \
+            --collection build-jit-sdk-smoke/jit-collection \
+            --library-directory jit-sdk/lib --output-directory sdk-jit-cpu-logs \
+            --qemu "$(command -v qemu-x86_64)"
+
+      - name: Upload experimental packages and compatibility evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: scalar-jit-manylinux-x64
+          path: |
+            wheelhouse/*.whl
+            zvec-sdk-linux-amd64-scalar-jit.tar.gz
+            clean-runtime.log
+            native-cpu.log
+            haswell-cpu.log
+            sdk-jit-*-logs/
+          if-no-files-found: error
+          retention-days: 7

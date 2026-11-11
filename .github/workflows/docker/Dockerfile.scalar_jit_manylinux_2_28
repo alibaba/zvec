@@ -1,0 +1,16 @@
+# Use the existing SDK's glibc 2.28 baseline. LLVM from a newer host distro
+# cannot be made manylinux-compatible merely by statically linking it.
+# Generic LLVM/OpenSSL flags preserve AVX2/AVX512 portability; Arrow retains
+# its existing SSE4.2 baseline, so this is not a promise of SSE2-only support.
+FROM quay.io/pypa/manylinux_2_28_x86_64:2026.03.01-1@sha256:d5f19b5957cf25df7ac15465924cafe2358754a187e510af386bf9596598a372
+
+ENV PATH=/opt/python/cp312-cp312/bin:$PATH
+RUN python -m pip install --no-cache-dir cmake==3.30.9 ninja==1.13.0 && \
+    dnf install -y perl-IPC-Cmd perl-Pod-Html perl-Time-Piece && \
+    dnf clean all
+COPY .github/scripts/prepare_scalar_jit_toolchain.sh /usr/local/bin/build-zvec-jit-toolchain
+ARG ZVEC_TOOLCHAIN_JOBS=2
+RUN ZVEC_TOOLCHAIN_WORK=/tmp/zvec-jit-toolchain \
+    ZVEC_TOOLCHAIN_JOBS=${ZVEC_TOOLCHAIN_JOBS} \
+    bash /usr/local/bin/build-zvec-jit-toolchain && \
+    rm -rf /tmp/zvec-jit-toolchain

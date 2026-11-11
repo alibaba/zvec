@@ -96,5 +96,14 @@ set(_ARROW_SCALAR_JIT_ARGS
     "-DOPENSSL_INCLUDE_DIR=${OPENSSL_INCLUDE_DIR}"
     "-DOPENSSL_CRYPTO_LIBRARY=${OPENSSL_CRYPTO_LIBRARY}"
     "-DOPENSSL_SSL_LIBRARY=${OPENSSL_SSL_LIBRARY}")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+   CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    # Helper bitcode is shipped in the artifact. Its function attributes must
+    # not inherit the build machine's ISA; only runtime JIT compilation may
+    # select the execution machine's CPU. Gandiva uses a separate clang
+    # invocation for bitcode, independent of Arrow's CMAKE_CXX_FLAGS.
+    list(APPEND _ARROW_SCALAR_JIT_ARGS
+        "-DARROW_GANDIVA_PC_CXX_FLAGS=-march=x86-64")
+endif()
 set(LIB_GANDIVA "${EXTERNAL_LIB_DIR}/libgandiva.a")
 message(STATUS "Scalar JIT: Arrow 21 static + Gandiva static, LLVM ${LLVM_PACKAGE_VERSION} ${_SCALAR_JIT_LLVM_LINKAGE}")

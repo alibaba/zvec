@@ -39,6 +39,8 @@ if(ZVEC_ENABLE_SCALAR_JIT)
     install(FILES arrow/gandiva/LICENSE arrow/gandiva/NOTICE
                   arrow/gandiva/PROVENANCE.json
         DESTINATION share/zvec/thirdparty/arrow/gandiva)
+    install(DIRECTORY "${LLVM_ROOT}/share/zvec-jit-licenses/"
+        DESTINATION share/zvec/thirdparty/jit-toolchain OPTIONAL)
 endif()
 add_subdirectory(gflags gflags EXCLUDE_FROM_ALL)
 add_subdirectory(glog glog EXCLUDE_FROM_ALL)

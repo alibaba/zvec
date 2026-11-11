@@ -298,6 +298,19 @@ if(BUILD_PYTHON_BINDINGS)
     install(TARGETS _zvec LIBRARY DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec
             COMPONENT python)
 
+    if(ZVEC_ENABLE_SCALAR_JIT)
+        install(FILES thirdparty/arrow/gandiva/LICENSE
+                      thirdparty/arrow/gandiva/NOTICE
+                      thirdparty/arrow/gandiva/PROVENANCE.json
+                DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec/thirdparty/gandiva
+                COMPONENT python)
+        # The portable toolchain records the exact LLVM/OpenSSL licenses.
+        # Keep local developer installations without this directory usable.
+        install(DIRECTORY "${LLVM_ROOT}/share/zvec-jit-licenses/"
+                DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec/thirdparty/jit-toolchain
+                COMPONENT python OPTIONAL)
+    endif()
+
     # DiskAnn is now statically linked into _zvec.so via --whole-archive
     # (see src/binding/python/CMakeLists.txt -> core_knn_diskann_static),
     # so no separate runtime .so needs to be installed in the wheel.
