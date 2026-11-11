@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: windows-2022
+          - platform: windows-2022-vs2022
             vs_version: '17.0'
             msvc_arch: x64
             python_version: '3.10'
@@ -27,7 +27,7 @@ jobs:
             python_version: '3.10'
           # Windows ARM64: Python 3.10 has no official ARM64 installer;
           # 3.11 is the first CPython release with a Windows-on-ARM build.
-          - platform: windows-11-vs2026-arm
+          - platform: windows-11-arm-vs2026
             vs_version: '18.0'
             msvc_arch: arm64
             python_version: '3.11'
