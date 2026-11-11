@@ -161,9 +161,6 @@ Status VectorColumnIndexer::destroy() {
   if (ailego::File::IsExist(index_file_path_ + ".nulls")) {
     ailego::File::Delete(index_file_path_ + ".nulls");
   }
-  if (ailego::File::IsExist(index_file_path_ + ".validity")) {
-    ailego::File::Delete(index_file_path_ + ".validity");
-  }
   return Status::OK();
 }
 

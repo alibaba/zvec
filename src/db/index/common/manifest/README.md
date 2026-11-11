@@ -78,10 +78,10 @@ write fields in ascending field-number order to produce canonical bytes.
 `BlockMeta` field 7 (`vector_validity`) marks vector blocks that require a
 `<index path>.nulls` sidecar. Missing or corrupt required sidecars are errors.
 
-The sidecar contains `ZVECNL01`, a little-endian uint32 logical row count and
-uint32 ID-layout flag (4), a portable Roaring bitmap of NULL rows, and a CRC32C
-of all preceding bytes. A set bit means NULL, as in scalar inverted columns.
-The row count includes trailing NULLs and agrees with the core slot count.
+The sidecar contains `ZVECNL01`, a little-endian uint32 logical row count, a
+portable Roaring bitmap of NULL rows, and a CRC32C of all preceding bytes. A set
+bit means NULL, as in scalar inverted columns. The row count includes trailing
+NULLs and agrees with the core slot count.
 
 Vector keys equal document row IDs. Flat and graph streamers represent gaps
 with invalid keys; invalid slots are excluded from results, graph construction
@@ -111,11 +111,14 @@ An all-NULL column uses a Flat backing with invalid-key slots even when its
 declared index requires training. The sidecar is flushed and published before
 the manifest references the block.
 
-Legacy nullable vector blocks without a NULL bitmap, and the previous
-`.validity` format with compact vector IDs or `.nulls` layout flags before 4,
-are unsupported. Opening them logs an error and returns `NotSupported`. The error identifies the field and index
-path, explains the risk of incorrect vector-to-document mappings in older
-versions, suggests reinserting original data into a new collection if needed,
-and links to GitHub issues for help or feedback. Scalar nullable fields and
-legacy non-nullable vector blocks retain their existing read paths.
+A legacy nullable block whose manifest carries no validity metadata never
+marked NULL rows, so its original data may already be lost. Opening it logs a
+warning and proceeds best-effort: every stored slot is treated as present and
+no NULL bitmap is fabricated. The warning identifies the field and index path,
+explains the risk of incorrect vector-to-document mappings in older versions,
+suggests reinserting original data into a new collection if needed, and links
+to GitHub issues for help or feedback. A block whose manifest requires validity
+but whose `.nulls` sidecar is missing or corrupt (bad magic or CRC) is an error.
+Scalar nullable fields and legacy non-nullable vector blocks retain their
+existing read paths.
 Older binaries do not understand the new nullable format.

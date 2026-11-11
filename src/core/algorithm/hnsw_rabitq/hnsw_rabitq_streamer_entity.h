@@ -94,10 +94,6 @@ class HnswRabitqStreamerEntity : public HnswRabitqEntity {
     return key_map_.enabled() ? read_stored_key(id) : id;
   }
 
-  key_t key_of_existing_node_typed(node_id_t id) const {
-    return key_map_.enabled() ? read_stored_key(id) : id;
-  }
-
  public:
   //! Constructor
   HnswRabitqStreamerEntity(IndexStreamer::Stats &stats);

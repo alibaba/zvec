@@ -138,7 +138,7 @@ class VectorColumnIndexer {
   Status recreate_empty_index(bool use_empty_flat);
   bool has_vector(uint32_t row) const;
   bool all_null() const {
-    return null_rows_.cardinality() == row_count_;
+    return !legacy_without_validity_ && null_rows_.cardinality() == row_count_;
   }
   // protected:
   //  virtual bool init_proxima_params() = 0;
@@ -166,6 +166,10 @@ class VectorColumnIndexer {
   bool read_only_{false};
   bool use_mmap_{true};
   bool empty_flat_index_{false};
+  // Legacy block opened without a NULL bitmap: nullness is unknown, so every
+  // stored slot is treated as present and the column is never degraded to an
+  // empty Flat backing.
+  bool legacy_without_validity_{false};
 };
 
 

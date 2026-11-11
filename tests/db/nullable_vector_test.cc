@@ -559,7 +559,7 @@ TEST_F(NullableVectorStorageTest, CoreKeysStayEqualToDocumentIds) {
     std::string bytes(bitmap_file.size(), '\0');
     ASSERT_EQ(bitmap_file.read(0, bytes.data(), bytes.size()), bytes.size());
     auto nulls =
-        roaring::Roaring::readSafe(bytes.data() + 16, bytes.size() - 20);
+        roaring::Roaring::readSafe(bytes.data() + 12, bytes.size() - 16);
     EXPECT_EQ(nulls.cardinality(), 4U);
     for (uint32_t row = 0; row < 6; ++row)
       EXPECT_EQ(nulls.contains(row), row != 1 && row != 3);
@@ -636,7 +636,7 @@ TEST_F(NullableVectorStorageTest, AllNullBackingAcceptsLaterVectors) {
   }
 }
 
-TEST_F(NullableVectorStorageTest, LegacyNullableIndexesAreRejected) {
+TEST_F(NullableVectorStorageTest, LegacyNullableIndexesOpenWithWarning) {
   const std::string path = "test_nullable_legacy";
   for (int kind : {0, 1, 2}) {
     for (bool mmap : {false, true}) {
@@ -672,11 +672,17 @@ TEST_F(NullableVectorStorageTest, LegacyNullableIndexesAreRejected) {
       FieldSchema nullable(field);
       nullable.set_nullable(true);
       for (bool read_only : {false, true}) {
-        VectorColumnIndexer rejected(file, nullable);
-        auto status = rejected.open({mmap, false, read_only, 4, false});
-        EXPECT_EQ(status.code(), StatusCode::NOT_SUPPORTED);
-        EXPECT_EQ(rejected.debug_get_index(), nullptr);
+        VectorColumnIndexer legacy(file, nullable);
+        auto status = legacy.open({mmap, false, read_only, 4, false});
+        ASSERT_TRUE(status.ok()) << status.message();
+        ASSERT_NE(legacy.debug_get_index(), nullptr);
+        if (kind != 2) {
+          EXPECT_TRUE(legacy.fetch(0));
+          EXPECT_TRUE(legacy.fetch(2));
+        }
+        // Opening best-effort must not fabricate a NULL bitmap.
         EXPECT_FALSE(FileHelper::FileExists(file + ".nulls"));
+        ASSERT_TRUE(legacy.close().ok());
       }
       // Legacy non-nullable fields continue to use their existing read path.
       VectorColumnIndexer non_nullable(file, field);
@@ -689,47 +695,6 @@ TEST_F(NullableVectorStorageTest, LegacyNullableIndexesAreRejected) {
       FileHelper::RemoveDirectory(path);
     }
   }
-}
-
-TEST_F(NullableVectorStorageTest, LegacyVectorLayoutsAreRejected) {
-  const std::string path = "test_nullable_identity";
-  FileHelper::RemoveDirectory(path);
-  ASSERT_TRUE(FileHelper::CreateDirectory(path));
-  FieldSchema field("vec", DataType::VECTOR_FP32, 16, true,
-                    std::make_shared<FlatIndexParams>(MetricType::L2));
-  const auto file = path + "/index";
-  VectorColumnIndexer writer(file, field);
-  ASSERT_TRUE(writer.open({true, true}).ok());
-  ASSERT_TRUE(writer.insert_null(0).ok());
-  ASSERT_TRUE(writer.close().ok());
-  ailego::File validity;
-  ASSERT_TRUE(validity.open(file + ".nulls", false));
-  std::string bytes(validity.size(), '\0');
-  ASSERT_EQ(validity.read(0, bytes.data(), bytes.size()), bytes.size());
-  validity.close();
-  for (uint32_t layout : {0U, 1U, 2U, 3U}) {
-    SCOPED_TRACE(layout);
-    for (unsigned i = 0; i < 4; ++i) bytes[12 + i] = layout >> (i * 8);
-    const uint32_t crc = ailego::Crc32c::Hash(bytes.data(), bytes.size() - 4);
-    for (unsigned i = 0; i < 4; ++i)
-      bytes[bytes.size() - 4 + i] = crc >> (i * 8);
-    ASSERT_TRUE(validity.open(file + ".nulls", false));
-    ASSERT_EQ(validity.write(0, bytes.data(), bytes.size()), bytes.size());
-    validity.close();
-    for (bool read_only : {false, true}) {
-      VectorColumnIndexer rejected(file, field);
-      EXPECT_EQ(rejected.open({true, false, read_only, 1, true}).code(),
-                StatusCode::NOT_SUPPORTED);
-      EXPECT_EQ(rejected.debug_get_index(), nullptr);
-    }
-  }
-  // The previous compact-ID format used a .validity sidecar. It remains
-  // unsupported even when the manifest requires nullable metadata.
-  ASSERT_TRUE(FileHelper::MoveFile(file + ".nulls", file + ".validity"));
-  VectorColumnIndexer compact(file, field);
-  EXPECT_EQ(compact.open({true, false, true, 1, true}).code(),
-            StatusCode::NOT_SUPPORTED);
-  FileHelper::RemoveDirectory(path);
 }
 
 TEST_F(NullableVectorStorageTest, MissingOrCorruptNullBitmapIsAnError) {

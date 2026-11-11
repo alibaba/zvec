@@ -71,76 +71,71 @@ Status VectorColumnIndexer::load_nulls(
   null_rows_ = roaring::Roaring{};
   row_count_ = 0;
   nulls_dirty_ = options.create_new;
+  legacy_without_validity_ = false;
   const auto path = index_file_path_ + ".nulls";
   if (options.create_new) {
     // A new block may replace an abandoned, unpublished block after recovery.
-    for (const auto &stale : {path, index_file_path_ + ".validity"}) {
-      if (FileHelper::FileExists(stale) && !FileHelper::RemoveFile(stale))
-        return Status::InternalError(
-            "Failed to remove stale vector NULL bitmap: ", stale);
-    }
+    if (FileHelper::FileExists(path) && !FileHelper::RemoveFile(path))
+      return Status::InternalError(
+          "Failed to remove stale vector NULL bitmap: ", path);
     return Status::OK();
   }
-  auto unsupported_legacy = [&] {
-    auto status = Status::NotSupported(
-        "Legacy index detected for nullable vector field '",
-        field_schema_.name(), "' at ", index_file_path_,
-        ". If NULL vectors were inserted in an older version, "
-        "vector-to-document "
-        "mappings may be incorrect. You may need to reinsert the original data "
-        "into a new collection. For help or feedback, please open an issue at "
-        "https://github.com/alibaba/zvec/issues.");
-    LOG_ERROR("%s", status.message().c_str());
-    return status;
+  // A legacy block (manifest without validity metadata) never marked NULL
+  // rows, so the original data may already be lost. Open it best-effort with
+  // a warning rather than refusing: every stored slot is treated as present.
+  auto warn_legacy = [&] {
+    LOG_WARN(
+        "Legacy nullable vector field '%s' at %s has no NULL bitmap. NULL "
+        "vectors inserted by an older version were not marked, so "
+        "vector-to-document mappings may be incorrect and some data may be "
+        "lost. Opening anyway; reinsert the original data into a new "
+        "collection if exact NULL semantics are required. For help or "
+        "feedback, please open an issue at "
+        "https://github.com/alibaba/zvec/issues.",
+        field_schema_.name().c_str(), index_file_path_.c_str());
+    legacy_without_validity_ = true;
+    null_rows_ = roaring::Roaring{};
+    row_count_ = index ? index->get_doc_count() : 0;
+    nulls_dirty_ = false;
+    return Status::OK();
   };
-  if (FileHelper::FileExists(index_file_path_ + ".validity"))
-    return unsupported_legacy();
   if (FileHelper::FileExists(path)) {
     std::ifstream in(ailego::FileHelper::PathFromUtf8(path), std::ios::binary);
     if (!in)
       return Status::InternalError("Failed to read vector NULL bitmap: ", path);
     std::string bytes((std::istreambuf_iterator<char>(in)), {});
-    if (in.bad() || bytes.size() < 20 || bytes.compare(0, 8, "ZVECNL01") != 0 ||
+    if (in.bad() || bytes.size() < 16 || bytes.compare(0, 8, "ZVECNL01") != 0 ||
         Get32(bytes.data() + bytes.size() - 4) !=
             ailego::Crc32c::Hash(bytes.data(), bytes.size() - 4)) {
       return Status::InternalError("Invalid vector NULL bitmap: ", path);
     }
-    if (Get32(bytes.data() + 12) != 4) return unsupported_legacy();
     row_count_ = Get32(bytes.data() + 8);
     try {
       null_rows_ =
-          roaring::Roaring::readSafe(bytes.data() + 16, bytes.size() - 20);
+          roaring::Roaring::readSafe(bytes.data() + 12, bytes.size() - 16);
     } catch (const std::exception &) {
       return Status::InternalError("Corrupt vector NULL bitmap: ", path);
     }
     if ((!null_rows_.isEmpty() && null_rows_.maximum() >= row_count_) ||
         (options.row_count && *options.row_count != row_count_) ||
-        (index && index->get_doc_count() > row_count_)) {
+        (index && index->get_doc_count() != row_count_)) {
       return Status::InternalError(
-          "Vector NULL bitmap disagrees with block/index: ", path);
-    }
-    if (index) {
-      const uint32_t expected = row_count_;
-      if (index->get_doc_count() != expected)
-        return Status::InternalError(
-            "Vector NULL bitmap disagrees with index: ", path,
-            " expected rows=", expected,
-            " actual rows=", index->get_doc_count());
+          "Vector NULL bitmap disagrees with block/index: ", path,
+          " rows=", row_count_,
+          " index_rows=", index ? index->get_doc_count() : 0);
     }
     return Status::OK();
   }
   if (options.require_validity)
     return Status::InternalError("Missing vector NULL bitmap: ", path);
 
-  return unsupported_legacy();
+  return warn_legacy();
 }
 
 Status VectorColumnIndexer::flush_nulls() {
   if (!has_null_bitmap() || read_only_ || !nulls_dirty_) return Status::OK();
   std::string bytes("ZVECNL01", 8);
   Put32(&bytes, row_count_);
-  Put32(&bytes,
-        4);  // Native slots include NULLs; no separate core range metadata.
   const auto offset = bytes.size();
   bytes.resize(offset + null_rows_.getSizeInBytes());
   null_rows_.write(bytes.data() + offset);
