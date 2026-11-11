@@ -299,9 +299,12 @@ if(BUILD_PYTHON_BINDINGS)
             COMPONENT python)
 
     if(ZVEC_ENABLE_SCALAR_JIT)
-        install(FILES thirdparty/arrow/gandiva/LICENSE
-                      thirdparty/arrow/gandiva/NOTICE
-                      thirdparty/arrow/gandiva/PROVENANCE.json
+        foreach(_arrow_notice IN ITEMS LICENSE NOTICE)
+            install(FILES thirdparty/arrow/apache-arrow-21.0.0/${_arrow_notice}.txt
+                    DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec/thirdparty/gandiva
+                    RENAME ${_arrow_notice} COMPONENT python)
+        endforeach()
+        install(FILES thirdparty/arrow/gandiva/PROVENANCE.json
                 DESTINATION ${ZVEC_PY_INSTALL_DIR}/zvec/thirdparty/gandiva
                 COMPONENT python)
         # The portable toolchain records the exact LLVM/OpenSSL licenses.

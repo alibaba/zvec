@@ -4,8 +4,15 @@ Gandiva scalar execution extension
 This directory extends Apache Arrow 21.0.0 Gandiva with single-row execution.
 ``prepare.cmake`` applies ``scalar.patch`` to zvec's existing Arrow build and
 copies only new extension files. ``PROVENANCE.json`` records the upstream
-version and extension hashes; ``LICENSE`` and ``NOTICE`` retain its licensing
-information.
+version, extension hashes and canonical license sources. The complete Apache
+Arrow license and third-party acknowledgments are retained in
+``../apache-arrow-21.0.0/LICENSE.txt`` and ``../apache-arrow-21.0.0/NOTICE.txt``.
+Wheel/SDK installation copies those unmodified texts as ``gandiva/LICENSE``
+and ``gandiva/NOTICE`` alongside the provenance; artifact checks verify their
+hashes. LLVM/OpenSSL toolchain license packaging is unchanged.
+
+Project-owned files use zvec's Apache 2.0 header. Arrow-derived files retain
+their ASF notices and separately identify zvec's local modifications.
 
 Dependency boundary
 -------------------

@@ -14,6 +14,9 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+//
+// Modifications Copyright 2025-present the zvec project.
+// Modified for zvec's scalar JIT integration.
 
 #pragma once
 
@@ -71,8 +74,6 @@ class BoundScalarPredicate {
   bool evaluate(int64_t row) const {
     return function_(buffers_.data(), offsets_.data(), holders_, row);
   }
-
-  arrow::Result<bool> evaluate_checked(int64_t row) const;
 
   int64_t num_rows() const {
     return num_rows_;

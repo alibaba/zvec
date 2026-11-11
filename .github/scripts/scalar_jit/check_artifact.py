@@ -1,3 +1,17 @@
+# Copyright 2025-present the zvec project
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Check portable ELF artifacts and the baseline of Gandiva's embedded IR."""
 
 from __future__ import annotations
@@ -75,6 +89,15 @@ def check_licenses(path: Path) -> list[str]:
         assert any(p.as_posix().endswith(suffix) and p.stat().st_size for p in files), (
             suffix
         )
+    for provenance_path in files:
+        if provenance_path.parts[-2:] != ("gandiva", "PROVENANCE.json"):
+            continue
+        provenance = json.loads(provenance_path.read_text())
+        for name in ("LICENSE", "NOTICE"):
+            notice = provenance_path.with_name(name)
+            assert sha256(notice) == provenance["licenses"][name]["sha256"], (
+                f"Changed or truncated notice: {notice}"
+            )
     return list(required)
 
 

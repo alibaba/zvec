@@ -14,6 +14,9 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
+//
+// Modifications Copyright 2025-present the zvec project.
+// Modified for zvec's scalar JIT integration.
 
 #include "db/sqlengine/scalar_jit/scalar_predicate.h"
 #include <algorithm>
@@ -59,7 +62,7 @@ arrow::Status ValidateScalarType(const std::shared_ptr<arrow::DataType> &type) {
     case arrow::Type::BINARY:
       return arrow::Status::OK();
     default:
-      return arrow::Status::NotImplemented("Scalar POC does not support type ",
+      return arrow::Status::NotImplemented("Scalar JIT does not support type ",
                                            type->ToString());
   }
 }
@@ -171,7 +174,7 @@ class ScalarSubsetValidator : public gandiva::NodeVisitor {
     ARROW_RETURN_IF(native->NeedsContext() || native->CanReturnErrors() ||
                         native->NeedsFunctionHolder(),
                     arrow::Status::NotImplemented(
-                        "Scalar POC rejects context/error/holder function: ",
+                        "Scalar JIT rejects context/error/holder function: ",
                         descriptor.name()));
     static const std::unordered_set<std::string> allowed = {
         "equal",
@@ -202,7 +205,7 @@ class ScalarSubsetValidator : public gandiva::NodeVisitor {
         "zvec_scalar_in"};
     ARROW_RETURN_IF(
         allowed.find(descriptor.name()) == allowed.end(),
-        arrow::Status::NotImplemented("Function outside scalar POC subset: ",
+        arrow::Status::NotImplemented("Function outside scalar JIT subset: ",
                                       descriptor.name()));
     for (const auto &child : node.children()) {
       ARROW_RETURN_NOT_OK(child->Accept(*this));
@@ -235,10 +238,10 @@ class ScalarSubsetValidator : public gandiva::NodeVisitor {
   }
   arrow::Status Visit(
       const gandiva::InExpressionNode<gandiva::DecimalScalar128> &) override {
-    return arrow::Status::NotImplemented("Scalar POC rejects decimal IN");
+    return arrow::Status::NotImplemented("Scalar JIT rejects decimal IN");
   }
   arrow::Status Visit(const gandiva::InExpressionNode<std::string> &) override {
-    return arrow::Status::NotImplemented("Scalar POC rejects string IN");
+    return arrow::Status::NotImplemented("Scalar JIT rejects string IN");
   }
 
  private:
@@ -277,14 +280,6 @@ BoundScalarPredicate::BoundScalarPredicate(
   for (const auto &value : parameter_values_)
     if (value) bytes.owned_bytes += value->capacity();
   memory_ticket_.Set("binding", bytes, 1);
-}
-
-arrow::Result<bool> BoundScalarPredicate::evaluate_checked(int64_t row) const {
-  if (row < 0 || row >= num_rows_) {
-    return arrow::Status::Invalid("Scalar row ", row, " is outside [0, ",
-                                  num_rows_, ")");
-  }
-  return evaluate(row);
 }
 
 ScalarPredicate::ScalarPredicate(

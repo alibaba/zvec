@@ -1,3 +1,17 @@
+# Copyright 2025-present the zvec project
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Portable artifact audit fixtures; no Linux tools or LLVM required."""
 
 from __future__ import annotations
@@ -119,20 +133,37 @@ def test_helper_ir(tmp_path, monkeypatch, cpu, features, valid):
             audit.check_bitcode(bitcode, "llvm-dis")
 
 
+@pytest.fixture
+def licensed_artifact(tmp_path):
+    root = Path(__file__).resolve().parents[3] / "thirdparty/arrow/gandiva"
+    gandiva = tmp_path / "gandiva"
+    gandiva.mkdir()
+    provenance = (root / "PROVENANCE.json").read_bytes()
+    (gandiva / "PROVENANCE.json").write_bytes(provenance)
+    for name, metadata in audit.json.loads(provenance)["licenses"].items():
+        (gandiva / name).write_bytes((root / metadata["source"]).read_bytes())
+    toolchain = tmp_path / "jit-toolchain"
+    toolchain.mkdir()
+    for name in ("LLVM-LICENSE.txt", "OpenSSL-LICENSE.txt"):
+        (toolchain / name).write_text("license fixture")
+    return tmp_path
+
+
 def test_licenses_required(tmp_path):
     with pytest.raises(AssertionError):
         audit.check_licenses(tmp_path)
-    for suffix in (
-        "gandiva/LICENSE",
-        "gandiva/NOTICE",
-        "gandiva/PROVENANCE.json",
-        "jit-toolchain/LLVM-LICENSE.txt",
-        "jit-toolchain/OpenSSL-LICENSE.txt",
-    ):
-        path = tmp_path / suffix
-        path.parent.mkdir(exist_ok=True)
-        path.write_text("license fixture")
-    assert len(audit.check_licenses(tmp_path)) == 5
+
+
+def test_complete_licenses(licensed_artifact):
+    assert len(audit.check_licenses(licensed_artifact)) == 5
+
+
+@pytest.mark.parametrize("name", ["LICENSE", "NOTICE"])
+def test_truncated_notices_rejected(licensed_artifact, name):
+    notice = licensed_artifact / "gandiva" / name
+    notice.write_bytes(notice.read_bytes()[:128])
+    with pytest.raises(AssertionError, match="Changed or truncated notice"):
+        audit.check_licenses(licensed_artifact)
 
 
 def test_report_written_on_failure(tmp_path, monkeypatch):
@@ -152,6 +183,8 @@ def test_maintained_extension_provenance():
     provenance = audit.json.loads((root / "PROVENANCE.json").read_text())
     for name, expected in provenance["sha256"].items():
         assert audit.sha256(root / name) == expected, name
+    for name, metadata in provenance["licenses"].items():
+        assert audit.sha256(root / metadata["source"]) == metadata["sha256"], name
 
 
 @pytest.mark.parametrize("host_flags", [False, True])

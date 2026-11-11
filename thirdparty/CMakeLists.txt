@@ -36,8 +36,12 @@ add_subdirectory(googletest googletest EXCLUDE_FROM_ALL)
 
 add_subdirectory(arrow arrow EXCLUDE_FROM_ALL)
 if(ZVEC_ENABLE_SCALAR_JIT)
-    install(FILES arrow/gandiva/LICENSE arrow/gandiva/NOTICE
-                  arrow/gandiva/PROVENANCE.json
+    foreach(_arrow_notice IN ITEMS LICENSE NOTICE)
+        install(FILES arrow/apache-arrow-21.0.0/${_arrow_notice}.txt
+            DESTINATION share/zvec/thirdparty/arrow/gandiva
+            RENAME ${_arrow_notice})
+    endforeach()
+    install(FILES arrow/gandiva/PROVENANCE.json
         DESTINATION share/zvec/thirdparty/arrow/gandiva)
     install(DIRECTORY "${LLVM_ROOT}/share/zvec-jit-licenses/"
         DESTINATION share/zvec/thirdparty/jit-toolchain OPTIONAL)

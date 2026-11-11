@@ -12,13 +12,23 @@
     },
     "llvm_major": 20
   },
+  "licenses": {
+    "LICENSE": {
+      "source": "../apache-arrow-21.0.0/LICENSE.txt",
+      "sha256": "82f5f9b0e6592da7f79022fc930add132a76c56727d29813f94058157a2b2d11"
+    },
+    "NOTICE": {
+      "source": "../apache-arrow-21.0.0/NOTICE.txt",
+      "sha256": "c946470d6b024c77feebdfb686bf92a828402c0ffc27c769bca7d8bef08e1db7"
+    }
+  },
   "sha256": {
     "scalar.patch": "03bf1f475ddc0d121ded093e31e6a78a75e8ec7a851293bef65cc445a14dd13a",
-    "extension/scalar_codegen_context.cc": "c0affd857f0a57ed0dc5c621183e32158f609a3c3f18859d84bd28cc5245856a",
-    "extension/scalar_codegen_context.h": "3403524f84d8ad843b85ef34d7a24a60fdd9cfe3706f2eb7a5ba4c9d8b809dd7",
-    "extension/scalar_generator.cc": "267cdf5f2d5c381d4b4e80dcd88165c61baa85417fcf121791b6a6a90d2ef0cc",
-    "extension/scalar_generator.h": "fa16e1ae1c2a021a5c23bda9c81c7fc988fabc2a77a393a129e5f2f4f180cfaa",
-    "extension/scalar_predicate_abi.h": "b82e8a051090f8131a5d4ca3d00a11f32e37f49d4e34a82b7ddb2a585f836e31"
+    "extension/scalar_codegen_context.cc": "153307ed6ab5dcdf3ebc91c1a7bc2e4353819408416e94b96c737f2218f68271",
+    "extension/scalar_codegen_context.h": "f432dad1392ab31361ca676e8ec960fb78ec6aee5f3b53c0f916127a6c9546b4",
+    "extension/scalar_generator.cc": "2c1cf2f24f424eac8423201114b42b949cf25275a4d183fa66b21b1699599c99",
+    "extension/scalar_generator.h": "82d40bb68b2f93c28640cebda3e54ed4c262c57506bca183309b487de48c337f",
+    "extension/scalar_predicate_abi.h": "052a0a474cdb6096e19247317666c46271486310934f97bd472cd7e07528cdc1"
   },
   "local_changes": [
     "Expose read-only Annotator metadata and let ScalarGenerator reuse the expression visitor through a compile-time scalar context.",
