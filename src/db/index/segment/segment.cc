@@ -1737,7 +1737,7 @@ Status SegmentImpl::create_vector_index(
     // training continue to consume the raw Flat sources.
     const auto *quantize_sources = &vector_indexers_[column];
     if (segment_detail::CanReuseInsertTimeQuantizedVectors(
-            vector_index_params->quantize_type())) {
+            *vector_index_params)) {
       auto quant_iter = quant_vector_indexers_.find(column);
       if (quant_iter != quant_vector_indexers_.end() &&
           !quant_iter->second.empty() &&
