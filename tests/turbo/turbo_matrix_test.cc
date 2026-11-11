@@ -154,9 +154,9 @@ void CheckSingleColumnTails() {
     std::vector<double> absolute_products(Rows, 0);
     auto value = [](size_t row, size_t d, bool is_query) -> float {
       const size_t index = is_query ? d / 16 : row + d;
-      if constexpr (int4) {
+      if constexpr (std::is_same_v<T, uint8_t>) {
         return float(int(index % 16) - 8);
-      } else if constexpr (int8) {
+      } else if constexpr (std::is_same_v<T, int8_t>) {
         constexpr int values[] = {-128, 127, -1, 0, 1, 64, -64};
         return float(values[index % 7]);
       } else {
