@@ -160,6 +160,28 @@ TEST_F(DiskAnnBuilderTest, SmallDatasetBuildTime) {
       << " ms — likely a lost-wakeup regression in progress loops.";
 }
 
+TEST_F(DiskAnnBuilderTest, Fp16EntryPointSurvivesDistanceOverflow) {
+  constexpr size_t dimension = 16;
+  IndexMeta meta(IndexMeta::DataType::DT_FP16, dimension);
+  meta.set_metric("SquaredEuclidean", 0, Params());
+  auto holder =
+      make_shared<MultiPassIndexHolder<IndexMeta::DataType::DT_FP16>>(dimension);
+  // The centroid is zero; both finite vectors overflow FP16 squared distance.
+  ASSERT_TRUE(holder->emplace(0, NumericalVector<Float16>(dimension, 1000.0f)));
+  ASSERT_TRUE(holder->emplace(1, NumericalVector<Float16>(dimension, -1000.0f)));
+  auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+  ASSERT_NE(builder, nullptr);
+  Params params;
+  params.set("zvec.diskann.builder.max_degree", 64);
+  params.set("zvec.diskann.builder.list_size", 200);
+  params.set("zvec.diskann.builder.max_pq_chunk_num", 4);
+  params.set("zvec.diskann.builder.threads", 2);
+  ASSERT_EQ(0, builder->init(meta, params));
+  ASSERT_EQ(0, builder->train(holder));
+  ASSERT_EQ(0, builder->build(holder));
+  EXPECT_EQ(2, builder->stats().built_count());
+}
+
 TEST_F(DiskAnnBuilderTest, MemoryLimitCapsPqChunkCount) {
   constexpr size_t kTestDim = 17;
   constexpr size_t kDocCnt = 16;

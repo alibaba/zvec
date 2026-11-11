@@ -18,6 +18,7 @@
 #include <iostream>
 #include <limits>
 #include <thread>
+#include <type_traits>
 #include <vector>
 #include <ailego/math/euclidean_distance_matrix.h>
 #include <ailego/math/normalizer.h>
@@ -250,6 +251,39 @@ int DiskAnnBuilder::calculate_entry_point() {
       break;
     default:
       return IndexError_Unsupported;
+  }
+
+  // FP16 SIMD accumulation can overflow even for finite input vectors. If
+  // every distance overflowed, do not pass kInvalidId to graph construction.
+  // Recompute only this exceptional case with a wider accumulator, keeping
+  // the ordinary entry-point selection and query path unchanged.
+  if (medoid_id == kInvalidId) {
+    double best = std::numeric_limits<double>::infinity();
+    auto select = [&](const auto &centroid) {
+      using Value = typename std::decay_t<decltype(centroid)>::value_type;
+      for (size_t id = 0; id < entity_.doc_cnt(); ++id) {
+        const auto *vector = static_cast<const Value *>(entity_.get_vector(id));
+        double distance = 0;
+        for (size_t d = 0; d < dimension; ++d) {
+          const double delta = static_cast<double>(centroid[d]) -
+                               static_cast<double>(vector[d]);
+          distance += delta * delta;
+        }
+        if (distance < best) {
+          best = distance;
+          medoid_id = id;
+        }
+      }
+    };
+    if (build_meta_.data_type() == IndexMeta::DataType::DT_FP16) {
+      select(centroid_fp16);
+    } else {
+      select(centroid_fp32);
+    }
+    if (medoid_id == kInvalidId) {
+      LOG_ERROR("Cannot choose a finite DiskAnn entry point");
+      return IndexError_InvalidArgument;
+    }
   }
 
   (*entity_.mutable_medoid()) = medoid_id;

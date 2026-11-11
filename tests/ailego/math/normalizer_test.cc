@@ -46,6 +46,21 @@ TEST(Normalizer, FP32_General) {
   }
 }
 
+TEST(Normalizer, FP16ExtremeNormsStayFinite) {
+  for (float value : {1000.0f, -1000.0f, 60000.0f, 1.0e-7f, 0.0f}) {
+    std::vector<Float16> vec(16, Float16(value));
+    const float rounded = static_cast<float>(vec[0]);
+    float norm = 0;
+    Normalizer<Float16>::L2(vec.data(), vec.size(), &norm);
+    ASSERT_TRUE(std::isfinite(norm));
+    EXPECT_FLOAT_EQ(norm, 4.0f * std::abs(rounded));
+    for (Float16 item : vec) {
+      ASSERT_TRUE(std::isfinite(static_cast<float>(item)));
+      EXPECT_FLOAT_EQ(static_cast<float>(item) * norm, rounded);
+    }
+  }
+}
+
 TEST(Normalizer, FP16_General) {
   std::mt19937 gen((std::random_device())());
   std::uniform_real_distribution<float> dist(0.0, 1.0);
