@@ -306,10 +306,16 @@ class SegmentImpl : public Segment,
                                                  BlockID block_id,
                                                  bool is_quantized = false);
 
+  // Builds a new indexer from `source_indexers`. `raw_source_indexers`, if
+  // non-null, hold the original vectors behind quantized `source_indexers`
+  // and are merged instead when the new indexer cannot take over the encoded
+  // records as they are.
   Result<VectorColumnIndexer::Ptr> merge_vector_indexer(
       const std::string &index_file_path, const FieldSchema &field,
       const std::vector<VectorColumnIndexer::Ptr> &source_indexers,
-      int concurrency);
+      int concurrency,
+      const std::vector<VectorColumnIndexer::Ptr> *raw_source_indexers =
+          nullptr);
 
   // Helper functions for Insert/Update/Upsert/Delete
   template <typename ValueType>
@@ -1549,7 +1555,8 @@ Status SegmentImpl::create_all_vector_indexes(
 Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
     const std::string &index_file_path, const FieldSchema &field,
     const std::vector<VectorColumnIndexer::Ptr> &source_indexers,
-    int concurrency) {
+    int concurrency,
+    const std::vector<VectorColumnIndexer::Ptr> *raw_source_indexers) {
   VectorColumnIndexer::Ptr vector_indexer =
       std::make_shared<VectorColumnIndexer>(index_file_path, field);
 
@@ -1565,8 +1572,17 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
   } else {
     merge_options.write_concurrency = concurrency;
   }
+  const auto *merge_sources = &source_indexers;
+  if (raw_source_indexers != nullptr &&
+      !vector_indexer->shares_encoding_state(source_indexers)) {
+    LOG_INFO(
+        "Quantized sources cannot be taken over as they are; rebuilding from "
+        "raw vectors. field[%s] dst[%s]",
+        field.name().c_str(), index_file_path.c_str());
+    merge_sources = raw_source_indexers;
+  }
   // Keep tombstoned vectors: forward rows are unchanged.
-  s = vector_indexer->merge(source_indexers, nullptr, merge_options);
+  s = vector_indexer->merge(*merge_sources, nullptr, merge_options);
   CHECK_RETURN_STATUS_EXPECTED(s);
   s = vector_indexer->flush();
   CHECK_RETURN_STATUS_EXPECTED(s);
@@ -1734,10 +1750,12 @@ Status SegmentImpl::create_vector_index(
     // Reuse insert-time quantized payloads when the quantizer operates on each
     // record independently. This keeps graph construction independent of the
     // configured raw Flat precision. Quantizers requiring full-dataset
-    // training continue to consume the raw Flat sources.
-    const auto *quantize_sources = &vector_indexers_[column];
+    // training continue to consume the raw Flat sources, and so does a new
+    // index that does not share the encoding state of the payloads.
+    const auto &raw_sources = vector_indexers_[column];
+    const auto *quantize_sources = &raw_sources;
     if (segment_detail::CanReuseInsertTimeQuantizedVectors(
-            *vector_index_params)) {
+            vector_index_params->quantize_type())) {
       auto quant_iter = quant_vector_indexers_.find(column);
       if (quant_iter != quant_vector_indexers_.end() &&
           !quant_iter->second.empty() &&
@@ -1759,7 +1777,8 @@ Status SegmentImpl::create_vector_index(
     }
 
     auto vector_indexer = merge_vector_indexer(
-        index_file_path, *field_for_quantize, *quantize_sources, concurrency);
+        index_file_path, *field_for_quantize, *quantize_sources, concurrency,
+        quantize_sources != &raw_sources ? &raw_sources : nullptr);
     if (!vector_indexer.has_value()) {
       return vector_indexer.error();
     }

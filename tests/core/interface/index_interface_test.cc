@@ -46,6 +46,7 @@
 #include "algorithm/ivf/ivf_params.h"
 #include "algorithm/vamana/vamana_entity.h"
 #include "algorithm/vamana/vamana_streamer.h"
+#include "quantizer/rotator/rotator.h"
 #include "zvec/core/framework/index_error.h"
 #include "zvec/core/interface/index.h"
 #include "zvec/core/interface/index_factory.h"
@@ -2545,6 +2546,135 @@ TEST(IndexInterface, Fp16CosineReopenPreservesStoredEncoding) {
       ASSERT_EQ(0, reopened->close());
       zvec::test_util::RemoveTestFiles(path);
       zvec::test_util::RemoveTestFiles(fresh_path);
+    }
+  }
+}
+
+// Records of a rotated INT8/INT4 index are only valid under its rotation.
+// merge() may copy them from a source holding the same rotation, but has to
+// re-encode the records of a source holding another one. Indexes written
+// before all rotators shared one rotation hold a random rotation each.
+TEST(IndexInterface, MergeRotatedQuantizerChecksSourceRotation) {
+  constexpr uint32_t kDimension = 64;
+  constexpr uint32_t kCount = 200;
+  std::mt19937 gen(886);
+  std::normal_distribution<float> dist(0.0f, 1.0f);
+  std::vector<std::vector<float>> vectors(kCount * 2,
+                                          std::vector<float>(kDimension));
+  for (auto &vector : vectors) {
+    for (auto &value : vector) value = dist(gen);
+  }
+
+  const auto open_index = [](const BaseIndexParam::Pointer &param,
+                             const std::string &path) -> Index::Pointer {
+    zvec::test_util::RemoveTestFiles(path);
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    if (index == nullptr ||
+        index->open(path, {StorageOptions::StorageType::kMMAP, true}) != 0) {
+      return nullptr;
+    }
+    return index;
+  };
+  const auto fetch = [](const Index::Pointer &index, uint32_t doc_id) {
+    VectorDataBuffer buffer;
+    EXPECT_EQ(0, index->fetch(doc_id, &buffer));
+    return std::get<DenseVectorBuffer>(buffer.vector_buffer).data;
+  };
+
+  for (const auto metric : {MetricType::kL2sq, MetricType::kCosine}) {
+    for (const auto type : {QuantizerType::kInt8, QuantizerType::kInt4}) {
+      for (const bool hnsw_target : {false, true}) {
+        SCOPED_TRACE(::testing::Message()
+                     << "metric=" << static_cast<int>(metric)
+                     << " quantizer=" << static_cast<int>(type)
+                     << " hnsw_target=" << hnsw_target);
+        const QuantizerParam quantizer(type, true);
+        auto source_param = FlatIndexParamBuilder()
+                                .with_metric_type(metric)
+                                .with_data_type(DataType::DT_FP32)
+                                .with_dimension(kDimension)
+                                .with_quantizer_param(quantizer)
+                                .build();
+        BaseIndexParam::Pointer target_param = source_param;
+        BaseIndexQueryParam::Pointer query_param =
+            FlatQueryParamBuilder().with_topk(1).build();
+        if (hnsw_target) {
+          target_param = HNSWIndexParamBuilder()
+                             .with_metric_type(metric)
+                             .with_data_type(DataType::DT_FP32)
+                             .with_dimension(kDimension)
+                             .with_quantizer_param(quantizer)
+                             .build();
+          query_param =
+              HNSWQueryParamBuilder().with_topk(1).with_ef_search(200).build();
+        }
+
+        // A source written before the rotation became shared.
+        zvec::core::Rotator::set_default_seed_for_testing(20260886);
+        auto foreign = open_index(source_param, "rotated_merge_foreign.index");
+        zvec::core::Rotator::set_default_seed_for_testing(
+            zvec::core::Rotator::kDefaultSeed);
+        auto shared = open_index(source_param, "rotated_merge_shared.index");
+        auto target = open_index(target_param, "rotated_merge_target.index");
+        ASSERT_NE(nullptr, foreign);
+        ASSERT_NE(nullptr, shared);
+        ASSERT_NE(nullptr, target);
+
+        EXPECT_TRUE(target->shares_encoding_state(*shared));
+        EXPECT_TRUE(shared->shares_encoding_state(*target));
+        EXPECT_FALSE(target->shares_encoding_state(*foreign));
+        EXPECT_FALSE(foreign->shares_encoding_state(*shared));
+
+        for (uint32_t i = 0; i < kCount; ++i) {
+          ASSERT_EQ(0,
+                    shared->add(VectorData{DenseVector{vectors[i].data()}}, i));
+          ASSERT_EQ(
+              0, foreign->add(
+                     VectorData{DenseVector{vectors[kCount + i].data()}}, i));
+        }
+        ASSERT_EQ(0, target->merge({shared, foreign}, IndexFilter()));
+        ASSERT_EQ(kCount * 2, target->get_doc_count());
+
+        uint32_t hits = 0;
+        for (uint32_t i = 0; i < kCount * 2; ++i) {
+          SearchResult result;
+          ASSERT_EQ(0,
+                    target->search(VectorData{DenseVector{vectors[i].data()}},
+                                   query_param, &result));
+          hits += !result.doc_list_.empty() && result.doc_list_[0].key() == i;
+        }
+        EXPECT_GE(hits, kCount * 2 * 95 / 100);
+
+        for (uint32_t i = 0; i < kCount; ++i) {
+          // Shared records are taken over exactly as the source stored them.
+          ASSERT_EQ(fetch(shared, i), fetch(target, i)) << i;
+          // Foreign records decode to the source's vectors under the target's
+          // rotation, up to a second quantization.
+          const auto before = fetch(foreign, i);
+          const auto after = fetch(target, kCount + i);
+          ASSERT_EQ(kDimension * sizeof(float), before.size());
+          ASSERT_EQ(before.size(), after.size());
+          float squared_error = 0.0f;
+          float squared_norm = 0.0f;
+          for (uint32_t d = 0; d < kDimension; ++d) {
+            const float lhs = reinterpret_cast<const float *>(before.data())[d];
+            const float rhs = reinterpret_cast<const float *>(after.data())[d];
+            squared_error += (lhs - rhs) * (lhs - rhs);
+            squared_norm += lhs * lhs;
+          }
+          ASSERT_LT(
+              squared_error,
+              squared_norm * (type == QuantizerType::kInt8 ? 1e-3f : 0.1f))
+              << i;
+        }
+
+        ASSERT_EQ(0, target->close());
+        ASSERT_EQ(0, shared->close());
+        ASSERT_EQ(0, foreign->close());
+        zvec::test_util::RemoveTestFiles("rotated_merge_target.index");
+        zvec::test_util::RemoveTestFiles("rotated_merge_shared.index");
+        zvec::test_util::RemoveTestFiles("rotated_merge_foreign.index");
+      }
     }
   }
 }
@@ -5212,9 +5342,9 @@ TEST(IndexInterface, BuilderChainingReturnsCorrectType) {
 namespace {
 
 void ExpectRefinedIdsMatchSearch(const SearchResult &expected,
-                               const int64_t *ids, const float *scores,
-                               bool tied, int64_t candidate_begin,
-                               int64_t candidate_end) {
+                                 const int64_t *ids, const float *scores,
+                                 bool tied, int64_t candidate_begin,
+                                 int64_t candidate_end) {
   // The fixtures below have unique coarse distances. All fine scores in a
   // tied fixture are 1, so different selectors may choose different subsets
   // at the top-k boundary, but every ID must be a distinct coarse candidate.
@@ -5311,7 +5441,7 @@ TEST(IndexInterface, RefineInternalIdsMatchesSearchAcrossStorageModes) {
           ASSERT_EQ(0, coarse->search_internal_ids(query, param, ids.data(),
                                                    nullptr));
           ExpectRefinedIdsMatchSearch(expected, ids.data(), nullptr, tied, 0,
-                                     6);
+                                      6);
         }
         std::array<int64_t, 3> scored_ids{{-2, -2, -2}};
         std::array<float, 3> scores;
@@ -5319,7 +5449,7 @@ TEST(IndexInterface, RefineInternalIdsMatchesSearchAcrossStorageModes) {
                          query, param, scored_ids.data(), scores.data()));
         EXPECT_EQ(ids, scored_ids);
         ExpectRefinedIdsMatchSearch(expected, scored_ids.data(), scores.data(),
-                                   tied, 0, 6);
+                                    tied, 0, 6);
         const auto saved_ids = scored_ids;
         const auto saved_scores = scores;
         auto expect_current_param_matches = [&](int64_t candidate_end) {
@@ -5556,7 +5686,7 @@ TEST(IndexInterface, RefineInternalIdsInnerProductMatchesSearch) {
       ASSERT_EQ(0, coarse->search_internal_ids(query, param, ids.data(),
                                                scores.data()));
       ExpectRefinedIdsMatchSearch(expected, ids.data(), scores.data(), tied, 2,
-                                 8);
+                                  8);
       // search_param owns topk; the index writes exactly that many entries.
       std::array<int64_t, 4> larger{{-2, -2, -2, -2}};
       ASSERT_EQ(

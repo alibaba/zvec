@@ -40,11 +40,13 @@
 #undef RemoveDirectory
 #endif
 #endif
+#include <ailego/pattern/defer.h>
 #include <gtest/gtest.h>
 #include <magic_enum/magic_enum.hpp>
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/file_helper.h>
+#include "core/quantizer/rotator/rotator.h"
 #include "db/collection_query_internal.h"
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
@@ -3827,10 +3829,21 @@ TEST_F(CollectionTest, Feature_Optimize_MetricType) {
   func(MetricType::IP, QuantizeType::FP16);
 }
 
-// Regression test for https://github.com/alibaba/zvec/issues/886: every
-// rotated INT8/INT4 index draws its own random rotation, so optimize must not
-// copy insert-time codes into an index that holds a different rotation.
+// Regression test for https://github.com/alibaba/zvec/issues/886: rotated
+// INT8/INT4 records are only valid under the rotation of the index that
+// encoded them, so optimize must not copy insert-time codes into an index
+// that holds a different rotation.
+//
+// All indexes now share one rotation, which lets optimize reuse the codes.
+// Indexes written before that hold a random rotation each; the seed hook
+// reproduces them, both for a collection that only has such indexes and for
+// one that keeps being written to after an upgrade.
 TEST_F(CollectionTest, Feature_Optimize_RotatedIntegerQuantizer) {
+  enum class Rotations { kShared, kRandom, kRandomThenShared };
+  constexpr uint32_t kSharedRotation = core::Rotator::kDefaultSeed;
+  AILEGO_DEFER(
+      [&]() { core::Rotator::set_default_seed_for_testing(kSharedRotation); });
+
   constexpr uint32_t kDim = 128;
   constexpr int kBatch = 200;
   constexpr int kMinHits = kBatch * 95 / 100;
@@ -3842,11 +3855,24 @@ TEST_F(CollectionTest, Feature_Optimize_RotatedIntegerQuantizer) {
   }
 
   auto func = [&](IndexType index_type, QuantizeType quantize_type,
-                  MetricType metric_type) {
+                  MetricType metric_type, Rotations rotations) {
     SCOPED_TRACE(std::string(magic_enum::enum_name(index_type)) + "/" +
                  std::string(magic_enum::enum_name(quantize_type)) + "/" +
-                 std::string(magic_enum::enum_name(metric_type)));
+                 std::string(magic_enum::enum_name(metric_type)) +
+                 "/rotations=" + std::to_string(static_cast<int>(rotations)));
     FileHelper::RemoveDirectory(col_path);
+
+    // Indexes created from here on draw the rotation of the next phase.
+    uint32_t phase = 0;
+    auto next_rotation = [&]() {
+      ++phase;
+      const bool random =
+          rotations == Rotations::kRandom ||
+          (rotations == Rotations::kRandomThenShared && phase == 1);
+      core::Rotator::set_default_seed_for_testing(random ? 886 + phase
+                                                         : kSharedRotation);
+    };
+    next_rotation();
 
     IndexParams::Ptr index_params;
     if (index_type == IndexType::HNSW) {
@@ -3902,27 +3928,35 @@ TEST_F(CollectionTest, Feature_Optimize_RotatedIntegerQuantizer) {
     // First optimize builds the index from a single writing segment.
     insert(0, kBatch);
     ASSERT_GE(self_recall(0, kBatch), kMinHits);
+    next_rotation();
     ASSERT_TRUE(collection->optimize().ok());
     EXPECT_GE(self_recall(0, kBatch), kMinHits);
 
     // Second optimize merges the indexed segment with a new writing segment.
+    next_rotation();
     insert(kBatch, kBatch * 2);
+    EXPECT_GE(self_recall(kBatch, kBatch * 2), kMinHits);
+    next_rotation();
     ASSERT_TRUE(collection->optimize().ok());
     EXPECT_GE(self_recall(0, kBatch), kMinHits);
     EXPECT_GE(self_recall(kBatch, kBatch * 2), kMinHits);
 
-    // The rebuilt index must keep its own rotation after reopen.
+    // Every index must keep its own rotation after reopen.
     collection.reset();
+    next_rotation();
     auto reopened = Collection::Open(col_path, options_);
     ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
     collection = std::move(reopened).value();
     EXPECT_GE(self_recall(0, kBatch * 2), kMinHits * 2);
   };
 
-  for (auto index_type : {IndexType::HNSW, IndexType::FLAT}) {
-    for (auto quantize_type : {QuantizeType::INT8, QuantizeType::INT4}) {
-      func(index_type, quantize_type, MetricType::COSINE);
-      func(index_type, quantize_type, MetricType::L2);
+  for (auto rotations :
+       {Rotations::kShared, Rotations::kRandom, Rotations::kRandomThenShared}) {
+    for (auto index_type : {IndexType::HNSW, IndexType::FLAT}) {
+      for (auto quantize_type : {QuantizeType::INT8, QuantizeType::INT4}) {
+        func(index_type, quantize_type, MetricType::COSINE, rotations);
+        func(index_type, quantize_type, MetricType::L2, rotations);
+      }
     }
   }
 }

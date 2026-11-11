@@ -31,7 +31,32 @@ class LegacyFhtFixture : public FhtRotator {
     save_blob(result.data());
     return result;
   }
+
+  int init(size_t dim, uint32_t seed) {
+    dimension_ = dim;
+    return init_impl(dim, seed);
+  }
 };
+
+// Every index of one dimension must draw the same rotation, on every platform
+// and in every release: indexes exchange rotated records as they are. A
+// changed payload turns all existing indexes into incompatible ones, which
+// merges then rebuild from raw vectors instead of reusing their records.
+TEST(CoreFhtRotator, DefaultRotationIsStable) {
+  const std::vector<uint8_t> expected = {0x2a, 0x7a, 0x0f, 0xec, 0x41, 0x12,
+                                         0x0d, 0x2c, 0x0f, 0x9f, 0xa8, 0x20,
+                                         0x64, 0x88, 0x61, 0xae};
+  for (size_t dim : {8u, 13u, 32u}) {
+    SCOPED_TRACE(dim);
+    LegacyFhtFixture rotator;
+    ASSERT_EQ(0, rotator.init(dim, Rotator::kDefaultSeed));
+    const auto payload = rotator.payload();
+    ASSERT_EQ(4 * ((dim + 7) / 8), payload.size());
+    for (size_t i = 0; i < payload.size(); ++i) {
+      EXPECT_EQ(expected[i], static_cast<uint8_t>(payload[i])) << i;
+    }
+  }
+}
 
 TEST(CoreFhtRotator, LegacyPayloadCompatibility) {
   // Outputs recorded from the Ailego implementation before its removal.
