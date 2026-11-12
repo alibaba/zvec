@@ -125,9 +125,9 @@ jobs:
           if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne $expected) {
             throw "Intel SDE checksum mismatch"
           }
-          # Windows' tar can stall on this archive; Python also validates
-          # extraction paths instead of trusting archive member names.
-          python -c "import os,tarfile; p=os.path.join(os.environ['RUNNER_TEMP'],'sde.tar.xz'); t=tarfile.open(p,'r:xz'); t.extractall(os.environ['RUNNER_TEMP'],filter='data')"
+          # Windows' tar can stall on this archive. Extract the checksum-pinned
+          # vendor archive with Python, including the runner's Python 3.10.11.
+          python -c "import os,tarfile; p=os.path.join(os.environ['RUNNER_TEMP'],'sde.tar.xz'); t=tarfile.open(p,'r:xz'); t.extractall(os.environ['RUNNER_TEMP'])"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $sde = Join-Path $env:RUNNER_TEMP "sde-external-10.13.1-2026-07-28-win\sde.exe"
           $package = python -c "import importlib.util; print(next(iter(importlib.util.find_spec('zvec').submodule_search_locations)))"
