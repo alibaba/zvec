@@ -266,20 +266,24 @@ ailego_force_inline void ip_int8_batch_avx512_vnni_impl(
       accs[i] = _mm512_dpbusd_epi32(accs[i], q, data_regs[i]);
     }
   }
-  std::array<int, batch_size> temp_results{};
-  for (size_t i = 0; i < batch_size; ++i) {
-    temp_results[i] = _mm512_reduce_add_epi32(accs[i]);
-  }
-  for (; dim < dimensionality; ++dim) {
-    int q = static_cast<int>(reinterpret_cast<const uint8_t *>(query)[dim]);
+  if (dim < dimensionality) {
+    // The full-block loop leaves 1..63 bytes. Zero inactive lanes so short
+    // vectors also use VNNI without reading record metadata or past the buffer.
+    const __mmask64 mask = (uint64_t{1} << (dimensionality - dim)) - 1;
+    const __m512i q = _mm512_maskz_loadu_epi8(
+        mask, reinterpret_cast<const uint8_t *>(query) + dim);
     for (size_t i = 0; i < batch_size; ++i) {
-      temp_results[i] +=
-          q *
-          static_cast<int>(reinterpret_cast<const int8_t *>(vectors[i])[dim]);
+      if (prefetch_ptrs[i]) {
+        _mm_prefetch(reinterpret_cast<const char *>(prefetch_ptrs[i]) + dim,
+                     _MM_HINT_T0);
+      }
+      const __m512i data = _mm512_maskz_loadu_epi8(
+          mask, reinterpret_cast<const int8_t *>(vectors[i]) + dim);
+      accs[i] = _mm512_dpbusd_epi32(accs[i], q, data);
     }
   }
   for (size_t i = 0; i < batch_size; ++i) {
-    distances[i] = static_cast<float>(temp_results[i]);
+    distances[i] = static_cast<float>(_mm512_reduce_add_epi32(accs[i]));
   }
 }
 

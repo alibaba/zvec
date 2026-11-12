@@ -25,6 +25,11 @@
 #include <zvec/turbo/turbo.h>
 #include "zvec/core/framework/index_factory.h"
 
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
+
 using namespace zvec;
 using namespace zvec::core;
 using namespace zvec::ailego;
@@ -62,10 +67,15 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
       {turbo::MetricType::kInnerProduct, "InnerProduct"},
   };
   // Dimensions around the SIMD lane boundaries plus odd tails.
-  const size_t dimensions[] = {2,  7,  8,  15, 16, 17,  31,
-                               32, 33, 63, 64, 65, 126, 130};
+  const size_t dimensions[] = {1,  2,  7,  8,  15, 16, 17,  31,
+                               32, 33, 62, 63, 64, 65, 126, 130};
 
   for (const auto &metric : metrics) {
+    // Record INT8 inner product has no VNNI backend.
+    if (arch == turbo::CpuArchType::kAVX512VNNI &&
+        metric.type == turbo::MetricType::kInnerProduct) {
+      continue;
+    }
     for (size_t dim : dimensions) {
       SCOPED_TRACE(testing::Message()
                    << "metric=" << metric.name << ", dim=" << dim);
@@ -126,10 +136,17 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
       std::vector<float> actual(candidates.size());
       scalar.batch(candidates.data(), encoded[0].data(), candidates.size(),
                    kernel_dim, expected.data(), nullptr);
-      simd.batch(candidates.data(), encoded[0].data(), candidates.size(),
-                 kernel_dim, actual.data(), nullptr);
-      for (size_t i = 0; i < candidates.size(); ++i) {
-        expect_simd_near(actual[i], expected[i]);
+      auto simd_query = encoded[0];
+      if (simd.preprocess) {
+        simd.preprocess(simd_query.data(), kernel_dim);
+      }
+      for (size_t count :
+           {size_t{1}, size_t{2}, size_t{3}, candidates.size()}) {
+        simd.batch(candidates.data(), simd_query.data(), count, kernel_dim,
+                   actual.data(), nullptr);
+        for (size_t i = 0; i < count; ++i) {
+          expect_simd_near(actual[i], expected[i]);
+        }
       }
     }
   }
@@ -372,4 +389,66 @@ TEST(Int8Quantizer, SseDistanceMatchesScalar) {
 
 TEST(Int8Quantizer, Avx512DistanceMatchesScalar) {
   check_simd_distance_matches_scalar(turbo::CpuArchType::kAVX512);
+}
+
+TEST(Int8Quantizer, VnniDistanceMatchesScalar) {
+  check_simd_distance_matches_scalar(turbo::CpuArchType::kAVX512VNNI);
+}
+
+TEST(Int8Quantizer, VnniTailDoesNotReadPastPageBoundary) {
+#if defined(__unix__) || defined(__APPLE__)
+  const auto simd = turbo::get_distance_kernels(
+      turbo::MetricType::kCosine, turbo::DataType::kInt8,
+      turbo::QuantizeType::kRecord, turbo::CpuArchType::kAVX512VNNI);
+  if (!simd.batch) GTEST_SKIP() << "AVX512-VNNI unavailable";
+  const auto scalar = turbo::get_distance_kernels(
+      turbo::MetricType::kCosine, turbo::DataType::kInt8,
+      turbo::QuantizeType::kRecord, turbo::CpuArchType::kScalar);
+  ASSERT_NE(nullptr, simd.preprocess);
+  const long page = sysconf(_SC_PAGESIZE);
+  ASSERT_GT(page, 256);
+  struct Mapping {
+    void *data;
+    size_t bytes;
+    ~Mapping() {
+      if (data != MAP_FAILED) munmap(data, bytes);
+    }
+  } query{mmap(nullptr, 2 * page, PROT_READ | PROT_WRITE,
+               MAP_PRIVATE | MAP_ANON, -1, 0),
+          size_t(2 * page)},
+      row{mmap(nullptr, 2 * page, PROT_READ | PROT_WRITE,
+               MAP_PRIVATE | MAP_ANON, -1, 0),
+          size_t(2 * page)};
+  ASSERT_NE(MAP_FAILED, query.data);
+  ASSERT_NE(MAP_FAILED, row.data);
+  ASSERT_EQ(0,
+            mprotect(static_cast<char *>(query.data) + page, page, PROT_NONE));
+  ASSERT_EQ(0, mprotect(static_cast<char *>(row.data) + page, page, PROT_NONE));
+  for (size_t dim = 1; dim <= 129; ++dim) {
+    SCOPED_TRACE(dim);
+    IndexMeta meta(IndexMeta::DT_FP32, static_cast<uint32_t>(dim));
+    meta.set_metric("Cosine", 0, Params());
+    auto quantizer = IndexFactory::CreateQuantizer("Int8Quantizer");
+    ASSERT_TRUE(quantizer);
+    ASSERT_EQ(0, quantizer->init(meta, Params()));
+    const size_t bytes = quantizer->quantized_datapoint_vector_length();
+    auto *q = static_cast<char *>(query.data) + page - bytes;
+    auto *r = static_cast<char *>(row.data) + page - bytes;
+    std::vector<float> input(dim);
+    for (size_t i = 0; i < dim; ++i) input[i] = float(int(i % 17) - 8);
+    quantizer->quantize_data(input.data(), q);
+    for (float &value : input) value = 3.0f - value;
+    quantizer->quantize_data(input.data(), r);
+    float expected;
+    scalar.dist(r, q, bytes, &expected);
+    simd.preprocess(q, bytes);
+    const void *rows[] = {r, r, r};
+    float actual[4] = {0, 0, 0, 123};
+    simd.batch(rows, q, 3, bytes, actual, nullptr);
+    for (size_t i = 0; i < 3; ++i) expect_simd_near(actual[i], expected);
+    EXPECT_EQ(123, actual[3]);
+  }
+#else
+  GTEST_SKIP() << "Page-boundary test requires mmap";
+#endif
 }
