@@ -64,6 +64,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <zvec/export.h>
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -238,8 +239,41 @@ static inline int ailego_clz64(uint64_t x) {
 #endif  // AILEGO_M64
 
 //! Counts the number of one bits
+#if defined(_M_X64) || defined(_M_IX86)
+// Initialized by the baseline CPU feature unit, not by a SIMD translation unit.
+ZVEC_AILEGO_API extern const bool zvec_ailego_have_popcnt;
+#if !defined(__AVX__) && !defined(__AVX2__)
+static inline unsigned int ailego_popcount32(uint32_t x) {
+  if (zvec_ailego_have_popcnt) {
+    return __popcnt(x);
+  }
+  x -= (x >> 1) & 0x55555555u;
+  x = (x & 0x33333333u) + ((x >> 2) & 0x33333333u);
+  x = (x + (x >> 4)) & 0x0f0f0f0fu;
+  return (x * 0x01010101u) >> 24;
+}
+
+static inline unsigned int ailego_popcount64(uint64_t x) {
+  if (zvec_ailego_have_popcnt) {
+#if defined(_M_X64)
+    return (unsigned int)__popcnt64(x);
+#else
+    return __popcnt((uint32_t)x) + __popcnt((uint32_t)(x >> 32));
+#endif
+  }
+  x -= (x >> 1) & 0x5555555555555555ULL;
+  x = (x & 0x3333333333333333ULL) + ((x >> 2) & 0x3333333333333333ULL);
+  x = (x + (x >> 4)) & 0x0f0f0f0f0f0f0f0fULL;
+  return (unsigned int)((x * 0x0101010101010101ULL) >> 56);
+}
+#else
 #define ailego_popcount32(x) (__popcnt(x))
 #define ailego_popcount64(x) (__popcnt64(x))
+#endif
+#else
+#define ailego_popcount32(x) (__popcnt(x))
+#define ailego_popcount64(x) (__popcnt64(x))
+#endif
 #define ailego_likely(x) (x)
 #define ailego_unlikely(x) (x)
 #ifdef __SSE__
@@ -253,7 +287,7 @@ static inline int ailego_clz64(uint64_t x) {
 #define ailego_clz32(x) (__builtin_clz(x))
 #define ailego_clz64(x) (__builtin_clzll(x))
 #define ailego_popcount32(x) (__builtin_popcount(x))
-#define ailego_popcount64(x) (__builtin_popcountl(x))
+#define ailego_popcount64(x) (__builtin_popcountll(x))
 #define ailego_likely(x) (__builtin_expect(!!(x), 1))
 #define ailego_unlikely(x) (__builtin_expect(!!(x), 0))
 #define ailego_prefetch(p) (__builtin_prefetch((p)))

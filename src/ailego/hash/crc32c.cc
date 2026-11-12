@@ -19,12 +19,21 @@
 /**
  *  Hardware CRC32C strategy:
  *  - CRC32C_SSE42_DIRECT: the target ISA already guarantees SSE4.2
- *    (e.g. -march=native or MSVC), call the hardware kernel directly.
- *  - CRC32C_SSE42_RUNTIME: baseline x86 build; compile only the hardware
- *    kernel with a per-function target attribute and select it at runtime
- *    via CpuFeatures, keeping the rest of this file at the baseline march.
+ *    (e.g. -march=native), call the hardware kernel directly.
+ *  - CRC32C_SSE42_RUNTIME: baseline x86 build; isolate the hardware kernel
+ *    and select it via CpuFeatures, keeping the rest of this file at the
+ *    baseline march.
+ *    MSVC's platform compatibility macros also advertise SSE4.2 on baseline
+ *    x64, so they must not bypass the runtime CPU check.
  */
-#if defined(__SSE4_2__)
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+#define CRC32C_SSE42_RUNTIME 1
+#if defined(__clang__)
+#define CRC32C_TARGET_SSE42 __attribute__((target("sse4.2")))
+#else
+#define CRC32C_TARGET_SSE42 __declspec(noinline)
+#endif
+#elif defined(__SSE4_2__)
 #define CRC32C_SSE42_DIRECT 1
 #define CRC32C_TARGET_SSE42
 #elif defined(__GNUC__) && (defined(__x86_64__) || defined(__i386))

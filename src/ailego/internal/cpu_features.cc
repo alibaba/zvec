@@ -464,3 +464,8 @@ CpuFeatures::StaticFlags CpuFeatures::static_flags_;
 }  // namespace internal
 }  // namespace ailego
 }  // namespace zvec
+
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+extern "C" ZVEC_AILEGO_API const bool zvec_ailego_have_popcnt =
+    zvec::ailego::internal::CpuFeatures::static_flags_.POPCNT;
+#endif
