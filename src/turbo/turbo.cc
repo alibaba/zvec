@@ -17,6 +17,7 @@
 #include <zvec/turbo/turbo.h>
 #include "avx2/fp16/cosine.h"
 #include "avx2/fp16/inner_product.h"
+#include "avx2/fp16/many_to_many.h"
 #include "avx2/fp16/squared_euclidean.h"
 #include "avx2/fp32/cosine.h"
 #include "avx2/fp32/inner_product.h"
@@ -64,6 +65,7 @@
 #include "conversion/avx512/convert.h"
 #include "neon/fp16/cosine.h"
 #include "neon/fp16/inner_product.h"
+#include "neon/fp16/many_to_many.h"
 #include "neon/fp16/squared_euclidean.h"
 #include "neon/fp32/cosine.h"
 #include "neon/fp32/inner_product.h"
@@ -665,6 +667,43 @@ BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
   return get_distance_kernels(metric_type, data_type, quantize_type,
                               cpu_arch_type)
       .batch;
+}
+
+ManyToManyDistanceFunc get_many_to_many_distance_func(
+    MetricType metric_type, DataType data_type, QuantizeType quantize_type,
+    CpuArchType cpu_arch_type) {
+  const KernelSet *k =
+      FindKernel(metric_type, data_type, quantize_type, cpu_arch_type);
+  if (!k || (!k->batch && !k->dist)) return {};
+
+  // Match the selected family, including ISA capability checks and physical
+  // layouts. Other families (e.g. native FP16 or AVX512) keep their own batch.
+  if (k->batch == avx2::inner_product_fp16_batch_distance_avx2) {
+    return avx2::inner_product_fp16_many_to_many_distance_avx2;
+  }
+  if (k->batch == avx2::cosine_fp16_batch_distance_avx2) {
+    return avx2::cosine_fp16_many_to_many_distance_avx2;
+  }
+  if (k->batch == neon::inner_product_fp16_batch_distance) {
+    return neon::inner_product_fp16_many_to_many_distance;
+  }
+  if (k->batch == neon::cosine_fp16_batch_distance) {
+    return neon::cosine_fp16_many_to_many_distance;
+  }
+  return
+      [k](const void *const *vectors, const void *const *queries, size_t m,
+          size_t n, size_t dim, float *out, const void *const *extra_values) {
+        if (m == 0 || n == 0) return;
+        for (size_t j = 0; j < n; ++j) {
+          if (k->batch) {
+            k->batch(vectors, queries[j], m, dim, out + j * m, extra_values);
+          } else {
+            for (size_t i = 0; i < m; ++i) {
+              k->dist(vectors[i], queries[j], dim, out + j * m + i);
+            }
+          }
+        }
+      };
 }
 
 QueryPreprocessFunc get_query_preprocess_func(MetricType metric_type,

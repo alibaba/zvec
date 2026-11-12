@@ -47,6 +47,13 @@ using DistanceFunc =
 using BatchDistanceFunc =
     std::function<void(const void **m, const void *q, size_t num, size_t dim,
                        float *out, const void **extra_values)>;
+// M candidate pointers and N query pointers, each pointing to one contiguous
+// encoded vector. Output is query-major: out[j * M + i]. No transpose is
+// needed. extra_values, when present, has M entries with the same meaning as in
+// batch.
+using ManyToManyDistanceFunc = std::function<void(
+    const void *const *vectors, const void *const *queries, size_t m, size_t n,
+    size_t dim, float *out, const void *const *extra_values)>;
 using QueryPreprocessFunc = void (*)(void *query, size_t dim);
 
 // Uniform UINT7 quantize kernel: fp32 -> int8 code in [0, 127] with a global
@@ -205,6 +212,17 @@ ZVEC_TURBO_API DistanceFunc get_distance_func(
     CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
 ZVEC_TURBO_API BatchDistanceFunc get_batch_distance_func(
+    MetricType metric_type, DataType data_type, QuantizeType quantize_type,
+    CpuArchType cpu_arch_type = CpuArchType::kAuto);
+
+// Uses the same kernel family and encoded layouts as get_batch_distance_func.
+// Apply that family's query preprocess to EACH query before calling. Raw
+// FP16/FP32 cosine inputs must already be normalized; other families retain
+// their encoded-data contracts. This API does not quantize or normalize.
+// Zero candidates or queries is a no-op (pointers may be null). Otherwise out
+// must hold M*N floats and must not overlap the inputs. Unsupported families or
+// unavailable explicit ISAs return an empty function, as with batch dispatch.
+ZVEC_TURBO_API ManyToManyDistanceFunc get_many_to_many_distance_func(
     MetricType metric_type, DataType data_type, QuantizeType quantize_type,
     CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
