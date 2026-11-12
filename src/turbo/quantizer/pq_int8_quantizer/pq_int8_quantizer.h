@@ -86,6 +86,16 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
 
   void quantize_query(const void *input, void *output) const override;
 
+  // Optional cosine ADC for uncentered/unrotated codebooks. Its query LUT
+  // uses two floats per centroid: negative dot/query norm and squared norm.
+  // It does not change the regular metric, codes, or serialization format.
+  bool quantize_cosine_query(const void *input, void *output,
+                             bool include_norms = true) const;
+  bool cosine_inverse_norms(const uint8_t *codes, size_t count,
+                            size_t stride, float *output) const;
+  void cosine_distance_batch(const void *const *codes, const void *query_lut,
+                             size_t count, float *distances) const;
+
   float calc_distance_dp_query(const void *dp,
                                const void *query) const override;
 

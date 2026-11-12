@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include "diskann_searcher_entity.h"
+#include <array>
+#include <limits>
 #include "diskann_util.h"
 
 namespace zvec {
@@ -23,6 +25,9 @@ void DiskAnnSearcherEntity::clear() {
   pq_codes_.reset();
   key_buffer_.reset();
   key_mapping_buffer_.reset();
+  sequential_keys_ = false;
+  identity_mapping_ = false;
+  first_key_ = 0;
   entrypoints_.clear();
   meta_.clear();
   meta_header_ = {};
@@ -56,6 +61,9 @@ const DiskAnnEntity::Pointer DiskAnnSearcherEntity::clone() const {
   entity->pq_codes_ = pq_codes_;
   entity->key_buffer_ = key_buffer_;
   entity->key_mapping_buffer_ = key_mapping_buffer_;
+  entity->sequential_keys_ = sequential_keys_;
+  entity->identity_mapping_ = identity_mapping_;
+  entity->first_key_ = first_key_;
   entity->entrypoints_ = entrypoints_;
 
   return DiskAnnEntity::Pointer(entity.release());
@@ -248,17 +256,38 @@ int DiskAnnSearcherEntity::load_key_segment() {
     return IndexError_InvalidFormat;
   }
 
-  size_t key_data_len = doc_cnt() * sizeof(diskann_key_t);
-
-  IndexStorage::MemoryBlock data;
-  if (key_segment_->read(0, data, key_data_len) != key_data_len) {
-    LOG_ERROR("Read segment %s failed", kDiskAnnKeySegmentId.c_str());
-    return IndexError_ReadData;
+  if (doc_cnt() > std::numeric_limits<size_t>::max() / sizeof(diskann_key_t))
+    return IndexError_InvalidFormat;
+  const size_t key_data_len = doc_cnt() * sizeof(diskann_key_t);
+  if (key_segment_->data_size() < key_data_len) return IndexError_ReadData;
+  // Probe in bounded chunks instead of allocating an index-sized temporary.
+  // Sequential internal keys need only their first value; arbitrary keys keep
+  // the original representation and lookup semantics.
+  std::array<diskann_key_t, 512> chunk{};
+  sequential_keys_ = doc_cnt() != 0;
+  key_buffer_.reset();
+  for (size_t begin = 0; begin < doc_cnt() && sequential_keys_;
+       begin += chunk.size()) {
+    const size_t count = std::min(chunk.size(), size_t(doc_cnt() - begin));
+    const size_t bytes = count * sizeof(diskann_key_t);
+    if (key_segment_->fetch(begin * sizeof(diskann_key_t), chunk.data(),
+                            bytes) != bytes)
+      return IndexError_ReadData;
+    if (begin == 0) first_key_ = chunk[0];
+    for (size_t i = 0; i < count; ++i) {
+      if (chunk[i] < first_key_ || chunk[i] - first_key_ != begin + i) {
+        sequential_keys_ = false;
+        break;
+      }
+    }
   }
+  if (sequential_keys_) return 0;
 
   try {
     auto key_buffer = std::make_shared<std::string>(key_data_len, '\0');
-    memcpy(&(*key_buffer)[0], data.data(), key_data_len);
+    if (key_data_len &&
+        key_segment_->fetch(0, &(*key_buffer)[0], key_data_len) != key_data_len)
+      return IndexError_ReadData;
     key_buffer_ = std::move(key_buffer);
   } catch (const std::bad_alloc &) {
     LOG_ERROR("Failed to allocate DiskAnn key buffer");
@@ -312,19 +341,38 @@ int DiskAnnSearcherEntity::load_key_mapping_segment() {
     return IndexError_InvalidFormat;
   }
 
-  size_t key_mapping_data_len = doc_cnt() * sizeof(diskann_id_t);
-
-  IndexStorage::MemoryBlock data;
-  if (key_mapping_segment_->read(0, data, key_mapping_data_len) !=
-      key_mapping_data_len) {
-    LOG_ERROR("Read segment %s failed", kDiskAnnKeyMappingSegmentId.c_str());
+  if (doc_cnt() > std::numeric_limits<size_t>::max() / sizeof(diskann_id_t))
+    return IndexError_InvalidFormat;
+  const size_t key_mapping_data_len = doc_cnt() * sizeof(diskann_id_t);
+  if (key_mapping_segment_->data_size() < key_mapping_data_len)
     return IndexError_ReadData;
+  std::array<diskann_id_t, 1024> chunk{};
+  identity_mapping_ = true;
+  key_mapping_buffer_.reset();
+  for (size_t begin = 0; begin < doc_cnt() && identity_mapping_;
+       begin += chunk.size()) {
+    const size_t count = std::min(chunk.size(), size_t(doc_cnt() - begin));
+    const size_t bytes = count * sizeof(diskann_id_t);
+    if (key_mapping_segment_->fetch(begin * sizeof(diskann_id_t), chunk.data(),
+                                    bytes) != bytes)
+      return IndexError_ReadData;
+    for (size_t i = 0; i < count; ++i) {
+      if (chunk[i] != begin + i) {
+        identity_mapping_ = false;
+        break;
+      }
+    }
   }
+  if (identity_mapping_) return 0;
 
   try {
     auto key_mapping_buffer =
         std::make_shared<std::string>(key_mapping_data_len, '\0');
-    memcpy(&(*key_mapping_buffer)[0], data.data(), key_mapping_data_len);
+    if (key_mapping_data_len &&
+        key_mapping_segment_->fetch(0, &(*key_mapping_buffer)[0],
+                                    key_mapping_data_len) !=
+            key_mapping_data_len)
+      return IndexError_ReadData;
     key_mapping_buffer_ = std::move(key_mapping_buffer);
   } catch (const std::bad_alloc &) {
     LOG_ERROR("Failed to allocate DiskAnn key mapping buffer");
@@ -336,11 +384,15 @@ int DiskAnnSearcherEntity::load_key_mapping_segment() {
 
 //! Get vector local id by key
 diskann_id_t DiskAnnSearcherEntity::get_id(diskann_key_t key) const {
+  if (sequential_keys_ && identity_mapping_) {
+    return key >= first_key_ && key - first_key_ < doc_cnt()
+               ? static_cast<diskann_id_t>(key - first_key_)
+               : kInvalidId;
+  }
   const diskann_id_t *key_mapping_data_ptr =
-      reinterpret_cast<const diskann_id_t *>(key_mapping_buffer_->data());
-
-  const diskann_key_t *key_data_ptr =
-      reinterpret_cast<const diskann_key_t *>(key_buffer_->data());
+      identity_mapping_
+          ? nullptr
+          : reinterpret_cast<const diskann_id_t *>(key_mapping_buffer_->data());
 
   //! Do binary search
   diskann_id_t start = 0UL;
@@ -348,9 +400,9 @@ diskann_id_t DiskAnnSearcherEntity::get_id(diskann_key_t key) const {
   diskann_id_t idx = 0u;
   while (start < end) {
     idx = start + (end - start) / 2;
-    diskann_id_t local_id = key_mapping_data_ptr[idx];
+    diskann_id_t local_id = identity_mapping_ ? idx : key_mapping_data_ptr[idx];
 
-    const diskann_key_t local_key = key_data_ptr[local_id];
+    const diskann_key_t local_key = get_key(local_id);
 
     if (local_key < key) {
       start = idx + 1;
@@ -365,6 +417,7 @@ diskann_id_t DiskAnnSearcherEntity::get_id(diskann_key_t key) const {
 }
 
 diskann_key_t DiskAnnSearcherEntity::get_key(diskann_id_t id) const {
+  if (sequential_keys_) return first_key_ + id;
   const diskann_key_t *key_data_ptr =
       reinterpret_cast<const diskann_key_t *>(key_buffer_->data());
 
