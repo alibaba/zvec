@@ -29,18 +29,15 @@ namespace turbo {
 #define NORM_FP16_STEP_NEON SA_FP16_NEON
 
 #if defined(__SSE__)
-static const __m128 ABS_MASK_FP32_SSE =
-    _mm_castsi128_ps(_mm_set1_epi32(0x7fffffffu));
+#define ABS_MASK_FP32_SSE _mm_castsi128_ps(_mm_set1_epi32(0x7fffffffu))
 #endif  // __SSE__
 
 #if defined(__AVX__)
-static const __m256 ABS_MASK_FP32_AVX =
-    _mm256_castsi256_ps(_mm256_set1_epi32(0x7fffffffu));
+#define ABS_MASK_FP32_AVX _mm256_castsi256_ps(_mm256_set1_epi32(0x7fffffffu))
 #endif  // __AVX__
 
 #if defined(__AVX512F__)
-static const __m512 ABS_MASK_FP32_AVX512 =
-    _mm512_castsi512_ps(_mm512_set1_epi32(0x7fffffffu));
+#define ABS_MASK_FP32_AVX512 _mm512_castsi512_ps(_mm512_set1_epi32(0x7fffffffu))
 #endif  // __AVX512F__
 
 //! Calculate sum of absolute (GENERAL)

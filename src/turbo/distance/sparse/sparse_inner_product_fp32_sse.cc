@@ -13,45 +13,13 @@
 // limitations under the License.
 #include <ailego/internal/cpu_features.h>
 #include "sparse_distance.h"
+#include "sparse_shuffle_masks.h"
 
 namespace zvec {
 namespace turbo {
 // Sparse
 //--------------------------------------------------
 #if defined(__SSE4_1__)
-const static __m128i SHUFFLE_MASK16[16] = {
-    _mm_set_epi8(-127, -127, -127, -127, -127, -127, -127, -127, -127, -127,
-                 -127, -127, -127, -127, -127, -127),
-    _mm_set_epi8(-127, -127, -127, -127, -127, -127, -127, -127, -127, -127,
-                 -127, -127, 3, 2, 1, 0),
-    _mm_set_epi8(-127, -127, -127, -127, -127, -127, -127, -127, -127, -127,
-                 -127, -127, 7, 6, 5, 4),
-    _mm_set_epi8(-127, -127, -127, -127, -127, -127, -127, -127, 7, 6, 5, 4, 3,
-                 2, 1, 0),
-    _mm_set_epi8(-127, -127, -127, -127, -127, -127, -127, -127, -127, -127,
-                 -127, -127, 11, 10, 9, 8),
-    _mm_set_epi8(-127, -127, -127, -127, -127, -127, -127, -127, 11, 10, 9, 8,
-                 3, 2, 1, 0),
-    _mm_set_epi8(-127, -127, -127, -127, -127, -127, -127, -127, 11, 10, 9, 8,
-                 7, 6, 5, 4),
-    _mm_set_epi8(-127, -127, -127, -127, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0),
-    _mm_set_epi8(-127, -127, -127, -127, -127, -127, -127, -127, -127, -127,
-                 -127, -127, 15, 14, 13, 12),
-    _mm_set_epi8(-127, -127, -127, -127, -127, -127, -127, -127, 15, 14, 13, 12,
-                 3, 2, 1, 0),
-    _mm_set_epi8(-127, -127, -127, -127, -127, -127, -127, -127, 15, 14, 13, 12,
-                 7, 6, 5, 4),
-    _mm_set_epi8(-127, -127, -127, -127, 15, 14, 13, 12, 7, 6, 5, 4, 3, 2, 1,
-                 0),
-    _mm_set_epi8(-127, -127, -127, -127, -127, -127, -127, -127, 15, 14, 13, 12,
-                 11, 10, 9, 8),
-    _mm_set_epi8(-127, -127, -127, -127, 15, 14, 13, 12, 11, 10, 9, 8, 3, 2, 1,
-                 0),
-    _mm_set_epi8(-127, -127, -127, -127, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5,
-                 4),
-    _mm_set_epi8(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0),
-};
-
 constexpr uint32_t MAX_SPARSE_BUFFER_LENGTH = 65536;
 
 float InnerProductSparseInSegmentFp32SSE(uint32_t m_sparse_count,
@@ -159,7 +127,9 @@ float InnerProductSparseInSegmentFp32SSE(uint32_t m_sparse_count,
 
         __m128i v = _mm_loadu_si128(
             reinterpret_cast<const __m128i *>(&m_sparse_value[i1]));
-        __m128 vs = _mm_castsi128_ps(_mm_shuffle_epi8(v, SHUFFLE_MASK16[r1]));
+        __m128 vs = _mm_castsi128_ps(_mm_shuffle_epi8(
+            v, _mm_loadu_si128(reinterpret_cast<const __m128i *>(
+                   sparse_internal::kFp32ShuffleMasks[r1].data()))));
 
         _mm_storeu_ps(val_1, vs);
         val_1 += _mm_popcnt_u32(r1);
@@ -167,7 +137,9 @@ float InnerProductSparseInSegmentFp32SSE(uint32_t m_sparse_count,
         int r2 = (r >> 4) & 15;
         v = _mm_loadu_si128(
             reinterpret_cast<const __m128i *>(&m_sparse_value[i1 + 4]));
-        vs = _mm_castsi128_ps(_mm_shuffle_epi8(v, SHUFFLE_MASK16[r2]));
+        vs = _mm_castsi128_ps(_mm_shuffle_epi8(
+            v, _mm_loadu_si128(reinterpret_cast<const __m128i *>(
+                   sparse_internal::kFp32ShuffleMasks[r2].data()))));
         _mm_storeu_ps(val_1, vs);
         val_1 += _mm_popcnt_u32(r2);
 
@@ -180,14 +152,18 @@ float InnerProductSparseInSegmentFp32SSE(uint32_t m_sparse_count,
 
         v = _mm_loadu_si128(
             reinterpret_cast<const __m128i *>(&q_sparse_value[i2]));
-        vs = _mm_castsi128_ps(_mm_shuffle_epi8(v, SHUFFLE_MASK16[r1]));
+        vs = _mm_castsi128_ps(_mm_shuffle_epi8(
+            v, _mm_loadu_si128(reinterpret_cast<const __m128i *>(
+                   sparse_internal::kFp32ShuffleMasks[r1].data()))));
         _mm_storeu_ps(val_2, vs);
         val_2 += _mm_popcnt_u32(r1);
 
         r2 = (r >> 4) & 15;
         v = _mm_loadu_si128(
             reinterpret_cast<const __m128i *>(&q_sparse_value[i2 + 4]));
-        vs = _mm_castsi128_ps(_mm_shuffle_epi8(v, SHUFFLE_MASK16[r2]));
+        vs = _mm_castsi128_ps(_mm_shuffle_epi8(
+            v, _mm_loadu_si128(reinterpret_cast<const __m128i *>(
+                   sparse_internal::kFp32ShuffleMasks[r2].data()))));
         _mm_storeu_ps(val_2, vs);
         val_2 += _mm_popcnt_u32(r2);
       }
