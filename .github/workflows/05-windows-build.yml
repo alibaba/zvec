@@ -145,7 +145,12 @@ jobs:
             Write-Host "Checking DLL loading and dense/sparse search for $cpu"
             & $sde $cpu @imageArgs -- python -I .github/workflows/scripts/smoke_no_avx.py --dll-only
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            & $sde $cpu @imageArgs -- python -I .github/workflows/scripts/smoke_no_avx.py
+            # Arrow's current Windows build requires SSE4.2 for collection
+            # operations. Merom still verifies DLL loading and Python import;
+            # Westmere/Goldmont match the no-AVX, SSE4.2 CPU in #810.
+            $smokeArgs = @()
+            if ($cpu -eq '-mrm') { $smokeArgs += '--import-only' }
+            & $sde $cpu @imageArgs -- python -I .github/workflows/scripts/smoke_no_avx.py @smokeArgs
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
         shell: powershell

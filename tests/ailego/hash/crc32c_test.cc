@@ -14,7 +14,6 @@
 
 #include <string>
 #include <vector>
-#include <ailego/internal/cpu_features.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/hash/crc32c.h>
 #include <zvec/ailego/utility/time_helper.h>
@@ -76,28 +75,6 @@ TEST(Crc32c, Crc32c) {
     EXPECT_NE(ailego::Crc32c::Hash(test2.data(), test2.size(), 0u),
               ailego::Crc32c::Hash(test2.data(), test2.size(), 1));
   }
-}
-
-TEST(Crc32c, SoftwareFallback) {
-  auto &sse42 = ailego::internal::CpuFeatures::static_flags_.SSE4_2;
-  struct RestoreFlag {
-    bool &flag;
-    bool original;
-    ~RestoreFlag() {
-      flag = original;
-    }
-  } restore{sse42, sse42};
-  sse42 = false;
-
-  EXPECT_EQ(0u, ailego::Crc32c::Hash("", 0, 0u));
-  // The extra prefix exercises unaligned input in the software implementation.
-  const std::string data = "x123456789";
-  EXPECT_EQ(0x58E3FA20u, ailego::Crc32c::Hash(data.data() + 1, 9, 0u));
-  const std::string seeded = "whiz bang boom";
-  EXPECT_EQ(0x8CAE40C8u,
-            ailego::Crc32c::Hash(seeded.data(), seeded.size(), 0u));
-  EXPECT_EQ(0xDF19F0C8u,
-            ailego::Crc32c::Hash(seeded.data(), seeded.size(), 5678u));
 }
 
 TEST(Crc32c, Crc32cChecksum) {

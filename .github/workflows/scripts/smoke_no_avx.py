@@ -58,7 +58,13 @@ def search() -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dll-only", action="store_true")
-    if parser.parse_args().dll_only:
+    parser.add_argument("--import-only", action="store_true")
+    args = parser.parse_args()
+    if args.dll_only:
         load_dll()
+    elif args.import_only:
+        import zvec
+
+        print(f"Python import succeeded: zvec {zvec.__version__}")  # noqa: T201
     else:
         search()

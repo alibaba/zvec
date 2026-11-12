@@ -15,13 +15,13 @@
 #include "bitset_helper.h"
 #include <zvec/ailego/internal/platform.h>
 
-#if !defined(__SSE4_2__) || defined(_MSC_VER)
+#ifndef __SSE4_2__
 #define bitset_popcount32 ailego_popcount32
 #define bitset_popcount64 ailego_popcount64
 #else
 #define bitset_popcount32 _mm_popcnt_u32
 #define bitset_popcount64 _mm_popcnt_u64
-#endif  // !__SSE4_2__ || _MSC_VER
+#endif  // !__SSE4_2__
 
 #if defined(AILEGO_HAVE_NEON)
 static inline void bitset_and(uint32_t *lhs, const uint32_t *rhs, size_t size) {

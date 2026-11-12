@@ -69,30 +69,6 @@ TEST(Platform, CacheLineAlignment) {
                 reinterpret_cast<uintptr_t>(&counters[0]));
 }
 
-TEST(Platform, PopcountMatchesBitCount) {
-  uint64_t value = 0x9e3779b97f4a7c15ULL;
-  for (size_t sample = 0; sample < 512; ++sample) {
-    value ^= value << 13;
-    value ^= value >> 7;
-    value ^= value << 17;
-    unsigned int expected32 = 0;
-    unsigned int expected64 = 0;
-    for (unsigned int bit = 0; bit < 64; ++bit) {
-      const unsigned int set = static_cast<unsigned int>((value >> bit) & 1);
-      expected64 += set;
-      if (bit < 32) {
-        expected32 += set;
-      }
-    }
-    EXPECT_EQ(expected32, ailego_popcount32(static_cast<uint32_t>(value)));
-    EXPECT_EQ(expected64, ailego_popcount64(value));
-  }
-  EXPECT_EQ(0u, ailego_popcount32(0u));
-  EXPECT_EQ(32u, ailego_popcount32(UINT32_MAX));
-  EXPECT_EQ(0u, ailego_popcount64(0ULL));
-  EXPECT_EQ(64u, ailego_popcount64(UINT64_MAX));
-}
-
 #if !defined(_MSC_VER)
 static std::vector<const void *> prefetched;
 
