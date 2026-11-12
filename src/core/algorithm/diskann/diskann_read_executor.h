@@ -67,7 +67,7 @@ class DiskAnnReadExecutor {
 
   static bool parse_workers(const char *value, size_t *workers) {
     if (!value) {
-      *workers = 4;
+      *workers = 12;
       return true;
     }
     if (!*value) return false;

@@ -13,8 +13,8 @@ using zvec::core::DiskAnnReadExecutor;
 TEST(DiskAnnReadExecutorTest, ValidatesWorkerLimit) {
   size_t workers = 0;
   EXPECT_TRUE(DiskAnnReadExecutor::parse_workers(nullptr, &workers));
-  EXPECT_EQ(workers, 4u);
-  for (auto text : {"1", "2", "4", "8", "9", "16", "24", "32"})
+  EXPECT_EQ(workers, 12u);
+  for (auto text : {"1", "2", "4", "8", "9", "12", "16", "24", "32"})
     EXPECT_TRUE(DiskAnnReadExecutor::parse_workers(text, &workers));
   for (auto text : {"", "0", "33", "-1", "+2", " 4", "4x", "44", "99999999"})
     EXPECT_FALSE(DiskAnnReadExecutor::parse_workers(text, &workers));
