@@ -115,15 +115,19 @@ jobs:
 
       - name: Check loading and search on CPUs without AVX
         if: matrix.platform == 'windows-2022'
+        timeout-minutes: 10
         run: |
+          $ProgressPreference = 'SilentlyContinue'
           $archive = Join-Path $env:RUNNER_TEMP "sde.tar.xz"
           $url = "https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-win.tar.xz"
-          Invoke-WebRequest -Uri $url -OutFile $archive
+          Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -Uri $url -OutFile $archive
           $expected = "74E626EDE09B0BAA5011FC9E51B58627EA92C3FC0BAE5FD7DB34B490F335F651"
           if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne $expected) {
             throw "Intel SDE checksum mismatch"
           }
-          tar -xf $archive -C $env:RUNNER_TEMP
+          # Windows' tar can stall on this archive; Python also validates
+          # extraction paths instead of trusting archive member names.
+          python -c "import os,tarfile; p=os.path.join(os.environ['RUNNER_TEMP'],'sde.tar.xz'); t=tarfile.open(p,'r:xz'); t.extractall(os.environ['RUNNER_TEMP'],filter='data')"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $sde = Join-Path $env:RUNNER_TEMP "sde-external-10.13.1-2026-07-28-win\sde.exe"
           $package = python -c "import importlib.util; print(next(iter(importlib.util.find_spec('zvec').submodule_search_locations)))"
@@ -138,6 +142,7 @@ jobs:
             $imageArgs += @('-chip_check_image', $image.Name)
           }
           foreach ($cpu in @('-mrm', '-wsm', '-glm', '-snb')) {
+            Write-Host "Checking DLL loading and dense/sparse search for $cpu"
             & $sde $cpu @imageArgs -- python -I .github/workflows/scripts/smoke_no_avx.py --dll-only
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             & $sde $cpu @imageArgs -- python -I .github/workflows/scripts/smoke_no_avx.py
