@@ -193,19 +193,24 @@ Status QueryTarget::validate(const FieldSchema *schema,
         IndexTypeCodeBook::AsString(schema->index_type()), " but got ",
         IndexTypeCodeBook::AsString(query_params->type()));
   }
-  // Validate refinement against the configured index.
-  if (schema->is_dense_vector() && query_params &&
-      query_params->is_using_refiner()) {
+  // Validate refinement support for the field and configured index.
+  if (query_params && query_params->is_using_refiner()) {
+    if (schema->is_sparse_vector()) {
+      return Status::InvalidArgument(
+          "Invalid query for field[", field_name,
+          "]: refinement is not supported for sparse vectors");
+    }
     const auto index_type = schema->index_type();
     if (index_type == IndexType::HNSW || index_type == IndexType::IVF ||
-        index_type == IndexType::DISKANN) {
+        index_type == IndexType::DISKANN || index_type == IndexType::VAMANA) {
       const auto *index_params =
           dynamic_cast<const VectorIndexParams *>(schema->index_params().get());
       if (index_params &&
           index_params->quantize_type() == QuantizeType::UNDEFINED) {
-        return Status::InvalidArgument("Invalid query for field[", field_name,
-                                       "]: refinement is not supported because "
-                                       "quantization is not enabled");
+        return Status::InvalidArgument(
+            "Invalid query for field[", field_name,
+            "]: refinement is not supported for this ",
+            IndexTypeCodeBook::AsString(index_type), " index configuration");
       }
     }
   }

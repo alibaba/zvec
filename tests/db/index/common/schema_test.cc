@@ -383,15 +383,9 @@ TEST(FieldSchemaTest, UniformQuantizationRejectsDiskAnnIndexes) {
     FieldSchema field("disk_vector", DataType::VECTOR_FP32, 32, false, params);
     auto status = field.validate();
     EXPECT_FALSE(status.ok());
-#if DISKANN_SUPPORTED
     EXPECT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
     EXPECT_NE(status.message().find("not supported with DISKANN"),
               std::string::npos);
-#else
-    EXPECT_NE(
-        status.message().find("DiskAnn is not supported on this platform"),
-        std::string::npos);
-#endif
   }
 }
 

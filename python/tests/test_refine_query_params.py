@@ -103,7 +103,7 @@ def test_query_entries_validate_refinement_target(tmp_path, entry_point):
 
         error = re.escape(
             "Invalid query for field[vector]: refinement is not supported "
-            "because quantization is not enabled"
+            "for this HNSW index configuration"
         )
         for populated in (False, True):
             if populated:

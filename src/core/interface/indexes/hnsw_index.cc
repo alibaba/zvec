@@ -443,7 +443,7 @@ int HNSWIndex::_prepare_for_search(
 
   if (ailego_unlikely(!hnsw_search_param)) {
     LOG_ERROR("Invalid search param type, expected HNSWQueryParam");
-    return core::IndexError_Runtime;
+    return core::IndexError_InvalidArgument;
   }
 
   if (0 >= hnsw_search_param->ef_search ||

@@ -14,6 +14,11 @@
 
 #pragma once
 
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
 #include <zvec/ailego/encoding/json.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/core/framework/index_framework.h>
