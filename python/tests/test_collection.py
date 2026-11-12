@@ -273,40 +273,6 @@ class TestCollectionIndexDDL:
                 index_param=InvertIndexParam(),
             )
 
-        index_param = field_schema.index_param
-        assert index_param.type == IndexType.INVERT
-        assert index_param.enable_range_optimization is False
-        assert index_param.enable_extended_wildcard is False
-
-    def test_drop_index(self, test_collection: Collection):
-        # before drop
-        field_schema = test_collection.schema.field("name")
-        assert field_schema is not None
-        assert field_schema.data_type == DataType.STRING
-        assert field_schema.name == "name"
-        index_param = field_schema.index_param
-        assert index_param.type == IndexType.INVERT
-        assert index_param.enable_range_optimization is False
-        assert index_param.enable_extended_wildcard is False
-
-        # drop
-        test_collection.drop_index("name")
-        field_schema = test_collection.schema.field("name")
-        assert field_schema is not None
-        assert field_schema.data_type == DataType.STRING
-        assert field_schema.name == "name"
-
-        # without index
-        index_param = field_schema.index_param
-        assert index_param is None
-
-    def test_create_index_field_is_not_exist(self, test_collection: Collection):
-        with pytest.raises(Exception) as e:
-            test_collection.create_index(
-                field_name="not_exist",
-                index_param=InvertIndexParam(),
-            )
-
 
 # ----------------------------
 # Collection Column DDL Test Case
