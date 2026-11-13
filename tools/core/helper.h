@@ -60,6 +60,33 @@ using namespace zvec::core;
 using namespace zvec::ailego;
 
 
+// Optional query grid for the standard recall and bench tools. All cases
+// share one opened index and the common external refiner, if configured.
+inline bool parse_tool_query_cases(
+    const YAML::Node &config,
+    const core_interface::BaseIndexQueryParam::Pointer &base,
+    std::vector<core_interface::BaseIndexQueryParam::Pointer> &cases) {
+  cases.clear();
+  const auto grid = config["QueryConfig"]["QueryParams"];
+  if (!grid) {
+    cases.push_back(base);
+    return base != nullptr;
+  }
+  if (!grid.IsSequence() || grid.size() == 0 || !base) {
+    LOG_ERROR("QueryConfig.QueryParams must be a nonempty sequence");
+    return false;
+  }
+  for (const auto &entry : grid) {
+    if (!entry.IsScalar()) return false;
+    auto param = core_interface::IndexFactory::QueryParamDeserializeFromJson<
+        core_interface::BaseIndexQueryParam>(entry.as<std::string>());
+    if (!param) return false;
+    param->refiner_param = base->refiner_param;
+    cases.push_back(std::move(param));
+  }
+  return true;
+}
+
 int parse_and_load_index_param(
     YAML::Node &config_node, string &index_dir,
     core_interface::Index::Pointer &index,
