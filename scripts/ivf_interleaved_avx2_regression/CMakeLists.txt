@@ -4,6 +4,15 @@ set(PROJECT_ROOT_DIR "" CACHE PATH "Version checkout")
 set(VALIDATION_DEPS "${PROJECT_ROOT_DIR}" CACHE PATH "Checkout with submodules")
 option(VALIDATION_FIXED "Build all related correctness tests" OFF)
 option(VALIDATION_LEGACY "Use pre-refactor matrix API" OFF)
+option(VALIDATION_SANITIZE "Instrument every C/C++ source with ASan/UBSan" OFF)
+set(VALIDATION_SANITIZERS "address,undefined" CACHE STRING
+    "Sanitizers (Linux acceptance requires address,undefined)")
+if(VALIDATION_SANITIZE)
+  # Directory options survive repeated option.cmake flag initialization and
+  # cover C sources as well as C++. Keep alignment and vptr checks enabled.
+  add_compile_options(-fsanitize=${VALIDATION_SANITIZERS} -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=${VALIDATION_SANITIZERS})
+endif()
 if(NOT EXISTS "${PROJECT_ROOT_DIR}/src/turbo/CMakeLists.txt")
   message(FATAL_ERROR "Pass an absolute PROJECT_ROOT_DIR")
 endif()
@@ -35,6 +44,10 @@ endforeach()
 foreach(part cluster flat ivf)
   add_subdirectory(${PROJECT_ROOT_DIR}/src/core/algorithm/${part} ${part})
 endforeach()
+# The focused build omits core_interface. Supply VectorSource's key function
+# so UBSan vptr checks in flat iterators can link without disabling the check.
+target_sources(core_knn_flat_objects PRIVATE
+  ${PROJECT_ROOT_DIR}/src/core/interface/vector_source.cc)
 if(VALIDATION_FIXED)
   add_subdirectory(${PROJECT_ROOT_DIR}/tests/core/metric tests_metric)
   add_subdirectory(${PROJECT_ROOT_DIR}/tests/turbo tests_turbo)

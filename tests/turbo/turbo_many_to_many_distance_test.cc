@@ -14,6 +14,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <memory>
 #include <vector>
 #include <gtest/gtest.h>
@@ -37,6 +39,13 @@ void CheckFp16(CpuArchType arch) {
       auto batch =
           get_batch_distance_func(metric, DataType::kFp16, quantize, arch);
       ASSERT_EQ(bool(many), bool(batch));
+      // Explicit ISA requests do not fall back to scalar. Raw FP16 L2 has
+      // scalar/NEON/AVX512 entries, but no AVX2 entry (unlike kFp16 L2).
+      if (arch == CpuArchType::kAVX2 && quantize == QuantizeType::kRaw &&
+          metric == MetricType::kSquaredEuclidean) {
+        EXPECT_FALSE(many);
+        continue;
+      }
       ASSERT_TRUE(many);
       // Empty shapes must not touch even null input/output pointers.
       many(nullptr, nullptr, 0, 5, 128, nullptr, nullptr);
@@ -193,7 +202,8 @@ TEST(ManyToManyDistance, Fp32FallbackAndUnsupportedDispatch) {
 }
 
 TEST(ManyToManyDistance, RecordInt8PreprocessAndMetadataFallback) {
-  // Record layout: aligned INT8 codes followed by five FP32 metadata values.
+  // Record layout: INT8 codes, four FP32 metadata values, then an INT32
+  // code sum used to undo the VNNI query's +128 shift.
   constexpr size_t dim = 16, encoded_size = dim + 20, m = 5, n = 3;
   std::vector<std::vector<float>> records(m + n,
                                           std::vector<float>(encoded_size / 4));
@@ -210,7 +220,8 @@ TEST(ManyToManyDistance, RecordInt8PreprocessAndMetadataFallback) {
     tail[1] = 0.5f;
     tail[2] = sum;
     tail[3] = squares;
-    tail[4] = std::sqrt(squares);
+    const int32_t code_sum = static_cast<int32_t>(sum);
+    std::memcpy(tail + 4, &code_sum, sizeof(code_sum));
   }
   for (auto metric :
        {MetricType::kInnerProduct, MetricType::kSquaredEuclidean}) {
@@ -219,6 +230,8 @@ TEST(ManyToManyDistance, RecordInt8PreprocessAndMetadataFallback) {
     ASSERT_TRUE(scalar);
     for (auto arch :
          {CpuArchType::kScalar, CpuArchType::kAuto, CpuArchType::kAVX512VNNI}) {
+      SCOPED_TRACE(testing::Message()
+                   << "arch=" << int(arch) << " metric=" << int(metric));
       auto kernels = get_distance_kernels(metric, DataType::kInt8,
                                           QuantizeType::kRecord, arch);
       auto many = get_many_to_many_distance_func(metric, DataType::kInt8,

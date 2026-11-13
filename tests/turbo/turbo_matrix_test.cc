@@ -42,6 +42,24 @@ void *operator new(std::size_t size) {
 void *operator new[](std::size_t size) {
   return ::operator new(size);
 }
+// Factory registration allocates with nothrow new. Route it through the same
+// malloc/free pair as the throwing overloads, including under ASan.
+void *operator new(std::size_t size, const std::nothrow_t &) noexcept {
+  try {
+    return ::operator new(size);
+  } catch (...) {
+    return nullptr;
+  }
+}
+void *operator new[](std::size_t size, const std::nothrow_t &tag) noexcept {
+  return ::operator new(size, tag);
+}
+void operator delete(void *p, const std::nothrow_t &) noexcept {
+  std::free(p);
+}
+void operator delete[](void *p, const std::nothrow_t &) noexcept {
+  std::free(p);
+}
 void operator delete(void *p) noexcept {
   std::free(p);
 }

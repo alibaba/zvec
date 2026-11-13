@@ -1,6 +1,10 @@
 IVF AVX2 交错布局联合内核：服务器 agent 执行说明
 日期：2026-11-13
 
+更新：本轮正确性修复后的复验请执行同目录 REVERIFY_zh.txt，使用仓库 reverify.py。
+它恢复两个被过滤用例、修复分数参考校验，并对基线/候选都做完整 sanitizer 对照。
+下文保留首次交接的范围与历史执行方法；本轮不要运行旧包内 tools/run.py。
+
 从当前分支直接开始（Linux 服务器）
 仓库：richyreachy/zvec
 分支：fix/legacy-matrix-distance-performance

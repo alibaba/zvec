@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <set>
 #include <tuple>
@@ -281,8 +282,37 @@ TEST_P(IVFLegacyMatrixTest, ColumnBatchPreservesScanOrderAndLimits) {
               for (size_t i = 0; i < single->result().size(); ++i) {
                 EXPECT_EQ(single->result()[i].key(),
                           grouped->result(q)[i].key());
-                EXPECT_FLOAT_EQ(single->result()[i].score(),
-                                grouped->result(q)[i].score());
+                if (integer) {
+                  EXPECT_FLOAT_EQ(single->result()[i].score(),
+                                  grouped->result(q)[i].score());
+                } else {
+                  const auto id = single->result()[i].key();
+                  ASSERT_LT(id, values_.size());
+                  const auto &query_values = values_[(q * 19) % rows_.size()];
+                  double reference = 0, magnitude = 0;
+                  for (size_t d = 0; d < query_values.size(); ++d) {
+                    const double x = values_[id][d], y = query_values[d];
+                    const double term =
+                        std::get<1>(GetParam()) ? -x * y : (x - y) * (x - y);
+                    reference += term;
+                    magnitude += std::abs(term);
+                  }
+                  // Compare both implementations to stored-value FP64 truth.
+                  // gamma(2*d+3) bounds FP32 product/subtraction/sum rounding,
+                  // including non-FMA paths. Absolute terms handle IP
+                  // cancellation; this is not a tolerance fitted to a failure.
+                  const double nu = (2 * query_values.size() + 3) *
+                                    (std::numeric_limits<float>::epsilon() / 2);
+                  const double tolerance =
+                      nu / (1 - nu) * std::max(1.0, magnitude);
+                  const float single_score = single->result()[i].score();
+                  const float batch_score = grouped->result(q)[i].score();
+                  EXPECT_TRUE(std::isfinite(single_score));
+                  EXPECT_TRUE(std::isfinite(batch_score));
+                  EXPECT_NEAR(reference, single_score, tolerance);
+                  EXPECT_NEAR(reference, batch_score, tolerance);
+                  EXPECT_NEAR(single_score, batch_score, 2 * tolerance);
+                }
               }
             }
           }

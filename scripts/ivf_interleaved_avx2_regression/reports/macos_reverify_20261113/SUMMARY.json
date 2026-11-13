@@ -1,0 +1,96 @@
+{
+  "base_commit": "6dced45eb1083089b1a14cb8ed79c37bcc9f7d5d",
+  "platform": "macOS 26.6.2 ARM64, Apple Clang 15",
+  "production_source_changes": false,
+  "correctness": {
+    "programs": 52,
+    "passed": 573,
+    "failed": 0,
+    "skipped": 43,
+    "disabled": 10
+  },
+  "old_index_compatibility": {
+    "passed": 12,
+    "skipped": 4,
+    "disabled": 16,
+    "failed": 0,
+    "exit_code": 0,
+    "missing_xml": false,
+    "diagnostics": [],
+    "ok": true
+  },
+  "ubsan": {
+    "before": {
+      "reports": 15,
+      "test_cases": {
+        "passed": 138,
+        "failed": 0,
+        "skipped": 12,
+        "disabled": 0
+      }
+    },
+    "after": {
+      "reports": 14,
+      "test_cases": {
+        "passed": 139,
+        "failed": 0,
+        "skipped": 13,
+        "disabled": 0
+      }
+    }
+  },
+  "ubsan_comparison": {
+    "turbo_matrix_test": {
+      "baseline_reports": 0,
+      "candidate_reports": 0,
+      "new_or_increased": {},
+      "removed_or_decreased": {}
+    },
+    "turbo_many_to_many_distance_test": {
+      "baseline_reports": 0,
+      "candidate_reports": 0,
+      "new_or_increased": {},
+      "removed_or_decreased": {}
+    },
+    "ivf_legacy_matrix_test": {
+      "baseline_reports": 0,
+      "candidate_reports": 0,
+      "new_or_increased": {},
+      "removed_or_decreased": {}
+    },
+    "ivf_searcher_test": {
+      "baseline_reports": 15,
+      "candidate_reports": 14,
+      "new_or_increased": {},
+      "removed_or_decreased": {
+        "src/turbo/algorithm/kmeans.h:508:29: runtime error: nan is outside the range of representable values of type 'signed char'": 1
+      }
+    }
+  },
+  "asan_status": "ENVIRONMENT_BLOCKED: Apple empty main initialization aborts even outside sandbox; LLVM18 empty main timed out",
+  "asan_smoke": {
+    "apple": {
+      "build_exit": 0,
+      "run_exit": -6
+    },
+    "llvm18": {
+      "build_exit": 0,
+      "timed_out": true
+    },
+    "apple_unsandboxed": {
+      "run_exit": 134
+    }
+  },
+  "sanitizer_instrumentation": {
+    "translation_units": 282,
+    "missing_or_suppressed": []
+  },
+  "performance": "Not rerun on macOS: production sources unchanged; x86 reverify runs the full two-round comparison",
+  "native_x86_status": "PENDING_SERVER_REVERIFY",
+  "checks": [
+    "clang-format 18 passed",
+    "clang-tidy 18 warnings-as-errors passed",
+    "test patch applies to both frozen snapshots; candidate matches working tree",
+    "runner rejects zero-exit UB diagnostics and missing-XML crashes"
+  ]
+}

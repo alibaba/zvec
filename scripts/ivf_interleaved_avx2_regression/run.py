@@ -72,13 +72,12 @@ def static_link(build, target, destination, log):
     run(cmd, log, cwd=build)
 
 def configure(source, build, deps, log, sanitize=False):
-    flags = '-fsanitize=address,undefined -fno-omit-frame-pointer' if sanitize else ''
     run(['cmake', '-S', TOOLS, '-B', build, '-G', 'Ninja',
          '-DPROJECT_ROOT_DIR=' + str(source), '-DVALIDATION_DEPS=' + str(deps),
          '-DVALIDATION_FIXED=ON', '-DCMAKE_BUILD_TYPE=Release',
          '-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF', '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON',
-         '-DCMAKE_CXX_FLAGS=' + flags, '-DCMAKE_EXE_LINKER_FLAGS=' + flags,
-         '-DCMAKE_SHARED_LINKER_FLAGS=' + flags], log)
+         '-DVALIDATION_SANITIZE=' + ('ON' if sanitize else 'OFF'),
+         '-DVALIDATION_SANITIZERS=address,undefined'], log)
 
 def test_binary(binary, directory, env=None, args=None):
     directory.mkdir(parents=True, exist_ok=True)
