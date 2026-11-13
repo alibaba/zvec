@@ -1,6 +1,8 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 include(CheckCXXSourceCompiles)
+include(${PROJECT_ROOT_DIR}/cmake/batch_topk.cmake)
+zvec_configure_batch_topk()
 
 # HOST_ARCH is only populated by the shared AUTO_DETECT_ARCH path. Resolve the
 # CMake target locally as well so Turbo's ARM dispatch also works for Android
@@ -28,6 +30,8 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH AND
     TURBO_MARCH_FLAG_AVX2
     TURBO_MARCH_FLAG_AVX512
     TURBO_MARCH_FLAG_AVX512FP16)
+  # Sparse FP32 uses SSE4 instructions, unlike the dense SSE2 kernels.
+  set(TURBO_SPARSE_MARCH_FLAG_SSE "${TURBO_MARCH_FLAG_SSE2}")
   # kSSE2 is gated by SSE2 at runtime. Keep these translation units at
   # that exact baseline so auto-vectorized scalar tails cannot acquire
   # instructions from the broader corei7 profile returned above.
@@ -48,7 +52,7 @@ if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
    _TURBO_TARGET_ARCH MATCHES "^(arm|arm64)$")
   # Keep this probe local to Turbo: only its neon_fp16 distance kernels need
   # FEAT_FP16, while the plain NEON kernels (which widen to FP32) and the
-  # existing Ailego distance implementations stay untouched.
+  # sparse kernels keep their own feature gates.
   # Android is kept even though build_android.sh sets AUTO_DETECT_ARCH=OFF:
   # that switch guards the host-oriented march detection, while this probe
   # runs against the actual (cross) target toolchain.
@@ -91,6 +95,40 @@ file(GLOB_RECURSE ALL_SRCS *.cc *.c *.h)
 # subdirectory).
 if(NOT ANDROID AND AUTO_DETECT_ARCH AND
    _TURBO_TARGET_ARCH MATCHES "^(x86|x64)$")
+    # Compile sparse dispatch at the target baseline. Advertise the kernels
+    # separately: compiling dispatch with the strongest ISA can emit illegal
+    # instructions before the runtime CPU check on older machines.
+    configure_simd_kernel(
+        distance/sparse/sparse_inner_product_fp32_sse.cc
+        distance/sparse/sparse_inner_product_fp32_dispatch.cc
+        "${TURBO_SPARSE_MARCH_FLAG_SSE}" "
+        #include <zvec/ailego/internal/platform.h>
+        #if !defined(__SSE4_1__)
+        #error Kernel ISA unavailable
+        #endif
+        int main() { return 0; }"
+        ZVEC_TURBO_SPARSE_HAVE_SSE4)
+    configure_simd_kernel(
+        distance/sparse/sparse_inner_product_fp16_avx.cc
+        distance/sparse/sparse_inner_product_fp16_dispatch.cc
+        "${TURBO_MARCH_FLAG_AVX2}" "
+        #include <zvec/ailego/internal/platform.h>
+        #if !defined(__AVX__)
+        #error Kernel ISA unavailable
+        #endif
+        int main() { return 0; }"
+        ZVEC_TURBO_SPARSE_HAVE_AVX)
+    configure_simd_kernel(
+        distance/sparse/sparse_inner_product_fp16_avx512fp16.cc
+        distance/sparse/sparse_inner_product_fp16_dispatch.cc
+        "${TURBO_MARCH_FLAG_AVX512FP16}" "
+        #include <zvec/ailego/internal/platform.h>
+        #if !defined(__AVX512FP16__)
+        #error Kernel ISA unavailable
+        #endif
+        int main() { return 0; }"
+        ZVEC_TURBO_SPARSE_HAVE_AVX512FP16)
+
     # SSE2
     file(GLOB_RECURSE SSE2_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/sse2/*.cc)
     set_source_files_properties(
@@ -128,6 +166,20 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH AND
         PROPERTIES
         COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX512}"
     )
+
+    # These raw kernels promise AVX2 or AVX512F+BW, not the full feature set of
+    # the CPU model selected above. In particular, icelake-server lets Clang
+    # fuse madd+add into VNNI, which older AVX512BW CPUs cannot execute.
+    if(NOT MSVC)
+      set(_TURBO_RAW_INT8_BASE "-march=x86-64")
+      if(_TURBO_TARGET_ARCH STREQUAL "x86")
+        set(_TURBO_RAW_INT8_BASE "-march=i686")
+      endif()
+      set_source_files_properties(distance/avx2/raw_int8/distance.cc
+          PROPERTIES COMPILE_FLAGS "${_TURBO_RAW_INT8_BASE} -mavx2")
+      set_source_files_properties(distance/avx512/raw_int8/distance.cc
+          PROPERTIES COMPILE_FLAGS "${_TURBO_RAW_INT8_BASE} -mavx512f -mavx512bw")
+    endif()
 endif()
 
 if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
@@ -142,6 +194,9 @@ if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
 endif()
 
 set(ZVEC_TURBO_DEFS)
+if(ZVEC_ON_MUSL)
+  list(APPEND ZVEC_TURBO_DEFS ZVEC_ON_MUSL)
+endif()
 if(ZVEC_TURBO_ARM_FP16_SUPPORTED)
     list(APPEND ZVEC_TURBO_DEFS ZVEC_HAVE_ARM_FP16_KERNEL=1)
 endif()

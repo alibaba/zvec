@@ -14,11 +14,11 @@
 
 #pragma once
 
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_meta.h>
 #include <zvec/core/framework/index_reformer.h>
 #include <zvec/core/framework/index_stats.h>
-#include "quantizer/quantizer.h"
 
 namespace zvec {
 namespace turbo {
@@ -89,6 +89,10 @@ class Fp32Quantizer : public Quantizer {
       float *dist_list) const override;
 
   float calc_distance_dp_dp(const void *dp1, const void *dp2) const override;
+
+  void calc_distance_dp_dp_batch(const void *const *dp_list, int dp_num,
+                                 const void *dp,
+                                 float *dist_list) const override;
 
   float calc_distance_input_query(const void *dp,
                                   const void *query) const override;

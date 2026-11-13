@@ -121,6 +121,11 @@ class Quantizer {
     return train(holder);
   }
 
+  //! Prepare derived state for graph construction before concurrent inserts.
+  virtual int prepare_build() {
+    return 0;
+  }
+
   //! Byte length of a quantized datapoint vector
   virtual size_t quantized_datapoint_vector_length() const = 0;
 
@@ -157,6 +162,13 @@ class Quantizer {
 
   //! Distance between two quantized datapoints
   virtual float calc_distance_dp_dp(const void *dp1, const void *dp2) const = 0;
+
+  //! Batched distance between quantized datapoints and a quantized datapoint.
+  //! The default implementation loops over calc_distance_dp_dp. Overrides
+  //! must preserve those distance semantics. A nonpositive count is a no-op.
+  virtual void calc_distance_dp_dp_batch(const void *const *dp_list, int dp_num,
+                                         const void *dp,
+                                         float *dist_list) const;
 
   //! Distance between an input datapoint and an already-quantized query.
   //!

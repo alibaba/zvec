@@ -12,19 +12,29 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cstring>
 #include <future>
 #include <numeric>
 #include <string>
 #include <vector>
-#include <ailego/math/norm2_matrix.h>
 #include <ailego/utility/math_helper.h>
 #include <ailego/utility/memory_helper.h>
 #include <algorithm/flat_sparse/flat_sparse_utility.h>
 #include <gtest/gtest.h>
+#include <turbo/norm/norm2_matrix.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
 #include "tests/test_util.h"
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <sys/mman.h>
+#endif
 
 using namespace zvec::core;
 using namespace zvec::ailego;
@@ -53,6 +63,107 @@ class FlatSparseStreamerTest : public testing::Test {
 std::string FlatSparseStreamerTest::dir_("flat_sparse_streamer_test_dir/");
 std::shared_ptr<IndexMeta> FlatSparseStreamerTest::index_meta_ptr_;
 
+namespace {
+
+class GuardedQueryBuffer {
+ public:
+  explicit GuardedQueryBuffer(size_t bytes)
+      : page_size_(MemoryHelper::PageSize()), bytes_(bytes) {
+#if defined(_WIN32)
+    memory_ = VirtualAlloc(nullptr, 2 * page_size_, MEM_RESERVE | MEM_COMMIT,
+                           PAGE_READWRITE);
+    if (memory_) {
+      DWORD old_protection;
+      if (!VirtualProtect(static_cast<char *>(memory_) + page_size_, page_size_,
+                          PAGE_NOACCESS, &old_protection)) {
+        VirtualFree(memory_, 0, MEM_RELEASE);
+        memory_ = nullptr;
+      }
+    }
+#else
+    memory_ = mmap(nullptr, 2 * page_size_, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (memory_ == MAP_FAILED) {
+      memory_ = nullptr;
+    } else if (mprotect(static_cast<char *>(memory_) + page_size_, page_size_,
+                        PROT_NONE) != 0) {
+      munmap(memory_, 2 * page_size_);
+      memory_ = nullptr;
+    }
+#endif
+  }
+
+  ~GuardedQueryBuffer() {
+    if (!memory_) return;
+#if defined(_WIN32)
+    VirtualFree(memory_, 0, MEM_RELEASE);
+#else
+    munmap(memory_, 2 * page_size_);
+#endif
+  }
+
+  GuardedQueryBuffer(const GuardedQueryBuffer &) = delete;
+  GuardedQueryBuffer &operator=(const GuardedQueryBuffer &) = delete;
+
+  void *data() const {
+    return memory_ ? static_cast<char *>(memory_) + page_size_ - bytes_
+                   : nullptr;
+  }
+
+ private:
+  size_t page_size_;
+  size_t bytes_;
+  void *memory_{nullptr};
+};
+
+}  // namespace
+
+TEST_F(FlatSparseStreamerTest, Fp16QueryDoesNotReadPastBuffer) {
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_EQ(0, storage->init(Params{}));
+  ASSERT_EQ(0, storage->open(dir_ + "fp16_query_boundary", true));
+  auto streamer = IndexFactory::CreateStreamer("FlatSparseStreamer");
+  IndexMeta meta(IndexMeta::MT_SPARSE, IndexMeta::DT_FP16);
+  meta.set_metric("InnerProductSparse", 0, Params{});
+  ASSERT_EQ(0, streamer->init(meta, Params{}));
+  ASSERT_EQ(0, streamer->open(storage));
+
+  const uint32_t indices[] = {128, 256, 512};
+  const Float16 values[] = {1.0f, -1.0f, 0.5f};
+  GuardedQueryBuffer query(sizeof(values));
+  ASSERT_NE(nullptr, query.data());
+  std::memcpy(query.data(), values, sizeof(values));
+  IndexQueryMeta qmeta(IndexMeta::DT_FP16);
+  auto context = streamer->create_context();
+  ASSERT_EQ(0, streamer->add_impl(7, 3, indices, values, qmeta, context));
+
+  for (bool grouped : {false, true}) {
+    for (bool candidates : {false, true}) {
+      SCOPED_TRACE(grouped);
+      SCOPED_TRACE(candidates);
+      context = streamer->create_context();
+      context->set_topk(1);
+      if (grouped) {
+        context->set_group_params(1, 1);
+        context->set_group_by([](uint64_t) { return std::string("all"); });
+      }
+      ASSERT_EQ(0, candidates
+                       ? streamer->search_bf_by_p_keys_impl(
+                             3, indices, query.data(), {{7}}, qmeta, context)
+                       : streamer->search_impl(3, indices, query.data(), qmeta,
+                                               context));
+      if (grouped) ASSERT_EQ(1, context->group_result().size());
+      const auto &results =
+          grouped ? context->group_result()[0].docs() : context->result();
+      ASSERT_EQ(1, results.size());
+      EXPECT_EQ(7, results[0].key());
+      EXPECT_FLOAT_EQ(-2.25f, results[0].score());
+    }
+  }
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, storage->close());
+}
+
 void FlatSparseStreamerTest::generate_sparse_data(
     size_t cnt, uint32_t sparse_dim_count,
     std::vector<NumericalVector<uint32_t>> &sparse_indices_list,
@@ -72,7 +183,8 @@ void FlatSparseStreamerTest::generate_sparse_data(
     }
 
     float norm;
-    Norm2Matrix<float, 1>::Compute(sparse_vec.data(), sparse_dim_count, &norm);
+    zvec::turbo::Norm2Matrix<float, 1>::Compute(sparse_vec.data(),
+                                                sparse_dim_count, &norm);
     for (size_t j = 0; j < sparse_dim_count; ++j) {
       sparse_vec[j] = sparse_vec[j] / norm;
     }
