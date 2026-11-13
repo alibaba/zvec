@@ -139,7 +139,13 @@ int HNSWIndex::merge(const std::vector<Index::Pointer> &indexes,
         meta.meta_type() != core::IndexMeta::MT_DENSE) {
       return Index::merge(indexes, filter, options);
     }
-    int ret = builder.add_source(index->create_index_provider());
+    auto provider = index->create_index_provider();
+    // The packed builder reassigns dense IDs and drops NULL gaps; nullable
+    // sources must keep physical slot == document ID via the reducer path.
+    if (!provider || provider->slot_count() != provider->count()) {
+      return Index::merge(indexes, filter, options);
+    }
+    int ret = builder.add_source(std::move(provider));
     if (ret == core::IndexError_NotImplemented) {
       return Index::merge(indexes, filter, options);
     }
