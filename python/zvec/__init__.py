@@ -101,6 +101,7 @@ from .tool import require_module
 from .typing import (
     DataType,
     IndexType,
+    InvertIndexLayout,
     IOBackendType,
     MetricType,
     QuantizeType,
@@ -181,6 +182,7 @@ __all__ = [
     "MetricType",
     "QuantizeType",
     "IndexType",
+    "InvertIndexLayout",
     "LogLevel",
     "LogType",
     "Status",

@@ -130,6 +130,18 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_contain(
 
 Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_ne(
     const std::string &term) const {
+  if (cf_bsi_) {
+    std::shared_lock lock(bsi_mutex_);
+    roaring::Roaring valid(get_bsi_non_null());
+    auto result = get_bitmap_eq(term);
+    if (!result) {
+      return result;
+    }
+    if (result.value()) {
+      valid -= roaring::Roaring(result.value());
+    }
+    return roaring_bitmap_copy(&valid.roaring);
+  }
   if (sealed_) {
     auto ret = get_bitmap_eq(term);
     if (ret) {
@@ -189,6 +201,14 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_not_contain(
   });
 
   auto ret = get_bitmap_contain(terms, is_any);
+  if (cf_bsi_ && ret) {
+    if (!ret.value()) {
+      return roaring_bitmap_copy(non_null_bitmap);
+    }
+    auto *result = roaring_bitmap_andnot(non_null_bitmap, ret.value());
+    roaring_bitmap_free(ret.value());
+    return result;
+  }
   if (ret) {
     if (ret.value() == nullptr) {
       ret = roaring_bitmap_create();
@@ -208,6 +228,9 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_not_contain(
 
 Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_lt(
     const std::string &term, bool include_eq) const {
+  if (cf_bsi_) {
+    return get_bitmap_bsi(term, include_eq ? CompareOp::LE : CompareOp::LT);
+  }
   if (field_.element_data_type() == DataType::BOOL) {
     LOG_ERROR("Bool type is not supported for range query");
     return tl::make_unexpected(Status::InternalError());
@@ -320,6 +343,9 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_lt(
 
 Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_gt(
     const std::string &term, bool include_eq) const {
+  if (cf_bsi_) {
+    return get_bitmap_bsi(term, include_eq ? CompareOp::GE : CompareOp::GT);
+  }
   if (field_.element_data_type() == DataType::BOOL) {
     LOG_ERROR("Bool type is not supported for range query");
     return tl::make_unexpected(Status::InternalError());
@@ -690,11 +716,21 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_suffix(
 
 
 Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_null() const {
+  if (cf_bsi_) {
+    std::shared_lock lock(bsi_mutex_);
+    auto *bitmap = null_bitmap_.copy();
+    roaring_bitmap_remove_range(bitmap, bsi_doc_count_, uint64_t{1} << 32);
+    return bitmap;
+  }
   return null_bitmap_.copy();
 }
 
 
 Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_non_null() const {
+  if (cf_bsi_) {
+    std::shared_lock lock(bsi_mutex_);
+    return get_bsi_non_null();
+  }
   if (sealed_) {
     roaring_bitmap_t *bitmap = null_bitmap_.copy();
     roaring_bitmap_flip_inplace(bitmap, 0, max_id_ + 1);
@@ -730,6 +766,9 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_non_null() const {
 
 InvertedSearchResult::Ptr InvertedColumnIndexer::search(
     const std::string &value, CompareOp op) const {
+  if (cf_bsi_ && value.size() != field_.element_data_size()) {
+    return nullptr;
+  }
   if (field_.is_array_type()) {
     LOG_ERROR("%s: array type doesn't support single value search",
               id().c_str());
@@ -739,6 +778,13 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search(
   std::string encoded_value = encode(value);
   auto search_res = std::make_shared<InvertedSearchResult>();
   Result<roaring_bitmap_t *> bitmap_res;
+  // Capture the prefix before reading postings; later completions must not
+  // expose pending IDs from an earlier read.
+  uint64_t doc_count = 0;
+  if (cf_bsi_) {
+    std::shared_lock lock(bsi_mutex_);
+    doc_count = bsi_doc_count_;
+  }
 
   switch (op) {
     case CompareOp::EQ: {
@@ -784,6 +830,10 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search(
   }
 
   if (bitmap_res) {
+    if (cf_bsi_ && bitmap_res.value()) {
+      roaring_bitmap_remove_range(bitmap_res.value(), doc_count,
+                                  uint64_t{1} << 32);
+    }
     search_res->set_and_own_bitmap(bitmap_res.value());
     return search_res;
   } else {
@@ -799,6 +849,11 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::multi_search(
   auto encoded_values = encode(values);
   auto search_res = std::make_shared<InvertedSearchResult>();
   Result<roaring_bitmap_t *> bitmap_res;
+  uint64_t doc_count = 0;
+  if (cf_bsi_) {
+    std::shared_lock lock(bsi_mutex_);
+    doc_count = bsi_doc_count_;
+  }
 
   switch (op) {
     case CompareOp::CONTAIN_ANY: {
@@ -824,6 +879,10 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::multi_search(
   }
 
   if (bitmap_res) {
+    if (cf_bsi_ && bitmap_res.value()) {
+      roaring_bitmap_remove_range(bitmap_res.value(), doc_count,
+                                  uint64_t{1} << 32);
+    }
     search_res->set_and_own_bitmap(bitmap_res.value());
     return search_res;
   } else {

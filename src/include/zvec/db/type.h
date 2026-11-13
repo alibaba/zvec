@@ -33,6 +33,16 @@ enum class IndexType : uint32_t {
   FTS = 11,
 };
 
+// Physical layouts for scalar inverted indexes.
+enum class InvertIndexLayout : uint32_t {
+  // Equality/IN use postings; ranges scan term keys.
+  TERM = 0,
+  // Add the existing range bitmap optimization for sealed segments.
+  TERM_RANGE = 1,
+  // Keep postings and use segment-wide bit slices for integer ranges.
+  TERM_BSI = 2,
+};
+
 /*
  * Column data types
  */

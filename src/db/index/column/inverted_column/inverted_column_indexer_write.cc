@@ -23,6 +23,9 @@ namespace zvec {
 
 
 Status InvertedColumnIndexer::insert(uint32_t id, const std::string &value) {
+  if (cf_bsi_) {
+    return insert_bsi(id, &value);
+  }
   if (read_only_) {
     return Status::PermissionDenied();
   }
@@ -76,6 +79,10 @@ Status InvertedColumnIndexer::insert(uint32_t id, const std::string &value) {
 
 Status InvertedColumnIndexer::insert(uint32_t id,
                                      const std::vector<std::string> &values) {
+  if (cf_bsi_) {
+    return Status::InvalidArgument("BSI requires a single encoded integer");
+  }
+
   if (read_only_) {
     return Status::PermissionDenied();
   }
@@ -115,6 +122,10 @@ Status InvertedColumnIndexer::insert(uint32_t id,
 
 
 Status InvertedColumnIndexer::insert(uint32_t id, bool value) {
+  if (cf_bsi_) {
+    return Status::InvalidArgument("BSI requires a single encoded integer");
+  }
+
   if (read_only_) {
     return Status::PermissionDenied();
   }
@@ -138,6 +149,10 @@ Status InvertedColumnIndexer::insert(uint32_t id, bool value) {
 
 Status InvertedColumnIndexer::insert(uint32_t id,
                                      const std::vector<bool> &values) {
+  if (cf_bsi_) {
+    return Status::InvalidArgument("BSI requires a single encoded integer");
+  }
+
   if (read_only_) {
     return Status::PermissionDenied();
   }
@@ -181,6 +196,9 @@ Status InvertedColumnIndexer::insert(uint32_t id,
 
 
 Status InvertedColumnIndexer::insert_null(uint32_t id) {
+  if (cf_bsi_) {
+    return insert_bsi(id, nullptr);
+  }
   if (read_only_) {
     return Status::PermissionDenied();
   }
@@ -191,36 +209,41 @@ Status InvertedColumnIndexer::insert_null(uint32_t id) {
 
 
 Status InvertedColumnIndexer::flush_special_values() {
+  std::shared_lock lock(bsi_mutex_);
   if (read_only_) {
     return Status::PermissionDenied();
   }
 
+  rocksdb::WriteBatch batch;
   std::string value;
   if (null_bitmap_.cardinality() != 0) {
     if (!null_bitmap_.serialize(&value).ok()) {
       LOG_ERROR("Failed to serialize null bitmap");
       return Status::InternalError();
     }
-    auto s = ctx_.db_->Put(ctx_.write_opts_, key_null(), value);
-    if (!s.ok()) {
-      LOG_ERROR("Failed to insert null bitmap to %s, code[%d], reason[%s]",
-                id().c_str(), s.code(), s.ToString().c_str());
-      return Status::InternalError();
+    auto status = batch.Put(key_null(), value);
+    if (!status.ok()) {
+      return Status::InternalError(status.ToString());
     }
   }
-
-  auto s =
-      ctx_.db_->Put(ctx_.write_opts_, key_max_id(), std::to_string(max_id_));
-  if (s.ok()) {
-    LOG_DEBUG("Special values flushed to %s", id().c_str());
-    return Status::OK();
-  } else {
-    LOG_ERROR("Failed to insert max_id to %s, code[%d], reason[%s]",
-              id().c_str(), s.code(), s.ToString().c_str());
-    return Status::InternalError();
+  auto status = batch.Put(key_max_id(), std::to_string(max_id_));
+  if (!status.ok()) {
+    return Status::InternalError(status.ToString());
   }
+  if (cf_bsi_) {
+    status = batch.Put(key_bsi_doc_count(), std::to_string(bsi_doc_count_));
+    if (!status.ok()) {
+      return Status::InternalError(status.ToString());
+    }
+  }
+  status = ctx_.db_->Write(ctx_.write_opts_, &batch);
+  if (!status.ok()) {
+    LOG_ERROR("Failed to flush special values for %s: %s", id().c_str(),
+              status.ToString().c_str());
+    return Status::InternalError(status.ToString());
+  }
+  return Status::OK();
 }
-
 
 rocksdb::Status InvertedColumnIndexer::index_array_len(uint32_t array_id,
                                                        uint32_t len) {
@@ -243,19 +266,21 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
   if (read_only_) {
     return Status::PermissionDenied();
   }
-  if (!enable_range_optimization_) {
+  if (!enable_range_optimization_ && !cf_bsi_) {
     return Status::PermissionDenied();
   }
 
-  if (!ctx_.reset_cf(cf_name_ranges()).ok()) {
-    // Reset the range index in case it is corrupted
-    LOG_ERROR("Failed to reset range index");
-    return Status::InternalError();
-  }
-  cf_ranges_ = ctx_.get_cf(cf_name_ranges());
-  if (!cf_ranges_) {
-    LOG_ERROR("Failed to get column families for %s", id().c_str());
-    return Status::InternalError();
+  if (enable_range_optimization_) {
+    if (!ctx_.reset_cf(cf_name_ranges()).ok()) {
+      // Reset the range index in case it is corrupted
+      LOG_ERROR("Failed to reset range index");
+      return Status::InternalError();
+    }
+    cf_ranges_ = ctx_.get_cf(cf_name_ranges());
+    if (!cf_ranges_) {
+      LOG_ERROR("Failed to get column families for %s", id().c_str());
+      return Status::InternalError();
+    }
   }
 
   // TODO: make them configurable
@@ -347,21 +372,23 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
     auto term_doc_count = roaring_bitmap_get_cardinality(bitmap_cur);
     doc_count += term_doc_count;
 
-    // Range
-    if (!range_slot_initialized) {
-      range_slot_initialized = true;
-      range_slot_doc_count = 0;
-      range_begin_key = iter_term->key().ToString();
-      roaring_bitmap_clear(bitmap_range);
-    }
-    range_end_key = iter_term->key().ToString();
-    range_slot_doc_count += term_doc_count;
-    roaring_bitmap_or_inplace(bitmap_range, bitmap_cur);
-    if (range_slot_doc_count >= num_doc_per_range_slot) {
-      if (create_range_slot().ok()) {
-        range_slot_initialized = false;
-      } else {
-        return Status::InternalError();
+    if (enable_range_optimization_) {
+      // Range
+      if (!range_slot_initialized) {
+        range_slot_initialized = true;
+        range_slot_doc_count = 0;
+        range_begin_key = iter_term->key().ToString();
+        roaring_bitmap_clear(bitmap_range);
+      }
+      range_end_key = iter_term->key().ToString();
+      range_slot_doc_count += term_doc_count;
+      roaring_bitmap_or_inplace(bitmap_range, bitmap_cur);
+      if (range_slot_doc_count >= num_doc_per_range_slot) {
+        if (create_range_slot().ok()) {
+          range_slot_initialized = false;
+        } else {
+          return Status::InternalError();
+        }
       }
     }
 
@@ -382,13 +409,17 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
   }
 
 
+  if (!iter_term->status().ok()) {
+    return Status::InternalError(iter_term->status().ToString());
+  }
+
   // Finalize
   if (range_slot_initialized) {
     if (!create_range_slot().ok()) {
       return Status::InternalError();
     }
   }
-  if (num_range_slot_created >= term_count) {
+  if (enable_range_optimization_ && num_range_slot_created >= term_count) {
     LOG_DEBUG(
         "Drop range index in %s, range_slot_count[%ld] vs term_count[%ld].",
         id().c_str(), num_range_slot_created, term_count);
@@ -437,13 +468,18 @@ Status InvertedColumnIndexer::seal() {
     return Status::PermissionDenied();
   }
 
+  if (cf_bsi_ && !bsi_pending_ids_.empty()) {
+    return Status::FailedPrecondition(
+        "BSI document IDs must be contiguous before sealing");
+  }
+
   Status status = flush_special_values();
   if (!status.ok()) {
     LOG_ERROR("Failed to flush special values to %s", id().c_str());
     return status;
   }
 
-  if (enable_range_optimization_) {
+  if (enable_range_optimization_ || cf_bsi_) {
     status = generate_statistical_indexes();
     if (!status.ok()) {
       LOG_ERROR("Failed to generate statistical indexes in %s", id().c_str());

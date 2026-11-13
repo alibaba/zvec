@@ -88,6 +88,11 @@ Examples:
 }
 
 void ZVecPyTyping::bind_index_types(pybind11::module_ &m) {
+  py::enum_<InvertIndexLayout>(m, "InvertIndexLayout")
+      .value("TERM", InvertIndexLayout::TERM)
+      .value("TERM_RANGE", InvertIndexLayout::TERM_RANGE)
+      .value("TERM_BSI", InvertIndexLayout::TERM_BSI);
+
   py::enum_<IndexType>(m, "IndexType", R"pbdoc(
 Enumeration of supported index types in Zvec.
 

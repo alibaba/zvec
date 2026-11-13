@@ -24,11 +24,29 @@
 
 namespace zvec {
 
+Status InvertIndexParams::validate(DataType data_type) const {
+  switch (layout_) {
+    case InvertIndexLayout::TERM:
+    case InvertIndexLayout::TERM_RANGE:
+      return Status::OK();
+    case InvertIndexLayout::TERM_BSI:
+      if (data_type == DataType::INT32 || data_type == DataType::INT64 ||
+          data_type == DataType::UINT32 || data_type == DataType::UINT64) {
+        return Status::OK();
+      }
+      return Status::InvalidArgument(
+          "TERM_BSI requires a single INT32, INT64, UINT32 or UINT64 field");
+    default:
+      return Status::InvalidArgument("Unknown inverted index layout");
+  }
+}
+
 std::string InvertIndexParams::to_string() const {
   std::ostringstream oss;
   oss << "InvertIndexParams{"
       << "enable_range_optimization:"
-      << (enable_range_optimization_ ? "true" : "false")
+      << (enable_range_optimization() ? "true" : "false")
+      << ", layout:" << static_cast<uint32_t>(layout_)
       << ", enable_extended_wildcard:"
       << (enable_extended_wildcard_ ? "true" : "false") << "}";
   return oss.str();

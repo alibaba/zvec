@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "python_param.h"
+#include <optional>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 #include <zvec/core/interface/constants.h>
@@ -212,12 +213,12 @@ Attributes:
       invert_params(m, "InvertIndexParam", R"pbdoc(
 Parameters for configuring an invert index.
 
-This class controls whether range query
-optimization is enabled for invert index structures.
+This class selects term, term/range, or term/BSI storage for scalar indexes.
 
 Attributes:
-    type (IndexType): Always `IndexType.INVERTED`.
-    enable_range_optimization (bool): Whether range optimization is enabled.
+    type (IndexType): Always `IndexType.INVERT`.
+    layout (InvertIndexLayout): Effective scalar index layout.
+    enable_range_optimization (bool): Whether the legacy TERM_RANGE layout is enabled.
     enable_extended_wildcard (bool): Whether extended wildcard (suffix and infix) search is enabled.
 
 Examples:
@@ -228,11 +229,27 @@ Examples:
     False
     >>> config = params.to_dict()
     >>> print(config)
-    {'enable_range_optimization': True, 'enable_extended_wildcard': False}
+    {'enable_range_optimization': True, 'enable_extended_wildcard': False, 'layout': 'TERM_RANGE'}
 )pbdoc");
   invert_params
-      .def(py::init<bool, bool>(), py::arg("enable_range_optimization") = false,
-           py::arg("enable_extended_wildcard") = false,
+      .def(py::init([](std::optional<bool> enable_range_optimization,
+                       bool enable_extended_wildcard,
+                       std::optional<InvertIndexLayout> layout) {
+             if (layout && enable_range_optimization) {
+               throw py::value_error(
+                   "Specify either layout or enable_range_optimization");
+             }
+             if (layout) {
+               return std::make_shared<InvertIndexParams>(
+                   *layout, enable_extended_wildcard);
+             }
+             return std::make_shared<InvertIndexParams>(
+                 enable_range_optimization.value_or(false),
+                 enable_extended_wildcard);
+           }),
+           py::arg("enable_range_optimization") = py::none(),
+           py::arg("enable_extended_wildcard") = false, py::kw_only(),
+           py::arg("layout") = py::none(),
            R"pbdoc(
 Constructs an InvertIndexParam instance.
 
@@ -241,11 +258,17 @@ Args:
         optimization for the invert index. Defaults to False.
     enable_extended_wildcard (bool, optional): If True, enables extended wildcard
         search including suffix and infix patterns. Defaults to False.
+    layout (InvertIndexLayout, optional): Explicit storage layout. TERM_BSI
+        supports single INT32, INT64, UINT32 and UINT64 fields. Mutually exclusive
+        with enable_range_optimization. Equality/IN continue using term postings,
+        while range comparisons use segment-wide bit slices. Changing the layout
+        through Collection.create_index rebuilds the field index.
 )pbdoc")
+      .def_property_readonly("layout", &InvertIndexParams::layout)
       .def_property_readonly("enable_range_optimization",
                              &InvertIndexParams::enable_range_optimization,
                              R"pbdoc(
-bool: Whether range optimization is enabled for this inverted index.
+bool: Whether the legacy TERM_RANGE layout is enabled. False for TERM_BSI.
 )pbdoc")
       .def_property_readonly("enable_extended_wildcard",
                              &InvertIndexParams::enable_extended_wildcard,
@@ -260,6 +283,7 @@ Note: Prefix search is always enabled regardless of this setting.
             dict["enable_range_optimization"] =
                 self.enable_range_optimization();
             dict["enable_extended_wildcard"] = self.enable_extended_wildcard();
+            dict["layout"] = py::cast(self.layout()).attr("name");
             return dict;
           },
           "Convert to dictionary with all fields")
@@ -270,18 +294,28 @@ Note: Prefix search is always enabled regardless of this setting.
                     std::to_string(self.enable_range_optimization()) +
                     ","
                     "\"enable_extended_wildcard\":" +
-                    std::to_string(self.enable_extended_wildcard()) + "}";
+                    std::to_string(self.enable_extended_wildcard()) +
+                    ",\"layout\":\"" +
+                    py::cast(self.layout()).attr("name").cast<std::string>() +
+                    "\"}";
            })
       .def(py::pickle(
           [](const InvertIndexParams &self) {  // __getstate__
             return py::make_tuple(self.enable_range_optimization(),
-                                  self.enable_extended_wildcard());
+                                  self.enable_extended_wildcard(),
+                                  static_cast<uint32_t>(self.layout()));
           },
           [](py::tuple t) {  // __setstate__
-            if (t.size() != 2)
-              throw std::runtime_error("Invalid state for InvertIndexParams");
-            return std::make_shared<InvertIndexParams>(t[0].cast<bool>(),
-                                                       t[1].cast<bool>());
+            if (t.size() == 2) {
+              return std::make_shared<InvertIndexParams>(t[0].cast<bool>(),
+                                                         t[1].cast<bool>());
+            }
+            if (t.size() == 3) {
+              return std::make_shared<InvertIndexParams>(
+                  static_cast<InvertIndexLayout>(t[2].cast<uint32_t>()),
+                  t[1].cast<bool>());
+            }
+            throw std::runtime_error("Invalid state for InvertIndexParams");
           }));
 
   // binding fts index params

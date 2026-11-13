@@ -356,6 +356,17 @@ Status FieldSchema::validate() const {
     }
   } else {
     if (index_params_) {
+      if (index_params_->type() == IndexType::INVERT) {
+        auto params =
+            std::dynamic_pointer_cast<InvertIndexParams>(index_params_);
+        if (!params) {
+          return Status::InvalidArgument("Invalid inverted index params");
+        }
+        auto status = params->validate(data_type_);
+        if (!status.ok()) {
+          return status;
+        }
+      }
       if (index_params_->is_vector_index_type()) {
         return Status::InvalidArgument(
             "Invalid schema: scalar field[", name_,

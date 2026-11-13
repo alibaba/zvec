@@ -30,7 +30,13 @@ Status InvertedIndexer::open(bool create_dir_if_missing, bool read_only) {
     }
     auto params =
         std::dynamic_pointer_cast<InvertIndexParams>(field.index_params());
+    if (auto status = params->validate(field.data_type()); !status.ok()) {
+      return status;
+    }
     cf_names.emplace_back(field.name() + INVERT_SUFFIX_TERMS);
+    if (params->layout() == InvertIndexLayout::TERM_BSI) {
+      cf_names.emplace_back(field.name() + INVERT_SUFFIX_BSI);
+    }
     if (field.is_array_type()) {
       cf_names.emplace_back(field.name() + INVERT_SUFFIX_ARRAY_LEN);
     }
@@ -132,6 +138,7 @@ Status InvertedIndexer::seal() {
     }
     if (s = indexer->seal(); !s.ok()) {
       LOG_ERROR("Failed to seal %s", indexer->id().c_str());
+      return s;
     }
   }
 
@@ -164,11 +171,15 @@ Status InvertedIndexer::create_column_indexer(const FieldSchema &field) {
   }
   auto params =
       std::dynamic_pointer_cast<InvertIndexParams>(field.index_params());
+  if (auto status = params->validate(field.data_type()); !status.ok()) {
+    return status;
+  }
 
   Status s;
   bool cf_terms_created{false};
   bool cf_array_len_created{false};
   bool cf_ranges_created{false};
+  bool cf_bsi_created{false};
   bool cf_reversed_terms_created{false};
   AILEGO_DEFER([&]() {
     if (s.ok()) {
@@ -183,6 +194,9 @@ Status InvertedIndexer::create_column_indexer(const FieldSchema &field) {
       }
       if (cf_ranges_created) {
         rocksdb_context_.drop_cf(field.name() + INVERT_SUFFIX_RANGES);
+      }
+      if (cf_bsi_created) {
+        rocksdb_context_.drop_cf(field.name() + INVERT_SUFFIX_BSI);
       }
       if (cf_reversed_terms_created) {
         rocksdb_context_.drop_cf(field.name() + INVERT_SUFFIX_REVERSED_TERMS);
@@ -205,6 +219,13 @@ Status InvertedIndexer::create_column_indexer(const FieldSchema &field) {
     } else {
       return s;
     }
+  }
+  if (params->layout() == InvertIndexLayout::TERM_BSI) {
+    s = rocksdb_context_.create_cf(field.name() + INVERT_SUFFIX_BSI);
+    if (!s.ok()) {
+      return s;
+    }
+    cf_bsi_created = true;
   }
   if (allow_range_optimization(field) && params->enable_range_optimization()) {
     s = rocksdb_context_.create_cf(field.name() + INVERT_SUFFIX_RANGES);

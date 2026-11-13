@@ -372,3 +372,27 @@ TEST(IndexParamsTest, QuantizerParamWithVectorIndex) {
     EXPECT_FALSE(params == params2);
   }
 }
+
+TEST(IndexParamsTest, InvertLayouts) {
+  InvertIndexParams terms(false);
+  InvertIndexParams ranges(true);
+  InvertIndexParams bsi(InvertIndexLayout::TERM_BSI);
+  EXPECT_EQ(terms.layout(), InvertIndexLayout::TERM);
+  EXPECT_EQ(ranges.layout(), InvertIndexLayout::TERM_RANGE);
+  EXPECT_EQ(bsi.layout(), InvertIndexLayout::TERM_BSI);
+  EXPECT_FALSE(bsi.enable_range_optimization());
+  EXPECT_EQ(bsi, *bsi.clone());
+  EXPECT_NE(bsi, terms);
+  EXPECT_NE(bsi, ranges);
+  for (auto type :
+       {DataType::INT32, DataType::INT64, DataType::UINT32, DataType::UINT64}) {
+    EXPECT_TRUE(bsi.validate(type).ok());
+  }
+  for (auto type : {DataType::FLOAT, DataType::DOUBLE, DataType::STRING,
+                    DataType::BOOL, DataType::ARRAY_INT64}) {
+    EXPECT_FALSE(bsi.validate(type).ok());
+  }
+  EXPECT_FALSE(InvertIndexParams(static_cast<InvertIndexLayout>(99))
+                   .validate(DataType::INT32)
+                   .ok());
+}

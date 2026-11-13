@@ -31,6 +31,9 @@ Status InvertedColumnIndexer::open() {
   }
   auto params =
       std::dynamic_pointer_cast<InvertIndexParams>(field_.index_params());
+  if (auto status = params->validate(field_.data_type()); !status.ok()) {
+    return status;
+  }
   enable_range_optimization_ =
       allow_range_optimization(field_) && params->enable_range_optimization();
   enable_extended_wildcard_ =
@@ -53,12 +56,21 @@ Status InvertedColumnIndexer::open() {
     }
   }
 
+  if (params->layout() == InvertIndexLayout::TERM_BSI) {
+    cf_bsi_ = ctx_.get_cf(cf_name_bsi());
+    if (!cf_bsi_) {
+      return Status::InternalError("Missing BSI column family");
+    }
+  }
+
   if (enable_range_optimization_) {
     cf_ranges_ = ctx_.get_cf(cf_name_ranges());
     if (!cf_ranges_) {
       LOG_ERROR("Failed to get cf_ranges for %s", id().c_str());
       return Status::InternalError();
     }
+  }
+  if (enable_range_optimization_ || cf_bsi_) {
     cf_cdf_ = ctx_.get_cf(cf_name_cdf());
     if (!cf_cdf_) {
       LOG_ERROR("Failed to get cf_cdf for %s", id().c_str());
@@ -110,6 +122,12 @@ Status InvertedColumnIndexer::open() {
   } else if (s.code() != rocksdb::Status::kNotFound) {
     LOG_ERROR("Failed to retrieve null bitmap from %s", id().c_str());
     return Status::InternalError();
+  }
+
+  if (cf_bsi_) {
+    if (auto status = restore_bsi_state(); !status.ok()) {
+      return status;
+    }
   }
 
   // Get indexer state
@@ -166,6 +184,17 @@ Status InvertedColumnIndexer::drop_storage() {
     if (s = ctx_.drop_cf(cf_name_ranges()); !s.ok()) {
       return s;
     }
+  }
+  if (cf_bsi_) {
+    if (s = ctx_.drop_cf(cf_name_bsi()); !s.ok()) {
+      return s;
+    }
+    rs = ctx_.db_->Delete(ctx_.write_opts_, key_bsi_doc_count());
+    if (!rs.ok()) {
+      return Status::InternalError(rs.ToString());
+    }
+  }
+  if (enable_range_optimization_ || cf_bsi_) {
     rs = ctx_.db_->Delete(ctx_.write_opts_, cf_cdf_, field_.name());
     if (!rs.ok()) {
       LOG_ERROR("Failed to delete cdf of %s", id().c_str());

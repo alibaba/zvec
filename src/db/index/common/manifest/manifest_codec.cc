@@ -15,6 +15,7 @@
 #include "db/index/common/manifest_codec.h"
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -49,6 +50,7 @@ constexpr uint32_t kEnableRangeOptimization = 1;
 // Added after the protobuf dependency was dropped; old manifests simply lack
 // this field and decode to the default (false).
 constexpr uint32_t kEnableExtendedWildcard = 2;
+constexpr uint32_t kLayout = 3;
 }  // namespace f_invert
 namespace f_hnsw {
 constexpr uint32_t kBase = 1;
@@ -624,18 +626,29 @@ void EncodeInvert(const InvertIndexParams *params, std::string *out) {
              params->enable_range_optimization());
   w.put_bool(f_invert::kEnableExtendedWildcard,
              params->enable_extended_wildcard());
+  // Keep legacy layouts byte-compatible with existing manifests.
+  if (params->layout() == InvertIndexLayout::TERM_BSI) {
+    w.put_varint(f_invert::kLayout, static_cast<uint32_t>(params->layout()));
+  }
 }
 
 InvertIndexParams::OPtr DecodeInvert(std::string_view buf) {
   bool enable_range_optimization = false;
   bool enable_extended_wildcard = false;
+  std::optional<InvertIndexLayout> layout;
   Reader r(buf);
   while (r.next()) {
     if (r.field() == f_invert::kEnableRangeOptimization) {
       enable_range_optimization = r.bool_value();
     } else if (r.field() == f_invert::kEnableExtendedWildcard) {
       enable_extended_wildcard = r.bool_value();
+    } else if (r.field() == f_invert::kLayout) {
+      layout = static_cast<InvertIndexLayout>(r.uint32_value());
     }
+  }
+  if (layout) {
+    return std::make_shared<InvertIndexParams>(*layout,
+                                               enable_extended_wildcard);
   }
   return std::make_shared<InvertIndexParams>(enable_range_optimization,
                                              enable_extended_wildcard);

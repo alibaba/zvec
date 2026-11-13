@@ -1166,3 +1166,19 @@ TEST(ManifestCodecTest, IvfPqParametersSurvivePersistence) {
     }
   }
 }
+
+TEST(ManifestCodecGolden, InvertLayouts) {
+  for (auto layout : {InvertIndexLayout::TERM, InvertIndexLayout::TERM_RANGE,
+                      InvertIndexLayout::TERM_BSI}) {
+    InvertIndexParams params(layout);
+    std::string encoded;
+    ManifestCodec::EncodeIndexParams(&params, &encoded);
+    auto decoded = ManifestCodec::DecodeIndexParams(encoded);
+    ASSERT_NE(decoded, nullptr);
+    EXPECT_EQ(*decoded, params);
+    if (layout == InvertIndexLayout::TERM_BSI) {
+      // IndexParams.invert (field 1), containing layout (field 3) = 2.
+      EXPECT_EQ(encoded, std::string("\x0a\x02\x18\x02", 4));
+    }
+  }
+}

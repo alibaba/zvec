@@ -75,13 +75,20 @@ class ZVEC_API InvertIndexParams : public IndexParams {
   InvertIndexParams(bool enable_range_optimization = true,
                     bool enable_extended_wildcard = false)
       : IndexParams(IndexType::INVERT),
-        enable_range_optimization_(enable_range_optimization),
+        layout_(enable_range_optimization ? InvertIndexLayout::TERM_RANGE
+                                          : InvertIndexLayout::TERM),
+        enable_extended_wildcard_(enable_extended_wildcard) {}
+
+  explicit InvertIndexParams(InvertIndexLayout layout,
+                             bool enable_extended_wildcard = false)
+      : IndexParams(IndexType::INVERT),
+        layout_(layout),
         enable_extended_wildcard_(enable_extended_wildcard) {}
 
   using OPtr = std::shared_ptr<InvertIndexParams>;
 
   Ptr clone() const override {
-    return std::make_shared<InvertIndexParams>(enable_range_optimization_,
+    return std::make_shared<InvertIndexParams>(layout_,
                                                enable_extended_wildcard_);
   }
 
@@ -92,18 +99,24 @@ class ZVEC_API InvertIndexParams : public IndexParams {
       return false;
     }
     auto &other_invert = dynamic_cast<const InvertIndexParams &>(other);
-    return enable_range_optimization_ ==
-               other_invert.enable_range_optimization_ &&
+    return layout_ == other_invert.layout_ &&
            enable_extended_wildcard_ == other_invert.enable_extended_wildcard_;
   }
 
   bool enable_range_optimization() const {
-    return enable_range_optimization_;
+    return layout_ == InvertIndexLayout::TERM_RANGE;
   }
 
   void set_enable_range_optimization(bool enable_range_optimization) {
-    enable_range_optimization_ = enable_range_optimization;
+    layout_ = enable_range_optimization ? InvertIndexLayout::TERM_RANGE
+                                        : InvertIndexLayout::TERM;
   }
+
+  InvertIndexLayout layout() const {
+    return layout_;
+  }
+
+  Status validate(DataType data_type) const;
 
   bool enable_extended_wildcard() const {
     return enable_extended_wildcard_;
@@ -116,7 +129,7 @@ class ZVEC_API InvertIndexParams : public IndexParams {
   }
 
  private:
-  bool enable_range_optimization_{false};
+  InvertIndexLayout layout_{InvertIndexLayout::TERM};
   bool enable_extended_wildcard_{false};
 };
 

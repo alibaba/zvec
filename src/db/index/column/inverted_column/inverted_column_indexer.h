@@ -15,7 +15,8 @@
 
 #pragma once
 
-
+#include <set>
+#include <shared_mutex>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/db/schema.h>
 #include "db/common/concurrent_roaring_bitmap.h"
@@ -207,6 +208,10 @@ class InvertedColumnIndexer {
     return sealed_;
   }
 
+  bool uses_bsi() const {
+    return cf_bsi_ != nullptr;
+  }
+
 
   /*!
    * \brief Drop the index storage
@@ -236,6 +241,14 @@ class InvertedColumnIndexer {
 
 
   Status open();
+
+  Status insert_bsi(uint32_t id, const std::string *value);
+  Status restore_bsi_state();
+  void record_bsi_id(uint32_t id);
+  Result<roaring_bitmap_t *> get_bitmap_bsi(const std::string &term,
+                                            CompareOp op) const;
+  // The caller holds bsi_mutex_ while accessing the published prefix.
+  roaring_bitmap_t *get_bsi_non_null() const;
 
   inline std::string encode(const std::string &term) const {
     return InvertedIndexCodec::Encode(term, field_.element_data_type());
@@ -371,6 +384,14 @@ class InvertedColumnIndexer {
     return INVERT_CDF;
   };
 
+  inline std::string cf_name_bsi() const {
+    return field_.name() + INVERT_SUFFIX_BSI;
+  }
+
+  inline std::string key_bsi_doc_count() const {
+    return field_.name() + INVERT_KEY_BSI_DOC_COUNT;
+  }
+
   inline std::string key_max_id() const {
     return field_.name() + INVERT_KEY_MAX_ID;
   };
@@ -406,6 +427,7 @@ class InvertedColumnIndexer {
   // 3. cf_array_len_:          Inverted index for array length
   // 4. cf_ranges_:             Range index
   // 5. cf_cdf_:                Cumulative distribution function
+  //    cf_bsi_:                Optional segment-wide bit slices
   // 6. default cf:             Stores special values
   //                              - null-value bitmap
   //                              - max id
@@ -420,6 +442,13 @@ class InvertedColumnIndexer {
   rocksdb::ColumnFamilyHandle *cf_array_len_{nullptr};
   rocksdb::ColumnFamilyHandle *cf_ranges_{nullptr};
   rocksdb::ColumnFamilyHandle *cf_cdf_{nullptr};
+  rocksdb::ColumnFamilyHandle *cf_bsi_{nullptr};
+
+  // A contiguous prefix makes complement queries safe during out-of-order
+  // construction. Pending IDs are reconstructed from terms after reopening.
+  mutable std::shared_mutex bsi_mutex_;
+  uint64_t bsi_doc_count_{0};
+  std::set<uint32_t> bsi_pending_ids_;
 
 
   bool read_only_{false};

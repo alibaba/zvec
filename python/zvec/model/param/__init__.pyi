@@ -1225,14 +1225,16 @@ class InvertIndexParam(IndexParam):
         False
         >>> config = params.to_dict()
         >>> print(config)
-        {'enable_range_optimization': True, 'enable_extended_wildcard': False}
+        {'enable_range_optimization': True, 'enable_extended_wildcard': False, 'layout': 'TERM_RANGE'}
     """
 
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
-        enable_range_optimization: bool = False,
+        enable_range_optimization: bool | None = None,
         enable_extended_wildcard: bool = False,
+        *,
+        layout: zvec._zvec.typing.InvertIndexLayout | None = None,
     ) -> None:
         """
         Constructs an InvertIndexParam instance.
@@ -1242,8 +1244,15 @@ class InvertIndexParam(IndexParam):
                 optimization for the invert index. Defaults to False.
             enable_extended_wildcard (bool, optional): If True, enables extended wildcard
                 search including suffix and infix patterns. Defaults to False.
+            layout (InvertIndexLayout, optional): Explicit storage layout, mutually
+                exclusive with enable_range_optimization. TERM_BSI supports scalar
+                INT32, INT64, UINT32 and UINT64 fields. Equality/IN use term postings;
+                ranges use segment-wide bit slices. Collection.create_index rebuilds
+                the field index when switching layouts.
         """
 
+    @property
+    def layout(self) -> zvec._zvec.typing.InvertIndexLayout: ...
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
     def to_dict(self) -> dict:

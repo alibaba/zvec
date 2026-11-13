@@ -54,6 +54,12 @@ bool InvertCondOptimizer::ratio_rule(Segment *segment,
     return false;
   }
 
+  // The term-range scan threshold estimates posting traversal. BSI visits a
+  // fixed set of slices; retain that path until its scan cost is calibrated.
+  if (invert_column_reader->uses_bsi()) {
+    return false;
+  }
+
   CompareOp oper = InvertSearch::query_nodeop2search_op(invert_cond->op());
   if (oper == CompareOp::NONE) {
     LOG_ERROR("Optimizer get search operator failed. invert_cond [%s]",
