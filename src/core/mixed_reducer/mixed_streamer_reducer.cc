@@ -352,9 +352,15 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
   const IndexQueryMeta source_streamer_query_meta{streamer->meta().data_type(),
                                                   streamer->meta().dimension()};
 
-  bool need_revert = (target_streamer_->meta().reformer_name() !=
-                          streamer->meta().reformer_name() &&
-                      reformer != nullptr);
+  // Records of a legacy reformer are copied as-is only when the target
+  // encodes them identically. A matching reformer name is not enough: the
+  // reformers can still hold different per-index state, such as a rotation.
+  const bool same_encoding =
+      target_streamer_->meta().reformer_name() ==
+          streamer->meta().reformer_name() &&
+      (target_streamer_reformer_ == nullptr || reformer == nullptr ||
+       target_streamer_reformer_->is_compatible(*reformer));
+  bool need_revert = reformer != nullptr && !same_encoding;
   if (target_builder_ && reformer) {
     need_revert = true;
   }

@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <iostream>
 #include <memory>
+#include <random>
 #include <set>
 #include <thread>
 #include <variant>
@@ -32,6 +33,7 @@
 #include <arrow/result.h>
 #include <arrow/table.h>
 #include <gtest/gtest.h>
+#include "core/quantizer/rotator/rotator.h"
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
 #include "db/index/column/vector_column/vector_column_indexer.h"
@@ -902,6 +904,73 @@ INSTANTIATE_TEST_SUITE_P(
         IndexType::IVF_RABITQ}));
 #endif
 
+// Building the index of a segment whose insert-time payloads hold another
+// rotation must start from the raw vectors: decoding the payloads and encoding
+// them again would quantize every record twice.
+TEST_F(SegmentHelperTest,
+       CreateVectorIndexTask_RebuildsForeignRotationFromRaw) {
+  constexpr uint32_t kDocCount = 200;
+  constexpr uint32_t kDimension = 128;
+  const std::string column = "dense_fp32";
+  auto index_params = std::make_shared<HnswIndexParams>(
+      MetricType::L2, 16, 200, QuantizeType::INT4, false, QuantizerParam(true));
+  // The shared schema would also apply the params to its sparse field.
+  auto schema = test::TestHelper::CreateNormalSchema(false, col_name);
+  ASSERT_EQ(kDimension, schema->get_vector_field(column)->dimension());
+  schema->get_vector_field(column)->set_index_params(index_params);
+  auto version_manager = create_version_manager(*schema);
+
+  // A segment written before all rotators shared one rotation.
+  core::Rotator::set_default_seed_for_testing(20260886);
+  auto segment = test::TestHelper::CreateSegmentWithDoc(
+      col_path, *schema, 0, 0, id_map, delete_store, version_manager,
+      write_options(), 0, kDocCount);
+  core::Rotator::set_default_seed_for_testing(core::Rotator::kDefaultSeed);
+  ASSERT_NE(segment, nullptr);
+  ASSERT_TRUE(segment->flush().ok());
+
+  CreateVectorIndexTask task(segment, column, index_params, 1);
+  auto segment_task = SegmentTask::CreateCreateVectorIndexTask(task);
+  ASSERT_NE(segment_task, nullptr);
+  ASSERT_TRUE(SegmentHelper::Execute(segment_task).ok());
+  auto executed = std::get<CreateVectorIndexTask>(segment_task->task_info());
+  ASSERT_NE(executed.output_segment_meta_, nullptr);
+  ASSERT_TRUE(segment
+                  ->reload_vector_index(*schema, executed.output_segment_meta_,
+                                        executed.output_vector_indexers_,
+                                        executed.output_quant_vector_indexers_)
+                  .ok());
+  auto built = segment->get_quant_vector_indexer(column);
+  ASSERT_EQ(1u, built.size());
+  ASSERT_EQ(IndexType::HNSW, built.front()->field_schema().index_type());
+
+  // The same index, built from the raw vectors alone.
+  auto reference = std::make_shared<VectorColumnIndexer>(
+      col_path + "/reference.index",
+      FieldSchema(column, DataType::VECTOR_FP32, kDimension, false,
+                  index_params));
+  ASSERT_TRUE(
+      reference->open(vector_column_params::ReadOptions{true, true}).ok());
+  ASSERT_TRUE(reference->merge(segment->get_vector_indexer(column)).ok());
+  ASSERT_EQ(kDocCount, reference->doc_count());
+  ASSERT_EQ(kDocCount, built.front()->doc_count());
+
+  for (uint32_t i = 0; i < kDocCount; ++i) {
+    auto expected = reference->fetch(i);
+    auto actual = built.front()->fetch(i);
+    ASSERT_TRUE(expected.has_value());
+    ASSERT_TRUE(actual.has_value());
+    ASSERT_EQ(
+        std::get<vector_column_params::DenseVectorBuffer>(
+            expected->vector_buffer)
+            .data,
+        std::get<vector_column_params::DenseVectorBuffer>(actual->vector_buffer)
+            .data)
+        << i;
+  }
+  ASSERT_TRUE(reference->close().ok());
+}
+
 TEST_F(SegmentHelperTest, CompactTask_FilterMultiSegmentsRegression) {
   auto schema = test::TestHelper::CreateSchemaWithVectorIndex();
   auto version_manager = create_version_manager(*schema);
@@ -926,4 +995,205 @@ TEST_F(SegmentHelperTest, CompactTask_FilterMultiSegmentsRegression) {
 
   ASSERT_NE(output_segment, nullptr);
   ASSERT_EQ(output_segment->doc_count(), 650);
+}
+
+// Rotated INT8/INT4 records are only valid under the rotation of the index
+// that encoded them. A merge takes the quantized sources over as they are when
+// the merged index holds the same rotation, and rebuilds from the raw sources
+// otherwise. Indexes written before all rotators shared one rotation hold a
+// random rotation each.
+//
+// The raw sources hold decoys instead of the vectors behind the quantized
+// sources, so the merged index tells which sources it was built from.
+class RotatedQuantizerMergeTest : public testing::Test {
+ protected:
+  static constexpr uint32_t kDimension = 64;
+  static constexpr uint32_t kDocsPerSource = 150;
+  static constexpr uint32_t kSharedRotation = core::Rotator::kDefaultSeed;
+  static constexpr uint32_t kForeignRotation = 20260886;
+  static constexpr uint32_t kOtherForeignRotation = 20260887;
+
+  void SetUp() override {
+    FileHelper::RemoveDirectory(dir_);
+    FileHelper::CreateDirectory(dir_);
+    std::mt19937 gen(886);
+    std::normal_distribution<float> dist(0.0f, 1.0f);
+    for (auto *set : {&vectors_, &decoys_}) {
+      set->assign(kDocsPerSource * 2, std::vector<float>(kDimension));
+      for (auto &vector : *set) {
+        for (auto &value : vector) value = dist(gen);
+      }
+    }
+  }
+
+  void TearDown() override {
+    core::Rotator::set_default_seed_for_testing(kSharedRotation);
+    FileHelper::RemoveDirectory(dir_);
+  }
+
+  static IndexParams::Ptr MakeRotatedParams(IndexType index_type,
+                                            MetricType metric_type,
+                                            QuantizeType quantize_type) {
+    if (index_type == IndexType::HNSW) {
+      return std::make_shared<HnswIndexParams>(
+          metric_type, 16, 200, quantize_type, false, QuantizerParam(true));
+    }
+    return std::make_shared<FlatIndexParams>(metric_type, quantize_type,
+                                             QuantizerParam(true));
+  }
+
+  // Opens a new indexer holding `vectors[first, first + kDocsPerSource)`.
+  VectorColumnIndexer::Ptr make_source(
+      const std::string &name, const IndexParams::Ptr &index_params,
+      const std::vector<std::vector<float>> &vectors, uint32_t first) {
+    auto indexer = std::make_shared<VectorColumnIndexer>(
+        dir_ + "/" + name, FieldSchema("dense", DataType::VECTOR_FP32,
+                                       kDimension, false, index_params));
+    EXPECT_TRUE(
+        indexer->open(vector_column_params::ReadOptions{true, true}).ok());
+    for (uint32_t i = 0; i < kDocsPerSource; ++i) {
+      vector_column_params::VectorData data{
+          vector_column_params::DenseVector{vectors[first + i].data()}};
+      EXPECT_TRUE(indexer->insert(data, i).ok());
+    }
+    EXPECT_TRUE(indexer->flush().ok());
+    return indexer;
+  }
+
+  // Counts the vectors of `vectors` whose nearest neighbor in `indexer` is
+  // the document at their own position.
+  static uint32_t SelfHits(const VectorColumnIndexer::Ptr &indexer,
+                           const std::vector<std::vector<float>> &vectors) {
+    auto hnsw_params = std::make_shared<zvec::HnswQueryParams>();
+    hnsw_params->set_is_linear(true);
+    uint32_t hits = 0;
+    for (uint32_t i = 0; i < vectors.size(); ++i) {
+      vector_column_params::QueryParams query;
+      query.topk = 1;
+      query.query_params =
+          indexer->field_schema().index_type() == IndexType::HNSW
+              ? std::static_pointer_cast<zvec::QueryParams>(hnsw_params)
+              : std::make_shared<zvec::FlatQueryParams>();
+      vector_column_params::VectorData data{
+          vector_column_params::DenseVector{vectors[i].data()}};
+      auto results = indexer->search(data, query);
+      EXPECT_TRUE(results.has_value());
+      if (!results.has_value()) continue;
+      auto iter = results.value()->create_iterator();
+      hits += iter->valid() && iter->doc_id() == i;
+    }
+    return hits;
+  }
+
+  // Merges two segments' worth of sources of `source_type`, written under the
+  // given rotations, into an index of `output_type`.
+  void merge_and_check(IndexType source_type, IndexType output_type,
+                       MetricType metric_type, QuantizeType quantize_type,
+                       uint32_t first_rotation, uint32_t second_rotation,
+                       bool expect_quantized_sources) {
+    SCOPED_TRACE(testing::Message()
+                 << "source=" << static_cast<int>(source_type)
+                 << " output=" << static_cast<int>(output_type)
+                 << " metric=" << static_cast<int>(metric_type)
+                 << " quantize=" << static_cast<int>(quantize_type)
+                 << " rotations=" << first_rotation << "," << second_rotation);
+    FileHelper::RemoveDirectory(dir_);
+    FileHelper::CreateDirectory(dir_);
+
+    const auto source_params =
+        MakeRotatedParams(source_type, metric_type, quantize_type);
+    const auto raw_params = std::make_shared<FlatIndexParams>(metric_type);
+    std::vector<VectorColumnIndexer::Ptr> quantized_sources;
+    std::vector<VectorColumnIndexer::Ptr> raw_sources;
+    const uint32_t rotations[] = {first_rotation, second_rotation};
+    for (uint32_t i = 0; i < 2; ++i) {
+      core::Rotator::set_default_seed_for_testing(rotations[i]);
+      quantized_sources.push_back(make_source("quantized." + std::to_string(i),
+                                              source_params, vectors_,
+                                              i * kDocsPerSource));
+      raw_sources.push_back(make_source("raw." + std::to_string(i), raw_params,
+                                        decoys_, i * kDocsPerSource));
+    }
+    core::Rotator::set_default_seed_for_testing(kSharedRotation);
+
+    const FieldSchema output_field(
+        "dense", DataType::VECTOR_FP32, kDimension, false,
+        MakeRotatedParams(output_type, metric_type, quantize_type));
+    VectorColumnIndexer::Ptr merged;
+    auto status = SegmentHelper::MergeWithOptionalReuse(
+        dir_ + "/merged", output_field, quantized_sources, nullptr, 1, &merged,
+        &raw_sources);
+    ASSERT_TRUE(status.ok()) << status.message();
+    ASSERT_NE(nullptr, merged);
+    ASSERT_EQ(kDocsPerSource * 2, merged->doc_count());
+
+    // The merged index answers queries for exactly one of the two sets.
+    const uint32_t min_hits = kDocsPerSource * 2 * 95 / 100;
+    const uint32_t max_misses = kDocsPerSource * 2 * 5 / 100;
+    const auto &expected = expect_quantized_sources ? vectors_ : decoys_;
+    const auto &unexpected = expect_quantized_sources ? decoys_ : vectors_;
+    EXPECT_GE(SelfHits(merged, expected), min_hits);
+    EXPECT_LE(SelfHits(merged, unexpected), max_misses);
+    EXPECT_EQ(expect_quantized_sources,
+              merged->shares_encoding_state(quantized_sources));
+
+    ASSERT_TRUE(merged->close().ok());
+    for (auto &source : quantized_sources) ASSERT_TRUE(source->close().ok());
+    for (auto &source : raw_sources) ASSERT_TRUE(source->close().ok());
+  }
+
+  std::string dir_ = "./test_rotated_quantizer_merge";
+  std::vector<std::vector<float>> vectors_;
+  std::vector<std::vector<float>> decoys_;
+};
+
+// Insert-time Flat payloads are built into a new index of another type.
+TEST_F(RotatedQuantizerMergeTest, NewIndexTakesOverSharedRotation) {
+  for (auto metric_type : {MetricType::L2, MetricType::COSINE}) {
+    for (auto quantize_type : {QuantizeType::INT8, QuantizeType::INT4}) {
+      merge_and_check(IndexType::FLAT, IndexType::HNSW, metric_type,
+                      quantize_type, kSharedRotation, kSharedRotation, true);
+    }
+  }
+}
+
+TEST_F(RotatedQuantizerMergeTest, NewIndexRebuildsForeignRotation) {
+  for (auto metric_type : {MetricType::L2, MetricType::COSINE}) {
+    for (auto quantize_type : {QuantizeType::INT8, QuantizeType::INT4}) {
+      merge_and_check(IndexType::FLAT, IndexType::HNSW, metric_type,
+                      quantize_type, kSharedRotation, kForeignRotation, false);
+      merge_and_check(IndexType::FLAT, IndexType::HNSW, metric_type,
+                      quantize_type, kForeignRotation, kSharedRotation, false);
+      // Sources that agree with each other still differ from the new index.
+      merge_and_check(IndexType::FLAT, IndexType::HNSW, metric_type,
+                      quantize_type, kForeignRotation, kForeignRotation, false);
+    }
+  }
+}
+
+// Indexes of the output type are merged by copying the first one as the base,
+// which carries its rotation over.
+TEST_F(RotatedQuantizerMergeTest, ReusedBaseTakesOverSharedRotation) {
+  for (auto index_type : {IndexType::HNSW, IndexType::FLAT}) {
+    for (auto metric_type : {MetricType::L2, MetricType::COSINE}) {
+      merge_and_check(index_type, index_type, metric_type, QuantizeType::INT8,
+                      kSharedRotation, kSharedRotation, true);
+      // The base keeps a foreign rotation that all sources agree on.
+      merge_and_check(index_type, index_type, metric_type, QuantizeType::INT8,
+                      kForeignRotation, kForeignRotation, true);
+    }
+  }
+}
+
+TEST_F(RotatedQuantizerMergeTest, ReusedBaseRebuildsForeignRotation) {
+  for (auto index_type : {IndexType::HNSW, IndexType::FLAT}) {
+    for (auto metric_type : {MetricType::L2, MetricType::COSINE}) {
+      merge_and_check(index_type, index_type, metric_type, QuantizeType::INT8,
+                      kSharedRotation, kForeignRotation, false);
+      merge_and_check(index_type, index_type, metric_type, QuantizeType::INT8,
+                      kForeignRotation, kSharedRotation, false);
+      merge_and_check(index_type, index_type, metric_type, QuantizeType::INT8,
+                      kForeignRotation, kOtherForeignRotation, false);
+    }
+  }
 }

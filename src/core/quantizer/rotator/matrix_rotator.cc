@@ -26,9 +26,10 @@ namespace core {
 namespace {
 
 // Generate a dim x dim random Gaussian matrix (row-major) without Eigen.
-void random_gaussian_matrix(float *mat, size_t dim) {
-  static std::random_device rd;
-  static std::mt19937 gen(rd());
+// std::normal_distribution is implementation-defined, so a seed reproduces
+// the matrix on one platform only; Rotator::equals() covers the rest.
+void random_gaussian_matrix(float *mat, size_t dim, uint32_t seed) {
+  std::mt19937 gen(seed);
   std::normal_distribution<float> dist(0.0f, 1.0f);
   for (size_t i = 0; i < dim * dim; ++i) {
     mat[i] = dist(gen);
@@ -112,13 +113,13 @@ void householder_qr(const float *a_in, float *q, size_t dim) {
 
 }  // anonymous namespace
 
-int MatrixRotator::init_impl(size_t dim) {
+int MatrixRotator::init_impl(size_t dim, uint32_t seed) {
   if (dim == 0) {
     return IndexError_InvalidArgument;
   }
   // Generate dim x dim random Gaussian matrix
   std::vector<float> rand_mat(dim * dim);
-  random_gaussian_matrix(rand_mat.data(), dim);
+  random_gaussian_matrix(rand_mat.data(), dim, seed);
 
   // Householder QR: A = Q * R, use Q^T as the rotation matrix
   std::vector<float> q(dim * dim);

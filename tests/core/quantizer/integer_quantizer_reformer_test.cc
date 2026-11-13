@@ -982,6 +982,64 @@ TEST(RotatorTest, RotateUnrotateFhtKac_Dim100) {
   EXPECT_LT(max_err, 1e-3f);
 }
 
+// Rotated records are only valid under the rotation that produced them, so
+// every rotator created by default must apply the same one.
+TEST(RotatorTest, DefaultRotationIsShared) {
+  std::mt19937 gen(42);
+  std::uniform_real_distribution<float> dist(-10.0f, 10.0f);
+  for (auto type : {RotatorType::FhtKac, RotatorType::Matrix}) {
+    for (size_t dim : {8u, 97u, 128u}) {
+      SCOPED_TRACE(testing::Message()
+                   << "type=" << static_cast<int>(type) << " dim=" << dim);
+      std::shared_ptr<Rotator> first, second, seeded, reseeded, other_dim;
+      ASSERT_EQ(Rotator::create(&first, dim, type), 0);
+      ASSERT_EQ(Rotator::create(&second, dim, type), 0);
+      ASSERT_EQ(Rotator::create(&seeded, dim, type, 886), 0);
+      ASSERT_EQ(Rotator::create(&reseeded, dim, type, 886), 0);
+      ASSERT_EQ(Rotator::create(&other_dim, dim + 8, type), 0);
+
+      EXPECT_TRUE(first->equals(*first));
+      EXPECT_TRUE(first->equals(*second));
+      EXPECT_TRUE(second->equals(*first));
+      EXPECT_TRUE(seeded->equals(*reseeded));
+      EXPECT_FALSE(first->equals(*seeded));
+      EXPECT_FALSE(seeded->equals(*first));
+      EXPECT_FALSE(first->equals(*other_dim));
+
+      EXPECT_TRUE(Rotator::same_rotation(first, second));
+      EXPECT_TRUE(Rotator::same_rotation(nullptr, nullptr));
+      EXPECT_FALSE(Rotator::same_rotation(first, nullptr));
+      EXPECT_FALSE(Rotator::same_rotation(nullptr, first));
+      EXPECT_FALSE(Rotator::same_rotation(first, seeded));
+
+      std::vector<float> vec(dim);
+      for (auto &value : vec) value = dist(gen);
+      EXPECT_EQ(first->rotate(vec.data()), second->rotate(vec.data()));
+      EXPECT_NE(first->rotate(vec.data()), seeded->rotate(vec.data()));
+    }
+  }
+
+  // The two algorithms never agree, whatever their payloads.
+  std::shared_ptr<Rotator> fht, matrix;
+  ASSERT_EQ(Rotator::create(&fht, 16, RotatorType::FhtKac), 0);
+  ASSERT_EQ(Rotator::create(&matrix, 16, RotatorType::Matrix), 0);
+  EXPECT_FALSE(fht->equals(*matrix));
+}
+
+// The seed hook reproduces indexes written before the rotation was fixed.
+TEST(RotatorTest, DefaultSeedOverride) {
+  std::shared_ptr<Rotator> canonical, legacy, restored;
+  ASSERT_EQ(Rotator::create(&canonical, 64), 0);
+  Rotator::set_default_seed_for_testing(886);
+  const int ret = Rotator::create(&legacy, 64);
+  Rotator::set_default_seed_for_testing(Rotator::kDefaultSeed);
+  ASSERT_EQ(ret, 0);
+  ASSERT_EQ(Rotator::create(&restored, 64), 0);
+
+  EXPECT_FALSE(canonical->equals(*legacy));
+  EXPECT_TRUE(canonical->equals(*restored));
+}
+
 // Test dump/open roundtrip: serialize then deserialize, verify rotate output
 // matches.
 TEST(RotatorTest, DumpOpenRoundtrip) {
@@ -1018,6 +1076,7 @@ TEST(RotatorTest, DumpOpenRoundtrip) {
   EXPECT_EQ(original->rotator_type(), loaded->rotator_type());
   EXPECT_EQ(original->dimension(), loaded->dimension());
   EXPECT_TRUE(loaded->initialized());
+  EXPECT_TRUE(original->equals(*loaded));
 
   // Verify rotate output matches
   std::mt19937 gen(42);

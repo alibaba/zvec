@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "rotator.h"
+#include <atomic>
 #include <cstring>
 #include <vector>
 #include <zvec/ailego/hash/crc32c.h>
@@ -92,14 +93,26 @@ struct Header {
   }
 };
 
+std::atomic<uint32_t> default_seed{Rotator::kDefaultSeed};
+
 }  // anonymous namespace
 
 // ============================================================================
 // Static factories
 // ============================================================================
 
+void Rotator::set_default_seed_for_testing(uint32_t seed) {
+  default_seed.store(seed, std::memory_order_relaxed);
+}
+
 int Rotator::create(std::shared_ptr<Rotator> *out, size_t dimension,
                     RotatorType rotator_type) {
+  return create(out, dimension, rotator_type,
+                default_seed.load(std::memory_order_relaxed));
+}
+
+int Rotator::create(std::shared_ptr<Rotator> *out, size_t dimension,
+                    RotatorType rotator_type, uint32_t seed) {
   *out = nullptr;
   std::unique_ptr<Rotator> rot;
   if (rotator_type == RotatorType::FhtKac) {
@@ -108,7 +121,7 @@ int Rotator::create(std::shared_ptr<Rotator> *out, size_t dimension,
     rot = std::make_unique<MatrixRotator>();
   }
   rot->dimension_ = dimension;
-  int ret = rot->init_impl(dimension);
+  int ret = rot->init_impl(dimension, seed);
   if (ret != 0) {
     LOG_ERROR("Rotator::create: init_impl failed, ret=%d, dim=%zu", ret,
               dimension);
@@ -208,6 +221,23 @@ std::unique_ptr<Rotator> Rotator::load_matrix(const float *matrix,
 // ============================================================================
 // Non-virtual public methods
 // ============================================================================
+
+bool Rotator::equals(const Rotator &other) const {
+  if (this == &other) {
+    return true;
+  }
+  if (!initialized_ || !other.initialized_ ||
+      rotator_type() != other.rotator_type() ||
+      dimension_ != other.dimension_ || blob_bytes() != other.blob_bytes()) {
+    return false;
+  }
+  // The blob is the whole state of a rotation of a given type and dimension.
+  std::vector<char> blob(blob_bytes());
+  std::vector<char> other_blob(blob.size());
+  save_blob(blob.data());
+  other.save_blob(other_blob.data());
+  return blob == other_blob;
+}
 
 std::vector<float> Rotator::rotate(const float *in) const {
   std::vector<float> out(dimension_);

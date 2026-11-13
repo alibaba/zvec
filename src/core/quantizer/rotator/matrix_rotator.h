@@ -39,7 +39,7 @@ class MatrixRotator : public Rotator {
 
  protected:
   // Protected virtuals for base class factory/serialization
-  int init_impl(size_t dim) override;
+  int init_impl(size_t dim, uint32_t seed) override;
   size_t blob_bytes() const override;
   void save_blob(char *data) const override;
   void load_blob(const char *data) override;
