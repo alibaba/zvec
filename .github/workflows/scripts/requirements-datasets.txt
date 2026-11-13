@@ -1,0 +1,4 @@
+numpy>=1.26,<3
+pyarrow>=17,<24
+h5py>=3.11,<4
+faiss-cpu>=1.9,<2
