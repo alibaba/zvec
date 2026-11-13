@@ -38,6 +38,7 @@
 #include <zvec/db/reranker.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
+#include "db/collection_fetch_internal.h"
 #include "db/collection_query_internal.h"
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
@@ -2208,6 +2209,57 @@ Result<DocPtrMap> CollectionImpl::fetch(
   auto segments = get_all_segments();
 
   DocPtrMap results;
+  if (!include_vector && pks.size() > 1) {
+    struct Batch {
+      Segment::Ptr segment;
+      std::vector<uint64_t> ids;
+      std::vector<Doc::Ptr *> output;
+    };
+    std::vector<Batch> batches;
+    std::unordered_map<Segment *, size_t> batch_index;
+    std::vector<DocPtrMap::value_type *> entries;
+    entries.reserve(pks.size());
+    for (const auto &pk : pks) {
+      auto [output, inserted] = results.emplace(pk, nullptr);
+      if (!inserted) continue;
+      entries.push_back(&*output);
+    }
+    // The usual all-distinct batch can use the caller's keys directly. Only
+    // duplicate inputs need a compact key vector, in first-occurrence order.
+    std::vector<std::string> unique_keys;
+    const auto *lookup_keys = &pks;
+    if (entries.size() != pks.size()) {
+      unique_keys.reserve(entries.size());
+      for (const auto *entry : entries) unique_keys.push_back(entry->first);
+      lookup_keys = &unique_keys;
+    }
+    const auto doc_ids = detail::FetchPrimaryKeyIds(*id_map_, *lookup_keys);
+    for (size_t i = 0; i < entries.size(); ++i) {
+      const uint64_t doc_id = doc_ids[i];
+      if (doc_id == INVALID_DOC_ID || delete_store_->is_deleted(doc_id)) {
+        continue;
+      }
+      auto segment = local_segment_by_doc_id(doc_id, segments);
+      if (!segment) {
+        LOG_WARN("doc_id: %zu segment not found", (size_t)doc_id);
+        continue;
+      }
+      auto [index, new_batch] =
+          batch_index.emplace(segment.get(), batches.size());
+      if (new_batch) batches.push_back(Batch{segment, {}, {}});
+      auto &batch = batches[index->second];
+      batch.ids.push_back(doc_id);
+      // unordered_map rehash preserves references to its mapped values.
+      batch.output.push_back(&entries[i]->second);
+    }
+    for (auto &batch : batches) {
+      auto docs = batch.segment->fetch_batch(batch.ids, output_fields, false);
+      for (size_t row = 0; row < batch.ids.size(); ++row) {
+        *batch.output[row] = std::move(docs[row]);
+      }
+    }
+    return results;
+  }
 
   for (auto &pk : pks) {
     uint64_t doc_id;
