@@ -446,7 +446,8 @@ int FlatStreamerEntity::search(const void *query, const IndexFilter &filter,
 int FlatStreamerEntity::search_batch_rows(
     const void *query, const IndexFilter &filter, uint32_t *scan_count,
     IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
-    FlatSearchScratch *scratch, size_t batch_size) const {
+    FlatSearchScratch *scratch, size_t batch_size,
+    const MatchCallback *on_match) const {
   const size_t stride = index_meta_.element_size();
   const size_t block_rows = block_vector_count();
   const size_t block_size = linear_block_size();
@@ -487,7 +488,7 @@ int FlatStreamerEntity::search_batch_rows(
   if (has_extra_values && extra_values.size() < capacity)
     extra_values.resize(capacity);
   auto &topk = scratch->batch_topk;
-  ResetBatchTopK(&topk, *heap);
+  if (!on_match) ResetBatchTopK(&topk, *heap);
   size_t count = 0;
   auto flush = [&]() {
     if (count == 0) return;
@@ -498,13 +499,23 @@ int FlatStreamerEntity::search_batch_rows(
         quantizer_->calc_distance_dp_query_batch(
             pointers.data(), static_cast<int>(count), query, distances.data());
       }
-    } else {
+    } else if (batch_distance_) {
       batch_distance_(pointers.data(), batch_query, count,
                       index_meta_.dimension(), distances.data(),
                       has_extra_values ? extra_values.data() : nullptr);
+    } else {
+      for (size_t i = 0; i < count; ++i) {
+        row_major_distance(query, pointers[i], 1, distances.data() + i);
+      }
     }
     *context_stats->mutable_dist_calced_count() += count;
-    topk.push_block(distances.data(), keys.data(), count);
+    if (on_match) {
+      for (size_t i = 0; i < count; ++i) {
+        (*on_match)(keys[i], distances[i]);
+      }
+    } else {
+      topk.push_block(distances.data(), keys.data(), count);
+    }
     count = 0;
   };
 
@@ -562,7 +573,81 @@ int FlatStreamerEntity::search_batch_rows(
     block = header.next;
   }
   flush();
-  MergeBatchTopK(&topk, heap);
+  if (!on_match) MergeBatchTopK(&topk, heap);
+  return 0;
+}
+
+int FlatStreamerEntity::scan_matches(
+    const void *query, const IndexFilter &filter, const MatchCallback &on_match,
+    IndexContext::Stats *context_stats, FlatSearchScratch *scratch,
+    size_t batch_size, const std::vector<uint64_t> *keys) const {
+  if (use_external_vector_) return IndexError_Unsupported;
+  if (!query || !on_match || !context_stats || !scratch) {
+    return IndexError_InvalidArgument;
+  }
+  if (stored_vector_size() == 0 || linear_block_size() == 0) {
+    return IndexError_InvalidFormat;
+  }
+  if (!keys) {
+    uint32_t scan_count = 0;
+    return search_batch_rows(query, filter, &scan_count, nullptr, context_stats,
+                             scratch, batch_size, &on_match);
+  }
+
+  // Selected-key searches remain proportional to the number of requested
+  // keys. Resolve locations, then validate the stored key and deletion bit
+  // before exposing a key to user callbacks.
+  for (uint64_t key : *keys) {
+    if (key == kInvalidKey) continue;
+    VectorLocation location{};
+    {
+      ailego::ReadLock lock(*key_info_map_lock_);
+      std::lock_guard<ailego::ReadLock> guard(lock);
+      if (use_key_info_map_) {
+        auto it = key_info_map_.find(key);
+        if (it == key_info_map_.end()) continue;
+        location = it->second;
+      } else {
+        if (key >= withid_key_info_map_.size()) continue;
+        location = withid_key_info_map_[key];
+      }
+    }
+    const size_t block_index = location.offset / linear_block_size();
+    const size_t row =
+        (location.offset % linear_block_size()) / stored_vector_size();
+    if (row >= block_vector_count()) return IndexError_InvalidFormat;
+    BlockLocation block{location.segment_id,
+                        static_cast<uint32_t>(block_index)};
+    IndexStorage::MemoryBlock stored_keys, deletion;
+    if (get_block_keys(block, stored_keys) != 0 || !stored_keys.data() ||
+        get_block_deletion_map(block, deletion) != 0 || !deletion.data()) {
+      return IndexError_ReadData;
+    }
+    uint64_t stored_key;
+    std::memcpy(&stored_key,
+                static_cast<const char *>(stored_keys.data()) +
+                    row * sizeof(stored_key),
+                sizeof(stored_key));
+    DeletionMap deleted;
+    std::memcpy(deleted.bitset.data(), deletion.data(), sizeof(deleted));
+    if (stored_key != key || deleted.test(row) ||
+        (filter.is_valid() && filter(key))) {
+      ++(*context_stats->mutable_filtered_count());
+      continue;
+    }
+    auto segment = get_segment(location.segment_id);
+    IndexStorage::MemoryBlock vector;
+    if (!segment ||
+        segment->read(location.offset, vector, index_meta_.element_size()) !=
+            index_meta_.element_size() ||
+        !vector.data()) {
+      return IndexError_ReadData;
+    }
+    float distance;
+    row_major_distance(query, vector.data(), 1, &distance);
+    ++(*context_stats->mutable_dist_calced_count());
+    on_match(key, distance);
+  }
   return 0;
 }
 
