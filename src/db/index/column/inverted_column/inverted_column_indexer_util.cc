@@ -102,6 +102,7 @@ Status InvertedColumnIndexer::open() {
   if (s.ok()) {
     try {
       max_id_ = std::stoul(value);
+      doc_id_limit_ = uint64_t{max_id_.load()} + 1;
     } catch (const std::exception &e) {
       LOG_ERROR("Failed to parse max id from %s for %s, exception[%s]",
                 value.c_str(), id().c_str(), e.what());
@@ -110,6 +111,24 @@ Status InvertedColumnIndexer::open() {
   } else if (s.code() != rocksdb::Status::kNotFound) {
     LOG_ERROR("Failed to retrieve max id from %s", id().c_str());
     return Status::InternalError();
+  }
+
+  // Persist the exclusive bound explicitly: max_id == 0 cannot distinguish
+  // an empty index from an index containing document zero.
+  s = ctx_.db_->Get(ctx_.read_opts_, key_doc_id_limit(), &value);
+  if (s.ok()) {
+    try {
+      size_t parsed = 0;
+      const auto limit = std::stoull(value, &parsed);
+      if (parsed != value.size() || limit > (uint64_t{1} << 32)) {
+        return Status::InternalError("Invalid inverted document bound");
+      }
+      doc_id_limit_ = limit;
+    } catch (const std::exception &) {
+      return Status::InternalError("Invalid inverted document bound");
+    }
+  } else if (!s.IsNotFound()) {
+    return Status::InternalError(s.ToString());
   }
 
   // Get null bitmap if exists
@@ -162,6 +181,12 @@ InvertedColumnIndexer::Ptr InvertedColumnIndexer::CreateAndOpen(
 
 
 Status InvertedColumnIndexer::drop_storage() {
+  std::unique_lock<std::shared_mutex> lock;
+  if (bsi_) {
+    lock = std::unique_lock(bsi_->mutex);
+    bsi_->dropped = true;
+    read_only_ = true;
+  }
   Status s = Status::OK();
   rocksdb::Status rs;
   AILEGO_DEFER([&]() {
@@ -193,6 +218,8 @@ Status InvertedColumnIndexer::drop_storage() {
     if (!rs.ok()) {
       return Status::InternalError(rs.ToString());
     }
+    rs = ctx_.db_->Delete(ctx_.write_opts_, key_bsi_sample());
+    if (!rs.ok()) return Status::InternalError(rs.ToString());
   }
   if (enable_range_optimization_ || cf_bsi_) {
     rs = ctx_.db_->Delete(ctx_.write_opts_, cf_cdf_, field_.name());
@@ -214,6 +241,9 @@ Status InvertedColumnIndexer::drop_storage() {
     s = Status::InternalError();
     return s;
   }
+
+  rs = ctx_.db_->Delete(ctx_.write_opts_, key_doc_id_limit());
+  if (!rs.ok()) return Status::InternalError(rs.ToString());
 
   rs = ctx_.db_->Delete(ctx_.write_opts_, key_null());
   if (!rs.ok()) {

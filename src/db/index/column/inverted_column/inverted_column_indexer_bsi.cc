@@ -14,12 +14,60 @@
 
 
 #include <algorithm>
-#include <cstdlib>
 #include <memory>
+#include <ailego/pattern/defer.h>
+#include <rocksdb/advanced_cache.h>
 #include <rocksdb/write_batch.h>
 #include "inverted_column_indexer.h"
 
 namespace zvec {
+
+namespace {
+
+constexpr size_t kBsiSampleSize = 256;
+
+// The same deterministic bottom-k IDs in every field preserve correlations.
+// Replaying a docID updates its sample in place instead of counting it twice.
+uint64_t SamplePriority(uint32_t id) {
+  uint64_t x = uint64_t{id} + 0x9e3779b97f4a7c15ULL;
+  x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+  return x ^ (x >> 31);
+}
+
+// Include a conservative allowance for container headers and pointer arrays.
+// Frozen payloads belong to the backing string and must not be counted twice.
+size_t BitmapMemoryBytes(const roaring_bitmap_t *bitmap) {
+  if (!bitmap) return 0;
+  size_t bytes =
+      sizeof(*bitmap) + size_t(bitmap->high_low_container.allocation_size) * 64;
+  if (!(bitmap->high_low_container.flags & ROARING_FLAG_FROZEN)) {
+    roaring_statistics_t stats;
+    roaring_bitmap_statistics(bitmap, &stats);
+    bytes += uint64_t(stats.n_bytes_array_containers) +
+             stats.n_bytes_run_containers + stats.n_bytes_bitset_containers;
+  }
+  return bytes;
+}
+
+struct CachedBsiSlice {
+  std::string buffer;
+  roaring_bitmap_t *bitmap{nullptr};
+  ~CachedBsiSlice() {
+    if (bitmap) roaring_bitmap_free(bitmap);
+  }
+  size_t charge() const {
+    return sizeof(*this) + buffer.capacity() + BitmapMemoryBytes(bitmap);
+  }
+};
+
+const rocksdb::Cache::CacheItemHelper kBsiCacheHelper{
+    rocksdb::CacheEntryRole::kMisc,
+    [](void *value, rocksdb::MemoryAllocator *) {
+      delete static_cast<CachedBsiSlice *>(value);
+    }};
+
+}  // namespace
 
 Status InvertedColumnIndexer::restore_bsi_state() {
   auto state = std::make_unique<BsiState>();
@@ -39,10 +87,41 @@ Status InvertedColumnIndexer::restore_bsi_state() {
   } else if (!status.IsNotFound()) {
     return Status::InternalError(status.ToString());
   }
-  // Benchmark-only switch, fixed when opening the index. Writing indexes
-  // always keep mutable slices; an empty slice vector denotes on-demand reads.
-  const auto *nonresident = std::getenv("ZVEC_BSI_BENCH_NONRESIDENT");
-  if (sealed_ && read_only_ && nonresident && std::string(nonresident) == "1") {
+  status = ctx_.db_->Get(ctx_.read_opts_, key_bsi_sample(), &value);
+  if (status.ok()) {
+    const size_t entry_size = sizeof(uint32_t) + 1 + width / 8;
+    if (value.empty() || value[0] != 1 ||
+        (value.size() - 1) % entry_size != 0 ||
+        (value.size() - 1) / entry_size > kBsiSampleSize) {
+      return Status::InternalError("Invalid BSI sample");
+    }
+    for (size_t offset = 1; offset < value.size(); offset += entry_size) {
+      uint32_t id;
+      std::memcpy(&id, value.data() + offset, sizeof(id));
+      const char is_null = value[offset + sizeof(id)];
+      if (id >= state->doc_id_limit || (is_null != 0 && is_null != 1) ||
+          state->samples.count(SamplePriority(id))) {
+        return Status::InternalError("Invalid BSI sample entry");
+      }
+      state->samples.emplace(
+          SamplePriority(id),
+          ValueSample::Entry{
+              id, is_null != 0,
+              is_null ? std::string{}
+                      : value.substr(offset + sizeof(id) + 1, width / 8)});
+    }
+  } else if (!status.IsNotFound()) {
+    return Status::InternalError(status.ToString());
+  }
+  const auto params =
+      std::static_pointer_cast<InvertIndexParams>(field_.index_params());
+  // Only sealed indexes can read immutable slices without a snapshot.
+  if (sealed_) state->cache_mode = params->bsi_cache_mode();
+  if (state->cache_mode != BsiCacheMode::RESIDENT) {
+    if (state->cache_mode == BsiCacheMode::LRU) {
+      // A single shard avoids partitioning the budget across just 32/64 keys.
+      state->cache = rocksdb::NewLRUCache(params->bsi_cache_bytes(), 0, true);
+    }
     bsi_ = std::move(state);
     return Status::OK();
   }
@@ -73,28 +152,58 @@ Status InvertedColumnIndexer::restore_bsi_state() {
 }
 
 void InvertedColumnIndexer::update_bsi(uint32_t id, const std::string &term) {
-  std::unique_lock lock(bsi_->mutex);
+  // The caller holds the column's BSI lock across term and slice updates.
   // Like term postings, replay assumes the same value for the same docID.
   // Always update slices even if a prior term write survived a partial flush.
   // Bit zero is the most significant bit of the order-preserving encoding.
   for (size_t bit = 0; bit < term.size() * 8; ++bit) {
     const auto byte = static_cast<unsigned char>(term[bit / 8]);
     if ((byte & (0x80u >> (bit % 8))) != 0) {
-      roaring_bitmap_add(bsi_->slices[bit].get(), id);
+      if (roaring_bitmap_add_checked(bsi_->slices[bit].get(), id)) {
+        bsi_->dirty_slices |= uint64_t{1} << bit;
+      }
     }
   }
   bsi_->doc_id_limit = std::max(bsi_->doc_id_limit, uint64_t{id} + 1);
-  bsi_->dirty = true;
+  sample_bsi_value(id, &term);
 }
 
-Status InvertedColumnIndexer::flush_bsi() {
+void InvertedColumnIndexer::sample_bsi_value(uint32_t id,
+                                             const std::string *term) {
+  const auto priority = SamplePriority(id);
+  auto &samples = bsi_->samples;
+  if (samples.size() == kBsiSampleSize && priority > samples.rbegin()->first) {
+    return;
+  }
+  samples[priority] = {id, term == nullptr, term ? *term : std::string{}};
+  if (samples.size() > kBsiSampleSize) samples.erase(std::prev(samples.end()));
+  bsi_->sample_view.reset();
+}
+
+std::shared_ptr<const InvertedColumnIndexer::ValueSample>
+InvertedColumnIndexer::value_sample() const {
+  if (!bsi_) return nullptr;
   std::unique_lock lock(bsi_->mutex);
-  if (!bsi_->dirty) return Status::OK();
-  rocksdb::WriteBatch batch;
+  if (bsi_->dropped || bsi_->samples.empty()) return nullptr;
+  if (!bsi_->sample_view) {
+    auto sample = std::make_shared<ValueSample>();
+    sample->type = field_.element_data_type();
+    sample->entries.reserve(bsi_->samples.size());
+    for (const auto &[_, entry] : bsi_->samples)
+      sample->entries.push_back(entry);
+    std::sort(sample->entries.begin(), sample->entries.end(),
+              [](const auto &a, const auto &b) { return a.id < b.id; });
+    bsi_->sample_view = std::move(sample);
+  }
+  return bsi_->sample_view;
+}
+
+Status InvertedColumnIndexer::append_bsi_snapshot(rocksdb::WriteBatch *batch) {
   for (size_t bit = 0; bit < bsi_->slices.size(); ++bit) {
+    if (!(bsi_->dirty_slices & (uint64_t{1} << bit))) continue;
     const std::string key(1, static_cast<char>(bit));
     if (roaring_bitmap_is_empty(bsi_->slices[bit].get())) {
-      auto status = batch.Delete(cf_bsi_, key);
+      auto status = batch->Delete(cf_bsi_, key);
       if (!status.ok()) return Status::InternalError(status.ToString());
       continue;
     }
@@ -102,23 +211,103 @@ Status InvertedColumnIndexer::flush_bsi() {
     auto encoded =
         InvertedIndexCodec::Serialize(bsi_->slices[bit].get(), &value);
     if (!encoded.ok()) return encoded;
-    auto status = batch.Put(cf_bsi_, key, value);
+    auto status = batch->Put(cf_bsi_, key, value);
     if (!status.ok()) return Status::InternalError(status.ToString());
   }
   auto status =
-      batch.Put(key_bsi_doc_count(), std::to_string(bsi_->doc_id_limit));
+      batch->Put(key_bsi_doc_count(), std::to_string(bsi_->doc_id_limit));
   if (!status.ok()) return Status::InternalError(status.ToString());
-  status = ctx_.db_->Write(ctx_.write_opts_, &batch);
+  std::string sample(1, char{1});
+  for (const auto &[_, entry] : bsi_->samples) {
+    sample.append(reinterpret_cast<const char *>(&entry.id), sizeof(entry.id));
+    sample.push_back(entry.is_null ? 1 : 0);
+    if (entry.is_null)
+      sample.append(field_.element_data_size(), char{0});
+    else
+      sample.append(entry.value);
+  }
+  status = batch->Put(key_bsi_sample(), sample);
   if (!status.ok()) return Status::InternalError(status.ToString());
-  // The owner still flushes all CFs before the segment commits and clears WAL.
-  bsi_->dirty = false;
   return Status::OK();
+}
+
+Status InvertedColumnIndexer::freeze_bsi_state() {
+  const auto params =
+      std::static_pointer_cast<InvertIndexParams>(field_.index_params());
+  // Prepare everything before publishing sealed state. A failed read or
+  // allocation leaves the existing mutable state available for retry.
+  std::vector<std::string> buffers;
+  std::vector<BitmapPtr> slices;
+  std::shared_ptr<rocksdb::Cache> cache;
+  if (params->bsi_cache_mode() == BsiCacheMode::RESIDENT) {
+    buffers.resize(bsi_->slices.size());
+    slices.resize(bsi_->slices.size());
+    for (size_t bit = 0; bit < slices.size(); ++bit) {
+      auto status =
+          ctx_.db_->Get(ctx_.read_opts_, cf_bsi_,
+                        std::string(1, static_cast<char>(bit)), &buffers[bit]);
+      roaring_bitmap_t *bitmap = nullptr;
+      if (status.ok()) {
+        auto decoded = InvertedIndexCodec::DeserializeFrozen(
+            buffers[bit].data(), buffers[bit].size(), &bitmap);
+        if (!decoded.ok()) return decoded;
+      } else if (status.IsNotFound()) {
+        bitmap = roaring_bitmap_create();
+      } else {
+        return Status::InternalError(status.ToString());
+      }
+      if (!bitmap) return Status::InternalError("Cannot allocate BSI slice");
+      slices[bit].reset(bitmap);
+    }
+  } else if (params->bsi_cache_mode() == BsiCacheMode::LRU) {
+    cache = rocksdb::NewLRUCache(params->bsi_cache_bytes(), 0, true);
+  }
+  auto status = ctx_.db_->Put(ctx_.write_opts_, key_sealed(), "sealed");
+  if (!status.ok()) return Status::InternalError(status.ToString());
+  bsi_->slices.swap(slices);
+  bsi_->buffers.swap(buffers);
+  bsi_->cache = std::move(cache);
+  bsi_->cache_mode = params->bsi_cache_mode();
+  read_only_ = true;
+  sealed_ = true;
+  return Status::OK();
+}
+
+InvertedColumnIndexer::BsiMemoryUsage InvertedColumnIndexer::bsi_memory_usage()
+    const {
+  BsiMemoryUsage usage;
+  if (!bsi_) return usage;
+  std::shared_lock lock(bsi_->mutex);
+  if (bsi_->dropped) return usage;
+  auto &bytes = sealed_ ? usage.resident_bytes : usage.mutable_bytes;
+  bytes = sizeof(BsiState) + bsi_->buffers.capacity() * sizeof(std::string) +
+          bsi_->slices.capacity() * sizeof(BitmapPtr);
+  for (const auto &buffer : bsi_->buffers) bytes += buffer.capacity();
+  for (const auto &slice : bsi_->slices)
+    bytes += BitmapMemoryBytes(slice.get());
+  bytes += bsi_->samples.size() * (sizeof(ValueSample::Entry) + 64);
+  if (bsi_->sample_view) {
+    bytes += sizeof(ValueSample) +
+             bsi_->sample_view->entries.capacity() * sizeof(ValueSample::Entry);
+  }
+  if (bsi_->cache) {
+    usage.cache_bytes = bsi_->cache->GetUsage();
+    usage.pinned_cache_bytes = bsi_->cache->GetPinnedUsage();
+  }
+  usage.persisted_bytes = bsi_->persisted_bytes;
+  usage.persisted_slices = bsi_->persisted_slices;
+  return usage;
 }
 
 Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_bsi(
     const std::string &term, CompareOp op) const {
-  std::shared_lock lock(bsi_->mutex, std::defer_lock);
-  if (!read_only_) lock.lock();
+  // Keep the state object stable across seal, including readers that entered
+  // while the column was still writable. Query results own their payloads.
+  std::shared_lock lock(bsi_->mutex);
+  if (bsi_->dropped) {
+    return tl::make_unexpected(
+        Status::PermissionDenied("BSI index was dropped"));
+  }
 
   // Compute GT or GE from the least significant bit. A null accumulator
   // represents the initial empty (GT) or universal (GE) set without allocating
@@ -131,6 +320,14 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_bsi(
   // Declare views after values so frozen headers die before their backing data.
   std::vector<PinnableSlice> values;
   std::vector<BitmapPtr> views;
+  std::vector<std::unique_ptr<CachedBsiSlice>> uncached;
+  std::vector<rocksdb::Cache::Handle *> handles;
+  AILEGO_DEFER([&]() {
+    for (auto *handle : handles) {
+      if (handle) bsi_->cache->Release(handle);
+    }
+  });
+  std::vector<const roaring_bitmap_t *> selected;
   const bool nonresident = bsi_->slices.empty();
   if (nonresident) {
     size_t needed = term.size() * 8;
@@ -142,27 +339,64 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_bsi(
       --needed;
     }
     if (needed != 0) {
+      selected.resize(needed);
+      handles.resize(needed);
       std::vector<std::string> keys;
+      std::vector<size_t> missing;
       keys.reserve(needed);
       for (size_t bit = 0; bit < needed; ++bit) {
-        keys.emplace_back(1, static_cast<char>(bit));
+        const std::string key(1, static_cast<char>(bit));
+        if (bsi_->cache) handles[bit] = bsi_->cache->Lookup(key);
+        if (handles[bit]) {
+          selected[bit] =
+              static_cast<CachedBsiSlice *>(bsi_->cache->Value(handles[bit]))
+                  ->bitmap;
+        } else {
+          keys.push_back(key);
+          missing.push_back(bit);
+        }
       }
       std::vector<Slice> slices(keys.begin(), keys.end());
-      std::vector<rocksdb::Status> statuses(needed);
-      values.resize(needed);
-      views.resize(needed);
-      ctx_.db_->MultiGet(ctx_.read_opts_, cf_bsi_, needed, slices.data(),
-                         values.data(), statuses.data(), true);
-      for (size_t bit = 0; bit < needed; ++bit) {
-        if (statuses[bit].ok()) {
+      std::vector<rocksdb::Status> statuses(keys.size());
+      values.resize(keys.size());
+      views.resize(keys.size());
+      if (!keys.empty()) {
+        ctx_.db_->MultiGet(ctx_.read_opts_, cf_bsi_, keys.size(), slices.data(),
+                           values.data(), statuses.data(), true);
+      }
+      for (size_t i = 0; i < keys.size(); ++i) {
+        const auto bit = missing[i];
+        if (!statuses[i].ok() && !statuses[i].IsNotFound()) {
+          return tl::make_unexpected(
+              Status::InternalError(statuses[i].ToString()));
+        }
+        if (bsi_->cache) {
+          auto entry = std::make_unique<CachedBsiSlice>();
+          if (statuses[i].ok()) {
+            entry->buffer.assign(values[i].data(), values[i].size());
+            auto status = InvertedIndexCodec::DeserializeFrozen(
+                entry->buffer.data(), entry->buffer.size(), &entry->bitmap);
+            if (!status.ok()) return tl::make_unexpected(status);
+          }
+          selected[bit] = entry->bitmap;
+          auto status =
+              bsi_->cache->Insert(keys[i], entry.get(), &kBsiCacheHelper,
+                                  entry->charge(), &handles[bit]);
+          if (status.ok()) {
+            entry.release();
+          } else {
+            // Oversized slices or a fully pinned cache still work without
+            // exceeding its capacity. The query owns these temporary entries.
+            uncached.push_back(std::move(entry));
+          }
+          values[i].Reset();
+        } else if (statuses[i].ok()) {
           roaring_bitmap_t *bitmap = nullptr;
           auto status = InvertedIndexCodec::DeserializeFrozen(
-              values[bit].data(), values[bit].size(), &bitmap);
+              values[i].data(), values[i].size(), &bitmap);
           if (!status.ok()) return tl::make_unexpected(status);
-          views[bit].reset(bitmap);
-        } else if (!statuses[bit].IsNotFound()) {
-          return tl::make_unexpected(
-              Status::InternalError(statuses[bit].ToString()));
+          views[i].reset(bitmap);
+          selected[bit] = bitmap;
         }
       }
     }
@@ -174,8 +408,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_bsi(
     const auto byte = static_cast<unsigned char>(term[bit / 8]);
     const bool one = (byte & (0x80u >> (bit % 8))) != 0;
     if (!result && one != inclusive) continue;
-    const auto *slice =
-        nonresident ? views[bit].get() : bsi_->slices[bit].get();
+    const auto *slice = nonresident ? selected[bit] : bsi_->slices[bit].get();
     if (!slice) slice = &empty;
     if (!result) {
       result.reset(roaring_bitmap_copy(slice));
@@ -218,9 +451,21 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search_filter(
     return search(value, op);
   }
   if (value.size() != field_.element_data_size()) return nullptr;
-  auto bitmap = get_bitmap_bsi(encode(value), op);
-  if (!bitmap) return nullptr;
-  return std::make_shared<InvertedSearchResult>(bitmap.value());
+  try {
+    auto bitmap = get_bitmap_bsi(encode(value), op);
+    if (!bitmap) {
+      LOG_ERROR("BSI filter failed for %s: %s", id().c_str(),
+                bitmap.error().message().c_str());
+      return nullptr;
+    }
+    BitmapPtr owned(bitmap.value());
+    auto result = std::make_shared<InvertedSearchResult>(owned.get());
+    owned.release();
+    return result;
+  } catch (const std::bad_alloc &) {
+    LOG_ERROR("Cannot allocate BSI query state for %s", id().c_str());
+    return nullptr;
+  }
 }
 
 }  // namespace zvec

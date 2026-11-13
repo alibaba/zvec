@@ -24,6 +24,11 @@ import zvec
 
 
 LAYOUT = zvec.InvertIndexLayout
+CACHE_MODES = [
+    zvec.BsiCacheMode.RESIDENT,
+    zvec.BsiCacheMode.ON_DEMAND,
+    zvec.BsiCacheMode.LRU,
+]
 
 
 def matching_ids(collection, expression):
@@ -88,6 +93,27 @@ def test_layout_parameters():
     restored = zvec.InvertIndexParam.__new__(zvec.InvertIndexParam)
     restored.__setstate__((True, False))
     assert restored.layout == LAYOUT.TERM_RANGE
+
+
+@pytest.mark.parametrize("mode", CACHE_MODES)
+def test_bsi_cache_parameters(mode):
+    params = zvec.InvertIndexParam(
+        layout=LAYOUT.TERM_BSI, bsi_cache_mode=mode, bsi_cache_bytes=123456
+    )
+    assert params.to_dict()["bsi_cache_mode"] == mode.name
+    restored = pickle.loads(pickle.dumps(params))
+    assert restored.bsi_cache_mode == mode
+    assert restored.bsi_cache_bytes == 123456
+    with pytest.raises(ValueError, match="capacity"):
+        zvec.InvertIndexParam(
+            layout=LAYOUT.TERM_BSI,
+            bsi_cache_mode=zvec.BsiCacheMode.LRU,
+            bsi_cache_bytes=0,
+        )
+    with pytest.raises(ValueError, match="TERM_BSI"):
+        zvec.InvertIndexParam(
+            layout=LAYOUT.TERM_RANGE, bsi_cache_mode=zvec.BsiCacheMode.ON_DEMAND
+        )
 
 
 @pytest.mark.parametrize(
@@ -185,7 +211,9 @@ def test_reject_unsupported_fields(tmp_path, data_type):
         zvec.create_and_open(str(tmp_path / "invalid"), schema)
 
 
-def test_wal_replay_after_process_exit(tmp_path):
+@pytest.mark.parametrize("cache_mode", CACHE_MODES)
+@pytest.mark.parametrize("boundary", ["none", "flush", "optimize"])
+def test_wal_replay_after_process_exit(tmp_path, cache_mode, boundary):
     path = str(tmp_path / "recovery")
     script = r"""
 import os
@@ -193,12 +221,16 @@ import sys
 import zvec
 schema = zvec.CollectionSchema("recovery", fields=[
     zvec.FieldSchema("value", zvec.DataType.INT64, nullable=True,
-        index_param=zvec.InvertIndexParam(layout=zvec.InvertIndexLayout.TERM_BSI))
+        index_param=zvec.InvertIndexParam(layout=zvec.InvertIndexLayout.TERM_BSI,
+            bsi_cache_mode=getattr(zvec.BsiCacheMode, sys.argv[2])))
 ])
 collection = zvec.create_and_open(sys.argv[1], schema)
 assert all(status.ok() for status in collection.insert(
     [zvec.Doc(id=str(i), fields={"value": i}) for i in range(40)]))
-collection.flush()
+if sys.argv[3] == "flush":
+    collection.flush()
+elif sys.argv[3] == "optimize":
+    collection.optimize()
 assert all(status.ok() for status in collection.insert(
     [zvec.Doc(id=str(i), fields={"value": i}) for i in range(40, 80)]))
 assert collection.upsert(zvec.Doc(id="1", fields={"value": 15})).ok()
@@ -207,7 +239,7 @@ assert collection.delete("3").ok()
 os._exit(0)
 """
     subprocess.run(
-        [sys.executable, "-c", script, path],
+        [sys.executable, "-c", script, path, cache_mode.name, boundary],
         check=True,
         timeout=60,
         env=os.environ.copy(),
@@ -222,8 +254,13 @@ os._exit(0)
         collection.close()
 
 
-@pytest.mark.parametrize("layout", [LAYOUT.TERM_RANGE, LAYOUT.TERM_BSI])
-def test_vector_filter_estimate_and_term_recall(tmp_path, layout):
+@pytest.mark.parametrize(
+    "layout, cache_mode",
+    [(LAYOUT.TERM_RANGE, zvec.BsiCacheMode.RESIDENT)]
+    + [(LAYOUT.TERM_BSI, mode) for mode in CACHE_MODES],
+)
+def test_vector_filter_estimate_and_term_recall(tmp_path, layout, cache_mode):
+    cache_bytes = 1024 if layout == LAYOUT.TERM_BSI else 64 << 20
     schema = zvec.CollectionSchema(
         "bsi_vector_routes",
         fields=[
@@ -231,8 +268,22 @@ def test_vector_filter_estimate_and_term_recall(tmp_path, layout):
                 "value",
                 zvec.DataType.INT32,
                 nullable=True,
-                index_param=zvec.InvertIndexParam(layout=layout),
-            )
+                index_param=zvec.InvertIndexParam(
+                    layout=layout,
+                    bsi_cache_mode=cache_mode,
+                    bsi_cache_bytes=cache_bytes,
+                ),
+            ),
+            zvec.FieldSchema(
+                "mirror",
+                zvec.DataType.INT32,
+                nullable=True,
+                index_param=zvec.InvertIndexParam(
+                    layout=layout,
+                    bsi_cache_mode=cache_mode,
+                    bsi_cache_bytes=cache_bytes,
+                ),
+            ),
         ],
         vectors=[
             zvec.VectorSchema(
@@ -251,7 +302,9 @@ def test_vector_filter_estimate_and_term_recall(tmp_path, layout):
         for status in collection.insert(
             [
                 zvec.Doc(
-                    id=str(i), fields={"value": value}, vectors={"vec": [float(i)] * 8}
+                    id=str(i),
+                    fields={"value": value, "mirror": value},
+                    vectors={"vec": [float(i)] * 8},
                 )
                 for i, value in values.items()
             ]
@@ -263,10 +316,20 @@ def test_vector_filter_estimate_and_term_recall(tmp_path, layout):
         ("value > 250", lambda x: x > 250),
         ("value >= 350 AND value <= 600", lambda x: 350 <= x <= 600),
         ("value = 1 AND value > 1", lambda x: False),
+        ("value < 100 AND mirror >= 100", lambda x: False),
+        ("value < 100 OR mirror < 200", lambda x: x < 200),
+        ("value IN (1, 7, 500) AND mirror >= 7", lambda x: x in (7, 500)),
+        (
+            "value NOT IN (1, 7, 500) AND mirror < 30",
+            lambda x: x < 30 and x not in (1, 7, 500),
+        ),
         ("value IS NULL", lambda x: False),
     ]
 
     def verify():
+        if layout == LAYOUT.TERM_BSI:
+            assert collection.stats.bsi_memory_bytes["value"] > 0
+            assert collection.stats.bsi_memory_bytes["mirror"] > 0
         for expression, predicate in conditions:
             expected = [
                 i
@@ -285,8 +348,8 @@ def test_vector_filter_estimate_and_term_recall(tmp_path, layout):
             )
             assert [doc.id for doc in docs] == [str(i) for i in expected[:21]]
 
-    # Writing has no CDF; sealed small ranges use term IDs and broad ranges
-    # use membership filters. Unknown compound estimates must remain correct.
+    # Writing BSI uses samples; sealed fields also have CDF statistics. Small
+    # estimates use term IDs, and broad ranges use membership filters.
     verify()
     collection.flush()
     collection.close()
@@ -296,5 +359,7 @@ def test_vector_filter_estimate_and_term_recall(tmp_path, layout):
     verify()
     collection.close()
     collection = zvec.open(path, option=zvec.CollectionOption(read_only=True))
+    assert collection.schema.field("value").index_param.bsi_cache_mode == cache_mode
+    assert collection.schema.field("value").index_param.bsi_cache_bytes == cache_bytes
     verify()
     collection.close()

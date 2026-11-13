@@ -1220,6 +1220,29 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_invert_params(
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_invert_params(
     zvec_index_params_t *params, bool enable_range_opt, bool enable_wildcard);
 
+typedef uint32_t zvec_invert_layout_t;
+#define ZVEC_INVERT_LAYOUT_TERM 0
+#define ZVEC_INVERT_LAYOUT_TERM_RANGE 1
+#define ZVEC_INVERT_LAYOUT_TERM_BSI 2
+
+typedef uint32_t zvec_bsi_cache_mode_t;
+#define ZVEC_BSI_CACHE_RESIDENT 0
+#define ZVEC_BSI_CACHE_ON_DEMAND 1
+#define ZVEC_BSI_CACHE_LRU 2
+
+/** Set the scalar layout and sealed BSI retention policy. The LRU capacity is
+ * per field per segment; query scratch and writable slices are not charged.
+ * Non-BSI layouts require RESIDENT and the default capacity (67108864 bytes).
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_invert_layout(
+    zvec_index_params_t *params, zvec_invert_layout_t layout,
+    zvec_bsi_cache_mode_t cache_mode, uint64_t cache_bytes);
+
+/** Get layout and cache settings. Each output pointer may be NULL. */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_invert_layout(
+    const zvec_index_params_t *params, zvec_invert_layout_t *out_layout,
+    zvec_bsi_cache_mode_t *out_cache_mode, uint64_t *out_cache_bytes);
+
 /**
  * @brief Set FTS index specific parameters
  * @param params Index parameters (must be FTS type)

@@ -4130,6 +4130,25 @@ void test_index_params_api_functions(void) {
   TEST_ASSERT(enable_range_opt == true);
   TEST_ASSERT(enable_wildcard == true);
 
+  TEST_ASSERT(zvec_index_params_set_invert_layout(
+                  invert_params, ZVEC_INVERT_LAYOUT_TERM_BSI,
+                  ZVEC_BSI_CACHE_LRU, 123456) == ZVEC_OK);
+  zvec_invert_layout_t invert_layout;
+  zvec_bsi_cache_mode_t cache_mode;
+  uint64_t cache_bytes;
+  TEST_ASSERT(zvec_index_params_get_invert_layout(invert_params, &invert_layout,
+                                                  &cache_mode,
+                                                  &cache_bytes) == ZVEC_OK);
+  TEST_ASSERT(invert_layout == ZVEC_INVERT_LAYOUT_TERM_BSI);
+  TEST_ASSERT(cache_mode == ZVEC_BSI_CACHE_LRU);
+  TEST_ASSERT(cache_bytes == 123456);
+  TEST_ASSERT(zvec_index_params_set_invert_layout(
+                  invert_params, ZVEC_INVERT_LAYOUT_TERM_BSI,
+                  ZVEC_BSI_CACHE_LRU, 0) == ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_index_params_get_invert_layout(invert_params, NULL, NULL,
+                                                  &cache_bytes) == ZVEC_OK);
+  TEST_ASSERT(cache_bytes == 123456);
+
   // Test zvec_index_params_create for FLAT
   zvec_index_params_t *flat_params =
       zvec_index_params_create(ZVEC_INDEX_TYPE_FLAT);

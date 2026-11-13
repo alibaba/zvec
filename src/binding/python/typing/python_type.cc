@@ -88,6 +88,11 @@ Examples:
 }
 
 void ZVecPyTyping::bind_index_types(pybind11::module_ &m) {
+  py::enum_<BsiCacheMode>(m, "BsiCacheMode")
+      .value("RESIDENT", BsiCacheMode::RESIDENT)
+      .value("ON_DEMAND", BsiCacheMode::ON_DEMAND)
+      .value("LRU", BsiCacheMode::LRU);
+
   py::enum_<InvertIndexLayout>(m, "InvertIndexLayout")
       .value("TERM", InvertIndexLayout::TERM)
       .value("TERM_RANGE", InvertIndexLayout::TERM_RANGE)

@@ -43,6 +43,13 @@ enum class InvertIndexLayout : uint32_t {
   TERM_BSI = 2,
 };
 
+// Immutable BSI slices can be retained, read per query, or cached on demand.
+enum class BsiCacheMode : uint32_t {
+  RESIDENT = 0,
+  ON_DEMAND = 1,
+  LRU = 2,
+};
+
 /*
  * Column data types
  */

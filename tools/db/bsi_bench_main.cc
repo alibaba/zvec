@@ -14,6 +14,7 @@
 
 // Reproduces the high-cardinality workload described in issue #868.
 // Layouts must share the same seed and, for ANN, the same optimized graph.
+#include <sys/resource.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -46,6 +47,11 @@ DEFINE_double(seconds, 3.0, "Measured seconds per round");
 DEFINE_string(reference, "", "ANN result file: create or compare exactly");
 DEFINE_bool(unfiltered, false, "ANN control run without scalar filter");
 DEFINE_uint64(memory_gib, 8, "Application memory limit");
+DEFINE_string(bsi_cache_mode, "RESIDENT", "RESIDENT, ON_DEMAND, or LRU");
+DEFINE_uint64(bsi_cache_bytes, 64ULL << 20,
+              "BSI LRU capacity per field per segment");
+DEFINE_uint64(flush_every, 0,
+              "Scalar build: flush after this many rows (0 = seal only)");
 
 namespace {
 using namespace zvec;
@@ -81,9 +87,37 @@ std::vector<float> Vector(uint64_t id) {
 InvertIndexParams::OPtr Params() {
   Check(FLAGS_layout == "TERM_RANGE" || FLAGS_layout == "TERM_BSI",
         "Bad layout");
-  return std::make_shared<InvertIndexParams>(
-      FLAGS_layout == "TERM_BSI" ? InvertIndexLayout::TERM_BSI
-                                 : InvertIndexLayout::TERM_RANGE);
+  BsiCacheMode mode = BsiCacheMode::RESIDENT;
+  if (FLAGS_bsi_cache_mode == "ON_DEMAND")
+    mode = BsiCacheMode::ON_DEMAND;
+  else if (FLAGS_bsi_cache_mode == "LRU")
+    mode = BsiCacheMode::LRU;
+  else
+    Check(FLAGS_bsi_cache_mode == "RESIDENT", "Bad BSI cache mode");
+  if (FLAGS_layout == "TERM_BSI") {
+    return std::make_shared<InvertIndexParams>(
+        InvertIndexLayout::TERM_BSI, false, mode, FLAGS_bsi_cache_bytes);
+  }
+  return std::make_shared<InvertIndexParams>(InvertIndexLayout::TERM_RANGE);
+}
+
+void MemoryEvent(const InvertedColumnIndexer::Ptr &index) {
+  const auto usage = index->bsi_memory_usage();
+  struct rusage process_usage{};
+  getrusage(RUSAGE_SELF, &process_usage);
+  uint64_t peak_rss = process_usage.ru_maxrss;
+#ifndef __APPLE__
+  peak_rss *= 1024;
+#endif
+  std::cout << "{\"event\":\"bsi_memory\",\"cache_mode\":"
+            << std::quoted(FLAGS_bsi_cache_mode)
+            << ",\"mutable_bytes\":" << usage.mutable_bytes
+            << ",\"resident_bytes\":" << usage.resident_bytes
+            << ",\"cache_bytes\":" << usage.cache_bytes
+            << ",\"pinned_cache_bytes\":" << usage.pinned_cache_bytes
+            << ",\"persisted_bytes\":" << usage.persisted_bytes
+            << ",\"persisted_slices\":" << usage.persisted_slices
+            << ",\"process_peak_rss_bytes\":" << peak_rss << "}" << std::endl;
 }
 uint64_t DiskBytes(const std::string &path) {
   uint64_t bytes = 0;
@@ -163,9 +197,11 @@ void Scalar() {
   Check(!build || !std::filesystem::exists(FLAGS_path),
         "Build directory already exists");
   FieldSchema field("dataTime", DataType::INT32, true, Params());
+  auto open_start = Clock::now();
   auto owner = InvertedIndexer::CreateAndOpen("bsi_bench", FLAGS_path, build,
                                               {field}, !build);
   Check(owner != nullptr, "Cannot open scalar index");
+  Event("open", Seconds(open_start));
   auto index = (*owner)["dataTime"];
   auto start = Clock::now();
   if (build) {
@@ -174,12 +210,18 @@ void Scalar() {
       Check(index->insert(
           id,
           std::string(reinterpret_cast<const char *>(&value), sizeof(value))));
+      if (FLAGS_flush_every && (id + 1) % FLAGS_flush_every == 0) {
+        auto flush_start = Clock::now();
+        Check(owner->flush());
+        Event("flush", Seconds(flush_start));
+      }
       if ((id + 1) % 100000 == 0) {
         std::cout << "progress scalar " << FLAGS_layout << " " << id + 1 << " "
                   << Seconds(start) << "s" << std::endl;
       }
     }
     Event("insert", Seconds(start));
+    MemoryEvent(index);
     start = Clock::now();
     Check(owner->seal());
     Event("seal", Seconds(start), DiskBytes(FLAGS_path));
@@ -207,6 +249,7 @@ void Scalar() {
       Check(found && found->count() == expected, "Scalar query failed");
       return found->count();
     });
+  MemoryEvent(index);
 }
 Collection::Ptr Open(bool read_only) {
   auto opened =
@@ -265,6 +308,9 @@ void QueryHybrid() {
       schema->get_field("dataTime")->index_params());
   Check(actual && actual->layout() == Params()->layout(),
         "Unexpected persisted layout");
+  Check(actual->layout() != InvertIndexLayout::TERM_BSI ||
+            actual->bsi_cache_mode() == Params()->bsi_cache_mode(),
+        "Hybrid BSI cache mode differs from the persisted field configuration");
   std::vector<SearchQuery> queries(256);
   for (size_t i = 0; i < queries.size(); ++i) {
     auto values = Vector(FLAGS_rows + 10000 + i);

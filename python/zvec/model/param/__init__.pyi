@@ -1235,6 +1235,8 @@ class InvertIndexParam(IndexParam):
         enable_extended_wildcard: bool = False,
         *,
         layout: zvec._zvec.typing.InvertIndexLayout | None = None,
+        bsi_cache_mode: zvec._zvec.typing.BsiCacheMode = ...,
+        bsi_cache_bytes: int = 67108864,
     ) -> None:
         """
         Constructs an InvertIndexParam instance.
@@ -1253,6 +1255,10 @@ class InvertIndexParam(IndexParam):
 
     @property
     def layout(self) -> zvec._zvec.typing.InvertIndexLayout: ...
+    @property
+    def bsi_cache_mode(self) -> zvec._zvec.typing.BsiCacheMode: ...
+    @property
+    def bsi_cache_bytes(self) -> int: ...
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
     def to_dict(self) -> dict:

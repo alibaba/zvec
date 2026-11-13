@@ -584,6 +584,14 @@ Result<CollectionStats> CollectionImpl::stats() const {
 
   for (auto &segment : segments) {
     stats.doc_count += segment->doc_count(delete_store_->make_filter());
+    for (const auto &field : schema_->invert_fields()) {
+      auto column = segment->get_scalar_indexer(field->name());
+      if (column && column->uses_bsi()) {
+        const auto usage = column->bsi_memory_usage();
+        stats.bsi_memory_bytes[field->name()] +=
+            usage.mutable_bytes + usage.resident_bytes + usage.cache_bytes;
+      }
+    }
   }
 
   for (auto &field : vector_fields) {

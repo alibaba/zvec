@@ -15,8 +15,10 @@
 
 #pragma once
 
+#include <map>
 #include <set>
 #include <shared_mutex>
+#include <rocksdb/cache.h>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/db/schema.h>
 #include "db/common/concurrent_roaring_bitmap.h"
@@ -221,6 +223,27 @@ class InvertedColumnIndexer {
     return cf_bsi_ != nullptr;
   }
 
+  struct BsiMemoryUsage {
+    uint64_t mutable_bytes{0};
+    uint64_t resident_bytes{0};
+    uint64_t cache_bytes{0};
+    uint64_t pinned_cache_bytes{0};
+    uint64_t persisted_bytes{0};
+    uint64_t persisted_slices{0};
+  };
+  BsiMemoryUsage bsi_memory_usage() const;
+
+  struct ValueSample {
+    struct Entry {
+      uint32_t id;
+      bool is_null;
+      std::string value;  // Order-preserving encoding, empty for NULL.
+    };
+    DataType type;
+    std::vector<Entry> entries;  // Sorted by segment docID across all fields.
+  };
+  std::shared_ptr<const ValueSample> value_sample() const;
+
 
   /*!
    * \brief Drop the index storage
@@ -252,8 +275,11 @@ class InvertedColumnIndexer {
   Status open();
 
   void update_bsi(uint32_t id, const std::string &term);
-  Status flush_bsi();
+  void sample_bsi_value(uint32_t id, const std::string *term);
+  Status append_bsi_snapshot(rocksdb::WriteBatch *batch);
+  Status flush_special_values_unlocked();
   Status restore_bsi_state();
+  Status freeze_bsi_state();
   Result<roaring_bitmap_t *> get_bitmap_bsi(const std::string &term,
                                             CompareOp op) const;
 
@@ -312,6 +338,11 @@ class InvertedColumnIndexer {
   }
 
   inline void update_max_id(uint32_t id) {
+    const uint64_t limit = uint64_t{id} + 1;
+    uint64_t expected_limit = doc_id_limit_.load();
+    while (expected_limit < limit &&
+           !doc_id_limit_.compare_exchange_weak(expected_limit, limit)) {
+    }
     uint32_t expected_id = max_id_.load();
     while (expected_id < id &&
            !max_id_.compare_exchange_weak(expected_id, id)) {
@@ -399,9 +430,17 @@ class InvertedColumnIndexer {
     return field_.name() + INVERT_KEY_BSI_DOC_COUNT;
   }
 
+  inline std::string key_bsi_sample() const {
+    return field_.name() + "$ZVEC$BSI_SAMPLE";
+  }
+
   inline std::string key_max_id() const {
     return field_.name() + INVERT_KEY_MAX_ID;
   };
+
+  inline std::string key_doc_id_limit() const {
+    return field_.name() + INVERT_KEY_DOC_ID_LIMIT;
+  }
 
   inline std::string key_null() const {
     return field_.name() + INVERT_KEY_NULL;
@@ -463,18 +502,26 @@ class InvertedColumnIndexer {
     std::vector<std::string> buffers;
     std::vector<BitmapPtr> slices;
     mutable std::shared_mutex mutex;
+    std::shared_ptr<rocksdb::Cache> cache;
+    std::map<uint64_t, ValueSample::Entry> samples;
+    std::shared_ptr<const ValueSample> sample_view;
+    BsiCacheMode cache_mode{BsiCacheMode::RESIDENT};
     // Upper bound, not a completed prefix: holes are allowed in filters.
     uint64_t doc_id_limit{0};
-    bool dirty{false};
+    uint64_t dirty_slices{0};
+    uint64_t persisted_bytes{0};
+    uint64_t persisted_slices{0};
+    bool dropped{false};
   };
   std::unique_ptr<BsiState> bsi_;
 
 
-  bool read_only_{false};
-  bool sealed_{false};
+  std::atomic<bool> read_only_{false};
+  std::atomic<bool> sealed_{false};
   bool enable_range_optimization_{false};
   bool enable_extended_wildcard_{false};
   std::atomic<uint32_t> max_id_{0};
+  std::atomic<uint64_t> doc_id_limit_{0};
   ConcurrentRoaringBitmap32 null_bitmap_{};
   SegmentDocRangeStat::Ptr doc_range_stat_{nullptr};
 };

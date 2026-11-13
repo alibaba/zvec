@@ -99,6 +99,7 @@ from .model.schema import CollectionSchema, CollectionStats, FieldSchema, Vector
 # —— tools ——
 from .tool import require_module
 from .typing import (
+    BsiCacheMode,
     DataType,
     IndexType,
     InvertIndexLayout,
@@ -177,6 +178,7 @@ __all__ = [
     "DefaultLocalReRanker",
     "QwenReRanker",
     # Typing
+    "BsiCacheMode",
     "DataType",
     "IOBackendType",
     "MetricType",

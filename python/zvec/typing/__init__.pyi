@@ -7,6 +7,7 @@ from __future__ import annotations
 import typing
 
 __all__: list[str] = [
+    "BsiCacheMode",
     "DataType",
     "IOBackendType",
     "IndexType",
@@ -236,6 +237,19 @@ class IndexType:
     def __repr__(self) -> str: ...
     def __setstate__(self, state: typing.SupportsInt) -> None: ...
     def __str__(self) -> str: ...
+    @property
+    def name(self) -> str: ...
+    @property
+    def value(self) -> int: ...
+
+class BsiCacheMode:
+    """Retention policy for immutable BSI slices."""
+
+    RESIDENT: typing.ClassVar[BsiCacheMode]
+    ON_DEMAND: typing.ClassVar[BsiCacheMode]
+    LRU: typing.ClassVar[BsiCacheMode]
+    __members__: typing.ClassVar[dict[str, BsiCacheMode]]
+
     @property
     def name(self) -> str: ...
     @property

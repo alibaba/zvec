@@ -74,6 +74,7 @@ const std::string INVERT_KEY_BSI_DOC_COUNT{"$ZVEC$BSI_DOC_COUNT"};
 const std::string INVERT_CDF{"$CDF"};
 
 const std::string INVERT_KEY_MAX_ID{"$ZVEC$MAX_ID"};
+const std::string INVERT_KEY_DOC_ID_LIMIT{"$ZVEC$DOC_ID_LIMIT"};
 
 const std::string INVERT_KEY_NULL{"$ZVEC$NULL"};
 

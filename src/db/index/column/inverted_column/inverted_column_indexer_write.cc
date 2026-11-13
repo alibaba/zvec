@@ -23,6 +23,8 @@ namespace zvec {
 
 
 Status InvertedColumnIndexer::insert(uint32_t id, const std::string &value) {
+  std::unique_lock<std::shared_mutex> lock;
+  if (bsi_) lock = std::unique_lock(bsi_->mutex);
   if (bsi_ && value.size() != field_.element_data_size()) {
     return Status::InvalidArgument("Invalid BSI value size");
   }
@@ -197,31 +199,36 @@ Status InvertedColumnIndexer::insert(uint32_t id,
 
 
 Status InvertedColumnIndexer::insert_null(uint32_t id) {
+  std::unique_lock<std::shared_mutex> lock;
+  if (bsi_) lock = std::unique_lock(bsi_->mutex);
   if (read_only_) {
     return Status::PermissionDenied();
   }
-  std::unique_lock<std::shared_mutex> lock;
-  if (bsi_) lock = std::unique_lock(bsi_->mutex);
   null_bitmap_.add(id);
   update_max_id(id);
   if (bsi_) {
     bsi_->doc_id_limit = std::max(bsi_->doc_id_limit, uint64_t{id} + 1);
-    bsi_->dirty = true;
+    sample_bsi_value(id, nullptr);
   }
   return Status::OK();
 }
 
 
 Status InvertedColumnIndexer::flush_special_values() {
+  std::unique_lock<std::shared_mutex> lock;
+  if (bsi_) lock = std::unique_lock(bsi_->mutex);
+  return flush_special_values_unlocked();
+}
+
+Status InvertedColumnIndexer::flush_special_values_unlocked() {
   if (read_only_) {
     return Status::PermissionDenied();
   }
+  rocksdb::WriteBatch batch;
   if (bsi_) {
-    auto status = flush_bsi();
+    auto status = append_bsi_snapshot(&batch);
     if (!status.ok()) return status;
   }
-
-  rocksdb::WriteBatch batch;
   std::string value;
   if (null_bitmap_.cardinality() != 0) {
     if (!null_bitmap_.serialize(&value).ok()) {
@@ -232,16 +239,28 @@ Status InvertedColumnIndexer::flush_special_values() {
     if (!status.ok()) {
       return Status::InternalError(status.ToString());
     }
+  } else {
+    auto status = batch.Delete(key_null());
+    if (!status.ok()) return Status::InternalError(status.ToString());
   }
   auto status = batch.Put(key_max_id(), std::to_string(max_id_));
   if (!status.ok()) {
     return Status::InternalError(status.ToString());
   }
+  status = batch.Put(key_doc_id_limit(), std::to_string(doc_id_limit_.load()));
+  if (!status.ok()) return Status::InternalError(status.ToString());
   status = ctx_.db_->Write(ctx_.write_opts_, &batch);
   if (!status.ok()) {
     LOG_ERROR("Failed to flush special values for %s: %s", id().c_str(),
               status.ToString().c_str());
     return Status::InternalError(status.ToString());
+  }
+  if (bsi_) {
+    // A failed write leaves dirty slices intact for retry. Durability still
+    // requires the owner's all-CF flush before committing a segment version.
+    bsi_->persisted_bytes += batch.GetDataSize();
+    bsi_->persisted_slices += __builtin_popcountll(bsi_->dirty_slices);
+    bsi_->dirty_slices = 0;
   }
   return Status::OK();
 }
@@ -288,8 +307,8 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
   const uint32_t num_range_slot = 1000;
   const uint32_t num_cdf_slot = 100;
 
-  const uint32_t num_doc_per_range_slot = (max_id_ + 1) / num_range_slot;
-  const uint32_t num_doc_per_cdf_slot = (max_id_ + 1) / num_cdf_slot;
+  const uint64_t num_doc_per_range_slot = doc_id_limit_ / num_range_slot;
+  const uint64_t num_doc_per_cdf_slot = doc_id_limit_ / num_cdf_slot;
 
   // Iterator for terms in the inverted index
   auto iter_term = ctx_.db_->NewIterator(ctx_.read_opts_, cf_terms_);
@@ -465,11 +484,14 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
 
 
 Status InvertedColumnIndexer::seal() {
+  std::unique_lock<std::shared_mutex> lock;
+  if (bsi_) lock = std::unique_lock(bsi_->mutex);
+  if (sealed_) return Status::OK();
   if (read_only_) {
     return Status::PermissionDenied();
   }
 
-  Status status = flush_special_values();
+  Status status = flush_special_values_unlocked();
   if (!status.ok()) {
     LOG_ERROR("Failed to flush special values to %s", id().c_str());
     return status;
@@ -483,11 +505,11 @@ Status InvertedColumnIndexer::seal() {
     }
   }
 
+  if (bsi_) return freeze_bsi_state();
   auto rs = ctx_.db_->Put(ctx_.write_opts_, key_sealed(), "sealed");
   if (rs.ok()) {
     sealed_ = true;
     read_only_ = true;
-    if (bsi_) return restore_bsi_state();
     return Status::OK();
   } else {
     LOG_ERROR("Failed to seal %s", id().c_str());

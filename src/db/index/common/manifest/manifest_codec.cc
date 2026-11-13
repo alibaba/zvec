@@ -51,6 +51,8 @@ constexpr uint32_t kEnableRangeOptimization = 1;
 // this field and decode to the default (false).
 constexpr uint32_t kEnableExtendedWildcard = 2;
 constexpr uint32_t kLayout = 3;
+constexpr uint32_t kBsiCacheMode = 4;
+constexpr uint32_t kBsiCacheBytes = 5;
 }  // namespace f_invert
 namespace f_hnsw {
 constexpr uint32_t kBase = 1;
@@ -629,6 +631,9 @@ void EncodeInvert(const InvertIndexParams *params, std::string *out) {
   // Keep legacy layouts byte-compatible with existing manifests.
   if (params->layout() == InvertIndexLayout::TERM_BSI) {
     w.put_varint(f_invert::kLayout, static_cast<uint32_t>(params->layout()));
+    w.put_varint(f_invert::kBsiCacheMode,
+                 static_cast<uint32_t>(params->bsi_cache_mode()));
+    w.put_varint(f_invert::kBsiCacheBytes, params->bsi_cache_bytes(), false);
   }
 }
 
@@ -636,6 +641,8 @@ InvertIndexParams::OPtr DecodeInvert(std::string_view buf) {
   bool enable_range_optimization = false;
   bool enable_extended_wildcard = false;
   std::optional<InvertIndexLayout> layout;
+  auto bsi_cache_mode = BsiCacheMode::RESIDENT;
+  uint64_t bsi_cache_bytes = 64ULL << 20;
   Reader r(buf);
   while (r.next()) {
     if (r.field() == f_invert::kEnableRangeOptimization) {
@@ -644,11 +651,15 @@ InvertIndexParams::OPtr DecodeInvert(std::string_view buf) {
       enable_extended_wildcard = r.bool_value();
     } else if (r.field() == f_invert::kLayout) {
       layout = static_cast<InvertIndexLayout>(r.uint32_value());
+    } else if (r.field() == f_invert::kBsiCacheMode) {
+      bsi_cache_mode = static_cast<BsiCacheMode>(r.uint32_value());
+    } else if (r.field() == f_invert::kBsiCacheBytes) {
+      bsi_cache_bytes = r.varint();
     }
   }
   if (layout) {
-    return std::make_shared<InvertIndexParams>(*layout,
-                                               enable_extended_wildcard);
+    return std::make_shared<InvertIndexParams>(
+        *layout, enable_extended_wildcard, bsi_cache_mode, bsi_cache_bytes);
   }
   return std::make_shared<InvertIndexParams>(enable_range_optimization,
                                              enable_extended_wildcard);

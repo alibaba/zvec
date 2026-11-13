@@ -79,17 +79,21 @@ class ZVEC_API InvertIndexParams : public IndexParams {
                                           : InvertIndexLayout::TERM),
         enable_extended_wildcard_(enable_extended_wildcard) {}
 
-  explicit InvertIndexParams(InvertIndexLayout layout,
-                             bool enable_extended_wildcard = false)
+  explicit InvertIndexParams(
+      InvertIndexLayout layout, bool enable_extended_wildcard = false,
+      BsiCacheMode bsi_cache_mode = BsiCacheMode::RESIDENT,
+      uint64_t bsi_cache_bytes = 64ULL << 20)
       : IndexParams(IndexType::INVERT),
         layout_(layout),
-        enable_extended_wildcard_(enable_extended_wildcard) {}
+        enable_extended_wildcard_(enable_extended_wildcard),
+        bsi_cache_mode_(bsi_cache_mode),
+        bsi_cache_bytes_(bsi_cache_bytes) {}
 
   using OPtr = std::shared_ptr<InvertIndexParams>;
 
   Ptr clone() const override {
-    return std::make_shared<InvertIndexParams>(layout_,
-                                               enable_extended_wildcard_);
+    return std::make_shared<InvertIndexParams>(
+        layout_, enable_extended_wildcard_, bsi_cache_mode_, bsi_cache_bytes_);
   }
 
   std::string to_string() const override;
@@ -100,7 +104,10 @@ class ZVEC_API InvertIndexParams : public IndexParams {
     }
     auto &other_invert = dynamic_cast<const InvertIndexParams &>(other);
     return layout_ == other_invert.layout_ &&
-           enable_extended_wildcard_ == other_invert.enable_extended_wildcard_;
+           enable_extended_wildcard_ ==
+               other_invert.enable_extended_wildcard_ &&
+           bsi_cache_mode_ == other_invert.bsi_cache_mode_ &&
+           bsi_cache_bytes_ == other_invert.bsi_cache_bytes_;
   }
 
   bool enable_range_optimization() const {
@@ -110,10 +117,22 @@ class ZVEC_API InvertIndexParams : public IndexParams {
   void set_enable_range_optimization(bool enable_range_optimization) {
     layout_ = enable_range_optimization ? InvertIndexLayout::TERM_RANGE
                                         : InvertIndexLayout::TERM;
+    bsi_cache_mode_ = BsiCacheMode::RESIDENT;
+    bsi_cache_bytes_ = 64ULL << 20;
   }
 
   InvertIndexLayout layout() const {
     return layout_;
+  }
+
+  BsiCacheMode bsi_cache_mode() const {
+    return bsi_cache_mode_;
+  }
+
+  // Capacity per field per segment, including frozen headers and buffers.
+  // Query-owned buffers and writable slices are not part of this cache budget.
+  uint64_t bsi_cache_bytes() const {
+    return bsi_cache_bytes_;
   }
 
   Status validate(DataType data_type) const;
@@ -131,6 +150,8 @@ class ZVEC_API InvertIndexParams : public IndexParams {
  private:
   InvertIndexLayout layout_{InvertIndexLayout::TERM};
   bool enable_extended_wildcard_{false};
+  BsiCacheMode bsi_cache_mode_{BsiCacheMode::RESIDENT};
+  uint64_t bsi_cache_bytes_{64ULL << 20};
 };
 
 /*

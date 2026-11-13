@@ -145,6 +145,11 @@ void ZVecPySchemas::bind_collection_stats(py::module_ &m) {
       .def_property_readonly(
           "index_completeness",
           [](const CollectionStats &c) { return c.index_completeness; })
+      .def_property_readonly(
+          "bsi_memory_bytes",
+          [](const CollectionStats &c) { return c.bsi_memory_bytes; },
+          "Retained BSI allocation estimates by field across segments; "
+          "excludes query scratch and RocksDB cache.")
       .def("__repr__", [](const CollectionStats &c) {
         std::string map_str = "{";
         bool first = true;

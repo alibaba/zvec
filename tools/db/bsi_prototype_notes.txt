@@ -1,48 +1,102 @@
-BSI 最简性能验证版本
+整型 BSI 实现与验证范围
 
 已实现
+- 一个字段、一个 segment 使用统一 segment docID，不划分 docID 子段。
+  TERM_BSI 支持单值 INT32、INT64、UINT32、UINT64；始终保留 term posting。
 - 单结果 C API 递推，按低位到高位计算 GT/GE，LT/LE 通过有界取反得到。
   跳过初始空集/全集上的恒等运算；结果直接转移所有权，无返回前深拷贝。
-- writing 切片常驻可修改内存，以 shared_mutex 协调写入和查询。
-- insert 保留原有 term 写入；成功后更新 BSI。NULL 保留原有 bitmap。
-- flush 写出完整切片快照和 docID 上界，普通 open 直接加载后继续写入。
-  WAL replay 必须重复更新切片，即使 term 已经存在。
-- sealed/open 只读切片常驻为 portable frozen 视图，同时持有序列化 buffer。
-  sealed 查询不获取 BSI 锁，不创建 RocksDB snapshot，不读取 RocksDB。
-- 设置实验环境变量 ZVEC_BSI_BENCH_NONRESIDENT=1 后，只读打开 sealed 时不预加载切片，
-  每次查询只 MultiGet 实际需要的切片，以临时 portable frozen 视图计算并释放。
-  比较算法、恒等运算跳过和 NULL 处理相同；writing 仍使用内存切片。
+- writing 切片常驻可修改内存，以列内 shared_mutex 协调 term、BSI、NULL
+  写入、查询、flush、seal 和 drop。seal 保留同一个 BsiState 和锁。
+  sealed 查询也持有共享锁，以保护与 seal/drop 重叠的生命周期。
+- insert 保留原有 term Merge；成功后在锁内更新 BSI 和 docID 上界。
+  NULL 复用原有 bitmap。没有额外的逐行 RocksDB BSI Merge。
+- flush 只序列化脏切片，每个脏切片仍是完整快照 Put；与 BSI 上界、抽样统计、
+  NULL、通用 docID 上界在同一个 WriteBatch 写入。Write 失败不清除脏标记。
+  普通 open 从 RocksDB 恢复可写状态；相同 docID/值的 WAL replay 幂等，
+  即使 term 已经存在，也必须重新更新 BSI。
+- seal 在准备好 frozen 数据和缓存后写 sealed 标记，再发布只读状态。
+  查询结果独立拥有 bitmap，indexer 关闭后仍可使用；读取/解码错误返回失败。
+- sealed 使用 portable frozen 视图，有三种正式配置，均使用相同比较算法：
+  RESIDENT：打开时加载全部切片，保持序列化 buffer 和 frozen header。
+  ON_DEMAND：每次 MultiGet 实际参与计算的切片，临时视图随查询释放。
+  LRU：按需加载，缓存 buffer 和 header；预算不足或切片过大时退到查询临时所有权。
+  LRU 预算按字段、按 segment 生效；默认 64 MiB；writing 不受此预算限制。
+  实验环境变量 ZVEC_BSI_BENCH_NONRESIDENT 已移除，改用持久化参数。
+- C++、Python 和 C API 均支持 layout/cache mode/cache bytes；manifest、
+  clone、pickle 和 Python 类型声明同步更新。切换配置使用已有 create_index 重建路径。
+- CollectionStats.bsi_memory_bytes 汇总各字段跨 segment 的 BSI 保留内存估算。
+  包含可写切片、frozen 数据、缓存和抽样；不包含查询临时空间和共享 RocksDB 缓存，
+  不是进程 RSS，也不是整个 collection 的内存上限。
 - search 保持 term 召回；search_filter 的范围条件启用 BSI。
   BSI 允许未插入 docID 的空洞，仅用于实际候选点的 membership 判断。
-- 向量查询先用单个范围条件的 CDF 估算选择路径，不通过结果 bitmap count 决策。
-  小结果走 term 枚举 ID；大结果或无统计走向量过滤。FTS 保留原有流程。
+- 各 BSI 字段使用相同 docID 优先级的最多 256 条在线样本，包含 NULL 并持久化。
+  向量查询直接在对齐样本上估算范围、EQ/NE、IN/NOT IN、NULL、复合 AND/OR，
+  保留字段间相关性；样本缺失或重叠不足时回退 sealed CDF，仍无统计则视为未知。
+  不通过结果 bitmap count 决策；小结果走 term 精确枚举 ID，大结果或未知走向量过滤。
+  估计为零也执行真实查询，不能直接返回空结果。FTS 保留原有流程。
+- 明确持久化 exclusive docID 上界，修复空 sealed 索引补集和 UINT32_MAX 溢出。
 - benchmark 的 scalar_query 测量过滤 bitmap 构造，明确不是纯标量召回性能。
 
-性能对比条件
+使用示例
+Python:
+  params = zvec.InvertIndexParam(
+      layout=zvec.InvertIndexLayout.TERM_BSI,
+      bsi_cache_mode=zvec.BsiCacheMode.LRU,
+      bsi_cache_bytes=64 << 20)
+  collection.create_index(field_name="dataTime", index_param=params)
+  print(collection.stats.bsi_memory_bytes)
+
+C++:
+  auto params = std::make_shared<InvertIndexParams>(
+      InvertIndexLayout::TERM_BSI, false, BsiCacheMode::LRU, 64ULL << 20);
+
+C:
+  zvec_index_params_set_invert_layout(params, ZVEC_INVERT_LAYOUT_TERM_BSI,
+                                     ZVEC_BSI_CACHE_LRU, 64ULL << 20);
+
+正确性验证
+- 本机和 191：三种缓存模式共 60 个 BSI 测试、10 个 optimizer 测试、
+  14 个参数测试、23 个 manifest 测试通过。
+- 本机：26 个 Python 集成测试、8 个原有 term 顺序测试、3 个空数组测试通过；
+  C API 新增导出函数的三模式读写和非法参数校验通过。
+- 覆盖四种整数、极值、NULL、空索引、空洞、乱序、回放、reopen/checkpoint、
+  缓存预算不足、返回结果生命周期、查询与 seal/drop 并发、写快照/写 seal 标记失败重试。
+- 三种模式分别注入 default、term、BSI CF flush 失败，子进程立即退出；
+  重开后重放相同数据，检查可写及 sealed 查询一致。共九个跨 CF 退出场景。
+- Python 子进程在未 flush、flush 后、optimize 后直接退出，三模式共九个恢复场景；
+  同时覆盖相关字段估算、布局重建、更新、删除和 segment 合并。
+
+2026-11 工程化回归性能
 - 复用 issue #868 场景：1000 万随机 INT32，dataTime > 536870911。
 - 固定 seed=868，准确命中 7,498,740；混合检索使用同一份 62 维合成向量图。
-- 191 固定 CPU 0-7，1/8 并发，各三轮 5 秒；每轮校验全部标量命中或 256 个 ANN 结果。
-- TERM_RANGE 与最简 BSI 使用同一个新二进制，排除编译参数差异。
+- 191 固定 CPU 0-7，1/8 并发，各三轮 3 秒；每轮校验全部标量命中或 256 个 ANN 结果。
+- TERM_RANGE 和三种 BSI 使用同一个二进制；数据已 sealed/compacted，BSI 没有待合并 operand。
 - 常驻组在打开时全量加载，初始化发生在计时前；非驻留组将读取和创建视图计入查询。
   两组都经过预热，非驻留不等于每次读取物理磁盘，操作系统与 RocksDB 缓存仍有效。
+- 主场景单线程 bitmap 构造中位耗时：RANGE 4.925 ms，RESIDENT 0.318 ms，
+  ON_DEMAND 1.529 ms，LRU 0.318 ms；LRU 此条件只保留约 3.62 MiB，常驻约 38.59 MiB。
+- 相邻阈值 536870910 需要全部切片：RANGE 4.741 ms，RESIDENT 4.278 ms，
+  ON_DEMAND 20.924 ms，LRU 4.258 ms。按需读取并非对所有条件都有优势。
+- 混合检索本轮只回归 RANGE/RESIDENT：单线程 6.306/2.138 ms，8 线程 544/2375 QPS。
+  复用的旧数据没有新样本，混合检索规划使用 CDF；新样本的 correctness 已测试，
+  此轮不代表新样本在 1000 万规模下的规划耗时基准。
+- 100 万随机整数、单次构建：BSI 每 1 万条 flush 的累计快照 WriteBatch 为 204.27 MiB，
+  每 10 万条为 22.37 MiB，只在 seal 写为 4.01 MiB。包含元数据，非物理磁盘写字节。
+  BSI 插入阶段耗时（含 flush）分别 3.167/2.383/2.148 s；RANGE 为 2.004/1.851/1.624 s。
+- 详细报告及原始结果：build.release/bsi-perf-868-results/hardening/report.html。
+  查询共 60 次，构建/重开共 12 次，所有结果校验通过；生命周期数据未多轮取中位数。
 
-待补齐（本版不承诺）
-1. 用户级驻留策略配置、缓存预算/淘汰、统一内存统计。当前模式只通过实验环境变量
-   选择；默认所有 BSI 字段在打开时加载，纯 term 召回也有这部分内存成本。
-2. writing 的在线统计；复合 AND/OR、等值/IN、相关字段的命中量估算。
-   当前未知估算默认普通向量过滤，不能把未知或估计零当成空结果返回。
-3. 比较算法、term 扫描、正排扫描的统一成本模型；当前仍沿用已有正排优化规则。
-4. flush 频率、全量切片重复 Put 的写放大/compaction、打开耗时和峰值内存基准。
-   后续可评估脏切片或增量持久化；本版没有 docID 分段。
-5. 完整进程崩溃/磁盘失败注入、跨 CF 部分 flush、版本提交与 WAL 清理边界。
-   当前覆盖列级部分持久化后的幂等重放、普通 flush/reopen/checkpoint，
-   以及 flush 后继续写入再进程退出的基础 WAL 恢复；尚未覆盖完整失败矩阵。
-   RocksDB WriteBatch 成功不是持久化完成；必须沿用全部 CF flush 后提交的流程。
-6. insert 在后续 FTS/向量失败时的共享行回滚与 docID 复用问题，以及并发 seal、
-   drop、索引切换和查询的生命周期压力测试。seal/open 完成后才发布只读状态。
-7. 错误处理与 OOM 的完整保证。CRoaring 原地 add 的内存分配失败语义仍沿用库行为。
-8. 已有 term 路径自身的边界问题（如空 sealed 索引的补集范围），本版不通过 BSI
-   的专用前缀裁剪修复。BSI 的空输入与 NULL 语义单独验证。
-9. float、格式兼容/迁移及用户级缓存配置；当前只覆盖四种 32/64 位整数类型。
+已约定的边界及后续工作
+1. 按方案一，不引入 segment 整行事务、回滚或 fail-stop。term/BSI 后续的 FTS/向量
+   失败及 docID 复用属于共享写路径问题，另行修复。列内锁不是跨索引的事务保证。
+2. float 单独实现；旧实验 BSI 格式迁移不纳入本地开发阶段的兼容承诺。
+3. 布局由用户显式选择，保留已有正排优化；没有统一校准的 BSI/term/正排自动成本模型。
+4. 脏切片仍是全量 Put，随机数据会修改几乎所有位。增量持久化和更低写放大继续评估；
+   不分 docID 子段。LRU 只限制保留缓存，不能限制可写状态、临时 buffer 或总 RSS。
+5. 已验证上述列级故障与 WAL 恢复，不等于覆盖完整磁盘错误、segment 版本提交、
+   WAL 删除和机器断电矩阵。WriteBatch 成功不等于持久化完成，继续依赖既有的
+   全部 CF flush → 版本提交 → WAL 清理顺序。
+6. 查询侧检查读取、解码和可检测的分配失败；CRoaring 原地操作 OOM 仍沿用库语义，
+   不承诺任意内存耗尽后的整行可恢复性。共享生命周期的长时间压力验证可继续补充。
 
-本版不引入 segment 级事务发布协议，也不要求 EQ/IN 等原有 term 查询遵守 BSI 前缀。
+本版不引入 segment 级事务发布协议，也不要求 EQ/IN 等原有 term 查询遵守 BSI 连续前缀。

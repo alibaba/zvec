@@ -193,7 +193,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_not_contain(
     if (ret.value() == nullptr) {
       ret = roaring_bitmap_create();
     }
-    roaring_bitmap_flip_inplace(ret.value(), 0, max_id_ + 1);
+    roaring_bitmap_flip_inplace(ret.value(), 0, doc_id_limit_.load());
   } else {
     LOG_ERROR("Failed to retrieve bitmap[%s] from %s, term size[%zu]",
               is_any ? "contain_any" : "contain_all", id().c_str(),
@@ -697,7 +697,10 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_null() const {
 Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_non_null() const {
   if (sealed_) {
     roaring_bitmap_t *bitmap = null_bitmap_.copy();
-    roaring_bitmap_flip_inplace(bitmap, 0, max_id_ + 1);
+    if (!bitmap)
+      return tl::make_unexpected(
+          Status::InternalError("Cannot copy NULL bitmap"));
+    roaring_bitmap_flip_inplace(bitmap, 0, doc_id_limit_.load());
     return bitmap;
   } else {
     Status s = Status::OK();
@@ -722,6 +725,11 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_non_null() const {
         return tl::make_unexpected(s);
       }
     }
+    if (!iter->status().ok()) {
+      roaring_bitmap_free(bitmap);
+      return tl::make_unexpected(
+          Status::InternalError(iter->status().ToString()));
+    }
     roaring_bitmap_repair_after_lazy(bitmap);
     return bitmap;
   }
@@ -730,6 +738,11 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_non_null() const {
 
 InvertedSearchResult::Ptr InvertedColumnIndexer::search(
     const std::string &value, CompareOp op) const {
+  std::shared_lock<std::shared_mutex> lock;
+  if (bsi_) {
+    lock = std::shared_lock(bsi_->mutex);
+    if (bsi_->dropped) return nullptr;
+  }
   if (cf_bsi_ && value.size() != field_.element_data_size()) {
     return nullptr;
   }
@@ -798,6 +811,11 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search(
 
 InvertedSearchResult::Ptr InvertedColumnIndexer::multi_search(
     const std::vector<std::string> &values, CompareOp op) const {
+  std::shared_lock<std::shared_mutex> lock;
+  if (bsi_) {
+    lock = std::shared_lock(bsi_->mutex);
+    if (bsi_->dropped) return nullptr;
+  }
   auto encoded_values = encode(values);
   auto search_res = std::make_shared<InvertedSearchResult>();
   Result<roaring_bitmap_t *> bitmap_res;
@@ -889,6 +907,11 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search_array_len(
 
 
 InvertedSearchResult::Ptr InvertedColumnIndexer::search_null() const {
+  std::shared_lock<std::shared_mutex> lock;
+  if (bsi_) {
+    lock = std::shared_lock(bsi_->mutex);
+    if (bsi_->dropped) return nullptr;
+  }
   auto search_res = std::make_shared<InvertedSearchResult>();
   auto bitmap_res = get_bitmap_null();
   if (bitmap_res) {
@@ -903,6 +926,11 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search_null() const {
 
 
 InvertedSearchResult::Ptr InvertedColumnIndexer::search_non_null() const {
+  std::shared_lock<std::shared_mutex> lock;
+  if (bsi_) {
+    lock = std::shared_lock(bsi_->mutex);
+    if (bsi_->dropped) return nullptr;
+  }
   auto search_res = std::make_shared<InvertedSearchResult>();
   auto bitmap_res = get_bitmap_non_null();
   if (bitmap_res) {
@@ -984,7 +1012,7 @@ inline roaring_bitmap_t *InvertedColumnIndexer::flip_bitmap(
   } else {
     roaring_bitmap_or_inplace(ret, null_bitmap_.bitmap());
   }
-  roaring_bitmap_flip_inplace(ret, 0, max_id_ + 1);
+  roaring_bitmap_flip_inplace(ret, 0, doc_id_limit_.load());
   return ret;
 }
 

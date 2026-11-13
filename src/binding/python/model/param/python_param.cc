@@ -234,22 +234,30 @@ Examples:
   invert_params
       .def(py::init([](std::optional<bool> enable_range_optimization,
                        bool enable_extended_wildcard,
-                       std::optional<InvertIndexLayout> layout) {
+                       std::optional<InvertIndexLayout> layout,
+                       BsiCacheMode bsi_cache_mode, uint64_t bsi_cache_bytes) {
              if (layout && enable_range_optimization) {
                throw py::value_error(
                    "Specify either layout or enable_range_optimization");
              }
-             if (layout) {
-               return std::make_shared<InvertIndexParams>(
-                   *layout, enable_extended_wildcard);
+             const auto effective_layout =
+                 layout.value_or(enable_range_optimization.value_or(false)
+                                     ? InvertIndexLayout::TERM_RANGE
+                                     : InvertIndexLayout::TERM);
+             auto params = std::make_shared<InvertIndexParams>(
+                 effective_layout, enable_extended_wildcard, bsi_cache_mode,
+                 bsi_cache_bytes);
+             if (auto status = params->validate(DataType::INT32);
+                 !status.ok()) {
+               throw py::value_error(status.message());
              }
-             return std::make_shared<InvertIndexParams>(
-                 enable_range_optimization.value_or(false),
-                 enable_extended_wildcard);
+             return params;
            }),
            py::arg("enable_range_optimization") = py::none(),
            py::arg("enable_extended_wildcard") = false, py::kw_only(),
            py::arg("layout") = py::none(),
+           py::arg("bsi_cache_mode") = BsiCacheMode::RESIDENT,
+           py::arg("bsi_cache_bytes") = 64ULL << 20,
            R"pbdoc(
 Constructs an InvertIndexParam instance.
 
@@ -261,10 +269,21 @@ Args:
     layout (InvertIndexLayout, optional): Explicit storage layout. TERM_BSI
         supports single INT32, INT64, UINT32 and UINT64 fields. Mutually exclusive
         with enable_range_optimization. Equality/IN continue using term postings,
-        while range comparisons use segment-wide bit slices. Changing the layout
+        while vector range filters use segment-wide bit slices. Scalar recall
+        continues to use term postings. Changing the layout
         through Collection.create_index rebuilds the field index.
+    bsi_cache_mode (BsiCacheMode): RESIDENT retains all sealed slices, ON_DEMAND
+        reads them per query, and LRU loads slices lazily with a bounded cache.
+        Writing indexes always retain mutable slices. Defaults to RESIDENT.
+    bsi_cache_bytes (int): LRU capacity per field per segment, in bytes. Includes
+        retained buffers and frozen headers; excludes query scratch space and
+        mutable writing slices. Defaults to 64 MiB. Must be positive for LRU.
 )pbdoc")
       .def_property_readonly("layout", &InvertIndexParams::layout)
+      .def_property_readonly("bsi_cache_mode",
+                             &InvertIndexParams::bsi_cache_mode)
+      .def_property_readonly("bsi_cache_bytes",
+                             &InvertIndexParams::bsi_cache_bytes)
       .def_property_readonly("enable_range_optimization",
                              &InvertIndexParams::enable_range_optimization,
                              R"pbdoc(
@@ -284,26 +303,43 @@ Note: Prefix search is always enabled regardless of this setting.
                 self.enable_range_optimization();
             dict["enable_extended_wildcard"] = self.enable_extended_wildcard();
             dict["layout"] = py::cast(self.layout()).attr("name");
+            if (self.layout() == InvertIndexLayout::TERM_BSI) {
+              dict["bsi_cache_mode"] =
+                  py::cast(self.bsi_cache_mode()).attr("name");
+              dict["bsi_cache_bytes"] = self.bsi_cache_bytes();
+            }
             return dict;
           },
           "Convert to dictionary with all fields")
       .def("__repr__",
            [](const InvertIndexParams &self) -> std::string {
-             return "{"
-                    "\"enable_range_optimization\":" +
-                    std::to_string(self.enable_range_optimization()) +
-                    ","
-                    "\"enable_extended_wildcard\":" +
-                    std::to_string(self.enable_extended_wildcard()) +
-                    ",\"layout\":\"" +
-                    py::cast(self.layout()).attr("name").cast<std::string>() +
-                    "\"}";
+             std::string result =
+                 "{"
+                 "\"enable_range_optimization\":" +
+                 std::to_string(self.enable_range_optimization()) +
+                 ","
+                 "\"enable_extended_wildcard\":" +
+                 std::to_string(self.enable_extended_wildcard()) +
+                 ",\"layout\":\"" +
+                 py::cast(self.layout()).attr("name").cast<std::string>() +
+                 "\"";
+             if (self.layout() == InvertIndexLayout::TERM_BSI) {
+               result += ",\"bsi_cache_mode\":\"" +
+                         py::cast(self.bsi_cache_mode())
+                             .attr("name")
+                             .cast<std::string>() +
+                         "\",\"bsi_cache_bytes\":" +
+                         std::to_string(self.bsi_cache_bytes());
+             }
+             return result + "}";
            })
       .def(py::pickle(
           [](const InvertIndexParams &self) {  // __getstate__
             return py::make_tuple(self.enable_range_optimization(),
                                   self.enable_extended_wildcard(),
-                                  static_cast<uint32_t>(self.layout()));
+                                  static_cast<uint32_t>(self.layout()),
+                                  static_cast<uint32_t>(self.bsi_cache_mode()),
+                                  self.bsi_cache_bytes());
           },
           [](py::tuple t) {  // __setstate__
             if (t.size() == 2) {
@@ -314,6 +350,18 @@ Note: Prefix search is always enabled regardless of this setting.
               return std::make_shared<InvertIndexParams>(
                   static_cast<InvertIndexLayout>(t[2].cast<uint32_t>()),
                   t[1].cast<bool>());
+            }
+            if (t.size() == 5) {
+              auto params = std::make_shared<InvertIndexParams>(
+                  static_cast<InvertIndexLayout>(t[2].cast<uint32_t>()),
+                  t[1].cast<bool>(),
+                  static_cast<BsiCacheMode>(t[3].cast<uint32_t>()),
+                  t[4].cast<uint64_t>());
+              if (auto status = params->validate(DataType::INT32);
+                  !status.ok()) {
+                throw py::value_error(status.message());
+              }
+              return params;
             }
             throw std::runtime_error("Invalid state for InvertIndexParams");
           }));

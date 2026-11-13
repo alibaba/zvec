@@ -25,6 +25,19 @@
 namespace zvec {
 
 Status InvertIndexParams::validate(DataType data_type) const {
+  if (bsi_cache_mode_ != BsiCacheMode::RESIDENT &&
+      bsi_cache_mode_ != BsiCacheMode::ON_DEMAND &&
+      bsi_cache_mode_ != BsiCacheMode::LRU) {
+    return Status::InvalidArgument("Unknown BSI cache mode");
+  }
+  if (bsi_cache_mode_ == BsiCacheMode::LRU && bsi_cache_bytes_ == 0) {
+    return Status::InvalidArgument("BSI LRU cache capacity must be positive");
+  }
+  if (layout_ != InvertIndexLayout::TERM_BSI &&
+      (bsi_cache_mode_ != BsiCacheMode::RESIDENT ||
+       bsi_cache_bytes_ != (64ULL << 20))) {
+    return Status::InvalidArgument("BSI cache configuration requires TERM_BSI");
+  }
   switch (layout_) {
     case InvertIndexLayout::TERM:
     case InvertIndexLayout::TERM_RANGE:
@@ -47,6 +60,8 @@ std::string InvertIndexParams::to_string() const {
       << "enable_range_optimization:"
       << (enable_range_optimization() ? "true" : "false")
       << ", layout:" << static_cast<uint32_t>(layout_)
+      << ", bsi_cache_mode:" << static_cast<uint32_t>(bsi_cache_mode_)
+      << ", bsi_cache_bytes:" << bsi_cache_bytes_
       << ", enable_extended_wildcard:"
       << (enable_extended_wildcard_ ? "true" : "false") << "}";
   return oss.str();

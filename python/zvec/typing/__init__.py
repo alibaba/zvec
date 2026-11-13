@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from zvec._zvec.typing import (
+    BsiCacheMode,
     DataType,
     IndexType,
     InvertIndexLayout,
@@ -25,6 +26,7 @@ from zvec._zvec.typing import (
 )
 
 __all__ = [
+    "BsiCacheMode",
     "DataType",
     "IOBackendType",
     "IndexType",

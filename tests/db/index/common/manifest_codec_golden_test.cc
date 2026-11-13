@@ -1177,8 +1177,21 @@ TEST(ManifestCodecGolden, InvertLayouts) {
     ASSERT_NE(decoded, nullptr);
     EXPECT_EQ(*decoded, params);
     if (layout == InvertIndexLayout::TERM_BSI) {
-      // IndexParams.invert (field 1), containing layout (field 3) = 2.
-      EXPECT_EQ(encoded, std::string("\x0a\x02\x18\x02", 4));
+      // IndexParams.invert contains the BSI layout and explicit cache capacity.
+      EXPECT_EQ(encoded,
+                std::string("\x0a\x07\x18\x02\x28\x80\x80\x80\x20", 9));
     }
+  }
+}
+
+TEST(ManifestCodecGolden, BsiCachePolicyRoundTrip) {
+  for (auto mode :
+       {BsiCacheMode::RESIDENT, BsiCacheMode::ON_DEMAND, BsiCacheMode::LRU}) {
+    InvertIndexParams params(InvertIndexLayout::TERM_BSI, false, mode, 123456);
+    std::string encoded;
+    ManifestCodec::EncodeIndexParams(&params, &encoded);
+    auto decoded = ManifestCodec::DecodeIndexParams(encoded);
+    ASSERT_NE(decoded, nullptr);
+    EXPECT_EQ(*decoded, params);
   }
 }

@@ -29,7 +29,17 @@ std::string CollectionStats::to_string() const {
     ++i;
   }
 
-  oss << "}}";
+  oss << "}";
+  if (!bsi_memory_bytes.empty()) {
+    oss << ",bsi_memory_bytes:{";
+    size_t n = 0;
+    for (const auto &[field, bytes] : bsi_memory_bytes) {
+      if (n++) oss << ",";
+      oss << field << ":" << bytes;
+    }
+    oss << "}";
+  }
+  oss << "}";
   return oss.str();
 }
 
@@ -49,7 +59,17 @@ std::string CollectionStats::to_string_formatted(int indent_level) const {
   if (!index_completeness.empty()) {
     oss << "\n";
   }
-  oss << indent(indent_level + 1) << "}\n" << indent(indent_level) << "}";
+  oss << indent(indent_level + 1) << "}";
+  if (!bsi_memory_bytes.empty()) {
+    oss << ",\n" << indent(indent_level + 1) << "bsi_memory_bytes: {\n";
+    size_t n = 0;
+    for (const auto &[field, bytes] : bsi_memory_bytes) {
+      if (n++) oss << ",\n";
+      oss << indent(indent_level + 2) << field << ": " << bytes;
+    }
+    oss << "\n" << indent(indent_level + 1) << "}";
+  }
+  oss << "\n" << indent(indent_level) << "}";
 
   return oss.str();
 }

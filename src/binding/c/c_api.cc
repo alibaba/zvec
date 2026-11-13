@@ -2014,6 +2014,43 @@ zvec_error_code_t zvec_index_params_get_invert_params(const zvec_index_params_t 
   return ZVEC_OK;
 }
 
+zvec_error_code_t zvec_index_params_set_invert_layout(
+    zvec_index_params_t *params, zvec_invert_layout_t layout,
+    zvec_bsi_cache_mode_t cache_mode, uint64_t cache_bytes) {
+  auto *invert = params ? dynamic_cast<zvec::InvertIndexParams *>(
+      reinterpret_cast<zvec::IndexParams *>(params)) : nullptr;
+  if (!invert) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Expected INVERT index params");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  zvec::InvertIndexParams replacement(
+      static_cast<zvec::InvertIndexLayout>(layout),
+      invert->enable_extended_wildcard(),
+      static_cast<zvec::BsiCacheMode>(cache_mode), cache_bytes);
+  auto status = replacement.validate(zvec::DataType::INT32);
+  if (!status.ok()) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, status.message().c_str());
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  *invert = replacement;
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_index_params_get_invert_layout(
+    const zvec_index_params_t *params, zvec_invert_layout_t *out_layout,
+    zvec_bsi_cache_mode_t *out_cache_mode, uint64_t *out_cache_bytes) {
+  const auto *invert = params ? dynamic_cast<const zvec::InvertIndexParams *>(
+      reinterpret_cast<const zvec::IndexParams *>(params)) : nullptr;
+  if (!invert) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Expected INVERT index params");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  if (out_layout) *out_layout = static_cast<uint32_t>(invert->layout());
+  if (out_cache_mode) *out_cache_mode = static_cast<uint32_t>(invert->bsi_cache_mode());
+  if (out_cache_bytes) *out_cache_bytes = invert->bsi_cache_bytes();
+  return ZVEC_OK;
+}
+
 zvec_error_code_t zvec_index_params_set_fts_params(
     zvec_index_params_t *params, const char *tokenizer_name,
     const zvec_string_array_t *filters, const char *extra_params) {

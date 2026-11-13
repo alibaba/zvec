@@ -224,6 +224,8 @@
     zvec_index_params_set_fts_params;
     zvec_index_params_set_hnsw_params;
     zvec_index_params_set_invert_params;
+    zvec_index_params_set_invert_layout;
+    zvec_index_params_get_invert_layout;
     zvec_index_params_set_ivf_params;
     zvec_index_params_set_ivf_rabitq_params;
     zvec_index_params_set_metric_type;

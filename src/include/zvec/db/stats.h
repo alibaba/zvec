@@ -27,6 +27,10 @@ struct ZVEC_API CollectionStats {
   uint64_t doc_count{0};
   // column -> completeness
   std::unordered_map<std::string, float> index_completeness;
+  // Conservative retained BSI allocations summed across segments, by field.
+  // Includes mutable slices, frozen buffers, sample metadata and the LRU.
+  // Excludes per-query scratch space and the shared RocksDB block cache.
+  std::unordered_map<std::string, uint64_t> bsi_memory_bytes;
 
   std::string to_string() const;
 

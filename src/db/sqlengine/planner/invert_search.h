@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <optional>
 #include <zvec/ailego/pattern/expected.hpp>
 #include "db/index/segment/segment.h"
 #include "db/sqlengine/analyzer/query_node.h"
@@ -31,6 +32,10 @@ class InvertSearch {
       const QueryNode *invert_cond);
 
   static CompareOp query_nodeop2search_op(QueryNodeOp op);
+
+  // Planning only: unknown is distinct from an estimated zero. No bitmap is
+  // materialized and estimates must never be used as query results.
+  std::optional<double> estimate_match_count(const QueryNode *condition) const;
 
  private:
   Result<InvertedSearchResult::Ptr> exec_invert_cond_node(
