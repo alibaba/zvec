@@ -158,7 +158,9 @@ bool IndexMeta::deserialize(const void *data, size_t len) {
   // Read attachment
   ailego::Params attachment;
   if (format->attachment_size) {
-    if (format->attachment_offset + format->attachment_size > len) {
+    if (static_cast<uint64_t>(format->attachment_offset) +
+            format->attachment_size >
+        len) {
       return false;
     }
     std::string str(
