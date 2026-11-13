@@ -74,6 +74,8 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
 
   diskann_id_t get_id(diskann_key_t key) const override;
   diskann_key_t get_key(diskann_id_t id) const override;
+  //! Physical addressable slots, including NULL gaps (compact + mapping
+  //! layout).
   size_t slot_count() const override {
     return key_mapping_buffer_
                ? key_mapping_buffer_->size() / sizeof(diskann_id_t)

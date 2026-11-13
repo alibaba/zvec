@@ -693,7 +693,7 @@ int FlatContiguousStreamerEntity::search_by_p_keys_fast(
 int FlatContiguousStreamerEntity::build_contiguous_memory() {
   degrade_to_mmap();
 
-  const size_t count = use_key_info_map() ? id_key_count() : vector_count();
+  const size_t count = use_key_info_map() ? id_key_count() : slot_count();
   if (count == 0) {
     return 0;
   }
@@ -1431,7 +1431,7 @@ int FlatStreamerEntity::add_vector_with_id(const uint32_t id, const void *query,
     query = empty.data();
   }
   meta_dirty_ = true;
-  if (id >= vector_count()) {
+  if (id >= slot_count()) {
     IndexStorage::MemoryBlock head_block;
     this->get_head_block(head_block);
     BlockLocation block =
@@ -1449,7 +1449,7 @@ int FlatStreamerEntity::add_vector_with_id(const uint32_t id, const void *query,
         return ret;
       }
     }
-    for (size_t start_id = vector_count(); start_id < id; ++start_id) {
+    for (size_t start_id = slot_count(); start_id < id; ++start_id) {
       std::vector<char> vec(size);
       int ret = this->add_to_block(block, kInvalidKey, vec.data(), size);
       if (ret == IndexError_IndexFull) {

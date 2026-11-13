@@ -45,14 +45,14 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
 
   size_t count() const override {
     std::call_once(count_once_, [&] {
-      for (uint32_t id = 0; id < entity_->doc_cnt(); ++id)
+      for (uint32_t id = 0; id < entity_->slot_count(); ++id)
         if (entity_->contains_node(id)) ++vector_count_;
     });
     return vector_count_;
   }
 
   size_t slot_count() const override {
-    return entity_->doc_cnt();
+    return entity_->slot_count();
   }
 
   size_t total_sparse_count() const override {
@@ -99,7 +99,7 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
     }
 
     bool is_valid() const override {
-      return status_ == 0 && cur_id_ < entity_->doc_cnt();
+      return status_ == 0 && cur_id_ < entity_->slot_count();
     }
 
     int status() const override {
@@ -125,7 +125,7 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
       sparse_indices_buffer_.clear();
       sparse_data_buffer_.clear();
       key_ = kInvalidKey;
-      for (cur_id_ = start_id; cur_id_ < entity_->doc_cnt(); ++cur_id_) {
+      for (cur_id_ = start_id; cur_id_ < entity_->slot_count(); ++cur_id_) {
         status_ = entity_->read_key(cur_id_, &key_);
         if (status_ != 0) return;
         if (key_ == kInvalidKey) {

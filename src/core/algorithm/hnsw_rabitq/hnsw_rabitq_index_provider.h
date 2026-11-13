@@ -46,14 +46,14 @@ class HnswRabitqIndexProvider : public IndexProvider {
   //! Retrieve count of vectors
   size_t count() const override {
     std::call_once(count_once_, [&] {
-      for (uint32_t id = 0; id < entity_->doc_cnt(); ++id)
+      for (uint32_t id = 0; id < entity_->slot_count(); ++id)
         if (entity_->contains_node(id)) ++vector_count_;
     });
     return vector_count_;
   }
 
   size_t slot_count() const override {
-    return entity_->doc_cnt();
+    return entity_->slot_count();
   }
 
   //! Retrieve dimension of vector
@@ -108,7 +108,7 @@ class HnswRabitqIndexProvider : public IndexProvider {
 
     //! Test if the iterator is valid
     bool is_valid() const override {
-      return status_ == 0 && cur_id_ < entity_->doc_cnt();
+      return status_ == 0 && cur_id_ < entity_->slot_count();
     }
 
     //! Retrieve primary key
@@ -136,7 +136,7 @@ class HnswRabitqIndexProvider : public IndexProvider {
     node_id_t get_next_valid_id(node_id_t start_id) {
       block_.reset();
       key_ = kInvalidKey;
-      for (node_id_t id = start_id; id < entity_->doc_cnt(); ++id) {
+      for (node_id_t id = start_id; id < entity_->slot_count(); ++id) {
         status_ = entity_->read_key(id, &key_);
         if (status_ != 0) return kInvalidNodeId;
         if (include_empty_ || key_ != kInvalidKey) return id;

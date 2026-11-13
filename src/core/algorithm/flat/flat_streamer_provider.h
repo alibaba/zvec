@@ -32,7 +32,7 @@ class FlatStreamerProvider : public IndexProvider {
   //! Constructor
   FlatStreamerProvider(const FlatStreamer<BATCH_SIZE> *owner) {
     feature_size_ = owner->meta().element_size();
-    total_vector_count_ = owner->entity().vector_count();
+    total_vector_count_ = owner->entity().slot_count();
     owner_ = owner;
     block_buffer_.resize(BATCH_SIZE * feature_size_);
   }

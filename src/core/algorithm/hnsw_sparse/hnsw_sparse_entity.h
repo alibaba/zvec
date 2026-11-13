@@ -257,6 +257,11 @@ class HnswSparseEntity {
     return header_.graph.doc_count;
   }
 
+  //! Physical addressable slots, including NULL gaps (gap-in-place layout).
+  size_t slot_count() const {
+    return doc_cnt();
+  }
+
   inline uint32_t *mutable_total_sparse_count() {
     return &header_.graph.total_sparse_count;
   }

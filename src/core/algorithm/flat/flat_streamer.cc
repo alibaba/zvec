@@ -514,7 +514,7 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_impl(
 
   for (size_t q = 0; q < count; ++q) {
     bf_context->group_topk_heaps().clear();
-    for (node_id_t id = 0; id < entity_->vector_count(); ++id) {
+    for (node_id_t id = 0; id < entity_->slot_count(); ++id) {
       uint64_t key = entity_->key(id);
       if (!bf_context->filter().is_valid() || !bf_context->filter()(key)) {
         dist_t dist = 0;
@@ -599,7 +599,7 @@ int FlatStreamer<BATCH_SIZE>::reserve_slots(uint32_t count) {
   if (state_ != STATE_OPENED) return IndexError_NoReady;
   READ_LOCK_GUARD_DEFER(dump_mutex_, dump_lock);
   if (!dump_lock.try_lock()) return IndexError_Unsupported;
-  if (count <= entity_->vector_count()) return 0;
+  if (count <= entity_->slot_count()) return 0;
   return entity_->add_vector_with_id(count - 1, nullptr, meta_.element_size());
 }
 

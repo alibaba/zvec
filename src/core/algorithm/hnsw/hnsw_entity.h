@@ -293,6 +293,11 @@ class HnswEntity {
     return header_.graph.doc_count;
   }
 
+  //! Physical addressable slots, including NULL gaps (gap-in-place layout).
+  size_t slot_count() const {
+    return doc_cnt();
+  }
+
   //! Get hnsw graph scaling params
   inline size_t scaling_factor() const {
     return header_.hnsw.scaling_factor;

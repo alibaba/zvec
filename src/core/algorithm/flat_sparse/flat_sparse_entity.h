@@ -213,6 +213,11 @@ class FlatSparseEntity {
  public:
   virtual uint32_t doc_cnt() const = 0;
 
+  //! Physical addressable slots, including NULL gaps (gap-in-place layout).
+  size_t slot_count() const {
+    return doc_cnt();
+  }
+
   virtual uint32_t total_sparse_count() const = 0;
 
   virtual node_id_t get_id(uint64_t key) const = 0;

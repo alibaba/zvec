@@ -112,8 +112,9 @@ class FlatStreamerEntity {
   //! Clone the entity
   virtual FlatStreamerEntity::Pointer clone() const;
 
-  //! Retrieve the total vectors in the index
-  size_t vector_count() const {
+  //! Physical addressable slots, including NULL gaps (gap-in-place layout).
+  //! This is an ID bound, not the count of real vectors; use count() for that.
+  size_t slot_count() const {
     return meta_.header.total_vector_count;
   }
 

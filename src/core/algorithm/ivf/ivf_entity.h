@@ -91,7 +91,7 @@ class IVFEntity {
     return 0;
   }
 
-  //! Retrieve the total vectors in the index
+  //! Real vectors stored compactly (excludes NULL gaps); not an ID bound.
   size_t vector_count() const {
     return header_.total_vector_count;
   }
@@ -183,6 +183,8 @@ class IVFEntity {
     return *static_cast<const uint64_t *>(data.data());
   }
 
+  //! Physical addressable slots, including NULL gaps (compact + mapping
+  //! layout).
   size_t slot_count() const {
     return mapping_ ? mapping_->data_size() / sizeof(uint32_t) : vector_count();
   }

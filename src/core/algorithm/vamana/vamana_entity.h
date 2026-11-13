@@ -142,6 +142,11 @@ class VamanaEntity {
   inline node_id_t doc_cnt() const {
     return header_.graph.doc_count;
   }
+
+  //! Physical addressable slots, including NULL gaps (gap-in-place layout).
+  size_t slot_count() const {
+    return doc_cnt();
+  }
   inline float alpha() const {
     return header_.graph.alpha;
   }
