@@ -2794,6 +2794,10 @@ arrow::Result<ForwardReadView::Ptr> Segment::make_forward_read_view(
     }
   }
 
+  // This boundary is outside seg_mtx_: retained stores must survive retirement
+  // while persisted projections are decoded. Keep it observable in debug logs.
+  LOG_DEBUG("Forward filter capture: segment[%d] rows[%zu] stores[%zu]",
+            impl->id(), static_cast<size_t>(rows), sources.size());
   std::vector<arrow::ArrayVector> chunks(columns.size());
   auto append = [&](const TablePtr &table,
                     int64_t expected_rows) -> arrow::Status {

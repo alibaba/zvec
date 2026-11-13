@@ -14,9 +14,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstring>
 #include <future>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -29,6 +33,40 @@
 
 namespace zvec::test {
 namespace cp = arrow::compute;
+
+namespace {
+class CaptureBarrier final : public ailego::Logger {
+ public:
+  int init(const ailego::Params &) override {
+    return 0;
+  }
+  int cleanup() override {
+    return 0;
+  }
+  void log(int, const char *, int, const char *format, va_list) override {
+    if (!std::strstr(format, "Forward filter capture:")) return;
+    std::unique_lock<std::mutex> lock(mutex_);
+    entered_ = true;
+    cv_.notify_all();
+    cv_.wait(lock, [&] { return released_; });
+  }
+  bool wait_entered() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return cv_.wait_for(lock, std::chrono::seconds(10),
+                        [&] { return entered_; });
+  }
+  void release() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    released_ = true;
+    cv_.notify_all();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  bool entered_{false}, released_{false};
+};
+}  // namespace
 
 class ForwardFilterReadTest : public testing::TestWithParam<bool> {
  protected:
@@ -232,6 +270,124 @@ TEST_P(ForwardFilterReadTest, CaptureRacesAppendAndPublicFlush) {
                 10000u + row);
     }
   }
+}
+
+TEST_P(ForwardFilterReadTest, RetirementBetweenCaptureAndPersistedDecode) {
+  ASSERT_NO_FATAL_FAILURE(create());
+  ASSERT_NO_FATAL_FAILURE(reopen_persisted());
+  const std::vector<std::string> columns{GLOBAL_DOC_ID, "text", "items"};
+  std::vector<std::string> expected;
+  for (int row = 0; row < 2053; ++row) {
+    auto batch = segment_->fetch(columns, row);
+    ASSERT_NE(batch, nullptr);
+    expected.push_back(batch->ToString());
+  }
+  auto barrier = std::make_shared<CaptureBarrier>();
+  auto previous = ailego::LoggerBroker::Register(barrier);
+  ailego::LoggerBroker::SetLevel(ailego::Logger::LEVEL_DEBUG);
+  auto pending = std::async(std::launch::async, [&] {
+    return Segment::make_forward_read_view(segment_, columns);
+  });
+  EXPECT_TRUE(barrier->wait_entered());
+  // Explicit retirement clears the segment's store owners even though the
+  // capture still retains the segment. shared_ptr<Segment> alone is not enough.
+  auto retiring =
+      std::async(std::launch::async, [&] { return segment_->destroy(); });
+  EXPECT_EQ(retiring.wait_for(std::chrono::seconds(10)),
+            std::future_status::ready);
+  barrier->release();
+  auto retired = retiring.get();
+  auto captured = pending.get();
+  ailego::LoggerBroker::Register(previous);
+  ailego::LoggerBroker::SetLevel(ailego::Logger::LEVEL_WARN);
+  ASSERT_TRUE(retired.ok()) << retired.message();
+  ASSERT_TRUE(captured.ok()) << captured.status().ToString();
+  // A new capture cannot use the retired stores; only the earlier retained
+  // publication may complete. This distinguishes ownership from live access.
+  EXPECT_FALSE(Segment::make_forward_read_view(segment_, columns).ok());
+  auto view = captured.MoveValueUnsafe();
+  segment_.reset();
+  for (int row = 0; row < 2053; ++row) {
+    auto batch = view->read_row(row);
+    ASSERT_NE(batch, nullptr);
+    EXPECT_EQ(batch->ToString(), expected[row]);
+  }
+}
+
+TEST_P(ForwardFilterReadTest,
+       ConcurrentWideMultiSegmentProjectionsReleaseMemory) {
+  constexpr int kSegments = 3, kRows = 257, kColumns = 6, kReaders = 4;
+  std::vector<std::string> columns{GLOBAL_DOC_ID};
+  for (int c = 0; c < kColumns; ++c) {
+    auto name = "wide_" + std::to_string(c);
+    columns.push_back(name);
+    schema_->add_field(std::make_shared<FieldSchema>(name, DataType::STRING));
+  }
+  auto value = [](int s, int row, int c) {
+    return std::to_string(s) + ":" + std::to_string(row) + ":" +
+           std::string(1024, static_cast<char>('a' + c));
+  };
+  options_.max_buffer_size_ = 1024 * 1024;
+  std::vector<Segment::Ptr> segments;
+  for (int s = 0; s < kSegments; ++s) {
+    auto created =
+        Segment::CreateAndOpen(path_, *schema_, s, 10000 + s * kRows, id_map_,
+                               deletes_, versions_, options_);
+    ASSERT_TRUE(created.has_value()) << created.error().message();
+    auto segment = created.value();
+    for (int row = 0; row < kRows; ++row) {
+      Doc doc;
+      doc.set_pk("wide_" + std::to_string(s) + "_" + std::to_string(row));
+      for (int c = 0; c < kColumns; ++c)
+        doc.set<std::string>(columns[c + 1], value(s, row, c));
+      ASSERT_TRUE(segment->insert(doc).ok());
+    }
+    ASSERT_TRUE(segment->dump().ok());
+    segment->remove_writing_forward_block();
+    segments.push_back(std::move(segment));
+  }
+  using Views = std::vector<ForwardReadView::Ptr>;
+  const auto before = arrow::default_memory_pool()->bytes_allocated();
+  std::vector<std::future<arrow::Result<Views>>> pending;
+  for (int reader = 0; reader < kReaders; ++reader) {
+    pending.push_back(
+        std::async(std::launch::async, [&]() -> arrow::Result<Views> {
+          Views views;
+          for (const auto &segment : segments) {
+            ARROW_ASSIGN_OR_RAISE(
+                auto view, Segment::make_forward_read_view(segment, columns));
+            views.push_back(std::move(view));
+          }
+          return views;
+        }));
+  }
+  std::vector<Views> held;
+  for (auto &future : pending) {
+    auto captured = future.get();
+    ASSERT_TRUE(captured.ok()) << captured.status().ToString();
+    held.push_back(captured.MoveValueUnsafe());
+  }
+  if (!GetParam()) {
+    // Parquet projections are independently owned and outside the cache budget.
+    EXPECT_GE(arrow::default_memory_pool()->bytes_allocated() - before,
+              int64_t{kSegments} * kRows * kColumns * 1024 * kReaders);
+  }
+  for (const auto &views : held) {
+    for (int s = 0; s < kSegments; ++s) {
+      ASSERT_TRUE(views[s]->table()->ValidateFull().ok());
+      for (int row : {0, 128, kRows - 1}) {
+        auto batch = views[s]->read_row(row);
+        ASSERT_NE(batch, nullptr);
+        EXPECT_EQ(batch->values[0].scalar_as<arrow::UInt64Scalar>().value,
+                  uint64_t{10000} + s * kRows + row);
+        for (int c = 0; c < kColumns; ++c)
+          EXPECT_EQ(batch->values[c + 1].scalar()->ToString(),
+                    value(s, row, c));
+      }
+    }
+  }
+  held.clear();
+  EXPECT_EQ(arrow::default_memory_pool()->bytes_allocated(), before);
 }
 
 TEST_P(ForwardFilterReadTest, EmptySegmentAndMutableTail) {

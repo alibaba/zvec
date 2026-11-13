@@ -30,6 +30,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -59,8 +60,11 @@
 #include "db/index/storage/mmap_forward_store.h"
 
 DEFINE_string(cmd, "all",
-              "build | run | lockmicro | snapshotmicro | all (build then run)");
+              "build | run | clone_deleted | lockmicro | snapshotmicro | all");
 DEFINE_string(index, "./filter_lock_bench_coll", "Collection directory");
+DEFINE_string(source_index, "", "Read-only source for clone_deleted");
+DEFINE_int64(delete_stride, 0,
+             "Expected tombstones: every Nth pk starting at 0; 0 means none");
 DEFINE_int64(docs, 1000000, "Number of documents to insert");
 DEFINE_int32(dim, 62, "Vector dimension");
 DEFINE_bool(invert, true,
@@ -216,6 +220,60 @@ void build_collection() {
   fprintf(stderr, "build done: %s\n", FLAGS_index.c_str());
 }
 
+int64_t expected_deleted() {
+  return FLAGS_delete_stride ? (FLAGS_docs - 1) / FLAGS_delete_stride + 1 : 0;
+}
+
+// Keep the original index intact. Delete only from a fresh copy, after index
+// optimization, so traversal still sees tombstones instead of compacted data.
+void clone_deleted_collection() {
+  if (FLAGS_source_index.empty() || FLAGS_delete_stride < 2 ||
+      !std::filesystem::is_directory(FLAGS_source_index) ||
+      std::filesystem::exists(FLAGS_index)) {
+    throw std::runtime_error(
+        "clone_deleted requires a source, new destination, "
+        "and delete_stride >= 2");
+  }
+  const auto source = std::filesystem::canonical(FLAGS_source_index);
+  const auto destination = std::filesystem::weakly_canonical(FLAGS_index);
+  for (auto parent = destination; !parent.empty();) {
+    if (parent == source)
+      throw std::runtime_error("Clone destination must be outside the source");
+    const auto next = parent.parent_path();
+    if (next == parent) break;
+    parent = next;
+  }
+  std::filesystem::copy(source, destination,
+                        std::filesystem::copy_options::recursive);
+  auto opened = Collection::Open(FLAGS_index, CollectionOptions{false, true});
+  if (!opened) throw std::runtime_error(opened.error().message());
+  auto coll = std::move(opened).value();
+  auto before = coll->stats();
+  if (!before || before->doc_count != static_cast<uint64_t>(FLAGS_docs))
+    throw std::runtime_error(
+        "Source must contain the requested undeleted rows");
+  std::vector<std::string> keys;
+  for (int64_t id = 0; id < FLAGS_docs; id += FLAGS_delete_stride) {
+    keys.push_back("pk_" + std::to_string(id));
+    if (keys.size() == 1024 || FLAGS_docs - id <= FLAGS_delete_stride) {
+      auto removed = coll->delete_(keys);
+      if (!removed) throw std::runtime_error(removed.error().message());
+      for (const auto &status : removed.value())
+        if (!status.ok()) throw std::runtime_error(status.message());
+      keys.clear();
+    }
+  }
+  auto after = coll->stats();
+  if (!after || after->doc_count !=
+                    static_cast<uint64_t>(FLAGS_docs - expected_deleted()))
+    throw std::runtime_error("Tombstone accounting mismatch");
+  auto status = coll->close();
+  if (!status.ok()) throw std::runtime_error(status.message());
+  printf("cloned tombstones=%lld stride=%lld; no post-delete optimization\n",
+         static_cast<long long>(expected_deleted()),
+         static_cast<long long>(FLAGS_delete_stride));
+}
+
 // Sleeping barrier: the coordinator and finished clients must not compete
 // with queries for CPU during the timed interval.
 class Barrier {
@@ -293,7 +351,8 @@ void run_benchmark() {
       hnsw->ef_construction() != FLAGS_efc ||
       hnsw->metric_type() != MetricType::COSINE ||
       hnsw->quantize_type() != quantization || has_invert != FLAGS_invert ||
-      stats->doc_count != static_cast<uint64_t>(FLAGS_docs) ||
+      stats->doc_count !=
+          static_cast<uint64_t>(FLAGS_docs - expected_deleted()) ||
       !options->read_only_ || !options->enable_mmap_) {
     fprintf(stderr,
             "Stored collection does not match requested benchmark: %s\n",
@@ -302,6 +361,9 @@ void run_benchmark() {
   }
   printf("Stored schema: %s\n", schema->to_string().c_str());
   printf("Stored stats: %s\n", stats->to_string().c_str());
+  printf("deletion_stride=%lld expected_deleted=%lld\n",
+         static_cast<long long>(FLAGS_delete_stride),
+         static_cast<long long>(expected_deleted()));
 #ifdef ZVEC_FORWARD_FILTER_DISABLE_VIEW
   printf("build_mode=per-candidate-locked-arrow\n");
 #else
@@ -353,10 +415,21 @@ void run_benchmark() {
             std::chrono::duration<double, std::micro>(t1 - t0).count());
       }
       bool bad = res->size() != static_cast<size_t>(FLAGS_topk);
-      if (!bad && FLAGS_verify && !filter.empty()) {
+      if (!bad && FLAGS_verify) {
         for (const auto &doc : res.value()) {
           auto v = doc->get<int32_t>(kTimeField);
-          if (!v.has_value() || v.value() <= threshold) {
+          const auto pk = doc->pk();
+          int64_t id = -1;
+          if (pk.compare(0, 3, "pk_") != 0) {
+            bad = true;
+            break;
+          }
+          auto parsed =
+              std::from_chars(pk.data() + 3, pk.data() + pk.size(), id);
+          if (parsed.ec != std::errc{} || parsed.ptr != pk.data() + pk.size() ||
+              id < 0 || id >= FLAGS_docs ||
+              (FLAGS_delete_stride && id % FLAGS_delete_stride == 0) ||
+              (!filter.empty() && (!v.has_value() || v.value() <= threshold))) {
             bad = true;
             break;
           }
@@ -609,10 +682,12 @@ void lock_micro() {
 int main(int argc, char **argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   if ((FLAGS_cmd != "build" && FLAGS_cmd != "run" && FLAGS_cmd != "all" &&
-       FLAGS_cmd != "lockmicro" && FLAGS_cmd != "snapshotmicro") ||
-      FLAGS_docs <= 0 || FLAGS_dim <= 0 || FLAGS_pool <= 0 ||
-      FLAGS_queries <= 0 || FLAGS_rounds <= 0 || FLAGS_warmup < 0 ||
-      FLAGS_topk <= 0 || FLAGS_topk > FLAGS_docs || FLAGS_micro_secs <= 0 ||
+       FLAGS_cmd != "lockmicro" && FLAGS_cmd != "snapshotmicro" &&
+       FLAGS_cmd != "clone_deleted") ||
+      FLAGS_delete_stride < 0 || FLAGS_delete_stride == 1 || FLAGS_docs <= 0 ||
+      FLAGS_dim <= 0 || FLAGS_pool <= 0 || FLAGS_queries <= 0 ||
+      FLAGS_rounds <= 0 || FLAGS_warmup < 0 || FLAGS_topk <= 0 ||
+      FLAGS_topk > FLAGS_docs || FLAGS_micro_secs <= 0 ||
       FLAGS_query_threads <= 0 || !std::isfinite(FLAGS_selectivity) ||
       FLAGS_selectivity < 0 || FLAGS_selectivity > 1 ||
       (FLAGS_quantization != "none" && FLAGS_quantization != "int8") ||
@@ -648,6 +723,9 @@ int main(int argc, char **argv) {
   }
   if (FLAGS_cmd == "snapshotmicro") {
     snapshot_micro();
+  }
+  if (FLAGS_cmd == "clone_deleted") {
+    clone_deleted_collection();
   }
   return 0;
 }

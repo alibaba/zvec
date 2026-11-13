@@ -299,6 +299,35 @@ TEST_P(ForwardFilterCollectionTest, CloseWaitsForActiveFanout) {
   EXPECT_EQ(probe_->locked.load(), 0);
 }
 
+TEST_P(ForwardFilterCollectionTest, DropColumnWaitsForCapturedQuery) {
+  ASSERT_NO_FATAL_FAILURE(create());
+  ASSERT_TRUE(collection_->optimize().ok());
+  probe_->block = true;
+  auto pending = std::async(std::launch::async,
+                            [&] { return collection_->query(query()); });
+  EXPECT_TRUE(probe_->wait_entered());
+  std::promise<void> started;
+  auto dropping = std::async(std::launch::async, [&] {
+    started.set_value();
+    return collection_->drop_column("value");
+  });
+  started.get_future().wait();
+  EXPECT_EQ(dropping.wait_for(std::chrono::milliseconds(100)),
+            std::future_status::timeout);
+  probe_->release();
+  auto result = pending.get();
+  auto dropped = dropping.get();
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  EXPECT_EQ(keys(result).size(), 8u);
+  ASSERT_TRUE(dropped.ok()) << dropped.message();
+  EXPECT_FALSE(collection_->query(query()).has_value());
+  auto surviving = query("bitmap > 48");
+  surviving.output_fields_ = std::vector<std::string>{"bitmap", "bucket"};
+  EXPECT_EQ(keys(collection_->query(surviving)).size(), 8u);
+  EXPECT_GT(probe_->views.load(), 0);
+  EXPECT_EQ(probe_->locked.load(), 0);
+}
+
 TEST_P(ForwardFilterCollectionTest, WritableFlushSwitchOptimizeAndDdlUseViews) {
   ASSERT_NO_FATAL_FAILURE(create());
   EXPECT_EQ(keys(collection_->query(query())).size(), 8u);

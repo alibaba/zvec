@@ -41,7 +41,10 @@ namespace zvec {
 // Decode a projection through an independent reader over an already-open file.
 // Unlike buffer-pool arrays, these buffers own their decoded storage, including
 // children/dictionaries. Slices remain valid without cache pins or a live
-// store.
+// store. Each capture materializes the complete requested projection using
+// Arrow's default pool, outside the Parquet cache budget. Preparation and peak
+// memory scale with projected bytes across segments and concurrent queries;
+// this is an ownership-safe path, not a bounded-memory or zero-copy cache view.
 inline arrow::Result<std::shared_ptr<arrow::Table>> SnapshotParquetColumns(
     const std::shared_ptr<arrow::io::RandomAccessFile> &file,
     const std::vector<std::string> &columns) {
