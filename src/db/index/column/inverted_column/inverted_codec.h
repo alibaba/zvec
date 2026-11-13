@@ -238,6 +238,31 @@ class InvertedIndexCodec {
   }
 
 
+  // The returned bitmap is read-only and must be released with
+  // roaring_bitmap_free(). Keep the serialized buffer alive until then.
+  // Small docID lists use an owned bitmap because they have no portable view.
+  static Status DeserializeFrozen(const char *data, size_t size,
+                                  roaring_bitmap_t **bitmap) {
+    *bitmap = nullptr;
+    if (!data || size == 0) {
+      return Status::InternalError("Empty bitmap value");
+    }
+    if (data[0] != 0) {
+      return Deserialize(data, size, bitmap);
+    }
+    const size_t payload_size = size - 1;
+    if (payload_size == 0 || roaring_bitmap_portable_deserialize_size(
+                                 data + 1, payload_size) != payload_size) {
+      return Status::InternalError("Invalid portable bitmap size");
+    }
+    *bitmap = roaring_bitmap_portable_deserialize_frozen(data + 1);
+    if (!*bitmap) {
+      return Status::InternalError("Failed to create portable bitmap view");
+    }
+    return Status::OK();
+  }
+
+
   static Status merge_or(const char *data, size_t size, bool lazy,
                          roaring_bitmap_t *bitmap) {
     if (!data || size == 0) {

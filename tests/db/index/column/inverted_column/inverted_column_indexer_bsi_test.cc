@@ -152,6 +152,74 @@ class BitSliceIndexTest : public testing::Test {
   std::filesystem::path path_;
 };
 
+TEST_F(BitSliceIndexTest, FrozenViewContainersAndResultLifetime) {
+  for (bool fourth_container : {false, true}) {
+    roaring::Roaring original;
+    for (uint32_t id : {1u, 9u, 37u, 91u}) original.add(id);
+    for (uint32_t id = 65536; id < 131072; id += 2) original.add(id);
+    original.addRange(131172, 141072);
+    if (fourth_container) original.add(196609);
+    original.runOptimize();
+    std::string buffer;
+    ASSERT_TRUE(InvertedIndexCodec::Serialize(&original.roaring, &buffer).ok());
+    const std::string before = buffer;
+    roaring_bitmap_t *raw = nullptr;
+    ASSERT_TRUE(InvertedIndexCodec::DeserializeFrozen(buffer.data(),
+                                                      buffer.size(), &raw)
+                    .ok());
+    std::unique_ptr<roaring_bitmap_t, decltype(&roaring_bitmap_free)> view(
+        raw, roaring_bitmap_free);
+    ASSERT_NE(view, nullptr);
+    EXPECT_NE(view->high_low_container.flags & ROARING_FLAG_FROZEN, 0);
+    EXPECT_TRUE(roaring_bitmap_equals(view.get(), &original.roaring));
+    roaring::Roaring mask;
+    mask.addRange(0, 65536);
+    auto *difference = roaring_bitmap_andnot(view.get(), &mask.roaring);
+    ASSERT_NE(difference, nullptr);
+    roaring::Roaring result(difference);
+    EXPECT_EQ(buffer, before);
+    view.reset();
+    std::string{}.swap(buffer);
+    EXPECT_EQ(result.cardinality(), original.cardinality() - 4);
+    EXPECT_FALSE(result.contains(9));
+    EXPECT_TRUE(result.contains(65538));
+    EXPECT_TRUE(result.contains(141071));
+    EXPECT_EQ(result.contains(196609), fourth_container);
+  }
+}
+
+TEST_F(BitSliceIndexTest, FrozenViewSmallDocIdList) {
+  roaring::Roaring original;
+  original.add(0);
+  original.add(65536);
+  original.add(std::numeric_limits<uint32_t>::max());
+  std::string buffer;
+  ASSERT_TRUE(InvertedIndexCodec::Serialize(&original.roaring, &buffer).ok());
+  ASSERT_NE(buffer[0], 0);
+  roaring_bitmap_t *raw = nullptr;
+  ASSERT_TRUE(
+      InvertedIndexCodec::DeserializeFrozen(buffer.data(), buffer.size(), &raw)
+          .ok());
+  std::unique_ptr<roaring_bitmap_t, decltype(&roaring_bitmap_free)> view(
+      raw, roaring_bitmap_free);
+  ASSERT_NE(view, nullptr);
+  EXPECT_TRUE(roaring_bitmap_equals(view.get(), &original.roaring));
+}
+
+TEST_F(BitSliceIndexTest, FrozenViewRejectsTruncatedValues) {
+  roaring::Roaring original;
+  for (uint32_t id = 0; id < 10000; id += 2) original.add(id);
+  std::string buffer;
+  ASSERT_TRUE(InvertedIndexCodec::Serialize(&original.roaring, &buffer).ok());
+  for (size_t size : {size_t{0}, size_t{1}, size_t{2}, size_t{8},
+                      buffer.size() / 2, buffer.size() - 1}) {
+    roaring_bitmap_t *raw = nullptr;
+    EXPECT_FALSE(
+        InvertedIndexCodec::DeserializeFrozen(buffer.data(), size, &raw).ok());
+    EXPECT_EQ(raw, nullptr);
+  }
+}
+
 TEST_F(BitSliceIndexTest, Int32) {
   CheckType<int32_t>(DataType::INT32);
 }

@@ -163,25 +163,35 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_bsi(
   roaring::Roaring equal = valid;
   roaring::Roaring less;
   for (size_t bit = 0; bit < width; ++bit) {
-    roaring::Roaring ones;
+    roaring::Roaring empty;
+    // Frozen containers borrow values[bit]. Destroy the view before the
+    // PinnableSlice, and never transfer its arena to Roaring's owning ctor.
+    std::unique_ptr<roaring_bitmap_t, decltype(&roaring_bitmap_free)> ones(
+        nullptr, roaring_bitmap_free);
     if (statuses[bit].ok()) {
       roaring_bitmap_t *raw = nullptr;
-      auto status = InvertedIndexCodec::Deserialize(values[bit].data(),
-                                                    values[bit].size(), &raw);
+      auto status = InvertedIndexCodec::DeserializeFrozen(
+          values[bit].data(), values[bit].size(), &raw);
       if (!status.ok()) {
         return tl::make_unexpected(status);
       }
-      ones = roaring::Roaring(raw);
+      ones.reset(raw);
     } else if (!statuses[bit].IsNotFound()) {
       return tl::make_unexpected(
           Status::InternalError(statuses[bit].ToString()));
     }
+    const auto *slice = ones ? ones.get() : &empty.roaring;
     auto byte = static_cast<unsigned char>(term[bit / 8]);
     if ((byte & (0x80u >> (bit % 8))) != 0) {
-      less |= equal - ones;
-      equal &= ones;
+      auto *difference = roaring_bitmap_andnot(&equal.roaring, slice);
+      if (!difference) {
+        return tl::make_unexpected(
+            Status::InternalError("Cannot subtract BSI slice"));
+      }
+      less |= roaring::Roaring(difference);
+      roaring_bitmap_and_inplace(&equal.roaring, slice);
     } else {
-      equal -= ones;
+      roaring_bitmap_andnot_inplace(&equal.roaring, slice);
     }
   }
   switch (op) {
