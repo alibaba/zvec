@@ -1,0 +1,13 @@
+{
+  "apple": {
+    "build_exit": 0,
+    "run_exit": -6
+  },
+  "llvm18": {
+    "build_exit": 0,
+    "timed_out": true
+  },
+  "apple_unsandboxed": {
+    "run_exit": 134
+  }
+}

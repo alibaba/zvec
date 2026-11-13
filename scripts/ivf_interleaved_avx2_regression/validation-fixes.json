@@ -1,0 +1,14 @@
+{
+  "patch_sha256": "171ef52c1fe7dcdacf78635666a2c28ce1136ada0b260da17d72a4340e3f1a0a",
+  "purpose": "Identical test-only repairs on both frozen versions; production code unchanged",
+  "before": {
+    "tests/core/algorithm/ivf/ivf_legacy_matrix_test.cc": "8445ba2fe7840f01d3d121f27852b69359dee860e7945ffd7021b3661d2d40a2",
+    "tests/turbo/turbo_many_to_many_distance_test.cc": "5c54a895d1efb93900375cb46168cd6d94231f72fcb8054790da9d61ad3c40ca",
+    "tests/turbo/turbo_matrix_test.cc": "aa692602334323d48c6ffb89c528baabb82eadb25491cb823b79631dd38f644f"
+  },
+  "after": {
+    "tests/core/algorithm/ivf/ivf_legacy_matrix_test.cc": "4611b872a67e6d782f24203c19271a35941c51252e201ec6ad48a6c792287a1d",
+    "tests/turbo/turbo_many_to_many_distance_test.cc": "5c54a895d1efb93900375cb46168cd6d94231f72fcb8054790da9d61ad3c40ca",
+    "tests/turbo/turbo_matrix_test.cc": "eca23959f2f1861b22468e875a47a647e323b6e7645c5de0dc435932f574eee6"
+  }
+}

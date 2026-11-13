@@ -22,6 +22,34 @@ namespace core {
 
 class IVFDistanceCalculator {
  public:
+  bool column_many_supported() const {
+    return column_major_order_ && row_distance_ && distance_xx1;
+  }
+
+  turbo::DistanceImpl column_query(const void *query,
+                                   const IndexQueryMeta &qmeta) const {
+    return turbo::DistanceImpl(
+        row_distance_,
+        std::string(static_cast<const char *>(query), qmeta.element_size()),
+        dimension_);
+  }
+
+  bool joint_column_kernel() const {
+    return static_cast<bool>(column_many_distance_);
+  }
+
+  void column_queries_distance(const void *const *queries, size_t n,
+                               const void *features, size_t count, float *out) {
+    if (column_many_distance_ && count == block_vec_cnt_ && n > 1) {
+      column_many_distance_(features, queries, n, dimension_, out);
+    } else {
+      for (size_t q = 0; q < n; ++q) {
+        query_features_distance(queries[q], features, count,
+                                out + q * block_vec_cnt_);
+      }
+    }
+  }
+
   typedef std::shared_ptr<IVFDistanceCalculator> Pointer;
 
   //! Constructor
@@ -78,6 +106,7 @@ class IVFDistanceCalculator {
   IndexMetric::Pointer metric_ptr_{};
   IndexMetric::MatrixDistance row_distance_{nullptr};
   IndexMetric::MatrixDistance distance_xx1{nullptr};
+  turbo::InterleavedManyToManyDistanceFunc column_many_distance_{};
   std::vector<IndexMetric::MatrixDistance> distances_{};
 
   size_t element_size_{0};

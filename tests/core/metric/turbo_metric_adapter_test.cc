@@ -33,6 +33,56 @@ double Fp32SumRelativeError(size_t dim) {
 }
 }  // namespace
 
+TEST(TurboMetricAdapter, Int4RecordMatricesPreserveStoredMoments) {
+  for (size_t dim : {8U, 16U, 128U, 512U}) {
+    for (size_t rows : {2U, 32U}) {
+      const size_t bytes = dim / 2 + 16;
+      // Codes repeat [-8, 7]. The stored moments deliberately differ from
+      // the rounded codes, as they can in records written by old quantizers.
+      const float query_tail[] = {0.5f, -0.25f, -0.75f * dim, 60.0f * dim};
+      std::vector<uint8_t> query(bytes, 0x78), matrix(rows * bytes, 0);
+      std::memcpy(query.data() + dim / 2, query_tail, sizeof(query_tail));
+      for (size_t i = 0; i < rows; ++i) {
+        for (size_t word = 0; word < dim / 8; ++word)
+          std::memset(matrix.data() + (word * rows + i) * 4, 0x78, 4);
+        const float tail[] = {0.25f * (i + 1), float(int(i % 3) - 1),
+                              -0.75f * dim, 60.0f * dim};
+        for (size_t k = 0; k < 4; ++k)
+          std::memcpy(matrix.data() + ((dim / 8 + k) * rows + i) * 4,
+                      tail + k, 4);
+      }
+      for (bool ip : {false, true}) {
+        SCOPED_TRACE(testing::Message() << dim << " rows=" << rows
+                                       << " ip=" << ip);
+        ailego::Params params;
+        params.set(QUANTIZED_INTEGER_METRIC_ORIGIN_METRIC_NAME,
+                   ip ? "InnerProduct" : "SquaredEuclidean");
+        auto metric = IndexFactory::CreateMetric("QuantizedInteger");
+        ASSERT_TRUE(metric);
+        ASSERT_EQ(0, metric->init(IndexMeta(IndexMeta::DT_INT4, dim + 32),
+                                  params));
+        auto kernel = metric->distance_matrix(rows, 1);
+        ASSERT_TRUE(kernel);
+        std::vector<float> output(rows);
+        kernel(matrix.data(), query.data(), dim + 32, output.data());
+        for (size_t i = 0; i < rows; ++i) {
+          const double a = 0.25 * (i + 1), b = int(i % 3) - 1;
+          const double qa = query_tail[0], qb = query_tail[1];
+          const double sum = -0.75 * dim, sum2 = 60.0 * dim;
+          const double dot = 56.5 * dim;
+          const double expected = ip
+              ? -(a * qa * dot + b * qa * sum + qb * a * sum + dim * qb * b)
+              : a * a * sum2 + qa * qa * sum2 - 2 * a * qa * dot +
+                    (b - qb) * (b - qb) * dim +
+                    2 * (b - qb) * (a * sum - qa * sum);
+          EXPECT_NEAR(expected, output[i],
+                      1e-5 * std::max(1.0, std::abs(expected)));
+        }
+      }
+    }
+  }
+}
+
 TEST(TurboMetricAdapter, RawSignedIntegerExtremesAndOddDimensions) {
   for (auto type : {turbo::DataType::kInt8, turbo::DataType::kInt4}) {
     const int minimum = type == turbo::DataType::kInt8 ? -128 : -8;
@@ -105,6 +155,81 @@ TEST(TurboMetricAdapter, InterleavedMatricesKeepQueryMajorOutput) {
         }
         if (std::strcmp(name, "Euclidean") == 0) expected = std::sqrt(expected);
         EXPECT_FLOAT_EQ(expected, result[q * 4 + i]);
+      }
+    }
+  }
+}
+
+TEST(TurboMetricAdapter, MipsMatricesMatchPairsAcrossLayouts) {
+  for (auto type : {IndexMeta::DT_FP32, IndexMeta::DT_FP16, IndexMeta::DT_INT8,
+                    IndexMeta::DT_INT4}) {
+    for (size_t dim : {8U, 128U}) {
+      const IndexMeta meta(type, dim);
+      const size_t bytes = meta.element_size();
+      const size_t unit = type == IndexMeta::DT_FP16 ? 2 : 4;
+      auto fill = [&](size_t count, int salt) {
+        std::vector<uint8_t> data(count * bytes);
+        for (size_t i = 0; i < count; ++i) {
+          for (size_t d = 0; d < dim; ++d) {
+            auto *p = data.data() + i * bytes;
+            const int value = int((i * 7 + d * 3 + salt) % 16) - 8;
+            if (type == IndexMeta::DT_FP32) {
+              const float v = value / 7.0f;
+              std::memcpy(p + d * 4, &v, 4);
+            } else if (type == IndexMeta::DT_FP16) {
+              const ailego::Float16 v(value / 7.0f);
+              std::memcpy(p + d * 2, &v, 2);
+            } else if (type == IndexMeta::DT_INT8) {
+              p[d] = uint8_t(value);
+            } else {
+              p[d / 2] |= (value & 15) << (4 * (d % 2));
+            }
+          }
+        }
+        return data;
+      };
+      auto interleave = [&](const std::vector<uint8_t> &data, size_t count) {
+        std::vector<uint8_t> result(data.size());
+        for (size_t d = 0; d < bytes / unit; ++d)
+          for (size_t i = 0; i < count; ++i)
+            std::memcpy(result.data() + (d * count + i) * unit,
+                        data.data() + i * bytes + d * unit, unit);
+        return result;
+      };
+      for (int injection = 0; injection < 4; ++injection) {
+        ailego::Params params;
+        params.set(MIPS_EUCLIDEAN_METRIC_INJECTION_TYPE, injection);
+        params.set(MIPS_EUCLIDEAN_METRIC_M_VALUE, 2);
+        params.set(MIPS_EUCLIDEAN_METRIC_U_VALUE, 0.5f);
+        params.set(MIPS_EUCLIDEAN_METRIC_MAX_L2_NORM, 256.0f);
+        auto metric = IndexFactory::CreateMetric("MipsSquaredEuclidean");
+        ASSERT_TRUE(metric);
+        ASSERT_EQ(0, metric->init(meta, params));
+        const auto pair = metric->distance();
+        for (size_t m : {2U, 4U, 8U, 16U, 32U}) {
+          const auto rows = fill(m, 0), packed_rows = interleave(rows, m);
+          for (size_t n = 1; n <= m; n *= 2) {
+            SCOPED_TRACE(testing::Message()
+                         << int(type) << " dim=" << dim
+                         << " injection=" << injection << " " << m << "x" << n);
+            const auto queries = fill(n, 5),
+                       packed_queries = interleave(queries, n);
+            std::vector<float> output(m * n);
+            auto matrix = metric->distance_matrix(m, n);
+            ASSERT_TRUE(matrix);
+            matrix(packed_rows.data(), packed_queries.data(), dim,
+                   output.data());
+            for (size_t j = 0; j < n; ++j) {
+              for (size_t i = 0; i < m; ++i) {
+                float expected;
+                pair(rows.data() + i * bytes, queries.data() + j * bytes, dim,
+                     &expected);
+                EXPECT_NEAR(expected, output[j * m + i],
+                            1e-5f * std::max(1.0f, std::abs(expected)));
+              }
+            }
+          }
+        }
       }
     }
   }

@@ -1,0 +1,28 @@
+{
+  "turbo_matrix_test": {
+    "baseline_reports": 0,
+    "candidate_reports": 0,
+    "new_or_increased": {},
+    "removed_or_decreased": {}
+  },
+  "turbo_many_to_many_distance_test": {
+    "baseline_reports": 0,
+    "candidate_reports": 0,
+    "new_or_increased": {},
+    "removed_or_decreased": {}
+  },
+  "ivf_legacy_matrix_test": {
+    "baseline_reports": 0,
+    "candidate_reports": 0,
+    "new_or_increased": {},
+    "removed_or_decreased": {}
+  },
+  "ivf_searcher_test": {
+    "baseline_reports": 15,
+    "candidate_reports": 14,
+    "new_or_increased": {},
+    "removed_or_decreased": {
+      "src/turbo/algorithm/kmeans.h:508:29: runtime error: nan is outside the range of representable values of type 'signed char'": 1
+    }
+  }
+}

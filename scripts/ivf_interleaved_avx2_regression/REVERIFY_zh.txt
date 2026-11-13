@@ -1,0 +1,90 @@
+AVX2 正确性修复后的服务器复验说明
+2026-11-13
+
+本轮入口是仓库中的 reverify.py，不是原压缩包内的 tools/run.py。
+原包及 SHA256 不变；复验工具校验原两份源码后，对两边应用同一份 validation-fixes.patch。
+补丁只修改三个测试文件，包含补丁 SHA256 和两版修复后的文件 SHA256。
+生产内核、get 分派和 IVF 查询代码未改。不要把当前 HEAD 当作性能基线。
+
+本次修复
+1. ColumnBatchPreservesScanOrderAndLimits：FP32/FP16 分数各自与存储值的 double
+   参考比较。使用 FP32 unit roundoff 和维度推导的 gamma(2*d+3)×绝对项和误差界，
+   处理 IP 抵消，不根据观察到的 585 个失败值倒推阈值。
+   ID、顺序、数量、扫描次数继续严格比较；整数路径保持 EXPECT_FLOAT_EQ。
+2. Fp16Avx2：显式 raw FP16 L2 没有 AVX2 注册项，测试应断言返回空函数。
+   这里指原 get_many_to_many_distance_func 的逐行指针接口，
+   不是此次新增且支持 raw FP16 L2 的 get_interleaved_many_to_many_distance_func。
+   其余组合继续执行完整数值验证；kFp16 L2 的 AVX2 组合也继续测试。
+3. RecordInt8PreprocessAndMetadataFallback：第五个元数据字段是 int32_t 码值和，
+   不是浮点范数。改正样本布局，恢复 VNNI 查询 +128 偏移校正的参考验证。
+4. turbo_matrix_test：补全 nothrow new/delete 配对，保留 ASan 分配/释放类型检查。
+5. 验证 CMake：目录级编译/链接选项保证 C/C++ 全部插桩；为聚焦构建补充
+   VectorSource 的实现以提供 RTTI，不再关闭 vptr 检查。
+
+执行环境
+原生 Linux x86_64，支持 AVX2/FMA/F16C；优先用上一轮 Intel Xeon 6982P-C 同机复验，
+以便覆盖 AVX512/VNNI 旧路径。CMake>=3.26、Ninja、Python>=3.9、C++17 GCC/Clang。
+测试期间不要并发编译或压测。不要使用过滤器排除失败用例。
+
+在已有 richyreachy/zvec checkout 中，保存自己的未提交改动后：
+  git fetch origin
+  git checkout fix/legacy-matrix-distance-performance
+  git pull --ff-only origin fix/legacy-matrix-distance-performance
+
+以下命令从仓库根目录执行：
+  export ZVEC_AVX2_REPO="$PWD"
+  git submodule update --init --recursive \
+    thirdparty/googletest/googletest-1.10.0 \
+    thirdparty/RaBitQ-Library/RaBitQ-Library-0.7.0
+  (cd artifacts && sha256sum -c ivf-interleaved-avx2-handoff-20261113.tar.gz.sha256)
+  export ZVEC_AVX2_WORK=$(mktemp -d "${TMPDIR:-/tmp}/zvec-avx2-reverify-XXXXXXXX")
+  mkdir "$ZVEC_AVX2_WORK/handoff"
+  tar -xzf artifacts/ivf-interleaved-avx2-handoff-20261113.tar.gz -C "$ZVEC_AVX2_WORK/handoff"
+  (cd "$ZVEC_AVX2_WORK/handoff" && sha256sum -c SHA256SUMS)
+  python3 scripts/ivf_interleaved_avx2_regression/reverify.py \
+    --bundle "$ZVEC_AVX2_WORK/handoff" --deps "$ZVEC_AVX2_REPO" \
+    --out "$ZVEC_AVX2_WORK/results" --jobs 4 --cpu 9 --sample-ms 50
+
+--cpu 9 应替换为本机 affinity 允许且空闲的 CPU；省略时使用最小允许 CPU。
+输出目录不能已存在。--allow-non-x86/--prepare-only 仅供工具检查，不能作为验收。
+不要改工具阈值、跳过测试、关闭 sanitizer 子检查，或直接复用上一轮二进制。
+运行后及时将结果复制到持久目录；不要在收集原始日志前清理 /tmp。
+
+覆盖与验收
+- 校验原包、源码哈希、测试补丁及修复后源码；两版 52 个相关测试程序全部运行。
+- 两版恢复 Fp16Avx2 和 RecordInt8PreprocessAndMetadataFallback，必须实际通过。
+- 候选显式 AVX2/AUTO 分派成功，Avx2JointInterleavedQueriesAndNoAllocations 不得跳过。
+- 两版分别运行原包 200 份旧索引 fixture 的兼容性测试。
+- 两版独立 sanitizer 构建，逐条核查 compile_commands 的 C/C++ 插桩，
+  运行 matrix、many_to_many、IVF legacy、IVF searcher 四个程序。
+  ASan halt_on_error=1，alloc_dealloc_mismatch 保持默认开启；UBSan 包含 alignment/vptr。
+  为比较全部既有 UB，UBSan 用 halt_on_error=0 收集报告，但任何报告都不算 PASS。
+  泄漏检测关闭（detect_leaks=0）；不将本轮宣称为泄漏验收。
+- 对 UBSan/ASan 报告按程序、源码位置、类型和操作归一化地址后比较次数。
+  new_or_increased 为空只表示报告指纹没有新增/增加；仍须审查完整调用栈。
+  旧的 89 条未对齐访问没有在本轮修改生产代码处理，必须确认基线是否同样触发。
+- 两轮 288 项实际 IVF 查询与原交接一致，任一轮 >5% 回退项再交替复测两轮。
+  Top-K ID/顺序、扫描次数严格一致；分数误差界仍为 1e-4*max(1,abs(旧分数))。
+
+状态含义（非通过状态返回非零退出码，不要据此删除结果）
+PASS_NATIVE_X86：完整正确性通过、sanitizer 无报告、性能无持续回退。
+CORRECTNESS_FAILED：有正确性失败。
+SANITIZER_FAILED：sanitizer 崩溃/测试失败/报告新增或增加。
+BASELINE_SANITIZER_REVIEW_REQUIRED：两边仍有已复现的 sanitizer 报告；不是全绿。
+PERFORMANCE_REVIEW_REQUIRED：存在复测后持续 >5% 回退。
+FAIL：工具、环境、必需用例或校验失败，查看 error 和日志。
+多个维度可能同时失败；状态是优先级最高的一项，必须同时查看 performance 和
+sanitizer-comparison.json，不能因显示 sanitizer 状态就忽略性能回退。
+
+回传（失败也回传）
+- SUMMARY.json、environment.json、lscpu.txt、dispatch-before/after.log。
+- correctness-before/after.json、全部 XML/运行日志、compatibility-before/after。
+- sanitized-before/after.json、sanitized-before/after 目录、instrumentation-before/after.json、
+  sanitizer-comparison.json；列出基线与候选各自所有诊断及新增/增加项。
+- PERFORMANCE.csv、performance.json、retake-PERFORMANCE.csv、retake-performance.json、
+  四轮原始 timings.csv/query_results.txt/run.log。
+- 四份构建的 compile_commands.json/CMakeCache.txt、全部配置/编译/链接日志，
+  before/after-source-sha256.json、本次运行的工具和补丁副本、仓库提交与依赖 submodule 状态。
+- 可以排除大型 build/bin，但先单独保存上述构建元数据。打包后生成同名 .sha256 一并回传。
+- 性能按 FP32/FP16×IP/L2 分别给出两轮加速比，INT 对照项单列。
+- 不提交、推送或合并服务器上的代码。本任务只验证和报告；不要自行把旧 UB 认定为豁免。

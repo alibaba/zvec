@@ -17,10 +17,12 @@
 #include <zvec/turbo/turbo.h>
 #include "avx2/fp16/cosine.h"
 #include "avx2/fp16/inner_product.h"
+#include "avx2/fp16/many_to_many.h"
 #include "avx2/fp16/squared_euclidean.h"
 #include "avx2/fp32/cosine.h"
 #include "avx2/fp32/inner_product.h"
 #include "avx2/fp32/squared_euclidean.h"
+#include "avx2/interleaved_many_to_many.h"
 #include "avx2/pq_quantizer_fast/pq_distance.h"
 #include "avx2/pq_quantizer_int4/pq_distance.h"
 #include "avx2/pq_quantizer_int8/pq_distance.h"
@@ -64,11 +66,13 @@
 #include "conversion/avx512/convert.h"
 #include "neon/fp16/cosine.h"
 #include "neon/fp16/inner_product.h"
+#include "neon/fp16/many_to_many.h"
 #include "neon/fp16/squared_euclidean.h"
 #include "neon/fp32/cosine.h"
 #include "neon/fp32/inner_product.h"
 #include "neon/fp32/squared_euclidean.h"
 #include "neon/integer/squared_euclidean.h"
+#include "neon/interleaved_many_to_many.h"
 #include "neon/pq_quantizer_fast/pq_distance.h"
 #include "neon/pq_quantizer_int4/pq_distance.h"
 #include "neon/pq_quantizer_int8/pq_distance.h"
@@ -160,13 +164,15 @@ constexpr CpuFeatureMask kCpuFeatureAvx512Dq = 1U << 1;
 constexpr CpuFeatureMask kCpuFeatureF16c = 1U << 2;
 // ARM FEAT_FP16 (half-precision vector arithmetic, armv8.2-a+fp16).
 constexpr CpuFeatureMask kCpuFeatureNeonFp16 = 1U << 3;
+constexpr CpuFeatureMask kCpuFeatureFma = 1U << 4;
 
 bool HasRequiredCpuFeatures(CpuFeatureMask required) {
   const auto &flags = zvec::ailego::internal::CpuFeatures::static_flags_;
   return ((required & kCpuFeatureAvx512Bw) == 0 || flags.AVX512BW) &&
          ((required & kCpuFeatureAvx512Dq) == 0 || flags.AVX512DQ) &&
          ((required & kCpuFeatureF16c) == 0 || flags.F16C) &&
-         ((required & kCpuFeatureNeonFp16) == 0 || flags.FP16);
+         ((required & kCpuFeatureNeonFp16) == 0 || flags.FP16) &&
+         ((required & kCpuFeatureFma) == 0 || flags.FMA);
 }
 
 bool CanUseKernel(CpuArchType requested_arch, CpuArchType kernel_arch,
@@ -580,6 +586,27 @@ constexpr KernelSet kKernelTable[] = {
      scalar::raw_numeric_batch_distance<int16_t, true>, nullptr},
 };
 
+// Interleaved blocks have a different input contract from contiguous-vector
+// kernels. Keep their factories separate while sharing runtime ISA gates.
+struct InterleavedKernelSet {
+  DataType dtype;
+  CpuArchType arch;
+  InterleavedManyToManyDistanceFunc (*make)(MetricType, DataType, size_t);
+  CpuFeatureMask required_cpu_features;
+};
+
+constexpr InterleavedKernelSet kInterleavedKernelTable[] = {
+    {DataType::kFp32, CpuArchType::kAVX2,
+     avx2::make_interleaved_many_to_many_distance, kCpuFeatureFma},
+    {DataType::kFp16, CpuArchType::kAVX2,
+     avx2::make_interleaved_many_to_many_distance,
+     kCpuFeatureFma | kCpuFeatureF16c},
+    {DataType::kFp32, CpuArchType::kNEON,
+     neon::make_interleaved_many_to_many_distance, kCpuFeatureNone},
+    {DataType::kFp16, CpuArchType::kNEON,
+     neon::make_interleaved_many_to_many_distance, kCpuFeatureNone},
+};
+
 struct ConvertKernel {
   DataType target_dtype;
   CpuArchType arch;
@@ -665,6 +692,57 @@ BatchDistanceFunc get_batch_distance_func(MetricType metric_type,
   return get_distance_kernels(metric_type, data_type, quantize_type,
                               cpu_arch_type)
       .batch;
+}
+
+ManyToManyDistanceFunc get_many_to_many_distance_func(
+    MetricType metric_type, DataType data_type, QuantizeType quantize_type,
+    CpuArchType cpu_arch_type) {
+  const KernelSet *k =
+      FindKernel(metric_type, data_type, quantize_type, cpu_arch_type);
+  if (!k || (!k->batch && !k->dist)) return {};
+
+  // Match the selected family, including ISA capability checks and physical
+  // layouts. Other families (e.g. native FP16 or AVX512) keep their own batch.
+  if (k->batch == avx2::inner_product_fp16_batch_distance_avx2) {
+    return avx2::inner_product_fp16_many_to_many_distance_avx2;
+  }
+  if (k->batch == avx2::cosine_fp16_batch_distance_avx2) {
+    return avx2::cosine_fp16_many_to_many_distance_avx2;
+  }
+  if (k->batch == neon::inner_product_fp16_batch_distance) {
+    return neon::inner_product_fp16_many_to_many_distance;
+  }
+  if (k->batch == neon::cosine_fp16_batch_distance) {
+    return neon::cosine_fp16_many_to_many_distance;
+  }
+  return
+      [k](const void *const *vectors, const void *const *queries, size_t m,
+          size_t n, size_t dim, float *out, const void *const *extra_values) {
+        if (m == 0 || n == 0) return;
+        for (size_t j = 0; j < n; ++j) {
+          if (k->batch) {
+            k->batch(vectors, queries[j], m, dim, out + j * m, extra_values);
+          } else {
+            for (size_t i = 0; i < m; ++i) {
+              k->dist(vectors[i], queries[j], dim, out + j * m + i);
+            }
+          }
+        }
+      };
+}
+
+InterleavedManyToManyDistanceFunc get_interleaved_many_to_many_distance_func(
+    MetricType metric_type, DataType data_type, size_t rows,
+    CpuArchType cpu_arch_type) {
+  for (const auto &k : kInterleavedKernelTable) {
+    if (k.dtype != data_type) continue;
+    if (CanUseKernel(cpu_arch_type, k.arch, k.required_cpu_features)) {
+      // The per-ISA factory also checks whether its kernels were compiled.
+      auto distance = k.make(metric_type, data_type, rows);
+      if (distance) return distance;
+    }
+  }
+  return {};
 }
 
 QueryPreprocessFunc get_query_preprocess_func(MetricType metric_type,

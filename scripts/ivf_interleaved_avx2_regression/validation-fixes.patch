@@ -1,0 +1,137 @@
+diff --git a/tests/core/algorithm/ivf/ivf_legacy_matrix_test.cc b/tests/core/algorithm/ivf/ivf_legacy_matrix_test.cc
+index 859e9f8d..39972c74 100644
+--- a/tests/core/algorithm/ivf/ivf_legacy_matrix_test.cc
++++ b/tests/core/algorithm/ivf/ivf_legacy_matrix_test.cc
+@@ -6,6 +6,7 @@
+ #include <algorithm>
+ #include <cmath>
+ #include <cstring>
++#include <limits>
+ #include <random>
+ #include <set>
+ #include <tuple>
+@@ -281,8 +282,37 @@ TEST_P(IVFLegacyMatrixTest, ColumnBatchPreservesScanOrderAndLimits) {
+               for (size_t i = 0; i < single->result().size(); ++i) {
+                 EXPECT_EQ(single->result()[i].key(),
+                           grouped->result(q)[i].key());
+-                EXPECT_FLOAT_EQ(single->result()[i].score(),
+-                                grouped->result(q)[i].score());
++                if (integer) {
++                  EXPECT_FLOAT_EQ(single->result()[i].score(),
++                                  grouped->result(q)[i].score());
++                } else {
++                  const auto id = single->result()[i].key();
++                  ASSERT_LT(id, values_.size());
++                  const auto &query_values = values_[(q * 19) % rows_.size()];
++                  double reference = 0, magnitude = 0;
++                  for (size_t d = 0; d < query_values.size(); ++d) {
++                    const double x = values_[id][d], y = query_values[d];
++                    const double term =
++                        std::get<1>(GetParam()) ? -x * y : (x - y) * (x - y);
++                    reference += term;
++                    magnitude += std::abs(term);
++                  }
++                  // Compare both implementations to stored-value FP64 truth.
++                  // gamma(2*d+3) bounds FP32 product/subtraction/sum rounding,
++                  // including non-FMA paths. Absolute terms handle IP
++                  // cancellation; this is not a tolerance fitted to a failure.
++                  const double nu = (2 * query_values.size() + 3) *
++                                    (std::numeric_limits<float>::epsilon() / 2);
++                  const double tolerance =
++                      nu / (1 - nu) * std::max(1.0, magnitude);
++                  const float single_score = single->result()[i].score();
++                  const float batch_score = grouped->result(q)[i].score();
++                  EXPECT_TRUE(std::isfinite(single_score));
++                  EXPECT_TRUE(std::isfinite(batch_score));
++                  EXPECT_NEAR(reference, single_score, tolerance);
++                  EXPECT_NEAR(reference, batch_score, tolerance);
++                  EXPECT_NEAR(single_score, batch_score, 2 * tolerance);
++                }
+               }
+             }
+           }
+diff --git a/tests/turbo/turbo_many_to_many_distance_test.cc b/tests/turbo/turbo_many_to_many_distance_test.cc
+index bd39271b..ccbe4f82 100644
+--- a/tests/turbo/turbo_many_to_many_distance_test.cc
++++ b/tests/turbo/turbo_many_to_many_distance_test.cc
+@@ -14,6 +14,8 @@
+
+ #include <algorithm>
+ #include <cmath>
++#include <cstdint>
++#include <cstring>
+ #include <memory>
+ #include <vector>
+ #include <gtest/gtest.h>
+@@ -37,6 +39,13 @@ void CheckFp16(CpuArchType arch) {
+       auto batch =
+           get_batch_distance_func(metric, DataType::kFp16, quantize, arch);
+       ASSERT_EQ(bool(many), bool(batch));
++      // Explicit ISA requests do not fall back to scalar. Raw FP16 L2 has
++      // scalar/NEON/AVX512 entries, but no AVX2 entry (unlike kFp16 L2).
++      if (arch == CpuArchType::kAVX2 && quantize == QuantizeType::kRaw &&
++          metric == MetricType::kSquaredEuclidean) {
++        EXPECT_FALSE(many);
++        continue;
++      }
+       ASSERT_TRUE(many);
+       // Empty shapes must not touch even null input/output pointers.
+       many(nullptr, nullptr, 0, 5, 128, nullptr, nullptr);
+@@ -193,7 +202,8 @@ TEST(ManyToManyDistance, Fp32FallbackAndUnsupportedDispatch) {
+ }
+
+ TEST(ManyToManyDistance, RecordInt8PreprocessAndMetadataFallback) {
+-  // Record layout: aligned INT8 codes followed by five FP32 metadata values.
++  // Record layout: INT8 codes, four FP32 metadata values, then an INT32
++  // code sum used to undo the VNNI query's +128 shift.
+   constexpr size_t dim = 16, encoded_size = dim + 20, m = 5, n = 3;
+   std::vector<std::vector<float>> records(m + n,
+                                           std::vector<float>(encoded_size / 4));
+@@ -210,7 +220,8 @@ TEST(ManyToManyDistance, RecordInt8PreprocessAndMetadataFallback) {
+     tail[1] = 0.5f;
+     tail[2] = sum;
+     tail[3] = squares;
+-    tail[4] = std::sqrt(squares);
++    const int32_t code_sum = static_cast<int32_t>(sum);
++    std::memcpy(tail + 4, &code_sum, sizeof(code_sum));
+   }
+   for (auto metric :
+        {MetricType::kInnerProduct, MetricType::kSquaredEuclidean}) {
+@@ -219,6 +230,8 @@ TEST(ManyToManyDistance, RecordInt8PreprocessAndMetadataFallback) {
+     ASSERT_TRUE(scalar);
+     for (auto arch :
+          {CpuArchType::kScalar, CpuArchType::kAuto, CpuArchType::kAVX512VNNI}) {
++      SCOPED_TRACE(testing::Message()
++                   << "arch=" << int(arch) << " metric=" << int(metric));
+       auto kernels = get_distance_kernels(metric, DataType::kInt8,
+                                           QuantizeType::kRecord, arch);
+       auto many = get_many_to_many_distance_func(metric, DataType::kInt8,
+diff --git a/tests/turbo/turbo_matrix_test.cc b/tests/turbo/turbo_matrix_test.cc
+index 41fecaeb..15d8be39 100644
+--- a/tests/turbo/turbo_matrix_test.cc
++++ b/tests/turbo/turbo_matrix_test.cc
+@@ -42,6 +42,24 @@ void *operator new(std::size_t size) {
+ void *operator new[](std::size_t size) {
+   return ::operator new(size);
+ }
++// Factory registration allocates with nothrow new. Route it through the same
++// malloc/free pair as the throwing overloads, including under ASan.
++void *operator new(std::size_t size, const std::nothrow_t &) noexcept {
++  try {
++    return ::operator new(size);
++  } catch (...) {
++    return nullptr;
++  }
++}
++void *operator new[](std::size_t size, const std::nothrow_t &tag) noexcept {
++  return ::operator new(size, tag);
++}
++void operator delete(void *p, const std::nothrow_t &) noexcept {
++  std::free(p);
++}
++void operator delete[](void *p, const std::nothrow_t &) noexcept {
++  std::free(p);
++}
+ void operator delete(void *p) noexcept {
+   std::free(p);
+ }

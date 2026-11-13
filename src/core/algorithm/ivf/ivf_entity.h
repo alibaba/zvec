@@ -48,6 +48,31 @@ class IVFEntity {
   //! Prepare the posting distance once per query, after centroid selection.
   int bind_query(const void *query, const IndexQueryMeta &qmeta);
 
+  const turbo::DistanceImpl &query_distance() const {
+    return query_distance_;
+  }
+
+  //! Match the bound posting kernel without changing its layout or arithmetic.
+  turbo::ManyToManyDistanceFunc many_distance() const;
+
+  bool column_many_supported() const {
+    return !quantizer_ && calculator_ && calculator_->column_many_supported();
+  }
+
+  turbo::DistanceImpl column_query(const void *query,
+                                   const IndexQueryMeta &qmeta) const {
+    return calculator_->column_query(query, qmeta);
+  }
+
+  //! Scan one list for queries sharing the same next centroid. Column-major
+  //! blocks retain their matrix kernel and do not require a Turbo row kernel.
+  int search_many(size_t inverted_list_id,
+                  const std::vector<const turbo::DistanceImpl *> &queries,
+                  const turbo::ManyToManyDistanceFunc &distance,
+                  const std::vector<IndexDocumentHeap *> &heaps,
+                  const std::vector<IndexContext::Stats *> &stats,
+                  uint32_t *scan_count) const;
+
   const turbo::Quantizer::Pointer &quantizer() const {
     return quantizer_;
   }

@@ -3565,6 +3565,7 @@ TEST_F(IVFSearcherTest, TestInt8QuantizerWithL2) {
 TEST_F(IVFSearcherTest, TestMipsEuclideanMetric) {
   constexpr size_t static dim = 32;
   IndexMeta meta(IndexMeta::DataType::DT_FP32, dim);
+  meta.set_major_order(IndexMeta::MO_COLUMN);
   meta.set_metric("MipsSquaredEuclidean", 0, Params());
   IndexBuilder::Pointer builder = IndexFactory::CreateBuilder("IVFBuilder");
   ASSERT_NE(builder, nullptr);
@@ -3615,6 +3616,23 @@ TEST_F(IVFSearcherTest, TestMipsEuclideanMetric) {
   auto &results = ctx->result();
   EXPECT_EQ(results.size(), topk);
   EXPECT_NEAR((uint64_t)(COUNT - 1), results[0].key(), 10);
+  auto batch_ctx = searcher->create_context();
+  ASSERT_NE(nullptr, batch_ctx);
+  batch_ctx->set_topk(topk);
+  std::vector<float> queries(35 * dim);
+  for (size_t q = 0; q < 35; ++q) {
+    std::fill_n(queries.data() + q * dim, dim, 1.0f + 0.013f * q);
+  }
+  ASSERT_EQ(0, searcher->search_impl(queries.data(), qmeta, 35, batch_ctx));
+  for (size_t q = 0; q < 35; ++q) {
+    ASSERT_EQ(0, searcher->search_impl(queries.data() + q * dim, qmeta, ctx));
+    ASSERT_EQ(ctx->result().size(), batch_ctx->result(q).size());
+    for (size_t i = 0; i < ctx->result().size(); ++i) {
+      EXPECT_EQ(ctx->result()[i].key(), batch_ctx->result(q)[i].key());
+      EXPECT_FLOAT_EQ(ctx->result()[i].score(),
+                      batch_ctx->result(q)[i].score());
+    }
+  }
   File::RemovePath(path);
 }
 
@@ -4498,6 +4516,182 @@ class IVFTurboTest : public testing::TestWithParam<TurboCase> {
   std::vector<std::string> codes_;
   std::string path_;
 };
+
+TEST_P(IVFTurboTest, BatchedQueriesMatchIndependentQueries) {
+  std::vector<float> queries;
+  // Cross the internal query chunk boundary, with different centroid orders.
+  for (size_t q = 0; q < 35; ++q) {
+    const auto &row = vectors_[(q * 19 + 7) % vectors_.size()];
+    queries.insert(queries.end(), row.begin(), row.end());
+    queries[queries.size() - 2] += 0.013f * q;
+  }
+  const IndexQueryMeta qmeta(IndexMeta::DT_FP32, kDimension);
+  for (const char *storage_name :
+       {"FileReadStorage", "MMapFileReadStorage", "BufferReadStorage"}) {
+    SCOPED_TRACE(storage_name);
+    auto storage = open_storage(storage_name);
+    IVFSearcher searcher;
+    ASSERT_EQ(0, searcher.init(search_params()));
+    ASSERT_EQ(0, searcher.load(storage, IndexMetric::Pointer()));
+    auto batch = searcher.create_context();
+    auto single = searcher.create_context();
+    ASSERT_NE(nullptr, batch);
+    ASSERT_NE(nullptr, single);
+    batch->set_topk(kTopK);
+    single->set_topk(kTopK);
+    for (uint32_t nprobe : {0U, 1U, 4U}) {
+      SCOPED_TRACE(nprobe);
+      auto params = search_params();
+      params.set(PARAM_IVF_SEARCHER_NPROBE, nprobe);
+      params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 0.35);
+      ASSERT_EQ(0, batch->update(params));
+      ASSERT_EQ(0, single->update(params));
+      // Exercise vector fetching and a threshold that may produce empty top-k.
+      batch->set_fetch_vector(nprobe == 1);
+      single->set_fetch_vector(nprobe == 1);
+      batch->set_threshold(nprobe == 1 ? 0.0f
+                                       : std::numeric_limits<float>::max());
+      single->set_threshold(batch->threshold());
+      for (bool brute_force : {false, true}) {
+        SCOPED_TRACE(brute_force);
+        for (uint32_t count : {2U, 7U, 35U}) {
+          SCOPED_TRACE(count);
+          ASSERT_EQ(0, brute_force ? searcher.search_bf_impl(
+                                         queries.data(), qmeta, count, batch)
+                                   : searcher.search_impl(queries.data(), qmeta,
+                                                          count, batch));
+          for (uint32_t q = 0; q < count; ++q) {
+            const auto *query = queries.data() + q * kDimension;
+            ASSERT_EQ(0, brute_force
+                             ? searcher.search_bf_impl(query, qmeta, single)
+                             : searcher.search_impl(query, qmeta, single));
+            ASSERT_EQ(single->result().size(), batch->result(q).size());
+            EXPECT_EQ(static_cast<IVFSearcherContext *>(single.get())
+                          ->stats()
+                          .dist_calced_count(),
+                      static_cast<IVFSearcherContext *>(batch.get())
+                          ->stats(q)
+                          .dist_calced_count());
+            for (size_t rank = 0; rank < single->result().size(); ++rank) {
+              const auto &expected = single->result()[rank];
+              const auto &actual = batch->result(q)[rank];
+              EXPECT_EQ(expected.key(), actual.key());
+              EXPECT_NEAR(expected.score(), actual.score(),
+                          1e-4f * std::max(1.0f, std::abs(expected.score())));
+            }
+          }
+        }
+      }
+    }
+    // The FP16/FP32 paths must actually expose a compatible many kernel;
+    // record and packed encodings must retain their existing dispatch.
+    auto *ctx = dynamic_cast<IVFSearcherContext *>(batch.get());
+    ASSERT_NE(nullptr, ctx);
+    ASSERT_EQ(0, ctx->entity()->bind_query(queries.data(), qmeta));
+    const auto type = quantizer_->type();
+    EXPECT_EQ(type == turbo::QuantizeType::kFp16 ||
+                  type == turbo::QuantizeType::kFp32,
+              static_cast<bool>(ctx->entity()->many_distance()));
+  }
+}
+
+TEST_P(IVFTurboTest, ManyDistanceAcrossStoragePages) {
+  const auto type = quantizer_->type();
+  if (type != turbo::QuantizeType::kFp16 &&
+      type != turbo::QuantizeType::kFp32) {
+    GTEST_SKIP() << "This path supports row-major FP16/FP32 postings only";
+  }
+  auto &pool = MemoryLimitPool::get_instance();
+  const auto capacity = pool.capacity();
+  ASSERT_EQ(0u, pool.used());
+  ASSERT_EQ(0, pool.init(8 * 1024 * 1024));
+  auto cleanup = ScopeGuard::Make([&]() {
+    EXPECT_EQ(0u, pool.used());
+    EXPECT_EQ(0, pool.init(capacity));
+  });
+  auto posting_meta = quantizer_->meta();
+  posting_meta.set_major_order(IndexMeta::MO_ROW);
+  const size_t count = 3 * kVectorPageSize / posting_meta.element_size() + 7;
+  for (bool legacy : {false, true}) {
+    SCOPED_TRACE(legacy);
+    auto dumper = IndexFactory::CreateDumper("FileDumper");
+    ASSERT_EQ(0, dumper->create(path_ + ".format"));
+    IVFDumper postings(posting_meta, dumper, 1, 32);
+    for (size_t i = 0; i < count; ++i) {
+      ASSERT_EQ(0, postings.dump_inverted_vector(
+                       0, Key(i), codes_[i % codes_.size()].data()));
+    }
+    ASSERT_EQ(0, postings.dump_inverted_vector_finished());
+    if (!legacy) ASSERT_EQ(0, postings.dump_turbo_quantizer(quantizer_));
+    ASSERT_EQ(0, IndexHelper::SerializeToDumper(meta_, dumper.get()));
+    ASSERT_EQ(0, dumper->close());
+    auto storage = IndexFactory::CreateStorage("BufferReadStorage");
+    ASSERT_EQ(0, storage->init(ailego::Params()));
+    ASSERT_EQ(0, storage->open(path_ + ".format", false));
+    IVFEntity entity;
+    ASSERT_EQ(0, entity.load(storage));
+    std::vector<turbo::DistanceImpl> queries;
+    std::vector<IndexDocumentHeap> expected, actual;
+    std::vector<IndexContext::Stats> stats(3);
+    for (size_t q = 0; q < 3; ++q) {
+      const void *query = queries_.data() + q * kDimension;
+      IndexQueryMeta qmeta(IndexMeta::DT_FP32, kDimension);
+      std::string encoded;
+      if (legacy) {
+        IndexQueryMeta encoded_meta;
+        ASSERT_EQ(0,
+                  quantizer_->quantize(query, qmeta, &encoded, &encoded_meta));
+        query = encoded.data();
+        qmeta = encoded_meta;
+      }
+      ASSERT_EQ(0, entity.bind_query(query, qmeta));
+      queries.push_back(entity.query_distance());
+      expected.emplace_back(kTopK);
+      actual.emplace_back(kTopK);
+      uint32_t scanned = 0;
+      ASSERT_EQ(0,
+                entity.search(0, query, &scanned, &expected.back(), &stats[q]));
+      ASSERT_EQ(count, scanned);
+      expected.back().sort();
+    }
+    auto kernel = entity.many_distance();
+    ASSERT_TRUE(kernel);
+    std::vector<const turbo::DistanceImpl *> handles;
+    std::vector<IndexDocumentHeap *> heaps;
+    std::vector<IndexContext::Stats *> counters;
+    for (size_t q = 0; q < 3; ++q) {
+      handles.push_back(&queries[q]);
+      heaps.push_back(&actual[q]);
+      stats[q].set_dist_calced_count(0);
+      counters.push_back(&stats[q]);
+    }
+    size_t calls = 0, fragments = 0;
+    const turbo::ManyToManyDistanceFunc traced =
+        [&](const void *const *rows, const void *const *query_ptrs, size_t m,
+            size_t n, size_t dim, float *out, const void *const *extra) {
+          ++calls;
+          if (m < 32) ++fragments;
+          EXPECT_EQ(3u, n);
+          kernel(rows, query_ptrs, m, n, dim, out, extra);
+        };
+    uint32_t scanned = 0;
+    ASSERT_EQ(
+        0, entity.search_many(0, handles, traced, heaps, counters, &scanned));
+    EXPECT_EQ(count, scanned);
+    EXPECT_GT(calls, 0u);
+    // A partially filled final block accounts for at most one fragment.
+    EXPECT_GT(fragments, 1u);
+    for (size_t q = 0; q < 3; ++q) {
+      actual[q].sort();
+      ASSERT_EQ(expected[q].size(), actual[q].size());
+      EXPECT_EQ(count, stats[q].dist_calced_count());
+      for (size_t i = 0; i < actual[q].size(); ++i) {
+        EXPECT_EQ(expected[q][i].key(), actual[q][i].key());
+        EXPECT_NEAR(expected[q][i].score(), actual[q][i].score(), 1e-4f);
+      }
+    }
+  }
+}
 
 TEST_P(IVFTurboTest, PostingFormatDetection) {
   for (bool future_version : {false, true}) {

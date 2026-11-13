@@ -1,0 +1,128 @@
+IVF AVX2 交错布局联合内核：服务器 agent 执行说明
+日期：2026-11-13
+
+更新：本轮正确性修复后的复验请执行同目录 REVERIFY_zh.txt，使用仓库 reverify.py。
+它恢复两个被过滤用例、修复分数参考校验，并对基线/候选都做完整 sanitizer 对照。
+下文保留首次交接的范围与历史执行方法；本轮不要运行旧包内 tools/run.py。
+
+从当前分支直接开始（Linux 服务器）
+仓库：richyreachy/zvec
+分支：fix/legacy-matrix-distance-performance
+在已有 checkout 中先保存自己的未提交改动，再执行：
+  git fetch origin
+  git checkout fix/legacy-matrix-distance-performance
+  git pull --ff-only origin fix/legacy-matrix-distance-performance
+
+在仓库根目录执行以下命令；解包及结果目录位于临时工作目录，不污染源码：
+  export ZVEC_AVX2_DEPS="$PWD"
+  git submodule update --init --recursive \
+    thirdparty/googletest/googletest-1.10.0 \
+    thirdparty/RaBitQ-Library/RaBitQ-Library-0.7.0
+  (cd artifacts && sha256sum -c ivf-interleaved-avx2-handoff-20261113.tar.gz.sha256)
+  export ZVEC_AVX2_WORK=$(mktemp -d "${TMPDIR:-/tmp}/zvec-avx2-XXXXXXXX")
+  mkdir "$ZVEC_AVX2_WORK/handoff"
+  tar -xzf artifacts/ivf-interleaved-avx2-handoff-20261113.tar.gz -C "$ZVEC_AVX2_WORK/handoff"
+  cd "$ZVEC_AVX2_WORK/handoff"
+  sha256sum -c SHA256SUMS
+  export ZVEC_AVX2_OUT="$ZVEC_AVX2_WORK/results"
+  python3 tools/run.py --bundle "$PWD" --deps "$ZVEC_AVX2_DEPS" \
+    --out "$ZVEC_AVX2_OUT" --jobs 4
+
+压缩包 SHA256：
+4e0f8f929e26ba1ee7ebee5b65a6c4da1bae5a0800c7a4264ee08d52f76e7bc7
+包内说明保留打包时的历史措辞（当时尚未提交），不代表当前分支缺少实现。
+不要把包内固定基线替换成当前 HEAD 或其父提交。
+执行完请及时将结果打包回传并存放到持久目录，避免 /tmp 被清理。
+下面列出环境、完整验收范围和回传要求；已运行上面的入口后，不必重复“执行”步骤。
+
+目标
+在原生 Linux x86_64 上验证新 AVX2 内核的正确性、旧索引兼容和实际 IVF 查询性能。
+基线是此次添加 AVX2 前的版本：有交错布局 get 接口，但 x86 返回空函数、保留旧 M×1。
+候选是添加 AVX2 后的版本。两者均包含此前 IVF 共享扫描代码，不能直接用分支 HEAD 当基线。
+包内提供固定 HEAD 的源码 archive、baseline-vs-head.patch、candidate-vs-baseline.patch
+以及每份源码的 SHA256。源码与工具包一并提交到当前分支；性能对比仍以包内冻结的两份源码为准。
+
+内核范围
+raw FP32/FP16，IP（负点积）/SquaredEuclidean，块宽 M=2/4/8/16/32。
+候选直接读取 matrix[d*M+i]，查询分别连续，输出 out[q*M+i]；按 M×2 tile 计算，
+奇数查询的末条使用同一 AVX2 实现的单查询 tile；没有转置或调用时堆分配。
+FP32 要求 AVX2+FMA，FP16 还要求 F16C。INT8/INT4、记录量化、MIPS 和部分尾块保持旧路径。
+这次未新增 AVX512 实现；AVX512 机器也可以通过 Auto 选中本次 AVX2 实现。
+
+环境
+必须使用原生 Linux x86_64，CPU 支持 AVX2、FMA、F16C；不要用 Rosetta/QEMU 作为验收环境。
+需要 CMake >=3.26、Ninja、Python >=3.9、支持 C++17 的 GCC/Clang（建议 GCC 12+）。
+准备一个带依赖的 zvec checkout，仅用于读取第三方源码。无需切换或修改该 checkout 的分支：
+  git -C /absolute/path/to/zvec submodule update --init --recursive \
+    thirdparty/googletest/googletest-1.10.0 \
+    thirdparty/RaBitQ-Library/RaBitQ-Library-0.7.0
+依赖内容会影响复现，应记录该 checkout 的提交和 submodule status。
+避免与其他基准、编译、压测并发，确认 CPU 温度/频率稳定。
+
+执行
+1. 先校验传输的压缩包和解包后的清单：
+   sha256sum -c ivf-interleaved-avx2-handoff-20261113.tar.gz.sha256
+   mkdir avx2-handoff
+   tar -xzf ivf-interleaved-avx2-handoff-20261113.tar.gz -C avx2-handoff
+   cd avx2-handoff
+   sha256sum -c SHA256SUMS
+
+2. 设置依赖位置与一个尚不存在的输出目录：
+   export ZVEC_AVX2_DEPS=/absolute/path/to/zvec
+   export ZVEC_AVX2_OUT=/absolute/path/to/avx2-results
+   python3 tools/run.py --bundle "$PWD" --deps "$ZVEC_AVX2_DEPS" \
+     --out "$ZVEC_AVX2_OUT" --jobs 4
+   可以用 --cpu N 指定允许使用的空闲 CPU；默认选择当前 affinity 集合中的最小 CPU 编号。
+   --sample-ms 默认 50（每场景 5 次采样，每次至少 50ms）。如噪声较大，用新输出目录、
+   --sample-ms 100 重跑完整比较，保留此前结果。禁止覆盖异常数据或修改测试阈值。
+   --allow-non-x86/--prepare-only 仅为工具调试，不能用于服务器验收。
+
+脚本步骤与验收
+A. 校验 SHA256，在输出目录隔离解包两份源码，应用补丁并逐文件核对哈希。
+B. 分别构建基线、候选及相关 52 个测试程序；独立运行各程序，避免临时索引写入冲突。
+   旧索引兼容使用包内 200 份重构前 fixture。基线和候选均必须正确性通过。
+C. 检查 dispatch-after.log：FP32/FP16 × IP/L2 的 AVX2 和 AUTO 均必须为 1。
+   候选 TurboMatrix.Avx2JointInterleavedQueriesAndNoAllocations 必须实际执行通过，
+   不能跳过；缺少指令集/内核未编译时应停止并回传环境，不能将回退路径当 AVX2 成果。
+   数值测试覆盖小块、非 SIMD 对齐、奇偶查询、尾维度、输出边界、零分配、FP16 大值。
+D. 用单独构建的 ASan+UBSan 运行 matrix、IVF legacy 和 IVF searcher 测试。
+   不允许把 sanitizer 初始化失败当作通过；保留日志并报告，不要静默跳过。
+E. 基线生成一次确定性测试索引，两个版本共用。8192 条向量、32 个倒排列表、
+   block=32、Top-K=10；raw FP32/FP16/INT8/INT4、record INT8/INT4，IP/L2，
+   dim=128/768，nprobe=1/8，查询数=1/8/32，shared/spread，共 288 项。
+   执行真正的 IVFSearcher::search_impl，统计 ns/query=整批时间/查询数。
+   shared 是相同查询的理想共享情形；spread 是独立随机查询。
+   这是合成数据实际查询路径基准，不是生产召回质量或任意业务数据的性能承诺。
+F. 两轮顺序 before→after、after→before；逐项检查 Top-K ID/顺序、扫描次数一致，
+   分数误差 <=1e-4*max(1,|旧分数|)。FMA 可能带来舍入差异，禁止仅凭耗时验收。
+   ID/顺序不一致也必须报告，不能自行放宽成“召回差不多”。
+G. 所有任一轮慢于基线 >5% 的项，再按单项紧邻前后版本交替复测两轮。
+   原始数据保留；持续 >5% 的项标记 PERFORMANCE_REVIEW_REQUIRED，不能宣称无回退。
+   仍有单轮异常时，应在回传中列明；需要再测可按下方单项方法运行并保存原始数据。
+
+单项复测（不要覆盖已有目录）
+在结果目录创建 focus-before、focus-after，并确保它们与 indexes 同级。
+分别在这两个目录中运行对应版本的 bin-before/ivf_interleaved_bench 或
+bin-after/ivf_interleaved_bench：
+  BENCH_CASE='Raw-FP16,IP,128,spread,8,32' BENCH_MIN_MS=100 \
+    taskset -c N /absolute/path/to/avx2-results/bin-after/ivf_interleaved_bench \
+    --gtest_filter='*ManyBenchmark*'
+输出 timings.csv/query_results.txt/run 日志，请手工建立与全量表相同的 CSV 表头。
+每轮前后版本都要测，下一轮反转顺序；注明 CPU 和完整命令。
+
+回传
+- SUMMARY.json、environment.json、lscpu.txt、dispatch-before/after.log。
+- correctness-before/after.json 及所有 XML/日志；旧索引兼容日志；sanitized 目录。
+- PERFORMANCE.csv、performance.json、retake-PERFORMANCE.csv、retake-performance.json。
+- before/after-round1/2、retake-* 的时延、Top-K 和日志；额外 focus 数据也保留。
+- 两版本 compile_commands.json、CMakeCache.txt、构建日志；确认新 AVX2 源文件带
+  -mavx2 -mfma -mf16c（或 MSVC 对应选项），dispatcher 没有继承这些专用 ISA 选项。
+- 结论按 FP32/FP16 × IP/L2，及 INT8/INT4 对照项分别罗列；区分 count=1/8/32、
+  shared/spread，打印有退化的具体维度/nprobe。加速比=旧耗时/新耗时，>1 更快。
+- 将输出目录打包回传；大型 build/bin 目录可以排除，但保留 compile_commands、
+  CMakeCache、全部构建与执行日志及源码哈希。任何失败也要回传 SUMMARY 和日志。
+- 不要提交、推送或合并代码；本任务仅要求验证与报告。
+
+当前本地验证的边界
+macOS ARM64 会验证 NEON 未退化；本机 x86 交叉编译确认内核能编译，Rosetta 不支持
+所需指令集，未执行 AVX2 数值内核。这份服务器执行结果才是原生 x86 验收依据。

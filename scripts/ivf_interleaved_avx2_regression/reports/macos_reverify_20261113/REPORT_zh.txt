@@ -1,0 +1,41 @@
+AVX2 验证修复：macOS 回归报告（2026-11-13）
+
+本轮仅修改三个测试及验证工具，没有修改 src/ 下的生产代码。
+原 AVX2 性能实现保持不变。Linux x86 修复后的实际执行仍待服务器复验。
+
+修复范围
+- IVF 批查询分数：单查询和批查询各自对照存储值的 double 参考；FP32/FP16 使用
+  gamma(2*d+3)×绝对项和误差界。ID、顺序、数量、扫描次数和整数分数比较不放宽。
+- Fp16Avx2：原逐行指针接口的 raw FP16 L2 没有显式 AVX2 注册，改为验证空返回；
+  其他已有组合全部继续数值测试。本次交错布局接口的 AVX2 L2 支持没有改变。
+- RecordInt8PreprocessAndMetadataFallback：修正第五个元数据字段为 int32_t 码值和。
+- 分配计数测试补全 nothrow new/delete 配对；验证 CMake 全量插桩且保留 vptr。
+
+环境：macOS 26.6.2 ARM64，Apple Clang 15，Release，ARMv8 baseline。
+普通回归：52 个测试程序，573 passed / 43 skipped / 10 disabled / 0 failed。
+旧索引兼容：200 份 fixture，12 passed / 4 skipped / 16 disabled / 0 failed。
+clang-format 18、clang-tidy 18（warnings-as-errors）和 git diff --check 通过。
+公共测试补丁已分别在原基线和候选源码应用成功，并校验修复后文件 SHA256。
+工具已验证：退出码为 0 的 UBSan 报告仍被判失败；无 XML 的崩溃不会被当成零测试通过。
+
+Sanitizer 的实际范围和限制
+1. ASan+UBSan 构建：282/282 个编译单元插桩，未关闭 alignment/vptr。
+   四个测试程序在 ASan 初始化阶段中止，尚未进入测试，不算通过。
+   独立空 main 也在 Apple ASan 初始化失败；退出沙箱仍失败；LLVM18 空 main 超时。
+   详细最小复现、日志及编译元数据已留存。不能据本机结果确认 ASan 内存检查通过。
+2. 改用独立、全量插桩的 UBSan 构建，分别运行基线与候选的四个相关测试程序。
+   基线 138 项通过、12 项跳过；候选 139 项通过、13 项跳过；没有测试断言失败。
+   matrix / many_to_many / IVF legacy：两边均无 UBSan 报告。
+   IVF searcher：基线 15 条，候选 14 条；按源码位置/类型/操作归一化比较无新增或增加。
+   候选的 14 条包括旧 record_quantizer 未对齐访问及 integer_quantizer 的 NaN 转 INT8。
+   基线额外出现 kmeans.h:508 的 NaN 转 INT8；不要把少一次触发解释为这次修复了该问题。
+   上述生产文件未改，本轮没有扩展为旧量化/聚类 UB 的修复。它们仍需独立处理。
+
+结论：macOS 普通正确性与兼容性通过，本轮未观察到新增 UBSan 报告；不是 sanitizer 全绿。
+本轮生产代码没有改变，未重复 macOS 性能测量。服务器 reverify.py 会执行两轮实际
+查询性能、异常项复测，以及基线/候选完整 ASan+UBSan 对照。
+原生 x86 上修复后的分数参考检查、两个恢复用例和 ASan 分配配对仍需实际执行通过。
+
+证据：仓库 artifacts/ivf-avx2-macos-reverify-20261113.tar.gz 及同名 .sha256。
+包内含原始 XML/日志、UBSan 两版对比、最小 ASan 复现、编译配置和 SHA256SUMS。
+执行说明：scripts/ivf_interleaved_avx2_regression/REVERIFY_zh.txt。

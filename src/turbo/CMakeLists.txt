@@ -193,6 +193,29 @@ if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
     )
 endif()
 
+# Use the compiler-target probe, including macOS cross builds. The joint
+# AVX2 TU must not inherit extra ISA features from a host CPU model flag.
+if(ZVEC_TOPK_TARGET_X86)
+    if(MSVC)
+        set(_TURBO_INTERLEAVED_AVX2_FLAGS "/arch:AVX2")
+    elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(_TURBO_INTERLEAVED_AVX2_FLAGS "-march=x86-64 -mavx2 -mfma -mf16c")
+    else()
+        set(_TURBO_INTERLEAVED_AVX2_FLAGS "-march=i686 -mavx2 -mfma -mf16c")
+    endif()
+    set_source_files_properties(distance/avx2/interleaved_many_to_many.cc
+        PROPERTIES COMPILE_FLAGS "${_TURBO_INTERLEAVED_AVX2_FLAGS}")
+endif()
+
+# The joint interleaved kernel uses baseline AArch64 NEON and FP32 arithmetic,
+# including FP16-to-FP32 conversion; it does not require FEAT_FP16 arithmetic.
+# Keep this translation unit at the ISA promised by its runtime dispatch gate.
+if(NOT MSVC AND _TURBO_TARGET_ARCH STREQUAL "arm64" AND
+   (NOT CMAKE_OSX_ARCHITECTURES OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64"))
+    set_source_files_properties(distance/neon/interleaved_many_to_many.cc
+        PROPERTIES COMPILE_FLAGS "-march=armv8-a")
+endif()
+
 set(ZVEC_TURBO_DEFS)
 if(ZVEC_ON_MUSL)
   list(APPEND ZVEC_TURBO_DEFS ZVEC_ON_MUSL)
