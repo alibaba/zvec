@@ -13,6 +13,8 @@
 // limitations under the License.
 #pragma once
 
+#include <algorithm>
+#include <limits>
 #include <memory>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/core/interface/index.h>
@@ -103,6 +105,7 @@ class ProximaEngineHelper {
       const QueryParams::Ptr &query_params, uint32_t topk,
       const IndexFilter *filter, const VectorColumnIndexer *reference_indexer,
       int64_t *output_ids, float *output_scores) {
+    std::shared_lock lock(indexer.nulls_mutex_);
     auto *index = indexer.index.get();
     if (!index) return Status::InvalidArgument("Index not opened");
     auto search = [&](auto engine_query_param) -> Status {
@@ -131,6 +134,13 @@ class ProximaEngineHelper {
       // search.
       const core_interface::BaseIndexQueryParam::Pointer params(
           core_interface::BaseIndexQueryParam::Pointer{}, &engine_query_param);
+      if (indexer.has_null_bitmap() && indexer.all_null()) {
+        std::fill(output_ids, output_ids + topk, int64_t{-1});
+        if (output_scores)
+          std::fill(output_scores, output_scores + topk,
+                    std::numeric_limits<float>::quiet_NaN());
+        return Status::OK();
+      }
       if (index->search_internal_ids(vector_data, params, output_ids,
                                      output_scores) != 0) {
         return Status::InternalError("Failed to search vector");
@@ -505,7 +515,8 @@ class ProximaEngineHelper {
     }
     auto index_param_builder = std::make_shared<IndexParamBuilderType>();
 
-    // db will ensure the id is consecutive
+    // Document IDs are preserved. NULL gaps use invalid-key slots in core
+    // streamers and do not participate in graph construction.
     index_param_builder->with_use_id_map(false);
 
     index_param_builder->with_is_sparse(field_schema.is_sparse_vector())
@@ -720,9 +731,9 @@ class ProximaEngineHelper {
         index_param_builder->with_two_pass_build(
             db_index_params->two_pass_build());
         // db_index_params->use_id_map() is intentionally ignored here:
-        // db ensures id is consecutive (see _build_common_index_param), so
-        // the engine-level use_id_map is forced to false in the common
-        // builder. The flag is preserved on the db-side params for schema
+        // db uses document IDs directly as node IDs, including NULL gaps,
+        // so the engine-level key mapping is disabled in the common builder.
+        // The flag is preserved on the db-side params for schema
         // round-trip / introspection only.
 
         return index_param_builder->build();

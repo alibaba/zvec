@@ -118,6 +118,9 @@ class DiskAnnStreamer : public IndexStreamer {
   int get_vector_by_id(const uint32_t id,
                        IndexStorage::MemoryBlock &block) const override;
 
+  int get_vector_by_key(uint64_t key,
+                        IndexStorage::MemoryBlock &block) const override;
+
   //! Create a searcher context
   ContextPointer create_context() const override;
 

@@ -643,6 +643,76 @@ TEST_F(HnswRabitqStreamerTest, TestDimensions) {
   }
 }
 
+TEST_F(HnswRabitqStreamerTest, NullSlotsPersistWithoutBuildingGraphNodes) {
+  ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll * 1024ll);
+  auto holder = make_shared<MultiPassIndexProvider<IndexMeta::DT_FP32>>(dim);
+  for (uint32_t id = 0; id < 64; ++id) {
+    NumericalVector<float> value(dim);
+    for (size_t d = 0; d < dim; ++d) value[d] = (id + d + 1) / 100.0f;
+    ASSERT_TRUE(holder->emplace(id, value));
+  }
+  RabitqConverter converter;
+  ASSERT_EQ(0, converter.init(*index_meta_ptr_, {}));
+  ASSERT_EQ(0, converter.train(holder));
+  IndexReformer::Pointer encoded_reformer;
+  ASSERT_EQ(0, converter.to_reformer(&encoded_reformer));
+  auto reformer = dynamic_pointer_cast<RabitqReformer>(encoded_reformer);
+  for (const char *storage_name : {"MMapFileStorage", "BufferStorage"}) {
+    for (bool mapped : {false, true}) {
+      SCOPED_TRACE(storage_name);
+      SCOPED_TRACE(mapped);
+      ailego::Params params;
+      params.set("proxima.hnsw_rabitq.general.dimension", dim);
+      params.set("proxima.hnsw_rabitq.streamer.use_id_map", mapped);
+      auto storage = IndexFactory::CreateStorage(storage_name);
+      ASSERT_EQ(0, storage->init({}));
+      ASSERT_EQ(0, storage->open(
+                       dir_ + "/nulls_" + storage_name + std::to_string(mapped),
+                       true));
+      IndexStreamer::Pointer streamer =
+          make_shared<HnswRabitqStreamer>(holder, reformer);
+      ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
+      ASSERT_EQ(0, streamer->open(storage));
+      ASSERT_EQ(0, streamer->reserve_slots(8194));
+      EXPECT_EQ(8194U, streamer->create_provider()->slot_count());
+      EXPECT_EQ(0U, streamer->create_provider()->count());
+      ASSERT_EQ(0, streamer->flush(0));
+      ASSERT_EQ(0, storage->flush());
+      ASSERT_EQ(0, streamer->close());
+      streamer = make_shared<HnswRabitqStreamer>(holder);
+      ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
+      ASSERT_EQ(0, streamer->open(storage));
+      auto provider = streamer->create_provider();
+      auto slots = provider->create_slot_iterator();
+      size_t count = 0;
+      for (; slots->is_valid(); slots->next(), ++count)
+        EXPECT_EQ(UINT64_MAX, slots->key());
+      EXPECT_EQ(8194U, count);
+      slots.reset();
+      provider.reset();
+      auto context = streamer->create_context();
+      context->set_topk(1);
+      IndexQueryMeta meta(IndexMeta::DT_FP32, dim);
+      ASSERT_EQ(0,
+                streamer->search_impl(holder->get_vector(2), meta, 1, context));
+      EXPECT_TRUE(context->result(0).empty());
+      ASSERT_EQ(0, streamer->add_with_id_impl(2, holder->get_vector(2), meta,
+                                              context));
+      EXPECT_EQ(8194U, streamer->create_provider()->slot_count());
+      EXPECT_EQ(1U, streamer->create_provider()->count());
+      ASSERT_EQ(0,
+                streamer->search_impl(holder->get_vector(2), meta, 1, context));
+      ASSERT_EQ(1U, context->result(0).size());
+      EXPECT_EQ(2U, context->result(0)[0].key());
+      context.reset();
+      ASSERT_EQ(0, streamer->flush(0));
+      ASSERT_EQ(0, streamer->close());
+      streamer.reset();
+      ASSERT_EQ(0, storage->close());
+    }
+  }
+}
+
 TEST_F(HnswRabitqStreamerTest, TestExBitsMismatch) {
   auto holder =
       make_shared<MultiPassIndexProvider<IndexMeta::DataType::DT_FP32>>(dim);

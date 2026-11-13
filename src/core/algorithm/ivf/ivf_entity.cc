@@ -844,10 +844,24 @@ int IVFEntity::load(const IndexStorage::Pointer &container) {
     return IndexError_InvalidFormat;
   }
 
-  expect_size = header_.total_vector_count * sizeof(uint32_t);
-  mapping_ = load_segment(IVF_MAPPING_SEG_ID, expect_size);
-  if (!mapping_) {
+  mapping_ = container->get(IVF_MAPPING_SEG_ID);
+  if (!mapping_ || mapping_->data_size() < vector_count() * sizeof(uint32_t) ||
+      mapping_->data_size() % sizeof(uint32_t) != 0 ||
+      slot_count() > UINT32_MAX) {
     return IndexError_InvalidFormat;
+  }
+
+  if (slot_count() > vector_count()) {
+    size_t values = 0;
+    for (size_t slot = 0; slot < slot_count(); ++slot) {
+      uint32_t id;
+      int err = slot_to_id(slot, &id);
+      if (err != 0) return err;
+      if (id == UINT32_MAX) continue;
+      if (get_key(id) != slot) return IndexError_InvalidFormat;
+      ++values;
+    }
+    if (values != vector_count()) return IndexError_InvalidFormat;
   }
 
   norm_value_sqrt_ =
@@ -1416,6 +1430,10 @@ uint32_t IVFEntity::key_to_id(uint64_t key) const {
 
 int IVFEntity::key_to_id(uint64_t key, uint32_t *id) const {
   *id = std::numeric_limits<uint32_t>::max();
+  if (slot_count() > vector_count()) {
+    if (key >= slot_count()) return 0;
+    return slot_to_id(key, id);
+  }
   //! Do binary search
   uint32_t start = 0UL;
   uint32_t end = vector_count();

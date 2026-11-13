@@ -314,15 +314,25 @@ int DiskAnnBuilderEntity::dump_key_segment(
 }
 
 int DiskAnnBuilderEntity::dump_key_mapping_segment(
-    const IndexDumper::Pointer &dumper) const {
+    const IndexDumper::Pointer &dumper, size_t slot_count) const {
   std::vector<diskann_id_t> mapping(doc_cnt());
 
   const diskann_key_t *keys = reinterpret_cast<diskann_key_t *>(
       const_cast<char *>(keys_buffer_.data()));
 
-  std::iota(mapping.begin(), mapping.end(), 0U);
-  std::sort(mapping.begin(), mapping.end(),
-            [&](diskann_id_t i, diskann_id_t j) { return keys[i] < keys[j]; });
+  if (slot_count > doc_cnt()) {
+    mapping.assign(slot_count, kInvalidId);
+    for (diskann_id_t id = 0; id < doc_cnt(); ++id) {
+      if (keys[id] >= slot_count || mapping[keys[id]] != kInvalidId)
+        return IndexError_InvalidArgument;
+      mapping[keys[id]] = id;
+    }
+  } else {
+    std::iota(mapping.begin(), mapping.end(), 0U);
+    std::sort(
+        mapping.begin(), mapping.end(),
+        [&](diskann_id_t i, diskann_id_t j) { return keys[i] < keys[j]; });
+  }
 
   size_t size = mapping.size() * sizeof(diskann_id_t);
   int64_t ret =
@@ -628,7 +638,7 @@ int DiskAnnBuilderEntity::dump(IndexHolder::Pointer holder, IndexMeta &meta,
   }
 
   // dump key mapping
-  ret = dump_key_mapping_segment(dumper);
+  ret = dump_key_mapping_segment(dumper, holder->slot_count());
   if (ret != 0) {
     LOG_ERROR("Dump key mapping segment failed");
 

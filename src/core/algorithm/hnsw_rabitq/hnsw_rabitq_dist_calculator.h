@@ -219,7 +219,7 @@ class HnswRabitqAddDistCalculator {
                   std::vector<IndexStorage::MemoryBlock> &vec_blocks) const {
     std::vector<key_t> keys(count);
     for (uint32_t i = 0; i < count; ++i) {
-      keys[i] = entity_->get_key(ids[i]);
+      keys[i] = entity_->key_of_existing_node(ids[i]);
       if (keys[i] == kInvalidKey) {
         return IndexError_NoExist;
       }
@@ -228,7 +228,7 @@ class HnswRabitqAddDistCalculator {
   }
 
   int get_vector(node_id_t id, IndexStorage::MemoryBlock &vec_block) const {
-    key_t key = entity_->get_key(id);
+    key_t key = entity_->key_of_existing_node(id);
     if (key == kInvalidKey) {
       return IndexError_NoExist;
     }
@@ -236,7 +236,7 @@ class HnswRabitqAddDistCalculator {
   }
 
   const void *get_vector(node_id_t id) const {
-    key_t key = entity_->get_key(id);
+    key_t key = entity_->key_of_existing_node(id);
     if (key == kInvalidKey) {
       return nullptr;
     }

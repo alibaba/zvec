@@ -39,12 +39,7 @@ int FlatSparseStreamerEntity::open(IndexStorage::Pointer storage,
     return IndexError_Duplicate;
   }
 
-  keys_map_lock_ = std::make_shared<ailego::SharedMutex>();
-  if (!keys_map_lock_) {
-    LOG_ERROR("FlatSparseStreamerEntity new object failed");
-    return IndexError_NoMemory;
-  }
-  keys_map_ = std::make_shared<std::map<uint64_t, node_id_t>>();
+  key_map_.set_enabled(key_map_.enabled());
 
   if (storage->get(PARAM_FLAT_SPARSE_META_SEG_ID) ||
       storage->get(PARAM_FLAT_SPARSE_STREAMER_META_SEG_ID)) {
@@ -206,15 +201,19 @@ int FlatSparseStreamerEntity::load_storage(IndexStorage::Pointer storage,
   }
 
   // load keys
+  size_t loaded_count = 0;
   for (node_id_t i = 0; i < meta_.doc_cnt; ++i) {
-    (*keys_map_)[get_key(i)] = i;
+    if (contains_node(i)) {
+      ++loaded_count;
+      key_map_.insert(get_key(i), i);
+    }
   }
 
   stats_.set_index_size(index_size);
   stats_.set_check_point(storage->check_point());
   stats_.set_create_time(meta_.create_time);
   stats_.set_update_time(meta_.update_time);
-  stats_.set_loaded_count(keys_map_->size());
+  stats_.set_loaded_count(loaded_count);
 
   return 0;
 }
@@ -285,8 +284,7 @@ int FlatSparseStreamerEntity::close() {
   sparse_data_chunks_.clear();
   sparse_offset_chunks_.clear();
 
-  keys_map_lock_.reset();
-  keys_map_.reset();
+  key_map_.clear();
 
   return 0;
 }
@@ -538,9 +536,9 @@ int FlatSparseStreamerEntity::dump_mapping(const std::vector<uint64_t> &keys,
 }
 
 FlatSparseStreamerEntity::Pointer FlatSparseStreamerEntity::clone() const {
-  auto entity = new (std::nothrow) FlatSparseStreamerEntity(
-      stats_, meta_, streamer_meta_, keys_map_lock_, keys_map_,
-      sparse_data_chunks_, sparse_offset_chunks_);
+  auto entity = new (std::nothrow)
+      FlatSparseStreamerEntity(stats_, meta_, streamer_meta_, key_map_,
+                               sparse_data_chunks_, sparse_offset_chunks_);
   return FlatSparseStreamerEntity::Pointer(entity);
 }
 
@@ -695,11 +693,7 @@ int FlatSparseStreamerEntity::add(uint64_t key,
   }
 
   // persist in keys_map
-  {
-    keys_map_lock_->lock();
-    (*keys_map_)[key] = local_id;
-    keys_map_lock_->unlock();
-  }
+  key_map_.insert(key, local_id);
 
   inc_doc_count();
   inc_total_sparse_count(sparse_count);
@@ -708,8 +702,9 @@ int FlatSparseStreamerEntity::add(uint64_t key,
 }
 
 int FlatSparseStreamerEntity::add_vector_with_id(
-    uint32_t id, const std::string &sparse_vector,
-    const uint32_t sparse_count) {
+    uint32_t id, const std::string &sparse_vector, const uint32_t sparse_count,
+    bool is_null) {
+  if (id == kInvalidNodeId) return IndexError_InvalidArgument;
   uint32_t sparse_vector_len = sparse_vector.size();
 
   sparse_vector_len = AlignSize(sparse_vector_len);
@@ -734,7 +729,7 @@ int FlatSparseStreamerEntity::add_vector_with_id(
       }
       uint32_t sparse_data_chunk_index, sparse_data_chunk_offset,
           sparse_offset_chunk_index, sparse_offset_chunk_offset;
-      if (i < id) {
+      if (i < id || is_null) {
         write_sparse_vector_to_chunk("", 0, sparse_data_chunk_index,
                                      sparse_data_chunk_offset);
       } else {
@@ -747,17 +742,13 @@ int FlatSparseStreamerEntity::add_vector_with_id(
       get_new_sparse_offset_chunk(sparse_offset_chunk_index,
                                   sparse_offset_chunk_offset);
       uint64_t written_key = kInvalidKey;
-      if (i == id) {
+      if (i == id && !is_null) {
         written_key = i;
       }
-      write_sparse_offset_to_chunk(sparse_offset_chunk_index,
-                                   sparse_offset_chunk_offset, sparse_offset,
-                                   sparse_vector_len, written_key);
-      {
-        keys_map_lock_->lock();
-        (*keys_map_)[i] = written_key;
-        keys_map_lock_->unlock();
-      }
+      write_sparse_offset_to_chunk(
+          sparse_offset_chunk_index, sparse_offset_chunk_offset, sparse_offset,
+          written_key == kInvalidKey ? 0 : sparse_vector_len, written_key);
+      if (written_key != kInvalidKey) key_map_.insert(written_key, i);
       inc_doc_count();
     }
   } else {
@@ -774,11 +765,7 @@ int FlatSparseStreamerEntity::add_vector_with_id(
     write_sparse_offset_to_chunk(sparse_offset_chunk_index,
                                  sparse_offset_chunk_offset, sparse_offset,
                                  sparse_vector_len, id);
-    {
-      keys_map_lock_->lock();
-      (*keys_map_)[id] = id;
-      keys_map_lock_->unlock();
-    }
+    key_map_.insert(id, id);
   }
   inc_total_sparse_count(sparse_count);
   return 0;
@@ -911,22 +898,30 @@ int FlatSparseStreamerEntity::write_sparse_offset_to_chunk(
   return 0;
 }
 
-uint64_t FlatSparseStreamerEntity::get_key(node_id_t node_id) const {
-  uint32_t offset_chunk_index = node_id / get_offset_info_number_per_chunk();
-  uint32_t offset_chunk_key_offset =
-      node_id % get_offset_info_number_per_chunk() * offset_size_per_node() +
+uint64_t FlatSparseStreamerEntity::get_key(node_id_t id) const {
+  uint64_t key = kInvalidKey;
+  read_key(id, &key);
+  return key;
+}
+
+int FlatSparseStreamerEntity::read_key(node_id_t id, uint64_t *key) const {
+  *key = kInvalidKey;
+  if (id >= doc_cnt()) return IndexError_OutOfRange;
+  const uint32_t chunk_index = id / get_offset_info_number_per_chunk();
+  const uint32_t offset =
+      id % get_offset_info_number_per_chunk() * offset_size_per_node() +
       2 * sizeof(uint64_t);
-
   IndexStorage::MemoryBlock block;
-  if (ailego_unlikely(sparse_offset_chunks_[offset_chunk_index]->read(
-                          offset_chunk_key_offset, block, sizeof(uint64_t)) !=
-                      sizeof(uint64_t))) {
-    LOG_ERROR("Read key failed, offset=%u, node_id=%u", offset_chunk_key_offset,
-              node_id);
-    return kInvalidKey;
-  };
-
-  return *reinterpret_cast<const uint64_t *>(block.data());
+  if (chunk_index >= sparse_offset_chunks_.size() ||
+      !sparse_offset_chunks_[chunk_index] ||
+      sparse_offset_chunks_[chunk_index]->read(
+          offset, block, sizeof(uint64_t)) != sizeof(uint64_t) ||
+      !block.data()) {
+    LOG_ERROR("Read key failed, node_id=%u", id);
+    return IndexError_ReadData;
+  }
+  *key = *reinterpret_cast<const uint64_t *>(block.data());
+  return 0;
 }
 
 int FlatSparseStreamerEntity::get_sparse_vector_ptr_by_id(

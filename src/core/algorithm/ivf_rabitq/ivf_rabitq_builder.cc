@@ -511,6 +511,16 @@ int IvfRabitqBuilder::build(IndexThreads::Pointer threads,
     return ret;
   }
 
+  if (holder && holder->slot_count() > build_data.keys_buf.size()) {
+    build_data.mapping_buf.assign(holder->slot_count(), UINT32_MAX);
+    for (uint32_t id = 0; id < build_data.keys_buf.size(); ++id) {
+      const auto key = build_data.keys_buf[id];
+      if (key >= holder->slot_count() ||
+          build_data.mapping_buf[key] != UINT32_MAX)
+        return IndexError_InvalidArgument;
+      build_data.mapping_buf[key] = id;
+    }
+  }
   header_ = build_data.header;
   batch_data_buf_ = std::move(build_data.batch_data_buf);
   ex_data_buf_ = std::move(build_data.ex_data_buf);

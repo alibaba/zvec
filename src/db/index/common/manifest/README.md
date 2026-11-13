@@ -72,3 +72,53 @@ numbers. Unknown values read from disk are preserved as-is and mapped to
 
 `pbwire::Writer` does not sort fields. Each message's encode function must
 write fields in ascending field-number order to produce canonical bytes.
+
+### Nullable vector blocks
+
+`BlockMeta` field 7 (`vector_validity`) marks vector blocks that require a
+`<index path>.nulls` sidecar. Missing or corrupt required sidecars are errors.
+
+The sidecar contains `ZVECNL01`, a little-endian uint32 logical row count, a
+portable Roaring bitmap of NULL rows, and a CRC32C of all preceding bytes. A set
+bit means NULL, as in scalar inverted columns. The row count includes trailing
+NULLs and agrees with the core slot count.
+
+Vector keys equal document row IDs. Flat and graph streamers represent gaps
+with invalid keys; invalid slots are excluded from results, graph construction
+and training. Search, filters, grouping and fetch use document IDs directly.
+Core accepts an explicit `NullVector` insertion that reserves physical slots,
+including their vector storage, without adding them to the search graph.
+Merge visits every source slot, including NULL tails, and reserves an output ID
+for each retained row. Training providers expose only real vectors with their
+original keys; slot iterators expose NULL slots with an invalid key and no
+readable payload. A failed key read is an error, not a NULL slot.
+
+Core key mapping and node existence are independent. Identity addressing uses
+no key hash table, while external-key indexes rebuild their optional map from
+stored keys on open. Checked lookup and fetch reject invalid slots in either
+mode. Graph traversal uses a separate accessor for nodes already known to
+exist, retaining direct identity-key access without validity lookups.
+
+The DB column exposes `row_count()` for its document range. Providers report
+valid vectors with `count()` and physical slot spans with `slot_count()`.
+`Index::get_doc_count()` and `get_slot_count()` include NULL slots;
+`get_vector_count()` counts actual vectors. Merge validates slot spans and
+counts values during its existing iterator passes, without an extra count scan.
+Builders preserve empty slots through their native mapping segments. There is
+no separate `IndexDocumentRange` segment. Search does not read the DB bitmap.
+
+An all-NULL column uses a Flat backing with invalid-key slots even when its
+declared index requires training. The sidecar is flushed and published before
+the manifest references the block.
+
+A legacy nullable block whose manifest carries no validity metadata never
+marked NULL rows, so its original data may already be lost. Opening it logs a
+warning and proceeds best-effort: every stored slot is treated as present and
+no NULL bitmap is fabricated. The warning identifies the field and index path,
+explains the risk of incorrect vector-to-document mappings in older versions,
+suggests reinserting original data into a new collection if needed, and links
+to GitHub issues for help or feedback. A block whose manifest requires validity
+but whose `.nulls` sidecar is missing or corrupt (bad magic or CRC) is an error.
+Scalar nullable fields and legacy non-nullable vector blocks retain their
+existing read paths.
+Older binaries do not understand the new nullable format.

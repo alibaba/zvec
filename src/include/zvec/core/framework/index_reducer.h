@@ -14,6 +14,10 @@
 
 #pragma once
 
+#include <cstdint>
+#include <memory>
+#include <utility>
+#include <vector>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/core/framework/index_builder.h>
 #include <zvec/core/framework/index_converter.h>

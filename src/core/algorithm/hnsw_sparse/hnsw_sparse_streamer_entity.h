@@ -19,6 +19,7 @@
 #include <sparsehash/dense_hash_set>
 #include <zvec/ailego/container/heap.h>
 #include <zvec/core/framework/index_framework.h>
+#include "utility/node_key_map.h"
 #include "hnsw_sparse_chunk.h"
 #include "hnsw_sparse_entity.h"
 #include "hnsw_sparse_index_hash.h"
@@ -40,6 +41,12 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
 
   //! Get primary key of the node id
   key_t get_key(node_id_t id) const override;
+  int read_key(node_id_t id, key_t *key) const override;
+  key_t read_stored_key(node_id_t id) const;
+  key_t key_of_existing_node(node_id_t id) const override {
+    return key_map_.enabled() ? read_stored_key(id) : id;
+  }
+
 
   //! Get vector feature data by key
   const void *get_vector_meta(node_id_t id) const override;
@@ -94,8 +101,8 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
 
   //! Add vector and id to hnsw entity
   int add_vector_with_id(level_t level, node_id_t id,
-                         const std::string &sparse_vec,
-                         uint32_t sparse_count) override;
+                         const std::string &sparse_vec, uint32_t sparse_count,
+                         bool is_null = false) override;
 
   int update_neighbors(
       level_t level, node_id_t id,
@@ -173,27 +180,22 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
     get_vector_enabled_ = val;
   }
 
-  //! Get vector local id by key
-  inline node_id_t get_id(key_t key) const {
-    keys_map_lock_->lock_shared();
-    auto it = keys_map_->find(key);
-    node_id_t id = it == keys_map_->end() ? kInvalidNodeId : it->second;
-    keys_map_lock_->unlock_shared();
-    return id;
+  void set_use_id_map(bool enabled) {
+    key_map_.set_enabled(enabled);
   }
 
-  void print_key_map() {
-    std::cout << "key map begins" << std::endl;
-
-    auto iter = keys_map_->begin();
-    while (iter != keys_map_->end()) {
-      std::cout << "key: " << iter->first << ", id: " << iter->second
-                << std::endl;
-      ;
-      iter++;
+  node_id_t find_node(uint64_t key) const {
+    if (key == kInvalidKey) return kInvalidNodeId;
+    if (key_map_.enabled()) {
+      node_id_t id = key_map_.find(key);
+      return contains_node(id) && get_key(id) == key ? id : kInvalidNodeId;
     }
-
-    std::cout << "key map ends" << std::endl;
+    if (key >= doc_cnt()) return kInvalidNodeId;
+    node_id_t id = static_cast<node_id_t>(key);
+    return contains_node(id) && get_key(id) == key ? id : kInvalidNodeId;
+  }
+  inline node_id_t get_id(key_t key) const {
+    return find_node(key);
   }
 
   //! Get neighbors size
@@ -237,9 +239,7 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
       size_t chunk_size, uint32_t node_index_mask_bits,
       uint32_t upper_neighbor_mask_bits, bool filter_same_key,
       bool get_vector_enabled, uint32_t sparse_chunk_size,
-      const NIHashMapPointer &upper_neighbor_index,
-      std::shared_ptr<ailego::SharedMutex> &keys_map_lock,
-      const HashMapPointer<key_t, node_id_t> &keys_map,
+      const NIHashMapPointer &upper_neighbor_index, const NodeKeyMap &key_map,
       std::vector<SparseChunk::Pointer> &&node_chunks,
       std::vector<SparseChunk::Pointer> &&upper_neighbor_chunks,
       std::vector<SparseChunk::Pointer> &&sparse_node_chunks,
@@ -255,8 +255,7 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
         get_vector_enabled_(get_vector_enabled),
         sparse_chunk_size_(sparse_chunk_size),
         upper_neighbor_index_(upper_neighbor_index),
-        keys_map_lock_(keys_map_lock),
-        keys_map_(keys_map),
+        key_map_(key_map),
         node_chunks_(std::move(node_chunks)),
         upper_neighbor_chunks_(std::move(upper_neighbor_chunks)),
         sparse_node_chunks_(std::move(sparse_node_chunks)),
@@ -530,8 +529,7 @@ class HnswSparseStreamerEntity : public HnswSparseEntity {
 
   NIHashMapPointer upper_neighbor_index_{};
 
-  mutable std::shared_ptr<ailego::SharedMutex> keys_map_lock_{};
-  HashMapPointer<key_t, node_id_t> keys_map_{};
+  NodeKeyMap key_map_;
 
   //! the chunks will be changed in searcher, so need mutable
   //! data chunk include: vector, key, level 0 neighbors

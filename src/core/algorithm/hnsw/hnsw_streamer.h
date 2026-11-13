@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <atomic>
 #include <ailego/parallel/lock.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_provider.h>
@@ -187,17 +188,20 @@ class HnswStreamer : public IndexStreamer {
 
   //! Fetch vector by id
   const void *get_vector_by_id(uint32_t id) const override {
-    return entity_->get_vector(id);
+    return entity_->contains_node(id) ? entity_->get_vector(id) : nullptr;
   }
 
   int get_vector_by_id(const uint32_t id,
                        IndexStorage::MemoryBlock &block) const override {
-    return entity_->get_vector(id, block);
+    return entity_->contains_node(id) ? entity_->get_vector(id, block)
+                                      : IndexError_NoExist;
   }
 
   //! Open index from file path
   int open(IndexStorage::Pointer stg) override;
   int open(IndexStorage::Pointer stg, bool read_only) override;
+
+  int reserve_slots(uint32_t count) override;
 
   //! Close file
   int close() override;
@@ -242,6 +246,8 @@ class HnswStreamer : public IndexStreamer {
 
   //! To share ctx across streamer/searcher, we need to update the context for
   //! current streamer/searcher
+  void prepare_write();
+
   int update_context(HnswContext *ctx) const;
 
   //! Bind the distance functions and inline record layout used for graph build
@@ -281,7 +287,7 @@ class HnswStreamer : public IndexStreamer {
   std::shared_ptr<zvec::turbo::Quantizer> quantizer_{};
 
   Stats stats_{};
-  std::mutex mutex_{};
+  mutable std::mutex mutex_{};
 
   // provider of the original vectors used to build graph
   IndexProvider::Pointer provider_{};
@@ -308,7 +314,7 @@ class HnswStreamer : public IndexStreamer {
   float bf_negative_prob_{HnswEntity::kDefaultBFNegativeProbability};
   float max_scan_ratio_{HnswEntity::kDefaultScanRatio};
 
-  uint32_t magic_{0U};
+  std::atomic<uint32_t> magic_{0U};
   State state_{STATE_INIT};
   bool read_only_{false};
   bool bf_enabled_{false};

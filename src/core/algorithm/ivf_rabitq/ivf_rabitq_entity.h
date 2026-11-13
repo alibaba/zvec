@@ -76,6 +76,7 @@ class IvfRabitqEntity {
   uint32_t cluster_count() const {
     return header_.cluster_count;
   }
+  //! Real vectors stored compactly (excludes NULL gaps); not an ID bound.
   uint32_t total_vector_count() const {
     return header_.total_vector_count;
   }
@@ -100,6 +101,20 @@ class IvfRabitqEntity {
   int get_vector_by_key(uint64_t key, IndexStorage::MemoryBlock &block) const;
 
   uint32_t key_to_id(uint64_t key) const;
+  //! Physical addressable slots, including NULL gaps (compact + mapping
+  //! layout).
+  size_t slot_count() const {
+    return mapping_ ? mapping_->data_size() / sizeof(uint32_t)
+                    : total_vector_count();
+  }
+  int slot_to_id(size_t slot, uint32_t *id) const {
+    if (!mapping_ || slot >= slot_count()) return IndexError_OutOfRange;
+    if (mapping_->fetch(slot * sizeof(uint32_t), id, sizeof(*id)) !=
+        sizeof(*id))
+      return IndexError_ReadData;
+    if (*id == UINT32_MAX && slot_count() > total_vector_count()) return 0;
+    return *id < total_vector_count() ? 0 : IndexError_InvalidFormat;
+  }
 
   uint32_t get_cluster_id(uint32_t id) const;
 

@@ -103,16 +103,10 @@ Status materialize_window(DocIterator::Impl *impl, int64_t begin, int64_t end) {
         auto fetched =
             indexer->fetch(static_cast<uint32_t>(row_ids->Value(begin + i)));
         if (!fetched.has_value()) {
-          // Docs without a value for a vector field are accepted by insert
-          // (the write path only warns and skips them, regardless of the
-          // schema's nullable flag) — no placeholder, no presence bitmap,
-          // and the engine folds "key has no vector" into the same error
-          // as a corrupted index, so a missing vector cannot be told apart
-          // here: iteration with include_vector fails on such docs
-          // (fetch() likewise returns null for them).
-          // TODO: propagate the engine's not-exist signal as
-          // Status::NotFound and leave the vector field unset instead of
-          // failing.
+          if (fetched.error().code() == StatusCode::NOT_FOUND) {
+            impl->batch_docs[i]->set_null(field->name());
+            continue;
+          }
           return Status::InternalError(
               "vector fetch failed, field: ", field->name(), ": ",
               fetched.error().message());

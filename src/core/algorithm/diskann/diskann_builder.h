@@ -25,6 +25,10 @@ namespace core {
 
 class DiskAnnBuilder : public IndexBuilder {
  public:
+  size_t slot_count() const override {
+    return holder_ ? holder_->slot_count() : 0;
+  }
+
   //! Constructor
   DiskAnnBuilder() = default;
 

@@ -172,6 +172,14 @@ class DiskAnnEntity {
 
   //! Get primary key of the node id
   virtual diskann_key_t get_key(diskann_id_t id) const = 0;
+  //! Physical addressable slots; equals the real count when no NULL-gap
+  //! mapping.
+  virtual size_t slot_count() const {
+    return doc_cnt();
+  }
+  virtual diskann_id_t slot_to_id(size_t slot) const {
+    return slot;
+  }
 
  public:
   uint64_t max_node_size() const {
@@ -194,6 +202,7 @@ class DiskAnnEntity {
     return pq_meta_.chunk_num;
   }
 
+  //! Real vectors stored compactly (excludes NULL gaps); not an ID bound.
   uint64_t doc_cnt() const {
     return meta_header_.doc_cnt;
   }

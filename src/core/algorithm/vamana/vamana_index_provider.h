@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <mutex>
 #include <zvec/core/framework/index_provider.h>
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_streamer.h>
@@ -37,8 +38,20 @@ class VamanaIndexProvider : public IndexProvider {
                                                       Iterator(entity_));
   }
 
+  IndexProvider::Iterator::Pointer create_slot_iterator() override {
+    return std::make_unique<Iterator>(entity_, true);
+  }
+
   size_t count() const override {
-    return entity_->doc_cnt();
+    std::call_once(count_once_, [&] {
+      for (uint32_t id = 0; id < entity_->slot_count(); ++id)
+        if (entity_->contains_node(id)) ++vector_count_;
+    });
+    return vector_count_;
+  }
+
+  size_t slot_count() const override {
+    return entity_->slot_count();
   }
 
   size_t dimension() const override {
@@ -69,47 +82,63 @@ class VamanaIndexProvider : public IndexProvider {
  private:
   class Iterator : public IndexProvider::Iterator {
    public:
-    Iterator(const VamanaEntity::Pointer &entity)
-        : entity_(entity), cur_id_(0U) {
+    Iterator(const VamanaEntity::Pointer &entity, bool include_empty = false)
+        : include_empty_(include_empty), entity_(entity), cur_id_(0U) {
       cur_id_ = get_next_valid_id(0);
     }
 
     const void *data() const override {
-      return entity_->get_vector(cur_id_, block_) == 0 ? block_.data()
-                                                       : nullptr;
+      if (!is_valid() || key_ == kInvalidKey) return nullptr;
+      status_ = entity_->get_vector(cur_id_, block_);
+      if (status_ == 0 && !block_.data()) status_ = IndexError_ReadData;
+      return status_ == 0 ? block_.data() : nullptr;
     }
 
     bool is_valid() const override {
-      return cur_id_ < entity_->doc_cnt();
+      return status_ == 0 && cur_id_ < entity_->slot_count();
     }
 
     uint64_t key() const override {
-      return entity_->get_key(cur_id_);
+      return key_;
     }
 
+    int status() const override {
+      return status_;
+    }
+
+    //! Next iterator
     void next() override {
+      if (!is_valid()) return;
       cur_id_ = get_next_valid_id(cur_id_ + 1);
     }
 
     void reset() {
+      status_ = 0;
       cur_id_ = get_next_valid_id(0);
     }
 
    private:
     node_id_t get_next_valid_id(node_id_t start_id) {
-      for (node_id_t i = start_id; i < entity_->doc_cnt(); i++) {
-        if (entity_->get_key(i) != kInvalidNodeId) {
-          return i;
-        }
+      block_.reset();
+      key_ = kInvalidKey;
+      for (node_id_t id = start_id; id < entity_->slot_count(); ++id) {
+        status_ = entity_->read_key(id, &key_);
+        if (status_ != 0) return kInvalidNodeId;
+        if (include_empty_ || key_ != kInvalidKey) return id;
       }
       return kInvalidNodeId;
     }
 
+    bool include_empty_{false};
     const VamanaEntity::Pointer entity_;
     node_id_t cur_id_;
+    key_t key_{kInvalidKey};
+    mutable int status_{0};
     mutable IndexStorage::MemoryBlock block_;
   };
 
+  mutable std::once_flag count_once_;
+  mutable size_t vector_count_{0};
   const IndexMeta &meta_;
   const VamanaEntity::Pointer entity_;
   const std::string owner_class_;

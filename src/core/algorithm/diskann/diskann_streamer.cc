@@ -456,6 +456,21 @@ const void *DiskAnnStreamer::get_vector_by_id(uint32_t /*id*/) const {
   return nullptr;
 }
 
+int DiskAnnStreamer::get_vector_by_key(uint64_t key,
+                                       IndexStorage::MemoryBlock &block) const {
+  if (state_ != STATE_LOADED) {
+    LOG_ERROR("Open DiskAnnStreamer before fetching vectors");
+    return IndexError_NoReady;
+  }
+  // Dense document IDs retain their direct-access path. Nullable fields may
+  // have nonconsecutive keys after a builder compacts its physical vectors.
+  const auto id = key < entity_.doc_cnt() && entity_.get_key(key) == key
+                      ? static_cast<diskann_id_t>(key)
+                      : diskann_indexer_->get_id(key);
+  if (id == kInvalidId) return IndexError_NoExist;
+  return get_vector_by_id(id, block);
+}
+
 int DiskAnnStreamer::get_vector_by_id(const uint32_t id,
                                       IndexStorage::MemoryBlock &block) const {
   if (state_ != STATE_LOADED) {

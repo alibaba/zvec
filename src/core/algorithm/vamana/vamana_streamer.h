@@ -92,15 +92,18 @@ class VamanaStreamer : public IndexStreamer {
   }
 
   const void *get_vector_by_id(uint32_t id) const override {
-    return entity_->get_vector(id);
+    return entity_->contains_node(id) ? entity_->get_vector(id) : nullptr;
   }
 
   int get_vector_by_id(const uint32_t id,
                        IndexStorage::MemoryBlock &block) const override {
-    return entity_->get_vector(id, block);
+    return entity_->contains_node(id) ? entity_->get_vector(id, block)
+                                      : IndexError_NoExist;
   }
 
   int open(IndexStorage::Pointer stg) override;
+
+  int reserve_slots(uint32_t count) override;
 
   int close() override;
 
@@ -135,6 +138,8 @@ class VamanaStreamer : public IndexStreamer {
   }
 
   int setup_entity();
+  void prepare_write();
+
   int update_context(VamanaContext *ctx) const;
   int finalize_build_locked();
   void update_entry_point_to_medoid();
@@ -169,7 +174,7 @@ class VamanaStreamer : public IndexStreamer {
   IndexMetric::MatrixBatchDistance search_batch_distance_{};
 
   Stats stats_{};
-  std::mutex mutex_{};
+  mutable std::mutex mutex_{};
 
   size_t max_index_size_{0UL};
   size_t chunk_size_{VamanaEntity::kDefaultChunkSize};
@@ -185,7 +190,7 @@ class VamanaStreamer : public IndexStreamer {
   size_t min_scan_limit_{VamanaEntity::kDefaultMinScanLimit};
   float max_scan_ratio_{VamanaEntity::kDefaultScanRatio};
 
-  uint32_t magic_{0U};
+  std::atomic<uint32_t> magic_{0U};
   State state_{STATE_INIT};
   bool check_crc_enabled_{false};
   bool get_vector_enabled_{false};
