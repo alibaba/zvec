@@ -26,10 +26,46 @@
 #if ZVEC_TURBO_SSE2
 
 #include <emmintrin.h>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <zvec/ailego/utility/float_helper.h>
 
 namespace zvec::turbo::sse2::internal {
+
+// Load 1..15 bytes, zeroing inactive lanes without reading beyond the input.
+// Overlapping fixed-width loads avoid a temporary buffer and dynamic memcpy.
+inline __m128i load_partial_int8(const int8_t *values, size_t count) {
+  if (count >= 8) {
+    const __m128i low =
+        _mm_loadl_epi64(reinterpret_cast<const __m128i *>(values));
+    const __m128i last =
+        _mm_loadl_epi64(reinterpret_cast<const __m128i *>(values + count - 8));
+    const __m128i high = _mm_srl_epi64(
+        last, _mm_cvtsi32_si128(static_cast<int>((16 - count) * 8)));
+    return _mm_unpacklo_epi64(low, high);
+  }
+  if (count >= 4) {
+    uint32_t low, last;
+    std::memcpy(&low, values, sizeof(low));
+    std::memcpy(&last, values + count - 4, sizeof(last));
+    const __m128i high =
+        _mm_srl_epi64(_mm_cvtsi32_si128(static_cast<int32_t>(last)),
+                      _mm_cvtsi32_si128(static_cast<int>((8 - count) * 8)));
+    return _mm_unpacklo_epi32(_mm_cvtsi32_si128(static_cast<int32_t>(low)),
+                              high);
+  }
+  uint32_t low = 0;
+  if (count >= 2) {
+    uint16_t first;
+    std::memcpy(&first, values, sizeof(first));
+    low = first;
+    if (count == 3) low |= static_cast<uint32_t>(uint8_t(values[2])) << 16;
+  } else if (count == 1) {
+    low = static_cast<uint8_t>(values[0]);
+  }
+  return _mm_cvtsi32_si128(static_cast<int32_t>(low));
+}
 
 inline float horizontal_sum(__m128 value) {
   const __m128 high = _mm_movehl_ps(value, value);

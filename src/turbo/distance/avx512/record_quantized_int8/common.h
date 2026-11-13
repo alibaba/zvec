@@ -26,6 +26,9 @@
 
 namespace zvec::turbo::avx512::internal {
 
+// Use 512-bit masked byte loads for the tail: their 256-bit forms would also
+// require AVX512VL, which is not part of this backend's F+BW runtime gate.
+
 // Raw integer inner product of two int8 code arrays of length `dim`.
 inline float raw_inner_product(const int8_t *a, const int8_t *b, size_t dim) {
   const __m512i ones = _mm512_set1_epi16(1);
@@ -43,11 +46,16 @@ inline float raw_inner_product(const int8_t *a, const int8_t *b, size_t dim) {
         _mm512_add_epi32(accumulator, _mm512_madd_epi16(products, ones));
   }
 
-  int64_t sum = _mm512_reduce_add_epi32(accumulator);
-  for (; i < dim; ++i) {
-    sum += static_cast<int32_t>(a[i]) * static_cast<int32_t>(b[i]);
+  if (i < dim) {
+    const __mmask64 mask = (uint64_t{1} << (dim - i)) - 1;
+    const __m512i lhs = _mm512_cvtepi8_epi16(
+        _mm512_castsi512_si256(_mm512_maskz_loadu_epi8(mask, a + i)));
+    const __m512i rhs = _mm512_cvtepi8_epi16(
+        _mm512_castsi512_si256(_mm512_maskz_loadu_epi8(mask, b + i)));
+    accumulator = _mm512_add_epi32(
+        accumulator, _mm512_madd_epi16(_mm512_mullo_epi16(lhs, rhs), ones));
   }
-  return static_cast<float>(sum);
+  return static_cast<float>(_mm512_reduce_add_epi32(accumulator));
 }
 
 // One-to-many raw inner product kernel: the query block is loaded and
@@ -84,13 +92,22 @@ inline void raw_inner_product_batch_impl(
     }
   }
 
-  for (size_t i = 0; i < dp_batch; ++i) {
-    const int8_t *record = static_cast<const int8_t *>(records[i]);
-    int64_t sum = _mm512_reduce_add_epi32(accs[i]);
-    for (size_t j = d; j < dim; ++j) {
-      sum += static_cast<int32_t>(record[j]) * static_cast<int32_t>(query[j]);
+  if (d < dim) {
+    const __mmask64 mask = (uint64_t{1} << (dim - d)) - 1;
+    const __m512i rhs = _mm512_cvtepi8_epi16(
+        _mm512_castsi512_si256(_mm512_maskz_loadu_epi8(mask, query + d)));
+    for (size_t i = 0; i < dp_batch; ++i) {
+      if (prefetch_ptrs[i]) ailego_prefetch(prefetch_ptrs[i] + d);
+      const __m512i lhs =
+          _mm512_cvtepi8_epi16(_mm512_castsi512_si256(_mm512_maskz_loadu_epi8(
+              mask, static_cast<const int8_t *>(records[i]) + d)));
+      accs[i] = _mm512_add_epi32(
+          accs[i], _mm512_madd_epi16(_mm512_mullo_epi16(lhs, rhs), ones));
     }
-    results[i] = static_cast<float>(sum);
+  }
+
+  for (size_t i = 0; i < dp_batch; ++i) {
+    results[i] = static_cast<float>(_mm512_reduce_add_epi32(accs[i]));
   }
 }
 

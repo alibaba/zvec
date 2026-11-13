@@ -67,6 +67,20 @@ inline void record_distance_rows(const void *const *vectors, const void *query,
       }
     }
   }
+  if constexpr (Bits == 8) {
+    if (d < dim) {
+      const int8x16_t tail_q = internal::load_partial_int8(
+          reinterpret_cast<const int8_t *>(q + d), dim - d);
+      for (size_t r = 0; r < Count; ++r) {
+        sums[r] = internal::accumulate_int8_products(
+            sums[r],
+            internal::load_partial_int8(
+                reinterpret_cast<const int8_t *>(rows[r] + d), dim - d),
+            tail_q);
+      }
+      d = dim;
+    }
+  }
   for (size_t r = 0; r < Count; ++r) totals[r] = vaddvq_s64(sums[r]);
 #endif
   for (; d < dim; ++d) {

@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <random>
 #include <string>
@@ -395,16 +396,14 @@ TEST(Int8Quantizer, VnniDistanceMatchesScalar) {
   check_simd_distance_matches_scalar(turbo::CpuArchType::kAVX512VNNI);
 }
 
-TEST(Int8Quantizer, VnniTailDoesNotReadPastPageBoundary) {
+TEST(Int8Quantizer, NeonDistanceMatchesScalar) {
+  check_simd_distance_matches_scalar(turbo::CpuArchType::kNEON);
+}
+
+class Int8RecordTail : public testing::TestWithParam<turbo::CpuArchType> {};
+
+TEST_P(Int8RecordTail, ExactBuffersAtPageBoundary) {
 #if defined(__unix__) || defined(__APPLE__)
-  const auto simd = turbo::get_distance_kernels(
-      turbo::MetricType::kCosine, turbo::DataType::kInt8,
-      turbo::QuantizeType::kRecord, turbo::CpuArchType::kAVX512VNNI);
-  if (!simd.batch) GTEST_SKIP() << "AVX512-VNNI unavailable";
-  const auto scalar = turbo::get_distance_kernels(
-      turbo::MetricType::kCosine, turbo::DataType::kInt8,
-      turbo::QuantizeType::kRecord, turbo::CpuArchType::kScalar);
-  ASSERT_NE(nullptr, simd.preprocess);
   const long page = sysconf(_SC_PAGESIZE);
   ASSERT_GT(page, 256);
   struct Mapping {
@@ -424,31 +423,93 @@ TEST(Int8Quantizer, VnniTailDoesNotReadPastPageBoundary) {
   ASSERT_EQ(0,
             mprotect(static_cast<char *>(query.data) + page, page, PROT_NONE));
   ASSERT_EQ(0, mprotect(static_cast<char *>(row.data) + page, page, PROT_NONE));
-  for (size_t dim = 1; dim <= 129; ++dim) {
-    SCOPED_TRACE(dim);
-    IndexMeta meta(IndexMeta::DT_FP32, static_cast<uint32_t>(dim));
-    meta.set_metric("Cosine", 0, Params());
-    auto quantizer = IndexFactory::CreateQuantizer("Int8Quantizer");
-    ASSERT_TRUE(quantizer);
-    ASSERT_EQ(0, quantizer->init(meta, Params()));
-    const size_t bytes = quantizer->quantized_datapoint_vector_length();
-    auto *q = static_cast<char *>(query.data) + page - bytes;
-    auto *r = static_cast<char *>(row.data) + page - bytes;
-    std::vector<float> input(dim);
-    for (size_t i = 0; i < dim; ++i) input[i] = float(int(i % 17) - 8);
-    quantizer->quantize_data(input.data(), q);
-    for (float &value : input) value = 3.0f - value;
-    quantizer->quantize_data(input.data(), r);
-    float expected;
-    scalar.dist(r, q, bytes, &expected);
-    simd.preprocess(q, bytes);
-    const void *rows[] = {r, r, r};
-    float actual[4] = {0, 0, 0, 123};
-    simd.batch(rows, q, 3, bytes, actual, nullptr);
-    for (size_t i = 0; i < 3; ++i) expect_simd_near(actual[i], expected);
-    EXPECT_EQ(123, actual[3]);
+  for (auto metric :
+       {turbo::MetricType::kCosine, turbo::MetricType::kSquaredEuclidean,
+        turbo::MetricType::kInnerProduct}) {
+    if (GetParam() == turbo::CpuArchType::kAVX512VNNI &&
+        metric == turbo::MetricType::kInnerProduct)
+      continue;  // Record INT8 inner product has no VNNI backend.
+    const auto simd =
+        turbo::get_distance_kernels(metric, turbo::DataType::kInt8,
+                                    turbo::QuantizeType::kRecord, GetParam());
+    if (!simd.batch && metric == turbo::MetricType::kCosine)
+      GTEST_SKIP() << "SIMD backend unavailable";
+    ASSERT_TRUE(simd.batch);
+    ASSERT_TRUE(simd.dist);
+    const auto scalar = turbo::get_distance_kernels(
+        metric, turbo::DataType::kInt8, turbo::QuantizeType::kRecord,
+        turbo::CpuArchType::kScalar);
+    for (size_t dim = 1; dim <= 129; ++dim) {
+      SCOPED_TRACE(testing::Message()
+                   << "metric=" << static_cast<int>(metric) << ", dim=" << dim);
+      const size_t bytes =
+          dim + kInt8TailSize + (metric == turbo::MetricType::kCosine ? 4 : 0);
+      auto *q = static_cast<char *>(query.data) + page - bytes;
+      auto *r = static_cast<char *>(row.data) + page - bytes;
+      // The quantizer emits [-127, 127], which the VNNI single-pair sign/abs
+      // kernel requires. Also exercise -128 on the widening backends.
+      const int minimum =
+          GetParam() == turbo::CpuArchType::kAVX512VNNI ? -127 : -128;
+      // Exact integer metadata also checks the VNNI query-shift correction.
+      for (int pattern = 0; pattern < 3; ++pattern) {
+        for (auto *record : {q, r}) {
+          std::memset(record, 0, bytes);
+          int32_t sum = 0;
+          float square_sum = 0;
+          for (size_t i = 0; i < dim; ++i) {
+            const int code =
+                pattern == 0 ? minimum
+                : pattern == 1
+                    ? (i % 2 ? 127 : minimum)
+                    : int((i * (record == q ? 37 : 53)) % (128 - minimum)) +
+                          minimum;
+            record[i] = static_cast<char>(code);
+            sum += code;
+            square_sum += code * code;
+          }
+          const float tail[] = {1.0f, 0.0f, float(sum), square_sum};
+          std::memcpy(record + dim, tail, sizeof(tail));
+          std::memcpy(record + dim + sizeof(tail), &sum, sizeof(sum));
+        }
+        float expected = 0, single = 0;
+        scalar.dist(r, q, bytes, &expected);
+        simd.dist(r, q, bytes, &single);
+        EXPECT_FLOAT_EQ(single, expected);
+        if (simd.preprocess) simd.preprocess(q, bytes);
+        const void *rows[33];
+        std::fill_n(rows, 33, r);
+        for (size_t count : {1, 2, 3, 7, 32, 33}) {
+          float actual[34];
+          std::fill_n(actual, 34, 123.0f);
+          simd.batch(rows, q, count, bytes, actual, nullptr);
+          for (size_t i = 0; i < count; ++i)
+            EXPECT_FLOAT_EQ(actual[i], expected);
+          EXPECT_EQ(123, actual[count]);
+        }
+      }
+    }
   }
 #else
   GTEST_SKIP() << "Page-boundary test requires mmap";
 #endif
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    Backends, Int8RecordTail,
+    testing::Values(turbo::CpuArchType::kAVX512VNNI,
+                    turbo::CpuArchType::kAVX512, turbo::CpuArchType::kAVX2,
+                    turbo::CpuArchType::kSSE2, turbo::CpuArchType::kNEON),
+    [](const testing::TestParamInfo<turbo::CpuArchType> &info) {
+      switch (info.param) {
+        case turbo::CpuArchType::kAVX512VNNI:
+          return "Vnni";
+        case turbo::CpuArchType::kAVX512:
+          return "Avx512";
+        case turbo::CpuArchType::kAVX2:
+          return "Avx2";
+        case turbo::CpuArchType::kSSE2:
+          return "Sse2";
+        default:
+          return "Neon";
+      }
+    });
