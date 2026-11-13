@@ -75,8 +75,10 @@ TEST(VectorColumnIndexerTest, ReusedQueryParametersAndFlatFallback) {
                     IndexType::VAMANA, nullptr, engine.get(), defaults.get())
                     .ok());
     EXPECT_EQ(typed->ef_search, core_interface::kDefaultVamanaEfSearch);
-    EXPECT_EQ(typed->prefetch_offset, core_interface::kDefaultPrefetchOffset);
-    EXPECT_EQ(typed->prefetch_lines, core_interface::kDefaultPrefetchLines);
+    EXPECT_EQ(typed->prefetch_offset,
+              core_interface::kDefaultVamanaPrefetchOffset);
+    EXPECT_EQ(typed->prefetch_lines,
+              core_interface::kDefaultVamanaPrefetchLines);
     EXPECT_FLOAT_EQ(typed->radius, 0.0f);
     EXPECT_FALSE(typed->is_linear);
   }

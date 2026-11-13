@@ -3849,9 +3849,10 @@ void test_ivf_pq_params(void) {
   TEST_START();
   zvec_index_params_t *ivf = zvec_index_params_create(ZVEC_INDEX_TYPE_IVF);
   TEST_ASSERT(ivf != NULL);
+  zvec_pq_quantizer_params_t pq = ZVEC_PQ_QUANTIZER_PARAMS_DEFAULT;
+  TEST_ASSERT(zvec_index_params_set_quantizer_pq(ivf, &pq) == ZVEC_OK);
   TEST_ASSERT(zvec_index_params_set_quantize_type(ivf, ZVEC_QUANTIZE_TYPE_PQ) ==
               ZVEC_OK);
-  zvec_pq_quantizer_params_t pq = ZVEC_PQ_QUANTIZER_PARAMS_DEFAULT;
   pq.num_chunk = 4;
   pq.num_bits = 4;
   pq.fast_scan = true;
@@ -3866,10 +3867,32 @@ void test_ivf_pq_params(void) {
   TEST_ASSERT(restored.opq_iter == 3 && restored.opq_pq_iter == 2);
   TEST_ASSERT(zvec_index_params_get_quantize_type(ivf) ==
               ZVEC_QUANTIZE_TYPE_PQ);
-  pq.num_bits = 8;
-  TEST_ASSERT(zvec_index_params_set_quantizer_pq(ivf, &pq) ==
-              ZVEC_ERROR_INVALID_ARGUMENT);
+  const zvec_pq_quantizer_params_t invalid[] = {
+      {4, 8, false, true, 3, 2},
+      {4, 4, false, true, 0, 2},
+      {4, 4, false, true, 3, 0},
+  };
+  const char *reasons[] = {
+      "fast_scan requires num_bits=4; got 8",
+      "opq_iter must be greater than 0; got 0",
+      "opq_pq_iter must be greater than 0; got 0",
+  };
+  for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+    zvec_clear_error();
+    TEST_ASSERT(zvec_index_params_set_quantizer_pq(ivf, &invalid[i]) ==
+                ZVEC_ERROR_INVALID_ARGUMENT);
+    check_last_error(ZVEC_ERROR_INVALID_ARGUMENT, reasons[i]);
+    TEST_ASSERT(zvec_index_params_get_quantizer_pq(ivf, &restored) == ZVEC_OK);
+    TEST_ASSERT(restored.num_chunk == pq.num_chunk);
+    TEST_ASSERT(restored.num_bits == pq.num_bits);
+    TEST_ASSERT(restored.enable_rotate == pq.enable_rotate);
+    TEST_ASSERT(restored.fast_scan == pq.fast_scan);
+    TEST_ASSERT(restored.opq_iter == pq.opq_iter);
+    TEST_ASSERT(restored.opq_pq_iter == pq.opq_pq_iter);
+  }
   TEST_ASSERT(zvec_index_params_get_quantizer_pq(ivf, NULL) ==
+              ZVEC_ERROR_INVALID_ARGUMENT);
+  TEST_ASSERT(zvec_index_params_set_quantizer_pq(ivf, NULL) ==
               ZVEC_ERROR_INVALID_ARGUMENT);
   TEST_ASSERT(zvec_index_params_set_quantizer_pq(NULL, &pq) ==
               ZVEC_ERROR_INVALID_ARGUMENT);

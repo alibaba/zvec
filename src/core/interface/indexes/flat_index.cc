@@ -402,7 +402,7 @@ int FlatIndex::_prepare_for_search(
 
   if (ailego_unlikely(!flat_search_param)) {
     LOG_ERROR("Invalid search param type, expected FlatQueryParam");
-    return core::IndexError_Runtime;
+    return core::IndexError_InvalidArgument;
   }
 
   if (param_.use_external_vector &&

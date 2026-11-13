@@ -61,8 +61,10 @@ TEST(QueryParamsTest, VamanaQueryParams) {
   VamanaQueryParams params;
   EXPECT_EQ(params.type(), IndexType::VAMANA);
   EXPECT_EQ(params.ef_search(), core_interface::kDefaultVamanaEfSearch);
-  EXPECT_EQ(params.prefetch_offset(), core_interface::kDefaultPrefetchOffset);
-  EXPECT_EQ(params.prefetch_lines(), core_interface::kDefaultPrefetchLines);
+  EXPECT_EQ(params.prefetch_offset(),
+            core_interface::kDefaultVamanaPrefetchOffset);
+  EXPECT_EQ(params.prefetch_lines(),
+            core_interface::kDefaultVamanaPrefetchLines);
 
   params.set_prefetch_offset(0);
   params.set_prefetch_lines(0);

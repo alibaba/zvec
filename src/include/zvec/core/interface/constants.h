@@ -18,28 +18,80 @@
 
 namespace zvec::core_interface {
 
-constexpr static uint32_t kDefaultHnswEfConstruction = 500;
-constexpr static uint32_t kDefaultHnswNeighborCnt = 50;
+// Common query parameters.
+inline constexpr float kDefaultQueryRadius = 0.0f;
+inline constexpr bool kDefaultQueryIsLinear = false;
 
-constexpr static uint32_t kDefaultHnswEfSearch = 300;
-constexpr static uint32_t kDefaultPrefetchOffset = 8;
-constexpr static uint32_t kDefaultPrefetchLines = 0;
+// DiskANN: build.
+inline constexpr uint32_t kDefaultDiskAnnMaxDegree = 100;
+inline constexpr uint32_t kDefaultDiskAnnBuildListSize = 50;
+inline constexpr uint32_t kDefaultDiskAnnPqNumChunks = 0;
 
-constexpr static uint32_t kDefaultVamanaMaxDegree = 64;
-constexpr static uint32_t kDefaultVamanaSearchListSize = 100;
-constexpr static float kDefaultVamanaAlpha = 1.2f;
-constexpr static uint32_t kDefaultVamanaEfSearch = 200;
-constexpr static uint32_t kDefaultVamanaMaxOcclusionSize = 750;
-constexpr static bool kDefaultVamanaSaturateGraph = false;
+// DiskANN: query.
+inline constexpr uint32_t kDefaultDiskAnnSearchListSize = 300;
+inline constexpr float kDefaultDiskAnnRefineScaleFactor = 10.0f;
 
-constexpr const uint32_t kDefaultRabitqTotalBits = 7;
-constexpr const uint32_t kDefaultRabitqNumClusters = 16;
+// Flat: query.
+inline constexpr float kDefaultFlatRefineScaleFactor = 10.0f;
 
-constexpr const uint32_t kDefaultIvfRabitqNlist = 1024;
-constexpr const uint32_t kDefaultIvfRabitqNprobe = 10;
+// HNSW: build.
+inline constexpr uint32_t kDefaultHnswNeighborCount = 50;
+inline constexpr uint32_t kDefaultHnswEfConstruction = 500;
 
-constexpr const uint32_t kDefaultDiskAnnMaxDegree = 100;
-constexpr const uint32_t kDefaultDiskAnnListSize = 200;
-constexpr const uint32_t kDefaultDiskAnnPqChunkNum = 16;
+// HNSW: query.
+inline constexpr uint32_t kDefaultHnswEfSearch = 300;
+inline constexpr float kDefaultHnswRefineScaleFactor = 0.0f;
+inline constexpr uint32_t kDefaultHnswPrefetchOffset = 8;
+inline constexpr uint32_t kDefaultHnswPrefetchLines = 0;
+
+// HNSW RaBitQ: build.
+inline constexpr uint32_t kDefaultHnswRabitqNumClusters = 16;
+
+// HNSW RaBitQ: query.
+inline constexpr float kDefaultHnswRabitqRefineScaleFactor = 0.0f;
+
+// IVF: build.
+inline constexpr uint32_t kDefaultIvfNumLists = 1024;
+inline constexpr uint32_t kDefaultIvfNumIterations = 10;
+inline constexpr bool kDefaultIvfUseSoar = false;
+
+// IVF: query.
+inline constexpr uint32_t kDefaultIvfNumProbes = 10;
+inline constexpr float kDefaultIvfRefineScaleFactor = 10.0f;
+
+// IVF RaBitQ: build.
+inline constexpr uint32_t kDefaultIvfRabitqNumLists = 1024;
+
+// IVF RaBitQ: query.
+inline constexpr uint32_t kDefaultIvfRabitqNumProbes = 10;
+inline constexpr float kDefaultIvfRabitqRefineScaleFactor = 10.0f;
+
+// Vamana: build.
+inline constexpr uint32_t kDefaultVamanaMaxDegree = 64;
+inline constexpr uint32_t kDefaultVamanaBuildListSize = 100;
+inline constexpr float kDefaultVamanaAlpha = 1.2f;
+inline constexpr uint32_t kDefaultVamanaMaxOcclusionSize = 750;
+inline constexpr bool kDefaultVamanaSaturateGraph = false;
+inline constexpr bool kDefaultVamanaTwoPassBuild = true;
+
+// Vamana: query.
+inline constexpr uint32_t kDefaultVamanaEfSearch = 200;
+inline constexpr float kDefaultVamanaRefineScaleFactor = 0.0f;
+inline constexpr uint32_t kDefaultVamanaPrefetchOffset = 8;
+inline constexpr uint32_t kDefaultVamanaPrefetchLines = 0;
+
+// Quantization parameters.
+inline constexpr bool kDefaultQuantizerEnableRotate = false;
+
+// PQ / OPQ.
+inline constexpr uint32_t kDefaultPqNumChunks = 8;
+inline constexpr uint32_t kDefaultPqNumBits = 8;
+inline constexpr bool kDefaultPqFastScan = false;
+inline constexpr uint32_t kDefaultOpqNumIterations = 5;
+inline constexpr uint32_t kDefaultOpqPqNumIterations = 4;
+
+// RaBitQ.
+inline constexpr uint32_t kDefaultRabitqTotalBits = 7;
+inline constexpr uint32_t kDefaultRabitqSampleCount = 0;
 
 }  // namespace zvec::core_interface

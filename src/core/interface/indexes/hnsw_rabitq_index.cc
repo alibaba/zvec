@@ -98,7 +98,7 @@ int HNSWRabitqIndex::_prepare_for_search(
 
   if (ailego_unlikely(!hnsw_search_param)) {
     LOG_ERROR("Invalid search param type, expected HNSWRabitqQueryParam");
-    return core::IndexError_Runtime;
+    return core::IndexError_InvalidArgument;
   }
 
   if (0 >= hnsw_search_param->ef_search ||
@@ -114,7 +114,7 @@ int HNSWRabitqIndex::_prepare_for_search(
   context->set_topk(hnsw_search_param->topk);
   context->set_fetch_vector(hnsw_search_param->fetch_vector);
   if (hnsw_search_param->filter && hnsw_search_param->filter->is_valid()) {
-    context->set_filter(std::move(*hnsw_search_param->filter));
+    context->set_filter(*hnsw_search_param->filter);
   } else {
     context->reset_filter();
   }

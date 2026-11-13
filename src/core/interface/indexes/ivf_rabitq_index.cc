@@ -333,7 +333,7 @@ int IVFRabitqIndex::_prepare_for_search(
   context->set_topk(search_param->topk);
   context->set_fetch_vector(false);
   if (search_param->filter) {
-    context->set_filter(std::move(*search_param->filter));
+    context->set_filter(*search_param->filter);
   }
   if (search_param->radius > 0.0f) {
     context->set_threshold(search_param->radius);

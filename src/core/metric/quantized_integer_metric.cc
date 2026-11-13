@@ -149,6 +149,15 @@ class QuantizedIntegerMetric : public IndexMetric {
     }
   }
 
+  void denormalize(float *score) const override {
+    if (origin_metric_type_ == MetricType::kInnerProduct) {
+      *score = -(*score);
+    } else if (origin_metric_type_ == MetricType::kNormalizedCosine ||
+               origin_metric_type_ == MetricType::kCosine) {
+      *score -= 1.0f;
+    }
+  }
+
   //! Retrieve if it supports normalization
   bool support_normalize() const override {
     return origin_metric_type_ == MetricType::kInnerProduct ||

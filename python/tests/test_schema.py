@@ -49,7 +49,7 @@ class TestFieldSchema:
         assert field_1.name == "float"
         assert field_1.data_type == DataType.FLOAT
         assert field_1.nullable is True
-        assert field_1.index_param.enable_range_optimization is False
+        assert field_1.index_param.enable_range_optimization is True
 
         field_2 = FieldSchema(
             name="str",
@@ -157,7 +157,7 @@ class TestCollectionSchema:
         assert field.data_type == DataType.INT64
         assert not field.nullable
         assert field.index_param.type == IndexType.INVERT
-        assert not field.index_param.enable_range_optimization
+        assert field.index_param.enable_range_optimization is True
 
         vector = collection_schema.vector("vector")
         assert vector is not None

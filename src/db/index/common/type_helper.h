@@ -459,6 +459,8 @@ struct MetricTypeCodeBook {
         return "L2";
       case MetricType::COSINE:
         return "COSINE";
+      case MetricType::MIPSL2:
+        return "MIPSL2";
       default:
         return "UNDEFINED";
     }
