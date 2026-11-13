@@ -14,6 +14,7 @@
 
 #include "segment.h"
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -152,6 +153,11 @@ class SegmentImpl : public Segment,
                  const std::optional<std::vector<std::string>> &output_fields =
                      std::nullopt,
                  bool include_vector = true) override;
+
+  DocPtrList fetch_batch(
+      const std::vector<uint64_t> &doc_ids,
+      const std::optional<std::vector<std::string>> &output_fields,
+      bool include_vector) override;
 
   CombinedVectorColumnIndexer::Ptr get_combined_vector_indexer(
       const std::string &field_name) const override;
@@ -338,6 +344,20 @@ class SegmentImpl : public Segment,
 
   bool validate(const std::vector<std::string> &columns) const;
 
+  std::vector<std::string> fetch_columns(
+      const std::optional<std::vector<std::string>> &output_fields) const;
+
+  struct FetchProjection {
+    std::vector<std::string> columns;
+    std::shared_ptr<arrow::Schema> schema;
+    uint64_t generation{0};
+  };
+  bool build_fetch_projection(
+      const std::optional<std::vector<std::string>> &output_fields,
+      FetchProjection &projection) const;
+  std::shared_ptr<const FetchProjection> default_fetch_projection() const;
+  void invalidate_fetch_projection();
+
   Status reopen_invert_indexer(bool read_only = false);
 
   // FTS helpers
@@ -360,6 +380,10 @@ class SegmentImpl : public Segment,
   TablePtr fetch_normal(const std::vector<std::string> &columns,
                         const std::shared_ptr<arrow::Schema> &result_schema,
                         const std::vector<int> &segment_doc_ids) const;
+  TablePtr fetch_shared_block(
+      const std::vector<std::string> &columns,
+      const std::shared_ptr<arrow::Schema> &result_schema,
+      const std::vector<int> &segment_doc_ids) const;
 
   // For performance tuning
   TablePtr fetch_perf(const std::vector<std::string> &columns,
@@ -407,6 +431,8 @@ class SegmentImpl : public Segment,
   std::string path_;
   std::string seg_path_;
   CollectionSchema::Ptr collection_schema_;
+  mutable std::shared_ptr<const FetchProjection> default_fetch_projection_;
+  std::atomic<uint64_t> fetch_projection_generation_{0};
   SegmentMeta::Ptr segment_meta_;
   VersionManager::Ptr version_manager_;
   SegmentOptions options_;
@@ -1076,6 +1102,88 @@ Status SegmentImpl::Delete(uint64_t g_doc_id) {
 }
 
 
+std::vector<std::string> SegmentImpl::fetch_columns(
+    const std::optional<std::vector<std::string>> &output_fields) const {
+  std::vector<std::string> forward_columns;
+  forward_columns.push_back(GLOBAL_DOC_ID);
+  forward_columns.push_back(USER_ID);
+  if (!output_fields.has_value()) {
+    // No output_fields specified: return all forward fields
+    for (const auto &field : collection_schema_->forward_fields()) {
+      forward_columns.push_back(field->name());
+    }
+  } else {
+    // output_fields specified: only return requested fields that exist
+    const auto &requested = *output_fields;
+    std::unordered_set<std::string> requested_set(requested.begin(),
+                                                  requested.end());
+    for (const auto &field : collection_schema_->forward_fields()) {
+      if (requested_set.count(field->name())) {
+        forward_columns.push_back(field->name());
+      }
+    }
+  }
+
+  return forward_columns;
+}
+
+bool SegmentImpl::build_fetch_projection(
+    const std::optional<std::vector<std::string>> &output_fields,
+    FetchProjection &projection) const {
+  projection.columns = fetch_columns(output_fields);
+  const auto &forward_columns = projection.columns;
+
+  // Build result schema
+  std::vector<std::shared_ptr<arrow::Field>> fields;
+  for (size_t i = 0; i < forward_columns.size(); ++i) {
+    const auto &col = forward_columns[i];
+    if (col == GLOBAL_DOC_ID) {
+      fields.push_back(arrow::field(GLOBAL_DOC_ID, arrow::uint64()));
+    } else if (col == USER_ID) {
+      fields.push_back(arrow::field(USER_ID, arrow::utf8()));
+    } else {
+      auto *field = collection_schema_->get_field(col);
+      std::shared_ptr<arrow::Field> arrow_field;
+      auto status = ConvertFieldSchemaToArrowField(field, &arrow_field);
+      if (!status.ok()) {
+        LOG_ERROR("Convert field schema failed: %s",
+                  field->to_string().c_str());
+        return false;
+      }
+      fields.push_back(std::move(arrow_field));
+    }
+  }
+  projection.schema = std::make_shared<arrow::Schema>(fields);
+
+  return true;
+}
+
+std::shared_ptr<const SegmentImpl::FetchProjection>
+SegmentImpl::default_fetch_projection() const {
+  const auto generation =
+      fetch_projection_generation_.load(std::memory_order_acquire);
+  auto cached = std::atomic_load_explicit(&default_fetch_projection_,
+                                          std::memory_order_acquire);
+  if (cached && cached->generation == generation) return cached;
+  auto built = std::make_shared<FetchProjection>();
+  if (!build_fetch_projection(std::nullopt, *built)) return nullptr;
+  built->generation = generation;
+  std::shared_ptr<const FetchProjection> result = std::move(built);
+  if (generation ==
+      fetch_projection_generation_.load(std::memory_order_acquire)) {
+    std::atomic_store_explicit(&default_fetch_projection_, result,
+                               std::memory_order_release);
+  }
+  return result;
+}
+
+void SegmentImpl::invalidate_fetch_projection() {
+  fetch_projection_generation_.fetch_add(1, std::memory_order_acq_rel);
+  std::atomic_store_explicit(&default_fetch_projection_,
+                             std::shared_ptr<const FetchProjection>{},
+                             std::memory_order_release);
+}
+
 Doc::Ptr SegmentImpl::fetch(
     uint64_t g_doc_id,
     const std::optional<std::vector<std::string>> &output_fields,
@@ -1102,47 +1210,20 @@ Doc::Ptr SegmentImpl::fetch(
     return nullptr;
   }
 
-  std::vector<std::string> forward_columns;
-  forward_columns.push_back(GLOBAL_DOC_ID);
-  forward_columns.push_back(USER_ID);
+  FetchProjection local_projection;
+  std::shared_ptr<const FetchProjection> cached_projection;
+  const FetchProjection *projection;
   if (!output_fields.has_value()) {
-    // No output_fields specified: return all forward fields
-    for (const auto &field : collection_schema_->forward_fields()) {
-      forward_columns.push_back(field->name());
-    }
+    cached_projection = default_fetch_projection();
+    if (!cached_projection) return nullptr;
+    projection = cached_projection.get();
   } else {
-    // output_fields specified: only return requested fields that exist
-    const auto &requested = *output_fields;
-    std::unordered_set<std::string> requested_set(requested.begin(),
-                                                  requested.end());
-    for (const auto &field : collection_schema_->forward_fields()) {
-      if (requested_set.count(field->name())) {
-        forward_columns.push_back(field->name());
-      }
-    }
+    if (!build_fetch_projection(output_fields, local_projection))
+      return nullptr;
+    projection = &local_projection;
   }
-
-  // Build result schema
-  std::vector<std::shared_ptr<arrow::Field>> fields;
-  for (size_t i = 0; i < forward_columns.size(); ++i) {
-    const auto &col = forward_columns[i];
-    if (col == GLOBAL_DOC_ID) {
-      fields.push_back(arrow::field(GLOBAL_DOC_ID, arrow::uint64()));
-    } else if (col == USER_ID) {
-      fields.push_back(arrow::field(USER_ID, arrow::utf8()));
-    } else {
-      auto *field = collection_schema_->get_field(col);
-      std::shared_ptr<arrow::Field> arrow_field;
-      auto status = ConvertFieldSchemaToArrowField(field, &arrow_field);
-      if (!status.ok()) {
-        LOG_ERROR("Convert field schema failed: %s",
-                  field->to_string().c_str());
-        return nullptr;
-      }
-      fields.push_back(std::move(arrow_field));
-    }
-  }
-  auto result_schema = std::make_shared<arrow::Schema>(fields);
+  const auto &forward_columns = projection->columns;
+  const auto &result_schema = projection->schema;
 
   // fetch forward columns
   auto exec_batch = fetch_exec_unsafe(forward_columns, segment_doc_id);
@@ -1397,6 +1478,90 @@ Doc::Ptr SegmentImpl::fetch(
   }
 
   return doc;
+}
+
+DocPtrList SegmentImpl::fetch_batch(
+    const std::vector<uint64_t> &doc_ids,
+    const std::optional<std::vector<std::string>> &output_fields,
+    bool include_vector) {
+  if (include_vector || doc_ids.size() < 2) {
+    return Segment::fetch_batch(doc_ids, output_fields, include_vector);
+  }
+  std::shared_lock<std::shared_mutex> lock(seg_mtx_);
+  auto fallback = [&]() {
+    lock.unlock();
+    return Segment::fetch_batch(doc_ids, output_fields, include_vector);
+  };
+  const auto columns = fetch_columns(output_fields);
+  // Separate column files retain the existing reconstruction and error
+  // semantics. Shared row layouts can use a single batched table read.
+  auto shared_layout = [&](const BlockMeta &block) {
+    size_t present = 0;
+    for (const auto &column : columns) {
+      present += block.contain_column(column);
+    }
+    return present == 0 || present == columns.size();
+  };
+  for (const auto &block : get_persist_block_metas(BlockType::SCALAR)) {
+    if (!shared_layout(block)) return fallback();
+  }
+  if (segment_meta_->has_writing_forward_block() &&
+      !shared_layout(segment_meta_->writing_forward_block().value())) {
+    return fallback();
+  }
+
+  DocPtrList result(doc_ids.size());
+  std::vector<int> rows;
+  std::vector<size_t> positions;
+  rows.reserve(doc_ids.size());
+  positions.reserve(doc_ids.size());
+  for (size_t pos = 0; pos < doc_ids.size(); ++pos) {
+    auto it = std::lower_bound(doc_ids_.begin(), doc_ids_.end(), doc_ids[pos]);
+    if (it == doc_ids_.end() || *it != doc_ids[pos]) continue;
+    rows.push_back(static_cast<int>(it - doc_ids_.begin()));
+    positions.push_back(pos);
+  }
+  if (rows.empty()) return result;
+  auto table = fetch_unsafe(columns, rows);
+  if (!table || table->num_rows() != static_cast<int64_t>(rows.size()) ||
+      table->num_columns() != static_cast<int>(columns.size()) ||
+      !table->Validate().ok()) {
+    return fallback();
+  }
+  DocPtrList docs(rows.size());
+  for (auto &doc : docs) doc = std::make_shared<Doc>();
+  for (size_t col = 0; col < columns.size(); ++col) {
+    const auto &name = columns[col];
+    if (table->field(col)->name() != name) return fallback();
+    size_t offset = 0;
+    for (const auto &chunk : table->column(col)->chunks()) {
+      if (name == GLOBAL_DOC_ID) {
+        auto ids = std::dynamic_pointer_cast<arrow::UInt64Array>(chunk);
+        if (!ids || ids->null_count() != 0) return fallback();
+        for (int64_t row = 0; row < ids->length(); ++row) {
+          docs[offset + row]->set_doc_id(ids->Value(row));
+        }
+      } else if (name == USER_ID) {
+        auto pks = std::dynamic_pointer_cast<arrow::StringArray>(chunk);
+        if (!pks || pks->null_count() != 0) return fallback();
+        for (int64_t row = 0; row < pks->length(); ++row) {
+          docs[offset + row]->set_pk(std::string(pks->GetView(row)));
+        }
+      } else {
+        auto *field = collection_schema_->get_field(name);
+        if (!field || !ConvertArrowColumnToDocFields(chunk.get(), *field,
+                                                     docs.begin() + offset)
+                           .ok()) {
+          return fallback();
+        }
+      }
+      offset += chunk->length();
+    }
+  }
+  for (size_t row = 0; row < rows.size(); ++row) {
+    result[positions[row]] = std::move(docs[row]);
+  }
+  return result;
 }
 
 CombinedVectorColumnIndexer::Ptr SegmentImpl::get_combined_vector_indexer(
@@ -1843,6 +2008,7 @@ Status SegmentImpl::reload_vector_index(
     const std::unordered_map<std::string, VectorColumnIndexer::Ptr>
         &quant_vector_indexers) {
   collection_schema_ = std::make_shared<CollectionSchema>(schema);
+  invalidate_fetch_projection();
   segment_meta_ = new_segment_meta;
   fresh_persist_block_offset();
 
@@ -2123,6 +2289,7 @@ Status SegmentImpl::reload_scalar_index(
     const CollectionSchema &schema, const SegmentMeta::Ptr &segment_meta,
     const InvertedIndexer::Ptr &scalar_indexer) {
   collection_schema_ = std::make_shared<CollectionSchema>(schema);
+  invalidate_fetch_projection();
   segment_meta_ = segment_meta;
 
   if (invert_indexers_ == scalar_indexer) {
@@ -2461,10 +2628,213 @@ const std::vector<uint64_t> *SegmentImpl::get_fetch_perf_chunk_offsets(
   return &chunk_layout_offsets_[common_layout_id];
 }
 
+TablePtr SegmentImpl::fetch_shared_block(
+    const std::vector<std::string> &columns,
+    const std::shared_ptr<arrow::Schema> &result_schema,
+    const std::vector<int> &segment_doc_ids) const {
+  if (columns.empty() || segment_doc_ids.empty()) return nullptr;
+  size_t row_id_column = columns.size();
+  for (size_t i = 0; i < columns.size(); ++i) {
+    if (std::find(columns.begin(), columns.begin() + i, columns[i]) !=
+        columns.begin() + i) {
+      return nullptr;
+    }
+    if (columns[i] == LOCAL_ROW_ID) row_id_column = i;
+  }
+  const bool has_row_id = row_id_column != columns.size();
+  std::vector<std::string> physical_columns;
+  if (has_row_id) {
+    physical_columns.reserve(columns.size() - 1);
+    for (const auto &column : columns) {
+      if (column != LOCAL_ROW_ID) physical_columns.push_back(column);
+    }
+    if (physical_columns.empty()) return nullptr;
+  }
+  const auto &stored_columns = has_row_id ? physical_columns : columns;
+
+  const auto &blocks = get_persist_block_metas(BlockType::SCALAR);
+  const auto &offsets = get_persist_block_offsets(BlockType::SCALAR);
+  if (blocks.size() != offsets.size() ||
+      blocks.size() != persist_stores_.size()) {
+    return nullptr;
+  }
+  // All selected columns must have the same contiguous block layout. Map
+  // each requested row once, rather than rebuilding a row/column map.
+  int64_t persisted_rows = 0;
+  for (size_t i = 0; i < blocks.size(); ++i) {
+    if (offsets[i] != persisted_rows) return nullptr;
+    for (const auto &column : stored_columns) {
+      if (!blocks[i].contain_column(column)) return nullptr;
+    }
+    persisted_rows += blocks[i].doc_count_;
+  }
+
+  BaseForwardStore::Ptr store;
+  int64_t begin = 0;
+  int64_t end = 0;
+  const int first = segment_doc_ids.front();
+  if (first >= 0 && first < persisted_rows) {
+    auto it = std::upper_bound(offsets.begin(), offsets.end(), first);
+    const size_t index = it - offsets.begin() - 1;
+    begin = offsets[index];
+    end = begin + blocks[index].doc_count_;
+    store = persist_stores_[index];
+  } else if (segment_meta_->has_writing_forward_block() && memory_store_) {
+    const auto &block = segment_meta_->writing_forward_block().value();
+    for (const auto &column : stored_columns) {
+      if (!block.contain_column(column)) return nullptr;
+    }
+    begin = persisted_rows;
+    end = begin + block.doc_count_;
+    store = memory_store_;
+  }
+  if (!store) return nullptr;
+
+  if (std::any_of(segment_doc_ids.begin(), segment_doc_ids.end(),
+                  [&](int row) { return row < begin || row >= end; })) {
+    struct BlockRows {
+      BaseForwardStore::Ptr store;
+      std::vector<int> rows;
+      TablePtr table;
+    };
+    struct OutputRun {
+      BlockRows *group;
+      int64_t offset;
+      int64_t length;
+    };
+    // Allocate bookkeeping only for blocks touched by this request.
+    std::map<size_t, BlockRows> groups;
+    std::vector<OutputRun> runs;
+    runs.reserve(segment_doc_ids.size());
+    for (int row : segment_doc_ids) {
+      if (row < 0) return nullptr;
+      size_t index;
+      int64_t block_begin;
+      BaseForwardStore::Ptr selected;
+      if (row < persisted_rows) {
+        auto it = std::upper_bound(offsets.begin(), offsets.end(), row);
+        index = it - offsets.begin() - 1;
+        block_begin = offsets[index];
+        selected = persist_stores_[index];
+      } else {
+        if (!segment_meta_->has_writing_forward_block() || !memory_store_) {
+          return nullptr;
+        }
+        const auto &block = segment_meta_->writing_forward_block().value();
+        if (row >= persisted_rows + block.doc_count_) return nullptr;
+        for (const auto &column : stored_columns) {
+          if (!block.contain_column(column)) return nullptr;
+        }
+        index = blocks.size();
+        block_begin = persisted_rows;
+        selected = memory_store_;
+      }
+      auto &group = groups[index];
+      group.store = std::move(selected);
+      const int64_t offset = group.rows.size();
+      group.rows.push_back(static_cast<int>(row - block_begin));
+      if (!runs.empty() && runs.back().group == &group &&
+          runs.back().offset + runs.back().length == offset) {
+        ++runs.back().length;
+      } else {
+        runs.push_back({&group, offset, 1});
+      }
+    }
+    for (auto &entry : groups) {
+      auto &group = entry.second;
+      if (group.rows.empty()) continue;
+      if (!group.store) return nullptr;
+      group.table = group.store->fetch(stored_columns, group.rows);
+      if (!group.table ||
+          group.table->num_rows() != static_cast<int64_t>(group.rows.size()) ||
+          group.table->num_columns() !=
+              static_cast<int>(stored_columns.size())) {
+        return nullptr;
+      }
+      for (size_t i = 0; i < stored_columns.size(); ++i) {
+        const size_t output = i + (has_row_id && i >= row_id_column);
+        if (group.table->field(i)->name() != stored_columns[i] ||
+            !group.table->column(i)->type()->Equals(
+                result_schema->field(output)->type())) {
+          return nullptr;
+        }
+      }
+    }
+    std::vector<std::shared_ptr<arrow::ChunkedArray>> arrays(columns.size());
+    for (size_t i = 0; i < stored_columns.size(); ++i) {
+      arrow::ArrayVector chunks;
+      chunks.reserve(runs.size());
+      for (const auto &run : runs) {
+        // Store gathers own their buffers. Slices keep that ownership and avoid
+        // the Array -> Scalar -> Array round trip in the general fallback.
+        auto slice = run.group->table->column(i)->Slice(run.offset, run.length);
+        chunks.insert(chunks.end(), slice->chunks().begin(),
+                      slice->chunks().end());
+      }
+      const size_t output = i + (has_row_id && i >= row_id_column);
+      arrays[output] = std::make_shared<arrow::ChunkedArray>(
+          std::move(chunks), result_schema->field(output)->type());
+    }
+    if (has_row_id) {
+      arrow::UInt64Builder builder;
+      if (!builder.Reserve(segment_doc_ids.size()).ok()) return nullptr;
+      for (int row : segment_doc_ids) builder.UnsafeAppend(row);
+      auto ids = builder.Finish();
+      if (!ids.ok()) return nullptr;
+      arrays[row_id_column] = std::make_shared<arrow::ChunkedArray>(*ids);
+    }
+    return arrow::Table::Make(result_schema, std::move(arrays),
+                              segment_doc_ids.size());
+  }
+
+  std::vector<int> rows;
+  rows.reserve(segment_doc_ids.size());
+  for (int row : segment_doc_ids) {
+    if (row < begin || row >= end) return nullptr;
+    rows.push_back(static_cast<int>(row - begin));
+  }
+  auto table = store->fetch(stored_columns, rows);
+  if (!table || table->num_rows() != static_cast<int64_t>(rows.size()) ||
+      table->num_columns() != static_cast<int>(stored_columns.size())) {
+    return nullptr;
+  }
+  std::vector<std::shared_ptr<arrow::ChunkedArray>> arrays;
+  if (has_row_id) arrays.resize(columns.size());
+  for (size_t i = 0; i < stored_columns.size(); ++i) {
+    const size_t output = i + (has_row_id && i >= row_id_column);
+    const auto &array = table->column(i);
+    if (table->field(i)->name() != stored_columns[i] ||
+        array->num_chunks() != 1 || array->length() != table->num_rows() ||
+        !array->type()->Equals(result_schema->field(output)->type())) {
+      return nullptr;
+    }
+    if (has_row_id) arrays[output] = array;
+  }
+  if (has_row_id) {
+    arrow::UInt64Builder builder;
+    auto status = builder.Reserve(segment_doc_ids.size());
+    // The synthetic ID is segment-local, not relative to the selected block.
+    for (int row : segment_doc_ids) {
+      if (!status.ok()) break;
+      status = builder.Append(static_cast<uint64_t>(row));
+    }
+    std::shared_ptr<arrow::Array> ids;
+    if (status.ok()) status = builder.Finish(&ids);
+    if (!status.ok()) return nullptr;
+    arrays[row_id_column] = std::make_shared<arrow::ChunkedArray>(ids);
+    return arrow::Table::Make(result_schema, std::move(arrays), rows.size());
+  }
+  return arrow::Table::Make(result_schema, table->columns(), rows.size());
+}
+
 TablePtr SegmentImpl::fetch_normal(
     const std::vector<std::string> &columns,
     const std::shared_ptr<arrow::Schema> &result_schema,
     const std::vector<int> &segment_doc_ids) const {
+  if (auto table =
+          fetch_shared_block(columns, result_schema, segment_doc_ids)) {
+    return table;
+  }
   // Store scalars per column: column_index -> (output_row, scalar)
   std::vector<std::vector<std::pair<int, std::shared_ptr<arrow::Scalar>>>>
       column_results(columns.size());
@@ -2562,6 +2932,61 @@ TablePtr SegmentImpl::fetch_normal(
       continue;
     }
 
+    // A complete block already has the requested row order. Reuse its owned
+    // arrays instead of converting them to scalars and rebuilding them.
+    if (block_request_map.size() == 1 &&
+        block_table->num_rows() ==
+            static_cast<int64_t>(segment_doc_ids.size()) &&
+        block_table->num_columns() == static_cast<int>(fetch_columns.size())) {
+      const auto &rows = col_to_rows.begin()->second;
+      bool complete = rows.size() == segment_doc_ids.size();
+      for (size_t row = 0; complete && row < rows.size(); ++row) {
+        complete = rows[row].first == static_cast<int>(row);
+      }
+      for (const auto &entry : col_to_rows) {
+        complete = complete && entry.second == rows;
+      }
+      const auto local_row_id_count =
+          std::count(columns.begin(), columns.end(), LOCAL_ROW_ID);
+      complete = complete && local_row_id_count <= 1 &&
+                 fetch_columns.size() + local_row_id_count == columns.size();
+      std::vector<std::shared_ptr<arrow::ChunkedArray>> arrays(columns.size());
+      for (size_t col = 0; complete && col < columns.size(); ++col) {
+        if (columns[col] == LOCAL_ROW_ID) continue;
+        const auto it = std::lower_bound(fetch_columns.begin(),
+                                         fetch_columns.end(), columns[col]);
+        complete = it != fetch_columns.end() && *it == columns[col];
+        if (!complete) break;
+        const auto &array = block_table->column(it - fetch_columns.begin());
+        complete = array->num_chunks() == 1 &&
+                   array->length() == block_table->num_rows() &&
+                   array->type()->Equals(result_schema->field(col)->type());
+        arrays[col] = array;
+      }
+      if (complete) {
+        if (local_row_id_count == 1) {
+          arrow::UInt64Builder builder;
+          auto status = builder.Reserve(segment_doc_ids.size());
+          for (int row : segment_doc_ids) {
+            if (!status.ok()) break;
+            status = builder.Append(static_cast<uint64_t>(row));
+          }
+          std::shared_ptr<arrow::Array> array;
+          if (status.ok()) status = builder.Finish(&array);
+          if (!status.ok()) {
+            LOG_ERROR("Build row IDs failed: %s", status.ToString().c_str());
+            return nullptr;
+          }
+          const auto pos =
+              std::find(columns.begin(), columns.end(), LOCAL_ROW_ID);
+          arrays[pos - columns.begin()] =
+              std::make_shared<arrow::ChunkedArray>(std::move(array));
+        }
+        return arrow::Table::Make(result_schema, std::move(arrays),
+                                  segment_doc_ids.size());
+      }
+    }
+
     // Fill results
     for (size_t i = 0; i < fetch_columns.size(); ++i) {
       const std::string &col = fetch_columns[i];
@@ -2607,13 +3032,12 @@ TablePtr SegmentImpl::fetch_normal(
     std::sort(result_vec.begin(), result_vec.end());
 
     std::vector<std::shared_ptr<arrow::Scalar>> ordered_scalars;
+    auto it = result_vec.begin();
     for (int i = 0; i < static_cast<int>(segment_doc_ids.size()); ++i) {
-      auto it = std::find_if(
-          result_vec.begin(), result_vec.end(),
-          [i](const std::pair<int, std::shared_ptr<arrow::Scalar>> &p) {
-            return p.first == i;
-          });
-      if (it != result_vec.end()) {
+      while (it != result_vec.end() && it->first < i) {
+        ++it;
+      }
+      if (it != result_vec.end() && it->first == i) {
         ordered_scalars.push_back(it->second);
       } else {
         auto field = result_schema->GetFieldByName(col);
@@ -3298,6 +3722,7 @@ Status SegmentImpl::add_column(FieldSchema::Ptr column_schema,
   // collection_schema append new field
   auto s = collection_schema_->add_field(column_schema);
   CHECK_RETURN_STATUS(s);
+  invalidate_fetch_projection();
 
   fresh_persist_block_offset();
 
@@ -3528,6 +3953,7 @@ Status SegmentImpl::alter_column(const std::string &column_name,
   auto alter_status =
       collection_schema_->alter_field(column_name, new_column_schema);
   CHECK_RETURN_STATUS(alter_status);
+  invalidate_fetch_projection();
 
   fresh_persist_block_offset();
 
@@ -3627,6 +4053,7 @@ Status SegmentImpl::drop_column(const std::string &column_name) {
   // collection_schema append new field
   auto alter_status = collection_schema_->drop_field(column_name);
   CHECK_RETURN_STATUS(alter_status);
+  invalidate_fetch_projection();
 
   fresh_persist_block_offset();
 
@@ -4960,6 +5387,7 @@ Status SegmentImpl::reload_fts_index(const CollectionSchema &schema,
                                      const SegmentMeta::Ptr &segment_meta,
                                      const FtsIndexer::Ptr &new_fts_indexer) {
   collection_schema_ = std::make_shared<CollectionSchema>(schema);
+  invalidate_fetch_projection();
   segment_meta_ = segment_meta;
 
   if (fts_indexer_) {

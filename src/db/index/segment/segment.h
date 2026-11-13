@@ -225,6 +225,20 @@ class Segment {
   virtual void remove_writing_forward_block() = 0;
 
   virtual Status destroy() = 0;
+
+  // Results correspond to input global IDs, including duplicates and missing
+  // rows. Implementations may retain the single-row path for other layouts.
+  virtual DocPtrList fetch_batch(const std::vector<uint64_t> &doc_ids,
+                                 const std::optional<std::vector<std::string>>
+                                     &output_fields = std::nullopt,
+                                 bool include_vector = true) {
+    DocPtrList docs;
+    docs.reserve(doc_ids.size());
+    for (auto id : doc_ids) {
+      docs.push_back(fetch(id, output_fields, include_vector));
+    }
+    return docs;
+  }
 };
 
 }  // namespace zvec
