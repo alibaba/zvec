@@ -58,9 +58,9 @@ class BitSliceIndexTest : public testing::Test {
               const std::vector<std::optional<T>> &values,
               const std::vector<T> &bounds) {
     for (T bound : bounds) {
-      for (CompareOp op : {CompareOp::EQ, CompareOp::NE, CompareOp::LT,
-                           CompareOp::LE, CompareOp::GT, CompareOp::GE}) {
-        auto result = index->search(EncodeValue(bound), op);
+      for (CompareOp op :
+           {CompareOp::LT, CompareOp::LE, CompareOp::GT, CompareOp::GE}) {
+        auto result = index->search_filter(EncodeValue(bound), op);
         ASSERT_NE(result, nullptr);
         size_t expected_count = 0;
         for (size_t id = 0; id < values.size(); ++id) {
@@ -258,7 +258,18 @@ TEST_F(BitSliceIndexTest, OutOfOrderAndIdempotentReplay) {
   ASSERT_NE(owner, nullptr);
   auto index = (*owner)["value"];
   ASSERT_TRUE(index->insert(2, EncodeValue(int32_t{7})).ok());
-  Verify<int32_t>(index, {}, {0, 7});
+  // Term recall enumerates only postings; BSI filters may include holes.
+  EXPECT_EQ(index->search(EncodeValue(int32_t{7}), CompareOp::EQ)->count(), 1u);
+  auto filter = index->search_filter(
+      EncodeValue(std::numeric_limits<int32_t>::min()), CompareOp::GE);
+  ASSERT_NE(filter, nullptr);
+  EXPECT_TRUE(filter->contains(1));
+  EXPECT_TRUE(filter->contains(2));
+  auto recall = index->search(EncodeValue(std::numeric_limits<int32_t>::min()),
+                              CompareOp::GE);
+  ASSERT_NE(recall, nullptr);
+  EXPECT_FALSE(recall->contains(1));
+  EXPECT_TRUE(recall->contains(2));
   ASSERT_TRUE(index->insert_null(0).ok());
   ASSERT_TRUE(owner->flush().ok());
   index.reset();
@@ -288,8 +299,21 @@ TEST_F(BitSliceIndexTest, ReplayRepairsSlicesWhenTermAlreadyExists) {
   ASSERT_NE(index, nullptr);
   const auto value = EncodeValue(uint32_t{7});
   ASSERT_TRUE(index->insert(0, value).ok());
+  std::string persisted;
+  auto *slice_cf = context.get_cf("value" + INVERT_SUFFIX_BSI);
+  EXPECT_TRUE(context.db_
+                  ->Get(context.read_opts_, slice_cf, std::string(1, char{31}),
+                        &persisted)
+                  .IsNotFound());
+  EXPECT_EQ(
+      index->search_filter(EncodeValue(uint32_t{0}), CompareOp::GT)->count(),
+      1u);
   ASSERT_TRUE(index->flush_special_values().ok());
   ASSERT_TRUE(context.flush().ok());
+  EXPECT_TRUE(context.db_
+                  ->Get(context.read_opts_, slice_cf, std::string(1, char{31}),
+                        &persisted)
+                  .ok());
   // Model a surviving term CF and a lost BSI CF before WAL replay.
   auto *slices = context.get_cf("value" + INVERT_SUFFIX_BSI);
   for (uint32_t bit = 0; bit < 32; ++bit) {
@@ -298,14 +322,20 @@ TEST_F(BitSliceIndexTest, ReplayRepairsSlicesWhenTermAlreadyExists) {
                              std::string(1, static_cast<char>(bit)))
                     .ok());
   }
+  // Reopen the column to discard its in-memory state, as crash recovery does.
+  index.reset();
+  index = InvertedColumnIndexer::CreateAndOpen("replay", field, context);
+  ASSERT_NE(index, nullptr);
   EXPECT_EQ(index->search(value, CompareOp::EQ)->count(), 1u);
-  EXPECT_EQ(index->search(EncodeValue(uint32_t{0}), CompareOp::GT)->count(),
-            0u);
+  EXPECT_EQ(
+      index->search_filter(EncodeValue(uint32_t{0}), CompareOp::GT)->count(),
+      0u);
   ASSERT_TRUE(index->insert(0, value).ok());
   Verify<uint32_t>(index, {7}, {0, 6, 7, 8});
 
+  ASSERT_TRUE(index->flush_special_values().ok());
   // The reverse partial-flush order must also be repaired, even when the
-  // persisted document count already includes this row.
+  // persisted document bound already includes this row.
   auto *terms = context.get_cf("value" + INVERT_SUFFIX_TERMS);
   std::unique_ptr<rocksdb::Iterator> iter(
       context.db_->NewIterator(context.read_opts_, terms));
@@ -352,7 +382,7 @@ TEST_F(BitSliceIndexTest, SegmentDocIdsAcrossBitmapContainers) {
 #endif
 }
 
-TEST_F(BitSliceIndexTest, ConcurrentTermQueriesRespectCompletedPrefix) {
+TEST_F(BitSliceIndexTest, ConcurrentTermQueriesKeepSparsePostings) {
   auto owner = Open(DataType::INT32);
   ASSERT_NE(owner, nullptr);
   auto index = (*owner)["value"];
@@ -360,6 +390,7 @@ TEST_F(BitSliceIndexTest, ConcurrentTermQueriesRespectCompletedPrefix) {
   for (uint32_t id = 1; id < 1000; id += 2) {
     ASSERT_TRUE(index->insert(id, value).ok());
   }
+  EXPECT_EQ(index->search(value, CompareOp::EQ)->count(), 500u);
   std::atomic<bool> done{false};
   std::atomic<bool> valid{true};
   std::thread writer([&]() {
@@ -377,8 +408,11 @@ TEST_F(BitSliceIndexTest, ConcurrentTermQueriesRespectCompletedPrefix) {
       }
       std::vector<uint32_t> ids;
       result->extract_ids(&ids);
-      for (size_t i = 0; i < ids.size(); ++i) {
-        if (ids[i] != i) valid = false;
+      if (ids.size() < 500 || ids.size() > 1000 || !result->contains(999)) {
+        valid = false;
+      }
+      for (auto id : ids) {
+        if (id >= 1000) valid = false;
       }
     }
   } while (!done);
@@ -408,7 +442,7 @@ TEST_F(BitSliceIndexTest, ConcurrentQueriesSeeWholeValues) {
     done = true;
   });
   do {
-    auto result = index->search(EncodeValue(uint64_t{0}), CompareOp::GT);
+    auto result = index->search_filter(EncodeValue(uint64_t{0}), CompareOp::GT);
     if (!result) {
       valid = false;
       break;
@@ -421,8 +455,9 @@ TEST_F(BitSliceIndexTest, ConcurrentQueriesSeeWholeValues) {
   } while (!done);
   writer.join();
   EXPECT_TRUE(valid);
-  EXPECT_EQ(index->search(EncodeValue(uint64_t{0}), CompareOp::GT)->count(),
-            133u);
+  EXPECT_EQ(
+      index->search_filter(EncodeValue(uint64_t{0}), CompareOp::GT)->count(),
+      133u);
 }
 
 }  // namespace

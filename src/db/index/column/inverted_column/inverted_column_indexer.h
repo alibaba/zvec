@@ -90,6 +90,15 @@ class InvertedColumnIndexer {
   virtual InvertedSearchResult::Ptr search(const std::string &value,
                                            CompareOp op) const;
 
+  // Candidate membership only: uninserted docIDs may be present. Use search()
+  // when enumerating IDs, including brute-force vector candidate generation.
+  InvertedSearchResult::Ptr search_filter(const std::string &value,
+                                          CompareOp op) const;
+
+  bool has_range_statistics() const {
+    return sealed_ && doc_range_stat_ != nullptr;
+  }
+
 
   /*!
    * \brief Search for documents matching multiple values
@@ -242,13 +251,11 @@ class InvertedColumnIndexer {
 
   Status open();
 
-  Status insert_bsi(uint32_t id, const std::string *value);
+  void update_bsi(uint32_t id, const std::string &term);
+  Status flush_bsi();
   Status restore_bsi_state();
-  void record_bsi_id(uint32_t id);
   Result<roaring_bitmap_t *> get_bitmap_bsi(const std::string &term,
                                             CompareOp op) const;
-  // The caller holds bsi_mutex_ while accessing the published prefix.
-  roaring_bitmap_t *get_bsi_non_null() const;
 
   inline std::string encode(const std::string &term) const {
     return InvertedIndexCodec::Encode(term, field_.element_data_type());
@@ -444,11 +451,23 @@ class InvertedColumnIndexer {
   rocksdb::ColumnFamilyHandle *cf_cdf_{nullptr};
   rocksdb::ColumnFamilyHandle *cf_bsi_{nullptr};
 
-  // A contiguous prefix makes complement queries safe during out-of-order
-  // construction. Pending IDs are reconstructed from terms after reopening.
-  mutable std::shared_mutex bsi_mutex_;
-  uint64_t bsi_doc_count_{0};
-  std::set<uint32_t> bsi_pending_ids_;
+  struct BitmapDeleter {
+    void operator()(roaring_bitmap_t *bitmap) const {
+      roaring_bitmap_free(bitmap);
+    }
+  };
+  using BitmapPtr = std::unique_ptr<roaring_bitmap_t, BitmapDeleter>;
+
+  struct BsiState {
+    // Frozen views must be destroyed before their backing buffers.
+    std::vector<std::string> buffers;
+    std::vector<BitmapPtr> slices;
+    mutable std::shared_mutex mutex;
+    // Upper bound, not a completed prefix: holes are allowed in filters.
+    uint64_t doc_id_limit{0};
+    bool dirty{false};
+  };
+  std::unique_ptr<BsiState> bsi_;
 
 
   bool read_only_{false};

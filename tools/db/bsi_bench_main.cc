@@ -187,7 +187,8 @@ void Scalar() {
   const std::string term(reinterpret_cast<const char *>(&FLAGS_bound),
                          sizeof(FLAGS_bound));
   start = Clock::now();
-  auto result = index->search(term, CompareOp::GT);
+  // Isolate filter construction here; pure scalar recall continues to use term.
+  auto result = index->search_filter(term, CompareOp::GT);
   Check(result != nullptr, "Scalar search failed");
   Event("first_query", Seconds(start));
   uint64_t expected = 0;
@@ -202,7 +203,7 @@ void Scalar() {
             << ",\"matches\":" << expected << "}" << std::endl;
   if (!build)
     Benchmark([&](size_t) {
-      auto found = index->search(term, CompareOp::GT);
+      auto found = index->search_filter(term, CompareOp::GT);
       Check(found && found->count() == expected, "Scalar query failed");
       return found->count();
     });

@@ -124,12 +124,6 @@ Status InvertedColumnIndexer::open() {
     return Status::InternalError();
   }
 
-  if (cf_bsi_) {
-    if (auto status = restore_bsi_state(); !status.ok()) {
-      return status;
-    }
-  }
-
   // Get indexer state
   s = ctx_.db_->Get(ctx_.read_opts_, key_sealed(), &value);
   if (s.ok()) {
@@ -140,6 +134,12 @@ Status InvertedColumnIndexer::open() {
   } else {
     LOG_ERROR("Failed to retrieve indexer state from %s", id().c_str());
     return Status::InternalError();
+  }
+
+  if (cf_bsi_) {
+    if (auto status = restore_bsi_state(); !status.ok()) {
+      return status;
+    }
   }
 
   LOG_INFO("Opened %s", id().c_str());

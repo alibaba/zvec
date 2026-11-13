@@ -1,0 +1,44 @@
+BSI 最简性能验证版本
+
+已实现
+- 单结果 C API 递推，按低位到高位计算 GT/GE，LT/LE 通过有界取反得到。
+  跳过初始空集/全集上的恒等运算；结果直接转移所有权，无返回前深拷贝。
+- writing 切片常驻可修改内存，以 shared_mutex 协调写入和查询。
+- insert 保留原有 term 写入；成功后更新 BSI。NULL 保留原有 bitmap。
+- flush 写出完整切片快照和 docID 上界，普通 open 直接加载后继续写入。
+  WAL replay 必须重复更新切片，即使 term 已经存在。
+- sealed/open 只读切片常驻为 portable frozen 视图，同时持有序列化 buffer。
+  sealed 查询不获取 BSI 锁，不创建 RocksDB snapshot，不读取 RocksDB。
+- search 保持 term 召回；search_filter 的范围条件启用 BSI。
+  BSI 允许未插入 docID 的空洞，仅用于实际候选点的 membership 判断。
+- 向量查询先用单个范围条件的 CDF 估算选择路径，不通过结果 bitmap count 决策。
+  小结果走 term 枚举 ID；大结果或无统计走向量过滤。FTS 保留原有流程。
+- benchmark 的 scalar_query 测量过滤 bitmap 构造，明确不是纯标量召回性能。
+
+性能对比条件
+- 复用 issue #868 场景：1000 万随机 INT32，dataTime > 536870911。
+- 固定 seed=868，准确命中 7,498,740；混合检索使用同一份 62 维合成向量图。
+- 191 固定 CPU 0-7，1/8 并发，各三轮 5 秒；每轮校验全部标量命中或 256 个 ANN 结果。
+- TERM_RANGE 与最简 BSI 使用同一个新二进制，排除编译参数差异。
+- BSI 为全量常驻，初始化加载发生在计时前。报告不外推到冷启动或非驻留模式。
+
+待补齐（本版不承诺）
+1. 非驻留读取、按需加载、缓存预算/淘汰、统一内存统计。当前所有 BSI 字段的
+   切片都在打开时加载，纯 term 召回打开同一索引也有这部分内存成本。
+2. writing 的在线统计；复合 AND/OR、等值/IN、相关字段的命中量估算。
+   当前未知估算默认普通向量过滤，不能把未知或估计零当成空结果返回。
+3. 比较算法、term 扫描、正排扫描的统一成本模型；当前仍沿用已有正排优化规则。
+4. flush 频率、全量切片重复 Put 的写放大/compaction、打开耗时和峰值内存基准。
+   后续可评估脏切片或增量持久化；本版没有 docID 分段。
+5. 完整进程崩溃/磁盘失败注入、跨 CF 部分 flush、版本提交与 WAL 清理边界。
+   当前覆盖列级部分持久化后的幂等重放、普通 flush/reopen/checkpoint，
+   以及 flush 后继续写入再进程退出的基础 WAL 恢复；尚未覆盖完整失败矩阵。
+   RocksDB WriteBatch 成功不是持久化完成；必须沿用全部 CF flush 后提交的流程。
+6. insert 在后续 FTS/向量失败时的共享行回滚与 docID 复用问题，以及并发 seal、
+   drop、索引切换和查询的生命周期压力测试。seal/open 完成后才发布只读状态。
+7. 错误处理与 OOM 的完整保证。CRoaring 原地 add 的内存分配失败语义仍沿用库行为。
+8. 已有 term 路径自身的边界问题（如空 sealed 索引的补集范围），本版不通过 BSI
+   的专用前缀裁剪修复。BSI 的空输入与 NULL 语义单独验证。
+9. float、格式兼容/迁移及用户级缓存配置；当前只覆盖四种 32/64 位整数类型。
+
+本版不引入 segment 级事务发布协议，也不要求 EQ/IN 等原有 term 查询遵守 BSI 前缀。

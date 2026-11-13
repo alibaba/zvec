@@ -23,8 +23,8 @@ namespace zvec {
 
 
 Status InvertedColumnIndexer::insert(uint32_t id, const std::string &value) {
-  if (cf_bsi_) {
-    return insert_bsi(id, &value);
+  if (bsi_ && value.size() != field_.element_data_size()) {
+    return Status::InvalidArgument("Invalid BSI value size");
   }
   if (read_only_) {
     return Status::PermissionDenied();
@@ -63,6 +63,7 @@ Status InvertedColumnIndexer::insert(uint32_t id, const std::string &value) {
     if (!s.ok()) {
       return Status::InternalError();
     }
+    if (bsi_) update_bsi(id, encoded_value);
     if (cf_reversed_terms_) {
       s = ctx_.db_->Merge(ctx_.write_opts_, cf_reversed_terms_,
                           encode_reversed(value), encoded_id);
@@ -196,22 +197,28 @@ Status InvertedColumnIndexer::insert(uint32_t id,
 
 
 Status InvertedColumnIndexer::insert_null(uint32_t id) {
-  if (cf_bsi_) {
-    return insert_bsi(id, nullptr);
-  }
   if (read_only_) {
     return Status::PermissionDenied();
   }
+  std::unique_lock<std::shared_mutex> lock;
+  if (bsi_) lock = std::unique_lock(bsi_->mutex);
   null_bitmap_.add(id);
   update_max_id(id);
+  if (bsi_) {
+    bsi_->doc_id_limit = std::max(bsi_->doc_id_limit, uint64_t{id} + 1);
+    bsi_->dirty = true;
+  }
   return Status::OK();
 }
 
 
 Status InvertedColumnIndexer::flush_special_values() {
-  std::shared_lock lock(bsi_mutex_);
   if (read_only_) {
     return Status::PermissionDenied();
+  }
+  if (bsi_) {
+    auto status = flush_bsi();
+    if (!status.ok()) return status;
   }
 
   rocksdb::WriteBatch batch;
@@ -229,12 +236,6 @@ Status InvertedColumnIndexer::flush_special_values() {
   auto status = batch.Put(key_max_id(), std::to_string(max_id_));
   if (!status.ok()) {
     return Status::InternalError(status.ToString());
-  }
-  if (cf_bsi_) {
-    status = batch.Put(key_bsi_doc_count(), std::to_string(bsi_doc_count_));
-    if (!status.ok()) {
-      return Status::InternalError(status.ToString());
-    }
   }
   status = ctx_.db_->Write(ctx_.write_opts_, &batch);
   if (!status.ok()) {
@@ -468,11 +469,6 @@ Status InvertedColumnIndexer::seal() {
     return Status::PermissionDenied();
   }
 
-  if (cf_bsi_ && !bsi_pending_ids_.empty()) {
-    return Status::FailedPrecondition(
-        "BSI document IDs must be contiguous before sealing");
-  }
-
   Status status = flush_special_values();
   if (!status.ok()) {
     LOG_ERROR("Failed to flush special values to %s", id().c_str());
@@ -491,6 +487,7 @@ Status InvertedColumnIndexer::seal() {
   if (rs.ok()) {
     sealed_ = true;
     read_only_ = true;
+    if (bsi_) return restore_bsi_state();
     return Status::OK();
   } else {
     LOG_ERROR("Failed to seal %s", id().c_str());

@@ -24,7 +24,8 @@ class InvertSearch {
  public:
   using Ptr = std::shared_ptr<InvertSearch>;
 
-  InvertSearch(zvec::Segment *segment) : segment_(segment) {}
+  InvertSearch(zvec::Segment *segment, bool filter_only = false)
+      : segment_(segment), filter_only_(filter_only) {}
 
   Result<InvertedSearchResult::Ptr> exec_invert_cond_tree(
       const QueryNode *invert_cond);
@@ -37,6 +38,7 @@ class InvertSearch {
 
  private:
   zvec::Segment *segment_;
+  bool filter_only_;
 };
 
 }  // namespace zvec::sqlengine

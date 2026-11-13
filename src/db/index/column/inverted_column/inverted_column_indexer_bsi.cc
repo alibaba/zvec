@@ -13,205 +13,160 @@
 // limitations under the License.
 
 
+#include <algorithm>
 #include <memory>
-#include <ailego/pattern/defer.h>
 #include <rocksdb/write_batch.h>
 #include "inverted_column_indexer.h"
 
 namespace zvec {
 
-void InvertedColumnIndexer::record_bsi_id(uint32_t id) {
-  update_max_id(id);
-  if (id == bsi_doc_count_) {
-    ++bsi_doc_count_;
-    while (!bsi_pending_ids_.empty() &&
-           *bsi_pending_ids_.begin() == bsi_doc_count_) {
-      bsi_pending_ids_.erase(bsi_pending_ids_.begin());
-      ++bsi_doc_count_;
-    }
-  } else if (id > bsi_doc_count_) {
-    bsi_pending_ids_.insert(id);
-  }
-}
-
 Status InvertedColumnIndexer::restore_bsi_state() {
+  auto state = std::make_unique<BsiState>();
+  const size_t width = field_.element_data_size() * 8;
+  state->buffers.resize(width);
+  state->slices.resize(width);
   std::string value;
   auto status = ctx_.db_->Get(ctx_.read_opts_, key_bsi_doc_count(), &value);
   if (status.ok()) {
     try {
       size_t parsed = 0;
-      bsi_doc_count_ = std::stoull(value, &parsed);
-      if (parsed != value.size() || bsi_doc_count_ > (uint64_t{1} << 32)) {
-        return Status::InternalError("Invalid BSI document count");
+      state->doc_id_limit = std::stoull(value, &parsed);
+      if (parsed != value.size() || state->doc_id_limit > (uint64_t{1} << 32)) {
+        return Status::InternalError("Invalid BSI document bound");
       }
     } catch (const std::exception &) {
-      return Status::InternalError("Invalid BSI document count");
+      return Status::InternalError("Invalid BSI document bound");
     }
   } else if (!status.IsNotFound()) {
     return Status::InternalError(status.ToString());
   }
-  if (bsi_doc_count_ > max_id_) {
-    return Status::OK();
-  }
-
-  // Only incomplete prefixes need reconstruction. This also handles an empty
-  // index, whose legacy max_id is zero, and unflushed metadata after replay.
-  std::unique_ptr<rocksdb::Iterator> iter(
-      ctx_.db_->NewIterator(ctx_.read_opts_, cf_terms_));
-  for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
-    roaring_bitmap_t *raw = nullptr;
-    auto decoded = InvertedIndexCodec::Deserialize(iter->value().data(),
-                                                   iter->value().size(), &raw);
-    if (!decoded.ok()) {
-      return decoded;
+  for (size_t bit = 0; bit < width; ++bit) {
+    auto &buffer = state->buffers[bit];
+    status = ctx_.db_->Get(ctx_.read_opts_, cf_bsi_,
+                           std::string(1, static_cast<char>(bit)), &buffer);
+    roaring_bitmap_t *bitmap = nullptr;
+    if (status.ok()) {
+      auto decoded = read_only_ ? InvertedIndexCodec::DeserializeFrozen(
+                                      buffer.data(), buffer.size(), &bitmap)
+                                : InvertedIndexCodec::Deserialize(
+                                      buffer.data(), buffer.size(), &bitmap);
+      if (!decoded.ok()) return decoded;
+    } else if (status.IsNotFound()) {
+      bitmap = roaring_bitmap_create();
+    } else {
+      return Status::InternalError(status.ToString());
     }
-    roaring::Roaring ids(raw);
-    ids.removeRange(0, bsi_doc_count_);
-    for (uint32_t id : ids) {
-      record_bsi_id(id);
-    }
+    if (!bitmap) return Status::InternalError("Cannot allocate BSI slice");
+    state->slices[bit].reset(bitmap);
+    if (!read_only_) std::string{}.swap(buffer);
   }
-  if (!iter->status().ok()) {
-    return Status::InternalError(iter->status().ToString());
-  }
-  roaring::Roaring nulls(null_bitmap_.copy());
-  nulls.removeRange(0, bsi_doc_count_);
-  for (uint32_t id : nulls) {
-    record_bsi_id(id);
-  }
+  bsi_ = std::move(state);
   return Status::OK();
 }
 
-Status InvertedColumnIndexer::insert_bsi(uint32_t id,
-                                         const std::string *value) {
-  std::unique_lock lock(bsi_mutex_);
-  if (read_only_) {
-    return Status::PermissionDenied();
-  }
-  if (value && value->size() != field_.element_data_size()) {
-    return Status::InvalidArgument("Invalid BSI value size");
-  }
-  std::string term = value ? encode(*value) : std::string{};
+void InvertedColumnIndexer::update_bsi(uint32_t id, const std::string &term) {
+  std::unique_lock lock(bsi_->mutex);
   // Like term postings, replay assumes the same value for the same docID.
-  // Always merge both terms and slices: either CF can survive a partial flush
-  // independently of the persisted document count.
-  if (!value) {
-    null_bitmap_.add(id);
-    record_bsi_id(id);
-    return Status::OK();
-  }
-
-  std::string operand(1, char{1});
-  operand.append(reinterpret_cast<const char *>(&id), sizeof(id));
-  rocksdb::WriteBatch batch;
-  auto status = batch.Merge(cf_terms_, term, operand);
-  if (!status.ok()) {
-    return Status::InternalError(status.ToString());
-  }
+  // Always update slices even if a prior term write survived a partial flush.
   // Bit zero is the most significant bit of the order-preserving encoding.
   for (size_t bit = 0; bit < term.size() * 8; ++bit) {
-    auto byte = static_cast<unsigned char>(term[bit / 8]);
+    const auto byte = static_cast<unsigned char>(term[bit / 8]);
     if ((byte & (0x80u >> (bit % 8))) != 0) {
-      status =
-          batch.Merge(cf_bsi_, std::string(1, static_cast<char>(bit)), operand);
-      if (!status.ok()) {
-        return Status::InternalError(status.ToString());
-      }
+      roaring_bitmap_add(bsi_->slices[bit].get(), id);
     }
   }
-  status = ctx_.db_->Write(ctx_.write_opts_, &batch);
-  if (!status.ok()) {
-    return Status::InternalError(status.ToString());
-  }
-  record_bsi_id(id);
-  return Status::OK();
+  bsi_->doc_id_limit = std::max(bsi_->doc_id_limit, uint64_t{id} + 1);
+  bsi_->dirty = true;
 }
 
-roaring_bitmap_t *InvertedColumnIndexer::get_bsi_non_null() const {
-  auto *bitmap = null_bitmap_.copy();
-  roaring_bitmap_remove_range(bitmap, bsi_doc_count_, uint64_t{1} << 32);
-  roaring_bitmap_flip_inplace(bitmap, 0, bsi_doc_count_);
-  return bitmap;
+Status InvertedColumnIndexer::flush_bsi() {
+  std::unique_lock lock(bsi_->mutex);
+  if (!bsi_->dirty) return Status::OK();
+  rocksdb::WriteBatch batch;
+  for (size_t bit = 0; bit < bsi_->slices.size(); ++bit) {
+    const std::string key(1, static_cast<char>(bit));
+    if (roaring_bitmap_is_empty(bsi_->slices[bit].get())) {
+      auto status = batch.Delete(cf_bsi_, key);
+      if (!status.ok()) return Status::InternalError(status.ToString());
+      continue;
+    }
+    std::string value;
+    auto encoded =
+        InvertedIndexCodec::Serialize(bsi_->slices[bit].get(), &value);
+    if (!encoded.ok()) return encoded;
+    auto status = batch.Put(cf_bsi_, key, value);
+    if (!status.ok()) return Status::InternalError(status.ToString());
+  }
+  auto status =
+      batch.Put(key_bsi_doc_count(), std::to_string(bsi_->doc_id_limit));
+  if (!status.ok()) return Status::InternalError(status.ToString());
+  status = ctx_.db_->Write(ctx_.write_opts_, &batch);
+  if (!status.ok()) return Status::InternalError(status.ToString());
+  // The owner still flushes all CFs before the segment commits and clears WAL.
+  bsi_->dirty = false;
+  return Status::OK();
 }
 
 Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_bsi(
     const std::string &term, CompareOp op) const {
-  roaring::Roaring valid;
-  rocksdb::ReadOptions options = ctx_.read_opts_;
-  {
-    std::shared_lock lock(bsi_mutex_);
-    valid = roaring::Roaring(get_bsi_non_null());
-    options.snapshot = ctx_.db_->GetSnapshot();
-  }
-  if (!options.snapshot) {
-    return tl::make_unexpected(Status::InternalError("Cannot snapshot BSI"));
-  }
-  AILEGO_DEFER([&]() { ctx_.db_->ReleaseSnapshot(options.snapshot); });
+  std::shared_lock lock(bsi_->mutex, std::defer_lock);
+  if (!read_only_) lock.lock();
 
-  const size_t width = term.size() * 8;
-  std::vector<std::string> keys;
-  keys.reserve(width);
-  for (size_t bit = 0; bit < width; ++bit) {
-    keys.emplace_back(1, static_cast<char>(bit));
-  }
-  std::vector<Slice> slices(keys.begin(), keys.end());
-  std::vector<PinnableSlice> values(width);
-  std::vector<rocksdb::Status> statuses(width);
-  ctx_.db_->MultiGet(options, cf_bsi_, width, slices.data(), values.data(),
-                     statuses.data(), true);
-
-  roaring::Roaring equal = valid;
-  roaring::Roaring less;
-  for (size_t bit = 0; bit < width; ++bit) {
-    roaring::Roaring empty;
-    // Frozen containers borrow values[bit]. Destroy the view before the
-    // PinnableSlice, and never transfer its arena to Roaring's owning ctor.
-    std::unique_ptr<roaring_bitmap_t, decltype(&roaring_bitmap_free)> ones(
-        nullptr, roaring_bitmap_free);
-    if (statuses[bit].ok()) {
-      roaring_bitmap_t *raw = nullptr;
-      auto status = InvertedIndexCodec::DeserializeFrozen(
-          values[bit].data(), values[bit].size(), &raw);
-      if (!status.ok()) {
-        return tl::make_unexpected(status);
-      }
-      ones.reset(raw);
-    } else if (!statuses[bit].IsNotFound()) {
-      return tl::make_unexpected(
-          Status::InternalError(statuses[bit].ToString()));
-    }
-    const auto *slice = ones ? ones.get() : &empty.roaring;
-    auto byte = static_cast<unsigned char>(term[bit / 8]);
-    if ((byte & (0x80u >> (bit % 8))) != 0) {
-      auto *difference = roaring_bitmap_andnot(&equal.roaring, slice);
-      if (!difference) {
+  // Compute GT or GE from the least significant bit. A null accumulator
+  // represents the initial empty (GT) or universal (GE) set without allocating
+  // it. Leading identity operations need neither a slice read nor a bitmap op.
+  const bool inclusive = op == CompareOp::GE || op == CompareOp::LT;
+  const bool complement = op == CompareOp::LT || op == CompareOp::LE;
+  BitmapPtr result;
+  for (size_t bit = term.size() * 8; bit-- > 0;) {
+    const auto byte = static_cast<unsigned char>(term[bit / 8]);
+    const bool one = (byte & (0x80u >> (bit % 8))) != 0;
+    const auto *slice = bsi_->slices[bit].get();
+    if (!result) {
+      if (one != inclusive) continue;
+      result.reset(roaring_bitmap_copy(slice));
+      if (!result)
         return tl::make_unexpected(
-            Status::InternalError("Cannot subtract BSI slice"));
-      }
-      less |= roaring::Roaring(difference);
-      roaring_bitmap_and_inplace(&equal.roaring, slice);
+            Status::InternalError("Cannot allocate BSI result"));
+    } else if (one) {
+      roaring_bitmap_and_inplace(result.get(), slice);
     } else {
-      roaring_bitmap_andnot_inplace(&equal.roaring, slice);
+      roaring_bitmap_or_inplace(result.get(), slice);
     }
   }
-  switch (op) {
-    case CompareOp::LT:
-      break;
-    case CompareOp::LE:
-      less |= equal;
-      break;
-    case CompareOp::GT:
-      less |= equal;
-      less = valid - less;
-      break;
-    case CompareOp::GE:
-      less = valid - less;
-      break;
-    default:
+  if (!result) {
+    result.reset(roaring_bitmap_create());
+    if (!result)
       return tl::make_unexpected(
-          Status::InvalidArgument("Invalid BSI operator"));
+          Status::InternalError("Cannot allocate BSI result"));
+    if (inclusive)
+      roaring_bitmap_add_range(result.get(), 0, bsi_->doc_id_limit);
   }
-  return roaring_bitmap_copy(&less.roaring);
+  if (complement) {
+    roaring_bitmap_flip_inplace(result.get(), 0, bsi_->doc_id_limit);
+  }
+  // NULL has no value slices, but complements and the unsigned minimum bound
+  // can include it. Keep NULL exclusion independent of hole tolerance.
+  if (null_bitmap_.cardinality() != 0) {
+    BitmapPtr nulls(null_bitmap_.copy());
+    if (!nulls)
+      return tl::make_unexpected(
+          Status::InternalError("Cannot copy NULL bitmap"));
+    roaring_bitmap_andnot_inplace(result.get(), nulls.get());
+  }
+  return result.release();
+}
+
+InvertedSearchResult::Ptr InvertedColumnIndexer::search_filter(
+    const std::string &value, CompareOp op) const {
+  if (!bsi_ || (op != CompareOp::LT && op != CompareOp::LE &&
+                op != CompareOp::GT && op != CompareOp::GE)) {
+    return search(value, op);
+  }
+  if (value.size() != field_.element_data_size()) return nullptr;
+  auto bitmap = get_bitmap_bsi(encode(value), op);
+  if (!bitmap) return nullptr;
+  return std::make_shared<InvertedSearchResult>(bitmap.value());
 }
 
 }  // namespace zvec

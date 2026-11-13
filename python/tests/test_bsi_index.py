@@ -220,3 +220,81 @@ os._exit(0)
         collection = zvec.open(path)
         verify_values(collection, values)
         collection.close()
+
+
+@pytest.mark.parametrize("layout", [LAYOUT.TERM_RANGE, LAYOUT.TERM_BSI])
+def test_vector_filter_estimate_and_term_recall(tmp_path, layout):
+    schema = zvec.CollectionSchema(
+        "bsi_vector_routes",
+        fields=[
+            zvec.FieldSchema(
+                "value",
+                zvec.DataType.INT32,
+                nullable=True,
+                index_param=zvec.InvertIndexParam(layout=layout),
+            )
+        ],
+        vectors=[
+            zvec.VectorSchema(
+                "vec",
+                zvec.DataType.VECTOR_FP32,
+                8,
+                index_param=zvec.FlatIndexParam(metric_type=zvec.MetricType.L2),
+            )
+        ],
+    )
+    path = str(tmp_path / "collection")
+    collection = zvec.create_and_open(path, schema)
+    values = {i: None if i % 17 == 0 else i for i in range(1000)}
+    assert all(
+        status.ok()
+        for status in collection.insert(
+            [
+                zvec.Doc(
+                    id=str(i), fields={"value": value}, vectors={"vec": [float(i)] * 8}
+                )
+                for i, value in values.items()
+            ]
+        )
+    )
+    conditions = [
+        ("value < 0", lambda x: x < 0),
+        ("value < 30", lambda x: x < 30),
+        ("value > 250", lambda x: x > 250),
+        ("value >= 350 AND value <= 600", lambda x: 350 <= x <= 600),
+        ("value = 1 AND value > 1", lambda x: False),
+        ("value IS NULL", lambda x: False),
+    ]
+
+    def verify():
+        for expression, predicate in conditions:
+            expected = [
+                i
+                for i, value in values.items()
+                if (
+                    value is None
+                    if expression == "value IS NULL"
+                    else value is not None and predicate(value)
+                )
+            ]
+            assert matching_ids(collection, expression) == {str(i) for i in expected}
+            docs = collection.query(
+                zvec.Query("vec", vector=[0.0] * 8),
+                filter=expression,
+                topk=21,
+            )
+            assert [doc.id for doc in docs] == [str(i) for i in expected[:21]]
+
+    # Writing has no CDF; sealed small ranges use term IDs and broad ranges
+    # use membership filters. Unknown compound estimates must remain correct.
+    verify()
+    collection.flush()
+    collection.close()
+    collection = zvec.open(path)
+    verify()
+    collection.optimize()
+    verify()
+    collection.close()
+    collection = zvec.open(path, option=zvec.CollectionOption(read_only=True))
+    verify()
+    collection.close()

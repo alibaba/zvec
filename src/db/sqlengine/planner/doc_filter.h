@@ -40,7 +40,10 @@ class DocFilter : public IndexFilter {
         forward_plan_(std::move(forward_plan)),
         forward_filter_expr_(std::move(forward_filter)) {}
 
-  Status compute_filter();
+  Status compute_filter(bool use_bsi = false);
+
+  // Choose the vector path from statistics before materializing a bitmap.
+  Status compute_vector_filter(float brute_force_ratio);
 
   bool is_filtered(uint64_t id) const override;
 
@@ -66,6 +69,7 @@ class DocFilter : public IndexFilter {
   std::unique_ptr<arrow::compute::Expression> forward_filter_expr_;
 
   InvertedSearchResult::Ptr invert_result_;
+  std::optional<bool> vector_bf_by_keys_;
   IndexFilter::Ptr invert_filter_{nullptr};
 
   std::shared_ptr<arrow::ChunkedArray> forward_bitmap_;
