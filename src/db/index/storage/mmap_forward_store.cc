@@ -27,6 +27,19 @@ namespace zvec {
 
 MmapForwardStore::MmapForwardStore(const std::string &uri) : file_path_(uri) {}
 
+arrow::Result<TablePtr> MmapForwardStore::snapshot(
+    const std::vector<std::string> &columns) {
+  if (!table_) return SnapshotParquetColumns(file_, columns);
+  std::vector<int> indices;
+  for (const auto &name : columns) {
+    int index = table_->schema()->GetFieldIndex(name);
+    if (index < 0)
+      return arrow::Status::Invalid("Unknown forward column: ", name);
+    indices.push_back(index);
+  }
+  return table_->SelectColumns(indices);
+}
+
 Status MmapForwardStore::open() {
   std::string uri = file_path_;
   auto status = CreateRandomAccessFileByUri(uri, &file_, &file_path_);

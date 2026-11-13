@@ -54,8 +54,12 @@
 #include <zvec/db/query.h>
 #include <zvec/db/query_params.h>
 #include <zvec/db/schema.h>
+#include "db/index/storage/bufferpool_forward_store.h"
+#include "db/index/storage/memory_forward_store.h"
+#include "db/index/storage/mmap_forward_store.h"
 
-DEFINE_string(cmd, "all", "build | run | lockmicro | all (build then run)");
+DEFINE_string(cmd, "all",
+              "build | run | lockmicro | snapshotmicro | all (build then run)");
 DEFINE_string(index, "./filter_lock_bench_coll", "Collection directory");
 DEFINE_int64(docs, 1000000, "Number of documents to insert");
 DEFINE_int32(dim, 62, "Vector dimension");
@@ -455,6 +459,109 @@ void run_benchmark() {
   }
 }
 
+// Preparation-only costs, separate from candidate evaluation/QPS. The Arrow
+// pool delta measures additional decoded/tail buffers, not shared IPC mappings
+// or all process RSS. Eight simultaneous owners exercise retention and release.
+void snapshot_micro() {
+  if (std::filesystem::exists(FLAGS_index)) {
+    throw std::runtime_error("snapshotmicro requires a new output directory");
+  }
+  std::filesystem::create_directories(FLAGS_index);
+  auto schema = std::make_shared<CollectionSchema>("snapshot_micro");
+  schema->add_field(std::make_shared<FieldSchema>(kTimeField, DataType::INT32));
+  schema->add_field(
+      std::make_shared<FieldSchema>("unprojected", DataType::STRING));
+  auto measure = [&](BaseForwardStore &store, const char *label) {
+    const auto before = arrow::default_memory_pool()->bytes_allocated();
+    std::vector<TablePtr> held;
+    std::vector<double> micros;
+    double first = 0;
+    for (int i = 0; i < FLAGS_queries; ++i) {
+      const auto start = std::chrono::steady_clock::now();
+      auto captured = store.snapshot({kTimeField});
+      double us = std::chrono::duration<double, std::micro>(
+                      std::chrono::steady_clock::now() - start)
+                      .count();
+      if (!captured.ok())
+        throw std::runtime_error(captured.status().ToString());
+      auto table = captured.MoveValueUnsafe();
+      if (table->num_rows() != FLAGS_docs || table->num_columns() != 1 ||
+          table->column(0)
+                  ->GetScalar(FLAGS_docs - 1)
+                  .ValueOrDie()
+                  ->ToString() != std::to_string(FLAGS_docs - 1)) {
+        throw std::runtime_error("snapshotmicro projection validation failed");
+      }
+      if (i == 0) first = us;
+      micros.push_back(us);
+      if (held.size() == 8) held.erase(held.begin());
+      held.push_back(std::move(table));
+    }
+    std::sort(micros.begin(), micros.end());
+    auto retained = arrow::default_memory_pool()->bytes_allocated() - before;
+    double writer_us = 0;
+    if (auto *memory = dynamic_cast<MemForwardStore *>(&store)) {
+      Doc doc;
+      doc.set_pk("appended");
+      doc.set_doc_id(FLAGS_docs);
+      doc.set<int32_t>(kTimeField, static_cast<int32_t>(FLAGS_docs));
+      doc.set<std::string>("unprojected", std::string(128, 'x'));
+      auto start = std::chrono::steady_clock::now();
+      auto status = memory->insert(doc);
+      writer_us = std::chrono::duration<double, std::micro>(
+                      std::chrono::steady_clock::now() - start)
+                      .count();
+      if (!status.ok()) throw std::runtime_error(status.message());
+      for (const auto &table : held) {
+        if (table->num_rows() != FLAGS_docs)
+          throw std::runtime_error("View grew");
+      }
+    }
+    held.clear();
+    auto released = arrow::default_memory_pool()->bytes_allocated() - before;
+    printf(
+        "snapshot storage=%s rows=%lld first_us=%.1f median_us=%.1f "
+        "retained_owners=%d pool_extra_bytes=%lld after_release_bytes=%lld "
+        "append_with_views_us=%.1f\n",
+        label, static_cast<long long>(FLAGS_docs), first,
+        micros[micros.size() / 2], std::min(8, FLAGS_queries),
+        static_cast<long long>(retained), static_cast<long long>(released),
+        writer_us);
+  };
+  for (auto format : {FileFormat::IPC, FileFormat::PARQUET}) {
+    const bool ipc = format == FileFormat::IPC;
+    const auto path = FLAGS_index + (ipc ? "/data.ipc" : "/data.parquet");
+    auto memory = std::make_shared<MemForwardStore>(schema, path, format);
+    auto status = memory->open();
+    if (!status.ok()) throw std::runtime_error(status.message());
+    // Leave a mutable tail in addition to the published batches.
+    for (int64_t i = 0; i < FLAGS_docs; ++i) {
+      Doc doc;
+      doc.set_pk(std::to_string(i));
+      doc.set_doc_id(i);
+      doc.set<int32_t>(kTimeField, static_cast<int32_t>(i));
+      doc.set<std::string>("unprojected", std::string(128, 'x'));
+      status = memory->insert(doc);
+      if (!status.ok()) throw std::runtime_error(status.message());
+    }
+    measure(*memory, ipc ? "memory-ipc" : "memory-parquet");
+    status = memory->close();
+    if (!status.ok()) throw std::runtime_error(status.message());
+    memory.reset();
+    BaseForwardStore::Ptr persisted;
+    if (ipc)
+      persisted = std::make_shared<MmapForwardStore>(path);
+    else
+      persisted = std::make_shared<BufferPoolForwardStore>(path);
+    status = persisted->open();
+    if (!status.ok()) throw std::runtime_error(status.message());
+    // The writer-impact probe appended one row after the original capture.
+    ++FLAGS_docs;
+    measure(*persisted, ipc ? "ipc" : "parquet-owned");
+    --FLAGS_docs;
+  }
+}
+
 // Raw lock throughput: N threads doing shared_lock/unlock on one mutex.
 // Isolates the synchronization cost from all other per-candidate work.
 void lock_micro() {
@@ -502,7 +609,7 @@ void lock_micro() {
 int main(int argc, char **argv) {
   gflags::ParseCommandLineFlags(&argc, &argv, true);
   if ((FLAGS_cmd != "build" && FLAGS_cmd != "run" && FLAGS_cmd != "all" &&
-       FLAGS_cmd != "lockmicro") ||
+       FLAGS_cmd != "lockmicro" && FLAGS_cmd != "snapshotmicro") ||
       FLAGS_docs <= 0 || FLAGS_dim <= 0 || FLAGS_pool <= 0 ||
       FLAGS_queries <= 0 || FLAGS_rounds <= 0 || FLAGS_warmup < 0 ||
       FLAGS_topk <= 0 || FLAGS_topk > FLAGS_docs || FLAGS_micro_secs <= 0 ||
@@ -538,6 +645,9 @@ int main(int argc, char **argv) {
   }
   if (FLAGS_cmd == "lockmicro") {
     lock_micro();
+  }
+  if (FLAGS_cmd == "snapshotmicro") {
+    snapshot_micro();
   }
   return 0;
 }

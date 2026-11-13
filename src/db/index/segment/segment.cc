@@ -282,6 +282,8 @@ class SegmentImpl : public Segment,
 
  private:
   Status close();
+  // Caller holds seg_mtx_ exclusively (insert, dump, close, or public flush).
+  Status flush_unsafe();
   Status cleanup();
   bool ready_for_dump_block();
 
@@ -604,7 +606,7 @@ Status SegmentImpl::close() {
   // Exclusive: flush() below rewrites the stores readers read; destroy()
   // reaches here without the lock.
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
-  flush();
+  flush_unsafe();
   if (invert_indexers_) {
     invert_indexers_.reset();
   }
@@ -927,7 +929,7 @@ Status SegmentImpl::internal_insert(Doc &doc) {
   doc.set_doc_id(g_doc_id);
 
   if (ready_for_dump_block()) {
-    auto s = flush();
+    auto s = flush_unsafe();
     CHECK_RETURN_STATUS(s);
   }
 
@@ -2161,7 +2163,7 @@ Status SegmentImpl::dump() {
   if (sealed_) {
     return Status::NotSupported("Segment has been dumped.");
   }
-  auto s = flush();
+  auto s = flush_unsafe();
   CHECK_RETURN_STATUS(s);
 
   if (invert_indexers_) {
@@ -2185,9 +2187,11 @@ void SegmentImpl::remove_writing_forward_block() {
 }
 
 Status SegmentImpl::flush() {
-  // Requires seg_mtx_ (Insert's buffer-full path, dump, close) or the
-  // collection's exclusive schema lock (CollectionImpl::flush): finish_/
-  // init_memory_components() below do not lock.
+  std::lock_guard<std::shared_mutex> lock(seg_mtx_);
+  return flush_unsafe();
+}
+
+Status SegmentImpl::flush_unsafe() {
   CHECK_SEGMENT_READONLY_RETURN_STATUS;
 
   if (wal_file_ == nullptr || !wal_file_->has_record()) {
@@ -2732,58 +2736,119 @@ TablePtr SegmentImpl::fetch_unsafe(
   return fetch_normal(columns, result_schema, segment_doc_ids);
 }
 
-ForwardReadView::Ptr Segment::make_forward_read_view(
-    const Ptr &segment, const std::vector<std::string> &columns,
-    const QueryReadContext &context) {
-#ifdef ZVEC_FORWARD_FILTER_DISABLE_VIEW
-  // Benchmark baseline: use upstream's per-candidate locked fetch.
-  (void)segment;
-  (void)columns;
-  (void)context;
-  return nullptr;
-#else
+arrow::Result<ForwardReadView::Ptr> Segment::make_forward_read_view(
+    const Ptr &segment, const std::vector<std::string> &columns) try {
   auto impl = std::dynamic_pointer_cast<SegmentImpl>(segment);
-  if (!impl) return nullptr;
-  std::shared_lock<std::shared_mutex> lock(impl->seg_mtx_);
-  if (!context.allows_forward_view(impl.get()) || !impl->options_.read_only_ ||
-      !impl->options_.enable_mmap_ || impl->memory_store_ || columns.empty() ||
-      impl->segment_meta_->writing_forward_block().has_value() ||
-      impl->doc_ids_.empty()) {
-    return nullptr;
+  if (!impl) return arrow::Status::Invalid("Invalid forward-view segment");
+  struct Source {
+    BaseForwardStore::Ptr store;
+    std::vector<std::string> columns;
+    int64_t rows;
+  };
+  std::vector<Source> sources;
+  arrow::FieldVector fields;
+  TablePtr memory;
+  int64_t rows;
+  {
+    // Capture publication state and the mutable tail together. Persisted store
+    // objects and their already-open files are immutable and retained below;
+    // decoding them does not need to hold up writers or reopen retired paths.
+    std::shared_lock<std::shared_mutex> lock(impl->seg_mtx_);
+    rows = static_cast<int64_t>(impl->doc_ids_.size());
+    for (const auto &name : columns) {
+      if (name == GLOBAL_DOC_ID || name == LOCAL_ROW_ID) {
+        fields.push_back(arrow::field(name, arrow::uint64(), false));
+      } else if (name == USER_ID) {
+        fields.push_back(arrow::field(name, arrow::utf8(), false));
+      } else {
+        const auto *field = impl->collection_schema_->get_field(name);
+        if (!field)
+          return arrow::Status::Invalid("Unknown forward column: ", name);
+        std::shared_ptr<arrow::Field> converted;
+        ARROW_RETURN_NOT_OK(ConvertFieldSchemaToArrowField(field, &converted));
+        fields.push_back(std::move(converted));
+      }
+    }
+    const auto &blocks = impl->get_persist_block_metas(BlockType::SCALAR);
+    if (blocks.size() != impl->persist_stores_.size()) {
+      return arrow::Status::Invalid("Forward stores are closed or incomplete");
+    }
+    for (size_t i = 0; i < blocks.size(); ++i) {
+      std::vector<std::string> projection;
+      for (const auto &name : columns) {
+        if (name != LOCAL_ROW_ID && blocks[i].contain_column(name)) {
+          projection.push_back(name);
+        }
+      }
+      if (!projection.empty()) {
+        sources.push_back({impl->persist_stores_[i], std::move(projection),
+                           static_cast<int64_t>(blocks[i].doc_count_)});
+      }
+    }
+    if (impl->memory_store_) {
+      auto projection = columns;
+      projection.erase(
+          std::remove(projection.begin(), projection.end(), LOCAL_ROW_ID),
+          projection.end());
+      ARROW_ASSIGN_OR_RAISE(memory, impl->memory_store_->snapshot(projection));
+    }
   }
-  // Use the same schema/order as the scalar fetch path. The cached arrays are
-  // owning IPC arrays; Parquet cache arrays require pins and remain
-  // unsupported.
-  auto schema_table = impl->fetch_unsafe(columns, std::vector<int>{});
-  if (!schema_table) return nullptr;
+
+  std::vector<arrow::ArrayVector> chunks(columns.size());
+  auto append = [&](const TablePtr &table,
+                    int64_t expected_rows) -> arrow::Status {
+    if (!table || table->num_rows() != expected_rows) {
+      return arrow::Status::Invalid("Incomplete forward-store snapshot");
+    }
+    ARROW_RETURN_NOT_OK(table->Validate());
+    for (size_t i = 0; i < columns.size(); ++i) {
+      const auto array = table->GetColumnByName(columns[i]);
+      if (!array) continue;
+      if (!array->type()->Equals(fields[i]->type())) {
+        return arrow::Status::TypeError("Forward column type mismatch: ",
+                                        columns[i]);
+      }
+      chunks[i].insert(chunks[i].end(), array->chunks().begin(),
+                       array->chunks().end());
+    }
+    return arrow::Status::OK();
+  };
+  for (const auto &source : sources) {
+    ARROW_ASSIGN_OR_RAISE(auto table, source.store->snapshot(source.columns));
+    ARROW_RETURN_NOT_OK(append(table, source.rows));
+  }
+  if (memory) ARROW_RETURN_NOT_OK(append(memory, memory->num_rows()));
+
   std::vector<std::shared_ptr<arrow::ChunkedArray>> arrays;
-  arrays.reserve(columns.size());
   for (size_t i = 0; i < columns.size(); ++i) {
-    const auto found = impl->col_idx_map_.find(columns[i]);
-    if (found == impl->col_idx_map_.end() || found->second < 0 ||
-        static_cast<size_t>(found->second) >=
-            impl->persist_chunk_arrays_.size()) {
-      return nullptr;
+    if (columns[i] == LOCAL_ROW_ID) {
+      arrow::UInt64Builder builder;
+      ARROW_RETURN_NOT_OK(builder.Reserve(rows));
+      for (int64_t row = 0; row < rows; ++row) builder.UnsafeAppend(row);
+      ARROW_ASSIGN_OR_RAISE(auto array, builder.Finish());
+      chunks[i].push_back(std::move(array));
     }
-    const auto &array = impl->persist_chunk_arrays_[found->second];
-    // Independent added-column blocks can inflate meta()->doc_count(). The
-    // global-ID column defines the actual segment-local row space instead.
-    if (!array ||
-        static_cast<uint64_t>(array->length()) != impl->doc_ids_.size() ||
-        !array->type()->Equals(schema_table->field(i)->type())) {
-      return nullptr;
+    auto array = std::make_shared<arrow::ChunkedArray>(std::move(chunks[i]),
+                                                       fields[i]->type());
+    if (array->length() != rows) {
+      return arrow::Status::Invalid("Incomplete forward column: ", columns[i]);
     }
-    arrays.push_back(array);
+    arrays.push_back(std::move(array));
   }
-  auto view = ForwardReadView::make(
-      arrow::Table::Make(schema_table->schema(), std::move(arrays),
-                         static_cast<int64_t>(impl->doc_ids_.size())));
-  if (view) {
-    LOG_DEBUG("Forward filter view: segment[%d] rows[%zu] columns[%zu]",
-              impl->id(), impl->doc_ids_.size(), columns.size());
-  }
+  auto table = arrow::Table::Make(arrow::schema(std::move(fields)),
+                                  std::move(arrays), rows);
+  ARROW_RETURN_NOT_OK(table->Validate());
+  auto view = ForwardReadView::make(std::move(table));
+  if (!view) return arrow::Status::Invalid("Invalid forward read view");
+  // Deliberately outside the capture lock, also allowing deterministic writer
+  // interleavings at this preparation boundary in tests.
+  LOG_DEBUG("Forward filter view: segment[%d] rows[%zu] columns[%zu]",
+            impl->id(), static_cast<size_t>(rows), columns.size());
   return view;
-#endif
+} catch (const std::bad_alloc &) {
+  return arrow::Status::OutOfMemory("Capture forward read view");
+} catch (const std::exception &error) {
+  return arrow::Status::IOError("Capture forward read view: ", error.what());
 }
 
 ExecBatchPtr SegmentImpl::fetch(const std::vector<std::string> &columns,

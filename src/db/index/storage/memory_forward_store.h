@@ -120,6 +120,9 @@ class MemForwardStore : public BaseForwardStore {
 
   TablePtr get_table() override;
 
+  arrow::Result<TablePtr> snapshot(
+      const std::vector<std::string> &columns) override;
+
  private:
   /// Create a RecordBatchBuilder for this store
   /// \return A new RecordBatchBuilder

@@ -160,6 +160,8 @@ def main():
                                        queries=int(queries), failures=int(bad)))
                 (out / "points.json").write_text(json.dumps(points, indent=2))
     run([binaries["locked"], "-cmd=lockmicro", "-threads=1,2,4,8", "-micro_secs=3"], "lockmicro.log")
+    run([binaries["view"], "-cmd=snapshotmicro", f"-index={out / 'snapshot-data'}",
+         f"-docs={args.docs}", "-queries=16"], "snapshotmicro.log")
     if source_state() != state or hashes != {mode: digest(path) for mode, path in binaries.items()}:
         raise RuntimeError("Source/binary provenance changed during measurements")
     summary = []

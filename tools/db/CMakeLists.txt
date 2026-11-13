@@ -13,14 +13,14 @@ cc_binary(
 )
 
 # Compare upstream-style per-candidate locked fetch directly with owning views.
-# The locked control supplies Segment's translation unit directly, replacing
+# The locked control supplies DocFilter's translation unit directly, replacing
 # the archive member. Both targets retain the same Arrow evaluator and query
 # lifecycle plumbing; the control is not a pristine upstream binary.
 foreach(BENCH_TARGET filter_lock_bench_locked filter_view_bench)
   set(CONTROL_SOURCE)
   set(CONTROL_DEFS)
   if(BENCH_TARGET STREQUAL "filter_lock_bench_locked")
-    set(CONTROL_SOURCE ${PROJECT_SOURCE_DIR}/src/db/index/segment/segment.cc)
+    set(CONTROL_SOURCE ${PROJECT_SOURCE_DIR}/src/db/sqlengine/planner/doc_filter.cc)
     set(CONTROL_DEFS ZVEC_FORWARD_FILTER_DISABLE_VIEW)
   endif()
   cc_binary(

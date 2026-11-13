@@ -13,15 +13,17 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <atomic>
+#include <future>
 #include <limits>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 #include <arrow/compute/api.h>
 #include <gtest/gtest.h>
 #include <zvec/db/config.h>
 #include "db/common/file_helper.h"
-#include "db/common/query_read_context.h"
 #include "db/sqlengine/planner/doc_filter.h"
 #include "index/utils/utils.h"
 
@@ -69,10 +71,10 @@ class ForwardFilterReadTest : public testing::TestWithParam<bool> {
     FileHelper::RemoveDirectory(path_);
   }
 
-  QueryReadContext context(bool read_only = true) const {
-    // This fixture substitutes for the collection-owned guarded scope. It never
-    // mutates/closes a segment during view preparation or query execution.
-    return QueryReadContext(read_only, {segment_});
+  ForwardReadView::Ptr capture(const std::vector<std::string> &columns) {
+    auto result = Segment::make_forward_read_view(segment_, columns);
+    EXPECT_TRUE(result.ok()) << result.status().ToString();
+    return result.ok() ? result.MoveValueUnsafe() : nullptr;
   }
 
   void create(int count = 2053) {
@@ -115,15 +117,13 @@ class ForwardFilterReadTest : public testing::TestWithParam<bool> {
   }
 
   std::unique_ptr<sqlengine::DocFilter> filter(
-      const std::vector<std::string> &columns, cp::Expression expression,
-      QueryReadContext ctx = {}) {
+      const std::vector<std::string> &columns, cp::Expression expression) {
     auto info = std::make_shared<sqlengine::QueryInfo>();
     for (const auto &column : columns) {
       info->add_forward_filter_schema_ptr(column, schema_->get_field(column));
     }
     return std::make_unique<sqlengine::DocFilter>(
-        segment_, info, nullptr, std::make_unique<cp::Expression>(expression),
-        ctx);
+        segment_, info, nullptr, std::make_unique<cp::Expression>(expression));
   }
 
   static ForwardReadView::Ptr make_owned_view(TablePtr table) {
@@ -139,39 +139,120 @@ class ForwardFilterReadTest : public testing::TestWithParam<bool> {
   Segment::Ptr segment_;
 };
 
-TEST_P(ForwardFilterReadTest, DefaultDenyMutableSealedAndForeignSegment) {
+TEST_P(ForwardFilterReadTest, MutableSealedAndDirectCapture) {
   create(24);
-  ASSERT_NE(segment_, nullptr);
-  EXPECT_EQ(Segment::make_forward_read_view(segment_, {"i32"}, context()),
-            nullptr);
-  EXPECT_FALSE(QueryReadContext{}.allows_forward_view(segment_.get()));
-  EXPECT_FALSE(context(false).allows_forward_view(segment_.get()));
-  EXPECT_FALSE(context().allows_forward_view(nullptr));
+  ASSERT_NE(capture({"i32"}), nullptr);
   ASSERT_TRUE(segment_->flush().ok());
-  EXPECT_EQ(Segment::make_forward_read_view(segment_, {"i32"}, context()),
-            nullptr);
+  ASSERT_NE(capture({"i32"}), nullptr);
   ASSERT_TRUE(segment_->dump().ok());
-  EXPECT_EQ(Segment::make_forward_read_view(segment_, {"i32"}, context()),
-            nullptr);
+  ASSERT_NE(capture({"i32"}), nullptr);
   segment_->remove_writing_forward_block();
-  EXPECT_EQ(Segment::make_forward_read_view(segment_, {"i32"}, context()),
-            nullptr);
-  const auto foreign_context = context();
+  ASSERT_NE(capture({"i32"}), nullptr);
   reopen_persisted(false);
-  EXPECT_EQ(Segment::make_forward_read_view(segment_, {"i32"}, foreign_context),
-            nullptr);
-  EXPECT_EQ(Segment::make_forward_read_view(segment_, {"i32"}), nullptr);
-  // Optimize can open read-only segments in a writable collection: still
-  // denied.
-  EXPECT_EQ(Segment::make_forward_read_view(segment_, {"i32"}, context(false)),
-            nullptr);
-  EXPECT_EQ(Segment::make_forward_read_view(segment_, {}, context()), nullptr);
-  EXPECT_EQ(Segment::make_forward_read_view(segment_, {"missing"}, context()),
-            nullptr);
-  EXPECT_EQ(Segment::make_forward_read_view(nullptr, {"i32"}, context()),
-            nullptr);
-  EXPECT_EQ(bool(Segment::make_forward_read_view(segment_, {"i32"}, context())),
-            GetParam());
+  ASSERT_NE(capture({"i32"}), nullptr);
+  auto constant = capture({});
+  ASSERT_NE(constant, nullptr);
+  EXPECT_EQ(constant->num_rows(), 24);
+  EXPECT_EQ(constant->read_row(0)->values.size(), 0u);
+  EXPECT_FALSE(Segment::make_forward_read_view(segment_, {"missing"}).ok());
+  EXPECT_FALSE(Segment::make_forward_read_view(nullptr, {"i32"}).ok());
+}
+
+TEST_P(ForwardFilterReadTest, MemoryTailAppendFlushAndRetirement) {
+  options_.max_buffer_size_ = 1024 * 1024;
+  create(97);
+  auto columns = schema_->forward_field_names();
+  auto view = capture(columns);
+  ASSERT_NE(view, nullptr);
+  ASSERT_EQ(view->num_rows(), 97);
+  ASSERT_GT(view->table()->column(0)->num_chunks(), 1);
+  std::vector<std::string> expected;
+  for (int row = 0; row < 97; ++row) {
+    expected.push_back(view->read_row(row)->ToString());
+  }
+  // Seed an unrelated tombstone so the existing live delete filter is active.
+  ASSERT_TRUE(segment_->Delete(uint64_t{10096}).ok());
+  auto candidate = filter({"i32"}, cp::literal(true));
+  auto constant = filter({}, cp::literal(true));
+  ASSERT_TRUE(candidate->compute_filter().ok());
+  ASSERT_TRUE(constant->compute_filter().ok());
+  auto added = TestHelper::CreateDoc(97, *schema_);
+  ASSERT_TRUE(segment_->insert(added).ok());
+  EXPECT_TRUE(candidate->is_filtered(97));
+  EXPECT_TRUE(candidate->is_filtered(UINT64_MAX));
+  EXPECT_TRUE(constant->is_filtered(97));
+  EXPECT_FALSE(candidate->is_filtered(1));
+  ASSERT_TRUE(segment_->Delete(uint64_t{10001}).ok());
+  EXPECT_TRUE(candidate->is_filtered(1));
+  ASSERT_TRUE(segment_->flush().ok());
+  EXPECT_EQ(capture(columns)->num_rows(), 98);
+  for (int row = 0; row < 97; ++row) {
+    EXPECT_EQ(view->read_row(row)->ToString(), expected[row]);
+  }
+  candidate.reset();
+  constant.reset();
+  // Keep only sliced arrays, not the view/table/store wrapper.
+  auto slice = view->table()->Slice(1, 95);
+  view.reset();
+  segment_.reset();
+  auto retained = make_owned_view(slice);
+  ASSERT_NE(retained, nullptr);
+  for (int row = 0; row < 95; ++row) {
+    EXPECT_EQ(retained->read_row(row)->ToString(), expected[row + 1]);
+  }
+}
+
+TEST_P(ForwardFilterReadTest, CaptureRacesAppendAndPublicFlush) {
+  options_.max_buffer_size_ = 1024 * 1024;
+  create(24);
+  std::atomic<bool> start{false};
+  auto writer = std::async(std::launch::async, [&] {
+    while (!start.load()) std::this_thread::yield();
+    for (int i = 24; i < 124; ++i) {
+      auto doc = TestHelper::CreateDoc(i, *schema_);
+      if (!segment_->insert(doc).ok()) return false;
+      if (i % 10 == 0 && !segment_->flush().ok()) return false;
+    }
+    return true;
+  });
+  std::vector<ForwardReadView::Ptr> views;
+  start = true;
+  for (int i = 0; i < 30; ++i) {
+    auto view = capture({GLOBAL_DOC_ID, "text", "items"});
+    ASSERT_NE(view, nullptr);
+    views.push_back(std::move(view));
+  }
+  ASSERT_TRUE(writer.get());
+  segment_.reset();
+  for (const auto &view : views) {
+    for (int64_t row = 0; row < view->num_rows(); ++row) {
+      auto batch = view->read_row(row);
+      ASSERT_NE(batch, nullptr);
+      EXPECT_EQ(batch->values[0].scalar_as<arrow::UInt64Scalar>().value,
+                10000u + row);
+    }
+  }
+}
+
+TEST_P(ForwardFilterReadTest, EmptySegmentAndMutableTail) {
+  options_.max_buffer_size_ = 16 * 1024 * 1024;
+  create(0);
+  auto empty = capture({"i32"});
+  ASSERT_NE(empty, nullptr);
+  EXPECT_EQ(empty->num_rows(), 0);
+  auto candidate = filter({"i32"}, cp::literal(true));
+  ASSERT_TRUE(candidate->compute_filter().ok());
+  auto doc = TestHelper::CreateDoc(1, *schema_);
+  ASSERT_TRUE(segment_->insert(doc).ok());
+  EXPECT_TRUE(candidate->is_filtered(0));
+  auto tail = capture({"i32", "text", "items"});
+  ASSERT_NE(tail, nullptr);
+  EXPECT_EQ(tail->num_rows(), 1);
+  auto expected = tail->read_row(0)->ToString();
+  ASSERT_TRUE(segment_->flush().ok());
+  candidate.reset();
+  segment_.reset();
+  EXPECT_EQ(tail->read_row(0)->ToString(), expected);
 }
 
 TEST_P(ForwardFilterReadTest, ReorderedProjectionBoundariesAndOwnedView) {
@@ -181,8 +262,8 @@ TEST_P(ForwardFilterReadTest, ReorderedProjectionBoundariesAndOwnedView) {
   ASSERT_GT(segment_->meta()->persisted_blocks().size(), 1u);
   auto columns = schema_->forward_field_names();
   std::reverse(columns.begin(), columns.end());
-  auto view = Segment::make_forward_read_view(segment_, columns, context());
-  ASSERT_EQ(bool(view), GetParam());
+  auto view = capture(columns);
+  ASSERT_NE(view, nullptr);
   if (view) {
     EXPECT_EQ(view->num_rows(), 2053);
     EXPECT_TRUE(view->table()->schema()->Equals(
@@ -249,18 +330,25 @@ TEST_P(ForwardFilterReadTest, ArrowPredicateParityAndGlobalIdDeletes) {
                               cp::call("invert", {cp::field_ref("flag")})})};
   for (const auto &expr : expressions) {
     SCOPED_TRACE(expr.ToString());
-    auto locked = filter(columns, expr);
-    auto candidate = filter(columns, expr, context());
-    auto status = locked->compute_filter();
+    auto candidate = filter(columns, expr);
+    auto status = candidate->compute_filter();
     ASSERT_TRUE(status.ok()) << status.message();
-    status = candidate->compute_filter();
-    ASSERT_TRUE(status.ok()) << status.message();
+    auto bound =
+        expr.Bind(*segment_->fetch(columns, std::vector<int>{})->schema());
+    ASSERT_TRUE(bound.ok());
     for (int row = 0; row < 2053; ++row) {
-      EXPECT_EQ(locked->is_filtered(row), candidate->is_filtered(row)) << row;
+      auto batch = segment_->fetch(columns, row);
+      ASSERT_NE(batch, nullptr);
+      auto result = cp::ExecuteScalarExpression(*bound, *batch);
+      ASSERT_TRUE(result.ok());
+      const auto &value = result->scalar_as<arrow::BooleanScalar>();
+      EXPECT_EQ(row == 7 || !value.is_valid || !value.value,
+                candidate->is_filtered(row))
+          << row;
     }
     EXPECT_TRUE(candidate->is_filtered(7));
   }
-  auto negative = filter({"i32"}, expressions[2], context());
+  auto negative = filter({"i32"}, expressions[2]);
   ASSERT_TRUE(negative->compute_filter().ok());
   EXPECT_FALSE(negative->is_filtered(1));
   EXPECT_TRUE(negative->is_filtered(2));
@@ -316,8 +404,8 @@ TEST_P(ForwardFilterReadTest, IndependentColumnChunkBoundaries) {
   ASSERT_TRUE(opened.has_value()) << opened.error().message();
   segment_ = opened.value();
   const std::vector<std::string> columns{"other", "i32", "text"};
-  auto view = Segment::make_forward_read_view(segment_, columns, context());
-  ASSERT_EQ(bool(view), GetParam());
+  auto view = capture(columns);
+  ASSERT_NE(view, nullptr);
   if (view) {
     EXPECT_EQ(view->num_rows(), 2053);
     EXPECT_NE(view->table()->column(0)->num_chunks(),
@@ -345,12 +433,10 @@ TEST_P(ForwardFilterReadTest, IndependentColumnChunkBoundaries) {
 }
 
 TEST_P(ForwardFilterReadTest, ViewOwnsBuffersAfterSegmentClose) {
-  if (!GetParam())
-    GTEST_SKIP() << "Parquet view ownership is not supported yet";
   ASSERT_NO_FATAL_FAILURE(create());
   ASSERT_NO_FATAL_FAILURE(reopen_persisted());
   const auto columns = schema_->forward_field_names();
-  auto view = Segment::make_forward_read_view(segment_, columns, context());
+  auto view = capture(columns);
   ASSERT_NE(view, nullptr);
   // Keep serialized expectations, not scalars/arrays that could accidentally
   // retain the buffers whose ownership this test exercises.
@@ -365,8 +451,14 @@ TEST_P(ForwardFilterReadTest, ViewOwnsBuffersAfterSegmentClose) {
   // SegmentImpl's destructor closes stores and releases their Arrow owners.
   segment_.reset();
   ASSERT_TRUE(weak.expired());
-  for (int row = 0; row < 2053; ++row) {
-    auto batch = view->read_row(row);
+  auto sliced = view->table()->Slice(1, 2051);
+  view.reset();
+  view = make_owned_view(sliced);
+  sliced.reset();
+  // No store, original table, view, or unsliced array remains as a hidden
+  // owner.
+  for (int row = 1; row < 2052; ++row) {
+    auto batch = view->read_row(row - 1);
     ASSERT_NE(batch, nullptr);
     EXPECT_EQ(batch->length, 1);
     ASSERT_EQ(batch->values.size(), expected[row].size());
@@ -430,7 +522,7 @@ TEST_P(ForwardFilterReadTest, ViewLocatesIndependentEmptyAndSlicedChunks) {
   EXPECT_EQ(view->read_row(UINT64_MAX), nullptr);
 
   EXPECT_EQ(make_owned_view(nullptr), nullptr);
-  EXPECT_EQ(make_owned_view(
+  EXPECT_NE(make_owned_view(
                 arrow::Table::Make(arrow::schema({}), arrow::ArrayVector{}, 0)),
             nullptr);
   EXPECT_EQ(make_owned_view(arrow::Table::Make(
@@ -450,10 +542,23 @@ TEST_P(ForwardFilterReadTest, BindFailureAndUnfilteredDeletionRemainUnchanged) {
   create(24);
   ASSERT_TRUE(segment_->Delete(uint64_t{10007}).ok());
   reopen_persisted();
-  auto invalid = filter({"i32"}, cp::field_ref("missing"), context());
+  auto invalid = filter({"i32"}, cp::field_ref("missing"));
   EXPECT_FALSE(invalid->compute_filter().ok());
+  EXPECT_TRUE(invalid->is_filtered(1));
+  auto missing_info = std::make_shared<sqlengine::QueryInfo>();
+  // Simulate analyzed metadata whose column cannot be captured by the segment.
+  missing_info->add_forward_filter_schema_ptr("missing",
+                                              schema_->get_field("i32"));
+  auto missing = std::make_unique<sqlengine::DocFilter>(
+      segment_, missing_info, nullptr,
+      std::make_unique<cp::Expression>(cp::literal(true)));
+  auto status = missing->compute_filter();
+  EXPECT_FALSE(status.ok());
+  EXPECT_NE(status.message().find("Capture forward view failed"),
+            std::string::npos);
+  EXPECT_TRUE(missing->is_filtered(1));
   auto info = std::make_shared<sqlengine::QueryInfo>();
-  sqlengine::DocFilter unfiltered(segment_, info, nullptr, nullptr, context());
+  sqlengine::DocFilter unfiltered(segment_, info, nullptr, nullptr);
   ASSERT_TRUE(unfiltered.compute_filter().ok());
   EXPECT_FALSE(unfiltered.is_filtered(1));
   EXPECT_TRUE(unfiltered.is_filtered(7));

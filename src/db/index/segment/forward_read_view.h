@@ -92,7 +92,7 @@ class ForwardReadView final {
   friend class test::ForwardFilterReadTest;
 
   static Ptr make(std::shared_ptr<arrow::Table> table) {
-    if (!table || table->num_columns() == 0 || !table->Validate().ok()) {
+    if (!table || !table->Validate().ok()) {
       return nullptr;
     }
     std::vector<std::vector<int64_t>> chunk_ends;

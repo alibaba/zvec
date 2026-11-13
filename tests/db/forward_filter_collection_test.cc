@@ -193,7 +193,7 @@ class ForwardFilterCollectionTest : public testing::TestWithParam<bool> {
 };
 
 TEST_P(ForwardFilterCollectionTest,
-       LockedViewVectorFtsBitmapAndInvertedParity) {
+       WritableReadOnlyVectorFtsBitmapAndInvertedParity) {
   ASSERT_NO_FATAL_FAILURE(create());
   ASSERT_TRUE(collection_->optimize().ok());
   auto forward = query();
@@ -201,8 +201,8 @@ TEST_P(ForwardFilterCollectionTest,
   ASSERT_EQ(baseline.size(), 8u);
   EXPECT_EQ(baseline.count("pk_60"), 0u);
   EXPECT_EQ(baseline.count("pk_61"), 0u);
-  EXPECT_GT(probe_->locked.load(), 0);
-  EXPECT_EQ(probe_->views.load(), 0);
+  EXPECT_EQ(probe_->locked.load(), 0);
+  EXPECT_GT(probe_->views.load(), 0);
   auto fts = query();
   fts.topk_ = 96;
   fts.target_.field_name_ = "text";
@@ -214,8 +214,8 @@ TEST_P(ForwardFilterCollectionTest,
   reopen();
   EXPECT_EQ(keys(collection_->query(forward)), baseline);
   EXPECT_GT(probe_->prepared(), 0);
-  EXPECT_EQ(probe_->views.load() > 0, GetParam());
-  EXPECT_EQ(probe_->locked.load() > 0, !GetParam());
+  EXPECT_GT(probe_->views.load(), 0);
+  EXPECT_EQ(probe_->locked.load(), 0);
   int readers = probe_->prepared();
   EXPECT_EQ(keys(collection_->query(query("bitmap > 48"))), baseline);
   std::string inverted = "inverted IN (49";
@@ -265,8 +265,8 @@ TEST_P(ForwardFilterCollectionTest, MultiQueryGroupByAndErrors) {
       EXPECT_GT(item.get<int32_t>("value").value(), 48);
   }
   EXPECT_GT(probe_->prepared(), 0);
-  EXPECT_EQ(probe_->views.load() > 0, GetParam());
-  EXPECT_EQ(probe_->locked.load() > 0, !GetParam());
+  EXPECT_GT(probe_->views.load(), 0);
+  EXPECT_EQ(probe_->locked.load(), 0);
   single.filter_ = "missing > 1";
   EXPECT_FALSE(collection_->query(single).has_value());
   multi.filter = single.filter_;
@@ -295,12 +295,11 @@ TEST_P(ForwardFilterCollectionTest, CloseWaitsForActiveFanout) {
   EXPECT_EQ(keys(pending.get()).size(), 8u);
   EXPECT_TRUE(closed.get().ok());
   EXPECT_GT(probe_->prepared(), 0);
-  EXPECT_EQ(probe_->views.load() > 0, GetParam());
-  EXPECT_EQ(probe_->locked.load() > 0, !GetParam());
+  EXPECT_GT(probe_->views.load(), 0);
+  EXPECT_EQ(probe_->locked.load(), 0);
 }
 
-TEST_P(ForwardFilterCollectionTest,
-       WritableFlushSwitchOptimizeAndDdlStayLocked) {
+TEST_P(ForwardFilterCollectionTest, WritableFlushSwitchOptimizeAndDdlUseViews) {
   ASSERT_NO_FATAL_FAILURE(create());
   EXPECT_EQ(keys(collection_->query(query())).size(), 8u);
   ASSERT_TRUE(collection_->flush().ok());
@@ -313,8 +312,36 @@ TEST_P(ForwardFilterCollectionTest,
                        "value + 1")
           .ok());
   EXPECT_EQ(keys(collection_->query(query())).size(), 8u);
-  EXPECT_GT(probe_->locked.load(), 0);
-  EXPECT_EQ(probe_->views.load(), 0);
+  EXPECT_EQ(probe_->locked.load(), 0);
+  EXPECT_GT(probe_->views.load(), 0);
+}
+
+TEST_P(ForwardFilterCollectionTest, AppendAfterCaptureDoesNotEnterCandidates) {
+  ASSERT_NO_FATAL_FAILURE(create(10000));
+  probe_->block = true;
+  auto pending = std::async(std::launch::async,
+                            [&] { return collection_->query(query()); });
+  EXPECT_TRUE(probe_->wait_entered());
+  // The query retains its collection guard, but no segment capture lock. A
+  // writer can publish a nearer vector while this query's scalar view is fixed.
+  auto writing = std::async(std::launch::async, [&] {
+    auto added = doc(10000);
+    added.set<std::vector<float>>("vec", {60.25f, 1, 2, 3});
+    std::vector<Doc> docs{added};
+    return collection_->insert(docs);
+  });
+  EXPECT_EQ(writing.wait_for(std::chrono::seconds(10)),
+            std::future_status::ready);
+  probe_->release();
+  auto written = writing.get();
+  ASSERT_TRUE(written.has_value());
+  ASSERT_TRUE(written->front().ok());
+  auto before = keys(pending.get());
+  EXPECT_EQ(before.size(), 8u);
+  EXPECT_EQ(before.count("pk_10000"), 0u);
+  auto after = keys(collection_->query(query()));
+  EXPECT_EQ(after.count("pk_10000"), 1u);
+  EXPECT_EQ(probe_->locked.load(), 0);
 }
 
 INSTANTIATE_TEST_SUITE_P(PersistedStores, ForwardFilterCollectionTest,

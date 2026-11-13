@@ -2060,17 +2060,14 @@ Result<DocPtrList> CollectionImpl::query_unsafe(
   }
 
   if (!need_sanitize) {
-    return sql_engine_->execute(
-        schema_, query, segments,
-        QueryReadContext(options_.read_only_, segments));
+    return sql_engine_->execute(schema_, query, segments);
   }
 
   // Sparse needs sanitization: make a mutable copy and sort indices in place.
   SearchQuery sanitized_query = query;
   auto ss = sanitize_sparse_vector(sanitized_query.target_, field_schema);
   CHECK_RETURN_STATUS_EXPECTED(ss);
-  return sql_engine_->execute(schema_, std::move(sanitized_query), segments,
-                              QueryReadContext(options_.read_only_, segments));
+  return sql_engine_->execute(schema_, std::move(sanitized_query), segments);
 }
 
 Result<DocPtrList> CollectionImpl::query_unsafe(const MultiQuery &query) const {
@@ -2125,10 +2122,9 @@ Result<DocPtrList> CollectionImpl::query_unsafe(const MultiQuery &query) const {
     return DocPtrList();
   }
 
-  const QueryReadContext read_context(options_.read_only_, segments);
   auto execute_query = [&](SearchQuery &pending) -> Result<DocPtrList> {
     auto engine = sqlengine::SQLEngine::create(std::make_shared<Profiler>());
-    return engine->execute(schema_, std::move(pending), segments, read_context);
+    return engine->execute(schema_, std::move(pending), segments);
   };
 
   std::vector<Result<DocPtrList>> results(pending_queries.size());
@@ -2190,18 +2186,14 @@ Result<GroupResults> CollectionImpl::group_by_query(
   }
 
   if (!need_sanitize) {
-    return sql_engine_->execute_group_by(
-        schema_, query, segments,
-        QueryReadContext(options_.read_only_, segments));
+    return sql_engine_->execute_group_by(schema_, query, segments);
   }
 
   // Sparse needs sanitization: make a mutable copy and sort indices in place.
   GroupByVectorQuery sanitized_query = query;
   auto ss = sanitize_sparse_vector(sanitized_query.target_, field_schema);
   CHECK_RETURN_STATUS_EXPECTED(ss);
-  return sql_engine_->execute_group_by(
-      schema_, sanitized_query, segments,
-      QueryReadContext(options_.read_only_, segments));
+  return sql_engine_->execute_group_by(schema_, sanitized_query, segments);
 }
 
 Result<DocPtrMap> CollectionImpl::fetch(

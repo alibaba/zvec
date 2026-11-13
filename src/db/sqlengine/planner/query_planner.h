@@ -29,7 +29,7 @@ namespace zvec::sqlengine {
 
 class QueryPlanner {
  public:
-  QueryPlanner(CollectionSchema *schema, QueryReadContext read_context = {});
+  explicit QueryPlanner(CollectionSchema *schema);
 
   Result<PlanInfo::Ptr> make_plan(
       const std::vector<Segment::Ptr> &segments, const std::string &trace_id,
@@ -74,7 +74,6 @@ class QueryPlanner {
 
  private:
   CollectionSchema *schema_{nullptr};
-  QueryReadContext read_context_;
 };
 
 }  // namespace zvec::sqlengine

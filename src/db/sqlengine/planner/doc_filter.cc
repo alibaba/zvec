@@ -22,6 +22,7 @@
 namespace zvec::sqlengine {
 
 Status DocFilter::compute_filter() {
+  forward_prepared_ = false;
   if (invert_cond_) {
     InvertSearch search(segment_.get());
     auto invert_res = search.exec_invert_cond_tree(invert_cond_.get());
@@ -51,22 +52,28 @@ Status DocFilter::compute_filter() {
   if (forward_filter_expr_) {
     // get schema to bind to Expression
     const auto columns = query_info_->get_forward_filter_field_names();
-    forward_view_ =
-        Segment::make_forward_read_view(segment_, columns, read_context_);
-    auto table = forward_view_ ? forward_view_->table()
-                               : segment_->fetch(columns, std::vector<int>{});
-    if (!table) {
-      return Status::InternalError("Fetch forward failed");
+#ifdef ZVEC_FORWARD_FILTER_DISABLE_VIEW
+    // Benchmark-only control; this branch is absent from the production
+    // library.
+    auto table = segment_->fetch(columns, std::vector<int>{});
+    if (!table) return Status::InternalError("Fetch forward failed");
+    LOG_DEBUG("Forward filter locked fetch: segment[%d]", segment_->id());
+#else
+    auto captured = Segment::make_forward_read_view(segment_, columns);
+    if (!captured.ok()) {
+      return Status::InternalError("Capture forward view failed: ",
+                                   captured.status().ToString());
     }
+    forward_view_ = captured.MoveValueUnsafe();
+    const auto &table = forward_view_->table();
+#endif
     auto bind_res = forward_filter_expr_->Bind(*table->schema());
     if (!bind_res.ok()) {
       return Status::InternalError("Bind forward filter expression failed",
                                    bind_res.status().ToString());
     }
     *forward_filter_expr_ = bind_res.MoveValueUnsafe();
-    if (!forward_view_) {
-      LOG_DEBUG("Forward filter locked fetch: segment[%d]", segment_->id());
-    }
+    forward_prepared_ = true;
   }
   return Status::OK();
 }
@@ -77,6 +84,16 @@ bool DocFilter::empty() const {
 }
 
 bool DocFilter::is_filtered(uint64_t id) const {
+  // A growing index may yield rows inserted after preparation. Missing view
+  // coverage must reject them, never turn into a missing-filter match.
+  if (forward_filter_expr_ && !forward_prepared_) return true;
+  if (forward_view_ && id >= static_cast<uint64_t>(forward_view_->num_rows())) {
+    return true;
+  }
+  if (forward_bitmap_ &&
+      id >= static_cast<uint64_t>(forward_bitmap_->length())) {
+    return true;
+  }
   if (delete_filter_ && delete_filter_->is_filtered(id)) {
     return true;
   }
@@ -144,20 +161,22 @@ std::optional<std::vector<uint64_t>> DocFilter::get_bf_by_keys_and_update(
 }
 
 std::optional<bool> DocFilter::is_matched_by_forward_filter(uint64_t id) const {
-  auto exec_batch = forward_view_
-                        ? forward_view_->read_row(id)
-                        : segment_->fetch(
-                              query_info_->get_forward_filter_field_names(), id);
+#ifdef ZVEC_FORWARD_FILTER_DISABLE_VIEW
+  auto exec_batch =
+      segment_->fetch(query_info_->get_forward_filter_field_names(), id);
+#else
+  auto exec_batch = forward_view_->read_row(id);
+#endif
   if (!exec_batch) {
     LOG_ERROR("Fetch forward failed, id[%zu]", (size_t)id);
-    return std::nullopt;
+    return false;
   }
   auto maybe_result = arrow::compute::ExecuteScalarExpression(
       *forward_filter_expr_, *exec_batch);
   if (!maybe_result.ok()) {
     LOG_ERROR("Execute scalar expression failed, id[%zu] err[%s]", (size_t)id,
               maybe_result.status().ToString().c_str());
-    return std::nullopt;
+    return false;
   }
   arrow::Datum datum = maybe_result.MoveValueUnsafe();
   if (datum.is_scalar()) {
@@ -166,7 +185,7 @@ std::optional<bool> DocFilter::is_matched_by_forward_filter(uint64_t id) const {
   }
   LOG_ERROR("Datum is not scalar, id[%zu] type[%s]", (size_t)id,
             datum.type()->ToString().c_str());
-  return std::nullopt;
+  return false;
 }
 
 

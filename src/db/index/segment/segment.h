@@ -25,7 +25,6 @@
 #include <zvec/db/options.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
-#include "db/common/query_read_context.h"
 #include "db/index/column/fts_column/fts_column_indexer.h"
 #include "db/index/column/fts_column/fts_indexer.h"
 #include "db/index/column/inverted_column/inverted_column_indexer.h"
@@ -47,14 +46,14 @@ class Segment {
  public:
   using Ptr = std::shared_ptr<Segment>;
 
-  // Capture an owning column projection while the collection query guard is
-  // held. Initially supports only authorized persisted IPC/mmap data. Returns
-  // nullptr for unsupported storage/state; callers use the original locked fetch.
-  // The view owns its buffers, but does not confer query/index snapshot safety
-  // after the collection guard is released.
-  static ForwardReadView::Ptr make_forward_read_view(
-      const Ptr &segment, const std::vector<std::string> &columns,
-      const QueryReadContext &context = {});
+  // Capture an owning projection and row boundary under segment
+  // synchronization. Supports persisted IPC/Parquet and writable memory,
+  // including direct callers. Capture failures abort preparation; candidate
+  // reads never use live stores. This owns scalar data, not a whole-query/index
+  // or deletion snapshot. Callers still protect index execution against
+  // close/DDL and drain query workers.
+  static arrow::Result<ForwardReadView::Ptr> make_forward_read_view(
+      const Ptr &segment, const std::vector<std::string> &columns);
 
   static Result<Ptr> CreateAndOpen(const std::string &path,
                                    const CollectionSchema &schema,

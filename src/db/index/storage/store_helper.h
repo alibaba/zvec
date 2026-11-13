@@ -38,6 +38,34 @@
 
 namespace zvec {
 
+// Decode a projection through an independent reader over an already-open file.
+// Unlike buffer-pool arrays, these buffers own their decoded storage, including
+// children/dictionaries. Slices remain valid without cache pins or a live
+// store.
+inline arrow::Result<std::shared_ptr<arrow::Table>> SnapshotParquetColumns(
+    const std::shared_ptr<arrow::io::RandomAccessFile> &file,
+    const std::vector<std::string> &columns) {
+  if (!file) return arrow::Status::Invalid("Forward store is not open");
+  ARROW_ASSIGN_OR_RAISE(auto reader, parquet::arrow::OpenFile(
+                                         file, arrow::default_memory_pool()));
+  std::shared_ptr<arrow::Schema> schema;
+  ARROW_RETURN_NOT_OK(reader->GetSchema(&schema));
+  arrow::FieldVector fields;
+  std::vector<std::shared_ptr<arrow::ChunkedArray>> arrays;
+  for (const auto &name : columns) {
+    int index = schema->GetFieldIndex(name);
+    if (index < 0)
+      return arrow::Status::Invalid("Unknown forward column: ", name);
+    std::shared_ptr<arrow::ChunkedArray> array;
+    // ReadColumn uses top-level field indices, also for nested/list fields.
+    ARROW_RETURN_NOT_OK(reader->ReadColumn(index, &array));
+    fields.push_back(schema->field(index));
+    arrays.push_back(std::move(array));
+  }
+  return arrow::Table::Make(arrow::schema(std::move(fields)), std::move(arrays),
+                            reader->parquet_reader()->metadata()->num_rows());
+}
+
 inline FileFormat InferFileFormat(const std::string &file_path) {
   std::string ext =
       ailego::FileHelper::PathFromUtf8(file_path).extension().u8string();

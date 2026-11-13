@@ -61,6 +61,64 @@ Status MemForwardStore::open() {
   return Status::OK();
 }
 
+arrow::Result<TablePtr> MemForwardStore::snapshot(
+    const std::vector<std::string> &columns) {
+  std::shared_lock<std::shared_mutex> lock(cache_mtx_);
+  if (!physic_schema_ || !writer_) {
+    return arrow::Status::Invalid("Memory forward store is not open");
+  }
+  arrow::FieldVector fields;
+  std::vector<int> indices;
+  for (const auto &name : columns) {
+    int index = physic_schema_->GetFieldIndex(name);
+    if (index < 0)
+      return arrow::Status::Invalid("Unknown forward column: ", name);
+    indices.push_back(index);
+    fields.push_back(physic_schema_->field(index));
+  }
+  auto schema = arrow::schema(fields);
+  std::vector<arrow::ArrayVector> chunks(columns.size());
+  for (const auto &batch : batches_) {
+    for (size_t i = 0; i < indices.size(); ++i) {
+      chunks[i].push_back(batch->column(indices[i]));
+    }
+  }
+  // Published batches are immutable. Only the bounded document tail needs
+  // conversion; do not rebuild unrelated (potentially large) vector fields.
+  if (!cache_.empty() && !columns.empty()) {
+    ARROW_ASSIGN_OR_RAISE(
+        auto builder,
+        arrow::RecordBatchBuilder::Make(schema, arrow::default_memory_pool()));
+    for (const auto &doc : cache_) {
+      for (size_t i = 0; i < indices.size(); ++i) {
+        auto *field_builder = builder->GetField(static_cast<int>(i));
+        if (columns[i] == GLOBAL_DOC_ID) {
+          ARROW_RETURN_NOT_OK(static_cast<arrow::UInt64Builder *>(field_builder)
+                                  ->Append(doc.doc_id()));
+        } else if (columns[i] == USER_ID) {
+          ARROW_RETURN_NOT_OK(static_cast<arrow::StringBuilder *>(field_builder)
+                                  ->Append(doc.pk_ref()));
+        } else {
+          ARROW_RETURN_NOT_OK(
+              AppendFieldValueToBuilder(doc, fields[i], field_builder));
+        }
+      }
+    }
+    ARROW_ASSIGN_OR_RAISE(auto tail, builder->Flush());
+    for (size_t i = 0; i < columns.size(); ++i) {
+      chunks[i].push_back(tail->column(static_cast<int>(i)));
+    }
+  }
+  std::vector<std::shared_ptr<arrow::ChunkedArray>> arrays;
+  for (size_t i = 0; i < columns.size(); ++i) {
+    arrays.push_back(std::make_shared<arrow::ChunkedArray>(std::move(chunks[i]),
+                                                           fields[i]->type()));
+  }
+  auto table = arrow::Table::Make(schema, std::move(arrays), num_rows_);
+  ARROW_RETURN_NOT_OK(table->Validate());
+  return table;
+}
+
 RecordBatchBuilderPtr MemForwardStore::create_builder() {
   auto result = arrow::RecordBatchBuilder::Make(physic_schema_,
                                                 arrow::default_memory_pool());

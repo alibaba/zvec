@@ -54,6 +54,14 @@ class BaseForwardStore {
   virtual const std::shared_ptr<arrow::Schema> physic_schema() const = 0;
 
   virtual TablePtr get_table() = 0;
+
+  // Capture immutable, owning columns in physical row order. Returned arrays
+  // (including slices and nested buffers) remain valid after store retirement.
+  // Persisted stores retain opened files, not paths; memory stores synchronize
+  // capture with inserts and materialize only the requested mutable-tail
+  // fields.
+  virtual arrow::Result<TablePtr> snapshot(
+      const std::vector<std::string> &columns) = 0;
 };
 
 }  // namespace zvec

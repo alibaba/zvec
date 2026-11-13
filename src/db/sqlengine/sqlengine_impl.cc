@@ -58,7 +58,7 @@ SQLEngineImpl::SQLEngineImpl(zvec::Profiler::Ptr profiler)
 
 Result<DocPtrList> SQLEngineImpl::execute(
     CollectionSchema::Ptr collection, SearchQuery query,
-    const std::vector<Segment::Ptr> &segments, QueryReadContext read_context) {
+    const std::vector<Segment::Ptr> &segments) {
   if (segments.empty()) {
     return DocPtrList{};
   }
@@ -90,8 +90,7 @@ Result<DocPtrList> SQLEngineImpl::execute(
     }
     query_infos.emplace_back(std::move(query_info.value()));
   }
-  auto reader = search_by_query_info(collection, segments, &query_infos,
-                                     std::move(read_context));
+  auto reader = search_by_query_info(collection, segments, &query_infos);
   if (!reader) {
     return tl::make_unexpected(Status::InternalError(
         "Execute plan failed (query): ", reader.error().c_str()));
@@ -111,7 +110,7 @@ SearchQuery from_group_by(const GroupByVectorQuery &gq) {
 
 Result<GroupResults> SQLEngineImpl::execute_group_by(
     CollectionSchema::Ptr collection, const GroupByVectorQuery &group_by_query,
-    const std::vector<Segment::Ptr> &segments, QueryReadContext read_context) {
+    const std::vector<Segment::Ptr> &segments) {
   if (segments.empty()) {
     return GroupResults{};
   }
@@ -153,8 +152,7 @@ Result<GroupResults> SQLEngineImpl::execute_group_by(
     }
     query_infos.emplace_back(std::move(query_info.value()));
   }
-  auto reader = search_by_query_info(collection, segments, &query_infos,
-                                     std::move(read_context));
+  auto reader = search_by_query_info(collection, segments, &query_infos);
   if (!reader) {
     return tl::make_unexpected(Status::InternalError(
         "Execute plan failed (group_by): ", reader.error().c_str()));
@@ -339,12 +337,11 @@ Result<QueryInfo::Ptr> SQLEngineImpl::build_query_info(
 Result<std::unique_ptr<arrow::RecordBatchReader>>
 SQLEngineImpl::search_by_query_info(
     CollectionSchema::Ptr collection, const std::vector<Segment::Ptr> &segments,
-    std::vector<sqlengine::QueryInfo::Ptr> *query_infos,
-    QueryReadContext read_context) {
+    std::vector<sqlengine::QueryInfo::Ptr> *query_infos) {
   global_init();
 
   ScopedProfilerStage stage_guard(profiler_, "build_query_plan");
-  QueryPlanner planner(collection.get(), std::move(read_context));
+  QueryPlanner planner(collection.get());
   auto plan_info =
       planner.make_plan(segments, profiler_->trace_id(), query_infos);
   if (!plan_info) {
