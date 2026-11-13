@@ -29,6 +29,14 @@ namespace zvec::turbo::avx2::internal {
 
 // Raw integer inner product of two int8 code arrays of length `dim`.
 inline float raw_inner_product(const int8_t *a, const int8_t *b, size_t dim) {
+  // Avoid partial-load, widening, and reduction setup for tiny vectors.
+  if (dim < 8) {
+    int32_t sum = 0;
+    for (size_t i = 0; i < dim; ++i) {
+      sum += static_cast<int32_t>(a[i]) * static_cast<int32_t>(b[i]);
+    }
+    return static_cast<float>(sum);
+  }
   const __m256i ones = _mm256_set1_epi16(1);
   __m256i accumulator = _mm256_setzero_si256();
   size_t i = 0;
@@ -45,6 +53,23 @@ inline float raw_inner_product(const int8_t *a, const int8_t *b, size_t dim) {
   }
 
   if (i < dim) {
+    // A few scalar products are cheaper than widening another SIMD block.
+    if (dim - i < 4) {
+      int32_t tail = static_cast<int32_t>(a[i]) * static_cast<int32_t>(b[i]);
+      if (dim - i >= 2) {
+        tail += static_cast<int32_t>(a[i + 1]) * b[i + 1];
+      }
+      if (dim - i == 3) {
+        tail += static_cast<int32_t>(a[i + 2]) * b[i + 2];
+      }
+      alignas(32) int32_t lanes[8];
+      _mm256_store_si256(reinterpret_cast<__m256i *>(lanes), accumulator);
+      int64_t sum = tail;
+      for (int32_t lane : lanes) {
+        sum += lane;
+      }
+      return static_cast<float>(sum);
+    }
     const __m256i lhs =
         _mm256_cvtepi8_epi16(sse2::internal::load_partial_int8(a + i, dim - i));
     const __m256i rhs =

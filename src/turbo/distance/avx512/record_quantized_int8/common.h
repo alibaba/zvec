@@ -31,6 +31,14 @@ namespace zvec::turbo::avx512::internal {
 
 // Raw integer inner product of two int8 code arrays of length `dim`.
 inline float raw_inner_product(const int8_t *a, const int8_t *b, size_t dim) {
+  // Skip masked-load and reduction setup when only a few products are needed.
+  if (dim < 4) {
+    int32_t sum = 0;
+    for (size_t i = 0; i < dim; ++i) {
+      sum += static_cast<int32_t>(a[i]) * static_cast<int32_t>(b[i]);
+    }
+    return static_cast<float>(sum);
+  }
   const __m512i ones = _mm512_set1_epi16(1);
   __m512i accumulator = _mm512_setzero_si512();
   size_t i = 0;

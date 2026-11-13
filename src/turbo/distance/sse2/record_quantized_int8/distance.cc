@@ -32,6 +32,14 @@ inline void widen_int8(__m128i bytes, __m128i *low, __m128i *high) {
 }
 
 float raw_inner_product(const int8_t *a, const int8_t *b, size_t dim) {
+  // Avoid partial-load, widening, and reduction setup for tiny vectors.
+  if (dim < 8) {
+    int32_t sum = 0;
+    for (size_t i = 0; i < dim; ++i) {
+      sum += static_cast<int32_t>(a[i]) * static_cast<int32_t>(b[i]);
+    }
+    return static_cast<float>(sum);
+  }
   const __m128i ones = _mm_set1_epi16(1);
   __m128i accumulator = _mm_setzero_si128();
   size_t i = 0;
@@ -48,6 +56,18 @@ float raw_inner_product(const int8_t *a, const int8_t *b, size_t dim) {
   }
 
   if (i < dim) {
+    // A few scalar products are cheaper than widening another SIMD block.
+    if (dim - i < 4) {
+      int32_t tail = static_cast<int32_t>(a[i]) * static_cast<int32_t>(b[i]);
+      if (dim - i >= 2) {
+        tail += static_cast<int32_t>(a[i + 1]) * b[i + 1];
+      }
+      if (dim - i == 3) {
+        tail += static_cast<int32_t>(a[i + 2]) * b[i + 2];
+      }
+      return static_cast<float>(internal::horizontal_sum_i32(accumulator) +
+                                tail);
+    }
     __m128i lhs_low, lhs_high, rhs_low, rhs_high;
     widen_int8(internal::load_partial_int8(a + i, dim - i), &lhs_low,
                &lhs_high);

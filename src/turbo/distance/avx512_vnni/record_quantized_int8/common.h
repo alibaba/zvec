@@ -267,8 +267,20 @@ ailego_force_inline void ip_int8_batch_avx512_vnni_impl(
     }
   }
   if (dim < dimensionality) {
-    // The full-block loop leaves 1..63 bytes. Zero inactive lanes so short
-    // vectors also use VNNI without reading record metadata or past the buffer.
+    // One byte does not justify masked loads and another VNNI operation.
+    if (dimensionality - dim == 1) {
+      const int q = static_cast<const uint8_t *>(query)[dim];
+      for (size_t i = 0; i < batch_size; ++i) {
+        // Preserve the SIMD accumulator's wrapping 32-bit addition.
+        uint32_t sum = static_cast<uint32_t>(_mm512_reduce_add_epi32(accs[i]));
+        sum += static_cast<uint32_t>(
+            q * static_cast<const int8_t *>(vectors[i])[dim]);
+        distances[i] = static_cast<float>(static_cast<int32_t>(sum));
+      }
+      return;
+    }
+    // Zero inactive lanes so short vectors and non-multiple-of-64 tails
+    // use VNNI without reading the record metadata or beyond the buffer.
     const __mmask64 mask = (uint64_t{1} << (dimensionality - dim)) - 1;
     const __m512i q = _mm512_maskz_loadu_epi8(
         mask, reinterpret_cast<const uint8_t *>(query) + dim);

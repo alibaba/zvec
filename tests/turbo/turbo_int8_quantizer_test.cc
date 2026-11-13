@@ -67,9 +67,10 @@ static void check_simd_distance_matches_scalar(turbo::CpuArchType arch) {
       {turbo::MetricType::kCosine, "Cosine"},
       {turbo::MetricType::kInnerProduct, "InnerProduct"},
   };
-  // Dimensions around the SIMD lane boundaries plus odd tails.
-  const size_t dimensions[] = {1,  2,  7,  8,  15, 16, 17,  31,
-                               32, 33, 62, 63, 64, 65, 126, 130};
+  // Cover scalar/SIMD cutoffs and 1..3-byte tails after full SIMD blocks.
+  const size_t dimensions[] = {
+      1,  2,  3,  4,  7,  8,  15, 16, 17, 18, 19, 20, 31, 32, 33,
+      34, 35, 36, 62, 63, 64, 65, 66, 67, 68, 126, 129, 130, 131, 132};
 
   for (const auto &metric : metrics) {
     // Record INT8 inner product has no VNNI backend.
