@@ -14,6 +14,7 @@
 
 
 #include <algorithm>
+#include <cstdlib>
 #include <memory>
 #include <rocksdb/write_batch.h>
 #include "inverted_column_indexer.h"
@@ -23,8 +24,6 @@ namespace zvec {
 Status InvertedColumnIndexer::restore_bsi_state() {
   auto state = std::make_unique<BsiState>();
   const size_t width = field_.element_data_size() * 8;
-  state->buffers.resize(width);
-  state->slices.resize(width);
   std::string value;
   auto status = ctx_.db_->Get(ctx_.read_opts_, key_bsi_doc_count(), &value);
   if (status.ok()) {
@@ -40,6 +39,15 @@ Status InvertedColumnIndexer::restore_bsi_state() {
   } else if (!status.IsNotFound()) {
     return Status::InternalError(status.ToString());
   }
+  // Benchmark-only switch, fixed when opening the index. Writing indexes
+  // always keep mutable slices; an empty slice vector denotes on-demand reads.
+  const auto *nonresident = std::getenv("ZVEC_BSI_BENCH_NONRESIDENT");
+  if (sealed_ && read_only_ && nonresident && std::string(nonresident) == "1") {
+    bsi_ = std::move(state);
+    return Status::OK();
+  }
+  state->buffers.resize(width);
+  state->slices.resize(width);
   for (size_t bit = 0; bit < width; ++bit) {
     auto &buffer = state->buffers[bit];
     status = ctx_.db_->Get(ctx_.read_opts_, cf_bsi_,
@@ -117,13 +125,59 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_bsi(
   // it. Leading identity operations need neither a slice read nor a bitmap op.
   const bool inclusive = op == CompareOp::GE || op == CompareOp::LT;
   const bool complement = op == CompareOp::LT || op == CompareOp::LE;
+
+  // A nonresident query pins only the slices reached by the same recurrence.
+  // All-zero GE and all-one GT bounds need no slice reads at all.
+  // Declare views after values so frozen headers die before their backing data.
+  std::vector<PinnableSlice> values;
+  std::vector<BitmapPtr> views;
+  const bool nonresident = bsi_->slices.empty();
+  if (nonresident) {
+    size_t needed = term.size() * 8;
+    while (needed != 0) {
+      const size_t bit = needed - 1;
+      const auto byte = static_cast<unsigned char>(term[bit / 8]);
+      const bool one = (byte & (0x80u >> (bit % 8))) != 0;
+      if (one == inclusive) break;
+      --needed;
+    }
+    if (needed != 0) {
+      std::vector<std::string> keys;
+      keys.reserve(needed);
+      for (size_t bit = 0; bit < needed; ++bit) {
+        keys.emplace_back(1, static_cast<char>(bit));
+      }
+      std::vector<Slice> slices(keys.begin(), keys.end());
+      std::vector<rocksdb::Status> statuses(needed);
+      values.resize(needed);
+      views.resize(needed);
+      ctx_.db_->MultiGet(ctx_.read_opts_, cf_bsi_, needed, slices.data(),
+                         values.data(), statuses.data(), true);
+      for (size_t bit = 0; bit < needed; ++bit) {
+        if (statuses[bit].ok()) {
+          roaring_bitmap_t *bitmap = nullptr;
+          auto status = InvertedIndexCodec::DeserializeFrozen(
+              values[bit].data(), values[bit].size(), &bitmap);
+          if (!status.ok()) return tl::make_unexpected(status);
+          views[bit].reset(bitmap);
+        } else if (!statuses[bit].IsNotFound()) {
+          return tl::make_unexpected(
+              Status::InternalError(statuses[bit].ToString()));
+        }
+      }
+    }
+  }
+  roaring_bitmap_t empty;
+  roaring_bitmap_init_cleared(&empty);
   BitmapPtr result;
   for (size_t bit = term.size() * 8; bit-- > 0;) {
     const auto byte = static_cast<unsigned char>(term[bit / 8]);
     const bool one = (byte & (0x80u >> (bit % 8))) != 0;
-    const auto *slice = bsi_->slices[bit].get();
+    if (!result && one != inclusive) continue;
+    const auto *slice =
+        nonresident ? views[bit].get() : bsi_->slices[bit].get();
+    if (!slice) slice = &empty;
     if (!result) {
-      if (one != inclusive) continue;
       result.reset(roaring_bitmap_copy(slice));
       if (!result)
         return tl::make_unexpected(
