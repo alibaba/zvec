@@ -29,7 +29,7 @@ namespace zvec::sqlengine {
 
 class QueryPlanner {
  public:
-  QueryPlanner(CollectionSchema *schema);
+  explicit QueryPlanner(CollectionSchema *schema);
 
   Result<PlanInfo::Ptr> make_plan(
       const std::vector<Segment::Ptr> &segments, const std::string &trace_id,
@@ -65,7 +65,7 @@ class QueryPlanner {
       std::unique_ptr<arrow::compute::Expression> forward_filter,
       bool single_stage_search);
 
-  static DocFilter::Ptr build_doc_filter(
+  DocFilter::Ptr build_doc_filter(
       const Segment::Ptr &seg, const QueryInfo::Ptr &query_info,
       std::unique_ptr<arrow::compute::Expression> &forward_filter,
       bool single_stage_search);

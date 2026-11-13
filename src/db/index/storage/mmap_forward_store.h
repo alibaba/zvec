@@ -82,6 +82,9 @@ class MmapForwardStore : public BaseForwardStore {
     return table_;
   }
 
+  arrow::Result<TablePtr> snapshot(
+      const std::vector<std::string> &columns) override;
+
  private:
   /// Validate that the requested columns exist in the schema
   /// \param columns The list of column names to validate

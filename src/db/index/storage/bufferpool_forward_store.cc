@@ -32,6 +32,13 @@ namespace zvec {
 BufferPoolForwardStore::BufferPoolForwardStore(const std::string &uri)
     : file_path_(uri) {}
 
+arrow::Result<TablePtr> BufferPoolForwardStore::snapshot(
+    const std::vector<std::string> &columns) {
+  // Do not expose cache arrays with non-owning buffer references. Materialize
+  // the projection once, outside the segment lock, from the retained file.
+  return SnapshotParquetColumns(file_, columns);
+}
+
 Status BufferPoolForwardStore::open() {
   std::string uri = file_path_;
   auto status = CreateRandomAccessFileByUri(uri, &file_, &file_path_);

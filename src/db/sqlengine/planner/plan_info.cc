@@ -20,6 +20,44 @@
 
 namespace zvec::sqlengine {
 
+namespace {
+// Explicitly stop/drain abandoned plans while the collection's query guard is
+// still held. This also covers partially prepared multi-segment readers and
+// conversion errors, not just normal EOF consumption.
+class DrainingPlanReader final : public arrow::RecordBatchReader {
+ public:
+  explicit DrainingPlanReader(std::unique_ptr<arrow::RecordBatchReader> reader)
+      : reader_(std::move(reader)) {}
+
+  ~DrainingPlanReader() override {
+    auto status = Close();
+    if (!status.ok()) {
+      LOG_WARN("Close query reader failed: %s", status.ToString().c_str());
+    }
+  }
+
+  std::shared_ptr<arrow::Schema> schema() const override {
+    return reader_->schema();
+  }
+
+  arrow::Status ReadNext(std::shared_ptr<arrow::RecordBatch> *batch) override {
+    return reader_->ReadNext(batch);
+  }
+
+  arrow::Status Close() override {
+    if (closed_) {
+      return arrow::Status::OK();
+    }
+    closed_ = true;
+    return reader_->Close();
+  }
+
+ private:
+  std::unique_ptr<arrow::RecordBatchReader> reader_;
+  bool closed_{false};
+};
+}  // namespace
+
 Result<std::unique_ptr<arrow::RecordBatchReader>>
 PlanInfo::execute_to_reader() {
   auto res = arrow::acero::DeclarationToReader(plan_);
@@ -27,7 +65,8 @@ PlanInfo::execute_to_reader() {
     return tl::make_unexpected(Status::InternalError(
         "execute plan_info failed: ", res.status().ToString()));
   }
-  return res.MoveValueUnsafe();
+  return std::unique_ptr<arrow::RecordBatchReader>(
+      new DrainingPlanReader(res.MoveValueUnsafe()));
 }
 
 }  // namespace zvec::sqlengine

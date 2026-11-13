@@ -35,6 +35,7 @@
 #include "db/index/common/id_map.h"
 #include "db/index/common/meta.h"
 #include "db/index/common/version_manager.h"
+#include "db/index/segment/forward_read_view.h"
 #include "db/index/storage/base_forward_store.h"
 
 namespace zvec {
@@ -44,6 +45,15 @@ class CombinedRecordBatchReader;
 class Segment {
  public:
   using Ptr = std::shared_ptr<Segment>;
+
+  // Capture an owning projection and row boundary under segment
+  // synchronization. Supports persisted IPC/Parquet and writable memory,
+  // including direct callers. Capture failures abort preparation; candidate
+  // reads never use live stores. This owns scalar data, not a whole-query/index
+  // or deletion snapshot. Callers still protect index execution against
+  // close/DDL and drain query workers.
+  static arrow::Result<ForwardReadView::Ptr> make_forward_read_view(
+      const Ptr &segment, const std::vector<std::string> &columns);
 
   static Result<Ptr> CreateAndOpen(const std::string &path,
                                    const CollectionSchema &schema,

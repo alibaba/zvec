@@ -69,6 +69,8 @@ class DocFilter : public IndexFilter {
   IndexFilter::Ptr invert_filter_{nullptr};
 
   std::shared_ptr<arrow::ChunkedArray> forward_bitmap_;
+  bool forward_prepared_{false};
+  ForwardReadView::Ptr forward_view_;
 };
 
 }  // namespace zvec::sqlengine
