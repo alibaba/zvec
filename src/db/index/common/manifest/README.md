@@ -68,6 +68,18 @@ proto numbers). Existing numbers must never change; add new values with new
 numbers. Unknown values read from disk are preserved as-is and mapped to
 `UNDEFINED` by the CodeBooks in `type_helper.h`.
 
+### Truncation
+
+Manifests are published atomically (written to `manifest.<id>.tmp`, synced,
+renamed, directory synced). On open, a collection loads only the newest
+manifest and rejects it if it fails `Version::validate()`. Because
+`next_segment_id` (field 8) is always non-zero and is the last top-level
+field that the encoder writes, this detects truncation of that canonical
+encoding at any length. It is not a general corruption check. A top-level
+field added after field 8 is not covered: a cut that drops only that field
+decodes to its default value, as for a manifest written before the field
+existed.
+
 ### Writer constraint
 
 `pbwire::Writer` does not sort fields. Each message's encode function must
