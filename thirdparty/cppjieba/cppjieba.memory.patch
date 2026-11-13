@@ -1,16 +1,17 @@
 diff --git a/include/cppjieba/DictTrie.hpp b/include/cppjieba/DictTrie.hpp
-index e3e1a7e4..3e36c3c2 100644
+index e3e1a7e4..6338afd4 100644
 --- a/include/cppjieba/DictTrie.hpp
 +++ b/include/cppjieba/DictTrie.hpp
-@@ -7,6 +7,7 @@
+@@ -7,6 +7,8 @@
  #include <cstdlib>
  #include <cmath>
  #include <deque>
 +#include <istream>
++#include <stdexcept>
  #include <memory>
  #include <mutex>
  #include <set>
-@@ -34,10 +35,26 @@ class DictTrie {
+@@ -34,10 +36,26 @@ class DictTrie {
      WordWeightMax,
    }; // enum UserWordWeightOption
 
@@ -37,7 +38,19 @@ index e3e1a7e4..3e36c3c2 100644
    ~DictTrie() {
      delete trie_;
    }
-@@ -168,16 +185,12 @@ class DictTrie {
+@@ -154,7 +172,10 @@ class DictTrie {
+     for (size_t i = 0; i < files.size(); i++) {
+       std::ifstream ifs;
+       OpenInputFile(ifs, files[i]);
+-      XCHECK(ifs.is_open()) << "open " << files[i] << " failed";
++      if (!ifs.is_open()) {
++        throw std::runtime_error("open " + files[i] + " failed");
++      }
++      ifs.exceptions(std::ios::badbit);
+       std::string line;
+
+       while(getline(ifs, line)) {
+@@ -168,16 +189,12 @@ class DictTrie {
 
 
   private:
@@ -58,7 +71,7 @@ index e3e1a7e4..3e36c3c2 100644
      base_static_node_infos_ = cache.node_infos;
      freq_sum_ = cache.freq_sum;
      min_weight_ = cache.min_weight;
-@@ -236,14 +249,18 @@ class DictTrie {
+@@ -236,14 +253,21 @@ class DictTrie {
    }
 
    static DictCacheEntry BuildDictCacheEntry(const std::string& filePath) {
@@ -66,7 +79,11 @@ index e3e1a7e4..3e36c3c2 100644
 -    std::vector<DictUnit> node_infos;
      std::ifstream ifs;
      OpenInputFile(ifs, filePath);
-     XCHECK(ifs.is_open()) << "open " << filePath << " failed.";
+-    XCHECK(ifs.is_open()) << "open " << filePath << " failed.";
++    if (!ifs.is_open()) {
++      throw std::runtime_error("open " + filePath + " failed");
++    }
++    ifs.exceptions(std::ios::badbit);
 +    return BuildDictCacheEntry(ifs, filePath);
 +  }
 +
@@ -81,18 +98,19 @@ index e3e1a7e4..3e36c3c2 100644
        XCHECK(buf.size() == DICT_COLUMN_NUM) << "split result illegal, line:" << line;
        DictUnit node_info;
 diff --git a/include/cppjieba/HMMModel.hpp b/include/cppjieba/HMMModel.hpp
-index 11524957..e181241d 100644
+index 11524957..67ab99ae 100644
 --- a/include/cppjieba/HMMModel.hpp
 +++ b/include/cppjieba/HMMModel.hpp
-@@ -1,6 +1,7 @@
+@@ -1,6 +1,8 @@
  #ifndef CPPJIEBA_HMMMODEL_H
  #define CPPJIEBA_HMMMODEL_H
 
 +#include <istream>
++#include <stdexcept>
  #include "UnicodeFile.hpp"
  #include "limonp/StringUtil.hpp"
  #include "Trie.hpp"
-@@ -18,24 +19,22 @@ struct HMMModel {
+@@ -18,24 +20,25 @@ struct HMMModel {
    enum {B = 0, E = 1, M = 2, S = 3, STATUS_SUM = 4};
 
    HMMModel(const string& modelPath) {
@@ -118,14 +136,18 @@ index 11524957..e181241d 100644
    void LoadModel(const string& filePath) {
      ifstream ifile;
      OpenInputFile(ifile, filePath);
-     XCHECK(ifile.is_open()) << "open " << filePath << " failed";
+-    XCHECK(ifile.is_open()) << "open " << filePath << " failed";
++    if (!ifile.is_open()) {
++      throw std::runtime_error("open " + filePath + " failed");
++    }
++    ifile.exceptions(std::ios::badbit);
 +    LoadModel(ifile);
 +  }
 +  void LoadModel(std::istream& ifile) {
      string line;
      vector<string> tmp;
      vector<string> tmp2;
-@@ -81,7 +80,7 @@ struct HMMModel {
+@@ -81,7 +84,7 @@ struct HMMModel {
      }
      return cit->second;
    }
@@ -134,7 +156,7 @@ index 11524957..e181241d 100644
      while (getline(ifile, line)) {
        Trim(line);
        if (line.empty()) {
-@@ -124,6 +123,20 @@ struct HMMModel {
+@@ -124,6 +127,20 @@ struct HMMModel {
    EmitProbMap emitProbM;
    EmitProbMap emitProbS;
    vector<EmitProbMap* > emitProbVec;

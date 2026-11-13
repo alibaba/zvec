@@ -13,9 +13,11 @@
 // limitations under the License.
 
 #include "jieba_tokenizer.h"
-#include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <system_error>
 #include <zvec/ailego/logger/logger.h>
+#include <zvec/ailego/utility/env_helper.h>
 #include "jieba_embedded_dict.h"
 
 namespace zvec::fts {
@@ -34,20 +36,28 @@ static std::string get_string_or_default(const ailego::JsonObject &config,
 }
 
 // Priority: per-field config > ZVEC_JIEBA_DICT_DIR > embedded defaults.
-static std::string resolve_jieba_dict_dir(const ailego::JsonObject &config) {
-  std::string dir = get_string_or_default(config, "jieba_dict_dir", "");
-  if (!dir.empty()) {
-    return dir;
+static Status resolve_jieba_dict_dir(const ailego::JsonObject &config,
+                                     std::string *dir) {
+  *dir = get_string_or_default(config, "jieba_dict_dir", "");
+  if (!dir->empty()) {
+    return Status::OK();
   }
-  if (const char *env = std::getenv("ZVEC_JIEBA_DICT_DIR"); env && *env) {
-    return env;
+  if (ailego::EnvHelper::Get("ZVEC_JIEBA_DICT_DIR", dir) ==
+      ailego::EnvHelper::Status::kError) {
+    return Status::InvalidArgument(
+        "JiebaTokenizer: cannot read ZVEC_JIEBA_DICT_DIR as UTF-8");
   }
-  return {};
+  return Status::OK();
 }
 
-// cppjieba aborts when a file cannot be opened. Validate configured paths
-// before constructing its dictionary or model, preserving UTF-8 path support.
+// Validate configured paths and reject empty resources before parsing them.
+// The library also throws on open failures occurring after this check.
 static Status check_jieba_file(const std::string &path, bool allow_empty) {
+  std::error_code error;
+  if (!std::filesystem::is_regular_file(std::filesystem::u8path(path), error)) {
+    return Status::InvalidArgument("JiebaTokenizer: not a regular file '", path,
+                                   "'");
+  }
   std::ifstream stream;
   cppjieba::OpenInputFile(stream, path);
   if (!stream.is_open()) {
@@ -86,35 +96,53 @@ Status JiebaTokenizer::init(const ailego::JsonObject &config) {
   bool needs_dict = cut_mode_ != CutMode::kHmm;
   bool needs_model = cut_mode_ != CutMode::kFull;
 
-  std::string dict_dir = resolve_jieba_dict_dir(config);
-
-  std::string dict_path = needs_dict ? dict_dir + "/jieba.dict.utf8" : "";
-  std::string model_path = needs_model ? dict_dir + "/hmm_model.utf8" : "";
-
-  if (!dict_dir.empty()) {
-    if (needs_dict) {
-      auto status = check_jieba_file(dict_path, false);
-      if (!status.ok()) {
-        return status;
-      }
-    }
-    if (needs_model) {
-      auto status = check_jieba_file(model_path, false);
-      if (!status.ok()) {
-        return status;
-      }
-    }
-  }
-  if (needs_dict && !user_dict_path.empty()) {
-    for (const auto &path : limonp::Split(user_dict_path, "|;")) {
-      auto status = check_jieba_file(path, true);
-      if (!status.ok()) {
-        return status;
-      }
-    }
-  }
-
+  std::string dict_dir;
   try {
+    auto dir_status = resolve_jieba_dict_dir(config, &dict_dir);
+    if (!dir_status.ok()) {
+      return dir_status;
+    }
+    auto resource_path = [&](const char *filename) {
+      // Preserve UTF-8 and use native separators even for extended Windows
+      // paths, where the OS does not translate forward slashes.
+      auto path = std::filesystem::u8path(dict_dir) / filename;
+      return path.make_preferred().u8string();
+    };
+    std::string dict_path = needs_dict ? resource_path("jieba.dict.utf8") : "";
+    std::string model_path = needs_model ? resource_path("hmm_model.utf8") : "";
+
+    if (!dict_dir.empty()) {
+      if (needs_dict) {
+        auto status = check_jieba_file(dict_path, false);
+        if (!status.ok()) {
+          return status;
+        }
+      }
+      if (needs_model) {
+        auto status = check_jieba_file(model_path, false);
+        if (!status.ok()) {
+          return status;
+        }
+      }
+    }
+    if (needs_dict && !user_dict_path.empty()) {
+      std::string native_paths;
+      for (const auto &path : limonp::Split(user_dict_path, "|;")) {
+        // User dictionaries need the same native separators as base resources.
+        auto native_path =
+            std::filesystem::u8path(path).make_preferred().u8string();
+        auto status = check_jieba_file(native_path, true);
+        if (!status.ok()) {
+          return status;
+        }
+        if (!native_paths.empty()) {
+          native_paths += '|';
+        }
+        native_paths += native_path;
+      }
+      user_dict_path = std::move(native_paths);
+    }
+
     if (needs_dict) {
       if (dict_dir.empty()) {
         auto dict = get_embedded_jieba_dict();
