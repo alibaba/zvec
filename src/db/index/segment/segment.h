@@ -173,6 +173,16 @@ class Segment {
   virtual ExecBatchPtr fetch(const std::vector<std::string> &columns,
                              int segment_doc_id) const = 0;
 
+  // An owning, zero-copy snapshot of complete immutable forward columns in
+  // segment-local row order, with validated Arrow column metadata and schema.
+  // Returns nullptr for storage without this contract
+  // (including the mutable writing store). Exported Arrow buffers keep their
+  // mappings alive; callers must not mutate them. No lock is held on return.
+  virtual TablePtr snapshot_forward_columns(
+      const std::vector<std::string> & /*columns*/) const {
+    return nullptr;
+  }
+
   // Valid only while the owning collection is open read-only. Computed by
   // Open after recovery, before queries can run; not maintained for writes.
   virtual bool has_identity_doc_ids() const = 0;

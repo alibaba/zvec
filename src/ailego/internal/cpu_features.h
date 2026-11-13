@@ -193,6 +193,21 @@ class CpuFeatures {
   //! Intrinsics of compiling
   static const char *Intrinsics();
 
+  // Hardware features usable with the operating system's register state.
+  // Independent of compiled kernels; all fields are false on non-x86 hosts.
+  struct X86Features {
+    bool sse42 = false;
+    bool avx = false;
+    bool avx2 = false;
+    bool avx512f = false;
+  };
+  // Uses the eagerly captured CPU/OS snapshot; no probes or lazy locks.
+  static X86Features UsableX86();
+  // Pure decoder for synthetic CPU/OS tests. os_avx512 permits Darwin's lazy
+  // ZMM state only when AVX state and the hardware AVX-512 feature are present.
+  static X86Features DecodeUsableX86(uint32_t leaf1_ecx, uint32_t leaf7_ebx,
+                                     uint64_t xcr0, bool os_avx512 = false);
+
  private:
   struct CpuFlags {
     //! Constructor
@@ -204,12 +219,16 @@ class CpuFeatures {
     uint32_t L7_EBX;
     uint32_t L7_ECX;
     uint32_t L7_EDX;
+    uint64_t XCR0;
+    bool OS_AVX512;
   };
 
   //! Static Members
   static CpuFlags flags_;
 
  public:
+  // Raw hardware flags retain their existing semantics. AVX-family kernel
+  // consumers must also check operating-system support via UsableX86().
   struct StaticFlags {
     //! 16-bit FP conversions
     bool F16C = CpuFeatures::F16C();

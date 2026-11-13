@@ -171,7 +171,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$ZVEC_INSTALL_DIR" \
             -DBUILD_TOOLS=OFF \
-            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DBUILD_PYTHON_BINDINGS=OFF -DZVEC_ENABLE_SCALAR_JIT=OFF \
             -DBUILD_C_BINDINGS=ON \
             -DBUILD_ZVEC_SHARED=ON \
             -DBUILD_ZVEC_CORE_SHARED=ON \
@@ -306,7 +306,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/work/install \
             -DBUILD_TOOLS=OFF \
-            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DBUILD_PYTHON_BINDINGS=OFF -DZVEC_ENABLE_SCALAR_JIT=OFF \
             -DBUILD_C_BINDINGS=ON \
             -DBUILD_ZVEC_SHARED=ON \
             -DBUILD_ZVEC_CORE_SHARED=ON \
@@ -426,7 +426,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$ZVEC_INSTALL_DIR" \
             -DBUILD_TOOLS=OFF \
-            -DBUILD_PYTHON_BINDINGS=OFF \
+            -DBUILD_PYTHON_BINDINGS=OFF -DZVEC_ENABLE_SCALAR_JIT=OFF \
             -DBUILD_C_BINDINGS=ON \
             -DBUILD_ZVEC_SHARED=ON \
             -DBUILD_ZVEC_CORE_SHARED=ON \
@@ -561,7 +561,7 @@ jobs:
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/install_${slice}" \
               -DBUILD_TOOLS=OFF \
-              -DBUILD_PYTHON_BINDINGS=OFF \
+              -DBUILD_PYTHON_BINDINGS=OFF -DZVEC_ENABLE_SCALAR_JIT=OFF \
               -DBUILD_C_BINDINGS=ON \
               -DBUILD_ZVEC_SHARED=ON \
               -DBUILD_ZVEC_CORE_SHARED=ON \

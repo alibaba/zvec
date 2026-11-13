@@ -51,6 +51,9 @@ from .typing import (
 from .typing.enum import LogLevel, LogType
 from .zvec import create_and_open, init, open
 
+def scalar_jit_info() -> dict[str, object]:
+    """Versioned process-local diagnostics; inspecting availability never initializes LLVM."""
+
 def io_backend_type() -> IOBackendType:
     """Returns the current I/O backend type for DiskAnn disk reads.
 
@@ -120,6 +123,7 @@ __all__: list = [
     "io_backend_type",
     "open",
     "require_module",
+    "scalar_jit_info",
 ]
 
 class _Collection:

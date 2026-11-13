@@ -149,7 +149,10 @@ function(zvec_add_all_in_one_shared TARGET_NAME OUTPUT_NAME)
     # antlr4) are hidden, and unreferenced code is dead-stripped to
     # reduce the shared library size. The public C++ headers never expose
     # third-party types, so hiding them is safe for external C++ consumers.
-    if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+    # Static LLVM is an implementation detail even in Debug builds. Keep its
+    # symbols out of the SDK's dynamic exports without stripping debug info.
+    if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug" OR
+       (ZVEC_ENABLE_SCALAR_JIT AND NOT ZVEC_SCALAR_JIT_LLVM_SHARED))
         if(APPLE)
             set(_ZVEC_ALLIN_EXPORTS ${CMAKE_CURRENT_SOURCE_DIR}/exported_symbols_cpp.txt)
             target_link_options(${TARGET_NAME} PRIVATE

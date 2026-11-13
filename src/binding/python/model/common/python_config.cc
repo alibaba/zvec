@@ -13,8 +13,10 @@
 // limitations under the License.
 
 #include "python_config.h"
+#include <ailego/internal/cpu_features.h>
 #include <pybind11/stl.h>
 #include <zvec/ailego/io/io_backend.h>
+#include "db/sqlengine/scalar_jit/runtime.h"
 
 namespace zvec {
 
@@ -196,6 +198,103 @@ void ZVecPyConfig::Initialize(pybind11::module_ &m) {
     }
     return py::none();
   });
+
+  m.def(
+      "scalar_jit_info",
+      [] {
+        auto info = sqlengine::scalar_jit::GetRuntimeSnapshot();
+        py::dict result, limits, cache, timings, memory, selections, execution;
+        result["version"] = 1;
+        const auto features = ailego::internal::CpuFeatures::UsableX86();
+        py::dict cpu;
+        cpu["sse42"] = features.sse42;
+        cpu["avx"] = features.avx;
+        cpu["avx2"] = features.avx2;
+        cpu["avx512f"] = features.avx512f;
+        result["cpu_features"] = cpu;
+        result["built"] = info.built;
+        result["enabled"] = info.enabled;
+        result["initialized"] = info.initialized;
+        result["disable_reason"] = info.reason;
+        result["initialization_error"] = info.initialization_error;
+        result["accounting_available"] =
+            sqlengine::scalar_jit::InOriginalProcess();
+        result["profile"] = info.config.profile;
+        result["dump_ir"] = info.config.dump_ir;
+        limits["positive_entries"] = 128;
+        limits["negative_entries"] = 128;
+        limits["compilations"] = info.config.max_compilations;
+        limits["live_programs"] = info.config.max_live_programs;
+        limits["expression_nodes"] = info.config.limits.nodes;
+        limits["expression_depth"] = info.config.limits.depth;
+        limits["key_bytes"] = info.config.limits.key_bytes;
+        limits["input_bytes"] = info.config.limits.input_bytes;
+        limits["in_values"] = info.config.limits.in_values;
+        for (const char *name :
+             {"hits", "misses", "in_flight_bypasses", "admission_rejections",
+              "compilations", "failed_compilations", "backoff_hits",
+              "evictions", "entries", "negative_entries"})
+          cache[name] = info.counters[std::string("cache_") + name];
+        cache["active_compilations"] = info.counters["active_compilations"];
+        for (const char *name : {"initialization", "compilation", "lowering",
+                                 "binding", "preparation"}) {
+          py::dict stage;
+          stage["count"] = info.counters[std::string(name) + "_count"];
+          stage["nanoseconds"] = info.counters[std::string(name) + "_ns"];
+          timings[name] = stage;
+        }
+        selections["jit"] = info.counters["jit_selections"];
+        selections["arrow"] = info.counters["arrow_selections"];
+        py::dict fallbacks;
+        for (const char *reason :
+             {"build_disabled", "runtime_disabled", "invalid_configuration",
+              "forked_process", "unsupported_expression",
+              "unsupported_snapshot", "expression_limit", "compilation_busy",
+              "live_program_limit", "compile_backoff", "initialization_failed",
+              "compile_failed", "binding_failed"})
+          fallbacks[reason] = info.counters[std::string("fallback_") + reason];
+        selections["fallbacks"] = fallbacks;
+        selections["meaning"] = "preparation selections, not execution counts";
+        for (const char *backend : {"jit", "arrow"}) {
+          py::dict sample;
+          sample["count"] =
+              info.counters[std::string(backend) + "_execution_sample_count"];
+          sample["nanoseconds"] =
+              info.counters[std::string(backend) + "_execution_sample_ns"];
+          execution[backend] = sample;
+        }
+        execution["sample_interval"] = 1024;
+        execution["meaning"] =
+            "first and every 1024th evaluation per thread/backend; sampled "
+            "only";
+        for (const char *kind :
+             {"program", "binding", "descriptor", "helper"}) {
+          const auto prefix = std::string("live_") + kind;
+          memory[py::str(prefix + "s")] = info.counters[prefix + "s"];
+          for (const char *suffix :
+               {"_object_bytes", "_ir_bytes", "_owned_bytes"})
+            memory[py::str(prefix + suffix)] = info.counters[prefix + suffix];
+        }
+        for (const char *name :
+             {"resident_object_bytes", "resident_ir_bytes",
+              "resident_owned_bytes", "shared_snapshot_references"})
+          memory[name] = info.counters[name];
+        memory["object_bytes_meaning"] =
+            "emitted object-file size proxy, not executable pages";
+        memory["unmeasured"] =
+            "LLVM heap, allocator overhead, registry, RE2 internals and "
+            "hash-table overhead";
+        memory["borrowed_arrow_buffers_included"] = false;
+        result["limits"] = limits;
+        result["cache"] = cache;
+        result["timings"] = timings;
+        result["selections"] = selections;
+        result["execution_samples"] = execution;
+        result["memory"] = memory;
+        return result;
+      },
+      "Returns versioned process-local scalar JIT diagnostics without "
+      "initializing LLVM.");
 
   // Returns the selected DiskAnn I/O backend. Linux tries io_uring, then
   // libaio, then pread; macOS ARM64 uses pread.

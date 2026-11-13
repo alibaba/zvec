@@ -19,11 +19,6 @@
 #include "batch_topk_internal.h"
 #if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
 #include <intrin.h>
-#elif defined(__x86_64__) || defined(__i386__)
-#include <cpuid.h>
-#endif
-#if defined(AILEGO_MACOS_X86_64)
-#include <sys/sysctl.h>
 #endif
 
 namespace zvec {
@@ -35,46 +30,20 @@ struct Capabilities {
 };
 Capabilities Detect() {
   const auto &f = ailego::internal::CpuFeatures::static_flags_;
-  uint64_t xcr0 = 0;
-  bool lzcnt = false;
+  const auto usable = ailego::internal::CpuFeatures::UsableX86();
 #if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
+  bool lzcnt = false;
   int regs[4] = {};
-  __cpuidex(regs, 0, 0);
-  if (regs[0] >= 1) {
-    __cpuidex(regs, 1, 0);
-    if ((static_cast<uint32_t>(regs[2]) & (3u << 26)) == (3u << 26))
-      xcr0 = _xgetbv(0);
-  }
   __cpuidex(regs, static_cast<int>(0x80000000u), 0);
   if (static_cast<uint32_t>(regs[0]) >= 0x80000001u) {
     __cpuidex(regs, static_cast<int>(0x80000001u), 0);
     lzcnt = (static_cast<uint32_t>(regs[2]) & (1u << 5)) != 0;
   }
-#elif defined(__x86_64__) || defined(__i386__)
-  uint32_t eax, ebx, ecx, edx;
-  if (__get_cpuid(1, &eax, &ebx, &ecx, &edx) &&
-      (ecx & (3u << 26)) == (3u << 26)) {
-    // XGETBV is legal only after both XSAVE and OSXSAVE are advertised.
-    __asm__ volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
-    xcr0 = (static_cast<uint64_t>(edx) << 32) | eax;
-  }
-#endif
-  (void)lzcnt;
-  const bool avx_state = (xcr0 & 0x6u) == 0x6u;
-  bool avx512_state = (xcr0 & 0xe6u) == 0xe6u;
-#if defined(AILEGO_MACOS_X86_64)
-  // Darwin enables opmask/ZMM lazily, so an early XCR0 snapshot is incomplete.
-  int enabled = 0;
-  size_t bytes = sizeof(enabled);
-  avx512_state = avx_state &&
-                 (avx512_state || (sysctlbyname("hw.optional.avx512f", &enabled,
-                                                &bytes, nullptr, 0) == 0 &&
-                                   bytes == sizeof(enabled) && enabled != 0));
 #endif
   // Include features the compiler may use implicitly for these target flags.
-  bool avx2 = avx_state && f.AVX && f.AVX2 && f.SSE2 && f.SSE3 && f.SSSE3 &&
-              f.SSE4_1 && f.SSE4_2 && f.POPCNT;
-  bool avx512 = avx512_state && avx2 && f.AVX512F && f.FMA && f.F16C;
+  bool avx2 = usable.avx2 && f.SSE2 && f.SSE3 && f.SSSE3 && f.SSE4_1 &&
+              f.SSE4_2 && f.POPCNT;
+  bool avx512 = usable.avx512f && avx2 && f.FMA && f.F16C;
 #if defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64))
   avx2 = avx2 && f.FMA && f.BMI1 && f.BMI2 && lzcnt;
   avx512 =

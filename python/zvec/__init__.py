@@ -30,7 +30,7 @@ if sys.maxsize <= 2**32:
     )
 
 
-from zvec._zvec import io_backend_description, io_backend_type
+from zvec._zvec import io_backend_description, io_backend_type, scalar_jit_info
 
 # ==============================
 # Public API — grouped by category
@@ -122,6 +122,7 @@ __all__ = [
     "open",
     "io_backend_type",
     "io_backend_description",
+    "scalar_jit_info",
     # Core classes
     "Collection",
     "Doc",
