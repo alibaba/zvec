@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 #include <gtest/gtest.h>
@@ -287,4 +288,93 @@ TEST_F(FtsQueryTest, FtsFieldUnsupportedAlterColumn) {
       col->alter_column("content", "", new_fts_field, AlterColumnOptions());
   ASSERT_FALSE(status.ok());
   ASSERT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
+}
+
+
+TEST_F(FtsQueryTest, CodeTokenizerRetrievalAndRebuild) {
+#ifdef __ANDROID__
+  GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "
+                  "support (needed by RocksDB checkpoint)";
+#endif
+  auto schema = CreateFtsSchema();
+  CollectionOptions options;
+  options.read_only_ = false;
+  auto opened = Collection::CreateAndOpen(kTestPath, *schema, options);
+  ASSERT_TRUE(opened.has_value()) << opened.error().message();
+  auto col = std::move(opened.value());
+  std::vector<Doc> docs = {MakeDoc(0, "", "getRequestTime"),
+                           MakeDoc(1, "", "get_request_time"),
+                           MakeDoc(2, "", "get_requestTime"),
+                           MakeDoc(3, "", "get"),
+                           MakeDoc(4, "", "request time"),
+                           MakeDoc(5, "", "getRequestTimeout"),
+                           MakeDoc(6, "", "getaway"),
+                           MakeDoc(7, "", "HTTPRequest 获取时间")};
+  ASSERT_TRUE(col->insert(docs).has_value());
+  auto params = std::make_shared<FtsIndexParams>(
+      "code", std::vector<std::string>{}, R"({"sub_tokenizer":"standard"})");
+  auto status = col->create_index("content", params);
+  ASSERT_TRUE(status.ok()) << status.message();
+
+  auto search = [&](const std::string &text, const std::string &op,
+                    bool structured) {
+    SearchQuery query;
+    query.target_.field_name_ = "content";
+    query.topk_ = 20;
+    FtsClause clause;
+    if (structured)
+      clause.query_string_ = text;
+    else
+      clause.match_string_ = text;
+    query.target_.clause_ = clause;
+    auto qp = std::make_shared<FtsQueryParams>();
+    qp->set_default_operator(op);
+    query.target_.query_params_ = qp;
+    return col->query(query);
+  };
+  auto check = [&](const std::string &text, const std::string &op,
+                   const std::set<std::string> &expected) {
+    for (bool structured : {false, true}) {
+      auto result = search(text, op, structured);
+      ASSERT_TRUE(result.has_value()) << result.error().message();
+      std::set<std::string> actual;
+      for (const auto &doc : result.value()) actual.insert(doc->pk());
+      EXPECT_EQ(actual, expected) << text << " " << op;
+    }
+  };
+  check("request time", "and", {"pk_0", "pk_1", "pk_2", "pk_4"});
+  check("getRequestTime", "and", {"pk_0"});
+  check("get_request_time", "and", {"pk_1"});
+  check("getRequestTime", "or",
+        {"pk_0", "pk_1", "pk_2", "pk_3", "pk_4", "pk_5", "pk_7"});
+  check("http request", "and", {"pk_7"});
+  check("get", "or", {"pk_0", "pk_1", "pk_2", "pk_3", "pk_5"});
+  auto phrase = search("\"request time\"", "or", true);
+  ASSERT_TRUE(phrase.has_value()) << phrase.error().message();
+  std::set<std::string> phrase_pks;
+  for (const auto &doc : phrase.value()) phrase_pks.insert(doc->pk());
+  EXPECT_EQ(phrase_pks,
+            (std::set<std::string>{"pk_0", "pk_1", "pk_2", "pk_4"}));
+  ASSERT_TRUE(search("\"request time\"", "and", false).has_value());
+
+  ASSERT_TRUE(col->flush().ok());
+  col.reset();
+  opened = Collection::Open(kTestPath, options);
+  ASSERT_TRUE(opened.has_value()) << opened.error().message();
+  col = std::move(opened.value());
+  auto persisted_schema = col->schema();
+  ASSERT_TRUE(persisted_schema.has_value());
+  auto persisted_params = std::dynamic_pointer_cast<FtsIndexParams>(
+      persisted_schema.value().get_field("content")->index_params());
+  ASSERT_NE(persisted_params, nullptr);
+  EXPECT_EQ(persisted_params->tokenizer_name(), "code");
+  EXPECT_TRUE(persisted_params->filters().empty());
+  EXPECT_EQ(persisted_params->extra_params(), params->extra_params());
+  check("request time", "and", {"pk_0", "pk_1", "pk_2", "pk_4"});
+  std::vector<Doc> updates{MakeDoc(0, "", "unrelated")};
+  ASSERT_TRUE(col->update(updates).has_value());
+  ASSERT_TRUE(col->delete_({"pk_1"}).has_value());
+  check("request time", "and", {"pk_2", "pk_4"});
+  ASSERT_TRUE(col->optimize().ok());
+  check("request time", "and", {"pk_2", "pk_4"});
 }
