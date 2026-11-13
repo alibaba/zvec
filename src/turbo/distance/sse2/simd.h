@@ -35,7 +35,7 @@ namespace zvec::turbo::sse2::internal {
 
 // Load 1..15 bytes, zeroing inactive lanes without reading beyond the input.
 // Overlapping fixed-width loads avoid a temporary buffer and dynamic memcpy.
-inline __m128i load_partial_int8(const int8_t *values, size_t count) {
+static inline __m128i load_partial_int8(const int8_t *values, size_t count) {
   if (count >= 8) {
     const __m128i low =
         _mm_loadl_epi64(reinterpret_cast<const __m128i *>(values));
