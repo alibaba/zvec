@@ -17,15 +17,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: windows-2022
+          - platform: windows-2022-vs2022
+            vs_version: '17.0'
             msvc_arch: x64
             python_version: '3.10'
-          - platform: windows-2025
+          - platform: windows-2025-vs2026
+            vs_version: '18.0'
             msvc_arch: x64
             python_version: '3.10'
           # Windows ARM64: Python 3.10 has no official ARM64 installer;
           # 3.11 is the first CPython release with a Windows-on-ARM build.
-          - platform: windows-11-arm
+          - platform: windows-11-arm-vs2026
+            vs_version: '18.0'
             msvc_arch: arm64
             python_version: '3.11'
 
@@ -36,7 +39,6 @@ jobs:
       - name: Show env info
         run: |
           Get-CimInstance -ClassName Win32_Processor
-          where cl
           & "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -all -products * -prerelease -format json
         shell: powershell
 
@@ -66,9 +68,21 @@ jobs:
           cache-dependency-path: 'pyproject.toml'
 
       - name: Set up MSVC environment
+        # Let vswhere discover VS 2026; v1.13.0 cannot resolve it by version.
         uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: ${{ matrix.msvc_arch }}
+
+      - name: Verify MSVC toolchain
+        shell: powershell
+        env:
+          EXPECTED_VS_VERSION: ${{ matrix.vs_version }}
+        run: |
+          if ($env:VisualStudioVersion -ne $env:EXPECTED_VS_VERSION) {
+            throw "Expected VS $env:EXPECTED_VS_VERSION, got $env:VisualStudioVersion"
+          }
+          Write-Host "MSVC toolset: $env:VCToolsVersion"
+          where.exe cl
 
       - name: Set up environment variables
         run: |
