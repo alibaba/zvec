@@ -29,7 +29,8 @@ int IVFIndex::create_and_init_converter_reformer(
     const QuantizerParam &param, const BaseIndexParam &index_param) {
   // Clustering and centroid selection use the input vectors. Only the
   // inverted lists are encoded, after their centroid assignments are known.
-  if (index_param.is_sparse || param.enable_rotate ||
+  if (index_param.is_sparse ||
+      (param.enable_rotate && param.type != QuantizerType::kPQ) ||
       index_param.data_type != DataType::DT_FP32 ||
       (index_param.metric_type != MetricType::kL2sq &&
        index_param.metric_type != MetricType::kInnerProduct &&
@@ -37,7 +38,10 @@ int IVFIndex::create_and_init_converter_reformer(
     return Index::create_and_init_converter_reformer(param, index_param);
   }
   const char *name = nullptr;
+  ailego::Params quantizer_params;
   switch (param.type) {
+    case QuantizerType::kPQ:
+      return init_pq_quantizer(param, index_param, &ivf_quantizer_);
     case QuantizerType::kNone:
       name = "Fp32Quantizer";
       break;
@@ -53,12 +57,12 @@ int IVFIndex::create_and_init_converter_reformer(
     default:
       return Index::create_and_init_converter_reformer(param, index_param);
   }
-  proxima_index_meta_.set_quantizer(name, 0, ailego::Params{});
+  proxima_index_meta_.set_quantizer(name, 0, quantizer_params);
   ivf_quantizer_ = core::IndexFactory::CreateQuantizer(name);
   if (!ivf_quantizer_) {
     return core::IndexError_NoExist;
   }
-  return ivf_quantizer_->init(proxima_index_meta_, ailego::Params{});
+  return ivf_quantizer_->init(proxima_index_meta_, quantizer_params);
 }
 
 int IVFIndex::create_and_init_streamer(const BaseIndexParam &param) {
@@ -170,6 +174,10 @@ int IVFIndex::load_streamer() {
 
 int IVFIndex::open(const std::string &file_path,
                    StorageOptions storage_options) {
+  if (storage_options.read_only && storage_options.create_new) {
+    LOG_ERROR("Cannot create storage for a read-only index");
+    return core::IndexError_Runtime;
+  }
   ailego::Params storage_params;
   file_path_ = file_path;
   is_read_only_ = storage_options.read_only;
@@ -239,6 +247,7 @@ int IVFIndex::generate_holder() {
 }
 
 int IVFIndex::add(const VectorData &vector, uint32_t doc_id) {
+  if (!is_open_ || is_read_only_) return core::IndexError_NoReady;
   if (is_trained_ || build_stage_ != BuildStage::kCollecting) {
     LOG_ERROR("this IVF index is trained or has a pending build");
     return core::IndexError_Runtime;
@@ -406,11 +415,12 @@ int IVFIndex::_dense_fetch(const uint32_t doc_id,
   }
 }
 
-int IVFIndex::_dense_search(const VectorData &query,
-                            const BaseIndexQueryParam::Pointer &search_param,
-                            SearchResult *result,
-                            core::IndexContext::Pointer &context) {
-  int ret = Index::_dense_search(query, search_param, result, context);
+int IVFIndex::_collect_dense_result(
+    const VectorData &query, const core::IndexQueryMeta &query_meta,
+    const BaseIndexQueryParam::Pointer &search_param, SearchResult *result,
+    core::IndexContext::Pointer &context) {
+  int ret = Index::_collect_dense_result(query, query_meta, search_param,
+                                         result, context);
   if (ret != 0 || !ivf_quantizer_ || !context->fetch_vector()) return ret;
   auto provider = streamer_->create_provider();
   if (!provider) return core::IndexError_NoReady;
@@ -432,28 +442,35 @@ int IVFIndex::_prepare_for_search(
   const auto &ivf_search_param =
       std::dynamic_pointer_cast<IVFQueryParam>(search_param);
 
+  if (!ivf_search_param) {
+    LOG_ERROR("Invalid search param type, expected IVFQueryParam");
+    return core::IndexError_InvalidArgument;
+  }
+
   if (search_param->group_by_param && search_param->group_by_param->group_by) {
     LOG_ERROR("group_by search is not supported for IVF index");
     return core::IndexError_Unsupported;
   }
 
+  context->reset_threshold();
   context->set_topk(ivf_search_param->topk);
   context->set_fetch_vector(ivf_search_param->fetch_vector);
   if (ivf_search_param->filter && ivf_search_param->filter->is_valid()) {
-    context->set_filter(std::move(*ivf_search_param->filter));
+    context->set_filter(*ivf_search_param->filter);
   } else {
     context->reset_filter();
   }
   if (ivf_search_param->radius > 0.0f) {
-    context->set_threshold(ivf_search_param->radius);
+    float threshold = ivf_search_param->radius;
+    if (metric_ && metric_->support_normalize()) {
+      metric_->denormalize(&threshold);
+    }
+    context->set_threshold(threshold);
   }
 
-  if (ivf_search_param->nprobe > 0) {
-    ailego::Params params;
-    params.set(core::PARAM_IVF_SEARCHER_NPROBE, ivf_search_param->nprobe);
-    context->update(params);
-  }
-  return 0;
+  ailego::Params params;
+  params.set(core::PARAM_IVF_SEARCHER_NPROBE, ivf_search_param->nprobe);
+  return context->update(params);
 }
 
 int IVFIndex::merge(const std::vector<Index::Pointer> &indexes,

@@ -14,6 +14,7 @@
 
 #include "neon/fp32/squared_euclidean.h"
 #include <zvec/ailego/internal/platform.h>
+#include "neon/one_to_many.h"
 
 #if defined(AILEGO_ARM64_NEON)
 #include <arm_neon.h>
@@ -61,7 +62,17 @@ void squared_euclidean_fp32_distance(const void *a, const void *b, size_t dim,
 void squared_euclidean_fp32_batch_distance(
     const void *const *vectors, const void *query, size_t n, size_t dim,
     float *distances, const void *const * /*extra_values*/) {
-  for (size_t i = 0; i < n; ++i) {
+  if (dim == 0) {
+    for (size_t i = 0; i < n; ++i) {
+      distances[i] = 0.0f;
+    }
+    return;
+  }
+  size_t i = 0;
+#if defined(AILEGO_ARM64_NEON)
+  i = detail::batch_groups<float, true>(vectors, query, n, dim, distances);
+#endif
+  for (; i < n; ++i) {
     squared_euclidean_fp32_distance(vectors[i], query, dim, &distances[i]);
   }
 }

@@ -103,6 +103,10 @@ int IVFRabitqIndex::open(const std::string &file_path,
   LOG_ERROR("%s", core::kRabitqUnsupportedPlatform);
   return core::IndexError_Unsupported;
 #else
+  if (storage_options.read_only && storage_options.create_new) {
+    LOG_ERROR("Cannot create storage for a read-only index");
+    return core::IndexError_Runtime;
+  }
   ailego::Params storage_params;
   file_path_ = file_path;
   is_read_only_ = storage_options.read_only;
@@ -156,6 +160,7 @@ int IVFRabitqIndex::add(const VectorData &vector, uint32_t doc_id) {
   LOG_ERROR("%s", core::kRabitqUnsupportedPlatform);
   return core::IndexError_Unsupported;
 #else
+  if (!is_open_ || is_read_only_) return core::IndexError_NoReady;
   if (is_trained_) {
     LOG_ERROR("this IVF RaBitQ index is trained");
     return core::IndexError_Runtime;
@@ -192,6 +197,9 @@ int IVFRabitqIndex::train() {
   LOG_ERROR("%s", core::kRabitqUnsupportedPlatform);
   return core::IndexError_Unsupported;
 #else
+  if (is_trained_) return 0;
+  if (!is_open_ || is_read_only_) return core::IndexError_NoReady;
+
   int ret = generate_holder();
   if (ret != 0) {
     LOG_ERROR("Failed to generate holder");
@@ -339,7 +347,7 @@ int IVFRabitqIndex::_prepare_for_search(
   context->set_topk(search_param->topk);
   context->set_fetch_vector(false);
   if (search_param->filter) {
-    context->set_filter(std::move(*search_param->filter));
+    context->set_filter(*search_param->filter);
   }
   if (search_param->radius > 0.0f) {
     context->set_threshold(search_param->radius);

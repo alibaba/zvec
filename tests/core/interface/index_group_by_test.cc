@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 #include <gtest/gtest.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include "tests/test_util.h"
 #if RABITQ_SUPPORTED
 #include "core/algorithm/hnsw_rabitq/rabitq_converter.h"
@@ -248,6 +249,11 @@ class GroupByInterfaceTest : public ::testing::Test {
     Run(test_case, /*expect_error=*/true);
   }
 
+  void run_reopened_flat(const GroupByCase &test_case,
+                         StorageOptions::StorageType storage) {
+    Run(test_case, /*expect_error=*/false, /*reopen=*/true, storage);
+  }
+
  private:
   struct QueryHolder {
     std::vector<float> values;
@@ -255,7 +261,9 @@ class GroupByInterfaceTest : public ::testing::Test {
     VectorData data;
   };
 
-  void Run(const GroupByCase &test_case, bool expect_error) {
+  void Run(const GroupByCase &test_case, bool expect_error, bool reopen = false,
+           StorageOptions::StorageType storage =
+               StorageOptions::StorageType::kMMAP) {
     const std::string index_name = "test_groupby_" + test_case.name;
     const std::string source_index_name = index_name + "_source";
     zvec::test_util::RemoveTestFiles(index_name + "*");
@@ -275,9 +283,7 @@ class GroupByInterfaceTest : public ::testing::Test {
 
     auto index = IndexFactory::CreateAndInitIndex(*test_case.index_param);
     ASSERT_NE(nullptr, index) << test_case.name;
-    ASSERT_EQ(
-        0, index->open(index_name, {StorageOptions::StorageType::kMMAP, true}))
-        << test_case.name;
+    ASSERT_EQ(0, index->open(index_name, {storage, true})) << test_case.name;
     // Unsupported combinations are rejected by Index::search before training
     // or backend-specific search setup.  Do not turn this API validation into
     // an integration build of every rejected backend (notably DiskAnn).
@@ -308,6 +314,19 @@ class GroupByInterfaceTest : public ::testing::Test {
     }
 
     ASSERT_EQ(0, index->close()) << test_case.name;
+    if (reopen) {
+      for (bool read_only : {true, false}) {
+        auto reopened =
+            IndexFactory::CreateAndInitIndex(*test_case.index_param);
+        ASSERT_NE(nullptr, reopened);
+        ASSERT_EQ(0, reopened->open(index_name, {storage, false, read_only}));
+        SearchResult reopened_result;
+        ASSERT_EQ(0,
+                  reopened->search(query.data, query_param, &reopened_result));
+        assert_grouped_result(reopened_result, query_param, test_case);
+        ASSERT_EQ(0, reopened->close());
+      }
+    }
     ASSERT_EQ(0, source->close()) << test_case.name;
     zvec::test_util::RemoveTestFiles(index_name + "*");
     zvec::test_util::RemoveTestFiles(source_index_name + "*");
@@ -475,6 +494,31 @@ class GroupByInterfaceTest : public ::testing::Test {
 };
 
 }  // namespace
+
+TEST_F(GroupByInterfaceTest, FlatAfterReopen) {
+  ASSERT_EQ(0, zvec::ailego::MemoryLimitPool::get_instance().init(256UL * 1024 *
+                                                                  1024));
+  for (bool contiguous : {false, true}) {
+    for (bool use_id_map : {false, true}) {
+      for (auto storage : {StorageOptions::StorageType::kMMAP,
+                           StorageOptions::StorageType::kBufferPool}) {
+        SCOPED_TRACE(testing::Message()
+                     << "contiguous=" << contiguous << " use_id_map="
+                     << use_id_map << " storage=" << static_cast<int>(storage));
+        auto param = FlatIndexParamBuilder()
+                         .with_metric_type(MetricType::kInnerProduct)
+                         .with_data_type(DataType::DT_FP32)
+                         .with_dimension(kDimension)
+                         .with_use_id_map(use_id_map)
+                         .with_use_contiguous_memory(contiguous)
+                         .build();
+        run_reopened_flat(
+            {"flat_reopened", param, FlatQuery(/*fetch_vector=*/true)},
+            storage);
+      }
+    }
+  }
+}
 
 TEST_F(GroupByInterfaceTest, Dense) {
   std::vector<GroupByCase> cases{

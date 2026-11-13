@@ -60,8 +60,8 @@ jobs:
           # with a focused database lifecycle test instead of duplicating the
           # platform-independent 1,200+ test regression suite here.
           if [[ "$CIBW_ONLY" == *-macosx_x86_64 ]]; then
-            export CIBW_TEST_COMMAND='cd {project} && python .github/scripts/macos_x64_python_smoke.py'
-            export CIBW_TEST_REQUIRES='numpy'
+            export CIBW_TEST_COMMAND='cd {project} && python .github/scripts/macos_x64_python_smoke.py && python -m pytest python/tests/test_collection_diskann.py::test_native_platform_lifecycle -o addopts= -v'
+            export CIBW_TEST_REQUIRES='numpy pytest'
           fi
 
           if [ -n "$CIBW_ONLY" ]; then

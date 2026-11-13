@@ -20,6 +20,7 @@
 #include <vector>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/time_helper.h>
+#include <zvec/core/interface/constants.h>
 #include "zvec/core/framework/index_error.h"
 #include "zvec/core/framework/index_factory.h"
 #include "zvec/core/framework/index_helper.h"
@@ -43,7 +44,8 @@ int IvfRabitqStreamer::init(const IndexMeta &meta,
   params_ = params;
 
   // Parse IVF RaBitQ specific params
-  int64_t configured_nprobe = static_cast<int64_t>(kDefaultIvfRabitqNprobe);
+  int64_t configured_nprobe =
+      static_cast<int64_t>(core_interface::kDefaultIvfRabitqNumProbes);
   if (params.get(PARAM_IVF_RABITQ_NPROBE, &configured_nprobe) &&
       configured_nprobe < 0) {
     LOG_ERROR("Invalid nprobe, must be greater than or equal to 0");
@@ -624,7 +626,7 @@ int IvfRabitqStreamer::cleanup() {
 
   this->unload();
   params_.clear();
-  nprobe_ = kDefaultIvfRabitqNprobe;
+  nprobe_ = core_interface::kDefaultIvfRabitqNumProbes;
   scan_ratio_ = kDefaultIvfRabitqScanRatio;
   brute_force_threshold_ = kDefaultIvfRabitqBruteForceThreshold;
   state_ = STATE_INIT;

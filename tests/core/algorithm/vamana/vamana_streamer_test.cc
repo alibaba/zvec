@@ -96,8 +96,8 @@ TEST(VamanaStreamerDefaultsTest, TwoPassAfterConstructionAndCleanup) {
 }
 
 TEST(VamanaQueryPrefetchTest, ResolvesSharedDefaultsFromStoredVectorSchema) {
-  const uint32_t default_offset = core_interface::kDefaultPrefetchOffset;
-  const uint32_t default_lines = core_interface::kDefaultPrefetchLines;
+  const uint32_t default_offset = core_interface::kDefaultVamanaPrefetchOffset;
+  const uint32_t default_lines = core_interface::kDefaultVamanaPrefetchLines;
 
   // SIFT: uniform_uint4 stores 64 B; uniform_uint7/uint8 store 128 B;
   // int8_record stores 128 B plus its 20-B record metadata.
@@ -112,38 +112,38 @@ TEST(VamanaQueryPrefetchTest, ResolvesSharedDefaultsFromStoredVectorSchema) {
     EXPECT_EQ(
         std::make_pair(std::min(64U, kPrefetchBudgetLines / lines), lines),
         VamanaContext::resolve_query_prefetch(bytes, 64, default_offset,
-                                               default_lines));
+                                              default_lines));
   }
 }
 
 TEST(VamanaQueryPrefetchTest, CacheLineBoundaryAndByteBudget) {
   constexpr size_t line = AILEGO_CACHE_LINE_SIZE;
-  const uint32_t default_offset = core_interface::kDefaultPrefetchOffset;
-  const uint32_t default_lines = core_interface::kDefaultPrefetchLines;
+  const uint32_t default_offset = core_interface::kDefaultVamanaPrefetchOffset;
+  const uint32_t default_lines = core_interface::kDefaultVamanaPrefetchLines;
 
   for (size_t bytes : {line - 1, line}) {
     EXPECT_EQ(std::make_pair(kPrefetchBudgetLines, 1U),
               VamanaContext::resolve_query_prefetch(bytes, 256, default_offset,
-                                                     default_lines));
+                                                    default_lines));
   }
   for (size_t bytes : {line + 1, 2 * line}) {
     EXPECT_EQ(std::make_pair(kPrefetchBudgetLines / 2, 2U),
               VamanaContext::resolve_query_prefetch(bytes, 256, default_offset,
-                                                     default_lines));
+                                                    default_lines));
   }
   // An explicit line request is clamped to the stored body, including a
   // partial final line. The automatic prefix still obeys the 6 KiB budget.
   EXPECT_EQ(std::make_pair(kPrefetchBudgetLines / 3, 3U),
             VamanaContext::resolve_query_prefetch(2 * line + 1, 256,
-                                                   default_offset, 4));
+                                                  default_offset, 4));
   EXPECT_EQ(std::make_pair(0U, 0U),
             VamanaContext::resolve_query_prefetch(line, 0, default_offset,
-                                                   default_lines));
+                                                  default_lines));
 }
 
 TEST(VamanaQueryPrefetchTest, ManualFieldsOverrideDefaultsIndependently) {
-  const uint32_t default_offset = core_interface::kDefaultPrefetchOffset;
-  const uint32_t default_lines = core_interface::kDefaultPrefetchLines;
+  const uint32_t default_offset = core_interface::kDefaultVamanaPrefetchOffset;
+  const uint32_t default_lines = core_interface::kDefaultVamanaPrefetchLines;
 
   EXPECT_EQ(std::make_pair(48U, 1U),
             VamanaContext::resolve_query_prefetch(64, 64, 48, default_lines));
@@ -194,8 +194,10 @@ class VamanaPrefetchContextTest : public testing::Test {
 
 TEST_F(VamanaPrefetchContextTest, UnchangedRequestsReuseResolvedValues) {
   ailego::Params params;
-  params.set(PARAM_VAMANA_STREAMER_PO, core_interface::kDefaultPrefetchOffset);
-  params.set(PARAM_VAMANA_STREAMER_PL, core_interface::kDefaultPrefetchLines);
+  params.set(PARAM_VAMANA_STREAMER_PO,
+             core_interface::kDefaultVamanaPrefetchOffset);
+  params.set(PARAM_VAMANA_STREAMER_PL,
+             core_interface::kDefaultVamanaPrefetchLines);
   // Matching the initial requested values must still resolve a fresh context.
   ASSERT_EQ(0, context_->update(params));
   expect_prefetch(kDefaultOffset, 2);
@@ -230,8 +232,8 @@ TEST_F(VamanaPrefetchContextTest, UnchangedSettersKeepResolvedValues) {
   context_->prepare_query_prefetch();
   entity_->set_vector_size(64);
   entity_->set_max_degree(96);
-  context_->set_po(core_interface::kDefaultPrefetchOffset);
-  context_->set_pl(core_interface::kDefaultPrefetchLines);
+  context_->set_po(core_interface::kDefaultVamanaPrefetchOffset);
+  context_->set_pl(core_interface::kDefaultVamanaPrefetchLines);
   // Same requests must neither overwrite effective values nor invalidate them.
   expect_prefetch(kDefaultOffset, 2);
   context_->prepare_query_prefetch();
@@ -262,7 +264,8 @@ TEST_F(VamanaPrefetchContextTest,
   ASSERT_EQ(0, context_->update(lines));
   // The manual prefix remains fixed when the per-vector line count changes.
   expect_prefetch(kDefaultOffset, 4);
-  offset.set(PARAM_VAMANA_STREAMER_PO, core_interface::kDefaultPrefetchOffset);
+  offset.set(PARAM_VAMANA_STREAMER_PO,
+             core_interface::kDefaultVamanaPrefetchOffset);
   ASSERT_EQ(0, context_->update(offset));
   expect_prefetch(kFourLineOffset, 4);
 }
@@ -284,7 +287,8 @@ TEST_F(VamanaPrefetchContextTest, PartialUpdatesPreserveAutomaticOffset) {
   ASSERT_EQ(0, context_->update(ailego::Params()));
   expect_prefetch(kFourLineOffset, 4);
 
-  lines.set(PARAM_VAMANA_STREAMER_PL, core_interface::kDefaultPrefetchLines);
+  lines.set(PARAM_VAMANA_STREAMER_PL,
+            core_interface::kDefaultVamanaPrefetchLines);
   ASSERT_EQ(0, context_->update(lines));
   expect_prefetch(kDefaultOffset, 2);
 }
@@ -300,7 +304,8 @@ TEST_F(VamanaPrefetchContextTest, PartialUpdatesPreserveManualFields) {
   ASSERT_EQ(0, context_->update(lines));
   expect_prefetch(12, 4);
 
-  offset.set(PARAM_VAMANA_STREAMER_PO, core_interface::kDefaultPrefetchOffset);
+  offset.set(PARAM_VAMANA_STREAMER_PO,
+             core_interface::kDefaultVamanaPrefetchOffset);
   ASSERT_EQ(0, context_->update(offset));
   expect_prefetch(kFourLineOffset, 4);
   lines.set(PARAM_VAMANA_STREAMER_PL, 1U);
@@ -310,7 +315,8 @@ TEST_F(VamanaPrefetchContextTest, PartialUpdatesPreserveManualFields) {
   offset.set(PARAM_VAMANA_STREAMER_PO, 0U);
   ASSERT_EQ(0, context_->update(offset));
   expect_prefetch(0, 1);
-  lines.set(PARAM_VAMANA_STREAMER_PL, core_interface::kDefaultPrefetchLines);
+  lines.set(PARAM_VAMANA_STREAMER_PL,
+            core_interface::kDefaultVamanaPrefetchLines);
   ASSERT_EQ(0, context_->update(lines));
   expect_prefetch(0, 2);
 }
@@ -342,8 +348,8 @@ TEST_F(VamanaPrefetchContextTest, SettersInvalidateResolvedValues) {
   ASSERT_EQ(0, context_->update(ailego::Params()));
   expect_prefetch(12, 4);
 
-  context_->set_po(core_interface::kDefaultPrefetchOffset);
-  context_->set_pl(core_interface::kDefaultPrefetchLines);
+  context_->set_po(core_interface::kDefaultVamanaPrefetchOffset);
+  context_->set_pl(core_interface::kDefaultVamanaPrefetchLines);
   context_->prepare_query_prefetch();
   expect_prefetch(kDefaultOffset, 2);
 }
@@ -1001,7 +1007,8 @@ TEST_F(VamanaStreamerTest, TestContiguousPackedGraphAndExtraValuesLayout) {
   constexpr size_t kCount = 192;
   constexpr uint64_t kKeyBase = 10000;
   constexpr uint32_t kExpectedLines =
-      (kOriginalDimension + AILEGO_CACHE_LINE_SIZE - 1) / AILEGO_CACHE_LINE_SIZE;
+      (kOriginalDimension + AILEGO_CACHE_LINE_SIZE - 1) /
+      AILEGO_CACHE_LINE_SIZE;
   constexpr uint32_t kExpectedOffset =
       std::min(32U, kPrefetchBudgetLines / kExpectedLines);
 
@@ -1202,14 +1209,13 @@ TEST_F(VamanaStreamerTest, TestContiguousKeepsInt8RecordTailInline) {
     // the inline quantizer tail must remain byte-for-byte unchanged.
     const void *stored = contiguous_entity->get_vector_ptr(probe);
     ASSERT_NE(nullptr, stored);
-    EXPECT_EQ(0U,
-              reinterpret_cast<uintptr_t>(stored) % AILEGO_CACHE_LINE_SIZE);
+    EXPECT_EQ(0U, reinterpret_cast<uintptr_t>(stored) % AILEGO_CACHE_LINE_SIZE);
     std::string expected_record;
     IndexQueryMeta encoded_meta;
     ASSERT_EQ(0, reformer->convert(vectors[probe].data(), raw_query_meta,
                                    &expected_record, &encoded_meta));
-    EXPECT_EQ(0, std::memcmp(stored, expected_record.data(),
-                             expected_record.size()));
+    EXPECT_EQ(
+        0, std::memcmp(stored, expected_record.data(), expected_record.size()));
 
     std::string query;
     IndexQueryMeta query_meta;

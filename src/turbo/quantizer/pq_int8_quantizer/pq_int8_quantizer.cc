@@ -20,8 +20,8 @@
 #include <limits>
 #include <random>
 #include <vector>
-#include <ailego/algorithm/kmeans.h>
-#include <ailego/math/normalizer.h>
+#include <turbo/algorithm/kmeans.h>
+#include <turbo/norm/normalizer.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_threads.h>
 #include "quantizer/common/pq_training_samples.h"
@@ -57,6 +57,7 @@ int PqInt8Quantizer::setup_functions() {
   auto pq_k = get_pq_kernels(DataType::kInt8);
   adc_fn_ = pq_k.asymmetric_distance;
   sdc_fn_ = pq_k.symmetric_distance;
+  batch_sdc_fn_ = pq_k.batch_symmetric_distance;
   batch_adc_fn_ = pq_k.batch_asymmetric_distance;
 
   // L2-only batch distance for encoding: the PQ codebook is trained in L2
@@ -143,6 +144,11 @@ int PqInt8Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   params.get("markov_chain_length", &markov_chain_length_);
   params.get("epsilon", &epsilon_);
   params.get("use_zero_mean", &use_zero_mean_);
+  precompute_sdc_ = true;
+  params.get("precompute_sdc", &precompute_sdc_);
+  // Reinitialization must release a previously trained table, including its
+  // capacity, before allocating training samples for the new codebook.
+  std::vector<float>().swap(dist_table_);
 
   int opq_ret = opq_.init(original_dim_, input_data_type_, params);
   if (opq_ret != 0) return opq_ret;
@@ -177,7 +183,8 @@ void PqInt8Quantizer::setup_chunk_offsets() {
 
 template <typename T>
 void PqInt8Quantizer::train_chunk(const T *data, size_t num, size_t stride,
-                                  size_t sub_idx, uint32_t max_iters) {
+                                  size_t sub_idx, uint32_t max_iters,
+                                  const void *const *rows) {
   const size_t k = kNumCentroids;
   const size_t d = chunk_dim(sub_idx);
   const size_t offset = chunk_offsets_[sub_idx];
@@ -185,23 +192,23 @@ void PqInt8Quantizer::train_chunk(const T *data, size_t num, size_t stride,
 
   // Non-spherical L2 KMeans: the PQ codebook must minimize L2 reconstruction
   // error, so centroids are the true (magnitude-preserving) means.
-  ailego::NumericalKmeans<T, SingleQueueIndexThreads> algorithm(k, d);
+  turbo::NumericalKmeans<T, SingleQueueIndexThreads> algorithm(k, d);
 
   // Append sub-vectors (NumericalKmeans handles transpose internally)
   for (size_t i = 0; i < num; ++i) {
-    const T *sub_vec =
-        reinterpret_cast<const T *>(reinterpret_cast<const uint8_t *>(data) +
-                                    i * stride) +
-        offset;
-    algorithm.append(sub_vec, d);
+    const T *row =
+        rows ? static_cast<const T *>(rows[i])
+             : reinterpret_cast<const T *>(
+                   reinterpret_cast<const uint8_t *>(data) + i * stride);
+    algorithm.append(row + offset, d);
   }
 
   // Single-threaded pool -- parallelism is at the chunk level.
   auto local_threads = std::make_shared<SingleQueueIndexThreads>(1, false);
 
   // KMC2 centroid initialization.
-  ailego::Kmc2CentroidsGenerator<
-      ailego::NumericalKmeans<T, SingleQueueIndexThreads>,
+  turbo::Kmc2CentroidsGenerator<
+      turbo::NumericalKmeans<T, SingleQueueIndexThreads>,
       SingleQueueIndexThreads>
       gen;
   gen.set_chain_length(markov_chain_length_);
@@ -247,6 +254,33 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
   size_t num = std::min(input_count, static_cast<size_t>(kMaxTrainVectors));
   if (num > std::numeric_limits<size_t>::max() / vec_bytes) {
     return kErrUnsupported;
+  }
+
+  auto finish_training = [this]() {
+    // ADC-only consumers do not need the quadratic centroid-pair table.
+    build_centroid_ptrs_cache();
+    if (precompute_sdc_) compute_dist_table();
+    compute_sub_centroid_norms();
+    return 0;
+  };
+
+  // Ordinary L2/IP training only reads the samples. KMeans copies each
+  // chunk's sub-vectors into its own small matrix; a full-width sample copy
+  // is unnecessary when the source can guarantee stable addresses.
+  if (!opq_.enabled() && !use_zero_mean_ && meta_.metric_name() != "Cosine") {
+    std::vector<const void *> rows;
+    std::shared_ptr<const void> lifetime;
+    int ret = BorrowPqTrainingSamples(holder, kMaxTrainVectors, vec_bytes,
+                                      &rows, &lifetime);
+    if (ret == 0) {
+      holder.reset();
+      train_all_chunks(nullptr, num, 0, kMaxKmeansIters, rows.data());
+      // All workers have joined; the learned centroids own their data.
+      std::vector<const void *>().swap(rows);
+      lifetime.reset();
+      return finish_training();
+    }
+    if (ret != IndexError_NotImplemented) return ret;
   }
 
   std::vector<uint8_t> all_data;
@@ -304,20 +338,12 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
 
   train_all_chunks(all_data.data(), num, data_stride, kMaxKmeansIters);
 
-  // Pre-build centroid pointer cache (needed by compute_dist_table).
-  build_centroid_ptrs_cache();
-
-  // Pre-compute SDC dist_table.
-  compute_dist_table();
-
-  // Pre-compute sub-centroid norms for the precomputed residual table.
-  compute_sub_centroid_norms();
-
-  return 0;
+  return finish_training();
 }
 
 void PqInt8Quantizer::train_all_chunks(const void *data, size_t num,
-                                       size_t stride, uint32_t max_iters) {
+                                       size_t stride, uint32_t max_iters,
+                                       const void *const *rows) {
   // Create thread pool.
   auto threads =
       std::make_shared<SingleQueueIndexThreads>(thread_count_, false);
@@ -331,11 +357,11 @@ void PqInt8Quantizer::train_all_chunks(const void *data, size_t num,
     using T = std::remove_const_t<std::remove_pointer_t<decltype(typed_data)>>;
     for (size_t i = 0; i < pool_count; ++i) {
       task_group->submit(
-          ailego::Closure::New([this, typed_data, num, stride, i, pool_count,
-                                max_iters, &finished]() {
+          ailego::Closure::New([this, typed_data, num, stride, rows, i,
+                                pool_count, max_iters, &finished]() {
             for (uint32_t m = static_cast<uint32_t>(i); m < num_chunk_;
                  m += static_cast<uint32_t>(pool_count)) {
-              train_chunk<T>(typed_data, num, stride, m, max_iters);
+              train_chunk<T>(typed_data, num, stride, m, max_iters, rows);
               finished++;
             }
           }));
@@ -630,6 +656,19 @@ void PqInt8Quantizer::calc_distance_dp_query_batch_unquantized(
 
 float PqInt8Quantizer::calc_distance_dp_dp(const void *dp1,
                                            const void *dp2) const {
+  if (dist_table_.empty()) {
+    const auto *a = static_cast<const uint8_t *>(dp1);
+    const auto *b = static_cast<const uint8_t *>(dp2);
+    float distance = 0.0f;
+    for (uint32_t m = 0; m < num_chunk_; ++m) {
+      const void *candidate = centroid_ptrs_cache_[m][b[m]];
+      float part = 0.0f;
+      batch_fn_(&candidate, centroid_ptrs_cache_[m][a[m]], 1, chunk_dim(m),
+                &part, nullptr);
+      distance += part;
+    }
+    return distance;
+  }
   float d = 0.0f;
   sdc_fn_(reinterpret_cast<const uint8_t *>(dp1),
           reinterpret_cast<const uint8_t *>(dp2), dist_table_.data(),
@@ -962,6 +1001,17 @@ DistanceImpl PqInt8Quantizer::sym_distance(const void *query,
                                            const IndexQueryMeta &qmeta) const {
   (void)qmeta;
 
+  if (dist_table_.empty()) {
+    DistanceFunc direct = [this](const void *a, const void *b, size_t,
+                                 float *out) {
+      *out = calc_distance_dp_dp(a, b);
+    };
+    return DistanceImpl(std::move(direct),
+                        std::string(static_cast<const char *>(query),
+                                    quantized_datapoint_vector_length()),
+                        static_cast<size_t>(num_chunk_));
+  }
+
   // SDC kernel needs a lambda: 5 parameters (extra dist_table pointer)
   // vs DistanceFunc's 4.
   auto sdc = sdc_fn_;
@@ -974,9 +1024,17 @@ DistanceImpl PqInt8Quantizer::sym_distance(const void *query,
   size_t code_bytes = quantized_datapoint_vector_length();
   std::string code_storage(static_cast<const char *>(query), code_bytes);
 
-  // SDC has no batch kernel -- use the 3-arg constructor.
-  return DistanceImpl(std::move(sdc_func), std::move(code_storage),
-                      static_cast<size_t>(num_chunk_));
+  BatchDistanceFunc batch_func;
+  if (batch_sdc_fn_) {
+    batch_func = [batch_sdc = batch_sdc_fn_, dt](
+                     const void *const *vectors, const void *query_code,
+                     size_t count, size_t chunks, float *out,
+                     const void *const *) {
+      batch_sdc(vectors, query_code, dt, count, chunks, out);
+    };
+  }
+  return DistanceImpl(std::move(sdc_func), std::move(batch_func),
+                      std::move(code_storage), static_cast<size_t>(num_chunk_));
 }
 
 // ---------------------------------------------------------------------------
@@ -1164,9 +1222,10 @@ int PqInt8Quantizer::deserialize(const void *data, size_t len) {
   int opq_ret = opq_.deserialize(payload.rotate_type, original_dim_, ptr,
                                  static_cast<size_t>(preprocessor_bytes));
   if (opq_ret != 0) return opq_ret;
-  // dist_table_ is intentionally not restored: SDC is only needed during
-  // offline build, not after deserialization (search uses ADC).
-  dist_table_.clear();
+  // ADC search only needs the codebook and a query LUT. Release the SDC table;
+  // prepare_build() restores it before graph construction or inserts into a
+  // reopened writable index.
+  std::vector<float>().swap(dist_table_);
 
   // Re-dispatch kernels and batch distance functions.
   if (setup_functions() != 0) {
@@ -1195,8 +1254,9 @@ int PqInt8Quantizer::import_codebook(const void *data, size_t len) {
 
   std::memcpy(centroids_.data(), data, len);
 
-  // Same derivations as deserialize(); dist_table_ stays unbuilt because SDC is
-  // only used while building.
+  // Discard derivatives of the old codebook, including an allocated SDC table.
+  // SDC can compute directly from the newly imported centroids.
+  std::vector<float>().swap(dist_table_);
   build_centroid_ptrs_cache();
   compute_sub_centroid_norms();
 
@@ -1213,7 +1273,7 @@ template <typename T>
 void PqInt8Quantizer::normalize(T *data, size_t num) const {
   for (size_t i = 0; i < num; ++i) {
     float norm = 0.0f;
-    ailego::Normalizer<T>::L2(data + i * original_dim_, original_dim_, &norm);
+    turbo::Normalizer<T>::L2(data + i * original_dim_, original_dim_, &norm);
   }
 }
 
@@ -1240,7 +1300,7 @@ void PqInt8Quantizer::compute_and_subtract_center(T *data, size_t num) {
 template <typename T>
 void PqInt8Quantizer::normalize(T *vec, float *norm_out) const {
   float norm = 0.0f;
-  ailego::Normalizer<T>::L2(vec, original_dim_, &norm);
+  turbo::Normalizer<T>::L2(vec, original_dim_, &norm);
   if (norm_out) {
     *norm_out = norm;
   }

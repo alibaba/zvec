@@ -17,21 +17,33 @@
 #include <zvec/core/framework/index_provider.h>
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_streamer.h>
+#include "utility/stable_vector_holder.h"
 #include "hnsw_entity.h"
 
 namespace zvec {
 namespace core {
 
-class HnswIndexProvider : public IndexProvider {
+class HnswIndexProvider : public IndexProvider, public StableVectorHolder {
  public:
   HnswIndexProvider(const IndexMeta &meta, const HnswEntity::Pointer &entity,
-                    const std::string &owner)
-      : meta_(meta), entity_(entity), owner_class_(owner) {}
+                    const std::string &owner,
+                    std::shared_ptr<const void> lifetime = nullptr)
+      : meta_(meta),
+        entity_(entity),
+        owner_class_(owner),
+        lifetime_(std::move(lifetime)) {}
 
   HnswIndexProvider(const HnswIndexProvider &) = delete;
   HnswIndexProvider &operator=(const HnswIndexProvider &) = delete;
 
  public:  // holder interface
+  int retain_stable_data(std::shared_ptr<const void> *lifetime) override {
+    if (!lifetime) return IndexError_InvalidArgument;
+    if (!lifetime_) return IndexError_NotImplemented;
+    *lifetime = lifetime_;
+    return 0;
+  }
+
   //! Create a new iterator
   IndexProvider::Iterator::Pointer create_iterator() override {
     return HnswIndexProvider::Iterator::Pointer(new (std::nothrow)
@@ -156,6 +168,7 @@ class HnswIndexProvider : public IndexProvider {
   const IndexMeta &meta_;
   const HnswEntity::Pointer entity_;
   const std::string owner_class_;
+  std::shared_ptr<const void> lifetime_;
 };
 
 }  // namespace core

@@ -16,7 +16,7 @@
 #include <algorithm>
 #include <array>
 #include <type_traits>
-#include <ailego/algorithm/kmeans.h>
+#include <turbo/algorithm/kmeans.h>
 #include "quantizer/distance_quantizer.h"
 
 namespace zvec::core {
@@ -27,12 +27,12 @@ namespace zvec::core {
 template <typename T, bool InnerProduct = false>
 class TurboKmeansContext
     : public std::conditional_t<InnerProduct,
-                                ailego::NumericalInnerProductKmeansContext<T>,
-                                ailego::NumericalKmeansContext<T>> {
+                                turbo::NumericalInnerProductKmeansContext<T>,
+                                turbo::NumericalKmeansContext<T>> {
  public:
   using Base = std::conditional_t<InnerProduct,
-                                  ailego::NumericalInnerProductKmeansContext<T>,
-                                  ailego::NumericalKmeansContext<T>>;
+                                  turbo::NumericalInnerProductKmeansContext<T>,
+                                  turbo::NumericalKmeansContext<T>>;
   using Base::Base;
   using Base::BatchCount;
 

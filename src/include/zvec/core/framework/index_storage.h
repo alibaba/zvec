@@ -34,6 +34,11 @@ class IndexStorage : public IndexModule {
   //! Index Storage Pointer
   typedef std::shared_ptr<IndexStorage> Pointer;
 
+  struct OpenOptions {
+    bool create_if_missing{false};
+    bool read_only{true};
+  };
+
   struct MemoryBlock {
     enum MemoryBlockType {
       MBT_UNKNOWN = 0,
@@ -650,6 +655,15 @@ class IndexStorage : public IndexModule {
   //! Open storage
   virtual int open(const std::string &path, bool create_if_missing) = 0;
 
+  //! Open with independent creation and access permissions. Implementations
+  //! that have not opted in return Unsupported instead of ignoring access.
+  int open(const std::string &path, const OpenOptions &options) {
+    if (options.create_if_missing && options.read_only) {
+      return IndexError_InvalidArgument;
+    }
+    return open_with_options(path, options);
+  }
+
   //! Flush storage
   virtual int flush() = 0;
 
@@ -708,6 +722,12 @@ class IndexStorage : public IndexModule {
 
   virtual std::string file_path() const {
     return "";
+  }
+
+ protected:
+  //! Separate dispatch keeps legacy open() overrides source-compatible.
+  virtual int open_with_options(const std::string &, const OpenOptions &) {
+    return IndexError_Unsupported;
   }
 };
 

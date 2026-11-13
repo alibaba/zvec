@@ -55,6 +55,46 @@ foreach(opt IN LISTS ARCH_OPTIONS)
 endforeach()
 
 include(CheckCCompilerFlag)
+include(CheckCXXCompilerFlag)
+include(CheckCXXSourceCompiles)
+
+# Configure one runtime-dispatched kernel in the target's source directory.
+# The probe must match the kernel's feature guard; accepting a compiler flag
+# alone does not establish that the implementation was compiled.
+function(configure_simd_kernel source dispatcher flags probe definition)
+  string(REPLACE ";" " " _flags "${flags}")
+  list(APPEND CMAKE_REQUIRED_INCLUDES "${PROJECT_ROOT_DIR}/src/include")
+  string(SHA256 _signature
+    "${CMAKE_CXX_COMPILER}|${CMAKE_CXX_COMPILER_VERSION}|${CMAKE_CXX_COMPILER_TARGET}|${CMAKE_SYSTEM_NAME}|${CMAKE_SYSTEM_PROCESSOR}|${CMAKE_OSX_ARCHITECTURES}|${CMAKE_SYSROOT}|${CMAKE_OSX_SYSROOT}|${CMAKE_CXX_STANDARD}|${CMAKE_CXX_FLAGS}|${CMAKE_CXX_FLAGS_DEBUG}|${CMAKE_CXX_FLAGS_RELEASE}|${CMAKE_CXX_FLAGS_RELWITHDEBINFO}|${CMAKE_CXX_FLAGS_MINSIZEREL}|${CMAKE_TRY_COMPILE_CONFIGURATION}|${CMAKE_TRY_COMPILE_TARGET_TYPE}|${CMAKE_REQUIRED_FLAGS}|${CMAKE_REQUIRED_DEFINITIONS}|${CMAKE_REQUIRED_INCLUDES}|${CMAKE_REQUIRED_LIBRARIES}|${CMAKE_REQUIRED_LINK_OPTIONS}|${_flags}|${probe}")
+  if(NOT "${${definition}_SIGNATURE}" STREQUAL "${_signature}")
+    unset(${definition} CACHE)
+    unset(${definition}_FLAGS CACHE)
+    set(${definition}_SIGNATURE "${_signature}" CACHE INTERNAL
+      "SIMD kernel compiler probe inputs" FORCE)
+  endif()
+  check_cxx_compiler_flag("${_flags}" ${definition}_FLAGS)
+  if(${definition}_FLAGS)
+    set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} ${_flags}")
+    check_cxx_source_compiles("${probe}" ${definition})
+  else()
+    set(${definition} FALSE CACHE INTERNAL "SIMD kernel unavailable" FORCE)
+  endif()
+
+  # Repeated calls must neither duplicate HAVE macros nor retain a failed one.
+  get_source_file_property(_definitions "${dispatcher}" COMPILE_DEFINITIONS)
+  if(NOT _definitions)
+    set(_definitions)
+  endif()
+  list(FILTER _definitions EXCLUDE REGEX "^${definition}(=|$)")
+  if(${definition})
+    set_source_files_properties("${source}" PROPERTIES COMPILE_FLAGS "${_flags}")
+    list(APPEND _definitions "${definition}=1")
+  else()
+    set_source_files_properties("${source}" PROPERTIES COMPILE_FLAGS "")
+  endif()
+  set_source_files_properties("${dispatcher}"
+    PROPERTIES COMPILE_DEFINITIONS "${_definitions}")
+endfunction()
 
 function(_AppendFlags _RESULT _FLAG)
   if(${_RESULT} AND NOT "${${_RESULT}}" MATCHES "${_FLAG}")

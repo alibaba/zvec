@@ -932,6 +932,40 @@ class TestCollectionOpen:
         cleanup_coll = zvec.open(path=str(collection_path), option=collection_option)
         cleanup_coll.destroy()
 
+    @pytest.mark.parametrize("read_only", [False, True])
+    def test_open_reports_idmap_recovery_error(
+        self, tmp_path, collection_schema, read_only
+    ):
+        zvec.init()
+        path = tmp_path / "collection"
+        created = zvec.create_and_open(
+            path=str(path),
+            schema=collection_schema,
+            option=CollectionOption(enable_mmap=False),
+        )
+        created.close()
+        # Keep collection metadata valid and fail specifically in IDMap's
+        # RocksDB manifest recovery, after the collection lock is acquired.
+        current = path / "idmap.0" / "CURRENT"
+        # RocksDB requires an LF terminator, including on Windows.
+        original = current.read_bytes()
+        current.write_bytes(b"MANIFEST-999999\n")
+
+        with pytest.raises(RuntimeError, match="recovery idmap failed") as error:
+            zvec.open(
+                path=str(path),
+                option=CollectionOption(read_only=read_only, enable_mmap=False),
+            )
+        assert "Failed to list RocksDB column families" in str(error.value)
+        assert "MANIFEST-999999" in str(error.value)
+
+        current.write_bytes(original)
+        reopened = zvec.open(
+            path=str(path),
+            option=CollectionOption(read_only=read_only, enable_mmap=False),
+        )
+        reopened.close()
+
     def test_open_with_corrupted_files(self, tmp_path_factory):
         # First create a collection
         collection_schema = zvec.CollectionSchema(
@@ -979,39 +1013,25 @@ class TestCollectionOpen:
         if hasattr(created_coll, "close") and created_coll is not None:
             created_coll.close()
 
-        # Test case 1: Delete some files in the collection directory (simulate partial corruption)
-        import os
+        # Test case 1: Remove required metadata while retaining the other files.
         import shutil
-        import random
 
-        # Get the collection directory path
-        collection_dir = str(collection_path)
-
-        # List all files in the collection directory
-        files_in_dir = []
-        for root, dirs, files in os.walk(collection_dir):
-            for file in files:
-                files_in_dir.append(os.path.join(root, file))
-
-        # Randomly delete approximately half of the files to simulate partial corruption
-        if files_in_dir:
-            # Shuffle the list to randomly select files
-            random.shuffle(files_in_dir)
-            files_to_delete = files_in_dir[: len(files_in_dir) // 2]
-            for file_path in files_to_delete:
-                try:
-                    os.remove(file_path)
-                except Exception as e:
-                    pass  # Ignore errors during deletion
+        # A random subset may contain only recoverable RocksDB auxiliary files.
+        # Removing every collection manifest makes partial corruption definite.
+        manifest_files = list(collection_path.glob("manifest.*"))
+        assert manifest_files, "Collection manifest files were not created"
+        for manifest in manifest_files:
+            manifest.unlink()
 
         # Try to open the collection with missing files - should raise an exception
-        with pytest.raises(Exception):
+        with pytest.raises(KeyError, match="Failed to find the version file"):
             zvec.open(path=str(collection_path), option=collection_option)
 
         # Test case 2: Delete all files in the collection directory (simulate complete corruption)
         # Recreate the collection
+        all_collection_path = temp_dir / "test_collection_all"
         recreated_coll = zvec.create_and_open(
-            path=str(collection_path) + "_all",
+            path=str(all_collection_path),
             schema=collection_schema,
             option=collection_option,
         )
@@ -1023,12 +1043,9 @@ class TestCollectionOpen:
             recreated_coll.close()
 
         # Delete all files in the collection directory
-        try:
-            shutil.rmtree(collection_dir)
-            os.makedirs(collection_dir)  # Recreate empty directory
-        except Exception as e:
-            pass  # Ignore errors during deletion
+        shutil.rmtree(all_collection_path)
+        all_collection_path.mkdir()
 
         # Try to open the collection with missing files - should raise an exception
-        with pytest.raises(Exception):
-            zvec.open(path=str(collection_path), option=collection_option)
+        with pytest.raises(RuntimeError):
+            zvec.open(path=str(all_collection_path), option=collection_option)

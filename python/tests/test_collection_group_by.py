@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+import numpy as np
 import pytest
 import zvec
 from zvec import (
@@ -30,6 +31,7 @@ from zvec import (
     Query,
     VectorSchema,
 )
+from zvec._zvec.param import _GroupByVectorQuery
 
 # ==================== Constants ====================
 
@@ -331,6 +333,54 @@ class TestGroupBySearch:
 
 
 class TestGroupByEmptyCollection:
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"group_by_field_name": ""},
+            {"group_count": 0},
+            {"topk_per_group": 0},
+        ],
+    )
+    def test_native_group_by_rejects_invalid_group_params(
+        self, group_by_collection: Collection, overrides: dict
+    ):
+        """Native validation must run before the empty-collection return."""
+        query = _GroupByVectorQuery()
+        query.field_name = "dense_flat"
+        query.group_by_field_name = "group_id"
+        query.group_count = GB_NUM_GROUPS
+        query.topk_per_group = GB_TOPK_PER_GROUP
+        query.set_vector(
+            group_by_collection.schema.vector("dense_flat")._get_object(),
+            np.ones(GB_DIMENSION, dtype=np.float32),
+        )
+        for field, value in overrides.items():
+            setattr(query, field, value)
+
+        # Bypass the public Python wrapper to exercise CollectionImpl directly.
+        with pytest.raises(ValueError, match="Invalid group_by request"):
+            group_by_collection._obj.GroupByQuery(query)
+
+    @pytest.mark.parametrize(
+        ("kwargs", "error"),
+        [
+            ({"group_by_field_name": ""}, "group_by_field_name"),
+            ({"group_by_field_name": "group_id", "group_count": 0}, "group_count"),
+            (
+                {"group_by_field_name": "group_id", "topk_per_group": 0},
+                "topk_per_group",
+            ),
+        ],
+    )
+    def test_group_by_rejects_invalid_group_params(
+        self, group_by_collection: Collection, kwargs: dict, error: str
+    ):
+        with pytest.raises(ValueError, match=error):
+            group_by_collection.group_by_query(
+                Query(field_name="dense_flat", vector=[1.0] * GB_DIMENSION),
+                **kwargs,
+            )
+
     def test_group_by_empty_collection(self, group_by_collection: Collection):
         """Group-by on an empty collection returns an empty list."""
         results = group_by_collection.group_by_query(

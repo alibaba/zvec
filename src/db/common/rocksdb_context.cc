@@ -135,7 +135,8 @@ Status RocksdbContext::open(Args args, bool read_only) {
   if (!s.ok()) {
     LOG_ERROR("Failed to list cf in RocksDB[%s], code[%d], reason[%s]",
               args.db_path.c_str(), s.code(), s.ToString().c_str());
-    return Status::InternalError();
+    return Status::InternalError("Failed to list RocksDB column families: ",
+                                 s.ToString());
   }
 
   auto make_cf_options = [&](const std::string &cf_name) {
@@ -191,7 +192,7 @@ Status RocksdbContext::open(Args args, bool read_only) {
   if (!s.ok()) {
     LOG_ERROR("Failed to open RocksDB[%s], code[%d], reason[%s]",
               args.db_path.c_str(), s.code(), s.ToString().c_str());
-    return Status::InternalError();
+    return Status::InternalError("Failed to open RocksDB: ", s.ToString());
   }
 
   db_.reset(db);

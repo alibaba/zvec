@@ -16,7 +16,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <zvec/ailego/math_batch/utils.h>
 #include <zvec/export.h>
 
 namespace zvec::turbo {
@@ -48,8 +47,7 @@ using DistanceFunc =
 using BatchDistanceFunc =
     std::function<void(const void **m, const void *q, size_t num, size_t dim,
                        float *out, const void **extra_values)>;
-using QueryPreprocessFunc =
-    zvec::ailego::distance_batch::DistanceBatchQueryPreprocessFunc;
+using QueryPreprocessFunc = void (*)(void *query, size_t dim);
 
 // Uniform UINT7 quantize kernel: fp32 -> int8 code in [0, 127] with a global
 // affine transform. Raw function pointer (rather than std::function) avoids
@@ -99,6 +97,11 @@ using CodebookBatchAsymmetricDistanceFunc =
     void (*)(const void **codes, const void *lut, size_t num, size_t num_chunk,
              float *out, const void **extra_values);
 
+// Batch symmetric: multiple codes against one code and a shared distance table.
+using CodebookBatchSymmetricDistanceFunc =
+    void (*)(const void *const *codes, const void *query,
+             const void *dist_table, size_t num, size_t num_chunk, float *out);
+
 // FastScan ADC kernel: LUT look-up + accumulate over one packed block of 32
 // vectors.  Codes are 4-bit and block-interleaved, the LUT is affine-quantized
 // to uint8; accumulation stays in the integer domain (callers apply
@@ -126,12 +129,14 @@ struct RotatorKernels {
 //
 // Fields are populated per family and are mutually exclusive: kPQ fills
 // asymmetric_distance / symmetric_distance / batch_asymmetric_distance,
+// and optionally batch_symmetric_distance when the ISA provides it,
 // kPQFast fills only fast_scan (the packed block scan is its sole read path).
 struct CodebookKernels {
   CodebookAsymmetricDistanceFunc asymmetric_distance = nullptr;
   CodebookSymmetricDistanceFunc symmetric_distance = nullptr;
   CodebookBatchAsymmetricDistanceFunc batch_asymmetric_distance = nullptr;
   CodebookFastScanFunc fast_scan = nullptr;
+  CodebookBatchSymmetricDistanceFunc batch_symmetric_distance = nullptr;
 };
 
 enum class MetricType {
@@ -151,6 +156,8 @@ enum class DataType {
   kUnknown,
   kUint4,
   kUint7,
+  kFp64,  // Raw clustering inputs.
+  kInt16,
 };
 
 enum class QuantizeType {

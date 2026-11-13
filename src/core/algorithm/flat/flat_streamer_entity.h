@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <memory>
 #include <mutex>
@@ -26,6 +27,7 @@
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
+#include <zvec/turbo/batch_topk.h>
 #include "flat_index_format.h"
 #include "flat_utility.h"
 
@@ -39,6 +41,8 @@ struct FlatSearchScratch {
   std::vector<uint64_t> vector_keys{};
   std::vector<float> distances{};
   std::vector<uint8_t> query_buffer{};
+  std::vector<uint8_t> key_presence{};
+  turbo::BatchTopK batch_topk;
 };
 
 /*! Flat Streamer Entity
@@ -118,6 +122,9 @@ class FlatStreamerEntity {
     return meta_.header.total_vector_count;
   }
 
+  // Retain the mmap backing for data read through existing iterators.
+  int retain_stable_data(std::shared_ptr<const void> *lifetime) const;
+
   //! Retrieve the linear list count
   size_t linear_list_count() const {
     return meta_.header.linear_list_count;
@@ -173,6 +180,41 @@ class FlatStreamerEntity {
     LOG_DEBUG("use_key_info_map_: %d", (int)use_key_info_map_);
   }
 
+  void set_use_external_vector(bool enabled) {
+    use_external_vector_ = enabled;
+    // Persist the physical layout independently of the logical vector meta.
+    meta_.header.reserved_[0] = enabled ? 1 : 0;
+  }
+
+  // A null keys pointer denotes consecutive IDs starting at first_key.
+  void key_presence(const uint32_t *keys, size_t count, uint32_t first_key,
+                    std::vector<uint8_t> *present) const {
+    present->resize(count);
+    ailego::ReadLock lock(*key_info_map_lock_);
+    std::lock_guard<ailego::ReadLock> guard(lock);
+    for (size_t i = 0; i < count; ++i) {
+      const auto key = keys ? keys[i] : first_key + i;
+      (*present)[i] = key_info_map_.find(key) != key_info_map_.end();
+    }
+  }
+
+  size_t registered_key_count() const {
+    ailego::ReadLock lock(*key_info_map_lock_);
+    std::lock_guard<ailego::ReadLock> guard(lock);
+    return id_key_vector_.size();
+  }
+
+  // Copy a bounded batch so source callbacks never run under the key lock.
+  void get_registered_keys(size_t offset, size_t count,
+                           std::vector<uint64_t> *keys) const {
+    ailego::ReadLock lock(*key_info_map_lock_);
+    std::lock_guard<ailego::ReadLock> guard(lock);
+    offset = std::min(offset, id_key_vector_.size());
+    count = std::min(count, id_key_vector_.size() - offset);
+    auto begin = id_key_vector_.begin() + offset;
+    keys->assign(begin, begin + count);
+  }
+
   //! Set params
   void set_segment_size(uint32_t size) {
     meta_.segment_size = size;
@@ -197,12 +239,26 @@ class FlatStreamerEntity {
     return key(id) != kInvalidKey;
   }
 
-  inline uint64_t key(uint32_t id) const {
-    if (id < id_key_vector_.size()) {
-      return id_key_vector_[id];
-    } else {
-      return kInvalidKey;
+  //! Read a key without conflating a missing slot with a storage read error.
+  //! A valid positional hole returns success with kInvalidKey.
+  inline int get_key(uint32_t id, uint64_t *out) const {
+    if (!out) {
+      return -1;
     }
+    if (!use_key_info_map_) {
+      // Positional indexes do not rebuild the key cache on open.
+      return get_key_by_position(id, out);
+    }
+    if (id >= id_key_vector_.size()) {
+      return -1;
+    }
+    *out = id_key_vector_[id];
+    return 0;
+  }
+
+  inline uint64_t key(uint32_t id) const {
+    uint64_t out = kInvalidKey;
+    return get_key(id, &out) == 0 ? out : kInvalidKey;
   }
 
   inline void row_major_distance(const void *query, const void *feature,
@@ -268,6 +324,11 @@ class FlatStreamerEntity {
   FlatStreamerEntity &operator=(const FlatStreamerEntity &) = delete;
 
  private:
+  int search_batch_rows(const void *query, const IndexFilter &filter,
+                        uint32_t *scan_count, IndexDocumentHeap *heap,
+                        IndexContext::Stats *context_stats,
+                        FlatSearchScratch *scratch, size_t batch_size) const;
+
   /*! Iterator of all the linear list
    */
   class Iterator : public IndexProvider::Iterator {
@@ -400,6 +461,10 @@ class FlatStreamerEntity {
                    size_t size);
 
  private:
+  size_t stored_vector_size() const {
+    return use_external_vector_ ? 0 : index_meta_.element_size();
+  }
+
   size_t get_block_offset(uint32_t block_index) const {
     return block_index * linear_block_size();
   }
@@ -416,14 +481,14 @@ class FlatStreamerEntity {
   size_t get_block_key_offset(uint32_t block_index,
                               uint32_t vector_index) const {
     return get_block_offset(block_index) +
-           block_vector_count() * index_meta_.element_size() +
+           block_vector_count() * stored_vector_size() +
            sizeof(uint64_t) * vector_index;
   }
 
   size_t get_block_vector_offset(uint32_t block_index,
                                  uint32_t vector_index) const {
     return this->get_block_offset(block_index) +
-           vector_index * index_meta_.element_size();
+           vector_index * stored_vector_size();
   }
 
   //! Get header block of an linear list
@@ -509,7 +574,10 @@ class FlatStreamerEntity {
   // Distance loops repeatedly read this metadata. Keep it off the cache line
   // written by segment-cache locking in concurrent queries.
   alignas(AILEGO_CACHE_LINE_SIZE) IndexMeta index_meta_{};
+  bool use_external_vector_{false};
   IndexStorage::Pointer storage_{};
+  // Distance callbacks may capture the metric's state (for example MIPS).
+  IndexMetric::Pointer metric_{};
   IndexMetric::MatrixDistance row_distance_{}, column_distance_{};
   IndexMetric::MatrixBatchDistance batch_distance_{};
   std::shared_ptr<zvec::turbo::Quantizer> quantizer_{};

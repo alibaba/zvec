@@ -13,8 +13,8 @@ int main(void) {
   int minor = zvec_get_version_minor();
   int patch = zvec_get_version_patch();
   if (!zvec_check_version(major, minor, patch)) {
-    fprintf(stderr, "c_smoke: zvec_check_version(%d.%d.%d) failed\n",
-            major, minor, patch);
+    fprintf(stderr, "c_smoke: zvec_check_version(%d.%d.%d) failed\n", major,
+            minor, patch);
     return 1;
   }
   printf("c_smoke: OK\n");
