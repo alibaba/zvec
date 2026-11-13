@@ -223,6 +223,148 @@ TEST_P(IVFLegacyMatrixTest, PersistedColumnBlocksMatchIndependentReference) {
   validate();
 }
 
+TEST_P(IVFLegacyMatrixTest, ColumnBatchPreservesScanOrderAndLimits) {
+  const auto type = std::get<0>(GetParam());
+  const bool integer = type == IndexMeta::DT_INT8 || type == IndexMeta::DT_INT4;
+  for (bool record : {false, true}) {
+    if (record && !integer) continue;
+    record_quantized_ = record;
+    // Mixed full blocks, row-major tails and an empty list.
+    ASSERT_NO_FATAL_FAILURE(write_index(128, {65, 0, 33, 31}));
+    Bytes batch;
+    for (size_t q = 0; q < 35; ++q) {
+      const auto &row = rows_[(q * 19) % rows_.size()];
+      batch.insert(batch.end(), row.begin(), row.end());
+    }
+    const IndexQueryMeta qmeta(meta_.data_type(), meta_.dimension());
+    for (const char *storage_name :
+         {"FileReadStorage", "MMapFileReadStorage", "BufferReadStorage"}) {
+      SCOPED_TRACE(storage_name);
+      auto storage = open_storage(storage_name);
+      ASSERT_NE(nullptr, storage);
+      IVFEntity entity;
+      ASSERT_EQ(0, entity.load(storage));
+      ASSERT_TRUE(entity.column_many_supported());
+      IVFSearcher searcher;
+      ASSERT_NO_FATAL_FAILURE(init_searcher(storage, &searcher));
+      auto grouped = searcher.create_context();
+      auto single = searcher.create_context();
+      ASSERT_NE(nullptr, grouped);
+      ASSERT_NE(nullptr, single);
+      grouped->set_topk(7);
+      single->set_topk(7);
+      for (uint32_t nprobe : {0U, 1U, 4U}) {
+        SCOPED_TRACE(nprobe);
+        ailego::Params params;
+        params.set(PARAM_IVF_SEARCHER_NPROBE, nprobe);
+        params.set(PARAM_IVF_SEARCHER_SCAN_RATIO, 0.4);
+        params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1U);
+        ASSERT_EQ(0, grouped->update(params));
+        ASSERT_EQ(0, single->update(params));
+        for (bool bf : {false, true}) {
+          for (uint32_t count : {2U, 7U, 35U}) {
+            ASSERT_EQ(0, bf ? searcher.search_bf_impl(batch.data(), qmeta,
+                                                      count, grouped)
+                            : searcher.search_impl(batch.data(), qmeta, count,
+                                                   grouped));
+            for (uint32_t q = 0; q < count; ++q) {
+              const void *query = batch.data() + q * qmeta.element_size();
+              ASSERT_EQ(0, bf ? searcher.search_bf_impl(query, qmeta, single)
+                              : searcher.search_impl(query, qmeta, single));
+              ASSERT_EQ(single->result().size(), grouped->result(q).size());
+              EXPECT_EQ(static_cast<IVFSearcherContext *>(single.get())
+                            ->stats()
+                            .dist_calced_count(),
+                        static_cast<IVFSearcherContext *>(grouped.get())
+                            ->stats(q)
+                            .dist_calced_count());
+              for (size_t i = 0; i < single->result().size(); ++i) {
+                EXPECT_EQ(single->result()[i].key(),
+                          grouped->result(q)[i].key());
+                EXPECT_FLOAT_EQ(single->result()[i].score(),
+                                grouped->result(q)[i].score());
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST_P(IVFLegacyMatrixTest, JointKernelDispatchPreservesMetricAndTail) {
+  ASSERT_NO_FATAL_FAILURE(write_index(128, {33}));
+  auto metric = IndexFactory::CreateMetric(meta_.metric_name());
+  ASSERT_NE(nullptr, metric);
+  ASSERT_EQ(0, metric->init(meta_, meta_.metric_params()));
+  IVFDistanceCalculator calculator(meta_, metric, 32);
+  bool supported = false;
+  if (meta_.data_type() == IndexMeta::DT_FP32 ||
+      meta_.data_type() == IndexMeta::DT_FP16) {
+    supported = bool(turbo::get_interleaved_many_to_many_distance_func(
+        std::get<1>(GetParam()) ? turbo::MetricType::kInnerProduct
+                                : turbo::MetricType::kSquaredEuclidean,
+        meta_.data_type() == IndexMeta::DT_FP32 ? turbo::DataType::kFp32
+                                                : turbo::DataType::kFp16,
+        32));
+  }
+  EXPECT_EQ(supported, calculator.joint_column_kernel());
+  // Partial blocks use the original row-major tail calculation.
+  std::vector<uint8_t> tail;
+  for (size_t i = 0; i < 31; ++i)
+    tail.insert(tail.end(), rows_[i].begin(), rows_[i].end());
+  std::vector<const void *> queries;
+  for (const auto &query : queries_) queries.push_back(query.data());
+  std::vector<float> out(32 * queries.size(), -12345.0f);
+  calculator.column_queries_distance(queries.data(), queries.size(),
+                                     tail.data(), 31, out.data());
+  for (size_t q = 0; q < queries.size(); ++q) {
+    EXPECT_EQ(-12345.0f, out[q * 32 + 31]);
+    for (size_t i = 0; i < 31; ++i) {
+      const double expected = reference(q, i);
+      EXPECT_NEAR(expected, out[q * 32 + i],
+                  1e-4 * std::max(1.0, std::abs(expected)));
+    }
+  }
+  // A same-name custom callback must not be replaced by a raw joint kernel.
+  class CustomMetric : public IndexMetric {
+   public:
+    int init(const IndexMeta &, const ailego::Params &) override {
+      return 0;
+    }
+    int cleanup() override {
+      return 0;
+    }
+    bool is_matched(const IndexMeta &) const override {
+      return true;
+    }
+    bool is_matched(const IndexMeta &, const IndexQueryMeta &) const override {
+      return true;
+    }
+    const ailego::Params &params() const override {
+      static const ailego::Params empty;
+      return empty;
+    }
+    Pointer query_metric() const override {
+      return nullptr;
+    }
+    MatrixDistance distance() const override {
+      return
+          [](const void *, const void *, size_t, float *out) { *out = 123.0f; };
+    }
+    MatrixDistance distance_matrix(size_t m, size_t) const override {
+      return [m](const void *, const void *, size_t, float *out) {
+        std::fill_n(out, m, 123.0f);
+      };
+    }
+  };
+  IVFDistanceCalculator custom(meta_, std::make_shared<CustomMetric>(), 32);
+  EXPECT_FALSE(custom.joint_column_kernel());
+  custom.column_queries_distance(queries.data(), queries.size(), nullptr, 32,
+                                 out.data());
+  for (float score : out) EXPECT_EQ(123.0f, score);
+}
+
 TEST_P(IVFLegacyMatrixTest,
        PersistedRecordQuantizedBlocksMatchIndependentReference) {
   if (std::get<0>(GetParam()) != IndexMeta::DT_INT8 &&

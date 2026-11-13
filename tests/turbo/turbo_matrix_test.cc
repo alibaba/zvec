@@ -20,6 +20,7 @@
 #include <new>
 #include <type_traits>
 #include <vector>
+#include <ailego/internal/cpu_features.h>
 #include <core/metric/metric_params.h>
 #include <gtest/gtest.h>
 #include <turbo/distance/matrix.h>
@@ -133,6 +134,185 @@ TEST(TurboMatrix, DirectInterleavedLayoutsAndNoAllocations) {
   CheckMatrices<int16_t>();
   CheckMatrices<int8_t>();
   CheckMatrices<uint8_t>();
+}
+
+template <typename T>
+void CheckJointQueries(turbo::CpuArchType arch = turbo::CpuArchType::kAuto) {
+  for (size_t rows : {2U, 4U, 8U, 16U, 32U}) {
+    for (bool ip : {false, true}) {
+      auto kernel = turbo::get_interleaved_many_to_many_distance_func(
+          ip ? turbo::MetricType::kInnerProduct
+             : turbo::MetricType::kSquaredEuclidean,
+          turbo::MatrixDataType<T>(), rows, arch);
+      ASSERT_TRUE(kernel);
+      for (size_t dim : {0U, 1U, 7U, 8U, 17U, 128U, 513U}) {
+        for (size_t n : {0U, 1U, 2U, 3U, 7U, 8U, 31U, 32U, 35U}) {
+          SCOPED_TRACE(::testing::Message()
+                       << rows << "x" << n << " dim=" << dim << " ip=" << ip);
+          std::vector<T> matrix(rows * dim + 1);
+          std::vector<std::vector<T>> queries(n, std::vector<T>(dim + 1));
+          std::vector<const void *> pointers;
+          for (size_t d = 0; d < dim; ++d) {
+            for (size_t i = 0; i < rows; ++i) {
+              matrix[1 + d * rows + i] =
+                  T(float(int((d * 13 + i * 7) % 31) - 15) / 7);
+            }
+            for (size_t q = 0; q < n; ++q) {
+              queries[q][1 + d] = T(float(int((q * 11 + d * 3) % 29) - 14) / 9);
+            }
+          }
+          for (size_t q = 0; q < n; ++q)
+            pointers.push_back(queries[q].data() + 1);
+          const auto original_matrix = matrix;
+          const auto original_queries = queries;
+          std::vector<float> result(rows * n + 2, -12345.0f);
+          allocation_count = 0;
+          count_allocations = true;
+          kernel(matrix.data() + 1, pointers.data(), n, dim, result.data() + 1);
+          count_allocations = false;
+          EXPECT_EQ(0U, allocation_count);
+          EXPECT_EQ(-12345.0f, result.front());
+          EXPECT_EQ(-12345.0f, result.back());
+          EXPECT_EQ(original_matrix, matrix);
+          EXPECT_EQ(original_queries, queries);
+          for (size_t q = 0; q < n; ++q) {
+            for (size_t i = 0; i < rows; ++i) {
+              double expected = 0, magnitude = 1;
+              for (size_t d = 0; d < dim; ++d) {
+                const double x = float(matrix[1 + d * rows + i]);
+                const double y = float(queries[q][1 + d]);
+                const double term = ip ? -x * y : (x - y) * (x - y);
+                expected += term;
+                magnitude += std::abs(term);
+              }
+              EXPECT_NEAR(expected, result[1 + q * rows + i], 2e-5 * magnitude);
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST(TurboMatrix, JointInterleavedQueriesAndNoAllocations) {
+  using namespace turbo;
+  if (!get_interleaved_many_to_many_distance_func(MetricType::kInnerProduct,
+                                                  DataType::kFp32, 32))
+    GTEST_SKIP() << "No compiled joint kernel supported by this CPU";
+  CheckJointQueries<float>();
+  if (get_interleaved_many_to_many_distance_func(MetricType::kInnerProduct,
+                                                 DataType::kFp16, 32))
+    CheckJointQueries<ailego::Float16>();
+}
+
+TEST(TurboMatrix, Avx2JointInterleavedQueriesAndNoAllocations) {
+  using namespace turbo;
+  if (!get_interleaved_many_to_many_distance_func(
+          MetricType::kInnerProduct, DataType::kFp32, 32, CpuArchType::kAVX2))
+    GTEST_SKIP() << "AVX2 + FMA joint kernel unavailable";
+  CheckJointQueries<float>(CpuArchType::kAVX2);
+  if (get_interleaved_many_to_many_distance_func(
+          MetricType::kInnerProduct, DataType::kFp16, 32, CpuArchType::kAVX2))
+    CheckJointQueries<ailego::Float16>(CpuArchType::kAVX2);
+}
+
+TEST(TurboMatrix, InterleavedDispatchHonorsArchitectureAndLayout) {
+  using namespace turbo;
+  for (auto type : {DataType::kFp32, DataType::kFp16}) {
+    for (auto metric :
+         {MetricType::kInnerProduct, MetricType::kSquaredEuclidean}) {
+      for (size_t rows : {2U, 4U, 8U, 16U, 32U}) {
+        auto automatic =
+            get_interleaved_many_to_many_distance_func(metric, type, rows);
+        auto neon = get_interleaved_many_to_many_distance_func(
+            metric, type, rows, CpuArchType::kNEON);
+        auto avx2 = get_interleaved_many_to_many_distance_func(
+            metric, type, rows, CpuArchType::kAVX2);
+        EXPECT_EQ(bool(neon) || bool(avx2), bool(automatic));
+#if defined(AILEGO_ARM64_GNU_LIKE)
+        ASSERT_TRUE(neon);
+#else
+        EXPECT_FALSE(neon);
+#endif
+        if (neon) neon(nullptr, nullptr, 0, 128, nullptr);
+        if (avx2) avx2(nullptr, nullptr, 0, 128, nullptr);
+        for (auto arch :
+             {CpuArchType::kScalar, CpuArchType::kSSE2, CpuArchType::kAVX512,
+              CpuArchType::kAVX512VNNI, CpuArchType::kAVX512FP16}) {
+          EXPECT_FALSE(get_interleaved_many_to_many_distance_func(metric, type,
+                                                                  rows, arch));
+        }
+      }
+    }
+  }
+  for (size_t rows : {0U, 1U, 3U, 33U, 64U}) {
+    EXPECT_FALSE(get_interleaved_many_to_many_distance_func(
+        MetricType::kInnerProduct, DataType::kFp32, rows));
+  }
+  EXPECT_FALSE(get_interleaved_many_to_many_distance_func(MetricType::kCosine,
+                                                          DataType::kFp32, 32));
+  EXPECT_FALSE(get_interleaved_many_to_many_distance_func(
+      MetricType::kInnerProduct, DataType::kInt8, 32));
+  auto &flags = ailego::internal::CpuFeatures::static_flags_;
+  const auto saved = flags;
+  flags.NEON = false;
+  auto neon = get_interleaved_many_to_many_distance_func(
+      MetricType::kInnerProduct, DataType::kFp32, 32, CpuArchType::kNEON);
+  flags = saved;
+  EXPECT_FALSE(neon);
+  for (int missing = 0; missing < 3; ++missing) {
+    if (missing == 0) flags.AVX2 = false;
+    if (missing == 1) flags.FMA = false;
+    if (missing == 2) flags.F16C = false;
+    auto half = get_interleaved_many_to_many_distance_func(
+        MetricType::kInnerProduct, DataType::kFp16, 32, CpuArchType::kAVX2);
+    auto full = get_interleaved_many_to_many_distance_func(
+        MetricType::kInnerProduct, DataType::kFp32, 32, CpuArchType::kAVX2);
+    flags = saved;
+    EXPECT_FALSE(half);
+    if (missing < 2)
+      EXPECT_FALSE(full);
+    else
+      EXPECT_EQ(bool(full), bool(get_interleaved_many_to_many_distance_func(
+                                MetricType::kInnerProduct, DataType::kFp32, 32,
+                                CpuArchType::kAVX2)));
+  }
+}
+
+TEST(TurboMatrix, InterleavedFp16AccumulatesInFp32) {
+  using namespace turbo;
+  constexpr size_t Rows = 32, Dim = 17, Queries = 3;
+  std::vector<ailego::Float16> matrix(Rows * Dim), query(Queries * Dim);
+  std::vector<const void *> pointers;
+  for (size_t i = 0; i < matrix.size(); ++i)
+    matrix[i] = ailego::Float16(i % 3 ? 65504.0f : -65504.0f);
+  for (size_t q = 0; q < Queries; ++q) {
+    pointers.push_back(query.data() + q * Dim);
+    for (size_t d = 0; d < Dim; ++d)
+      query[q * Dim + d] = ailego::Float16((q + d) % 2 ? 65504.0f : -65504.0f);
+  }
+  for (auto metric :
+       {MetricType::kInnerProduct, MetricType::kSquaredEuclidean}) {
+    auto kernel = get_interleaved_many_to_many_distance_func(
+        metric, DataType::kFp16, Rows);
+    if (!kernel) GTEST_SKIP() << "No joint FP16 kernel";
+    std::vector<float> out(Rows * Queries);
+    kernel(matrix.data(), pointers.data(), Queries, Dim, out.data());
+    for (size_t q = 0; q < Queries; ++q)
+      for (size_t i = 0; i < Rows; ++i) {
+        double expected = 0, magnitude = 1;
+        for (size_t d = 0; d < Dim; ++d) {
+          const double x = float(matrix[d * Rows + i]),
+                       y = float(query[q * Dim + d]);
+          const double term =
+              metric == MetricType::kInnerProduct ? -x * y : (x - y) * (x - y);
+          expected += term;
+          magnitude += std::abs(term);
+        }
+        EXPECT_TRUE(std::isfinite(out[q * Rows + i]));
+        EXPECT_NEAR(expected, out[q * Rows + i], 2e-5 * magnitude);
+      }
+  }
 }
 
 template <typename T, size_t Rows, turbo::MetricType Metric>
@@ -363,7 +543,8 @@ TEST(TurboMatrix, RecordAndMipsFastMatricesDoNotAllocate) {
           matrix(data.data(), query.data(), dim, output.data());
           count_allocations = false;
           size_t expected_allocations = 0;
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || \
+    defined(_M_IX86)
           // These x86 record shapes deliberately use the faster contiguous
           // SIMD adapter, which owns a matrix buffer and a query buffer.
           if (record && (type == IndexMeta::DT_INT4 || columns > 1))

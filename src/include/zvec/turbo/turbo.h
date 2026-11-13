@@ -54,6 +54,13 @@ using BatchDistanceFunc =
 using ManyToManyDistanceFunc = std::function<void(
     const void *const *vectors, const void *const *queries, size_t m, size_t n,
     size_t dim, float *out, const void *const *extra_values)>;
+// A fixed-width interleaved candidate block and N contiguous query vectors.
+// The factory fixes M; candidates use element[d * M + i], queries are not
+// interleaved, and output is out[j * M + i]. No metadata/preprocessing is
+// added.
+using InterleavedManyToManyDistanceFunc =
+    std::function<void(const void *vectors, const void *const *queries,
+                       size_t n, size_t dim, float *out)>;
 using QueryPreprocessFunc = void (*)(void *query, size_t dim);
 
 // Uniform UINT7 quantize kernel: fp32 -> int8 code in [0, 127] with a global
@@ -224,6 +231,20 @@ ZVEC_TURBO_API BatchDistanceFunc get_batch_distance_func(
 // unavailable explicit ISAs return an empty function, as with batch dispatch.
 ZVEC_TURBO_API ManyToManyDistanceFunc get_many_to_many_distance_func(
     MetricType metric_type, DataType data_type, QuantizeType quantize_type,
+    CpuArchType cpu_arch_type = CpuArchType::kAuto);
+
+// Raw element-interleaved candidates: vectors[d * rows + i]. Queries remain
+// contiguous; results are query-major, out[q * rows + i]. No preprocessing or
+// metadata is added. rows is fixed by the returned function (2/4/8/16/32).
+// Supports FP32/FP16 IP/L2 on ARM64 GNU/Clang NEON or AVX2 + FMA
+// (FP16 additionally requires F16C). Unsupported
+// shapes/types/metrics and unavailable or unimplemented explicit ISAs return
+// empty; kAuto selects only a compiled kernel supported by the current CPU.
+// n == 0 is a no-op even with null pointers; otherwise out holds rows*n floats
+// and must not overlap inputs. Both FP16 and FP32 accumulate in FP32.
+ZVEC_TURBO_API InterleavedManyToManyDistanceFunc
+get_interleaved_many_to_many_distance_func(
+    MetricType metric_type, DataType data_type, size_t rows,
     CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
 ZVEC_TURBO_API QueryPreprocessFunc get_query_preprocess_func(

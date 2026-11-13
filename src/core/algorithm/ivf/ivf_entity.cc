@@ -1119,6 +1119,142 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
   return 0;
 }
 
+turbo::ManyToManyDistanceFunc IVFEntity::many_distance() const {
+  const auto &quantizer = quantizer_ ? quantizer_ : distance_quantizer_;
+  if (!quantizer || meta_.major_order() != IndexMeta::MO_ROW ||
+      packed_quantizer_ || !query_distance_.batch_valid())
+    return {};
+  const auto type = quantizer->type();
+  if (type != turbo::QuantizeType::kFp16 && type != turbo::QuantizeType::kFp32)
+    return {};
+  const auto data_type = type == turbo::QuantizeType::kFp16
+                             ? turbo::DataType::kFp16
+                             : turbo::DataType::kFp32;
+  turbo::MetricType metric;
+  if (meta_.metric_name() == "InnerProduct") {
+    metric = turbo::MetricType::kInnerProduct;
+  } else if (meta_.metric_name() == "Cosine") {
+    metric = turbo::MetricType::kCosine;
+  } else if (meta_.metric_name() == "SquaredEuclidean") {
+    metric = turbo::MetricType::kSquaredEuclidean;
+  } else {
+    return {};
+  }
+  using Batch = void (*)(const void *const *, const void *, size_t, size_t,
+                         float *, const void *const *);
+  const auto bound = query_distance_.batch_func().target<Batch>();
+  if (!bound) return {};
+  // Raw and explicitly quantized FP16 can select different accumulation
+  // precision. Use many-to-many only when its dispatch matches the bound one.
+  for (auto candidate : {turbo::QuantizeType::kRaw, type}) {
+    auto batch = turbo::get_batch_distance_func(metric, data_type, candidate);
+    const auto selected = batch.target<Batch>();
+    if (selected && *selected == *bound) {
+      return turbo::get_many_to_many_distance_func(metric, data_type,
+                                                   candidate);
+    }
+  }
+  return {};
+}
+
+int IVFEntity::search_many(
+    size_t inverted_list_id,
+    const std::vector<const turbo::DistanceImpl *> &queries,
+    const turbo::ManyToManyDistanceFunc &distance,
+    const std::vector<IndexDocumentHeap *> &heaps,
+    const std::vector<IndexContext::Stats *> &stats,
+    uint32_t *scan_count) const {
+  IndexStorage::MemoryBlock meta_block;
+  const auto list_meta = inverted_list_meta(inverted_list_id, meta_block);
+  ivf_assert(list_meta, IndexError_ReadData);
+  const size_t block_vecs = header_.block_vector_count;
+  const size_t block_size = header_.block_size;
+  const size_t element_size = meta_.element_size();
+  const size_t n = queries.size();
+  const bool row_major = meta_.major_order() == IndexMeta::MO_ROW;
+  std::vector<float> distances(block_vecs * n), tile;
+  std::vector<const void *> rows(block_vecs), query_ptrs;
+  for (const auto *q : queries) query_ptrs.push_back(q->query_storage().data());
+  scatter_vector_.resize(element_size);
+  const auto calculate = [&](const void *features, size_t m, float *out) {
+    for (size_t i = 0; i < m; ++i) {
+      rows[i] = static_cast<const char *>(features) + i * element_size;
+    }
+    if (n == 1) {
+      queries[0]->batch(rows.data(), m, out);
+      return;
+    }
+    // Full blocks already have the query-major output stride the kernel
+    // expects. Only page fragments and the final partial block need a tile.
+    if (m == block_vecs) {
+      distance(rows.data(), query_ptrs.data(), m, n, queries[0]->dim(), out,
+               nullptr);
+      return;
+    }
+    tile.resize(m * n);
+    distance(rows.data(), query_ptrs.data(), m, n, queries[0]->dim(),
+             tile.data(), nullptr);
+    const size_t offset = out - distances.data();
+    for (size_t q = 0; q < n; ++q) {
+      std::copy_n(tile.data() + q * m, m,
+                  distances.data() + q * block_vecs + offset);
+    }
+  };
+  const auto norm = inverted_list_normalize_value(inverted_list_id);
+  for (size_t i = 0; i < list_meta->block_count; i += kBatchBlocks) {
+    const size_t blocks = std::min(kBatchBlocks, list_meta->block_count - i);
+    const size_t items =
+        std::min(blocks * block_vecs, list_meta->vector_count - i * block_vecs);
+    IndexStorage::MemoryBlock keys_block;
+    const auto keys =
+        get_keys(list_meta->id_offset + i * block_vecs, items, keys_block);
+    if (!keys) return IndexError_ReadData;
+    // Keep the existing key-before-vector pin lifetime for paged storage.
+    const size_t off = list_meta->offset + i * block_size;
+    const size_t size =
+        std::min(blocks * block_size,
+                 static_cast<size_t>(header_.inverted_body_size - off));
+    IndexStorage::Segment::ScatterBlock data;
+    IndexStorage::MemoryBlock column_data;
+    if (row_major ? inverted_->read_scatter(off, data, size) != size
+                  : inverted_->read(off, column_data, size) != size) {
+      return IndexError_ReadData;
+    }
+    ScatterCursor cursor(data);
+    for (size_t b = 0; b < blocks; ++b) {
+      const size_t vecs =
+          std::min(block_vecs, list_meta->vector_count - (i + b) * block_vecs);
+      const size_t offset = b * block_size;
+      if (offset > size) return IndexError_ReadData;
+      if (!row_major) {
+        // Full legacy blocks are interleaved; their partial tail is row-major.
+        // Joint kernels consume the block directly and keep queries contiguous.
+        // Unsupported metrics and partial blocks retain their M x 1 dispatch.
+        const void *features =
+            static_cast<const char *>(column_data.data()) + offset;
+        calculator_->column_queries_distance(query_ptrs.data(), n, features,
+                                             vecs, distances.data());
+      } else if (!calculate_row_major_block(
+                     &cursor, calculate, vecs, element_size,
+                     std::min(block_size, size - offset),
+                     scatter_vector_.data(), distances.data(), true, false))
+        return IndexError_ReadData;
+      for (size_t q = 0; q < n; ++q) {
+        for (size_t k = 0; k < vecs; ++k) {
+          const auto key = keys[b * block_vecs + k];
+          if (key != kInvalidKey) {
+            heaps[q]->emplace(key, distances[q * block_vecs + k] * norm,
+                              list_meta->id_offset + (i + b) * block_vecs + k);
+          }
+        }
+        *stats[q]->mutable_dist_calced_count() += vecs;
+      }
+    }
+  }
+  *scan_count = list_meta->vector_count;
+  return 0;
+}
+
 int IVFEntity::search_by_keys(const std::vector<uint64_t> &keys,
                               const IndexFilter &filter,
                               IndexDocumentHeap *heap,
