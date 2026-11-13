@@ -32,6 +32,14 @@ inline void widen_int8(__m128i bytes, __m128i *low, __m128i *high) {
 }
 
 float raw_inner_product(const int8_t *a, const int8_t *b, size_t dim) {
+  // Avoid partial-load, widening, and reduction setup for tiny vectors.
+  if (dim < 8) {
+    int32_t sum = 0;
+    for (size_t i = 0; i < dim; ++i) {
+      sum += static_cast<int32_t>(a[i]) * static_cast<int32_t>(b[i]);
+    }
+    return static_cast<float>(sum);
+  }
   const __m128i ones = _mm_set1_epi16(1);
   __m128i accumulator = _mm_setzero_si128();
   size_t i = 0;
@@ -47,11 +55,30 @@ float raw_inner_product(const int8_t *a, const int8_t *b, size_t dim) {
         accumulator, _mm_madd_epi16(_mm_mullo_epi16(lhs_high, rhs_high), ones));
   }
 
-  int64_t sum = internal::horizontal_sum_i32(accumulator);
-  for (; i < dim; ++i) {
-    sum += static_cast<int32_t>(a[i]) * static_cast<int32_t>(b[i]);
+  if (i < dim) {
+    // A few scalar products are cheaper than widening another SIMD block.
+    if (dim - i < 4) {
+      int32_t tail = static_cast<int32_t>(a[i]) * static_cast<int32_t>(b[i]);
+      if (dim - i >= 2) {
+        tail += static_cast<int32_t>(a[i + 1]) * b[i + 1];
+      }
+      if (dim - i == 3) {
+        tail += static_cast<int32_t>(a[i + 2]) * b[i + 2];
+      }
+      return static_cast<float>(internal::horizontal_sum_i32(accumulator) +
+                                tail);
+    }
+    __m128i lhs_low, lhs_high, rhs_low, rhs_high;
+    widen_int8(internal::load_partial_int8(a + i, dim - i), &lhs_low,
+               &lhs_high);
+    widen_int8(internal::load_partial_int8(b + i, dim - i), &rhs_low,
+               &rhs_high);
+    accumulator = _mm_add_epi32(
+        accumulator, _mm_madd_epi16(_mm_mullo_epi16(lhs_low, rhs_low), ones));
+    accumulator = _mm_add_epi32(
+        accumulator, _mm_madd_epi16(_mm_mullo_epi16(lhs_high, rhs_high), ones));
   }
-  return static_cast<float>(sum);
+  return static_cast<float>(internal::horizontal_sum_i32(accumulator));
 }
 
 template <size_t kBatch>
@@ -89,13 +116,28 @@ void raw_inner_product_batch_impl(const int8_t *query,
     }
   }
 
-  for (size_t i = 0; i < kBatch; ++i) {
-    const auto *record = static_cast<const int8_t *>(records[i]);
-    int64_t sum = internal::horizontal_sum_i32(accumulators[i]);
-    for (size_t j = d; j < dim; ++j) {
-      sum += static_cast<int32_t>(record[j]) * static_cast<int32_t>(query[j]);
+  if (d < dim) {
+    __m128i query_low, query_high;
+    widen_int8(internal::load_partial_int8(query + d, dim - d), &query_low,
+               &query_high);
+    for (size_t i = 0; i < kBatch; ++i) {
+      if (prefetch[i]) ailego_prefetch(prefetch[i] + d);
+      const auto *record = static_cast<const int8_t *>(records[i]);
+      __m128i record_low, record_high;
+      widen_int8(internal::load_partial_int8(record + d, dim - d), &record_low,
+                 &record_high);
+      accumulators[i] = _mm_add_epi32(
+          accumulators[i],
+          _mm_madd_epi16(_mm_mullo_epi16(record_low, query_low), ones));
+      accumulators[i] = _mm_add_epi32(
+          accumulators[i],
+          _mm_madd_epi16(_mm_mullo_epi16(record_high, query_high), ones));
     }
-    results[i] = static_cast<float>(sum);
+  }
+
+  for (size_t i = 0; i < kBatch; ++i) {
+    results[i] =
+        static_cast<float>(internal::horizontal_sum_i32(accumulators[i]));
   }
 }
 

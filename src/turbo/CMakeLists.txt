@@ -167,18 +167,24 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH AND
         COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX512}"
     )
 
-    # These raw kernels promise AVX2 or AVX512F+BW, not the full feature set of
+    # These INT8 kernels promise AVX2 or AVX512F+BW, not the full feature set of
     # the CPU model selected above. In particular, icelake-server lets Clang
     # fuse madd+add into VNNI, which older AVX512BW CPUs cannot execute.
     if(NOT MSVC)
-      set(_TURBO_RAW_INT8_BASE "-march=x86-64")
+      set(_TURBO_INT8_BASE "-march=x86-64")
       if(_TURBO_TARGET_ARCH STREQUAL "x86")
-        set(_TURBO_RAW_INT8_BASE "-march=i686")
+        set(_TURBO_INT8_BASE "-march=i686")
       endif()
+      file(GLOB AVX2_RECORD_INT8_SRCS
+          ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx2/record_quantized_int8/*.cc)
+      file(GLOB AVX512_RECORD_INT8_SRCS
+          ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512/record_quantized_int8/*.cc)
       set_source_files_properties(distance/avx2/raw_int8/distance.cc
-          PROPERTIES COMPILE_FLAGS "${_TURBO_RAW_INT8_BASE} -mavx2")
+          ${AVX2_RECORD_INT8_SRCS}
+          PROPERTIES COMPILE_FLAGS "${_TURBO_INT8_BASE} -mavx2")
       set_source_files_properties(distance/avx512/raw_int8/distance.cc
-          PROPERTIES COMPILE_FLAGS "${_TURBO_RAW_INT8_BASE} -mavx512f -mavx512bw")
+          ${AVX512_RECORD_INT8_SRCS}
+          PROPERTIES COMPILE_FLAGS "${_TURBO_INT8_BASE} -mavx512f -mavx512bw")
     endif()
 endif()
 
