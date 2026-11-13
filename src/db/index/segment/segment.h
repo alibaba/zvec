@@ -25,6 +25,7 @@
 #include <zvec/db/options.h>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
+#include "db/common/query_read_context.h"
 #include "db/index/column/fts_column/fts_column_indexer.h"
 #include "db/index/column/fts_column/fts_indexer.h"
 #include "db/index/column/inverted_column/inverted_column_indexer.h"
@@ -35,6 +36,7 @@
 #include "db/index/common/id_map.h"
 #include "db/index/common/meta.h"
 #include "db/index/common/version_manager.h"
+#include "db/index/segment/forward_read_view.h"
 #include "db/index/storage/base_forward_store.h"
 
 namespace zvec {
@@ -44,6 +46,15 @@ class CombinedRecordBatchReader;
 class Segment {
  public:
   using Ptr = std::shared_ptr<Segment>;
+
+  // Capture an owning column projection while the collection query guard is
+  // held. Initially supports only authorized persisted IPC/mmap data. Returns
+  // nullptr for unsupported storage/state; callers use the original locked fetch.
+  // The view owns its buffers, but does not confer query/index snapshot safety
+  // after the collection guard is released.
+  static ForwardReadView::Ptr make_forward_read_view(
+      const Ptr &segment, const std::vector<std::string> &columns,
+      const QueryReadContext &context = {});
 
   static Result<Ptr> CreateAndOpen(const std::string &path,
                                    const CollectionSchema &schema,

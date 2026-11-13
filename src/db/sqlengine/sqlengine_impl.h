@@ -43,16 +43,19 @@ class SQLEngineImpl : public SQLEngine {
   Result<std::unique_ptr<arrow::RecordBatchReader>> search_by_query_info(
       CollectionSchema::Ptr collection,
       const std::vector<Segment::Ptr> &segments,
-      std::vector<sqlengine::QueryInfo::Ptr> *query_infos);
+      std::vector<sqlengine::QueryInfo::Ptr> *query_infos,
+      QueryReadContext read_context = {});
 
-  Result<DocPtrList> execute(
-      CollectionSchema::Ptr collection, SearchQuery query,
-      const std::vector<Segment::Ptr> &segments) override;
+  Result<DocPtrList> execute(CollectionSchema::Ptr collection,
+                             SearchQuery query,
+                             const std::vector<Segment::Ptr> &segments,
+                             QueryReadContext read_context = {}) override;
 
   Result<GroupResults> execute_group_by(
       CollectionSchema::Ptr collection,
       const GroupByVectorQuery &group_by_query,
-      const std::vector<Segment::Ptr> &segments) override;
+      const std::vector<Segment::Ptr> &segments,
+      QueryReadContext read_context = {}) override;
 
   const std::string &execution_time_info() {
     return execution_time_info_;

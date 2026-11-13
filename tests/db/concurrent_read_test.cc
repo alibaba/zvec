@@ -26,6 +26,7 @@
 #include <zvec/ailego/utility/file_helper.h>
 #include "index/utils/utils.h"
 #include "zvec/db/collection.h"
+#include "zvec/db/config.h"
 
 namespace zvec {
 namespace test {
@@ -326,6 +327,62 @@ TEST_F(ConcurrentReadTest, QueryReturnsCompleteResultsUnderConcurrency) {
       << "no segment switch inside the run window";
 
   collection.reset();
+}
+
+TEST_F(ConcurrentReadTest,
+       ForwardPredicateKeepsStableProbeDuringSegmentSwitches) {
+  GlobalConfig::ConfigData config;
+  config.invert_to_forward_scan_ratio = 0;
+  ASSERT_TRUE(GlobalConfig::Instance().initialize(config).ok());
+  CollectionSchema schema("forward_concurrent");
+  schema.set_max_doc_count_per_segment(1000);
+  schema.add_field(
+      std::make_shared<FieldSchema>("value", DataType::INT32, false,
+                                    std::make_shared<InvertIndexParams>(true)));
+  schema.add_field(std::make_shared<FieldSchema>(
+      "vec", DataType::VECTOR_FP32, 4, false,
+      std::make_shared<FlatIndexParams>(MetricType::L2)));
+  auto collection = TestHelper::CreateCollectionWithDoc(
+      kPath, schema, CollectionOptions{false, true, kMaxBufferSize}, 0, 500);
+  ASSERT_NE(collection, nullptr);
+  std::atomic<bool> start{false}, done{false};
+  std::atomic<int> failures{0}, probes{0};
+  std::vector<std::thread> readers;
+  for (int t = 0; t < 4; ++t) {
+    readers.emplace_back([&] {
+      SearchQuery query;
+      query.topk_ = 1;
+      query.filter_ = "value >= 100 AND value < 200";
+      query.output_fields_ = std::vector<std::string>{"value"};
+      query.target_.field_name_ = "vec";
+      query.target_.query_params_ = std::make_shared<FlatQueryParams>();
+      const std::vector<float> vector(4, 123.1f);
+      query.target_.set_vector(
+          std::string(reinterpret_cast<const char *>(vector.data()),
+                      vector.size() * sizeof(float)));
+      while (!start.load()) std::this_thread::yield();
+      do {
+        auto result = collection->query(query);
+        if (!result || result->size() != 1 ||
+            result.value()[0]->pk() != "pk_123" ||
+            result.value()[0]->get<int32_t>("value") != 123) {
+          ++failures;
+        }
+        ++probes;
+      } while (!done.load());
+    });
+  }
+  start = true;
+  for (int batch = 0; batch < 30; ++batch) {
+    auto status = TestHelper::CollectionInsertDoc(
+        collection, 100000 + batch * 100, 100000 + (batch + 1) * 100, false,
+        false, true);
+    if (!status.ok()) ++failures;
+  }
+  done = true;
+  for (auto &reader : readers) reader.join();
+  EXPECT_GT(probes.load(), 0);
+  EXPECT_EQ(failures.load(), 0);
 }
 
 }  // namespace test

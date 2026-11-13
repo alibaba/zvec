@@ -41,6 +41,7 @@ SegmentNode::gen() {
       auto &back = self->readers_.back();
       auto status = back->ReadNext(&batch);
       if (!status.ok()) {
+        self->readers_.clear();
         return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
             arrow::Status::ExecutionError("read next batch failed:",
                                           status.ToString()));
@@ -74,6 +75,7 @@ Status SegmentNode::prepare() {
   for (size_t i = 0; i < segment_plans_.size(); i++) {
     auto &result = results[i];
     if (!result) {
+      readers_.clear();
       return result.error();
     }
     readers_[i] = std::move(result.value());

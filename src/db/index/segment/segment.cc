@@ -81,6 +81,7 @@ class SegmentImpl : public Segment,
                     public std::enable_shared_from_this<SegmentImpl> {
  public:
   using Ptr = std::shared_ptr<SegmentImpl>;
+  friend class Segment;
 
   class SegmentIndexFilter : public IndexFilter {
    public:
@@ -2729,6 +2730,60 @@ TablePtr SegmentImpl::fetch_unsafe(
     return fetch_perf(columns, result_schema, segment_doc_ids, *chunk_offsets);
   }
   return fetch_normal(columns, result_schema, segment_doc_ids);
+}
+
+ForwardReadView::Ptr Segment::make_forward_read_view(
+    const Ptr &segment, const std::vector<std::string> &columns,
+    const QueryReadContext &context) {
+#ifdef ZVEC_FORWARD_FILTER_DISABLE_VIEW
+  // Benchmark baseline: use upstream's per-candidate locked fetch.
+  (void)segment;
+  (void)columns;
+  (void)context;
+  return nullptr;
+#else
+  auto impl = std::dynamic_pointer_cast<SegmentImpl>(segment);
+  if (!impl) return nullptr;
+  std::shared_lock<std::shared_mutex> lock(impl->seg_mtx_);
+  if (!context.allows_forward_view(impl.get()) || !impl->options_.read_only_ ||
+      !impl->options_.enable_mmap_ || impl->memory_store_ || columns.empty() ||
+      impl->segment_meta_->writing_forward_block().has_value() ||
+      impl->doc_ids_.empty()) {
+    return nullptr;
+  }
+  // Use the same schema/order as the scalar fetch path. The cached arrays are
+  // owning IPC arrays; Parquet cache arrays require pins and remain
+  // unsupported.
+  auto schema_table = impl->fetch_unsafe(columns, std::vector<int>{});
+  if (!schema_table) return nullptr;
+  std::vector<std::shared_ptr<arrow::ChunkedArray>> arrays;
+  arrays.reserve(columns.size());
+  for (size_t i = 0; i < columns.size(); ++i) {
+    const auto found = impl->col_idx_map_.find(columns[i]);
+    if (found == impl->col_idx_map_.end() || found->second < 0 ||
+        static_cast<size_t>(found->second) >=
+            impl->persist_chunk_arrays_.size()) {
+      return nullptr;
+    }
+    const auto &array = impl->persist_chunk_arrays_[found->second];
+    // Independent added-column blocks can inflate meta()->doc_count(). The
+    // global-ID column defines the actual segment-local row space instead.
+    if (!array ||
+        static_cast<uint64_t>(array->length()) != impl->doc_ids_.size() ||
+        !array->type()->Equals(schema_table->field(i)->type())) {
+      return nullptr;
+    }
+    arrays.push_back(array);
+  }
+  auto view = ForwardReadView::make(
+      arrow::Table::Make(schema_table->schema(), std::move(arrays),
+                         static_cast<int64_t>(impl->doc_ids_.size())));
+  if (view) {
+    LOG_DEBUG("Forward filter view: segment[%d] rows[%zu] columns[%zu]",
+              impl->id(), impl->doc_ids_.size(), columns.size());
+  }
+  return view;
+#endif
 }
 
 ExecBatchPtr SegmentImpl::fetch(const std::vector<std::string> &columns,

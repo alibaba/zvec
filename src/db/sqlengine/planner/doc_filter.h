@@ -32,13 +32,15 @@ class DocFilter : public IndexFilter {
 
   DocFilter(Segment::Ptr segment, QueryInfo::Ptr query_info,
             std::unique_ptr<arrow::acero::Declaration> forward_plan,
-            std::unique_ptr<arrow::compute::Expression> forward_filter)
+            std::unique_ptr<arrow::compute::Expression> forward_filter,
+            QueryReadContext read_context = {})
       : segment_(std::move(segment)),
         query_info_(std::move(query_info)),
         delete_filter_(segment_->get_filter()),
         invert_cond_(query_info_->invert_cond()),
         forward_plan_(std::move(forward_plan)),
-        forward_filter_expr_(std::move(forward_filter)) {}
+        forward_filter_expr_(std::move(forward_filter)),
+        read_context_(std::move(read_context)) {}
 
   Status compute_filter();
 
@@ -69,6 +71,8 @@ class DocFilter : public IndexFilter {
   IndexFilter::Ptr invert_filter_{nullptr};
 
   std::shared_ptr<arrow::ChunkedArray> forward_bitmap_;
+  QueryReadContext read_context_;
+  ForwardReadView::Ptr forward_view_;
 };
 
 }  // namespace zvec::sqlengine

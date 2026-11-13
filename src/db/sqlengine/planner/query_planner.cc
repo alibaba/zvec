@@ -43,7 +43,9 @@ namespace zvec::sqlengine {
 namespace cp = ::arrow::compute;
 namespace ac = ::arrow::acero;
 
-QueryPlanner::QueryPlanner(CollectionSchema *schema) : schema_(schema) {}
+QueryPlanner::QueryPlanner(CollectionSchema *schema,
+                           QueryReadContext read_context)
+    : schema_(schema), read_context_(std::move(read_context)) {}
 
 template <typename T>
 auto convert_node_to_value(const QueryNode::Ptr &node) {
@@ -555,7 +557,7 @@ DocFilter::Ptr QueryPlanner::build_doc_filter(
   }
   return std::make_shared<DocFilter>(seg, query_info,
                                      std::move(forward_filter_plan),
-                                     std::move(forward_filter));
+                                     std::move(forward_filter), read_context_);
 }
 
 Result<PlanInfo::Ptr> QueryPlanner::vector_scan(

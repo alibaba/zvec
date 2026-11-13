@@ -26,14 +26,16 @@ class SQLEngine {
   using Ptr = std::shared_ptr<SQLEngine>;
   virtual ~SQLEngine();
 
-  virtual Result<DocPtrList> execute(
-      CollectionSchema::Ptr collection, SearchQuery query,
-      const std::vector<Segment::Ptr> &segments) = 0;
+  virtual Result<DocPtrList> execute(CollectionSchema::Ptr collection,
+                                     SearchQuery query,
+                                     const std::vector<Segment::Ptr> &segments,
+                                     QueryReadContext read_context = {}) = 0;
 
   virtual Result<GroupResults> execute_group_by(
       CollectionSchema::Ptr collection,
       const GroupByVectorQuery &group_by_query,
-      const std::vector<Segment::Ptr> &segments) = 0;
+      const std::vector<Segment::Ptr> &segments,
+      QueryReadContext read_context = {}) = 0;
 
  public:
   static SQLEngine::Ptr create(zvec::Profiler::Ptr profiler);

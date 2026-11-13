@@ -50,8 +50,11 @@ Status DocFilter::compute_filter() {
 
   if (forward_filter_expr_) {
     // get schema to bind to Expression
-    auto table = segment_->fetch(query_info_->get_forward_filter_field_names(),
-                                 std::vector<int>{});
+    const auto columns = query_info_->get_forward_filter_field_names();
+    forward_view_ =
+        Segment::make_forward_read_view(segment_, columns, read_context_);
+    auto table = forward_view_ ? forward_view_->table()
+                               : segment_->fetch(columns, std::vector<int>{});
     if (!table) {
       return Status::InternalError("Fetch forward failed");
     }
@@ -61,6 +64,9 @@ Status DocFilter::compute_filter() {
                                    bind_res.status().ToString());
     }
     *forward_filter_expr_ = bind_res.MoveValueUnsafe();
+    if (!forward_view_) {
+      LOG_DEBUG("Forward filter locked fetch: segment[%d]", segment_->id());
+    }
   }
   return Status::OK();
 }
@@ -138,8 +144,10 @@ std::optional<std::vector<uint64_t>> DocFilter::get_bf_by_keys_and_update(
 }
 
 std::optional<bool> DocFilter::is_matched_by_forward_filter(uint64_t id) const {
-  auto exec_batch =
-      segment_->fetch(query_info_->get_forward_filter_field_names(), id);
+  auto exec_batch = forward_view_
+                        ? forward_view_->read_row(id)
+                        : segment_->fetch(
+                              query_info_->get_forward_filter_field_names(), id);
   if (!exec_batch) {
     LOG_ERROR("Fetch forward failed, id[%zu]", (size_t)id);
     return std::nullopt;
