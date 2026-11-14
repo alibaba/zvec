@@ -462,40 +462,119 @@ TEST_P(BitSliceIndexTest, ConcurrentQueriesSeeWholeValues) {
       133u);
 }
 
+class FailingBsiDB : public rocksdb::StackableDB {
+ public:
+  explicit FailingBsiDB(rocksdb::DB *db) : StackableDB(db) {}
+  uint32_t bsi_cf_id{0};
+  size_t persisted_slices{0};
+  bool fail_write{false};
+  bool fail_seal{false};
+  std::string fail_flush_cf;
+  rocksdb::Status Flush(const rocksdb::FlushOptions &options,
+                        rocksdb::ColumnFamilyHandle *cf) override {
+    if (cf->GetName() == fail_flush_cf) {
+      return rocksdb::Status::IOError("Injected CF flush failure");
+    }
+    return StackableDB::Flush(options, cf);
+  }
+  rocksdb::Status Write(const rocksdb::WriteOptions &options,
+                        rocksdb::WriteBatch *batch) override {
+    if (fail_write)
+      return rocksdb::Status::IOError("Injected snapshot failure");
+    auto status = StackableDB::Write(options, batch);
+    if (!status.ok()) return status;
+    // Observe actual persisted slice writes without production counters.
+    struct SliceWrites : rocksdb::WriteBatch::Handler {
+      uint32_t bsi_cf_id;
+      size_t count{0};
+      explicit SliceWrites(uint32_t id) : bsi_cf_id(id) {}
+      rocksdb::Status PutCF(uint32_t cf, const rocksdb::Slice &,
+                            const rocksdb::Slice &) override {
+        if (cf == bsi_cf_id) ++count;
+        return rocksdb::Status::OK();
+      }
+    } writes(bsi_cf_id);
+    status = batch->Iterate(&writes);
+    if (status.ok()) persisted_slices += writes.count;
+    return status;
+  }
+  rocksdb::Status Put(const rocksdb::WriteOptions &options,
+                      rocksdb::ColumnFamilyHandle *cf,
+                      const rocksdb::Slice &key,
+                      const rocksdb::Slice &value) override {
+    if (fail_seal && key.ToString() == "value" + INVERT_KEY_SEALED) {
+      return rocksdb::Status::IOError("Injected seal failure");
+    }
+    return StackableDB::Put(options, cf, key, value);
+  }
+};
+
 TEST_P(BitSliceIndexTest, DirtySlicesAndIdempotentFlush) {
-  auto owner = Open(DataType::UINT64);
+  RocksdbContext context;
+  ASSERT_TRUE(context
+                  .create(path_.string(),
+                          {"value" + INVERT_SUFFIX_TERMS,
+                           "value" + INVERT_SUFFIX_BSI, INVERT_CDF},
+                          std::make_shared<InvertedRocksdbValueMerger>())
+                  .ok());
+  auto wrapper = std::make_unique<FailingBsiDB>(context.db_.release());
+  auto *writes = wrapper.get();
+  writes->bsi_cf_id = context.get_cf("value" + INVERT_SUFFIX_BSI)->GetID();
+  context.db_ = std::move(wrapper);
+  FieldSchema field("value", DataType::UINT64, true, Params());
+  auto index = InvertedColumnIndexer::CreateAndOpen("dirty", field, context);
+  ASSERT_NE(index, nullptr);
+  ASSERT_TRUE(index->insert(0, EncodeValue(uint64_t{1})).ok());
+  ASSERT_TRUE(index->flush_special_values().ok());
+  EXPECT_EQ(writes->persisted_slices, 1u);
+  ASSERT_TRUE(index->insert(0, EncodeValue(uint64_t{1})).ok());
+  ASSERT_TRUE(index->flush_special_values().ok());
+  EXPECT_EQ(writes->persisted_slices, 1u);
+  ASSERT_TRUE(index->insert_null(1).ok());
+  ASSERT_TRUE(index->flush_special_values().ok());
+  EXPECT_EQ(writes->persisted_slices, 1u);
+  ASSERT_TRUE(index->insert(2, EncodeValue(uint64_t{2})).ok());
+  ASSERT_TRUE(index->flush_special_values().ok());
+  EXPECT_EQ(writes->persisted_slices, 2u);
+  ASSERT_TRUE(index->seal().ok());
+  EXPECT_EQ(writes->persisted_slices, 2u);
+  ASSERT_TRUE(context.flush().ok());
+  Verify<uint64_t>(index, {1, std::nullopt, 2}, {0, 1, 2, 3});
+  index.reset();
+  index = InvertedColumnIndexer::CreateAndOpen("dirty", field, context, true);
+  ASSERT_NE(index, nullptr);
+  Verify<uint64_t>(index, {1, std::nullopt, 2}, {0, 1, 2, 3});
+}
+
+TEST_P(BitSliceIndexTest, NoRangeStatisticsAcrossLifecycle) {
+  auto owner = Open(DataType::INT32);
   ASSERT_NE(owner, nullptr);
   auto index = (*owner)["value"];
-  ASSERT_TRUE(index->insert(0, EncodeValue(uint64_t{1})).ok());
-  ASSERT_TRUE(owner->flush().ok());
-  EXPECT_EQ(index->bsi_memory_usage().persisted_slices, 1u);
-  ASSERT_TRUE(index->insert(0, EncodeValue(uint64_t{1})).ok());
-  ASSERT_TRUE(owner->flush().ok());
-  EXPECT_EQ(index->bsi_memory_usage().persisted_slices, 1u);
-  ASSERT_TRUE(index->insert_null(1).ok());
-  ASSERT_TRUE(owner->flush().ok());
-  EXPECT_EQ(index->bsi_memory_usage().persisted_slices, 1u);
-  ASSERT_TRUE(index->insert(2, EncodeValue(uint64_t{2})).ok());
-  ASSERT_TRUE(owner->flush().ok());
-  EXPECT_EQ(index->bsi_memory_usage().persisted_slices, 2u);
-  auto sample = index->value_sample();
-  ASSERT_NE(sample, nullptr);
-  ASSERT_EQ(sample->entries.size(), 3u);
-  EXPECT_TRUE(sample->entries[1].is_null);
-  EXPECT_GT(index->bsi_memory_usage().mutable_bytes, 0u);
+  auto verify_no_estimate = [&]() {
+    EXPECT_FALSE(index->has_range_statistics());
+    uint64_t total = 0, matched = 0;
+    EXPECT_EQ(index
+                  ->evaluate_ratio(EncodeValue(int32_t{6}), CompareOp::GT,
+                                   &total, &matched)
+                  .code(),
+              StatusCode::NOT_SUPPORTED);
+  };
+  ASSERT_TRUE(index->insert(0, EncodeValue(int32_t{7})).ok());
+  verify_no_estimate();
   ASSERT_TRUE(owner->seal().ok());
-  EXPECT_EQ(index->bsi_memory_usage().mutable_bytes, 0u);
-  Verify<uint64_t>(index, {1, std::nullopt, 2}, {0, 1, 2, 3});
-  EXPECT_LE(index->bsi_memory_usage().cache_bytes, Params()->bsi_cache_bytes());
+  verify_no_estimate();
+  EXPECT_EQ(
+      index->search_filter(EncodeValue(int32_t{6}), CompareOp::GT)->count(),
+      1u);
   index.reset();
   owner.reset();
-  owner = Open(DataType::UINT64, true);
+  owner = Open(DataType::INT32, true);
   ASSERT_NE(owner, nullptr);
   index = (*owner)["value"];
-  ASSERT_NE(index->value_sample(), nullptr);
-  ASSERT_EQ(index->value_sample()->entries.size(), 3u);
-  EXPECT_TRUE(index->value_sample()->entries[1].is_null);
-  Verify<uint64_t>(index, {1, std::nullopt, 2}, {0, 1, 2, 3});
+  verify_no_estimate();
+  EXPECT_EQ(
+      index->search_filter(EncodeValue(int32_t{6}), CompareOp::GT)->count(),
+      1u);
 }
 
 TEST_P(BitSliceIndexTest, SmallCacheAndResultLifetime) {
@@ -521,9 +600,6 @@ TEST_P(BitSliceIndexTest, SmallCacheAndResultLifetime) {
     for (uint32_t id = 0; id < values.size(); ++id) {
       EXPECT_EQ(result->contains(id), values[id] > bound);
     }
-    const auto usage = index->bsi_memory_usage();
-    EXPECT_LE(usage.cache_bytes, 1024u);
-    EXPECT_EQ(usage.pinned_cache_bytes, 0u);
   }
   index.reset();
   owner.reset();
@@ -588,36 +664,6 @@ TEST_P(BitSliceIndexTest, QueriesOverlapSealAndDrop) {
             nullptr);
 }
 
-class FailingBsiDB : public rocksdb::StackableDB {
- public:
-  explicit FailingBsiDB(rocksdb::DB *db) : StackableDB(db) {}
-  bool fail_write{false};
-  bool fail_seal{false};
-  std::string fail_flush_cf;
-  rocksdb::Status Flush(const rocksdb::FlushOptions &options,
-                        rocksdb::ColumnFamilyHandle *cf) override {
-    if (cf->GetName() == fail_flush_cf) {
-      return rocksdb::Status::IOError("Injected CF flush failure");
-    }
-    return StackableDB::Flush(options, cf);
-  }
-  rocksdb::Status Write(const rocksdb::WriteOptions &options,
-                        rocksdb::WriteBatch *batch) override {
-    if (fail_write)
-      return rocksdb::Status::IOError("Injected snapshot failure");
-    return StackableDB::Write(options, batch);
-  }
-  rocksdb::Status Put(const rocksdb::WriteOptions &options,
-                      rocksdb::ColumnFamilyHandle *cf,
-                      const rocksdb::Slice &key,
-                      const rocksdb::Slice &value) override {
-    if (fail_seal && key.ToString() == "value" + INVERT_KEY_SEALED) {
-      return rocksdb::Status::IOError("Injected seal failure");
-    }
-    return StackableDB::Put(options, cf, key, value);
-  }
-};
-
 TEST_P(BitSliceIndexTest, FailedSnapshotAndSealCanBeRetried) {
   RocksdbContext context;
   ASSERT_TRUE(context
@@ -628,6 +674,7 @@ TEST_P(BitSliceIndexTest, FailedSnapshotAndSealCanBeRetried) {
                   .ok());
   auto wrapper = std::make_unique<FailingBsiDB>(context.db_.release());
   auto *fault = wrapper.get();
+  fault->bsi_cf_id = context.get_cf("value" + INVERT_SUFFIX_BSI)->GetID();
   context.db_ = std::move(wrapper);
   FieldSchema field("value", DataType::UINT32, true, Params());
   auto index = InvertedColumnIndexer::CreateAndOpen("failure", field, context);
@@ -636,11 +683,11 @@ TEST_P(BitSliceIndexTest, FailedSnapshotAndSealCanBeRetried) {
   ASSERT_TRUE(index->insert_null(1).ok());
   fault->fail_write = true;
   EXPECT_FALSE(index->flush_special_values().ok());
-  EXPECT_EQ(index->bsi_memory_usage().persisted_slices, 0u);
+  EXPECT_EQ(fault->persisted_slices, 0u);
   Verify<uint32_t>(index, {1, std::nullopt}, {0, 1, 2});
   fault->fail_write = false;
   ASSERT_TRUE(index->flush_special_values().ok());
-  EXPECT_EQ(index->bsi_memory_usage().persisted_slices, 1u);
+  EXPECT_EQ(fault->persisted_slices, 1u);
   fault->fail_seal = true;
   EXPECT_FALSE(index->seal().ok());
   EXPECT_FALSE(index->is_sealed());

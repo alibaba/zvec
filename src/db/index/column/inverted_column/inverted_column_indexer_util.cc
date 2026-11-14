@@ -70,7 +70,7 @@ Status InvertedColumnIndexer::open() {
       return Status::InternalError();
     }
   }
-  if (enable_range_optimization_ || cf_bsi_) {
+  if (enable_range_optimization_) {
     cf_cdf_ = ctx_.get_cf(cf_name_cdf());
     if (!cf_cdf_) {
       LOG_ERROR("Failed to get cf_cdf for %s", id().c_str());
@@ -218,10 +218,8 @@ Status InvertedColumnIndexer::drop_storage() {
     if (!rs.ok()) {
       return Status::InternalError(rs.ToString());
     }
-    rs = ctx_.db_->Delete(ctx_.write_opts_, key_bsi_sample());
-    if (!rs.ok()) return Status::InternalError(rs.ToString());
   }
-  if (enable_range_optimization_ || cf_bsi_) {
+  if (enable_range_optimization_) {
     rs = ctx_.db_->Delete(ctx_.write_opts_, cf_cdf_, field_.name());
     if (!rs.ok()) {
       LOG_ERROR("Failed to delete cdf of %s", id().c_str());

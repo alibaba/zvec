@@ -1,5 +1,8 @@
 整型 BSI 实现与验证范围
 
+2026-11-14 收敛：移除采样、BSI 命中量预估和缓存统计；本轮只做 BSI 单元测试，
+不运行 benchmark。后面的性能数字是上一版本的历史记录，不代表此次精简后的结果。
+
 已实现
 - 一个字段、一个 segment 使用统一 segment docID，不划分 docID 子段。
   TERM_BSI 支持单值 INT32、INT64、UINT32、UINT64；始终保留 term posting。
@@ -10,7 +13,7 @@
   sealed 查询也持有共享锁，以保护与 seal/drop 重叠的生命周期。
 - insert 保留原有 term Merge；成功后在锁内更新 BSI 和 docID 上界。
   NULL 复用原有 bitmap。没有额外的逐行 RocksDB BSI Merge。
-- flush 只序列化脏切片，每个脏切片仍是完整快照 Put；与 BSI 上界、抽样统计、
+- flush 只序列化脏切片，每个脏切片仍是完整快照 Put；与 BSI 上界、
   NULL、通用 docID 上界在同一个 WriteBatch 写入。Write 失败不清除脏标记。
   普通 open 从 RocksDB 恢复可写状态；相同 docID/值的 WAL replay 幂等，
   即使 term 已经存在，也必须重新更新 BSI。
@@ -24,16 +27,14 @@
   实验环境变量 ZVEC_BSI_BENCH_NONRESIDENT 已移除，改用持久化参数。
 - C++、Python 和 C API 均支持 layout/cache mode/cache bytes；manifest、
   clone、pickle 和 Python 类型声明同步更新。切换配置使用已有 create_index 重建路径。
-- CollectionStats.bsi_memory_bytes 汇总各字段跨 segment 的 BSI 保留内存估算。
-  包含可写切片、frozen 数据、缓存和抽样；不包含查询临时空间和共享 RocksDB 缓存，
-  不是进程 RSS，也不是整个 collection 的内存上限。
+- 缓存策略和预算继续生效；移除 CollectionStats 中的 BSI 内存字段及内部统计接口。
 - search 保持 term 召回；search_filter 的范围条件启用 BSI。
   BSI 允许未插入 docID 的空洞，仅用于实际候选点的 membership 判断。
-- 各 BSI 字段使用相同 docID 优先级的最多 256 条在线样本，包含 NULL 并持久化。
-  向量查询直接在对齐样本上估算范围、EQ/NE、IN/NOT IN、NULL、复合 AND/OR，
-  保留字段间相关性；样本缺失或重叠不足时回退 sealed CDF，仍无统计则视为未知。
-  不通过结果 bitmap count 决策；小结果走 term 精确枚举 ID，大结果或未知走向量过滤。
-  估计为零也执行真实查询，不能直接返回空结果。FTS 保留原有流程。
+- BSI 不维护在线样本，不生成或加载 CDF，也不预估命中量。向量查询中的 BSI
+  evaluate_ratio 明确返回 NOT_SUPPORTED；范围条件直接构造 membership filter，
+  不按 bitmap count 枚举 ID，避免空洞进入候选。
+  原有 TERM_RANGE 的单范围 CDF 决策保留；复合条件或无统计时走候选过滤。
+  纯标量召回、等值和 IN 继续使用 term；FTS 保留原有流程。
 - 明确持久化 exclusive docID 上界，修复空 sealed 索引补集和 UINT32_MAX 溢出。
 - benchmark 的 scalar_query 测量过滤 bitmap 构造，明确不是纯标量召回性能。
 
@@ -44,7 +45,6 @@ Python:
       bsi_cache_mode=zvec.BsiCacheMode.LRU,
       bsi_cache_bytes=64 << 20)
   collection.create_index(field_name="dataTime", index_param=params)
-  print(collection.stats.bsi_memory_bytes)
 
 C++:
   auto params = std::make_shared<InvertIndexParams>(
@@ -54,7 +54,15 @@ C:
   zvec_index_params_set_invert_layout(params, ZVEC_INVERT_LAYOUT_TERM_BSI,
                                      ZVEC_BSI_CACHE_LRU, 64ULL << 20);
 
-正确性验证
+本轮验证（2026-11-14）
+- 本机 63 个 BSI 单元测试通过，覆盖三种缓存模式，以及四种整数、NULL、极值、
+  空洞、flush/reopen、失败重试、部分 CF flush 后退出、seal/drop 并发。
+- 1 个 BSI 查询规划单元测试通过，覆盖无统计时保留原倒排计划、禁止枚举空洞，
+  并在 writing、sealed、reopen 状态检查范围、term 和复合条件。
+- BSI 的预估接口在上述生命周期中均返回 NOT_SUPPORTED；原有 TERM_RANGE CDF 保留。
+- 受影响的 Python 绑定编译通过；本轮未运行 Python 集成测试或 benchmark。
+
+上版正确性验证（提交 1a4c5747）
 - 本机和 191：三种缓存模式共 60 个 BSI 测试、10 个 optimizer 测试、
   14 个参数测试、23 个 manifest 测试通过。
 - 本机：26 个 Python 集成测试、8 个原有 term 顺序测试、3 个空数组测试通过；
@@ -64,9 +72,9 @@ C:
 - 三种模式分别注入 default、term、BSI CF flush 失败，子进程立即退出；
   重开后重放相同数据，检查可写及 sealed 查询一致。共九个跨 CF 退出场景。
 - Python 子进程在未 flush、flush 后、optimize 后直接退出，三模式共九个恢复场景；
-  同时覆盖相关字段估算、布局重建、更新、删除和 segment 合并。
+  当时同时覆盖相关字段估算、布局重建、更新、删除和 segment 合并。
 
-2026-11 工程化回归性能
+历史性能记录（提交 1a4c5747，精简前）
 - 复用 issue #868 场景：1000 万随机 INT32，dataTime > 536870911。
 - 固定 seed=868，准确命中 7,498,740；混合检索使用同一份 62 维合成向量图。
 - 191 固定 CPU 0-7，1/8 并发，各三轮 3 秒；每轮校验全部标量命中或 256 个 ANN 结果。
@@ -90,7 +98,8 @@ C:
 1. 按方案一，不引入 segment 整行事务、回滚或 fail-stop。term/BSI 后续的 FTS/向量
    失败及 docID 复用属于共享写路径问题，另行修复。列内锁不是跨索引的事务保证。
 2. float 单独实现；旧实验 BSI 格式迁移不纳入本地开发阶段的兼容承诺。
-3. 布局由用户显式选择，保留已有正排优化；没有统一校准的 BSI/term/正排自动成本模型。
+3. 布局由用户显式选择，保留已有正排优化；BSI 暂不支持命中量预估，也没有统一校准的
+   BSI/term/正排自动成本模型。后续有明确需求时再单独实现统计。
 4. 脏切片仍是全量 Put，随机数据会修改几乎所有位。增量持久化和更低写放大继续评估；
    不分 docID 子段。LRU 只限制保留缓存，不能限制可写状态、临时 buffer 或总 RSS。
 5. 已验证上述列级故障与 WAL 恢复，不等于覆盖完整磁盘错误、segment 版本提交、

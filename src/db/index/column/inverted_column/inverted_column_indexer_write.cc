@@ -208,7 +208,6 @@ Status InvertedColumnIndexer::insert_null(uint32_t id) {
   update_max_id(id);
   if (bsi_) {
     bsi_->doc_id_limit = std::max(bsi_->doc_id_limit, uint64_t{id} + 1);
-    sample_bsi_value(id, nullptr);
   }
   return Status::OK();
 }
@@ -258,8 +257,6 @@ Status InvertedColumnIndexer::flush_special_values_unlocked() {
   if (bsi_) {
     // A failed write leaves dirty slices intact for retry. Durability still
     // requires the owner's all-CF flush before committing a segment version.
-    bsi_->persisted_bytes += batch.GetDataSize();
-    bsi_->persisted_slices += __builtin_popcountll(bsi_->dirty_slices);
     bsi_->dirty_slices = 0;
   }
   return Status::OK();
@@ -286,7 +283,7 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
   if (read_only_) {
     return Status::PermissionDenied();
   }
-  if (!enable_range_optimization_ && !cf_bsi_) {
+  if (!enable_range_optimization_) {
     return Status::PermissionDenied();
   }
 
@@ -497,7 +494,7 @@ Status InvertedColumnIndexer::seal() {
     return status;
   }
 
-  if (enable_range_optimization_ || cf_bsi_) {
+  if (enable_range_optimization_) {
     status = generate_statistical_indexes();
     if (!status.ok()) {
       LOG_ERROR("Failed to generate statistical indexes in %s", id().c_str());

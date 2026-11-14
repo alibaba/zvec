@@ -71,6 +71,8 @@ bool InvertCondOptimizer::ratio_rule(Segment *segment,
   Status status = invert_column_reader->evaluate_ratio(
       invert_term, oper, &total_size, &range_size);
   if (!status.ok()) {
+    // Missing estimation support leaves the existing inverted plan intact.
+    if (status.code() == StatusCode::NOT_SUPPORTED) return false;
     LOG_WARN("Optimizer evaluate failed. invert_cond [%s] err[%s]",
              invert_cond->text().c_str(), status.c_str());
     return false;

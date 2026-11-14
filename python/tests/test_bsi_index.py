@@ -327,9 +327,6 @@ def test_vector_filter_estimate_and_term_recall(tmp_path, layout, cache_mode):
     ]
 
     def verify():
-        if layout == LAYOUT.TERM_BSI:
-            assert collection.stats.bsi_memory_bytes["value"] > 0
-            assert collection.stats.bsi_memory_bytes["mirror"] > 0
         for expression, predicate in conditions:
             expected = [
                 i
@@ -348,8 +345,8 @@ def test_vector_filter_estimate_and_term_recall(tmp_path, layout, cache_mode):
             )
             assert [doc.id for doc in docs] == [str(i) for i in expected[:21]]
 
-    # Writing BSI uses samples; sealed fields also have CDF statistics. Small
-    # estimates use term IDs, and broad ranges use membership filters.
+    # BSI always filters candidates without estimating cardinality. Scalar
+    # recall still enumerates exact term IDs across all index lifecycle states.
     verify()
     collection.flush()
     collection.close()

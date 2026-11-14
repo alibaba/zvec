@@ -947,6 +947,9 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search_non_null() const {
 Status InvertedColumnIndexer::evaluate_ratio(const std::string &value,
                                              CompareOp op, uint64_t *total_size,
                                              uint64_t *range_size) const {
+  if (bsi_) {
+    return Status::NotSupported("BSI cardinality estimation is unavailable");
+  }
   if (field_.is_array_type()) {
     LOG_ERROR("%s: array type doesn't support ratio evaluation", id().c_str());
     return Status::PermissionDenied();
@@ -988,7 +991,7 @@ inline bool InvertedColumnIndexer::range_covers_most_values(
 
   // Estimation is only available for sealed indexes as they have the cumulative
   // distribution index.
-  if (!sealed_) {
+  if (!sealed_ || !doc_range_stat_) {
     return false;
   }
 

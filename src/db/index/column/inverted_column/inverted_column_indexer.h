@@ -15,7 +15,6 @@
 
 #pragma once
 
-#include <map>
 #include <set>
 #include <shared_mutex>
 #include <rocksdb/cache.h>
@@ -37,7 +36,7 @@ namespace zvec {
 //      - allows insertion of new terms and indexing of document-term pairs
 // 2. Sealed:
 //      - read-only, no further writes permitted
-//      - statistical index generated for optimized search performance
+//      - statistical index generated when range optimization is enabled
 //
 //
 // InvertedColumnIndexer requires document IDs to be sequential integers
@@ -223,28 +222,6 @@ class InvertedColumnIndexer {
     return cf_bsi_ != nullptr;
   }
 
-  struct BsiMemoryUsage {
-    uint64_t mutable_bytes{0};
-    uint64_t resident_bytes{0};
-    uint64_t cache_bytes{0};
-    uint64_t pinned_cache_bytes{0};
-    uint64_t persisted_bytes{0};
-    uint64_t persisted_slices{0};
-  };
-  BsiMemoryUsage bsi_memory_usage() const;
-
-  struct ValueSample {
-    struct Entry {
-      uint32_t id;
-      bool is_null;
-      std::string value;  // Order-preserving encoding, empty for NULL.
-    };
-    DataType type;
-    std::vector<Entry> entries;  // Sorted by segment docID across all fields.
-  };
-  std::shared_ptr<const ValueSample> value_sample() const;
-
-
   /*!
    * \brief Drop the index storage
    * \return Status indicating success or failure of the operation
@@ -275,7 +252,6 @@ class InvertedColumnIndexer {
   Status open();
 
   void update_bsi(uint32_t id, const std::string &term);
-  void sample_bsi_value(uint32_t id, const std::string *term);
   Status append_bsi_snapshot(rocksdb::WriteBatch *batch);
   Status flush_special_values_unlocked();
   Status restore_bsi_state();
@@ -430,10 +406,6 @@ class InvertedColumnIndexer {
     return field_.name() + INVERT_KEY_BSI_DOC_COUNT;
   }
 
-  inline std::string key_bsi_sample() const {
-    return field_.name() + "$ZVEC$BSI_SAMPLE";
-  }
-
   inline std::string key_max_id() const {
     return field_.name() + INVERT_KEY_MAX_ID;
   };
@@ -503,14 +475,10 @@ class InvertedColumnIndexer {
     std::vector<BitmapPtr> slices;
     mutable std::shared_mutex mutex;
     std::shared_ptr<rocksdb::Cache> cache;
-    std::map<uint64_t, ValueSample::Entry> samples;
-    std::shared_ptr<const ValueSample> sample_view;
     BsiCacheMode cache_mode{BsiCacheMode::RESIDENT};
     // Upper bound, not a completed prefix: holes are allowed in filters.
     uint64_t doc_id_limit{0};
     uint64_t dirty_slices{0};
-    uint64_t persisted_bytes{0};
-    uint64_t persisted_slices{0};
     bool dropped{false};
   };
   std::unique_ptr<BsiState> bsi_;

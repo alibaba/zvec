@@ -23,12 +23,25 @@ namespace zvec::sqlengine {
 
 Status DocFilter::compute_vector_filter(float brute_force_ratio) {
   vector_bf_by_keys_ = false;
-  // Shared docID samples retain correlations across BSI fields. Sealed CDFs
-  // provide a fallback; unknown estimates never mean an empty result.
-  InvertSearch search(segment_.get());
-  if (auto matches = search.estimate_match_count(invert_cond_.get())) {
-    vector_bf_by_keys_ =
-        *matches <= segment_->doc_count_snapshot() * brute_force_ratio;
+  // Only existing range statistics can select term ID enumeration. BSI has
+  // no estimates; unknown and compound conditions stay on the filter path.
+  if (invert_cond_ &&
+      invert_cond_->type() == QueryNode::QueryNodeType::REL_EXPR &&
+      invert_cond_->left_node()->op() == QueryNodeOp::Q_ID) {
+    const auto op = InvertSearch::query_nodeop2search_op(invert_cond_->op());
+    if (op == CompareOp::LT || op == CompareOp::LE || op == CompareOp::GT ||
+        op == CompareOp::GE) {
+      auto column = segment_->get_scalar_indexer(invert_cond_->left()->text());
+      if (column && column->has_range_statistics()) {
+        uint64_t total = 0, matches = 0;
+        auto status = column->evaluate_ratio(invert_cond_->right()->text(), op,
+                                             &total, &matches);
+        if (status.ok()) {
+          vector_bf_by_keys_ =
+              matches <= segment_->doc_count_snapshot() * brute_force_ratio;
+        }
+      }
+    }
   }
   return compute_filter(!*vector_bf_by_keys_);
 }

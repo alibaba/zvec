@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 #include "db/index/column/inverted_column/inverted_indexer.h"
 #include "db/sqlengine/analyzer/query_info_helper.h"
+#include "db/sqlengine/planner/doc_filter.h"
 #include "db/sqlengine/planner/invert_search.h"
 #include "db/sqlengine/sqlengine_impl.h"
 #include "zvec/db/index_params.h"
@@ -30,27 +31,29 @@
 
 namespace zvec::sqlengine {
 
-class SampledSegment : public MockSegment {
+class BsiFilterSegment : public MockSegment {
  public:
   InvertedIndexer::Ptr owner;
-  bool hide_mirror{false};
   InvertedColumnIndexer::Ptr get_scalar_indexer(
       const std::string &name) const override {
-    return hide_mirror && name == "mirror" ? nullptr : (*owner)[name];
+    return (*owner)[name];
   }
   uint64_t doc_count_snapshot() const override {
     return 200;
   }
+  const IndexFilter::Ptr get_filter() override {
+    return nullptr;
+  }
 };
 
-TEST(FilterEstimateTest, CorrelatedFieldsAndReplay) {
+TEST(BsiFilterPlanningTest, MissingStatisticsNeverEnumeratesHoles) {
   auto path =
       std::filesystem::temp_directory_path() /
-      ("bsi_estimate_" +
+      ("bsi_filter_" +
        std::to_string(
            std::chrono::steady_clock::now().time_since_epoch().count()));
   AILEGO_DEFER([&] { std::filesystem::remove_all(path); });
-  auto schema = std::make_shared<CollectionSchema>("estimate");
+  auto schema = std::make_shared<CollectionSchema>("filter");
   for (const auto &name : {"age", "mirror"}) {
     ASSERT_TRUE(schema
                     ->add_field(std::make_shared<FieldSchema>(
@@ -61,56 +64,73 @@ TEST(FilterEstimateTest, CorrelatedFieldsAndReplay) {
   }
   std::vector<FieldSchema> fields;
   for (const auto &field : schema->fields()) fields.push_back(*field);
-  SampledSegment segment;
-  segment.owner = InvertedIndexer::CreateAndOpen("estimate", path.string(),
-                                                 true, fields, false);
-  ASSERT_NE(segment.owner, nullptr);
+  auto segment = std::make_shared<BsiFilterSegment>();
+  segment->owner = InvertedIndexer::CreateAndOpen("filter", path.string(), true,
+                                                  fields, false);
+  ASSERT_NE(segment->owner, nullptr);
   for (uint32_t id = 0; id < 200; ++id) {
     for (const auto &name : {"age", "mirror"}) {
-      auto column = (*segment.owner)[name];
+      auto column = (*segment->owner)[name];
       const int32_t value = id;
       ASSERT_TRUE(
-          (id == 0 ? column->insert_null(id)
-                   : column->insert(
-                         id, std::string(reinterpret_cast<const char *>(&value),
+          (id == 0
+               ? column->insert_null(id * 2)
+               : column->insert(
+                     id * 2, std::string(reinterpret_cast<const char *>(&value),
                                          sizeof(value))))
               .ok());
     }
   }
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
-  auto estimate = [&](const std::string &filter) -> std::optional<double> {
-    SearchQuery query;
-    query.filter_ = filter;
-    query.topk_ = 10;
-    auto info = engine->build_query_info(schema, query, nullptr);
-    if (!info) return std::nullopt;
-    return InvertSearch(&segment).estimate_match_count(
-        info.value()->invert_cond().get());
-  };
   for (int phase = 0; phase < 3; ++phase) {
+    EXPECT_FALSE((*segment->owner)["age"]->has_range_statistics());
     for (const auto &[filter, count] :
-         std::vector<std::pair<std::string, double>>{
+         std::vector<std::pair<std::string, size_t>>{
+             {"age < 0", 0},
+             {"age < 100", 99},
              {"age < 100 AND mirror >= 100", 0},
              {"age < 100 OR mirror < 150", 149},
              {"age = 7", 1},
-             {"age != 7", 198},
              {"age IN (7, 9, 9)", 2},
              {"age NOT IN (7, 9) AND mirror < 10", 7},
              {"age IS NULL", 1}}) {
-      auto result = estimate(filter);
-      ASSERT_TRUE(result.has_value()) << filter;
-      EXPECT_DOUBLE_EQ(*result, count) << filter;
+      SearchQuery query;
+      query.filter_ = filter;
+      query.topk_ = 10;
+      auto info = engine->build_query_info(schema, query, nullptr);
+      ASSERT_TRUE(info.has_value()) << filter;
+      if (filter == "age < 100") {
+        auto original = info.value()->invert_cond();
+        InvertCondOptimizer optimizer(schema.get());
+        optimizer.optimize(segment.get(), info.value().get());
+        EXPECT_EQ(info.value()->invert_cond(), original);
+      }
+      auto exact =
+          InvertSearch(segment.get())
+              .exec_invert_cond_tree(info.value()->invert_cond().get());
+      ASSERT_TRUE(exact.has_value()) << filter;
+      EXPECT_EQ(exact.value()->count(), count) << filter;
+      DocFilter candidates(segment, info.value(), nullptr, nullptr);
+      ASSERT_TRUE(candidates.compute_vector_filter(1.0f).ok()) << filter;
+      // Unknown is not zero, even with a threshold that would choose all IDs.
+      // BSI results may contain holes and must remain membership filters.
+      EXPECT_FALSE(candidates.get_bf_by_keys_and_update(1.0f).has_value());
+      for (uint32_t id = 0; id < 200; ++id) {
+        EXPECT_EQ(candidates.is_filtered(id * 2),
+                  !exact.value()->contains(id * 2))
+            << filter;
+      }
+      if (filter == "age < 100") {
+        EXPECT_FALSE(exact.value()->contains(1));
+        EXPECT_FALSE(candidates.is_filtered(1));
+      }
     }
-    segment.hide_mirror = true;
-    EXPECT_FALSE(estimate("mirror = 7").has_value());
-    EXPECT_FALSE(estimate("age < 100 OR mirror = 7").has_value());
-    segment.hide_mirror = false;
-    if (phase == 0) ASSERT_TRUE(segment.owner->seal().ok());
+    if (phase == 0) ASSERT_TRUE(segment->owner->seal().ok());
     if (phase == 1) {
-      segment.owner.reset();
-      segment.owner = InvertedIndexer::CreateAndOpen("estimate", path.string(),
-                                                     false, fields, true);
-      ASSERT_NE(segment.owner, nullptr);
+      segment->owner.reset();
+      segment->owner = InvertedIndexer::CreateAndOpen("filter", path.string(),
+                                                      false, fields, true);
+      ASSERT_NE(segment->owner, nullptr);
     }
   }
 }

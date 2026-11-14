@@ -14,7 +14,6 @@
 
 // Reproduces the high-cardinality workload described in issue #868.
 // Layouts must share the same seed and, for ANN, the same optimized graph.
-#include <sys/resource.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -101,24 +100,6 @@ InvertIndexParams::OPtr Params() {
   return std::make_shared<InvertIndexParams>(InvertIndexLayout::TERM_RANGE);
 }
 
-void MemoryEvent(const InvertedColumnIndexer::Ptr &index) {
-  const auto usage = index->bsi_memory_usage();
-  struct rusage process_usage{};
-  getrusage(RUSAGE_SELF, &process_usage);
-  uint64_t peak_rss = process_usage.ru_maxrss;
-#ifndef __APPLE__
-  peak_rss *= 1024;
-#endif
-  std::cout << "{\"event\":\"bsi_memory\",\"cache_mode\":"
-            << std::quoted(FLAGS_bsi_cache_mode)
-            << ",\"mutable_bytes\":" << usage.mutable_bytes
-            << ",\"resident_bytes\":" << usage.resident_bytes
-            << ",\"cache_bytes\":" << usage.cache_bytes
-            << ",\"pinned_cache_bytes\":" << usage.pinned_cache_bytes
-            << ",\"persisted_bytes\":" << usage.persisted_bytes
-            << ",\"persisted_slices\":" << usage.persisted_slices
-            << ",\"process_peak_rss_bytes\":" << peak_rss << "}" << std::endl;
-}
 uint64_t DiskBytes(const std::string &path) {
   uint64_t bytes = 0;
   for (const auto &entry :
@@ -221,7 +202,6 @@ void Scalar() {
       }
     }
     Event("insert", Seconds(start));
-    MemoryEvent(index);
     start = Clock::now();
     Check(owner->seal());
     Event("seal", Seconds(start), DiskBytes(FLAGS_path));
@@ -249,7 +229,6 @@ void Scalar() {
       Check(found && found->count() == expected, "Scalar query failed");
       return found->count();
     });
-  MemoryEvent(index);
 }
 Collection::Ptr Open(bool read_only) {
   auto opened =

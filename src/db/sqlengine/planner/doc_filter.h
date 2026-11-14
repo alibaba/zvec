@@ -42,7 +42,8 @@ class DocFilter : public IndexFilter {
 
   Status compute_filter(bool use_bsi = false);
 
-  // Choose the vector path from statistics before materializing a bitmap.
+  // Use existing range statistics before materializing a bitmap. BSI stays
+  // on the candidate filter path because it has no cardinality estimate.
   Status compute_vector_filter(float brute_force_ratio);
 
   bool is_filtered(uint64_t id) const override;
