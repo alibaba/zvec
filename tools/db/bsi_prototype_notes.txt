@@ -1,7 +1,7 @@
 整型 BSI 实现与验证范围
 
-2026-11-14 收敛：移除采样、BSI 命中量预估和缓存统计，简化状态与查询路径；只做相关单元测试，
-不运行 benchmark。后面的性能数字是上一版本的历史记录，不代表此次精简后的结果。
+2026-11-14 收敛：移除采样、BSI 命中量预估和缓存统计，简化状态与查询路径；相关 UT 通过后，
+按后续要求在本机和 191 完成与 TERM_RANGE 的查询性能对比。最新结果与历史记录分开列出。
 
 已实现
 - 一个字段、一个 segment 使用统一 segment docID，不划分 docID 子段。
@@ -101,6 +101,30 @@ C:
   重开后重放相同数据，检查可写及 sealed 查询一致。共九个跨 CF 退出场景。
 - Python 子进程在未 flush、flush 后、optimize 后直接退出，三模式共九个恢复场景；
   当时同时覆盖相关字段估算、布局重建、更新、删除和 segment 合并。
+
+最新查询性能（查询实现提交 d13769c6，2026-11-14）
+- 本机 Apple M3 Pro / 36 GiB，未绑定 CPU；191 Xeon Platinum 8369B，固定逻辑 CPU 0–7
+  （4 个物理核、8 个线程）。各 60 次运行，共 120 次，所有结果校验通过。
+- 复用相同 issue #868 合成数据与已有 optimize 后的向量图，不是原 issue 私有数据集。
+  1000 万条随机 INT32，seed=868；主条件 dataTime > 536870911，命中 7,498,740。
+- 每组 3 轮，每轮 5 秒；交替执行方案，64 次预热，取各轮均值/QPS 的中位数。
+  每轮校验全部标量 membership 或 256 个 ANN 有序结果。是热缓存查询，不含打开成本。
+- 本次 benchmark 增加 sealed 检查；计时后检查两台机器各 4 个数据库，所有 CF 的
+  merge operand 均为 0，BSI CF 各有 32 个切片条目；不存在未完成的 BSI merge。
+- 单线程过滤 bitmap 构造耗时（ms；计时含 cardinality 校验和结果释放）：
+  本机：RANGE 2.718，RESIDENT 0.117，ON_DEMAND 0.402，LRU 0.117。
+  191：RANGE 4.932，RESIDENT 0.322，ON_DEMAND 1.545，LRU 0.318。
+- 相邻阈值 536870910 需要全部 32 个切片，单线程耗时（ms）：
+  本机：RANGE 2.697，RESIDENT 2.149，ON_DEMAND 9.116，LRU 2.164。
+  191：RANGE 4.943，RESIDENT 4.237，ON_DEMAND 21.105，LRU 4.264。
+  主阈值只需 3 个切片，优势不可外推到所有范围条件；按需读取在此条件下反而更慢。
+- 混合检索只比较 RANGE/RESIDENT，62 维 COSINE/INT8，HNSW efSearch=300、topK=21：
+  本机单线程 3.774/1.060 ms，8 并发 1192/3669 QPS。
+  191 单线程 6.348/2.182 ms，8 并发 547/2440 QPS。
+- LRU 预算保持每字段每 segment 64 MiB；没有重新引入缓存统计。
+  本轮不测当前写入/flush 性能，不包括冷缓存或随机变化阈值。
+- 报告与原始记录：build.release/bsi-perf-868-results/post-cleanup-20261114/report.html。
+  191 原始目录：/home/jiliang.ljl/project/zvec/work/bsi-868-results/post-cleanup-20261114/。
 
 历史性能记录（提交 1a4c5747，精简前）
 - 复用 issue #868 场景：1000 万随机 INT32，dataTime > 536870911。

@@ -206,6 +206,8 @@ void Scalar() {
     Check(owner->seal());
     Event("seal", Seconds(start), DiskBytes(FLAGS_path));
   }
+  Check(index->is_sealed(), "Scalar benchmark requires a sealed index");
+  Event("sealed_verified", 0);
   const std::string term(reinterpret_cast<const char *>(&FLAGS_bound),
                          sizeof(FLAGS_bound));
   start = Clock::now();
