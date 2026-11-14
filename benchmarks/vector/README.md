@@ -1,7 +1,29 @@
+# Vector benchmarks
 
-# Benchmarking scripts
+Vector index construction, recall evaluation, query throughput, and dataset conversion.
 
-This directory contains benchmarking scripts and reproducing steps.
+## Build
+
+Follow the [build configuration](../README.md), then run from the repository root:
+
+```bash
+cmake --build build-bench --target \
+  txt2vecs local_builder recall bench \
+  local_builder_original recall_original bench_original
+```
+
+| Target | Purpose | Configuration |
+| --- | --- | --- |
+| `txt2vecs` | Convert text vectors to binary data | Command-line flags |
+| `local_builder`, `local_builder_original` | Build indexes | `BuilderCommon`, `BuilderParams` |
+| `recall`, `bench` | Measure recall or query throughput via the index interface | `IndexCommon.IndexConfig`, `QueryConfig.QueryParam` |
+| `recall_original`, `bench_original` | Measure recall or query throughput via framework plugins | `SearcherCommon`, `SearcherParams` |
+
+Run YAML-based tools with `build-bench/bin/<target> <config.yaml>`.
+
+The COHERE example below uses the `_original` tools. Its search YAML is not
+interchangeable with the `IndexCommon`/`QueryConfig` format used by `recall` and
+`bench`. Run all local commands from the repository root.
 
 ## COHERE experiments
 
@@ -26,7 +48,7 @@ scalar_labels.parquet
 test.parquet      
 ```
 
-For convenience, we prepared a docker image with cohere bench datasets: registry.cn-hongkong.cr.aliyuncs.com/zvec/cohere-bench-data. 
+For convenience, we prepared a docker image with cohere bench datasets: registry.cn-hongkong.cr.aliyuncs.com/zvec/cohere-bench-data.
 
 You can run a container as follows:
 
@@ -38,32 +60,34 @@ docker exec -it cohere_bench bash
 
 The datasets locate at /tmp/cohere/
 
-### Preparing Environment 
+### Preparing Environment
+
 Clone code and init:
+
 ```bash
-$ git clone git@github.com:alibaba/zvec.git
-$ cd zvec
-$ git submodule update --init
+git clone git@github.com:alibaba/zvec.git
+cd zvec
+git submodule update --init
 ```
 
-Build source code:
-```
-$ cd /home/zvec/workspace/zvec
-$ mkdir build
-$ cd build  
-$ cmake -DENABLE_SKYLAKE=ON -DCMAKE_BUILD_TYPE=Release ..
-```
+Configure and build the targets as described above.
 
-### Converting Dataset 
-Export vector data using python script:
+### Converting Dataset
+
+The conversion script reads `./cohere/10m` and writes `./10m.output` by default.
+Adjust its `input_dir` and `output_dir` for your dataset location, then run:
+
 ```bash
-$ mkdir 10m.output
-$ python3 convert_cohere_parquet.py
+mkdir -p 10m.output
+python3 benchmarks/vector/convert_cohere_parquet.py
 ```
 
 Convert vector data to binary formatted file.
+
 ```bash
-/home/zvec/workspace/zvec/bin/txt2vecs -input=cohere_train_vector_10m.txt --output=cohere_train_vector_10m.zvec.vecs --dimension=768
+build-bench/bin/txt2vecs \
+  --input=10m.output/cohere_768_10m_vector.train.txt \
+  --output=10m.output/cohere_train_vector_10m.zvec.vecs --dimension=768
 ```
 
 We've also prepared preprocessed binary formatted files, which can be found in the container below:
@@ -87,8 +111,9 @@ drwxr-xr-x 6 root root       4096 Feb  6 03:38 ..
 -rw-r--r-- 1 root root     692969 Feb  5 13:08 neighbors.txt
 ```
 
-### Preparing Bench Config 
-Prepare Build Config
+### Preparing Bench Config
+
+Save as `build.yaml`, adjusting dataset and index paths for your environment.
 
 ```yaml
 BuilderCommon:
@@ -109,7 +134,7 @@ BuilderParams:
     proxima.hnsw.builder.thread_count: !!int 16
 ```
 
-Prepare Search Config
+Save as `search.yaml` for `recall_original` and `bench_original`.
 
 ```yaml
 SearcherCommon:
@@ -130,21 +155,24 @@ SearcherParams:
     proxima.hnsw.streamer.ef: !!int 250
 ```
 
-### Building Index 
-Conduct Build 
+### Building Index
+
+Conduct Build
+
 ```bash
-$ /home/zvec/workspace/zvec/build/bin/local_build_original ./build.yaml 
+build-bench/bin/local_builder_original ./build.yaml
 ```
 
 ### Performing Bench
-Conduct Recall 
+
+Conduct Recall
+
 ```bash
-$ /home/zvec/workspace/zvec/build/bin/recall_original ./search.yaml
+build-bench/bin/recall_original ./search.yaml
 ```
 
-Conduct Bench 
+Conduct Bench
+
 ```bash
-$ /home/zvec/workspace/zvec/build/bin/bench_original ./search.yaml
+build-bench/bin/bench_original ./search.yaml
 ```
-
-

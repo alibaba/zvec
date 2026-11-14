@@ -54,7 +54,7 @@ jobs:
           cmake -S . -B build \
             -G "Unix Makefiles" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TOOLS=ON \
+            -DBUILD_BENCHMARKS=ON \
             -DBUILD_PYTHON_BINDINGS=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
@@ -119,7 +119,7 @@ jobs:
           cmake -S . -B build \
             -G "Unix Makefiles" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TOOLS=ON \
+            -DBUILD_BENCHMARKS=ON \
             -DBUILD_PYTHON_BINDINGS=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
@@ -204,7 +204,7 @@ jobs:
           cmake -S . -B build \
             -G "Unix Makefiles" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TOOLS=ON \
+            -DBUILD_BENCHMARKS=ON \
             -DBUILD_PYTHON_BINDINGS=ON \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
@@ -220,7 +220,7 @@ jobs:
           CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
           $PYTHON -m pip install -v . \
             --no-build-isolation \
-            --config-settings='cmake.define.BUILD_TOOLS="ON"' \
+            --config-settings='cmake.define.BUILD_BENCHMARKS="ON"' \
             --config-settings='cmake.define.ENABLE_WERROR=ON' \
             --config-settings='cmake.define.CMAKE_C_COMPILER_LAUNCHER=ccache' \
             --config-settings='cmake.define.CMAKE_CXX_COMPILER_LAUNCHER=ccache'
