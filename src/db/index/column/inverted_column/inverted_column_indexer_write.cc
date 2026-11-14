@@ -23,8 +23,6 @@ namespace zvec {
 
 
 Status InvertedColumnIndexer::insert(uint32_t id, const std::string &value) {
-  std::unique_lock<std::shared_mutex> lock;
-  if (bsi_) lock = std::unique_lock(bsi_->mutex);
   if (bsi_ && value.size() != field_.element_data_size()) {
     return Status::InvalidArgument("Invalid BSI value size");
   }
@@ -75,6 +73,7 @@ Status InvertedColumnIndexer::insert(uint32_t id, const std::string &value) {
     }
   }
 
+  // Publish the column bound only after the term and all BSI slices are ready.
   update_max_id(id);
   return Status::OK();
 }
@@ -199,16 +198,11 @@ Status InvertedColumnIndexer::insert(uint32_t id,
 
 
 Status InvertedColumnIndexer::insert_null(uint32_t id) {
-  std::unique_lock<std::shared_mutex> lock;
-  if (bsi_) lock = std::unique_lock(bsi_->mutex);
   if (read_only_) {
     return Status::PermissionDenied();
   }
   null_bitmap_.add(id);
   update_max_id(id);
-  if (bsi_) {
-    bsi_->doc_id_limit = std::max(bsi_->doc_id_limit, uint64_t{id} + 1);
-  }
   return Status::OK();
 }
 

@@ -8,13 +8,18 @@
   TERM_BSI 支持单值 INT32、INT64、UINT32、UINT64；始终保留 term posting。
 - 单结果 C API 递推，按低位到高位计算 GT/GE，LT/LE 通过有界取反得到。
   跳过初始空集/全集上的恒等运算；结果直接转移所有权，无返回前深拷贝。
-- writing 切片常驻可修改内存，以列内 shared_mutex 协调 term、BSI、NULL
-  写入、查询、flush、seal 和 drop。seal 保留同一个 BsiState 和锁。
+- writing 切片常驻可修改内存，以列内 shared_mutex 协调切片更新、查询、flush、
+  seal 和 drop。NULL bitmap 使用自身的并发保护。seal 保留同一个 BsiState 和锁。
   sealed 查询也持有共享锁，以保护与 seal/drop 重叠的生命周期。
-- insert 保留原有 term Merge；成功后在锁内更新 BSI 和 docID 上界。
-  NULL 复用原有 bitmap。没有额外的逐行 RocksDB BSI Merge。
-- flush 只序列化脏切片，每个脏切片仍是完整快照 Put；与 BSI 上界、
-  NULL、通用 docID 上界在同一个 WriteBatch 写入。Write 失败不清除脏标记。
+- insert 保留原有 term Merge，入口不持 BSI 锁；update_bsi 内部持独占锁更新切片
+  和 dirty_slices，返回后才由 update_max_id 推进公共 doc_id_limit_。NULL 写入先
+  更新自身 bitmap，再推进相同上界。没有额外的逐行 RocksDB BSI Merge。
+  insert 与 flush/seal/drop 的互斥沿用上层 collection/segment 约束。
+- 删除 BSI 专用上界及持久化 key，恢复直接使用列级 doc_id_limit_。BSI 查询先读取
+  一次公共上界，再读取 NULL 状态；全集构造和有界取反使用同一份局部上界。
+  新切片与旧上界短暂并存只涉及尚未完成写入的 docID，filter 只测试有效候选。
+- flush 只序列化脏切片，每个脏切片仍是完整快照 Put；与 NULL、公共 docID 上界
+  在同一个 WriteBatch 写入。Write 失败不清除脏标记。
   普通 open 从 RocksDB 恢复可写状态；相同 docID/值的 WAL replay 幂等，
   即使 term 已经存在，也必须重新更新 BSI。
 - seal 在准备好 frozen 数据和缓存后写 sealed 标记，再发布只读状态。
@@ -54,7 +59,14 @@ C:
   zvec_index_params_set_invert_layout(params, ZVEC_INVERT_LAYOUT_TERM_BSI,
                                      ZVEC_BSI_CACHE_LRU, 64ULL << 20);
 
-本轮验证（2026-11-14）
+公共上界与锁收敛验证（2026-11-14）
+- 本机 69 个 BSI 单元测试及 1 个 BSI 查询规划单元测试全部通过；未运行 benchmark。
+- 新增三种缓存模式下的公共上界持久化及可写/只读恢复验证，最高 docID 为 NULL，
+  且默认 CF 只保留公共列元数据，不再写 BSI 专用上界。
+- 新增并发追加 NULL 与 GE(0)/LT(0) 查询验证，确保全集与取反使用同一上界，
+  NULL 不进入结果；普通写入、部分 CF 恢复、seal/drop 读者协调继续通过原 UT。
+
+采样及统计精简验证（2026-11-14，提交 9d119a04）
 - 本机 63 个 BSI 单元测试通过，覆盖三种缓存模式，以及四种整数、NULL、极值、
   空洞、flush/reopen、失败重试、部分 CF flush 后退出、seal/drop 并发。
 - 1 个 BSI 查询规划单元测试通过，覆盖无统计时保留原倒排计划、禁止枚举空洞，

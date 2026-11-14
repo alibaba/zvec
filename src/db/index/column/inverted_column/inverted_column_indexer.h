@@ -402,10 +402,6 @@ class InvertedColumnIndexer {
     return field_.name() + INVERT_SUFFIX_BSI;
   }
 
-  inline std::string key_bsi_doc_count() const {
-    return field_.name() + INVERT_KEY_BSI_DOC_COUNT;
-  }
-
   inline std::string key_max_id() const {
     return field_.name() + INVERT_KEY_MAX_ID;
   };
@@ -476,8 +472,6 @@ class InvertedColumnIndexer {
     mutable std::shared_mutex mutex;
     std::shared_ptr<rocksdb::Cache> cache;
     BsiCacheMode cache_mode{BsiCacheMode::RESIDENT};
-    // Upper bound, not a completed prefix: holes are allowed in filters.
-    uint64_t doc_id_limit{0};
     uint64_t dirty_slices{0};
     bool dropped{false};
   };
@@ -489,6 +483,7 @@ class InvertedColumnIndexer {
   bool enable_range_optimization_{false};
   bool enable_extended_wildcard_{false};
   std::atomic<uint32_t> max_id_{0};
+  // Upper bound, not a completed prefix: holes are allowed in BSI filters.
   std::atomic<uint64_t> doc_id_limit_{0};
   ConcurrentRoaringBitmap32 null_bitmap_{};
   SegmentDocRangeStat::Ptr doc_range_stat_{nullptr};

@@ -19,6 +19,7 @@
 #include <limits>
 #include <optional>
 #include <random>
+#include <set>
 #include <thread>
 #include <type_traits>
 #include <ailego/pattern/defer.h>
@@ -290,6 +291,68 @@ TEST_P(BitSliceIndexTest, OutOfOrderAndIdempotentReplay) {
   ASSERT_TRUE(owner->seal().ok());
 }
 
+TEST_P(BitSliceIndexTest, SharedBoundIncludesNullAndSurvivesReopen) {
+  RocksdbContext context;
+  ASSERT_TRUE(context
+                  .create(path_.string(),
+                          {"value" + INVERT_SUFFIX_TERMS,
+                           "value" + INVERT_SUFFIX_BSI, INVERT_CDF},
+                          std::make_shared<InvertedRocksdbValueMerger>())
+                  .ok());
+  FieldSchema field("value", DataType::UINT32, true, Params());
+  auto index = InvertedColumnIndexer::CreateAndOpen("bound", field, context);
+  ASSERT_NE(index, nullptr);
+  ASSERT_TRUE(index->insert(0, EncodeValue(uint32_t{0})).ok());
+  ASSERT_TRUE(index->insert(2, EncodeValue(uint32_t{7})).ok());
+  ASSERT_TRUE(index->insert_null(4).ok());
+  ASSERT_TRUE(index->flush_special_values().ok());
+  ASSERT_TRUE(context.flush().ok());
+
+  // Only shared column metadata is persisted; BSI has no separate bound key.
+  std::string bound;
+  ASSERT_TRUE(
+      context.db_
+          ->Get(context.read_opts_, "value" + INVERT_KEY_DOC_ID_LIMIT, &bound)
+          .ok());
+  EXPECT_EQ(bound, "5");
+  std::set<std::string> keys;
+  {
+    std::unique_ptr<rocksdb::Iterator> iter(
+        context.db_->NewIterator(context.read_opts_));
+    for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
+      keys.insert(iter->key().ToString());
+    }
+    ASSERT_TRUE(iter->status().ok());
+  }
+  const std::set<std::string> expected_keys{"value" + INVERT_KEY_MAX_ID,
+                                            "value" + INVERT_KEY_DOC_ID_LIMIT,
+                                            "value" + INVERT_KEY_NULL};
+  EXPECT_EQ(keys, expected_keys);
+
+  for (int phase = 0; phase < 4; ++phase) {
+    auto all = index->search_filter(EncodeValue(uint32_t{0}), CompareOp::GE);
+    ASSERT_NE(all, nullptr);
+    EXPECT_EQ(all->count(), 4u);
+    EXPECT_TRUE(all->contains(0));
+    EXPECT_TRUE(all->contains(2));
+    EXPECT_TRUE(all->contains(3));  // Uninserted IDs may remain in a filter.
+    EXPECT_FALSE(all->contains(4));
+    EXPECT_FALSE(all->contains(5));
+    auto none = index->search_filter(EncodeValue(uint32_t{0}), CompareOp::LT);
+    ASSERT_NE(none, nullptr);
+    EXPECT_EQ(none->count(), 0u);
+    if (phase == 1) {
+      ASSERT_TRUE(index->seal().ok());
+      ASSERT_TRUE(context.flush().ok());
+    } else if (phase < 3) {
+      index.reset();
+      index = InvertedColumnIndexer::CreateAndOpen("bound", field, context,
+                                                   phase == 2);
+      ASSERT_NE(index, nullptr);
+    }
+  }
+}
+
 TEST_P(BitSliceIndexTest, ReplayRepairsSlicesWhenTermAlreadyExists) {
   RocksdbContext context;
   ASSERT_TRUE(context
@@ -460,6 +523,46 @@ TEST_P(BitSliceIndexTest, ConcurrentQueriesSeeWholeValues) {
   EXPECT_EQ(
       index->search_filter(EncodeValue(uint64_t{0}), CompareOp::GT)->count(),
       133u);
+}
+
+TEST_P(BitSliceIndexTest, ConcurrentNullWritesKeepComplementsBounded) {
+  auto owner = Open(DataType::UINT32);
+  ASSERT_NE(owner, nullptr);
+  auto index = (*owner)["value"];
+  ASSERT_TRUE(index->insert(0, EncodeValue(uint32_t{0})).ok());
+  std::atomic<bool> started{false}, done{false}, valid{true};
+  std::thread writer([&]() {
+    while (!started) std::this_thread::yield();
+    for (uint32_t id = 1; id <= 10000; ++id) {
+      if (!index->insert_null(id).ok()) valid = false;
+      if (id % 32 == 0) std::this_thread::yield();
+    }
+    done = true;
+  });
+  started = true;
+  do {
+    // GE(0) constructs the universe; LT(0) then flips that same universe.
+    // Newly published NULL IDs must not leak into either result.
+    auto all = index->search_filter(EncodeValue(uint32_t{0}), CompareOp::GE);
+    auto none = index->search_filter(EncodeValue(uint32_t{0}), CompareOp::LT);
+    if (!all || !none || all->count() != 1 || !all->contains(0) ||
+        none->count() != 0) {
+      valid = false;
+    }
+  } while (!done);
+  writer.join();
+  EXPECT_TRUE(valid);
+  EXPECT_EQ(index->search_null()->count(), 10000u);
+  ASSERT_TRUE(owner->flush().ok());
+  index.reset();
+  owner.reset();
+  owner = Open(DataType::UINT32);
+  ASSERT_NE(owner, nullptr);
+  auto all =
+      (*owner)["value"]->search_filter(EncodeValue(uint32_t{0}), CompareOp::GE);
+  ASSERT_NE(all, nullptr);
+  EXPECT_EQ(all->count(), 1u);
+  EXPECT_TRUE(all->contains(0));
 }
 
 class FailingBsiDB : public rocksdb::StackableDB {

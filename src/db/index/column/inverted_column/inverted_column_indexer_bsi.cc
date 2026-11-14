@@ -61,21 +61,6 @@ const rocksdb::Cache::CacheItemHelper kBsiCacheHelper{
 Status InvertedColumnIndexer::restore_bsi_state() {
   auto state = std::make_unique<BsiState>();
   const size_t width = field_.element_data_size() * 8;
-  std::string value;
-  auto status = ctx_.db_->Get(ctx_.read_opts_, key_bsi_doc_count(), &value);
-  if (status.ok()) {
-    try {
-      size_t parsed = 0;
-      state->doc_id_limit = std::stoull(value, &parsed);
-      if (parsed != value.size() || state->doc_id_limit > (uint64_t{1} << 32)) {
-        return Status::InternalError("Invalid BSI document bound");
-      }
-    } catch (const std::exception &) {
-      return Status::InternalError("Invalid BSI document bound");
-    }
-  } else if (!status.IsNotFound()) {
-    return Status::InternalError(status.ToString());
-  }
   const auto params =
       std::static_pointer_cast<InvertIndexParams>(field_.index_params());
   // Only sealed indexes can read immutable slices without a snapshot.
@@ -92,8 +77,9 @@ Status InvertedColumnIndexer::restore_bsi_state() {
   state->slices.resize(width);
   for (size_t bit = 0; bit < width; ++bit) {
     auto &buffer = state->buffers[bit];
-    status = ctx_.db_->Get(ctx_.read_opts_, cf_bsi_,
-                           std::string(1, static_cast<char>(bit)), &buffer);
+    auto status =
+        ctx_.db_->Get(ctx_.read_opts_, cf_bsi_,
+                      std::string(1, static_cast<char>(bit)), &buffer);
     roaring_bitmap_t *bitmap = nullptr;
     if (status.ok()) {
       auto decoded = read_only_ ? InvertedIndexCodec::DeserializeFrozen(
@@ -115,7 +101,9 @@ Status InvertedColumnIndexer::restore_bsi_state() {
 }
 
 void InvertedColumnIndexer::update_bsi(uint32_t id, const std::string &term) {
-  // The caller holds the column's BSI lock across term and slice updates.
+  // Lock only the mutable slices; the caller publishes the column bound after
+  // this returns. The owner serializes inserts against flush, seal and drop.
+  std::unique_lock lock(bsi_->mutex);
   // Like term postings, replay assumes the same value for the same docID.
   // Always update slices even if a prior term write survived a partial flush.
   // Bit zero is the most significant bit of the order-preserving encoding.
@@ -127,7 +115,6 @@ void InvertedColumnIndexer::update_bsi(uint32_t id, const std::string &term) {
       }
     }
   }
-  bsi_->doc_id_limit = std::max(bsi_->doc_id_limit, uint64_t{id} + 1);
 }
 
 Status InvertedColumnIndexer::append_bsi_snapshot(rocksdb::WriteBatch *batch) {
@@ -146,9 +133,6 @@ Status InvertedColumnIndexer::append_bsi_snapshot(rocksdb::WriteBatch *batch) {
     auto status = batch->Put(cf_bsi_, key, value);
     if (!status.ok()) return Status::InternalError(status.ToString());
   }
-  auto status =
-      batch->Put(key_bsi_doc_count(), std::to_string(bsi_->doc_id_limit));
-  if (!status.ok()) return Status::InternalError(status.ToString());
   return Status::OK();
 }
 
@@ -203,6 +187,9 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_bsi(
     return tl::make_unexpected(
         Status::PermissionDenied("BSI index was dropped"));
   }
+  // Read the bound before NULL state. NULL inserts publish their bitmap first
+  // and do not take the BSI lock. Use this same bound for universe and flip.
+  const uint64_t doc_id_limit = doc_id_limit_.load();
 
   // Compute GT or GE from the least significant bit. A null accumulator
   // represents the initial empty (GT) or universal (GE) set without allocating
@@ -321,11 +308,10 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_bsi(
     if (!result)
       return tl::make_unexpected(
           Status::InternalError("Cannot allocate BSI result"));
-    if (inclusive)
-      roaring_bitmap_add_range(result.get(), 0, bsi_->doc_id_limit);
+    if (inclusive) roaring_bitmap_add_range(result.get(), 0, doc_id_limit);
   }
   if (complement) {
-    roaring_bitmap_flip_inplace(result.get(), 0, bsi_->doc_id_limit);
+    roaring_bitmap_flip_inplace(result.get(), 0, doc_id_limit);
   }
   // NULL has no value slices, but complements and the unsigned minimum bound
   // can include it. Keep NULL exclusion independent of hole tolerance.

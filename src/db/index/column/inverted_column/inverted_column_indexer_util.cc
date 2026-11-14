@@ -214,10 +214,6 @@ Status InvertedColumnIndexer::drop_storage() {
     if (s = ctx_.drop_cf(cf_name_bsi()); !s.ok()) {
       return s;
     }
-    rs = ctx_.db_->Delete(ctx_.write_opts_, key_bsi_doc_count());
-    if (!rs.ok()) {
-      return Status::InternalError(rs.ToString());
-    }
   }
   if (enable_range_optimization_) {
     rs = ctx_.db_->Delete(ctx_.write_opts_, cf_cdf_, field_.name());

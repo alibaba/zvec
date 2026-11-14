@@ -69,7 +69,6 @@ const std::string INVERT_SUFFIX_RANGES{"$RANGES"};
 
 // Version 1 stores one Roaring bitmap per bit over segment document IDs.
 const std::string INVERT_SUFFIX_BSI{"$BSI_V1"};
-const std::string INVERT_KEY_BSI_DOC_COUNT{"$ZVEC$BSI_DOC_COUNT"};
 
 const std::string INVERT_CDF{"$CDF"};
 
