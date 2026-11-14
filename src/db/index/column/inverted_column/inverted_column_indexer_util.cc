@@ -25,6 +25,23 @@ InvertedColumnIndexer::~InvertedColumnIndexer() {
 }
 
 
+void InvertedColumnIndexer::build_range_cache() {
+  range_cache_.reset();
+  if (!sealed_ || !enable_range_optimization_ || !cf_ranges_ ||
+      range_cache_options_.max_bytes == 0) {
+    return;
+  }
+  try {
+    range_cache_ = InvertedRangeCache::Build(ctx_, cf_ranges_, max_id_.load(),
+                                             null_bitmap_.bitmap(),
+                                             range_cache_options_.max_bytes);
+  } catch (const std::bad_alloc &) {
+    LOG_WARN("Skipping range prefix cache for %s: insufficient memory",
+             id().c_str());
+  }
+}
+
+
 Status InvertedColumnIndexer::open() {
   if (field_.index_type() != IndexType::INVERT) {
     return Status::InvalidArgument();
@@ -124,6 +141,7 @@ Status InvertedColumnIndexer::open() {
     return Status::InternalError();
   }
 
+  build_range_cache();
   LOG_INFO("Opened %s", id().c_str());
   return Status::OK();
 }
@@ -131,9 +149,10 @@ Status InvertedColumnIndexer::open() {
 
 InvertedColumnIndexer::Ptr InvertedColumnIndexer::CreateAndOpen(
     const std::string &collection_name, const FieldSchema &field,
-    RocksdbContext &context, bool read_only) {
-  auto ptr =
-      new InvertedColumnIndexer(collection_name, field, context, read_only);
+    RocksdbContext &context, bool read_only,
+    const RangePrefixCacheOptions &cache_options) {
+  auto ptr = new InvertedColumnIndexer(collection_name, field, context,
+                                       read_only, cache_options);
   auto indexer = std::shared_ptr<InvertedColumnIndexer>(ptr);
   if (indexer->open().ok()) {
     return indexer;
