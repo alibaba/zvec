@@ -46,7 +46,8 @@ class InvertedSearchResult
 
 
   const IndexFilter::Ptr make_filter() const {
-    return bitmap_ ? std::make_shared<Filter>(shared_from_this()) : nullptr;
+    // A missing bitmap is an empty result, not an absent filter condition.
+    return std::make_shared<Filter>(shared_from_this());
   }
 
 

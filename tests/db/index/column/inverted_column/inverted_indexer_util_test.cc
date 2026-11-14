@@ -249,6 +249,15 @@ TEST_F(InvertedIndexTest, INVERTED_SEARCH_RESULT) {
   ASSERT_FALSE(filter->is_filtered(5));
   ASSERT_FALSE(filter->is_filtered(9));
   ASSERT_FALSE(filter->is_filtered(11));
+
+  auto empty = std::make_shared<InvertedSearchResult>();
+  filter = empty->make_filter();
+  ASSERT_TRUE(filter);
+  EXPECT_TRUE(filter->is_filtered(3));
+  res1->AND(*empty);
+  filter = res1->make_filter();
+  ASSERT_TRUE(filter);
+  EXPECT_TRUE(filter->is_filtered(3));
 }
 
 #if defined(__GNUC__) || defined(__GNUG__)

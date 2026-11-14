@@ -30,6 +30,10 @@ class InvertSearch {
   Result<InvertedSearchResult::Ptr> exec_invert_cond_tree(
       const QueryNode *invert_cond);
 
+  bool used_bsi() const {
+    return used_bsi_;
+  }
+
   static CompareOp query_nodeop2search_op(QueryNodeOp op);
 
  private:
@@ -39,6 +43,7 @@ class InvertSearch {
  private:
   zvec::Segment *segment_;
   bool filter_only_;
+  bool used_bsi_{false};
 };
 
 }  // namespace zvec::sqlengine

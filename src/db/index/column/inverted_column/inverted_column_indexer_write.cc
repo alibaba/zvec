@@ -74,7 +74,7 @@ Status InvertedColumnIndexer::insert(uint32_t id, const std::string &value) {
   }
 
   // Publish the column bound only after the term and all BSI slices are ready.
-  update_max_id(id);
+  update_doc_id_limit(id);
   return Status::OK();
 }
 
@@ -115,7 +115,7 @@ Status InvertedColumnIndexer::insert(uint32_t id,
   }
   s = ctx_.db_->Write(ctx_.write_opts_, &write_batch);
   if (s.ok()) {
-    update_max_id(id);
+    update_doc_id_limit(id);
     return Status::OK();
   } else {
     return Status::InternalError();
@@ -139,7 +139,7 @@ Status InvertedColumnIndexer::insert(uint32_t id, bool value) {
   auto s =
       ctx_.db_->Merge(ctx_.write_opts_, cf_terms_, encoded_value, encoded_id);
   if (s.ok()) {
-    update_max_id(id);
+    update_doc_id_limit(id);
     return Status::OK();
   } else {
     LOG_ERROR("Failed to insert terms of id[%u] to %s, code[%d], reason[%s]",
@@ -187,7 +187,7 @@ Status InvertedColumnIndexer::insert(uint32_t id,
   }
   rs = ctx_.db_->Write(ctx_.write_opts_, &write_batch);
   if (rs.ok()) {
-    update_max_id(id);
+    update_doc_id_limit(id);
     return Status::OK();
   } else {
     LOG_ERROR("Failed to insert terms of id[%u] to %s, code[%d], reason[%s]",
@@ -202,7 +202,7 @@ Status InvertedColumnIndexer::insert_null(uint32_t id) {
     return Status::PermissionDenied();
   }
   null_bitmap_.add(id);
-  update_max_id(id);
+  update_doc_id_limit(id);
   return Status::OK();
 }
 
@@ -236,11 +236,13 @@ Status InvertedColumnIndexer::flush_special_values_unlocked() {
     auto status = batch.Delete(key_null());
     if (!status.ok()) return Status::InternalError(status.ToString());
   }
-  auto status = batch.Put(key_max_id(), std::to_string(max_id_));
+  const auto doc_id_limit = doc_id_limit_.load();
+  auto status = batch.Put(
+      key_max_id(), std::to_string(doc_id_limit == 0 ? 0 : doc_id_limit - 1));
   if (!status.ok()) {
     return Status::InternalError(status.ToString());
   }
-  status = batch.Put(key_doc_id_limit(), std::to_string(doc_id_limit_.load()));
+  status = batch.Put(key_doc_id_limit(), std::to_string(doc_id_limit));
   if (!status.ok()) return Status::InternalError(status.ToString());
   status = ctx_.db_->Write(ctx_.write_opts_, &batch);
   if (!status.ok()) {
@@ -281,17 +283,15 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
     return Status::PermissionDenied();
   }
 
-  if (enable_range_optimization_) {
-    if (!ctx_.reset_cf(cf_name_ranges()).ok()) {
-      // Reset the range index in case it is corrupted
-      LOG_ERROR("Failed to reset range index");
-      return Status::InternalError();
-    }
-    cf_ranges_ = ctx_.get_cf(cf_name_ranges());
-    if (!cf_ranges_) {
-      LOG_ERROR("Failed to get column families for %s", id().c_str());
-      return Status::InternalError();
-    }
+  if (!ctx_.reset_cf(cf_name_ranges()).ok()) {
+    // Reset the range index in case it is corrupted
+    LOG_ERROR("Failed to reset range index");
+    return Status::InternalError();
+  }
+  cf_ranges_ = ctx_.get_cf(cf_name_ranges());
+  if (!cf_ranges_) {
+    LOG_ERROR("Failed to get column families for %s", id().c_str());
+    return Status::InternalError();
   }
 
   // TODO: make them configurable
@@ -383,23 +383,21 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
     auto term_doc_count = roaring_bitmap_get_cardinality(bitmap_cur);
     doc_count += term_doc_count;
 
-    if (enable_range_optimization_) {
-      // Range
-      if (!range_slot_initialized) {
-        range_slot_initialized = true;
-        range_slot_doc_count = 0;
-        range_begin_key = iter_term->key().ToString();
-        roaring_bitmap_clear(bitmap_range);
-      }
-      range_end_key = iter_term->key().ToString();
-      range_slot_doc_count += term_doc_count;
-      roaring_bitmap_or_inplace(bitmap_range, bitmap_cur);
-      if (range_slot_doc_count >= num_doc_per_range_slot) {
-        if (create_range_slot().ok()) {
-          range_slot_initialized = false;
-        } else {
-          return Status::InternalError();
-        }
+    // Range
+    if (!range_slot_initialized) {
+      range_slot_initialized = true;
+      range_slot_doc_count = 0;
+      range_begin_key = iter_term->key().ToString();
+      roaring_bitmap_clear(bitmap_range);
+    }
+    range_end_key = iter_term->key().ToString();
+    range_slot_doc_count += term_doc_count;
+    roaring_bitmap_or_inplace(bitmap_range, bitmap_cur);
+    if (range_slot_doc_count >= num_doc_per_range_slot) {
+      if (create_range_slot().ok()) {
+        range_slot_initialized = false;
+      } else {
+        return Status::InternalError();
       }
     }
 
@@ -430,7 +428,7 @@ Status InvertedColumnIndexer::generate_statistical_indexes() {
       return Status::InternalError();
     }
   }
-  if (enable_range_optimization_ && num_range_slot_created >= term_count) {
+  if (num_range_slot_created >= term_count) {
     LOG_DEBUG(
         "Drop range index in %s, range_slot_count[%ld] vs term_count[%ld].",
         id().c_str(), num_range_slot_created, term_count);

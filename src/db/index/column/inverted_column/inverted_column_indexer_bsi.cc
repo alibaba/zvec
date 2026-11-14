@@ -60,17 +60,27 @@ const rocksdb::Cache::CacheItemHelper kBsiCacheHelper{
 
 Status InvertedColumnIndexer::restore_bsi_state() {
   auto state = std::make_unique<BsiState>();
-  const size_t width = field_.element_data_size() * 8;
+  // Only sealed indexes can read immutable slices without a snapshot.
   const auto params =
       std::static_pointer_cast<InvertIndexParams>(field_.index_params());
-  // Only sealed indexes can read immutable slices without a snapshot.
-  if (sealed_) state->cache_mode = params->bsi_cache_mode();
-  if (state->cache_mode != BsiCacheMode::RESIDENT) {
-    if (state->cache_mode == BsiCacheMode::LRU) {
+  const auto cache_mode =
+      sealed_ ? params->bsi_cache_mode() : BsiCacheMode::RESIDENT;
+  auto status = load_bsi_state(state.get(), read_only_, cache_mode);
+  if (!status.ok()) return status;
+  bsi_ = std::move(state);
+  return Status::OK();
+}
+
+Status InvertedColumnIndexer::load_bsi_state(BsiState *state, bool frozen,
+                                             BsiCacheMode cache_mode) {
+  const size_t width = field_.element_data_size() * 8;
+  if (cache_mode != BsiCacheMode::RESIDENT) {
+    if (cache_mode == BsiCacheMode::LRU) {
+      const auto params =
+          std::static_pointer_cast<InvertIndexParams>(field_.index_params());
       // A single shard avoids partitioning the budget across just 32/64 keys.
       state->cache = rocksdb::NewLRUCache(params->bsi_cache_bytes(), 0, true);
     }
-    bsi_ = std::move(state);
     return Status::OK();
   }
   state->buffers.resize(width);
@@ -82,10 +92,10 @@ Status InvertedColumnIndexer::restore_bsi_state() {
                       std::string(1, static_cast<char>(bit)), &buffer);
     roaring_bitmap_t *bitmap = nullptr;
     if (status.ok()) {
-      auto decoded = read_only_ ? InvertedIndexCodec::DeserializeFrozen(
-                                      buffer.data(), buffer.size(), &bitmap)
-                                : InvertedIndexCodec::Deserialize(
-                                      buffer.data(), buffer.size(), &bitmap);
+      auto decoded = frozen ? InvertedIndexCodec::DeserializeFrozen(
+                                  buffer.data(), buffer.size(), &bitmap)
+                            : InvertedIndexCodec::Deserialize(
+                                  buffer.data(), buffer.size(), &bitmap);
       if (!decoded.ok()) return decoded;
     } else if (status.IsNotFound()) {
       bitmap = roaring_bitmap_create();
@@ -94,9 +104,8 @@ Status InvertedColumnIndexer::restore_bsi_state() {
     }
     if (!bitmap) return Status::InternalError("Cannot allocate BSI slice");
     state->slices[bit].reset(bitmap);
-    if (!read_only_) std::string{}.swap(buffer);
+    if (!frozen) std::string{}.swap(buffer);
   }
-  bsi_ = std::move(state);
   return Status::OK();
 }
 
@@ -121,11 +130,6 @@ Status InvertedColumnIndexer::append_bsi_snapshot(rocksdb::WriteBatch *batch) {
   for (size_t bit = 0; bit < bsi_->slices.size(); ++bit) {
     if (!(bsi_->dirty_slices & (uint64_t{1} << bit))) continue;
     const std::string key(1, static_cast<char>(bit));
-    if (roaring_bitmap_is_empty(bsi_->slices[bit].get())) {
-      auto status = batch->Delete(cf_bsi_, key);
-      if (!status.ok()) return Status::InternalError(status.ToString());
-      continue;
-    }
     std::string value;
     auto encoded =
         InvertedIndexCodec::Serialize(bsi_->slices[bit].get(), &value);
@@ -141,38 +145,14 @@ Status InvertedColumnIndexer::freeze_bsi_state() {
       std::static_pointer_cast<InvertIndexParams>(field_.index_params());
   // Prepare everything before publishing sealed state. A failed read or
   // allocation leaves the existing mutable state available for retry.
-  std::vector<std::string> buffers;
-  std::vector<BitmapPtr> slices;
-  std::shared_ptr<rocksdb::Cache> cache;
-  if (params->bsi_cache_mode() == BsiCacheMode::RESIDENT) {
-    buffers.resize(bsi_->slices.size());
-    slices.resize(bsi_->slices.size());
-    for (size_t bit = 0; bit < slices.size(); ++bit) {
-      auto status =
-          ctx_.db_->Get(ctx_.read_opts_, cf_bsi_,
-                        std::string(1, static_cast<char>(bit)), &buffers[bit]);
-      roaring_bitmap_t *bitmap = nullptr;
-      if (status.ok()) {
-        auto decoded = InvertedIndexCodec::DeserializeFrozen(
-            buffers[bit].data(), buffers[bit].size(), &bitmap);
-        if (!decoded.ok()) return decoded;
-      } else if (status.IsNotFound()) {
-        bitmap = roaring_bitmap_create();
-      } else {
-        return Status::InternalError(status.ToString());
-      }
-      if (!bitmap) return Status::InternalError("Cannot allocate BSI slice");
-      slices[bit].reset(bitmap);
-    }
-  } else if (params->bsi_cache_mode() == BsiCacheMode::LRU) {
-    cache = rocksdb::NewLRUCache(params->bsi_cache_bytes(), 0, true);
-  }
-  auto status = ctx_.db_->Put(ctx_.write_opts_, key_sealed(), "sealed");
-  if (!status.ok()) return Status::InternalError(status.ToString());
-  bsi_->slices.swap(slices);
-  bsi_->buffers.swap(buffers);
-  bsi_->cache = std::move(cache);
-  bsi_->cache_mode = params->bsi_cache_mode();
+  BsiState state;
+  auto status = load_bsi_state(&state, true, params->bsi_cache_mode());
+  if (!status.ok()) return status;
+  auto rs = ctx_.db_->Put(ctx_.write_opts_, key_sealed(), "sealed");
+  if (!rs.ok()) return Status::InternalError(rs.ToString());
+  bsi_->slices.swap(state.slices);
+  bsi_->buffers.swap(state.buffers);
+  bsi_->cache = std::move(state.cache);
   read_only_ = true;
   sealed_ = true;
   return Status::OK();
@@ -183,10 +163,6 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_bsi(
   // Keep the state object stable across seal, including readers that entered
   // while the column was still writable. Query results own their payloads.
   std::shared_lock lock(bsi_->mutex);
-  if (bsi_->dropped) {
-    return tl::make_unexpected(
-        Status::PermissionDenied("BSI index was dropped"));
-  }
   // Read the bound before NULL state. NULL inserts publish their bitmap first
   // and do not take the BSI lock. Use this same bound for universe and flip.
   const uint64_t doc_id_limit = doc_id_limit_.load();
@@ -327,8 +303,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_bsi(
 
 InvertedSearchResult::Ptr InvertedColumnIndexer::search_filter(
     const std::string &value, CompareOp op) const {
-  if (!bsi_ || (op != CompareOp::LT && op != CompareOp::LE &&
-                op != CompareOp::GT && op != CompareOp::GE)) {
+  if (!supports_bsi(op)) {
     return search(value, op);
   }
   if (value.size() != field_.element_data_size()) return nullptr;

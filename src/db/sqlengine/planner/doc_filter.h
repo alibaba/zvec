@@ -42,16 +42,14 @@ class DocFilter : public IndexFilter {
 
   Status compute_filter(bool use_bsi = false);
 
-  // Use existing range statistics before materializing a bitmap. BSI stays
-  // on the candidate filter path because it has no cardinality estimate.
-  Status compute_vector_filter(float brute_force_ratio);
-
   bool is_filtered(uint64_t id) const override;
 
   //! When invert cardinality <= \p ratio * doc_count, extract the ids and
   //! clear invert_filter_ so the caller drives evaluation by ids instead of
   //! bitmap-checking. Ratio is per-caller (vector vs FTS use different
   //! GlobalConfig knobs) because per-candidate cost differs.
+  //! Results containing BSI predicates remain membership filters: their
+  //! bitmaps can contain holes and have no cardinality estimate.
   std::optional<std::vector<uint64_t>> get_bf_by_keys_and_update(float ratio);
 
   bool empty() const;
@@ -70,7 +68,7 @@ class DocFilter : public IndexFilter {
   std::unique_ptr<arrow::compute::Expression> forward_filter_expr_;
 
   InvertedSearchResult::Ptr invert_result_;
-  std::optional<bool> vector_bf_by_keys_;
+  bool used_bsi_{false};
   IndexFilter::Ptr invert_filter_{nullptr};
 
   std::shared_ptr<arrow::ChunkedArray> forward_bitmap_;

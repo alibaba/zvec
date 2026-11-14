@@ -101,8 +101,8 @@ Status InvertedColumnIndexer::open() {
   s = ctx_.db_->Get(ctx_.read_opts_, key_max_id(), &value);
   if (s.ok()) {
     try {
-      max_id_ = std::stoul(value);
-      doc_id_limit_ = uint64_t{max_id_.load()} + 1;
+      const uint32_t max_id = std::stoul(value);
+      doc_id_limit_ = uint64_t{max_id} + 1;
     } catch (const std::exception &e) {
       LOG_ERROR("Failed to parse max id from %s for %s, exception[%s]",
                 value.c_str(), id().c_str(), e.what());
@@ -181,12 +181,7 @@ InvertedColumnIndexer::Ptr InvertedColumnIndexer::CreateAndOpen(
 
 
 Status InvertedColumnIndexer::drop_storage() {
-  std::unique_lock<std::shared_mutex> lock;
-  if (bsi_) {
-    lock = std::unique_lock(bsi_->mutex);
-    bsi_->dropped = true;
-    read_only_ = true;
-  }
+  // The owner excludes queries and writes while removing the column.
   Status s = Status::OK();
   rocksdb::Status rs;
   AILEGO_DEFER([&]() {

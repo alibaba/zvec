@@ -737,7 +737,7 @@ TEST_P(BitSliceIndexTest, EmptyRecallAndMaximumDocumentId) {
   EXPECT_EQ(result->count(), uint64_t{1} << 32);
 }
 
-TEST_P(BitSliceIndexTest, QueriesOverlapSealAndDrop) {
+TEST_P(BitSliceIndexTest, QueriesOverlapSeal) {
   auto owner = Open(DataType::INT32);
   ASSERT_NE(owner, nullptr);
   auto index = (*owner)["value"];
@@ -757,14 +757,13 @@ TEST_P(BitSliceIndexTest, QueriesOverlapSealAndDrop) {
   });
   while (!started) std::this_thread::yield();
   const auto sealed = owner->seal();
-  const auto dropped = index->drop_storage();
   done = true;
   reader.join();
   EXPECT_TRUE(sealed.ok());
-  EXPECT_TRUE(dropped.ok());
   EXPECT_TRUE(valid);
-  EXPECT_EQ(index->search_filter(EncodeValue(int32_t{3}), CompareOp::GT),
-            nullptr);
+  // Like term indexes, drop requires the owner to exclude active queries.
+  EXPECT_TRUE(owner->remove_column_indexer("value").ok());
+  EXPECT_EQ((*owner)["value"], nullptr);
 }
 
 TEST_P(BitSliceIndexTest, FailedSnapshotAndSealCanBeRetried) {

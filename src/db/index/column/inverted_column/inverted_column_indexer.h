@@ -96,6 +96,11 @@ class InvertedColumnIndexer {
   InvertedSearchResult::Ptr search_filter(const std::string &value,
                                           CompareOp op) const;
 
+  bool supports_bsi(CompareOp op) const {
+    return bsi_ && (op == CompareOp::LT || op == CompareOp::LE ||
+                    op == CompareOp::GT || op == CompareOp::GE);
+  }
+
   bool has_range_statistics() const {
     return sealed_ && doc_range_stat_ != nullptr;
   }
@@ -313,16 +318,11 @@ class InvertedColumnIndexer {
     return InvertedIndexCodec::has_prefix(value, value_len, prefix, prefix_len);
   }
 
-  inline void update_max_id(uint32_t id) {
+  inline void update_doc_id_limit(uint32_t id) {
     const uint64_t limit = uint64_t{id} + 1;
     uint64_t expected_limit = doc_id_limit_.load();
     while (expected_limit < limit &&
            !doc_id_limit_.compare_exchange_weak(expected_limit, limit)) {
-    }
-    uint32_t expected_id = max_id_.load();
-    while (expected_id < id &&
-           !max_id_.compare_exchange_weak(expected_id, id)) {
-      ;
     }
   }
 
@@ -471,10 +471,9 @@ class InvertedColumnIndexer {
     std::vector<BitmapPtr> slices;
     mutable std::shared_mutex mutex;
     std::shared_ptr<rocksdb::Cache> cache;
-    BsiCacheMode cache_mode{BsiCacheMode::RESIDENT};
     uint64_t dirty_slices{0};
-    bool dropped{false};
   };
+  Status load_bsi_state(BsiState *state, bool frozen, BsiCacheMode cache_mode);
   std::unique_ptr<BsiState> bsi_;
 
 
@@ -482,7 +481,6 @@ class InvertedColumnIndexer {
   std::atomic<bool> sealed_{false};
   bool enable_range_optimization_{false};
   bool enable_extended_wildcard_{false};
-  std::atomic<uint32_t> max_id_{0};
   // Upper bound, not a completed prefix: holes are allowed in BSI filters.
   std::atomic<uint64_t> doc_id_limit_{0};
   ConcurrentRoaringBitmap32 null_bitmap_{};

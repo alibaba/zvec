@@ -21,32 +21,8 @@
 
 namespace zvec::sqlengine {
 
-Status DocFilter::compute_vector_filter(float brute_force_ratio) {
-  vector_bf_by_keys_ = false;
-  // Only existing range statistics can select term ID enumeration. BSI has
-  // no estimates; unknown and compound conditions stay on the filter path.
-  if (invert_cond_ &&
-      invert_cond_->type() == QueryNode::QueryNodeType::REL_EXPR &&
-      invert_cond_->left_node()->op() == QueryNodeOp::Q_ID) {
-    const auto op = InvertSearch::query_nodeop2search_op(invert_cond_->op());
-    if (op == CompareOp::LT || op == CompareOp::LE || op == CompareOp::GT ||
-        op == CompareOp::GE) {
-      auto column = segment_->get_scalar_indexer(invert_cond_->left()->text());
-      if (column && column->has_range_statistics()) {
-        uint64_t total = 0, matches = 0;
-        auto status = column->evaluate_ratio(invert_cond_->right()->text(), op,
-                                             &total, &matches);
-        if (status.ok()) {
-          vector_bf_by_keys_ =
-              matches <= segment_->doc_count_snapshot() * brute_force_ratio;
-        }
-      }
-    }
-  }
-  return compute_filter(!*vector_bf_by_keys_);
-}
-
 Status DocFilter::compute_filter(bool use_bsi) {
+  used_bsi_ = false;
   if (invert_cond_) {
     InvertSearch search(segment_.get(), use_bsi);
     auto invert_res = search.exec_invert_cond_tree(invert_cond_.get());
@@ -55,6 +31,7 @@ Status DocFilter::compute_filter(bool use_bsi) {
                                    invert_res.error().message());
     }
     invert_result_ = invert_res.value();
+    used_bsi_ = search.used_bsi();
     invert_filter_ = invert_result_->make_filter();
   }
 
@@ -134,18 +111,9 @@ std::optional<bool> DocFilter::get_forward_bit(uint64_t id) const {
 std::optional<std::vector<uint64_t>> DocFilter::get_bf_by_keys_and_update(
     float ratio) {
   // TODO: support forward
-  if (!invert_result_) {
+  // BSI membership bitmaps may contain holes; never count or enumerate them.
+  if (!invert_result_ || used_bsi_) {
     return std::nullopt;
-  }
-  if (vector_bf_by_keys_.has_value()) {
-    if (!*vector_bf_by_keys_) return std::nullopt;
-    // This result was computed through term postings, never through a BSI
-    // membership filter, so it is suitable for candidate enumeration.
-    std::vector<uint32_t> ids;
-    invert_result_->extract_ids(&ids);
-    invert_filter_.reset();
-    invert_result_.reset();
-    return std::vector<uint64_t>(ids.begin(), ids.end());
   }
   // Insert/flush() rewrite the block behind doc_count(), so read it locked.
   size_t doc_count = segment_->doc_count_snapshot();

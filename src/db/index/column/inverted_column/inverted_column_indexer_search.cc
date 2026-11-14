@@ -738,11 +738,6 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_non_null() const {
 
 InvertedSearchResult::Ptr InvertedColumnIndexer::search(
     const std::string &value, CompareOp op) const {
-  std::shared_lock<std::shared_mutex> lock;
-  if (bsi_) {
-    lock = std::shared_lock(bsi_->mutex);
-    if (bsi_->dropped) return nullptr;
-  }
   if (cf_bsi_ && value.size() != field_.element_data_size()) {
     return nullptr;
   }
@@ -811,11 +806,6 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search(
 
 InvertedSearchResult::Ptr InvertedColumnIndexer::multi_search(
     const std::vector<std::string> &values, CompareOp op) const {
-  std::shared_lock<std::shared_mutex> lock;
-  if (bsi_) {
-    lock = std::shared_lock(bsi_->mutex);
-    if (bsi_->dropped) return nullptr;
-  }
   auto encoded_values = encode(values);
   auto search_res = std::make_shared<InvertedSearchResult>();
   Result<roaring_bitmap_t *> bitmap_res;
@@ -907,11 +897,6 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search_array_len(
 
 
 InvertedSearchResult::Ptr InvertedColumnIndexer::search_null() const {
-  std::shared_lock<std::shared_mutex> lock;
-  if (bsi_) {
-    lock = std::shared_lock(bsi_->mutex);
-    if (bsi_->dropped) return nullptr;
-  }
   auto search_res = std::make_shared<InvertedSearchResult>();
   auto bitmap_res = get_bitmap_null();
   if (bitmap_res) {
@@ -926,11 +911,6 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search_null() const {
 
 
 InvertedSearchResult::Ptr InvertedColumnIndexer::search_non_null() const {
-  std::shared_lock<std::shared_mutex> lock;
-  if (bsi_) {
-    lock = std::shared_lock(bsi_->mutex);
-    if (bsi_->dropped) return nullptr;
-  }
   auto search_res = std::make_shared<InvertedSearchResult>();
   auto bitmap_res = get_bitmap_non_null();
   if (bitmap_res) {

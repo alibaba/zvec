@@ -135,8 +135,7 @@ std::string decode_group_id_from_forward(const FieldSchema *schema,
 }
 
 Result<IndexResults::Ptr> VectorRecallNode::prepare() {
-  auto filter_status = doc_filter_->compute_vector_filter(
-      GlobalConfig::Instance().brute_force_by_keys_ratio());
+  auto filter_status = doc_filter_->compute_filter(true);
   if (!filter_status.ok()) {
     return tl::make_unexpected(filter_status);
   }

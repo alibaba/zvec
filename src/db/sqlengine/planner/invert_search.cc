@@ -153,9 +153,10 @@ Result<InvertedSearchResult::Ptr> InvertSearch::exec_invert_cond_node(
     return invert_res;
   } else if (!is_array_length) {
     auto invert_term = term_node->text();
-    auto invert_res = filter_only_
-                          ? invert_reader->search_filter(invert_term, oper)
-                          : invert_reader->search(invert_term, oper);
+    const bool use_bsi = filter_only_ && invert_reader->supports_bsi(oper);
+    used_bsi_ |= use_bsi;
+    auto invert_res = use_bsi ? invert_reader->search_filter(invert_term, oper)
+                              : invert_reader->search(invert_term, oper);
     if (!invert_res) {
       return tl::make_unexpected(Status::InvalidArgument(
           "invert column reader search failed. term:", invert_term.c_str(),

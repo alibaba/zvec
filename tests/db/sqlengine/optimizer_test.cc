@@ -14,6 +14,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <tuple>
 #include <ailego/pattern/defer.h>
 #include <gtest/gtest.h>
 #include "db/index/column/inverted_column/inverted_indexer.h"
@@ -46,7 +47,7 @@ class BsiFilterSegment : public MockSegment {
   }
 };
 
-TEST(BsiFilterPlanningTest, MissingStatisticsNeverEnumeratesHoles) {
+TEST(BsiFilterPlanningTest, OnlyBsiPredicatesPreventEnumeration) {
   auto path =
       std::filesystem::temp_directory_path() /
       ("bsi_filter_" +
@@ -84,16 +85,25 @@ TEST(BsiFilterPlanningTest, MissingStatisticsNeverEnumeratesHoles) {
   auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
   for (int phase = 0; phase < 3; ++phase) {
     EXPECT_FALSE((*segment->owner)["age"]->has_range_statistics());
-    for (const auto &[filter, count] :
-         std::vector<std::pair<std::string, size_t>>{
-             {"age < 0", 0},
-             {"age < 100", 99},
-             {"age < 100 AND mirror >= 100", 0},
-             {"age < 100 OR mirror < 150", 149},
-             {"age = 7", 1},
-             {"age IN (7, 9, 9)", 2},
-             {"age NOT IN (7, 9) AND mirror < 10", 7},
-             {"age IS NULL", 1}}) {
+    for (const auto &[filter, count, uses_bsi] :
+         std::vector<std::tuple<std::string, size_t, bool>>{
+             {"age < 0", 0, true},
+             {"age < 100", 99, true},
+             {"age < 100 AND mirror >= 100", 0, true},
+             {"age < 100 OR mirror < 150", 149, true},
+             {"age = 7", 1, false},
+             {"age = 999", 0, false},
+             {"age IN (7, 9, 9)", 2, false},
+             {"age = 7 OR mirror IN (9, 11)", 3, false},
+             {"age = 7 AND mirror < 10", 1, true},
+             {"age = 7 OR mirror < 10", 9, true},
+             {"age = 999 AND mirror < 10", 0, true},
+             {"age < 10 AND mirror = 999", 0, true},
+             {"age = 999 OR mirror < 10", 9, true},
+             {"age < 10 OR mirror = 999", 9, true},
+             {"age IN (999) AND mirror < 10", 0, true},
+             {"age NOT IN (7, 9) AND mirror < 10", 7, true},
+             {"age IS NULL", 1, false}}) {
       SearchQuery query;
       query.filter_ = filter;
       query.topk_ = 10;
@@ -111,10 +121,7 @@ TEST(BsiFilterPlanningTest, MissingStatisticsNeverEnumeratesHoles) {
       ASSERT_TRUE(exact.has_value()) << filter;
       EXPECT_EQ(exact.value()->count(), count) << filter;
       DocFilter candidates(segment, info.value(), nullptr, nullptr);
-      ASSERT_TRUE(candidates.compute_vector_filter(1.0f).ok()) << filter;
-      // Unknown is not zero, even with a threshold that would choose all IDs.
-      // BSI results may contain holes and must remain membership filters.
-      EXPECT_FALSE(candidates.get_bf_by_keys_and_update(1.0f).has_value());
+      ASSERT_TRUE(candidates.compute_filter(true).ok()) << filter;
       for (uint32_t id = 0; id < 200; ++id) {
         EXPECT_EQ(candidates.is_filtered(id * 2),
                   !exact.value()->contains(id * 2))
@@ -124,6 +131,23 @@ TEST(BsiFilterPlanningTest, MissingStatisticsNeverEnumeratesHoles) {
         EXPECT_FALSE(exact.value()->contains(1));
         EXPECT_FALSE(candidates.is_filtered(1));
       }
+      if (count != 0) {
+        EXPECT_FALSE(candidates.get_bf_by_keys_and_update(0.0f).has_value())
+            << filter;
+      }
+      // Unknown is not zero, even with a threshold that would choose all IDs.
+      // Only actual BSI predicates can introduce holes into these results.
+      auto ids = candidates.get_bf_by_keys_and_update(1.0f);
+      if (uses_bsi) {
+        EXPECT_FALSE(ids.has_value()) << filter;
+        // Scalar recall still uses term postings and may enumerate IDs.
+        DocFilter recall(segment, info.value(), nullptr, nullptr);
+        ASSERT_TRUE(recall.compute_filter().ok()) << filter;
+        ids = recall.get_bf_by_keys_and_update(1.0f);
+      }
+      ASSERT_TRUE(ids.has_value()) << filter;
+      EXPECT_EQ(ids->size(), count) << filter;
+      for (auto id : *ids) EXPECT_TRUE(exact.value()->contains(id)) << filter;
     }
     if (phase == 0) ASSERT_TRUE(segment->owner->seal().ok());
     if (phase == 1) {
@@ -131,6 +155,88 @@ TEST(BsiFilterPlanningTest, MissingStatisticsNeverEnumeratesHoles) {
       segment->owner = InvertedIndexer::CreateAndOpen("filter", path.string(),
                                                       false, fields, true);
       ASSERT_NE(segment->owner, nullptr);
+    }
+  }
+}
+
+TEST(BsiFilterPlanningTest, TermLayoutsRetainCardinalityRouting) {
+  auto engine = std::make_shared<SQLEngineImpl>(std::make_shared<Profiler>());
+  for (auto layout : {InvertIndexLayout::TERM, InvertIndexLayout::TERM_RANGE}) {
+    auto path =
+        std::filesystem::temp_directory_path() /
+        ("term_filter_" +
+         std::to_string(
+             std::chrono::steady_clock::now().time_since_epoch().count()));
+    AILEGO_DEFER([&] { std::filesystem::remove_all(path); });
+    auto schema = std::make_shared<CollectionSchema>("filter");
+    auto field = std::make_shared<FieldSchema>(
+        "age", DataType::INT32, true,
+        std::make_shared<InvertIndexParams>(layout));
+    ASSERT_TRUE(schema->add_field(field).ok());
+    auto segment = std::make_shared<BsiFilterSegment>();
+    segment->owner = InvertedIndexer::CreateAndOpen("filter", path.string(),
+                                                    true, {*field}, false);
+    ASSERT_NE(segment->owner, nullptr);
+    auto column = (*segment->owner)["age"];
+    ASSERT_TRUE(column->insert_null(0).ok());
+    for (int32_t value = 1; value < 200; ++value) {
+      ASSERT_TRUE(
+          column
+              ->insert(value, std::string(reinterpret_cast<char *>(&value),
+                                          sizeof(value)))
+              .ok());
+    }
+    column.reset();
+    for (int phase = 0; phase < 3; ++phase) {
+      for (const auto &[filter, count] :
+           std::vector<std::pair<std::string, size_t>>{
+               {"age = 7", 1},
+               {"age = 999", 0},
+               {"age IN (7, 9, 9)", 2},
+               {"age < 10", 9},
+               {"age <= 10", 10},
+               {"age > 189", 10},
+               {"age >= 190", 10},
+               {"age < 100", 99},
+               {"age != 7", 198},
+               {"age >= 7 AND age < 10", 3},
+               {"age = 999 AND age < 10", 0},
+               {"age = 7 OR age IN (9, 11)", 3},
+               {"age IS NULL", 1},
+               {"age IS NOT NULL", 199}}) {
+        SCOPED_TRACE(filter + " phase=" + std::to_string(phase));
+        SearchQuery query;
+        query.filter_ = filter;
+        query.topk_ = 10;
+        auto info = engine->build_query_info(schema, query, nullptr);
+        ASSERT_TRUE(info.has_value());
+        auto exact =
+            InvertSearch(segment.get())
+                .exec_invert_cond_tree(info.value()->invert_cond().get());
+        ASSERT_TRUE(exact.has_value());
+        ASSERT_EQ(exact.value()->count(), count);
+        DocFilter candidates(segment, info.value(), nullptr, nullptr);
+        ASSERT_TRUE(candidates.compute_filter(true).ok());
+        for (uint32_t id = 0; id < 200; ++id) {
+          EXPECT_EQ(candidates.is_filtered(id), !exact.value()->contains(id));
+        }
+        // Preserve the original count threshold, including its boundary.
+        auto ids = candidates.get_bf_by_keys_and_update(0.05f);
+        if (count > 10) {
+          EXPECT_FALSE(ids.has_value());
+          ids = candidates.get_bf_by_keys_and_update(1.0f);
+        }
+        ASSERT_TRUE(ids.has_value());
+        EXPECT_EQ(ids->size(), count);
+        for (auto id : *ids) EXPECT_TRUE(exact.value()->contains(id));
+      }
+      if (phase == 0) ASSERT_TRUE(segment->owner->seal().ok());
+      if (phase == 1) {
+        segment->owner.reset();
+        segment->owner = InvertedIndexer::CreateAndOpen("filter", path.string(),
+                                                        false, {*field}, true);
+        ASSERT_NE(segment->owner, nullptr);
+      }
     }
   }
 }
