@@ -7,7 +7,7 @@ Vector index construction, recall evaluation, query throughput, and dataset conv
 Follow the [build configuration](../README.md), then run from the repository root:
 
 ```bash
-cmake --build build-bench --target \
+cmake --build build --target \
   txt2vecs local_builder recall bench \
   local_builder_original recall_original bench_original
 ```
@@ -19,7 +19,7 @@ cmake --build build-bench --target \
 | `recall`, `bench` | Measure recall or query throughput via the index interface | `IndexCommon.IndexConfig`, `QueryConfig.QueryParam` |
 | `recall_original`, `bench_original` | Measure recall or query throughput via framework plugins | `SearcherCommon`, `SearcherParams` |
 
-Run YAML-based tools with `build-bench/bin/<target> <config.yaml>`.
+Run YAML-based tools with `build/bin/<target> <config.yaml>`.
 
 The COHERE example below uses the `_original` tools. Its search YAML is not
 interchangeable with the `IndexCommon`/`QueryConfig` format used by `recall` and
@@ -85,7 +85,7 @@ python3 benchmarks/vector/convert_cohere_parquet.py
 Convert vector data to binary formatted file.
 
 ```bash
-build-bench/bin/txt2vecs \
+build/bin/txt2vecs \
   --input=10m.output/cohere_768_10m_vector.train.txt \
   --output=10m.output/cohere_train_vector_10m.zvec.vecs --dimension=768
 ```
@@ -160,7 +160,7 @@ SearcherParams:
 Conduct Build
 
 ```bash
-build-bench/bin/local_builder_original ./build.yaml
+build/bin/local_builder_original ./build.yaml
 ```
 
 ### Performing Bench
@@ -168,11 +168,11 @@ build-bench/bin/local_builder_original ./build.yaml
 Conduct Recall
 
 ```bash
-build-bench/bin/recall_original ./search.yaml
+build/bin/recall_original ./search.yaml
 ```
 
 Conduct Bench
 
 ```bash
-build-bench/bin/bench_original ./search.yaml
+build/bin/bench_original ./search.yaml
 ```
