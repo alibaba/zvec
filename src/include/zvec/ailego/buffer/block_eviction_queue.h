@@ -221,9 +221,6 @@ class ZVEC_AILEGO_API BlockEvictionQueue {
     for (size_t i = 0; i < kQueueCount; ++i) {
       evict_queues_.push_back(ConcurrentQueue(kEvictQueueCapacity));
     }
-    for (size_t i = 0; i < kQueueCount; ++i) {
-      cleanup_consumers_[i].emplace(evict_queues_[i]);
-    }
   }
 
   // Foreground one-page reclaim should not pay for protected aging. Larger
@@ -244,9 +241,9 @@ class ZVEC_AILEGO_API BlockEvictionQueue {
   std::atomic<uint64_t> inactive_evictions_{0};
   std::mutex cleanup_mutex_;
   uint64_t cleanup_generation_seen_{0};
-  std::array<size_t, kQueueCount> cleanup_scan_remaining_{};
-  std::array<std::optional<ConcurrentQueue::consumer_token_t>, kQueueCount>
-      cleanup_consumers_{};
+  bool cleanup_in_progress_{false};
+  std::array<ConcurrentQueue::producer_scan_token_t, kQueueCount>
+      cleanup_scans_{};
   size_t cleanup_next_queue_{0};
 };
 
@@ -679,7 +676,7 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   char *pop_free_buffer(size_t start_shard);
   char *pop_reusable_buffer(size_t start_shard, size_t bytes);
   void push_free_buffer(char *buffer, size_t shard);
-  char *acquire_slab_buffer();
+  char *acquire_slab_buffer(size_t *reserved_pages = nullptr);
   bool reclaim_slab_buffer(char *buffer);
   bool release_all_slabs_locked();
   size_t trim_free_buffers(size_t bytes_needed);

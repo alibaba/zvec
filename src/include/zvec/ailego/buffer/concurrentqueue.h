@@ -970,6 +970,20 @@ class ConcurrentQueue {
   typedef typename Traits::index_t index_t;
   typedef typename Traits::size_t size_t;
 
+  // A bounded FIFO-prefix scan of each existing producer. The queue must not
+  // be moved or destroyed while a scan is active; producers themselves remain
+  // allocated until queue destruction, including when their threads exit.
+  struct producer_scan_token_t {
+    bool finished() const {
+      return producer == nullptr;
+    }
+
+   private:
+    friend class ConcurrentQueue;
+    void *producer{nullptr};
+    size_t remaining{0};
+  };
+
   static const size_t BLOCK_SIZE = static_cast<size_t>(Traits::BLOCK_SIZE);
   static const size_t EXPLICIT_BLOCK_EMPTY_COUNTER_THRESHOLD =
       static_cast<size_t>(Traits::EXPLICIT_BLOCK_EMPTY_COUNTER_THRESHOLD);
@@ -1569,6 +1583,33 @@ class ConcurrentQueue {
         ->dequeue_bulk(itemFirst, max);
   }
 
+
+  void begin_producer_scan(producer_scan_token_t &scan) const {
+    auto producer = producerListTail.load(std::memory_order_acquire);
+    scan.producer = producer;
+    scan.remaining = producer == nullptr ? 0 : producer->size_approx();
+  }
+
+  // Inspect at most one producer per call, without allocating. Each producer
+  // contributes its available FIFO prefix when first visited; requeued items
+  // cannot consume another producer's scan allowance. A zero result may only
+  // mean that an empty producer was skipped; check finished() for completion.
+  template <typename It>
+  size_t try_dequeue_bulk_from_producer_scan(producer_scan_token_t &scan,
+                                             It itemFirst, size_t max) {
+    auto producer = static_cast<ProducerBase *>(scan.producer);
+    if (producer == nullptr || max == 0) return 0;
+    const size_t requested = scan.remaining < max ? scan.remaining : max;
+    const size_t count =
+        requested == 0 ? 0 : producer->dequeue_bulk(itemFirst, requested);
+    scan.remaining -= count;
+    if (count == 0 || scan.remaining == 0) {
+      producer = producer->next_prod();
+      scan.producer = producer;
+      scan.remaining = producer == nullptr ? 0 : producer->size_approx();
+    }
+    return count;
+  }
 
   // Returns an estimate of the total number of elements currently in the queue.
   // This estimate is only accurate if the queue has completely stabilized

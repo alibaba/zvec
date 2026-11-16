@@ -7,6 +7,7 @@
 #include <future>
 #include <memory>
 #include <thread>
+#include <vector>
 #include <ailego/pattern/scope_guard.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
@@ -97,6 +98,93 @@ class CacheMappingRssTest : public testing::Test {
   }
   MemoryLimitPool &pool_ = MemoryLimitPool::get_instance();
 };
+
+TEST_F(CacheMappingRssTest, BatchPagesLeaveRoomForNewSlabHeaders) {
+  const size_t page = MemoryLimitPool::page_buffer_size();
+  const size_t slots = MemoryLimitPool::slab_size() / page - 1;
+  for (const size_t pages : {size_t{8}, slots + 2, 2 * (slots + 1)}) {
+    ASSERT_EQ(0, pool_.init(0));
+    const size_t capacity = pool_.queue_allocated() + pages * page;
+    ASSERT_EQ(0, pool_.init(capacity));
+    MemoryLimitPoolTestPeer::stop_background(pool_);
+    // Count payloads that fit together with their slab headers. Repeat after
+    // release to cover both cold allocation and reuse of existing backing.
+    const size_t payloads = pages - (pages + slots) / (slots + 1);
+    for (size_t round = 0; round < 2; ++round) {
+      std::vector<char *> buffers(pages);
+      const size_t acquired =
+          pool_.batch_acquire_buffers(page, buffers.data(), pages);
+      auto release = ScopeGuard::Make([&] {
+        for (size_t i = 0; i < acquired; ++i)
+          if (buffers[i]) pool_.release_buffer(buffers[i], page);
+      });
+      EXPECT_EQ(payloads, acquired) << "pages=" << pages << " round=" << round;
+      EXPECT_LE(pool_.used(), capacity);
+      EXPECT_LE(pool_.committed(), capacity);
+      for (size_t i = 0; i < acquired; ++i) EXPECT_NE(nullptr, buffers[i]);
+    }
+  }
+}
+
+TEST_F(CacheMappingRssTest,
+       CleanupVisitsEveryProducerWithoutRepeatingLiveItems) {
+  class Owner : public EvictableBlockOwner {
+   public:
+    bool dead{false};
+    size_t checks{0};
+    bool is_dead_block(size_t, size_t) override {
+      ++checks;
+      return dead;
+    }
+    bool evict_block(size_t) override {
+      ADD_FAILURE() << "Cleanup must not evict a live owner";
+      return false;
+    }
+  } live, retired;
+  auto &queue = BlockEvictionQueue::get_instance();
+  BlockEvictionQueue::BlockType stale;
+  while (queue.evict_single_block(stale)) {
+  }
+  queue.set_valid(&live);
+  queue.set_valid(&retired);
+  auto cleanup = ScopeGuard::Make([&] {
+    queue.set_invalid(&live);
+    queue.set_invalid(&retired);
+    while (queue.evict_single_block(stale)) {
+    }
+  });
+  constexpr size_t count = 4096;
+  std::promise<void> ready, finish;
+  auto finished = finish.get_future();
+  std::atomic<bool> enqueued{true};
+  std::thread producer([&] {
+    for (size_t i = 0; i < count; ++i)
+      if (!queue.add_single_block({i, 1, &retired, 0}, 0)) enqueued = false;
+    ready.set_value();
+    finished.wait();
+  });
+  auto join = ScopeGuard::Make([&] {
+    finish.set_value();
+    producer.join();
+  });
+  ready.get_future().wait();
+  ASSERT_TRUE(enqueued);
+  ASSERT_TRUE(queue.add_single_block({0, 1, &live, 0}, 0));
+  retired.dead = true;
+  queue.request_dead_entry_cleanup();
+  size_t cleaned = 0;
+  for (size_t i = 0; i < 64; ++i) {
+    const auto before = queue.stats().cleanup_attempts;
+    cleaned += queue.cleanup_dead_entries(256);
+    EXPECT_LE(queue.stats().cleanup_attempts - before, 256u);
+  }
+  EXPECT_EQ(count, cleaned);
+  EXPECT_EQ(1u, queue.stats().approximate_queue_sizes[0]);
+  EXPECT_EQ(1u, live.checks);
+  const auto attempts = queue.stats().cleanup_attempts;
+  EXPECT_EQ(0u, queue.cleanup_dead_entries(256));
+  EXPECT_EQ(attempts, queue.stats().cleanup_attempts);
+}
 
 TEST_F(CacheMappingRssTest, IdleReuseRetainsRegistrationUntilSuccessfulUnmap) {
   auto first = acquire();

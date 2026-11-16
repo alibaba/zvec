@@ -1418,16 +1418,14 @@ size_t BlockEvictionQueue::cleanup_dead_entries(size_t max_attempts) {
   if (max_attempts == 0) return 0;
   std::unique_lock<std::mutex> cleanup_lock(cleanup_mutex_, std::try_to_lock);
   if (!cleanup_lock.owns_lock()) return 0;
-  if (std::all_of(cleanup_scan_remaining_.begin(),
-                  cleanup_scan_remaining_.end(),
-                  [](size_t remaining) { return remaining == 0; })) {
+  if (!cleanup_in_progress_) {
     const auto generation = cleanup_generation_.load(std::memory_order_relaxed);
     if (generation == cleanup_generation_seen_) return 0;
     cleanup_generation_seen_ = generation;
     for (size_t i = 0; i < kQueueCount; ++i) {
-      cleanup_scan_remaining_[i] =
-          approximate_queue_sizes_[i].load(std::memory_order_relaxed);
+      evict_queues_[i].begin_producer_scan(cleanup_scans_[i]);
     }
+    cleanup_in_progress_ = true;
   }
 
   size_t attempts = 0;
@@ -1444,31 +1442,29 @@ size_t BlockEvictionQueue::cleanup_dead_entries(size_t max_attempts) {
                                   budgets[kExplicitHotPriority];
     first_queue = kProbationPriority;
   }
-  // Spend unused shares in priority order. The snapshot remaining counts
-  // prevent live requeued entries from being scanned twice in this pass.
+  // Spend unused shares in priority order. Per-producer FIFO prefixes keep
+  // live entries requeued on the cleaner's stream from hiding other streams.
   for (size_t i = 0; i < 2 * kQueueCount && attempts < max_attempts; ++i) {
     const size_t priority = (first_queue + i) % kQueueCount;
     const size_t budget =
         i < kQueueCount ? budgets[priority] : max_attempts - attempts;
-    size_t remaining = std::min(budget, cleanup_scan_remaining_[priority]);
-    while (remaining != 0 && attempts < max_attempts) {
-      // Tokenless dequeue favors a few producer streams. Requeuing live
-      // entries onto the cleaner's stream can then hide old producer streams
-      // indefinitely. Rotate producers and dequeue a batch before requeuing.
+    size_t remaining = budget;
+    auto &scan = cleanup_scans_[priority];
+    while (remaining != 0 && attempts < max_attempts && !scan.finished()) {
       std::array<BlockType, 64> items;
       const size_t requested =
           std::min({items.size(), remaining, max_attempts - attempts});
-      const size_t found = evict_queues_[priority].try_dequeue_bulk(
-          *cleanup_consumers_[priority], items.begin(), requested);
-      if (found == 0) {
-        cleanup_scan_remaining_[priority] = 0;
-        break;
-      }
-      remaining -= found;
-      cleanup_scan_remaining_[priority] -= found;
+      const size_t found =
+          evict_queues_[priority].try_dequeue_bulk_from_producer_scan(
+              scan, items.begin(), requested);
+      // Empty producers also consume bounded work; their metadata can outlive
+      // both the original thread and every queued entry.
+      const size_t work = std::max<size_t>(1, found);
+      remaining -= work;
+      attempts += work;
+      if (found == 0) continue;
       approximate_queue_sizes_[priority].fetch_sub(found,
                                                    std::memory_order_relaxed);
-      attempts += found;
       std::shared_lock<std::shared_mutex> owner_lock(valid_owners_mutex_);
       for (size_t entry = 0; entry < found; ++entry) {
         const auto &item = items[entry];
@@ -1485,6 +1481,9 @@ size_t BlockEvictionQueue::cleanup_dead_entries(size_t max_attempts) {
       }
     }
   }
+  cleanup_in_progress_ =
+      std::any_of(cleanup_scans_.begin(), cleanup_scans_.end(),
+                  [](const auto &scan) { return !scan.finished(); });
   cleanup_attempts_.fetch_add(attempts, std::memory_order_relaxed);
   dead_entries_cleaned_.fetch_add(cleaned, std::memory_order_relaxed);
   return cleaned;
@@ -1636,7 +1635,7 @@ void MemoryLimitPool::push_free_buffer(char *buffer, size_t shard) {
   free_shards_[shard].count.fetch_add(1, std::memory_order_relaxed);
 }
 
-char *MemoryLimitPool::acquire_slab_buffer() {
+char *MemoryLimitPool::acquire_slab_buffer(size_t *reserved_pages) {
   static_assert(sizeof(ReclaimableSlab) <= kMinimumPageBytes,
                 "slab metadata must fit in its header page");
 
@@ -1689,7 +1688,15 @@ char *MemoryLimitPool::acquire_slab_buffer() {
   // The header is resident-capable backing too. Keep it charged even after
   // all data pages have been returned or discarded, until slab teardown.
   // Do not evict here while holding allocator locks.
-  if (!try_reserve_allocation(page_size, Backing::kPending)) {
+  if (!try_reserve_used(page_size)) {
+    // A batch may already own every logical slot. Convert one unused payload
+    // slot into the header without publishing free capacity to competitors.
+    // Keep at least one payload slot for the page being acquired now.
+    if (!reserved_pages || *reserved_pages <= 1) return nullptr;
+    --*reserved_pages;
+  }
+  if (!try_reserve_committed(page_size, Backing::kPending)) {
+    release_buffer(nullptr, page_size);
     return nullptr;
   }
   metadata_used_size_.fetch_add(page_size, std::memory_order_relaxed);
@@ -3020,9 +3027,14 @@ size_t MemoryLimitPool::batch_acquire_buffers(size_t buffer_size, char **out,
         break;
       }
     }
-    out[acquired] = cacheable ? acquire_slab_buffer()
-                              : static_cast<char *>(ailego_aligned_malloc(
-                                    buffer_size, kMinimumPageBytes));
+    if (cacheable) {
+      size_t reserved_pages = actual_count - acquired;
+      out[acquired] = acquire_slab_buffer(&reserved_pages);
+      actual_count = acquired + reserved_pages;
+    } else {
+      out[acquired] = static_cast<char *>(
+          ailego_aligned_malloc(buffer_size, kMinimumPageBytes));
+    }
     if (!out[acquired]) {
       release_committed(buffer_size, Backing::kPending);
       break;
