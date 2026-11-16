@@ -60,11 +60,10 @@ else()
       )
       # MSVC 19.52 on ARM64 miscompiles the optimized Snowball generator:
       # routine modes and tokeniser filenames lose their initialized values.
-      # Keep this build-time tool unoptimized until the compiler is fixed;
+      # Keep this build-time tool unoptimized until a fixed MSVC is verified;
       # the generated stemmers and the Snowball runtime keep their optimization.
-      if(CMAKE_C_COMPILER_ARCHITECTURE_ID STREQUAL "ARM64"
-         AND CMAKE_C_COMPILER_VERSION VERSION_GREATER_EQUAL "19.52"
-         AND CMAKE_C_COMPILER_VERSION VERSION_LESS "19.53")
+      if(CMAKE_C_COMPILER_ID STREQUAL "MSVC"
+         AND CMAKE_C_COMPILER_ARCHITECTURE_ID STREQUAL "ARM64")
         target_compile_options(snowball_compiler PRIVATE /Od /Ob0)
       endif()
     endif()
