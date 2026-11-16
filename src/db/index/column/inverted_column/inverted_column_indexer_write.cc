@@ -455,6 +455,7 @@ Status InvertedColumnIndexer::seal() {
   if (rs.ok()) {
     sealed_ = true;
     read_only_ = true;
+    build_range_cache();
     return Status::OK();
   } else {
     LOG_ERROR("Failed to seal %s", id().c_str());
