@@ -115,6 +115,46 @@ TEST(ProcessRssBudgetTest, ConcurrentAdmissionsShareUnmaterializedHeadroom) {
   EXPECT_EQ(100 * kMiB, budget.available());
 }
 
+TEST(ProcessRssBudgetTest, UntouchedBackingSurvivesSampleAndOldHeapRetirement) {
+  for (const bool use_native_sample : {false, true}) {
+    SCOPED_TRACE(use_native_sample);
+    ProcessRssBudget budget;
+    sampled_rss = 100 * kMiB;
+    native_sample = {100 * kMiB, 50 * kMiB};
+    native_sample_valid = true;
+    // A resident heap owner predates configuration. Its lazy replacement
+    // remains untouched across the next ordinary observation.
+    budget.account(20 * kMiB);
+    ASSERT_TRUE(budget.configure(150 * kMiB, ReadRss,
+                                 use_native_sample ? ReadNative : nullptr));
+    ASSERT_TRUE(budget.try_reserve(20 * kMiB));
+    const auto lazy = budget.finish_reservation(20 * kMiB, true);
+    const size_t headroom =
+        30 * kMiB - (use_native_sample ? budget.headroom(budget.limit()) : 0);
+    ASSERT_EQ(headroom, budget.available());
+    budget.refresh(true);
+    EXPECT_EQ(headroom, budget.available());
+    // malloc retains both released halves. Neither release nor unchanged
+    // samples may spend the replacement's outstanding residency allowance.
+    for (size_t i = 0; i < 2; ++i) {
+      budget.release_heap(10 * kMiB, {});
+      EXPECT_EQ(headroom, budget.available());
+    }
+    const bool admitted = budget.try_reserve(40 * kMiB);
+    EXPECT_FALSE(admitted);
+    if (admitted) budget.finish_reservation(40 * kMiB, false);
+    budget.refresh(true);
+    EXPECT_EQ(headroom, budget.available());
+    // Once the old pages really leave the sample, their headroom recovers.
+    sampled_rss = 80 * kMiB;
+    native_sample = {80 * kMiB, 70 * kMiB};
+    budget.refresh(true);
+    EXPECT_EQ(headroom + 20 * kMiB, budget.available());
+    budget.release_unmapped(20 * kMiB, lazy);
+    EXPECT_EQ(headroom + 40 * kMiB, budget.available());
+  }
+}
+
 TEST(ProcessRssBudgetTest, PermanentBackingCannotWitnessTemporaryOwners) {
   for (const bool background : {false, true}) {
     for (const bool reenable : {false, true}) {

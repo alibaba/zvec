@@ -813,13 +813,12 @@ class ProcessRssBudget {
           std::min({rss, add_saturated(backing, pending_releases_),
                     add_saturated(resident_upper_, growth)});
       assert(pending_releases_ <= resident_upper_);
-      // While a release can still be part of the sample, only observed
-      // growth can cover more live backing. Repeated unchanged samples do
-      // not prove that retained pages have been reused.
+      // Ordinary observations cannot prove untouched backing became resident,
+      // even before any owner retires. Only observed growth can cover more
+      // backing; a later release must not transfer an old owner's overlap to
+      // an untouched replacement.
       sampled_backing_ =
-          pending_releases_
-              ? std::min(backing, add_saturated(sampled_backing_, growth))
-              : backing;
+          std::min(backing, add_saturated(sampled_backing_, growth));
       // A fresh ownership/residency snapshot can prove overlap even when
       // evictions and refaults leave total RSS unchanged. It cannot cover
       // untouched owners, pending allocations, or more than this sample.
