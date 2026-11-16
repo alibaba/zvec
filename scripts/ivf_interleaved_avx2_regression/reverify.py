@@ -148,7 +148,8 @@ def benchmark(out, binaries, cpu, sample_ms):
                 sustained_regressions=retake['sustained_regressions'])
 
 
-def main():
+def main(prepare_sources=prepare, sanitizer_tests=SAN_TESTS, finalize=None,
+         extra_tools=()):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--bundle', type=Path, required=True)
     parser.add_argument('--deps', type=Path, required=True)
@@ -175,7 +176,8 @@ def main():
         tool_copy.mkdir()
         for name in ['reverify.py', 'run.py', 'CMakeLists.txt', 'bench.cc',
                      'benchmark_clock.h', 'dispatch_probe.cc', 'legacy_compatibility.cc',
-                     'validation-fixes.patch', 'validation-fixes.json', 'REVERIFY_zh.txt']:
+                     'validation-fixes.patch', 'validation-fixes.json', 'REVERIFY_zh.txt',
+                     *extra_tools]:
             shutil.copy2(TOOLS / name, tool_copy / name)
         kit.dump(out / 'tools-source-sha256.json', {p.name: digest(p) for p in sorted(tool_copy.iterdir())})
         kit.run(['git', 'rev-parse', 'HEAD'], out / 'dependency-checkout.log', deps)
@@ -183,7 +185,7 @@ def main():
                  'thirdparty/RaBitQ-Library/RaBitQ-Library-0.7.0'], out / 'dependency-checkout.log', deps)
         if native:
             kit.run(['lscpu'], out / 'lscpu.txt')
-        sources = prepare(bundle, out)
+        sources = prepare_sources(bundle, out)
         if args.prepare_only:
             summary['status'] = 'PREPARED_ONLY'
             return 0
@@ -220,17 +222,17 @@ def main():
             build = out / ('build-sanitized-' + version)
             kit.configure(source, build, deps, out / ('configure-sanitized-' + version + '.log'), True)
             check_instrumentation(build, out / ('instrumentation-' + version + '.json'))
-            kit.run(['cmake', '--build', build, '--parallel', args.jobs, '--target', *kit.LIBS, *SAN_TESTS],
+            kit.run(['cmake', '--build', build, '--parallel', args.jobs, '--target', *kit.LIBS, *sanitizer_tests],
                     out / ('build-sanitized-' + version + '.log'))
             bindir = out / ('bin-sanitized-' + version)
             bindir.mkdir()
             sanitized[version] = {}
-            for target in SAN_TESTS:
+            for target in sanitizer_tests:
                 kit.static_link(build, target, bindir / target, out / ('link-sanitized-' + version + '.log'))
                 sanitized[version][target] = test(bindir / target, out / ('sanitized-' + version) / target, True)
             kit.dump(out / ('sanitized-' + version + '.json'), sanitized[version])
         new_diagnostics = {}
-        for target in SAN_TESTS:
+        for target in sanitizer_tests:
             old, new = (Counter(sanitized[v][target]['diagnostics']) for v in ['before', 'after'])
             new_diagnostics[target] = dict(new - old)
         kit.dump(out / 'sanitizer-comparison.json', dict(new_or_increased=new_diagnostics, results=sanitized))
@@ -246,7 +248,10 @@ def main():
                              'BASELINE_SANITIZER_REVIEW_REQUIRED' if san_reports else
                              'PERFORMANCE_REVIEW_REQUIRED' if summary['performance']['sustained_regressions'] else
                              'PASS_NATIVE_X86' if native else 'SMOKE_ONLY')
-        return 0 if summary['status'] in ('PASS_NATIVE_X86', 'SMOKE_ONLY') else 1
+        if finalize is not None:
+            finalize(out, summary)
+        return 0 if summary['status'] in ('PASS_NATIVE_X86', 'SMOKE_ONLY',
+                                          'PASS_ALIGNMENT_FIX_NATIVE_X86') else 1
     except Exception as exc:
         summary.update(status='FAIL', error=str(exc))
         raise

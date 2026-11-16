@@ -1,0 +1,131 @@
+{
+  "status": "MACOS_ALIGNMENT_FIXED_OTHER_UB_REMAINS",
+  "normal": {
+    "programs": 53,
+    "passed": 577,
+    "skipped": 47,
+    "disabled": 10,
+    "failed": 0
+  },
+  "compatibility": {
+    "passed": 12,
+    "skipped": 4,
+    "disabled": 16,
+    "failed": 0,
+    "exit_code": 0,
+    "missing_xml": false,
+    "diagnostics": [],
+    "ok": true
+  },
+  "ubsan": {
+    "programs": 5,
+    "misaligned": 0,
+    "other_reports": [
+      "/Users/xingrui/Documents/workspace/zvec/ivf_many_to_many/zvec/src/turbo/quantizer/entropy_integer_quantizer/integer_quantizer.cc:352:9: runtime error: nan is outside the range of representable values of type 'signed char'"
+    ]
+  },
+  "performance": {
+    "cases_per_round": 288,
+    "retake_cases": 20,
+    "sustained_regressions": []
+  },
+  "query_correctness": [
+    {
+      "round": 1,
+      "records": 39360,
+      "ids_identical": true,
+      "max_score_error": 0.0
+    },
+    {
+      "round": 2,
+      "records": 39360,
+      "ids_identical": true,
+      "max_score_error": 0.0
+    }
+  ],
+  "x86_cross_compile": {
+    "files": 22,
+    "same_optimized_assembly": 22,
+    "native_execution": false
+  },
+  "performance_groups": [
+    {
+      "type": "Raw-FP32",
+      "metric": "L2",
+      "round1": 1.0064452222222147,
+      "round2": 1.0107109476879474
+    },
+    {
+      "type": "Raw-FP32",
+      "metric": "IP",
+      "round1": 0.9929211941450494,
+      "round2": 1.012508737364007
+    },
+    {
+      "type": "Raw-FP16",
+      "metric": "L2",
+      "round1": 1.0126891293438367,
+      "round2": 1.0091982409305784
+    },
+    {
+      "type": "Raw-FP16",
+      "metric": "IP",
+      "round1": 0.9907733005576967,
+      "round2": 0.991406056420327
+    },
+    {
+      "type": "Raw-INT8",
+      "metric": "L2",
+      "round1": 1.0351600702616421,
+      "round2": 0.9983956022080303
+    },
+    {
+      "type": "Record-INT8",
+      "metric": "L2",
+      "round1": 1.009768140276456,
+      "round2": 1.003853697710877
+    },
+    {
+      "type": "Raw-INT8",
+      "metric": "IP",
+      "round1": 1.0199667961637642,
+      "round2": 1.0071297986752124
+    },
+    {
+      "type": "Record-INT8",
+      "metric": "IP",
+      "round1": 0.9815406447382454,
+      "round2": 0.9936515118026654
+    },
+    {
+      "type": "Raw-INT4",
+      "metric": "L2",
+      "round1": 0.9984021793198316,
+      "round2": 1.01150429317093
+    },
+    {
+      "type": "Record-INT4",
+      "metric": "L2",
+      "round1": 0.9919872019244095,
+      "round2": 0.9921074083895828
+    },
+    {
+      "type": "Raw-INT4",
+      "metric": "IP",
+      "round1": 1.0069278215445827,
+      "round2": 0.9804740135016882
+    },
+    {
+      "type": "Record-INT4",
+      "metric": "IP",
+      "round1": 0.9972094639970033,
+      "round2": 0.9940356333271924
+    }
+  ],
+  "handoff": {
+    "archive": "artifacts/ivf-record-alignment-handoff-20261116.tar.gz",
+    "sha256": "93c169000a00286debe26c463a927258186767a88b61ad73d86bece3c0f22179",
+    "selfcheck": "PREPARED_ONLY: both frozen source sets and hashes verified; not native execution"
+  },
+  "lint": "clang-format 18 / diff --check / new test and shared reader clang-tidy passed"
+}
