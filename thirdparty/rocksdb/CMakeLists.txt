@@ -1,3 +1,9 @@
+# LOCAL WORKAROUND (not part of the sqlite extension): RocksDB 8.1.1 omits <cstdint>;
+# GCC >= 13 no longer includes it transitively.
+if(NOT MSVC)
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include cstdint>")
+endif()
+
 set(ROCKSDB_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rocksdb-8.1.1)
 if (ANDROID)
     set(ROCKSDB_ANDROID_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/rocksdb.android.patch)

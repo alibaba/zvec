@@ -134,6 +134,7 @@ option(BUILD_ZVEC_CORE_SHARED "Build all-in-one zvec-core shared library libzvec
 
 option(BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" OFF)
 option(BUILD_C_BINDINGS "Build C bindings" ON)
+option(BUILD_SQLITE_BINDINGS "Build SQLite loadable extension (requires BUILD_C_BINDINGS)" OFF)
 option(BUILD_TOOLS "Build tools" ON)
 option(BUILD_CPP_EXAMPLES "Build C++ examples" OFF)
 
@@ -142,6 +143,7 @@ message(STATUS "BUILD_ZVEC_AILEGO_SHARED:${BUILD_ZVEC_AILEGO_SHARED}")
 message(STATUS "BUILD_ZVEC_CORE_SHARED:${BUILD_ZVEC_CORE_SHARED}")
 message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
 message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
+message(STATUS "BUILD_SQLITE_BINDINGS:${BUILD_SQLITE_BINDINGS}")
 message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
 message(STATUS "BUILD_CPP_EXAMPLES:${BUILD_CPP_EXAMPLES}")
 
