@@ -24,6 +24,7 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 #include <ailego/utility/math_helper.h>
 #include <ailego/utility/memory_helper.h>
@@ -1469,16 +1470,23 @@ TEST_F(FlatStreamerTest, TestConcurrentAddAndSearch) {
 
 TEST_F(FlatStreamerTest, TestConcurrentSegmentGrowthAndFetch) {
   MemoryLimitPool::get_instance().init(64 * 1024UL * 1024UL);
-  for (const char *storage_name : {"MMapFileStorage", "BufferStorage"}) {
+  for (const auto &[storage_name, use_id_map] :
+       {std::make_pair("MMapFileStorage", false),
+        std::make_pair("MMapFileStorage", true),
+        std::make_pair("BufferStorage", false),
+        std::make_pair("BufferStorage", true)}) {
     SCOPED_TRACE(storage_name);
+    SCOPED_TRACE(use_id_map);
     auto storage = IndexFactory::CreateStorage(storage_name);
     ASSERT_NE(nullptr, storage);
     ASSERT_EQ(0, storage->init(Params()));
-    ASSERT_EQ(0, storage->open(dir_ + storage_name, true));
+    ASSERT_EQ(0, storage->open(dir_ + storage_name + std::to_string(use_id_map),
+                               true));
 
     IndexStreamer::Stats stats;
     FlatStreamerEntity entity(stats);
     *entity.mutable_meta() = *index_meta_ptr_;
+    entity.set_use_key_info_map(use_id_map);
     entity.set_block_vector_count(32);
     entity.set_linear_list_count(1);
     // Force repeated cache reallocations with a small dataset.
@@ -1502,9 +1510,10 @@ TEST_F(FlatStreamerTest, TestConcurrentSegmentGrowthAndFetch) {
           // Read an old segment and a newly published one during growth.
           for (uint32_t key : {0U, newest}) {
             IndexStorage::MemoryBlock block;
-            if (entity.get_vector_by_key(key, block) != 0 || !block.data()) {
-              return false;
-            }
+            const int ret = rounds % 2 == 0
+                                ? entity.get_vector_by_key(key, block)
+                                : entity.get_vector_by_position(key, block);
+            if (ret != 0 || !block.data()) return false;
             const auto *data = static_cast<const float *>(block.data());
             for (size_t d = 0; d < dim; ++d) {
               if (data[d] != static_cast<float>(key)) return false;

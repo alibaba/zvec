@@ -705,11 +705,16 @@ const void *FlatStreamerEntity::get_vector_by_position(uint32_t id) const {
 int FlatStreamerEntity::get_vector_by_position(
     uint32_t id, IndexStorage::MemoryBlock &block) const {
   if (use_external_vector_) return IndexError_Unsupported;
-  if (id >= withid_key_info_map_.size()) return IndexError_NoExist;
-  uint64_t key = kInvalidKey;
-  if (get_key(id, &key) != 0) return IndexError_ReadData;
-  if (key == kInvalidKey) return IndexError_NoExist;
-  const VectorLocation &loc = withid_key_info_map_[id];
+  VectorLocation loc{};
+  {
+    ailego::ReadLock lock(*key_info_map_lock_);
+    std::lock_guard<ailego::ReadLock> guard(lock);
+    if (id >= withid_key_info_map_.size()) return IndexError_NoExist;
+    uint64_t key = kInvalidKey;
+    if (get_key(id, &key) != 0) return IndexError_ReadData;
+    if (key == kInvalidKey) return IndexError_NoExist;
+    loc = withid_key_info_map_[id];
+  }
   auto segment = this->get_segment(loc.segment_id);
   if (!segment ||
       segment->read(loc.offset, block, index_meta_.element_size()) !=
