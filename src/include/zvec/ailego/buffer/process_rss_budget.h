@@ -731,6 +731,11 @@ class ProcessRssBudget {
   }
 
   void publish(size_t rss, size_t owned_resident = 0) {
+    // Ownership samplers also see lifetime mappings excluded from backing_.
+    // Without per-owner identities, deduct their full permanent allowance:
+    // those resident pages cannot witness overlap for temporary backing.
+    owned_resident -= std::min(
+        owned_resident, permanent_backing_.load(std::memory_order_relaxed));
     if (limit()) estimate_.observe(rss, backing_, owned_resident);
     rss_materialized_ = 0;
     ++rss_epoch_;

@@ -15,6 +15,11 @@ size_t ReadRss() {
   return sampled_rss.load();
 }
 
+size_t sampled_owned_resident{0};
+ProcessRssBudget::ResidentSample ReadResident() {
+  return {ReadRss(), sampled_owned_resident};
+}
+
 ProcessRssBudget::NativeSample native_sample;
 bool native_sample_valid = true;
 bool ReadNative(ProcessRssBudget::NativeSample *sample) {
@@ -108,6 +113,54 @@ TEST(ProcessRssBudgetTest, ConcurrentAdmissionsShareUnmaterializedHeadroom) {
   EXPECT_EQ(100 * kMiB, acquired.load());
   budget.release(acquired.load());
   EXPECT_EQ(100 * kMiB, budget.available());
+}
+
+TEST(ProcessRssBudgetTest, PermanentBackingCannotWitnessTemporaryOwners) {
+  for (const bool background : {false, true}) {
+    for (const bool reenable : {false, true}) {
+      SCOPED_TRACE(testing::Message()
+                   << "background=" << background << " reenable=" << reenable);
+      ProcessRssBudget budget;
+      sampled_rss = 100 * kMiB;
+      sampled_owned_resident = 0;
+      const auto reader = background ? nullptr : ReadResident;
+      // RSS includes 40 MiB permanent mappings, 20 MiB heap backing and
+      // 40 MiB host memory. Permanent mappings leave the backing ledger.
+      budget.account(60 * kMiB);
+      ASSERT_TRUE(
+          budget.configure(150 * kMiB, ReadRss, nullptr, 40 * kMiB, reader));
+      if (reenable) {
+        ASSERT_TRUE(budget.configure(0, nullptr));
+        ASSERT_TRUE(budget.configure(150 * kMiB, ReadRss, nullptr, 0, reader));
+      }
+      // malloc retains the retired heap pages. Its untouched replacement
+      // still needs 20 MiB beyond the unchanged 100 MiB RSS observation.
+      budget.release_heap(20 * kMiB, {});
+      ASSERT_TRUE(budget.try_reserve(20 * kMiB));
+      const auto lazy = budget.finish_reservation(20 * kMiB, true);
+      budget.refresh(true);
+      ASSERT_EQ(30 * kMiB, budget.available());
+      for (const size_t owned : {20 * kMiB, 40 * kMiB, 60 * kMiB}) {
+        sampled_owned_resident = owned;
+        if (background) {
+          ASSERT_TRUE(budget.publish_resident_sample(
+              budget.begin_resident_sample(), ReadResident()));
+        } else {
+          budget.refresh(true);
+          ASSERT_TRUE(
+              budget.configure(150 * kMiB, ReadRss, nullptr, 0, reader));
+        }
+        // Only residency beyond the permanent allowance can prove the
+        // replacement has become resident, e.g. after heap pages return.
+        const bool replacement_resident = owned == 60 * kMiB;
+        EXPECT_EQ((replacement_resident ? 50 : 30) * kMiB, budget.available());
+        const bool admitted = budget.try_reserve(40 * kMiB);
+        EXPECT_EQ(replacement_resident, admitted);
+        if (admitted) budget.finish_reservation(40 * kMiB, false);
+      }
+      budget.release_unmapped(20 * kMiB, lazy);
+    }
+  }
 }
 
 TEST(ProcessRssBudgetTest, PrepaidMappingDebitSurvivesAnInFlightSample) {
