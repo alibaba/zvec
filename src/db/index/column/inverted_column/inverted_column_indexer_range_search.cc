@@ -189,7 +189,7 @@ RangeQueryPlan InvertedColumnIndexer::plan_range(const std::string &term,
   consider(make_plan(RangeQueryPath::ScanRight, right_begin, buckets.size(),
                      SIZE_MAX, query_left));
 
-  // There are at most nine prefixes. Considering all eligible prefixes also
+  // The prefix set is bounded. Considering all eligible prefixes also
   // accounts for a farther but substantially smaller run-compressed prefix.
   for (size_t i = 0; i < cache.prefixes.size(); ++i) {
     const size_t end = cache.prefixes[i].end_bucket;

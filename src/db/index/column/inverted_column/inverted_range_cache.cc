@@ -4,6 +4,7 @@
 // You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0
 
 #include "inverted_range_cache.h"
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <limits>
@@ -207,8 +208,84 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
     return nullptr;
   }
   cumulative.reset();
+
+  // Preserve all original decile checkpoints. Spend only remaining budget on
+  // a bounded, query-independent refinement: half, quarters, eighths, etc. of
+  // serialized posting work. Exact checkpoints and original plans stay usable;
+  // a new threshold can merge fewer residual postings without a result cache.
+  constexpr size_t max_prefixes = 32;
+  uint64_t extra_source_bytes = 0;
+  bool full = false;
+  for (uint64_t denominator = 2;
+       denominator <= 64 && cache->prefixes.size() < max_prefixes && !full;
+       denominator *= 2) {
+    for (uint64_t numerator = 1;
+         numerator < denominator && cache->prefixes.size() < max_prefixes;
+         numerator += 2) {
+      // This form avoids overflowing total_bytes * numerator.
+      const uint64_t target = total_bytes / denominator * numerator +
+          ((total_bytes % denominator) * numerator + denominator - 1) /
+              denominator;
+      auto bucket = std::lower_bound(
+          cache->buckets.begin(), cache->buckets.end(), target,
+          [](const Bucket &entry, uint64_t bytes) {
+            return entry.cumulative_bytes < bytes;
+          });
+      const size_t end = bucket - cache->buckets.begin() + 1;
+      if (end >= cache->buckets.size()) continue;
+      auto position = std::lower_bound(
+          cache->prefixes.begin(), cache->prefixes.end(), end,
+          [](const Prefix &prefix, size_t boundary) {
+            return prefix.end_bucket < boundary;
+          });
+      if (position != cache->prefixes.end() && position->end_bucket == end)
+        continue;
+      const size_t begin = position == cache->prefixes.begin()
+                               ? 0 : (position - 1)->end_bucket;
+      BitmapPtr prefix(begin ? roaring_bitmap_copy((position - 1)->bitmap.get())
+                             : roaring_bitmap_create());
+      if (!prefix) { full = true; break; }
+      iter->Seek(cache->buckets[begin].key);
+      for (size_t i = begin; i < end; ++i, iter->Next()) {
+        if (!iter->Valid() || iter->key() != cache->buckets[i].key)
+          return nullptr;
+        const auto value = iter->value();
+        auto status = InvertedIndexCodec::merge_or(
+            value.data(), value.size(), false, prefix.get());
+        if (!status.ok()) return nullptr;
+        extra_source_bytes += value.size();
+      }
+      if (!iter->status().ok() ||
+          roaring_bitmap_get_cardinality(prefix.get()) !=
+              cache->buckets[end - 1].cumulative_cardinality)
+        return nullptr;
+      roaring_bitmap_run_optimize(prefix.get());
+      roaring_bitmap_shrink_to_fit(prefix.get());
+      const size_t charge = bitmap_bytes(prefix.get());
+      const size_t growth = cache->prefixes.capacity() < max_prefixes
+          ? (max_prefixes - cache->prefixes.capacity()) * sizeof(Prefix) : 0;
+      const size_t accounted = bitmap_charge + metadata_bytes(*cache);
+      if (accounted > max_bytes) return nullptr;
+      const size_t remaining = max_bytes - accounted;
+      if (charge > remaining || growth > remaining - charge) {
+        full = true;
+        break;
+      }
+      if (growth) cache->prefixes.reserve(max_prefixes);
+      position = std::lower_bound(
+          cache->prefixes.begin(), cache->prefixes.end(), end,
+          [](const Prefix &entry, size_t boundary) {
+            return entry.end_bucket < boundary;
+          });
+      const auto copy_bytes = roaring_bitmap_portable_size_in_bytes(prefix.get());
+      cache->prefixes.insert(position,
+          {end, std::move(prefix), cache->buckets[end - 1].cumulative_cardinality,
+           copy_bytes});
+      bitmap_charge += charge;
+    }
+  }
   iter.reset();
-  cache->stats.source_bytes = 2 * total_bytes;
+  cache->stats.source_bytes = 2 * total_bytes + extra_source_bytes;
   cache->stats.accounted_bytes = bitmap_charge + metadata_bytes(*cache);
   pool.release_external(reservation - cache->stats.accounted_bytes);
   cache->charged_bytes_ = cache->stats.accounted_bytes;

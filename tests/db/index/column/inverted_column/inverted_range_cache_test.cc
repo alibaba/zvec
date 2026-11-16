@@ -360,19 +360,31 @@ TEST_F(InvertedRangeCacheTest, FreshSealAndReopenPreserveRangeSemantics) {
   ASSERT_TRUE(column_->seal().ok());
   const auto *cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
-  ASSERT_EQ(cache->prefixes.size(), 9);
+  ASSERT_GE(cache->prefixes.size(), 9);
+  ASSERT_LE(cache->prefixes.size(), 32);
   size_t previous_end = 0;
   for (size_t i = 0; i < cache->prefixes.size(); ++i) {
     const auto &prefix = cache->prefixes[i];
     EXPECT_GT(prefix.end_bucket, previous_end);
     ASSERT_LE(prefix.end_bucket, cache->buckets.size());
     const auto &last_bucket = cache->buckets[prefix.end_bucket - 1];
-    const uint64_t target = (cache->total_cardinality * (i + 1) + 9) / 10;
-    EXPECT_GE(prefix.cardinality, target);
-    EXPECT_LT(prefix.cardinality, target + last_bucket.cardinality);
+    EXPECT_EQ(prefix.cardinality, last_bucket.cumulative_cardinality);
     EXPECT_EQ(prefix.cardinality,
               roaring_bitmap_get_cardinality(prefix.bitmap.get()));
     previous_end = prefix.end_bucket;
+  }
+  // Every original decile remains available to the range planner.
+  for (unsigned decile = 1; decile <= 9; ++decile) {
+    const uint64_t target = (cache->total_cardinality * decile + 9) / 10;
+    auto bucket = std::lower_bound(cache->buckets.begin(), cache->buckets.end(),
+        target, [](const InvertedRangeCache::Bucket &entry, uint64_t cardinality) {
+          return entry.cumulative_cardinality < cardinality;
+        });
+    const auto end = size_t(bucket - cache->buckets.begin() + 1);
+    EXPECT_TRUE(std::any_of(cache->prefixes.begin(), cache->prefixes.end(),
+        [&](const InvertedRangeCache::Prefix &prefix) {
+          return prefix.end_bucket == end;
+        }));
   }
   auto bounds = NumericBounds();
   CheckNumeric(values, bounds);
@@ -410,6 +422,59 @@ TEST_F(InvertedRangeCacheTest, OpensUnchangedIndexBuiltWithoutCache) {
   EXPECT_EQ(actual_families, expected_families);
 }
 
+TEST_F(InvertedRangeCacheTest, OptionalRefinementStopsAtBudgetWithoutLosingCache) {
+  CreateWriter();
+  const auto values = RandomValues(40000, false);
+  Insert(values);
+  ASSERT_TRUE(column_->seal().ok());
+  const auto *cache = column_->range_cache();
+  ASSERT_NE(cache, nullptr);
+  ASSERT_GT(cache->prefixes.size(), 9);
+  const auto full_count = cache->prefixes.size();
+  RangePrefixCacheOptions limited;
+  limited.max_bytes = cache->stats.accounted_bytes - 1;
+  Reopen(limited);
+  cache = column_->range_cache();
+  ASSERT_NE(cache, nullptr);
+  EXPECT_GE(cache->prefixes.size(), 9);
+  EXPECT_LT(cache->prefixes.size(), full_count);
+  EXPECT_LE(cache->stats.accounted_bytes, limited.max_bytes);
+  CheckNumeric(values, NumericBounds());
+}
+
+TEST_F(InvertedRangeCacheTest, AdditionalCheckpointsServePreviouslyUnseenBounds) {
+  CreateWriter();
+  const auto values = RandomValues(40000, false);
+  Insert(values);
+  ASSERT_TRUE(column_->seal().ok());
+  const auto *cache = column_->range_cache();
+  ASSERT_NE(cache, nullptr);
+  ASSERT_GT(cache->prefixes.size(), 9);
+  std::vector<size_t> original;
+  for (unsigned decile = 1; decile <= 9; ++decile) {
+    const auto target = (cache->total_cardinality * decile + 9) / 10;
+    const auto bucket = std::lower_bound(cache->buckets.begin(), cache->buckets.end(),
+        target, [](const InvertedRangeCache::Bucket &entry, uint64_t cardinality) {
+          return entry.cumulative_cardinality < cardinality;
+        });
+    original.push_back(bucket - cache->buckets.begin() + 1);
+  }
+  bool used_additional = false;
+  std::vector<int32_t> bounds;
+  for (const auto &prefix : cache->prefixes) {
+    if (std::find(original.begin(), original.end(), prefix.end_bucket) != original.end())
+      continue;
+    const int32_t bound = DecodeInt32(cache->buckets[prefix.end_bucket - 1].end);
+    bounds.push_back(bound);
+    const auto plan = column_->explain_range(RawInt32(bound), CompareOp::LE);
+    used_additional |= plan.prefix_index != SIZE_MAX &&
+                      cache->prefixes[plan.prefix_index].end_bucket == prefix.end_bucket;
+  }
+  EXPECT_TRUE(used_additional);
+  ASSERT_FALSE(bounds.empty());
+  CheckNumeric(values, bounds);
+}
+
 TEST_F(InvertedRangeCacheTest, RepeatedValuesAndNullsAtInclusiveBoundaries) {
   CreateWriter();
   std::vector<std::optional<int32_t>> values(15000, 0);
@@ -425,7 +490,7 @@ TEST_F(InvertedRangeCacheTest, RepeatedValuesAndNullsAtInclusiveBoundaries) {
   Insert(values);
   ASSERT_TRUE(column_->seal().ok());
   ASSERT_NE(column_->range_cache(), nullptr);
-  EXPECT_LE(column_->range_cache()->prefixes.size(), 9);
+  EXPECT_LE(column_->range_cache()->prefixes.size(), 32);
   CheckNumeric(values, NumericBounds());
   Reopen();
   CheckNumeric(values, NumericBounds());
@@ -440,7 +505,8 @@ TEST_F(InvertedRangeCacheTest, OrderedPrefixesUseRunContainers) {
   Insert(values);
   ASSERT_TRUE(column_->seal().ok());
   ASSERT_NE(column_->range_cache(), nullptr);
-  ASSERT_EQ(column_->range_cache()->prefixes.size(), 9);
+  ASSERT_GE(column_->range_cache()->prefixes.size(), 9);
+  ASSERT_LE(column_->range_cache()->prefixes.size(), 32);
   for (const auto &prefix : column_->range_cache()->prefixes) {
     roaring_statistics_t stats{};
     roaring_bitmap_statistics(prefix.bitmap.get(), &stats);
@@ -497,7 +563,7 @@ TEST_F(InvertedRangeCacheTest, BoundaryTermsKeepLegacyPhysicalScanDirection) {
   bool used_scan_right = false;
   bool used_add = false;
   bool used_subtract = false;
-  for (const size_t percent : {5, 15, 25, 35, 45, 55, 65, 75, 85, 95}) {
+  for (const size_t percent : {1, 5, 15, 25, 35, 45, 55, 65, 75, 85, 95, 99}) {
     const auto &bucket = cache->buckets[cache->buckets.size() * percent / 100];
     const int32_t begin = DecodeInt32(bucket.begin);
     const int32_t end = DecodeInt32(bucket.end);
