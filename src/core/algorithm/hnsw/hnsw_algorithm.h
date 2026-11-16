@@ -21,6 +21,7 @@
 #include "hnsw_context.h"
 #include "hnsw_dist_calculator.h"
 #include "hnsw_entity.h"
+#include "hnsw_quantized_graph.h"
 #include "hnsw_streamer_entity.h"
 
 namespace zvec {
@@ -38,6 +39,12 @@ class HnswAlgorithmBase {
   virtual int search(HnswContext *ctx) const = 0;
   virtual int init() = 0;
   virtual uint32_t get_random_level() const = 0;
+  void set_quantized_graph(std::shared_ptr<HnswQuantizedGraph> qg) {
+    quantized_graph_ = std::move(qg);
+  }
+
+ protected:
+  std::shared_ptr<HnswQuantizedGraph> quantized_graph_;
 };
 
 //! hnsw graph algorithm implement, templated on EntityType

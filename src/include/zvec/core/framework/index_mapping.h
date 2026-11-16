@@ -14,6 +14,7 @@
 #pragma once
 
 #include <map>
+#include <vector>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/io/file.h>
 #include <zvec/core/framework/index_format.h>
@@ -150,6 +151,14 @@ class IndexMapping {
   //! Test if the segment is exist
   bool has(const std::string &id) const {
     return (segments_.find(id) != segments_.end());
+  }
+
+  //! Snapshot segment names; callers synchronize against append/close.
+  std::vector<std::string> segment_ids() const {
+    std::vector<std::string> ids;
+    ids.reserve(segments_.size());
+    for (const auto &entry : segments_) ids.push_back(entry.first);
+    return ids;
   }
 
   //! Retrieve count of segments

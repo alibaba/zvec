@@ -214,6 +214,19 @@ class MMapFileStorage : public IndexStorage {
     return std::make_shared<MMapFileStorage::Segment>(this, segment);
   }
 
+  std::map<std::string, IndexStorage::Segment::Pointer> get_all()
+      const override {
+    std::lock_guard<std::mutex> latch(mapping_mutex_);
+    std::map<std::string, IndexStorage::Segment::Pointer> result;
+    for (const auto &id : mapping_.segment_ids()) {
+      auto *segment = mapping_.map(id, memory_warmup_, memory_locked_);
+      if (!segment) return {};
+      result.emplace(id, std::make_shared<Segment>(
+                             const_cast<MMapFileStorage *>(this), segment));
+    }
+    return result;
+  }
+
   //! Test if it a segment exists
   bool has(const std::string &id) const override {
     return this->has_segment(id);
