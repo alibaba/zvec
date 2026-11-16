@@ -13,9 +13,15 @@
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/ailego/buffer/budgeted_allocator.h>
+#include <zvec/ailego/buffer/budgeted_buffer.h>
+#include <zvec/ailego/buffer/budgeted_mapped_buffer.h>
+#include <zvec/ailego/buffer/retained_block_allocator.h>
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
+#endif
+#if defined(__linux__)
+#include <sys/mman.h>
 #endif
 
 namespace zvec::ailego {
@@ -63,6 +69,18 @@ struct MemoryLimitPoolTestPeer {
   }
   static bool needs_proof(MemoryLimitPool &pool) {
     return pool.process_rss_.needs_resident_confirmation();
+  }
+  static void refresh_rss(MemoryLimitPool &pool) {
+    pool.process_rss_.refresh(true);
+  }
+  static size_t waiters(MemoryLimitPool &pool) {
+    return pool.workspace_waiting_size_.load();
+  }
+  static void hold_registry(MemoryLimitPool &pool, std::promise<void> &ready,
+                            std::future<void> &release) {
+    std::lock_guard<std::mutex> lock(pool.cache_mapping_mutex_);
+    ready.set_value();
+    release.wait();
   }
   static ProcessRssBudget::ResidentSample sample_while_busy(
       MemoryLimitPool &pool, bool background) {
@@ -153,6 +171,240 @@ TEST_F(CacheMappingRssTest, FirstOwnershipProofRecoversPrefaultedWorkspace) {
   MemoryLimitPool::PendingAllocation allocation(
       pool_, MemoryLimitPool::PendingAllocation::Kind::kLockedExternal);
   EXPECT_TRUE(allocation.reserve(kMiB));
+}
+
+TEST_F(CacheMappingRssTest, RealMappedAllocatorsKeepTheirLiveRefaultAllowance) {
+  const auto exercise = [&](void *data, size_t bytes) {
+    std::memset(data, 0x55, bytes);
+    ASSERT_TRUE(
+        pool_.configure_process_rss_limit(MemoryHelper::SelfRSS() + 32 * kMiB));
+    ASSERT_TRUE(MemoryLimitPoolTestPeer::prove_residency(pool_));
+    const size_t before = MemoryLimitPoolTestPeer::rss_room(pool_);
+    EXPECT_GE(before, 16 * kMiB);
+    {
+      MemoryLimitPool::PendingAllocation pending(
+          pool_, MemoryLimitPool::PendingAllocation::Kind::kLockedExternal);
+      EXPECT_TRUE(pending.reserve(kMiB));
+    }
+#if defined(__linux__)
+    const size_t page = MemoryHelper::PageSize();
+    const uintptr_t first =
+        (reinterpret_cast<uintptr_t>(data) + page - 1) & ~(page - 1);
+    const size_t skipped = first - reinterpret_cast<uintptr_t>(data);
+    const size_t discarded = (bytes - skipped) / page * page;
+    ASSERT_EQ(0, ::madvise(reinterpret_cast<void *>(first), discarded,
+                           MADV_DONTNEED));
+    ASSERT_TRUE(MemoryLimitPoolTestPeer::prove_residency(pool_));
+    // The mapping and its full future fault cost are still owned. Lost
+    // residency is not a host free and cannot finance a new 64 MiB owner.
+    const size_t cold = MemoryLimitPoolTestPeer::rss_room(pool_);
+    EXPECT_LE(cold, before + 2 * kMiB);
+    {
+      MemoryLimitPool::PendingAllocation pending(
+          pool_, MemoryLimitPool::PendingAllocation::Kind::kLockedExternal);
+      EXPECT_FALSE(pending.reserve(64 * kMiB));
+    }
+    std::memset(data, 0x77, bytes);
+    ASSERT_TRUE(MemoryLimitPoolTestPeer::prove_residency(pool_));
+    EXPECT_GE(MemoryLimitPoolTestPeer::rss_room(pool_), 16 * kMiB);
+#endif
+    ASSERT_TRUE(pool_.configure_process_rss_limit(0));
+  };
+  {
+    BudgetedMappedBuffer original(64 * kMiB);
+    const auto *data = original.data();
+    BudgetedMappedBuffer moved(std::move(original));
+    ASSERT_EQ(data, moved.data());
+    ASSERT_EQ(nullptr, original.data());
+    exercise(moved.data(), moved.size());
+    ASSERT_TRUE(moved.try_resize(16 * kMiB));
+    exercise(moved.data(), moved.size());
+  }
+  {
+    BudgetedAlignedBuffer aligned(64 * kMiB, 64);
+    exercise(aligned.data(), aligned.size());
+  }
+  {
+    std::vector<uint8_t, RetainedBlockAllocator<uint8_t>> retained(64 * kMiB);
+    exercise(retained.data(), retained.size());
+  }
+  {
+    auto *workspace = pool_.try_acquire_workspace_buffer(64 * kMiB);
+    ASSERT_NE(nullptr, workspace);
+    auto cleanup = ScopeGuard::Make(
+        [&] { EXPECT_TRUE(pool_.release_workspace_buffer(workspace)); });
+    exercise(workspace->data, workspace->bytes);
+  }
+}
+
+TEST_F(CacheMappingRssTest, MandatoryAllocatorsProgressAfterProofExpiry) {
+  auto *workspace = pool_.try_acquire_workspace_buffer(64 * kMiB);
+  ASSERT_NE(nullptr, workspace);
+  auto cleanup = ScopeGuard::Make(
+      [&] { EXPECT_TRUE(pool_.release_workspace_buffer(workspace)); });
+  std::memset(workspace->data, 0x55, workspace->bytes);
+  ASSERT_TRUE(
+      pool_.configure_process_rss_limit(MemoryHelper::SelfRSS() + 32 * kMiB));
+  MemoryLimitPoolTestPeer::start_background(pool_);
+  auto shutdown = ScopeGuard::Make([&] {
+    MemoryLimitPoolTestPeer::stop_background(pool_);
+    pool_.configure_process_rss_limit(0);
+  });
+  // Each real allocator must wait for a new background proof when the cheap
+  // process reader has expired it. Rejecting every request is not a safe fix.
+  for (int allocator = 0; allocator < 6; ++allocator) {
+    SCOPED_TRACE(allocator);
+    MemoryLimitPoolTestPeer::refresh_rss(pool_);
+    ASSERT_NO_THROW({
+      if (allocator == 0) {
+        BudgetedVector<uint8_t> values(kMiB, 73);
+        EXPECT_EQ(73, values.back());
+      } else if (allocator == 1) {
+        MemoryReservation memory;
+        std::vector<uint8_t> values;
+        ReserveVectorCapacity(values, memory, kMiB);
+        values.assign(kMiB, 73);
+        EXPECT_EQ(73, values.back());
+      } else if (allocator == 2) {
+        BudgetedStringWorkspace text;
+        text.reserve(kMiB);
+        text.value.assign(kMiB, 'a');
+        EXPECT_EQ('a', text.value.back());
+      } else if (allocator == 3) {
+        BudgetedAlignedBuffer aligned(64UL << 10, 64);
+        std::memset(aligned.data(), 73, aligned.size());
+        EXPECT_EQ(73,
+                  static_cast<uint8_t *>(aligned.data())[aligned.size() - 1]);
+      } else if (allocator == 4) {
+        RetainedBlockAllocator<uint64_t> small;
+        auto *first = small.allocate(8);
+        auto cleanup = ScopeGuard::Make([&] { small.deallocate(first, 8); });
+        first[0] = 73;
+        auto *second = small.allocate(8);
+        small.deallocate(second, 8);
+        MemoryLimitPoolTestPeer::refresh_rss(pool_);
+        second = small.allocate(8);
+        small.deallocate(second, 8);
+        EXPECT_EQ(73u, first[0]);
+      } else {
+        ASSERT_TRUE(pool_.configure_process_rss_limit(MemoryHelper::SelfRSS() +
+                                                      96 * kMiB));
+        MemoryLimitPoolTestPeer::refresh_rss(pool_);
+        ASSERT_TRUE(pool_.try_charge_process_backing(0, 64 * kMiB, true));
+        pool_.finish_materialization(64 * kMiB, false);
+        ASSERT_TRUE(pool_.configure_process_rss_limit(MemoryHelper::SelfRSS() +
+                                                      32 * kMiB));
+      }
+    });
+  }
+  MemoryLimitPoolTestPeer::refresh_rss(pool_);
+  Buffer optional;
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  do {
+    optional = acquire();
+    if (!optional) std::this_thread::yield();
+  } while (!optional && std::chrono::steady_clock::now() < deadline);
+  ASSERT_NE(nullptr, optional);
+  optional.reset();
+  RetainedBlockAllocator<uint64_t> callback_allocator;
+  auto *first = callback_allocator.allocate(8);
+  auto release_first =
+      ScopeGuard::Make([&] { callback_allocator.deallocate(first, 8); });
+  first[0] = 73;
+  std::promise<bool> completed;
+  auto result = completed.get_future();
+  std::atomic<bool> invoked{false};
+  auto stop_callback = ScopeGuard::Make([&] {
+    MemoryLimitPoolTestPeer::stop_background(pool_);
+    pool_.set_process_rss_reclaimer({});
+    pool_.set_memory_pressure(ProcessRssBudget::PressureLevel::kNormal);
+  });
+  pool_.set_process_rss_reclaimer([&] {
+    if (invoked.exchange(true)) return;
+    MemoryLimitPoolTestPeer::refresh_rss(pool_);
+    try {
+      auto *second = callback_allocator.allocate(8);
+      callback_allocator.deallocate(second, 8);
+      completed.set_value(true);
+    } catch (...) {
+      completed.set_value(false);
+    }
+  });
+  pool_.set_memory_pressure(ProcessRssBudget::PressureLevel::kBackground);
+  ASSERT_EQ(std::future_status::ready,
+            result.wait_for(std::chrono::seconds(2)));
+  EXPECT_TRUE(result.get());
+  EXPECT_EQ(73u, first[0]);
+}
+
+TEST_F(CacheMappingRssTest, RetainedWaitPinsChunkAcrossFinalSlotRetirement) {
+  auto *workspace = pool_.try_acquire_workspace_buffer(64 * kMiB);
+  ASSERT_NE(nullptr, workspace);
+  auto release_workspace = ScopeGuard::Make(
+      [&] { EXPECT_TRUE(pool_.release_workspace_buffer(workspace)); });
+  std::memset(workspace->data, 73, workspace->bytes);
+  ASSERT_TRUE(
+      pool_.configure_process_rss_limit(MemoryHelper::SelfRSS() + 32 * kMiB));
+  ASSERT_TRUE(MemoryLimitPoolTestPeer::prove_residency(pool_));
+  RetainedBlockAllocator<uint64_t> small;
+  auto *first = small.allocate(8);
+  MemoryLimitPoolTestPeer::start_background(pool_);
+  auto shutdown = ScopeGuard::Make([&] {
+    MemoryLimitPoolTestPeer::stop_background(pool_);
+    pool_.configure_process_rss_limit(0);
+  });
+  std::promise<void> ready, release;
+  auto unlocked = release.get_future();
+  std::thread holder(
+      [&] { MemoryLimitPoolTestPeer::hold_registry(pool_, ready, unlocked); });
+  bool released = false;
+  const auto unlock = [&] {
+    if (!released) {
+      release.set_value();
+      released = true;
+    }
+    if (holder.joinable()) holder.join();
+  };
+  auto release_registry = ScopeGuard::Make(unlock);
+  ready.get_future().wait();
+  MemoryLimitPoolTestPeer::refresh_rss(pool_);
+  auto pending = std::async(std::launch::async, [&]() -> uint64_t * {
+    try {
+      return small.allocate(8);
+    } catch (...) {
+      return nullptr;
+    }
+  });
+  auto finish = ScopeGuard::Make([&] {
+    unlock();
+    if (pending.valid()) {
+      if (auto *second = pending.get()) small.deallocate(second, 8);
+    }
+    if (first) small.deallocate(first, 8);
+  });
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (!MemoryLimitPoolTestPeer::waiters(pool_) &&
+         pending.wait_for(std::chrono::milliseconds(1)) !=
+             std::future_status::ready &&
+         std::chrono::steady_clock::now() < deadline) {
+  }
+  if (pending.wait_for(std::chrono::milliseconds(0)) !=
+      std::future_status::ready) {
+    ASSERT_GT(MemoryLimitPoolTestPeer::waiters(pool_), 0u);
+    small.deallocate(first, 8);
+    first = nullptr;
+    EXPECT_EQ(0u, small.live_bytes());
+  }
+  unlock();
+  ASSERT_EQ(std::future_status::ready,
+            pending.wait_for(std::chrono::seconds(2)));
+  auto *second = pending.get();
+  ASSERT_NE(nullptr, second);
+  second[0] = 73;
+  EXPECT_EQ(73u, second[0]);
+  small.deallocate(second, 8);
 }
 #endif
 

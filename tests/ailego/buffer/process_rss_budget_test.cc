@@ -134,14 +134,16 @@ TEST(ProcessRssBudgetTest, UntouchedBackingSurvivesSampleAndOldHeapRetirement) {
     const auto lazy = budget.finish_reservation(20 * kMiB, true);
     const size_t headroom =
         30 * kMiB - (use_native_sample ? budget.headroom(budget.limit()) : 0);
-    ASSERT_EQ(headroom, budget.available());
+    ASSERT_EQ(headroom - 20 * kMiB, budget.available());
     budget.refresh(true);
-    EXPECT_EQ(headroom, budget.available());
+    // Neither startup accounting nor a plain process read establishes
+    // residency. The still-live 20 MiB stays in the conservative bound.
+    EXPECT_EQ(headroom - 20 * kMiB, budget.available());
     // malloc retains both released halves. Neither release nor unchanged
     // samples may spend the replacement's outstanding residency allowance.
     for (size_t i = 0; i < 2; ++i) {
       budget.release_heap(10 * kMiB, {});
-      EXPECT_EQ(headroom, budget.available());
+      EXPECT_EQ(headroom - (10 - i * 10) * kMiB, budget.available());
     }
     const bool admitted = budget.try_reserve(40 * kMiB);
     EXPECT_FALSE(admitted);
@@ -197,12 +199,12 @@ TEST(ProcessRssBudgetTest, ReconfigurationPreservesBackingAcrossDisabledGate) {
     budget.release_unmapped(10 * kMiB, pending_sample);
     ASSERT_TRUE(budget.configure(150 * kMiB, ReadRss, reader));
     EXPECT_EQ(room, budget.available());
-    // With no remaining owners, a new resident startup allowance can establish
-    // a fresh baseline instead of inheriting a previous pool's history.
+    // A new startup allowance remains charged until a real ownership witness
+    // proves residency, including after a previously drained ledger.
     ASSERT_TRUE(budget.configure(0, nullptr));
     budget.account(20 * kMiB);
     ASSERT_TRUE(budget.configure(150 * kMiB, ReadRss, reader));
-    EXPECT_EQ(room, budget.available());
+    EXPECT_EQ(room - 20 * kMiB, budget.available());
     budget.release_heap(20 * kMiB, {});
   }
 }
@@ -236,7 +238,7 @@ TEST(ProcessRssBudgetTest, EmptyDisabledLedgerRetainsNewBacking) {
         ASSERT_TRUE(budget.configure(limit, ReadRss, reader));
         if (!complete_offline)
           lazy = budget.finish_reservation(64 * kMiB, true);
-        EXPECT_EQ(room - 64 * kMiB, budget.available());
+        EXPECT_EQ(room - (permanent ? 64 : 80) * kMiB, budget.available());
         const bool admitted = budget.try_reserve(96 * kMiB);
         EXPECT_FALSE(admitted);
         if (admitted) budget.finish_reservation(96 * kMiB, false);
@@ -311,12 +313,15 @@ TEST(ProcessRssBudgetTest, PrepaidMappingDebitSurvivesAnInFlightSample) {
   for (const bool use_native_sample : {false, true}) {
     SCOPED_TRACE(use_native_sample);
     ProcessRssBudget budget;
-    budget.account(bytes);
-    sampled_rss = (use_native_sample ? 32 : 120) * kMiB;
-    native_sample = {112 * kMiB, 16 * kMiB};
+    // A 6 MiB planning allowance and its copy are independent charges. Leave
+    // 8 MiB after the allowance, without relying on an old startup witness.
+    sampled_rss = (use_native_sample ? 32 : 114) * kMiB;
+    native_sample = {106 * kMiB, 22 * kMiB};
     native_sample_valid = true;
     ASSERT_TRUE(budget.configure(limit, ReadRss,
                                  use_native_sample ? ReadNative : nullptr));
+
+    ASSERT_TRUE(budget.try_acquire(bytes));
 
     ASSERT_TRUE(budget.try_reserve_materialization(bytes));
     budget.refresh(true);
@@ -379,6 +384,34 @@ TEST(ProcessRssBudgetTest, ReuseAndNewBackingShareMeasuredRoomBetweenSamples) {
     budget.refresh(true);
     EXPECT_EQ(8 * kMiB, budget.available());
     EXPECT_TRUE(budget.try_materialize(8 * kMiB));
+  }
+}
+
+TEST(ProcessRssBudgetTest, ReusableMappingSpendsItsOwnLifetimeCharge) {
+  for (bool native : {false, true}) {
+    SCOPED_TRACE(native);
+    ProcessRssBudget budget;
+    sampled_rss = sampled_owned_resident = 64 * kMiB;
+    native_sample = {64 * kMiB, 192 * kMiB};
+    native_sample_valid = true;
+    budget.account(64 * kMiB);
+    ASSERT_TRUE(budget.configure(256 * kMiB, ReadRss,
+                                 native ? ReadNative : nullptr, 0,
+                                 native ? nullptr : ReadResident));
+    const size_t room = budget.available();
+    ASSERT_TRUE(budget.try_reserve(room));
+    const auto lazy = budget.finish_reservation(room, true);
+    ASSERT_EQ(0u, budget.available());
+    // The whole old mapping is already in the lifetime bound, including
+    // any future refault. Reuse cannot create a second mapping's footprint.
+    ProcessRssBudget::MaterializationStamp old;
+    EXPECT_TRUE(budget.try_materialize_reusable(64 * kMiB, old));
+    EXPECT_EQ(0u, budget.available());
+    // An independent copy still needs additional headroom. Reuse must not
+    // spend the unrelated lazy owner's prepaid fault allowance.
+    EXPECT_FALSE(budget.try_reserve_materialization(1));
+    budget.release_unmapped(room, lazy);
+    budget.release_unmapped(64 * kMiB, old);
   }
 }
 

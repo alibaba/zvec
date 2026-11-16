@@ -104,25 +104,49 @@ class RetainedBlockResource {
 
     const size_t index = stride / kAlignment - 1;
     std::unique_lock<std::mutex> lock(mutex_);
-    auto *chunk = chunks_[index];
+    Chunk *chunk = nullptr;
     const size_t slots = (kPayloadBytes - sizeof(Chunk)) / stride;
-    while (chunk && !chunk->free_head && chunk->next_slot == slots)
-      chunk = chunk->next;
-    if (!chunk) {
+    for (;;) {
+      chunk = chunks_[index];
+      while (chunk && !chunk->free_head && chunk->next_slot == slots)
+        chunk = chunk->next;
+      if (!chunk) {
+        lock.unlock();
+        auto *data = MemoryLimitPool::get_instance().acquire_retained_block(
+            kPayloadBytes);
+        if (!data) throw std::bad_alloc();
+        chunk = new (data) Chunk{};
+        chunk->stride = stride;
+        lock.lock();
+        chunk->next = chunks_[index];
+        chunks_[index] = chunk;
+        break;
+      }
+      if (MemoryLimitPool::get_instance().try_materialize_retained_block(chunk))
+        break;
+      // Pin the chunk while waiting outside the resource mutex. Otherwise
+      // retiring its final real slot could unmap it, or a reclaim callback
+      // using this allocator could deadlock with the waiting allocation.
+      ++chunk->live_slots;
+      const auto unpin = [&](Chunk *held) {
+        if (!lock.owns_lock()) lock.lock();
+        if (--held->live_slots != 0) return;
+        auto **link = &chunks_[index];
+        while (*link != held) link = &(*link)->next;
+        *link = held->next;
+        lock.unlock();
+        MemoryLimitPool::get_instance().release_retained_block(held);
+      };
+      std::unique_ptr<Chunk, decltype(unpin)> pin(chunk, unpin);
       lock.unlock();
-      auto *data =
-          MemoryLimitPool::get_instance().acquire_retained_block(kPayloadBytes);
-      if (!data) throw std::bad_alloc();
-      chunk = new (data) Chunk{};
-      chunk->stride = stride;
+      if (!MemoryLimitPool::get_instance().try_materialize_retained_block(
+              chunk, /*required=*/true))
+        throw std::bad_alloc();
       lock.lock();
-      chunk->next = chunks_[index];
-      chunks_[index] = chunk;
-    } else if (!MemoryLimitPool::get_instance().try_materialize_retained_block(
-                   chunk)) {
-      // A live chunk can still contain untouched or reclaimed pages. Admit
-      // reuse before changing either its free list or its unused-slot cursor.
-      throw std::bad_alloc();
+      --chunk->live_slots;
+      pin.release();
+      // Another allocator may have taken the final slot while we waited.
+      if (chunk->free_head || chunk->next_slot < slots) break;
     }
     void *slot = chunk->free_head;
     if (slot)

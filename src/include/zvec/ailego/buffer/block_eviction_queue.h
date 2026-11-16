@@ -409,8 +409,9 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   //! committed(). Only successful unmapping refunds their backing budget.
   void *acquire_retained_block(size_t bytes, bool metadata = false);
   // For a retained block shared by multiple allocations. The owner must
-  // keep the block alive and serialize calls that use the same block.
-  bool try_materialize_retained_block(void *data);
+  // keep the block alive. Required waits must release the allocator mutex;
+  // current-observation projections are serialized by the RSS budget mutex.
+  bool try_materialize_retained_block(void *data, bool required = false);
   void release_retained_block(void *data);
   static size_t retained_block_size(size_t bytes);
   static constexpr size_t kRetainedBlockHeaderBytes = 64;
@@ -442,7 +443,8 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   // Mandatory workspaces share the mapping-residency directory, but never
   // optional-cache admission, idle reuse or evictable-cache accounting.
   struct WorkspaceBuffer : CacheBuffer {};
-  WorkspaceBuffer *try_acquire_workspace_buffer(size_t bytes);
+  WorkspaceBuffer *try_acquire_workspace_buffer(size_t bytes,
+                                                bool required = true);
   // Failed unmapping retains the descriptor, registration and backing debit.
   bool release_workspace_buffer(WorkspaceBuffer *buffer);
   // Reassigning an already charged mapping must preserve mandatory-workspace
@@ -681,7 +683,7 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   bool release_all_slabs_locked();
   size_t trim_free_buffers(size_t bytes_needed);
   bool trim_idle_buffers();
-  void reclaim_process_cache();
+  bool reclaim_process_cache();
   size_t trim_retained_blocks(size_t bytes_needed);
   size_t trim_cache_buffers(size_t bytes_needed);
   void register_cache_mapping(CacheBuffer *buffer);
@@ -692,6 +694,7 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   void start_background_evictor();
   void stop_background_evictor();
   void background_evict_loop();
+  bool refresh_residency_on_background_thread();
   // Keep a small absolute reserve without shrinking a fitting working set.
   size_t reserve_margin(size_t capacity) const {
     size_t m = capacity / 64;      // ~1.5% of the pool

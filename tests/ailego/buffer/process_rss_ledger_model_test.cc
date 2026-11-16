@@ -217,10 +217,10 @@ struct LedgerModel {
     budget.account(terminal_owner);
     configure();
     const size_t startup =
-        rss() +
+        rss() + terminal_owner +
         (mode == 2 ? 16 * kUnit + ProcessRssBudget::headroom(kLimit) : 0);
     check(budget.available() == kLimit - std::min(kLimit, startup),
-          "startup adoption");
+          "unproved startup backing");
     budget.release_heap(terminal_owner, {});
     terminal_owner = 0;
   }
@@ -354,6 +354,58 @@ TEST(ProcessRssLedgerModelTest,
       details << property << '=' << count << '\n';
     for (const auto &example : examples) details << example << '\n';
     EXPECT_TRUE(failures.empty()) << details.str();
+  }
+}
+
+TEST(ProcessRssLedgerModelTest, NewObservationsExpireOldResidencyCredit) {
+  for (int observer : {0, 1, 2}) {
+    {
+      std::map<std::string, size_t> failures;
+      std::vector<std::string> examples;
+      const std::vector<int> events;
+      LedgerModel cold(observer, 1, false, false, failures, examples, events);
+      cold.objects[0].bytes = cold.objects[0].capacity;
+      cold.budget.account(cold.objects[0].bytes);
+      cold.configure();
+      cold.validate();
+      for (int event : {3, 4}) cold.step(event);
+      cold.finish();
+      EXPECT_TRUE(failures.empty());
+    }
+    for (bool balanced_host_growth : {false, true}) {
+      SCOPED_TRACE(observer);
+      SCOPED_TRACE(balanced_host_growth);
+      std::map<std::string, size_t> failures;
+      std::vector<std::string> examples;
+      const std::vector<int> events;
+      LedgerModel model(observer, 0, false, false, failures, examples, events);
+      const auto stale = model.budget.begin_resident_sample();
+      const auto earlier = LedgerModel::ReadOwned();
+      // The object stays live. Its pages disappear, optionally replaced by
+      // host pages so even unchanged total RSS cannot renew an old proof.
+      model.objects[0].resident = 0;
+      if (balanced_host_growth) model.host += 16 * kUnit;
+      model.budget.refresh(true);
+      if (observer == 1)
+        EXPECT_FALSE(model.budget.publish_resident_sample(stale, earlier));
+      const size_t reserve =
+          observer == 2 ? 16 * kUnit + ProcessRssBudget::headroom(kLimit) : 0;
+      const size_t upper = model.rss() + model.backing() + reserve;
+      const size_t room = kLimit - std::min(kLimit, upper);
+      EXPECT_EQ(room, model.budget.available());
+      // The state-derived admission boundary checks both directions.
+      ASSERT_TRUE(model.budget.try_reserve(room));
+      EXPECT_FALSE(model.budget.try_reserve(1));
+      model.budget.finish_reservation(room, false);
+      model.validate();
+      model.proof();
+      model.objects[0].resident = model.objects[0].bytes;
+      model.budget.refresh(true);
+      model.proof();
+      for (int event : {3, 4}) model.step(event);
+      model.finish();
+      EXPECT_TRUE(failures.empty());
+    }
   }
 }
 }  // namespace
