@@ -27,6 +27,7 @@
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_helper.h>
+#include "../../ailego/buffer/pool_payload_budget.h"
 
 using namespace zvec;
 using namespace zvec::core;
@@ -35,7 +36,8 @@ class BufferStorageWriteTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
     // Initialize the memory limit pool with 64MB - enough for all tests.
-    ailego::MemoryLimitPool::get_instance().init(64 * 1024UL * 1024UL);
+    ::zvec::ailego::PoolPayloadBudget::get_instance().init(64 * 1024UL *
+                                                           1024UL);
   }
 
   void SetUp() override {
@@ -173,7 +175,7 @@ TEST_F(BufferStorageWriteTest, WritableReopenNeedsCacheAndAllowsRetry) {
     ASSERT_NE(nullptr, storage);
     ASSERT_EQ(0, storage->close());
   }
-  auto &pool = ailego::MemoryLimitPool::get_instance();
+  auto &pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   AILEGO_DEFER([&]() { EXPECT_EQ(0, pool.init(64UL * 1024UL * 1024UL)); });
   ASSERT_EQ(0, pool.init(ailego::kVectorPageSize));
   auto storage = IndexFactory::CreateStorage("BufferStorage");
@@ -1327,7 +1329,7 @@ TEST_F(BufferStorageWriteTest, ImmutableFallbackPreservesUnflushedPrefix) {
   ASSERT_TRUE(vec_pool);
   const size_t cold_page = (segment->data_offset() + offset + 64) / page_size;
   ASSERT_FALSE(vec_pool->is_page_resident(cold_page));
-  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   const size_t external_charge = memory_pool.available();
   ASSERT_TRUE(memory_pool.try_charge_external(external_charge));
   AILEGO_DEFER([&] { memory_pool.release_external(external_charge); });
@@ -1474,7 +1476,7 @@ TEST_F(BufferStorageWriteTest, ReadOnlyBatchPreservesSharedCacheReserve) {
       (page_size - segment->data_offset() % page_size) % page_size;
   constexpr size_t kSharedReserveBytes = 4UL * 1024UL * 1024UL;
   const size_t available_before =
-      ailego::MemoryLimitPool::get_instance().available();
+      ::zvec::ailego::PoolPayloadBudget::get_instance().available();
   ASSERT_GT(available_before, kSharedReserveBytes);
   const size_t count = (available_before - kSharedReserveBytes) / page_size + 1;
   ASSERT_LT(first + count * page_size, segment->data_size());
@@ -1488,8 +1490,9 @@ TEST_F(BufferStorageWriteTest, ReadOnlyBatchPreservesSharedCacheReserve) {
 
   ASSERT_TRUE(
       segment->read_borrowed_batch_immutable(reads.data(), reads.size()));
-  EXPECT_GE(ailego::MemoryLimitPool::get_instance().available() + page_size,
-            kSharedReserveBytes);
+  EXPECT_GE(
+      ::zvec::ailego::PoolPayloadBudget::get_instance().available() + page_size,
+      kSharedReserveBytes);
   blocks.clear();
   EXPECT_EQ(0, storage->close());
 }
@@ -1830,7 +1833,7 @@ TEST_F(BufferStorageWriteTest, BorrowedReadUsesOneColdPageLoadSequence) {
   auto segment = storage->get("seg1");
   ASSERT_TRUE(segment);
 
-  auto &pool = ailego::MemoryLimitPool::get_instance();
+  auto &pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   const size_t external_charge = pool.available();
   ASSERT_GT(external_charge, 0u);
   ASSERT_TRUE(pool.try_charge_external(external_charge));
@@ -1978,7 +1981,7 @@ TEST_F(BufferStorageWriteTest, CR_ReadOnlyMetadataPressureFallsBackToBypass) {
     ASSERT_EQ(0, storage->close());
   }
 
-  auto &pool = ailego::MemoryLimitPool::get_instance();
+  auto &pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   ASSERT_EQ(0, pool.init(ailego::kVectorPageSize));
   {
     auto storage = open_read_only();

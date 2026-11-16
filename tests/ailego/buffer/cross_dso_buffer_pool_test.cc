@@ -35,7 +35,7 @@ TEST(CrossDsoBufferPoolTest, SharesAddressesAndAccountingState) {
   EXPECT_EQ(&eviction_queue, zvec_test_dso_block_eviction_queue());
 
   const size_t bytes = 4 * kVectorPageSize;
-  ASSERT_EQ(0, pool.init(bytes));
+  ASSERT_EQ(0, pool.init(bytes + pool.queue_allocated()));
   ASSERT_TRUE(zvec_test_dso_charge_external(kVectorPageSize));
   EXPECT_EQ(kVectorPageSize, pool.external_used());
   zvec_test_dso_release_external(kVectorPageSize);

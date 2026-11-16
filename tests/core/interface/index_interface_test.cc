@@ -30,6 +30,7 @@
 #include <gtest/gtest.h>
 #include <turbo/quantizer/quantizer.h>
 #include "tests/test_util.h"
+#include "../../ailego/buffer/pool_payload_budget.h"
 #if RABITQ_SUPPORTED
 #include "core/algorithm/hnsw_rabitq/rabitq_converter.h"
 #include "zvec/core/framework/index_provider.h"
@@ -823,7 +824,7 @@ TEST(IndexInterface, CopyOnWrite) {
 }
 
 TEST(IndexInterface, BufferGeneral) {
-  zvec::ailego::MemoryLimitPool::get_instance().init(100 * 1024 * 1024);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(100 * 1024 * 1024);
   constexpr uint32_t kDimension = 64;
   const std::string index_name{"test.index"};
 
@@ -975,7 +976,7 @@ TEST(IndexInterface, IvfBufferPoolDefersWarmupUntilReads) {
   constexpr size_t kVectorBytes = kDimension * kDocCount * sizeof(float);
   constexpr size_t kBufferBudget = 32UL * 1024UL * 1024UL;
   const std::string index_name{"test_ivf_buffer_lazy_open.index"};
-  auto &memory_pool = zvec::ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   const size_t previous_capacity = memory_pool.capacity();
   ASSERT_EQ(0u, memory_pool.used());
   auto cleanup = zvec::ailego::ScopeGuard::Make([&]() {
@@ -1093,8 +1094,8 @@ TEST(IndexInterface, IvfBufferPoolSearchAfterOpenThreadExits) {
     ASSERT_EQ(0, write_index->close());
   }
 
-  ASSERT_EQ(0,
-            zvec::ailego::MemoryLimitPool::get_instance().init(kBufferBudget));
+  ASSERT_EQ(
+      0, ::zvec::ailego::PoolPayloadBudget::get_instance().init(kBufferBudget));
   auto read_index = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, read_index);
 
@@ -1143,7 +1144,7 @@ TEST(IndexInterface, IvfBufferPoolSearchAfterOpenThreadExits) {
     ASSERT_TRUE(ok);
   }
 
-  auto &memory_pool = zvec::ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   ASSERT_GT(memory_pool.metadata_used(), 0u);
   ASSERT_GT(memory_pool.used(), memory_pool.metadata_used());
 
@@ -1162,7 +1163,7 @@ TEST(IndexInterface, DiskAnnBufferPoolSearchAcrossBudgets) {
   constexpr uint32_t kDocCount = 512;
   constexpr size_t kFullBudget = 8UL * 1024UL * 1024UL;
   const std::string index_name{"test_diskann_buffer_budgets.index"};
-  auto &memory_pool = zvec::ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   const size_t previous_capacity = memory_pool.capacity();
   ASSERT_EQ(0u, memory_pool.used());
   auto cleanup = zvec::ailego::ScopeGuard::Make([&]() {
@@ -4868,7 +4869,7 @@ TEST(IndexInterface, IsDirty) {
 TEST(IndexInterface, IsDirtyBufferPool) {
   constexpr uint32_t kDimension = 16;
   const std::string index_name{"test_is_dirty_bp.index"};
-  auto &pool = zvec::ailego::MemoryLimitPool::get_instance();
+  auto &pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   const size_t previous_capacity = pool.capacity();
   ASSERT_EQ(0, pool.init(64UL * 1024UL * 1024UL));
   auto restore = zvec::ailego::ScopeGuard::Make(
@@ -4958,7 +4959,7 @@ TEST(IndexInterface, BufferPoolOpenPreservesCreationAndMemoryErrors) {
   zvec::test_util::RemoveTestFiles(path);
   auto remove = zvec::ailego::ScopeGuard::Make(
       [&]() { zvec::test_util::RemoveTestFiles(path); });
-  auto &pool = zvec::ailego::MemoryLimitPool::get_instance();
+  auto &pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   const size_t previous_capacity = pool.capacity();
   auto restore = zvec::ailego::ScopeGuard::Make(
       [&]() { EXPECT_EQ(0, pool.init(previous_capacity)); });
@@ -5212,9 +5213,9 @@ TEST(IndexInterface, BuilderChainingReturnsCorrectType) {
 namespace {
 
 void ExpectRefinedIdsMatchSearch(const SearchResult &expected,
-                               const int64_t *ids, const float *scores,
-                               bool tied, int64_t candidate_begin,
-                               int64_t candidate_end) {
+                                 const int64_t *ids, const float *scores,
+                                 bool tied, int64_t candidate_begin,
+                                 int64_t candidate_end) {
   // The fixtures below have unique coarse distances. All fine scores in a
   // tied fixture are 1, so different selectors may choose different subsets
   // at the top-k boundary, but every ID must be a distinct coarse candidate.
@@ -5311,7 +5312,7 @@ TEST(IndexInterface, RefineInternalIdsMatchesSearchAcrossStorageModes) {
           ASSERT_EQ(0, coarse->search_internal_ids(query, param, ids.data(),
                                                    nullptr));
           ExpectRefinedIdsMatchSearch(expected, ids.data(), nullptr, tied, 0,
-                                     6);
+                                      6);
         }
         std::array<int64_t, 3> scored_ids{{-2, -2, -2}};
         std::array<float, 3> scores;
@@ -5319,7 +5320,7 @@ TEST(IndexInterface, RefineInternalIdsMatchesSearchAcrossStorageModes) {
                          query, param, scored_ids.data(), scores.data()));
         EXPECT_EQ(ids, scored_ids);
         ExpectRefinedIdsMatchSearch(expected, scored_ids.data(), scores.data(),
-                                   tied, 0, 6);
+                                    tied, 0, 6);
         const auto saved_ids = scored_ids;
         const auto saved_scores = scores;
         auto expect_current_param_matches = [&](int64_t candidate_end) {
@@ -5556,7 +5557,7 @@ TEST(IndexInterface, RefineInternalIdsInnerProductMatchesSearch) {
       ASSERT_EQ(0, coarse->search_internal_ids(query, param, ids.data(),
                                                scores.data()));
       ExpectRefinedIdsMatchSearch(expected, ids.data(), scores.data(), tied, 2,
-                                 8);
+                                  8);
       // search_param owns topk; the index writes exactly that many entries.
       std::array<int64_t, 4> larger{{-2, -2, -2, -2}};
       ASSERT_EQ(

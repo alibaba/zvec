@@ -3481,8 +3481,16 @@ class ConcurrentQueue {
           blockIndex.load(std::memory_order_relaxed);  // We're the only writer
                                                        // thread, relaxed is OK
       if (localBlockIndex == nullptr) {
-        return false;  // this can happen if new_block_index failed in the
-                       // constructor
+        // A failed constructor allocation leaves a registered producer which
+        // can also be recycled by another thread. Retry its initial index
+        // once memory becomes available instead of poisoning it permanently.
+        MOODYCAMEL_CONSTEXPR_IF(allocMode == CannotAlloc) {
+          return false;
+        }
+        else if (!new_block_index()) {
+          return false;
+        }
+        localBlockIndex = blockIndex.load(std::memory_order_relaxed);
       }
       size_t newTail =
           (localBlockIndex->tail.load(std::memory_order_relaxed) + 1) &
