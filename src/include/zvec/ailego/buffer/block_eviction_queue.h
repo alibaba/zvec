@@ -275,8 +275,10 @@ class ZVEC_AILEGO_API MemoryLimitPool {
 
   // Enabled by the DB process budget, not by standalone page-pool users.
   bool configure_process_rss_limit(size_t bytes);
-  // On initial setup only, permanent_backing is already charged to the pool
-  // and its owners never release it. It stays included in measured RSS.
+  // On initial setup only, permanent_backing is an external lifetime
+  // allowance for native images/stacks outside the residency directory.
+  // Its owners never release it; measured process RSS still includes it.
+  // Registered queue/slab/cache/workspace mappings cannot be excluded.
   // Its exclusion survives RSS disable/re-enable; native capacity changes
   // are rejected afterward, while init() with the same capacity is a no-op.
   bool configure_process_rss_limit(size_t bytes, size_t permanent_backing);

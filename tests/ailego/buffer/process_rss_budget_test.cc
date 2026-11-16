@@ -8,6 +8,16 @@
 #include <zvec/ailego/buffer/process_rss_budget.h>
 
 namespace zvec::ailego {
+struct ProcessRssBudgetTestPeer {
+  static void make_rss_refresh_due(ProcessRssBudget &budget) {
+    std::lock_guard<std::mutex> lock(budget.mutex_);
+    budget.sampled_at_ -= std::chrono::seconds(1);
+  }
+  static void expire_scan(ProcessRssBudget &budget) {
+    std::lock_guard<std::mutex> lock(budget.mutex_);
+    budget.resident_scan_started_ -= std::chrono::seconds(1);
+  }
+};
 namespace {
 constexpr size_t kMiB = 1UL << 20;
 std::atomic<size_t> sampled_rss{0};
@@ -259,7 +269,7 @@ TEST(ProcessRssBudgetTest, EmptyDisabledLedgerRetainsNewBacking) {
   }
 }
 
-TEST(ProcessRssBudgetTest, PermanentBackingCannotWitnessTemporaryOwners) {
+TEST(ProcessRssBudgetTest, PermanentNativeBackingKeepsManagedResidencyCredit) {
   for (const bool background : {false, true}) {
     for (const bool reenable : {false, true}) {
       SCOPED_TRACE(testing::Message()
@@ -268,8 +278,8 @@ TEST(ProcessRssBudgetTest, PermanentBackingCannotWitnessTemporaryOwners) {
       sampled_rss = 100 * kMiB;
       sampled_owned_resident = 0;
       const auto reader = background ? nullptr : ReadResident;
-      // RSS includes 40 MiB permanent mappings, 20 MiB heap backing and
-      // 40 MiB host memory. Permanent mappings leave the backing ledger.
+      // Native images/stacks are outside the provider's registered mappings.
+      // Retiring heap backing cannot turn their RSS into a managed witness.
       budget.account(60 * kMiB);
       ASSERT_TRUE(
           budget.configure(150 * kMiB, ReadRss, nullptr, 40 * kMiB, reader));
@@ -277,15 +287,13 @@ TEST(ProcessRssBudgetTest, PermanentBackingCannotWitnessTemporaryOwners) {
         ASSERT_TRUE(budget.configure(0, nullptr));
         ASSERT_TRUE(budget.configure(150 * kMiB, ReadRss, nullptr, 0, reader));
       }
-      // malloc retains the retired heap pages. Its untouched replacement
-      // still needs 20 MiB beyond the unchanged 100 MiB RSS observation.
       budget.release_heap(20 * kMiB, {});
       ASSERT_TRUE(budget.try_reserve(20 * kMiB));
       const auto lazy = budget.finish_reservation(20 * kMiB, true);
       budget.refresh(true);
-      ASSERT_EQ(30 * kMiB, budget.available());
-      for (const size_t owned : {20 * kMiB, 40 * kMiB, 60 * kMiB}) {
-        sampled_owned_resident = owned;
+      EXPECT_EQ(30 * kMiB, budget.available());
+      for (const size_t managed : {size_t{0}, 20 * kMiB}) {
+        sampled_owned_resident = managed;
         if (background) {
           ASSERT_TRUE(budget.publish_resident_sample(
               budget.begin_resident_sample(), ReadResident()));
@@ -294,12 +302,11 @@ TEST(ProcessRssBudgetTest, PermanentBackingCannotWitnessTemporaryOwners) {
           ASSERT_TRUE(
               budget.configure(150 * kMiB, ReadRss, nullptr, 0, reader));
         }
-        // Only residency beyond the permanent allowance can prove the
-        // replacement has become resident, e.g. after heap pages return.
-        const bool replacement_resident = owned == 60 * kMiB;
-        EXPECT_EQ((replacement_resident ? 50 : 30) * kMiB, budget.available());
+        // A real managed witness supplies its entire credit, independently
+        // of the larger permanent native allowance. No witness stays cold.
+        EXPECT_EQ((managed ? 50 : 30) * kMiB, budget.available());
         const bool admitted = budget.try_reserve(40 * kMiB);
-        EXPECT_EQ(replacement_resident, admitted);
+        EXPECT_EQ(managed != 0, admitted);
         if (admitted) budget.finish_reservation(40 * kMiB, false);
       }
       budget.release_unmapped(20 * kMiB, lazy);
@@ -488,6 +495,69 @@ TEST_F(ResidentSamplePublishTest, FreshProofRetainsUntouchedAndInFlightDebits) {
       budget.publish_resident_sample(token, {sampled_rss.load(), 256 * kMiB}));
   EXPECT_EQ(160 * kMiB, budget.available());
   EXPECT_FALSE(budget.try_acquire(161 * kMiB));
+}
+
+TEST_F(ResidentSamplePublishTest, FailedReadsExpirePreFailureProofs) {
+  for (const int failures : {1, 3}) {
+    SCOPED_TRACE(failures);
+    const auto token = budget.begin_resident_sample();
+    sampled_rss = 0;
+    for (int i = 0; i < failures; ++i) budget.refresh(true);
+    if (failures == 3) EXPECT_EQ(0u, budget.available());
+    sampled_rss = 320 * kMiB;
+    const auto paused_room = budget.available();
+    EXPECT_FALSE(budget.publish_resident_sample(
+        token, {sampled_rss.load(), 256 * kMiB}));
+    EXPECT_EQ(paused_room, budget.available());
+    // A reader failure cannot be recovered by an older ownership scan.
+    EXPECT_EQ(0u, budget.begin_resident_sample().configuration);
+    budget.refresh(true);
+    EXPECT_TRUE(budget.publish_resident_sample(
+        budget.begin_resident_sample(), {sampled_rss.load(), 256 * kMiB}));
+    EXPECT_EQ(160 * kMiB, budget.available());
+  }
+  // Failure in the ownership provider must also end its cooperative window,
+  // even when the budget's process-only reader is independently healthy.
+  const auto token = budget.begin_resident_sample();
+  EXPECT_FALSE(budget.publish_resident_sample(token, {}));
+  EXPECT_FALSE(
+      budget.publish_resident_sample(token, {sampled_rss.load(), 256 * kMiB}));
+  EXPECT_EQ(0u, budget.begin_resident_sample().configuration);
+  budget.refresh(true);
+  EXPECT_TRUE(budget.publish_resident_sample(budget.begin_resident_sample(),
+                                             {sampled_rss.load(), 256 * kMiB}));
+}
+
+TEST_F(ResidentSamplePublishTest,
+       ScanWindowPreservesProgressAndBoundsStaleness) {
+  auto token = budget.begin_resident_sample();
+  ProcessRssBudgetTestPeer::make_rss_refresh_due(budget);
+  const auto before = budget.available();
+  budget.refresh();
+  EXPECT_EQ(before, budget.available());
+  EXPECT_FALSE(budget.try_reserve(32 * kMiB));
+  EXPECT_TRUE(
+      budget.publish_resident_sample(token, {sampled_rss.load(), 256 * kMiB}));
+  EXPECT_EQ(160 * kMiB, budget.available());
+  // A forced observation immediately wins over the cooperative scan window.
+  token = budget.begin_resident_sample();
+  budget.refresh(true);
+  EXPECT_FALSE(
+      budget.publish_resident_sample(token, {sampled_rss.load(), 256 * kMiB}));
+  token = budget.begin_resident_sample();
+  ProcessRssBudgetTestPeer::expire_scan(budget);
+  EXPECT_FALSE(
+      budget.publish_resident_sample(token, {sampled_rss.load(), 256 * kMiB}));
+  EXPECT_EQ(0u, budget.available());
+  // Abandoned scans cannot renew their own grace period or close the gate.
+  token = budget.begin_resident_sample();
+  ProcessRssBudgetTestPeer::expire_scan(budget);
+  const auto fresh = budget.begin_resident_sample();
+  EXPECT_FALSE(
+      budget.publish_resident_sample(token, {sampled_rss.load(), 256 * kMiB}));
+  EXPECT_TRUE(
+      budget.publish_resident_sample(fresh, {sampled_rss.load(), 256 * kMiB}));
+  EXPECT_EQ(160 * kMiB, budget.available());
 }
 
 TEST_F(ResidentSamplePublishTest,

@@ -21,12 +21,15 @@ namespace zvec::ailego {
 // owned residency, plus pending work and independent copy/refault exposure.
 // A new process-only observation cannot renew an older ownership witness.
 class ProcessRssBudget {
+  friend struct ProcessRssBudgetTestPeer;
+
  public:
   using Reader = size_t (*)();
   struct ResidentSample {
     size_t rss{0};
-    // A lower bound observed in live, owned mappings in this RSS snapshot.
-    // Reserved virtual pages and pending OS allocations must be excluded.
+    // A lower bound in mappings still charged to this ledger. Exclude
+    // permanent native image/stack allowances, reserved virtual pages and
+    // pending OS allocations. The provider owns this classification.
     size_t owned_resident{0};
   };
   using ResidentReader = ResidentSample (*)();
@@ -34,6 +37,7 @@ class ProcessRssBudget {
     uint64_t configuration{0};
     uint64_t observation{0};
     size_t retired_bytes{0};
+    uint64_t scan{0};
   };
   struct NativeSample {
     size_t footprint{0};
@@ -174,8 +178,7 @@ class ProcessRssBudget {
       // An unlocked ownership scan must not cross a host policy change,
       // including NORMAL -> CRITICAL -> NORMAL. Keep allocation epochs
       // intact: a policy notification is not an RSS observation.
-      ++resident_configuration_;
-      ++resident_generation_;
+      invalidate_resident_samples();
     }
     if (limit() && level < external_pressure_) {
       // The host can relax its policy independently of the current RSS or
@@ -214,10 +217,9 @@ class ProcessRssBudget {
     if (limit && !rss) return false;
     NativeSample native;
     if (limit && native_reader && !native_reader(&native)) return false;
-    // Process-lifetime startup reservations stay charged to pool capacity.
-    // Their residency is observed in the total process samples. Exclude them
-    // from the reclaimable RSS ledger so later temporary frees cannot consume
-    // their overlap or make an unchanged sample count them twice.
+    // Permanent image/stack allowances are outside the ownership provider's
+    // mapping directory. Keep their measured RSS, but remove their lifetime
+    // quota here. A provider must not report them as owned_resident.
     backing_ -= permanent_backing;
     if (permanent_backing) {
       permanent_backing_.store(permanent_backing, std::memory_order_relaxed);
@@ -232,8 +234,7 @@ class ProcessRssBudget {
     native_reader_ = native_reader;
     reader_ = reader;
     resident_reader_ = resident_reader;
-    ++resident_configuration_;
-    ++resident_generation_;
+    invalidate_resident_samples();
     resident_retired_bytes_ = 0;
     recovery_sample_pending_ = false;
     rss_sample_failures_ = native_sample_failures_ = 0;
@@ -365,7 +366,21 @@ class ProcessRssBudget {
     if (!limit() || !reader_ || native_reader_ ||
         resident_retired_bytes_ == std::numeric_limits<size_t>::max())
       return {};
-    return {resident_configuration_, rss_epoch_, resident_retired_bytes_};
+    // An abandoned scan cannot defer observations indefinitely. Refresh
+    // before starting a replacement window, including after reader recovery.
+    const auto now = std::chrono::steady_clock::now();
+    if (active_resident_scan_ &&
+        now - resident_scan_started_ >= kResidentScanWindow)
+      refresh_locked(true);
+    if (rss_sample_failures_) return {};
+    if (!active_resident_scan_) {
+      active_resident_scan_ = ++resident_scan_sequence_;
+      if (!active_resident_scan_)
+        active_resident_scan_ = ++resident_scan_sequence_;
+      resident_scan_started_ = std::chrono::steady_clock::now();
+    }
+    return {resident_configuration_, rss_epoch_, resident_retired_bytes_,
+            active_resident_scan_};
   }
 
   bool publish_resident_sample(ResidentSampleToken token,
@@ -373,12 +388,23 @@ class ProcessRssBudget {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!token.configuration ||
         token.configuration != resident_configuration_ || !limit() ||
-        token.observation != rss_epoch_ || !reader_ || native_reader_ ||
-        !sample.rss ||
+        token.observation != rss_epoch_ || !token.scan ||
+        token.scan != active_resident_scan_ || !reader_ || native_reader_ ||
         resident_retired_bytes_ == std::numeric_limits<size_t>::max())
       return false;
+    if (!sample.rss) {
+      record_sample_result(false, rss_sample_failures_);
+      sampled_at_ = std::chrono::steady_clock::now();
+      update_available();
+      return false;
+    }
+    if (std::chrono::steady_clock::now() - resident_scan_started_ >=
+        kResidentScanWindow) {
+      refresh_locked(true);
+      return false;
+    }
     const size_t rss = reader_();
-    rss_sample_failures_ = rss ? 0 : next_sample_failure(rss_sample_failures_);
+    record_sample_result(rss != 0, rss_sample_failures_);
     if (!rss) {
       sampled_at_ = std::chrono::steady_clock::now();
       update_available();
@@ -441,36 +467,14 @@ class ProcessRssBudget {
     return try_materialize_reusable_locked(bytes, stamp);
   }
 
-  // A partially used mapping can advance into fresh pages. Fully charged
-  // backing already includes those faults. Potentially excluded startup
-  // mappings still need a projection bounded by the whole mapping.
-  bool try_extend_mapping(size_t bytes, size_t mapping_bytes,
-                          MappingProjection &projection,
-                          bool lifetime_charged = true) {
+  // Registered mappings retain their complete lifetime fault allowance.
+  // Extending within one mapping creates no independent storage, and must
+  // not change its allocation age or refund another owner's projection.
+  bool try_extend_mapping(size_t /*bytes*/, size_t /*mapping_bytes*/,
+                          MappingProjection & /*projection*/) {
     std::lock_guard<std::mutex> lock(mutex_);
     refresh_locked(false);
-    if (lifetime_charged)
-      return materialization_allowed_locked(0, 0, /*allow_at_limit=*/true);
-    const auto rss = projection.rss.for_epoch(rss_epoch_);
-    const auto native = projection.native.for_epoch(native_epoch_);
-    assert(rss.bytes <= mapping_bytes && native.bytes <= mapping_bytes);
-    const size_t rss_growth = std::min(bytes, mapping_bytes - rss.bytes);
-    const size_t native_growth = std::min(bytes, mapping_bytes - native.bytes);
-    if (!materialization_allowed_locked(rss_growth, native_growth,
-                                        /*allow_at_limit=*/true))
-      return false;
-    if (limit()) {
-      rss_materialized_ = add_saturated(rss_materialized_, rss_growth);
-      if (native_reader_) {
-        native_materialized_ =
-            add_saturated(native_materialized_, native_growth);
-      }
-      projection.rss = {rss_epoch_, rss.bytes + rss_growth, rss.unsampled};
-      projection.native = {native_reader_ ? native_epoch_ : 0,
-                           native.bytes + native_growth, native.unsampled};
-      update_available();
-    }
-    return true;
+    return materialization_allowed_locked(0, 0, /*allow_at_limit=*/true);
   }
 
   // Reserve measured headroom until mapping or prefaulting completes.
@@ -710,6 +714,10 @@ class ProcessRssBudget {
     // Pending allocations/copies remain charged across this observation.
     // Failed readers keep their sampling backoff, and host critical pressure
     // cannot be relaxed by an RSS observation.
+    if (active_resident_scan_ &&
+        std::chrono::steady_clock::now() - resident_scan_started_ <
+            kResidentScanWindow)
+      return;
     if (!rss_sample_failures_ && !native_sample_failures_ &&
         external_pressure_ != PressureLevel::kCritical &&
         !(has_resident_uncertainty() &&
@@ -724,20 +732,26 @@ class ProcessRssBudget {
     if (!force && now - sampled_at_ < std::chrono::milliseconds(20)) {
       return;
     }
+    // A normal raw read would erase the scan's proof before it can publish.
+    // Let the single maintenance scan finish in a bounded window. Forced
+    // reads, pressure/configuration changes and failures still expire it;
+    // native application-footprint reads never use this RSS-only window.
+    if (!force && active_resident_scan_ &&
+        now - resident_scan_started_ < kResidentScanWindow)
+      return;
     const auto resident = resident_reader_
                               ? resident_reader_()
                               : ResidentSample{reader_ ? reader_() : 0, 0};
     const size_t rss = resident.rss;
     // Keep the last observation across a transient failure. If either
     // configured reader keeps failing, pause growth until it recovers.
-    rss_sample_failures_ = rss ? 0 : next_sample_failure(rss_sample_failures_);
+    record_sample_result(rss != 0, rss_sample_failures_);
     bool sampled_native = false;
     if (native_reader_) {
       NativeSample native;
       sampled_native = native_reader_(&native);
       if (sampled_native) publish_native(native);
-      native_sample_failures_ =
-          sampled_native ? 0 : next_sample_failure(native_sample_failures_);
+      record_sample_result(sampled_native, native_sample_failures_);
     }
     if (rss && (!native_reader_ || sampled_native)) {
       recovery_sample_pending_ = false;
@@ -754,6 +768,16 @@ class ProcessRssBudget {
   }
 
   static constexpr uint8_t kMaxSampleFailures = 3;
+  static constexpr auto kResidentScanWindow = std::chrono::milliseconds(100);
+  void invalidate_resident_samples() {
+    active_resident_scan_ = 0;
+    ++resident_configuration_;
+    ++resident_generation_;
+  }
+  void record_sample_result(bool success, uint8_t &failures) {
+    if (!success && !failures) invalidate_resident_samples();
+    failures = success ? 0 : next_sample_failure(failures);
+  }
   static uint8_t next_sample_failure(uint8_t failures) {
     return failures < kMaxSampleFailures ? failures + 1 : failures;
   }
@@ -767,11 +791,9 @@ class ProcessRssBudget {
   }
 
   void publish(size_t rss, size_t owned_resident = 0) {
-    // Ownership samplers also see lifetime mappings excluded from backing_.
-    // Without per-owner identities, deduct their full permanent allowance:
-    // those resident pages cannot witness overlap for temporary backing.
-    owned_resident -= std::min(
-        owned_resident, permanent_backing_.load(std::memory_order_relaxed));
+    // The provider already excludes permanent native owners. Deducting their
+    // unrelated quota again would erase valid registered-mapping residency.
+    active_resident_scan_ = 0;
     if (limit()) estimate_.observe(rss, backing_, owned_resident);
     rss_materialized_ = 0;
     rss_new_backing_ = 0;
@@ -899,6 +921,9 @@ class ProcessRssBudget {
   std::atomic<bool> resident_uncertainty_{false};
   std::atomic<uint64_t> resident_generation_{0};
   uint64_t resident_configuration_{0};
+  uint64_t resident_scan_sequence_{0};
+  uint64_t active_resident_scan_{0};
+  std::chrono::steady_clock::time_point resident_scan_started_{};
   size_t resident_retired_bytes_{0};
 };
 }  // namespace zvec::ailego

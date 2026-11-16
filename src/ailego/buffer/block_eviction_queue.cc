@@ -186,9 +186,6 @@ struct MemoryLimitPool::QueueResidentMapping {
   QueueResidentMapping *next{nullptr};
   void *data{nullptr};
   size_t bytes{0};
-  // Initial aggregate exclusions cannot identify individual owners. Only
-  // mappings predating such an exclusion may need a separate fault debit.
-  bool lifetime_charged{true};
 };
 
 struct MemoryLimitPool::QueueMappingHeader {
@@ -317,15 +314,15 @@ void *MemoryLimitPool::allocate_queue_memory(size_t bytes) {
     const size_t index = total / kQueueAlignment - 1;
     auto *slab = queue_small_slabs_[index];
     if (charged && slab && !slab->free_head) {
-      // A charged slab's future page faults are already reserved. Startup
-      // slabs may have been excluded; only those mappings need another
-      // projection. Reused slots remain available for queue registration.
+      // All queue mappings retain their full lifetime charge, including
+      // slots not yet touched. Permanent native image/stack allowances never
+      // exclude a queue mapping from this ledger.
       const size_t previous_page = (slab->next_unused - 1) / page;
       const size_t last_page = (slab->next_unused + total - 1) / page;
       if (last_page != previous_page &&
-          !process_rss_.try_extend_mapping(
-              (last_page - previous_page) * page, slab->mapping_bytes,
-              slab->projection, slab->mapping.lifetime_charged))
+          !process_rss_.try_extend_mapping((last_page - previous_page) * page,
+                                           slab->mapping_bytes,
+                                           slab->projection))
         return denied();
     }
     if (!slab) {
@@ -802,13 +799,17 @@ MemoryLimitPool::read_background_resident_sample() {
       };
   size_t resident = 0;
   uintptr_t cursor = 0;
-  size_t slabs_left = 0;
+  ReclaimableSlab *next_slab = nullptr;
   {
     std::unique_lock<std::mutex> lock(pool.slab_mutex_, std::try_to_lock);
-    if (lock)
-      for (auto *slab = pool.slabs_; slab; slab = slab->next) ++slabs_left;
+    if (lock) next_slab = pool.slabs_;
   }
-  while (slabs_left-- != 0) {
+  // Only the maintenance worker calls this unlocked scanner. init() joins
+  // that worker before tearing down slab headers; ordinary page retirement
+  // discards payloads but keeps their header/list nodes alive. Follow the
+  // initial list once instead of searching the whole list for each address.
+  // Concurrently prepended slabs supply no credit in this conservative scan.
+  while (next_slab) {
     uintptr_t address = 0;
     size_t logical_page = 0, bytes = 0;
     std::array<bool, kMaxSlabDataPages + 1> charged{};
@@ -818,20 +819,13 @@ MemoryLimitPool::read_background_resident_sample() {
       // makes the remaining range unknown; it does not invalidate earlier
       // proof. Publication still subtracts all concurrent retirements.
       if (!lock) break;
-      ReclaimableSlab *next = nullptr;
-      for (auto *slab = pool.slabs_; slab; slab = slab->next) {
-        const auto base = reinterpret_cast<uintptr_t>(slab);
-        if (base >= cursor &&
-            (!next || base < reinterpret_cast<uintptr_t>(next)))
-          next = slab;
-      }
-      if (!next) break;
+      auto *next = next_slab;
+      next_slab = next->next;
       std::unique_lock<std::mutex> slab_lock(next->mutex, std::try_to_lock);
       address = reinterpret_cast<uintptr_t>(next);
       if (!slab_lock) {
         if (address > std::numeric_limits<uintptr_t>::max() - kSlabBytes)
           return {MemoryHelper::SelfRSS(), 0};
-        cursor = address + kSlabBytes;
         continue;
       }
       logical_page = next->page_size;
@@ -845,7 +839,6 @@ MemoryLimitPool::read_background_resident_sample() {
         for (size_t i = 0; i < next->reclaimed_count; ++i)
           charged[next->reclaimed_pages[i]] = false;
       }
-      cursor = address + kSlabBytes;
     }
     resident += read_range(address, bytes, &charged, logical_page);
   }
@@ -1879,10 +1872,10 @@ bool MemoryLimitPool::configure_process_rss_limit(size_t bytes) {
 bool MemoryLimitPool::configure_process_rss_limit(size_t bytes,
                                                   size_t permanent_backing) {
   std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
-  // Queue allocation holds this lock before entering RSS accounting. Keep
-  // the same order and publish exclusions and mapping classification together.
-  std::unique_lock<std::mutex> queue_lock(queue_memory_mutex_, std::defer_lock);
-  if (permanent_backing) queue_lock.lock();
+  // Permanent native allowances use external lifetime reservations. Queue
+  // and slab metadata remain fully charged and cannot be excluded here.
+  if (permanent_backing > external_used_size_.load(std::memory_order_relaxed))
+    return false;
   auto resident_reader = &MemoryLimitPool::read_slab_resident_sample;
 #if (defined(__linux__) && !defined(__ANDROID__)) || \
     (defined(__APPLE__) && TARGET_OS_OSX)
@@ -1895,13 +1888,6 @@ bool MemoryLimitPool::configure_process_rss_limit(size_t bytes,
   const bool configured = process_rss_.configure(
       bytes, &MemoryHelper::SelfRSS, NativeApplicationMemoryReader(),
       permanent_backing, resident_reader);
-  if (configured && permanent_backing) {
-    // The public exclusion is aggregate, so conservatively treat existing
-    // queue mappings as possibly excluded. Later mappings are fully charged,
-    // even when this process has a nonzero permanent allowance.
-    for (auto *mapping = queue_mappings_; mapping; mapping = mapping->next)
-      mapping->lifetime_charged = false;
-  }
   bg_cv_.notify_one();
   return configured;
 }
@@ -2123,10 +2109,11 @@ void MemoryLimitPool::background_evict_loop() {
       const auto token = process_rss_.begin_resident_sample();
       if (token.configuration) {
         const auto sample = read_background_resident_sample();
-        process_rss_.publish_resident_sample(token, sample);
+        if (process_rss_.publish_resident_sample(token, sample)) {
+          last_owned_sample = std::chrono::steady_clock::now();
+          confirmed_generation = generation;
+        }
       }
-      last_owned_sample = std::chrono::steady_clock::now();
-      confirmed_generation = generation;
     }
   };
 #endif

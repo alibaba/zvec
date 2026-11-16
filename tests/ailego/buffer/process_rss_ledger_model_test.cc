@@ -71,7 +71,8 @@ struct LedgerModel {
            objects[0].resident + objects[1].resident;
   }
   size_t owned() const {
-    size_t bytes = permanent;
+    // Permanent image/stack allowances are outside the mapping provider.
+    size_t bytes = 0;
     for (const auto &object : objects)
       if (!object.heap) bytes += object.resident;
     return bytes;
@@ -110,7 +111,7 @@ struct LedgerModel {
   }
   void proof() {
     if (mode == 2) return;
-    size_t credit = owned() - permanent;
+    size_t credit = owned();
     if (mode == 1) {
       const auto token = budget.begin_resident_sample();
       const auto sample = ReadOwned();
