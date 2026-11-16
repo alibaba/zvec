@@ -655,7 +655,8 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   bool try_reserve_allocation(size_t bytes, Backing backing = Backing::kLive,
                               size_t materialization = 0);
   bool wait_for_available_impl(size_t bytes, std::chrono::milliseconds timeout,
-                               bool page_admission, bool required = false);
+                               bool page_admission, bool required = false,
+                               size_t materialization = 0);
   size_t page_admission_limit() const {
     const size_t capacity = pool_size_.load(std::memory_order_relaxed);
     const size_t reserve = page_admission_reserve();

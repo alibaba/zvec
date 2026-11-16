@@ -2325,20 +2325,27 @@ bool MemoryLimitPool::wait_for_available(size_t buffer_size,
 bool MemoryLimitPool::wait_for_available_impl(size_t buffer_size,
                                               std::chrono::milliseconds timeout,
                                               bool page_admission,
-                                              bool required) {
-  if (buffer_size == 0) {
+                                              bool required,
+                                              size_t materialization) {
+  if (materialization > std::numeric_limits<size_t>::max() - buffer_size)
+    return false;
+  const size_t process_bytes = buffer_size + materialization;
+  if (process_bytes == 0) {
     return true;
   }
   capacity_waits_.fetch_add(1, std::memory_order_relaxed);
   std::unique_lock<std::mutex> lock(capacity_mutex_);
   const bool available = capacity_cv_.wait_for(
-      lock, timeout, [this, buffer_size, page_admission, required] {
+      lock, timeout,
+      [this, buffer_size, process_bytes, page_admission, required] {
         const size_t capacity = pool_size_.load(std::memory_order_relaxed);
         const size_t used = used_size_.load(std::memory_order_relaxed);
         if (capacity < used || buffer_size > capacity - used) {
           return false;
         }
-        if (buffer_size > process_rss_.available()) return false;
+        // Reusing a prepaid allowance can have no native-capacity growth,
+        // while still needing room for an independent heap materialization.
+        if (process_bytes > process_rss_.available()) return false;
         if (page_admission && !required && process_rss_.pressure())
           return false;
         // A page can be denied below the total capacity: unconsumed external
@@ -2559,6 +2566,9 @@ bool MemoryLimitPool::try_charge_fixed_with_wait(const size_t buffer_size,
                                                  std::atomic<size_t> *counter,
                                                  Backing backing,
                                                  size_t materialization) {
+  if (materialization > std::numeric_limits<size_t>::max() - buffer_size)
+    return false;
+  const size_t process_bytes = buffer_size + materialization;
   if (try_charge_fixed(buffer_size, counter, backing, materialization)) {
     return true;
   }
@@ -2582,12 +2592,12 @@ bool MemoryLimitPool::try_charge_fixed_with_wait(const size_t buffer_size,
   }
   size_t waiting = workspace_waiting_size_.load(std::memory_order_relaxed);
   do {
-    if (buffer_size > std::numeric_limits<size_t>::max() - waiting)
+    if (process_bytes > std::numeric_limits<size_t>::max() - waiting)
       return false;
   } while (!workspace_waiting_size_.compare_exchange_weak(
-      waiting, waiting + buffer_size, std::memory_order_relaxed));
-  auto release_priority = ScopeGuard::Make([this, buffer_size] {
-    workspace_waiting_size_.fetch_sub(buffer_size, std::memory_order_relaxed);
+      waiting, waiting + process_bytes, std::memory_order_relaxed));
+  auto release_priority = ScopeGuard::Make([this, process_bytes] {
+    workspace_waiting_size_.fetch_sub(process_bytes, std::memory_order_relaxed);
     capacity_cv_.notify_all();
   });
   bg_cv_.notify_one();
@@ -2599,13 +2609,14 @@ bool MemoryLimitPool::try_charge_fixed_with_wait(const size_t buffer_size,
   // Dirty writeback and CLOCK aging can need more than one bounded pass.
   // A zero-page batch is not proof that the queue is unreclaimable: it may
   // only have cleared reference bits or demoted recently used entries.
-  // Keep waiting while candidates remain, but never beyond 50 waits. Empty
-  // queues with no capacity progress still fail after one idle wait.
+  // Keep waiting while candidates or ownership uncertainty remain, but never
+  // beyond 50 waits. Known no-progress states still fail after one idle wait.
   // Ordinary external-cache admission never enters this waiting path.
   size_t previous_available = available();
+  size_t previous_process_available = process_rss_.available();
   for (size_t attempt = 0; attempt < 50; ++attempt) {
     (void)wait_for_available_impl(buffer_size, std::chrono::milliseconds(100),
-                                  false);
+                                  false, false, materialization);
     if (try_charge_fixed(buffer_size, counter, backing, materialization))
       return true;
     // One maintenance pass can release idle planning allowances. If fixed
@@ -2617,7 +2628,12 @@ bool MemoryLimitPool::try_charge_fixed_with_wait(const size_t buffer_size,
         !process_rss_.has_resident_uncertainty())
       return false;
     const size_t current_available = available();
-    if (current_available <= previous_available) {
+    const size_t current_process_available = process_rss_.available();
+    // Empty page queues do not rule out a pending ownership proof. Native
+    // room can stay constant while a proof restores measured RSS headroom.
+    if (current_available <= previous_available &&
+        current_process_available <= previous_process_available &&
+        !process_rss_.has_resident_uncertainty()) {
       const auto queues = BlockEvictionQueue::get_instance().stats();
       if (std::all_of(queues.approximate_queue_sizes.begin(),
                       queues.approximate_queue_sizes.end(),
@@ -2625,6 +2641,7 @@ bool MemoryLimitPool::try_charge_fixed_with_wait(const size_t buffer_size,
         return false;
     }
     previous_available = current_available;
+    previous_process_available = current_process_available;
   }
   return false;
 }

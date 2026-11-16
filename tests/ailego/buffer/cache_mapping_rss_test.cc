@@ -94,6 +94,19 @@ struct MemoryLimitPoolTestPeer {
     ready.set_value();
     release.wait();
   }
+  static bool hold_registry_until_second_wait(MemoryLimitPool &pool,
+                                              std::promise<void> &ready,
+                                              std::atomic<bool> &done) {
+    const size_t waits = pool.capacity_waits_.load();
+    std::lock_guard<std::mutex> lock(pool.cache_mapping_mutex_);
+    ready.set_value();
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!done && pool.capacity_waits_.load() - waits < 2 &&
+           std::chrono::steady_clock::now() < deadline)
+      std::this_thread::yield();
+    return pool.capacity_waits_.load() - waits >= 2;
+  }
   static ProcessRssBudget::ResidentSample sample_while_busy(
       MemoryLimitPool &pool, bool background) {
     std::promise<void> locked, release;
@@ -471,6 +484,112 @@ TEST_F(CacheMappingRssTest, MandatoryAllocatorsProgressAfterProofExpiry) {
             result.wait_for(std::chrono::seconds(2)));
   EXPECT_TRUE(result.get());
   EXPECT_EQ(73u, first[0]);
+}
+
+TEST_F(CacheMappingRssTest,
+       MandatoryMaterializationWaitsWithZeroOrSmallGrowth) {
+  auto *workspace = pool_.try_acquire_workspace_buffer(64 * kMiB);
+  ASSERT_NE(nullptr, workspace);
+  auto cleanup = ScopeGuard::Make(
+      [&] { EXPECT_TRUE(pool_.release_workspace_buffer(workspace)); });
+  std::memset(workspace->data, 0x55, workspace->bytes);
+  for (const size_t growth : {size_t{0}, kMiB}) {
+    SCOPED_TRACE(growth);
+    // A pure materialization must work even when native capacity is full.
+    const size_t plan = growth ? 0 : pool_.available();
+    ASSERT_TRUE(pool_.try_charge_workspace_plan(plan));
+    auto release_plan =
+        ScopeGuard::Make([&] { pool_.release_workspace_plan(plan); });
+    for (int api = 0; api < 3; ++api) {
+      SCOPED_TRACE(api);  // Workspace, metadata, standard-buffer reservation.
+      const size_t materialization = (growth ? 24 : 16) * kMiB;
+      const size_t headroom = (growth ? 80 : 32) * kMiB;
+      ASSERT_TRUE(pool_.configure_process_rss_limit(MemoryHelper::SelfRSS() +
+                                                    headroom));
+      ASSERT_TRUE(MemoryLimitPoolTestPeer::prove_residency(pool_));
+      ASSERT_GE(MemoryLimitPoolTestPeer::rss_room(pool_),
+                growth + materialization);
+      MemoryLimitPoolTestPeer::refresh_rss(pool_);
+      const size_t room = MemoryLimitPoolTestPeer::rss_room(pool_);
+      if (growth) ASSERT_GE(room, growth);
+      ASSERT_LT(room, growth + materialization);
+      const size_t used = pool_.used();
+      if (!growth) ASSERT_EQ(pool_.capacity(), used);
+      std::promise<void> ready;
+      std::atomic<bool> done{false}, waited{false};
+      std::thread holder([&] {
+        // Keep proof unavailable through a full idle wait. Empty eviction
+        // queues must not be mistaken for an unrecoverable RSS refusal.
+        waited = MemoryLimitPoolTestPeer::hold_registry_until_second_wait(
+            pool_, ready, done);
+      });
+      auto join = ScopeGuard::Make([&] {
+        done = true;
+        if (holder.joinable()) holder.join();
+      });
+      ready.get_future().wait();
+      MemoryLimitPoolTestPeer::start_background(pool_);
+      auto shutdown = ScopeGuard::Make([&] {
+        MemoryLimitPoolTestPeer::stop_background(pool_);
+        EXPECT_TRUE(pool_.configure_process_rss_limit(0));
+      });
+      MemoryReservation memory;
+      bool admitted = false;
+      auto release = ScopeGuard::Make([&] {
+        if (admitted && api == 0) pool_.release_external(growth);
+        if (admitted && api == 1) pool_.release_metadata(growth);
+      });
+      if (api == 0)
+        admitted = pool_.try_charge_workspace(growth, materialization);
+      else if (api == 1)
+        admitted = pool_.try_charge_metadata(growth, materialization);
+      else {
+        EXPECT_NO_THROW({
+          memory.add(growth, materialization);
+          admitted = true;
+        });
+      }
+      done = true;
+      holder.join();
+      EXPECT_TRUE(admitted);
+      EXPECT_TRUE(waited);
+      EXPECT_EQ(used + (admitted ? growth : 0), pool_.used());
+      EXPECT_EQ(0u, MemoryLimitPoolTestPeer::waiters(pool_));
+      EXPECT_EQ(0x55, workspace->data[workspace->bytes - 1]);
+    }
+  }
+}
+
+TEST_F(CacheMappingRssTest, MaterializationDenialsKeepReservationsUnchanged) {
+  const size_t used = pool_.used(), committed = pool_.committed();
+  for (const size_t growth : {size_t{0}, kMiB}) {
+    SCOPED_TRACE(growth);
+    ASSERT_TRUE(pool_.configure_process_rss_limit(MemoryHelper::SelfRSS() - 1));
+    EXPECT_FALSE(pool_.try_charge_workspace(growth, 16 * kMiB));
+    EXPECT_FALSE(pool_.try_charge_metadata(growth, 16 * kMiB));
+    MemoryReservation memory;
+    EXPECT_THROW(memory.add(growth, 16 * kMiB), std::bad_alloc);
+    ASSERT_TRUE(pool_.configure_process_rss_limit(0));
+    pool_.set_memory_pressure(ProcessRssBudget::PressureLevel::kCritical);
+    auto normal = ScopeGuard::Make([&] {
+      pool_.set_memory_pressure(ProcessRssBudget::PressureLevel::kNormal);
+    });
+    EXPECT_FALSE(pool_.try_charge_workspace(growth, 16 * kMiB));
+    EXPECT_FALSE(pool_.try_charge_metadata(growth, 16 * kMiB));
+    EXPECT_THROW(memory.add(growth, 16 * kMiB), std::bad_alloc);
+    EXPECT_EQ(0u, memory.bytes());
+    EXPECT_EQ(used, pool_.used());
+    EXPECT_EQ(committed, pool_.committed());
+    EXPECT_EQ(0u, MemoryLimitPoolTestPeer::waiters(pool_));
+  }
+  const bool workspace = pool_.try_charge_workspace(1, SIZE_MAX);
+  EXPECT_FALSE(workspace);
+  if (workspace) pool_.release_external(1);
+  const bool metadata = pool_.try_charge_metadata(1, SIZE_MAX);
+  EXPECT_FALSE(metadata);
+  if (metadata) pool_.release_metadata(1);
+  EXPECT_EQ(used, pool_.used());
+  EXPECT_EQ(committed, pool_.committed());
 }
 
 TEST_F(CacheMappingRssTest, RetainedWaitPinsChunkAcrossFinalSlotRetirement) {
