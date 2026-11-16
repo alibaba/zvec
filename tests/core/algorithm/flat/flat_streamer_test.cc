@@ -579,8 +579,12 @@ TEST_F(FlatStreamerTest, ContiguousBuildDistinguishesKeyReadErrorsFromHoles) {
     SCOPED_TRACE(bytes);
     ASSERT_EQ(key_offset + bytes, segment->resize(key_offset + bytes));
     IndexStorage::MemoryBlock block;
-    ASSERT_EQ(0, entity.FlatStreamerEntity::get_vector_by_key(0, block));
+    ASSERT_EQ(dim * sizeof(float),
+              segment->read(0, block, dim * sizeof(float)));
     ASSERT_NE(nullptr, block.data());
+    EXPECT_EQ(IndexError_ReadData, entity.get_vector_by_position(2, block));
+    EXPECT_EQ(IndexError_ReadData,
+              entity.FlatStreamerEntity::get_vector_by_key(2, block));
     EXPECT_NE(0, entity.get_key(0, &key));
     EXPECT_EQ(kInvalidKey, entity.key(0));
     EXPECT_EQ(IndexError_ReadData, entity.build_contiguous_memory());

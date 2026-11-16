@@ -142,8 +142,8 @@ int FlatContiguousStreamerEntity::evaluate_distances(
   } else {
     for (size_t position = 0; position < storage.vector_count; ++position) {
       const uint64_t vector_key = storage.position_to_key[position];
-      // Cache reconstruction omits deleted rows. Reject invalid keys before
-      // invoking the user filter and count each remaining rejected row once.
+      // Empty and deleted slots retain their positions; never pass their
+      // invalid keys to the user filter.
       if (vector_key == kInvalidKey ||
           (filter.is_valid() && filter(vector_key))) {
         if (context_stats) {
@@ -704,9 +704,11 @@ const void *FlatStreamerEntity::get_vector_by_position(uint32_t id) const {
 
 int FlatStreamerEntity::get_vector_by_position(
     uint32_t id, IndexStorage::MemoryBlock &block) const {
-  if (id >= withid_key_info_map_.size() || !contains_node(id)) {
-    return IndexError_NoExist;
-  }
+  if (use_external_vector_) return IndexError_Unsupported;
+  if (id >= withid_key_info_map_.size()) return IndexError_NoExist;
+  uint64_t key = kInvalidKey;
+  if (get_key(id, &key) != 0) return IndexError_ReadData;
+  if (key == kInvalidKey) return IndexError_NoExist;
   const VectorLocation &loc = withid_key_info_map_[id];
   auto segment = this->get_segment(loc.segment_id);
   if (!segment ||
@@ -896,16 +898,15 @@ int FlatContiguousStreamerEntity::build_contiguous_memory() {
   storage->position_to_key.assign(count, static_cast<uint64_t>(kInvalidKey));
 
   for (uint32_t id = 0; id < count; ++id) {
-    if (!contains_node(id)) continue;
-    IndexStorage::MemoryBlock block;
     uint64_t vector_key = kInvalidKey;
     int ret = get_key(id, &vector_key);
-    if (ret == 0) {
-      if (use_key_info_map()) {
-        ret = FlatStreamerEntity::get_vector_by_key(vector_key, block);
-      } else {
-        ret = get_vector_by_position(id, block);
-      }
+    if (ret != 0) return IndexError_ReadData;
+    if (vector_key == kInvalidKey) continue;
+    IndexStorage::MemoryBlock block;
+    if (use_key_info_map()) {
+      ret = FlatStreamerEntity::get_vector_by_key(vector_key, block);
+    } else {
+      ret = get_vector_by_position(id, block);
     }
     if (ret != 0 || block.data() == nullptr) {
       LOG_ERROR("Failed to load Flat vector into contiguous memory, id=%u", id);
@@ -995,23 +996,18 @@ int FlatStreamerEntity::get_vector_by_key(
     const uint64_t key, IndexStorage::MemoryBlock &block) const {
   if (key == kInvalidKey) return IndexError_NoExist;
   if (use_external_vector_) return IndexError_Unsupported;
+  if (!use_key_info_map_) {
+    if (key > UINT32_MAX) return IndexError_NoExist;
+    return get_vector_by_position(static_cast<uint32_t>(key), block);
+  }
   VectorLocation loc{};
   key_info_map_lock_->lock_shared();
-  if (use_key_info_map_) {
-    auto iterator = key_info_map_.find(key);
-    if (iterator == key_info_map_.end()) {
-      key_info_map_lock_->unlock_shared();
-      return -1;
-    }
-    loc = iterator->second;
-  } else {
-    if (key < withid_key_info_map_.size() && contains_node(key)) {
-      loc = withid_key_info_map_[key];
-    } else {
-      key_info_map_lock_->unlock_shared();
-      return -1;
-    }
+  auto iterator = key_info_map_.find(key);
+  if (iterator == key_info_map_.end()) {
+    key_info_map_lock_->unlock_shared();
+    return -1;
   }
+  loc = iterator->second;
   key_info_map_lock_->unlock_shared();
 
   auto segment = this->get_segment(loc.segment_id);
