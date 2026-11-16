@@ -16,6 +16,7 @@
 #include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/ailego/buffer/budgeted_mapped_buffer.h>
 #include <zvec/ailego/buffer/retained_block_allocator.h>
+#include <zvec/ailego/io/file.h>
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -63,6 +64,17 @@ struct MemoryLimitPoolTestPeer {
   static bool prove_residency(MemoryLimitPool &pool) {
     const auto token = pool.process_rss_.begin_resident_sample();
     return pool.process_rss_.publish_resident_sample(token, sample(true));
+  }
+  static auto begin_sample(MemoryLimitPool &pool) {
+    return pool.process_rss_.begin_resident_sample();
+  }
+  static bool publish_sample(MemoryLimitPool &pool,
+                             ProcessRssBudget::ResidentSampleToken token,
+                             ProcessRssBudget::ResidentSample sample) {
+    return pool.process_rss_.publish_resident_sample(token, sample);
+  }
+  static bool fixed_rss_limit(MemoryLimitPool &pool, size_t limit) {
+    return pool.process_rss_.configure(limit, +[] { return size_t{64} << 20; });
   }
   static size_t rss_room(MemoryLimitPool &pool) {
     return pool.process_rss_.available();
@@ -155,8 +167,104 @@ TEST_F(CacheMappingRssTest, BatchPagesLeaveRoomForNewSlabHeaders) {
   }
 }
 
+TEST_F(CacheMappingRssTest, QueueSlotsSpendTheirExistingMappingReservation) {
+  // Cover both a slab adopted at init and a new slab charged by its allocator.
+  for (bool adopted : {false, true}) {
+    ASSERT_EQ(0, pool_.init(0));
+    std::vector<void *> slots;
+    auto cleanup = ScopeGuard::Make([&] {
+      EXPECT_TRUE(pool_.configure_process_rss_limit(0));
+      for (auto *slot : slots) EvictionQueueTraits::free(slot);
+    });
+    if (adopted) {
+      slots.push_back(EvictionQueueTraits::malloc(4000));
+      ASSERT_NE(nullptr, slots.back());
+    }
+    ASSERT_EQ(0, pool_.init(128 * kMiB));
+    MemoryLimitPoolTestPeer::stop_background(pool_);
+    if (!adopted) {
+      slots.push_back(EvictionQueueTraits::malloc(4000));
+      ASSERT_NE(nullptr, slots.back());
+    }
+    const size_t backing = pool_.committed();
+    ASSERT_TRUE(
+        MemoryLimitPoolTestPeer::fixed_rss_limit(pool_, 64 * kMiB + backing));
+    ASSERT_EQ(0u, MemoryLimitPoolTestPeer::rss_room(pool_));
+    for (size_t i = 0; i < 8; ++i) {
+      auto *slot = EvictionQueueTraits::malloc(4000);
+      ASSERT_NE(nullptr, slot);
+      slots.push_back(slot);
+      std::memset(slot, static_cast<int>(i), 4000);
+    }
+    EXPECT_EQ(backing, pool_.committed());
+    EXPECT_EQ(0u, MemoryLimitPoolTestPeer::rss_room(pool_));
+    for (size_t i = 1; i < slots.size(); ++i)
+      for (size_t byte = 0; byte < 4000; ++byte)
+        ASSERT_EQ(static_cast<unsigned char>(i - 1),
+                  static_cast<unsigned char *>(slots[i])[byte]);
+  }
+}
+
 #if (defined(__linux__) && !defined(__ANDROID__)) || \
     (defined(__APPLE__) && TARGET_OS_OSX)
+TEST_F(CacheMappingRssTest, QueueExclusionDoesNotApplyToLaterMappings) {
+  // Permanent owners cannot be reset. Keep this irreversible configuration
+  // in a child, and exercise the real queue allocator with stable RSS input.
+  ASSERT_EXIT(([] {
+                auto &pool = MemoryLimitPool::get_instance();
+                std::vector<void *> old_slots;
+                old_slots.push_back(EvictionQueueTraits::malloc(4000));
+                if (!old_slots.back()) std::_Exit(1);
+                const size_t permanent = pool.committed();
+                if (!pool.configure_process_rss_limit(512 * kMiB, permanent) ||
+                    !MemoryLimitPoolTestPeer::fixed_rss_limit(pool, 64 * kMiB))
+                  std::_Exit(2);
+                bool denied = false;
+                for (size_t i = 0; i < 8; ++i) {
+                  auto *slot = EvictionQueueTraits::malloc(4000);
+                  if (!slot) {
+                    denied = true;
+                    break;
+                  }
+                  old_slots.push_back(slot);
+                }
+                // A potentially excluded startup mapping still needs room
+                // for previously untouched pages.
+                if (!denied || pool.committed() != permanent) std::_Exit(3);
+                if (!MemoryLimitPoolTestPeer::fixed_rss_limit(pool, 128 * kMiB))
+                  std::_Exit(4);
+                std::vector<void *> new_slots;
+                new_slots.push_back(EvictionQueueTraits::malloc(3000));
+                if (!new_slots.back()) std::_Exit(5);
+                const size_t backing = pool.committed();
+                if (!MemoryLimitPoolTestPeer::fixed_rss_limit(
+                        pool, 64 * kMiB + backing - permanent))
+                  std::_Exit(6);
+                // A global permanent allowance must not make this later,
+                // fully charged mapping pay twice for its remaining slots.
+                for (size_t i = 0; i < 8; ++i) {
+                  auto *slot = EvictionQueueTraits::malloc(3000);
+                  if (!slot) std::_Exit(7);
+                  new_slots.push_back(slot);
+                  std::memset(slot, 0x55, 3000);
+                }
+                if (pool.committed() != backing) std::_Exit(8);
+                if (!pool.configure_process_rss_limit(0) ||
+                    !MemoryLimitPoolTestPeer::fixed_rss_limit(
+                        pool, 64 * kMiB + backing - permanent))
+                  std::_Exit(9);
+                // Classification survives disable/re-enable and slot reuse.
+                EvictionQueueTraits::free(new_slots.back());
+                new_slots.pop_back();
+                auto *reused = EvictionQueueTraits::malloc(3000);
+                if (!reused || pool.committed() != backing) std::_Exit(10);
+                new_slots.push_back(reused);
+                for (auto *slot : new_slots) EvictionQueueTraits::free(slot);
+                std::_Exit(pool.committed() == permanent ? 0 : 11);
+              }()),
+              testing::ExitedWithCode(0), "");
+}
+
 TEST_F(CacheMappingRssTest, FirstOwnershipProofRecoversPrefaultedWorkspace) {
   auto *workspace = pool_.try_acquire_workspace_buffer(64 * kMiB);
   ASSERT_NE(nullptr, workspace);
@@ -172,6 +280,50 @@ TEST_F(CacheMappingRssTest, FirstOwnershipProofRecoversPrefaultedWorkspace) {
       pool_, MemoryLimitPool::PendingAllocation::Kind::kLockedExternal);
   EXPECT_TRUE(allocation.reserve(kMiB));
 }
+
+#if defined(__linux__)
+TEST_F(CacheMappingRssTest, PressureRecoveryRejectsOldOwnershipAfterPageLoss) {
+  auto *workspace = pool_.try_acquire_workspace_buffer(64 * kMiB);
+  ASSERT_NE(nullptr, workspace);
+  auto cleanup = ScopeGuard::Make([&] {
+    pool_.set_memory_pressure(ProcessRssBudget::PressureLevel::kNormal);
+    EXPECT_TRUE(pool_.configure_process_rss_limit(0));
+    EXPECT_TRUE(pool_.release_workspace_buffer(workspace));
+  });
+  std::memset(workspace->data, 0x55, workspace->bytes);
+  ASSERT_TRUE(
+      pool_.configure_process_rss_limit(MemoryHelper::SelfRSS() + 32 * kMiB));
+  ASSERT_TRUE(MemoryLimitPoolTestPeer::prove_residency(pool_));
+  const auto token = MemoryLimitPoolTestPeer::begin_sample(pool_);
+  const auto sample = MemoryLimitPoolTestPeer::sample(true);
+  pool_.set_memory_pressure(ProcessRssBudget::PressureLevel::kCritical);
+  ASSERT_EQ(0, ::madvise(workspace->data, workspace->bytes, MADV_DONTNEED));
+  void *host = File::MemoryMap(64 * kMiB, 0);
+  ASSERT_NE(nullptr, host);
+  auto unmap = ScopeGuard::Make(
+      [&] { EXPECT_TRUE(File::TryMemoryUnmap(host, 64 * kMiB)); });
+  std::memset(host, 0x66, 64 * kMiB);
+  pool_.set_memory_pressure(ProcessRssBudget::PressureLevel::kNormal);
+  EXPECT_EQ(0u, MemoryLimitPoolTestPeer::rss_room(pool_));
+  EXPECT_FALSE(MemoryLimitPoolTestPeer::publish_sample(pool_, token, sample));
+  EXPECT_EQ(0u, MemoryLimitPoolTestPeer::rss_room(pool_));
+  {
+    MemoryLimitPool::PendingAllocation pending(
+        pool_, MemoryLimitPool::PendingAllocation::Kind::kLockedExternal);
+    EXPECT_FALSE(pending.reserve(16 * kMiB));
+  }
+  ASSERT_TRUE(MemoryLimitPoolTestPeer::prove_residency(pool_));
+  EXPECT_EQ(0u, MemoryLimitPoolTestPeer::rss_room(pool_));
+  // Once the host releases its replacement pages, a new proof must recover
+  // usable room. Blocking the old proof must not permanently close admission.
+  ASSERT_EQ(0, ::madvise(host, 64 * kMiB, MADV_DONTNEED));
+  std::memset(workspace->data, 0x77, workspace->bytes);
+  ASSERT_TRUE(MemoryLimitPoolTestPeer::prove_residency(pool_));
+  MemoryLimitPool::PendingAllocation pending(
+      pool_, MemoryLimitPool::PendingAllocation::Kind::kLockedExternal);
+  EXPECT_TRUE(pending.reserve(16 * kMiB));
+}
+#endif
 
 TEST_F(CacheMappingRssTest, RealMappedAllocatorsKeepTheirLiveRefaultAllowance) {
   const auto exercise = [&](void *data, size_t bytes) {

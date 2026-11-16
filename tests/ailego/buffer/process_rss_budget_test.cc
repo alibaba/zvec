@@ -407,6 +407,13 @@ TEST(ProcessRssBudgetTest, ReusableMappingSpendsItsOwnLifetimeCharge) {
     ProcessRssBudget::MaterializationStamp old;
     EXPECT_TRUE(budget.try_materialize_reusable(64 * kMiB, old));
     EXPECT_EQ(0u, budget.available());
+    // Queue slots extend within the same lifetime-charged mapping. They
+    // must obey the same boundary, without changing its allocation age.
+    auto extension = ProcessRssBudget::MappingProjection::Full(64 * kMiB, old);
+    EXPECT_TRUE(budget.try_extend_mapping(kMiB, 64 * kMiB, extension));
+    EXPECT_EQ(old.rss_epoch, extension.rss.epoch);
+    EXPECT_EQ(old.native_epoch, extension.native.epoch);
+    EXPECT_EQ(0u, budget.available());
     // An independent copy still needs additional headroom. Reuse must not
     // spend the unrelated lazy owner's prepaid fault allowance.
     EXPECT_FALSE(budget.try_reserve_materialization(1));
@@ -434,6 +441,39 @@ class ResidentSamplePublishTest : public testing::Test {
   }
   ProcessRssBudget budget;
 };
+
+TEST_F(ResidentSamplePublishTest, PressureChangesExpireInFlightProofs) {
+  using Pressure = ProcessRssBudget::PressureLevel;
+  const Pressure levels[] = {Pressure::kNormal, Pressure::kBackground,
+                             Pressure::kCritical};
+  for (const auto from : levels) {
+    for (const auto to : levels) {
+      SCOPED_TRACE(static_cast<int>(from));
+      SCOPED_TRACE(static_cast<int>(to));
+      budget.set_external_pressure(from);
+      const auto token = budget.begin_resident_sample();
+      budget.set_external_pressure(to);
+      const size_t room = budget.available();
+      EXPECT_EQ(from == to, budget.publish_resident_sample(
+                                token, {sampled_rss.load(), 256 * kMiB}));
+      if (from != to) EXPECT_EQ(room, budget.available());
+      EXPECT_TRUE(budget.publish_resident_sample(
+          budget.begin_resident_sample(), {sampled_rss.load(), 256 * kMiB}));
+      if (to == Pressure::kCritical) EXPECT_EQ(0u, budget.available());
+    }
+  }
+  budget.set_external_pressure(Pressure::kNormal);
+  const auto token = budget.begin_resident_sample();
+  budget.set_external_pressure(Pressure::kCritical);
+  budget.set_external_pressure(Pressure::kNormal);
+  EXPECT_FALSE(
+      budget.publish_resident_sample(token, {sampled_rss.load(), 256 * kMiB}));
+  EXPECT_EQ(0u, budget.available());
+  budget.refresh(true);
+  EXPECT_TRUE(budget.publish_resident_sample(budget.begin_resident_sample(),
+                                             {sampled_rss.load(), 256 * kMiB}));
+  EXPECT_GT(budget.available(), 0u);
+}
 
 TEST_F(ResidentSamplePublishTest, FreshProofRetainsUntouchedAndInFlightDebits) {
   auto token = budget.begin_resident_sample();

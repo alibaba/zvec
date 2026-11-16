@@ -161,6 +161,8 @@ struct LedgerModel {
       }
       // Failed observations and host pressure must not make a proof a backdoor
       // around admission. Successful recovery uses the same live object state.
+      const auto pre_pressure_token = budget.begin_resident_sample();
+      const auto pre_pressure_sample = ReadOwned();
       rss_valid = false;
       for (int i = 0; i < 3; ++i) budget.refresh(true);
       check(budget.available() == 0, "failed reader admission");
@@ -169,6 +171,10 @@ struct LedgerModel {
       budget.set_external_pressure(ProcessRssBudget::PressureLevel::kNormal);
       if (mode == 2) native_valid = false;
       rss_valid = true;
+      if (mode != 2)
+        check(!budget.publish_resident_sample(pre_pressure_token,
+                                              pre_pressure_sample),
+              "stale pressure proof");
       if (mode == 2) {
         budget.refresh(true);
         check(budget.available() == 0, "native recovery barrier");

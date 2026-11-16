@@ -186,6 +186,9 @@ struct MemoryLimitPool::QueueResidentMapping {
   QueueResidentMapping *next{nullptr};
   void *data{nullptr};
   size_t bytes{0};
+  // Initial aggregate exclusions cannot identify individual owners. Only
+  // mappings predating such an exclusion may need a separate fault debit.
+  bool lifetime_charged{true};
 };
 
 struct MemoryLimitPool::QueueMappingHeader {
@@ -314,15 +317,15 @@ void *MemoryLimitPool::allocate_queue_memory(size_t bytes) {
     const size_t index = total / kQueueAlignment - 1;
     auto *slab = queue_small_slabs_[index];
     if (charged && slab && !slab->free_head) {
-      // Advancing into a new page of an old slab can raise RSS even though
-      // the whole mapping is already charged. Previously used slots remain
-      // available so queue registration can help reclaim pages under pressure.
+      // A charged slab's future page faults are already reserved. Startup
+      // slabs may have been excluded; only those mappings need another
+      // projection. Reused slots remain available for queue registration.
       const size_t previous_page = (slab->next_unused - 1) / page;
       const size_t last_page = (slab->next_unused + total - 1) / page;
       if (last_page != previous_page &&
-          !process_rss_.try_extend_mapping((last_page - previous_page) * page,
-                                           slab->mapping_bytes,
-                                           slab->projection))
+          !process_rss_.try_extend_mapping(
+              (last_page - previous_page) * page, slab->mapping_bytes,
+              slab->projection, slab->mapping.lifetime_charged))
         return denied();
     }
     if (!slab) {
@@ -1876,6 +1879,10 @@ bool MemoryLimitPool::configure_process_rss_limit(size_t bytes) {
 bool MemoryLimitPool::configure_process_rss_limit(size_t bytes,
                                                   size_t permanent_backing) {
   std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+  // Queue allocation holds this lock before entering RSS accounting. Keep
+  // the same order and publish exclusions and mapping classification together.
+  std::unique_lock<std::mutex> queue_lock(queue_memory_mutex_, std::defer_lock);
+  if (permanent_backing) queue_lock.lock();
   auto resident_reader = &MemoryLimitPool::read_slab_resident_sample;
 #if (defined(__linux__) && !defined(__ANDROID__)) || \
     (defined(__APPLE__) && TARGET_OS_OSX)
@@ -1888,6 +1895,13 @@ bool MemoryLimitPool::configure_process_rss_limit(size_t bytes,
   const bool configured = process_rss_.configure(
       bytes, &MemoryHelper::SelfRSS, NativeApplicationMemoryReader(),
       permanent_backing, resident_reader);
+  if (configured && permanent_backing) {
+    // The public exclusion is aggregate, so conservatively treat existing
+    // queue mappings as possibly excluded. Later mappings are fully charged,
+    // even when this process has a nonzero permanent allowance.
+    for (auto *mapping = queue_mappings_; mapping; mapping = mapping->next)
+      mapping->lifetime_charged = false;
+  }
   bg_cv_.notify_one();
   return configured;
 }

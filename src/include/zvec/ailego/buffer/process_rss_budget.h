@@ -170,6 +170,13 @@ class ProcessRssBudget {
 
   void set_external_pressure(PressureLevel level) {
     std::lock_guard<std::mutex> lock(mutex_);
+    if (level != external_pressure_) {
+      // An unlocked ownership scan must not cross a host policy change,
+      // including NORMAL -> CRITICAL -> NORMAL. Keep allocation epochs
+      // intact: a policy notification is not an RSS observation.
+      ++resident_configuration_;
+      ++resident_generation_;
+    }
     if (limit() && level < external_pressure_) {
       // The host can relax its policy independently of the current RSS or
       // application limit. Keep admission closed until the next fresh sample,
@@ -434,12 +441,16 @@ class ProcessRssBudget {
     return try_materialize_reusable_locked(bytes, stamp);
   }
 
-  // A partially used mapping can advance into fresh pages. Within each
-  // reader's current sample, its projection cannot exceed the whole mapping.
+  // A partially used mapping can advance into fresh pages. Fully charged
+  // backing already includes those faults. Potentially excluded startup
+  // mappings still need a projection bounded by the whole mapping.
   bool try_extend_mapping(size_t bytes, size_t mapping_bytes,
-                          MappingProjection &projection) {
+                          MappingProjection &projection,
+                          bool lifetime_charged = true) {
     std::lock_guard<std::mutex> lock(mutex_);
     refresh_locked(false);
+    if (lifetime_charged)
+      return materialization_allowed_locked(0, 0, /*allow_at_limit=*/true);
     const auto rss = projection.rss.for_epoch(rss_epoch_);
     const auto native = projection.native.for_epoch(native_epoch_);
     assert(rss.bytes <= mapping_bytes && native.bytes <= mapping_bytes);
