@@ -7,17 +7,6 @@ set(INVERTED_BENCH_HELPER_SRCS
 )
 
 cc_binary(
-    NAME inverted_array_bench PACKED
-    SRCS
-        array_numeric_cases/main.cc
-        array_numeric_cases/array_numeric_cases.cc
-        ${INVERTED_BENCH_HELPER_SRCS}
-    LIBS zvec zvec_ailego gflags roaring rocksdb
-    INCS . ${PROJECT_SOURCE_DIR}/src
-    LDFLAGS ${APPLE_FRAMEWORK_LIBS}
-)
-
-cc_binary(
     NAME inverted_numeric_bench PACKED
     SRCS
         numeric_cases/main.cc
@@ -31,8 +20,6 @@ cc_binary(
 cc_gtest(
     NAME inverted_bench_test
     SRCS
-        array_numeric_cases/array_numeric_cases.cc
-        array_numeric_cases/array_numeric_cases_test.cc
         numeric_cases/numeric_cases.cc
         numeric_cases/numeric_cases_test.cc
         shared/helpers_test.cc

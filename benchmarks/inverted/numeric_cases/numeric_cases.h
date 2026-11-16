@@ -19,53 +19,42 @@
 namespace zvec::benchmarks::inverted {
 
 
-enum class NumericDistribution { UNIFORM, HOTSPOT };
 enum class NumericDocCount : uint32_t {
-  // 100,000 documents, including NULLs.
   ONE_HUNDRED_THOUSAND = 100000,
-  // 10,000,000 documents, including NULLs.
-  TEN_MILLION = 10000000,
+  TEN_MILLION = 10000000
 };
-enum class NumericValueRange { ZERO_TO_TYPE_MAX, ZERO_TO_30000 };
-enum class NumericValueOrder { SHUFFLED, ASCENDING };
+enum class NumericDistribution { UNIFORM, HOTSPOT_MODERATE, HOTSPOT_EXTREME };
+enum class NumericValueRange { ZERO_TO_30000, ZERO_TO_TYPE_MAX };
+enum class NumericValueOrder { ASCENDING, SHUFFLED };
 enum class NumericNullRatio { NONE, TEN_PERCENT, FIFTY_PERCENT };
 
 
 struct NumericProfile {
   explicit NumericProfile(DataType type) : data_type(type) {}
 
-  // Indexed data type; explicitly choose INT32 or INT64.
+  // Indexed data type.
   DataType data_type;
-  // Total document count, including NULLs: 100,000 or 10,000,000.
+  // Total document count, including NULLs.
   NumericDocCount num_docs{NumericDocCount::ONE_HUNDRED_THOUSAND};
   // Value frequency distribution among non-NULL documents.
   NumericDistribution distribution{NumericDistribution::UNIFORM};
-  // Inclusive nonnegative domain: [0, type maximum] or [0, 30000].
+  // Inclusive nonnegative domain.
   NumericValueRange value_range{NumericValueRange::ZERO_TO_30000};
-  // Non-NULL value order by doc ID; NULL positions stay unchanged.
-  NumericValueOrder value_order{NumericValueOrder::SHUFFLED};
-  // NULL fraction: none, 10%, or 50% of all documents.
-  NumericNullRatio null_ratio{NumericNullRatio::TEN_PERCENT};
-  // HOTSPOT only: number of distinct values in the hot set.
-  uint32_t hot_value_count{100};
-  // HOTSPOT only: fraction of non-NULL documents on hot values.
-  double hot_doc_ratio{0.8};
+  // Value order by doc ID.
+  NumericValueOrder value_order{NumericValueOrder::ASCENDING};
+  // NULL fraction of all documents.
+  NumericNullRatio null_ratio{NumericNullRatio::NONE};
 };
 
-// CLI preset/JSON adapters; generation and queries use the typed profile.
-NumericProfile ResolveNumericProfile(DataType type, const std::string &preset,
-                                     const JsonObject &overrides = {});
-JsonObject NumericCatalog(DataType type, const std::string &preset = "",
-                          const JsonObject &overrides = {});
+// Describe one validated profile and its applicable query cases.
+JsonObject DescribeNumericProfile(const NumericProfile &profile);
 
-// Workers share run_dir/{index,build.json,verify.json}. The caller saves each
-// returned report; verification and timing restore the profile from build.json.
+// Workers share run_dir/{index,build.json,verify.json,query.json}. The caller
+// saves each report; verify and query restore the workload and run all cases.
 JsonObject BuildNumeric(const NumericProfile &profile,
                         const std::string &run_dir);
-JsonObject VerifyNumeric(const std::string &run_dir,
-                         const std::string &case_filter = "");
-JsonObject QueryNumeric(const std::string &run_dir,
-                        const std::string &case_name);
+JsonObject VerifyNumeric(const std::string &run_dir);
+JsonObject QueryNumeric(const std::string &run_dir);
 
 
 }  // namespace zvec::benchmarks::inverted

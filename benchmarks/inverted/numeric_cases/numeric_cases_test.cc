@@ -12,7 +12,6 @@
 #include "numeric_cases.h"
 #include <algorithm>
 #include <filesystem>
-#include <limits>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -102,7 +101,18 @@ TEST(InvertedBenchmarkNumeric,
     for (const auto range : {NumericValueRange::ZERO_TO_TYPE_MAX,
                              NumericValueRange::ZERO_TO_30000}) {
       for (const auto distribution :
-           {NumericDistribution::UNIFORM, NumericDistribution::HOTSPOT}) {
+           {NumericDistribution::UNIFORM, NumericDistribution::HOTSPOT_MODERATE,
+            NumericDistribution::HOTSPOT_EXTREME}) {
+        const uint32_t hot_value_count =
+            distribution == NumericDistribution::UNIFORM
+                ? 0
+                : (distribution == NumericDistribution::HOTSPOT_MODERATE ? 3000
+                                                                         : 300);
+        const uint32_t hot_percent =
+            distribution == NumericDistribution::UNIFORM
+                ? 0
+                : (distribution == NumericDistribution::HOTSPOT_MODERATE ? 50
+                                                                         : 90);
         for (const auto null_ratio :
              {NumericNullRatio::NONE, NumericNullRatio::TEN_PERCENT,
               NumericNullRatio::FIFTY_PERCENT}) {
@@ -112,7 +122,6 @@ TEST(InvertedBenchmarkNumeric,
           profile.value_range = range;
           profile.distribution = distribution;
           profile.null_ratio = null_ratio;
-          profile.hot_value_count = 7;
           const uint32_t null_count =
               null_ratio == NumericNullRatio::NONE
                   ? 0
@@ -152,9 +161,16 @@ TEST(InvertedBenchmarkNumeric,
               hot.push_back(value.as_integer());
             EXPECT_TRUE(std::is_sorted(hot.begin(), hot.end()));
             EXPECT_EQ(std::adjacent_find(hot.begin(), hot.end()), hot.end());
-            EXPECT_EQ(hot.size(), distribution == NumericDistribution::HOTSPOT
-                                      ? profile.hot_value_count
-                                      : 0);
+            EXPECT_EQ(hot.size(), hot_value_count);
+            if (distribution == NumericDistribution::UNIFORM) {
+              EXPECT_TRUE(description["hot_value_count"].is_null());
+              EXPECT_TRUE(description["hot_doc_ratio"].is_null());
+            } else {
+              EXPECT_EQ(Number(description, "hot_value_count"),
+                        hot_value_count);
+              EXPECT_DOUBLE_EQ(description["hot_doc_ratio"].as_float(),
+                               hot_percent / 100.0);
+            }
             uint64_t hot_docs = 0;
             {
               IndexFixture index(type, (path / "index").string(), true);
@@ -167,9 +183,8 @@ TEST(InvertedBenchmarkNumeric,
                 hot_docs += result->count();
               }
             }
-            EXPECT_EQ(hot_docs, distribution == NumericDistribution::HOTSPOT
-                                    ? static_cast<uint64_t>(nonnull) * 4 / 5
-                                    : 0);
+            EXPECT_EQ(hot_docs,
+                      static_cast<uint64_t>(nonnull) * hot_percent / 100);
             EXPECT_EQ(Number(stats, "hot_doc_count"), hot_docs);
             // Wide-range sampling must not truncate to 32 bits or double's
             // exact integer range, nor enumerate a small prefix of the domain.
@@ -229,7 +244,8 @@ TEST(InvertedBenchmarkNumeric,
 TEST(InvertedBenchmarkNumeric, SmallRangeTypesShareLogicalDataAndIdResults) {
   test::TemporaryDirectory directory;
   for (const auto distribution :
-       {NumericDistribution::UNIFORM, NumericDistribution::HOTSPOT}) {
+       {NumericDistribution::UNIFORM, NumericDistribution::HOTSPOT_MODERATE,
+        NumericDistribution::HOTSPOT_EXTREME}) {
     JsonObject previous_build, previous_verify;
     for (const auto type : {DataType::INT32, DataType::INT64}) {
       NumericProfile profile(type);
@@ -252,25 +268,8 @@ TEST(InvertedBenchmarkNumeric, SmallRangeTypesShareLogicalDataAndIdResults) {
   }
 }
 
-TEST(InvertedBenchmarkNumeric, NearlyFullHotSetKeepsColdValuesDisjoint) {
-  test::TemporaryDirectory directory;
-  NumericProfile profile(DataType::INT64);
-  profile.distribution = NumericDistribution::HOTSPOT;
-  profile.hot_value_count = 30000;
-  profile.null_ratio = NumericNullRatio::NONE;
-  JsonObject build;
-  const auto verified = BuildAndVerify(profile, directory.path(), &build);
-  const auto stats = build["dataset"].as_object()["stats"].as_object();
-  const auto hot = stats["hot_values"].as_array();
-  ASSERT_EQ(hot.size(), 30000);
-  EXPECT_EQ(Number(stats, "hot_doc_count"), 80000);
-  const auto cold = NamedRecord(verified["cases"].as_array(), "eq_cold");
-  const auto counts = cold["counts"].as_array();
-  ASSERT_FALSE(counts.empty());
-  for (const auto &count : counts) EXPECT_EQ(count.as_integer(), 20000);
-}
-
-TEST(InvertedBenchmarkNumeric, DocumentCountPresetsRoundTripWithoutBuilding) {
+TEST(InvertedBenchmarkNumeric,
+     DocumentCountPresetsAreDescribedWithoutBuilding) {
   EXPECT_EQ(NumericProfile(DataType::INT64).num_docs,
             NumericDocCount::ONE_HUNDRED_THOUSAND);
   for (const auto type : {DataType::INT32, DataType::INT64}) {
@@ -278,22 +277,15 @@ TEST(InvertedBenchmarkNumeric, DocumentCountPresetsRoundTripWithoutBuilding) {
          std::vector<std::pair<NumericDocCount, uint32_t>>{
              {NumericDocCount::ONE_HUNDRED_THOUSAND, 100000},
              {NumericDocCount::TEN_MILLION, 10000000}}) {
-      JsonObject overrides;
-      overrides.set("num_docs", JsonValue(count));
-      EXPECT_EQ(ResolveNumericProfile(type, "uniform", overrides).num_docs,
-                preset);
-      const auto catalog = NumericCatalog(type, "uniform", overrides);
-      const auto profiles = catalog["profiles"].as_array();
-      ASSERT_EQ(profiles.size(), 1);
-      EXPECT_EQ(Number(profiles[0].as_object(), "num_docs"), count);
+      NumericProfile profile(type);
+      profile.num_docs = preset;
+      EXPECT_EQ(Number(DescribeNumericProfile(profile), "num_docs"), count);
     }
   }
-  for (int64_t count : {INT64_C(-1), INT64_C(0), INT64_C(1), INT64_C(257),
-                        INT64_C(1234), INT64_C(100001), INT64_C(10000001)}) {
-    JsonObject overrides;
-    overrides.set("num_docs", JsonValue(count));
-    EXPECT_THROW(ResolveNumericProfile(DataType::INT64, "uniform", overrides),
-                 std::invalid_argument)
+  for (uint32_t count : {0U, 1U, 257U, 1234U, 100001U, 10000001U, UINT32_MAX}) {
+    NumericProfile profile(DataType::INT64);
+    profile.num_docs = static_cast<NumericDocCount>(count);
+    EXPECT_THROW(DescribeNumericProfile(profile), std::invalid_argument)
         << count;
   }
 }
@@ -346,7 +338,7 @@ TEST(InvertedBenchmarkNumeric, SameCountsWithDifferentIdsAreRejected) {
   }
   build["index_path"] = JsonStringValue((rotated / "index").string());
   WriteJson((rotated / "build.json").string(), build);
-  EXPECT_THROW(VerifyNumeric(rotated.string(), "eq_hit"), std::runtime_error);
+  EXPECT_THROW(VerifyNumeric(rotated.string()), std::runtime_error);
 }
 
 TEST(InvertedBenchmarkNumeric, QueryRejectsCorruptedVerificationCounts) {
@@ -364,36 +356,102 @@ TEST(InvertedBenchmarkNumeric, QueryRejectsCorruptedVerificationCounts) {
   }
   verified["cases"] = cases;
   WriteJson((directory.path() / "verify.json").string(), verified);
-  EXPECT_THROW(QueryNumeric(directory.path().string(), "eq_hit"),
-               std::runtime_error);
+  EXPECT_THROW(QueryNumeric(directory.path().string()), std::runtime_error);
 }
 
-TEST(InvertedBenchmarkNumeric, RejectsInvalidSavedTypeSeedAndDocumentCount) {
+TEST(InvertedBenchmarkNumeric, QueryMeasuresEveryWorkloadCase) {
+  test::TemporaryDirectory directory;
+  NumericProfile profile(DataType::INT32);
+  profile.null_ratio = NumericNullRatio::TEN_PERCENT;
+  JsonObject build;
+  const auto verified = BuildAndVerify(profile, directory.path(), &build);
+  const auto measured = QueryNumeric(directory.path().string());
+  const auto fingerprint =
+      Text(build["dataset"].as_object(), "data_fingerprint");
+  EXPECT_EQ(Text(measured, "phase"), "query");
+  EXPECT_EQ(Text(measured, "data_fingerprint"), fingerprint);
+  const auto cases = measured["cases"].as_array();
+  std::vector<std::string> names;
+  for (const auto &value : cases) {
+    const auto query = value.as_object();
+    const auto name = Text(query, "case");
+    SCOPED_TRACE(name);
+    names.push_back(name);
+    const auto expected = NamedRecord(verified["cases"].as_array(), name);
+    EXPECT_EQ(Text(query, "data_fingerprint"), fingerprint);
+    EXPECT_EQ(Text(query, "query_fingerprint"),
+              Text(expected, "query_fingerprint"));
+    EXPECT_EQ(JsonText(query["match_counts"]), JsonText(expected["counts"]));
+    EXPECT_GT(Number(query, "completed_queries"), 0);
+    EXPECT_GT(query["elapsed_seconds"].as_float(), 0);
+    EXPECT_GT(query["qps"].as_float(), 0);
+    EXPECT_FALSE(query["metric_names"].as_array().empty());
+  }
+  std::sort(names.begin(), names.end());
+  const std::vector<std::string> expected_names{
+      "eq_hit", "eq_miss", "ge_q50", "is_not_null", "is_null",
+      "lt_q01", "lt_q50",  "lt_q90", "ne_hit"};
+  EXPECT_EQ(names, expected_names);
+}
+
+TEST(InvertedBenchmarkNumeric, QueryRequiresVerificationForEveryCase) {
+  test::TemporaryDirectory directory;
+  NumericProfile profile(DataType::INT64);
+  const auto verified = BuildAndVerify(profile, directory.path());
+  const auto original_cases = verified["cases"].as_array();
+  ASSERT_GT(original_cases.size(), 1);
+
+  // Remove the final case: earlier cases must not make a partial verification
+  // sufficient for a full query run.
+  auto incomplete = verified;
+  JsonArray cases;
+  for (size_t i = 0; i + 1 < original_cases.size(); ++i)
+    cases.push(original_cases[i]);
+  incomplete["cases"] = cases;
+  WriteJson((directory.path() / "verify.json").string(), incomplete);
+  EXPECT_THROW(QueryNumeric(directory.path().string()), std::invalid_argument);
+
+  auto mismatched = verified;
+  cases = original_cases;
+  auto last = cases[cases.size() - 1].as_object();
+  last["query_fingerprint"] = JsonStringValue("different-query");
+  cases[cases.size() - 1] = last;
+  mismatched["cases"] = cases;
+  WriteJson((directory.path() / "verify.json").string(), mismatched);
+  EXPECT_THROW(QueryNumeric(directory.path().string()), std::invalid_argument);
+}
+
+TEST(InvertedBenchmarkNumeric, RejectsInvalidSavedProfile) {
   test::TemporaryDirectory directory;
   NumericProfile profile(DataType::INT32);
   JsonObject build;
   BuildAndVerify(profile, directory.path(), &build);
-  auto description = build["dataset"].as_object();
-  description["type"] = JsonStringValue("array_int32");
-  build["dataset"] = description;
-  WriteJson((directory.path() / "build.json").string(), build);
-  EXPECT_THROW(VerifyNumeric(directory.path().string()), std::invalid_argument);
-  EXPECT_THROW(QueryNumeric(directory.path().string(), "eq_hit"),
-               std::invalid_argument);
-  description["type"] = JsonStringValue("int32");
-  description["seed"] = JsonValue(20261116);
-  build["dataset"] = description;
-  WriteJson((directory.path() / "build.json").string(), build);
-  EXPECT_THROW(VerifyNumeric(directory.path().string()), std::invalid_argument);
-  EXPECT_THROW(QueryNumeric(directory.path().string(), "eq_hit"),
-               std::invalid_argument);
-  description["seed"] = JsonValue(20261115);
-  description["num_docs"] = JsonValue(1234);
-  build["dataset"] = description;
-  WriteJson((directory.path() / "build.json").string(), build);
-  EXPECT_THROW(VerifyNumeric(directory.path().string()), std::invalid_argument);
-  EXPECT_THROW(QueryNumeric(directory.path().string(), "eq_hit"),
-               std::invalid_argument);
+  const auto original = build["dataset"].as_object();
+  for (const auto &[key, value] :
+       std::vector<std::pair<std::string, JsonValue>>{
+           {"type", JsonStringValue("array_int32")},
+           {"seed", JsonValue(20261116)},
+           {"num_docs", JsonValue(1234)},
+           {"num_docs", JsonValue(-1)},
+           {"num_docs", JsonValue(1.5)},
+           {"num_docs", JsonValue(static_cast<int64_t>(UINT32_MAX) + 1)},
+           {"distribution", JsonStringValue("hotspot")},
+           {"distribution", JsonValue()},
+           {"value_range", JsonStringValue("unknown")},
+           {"value_order", JsonStringValue("descending")},
+           {"null_ratio", JsonValue(0.25)},
+           {"null_ratio", JsonStringValue("0.1")},
+           {"null_ratio", JsonValue()}}) {
+    SCOPED_TRACE(key + ": " + JsonText(value));
+    auto description = original;
+    description[key.c_str()] = value;
+    build["dataset"] = description;
+    WriteJson((directory.path() / "build.json").string(), build);
+    EXPECT_THROW(VerifyNumeric(directory.path().string()),
+                 std::invalid_argument);
+    EXPECT_THROW(QueryNumeric(directory.path().string()),
+                 std::invalid_argument);
+  }
 }
 
 TEST(InvertedBenchmarkNumeric, RejectsInvalidProfilesBeforeCreatingIndex) {
@@ -401,6 +459,7 @@ TEST(InvertedBenchmarkNumeric, RejectsInvalidProfilesBeforeCreatingIndex) {
   const auto path = (directory.path() / "invalid").string();
   NumericProfile defaults(DataType::INT32);
   const auto rejects = [&](const NumericProfile &profile) {
+    EXPECT_THROW(DescribeNumericProfile(profile), std::invalid_argument);
     EXPECT_THROW(BuildNumeric(profile, path), std::invalid_argument);
     EXPECT_FALSE(
         std::filesystem::exists(std::filesystem::path(path) / "index"));
@@ -425,74 +484,67 @@ TEST(InvertedBenchmarkNumeric, RejectsInvalidProfilesBeforeCreatingIndex) {
   profile = defaults;
   profile.null_ratio = static_cast<NumericNullRatio>(-1);
   rejects(profile);
-  profile = defaults;
-  profile.distribution = NumericDistribution::HOTSPOT;
-  profile.hot_value_count = 0;
-  rejects(profile);
-  profile.hot_value_count = 30001;
-  rejects(profile);
-  profile.hot_value_count = 100;
-  for (double value : {0.0, 1.0, std::numeric_limits<double>::infinity(),
-                       std::numeric_limits<double>::quiet_NaN()}) {
-    profile.hot_doc_ratio = value;
-    rejects(profile);
-  }
   EXPECT_NO_THROW(BuildAndVerify(defaults, path));
   EXPECT_THROW(BuildNumeric(defaults, path), std::invalid_argument);
 }
 
-TEST(InvertedBenchmarkNumeric,
-     PresetsResolveNewFieldsAndRejectRemovedConfiguration) {
-  JsonObject overrides;
-  overrides.set("num_docs", JsonValue(100000));
-  overrides.set("value_range", JsonStringValue("zero_to_type_max"));
-  overrides.set("value_order", JsonStringValue("ascending"));
-  overrides.set("null_ratio", JsonValue(0.5));
-  overrides.set("hot_value_count", JsonValue(7));
-  const auto profile =
-      ResolveNumericProfile(DataType::INT64, "hotspot", overrides);
-  EXPECT_EQ(profile.data_type, DataType::INT64);
-  EXPECT_EQ(profile.num_docs, NumericDocCount::ONE_HUNDRED_THOUSAND);
-  EXPECT_EQ(profile.distribution, NumericDistribution::HOTSPOT);
-  EXPECT_EQ(profile.value_range, NumericValueRange::ZERO_TO_TYPE_MAX);
-  EXPECT_EQ(profile.value_order, NumericValueOrder::ASCENDING);
-  EXPECT_EQ(profile.null_ratio, NumericNullRatio::FIFTY_PERCENT);
-  EXPECT_EQ(profile.hot_value_count, 7);
-  for (const auto &[key, value] :
-       std::vector<std::pair<std::string, JsonValue>>{
-           {"num_docs", JsonValue(0)},
-           {"num_docs", JsonValue(1.5)},
-           {"num_docs", JsonValue(static_cast<int64_t>(UINT32_MAX) + 1)},
-           {"cardinality", JsonValue(100)},
-           {"value_min", JsonValue(0)},
-           {"zipf_exponent", JsonValue(1.0)},
-           {"hot_key_ratio", JsonValue(0.1)},
-           {"distribution", JsonStringValue("zipf")},
-           {"value_range", JsonStringValue("unknown")},
-           {"value_order", JsonStringValue("unknown")},
-           {"null_ratio", JsonValue(0.25)},
-           {"null_ratio", JsonValue(1.0)},
-           {"hot_value_count", JsonValue(1.5)},
-           {"hot_value_count",
-            JsonValue(static_cast<int64_t>(UINT32_MAX) + 1)}}) {
-    JsonObject invalid;
-    invalid.set(key.c_str(), value);
-    EXPECT_THROW(NumericCatalog(DataType::INT32, "uniform", invalid),
-                 std::invalid_argument)
-        << key;
+TEST(InvertedBenchmarkNumeric, DescriptionIncludesTypedWorkloadAndAllCases) {
+  for (const auto type : {DataType::INT32, DataType::INT64}) {
+    for (const auto &[name, distribution] :
+         std::vector<std::pair<std::string, NumericDistribution>>{
+             {"uniform", NumericDistribution::UNIFORM},
+             {"hotspot_moderate", NumericDistribution::HOTSPOT_MODERATE},
+             {"hotspot_extreme", NumericDistribution::HOTSPOT_EXTREME}}) {
+      SCOPED_TRACE(name);
+      NumericProfile profile(type);
+      profile.num_docs = NumericDocCount::TEN_MILLION;
+      profile.distribution = distribution;
+      profile.value_range = NumericValueRange::ZERO_TO_TYPE_MAX;
+      profile.value_order = NumericValueOrder::SHUFFLED;
+      profile.null_ratio = NumericNullRatio::FIFTY_PERCENT;
+      const auto description = DescribeNumericProfile(profile);
+      EXPECT_EQ(Text(description, "name"), name);
+      EXPECT_EQ(Text(description, "distribution"), name);
+      EXPECT_EQ(Text(description, "type"),
+                type == DataType::INT32 ? "int32" : "int64");
+      EXPECT_EQ(Number(description, "num_docs"), 10000000);
+      EXPECT_EQ(Text(description, "value_range"), "0_to_type_max");
+      EXPECT_EQ(description["value_min"].as_integer(), 0);
+      EXPECT_EQ(description["value_max"].as_integer(),
+                type == DataType::INT32 ? INT32_MAX : INT64_MAX);
+      EXPECT_EQ(Text(description, "value_order"), "shuffled");
+      EXPECT_DOUBLE_EQ(description["null_ratio"].as_float(), 0.5);
+      EXPECT_FALSE(description["supplemental"].as_bool());
+      const bool uniform = distribution == NumericDistribution::UNIFORM;
+      if (uniform) {
+        EXPECT_TRUE(description["hot_value_count"].is_null());
+        EXPECT_TRUE(description["hot_doc_ratio"].is_null());
+      } else {
+        const bool moderate =
+            distribution == NumericDistribution::HOTSPOT_MODERATE;
+        EXPECT_EQ(Number(description, "hot_value_count"),
+                  moderate ? 3000 : 300);
+        EXPECT_DOUBLE_EQ(description["hot_doc_ratio"].as_float(),
+                         moderate ? 0.5 : 0.9);
+      }
+      std::vector<std::string> cases;
+      const auto case_names = description["cases"].as_array();
+      for (const auto &value : case_names)
+        cases.push_back(JsonStringText(value));
+      std::vector<std::string> expected{"eq_miss", "ne_hit",     "lt_q01",
+                                        "lt_q50",  "lt_q90",     "ge_q50",
+                                        "is_null", "is_not_null"};
+      if (uniform) {
+        expected.push_back("eq_hit");
+      } else {
+        expected.push_back("eq_hot");
+        expected.push_back("eq_cold");
+      }
+      std::sort(cases.begin(), cases.end());
+      std::sort(expected.begin(), expected.end());
+      EXPECT_EQ(cases, expected);
+    }
   }
-  EXPECT_THROW(NumericCatalog(DataType::ARRAY_INT32), std::invalid_argument);
-  EXPECT_THROW(ResolveNumericProfile(DataType::INT32, "zipf_k10000"),
-               std::invalid_argument);
-  JsonObject conflicting;
-  conflicting.set("distribution", JsonStringValue("hotspot"));
-  EXPECT_THROW(ResolveNumericProfile(DataType::INT32, "uniform", conflicting),
-               std::invalid_argument);
-  const auto catalog = NumericCatalog(DataType::INT32);
-  const auto profiles = catalog["profiles"].as_array();
-  ASSERT_EQ(profiles.size(), 2);
-  EXPECT_EQ(Text(profiles[0].as_object(), "name"), "uniform");
-  EXPECT_EQ(Text(profiles[1].as_object(), "name"), "hotspot");
 }
 
 }  // namespace

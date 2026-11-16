@@ -60,31 +60,51 @@ std::string DistributionName(NumericDistribution distribution) {
   switch (distribution) {
     case NumericDistribution::UNIFORM:
       return "uniform";
-    case NumericDistribution::HOTSPOT:
-      return "hotspot";
+    case NumericDistribution::HOTSPOT_MODERATE:
+      return "hotspot_moderate";
+    case NumericDistribution::HOTSPOT_EXTREME:
+      return "hotspot_extreme";
   }
   throw std::invalid_argument("Unknown numeric distribution");
 }
 
 NumericDistribution ParseDistribution(const std::string &name) {
   if (name == "uniform") return NumericDistribution::UNIFORM;
-  if (name == "hotspot") return NumericDistribution::HOTSPOT;
+  if (name == "hotspot_moderate") return NumericDistribution::HOTSPOT_MODERATE;
+  if (name == "hotspot_extreme") return NumericDistribution::HOTSPOT_EXTREME;
   throw std::invalid_argument("Unknown numeric distribution: " + name);
+}
+
+struct HotspotPreset {
+  uint32_t value_count;
+  uint32_t doc_percent;  // Percentage of non-NULL documents on hot values.
+};
+
+HotspotPreset HotspotFor(NumericDistribution distribution) {
+  switch (distribution) {
+    case NumericDistribution::UNIFORM:
+      return {0, 0};
+    case NumericDistribution::HOTSPOT_MODERATE:
+      return {3000, 50};
+    case NumericDistribution::HOTSPOT_EXTREME:
+      return {300, 90};
+  }
+  throw std::invalid_argument("Unknown numeric distribution");
 }
 
 std::string RangeName(NumericValueRange range) {
   switch (range) {
     case NumericValueRange::ZERO_TO_TYPE_MAX:
-      return "zero_to_type_max";
+      return "0_to_type_max";
     case NumericValueRange::ZERO_TO_30000:
-      return "zero_to_30000";
+      return "0_to_30000";
   }
   throw std::invalid_argument("Unknown numeric value range");
 }
 
 NumericValueRange ParseRange(const std::string &name) {
-  if (name == "zero_to_type_max") return NumericValueRange::ZERO_TO_TYPE_MAX;
-  if (name == "zero_to_30000") return NumericValueRange::ZERO_TO_30000;
+  if (name == "0_to_type_max") return NumericValueRange::ZERO_TO_TYPE_MAX;
+  if (name == "0_to_30000") return NumericValueRange::ZERO_TO_30000;
   throw std::invalid_argument("Unknown numeric value range: " + name);
 }
 
@@ -165,11 +185,6 @@ struct NumericData {
   std::string fingerprint;
 };
 
-constexpr const char *kProfiles[]{"uniform", "hotspot"};
-constexpr const char *kProfileFields[]{
-    "num_docs",   "distribution",    "value_range",  "value_order",
-    "null_ratio", "hot_value_count", "hot_doc_ratio"};
-
 std::vector<std::string> CaseNames(const NumericProfile &profile) {
   std::vector<std::string> names =
       profile.distribution == NumericDistribution::UNIFORM
@@ -208,49 +223,6 @@ void ValidateProfile(const NumericProfile &profile) {
   if (profile.num_docs != NumericDocCount::ONE_HUNDRED_THOUSAND &&
       profile.num_docs != NumericDocCount::TEN_MILLION)
     throw std::invalid_argument("Numeric num_docs must be 100000 or 10000000");
-  if (!std::isfinite(profile.hot_doc_ratio))
-    throw std::invalid_argument("hot_doc_ratio must be finite");
-  if (profile.distribution == NumericDistribution::HOTSPOT &&
-      (!profile.hot_value_count ||
-       profile.hot_value_count >= DomainSize(profile) ||
-       !(profile.hot_doc_ratio > 0 && profile.hot_doc_ratio < 1)))
-    throw std::invalid_argument(
-        "Hotspot needs hot and cold values and a document ratio in (0, 1)");
-}
-
-// Decode CLI/report fields once; workload functions use NumericProfile
-// directly.
-void ApplyOverrides(NumericProfile *profile, const JsonObject &overrides) {
-  for (const auto &entry : overrides) {
-    const auto key = entry.key().decode().as_stl_string();
-    const auto value = entry.value();
-    if (key == "num_docs") {
-      profile->num_docs = static_cast<NumericDocCount>(Uint32(value, key));
-    } else if (key == "distribution") {
-      profile->distribution = ParseDistribution(JsonStringText(value));
-    } else if (key == "value_range") {
-      profile->value_range = ParseRange(JsonStringText(value));
-    } else if (key == "value_order") {
-      profile->value_order = ParseOrder(JsonStringText(value));
-    } else if (key == "null_ratio") {
-      const auto ratio = Real(value, key);
-      if (ratio == 0)
-        profile->null_ratio = NumericNullRatio::NONE;
-      else if (ratio == 0.1)
-        profile->null_ratio = NumericNullRatio::TEN_PERCENT;
-      else if (ratio == 0.5)
-        profile->null_ratio = NumericNullRatio::FIFTY_PERCENT;
-      else
-        throw std::invalid_argument(
-            "Numeric null_ratio must be 0, 0.1, or 0.5");
-    } else if (key == "hot_value_count") {
-      profile->hot_value_count = Uint32(value, key);
-    } else if (key == "hot_doc_ratio") {
-      profile->hot_doc_ratio = Real(value, key);
-    } else {
-      throw std::invalid_argument("Unknown numeric profile field: " + key);
-    }
-  }
 }
 
 JsonObject ProfileJson(const NumericProfile &profile) {
@@ -265,17 +237,31 @@ JsonObject ProfileJson(const NumericProfile &profile) {
   result.set("value_min", JsonValue(0));
   result.set("value_max", JsonValue(ValueMax(profile)));
   result.set("null_ratio", JsonValue(NullPercent(profile.null_ratio) / 100.0));
-  result.set("hot_value_count", JsonValue(profile.hot_value_count));
-  result.set("hot_doc_ratio", JsonValue(profile.hot_doc_ratio));
+  if (profile.distribution != NumericDistribution::UNIFORM) {
+    const auto hotspot = HotspotFor(profile.distribution);
+    result.set("hot_value_count", JsonValue(hotspot.value_count));
+    result.set("hot_doc_ratio", JsonValue(hotspot.doc_percent / 100.0));
+  }
   result.set("supplemental", JsonValue(false));
   return result;
 }
 
 NumericProfile ReadProfile(const JsonObject &description) {
   NumericProfile profile(ParseType(Text(description, "type")));
-  JsonObject fields;
-  for (const auto *key : kProfileFields) fields.set(key, description[key]);
-  ApplyOverrides(&profile, fields);
+  profile.num_docs =
+      static_cast<NumericDocCount>(Uint32(description["num_docs"], "num_docs"));
+  profile.distribution = ParseDistribution(Text(description, "distribution"));
+  profile.value_range = ParseRange(Text(description, "value_range"));
+  profile.value_order = ParseOrder(Text(description, "value_order"));
+  const auto ratio = Real(description["null_ratio"], "null_ratio");
+  if (ratio == 0)
+    profile.null_ratio = NumericNullRatio::NONE;
+  else if (ratio == 0.1)
+    profile.null_ratio = NumericNullRatio::TEN_PERCENT;
+  else if (ratio == 0.5)
+    profile.null_ratio = NumericNullRatio::FIFTY_PERCENT;
+  else
+    throw std::invalid_argument("Numeric null_ratio must be 0, 0.1, or 0.5");
   ValidateProfile(profile);
   if (Number(description, "seed") != kSeed)
     throw std::invalid_argument("Numeric dataset uses a different fixed seed");
@@ -295,13 +281,14 @@ std::string DatasetFingerprint(const NumericData &dataset) {
   return fingerprint.Finish();
 }
 
-std::vector<int64_t> SelectHotValues(const NumericProfile &profile) {
+std::vector<int64_t> SelectHotValues(const NumericProfile &profile,
+                                     uint32_t count) {
   // Floyd's sampling without replacement takes one draw per selected value,
   // even when the hot set nearly fills the domain. No full-domain array.
   Random random(kSeed ^ 0xe7037ed1a0b428dbULL);
   std::set<int64_t> selected;
   const auto size = DomainSize(profile);
-  for (uint64_t last = size - profile.hot_value_count; last < size; ++last) {
+  for (uint64_t last = size - count; last < size; ++last) {
     const auto value = static_cast<int64_t>(random.bounded(last + 1));
     selected.insert(selected.count(value) ? static_cast<int64_t>(last) : value);
   }
@@ -333,19 +320,16 @@ NumericData GenerateDataset(const NumericProfile &profile) {
   if (dataset.null_count)
     Random(kSeed ^ 0xa0761d6478bd642fULL).shuffle(dataset.is_null);
   const auto nonnull = DocumentCount(profile) - dataset.null_count;
-  const bool hotspot = profile.distribution == NumericDistribution::HOTSPOT;
-  if (hotspot) dataset.hot_values = SelectHotValues(profile);
-  const uint64_t hot_rows =
-      !hotspot ? 0
-               : (profile.hot_doc_ratio == 0.8
-                      ? nonnull * 4 / 5
-                      : static_cast<uint64_t>(nonnull * profile.hot_doc_ratio));
+  const auto hotspot = HotspotFor(profile.distribution);
+  if (hotspot.value_count)
+    dataset.hot_values = SelectHotValues(profile, hotspot.value_count);
+  const uint64_t hot_rows = nonnull * hotspot.doc_percent / 100;
 
   // bounded() uses integer rejection sampling, including the full 2^63 domain.
   Random random(kSeed ^ 0x8ebc6af09c88c6e3ULL);
   std::vector<int64_t> values(nonnull);
   for (uint64_t i = 0; i < nonnull; ++i) {
-    if (!hotspot)
+    if (!hotspot.value_count)
       values[i] = random.bounded(DomainSize(profile));
     else if (i < hot_rows)
       values[i] = dataset.hot_values[random.bounded(dataset.hot_values.size())];
@@ -420,15 +404,8 @@ JsonArray SelectQueryInputs(const NumericData &dataset) {
   if (dataset.profile.distribution == NumericDistribution::UNIFORM) {
     points("eq_hit", observed);
   } else {
-    // Tiny workloads may round one group to zero documents; query its known
-    // values anyway and report the actual zero count rather than inventing
-    // hits.
-    points("eq_hot", hot.empty()
-                         ? std::vector<int64_t>{dataset.hot_values.front()}
-                         : hot);
-    points("eq_cold",
-           cold.empty() ? std::vector<int64_t>{ColdValue(0, dataset.hot_values)}
-                        : cold);
+    points("eq_hot", hot);
+    points("eq_cold", cold);
   }
   JsonArray misses;
   for (int64_t i = 1; i <= static_cast<int64_t>(kQueryPoolSize); ++i)
@@ -673,14 +650,12 @@ JsonObject Build(const NumericProfile &profile, const std::string &index_path) {
 
 template <typename T>
 JsonObject Verify(const NumericProfile &profile, const JsonObject &build,
-                  const std::string &index_path,
-                  const std::string &case_filter) {
+                  const std::string &index_path) {
   auto dataset = GenerateDataset<T>(profile);
   CheckRegenerated(build, dataset.fingerprint, SelectQueryInputs<T>(dataset));
   IndexFixture index(profile.data_type, index_path, true);
   JsonArray checked;
-  for (const auto &record :
-       SelectInputs(build["cases"].as_array(), case_filter))
+  for (const auto &record : SelectInputs(build["cases"].as_array(), ""))
     checked.push(ExecuteNumericCase<T>(index_path, record, &dataset,
                                        &index.column(), JsonObject()));
   auto result = Report("verify");
@@ -691,38 +666,12 @@ JsonObject Verify(const NumericProfile &profile, const JsonObject &build,
 }
 }  // namespace
 
-NumericProfile ResolveNumericProfile(DataType type, const std::string &preset,
-                                     const JsonObject &overrides) {
-  NumericProfile profile(type);
-  profile.distribution = ParseDistribution(preset);
-  ApplyOverrides(&profile, overrides);
-  if (profile.distribution != ParseDistribution(preset))
-    throw std::invalid_argument(
-        "Select the distribution with --profile, not a conflicting config "
-        "override");
+JsonObject DescribeNumericProfile(const NumericProfile &profile) {
   ValidateProfile(profile);
-  return profile;
-}
-
-JsonObject NumericCatalog(DataType type, const std::string &preset,
-                          const JsonObject &overrides) {
-  TypeName(type);
-  if (!preset.empty()) ParseDistribution(preset);
-  JsonObject result;
-  result.set("name", JsonStringValue("numeric"));
-  JsonArray profiles;
-  for (const auto *name : kProfiles) {
-    if (!preset.empty() && preset != name) continue;
-    const auto profile = ResolveNumericProfile(type, name, overrides);
-    auto record = ProfileJson(profile);
-    record["name"] = JsonStringValue(name);
-    JsonArray cases;
-    for (const auto &name : CaseNames(profile))
-      cases.push(JsonStringValue(name));
-    record.set("cases", cases);
-    profiles.push(record);
-  }
-  result.set("profiles", profiles);
+  auto result = ProfileJson(profile);
+  JsonArray cases;
+  for (const auto &name : CaseNames(profile)) cases.push(JsonStringValue(name));
+  result.set("cases", cases);
   return result;
 }
 
@@ -731,41 +680,50 @@ JsonObject BuildNumeric(const NumericProfile &profile,
   ValidateProfile(profile);
   const auto index_path = RunPath(run_dir, "index");
   if (std::filesystem::exists(index_path))
-    throw std::invalid_argument("Numeric build requires a new index directory");
+    throw std::invalid_argument(
+        "index directory already exists: '" + index_path +
+        "'\n  use a new --run_dir to start another run");
   if (profile.data_type == DataType::INT32)
     return Build<int32_t>(profile, index_path);
   return Build<int64_t>(profile, index_path);
 }
 
-JsonObject VerifyNumeric(const std::string &run_dir,
-                         const std::string &case_filter) {
+JsonObject VerifyNumeric(const std::string &run_dir) {
   const auto index_path = RunPath(run_dir, "index");
   const auto build = LoadBuild(RunPath(run_dir, "build.json"), index_path);
   const auto profile = ReadProfile(build["dataset"].as_object());
   if (profile.data_type == DataType::INT32)
-    return Verify<int32_t>(profile, build, index_path, case_filter);
-  return Verify<int64_t>(profile, build, index_path, case_filter);
+    return Verify<int32_t>(profile, build, index_path);
+  return Verify<int64_t>(profile, build, index_path);
 }
 
-JsonObject QueryNumeric(const std::string &run_dir,
-                        const std::string &case_name) {
+JsonObject QueryNumeric(const std::string &run_dir) {
   const auto index_path = RunPath(run_dir, "index");
   const auto build = LoadBuild(RunPath(run_dir, "build.json"), index_path);
   const auto profile = ReadProfile(build["dataset"].as_object());
-  const auto selected = SelectInputs(build["cases"].as_array(), case_name);
-  if (selected.size() != 1)
-    throw std::invalid_argument("query requires exactly one case");
-  const auto verified = LoadVerification(RunPath(run_dir, "verify.json"), build,
-                                         selected.front());
-  auto result = profile.data_type == DataType::INT32
-                    ? ExecuteNumericCase<int32_t>(index_path, selected.front(),
-                                                  nullptr, nullptr, verified,
-                                                  DocumentCount(profile))
-                    : ExecuteNumericCase<int64_t>(index_path, selected.front(),
-                                                  nullptr, nullptr, verified,
-                                                  DocumentCount(profile));
+  const auto inputs = SelectInputs(build["cases"].as_array(), "");
+  // Require successful verification of every case before starting measurement.
+  std::vector<JsonObject> verified;
+  for (const auto &record : inputs)
+    verified.push_back(
+        LoadVerification(RunPath(run_dir, "verify.json"), build, record));
+  JsonArray cases;
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    auto query = profile.data_type == DataType::INT32
+                     ? ExecuteNumericCase<int32_t>(
+                           index_path, inputs[i], nullptr, nullptr, verified[i],
+                           DocumentCount(profile))
+                     : ExecuteNumericCase<int64_t>(
+                           index_path, inputs[i], nullptr, nullptr, verified[i],
+                           DocumentCount(profile));
+    query.set("data_fingerprint",
+              build["dataset"].as_object()["data_fingerprint"]);
+    cases.push(query);
+  }
+  auto result = Report("query");
   result.set("data_fingerprint",
              build["dataset"].as_object()["data_fingerprint"]);
+  result.set("cases", cases);
   return result;
 }
 }  // namespace zvec::benchmarks::inverted
