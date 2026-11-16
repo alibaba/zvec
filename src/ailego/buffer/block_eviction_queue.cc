@@ -65,7 +65,6 @@ constexpr size_t kMaxSlabDataPages = kSlabBytes / kMinimumPageBytes - 1;
 constexpr size_t kQueueSmallBytes = 4096;
 constexpr size_t kQueueSlabBytes = 64UL << 10;
 constexpr size_t kQueueAlignment = alignof(std::max_align_t);
-thread_local MemoryLimitPool *active_background_pool = nullptr;
 
 static_assert(kQueueSmallBytes % kQueueAlignment == 0,
               "queue size classes must preserve maximum alignment");
@@ -2067,9 +2066,14 @@ void MemoryLimitPool::stop_background_evictor() {
 }
 
 void MemoryLimitPool::background_evict_loop() {
-  active_background_pool = this;
-  auto clear_background =
-      ScopeGuard::Make([] { active_background_pool = nullptr; });
+  {
+    std::lock_guard<std::mutex> lock(bg_identity_mutex_);
+    bg_identity_ = std::this_thread::get_id();
+  }
+  auto clear_background = ScopeGuard::Make([this] {
+    std::lock_guard<std::mutex> lock(bg_identity_mutex_);
+    bg_identity_ = {};
+  });
   using std::chrono::milliseconds;
   bool idle_progress = false;
   bool reclaim_to_low = false;
@@ -2226,7 +2230,12 @@ void MemoryLimitPool::background_evict_loop() {
 }
 
 bool MemoryLimitPool::refresh_residency_on_background_thread() {
-  if (active_background_pool != this) return false;
+  {
+    // Components can embed their own copy of the allocator implementation.
+    // The worker identity must live in their shared pool, not image-local TLS.
+    std::lock_guard<std::mutex> lock(bg_identity_mutex_);
+    if (bg_identity_ != std::this_thread::get_id()) return false;
+  }
   // A reclaimer can allocate through the pool after its own work expires an
   // earlier proof. It must sample directly instead of waiting for itself.
   const auto token = process_rss_.begin_resident_sample();

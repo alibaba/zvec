@@ -21,6 +21,12 @@ elseif(NOT WIN32 AND NOT IOS AND NOT ANDROID)
   )
 endif()
 
+if(TARGET cross_dso_buffer_pool_probe AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Check shared state even when component methods bind to their own image.
+  target_link_options(cross_dso_buffer_pool_probe PRIVATE
+    "-Wl,-Bsymbolic-functions")
+endif()
+
 foreach(CC_SRCS ${ALL_TEST_SRCS})
   get_filename_component(CC_TARGET ${CC_SRCS} NAME_WE)
   # io_uring is only enabled on Linux. Do not create an empty test binary on
@@ -44,5 +50,9 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     LIBS ${CC_TEST_LIBS}
     SRCS ${CC_SRCS}
   )
+  if(CC_TARGET STREQUAL "cross_dso_buffer_pool_test" AND
+     CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(${CC_TARGET} PRIVATE "-Wl,--export-dynamic")
+  endif()
   cc_test_suite(zvec_ailego ${CC_TARGET})
 endforeach()

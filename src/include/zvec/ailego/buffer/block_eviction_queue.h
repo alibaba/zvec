@@ -822,6 +822,8 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   std::condition_variable capacity_cv_;
 
   std::thread bg_thread_;
+  std::mutex bg_identity_mutex_;
+  std::thread::id bg_identity_{};
   std::atomic<bool> bg_running_{false};
   std::mutex bg_mutex_;
   std::condition_variable bg_cv_;
