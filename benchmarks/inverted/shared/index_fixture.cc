@@ -13,7 +13,7 @@
 
 namespace zvec::benchmarks::inverted {
 
-IndexFixture::IndexFixture(const TypeSuite &suite, const std::string &path,
+IndexFixture::IndexFixture(DataType data_type, const std::string &path,
                            bool read_only)
     : read_only_(read_only) {
   namespace fs = std::filesystem;
@@ -33,7 +33,7 @@ IndexFixture::IndexFixture(const TypeSuite &suite, const std::string &path,
       fs::create_directories(parent);
     }
   }
-  FieldSchema field{"value", suite.data_type, true,
+  FieldSchema field{"value", data_type, true,
                     std::make_shared<InvertIndexParams>()};
   index_ = InvertedIndexer::CreateAndOpen("inverted_benchmark", path,
                                           !read_only, {field}, read_only);
@@ -58,48 +58,6 @@ InvertedColumnIndexer &IndexFixture::column() {
     throw std::logic_error("Benchmark index is closed");
   }
   return *column_;
-}
-
-InvertedSearchResult::Ptr IndexFixture::Search(const QueryInput &query) const {
-  if (!column_) {
-    throw std::logic_error("Benchmark index is closed");
-  }
-  switch (query.op) {
-    case QueryOp::kEq:
-    case QueryOp::kNe:
-    case QueryOp::kLt:
-    case QueryOp::kGe: {
-      if (query.values.size() != 1) {
-        throw std::invalid_argument("Scalar query needs exactly one value");
-      }
-      CompareOp op = CompareOp::EQ;
-      if (query.op == QueryOp::kNe) op = CompareOp::NE;
-      if (query.op == QueryOp::kLt) op = CompareOp::LT;
-      if (query.op == QueryOp::kGe) op = CompareOp::GE;
-      return column_->search(query.values.front(), op);
-    }
-    case QueryOp::kAny:
-    case QueryOp::kAll:
-    case QueryOp::kNotAny:
-    case QueryOp::kNotAll: {
-      if (query.values.empty()) {
-        throw std::invalid_argument(
-            "Membership query needs at least one value");
-      }
-      CompareOp op = CompareOp::CONTAIN_ANY;
-      if (query.op == QueryOp::kAll) op = CompareOp::CONTAIN_ALL;
-      if (query.op == QueryOp::kNotAny) op = CompareOp::NOT_CONTAIN_ANY;
-      if (query.op == QueryOp::kNotAll) op = CompareOp::NOT_CONTAIN_ALL;
-      return column_->multi_search(query.values, op);
-    }
-    case QueryOp::kIsNull:
-      return column_->search_null();
-    case QueryOp::kIsNotNull:
-      return column_->search_non_null();
-    case QueryOp::kLengthEq:
-      return column_->search_array_len(query.length, CompareOp::EQ);
-  }
-  throw std::invalid_argument("Unsupported query operation");
 }
 
 void IndexFixture::Seal() {

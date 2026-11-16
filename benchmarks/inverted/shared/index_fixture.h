@@ -9,26 +9,27 @@
 
 #pragma once
 
-#include "metrics.h"
+#include <string>
+#include <zvec/db/type.h>
+#include "db/index/column/inverted_column/inverted_indexer.h"
 
 namespace zvec::benchmarks::inverted {
 
-struct RunOptions {
-  std::string type;
-  std::string profile;
-  uint32_t num_docs{100000};
-  uint64_t seed{20261115};
-  std::string index;
-  std::string manifest;
-  std::string verification;
-  std::string case_filter;
-  double warmup_seconds{0.2};
-  double measure_seconds{1.0};
-};
+class IndexFixture {
+ public:
+  IndexFixture(DataType data_type, const std::string &path, bool read_only);
+  ~IndexFixture();
+  IndexFixture(const IndexFixture &) = delete;
+  IndexFixture &operator=(const IndexFixture &) = delete;
 
-JsonObject Catalog();
-JsonObject RunBuild(const RunOptions &);
-JsonObject RunVerify(const RunOptions &);
-JsonObject RunQuery(const RunOptions &);
+  InvertedColumnIndexer &column();
+  void Seal();
+  void Close();
+
+ private:
+  bool read_only_;
+  InvertedIndexer::Ptr index_;
+  InvertedColumnIndexer::Ptr column_;
+};
 
 }  // namespace zvec::benchmarks::inverted

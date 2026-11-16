@@ -1,16 +1,28 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 
-set(INVERTED_BENCH_SRCS
-    int64_cases.cc
-    array_int32_cases.cc
-    index_fixture.cc
-    metrics.cc
-    runner.cc
+set(INVERTED_BENCH_HELPER_SRCS
+    shared/index_fixture.cc
+    shared/metrics.cc
+    shared/report_utils.cc
 )
 
 cc_binary(
-    NAME inverted_bench PACKED
-    SRCS inverted_bench_main.cc ${INVERTED_BENCH_SRCS}
+    NAME inverted_array_bench PACKED
+    SRCS
+        array_numeric_cases/main.cc
+        array_numeric_cases/array_numeric_cases.cc
+        ${INVERTED_BENCH_HELPER_SRCS}
+    LIBS zvec zvec_ailego gflags roaring rocksdb
+    INCS . ${PROJECT_SOURCE_DIR}/src
+    LDFLAGS ${APPLE_FRAMEWORK_LIBS}
+)
+
+cc_binary(
+    NAME inverted_numeric_bench PACKED
+    SRCS
+        numeric_cases/main.cc
+        numeric_cases/numeric_cases.cc
+        ${INVERTED_BENCH_HELPER_SRCS}
     LIBS zvec zvec_ailego gflags roaring rocksdb
     INCS . ${PROJECT_SOURCE_DIR}/src
     LDFLAGS ${APPLE_FRAMEWORK_LIBS}
@@ -18,7 +30,13 @@ cc_binary(
 
 cc_gtest(
     NAME inverted_bench_test
-    SRCS inverted_bench_test.cc ${INVERTED_BENCH_SRCS}
+    SRCS
+        array_numeric_cases/array_numeric_cases.cc
+        array_numeric_cases/array_numeric_cases_test.cc
+        numeric_cases/numeric_cases.cc
+        numeric_cases/numeric_cases_test.cc
+        shared/helpers_test.cc
+        ${INVERTED_BENCH_HELPER_SRCS}
     LIBS zvec zvec_ailego roaring rocksdb
     INCS . ${PROJECT_SOURCE_DIR}/src
     LDFLAGS ${APPLE_FRAMEWORK_LIBS}
