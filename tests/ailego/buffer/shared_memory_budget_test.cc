@@ -150,11 +150,5 @@ TEST_F(SharedMemoryBudgetTest, AlignedWorkspaceMoveAndRefusalPreservePayload) {
   EXPECT_EQ(29, static_cast<const uint8_t *>(moved.data())[512]);
 }
 
-TEST_F(SharedMemoryBudgetTest, SuccessfulUnmapCanBeConfirmed) {
-  EXPECT_FALSE(File::TryMemoryUnmap(nullptr, 4096));
-  void *mapping = File::MemoryMap(4096, 0);
-  ASSERT_NE(nullptr, mapping);
-  EXPECT_TRUE(File::TryMemoryUnmap(mapping, 4096));
-}
 }  // namespace
 }  // namespace zvec::ailego

@@ -186,5 +186,87 @@ TEST(ProcessRssBudgetTest, ReuseAndNewBackingShareMeasuredRoomBetweenSamples) {
     EXPECT_TRUE(budget.try_materialize(8 * kMiB));
   }
 }
+
+class ResidentSamplePublishTest : public testing::Test {
+ protected:
+  void SetUp() override {
+    sampled_rss = 64 * kMiB;
+    ASSERT_TRUE(budget.configure(512 * kMiB, ReadRss));
+    ASSERT_TRUE(budget.try_acquire(256 * kMiB));
+    sampled_rss = 320 * kMiB;
+    budget.refresh(true);
+    ASSERT_TRUE(budget.try_acquire(32 * kMiB));  // Untouched owner.
+    budget.release(128 * kMiB);
+    ASSERT_TRUE(budget.try_acquire(128 * kMiB));
+    budget.release(8 * kMiB);
+    ASSERT_TRUE(budget.try_acquire(8 * kMiB));
+    ASSERT_TRUE(budget.pressure());
+  }
+  ProcessRssBudget budget;
+};
+
+TEST_F(ResidentSamplePublishTest, FreshProofRetainsUntouchedAndInFlightDebits) {
+  auto token = budget.begin_resident_sample();
+  ASSERT_TRUE(budget.try_reserve(8 * kMiB));
+  ASSERT_TRUE(
+      budget.publish_resident_sample(token, {sampled_rss.load(), 256 * kMiB}));
+  EXPECT_FALSE(budget.pressure());
+  EXPECT_EQ(144 * kMiB, budget.available());
+  budget.finish_reservation(8 * kMiB, false);
+  token = budget.begin_resident_sample();
+  ASSERT_TRUE(
+      budget.publish_resident_sample(token, {sampled_rss.load(), 256 * kMiB}));
+  EXPECT_EQ(160 * kMiB, budget.available());
+  EXPECT_FALSE(budget.try_acquire(161 * kMiB));
+}
+
+TEST_F(ResidentSamplePublishTest,
+       RetiredWitnessCannotCoverUntouchedReplacement) {
+  const auto token = budget.begin_resident_sample();
+  budget.release(64 * kMiB);
+  budget.account(64 * kMiB);  // A mandatory, still untouched replacement.
+  ASSERT_TRUE(
+      budget.publish_resident_sample(token, {sampled_rss.load(), 256 * kMiB}));
+  EXPECT_EQ(96 * kMiB, budget.available());
+  EXPECT_FALSE(budget.try_acquire(97 * kMiB));
+}
+
+TEST_F(ResidentSamplePublishTest, CancelledPendingMappingInvalidatesOldProof) {
+  const auto token = budget.begin_resident_sample();
+  ASSERT_TRUE(budget.account_pending(64 * kMiB));
+  budget.finish_reservation(64 * kMiB, false);
+  ASSERT_TRUE(
+      budget.publish_resident_sample(token, {sampled_rss.load(), 256 * kMiB}));
+  EXPECT_EQ(96 * kMiB, budget.available());
+}
+
+TEST_F(ResidentSamplePublishTest,
+       UnsampledMappingRetirementStillInvalidatesProof) {
+  const auto token = budget.begin_resident_sample();
+  ASSERT_TRUE(budget.try_reserve(8 * kMiB));
+  const auto stamp = budget.finish_reservation(8 * kMiB, true);
+  sampled_rss = 328 * kMiB;
+  budget.release_unmapped(8 * kMiB, stamp);
+  ASSERT_TRUE(
+      budget.publish_resident_sample(token, {sampled_rss.load(), 264 * kMiB}));
+  EXPECT_EQ(152 * kMiB, budget.available());
+}
+
+TEST_F(ResidentSamplePublishTest,
+       ReconfigurationAndReadFailuresRejectOldProof) {
+  auto token = budget.begin_resident_sample();
+  ASSERT_TRUE(budget.configure(1024 * kMiB, ReadRss));
+  EXPECT_FALSE(
+      budget.publish_resident_sample(token, {sampled_rss.load(), 256 * kMiB}));
+  token = budget.begin_resident_sample();
+  sampled_rss = 0;
+  EXPECT_FALSE(budget.publish_resident_sample(token, {320 * kMiB, 256 * kMiB}));
+  budget.refresh(true);
+  budget.refresh(true);
+  EXPECT_EQ(0u, budget.available());
+  sampled_rss = 320 * kMiB;
+  budget.refresh(true);
+  EXPECT_GT(budget.available(), 0u);
+}
 }  // namespace
 }  // namespace zvec::ailego
