@@ -9,7 +9,7 @@ results = root / "snowball-probe-results"
 results.mkdir(exist_ok=True)
 summary = {}
 reference = None
-for mode in ["Od", "O1", "O2", "analyser-Od", "tokeniser-Od", "space-Od"]:
+for mode in ["Od", "O1", "O2", "analyser-tokeniser-Od", "patched"]:
     print(f"::group::Snowball {mode}", flush=True)
     build = results / mode
     configure = subprocess.run(
@@ -29,6 +29,15 @@ for mode in ["Od", "O1", "O2", "analyser-Od", "tokeniser-Od", "space-Od"]:
     )
     (results / f"{mode}.log").write_text(compiled.stdout + compiled.stderr)
     print(compiled.stdout, compiled.stderr, flush=True)
+    probe_build = subprocess.run(
+        ["cmake", "--build", str(build), "--target", "initialization_probe"],
+        capture_output=True, text=True,
+    )
+    if probe_build.returncode:
+        print(probe_build.stdout, probe_build.stderr)
+        raise RuntimeError("Initialization probe failed to compile")
+    probe = subprocess.run([str(build / "initialization_probe.exe")], capture_output=True, text=True)
+    print(f"INITIALIZATION {mode}: exit={probe.returncode}, {probe.stdout}", flush=True)
     files = {}
     for path in sorted((build / "snowball/snowball-codegen/src_c").glob("*")):
         content = path.read_bytes().replace(b"\r\n", b"\n")
@@ -36,6 +45,7 @@ for mode in ["Od", "O1", "O2", "analyser-Od", "tokeniser-Od", "space-Od"]:
     if mode == "Od" and compiled.returncode == 0:
         reference = files
     summary[mode] = {
+        "initialization_probe": {"exit_code": probe.returncode, "output": probe.stdout},
         "exit_code": compiled.returncode,
         "generated_files": len(files),
         "matches_Od": files == reference,
@@ -47,3 +57,5 @@ for mode in ["Od", "O1", "O2", "analyser-Od", "tokeniser-Od", "space-Od"]:
 print(json.dumps({k: {n: v for n, v in value.items() if n != "hashes"} for k, value in summary.items()}, indent=2))
 if reference is None:
     raise RuntimeError("Even the unoptimized reference failed")
+if summary["patched"]["exit_code"] or not summary["patched"]["matches_Od"]:
+    raise RuntimeError("The production workaround failed verification")

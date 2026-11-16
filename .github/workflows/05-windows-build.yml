@@ -27,3 +27,4 @@ jobs:
             snowball-probe-results/*.log
             snowball-probe-results/summary.json
             snowball-probe-results/*/snowball/snowball-codegen/src_c/
+            snowball-probe-results/**/*.asm
