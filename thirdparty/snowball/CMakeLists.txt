@@ -58,6 +58,13 @@ else()
       target_compile_definitions(snowball_compiler PRIVATE
         _CRT_SECURE_NO_WARNINGS
       )
+      if(CMAKE_C_COMPILER_ARCHITECTURE_ID STREQUAL "ARM64" OR
+         CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$")
+        # The optimized MSVC ARM64 host tool misparses backwardmode blocks
+        # in arabic.sbl. Only the build-time compiler needs this workaround;
+        # the generated stemmer library keeps its normal optimization flags.
+        target_compile_options(snowball_compiler PRIVATE /Od)
+      endif()
     endif()
     set_target_properties(snowball_compiler PROPERTIES C_STANDARD 99)
   endif()

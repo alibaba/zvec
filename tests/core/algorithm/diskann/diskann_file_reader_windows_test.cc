@@ -269,7 +269,7 @@ TEST(DiskAnnFileReaderWindowsTest, BufferPoolReadsCachedAndBypassedPages) {
   ASSERT_TRUE(file.write_pages());
   auto &memory_pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   ASSERT_EQ(
-      memory_pool.init(native_page_size +
+      memory_pool.init(2 * native_page_size +
                        ailego::VecBufferPool::metadata_bytes_for_page_count(
                            native_page_count)),
       0);

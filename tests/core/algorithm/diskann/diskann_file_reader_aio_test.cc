@@ -292,7 +292,7 @@ TEST(DiskAnnBufferPoolFileReaderTest,
   auto &memory_pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   ASSERT_EQ(
       0, memory_pool.init(
-             page_size +
+             2 * page_size +
              ailego::VecBufferPool::metadata_bytes_for_page_count(kPageCount)));
   auto pool =
       std::make_shared<ailego::VecBufferPool>(file.path(), /*writable=*/false);

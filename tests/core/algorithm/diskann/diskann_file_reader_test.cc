@@ -187,8 +187,9 @@ TEST(DiskAnnFileReaderTest, BufferPoolReadsSectorSlicesFromNativePages) {
   file.close();
 
   auto &memory_pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
+  // Reserve one cached data page and the slab's header page.
   ASSERT_EQ(
-      memory_pool.init(native_page_size +
+      memory_pool.init(2 * native_page_size +
                        ailego::VecBufferPool::metadata_bytes_for_page_count(2)),
       0);
   auto pool =
@@ -245,8 +246,9 @@ TEST(DiskAnnFileReaderTest,
   replacement.close();
 
   auto &memory_pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
+  // The slab header is backing metadata, leaving capacity for one data page.
   ASSERT_EQ(
-      memory_pool.init(native_page_size +
+      memory_pool.init(2 * native_page_size +
                        ailego::VecBufferPool::metadata_bytes_for_page_count(2)),
       0);
   auto pool = std::make_shared<ailego::VecBufferPool>(original.path(), false);
