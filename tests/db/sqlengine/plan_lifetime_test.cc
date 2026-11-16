@@ -87,7 +87,7 @@ TEST(PlanLifetimeTest, ReleaseImmediatelyAfterReadiness) {
     std::shared_ptr<arrow::Table> table;
     std::shared_ptr<std::atomic<arrow::acero::ExecPlan *>> plan;
   };
-  const auto registered =
+  static const auto registered =
       arrow::acero::default_exec_factory_registry()->AddFactory(
           "zvec_test_capture_plan",
           [](arrow::acero::ExecPlan *plan,
