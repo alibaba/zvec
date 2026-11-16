@@ -155,6 +155,55 @@ TEST(ProcessRssBudgetTest, UntouchedBackingSurvivesSampleAndOldHeapRetirement) {
   }
 }
 
+TEST(ProcessRssBudgetTest, ReconfigurationPreservesBackingAcrossDisabledGate) {
+  for (const bool use_native_sample : {false, true}) {
+    SCOPED_TRACE(use_native_sample);
+    ProcessRssBudget budget;
+    sampled_rss = 100 * kMiB;
+    native_sample = {100 * kMiB, 50 * kMiB};
+    native_sample_valid = true;
+    const auto reader = use_native_sample ? ReadNative : nullptr;
+    const size_t room =
+        50 * kMiB -
+        (use_native_sample ? ProcessRssBudget::headroom(150 * kMiB) : 0);
+    ASSERT_TRUE(budget.configure(150 * kMiB, ReadRss, reader));
+    ASSERT_TRUE(budget.try_reserve(20 * kMiB));
+    const auto lazy = budget.finish_reservation(20 * kMiB, true);
+    budget.refresh(true);
+    ASSERT_EQ(room - 20 * kMiB, budget.available());
+    ASSERT_TRUE(budget.configure(0, nullptr));
+    // This allocation is made while sampling is disabled. Neither it nor the
+    // existing untouched owner may disappear from the resumed RSS allowance.
+    ASSERT_TRUE(budget.try_reserve(10 * kMiB));
+    const auto offline = budget.finish_reservation(10 * kMiB, true);
+    ASSERT_TRUE(budget.configure(150 * kMiB, ReadRss, reader));
+    EXPECT_EQ(room - 30 * kMiB, budget.available());
+    const bool admitted = budget.try_reserve(40 * kMiB);
+    EXPECT_FALSE(admitted);
+    if (admitted) budget.finish_reservation(40 * kMiB, false);
+    ASSERT_TRUE(budget.configure(0, nullptr));
+    budget.release_unmapped(10 * kMiB, offline);
+    ASSERT_TRUE(budget.configure(150 * kMiB, ReadRss, reader));
+    EXPECT_EQ(room - 20 * kMiB, budget.available());
+    budget.release_unmapped(20 * kMiB, lazy);
+    EXPECT_EQ(room, budget.available());
+    // A current-sample projection can also be released while the gate is off.
+    ASSERT_TRUE(budget.try_reserve(10 * kMiB));
+    const auto pending_sample = budget.finish_reservation(10 * kMiB, true);
+    ASSERT_TRUE(budget.configure(0, nullptr));
+    budget.release_unmapped(10 * kMiB, pending_sample);
+    ASSERT_TRUE(budget.configure(150 * kMiB, ReadRss, reader));
+    EXPECT_EQ(room, budget.available());
+    // With no remaining owners, a new resident startup allowance can establish
+    // a fresh baseline instead of inheriting a previous pool's history.
+    ASSERT_TRUE(budget.configure(0, nullptr));
+    budget.account(20 * kMiB);
+    ASSERT_TRUE(budget.configure(150 * kMiB, ReadRss, reader));
+    EXPECT_EQ(room, budget.available());
+    budget.release_heap(20 * kMiB, {});
+  }
+}
+
 TEST(ProcessRssBudgetTest, PermanentBackingCannotWitnessTemporaryOwners) {
   for (const bool background : {false, true}) {
     for (const bool reenable : {false, true}) {

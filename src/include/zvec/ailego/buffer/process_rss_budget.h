@@ -208,13 +208,16 @@ class ProcessRssBudget {
     // from the reclaimable RSS ledger so later temporary frees cannot consume
     // their overlap or make an unchanged sample count them twice.
     backing_ -= permanent_backing;
-    if (permanent_backing)
+    if (permanent_backing) {
       permanent_backing_.store(permanent_backing, std::memory_order_relaxed);
-    // Changing an active limit must not forget live, possibly untouched
-    // backing. The initial sample already includes pre-existing allocations.
-    if (!limit || !this->limit()) estimate_.reset(rss, backing_);
+      estimate_.exclude_permanent(permanent_backing, backing_);
+      native_estimate_.exclude_permanent(permanent_backing, backing_);
+    }
+    // Suspending or replacing observers must preserve the allowance for live,
+    // possibly untouched backing. Only a fresh ledger adopts a new baseline.
+    if (limit && !estimate_.initialized_) estimate_.reset(rss, backing_);
     if (limit && native_reader) {
-      if (!this->limit() || native_reader_ != native_reader)
+      if (!native_estimate_.initialized_)
         native_estimate_.reset(native.footprint, backing_);
       publish_native(native);
     }
@@ -227,7 +230,18 @@ class ProcessRssBudget {
     rss_sample_failures_ = native_sample_failures_ = 0;
     limit_.store(limit, std::memory_order_relaxed);
     pressure_.store(false, std::memory_order_relaxed);
-    publish(rss, resident.owned_resident);
+    if (limit) {
+      publish(rss, resident.owned_resident);
+    } else {
+      // No observation occurs while disabled. Keep epochs and projections so
+      // releases can still retire their own debits. A drained ledger can be
+      // reused by a new native pool without inheriting old overlap history.
+      if (!backing_ && !pending_allocations_ && !pending_materializations_) {
+        estimate_ = {};
+        native_estimate_ = {};
+      }
+      update_available();
+    }
     return true;
   }
 
@@ -754,6 +768,15 @@ class ProcessRssBudget {
       baseline_backing_ = sampled_backing_ = backing;
       resident_upper_ = std::min(sample, backing);
       pending_releases_ = 0;
+      initialized_ = true;
+    }
+    void exclude_permanent(size_t bytes, size_t backing) {
+      // Excluded lifetime owners stay in measured RSS but no longer belong to
+      // this ledger's overlap. They cannot retire unrelated live allowances.
+      baseline_backing_ -= std::min(baseline_backing_, bytes);
+      sampled_backing_ -= std::min(sampled_backing_, bytes);
+      sampled_backing_ = std::min(sampled_backing_, backing);
+      resident_upper_ -= std::min(bytes, resident_upper_ - pending_releases_);
     }
     void release(size_t bytes, size_t backing) {
       const size_t possibly_resident =
@@ -845,6 +868,7 @@ class ProcessRssBudget {
     size_t resident_upper_{0};
     size_t pending_releases_{0};
     size_t sample_{0};
+    bool initialized_{false};
   };
 
   void update_available() {
