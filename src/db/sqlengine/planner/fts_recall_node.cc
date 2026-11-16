@@ -17,18 +17,26 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/config.h>
 #include "db/sqlengine/common/util.h"
+#include "db/sqlengine/planner/fts_rank_batch.h"
 
 namespace cp = arrow::compute;
 
 namespace zvec::sqlengine {
 
 FtsRecallNode::FtsRecallNode(Segment::Ptr segment, QueryInfo::Ptr query_info,
-                             DocFilter::Ptr doc_filter, int batch_size)
+                             DocFilter::Ptr doc_filter, int batch_size,
+                             bool rank_only)
     : segment_(std::move(segment)),
       query_info_(std::move(query_info)),
       doc_filter_(std::move(doc_filter)),
       fetched_columns_(query_info_->get_all_fetched_scalar_field_names()),
-      batch_size_(batch_size) {
+      batch_size_(batch_size),
+      rank_only_(rank_only) {
+  if (rank_only_) {
+    schema_ = arrow::schema({arrow::field(LOCAL_ROW_ID, arrow::int32()),
+                             arrow::field(FIELD_SCORE, arrow::float32())});
+    return;
+  }
   auto table = segment_->fetch(fetched_columns_, std::vector<int>{});
   // Append BM25 score column so downstream fill_doc_score() surfaces it to
   // the Python Doc.score, matching the vector-recall path.
@@ -41,7 +49,7 @@ arrow::AsyncGenerator<std::optional<cp::ExecBatch>> FtsRecallNode::gen() {
              -> arrow::Future<std::optional<cp::ExecBatch>> {
     auto &state = *state_ptr;
 
-    if (!state.iter_) {
+    if (!state.fts_result_) {
       auto fts_ret = self->prepare();
       if (!fts_ret) {
         return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
@@ -49,9 +57,23 @@ arrow::AsyncGenerator<std::optional<cp::ExecBatch>> FtsRecallNode::gen() {
                                           fts_ret.error().c_str()));
       }
       state.fts_result_ = fts_ret.value();
-      state.iter_ = state.fts_result_->create_iterator();
+      if (!self->rank_only_) state.iter_ = state.fts_result_->create_iterator();
     }
 
+    if (self->rank_only_) {
+      if (state.rank_offset_ == state.fts_result_->count())
+        return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+            std::nullopt);
+      auto batch = MakeFtsRankBatch(*state.fts_result_, state.rank_offset_,
+                                    self->batch_size_, self->schema_,
+                                    arrow::default_memory_pool());
+      if (!batch.ok())
+        return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+            batch.status());
+      state.rank_offset_ += (*batch)->num_rows();
+      return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+          cp::ExecBatch(**batch));
+    }
     if (!state.iter_->valid()) {
       return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
           std::nullopt);

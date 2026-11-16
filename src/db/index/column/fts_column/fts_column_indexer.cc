@@ -34,6 +34,24 @@
 #include "fts_utils.h"
 
 namespace zvec::fts {
+namespace {
+// Reserve only after a positive hit. Keep the ordinary heap algorithm and
+// backing, with bounded initial capacity for common small requests.
+class FtsTopKHeap
+    : public std::priority_queue<FtsResult, std::vector<FtsResult>,
+                                 std::greater<FtsResult>> {
+ public:
+  void reserve_small(uint32_t topk, uint64_t estimated_hits) {
+    try {
+      this->c.reserve(std::min<uint64_t>({topk, estimated_hits, 128}));
+    } catch (const std::bad_alloc &) {
+      // Preserve incremental admission when the full initial reserve cannot
+      // fit but a smaller result set can still use the remaining budget.
+    }
+  }
+};
+}  // namespace
+
 
 // ============================================================
 // Lifecycle
@@ -223,9 +241,7 @@ Result<std::vector<FtsResult>> FtsColumnIndexer::search(
   const uint32_t topk = query_params.topk;
   const zvec::IndexFilter *filter_ptr = query_params.filter.get();
 
-  using MinHeap = std::priority_queue<FtsResult, std::vector<FtsResult>,
-                                      std::greater<FtsResult>>;
-  MinHeap min_heap;
+  FtsTopKHeap min_heap;
 
   // Filter pushdown: when a filter is present, use the filter-aware next_doc
   // overload so composite iterators skip filtered docs before paying for
@@ -239,6 +255,7 @@ Result<std::vector<FtsResult>> FtsColumnIndexer::search(
       float s = root_iter->score();
       if (s > 0.0f) {
         if (min_heap.size() < topk) {
+          if (min_heap.empty()) min_heap.reserve_small(topk, root_iter->cost());
           min_heap.push({global_doc_id, s});
           if (min_heap.size() == topk) {
             root_iter->set_min_competitive_score(min_heap.top().score);

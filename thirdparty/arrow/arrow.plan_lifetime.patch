@@ -1,0 +1,26 @@
+diff --git a/cpp/src/arrow/acero/exec_plan.cc b/cpp/src/arrow/acero/exec_plan.cc
+--- a/cpp/src/arrow/acero/exec_plan.cc
++++ b/cpp/src/arrow/acero/exec_plan.cc
+@@ -195,14 +195,18 @@ struct ExecPlanImpl : public ExecPlan {
+           StopProducing();
+         });
+-    scheduler_finished.AddCallback([this](const Status& st) {
++    // finished_ publishes readiness before its condition variable notification
++    // returns. A consumer observing readiness may destroy this plan immediately.
++    // Complete a captured copy so neither the Future member nor its notification
++    // state can be freed while MarkFinished is still running.
++    scheduler_finished.AddCallback([this, finished = finished_](const Status& st) mutable {
+       if (st.ok()) {
+         if (stopped_.load()) {
+-          finished_.MarkFinished(Status::Cancelled("Plan was cancelled early."));
++          finished.MarkFinished(Status::Cancelled("Plan was cancelled early."));
+         } else {
+-          finished_.MarkFinished();
++          finished.MarkFinished();
+         }
+       } else {
+-        finished_.MarkFinished(st);
++        finished.MarkFinished(st);
+       }
+     });
+   }

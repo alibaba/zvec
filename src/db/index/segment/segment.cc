@@ -21,6 +21,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <numeric>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -134,6 +135,10 @@ class SegmentImpl : public Segment,
   uint64_t doc_count_snapshot() const override;
 
   SegmentMeta::Ptr meta() const override;
+
+  bool uses_buffer_storage() const override {
+    return !options_.enable_mmap_;
+  }
 
   uint64_t doc_count(const IndexFilter::Ptr filter = nullptr) override;
 
@@ -344,6 +349,15 @@ class SegmentImpl : public Segment,
 
   bool validate(const std::vector<std::string> &columns) const;
 
+  Doc::Ptr fetch_direct_doc_unsafe(const std::vector<std::string> &columns,
+                                   const std::shared_ptr<arrow::Schema> &schema,
+                                   int row) const;
+
+  TablePtr fetch_buffered_blocks(
+      const std::vector<std::string> &columns,
+      const std::shared_ptr<arrow::Schema> &result_schema,
+      const std::vector<int> &segment_doc_ids) const;
+
   std::vector<std::string> fetch_columns(
       const std::optional<std::vector<std::string>> &output_fields) const;
 
@@ -489,7 +503,7 @@ class SegmentImpl::CombinedRecordBatchReader : public arrow::RecordBatchReader {
  public:
   CombinedRecordBatchReader(
       std::vector<std::shared_ptr<arrow::RecordBatchReader>> readers,
-      const std::vector<std::string> &columns);
+      const std::vector<std::string> &columns, bool buffered);
 
   ~CombinedRecordBatchReader() override;
 
@@ -501,6 +515,7 @@ class SegmentImpl::CombinedRecordBatchReader : public arrow::RecordBatchReader {
   std::vector<std::shared_ptr<arrow::RecordBatchReader>> readers_;
   std::shared_ptr<arrow::Schema> projected_schema_;
   bool emit_segment_row_id_ = false;
+  bool buffered_;
   size_t current_reader_index_;
   uint64_t next_segment_row_id_to_emit_;
   int segment_row_id_output_col_index_ = -1;
@@ -1184,6 +1199,35 @@ void SegmentImpl::invalidate_fetch_projection() {
                              std::memory_order_release);
 }
 
+Doc::Ptr SegmentImpl::fetch_direct_doc_unsafe(
+    const std::vector<std::string> &columns,
+    const std::shared_ptr<arrow::Schema> &schema, int row) const {
+  const auto &blocks = get_persist_block_metas(BlockType::SCALAR);
+  const auto &offsets = get_persist_block_offsets(BlockType::SCALAR);
+  if (row < 0 || blocks.empty() || blocks.size() != offsets.size() ||
+      blocks.size() != persist_stores_.size())
+    return nullptr;
+  // calculate_block_offsets() builds cumulative scalar offsets. The size
+  // check above excludes layouts where blocks without the anchor column were
+  // skipped. A single-row Fetch only needs to validate its selected block.
+  const auto end = std::upper_bound(offsets.begin(), offsets.end(), row);
+  if (end == offsets.begin()) return nullptr;
+  const size_t i = end - offsets.begin() - 1;
+  if (static_cast<uint64_t>(row - offsets[i]) >= blocks[i].doc_count_)
+    return nullptr;
+  // Keep this metadata check: a dropped/re-added column can still be present
+  // in an old physical file while being absent from this block logically.
+  for (const auto &column : columns) {
+    if (!blocks[i].contain_column(column)) return nullptr;
+  }
+  auto *store =
+      dynamic_cast<BufferPoolForwardStore *>(persist_stores_[i].get());
+  return store ? store->fetch_doc(columns, schema, row - offsets[i],
+                                  doc_ids_[row])
+               : nullptr;
+}
+
+
 Doc::Ptr SegmentImpl::fetch(
     uint64_t g_doc_id,
     const std::optional<std::vector<std::string>> &output_fields,
@@ -1224,6 +1268,13 @@ Doc::Ptr SegmentImpl::fetch(
   }
   const auto &forward_columns = projection->columns;
   const auto &result_schema = projection->schema;
+
+  if (!include_vector && !options_.enable_mmap_) {
+    if (auto doc = fetch_direct_doc_unsafe(forward_columns, result_schema,
+                                           segment_doc_id)) {
+      return doc;
+    }
+  }
 
   // fetch forward columns
   auto exec_batch = fetch_exec_unsafe(forward_columns, segment_doc_id);
@@ -2827,6 +2878,180 @@ TablePtr SegmentImpl::fetch_shared_block(
   return arrow::Table::Make(result_schema, table->columns(), rows.size());
 }
 
+TablePtr SegmentImpl::fetch_buffered_blocks(
+    const std::vector<std::string> &columns,
+    const std::shared_ptr<arrow::Schema> &result_schema,
+    const std::vector<int> &segment_doc_ids) const {
+  const auto &blocks = get_persist_block_metas(BlockType::SCALAR);
+  const auto &offsets = get_persist_block_offsets(BlockType::SCALAR);
+  if (blocks.empty() || blocks.size() != offsets.size() ||
+      blocks.size() != persist_stores_.size()) {
+    return nullptr;
+  }
+
+  std::vector<std::string> physical_columns;
+  std::vector<size_t> output_columns;
+  for (size_t i = 0; i < columns.size(); ++i) {
+    if (std::find(columns.begin(), columns.begin() + i, columns[i]) !=
+        columns.begin() + i) {
+      return nullptr;
+    }
+    if (columns[i] != LOCAL_ROW_ID) {
+      physical_columns.push_back(columns[i]);
+      output_columns.push_back(i);
+    }
+  }
+  if (physical_columns.empty()) return nullptr;
+
+  // BP stores cannot expose a resident table to fetch_perf: cached columns
+  // must remain evictable. Gather owned arrays per block instead. Leave
+  // column-specific layouts to the existing fallback.
+  int64_t persisted_rows = 0;
+  for (size_t i = 0; i < blocks.size(); ++i) {
+    if (offsets[i] != persisted_rows ||
+        !std::dynamic_pointer_cast<BufferPoolForwardStore>(
+            persist_stores_[i])) {
+      return nullptr;
+    }
+    for (const auto &column : physical_columns) {
+      if (!blocks[i].contain_column(column)) return nullptr;
+    }
+    persisted_rows += blocks[i].doc_count_;
+  }
+  int64_t total_rows = persisted_rows;
+  if (segment_meta_->has_writing_forward_block() && memory_store_) {
+    const auto &block = segment_meta_->writing_forward_block().value();
+    for (const auto &column : physical_columns) {
+      if (!block.contain_column(column)) return nullptr;
+    }
+    total_rows += block.doc_count_;
+  }
+
+  struct BlockRows {
+    std::vector<int> rows;
+    TablePtr table;
+    size_t request_index = 0;
+  };
+  struct OutputRun {
+    BlockRows *group;
+    int64_t offset;
+    int64_t length;
+  };
+  std::map<size_t, BlockRows> groups;
+  std::vector<OutputRun> runs;
+  runs.reserve(segment_doc_ids.size());
+  for (int row : segment_doc_ids) {
+    if (row < 0 || row >= total_rows) return nullptr;
+    size_t index = blocks.size();
+    int64_t begin = persisted_rows;
+    if (row < persisted_rows) {
+      auto it = std::upper_bound(offsets.begin(), offsets.end(), row);
+      index = it - offsets.begin() - 1;
+      begin = offsets[index];
+    }
+    auto &group = groups[index];
+    const int64_t position = group.rows.size();
+    group.rows.push_back(static_cast<int>(row - begin));
+    if (!runs.empty() && runs.back().group == &group &&
+        runs.back().offset + runs.back().length == position) {
+      ++runs.back().length;
+    } else {
+      runs.push_back({&group, position, 1});
+    }
+  }
+
+  if (groups.size() > 1 && groups.rbegin()->first < blocks.size()) {
+    std::vector<BufferPoolForwardStore::FetchBlock> requests;
+    requests.reserve(groups.size());
+    for (auto &[index, group] : groups) {
+      group.request_index = requests.size();
+      requests.push_back(
+          {static_cast<BufferPoolForwardStore *>(persist_stores_[index].get()),
+           {}});
+      requests.back().rows.reserve(group.rows.size());
+    }
+    int output = 0;
+    for (const auto &run : runs) {
+      auto &selected = requests[run.group->request_index].rows;
+      for (int64_t row = 0; row < run.length; ++row) {
+        selected.emplace_back(output++, run.group->rows[run.offset + row]);
+      }
+    }
+    auto combined = BufferPoolForwardStore::fetch_blocks(
+        physical_columns, requests, segment_doc_ids.size());
+    if (combined) {
+      std::vector<std::shared_ptr<arrow::ChunkedArray>> arrays(columns.size());
+      for (size_t i = 0; i < physical_columns.size(); ++i) {
+        arrays[output_columns[i]] = combined->column(i);
+        if (!arrays[output_columns[i]]->type()->Equals(
+                result_schema->field(output_columns[i])->type()))
+          return nullptr;
+      }
+      if (physical_columns.size() != columns.size()) {
+        arrow::UInt64Builder builder;
+        if (!builder.Reserve(segment_doc_ids.size()).ok()) return nullptr;
+        for (int row : segment_doc_ids) builder.UnsafeAppend(row);
+        auto ids = builder.Finish();
+        if (!ids.ok()) return nullptr;
+        const size_t index =
+            std::find(columns.begin(), columns.end(), LOCAL_ROW_ID) -
+            columns.begin();
+        arrays[index] = std::make_shared<arrow::ChunkedArray>(*ids);
+      }
+      return arrow::Table::Make(result_schema, std::move(arrays),
+                                segment_doc_ids.size());
+    }
+  }
+
+  for (auto &[index, group] : groups) {
+    const auto &store =
+        index == blocks.size() ? memory_store_ : persist_stores_[index];
+    group.table = store->fetch(physical_columns, group.rows);
+    if (!group.table ||
+        group.table->num_rows() != static_cast<int64_t>(group.rows.size()) ||
+        group.table->num_columns() !=
+            static_cast<int>(physical_columns.size())) {
+      return nullptr;
+    }
+    for (size_t i = 0; i < physical_columns.size(); ++i) {
+      if (group.table->field(i)->name() != physical_columns[i] ||
+          !group.table->column(i)->type()->Equals(
+              result_schema->field(output_columns[i])->type())) {
+        return nullptr;
+      }
+    }
+  }
+
+  std::vector<std::shared_ptr<arrow::ChunkedArray>> arrays(columns.size());
+  for (size_t i = 0; i < physical_columns.size(); ++i) {
+    if (groups.size() == 1) {
+      arrays[output_columns[i]] = groups.begin()->second.table->column(i);
+      continue;
+    }
+    arrow::ArrayVector chunks;
+    for (const auto &run : runs) {
+      auto slice = run.group->table->column(i)->Slice(run.offset, run.length);
+      chunks.insert(chunks.end(), slice->chunks().begin(),
+                    slice->chunks().end());
+    }
+    arrays[output_columns[i]] = std::make_shared<arrow::ChunkedArray>(
+        std::move(chunks), result_schema->field(output_columns[i])->type());
+  }
+  if (physical_columns.size() != columns.size()) {
+    arrow::UInt64Builder builder;
+    if (!builder.Reserve(segment_doc_ids.size()).ok()) return nullptr;
+    for (int row : segment_doc_ids) builder.UnsafeAppend(row);
+    auto ids = builder.Finish();
+    if (!ids.ok()) return nullptr;
+    const size_t index =
+        std::find(columns.begin(), columns.end(), LOCAL_ROW_ID) -
+        columns.begin();
+    arrays[index] = std::make_shared<arrow::ChunkedArray>(*ids);
+  }
+  return arrow::Table::Make(result_schema, std::move(arrays),
+                            static_cast<int64_t>(segment_doc_ids.size()));
+}
+
 TablePtr SegmentImpl::fetch_normal(
     const std::vector<std::string> &columns,
     const std::shared_ptr<arrow::Schema> &result_schema,
@@ -3152,6 +3377,10 @@ TablePtr SegmentImpl::fetch_unsafe(
   if (chunk_offsets != nullptr) {
     return fetch_perf(columns, result_schema, segment_doc_ids, *chunk_offsets);
   }
+  if (auto table =
+          fetch_buffered_blocks(columns, result_schema, segment_doc_ids)) {
+    return table;
+  }
   return fetch_normal(columns, result_schema, segment_doc_ids);
 }
 
@@ -3339,8 +3568,8 @@ RecordBatchReaderPtr SegmentImpl::scan(
     }
   }
 
-  return std::make_shared<CombinedRecordBatchReader>(std::move(merged_readers),
-                                                     columns);
+  return std::make_shared<CombinedRecordBatchReader>(
+      std::move(merged_readers), columns, !options_.enable_mmap_);
 }
 
 
@@ -3350,8 +3579,9 @@ RecordBatchReaderPtr SegmentImpl::scan(
 
 SegmentImpl::CombinedRecordBatchReader::CombinedRecordBatchReader(
     std::vector<std::shared_ptr<arrow::RecordBatchReader>> readers,
-    const std::vector<std::string> &columns)
+    const std::vector<std::string> &columns, bool buffered)
     : readers_(std::move(readers)),
+      buffered_(buffered),
       current_reader_index_(0),
       next_segment_row_id_to_emit_(0) {
   if (!readers_.empty()) {
@@ -3393,14 +3623,26 @@ arrow::Status SegmentImpl::CombinedRecordBatchReader::ReadNext(
 
     if (emit_segment_row_id_ && *batch) {
       auto num_rows = (*batch)->num_rows();
-      arrow::UInt64Builder builder;
-      ARROW_RETURN_NOT_OK(builder.Reserve(num_rows));
-
-      for (int64_t i = 0; i < num_rows; ++i) {
-        builder.UnsafeAppend(next_segment_row_id_to_emit_++);
-      }
       std::shared_ptr<arrow::Array> segment_row_id_array;
-      ARROW_RETURN_NOT_OK(builder.Finish(&segment_row_id_array));
+      if (buffered_) {
+        constexpr int64_t kRowIdBytes = sizeof(uint64_t);
+        if (num_rows > std::numeric_limits<int64_t>::max() / kRowIdBytes)
+          return arrow::Status::CapacityError("Row ID array is too large");
+        ARROW_ASSIGN_OR_RAISE(auto values,
+                              arrow::AllocateBuffer(num_rows * kRowIdBytes));
+        auto *ids = reinterpret_cast<uint64_t *>(values->mutable_data());
+        if (num_rows)
+          std::iota(ids, ids + num_rows, next_segment_row_id_to_emit_);
+        segment_row_id_array =
+            std::make_shared<arrow::UInt64Array>(num_rows, std::move(values));
+        next_segment_row_id_to_emit_ += num_rows;
+      } else {
+        arrow::UInt64Builder builder;
+        ARROW_RETURN_NOT_OK(builder.Reserve(num_rows));
+        for (int64_t i = 0; i < num_rows; ++i)
+          builder.UnsafeAppend(next_segment_row_id_to_emit_++);
+        ARROW_RETURN_NOT_OK(builder.Finish(&segment_row_id_array));
+      }
 
       auto result =
           (*batch)->AddColumn(segment_row_id_output_col_index_,

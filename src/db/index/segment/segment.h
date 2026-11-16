@@ -239,6 +239,9 @@ class Segment {
     }
     return docs;
   }
+  virtual bool uses_buffer_storage() const {
+    return false;
+  }
 };
 
 }  // namespace zvec

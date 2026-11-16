@@ -27,6 +27,11 @@ endif()
 set(ARROW_SLIM_COMPUTE_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.slim_compute.patch)
 apply_patch_once("arrow_slim_compute" "${ARROW_SRC_DIR}" "${ARROW_SLIM_COMPUTE_PATCH}")
 
+# A consumer can release its plan as soon as finished() becomes ready. Keep
+# the completion future alive until its producer has finished notifying.
+set(ARROW_PLAN_LIFETIME_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/arrow.plan_lifetime.patch)
+apply_patch_once("arrow_plan_completion_lifetime" "${ARROW_SRC_DIR}" "${ARROW_PLAN_LIFETIME_PATCH}")
+
 include(ExternalProject)
 include(ProcessorCount)
 

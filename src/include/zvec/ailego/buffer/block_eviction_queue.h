@@ -151,6 +151,12 @@ class BlockEvictionQueue {
   }
 
  private:
+  friend class MemoryLimitPool;
+
+  // A variable-sized external reservation must stop as soon as it fits.
+  size_t batch_recycle(size_t count, bool age_protected,
+                       size_t reservation_bytes);
+
   bool evict_single_block(BlockType &item, bool age_protected);
 
   bool evict_block(BlockType &item, size_t &attempts, size_t max_attempts,

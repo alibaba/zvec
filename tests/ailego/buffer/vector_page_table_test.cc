@@ -1088,6 +1088,26 @@ TEST_F(BufferPoolTest, RejectsReinitializationWhileMemoryIsActive) {
   EXPECT_EQ(8 * kVectorPageSize, memory_pool.capacity());
 }
 
+TEST_F(BufferPoolTest, ExternalReservationKeepsUnneededCacheEntries) {
+  auto &memory_pool = MemoryLimitPool::get_instance();
+  init_pool(/*capacity_pages=*/64);
+  SizedExternalCache cache;
+  // All entries are unpinned and evictable. Admitting 32 pages only needs
+  // six more pages; any one old entry is sufficient to make room.
+  for (size_t pages : {8u, 9u, 10u, 11u}) {
+    const size_t bytes = pages * kVectorPageSize;
+    auto value = cache.acquire(bytes);
+    ASSERT_NE(nullptr, value);
+    cache.release(bytes);
+  }
+  ASSERT_EQ(4u, cache.entry_count());
+  auto value = cache.acquire(32 * kVectorPageSize);
+  ASSERT_NE(nullptr, value);
+  EXPECT_EQ(4u, cache.entry_count());
+  EXPECT_LE(memory_pool.committed(), memory_pool.capacity());
+  cache.release(32 * kVectorPageSize);
+}
+
 TEST_F(BufferPoolTest, ExternalCacheRejectsOversizedEntryAndReleasesOnDestroy) {
   auto &memory_pool = MemoryLimitPool::get_instance();
   init_pool(/*capacity_pages=*/2);

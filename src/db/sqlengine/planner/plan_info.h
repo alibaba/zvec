@@ -17,6 +17,7 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <vector>
 #include <arrow/acero/api.h>
 #include <arrow/acero/exec_plan.h>
 #include <zvec/db/status.h>
@@ -32,6 +33,8 @@ class PlanInfo {
       : plan_(std::move(plan)), schema_(std::move(schema)) {}
 
   Result<std::unique_ptr<arrow::RecordBatchReader>> execute_to_reader();
+
+  Status project(const std::vector<std::string> &columns);
 
   std::shared_ptr<arrow::Schema> schema() const {
     return schema_;

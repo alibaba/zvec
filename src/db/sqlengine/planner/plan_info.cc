@@ -20,6 +20,26 @@
 
 namespace zvec::sqlengine {
 
+Status PlanInfo::project(const std::vector<std::string> &columns) {
+  if (schema_->field_names() == columns) return Status::OK();
+  std::vector<arrow::compute::Expression> expressions;
+  std::vector<std::shared_ptr<arrow::Field>> fields;
+  for (const auto &name : columns) {
+    auto field = schema_->GetFieldByName(name);
+    if (!field) {
+      return Status::InternalError("Segment output is missing field: ", name);
+    }
+    expressions.push_back(arrow::compute::field_ref(name));
+    fields.push_back(std::move(field));
+  }
+  plan_ = arrow::acero::Declaration{
+      "project",
+      {std::move(plan_)},
+      arrow::acero::ProjectNodeOptions{std::move(expressions), columns}};
+  schema_ = arrow::schema(std::move(fields));
+  return Status::OK();
+}
+
 Result<std::unique_ptr<arrow::RecordBatchReader>>
 PlanInfo::execute_to_reader() {
   auto res = arrow::acero::DeclarationToReader(plan_);
