@@ -58,6 +58,14 @@ else()
       target_compile_definitions(snowball_compiler PRIVATE
         _CRT_SECURE_NO_WARNINGS
       )
+      # MSVC 19.52 on ARM64 miscompiles the optimized Snowball generator:
+      # routine modes and tokeniser filenames lose their initialized values.
+      # Keep this build-time tool unoptimized until a fixed MSVC is verified;
+      # the generated stemmers and the Snowball runtime keep their optimization.
+      if(CMAKE_C_COMPILER_ID STREQUAL "MSVC"
+         AND CMAKE_C_COMPILER_ARCHITECTURE_ID STREQUAL "ARM64")
+        target_compile_options(snowball_compiler PRIVATE /Od /Ob0)
+      endif()
     endif()
     set_target_properties(snowball_compiler PROPERTIES C_STANDARD 99)
   endif()
