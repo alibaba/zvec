@@ -9,6 +9,7 @@
 #include <thread>
 #include <vector>
 #include <ailego/pattern/scope_guard.h>
+#include <ailego/utility/memory_helper.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/ailego/buffer/budgeted_allocator.h>
@@ -52,6 +53,16 @@ struct MemoryLimitPoolTestPeer {
   static ProcessRssBudget::ResidentSample sample(bool background = false) {
     return background ? MemoryLimitPool::read_background_resident_sample()
                       : MemoryLimitPool::read_slab_resident_sample();
+  }
+  static bool prove_residency(MemoryLimitPool &pool) {
+    const auto token = pool.process_rss_.begin_resident_sample();
+    return pool.process_rss_.publish_resident_sample(token, sample(true));
+  }
+  static size_t rss_room(MemoryLimitPool &pool) {
+    return pool.process_rss_.available();
+  }
+  static bool needs_proof(MemoryLimitPool &pool) {
+    return pool.process_rss_.needs_resident_confirmation();
   }
   static ProcessRssBudget::ResidentSample sample_while_busy(
       MemoryLimitPool &pool, bool background) {
@@ -125,6 +136,25 @@ TEST_F(CacheMappingRssTest, BatchPagesLeaveRoomForNewSlabHeaders) {
     }
   }
 }
+
+#if (defined(__linux__) && !defined(__ANDROID__)) || \
+    (defined(__APPLE__) && TARGET_OS_OSX)
+TEST_F(CacheMappingRssTest, FirstOwnershipProofRecoversPrefaultedWorkspace) {
+  auto *workspace = pool_.try_acquire_workspace_buffer(64 * kMiB);
+  ASSERT_NE(nullptr, workspace);
+  auto cleanup = ScopeGuard::Make(
+      [&] { EXPECT_TRUE(pool_.release_workspace_buffer(workspace)); });
+  std::memset(workspace->data, 0x77, workspace->bytes);
+  ASSERT_TRUE(
+      pool_.configure_process_rss_limit(MemoryHelper::SelfRSS() + 32 * kMiB));
+  EXPECT_TRUE(MemoryLimitPoolTestPeer::needs_proof(pool_));
+  ASSERT_TRUE(MemoryLimitPoolTestPeer::prove_residency(pool_));
+  EXPECT_GE(MemoryLimitPoolTestPeer::rss_room(pool_), 16 * kMiB);
+  MemoryLimitPool::PendingAllocation allocation(
+      pool_, MemoryLimitPool::PendingAllocation::Kind::kLockedExternal);
+  EXPECT_TRUE(allocation.reserve(kMiB));
+}
+#endif
 
 TEST_F(CacheMappingRssTest,
        CleanupVisitsEveryProducerWithoutRepeatingLiveItems) {

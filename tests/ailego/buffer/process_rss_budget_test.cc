@@ -41,7 +41,10 @@ TEST(ProcessRssBudgetTest, NativeFootprintTracksUntouchedBackingAcrossSamples) {
   EXPECT_FALSE(budget.try_acquire(9 * kMiB));
   native_sample = {112 * kMiB, 64 * kMiB};
   budget.refresh(true);
-  EXPECT_EQ(8 * kMiB, budget.available());
+  // The footprint increase could be host memory while this owner stays lazy.
+  // Without an ownership proof it cannot establish managed overlap.
+  EXPECT_EQ(0u, budget.available());
+  EXPECT_FALSE(budget.try_acquire(1));
   budget.release(16 * kMiB);
   native_sample = {96 * kMiB, 80 * kMiB};
   budget.refresh(true);
@@ -387,6 +390,8 @@ class ResidentSamplePublishTest : public testing::Test {
     ASSERT_TRUE(budget.try_acquire(256 * kMiB));
     sampled_rss = 320 * kMiB;
     budget.refresh(true);
+    ASSERT_TRUE(budget.publish_resident_sample(budget.begin_resident_sample(),
+                                               {320 * kMiB, 256 * kMiB}));
     ASSERT_TRUE(budget.try_acquire(32 * kMiB));  // Untouched owner.
     budget.release(128 * kMiB);
     ASSERT_TRUE(budget.try_acquire(128 * kMiB));

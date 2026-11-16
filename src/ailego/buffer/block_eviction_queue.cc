@@ -2050,10 +2050,10 @@ void MemoryLimitPool::background_evict_loop() {
   auto last_owned_sample = std::chrono::steady_clock::time_point{};
   uint64_t confirmed_generation = 0;
   const auto refresh_owned_sample = [&] {
-    const auto generation = process_rss_.resident_release_generation();
+    const auto generation = process_rss_.resident_generation();
     // A mandatory waiter can exhaust the conservative overlap projection
     // while measured RSS remains below its limit but inside hysteresis.
-    // Confirm once per retirement generation before its existing wait ends;
+    // Confirm once per backing/configuration generation before its wait ends;
     // the proof still excludes untouched, retired and in-flight backing.
     const bool waiting_for_proof =
         process_rss_.pressure() &&
@@ -2097,7 +2097,7 @@ void MemoryLimitPool::background_evict_loop() {
     if (pool_size_.load(std::memory_order_relaxed) == 0) continue;
     const size_t requested =
         cache_reclaim_requested_.exchange(0, std::memory_order_relaxed);
-    process_rss_.refresh(process_rss_.needs_resident_confirmation());
+    process_rss_.refresh();
 #if (defined(__linux__) && !defined(__ANDROID__)) || \
     (defined(__APPLE__) && TARGET_OS_OSX)
     refresh_owned_sample();

@@ -225,6 +225,7 @@ class ProcessRssBudget {
     reader_ = reader;
     resident_reader_ = resident_reader;
     ++resident_configuration_;
+    ++resident_generation_;
     resident_retired_bytes_ = 0;
     recovery_sample_pending_ = false;
     rss_sample_failures_ = native_sample_failures_ = 0;
@@ -259,7 +260,8 @@ class ProcessRssBudget {
   }
 
   // Admit a planning allowance and its in-flight copy as one operation.
-  // They cover overlapping bytes, and refusal must leave both unchanged.
+  // Without an owner identity, the copy cannot spend another allowance's
+  // untouched backing. Refusal must leave both charges unchanged.
   bool try_acquire_with_pending_copy(size_t bytes, size_t materialization) {
     return try_charge(bytes, backing_, materialization, true);
   }
@@ -307,13 +309,17 @@ class ProcessRssBudget {
     assert(rss_unsampled <= bytes && native_unsampled <= bytes);
     assert(bytes <= backing_);
     backing_ -= bytes;
+    retire_new_backing(bytes, projection.rss.epoch, rss_unsampled,
+                       rss_new_backing_);
+    retire_new_backing(bytes, projection.native.epoch, native_unsampled,
+                       native_new_backing_);
     remember_resident_retirement(bytes);
     // Unlike unmapping, free() may leave every page resident in the allocator.
     // Keep its materialization debit until a successful sample observes it.
     // A new allocation absent from that sample cannot retire the sample's
     // overlap with a different, still-live owner.
     estimate_.release(bytes - rss_unsampled, backing_);
-    if (bytes != rss_unsampled) ++resident_release_generation_;
+    if (bytes != rss_unsampled) ++resident_generation_;
     native_estimate_.release(bytes - native_unsampled, backing_);
     update_available();
   }
@@ -452,11 +458,9 @@ class ProcessRssBudget {
         native_materialized_ =
             add_saturated(native_materialized_, native_growth);
       }
-      projection.rss = {rss_epoch_, rss.bytes + rss_growth,
-                        rss.unsampled + rss_growth};
+      projection.rss = {rss_epoch_, rss.bytes + rss_growth, rss.unsampled};
       projection.native = {native_reader_ ? native_epoch_ : 0,
-                           native.bytes + native_growth,
-                           native.unsampled + native_growth};
+                           native.bytes + native_growth, native.unsampled};
       update_available();
     }
     return true;
@@ -511,8 +515,8 @@ class ProcessRssBudget {
   bool needs_resident_confirmation() const {
     return resident_confirmation_.load(std::memory_order_relaxed);
   }
-  uint64_t resident_release_generation() const {
-    return resident_release_generation_.load(std::memory_order_relaxed);
+  uint64_t resident_generation() const {
+    return resident_generation_.load(std::memory_order_relaxed);
   }
 
  private:
@@ -525,6 +529,12 @@ class ProcessRssBudget {
       native_estimate_.account_new_backing(bytes);
       // Keep the in-flight debit until a successful sample can observe it.
       remember_materialization(bytes);
+      if (limit()) {
+        rss_new_backing_ = add_saturated(rss_new_backing_, bytes);
+        if (native_reader_)
+          native_new_backing_ = add_saturated(native_new_backing_, bytes);
+      }
+      ++resident_generation_;
     } else {
       remember_resident_retirement(bytes);
     }
@@ -543,11 +553,15 @@ class ProcessRssBudget {
     refund_projection(native.bytes, native_materialized_);
     assert(bytes <= backing_);
     backing_ -= bytes;
+    retire_new_backing(bytes, projection.rss.epoch, rss.unsampled,
+                       rss_new_backing_);
+    retire_new_backing(bytes, projection.native.epoch, native.unsampled,
+                       native_new_backing_);
     remember_resident_retirement(bytes);
     // Only backing that could have contributed to a successful RSS sample
     // can explain a later RSS decrease.
     estimate_.release(bytes - rss.unsampled, backing_);
-    if (bytes != rss.unsampled) ++resident_release_generation_;
+    if (bytes != rss.unsampled) ++resident_generation_;
     native_estimate_.release(bytes - native.unsampled, backing_);
     update_available();
   }
@@ -579,6 +593,13 @@ class ProcessRssBudget {
     if (projection == std::numeric_limits<size_t>::max()) return;
     assert(bytes <= projection);
     projection -= bytes;
+  }
+
+  static void retire_new_backing(size_t bytes, uint64_t epoch, size_t unsampled,
+                                 size_t &overlap) {
+    // Legacy owners with no stamp cannot establish which cohort retired.
+    // Removing possible overlap is conservative until the next observation.
+    overlap -= std::min(overlap, epoch ? unsampled : bytes);
   }
 
   void remember_resident_retirement(size_t bytes) {
@@ -618,28 +639,23 @@ class ProcessRssBudget {
     }
     const size_t cap = limit();
     if (!cap) return true;
-    // The existing allowance may overlap the RSS estimate even though this
-    // operation still needs new pages. Check measured room independently of
-    // the lifetime charge, including other backing allocations in flight.
-    const size_t pending =
-        add_saturated(pending_allocations_, pending_materializations_);
-    const size_t needed = add_saturated(rss_bytes, pending);
-    const size_t measured = add_saturated(rss(), rss_materialized_);
-    if (measured > cap) return false;
-    const size_t room = cap - measured;
+    const size_t usage =
+        projected_usage(estimate_, rss_materialized_, rss_new_backing_);
+    if (usage > cap) return false;
+    const size_t room = cap - usage;
     // A mapping already covered by this sample may reuse that debit even
     // when no room remains. A new projection still needs its full headroom.
-    if ((!allow_at_limit && room == 0) || needed > room) return false;
+    if ((!allow_at_limit && room == 0) || rss_bytes > room) return false;
     if (native_reader_) {
       const size_t native_cap = std::min(cap, native_limit_);
-      const size_t footprint =
-          add_saturated(native_estimate_.sample_, native_materialized_);
+      const size_t footprint = projected_usage(
+          native_estimate_, native_materialized_, native_new_backing_);
       const size_t reserve = headroom(native_cap);
       if (footprint > native_cap) return false;
       const size_t native_room = native_cap - footprint;
       if (native_room < reserve ||
           (!allow_at_limit && native_room == reserve) ||
-          add_saturated(native_bytes, pending) > native_room - reserve)
+          native_bytes > native_room - reserve)
         return false;
     }
     return true;
@@ -659,14 +675,15 @@ class ProcessRssBudget {
                   bool pending_copy = false) {
     std::lock_guard<std::mutex> lock(mutex_);
     refresh_locked(false);
-    if (bytes > available_.load(std::memory_order_relaxed) ||
+    const size_t required = add_saturated(bytes, materialization);
+    if (required > available_.load(std::memory_order_relaxed) ||
         (materialization && !materialization_allowed_locked(materialization)))
       refresh_after_denial_locked();
     if (materialization && !materialization_allowed_locked(materialization))
       return false;
     const size_t ledger_available =
         std::numeric_limits<size_t>::max() - backing_ - pending_allocations_;
-    if (bytes > available_.load(std::memory_order_relaxed) ||
+    if (required > available_.load(std::memory_order_relaxed) ||
         bytes > ledger_available ||
         (pending_copy && materialization > std::numeric_limits<size_t>::max() -
                                                pending_materializations_)) {
@@ -677,6 +694,7 @@ class ProcessRssBudget {
     if (&counter == &backing_) {
       estimate_.account_new_backing(bytes);
       native_estimate_.account_new_backing(bytes);
+      ++resident_generation_;
     }
     if (pending_copy) {
       pending_materializations_ += materialization;
@@ -746,6 +764,7 @@ class ProcessRssBudget {
   void publish_native(const NativeSample &native) {
     native_estimate_.observe(native.footprint, backing_);
     native_materialized_ = 0;
+    native_new_backing_ = 0;
     ++native_epoch_;
     native_limit_ = add_saturated(native.footprint, native.available);
   }
@@ -758,6 +777,7 @@ class ProcessRssBudget {
         owned_resident, permanent_backing_.load(std::memory_order_relaxed));
     if (limit()) estimate_.observe(rss, backing_, owned_resident);
     rss_materialized_ = 0;
+    rss_new_backing_ = 0;
     ++rss_epoch_;
     rss_.store(rss, std::memory_order_relaxed);
     update_available();
@@ -859,12 +879,11 @@ class ProcessRssBudget {
           std::min({rss, add_saturated(backing, pending_releases_),
                     add_saturated(resident_upper_, growth)});
       assert(pending_releases_ <= resident_upper_);
-      // Ordinary observations cannot prove untouched backing became resident,
-      // even before any owner retires. Only observed growth can cover more
-      // backing; a later release must not transfer an old owner's overlap to
-      // an untouched replacement.
-      sampled_backing_ =
-          std::min(backing, add_saturated(sampled_backing_, growth));
+      // Process growth can belong entirely to the host. It is an upper bound
+      // on possible managed residency, never a lower bound that can cover an
+      // untouched owner's lifetime reservation. Only a live ownership proof
+      // may increase overlap after initialization.
+      sampled_backing_ = std::min(backing, sampled_backing_);
       // A fresh ownership/residency snapshot can prove overlap even when
       // evictions and refaults leave total RSS unchanged. It cannot cover
       // untouched owners, pending allocations, or more than this sample.
@@ -877,6 +896,16 @@ class ProcessRssBudget {
           std::max(resident_upper_, witnessed + pending_releases_);
       sampled_backing_ = std::max(sampled_backing_, witnessed);
       sample_ = rss;
+      // A fresh lower bound on live residency supplies an independent upper
+      // bound on future usage. Reanchor both estimates when it improves that
+      // bound; updating only sampled_backing_ leaves an older baseline in
+      // charge forever. Retained retired pages now belong to this RSS anchor,
+      // so a later drop must not consume the newly witnessed live overlap.
+      if (projected(rss, witnessed, backing) < usage(backing)) {
+        baseline_rss_ = recovery_floor_ = sample_ = rss;
+        baseline_backing_ = sampled_backing_ = resident_upper_ = witnessed;
+        pending_releases_ = 0;
+      }
     }
 
     static size_t projected(size_t rss, size_t baseline, size_t backing) {
@@ -895,25 +924,32 @@ class ProcessRssBudget {
     bool initialized_{false};
   };
 
+  size_t projected_usage(const Estimate &estimate, size_t materialized,
+                         size_t new_backing) const {
+    // Only current-epoch OS births prove the lifetime and materialization
+    // debits refer to the same bytes. Reuse/copy work belongs to independent
+    // exposure and cannot hide behind a different owner's lazy allowance.
+    const size_t extra =
+        materialized == std::numeric_limits<size_t>::max()
+            ? materialized
+            : materialized - std::min(materialized, new_backing);
+    return add_saturated(
+        add_saturated(estimate.usage(backing_), extra),
+        add_saturated(pending_materializations_, pending_allocations_));
+  }
+
   void update_available() {
     const size_t cap = limit();
-    // Take the larger estimate, never add managed bytes to measured RSS.
-    // The lifetime estimate preserves lazy allocations across samples; the
-    // latest sample catches host growth and includes subsequent admissions.
     const size_t measured = add_saturated(
         add_saturated(rss(), rss_materialized_), pending_materializations_);
-    const size_t usage = add_saturated(
-        std::max(estimate_.usage(backing_), measured), pending_allocations_);
+    const size_t usage =
+        projected_usage(estimate_, rss_materialized_, rss_new_backing_);
     size_t available = cap ? (usage < cap ? cap - usage : 0)
                            : std::numeric_limits<size_t>::max();
     if (cap && native_reader_) {
       const size_t native_cap = std::min(cap, native_limit_);
-      const size_t footprint = add_saturated(
-          add_saturated(native_estimate_.sample_, native_materialized_),
-          pending_materializations_);
-      const size_t native_usage =
-          add_saturated(std::max(native_estimate_.usage(backing_), footprint),
-                        pending_allocations_);
+      const size_t native_usage = projected_usage(
+          native_estimate_, native_materialized_, native_new_backing_);
       const size_t remaining =
           native_usage < native_cap ? native_cap - native_usage : 0;
       // Keep a reserve below the OS application limit even for mandatory work.
@@ -929,21 +965,15 @@ class ProcessRssBudget {
                                        : available <= margin));
     available_.store(available, std::memory_order_relaxed);
     pressure_.store(pressure, std::memory_order_relaxed);
-    // A retired mapping may still be included in RSS while its replacement
-    // is already resident. Ask the ownership sampler to confirm that overlap
-    // before this conservative projection drives cache reclamation. Preserve
-    // the lifetime reservation and every pending allocation/materialization.
-    const size_t confirmed_usage = add_saturated(
-        std::max(Estimate::projected(estimate_.baseline_rss_,
-                                     estimate_.baseline_backing_, backing_),
-                 measured),
-        pending_allocations_);
+    // A fresh proof can recover an initial or retired owner's overlap. Ask
+    // before an uncertain lifetime projection drives cache reclamation.
+    const size_t confirmed_usage =
+        add_saturated(measured, pending_allocations_);
     resident_confirmation_.store(
         pressure && cap && resident_reader_ && !native_reader_ &&
             external_pressure_ == PressureLevel::kNormal &&
-            !admission_paused() && estimate_.pending_releases_ &&
-            confirmed_usage < usage && confirmed_usage < cap &&
-            cap - confirmed_usage >= 2 * margin,
+            !admission_paused() && confirmed_usage < usage &&
+            confirmed_usage < cap && cap - confirmed_usage >= 2 * margin,
         std::memory_order_relaxed);
   }
 
@@ -971,10 +1001,12 @@ class ProcessRssBudget {
   std::atomic<bool> pressure_{false};
   size_t rss_materialized_{0};
   size_t native_materialized_{0};
+  size_t rss_new_backing_{0};
+  size_t native_new_backing_{0};
   uint64_t rss_epoch_{0};
   uint64_t native_epoch_{0};
   std::atomic<bool> resident_confirmation_{false};
-  std::atomic<uint64_t> resident_release_generation_{0};
+  std::atomic<uint64_t> resident_generation_{0};
   uint64_t resident_configuration_{0};
   size_t resident_retired_bytes_{0};
 };
