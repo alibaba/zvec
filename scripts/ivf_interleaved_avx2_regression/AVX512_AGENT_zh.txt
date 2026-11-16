@@ -1,0 +1,111 @@
+AVX512 交错布局联合内核：Linux x86 服务器 agent 验证说明
+2026-11-16
+
+目标和版本
+基线：5f489fd4debbf4efc0b32d4e0e90d0741dc65a02，已包含 AVX2 联合内核和
+旧 record INT8/INT4 未对齐访问修复。本轮只比较“增加 AVX512 前/后”，
+不要用重构前、增加 AVX2 前或 record 对齐修复前版本替代。
+候选：基线 + 包内 candidate-vs-baseline.patch，由 SHA256 冻结。
+本轮改动、macOS 报告及下列独立包随当前分支提交归档；拉取交接消息指定的
+提交后，从仓库 artifacts/ 直接使用，无需另外传输源码：
+  ivf-interleaved-avx512-handoff-20261116.tar.gz
+  ivf-interleaved-avx512-handoff-20261116.tar.gz.sha256
+包内含基线源码、双方相同的测试补丁、候选生产补丁、完整源码 hash、
+旧索引 fixtures、验证工具。SHA256SUMS 覆盖包内文件。
+
+改动范围
+- 不改变 IVF 调用点、接口、交错存储或分数定义，不做转置，不增加热路径分配。
+- FP32/FP16，IP（负内积距离）和 squared L2；2/4/8/16/32 行。
+- 一条 512-bit 向量对应 16 个候选，两个查询共享矩阵读取；奇数查询有尾部。
+- FP16 转 FP32 累加。AUTO 优先 AVX512，之后 AVX2/NEON；没有可用内核仍由
+  现有 IVF 路径回退。单查询和非完整交错块的原路径保持不变。
+- 普通 row-major many-to-many、INT8/INT4、MIPS/record 元数据内核没有新增实现。
+
+环境
+原生 Linux x86_64，CPU 必须支持 AVX512F、F16C，以及用于基线的 AVX2/FMA。
+建议仍用原 Xeon 6982P-C。GCC/Clang、CMake >= 3.26、Ninja、Python >= 3.9。
+测试时停止其他构建/压测，使用 affinity 允许且空闲的 CPU；保留 lscpu、
+频率策略/NUMA/温度（若有）和 CPU affinity。不得把不支持造成的 skip 当通过。
+
+执行（从已有 richyreachy/zvec checkout 根目录开始）
+  git fetch origin
+  git checkout fix/legacy-matrix-distance-performance
+  git pull --ff-only origin fix/legacy-matrix-distance-performance
+  git cat-file -e 5f489fd4debbf4efc0b32d4e0e90d0741dc65a02^{commit}
+  export ZVEC_AVX512_DEPS="$PWD"
+  git submodule update --init --recursive \
+    thirdparty/googletest/googletest-1.10.0 \
+    thirdparty/RaBitQ-Library/RaBitQ-Library-0.7.0
+
+使用仓库随附交接包（以交接消息指定的提交及 SHA256 为准）：
+  export ZVEC_AVX512_PACK="$PWD/artifacts"
+  (cd "$ZVEC_AVX512_PACK" && sha256sum -c ivf-interleaved-avx512-handoff-20261116.tar.gz.sha256)
+  export ZVEC_AVX512_WORK=$(mktemp -d "${TMPDIR:-/tmp}/zvec-avx512-XXXXXXXX")
+  mkdir "$ZVEC_AVX512_WORK/handoff"
+  tar -xzf "$ZVEC_AVX512_PACK/ivf-interleaved-avx512-handoff-20261116.tar.gz" -C "$ZVEC_AVX512_WORK/handoff"
+  (cd "$ZVEC_AVX512_WORK/handoff" && sha256sum -c SHA256SUMS)
+  python3 "$ZVEC_AVX512_WORK/handoff/tools/avx512.py" \
+    --bundle "$ZVEC_AVX512_WORK/handoff" --deps "$ZVEC_AVX512_DEPS" \
+    --out "$ZVEC_AVX512_WORK/results" --jobs 4 --cpu 9 --sample-ms 200
+
+--cpu 9 替换为允许且空闲的 CPU；输出目录必须不存在。
+不得使用旧 run.py/reverify.py/record_alignment.py 作为本轮入口。
+prepare-only/allow-non-x86 只能检查工具，不是 Linux 验收。
+失败也保留输出，不改变阈值、源码、过滤条件、sanitizer 配置来绕过失败。
+
+正确性验收
+1. 两版全部相关测试（Turbo、metric、flat、IVF），旧索引 fixtures 兼容测试。
+   相同测试补丁同时作用于两版：基线 AVX512 专项跳过属预期；候选必须执行。
+2. 候选普通及 ASan+UBSan 两套构建中：
+   Avx512JointInterleavedQueriesAndNoAllocations 必须通过，不能 skip；
+   Avx2JointInterleavedQueriesAndNoAllocations、特性门控/回退、FP32 累加测试均通过。
+   覆盖 rows=2/4/8/16/32、dim=0/1/7/8/17/128/513、N=0/1/2/3/7/8/31/32/35，
+   IP/L2、FP32/FP16、不按 SIMD 对齐的输入、输出哨兵、输入不变、计算时零分配。
+   double 独立参考沿用现有界；新增 AVX512/AVX2 输出完全相等检查，不放宽阈值。
+3. dispatch-avx512-required.log 四组必须 AVX512=1、AUTO_IS_AVX512=1。
+   基线应 AVX512=0、AVX2=1，候选仍能显式选择 AVX2。
+4. 两版 matrix/many_to_many/IVF legacy/IVF searcher/record alignment 五个程序
+   全插桩 ASan+UBSan。alignment、vptr、alloc_dealloc_mismatch 均不关闭。
+   仅关闭泄漏检测。所有 sanitizer 诊断都需检查，不凭退出码 0 判通过。
+   候选任何报告均不验收；基线有报告也需要解释并回传，不能自动接受。
+
+实际查询性能
+工具调用真实 IVF search_impl，使用构造的旧交错布局索引；不是裸内核循环，
+也不等于所有生产 IVF 数据集。共 288 项/轮：Raw-FP32/FP16/INT8/INT4、
+Record-INT8/INT4 × IP/L2 × 128/768 维 × shared/spread × nprobe=1/8 × batch=1/8/32。
+每项 5 个 >=200ms 样本，取中位数；第一轮 before→after，第二轮 after→before。
+每轮 Top-K ID/顺序/扫描次数严格一致，分数继续使用既有 1e-4 界。
+任一轮 >5% 回退项自动逐项交替配对复测两轮；两轮均 >5% 判为持续回退。
+按类型/度量报告耗时、加速比以及 batch=1 和 batch>1，不能只报总体均值。
+重点观察 FP16 IP、768 维、shared/spread，以及 AVX512 降频对 batch=1 的影响。
+若仍有回退：保留原始数据，使用 >=1000ms 做至少 6 组 AB/BA 交替对照，
+再做相同基线二进制 A/A 自身对照。不得以基线抖动直接覆盖原来的失败状态。
+可用 BENCH_CASE 选单项，例：Raw-FP16,IP,768,shared,8,32；以 CSV 中的真实 key 为准。
+
+热路径和机器码
+macOS 仅完成 x86 交叉编译，不代表服务器执行已验证。服务器还需要：
+- 保存普通/插桩双方 compile_commands.json、CMakeCache.txt。
+- 新文件应使用 -march=x86-64 -mavx512f -mf16c；不能因主机 march 隐式依赖
+  BW/DQ/VL/VNNI/AVX512FP16。用 objdump -drwC 导出新对象和候选二进制。
+- 新 tile 应有 zmm FMA，FP16 用转换后 FP32 累加；检查无转置、堆分配或 memcpy 调用。
+- 在独立于计时的 perf/gdb 运行中证明实际 IVF 叶子扫描命中新 AVX512 tile。
+  例如 gdb 的 rbreak 匹配 zvec::turbo::avx512::.*tile，命中后 bt/disassemble；
+  若被内联，用 perf record/report/annotate 定位 AVX512 工厂生成的 lambda。
+  不要把质心搜索中的普通 AVX512 FP16 distance/batch 命中当作交错内核证据。
+- 至少 FP32/FP16 × IP/L2 的 batch=32 各留一份实际叶子扫描调用栈或 perf 注释。
+  probe 证明分派选择，调用栈/采样证明实际查询执行；这两份证据都需要。
+
+回传
+- REPORT_zh.txt：结论、硬件/编译器、正确性/兼容/数值误差、分组速度表、
+  持续回退清单及复测、AVX512 叶子命中证据和未验证范围。
+- SUMMARY.json、environment.json、lscpu.txt、avx512-manifest.json、源码/tools hash。
+- dispatch 日志、所有普通/兼容/sanitizer XML 和日志、instrumentation JSON。
+- 4 套 CMakeCache/compile_commands、构建/静态链接日志。
+- 两轮/retake timings.csv、query_results.txt、PERFORMANCE.csv/performance.json，
+  额外长采样/A-A 对照、反汇编/调用栈或 perf 证据。
+- 将证据压缩并附 sha256，排除 build 的 .o/.a 可减小体积，但保留配置和日志。
+  复制到持久目录，失败也回传。
+
+PASS_NATIVE_X86 只表示工具自动检查通过；最终交接结论还需核对实际叶子
+AVX512 命中和机器码范围。存在 correctness/sanitizer/持续性能回退或缺少
+执行证据时标 REVIEW_REQUIRED/对应失败状态，不可宣称可以合入。

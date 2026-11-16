@@ -41,6 +41,7 @@
 #include "avx512/fp32/cosine.h"
 #include "avx512/fp32/inner_product.h"
 #include "avx512/fp32/squared_euclidean.h"
+#include "avx512/interleaved_many_to_many.h"
 #include "avx512/pq_quantizer_fast/pq_distance.h"
 #include "avx512/pq_quantizer_int4/pq_distance.h"
 #include "avx512/pq_quantizer_int8/pq_distance.h"
@@ -596,6 +597,10 @@ struct InterleavedKernelSet {
 };
 
 constexpr InterleavedKernelSet kInterleavedKernelTable[] = {
+    {DataType::kFp32, CpuArchType::kAVX512,
+     avx512::make_interleaved_many_to_many_distance, kCpuFeatureNone},
+    {DataType::kFp16, CpuArchType::kAVX512,
+     avx512::make_interleaved_many_to_many_distance, kCpuFeatureF16c},
     {DataType::kFp32, CpuArchType::kAVX2,
      avx2::make_interleaved_many_to_many_distance, kCpuFeatureFma},
     {DataType::kFp16, CpuArchType::kAVX2,

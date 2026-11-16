@@ -1,0 +1,121 @@
+{
+  "status": "MACOS_REGRESSION_PASS_EXISTING_UB_REMAINS",
+  "baseline_commit": "5f489fd4debbf4efc0b32d4e0e90d0741dc65a02",
+  "native_avx512_executed": false,
+  "normal": {
+    "programs": 53,
+    "passed": 578,
+    "skipped": 48,
+    "disabled": 10,
+    "failed": 0
+  },
+  "compatibility": {
+    "passed": 12,
+    "skipped": 4,
+    "disabled": 16,
+    "failed": 0,
+    "exit_code": 0,
+    "missing_xml": false,
+    "diagnostics": [],
+    "ok": true
+  },
+  "ubsan": {
+    "programs": 5,
+    "diagnostics": [
+      "/Users/xingrui/Documents/workspace/zvec/ivf_many_to_many/zvec/src/turbo/quantizer/entropy_integer_quantizer/integer_quantizer.cc:352:9: runtime error: nan is outside the range of representable values of type 'signed char'"
+    ]
+  },
+  "performance": {
+    "cases_per_round": 288,
+    "retake_cases": 69,
+    "sustained_regressions": []
+  },
+  "query_correctness": [
+    {
+      "round": 1,
+      "records": 39360,
+      "ids_identical": true,
+      "max_score_error": 0.0
+    },
+    {
+      "round": 2,
+      "records": 39360,
+      "ids_identical": true,
+      "max_score_error": 0.0
+    }
+  ],
+  "performance_groups": [
+    {
+      "type": "Raw-FP32",
+      "metric": "L2",
+      "round1": 0.9757031490979764,
+      "round2": 1.0075419932002072
+    },
+    {
+      "type": "Raw-FP32",
+      "metric": "IP",
+      "round1": 0.9755775249103966,
+      "round2": 1.0325853794620545
+    },
+    {
+      "type": "Raw-FP16",
+      "metric": "L2",
+      "round1": 0.9797796656612948,
+      "round2": 0.9578181914124175
+    },
+    {
+      "type": "Raw-FP16",
+      "metric": "IP",
+      "round1": 1.0001572801639433,
+      "round2": 0.978757018600622
+    },
+    {
+      "type": "Raw-INT8",
+      "metric": "L2",
+      "round1": 0.9861574041424463,
+      "round2": 0.9116384732888004
+    },
+    {
+      "type": "Record-INT8",
+      "metric": "L2",
+      "round1": 0.9978407206851362,
+      "round2": 0.9612137282510316
+    },
+    {
+      "type": "Raw-INT8",
+      "metric": "IP",
+      "round1": 1.0060376048501278,
+      "round2": 0.970796323241677
+    },
+    {
+      "type": "Record-INT8",
+      "metric": "IP",
+      "round1": 0.9815008363243876,
+      "round2": 0.9732977805447137
+    },
+    {
+      "type": "Raw-INT4",
+      "metric": "L2",
+      "round1": 0.9864176514954345,
+      "round2": 0.9965678971295999
+    },
+    {
+      "type": "Record-INT4",
+      "metric": "L2",
+      "round1": 0.975395422202006,
+      "round2": 1.032020854215354
+    },
+    {
+      "type": "Raw-INT4",
+      "metric": "IP",
+      "round1": 0.9764893864178896,
+      "round2": 1.0627832717146923
+    },
+    {
+      "type": "Record-INT4",
+      "metric": "IP",
+      "round1": 0.9906782788023194,
+      "round2": 1.0360796343781897
+    }
+  ]
+}

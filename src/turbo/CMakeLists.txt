@@ -207,6 +207,19 @@ if(ZVEC_TOPK_TARGET_X86)
         PROPERTIES COMPILE_FLAGS "${_TURBO_INTERLEAVED_AVX2_FLAGS}")
 endif()
 
+# AVX512 joint kernels need AVX512F and FP16 conversion, not BW/DQ/VL/VNNI.
+if(ZVEC_TOPK_TARGET_X86)
+    if(MSVC)
+        set(_TURBO_INTERLEAVED_AVX512_FLAGS "/arch:AVX512")
+    elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(_TURBO_INTERLEAVED_AVX512_FLAGS "-march=x86-64 -mavx512f -mf16c")
+    else()
+        set(_TURBO_INTERLEAVED_AVX512_FLAGS "-march=i686 -mavx512f -mf16c")
+    endif()
+    set_source_files_properties(distance/avx512/interleaved_many_to_many.cc
+        PROPERTIES COMPILE_FLAGS "${_TURBO_INTERLEAVED_AVX512_FLAGS}")
+endif()
+
 # The joint interleaved kernel uses baseline AArch64 NEON and FP32 arithmetic,
 # including FP16-to-FP32 conversion; it does not require FEAT_FP16 arithmetic.
 # Keep this translation unit at the ISA promised by its runtime dispatch gate.

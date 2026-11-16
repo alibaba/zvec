@@ -193,6 +193,18 @@ void CheckJointQueries(turbo::CpuArchType arch = turbo::CpuArchType::kAuto) {
           EXPECT_EQ(-12345.0f, result.back());
           EXPECT_EQ(original_matrix, matrix);
           EXPECT_EQ(original_queries, queries);
+          if (arch == turbo::CpuArchType::kAVX512) {
+            auto avx2 = turbo::get_interleaved_many_to_many_distance_func(
+                ip ? turbo::MetricType::kInnerProduct
+                   : turbo::MetricType::kSquaredEuclidean,
+                turbo::MatrixDataType<T>(), rows, turbo::CpuArchType::kAVX2);
+            if (avx2) {
+              std::vector<float> reference(rows * n + 2, -12345.0f);
+              avx2(matrix.data() + 1, pointers.data(), n, dim,
+                   reference.data() + 1);
+              EXPECT_EQ(reference, result);
+            }
+          }
           for (size_t q = 0; q < n; ++q) {
             for (size_t i = 0; i < rows; ++i) {
               double expected = 0, magnitude = 1;
@@ -234,6 +246,17 @@ TEST(TurboMatrix, Avx2JointInterleavedQueriesAndNoAllocations) {
     CheckJointQueries<ailego::Float16>(CpuArchType::kAVX2);
 }
 
+TEST(TurboMatrix, Avx512JointInterleavedQueriesAndNoAllocations) {
+  using namespace turbo;
+  if (!get_interleaved_many_to_many_distance_func(
+          MetricType::kInnerProduct, DataType::kFp32, 32, CpuArchType::kAVX512))
+    GTEST_SKIP() << "AVX512 joint kernel unavailable";
+  CheckJointQueries<float>(CpuArchType::kAVX512);
+  if (get_interleaved_many_to_many_distance_func(
+          MetricType::kInnerProduct, DataType::kFp16, 32, CpuArchType::kAVX512))
+    CheckJointQueries<ailego::Float16>(CpuArchType::kAVX512);
+}
+
 TEST(TurboMatrix, InterleavedDispatchHonorsArchitectureAndLayout) {
   using namespace turbo;
   for (auto type : {DataType::kFp32, DataType::kFp16}) {
@@ -246,7 +269,10 @@ TEST(TurboMatrix, InterleavedDispatchHonorsArchitectureAndLayout) {
             metric, type, rows, CpuArchType::kNEON);
         auto avx2 = get_interleaved_many_to_many_distance_func(
             metric, type, rows, CpuArchType::kAVX2);
-        EXPECT_EQ(bool(neon) || bool(avx2), bool(automatic));
+        auto avx512 = get_interleaved_many_to_many_distance_func(
+            metric, type, rows, CpuArchType::kAVX512);
+        EXPECT_EQ(bool(neon) || bool(avx2) || bool(avx512), bool(automatic));
+        if (avx512) EXPECT_EQ(automatic.target_type(), avx512.target_type());
 #if defined(AILEGO_ARM64_GNU_LIKE)
         ASSERT_TRUE(neon);
 #else
@@ -254,9 +280,9 @@ TEST(TurboMatrix, InterleavedDispatchHonorsArchitectureAndLayout) {
 #endif
         if (neon) neon(nullptr, nullptr, 0, 128, nullptr);
         if (avx2) avx2(nullptr, nullptr, 0, 128, nullptr);
-        for (auto arch :
-             {CpuArchType::kScalar, CpuArchType::kSSE2, CpuArchType::kAVX512,
-              CpuArchType::kAVX512VNNI, CpuArchType::kAVX512FP16}) {
+        if (avx512) avx512(nullptr, nullptr, 0, 128, nullptr);
+        for (auto arch : {CpuArchType::kScalar, CpuArchType::kSSE2,
+                          CpuArchType::kAVX512VNNI, CpuArchType::kAVX512FP16}) {
           EXPECT_FALSE(get_interleaved_many_to_many_distance_func(metric, type,
                                                                   rows, arch));
         }
@@ -295,6 +321,34 @@ TEST(TurboMatrix, InterleavedDispatchHonorsArchitectureAndLayout) {
                                 MetricType::kInnerProduct, DataType::kFp32, 32,
                                 CpuArchType::kAVX2)));
   }
+}
+
+TEST(TurboMatrix, InterleavedAvx512FeatureGatesAndFallback) {
+  using namespace turbo;
+  auto &flags = ailego::internal::CpuFeatures::static_flags_;
+  const auto saved = flags;
+  for (auto type : {DataType::kFp32, DataType::kFp16}) {
+    flags.AVX512F = false;
+    auto disabled = get_interleaved_many_to_many_distance_func(
+        MetricType::kInnerProduct, type, 32, CpuArchType::kAVX512);
+    auto automatic = get_interleaved_many_to_many_distance_func(
+        MetricType::kInnerProduct, type, 32);
+    auto avx2 = get_interleaved_many_to_many_distance_func(
+        MetricType::kInnerProduct, type, 32, CpuArchType::kAVX2);
+    flags = saved;
+    EXPECT_FALSE(disabled);
+    if (avx2) EXPECT_EQ(automatic.target_type(), avx2.target_type());
+  }
+  auto full = get_interleaved_many_to_many_distance_func(
+      MetricType::kInnerProduct, DataType::kFp32, 32, CpuArchType::kAVX512);
+  flags.F16C = false;
+  auto half = get_interleaved_many_to_many_distance_func(
+      MetricType::kInnerProduct, DataType::kFp16, 32, CpuArchType::kAVX512);
+  auto full_without_f16c = get_interleaved_many_to_many_distance_func(
+      MetricType::kInnerProduct, DataType::kFp32, 32, CpuArchType::kAVX512);
+  flags = saved;
+  EXPECT_FALSE(half);
+  EXPECT_EQ(bool(full), bool(full_without_f16c));
 }
 
 TEST(TurboMatrix, InterleavedFp16AccumulatesInFp32) {

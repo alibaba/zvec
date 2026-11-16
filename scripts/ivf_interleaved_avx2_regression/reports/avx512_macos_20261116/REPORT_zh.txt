@@ -1,0 +1,68 @@
+AVX512 交错布局联合内核 — macOS ARM64 回归
+2026-11-16
+
+结论：MACOS_REGRESSION_PASS_EXISTING_UB_REMAINS
+生产改动仅四个文件：新增 AVX512 .cc/.h、Turbo 分派表、按 ISA 的 CMake 编译选项。
+IVF 调用点不变；新增 FP32/FP16、IP/L2 联合计算；不转置、不分配；FP16 转 FP32 累加。
+AUTO 在支持的 x86 上优先 AVX512，否则继续 AVX2/NEON。macOS ARM64 继续使用 NEON。
+
+正确性
+- 53 个相关程序：{'passed': 578, 'skipped': 48, 'disabled': 10, 'failed': 0}。
+- 旧索引兼容：12 通过 / 4 跳过 / 16 禁用 / 0 失败。
+- 强制 AVX512 专项在 ARM64 上按预期跳过，不计为 AVX512 正确性通过。
+- 新测试覆盖行数/查询数/维度尾部、无分配、输入不变、输出哨兵、double 参考、
+  AVX512 与 AVX2 完全相等、AUTO 优先级及 CPU 特性缺失时回退；x86 必须实际执行。
+- 最终 matrix 测试重新构建/执行于 final-matrix-normal 和 final-matrix-ubsan；
+  correctness.json/ubsan.json 已使用这两份最终结果。
+
+UBSan
+- 5 个相关程序全插桩；没有新增报告、旧 record 对齐报告为 0。
+- 仍有此前 entropy_integer_quantizer/integer_quantizer.cc:352 的 NaN 转 signed char 报告。
+  因此不是 sanitizer 全绿；本轮未修改该文件。原始日志完整保留。
+- 本轮 macOS 运行 UBSan，未运行 ASan；原生 x86 必须运行完整 ASan+UBSan。
+
+实际 IVF 查询性能
+- 基线 5f489fd4 在任何生产修改前从本地源码构建并静态链接；候选单独静态链接。
+- 基线/候选二进制 SHA256 见 performance/provenance.json；两边使用同一 bench.cc。
+- 每轮 288 项，5 个 >=50ms 样本取中位数。首轮 before→after，次轮 after→before。
+- 任一轮 >5% 的 69 项逐项交替复测两轮；持续回退 0 项。
+- 构建和 UBSan 均结束后开始计时；日常桌面后台服务仍在运行，未进行 CPU 绑核。
+- 是构造的旧交错索引上真实 search_impl 查询，完整块为 32 行；不覆盖全部生产数据集，
+  不代表 2/4/8/16 行内核的性能已测，也不代表 AVX512 在服务器上更快。
+- 比值 = 基线耗时 / 候选耗时，表内为组内几何平均，>1 为更快。
+
+类型 | 度量 | 第一轮 | 第二轮
+--- | --- | --- | ---
+Raw-FP32 | L2 | 0.976x | 1.008x
+Raw-FP32 | IP | 0.976x | 1.033x
+Raw-FP16 | L2 | 0.980x | 0.958x
+Raw-FP16 | IP | 1.000x | 0.979x
+Raw-INT8 | L2 | 0.986x | 0.912x
+Record-INT8 | L2 | 0.998x | 0.961x
+Raw-INT8 | IP | 1.006x | 0.971x
+Record-INT8 | IP | 0.982x | 0.973x
+Raw-INT4 | L2 | 0.986x | 0.997x
+Record-INT4 | L2 | 0.975x | 1.032x
+Raw-INT4 | IP | 0.976x | 1.063x
+Record-INT4 | IP | 0.991x | 1.036x
+
+Top-K：[{'round': 1, 'records': 39360, 'ids_identical': True, 'max_score_error': 0.0}, {'round': 2, 'records': 39360, 'ids_identical': True, 'max_score_error': 0.0}]
+持续回退：[]
+
+x86 静态检查及交接
+- 新内核以 Apple Clang x86_64、-march=x86-64 -mavx512f -mf16c 交叉编译通过。
+- 优化汇编可见 ZMM FMA、FP16→FP32 转换；这不是原生 x86 执行证据。
+- 新文件 clang-format 18、全部修改 C++ 文件格式检查及 git diff --check 通过。
+- 交接包内完整 SHA256 和前后源码集合/文件 hash 自检通过；同一测试补丁用于双方。
+- 入口 scripts/ivf_interleaved_avx2_regression/AVX512_AGENT_zh.txt；
+  独立包 artifacts/ivf-interleaved-avx512-handoff-20261116.tar.gz 及 .sha256。
+- 要求原生 x86 强制 AVX512/AVX2、AUTO 分派、旧索引、ASan+UBSan、两轮长采样，
+  以及实际 IVF 叶子扫描命中新 AVX512 联合内核的调用栈或 perf 证据。
+- 本轮代码、说明、交接包和 macOS 证据随本次提交归档；基准数据及生产源码未再改动。
+
+最终静态/交接检查：新 AVX512 内核的 x86 clang-tidy、matrix 测试 clang-tidy 通过。
+最终 mask 的 constexpr 分支修正不进入 ARM64 编译；重新编译的 ARM stub 对象逐字节相同，
+见 macos-stub-comparison.json，不改变本次已测 macOS 二进制中的执行代码。
+实际压缩包解包后验证包内 SHA256 和前后完整源码 hash 通过；冻结候选 CMake 配置通过。
+本地依赖 checkout 为 legacy_code_cleanup/zvec（与现有回归构建一致）；
+首次 package 配置指向未初始化子模块的当前 checkout，失败日志保留；改用既有依赖后通过。
