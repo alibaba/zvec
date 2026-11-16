@@ -14,10 +14,12 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <thread>
 #include <arrow/api.h>
 #include <arrow/io/api.h>
 #include <arrow/ipc/api.h>
@@ -206,6 +208,19 @@ class RecallTest : public testing::Test {
   }
 
   static void TearDownTestSuite() {
+    // LIMIT can return while cancelled child plans release their segments.
+    // Keep the fixture's last references until that cleanup finishes so the
+    // segment destructors close RocksDB before its directory is removed.
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    for (const auto &segment : segments_) {
+      while (segment.use_count() > 1 &&
+             std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      }
+      ASSERT_EQ(segment.use_count(), 1)
+          << "Cancelled query retained a segment during fixture cleanup";
+    }
     segments_.clear();
     FileHelper::RemoveDirectory(seg_path_);
   }
