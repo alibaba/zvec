@@ -10,6 +10,26 @@ Third-Party Components
 ================================================================================
 
 --------------------------------------------------------------------------------
+Apache Arrow / Gandiva
+--------------------------------------------------------------------------------
+Project: Apache Arrow 21.0.0, including the optional Gandiva scalar JIT extension
+Homepage: https://arrow.apache.org/
+License: Apache License, Version 2.0, with additional third-party notices
+Copyright 2016-2024 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+
+The complete upstream license and acknowledgments are retained in
+thirdparty/arrow/apache-arrow-21.0.0/LICENSE.txt and NOTICE.txt. JIT-enabled
+wheels and SDKs also include these unabridged texts as gandiva/LICENSE and
+NOTICE in their thirdparty directories, together with PROVENANCE.json.
+Local scalar JIT modifications are described in thirdparty/arrow/gandiva/README.rst
+and PROVENANCE.json; upstream notices remain in Arrow-derived source files.
+The experimental release toolchain also supplies the LLVM and OpenSSL license
+texts in the packaged jit-toolchain directory.
+
+--------------------------------------------------------------------------------
 Unicode Character Database
 --------------------------------------------------------------------------------
 Project: Unicode Character Database

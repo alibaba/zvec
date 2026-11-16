@@ -18,6 +18,10 @@
     _ZTSN4zvec*;
     _ZTTN4zvec*;
     _ZGVN4zvec*;
+    /* Function-local singleton guards must coalesce with their exported
+       objects across the executable/DSO boundary, just as on macOS. */
+    _ZGVZN4zvec*;
+    _ZGVZNK4zvec*;
   local:
     *;
 };
