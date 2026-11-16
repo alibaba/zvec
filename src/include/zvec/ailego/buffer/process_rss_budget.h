@@ -521,6 +521,8 @@ class ProcessRssBudget {
     pending_allocations_ -= bytes;
     if (allocated) {
       backing_ += bytes;
+      estimate_.account_new_backing(bytes);
+      native_estimate_.account_new_backing(bytes);
       // Keep the in-flight debit until a successful sample can observe it.
       remember_materialization(bytes);
     } else {
@@ -672,6 +674,10 @@ class ProcessRssBudget {
       return false;
     }
     counter += bytes;
+    if (&counter == &backing_) {
+      estimate_.account_new_backing(bytes);
+      native_estimate_.account_new_backing(bytes);
+    }
     if (pending_copy) {
       pending_materializations_ += materialization;
     } else {
@@ -763,14 +769,25 @@ class ProcessRssBudget {
   }
 
   struct Estimate {
+    void account_new_backing(size_t bytes) {
+      if (!initialized_) unobserved_backing_ += bytes;
+    }
     void reset(size_t sample, size_t backing) {
+      // An initial observation can include adopted startup owners, but cannot
+      // prove new allocations made while this reader was inactive are resident.
+      const size_t overlap = backing - std::min(backing, unobserved_backing_);
       baseline_rss_ = recovery_floor_ = sample_ = sample;
-      baseline_backing_ = sampled_backing_ = backing;
-      resident_upper_ = std::min(sample, backing);
+      baseline_backing_ = sampled_backing_ = overlap;
+      resident_upper_ = std::min(sample, overlap);
       pending_releases_ = 0;
+      unobserved_backing_ = 0;
       initialized_ = true;
     }
     void exclude_permanent(size_t bytes, size_t backing) {
+      if (!initialized_) {
+        unobserved_backing_ = std::min(unobserved_backing_, backing);
+        return;
+      }
       // Excluded lifetime owners stay in measured RSS but no longer belong to
       // this ledger's overlap. They cannot retire unrelated live allowances.
       baseline_backing_ -= std::min(baseline_backing_, bytes);
@@ -779,6 +796,12 @@ class ProcessRssBudget {
       resident_upper_ -= std::min(bytes, resident_upper_ - pending_releases_);
     }
     void release(size_t bytes, size_t backing) {
+      if (!initialized_) {
+        // Without allocation identities, retire adopted overlap first, keeping
+        // every still-possible unobserved owner charged until initialization.
+        unobserved_backing_ = std::min(unobserved_backing_, backing);
+        return;
+      }
       const size_t possibly_resident =
           std::min(bytes, resident_upper_ - pending_releases_);
       pending_releases_ += possibly_resident;
@@ -868,6 +891,7 @@ class ProcessRssBudget {
     size_t resident_upper_{0};
     size_t pending_releases_{0};
     size_t sample_{0};
+    size_t unobserved_backing_{0};
     bool initialized_{false};
   };
 

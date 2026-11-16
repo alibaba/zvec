@@ -204,6 +204,56 @@ TEST(ProcessRssBudgetTest, ReconfigurationPreservesBackingAcrossDisabledGate) {
   }
 }
 
+TEST(ProcessRssBudgetTest, EmptyDisabledLedgerRetainsNewBacking) {
+  constexpr size_t limit = 256 * kMiB;
+  for (const bool use_native_sample : {false, true}) {
+    for (const bool permanent : {false, true}) {
+      for (const bool complete_offline : {false, true}) {
+        SCOPED_TRACE(testing::Message()
+                     << "native=" << use_native_sample << " permanent="
+                     << permanent << " complete_offline=" << complete_offline);
+        ProcessRssBudget budget;
+        sampled_rss = 128 * kMiB;
+        native_sample = {128 * kMiB, 128 * kMiB};
+        native_sample_valid = true;
+        const auto reader = use_native_sample ? ReadNative : nullptr;
+        const size_t room =
+            128 * kMiB -
+            (use_native_sample ? ProcessRssBudget::headroom(limit) : 0);
+        if (permanent) budget.account(16 * kMiB);
+        ASSERT_TRUE(budget.configure(limit, ReadRss, reader,
+                                     permanent ? 16 * kMiB : 0));
+        ASSERT_TRUE(budget.configure(0, nullptr));
+        // Adopt an already resident owner after disabling an empty ledger.
+        // New OS backing must remain distinct from that startup overlap.
+        if (!permanent) budget.account(16 * kMiB);
+        ASSERT_TRUE(budget.try_reserve(64 * kMiB));
+        ProcessRssBudget::MaterializationStamp lazy;
+        if (complete_offline) lazy = budget.finish_reservation(64 * kMiB, true);
+        ASSERT_TRUE(budget.configure(limit, ReadRss, reader));
+        if (!complete_offline)
+          lazy = budget.finish_reservation(64 * kMiB, true);
+        EXPECT_EQ(room - 64 * kMiB, budget.available());
+        const bool admitted = budget.try_reserve(96 * kMiB);
+        EXPECT_FALSE(admitted);
+        if (admitted) budget.finish_reservation(96 * kMiB, false);
+        if (!permanent) budget.release_heap(16 * kMiB, {});
+        EXPECT_EQ(room - 64 * kMiB, budget.available());
+        budget.release_unmapped(64 * kMiB, lazy);
+        EXPECT_EQ(room, budget.available());
+        // Direct lifetime allowances also represent potentially untouched
+        // backing, including before this reader's first observation.
+        ASSERT_TRUE(budget.configure(0, nullptr));
+        ASSERT_TRUE(budget.try_acquire(32 * kMiB));
+        ASSERT_TRUE(budget.configure(limit, ReadRss, reader));
+        EXPECT_EQ(room - 32 * kMiB, budget.available());
+        budget.release(32 * kMiB);
+        EXPECT_EQ(room, budget.available());
+      }
+    }
+  }
+}
+
 TEST(ProcessRssBudgetTest, PermanentBackingCannotWitnessTemporaryOwners) {
   for (const bool background : {false, true}) {
     for (const bool reenable : {false, true}) {
