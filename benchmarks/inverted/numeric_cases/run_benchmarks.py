@@ -39,7 +39,6 @@ from benchmark_helpers import (
 
 ROOT = Path(__file__).resolve().parents[3]
 BENCHMARK = "inverted_numeric_bench"
-NUMERIC_SEED = 20261115
 DATA_TYPES = ("int32", "int64")
 DISTRIBUTIONS = ("uniform", "hotspot_moderate", "hotspot_extreme")
 
@@ -89,17 +88,11 @@ def validate_build(build, profile, args, overrides):
         "name": profile["name"],
         "distribution": profile["name"],
         "num_docs": args.num_docs,
-        "seed": NUMERIC_SEED,
         **overrides,
     }
     for key, value in expected.items():
         if dataset.get(key) != value:
             fail(f"Build dataset mismatch: {key}")
-    if (
-        not isinstance(dataset.get("data_fingerprint"), str)
-        or not dataset["data_fingerprint"]
-    ):
-        fail("Build is missing its data fingerprint")
     validate_metrics(build)
     for key in (
         "insert_seconds",
@@ -121,11 +114,6 @@ def validate_build(build, profile, args, overrides):
         name = safe_name(case.get("name"))
         if name in cases:
             fail(f"Build contains duplicate query case: {name}")
-        if (
-            not isinstance(case.get("query_fingerprint"), str)
-            or not case["query_fingerprint"]
-        ):
-            fail(f"Build is missing query fingerprint: {name}")
         cases[name] = case
     return cases
 
@@ -133,36 +121,25 @@ def validate_build(build, profile, args, overrides):
 def validate_verification(verification, build, cases):
     if verification.get("passed") is not True:
         fail("Correctness verification did not pass")
-    if verification.get("data_fingerprint") != build["dataset"]["data_fingerprint"]:
-        fail("Build and verification data fingerprints differ")
     verified = {case["name"]: case for case in verification["cases"]}
     if len(verified) != len(verification["cases"]) or set(verified) != set(cases):
         fail("Verification did not cover exactly all workload cases")
     for name in cases:
         case, result = cases[name], verified[name]
-        if result["query_fingerprint"] != case["query_fingerprint"]:
-            fail(f"Verification query fingerprint mismatch: {name}")
         if not isinstance(case["inputs"], list) or not case["inputs"]:
             fail(f"Missing query inputs: {name}")
-        for field in ("counts", "id_fingerprints"):
-            if field in result and (
-                not isinstance(result[field], list)
-                or len(result[field]) != len(case["inputs"])
-            ):
-                fail(f"Incomplete verification {field}: {name}")
-        for count in result.get("counts", []):
+        counts = result.get("counts")
+        if not isinstance(counts, list) or len(counts) != len(case["inputs"]):
+            fail(f"Incomplete verification counts: {name}")
+        for count in counts:
             if type(count) is not int or not 0 <= count <= build["dataset"]["num_docs"]:
                 fail(f"Invalid verification hit count: {name}")
     return verified
 
 
-def validate_query(query, name, build, verified):
+def validate_query(query, name, verified):
     if query.get("case") != name:
         fail(f"Unexpected query case: {name}")
-    if query.get("data_fingerprint") != build["dataset"]["data_fingerprint"]:
-        fail(f"Query data fingerprint mismatch: {name}")
-    if query["query_fingerprint"] != verified["query_fingerprint"]:
-        fail(f"Query input fingerprint mismatch: {name}")
     if "match_counts" in query and query["match_counts"] != verified.get("counts"):
         fail(f"Query hit counts differ from verification: {name}")
     if "completed_queries" in query:
@@ -175,9 +152,7 @@ def validate_query(query, name, build, verified):
     validate_metrics(query)
 
 
-def validate_numeric_queries(report, build, cases, verified):
-    if report.get("data_fingerprint") != build["dataset"]["data_fingerprint"]:
-        fail("Query data fingerprint mismatch")
+def validate_numeric_queries(report, cases, verified):
     entries = report.get("cases")
     if not isinstance(entries, list) or any(
         not isinstance(entry, dict) or not isinstance(entry.get("case"), str)
@@ -188,7 +163,7 @@ def validate_numeric_queries(report, build, cases, verified):
     if len(queries) != len(entries) or set(queries) != set(cases):
         fail("Numeric query report must cover exactly all workload cases")
     for name, query in queries.items():
-        validate_query(query, name, build, verified[name])
+        validate_query(query, name, verified[name])
     return queries
 
 
@@ -239,7 +214,7 @@ def run_profile(binary, output, profile, args, overrides):
             logs / "query.log",
             run_dir=directory,
         )
-        query_results = validate_numeric_queries(report, build, cases, verified)
+        query_results = validate_numeric_queries(report, cases, verified)
         builds.append(build)
         for name in cases:
             verifications[name].append(report_details(verified[name]))
@@ -255,7 +230,6 @@ def run_profile(binary, output, profile, args, overrides):
         "cases": [
             {
                 "name": name,
-                "query_fingerprint": expected_cases[name]["query_fingerprint"],
                 "metrics": summarize_metrics(samples),
                 "details": [report_details(sample) for sample in samples],
                 "verification": verifications[name],

@@ -8,11 +8,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
 #include "metrics.h"
-#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
-#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
@@ -47,19 +45,6 @@ std::string Hex(uint64_t value) {
   std::ostringstream stream;
   stream << std::hex << std::setfill('0') << std::setw(16) << value;
   return stream.str();
-}
-
-void HashId(uint64_t *hash, uint32_t id) {
-  for (unsigned shift = 0; shift < 32; shift += 8)
-    *hash = (*hash ^ ((id >> shift) & 0xffU)) * 1099511628211ULL;
-}
-
-std::string InputFingerprint(const std::string &name, const JsonArray &inputs) {
-  uint64_t hash = 14695981039346656037ULL;
-  const std::string encoded =
-      name + ":" + JsonValue(inputs).as_json_string().as_stl_string();
-  for (unsigned char c : encoded) hash = (hash ^ c) * 1099511628211ULL;
-  return Hex(hash);
 }
 
 JsonValue JsonStringValue(const std::string &value) {
@@ -201,37 +186,11 @@ JsonArray BuildMetricNames() {
   return names;
 }
 
-JsonObject FrequencyStats(const std::vector<uint64_t> &frequencies) {
-  JsonObject result, percentiles;
-  JsonArray counts;
-  std::vector<uint64_t> observed;
-  for (auto count : frequencies) {
-    counts.push(JsonValue(count));
-    if (count) observed.push_back(count);
-  }
-  result.set("term_doc_frequencies", counts);
-  result.set("observed_cardinality",
-             JsonValue(static_cast<uint64_t>(observed.size())));
-  if (!observed.empty()) {
-    std::sort(observed.begin(), observed.end());
-    percentiles.set("min", JsonValue(observed.front()));
-    percentiles.set("p50", JsonValue(observed[(observed.size() - 1) / 2]));
-    percentiles.set("p95",
-                    JsonValue(observed[(observed.size() - 1) * 95 / 100]));
-    percentiles.set("max", JsonValue(observed.back()));
-  }
-  result.set("observed_term_df", percentiles);
-  return result;
-}
-
-JsonObject QueryReport(const std::string &name, const JsonArray &inputs,
-                       const Measurement &measurement, double warmup_seconds,
-                       double measure_seconds, const JsonObject &before,
-                       const JsonObject &after) {
+JsonObject QueryReport(const std::string &name, const Measurement &measurement,
+                       double warmup_seconds, double measure_seconds,
+                       const JsonObject &before, const JsonObject &after) {
   auto result = Report("query");
   result.set("case", JsonStringValue(name));
-  result.set("query_fingerprint",
-             JsonStringValue(InputFingerprint(name, inputs)));
   result.set("completed_queries", JsonValue(measurement.completed));
   result.set("elapsed_seconds", JsonValue(measurement.elapsed_seconds));
   result.set("mean_ns_per_query", JsonValue(measurement.elapsed_seconds * 1e9 /

@@ -5,10 +5,7 @@ Benchmarks for zvec's inverted index using synthetic data.
 Follow the [shared build setup](../README.md), then build from the repository root:
 
 ```bash
-cmake --build build --parallel \
-  --target inverted_numeric_bench inverted_bench_test
-
-build/bin/inverted_bench_test
+cmake --build build --parallel --target inverted_numeric_bench
 ```
 
 ## Code layout
@@ -25,18 +22,6 @@ Query cases are read from the build report. Python uses only the standard librar
 `shared/` provides helpers without defining workloads or controlling suite execution.
 
 See [Numeric benchmarks](numeric_cases/README.md) for configuration and commands.
-
-Start reviewing a suite's header for configuration and entry points, then `main.cc` for its CLI.
-The adjacent `*_test.cc` covers correctness and boundary cases; `run_benchmarks_test.py`
-covers that suite's orchestration.
-
-Run the Python tests independently:
-
-```bash
-python3 -m unittest discover -s benchmarks/inverted/numeric_cases -p 'run_benchmarks_test.py'
-
-python3 -m unittest discover -s benchmarks/inverted/shared -p 'benchmark_helpers_test.py'
-```
 
 ## Results
 

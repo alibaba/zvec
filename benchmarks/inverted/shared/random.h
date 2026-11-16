@@ -34,10 +34,6 @@ class Random {
     return value % bound;
   }
 
-  double unit() {
-    return static_cast<double>(engine_() >> 11) * 0x1.0p-53;
-  }
-
   template <typename T>
   void shuffle(std::vector<T> &items) {
     for (size_t remaining = items.size(); remaining > 1; --remaining) {

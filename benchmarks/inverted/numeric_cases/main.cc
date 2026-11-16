@@ -137,7 +137,9 @@ NumericProfile ProfileFromFlags(DataType type) {
   return profile;
 }
 
+
 }  // namespace
+
 
 int main(int argc, char **argv) {
   const bool no_arguments = argc == 1;

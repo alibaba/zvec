@@ -12,7 +12,6 @@
 #include "report_utils.h"
 #include <filesystem>
 #include <set>
-#include <sstream>
 #include <stdexcept>
 
 namespace zvec::benchmarks::inverted {
@@ -24,24 +23,14 @@ JsonObject InputRecord(const std::string &name, const JsonArray &inputs) {
   JsonObject result;
   result.set("name", JsonStringValue(name));
   result.set("inputs", inputs);
-  result.set("query_fingerprint",
-             JsonStringValue(InputFingerprint(name, inputs)));
   return result;
 }
 
-std::vector<JsonObject> SelectInputs(const JsonArray &cases,
-                                     const std::string &filter) {
-  std::set<std::string> requested, seen;
-  if (!filter.empty()) {
-    std::istringstream stream(filter);
-    std::string name;
-    while (std::getline(stream, name, ',')) {
-      if (name.empty() || !requested.insert(name).second)
-        throw std::invalid_argument("Empty or duplicate query filter");
-    }
-    if (filter.back() == ',') throw std::invalid_argument("Empty query filter");
-  }
-  std::vector<JsonObject> selected;
+std::vector<JsonObject> ReadQueryInputs(const JsonArray &cases) {
+  if (cases.empty())
+    throw std::invalid_argument("Query case list must not be empty");
+  std::set<std::string> seen;
+  std::vector<JsonObject> records;
   for (const auto &value : cases) {
     if (!value.is_object()) throw std::invalid_argument("Invalid query record");
     const auto entry = value.as_object();
@@ -50,15 +39,12 @@ std::vector<JsonObject> SelectInputs(const JsonArray &cases,
         !entry["inputs"].is_array())
       throw std::invalid_argument("Invalid or duplicate query parameters");
     const auto inputs = entry["inputs"].as_array();
-    if (inputs.empty() ||
-        Text(entry, "query_fingerprint") != InputFingerprint(name, inputs))
-      throw std::invalid_argument("Query parameter fingerprint mismatch: " +
+    if (inputs.empty())
+      throw std::invalid_argument("Query parameter pool must be nonempty: " +
                                   name);
-    if (filter.empty() || requested.erase(name)) selected.push_back(entry);
+    records.push_back(entry);
   }
-  if (!requested.empty())
-    throw std::invalid_argument("Unknown query: " + *requested.begin());
-  return selected;
+  return records;
 }
 
 JsonObject LoadBuild(const std::string &build_report_path,
@@ -72,20 +58,18 @@ JsonObject LoadBuild(const std::string &build_report_path,
     throw std::invalid_argument("Index path does not match build report");
   const auto dataset = build["dataset"].as_object();
   const auto count = Number(dataset, "num_docs");
-  if (!count || count > UINT32_MAX || Number(dataset, "seed") > INT64_MAX)
-    throw std::invalid_argument("Invalid saved dataset size or seed");
-  SelectInputs(build["cases"].as_array(), "");
+  if (!count || count > UINT32_MAX)
+    throw std::invalid_argument("Invalid saved dataset size");
+  ReadQueryInputs(build["cases"].as_array());
   return build;
 }
 
 JsonObject LoadVerification(const std::string &verification_path,
-                            const JsonObject &build, const JsonObject &inputs) {
+                            const JsonObject &inputs) {
   const auto verified = ReadJson(verification_path);
   if (Number(verified, "schema_version") != 2 ||
       Text(verified, "phase") != "verify" || !verified["passed"].is_boolean() ||
-      !verified["passed"].as_bool() || !verified["cases"].is_array() ||
-      Text(verified, "data_fingerprint") !=
-          Text(build["dataset"].as_object(), "data_fingerprint"))
+      !verified["passed"].as_bool() || !verified["cases"].is_array())
     throw std::invalid_argument(
         "Successful verification of this dataset is required");
   const auto name = Text(inputs, "name");
@@ -101,8 +85,6 @@ JsonObject LoadVerification(const std::string &verification_path,
     if (!seen.insert(entry_name).second)
       throw std::invalid_argument("Duplicate verification record");
     if (entry_name == name) {
-      if (Text(entry, "query_fingerprint") != Text(inputs, "query_fingerprint"))
-        throw std::invalid_argument("Verification query fingerprint mismatch");
       result = entry;
       found = true;
     }
@@ -111,19 +93,4 @@ JsonObject LoadVerification(const std::string &verification_path,
   return result;
 }
 
-void CheckRegenerated(const JsonObject &build, const std::string &fingerprint,
-                      const JsonArray &inputs) {
-  if (Text(build["dataset"].as_object(), "data_fingerprint") != fingerprint)
-    throw std::runtime_error("Regenerated data differs from build input");
-  const auto saved = SelectInputs(build["cases"].as_array(), "");
-  const auto regenerated = SelectInputs(inputs, "");
-  if (saved.size() != regenerated.size())
-    throw std::runtime_error("Regenerated query set differs");
-  for (size_t i = 0; i < saved.size(); ++i) {
-    if (Text(saved[i], "name") != Text(regenerated[i], "name") ||
-        Text(saved[i], "query_fingerprint") !=
-            Text(regenerated[i], "query_fingerprint"))
-      throw std::runtime_error("Regenerated query parameters differ");
-  }
-}
 }  // namespace zvec::benchmarks::inverted

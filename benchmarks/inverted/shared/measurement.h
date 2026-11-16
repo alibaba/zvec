@@ -48,31 +48,24 @@ Measurement MeasurePool(size_t pool_size, double warmup_seconds,
   return result;
 }
 
-struct VerifiedIds {
-  uint64_t count{0};
-  std::string fingerprint;
-};
-
-// Optional for tests returning document sets. The predicate must independently
-// inspect original data, rather than consulting the index or result bitmap.
+// Verify document IDs against original data. The predicate must not consult
+// the index or result bitmap.
 template <typename Predicate>
-VerifiedIds VerifyIds(uint32_t num_docs,
-                      const InvertedSearchResult::Ptr &actual,
-                      Predicate &&matches) {
+uint64_t VerifyIds(uint32_t num_docs, const InvertedSearchResult::Ptr &actual,
+                   Predicate &&matches) {
   if (!actual) throw std::runtime_error("Index query failed");
   auto iterator = actual->create_iterator();
-  uint64_t count = 0, hash = UINT64_C(14695981039346656037);
+  uint64_t count = 0;
   for (uint32_t id = 0; id < num_docs; ++id) {
     if (!matches(id)) continue;
     if (!iterator->valid() || iterator->doc_id() != id)
       throw std::runtime_error("ID mismatch at doc " + std::to_string(id));
     ++count;
-    HashId(&hash, id);
     iterator->next();
   }
   if (iterator->valid() || actual->count() != count)
     throw std::runtime_error("Extra IDs or incorrect result count");
-  return {count, Hex(hash)};
+  return count;
 }
 
 inline std::vector<uint64_t> VerifiedCounts(const JsonObject &verification,

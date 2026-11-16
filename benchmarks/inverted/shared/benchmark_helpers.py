@@ -160,8 +160,6 @@ def report_details(report):
         "cases",
         "index_path",
         "environment",
-        "data_fingerprint",
-        "query_fingerprint",
     ):
         details.pop(key, None)
     for key in report.get("metric_names", []):

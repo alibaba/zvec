@@ -18,12 +18,9 @@ namespace zvec::benchmarks::inverted {
 // Report helpers receive only their inputs; CLI options belong to each suite.
 JsonObject LoadBuild(const std::string &build_report_path,
                      const std::string &index_path);
-std::vector<JsonObject> SelectInputs(const JsonArray &cases,
-                                     const std::string &filter);
+std::vector<JsonObject> ReadQueryInputs(const JsonArray &cases);
 JsonObject LoadVerification(const std::string &verification_path,
-                            const JsonObject &build, const JsonObject &inputs);
+                            const JsonObject &inputs);
 JsonObject InputRecord(const std::string &name, const JsonArray &inputs);
-void CheckRegenerated(const JsonObject &build, const std::string &fingerprint,
-                      const JsonArray &inputs);
 
 }  // namespace zvec::benchmarks::inverted

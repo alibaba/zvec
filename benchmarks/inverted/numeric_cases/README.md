@@ -2,6 +2,9 @@
 
 Benchmarks for inverted indexes over INT32 and INT64 data.
 
+`profile.h/.cc` defines workload configuration; `dataset.h/.cc` generates and describes
+data; `numeric_cases.h/.cc` selects queries and implements build, verify, and query.
+
 Follow the [shared build setup](../../README.md), then run from the repository root:
 
 ```bash
@@ -38,15 +41,10 @@ which validates it and records the resolved configuration in the reports.
 
 The Python script translates `--profile` to the executable's `--distribution`.
 
-| Distribution | Hot values | Non-NULL documents on hot values |
-| --- | ---: | ---: |
-| `uniform` | — | — |
-| `hotspot_moderate` | 3,000 | 50% |
-| `hotspot_extreme` | 300 | 90% |
-
 Uniform samples every candidate value with equal probability. Hotspot selects distinct hot
 values across the domain; remaining documents sample cold values outside that set. Each group
-samples uniformly. Hotspot parameters are fixed by the distribution and recorded in reports.
+samples uniformly. `hotspot_extreme` concentrates documents on hot values more strongly than
+`hotspot_moderate`; both use fixed presets identified by name in reports.
 
 `0_to_30000` means `[0, 30000]`; `0_to_type_max` means `[0, INT32_MAX]` or `[0, INT64_MAX]`.
 Both bounds are inclusive. Sampling and statistics do not allocate the full value domain.
@@ -57,7 +55,7 @@ values in nondecreasing order. Both use the same values and NULL positions. NULL
 zero, `num_docs / 10`, or `num_docs / 2` NULLs, with deterministic, randomly distributed positions.
 
 Query operands are derived from the generated data. Reports retain compact cardinality,
-frequency, and value-bound summaries with a frequency fingerprint, rather than a per-value table.
+frequency, and value-bound summaries.
 Range targets refer to non-NULL documents and may be approximate; ordinary match ratios use all
 documents. Query reports retain actual hit counts.
 
