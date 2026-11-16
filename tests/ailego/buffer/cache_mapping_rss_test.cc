@@ -496,6 +496,132 @@ TEST_F(CacheMappingRssTest, MandatoryAllocatorsProgressAfterProofExpiry) {
   EXPECT_EQ(73u, first[0]);
 }
 
+TEST_F(CacheMappingRssTest, BackgroundAllocatorsReclaimIdleNativeBacking) {
+  class Owner : public EvictableBlockOwner {
+   public:
+    bool in_callback{false};
+    size_t recursive_calls{0};
+    bool is_dead_block(size_t, size_t) override {
+      return false;
+    }
+    bool evict_block(size_t) override {
+      return false;
+    }
+    size_t recover_eviction_queue() override {
+      if (in_callback) ++recursive_calls;
+      return 0;
+    }
+  };
+  auto &queue = BlockEvictionQueue::get_instance();
+  const size_t page = pool_.page_buffer_size();
+  // These requests all fit in the idle pages. Retained allocation also needs
+  // its managed control block and a chunk; vector/mapping need their headers.
+  for (const bool rss : {false, true}) {
+    for (const bool idle : {false, true}) {
+      for (int api = 0; api < 7; ++api) {
+        SCOPED_TRACE(testing::Message()
+                     << "rss=" << rss << " idle=" << idle << " api=" << api);
+        ASSERT_EQ(0, pool_.init(0));
+        constexpr size_t count = 32;
+        const size_t workspace_bytes = rss ? 64 * kMiB : 0;
+        const size_t workspace_metadata =
+            rss ? sizeof(MemoryLimitPool::WorkspaceBuffer) : 0;
+        ASSERT_EQ(0, pool_.init(pool_.queue_allocated() + workspace_bytes +
+                                workspace_metadata + (count + 1) * page));
+        MemoryLimitPoolTestPeer::stop_background(pool_);
+        MemoryLimitPool::WorkspaceBuffer *workspace = nullptr;
+        std::vector<char *> pages(count);
+        std::promise<bool> completed;
+        auto result = completed.get_future();
+        std::atomic<bool> invoked{false};
+        Owner owner;
+        queue.set_valid(&owner);
+        auto shutdown = ScopeGuard::Make([&] {
+          MemoryLimitPoolTestPeer::stop_background(pool_);
+          pool_.set_process_rss_reclaimer({});
+          queue.set_invalid(&owner);
+          pool_.set_memory_pressure(ProcessRssBudget::PressureLevel::kNormal);
+          EXPECT_TRUE(pool_.configure_process_rss_limit(0));
+          for (char *buffer : pages)
+            if (buffer) pool_.release_buffer(buffer, page);
+          EXPECT_TRUE(pool_.release_workspace_buffer(workspace));
+        });
+        if (rss) {
+          workspace = pool_.try_acquire_workspace_buffer(workspace_bytes);
+          ASSERT_NE(nullptr, workspace);
+          std::memset(workspace->data, 73, workspace->bytes);
+        }
+        for (auto &buffer : pages)
+          ASSERT_TRUE(pool_.try_acquire_buffer(page, buffer, true));
+        if (idle) {
+          for (auto &buffer : pages) {
+            pool_.release_buffer(buffer, page);
+            buffer = nullptr;
+          }
+        }
+        ASSERT_EQ(pool_.capacity(), pool_.committed());
+        const size_t used = pool_.used();
+        ASSERT_EQ(idle ? count * page : 0, pool_.committed() - used);
+        // Tight RSS requires a proof both before and after discarding idle
+        // backing: the discard's raw observation expires the first witness.
+        if (rss)
+          ASSERT_TRUE(pool_.configure_process_rss_limit(
+              MemoryHelper::SelfRSS() + 64 * kMiB));
+        const size_t waits = pool_.stats().capacity_waits;
+        pool_.set_process_rss_reclaimer([&] {
+          if (invoked.exchange(true)) return;
+          owner.in_callback = true;
+          auto leave = ScopeGuard::Make([&] { owner.in_callback = false; });
+          bool allocated = false;
+          try {
+            if (api == 0) {
+              BudgetedAlignedBuffer buffer(page, 64);
+              std::memset(buffer.data(), 73, buffer.size());
+              allocated = static_cast<uint8_t *>(buffer.data())[page - 1] == 73;
+            } else if (api == 1) {
+              BudgetedVector<uint8_t> values(page, 73);
+              allocated = values.back() == 73;
+            } else if (api == 2) {
+              BudgetedMappedBuffer buffer(page);
+              std::memset(buffer.data(), 73, buffer.size());
+              allocated = buffer.data()[page - 1] == 73;
+            } else if (api == 3) {
+              RetainedBlockAllocator<uint64_t> allocator;
+              auto *value = allocator.allocate(1);
+              value[0] = 73;
+              allocated = value[0] == 73;
+              allocator.deallocate(value, 1);
+            } else if (api == 4) {
+              allocated = pool_.try_charge_metadata(page);
+              if (allocated) pool_.release_metadata(page);
+            } else if (api == 5) {
+              allocated = pool_.try_charge_workspace_plan(page);
+              if (allocated) pool_.release_workspace_plan(page);
+            } else {
+              allocated = pool_.try_charge_external(page);
+              if (allocated) pool_.release_external(page);
+            }
+          } catch (const std::bad_alloc &) {
+          }
+          completed.set_value(allocated);
+        });
+        pool_.set_memory_pressure(ProcessRssBudget::PressureLevel::kBackground);
+        MemoryLimitPoolTestPeer::start_background(pool_);
+        ASSERT_EQ(std::future_status::ready,
+                  result.wait_for(std::chrono::seconds(2)));
+        EXPECT_EQ(idle, result.get());
+        MemoryLimitPoolTestPeer::stop_background(pool_);
+        EXPECT_EQ(waits, pool_.stats().capacity_waits);
+        EXPECT_EQ(0u, owner.recursive_calls);
+        EXPECT_EQ(used, pool_.used());
+        EXPECT_EQ(0u, MemoryLimitPoolTestPeer::waiters(pool_));
+        EXPECT_EQ(0u, MemoryLimitPoolTestPeer::native_waiting(pool_));
+      }
+    }
+  }
+  RecordProperty("background_admission_cases", "28");
+}
+
 TEST_F(CacheMappingRssTest,
        MandatoryMaterializationWaitsWithZeroOrSmallGrowth) {
   auto *workspace = pool_.try_acquire_workspace_buffer(64 * kMiB);

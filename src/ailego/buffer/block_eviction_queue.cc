@@ -2507,8 +2507,13 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
   // notifications cannot turn a bounded wait into unbounded retry work.
   if (admit()) return true;
   const auto deadline = Clock::now() + std::chrono::seconds(5);
-  // A maintenance callback must not wait for the thread executing itself.
-  if (wait && refresh_residency_on_background_thread()) return admit();
+  // Maintenance can release idle backing and prove residency itself, but
+  // cannot wait for its own worker or recursively invoke eviction owners.
+  const bool maintenance = refresh_residency_on_background_thread();
+  if (maintenance) {
+    wait = false;
+    if (admit()) return true;
+  }
   const auto impossible = [&] {
     const size_t capacity = pool_size_.load(std::memory_order_relaxed);
     return request.native_bytes > capacity ||
@@ -2544,10 +2549,14 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
       previous_shortfall = shortfall;
       if (trim_free_buffers(shortfall) != 0) {
         process_rss_.refresh(true);
+        // Discarding backing takes a raw observation. Restore its ownership
+        // proof here instead of making maintenance wait for its next round.
+        if (maintenance) refresh_residency_on_background_thread();
         if (admit()) return true;
         continue;
       }
-      if (BlockEvictionQueue::get_instance().reclaim_for_allocation(
+      if (!maintenance &&
+          BlockEvictionQueue::get_instance().reclaim_for_allocation(
               shortfall)) {
         // Eviction frees logical slots first. Turn idle pages into backing
         // headroom before judging progress, including with RSS disabled.
