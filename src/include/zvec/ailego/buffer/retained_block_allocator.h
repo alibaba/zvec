@@ -118,6 +118,11 @@ class RetainedBlockResource {
       lock.lock();
       chunk->next = chunks_[index];
       chunks_[index] = chunk;
+    } else if (!MemoryLimitPool::get_instance().try_materialize_retained_block(
+                   chunk)) {
+      // A live chunk can still contain untouched or reclaimed pages. Admit
+      // reuse before changing either its free list or its unused-slot cursor.
+      throw std::bad_alloc();
     }
     void *slot = chunk->free_head;
     if (slot)

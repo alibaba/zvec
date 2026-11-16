@@ -738,6 +738,9 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   // init() may publish capacity while monitoring reads it.
   std::atomic<size_t> pool_size_{0};
   std::atomic<bool> initialized_{false};
+  // Keep init() calls serialized while joining maintenance without blocking
+  // allocations performed by an in-flight process-cache reclaimer.
+  std::mutex initialization_mutex_;
   // Serialize reinitialization with reservations, but not releases.
   mutable std::shared_mutex lifecycle_mutex_;
   // Includes pending page reservations, not just materialized allocations.

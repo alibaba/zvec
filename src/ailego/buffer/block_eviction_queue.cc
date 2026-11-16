@@ -1886,12 +1886,30 @@ int MemoryLimitPool::init(size_t pool_size) {
   // and adopt all retained allocations when publishing a non-zero budget.
   // Keep the existing preallocation policy and reject an insufficient budget.
   (void)BlockEvictionQueue::get_instance();
-  std::unique_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+  std::lock_guard<std::mutex> initialization_lock(initialization_mutex_);
   // Re-publishing the active process-wide budget is a safe no-op.
   if (initialized_.load(std::memory_order_acquire) &&
       pool_size_.load(std::memory_order_relaxed) == pool_size) {
     return 0;
   }
+  // A running reclaimer may allocate through the pool. Let it finish before
+  // taking the reservation lock, otherwise joining maintenance can deadlock
+  // with a callback waiting for that lock's shared side.
+  bool restart_previous = bg_running_.load();
+  stop_background_evictor();
+  auto restart_evictor = ScopeGuard::Make([this, &restart_previous] {
+    if (!restart_previous) return;
+    try {
+      start_background_evictor();
+    } catch (const std::exception &e) {
+      LOG_ERROR("Failed to restart the shared-cache evictor: %s", e.what());
+    } catch (...) {
+      LOG_ERROR("Failed to restart the shared-cache evictor");
+    }
+  });
+  std::unique_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+  // The callback may have created owners. Check again only after it has
+  // finished, preserving the previous pool and worker on a rejected reset.
   // Idle cache descriptors are allocator metadata, not active owners.
   trim_cache_buffers(std::numeric_limits<size_t>::max());
   const size_t used = used_size_.load(std::memory_order_relaxed);
@@ -1913,38 +1931,21 @@ int MemoryLimitPool::init(size_t pool_size) {
     return -1;
   }
 
-  // Tear down the background evictor first: it reads pool_size_ and touches
-  // the free-list, both of which we are about to reset.
-  const bool was_running = bg_running_.load();
-  stop_background_evictor();
   std::unique_lock<std::mutex> queue_lock(queue_memory_mutex_);
   const size_t queue_bytes =
       queue_allocated_size_.load(std::memory_order_relaxed);
-  auto restart_previous_pool = [&] {
-    queue_lock.unlock();
-    if (was_running) {
-      try {
-        start_background_evictor();
-      } catch (const std::exception &e) {
-        LOG_ERROR("Failed to restart the shared-cache evictor: %s", e.what());
-      } catch (...) {
-        LOG_ERROR("Failed to restart the shared-cache evictor");
-      }
-    }
-    return -1;
-  };
   if (pool_size != 0 && pool_size < queue_bytes) {
     LOG_ERROR(
         "Shared cache budget cannot fit eviction queues: capacity=%zu "
         "queue_bytes=%zu",
         pool_size, queue_bytes);
-    return restart_previous_pool();
+    return -1;
   }
   // No owner allocations remain. Keep the existing budget active until the
   // old allocator releases its backing, so failure leaves it usable.
   if (!drain_free_list() ||
       retained_block_bytes_.load(std::memory_order_relaxed) != 0) {
-    return restart_previous_pool();
+    return -1;
   }
   const size_t old_charge = queue_charged_size_.exchange(0);
   if (old_charge != 0) {
@@ -1963,6 +1964,7 @@ int MemoryLimitPool::init(size_t pool_size) {
   }
   initialized_.store(true, std::memory_order_release);
   queue_lock.unlock();
+  restart_previous = false;
   LOG_INFO("Shared cache initialized with capacity: %zu", pool_size);
   if (pool_size > 0) {
     try {

@@ -1,6 +1,8 @@
 // Copyright 2025-present the zvec project
 // SPDX-License-Identifier: Apache-2.0
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <future>
 #include <memory>
@@ -8,6 +10,7 @@
 #include <ailego/pattern/scope_guard.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/buffer/budgeted_allocator.h>
 
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
@@ -17,6 +20,12 @@ namespace zvec::ailego {
 struct MemoryLimitPoolTestPeer {
   static void stop_background(MemoryLimitPool &pool) {
     pool.stop_background_evictor();
+  }
+  static void start_background(MemoryLimitPool &pool) {
+    pool.start_background_evictor();
+  }
+  static bool background_running(MemoryLimitPool &pool) {
+    return pool.bg_running_.load();
   }
   static size_t mappings(MemoryLimitPool &pool) {
     std::lock_guard<std::mutex> lock(pool.cache_mapping_mutex_);
@@ -121,6 +130,54 @@ TEST_F(CacheMappingRssTest, ReturningLargeMappingBoundsIdleBackingImmediately) {
   EXPECT_EQ(3 * kMiB, pool_.evictable_cache_used());
   EXPECT_EQ(0x5a, live->data[0]);
 }
+
+#if GTEST_HAS_DEATH_TEST && !defined(__ANDROID__) && \
+    (!defined(__APPLE__) || !TARGET_OS_IPHONE)
+TEST_F(CacheMappingRssTest,
+       ReinitializationAllowsReentrantReclaimerAllocation) {
+  // A subprocess bounds a deadlock regression without leaving blocked threads
+  // in the remaining tests. The callback must finish before reset returns.
+  ASSERT_EXIT(
+      ([] {
+        using namespace std::chrono_literals;
+        auto &pool = MemoryLimitPool::get_instance();
+        std::promise<void> entered, resume, finished;
+        auto proceed = resume.get_future();
+        auto done = finished.get_future();
+        std::atomic<bool> allocated{false};
+        std::atomic<int> status{-1};
+        pool.set_process_rss_reclaimer([&] {
+          entered.set_value();
+          proceed.wait();
+          BudgetedAllocator<uint64_t> allocator;
+          auto *value = allocator.allocate(8);
+          allocator.deallocate(value, 8);
+          allocated = true;
+        });
+        pool.set_memory_pressure(ProcessRssBudget::PressureLevel::kBackground);
+        MemoryLimitPoolTestPeer::start_background(pool);
+        if (entered.get_future().wait_for(2s) != std::future_status::ready)
+          std::_Exit(1);
+        std::thread reset([&] {
+          status = pool.init(0);
+          finished.set_value();
+        });
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        while (MemoryLimitPoolTestPeer::background_running(pool)) {
+          if (std::chrono::steady_clock::now() >= deadline) std::_Exit(2);
+          std::this_thread::yield();
+        }
+        resume.set_value();
+        if (done.wait_for(2s) != std::future_status::ready) std::_Exit(3);
+        reset.join();
+        std::_Exit(allocated && status == 0 && pool.capacity() == 0 &&
+                           pool.external_used() == 0
+                       ? 0
+                       : 4);
+      }()),
+      testing::ExitedWithCode(0), "");
+}
+#endif
 
 #if (defined(__linux__) && !defined(__ANDROID__)) || \
     (defined(__APPLE__) && TARGET_OS_OSX)

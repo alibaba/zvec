@@ -126,6 +126,39 @@ TEST_F(SharedMemoryBudgetTest, RetainedAllocatorCanReleaseOnAnotherThread) {
   EXPECT_EQ(0u, pool_.external_used());
 }
 
+TEST_F(SharedMemoryBudgetTest, RetainedSlotsObeyPressureAndRssAdmission) {
+  RetainedBlockAllocator<uint64_t> allocator;
+  auto *first = allocator.allocate(64);
+  auto *second = allocator.allocate(64);
+  auto cleanup = ScopeGuard::Make([&] {
+    pool_.configure_process_rss_limit(0);
+    pool_.set_memory_pressure(ProcessRssBudget::PressureLevel::kNormal);
+    allocator.deallocate(first, 64);
+    allocator.deallocate(second, 64);
+  });
+  first[0] = 73;
+  allocator.deallocate(second, 64);
+  second = nullptr;
+  const size_t charged = pool_.external_used();
+  const auto allocate = [&] {
+    auto *value = allocator.allocate(64);
+    allocator.deallocate(value, 64);
+  };
+  pool_.set_memory_pressure(ProcessRssBudget::PressureLevel::kCritical);
+  EXPECT_THROW(allocate(), std::bad_alloc);  // Previously freed slot.
+  pool_.set_memory_pressure(ProcessRssBudget::PressureLevel::kNormal);
+  second = allocator.allocate(64);
+  pool_.set_memory_pressure(ProcessRssBudget::PressureLevel::kCritical);
+  EXPECT_THROW(allocate(), std::bad_alloc);  // Previously unused slot.
+  pool_.set_memory_pressure(ProcessRssBudget::PressureLevel::kNormal);
+  ASSERT_TRUE(pool_.configure_process_rss_limit(1));
+  EXPECT_THROW(allocate(), std::bad_alloc);
+  ASSERT_TRUE(pool_.configure_process_rss_limit(0));
+  EXPECT_NO_THROW(allocate());
+  EXPECT_EQ(73u, first[0]);
+  EXPECT_EQ(charged, pool_.external_used());
+}
+
 TEST_F(SharedMemoryBudgetTest, DisabledBudgetKeepsOrdinaryAllocationAvailable) {
   ASSERT_EQ(0, pool_.init(0));
   MemoryReservation memory;
