@@ -177,6 +177,38 @@ TEST_F(CacheMappingRssTest,
       }()),
       testing::ExitedWithCode(0), "");
 }
+
+TEST_F(CacheMappingRssTest, PermanentBackingRejectsResetAndRepeatedExclusion) {
+  // Permanent reservations last until process exit. Keep this test's global
+  // pool and its irreversible exclusion out of the remaining fixtures.
+  ASSERT_EXIT(([] {
+                auto &pool = MemoryLimitPool::get_instance();
+                const size_t capacity = pool.capacity();
+                const size_t permanent = pool.queue_metadata_used();
+                if (!permanent ||
+                    !pool.configure_process_rss_limit(512UL << 20, permanent))
+                  std::_Exit(1);
+                MemoryLimitPoolTestPeer::start_background(pool);
+                if (pool.init(0) == 0 ||
+                    pool.init(capacity + (64UL << 20)) == 0 ||
+                    pool.init(capacity) != 0 || pool.capacity() != capacity ||
+                    !MemoryLimitPoolTestPeer::background_running(pool))
+                  std::_Exit(2);
+                if (!pool.try_charge_external(permanent)) std::_Exit(3);
+                // Disabling the RSS gate must not forget which lifetime backing
+                // was already excluded, even with sufficient temporary bytes to
+                // exclude.
+                if (!pool.configure_process_rss_limit(0) || pool.init(0) == 0 ||
+                    pool.configure_process_rss_limit(512UL << 20, permanent) ||
+                    !pool.configure_process_rss_limit(512UL << 20))
+                  std::_Exit(4);
+                pool.release_external(permanent);
+                if (!pool.try_charge_external(permanent)) std::_Exit(5);
+                pool.release_external(permanent);
+                std::_Exit(0);
+              }()),
+              testing::ExitedWithCode(0), "");
+}
 #endif
 
 #if (defined(__linux__) && !defined(__ANDROID__)) || \

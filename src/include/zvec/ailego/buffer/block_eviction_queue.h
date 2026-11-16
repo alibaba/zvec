@@ -280,6 +280,8 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   bool configure_process_rss_limit(size_t bytes);
   // On initial setup only, permanent_backing is already charged to the pool
   // and its owners never release it. It stays included in measured RSS.
+  // Its exclusion survives RSS disable/re-enable; native capacity changes
+  // are rejected afterward, while init() with the same capacity is a no-op.
   bool configure_process_rss_limit(size_t bytes, size_t permanent_backing);
   // Queues host pressure; reclamation runs on existing maintenance.
   void set_memory_pressure(ProcessRssBudget::PressureLevel level);

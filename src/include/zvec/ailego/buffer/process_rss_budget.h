@@ -191,7 +191,9 @@ class ProcessRssBudget {
                  ResidentReader resident_reader = nullptr) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (permanent_backing &&
-        (!limit || this->limit() || permanent_backing > backing_))
+        (!limit || this->limit() ||
+         permanent_backing_.load(std::memory_order_relaxed) != 0 ||
+         permanent_backing > backing_))
       return false;
     const auto resident =
         limit && resident_reader
@@ -206,6 +208,8 @@ class ProcessRssBudget {
     // from the reclaimable RSS ledger so later temporary frees cannot consume
     // their overlap or make an unchanged sample count them twice.
     backing_ -= permanent_backing;
+    if (permanent_backing)
+      permanent_backing_.store(permanent_backing, std::memory_order_relaxed);
     // Changing an active limit must not forget live, possibly untouched
     // backing. The initial sample already includes pre-existing allocations.
     if (!limit || !this->limit()) estimate_.reset(rss, backing_);
@@ -476,6 +480,9 @@ class ProcessRssBudget {
 
   size_t limit() const {
     return limit_.load(std::memory_order_relaxed);
+  }
+  size_t permanent_backing() const {
+    return permanent_backing_.load(std::memory_order_relaxed);
   }
   size_t available() const {
     return available_.load(std::memory_order_relaxed);
@@ -892,6 +899,9 @@ class ProcessRssBudget {
   Reader reader_{nullptr};
   ResidentReader resident_reader_{nullptr};
   size_t backing_{0};
+  // This exclusion lasts for the owners' entire process lifetime, including
+  // while the RSS gate is disabled. It must never be deducted a second time.
+  std::atomic<size_t> permanent_backing_{0};
   size_t pending_allocations_{0};
   size_t pending_materializations_{0};
   Estimate estimate_;

@@ -1836,6 +1836,7 @@ bool MemoryLimitPool::configure_process_rss_limit(size_t bytes) {
 
 bool MemoryLimitPool::configure_process_rss_limit(size_t bytes,
                                                   size_t permanent_backing) {
+  std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
   auto resident_reader = &MemoryLimitPool::read_slab_resident_sample;
 #if (defined(__linux__) && !defined(__ANDROID__)) || \
     (defined(__APPLE__) && TARGET_OS_OSX)
@@ -1908,6 +1909,16 @@ int MemoryLimitPool::init(size_t pool_size) {
     }
   });
   std::unique_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
+  // Lifetime exclusions have already left the RSS backing ledger. Changing
+  // native capacity would retire and re-adopt the queue charge, which cannot
+  // be paired with that exclusion. Keep the original pool intact instead.
+  if (process_rss_.permanent_backing() != 0) {
+    LOG_ERROR(
+        "MemoryLimitPool reinitialization rejected with permanent process "
+        "backing: requested_capacity=%zu permanent_backing=%zu",
+        pool_size, process_rss_.permanent_backing());
+    return -1;
+  }
   // The callback may have created owners. Check again only after it has
   // finished, preserving the previous pool and worker on a rejected reset.
   // Idle cache descriptors are allocator metadata, not active owners.

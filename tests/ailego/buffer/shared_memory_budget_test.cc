@@ -96,6 +96,38 @@ TEST_F(SharedMemoryBudgetTest, StandardVectorGrowthPreservesOverlapAndData) {
   for (const auto value : values) EXPECT_EQ(91u, value);
 }
 
+TEST_F(SharedMemoryBudgetTest, StringWorkspaceAssignmentKeepsCapacityCharged) {
+  BudgetedStringWorkspace source, destination;
+  source.reserve(64UL << 10);
+  source.value.assign(64UL << 10, 'a');
+  destination.reserve(1UL << 20);
+  destination.value.assign(1UL << 20, 'b');
+  destination = source;
+  EXPECT_EQ(source.value, destination.value);
+  EXPECT_EQ(destination.value.capacity() + 1, destination.memory.bytes());
+  EXPECT_EQ(source.memory.bytes() + destination.memory.bytes(),
+            pool_.external_used());
+
+  BudgetedStringWorkspace moved;
+  moved.reserve(128UL << 10);
+  moved = std::move(destination);
+  EXPECT_EQ(0u, destination.memory.bytes());
+  EXPECT_EQ(source.value, moved.value);
+  EXPECT_EQ(moved.value.capacity() + 1, moved.memory.bytes());
+  EXPECT_EQ(source.memory.bytes() + moved.memory.bytes(),
+            pool_.external_used());
+
+  const auto *data = moved.value.data();
+  const size_t charged = pool_.external_used();
+  const size_t remaining = pool_.capacity() - pool_.used();
+  ASSERT_TRUE(pool_.try_charge_external(remaining));
+  auto release = ScopeGuard::Make([&] { pool_.release_external(remaining); });
+  EXPECT_THROW(moved = source, std::bad_alloc);
+  EXPECT_EQ(data, moved.value.data());
+  EXPECT_EQ(source.value, moved.value);
+  EXPECT_EQ(charged + remaining, pool_.external_used());
+}
+
 TEST_F(SharedMemoryBudgetTest, MappedGrowthRefusalPreservesOwnedBacking) {
   BudgetedMappedBuffer bytes(4096);
   std::memset(bytes.data(), 19, bytes.size());

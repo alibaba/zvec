@@ -87,6 +87,19 @@ class BudgetedStringBuffer {
 struct BudgetedStringWorkspace {
   MemoryReservation memory;
   std::string value;
+  BudgetedStringWorkspace() = default;
+  BudgetedStringWorkspace(const BudgetedStringWorkspace &other) {
+    reserve(other.value.size());
+    value.assign(other.value);
+  }
+  BudgetedStringWorkspace(BudgetedStringWorkspace &&) noexcept = default;
+  BudgetedStringWorkspace &operator=(BudgetedStringWorkspace other) noexcept {
+    // The old allocation stays charged until its replacement is admitted and
+    // both the string and its reservation have transferred ownership.
+    memory.swap(other.memory);
+    value.swap(other.value);
+    return *this;
+  }
   void reserve(size_t bytes) {
     ReserveStringCapacity(value, memory, bytes);
   }
