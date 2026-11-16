@@ -453,7 +453,7 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   // priority, just like acquiring one from the idle cache-buffer pool.
   bool can_reuse_cache_backing() const {
     return !process_rss_.pressure() &&
-           workspace_waiting_size_.load(std::memory_order_relaxed) == 0;
+           mandatory_waiters_.load(std::memory_order_relaxed) == 0;
   }
   void request_cache_reclaim(size_t bytes);
 
@@ -514,7 +514,7 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   //! Optional preparation uses only unoccupied page/RSS headroom. The result
   //! is an estimate; each subsequent allocation still needs normal admission.
   size_t prefetch_available() {
-    if (workspace_waiting_size_.load(std::memory_order_relaxed) != 0) return 0;
+    if (mandatory_waiters_.load(std::memory_order_relaxed) != 0) return 0;
     process_rss_.refresh();
     if (process_rss_.pressure()) return 0;
     const size_t limit = page_admission_limit();
@@ -654,16 +654,30 @@ class ZVEC_AILEGO_API MemoryLimitPool {
                            ProcessRssBudget::MappingProjection projection = {});
   bool try_reserve_allocation(size_t bytes, Backing backing = Backing::kLive,
                               size_t materialization = 0);
-  bool wait_for_available_impl(size_t bytes, std::chrono::milliseconds timeout,
-                               bool page_admission, bool required = false,
-                               size_t materialization = 0);
+  // Admission keeps three independent quantities:
+  //   new live/pending backing: native = bytes, RSS = bytes + copy exposure;
+  //   prepaid native plan:     native = bytes, RSS = 0;
+  //   backing under a plan:    native = 0,     RSS = bytes + copy exposure;
+  //   live mapping reuse:      native = 0,     RSS = 0 (reuse gate still
+  //   applies).
+  // Only native growth reserves page headroom. A waiter count signals proof
+  // and cache maintenance even when both growth quantities are zero. Neither
+  // priority counter is an allocation or changes the lifetime RSS ledger.
+  struct AdmissionRequest {
+    size_t native_bytes;
+    size_t rss_bytes;
+  };
+  size_t native_available() const;
+  size_t admission_shortfall(AdmissionRequest request) const;
+  template <typename Admit>
+  bool try_admit(AdmissionRequest request, Admit &&admit, bool wait);
   size_t page_admission_limit() const {
     const size_t capacity = pool_size_.load(std::memory_order_relaxed);
     const size_t reserve = page_admission_reserve();
     const size_t external = external_used_size_.load(std::memory_order_relaxed);
     const size_t remaining = reserve > external ? reserve - external : 0;
     const size_t waiting =
-        workspace_waiting_size_.load(std::memory_order_relaxed);
+        native_waiting_bytes_.load(std::memory_order_relaxed);
     return capacity - std::min(capacity, std::max(remaining, waiting));
   }
   bool try_charge_fixed(size_t bytes, std::atomic<size_t> *counter,
@@ -672,6 +686,8 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   bool try_charge_fixed_with_wait(size_t bytes, std::atomic<size_t> *counter,
                                   Backing backing = Backing::kLive,
                                   size_t materialization = 0);
+  bool try_charge_fixed_once(size_t bytes, std::atomic<size_t> *counter,
+                             Backing backing, size_t materialization);
   bool try_charge_locked(size_t bytes, std::atomic<size_t> *counter,
                          Backing backing);
   void release_fixed(size_t bytes, std::atomic<size_t> *counter,
@@ -760,9 +776,10 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   std::atomic<size_t> evictable_cache_size_{0};
   std::atomic<size_t> cache_reclaim_requested_{0};
   std::atomic<size_t> metadata_used_size_{0};
-  // Logical priority only, not an allocation: waiting mandatory consumers
-  // must be able to claim reclaimed bytes before optional page readmission.
-  std::atomic<size_t> workspace_waiting_size_{0};
+  // Logical priority only: reserve actual native growth for mandatory work,
+  // while RSS-only/proof waiters merely signal maintenance and optional caches.
+  std::atomic<size_t> native_waiting_bytes_{0};
+  std::atomic<size_t> mandatory_waiters_{0};
 
   // Serialize queue allocation with budget adoption/reinitialization. These
   // hooks never acquire lifecycle_mutex_ or call an eviction/reclaim path.

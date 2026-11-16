@@ -1074,32 +1074,11 @@ bool MemoryLimitPool::try_materialize_retained_block(void *data,
   const auto admit = [&] {
     return process_rss_.try_materialize_reusable(bytes, block->projection);
   };
-  if (admit()) return true;
-  if (!required) return false;
-  if (refresh_residency_on_background_thread()) return admit();
-  if (!process_rss_.has_resident_uncertainty()) return false;
+  if (!required) return admit();
   // The caller pins the chunk, but must not hold its allocator mutex while
   // maintenance proves residency or invokes a reclaimer that can use it.
   std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
-  size_t waiting = workspace_waiting_size_.load(std::memory_order_relaxed);
-  do {
-    if (bytes > std::numeric_limits<size_t>::max() - waiting) return false;
-  } while (!workspace_waiting_size_.compare_exchange_weak(
-      waiting, waiting + bytes, std::memory_order_relaxed));
-  auto release_priority = ScopeGuard::Make([this, bytes] {
-    workspace_waiting_size_.fetch_sub(bytes, std::memory_order_relaxed);
-    capacity_cv_.notify_all();
-  });
-  bg_cv_.notify_one();
-  for (size_t attempt = 0; attempt < 50; ++attempt) {
-    if (admit()) return true;
-    if (!process_rss_.has_resident_uncertainty()) return false;
-    std::unique_lock<std::mutex> lock(capacity_mutex_);
-    capacity_cv_.wait_for(lock, std::chrono::milliseconds(100), [this, bytes] {
-      return bytes <= process_rss_.available();
-    });
-  }
-  return admit();
+  return try_admit({0, 0}, admit, true);
 }
 
 void MemoryLimitPool::release_retained_block(void *data) {
@@ -2099,7 +2078,7 @@ void MemoryLimitPool::background_evict_loop() {
     // the proof still excludes untouched, retired and in-flight backing.
     const bool waiting_for_proof =
         process_rss_.has_resident_uncertainty() &&
-        workspace_waiting_size_.load(std::memory_order_relaxed) != 0;
+        mandatory_waiters_.load(std::memory_order_relaxed) != 0;
     const bool confirm =
         (process_rss_.needs_resident_confirmation() || waiting_for_proof) &&
         generation != confirmed_generation;
@@ -2154,7 +2133,7 @@ void MemoryLimitPool::background_evict_loop() {
     if (process_rss_.limit()) capacity_cv_.notify_all();
     const auto now = std::chrono::steady_clock::now();
     if ((process_rss_.pressure() ||
-         workspace_waiting_size_.load(std::memory_order_relaxed) != 0) &&
+         mandatory_waiters_.load(std::memory_order_relaxed) != 0) &&
         now - last_process_reclaim >= milliseconds(20)) {
       // RocksDB has a separate cache budget. Retire its unpinned entries too,
       // including when vector pages cannot make further reclamation progress.
@@ -2319,41 +2298,23 @@ bool MemoryLimitPool::wait_for_available(const size_t buffer_size,
 bool MemoryLimitPool::wait_for_available(size_t buffer_size,
                                          std::chrono::milliseconds timeout,
                                          bool required) {
-  return wait_for_available_impl(buffer_size, timeout, true, required);
-}
-
-bool MemoryLimitPool::wait_for_available_impl(size_t buffer_size,
-                                              std::chrono::milliseconds timeout,
-                                              bool page_admission,
-                                              bool required,
-                                              size_t materialization) {
-  if (materialization > std::numeric_limits<size_t>::max() - buffer_size)
-    return false;
-  const size_t process_bytes = buffer_size + materialization;
-  if (process_bytes == 0) {
-    return true;
-  }
+  if (buffer_size == 0) return true;
   capacity_waits_.fetch_add(1, std::memory_order_relaxed);
   std::unique_lock<std::mutex> lock(capacity_mutex_);
-  const bool available = capacity_cv_.wait_for(
-      lock, timeout,
-      [this, buffer_size, process_bytes, page_admission, required] {
+  const bool available =
+      capacity_cv_.wait_for(lock, timeout, [this, buffer_size, required] {
         const size_t capacity = pool_size_.load(std::memory_order_relaxed);
         const size_t used = used_size_.load(std::memory_order_relaxed);
         if (capacity < used || buffer_size > capacity - used) {
           return false;
         }
-        // Reusing a prepaid allowance can have no native-capacity growth,
-        // while still needing room for an independent heap materialization.
-        if (process_bytes > process_rss_.available()) return false;
-        if (page_admission && !required && process_rss_.pressure())
-          return false;
+        if (buffer_size > process_rss_.available()) return false;
+        if (!required && process_rss_.pressure()) return false;
         // A page can be denied below the total capacity: unconsumed external
         // cache headroom is not available to page admission. Use the same
         // page-limit predicate as eviction instead of turning backpressure
         // into immediate successful waits while pages still cannot fit.
-        if (!page_admission || !is_cacheable_buffer_size(buffer_size))
-          return true;
+        if (!is_cacheable_buffer_size(buffer_size)) return true;
         const size_t limit = page_admission_limit();
         if (used >= limit || buffer_size > limit - used) return false;
         for (const auto &shard : free_shards_)
@@ -2410,48 +2371,7 @@ bool MemoryLimitPool::try_charge_process_backing(size_t bytes,
                               bytes, materialization)
                         : process_rss_.try_acquire(bytes, materialization);
   };
-  if (admit()) return true;
-  if (refresh_residency_on_background_thread()) return admit();
-  if ((process_rss_.limit() && required > process_rss_.limit()) ||
-      (!process_rss_.materialization_allowed(materialization) &&
-       !process_rss_.has_resident_uncertainty()))
-    return false;
-  size_t waiting = workspace_waiting_size_.load(std::memory_order_relaxed);
-  do {
-    if (required > std::numeric_limits<size_t>::max() - waiting) return false;
-  } while (!workspace_waiting_size_.compare_exchange_weak(
-      waiting, waiting + required, std::memory_order_relaxed));
-  auto release_priority = ScopeGuard::Make([this, required] {
-    workspace_waiting_size_.fetch_sub(required, std::memory_order_relaxed);
-    capacity_cv_.notify_all();
-  });
-  bg_cv_.notify_one();
-  if (admit()) return true;
-  // Planning quota is already charged. Wait on RSS room independently of
-  // logical capacity, giving cache eviction and competing calls time to yield.
-  size_t previous_available = process_rss_.available();
-  for (size_t attempt = 0; attempt < 50; ++attempt) {
-    {
-      std::unique_lock<std::mutex> lock(capacity_mutex_);
-      capacity_cv_.wait_for(
-          lock, std::chrono::milliseconds(100),
-          [this, required] { return required <= process_rss_.available(); });
-    }
-    if (admit()) return true;
-    if (!process_rss_.materialization_allowed(materialization) &&
-        !process_rss_.has_resident_uncertainty())
-      return false;
-    const size_t current_available = process_rss_.available();
-    if (current_available <= previous_available) {
-      const auto queues = BlockEvictionQueue::get_instance().stats();
-      if (std::all_of(queues.approximate_queue_sizes.begin(),
-                      queues.approximate_queue_sizes.end(),
-                      [](size_t depth) { return depth == 0; }))
-        return false;
-    }
-    previous_available = current_available;
-  }
-  return false;
+  return try_admit({0, required}, admit, true);
 }
 
 bool MemoryLimitPool::try_charge_workspace_plan(size_t bytes) {
@@ -2529,7 +2449,7 @@ bool MemoryLimitPool::PendingAllocation::reserve(size_t bytes) {
     case Kind::kEvictableCache: {
       const size_t used = pool_.used();
       const size_t limit = pool_.high_watermark();
-      if (pool_.workspace_waiting_size_.load(std::memory_order_relaxed) == 0 &&
+      if (pool_.mandatory_waiters_.load(std::memory_order_relaxed) == 0 &&
           used <= limit && bytes <= limit - used &&
           pool_.try_reserve_allocation(bytes, Backing::kPending)) {
         counter_->fetch_add(bytes, std::memory_order_relaxed);
@@ -2562,150 +2482,176 @@ MemoryLimitPool::PendingAllocation::commit_mapping(size_t bytes) {
   return stamp;
 }
 
-bool MemoryLimitPool::try_charge_fixed_with_wait(const size_t buffer_size,
-                                                 std::atomic<size_t> *counter,
-                                                 Backing backing,
-                                                 size_t materialization) {
-  if (materialization > std::numeric_limits<size_t>::max() - buffer_size)
-    return false;
-  const size_t process_bytes = buffer_size + materialization;
-  if (try_charge_fixed(buffer_size, counter, backing, materialization)) {
-    return true;
-  }
-  if (refresh_residency_on_background_thread())
-    return try_charge_fixed(buffer_size, counter, backing, materialization);
-  if (materialization &&
-      !process_rss_.materialization_allowed(materialization) &&
-      !process_rss_.has_resident_uncertainty()) {
-    return false;
-  }
+size_t MemoryLimitPool::native_available() const {
   const size_t capacity = pool_size_.load(std::memory_order_relaxed);
-  if (buffer_size > capacity) {
-    return false;
+  const size_t reserved =
+      std::max(used_size_.load(std::memory_order_relaxed),
+               committed_size_.load(std::memory_order_relaxed));
+  return reserved < capacity ? capacity - reserved : 0;
+}
+
+size_t MemoryLimitPool::admission_shortfall(AdmissionRequest request) const {
+  const size_t native_room = native_available();
+  const size_t rss_room = process_rss_.available();
+  return std::max(
+      request.native_bytes - std::min(request.native_bytes, native_room),
+      request.rss_bytes - std::min(request.rss_bytes, rss_room));
+}
+
+template <typename Admit>
+bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
+                                bool wait) {
+  using Clock = std::chrono::steady_clock;
+  using std::chrono::milliseconds;
+  // One deadline covers inline retries and sleeps. Ready hints and spurious
+  // notifications cannot turn a bounded wait into unbounded retry work.
+  if (admit()) return true;
+  const auto deadline = Clock::now() + std::chrono::seconds(5);
+  // A maintenance callback must not wait for the thread executing itself.
+  if (wait && refresh_residency_on_background_thread()) return admit();
+  const auto impossible = [&] {
+    const size_t capacity = pool_size_.load(std::memory_order_relaxed);
+    return request.native_bytes > capacity ||
+           (process_rss_.limit() && request.rss_bytes > process_rss_.limit());
+  };
+  if (impossible()) return false;
+
+  if (wait) {
+    size_t waiting = native_waiting_bytes_.load(std::memory_order_relaxed);
+    do {
+      if (request.native_bytes > std::numeric_limits<size_t>::max() - waiting)
+        return false;
+    } while (!native_waiting_bytes_.compare_exchange_weak(
+        waiting, waiting + request.native_bytes, std::memory_order_relaxed));
+    mandatory_waiters_.fetch_add(1, std::memory_order_relaxed);
+    bg_cv_.notify_one();
   }
-  const size_t initial_fixed = fixed_used();
-  if (initial_fixed > capacity || buffer_size > capacity - initial_fixed) {
-    // Only a registered cache reclaimer can release idle fixed allowances.
-    // Waiting for page eviction cannot free live external reservations.
-    std::lock_guard<std::mutex> lock(process_reclaimer_mutex_);
-    if (!process_reclaimer_) return false;
-  }
-  size_t waiting = workspace_waiting_size_.load(std::memory_order_relaxed);
-  do {
-    if (process_bytes > std::numeric_limits<size_t>::max() - waiting)
-      return false;
-  } while (!workspace_waiting_size_.compare_exchange_weak(
-      waiting, waiting + process_bytes, std::memory_order_relaxed));
-  auto release_priority = ScopeGuard::Make([this, process_bytes] {
-    workspace_waiting_size_.fetch_sub(process_bytes, std::memory_order_relaxed);
+  auto release_priority = ScopeGuard::Make([this, request, wait] {
+    if (!wait) return;
+    native_waiting_bytes_.fetch_sub(request.native_bytes,
+                                    std::memory_order_relaxed);
+    mandatory_waiters_.fetch_sub(1, std::memory_order_relaxed);
     capacity_cv_.notify_all();
   });
-  bg_cv_.notify_one();
-  // Establish priority before another reclaim pass. A cache page may already
-  // have won the preceding race, but cannot repeatedly consume the released
-  // headroom while this mandatory consumer is waiting.
-  if (try_charge_fixed(buffer_size, counter, backing, materialization))
-    return true;
-  // Dirty writeback and CLOCK aging can need more than one bounded pass.
-  // A zero-page batch is not proof that the queue is unreclaimable: it may
-  // only have cleared reference bits or demoted recently used entries.
-  // Keep waiting while candidates or ownership uncertainty remain, but never
-  // beyond 50 waits. Known no-progress states still fail after one idle wait.
-  // Ordinary external-cache admission never enters this waiting path.
-  size_t previous_available = available();
-  size_t previous_process_available = process_rss_.available();
-  for (size_t attempt = 0; attempt < 50; ++attempt) {
-    (void)wait_for_available_impl(buffer_size, std::chrono::milliseconds(100),
-                                  false, false, materialization);
-    if (try_charge_fixed(buffer_size, counter, backing, materialization))
-      return true;
-    // One maintenance pass can release idle planning allowances. If fixed
-    // live reservations still cannot fit, page eviction cannot help further.
+  // Close the race between the first denial and publishing priority.
+  if (wait && admit()) return true;
+  size_t previous_shortfall = std::numeric_limits<size_t>::max();
+  while (Clock::now() < deadline) {
+    const size_t shortfall = admission_shortfall(request);
+    // Retry inline only after useful reclamation. A failed combined RSS gate
+    // must never retry merely because either component would fit by itself.
+    if (shortfall && shortfall < previous_shortfall) {
+      previous_shortfall = shortfall;
+      if (trim_free_buffers(shortfall) != 0) {
+        process_rss_.refresh(true);
+        if (admit()) return true;
+        continue;
+      }
+      if (BlockEvictionQueue::get_instance().reclaim_for_allocation(
+              shortfall)) {
+        // Eviction frees logical slots first. Turn idle pages into backing
+        // headroom before judging progress, including with RSS disabled.
+        trim_free_buffers(shortfall);
+        if (process_rss_.limit()) process_rss_.refresh(true);
+        if (admit()) return true;
+        continue;
+      }
+    }
+    if (!wait || impossible()) break;
+    bool has_reclaimer;
+    {
+      std::lock_guard<std::mutex> lock(process_reclaimer_mutex_);
+      has_reclaimer = static_cast<bool>(process_reclaimer_);
+    }
     const size_t fixed = fixed_used();
-    if (fixed > capacity || buffer_size > capacity - fixed) return false;
-    if (materialization &&
-        !process_rss_.materialization_allowed(materialization) &&
-        !process_rss_.has_resident_uncertainty())
-      return false;
-    const size_t current_available = available();
-    const size_t current_process_available = process_rss_.available();
-    // Empty page queues do not rule out a pending ownership proof. Native
-    // room can stay constant while a proof restores measured RSS headroom.
-    if (current_available <= previous_available &&
-        current_process_available <= previous_process_available &&
-        !process_rss_.has_resident_uncertainty()) {
+    const size_t capacity = pool_size_.load(std::memory_order_relaxed);
+    if ((fixed > capacity || request.native_bytes > capacity - fixed) &&
+        !has_reclaimer)
+      break;
+
+    // Observe increases relative to this failed attempt, rather than testing
+    // an already-true capacity hint. Reuse can be denied with zero new bytes;
+    // it still needs a paced retry after maintenance publishes a new proof.
+    const size_t native_room = native_available();
+    const size_t rss_room = process_rss_.available();
+    capacity_waits_.fetch_add(1, std::memory_order_relaxed);
+    {
+      std::unique_lock<std::mutex> lock(capacity_mutex_);
+      const bool progress = capacity_cv_.wait_until(
+          lock, std::min(deadline, Clock::now() + milliseconds(100)),
+          [this, native_room, rss_room, request] {
+            return (request.native_bytes && native_available() > native_room) ||
+                   process_rss_.available() > rss_room;
+          });
+      if (!progress)
+        capacity_wait_timeouts_.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (admit()) return true;
+    // Empty queues are conclusive only when no pending proof or registered
+    // process-cache reclaimer can restore admission. All three mandatory
+    // entry points use the same recovery rule and the same deadline.
+    if (!process_rss_.has_resident_uncertainty() && !has_reclaimer) {
       const auto queues = BlockEvictionQueue::get_instance().stats();
       if (std::all_of(queues.approximate_queue_sizes.begin(),
                       queues.approximate_queue_sizes.end(),
                       [](size_t depth) { return depth == 0; }))
-        return false;
+        break;
     }
-    previous_available = current_available;
-    previous_process_available = current_process_available;
+    previous_shortfall = std::numeric_limits<size_t>::max();
+    bg_cv_.notify_one();
   }
+  high_watermark_hits_.fetch_add(1, std::memory_order_relaxed);
   return false;
 }
 
-bool MemoryLimitPool::try_charge_fixed(const size_t buffer_size,
+bool MemoryLimitPool::try_charge_fixed_with_wait(size_t bytes,
+                                                 std::atomic<size_t> *counter,
+                                                 Backing backing,
+                                                 size_t materialization) {
+  if (materialization > std::numeric_limits<size_t>::max() - bytes)
+    return false;
+  const size_t rss_bytes =
+      backing == Backing::kPlan ? 0 : bytes + materialization;
+  return try_admit(
+      {bytes, rss_bytes},
+      [&] {
+        return try_charge_fixed_once(bytes, counter, backing, materialization);
+      },
+      true);
+}
+
+bool MemoryLimitPool::try_charge_fixed(size_t bytes,
                                        std::atomic<size_t> *counter,
                                        Backing backing,
                                        size_t materialization) {
-  if (buffer_size == 0) {
-    return !materialization || process_rss_.try_materialize(materialization);
-  }
-  const size_t capacity = pool_size_.load(std::memory_order_relaxed);
-  if (capacity == 0 || buffer_size > capacity) {
-    high_watermark_hits_.fetch_add(1, std::memory_order_relaxed);
+  if (materialization > std::numeric_limits<size_t>::max() - bytes)
     return false;
+  const size_t rss_bytes =
+      backing == Backing::kPlan ? 0 : bytes + materialization;
+  return try_admit(
+      {bytes, rss_bytes},
+      [&] {
+        return try_charge_fixed_once(bytes, counter, backing, materialization);
+      },
+      false);
+}
+
+bool MemoryLimitPool::try_charge_fixed_once(size_t bytes,
+                                            std::atomic<size_t> *counter,
+                                            Backing backing,
+                                            size_t materialization) {
+  if (bytes == 0)
+    return !materialization || process_rss_.try_materialize(materialization);
+  if (!try_reserve_allocation(bytes, backing, materialization)) return false;
+  counter->fetch_add(bytes, std::memory_order_relaxed);
+  // Tiny successful reservations do not need a maintenance wakeup while
+  // there is ample headroom; denial and wait paths always request it.
+  if (should_background_reclaim() || is_page_full() ||
+      mandatory_waiters_.load(std::memory_order_relaxed) != 0) {
+    bg_charge_notifications_.fetch_add(1, std::memory_order_relaxed);
+    bg_cv_.notify_one();
   }
-
-  while (true) {
-    if (try_reserve_allocation(buffer_size, backing, materialization)) {
-      counter->fetch_add(buffer_size, std::memory_order_relaxed);
-      // Successful tiny workspace reservations must not wake the evictor
-      // while there is ample headroom. Foreground denial/wait paths retain
-      // their unconditional notifications.
-      if (should_background_reclaim() || is_page_full() ||
-          workspace_waiting_size_.load(std::memory_order_relaxed) != 0) {
-        bg_charge_notifications_.fetch_add(1, std::memory_order_relaxed);
-        bg_cv_.notify_one();
-      }
-      return true;
-    }
-
-    // The measured gate can deny a materialization larger than the lifetime
-    // charge. In that case there is no point in spinning on the smaller delta.
-    if (materialization &&
-        !process_rss_.materialization_allowed(materialization)) {
-      return false;
-    }
-
-    // Logical admission may fail even with backing headroom while pages are
-    // in flight. Do not spin on committed capacity alone in that case.
-    const size_t reserved =
-        std::max(used_size_.load(std::memory_order_relaxed),
-                 committed_size_.load(std::memory_order_relaxed));
-    size_t available = std::min(reserved >= capacity ? 0 : capacity - reserved,
-                                process_rss_.available());
-    if (available >= buffer_size) {
-      continue;
-    }
-    if (trim_free_buffers(buffer_size - available) != 0) {
-      process_rss_.refresh(true);
-      continue;
-    }
-
-    // Reclaim until the reservation fits or eviction stops making progress.
-    if (BlockEvictionQueue::get_instance().reclaim_for_allocation(
-            buffer_size - available) == 0) {
-      high_watermark_hits_.fetch_add(1, std::memory_order_relaxed);
-      return false;
-    }
-    if (process_rss_.limit()) {
-      trim_free_buffers(buffer_size - available);
-      process_rss_.refresh(true);
-    }
-  }
+  return true;
 }
 
 void MemoryLimitPool::release_buffer(char *buffer, const size_t buffer_size) {
@@ -2889,7 +2835,7 @@ MemoryLimitPool::CacheBuffer *MemoryLimitPool::try_acquire_cache_buffer(
   std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
   process_rss_.refresh();
   const size_t used = this->used(), limit = high_watermark();
-  if (process_rss_.pressure() || workspace_waiting_size_.load() != 0 ||
+  if (process_rss_.pressure() || mandatory_waiters_.load() != 0 ||
       used > limit || bytes > limit - used ||
       sizeof(CacheBuffer) > limit - used - bytes || !try_reserve_used(bytes))
     return nullptr;
