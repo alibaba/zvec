@@ -102,9 +102,13 @@ def test_refinement_requires_quantization_through_lifecycle(
         ],
     )
     vectors = np.random.default_rng(849).random((32, 16), dtype=np.float32)
-    plain = zvec.Query("vector", vector=vectors[0], param=query_type())
+    # Lifecycle validation requires an exact hit, not approximate graph recall.
+    query_options = {"is_linear": True} if index_kind == "diskann" else {}
+    plain = zvec.Query("vector", vector=vectors[0], param=query_type(**query_options))
     refined = zvec.Query(
-        "vector", vector=vectors[0], param=query_type(is_using_refiner=True)
+        "vector",
+        vector=vectors[0],
+        param=query_type(is_using_refiner=True, **query_options),
     )
     error = re.escape(
         "Invalid query for field[vector]: refinement is not supported "
@@ -119,6 +123,33 @@ def test_refinement_requires_quantization_through_lifecycle(
                 collection.query(refined, topk=1)
         else:
             assert [hit.id for hit in collection.query(refined, topk=1)] == expected_ids
+            if index_kind == "diskann" and not empty:
+                # Keep the approximate path covered without requiring a global
+                # nearest neighbor that may be absent from the coarse results.
+                coarse = collection.query(
+                    zvec.Query(
+                        "vector", vector=vectors[0], param=zvec.DiskAnnQueryParam()
+                    ),
+                    topk=10,
+                )
+                assert coarse
+                coarse_ids = np.array([int(hit.id) for hit in coarse])
+                distances = np.square(vectors[coarse_ids] - vectors[0]).sum(axis=1)
+                order = np.lexsort((coarse_ids, distances))
+                hits = collection.query(
+                    zvec.Query(
+                        "vector",
+                        vector=vectors[0],
+                        param=zvec.DiskAnnQueryParam(
+                            is_using_refiner=True, scale_factor=10.0
+                        ),
+                    ),
+                    topk=1,
+                )
+                assert [hit.id for hit in hits] == [str(coarse_ids[order[0]])]
+                assert hits[0].score == pytest.approx(
+                    float(distances[order[0]]), rel=2e-5, abs=2e-5
+                )
 
     path = str(tmp_path / "index")
     writer = zvec.create_and_open(path, schema)
