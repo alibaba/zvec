@@ -12,13 +12,118 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "hnsw_algorithm.h"
+#include <string_view>
 
 namespace zvec {
 namespace core {
 
+namespace {
+size_t VectorFingerprint(const void *vector, size_t size) {
+  // The directory is rebuilt on open; hash collisions are always confirmed
+  // against the complete stored vector, never against distance == 0.
+  return std::hash<std::string_view>{}(
+      std::string_view(static_cast<const char *>(vector), size));
+}
+}  // namespace
+
+template <typename EntityType>
+int HnswAlgorithm<EntityType>::init_duplicate_directory() {
+  duplicate_directory_.clear();
+  for (node_id_t id = 0; id < entity_.doc_cnt(); ++id) {
+    if (entity_.get_key(id) == kInvalidKey) continue;
+    typename EntityType::DuplicateLinks links;
+    int ret = entity_.get_duplicate_links(id, entity_.doc_cnt(), &links);
+    if (ret != 0) return ret;
+    if (links.representative != id) continue;
+    IndexStorage::MemoryBlock block;
+    ret = entity_.get_vector(id, block);
+    if (ret != 0) return ret;
+    auto group = std::make_shared<DuplicateGroup>(id);
+    group->ready = true;
+    duplicate_directory_.emplace(
+        VectorFingerprint(block.data(), entity_.vector_size()), group);
+  }
+  return 0;
+}
+
 template <typename EntityType>
 int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
                                         HnswContext *ctx) {
+  if (!entity_.deduplicate_vectors()) {
+    return add_representative(id, level, ctx);
+  }
+
+  // Node allocation is already serialized by the entity. Reserve one group
+  // before building navigation; only inserts of that same vector must wait
+  // for its representative to finish publication.
+  const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
+  IndexStorage::MemoryBlock vector;
+  int ret = entity.get_vector(id, vector);
+  if (ret != 0) return ret;
+  const auto fingerprint =
+      VectorFingerprint(vector.data(), entity_.vector_size());
+  std::unique_lock<std::mutex> lock(duplicate_directory_mutex_);
+  const auto range = duplicate_directory_.equal_range(fingerprint);
+  std::shared_ptr<DuplicateGroup> group;
+  for (auto it = range.first; it != range.second; ++it) {
+    IndexStorage::MemoryBlock candidate;
+    ret = entity.get_vector(it->second->representative, candidate);
+    if (ret != 0) return ret;
+    if (std::memcmp(vector.data(), candidate.data(), entity_.vector_size()) ==
+        0) {
+      group = it->second;
+      break;
+    }
+  }
+  if (group) {
+    group->published.wait(lock, [&]() { return group->ready; });
+    ret = group->status;
+    lock.unlock();
+    return ret != 0 ? ret : attach_duplicate(id, group->representative);
+  }
+  group = std::make_shared<DuplicateGroup>(id);
+  duplicate_directory_.emplace(fingerprint, group);
+  lock.unlock();
+
+  auto publish = [&](int status) {
+    {
+      std::lock_guard<std::mutex> publish_lock(duplicate_directory_mutex_);
+      group->status = status;
+      group->ready = true;
+    }
+    group->published.notify_all();
+  };
+  try {
+    ret = add_representative(id, level, ctx);
+    if (ret == 0 && ctx->error()) ret = IndexError_Runtime;
+  } catch (...) {
+    publish(IndexError_Runtime);
+    throw;
+  }
+  publish(ret);
+  return ret;
+}
+
+template <typename EntityType>
+int HnswAlgorithm<EntityType>::attach_duplicate(node_id_t id,
+                                                node_id_t representative) {
+  std::lock_guard<std::mutex> lock(lock_pool_[representative & kLockMask]);
+  typename EntityType::DuplicateLinks head;
+  int ret =
+      entity_.get_duplicate_links(representative, entity_.doc_cnt(), &head);
+  if (ret != 0) return ret;
+  ret = entity_.set_duplicate_links(id, {representative, head.next});
+  if (ret != 0) return ret;
+  // The leaf's back edge is ordinary L0 adjacency; the representative's
+  // reverse edges are a posting list, independent of M and neighbor pruning.
+  ret = entity_.update_neighbors(0, id, {{representative, 0.0f}});
+  if (ret != 0) return ret;
+  return entity_.set_duplicate_links(representative, {representative, id});
+}
+
+template <typename EntityType>
+int HnswAlgorithm<EntityType>::add_representative(node_id_t id, level_t level,
+                                                  HnswContext *ctx) {
   spin_lock_.lock();
 
   auto cur_max_level = entity_.cur_max_level();
@@ -95,10 +200,13 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
     if (ailego_unlikely(ret != 0)) return ret;
   } else {
     auto &topk = ctx->search_heap().reset<TopkHeap>(capacity);
-    search_neighbors(0, &entry_point, &dist, topk, ctx);
+    search_neighbors(0, &entry_point, &dist, topk, ctx, true);
   }
 
   if (ailego_unlikely(ctx->error())) return IndexError_Runtime;
+  if (entity_.deduplicate_vectors()) {
+    return expand_duplicates(ctx);
+  }
   if (ctx->group_by_search()) {
     expand_neighbors_by_group(ctx);
   }
@@ -559,7 +667,8 @@ template <typename EntityType>
 void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
                                                  node_id_t *entry_point,
                                                  dist_t *dist, TopkHeap &topk,
-                                                 HnswContext *ctx) const {
+                                                 HnswContext *ctx,
+                                                 bool duplicate_filter) const {
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
 
@@ -571,12 +680,55 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
 
   if (ctx->filter().is_valid()) {
     auto filter = [&](node_id_t id) {
+      if (duplicate_filter && entity_.deduplicate_vectors()) {
+        bool accepted = false;
+        const int ret = visit_duplicate_group(id, ctx, [&](node_id_t member) {
+          const auto key = entity.get_key_typed(member);
+          accepted = key != kInvalidKey && !ctx->filter()(key);
+          return !accepted;
+        });
+        if (ret != 0) dc.set_error();
+        return !accepted;
+      }
       return ctx->filter()(entity.get_key_typed(id));
     };
     run_with_filter(filter);
   } else {
     run_with_filter([](node_id_t) { return false; });
   }
+}
+
+template <typename EntityType>
+int HnswAlgorithm<EntityType>::expand_duplicates(HnswContext *ctx) const {
+  if (ctx->group_by_search()) return IndexError_Unsupported;
+  const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
+  std::vector<std::pair<node_id_t, dist_t>> representatives;
+  ctx->search_heap().for_each([&](node_id_t id, dist_t distance) {
+    representatives.emplace_back(id, distance);
+    return true;
+  });
+  const uint32_t capacity = std::max(ctx->topk(), ctx->ef());
+  auto &results = ctx->search_heap().reset<TopkHeap>(capacity);
+  for (const auto &representative : representatives) {
+    const auto distance = representative.second;
+    if (results.full() && distance >= results[0].second) continue;
+    uint32_t accepted = 0;
+    const int ret =
+        visit_duplicate_group(representative.first, ctx, [&](node_id_t member) {
+          const auto key = entity.get_key_typed(member);
+          if (key != kInvalidKey &&
+              (!ctx->filter().is_valid() || !ctx->filter()(key))) {
+            results.emplace(member, distance);
+            ctx->visit_filter().set_visited(member);
+            ++accepted;
+          }
+          // Identical members have identical scores. More than capacity from
+          // one group cannot affect the returned top-k (ties are arbitrary).
+          return accepted < capacity;
+        });
+    if (ret != 0) return ret;
+  }
+  return 0;
 }
 
 template <typename EntityType>
