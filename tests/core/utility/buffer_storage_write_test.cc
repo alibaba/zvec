@@ -1453,6 +1453,11 @@ TEST_F(BufferStorageWriteTest, ReadOnlyBatchFallsBackWhenPinsExceedBudget) {
 }
 
 TEST_F(BufferStorageWriteTest, ReadOnlyBatchPreservesSharedCacheReserve) {
+  auto &memory_pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
+  // The shared non-page reserve is enabled only for native budgets >= 256 MiB.
+  ASSERT_EQ(0, memory_pool.init(256UL * 1024UL * 1024UL));
+  AILEGO_DEFER(
+      [&]() { EXPECT_EQ(0, memory_pool.init(64UL * 1024UL * 1024UL)); });
   constexpr size_t kSegmentBytes = 64UL * 1024UL * 1024UL;
   {
     auto storage = open_writable();
@@ -1474,11 +1479,21 @@ TEST_F(BufferStorageWriteTest, ReadOnlyBatchPreservesSharedCacheReserve) {
   const size_t page_size = ailego::kVectorPageSize;
   const size_t first =
       (page_size - segment->data_offset() % page_size) % page_size;
-  constexpr size_t kSharedReserveBytes = 4UL * 1024UL * 1024UL;
-  const size_t available_before =
-      ::zvec::ailego::PoolPayloadBudget::get_instance().available();
-  ASSERT_GT(available_before, kSharedReserveBytes);
-  const size_t count = (available_before - kSharedReserveBytes) / page_size + 1;
+  const size_t kSharedReserveBytes = memory_pool.page_admission_reserve();
+  ASSERT_GT(kSharedReserveBytes, 0U);
+  // Simulate occupancy so the batch crosses the real admission boundary with
+  // only a few MiB of reads. Slab headers and queues retain their native cost.
+  constexpr size_t kBatchBytes = 4UL * 1024UL * 1024UL;
+  ASSERT_GT(memory_pool.available(), kSharedReserveBytes + kBatchBytes);
+  const size_t occupied =
+      memory_pool.available() - kSharedReserveBytes - kBatchBytes;
+  ASSERT_TRUE(memory_pool.try_charge_metadata(occupied));
+  AILEGO_DEFER([&]() { memory_pool.release_metadata(occupied); });
+  const size_t available_before = memory_pool.available();
+  // Cross the boundary by a full chunk, even if idle metadata is retired.
+  constexpr size_t kExtraPages = 64;
+  const size_t count =
+      (available_before - kSharedReserveBytes) / page_size + kExtraPages;
   ASSERT_LT(first + count * page_size, segment->data_size());
 
   std::vector<IndexStorage::MemoryBlock> blocks(count);
@@ -1488,11 +1503,19 @@ TEST_F(BufferStorageWriteTest, ReadOnlyBatchPreservesSharedCacheReserve) {
     reads.emplace_back(segment.get(), first + i * page_size, 1, &blocks[i]);
   }
 
+  const size_t metadata_before =
+      ailego::MemoryLimitPool::get_instance().metadata_used();
   ASSERT_TRUE(
       segment->read_borrowed_batch_immutable(reads.data(), reads.size()));
-  EXPECT_GE(
-      ::zvec::ailego::PoolPayloadBudget::get_instance().available() + page_size,
-      kSharedReserveBytes);
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, blocks.front().type_);
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_SHARED_SCRATCH, blocks.back().type_);
+  // New queue/slab metadata is also a legitimate non-page consumer.
+  const size_t available_after = memory_pool.available();
+  const size_t metadata_after =
+      ailego::MemoryLimitPool::get_instance().metadata_used();
+  const size_t metadata_growth =
+      metadata_after - std::min(metadata_before, metadata_after);
+  EXPECT_GE(available_after + metadata_growth + page_size, kSharedReserveBytes);
   blocks.clear();
   EXPECT_EQ(0, storage->close());
 }
