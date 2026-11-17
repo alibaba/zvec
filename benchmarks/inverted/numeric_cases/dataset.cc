@@ -26,7 +26,7 @@ namespace zvec::benchmarks::inverted {
 namespace {
 
 // Fixed for reproducible datasets; not a configurable profile field.
-constexpr uint64_t kNumericSeed = 20261115;
+constexpr uint64_t kNumericSeed = 19991230;
 constexpr size_t kQueryPoolSize = 7;
 constexpr uint32_t kNumericBatchSize = 32768;
 

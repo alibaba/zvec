@@ -39,6 +39,21 @@ ROOT = Path(__file__).resolve().parents[3]
 BENCHMARK = "inverted_numeric_bench"
 DATA_TYPES = ("int32", "int64")
 DISTRIBUTIONS = ("uniform", "hotspot_moderate", "hotspot_extreme")
+BUILD_METRICS = (
+    "insert_seconds",
+    "optimize_seconds",
+    "total_seconds",
+    "index_file_mib",
+    "process_memory.peak_rss_mib",
+    "process_memory.final_rss_mib",
+)
+QUERY_METRICS = (
+    "mean_ns_per_query",
+    "qps",
+    "memory_before.rss_mib",
+    "memory_after.rss_mib",
+    "memory_after.peak_rss_mib",
+)
 
 
 def select_binary(args):
@@ -110,15 +125,15 @@ def validate_dataset(dataset, profile, args, overrides):
 
 
 def validate_build(build):
-    validate_metrics(build)
+    validate_metrics(build, BUILD_METRICS)
     for key in (
         "insert_seconds",
         "optimize_seconds",
         "total_seconds",
         "index_file_mib",
     ):
-        if key in build:
-            number(build[key], key, positive=True)
+        # Valid measurements can round to zero in reports.
+        number(build[key], key)
 
 
 def validate_verification(verification, dataset, cases):
@@ -152,8 +167,8 @@ def validate_query(query, name, verified):
         number(query["completed_queries"], "completed_queries", positive=True)
     for key in ("elapsed_seconds", "mean_ns_per_query", "qps"):
         if key in query:
-            number(query[key], key, positive=True)
-    validate_metrics(query)
+            number(query[key], key)
+    validate_metrics(query, QUERY_METRICS)
 
 
 def validate_numeric_queries(report, cases, verified):
@@ -237,13 +252,15 @@ def run_profile(binary, output, profile, args, overrides):
         "profile": profile["name"],
         "dataset": expected_dataset,
         "directory": str(profile_dir.relative_to(output)),
-        "build": summarize_metrics(builds),
-        "build_details": [report_details(sample) for sample in builds],
+        "build": summarize_metrics(builds, BUILD_METRICS),
+        "build_details": [report_details(sample, BUILD_METRICS) for sample in builds],
         "cases": [
             {
                 "name": name,
-                "metrics": summarize_metrics(samples),
-                "details": [report_details(sample) for sample in samples],
+                "metrics": summarize_metrics(samples, QUERY_METRICS),
+                "details": [
+                    report_details(sample, QUERY_METRICS) for sample in samples
+                ],
                 "verification": verifications[name],
             }
             for name, samples in queries.items()

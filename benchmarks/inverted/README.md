@@ -31,10 +31,14 @@ Use `--output /path/to/new-directory` to choose another location; existing direc
 are never overwritten. `--bin-dir /path/to/bin` selects another build.
 
 `run.json` records configuration, executable path and hash, and status. `summary.json`
-aggregates declared metrics into repetition medians and ranges, retaining case-specific
-and verification fields alongside them. Each profile/repetition retains its dataset, index, logs,
+aggregates metrics selected by the numeric script into repetition medians and ranges,
+retaining case-specific and verification fields alongside them. Each profile/repetition
+retains its dataset, index, logs,
 build and verification reports, and query results. A failed phase stops the run without
 a successful summary.
+
+Floating-point values in JSON reports use two decimal places; integer counts and query
+values remain exact. Small measurements may round to `0.00`.
 
 - **Build:** `insert_seconds` measures the complete insertion loop, including dataset
   reads, batch preparation, and index insert calls. `optimize_seconds` measures finalizing

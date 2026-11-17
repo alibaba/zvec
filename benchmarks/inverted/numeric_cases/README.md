@@ -78,7 +78,7 @@ query reports retain actual hit counts. Uniform has 19 cases; hotspot has 21.
 
 Each repetition prepares a dataset, builds its index, verifies all applicable queries, then
 measures all queries. These four phases run in separate processes. The query process reopens
-the index and warms up for each case. Seed `20261115`, at least 0.2 seconds of warmup, and at
+the index and warms up for each case. Seed `19991230`, at least 0.2 seconds of warmup, and at
 least 1 second of measurement per case are fixed in C++; each interval completes whole
 query-pool passes.
 Use `--repetitions` to change the default of three repetitions.

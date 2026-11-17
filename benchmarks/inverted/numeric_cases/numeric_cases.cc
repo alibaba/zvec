@@ -231,7 +231,6 @@ JsonObject Build(const std::string &index_path, const std::string &run_dir) {
   process_memory.set("peak_rss_mib", memory["peak_rss_mib"]);
   process_memory.set("final_rss_mib", memory["rss_mib"]);
   result.set("process_memory", process_memory);
-  result.set("metric_names", BuildMetricsToSummarize());
   return result;
 }
 
@@ -277,10 +276,11 @@ JsonObject QueryNumeric(const std::string &run_dir) {
   const auto index_path = ailego::FileHelper::PathJoin(run_dir, "index");
   ValidateBuildReport(ailego::FileHelper::PathJoin(run_dir, "build.json"),
                       index_path);
+
   auto dataset = NumericDataset::Load(run_dir);
   const auto &profile = dataset.profile();
   const auto &inputs = dataset.query_cases();
-  // Require successful verification of every case before starting measurement.
+
   std::vector<JsonObject> verified;
   for (const auto &record : inputs)
     verified.push_back(LoadVerification(

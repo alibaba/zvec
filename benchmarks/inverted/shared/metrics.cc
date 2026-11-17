@@ -98,15 +98,6 @@ JsonObject EnvironmentJson() {
 }
 
 
-JsonArray BuildMetricsToSummarize() {
-  JsonArray names;
-  for (const char *name :
-       {"insert_seconds", "optimize_seconds", "total_seconds", "index_file_mib",
-        "process_memory.peak_rss_mib", "process_memory.final_rss_mib"})
-    names.push(JsonStringValue(name));
-  return names;
-}
-
 JsonObject QueryReport(const std::string &name, const Measurement &measurement,
                        double warmup_seconds, double measure_seconds,
                        const JsonObject &before, const JsonObject &after) {
@@ -123,11 +114,6 @@ JsonObject QueryReport(const std::string &name, const Measurement &measurement,
   result.set("memory_before", before);
   result.set("memory_after", after);
   result.set("environment", EnvironmentJson());
-  JsonArray names;
-  for (const char *key : {"mean_ns_per_query", "qps", "memory_before.rss_mib",
-                          "memory_after.rss_mib", "memory_after.peak_rss_mib"})
-    names.push(JsonStringValue(key));
-  result.set("metric_names", names);
   return result;
 }
 

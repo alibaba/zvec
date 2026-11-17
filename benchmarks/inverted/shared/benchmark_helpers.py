@@ -39,9 +39,32 @@ def load_json(text):
     return result
 
 
+def format_json(value, indent=0):
+    """Format report floats to two decimal places, retaining JSON number types."""
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            fail("Cannot write a non-finite JSON number")
+        return f"{value:.2f}"
+    if isinstance(value, dict):
+        opening, closing = "{", "}"
+        items = [
+            f"{json.dumps(key)}: {format_json(item, indent + 2)}"
+            for key, item in value.items()
+        ]
+    elif isinstance(value, list):
+        opening, closing = "[", "]"
+        items = [format_json(item, indent + 2) for item in value]
+    else:
+        return json.dumps(value, allow_nan=False)
+    if not items:
+        return opening + closing
+    body = ",\n".join(" " * (indent + 2) + item for item in items)
+    return f"{opening}\n{body}\n{' ' * indent}{closing}"
+
+
 def write_json(path, value):
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
+    temporary.write_text(format_json(value) + "\n")
     temporary.replace(path)
 
 
@@ -100,34 +123,21 @@ def metric_value(report, key):
     value = report
     for component in key.split("."):
         if not isinstance(value, dict) or component not in value:
-            fail(f"Missing declared metric: {key}")
+            fail(f"Missing metric: {key}")
         value = value[component]
     if value is not None and (
         type(value) not in (int, float) or not math.isfinite(value)
     ):
-        fail(f"Invalid declared metric {key}: {value!r}")
+        fail(f"Invalid metric {key}: {value!r}")
     return value
 
 
-def validate_metrics(report):
-    keys = report.get("metric_names")
-    if (
-        not isinstance(keys, list)
-        or not keys
-        or any(not isinstance(key, str) or not all(key.split(".")) for key in keys)
-    ):
-        fail("Report must declare nonempty metric_names")
-    if len(set(keys)) != len(keys):
-        fail("Report declares duplicate metric names")
+def validate_metrics(report, keys):
     for key in keys:
         metric_value(report, key)
-    return keys
 
 
-def summarize_metrics(samples):
-    keys = validate_metrics(samples[0])
-    if any(set(validate_metrics(sample)) != set(keys) for sample in samples[1:]):
-        fail("Metric declarations changed across repetitions")
+def summarize_metrics(samples, keys):
     result = {}
     for key in keys:
         values = [metric_value(sample, key) for sample in samples]
@@ -143,16 +153,15 @@ def summarize_metrics(samples):
     return result
 
 
-def report_details(report):
+def report_details(report, metrics=()):
     details = copy.deepcopy(report)
     for key in (
-        "metric_names",
         "name",
         "index_path",
         "environment",
     ):
         details.pop(key, None)
-    for key in report.get("metric_names", []):
+    for key in metrics:
         components = key.split(".")
         parent = details
         for component in components[:-1]:

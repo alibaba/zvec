@@ -8,12 +8,48 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
 #include "json.h"
+#include <cmath>
 #include <fstream>
+#include <iomanip>
+#include <locale>
 #include <sstream>
 #include <stdexcept>
 #include <zvec/ailego/utility/file_helper.h>
 
 namespace zvec::benchmarks::inverted {
+
+namespace {
+
+void WriteJsonValue(std::ostream &output, const JsonValue &value) {
+  if (value.is_float()) {
+    if (!std::isfinite(value.as_float()))
+      throw std::invalid_argument("Cannot write a non-finite JSON number");
+    output << value.as_float();
+  } else if (value.is_array()) {
+    output << '[';
+    bool first = true;
+    for (const auto &element : value.as_array()) {
+      if (!first) output << ',';
+      first = false;
+      WriteJsonValue(output, element);
+    }
+    output << ']';
+  } else if (value.is_object()) {
+    output << '{';
+    bool first = true;
+    for (const auto &entry : value.as_object()) {
+      if (!first) output << ',';
+      first = false;
+      output << JsonValue(entry.key()).as_json_string().as_stl_string() << ':';
+      WriteJsonValue(output, entry.value());
+    }
+    output << '}';
+  } else {
+    output << value.as_json_string().as_stl_string();
+  }
+}
+
+}  // namespace
 
 JsonValue JsonStringValue(const std::string &value) {
   return JsonValue(ailego::JsonString(value).encode());
@@ -42,7 +78,10 @@ void WriteJson(const std::string &path, const JsonObject &object) {
   output.exceptions(std::ios::badbit | std::ios::failbit);
   ailego::FileHelper::OpenOfstream(output, path,
                                    std::ios::binary | std::ios::trunc);
-  output << JsonValue(object).as_json_string().as_stl_string() << '\n';
+  output.imbue(std::locale::classic());
+  output << std::fixed << std::setprecision(2);
+  WriteJsonValue(output, JsonValue(object));
+  output << '\n';
   output.close();
 }
 
