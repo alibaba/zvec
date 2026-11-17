@@ -917,6 +917,57 @@ TEST_F(BufferPoolTest, RecoversDirtyPageAfterQueueRegistrationFailure) {
       0u, ::zvec::ailego::PoolPayloadBudget::get_instance().stats().page_used);
 }
 
+TEST_F(BufferPoolTest, DestructionWaitsForInFlightEvictionBeforeFreeingPages) {
+  init_vec_pool(/*capacity_pages=*/512, /*file_pages=*/1);
+  QueueResidentSampleTestPeer::stop_background();
+  auto pool = std::make_unique<VecBufferPool>(new_file(1));
+  ASSERT_EQ(0, pool->init());
+  const block_id_t page_id = 0;
+  char *page = nullptr;
+  ASSERT_TRUE(pool->acquire_pages(&page_id, 1, &page));
+  pool->page_table_.mark_dirty(page_id);
+  pool->release_pages(&page_id, 1);
+
+  std::promise<void> eviction_entered;
+  auto entered = eviction_entered.get_future();
+  std::promise<void> finish_eviction;
+  auto finish = finish_eviction.get_future();
+  std::atomic<bool> first_flush{true};
+  pool->page_table_.set_flush_callback([&](block_id_t, char *, size_t, size_t) {
+    if (first_flush.exchange(false)) {
+      eviction_entered.set_value();
+      finish.wait();
+    }
+    // Failed eviction retains the page, so teardown must still free it.
+    return -1;
+  });
+  auto eviction = std::async(std::launch::async, [] {
+    return BlockEvictionQueue::get_instance().batch_recycle(1);
+  });
+  const auto ready = entered.wait_for(std::chrono::seconds(5));
+  if (ready != std::future_status::ready) {
+    finish_eviction.set_value();
+    eviction.wait();
+    FAIL() << "eviction did not reach the flush callback";
+  }
+
+  std::promise<void> destruction_started;
+  auto started = destruction_started.get_future();
+  auto destruction = std::async(std::launch::async, [&] {
+    destruction_started.set_value();
+    pool.reset();
+  });
+  started.wait();
+  EXPECT_EQ(std::future_status::timeout,
+            destruction.wait_for(std::chrono::milliseconds(100)));
+  finish_eviction.set_value();
+  EXPECT_EQ(0u, eviction.get());
+  destruction.get();
+
+  EXPECT_EQ(0u, PoolPayloadBudget::get_instance().stats().page_used);
+  EXPECT_EQ(0, PoolPayloadBudget::get_instance().init(0));
+}
+
 TEST_F(BufferPoolTest, MetadataIsCountedAndReleasedWithPool) {
   constexpr size_t kPageCount = 2;
   const size_t expected_metadata =
