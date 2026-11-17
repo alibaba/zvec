@@ -35,6 +35,17 @@ add_subdirectory(RaBitQ-Library RaBitQ-Library EXCLUDE_FROM_ALL)
 add_subdirectory(googletest googletest EXCLUDE_FROM_ALL)
 
 add_subdirectory(arrow arrow EXCLUDE_FROM_ALL)
+if(ZVEC_ENABLE_SCALAR_JIT)
+    foreach(_arrow_notice IN ITEMS LICENSE NOTICE)
+        install(FILES arrow/apache-arrow-21.0.0/${_arrow_notice}.txt
+            DESTINATION share/zvec/thirdparty/arrow/gandiva
+            RENAME ${_arrow_notice})
+    endforeach()
+    install(FILES arrow/gandiva/PROVENANCE.json
+        DESTINATION share/zvec/thirdparty/arrow/gandiva)
+    install(DIRECTORY "${LLVM_ROOT}/share/zvec-jit-licenses/"
+        DESTINATION share/zvec/thirdparty/jit-toolchain OPTIONAL)
+endif()
 add_subdirectory(gflags gflags EXCLUDE_FROM_ALL)
 add_subdirectory(glog glog EXCLUDE_FROM_ALL)
 add_subdirectory(yaml-cpp yaml-cpp EXCLUDE_FROM_ALL)

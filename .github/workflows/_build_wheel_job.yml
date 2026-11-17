@@ -54,6 +54,7 @@ jobs:
       - name: Build wheels using cibuildwheel
         env:
           CIBW_ONLY: ${{ inputs.build_identifier }}
+          CIBW_CONFIG_SETTINGS: cmake.define.ZVEC_ENABLE_SCALAR_JIT=OFF
         run: |
           # The Intel runner has limited scratch space after compiling zvec and
           # its vendored dependencies.  Exercise the installed x86_64 wheel

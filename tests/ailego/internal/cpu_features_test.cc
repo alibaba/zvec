@@ -17,6 +17,119 @@
 
 using namespace zvec::ailego::internal;
 
+namespace {
+constexpr uint32_t kSse42 = 1u << 20;
+constexpr uint32_t kXsave = 1u << 26;
+constexpr uint32_t kOsxsave = 1u << 27;
+constexpr uint32_t kAvx = 1u << 28;
+constexpr uint32_t kAvx2 = 1u << 5;
+constexpr uint32_t kAvx512f = 1u << 16;
+constexpr uint32_t kLeaf1 = kSse42 | kXsave | kOsxsave | kAvx;
+constexpr uint32_t kLeaf7 = kAvx2 | kAvx512f;
+
+void ExpectNoAvx(const CpuFeatures::X86Features &features) {
+  EXPECT_FALSE(features.avx);
+  EXPECT_FALSE(features.avx2);
+  EXPECT_FALSE(features.avx512f);
+}
+}  // namespace
+
+TEST(CpuFeatures, UsableX86BaselineAndHardwareBits) {
+  const auto baseline = CpuFeatures::DecodeUsableX86(0, 0, 0);
+  EXPECT_FALSE(baseline.sse42);
+  ExpectNoAvx(baseline);
+  const auto sse = CpuFeatures::DecodeUsableX86(kSse42, 0, 0);
+  EXPECT_TRUE(sse.sse42);
+  ExpectNoAvx(sse);
+
+  const auto all = CpuFeatures::DecodeUsableX86(kLeaf1, kLeaf7, 0xe6);
+  EXPECT_TRUE(all.sse42);
+  EXPECT_TRUE(all.avx);
+  EXPECT_TRUE(all.avx2);
+  EXPECT_TRUE(all.avx512f);
+  const auto avx = CpuFeatures::DecodeUsableX86(kLeaf1, 0, 0xe6);
+  EXPECT_TRUE(avx.avx);
+  EXPECT_FALSE(avx.avx2);
+  EXPECT_FALSE(avx.avx512f);
+  // Report individual hardware features, not a compiled kernel's ISA bundle.
+  const auto independent =
+      CpuFeatures::DecodeUsableX86(kLeaf1 & ~kSse42, kAvx512f, 0xe6);
+  EXPECT_FALSE(independent.sse42);
+  EXPECT_TRUE(independent.avx);
+  EXPECT_FALSE(independent.avx2);
+  EXPECT_TRUE(independent.avx512f);
+}
+
+TEST(CpuFeatures, UsableX86RequiresAvxAndBothXsaveFlags) {
+  for (const auto missing : {kXsave, kOsxsave, kAvx}) {
+    SCOPED_TRACE(missing);
+    for (bool lazy : {false, true}) {
+      const auto features =
+          CpuFeatures::DecodeUsableX86(kLeaf1 & ~missing, kLeaf7, 0xe6, lazy);
+      EXPECT_TRUE(features.sse42);
+      ExpectNoAvx(features);
+    }
+  }
+}
+
+TEST(CpuFeatures, UsableX86RequiresXmmAndYmmState) {
+  for (uint64_t state : {uint64_t{0}, uint64_t{0xe6} & ~uint64_t{2},
+                         uint64_t{0xe6} & ~uint64_t{4}, uint64_t{0xe6} << 32}) {
+    SCOPED_TRACE(state);
+    for (bool lazy : {false, true}) {
+      const auto features =
+          CpuFeatures::DecodeUsableX86(kLeaf1, kLeaf7, state, lazy);
+      EXPECT_TRUE(features.sse42);
+      ExpectNoAvx(features);
+    }
+  }
+}
+
+TEST(CpuFeatures, UsableX86RequiresCompleteZmmState) {
+  for (uint64_t state :
+       {uint64_t{6}, uint64_t{0xe6} & ~uint64_t{0x20},
+        uint64_t{0xe6} & ~uint64_t{0x40}, uint64_t{0xe6} & ~uint64_t{0x80}}) {
+    SCOPED_TRACE(state);
+    const auto features = CpuFeatures::DecodeUsableX86(kLeaf1, kLeaf7, state);
+    EXPECT_TRUE(features.avx);
+    EXPECT_TRUE(features.avx2);
+    EXPECT_FALSE(features.avx512f);
+  }
+}
+
+TEST(CpuFeatures, UsableX86DarwinLazyStateNeedsHardwareSupport) {
+  const auto lazy = CpuFeatures::DecodeUsableX86(kLeaf1, kLeaf7, 6, true);
+  EXPECT_TRUE(lazy.avx);
+  EXPECT_TRUE(lazy.avx2);
+  EXPECT_TRUE(lazy.avx512f);
+  const auto absent = CpuFeatures::DecodeUsableX86(kLeaf1, kAvx2, 6, true);
+  EXPECT_TRUE(absent.avx2);
+  EXPECT_FALSE(absent.avx512f);
+}
+
+TEST(CpuFeatures, UsableX86SnapshotDoesNotChangeRawFlags) {
+  const auto &raw = CpuFeatures::static_flags_;
+  const auto usable = CpuFeatures::UsableX86();
+  EXPECT_EQ(raw.SSE4_2, CpuFeatures::SSE4_2());
+  EXPECT_EQ(raw.AVX, CpuFeatures::AVX());
+  EXPECT_EQ(raw.AVX2, CpuFeatures::AVX2());
+  EXPECT_EQ(raw.AVX512F, CpuFeatures::AVX512F());
+  EXPECT_EQ(usable.sse42, raw.SSE4_2);
+  EXPECT_FALSE(usable.avx && !raw.AVX);
+  EXPECT_FALSE(usable.avx2 && (!usable.avx || !raw.AVX2));
+  EXPECT_FALSE(usable.avx512f && (!usable.avx || !raw.AVX512F));
+  const auto again = CpuFeatures::UsableX86();
+  EXPECT_EQ(usable.sse42, again.sse42);
+  EXPECT_EQ(usable.avx, again.avx);
+  EXPECT_EQ(usable.avx2, again.avx2);
+  EXPECT_EQ(usable.avx512f, again.avx512f);
+#if !defined(__x86_64__) && !defined(__i386__) && !defined(_M_X64) && \
+    !defined(_M_IX86)
+  EXPECT_FALSE(usable.sse42);
+  ExpectNoAvx(usable);
+#endif
+}
+
 TEST(CpuFeatures, General) {
   std::cout << "* Intrinsics:       " << CpuFeatures::Intrinsics() << std::endl;
   std::cout << "* F16C:             " << CpuFeatures::F16C() << std::endl;

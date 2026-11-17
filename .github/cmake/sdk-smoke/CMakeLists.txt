@@ -44,6 +44,11 @@ add_executable(cpp_smoke smoke.cc)
 target_include_directories(cpp_smoke PRIVATE "${ZVEC_SDK_DIR}/include")
 target_link_libraries(cpp_smoke PRIVATE "${ZVEC_SDK_LIBRARY}")
 
+option(ZVEC_SDK_SCALAR_JIT_SMOKE "Build the optional scalar JIT SDK smoke test" OFF)
+if(ZVEC_SDK_SCALAR_JIT_SMOKE)
+  add_subdirectory(scalar-jit)
+endif()
+
 # Let the executables find the packaged shared libraries at runtime
 # (Windows locates the DLLs through PATH instead).
 if(NOT WIN32)

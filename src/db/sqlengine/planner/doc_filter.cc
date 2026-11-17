@@ -18,10 +18,18 @@
 #include <arrow/table.h>
 #include <zvec/ailego/logger/logger.h>
 #include "db/sqlengine/planner/invert_search.h"
+#include "db/sqlengine/scalar_jit/runtime.h"
 
 namespace zvec::sqlengine {
 
 Status DocFilter::compute_filter() {
+  forward_prepared_ = false;
+  forward_view_.reset();
+  forward_rows_ = 0;
+  sealed_deletion_.reset();
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+  scalar_filter_.reset();
+#endif
   if (invert_cond_) {
     InvertSearch search(segment_.get());
     auto invert_res = search.exec_invert_cond_tree(invert_cond_.get());
@@ -48,19 +56,71 @@ Status DocFilter::compute_filter() {
     forward_bitmap_ = forward_table->column(0);
   }
 
+  // A sealed IPC segment also supplies a lock-free deletion check. Only a
+  // filter that exists now is replaced, so the delete bitmap observed at
+  // construction still decides whether deletion is checked at all.
+  const bool with_deletion = delete_filter_ != nullptr;
   if (forward_filter_expr_) {
+    scalar_jit::StageTimer preparation_timer("preparation");
+    forward_evaluator_ = scalar_jit::GetRuntimeConfig().profile
+                             ? &DocFilter::profiled_forward_filter
+                             : &DocFilter::is_matched_by_forward_filter;
     // get schema to bind to Expression
-    auto table = segment_->fetch(query_info_->get_forward_filter_field_names(),
-                                 std::vector<int>{});
-    if (!table) {
-      return Status::InternalError("Fetch forward failed");
+    const auto columns = query_info_->get_forward_filter_field_names();
+    auto prepared = segment_->prepare_forward_read(columns, with_deletion);
+    if (!prepared.ok()) {
+      return Status::InternalError("Prepare forward read failed: ",
+                                   prepared.status().ToString());
     }
-    auto bind_res = forward_filter_expr_->Bind(*table->schema());
+    auto state = prepared.MoveValueUnsafe();
+    forward_rows_ = state.num_rows;
+    forward_view_ = std::move(state.view);
+    sealed_deletion_ = std::move(state.deletion_filter);
+    const auto &schema = state.schema;
+    // Log outside segment synchronization.
+    if (forward_view_) {
+      LOG_DEBUG("Forward filter view: segment[%d] rows[%zu] columns[%zu]",
+                segment_->id(), static_cast<size_t>(forward_rows_),
+                columns.size());
+    } else {
+      LOG_DEBUG("Forward filter locked fetch: segment[%d] rows[%zu]",
+                segment_->id(), static_cast<size_t>(forward_rows_));
+    }
+    auto bind_res = forward_filter_expr_->Bind(*schema);
     if (!bind_res.ok()) {
       return Status::InternalError("Bind forward filter expression failed",
                                    bind_res.status().ToString());
     }
     *forward_filter_expr_ = bind_res.MoveValueUnsafe();
+    forward_prepared_ = true;
+    auto reason = scalar_jit::UnavailableReason();
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+    if (reason.empty()) {
+      try {
+        auto compiled =
+            ScalarDocFilter::Make(*forward_filter_expr_, forward_view_);
+        if (compiled.ok()) {
+          scalar_filter_ = std::move(compiled).ValueUnsafe();
+          LOG_DEBUG("Scalar JIT forward filter ready");
+        } else {
+          reason =
+              scalar_jit::FailureReason(compiled.status(), "binding_failed");
+          LOG_DEBUG("Scalar JIT unavailable reason=%s status=%s",
+                    reason.c_str(), compiled.status().CodeAsString().c_str());
+        }
+      } catch (...) {
+        reason = "binding_failed";
+      }
+    }
+#endif
+    scalar_jit::RecordSelection(reason);
+  } else if (with_deletion) {
+    // Without a forward predicate the capture is only an optimization: on
+    // any failure keep the segment's filter, which gives the same results.
+    auto prepared = segment_->prepare_forward_read({}, true);
+    if (prepared.ok()) {
+      sealed_deletion_ = std::move(prepared->deletion_filter);
+    }
   }
   return Status::OK();
 }
@@ -71,7 +131,13 @@ bool DocFilter::empty() const {
 }
 
 bool DocFilter::is_filtered(uint64_t id) const {
-  if (delete_filter_ && delete_filter_->is_filtered(id)) {
+  // An unprepared (or failed) forward filter never admits candidates.
+  if (forward_filter_expr_ && !forward_prepared_) return true;
+  // An owning view holds exactly the rows captured at preparation; nothing
+  // beyond them can be read. Locked fetch keeps reading the live segment.
+  if (forward_view_ && id >= forward_rows_) return true;
+  if (delete_filter_ &&
+      (sealed_deletion_ ? sealed_deletion_ : delete_filter_)->is_filtered(id)) {
     return true;
   }
   if (invert_filter_ && invert_filter_->is_filtered(id)) {
@@ -87,7 +153,7 @@ bool DocFilter::is_filtered(uint64_t id) const {
 
 std::optional<bool> DocFilter::get_forward_bit(uint64_t id) const {
   if (forward_filter_expr_) {
-    return is_matched_by_forward_filter(id);
+    return (this->*forward_evaluator_)(id);
   }
   if (!forward_bitmap_) {
     return std::nullopt;
@@ -138,8 +204,36 @@ std::optional<std::vector<uint64_t>> DocFilter::get_bf_by_keys_and_update(
 }
 
 std::optional<bool> DocFilter::is_matched_by_forward_filter(uint64_t id) const {
-  auto exec_batch =
-      segment_->fetch(query_info_->get_forward_filter_field_names(), id);
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+  if (scalar_filter_) {
+    if (auto result = scalar_filter_->evaluate(id)) return result;
+  }
+#endif
+  return arrow_forward_filter(id);
+}
+
+std::optional<bool> DocFilter::profiled_forward_filter(uint64_t id) const {
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+  if (scalar_filter_) {
+    scalar_jit::ExecutionSample sample(true);
+    if (auto result = scalar_filter_->evaluate(id)) return result;
+  }
+#endif
+  scalar_jit::ExecutionSample sample(false);
+  return arrow_forward_filter(id);
+}
+
+std::optional<bool> DocFilter::arrow_forward_filter(uint64_t id) const {
+  ExecBatchPtr exec_batch;
+  if (forward_view_) {
+    exec_batch = forward_view_->read_row(id);
+  } else {
+    const auto &columns = query_info_->get_forward_filter_field_names();
+    // Literal predicates need a one-row batch but no scalar storage access.
+    exec_batch = columns.empty() ? std::make_shared<arrow::compute::ExecBatch>(
+                                       std::vector<arrow::Datum>{}, 1)
+                                 : segment_->fetch(columns, id);
+  }
   if (!exec_batch) {
     LOG_ERROR("Fetch forward failed, id[%zu]", (size_t)id);
     return std::nullopt;

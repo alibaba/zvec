@@ -1,0 +1,39 @@
+{
+  "component": "Apache Arrow Gandiva scalar execution extension",
+  "license": "Apache-2.0",
+  "notes": "Minimal visitor integration patch plus an independent scalar code generation extension. The owning runtime and query cache are zvec code under src/db/sqlengine/scalar_jit.",
+  "upstream": {
+    "arrow": {
+      "version": "21.0.0",
+      "tag": "apache-arrow-21.0.0",
+      "url": "https://github.com/apache/arrow/archive/refs/tags/apache-arrow-21.0.0.tar.gz",
+      "sha256": "e92401790fdba33bfb4b8aa522626d800ea7fda4b6f036aaf39849927d2cf88d",
+      "zvec_submodule_commit": "ee4d09ebef61c663c1efbfa4c18e518a03b798be"
+    },
+    "llvm_major": 20
+  },
+  "licenses": {
+    "LICENSE": {
+      "source": "../apache-arrow-21.0.0/LICENSE.txt",
+      "sha256": "82f5f9b0e6592da7f79022fc930add132a76c56727d29813f94058157a2b2d11"
+    },
+    "NOTICE": {
+      "source": "../apache-arrow-21.0.0/NOTICE.txt",
+      "sha256": "c946470d6b024c77feebdfb686bf92a828402c0ffc27c769bca7d8bef08e1db7"
+    }
+  },
+  "sha256": {
+    "scalar.patch": "03bf1f475ddc0d121ded093e31e6a78a75e8ec7a851293bef65cc445a14dd13a",
+    "extension/scalar_codegen_context.cc": "153307ed6ab5dcdf3ebc91c1a7bc2e4353819408416e94b96c737f2218f68271",
+    "extension/scalar_codegen_context.h": "f432dad1392ab31361ca676e8ec960fb78ec6aee5f3b53c0f916127a6c9546b4",
+    "extension/scalar_generator.cc": "2c1cf2f24f424eac8423201114b42b949cf25275a4d183fa66b21b1699599c99",
+    "extension/scalar_generator.h": "82d40bb68b2f93c28640cebda3e54ed4c262c57506bca183309b487de48c337f",
+    "extension/scalar_predicate_abi.h": "052a0a474cdb6096e19247317666c46271486310934f97bd472cd7e07528cdc1"
+  },
+  "local_changes": [
+    "Expose read-only Annotator metadata and let ScalarGenerator reuse the expression visitor through a compile-time scalar context.",
+    "Keep the scalar entry point, parameter metadata, raw buffer binding and intermediate validity handling in separate extension sources.",
+    "Preserve LLVMGenerator's existing instance state and public API; batch visitors use the default null context.",
+    "Observe emitted object-code size only on scalar engines without retaining an additional object copy."
+  ]
+}

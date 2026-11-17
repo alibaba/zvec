@@ -5,6 +5,7 @@
 #include <utility>
 #include <vector>
 #include <zvec/db/collection.h>
+#include <zvec/db/config.h>
 #include <zvec/db/doc.h>
 #include <zvec/db/query.h>
 #include <zvec/db/schema.h>
@@ -21,6 +22,18 @@ int Fail(const std::string &message) {
 
 int main() {
   using namespace zvec;
+
+#if defined(__linux__)
+  // A function-local singleton object and its construction guard must both
+  // be shared across the executable/ELF library boundary. A private guard in
+  // libzvec can construct the exported object again and reset these options.
+  GlobalConfig::ConfigData config;
+  config.invert_to_forward_scan_ratio = 0.5F;
+  auto config_status = GlobalConfig::Instance().initialize(config);
+  if (!config_status.ok()) {
+    return Fail("configuration failed: " + config_status.message());
+  }
+#endif
 
   const std::filesystem::path path =
       std::filesystem::temp_directory_path() / "zvec-sdk-smoke-db";
@@ -44,6 +57,12 @@ int main() {
     return Fail("CreateAndOpen failed: " + create_result.error().message());
   }
   auto collection = std::move(create_result).value();
+
+#if defined(__linux__)
+  if (GlobalConfig::Instance().invert_to_forward_scan_ratio() != 0.5F) {
+    return Fail("shared library reset the caller's global configuration");
+  }
+#endif
 
   const std::vector<std::string> contents{
       u8"\u6211\u7231\u5317\u4eac\u5929\u5b89\u95e8",

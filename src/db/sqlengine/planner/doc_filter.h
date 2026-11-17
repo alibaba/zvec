@@ -23,6 +23,7 @@
 #include "db/index/segment/segment.h"
 #include "db/sqlengine/analyzer/query_info.h"
 #include "db/sqlengine/analyzer/query_node.h"
+#include "db/sqlengine/planner/scalar_doc_filter.h"
 
 namespace zvec::sqlengine {
 
@@ -53,8 +54,15 @@ class DocFilter : public IndexFilter {
   bool empty() const;
 
  private:
+  friend class zvec::test::ForwardFilterReadTest;
+
   std::optional<bool> get_forward_bit(uint64_t id) const;
   std::optional<bool> is_matched_by_forward_filter(uint64_t id) const;
+  std::optional<bool> profiled_forward_filter(uint64_t id) const;
+  std::optional<bool> arrow_forward_filter(uint64_t id) const;
+  using ForwardEvaluator = std::optional<bool> (DocFilter::*)(uint64_t) const;
+  ForwardEvaluator forward_evaluator_ =
+      &DocFilter::is_matched_by_forward_filter;
 
  private:
   Segment::Ptr segment_;
@@ -69,6 +77,17 @@ class DocFilter : public IndexFilter {
   IndexFilter::Ptr invert_filter_{nullptr};
 
   std::shared_ptr<arrow::ChunkedArray> forward_bitmap_;
+  bool forward_prepared_{false};
+  // Rows captured at preparation. The access decision stays fixed even if the
+  // segment is sealed later; an owning view rejects candidates beyond it.
+  uint64_t forward_rows_{0};
+  ForwardReadView::Ptr forward_view_;
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+  std::unique_ptr<ScalarDocFilter> scalar_filter_;
+#endif
+  // Sealed IPC replacement for delete_filter_: same results without a
+  // per-candidate segment lock. Null keeps delete_filter_.
+  IndexFilter::Ptr sealed_deletion_;
 };
 
 }  // namespace zvec::sqlengine
