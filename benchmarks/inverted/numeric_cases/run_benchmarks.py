@@ -268,7 +268,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--value-range",
         choices=("0_to_30000", "0_to_type_max"),
-        help="Inclusive domain: [0, 30000] or [0, type maximum]",
+        help="Value domain: [0, 30000) or [0, type maximum)",
     )
     parser.add_argument(
         "--value-order",

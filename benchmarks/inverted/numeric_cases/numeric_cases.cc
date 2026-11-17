@@ -161,8 +161,8 @@ JsonObject ExecuteNumericCase(const NumericProfile &profile,
         [&](size_t) { return column->search_non_null(); },
         [&](bool is_null, const std::string &, size_t) { return !is_null; });
   }
-  if (name == "eq_hit" || name == "eq_hot" || name == "eq_cold" ||
-      name == "eq_miss") {
+  if (name == "eq_hit" || name == "eq_hottest" || name == "eq_hot" ||
+      name == "eq_cold" || name == "eq_miss") {
     return execute(
         [&](size_t i) { return column->search(encoded[i], CompareOp::EQ); },
         [&](bool is_null, const std::string &value, size_t i) {
@@ -176,7 +176,9 @@ JsonObject ExecuteNumericCase(const NumericProfile &profile,
           return !is_null && DecodeValue<T>(value) != operands[i];
         });
   }
-  if (name == "lt_q01" || name == "lt_q50" || name == "lt_q90") {
+  if (name == "lt_q01" || name == "lt_q11" || name == "lt_q33" ||
+      name == "lt_q50" || name == "lt_q77" || name == "lt_q90" ||
+      name == "lt_q99") {
     return execute(
         [&](size_t i) { return column->search(encoded[i], CompareOp::LT); },
         [&](bool is_null, const std::string &value, size_t i) {
@@ -184,11 +186,13 @@ JsonObject ExecuteNumericCase(const NumericProfile &profile,
         },
         true);
   }
-  if (name == "ge_q50") {
+  if (name == "gt_q01" || name == "gt_q11" || name == "gt_q33" ||
+      name == "gt_q50" || name == "gt_q77" || name == "gt_q90" ||
+      name == "gt_q99") {
     return execute(
-        [&](size_t i) { return column->search(encoded[i], CompareOp::GE); },
+        [&](size_t i) { return column->search(encoded[i], CompareOp::GT); },
         [&](bool is_null, const std::string &value, size_t i) {
-          return !is_null && DecodeValue<T>(value) >= operands[i];
+          return !is_null && DecodeValue<T>(value) > operands[i];
         },
         true);
   }

@@ -36,7 +36,7 @@ struct NumericProfile {
   NumericDocCount num_docs{NumericDocCount::ONE_HUNDRED_THOUSAND};
   // Value frequency distribution among non-NULL documents.
   NumericDistribution distribution{NumericDistribution::UNIFORM};
-  // Inclusive nonnegative domain.
+  // Nonnegative domain.
   NumericValueRange value_range{NumericValueRange::ZERO_TO_30000};
   // Value order by doc ID.
   NumericValueOrder value_order{NumericValueOrder::ASCENDING};

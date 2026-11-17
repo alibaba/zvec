@@ -46,18 +46,33 @@ values across the domain; remaining documents sample cold values outside that se
 samples uniformly. `hotspot_extreme` concentrates documents on hot values more strongly than
 `hotspot_moderate`; both use fixed presets identified by name in reports.
 
-`0_to_30000` means `[0, 30000]`; `0_to_type_max` means `[0, INT32_MAX]` or `[0, INT64_MAX]`.
-Both bounds are inclusive. Sampling and statistics do not allocate the full value domain.
+`0_to_30000` means `[0, 30000)`; `0_to_type_max` means `[0, INT32_MAX)` or `[0, INT64_MAX)`.
+Sampling and statistics do not allocate the full value domain.
 Large domains can produce many one-document postings.
 
 `shuffled` distributes values randomly across document IDs. `ascending` assigns non-NULL
 values in nondecreasing order. Both use the same values and NULL positions. NULL ratios produce
 zero, `num_docs / 10`, or `num_docs / 2` NULLs, with deterministic, randomly distributed positions.
 
-Query operands are derived from the generated data. Reports retain compact cardinality,
-frequency, and value-bound summaries.
-Range targets refer to non-NULL documents and may be approximate; ordinary match ratios use all
-documents. Query reports retain actual hit counts.
+Query operands are derived from the generated data. In `dataset.json`, `stats` records
+`distinct_value_count`, `min_value`, and `max_value` for non-NULL values.
+`documents_per_value` summarizes how many documents contain each distinct non-NULL value
+(`min`, `p50`, `p95`, `max`); `null_count` records the number of NULL documents.
+
+| Query case | Distribution | Inputs |
+| --- | --- | --- |
+| `eq_hit` | Uniform | Up to 7 existing values |
+| `eq_hottest` | Hotspot | The most frequent hot value; ties choose the smallest |
+| `eq_hot`, `eq_cold` | Hotspot | Up to 7 existing hot/cold values each |
+| `eq_miss` | All | `-1` through `-7` |
+| `ne_hit` | All | Reuses the `eq_hit` or `eq_hot` inputs |
+| `lt_qXX`, `gt_qXX` | All | One shared boundary per pair; `XX` is `01`, `11`, `33`, `50`, `77`, `90`, or `99` |
+| `is_null`, `is_not_null` | All | No numeric input |
+
+Range boundaries target the specified percentage of non-NULL documents for `<` queries.
+The paired `>` query uses the same boundary; neither includes values equal to it.
+Repeated values may prevent an exact target ratio. Ordinary match ratios use all documents;
+query reports retain actual hit counts. Uniform has 19 cases; hotspot has 21.
 
 ## Execution
 

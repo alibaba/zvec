@@ -27,59 +27,55 @@ namespace {
 
 // Fixed for reproducible datasets; not a configurable profile field.
 constexpr uint64_t kNumericSeed = 20261115;
-constexpr size_t kQueryPoolSize = 8;
+constexpr size_t kQueryPoolSize = 7;
 constexpr uint32_t kNumericBatchSize = 32768;
 
-// Temporary generation data, released before opening the index.
+
 template <typename T>
 struct NumericData {
   static_assert(std::is_same_v<T, int32_t> || std::is_same_v<T, int64_t>);
-  // Workload used to generate the records.
+  // Configuration used to generate this dataset.
   NumericProfile profile;
-  // Exact number of NULL documents.
+  // Total number of generated documents, including NULLs.
+  uint32_t doc_count{0};
+  // Number of NULL documents.
   uint64_t null_count{0};
-  // One marker per doc ID, including NULL documents.
-  std::vector<uint8_t> is_null;
+  // Whether each document is NULL, indexed by doc ID.
+  std::vector<bool> is_null;
   // Non-NULL values in doc ID order; NULL documents have no slot here.
   std::vector<T> values;
-  // Sorted hot set used for query selection; empty for uniform data.
+  // Sorted hot values for generation and query selection; empty for uniform.
   std::vector<T> hot_values;
 };
 
-uint64_t DomainSize(const NumericProfile &profile) {
-  // The nonnegative INT64 domain has 2^63 values; count it in uint64_t.
-  return static_cast<uint64_t>(ValueMax(profile)) + 1;
-}
-
-struct HotspotPreset {
-  uint32_t value_count;
-  uint32_t doc_percent;  // Percentage of non-NULL documents on hot values.
-};
-
-HotspotPreset HotspotFor(NumericDistribution distribution) {
-  switch (distribution) {
-    case NumericDistribution::HOTSPOT_MODERATE:
-      return {3000, 50};
-    case NumericDistribution::HOTSPOT_EXTREME:
-      return {300, 90};
-    case NumericDistribution::UNIFORM:
-      break;
-  }
-  throw std::invalid_argument("Expected a hotspot distribution");
-}
-
 template <typename T>
-std::vector<T> SelectHotValues(const NumericProfile &profile, uint32_t count) {
+std::vector<T> SelectHotValues(uint64_t value_max, uint32_t count) {
   // Floyd's sampling without replacement takes one draw per selected value,
   // even when the hot set nearly fills the domain. No full-domain array.
   Random random(kNumericSeed ^ 0xe7037ed1a0b428dbULL);
   std::set<T> selected;
-  const auto size = DomainSize(profile);
-  for (uint64_t last = size - count; last < size; ++last) {
+  for (uint64_t last = value_max - count; last < value_max; ++last) {
     const auto value = static_cast<T>(random.bounded(last + 1));
     selected.insert(selected.count(value) ? static_cast<T>(last) : value);
   }
   return {selected.begin(), selected.end()};
+}
+
+template <typename T>
+T SelectHottestValue(const std::vector<T> &sorted,
+                     const std::vector<T> &hot_values) {
+  T hottest = hot_values.front();
+  size_t max_count = 0;
+  // Hot values are sorted, so equal counts keep the smallest value.
+  for (const auto value : hot_values) {
+    const auto range = std::equal_range(sorted.begin(), sorted.end(), value);
+    const auto count = static_cast<size_t>(range.second - range.first);
+    if (count > max_count) {
+      hottest = value;
+      max_count = count;
+    }
+  }
+  return hottest;
 }
 
 template <typename T>
@@ -101,38 +97,58 @@ T ColdValue(uint64_t rank, const std::vector<T> &hot_values) {
 template <typename T>
 NumericData<T> GenerateDataset(const NumericProfile &profile) {
   NumericData<T> dataset{profile};
-  dataset.null_count = static_cast<uint64_t>(DocumentCount(profile)) *
-                       NullPercent(profile.null_ratio) / 100;
-  dataset.is_null.resize(DocumentCount(profile), 0);
-  std::fill_n(dataset.is_null.begin(), dataset.null_count, uint8_t{1});
-  if (dataset.null_count)
-    Random(kNumericSeed ^ 0xa0761d6478bd642fULL).shuffle(dataset.is_null);
-  const auto nonnull = DocumentCount(profile) - dataset.null_count;
+  dataset.doc_count = DocumentCount(profile);
 
-  // bounded() uses integer rejection sampling, including the full 2^63 domain.
+  // Set the NULL count and randomly distribute NULLs across doc IDs.
+  dataset.null_count = static_cast<uint64_t>(dataset.doc_count) *
+                       NullPercent(profile.null_ratio) / 100;
+  dataset.is_null.resize(dataset.doc_count, false);
+  std::fill_n(dataset.is_null.begin(), dataset.null_count, true);
+  if (dataset.null_count) {
+    Random(kNumericSeed ^ 0xa0761d6478bd642fULL).shuffle(dataset.is_null);
+  }
+  const auto nonnull = dataset.doc_count - dataset.null_count;
+
+  // Generate non-NULL values using the configured distribution.
   Random random(kNumericSeed ^ 0x8ebc6af09c88c6e3ULL);
   auto &values = dataset.values;
   values.resize(nonnull);
   if (profile.distribution == NumericDistribution::UNIFORM) {
-    for (auto &value : values) value = random.bounded(DomainSize(profile));
+    for (auto &value : values) value = random.bounded(ValueMax(profile));
   } else {
-    const auto hotspot = HotspotFor(profile.distribution);
-    dataset.hot_values = SelectHotValues<T>(profile, hotspot.value_count);
-    const uint64_t hot_rows = nonnull * hotspot.doc_percent / 100;
+    uint32_t hot_value_count = 0;
+    uint32_t hot_doc_percent = 0;
+    switch (profile.distribution) {
+      case NumericDistribution::HOTSPOT_MODERATE:
+        hot_value_count = 3000;
+        hot_doc_percent = 50;
+        break;
+      case NumericDistribution::HOTSPOT_EXTREME:
+        hot_value_count = 300;
+        hot_doc_percent = 90;
+        break;
+      default:
+        throw std::invalid_argument("Expected a hotspot distribution");
+    }
+    dataset.hot_values = SelectHotValues<T>(ValueMax(profile), hot_value_count);
+    const uint64_t hot_rows = nonnull * hot_doc_percent / 100;
     for (uint64_t i = 0; i < nonnull; ++i) {
       if (i < hot_rows)
         values[i] =
             dataset.hot_values[random.bounded(dataset.hot_values.size())];
       else
         values[i] = ColdValue(
-            random.bounded(DomainSize(profile) - dataset.hot_values.size()),
+            random.bounded(ValueMax(profile) - dataset.hot_values.size()),
             dataset.hot_values);
     }
   }
-  if (profile.value_order == NumericValueOrder::ASCENDING)
+
+  // Sort or shuffle non-NULL values according to the configured order.
+  if (profile.value_order == NumericValueOrder::ASCENDING) {
     std::sort(values.begin(), values.end());
-  else
+  } else {
     Random(kNumericSeed ^ 0x589965cc75374cc3ULL).shuffle(values);
+  }
   return dataset;
 }
 
@@ -159,11 +175,11 @@ JsonObject DescribeDataset(const NumericData<T> &dataset,
   percentiles.set("p50", JsonValue(counts[(counts.size() - 1) / 2]));
   percentiles.set("p95", JsonValue(counts[(counts.size() - 1) * 95 / 100]));
   percentiles.set("max", JsonValue(counts.back()));
-  stats.set("observed_cardinality",
+  stats.set("distinct_value_count",
             JsonValue(static_cast<uint64_t>(counts.size())));
-  stats.set("observed_term_df", percentiles);
-  stats.set("observed_value_min", JsonValue(sorted_values.front()));
-  stats.set("observed_value_max", JsonValue(sorted_values.back()));
+  stats.set("documents_per_value", percentiles);
+  stats.set("min_value", JsonValue(sorted_values.front()));
+  stats.set("max_value", JsonValue(sorted_values.back()));
   stats.set("null_count", JsonValue(dataset.null_count));
   description.set("stats", stats);
   return description;
@@ -218,7 +234,7 @@ template <typename T>
 JsonArray SelectQueryInputs(const NumericData<T> &dataset,
                             const std::vector<T> &sorted) {
   JsonArray cases;
-  auto points = [&](const std::string &name, const std::vector<T> &values) {
+  auto add_case = [&](const std::string &name, const std::vector<T> &values) {
     JsonArray inputs;
     for (auto value : values) inputs.push(JsonValue(value));
     cases.push(InputRecord(name, inputs));
@@ -226,28 +242,34 @@ JsonArray SelectQueryInputs(const NumericData<T> &dataset,
   std::vector<T> hits;
   if (dataset.profile.distribution == NumericDistribution::UNIFORM) {
     hits = SelectQueryTerms(sorted, [](T) { return true; });
-    points("eq_hit", hits);
+    add_case("eq_hit", hits);
   } else {
     auto is_hot = [&](T value) {
       return std::binary_search(dataset.hot_values.begin(),
                                 dataset.hot_values.end(), value);
     };
+    add_case("eq_hottest", {SelectHottestValue(sorted, dataset.hot_values)});
     hits = SelectQueryTerms(sorted, is_hot);
-    points("eq_hot", hits);
-    points("eq_cold",
-           SelectQueryTerms(sorted, [&](T value) { return !is_hot(value); }));
+    add_case("eq_hot", hits);
+    add_case("eq_cold",
+             SelectQueryTerms(sorted, [&](T value) { return !is_hot(value); }));
   }
   JsonArray misses;
   for (int64_t i = 1; i <= static_cast<int64_t>(kQueryPoolSize); ++i)
     misses.push(JsonValue(-i));
   cases.push(InputRecord("eq_miss", misses));
-  points("ne_hit", hits);
-  for (const auto &[name, percentile] :
-       std::vector<std::pair<std::string, uint32_t>>{
-           {"lt_q01", 1}, {"lt_q50", 50}, {"lt_q90", 90}, {"ge_q50", 50}}) {
-    JsonArray inputs;
-    inputs.push(JsonValue(RangeBoundary(sorted, percentile)));
-    cases.push(InputRecord(name, inputs));
+  add_case("ne_hit", hits);
+  for (const auto &[quantile, percentile] :
+       std::vector<std::pair<std::string, uint32_t>>{{"q01", 1},
+                                                     {"q11", 11},
+                                                     {"q33", 33},
+                                                     {"q50", 50},
+                                                     {"q77", 77},
+                                                     {"q90", 90},
+                                                     {"q99", 99}}) {
+    const auto boundary = RangeBoundary(sorted, percentile);
+    add_case("lt_" + quantile, {boundary});
+    add_case("gt_" + quantile, {boundary});
   }
   JsonArray null_input;
   null_input.push(JsonValue());
@@ -258,10 +280,11 @@ JsonArray SelectQueryInputs(const NumericData<T> &dataset,
 
 template <typename T>
 void WriteDataset(const NumericData<T> &dataset, const std::string &path) {
-  const auto num_docs = DocumentCount(dataset.profile);
+  const auto num_docs = dataset.doc_count;
   if (dataset.is_null.size() != num_docs ||
       dataset.values.size() + dataset.null_count != num_docs)
-    throw std::invalid_argument("numeric dataset size does not match profile");
+    throw std::invalid_argument(
+        "numeric dataset size does not match document count");
   if (ailego::File::IsExist(path))
     throw std::invalid_argument("dataset file already exists: '" + path + "'");
   ailego::File file;
@@ -299,8 +322,9 @@ template <typename T>
 void CreateDatasetFiles(const NumericProfile &profile,
                         const std::string &directory) {
   auto dataset = GenerateDataset<T>(profile);
-  std::vector<T> sorted_copy;
+  // Sorted values for statistics and query selection.
   const auto *sorted = &dataset.values;
+  std::vector<T> sorted_copy;
   if (profile.value_order == NumericValueOrder::SHUFFLED) {
     sorted_copy = dataset.values;
     std::sort(sorted_copy.begin(), sorted_copy.end());
