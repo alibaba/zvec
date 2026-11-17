@@ -76,23 +76,24 @@ query reports retain actual hit counts. Uniform has 19 cases; hotspot has 21.
 
 ## Execution
 
-Each repetition builds one dataset, verifies all applicable queries, then measures all queries.
-These three phases run in separate processes. The query process reopens the index and warms up
-for each case. Seed `20261115`, at least 0.2 seconds of warmup, and at least 1 second of measurement
-per case are fixed in C++; each interval completes whole query-pool passes.
+Each repetition prepares a dataset, builds its index, verifies all applicable queries, then
+measures all queries. These four phases run in separate processes. The query process reopens
+the index and warms up for each case. Seed `20261115`, at least 0.2 seconds of warmup, and at
+least 1 second of measurement per case are fixed in C++; each interval completes whole
+query-pool passes.
 Use `--repetitions` to change the default of three repetitions.
 
-Build creates the dataset and releases generation arrays before opening the index.
-It then reads up to 32,768 records per batch, inserts them sequentially on one
-thread, and seals the index. Verify scans this same file for each query operand and compares
-every matching document ID with the index result. It does not regenerate data. Query uses
-the verified counts and index without reading `data.bin`.
+Prepare writes `data.bin` and `dataset.json`, then exits. Build loads that dataset in a fresh
+process, so its peak RSS excludes data generation. It reads up to 32,768 records per batch,
+inserts them sequentially on one thread, and seals the index. Verify scans this same file for
+each query operand and compares every matching document ID with the index result. It does not
+regenerate data. Query uses the verified counts and index without reading `data.bin`.
 
 `data.bin` stores records in document ID order: one NULL byte followed by 4-byte INT32 or
 8-byte INT64 native values. NULL payloads are zero-filled; document IDs are implicit. The
 file has no header; `dataset.json` holds its metadata. This is a local run format.
 
-Both dataset entry points require an existing directory; the CLI creates `--run_dir` in build mode.
+Both dataset entry points require an existing directory; the CLI creates `--run_dir` in prepare mode.
 `NumericDataset::Create(profile, directory)` writes both dataset files.
 `NumericDataset::Load(directory)` loads metadata; the first `read_next_batch()` opens `data.bin`.
 `rewind()` resets the document cursor, and `query_cases()` returns the cached query definitions.
@@ -113,9 +114,12 @@ The C++ benchmark writes the phase reports; the dataset class writes the two dat
 To run the phases directly:
 
 ```bash
-build/bin/inverted_numeric_bench --mode=build --data_type=int64 \
+build/bin/inverted_numeric_bench --mode=prepare --data_type=int64 \
   --num_docs=100000 --distribution=hotspot_moderate \
   --value_range=0_to_type_max --value_order=shuffled --null_ratio=0.1 \
+  --run_dir=build/results/inverted/numeric-example
+
+build/bin/inverted_numeric_bench --mode=build \
   --run_dir=build/results/inverted/numeric-example
 
 build/bin/inverted_numeric_bench --mode=verify \
@@ -125,9 +129,9 @@ build/bin/inverted_numeric_bench --mode=query \
   --run_dir=build/results/inverted/numeric-example
 ```
 
-Build requires `--data_type` and defaults to 100,000 documents and `uniform`.
-Verify and query restore the workload from `dataset.json`. The executable supports only these
-three modes; run it without arguments or with `--help` to see its parameters.
+Prepare requires `--data_type` and defaults to 100,000 documents and `uniform`.
+Build, verify, and query accept only `--run_dir` as workload input and restore the configuration
+from `dataset.json`. Run the executable without arguments or with `--help` to see its parameters.
 
 Script results default to `build/results/inverted/numeric/<run-id>/`.
 See [result metrics and output controls](../README.md#results).

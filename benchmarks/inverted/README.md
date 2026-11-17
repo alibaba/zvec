@@ -17,7 +17,8 @@ shared/               # C++ helpers and Python process, JSON, and metric helpers
 
 `numeric_cases/` owns its CLI, configuration, data generation, queries, and `run_benchmarks.py`.
 C++ performs the benchmark phases and determines the queries for each workload. The Python
-script enumerates workload combinations, runs repetitions, and aggregates reports.
+script enumerates workload combinations, runs prepare, build, verify, and query in separate
+processes for each repetition, and aggregates reports.
 Workload metadata and query cases are read from `dataset.json`. Python uses only the standard library.
 `shared/` provides helpers without defining workloads or controlling suite execution.
 
@@ -43,12 +44,13 @@ a successful summary.
 - **Query:** single-threaded, warm-cache mean nanoseconds/query and QPS, including the index call,
   result count, and result release. Full document-ID verification occurs before timing in another
   process. Reported repetition ranges are not per-request latency percentiles.
-- **Disk:** index-directory file bytes after seal and close, bytes/document, and allocated bytes
-  where supported. Dataset files, worker logs, and benchmark reports are excluded.
-- **Memory:** process RSS at stage boundaries and process peak RSS where available. These include
-  runtime and allocator overhead. Build snapshots bracket index opening through seal, after
-  generation arrays are released. Data-file opening and batch-buffer allocation occur on the
-  first batch read, after the baseline snapshot. The same process generates
-  data, so its peak RSS includes generation and its allocator may retain freed memory. Query
-  workers load query inputs without the full dataset. Peak RSS includes setup and warmup,
-  and is not index-only memory.
+- **Disk:** logical bytes of files in the index directory after seal and close, and bytes/document.
+  Dataset files, worker logs, and benchmark reports are excluded.
+- **Memory:** `rss_mib` and `peak_rss_mib` report process RSS at stage boundaries and process peak
+  RSS in MiB (1 MiB = 1,048,576 bytes), or `null` when unavailable. These include
+  runtime and allocator overhead. Build runs in a fresh process after prepare exits, so its
+  peak RSS excludes data generation. Build snapshots bracket index opening through seal;
+  data-file opening and batch-buffer allocation occur on the first batch read, after the
+  baseline snapshot. Its peak still includes process startup, metadata loading, and read buffers.
+  Query workers load query inputs without the full dataset; their peak includes setup and
+  warmup. These are process-level measurements, not index-only memory.

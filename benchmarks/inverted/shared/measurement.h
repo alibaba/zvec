@@ -22,8 +22,7 @@
 namespace zvec::benchmarks::inverted {
 
 // The caller defines a complete pool pass, including result consumption and
-// release, and returns its checksum. No operation or result type is
-// interpreted.
+// release. No operation or result type is interpreted.
 template <typename RunPool>
 Measurement MeasurePool(size_t pool_size, double warmup_seconds,
                         double measure_seconds, RunPool &&run_pool) {
@@ -40,7 +39,7 @@ Measurement MeasurePool(size_t pool_size, double warmup_seconds,
   const auto begin = Clock::now();
   Clock::time_point end;
   do {
-    result.checksum += run_pool();
+    run_pool();
     result.completed += pool_size;
     end = Clock::now();
   } while (Seconds(begin, end) < measure_seconds);

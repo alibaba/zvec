@@ -50,8 +50,6 @@ std::vector<JsonObject> ReadQueryInputs(const JsonArray &cases) {
 void ValidateBuildReport(const std::string &build_report_path,
                          const std::string &index_path) {
   const auto build = ReadJson(build_report_path);
-  if (Number(build, "schema_version") != 2 || Text(build, "phase") != "build")
-    throw std::invalid_argument("Invalid build report");
   if (std::filesystem::weakly_canonical(Text(build, "index_path")) !=
       std::filesystem::weakly_canonical(index_path))
     throw std::invalid_argument("Index path does not match build report");
@@ -60,9 +58,8 @@ void ValidateBuildReport(const std::string &build_report_path,
 JsonObject LoadVerification(const std::string &verification_path,
                             const JsonObject &inputs) {
   const auto verified = ReadJson(verification_path);
-  if (Number(verified, "schema_version") != 2 ||
-      Text(verified, "phase") != "verify" || !verified["passed"].is_boolean() ||
-      !verified["passed"].as_bool() || !verified["cases"].is_array())
+  if (!verified["passed"].is_boolean() || !verified["passed"].as_bool() ||
+      !verified["cases"].is_array())
     throw std::invalid_argument(
         "query requires successful verification"
         "\n  run --mode=verify with the same --run_dir first");

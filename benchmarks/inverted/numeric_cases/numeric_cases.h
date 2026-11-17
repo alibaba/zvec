@@ -13,13 +13,11 @@
 
 #include <string>
 #include "shared/json.h"
-#include "profile.h"
 
 namespace zvec::benchmarks::inverted {
 
 
-JsonObject BuildNumeric(const NumericProfile &profile,
-                        const std::string &run_dir);
+JsonObject BuildNumeric(const std::string &run_dir);
 JsonObject VerifyNumeric(const std::string &run_dir);
 JsonObject QueryNumeric(const std::string &run_dir);
 

@@ -20,10 +20,11 @@
 #include <gflags/gflags.h>
 #include <zvec/ailego/io/file.h>
 #include "shared/json.h"
+#include "dataset.h"
 #include "numeric_cases.h"
 
 
-DEFINE_string(mode, "", "build, verify, or query");
+DEFINE_string(mode, "", "prepare, build, verify, or query");
 DEFINE_string(data_type, "", "int32 or int64");
 DEFINE_uint32(num_docs, 100000, "100000 or 10000000");
 DEFINE_string(distribution, "uniform",
@@ -67,8 +68,9 @@ void PrintHelp() {
       std::cout << " (default: " << flag.default_value << ')';
     std::cout << '\n';
   }
-  std::cout << "\nbuild requires --data_type and --run_dir.\n"
-               "verify/query require the same --run_dir used for build.\n";
+  std::cout << "\nprepare requires --data_type and --run_dir.\n"
+               "build/verify/query require the same --run_dir used for "
+               "prepare.\n";
 }
 
 [[noreturn]] void InvalidValue(const char *name, const std::string &value) {
@@ -162,18 +164,18 @@ int main(int argc, char **argv) {
       throw std::invalid_argument(
           "missing required argument --mode\n  expected: " +
           gflags::GetCommandLineFlagInfoOrDie("mode").description);
-    if (FLAGS_mode != "build" && FLAGS_mode != "verify" &&
-        FLAGS_mode != "query")
+    if (FLAGS_mode != "prepare" && FLAGS_mode != "build" &&
+        FLAGS_mode != "verify" && FLAGS_mode != "query")
       InvalidValue("mode", FLAGS_mode);
 
-    if (FLAGS_mode == "build") {
+    if (FLAGS_mode == "prepare") {
       if (IsSpecified("data_type") && FLAGS_data_type != "int32" &&
           FLAGS_data_type != "int64")
         InvalidValue("data_type", FLAGS_data_type);
       if (!IsSpecified("data_type"))
         throw std::invalid_argument(
             "missing required argument --data_type "
-            "for --mode=build\n  expected: " +
+            "for --mode=prepare\n  expected: " +
             gflags::GetCommandLineFlagInfoOrDie("data_type").description);
     } else {
       for (const auto *name : {"data_type", "num_docs", "distribution",
@@ -182,7 +184,7 @@ int main(int argc, char **argv) {
           throw std::invalid_argument(
               "unexpected argument --" + std::string(name) +
               " for --mode=" + FLAGS_mode +
-              "\n  this argument is only supported with --mode=build");
+              "\n  this argument is only supported with --mode=prepare");
       }
     }
 
@@ -192,6 +194,17 @@ int main(int argc, char **argv) {
           "--mode=" +
           FLAGS_mode + "\n  expected: a benchmark run directory");
     const fs::path directory = fs::absolute(FLAGS_run_dir);
+    if (FLAGS_mode == "prepare") {
+      const auto type =
+          FLAGS_data_type == "int32" ? DataType::INT32 : DataType::INT64;
+      const auto profile = ProfileFromFlags(type);
+      if (!zvec::ailego::File::MakePath(directory.string()))
+        throw std::runtime_error("cannot create run directory: '" +
+                                 directory.string() + "'");
+      bench::NumericDataset::Create(profile, directory.string());
+      return 0;
+    }
+
     const auto output = directory / (FLAGS_mode + ".json");
     if (fs::exists(output))
       throw std::invalid_argument(
@@ -200,13 +213,7 @@ int main(int argc, char **argv) {
 
     bench::JsonObject result;
     if (FLAGS_mode == "build") {
-      const auto type =
-          FLAGS_data_type == "int32" ? DataType::INT32 : DataType::INT64;
-      const auto profile = ProfileFromFlags(type);
-      if (!zvec::ailego::File::MakePath(directory.string()))
-        throw std::runtime_error("cannot create run directory: '" +
-                                 directory.string() + "'");
-      result = bench::BuildNumeric(profile, directory.string());
+      result = bench::BuildNumeric(directory.string());
     } else if (FLAGS_mode == "verify") {
       result = bench::VerifyNumeric(directory.string());
     } else {

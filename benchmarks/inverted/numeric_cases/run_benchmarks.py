@@ -22,10 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shared"))
 from benchmark_helpers import (
-    SCHEMA_VERSION,
     binary_record,
     fail,
-    load_json,
     names,
     number,
     report_details,
@@ -187,18 +185,16 @@ def run_profile(binary, output, profile, args, overrides):
         prefix = (
             f"{profile['type']}/{profile['name']} [{repetition}/{args.repetitions}]"
         )
-        print(f"{prefix} build", flush=True)
-        build = run_worker(
+        print(f"{prefix} prepare", flush=True)
+        dataset = run_worker(
             binary,
-            "build",
-            directory / "build.json",
-            logs / "build.log",
+            "prepare",
+            directory / "dataset.json",
+            logs / "prepare.log",
             run_dir=directory,
             num_docs=args.num_docs,
             **workload_flags(profile, overrides),
         )
-        validate_build(build)
-        dataset = load_json((directory / "dataset.json").read_text())
         cases = validate_dataset(dataset, profile, args, overrides)
         if expected_dataset is None:
             expected_dataset = dataset
@@ -206,6 +202,15 @@ def run_profile(binary, output, profile, args, overrides):
             verifications = {name: [] for name in cases}
         elif dataset != expected_dataset:
             fail(f"Data or query inputs changed across repetitions: {prefix}")
+        print(f"{prefix} build", flush=True)
+        build = run_worker(
+            binary,
+            "build",
+            directory / "build.json",
+            logs / "build.log",
+            run_dir=directory,
+        )
+        validate_build(build)
         print(f"{prefix} verify", flush=True)
         verification = run_worker(
             binary,
@@ -347,7 +352,6 @@ def main(argv=None):
         )
         output.mkdir(parents=True, exist_ok=False)
         metadata = {
-            "schema_version": SCHEMA_VERSION,
             "run_id": run_id,
             "status": "running",
             "started_at": timestamp(),
@@ -372,7 +376,6 @@ def main(argv=None):
             for profile in profiles
         ]
         summary = {
-            "schema_version": SCHEMA_VERSION,
             "run_id": run_id,
             "repetitions": args.repetitions,
             "profiles": summaries,

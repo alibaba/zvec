@@ -50,7 +50,7 @@ IndexFixture::IndexFixture(DataType data_type, const std::string &path,
 }
 
 IndexFixture::~IndexFixture() {
-  Close();
+  close();
 }
 
 InvertedColumnIndexer &IndexFixture::column() {
@@ -60,7 +60,7 @@ InvertedColumnIndexer &IndexFixture::column() {
   return *column_;
 }
 
-void IndexFixture::Seal() {
+void IndexFixture::seal() {
   if (!index_ || !column_ || read_only_) {
     throw std::logic_error("Cannot seal a closed or read-only index");
   }
@@ -71,7 +71,7 @@ void IndexFixture::Seal() {
   }
 }
 
-void IndexFixture::Close() {
+void IndexFixture::close() {
   column_.reset();
   index_.reset();
 }

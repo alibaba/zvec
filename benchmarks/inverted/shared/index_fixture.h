@@ -23,8 +23,8 @@ class IndexFixture {
   IndexFixture &operator=(const IndexFixture &) = delete;
 
   InvertedColumnIndexer &column();
-  void Seal();
-  void Close();
+  void seal();
+  void close();
 
  private:
   bool read_only_;

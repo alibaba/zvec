@@ -20,14 +20,11 @@ using Clock = std::chrono::steady_clock;
 JsonObject MemorySnapshot();
 JsonObject DiskUsage(const std::string &path);
 JsonObject EnvironmentJson();
-JsonObject Report(const char *phase);
 JsonArray BuildMetricNames();
 double Seconds(Clock::time_point begin, Clock::time_point end);
-std::string Hex(uint64_t value);
 
 struct Measurement {
   uint64_t completed{0};
-  uint64_t checksum{0};
   double elapsed_seconds{0};
 };
 

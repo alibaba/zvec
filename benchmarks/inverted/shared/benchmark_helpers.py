@@ -20,8 +20,6 @@ import re
 import statistics
 import subprocess
 
-SCHEMA_VERSION = 2
-
 
 def timestamp():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -83,10 +81,7 @@ def run_worker(binary, phase, report, log, **flags):
         fail(f"{phase} exited with {completed.returncode}; see {log}")
     if not report.is_file():
         fail(f"{phase} produced no report; see {log}")
-    result = load_json(report.read_text())
-    if result.get("schema_version") != SCHEMA_VERSION or result.get("phase") != phase:
-        fail(f"Unexpected phase in {report}")
-    return result
+    return load_json(report.read_text())
 
 
 def number(value, label, positive=False):
@@ -151,8 +146,6 @@ def summarize_metrics(samples):
 def report_details(report):
     details = copy.deepcopy(report)
     for key in (
-        "schema_version",
-        "phase",
         "metric_names",
         "name",
         "index_path",

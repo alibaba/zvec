@@ -15,6 +15,7 @@
 #include <memory>
 #include <stdexcept>
 #include <vector>
+#include <zvec/ailego/utility/file_helper.h>
 #include "shared/index_fixture.h"
 #include "shared/json.h"
 #include "shared/measurement.h"
@@ -30,11 +31,6 @@ namespace {
 
 constexpr double kWarmupSeconds = 0.2;
 constexpr double kMeasureSeconds = 1.0;
-
-std::string RunPath(const std::string &run_dir, const std::string &name) {
-  if (run_dir.empty()) throw std::invalid_argument("run_dir must not be empty");
-  return (std::filesystem::path(run_dir) / name).string();
-}
 
 // Stream original records; the predicate does not consult the index.
 template <typename Predicate>
@@ -128,7 +124,6 @@ JsonObject ExecuteNumericCase(const NumericProfile &profile,
     }
     const auto measurement =
         MeasurePool(inputs.size(), kWarmupSeconds, kMeasureSeconds, [&]() {
-          uint64_t checksum = 0;
           for (size_t i = 0; i < inputs.size(); ++i) {
             auto result = search(i);
             if (!result)
@@ -138,12 +133,10 @@ JsonObject ExecuteNumericCase(const NumericProfile &profile,
               throw std::runtime_error(
                   "Numeric query count changed during timing: " + name);
             }
-            checksum += count;
           }
-          return checksum;
         });
     const auto after = MemorySnapshot();
-    query_index->Close();
+    query_index->close();
     auto result = QueryReport(name, measurement, kWarmupSeconds,
                               kMeasureSeconds, before, after);
     JsonArray counts;
@@ -199,9 +192,9 @@ JsonObject ExecuteNumericCase(const NumericProfile &profile,
   throw std::invalid_argument("Unknown numeric query case: " + name);
 }
 
-JsonObject Build(const NumericProfile &profile, const std::string &index_path,
-                 const std::string &run_dir) {
-  auto dataset = NumericDataset::Create(profile, run_dir);
+JsonObject Build(const std::string &index_path, const std::string &run_dir) {
+  auto dataset = NumericDataset::Load(run_dir);
+  const auto &profile = dataset.profile();
   NumericBatch batch;
   const auto before = MemorySnapshot();
   IndexFixture index(profile.data_type, index_path, false);
@@ -220,12 +213,12 @@ JsonObject Build(const NumericProfile &profile, const std::string &index_path,
     insert_seconds += Seconds(begin, Clock::now());
   }
   const auto seal_begin = Clock::now();
-  index.Seal();
+  index.seal();
   const auto seal_seconds = Seconds(seal_begin, Clock::now());
   const auto build_seconds = insert_seconds + seal_seconds;
   const auto after = MemorySnapshot();
-  index.Close();
-  auto result = Report("build");
+  index.close();
+  JsonObject result;
   result.set(
       "index_path",
       JsonStringValue(std::filesystem::weakly_canonical(index_path).string()));
@@ -236,7 +229,6 @@ JsonObject Build(const NumericProfile &profile, const std::string &index_path,
              JsonValue(DocumentCount(profile) / build_seconds));
   const auto disk = DiskUsage(index_path);
   result.set("index_file_bytes", disk["index_file_bytes"]);
-  result.set("index_allocated_bytes", disk["index_allocated_bytes"]);
   result.set("bytes_per_doc",
              JsonValue(static_cast<double>(Number(disk, "index_file_bytes")) /
                        DocumentCount(profile)));
@@ -255,7 +247,7 @@ JsonObject Verify(NumericDataset &dataset, const std::string &index_path) {
   for (const auto &record : dataset.query_cases())
     checked.push(ExecuteNumericCase<T>(profile, index_path, record, &dataset,
                                        &index.column(), JsonObject()));
-  auto result = Report("verify");
+  JsonObject result;
   result.set("passed", JsonValue(true));
   result.set("cases", checked);
   return result;
@@ -265,20 +257,19 @@ JsonObject Verify(NumericDataset &dataset, const std::string &index_path) {
 }  // namespace
 
 
-JsonObject BuildNumeric(const NumericProfile &profile,
-                        const std::string &run_dir) {
-  ValidateProfile(profile);
-  const auto index_path = RunPath(run_dir, "index");
+JsonObject BuildNumeric(const std::string &run_dir) {
+  const auto index_path = ailego::FileHelper::PathJoin(run_dir, "index");
   if (std::filesystem::exists(index_path))
     throw std::invalid_argument(
         "index directory already exists: '" + index_path +
         "'\n  use a new --run_dir to start another run");
-  return Build(profile, index_path, run_dir);
+  return Build(index_path, run_dir);
 }
 
 JsonObject VerifyNumeric(const std::string &run_dir) {
-  const auto index_path = RunPath(run_dir, "index");
-  ValidateBuildReport(RunPath(run_dir, "build.json"), index_path);
+  const auto index_path = ailego::FileHelper::PathJoin(run_dir, "index");
+  ValidateBuildReport(ailego::FileHelper::PathJoin(run_dir, "build.json"),
+                      index_path);
   auto dataset = NumericDataset::Load(run_dir);
   const auto &profile = dataset.profile();
   if (profile.data_type == DataType::INT32)
@@ -287,16 +278,17 @@ JsonObject VerifyNumeric(const std::string &run_dir) {
 }
 
 JsonObject QueryNumeric(const std::string &run_dir) {
-  const auto index_path = RunPath(run_dir, "index");
-  ValidateBuildReport(RunPath(run_dir, "build.json"), index_path);
+  const auto index_path = ailego::FileHelper::PathJoin(run_dir, "index");
+  ValidateBuildReport(ailego::FileHelper::PathJoin(run_dir, "build.json"),
+                      index_path);
   auto dataset = NumericDataset::Load(run_dir);
   const auto &profile = dataset.profile();
   const auto &inputs = dataset.query_cases();
   // Require successful verification of every case before starting measurement.
   std::vector<JsonObject> verified;
   for (const auto &record : inputs)
-    verified.push_back(
-        LoadVerification(RunPath(run_dir, "verify.json"), record));
+    verified.push_back(LoadVerification(
+        ailego::FileHelper::PathJoin(run_dir, "verify.json"), record));
   JsonArray cases;
   for (size_t i = 0; i < inputs.size(); ++i) {
     auto query =
@@ -307,7 +299,7 @@ JsonObject QueryNumeric(const std::string &run_dir) {
                                           nullptr, nullptr, verified[i]);
     cases.push(query);
   }
-  auto result = Report("query");
+  JsonObject result;
   result.set("cases", cases);
   return result;
 }
