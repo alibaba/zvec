@@ -60,15 +60,22 @@ class MixedStreamerReducer : public IndexStreamerReducer {
                                   const std::shared_ptr<zvec::turbo::Quantizer>
                                       &quantizer = nullptr) override;
 
+  void set_output_base(uint32_t base) {
+    output_base_ = base;
+  }
+  void set_merged_holder(std::shared_ptr<MergedProviderIndexHolder> holder) {
+    merged_holder_ = std::move(holder);
+  }
+
  private:
   int reduce_with_builder(const IndexFilter &filter);
   int read_vec(size_t source_streamer_index,
                const IndexProvider::Pointer &provider,
-               const IndexFilter &filter, const uint32_t id_offset,
+               const IndexFilter &filter, const uint64_t id_offset,
                uint32_t *next_id);
   void add_vec(int *result);
   int read_sparse_vec(size_t source_streamer_index, const IndexFilter &filter,
-                      const uint32_t id_offset, uint32_t *next_id);
+                      const uint64_t id_offset, uint32_t *next_id);
   void add_sparse_vec(int *result);
 
   int index_build(IndexHolder::Pointer target_holder);
@@ -87,6 +94,7 @@ class MixedStreamerReducer : public IndexStreamerReducer {
     STATE_REDUCE
   };
 
+  uint32_t output_base_{0};
   bool enable_pk_rewrite_{false};
   bool is_sparse_{false};
 

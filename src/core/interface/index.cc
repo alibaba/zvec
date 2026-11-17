@@ -23,7 +23,9 @@
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_storage.h>
 #include <zvec/core/interface/index.h>
+#include "mixed_reducer/merged_provider_index_holder.h"
 #include "mixed_reducer/mixed_reducer_params.h"
+#include "mixed_reducer/mixed_streamer_reducer.h"
 #include "utility/utility_params.h"
 
 namespace zvec::core_interface {
@@ -33,155 +35,6 @@ namespace {
 bool has_group_by_search(const BaseIndexQueryParam::Pointer &search_param) {
   return search_param->group_by_param && search_param->group_by_param->group_by;
 }
-
-// A multipass training view over merge sources. Decode through each source's
-// existing quantizer or reformer, just as the merge reducer does. This lets
-// global quantizers train from FP16/UINT8 Flat references without materializing
-// an additional full-dataset FP32 copy or adding input types to the quantizers.
-class MergeSourceIndexHolder final : public core::IndexHolder {
- public:
-  struct Source {
-    core::IndexHolder::Pointer holder;
-    core::IndexReformer::Pointer reformer;
-    std::shared_ptr<turbo::Quantizer> quantizer;
-    core::IndexQueryMeta stored_meta;
-  };
-
-  class Iterator final : public core::IndexHolder::Iterator {
-   public:
-    explicit Iterator(MergeSourceIndexHolder *owner) : owner_(owner) {
-      advance_to_valid_source();
-    }
-
-    const void *data() const override {
-      return data_;
-    }
-
-    bool is_valid() const override {
-      if (owner_->error_ != 0 || !source_iter_) {
-        return false;
-      }
-      const bool valid = source_iter_->is_valid();
-      owner_->error_ = source_iter_->status();
-      return owner_->error_ == 0 && valid;
-    }
-
-    int status() const override {
-      return owner_->error_;
-    }
-
-    uint64_t key() const override {
-      const uint64_t result = source_iter_->key();
-      if (owner_->error_ == 0) {
-        owner_->error_ = source_iter_->status();
-      }
-      return result;
-    }
-
-    void next() override {
-      if (source_iter_) source_iter_->next();
-      advance_to_valid_source();
-    }
-
-   private:
-    void advance_to_valid_source() {
-      data_ = nullptr;
-      if (owner_->error_ != 0) return;
-      while (!source_iter_ || !source_iter_->is_valid()) {
-        if (source_iter_ && source_iter_->status() != 0) {
-          owner_->error_ = source_iter_->status();
-          return;
-        }
-        source_iter_.reset();
-        if (source_index_ >= owner_->sources_.size()) return;
-        source_ = &owner_->sources_[source_index_++];
-        source_iter_ = source_->holder->create_iterator();
-        if (!source_iter_) {
-          owner_->error_ = core::IndexError_ReadData;
-          return;
-        }
-      }
-      if (source_iter_->status() != 0) {
-        owner_->error_ = source_iter_->status();
-        return;
-      }
-      data_ = source_iter_->data();
-      if (source_iter_->status() != 0) {
-        owner_->error_ = source_iter_->status();
-        data_ = nullptr;
-        return;
-      }
-      if (!data_) {
-        owner_->error_ = core::IndexError_ReadData;
-        return;
-      }
-      if (source_->quantizer || source_->reformer) {
-        const int ret = source_->quantizer
-                            ? source_->quantizer->dequantize(
-                                  data_, source_->stored_meta, &decoded_)
-                            : source_->reformer->revert(
-                                  data_, source_->stored_meta, &decoded_);
-        if (ret != 0) {
-          owner_->error_ = ret;
-          return;
-        }
-        if (decoded_.size() != owner_->element_size()) {
-          owner_->error_ = core::IndexError_Mismatch;
-          return;
-        }
-        data_ = decoded_.data();
-      }
-    }
-
-    MergeSourceIndexHolder *owner_;
-    const Source *source_{nullptr};
-    size_t source_index_{0};
-    core::IndexHolder::Iterator::Pointer source_iter_{};
-    std::string decoded_;
-    const void *data_{nullptr};
-  };
-
-  MergeSourceIndexHolder(std::vector<Source> sources,
-                         core::IndexQueryMeta source_meta)
-      : sources_(std::move(sources)), source_meta_(std::move(source_meta)) {
-    for (const auto &source : sources_) {
-      if (source.holder->count() >
-          (std::numeric_limits<size_t>::max)() - count_) {
-        error_ = core::IndexError_InvalidArgument;
-        return;
-      }
-      count_ += source.holder->count();
-    }
-  }
-
-  size_t count() const override {
-    return count_;
-  }
-  size_t dimension() const override {
-    return source_meta_.dimension();
-  }
-  core::IndexMeta::DataType data_type() const override {
-    return source_meta_.data_type();
-  }
-  size_t element_size() const override {
-    return source_meta_.element_size();
-  }
-  bool multipass() const override {
-    return true;
-  }
-  core::IndexHolder::Iterator::Pointer create_iterator() override {
-    return std::make_unique<Iterator>(this);
-  }
-  int error() const {
-    return error_;
-  }
-
- private:
-  std::vector<Source> sources_;
-  core::IndexQueryMeta source_meta_;
-  size_t count_{0};
-  int error_{0};
-};
 
 int CreateReformerFromConverterMeta(
     const core::IndexConverter::Pointer &converter,
@@ -246,14 +99,31 @@ bool Index::is_trained() const {
 }
 
 uint32_t Index::get_doc_count() const {
+  return get_slot_count();
+}
+
+uint32_t Index::get_slot_count() const {
   if (pending_quantizer_training_) return 0;
-  if (streamer_ == nullptr) {
-    return -1;
-  }
+  if (!streamer_) return 0;
+  uint32_t slots = 0;
   if (is_sparse_) {
-    return streamer_->create_sparse_provider()->count();
+    auto provider = streamer_->create_sparse_provider();
+    if (provider) slots = provider->slot_count();
+  } else {
+    auto provider = streamer_->create_provider();
+    if (provider) slots = provider->slot_count();
   }
-  return streamer_->create_provider()->count();
+  return builder_ ? std::max<uint32_t>(slots, builder_->slot_count()) : slots;
+}
+
+uint32_t Index::get_vector_count() const {
+  if (!streamer_) return 0;
+  if (is_sparse_) {
+    auto provider = streamer_->create_sparse_provider();
+    return provider ? provider->count() : 0;
+  }
+  auto provider = streamer_->create_provider();
+  return provider ? provider->count() : 0;
 }
 
 core::IndexStreamer::Pointer Index::index_searcher() {
@@ -666,6 +536,14 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
   return 0;
 }
 
+int Index::add_null(uint32_t id) {
+  if (!is_open_ || is_read_only_) return core::IndexError_NoReady;
+  if (builder_ && is_trained_) return core::IndexError_Unsupported;
+  if (id == UINT32_MAX || id < get_slot_count())
+    return core::IndexError_InvalidArgument;
+  return streamer_->reserve_slots(id + 1);
+}
+
 int Index::close() {
   if (!is_open_) {
     LOG_ERROR("Index is not open");
@@ -724,7 +602,8 @@ bool Index::is_dirty() const {
   if (!storage_) {
     return false;
   }
-  return storage_->is_dirty();
+  return (builder_ && !is_trained_ && get_slot_count() != 0) ||
+         storage_->is_dirty();
 }
 
 int Index::fetch(const uint32_t doc_id, VectorDataBuffer *vector_data_buffer) {
@@ -741,6 +620,8 @@ int Index::fetch(const uint32_t doc_id, VectorDataBuffer *vector_data_buffer) {
 
 int Index::add(const VectorData &vector_data, const uint32_t doc_id) {
   if (pending_quantizer_training_) return core::IndexError_NoReady;
+  if (std::holds_alternative<NullVector>(vector_data.vector))
+    return add_null(doc_id);
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;
@@ -903,8 +784,11 @@ int Index::_dense_fetch(const uint32_t doc_id,
     LOG_ERROR("Failed to fetch vector, doc_id: %u", doc_id);
     return core::IndexError_Runtime;
   }
-  const void *vector = vector_block.data();
+  return _decode_dense_vector(vector_block.data(), vector_data_buffer);
+}
 
+int Index::_decode_dense_vector(const void *vector,
+                                VectorDataBuffer *vector_data_buffer) {
   DenseVectorBuffer dense_vector_buffer;
   std::string &out_vector_buffer = dense_vector_buffer.data;
   // for int4, unit_size * dim != element_size
@@ -1480,18 +1364,13 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
     return core::IndexError_Unsupported;
   }
   for (const auto &index : indexes) {
-    if (index && index->param_.index_type == IndexType::kFlat &&
+    if (!index || !index->is_open_) return core::IndexError_NoReady;
+    if (index->param_.index_type == IndexType::kFlat &&
         index->param_.use_external_vector) {
       return core::IndexError_Unsupported;
     }
   }
-  // ivf need builder
-  auto reducer =
-      core::IndexFactory::CreateStreamerReducer("MixedStreamerReducer");
-  if (reducer == nullptr) {
-    LOG_ERROR("Failed to create reducer");
-    return core::IndexError_Runtime;
-  }
+  auto reducer = std::make_shared<core::MixedStreamerReducer>();
 
   if (options.write_concurrency == 0) {
     LOG_ERROR("Write concurrency must be greater than 0");
@@ -1521,9 +1400,10 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
     LOG_ERROR("Failed to init reducer");
     return core::IndexError_Runtime;
   }
+  reducer->set_output_base(get_slot_count());
   if (pending_quantizer_training_ ||
       (converter_ != nullptr && reformer_ == nullptr)) {
-    std::vector<MergeSourceIndexHolder::Source> sources;
+    std::vector<core::MergedProviderIndexHolder::Source> sources;
     sources.reserve(indexes.size());
     for (const auto &index : indexes) {
       auto provider = index->create_index_provider();
@@ -1550,19 +1430,22 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
               ? static_cast<uint32_t>(index->turbo_quantizer_->type())
               : 0,
           meta.extra_meta_size()};
-      sources.push_back({std::move(provider), index->reformer_,
-                         index->turbo_quantizer_, std::move(stored_meta)});
+      sources.push_back({index->streamer_, index->reformer_,
+                         index->turbo_quantizer_, std::move(stored_meta),
+                         bool(index->reformer_ || index->turbo_quantizer_)});
     }
-    auto holder = std::make_shared<MergeSourceIndexHolder>(std::move(sources),
-                                                           input_vector_meta_);
-    if (holder->error() != 0) return holder->error();
+    auto holder = std::make_shared<core::MergedProviderIndexHolder>(
+        input_vector_meta_, std::move(sources), get_slot_count());
+    int init_ret = holder->init(filter);
+    if (init_ret != 0) return init_ret;
+    reducer->set_merged_holder(holder);
     if (holder->count() == 0) {
       LOG_ERROR("No vectors available to train quantization");
       return core::IndexError_InvalidArgument;
     }
     int ret = pending_quantizer_training_ ? turbo_quantizer_->train(holder)
                                           : converter_->train(holder);
-    if (holder->error() != 0) return holder->error();
+    if (holder->status() != 0) return holder->status();
     if (ret != 0) {
       LOG_ERROR("Failed to train quantization from merge sources");
       return ret;

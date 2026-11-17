@@ -119,16 +119,19 @@ class HnswRabitqStreamer : public IndexStreamer {
 
   //! Fetch vector by id
   const void *get_vector_by_id(uint32_t id) const override {
-    return entity_.get_vector(id);
+    return entity_.contains_node(id) ? entity_.get_vector(id) : nullptr;
   }
 
   int get_vector_by_id(const uint32_t id,
                        IndexStorage::MemoryBlock &block) const override {
-    return entity_.get_vector(id, block);
+    return entity_.contains_node(id) ? entity_.get_vector(id, block)
+                                     : IndexError_NoExist;
   }
 
   //! Open index from file path
   int open(IndexStorage::Pointer stg) override;
+
+  int reserve_slots(uint32_t count) override;
 
   //! Close file
   int close() override;

@@ -37,13 +37,24 @@ int HnswSparseSearcherEntity::cleanup() {
 }
 
 key_t HnswSparseSearcherEntity::get_key(node_id_t id) const {
-  IndexStorage::MemoryBlock key;
-  if (ailego_unlikely(keys_->read(id * sizeof(key_t), key, sizeof(key_t)) !=
-                      sizeof(key_t))) {
+  key_t key = kInvalidKey;
+  read_key(id, &key);
+  return key;
+}
+
+int HnswSparseSearcherEntity::read_key(node_id_t id, key_t *key) const {
+  *key = kInvalidKey;
+  if (id >= doc_cnt()) return IndexError_OutOfRange;
+  IndexStorage::MemoryBlock block;
+  if (!keys_ ||
+      keys_->read(static_cast<size_t>(id) * sizeof(key_t), block,
+                  sizeof(key_t)) != sizeof(key_t) ||
+      !block.data()) {
     LOG_ERROR("Read key from segment failed");
-    return kInvalidKey;
+    return IndexError_ReadData;
   }
-  return *(reinterpret_cast<const key_t *>(key.data()));
+  *key = *reinterpret_cast<const key_t *>(block.data());
+  return 0;
 }
 
 //! Get vector local id by key

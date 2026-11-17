@@ -38,13 +38,11 @@ int HnswSparseStreamerEntity::init(uint64_t max_index_size,
   std::lock_guard<std::mutex> lock(mutex_);
   broker_ = std::make_shared<SparseChunkBroker>(stats_);
   upper_neighbor_index_ = std::make_shared<NIHashMap>();
-  keys_map_lock_ = std::make_shared<ailego::SharedMutex>();
-  keys_map_ = std::make_shared<HashMap<key_t, node_id_t>>();
-  if (!keys_map_ || !upper_neighbor_index_ || !broker_ || !keys_map_lock_) {
+  key_map_.set_enabled(key_map_.enabled());
+  if (!upper_neighbor_index_ || !broker_) {
     LOG_ERROR("HnswSparseStreamerEntity new object failed");
     return IndexError_NoMemory;
   }
-  keys_map_->set_empty_key(kInvalidKey);
 
   neighbor_size_ = neighbors_size();
   upper_neighbor_size_ = upper_neighbors_size();
@@ -70,9 +68,7 @@ int HnswSparseStreamerEntity::cleanup() {
   if (upper_neighbor_index_) {
     upper_neighbor_index_->cleanup();
   }
-  if (keys_map_) {
-    keys_map_->clear();
-  }
+  key_map_.clear();
   node_chunks_.clear();
   upper_neighbor_chunks_.clear();
   filter_same_key_ = false;
@@ -294,19 +290,35 @@ int HnswSparseStreamerEntity::get_sparse_data_from_vector(
 }
 
 key_t HnswSparseStreamerEntity::get_key(node_id_t id) const {
-  auto loc = get_key_chunk_loc(id);
-  IndexStorage::MemoryBlock key_block;
-  ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
-  ailego_assert_with(loc.second < node_chunks_[loc.first]->data_size(),
-                     "invalid chunk offset");
-  size_t ret =
-      node_chunks_[loc.first]->read(loc.second, key_block, sizeof(key_t));
-  if (ailego_unlikely(ret != sizeof(key_t))) {
-    LOG_ERROR("Read vector failed, ret=%zu", ret);
-    return kInvalidKey;
+  if (id >= doc_cnt()) return kInvalidKey;
+  return read_stored_key(id);
+}
+
+key_t HnswSparseStreamerEntity::read_stored_key(node_id_t id) const {
+  key_t key = kInvalidKey;
+  read_key(id, &key);
+  return key;
+}
+
+int HnswSparseStreamerEntity::read_key(node_id_t id, key_t *key) const {
+  // Search contexts may retain an older doc count while their chunks grow.
+  *key = kInvalidKey;
+  const auto loc = get_key_chunk_loc(id);
+  if (loc.first >= node_chunks_.size() || !node_chunks_[loc.first] ||
+      loc.second > node_chunks_[loc.first]->data_size() ||
+      sizeof(key_t) > node_chunks_[loc.first]->data_size() - loc.second) {
+    return IndexError_ReadData;
   }
 
-  return *reinterpret_cast<const key_t *>(key_block.data());
+  IndexStorage::MemoryBlock block;
+  if (node_chunks_[loc.first]->read(loc.second, block, sizeof(key_t)) !=
+          sizeof(key_t) ||
+      !block.data()) {
+    LOG_ERROR("Read key failed, node_id=%u", id);
+    return IndexError_ReadData;
+  }
+  *key = *reinterpret_cast<const key_t *>(block.data());
+  return 0;
 }
 
 void HnswSparseStreamerEntity::add_neighbor(level_t level, node_id_t id,
@@ -389,6 +401,22 @@ int HnswSparseStreamerEntity::init_chunks(
     }
   }
 
+  if (entry_point() == kInvalidNodeId) {
+    const size_t slots_per_chunk = size_t{1} << node_index_mask_bits_;
+    if (doc_cnt() > node_chunks_.size() * slots_per_chunk)
+      return IndexError_InvalidFormat;
+    for (size_t i = 0; i < node_chunks_.size(); ++i) {
+      const size_t first = i * slots_per_chunk;
+      const size_t used =
+          first < doc_cnt()
+              ? std::min<size_t>(slots_per_chunk, doc_cnt() - first)
+              : 0;
+      if (node_chunks_[i]->data_size() < used * node_size())
+        return IndexError_InvalidFormat;
+    }
+    for (node_id_t id = 0; id < doc_cnt(); ++id)
+      if (contains_node(id)) return IndexError_InvalidFormat;
+  }
   return 0;
 }
 
@@ -456,9 +484,9 @@ int HnswSparseStreamerEntity::open(IndexStorage::Pointer stg, bool check_crc) {
     LOG_WARN("Index closed abnormally, using totalVecs as curDocCnt");
     *mutable_doc_cnt() = total_vecs;
   }
-  if (filter_same_key_ || get_vector_enabled_) {
+  if (key_map_.enabled()) {
     for (node_id_t id = 0U; id < doc_cnt(); ++id) {
-      (*keys_map_)[get_key(id)] = id;
+      if (contains_node(id)) key_map_.insert(get_key(id), id);
     }
   }
 
@@ -474,7 +502,7 @@ int HnswSparseStreamerEntity::close() {
   flush_header();
   mutable_header()->reset();
   upper_neighbor_index_->cleanup();
-  keys_map_->clear();
+  key_map_.clear();
   header_.clear();
   node_chunks_.clear();
   upper_neighbor_chunks_.clear();
@@ -547,14 +575,13 @@ int HnswSparseStreamerEntity::check_hnsw_index(
              hd->neighbor_prune_cnt());
     return IndexError_Mismatch;
   }
-  if ((hd->entry_point() != kInvalidNodeId &&
-       hd->entry_point() >= hd->doc_cnt()) ||
-      (hd->entry_point() == kInvalidNodeId && hd->doc_cnt() > 0U)) {
+  if (hd->entry_point() != kInvalidNodeId &&
+      hd->entry_point() >= hd->doc_cnt()) {
     LOG_WARN("Invalid entryPoint %u, docCnt %u", hd->entry_point(),
              hd->doc_cnt());
     return IndexError_InvalidFormat;
   }
-  if (hd->entry_point() == kInvalidNodeId &&
+  if (hd->entry_point() == kInvalidNodeId && hd->doc_cnt() == 0 &&
       broker_->get_chunk_cnt(SparseChunkBroker::CHUNK_TYPE_NODE) > 0) {
     LOG_WARN("The index is broken, maybe it haven't flush");
     return IndexError_InvalidFormat;
@@ -698,11 +725,7 @@ int HnswSparseStreamerEntity::add_vector(level_t level, key_t key,
     return IndexError_Runtime;
   }
 
-  if (filter_same_key_ || get_vector_enabled_) {
-    keys_map_lock_->lock();
-    (*keys_map_)[key] = local_id;
-    keys_map_lock_->unlock();
-  }
+  key_map_.insert(key, local_id);
 
   *mutable_doc_cnt() += 1;
   *mutable_total_sparse_count() += sparse_count;
@@ -715,7 +738,9 @@ int HnswSparseStreamerEntity::add_vector(level_t level, key_t key,
 
 int HnswSparseStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
                                                  const std::string &sparse_vec,
-                                                 uint32_t sparse_count) {
+                                                 uint32_t sparse_count,
+                                                 bool is_null) {
+  if (id == kInvalidNodeId) return IndexError_InvalidArgument;
   key_t key = id;
   SparseChunk::Pointer node_chunk;
   SparseChunk::Pointer sparse_node_chunk;
@@ -739,7 +764,8 @@ int HnswSparseStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
   std::lock_guard<std::mutex> lock(mutex_);
 
   // duplicate check
-  if (ailego_unlikely(filter_same_key_ && get_id(key) != kInvalidNodeId)) {
+  if (ailego_unlikely(!is_null && filter_same_key_ &&
+                      get_id(key) != kInvalidNodeId)) {
     LOG_WARN("Try to add duplicate key, ignore it");
     return IndexError_Duplicate;
   }
@@ -790,6 +816,18 @@ int HnswSparseStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
   if (auto ret = func_get_sparse_node_chunk_and_offset(id); ret != 0) {
     LOG_ERROR("func_get_sparse_node_chunk_and_offset failed");
     return ret;
+  }
+
+  if (is_null) {
+    if (node_chunk->write(chunk_offset + sparse_meta_size(), &kInvalidKey,
+                          sizeof(key_t)) != sizeof(key_t))
+      return IndexError_WriteData;
+    if (node_chunk->resize(chunk_offset + node_size()) !=
+        chunk_offset + node_size())
+      return IndexError_WriteData;
+    *mutable_doc_cnt() = id + 1;
+    broker_->mark_dirty();
+    return 0;
   }
 
   uint32_t sparse_chunk_index = sparse_node_chunks_.size() - 1U;
@@ -877,11 +915,7 @@ int HnswSparseStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
   }
   *mutable_total_sparse_count() += sparse_count;
 
-  if (filter_same_key_ || get_vector_enabled_) {
-    keys_map_lock_->lock();
-    (*keys_map_)[key] = id;
-    keys_map_lock_->unlock();
-  }
+  key_map_.insert(key, id);
 
   broker_->mark_dirty();
 
@@ -931,7 +965,7 @@ const HnswSparseEntity::Pointer HnswSparseStreamerEntity::clone() const {
       new (std::nothrow) HnswSparseStreamerEntity(
           stats_, header(), chunk_size_, node_index_mask_bits_,
           upper_neighbor_mask_bits_, filter_same_key_, get_vector_enabled_,
-          sparse_chunk_size_, upper_neighbor_index_, keys_map_lock_, keys_map_,
+          sparse_chunk_size_, upper_neighbor_index_, key_map_,
           std::move(node_chunks), std::move(upper_neighbor_chunks),
           std::move(sparse_node_chunks), broker_);
   if (ailego_unlikely(!entity)) {
@@ -958,6 +992,7 @@ int HnswSparseStreamerEntity::get_sparse_vector_by_key(
 int HnswSparseStreamerEntity::get_sparse_vector_by_id(
     node_id_t id, uint32_t *sparse_count, std::string *sparse_indices_buffer,
     std::string *sparse_values_buffer) const {
+  if (!contains_node(id)) return IndexError_NoExist;
   IndexStorage::MemoryBlock block;
   get_sparse_data(id, block);
   const void *sparse_data = block.data();

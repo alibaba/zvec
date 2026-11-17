@@ -96,6 +96,9 @@ inline const std::string PARAM_HNSW_SPARSE_STREAMER_CHUNK_SIZE(
     "proxima.hnsw.sparse_streamer.chunk_size");
 inline const std::string PARAM_HNSW_SPARSE_STREAMER_FILTER_SAME_KEY(
     "proxima.hnsw.sparse_streamer.filter_same_key");
+inline const std::string PARAM_HNSW_SPARSE_STREAMER_USE_ID_MAP(
+    "proxima.hnsw_sparse.streamer.use_id_map");
+
 inline const std::string PARAM_HNSW_SPARSE_STREAMER_GET_VECTOR_ENABLE(
     "proxima.hnsw.sparse_streamer.get_vector_enable");
 inline const std::string PARAM_HNSW_SPARSE_STREAMER_MIN_NEIGHBOR_COUNT(

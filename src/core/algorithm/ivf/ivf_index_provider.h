@@ -45,6 +45,14 @@ class IVFIndexProvider : public IndexProvider {
         entity_, read_mutex_, element_size()));
   }
 
+  Iterator::Pointer create_slot_iterator() override {
+    return std::make_unique<SortedIterator>(entity_, read_mutex_,
+                                            element_size(), true);
+  }
+  size_t slot_count() const override {
+    return entity_->slot_count();
+  }
+
   //! Retrieve count of vectors
   size_t count() const override {
     return entity_->vector_count();
@@ -175,12 +183,13 @@ class IVFIndexProvider : public IndexProvider {
    public:
     SortedIterator(const IVFEntity::Pointer &entity,
                    const std::shared_ptr<std::mutex> &read_mutex,
-                   size_t element_size)
+                   size_t element_size, bool include_empty = false)
         : entity_(entity),
           read_mutex_(read_mutex),
-          element_size_(element_size) {
+          element_size_(element_size),
+          include_empty_(include_empty) {
       std::lock_guard<std::mutex> lock(*read_mutex_);
-      count_ = entity_->vector_count();
+      count_ = entity_->slot_count();
       use_mapping_ = entity_->has_key_order_mapping();
       if (!use_mapping_) {
         // Fallback: compute sorting if mapping segment is unavailable
@@ -200,7 +209,7 @@ class IVFIndexProvider : public IndexProvider {
     const void *data() const override {
       std::lock_guard<std::mutex> lock(*read_mutex_);
       size_t local_id = current_local_id();
-      if (local_id >= count_) {
+      if (local_id >= entity_->vector_count()) {
         return nullptr;
       }
       if (!vector_loaded_) {
@@ -218,8 +227,12 @@ class IVFIndexProvider : public IndexProvider {
     //! Test if the iterator is valid
     bool is_valid() const override {
       std::lock_guard<std::mutex> lock(*read_mutex_);
-      return status_ == 0 && pos_ < count_ &&
-             (!use_mapping_ || ensure_mapping_chunk());
+      while (status_ == 0 && pos_ < count_) {
+        if (use_mapping_ && !ensure_mapping_chunk()) return false;
+        if (include_empty_ || current_local_id() != UINT32_MAX) return true;
+        ++pos_;
+      }
+      return false;
     }
 
     int status() const override {
@@ -231,7 +244,7 @@ class IVFIndexProvider : public IndexProvider {
     uint64_t key() const override {
       std::lock_guard<std::mutex> lock(*read_mutex_);
       size_t local_id = current_local_id();
-      if (local_id >= count_) {
+      if (local_id >= entity_->vector_count()) {
         return kInvalidKey;
       }
       const uint64_t result = entity_->get_key(local_id);
@@ -277,7 +290,12 @@ class IVFIndexProvider : public IndexProvider {
         return false;
       }
       if (std::any_of(mapping_chunk_.begin(), mapping_chunk_.end(),
-                      [this](uint32_t id) { return id >= count_; })) {
+                      [this](uint32_t id) {
+                        return id >= entity_->vector_count() &&
+                               !(id == UINT32_MAX &&
+                                 entity_->slot_count() >
+                                     entity_->vector_count());
+                      })) {
         mapping_chunk_.clear();
         status_ = IndexError_InvalidFormat;
         return false;
@@ -311,7 +329,8 @@ class IVFIndexProvider : public IndexProvider {
     mutable size_t mapping_chunk_begin_{0};
     std::vector<size_t> fallback_;  // used only if mapping_ unavailable
     size_t count_{0};
-    size_t pos_{0};
+    mutable size_t pos_{0};
+    bool include_empty_{false};
   };
 
  private:

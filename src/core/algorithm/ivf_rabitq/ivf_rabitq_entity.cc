@@ -232,6 +232,10 @@ int IvfRabitqEntity::get_vector_by_key(
 }
 
 uint32_t IvfRabitqEntity::key_to_id(uint64_t key) const {
+  if (slot_count() > total_vector_count()) {
+    uint32_t id = UINT32_MAX;
+    return slot_to_id(key, &id) == 0 ? id : UINT32_MAX;
+  }
   if (!keys_ || !mapping_) {
     return std::numeric_limits<uint32_t>::max();
   }
@@ -359,10 +363,24 @@ int IvfRabitqEntity::load_key_order_mapping(IndexStorage::Pointer storage) {
     LOG_ERROR("Failed to get segment %s", IVF_RABITQ_MAPPING_SEG_ID.c_str());
     return IndexError_InvalidFormat;
   }
-  if (mapping_->data_size() != mapping_size) {
+  if (mapping_->data_size() < mapping_size ||
+      mapping_->data_size() % sizeof(uint32_t) != 0 ||
+      slot_count() > UINT32_MAX) {
     LOG_ERROR("Invalid mapping segment size=%zu, expected=%zu",
               mapping_->data_size(), mapping_size);
     return IndexError_InvalidFormat;
+  }
+  if (slot_count() > total_vector_count()) {
+    size_t values = 0;
+    for (size_t slot = 0; slot < slot_count(); ++slot) {
+      uint32_t id;
+      int err = slot_to_id(slot, &id);
+      if (err != 0) return err;
+      if (id == UINT32_MAX) continue;
+      if (get_key(id) != slot) return IndexError_InvalidFormat;
+      ++values;
+    }
+    if (values != total_vector_count()) return IndexError_InvalidFormat;
   }
   return 0;
 }

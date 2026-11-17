@@ -36,6 +36,8 @@ FlatSparseStreamer::~FlatSparseStreamer() {
 int FlatSparseStreamer::init(const IndexMeta &imeta,
                              const ailego::Params &params) {
   LOG_DEBUG("FlatSparseStreamer init");
+  params.get(PARAM_FLAT_SPARSE_USE_ID_MAP, &use_id_map_);
+  entity_.set_use_id_map(use_id_map_);
 
   meta_ = imeta;
   meta_.set_streamer("FlatSparseStreamer", VERSION, params);
@@ -182,6 +184,13 @@ int FlatSparseStreamer::add_impl(uint64_t pkey, const uint32_t sparse_count,
                                  const void *sparse_query,
                                  const IndexQueryMeta &qmeta,
                                  Context::Pointer &context) {
+  if (pkey == UINT64_MAX) return IndexError_InvalidArgument;
+  if (!use_id_map_) {
+    if (pkey >= UINT32_MAX) return IndexError_InvalidArgument;
+    return add_with_id_impl(static_cast<uint32_t>(pkey), sparse_count,
+                            sparse_indices, sparse_query, qmeta, context);
+  }
+
   if (state_ != STATE_OPENED) {
     LOG_ERROR("Failed to add_impl, open streamer first!");
     (*stats_.mutable_discarded_count())++;
@@ -241,6 +250,8 @@ int FlatSparseStreamer::add_with_id_impl(uint32_t pkey,
                                          const void *sparse_query,
                                          const IndexQueryMeta &qmeta,
                                          Context::Pointer &context) {
+  if (pkey == UINT32_MAX) return IndexError_InvalidArgument;
+
   if (state_ != STATE_OPENED) {
     LOG_ERROR("Failed to add_with_id_impl, open streamer first!");
     (*stats_.mutable_discarded_count())++;
@@ -379,6 +390,19 @@ int FlatSparseStreamer::get_sparse_vector(
   return 0;
 }
 
+int FlatSparseStreamer::get_sparse_vector_by_id(
+    uint32_t id, uint32_t *sparse_count, std::string *sparse_indices_buffer,
+    std::string *sparse_values_buffer) const {
+  if (state_ != STATE_OPENED) return IndexError_NoReady;
+  IndexStorage::MemoryBlock block;
+  int ret = entity_.get_sparse_vector(id, block);
+  if (ret != 0) return ret;
+  SparseUtility::ReverseSparseFormat(block.data(), sparse_count,
+                                     sparse_indices_buffer,
+                                     sparse_values_buffer, meta_.unit_size());
+  return 0;
+}
+
 int FlatSparseStreamer::do_search(
     const uint32_t *sparse_count, const uint32_t *sparse_indices,
     const void *sparse_query, bool with_p_keys,
@@ -403,6 +427,15 @@ int FlatSparseStreamer::do_search(
   return FlatSearch(sparse_count, sparse_indices, sparse_query, with_p_keys,
                     p_keys, qmeta, count, meta_, context,
                     (FlatSparseEntity *)&entity_);
+}
+
+
+int FlatSparseStreamer::reserve_slots(uint32_t count) {
+  if (state_ != STATE_OPENED) return IndexError_NoReady;
+  if (!shared_mutex_.try_lock_shared()) return IndexError_Unsupported;
+  AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
+  if (count <= entity_.doc_cnt()) return 0;
+  return entity_.add_vector_with_id(count - 1, {}, 0, true);
 }
 
 INDEX_FACTORY_REGISTER_STREAMER(FlatSparseStreamer);

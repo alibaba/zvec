@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -68,8 +69,12 @@ struct SparseVector {
   }
 };
 
+// A missing vector still allocates its document ID. Zero-valued dense
+// vectors and sparse vectors with zero nonzero elements remain real vectors.
+struct NullVector {};
+
 struct VectorData {
-  std::variant<DenseVector, SparseVector> vector;
+  std::variant<DenseVector, SparseVector, NullVector> vector;
 
   // DenseVector dense_vector;
   // SparseVector sparse_vector;
@@ -164,7 +169,11 @@ class ZVEC_CORE_API Index {
 
   bool is_dirty() const;
 
+  // Exclusive document ID upper bound, including empty slots. Neither count
+  // is a live-document count; get_vector_count() counts actual stored values.
   uint32_t get_doc_count() const;
+  virtual uint32_t get_slot_count() const;
+  uint32_t get_vector_count() const;
 
   core::IndexStreamer::Pointer index_searcher();
 
@@ -181,6 +190,8 @@ class ZVEC_CORE_API Index {
   int _sparse_fetch(const uint32_t doc_id,
                     VectorDataBuffer *vector_data_buffer);
   virtual int _dense_fetch(const uint32_t doc_id,
+                           VectorDataBuffer *vector_data_buffer);
+  int _decode_dense_vector(const void *vector,
                            VectorDataBuffer *vector_data_buffer);
 
   int _sparse_add(const VectorData &vector, const uint32_t doc_id,
@@ -254,6 +265,8 @@ class ZVEC_CORE_API Index {
   }
 
  protected:
+  int add_null(uint32_t doc_id);
+
   bool init_context();
   core::IndexContext::Pointer &acquire_context();
 
@@ -353,6 +366,10 @@ class ZVEC_CORE_API FlatIndex : public Index {
 
 class ZVEC_CORE_API IVFIndex : public Index {
  public:
+  uint32_t get_slot_count() const override {
+    return is_trained_ ? Index::get_slot_count() : doc_cache_.size();
+  }
+
   IVFIndex() = default;
 
  protected:
@@ -488,6 +505,10 @@ class ZVEC_CORE_API HNSWRabitqIndex : public Index {
 
 class ZVEC_CORE_API IVFRabitqIndex : public Index {
  public:
+  uint32_t get_slot_count() const override {
+    return is_trained_ ? Index::get_slot_count() : doc_cache_.size();
+  }
+
   IVFRabitqIndex() = default;
 
  protected:
@@ -517,6 +538,10 @@ class ZVEC_CORE_API IVFRabitqIndex : public Index {
 
 class ZVEC_CORE_API DiskAnnIndex : public Index {
  public:
+  uint32_t get_slot_count() const override {
+    return is_trained_ ? Index::get_slot_count() : doc_cache_.size();
+  }
+
   DiskAnnIndex() = default;
 
  protected:
