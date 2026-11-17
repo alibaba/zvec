@@ -231,6 +231,17 @@ int HnswStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
   params.get(PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY,
              &use_contiguous_memory_);
   params.get(PARAM_HNSW_STREAMER_USE_EXTERNAL_VECTOR, &use_external_vector_);
+  params.get(PARAM_HNSW_STREAMER_DEDUPLICATE_VECTORS, &deduplicate_vectors_);
+  if (deduplicate_vectors_ &&
+      (use_external_vector_ || provider_ ||
+       (quantizer_ && quantizer_->type() != turbo::QuantizeType::kFp32) ||
+       (!meta_.quantizer_name().empty() &&
+        meta_.quantizer_name() != "Fp32Quantizer"))) {
+    LOG_ERROR(
+        "Duplicate-vector navigation requires in-index, uncompressed "
+        "vectors in a single distance space");
+    return IndexError_Unsupported;
+  }
 
   params.get(PARAM_HNSW_STREAMER_DOCS_SOFT_LIMIT, &docs_soft_limit_);
   if (docs_soft_limit_ > 0 && docs_soft_limit_ > docs_hard_limit_) {
@@ -410,11 +421,13 @@ int HnswStreamer::cleanup() {
   check_crc_enabled_ = false;
   filter_same_key_ = false;
   get_vector_enabled_ = false;
+  deduplicate_vectors_ = false;
 
   return 0;
 }
 
 int HnswStreamer::setup_entity() {
+  entity_->set_deduplicate_vectors(deduplicate_vectors_);
   entity_->set_use_key_info_map(use_id_map_);
   entity_->set_ef_construction(ef_construction_);
   entity_->set_upper_neighbor_cnt(upper_max_neighbor_cnt_);
@@ -448,7 +461,8 @@ int HnswStreamer::open(IndexStorage::Pointer stg) {
 int HnswStreamer::open_with_borrowed_vectors(IndexStorage::Pointer storage,
                                              const VectorSource *source) {
   if (state_ != STATE_INITED || !storage || !source || use_external_vector_ ||
-      provider_ || storage->name() != "MMapFileStorage") {
+      provider_ || deduplicate_vectors_ ||
+      storage->name() != "MMapFileStorage") {
     return IndexError_InvalidArgument;
   }
   build_vector_source_ = source;
@@ -473,6 +487,9 @@ int HnswStreamer::dump_with_vectors(const IndexDumper::Pointer &dumper) {
 
 int HnswStreamer::open(IndexStorage::Pointer stg, bool read_only) {
   LOG_INFO("HnswStreamer open");
+  // set_provider() can be called after init(), so recheck at the boundary
+  // where the build distance space is fixed.
+  if (deduplicate_vectors_ && provider_) return IndexError_Unsupported;
 
   if (ailego_unlikely(state_ != STATE_INITED)) {
     LOG_ERROR("Open storage failed, init streamer first!");
@@ -811,6 +828,7 @@ int HnswStreamer::flush(uint64_t checkpoint) {
 
 int HnswStreamer::dump(const IndexDumper::Pointer &dumper) {
   LOG_INFO("HnswStreamer dump");
+  if (deduplicate_vectors_) return IndexError_Unsupported;
 
   shared_mutex_.lock();
   AILEGO_DEFER([&]() { shared_mutex_.unlock(); });
@@ -1159,7 +1177,8 @@ int HnswStreamer::search_impl(const void *query, const IndexQueryMeta &qmeta,
     return IndexError_Cast;
   }
 
-  if (entity_->doc_cnt() <= ctx->get_bruteforce_threshold()) {
+  if (entity_->doc_cnt() <= ctx->get_bruteforce_threshold() ||
+      (deduplicate_vectors_ && ctx->group_by_search())) {
     return search_bf_impl(query, qmeta, count, context);
   }
 
