@@ -2,8 +2,8 @@
 
 Benchmarks for inverted indexes over INT32 and INT64 data.
 
-`profile.h/.cc` defines workload configuration; `dataset.h/.cc` generates and describes
-data; `numeric_cases.h/.cc` selects queries and implements build, verify, and query.
+`profile.h/.cc` defines workload configuration; `dataset.h/.cc` generates, describes,
+writes, and reads data; `numeric_cases.h/.cc` selects queries and implements build, verify, and query.
 
 Follow the [shared build setup](../../README.md), then run from the repository root:
 
@@ -67,8 +67,18 @@ for each case. Seed `20261115`, at least 0.2 seconds of warmup, and at least 1 s
 per case are fixed in C++; each interval completes whole query-pool passes.
 Use `--repetitions` to change the default of three repetitions.
 
-The executable accepts a single `--run_dir` containing `index/`, `build.json`, `verify.json`,
-and `query.json`. To run the phases directly:
+Build generates `data.bin`, selects queries, and releases generation arrays before opening
+the index. It then reads up to 32,768 records per batch, inserts them sequentially on one
+thread, and seals the index. Verify scans this same file for each query operand and compares
+every matching document ID with the index result. It does not regenerate data. Query uses
+the verified counts and index without reading `data.bin`.
+
+`data.bin` stores records in document ID order: one NULL byte followed by 4-byte INT32 or
+8-byte INT64 native values. NULL payloads are zero-filled; document IDs are implicit. The
+file has no header; `build.json` holds its profile and seed. This is a local run format.
+
+The executable accepts a single `--run_dir` containing `data.bin`, `index/`, `build.json`,
+`verify.json`, and `query.json`. To run the phases directly:
 
 ```bash
 build/bin/inverted_numeric_bench --mode=build --data_type=int64 \

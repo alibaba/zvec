@@ -16,7 +16,6 @@
 #include <cstdint>
 #include <stdexcept>
 #include <vector>
-#include "db/index/column/inverted_column/inverted_search_result.h"
 #include "metrics.h"
 
 namespace zvec::benchmarks::inverted {
@@ -46,26 +45,6 @@ Measurement MeasurePool(size_t pool_size, double warmup_seconds,
   } while (Seconds(begin, end) < measure_seconds);
   result.elapsed_seconds = Seconds(begin, end);
   return result;
-}
-
-// Verify document IDs against original data. The predicate must not consult
-// the index or result bitmap.
-template <typename Predicate>
-uint64_t VerifyIds(uint32_t num_docs, const InvertedSearchResult::Ptr &actual,
-                   Predicate &&matches) {
-  if (!actual) throw std::runtime_error("Index query failed");
-  auto iterator = actual->create_iterator();
-  uint64_t count = 0;
-  for (uint32_t id = 0; id < num_docs; ++id) {
-    if (!matches(id)) continue;
-    if (!iterator->valid() || iterator->doc_id() != id)
-      throw std::runtime_error("ID mismatch at doc " + std::to_string(id));
-    ++count;
-    iterator->next();
-  }
-  if (iterator->valid() || actual->count() != count)
-    throw std::runtime_error("Extra IDs or incorrect result count");
-  return count;
 }
 
 inline std::vector<uint64_t> VerifiedCounts(const JsonObject &verification,

@@ -29,7 +29,8 @@ DEFINE_string(distribution, "uniform",
 DEFINE_string(value_range, "0_to_30000", "0_to_30000 or 0_to_type_max");
 DEFINE_string(value_order, "ascending", "ascending or shuffled");
 DEFINE_double(null_ratio, 0, "0, 0.1, or 0.5");
-DEFINE_string(run_dir, "", "Directory containing index and phase reports");
+DEFINE_string(run_dir, "",
+              "Directory containing data, index, and phase reports");
 
 DECLARE_bool(help);
 DECLARE_bool(helpshort);
@@ -189,7 +190,7 @@ int main(int argc, char **argv) {
           "missing required argument --run_dir for "
           "--mode=" +
           FLAGS_mode +
-          "\n  expected: a directory for the index and "
+          "\n  expected: a directory for data, index, and "
           "phase reports");
     const fs::path directory = fs::absolute(FLAGS_run_dir);
     const auto output = directory / (FLAGS_mode + ".json");
