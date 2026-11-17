@@ -8,6 +8,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
 #include "metrics.h"
+#include <cstdint>
 #include <filesystem>
 #include <stdexcept>
 #include <thread>
@@ -98,19 +99,12 @@ JsonObject EnvironmentJson() {
 }
 
 
-JsonObject QueryReport(const std::string &name, const Measurement &measurement,
-                       double warmup_seconds, double measure_seconds,
+JsonObject QueryReport(const std::string &name, double mean_ns_per_query,
                        const JsonObject &before, const JsonObject &after) {
   JsonObject result;
   result.set("name", JsonStringValue(name));
-  result.set("completed_queries", JsonValue(measurement.completed));
-  result.set("elapsed_seconds", JsonValue(measurement.elapsed_seconds));
-  result.set("mean_ns_per_query", JsonValue(measurement.elapsed_seconds * 1e9 /
-                                            measurement.completed));
-  result.set("qps",
-             JsonValue(measurement.completed / measurement.elapsed_seconds));
-  result.set("warmup_seconds", JsonValue(warmup_seconds));
-  result.set("measure_seconds", JsonValue(measure_seconds));
+  result.set("mean_ns_per_query", JsonValue(mean_ns_per_query));
+  result.set("qps", JsonValue(1e9 / mean_ns_per_query));
   result.set("memory_before", before);
   result.set("memory_after", after);
   result.set("environment", EnvironmentJson());

@@ -10,11 +10,13 @@
 #pragma once
 
 #include <chrono>
-#include <cstdint>
+#include <cstddef>
+#include <stdexcept>
 #include <string>
 #include "json.h"
 
 namespace zvec::benchmarks::inverted {
+
 using Clock = std::chrono::steady_clock;
 
 JsonObject MemorySnapshot();
@@ -22,13 +24,25 @@ JsonObject DiskUsage(const std::string &path);
 JsonObject EnvironmentJson();
 double Seconds(Clock::time_point begin, Clock::time_point end);
 
-struct Measurement {
-  uint64_t completed{0};
-  double elapsed_seconds{0};
-};
+// Runs 100 iterations and returns the mean nanoseconds per query.
+template <typename RunQueries>
+double MeasureRepeatedQueries(size_t queries_per_iteration,
+                              RunQueries &&run_queries) {
+  constexpr size_t kIterations = 100;
+  if (!queries_per_iteration) {
+    throw std::invalid_argument("Query count per iteration must be positive");
+  }
+  const auto begin = Clock::now();
+  for (size_t i = 0; i < kIterations; ++i) {
+    run_queries();
+  }
+  const auto end = Clock::now();
+  const auto elapsed_ns =
+      std::chrono::duration<double, std::nano>(end - begin).count();
+  return elapsed_ns / queries_per_iteration / kIterations;
+}
 
 // Optional report fields for query timing; cases add their own result fields.
-JsonObject QueryReport(const std::string &name, const Measurement &measurement,
-                       double warmup_seconds, double measure_seconds,
+JsonObject QueryReport(const std::string &name, double mean_ns_per_query,
                        const JsonObject &before, const JsonObject &after);
 }  // namespace zvec::benchmarks::inverted

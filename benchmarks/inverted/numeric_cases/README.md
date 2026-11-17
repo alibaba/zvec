@@ -78,10 +78,11 @@ counts for each input. Uniform has 19 cases; hotspot has 21.
 
 Each repetition prepares a dataset, builds its index, verifies all applicable queries, then
 measures all queries. These four phases run in separate processes. The query process reopens
-the index and warms up for each case. Seed `19991230`, at least 0.2 seconds of warmup, and at
-least 1 second of measurement per case are fixed in C++; each interval completes whole
-query-pool passes.
-Use `--repetitions` to change the default of three repetitions.
+the index for each case, then times 100 complete query-pool passes from the first pass.
+Each input runs 100 times: a case with seven inputs completes 700 queries.
+Seed `19991230` and the iteration count are fixed in C++.
+Use `--repetitions` to change the default of three repetitions; the script reports each
+metric's arithmetic mean across repetitions.
 
 Prepare writes `data.bin` and `dataset.json`, then exits. Build loads that dataset in a fresh
 process, so its peak RSS excludes data generation. It reads up to 32,768 records per batch,
@@ -89,7 +90,7 @@ inserts them sequentially on one thread, and optimizes the index. Verify scans t
 each query operand and compares every matching document ID with the index result.
 It prints `Verification passed` on success, or stops with an error and a nonzero exit
 code on failure; it writes no report. The script starts query only after verification
-succeeds. Query records `match_counts` from the first warmup pass and assumes results
+succeeds. Query records `match_counts` from the first measured pass and assumes results
 are correct during timing. It reads the index without reading `data.bin` and can also
 run directly after build.
 

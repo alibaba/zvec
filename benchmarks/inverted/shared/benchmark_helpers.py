@@ -144,11 +144,7 @@ def summarize_metrics(samples, keys):
     for key in keys:
         values = [metric_value(sample, key) for sample in samples]
         result[key] = (
-            {
-                "median": statistics.median(values),
-                "min": min(values),
-                "max": max(values),
-            }
+            statistics.mean(values)
             if all(value is not None for value in values)
             else None
         )

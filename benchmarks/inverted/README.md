@@ -31,7 +31,7 @@ Use `--output /path/to/new-directory` to choose another location; existing direc
 are never overwritten. `--bin-dir /path/to/bin` selects another build.
 
 `run.json` records configuration, executable path and hash, and status. `summary.json`
-aggregates metrics selected by the numeric script into repetition medians and ranges,
+aggregates metrics selected by the numeric script into arithmetic means across repetitions,
 retaining case-specific fields alongside them. Each profile/repetition retains its
 dataset, index, logs, build report, and query results. Verification succeeds with exit
 code zero and writes no report. A failed phase stops the run without
@@ -45,11 +45,14 @@ values remain exact. Small measurements may round to `0.00`.
   the index through `InvertedIndexer::seal()`, including statistical index generation,
   flushing, and compaction. `total_seconds` is their sum. Data generation, dataset writes,
   metadata loading, and index opening/closing are excluded.
-- **Query:** single-threaded, warm-cache mean nanoseconds/query and QPS, including the index call,
-  result count, and result release. Full document-ID verification occurs before timing in another
-  process when using the Python script. Query records `match_counts` during the first
-  warmup pass; timed queries do not recheck correctness. Reported repetition ranges
-  are not per-request latency percentiles.
+- **Query:** each input runs 100 times on one thread. A monotonic `steady_clock` measures
+  the complete loop in nanoseconds. Reports include `mean_ns_per_query` and QPS.
+  Timing includes every query from the first pass, data loading triggered by queries,
+  result counting, and result release. Index opening and query-input preparation
+  occur before timing.
+  OS caches are not cleared between repetitions. Full document-ID verification occurs
+  before timing in another process when using the Python script. Query records
+  `match_counts` during the first measured pass; timed queries do not recheck correctness.
 - **Disk:** `index_file_mib` reports the total logical size of files in the index directory
   after optimization and close, in MiB (1 MiB = 1,048,576 bytes).
   Dataset files, worker logs, and benchmark reports are excluded.
@@ -59,5 +62,5 @@ values remain exact. Small measurements may round to `0.00`.
   optimization, before closing the index). Build runs in a fresh process after prepare
   exits, so its peak excludes data generation but includes startup, metadata loading,
   read buffers, and allocator overhead. Query reports `rss_mib` and `peak_rss_mib`
-  in `memory_before` and `memory_after`; its process peak includes setup, warmup, and
+  in `memory_before` and `memory_after`; its process peak includes setup and
   earlier cases in the same query run.

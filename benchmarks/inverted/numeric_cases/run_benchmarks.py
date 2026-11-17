@@ -145,13 +145,8 @@ def validate_query(query, case, num_docs):
         fail(f"Incomplete query hit counts: {name}")
     if any(type(count) is not int or not 0 <= count <= num_docs for count in counts):
         fail(f"Invalid query hit count: {name}")
-    if "completed_queries" in query:
-        if type(query["completed_queries"]) is not int:
-            fail(f"Invalid completed query count: {name}")
-        number(query["completed_queries"], "completed_queries", positive=True)
-    for key in ("elapsed_seconds", "mean_ns_per_query", "qps"):
-        if key in query:
-            number(query[key], key)
+    for key in ("mean_ns_per_query", "qps"):
+        number(query[key], key)
     validate_metrics(query, QUERY_METRICS)
 
 

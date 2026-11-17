@@ -18,7 +18,6 @@
 #include <zvec/ailego/utility/file_helper.h>
 #include "shared/index_fixture.h"
 #include "shared/json.h"
-#include "shared/measurement.h"
 #include "shared/metrics.h"
 #include "dataset.h"
 
@@ -27,9 +26,6 @@ namespace zvec::benchmarks::inverted {
 
 
 namespace {
-
-constexpr double kWarmupSeconds = 0.2;
-constexpr double kMeasureSeconds = 1.0;
 
 // Stream original records; the predicate does not consult the index.
 template <typename Predicate>
@@ -60,6 +56,10 @@ void VerifyNumericIds(NumericDataset &reader, NumericBatch &batch,
     throw std::runtime_error("Incorrect result count");
 }
 
+// Verify: pass non-null reader and column, both borrowed from the caller.
+// reader scans the original dataset to verify the results returned by column.
+// Query: pass nullptr for both. This function opens and owns a read-only index
+// for this case, then assigns column for measurement.
 template <typename T>
 JsonObject ExecuteNumericCase(const NumericProfile &profile,
                               const std::string &index_path,
@@ -115,23 +115,20 @@ JsonObject ExecuteNumericCase(const NumericProfile &profile,
     }
     std::vector<uint64_t> match_counts(inputs.size());
     bool collect_counts = true;
-    const auto measurement =
-        MeasurePool(inputs.size(), kWarmupSeconds, kMeasureSeconds, [&]() {
-          for (size_t i = 0; i < inputs.size(); ++i) {
-            auto result = search(i);
-            if (!result)
-              throw std::runtime_error("Numeric query failed: " + name);
-            // Keep result counting in the timed workload without validation.
-            const volatile auto count = result->count();
-            if (collect_counts) match_counts[i] = count;
-          }
-          // The first pool pass runs during warmup, before measurement starts.
-          collect_counts = false;
-        });
+    const auto mean_ns_per_query = MeasureRepeatedQueries(inputs.size(), [&]() {
+      for (size_t i = 0; i < inputs.size(); ++i) {
+        auto result = search(i);
+        if (!result) throw std::runtime_error("Numeric query failed: " + name);
+        // Keep result counting in the timed workload without validation.
+        const volatile auto count = result->count();
+        if (collect_counts) match_counts[i] = count;
+      }
+      // Record counts only during the first measured iteration.
+      collect_counts = false;
+    });
     const auto after = MemorySnapshot();
     query_index->close();
-    auto result = QueryReport(name, measurement, kWarmupSeconds,
-                              kMeasureSeconds, before, after);
+    auto result = QueryReport(name, mean_ns_per_query, before, after);
     JsonArray counts;
     for (auto count : match_counts) counts.push(JsonValue(count));
     result.set("match_counts", counts);
