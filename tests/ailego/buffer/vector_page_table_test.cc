@@ -24,6 +24,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <future>
 #include <limits>
 #include <new>
 #include <random>
@@ -36,6 +37,43 @@
 #include <zvec/ailego/buffer/external_cache.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include "pool_payload_budget.h"
+
+namespace zvec::ailego {
+struct QueueResidentSampleTestPeer {
+  static void stop_background() {
+    MemoryLimitPool::get_instance().stop_background_evictor();
+  }
+  static bool init_background_pool(size_t bytes) {
+    auto &pool = MemoryLimitPool::get_instance();
+    std::promise<bool> prepared;
+    auto ready = prepared.get_future();
+    std::promise<void> start;
+    // Warm the actual maintenance thread while the pool is disabled. A
+    // temporary producer cannot prepay this thread's hash-table growth.
+    std::thread worker([&pool, prepared = std::move(prepared),
+                        go = start.get_future()]() mutable {
+      auto &queue = BlockEvictionQueue::get_instance();
+      bool ok = true;
+      for (size_t i = 0; i < BlockEvictionQueue::kQueueCount; ++i) {
+        if (!queue.add_single_block({}, static_cast<int>(i))) ok = false;
+      }
+      prepared.set_value(ok);
+      go.wait();
+      pool.background_evict_loop();
+    });
+    // init() includes all warmed queue metadata in the native budget. Replace
+    // its idle worker before any page owner is created, preserving this
+    // prepared thread's producer identities for the real reclaim loop.
+    const bool ok =
+        ready.get() && PoolPayloadBudget::get_instance().init(bytes) == 0;
+    pool.stop_background_evictor();
+    pool.bg_running_.store(ok);
+    pool.bg_thread_ = std::move(worker);
+    start.set_value();
+    return ok;
+  }
+};
+}  // namespace zvec::ailego
 
 using namespace zvec::ailego;
 
@@ -94,6 +132,11 @@ class BufferPoolTest : public ::testing::Test {
                      (capacity_pages ? kVectorPageSize : 0) +
                      VecBufferPool::metadata_bytes_for_page_count(file_pages,
                                                                   writable)));
+  }
+  void init_background_vec_pool(size_t capacity_pages, size_t file_pages) {
+    ASSERT_TRUE(QueueResidentSampleTestPeer::init_background_pool(
+        capacity_pages * kVectorPageSize + kVectorPageSize +
+        VecBufferPool::metadata_bytes_for_page_count(file_pages, false)));
   }
   void init_table_pool(size_t capacity_pages, size_t entry_num) {
     ASSERT_EQ(0, ::zvec::ailego::PoolPayloadBudget::get_instance().init(
@@ -2048,6 +2091,9 @@ TEST_F(BufferPoolTest, ConcurrentBatchLoadsPopulateEachPageOnce) {
 
 TEST_F(BufferPoolTest, BatchMissesRemainProbationUntilLaterReuse) {
   init_vec_pool(/*capacity_pages=*/2, /*file_pages=*/4);
+  // Check miss/reuse priorities with foreground eviction. Background reclaim
+  // could evict the populated miss before acquire_pages obtains its pin.
+  QueueResidentSampleTestPeer::stop_background();
   std::string file = new_file(/*num_pages=*/4);
 
   VecBufferPool pool(file, /*writable=*/false);
@@ -2065,8 +2111,8 @@ TEST_F(BufferPoolTest, BatchMissesRemainProbationUntilLaterReuse) {
   char *pages[1] = {};
 
   ASSERT_TRUE(handle.acquire_pages(page_ids, 1, pages));
-  // Retain the initial miss pin so background aging cannot race with either
-  // the probation assertion or the later sampled reuse promotion.
+  // Retain the initial miss pin through the probation assertion and the
+  // later sampled reuse promotion.
   auto release_pin = ScopeGuard::Make(
       [&handle, &page_ids] { handle.release_pages(page_ids, 1); });
   ASSERT_TRUE(
@@ -2191,7 +2237,7 @@ TEST_F(BufferPoolTest, BackgroundReclaimsToLowWatermark) {
 
 TEST_F(BufferPoolTest, BackgroundReclaimPreservesTinyWorkingSet) {
   constexpr size_t kCapacityPages = 3;
-  init_vec_pool(kCapacityPages, /*file_pages=*/kCapacityPages);
+  init_background_vec_pool(kCapacityPages, /*file_pages=*/kCapacityPages);
   std::string file = new_file(kCapacityPages);
 
   VecBufferPool pool(file, /*writable=*/false);
@@ -2224,7 +2270,7 @@ TEST_F(BufferPoolTest, BackgroundReclaimPreservesTinyWorkingSet) {
 TEST_F(BufferPoolTest, SmallBackgroundReclaimAgesDominantProtectedQueue) {
   constexpr size_t kProtectedPages = 12;
   constexpr size_t kFilePages = kProtectedPages + 1;
-  init_vec_pool(/*capacity_pages=*/16, /*file_pages=*/kFilePages);
+  init_background_vec_pool(/*capacity_pages=*/16, /*file_pages=*/kFilePages);
   std::string file = new_file(kFilePages);
 
   VecBufferPool pool(file, /*writable=*/false);
