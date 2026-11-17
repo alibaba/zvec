@@ -12,6 +12,7 @@
 #pragma once
 
 #include <string>
+#include "shared/json.h"
 #include "profile.h"
 
 namespace zvec::benchmarks::inverted {

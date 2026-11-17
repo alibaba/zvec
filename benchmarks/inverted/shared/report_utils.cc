@@ -47,21 +47,14 @@ std::vector<JsonObject> ReadQueryInputs(const JsonArray &cases) {
   return records;
 }
 
-JsonObject LoadBuild(const std::string &build_report_path,
-                     const std::string &index_path) {
+void ValidateBuildReport(const std::string &build_report_path,
+                         const std::string &index_path) {
   const auto build = ReadJson(build_report_path);
-  if (Number(build, "schema_version") != 2 || Text(build, "phase") != "build" ||
-      !build["dataset"].is_object() || !build["cases"].is_array())
+  if (Number(build, "schema_version") != 2 || Text(build, "phase") != "build")
     throw std::invalid_argument("Invalid build report");
   if (std::filesystem::weakly_canonical(Text(build, "index_path")) !=
       std::filesystem::weakly_canonical(index_path))
     throw std::invalid_argument("Index path does not match build report");
-  const auto dataset = build["dataset"].as_object();
-  const auto count = Number(dataset, "num_docs");
-  if (!count || count > UINT32_MAX)
-    throw std::invalid_argument("Invalid saved dataset size");
-  ReadQueryInputs(build["cases"].as_array());
-  return build;
 }
 
 JsonObject LoadVerification(const std::string &verification_path,
@@ -71,7 +64,8 @@ JsonObject LoadVerification(const std::string &verification_path,
       Text(verified, "phase") != "verify" || !verified["passed"].is_boolean() ||
       !verified["passed"].as_bool() || !verified["cases"].is_array())
     throw std::invalid_argument(
-        "Successful verification of this dataset is required");
+        "query requires successful verification"
+        "\n  run --mode=verify with the same --run_dir first");
   const auto name = Text(inputs, "name");
   const auto cases = verified["cases"].as_array();
   std::set<std::string> seen;

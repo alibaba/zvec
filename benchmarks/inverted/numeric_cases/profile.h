@@ -13,7 +13,7 @@
 
 #include <cstdint>
 #include <zvec/db/type.h>
-#include "shared/metrics.h"
+#include "shared/json.h"
 
 namespace zvec::benchmarks::inverted {
 

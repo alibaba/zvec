@@ -154,10 +154,7 @@ def report_details(report):
         "schema_version",
         "phase",
         "metric_names",
-        "case",
         "name",
-        "dataset",
-        "cases",
         "index_path",
         "environment",
     ):

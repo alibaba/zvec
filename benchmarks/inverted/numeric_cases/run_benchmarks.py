@@ -8,7 +8,7 @@
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-"""Run numeric inverted-index benchmarks and aggregate their JSON reports."""
+"""Run numeric inverted-index benchmarks and summarize the results."""
 
 # This command-line tool intentionally prints its workload preview and run progress.
 # ruff: noqa: T201
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import json
 import sys
 import uuid
 from pathlib import Path
@@ -26,6 +25,7 @@ from benchmark_helpers import (
     SCHEMA_VERSION,
     binary_record,
     fail,
+    load_json,
     names,
     number,
     report_details,
@@ -81,8 +81,10 @@ def workload_flags(profile, overrides):
     }
 
 
-def validate_build(build, profile, args, overrides):
-    dataset = build["dataset"]
+def validate_dataset(dataset, profile, args, overrides):
+    configuration = dataset.get("profile")
+    if not isinstance(configuration, dict):
+        fail("Dataset must contain a profile")
     expected = {
         "type": profile["type"],
         "name": profile["name"],
@@ -91,8 +93,25 @@ def validate_build(build, profile, args, overrides):
         **overrides,
     }
     for key, value in expected.items():
-        if dataset.get(key) != value:
-            fail(f"Build dataset mismatch: {key}")
+        if configuration.get(key) != value:
+            fail(f"Dataset profile mismatch: {key}")
+    entries = dataset.get("queries")
+    if not isinstance(entries, list) or not entries:
+        fail("Dataset must contain query cases")
+    cases = {}
+    for case in entries:
+        if not isinstance(case, dict):
+            fail("Invalid dataset query case")
+        name = safe_name(case.get("name"))
+        if name in cases:
+            fail(f"Dataset contains duplicate query case: {name}")
+        if not isinstance(case.get("inputs"), list) or not case["inputs"]:
+            fail(f"Missing query inputs: {name}")
+        cases[name] = case
+    return cases
+
+
+def validate_build(build):
     validate_metrics(build)
     for key in (
         "insert_seconds",
@@ -104,21 +123,9 @@ def validate_build(build, profile, args, overrides):
     ):
         if key in build:
             number(build[key], key, positive=True)
-    entries = build.get("cases")
-    if not isinstance(entries, list) or not entries:
-        fail("Build report must contain query cases")
-    cases = {}
-    for case in entries:
-        if not isinstance(case, dict):
-            fail("Build query case must be an object")
-        name = safe_name(case.get("name"))
-        if name in cases:
-            fail(f"Build contains duplicate query case: {name}")
-        cases[name] = case
-    return cases
 
 
-def validate_verification(verification, build, cases):
+def validate_verification(verification, dataset, cases):
     if verification.get("passed") is not True:
         fail("Correctness verification did not pass")
     verified = {case["name"]: case for case in verification["cases"]}
@@ -126,21 +133,22 @@ def validate_verification(verification, build, cases):
         fail("Verification did not cover exactly all workload cases")
     for name in cases:
         case, result = cases[name], verified[name]
-        if not isinstance(case["inputs"], list) or not case["inputs"]:
-            fail(f"Missing query inputs: {name}")
-        counts = result.get("counts")
+        counts = result.get("match_counts")
         if not isinstance(counts, list) or len(counts) != len(case["inputs"]):
             fail(f"Incomplete verification counts: {name}")
         for count in counts:
-            if type(count) is not int or not 0 <= count <= build["dataset"]["num_docs"]:
+            if (
+                type(count) is not int
+                or not 0 <= count <= dataset["profile"]["num_docs"]
+            ):
                 fail(f"Invalid verification hit count: {name}")
     return verified
 
 
 def validate_query(query, name, verified):
-    if query.get("case") != name:
+    if query.get("name") != name:
         fail(f"Unexpected query case: {name}")
-    if "match_counts" in query and query["match_counts"] != verified.get("counts"):
+    if query.get("match_counts") != verified.get("match_counts"):
         fail(f"Query hit counts differ from verification: {name}")
     if "completed_queries" in query:
         if type(query["completed_queries"]) is not int:
@@ -155,11 +163,11 @@ def validate_query(query, name, verified):
 def validate_numeric_queries(report, cases, verified):
     entries = report.get("cases")
     if not isinstance(entries, list) or any(
-        not isinstance(entry, dict) or not isinstance(entry.get("case"), str)
+        not isinstance(entry, dict) or not isinstance(entry.get("name"), str)
         for entry in entries
     ):
         fail("Numeric query report must contain query case results")
-    queries = {entry["case"]: entry for entry in entries}
+    queries = {entry["name"]: entry for entry in entries}
     if len(queries) != len(entries) or set(queries) != set(cases):
         fail("Numeric query report must cover exactly all workload cases")
     for name, query in queries.items():
@@ -172,7 +180,6 @@ def run_profile(binary, output, profile, args, overrides):
     profile_dir.mkdir(parents=True)
     builds, queries, verifications = [], {}, {}
     expected_dataset = None
-    expected_cases = None
     for repetition in range(1, args.repetitions + 1):
         directory = profile_dir / f"repeat-{repetition:03d}"
         logs = directory / "logs"
@@ -190,12 +197,14 @@ def run_profile(binary, output, profile, args, overrides):
             num_docs=args.num_docs,
             **workload_flags(profile, overrides),
         )
-        cases = validate_build(build, profile, args, overrides)
+        validate_build(build)
+        dataset = load_json((directory / "dataset.json").read_text())
+        cases = validate_dataset(dataset, profile, args, overrides)
         if expected_dataset is None:
-            expected_dataset, expected_cases = build["dataset"], cases
+            expected_dataset = dataset
             queries = {name: [] for name in cases}
             verifications = {name: [] for name in cases}
-        elif build["dataset"] != expected_dataset or cases != expected_cases:
+        elif dataset != expected_dataset:
             fail(f"Data or query inputs changed across repetitions: {prefix}")
         print(f"{prefix} verify", flush=True)
         verification = run_worker(
@@ -205,7 +214,7 @@ def run_profile(binary, output, profile, args, overrides):
             logs / "verify.log",
             run_dir=directory,
         )
-        verified = validate_verification(verification, build, cases)
+        verified = validate_verification(verification, dataset, cases)
         print(f"{prefix} query (all cases)", flush=True)
         report = run_worker(
             binary,
@@ -223,7 +232,7 @@ def run_profile(binary, output, profile, args, overrides):
         "suite": "numeric",
         "type": profile["type"],
         "profile": profile["name"],
-        "dataset": builds[0]["dataset"],
+        "dataset": expected_dataset,
         "directory": str(profile_dir.relative_to(output)),
         "build": summarize_metrics(builds),
         "build_details": [report_details(sample) for sample in builds],
@@ -318,7 +327,11 @@ def main(argv=None):
                 print(f"Document count: {args.num_docs}")
             if overrides:
                 print(
-                    f"Configuration overrides: {json.dumps(overrides, allow_nan=False)}"
+                    "Options: "
+                    + " ".join(
+                        f"--{name.replace('_', '-')}={value}"
+                        for name, value in overrides.items()
+                    )
                 )
             return 0
         binary = select_binary(args)

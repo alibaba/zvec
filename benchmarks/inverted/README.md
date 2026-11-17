@@ -18,7 +18,7 @@ shared/               # C++ helpers and Python process, JSON, and metric helpers
 `numeric_cases/` owns its CLI, configuration, data generation, queries, and `run_benchmarks.py`.
 C++ performs the benchmark phases and determines the queries for each workload. The Python
 script enumerates workload combinations, runs repetitions, and aggregates reports.
-Query cases are read from the build report. Python uses only the standard library.
+Workload metadata and query cases are read from `dataset.json`. Python uses only the standard library.
 `shared/` provides helpers without defining workloads or controlling suite execution.
 
 See [Numeric benchmarks](numeric_cases/README.md) for configuration and commands.
@@ -47,7 +47,8 @@ a successful summary.
   where supported. Dataset files, worker logs, and benchmark reports are excluded.
 - **Memory:** process RSS at stage boundaries and process peak RSS where available. These include
   runtime and allocator overhead. Build snapshots bracket index opening through seal, after
-  generation arrays are released and batch buffers are allocated. The same process generates
+  generation arrays are released. Data-file opening and batch-buffer allocation occur on the
+  first batch read, after the baseline snapshot. The same process generates
   data, so its peak RSS includes generation and its allocator may retain freed memory. Query
   workers load query inputs without the full dataset. Peak RSS includes setup and warmup,
   and is not index-only memory.

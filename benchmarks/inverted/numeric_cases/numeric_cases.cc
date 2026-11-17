@@ -10,15 +10,15 @@
 // limitations under the License.
 
 #include "numeric_cases.h"
-#include <algorithm>
 #include <filesystem>
 #include <limits>
 #include <memory>
 #include <stdexcept>
-#include <utility>
 #include <vector>
 #include "shared/index_fixture.h"
+#include "shared/json.h"
 #include "shared/measurement.h"
+#include "shared/metrics.h"
 #include "shared/report_utils.h"
 #include "dataset.h"
 
@@ -28,7 +28,6 @@ namespace zvec::benchmarks::inverted {
 
 namespace {
 
-constexpr size_t kQueryPoolSize = 8;
 constexpr double kWarmupSeconds = 0.2;
 constexpr double kMeasureSeconds = 1.0;
 
@@ -37,103 +36,16 @@ std::string RunPath(const std::string &run_dir, const std::string &name) {
   return (std::filesystem::path(run_dir) / name).string();
 }
 
-template <typename T, typename Predicate>
-std::vector<T> SelectQueryTerms(const std::vector<T> &sorted,
-                                Predicate &&matches) {
-  // Select evenly spaced distinct-value ranks without storing all candidates.
-  size_t terms = 0;
-  for (size_t i = 0; i < sorted.size(); ++i)
-    if ((i == 0 || sorted[i] != sorted[i - 1]) && matches(sorted[i])) ++terms;
-  const size_t count = std::min(kQueryPoolSize, terms);
-  std::vector<T> selected;
-  selected.reserve(count);
-  if (!count) return selected;
-  size_t rank = 0;
-  for (size_t i = 0; i < sorted.size(); ++i) {
-    if ((i > 0 && sorted[i] == sorted[i - 1]) || !matches(sorted[i])) continue;
-    if (rank == selected.size() * terms / count) {
-      selected.push_back(sorted[i]);
-      if (selected.size() == count) break;
-    }
-    ++rank;
-  }
-  return selected;
-}
-
-template <typename T>
-T RangeBoundary(const std::vector<T> &sorted, uint32_t percentile) {
-  const uint64_t target = static_cast<uint64_t>(sorted.size()) * percentile;
-  uint64_t best_distance = UINT64_MAX;
-  T boundary = 0;
-  auto consider = [&](T value, uint64_t cumulative) {
-    const auto scaled = cumulative * 100;
-    const auto distance = scaled > target ? scaled - target : target - scaled;
-    if (distance < best_distance) {
-      best_distance = distance;
-      boundary = value;
-    }
-  };
-  // A distinct value's first position is the number of documents below it.
-  for (size_t i = 0; i < sorted.size(); ++i)
-    if (i == 0 || sorted[i] != sorted[i - 1]) consider(sorted[i], i);
-  const auto largest = sorted.back();
-  if (largest < std::numeric_limits<T>::max())
-    consider(largest + 1, sorted.size());
-  return boundary;
-}
-
-template <typename T>
-JsonArray SelectQueryInputs(const NumericData<T> &dataset,
-                            const std::vector<T> &sorted) {
-  JsonArray cases;
-  auto points = [&](const std::string &name, const std::vector<T> &values) {
-    JsonArray inputs;
-    for (auto value : values) inputs.push(JsonValue(value));
-    cases.push(InputRecord(name, inputs));
-  };
-  std::vector<T> hits;
-  if (dataset.profile.distribution == NumericDistribution::UNIFORM) {
-    hits = SelectQueryTerms(sorted, [](T) { return true; });
-    points("eq_hit", hits);
-  } else {
-    auto is_hot = [&](T value) {
-      return std::binary_search(dataset.hot_values.begin(),
-                                dataset.hot_values.end(), value);
-    };
-    hits = SelectQueryTerms(sorted, is_hot);
-    points("eq_hot", hits);
-    points("eq_cold",
-           SelectQueryTerms(sorted, [&](T value) { return !is_hot(value); }));
-  }
-  JsonArray misses;
-  for (int64_t i = 1; i <= static_cast<int64_t>(kQueryPoolSize); ++i)
-    misses.push(JsonValue(-i));
-  cases.push(InputRecord("eq_miss", misses));
-  points("ne_hit", hits);
-  for (const auto &[name, percentile] :
-       std::vector<std::pair<std::string, uint32_t>>{
-           {"lt_q01", 1}, {"lt_q50", 50}, {"lt_q90", 90}, {"ge_q50", 50}}) {
-    JsonArray inputs;
-    inputs.push(JsonValue(RangeBoundary(sorted, percentile)));
-    cases.push(InputRecord(name, inputs));
-  }
-  JsonArray null_input;
-  null_input.push(JsonValue());
-  cases.push(InputRecord("is_null", null_input));
-  cases.push(InputRecord("is_not_null", null_input));
-  return cases;
-}
-
 // Stream original records; the predicate does not consult the index.
 template <typename Predicate>
-uint64_t VerifyNumericIds(NumericDatasetReader &reader, NumericBatch &batch,
+uint64_t VerifyNumericIds(NumericDataset &reader, NumericBatch &batch,
                           const InvertedSearchResult::Ptr &actual,
                           Predicate &&matches) {
   if (!actual) throw std::runtime_error("Index query failed");
-  reader.Reset();
+  reader.rewind();
   auto iterator = actual->create_iterator();
   uint64_t count = 0;
-  while (reader.ReadBatch(batch)) {
+  while (reader.read_next_batch(batch)) {
     for (size_t i = 0; i < batch.values.size(); ++i) {
       if (!matches(batch.is_null[i] != 0, batch.values[i])) continue;
       const auto id = batch.first_doc_id + static_cast<uint32_t>(i);
@@ -151,8 +63,7 @@ uint64_t VerifyNumericIds(NumericDatasetReader &reader, NumericBatch &batch,
 template <typename T>
 JsonObject ExecuteNumericCase(const NumericProfile &profile,
                               const std::string &index_path,
-                              const JsonObject &record,
-                              NumericDatasetReader *reader,
+                              const JsonObject &record, NumericDataset *reader,
                               InvertedColumnIndexer *column,
                               const JsonObject &verification) {
   const auto num_docs = DocumentCount(profile);
@@ -210,7 +121,7 @@ JsonObject ExecuteNumericCase(const NumericProfile &profile,
       }
       JsonObject result;
       result.set("name", JsonStringValue(name));
-      result.set("counts", counts);
+      result.set("match_counts", counts);
       result.set("match_ratios", ratios);
       if (range) result.set("nonnull_match_ratios", nonnull_ratios);
       return result;
@@ -284,34 +195,15 @@ JsonObject ExecuteNumericCase(const NumericProfile &profile,
   throw std::invalid_argument("Unknown numeric query case: " + name);
 }
 
-template <typename T>
 JsonObject Build(const NumericProfile &profile, const std::string &index_path,
-                 const std::string &data_path) {
-  JsonObject description;
-  JsonArray inputs;
-  // No generation arrays survive into the insertion phase.
-  {
-    auto dataset = GenerateDataset<T>(profile);
-    std::vector<T> sorted_copy;
-    const auto *sorted = &dataset.values;
-    if (profile.value_order == NumericValueOrder::SHUFFLED) {
-      sorted_copy = dataset.values;
-      std::sort(sorted_copy.begin(), sorted_copy.end());
-      sorted = &sorted_copy;
-    }
-    description = DescribeDataset(dataset, *sorted);
-    inputs = SelectQueryInputs(dataset, *sorted);
-    WriteDataset(dataset, data_path);
-  }
-  NumericDatasetReader reader(profile, data_path);
+                 const std::string &run_dir) {
+  auto dataset = NumericDataset::Create(profile, run_dir);
   NumericBatch batch;
-  batch.is_null.resize(kNumericBatchSize);
-  batch.values.resize(kNumericBatchSize);
   const auto before = MemorySnapshot();
   IndexFixture index(profile.data_type, index_path, false);
   auto &column = index.column();
   double insert_seconds = 0;
-  while (reader.ReadBatch(batch)) {
+  while (dataset.read_next_batch(batch)) {
     const auto begin = Clock::now();
     for (size_t i = 0; i < batch.values.size(); ++i) {
       const auto id = batch.first_doc_id + static_cast<uint32_t>(i);
@@ -330,8 +222,6 @@ JsonObject Build(const NumericProfile &profile, const std::string &index_path,
   const auto after = MemorySnapshot();
   index.Close();
   auto result = Report("build");
-  result.set("dataset", description);
-  result.set("cases", inputs);
   result.set(
       "index_path",
       JsonStringValue(std::filesystem::weakly_canonical(index_path).string()));
@@ -354,13 +244,12 @@ JsonObject Build(const NumericProfile &profile, const std::string &index_path,
 }
 
 template <typename T>
-JsonObject Verify(const NumericProfile &profile, const JsonObject &build,
-                  const std::string &index_path, const std::string &data_path) {
-  NumericDatasetReader reader(profile, data_path);
+JsonObject Verify(NumericDataset &dataset, const std::string &index_path) {
+  const auto &profile = dataset.profile();
   IndexFixture index(profile.data_type, index_path, true);
   JsonArray checked;
-  for (const auto &record : ReadQueryInputs(build["cases"].as_array()))
-    checked.push(ExecuteNumericCase<T>(profile, index_path, record, &reader,
+  for (const auto &record : dataset.query_cases())
+    checked.push(ExecuteNumericCase<T>(profile, index_path, record, &dataset,
                                        &index.column(), JsonObject()));
   auto result = Report("verify");
   result.set("passed", JsonValue(true));
@@ -376,35 +265,29 @@ JsonObject BuildNumeric(const NumericProfile &profile,
                         const std::string &run_dir) {
   ValidateProfile(profile);
   const auto index_path = RunPath(run_dir, "index");
-  const auto data_path = RunPath(run_dir, "data.bin");
   if (std::filesystem::exists(index_path))
     throw std::invalid_argument(
         "index directory already exists: '" + index_path +
         "'\n  use a new --run_dir to start another run");
-  if (std::filesystem::exists(data_path))
-    throw std::invalid_argument(
-        "dataset file already exists: '" + data_path +
-        "'\n  use a new --run_dir to start another run");
-  if (profile.data_type == DataType::INT32)
-    return Build<int32_t>(profile, index_path, data_path);
-  return Build<int64_t>(profile, index_path, data_path);
+  return Build(profile, index_path, run_dir);
 }
 
 JsonObject VerifyNumeric(const std::string &run_dir) {
   const auto index_path = RunPath(run_dir, "index");
-  const auto build = LoadBuild(RunPath(run_dir, "build.json"), index_path);
-  const auto profile = ReadProfile(build["dataset"].as_object());
-  const auto data_path = RunPath(run_dir, "data.bin");
+  ValidateBuildReport(RunPath(run_dir, "build.json"), index_path);
+  auto dataset = NumericDataset::Load(run_dir);
+  const auto &profile = dataset.profile();
   if (profile.data_type == DataType::INT32)
-    return Verify<int32_t>(profile, build, index_path, data_path);
-  return Verify<int64_t>(profile, build, index_path, data_path);
+    return Verify<int32_t>(dataset, index_path);
+  return Verify<int64_t>(dataset, index_path);
 }
 
 JsonObject QueryNumeric(const std::string &run_dir) {
   const auto index_path = RunPath(run_dir, "index");
-  const auto build = LoadBuild(RunPath(run_dir, "build.json"), index_path);
-  const auto profile = ReadProfile(build["dataset"].as_object());
-  const auto inputs = ReadQueryInputs(build["cases"].as_array());
+  ValidateBuildReport(RunPath(run_dir, "build.json"), index_path);
+  auto dataset = NumericDataset::Load(run_dir);
+  const auto &profile = dataset.profile();
+  const auto &inputs = dataset.query_cases();
   // Require successful verification of every case before starting measurement.
   std::vector<JsonObject> verified;
   for (const auto &record : inputs)

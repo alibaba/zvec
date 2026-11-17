@@ -12,20 +12,11 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
-#include <zvec/ailego/encoding/json.h>
+#include "json.h"
 
 namespace zvec::benchmarks::inverted {
-using ailego::JsonArray;
-using ailego::JsonObject;
-using ailego::JsonValue;
 using Clock = std::chrono::steady_clock;
 
-JsonValue JsonStringValue(const std::string &value);
-std::string JsonStringText(const JsonValue &value);
-std::string Text(const JsonObject &object, const char *key);
-uint64_t Number(const JsonObject &object, const char *key);
-void WriteJson(const std::string &path, const JsonObject &object);
-JsonObject ReadJson(const std::string &path);
 JsonObject MemorySnapshot();
 JsonObject DiskUsage(const std::string &path);
 JsonObject EnvironmentJson();

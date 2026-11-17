@@ -2,6 +2,7 @@ include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 
 set(INVERTED_BENCH_HELPER_SRCS
     shared/index_fixture.cc
+    shared/json.cc
     shared/metrics.cc
     shared/report_utils.cc
 )

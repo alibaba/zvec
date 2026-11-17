@@ -19,42 +19,10 @@
 #include <type_traits>
 #include <vector>
 #include <zvec/ailego/io/file.h>
+#include "shared/json.h"
 #include "profile.h"
 
 namespace zvec::benchmarks::inverted {
-
-// Fixed for reproducible datasets; not a configurable profile field.
-inline constexpr uint64_t kNumericSeed = 20261115;
-// Maximum records per read/write; the final batch may be smaller.
-inline constexpr uint32_t kNumericBatchSize = 32768;
-
-// Temporary generation data, released before opening the index.
-template <typename T>
-struct NumericData {
-  static_assert(std::is_same_v<T, int32_t> || std::is_same_v<T, int64_t>);
-  // Workload used to generate the records.
-  NumericProfile profile;
-  // Exact number of NULL documents.
-  uint64_t null_count{0};
-  // One marker per doc ID, including NULL documents.
-  std::vector<uint8_t> is_null;
-  // Non-NULL values in doc ID order; NULL documents have no slot here.
-  std::vector<T> values;
-  // Sorted hot set used for query selection; empty for uniform data.
-  std::vector<T> hot_values;
-};
-
-template <typename T>
-NumericData<T> GenerateDataset(const NumericProfile &profile);
-// sorted_values contains all non-NULL values, including duplicates.
-template <typename T>
-JsonObject DescribeDataset(const NumericData<T> &dataset,
-                           const std::vector<T> &sorted_values);
-
-// Records follow doc ID order: one NULL byte, then native INT32/INT64 bytes.
-// NULL value bytes are zero-filled. An existing file is never overwritten.
-template <typename T>
-void WriteDataset(const NumericData<T> &dataset, const std::string &path);
 
 struct NumericBatch {
   // Record i belongs to doc ID first_doc_id + i.
@@ -65,25 +33,45 @@ struct NumericBatch {
   std::vector<std::string> values;
 };
 
-class NumericDatasetReader {
+class NumericDataset {
  public:
-  NumericDatasetReader(const NumericProfile &profile, const std::string &path);
+  static NumericDataset Create(const NumericProfile &profile,
+                               const std::string &directory);
 
-  // Reuses batch storage. Returns false and empties the batch at end of file.
-  bool ReadBatch(NumericBatch &batch);
-  // Restarts reading from doc ID zero using the same file and buffer.
-  void Reset();
+  static NumericDataset Load(const std::string &directory);
+
+  const NumericProfile &profile() const {
+    return profile_;
+  }
+  const std::vector<JsonObject> &query_cases() const {
+    return query_cases_;
+  }
+
+
+  bool read_next_batch(NumericBatch &batch);
+
+  void rewind();
 
  private:
+  NumericDataset(const std::string &directory, const JsonObject &metadata);
+
+  // Workload configuration.
+  NumericProfile profile_;
+  // Query names and input values.
+  std::vector<JsonObject> query_cases_;
+  // Path to the document records in data.bin.
+  std::string data_path_;
+  // Read-only data file, opened on the first batch read.
   ailego::File file_;
-  std::string path_;
-  uint32_t num_docs_;
-  size_t value_size_;
+  // Bytes occupied by each numeric value in data.bin.
+  size_t bytes_per_value_;
+  // Doc ID of the next record to read.
   uint32_t next_doc_id_{0};
+  // Reusable raw-byte buffer for reading one batch of records.
   std::vector<char> buffer_;
 };
 
-// Native scalar bytes accepted by the inverted-column API.
+
 template <typename T>
 std::string EncodeValue(T value) {
   static_assert(std::is_same_v<T, int32_t> || std::is_same_v<T, int64_t>);

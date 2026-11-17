@@ -9,12 +9,12 @@
 
 #include "metrics.h"
 #include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
 #include "ailego/utility/memory_helper.h"
+#include "json.h"
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <sys/stat.h>
@@ -26,17 +26,6 @@
 
 namespace zvec::benchmarks::inverted {
 
-std::string Text(const JsonObject &object, const char *key) {
-  return JsonStringText(object[key]);
-}
-
-uint64_t Number(const JsonObject &object, const char *key) {
-  if (!object[key].is_integer() || object[key].as_integer() < 0)
-    throw std::invalid_argument(std::string("Expected nonnegative integer: ") +
-                                key);
-  return object[key].as_integer();
-}
-
 double Seconds(Clock::time_point begin, Clock::time_point end) {
   return std::chrono::duration<double>(end - begin).count();
 }
@@ -45,41 +34,6 @@ std::string Hex(uint64_t value) {
   std::ostringstream stream;
   stream << std::hex << std::setfill('0') << std::setw(16) << value;
   return stream.str();
-}
-
-JsonValue JsonStringValue(const std::string &value) {
-  return JsonValue(ailego::JsonString(value).encode());
-}
-
-std::string JsonStringText(const JsonValue &value) {
-  if (!value.is_string()) {
-    throw std::invalid_argument("Expected JSON string");
-  }
-  return value.as_string().decode().as_stl_string();
-}
-
-void WriteJson(const std::string &path, const JsonObject &object) {
-  const auto parent = std::filesystem::path(path).parent_path();
-  if (!parent.empty()) std::filesystem::create_directories(parent);
-  std::ofstream output;
-  output.exceptions(std::ios::badbit | std::ios::failbit);
-  output.open(path, std::ios::binary | std::ios::trunc);
-  output << JsonValue(object).as_json_string().as_stl_string() << '\n';
-  output.close();
-}
-
-JsonObject ReadJson(const std::string &path) {
-  std::ifstream input(path, std::ios::binary);
-  if (!input) throw std::runtime_error("Cannot read JSON file: " + path);
-  std::ostringstream content;
-  content << input.rdbuf();
-  if (input.bad())
-    throw std::runtime_error("Failed reading JSON file: " + path);
-  JsonValue value;
-  if (!value.parse(content.str()) || !value.is_object()) {
-    throw std::runtime_error("Invalid JSON object: " + path);
-  }
-  return value.as_object();
 }
 
 JsonObject MemorySnapshot() {
@@ -190,7 +144,7 @@ JsonObject QueryReport(const std::string &name, const Measurement &measurement,
                        double warmup_seconds, double measure_seconds,
                        const JsonObject &before, const JsonObject &after) {
   auto result = Report("query");
-  result.set("case", JsonStringValue(name));
+  result.set("name", JsonStringValue(name));
   result.set("completed_queries", JsonValue(measurement.completed));
   result.set("elapsed_seconds", JsonValue(measurement.elapsed_seconds));
   result.set("mean_ns_per_query", JsonValue(measurement.elapsed_seconds * 1e9 /

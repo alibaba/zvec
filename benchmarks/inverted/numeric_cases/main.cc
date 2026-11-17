@@ -18,6 +18,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <gflags/gflags.h>
+#include <zvec/ailego/io/file.h>
+#include "shared/json.h"
 #include "numeric_cases.h"
 
 
@@ -29,8 +31,7 @@ DEFINE_string(distribution, "uniform",
 DEFINE_string(value_range, "0_to_30000", "0_to_30000 or 0_to_type_max");
 DEFINE_string(value_order, "ascending", "ascending or shuffled");
 DEFINE_double(null_ratio, 0, "0, 0.1, or 0.5");
-DEFINE_string(run_dir, "",
-              "Directory containing data, index, and phase reports");
+DEFINE_string(run_dir, "", "Directory for this benchmark run");
 
 DECLARE_bool(help);
 DECLARE_bool(helpshort);
@@ -67,8 +68,7 @@ void PrintHelp() {
     std::cout << '\n';
   }
   std::cout << "\nbuild requires --data_type and --run_dir.\n"
-               "verify/query require --run_dir and restore the workload from "
-               "build.json.\n";
+               "verify/query require the same --run_dir used for build.\n";
 }
 
 [[noreturn]] void InvalidValue(const char *name, const std::string &value) {
@@ -180,8 +180,9 @@ int main(int argc, char **argv) {
                                "value_range", "value_order", "null_ratio"}) {
         if (IsSpecified(name))
           throw std::invalid_argument(
-              "unexpected argument --" + std::string(name) + " for --mode=" +
-              FLAGS_mode + "\n  workload is restored from build.json");
+              "unexpected argument --" + std::string(name) +
+              " for --mode=" + FLAGS_mode +
+              "\n  this argument is only supported with --mode=build");
       }
     }
 
@@ -189,9 +190,7 @@ int main(int argc, char **argv) {
       throw std::invalid_argument(
           "missing required argument --run_dir for "
           "--mode=" +
-          FLAGS_mode +
-          "\n  expected: a directory for data, index, and "
-          "phase reports");
+          FLAGS_mode + "\n  expected: a benchmark run directory");
     const fs::path directory = fs::absolute(FLAGS_run_dir);
     const auto output = directory / (FLAGS_mode + ".json");
     if (fs::exists(output))
@@ -203,7 +202,11 @@ int main(int argc, char **argv) {
     if (FLAGS_mode == "build") {
       const auto type =
           FLAGS_data_type == "int32" ? DataType::INT32 : DataType::INT64;
-      result = bench::BuildNumeric(ProfileFromFlags(type), directory.string());
+      const auto profile = ProfileFromFlags(type);
+      if (!zvec::ailego::File::MakePath(directory.string()))
+        throw std::runtime_error("cannot create run directory: '" +
+                                 directory.string() + "'");
+      result = bench::BuildNumeric(profile, directory.string());
     } else if (FLAGS_mode == "verify") {
       result = bench::VerifyNumeric(directory.string());
     } else {

@@ -11,13 +11,13 @@
 
 #include <string>
 #include <vector>
-#include "metrics.h"
+#include "json.h"
 
 namespace zvec::benchmarks::inverted {
 
 // Report helpers receive only their inputs; CLI options belong to each suite.
-JsonObject LoadBuild(const std::string &build_report_path,
-                     const std::string &index_path);
+void ValidateBuildReport(const std::string &build_report_path,
+                         const std::string &index_path);
 std::vector<JsonObject> ReadQueryInputs(const JsonArray &cases);
 JsonObject LoadVerification(const std::string &verification_path,
                             const JsonObject &inputs);

@@ -11,15 +11,40 @@
 
 #include "dataset.h"
 #include <algorithm>
-#include <filesystem>
+#include <limits>
 #include <set>
+#include <utility>
+#include <zvec/ailego/utility/file_helper.h>
 #include <zvec/db/schema.h>
+#include "shared/json.h"
 #include "shared/random.h"
+#include "shared/report_utils.h"
 
 namespace zvec::benchmarks::inverted {
 
 
 namespace {
+
+// Fixed for reproducible datasets; not a configurable profile field.
+constexpr uint64_t kNumericSeed = 20261115;
+constexpr size_t kQueryPoolSize = 8;
+constexpr uint32_t kNumericBatchSize = 32768;
+
+// Temporary generation data, released before opening the index.
+template <typename T>
+struct NumericData {
+  static_assert(std::is_same_v<T, int32_t> || std::is_same_v<T, int64_t>);
+  // Workload used to generate the records.
+  NumericProfile profile;
+  // Exact number of NULL documents.
+  uint64_t null_count{0};
+  // One marker per doc ID, including NULL documents.
+  std::vector<uint8_t> is_null;
+  // Non-NULL values in doc ID order; NULL documents have no slot here.
+  std::vector<T> values;
+  // Sorted hot set used for query selection; empty for uniform data.
+  std::vector<T> hot_values;
+};
 
 uint64_t DomainSize(const NumericProfile &profile) {
   // The nonnegative INT64 domain has 2^63 values; count it in uint64_t.
@@ -73,14 +98,8 @@ T ColdValue(uint64_t rank, const std::vector<T> &hot_values) {
   return static_cast<T>(rank + begin);
 }
 
-}  // namespace
-
-
 template <typename T>
 NumericData<T> GenerateDataset(const NumericProfile &profile) {
-  ValidateProfile(profile);
-  if ((profile.data_type == DataType::INT32) != std::is_same_v<T, int32_t>)
-    throw std::invalid_argument("numeric profile does not match value type");
   NumericData<T> dataset{profile};
   dataset.null_count = static_cast<uint64_t>(DocumentCount(profile)) *
                        NullPercent(profile.null_ratio) / 100;
@@ -120,7 +139,8 @@ NumericData<T> GenerateDataset(const NumericProfile &profile) {
 template <typename T>
 JsonObject DescribeDataset(const NumericData<T> &dataset,
                            const std::vector<T> &sorted_values) {
-  auto description = ProfileJson(dataset.profile);
+  JsonObject description;
+  description.set("profile", ProfileJson(dataset.profile));
   description.set("seed", JsonValue(kNumericSeed));
   JsonObject stats, percentiles;
   size_t cardinality = 1;
@@ -149,17 +169,101 @@ JsonObject DescribeDataset(const NumericData<T> &dataset,
   return description;
 }
 
+template <typename T, typename Predicate>
+std::vector<T> SelectQueryTerms(const std::vector<T> &sorted,
+                                Predicate &&matches) {
+  // Select evenly spaced distinct-value ranks without storing all candidates.
+  size_t terms = 0;
+  for (size_t i = 0; i < sorted.size(); ++i)
+    if ((i == 0 || sorted[i] != sorted[i - 1]) && matches(sorted[i])) ++terms;
+  const size_t count = std::min(kQueryPoolSize, terms);
+  std::vector<T> selected;
+  selected.reserve(count);
+  if (!count) return selected;
+  size_t rank = 0;
+  for (size_t i = 0; i < sorted.size(); ++i) {
+    if ((i > 0 && sorted[i] == sorted[i - 1]) || !matches(sorted[i])) continue;
+    if (rank == selected.size() * terms / count) {
+      selected.push_back(sorted[i]);
+      if (selected.size() == count) break;
+    }
+    ++rank;
+  }
+  return selected;
+}
+
+template <typename T>
+T RangeBoundary(const std::vector<T> &sorted, uint32_t percentile) {
+  const uint64_t target = static_cast<uint64_t>(sorted.size()) * percentile;
+  uint64_t best_distance = UINT64_MAX;
+  T boundary = 0;
+  auto consider = [&](T value, uint64_t cumulative) {
+    const auto scaled = cumulative * 100;
+    const auto distance = scaled > target ? scaled - target : target - scaled;
+    if (distance < best_distance) {
+      best_distance = distance;
+      boundary = value;
+    }
+  };
+  // A distinct value's first position is the number of documents below it.
+  for (size_t i = 0; i < sorted.size(); ++i)
+    if (i == 0 || sorted[i] != sorted[i - 1]) consider(sorted[i], i);
+  const auto largest = sorted.back();
+  if (largest < std::numeric_limits<T>::max())
+    consider(largest + 1, sorted.size());
+  return boundary;
+}
+
+template <typename T>
+JsonArray SelectQueryInputs(const NumericData<T> &dataset,
+                            const std::vector<T> &sorted) {
+  JsonArray cases;
+  auto points = [&](const std::string &name, const std::vector<T> &values) {
+    JsonArray inputs;
+    for (auto value : values) inputs.push(JsonValue(value));
+    cases.push(InputRecord(name, inputs));
+  };
+  std::vector<T> hits;
+  if (dataset.profile.distribution == NumericDistribution::UNIFORM) {
+    hits = SelectQueryTerms(sorted, [](T) { return true; });
+    points("eq_hit", hits);
+  } else {
+    auto is_hot = [&](T value) {
+      return std::binary_search(dataset.hot_values.begin(),
+                                dataset.hot_values.end(), value);
+    };
+    hits = SelectQueryTerms(sorted, is_hot);
+    points("eq_hot", hits);
+    points("eq_cold",
+           SelectQueryTerms(sorted, [&](T value) { return !is_hot(value); }));
+  }
+  JsonArray misses;
+  for (int64_t i = 1; i <= static_cast<int64_t>(kQueryPoolSize); ++i)
+    misses.push(JsonValue(-i));
+  cases.push(InputRecord("eq_miss", misses));
+  points("ne_hit", hits);
+  for (const auto &[name, percentile] :
+       std::vector<std::pair<std::string, uint32_t>>{
+           {"lt_q01", 1}, {"lt_q50", 50}, {"lt_q90", 90}, {"ge_q50", 50}}) {
+    JsonArray inputs;
+    inputs.push(JsonValue(RangeBoundary(sorted, percentile)));
+    cases.push(InputRecord(name, inputs));
+  }
+  JsonArray null_input;
+  null_input.push(JsonValue());
+  cases.push(InputRecord("is_null", null_input));
+  cases.push(InputRecord("is_not_null", null_input));
+  return cases;
+}
+
 template <typename T>
 void WriteDataset(const NumericData<T> &dataset, const std::string &path) {
-  ValidateProfile(dataset.profile);
   const auto num_docs = DocumentCount(dataset.profile);
   if (dataset.is_null.size() != num_docs ||
       dataset.values.size() + dataset.null_count != num_docs)
     throw std::invalid_argument("numeric dataset size does not match profile");
-  if (std::filesystem::exists(path))
+  if (ailego::File::IsExist(path))
     throw std::invalid_argument("dataset file already exists: '" + path + "'");
-  const auto parent = std::filesystem::path(path).parent_path();
-  if (!parent.empty()) std::filesystem::create_directories(parent);
   ailego::File file;
   if (!file.create(path, 0))
     throw std::runtime_error("cannot create dataset file: '" + path + "'");
@@ -191,63 +295,112 @@ void WriteDataset(const NumericData<T> &dataset, const std::string &path) {
   file.close();
 }
 
-// These are the only scalar types supported by NumericProfile.
-template NumericData<int32_t> GenerateDataset<int32_t>(const NumericProfile &);
-template NumericData<int64_t> GenerateDataset<int64_t>(const NumericProfile &);
-template JsonObject DescribeDataset(const NumericData<int32_t> &,
-                                    const std::vector<int32_t> &);
-template JsonObject DescribeDataset(const NumericData<int64_t> &,
-                                    const std::vector<int64_t> &);
-template void WriteDataset(const NumericData<int32_t> &, const std::string &);
-template void WriteDataset(const NumericData<int64_t> &, const std::string &);
-
-NumericDatasetReader::NumericDatasetReader(const NumericProfile &profile,
-                                           const std::string &path)
-    : path_(path),
-      num_docs_(DocumentCount(profile)),
-      value_size_(FieldSchema::get_element_data_size(profile.data_type)),
-      buffer_(kNumericBatchSize * (1 + value_size_)) {
-  ValidateProfile(profile);
-  if (!file_.open(path_, true))
-    throw std::runtime_error("cannot open dataset file: '" + path_ + "'");
-  const auto expected_size =
-      static_cast<uint64_t>(num_docs_) * (1 + value_size_);
-  if (file_.size() != expected_size)
-    throw std::runtime_error("dataset file size does not match profile: '" +
-                             path_ + "'");
+template <typename T>
+void CreateDatasetFiles(const NumericProfile &profile,
+                        const std::string &directory) {
+  auto dataset = GenerateDataset<T>(profile);
+  std::vector<T> sorted_copy;
+  const auto *sorted = &dataset.values;
+  if (profile.value_order == NumericValueOrder::SHUFFLED) {
+    sorted_copy = dataset.values;
+    std::sort(sorted_copy.begin(), sorted_copy.end());
+    sorted = &sorted_copy;
+  }
+  auto metadata = DescribeDataset(dataset, *sorted);
+  metadata.set("queries", SelectQueryInputs(dataset, *sorted));
+  WriteDataset(dataset, ailego::FileHelper::PathJoin(directory, "data.bin"));
+  WriteJson(ailego::FileHelper::PathJoin(directory, "dataset.json"), metadata);
 }
 
-bool NumericDatasetReader::ReadBatch(NumericBatch &batch) {
-  const auto count = std::min(kNumericBatchSize, num_docs_ - next_doc_id_);
+}  // namespace
+
+
+NumericDataset NumericDataset::Create(const NumericProfile &profile,
+                                      const std::string &directory) {
+  ValidateProfile(profile);
+  if (!ailego::File::IsDirectory(directory))
+    throw std::invalid_argument("expected an existing directory: '" +
+                                directory + "'");
+  for (const auto *name : {"data.bin", "dataset.json"}) {
+    const auto path = ailego::FileHelper::PathJoin(directory, name);
+    if (ailego::File::IsExist(path))
+      throw std::invalid_argument(
+          "dataset file already exists: '" + path +
+          "'\n  use a new --run_dir to start another run");
+  }
+  if (profile.data_type == DataType::INT32) {
+    CreateDatasetFiles<int32_t>(profile, directory);
+  } else {
+    CreateDatasetFiles<int64_t>(profile, directory);
+  }
+  return Load(directory);
+}
+
+NumericDataset NumericDataset::Load(const std::string &directory) {
+  if (!ailego::File::IsDirectory(directory))
+    throw std::invalid_argument("expected an existing directory: '" +
+                                directory + "'");
+  const auto metadata =
+      ReadJson(ailego::FileHelper::PathJoin(directory, "dataset.json"));
+  if (!metadata["profile"].is_object() || !metadata["queries"].is_array())
+    throw std::invalid_argument("invalid dataset metadata");
+  return NumericDataset(directory, metadata);
+}
+
+NumericDataset::NumericDataset(const std::string &directory,
+                               const JsonObject &metadata)
+    : profile_(ReadProfile(metadata["profile"].as_object())),
+      query_cases_(ReadQueryInputs(metadata["queries"].as_array())),
+      data_path_(ailego::FileHelper::PathJoin(directory, "data.bin")),
+      bytes_per_value_(FieldSchema::get_element_data_size(profile_.data_type)) {
+}
+
+bool NumericDataset::read_next_batch(NumericBatch &batch) {
+  const auto num_docs = DocumentCount(profile_);
+  if (!file_.is_valid()) {
+    if (!file_.open(data_path_, true))
+      throw std::runtime_error("cannot open dataset file: '" + data_path_ +
+                               "'");
+    const auto expected_size =
+        static_cast<uint64_t>(num_docs) * (1 + bytes_per_value_);
+    if (file_.size() != expected_size) {
+      file_.close();
+      throw std::runtime_error("dataset file size does not match profile: '" +
+                               data_path_ + "'");
+    }
+    buffer_.resize(kNumericBatchSize * (1 + bytes_per_value_));
+  }
+  const auto count = std::min(kNumericBatchSize, num_docs - next_doc_id_);
   batch.first_doc_id = next_doc_id_;
   batch.is_null.resize(count);
   batch.values.resize(count);
   if (!count) return false;
 
-  const auto record_size = 1 + value_size_;
+  const auto record_size = 1 + bytes_per_value_;
   const auto bytes = count * record_size;
   if (file_.read(buffer_.data(), bytes) != bytes)
-    throw std::runtime_error("cannot read dataset file: '" + path_ + "'");
+    throw std::runtime_error("cannot read dataset file: '" + data_path_ + "'");
   for (uint32_t i = 0; i < count; ++i) {
     const auto *record = buffer_.data() + i * record_size;
     const auto is_null = static_cast<uint8_t>(record[0]);
     if (is_null > 1)
       throw std::runtime_error("invalid NULL marker at doc " +
                                std::to_string(next_doc_id_ + i) +
-                               " in dataset file: '" + path_ + "'");
+                               " in dataset file: '" + data_path_ + "'");
     batch.is_null[i] = is_null;
     if (is_null)
       batch.values[i].clear();
     else
-      batch.values[i].assign(record + 1, value_size_);
+      batch.values[i].assign(record + 1, bytes_per_value_);
   }
   next_doc_id_ += count;
   return true;
 }
 
-void NumericDatasetReader::Reset() {
-  if (!file_.seek(0, ailego::File::Origin::Begin))
-    throw std::runtime_error("cannot rewind dataset file: '" + path_ + "'");
+void NumericDataset::rewind() {
+  if (file_.is_valid() && !file_.seek(0, ailego::File::Origin::Begin))
+    throw std::runtime_error("cannot rewind dataset file: '" + data_path_ +
+                             "'");
   next_doc_id_ = 0;
 }
 
