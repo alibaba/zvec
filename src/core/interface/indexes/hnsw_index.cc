@@ -115,6 +115,7 @@ int HNSWIndex::merge(const std::vector<Index::Pointer> &indexes,
       storage_options_.type != StorageOptions::StorageType::kMMAP ||
       get_doc_count() != 0 || param_.use_external_vector || param_.provider ||
       param_.use_contiguous_memory || !turbo_quantizer_ ||
+      param_.deduplicate_vectors ||
       proxima_index_meta_.quantizer_name() != "Fp32Quantizer") {
     return Index::merge(indexes, filter, options);
   }
@@ -370,8 +371,11 @@ int HNSWIndex::create_and_init_streamer(const BaseIndexParam &param) {
 
   if (is_sparse_) {
     // the original vector provider is only supported by the dense streamer
-    if (ailego_unlikely(param_.provider != nullptr)) {
-      LOG_ERROR("Provider is not supported by sparse HNSW index");
+    if (ailego_unlikely(param_.provider != nullptr ||
+                        param_.deduplicate_vectors)) {
+      LOG_ERROR(
+          "Provider and duplicate-vector navigation are not supported "
+          "by sparse HNSW index");
       return core::IndexError_Unsupported;
     }
     proxima_index_params_.set(core::PARAM_HNSW_SPARSE_STREAMER_EFCONSTRUCTION,
@@ -407,6 +411,8 @@ int HNSWIndex::create_and_init_streamer(const BaseIndexParam &param) {
                               param_.use_contiguous_memory);
     proxima_index_params_.set(core::PARAM_HNSW_STREAMER_USE_EXTERNAL_VECTOR,
                               param_.use_external_vector);
+    proxima_index_params_.set(core::PARAM_HNSW_STREAMER_DEDUPLICATE_VECTORS,
+                              param_.deduplicate_vectors);
     streamer_ = core::IndexFactory::CreateStreamer("HnswStreamer");
     // build graph from the original vectors of provider when it is set
     if (param_.provider && streamer_) {
