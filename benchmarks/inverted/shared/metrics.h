@@ -20,7 +20,7 @@ using Clock = std::chrono::steady_clock;
 JsonObject MemorySnapshot();
 JsonObject DiskUsage(const std::string &path);
 JsonObject EnvironmentJson();
-JsonArray BuildMetricNames();
+JsonArray BuildMetricsToSummarize();
 double Seconds(Clock::time_point begin, Clock::time_point end);
 
 struct Measurement {

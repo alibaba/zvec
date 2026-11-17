@@ -113,11 +113,9 @@ def validate_build(build):
     validate_metrics(build)
     for key in (
         "insert_seconds",
-        "seal_seconds",
-        "build_seconds",
-        "docs_per_second",
-        "index_file_bytes",
-        "bytes_per_doc",
+        "optimize_seconds",
+        "total_seconds",
+        "index_file_mib",
     ):
         if key in build:
             number(build[key], key, positive=True)

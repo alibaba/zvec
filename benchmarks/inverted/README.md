@@ -36,21 +36,22 @@ and verification fields alongside them. Each profile/repetition retains its data
 build and verification reports, and query results. A failed phase stops the run without
 a successful summary.
 
-- **Build:** the sum of per-batch insertion times, seal time, their sum (`build_seconds`),
-  and documents/second based on that sum. Data generation, dataset reads/writes, input encoding, and
-  index opening are excluded. Seal includes flushing and compaction. File reads pause
-  insertion between batches and affect caches, so results are not directly comparable
-  with the previous continuous in-memory insertion loop.
+- **Build:** `insert_seconds` measures the complete insertion loop, including dataset
+  reads, batch preparation, and index insert calls. `optimize_seconds` measures finalizing
+  the index through `InvertedIndexer::seal()`, including statistical index generation,
+  flushing, and compaction. `total_seconds` is their sum. Data generation, dataset writes,
+  metadata loading, and index opening/closing are excluded.
 - **Query:** single-threaded, warm-cache mean nanoseconds/query and QPS, including the index call,
   result count, and result release. Full document-ID verification occurs before timing in another
   process. Reported repetition ranges are not per-request latency percentiles.
-- **Disk:** logical bytes of files in the index directory after seal and close, and bytes/document.
+- **Disk:** `index_file_mib` reports the total logical size of files in the index directory
+  after optimization and close, in MiB (1 MiB = 1,048,576 bytes).
   Dataset files, worker logs, and benchmark reports are excluded.
-- **Memory:** `rss_mib` and `peak_rss_mib` report process RSS at stage boundaries and process peak
-  RSS in MiB (1 MiB = 1,048,576 bytes), or `null` when unavailable. These include
-  runtime and allocator overhead. Build runs in a fresh process after prepare exits, so its
-  peak RSS excludes data generation. Build snapshots bracket index opening through seal;
-  data-file opening and batch-buffer allocation occur on the first batch read, after the
-  baseline snapshot. Its peak still includes process startup, metadata loading, and read buffers.
-  Query workers load query inputs without the full dataset; their peak includes setup and
-  warmup. These are process-level measurements, not index-only memory.
+- **Memory:** values report whole-process RSS in MiB (1 MiB = 1,048,576 bytes),
+  or `null` when unavailable. Build reports `process_memory.peak_rss_mib` (the process
+  peak through build completion) and `process_memory.final_rss_mib` (RSS after
+  optimization, before closing the index). Build runs in a fresh process after prepare
+  exits, so its peak excludes data generation but includes startup, metadata loading,
+  read buffers, and allocator overhead. Query reports `rss_mib` and `peak_rss_mib`
+  in `memory_before` and `memory_after`; its process peak includes setup, warmup, and
+  earlier cases in the same query run.

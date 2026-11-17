@@ -196,12 +196,10 @@ JsonObject Build(const std::string &index_path, const std::string &run_dir) {
   auto dataset = NumericDataset::Load(run_dir);
   const auto &profile = dataset.profile();
   NumericBatch batch;
-  const auto before = MemorySnapshot();
   IndexFixture index(profile.data_type, index_path, false);
   auto &column = index.column();
-  double insert_seconds = 0;
+  const auto insert_begin = Clock::now();
   while (dataset.read_next_batch(batch)) {
-    const auto begin = Clock::now();
     for (size_t i = 0; i < batch.values.size(); ++i) {
       const auto id = batch.first_doc_id + static_cast<uint32_t>(i);
       auto status = batch.is_null[i] ? column.insert_null(id)
@@ -210,32 +208,30 @@ JsonObject Build(const std::string &index_path, const std::string &run_dir) {
         throw std::runtime_error("Numeric insert failed at doc " +
                                  std::to_string(id));
     }
-    insert_seconds += Seconds(begin, Clock::now());
   }
-  const auto seal_begin = Clock::now();
+  const auto optimize_begin = Clock::now();
   index.seal();
-  const auto seal_seconds = Seconds(seal_begin, Clock::now());
-  const auto build_seconds = insert_seconds + seal_seconds;
-  const auto after = MemorySnapshot();
+  const auto optimize_end = Clock::now();
+  const auto insert_seconds = Seconds(insert_begin, optimize_begin);
+  const auto optimize_seconds = Seconds(optimize_begin, optimize_end);
+  const auto total_seconds = insert_seconds + optimize_seconds;
+  const auto memory = MemorySnapshot();
   index.close();
   JsonObject result;
+  result.set("environment", EnvironmentJson());
   result.set(
       "index_path",
       JsonStringValue(std::filesystem::weakly_canonical(index_path).string()));
-  result.set("insert_seconds", JsonValue(insert_seconds));
-  result.set("seal_seconds", JsonValue(seal_seconds));
-  result.set("build_seconds", JsonValue(build_seconds));
-  result.set("docs_per_second",
-             JsonValue(DocumentCount(profile) / build_seconds));
   const auto disk = DiskUsage(index_path);
-  result.set("index_file_bytes", disk["index_file_bytes"]);
-  result.set("bytes_per_doc",
-             JsonValue(static_cast<double>(Number(disk, "index_file_bytes")) /
-                       DocumentCount(profile)));
-  result.set("memory_before", before);
-  result.set("memory_after", after);
-  result.set("environment", EnvironmentJson());
-  result.set("metric_names", BuildMetricNames());
+  result.set("index_file_mib", disk["index_file_mib"]);
+  result.set("insert_seconds", JsonValue(insert_seconds));
+  result.set("optimize_seconds", JsonValue(optimize_seconds));
+  result.set("total_seconds", JsonValue(total_seconds));
+  JsonObject process_memory;
+  process_memory.set("peak_rss_mib", memory["peak_rss_mib"]);
+  process_memory.set("final_rss_mib", memory["rss_mib"]);
+  result.set("process_memory", process_memory);
+  result.set("metric_names", BuildMetricsToSummarize());
   return result;
 }
 

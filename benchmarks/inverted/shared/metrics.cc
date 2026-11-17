@@ -16,12 +16,17 @@
 
 namespace zvec::benchmarks::inverted {
 
+namespace {
+
+constexpr double kBytesPerMebibyte = 1024.0 * 1024.0;
+
+}  // namespace
+
 double Seconds(Clock::time_point begin, Clock::time_point end) {
   return std::chrono::duration<double>(end - begin).count();
 }
 
 JsonObject MemorySnapshot() {
-  constexpr double kBytesPerMebibyte = 1024.0 * 1024.0;
   JsonObject result;
   size_t vsz = 0;
   size_t rss = 0;
@@ -47,7 +52,7 @@ JsonObject DiskUsage(const std::string &path) {
     ++file_count;
   }
   JsonObject result;
-  result.set("index_file_bytes", JsonValue(logical_bytes));
+  result.set("index_file_mib", JsonValue(logical_bytes / kBytesPerMebibyte));
   result.set("index_file_count", JsonValue(file_count));
   return result;
 }
@@ -93,12 +98,11 @@ JsonObject EnvironmentJson() {
 }
 
 
-JsonArray BuildMetricNames() {
+JsonArray BuildMetricsToSummarize() {
   JsonArray names;
   for (const char *name :
-       {"insert_seconds", "seal_seconds", "build_seconds", "docs_per_second",
-        "index_file_bytes", "bytes_per_doc", "memory_before.rss_mib",
-        "memory_after.rss_mib", "memory_after.peak_rss_mib"})
+       {"insert_seconds", "optimize_seconds", "total_seconds", "index_file_mib",
+        "process_memory.peak_rss_mib", "process_memory.final_rss_mib"})
     names.push(JsonStringValue(name));
   return names;
 }

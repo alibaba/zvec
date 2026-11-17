@@ -85,7 +85,7 @@ Use `--repetitions` to change the default of three repetitions.
 
 Prepare writes `data.bin` and `dataset.json`, then exits. Build loads that dataset in a fresh
 process, so its peak RSS excludes data generation. It reads up to 32,768 records per batch,
-inserts them sequentially on one thread, and seals the index. Verify scans this same file for
+inserts them sequentially on one thread, and optimizes the index. Verify scans this same file for
 each query operand and compares every matching document ID with the index result. It does not
 regenerate data. Query uses the verified counts and index without reading `data.bin`.
 
