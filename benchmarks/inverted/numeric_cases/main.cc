@@ -205,6 +205,12 @@ int main(int argc, char **argv) {
       return 0;
     }
 
+    if (FLAGS_mode == "verify") {
+      bench::VerifyNumeric(directory.string());
+      std::cout << "Verification passed\n";
+      return 0;
+    }
+
     const auto output = directory / (FLAGS_mode + ".json");
     if (fs::exists(output))
       throw std::invalid_argument(
@@ -214,8 +220,6 @@ int main(int argc, char **argv) {
     bench::JsonObject result;
     if (FLAGS_mode == "build") {
       result = bench::BuildNumeric(directory.string());
-    } else if (FLAGS_mode == "verify") {
-      result = bench::VerifyNumeric(directory.string());
     } else {
       result = bench::QueryNumeric(directory.string());
     }

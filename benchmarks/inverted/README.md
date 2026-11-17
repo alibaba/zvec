@@ -32,9 +32,9 @@ are never overwritten. `--bin-dir /path/to/bin` selects another build.
 
 `run.json` records configuration, executable path and hash, and status. `summary.json`
 aggregates metrics selected by the numeric script into repetition medians and ranges,
-retaining case-specific and verification fields alongside them. Each profile/repetition
-retains its dataset, index, logs,
-build and verification reports, and query results. A failed phase stops the run without
+retaining case-specific fields alongside them. Each profile/repetition retains its
+dataset, index, logs, build report, and query results. Verification succeeds with exit
+code zero and writes no report. A failed phase stops the run without
 a successful summary.
 
 Floating-point values in JSON reports use two decimal places; integer counts and query
@@ -47,7 +47,9 @@ values remain exact. Small measurements may round to `0.00`.
   metadata loading, and index opening/closing are excluded.
 - **Query:** single-threaded, warm-cache mean nanoseconds/query and QPS, including the index call,
   result count, and result release. Full document-ID verification occurs before timing in another
-  process. Reported repetition ranges are not per-request latency percentiles.
+  process when using the Python script. Query records `match_counts` during the first
+  warmup pass; timed queries do not recheck correctness. Reported repetition ranges
+  are not per-request latency percentiles.
 - **Disk:** `index_file_mib` reports the total logical size of files in the index directory
   after optimization and close, in MiB (1 MiB = 1,048,576 bytes).
   Dataset files, worker logs, and benchmark reports are excluded.

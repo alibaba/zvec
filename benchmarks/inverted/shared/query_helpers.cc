@@ -9,14 +9,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "report_utils.h"
-#include <filesystem>
+#include "query_helpers.h"
 #include <set>
 #include <stdexcept>
 
 namespace zvec::benchmarks::inverted {
 
-JsonObject InputRecord(const std::string &name, const JsonArray &inputs) {
+
+JsonObject MakeQueryCase(const std::string &name, const JsonArray &inputs) {
   if (name.empty() || inputs.empty())
     throw std::invalid_argument(
         "Query name and parameter pool must be nonempty");
@@ -47,41 +47,5 @@ std::vector<JsonObject> ReadQueryInputs(const JsonArray &cases) {
   return records;
 }
 
-void ValidateBuildReport(const std::string &build_report_path,
-                         const std::string &index_path) {
-  const auto build = ReadJson(build_report_path);
-  if (std::filesystem::weakly_canonical(Text(build, "index_path")) !=
-      std::filesystem::weakly_canonical(index_path))
-    throw std::invalid_argument("Index path does not match build report");
-}
-
-JsonObject LoadVerification(const std::string &verification_path,
-                            const JsonObject &inputs) {
-  const auto verified = ReadJson(verification_path);
-  if (!verified["passed"].is_boolean() || !verified["passed"].as_bool() ||
-      !verified["cases"].is_array())
-    throw std::invalid_argument(
-        "query requires successful verification"
-        "\n  run --mode=verify with the same --run_dir first");
-  const auto name = Text(inputs, "name");
-  const auto cases = verified["cases"].as_array();
-  std::set<std::string> seen;
-  JsonObject result;
-  bool found = false;
-  for (const auto &value : cases) {
-    if (!value.is_object())
-      throw std::invalid_argument("Invalid verification record");
-    const auto entry = value.as_object();
-    const auto entry_name = Text(entry, "name");
-    if (!seen.insert(entry_name).second)
-      throw std::invalid_argument("Duplicate verification record");
-    if (entry_name == name) {
-      result = entry;
-      found = true;
-    }
-  }
-  if (!found) throw std::invalid_argument("Query was not verified: " + name);
-  return result;
-}
 
 }  // namespace zvec::benchmarks::inverted

@@ -4,7 +4,7 @@ set(INVERTED_BENCH_HELPER_SRCS
     shared/index_fixture.cc
     shared/json.cc
     shared/metrics.cc
-    shared/report_utils.cc
+    shared/query_helpers.cc
 )
 
 cc_binary(

@@ -71,8 +71,8 @@ Query operands are derived from the generated data. In `dataset.json`, `stats` r
 
 Range boundaries target the specified percentage of non-NULL documents for `<` queries.
 The paired `>` query uses the same boundary; neither includes values equal to it.
-Repeated values may prevent an exact target ratio. Ordinary match ratios use all documents;
-query reports retain actual hit counts. Uniform has 19 cases; hotspot has 21.
+Repeated values may prevent an exact target ratio. Query reports retain actual hit
+counts for each input. Uniform has 19 cases; hotspot has 21.
 
 ## Execution
 
@@ -86,8 +86,12 @@ Use `--repetitions` to change the default of three repetitions.
 Prepare writes `data.bin` and `dataset.json`, then exits. Build loads that dataset in a fresh
 process, so its peak RSS excludes data generation. It reads up to 32,768 records per batch,
 inserts them sequentially on one thread, and optimizes the index. Verify scans this same file for
-each query operand and compares every matching document ID with the index result. It does not
-regenerate data. Query uses the verified counts and index without reading `data.bin`.
+each query operand and compares every matching document ID with the index result.
+It prints `Verification passed` on success, or stops with an error and a nonzero exit
+code on failure; it writes no report. The script starts query only after verification
+succeeds. Query records `match_counts` from the first warmup pass and assumes results
+are correct during timing. It reads the index without reading `data.bin` and can also
+run directly after build.
 
 `data.bin` stores records in document ID order: one NULL byte followed by 4-byte INT32 or
 8-byte INT64 native values. NULL payloads are zero-filled; document IDs are implicit. The
@@ -106,11 +110,10 @@ The executable accepts a single `--run_dir` containing:
 | `dataset.json` | `profile`, `seed`, `stats`, and `queries` (each with `name` and `inputs`) |
 | `index/` | Built inverted index |
 | `build.json` | Build timing, disk usage, memory, and environment |
-| `verify.json` | Verification status, `match_counts`, and match ratios per query case |
 | `query.json` | Query timing, `match_counts`, memory, and environment per query case |
 
-Verification and query reports identify each case by `name`.
-The C++ benchmark writes the phase reports; the dataset class writes the two dataset files.
+Query reports identify each case by `name`.
+The C++ benchmark writes build and query reports; the dataset class writes the two dataset files.
 To run the phases directly:
 
 ```bash

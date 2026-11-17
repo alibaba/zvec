@@ -13,10 +13,7 @@
 
 #include <cmath>
 #include <cstddef>
-#include <cstdint>
 #include <stdexcept>
-#include <vector>
-#include "json.h"
 #include "metrics.h"
 
 namespace zvec::benchmarks::inverted {
@@ -47,21 +44,4 @@ Measurement MeasurePool(size_t pool_size, double warmup_seconds,
   return result;
 }
 
-inline std::vector<uint64_t> VerifiedCounts(const JsonObject &verification,
-                                            size_t pool_size,
-                                            uint32_t num_docs) {
-  if (!verification["match_counts"].is_array())
-    throw std::invalid_argument("Verification has no document counts");
-  const auto counts = verification["match_counts"].as_array();
-  if (counts.size() != pool_size)
-    throw std::invalid_argument("Query pool was not fully verified");
-  std::vector<uint64_t> result;
-  for (const auto &count : counts) {
-    if (!count.is_integer() || count.as_integer() < 0 ||
-        static_cast<uint64_t>(count.as_integer()) > num_docs)
-      throw std::invalid_argument("Invalid verified result count");
-    result.push_back(count.as_integer());
-  }
-  return result;
-}
 }  // namespace zvec::benchmarks::inverted

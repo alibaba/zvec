@@ -18,7 +18,7 @@ namespace zvec::benchmarks::inverted {
 
 
 JsonObject BuildNumeric(const std::string &run_dir);
-JsonObject VerifyNumeric(const std::string &run_dir);
+void VerifyNumeric(const std::string &run_dir);
 JsonObject QueryNumeric(const std::string &run_dir);
 
 

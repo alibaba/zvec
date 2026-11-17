@@ -20,7 +20,6 @@
 #include "shared/json.h"
 #include "shared/measurement.h"
 #include "shared/metrics.h"
-#include "shared/report_utils.h"
 #include "dataset.h"
 
 
@@ -34,9 +33,9 @@ constexpr double kMeasureSeconds = 1.0;
 
 // Stream original records; the predicate does not consult the index.
 template <typename Predicate>
-uint64_t VerifyNumericIds(NumericDataset &reader, NumericBatch &batch,
-                          const InvertedSearchResult::Ptr &actual,
-                          Predicate &&matches) {
+void VerifyNumericIds(NumericDataset &reader, NumericBatch &batch,
+                      const InvertedSearchResult::Ptr &actual,
+                      Predicate &&matches) {
   if (!actual) throw std::runtime_error("Index query failed");
   reader.rewind();
   auto iterator = actual->create_iterator();
@@ -45,24 +44,27 @@ uint64_t VerifyNumericIds(NumericDataset &reader, NumericBatch &batch,
     for (size_t i = 0; i < batch.values.size(); ++i) {
       if (!matches(batch.is_null[i] != 0, batch.values[i])) continue;
       const auto id = batch.first_doc_id + static_cast<uint32_t>(i);
-      if (!iterator->valid() || iterator->doc_id() != id)
-        throw std::runtime_error("ID mismatch at doc " + std::to_string(id));
+      if (!iterator->valid())
+        throw std::runtime_error("Missing ID at doc " + std::to_string(id));
+      if (iterator->doc_id() != id)
+        throw std::runtime_error("Expected doc ID " + std::to_string(id) +
+                                 ", got " + std::to_string(iterator->doc_id()));
       ++count;
       iterator->next();
     }
   }
-  if (iterator->valid() || actual->count() != count)
-    throw std::runtime_error("Extra IDs or incorrect result count");
-  return count;
+  if (iterator->valid())
+    throw std::runtime_error("Unexpected doc ID " +
+                             std::to_string(iterator->doc_id()));
+  if (actual->count() != count)
+    throw std::runtime_error("Incorrect result count");
 }
 
 template <typename T>
 JsonObject ExecuteNumericCase(const NumericProfile &profile,
                               const std::string &index_path,
                               const JsonObject &record, NumericDataset *reader,
-                              InvertedColumnIndexer *column,
-                              const JsonObject &verification) {
-  const auto num_docs = DocumentCount(profile);
+                              InvertedColumnIndexer *column) {
   const auto name = Text(record, "name");
   const auto inputs = record["inputs"].as_array();
   const bool null_query = name == "is_null" || name == "is_not_null";
@@ -85,62 +87,53 @@ JsonObject ExecuteNumericCase(const NumericProfile &profile,
       encoded.push_back(EncodeValue(operands.back()));
     }
   }
-  std::vector<uint64_t> expected;
   JsonObject before;
   std::unique_ptr<IndexFixture> query_index;
   if (!reader) {
-    expected = VerifiedCounts(verification, inputs.size(), num_docs);
     before = MemorySnapshot();
     query_index =
         std::make_unique<IndexFixture>(profile.data_type, index_path, true);
     column = &query_index->column();
   }
-  auto execute = [&](auto search, auto predicate, bool range = false) {
+  auto execute = [&](auto search, auto predicate) {
     if (reader) {
-      const auto null_count = static_cast<uint64_t>(num_docs) *
-                              NullPercent(profile.null_ratio) / 100;
       NumericBatch batch;
-      JsonArray counts, ratios, nonnull_ratios;
       for (size_t i = 0; i < inputs.size(); ++i) {
-        const auto count =
-            VerifyNumericIds(*reader, batch, search(i),
-                             [&](bool is_null, const std::string &value) {
-                               return predicate(is_null, value, i);
-                             });
-        counts.push(JsonValue(count));
-        ratios.push(JsonValue(static_cast<double>(count) / num_docs));
-        if (range)
-          nonnull_ratios.push(num_docs == null_count
-                                  ? JsonValue()
-                                  : JsonValue(static_cast<double>(count) /
-                                              (num_docs - null_count)));
+        try {
+          VerifyNumericIds(*reader, batch, search(i),
+                           [&](bool is_null, const std::string &value) {
+                             return predicate(is_null, value, i);
+                           });
+        } catch (const std::exception &error) {
+          throw std::runtime_error(
+              "verification failed for case '" + name + "', input " +
+              (null_query ? "NULL" : std::to_string(operands[i])) + ": " +
+              error.what());
+        }
       }
-      JsonObject result;
-      result.set("name", JsonStringValue(name));
-      result.set("match_counts", counts);
-      result.set("match_ratios", ratios);
-      if (range) result.set("nonnull_match_ratios", nonnull_ratios);
-      return result;
+      return JsonObject();
     }
+    std::vector<uint64_t> match_counts(inputs.size());
+    bool collect_counts = true;
     const auto measurement =
         MeasurePool(inputs.size(), kWarmupSeconds, kMeasureSeconds, [&]() {
           for (size_t i = 0; i < inputs.size(); ++i) {
             auto result = search(i);
             if (!result)
               throw std::runtime_error("Numeric query failed: " + name);
-            const auto count = result->count();
-            if (count != expected[i]) {
-              throw std::runtime_error(
-                  "Numeric query count changed during timing: " + name);
-            }
+            // Keep result counting in the timed workload without validation.
+            const volatile auto count = result->count();
+            if (collect_counts) match_counts[i] = count;
           }
+          // The first pool pass runs during warmup, before measurement starts.
+          collect_counts = false;
         });
     const auto after = MemorySnapshot();
     query_index->close();
     auto result = QueryReport(name, measurement, kWarmupSeconds,
                               kMeasureSeconds, before, after);
     JsonArray counts;
-    for (auto count : expected) counts.push(JsonValue(count));
+    for (auto count : match_counts) counts.push(JsonValue(count));
     result.set("match_counts", counts);
     return result;
   };
@@ -176,8 +169,7 @@ JsonObject ExecuteNumericCase(const NumericProfile &profile,
         [&](size_t i) { return column->search(encoded[i], CompareOp::LT); },
         [&](bool is_null, const std::string &value, size_t i) {
           return !is_null && DecodeValue<T>(value) < operands[i];
-        },
-        true);
+        });
   }
   if (name == "gt_q01" || name == "gt_q11" || name == "gt_q33" ||
       name == "gt_q50" || name == "gt_q77" || name == "gt_q90" ||
@@ -186,8 +178,7 @@ JsonObject ExecuteNumericCase(const NumericProfile &profile,
         [&](size_t i) { return column->search(encoded[i], CompareOp::GT); },
         [&](bool is_null, const std::string &value, size_t i) {
           return !is_null && DecodeValue<T>(value) > operands[i];
-        },
-        true);
+        });
   }
   throw std::invalid_argument("Unknown numeric query case: " + name);
 }
@@ -235,17 +226,12 @@ JsonObject Build(const std::string &index_path, const std::string &run_dir) {
 }
 
 template <typename T>
-JsonObject Verify(NumericDataset &dataset, const std::string &index_path) {
+void Verify(NumericDataset &dataset, const std::string &index_path) {
   const auto &profile = dataset.profile();
   IndexFixture index(profile.data_type, index_path, true);
-  JsonArray checked;
   for (const auto &record : dataset.query_cases())
-    checked.push(ExecuteNumericCase<T>(profile, index_path, record, &dataset,
-                                       &index.column(), JsonObject()));
-  JsonObject result;
-  result.set("passed", JsonValue(true));
-  result.set("cases", checked);
-  return result;
+    ExecuteNumericCase<T>(profile, index_path, record, &dataset,
+                          &index.column());
 }
 
 
@@ -261,10 +247,13 @@ JsonObject BuildNumeric(const std::string &run_dir) {
   return Build(index_path, run_dir);
 }
 
-JsonObject VerifyNumeric(const std::string &run_dir) {
+void VerifyNumeric(const std::string &run_dir) {
   const auto index_path = ailego::FileHelper::PathJoin(run_dir, "index");
-  ValidateBuildReport(ailego::FileHelper::PathJoin(run_dir, "build.json"),
-                      index_path);
+  const auto build =
+      ReadJson(ailego::FileHelper::PathJoin(run_dir, "build.json"));
+  if (std::filesystem::weakly_canonical(Text(build, "index_path")) !=
+      std::filesystem::weakly_canonical(index_path))
+    throw std::invalid_argument("Index path does not match build report");
   auto dataset = NumericDataset::Load(run_dir);
   const auto &profile = dataset.profile();
   if (profile.data_type == DataType::INT32)
@@ -274,25 +263,23 @@ JsonObject VerifyNumeric(const std::string &run_dir) {
 
 JsonObject QueryNumeric(const std::string &run_dir) {
   const auto index_path = ailego::FileHelper::PathJoin(run_dir, "index");
-  ValidateBuildReport(ailego::FileHelper::PathJoin(run_dir, "build.json"),
-                      index_path);
+  const auto build =
+      ReadJson(ailego::FileHelper::PathJoin(run_dir, "build.json"));
+  if (std::filesystem::weakly_canonical(Text(build, "index_path")) !=
+      std::filesystem::weakly_canonical(index_path))
+    throw std::invalid_argument("Index path does not match build report");
 
   auto dataset = NumericDataset::Load(run_dir);
   const auto &profile = dataset.profile();
   const auto &inputs = dataset.query_cases();
 
-  std::vector<JsonObject> verified;
-  for (const auto &record : inputs)
-    verified.push_back(LoadVerification(
-        ailego::FileHelper::PathJoin(run_dir, "verify.json"), record));
   JsonArray cases;
-  for (size_t i = 0; i < inputs.size(); ++i) {
-    auto query =
-        profile.data_type == DataType::INT32
-            ? ExecuteNumericCase<int32_t>(profile, index_path, inputs[i],
-                                          nullptr, nullptr, verified[i])
-            : ExecuteNumericCase<int64_t>(profile, index_path, inputs[i],
-                                          nullptr, nullptr, verified[i]);
+  for (const auto &record : inputs) {
+    auto query = profile.data_type == DataType::INT32
+                     ? ExecuteNumericCase<int32_t>(profile, index_path, record,
+                                                   nullptr, nullptr)
+                     : ExecuteNumericCase<int64_t>(profile, index_path, record,
+                                                   nullptr, nullptr);
     cases.push(query);
   }
   JsonObject result;

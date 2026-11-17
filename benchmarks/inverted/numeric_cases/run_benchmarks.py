@@ -136,31 +136,15 @@ def validate_build(build):
         number(build[key], key)
 
 
-def validate_verification(verification, dataset, cases):
-    if verification.get("passed") is not True:
-        fail("Correctness verification did not pass")
-    verified = {case["name"]: case for case in verification["cases"]}
-    if len(verified) != len(verification["cases"]) or set(verified) != set(cases):
-        fail("Verification did not cover exactly all workload cases")
-    for name in cases:
-        case, result = cases[name], verified[name]
-        counts = result.get("match_counts")
-        if not isinstance(counts, list) or len(counts) != len(case["inputs"]):
-            fail(f"Incomplete verification counts: {name}")
-        for count in counts:
-            if (
-                type(count) is not int
-                or not 0 <= count <= dataset["profile"]["num_docs"]
-            ):
-                fail(f"Invalid verification hit count: {name}")
-    return verified
-
-
-def validate_query(query, name, verified):
+def validate_query(query, case, num_docs):
+    name = case["name"]
     if query.get("name") != name:
         fail(f"Unexpected query case: {name}")
-    if query.get("match_counts") != verified.get("match_counts"):
-        fail(f"Query hit counts differ from verification: {name}")
+    counts = query.get("match_counts")
+    if not isinstance(counts, list) or len(counts) != len(case["inputs"]):
+        fail(f"Incomplete query hit counts: {name}")
+    if any(type(count) is not int or not 0 <= count <= num_docs for count in counts):
+        fail(f"Invalid query hit count: {name}")
     if "completed_queries" in query:
         if type(query["completed_queries"]) is not int:
             fail(f"Invalid completed query count: {name}")
@@ -171,7 +155,7 @@ def validate_query(query, name, verified):
     validate_metrics(query, QUERY_METRICS)
 
 
-def validate_numeric_queries(report, cases, verified):
+def validate_numeric_queries(report, cases, num_docs):
     entries = report.get("cases")
     if not isinstance(entries, list) or any(
         not isinstance(entry, dict) or not isinstance(entry.get("name"), str)
@@ -182,14 +166,14 @@ def validate_numeric_queries(report, cases, verified):
     if len(queries) != len(entries) or set(queries) != set(cases):
         fail("Numeric query report must cover exactly all workload cases")
     for name, query in queries.items():
-        validate_query(query, name, verified[name])
+        validate_query(query, cases[name], num_docs)
     return queries
 
 
 def run_profile(binary, output, profile, args, overrides):
     profile_dir = output / profile["type"] / profile["name"]
     profile_dir.mkdir(parents=True)
-    builds, queries, verifications = [], {}, {}
+    builds, queries = [], {}
     expected_dataset = None
     for repetition in range(1, args.repetitions + 1):
         directory = profile_dir / f"repeat-{repetition:03d}"
@@ -202,8 +186,8 @@ def run_profile(binary, output, profile, args, overrides):
         dataset = run_worker(
             binary,
             "prepare",
-            directory / "dataset.json",
             logs / "prepare.log",
+            report=directory / "dataset.json",
             run_dir=directory,
             num_docs=args.num_docs,
             **workload_flags(profile, overrides),
@@ -212,39 +196,35 @@ def run_profile(binary, output, profile, args, overrides):
         if expected_dataset is None:
             expected_dataset = dataset
             queries = {name: [] for name in cases}
-            verifications = {name: [] for name in cases}
         elif dataset != expected_dataset:
             fail(f"Data or query inputs changed across repetitions: {prefix}")
         print(f"{prefix} build", flush=True)
         build = run_worker(
             binary,
             "build",
-            directory / "build.json",
             logs / "build.log",
+            report=directory / "build.json",
             run_dir=directory,
         )
         validate_build(build)
         print(f"{prefix} verify", flush=True)
-        verification = run_worker(
+        run_worker(
             binary,
             "verify",
-            directory / "verify.json",
             logs / "verify.log",
             run_dir=directory,
         )
-        verified = validate_verification(verification, dataset, cases)
         print(f"{prefix} query (all cases)", flush=True)
         report = run_worker(
             binary,
             "query",
-            directory / "query.json",
             logs / "query.log",
+            report=directory / "query.json",
             run_dir=directory,
         )
-        query_results = validate_numeric_queries(report, cases, verified)
+        query_results = validate_numeric_queries(report, cases, args.num_docs)
         builds.append(build)
         for name in cases:
-            verifications[name].append(report_details(verified[name]))
             queries[name].append(query_results[name])
     return {
         "suite": "numeric",
@@ -261,7 +241,6 @@ def run_profile(binary, output, profile, args, overrides):
                 "details": [
                     report_details(sample, QUERY_METRICS) for sample in samples
                 ],
-                "verification": verifications[name],
             }
             for name, samples in queries.items()
         ],

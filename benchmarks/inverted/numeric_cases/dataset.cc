@@ -17,8 +17,8 @@
 #include <zvec/ailego/utility/file_helper.h>
 #include <zvec/db/schema.h>
 #include "shared/json.h"
+#include "shared/query_helpers.h"
 #include "shared/random.h"
-#include "shared/report_utils.h"
 
 namespace zvec::benchmarks::inverted {
 
@@ -237,7 +237,7 @@ JsonArray SelectQueryInputs(const NumericData<T> &dataset,
   auto add_case = [&](const std::string &name, const std::vector<T> &values) {
     JsonArray inputs;
     for (auto value : values) inputs.push(JsonValue(value));
-    cases.push(InputRecord(name, inputs));
+    cases.push(MakeQueryCase(name, inputs));
   };
   std::vector<T> hits;
   if (dataset.profile.distribution == NumericDistribution::UNIFORM) {
@@ -257,7 +257,7 @@ JsonArray SelectQueryInputs(const NumericData<T> &dataset,
   JsonArray misses;
   for (int64_t i = 1; i <= static_cast<int64_t>(kQueryPoolSize); ++i)
     misses.push(JsonValue(-i));
-  cases.push(InputRecord("eq_miss", misses));
+  cases.push(MakeQueryCase("eq_miss", misses));
   add_case("ne_hit", hits);
   for (const auto &[quantile, percentile] :
        std::vector<std::pair<std::string, uint32_t>>{{"q01", 1},
@@ -273,8 +273,8 @@ JsonArray SelectQueryInputs(const NumericData<T> &dataset,
   }
   JsonArray null_input;
   null_input.push(JsonValue());
-  cases.push(InputRecord("is_null", null_input));
-  cases.push(InputRecord("is_not_null", null_input));
+  cases.push(MakeQueryCase("is_null", null_input));
+  cases.push(MakeQueryCase("is_not_null", null_input));
   return cases;
 }
 

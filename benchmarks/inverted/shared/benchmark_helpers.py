@@ -93,7 +93,7 @@ def binary_record(binary):
     return {"path": str(binary), "sha256": digest.hexdigest()}
 
 
-def run_worker(binary, phase, report, log, **flags):
+def run_worker(binary, phase, log, *, report=None, **flags):
     command = [str(binary), f"--mode={phase}"]
     command.extend(f"--{key}={value}" for key, value in flags.items())
     with log.open("x") as stream:
@@ -102,6 +102,8 @@ def run_worker(binary, phase, report, log, **flags):
         )
     if completed.returncode:
         fail(f"{phase} exited with {completed.returncode}; see {log}")
+    if report is None:
+        return None
     if not report.is_file():
         fail(f"{phase} produced no report; see {log}")
     return load_json(report.read_text())

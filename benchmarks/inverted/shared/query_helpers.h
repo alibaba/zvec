@@ -15,12 +15,10 @@
 
 namespace zvec::benchmarks::inverted {
 
-// Report helpers receive only their inputs; CLI options belong to each suite.
-void ValidateBuildReport(const std::string &build_report_path,
-                         const std::string &index_path);
+
+JsonObject MakeQueryCase(const std::string &name, const JsonArray &inputs);
+
 std::vector<JsonObject> ReadQueryInputs(const JsonArray &cases);
-JsonObject LoadVerification(const std::string &verification_path,
-                            const JsonObject &inputs);
-JsonObject InputRecord(const std::string &name, const JsonArray &inputs);
+
 
 }  // namespace zvec::benchmarks::inverted
