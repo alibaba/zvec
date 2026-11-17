@@ -108,6 +108,53 @@ jobs:
         run: sccache --show-stats
         shell: powershell
 
+      - name: Check AVX objects for load-time initializers
+        if: matrix.msvc_arch == 'x64'
+        run: python .github/workflows/scripts/check_simd_initializers.py build
+        shell: powershell
+
+      - name: Check loading and search on CPUs without AVX
+        if: matrix.platform == 'windows-2022'
+        timeout-minutes: 10
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $archive = Join-Path $env:RUNNER_TEMP "sde.tar.xz"
+          $url = "https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-win.tar.xz"
+          Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -Uri $url -OutFile $archive
+          $expected = "74E626EDE09B0BAA5011FC9E51B58627EA92C3FC0BAE5FD7DB34B490F335F651"
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne $expected) {
+            throw "Intel SDE checksum mismatch"
+          }
+          # Windows' tar can stall on this archive. Extract the checksum-pinned
+          # vendor archive with Python, including the runner's Python 3.10.11.
+          python -c "import os,tarfile; p=os.path.join(os.environ['RUNNER_TEMP'],'sde.tar.xz'); t=tarfile.open(p,'r:xz'); t.extractall(os.environ['RUNNER_TEMP'])"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $sde = Join-Path $env:RUNNER_TEMP "sde-external-10.13.1-2026-07-28-win\sde.exe"
+          $package = python -c "import importlib.util; print(next(iter(importlib.util.find_spec('zvec').submodule_search_locations)))"
+          # Check every bundled native image; CPython and the Windows CRT have
+          # their own dispatch and must not obscure violations in zvec (#810).
+          $images = Get-ChildItem $package -Recurse -File | Where-Object {
+            $_.Extension -eq '.pyd' -or $_.Extension -eq '.dll'
+          }
+          if (-not $images) { throw "No zvec native images found" }
+          $imageArgs = @()
+          foreach ($image in $images) {
+            $imageArgs += @('-chip_check_image', $image.Name)
+          }
+          foreach ($cpu in @('-mrm', '-wsm', '-glm', '-snb')) {
+            Write-Host "Checking DLL loading and dense/sparse search for $cpu"
+            & $sde $cpu @imageArgs -- python -I .github/workflows/scripts/smoke_no_avx.py --dll-only
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            # Arrow's current Windows build requires SSE4.2 for collection
+            # operations. Merom still verifies DLL loading and Python import;
+            # Westmere/Goldmont match the no-AVX, SSE4.2 CPU in #810.
+            $smokeArgs = @()
+            if ($cpu -eq '-mrm') { $smokeArgs += '--import-only' }
+            & $sde $cpu @imageArgs -- python -I .github/workflows/scripts/smoke_no_avx.py @smokeArgs
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+        shell: powershell
+
       - name: Run C++ Tests
         run: |
           cd "$env:GITHUB_WORKSPACE\build"

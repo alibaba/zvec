@@ -130,6 +130,10 @@ class BlockEvictionQueue {
 
   size_t batch_recycle(size_t count);
 
+  //! Reclaim at most count blocks, optionally sampling protected aging once
+  //! regardless of the batch size.
+  size_t batch_recycle(size_t count, bool age_protected);
+
   struct Stats {
     std::array<size_t, kQueueCount> approximate_queue_sizes{};
     uint64_t protected_aging_dequeues{0};
@@ -160,8 +164,8 @@ class BlockEvictionQueue {
     }
   }
 
-  // Foreground one-page reclaim should not pay for protected aging. Larger
-  // reclaim batches inspect the protected queue at most once.
+  // Small explicit batches skip aging by default. Background reclamation
+  // opts into one sample even when only one page needs to be reclaimed.
   static constexpr size_t kEvictQueueCapacity = 512 * 200;
   static constexpr size_t kProtectedAgingMinBatch = 8;
   static constexpr size_t kProtectedDominanceRatio = 3;

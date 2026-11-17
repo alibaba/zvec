@@ -21,11 +21,9 @@
 #include <vector>
 #include <zvec/ailego/encoding/json.h>
 #include <zvec/ailego/parallel/thread_pool.h>
-#include <zvec/core/framework/index_filter.h>
-#include <zvec/core/framework/index_meta.h>
+#include <zvec/core/framework/index_framework.h>
 #include <zvec/core/interface/constants.h>
 #include <zvec/export.h>
-#include "zvec/core/framework/index_framework.h"
 
 namespace zvec::core_interface {
 #define MAX_DIMENSION 65536
@@ -134,11 +132,11 @@ struct ZVEC_CORE_API QuantizerParam : public SerializableBase {
   using Pointer = std::shared_ptr<QuantizerParam>;
 
   QuantizerType type = QuantizerType::kNone;
-  bool enable_rotate =
-      false;  // rotate vectors before quantization to reduce error
+  bool enable_rotate = kDefaultQuantizerEnableRotate;
 
   // Constructors
-  QuantizerParam(QuantizerType t = QuantizerType::kNone, bool rotate = false)
+  QuantizerParam(QuantizerType t = QuantizerType::kNone,
+                 bool rotate = kDefaultQuantizerEnableRotate)
       : type(t), enable_rotate(rotate) {}
   virtual ~QuantizerParam() = default;
 
@@ -161,14 +159,17 @@ struct ZVEC_CORE_API QuantizerParam : public SerializableBase {
 
 //! Product-Quantization specific params
 struct PqQuantizerParam : public QuantizerParam {
-  int num_chunk = 8;       // M: number of chunks
-  int num_bits = 8;        // bits per chunk
-  bool fast_scan = false;  // IVF packed PQ4 scan; requires num_bits == 4
-  uint32_t opq_iter = 5;
-  uint32_t opq_pq_iter = 4;
+  int num_chunk = kDefaultPqNumChunks;
+  int num_bits = kDefaultPqNumBits;
+  bool fast_scan =
+      kDefaultPqFastScan;  // IVF packed PQ4 scan; requires num_bits == 4
+  uint32_t opq_iter = kDefaultOpqNumIterations;
+  uint32_t opq_pq_iter = kDefaultOpqPqNumIterations;
 
   // Constructors
-  PqQuantizerParam(int chunks = 8, int bits = 8, bool rotate = false)
+  PqQuantizerParam(int chunks = kDefaultPqNumChunks,
+                   int bits = kDefaultPqNumBits,
+                   bool rotate = kDefaultQuantizerEnableRotate)
       : QuantizerParam(QuantizerType::kPQ, rotate),
         num_chunk(chunks),
         num_bits(bits) {}
@@ -232,8 +233,8 @@ class ZVEC_CORE_API BaseIndexQueryParam {
   bool fetch_vector = false;
   std::shared_ptr<IndexFilter> filter = nullptr;
   std::shared_ptr<std::vector<uint64_t>> bf_pks = nullptr;
-  float radius = 0.0f;
-  bool is_linear = false;
+  float radius = kDefaultQueryRadius;
+  bool is_linear = kDefaultQueryIsLinear;
   RefinerParam::Pointer refiner_param = nullptr;
   std::shared_ptr<GroupByParam> group_by_param = nullptr;
 
@@ -264,8 +265,8 @@ struct ZVEC_CORE_API HNSWQueryParam : public BaseIndexQueryParam {
   ~HNSWQueryParam() override;
 
   uint32_t ef_search = kDefaultHnswEfSearch;
-  uint32_t prefetch_offset = kDefaultPrefetchOffset;
-  uint32_t prefetch_lines = kDefaultPrefetchLines;
+  uint32_t prefetch_offset = kDefaultHnswPrefetchOffset;
+  uint32_t prefetch_lines = kDefaultHnswPrefetchLines;
 
   BaseIndexQueryParam::Pointer clone() const override;
 };
@@ -293,7 +294,7 @@ struct ZVEC_CORE_API IVFQueryParam : public BaseIndexQueryParam {
   IVFQueryParam &operator=(IVFQueryParam &&) noexcept;
   ~IVFQueryParam() override;
 
-  int nprobe = 10;
+  int nprobe = kDefaultIvfNumProbes;
   std::shared_ptr<BaseIndexQueryParam> l1_query_param = nullptr;
   std::shared_ptr<BaseIndexQueryParam> l2_query_param = nullptr;
 
@@ -314,7 +315,7 @@ struct ZVEC_CORE_API DiskAnnQueryParam : public BaseIndexQueryParam {
 
   // Beam-search candidate list size used at query time. Larger values improve
   // recall at the cost of latency.
-  uint32_t list_size = kDefaultDiskAnnListSize;
+  uint32_t list_size = kDefaultDiskAnnSearchListSize;
 
   BaseIndexQueryParam::Pointer clone() const override;
 };
@@ -382,11 +383,11 @@ struct ZVEC_CORE_API FlatIndexParam : public BaseIndexParam {
 
 struct ZVEC_CORE_API IVFIndexParam : public BaseIndexParam {
   using Pointer = std::shared_ptr<IVFIndexParam>;
-  int nlist = 1024;
-  int niters = 10;
+  int nlist = kDefaultIvfNumLists;
+  int niters = kDefaultIvfNumIterations;
   std::shared_ptr<BaseIndexParam> l1_index = nullptr;
   std::shared_ptr<BaseIndexParam> l2_index = nullptr;
-  bool use_soar = false;
+  bool use_soar = kDefaultIvfUseSoar;
 
   // Constructors with delegation
   IVFIndexParam();
@@ -407,11 +408,17 @@ struct ZVEC_CORE_API IVFIndexParam : public BaseIndexParam {
 
   // IVFIndexParam.metric_type === l2Index's metric_type
   // IVFIndexParam.quantization === l2Index's quantization
+
+ protected:
+  bool deserialize_from_json_object(
+      const ailego::JsonObject &json_obj) override;
+  ailego::JsonObject serialize_to_json_object(
+      bool omit_empty_value = false) const override;
 };
 
 struct ZVEC_CORE_API HNSWIndexParam : public BaseIndexParam {
   using Pointer = std::shared_ptr<HNSWIndexParam>;
-  int m = kDefaultHnswNeighborCnt;
+  int m = kDefaultHnswNeighborCount;
   int ef_construction = kDefaultHnswEfConstruction;
   bool use_contiguous_memory = false;
 
@@ -443,12 +450,12 @@ struct ZVEC_CORE_API HNSWIndexParam : public BaseIndexParam {
 struct ZVEC_CORE_API VamanaIndexParam : public BaseIndexParam {
   using Pointer = std::shared_ptr<VamanaIndexParam>;
   int max_degree = kDefaultVamanaMaxDegree;
-  int search_list_size = kDefaultVamanaSearchListSize;
+  int search_list_size = kDefaultVamanaBuildListSize;
   float alpha = kDefaultVamanaAlpha;
   int max_occlusion_size = kDefaultVamanaMaxOcclusionSize;
   bool saturate_graph = kDefaultVamanaSaturateGraph;
   bool use_contiguous_memory = false;
-  bool two_pass_build = true;
+  bool two_pass_build = kDefaultVamanaTwoPassBuild;
 
   VamanaIndexParam() : BaseIndexParam(IndexType::kVamana) {}
 
@@ -479,8 +486,8 @@ struct ZVEC_CORE_API VamanaQueryParam : public BaseIndexQueryParam {
   // Requested values: Vamana resolves PO=8 / PL=0 against the loaded layout.
   // Auto PO uses a nominal 6 KiB budget for pool-phase vector prefetch only;
   // PO=0 disables that prefix, not local-descent, graph-row or kernel prefetch.
-  uint32_t prefetch_offset = kDefaultPrefetchOffset;
-  uint32_t prefetch_lines = kDefaultPrefetchLines;
+  uint32_t prefetch_offset = kDefaultVamanaPrefetchOffset;
+  uint32_t prefetch_lines = kDefaultVamanaPrefetchLines;
 
   BaseIndexQueryParam::Pointer clone() const override;
 };
@@ -489,13 +496,13 @@ struct ZVEC_CORE_API HNSWRabitqIndexParam : public BaseIndexParam {
   using Pointer = std::shared_ptr<HNSWRabitqIndexParam>;
 
   // HNSW parameters
-  int m = kDefaultHnswNeighborCnt;
+  int m = kDefaultHnswNeighborCount;
   int ef_construction = kDefaultHnswEfConstruction;
 
   // Rabitq parameters
   int total_bits = kDefaultRabitqTotalBits;
-  int num_clusters = kDefaultRabitqNumClusters;
-  int sample_count = 0;
+  int num_clusters = kDefaultHnswRabitqNumClusters;
+  int sample_count = kDefaultRabitqSampleCount;
   core::IndexProvider::Pointer provider = nullptr;
   core::IndexReformer::Pointer reformer = nullptr;
 
@@ -520,11 +527,11 @@ struct ZVEC_CORE_API IVFRabitqIndexParam : public BaseIndexParam {
   using Pointer = std::shared_ptr<IVFRabitqIndexParam>;
 
   // IVF parameters
-  int nlist = kDefaultIvfRabitqNlist;
+  int nlist = kDefaultIvfRabitqNumLists;
 
   // Rabitq parameters
   int total_bits = kDefaultRabitqTotalBits;
-  int sample_count = 0;
+  int sample_count = kDefaultRabitqSampleCount;
 
   IVFRabitqIndexParam();
   explicit IVFRabitqIndexParam(int nlist);
@@ -552,7 +559,7 @@ struct ZVEC_CORE_API IVFRabitqQueryParam : public BaseIndexQueryParam {
   IVFRabitqQueryParam &operator=(IVFRabitqQueryParam &&) noexcept;
   ~IVFRabitqQueryParam() override;
 
-  uint32_t nprobe = kDefaultIvfRabitqNprobe;
+  uint32_t nprobe = kDefaultIvfRabitqNumProbes;
 
   BaseIndexQueryParam::Pointer clone() const override;
 };
@@ -561,8 +568,8 @@ struct ZVEC_CORE_API DiskAnnIndexParam : public BaseIndexParam {
   using Pointer = std::shared_ptr<DiskAnnIndexParam>;
 
   int max_degree = kDefaultDiskAnnMaxDegree;
-  int list_size = kDefaultDiskAnnListSize;
-  int pq_chunk_num = kDefaultDiskAnnPqChunkNum;
+  int list_size = kDefaultDiskAnnBuildListSize;
+  int pq_chunk_num = kDefaultDiskAnnPqNumChunks;
 
   // Constructors with delegation
   DiskAnnIndexParam() : BaseIndexParam(IndexType::kDiskAnn) {}
