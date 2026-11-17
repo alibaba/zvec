@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <array>
+#include <condition_variable>
 #include <future>
 #include <set>
 #include <gtest/gtest.h>
@@ -111,6 +112,172 @@ class HnswDuplicatesTest : public testing::TestWithParam<const char *> {
       EXPECT_FLOAT_EQ(expected[i].score(), actual[i].score());
       EXPECT_TRUE(keys.insert(actual[i].key()).second);
     }
+  }
+
+  void BuildConcurrently(bool identical) {
+    if (std::string(GetParam()) != "MMapFileStorage") return;
+    storage_ = IndexFactory::CreateStorage(GetParam());
+    ASSERT_EQ(0, storage_->init(ailego::Params{}));
+    ASSERT_EQ(0, storage_->open(path_, true));
+    IndexStreamer::Stats stats;
+    HnswMmapStreamerEntity entity(stats);
+    entity.set_vector_size(sizeof(Vector));
+    entity.set_l0_neighbor_cnt(10);
+    entity.set_upper_neighbor_cnt(5);
+    entity.set_scaling_factor(5);
+    entity.set_ef_construction(32);
+    entity.set_deduplicate_vectors(true);
+    ASSERT_EQ(0, entity.init(100));
+    ASSERT_EQ(0, entity.open(storage_, 0, false));
+    HnswAlgorithm<HnswMmapStreamerEntity> algorithm(entity);
+    ASSERT_EQ(0, algorithm.init());
+    auto metric = IndexFactory::CreateMetric("SquaredEuclidean");
+    ASSERT_NE(nullptr, metric);
+    ASSERT_EQ(0, metric->init(meta_, ailego::Params{}));
+    auto make_context = [&]() {
+      auto ctx =
+          std::make_unique<HnswContext>(kDimension, metric, entity.clone());
+      EXPECT_EQ(0, ctx->init(HnswContext::kStreamerContext));
+      return ctx;
+    };
+    node_id_t id;
+    auto seed = MakeVector(0);
+    ASSERT_EQ(0, entity.add_vector(0, 0, seed.data(), &id));
+    auto seed_context = make_context();
+    seed_context->reset_query(seed.data(), meta_);
+    ASSERT_EQ(0, algorithm.add_node(0, 0, seed_context.get()));
+    std::array<Vector, 2> vectors{MakeVector(10),
+                                  MakeVector(identical ? 10 : 20)};
+    for (uint32_t i = 0; i < 2; ++i) {
+      ASSERT_EQ(0, entity.add_vector(0, i + 1, vectors[i].data(), &id));
+    }
+    auto first = make_context();
+    auto second = make_context();
+    std::mutex gate_mutex;
+    std::condition_variable gate;
+    unsigned entered = 0;
+    bool overlapped = true;
+    auto build = [&](uint32_t worker, HnswContext *ctx) {
+      ctx->reset_query(vectors[worker].data(), meta_);
+      // Limit both workers to the entry point so neither can discover the
+      // other's equal vector after the first-distance rendezvous.
+      if (identical) ctx->set_max_scan_num(1);
+      bool first_distance = true;
+      auto rendezvous = [&]() {
+        if (!first_distance) return;
+        first_distance = false;
+        std::unique_lock<std::mutex> lock(gate_mutex);
+        ++entered;
+        gate.notify_all();
+        // A global insertion lock prevents the second builder from reaching
+        // distance evaluation, making this a deterministic regression check.
+        if (!gate.wait_for(lock, std::chrono::seconds(2),
+                           [&]() { return entered == 2; })) {
+          overlapped = false;
+        }
+      };
+      ctx->dist_calculator().update_distance(
+          [&](const void *m, const void *q, size_t dim, float *out) {
+            rendezvous();
+            metric->distance()(m, q, dim, out);
+          },
+          [&](const void **m, const void *q, size_t num, size_t dim, float *out,
+              const void **extra) {
+            rendezvous();
+            metric->batch_distance()(m, q, num, dim, out, extra);
+          });
+      return algorithm.add_node(worker + 1, 0, ctx);
+    };
+    auto a = std::async(std::launch::async, build, 0, first.get());
+    auto b = std::async(std::launch::async, build, 1, second.get());
+    EXPECT_EQ(0, a.get());
+    EXPECT_EQ(0, b.get());
+    EXPECT_TRUE(overlapped);
+    if (identical) {
+      for (node_id_t rep : {1U, 2U}) {
+        HnswStreamerEntity::DuplicateLinks links;
+        ASSERT_EQ(0, entity.get_duplicate_links(rep, 3, &links));
+        EXPECT_EQ(rep, links.representative);
+      }
+      // Later duplicates can attach to either representative without a global
+      // reservation or a second navigation insertion.
+      ASSERT_EQ(0, entity.add_vector(0, 3, vectors[0].data(), &id));
+      auto ctx = make_context();
+      ctx->reset_query(vectors[0].data(), meta_);
+      ctx->set_max_scan_num(1000);
+      ASSERT_EQ(0, algorithm.add_node(3, 0, ctx.get()));
+      HnswStreamerEntity::DuplicateLinks links;
+      ASSERT_EQ(0, entity.get_duplicate_links(3, 4, &links));
+      EXPECT_TRUE(links.representative == 1 || links.representative == 2);
+      HnswStreamerEntity::DuplicateLinks head;
+      ASSERT_EQ(0, entity.get_duplicate_links(links.representative, 4, &head));
+      EXPECT_EQ(3U, head.next);
+    }
+    ASSERT_EQ(0, entity.close());
+  }
+
+  void CheckCandidateGate(float distance, bool identical, level_t level,
+                          bool expect_duplicate) {
+    storage_ = IndexFactory::CreateStorage(GetParam());
+    ASSERT_EQ(0, storage_->init(ailego::Params{}));
+    ASSERT_EQ(0, storage_->open(path_, true));
+    IndexStreamer::Stats stats;
+    HnswMmapStreamerEntity entity(stats);
+    entity.set_vector_size(sizeof(Vector));
+    entity.set_l0_neighbor_cnt(10);
+    entity.set_upper_neighbor_cnt(5);
+    entity.set_scaling_factor(5);
+    entity.set_ef_construction(32);
+    entity.set_deduplicate_vectors(true);
+    ASSERT_EQ(0, entity.init(100));
+    ASSERT_EQ(0, entity.open(storage_, 0, false));
+    HnswAlgorithm<HnswMmapStreamerEntity> algorithm(entity);
+    ASSERT_EQ(0, algorithm.init());
+    auto metric = IndexFactory::CreateMetric("SquaredEuclidean");
+    ASSERT_EQ(0, metric->init(meta_, ailego::Params{}));
+    HnswContext ctx(kDimension, metric, entity.clone());
+    ASSERT_EQ(0, ctx.init(HnswContext::kStreamerContext));
+    const auto seed = MakeVector(0);
+    const auto candidate = MakeVector(1);
+    const auto input = MakeVector(identical ? 1.0f : 1.00001f);
+    node_id_t id;
+    ASSERT_EQ(0, entity.add_vector(1, 0, seed.data(), &id));
+    ASSERT_EQ(0, entity.add_vector(1, 1, candidate.data(), &id));
+    ASSERT_EQ(0, entity.add_vector(level, 2, input.data(), &id));
+    // The matching candidate is not the entry point. A level-0 insertion
+    // discovers it during upper-layer descent; level 1 uses the heap search.
+    entity.update_ep_and_level(0, 1);
+    ASSERT_EQ(0, entity.update_neighbors(1, 0, {{1, 16.0f}}));
+    ASSERT_EQ(0, entity.update_neighbors(0, 0, {{1, 16.0f}}));
+    ctx.reset_query(input.data(), meta_);
+    ctx.set_max_scan_num(1000);
+    auto score = [&](const void *vector) {
+      return static_cast<const float *>(vector)[0] == 0 ? 16.0f : distance;
+    };
+    ctx.dist_calculator().update_distance(
+        [&](const void *m, const void *, size_t, float *out) {
+          *out = score(m);
+        },
+        [&](const void **m, const void *, size_t count, size_t, float *out,
+            const void **) {
+          for (size_t i = 0; i < count; ++i) out[i] = score(m[i]);
+        });
+    ASSERT_EQ(0, algorithm.add_node(2, level, &ctx));
+    HnswStreamerEntity::DuplicateLinks links;
+    ASSERT_EQ(0, entity.get_duplicate_links(2, 3, &links));
+    EXPECT_EQ(expect_duplicate ? 1U : 2U, links.representative);
+    if (expect_duplicate) {
+      // Early attachment must not publish the leaf in either navigation layer.
+      for (level_t l = 0; l <= 1; ++l) {
+        const auto neighbors = entity.get_neighbors(l, 0);
+        ASSERT_EQ(1U, neighbors.size());
+        EXPECT_EQ(1U, neighbors[0]);
+      }
+      ASSERT_EQ(0, entity.get_duplicate_links(1, 3, &links));
+      EXPECT_EQ(2U, links.next);
+      EXPECT_EQ(0U, entity.get_neighbors(0, 1).size());
+    }
+    ASSERT_EQ(0, entity.close());
   }
 
   std::string path_;
@@ -224,7 +391,7 @@ TEST_P(HnswDuplicatesTest, NearDuplicatesAreNotMerged) {
   SearchAndCompareScores(MakeVector(1.0001f), 5);
 }
 
-TEST_P(HnswDuplicatesTest, ConcurrentInsertsPublishOneRepresentative) {
+TEST_P(HnswDuplicatesTest, ConcurrentIdenticalInsertsRemainSearchable) {
   ASSERT_NO_FATAL_FAILURE(Open());
   constexpr uint32_t workers = 4;
   constexpr uint32_t per_worker = 64;
@@ -252,8 +419,29 @@ TEST_P(HnswDuplicatesTest, ConcurrentInsertsPublishOneRepresentative) {
               Entity().get_duplicate_links(id, workers * per_worker, &links));
     if (links.representative == id) ++representatives;
   }
-  EXPECT_EQ(1U, representatives);
+  EXPECT_GE(representatives, 1U);
+  EXPECT_LE(representatives, workers);
   SearchAndCompareScores(MakeVector(1), workers * per_worker);
+}
+
+TEST_P(HnswDuplicatesTest, PositiveDistanceCandidateIsComparedExactly) {
+  if (std::string(GetParam()) != "MMapFileStorage") return;
+  CheckCandidateGate(0.5e-6f, true, 0, true);
+}
+
+TEST_P(HnswDuplicatesTest, HeapSearchAlsoChecksDuplicateCandidates) {
+  if (std::string(GetParam()) != "MMapFileStorage") return;
+  CheckCandidateGate(0.5e-6f, true, 1, true);
+}
+
+TEST_P(HnswDuplicatesTest, ZeroDistanceDoesNotMergeDifferentBytes) {
+  if (std::string(GetParam()) != "MMapFileStorage") return;
+  CheckCandidateGate(0.0f, false, 1, false);
+}
+
+TEST_P(HnswDuplicatesTest, ThresholdMissKeepsOrdinaryRepresentative) {
+  if (std::string(GetParam()) != "MMapFileStorage") return;
+  CheckCandidateGate(1e-6f, true, 1, false);
 }
 
 TEST_P(HnswDuplicatesTest, ReopenRejectsWrongLayout) {
@@ -279,7 +467,7 @@ TEST_P(HnswDuplicatesTest, ReopenRejectsWrongLayout) {
   EXPECT_EQ(IndexError_Mismatch, streamer_->open(storage_));
 }
 
-TEST_P(HnswDuplicatesTest, ConcurrentDistinctGroupsKeepOneRepresentativeEach) {
+TEST_P(HnswDuplicatesTest, ConcurrentGroupsReduceNavigationDuplicates) {
   ASSERT_NO_FATAL_FAILURE(Open());
   constexpr uint32_t workers = 4;
   constexpr uint32_t groups = 16;
@@ -306,86 +494,17 @@ TEST_P(HnswDuplicatesTest, ConcurrentDistinctGroupsKeepOneRepresentativeEach) {
     ASSERT_EQ(0, Entity().get_duplicate_links(id, workers * 64, &links));
     if (links.representative == id) ++representatives;
   }
-  EXPECT_EQ(groups, representatives);
+  EXPECT_GE(representatives, groups);
+  EXPECT_LE(representatives, groups * workers);
   SearchAndCompareScores(MakeVector(10), 25);
 }
 
 TEST_P(HnswDuplicatesTest, DistinctRepresentativesBuildConcurrently) {
-  if (std::string(GetParam()) != "MMapFileStorage") return;
-  storage_ = IndexFactory::CreateStorage(GetParam());
-  ASSERT_EQ(0, storage_->init(ailego::Params{}));
-  ASSERT_EQ(0, storage_->open(path_, true));
-  IndexStreamer::Stats stats;
-  HnswMmapStreamerEntity entity(stats);
-  entity.set_vector_size(sizeof(Vector));
-  entity.set_l0_neighbor_cnt(10);
-  entity.set_upper_neighbor_cnt(5);
-  entity.set_scaling_factor(5);
-  entity.set_ef_construction(32);
-  entity.set_deduplicate_vectors(true);
-  ASSERT_EQ(0, entity.init(100));
-  ASSERT_EQ(0, entity.open(storage_, 0, false));
-  HnswAlgorithm<HnswMmapStreamerEntity> algorithm(entity);
-  ASSERT_EQ(0, algorithm.init());
-  auto metric = IndexFactory::CreateMetric("SquaredEuclidean");
-  ASSERT_NE(nullptr, metric);
-  ASSERT_EQ(0, metric->init(meta_, ailego::Params{}));
-  auto make_context = [&]() {
-    auto ctx =
-        std::make_unique<HnswContext>(kDimension, metric, entity.clone());
-    EXPECT_EQ(0, ctx->init(HnswContext::kStreamerContext));
-    return ctx;
-  };
-  node_id_t id;
-  auto seed = MakeVector(0);
-  ASSERT_EQ(0, entity.add_vector(0, 0, seed.data(), &id));
-  auto seed_context = make_context();
-  seed_context->reset_query(seed.data(), meta_);
-  ASSERT_EQ(0, algorithm.add_node(0, 0, seed_context.get()));
-  std::array<Vector, 2> vectors{MakeVector(10), MakeVector(20)};
-  for (uint32_t i = 0; i < 2; ++i) {
-    ASSERT_EQ(0, entity.add_vector(0, i + 1, vectors[i].data(), &id));
-  }
-  auto first = make_context();
-  auto second = make_context();
-  std::mutex gate_mutex;
-  std::condition_variable gate;
-  unsigned entered = 0;
-  bool overlapped = true;
-  auto build = [&](uint32_t worker, HnswContext *ctx) {
-    ctx->reset_query(vectors[worker].data(), meta_);
-    bool first_distance = true;
-    auto rendezvous = [&]() {
-      if (!first_distance) return;
-      first_distance = false;
-      std::unique_lock<std::mutex> lock(gate_mutex);
-      ++entered;
-      gate.notify_all();
-      // A global insertion lock prevents the second builder from reaching
-      // distance evaluation, making this a deterministic regression check.
-      if (!gate.wait_for(lock, std::chrono::seconds(2),
-                         [&]() { return entered == 2; })) {
-        overlapped = false;
-      }
-    };
-    ctx->dist_calculator().update_distance(
-        [&](const void *m, const void *q, size_t dim, float *out) {
-          rendezvous();
-          metric->distance()(m, q, dim, out);
-        },
-        [&](const void **m, const void *q, size_t num, size_t dim, float *out,
-            const void **extra) {
-          rendezvous();
-          metric->batch_distance()(m, q, num, dim, out, extra);
-        });
-    return algorithm.add_node(worker + 1, 0, ctx);
-  };
-  auto a = std::async(std::launch::async, build, 0, first.get());
-  auto b = std::async(std::launch::async, build, 1, second.get());
-  EXPECT_EQ(0, a.get());
-  EXPECT_EQ(0, b.get());
-  EXPECT_TRUE(overlapped);
-  ASSERT_EQ(0, entity.close());
+  BuildConcurrently(false);
+}
+
+TEST_P(HnswDuplicatesTest, ConcurrentMissesCanPublishEqualRepresentatives) {
+  BuildConcurrently(true);
 }
 
 TEST_P(HnswDuplicatesTest, Fp32QuantizerSharesOnlyIdenticalStoredRecords) {
@@ -412,6 +531,9 @@ TEST_P(HnswDuplicatesTest, Fp32QuantizerSharesOnlyIdenticalStoredRecords) {
     for (uint32_t i = 0; i < 64; ++i) {
       ASSERT_EQ(0, streamer_->add_impl(i, code.data(), code_meta, context_));
     }
+    HnswStreamerEntity::DuplicateLinks links;
+    ASSERT_EQ(0, Entity().get_duplicate_links(1, 64, &links));
+    EXPECT_EQ(0U, links.representative);
     context_->set_topk(20);
     ASSERT_EQ(0, streamer_->search_impl(code.data(), code_meta, context_));
     const auto actual = context_->result();

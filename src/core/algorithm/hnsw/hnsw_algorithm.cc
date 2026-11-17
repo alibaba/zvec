@@ -12,96 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "hnsw_algorithm.h"
-#include <string_view>
 
 namespace zvec {
 namespace core {
 
-namespace {
-size_t VectorFingerprint(const void *vector, size_t size) {
-  // The directory is rebuilt on open; hash collisions are always confirmed
-  // against the complete stored vector, never against distance == 0.
-  return std::hash<std::string_view>{}(
-      std::string_view(static_cast<const char *>(vector), size));
-}
-}  // namespace
-
 template <typename EntityType>
-int HnswAlgorithm<EntityType>::init_duplicate_directory() {
-  duplicate_directory_.clear();
-  for (node_id_t id = 0; id < entity_.doc_cnt(); ++id) {
-    if (entity_.get_key(id) == kInvalidKey) continue;
-    typename EntityType::DuplicateLinks links;
-    int ret = entity_.get_duplicate_links(id, entity_.doc_cnt(), &links);
-    if (ret != 0) return ret;
-    if (links.representative != id) continue;
-    IndexStorage::MemoryBlock block;
-    ret = entity_.get_vector(id, block);
-    if (ret != 0) return ret;
-    auto group = std::make_shared<DuplicateGroup>(id);
-    group->ready = true;
-    duplicate_directory_.emplace(
-        VectorFingerprint(block.data(), entity_.vector_size()), group);
-  }
-  return 0;
-}
-
-template <typename EntityType>
-int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
-                                        HnswContext *ctx) {
-  if (!entity_.deduplicate_vectors()) {
-    return add_representative(id, level, ctx);
-  }
-
-  // Node allocation is already serialized by the entity. Reserve one group
-  // before building navigation; only inserts of that same vector must wait
-  // for its representative to finish publication.
+bool HnswAlgorithm<EntityType>::check_duplicate(node_id_t id, dist_t distance,
+                                                DuplicateProbe *probe,
+                                                HnswContext *ctx) const {
+  if (!probe || !(distance < DuplicateProbe::kBeta)) return false;
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
-  IndexStorage::MemoryBlock vector;
-  int ret = entity.get_vector(id, vector);
-  if (ret != 0) return ret;
-  const auto fingerprint =
-      VectorFingerprint(vector.data(), entity_.vector_size());
-  std::unique_lock<std::mutex> lock(duplicate_directory_mutex_);
-  const auto range = duplicate_directory_.equal_range(fingerprint);
-  std::shared_ptr<DuplicateGroup> group;
-  for (auto it = range.first; it != range.second; ++it) {
-    IndexStorage::MemoryBlock candidate;
-    ret = entity.get_vector(it->second->representative, candidate);
-    if (ret != 0) return ret;
-    if (std::memcmp(vector.data(), candidate.data(), entity_.vector_size()) ==
-        0) {
-      group = it->second;
-      break;
-    }
+  IndexStorage::MemoryBlock candidate;
+  if (entity.get_vector(id, candidate) != 0) {
+    ctx->dist_calculator().set_error();
+    return false;
   }
-  if (group) {
-    group->published.wait(lock, [&]() { return group->ready; });
-    ret = group->status;
-    lock.unlock();
-    return ret != 0 ? ret : attach_duplicate(id, group->representative);
-  }
-  group = std::make_shared<DuplicateGroup>(id);
-  duplicate_directory_.emplace(fingerprint, group);
-  lock.unlock();
-
-  auto publish = [&](int status) {
-    {
-      std::lock_guard<std::mutex> publish_lock(duplicate_directory_mutex_);
-      group->status = status;
-      group->ready = true;
-    }
-    group->published.notify_all();
-  };
-  try {
-    ret = add_representative(id, level, ctx);
-    if (ret == 0 && ctx->error()) ret = IndexError_Runtime;
-  } catch (...) {
-    publish(IndexError_Runtime);
-    throw;
-  }
-  publish(ret);
-  return ret;
+  return probe->check(id, distance, candidate.data());
 }
 
 template <typename EntityType>
@@ -122,8 +48,8 @@ int HnswAlgorithm<EntityType>::attach_duplicate(node_id_t id,
 }
 
 template <typename EntityType>
-int HnswAlgorithm<EntityType>::add_representative(node_id_t id, level_t level,
-                                                  HnswContext *ctx) {
+int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
+                                        HnswContext *ctx) {
   spin_lock_.lock();
 
   auto cur_max_level = entity_.cur_max_level();
@@ -148,15 +74,44 @@ int HnswAlgorithm<EntityType>::add_representative(node_id_t id, level_t level,
     }
   }
 
+  // Best-effort deduplication shares the insertion traversal. No directory
+  // or reservation is needed: concurrent inserts may publish equal reps.
+  IndexStorage::MemoryBlock vector;
+  DuplicateProbe duplicate{nullptr, entity_.vector_size()};
+  DuplicateProbe *probe = nullptr;
+  if (entity_.deduplicate_vectors()) {
+    const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
+    const int ret = entity.get_vector(id, vector);
+    if (ret != 0) return ret;
+    duplicate.vector = vector.data();
+    probe = &duplicate;
+  }
+  auto finish_duplicate = [&]() {
+    for (level_t l = 0; l <= level; ++l) ctx->level_topk(l).clear();
+    return attach_duplicate(id, probe->representative);
+  };
+
   level_t cur_level = cur_max_level;
   dist_t dist = ctx->batch_dist(entry_point);
+  if (ctx->error()) return IndexError_Runtime;
+  if (check_duplicate(entry_point, dist, probe, ctx)) {
+    return finish_duplicate();
+  }
   for (; cur_level > level; --cur_level) {
-    select_entry_point(cur_level, &entry_point, &dist, ctx);
+    select_entry_point(cur_level, &entry_point, &dist, ctx, probe);
+    if (ctx->error()) return IndexError_Runtime;
+    if (probe && probe->representative != kInvalidNodeId) {
+      return finish_duplicate();
+    }
   }
 
   for (; cur_level >= 0; --cur_level) {
     search_neighbors(cur_level, &entry_point, &dist, ctx->level_topk(cur_level),
-                     ctx);
+                     ctx, false, probe);
+    if (ctx->error()) return IndexError_Runtime;
+    if (probe && probe->representative != kInvalidNodeId) {
+      return finish_duplicate();
+    }
   }
 
   // add neighbors from down level to top level, to avoid upper level visible
@@ -215,10 +170,9 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
 }
 
 template <typename EntityType>
-void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
-                                                   node_id_t *entry_point,
-                                                   dist_t *dist,
-                                                   HnswContext *ctx) const {
+void HnswAlgorithm<EntityType>::select_entry_point(
+    level_t level, node_id_t *entry_point, dist_t *dist, HnswContext *ctx,
+    DuplicateProbe *probe) const {
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
   const bool use_provider = dc.has_provider();
@@ -289,6 +243,9 @@ void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
 
     for (uint32_t i = 0; i < size; ++i) {
       dist_t cur_dist = dists[i];
+      if (probe && probe->check(neighbor_ids[i], cur_dist, neighbor_vecs[i])) {
+        return;
+      }
 
       if (cur_dist < *dist) {
         *entry_point = neighbor_ids[i];
@@ -513,12 +470,14 @@ void fast_search_neighbors_buffer(const EntityType &entity, HeapType &pool,
 // arbitrary levels, filters, and MemoryBlock types (BufferPool/Mmap).
 // Also updates entry_point/dist for next-level continuation.
 // ============================================================================
-template <typename EntityType, typename MemBlockType, typename FilterFn>
+template <typename EntityType, typename MemBlockType, typename FilterFn,
+          typename Visitor>
 void dual_heap_search_neighbors(const EntityType &entity, level_t level,
                                 node_id_t *entry_point, dist_t *dist,
                                 TopkHeap &topk, HnswContext *ctx,
                                 HnswDistCalculator &dc, FilterFn &&filter,
-                                std::mutex *node_locks, uint32_t lock_mask) {
+                                std::mutex *node_locks, uint32_t lock_mask,
+                                Visitor &&visit_candidate) {
   const uint32_t prefetch_offset = ctx->po();
   const size_t vector_lines = ailego_cache_line_count(entity.vector_size());
   const uint32_t prefetch_lines =
@@ -643,6 +602,9 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
     for (uint32_t i = 0; i < size; ++i) {
       node_id_t node = neighbor_ids[i];
       dist_t cur_dist = dists[i];
+      // Inspect every evaluated vector, including candidates rejected by the
+      // top-k heap. All navigation mutation happens after this traversal.
+      if (visit_candidate(node, cur_dist, neighbor_vecs[i])) return;
 
       if ((!topk.full()) || cur_dist < topk[0].second) {
         candidates.emplace(node, cur_dist);
@@ -664,18 +626,29 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
 // queries, and upper levels for every backend.
 // ============================================================================
 template <typename EntityType>
-void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
-                                                 node_id_t *entry_point,
-                                                 dist_t *dist, TopkHeap &topk,
-                                                 HnswContext *ctx,
-                                                 bool duplicate_filter) const {
+void HnswAlgorithm<EntityType>::search_neighbors(
+    level_t level, node_id_t *entry_point, dist_t *dist, TopkHeap &topk,
+    HnswContext *ctx, bool duplicate_filter, DuplicateProbe *probe) const {
   const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
   HnswDistCalculator &dc = ctx->dist_calculator();
 
   auto run_with_filter = [&](auto &&filter) {
-    dual_heap_search_neighbors<EntityType, MemBlockType>(
-        entity, level, entry_point, dist, topk, ctx, dc,
-        std::forward<decltype(filter)>(filter), lock_pool_.data(), kLockMask);
+    auto run = [&](auto &&visitor) {
+      dual_heap_search_neighbors<EntityType, MemBlockType>(
+          entity, level, entry_point, dist, topk, ctx, dc,
+          std::forward<decltype(filter)>(filter), lock_pool_.data(), kLockMask,
+          std::forward<decltype(visitor)>(visitor));
+    };
+    if (probe) {
+      if (check_duplicate(*entry_point, *dist, probe, ctx) || ctx->error()) {
+        return;
+      }
+      run([&](node_id_t id, dist_t distance, const void *candidate) {
+        return probe->check(id, distance, candidate);
+      });
+    } else {
+      run([](node_id_t, dist_t, const void *) { return false; });
+    }
   };
 
   if (ctx->filter().is_valid()) {

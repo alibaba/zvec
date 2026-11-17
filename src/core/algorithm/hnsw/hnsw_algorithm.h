@@ -15,9 +15,8 @@
 
 #include <stdint.h>
 #include <chrono>
-#include <condition_variable>
+#include <cstring>
 #include <type_traits>
-#include <unordered_map>
 #include <vector>
 #include <ailego/parallel/lock.h>
 #include "hnsw_context.h"
@@ -59,7 +58,6 @@ class HnswAlgorithm : public HnswAlgorithmBase {
 
   //! Cleanup HnswAlgorithm
   int cleanup() override {
-    duplicate_directory_.clear();
     return 0;
   }
 
@@ -88,7 +86,7 @@ class HnswAlgorithm : public HnswAlgorithmBase {
       level_probas_.push_back(proba);
     }
 
-    return entity_.deduplicate_vectors() ? init_duplicate_directory() : 0;
+    return 0;
   }
 
   //! Generate a random level
@@ -108,17 +106,26 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   }
 
  private:
-  struct DuplicateGroup {
-    node_id_t representative;
-    bool ready{false};
-    int status{0};
-    std::condition_variable published;
+  struct DuplicateProbe {
+    static constexpr dist_t kBeta = 1e-6f;
+    const void *vector;
+    size_t size;
+    node_id_t representative{kInvalidNodeId};
 
-    explicit DuplicateGroup(node_id_t id) : representative(id) {}
+    bool check(node_id_t id, dist_t distance, const void *candidate) {
+      // A permissive candidate gate, not an equality test. In the negative
+      // inner-product space it also admits nonidentical vectors. Only full
+      // stored-byte equality can remove a node from navigation.
+      if (distance < kBeta && std::memcmp(vector, candidate, size) == 0) {
+        representative = id;
+        return true;
+      }
+      return false;
+    }
   };
 
-  int init_duplicate_directory();
-  int add_representative(node_id_t id, level_t level, HnswContext *ctx);
+  bool check_duplicate(node_id_t id, dist_t distance, DuplicateProbe *probe,
+                       HnswContext *ctx) const;
   int attach_duplicate(node_id_t id, node_id_t representative);
 
   template <typename Visitor>
@@ -141,7 +148,8 @@ class HnswAlgorithm : public HnswAlgorithmBase {
 
   //! Select in upper layer to get entry point for next layer search
   void select_entry_point(level_t level, node_id_t *entry_point, dist_t *dist,
-                          HnswContext *ctx) const;
+                          HnswContext *ctx,
+                          DuplicateProbe *probe = nullptr) const;
 
   //! update node id neighbors from topkHeap, and reverse link is also updated
   void add_neighbors(node_id_t id, level_t level, TopkHeap &topk_heap,
@@ -157,7 +165,8 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   //! Note: entry_point and dist will be updated to current level nearest node.
   void search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
                         TopkHeap &topk, HnswContext *ctx,
-                        bool duplicate_filter = false) const;
+                        bool duplicate_filter = false,
+                        DuplicateProbe *probe = nullptr) const;
 
   int expand_duplicates(HnswContext *ctx) const;
 
@@ -196,11 +205,6 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   std::mutex mutex_{};                     // global mutex
   // TODO: spin lock?
   mutable std::vector<std::mutex> lock_pool_{};
-  // Only lookup/reservation and publication hold this lock. Distinct vector
-  // groups build concurrently using the existing HNSW node/entry-point locks.
-  std::mutex duplicate_directory_mutex_{};
-  std::unordered_multimap<size_t, std::shared_ptr<DuplicateGroup>>
-      duplicate_directory_{};
 };
 
 }  // namespace core
