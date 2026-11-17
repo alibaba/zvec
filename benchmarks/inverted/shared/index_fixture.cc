@@ -8,29 +8,31 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
 #include "index_fixture.h"
-#include <filesystem>
 #include <stdexcept>
+#include <zvec/ailego/io/file.h>
+#include <zvec/ailego/utility/file_helper.h>
 
 namespace zvec::benchmarks::inverted {
 
 IndexFixture::IndexFixture(DataType data_type, const std::string &path,
                            bool read_only)
     : read_only_(read_only) {
-  namespace fs = std::filesystem;
   if (path.empty()) {
     throw std::invalid_argument("Index path must not be empty");
   }
   if (read_only) {
-    if (!fs::is_directory(path)) {
+    if (!ailego::File::IsDirectory(path)) {
       throw std::runtime_error("Index directory does not exist: " + path);
     }
   } else {
-    if (fs::exists(path)) {
+    if (ailego::File::IsExist(path)) {
       throw std::runtime_error("Refusing to overwrite index path: " + path);
     }
-    const auto parent = fs::path(path).parent_path();
-    if (!parent.empty()) {
-      fs::create_directories(parent);
+    const auto parent = ailego::FileHelper::PathToUtf8(
+        ailego::FileHelper::PathFromUtf8(path).parent_path());
+    if (!parent.empty() && !ailego::File::MakePath(parent)) {
+      throw std::runtime_error("Cannot create index parent directory: " +
+                               parent);
     }
   }
   FieldSchema field{"value", data_type, true,

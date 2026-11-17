@@ -24,7 +24,7 @@ JsonObject DiskUsage(const std::string &path);
 JsonObject EnvironmentJson();
 double Seconds(Clock::time_point begin, Clock::time_point end);
 
-// Runs 100 iterations and returns the mean nanoseconds per query.
+// Runs 100 iterations and returns the mean microseconds per query.
 template <typename RunQueries>
 double MeasureRepeatedQueries(size_t queries_per_iteration,
                               RunQueries &&run_queries) {
@@ -37,12 +37,10 @@ double MeasureRepeatedQueries(size_t queries_per_iteration,
     run_queries();
   }
   const auto end = Clock::now();
-  const auto elapsed_ns =
-      std::chrono::duration<double, std::nano>(end - begin).count();
-  return elapsed_ns / queries_per_iteration / kIterations;
+  const auto elapsed_us =
+      std::chrono::duration<double, std::micro>(end - begin).count();
+  return elapsed_us / queries_per_iteration / kIterations;
 }
 
-// Optional report fields for query timing; cases add their own result fields.
-JsonObject QueryReport(const std::string &name, double mean_ns_per_query,
-                       const JsonObject &before, const JsonObject &after);
+JsonObject QueryReport(const std::string &name, double query_time_us);
 }  // namespace zvec::benchmarks::inverted

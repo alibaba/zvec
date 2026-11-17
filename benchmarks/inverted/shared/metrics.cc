@@ -12,6 +12,8 @@
 #include <filesystem>
 #include <stdexcept>
 #include <thread>
+#include <zvec/ailego/io/file.h>
+#include <zvec/ailego/utility/file_helper.h>
 #include "ailego/utility/memory_helper.h"
 #include "json.h"
 
@@ -42,12 +44,13 @@ JsonObject MemorySnapshot() {
 
 JsonObject DiskUsage(const std::string &path) {
   namespace fs = std::filesystem;
-  if (!fs::is_directory(path)) {
+  if (!ailego::File::IsDirectory(path)) {
     throw std::runtime_error("Cannot measure missing index directory: " + path);
   }
   uint64_t logical_bytes = 0;
   uint64_t file_count = 0;
-  for (const auto &entry : fs::recursive_directory_iterator(path)) {
+  const auto directory = ailego::FileHelper::PathFromUtf8(path);
+  for (const auto &entry : fs::recursive_directory_iterator(directory)) {
     if (!fs::is_regular_file(entry.symlink_status())) continue;
     logical_bytes += entry.file_size();
     ++file_count;
@@ -99,14 +102,10 @@ JsonObject EnvironmentJson() {
 }
 
 
-JsonObject QueryReport(const std::string &name, double mean_ns_per_query,
-                       const JsonObject &before, const JsonObject &after) {
+JsonObject QueryReport(const std::string &name, double query_time_us) {
   JsonObject result;
   result.set("name", JsonStringValue(name));
-  result.set("mean_ns_per_query", JsonValue(mean_ns_per_query));
-  result.set("qps", JsonValue(1e9 / mean_ns_per_query));
-  result.set("memory_before", before);
-  result.set("memory_after", after);
+  result.set("query_time_us", JsonValue(query_time_us));
   result.set("environment", EnvironmentJson());
   return result;
 }

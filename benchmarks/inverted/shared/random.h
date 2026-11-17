@@ -9,11 +9,11 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <random>
 #include <stdexcept>
-#include <utility>
 #include <vector>
 
 namespace zvec::benchmarks::inverted {
@@ -37,7 +37,8 @@ class Random {
   template <typename T>
   void shuffle(std::vector<T> &items) {
     for (size_t remaining = items.size(); remaining > 1; --remaining) {
-      std::swap(items[remaining - 1], items[bounded(remaining)]);
+      std::iter_swap(items.begin() + remaining - 1,
+                     items.begin() + bounded(remaining));
     }
   }
 

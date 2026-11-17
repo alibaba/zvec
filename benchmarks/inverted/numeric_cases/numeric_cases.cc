@@ -26,6 +26,7 @@ namespace zvec::benchmarks::inverted {
 
 namespace {
 
+
 // Stream original records; the predicate does not consult the index.
 template <typename Predicate>
 void VerifyNumericIds(NumericDataset &reader, NumericBatch &batch,
@@ -96,8 +97,6 @@ std::vector<T> ReadNumericOperands(const JsonArray &inputs, CompareOp op) {
   return operands;
 }
 
-// The caller owns the dataset reader and the index shared by verification
-// cases.
 template <typename T>
 void VerifyNumericCase(const JsonObject &record, NumericDataset &dataset,
                        InvertedColumnIndexer &column) {
@@ -146,55 +145,6 @@ void VerifyNumericCase(const JsonObject &record, NumericDataset &dataset,
   }
 }
 
-// Each timed case owns its index; input preparation and index opening are
-// untimed.
-template <typename T>
-JsonObject QueryNumericCase(DataType data_type, const std::string &index_path,
-                            const JsonObject &record) {
-  const auto name = Text(record, "name");
-  const auto inputs = record["inputs"].as_array();
-  const auto op = NumericCompareOp(name);
-  const auto operands = ReadNumericOperands<T>(inputs, op);
-  std::vector<std::string> encoded;
-  for (auto operand : operands) encoded.push_back(EncodeValue(operand));
-
-  const auto before = MemorySnapshot();
-  IndexFixture index(data_type, index_path, true);
-  auto &column = index.column();
-  std::vector<uint64_t> match_counts(inputs.size());
-  bool collect_counts = true;
-  auto measure = [&](auto search) {
-    return MeasureRepeatedQueries(inputs.size(), [&]() {
-      for (size_t i = 0; i < inputs.size(); ++i) {
-        auto result = search(i);
-        if (!result) throw std::runtime_error("Numeric query failed: " + name);
-        // Keep result counting in the timed workload without validation.
-        const volatile auto count = result->count();
-        if (collect_counts) match_counts[i] = count;
-      }
-      // Record counts only during the first measured iteration.
-      collect_counts = false;
-    });
-  };
-  double mean_ns_per_query;
-  if (op == CompareOp::IS_NULL) {
-    mean_ns_per_query = measure([&](size_t) { return column.search_null(); });
-  } else if (op == CompareOp::IS_NOT_NULL) {
-    mean_ns_per_query =
-        measure([&](size_t) { return column.search_non_null(); });
-  } else {
-    mean_ns_per_query =
-        measure([&](size_t i) { return column.search(encoded[i], op); });
-  }
-  const auto after = MemorySnapshot();
-  index.close();
-  auto result = QueryReport(name, mean_ns_per_query, before, after);
-  JsonArray counts;
-  for (auto count : match_counts) counts.push(JsonValue(count));
-  result.set("match_counts", counts);
-  return result;
-}
-
 JsonObject Build(const std::string &index_path, const std::string &run_dir) {
   auto dataset = NumericDataset::Load(run_dir);
   const auto &profile = dataset.profile();
@@ -222,9 +172,10 @@ JsonObject Build(const std::string &index_path, const std::string &run_dir) {
   index.close();
   JsonObject result;
   result.set("environment", EnvironmentJson());
-  result.set(
-      "index_path",
-      JsonStringValue(std::filesystem::weakly_canonical(index_path).string()));
+  result.set("index_path",
+             JsonStringValue(ailego::FileHelper::PathToUtf8(
+                 std::filesystem::weakly_canonical(
+                     ailego::FileHelper::PathFromUtf8(index_path)))));
   const auto disk = DiskUsage(index_path);
   result.set("index_file_mib", disk["index_file_mib"]);
   result.set("insert_seconds", JsonValue(insert_seconds));
@@ -245,13 +196,55 @@ void Verify(NumericDataset &dataset, const std::string &index_path) {
     VerifyNumericCase<T>(record, dataset, index.column());
 }
 
+template <typename T>
+JsonObject QueryNumericCase(DataType data_type, const std::string &index_path,
+                            const JsonObject &record) {
+  const auto name = Text(record, "name");
+  const auto inputs = record["inputs"].as_array();
+  const auto op = NumericCompareOp(name);
+  const auto operands = ReadNumericOperands<T>(inputs, op);
+  std::vector<std::string> encoded;
+  for (auto operand : operands) encoded.push_back(EncodeValue(operand));
+
+  IndexFixture index(data_type, index_path, true);
+  auto &column = index.column();
+  std::vector<uint64_t> match_counts(inputs.size());
+  bool collect_counts = true;
+  auto measure = [&](auto search) {
+    return MeasureRepeatedQueries(inputs.size(), [&]() {
+      for (size_t i = 0; i < inputs.size(); ++i) {
+        auto result = search(i);
+        if (!result) throw std::runtime_error("Numeric query failed: " + name);
+        const volatile auto count = result->count();
+        if (collect_counts) match_counts[i] = count;
+      }
+      collect_counts = false;
+    });
+  };
+  double query_time_us;
+  if (op == CompareOp::IS_NULL) {
+    query_time_us = measure([&](size_t) { return column.search_null(); });
+  } else if (op == CompareOp::IS_NOT_NULL) {
+    query_time_us = measure([&](size_t) { return column.search_non_null(); });
+  } else {
+    query_time_us =
+        measure([&](size_t i) { return column.search(encoded[i], op); });
+  }
+  index.close();
+  auto result = QueryReport(name, query_time_us);
+  JsonArray counts;
+  for (auto count : match_counts) counts.push(JsonValue(count));
+  result.set("match_counts", counts);
+  return result;
+}
+
 
 }  // namespace
 
 
 JsonObject BuildNumeric(const std::string &run_dir) {
   const auto index_path = ailego::FileHelper::PathJoin(run_dir, "index");
-  if (std::filesystem::exists(index_path))
+  if (ailego::File::IsExist(index_path))
     throw std::invalid_argument(
         "index directory already exists: '" + index_path +
         "'\n  use a new --run_dir to start another run");
@@ -262,8 +255,7 @@ void VerifyNumeric(const std::string &run_dir) {
   const auto index_path = ailego::FileHelper::PathJoin(run_dir, "index");
   const auto build =
       ReadJson(ailego::FileHelper::PathJoin(run_dir, "build.json"));
-  if (std::filesystem::weakly_canonical(Text(build, "index_path")) !=
-      std::filesystem::weakly_canonical(index_path))
+  if (!ailego::File::IsSame(Text(build, "index_path"), index_path))
     throw std::invalid_argument("Index path does not match build report");
   auto dataset = NumericDataset::Load(run_dir);
   const auto &profile = dataset.profile();
@@ -276,14 +268,11 @@ JsonObject QueryNumeric(const std::string &run_dir) {
   const auto index_path = ailego::FileHelper::PathJoin(run_dir, "index");
   const auto build =
       ReadJson(ailego::FileHelper::PathJoin(run_dir, "build.json"));
-  if (std::filesystem::weakly_canonical(Text(build, "index_path")) !=
-      std::filesystem::weakly_canonical(index_path))
+  if (!ailego::File::IsSame(Text(build, "index_path"), index_path))
     throw std::invalid_argument("Index path does not match build report");
-
   auto dataset = NumericDataset::Load(run_dir);
   const auto &profile = dataset.profile();
   const auto &inputs = dataset.query_cases();
-
   JsonArray cases;
   for (const auto &record : inputs) {
     auto query =

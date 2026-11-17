@@ -10,15 +10,23 @@
 
 """Run numeric inverted-index benchmarks and summarize the results."""
 
-# This command-line tool intentionally prints its workload preview and run progress.
-# ruff: noqa: T201
 from __future__ import annotations
 
 import argparse
 import datetime
 import sys
 import uuid
+from itertools import product
 from pathlib import Path
+
+from interactive import (
+    interactive_args,
+    phase_progress,
+    print_error,
+    print_success,
+    print_workload,
+)
+from report import BUILD_COLUMNS, QUERY_COLUMNS, render_report
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shared"))
 from benchmark_helpers import (
@@ -37,74 +45,63 @@ from benchmark_helpers import (
 
 ROOT = Path(__file__).resolve().parents[3]
 BENCHMARK = "inverted_numeric_bench"
-DATA_TYPES = ("int32", "int64")
-DISTRIBUTIONS = ("uniform", "hotspot_moderate", "hotspot_extreme")
-BUILD_METRICS = (
-    "insert_seconds",
-    "optimize_seconds",
-    "total_seconds",
-    "index_file_mib",
-    "process_memory.peak_rss_mib",
-    "process_memory.final_rss_mib",
-)
-QUERY_METRICS = (
-    "mean_ns_per_query",
-    "qps",
-    "memory_before.rss_mib",
-    "memory_after.rss_mib",
-    "memory_after.peak_rss_mib",
-)
+PROFILE_CHOICES = {
+    "data_type": ("int32", "int64"),
+    "distribution": ("uniform", "hotspot_moderate", "hotspot_extreme"),
+    "value_range": ("0_to_30000", "0_to_type_max"),
+    "value_order": ("ascending", "shuffled"),
+    "null_ratio": (0, 0.1, 0.5),
+}
+DOCUMENT_COUNTS = (100000, 10000000)
+DEFAULTS = {
+    "distribution": "all",
+    "value_range": "0_to_30000",
+    "value_order": "ascending",
+    "null_ratio": "0",
+    "run_dir": None,
+    "repetitions": 3,
+    "bin_dir": ROOT / "build/bin",
+}
+BUILD_METRICS = tuple(key for _, key in BUILD_COLUMNS)
+QUERY_METRICS = tuple(key for _, key in QUERY_COLUMNS)
 
 
 def select_binary(args):
-    binary = args.bin_dir.expanduser().resolve() / BENCHMARK
+    executable = BENCHMARK + (".exe" if sys.platform == "win32" else "")
+    binary = args.bin_dir.expanduser().resolve() / executable
     if not binary.is_file():
         fail(f"Missing numeric benchmark: {binary}; build target {BENCHMARK}")
     return binary
 
 
 def select_profiles(args):
-    requested_types = set() if args.type in (None, "all") else names(args.type)
-    requested_profiles = names(args.profile)
-    unknown = requested_profiles - set(DISTRIBUTIONS)
-    if unknown:
-        fail(f"Unknown profiles: {', '.join(sorted(unknown))}")
+    """Expand selected values into every combination, in profile field order."""
+    selections = []
+    for name, choices in PROFILE_CHOICES.items():
+        requested = names(getattr(args, name))
+        selections.append(
+            [
+                value
+                for value in choices
+                if "all" in requested or str(value) in requested
+            ]
+        )
     return [
-        {"type": data_type, "name": distribution}
-        for data_type in DATA_TYPES
-        for distribution in DISTRIBUTIONS
-        if (not requested_types or data_type in requested_types)
-        and (not requested_profiles or distribution in requested_profiles)
+        dict(zip(PROFILE_CHOICES, values, strict=True))
+        for values in product(*selections)
     ]
 
 
-def configuration(args):
-    return {
-        name: getattr(args, name)
-        for name in ("value_range", "value_order", "null_ratio")
-        if getattr(args, name) is not None
-    }
-
-
-def workload_flags(profile, overrides):
-    return {
-        "data_type": profile["type"],
-        "distribution": profile["name"],
-        **overrides,
-    }
-
-
-def validate_dataset(dataset, profile, args, overrides):
+def validate_dataset(dataset, profile, args):
     configuration = dataset.get("profile")
     if not isinstance(configuration, dict):
         fail("Dataset must contain a profile")
     expected = {
-        "type": profile["type"],
-        "name": profile["name"],
-        "distribution": profile["name"],
+        **profile,
+        "name": profile["distribution"],
         "num_docs": args.num_docs,
-        **overrides,
     }
+    expected["type"] = expected.pop("data_type")
     for key, value in expected.items():
         if configuration.get(key) != value:
             fail(f"Dataset profile mismatch: {key}")
@@ -145,8 +142,7 @@ def validate_query(query, case, num_docs):
         fail(f"Incomplete query hit counts: {name}")
     if any(type(count) is not int or not 0 <= count <= num_docs for count in counts):
         fail(f"Invalid query hit count: {name}")
-    for key in ("mean_ns_per_query", "qps"):
-        number(query[key], key)
+    number(query["query_time_us"], "query_time_us")
     validate_metrics(query, QUERY_METRICS)
 
 
@@ -165,66 +161,80 @@ def validate_numeric_queries(report, cases, num_docs):
     return queries
 
 
-def run_profile(binary, output, profile, args, overrides):
-    profile_dir = output / profile["type"] / profile["name"]
+def run_profile(binary, output, profile, args, workload):
+    profile_dir = (
+        output
+        / profile["data_type"]
+        / profile["distribution"]
+        / profile["value_range"]
+        / profile["value_order"]
+        / f"null_{profile['null_ratio'] * 100:.0f}_percent"
+    )
     profile_dir.mkdir(parents=True)
     builds, queries = [], {}
     expected_dataset = None
     for repetition in range(1, args.repetitions + 1):
         directory = profile_dir / f"repeat-{repetition:03d}"
+        directory.mkdir()
         logs = directory / "logs"
-        logs.mkdir(parents=True)
-        prefix = (
-            f"{profile['type']}/{profile['name']} [{repetition}/{args.repetitions}]"
-        )
-        print(f"{prefix} prepare", flush=True)
-        dataset = run_worker(
-            binary,
-            "prepare",
-            logs / "prepare.log",
-            report=directory / "dataset.json",
-            run_dir=directory,
-            num_docs=args.num_docs,
-            **workload_flags(profile, overrides),
-        )
-        cases = validate_dataset(dataset, profile, args, overrides)
-        if expected_dataset is None:
-            expected_dataset = dataset
-            queries = {name: [] for name in cases}
-        elif dataset != expected_dataset:
-            fail(f"Data or query inputs changed across repetitions: {prefix}")
-        print(f"{prefix} build", flush=True)
-        build = run_worker(
-            binary,
-            "build",
-            logs / "build.log",
-            report=directory / "build.json",
-            run_dir=directory,
-        )
-        validate_build(build)
-        print(f"{prefix} verify", flush=True)
-        run_worker(
-            binary,
-            "verify",
-            logs / "verify.log",
-            run_dir=directory,
-        )
-        print(f"{prefix} query (all cases)", flush=True)
-        report = run_worker(
-            binary,
-            "query",
-            logs / "query.log",
-            report=directory / "query.json",
-            run_dir=directory,
-        )
-        query_results = validate_numeric_queries(report, cases, args.num_docs)
+        prefix = f"Workload {workload}, repetition {repetition}/{args.repetitions}"
+        with (
+            phase_progress(f"{prefix} prepare"),
+            run_worker(
+                binary,
+                "prepare",
+                logs / "prepare.log",
+                report=directory / "dataset.json",
+                run_dir=directory,
+                num_docs=args.num_docs,
+                **profile,
+            ) as dataset,
+        ):
+            cases = validate_dataset(dataset, profile, args)
+            if expected_dataset is None:
+                expected_dataset = dataset
+                queries = {name: [] for name in cases}
+            elif dataset != expected_dataset:
+                fail(f"Data or query inputs changed across repetitions: {prefix}")
+        with (
+            phase_progress(f"{prefix} build"),
+            run_worker(
+                binary,
+                "build",
+                logs / "build.log",
+                report=directory / "build.json",
+                run_dir=directory,
+            ) as build,
+        ):
+            validate_build(build)
+        with (
+            phase_progress(f"{prefix} verify"),
+            run_worker(
+                binary,
+                "verify",
+                logs / "verify.log",
+                run_dir=directory,
+            ),
+        ):
+            pass
+        with (
+            phase_progress(f"{prefix} query (all cases)"),
+            run_worker(
+                binary,
+                "query",
+                logs / "query.log",
+                report=directory / "query.json",
+                run_dir=directory,
+            ) as report,
+        ):
+            query_results = validate_numeric_queries(report, cases, args.num_docs)
         builds.append(build)
         for name in cases:
             queries[name].append(query_results[name])
     return {
         "suite": "numeric",
-        "type": profile["type"],
-        "profile": profile["name"],
+        "type": profile["data_type"],
+        "profile": profile["distribution"],
         "dataset": expected_dataset,
         "directory": str(profile_dir.relative_to(output)),
         "build": summarize_metrics(builds, BUILD_METRICS),
@@ -245,89 +255,83 @@ def run_profile(binary, output, profile, args, overrides):
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument(
-        "--type",
-        help="Comma-separated data types: int32, int64, or all; required to run",
+        "--data_type",
+        required=True,
+        help="Comma-separated data types: int32, int64, or all",
     )
     parser.add_argument(
-        "--num-docs",
+        "--num_docs",
         type=int,
-        choices=(100000, 10000000),
-        help="Document count; required to run",
+        choices=DOCUMENT_COUNTS,
+        required=True,
+        help="Document count per workload",
     )
     parser.add_argument(
-        "--profile",
-        default="",
-        help="Comma-separated distributions; default: all three distributions",
+        "--distribution",
+        default=DEFAULTS["distribution"],
+        help="Comma-separated distributions: uniform, hotspot_moderate, "
+        "hotspot_extreme, or all (default)",
     )
     parser.add_argument(
-        "--value-range",
-        choices=("0_to_30000", "0_to_type_max"),
-        help="Value domain: [0, 30000) or [0, type maximum)",
+        "--value_range",
+        choices=(*PROFILE_CHOICES["value_range"], "all"),
+        default=DEFAULTS["value_range"],
+        help="Value domain: [0, 30000) (default), [0, type maximum), or all",
     )
     parser.add_argument(
-        "--value-order",
-        choices=("ascending", "shuffled"),
-        help="Order of non-NULL values across document IDs",
+        "--value_order",
+        choices=(*PROFILE_CHOICES["value_order"], "all"),
+        default=DEFAULTS["value_order"],
+        help="Order of non-NULL values across document IDs (default: ascending)",
     )
     parser.add_argument(
-        "--null-ratio",
-        type=float,
-        choices=(0, 0.1, 0.5),
-        help="NULL document fraction",
+        "--null_ratio",
+        choices=(*(str(value) for value in PROFILE_CHOICES["null_ratio"]), "all"),
+        default=DEFAULTS["null_ratio"],
+        help="NULL document fraction, or all (default: 0)",
     )
-    parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument(
-        "--bin-dir",
+        "--run_dir",
         type=Path,
-        default=ROOT / "build/bin",
-        help="Directory containing inverted_numeric_bench",
+        default=DEFAULTS["run_dir"],
+        help="Output directory for data, indexes, and reports; must not already exist "
+        "(default: build/results/inverted/numeric/<run-id>)",
     )
+    parser.add_argument("--repetitions", type=int, default=DEFAULTS["repetitions"])
     parser.add_argument(
-        "--output", type=Path, help="New result directory; must not already exist"
-    )
-    parser.add_argument(
-        "--list",
-        action="store_true",
-        help="Preview selected workloads without running",
+        "--bin_dir",
+        type=Path,
+        default=DEFAULTS["bin_dir"],
+        help="Directory containing inverted_numeric_bench (default: build/bin)",
     )
     args = parser.parse_args(argv)
-    if not args.list:
-        if args.type is None:
-            parser.error("--type is required unless --list is used")
-        if args.num_docs is None:
-            parser.error("--num-docs is required unless --list is used")
-    if args.type not in (None, "all"):
+    for name in ("data_type", "distribution"):
+        value = getattr(args, name)
+        if value == "all":
+            continue
         try:
-            requested_types = names(args.type)
+            requested = names(value)
         except RuntimeError as error:
             parser.error(str(error))
-        if not requested_types or requested_types - set(DATA_TYPES):
-            parser.error("--type must select int32, int64, or all")
+        if not requested or requested - set(PROFILE_CHOICES[name]):
+            parser.error(
+                f"--{name} must select {', '.join(PROFILE_CHOICES[name])}, or all"
+            )
     if args.repetitions < 1:
         parser.error("--repetitions must be positive")
     return args
 
 
 def main(argv=None):
-    args = parse_args(argv)
     output, metadata = None, None
     try:
+        argv = sys.argv[1:] if argv is None else argv
+        if not argv and sys.stdin.isatty() and sys.stdout.isatty():
+            argv = interactive_args(PROFILE_CHOICES, DOCUMENT_COUNTS, DEFAULTS)
+            if argv is None:
+                return 0
+        args = parse_args(argv)
         profiles = select_profiles(args)
-        overrides = configuration(args)
-        if args.list:
-            for profile in profiles:
-                print(f"numeric/{profile['type']}/{profile['name']}")
-            if args.num_docs is not None:
-                print(f"Document count: {args.num_docs}")
-            if overrides:
-                print(
-                    "Options: "
-                    + " ".join(
-                        f"--{name.replace('_', '-')}={value}"
-                        for name, value in overrides.items()
-                    )
-                )
-            return 0
         binary = select_binary(args)
         run_id = (
             datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -335,7 +339,7 @@ def main(argv=None):
             + uuid.uuid4().hex[:8]
         )
         output = (
-            (args.output or ROOT / "build/results/inverted/numeric" / run_id)
+            (args.run_dir or ROOT / "build/results/inverted/numeric" / run_id)
             .expanduser()
             .resolve()
         )
@@ -349,45 +353,50 @@ def main(argv=None):
                 key: str(value) if isinstance(value, Path) else value
                 for key, value in vars(args).items()
             },
-            "selected": [
-                {
-                    "suite": "numeric",
-                    "type": p["type"],
-                    "profile": p["name"],
-                }
-                for p in profiles
-            ],
-            "configuration_overrides": overrides,
+            "selected": [{"suite": "numeric", **profile} for profile in profiles],
         }
         write_json(output / "run.json", metadata)
-        summaries = [
-            run_profile(binary, output, profile, args, overrides)
-            for profile in profiles
-        ]
+        summaries = []
+        for index, profile in enumerate(profiles, 1):
+            print_workload(index, len(profiles), profile)
+            summaries.append(run_profile(binary, output, profile, args, index))
         summary = {
             "run_id": run_id,
             "repetitions": args.repetitions,
             "profiles": summaries,
         }
-        write_json(output / "summary.json", summary)
         for index, result in enumerate(summaries):
             metadata["selected"][index]["cases"] = [
                 case["name"] for case in result["cases"]
             ]
         metadata.update(status="passed", finished_at=timestamp())
+        report_path = output / "report.md"
+        temporary_report = report_path.with_suffix(".md.tmp")
+        temporary_report.write_text(render_report(metadata, summary), encoding="utf-8")
         write_json(output / "run.json", metadata)
-        print(f"Results: {output}")
+        # Publish only after both the report and the final run status are saved.
+        temporary_report.replace(report_path)
+        print_success(f"Report: {report_path}")
         return 0
     except (Exception, KeyboardInterrupt) as error:
+        interrupted = isinstance(error, (KeyboardInterrupt, EOFError))
+        message = (
+            "Interrupted"
+            if isinstance(error, EOFError)
+            else str(error) or "Interrupted"
+        )
         if metadata is not None:
             metadata.update(
                 status="failed",
                 finished_at=timestamp(),
                 error=str(error) or "Interrupted",
             )
-            write_json(output / "run.json", metadata)
-        print(f"error: {str(error) or 'Interrupted'}", file=sys.stderr)
-        return 130 if isinstance(error, KeyboardInterrupt) else 1
+            try:
+                write_json(output / "run.json", metadata)
+            except OSError as status_error:
+                message += f"\n  Could not save run status: {status_error}"
+        print_error(message)
+        return 130 if interrupted else 1
 
 
 if __name__ == "__main__":

@@ -17,8 +17,10 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 #include <gflags/gflags.h>
 #include <zvec/ailego/io/file.h>
+#include <zvec/ailego/utility/file_helper.h>
 #include "shared/json.h"
 #include "dataset.h"
 #include "numeric_cases.h"
@@ -49,6 +51,7 @@ using bench::NumericProfile;
 using bench::NumericValueOrder;
 using bench::NumericValueRange;
 using zvec::DataType;
+using zvec::ailego::FileHelper;
 
 bool IsSpecified(const char *name) {
   return !gflags::GetCommandLineFlagInfoOrDie(name).is_default;
@@ -144,7 +147,20 @@ NumericProfile ProfileFromFlags(DataType type) {
 }  // namespace
 
 
+#if defined(_WIN32)
+int wmain(int argc, wchar_t **wide_argv) {
+  // Windows supplies UTF-16 arguments; gflags and ailego use UTF-8.
+  std::vector<std::string> arguments;
+  arguments.reserve(argc);
+  for (int i = 0; i < argc; ++i)
+    arguments.push_back(FileHelper::WideToUtf8(wide_argv[i]));
+  std::vector<char *> pointers;
+  for (auto &argument : arguments) pointers.push_back(argument.data());
+  pointers.push_back(nullptr);
+  auto argv = pointers.data();
+#else
 int main(int argc, char **argv) {
+#endif
   const bool no_arguments = argc == 1;
   gflags::SetUsageMessage("Inverted-index benchmarks for numeric data.");
   gflags::ParseCommandLineNonHelpFlags(&argc, &argv, true);
@@ -193,37 +209,39 @@ int main(int argc, char **argv) {
           "missing required argument --run_dir for "
           "--mode=" +
           FLAGS_mode + "\n  expected: a benchmark run directory");
-    const fs::path directory = fs::absolute(FLAGS_run_dir);
+    const auto directory =
+        fs::absolute(FileHelper::PathFromUtf8(FLAGS_run_dir));
+    const auto run_dir = FileHelper::PathToUtf8(directory);
     if (FLAGS_mode == "prepare") {
       const auto type =
           FLAGS_data_type == "int32" ? DataType::INT32 : DataType::INT64;
       const auto profile = ProfileFromFlags(type);
-      if (!zvec::ailego::File::MakePath(directory.string()))
-        throw std::runtime_error("cannot create run directory: '" +
-                                 directory.string() + "'");
-      bench::NumericDataset::Create(profile, directory.string());
+      if (!zvec::ailego::File::MakePath(run_dir))
+        throw std::runtime_error("cannot create run directory: '" + run_dir +
+                                 "'");
+      bench::NumericDataset::Create(profile, run_dir);
       return 0;
     }
 
     if (FLAGS_mode == "verify") {
-      bench::VerifyNumeric(directory.string());
+      bench::VerifyNumeric(run_dir);
       std::cout << "Verification passed\n";
       return 0;
     }
 
-    const auto output = directory / (FLAGS_mode + ".json");
-    if (fs::exists(output))
+    const auto output = FileHelper::PathJoin(run_dir, FLAGS_mode + ".json");
+    if (zvec::ailego::File::IsExist(output))
       throw std::invalid_argument(
-          "output file already exists: '" + output.string() +
+          "output file already exists: '" + output +
           "'\n  use a new --run_dir to start another run");
 
     bench::JsonObject result;
     if (FLAGS_mode == "build") {
-      result = bench::BuildNumeric(directory.string());
+      result = bench::BuildNumeric(run_dir);
     } else {
-      result = bench::QueryNumeric(directory.string());
+      result = bench::QueryNumeric(run_dir);
     }
-    bench::WriteJson(output.string(), result);
+    bench::WriteJson(output, result);
     return 0;
   } catch (const std::exception &error) {
     std::cerr << "inverted_numeric_bench: " << error.what() << '\n';

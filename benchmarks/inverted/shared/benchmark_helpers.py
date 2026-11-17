@@ -19,6 +19,8 @@ import math
 import re
 import statistics
 import subprocess
+from collections import deque
+from contextlib import contextmanager
 
 
 def timestamp():
@@ -64,7 +66,7 @@ def format_json(value, indent=0):
 
 def write_json(path, value):
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(format_json(value) + "\n")
+    temporary.write_text(format_json(value) + "\n", encoding="utf-8")
     temporary.replace(path)
 
 
@@ -93,20 +95,50 @@ def binary_record(binary):
     return {"path": str(binary), "sha256": digest.hexdigest()}
 
 
+@contextmanager
 def run_worker(binary, phase, log, *, report=None, **flags):
+    """Keep output only if the worker or the caller's report validation fails."""
     command = [str(binary), f"--mode={phase}"]
     command.extend(f"--{key}={value}" for key, value in flags.items())
-    with log.open("x") as stream:
-        completed = subprocess.run(
-            command, stdout=stream, stderr=subprocess.STDOUT, check=False
-        )
-    if completed.returncode:
-        fail(f"{phase} exited with {completed.returncode}; see {log}")
-    if report is None:
-        return None
-    if not report.is_file():
-        fail(f"{phase} produced no report; see {log}")
-    return load_json(report.read_text())
+    log.parent.mkdir(parents=True, exist_ok=True)
+    # Opening outside the handler avoids modifying a pre-existing log on failure.
+    stream = log.open("x", encoding="utf-8")
+    try:
+        with stream:
+            completed = subprocess.run(
+                command, stdout=stream, stderr=subprocess.STDOUT, check=False
+            )
+        if completed.returncode:
+            fail(f"process exited with code {completed.returncode}")
+        result = None
+        if report is not None:
+            if not report.is_file():
+                fail("process produced no report")
+            result = load_json(report.read_text(encoding="utf-8"))
+        yield result
+    except (Exception, KeyboardInterrupt) as error:
+        reason = str(error) or "Interrupted"
+        tail, log_warning = (), ""
+        try:
+            with log.open(encoding="utf-8", errors="replace") as output:
+                tail = deque(
+                    (line.rstrip() for line in output if line.strip()), maxlen=5
+                )
+            with log.open("a", encoding="utf-8") as output:
+                output.write(f"\n{phase} failed: {reason}\n")
+        except OSError as log_error:
+            log_warning = f"\n  Could not update log: {log_error}"
+        message = f"{phase} failed: {reason}"
+        if tail:
+            message += "\n" + "\n".join(
+                f"  {line[:300]}{'...' if len(line) > 300 else ''}" for line in tail
+            )
+        message += f"\n  Full log: {log}{log_warning}"
+        if isinstance(error, KeyboardInterrupt):
+            raise KeyboardInterrupt(message) from error
+        raise RuntimeError(message) from error
+    log.unlink()
+    log.parent.rmdir()
 
 
 def number(value, label, positive=False):
