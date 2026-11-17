@@ -1,4 +1,10 @@
 cmake_minimum_required(VERSION 3.26)
+# Keep legacy third-party projects compatible with CMake 4, which requires
+# a policy version of at least 3.5. Preserve higher values set by callers.
+if(NOT DEFINED CMAKE_POLICY_VERSION_MINIMUM OR CMAKE_POLICY_VERSION_MINIMUM VERSION_LESS 3.5)
+  set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
+
 cmake_policy(SET CMP0077 NEW)
 # Some thirdparty subdirectories declare cmake_minimum_required < 3.25, which would
 # leave CMP0141 unset for them and make them ignore CMAKE_MSVC_DEBUG_INFORMATION_FORMAT.
