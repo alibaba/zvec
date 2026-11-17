@@ -15,6 +15,7 @@
 #include <zvec/ailego/io/file.h>
 #include <zvec/core/framework/index_framework.h>
 #include "metric/metric_params.h"
+#include "ivf_batch_test_helper.h"
 #include "ivf_centroid_index.h"
 #include "ivf_dumper.h"
 #include "ivf_entity.h"
@@ -262,61 +263,35 @@ TEST_P(IVFLegacyMatrixTest, ColumnBatchPreservesScanOrderAndLimits) {
         params.set(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD, 1U);
         ASSERT_EQ(0, grouped->update(params));
         ASSERT_EQ(0, single->update(params));
-        for (bool bf : {false, true}) {
-          for (uint32_t count : {2U, 7U, 35U}) {
-            ASSERT_EQ(0, bf ? searcher.search_bf_impl(batch.data(), qmeta,
-                                                      count, grouped)
-                            : searcher.search_impl(batch.data(), qmeta, count,
-                                                   grouped));
-            for (uint32_t q = 0; q < count; ++q) {
-              const void *query = batch.data() + q * qmeta.element_size();
-              ASSERT_EQ(0, bf ? searcher.search_bf_impl(query, qmeta, single)
-                              : searcher.search_impl(query, qmeta, single));
-              ASSERT_EQ(single->result().size(), grouped->result(q).size());
-              EXPECT_EQ(static_cast<IVFSearcherContext *>(single.get())
-                            ->stats()
-                            .dist_calced_count(),
-                        static_cast<IVFSearcherContext *>(grouped.get())
-                            ->stats(q)
-                            .dist_calced_count());
-              for (size_t i = 0; i < single->result().size(); ++i) {
-                EXPECT_EQ(single->result()[i].key(),
-                          grouped->result(q)[i].key());
-                if (integer) {
-                  EXPECT_FLOAT_EQ(single->result()[i].score(),
-                                  grouped->result(q)[i].score());
-                } else {
-                  const auto id = single->result()[i].key();
-                  ASSERT_LT(id, values_.size());
-                  const auto &query_values = values_[(q * 19) % rows_.size()];
-                  double reference = 0, magnitude = 0;
-                  for (size_t d = 0; d < query_values.size(); ++d) {
-                    const double x = values_[id][d], y = query_values[d];
-                    const double term =
-                        std::get<1>(GetParam()) ? -x * y : (x - y) * (x - y);
-                    reference += term;
-                    magnitude += std::abs(term);
-                  }
-                  // Compare both implementations to stored-value FP64 truth.
-                  // gamma(2*d+3) bounds FP32 product/subtraction/sum rounding,
-                  // including non-FMA paths. Absolute terms handle IP
-                  // cancellation; this is not a tolerance fitted to a failure.
-                  const double nu = (2 * query_values.size() + 3) *
-                                    (std::numeric_limits<float>::epsilon() / 2);
-                  const double tolerance =
-                      nu / (1 - nu) * std::max(1.0, magnitude);
-                  const float single_score = single->result()[i].score();
-                  const float batch_score = grouped->result(q)[i].score();
-                  EXPECT_TRUE(std::isfinite(single_score));
-                  EXPECT_TRUE(std::isfinite(batch_score));
-                  EXPECT_NEAR(reference, single_score, tolerance);
-                  EXPECT_NEAR(reference, batch_score, tolerance);
-                  EXPECT_NEAR(single_score, batch_score, 2 * tolerance);
-                }
+        ASSERT_NO_FATAL_FAILURE(test::CheckBatchedQueries(
+            searcher, batch.data(), qmeta, grouped, single,
+            [&](uint32_t q, uint64_t id, float single_score,
+                float batch_score) {
+              if (integer) {
+                EXPECT_FLOAT_EQ(single_score, batch_score);
+                return;
               }
-            }
-          }
-        }
+              ASSERT_LT(id, values_.size());
+              const auto &query_values = values_[(q * 19) % rows_.size()];
+              double reference = 0, magnitude = 0;
+              for (size_t d = 0; d < query_values.size(); ++d) {
+                const double x = values_[id][d], y = query_values[d];
+                const double term =
+                    std::get<1>(GetParam()) ? -x * y : (x - y) * (x - y);
+                reference += term;
+                magnitude += std::abs(term);
+              }
+              // Bound FP32 product/subtraction/sum rounding against stored
+              // FP64 values; absolute terms also handle IP cancellation.
+              const double nu = (2 * query_values.size() + 3) *
+                                (std::numeric_limits<float>::epsilon() / 2);
+              const double tolerance = nu / (1 - nu) * std::max(1.0, magnitude);
+              EXPECT_TRUE(std::isfinite(single_score));
+              EXPECT_TRUE(std::isfinite(batch_score));
+              EXPECT_NEAR(reference, single_score, tolerance);
+              EXPECT_NEAR(reference, batch_score, tolerance);
+              EXPECT_NEAR(single_score, batch_score, 2 * tolerance);
+            }));
       }
     }
   }

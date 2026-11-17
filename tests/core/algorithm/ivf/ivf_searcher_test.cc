@@ -27,6 +27,7 @@
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/core/framework/index_segment_storage.h>
 #include "zvec/core/framework/index_framework.h"
+#include "ivf_batch_test_helper.h"
 #include "ivf_builder.h"
 #include "ivf_dumper.h"
 #include "ivf_streamer.h"
@@ -4552,36 +4553,12 @@ TEST_P(IVFTurboTest, BatchedQueriesMatchIndependentQueries) {
       batch->set_threshold(nprobe == 1 ? 0.0f
                                        : std::numeric_limits<float>::max());
       single->set_threshold(batch->threshold());
-      for (bool brute_force : {false, true}) {
-        SCOPED_TRACE(brute_force);
-        for (uint32_t count : {2U, 7U, 35U}) {
-          SCOPED_TRACE(count);
-          ASSERT_EQ(0, brute_force ? searcher.search_bf_impl(
-                                         queries.data(), qmeta, count, batch)
-                                   : searcher.search_impl(queries.data(), qmeta,
-                                                          count, batch));
-          for (uint32_t q = 0; q < count; ++q) {
-            const auto *query = queries.data() + q * kDimension;
-            ASSERT_EQ(0, brute_force
-                             ? searcher.search_bf_impl(query, qmeta, single)
-                             : searcher.search_impl(query, qmeta, single));
-            ASSERT_EQ(single->result().size(), batch->result(q).size());
-            EXPECT_EQ(static_cast<IVFSearcherContext *>(single.get())
-                          ->stats()
-                          .dist_calced_count(),
-                      static_cast<IVFSearcherContext *>(batch.get())
-                          ->stats(q)
-                          .dist_calced_count());
-            for (size_t rank = 0; rank < single->result().size(); ++rank) {
-              const auto &expected = single->result()[rank];
-              const auto &actual = batch->result(q)[rank];
-              EXPECT_EQ(expected.key(), actual.key());
-              EXPECT_NEAR(expected.score(), actual.score(),
-                          1e-4f * std::max(1.0f, std::abs(expected.score())));
-            }
-          }
-        }
-      }
+      ASSERT_NO_FATAL_FAILURE(test::CheckBatchedQueries(
+          searcher, queries.data(), qmeta, batch, single,
+          [](uint32_t, uint64_t, float expected, float actual) {
+            EXPECT_NEAR(expected, actual,
+                        1e-4f * std::max(1.0f, std::abs(expected)));
+          }));
     }
     // The FP16/FP32 paths must actually expose a compatible many kernel;
     // record and packed encodings must retain their existing dispatch.
