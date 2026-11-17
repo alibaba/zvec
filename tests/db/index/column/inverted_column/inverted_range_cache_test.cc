@@ -96,7 +96,7 @@ class InvertedRangeCacheTest : public testing::Test {
     test_util::RemoveTestPath(path_);
   }
 
-  void CreateWriter(const RangePrefixCacheOptions &options = {},
+  void create_writer(const RangePrefixCacheOptions &options = {},
                     DataType type = DataType::INT32,
                     bool enable_ranges = true) {
     field_ =
@@ -117,7 +117,7 @@ class InvertedRangeCacheTest : public testing::Test {
     EXPECT_EQ(column_->range_cache(), nullptr);
   }
 
-  void Reopen(const RangePrefixCacheOptions &options = {}) {
+  void reopen(const RangePrefixCacheOptions &options = {}) {
     column_.reset();
     if (!context_.read_only()) {
       ASSERT_TRUE(context_.flush().ok());
@@ -133,7 +133,7 @@ class InvertedRangeCacheTest : public testing::Test {
     EXPECT_TRUE(column_->is_sealed());
   }
 
-  void Insert(const std::vector<std::optional<int32_t>> &values) {
+  void insert(const std::vector<std::optional<int32_t>> &values) {
     for (uint32_t id = 0; id < values.size(); ++id) {
       ASSERT_TRUE(values[id] ? column_->insert(id, RawInt32(*values[id])).ok()
                              : column_->insert_null(id).ok())
@@ -159,7 +159,7 @@ class InvertedRangeCacheTest : public testing::Test {
     return values;
   }
 
-  std::vector<int32_t> NumericBounds() const {
+  std::vector<int32_t> numeric_bounds() const {
     std::vector<int32_t> bounds{std::numeric_limits<int32_t>::min(),
                                 -20000,
                                 -6000,
@@ -196,7 +196,7 @@ class InvertedRangeCacheTest : public testing::Test {
     return bounds;
   }
 
-  void CheckNumeric(const std::vector<std::optional<int32_t>> &values,
+  void check_numeric(const std::vector<std::optional<int32_t>> &values,
                     const std::vector<int32_t> &bounds) const {
     for (const int32_t bound : bounds) {
       for (const CompareOp op : kRangeOperations) {
@@ -217,7 +217,7 @@ class InvertedRangeCacheTest : public testing::Test {
   }
 
   template <typename T>
-  void CheckTypedNumeric(const std::vector<std::optional<T>> &values,
+  void check_typed_numeric(const std::vector<std::optional<T>> &values,
                          const std::vector<T> &bounds) const {
     for (const T bound : bounds) {
       for (const CompareOp op : kRangeOperations) {
@@ -237,10 +237,10 @@ class InvertedRangeCacheTest : public testing::Test {
   }
 
   template <typename T>
-  void CheckTypedSealAndReopen(DataType type,
+  void check_typed_seal_and_reopen(DataType type,
                                std::vector<std::optional<T>> values,
                                std::vector<T> bounds) {
-    CreateWriter({}, type);
+    create_writer({}, type);
     std::mt19937 random(868);
     std::shuffle(values.begin(), values.end(), random);
     for (uint32_t id = 0; id < values.size(); ++id) {
@@ -289,14 +289,14 @@ class InvertedRangeCacheTest : public testing::Test {
       }
     }
     ASSERT_TRUE(used_prefix);
-    CheckTypedNumeric(values, bounds);
-    Reopen();
+    check_typed_numeric(values, bounds);
+    reopen();
     ASSERT_NE(column_->range_cache(), nullptr);
-    CheckTypedNumeric(values, bounds);
+    check_typed_numeric(values, bounds);
   }
 
   template <typename T>
-  void CheckFloatingPoint(DataType type) {
+  void check_floating_point(DataType type) {
     std::vector<std::optional<T>> values(12000);
     for (size_t i = 0; i < values.size(); ++i) {
       if (i % 97 != 0) {
@@ -315,10 +315,10 @@ class InvertedRangeCacheTest : public testing::Test {
     for (size_t i = 0; i < bounds.size(); ++i) {
       values[i + 1] = bounds[i];
     }
-    CheckTypedSealAndReopen(type, std::move(values), bounds);
+    check_typed_seal_and_reopen(type, std::move(values), bounds);
   }
 
-  std::vector<std::string> CacheContents() const {
+  std::vector<std::string> cache_contents() const {
     std::vector<std::string> result;
     if (const auto *cache = column_->range_cache()) {
       for (const auto &prefix : cache->prefixes) {
@@ -331,7 +331,7 @@ class InvertedRangeCacheTest : public testing::Test {
     return result;
   }
 
-  std::vector<std::pair<std::string, std::string>> RangeRows() {
+  std::vector<std::pair<std::string, std::string>> range_rows() {
     std::vector<std::pair<std::string, std::string>> result;
     auto *family = context_.get_cf(field_.name() + INVERT_SUFFIX_RANGES);
     if (!family) {
@@ -354,9 +354,9 @@ class InvertedRangeCacheTest : public testing::Test {
 };
 
 TEST_F(InvertedRangeCacheTest, FreshSealAndReopenPreserveRangeSemantics) {
-  CreateWriter();
+  create_writer();
   const auto values = RandomValues(12000, true);
-  Insert(values);
+  insert(values);
   ASSERT_TRUE(column_->seal().ok());
   const auto *cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
@@ -386,31 +386,31 @@ TEST_F(InvertedRangeCacheTest, FreshSealAndReopenPreserveRangeSemantics) {
           return prefix.end_bucket == end;
         }));
   }
-  auto bounds = NumericBounds();
-  CheckNumeric(values, bounds);
-  const auto range_rows = RangeRows();
-  const auto contents = CacheContents();
-  Reopen();
+  auto bounds = numeric_bounds();
+  check_numeric(values, bounds);
+  const auto original_range_rows = range_rows();
+  const auto contents = cache_contents();
+  reopen();
   ASSERT_NE(column_->range_cache(), nullptr);
-  CheckNumeric(values, bounds);
-  EXPECT_EQ(RangeRows(), range_rows);
-  EXPECT_EQ(CacheContents(), contents);
+  check_numeric(values, bounds);
+  EXPECT_EQ(range_rows(), original_range_rows);
+  EXPECT_EQ(cache_contents(), contents);
 }
 
 TEST_F(InvertedRangeCacheTest, OpensUnchangedIndexBuiltWithoutCache) {
   RangePrefixCacheOptions disabled;
   disabled.max_bytes = 0;
-  CreateWriter(disabled);
+  create_writer(disabled);
   const auto values = RandomValues(12000, false);
-  Insert(values);
+  insert(values);
   ASSERT_TRUE(column_->seal().ok());
   ASSERT_EQ(column_->range_cache(), nullptr);
-  const auto original_rows = RangeRows();
+  const auto original_rows = range_rows();
   ASSERT_FALSE(original_rows.empty());
-  Reopen();
+  reopen();
   ASSERT_NE(column_->range_cache(), nullptr);
-  CheckNumeric(values, NumericBounds());
-  EXPECT_EQ(RangeRows(), original_rows);
+  check_numeric(values, numeric_bounds());
+  EXPECT_EQ(range_rows(), original_rows);
   std::vector<std::string> actual_families;
   for (const auto *family : context_.cf_handles_) {
     actual_families.push_back(family->GetName());
@@ -423,9 +423,9 @@ TEST_F(InvertedRangeCacheTest, OpensUnchangedIndexBuiltWithoutCache) {
 }
 
 TEST_F(InvertedRangeCacheTest, OptionalRefinementStopsAtBudgetWithoutLosingCache) {
-  CreateWriter();
+  create_writer();
   const auto values = RandomValues(40000, false);
-  Insert(values);
+  insert(values);
   ASSERT_TRUE(column_->seal().ok());
   const auto *cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
@@ -433,19 +433,19 @@ TEST_F(InvertedRangeCacheTest, OptionalRefinementStopsAtBudgetWithoutLosingCache
   const auto full_count = cache->prefixes.size();
   RangePrefixCacheOptions limited;
   limited.max_bytes = cache->stats.accounted_bytes - 1;
-  Reopen(limited);
+  reopen(limited);
   cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
   EXPECT_GE(cache->prefixes.size(), 9);
   EXPECT_LT(cache->prefixes.size(), full_count);
   EXPECT_LE(cache->stats.accounted_bytes, limited.max_bytes);
-  CheckNumeric(values, NumericBounds());
+  check_numeric(values, numeric_bounds());
 }
 
 TEST_F(InvertedRangeCacheTest, AdditionalCheckpointsServePreviouslyUnseenBounds) {
-  CreateWriter();
+  create_writer();
   const auto values = RandomValues(40000, false);
-  Insert(values);
+  insert(values);
   ASSERT_TRUE(column_->seal().ok());
   const auto *cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
@@ -472,11 +472,11 @@ TEST_F(InvertedRangeCacheTest, AdditionalCheckpointsServePreviouslyUnseenBounds)
   }
   EXPECT_TRUE(used_additional);
   ASSERT_FALSE(bounds.empty());
-  CheckNumeric(values, bounds);
+  check_numeric(values, bounds);
 }
 
 TEST_F(InvertedRangeCacheTest, RepeatedValuesAndNullsAtInclusiveBoundaries) {
-  CreateWriter();
+  create_writer();
   std::vector<std::optional<int32_t>> values(15000, 0);
   for (int32_t i = 0; i < 1500; ++i) {
     values[i] = -1500 + i;
@@ -487,22 +487,22 @@ TEST_F(InvertedRangeCacheTest, RepeatedValuesAndNullsAtInclusiveBoundaries) {
   }
   std::mt19937 random(868);
   std::shuffle(values.begin(), values.end(), random);
-  Insert(values);
+  insert(values);
   ASSERT_TRUE(column_->seal().ok());
   ASSERT_NE(column_->range_cache(), nullptr);
   EXPECT_LE(column_->range_cache()->prefixes.size(), 32);
-  CheckNumeric(values, NumericBounds());
-  Reopen();
-  CheckNumeric(values, NumericBounds());
+  check_numeric(values, numeric_bounds());
+  reopen();
+  check_numeric(values, numeric_bounds());
 }
 
 TEST_F(InvertedRangeCacheTest, OrderedPrefixesUseRunContainers) {
-  CreateWriter();
+  create_writer();
   std::vector<std::optional<int32_t>> values(12000);
   for (size_t i = 0; i < values.size(); ++i) {
     values[i] = static_cast<int32_t>(i) - 6000;
   }
-  Insert(values);
+  insert(values);
   ASSERT_TRUE(column_->seal().ok());
   ASSERT_NE(column_->range_cache(), nullptr);
   ASSERT_GE(column_->range_cache()->prefixes.size(), 9);
@@ -515,38 +515,38 @@ TEST_F(InvertedRangeCacheTest, OrderedPrefixesUseRunContainers) {
     EXPECT_EQ(stats.n_array_containers, 0);
     EXPECT_EQ(stats.n_bitset_containers, 0);
   }
-  CheckNumeric(values, NumericBounds());
+  check_numeric(values, numeric_bounds());
 }
 
 TEST_F(InvertedRangeCacheTest, LowerOnlyPolicyPreservesAllComparisons) {
   RangePrefixCacheOptions lower_only;
   lower_only.allow_subtraction = false;
-  CreateWriter(lower_only);
+  create_writer(lower_only);
   const auto values = RandomValues(12000, true);
-  Insert(values);
+  insert(values);
   ASSERT_TRUE(column_->seal().ok());
   ASSERT_NE(column_->range_cache(), nullptr);
-  const auto bounds = NumericBounds();
+  const auto bounds = numeric_bounds();
   for (const int32_t bound : bounds) {
     for (const auto op : kRangeOperations) {
       EXPECT_NE(column_->explain_range(RawInt32(bound), op).path,
                 RangeQueryPath::PrefixSubtract);
     }
   }
-  CheckNumeric(values, bounds);
-  Reopen(lower_only);
-  CheckNumeric(values, bounds);
+  check_numeric(values, bounds);
+  reopen(lower_only);
+  check_numeric(values, bounds);
 }
 
 TEST_F(InvertedRangeCacheTest, BoundaryTermsKeepLegacyPhysicalScanDirection) {
-  CreateWriter();
+  create_writer();
   std::vector<std::optional<int32_t>> values(12000);
   for (size_t i = 0; i < values.size(); ++i) {
     if (i % 97 != 0) {
       values[i] = static_cast<int32_t>(i) - 6000;
     }
   }
-  Insert(values);
+  insert(values);
   ASSERT_TRUE(column_->seal().ok());
   const auto *cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
@@ -608,17 +608,17 @@ TEST_F(InvertedRangeCacheTest, BoundaryTermsKeepLegacyPhysicalScanDirection) {
   EXPECT_TRUE(used_scan_right);
   EXPECT_TRUE(used_add);
   EXPECT_TRUE(used_subtract);
-  CheckNumeric(values, bounds);
+  check_numeric(values, bounds);
 }
 
 TEST_F(InvertedRangeCacheTest, ReadOnlyQueriesDoNotMutateSharedPrefixes) {
-  CreateWriter();
+  create_writer();
   const auto values = RandomValues(12000, true);
-  Insert(values);
+  insert(values);
   ASSERT_TRUE(column_->seal().ok());
   ASSERT_NE(column_->range_cache(), nullptr);
-  const auto before = CacheContents();
-  const auto bounds = NumericBounds();
+  const auto before = cache_contents();
+  const auto bounds = numeric_bounds();
   bool used_add = false;
   bool used_subtract = false;
   bool used_flip = false;
@@ -664,33 +664,33 @@ TEST_F(InvertedRangeCacheTest, ReadOnlyQueriesDoNotMutateSharedPrefixes) {
     reader.join();
   }
   EXPECT_TRUE(correct.load());
-  EXPECT_EQ(CacheContents(), before);
+  EXPECT_EQ(cache_contents(), before);
 }
 
 TEST_F(InvertedRangeCacheTest, InsufficientLocalBudgetFallsBack) {
   RangePrefixCacheOptions too_small;
   too_small.max_bytes = 1;
-  CreateWriter(too_small);
+  create_writer(too_small);
   const auto values = RandomValues(12000, true);
-  Insert(values);
+  insert(values);
   ASSERT_TRUE(column_->seal().ok());
   EXPECT_EQ(column_->range_cache(), nullptr);
-  CheckNumeric(values, NumericBounds());
-  Reopen(too_small);
+  check_numeric(values, numeric_bounds());
+  reopen(too_small);
   EXPECT_EQ(column_->range_cache(), nullptr);
-  CheckNumeric(values, NumericBounds());
-  Reopen();
+  check_numeric(values, numeric_bounds());
+  reopen();
   ASSERT_NE(column_->range_cache(), nullptr);
-  CheckNumeric(values, NumericBounds());
+  check_numeric(values, numeric_bounds());
 }
 
 TEST_F(InvertedRangeCacheTest,
        GlobalMemoryPressureFallsBackWithoutFailingOpen) {
   RangePrefixCacheOptions disabled;
   disabled.max_bytes = 0;
-  CreateWriter(disabled);
+  create_writer(disabled);
   const auto values = RandomValues(12000, false);
-  Insert(values);
+  insert(values);
   ASSERT_TRUE(column_->seal().ok());
   auto &pool = ailego::MemoryLimitPool::get_instance();
   const size_t reservation = pool.capacity() - pool.committed();
@@ -703,64 +703,64 @@ TEST_F(InvertedRangeCacheTest,
         ailego::MemoryLimitPool::get_instance().release_external(bytes);
       }
     } release{reservation};
-    Reopen();
+    reopen();
     EXPECT_EQ(column_->range_cache(), nullptr);
-    CheckNumeric(values, {-10000, -3000, 0, 3000, 10000});
+    check_numeric(values, {-10000, -3000, 0, 3000, 10000});
   }
-  Reopen();
+  reopen();
   EXPECT_NE(column_->range_cache(), nullptr);
 }
 
 TEST_F(InvertedRangeCacheTest, EmptyIndexUsesExistingSearchPath) {
-  CreateWriter();
+  create_writer();
   ASSERT_TRUE(column_->seal().ok());
   EXPECT_EQ(column_->range_cache(), nullptr);
-  CheckNumeric({}, {-1, 0, 1});
-  Reopen();
+  check_numeric({}, {-1, 0, 1});
+  reopen();
   EXPECT_EQ(column_->range_cache(), nullptr);
-  CheckNumeric({}, {-1, 0, 1});
+  check_numeric({}, {-1, 0, 1});
 }
 
 TEST_F(InvertedRangeCacheTest, NullOnlyFieldNeverMatchesRangeQueries) {
-  CreateWriter();
+  create_writer();
   const std::vector<std::optional<int32_t>> values(12000);
-  Insert(values);
+  insert(values);
   ASSERT_TRUE(column_->seal().ok());
   EXPECT_EQ(column_->range_cache(), nullptr);
-  CheckNumeric(values, {-1, 0, 1});
-  Reopen();
+  check_numeric(values, {-1, 0, 1});
+  reopen();
   EXPECT_EQ(column_->range_cache(), nullptr);
-  CheckNumeric(values, {-1, 0, 1});
+  check_numeric(values, {-1, 0, 1});
 }
 
 TEST_F(InvertedRangeCacheTest, LowCardinalityWithoutRangeBuckets) {
-  CreateWriter();
+  create_writer();
   std::vector<std::optional<int32_t>> values(12000);
   for (size_t i = 0; i < values.size(); ++i) {
     if (i % 19 != 0) {
       values[i] = static_cast<int32_t>(i % 32) - 16;
     }
   }
-  Insert(values);
+  insert(values);
   ASSERT_TRUE(column_->seal().ok());
   EXPECT_EQ(column_->range_cache(), nullptr);
-  EXPECT_TRUE(RangeRows().empty());
-  CheckNumeric(values, {-100, -17, -16, -1, 0, 1, 15, 16, 100});
-  Reopen();
+  EXPECT_TRUE(range_rows().empty());
+  check_numeric(values, {-100, -17, -16, -1, 0, 1, 15, 16, 100});
+  reopen();
   EXPECT_EQ(column_->range_cache(), nullptr);
-  CheckNumeric(values, {-100, -17, -16, -1, 0, 1, 15, 16, 100});
+  check_numeric(values, {-100, -17, -16, -1, 0, 1, 15, 16, 100});
 }
 
 TEST_F(InvertedRangeCacheTest, DisabledRangeIndexDoesNotBuildCache) {
-  CreateWriter({}, DataType::INT32, false);
+  create_writer({}, DataType::INT32, false);
   const auto values = RandomValues(1200, true);
-  Insert(values);
+  insert(values);
   ASSERT_TRUE(column_->seal().ok());
   EXPECT_EQ(column_->range_cache(), nullptr);
-  CheckNumeric(values, {-1000, -300, 0, 300, 1000});
-  Reopen();
+  check_numeric(values, {-1000, -300, 0, 300, 1000});
+  reopen();
   EXPECT_EQ(column_->range_cache(), nullptr);
-  CheckNumeric(values, {-1000, -300, 0, 300, 1000});
+  check_numeric(values, {-1000, -300, 0, 300, 1000});
 }
 
 TEST_F(InvertedRangeCacheTest, Uint64HighBitAndExtremeBoundaries) {
@@ -782,21 +782,21 @@ TEST_F(InvertedRangeCacheTest, Uint64HighBitAndExtremeBoundaries) {
   for (size_t i = 0; i < bounds.size(); ++i) {
     values[i + 1] = bounds[i];
   }
-  CheckTypedSealAndReopen(DataType::UINT64, std::move(values), bounds);
+  check_typed_seal_and_reopen(DataType::UINT64, std::move(values), bounds);
 }
 
 TEST_F(InvertedRangeCacheTest, FloatRepresentableBoundaryNeighbors) {
-  CheckFloatingPoint<float>(DataType::FLOAT);
+  check_floating_point<float>(DataType::FLOAT);
 }
 
 TEST_F(InvertedRangeCacheTest, DoubleRepresentableBoundaryNeighbors) {
-  CheckFloatingPoint<double>(DataType::DOUBLE);
+  check_floating_point<double>(DataType::DOUBLE);
 }
 
 TEST_F(InvertedRangeCacheTest, SparseValuesHighNullRateAndHotTerms) {
   for (const uint32_t seed : {1, 868, 2026}) {
     SCOPED_TRACE(testing::Message() << "seed=" << seed);
-    CreateWriter();
+    create_writer();
     std::mt19937 random(seed);
     std::vector<std::optional<int32_t>> values(12000);
     for (auto &value : values) {
@@ -815,10 +815,10 @@ TEST_F(InvertedRangeCacheTest, SparseValuesHighNullRateAndHotTerms) {
           break;
       }
     }
-    Insert(values);
+    insert(values);
     ASSERT_TRUE(column_->seal().ok());
     ASSERT_NE(column_->range_cache(), nullptr);
-    auto bounds = NumericBounds();
+    auto bounds = numeric_bounds();
     bounds.insert(bounds.end(),
                   {-1000000001, -1000000000, -999999999, -500000001, -500000000,
                    -499999999, 499999999, 500000000, 500000001, 999999999,
@@ -832,12 +832,12 @@ TEST_F(InvertedRangeCacheTest, SparseValuesHighNullRateAndHotTerms) {
       }
     }
     ASSERT_TRUE(used_prefix);
-    CheckNumeric(values, bounds);
+    check_numeric(values, bounds);
     RangePrefixCacheOptions disabled;
     disabled.max_bytes = 0;
-    Reopen(disabled);
+    reopen(disabled);
     ASSERT_EQ(column_->range_cache(), nullptr);
-    CheckNumeric(values, bounds);
+    check_numeric(values, bounds);
     column_.reset();
     ASSERT_TRUE(context_.close().ok());
     test_util::RemoveTestPath(path_);
@@ -845,7 +845,7 @@ TEST_F(InvertedRangeCacheTest, SparseValuesHighNullRateAndHotTerms) {
 }
 
 TEST_F(InvertedRangeCacheTest, VariableLengthStringAndEmbeddedZeroBoundaries) {
-  CreateWriter({}, DataType::STRING);
+  create_writer({}, DataType::STRING);
   std::vector<std::optional<std::string>> values(6000);
   for (size_t i = 0; i < values.size(); ++i) {
     if (i % 97 == 0) {
@@ -889,14 +889,14 @@ TEST_F(InvertedRangeCacheTest, VariableLengthStringAndEmbeddedZeroBoundaries) {
       }
     }
     if (pass == 0) {
-      Reopen();
+      reopen();
       ASSERT_NE(column_->range_cache(), nullptr);
     }
   }
 }
 
 TEST_F(InvertedRangeCacheTest, BinaryStringsPreserveUnsignedLexicalOrder) {
-  CreateWriter({}, DataType::STRING);
+  create_writer({}, DataType::STRING);
   std::vector<std::optional<std::string>> values;
   values.reserve(12000);
   for (uint32_t i = 0; i < 4000; ++i) {
@@ -956,14 +956,14 @@ TEST_F(InvertedRangeCacheTest, BinaryStringsPreserveUnsignedLexicalOrder) {
       }
     }
     if (pass == 0) {
-      Reopen();
+      reopen();
       ASSERT_NE(column_->range_cache(), nullptr);
     }
   }
 }
 
 TEST_F(InvertedRangeCacheTest, SparseDocumentIdsDoNotCreatePhantomMatches) {
-  CreateWriter();
+  create_writer();
   const auto values = RandomValues(24000, false);
   for (uint32_t i = 0; i < values.size(); ++i) {
     // These gaps are absent documents, not NULL-valued documents. A cache
@@ -1001,7 +1001,7 @@ TEST_F(InvertedRangeCacheTest, SparseDocumentIdsDoNotCreatePhantomMatches) {
 
   // Correctness is required whether the cache is admitted or safely skipped.
   check_result(column_);
-  Reopen();
+  reopen();
   check_result(column_);
 }
 
