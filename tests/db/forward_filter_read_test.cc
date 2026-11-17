@@ -160,6 +160,22 @@ class ForwardFilterReadTest : public testing::TestWithParam<bool> {
     return filter.forward_view_ != nullptr;
   }
 
+  static bool uses_jit(const sqlengine::DocFilter &filter) {
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+    return filter.scalar_filter_ != nullptr;
+#else
+    (void)filter;
+    return false;
+#endif
+  }
+
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+  static bool jit_shares_prepared_view(const sqlengine::DocFilter &filter) {
+    return filter.scalar_filter_ &&
+           filter.scalar_filter_->view_ == filter.forward_view_;
+  }
+#endif
+
   static bool uses_sealed_deletion(const sqlengine::DocFilter &filter) {
     return filter.sealed_deletion_ != nullptr;
   }
@@ -621,6 +637,8 @@ TEST_P(ForwardFilterReadTest, LockedDecisionSurvivesSealingAndReadsLive) {
   ASSERT_TRUE(candidate->compute_filter().ok());
   ASSERT_TRUE(constant->compute_filter().ok());
   EXPECT_FALSE(uses_view(*candidate));
+  EXPECT_FALSE(uses_jit(*candidate));
+  EXPECT_FALSE(uses_jit(*constant));
   auto added = TestHelper::CreateDoc(24, *schema_);
   ASSERT_TRUE(segment_->insert(added).ok());
   ASSERT_TRUE(segment_->flush().ok());
@@ -674,6 +692,7 @@ TEST_P(ForwardFilterReadTest, FailedReprepareClearsPreviousReadState) {
   ASSERT_TRUE(segment_->destroy().ok());
   EXPECT_FALSE(candidate->compute_filter().ok());
   EXPECT_FALSE(uses_view(*candidate));
+  EXPECT_FALSE(uses_jit(*candidate));
   EXPECT_TRUE(candidate->is_filtered(2));
 }
 
@@ -884,6 +903,59 @@ TEST_P(ForwardFilterReadTest, ReorderedProjectionBoundariesAndOwnedView) {
   EXPECT_TRUE(weak.expired());
   if (view) EXPECT_NE(view->read_row(1024), nullptr);
 }
+
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+TEST_P(ForwardFilterReadTest, JitUsesPreparedViewAndKeepsLiveDeletionChecks) {
+  ASSERT_NO_FATAL_FAILURE(create(64));
+  ASSERT_NO_FATAL_FAILURE(reopen_persisted());
+  deletes_->mark_deleted(10000);
+  auto candidate = filter(
+      {"i32"}, cp::greater(cp::field_ref("i32"), cp::literal(int32_t{7})));
+  ASSERT_TRUE(candidate->compute_filter().ok());
+  const bool compiled = GetParam() && sqlengine::ScalarDocFilter::Enabled();
+  EXPECT_EQ(uses_jit(*candidate), compiled);
+  if (compiled) EXPECT_TRUE(jit_shares_prepared_view(*candidate));
+
+  // The bitmap was already non-empty at preparation. Later deletes remain
+  // visible through the same sealed deletion binding used by Arrow.
+  deletes_->mark_deleted(10012);
+  for (uint64_t row = 0; row < 64; ++row) {
+    const bool matches = row % 11 != 0 && row % 2 == 0 && row > 7 && row != 12;
+    EXPECT_EQ(candidate->is_filtered(row), !matches) << row;
+  }
+
+  if (GetParam()) {
+    std::weak_ptr<const ForwardColumn> owner = capture({"i32"})->column(0);
+    ASSERT_TRUE(segment_->destroy().ok());
+    EXPECT_FALSE(owner.expired());
+    EXPECT_FALSE(candidate->is_filtered(14));
+    EXPECT_TRUE(candidate->is_filtered(12));
+    EXPECT_TRUE(candidate->is_filtered(64));
+    candidate.reset();
+    EXPECT_TRUE(owner.expired());
+  }
+}
+
+TEST_P(ForwardFilterReadTest, UnsupportedJitExpressionKeepsPreparedArrowView) {
+  ASSERT_NO_FATAL_FAILURE(create(64));
+  ASSERT_NO_FATAL_FAILURE(reopen_persisted());
+  auto candidate =
+      filter({"i32"}, cp::greater(cp::call("add", {cp::field_ref("i32"),
+                                                   cp::literal(int32_t{1})}),
+                                  cp::literal(int32_t{7})));
+  ASSERT_TRUE(candidate->compute_filter().ok());
+  EXPECT_FALSE(uses_jit(*candidate));
+  EXPECT_EQ(uses_view(*candidate), GetParam());
+  for (uint64_t row = 0; row < 64; ++row) {
+    const bool matches = row % 11 != 0 && row % 2 == 0 && row + 1 > 7;
+    EXPECT_EQ(candidate->is_filtered(row), !matches) << row;
+  }
+  if (GetParam()) {
+    ASSERT_TRUE(segment_->destroy().ok());
+    EXPECT_FALSE(candidate->is_filtered(8));
+  }
+}
+#endif
 
 TEST_P(ForwardFilterReadTest, ArrowPredicateParityAndGlobalIdDeletes) {
   create();

@@ -18,6 +18,7 @@
 #include <arrow/table.h>
 #include <zvec/ailego/logger/logger.h>
 #include "db/sqlengine/planner/invert_search.h"
+#include "db/sqlengine/scalar_jit/runtime.h"
 
 namespace zvec::sqlengine {
 
@@ -26,6 +27,9 @@ Status DocFilter::compute_filter() {
   forward_view_.reset();
   forward_rows_ = 0;
   sealed_deletion_.reset();
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+  scalar_filter_.reset();
+#endif
   if (invert_cond_) {
     InvertSearch search(segment_.get());
     auto invert_res = search.exec_invert_cond_tree(invert_cond_.get());
@@ -57,6 +61,10 @@ Status DocFilter::compute_filter() {
   // construction still decides whether deletion is checked at all.
   const bool with_deletion = delete_filter_ != nullptr;
   if (forward_filter_expr_) {
+    scalar_jit::StageTimer preparation_timer("preparation");
+    forward_evaluator_ = scalar_jit::GetRuntimeConfig().profile
+                             ? &DocFilter::profiled_forward_filter
+                             : &DocFilter::is_matched_by_forward_filter;
     // get schema to bind to Expression
     const auto columns = query_info_->get_forward_filter_field_names();
     auto prepared = segment_->prepare_forward_read(columns, with_deletion);
@@ -85,6 +93,27 @@ Status DocFilter::compute_filter() {
     }
     *forward_filter_expr_ = bind_res.MoveValueUnsafe();
     forward_prepared_ = true;
+    auto reason = scalar_jit::UnavailableReason();
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+    if (reason.empty()) {
+      try {
+        auto compiled =
+            ScalarDocFilter::Make(*forward_filter_expr_, forward_view_);
+        if (compiled.ok()) {
+          scalar_filter_ = std::move(compiled).ValueUnsafe();
+          LOG_DEBUG("Scalar JIT forward filter ready");
+        } else {
+          reason =
+              scalar_jit::FailureReason(compiled.status(), "binding_failed");
+          LOG_DEBUG("Scalar JIT unavailable reason=%s status=%s",
+                    reason.c_str(), compiled.status().CodeAsString().c_str());
+        }
+      } catch (...) {
+        reason = "binding_failed";
+      }
+    }
+#endif
+    scalar_jit::RecordSelection(reason);
   } else if (with_deletion) {
     // Without a forward predicate the capture is only an optimization: on
     // any failure keep the segment's filter, which gives the same results.
@@ -124,7 +153,7 @@ bool DocFilter::is_filtered(uint64_t id) const {
 
 std::optional<bool> DocFilter::get_forward_bit(uint64_t id) const {
   if (forward_filter_expr_) {
-    return is_matched_by_forward_filter(id);
+    return (this->*forward_evaluator_)(id);
   }
   if (!forward_bitmap_) {
     return std::nullopt;
@@ -175,6 +204,26 @@ std::optional<std::vector<uint64_t>> DocFilter::get_bf_by_keys_and_update(
 }
 
 std::optional<bool> DocFilter::is_matched_by_forward_filter(uint64_t id) const {
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+  if (scalar_filter_) {
+    if (auto result = scalar_filter_->evaluate(id)) return result;
+  }
+#endif
+  return arrow_forward_filter(id);
+}
+
+std::optional<bool> DocFilter::profiled_forward_filter(uint64_t id) const {
+#ifdef ZVEC_ENABLE_SCALAR_JIT
+  if (scalar_filter_) {
+    scalar_jit::ExecutionSample sample(true);
+    if (auto result = scalar_filter_->evaluate(id)) return result;
+  }
+#endif
+  scalar_jit::ExecutionSample sample(false);
+  return arrow_forward_filter(id);
+}
+
+std::optional<bool> DocFilter::arrow_forward_filter(uint64_t id) const {
   ExecBatchPtr exec_batch;
   if (forward_view_) {
     exec_batch = forward_view_->read_row(id);

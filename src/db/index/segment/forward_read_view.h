@@ -31,7 +31,8 @@ namespace zvec {
 class SegmentImpl;
 namespace test {
 class ForwardFilterReadTest;
-}
+class ScalarDocFilterTest;
+}  // namespace test
 
 // One immutable, zero-copy forward column in segment-local row order. A
 // sealed segment builds each filtered column once and shares it with every
@@ -116,6 +117,7 @@ class ForwardColumn final {
   friend class SegmentImpl;
   friend class ForwardReadView;
   friend class test::ForwardFilterReadTest;
+  friend class test::ScalarDocFilterTest;
 
   // Validates the column's structure, type and length; never copies values.
   static arrow::Result<Ptr> Make(std::shared_ptr<arrow::Field> field,
@@ -171,6 +173,7 @@ class ForwardReadView final {
  private:
   friend class SegmentImpl;
   friend class test::ForwardFilterReadTest;
+  friend class test::ScalarDocFilterTest;
 
   // Wraps every column of a validated, caller-owned table. The caller must
   // guarantee buffer ownership; used by tests to build views from arbitrary
