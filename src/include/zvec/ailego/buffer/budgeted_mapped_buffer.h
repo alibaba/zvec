@@ -5,7 +5,7 @@
 #include <limits>
 #include <new>
 #include <utility>
-#include <zvec/ailego/buffer/memory_reservation.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/ailego/io/file.h>
 #if defined(__linux__)
 #include <sys/mman.h>
@@ -19,9 +19,6 @@ namespace zvec::ailego {
 class BudgetedMappedBuffer {
  public:
   BudgetedMappedBuffer() = default;
-  explicit BudgetedMappedBuffer(size_t bytes) {
-    resize(bytes);
-  }
   BudgetedMappedBuffer(const BudgetedMappedBuffer &) = delete;
   BudgetedMappedBuffer &operator=(const BudgetedMappedBuffer &) = delete;
   BudgetedMappedBuffer(BudgetedMappedBuffer &&rhs) noexcept {
@@ -39,44 +36,39 @@ class BudgetedMappedBuffer {
       File::TryMemoryUnmap(data_, mapped_size_);
   }
 
-  static size_t mapping_size(size_t bytes) {
+  // Zero denotes an empty request or an unrepresentable mapping size.
+  static size_t mapping_size(size_t bytes) noexcept {
     if (bytes == 0) return 0;
     const size_t page = MemoryLimitPool::page_buffer_size();
     if (page == 0 || bytes > std::numeric_limits<size_t>::max() - (page - 1))
-      throw std::bad_alloc();
+      return 0;
     return ((bytes + page - 1) / page) * page;
   }
 
   // Replacement is charged while the old allocation is still live. Contents
   // are not preserved on success; allocation failure leaves the old buffer.
-  void resize(size_t bytes) {
-    resize_impl(bytes, MemoryLimitPool::PendingAllocation::Kind::kWorkspace);
+  // Return 0 on success, -1 on invalid size or allocation/admission failure.
+  [[nodiscard]] int resize(size_t bytes) {
+    return resize_impl(bytes, true);
   }
 
   // Optional read-ahead must neither wait for nor evict mandatory consumers.
-  bool try_resize(size_t bytes) {
-    try {
-      resize_impl(bytes,
-                  MemoryLimitPool::PendingAllocation::Kind::kLockedExternal);
-      return true;
-    } catch (const std::bad_alloc &) {
-      return false;
-    }
+  [[nodiscard]] bool try_resize(size_t bytes) {
+    return resize_impl(bytes, false) == 0;
   }
 
  private:
-  void resize_impl(size_t bytes,
-                   MemoryLimitPool::PendingAllocation::Kind kind) {
-    if (bytes == size_) return;
+  int resize_impl(size_t bytes, bool required) try {
+    if (bytes == size_) return 0;
     BudgetedMappedBuffer replacement;
     if (bytes) {
       replacement.mapped_size_ = mapping_size(bytes);
+      if (!replacement.mapped_size_) return -1;
       auto &pool = MemoryLimitPool::get_instance();
       if (pool.capacity()) {
         replacement.mapping_ = pool.try_acquire_workspace_buffer(
-            replacement.mapped_size_,
-            kind == MemoryLimitPool::PendingAllocation::Kind::kWorkspace);
-        if (!replacement.mapping_) throw std::bad_alloc();
+            replacement.mapped_size_, required);
+        if (!replacement.mapping_) return -1;
         replacement.data_ =
             reinterpret_cast<char *>(replacement.mapping_->data);
         replacement.mapped_size_ = replacement.mapping_->bytes;
@@ -84,10 +76,14 @@ class BudgetedMappedBuffer {
         replacement.data_ =
             static_cast<char *>(File::MemoryMap(replacement.mapped_size_, 0));
       }
-      if (!replacement.data_) throw std::bad_alloc();
+      if (!replacement.data_) return -1;
       replacement.size_ = bytes;
     }
     swap(replacement);
+    return 0;
+  } catch (const std::bad_alloc &) {
+    // Allocation failures from reclaim callbacks use the same status path.
+    return -1;
   }
 
  public:

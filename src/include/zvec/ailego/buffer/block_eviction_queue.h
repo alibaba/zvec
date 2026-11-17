@@ -400,6 +400,9 @@ class ZVEC_AILEGO_API MemoryLimitPool {
     ProcessRssBudget::MaterializationStamp commit_mapping(size_t bytes);
 
    private:
+    friend class MemoryLimitPool;
+    bool reserve_with_metadata(size_t bytes, PendingAllocation &metadata,
+                               size_t metadata_bytes);
     MemoryLimitPool &pool_;
     const Kind kind_;
     std::atomic<size_t> *const counter_;

@@ -2463,6 +2463,36 @@ bool MemoryLimitPool::PendingAllocation::reserve(size_t bytes) {
   return reserved;
 }
 
+bool MemoryLimitPool::PendingAllocation::reserve_with_metadata(
+    size_t bytes, PendingAllocation &metadata, size_t metadata_bytes) {
+  assert(bytes_ == 0);
+  assert(&pool_ == &metadata.pool_ && metadata.bytes_ == 0 &&
+         metadata.kind_ == Kind::kLockedMetadata);
+  assert(kind_ == Kind::kWorkspace || kind_ == Kind::kLockedExternal);
+  if (bytes > std::numeric_limits<size_t>::max() - metadata_bytes) return false;
+  const size_t total = bytes + metadata_bytes;
+  std::shared_lock<std::shared_mutex> lifecycle_lock(pool_.lifecycle_mutex_);
+  const auto admit = [&] {
+    if (!pool_.try_reserve_allocation(total, Backing::kPending)) return false;
+    // Reserve native/RSS backing once, but publish each owner's own charge.
+    // Descriptor metadata must not count as external page-admission credit.
+    metadata.counter_->fetch_add(metadata_bytes, std::memory_order_relaxed);
+    counter_->fetch_add(bytes, std::memory_order_relaxed);
+    pool_.bg_cv_.notify_one();
+    return true;
+  };
+  if (kind_ == Kind::kWorkspace) {
+    if (!pool_.try_admit({total, total}, admit, true)) return false;
+  } else if (!admit()) {
+    // Match locked/optional admission: trim idle backing without owner calls.
+    pool_.trim_free_buffers(total);
+    if (!admit()) return false;
+  }
+  bytes_ = bytes;
+  metadata.bytes_ = metadata_bytes;
+  return true;
+}
+
 ProcessRssBudget::MaterializationStamp
 MemoryLimitPool::PendingAllocation::commit(size_t bytes) {
   return commit_mapping(bytes);
@@ -2807,9 +2837,9 @@ MemoryLimitPool::WorkspaceBuffer *MemoryLimitPool::try_acquire_workspace_buffer(
   PendingAllocation pending(
       *this, required ? PendingAllocation::Kind::kWorkspace
                       : PendingAllocation::Kind::kLockedExternal);
-  if (!pending.reserve(bytes)) return nullptr;
   PendingAllocation metadata(*this, PendingAllocation::Kind::kLockedMetadata);
-  if (!metadata.reserve(sizeof(WorkspaceBuffer))) return nullptr;
+  if (!pending.reserve_with_metadata(bytes, metadata, sizeof(WorkspaceBuffer)))
+    return nullptr;
   auto *buffer = new (std::nothrow) WorkspaceBuffer();
   if (!buffer) return nullptr;
   buffer->data = static_cast<uint8_t *>(File::MemoryMap(bytes, 0));

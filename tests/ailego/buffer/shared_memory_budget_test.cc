@@ -129,20 +129,32 @@ TEST_F(SharedMemoryBudgetTest, StringWorkspaceAssignmentKeepsCapacityCharged) {
 }
 
 TEST_F(SharedMemoryBudgetTest, MappedGrowthRefusalPreservesOwnedBacking) {
-  BudgetedMappedBuffer bytes(4096);
+  BudgetedMappedBuffer bytes;
+  ASSERT_EQ(0, bytes.resize(4096));
   std::memset(bytes.data(), 19, bytes.size());
   const auto *old = bytes.data();
+  const size_t old_size = bytes.size(), old_mapping = bytes.mapped_size();
+  const size_t charged = pool_.external_used();
+  EXPECT_NE(0, bytes.resize(SIZE_MAX));
+  EXPECT_FALSE(bytes.try_resize(SIZE_MAX));
+  EXPECT_EQ(charged, pool_.external_used());
   const size_t remaining = pool_.capacity() - pool_.used();
   ASSERT_TRUE(pool_.try_charge_external(remaining));
   {
     auto release = ScopeGuard::Make([&] { pool_.release_external(remaining); });
     EXPECT_FALSE(bytes.try_resize(128 * 1024));
-    EXPECT_THROW(bytes.resize(128 * 1024), std::bad_alloc);
+    EXPECT_NE(0, bytes.resize(128 * 1024));
     EXPECT_EQ(old, bytes.data());
+    EXPECT_EQ(old_size, bytes.size());
+    EXPECT_EQ(old_mapping, bytes.mapped_size());
     EXPECT_EQ(19, bytes.data()[bytes.size() - 1]);
   }
-  ASSERT_NO_THROW(bytes.resize(128 * 1024));
+  ASSERT_EQ(0, bytes.resize(128 * 1024));
   EXPECT_EQ(128u * 1024, bytes.size());
+  ASSERT_EQ(0, bytes.resize(0));
+  EXPECT_EQ(nullptr, bytes.data());
+  EXPECT_EQ(0u, bytes.mapped_size());
+  EXPECT_EQ(0u, pool_.external_used());
 }
 
 TEST_F(SharedMemoryBudgetTest, RetainedAllocatorCanReleaseOnAnotherThread) {
@@ -196,6 +208,10 @@ TEST_F(SharedMemoryBudgetTest, DisabledBudgetKeepsOrdinaryAllocationAvailable) {
   MemoryReservation memory;
   memory.add(4096);
   BudgetedVector<uint64_t> values(32, 17);
+  BudgetedMappedBuffer mapped;
+  ASSERT_EQ(0, mapped.resize(4097));
+  EXPECT_NE(0, mapped.resize(SIZE_MAX));
+  EXPECT_EQ(4097u, mapped.size());
   EXPECT_EQ(0u, memory.bytes());
   EXPECT_EQ(0u, pool_.external_used());
   EXPECT_EQ(17u, values.back());

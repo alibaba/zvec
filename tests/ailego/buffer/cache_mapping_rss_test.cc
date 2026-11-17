@@ -150,6 +150,98 @@ class CacheMappingRssTest : public testing::Test {
   MemoryLimitPool &pool_ = MemoryLimitPool::get_instance();
 };
 
+TEST_F(CacheMappingRssTest, WorkspaceAdmissionIncludesDescriptor) {
+  class Owner : public EvictableBlockOwner {
+   public:
+    Buffer buffer;
+    size_t evictions{0};
+    bool fail_reclaim{false};
+    bool is_dead_block(size_t, size_t) override {
+      return !buffer;
+    }
+    bool evict_block(size_t) override {
+      if (!buffer) return false;
+      if (fail_reclaim) throw std::bad_alloc();
+      buffer.reset();
+      ++evictions;
+      return true;
+    }
+  };
+  auto &queue = BlockEvictionQueue::get_instance();
+  const size_t page = pool_.page_buffer_size();
+  for (bool rss : {false, true}) {
+    SCOPED_TRACE(testing::Message() << "rss=" << rss);
+    ASSERT_EQ(0, pool_.init(0));
+    // Prepare this producer before measuring the available native capacity.
+    for (size_t i = 0; i < BlockEvictionQueue::kQueueCount; ++i)
+      ASSERT_TRUE(queue.add_single_block({}, static_cast<int>(i)));
+    BlockEvictionQueue::BlockType stale;
+    while (queue.evict_single_block(stale)) {
+    }
+    ASSERT_EQ(0, pool_.init(pool_.queue_allocated() + (rss ? 8 : 2) * page +
+                            sizeof(MemoryLimitPool::CacheBuffer)));
+    MemoryLimitPoolTestPeer::stop_background(pool_);
+    Owner owner;
+    owner.buffer = acquire(page);
+    ASSERT_NE(nullptr, owner.buffer);
+    MemoryLimitPool::WorkspaceBuffer *workspace = nullptr;
+    queue.set_valid(&owner);
+    auto cleanup = ScopeGuard::Make([&] {
+      queue.set_invalid(&owner);
+      EXPECT_TRUE(pool_.configure_process_rss_limit(0));
+      owner.buffer.reset();
+      EXPECT_TRUE(pool_.release_workspace_buffer(workspace));
+      (void)MemoryLimitPoolTestPeer::trim(pool_, SIZE_MAX);
+    });
+    ASSERT_TRUE(queue.add_single_block({0, 1, &owner, 0}, 0));
+    if (rss) {
+      ASSERT_TRUE(MemoryLimitPoolTestPeer::fixed_rss_limit(
+          pool_, 64 * kMiB + pool_.committed() + page));
+      ASSERT_EQ(page, MemoryLimitPoolTestPeer::rss_room(pool_));
+    } else {
+      ASSERT_EQ(page, pool_.available());
+    }
+    const auto before = pool_.stats();
+    // The payload fits, but its descriptor requires reclaiming the owner.
+    EXPECT_EQ(nullptr, pool_.try_acquire_workspace_buffer(page, false));
+    EXPECT_EQ(0u, owner.evictions);
+    EXPECT_EQ(before.used, pool_.used());
+    EXPECT_EQ(before.committed, pool_.committed());
+    BudgetedMappedBuffer mapped;
+    owner.fail_reclaim = true;
+    EXPECT_NE(0, mapped.resize(page));
+    EXPECT_EQ(nullptr, mapped.data());
+    EXPECT_EQ(before.used, pool_.used());
+    EXPECT_EQ(before.committed, pool_.committed());
+    EXPECT_EQ(0u, MemoryLimitPoolTestPeer::waiters(pool_));
+    EXPECT_EQ(0u, MemoryLimitPoolTestPeer::native_waiting(pool_));
+    owner.fail_reclaim = false;
+    // The throwing owner retains its buffer and restores its queue entry.
+    ASSERT_TRUE(queue.add_single_block({0, 1, &owner, 0}, 0));
+    workspace = pool_.try_acquire_workspace_buffer(page, true);
+    ASSERT_NE(nullptr, workspace);
+    EXPECT_EQ(1u, owner.evictions);
+    EXPECT_EQ(page, pool_.external_used());
+    EXPECT_EQ(pool_.queue_metadata_used() + sizeof(*workspace),
+              pool_.metadata_used());
+    EXPECT_EQ(1u, MemoryLimitPoolTestPeer::mappings(pool_));
+  }
+}
+
+TEST_F(CacheMappingRssTest, WorkspaceMappingFailureRollsBackAdmission) {
+  ASSERT_EQ(0, pool_.init(SIZE_MAX));
+  MemoryLimitPoolTestPeer::stop_background(pool_);
+  const auto before = pool_.stats();
+  // This exceeds a 64-bit process's address space after admission succeeds.
+  EXPECT_EQ(nullptr, pool_.try_acquire_workspace_buffer(SIZE_MAX / 4));
+  EXPECT_EQ(nullptr, pool_.try_acquire_workspace_buffer(SIZE_MAX));
+  EXPECT_EQ(before.used, pool_.used());
+  EXPECT_EQ(before.committed, pool_.committed());
+  EXPECT_EQ(before.external_used, pool_.external_used());
+  EXPECT_EQ(before.metadata_used, pool_.metadata_used());
+  EXPECT_EQ(0u, MemoryLimitPoolTestPeer::mappings(pool_));
+}
+
 TEST_F(CacheMappingRssTest, BatchPagesLeaveRoomForNewSlabHeaders) {
   const size_t page = MemoryLimitPool::page_buffer_size();
   const size_t slots = MemoryLimitPool::slab_size() / page - 1;
@@ -341,7 +433,8 @@ TEST_F(CacheMappingRssTest, RealMappedAllocatorsKeepTheirLiveRefaultAllowance) {
     ASSERT_TRUE(pool_.configure_process_rss_limit(0));
   };
   {
-    BudgetedMappedBuffer original(64 * kMiB);
+    BudgetedMappedBuffer original;
+    ASSERT_EQ(0, original.resize(64 * kMiB));
     const auto *data = original.data();
     BudgetedMappedBuffer moved(std::move(original));
     ASSERT_EQ(data, moved.data());
@@ -554,9 +647,11 @@ TEST_F(CacheMappingRssTest, BackgroundAllocatorsReclaimIdleNativeBacking) {
               BudgetedVector<uint8_t> values(page, 73);
               allocated = values.back() == 73;
             } else if (api == 2) {
-              BudgetedMappedBuffer buffer(page);
-              std::memset(buffer.data(), 73, buffer.size());
-              allocated = buffer.data()[page - 1] == 73;
+              BudgetedMappedBuffer buffer;
+              if (buffer.resize(page) == 0) {
+                std::memset(buffer.data(), 73, buffer.size());
+                allocated = buffer.data()[page - 1] == 73;
+              }
             } else if (api == 3) {
               RetainedBlockAllocator<uint64_t> allocator;
               auto *value = allocator.allocate(1);
