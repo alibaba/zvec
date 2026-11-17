@@ -15,7 +15,9 @@
 
 #include <stdint.h>
 #include <chrono>
+#include <condition_variable>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 #include <ailego/parallel/lock.h>
 #include "hnsw_context.h"
@@ -57,6 +59,7 @@ class HnswAlgorithm : public HnswAlgorithmBase {
 
   //! Cleanup HnswAlgorithm
   int cleanup() override {
+    duplicate_directory_.clear();
     return 0;
   }
 
@@ -85,7 +88,7 @@ class HnswAlgorithm : public HnswAlgorithmBase {
       level_probas_.push_back(proba);
     }
 
-    return 0;
+    return entity_.deduplicate_vectors() ? init_duplicate_directory() : 0;
   }
 
   //! Generate a random level
@@ -105,6 +108,37 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   }
 
  private:
+  struct DuplicateGroup {
+    node_id_t representative;
+    bool ready{false};
+    int status{0};
+    std::condition_variable published;
+
+    explicit DuplicateGroup(node_id_t id) : representative(id) {}
+  };
+
+  int init_duplicate_directory();
+  int add_representative(node_id_t id, level_t level, HnswContext *ctx);
+  int attach_duplicate(node_id_t id, node_id_t representative);
+
+  template <typename Visitor>
+  int visit_duplicate_group(node_id_t representative, HnswContext *ctx,
+                            Visitor &&visit) const {
+    const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
+    typename EntityType::DuplicateLinks head;
+    node_id_t doc_count;
+    {
+      // Only the representative's head changes. Published leaf records are
+      // immutable, so a snapshot lets queries expand without holding a lock.
+      std::lock_guard<std::mutex> lock(lock_pool_[representative & kLockMask]);
+      doc_count = entity_.doc_cnt();
+      int ret = entity.get_duplicate_links(representative, doc_count, &head);
+      if (ret != 0) return ret;
+    }
+    return entity.visit_duplicate_group(representative, doc_count, head,
+                                        std::forward<Visitor>(visit));
+  }
+
   //! Select in upper layer to get entry point for next layer search
   void select_entry_point(level_t level, node_id_t *entry_point, dist_t *dist,
                           HnswContext *ctx) const;
@@ -122,7 +156,10 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   //! add_node, filtered queries, and upper levels for every backend.
   //! Note: entry_point and dist will be updated to current level nearest node.
   void search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
-                        TopkHeap &topk, HnswContext *ctx) const;
+                        TopkHeap &topk, HnswContext *ctx,
+                        bool duplicate_filter = false) const;
+
+  int expand_duplicates(HnswContext *ctx) const;
 
   //! Update the node's neighbors
   void update_neighbors(HnswDistCalculator &dc, node_id_t id, level_t level,
@@ -159,6 +196,11 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   std::mutex mutex_{};                     // global mutex
   // TODO: spin lock?
   mutable std::vector<std::mutex> lock_pool_{};
+  // Only lookup/reservation and publication hold this lock. Distinct vector
+  // groups build concurrently using the existing HNSW node/entry-point locks.
+  std::mutex duplicate_directory_mutex_{};
+  std::unordered_multimap<size_t, std::shared_ptr<DuplicateGroup>>
+      duplicate_directory_{};
 };
 
 }  // namespace core
