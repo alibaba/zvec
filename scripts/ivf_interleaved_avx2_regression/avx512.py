@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the frozen AVX512 interleaved kernel against the AVX2 baseline."""
+"""Verify FP16 IP AUTO prefers AVX2 while explicit AVX512 stays available."""
 import json
 from pathlib import Path
 import sys
@@ -16,6 +16,8 @@ def prepare(bundle, out):
     meta = json.loads((bundle / 'avx512-manifest.json').read_text())
     if meta['baseline_commit'] != BASELINE:
         raise RuntimeError('Use the post-record-alignment baseline 5f489fd4')
+    if meta.get('dispatch_policy') != 'fp16_ip_auto_avx2':
+        raise RuntimeError('Use the 20261117 FP16 IP AUTO policy handoff')
     sources = {}
     for version in ['before', 'after']:
         source = out / 'sources' / version
@@ -49,12 +51,13 @@ def prepare(bundle, out):
 
 def finalize(out, summary):
     if summary['native_linux_x86']:
-        kit.run([out / 'bin-after/interleaved_dispatch_probe', '--require-avx512'],
-                out / 'dispatch-avx512-required.log')
+        kit.run([out / 'bin-after/interleaved_dispatch_probe', '--require-avx512-policy'],
+                out / 'dispatch-avx512-policy-required.log')
         for mode in ['correctness', 'sanitized']:
             xml = out / (mode + '-after') / 'turbo_matrix_test/results.xml'
             for name in ['Avx512JointInterleavedQueriesAndNoAllocations',
                          'Avx2JointInterleavedQueriesAndNoAllocations',
+                         'Avx512Fp16IpAutoUsesAvx2',
                          'InterleavedDispatchHonorsArchitectureAndLayout',
                          'InterleavedAvx512FeatureGatesAndFallback',
                          'InterleavedFp16AccumulatesInFp32']:
@@ -66,11 +69,12 @@ def finalize(out, summary):
         summary['status'] = 'CORRECTNESS_FAILED'
     elif any(not r['ok'] for tests in both for r in tests.values()):
         summary['status'] = 'SANITIZER_FAILED'
-    summary['avx512_native_verified'] = summary['native_linux_x86']
+    summary['avx512_policy_native_verified'] = summary['native_linux_x86']
 
 
 if __name__ == '__main__':
     sys.exit(verify.main(prepare_sources=prepare,
                          sanitizer_tests=[*verify.SAN_TESTS, 'turbo_record_alignment_test'],
                          finalize=finalize,
-                         extra_tools=['avx512.py', 'AVX512_AGENT_zh.txt']))
+                         extra_tools=['avx512.py', 'focused_fp16_ip.py',
+                                      'AVX512_FP16_IP_REVERIFY_zh.txt']))

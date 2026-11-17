@@ -271,8 +271,14 @@ TEST(TurboMatrix, InterleavedDispatchHonorsArchitectureAndLayout) {
             metric, type, rows, CpuArchType::kAVX2);
         auto avx512 = get_interleaved_many_to_many_distance_func(
             metric, type, rows, CpuArchType::kAVX512);
-        EXPECT_EQ(bool(neon) || bool(avx2) || bool(avx512), bool(automatic));
-        if (avx512) EXPECT_EQ(automatic.target_type(), avx512.target_type());
+        const bool prefer_avx2 =
+            type == DataType::kFp16 && metric == MetricType::kInnerProduct;
+        EXPECT_EQ(bool(neon) || bool(avx2) || (!prefer_avx2 && bool(avx512)),
+                  bool(automatic));
+        if (prefer_avx2 && avx2)
+          EXPECT_EQ(automatic.target_type(), avx2.target_type());
+        else if (!prefer_avx2 && avx512)
+          EXPECT_EQ(automatic.target_type(), avx512.target_type());
 #if defined(AILEGO_ARM64_GNU_LIKE)
         ASSERT_TRUE(neon);
 #else
@@ -320,6 +326,44 @@ TEST(TurboMatrix, InterleavedDispatchHonorsArchitectureAndLayout) {
       EXPECT_EQ(bool(full), bool(get_interleaved_many_to_many_distance_func(
                                 MetricType::kInnerProduct, DataType::kFp32, 32,
                                 CpuArchType::kAVX2)));
+  }
+}
+
+TEST(TurboMatrix, Avx512Fp16IpAutoUsesAvx2) {
+  using namespace turbo;
+  const auto metric = MetricType::kInnerProduct;
+  const auto type = DataType::kFp16;
+  if (!get_interleaved_many_to_many_distance_func(metric, type, 32,
+                                                  CpuArchType::kAVX512) ||
+      !get_interleaved_many_to_many_distance_func(metric, type, 32,
+                                                  CpuArchType::kAVX2))
+    GTEST_SKIP() << "Both AVX512 and AVX2 kernels required";
+  for (size_t rows : {2U, 4U, 8U, 16U, 32U}) {
+    auto automatic =
+        get_interleaved_many_to_many_distance_func(metric, type, rows);
+    auto avx2 = get_interleaved_many_to_many_distance_func(metric, type, rows,
+                                                           CpuArchType::kAVX2);
+    auto avx512 = get_interleaved_many_to_many_distance_func(
+        metric, type, rows, CpuArchType::kAVX512);
+    ASSERT_TRUE(automatic);
+    ASSERT_TRUE(avx2);
+    ASSERT_TRUE(avx512);
+    EXPECT_EQ(automatic.target_type(), avx2.target_type());
+    EXPECT_NE(automatic.target_type(), avx512.target_type());
+  }
+  // Losing AVX2 must not silently opt AUTO back into the slower AVX512 path.
+  auto &flags = ailego::internal::CpuFeatures::static_flags_;
+  const auto saved = flags;
+  for (int missing = 0; missing < 2; ++missing) {
+    if (missing == 0) flags.AVX2 = false;
+    if (missing == 1) flags.FMA = false;
+    auto automatic =
+        get_interleaved_many_to_many_distance_func(metric, type, 32);
+    auto explicit_avx512 = get_interleaved_many_to_many_distance_func(
+        metric, type, 32, CpuArchType::kAVX512);
+    flags = saved;
+    EXPECT_FALSE(automatic);
+    EXPECT_TRUE(explicit_avx512);
   }
 }
 

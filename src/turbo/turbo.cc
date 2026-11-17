@@ -741,6 +741,12 @@ InterleavedManyToManyDistanceFunc get_interleaved_many_to_many_distance_func(
     CpuArchType cpu_arch_type) {
   for (const auto &k : kInterleavedKernelTable) {
     if (k.dtype != data_type) continue;
+    // FP16 IP is faster with AVX2 on measured IVF workloads. Keep AVX512
+    // available to explicit requests without selecting it automatically.
+    if (cpu_arch_type == CpuArchType::kAuto && data_type == DataType::kFp16 &&
+        metric_type == MetricType::kInnerProduct &&
+        k.arch == CpuArchType::kAVX512)
+      continue;
     if (CanUseKernel(cpu_arch_type, k.arch, k.required_cpu_features)) {
       // The per-ISA factory also checks whether its kernels were compiled.
       auto distance = k.make(metric_type, data_type, rows);

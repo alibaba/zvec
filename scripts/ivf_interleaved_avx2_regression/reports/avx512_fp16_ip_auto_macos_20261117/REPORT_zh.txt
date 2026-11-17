@@ -1,0 +1,58 @@
+FP16 IP AUTO 选择 AVX2 — macOS ARM64 回归
+2026-11-17
+
+结论：MACOS_REGRESSION_PASS_EXISTING_UB_REMAINS
+生产代码仅 src/turbo/turbo.cc 增加6行：AUTO 的 FP16/IP 跳过 AVX512 项。
+显式 AVX512 入口和四种 FP32/FP16 IP/L2 内核保留；FP32 IP/L2、FP16 L2 的 AUTO 仍优先 AVX512。
+未改变距离算法、布局、转置、累加顺序、IVF调用点；macOS ARM64 仍使用 NEON。
+
+正确性
+- 53 个相关程序：{'passed': 578, 'skipped': 49, 'disabled': 10, 'failed': 0}。
+- 旧索引兼容：12通过 /4跳过 /16禁用 /0失败。
+- 新 Avx512Fp16IpAutoUsesAvx2 在 ARM64 上跳过，不能算 x86 数值/分派已验证。
+- x86 新专项覆盖2/4/8/16/32行的AUTO=AVX2、显式AVX512保留，缺AVX2/FMA时不自动回到AVX512。
+- 继续保留显式 AVX512/AVX2 数值对比、边界、无分配、FP32累加和旧索引测试。
+
+UBSan
+- 5个程序全插桩，无新增报告；旧record对齐报告为0。
+- 仍有既有 entropy_integer_quantizer/integer_quantizer.cc:352 NaN转signed char报告。
+  不是 sanitizer 全绿；本轮不修改此文件，日志原样保留。
+- 本轮macOS未运行ASan，服务器要求完整ASan+UBSan，不关闭alignment/vptr等检查。
+
+实际查询性能
+- macOS基线为54e990b7；在修改前构建并静态链接，与候选使用同一bench.cc。
+- 两轮各288项，5个>=50ms样本取中位数；before→after / after→before。
+- 任一轮>5%的87项逐项交替复测两轮，持续回退0项。
+- 全部构建、正确性和UBSan测试结束后计时；无其他主动压测，桌面后台服务仍运行，未绑核。
+- 测试为构造的旧交错索引上真实IVF search_impl查询，完整块32行，不能外推全部生产数据集。
+- 加速比=基线耗时/候选耗时，组内几何平均，>1更快。
+
+类型 | 度量 | 第一轮 | 第二轮
+--- | --- | --- | ---
+Raw-FP32 | L2 | 1.024x | 1.022x
+Raw-FP32 | IP | 0.991x | 1.003x
+Raw-FP16 | L2 | 0.941x | 0.983x
+Raw-FP16 | IP | 1.000x | 0.993x
+Raw-INT8 | L2 | 0.989x | 0.927x
+Record-INT8 | L2 | 0.989x | 0.986x
+Raw-INT8 | IP | 0.968x | 0.973x
+Record-INT8 | IP | 1.013x | 1.000x
+Raw-INT4 | L2 | 0.993x | 0.921x
+Record-INT4 | L2 | 0.982x | 0.944x
+Raw-INT4 | IP | 0.984x | 0.999x
+Record-INT4 | IP | 0.993x | 0.966x
+
+Top-K：[{'round': 1, 'records': 39360, 'ids_identical': True, 'max_score_error': 0.0}, {'round': 2, 'records': 39360, 'ids_identical': True, 'max_score_error': 0.0}]
+持续回退：[]
+
+工具与交接
+- clang-format 18、clang-tidy（turbo.cc/matrix测试）、git diff --check通过。
+- 新长采样脚本的合成检查：正常数据PASS、性能回退REVIEW、分数不一致FAIL；
+  这些只是工具检查，不是原生x86性能证据。
+- x86主对照5f489fd4→冻结修复候选（与macOS本轮54e990b7基线不同，口径明确）。
+- 两版相同测试补丁；包内完整文件集合/SHA256自检，显式分派探针校验新策略。
+- 服务器强制五场景>=1000ms、6组ABBA/BAAB+AA，验证恢复到原AVX2基线，
+  不能仅与已知较慢的54e990b7相比。还必须确认FP32的AVX512收益保留。
+- 入口：scripts/ivf_interleaved_avx2_regression/AVX512_FP16_IP_REVERIFY_zh.txt。
+- 包：artifacts/ivf-avx512-fp16-ip-auto-handoff-20261117.tar.gz及.sha256。
+- 本轮代码、macOS报告/证据及x86交接包随本次提交归档；原生x86复验仍待执行。

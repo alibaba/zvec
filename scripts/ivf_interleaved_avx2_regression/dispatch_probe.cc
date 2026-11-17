@@ -6,7 +6,7 @@
 int main(int argc, char **argv) {
   using namespace zvec::turbo;
   const auto &f = zvec::ailego::internal::CpuFeatures::static_flags_;
-  bool ready = true, ready512 = true;
+  bool ready = true, ready512 = true, policy_ready = true;
   for (auto metric :
        {MetricType::kSquaredEuclidean, MetricType::kInnerProduct}) {
     for (auto type : {DataType::kFp32, DataType::kFp16}) {
@@ -24,11 +24,23 @@ int main(int argc, char **argv) {
       std::printf("metric=%d dtype=%d AVX512=%d AUTO_IS_AVX512=%d\n",
                   int(metric), int(type), bool(avx512), selected);
       ready512 = ready512 && bool(avx512) && selected;
+      const bool selected_avx2 =
+          avx2 && automatic.target_type() == avx2.target_type();
+      const bool prefer_avx2 =
+          type == DataType::kFp16 && metric == MetricType::kInnerProduct;
+      const bool policy_matches = prefer_avx2 ? selected_avx2 : selected;
+      std::printf("metric=%d dtype=%d AUTO_IS_AVX2=%d POLICY_OK=%d\n",
+                  int(metric), int(type), selected_avx2, policy_matches);
+      policy_ready =
+          policy_ready && bool(avx512) && bool(avx2) && policy_matches;
     }
   }
   std::printf("CPU AVX2=%d FMA=%d F16C=%d NEON=%d; joint_avx2_ready=%d\n",
               f.AVX2, f.FMA, f.F16C, f.NEON, ready);
   std::printf("CPU AVX512F=%d; joint_avx512_ready=%d\n", f.AVX512F, ready512);
+  std::printf("joint_avx512_fp16_ip_policy_ready=%d\n", policy_ready);
+  if (argc > 1 && std::strcmp(argv[1], "--require-avx512-policy") == 0)
+    return policy_ready ? 0 : 2;
   if (argc > 1 && std::strcmp(argv[1], "--require-avx512") == 0)
     return ready512 ? 0 : 2;
   return argc > 1 && std::strcmp(argv[1], "--require-avx2") == 0 && !ready ? 2
