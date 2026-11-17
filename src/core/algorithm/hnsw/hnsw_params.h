@@ -118,5 +118,9 @@ inline const std::string PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY(
 inline const std::string PARAM_HNSW_STREAMER_USE_EXTERNAL_VECTOR(
     "proxima.hnsw.streamer.use_external_vector");
 
+// Experimental: only byte-identical, uncompressed vectors share navigation.
+inline const std::string PARAM_HNSW_STREAMER_DEDUPLICATE_VECTORS(
+    "proxima.hnsw.streamer.deduplicate_vectors");
+
 }  // namespace core
 }  // namespace zvec
