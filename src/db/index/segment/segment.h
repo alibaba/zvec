@@ -35,6 +35,7 @@
 #include "db/index/common/id_map.h"
 #include "db/index/common/meta.h"
 #include "db/index/common/version_manager.h"
+#include "db/index/segment/forward_read_view.h"
 #include "db/index/storage/base_forward_store.h"
 
 namespace zvec {
@@ -44,6 +45,35 @@ class CombinedRecordBatchReader;
 class Segment {
  public:
   using Ptr = std::shared_ptr<Segment>;
+
+  // A query-local access decision, not itself an immutable data view. A null
+  // view explicitly selects locked Segment::fetch; it never denotes a failed
+  // capture. Schema, row boundary and eligibility are captured together.
+  struct ForwardReadState {
+    std::shared_ptr<arrow::Schema> schema;
+    uint64_t num_rows{0};
+    ForwardReadView::Ptr view;
+    // Sealed IPC only, when requested: the deletion check for this segment,
+    // mapping local rows to global doc IDs through the immutable, owned
+    // GLOBAL_DOC_ID column instead of a locked segment lookup. Same results
+    // as get_filter(); the delete bitmap keeps its own synchronization, so
+    // deletes made during the query stay visible. Null selects get_filter().
+    IndexFilter::Ptr deletion_filter;
+  };
+
+  // Captures how a query reads `columns` per candidate. Implementations that
+  // cannot prove buffer ownership return a null view (locked fetch). The
+  // segment implementation uses owning views only for sealed IPC segments;
+  // writing segments (even immediately after flush) and Parquet keep
+  // per-candidate locked fetch. A sealed segment builds each requested column
+  // once and shares it with every later projection until DDL, reload or
+  // close; composing a view for already-built columns copies no data.
+  // `with_deletion` also requests deletion_filter.
+  // Callers keep this decision fixed and enforce num_rows only for an owning
+  // view. Locked fetch reads live rows, including appends after preparation,
+  // and must be protected from close/DDL; an owning view needs no such guard.
+  virtual arrow::Result<ForwardReadState> prepare_forward_read(
+      const std::vector<std::string> &columns, bool with_deletion) = 0;
 
   static Result<Ptr> CreateAndOpen(const std::string &path,
                                    const CollectionSchema &schema,
