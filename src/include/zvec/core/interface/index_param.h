@@ -421,6 +421,10 @@ struct ZVEC_CORE_API HNSWIndexParam : public BaseIndexParam {
   int m = kDefaultHnswNeighborCount;
   int ef_construction = kDefaultHnswEfConstruction;
   bool use_contiguous_memory = false;
+  // Experimental exact-vector deduplication. Leaves retain their own IDs;
+  // only representatives participate in HNSW navigation. Default layout and
+  // behavior are unchanged when disabled.
+  bool deduplicate_vectors = false;
 
   // Optional provider of the original vectors used to build the graph,
   // with their meta. Runtime only, not serialized.
