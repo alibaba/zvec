@@ -12,7 +12,6 @@
 #include "numeric_cases.h"
 #include <filesystem>
 #include <limits>
-#include <memory>
 #include <stdexcept>
 #include <vector>
 #include <zvec/ailego/utility/file_helper.h>
@@ -56,66 +55,116 @@ void VerifyNumericIds(NumericDataset &reader, NumericBatch &batch,
     throw std::runtime_error("Incorrect result count");
 }
 
-// Verify: pass non-null reader and column, both borrowed from the caller.
-// reader scans the original dataset to verify the results returned by column.
-// Query: pass nullptr for both. This function opens and owns a read-only index
-// for this case, then assigns column for measurement.
+CompareOp NumericCompareOp(const std::string &name) {
+  if (name == "is_null") return CompareOp::IS_NULL;
+  if (name == "is_not_null") return CompareOp::IS_NOT_NULL;
+  if (name == "eq_hit" || name == "eq_hottest" || name == "eq_hot" ||
+      name == "eq_cold" || name == "eq_miss")
+    return CompareOp::EQ;
+  if (name == "ne_hit") return CompareOp::NE;
+  if (name == "lt_q01" || name == "lt_q11" || name == "lt_q33" ||
+      name == "lt_q50" || name == "lt_q77" || name == "lt_q90" ||
+      name == "lt_q99")
+    return CompareOp::LT;
+  if (name == "gt_q01" || name == "gt_q11" || name == "gt_q33" ||
+      name == "gt_q50" || name == "gt_q77" || name == "gt_q90" ||
+      name == "gt_q99")
+    return CompareOp::GT;
+  throw std::invalid_argument("Unknown numeric query case: " + name);
+}
+
+// NULL queries validate their marker and have no numeric operands.
 template <typename T>
-JsonObject ExecuteNumericCase(const NumericProfile &profile,
-                              const std::string &index_path,
-                              const JsonObject &record, NumericDataset *reader,
-                              InvertedColumnIndexer *column) {
-  const auto name = Text(record, "name");
-  const auto inputs = record["inputs"].as_array();
-  const bool null_query = name == "is_null" || name == "is_not_null";
-  std::vector<T> operands;
-  std::vector<std::string> encoded;
-  if (null_query) {
+std::vector<T> ReadNumericOperands(const JsonArray &inputs, CompareOp op) {
+  if (op == CompareOp::IS_NULL || op == CompareOp::IS_NOT_NULL) {
     if (inputs.size() != 1 || !inputs[0].is_null()) {
       throw std::invalid_argument(
           "NULL query requires one null parameter marker");
     }
-  } else {
-    for (const auto &input : inputs) {
-      if (!input.is_integer() ||
-          input.as_integer() < std::numeric_limits<T>::min() ||
-          input.as_integer() > std::numeric_limits<T>::max()) {
-        throw std::invalid_argument(
-            "Numeric query operand exceeds data type bounds");
+    return {};
+  }
+  std::vector<T> operands;
+  for (const auto &input : inputs) {
+    if (!input.is_integer() ||
+        input.as_integer() < std::numeric_limits<T>::min() ||
+        input.as_integer() > std::numeric_limits<T>::max()) {
+      throw std::invalid_argument(
+          "Numeric query operand exceeds data type bounds");
+    }
+    operands.push_back(static_cast<T>(input.as_integer()));
+  }
+  return operands;
+}
+
+// The caller owns the dataset reader and the index shared by verification
+// cases.
+template <typename T>
+void VerifyNumericCase(const JsonObject &record, NumericDataset &dataset,
+                       InvertedColumnIndexer &column) {
+  const auto name = Text(record, "name");
+  const auto inputs = record["inputs"].as_array();
+  const auto op = NumericCompareOp(name);
+  const auto operands = ReadNumericOperands<T>(inputs, op);
+  NumericBatch batch;
+  for (size_t i = 0; i < inputs.size(); ++i) {
+    try {
+      if (op == CompareOp::IS_NULL) {
+        VerifyNumericIds(
+            dataset, batch, column.search_null(),
+            [](bool is_null, const std::string &) { return is_null; });
+      } else if (op == CompareOp::IS_NOT_NULL) {
+        VerifyNumericIds(
+            dataset, batch, column.search_non_null(),
+            [](bool is_null, const std::string &) { return !is_null; });
+      } else {
+        const auto result = column.search(EncodeValue(operands[i]), op);
+        VerifyNumericIds(
+            dataset, batch, result,
+            [&](bool is_null, const std::string &bytes) {
+              if (is_null) return false;
+              const auto value = DecodeValue<T>(bytes);
+              switch (op) {
+                case CompareOp::EQ:
+                  return value == operands[i];
+                case CompareOp::NE:
+                  return value != operands[i];
+                case CompareOp::LT:
+                  return value < operands[i];
+                case CompareOp::GT:
+                  return value > operands[i];
+                default:
+                  throw std::invalid_argument("Unsupported numeric comparison");
+              }
+            });
       }
-      operands.push_back(static_cast<T>(input.as_integer()));
-      encoded.push_back(EncodeValue(operands.back()));
+    } catch (const std::exception &error) {
+      throw std::runtime_error(
+          "verification failed for case '" + name + "', input " +
+          (operands.empty() ? "NULL" : std::to_string(operands[i])) + ": " +
+          error.what());
     }
   }
-  JsonObject before;
-  std::unique_ptr<IndexFixture> query_index;
-  if (!reader) {
-    before = MemorySnapshot();
-    query_index =
-        std::make_unique<IndexFixture>(profile.data_type, index_path, true);
-    column = &query_index->column();
-  }
-  auto execute = [&](auto search, auto predicate) {
-    if (reader) {
-      NumericBatch batch;
-      for (size_t i = 0; i < inputs.size(); ++i) {
-        try {
-          VerifyNumericIds(*reader, batch, search(i),
-                           [&](bool is_null, const std::string &value) {
-                             return predicate(is_null, value, i);
-                           });
-        } catch (const std::exception &error) {
-          throw std::runtime_error(
-              "verification failed for case '" + name + "', input " +
-              (null_query ? "NULL" : std::to_string(operands[i])) + ": " +
-              error.what());
-        }
-      }
-      return JsonObject();
-    }
-    std::vector<uint64_t> match_counts(inputs.size());
-    bool collect_counts = true;
-    const auto mean_ns_per_query = MeasureRepeatedQueries(inputs.size(), [&]() {
+}
+
+// Each timed case owns its index; input preparation and index opening are
+// untimed.
+template <typename T>
+JsonObject QueryNumericCase(DataType data_type, const std::string &index_path,
+                            const JsonObject &record) {
+  const auto name = Text(record, "name");
+  const auto inputs = record["inputs"].as_array();
+  const auto op = NumericCompareOp(name);
+  const auto operands = ReadNumericOperands<T>(inputs, op);
+  std::vector<std::string> encoded;
+  for (auto operand : operands) encoded.push_back(EncodeValue(operand));
+
+  const auto before = MemorySnapshot();
+  IndexFixture index(data_type, index_path, true);
+  auto &column = index.column();
+  std::vector<uint64_t> match_counts(inputs.size());
+  bool collect_counts = true;
+  auto measure = [&](auto search) {
+    return MeasureRepeatedQueries(inputs.size(), [&]() {
       for (size_t i = 0; i < inputs.size(); ++i) {
         auto result = search(i);
         if (!result) throw std::runtime_error("Numeric query failed: " + name);
@@ -126,58 +175,24 @@ JsonObject ExecuteNumericCase(const NumericProfile &profile,
       // Record counts only during the first measured iteration.
       collect_counts = false;
     });
-    const auto after = MemorySnapshot();
-    query_index->close();
-    auto result = QueryReport(name, mean_ns_per_query, before, after);
-    JsonArray counts;
-    for (auto count : match_counts) counts.push(JsonValue(count));
-    result.set("match_counts", counts);
-    return result;
   };
-  if (name == "is_null") {
-    return execute(
-        [&](size_t) { return column->search_null(); },
-        [&](bool is_null, const std::string &, size_t) { return is_null; });
+  double mean_ns_per_query;
+  if (op == CompareOp::IS_NULL) {
+    mean_ns_per_query = measure([&](size_t) { return column.search_null(); });
+  } else if (op == CompareOp::IS_NOT_NULL) {
+    mean_ns_per_query =
+        measure([&](size_t) { return column.search_non_null(); });
+  } else {
+    mean_ns_per_query =
+        measure([&](size_t i) { return column.search(encoded[i], op); });
   }
-  if (name == "is_not_null") {
-    return execute(
-        [&](size_t) { return column->search_non_null(); },
-        [&](bool is_null, const std::string &, size_t) { return !is_null; });
-  }
-  if (name == "eq_hit" || name == "eq_hottest" || name == "eq_hot" ||
-      name == "eq_cold" || name == "eq_miss") {
-    return execute(
-        [&](size_t i) { return column->search(encoded[i], CompareOp::EQ); },
-        [&](bool is_null, const std::string &value, size_t i) {
-          return !is_null && DecodeValue<T>(value) == operands[i];
-        });
-  }
-  if (name == "ne_hit") {
-    return execute(
-        [&](size_t i) { return column->search(encoded[i], CompareOp::NE); },
-        [&](bool is_null, const std::string &value, size_t i) {
-          return !is_null && DecodeValue<T>(value) != operands[i];
-        });
-  }
-  if (name == "lt_q01" || name == "lt_q11" || name == "lt_q33" ||
-      name == "lt_q50" || name == "lt_q77" || name == "lt_q90" ||
-      name == "lt_q99") {
-    return execute(
-        [&](size_t i) { return column->search(encoded[i], CompareOp::LT); },
-        [&](bool is_null, const std::string &value, size_t i) {
-          return !is_null && DecodeValue<T>(value) < operands[i];
-        });
-  }
-  if (name == "gt_q01" || name == "gt_q11" || name == "gt_q33" ||
-      name == "gt_q50" || name == "gt_q77" || name == "gt_q90" ||
-      name == "gt_q99") {
-    return execute(
-        [&](size_t i) { return column->search(encoded[i], CompareOp::GT); },
-        [&](bool is_null, const std::string &value, size_t i) {
-          return !is_null && DecodeValue<T>(value) > operands[i];
-        });
-  }
-  throw std::invalid_argument("Unknown numeric query case: " + name);
+  const auto after = MemorySnapshot();
+  index.close();
+  auto result = QueryReport(name, mean_ns_per_query, before, after);
+  JsonArray counts;
+  for (auto count : match_counts) counts.push(JsonValue(count));
+  result.set("match_counts", counts);
+  return result;
 }
 
 JsonObject Build(const std::string &index_path, const std::string &run_dir) {
@@ -227,8 +242,7 @@ void Verify(NumericDataset &dataset, const std::string &index_path) {
   const auto &profile = dataset.profile();
   IndexFixture index(profile.data_type, index_path, true);
   for (const auto &record : dataset.query_cases())
-    ExecuteNumericCase<T>(profile, index_path, record, &dataset,
-                          &index.column());
+    VerifyNumericCase<T>(record, dataset, index.column());
 }
 
 
@@ -272,11 +286,10 @@ JsonObject QueryNumeric(const std::string &run_dir) {
 
   JsonArray cases;
   for (const auto &record : inputs) {
-    auto query = profile.data_type == DataType::INT32
-                     ? ExecuteNumericCase<int32_t>(profile, index_path, record,
-                                                   nullptr, nullptr)
-                     : ExecuteNumericCase<int64_t>(profile, index_path, record,
-                                                   nullptr, nullptr);
+    auto query =
+        profile.data_type == DataType::INT32
+            ? QueryNumericCase<int32_t>(profile.data_type, index_path, record)
+            : QueryNumericCase<int64_t>(profile.data_type, index_path, record);
     cases.push(query);
   }
   JsonObject result;
