@@ -28,6 +28,9 @@ jobs:
           - platform: windows-11-arm
             msvc_arch: arm64
             python_version: '3.11'
+            # The hosted image's default MSVC 19.52 fails Snowball codegen
+            # even on main. Use the installed v143 toolset without patches.
+            msvc_toolset: '14.44'
 
     env:
       SCCACHE_GHA_ENABLED: "true"
@@ -69,6 +72,7 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
           arch: ${{ matrix.msvc_arch }}
+          toolset: ${{ matrix.msvc_toolset || '' }}
 
       - name: Set up environment variables
         run: |

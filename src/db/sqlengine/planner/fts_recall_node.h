@@ -30,7 +30,8 @@ namespace zvec::sqlengine {
 class FtsRecallNode : public std::enable_shared_from_this<FtsRecallNode> {
  public:
   FtsRecallNode(Segment::Ptr segment, QueryInfo::Ptr query_info,
-                DocFilter::Ptr doc_filter, int batch_size);
+                DocFilter::Ptr doc_filter, int batch_size,
+                bool rank_only = false);
 
   //! get schema
   std::shared_ptr<arrow::Schema> schema() const {
@@ -46,6 +47,7 @@ class FtsRecallNode : public std::enable_shared_from_this<FtsRecallNode> {
   struct State {
     FtsIndexResults::Ptr fts_result_;
     IndexResults::IteratorUPtr iter_;
+    size_t rank_offset_{0};
   };
 
   Segment::Ptr segment_;
@@ -53,6 +55,7 @@ class FtsRecallNode : public std::enable_shared_from_this<FtsRecallNode> {
   DocFilter::Ptr doc_filter_;
   const std::vector<std::string> &fetched_columns_;
   int batch_size_;
+  bool rank_only_;
   std::shared_ptr<arrow::Schema> schema_;
 };
 

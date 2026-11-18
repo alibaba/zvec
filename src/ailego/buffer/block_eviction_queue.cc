@@ -287,6 +287,11 @@ size_t BlockEvictionQueue::batch_recycle(size_t count) {
 }
 
 size_t BlockEvictionQueue::batch_recycle(size_t count, bool age_protected) {
+  return batch_recycle(count, age_protected, 0);
+}
+
+size_t BlockEvictionQueue::batch_recycle(size_t count, bool age_protected,
+                                         size_t reservation_bytes) {
   size_t evicted = 0;
   // Bound work when no page is currently evictable.
   const size_t max_attempts =
@@ -296,6 +301,15 @@ size_t BlockEvictionQueue::batch_recycle(size_t count, bool age_protected) {
   size_t attempts = 0;
   bool recovered = false;
   while (evicted < count && attempts < max_attempts) {
+    if (reservation_bytes != 0) {
+      auto &pool = MemoryLimitPool::get_instance();
+      const size_t capacity = pool.capacity();
+      const size_t committed = pool.committed();
+      if (reservation_bytes <= capacity &&
+          committed <= capacity - reservation_bytes) {
+        break;
+      }
+    }
     BlockType item;
     if (!evict_block(item, attempts, max_attempts, age_protected)) {
       if (attempts >= max_attempts) {
@@ -812,7 +826,17 @@ bool MemoryLimitPool::try_charge_fixed(const size_t buffer_size,
     }
 
     // Reclaim until the reservation fits or eviction stops making progress.
-    if (BlockEvictionQueue::get_instance().batch_recycle(256) == 0) {
+    auto &queue = BlockEvictionQueue::get_instance();
+    const size_t evicted = counter == &external_used_size_
+                               ? queue.batch_recycle(256, true, buffer_size)
+                               : queue.batch_recycle(256);
+    if (evicted == 0) {
+      // Another thread may have released enough memory while reclamation
+      // found no victim. Retry admission before reporting pressure.
+      committed = committed_size_.load(std::memory_order_relaxed);
+      if (committed <= capacity && buffer_size <= capacity - committed) {
+        continue;
+      }
       high_watermark_hits_.fetch_add(1, std::memory_order_relaxed);
       return false;
     }

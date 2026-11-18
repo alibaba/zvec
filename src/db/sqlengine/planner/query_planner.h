@@ -63,7 +63,7 @@ class QueryPlanner {
   Result<PlanInfo::Ptr> fts_scan(
       Segment::Ptr seg, QueryInfo::Ptr query_info,
       std::unique_ptr<arrow::compute::Expression> forward_filter,
-      bool single_stage_search);
+      bool single_stage_search, bool rank_only = false);
 
   static DocFilter::Ptr build_doc_filter(
       const Segment::Ptr &seg, const QueryInfo::Ptr &query_info,
