@@ -46,6 +46,52 @@ enum class HnswStorageMode {
 //! HnswStreamerEntity manage vector data, pkey, and node's neighbors
 class HnswStreamerEntity : public HnswEntity {
  public:
+  // Kept outside the bounded navigation adjacency. For a representative,
+  // next is its posting-list head; each leaf points back to the representative
+  // and to the next leaf. IDs and vectors remain independently addressable.
+  struct DuplicateLinks {
+    node_id_t representative;
+    node_id_t next;
+  };
+
+  bool deduplicate_vectors() const {
+    return (header_.graph.options & kDuplicateLinksOption) != 0;
+  }
+
+  void set_deduplicate_vectors(bool enabled) {
+    if (enabled) {
+      header_.graph.options |= kDuplicateLinksOption;
+    } else {
+      header_.graph.options &= ~kDuplicateLinksOption;
+    }
+  }
+
+  int get_duplicate_links(node_id_t id, node_id_t doc_count,
+                          DuplicateLinks *links) const;
+  int set_duplicate_links(node_id_t id, const DuplicateLinks &links);
+
+  // The caller supplies the current count because search clones have a
+  // snapshot header. Return early when visit returns false.
+  template <typename Visitor>
+  int visit_duplicate_group(node_id_t representative, node_id_t doc_count,
+                            DuplicateLinks links, Visitor &&visit) const {
+    node_id_t id = representative;
+    for (node_id_t steps = 0; steps < doc_count; ++steps) {
+      if (links.representative != representative) {
+        LOG_ERROR(
+            "Duplicate group mismatch: node=%u representative=%u expected=%u",
+            id, links.representative, representative);
+        return IndexError_InvalidFormat;
+      }
+      if (!visit(id) || links.next == kInvalidNodeId) return 0;
+      id = links.next;
+      int ret = get_duplicate_links(id, doc_count, &links);
+      if (ret != 0) return ret;
+    }
+    LOG_ERROR("Cyclic duplicate group: representative=%u", representative);
+    return IndexError_InvalidFormat;
+  }
+
   //! Cleanup
   //! return 0 on success, or errCode in failure
   int cleanup() override;
@@ -247,6 +293,8 @@ class HnswStreamerEntity : public HnswEntity {
 
 
  protected:
+  static constexpr uint32_t kDuplicateLinksOption = 1U;
+
   union UpperNeighborIndexMeta {
     struct {
       uint32_t level : 4;

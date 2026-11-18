@@ -185,6 +185,10 @@ class HNSWIndexParamBuilder
     param->provider_meta = provider_meta;
     return *this;
   }
+  HNSWIndexParamBuilder &with_deduplicate_vectors(bool enabled) {
+    param->deduplicate_vectors = enabled;
+    return *this;
+  }
 
   std::shared_ptr<HNSWIndexParam> build() override {
     return param;

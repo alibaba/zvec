@@ -319,6 +319,7 @@ class HnswStreamer : public IndexStreamer {
   bool use_id_map_{true};
   bool use_contiguous_memory_{false};
   bool use_external_vector_{false};
+  bool deduplicate_vectors_{false};
   const VectorSource *build_vector_source_{nullptr};
 
   //! avoid add vector while dumping index

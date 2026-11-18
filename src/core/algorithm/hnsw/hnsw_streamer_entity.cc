@@ -29,6 +29,40 @@ HnswStreamerEntity::HnswStreamerEntity(IndexStreamer::Stats &stats)
 
 HnswStreamerEntity::~HnswStreamerEntity() = default;
 
+int HnswStreamerEntity::get_duplicate_links(node_id_t id, node_id_t doc_count,
+                                            DuplicateLinks *links) const {
+  if (!deduplicate_vectors() || !links || id >= doc_count) {
+    return IndexError_InvalidArgument;
+  }
+  auto loc = get_neighbor_chunk_loc(0, id);
+  IndexStorage::MemoryBlock block;
+  if (loc.first->read(loc.second + neighbor_size_, block, sizeof(*links)) !=
+      sizeof(*links)) {
+    return IndexError_ReadData;
+  }
+  std::memcpy(links, block.data(), sizeof(*links));
+  if (links->representative >= doc_count ||
+      (links->next != kInvalidNodeId &&
+       (links->next >= doc_count || links->next == id))) {
+    LOG_ERROR(
+        "Invalid duplicate links: node=%u count=%u representative=%u next=%u",
+        id, doc_count, links->representative, links->next);
+    return IndexError_InvalidFormat;
+  }
+  return 0;
+}
+
+int HnswStreamerEntity::set_duplicate_links(node_id_t id,
+                                            const DuplicateLinks &links) {
+  auto loc = get_neighbor_chunk_loc(0, id);
+  if (loc.first->write(loc.second + neighbor_size_, &links, sizeof(links)) !=
+      sizeof(links)) {
+    return IndexError_WriteData;
+  }
+  broker_->mark_dirty();
+  return 0;
+}
+
 int HnswStreamerEntity::retain_stable_data(
     std::shared_ptr<const void> *lifetime) const {
   if (!lifetime) return IndexError_InvalidArgument;
@@ -203,6 +237,7 @@ int HnswStreamerEntity::init(size_t max_doc_cnt) {
 
   //! vector + key + level 0 neighbors
   size_t size = vector_size() + sizeof(key_t) + neighbor_size_;
+  if (deduplicate_vectors()) size += sizeof(DuplicateLinks);
 
   size = AlignSize(size);
   set_node_size(size);
@@ -512,8 +547,17 @@ int HnswStreamerEntity::init_chunks(const Chunk::Pointer &header_chunk) {
     LOG_ERROR("Read header chunk failed");
     return IndexError_ReadData;
   }
-  *mutable_header() =
+  const auto &stored =
       *reinterpret_cast<const HNSWHeader *>(header_block.data());
+  // Check before replacing the requested header: chunk geometry was computed
+  // from the configured layout, and must never silently change on reopen.
+  if ((stored.graph.options & kDuplicateLinksOption) !=
+          (header_.graph.options & kDuplicateLinksOption) ||
+      (deduplicate_vectors() && stored.graph.node_size != node_size())) {
+    LOG_ERROR("HNSW duplicate-vector layout mismatch");
+    return IndexError_Mismatch;
+  }
+  *mutable_header() = stored;
 
   int ret = check_hnsw_index(&header());
   if (ret != 0) {
@@ -705,6 +749,10 @@ int HnswStreamerEntity::flush(uint64_t checkpoint) {
 int HnswStreamerEntity::dump(const IndexDumper::Pointer &dumper) {
   LOG_INFO("Dump index, curDocs=%u", doc_cnt());
 
+  // The legacy split-segment export has no duplicate-links representation.
+  // Mutable storage flush/reopen preserves the links in each node record.
+  if (deduplicate_vectors()) return IndexError_Unsupported;
+
   //! sort by keys, to support get_vector by key in searcher
   std::vector<key_t> keys(doc_cnt());
   for (node_id_t i = 0; i < doc_cnt(); ++i) {
@@ -822,6 +870,24 @@ int HnswStreamerEntity::add_vector(level_t level, key_t key, const void *vec,
   }
   //! level 0 neighbors is inited to zero by default
 
+  if (deduplicate_vectors()) {
+    // BufferStorage can reuse nonzero pages, and an explicit ID can fill a
+    // previously unused slot. In particular the first representative returns
+    // from add_node without otherwise writing its empty L0 adjacency.
+    const uint32_t empty_neighbors = 0;
+    if (node_chunk->write(chunk_offset + vector_size() + sizeof(key_t),
+                          &empty_neighbors,
+                          sizeof(empty_neighbors)) != sizeof(empty_neighbors)) {
+      return IndexError_WriteData;
+    }
+    const DuplicateLinks links{local_id, kInvalidNodeId};
+    if (node_chunk->write(
+            chunk_offset + vector_size() + sizeof(key_t) + neighbor_size_,
+            &links, sizeof(links)) != sizeof(links)) {
+      return IndexError_WriteData;
+    }
+  }
+
   int ret = add_upper_neighbor(level, local_id);
   if (ret != 0) {
     return ret;
@@ -854,6 +920,11 @@ int HnswStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
   key_t key = id;
 
   std::lock_guard<std::mutex> lock(mutex_);
+
+  // Replacing an existing ID would invalidate both navigation and postings.
+  if (deduplicate_vectors() && id < doc_cnt() && get_key(id) != kInvalidKey) {
+    return IndexError_Duplicate;
+  }
 
   // duplicate check
   if (ailego_unlikely(filter_same_key_ && get_id(key) != kInvalidNodeId)) {
@@ -922,6 +993,21 @@ int HnswStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
     return IndexError_WriteData;
   }
   //! level 0 neighbors is inited to zero by default
+
+  if (deduplicate_vectors()) {
+    const uint32_t empty_neighbors = 0;
+    if (node_chunk->write(chunk_offset + vector_size() + sizeof(key_t),
+                          &empty_neighbors,
+                          sizeof(empty_neighbors)) != sizeof(empty_neighbors)) {
+      return IndexError_WriteData;
+    }
+    const DuplicateLinks links{id, kInvalidNodeId};
+    if (node_chunk->write(
+            chunk_offset + vector_size() + sizeof(key_t) + neighbor_size_,
+            &links, sizeof(links)) != sizeof(links)) {
+      return IndexError_WriteData;
+    }
+  }
 
   int ret = add_upper_neighbor(level, id);
   if (ret != 0) {
