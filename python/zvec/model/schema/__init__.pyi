@@ -33,7 +33,10 @@ class _CollectionSchema:
 
     def __eq__(self, arg0: _CollectionSchema) -> bool: ...
     def __init__(
-        self, name: str, fields: collections.abc.Sequence[_FieldSchema]
+        self,
+        name: str,
+        fields: collections.abc.Sequence[_FieldSchema],
+        max_doc_count_per_segment: int = 10_000_000,
     ) -> None:
         """
         Construct with name and list of fields
@@ -77,6 +80,8 @@ class _CollectionSchema:
 
     @property
     def name(self) -> str: ...
+    @property
+    def max_doc_count_per_segment(self) -> int: ...
 
 class _FieldSchema:
     __hash__: typing.ClassVar[None] = None

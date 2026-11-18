@@ -39,6 +39,9 @@ class CollectionSchema:
             One or more scalar field definitions. Defaults to None.
         vectors (Optional[Union[VectorSchema, list[VectorSchema]]], optional):
             One or more vector field definitions. Defaults to None.
+        max_doc_count_per_segment (int, optional): Maximum number of documents
+            per physical segment. Defaults to 10,000,000 and must be at least
+            1,000. HNSW indexes are built per segment by `Collection.optimize()`.
 
     Raises:
         TypeError: If `fields` or `vectors` are of unsupported types.
@@ -62,6 +65,8 @@ class CollectionSchema:
         name: str,
         fields: Optional[Union[FieldSchema, list[FieldSchema]]] = None,
         vectors: Optional[Union[VectorSchema, list[VectorSchema]]] = None,
+        *,
+        max_doc_count_per_segment: int = 10_000_000,
     ):
         if name is None or not isinstance(name, str):
             raise ValueError(
@@ -80,6 +85,7 @@ class CollectionSchema:
             self._cpp_obj = _CollectionSchema(
                 name=name,
                 fields=_fields_list,
+                max_doc_count_per_segment=max_doc_count_per_segment,
             )
         except TypeError:
             explain_utf8_conversion_error(name, "Invalid schema: collection name")
@@ -165,6 +171,11 @@ class CollectionSchema:
     def name(self) -> str:
         """str: The name of the collection."""
         return self._cpp_obj.name
+
+    @property
+    def max_doc_count_per_segment(self) -> int:
+        """int: Maximum number of documents per physical segment."""
+        return self._cpp_obj.max_doc_count_per_segment
 
     def field(self, name: str) -> Optional[FieldSchema]:
         """Retrieve a scalar field by name.

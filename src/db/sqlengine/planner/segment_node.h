@@ -15,6 +15,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <arrow/acero/api.h>
@@ -41,14 +42,27 @@ class SegmentNode : public std::enable_shared_from_this<SegmentNode> {
 
   arrow::AsyncGenerator<std::optional<arrow::compute::ExecBatch>> gen();
 
+  arrow::AsyncGenerator<std::optional<arrow::compute::ExecBatch>> topk_gen(
+      int64_t topk, bool descending);
+
  private:
+  struct Hit {
+    std::shared_ptr<arrow::RecordBatch> batch;
+    int64_t row;
+    float score;
+    uint64_t ordinal;
+  };
+
   Status prepare();
+  arrow::Status merge_topk(int64_t topk, bool descending);
+  arrow::Result<std::optional<arrow::compute::ExecBatch>> next_topk_batch();
 
  private:
   std::vector<PlanInfo::Ptr> segment_plans_;
   ailego::ThreadPool *thread_pool_;
 
   std::vector<std::unique_ptr<arrow::RecordBatchReader>> readers_;
+  std::vector<Hit> topk_hits_;
   std::atomic_bool prepared_{false};
 };
 

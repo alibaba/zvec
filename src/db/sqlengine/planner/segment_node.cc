@@ -13,11 +13,15 @@
 // limitations under the License.
 
 #include "db/sqlengine/planner/segment_node.h"
+#include <algorithm>
+#include <cmath>
 #include <memory>
 #include <optional>
+#include <queue>
 #include <arrow/record_batch.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/parallel/thread_pool.h>
+#include "db/common/constants.h"
 
 namespace zvec::sqlengine {
 
@@ -59,6 +63,106 @@ SegmentNode::gen() {
     return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
         std::nullopt);
   };
+}
+
+arrow::AsyncGenerator<std::optional<cp::ExecBatch>> SegmentNode::topk_gen(
+    int64_t topk, bool descending) {
+  return [self = shared_from_this(), topk, descending]()
+             -> arrow::Future<std::optional<cp::ExecBatch>> {
+    if (!self->prepared_.exchange(true) && topk > 0) {
+      auto status = self->prepare();
+      if (!status.ok()) {
+        return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+            arrow::Status::ExecutionError("prepare segment node failed:",
+                                          status.c_str()));
+      }
+      auto merge_status = self->merge_topk(topk, descending);
+      if (!merge_status.ok()) {
+        return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+            std::move(merge_status));
+      }
+    }
+    return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
+        self->next_topk_batch());
+  };
+}
+
+arrow::Status SegmentNode::merge_topk(int64_t topk, bool descending) {
+  auto better = [descending](const Hit &a, const Hit &b) {
+    if (a.score < b.score) {
+      return !descending;
+    }
+    if (a.score > b.score) {
+      return descending;
+    }
+    // Arrow places NaNs last in both directions and keeps source order at ties.
+    if (std::isnan(a.score) != std::isnan(b.score)) {
+      return !std::isnan(a.score);
+    }
+    return a.ordinal < b.ordinal;
+  };
+  std::priority_queue<Hit, std::vector<Hit>, decltype(better)> hits(better);
+  const int score_index = schema()->GetFieldIndex(FIELD_SCORE);
+  uint64_t ordinal = 0;
+
+  // Use the same segment order as gen(). Each candidate competes against the
+  // current worst winner, even when a segment emits several batches.
+  while (!readers_.empty()) {
+    auto &reader = readers_.back();
+    while (true) {
+      ARROW_ASSIGN_OR_RAISE(auto batch, reader->Next());
+      if (!batch) {
+        break;
+      }
+      const auto &scores =
+          static_cast<const arrow::FloatArray &>(*batch->column(score_index));
+      for (int64_t row = 0; row < batch->num_rows(); ++row) {
+        Hit hit{batch, row, scores.Value(row), ordinal++};
+        if (hits.size() == static_cast<size_t>(topk)) {
+          if (!better(hit, hits.top())) {
+            continue;
+          }
+          hits.pop();
+        }
+        hits.push(std::move(hit));
+      }
+    }
+    readers_.pop_back();
+  }
+  topk_hits_.reserve(hits.size());
+  while (!hits.empty()) {
+    topk_hits_.push_back(hits.top());
+    hits.pop();
+  }
+  return arrow::Status::OK();
+}
+
+arrow::Result<std::optional<cp::ExecBatch>> SegmentNode::next_topk_batch() {
+  if (topk_hits_.empty()) {
+    return std::nullopt;
+  }
+
+  // Copy only winning rows. Emit in batches to bound Arrow column sizes.
+  constexpr int64_t kOutputBatchRows = 1024;
+  const int64_t count = std::min<int64_t>(topk_hits_.size(), kOutputBatchRows);
+  auto output_schema = schema();
+  std::vector<std::shared_ptr<arrow::Array>> columns;
+  columns.reserve(output_schema->num_fields());
+  for (int i = 0; i < output_schema->num_fields(); ++i) {
+    ARROW_ASSIGN_OR_RAISE(auto builder,
+                          arrow::MakeBuilder(output_schema->field(i)->type()));
+    ARROW_RETURN_NOT_OK(builder->Reserve(count));
+    auto hit = topk_hits_.rbegin();
+    for (int64_t row = 0; row < count; ++row, ++hit) {
+      const arrow::ArraySpan values(*hit->batch->column_data(i));
+      ARROW_RETURN_NOT_OK(builder->AppendArraySlice(values, hit->row, 1));
+    }
+    ARROW_ASSIGN_OR_RAISE(auto column, builder->Finish());
+    columns.push_back(std::move(column));
+  }
+  topk_hits_.resize(topk_hits_.size() - count);
+  return cp::ExecBatch(*arrow::RecordBatch::Make(
+      std::move(output_schema), count, std::move(columns)));
 }
 
 Status SegmentNode::prepare() {

@@ -85,10 +85,18 @@ void ZVecPySchemas::bind_field_schema(py::module_ &m) {
 
 void ZVecPySchemas::bind_collection_schema(py::module_ &m) {
   py::class_<CollectionSchema, CollectionSchema::Ptr>(m, "_CollectionSchema")
-      .def(py::init<const std::string &, const FieldSchemaPtrList &>(),
+      .def(py::init([](const std::string &name,
+                       const FieldSchemaPtrList &fields,
+                       uint64_t max_doc_count_per_segment) {
+             auto schema = std::make_shared<CollectionSchema>(name, fields);
+             schema->set_max_doc_count_per_segment(max_doc_count_per_segment);
+             return schema;
+           }),
            py::arg("name"), py::arg("fields"),
-           "Construct with name and list of fields")
+           py::arg("max_doc_count_per_segment") = MAX_DOC_COUNT_PER_SEGMENT)
       .def_property_readonly("name", &CollectionSchema::name)
+      .def_property_readonly("max_doc_count_per_segment",
+                             &CollectionSchema::max_doc_count_per_segment)
       .def("has_field", &CollectionSchema::has_field, py::arg("field_name"),
            "Check if a field exists.")
       .def(

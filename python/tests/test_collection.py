@@ -13,6 +13,7 @@
 # limitations under the License.
 from __future__ import annotations
 
+from contextlib import closing
 from unittest.mock import MagicMock
 
 import pytest
@@ -1292,3 +1293,97 @@ class TestCollectionQuery:
             assert doc.field("id") == int(doc.id)
             assert doc.field("name") == "test"
             assert doc.vectors == {}
+
+
+@pytest.mark.parametrize(
+    ("metric", "query_vector"),
+    [(zvec.MetricType.L2, [0.0, 0.0]), (zvec.MetricType.IP, [1.0, 0.0])],
+)
+def test_partitioned_hnsw_topk(tmp_path, metric, query_vector):
+    path = tmp_path / "partitioned_hnsw"
+    segment_size = 1200
+    row_count = 2 * segment_size + 5
+    schema = zvec.CollectionSchema(
+        name="partitioned_hnsw",
+        fields=[
+            FieldSchema("rank", DataType.INT32),
+            FieldSchema("payload", DataType.ARRAY_INT32, nullable=True),
+        ],
+        vectors=VectorSchema(
+            "embedding",
+            DataType.VECTOR_FP32,
+            dimension=2,
+            index_param=HnswIndexParam(metric_type=metric),
+        ),
+        max_doc_count_per_segment=segment_size,
+    )
+
+    def embedding(rank):
+        value = 4000 - rank if metric == zvec.MetricType.IP else rank
+        return [float(value), 0.0]
+
+    def make_doc(i, rank):
+        return Doc(
+            id=str(i),
+            fields={"rank": rank, "payload": [i, rank] if i % 2 else None},
+            vectors={"embedding": embedding(rank)},
+        )
+
+    def check_hits(collection, expected, filter_expr=None):
+        hits = collection.query(
+            Query(
+                field_name="embedding",
+                vector=query_vector,
+                param=zvec.HnswQueryParam(ef=1000),
+            ),
+            topk=4,
+            filter=filter_expr,
+            include_vector=True,
+        )
+        assert [hit.id for hit in hits] == [str(i) for i, _ in expected]
+        for hit, (i, rank) in zip(hits, expected):
+            assert hit.field("rank") == rank
+            assert hit.field("payload") == ([i, rank] if i % 2 else None)
+            assert list(hit.vector("embedding")) == embedding(rank)
+
+    ranks = [(i % segment_size) * 3 + i // segment_size for i in range(row_count)]
+    unfiltered = [(0, 0), (segment_size, 1), (2 * segment_size, 2), (1, 3)]
+    filtered = [
+        (2 * segment_size, 2),
+        (1, 3),
+        (segment_size + 1, 4),
+        (2 * segment_size + 1, 5),
+    ]
+    mixed = [(row_count, 1), *filtered[:3]]
+    with closing(zvec.create_and_open(str(path), schema)) as collection:
+        for start in range(0, row_count, 500):
+            docs = [
+                make_doc(i, ranks[i])
+                for i in range(start, min(start + 500, row_count))
+            ]
+            assert all(status.ok() for status in collection.insert(docs))
+        check_hits(collection, unfiltered)
+        paged_hits = collection.query(
+            Query(
+                field_name="embedding",
+                vector=query_vector,
+                param=zvec.HnswQueryParam(is_linear=True),
+            ),
+            topk=1025,
+        )
+        assert [hit.field("rank") for hit in paged_hits] == sorted(ranks)[:1025]
+
+        collection.optimize()
+        assert collection.stats.index_completeness["embedding"] == 1
+        indexes = path.glob("*/embedding.index.*.proxima")
+        assert len({index.parent for index in indexes}) == 3
+        check_hits(collection, unfiltered)
+        assert collection.delete(str(segment_size)).ok()
+        check_hits(collection, filtered, "rank > 0")
+        assert collection.insert(make_doc(row_count, 1)).ok()
+        check_hits(collection, mixed, "rank > 0")
+        check_hits(collection, [], "rank < 0")
+
+    with closing(zvec.open(str(path))) as collection:
+        assert collection.schema.max_doc_count_per_segment == segment_size
+        check_hits(collection, mixed, "rank > 0")

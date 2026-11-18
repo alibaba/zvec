@@ -436,6 +436,14 @@ Result<PlanInfo::Ptr> QueryPlanner::make_physical_plan(
   ailego::ThreadPool *pool = GlobalResource::Instance().query_thread_pool();
   auto recall_node =
       std::make_shared<SegmentNode>(std::move(segment_plans), pool);
+  if (has_vector && !has_group_by) {
+    auto options = ac::SourceNodeOptions{
+        recall_node->schema(), recall_node->topk_gen(topn, vector_is_reverse),
+        cp::Ordering::Implicit()};
+    return std::make_shared<PlanInfo>(
+        ac::Declaration{"source", std::move(options)}, recall_node->schema());
+  }
+
   auto source_node_options =
       arrow::acero::SourceNodeOptions{recall_node->schema(), recall_node->gen(),
                                       arrow::compute::Ordering::Implicit()};
