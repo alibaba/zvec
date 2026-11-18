@@ -214,6 +214,13 @@ class Quantizer {
     return DistanceImpl{};
   }
 
+  //! Optional many-to-many kernel for the same encoded layout and arithmetic
+  //! as distance(). Keep the dispatch with the quantizer: function addresses
+  //! cannot identify a kernel family across independently linked libraries.
+  virtual ManyToManyDistanceFunc many_distance() const {
+    return {};
+  }
+
   //! Convert an internal distance into the caller-facing score in place
   //! (e.g. the InnerProduct kernels rank by the negated dot product).
   virtual void normalize_score(float * /*score*/) const {}

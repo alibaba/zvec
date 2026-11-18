@@ -83,6 +83,12 @@ class InnerProductMetric : public IndexMetric {
         m, n, TurboDataType(data_type_));
   }
 
+  turbo::InterleavedManyToManyDistanceFunc interleaved_many_distance(
+      size_t rows) const override {
+    return turbo::get_interleaved_many_to_many_distance_func(
+        turbo::MetricType::kInnerProduct, TurboDataType(data_type_), rows);
+  }
+
   //! Retrieve distance function for query
   MatrixBatchDistance batch_distance() const override {
     return RawKernels(turbo::MetricType::kInnerProduct, data_type_).batch;

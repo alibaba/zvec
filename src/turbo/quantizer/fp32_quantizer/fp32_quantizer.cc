@@ -48,6 +48,8 @@ int Fp32Quantizer::init(const IndexMeta &meta,
   }
   dp_query_func_ = std::move(kernels.dist);
   dp_query_batch_func_ = std::move(kernels.batch);
+  dp_query_many_func_ = get_many_to_many_distance_func(
+      metric_from_name(metric_name), DataType::kFp32, QuantizeType::kFp32);
 
   return 0;
 }

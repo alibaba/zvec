@@ -100,6 +100,13 @@ struct IndexMetric : public IndexModule {
     return nullptr;
   }
 
+  //! Optional joint kernel matching this metric's distance_matrix semantics.
+  //! Candidates are interleaved; query vectors remain contiguous.
+  virtual turbo::InterleavedManyToManyDistanceFunc interleaved_many_distance(
+      size_t /*rows*/) const {
+    return {};
+  }
+
   //! Retrieve params of Metric
   virtual const ailego::Params &params() const = 0;
 

@@ -1127,34 +1127,7 @@ turbo::ManyToManyDistanceFunc IVFEntity::many_distance() const {
   const auto type = quantizer->type();
   if (type != turbo::QuantizeType::kFp16 && type != turbo::QuantizeType::kFp32)
     return {};
-  const auto data_type = type == turbo::QuantizeType::kFp16
-                             ? turbo::DataType::kFp16
-                             : turbo::DataType::kFp32;
-  turbo::MetricType metric;
-  if (meta_.metric_name() == "InnerProduct") {
-    metric = turbo::MetricType::kInnerProduct;
-  } else if (meta_.metric_name() == "Cosine") {
-    metric = turbo::MetricType::kCosine;
-  } else if (meta_.metric_name() == "SquaredEuclidean") {
-    metric = turbo::MetricType::kSquaredEuclidean;
-  } else {
-    return {};
-  }
-  using Batch = void (*)(const void *const *, const void *, size_t, size_t,
-                         float *, const void *const *);
-  const auto bound = query_distance_.batch_func().target<Batch>();
-  if (!bound) return {};
-  // Raw and explicitly quantized FP16 can select different accumulation
-  // precision. Use many-to-many only when its dispatch matches the bound one.
-  for (auto candidate : {turbo::QuantizeType::kRaw, type}) {
-    auto batch = turbo::get_batch_distance_func(metric, data_type, candidate);
-    const auto selected = batch.target<Batch>();
-    if (selected && *selected == *bound) {
-      return turbo::get_many_to_many_distance_func(metric, data_type,
-                                                   candidate);
-    }
-  }
-  return {};
+  return quantizer->many_distance();
 }
 
 int IVFEntity::search_many(
