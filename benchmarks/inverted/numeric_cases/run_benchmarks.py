@@ -231,6 +231,7 @@ def run_profile(binary, output, profile, args, workload):
         "type": profile["data_type"],
         "profile": profile["distribution"],
         "dataset": expected_dataset,
+        "environment": builds[0]["environment"],
         "directory": str(profile_dir.relative_to(output)),
         "build": summarize_metrics(builds, BUILD_METRICS),
         "build_details": [report_details(sample, BUILD_METRICS) for sample in builds],

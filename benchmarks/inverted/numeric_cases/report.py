@@ -56,12 +56,34 @@ def _query_table(profile):
 def render_report(run, summary):
     """Render completed workloads without reading or modifying their raw results."""
     profiles = summary["profiles"]
+    environment = profiles[0]["environment"]
     lines = [
         "# Numeric inverted-index benchmark report",
         "",
         f"- Run: `{run['run_id']}`",
         f"- Status: {run['status']}",
         f"- Started: {run['started_at']}",
+        "",
+        "## Environment",
+        "",
+        _table(
+            [
+                "Platform",
+                "Target architecture",
+                "Compiler",
+                "`__cplusplus`",
+                "Hardware threads",
+            ],
+            [
+                [
+                    environment["platform"],
+                    environment["architecture"],
+                    environment.get("compiler", "N/A"),
+                    environment["cplusplus"],
+                    environment["hardware_threads"] or "N/A",
+                ]
+            ],
+        ),
         "",
         "## Workloads",
         "",
