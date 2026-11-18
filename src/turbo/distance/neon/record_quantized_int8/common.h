@@ -56,10 +56,15 @@ inline int8x16_t load_partial_int8(const int8_t *values, size_t count) {
 
 inline int64x2_t accumulate_int8_products(int64x2_t sum, int8x16_t lhs,
                                           int8x16_t rhs) {
+#if defined(__ARM_FEATURE_DOTPROD)
+  // Widen each block before adding it to the running total.
+  return vpadalq_s32(sum, vdotq_s32(vdupq_n_s32(0), lhs, rhs));
+#else
   const int16x8_t product_low = vmull_s8(vget_low_s8(lhs), vget_low_s8(rhs));
   const int16x8_t product_high = vmull_s8(vget_high_s8(lhs), vget_high_s8(rhs));
   sum = vpadalq_s32(sum, vpaddlq_s16(product_low));
   return vpadalq_s32(sum, vpaddlq_s16(product_high));
+#endif
 }
 #endif
 
