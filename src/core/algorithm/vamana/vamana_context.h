@@ -369,8 +369,8 @@ class VamanaContext : public IndexContext {
   uint32_t reserve_max_doc_cnt_{kMinReserveDocCnt};
   uint32_t topk_{0};
   uint32_t ef_{VamanaEntity::kDefaultEf};
-  uint32_t requested_po_{core_interface::kDefaultPrefetchOffset};
-  uint32_t requested_pl_{core_interface::kDefaultPrefetchLines};
+  uint32_t requested_po_{core_interface::kDefaultVamanaPrefetchOffset};
+  uint32_t requested_pl_{core_interface::kDefaultVamanaPrefetchLines};
   // Active values keep the existing build defaults until query preparation.
   uint32_t po_{requested_po_};
   uint32_t pl_{requested_pl_};

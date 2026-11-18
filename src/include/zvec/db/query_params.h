@@ -71,9 +71,8 @@ class ZVEC_API QueryParams {
 
  private:
   IndexType type_;
-  float radius_{0.0f};
-  bool is_linear_{false};
-
+  float radius_{core_interface::kDefaultQueryRadius};
+  bool is_linear_{core_interface::kDefaultQueryIsLinear};
   bool is_using_refiner_{false};
   float scale_factor_{0.0f};
 };
@@ -81,11 +80,13 @@ class ZVEC_API QueryParams {
 class ZVEC_API HnswQueryParams : public QueryParams {
  public:
   HnswQueryParams(
-      int ef = core_interface::kDefaultHnswEfSearch, float radius = 0.0f,
-      bool is_linear = false, bool is_using_refiner = false,
-      uint32_t prefetch_offset = core_interface::kDefaultPrefetchOffset,
-      uint32_t prefetch_lines = core_interface::kDefaultPrefetchLines,
-      float scale_factor = 0.0f)
+      int ef = core_interface::kDefaultHnswEfSearch,
+      float radius = core_interface::kDefaultQueryRadius,
+      bool is_linear = core_interface::kDefaultQueryIsLinear,
+      bool is_using_refiner = false,
+      uint32_t prefetch_offset = core_interface::kDefaultHnswPrefetchOffset,
+      uint32_t prefetch_lines = core_interface::kDefaultHnswPrefetchLines,
+      float scale_factor = core_interface::kDefaultHnswRefineScaleFactor)
       : QueryParams(IndexType::HNSW),
         ef_(ef),
         prefetch_offset_(prefetch_offset),
@@ -124,14 +125,16 @@ class ZVEC_API HnswQueryParams : public QueryParams {
 
  private:
   int ef_;
-  uint32_t prefetch_offset_{core_interface::kDefaultPrefetchOffset};
-  uint32_t prefetch_lines_{core_interface::kDefaultPrefetchLines};
+  uint32_t prefetch_offset_{core_interface::kDefaultHnswPrefetchOffset};
+  uint32_t prefetch_lines_{core_interface::kDefaultHnswPrefetchLines};
 };
 
 class ZVEC_API IVFQueryParams : public QueryParams {
  public:
-  IVFQueryParams(int nprobe = 10, bool is_using_refiner = false,
-                 float scale_factor = 10)
+  IVFQueryParams(
+      int nprobe = core_interface::kDefaultIvfNumProbes,
+      bool is_using_refiner = false,
+      float scale_factor = core_interface::kDefaultIvfRefineScaleFactor)
       : QueryParams(IndexType::IVF), nprobe_(nprobe) {
     set_is_using_refiner(is_using_refiner);
     set_scale_factor(scale_factor);
@@ -153,10 +156,12 @@ class ZVEC_API IVFQueryParams : public QueryParams {
 
 class ZVEC_API HnswRabitqQueryParams : public QueryParams {
  public:
-  HnswRabitqQueryParams(int ef = core_interface::kDefaultHnswEfSearch,
-                        float radius = 0.0f, bool is_linear = false,
-                        bool is_using_refiner = false,
-                        float scale_factor = 0.0f)
+  HnswRabitqQueryParams(
+      int ef = core_interface::kDefaultHnswEfSearch,
+      float radius = core_interface::kDefaultQueryRadius,
+      bool is_linear = core_interface::kDefaultQueryIsLinear,
+      bool is_using_refiner = false,
+      float scale_factor = core_interface::kDefaultHnswRabitqRefineScaleFactor)
       : QueryParams(IndexType::HNSW_RABITQ), ef_(ef) {
     set_radius(radius);
     set_is_linear(is_linear);
@@ -180,10 +185,12 @@ class ZVEC_API HnswRabitqQueryParams : public QueryParams {
 
 class ZVEC_API IvfRabitqQueryParams : public QueryParams {
  public:
-  IvfRabitqQueryParams(int nprobe = core_interface::kDefaultIvfRabitqNprobe,
-                       float radius = 0.0f, bool is_linear = false,
-                       bool is_using_refiner = false,
-                       float scale_factor = 10.0f)
+  IvfRabitqQueryParams(
+      int nprobe = core_interface::kDefaultIvfRabitqNumProbes,
+      float radius = core_interface::kDefaultQueryRadius,
+      bool is_linear = core_interface::kDefaultQueryIsLinear,
+      bool is_using_refiner = false,
+      float scale_factor = core_interface::kDefaultIvfRabitqRefineScaleFactor)
       : QueryParams(IndexType::IVF_RABITQ), nprobe_(nprobe) {
     set_radius(radius);
     set_is_linear(is_linear);
@@ -206,7 +213,9 @@ class ZVEC_API IvfRabitqQueryParams : public QueryParams {
 
 class ZVEC_API FlatQueryParams : public QueryParams {
  public:
-  FlatQueryParams(bool is_using_refiner = false, float scale_factor = 10)
+  FlatQueryParams(
+      bool is_using_refiner = false,
+      float scale_factor = core_interface::kDefaultFlatRefineScaleFactor)
       : QueryParams(IndexType::FLAT) {
     set_is_using_refiner(is_using_refiner);
     set_scale_factor(scale_factor);
@@ -217,8 +226,11 @@ class ZVEC_API FlatQueryParams : public QueryParams {
 
 class ZVEC_API DiskAnnQueryParams : public QueryParams {
  public:
-  DiskAnnQueryParams(int list_size = 300) : QueryParams(IndexType::DISKANN) {
+  DiskAnnQueryParams(
+      int list_size = core_interface::kDefaultDiskAnnSearchListSize)
+      : QueryParams(IndexType::DISKANN) {
     set_list_size(list_size);
+    set_scale_factor(core_interface::kDefaultDiskAnnRefineScaleFactor);
   }
 
   ~DiskAnnQueryParams() override = default;
@@ -241,11 +253,12 @@ class ZVEC_API VamanaQueryParams : public QueryParams {
  public:
   VamanaQueryParams(
       int ef_search = core_interface::kDefaultVamanaEfSearch,
-      float radius = 0.0f, bool is_linear = false,
+      float radius = core_interface::kDefaultQueryRadius,
+      bool is_linear = core_interface::kDefaultQueryIsLinear,
       bool is_using_refiner = false,
-      uint32_t prefetch_offset = core_interface::kDefaultPrefetchOffset,
-      uint32_t prefetch_lines = core_interface::kDefaultPrefetchLines,
-      float scale_factor = 0.0f)
+      uint32_t prefetch_offset = core_interface::kDefaultVamanaPrefetchOffset,
+      uint32_t prefetch_lines = core_interface::kDefaultVamanaPrefetchLines,
+      float scale_factor = core_interface::kDefaultVamanaRefineScaleFactor)
       : QueryParams(IndexType::VAMANA),
         ef_search_(ef_search),
         prefetch_offset_(prefetch_offset),
@@ -284,8 +297,8 @@ class ZVEC_API VamanaQueryParams : public QueryParams {
 
  private:
   int ef_search_;
-  uint32_t prefetch_offset_{core_interface::kDefaultPrefetchOffset};
-  uint32_t prefetch_lines_{core_interface::kDefaultPrefetchLines};
+  uint32_t prefetch_offset_{core_interface::kDefaultVamanaPrefetchOffset};
+  uint32_t prefetch_lines_{core_interface::kDefaultVamanaPrefetchLines};
 };
 
 class ZVEC_API FtsQueryParams : public QueryParams {

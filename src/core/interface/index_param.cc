@@ -255,6 +255,17 @@ ailego::JsonObject FlatIndexParam::serialize_to_json_object(
   return json_obj;
 }
 
+ailego::JsonObject IVFIndexParam::serialize_to_json_object(
+    bool omit_empty_value) const {
+  auto json_obj = BaseIndexParam::serialize_to_json_object(omit_empty_value);
+  json_obj.set("nlist", ailego::JsonValue(nlist));
+  json_obj.set("niters", ailego::JsonValue(niters));
+  if (!omit_empty_value || use_soar) {
+    json_obj.set("use_soar", ailego::JsonValue(use_soar));
+  }
+  return json_obj;
+}
+
 ailego::JsonObject HNSWIndexParam::serialize_to_json_object(
     bool omit_empty_value) const {
   auto json_obj = BaseIndexParam::serialize_to_json_object(omit_empty_value);
@@ -318,6 +329,24 @@ bool FlatIndexParam::deserialize_from_json_object(
   DESERIALIZE_ENUM_FIELD(json_obj, major_order, IndexMeta::MajorOrder);
   DESERIALIZE_VALUE_FIELD(json_obj, use_contiguous_memory);
   DESERIALIZE_ENUM_FIELD(json_obj, storage_data_type, DataType);
+  return true;
+}
+
+bool IVFIndexParam::deserialize_from_json_object(
+    const ailego::JsonObject &json_obj) {
+  if (!BaseIndexParam::deserialize_from_json_object(json_obj)) {
+    return false;
+  }
+
+  if (index_type != IndexType::kIVF) {
+    LOG_ERROR("index_type is not kIVF");
+    return false;
+  }
+
+  DESERIALIZE_VALUE_FIELD(json_obj, nlist);
+  DESERIALIZE_VALUE_FIELD(json_obj, niters);
+  DESERIALIZE_VALUE_FIELD(json_obj, use_soar);
+
   return true;
 }
 

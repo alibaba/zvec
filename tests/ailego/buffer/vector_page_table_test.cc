@@ -1551,10 +1551,20 @@ TEST_F(BufferPoolTest, DominantProtectedQueueReceivesAgingSamples) {
   }
 
   const uint64_t aging_before = queue.stats().protected_aging_dequeues;
-  // A reclaim batch samples the protected queue at most once; scalar queue
-  // inspection deliberately stays strict-priority and pays no aging cost.
+  // Small explicit batches keep their default policy, while a caller can
+  // enable one protected sample independently of its reclaim budget.
+  (void)queue.batch_recycle(/*count=*/1);
+  EXPECT_EQ(aging_before, queue.stats().protected_aging_dequeues);
+  (void)queue.batch_recycle(/*count=*/0, /*age_protected=*/true);
+  EXPECT_EQ(aging_before, queue.stats().protected_aging_dequeues);
+  (void)queue.batch_recycle(/*count=*/1, /*age_protected=*/true);
+  EXPECT_EQ(aging_before + 1, queue.stats().protected_aging_dequeues);
+  (void)queue.batch_recycle(/*count=*/7, /*age_protected=*/true);
+  EXPECT_EQ(aging_before + 2, queue.stats().protected_aging_dequeues);
+  (void)queue.batch_recycle(/*count=*/8, /*age_protected=*/false);
+  EXPECT_EQ(aging_before + 2, queue.stats().protected_aging_dequeues);
   (void)queue.batch_recycle(/*count=*/8);
-  EXPECT_GT(queue.stats().protected_aging_dequeues, aging_before);
+  EXPECT_EQ(aging_before + 3, queue.stats().protected_aging_dequeues);
 
   while (queue.evict_single_block(item)) {
   }
@@ -2140,6 +2150,77 @@ TEST_F(BufferPoolTest, BackgroundReclaimsToLowWatermark) {
   }
   EXPECT_LE(mp.stats().page_used, low + kVectorPageSize);
   EXPECT_GT(mp.stats().bg_evicted_buffers, 0u);
+}
+
+TEST_F(BufferPoolTest, BackgroundReclaimPreservesTinyWorkingSet) {
+  constexpr size_t kCapacityPages = 3;
+  init_vec_pool(kCapacityPages, /*file_pages=*/kCapacityPages);
+  std::string file = new_file(kCapacityPages);
+
+  VecBufferPool pool(file, /*writable=*/false);
+  ASSERT_EQ(pool.init(), 0);
+  auto handle = pool.get_handle();
+  auto &memory_pool = MemoryLimitPool::get_instance();
+  const uint64_t evicted_before = memory_pool.stats().bg_evicted_buffers;
+
+  // The first two pages are released before the third allocation triggers
+  // reclaim. A fixed 64-page batch would evict both (and possibly the third),
+  // although freeing one page is enough to reach the 2.25-page low watermark.
+  std::vector<char> data(kVectorPageSize);
+  for (size_t page = 0; page < kCapacityPages; ++page) {
+    ASSERT_TRUE(handle.read_range(page * kVectorPageSize, kVectorPageSize,
+                                  data.data()));
+    ExpectPageContent(data.data(), page);
+  }
+
+  // Observe completion of the batch, not just its first buffer release.
+  for (int i = 0;
+       i < 200 && memory_pool.stats().bg_evicted_buffers == evicted_before;
+       ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  const auto stats = memory_pool.stats();
+  EXPECT_EQ(1u, stats.bg_evicted_buffers - evicted_before);
+  EXPECT_EQ(2 * kVectorPageSize, stats.page_used);
+}
+
+TEST_F(BufferPoolTest, SmallBackgroundReclaimAgesDominantProtectedQueue) {
+  constexpr size_t kProtectedPages = 12;
+  constexpr size_t kFilePages = kProtectedPages + 1;
+  init_vec_pool(/*capacity_pages=*/16, /*file_pages=*/kFilePages);
+  std::string file = new_file(kFilePages);
+
+  VecBufferPool pool(file, /*writable=*/false);
+  ASSERT_EQ(pool.init(), 0);
+  auto handle = pool.get_handle();
+  std::vector<char> data(kVectorPageSize);
+  // Fill exactly to the low watermark with protected pages. Set priorities
+  // before loading so their queue entries already have the right priority.
+  for (size_t page = 0; page < kProtectedPages; ++page) {
+    ASSERT_TRUE(pool.set_page_priority(page, VecBufferPool::kNormalPriority));
+    ASSERT_TRUE(handle.read_range(page * kVectorPageSize, kVectorPageSize,
+                                  data.data()));
+  }
+
+  auto &memory_pool = MemoryLimitPool::get_instance();
+  auto &queue = BlockEvictionQueue::get_instance();
+  const uint64_t aging_before = queue.stats().protected_aging_dequeues;
+  const uint64_t evicted_before = memory_pool.stats().bg_evicted_buffers;
+  // One probation page exceeds the low watermark by exactly one page.
+  ASSERT_TRUE(handle.read_range(kProtectedPages * kVectorPageSize,
+                                kVectorPageSize, data.data()));
+  ExpectPageContent(data.data(), kProtectedPages);
+  for (int i = 0;
+       i < 200 && memory_pool.stats().bg_evicted_buffers == evicted_before;
+       ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  EXPECT_EQ(aging_before + 1, queue.stats().protected_aging_dequeues);
+  EXPECT_EQ(1u, pool.stats().priority_demotions[VecBufferPool::kLowPriority]);
+  const auto stats = memory_pool.stats();
+  EXPECT_EQ(1u, stats.bg_evicted_buffers - evicted_before);
+  EXPECT_EQ(kProtectedPages * kVectorPageSize, stats.page_used);
 }
 
 TEST_F(BufferPoolTest, BackgroundBacksOffWhenAllPagesArePinned) {
