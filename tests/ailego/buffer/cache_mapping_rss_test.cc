@@ -242,6 +242,62 @@ TEST_F(CacheMappingRssTest, WorkspaceMappingFailureRollsBackAdmission) {
   EXPECT_EQ(0u, MemoryLimitPoolTestPeer::mappings(pool_));
 }
 
+TEST_F(CacheMappingRssTest,
+       OptionalWorkspaceYieldsToPressureAndMandatoryWaiters) {
+  const size_t page = pool_.page_buffer_size();
+  BudgetedMappedBuffer buffer;
+  ASSERT_EQ(0, buffer.resize(page));
+  std::memset(buffer.data(), 73, buffer.size());
+  const auto *original = buffer.data();
+  auto restore = ScopeGuard::Make([&] {
+    pool_.set_memory_pressure(ProcessRssBudget::PressureLevel::kNormal);
+    pool_.set_process_rss_reclaimer({});
+  });
+  const auto expect_denied = [&] {
+    const auto before = pool_.stats();
+    EXPECT_FALSE(buffer.try_resize(2 * page));
+    EXPECT_EQ(original, buffer.data());
+    EXPECT_EQ(page, buffer.size());
+    EXPECT_EQ(73, buffer.data()[0]);
+    EXPECT_EQ(73, buffer.data()[page - 1]);
+    EXPECT_EQ(before.used, pool_.used());
+    EXPECT_EQ(before.committed, pool_.committed());
+    EXPECT_EQ(before.external_used, pool_.external_used());
+    EXPECT_EQ(before.metadata_used, pool_.metadata_used());
+    EXPECT_EQ(1u, MemoryLimitPoolTestPeer::mappings(pool_));
+  };
+  pool_.set_memory_pressure(ProcessRssBudget::PressureLevel::kBackground);
+  expect_denied();
+  pool_.set_memory_pressure(ProcessRssBudget::PressureLevel::kNormal);
+
+  // Leave room for the optional buffer, but make a larger required mapping
+  // wait for a prepaid workspace plan to retire.
+  const size_t blocker = 2 * page;
+  ASSERT_TRUE(pool_.try_charge_workspace_plan(blocker));
+  const size_t required_bytes = pool_.available() + page;
+  pool_.set_process_rss_reclaimer([] {});
+  BudgetedMappedBuffer required;
+  {
+    auto pending = std::async(std::launch::async,
+                              [&] { return required.resize(required_bytes); });
+    auto finish = ScopeGuard::Make([&] {
+      pool_.release_workspace_plan(blocker);
+      EXPECT_EQ(0, pending.get());
+    });
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (MemoryLimitPoolTestPeer::waiters(pool_) == 0 &&
+           std::chrono::steady_clock::now() < deadline) {
+      std::this_thread::yield();
+    }
+    ASSERT_EQ(1u, MemoryLimitPoolTestPeer::waiters(pool_));
+    expect_denied();
+  }
+  required.clear();
+  EXPECT_EQ(0u, MemoryLimitPoolTestPeer::waiters(pool_));
+  EXPECT_TRUE(buffer.try_resize(2 * page));
+}
+
 TEST_F(CacheMappingRssTest, BatchPagesLeaveRoomForNewSlabHeaders) {
   const size_t page = MemoryLimitPool::page_buffer_size();
   const size_t slots = MemoryLimitPool::slab_size() / page - 1;

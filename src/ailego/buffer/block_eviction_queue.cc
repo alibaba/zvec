@@ -2473,6 +2473,12 @@ bool MemoryLimitPool::PendingAllocation::reserve_with_metadata(
   const size_t total = bytes + metadata_bytes;
   std::shared_lock<std::shared_mutex> lifecycle_lock(pool_.lifecycle_mutex_);
   const auto admit = [&] {
+    if (kind_ == Kind::kLockedExternal) {
+      pool_.process_rss_.refresh();
+      if (pool_.process_rss_.pressure() ||
+          pool_.mandatory_waiters_.load(std::memory_order_relaxed) != 0)
+        return false;
+    }
     if (!pool_.try_reserve_allocation(total, Backing::kPending)) return false;
     // Reserve native/RSS backing once, but publish each owner's own charge.
     // Descriptor metadata must not count as external page-admission credit.
