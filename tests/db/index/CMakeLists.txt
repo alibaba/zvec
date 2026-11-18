@@ -77,5 +77,5 @@ endif()
 
 if(TARGET code_tokenizer_test)
   target_compile_definitions(code_tokenizer_test PRIVATE
-    JIEBA_DICT_DIR="${PROJECT_SOURCE_DIR}/thirdparty/cppjieba/cppjieba-5.6.7/dict")
+    JIEBA_DICT_DIR="${JIEBA_TEST_DICT_DIR}")
 endif()

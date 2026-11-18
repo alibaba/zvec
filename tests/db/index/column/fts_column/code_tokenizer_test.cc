@@ -23,7 +23,9 @@ namespace zvec::fts {
 namespace {
 std::vector<std::string> texts(const std::vector<Token> &tokens) {
   std::vector<std::string> result;
-  for (const auto &token : tokens) result.push_back(token.text);
+  for (const auto &token : tokens) {
+    result.push_back(token.text);
+  }
   return result;
 }
 
@@ -51,7 +53,9 @@ TEST(CodeTokenizerTest, IdentifierRulesAndPositions) {
     SCOPED_TRACE(entry.first);
     auto tokens = tokenizer.tokenize(entry.first);
     EXPECT_EQ(texts(tokens), entry.second);
-    for (size_t i = 0; i < tokens.size(); ++i) EXPECT_EQ(tokens[i].position, i);
+    for (size_t i = 0; i < tokens.size(); ++i) {
+      EXPECT_EQ(tokens[i].position, i);
+    }
   }
   auto tokens = tokenizer.tokenize("获取getRequestTime");
   ASSERT_EQ(tokens.size(), 6u);
@@ -85,6 +89,45 @@ TEST(CodeTokenizerTest, UnicodeBoundaryProtectionAndMalformedInput) {
   // Astral Han must be a boundary just like common ideographs.
   EXPECT_EQ(texts(tokenizer.tokenize("𠀀getValue")),
             (std::vector<std::string>{"𠀀", "getvalue", "get", "value"}));
+}
+
+TEST(CodeTokenizerTest, IdentifiersAdjacentToKanaAndHangul) {
+  for (const char *child_name : {"standard", "jieba"}) {
+    ailego::JsonObject config;
+    config.set("sub_tokenizer", child_name);
+    CodeTokenizer tokenizer;
+    ASSERT_TRUE(tokenizer.init(config).ok());
+    for (const std::string script :
+         {"かな", "カナ", "ｶﾅ", "한국어", "한", "𛀀"}) {
+      for (const bool prefix : {false, true}) {
+        const std::string input =
+            prefix ? script + "getValue" : "getValue" + script;
+        SCOPED_TRACE(std::string(child_name) + ": " + input);
+        auto expected = tokenizer.tokenize(script);
+        const uint32_t offset =
+            prefix ? static_cast<uint32_t>(script.size()) : 0;
+        std::vector<Token> identifier{{"getvalue", offset, 0},
+                                      {"get", offset, 0},
+                                      {"value", offset + 3, 0}};
+        if (prefix) {
+          expected.insert(expected.end(), identifier.begin(), identifier.end());
+        } else {
+          for (auto &token : expected) {
+            token.offset += 8;
+          }
+          expected.insert(expected.begin(), identifier.begin(),
+                          identifier.end());
+        }
+        auto actual = tokenizer.tokenize(input);
+        ASSERT_EQ(actual.size(), expected.size());
+        for (size_t i = 0; i < actual.size(); ++i) {
+          EXPECT_EQ(actual[i].text, expected[i].text);
+          EXPECT_EQ(actual[i].offset, expected[i].offset);
+          EXPECT_EQ(actual[i].position, i);
+        }
+      }
+    }
+  }
 }
 
 TEST(CodeTokenizerTest, ChildConfigurationAndIntrinsicLowercase) {
@@ -144,15 +187,7 @@ TEST(CodeTokenizerTest, CacheSeparatesChildParameters) {
 }
 
 TEST(CodeTokenizerTest, JiebaChildPreservesWordsAndGlobalOffsets) {
-  const std::string dict_dir{JIEBA_DICT_DIR};
-  for (const char *file : {"jieba.dict.utf8", "hmm_model.utf8"}) {
-    const std::string path = dict_dir + "/" + file;
-    if (!std::ifstream(path).good()) {
-      GTEST_SKIP() << "Jieba resource not available at: " << path;
-    }
-  }
   ailego::JsonObject child_config;
-  child_config.set("jieba_dict_dir", dict_dir);
   ailego::JsonObject config;
   config.set("sub_tokenizer", "jieba");
   config.set("sub_tokenizer_params", child_config);
@@ -166,7 +201,9 @@ TEST(CodeTokenizerTest, JiebaChildPreservesWordsAndGlobalOffsets) {
   EXPECT_EQ(tokens[3].offset, 19u);
   EXPECT_EQ(tokens[5].offset, 22u);
   EXPECT_EQ(tokens[7].offset, 36u);
-  for (size_t i = 0; i < tokens.size(); ++i) EXPECT_EQ(tokens[i].position, i);
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    EXPECT_EQ(tokens[i].position, i);
+  }
 
   JiebaTokenizer child;
   ASSERT_TRUE(child.init(child_config).ok());
@@ -174,6 +211,34 @@ TEST(CodeTokenizerTest, JiebaChildPreservesWordsAndGlobalOffsets) {
        {"南京市长江大桥", "caféValue", "한국어테스트", "Приветмир"}) {
     EXPECT_EQ(texts(tokenizer.tokenize(text)),
               texts(LowercaseTokenFilter().filter(child.tokenize(text))));
+  }
+}
+
+TEST(CodeTokenizerTest, JiebaChildSupportsExternalDictionary) {
+  const std::string dict_dir{JIEBA_DICT_DIR};
+  for (const char *file : {"jieba.dict.utf8", "hmm_model.utf8"}) {
+    const std::string path = dict_dir + "/" + file;
+    if (!std::ifstream(path).good()) {
+      GTEST_SKIP() << "Jieba resource not available at: " << path;
+    }
+  }
+  ailego::JsonObject config;
+  config.set("sub_tokenizer", "jieba");
+  CodeTokenizer embedded;
+  ASSERT_TRUE(embedded.init(config).ok());
+  ailego::JsonObject child_config;
+  child_config.set("jieba_dict_dir", dict_dir);
+  config.set("sub_tokenizer_params", child_config);
+  CodeTokenizer external;
+  ASSERT_TRUE(external.init(config).ok());
+  const std::string input = "获取请求时间getRequestTime，调用";
+  const auto expected = embedded.tokenize(input);
+  const auto actual = external.tokenize(input);
+  ASSERT_EQ(actual.size(), expected.size());
+  for (size_t i = 0; i < actual.size(); ++i) {
+    EXPECT_EQ(actual[i].text, expected[i].text);
+    EXPECT_EQ(actual[i].offset, expected[i].offset);
+    EXPECT_EQ(actual[i].position, expected[i].position);
   }
 }
 

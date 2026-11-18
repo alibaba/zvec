@@ -930,11 +930,15 @@ std::vector<Token> tokenize_ascii(const std::string &text,
 
 }  // namespace
 
-bool StandardTokenizer::is_ideographic(uint32_t codepoint) {
+bool StandardTokenizer::is_cjk(uint32_t codepoint) {
   if (codepoint > kUnicodeMaxCodepoint) {
     return false;
   }
-  return lookup_script_class(codepoint) == WordBreakClass::Ideographic;
+  auto script = lookup_script_class(codepoint);
+  return script == WordBreakClass::Ideographic ||
+         script == WordBreakClass::Hiragana ||
+         script == WordBreakClass::Hangul ||
+         lookup_word_break_class(codepoint) == WordBreakClass::Katakana;
 }
 
 Status StandardTokenizer::init(const ailego::JsonObject &config) {

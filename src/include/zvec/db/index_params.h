@@ -1006,6 +1006,7 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
  *     code:
  *       - "sub_tokenizer" ("standard" or "jieba"; default "standard").
  *       - "sub_tokenizer_params" (JSON object passed to the child tokenizer).
+ *       Jieba uses embedded defaults unless its dictionary is overridden.
  *       Preserves ASCII identifiers and emits camelCase/snake_case subwords.
  *       Always lowercases output, even with empty filters. Digits stay joined
  *       to letters (base64Encode -> base64encode, base64, encode).

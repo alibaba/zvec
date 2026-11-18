@@ -1036,6 +1036,7 @@ class FtsIndexParam(IndexParam):
                 code:
                     - "sub_tokenizer" ("standard" or "jieba"; default "standard").
                     - "sub_tokenizer_params" (object passed to the child tokenizer).
+                    Jieba uses embedded defaults unless its dictionary is overridden.
                     Preserves ASCII identifiers and emits naming subwords.
                     Output is always lowercase, including with filters=[].
                     Phrases match the expanded token sequence. Changes to the
@@ -1096,6 +1097,11 @@ class FtsIndexParam(IndexParam):
                           including the embedded default).
                         - "cut_mode" ("search", "mix", "full", or "hmm";
                           default "search").
+                    code:
+                        - "sub_tokenizer" ("standard" or "jieba"; default "standard").
+                        - "sub_tokenizer_params" (object passed to the child tokenizer).
+                        Jieba uses embedded defaults unless its dictionary is overridden.
+                        Output is always lowercase, including with filters=[].
                     whitespace:
                         - no extra_params.
                 Filters:

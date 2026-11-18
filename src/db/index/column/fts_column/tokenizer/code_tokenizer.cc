@@ -35,7 +35,7 @@ bool is_digit(int32_t cp) {
 }
 
 bool is_word_codepoint(const UnicodeCodepoint &cp) {
-  if (!cp.valid || StandardTokenizer::is_ideographic(cp.cp)) {
+  if (!cp.valid || StandardTokenizer::is_cjk(cp.cp)) {
     return false;
   }
   auto category = utf8proc_category(cp.cp);
