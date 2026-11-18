@@ -20,6 +20,7 @@
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
 #include "tests/test_util.h"
+#include "../../ailego/buffer/pool_payload_budget.h"
 #if RABITQ_SUPPORTED
 #include "core/algorithm/hnsw_rabitq/rabitq_converter.h"
 #include "zvec/core/framework/index_provider.h"
@@ -496,8 +497,8 @@ class GroupByInterfaceTest : public ::testing::Test {
 }  // namespace
 
 TEST_F(GroupByInterfaceTest, FlatAfterReopen) {
-  ASSERT_EQ(0, zvec::ailego::MemoryLimitPool::get_instance().init(256UL * 1024 *
-                                                                  1024));
+  ASSERT_EQ(0, ::zvec::ailego::PoolPayloadBudget::get_instance().init(
+                   256UL * 1024 * 1024));
   for (bool contiguous : {false, true}) {
     for (bool use_id_map : {false, true}) {
       for (auto storage : {StorageOptions::StorageType::kMMAP,

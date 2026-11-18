@@ -30,6 +30,7 @@
 #include <zvec/db/status.h>
 #include "db/common/file_helper.h"
 #include "index/utils/utils.h"
+#include "../ailego/buffer/pool_payload_budget.h"
 
 using namespace zvec;
 using namespace zvec::test;
@@ -39,8 +40,8 @@ static std::string iter_test_path = "test_iterator_collection";
 class IteratorTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    zvec::ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll *
-                                                       1024ll);
+    ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024ll * 1024ll *
+                                                           1024ll);
     FileHelper::RemoveDirectory(iter_test_path);
   }
 

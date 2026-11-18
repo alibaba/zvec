@@ -44,6 +44,7 @@
 #include "algorithm/hnsw/hnsw_streamer.h"
 #include "tests/test_util.h"
 #include "utility/stable_vector_holder.h"
+#include "../../ailego/buffer/pool_payload_budget.h"
 
 // Fault injection is opt-in and thread-local. All other allocations use the
 // normal malloc/free path.
@@ -1780,8 +1781,8 @@ INSTANTIATE_TEST_SUITE_P(
 class HnswLegacyReopenTest : public testing::TestWithParam<StorageOptions> {
  protected:
   static void SetUpTestSuite() {
-    ASSERT_EQ(0, zvec::ailego::MemoryLimitPool::get_instance().init(100 * 1024 *
-                                                                    1024));
+    ASSERT_EQ(0, ::zvec::ailego::PoolPayloadBudget::get_instance().init(
+                     100 * 1024 * 1024));
   }
 };
 
@@ -2127,7 +2128,7 @@ TEST_P(HnswPqLifecycleTest, TrainMergeReopenAndAppend) {
   const std::string merge_path = "hnsw_pq_merge.index";
   for (auto &path : {raw_path, pq_path, merge_path})
     test_util::RemoveTestFiles(path);
-  ailego::MemoryLimitPool::get_instance().init(256 * 1024 * 1024);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(256 * 1024 * 1024);
   auto vectors = RandomVectors(300);
   auto raw_param = FlatIndexParamBuilder()
                        .with_dimension(kDimension)

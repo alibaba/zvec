@@ -390,8 +390,11 @@ void *File::MemoryRemap(void *oldptr, size_t oldsize, void *newptr,
 }
 
 void File::MemoryUnmap(void *addr, size_t len) {
-  ailego_return_if_false(addr);
-  munmap(addr, len);
+  TryMemoryUnmap(addr, len);
+}
+
+bool File::TryMemoryUnmap(void *addr, size_t len) {
+  return addr && ::munmap(addr, len) == 0;
 }
 
 bool File::MemoryFlush(void *addr, size_t len) {
@@ -733,16 +736,15 @@ void *File::MemoryRemap(void *, size_t, void *, size_t) {
   return nullptr;
 }
 
-void File::MemoryUnmap(void *addr, size_t /*len*/) {
-  ailego_return_if_false(addr);
-  MEMORY_BASIC_INFORMATION mbi;
-  if (VirtualQuery(addr, &mbi, sizeof(mbi))) {
-    if (mbi.Type == MEM_MAPPED) {
-      UnmapViewOfFile(mbi.AllocationBase);
-    } else {
-      VirtualFree(mbi.AllocationBase, 0, MEM_RELEASE);
-    }
-  }
+void File::MemoryUnmap(void *addr, size_t len) {
+  TryMemoryUnmap(addr, len);
+}
+
+bool File::TryMemoryUnmap(void *addr, size_t /*len*/) {
+  MEMORY_BASIC_INFORMATION mbi{};
+  if (!addr || !::VirtualQuery(addr, &mbi, sizeof(mbi))) return false;
+  if (mbi.Type == MEM_MAPPED) return ::UnmapViewOfFile(mbi.AllocationBase) != 0;
+  return ::VirtualFree(mbi.AllocationBase, 0, MEM_RELEASE) != 0;
 }
 
 bool File::MemoryFlush(void *addr, size_t /*len*/) {

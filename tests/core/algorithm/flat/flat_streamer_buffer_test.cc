@@ -7,6 +7,7 @@
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
 #include "tests/test_util.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 using namespace zvec::core;
 using namespace zvec::ailego;
@@ -46,7 +47,8 @@ void FlatStreamerTest::TearDown() {
 }
 
 TEST_F(FlatStreamerTest, TestLinearSearch) {
-  MemoryLimitPool::get_instance().init(2 * 1024UL * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024UL * 1024UL *
+                                                         1024UL);
   IndexStreamer::Pointer write_streamer =
       IndexFactory::CreateStreamer("FlatStreamer");
   ASSERT_TRUE(write_streamer != nullptr);
@@ -168,7 +170,8 @@ TEST_F(FlatStreamerTest, TestLinearSearch) {
 }
 
 TEST_F(FlatStreamerTest, TestLinearSearchBuffer) {
-  MemoryLimitPool::get_instance().init(2 * 1024UL * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024UL * 1024UL *
+                                                         1024UL);
   IndexStreamer::Pointer write_streamer =
       IndexFactory::CreateStreamer("FlatStreamer");
   ASSERT_TRUE(write_streamer != nullptr);
@@ -290,7 +293,8 @@ TEST_F(FlatStreamerTest, TestLinearSearchBuffer) {
 }
 
 TEST_F(FlatStreamerTest, TestLinearSearchBufferMMap) {
-  MemoryLimitPool::get_instance().init(2 * 1024UL * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024UL * 1024UL *
+                                                         1024UL);
   IndexStreamer::Pointer write_streamer =
       IndexFactory::CreateStreamer("FlatStreamer");
   ASSERT_TRUE(write_streamer != nullptr);
@@ -413,7 +417,7 @@ TEST_F(FlatStreamerTest, TestLinearSearchBufferMMap) {
 
 
 TEST_F(FlatStreamerTest, TestLinearSearchWithLRU) {
-  MemoryLimitPool::get_instance().init(100 * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(100 * 1024UL * 1024UL);
 #ifdef __ANDROID__
   GTEST_SKIP()
       << "Skipped on Android: requires ~6GB memory/disk (emulator limit)";

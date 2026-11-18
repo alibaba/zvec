@@ -16,6 +16,15 @@
 #include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/export.h>
 
+namespace zvec::ailego {
+struct MemoryLimitPoolTestPeer {
+  static bool is_background_worker() {
+    return MemoryLimitPool::get_instance()
+        .refresh_residency_on_background_thread();
+  }
+};
+}  // namespace zvec::ailego
+
 extern "C" {
 
 ZVEC_HELPER_DLL_EXPORT void *zvec_test_dso_memory_limit_pool() {
@@ -33,6 +42,10 @@ ZVEC_HELPER_DLL_EXPORT bool zvec_test_dso_charge_external(size_t bytes) {
 
 ZVEC_HELPER_DLL_EXPORT void zvec_test_dso_release_external(size_t bytes) {
   zvec::ailego::MemoryLimitPool::get_instance().release_external(bytes);
+}
+
+ZVEC_HELPER_DLL_EXPORT bool zvec_test_dso_is_background_worker() {
+  return zvec::ailego::MemoryLimitPoolTestPeer::is_background_worker();
 }
 
 }  // extern "C"

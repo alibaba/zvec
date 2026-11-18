@@ -83,6 +83,10 @@ constexpr size_t kBlockingAioBatchSize = VecBufferPool::kWritebackBatchPages;
 }
 
 VecBufferPool::~VecBufferPool() {
+  // Retire and wait for in-flight eviction callbacks before teardown. A
+  // callback can retain a page after force_evict_all_loaded() skips its
+  // evicting state, leaking that page when the table is destroyed.
+  BlockEvictionQueue::get_instance().set_invalid(&page_table_);
   // Finish queued writes before page buffers, latches, and descriptors go
   // away. The synchronous pass below catches any prior writeback error.
   stop_writeback();
