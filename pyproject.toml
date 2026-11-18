@@ -129,7 +129,7 @@ sdist.include = [
 
 # CMake defines (env-overridable)
 [tool.scikit-build.cmake.define]
-BUILD_TOOLS = "OFF"
+BUILD_BENCHMARKS = "OFF"
 BUILD_PYTHON_BINDINGS = "ON"
 #CMAKE_VERBOSE_MAKEFILE = "ON"
 

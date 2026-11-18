@@ -55,7 +55,7 @@ jobs:
             -DBUILD_ZVEC_AILEGO_SHARED=OFF \
             -DBUILD_ZVEC_CORE_SHARED=OFF \
             -DBUILD_PYTHON_BINDINGS=OFF \
-            -DBUILD_TOOLS=OFF \
+            -DBUILD_BENCHMARKS=OFF \
             -DBUILD_CPP_EXAMPLES=ON \
             -DENABLE_WERROR=ON \
             -DCMAKE_INSTALL_PREFIX="./install" \
