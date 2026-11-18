@@ -1,143 +1,79 @@
-# Numeric benchmarks
+# Numeric inverted index benchmark
 
-Benchmarks for inverted indexes over INT32 and INT64 data.
+Benchmark zvec's inverted index on reproducible INT32 and INT64 workloads.
 
-`profile.h/.cc` defines workload configuration; `dataset.h/.cc` owns dataset creation,
-metadata, and batch reading; `numeric_cases.h/.cc` implements build, verify, and query.
+## Build and run
 
-Follow the [shared build setup](../../README.md), then run from the repository root:
+Run these commands from the repository root to build the Release executable.
 
 ```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_BENCHMARKS=ON
+
 cmake --build build --parallel --target inverted_numeric_bench
-
-python3 benchmarks/inverted/numeric_cases/run_benchmarks.py --list
-
-python3 benchmarks/inverted/numeric_cases/run_benchmarks.py \
-  --type int64 --num-docs 100000
-
-python3 benchmarks/inverted/numeric_cases/run_benchmarks.py \
-  --type int32,int64 --num-docs 100000 --profile uniform
 ```
 
-The script requires only `inverted_numeric_bench`. Runs require an explicit `--type` and
-`--num-docs`; `--type all` selects both INT32 and INT64. `--type` and `--profile` accept
-comma-separated names. `--list` previews workload combinations without running the executable;
-omitting these filters includes both types and all distributions. Query cases are determined by
-C++ when creating each dataset and recorded in `dataset.json`.
-
-## Workload
-
-One `NumericProfile` describes each workload. Python passes the selected configuration to C++,
-which validates it and records the resolved configuration in the reports.
-
-| Flag | Values | Default |
-| --- | --- | --- |
-| `--type` | `int32`, `int64`, or `all` | Required for runs |
-| `--num-docs` | `100000` or `10000000` | Required for runs |
-| `--profile` | `uniform`, `hotspot_moderate`, `hotspot_extreme` | All distributions |
-| `--value-range` | `0_to_30000`, `0_to_type_max` | `0_to_30000` |
-| `--value-order` | `ascending`, `shuffled` | `ascending` |
-| `--null-ratio` | `0`, `0.1`, `0.5` | `0` |
-
-The Python script translates `--profile` to the executable's `--distribution`.
-
-Uniform samples every candidate value with equal probability. Hotspot selects distinct hot
-values across the domain; remaining documents sample cold values outside that set. Each group
-samples uniformly. `hotspot_extreme` concentrates documents on hot values more strongly than
-`hotspot_moderate`; both use fixed presets identified by name in reports.
-
-`0_to_30000` means `[0, 30000)`; `0_to_type_max` means `[0, INT32_MAX)` or `[0, INT64_MAX)`.
-Sampling and statistics do not allocate the full value domain.
-Large domains can produce many one-document postings.
-
-`shuffled` distributes values randomly across document IDs. `ascending` assigns non-NULL
-values in nondecreasing order. Both use the same values and NULL positions. NULL ratios produce
-zero, `num_docs / 10`, or `num_docs / 2` NULLs, with deterministic, randomly distributed positions.
-
-Query operands are derived from the generated data. In `dataset.json`, `stats` records
-`distinct_value_count`, `min_value`, and `max_value` for non-NULL values.
-`documents_per_value` summarizes how many documents contain each distinct non-NULL value
-(`min`, `p50`, `p95`, `max`); `null_count` records the number of NULL documents.
-
-| Query case | Distribution | Inputs |
-| --- | --- | --- |
-| `eq_hit` | Uniform | Up to 7 existing values |
-| `eq_hottest` | Hotspot | The most frequent hot value; ties choose the smallest |
-| `eq_hot`, `eq_cold` | Hotspot | Up to 7 existing hot/cold values each |
-| `eq_miss` | All | `-1` through `-7` |
-| `ne_hit` | All | Reuses the `eq_hit` or `eq_hot` inputs |
-| `lt_qXX`, `gt_qXX` | All | One shared boundary per pair; `XX` is `01`, `11`, `33`, `50`, `77`, `90`, or `99` |
-| `is_null`, `is_not_null` | All | No numeric input |
-
-Range boundaries target the specified percentage of non-NULL documents for `<` queries.
-The paired `>` query uses the same boundary; neither includes values equal to it.
-Repeated values may prevent an exact target ratio. Query reports retain actual hit
-counts for each input. Uniform has 19 cases; hotspot has 21.
-
-## Execution
-
-Each repetition prepares a dataset, builds its index, verifies all applicable queries, then
-measures all queries. These four phases run in separate processes. The query process reopens
-the index for each case, then times 100 complete query-pool passes from the first pass.
-Each input runs 100 times: a case with seven inputs completes 700 queries.
-Seed `19991230` and the iteration count are fixed in C++.
-Use `--repetitions` to change the default of three repetitions; the script reports each
-metric's arithmetic mean across repetitions.
-
-Prepare writes `data.bin` and `dataset.json`, then exits. Build loads that dataset in a fresh
-process, so its peak RSS excludes data generation. It reads up to 32,768 records per batch,
-inserts them sequentially on one thread, and optimizes the index. Verify scans this same file for
-each query operand and compares every matching document ID with the index result.
-It prints `Verification passed` on success, or stops with an error and a nonzero exit
-code on failure; it writes no report. The script starts query only after verification
-succeeds. Query records `match_counts` from the first measured pass and assumes results
-are correct during timing. It reads the index without reading `data.bin` and can also
-run directly after build.
-
-`data.bin` stores records in document ID order: one NULL byte followed by 4-byte INT32 or
-8-byte INT64 native values. NULL payloads are zero-filled; document IDs are implicit. The
-file has no header; `dataset.json` holds its metadata. This is a local run format.
-
-Both dataset entry points require an existing directory; the CLI creates `--run_dir` in prepare mode.
-`NumericDataset::Create(profile, directory)` writes both dataset files.
-`NumericDataset::Load(directory)` loads metadata; the first `read_next_batch()` opens `data.bin`.
-`rewind()` resets the document cursor, and `query_cases()` returns the cached query definitions.
-
-The executable accepts a single `--run_dir` containing:
-
-| File | Contents |
-| --- | --- |
-| `data.bin` | Original records in document ID order |
-| `dataset.json` | `profile`, `seed`, `stats`, and `queries` (each with `name` and `inputs`) |
-| `index/` | Built inverted index |
-| `build.json` | Build timing, disk usage, memory, and environment |
-| `query.json` | Query timing, `match_counts`, memory, and environment per query case |
-
-Query reports identify each case by `name`.
-The C++ benchmark writes build and query reports; the dataset class writes the two dataset files.
-To run the phases directly:
+Run the Python driver in a terminal to choose workloads interactively.
 
 ```bash
-build/bin/inverted_numeric_bench --mode=prepare --data_type=int64 \
-  --num_docs=100000 --distribution=hotspot_moderate \
-  --value_range=0_to_type_max --value_order=shuffled --null_ratio=0.1 \
-  --run_dir=build/results/inverted/numeric-example
-
-build/bin/inverted_numeric_bench --mode=build \
-  --run_dir=build/results/inverted/numeric-example
-
-build/bin/inverted_numeric_bench --mode=verify \
-  --run_dir=build/results/inverted/numeric-example
-
-build/bin/inverted_numeric_bench --mode=query \
-  --run_dir=build/results/inverted/numeric-example
+python3 benchmarks/inverted/numeric_cases/run_benchmarks.py
 ```
 
-Prepare requires `--data_type` and defaults to 100,000 documents and `uniform`.
-Build, verify, and query accept only `--run_dir` as workload input and restore the configuration
-from `dataset.json`. Run the executable without arguments or with `--help` to see its parameters.
+This example runs one workload with 100,000 INT64 documents and one repetition.
 
-Script results default to `build/results/inverted/numeric/<run-id>/`.
-See [result metrics and output controls](../README.md#results).
-Numeric query cases share a process: later cases may retain allocator memory, and peak RSS
-accumulates across all cases in that query run.
+```bash
+python3 benchmarks/inverted/numeric_cases/run_benchmarks.py \
+  --data_type=int64 --num_docs=100000 --distribution=hotspot_moderate \
+  --value_order=shuffled --null_ratio=0.1 --repetitions=1
+```
+
+Open the `report.md` path printed at the end. Results default to
+`build/results/inverted/numeric/<run-id>/`. Use `--run_dir` to name a new output
+directory or `--bin_dir` to point to the directory containing the executable (default `build/bin`).
+With a multi-config generator such as Visual Studio, add `--config Release` to the
+build command and set `--bin_dir` to the resulting directory, typically `build/bin/Release`.
+
+## Choose a workload
+
+| Python flag | Choices | CLI default |
+| --- | --- | --- |
+| `--data_type` | `int32`, `int64`, `all` | Required |
+| `--num_docs` | `100000`, `10000000` | Required |
+| `--distribution` | `uniform`, `hotspot_moderate`, `hotspot_extreme`, `all` | `all` |
+| `--value_range` | `0_to_30000`, `0_to_type_max`, `all` | `0_to_30000` |
+| `--value_order` | `ascending`, `shuffled`, `all` | `ascending` |
+| `--null_ratio` | `0`, `0.1`, `0.5`, `all` | `0` |
+| `--repetitions` | Positive integer | `3` |
+
+Each combination is a separate workload. For example, selecting `all` for both
+type and distribution runs six workloads when each other flag selects one value.
+The value range starts at zero and excludes the upper bound (30,000 or the type
+maximum). Value order controls how non-NULL values are assigned to document IDs.
+Hotspot distributions concentrate records on a subset of values. The extreme
+preset puts a larger fraction of records on fewer values.
+
+## Read the report
+
+Each repetition runs four C++ phases in separate processes. `prepare` generates
+the dataset and query inputs from a fixed seed. `build` inserts and optimizes
+the index. `verify` compares every matching document ID with a scan of the
+dataset. `query` times all applicable queries after verification succeeds.
+To run individual phases, see `build/bin/inverted_numeric_bench --help`.
+
+| Report section | What to look for |
+| --- | --- |
+| Workloads | Configuration and repetitions, followed by observed NULL count, distinct values, value bounds, and documents per value. |
+| Build | Mean insert and optimize time across repetitions. Insert timing starts after each batch has been read and decoded. Total is insert plus optimize. Index size is the logical size of files in the index directory. Peak and final RSS cover the build process through optimization, before the index closes. Sizes are in MiB. |
+| Queries | Mean time per query in µs and mean matching documents per query, across inputs and repetitions. Each input runs 100 times on one thread. Timing includes search, result counting, and release. The index is opened before timing. |
+
+Uniform workloads test equality hits (`eq_hit`). Hotspot workloads distinguish
+the most frequent hot value (`eq_hottest`) from sampled hot and cold values
+(`eq_hot`, `eq_cold`). All workloads test equality misses below zero,
+inequality against existing values, NULL checks, and paired range queries.
+For example, `lt_q11` targets the boundary with about 11% of **non-NULL**
+documents below it. `gt_q11` uses the same boundary and counts values above it.
+
+For individual measurements, open `build.json` and `query.json` in a workload's
+`repeat-001/` directory. Its `dataset.json` records the query inputs in the same
+order as the per-input `match_counts` in `query.json`. The run's top-level
+`run.json` records the arguments, binary identity, and status. If a phase fails,
+the driver prints an error summary and retains that phase's log.

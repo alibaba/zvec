@@ -70,15 +70,6 @@ def write_json(path, value):
     temporary.replace(path)
 
 
-def names(value):
-    if not value:
-        return set()
-    result = {part.strip() for part in value.split(",")}
-    if "" in result:
-        fail("Filters must contain nonempty comma-separated names")
-    return result
-
-
 def safe_name(value):
     if not isinstance(value, str) or not re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9_.-]*", value

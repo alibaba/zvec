@@ -151,8 +151,9 @@ JsonObject Build(const std::string &index_path, const std::string &run_dir) {
   NumericBatch batch;
   IndexFixture index(profile.data_type, index_path, false);
   auto &column = index.column();
-  const auto insert_begin = Clock::now();
+  double insert_seconds = 0.0;
   while (dataset.read_next_batch(batch)) {
+    const auto insert_begin = Clock::now();
     for (size_t i = 0; i < batch.values.size(); ++i) {
       const auto id = batch.first_doc_id + static_cast<uint32_t>(i);
       auto status = batch.is_null[i] ? column.insert_null(id)
@@ -161,11 +162,11 @@ JsonObject Build(const std::string &index_path, const std::string &run_dir) {
         throw std::runtime_error("Numeric insert failed at doc " +
                                  std::to_string(id));
     }
+    insert_seconds += Seconds(insert_begin, Clock::now());
   }
   const auto optimize_begin = Clock::now();
   index.seal();
   const auto optimize_end = Clock::now();
-  const auto insert_seconds = Seconds(insert_begin, optimize_begin);
   const auto optimize_seconds = Seconds(optimize_begin, optimize_end);
   const auto total_seconds = insert_seconds + optimize_seconds;
   const auto memory = MemorySnapshot();

@@ -23,7 +23,7 @@ from interactive import (
     interactive_args,
     phase_progress,
     print_error,
-    print_success,
+    print_report_path,
     print_workload,
 )
 from report import BUILD_COLUMNS, QUERY_COLUMNS, render_report
@@ -32,7 +32,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "shared"))
 from benchmark_helpers import (
     binary_record,
     fail,
-    names,
     number,
     report_details,
     run_worker,
@@ -58,7 +57,6 @@ DEFAULTS = {
     "value_range": "0_to_30000",
     "value_order": "ascending",
     "null_ratio": "0",
-    "run_dir": None,
     "repetitions": 3,
     "bin_dir": ROOT / "build/bin",
 }
@@ -78,18 +76,15 @@ def select_profiles(args):
     """Expand selected values into every combination, in profile field order."""
     selections = []
     for name, choices in PROFILE_CHOICES.items():
-        requested = names(getattr(args, name))
+        selected = getattr(args, name)
         selections.append(
             [
-                value
+                (name, value)
                 for value in choices
-                if "all" in requested or str(value) in requested
+                if selected == "all" or str(value) == selected
             ]
         )
-    return [
-        dict(zip(PROFILE_CHOICES, values, strict=True))
-        for values in product(*selections)
-    ]
+    return [dict(items) for items in product(*selections)]
 
 
 def validate_dataset(dataset, profile, args):
@@ -257,7 +252,8 @@ def parse_args(argv=None):
     parser.add_argument(
         "--data_type",
         required=True,
-        help="Comma-separated data types: int32, int64, or all",
+        choices=(*PROFILE_CHOICES["data_type"], "all"),
+        help="Numeric data type, or all",
     )
     parser.add_argument(
         "--num_docs",
@@ -269,8 +265,8 @@ def parse_args(argv=None):
     parser.add_argument(
         "--distribution",
         default=DEFAULTS["distribution"],
-        help="Comma-separated distributions: uniform, hotspot_moderate, "
-        "hotspot_extreme, or all (default)",
+        choices=(*PROFILE_CHOICES["distribution"], "all"),
+        help="Value distribution (default: all)",
     )
     parser.add_argument(
         "--value_range",
@@ -293,7 +289,6 @@ def parse_args(argv=None):
     parser.add_argument(
         "--run_dir",
         type=Path,
-        default=DEFAULTS["run_dir"],
         help="Output directory for data, indexes, and reports; must not already exist "
         "(default: build/results/inverted/numeric/<run-id>)",
     )
@@ -305,18 +300,6 @@ def parse_args(argv=None):
         help="Directory containing inverted_numeric_bench (default: build/bin)",
     )
     args = parser.parse_args(argv)
-    for name in ("data_type", "distribution"):
-        value = getattr(args, name)
-        if value == "all":
-            continue
-        try:
-            requested = names(value)
-        except RuntimeError as error:
-            parser.error(str(error))
-        if not requested or requested - set(PROFILE_CHOICES[name]):
-            parser.error(
-                f"--{name} must select {', '.join(PROFILE_CHOICES[name])}, or all"
-            )
     if args.repetitions < 1:
         parser.error("--repetitions must be positive")
     return args
@@ -326,23 +309,24 @@ def main(argv=None):
     output, metadata = None, None
     try:
         argv = sys.argv[1:] if argv is None else argv
-        if not argv and sys.stdin.isatty() and sys.stdout.isatty():
-            argv = interactive_args(PROFILE_CHOICES, DOCUMENT_COUNTS, DEFAULTS)
-            if argv is None:
-                return 0
-        args = parse_args(argv)
-        profiles = select_profiles(args)
-        binary = select_binary(args)
         run_id = (
             datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             + "-"
             + uuid.uuid4().hex[:8]
         )
-        output = (
-            (args.run_dir or ROOT / "build/results/inverted/numeric" / run_id)
-            .expanduser()
-            .resolve()
-        )
+        default_run_dir = ROOT / "build/results/inverted/numeric" / run_id
+        if not argv and sys.stdin.isatty() and sys.stdout.isatty():
+            argv = interactive_args(
+                PROFILE_CHOICES,
+                DOCUMENT_COUNTS,
+                {**DEFAULTS, "run_dir": default_run_dir},
+            )
+            if argv is None:
+                return 0
+        args = parse_args(argv)
+        profiles = select_profiles(args)
+        binary = select_binary(args)
+        output = (args.run_dir or default_run_dir).expanduser().resolve()
         output.mkdir(parents=True, exist_ok=False)
         metadata = {
             "run_id": run_id,
@@ -376,8 +360,6 @@ def main(argv=None):
         write_json(output / "run.json", metadata)
         # Publish only after both the report and the final run status are saved.
         temporary_report.replace(report_path)
-        print_success(f"Report: {report_path}")
-        return 0
     except (Exception, KeyboardInterrupt) as error:
         interrupted = isinstance(error, (KeyboardInterrupt, EOFError))
         message = (
@@ -397,6 +379,9 @@ def main(argv=None):
                 message += f"\n  Could not save run status: {status_error}"
         print_error(message)
         return 130 if interrupted else 1
+
+    print_report_path(report_path)
+    return 0
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@
 
 from __future__ import annotations
 
-import datetime
+from statistics import mean
 
 BUILD_COLUMNS = (
     ("Insert (s)", "insert_seconds"),
@@ -21,7 +21,7 @@ BUILD_COLUMNS = (
     ("Peak RSS (MiB)", "process_memory.peak_rss_mib"),
     ("Final RSS (MiB)", "process_memory.final_rss_mib"),
 )
-QUERY_COLUMNS = (("Query time (µs)", "query_time_us"),)
+QUERY_COLUMNS = (("Mean query time (µs)", "query_time_us"),)
 
 
 def _number(value):
@@ -37,25 +37,18 @@ def _table(headers, rows):
 
 
 def _query_table(profile):
-    inputs = {
-        case["name"]: len(case["inputs"]) for case in profile["dataset"]["queries"]
-    }
     rows = []
     for case in profile["cases"]:
-        counts = [str(detail["match_counts"]) for detail in case["details"]]
-        # Keep one list when repetitions agree; otherwise show each repetition.
-        matches = (
-            counts[0]
-            if all(value == counts[0] for value in counts)
-            else "; ".join(f"run {i}: {value}" for i, value in enumerate(counts, 1))
+        matches_per_query = mean(
+            count for detail in case["details"] for count in detail["match_counts"]
         )
         rows.append(
-            [case["name"], inputs[case["name"]]]
+            [case["name"]]
             + [_number(case["metrics"][key]) for _, key in QUERY_COLUMNS]
-            + [matches]
+            + [_number(matches_per_query)]
         )
     return _table(
-        ["Case", "Inputs"] + [label for label, _ in QUERY_COLUMNS] + ["Matches/input"],
+        ["Case"] + [label for label, _ in QUERY_COLUMNS] + ["Matches per query"],
         rows,
     )
 
@@ -63,26 +56,20 @@ def _query_table(profile):
 def render_report(run, summary):
     """Render completed workloads without reading or modifying their raw results."""
     profiles = summary["profiles"]
-    elapsed = (
-        datetime.datetime.fromisoformat(run["finished_at"])
-        - datetime.datetime.fromisoformat(run["started_at"])
-    ).total_seconds()
     lines = [
         "# Numeric inverted-index benchmark report",
         "",
         f"- Run: `{run['run_id']}`",
         f"- Status: {run['status']}",
         f"- Started: {run['started_at']}",
-        f"- Total wall time: {elapsed:.2f} s",
-        f"- Repetitions per workload: {summary['repetitions']}",
-        "",
-        "Metrics are arithmetic means across repetitions. "
-        "`N/A` means a measurement was unavailable.",
         "",
         "## Workloads",
         "",
+        f"Repetitions per workload: {summary['repetitions']}",
+        "",
     ]
     workload_rows = []
+    stats_rows = []
     for index, profile in enumerate(profiles, 1):
         configuration = profile["dataset"]["profile"]
         workload_rows.append(
@@ -94,6 +81,20 @@ def render_report(run, summary):
                 configuration["value_range"],
                 configuration["value_order"],
                 f"{configuration['null_ratio'] * 100:.2f}%",
+            ]
+        )
+        stats = profile["dataset"]["stats"]
+        docs_per_value = stats["documents_per_value"]
+        stats_rows.append(
+            [
+                index,
+                f"{stats['null_count']:,}",
+                f"{stats['distinct_value_count']:,}",
+                f"{stats['min_value']:,}",
+                f"{stats['max_value']:,}",
+                " / ".join(
+                    f"{docs_per_value[q]:,}" for q in ("min", "p50", "p95", "max")
+                ),
             ]
         )
     lines.extend(
@@ -111,6 +112,20 @@ def render_report(run, summary):
                 workload_rows,
             ),
             "",
+            "### Observed dataset statistics",
+            "",
+            _table(
+                [
+                    "Workload",
+                    "NULL documents",
+                    "Distinct non-NULL values",
+                    "Min value",
+                    "Max value",
+                    "Documents per non-NULL value (min / p50 / p95 / max)",
+                ],
+                stats_rows,
+            ),
+            "",
             "## Build",
             "",
             _table(
@@ -123,8 +138,6 @@ def render_report(run, summary):
             ),
             "",
             "## Queries",
-            "",
-            "Matches/input lists the document count for each query input in dataset order.",
             "",
         ]
     )
@@ -141,24 +154,4 @@ def render_report(run, summary):
                 "",
             ]
         )
-    lines.extend(
-        [
-            "## Measurement notes",
-            "",
-            "- Query time is the mean time per query in microseconds. "
-            "Each input runs 100 times per repetition, without warmup. Query timing "
-            "includes search, result counting, and release; index opening, input "
-            "preparation, and document-ID verification are excluded.",
-            "- Build total is insert plus optimize time. Insert includes dataset reads; "
-            "optimize includes sealing, flushing, and compaction. Index size excludes "
-            "dataset files and reports.",
-            "- Build RSS measures the whole process. Build runs in a fresh process "
-            "after dataset preparation.",
-            "- The benchmark calls the index on one thread; RocksDB can use background "
-            "threads. OS caches are not cleared between repetitions.",
-            "- Floating-point values use two decimal places. "
-            "Independently rounded values may not sum exactly.",
-            "",
-        ]
-    )
     return "\n".join(lines)

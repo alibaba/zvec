@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 import sys
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from functools import cache
 from pathlib import Path
 
@@ -65,8 +65,15 @@ def print_error(message):
     print(_colored(f"error: {message}", RED, sys.stderr), file=sys.stderr)
 
 
-def print_success(message):
-    print(_colored(message, GREEN), flush=True)
+def print_report_path(path):
+    encoding = sys.stdout.encoding or "utf-8"
+    display_path = str(path).encode(encoding, "backslashreplace").decode(encoding)
+    try:
+        print(_colored(f"Report: {display_path}", GREEN), flush=True)
+    except OSError:
+        # The report is on disk. Avoid retrying buffered output at process exit.
+        with suppress(OSError):
+            sys.stdout.close()
 
 
 def print_workload(index, total, profile):
@@ -118,37 +125,8 @@ def _choose(title, options, default=None):
         print_error(f"Choose a number from 1 to {len(options)}.")
 
 
-def _choose_multiple(name, choices, selected):
-    print("\n" + _colored(f"--{name} (multiple selections allowed)", CYAN))
-    for index, value in enumerate(choices, 1):
-        print(f"  {index}. {value}")
-    print(f"  {len(choices) + 1}. all")
-    default = (
-        "all"
-        if selected == "all"
-        else ",".join(
-            str(i)
-            for i, value in enumerate(choices, 1)
-            if selected is not None and value in selected.split(",")
-        )
-    )
-    prompt = "Choices (comma-separated numbers or all)"
-    prompt += f" [{default}]: " if default else ": "
-    while True:
-        answer = input(_colored(prompt, CYAN)).strip() or default
-        if answer in ("all", str(len(choices) + 1)):
-            return "all"
-        parts = [part.strip() for part in answer.split(",")]
-        if all(part.isdecimal() and 1 <= int(part) <= len(choices) for part in parts):
-            indices = sorted({int(part) - 1 for part in parts})
-            if len(indices) == len(choices):
-                return "all"
-            return ",".join(choices[i] for i in indices)
-        print_error(f"Choose comma-separated numbers from 1 to {len(choices)}, or all.")
-
-
 def _read_repetitions(default):
-    print("\n" + _colored("--repetitions", CYAN))
+    print("\n" + _colored("repetitions", CYAN))
     while True:
         answer = input(_colored(f"Positive integer [{default}]: ", CYAN)).strip()
         if not answer:
@@ -159,11 +137,11 @@ def _read_repetitions(default):
             value = 0
         if value > 0:
             return value
-        print_error("--repetitions must be a positive integer.")
+        print_error("Enter a positive integer.")
 
 
 def _read_directory(name, current, default):
-    print("\n" + _colored(f"--{name}", CYAN))
+    print("\n" + _colored(name, CYAN))
     description = (
         "Output directory for data, indexes, and reports; must not already exist."
         if name == "run_dir"
@@ -171,11 +149,10 @@ def _read_directory(name, current, default):
     )
     print(description)
     print("Press Enter to keep the current value; enter '-' to reset to the default.")
-    display = "automatic" if current is None else str(current)
-    answer = input(_colored(f"Directory [{display}]: ", CYAN)).strip()
+    answer = input(_colored(f"Directory [{current}]: ", CYAN)).strip()
     if not answer:
         return current
-    return default if answer == "-" else Path(answer)
+    return default if answer == "-" else Path(answer).expanduser().resolve()
 
 
 def interactive_args(profile_choices, document_counts, defaults):
@@ -194,13 +171,11 @@ def interactive_args(profile_choices, document_counts, defaults):
     }
 
     def choose_value(name):
-        if name in ("data_type", "distribution"):
-            return _choose_multiple(name, profile_choices[name], values[name])
         if name == "repetitions":
             return _read_repetitions(values[name])
         if name in ("run_dir", "bin_dir"):
             return _read_directory(name, values[name], defaults[name])
-        return _choose(f"--{name}", options[name], default=values[name])
+        return _choose(name, options[name], default=values[name])
 
     # Ask for every workload dimension; directories remain optional settings.
     for name in values:
@@ -209,13 +184,11 @@ def interactive_args(profile_choices, document_counts, defaults):
     while True:
         print("\n" + _colored("Run configuration", CYAN))
         for name, value in values.items():
-            display = "automatic" if value is None else str(value)
-            print(f"  --{name:<13} {_colored(display, GREEN)}")
+            print(f"  --{name:<13} {_colored(str(value), GREEN)}")
         workloads = 1
         for name, choices in profile_choices.items():
-            workloads *= (
-                len(choices) if values[name] == "all" else len(values[name].split(","))
-            )
+            if values[name] == "all":
+                workloads *= len(choices)
         print(
             _colored(
                 f"\n{workloads} workloads x {values['repetitions']} repetitions", YELLOW
@@ -233,12 +206,8 @@ def interactive_args(profile_choices, document_counts, defaults):
         if action == "exit":
             return None
         if action == "run":
-            return [
-                f"--{name}={value}"
-                for name, value in values.items()
-                if value is not None
-            ]
-        fields = [(f"--{name}", name) for name in values]
+            return [f"--{name}={value}" for name, value in values.items()]
+        fields = [(name, name) for name in values]
         name = _choose("Edit setting", [*fields, ("Back", None)])
         if name is not None:
             values[name] = choose_value(name)
