@@ -173,14 +173,14 @@ std::pair<uint32_t, uint32_t> VamanaContext::resolve_query_prefetch(
       static_cast<uint32_t>(ailego_cache_line_count(vector_data_size));
 
   uint32_t resolved_lines;
-  if (requested_lines == kDefaultPrefetchLines) {
+  if (requested_lines == kDefaultVamanaPrefetchLines) {
     resolved_lines = std::min(kPrefetchTargetLines, body_lines);
   } else {
     resolved_lines = std::min({requested_lines, body_lines, kPrefetchMaxValue});
   }
 
   uint32_t resolved_offset;
-  if (requested_offset == kDefaultPrefetchOffset) {
+  if (requested_offset == kDefaultVamanaPrefetchOffset) {
     const uint64_t bytes_per_neighbor =
         static_cast<uint64_t>(AILEGO_CACHE_LINE_SIZE) * resolved_lines;
     const uint32_t budget_offset = static_cast<uint32_t>(

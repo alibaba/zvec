@@ -332,7 +332,7 @@ int DiskAnnIndex::_prepare_for_search(
       std::dynamic_pointer_cast<DiskAnnQueryParam>(search_param);
   if (diskann_search_param == nullptr) {
     LOG_ERROR("Invalid search param: expected DiskAnnQueryParam");
-    return core::IndexError_Runtime;
+    return core::IndexError_InvalidArgument;
   }
 
   if (search_param->group_by_param && search_param->group_by_param->group_by) {
