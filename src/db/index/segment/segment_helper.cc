@@ -74,6 +74,13 @@ Status SegmentHelper::Execute(SegmentTask::Ptr &task) {
     s = fts_task.input_segment_->drop_fts_index(fts_task.column_,
                                                 &fts_task.output_segment_meta_,
                                                 &fts_task.output_fts_indexer_);
+  } else if (std::holds_alternative<RewriteFtsTask>(task_info)) {
+    auto &rewrite = std::get<RewriteFtsTask>(task_info);
+    auto prepared = rewrite.input_segment_->prepare_fts_rewrite();
+    if (!prepared) {
+      return prepared.error();
+    }
+    rewrite.prepared_ = std::move(*prepared);
   } else {
     return Status::InvalidArgument("Unknown task type");
   }
@@ -152,14 +159,21 @@ Status SegmentHelper::ExecuteCompactTask(CompactTask &task) {
 
   LOG_INFO("Compacted vector index");
 
-  s = ReduceFts(schema, input_segments, output_segment_path,
-                delete_row_id_bitmap, block_id_generator, &block_metas);
+  const auto published_id =
+      task.published_segment_id_.value_or(output_segment_id);
+  FtsIndexer::CustomTarget fts_target{
+      output_segment_path,
+      published_id,
+      {0, BlockType::FTS_INDEX, min_doc_id, max_doc_id, doc_count, {}},
+      !task.forward_use_parquet_};
+  s = ReduceFts(schema, input_segments, fts_target, delete_row_id_bitmap,
+                block_id_generator, &block_metas);
   CHECK_RETURN_STATUS(s);
 
   LOG_INFO("Compacted fts index");
 
   auto new_segment_meta = std::make_shared<SegmentMeta>();
-  new_segment_meta->set_id(task.output_segment_id_);
+  new_segment_meta->set_id(published_id);
   new_segment_meta->set_persisted_blocks(block_metas);
   std::set<std::string> indexed_vector_fields;
   for (auto &field : schema->vector_fields()) {
@@ -1011,7 +1025,7 @@ arrow::Status SegmentHelper::FilterRecordBatch(
 
 Status SegmentHelper::ReduceFts(const CollectionSchema::Ptr &schema,
                                 const std::vector<Segment::Ptr> &input_segments,
-                                const std::string &output_segment_path,
+                                const FtsIndexer::CustomTarget &target,
                                 const roaring::Roaring &delete_row_id_bitmap,
                                 std::function<BlockID()> &block_id_generator,
                                 std::vector<BlockMeta> *output_block_metas) {
@@ -1026,13 +1040,49 @@ Status SegmentHelper::ReduceFts(const CollectionSchema::Ptr &schema,
 
   auto fts_block_id = block_id_generator();
 
+  bool custom = FtsIndexer::kCustomWritesEnabled;
+  for (const auto &segment : input_segments) {
+    for (const auto &block : segment->meta()->persisted_blocks()) {
+      custom = custom || block.fts_base_.has_value();
+    }
+  }
+  if (custom) {
+    auto destination = target;
+    destination.block.set_id(fts_block_id);
+    std::vector<std::string> columns;
+    std::vector<std::vector<fts::FtsFieldSource::Ptr>> sources;
+    for (const auto &field : fts_fields) {
+      columns.push_back(field->name());
+      sources.emplace_back();
+      for (const auto &segment : input_segments) {
+        auto source = segment->open_fts_source(field->name());
+        if (!source) {
+          return source.error();
+        }
+        sources.back().push_back(std::move(*source));
+      }
+    }
+    destination.block.set_columns(columns);
+    auto prepared = FtsIndexer::PrepareMerged(
+        destination, fts_fields, sources, delete_row_id_bitmap,
+        fts::FtsMergePolicy::kCompact, fts::FtsRetirementQueue::Create());
+    if (!prepared) {
+      return prepared.error();
+    }
+    output_block_metas->push_back(*(*prepared)->custom_block());
+    // The enclosing private segment now owns this file. Its directory may
+    // move, so release native handles before returning the fixed file list.
+    (*prepared)->preserve_files();
+    return Status::OK();
+  }
+
   // Build the destination FTS RocksDB with the post-dump CF layout:
   // postings + positions per field, plus the shared stat CF.  Side CFs
   // ($TF/$MAX_TF/$DOC_LEN) are skipped — the reducer writes BitPacked
   // directly, matching the immutable-segment shape after
   // convert_postings_to_bitpacked().
   auto dst_fts_path =
-      FileHelper::MakeFtsIndexPath(output_segment_path, fts_block_id);
+      FileHelper::MakeFtsIndexPath(target.segment_path, fts_block_id);
   std::vector<std::string> cf_names;
   std::unordered_map<std::string, std::shared_ptr<rocksdb::MergeOperator>>
       per_cf_merge_ops;

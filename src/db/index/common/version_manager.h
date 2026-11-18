@@ -17,13 +17,20 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
+#include "db/common/durable_file.h"
 #include "db/index/common/meta.h"
 
 namespace zvec {
+
+namespace fts {
+class FtsRetirementQueue;
+class FtsFileOwner;
+}  // namespace fts
 
 class Version {
  public:
@@ -34,6 +41,14 @@ class Version {
   static Status Load(const std::string &path, Version *version);
 
   static Status Save(const std::string &path, const Version &version);
+
+  // Independent candidate metadata for preparation before durable commit.
+  // SegmentMeta pointers must not alias the currently published version.
+  Version clone() const;
+
+  bool requires_commit_record() const {
+    return requires_commit_record_;
+  }
 
  public:
   void set_schema(const CollectionSchema &schema) {
@@ -163,6 +178,12 @@ class Version {
   std::string to_string_formatted(int indent_level = 0) const;
 
  private:
+  friend class VersionManager;
+  // Metadata snapshots pin the numbered manifest and deletion snapshot.
+  // Native index/query owners pin their data files independently.
+  std::shared_ptr<fts::FtsFileOwner> manifest_owner_;
+  std::shared_ptr<fts::FtsFileOwner> delete_owner_;
+  bool requires_commit_record_{false};
   CollectionSchema::Ptr schema_;
   bool enable_mmap_{false};
 
@@ -204,13 +225,46 @@ class VersionManager {
 
   Status flush();
 
+  // Publish a source checkpoint without changing the legacy wire format.
+  // Once explicit authority is active, this uses the same commit protocol.
+  Status checkpoint(const Version &candidate,
+                    const DurableFile::Hook &hook = {});
+
+  // Atomically commit a fully prepared candidate. All new files/readers and
+  // the successor writing segment must already be ready. Unlike apply/flush,
+  // this leaves current metadata unchanged until the durable commit succeeds.
+  Status commit(const Version &candidate, const DurableFile::Hook &hook = {});
+
+  // Caller holds the exclusive collection file lock and has successfully
+  // recovered all committed stores. Never call during active preparation or
+  // from a read-only open. Unknown names and symlinks are left untouched.
+  Status reclaim_unreferenced_files();
+
+  // A rename whose directory sync failed may already be authoritative.
+  // Callers must retain all files and refuse dependent writes until reopen.
+  bool requires_recovery() const;
+  bool uses_commit_record() const {
+    std::lock_guard lock(mtx_);
+    return explicit_authority_;
+  }
+
+  const std::shared_ptr<fts::FtsRetirementQueue> &fts_retirement() const {
+    return fts_retirement_;
+  }
+
   void set_id_map_path_suffix(uint32_t suffix) {
     std::lock_guard lock(mtx_);
+    if (requires_recovery_) {
+      return;
+    }
     current_version_.set_id_map_path_suffix(suffix);
   }
 
   void set_delete_snapshot_path_suffix(uint32_t suffix) {
     std::lock_guard lock(mtx_);
+    if (requires_recovery_) {
+      return;
+    }
     current_version_.set_delete_snapshot_path_suffix(suffix);
   }
 
@@ -221,20 +275,36 @@ class VersionManager {
 
   void set_next_segment_id(SegmentID id) {
     std::lock_guard lock(mtx_);
+    if (requires_recovery_) {
+      return;
+    }
     current_version_.set_next_segment_id(id);
   }
 
   void set_enable_mmap(bool enable_mmap) {
     std::lock_guard lock(mtx_);
+    if (requires_recovery_) {
+      return;
+    }
     current_version_.set_enable_mmap(enable_mmap);
   }
 
  private:
+  Status checkpoint_locked(const Version &candidate,
+                           const DurableFile::Hook &hook);
+  Status commit_locked(const Version &candidate, const DurableFile::Hook &hook);
+  Result<uint32_t> reserve_version_id();
+  void pin_publication(Version *version, uint32_t manifest_id);
+  void publish_version(Version prepared, uint32_t manifest_id);
   const std::string path_;
   Version current_version_;
   mutable std::mutex mtx_;
 
   uint64_t version_id_ = 0;
+  std::optional<uint32_t> committed_id_;
+  bool explicit_authority_{false};
+  bool requires_recovery_{false};
+  std::shared_ptr<fts::FtsRetirementQueue> fts_retirement_;
 };
 
 }  // namespace zvec

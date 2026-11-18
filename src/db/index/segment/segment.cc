@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 #include <map>
 #include <memory>
@@ -83,6 +84,14 @@ class SegmentImpl : public Segment,
  public:
   using Ptr = std::shared_ptr<SegmentImpl>;
 
+  Result<PreparedFtsSeal> prepare_fts_seal(
+      const DurableFile::Hook &hook) override;
+  void publish_fts_seal(PreparedFtsSeal prepared) override;
+  Status checkpoint_for_fts() override;
+  Result<PreparedColumnChange> prepare_column_change(
+      SegmentID target,
+      const std::function<Status(Segment *)> &change) override;
+
   class SegmentIndexFilter : public IndexFilter {
    public:
     SegmentIndexFilter(const DeleteStore::Ptr &delete_store,
@@ -107,6 +116,10 @@ class SegmentImpl : public Segment,
         id_map_(id_map),
         delete_store_(delete_store) {
     seg_path_ = FileHelper::MakeSegmentPath(path_, segment_meta.id());
+    if (version_manager_) {
+      directory_owner_ =
+          version_manager_->fts_retirement()->track(seg_path_, true, false);
+    }
   }
 
   virtual ~SegmentImpl() {
@@ -242,6 +255,15 @@ class SegmentImpl : public Segment,
                           const SegmentMeta::Ptr &segment_meta,
                           const FtsIndexer::Ptr &new_fts_indexer) override;
 
+  Result<fts::FtsFieldSource::Ptr> open_fts_source(
+      const std::string &field_name) const override;
+
+  Result<PreparedFtsSeal> prepare_fts_rewrite(
+      const DurableFile::Hook &hook) override;
+
+  void publish_fts_index(CollectionSchema::Ptr schema,
+                         PreparedFtsSeal prepared) override;
+
   Status dump() override;
 
   void remove_writing_forward_block() override;
@@ -287,6 +309,10 @@ class SegmentImpl : public Segment,
   Status close();
   // Caller holds seg_mtx_ exclusively (insert, dump, close, or public flush).
   Status flush_unsafe();
+  Result<PreparedFtsSeal> prepare_fts_fields(
+      const CollectionSchema &schema, const std::string &rebuild_column = {});
+  Result<fts::FtsFieldSource::Ptr> build_fts_field(
+      const FieldSchema::Ptr &field, uint32_t rows);
   Status cleanup();
   bool ready_for_dump_block();
 
@@ -337,6 +363,9 @@ class SegmentImpl : public Segment,
   Status open_wal_file();
   Status append_wal(const Doc &doc);
   Status update_version(uint32_t delete_snapshot_path_suffix);
+  Status flush_checkpoint(bool durable);
+  Status sync_checkpoint(uint32_t delete_suffix = UINT32_MAX,
+                         bool immutable = false);
 
   Result<uint64_t> get_global_doc_id(uint32_t segment_doc_id) const;
 
@@ -395,7 +424,11 @@ class SegmentImpl : public Segment,
 
  private:
   // scalar forward (uses segment-local doc ID)
+  fts::FtsFileOwner::Pointer directory_owner_;
   MemForwardStore::Ptr memory_store_;
+  // A completed writer whose immutable replacement has not opened yet.
+  // Retry the checkpoint before admitting another WAL record/write.
+  bool finishing_memory_block_{false};
   std::vector<BaseForwardStore::Ptr> persist_stores_;
 
   // scalar index (uses segment-local doc ID)
@@ -1840,9 +1873,6 @@ Status SegmentImpl::drop_vector_index(
     return Status::OK();
   }
 
-  auto vector_index_params =
-      std::dynamic_pointer_cast<VectorIndexParams>(field->index_params());
-
   auto block_id = allocate_block_id();
 
   auto field_with_default_index = std::make_shared<FieldSchema>(*field);
@@ -1863,8 +1893,10 @@ Status SegmentImpl::drop_vector_index(
   CHECK_RETURN_STATUS(s);
 
   (*vector_indexers)[column] = new_vector_indexer;
-  new_segment_meta->remove_vector_persisted_block(
-      column, vector_index_params->quantize_type() != QuantizeType::UNDEFINED);
+  // The new Flat block replaces both raw and quantized source indexes.
+  // Retaining either old block would make the committed manifest reference
+  // a file removed by reload_vector_index().
+  new_segment_meta->remove_vector_persisted_block(column);
 
   BlockMeta block;
   block.set_id(block_id);
@@ -2227,6 +2259,177 @@ Status SegmentImpl::dump() {
   return Status::OK();
 }
 
+Result<Segment::PreparedFtsSeal> SegmentImpl::prepare_fts_seal(
+    const DurableFile::Hook &hook) {
+  std::lock_guard lock(seg_mtx_);
+  if (sealed_ || options_.read_only_ || !version_manager_) {
+    return tl::make_unexpected(
+        Status::FailedPrecondition("FTS seal requires a writable segment"));
+  }
+  auto status = flush_checkpoint(true);
+  if (!status.ok()) {
+    return tl::make_unexpected(status);
+  }
+  auto metadata = std::make_shared<SegmentMeta>(*segment_meta_);
+  metadata->remove_writing_forward_block();
+  if (!fts_indexer_) {
+    // Explicit authority survives dropping the last FTS field. Subsequent
+    // non-FTS writer switches retain the same checkpoint/commit protocol.
+    return PreparedFtsSeal{std::move(metadata), nullptr};
+  }
+  for (auto &block : metadata->persisted_blocks()) {
+    if (block.type() != BlockType::FTS_INDEX) {
+      continue;
+    }
+    block.set_doc_count(doc_ids_.size());
+    block.set_min_doc_id(metadata->min_doc_id());
+    block.set_max_doc_id(metadata->max_doc_id());
+    std::vector<std::string> columns;
+    for (const auto &field : collection_schema_->fts_fields()) {
+      columns.push_back(field->name());
+    }
+    block.set_columns(columns);
+    auto prepared = fts_indexer_->prepare_custom(
+        {seg_path_, id(), block, options_.enable_mmap_},
+        collection_schema_->fts_fields(), version_manager_->fts_retirement(),
+        hook);
+    if (!prepared) {
+      return tl::make_unexpected(prepared.error());
+    }
+    block = *(*prepared)->custom_block();
+    return PreparedFtsSeal{std::move(metadata), std::move(*prepared)};
+  }
+  return tl::make_unexpected(Status::InternalError("Missing source FTS block"));
+}
+
+Status SegmentImpl::checkpoint_for_fts() {
+  std::lock_guard lock(seg_mtx_);
+  if (sealed_ || options_.read_only_ ||
+      !segment_meta_->has_writing_forward_block()) {
+    return sync_checkpoint(UINT32_MAX, true);
+  }
+  return flush_checkpoint(true);
+}
+
+Result<fts::FtsFieldSource::Ptr> SegmentImpl::open_fts_source(
+    const std::string &field_name) const {
+  FtsIndexer::Ptr indexer;
+  uint64_t rows = 0;
+  {
+    std::shared_lock lock(seg_mtx_);
+    if ((!sealed_ && segment_meta_->has_writing_forward_block()) ||
+        !fts_indexer_) {
+      return tl::make_unexpected(Status::FailedPrecondition(
+          "FTS export requires an immutable source"));
+    }
+    indexer = fts_indexer_;
+    rows = doc_ids_.size();
+  }
+  if (indexer->custom_block()) {
+    return indexer->open_source(field_name, rows);
+  }
+  // GLOBAL_DOC_ID ensures every forward row group participates. Presence is
+  // consumed synchronously during export; only one existing Arrow batch is
+  // retained and no text is copied or re-tokenized.
+  auto reader = scan({GLOBAL_DOC_ID, field_name});
+  if (!reader) {
+    return tl::make_unexpected(
+        Status::InternalError("Cannot scan FTS presence"));
+  }
+  std::shared_ptr<arrow::Array> column;
+  int64_t row = 0;
+  return indexer->open_source(
+      field_name, rows, [&]() -> Result<std::optional<bool>> {
+        while (!column || row == column->length()) {
+          auto next = reader->Next();
+          if (!next.ok()) {
+            return tl::make_unexpected(Status{
+                StatusCode::UNAVAILABLE,
+                "Cannot read FTS presence: " + next.status().ToString()});
+          }
+          const auto &batch = *next;
+          if (!batch) {
+            return std::optional<bool>{};
+          }
+          const auto ordinal = batch->schema()->GetFieldIndex(field_name);
+          if (ordinal < 0 ||
+              batch->column(ordinal)->type_id() != arrow::Type::STRING) {
+            return tl::make_unexpected(
+                Status::InternalError("Invalid FTS forward presence column"));
+          }
+          column = batch->column(ordinal);
+          row = 0;
+        }
+        return std::optional<bool>{!column->IsNull(row++)};
+      });
+}
+
+Result<Segment::PreparedFtsSeal> SegmentImpl::prepare_fts_rewrite(
+    const DurableFile::Hook &hook) {
+  SegmentMeta::Ptr metadata;
+  FieldSchemaPtrList fields;
+  uint64_t rows;
+  {
+    std::shared_lock lock(seg_mtx_);
+    if ((!sealed_ && segment_meta_->has_writing_forward_block()) ||
+        !fts_indexer_ || !version_manager_) {
+      return tl::make_unexpected(Status::FailedPrecondition(
+          "FTS rewrite requires an immutable source"));
+    }
+    metadata = std::make_shared<SegmentMeta>(*segment_meta_);
+    fields = collection_schema_->fts_fields();
+    rows = doc_ids_.size();
+  }
+  auto status = checkpoint_for_fts();
+  if (!status.ok()) {
+    return tl::make_unexpected(status);
+  }
+  std::vector<std::vector<fts::FtsFieldSource::Ptr>> sources;
+  std::vector<std::string> columns;
+  for (const auto &field : fields) {
+    auto source = open_fts_source(field->name());
+    if (!source) {
+      return tl::make_unexpected(source.error());
+    }
+    sources.push_back({std::move(*source)});
+    columns.push_back(field->name());
+  }
+  if (rows > UINT32_MAX) {
+    return tl::make_unexpected(
+        Status::InvalidArgument("FTS rewrite row domain exceeds v1 limit"));
+  }
+  BlockMeta block{allocate_block_id(),         BlockType::FTS_INDEX,
+                  metadata->min_doc_id(),      metadata->max_doc_id(),
+                  static_cast<uint32_t>(rows), columns};
+  auto prepared = FtsIndexer::PrepareMerged(
+      {seg_path_, id(), block, options_.enable_mmap_}, fields, sources, {},
+      fts::FtsMergePolicy::kRewrite, version_manager_->fts_retirement(), hook);
+  if (!prepared) {
+    return tl::make_unexpected(prepared.error());
+  }
+  metadata->remove_writing_forward_block();
+  metadata->remove_fts_index_block();
+  metadata->add_persisted_block(*(*prepared)->custom_block());
+  return PreparedFtsSeal{std::move(metadata), std::move(*prepared)};
+}
+
+void SegmentImpl::publish_fts_seal(PreparedFtsSeal prepared) {
+  std::lock_guard lock(seg_mtx_);
+  // All allocating/opening/verification work belongs to preparation. The
+  // caller has durably committed exactly this metadata under write exclusion.
+  if (prepared.indexer) {
+    prepared.indexer->preserve_files();
+  }
+  auto retired = std::move(fts_indexer_);
+  fts_indexer_ = std::move(prepared.indexer);
+  segment_meta_ = std::move(prepared.metadata);
+  sealed_ = true;
+  publish_persisted_read_state();
+  if (retired) {
+    retired->retire_files();
+  }
+}
+
 void SegmentImpl::remove_writing_forward_block() {
   // Exclusive: dump() has already released seg_mtx_ by the time the collection
   // seals the switched-out segment. Queries cannot observe the segment
@@ -2242,10 +2445,23 @@ Status SegmentImpl::flush() {
 }
 
 Status SegmentImpl::flush_unsafe() {
+  return flush_checkpoint(version_manager_ &&
+                          version_manager_->uses_commit_record());
+}
+
+Status SegmentImpl::flush_checkpoint(bool durable) {
+  // The caller holds seg_mtx_ exclusively across the checkpoint.
   CHECK_SEGMENT_READONLY_RETURN_STATUS;
+  if (version_manager_ && version_manager_->requires_recovery()) {
+    return Status::FailedPrecondition(
+        "Uncertain manifest commit; reopen required");
+  }
+  if (sealed_) {
+    return Status::OK();
+  }
 
   if (wal_file_ == nullptr || !wal_file_->has_record()) {
-    return Status::OK();
+    return durable ? sync_checkpoint() : Status::OK();
   }
 
   if (wal_file_) {
@@ -2298,22 +2514,20 @@ Status SegmentImpl::flush_unsafe() {
   auto block = segment_meta_->writing_forward_block().value();
 
   uint32_t delete_snapshot_path_suffix = UINT32_MAX;
-  uint32_t delete_snapshot_path_suffix_current = UINT32_MAX;
   if (delete_store_) {
     if (delete_store_->modified_since_last_flush()) {
-      delete_snapshot_path_suffix_current =
-          version_manager_->delete_snapshot_path_suffix();
       delete_snapshot_path_suffix =
           version_manager_->delete_snapshot_path_suffix() + 1;
       std::string delete_store_path = FileHelper::MakeFilePath(
           path_, FileID::DELETE_FILE, delete_snapshot_path_suffix);
-      s = delete_store_->flush(delete_store_path);
+      s = delete_store_->prepare_snapshot(delete_store_path);
       CHECK_RETURN_STATUS(s);
     }
   }
 
   if (memory_store_) {
     // update segment meta with memory components
+    finishing_memory_block_ = true;
     s = finish_memory_components();
     CHECK_RETURN_STATUS(s);
 
@@ -2322,11 +2536,23 @@ Status SegmentImpl::flush_unsafe() {
     segment_meta_->set_writing_forward_block({block_id, BlockType::SCALAR,
                                               block.max_doc_id_ + 1, 0, 0,
                                               block.columns_});
+    finishing_memory_block_ = false;
+  }
+
+  // Files referenced by a custom-format checkpoint must be durable before
+  // its manifest can make WAL cleanup safe. FileDumper/Arrow close is not
+  // fsync.
+  if (durable) {
+    s = sync_checkpoint(delete_snapshot_path_suffix);
+    CHECK_RETURN_STATUS(s);
   }
 
   // update version and flush
   s = update_version(delete_snapshot_path_suffix);
   CHECK_RETURN_STATUS(s);
+  if (delete_snapshot_path_suffix != UINT32_MAX) {
+    delete_store_->checkpoint_committed();
+  }
 
   // clear WAL file
   if (wal_file_) {
@@ -2340,11 +2566,8 @@ Status SegmentImpl::flush_unsafe() {
     LOG_INFO("WAL cleanup completed: segment[%d]", id());
   }
 
-  if (delete_snapshot_path_suffix_current != UINT32_MAX) {
-    std::string delete_store_path = FileHelper::MakeFilePath(
-        path_, FileID::DELETE_FILE, delete_snapshot_path_suffix_current);
-    FileHelper::RemoveFile(delete_store_path);
-  }
+  // Version publication retires the previous deletion snapshot. Its final
+  // metadata owner controls removal, including before custom authority starts.
 
   return Status::OK();
 }
@@ -2364,6 +2587,11 @@ Status SegmentImpl::destroy() {
 }
 
 Status SegmentImpl::cleanup() {
+  if (directory_owner_) {
+    directory_owner_->retire();
+    directory_owner_.reset();
+    return Status::OK();
+  }
   auto seg_path = FileHelper::MakeSegmentPath(path_, segment_meta_->id());
   if (!FileHelper::RemoveDirectory(seg_path)) {
     return Status::InternalError(
@@ -3258,6 +3486,154 @@ Status SegmentImpl::reopen_invert_indexer(bool read_only) {
     return Status::InternalError("Failed to create scalar indexer");
   }
   return Status::OK();
+}
+
+Result<Segment::PreparedColumnChange> SegmentImpl::prepare_column_change(
+    SegmentID target, const std::function<Status(Segment *)> &change) {
+  if (!version_manager_ || memory_store_ || target == id()) {
+    return tl::make_unexpected(Status::FailedPrecondition(
+        "Column preparation requires a sealed source"));
+  }
+  auto status = checkpoint_for_fts();
+  CHECK_RETURN_STATUS_EXPECTED(status);
+  const auto destination = FileHelper::MakeSegmentPath(path_, target);
+  const auto directory = ailego::FileHelper::PathFromUtf8(destination);
+  std::error_code error;
+  if (!std::filesystem::create_directory(directory, error)) {
+    return tl::make_unexpected(Status::InternalError(
+        "Cannot reserve column-change segment: ", destination, ": ",
+        error.message()));
+  }
+  auto owner =
+      version_manager_->fts_retirement()->track(destination, true, true);
+  auto metadata = std::make_shared<SegmentMeta>(*segment_meta_);
+  metadata->set_id(target);
+  metadata->remove_writing_forward_block();
+  metadata->remove_fts_index_block();
+  // Copy only committed dependencies. Never mutate a source CF or unlink a
+  // forward block still referenced by the old authoritative manifest.
+  for (const auto &block : metadata->persisted_blocks()) {
+    std::string source;
+    switch (block.type()) {
+      case BlockType::SCALAR:
+        source = FileHelper::MakeForwardBlockPath(seg_path_, block.id(),
+                                                  !options_.enable_mmap_);
+        break;
+      case BlockType::SCALAR_INDEX:
+        if (!invert_indexers_) {
+          return tl::make_unexpected(
+              Status::InternalError("Missing scalar index"));
+        }
+        // RocksDB snapshots pin a consistent SST set even if the source
+        // still has a background compaction. Only immutable SSTs are linked.
+        status = invert_indexers_->create_snapshot(
+            FileHelper::MakeInvertIndexPath(destination, block.id()));
+        CHECK_RETURN_STATUS_EXPECTED(status);
+        continue;
+      case BlockType::VECTOR_INDEX:
+      case BlockType::VECTOR_INDEX_QUANTIZE:
+        if (block.columns().size() != 1) {
+          return tl::make_unexpected(
+              Status::InternalError("Invalid vector block columns"));
+        }
+        source = block.type() == BlockType::VECTOR_INDEX
+                     ? FileHelper::MakeVectorIndexPath(
+                           seg_path_, block.columns()[0], block.id())
+                     : FileHelper::MakeQuantizeVectorIndexPath(
+                           seg_path_, block.columns()[0], block.id());
+        break;
+      default:
+        return tl::make_unexpected(
+            Status::NotSupported("Unsupported column-copy block"));
+    }
+    const auto source_path = ailego::FileHelper::PathFromUtf8(source);
+    std::filesystem::copy(source_path, directory / source_path.filename(),
+                          std::filesystem::copy_options::recursive, error);
+    if (error) {
+      return tl::make_unexpected(Status::InternalError(
+          "Cannot copy column dependency: ", error.message()));
+    }
+  }
+  for (const auto &block : segment_meta_->persisted_blocks()) {
+    if (block.type() != BlockType::FTS_INDEX) {
+      continue;
+    }
+    std::vector<std::vector<fts::FtsFieldSource::Ptr>> sources;
+    const auto fields = collection_schema_->fts_fields();
+    for (const auto &field : fields) {
+      auto source = open_fts_source(field->name());
+      if (!source) {
+        return tl::make_unexpected(source.error());
+      }
+      sources.push_back({std::move(*source)});
+    }
+    auto copied_block = block;
+    copied_block.fts_base_.reset();
+    copied_block.set_doc_count(doc_ids_.size());
+    auto prepared = FtsIndexer::PrepareMerged(
+        {destination, target, copied_block, options_.enable_mmap_}, fields,
+        sources, {}, fts::FtsMergePolicy::kRewrite,
+        version_manager_->fts_retirement());
+    if (!prepared) {
+      return tl::make_unexpected(prepared.error());
+    }
+    metadata->add_persisted_block(*(*prepared)->custom_block());
+    // The parent candidate directory owns cleanup until publication.
+    (*prepared)->preserve_files();
+  }
+  auto candidate =
+      std::make_shared<SegmentImpl>(path_, *collection_schema_, *metadata,
+                                    id_map_, delete_store_, version_manager_);
+  status = candidate->Open(SegmentOptions{true, options_.enable_mmap_});
+  CHECK_RETURN_STATUS_EXPECTED(status);
+  status = change(candidate.get());
+  CHECK_RETURN_STATUS_EXPECTED(status);
+  if (candidate->invert_indexers_) {
+    status = candidate->invert_indexers_->flush();
+    CHECK_RETURN_STATUS_EXPECTED(status);
+  }
+  metadata = candidate->meta();
+  auto changed_schema = candidate->collection_schema_;
+  status = candidate->close();
+  CHECK_RETURN_STATUS_EXPECTED(status);
+  candidate.reset();
+  // Copied RocksDB files need their own durability boundary. Sync every file
+  // with all mutable handles closed, then directories from children to parent.
+  std::vector<std::filesystem::path> directories{directory};
+  std::filesystem::recursive_directory_iterator it(directory, error), end;
+  while (!error && it != end) {
+    const auto type = it->symlink_status(error);
+    if (error) {
+      break;
+    }
+    if (std::filesystem::is_directory(type)) {
+      directories.push_back(it->path());
+    } else if (std::filesystem::is_regular_file(type)) {
+      status = DurableFile::Sync(it->path().u8string());
+      CHECK_RETURN_STATUS_EXPECTED(status);
+    } else {
+      return tl::make_unexpected(
+          Status::NotSupported("Unexpected column dependency type"));
+    }
+    it.increment(error);
+  }
+  if (error) {
+    return tl::make_unexpected(Status::InternalError(
+        "Cannot enumerate column dependencies: ", error.message()));
+  }
+  for (auto dir = directories.rbegin(); dir != directories.rend(); ++dir) {
+    status = DurableFile::SyncDirectory(dir->u8string());
+    CHECK_RETURN_STATUS_EXPECTED(status);
+  }
+  status = DurableFile::SyncDirectory(path_);
+  CHECK_RETURN_STATUS_EXPECTED(status);
+  auto opened = Segment::Open(path_, *changed_schema, *metadata, id_map_,
+                              delete_store_, version_manager_,
+                              SegmentOptions{true, options_.enable_mmap_});
+  if (!opened) {
+    return tl::make_unexpected(opened.error());
+  }
+  return PreparedColumnChange{std::move(*opened), std::move(owner)};
 }
 
 Status SegmentImpl::add_column(FieldSchema::Ptr column_schema,
@@ -4604,6 +4980,14 @@ Status SegmentImpl::recover() {
   }
   recover_wal_file.reset();
 
+  // FTS rows/TF/positions replay idempotently, but a crash may already have
+  // flushed their statistics before the forward checkpoint was committed.
+  // Recount exact lengths once, instead of counting replayed rows twice.
+  if (fts_indexer_) {
+    auto status = fts_indexer_->recover_statistics(doc_ids_.size());
+    CHECK_RETURN_STATUS(status);
+  }
+
   LOG_INFO(
       "WAL recovery completed: path[%s], segment[%d], total[%zu], "
       "insert[%zu], upsert[%zu], update[%zu], delete[%zu]",
@@ -4644,6 +5028,15 @@ Status SegmentImpl::open_wal_file() {
 }
 
 Status SegmentImpl::append_wal(const Doc &doc) {
+  if (sealed_ || options_.read_only_ ||
+      (version_manager_ && version_manager_->requires_recovery())) {
+    return Status::FailedPrecondition(
+        "Segment is immutable or its commit requires recovery");
+  }
+  if (finishing_memory_block_) {
+    auto status = flush_checkpoint(true);
+    CHECK_RETURN_STATUS(status);
+  }
   std::vector<uint8_t> buf = doc.serialize();
 
   if (!wal_file_) {
@@ -4674,7 +5067,6 @@ Status SegmentImpl::finish_memory_components() {
   // close for loading persist block
   auto s = memory_store_->close();
   CHECK_RETURN_STATUS(s);
-  memory_store_.reset();
 
   // load forward store
   auto persist_forward_store_path = FileHelper::MakeForwardBlockPath(
@@ -4690,6 +5082,9 @@ Status SegmentImpl::finish_memory_components() {
   }
   s = persist_store->open();
   CHECK_RETURN_STATUS(s);
+  // Keep the completed writer until opening its replacement succeeds. A
+  // failed open must retry this same block, never recreate/overwrite it.
+  memory_store_.reset();
   persist_stores_.push_back(persist_store);
 
   BlockMeta b{block.id_,         block.type_,      block.min_doc_id_,
@@ -4740,16 +5135,65 @@ Status SegmentImpl::finish_memory_components() {
   return Status::OK();
 }
 
+Status SegmentImpl::sync_checkpoint(uint32_t delete_suffix, bool immutable) {
+  // RocksDB FlushOptions::wait is true. Its completed flush synchronizes SST
+  // and manifest dependencies; the shared ID map remains part of this boundary.
+  if (fts_indexer_ && !immutable) {
+    auto status = fts_indexer_->flush();
+    CHECK_RETURN_STATUS(status);
+  }
+  if (invert_indexers_ && !immutable) {
+    auto status = invert_indexers_->flush();
+    CHECK_RETURN_STATUS(status);
+  }
+  if (id_map_ && !immutable) {
+    auto status = id_map_->flush();
+    CHECK_RETURN_STATUS(status);
+  }
+  for (const auto &block : segment_meta_->persisted_blocks()) {
+    std::string file;
+    if (block.type() == BlockType::SCALAR) {
+      file = FileHelper::MakeForwardBlockPath(seg_path_, block.id(),
+                                              !options_.enable_mmap_);
+    } else if (block.type() == BlockType::VECTOR_INDEX &&
+               block.columns().size() == 1) {
+      file = FileHelper::MakeVectorIndexPath(seg_path_, block.columns()[0],
+                                             block.id());
+    } else if (block.type() == BlockType::VECTOR_INDEX_QUANTIZE &&
+               block.columns().size() == 1) {
+      file = FileHelper::MakeQuantizeVectorIndexPath(
+          seg_path_, block.columns()[0], block.id());
+    }
+    if (!file.empty()) {
+      auto status = DurableFile::Sync(file);
+      CHECK_RETURN_STATUS(status);
+    }
+  }
+  if (delete_store_ && version_manager_) {
+    if (delete_suffix == UINT32_MAX) {
+      delete_suffix = version_manager_->delete_snapshot_path_suffix();
+    }
+    const auto file =
+        FileHelper::MakeFilePath(path_, FileID::DELETE_FILE, delete_suffix);
+    if (FileHelper::FileExists(file) ||
+        (!immutable && !delete_store_->empty())) {
+      auto status = DurableFile::Sync(file);
+      CHECK_RETURN_STATUS(status);
+    }
+  }
+  auto status = DurableFile::SyncDirectory(seg_path_);
+  CHECK_RETURN_STATUS(status);
+  return DurableFile::SyncDirectory(path_);
+}
+
 Status SegmentImpl::update_version(uint32_t delete_snapshot_path_suffix) {
   if (version_manager_) {
+    auto candidate = version_manager_->get_current_version();
     if (delete_snapshot_path_suffix != UINT32_MAX) {
-      version_manager_->set_delete_snapshot_path_suffix(
-          delete_snapshot_path_suffix);
+      candidate.set_delete_snapshot_path_suffix(delete_snapshot_path_suffix);
     }
-    auto s = version_manager_->reset_writing_segment_meta(segment_meta_);
-    CHECK_RETURN_STATUS(s);
-    s = version_manager_->flush();
-    CHECK_RETURN_STATUS(s);
+    candidate.reset_writing_segment_meta(segment_meta_);
+    return version_manager_->checkpoint(candidate);
   }
   return Status::OK();
 }
@@ -4792,26 +5236,25 @@ Result<Segment::Ptr> Segment::CreateAndOpen(
     SegmentID segment_id, uint64_t min_doc_id, const IDMap::Ptr &id_map,
     const DeleteStore::Ptr &delete_store,
     const VersionManager::Ptr &version_manager, const SegmentOptions &options) {
+  auto segment_path = FileHelper::MakeSegmentPath(path, segment_id);
+  // Reserve exclusively before creating owners or files. A failed create may
+  // clean up only this private directory, never a preexisting segment.
+  std::error_code error;
+  if (!std::filesystem::create_directory(
+          ailego::FileHelper::PathFromUtf8(segment_path), error)) {
+    return tl::make_unexpected(Status::InternalError(
+        "Segment create failed: cannot reserve directory [", segment_path,
+        "]: ", error.message()));
+  }
+
   auto segment = std::shared_ptr<SegmentImpl>(
       new SegmentImpl(path, schema, SegmentMeta(segment_id), id_map,
                       delete_store, version_manager));
-
-  auto segment_path = FileHelper::MakeSegmentPath(path, segment_id);
-  // check or create path
-  if (FileHelper::DirectoryExists(segment_path)) {
-    return tl::make_unexpected(Status::InternalError(
-        "Segment create failed: segment path already exists [", segment_path,
-        "]"));
-  } else {
-    if (!FileHelper::CreateDirectory(segment_path)) {
-      return tl::make_unexpected(Status::InternalError(
-          "Segment create failed: unable to create segment directory [",
-          segment_path, "]"));
-    }
-  }
-
   auto s = segment->create(options, min_doc_id);
-  CHECK_RETURN_STATUS_EXPECTED(s);
+  if (!s.ok()) {
+    (void)segment->destroy();
+    return tl::make_unexpected(s);
+  }
 
   return segment;
 }
@@ -4852,7 +5295,8 @@ Status SegmentImpl::open_fts_indexers(bool create) {
     auto block_id = allocate_block_id();
     auto fts_path = FileHelper::MakeFtsIndexPath(seg_path_, block_id);
     fts_indexer_ = FtsIndexer::CreateAndOpen(
-        fts_path, collection_schema_->fts_fields(), true);
+        fts_path, collection_schema_->fts_fields(), true, false,
+        version_manager_ ? version_manager_->fts_retirement() : nullptr);
     if (!fts_indexer_) {
       return Status::InternalError("open_fts_indexers: create failed at [",
                                    fts_path, "]");
@@ -4862,10 +5306,25 @@ Status SegmentImpl::open_fts_indexers(bool create) {
   } else {
     for (const auto &block : segment_meta_->persisted_blocks()) {
       if (block.type() == BlockType::FTS_INDEX) {
+        if (block.fts_base_) {
+          if (!version_manager_) {
+            return Status::InternalError("Missing FTS version owner");
+          }
+          auto opened = FtsIndexer::OpenCustom(
+              {seg_path_, id(), block, options_.enable_mmap_},
+              collection_schema_->fts_fields(),
+              version_manager_->fts_retirement());
+          if (!opened) {
+            return opened.error();
+          }
+          fts_indexer_ = std::move(*opened);
+          break;
+        }
         auto fts_path = FileHelper::MakeFtsIndexPath(seg_path_, block.id());
         fts_indexer_ = FtsIndexer::CreateAndOpen(
             fts_path, collection_schema_->fts_fields(), false,
-            options_.read_only_);
+            options_.read_only_,
+            version_manager_ ? version_manager_->fts_retirement() : nullptr);
         if (!fts_indexer_) {
           return Status::InternalError("open_fts_indexers: open failed at [",
                                        fts_path, "]");
@@ -4920,6 +5379,7 @@ Status SegmentImpl::dump_fts_indexers() {
 
 fts::FtsColumnIndexerPtr SegmentImpl::get_fts_indexer(
     const std::string &field_name) const {
+  std::shared_lock lock(seg_mtx_);
   if (!fts_indexer_) {
     return nullptr;
   }
@@ -4973,15 +5433,26 @@ Status SegmentImpl::create_fts_index(const std::string &column,
     // Same type but different params — will rebuild below.
   }
 
-  auto new_segment_meta = std::make_shared<SegmentMeta>(*segment_meta_);
-  new_segment_meta->remove_fts_index_block();
-
-  auto block_id = allocate_block_id();
-  auto new_fts_path = FileHelper::MakeFtsIndexPath(seg_path_, block_id);
-
   // Build a new schema that includes the new FTS field for the snapshot open.
   auto new_schema = std::make_shared<CollectionSchema>(*collection_schema_);
   new_schema->get_field(column)->set_index_params(index_params);
+
+  if ((fts_indexer_ && fts_indexer_->custom_block()) ||
+      FtsIndexer::kCustomWritesEnabled ||
+      (version_manager_ && version_manager_->uses_commit_record())) {
+    auto prepared = prepare_fts_fields(*new_schema, column);
+    if (!prepared) {
+      return prepared.error();
+    }
+    *out_segment_meta = std::move(prepared->metadata);
+    *out_fts_indexer = std::move(prepared->indexer);
+    return Status::OK();
+  }
+
+  auto new_segment_meta = std::make_shared<SegmentMeta>(*segment_meta_);
+  new_segment_meta->remove_fts_index_block();
+  auto block_id = allocate_block_id();
+  auto new_fts_path = FileHelper::MakeFtsIndexPath(seg_path_, block_id);
 
   FtsIndexer::Ptr new_fts_indexer;
   if (fts_indexer_) {
@@ -4990,11 +5461,13 @@ Status SegmentImpl::create_fts_index(const std::string &column,
     CHECK_RETURN_STATUS(s);
 
     new_fts_indexer = FtsIndexer::CreateAndOpen(
-        new_fts_path, collection_schema_->fts_fields(), false);
+        new_fts_path, collection_schema_->fts_fields(), false, false,
+        version_manager_ ? version_manager_->fts_retirement() : nullptr);
   } else {
     // No existing fts DB — create a fresh one.
-    new_fts_indexer =
-        FtsIndexer::CreateAndOpen(new_fts_path, new_schema->fts_fields(), true);
+    new_fts_indexer = FtsIndexer::CreateAndOpen(
+        new_fts_path, new_schema->fts_fields(), true, false,
+        version_manager_ ? version_manager_->fts_retirement() : nullptr);
   }
   if (!new_fts_indexer) {
     FileHelper::RemoveDirectory(new_fts_path);
@@ -5103,6 +5576,17 @@ Status SegmentImpl::drop_fts_index(const std::string &column,
     return Status::OK();
   }
 
+  if (fts_indexer_->custom_block() || FtsIndexer::kCustomWritesEnabled ||
+      (version_manager_ && version_manager_->uses_commit_record())) {
+    auto prepared = prepare_fts_fields(*new_schema);
+    if (!prepared) {
+      return prepared.error();
+    }
+    *out_segment_meta = std::move(prepared->metadata);
+    *out_fts_indexer = std::move(prepared->indexer);
+    return Status::OK();
+  }
+
   // Check if other FTS fields remain after removal.
   bool has_other_fts = new_schema->has_fts_field();
 
@@ -5115,7 +5599,8 @@ Status SegmentImpl::drop_fts_index(const std::string &column,
     CHECK_RETURN_STATUS(s);
 
     auto new_fts_indexer = FtsIndexer::CreateAndOpen(
-        new_fts_path, collection_schema_->fts_fields(), false);
+        new_fts_path, collection_schema_->fts_fields(), false, false,
+        version_manager_ ? version_manager_->fts_retirement() : nullptr);
     if (!new_fts_indexer) {
       FileHelper::RemoveDirectory(new_fts_path);
       return Status::InternalError("drop_fts_index: failed to open snapshot");
@@ -5145,24 +5630,174 @@ Status SegmentImpl::drop_fts_index(const std::string &column,
 Status SegmentImpl::reload_fts_index(const CollectionSchema &schema,
                                      const SegmentMeta::Ptr &segment_meta,
                                      const FtsIndexer::Ptr &new_fts_indexer) {
-  std::lock_guard<std::shared_mutex> lock(seg_mtx_);
-  collection_schema_ = std::make_shared<CollectionSchema>(schema);
-  segment_meta_ = segment_meta;
-  fresh_persist_block_offset();
-  // Never aborts the reload: the indexer below must still be installed.
-  publish_persisted_read_state();
-
-  if (fts_indexer_) {
-    auto old_dir = fts_indexer_->working_dir();
-    fts_indexer_ = new_fts_indexer;
-    FileHelper::RemoveDirectory(old_dir);
-  } else {
-    fts_indexer_ = new_fts_indexer;
-  }
-
-  has_fts_ = (fts_indexer_ != nullptr);
-
+  publish_fts_index(std::make_shared<CollectionSchema>(schema),
+                    {segment_meta, new_fts_indexer});
   return Status::OK();
+}
+
+void SegmentImpl::publish_fts_index(CollectionSchema::Ptr schema,
+                                    PreparedFtsSeal prepared) {
+  std::lock_guard lock(seg_mtx_);
+  if (prepared.indexer) {
+    prepared.indexer->preserve_files();
+  }
+  auto retired = std::move(fts_indexer_);
+  collection_schema_ = std::move(schema);
+  segment_meta_ = std::move(prepared.metadata);
+  fts_indexer_ = std::move(prepared.indexer);
+  has_fts_ = fts_indexer_ != nullptr;
+  // Only FTS blocks change; forward/vector row-offset caches stay valid.
+  publish_persisted_read_state();
+  if (retired && retired != fts_indexer_) {
+    retired->retire_files();
+  }
+}
+
+Result<Segment::PreparedFtsSeal> SegmentImpl::prepare_fts_fields(
+    const CollectionSchema &schema, const std::string &rebuild_column) {
+  SegmentMeta::Ptr metadata;
+  uint64_t rows;
+  {
+    std::shared_lock lock(seg_mtx_);
+    if ((!sealed_ && segment_meta_->has_writing_forward_block()) ||
+        !version_manager_) {
+      return tl::make_unexpected(
+          Status::FailedPrecondition("FTS DDL requires an immutable segment"));
+    }
+    metadata = std::make_shared<SegmentMeta>(*segment_meta_);
+    rows = doc_ids_.size();
+  }
+  auto status = checkpoint_for_fts();
+  if (!status.ok()) {
+    return tl::make_unexpected(status);
+  }
+  metadata->remove_writing_forward_block();
+  metadata->remove_fts_index_block();
+  auto fields = schema.fts_fields();
+  if (fields.empty()) {
+    return PreparedFtsSeal{std::move(metadata), nullptr};
+  }
+  if (rows > UINT32_MAX) {
+    return tl::make_unexpected(
+        Status::InvalidArgument("FTS DDL row domain exceeds v1 limit"));
+  }
+  std::vector<std::vector<fts::FtsFieldSource::Ptr>> sources;
+  std::vector<std::string> columns;
+  for (const auto &field : fields) {
+    auto source = field->name() == rebuild_column
+                      ? build_fts_field(field, static_cast<uint32_t>(rows))
+                      : open_fts_source(field->name());
+    if (!source) {
+      return tl::make_unexpected(source.error());
+    }
+    sources.push_back({std::move(*source)});
+    columns.push_back(field->name());
+  }
+  BlockMeta block{allocate_block_id(),         BlockType::FTS_INDEX,
+                  metadata->min_doc_id(),      metadata->max_doc_id(),
+                  static_cast<uint32_t>(rows), columns};
+  auto prepared = FtsIndexer::PrepareMerged(
+      {seg_path_, id(), block, options_.enable_mmap_}, fields, sources, {},
+      fts::FtsMergePolicy::kRewrite, version_manager_->fts_retirement());
+  if (!prepared) {
+    return tl::make_unexpected(prepared.error());
+  }
+  metadata->add_persisted_block(*(*prepared)->custom_block());
+  return PreparedFtsSeal{std::move(metadata), std::move(*prepared)};
+}
+
+Result<fts::FtsFieldSource::Ptr> SegmentImpl::build_fts_field(
+    const FieldSchema::Ptr &field, uint32_t rows) {
+  if (field->data_type() != DataType::STRING) {
+    return tl::make_unexpected(
+        Status::InvalidArgument("FTS rebuild requires a string field"));
+  }
+  // Only the changed field is analyzed again. The private mutable index uses
+  // the regular insert semantics, then feeds the direct custom writer (never
+  // the legacy BitPacked seal). Its source pins the temporary custom file
+  // until the complete multi-field generation has consumed it.
+  auto retirement = version_manager_->fts_retirement();
+  fts::FtsFileOwner::Pointer workspace;
+  std::string path;
+  for (unsigned attempt = 0; attempt < 64; ++attempt) {
+    path =
+        FileHelper::MakeFtsIndexPath(seg_path_, allocate_block_id()) + ".build";
+    std::error_code error;
+    if (std::filesystem::create_directory(
+            ailego::FileHelper::PathFromUtf8(path), error)) {
+      workspace = retirement->track(path, true, true);
+      break;
+    }
+    if (error) {
+      return tl::make_unexpected(Status::InternalError(
+          "Cannot reserve FTS rebuild directory: ", error.message()));
+    }
+  }
+  if (!workspace) {
+    return tl::make_unexpected(Status{StatusCode::UNAVAILABLE,
+                                      "Cannot reserve FTS rebuild directory"});
+  }
+  FieldSchemaPtrList fields{field};
+  auto indexer = FtsIndexer::CreateAndOpen(path + "/mutable", fields, true,
+                                           false, retirement);
+  if (!indexer) {
+    return tl::make_unexpected(
+        Status::InternalError("Cannot create private FTS rebuild index"));
+  }
+  auto reader = scan({GLOBAL_DOC_ID, field->name()});
+  if (!reader) {
+    return tl::make_unexpected(
+        Status::InternalError("Cannot scan FTS rebuild field"));
+  }
+  uint64_t row = 0;
+  while (true) {
+    auto batch = reader->Next();
+    if (!batch.ok()) {
+      return tl::make_unexpected(Status::InternalError(
+          "FTS rebuild scan failed: ", batch.status().message()));
+    }
+    const auto &value = batch.ValueOrDie();
+    if (!value) {
+      break;
+    }
+    auto column = value->GetColumnByName(field->name());
+    if (!column || column->type_id() != arrow::Type::STRING ||
+        value->num_rows() < 0 ||
+        static_cast<uint64_t>(value->num_rows()) > rows - row) {
+      return tl::make_unexpected(
+          Status::InternalError("Invalid FTS rebuild forward domain"));
+    }
+    auto strings = std::static_pointer_cast<arrow::StringArray>(column);
+    for (int64_t i = 0; i < strings->length(); ++i, ++row) {
+      if (!strings->IsNull(i)) {
+        auto status = indexer->insert(field->name(), static_cast<uint32_t>(row),
+                                      strings->GetString(i));
+        if (!status.ok()) {
+          return tl::make_unexpected(status);
+        }
+      }
+    }
+  }
+  if (row != rows) {
+    return tl::make_unexpected(
+        Status::InternalError("Truncated FTS rebuild forward domain"));
+  }
+  auto status = indexer->flush();
+  if (!status.ok()) {
+    return tl::make_unexpected(status);
+  }
+  BlockMeta block{allocate_block_id(),
+                  BlockType::FTS_INDEX,
+                  segment_meta_->min_doc_id(),
+                  segment_meta_->max_doc_id(),
+                  rows,
+                  {field->name()}};
+  auto prepared = indexer->prepare_custom(
+      {seg_path_, id(), block, options_.enable_mmap_}, fields, retirement);
+  if (!prepared) {
+    return tl::make_unexpected(prepared.error());
+  }
+  return (*prepared)->open_source(field->name(), rows);
 }
 
 }  // namespace zvec

@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cfenv>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <utility>
@@ -120,6 +122,73 @@ std::vector<uint32_t> collect_docs(DocIterator *iter) {
 }
 
 }  // namespace
+
+TEST(DisjunctionOptTest, ScoreDoesNotDependOnTraversalHistory) {
+  auto make = [](bool bounded = true) {
+    const float infinity = std::numeric_limits<float>::infinity();
+    std::vector<DocIteratorPtr> terms;
+    terms.push_back(std::make_unique<FakeDocIterator>(
+        std::vector<std::pair<uint32_t, float>>{{0, 0}, {2, 100000000.0f}},
+        bounded ? 100000000.0f : infinity));
+    for (int i = 0; i < 2; ++i) {
+      terms.push_back(std::make_unique<FakeDocIterator>(
+          std::vector<std::pair<uint32_t, float>>{{1, 0}, {2, 4.0f}},
+          bounded ? 4.0f : infinity));
+    }
+    return std::make_unique<DisjunctionIterator>(std::move(terms));
+  };
+  auto sequential = make();
+  ASSERT_EQ(0u, sequential->next_doc());
+  ASSERT_EQ(1u, sequential->next_doc());
+  ASSERT_EQ(2u, sequential->next_doc());
+  auto seek = make();
+  ASSERT_EQ(2u, seek->advance(2));
+  // FP32 addition in clause order: (100000000 + 4) + 4 == 100000000.
+  // Visiting an earlier candidate must not reorder the score contributions.
+  EXPECT_EQ(100000000.0f, seek->score());
+  EXPECT_EQ(seek->score(), sequential->score());
+  for (bool bounded : {false, true}) {
+    auto wand = make(bounded);
+    ASSERT_EQ(0u, wand->next_doc());
+    wand->set_min_competitive_score(10.0f);
+    auto doc = wand->next_doc();
+    if (!bounded) {
+      ASSERT_EQ(1u, doc);
+      doc = wand->next_doc();
+    }
+    ASSERT_EQ(2u, doc);
+    EXPECT_EQ(seek->score(), wand->score());
+  }
+}
+
+TEST(ConjunctionOptTest, SmallRemainingScoresSurviveCancellation) {
+  std::vector<DocIteratorPtr> terms;
+  terms.push_back(std::make_unique<FakeDocIterator>(
+      std::vector<std::pair<uint32_t, float>>{{0, 0}}, 100000000.0f));
+  for (int i = 0; i < 2; ++i) {
+    terms.push_back(std::make_unique<FakeDocIterator>(
+        std::vector<std::pair<uint32_t, float>>{{0, 4}, {1, 4}}, 4));
+  }
+  ConjunctionIterator query(std::move(terms), {});
+  query.set_min_competitive_score(6);
+  ASSERT_EQ(0u, query.next_doc());
+  EXPECT_FLOAT_EQ(8, query.score());
+}
+
+TEST(ConjunctionOptTest, UnboundedScoresNeverSubtractInfinity) {
+  std::vector<DocIteratorPtr> musts;
+  musts.push_back(std::make_unique<FakeDocIterator>(
+      std::vector<std::pair<uint32_t, float>>{{0, 2.0f}},
+      std::numeric_limits<float>::infinity()));
+  musts.push_back(std::make_unique<FakeDocIterator>(
+      std::vector<std::pair<uint32_t, float>>{{0, 3.0f}}, 3.0f));
+  ConjunctionIterator iterator(std::move(musts), {});
+  iterator.set_min_competitive_score(4.0f);
+  ASSERT_EQ(iterator.next_doc(), 0u);
+  std::feclearexcept(FE_ALL_EXCEPT);
+  EXPECT_FLOAT_EQ(iterator.score(), 5.0f);
+  EXPECT_EQ(std::fetestexcept(FE_INVALID), 0);
+}
 
 // ============================================================
 // Optimization 1: Block-Max skip

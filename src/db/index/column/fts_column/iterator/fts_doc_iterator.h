@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <zvec/db/status.h>
 #include "db/index/common/index_filter.h"
 
 namespace zvec::fts {
@@ -36,6 +37,12 @@ namespace zvec::fts {
 class DocIterator {
  public:
   virtual ~DocIterator() = default;
+
+  // Search must inspect the root after traversal: EOF alone is not proof of
+  // successful completion. Composite iterators aggregate their child errors.
+  virtual Status status() const {
+    return Status::OK();
+  }
 
   //! Sentinel value indicating no more matching documents
   static constexpr uint32_t NO_MORE_DOCS = UINT32_MAX;

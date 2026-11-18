@@ -18,8 +18,10 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
@@ -181,6 +183,7 @@ class CollectionImpl : public Collection {
   Status close_unsafe();
 
   Status flush_unsafe();
+  Status check_write_state() const;
 
   Status create();
 
@@ -210,6 +213,9 @@ class CollectionImpl : public Collection {
       const CollectionSchema::Ptr &new_schema,
       const Segment::Ptr &old_writing_segment, const Version &old_version,
       Version *new_version, uint64_t writing_min_doc_id);
+
+  Status commit_column_change(const CollectionSchema::Ptr &new_schema,
+                              const std::function<Status(Segment *)> &change);
 
   Result<WriteResults> write_impl(std::vector<Doc> &docs, WriteMode mode);
 
@@ -251,6 +257,10 @@ class CollectionImpl : public Collection {
       const IndexFilter::Ptr filter);
 
   Status execute_compact_task(std::vector<SegmentTask::Ptr> &tasks) const;
+
+  Status commit_custom_optimize(
+      std::vector<SegmentTask::Ptr> &tasks,
+      const std::vector<Segment::Ptr> &opened_segments);
 
   std::vector<SegmentTask::Ptr> build_create_vector_index_task(
       const std::vector<Segment::Ptr> &segments, const std::string &column,
@@ -543,7 +553,16 @@ Status CollectionImpl::flush() {
   return flush_unsafe();
 }
 
+Status CollectionImpl::check_write_state() const {
+  if (version_manager_ && version_manager_->requires_recovery()) {
+    return Status::FailedPrecondition(
+        "Uncertain manifest commit; reopen required");
+  }
+  return Status::OK();
+}
+
 Status CollectionImpl::flush_unsafe() {
+  CHECK_RETURN_STATUS(check_write_state());
   if (!writing_segment_) {
     return Status::InternalError(
         "flush writing segment failed because writing segment is nullptr");
@@ -635,6 +654,7 @@ Status CollectionImpl::create_index(const std::string &column_name,
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
+  CHECK_RETURN_STATUS(check_write_state());
 
   if (index_params == nullptr) {
     return Status::InvalidArgument("create_index: index_params is null");
@@ -730,6 +750,16 @@ Status CollectionImpl::create_index(const std::string &column_name,
   s = commit_schema_change_with_new_writing_segment(
       new_schema, old_writing_segment, old_version, &new_version,
       writing_min_doc_id);
+  if (!s.ok() && version_manager_->requires_recovery()) {
+    for (const auto &task : tasks) {
+      if (const auto *fts =
+              std::get_if<CreateFtsIndexTask>(&task->task_info())) {
+        if (fts->output_fts_indexer_) {
+          fts->output_fts_indexer_->preserve_files();
+        }
+      }
+    }
+  }
   CHECK_RETURN_STATUS(s);
 
   // 4. remove old segments or block
@@ -749,11 +779,19 @@ Status CollectionImpl::create_index(const std::string &column_name,
           create_index_task.output_scalar_indexer_);
     } else if (std::holds_alternative<CreateFtsIndexTask>(task_info)) {
       auto fts_task = std::get<CreateFtsIndexTask>(task_info);
-      s = fts_task.input_segment_->reload_fts_index(
-          *new_schema, fts_task.output_segment_meta_,
-          fts_task.output_fts_indexer_);
+      fts_task.input_segment_->publish_fts_index(
+          new_schema,
+          {fts_task.output_segment_meta_, fts_task.output_fts_indexer_});
+      s = Status::OK();
     }
-    CHECK_RETURN_STATUS(s);
+    if (!s.ok() && version_manager_->uses_commit_record()) {
+      // The new schema and preopened readers are already authoritative.
+      // Cleanup failure must not report this committed DDL as rolled back.
+      LOG_WARN("Committed index change; old index cleanup failed: %s",
+               s.message().c_str());
+    } else {
+      CHECK_RETURN_STATUS(s);
+    }
   }
 
   return Status::OK();
@@ -827,6 +865,7 @@ Status CollectionImpl::drop_index(const std::string &column_name) {
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
+  CHECK_RETURN_STATUS(check_write_state());
 
   auto new_schema = std::make_shared<CollectionSchema>(*schema_);
   auto s = new_schema->drop_index(column_name);
@@ -902,6 +941,15 @@ Status CollectionImpl::drop_index(const std::string &column_name) {
   s = commit_schema_change_with_new_writing_segment(
       new_schema, old_writing_segment, old_version, &new_version,
       writing_min_doc_id);
+  if (!s.ok() && version_manager_->requires_recovery()) {
+    for (const auto &task : tasks) {
+      if (const auto *fts = std::get_if<DropFtsIndexTask>(&task->task_info())) {
+        if (fts->output_fts_indexer_) {
+          fts->output_fts_indexer_->preserve_files();
+        }
+      }
+    }
+  }
   CHECK_RETURN_STATUS(s);
 
   // 4. remove old segments or block
@@ -920,11 +968,19 @@ Status CollectionImpl::drop_index(const std::string &column_name) {
           drop_index_task.output_scalar_indexer_);
     } else if (std::holds_alternative<DropFtsIndexTask>(task_info)) {
       auto fts_task = std::get<DropFtsIndexTask>(task_info);
-      s = fts_task.input_segment_->reload_fts_index(
-          *new_schema, fts_task.output_segment_meta_,
-          fts_task.output_fts_indexer_);
+      fts_task.input_segment_->publish_fts_index(
+          new_schema,
+          {fts_task.output_segment_meta_, fts_task.output_fts_indexer_});
+      s = Status::OK();
     }
-    CHECK_RETURN_STATUS(s);
+    if (!s.ok() && version_manager_->uses_commit_record()) {
+      // The new schema and preopened readers are already authoritative.
+      // Cleanup failure must not report this committed DDL as rolled back.
+      LOG_WARN("Committed index change; old index cleanup failed: %s",
+               s.message().c_str());
+    } else {
+      CHECK_RETURN_STATUS(s);
+    }
   }
 
   return Status::OK();
@@ -968,6 +1024,7 @@ Status CollectionImpl::optimize(const OptimizeOptions &options) {
 
     CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
     CHECK_CLOSED_RETURN_STATUS(closed_, false);
+    CHECK_RETURN_STATUS(check_write_state());
 
     if (writing_segment_->has_record()) {
       auto s = switch_to_new_segment_for_writing();
@@ -989,6 +1046,13 @@ Status CollectionImpl::optimize(const OptimizeOptions &options) {
   auto tasks =
       build_compact_task(schema_, persist_segments, options.concurrency_,
                          delete_store_clone->make_filter());
+  // Bind custom containers to their final segment identity before writing
+  // bytes; moving a private directory must not change that persisted identity.
+  for (auto &task : tasks) {
+    if (auto *compact = std::get_if<CompactTask>(&task->task_info())) {
+      compact->published_segment_id_ = allocate_segment_id();
+    }
+  }
   auto s = execute_compact_task(tasks);
   CHECK_RETURN_STATUS(s);
 
@@ -1014,7 +1078,7 @@ Status CollectionImpl::optimize(const OptimizeOptions &options) {
 
     auto tmp_segment_path =
         FileHelper::MakeTempSegmentPath(path_, compact_task.output_segment_id_);
-    auto new_segment_id = allocate_segment_id();
+    auto new_segment_id = compact_task.published_segment_id_.value();
     auto new_segment_path = FileHelper::MakeSegmentPath(path_, new_segment_id);
 
     if (!FileHelper::MoveDirectory(tmp_segment_path, new_segment_path)) {
@@ -1046,6 +1110,15 @@ Status CollectionImpl::optimize(const OptimizeOptions &options) {
     // zero here.
     std::unique_lock schema_lock(schema_handle_mtx_);
     std::lock_guard write_lock(write_mtx_);
+
+    bool custom_commit = version_manager_->uses_commit_record();
+    for (const auto &task : tasks) {
+      custom_commit = custom_commit ||
+                      std::holds_alternative<RewriteFtsTask>(task->task_info());
+    }
+    if (custom_commit) {
+      return commit_custom_optimize(tasks, opened_segments);
+    }
 
     Version new_version = version_manager_->get_current_version();
 
@@ -1121,6 +1194,122 @@ Status CollectionImpl::optimize(const OptimizeOptions &options) {
   tasks.clear();
   persist_segments.clear();
 
+  return Status::OK();
+}
+
+Status CollectionImpl::commit_custom_optimize(
+    std::vector<SegmentTask::Ptr> &tasks,
+    const std::vector<Segment::Ptr> &opened_segments) {
+  // The caller holds schema/write exclusion. Capture the latest writer and
+  // deletion checkpoint after the concurrent build phase, then prepare all
+  // immutable replacements before changing the authoritative version.
+  auto discard = [&](const Status &status) {
+    if (!version_manager_->requires_recovery()) {
+      for (const auto &segment : opened_segments) {
+        (void)segment->destroy();
+      }
+    }
+    return status;
+  };
+  auto status = writing_segment_->checkpoint_for_fts();
+  if (!status.ok()) {
+    return discard(status);
+  }
+  for (const auto &source : segment_manager_->get_segments()) {
+    status = source->checkpoint_for_fts();
+    if (!status.ok()) {
+      return discard(status);
+    }
+  }
+  auto candidate = version_manager_->get_current_version();
+  std::vector<Segment::Ptr> additions = opened_segments;
+  std::vector<SegmentID> removals;
+  std::map<SegmentID, SegmentMeta::Ptr> changed;
+  for (const auto &task : tasks) {
+    const auto &info = task->task_info();
+    if (const auto *compact = std::get_if<CompactTask>(&info)) {
+      if (compact->output_segment_meta_) {
+        status =
+            candidate.add_persisted_segment_meta(compact->output_segment_meta_);
+        if (!status.ok()) {
+          return discard(status);
+        }
+      }
+      for (const auto &input : compact->input_segments_) {
+        removals.push_back(input->id());
+        status = candidate.remove_persisted_segment_meta(input->id());
+        if (!status.ok()) {
+          return discard(status);
+        }
+      }
+    } else if (const auto *vector = std::get_if<CreateVectorIndexTask>(&info)) {
+      changed[vector->input_segment_->id()] =
+          std::make_shared<SegmentMeta>(*vector->output_segment_meta_);
+    }
+  }
+  // A single segment may have independent vector and FTS rewrite tasks.
+  // Combine only the rewritten FTS block into an already prepared vector meta.
+  for (const auto &task : tasks) {
+    if (const auto *rewrite = std::get_if<RewriteFtsTask>(&task->task_info())) {
+      if (!rewrite->prepared_) {
+        return discard(Status::InternalError("Missing prepared FTS rewrite"));
+      }
+      auto &meta = changed[rewrite->input_segment_->id()];
+      if (!meta) {
+        meta = std::make_shared<SegmentMeta>(*rewrite->prepared_->metadata);
+      } else {
+        meta->remove_fts_index_block();
+        for (const auto &block :
+             rewrite->prepared_->metadata->persisted_blocks()) {
+          if (block.type() == BlockType::FTS_INDEX) {
+            meta->add_persisted_block(block);
+          }
+        }
+      }
+    }
+  }
+  for (const auto &entry : changed) {
+    status = candidate.update_persisted_segment_meta(entry.second);
+    if (!status.ok()) {
+      return discard(status);
+    }
+    auto opened = Segment::Open(path_, *schema_, *entry.second, id_map_,
+                                delete_store_, version_manager_,
+                                SegmentOptions{true, options_.enable_mmap_});
+    if (!opened) {
+      return discard(opened.error());
+    }
+    additions.push_back(std::move(*opened));
+  }
+  for (const auto &segment : additions) {
+    status = segment->checkpoint_for_fts();
+    if (!status.ok()) {
+      return discard(status);
+    }
+  }
+  auto publication = segment_manager_->prepare_update(additions, removals);
+  if (!publication) {
+    return discard(publication.error());
+  }
+  candidate.set_next_segment_id(segment_id_allocator_.load());
+  status = version_manager_->checkpoint(candidate);
+  if (!status.ok()) {
+    if (version_manager_->requires_recovery()) {
+      for (const auto &task : tasks) {
+        if (const auto *rewrite =
+                std::get_if<RewriteFtsTask>(&task->task_info())) {
+          rewrite->prepared_->indexer->preserve_files();
+        }
+      }
+    }
+    return discard(status);
+  }
+  for (auto &task : tasks) {
+    if (auto *rewrite = std::get_if<RewriteFtsTask>(&task->task_info())) {
+      rewrite->input_segment_->publish_fts_seal(std::move(*rewrite->prepared_));
+    }
+  }
+  segment_manager_->publish_update(std::move(*publication));
   return Status::OK();
 }
 
@@ -1210,6 +1399,27 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
     tasks.push_back(task);
   }
 
+  if (FtsIndexer::kCustomWritesEnabled && schema->has_fts_field()) {
+    std::set<SegmentID> compacted;
+    for (const auto &task : tasks) {
+      if (const auto *compact = std::get_if<CompactTask>(&task->task_info())) {
+        for (const auto &input : compact->input_segments_) {
+          compacted.insert(input->id());
+        }
+      }
+    }
+    for (const auto &segment : segments) {
+      if (compacted.count(segment->id()) != 0) {
+        continue;
+      }
+      for (const auto &block : segment->meta()->persisted_blocks()) {
+        if (block.type() == BlockType::FTS_INDEX && !block.fts_base_) {
+          tasks.push_back(SegmentTask::CreateRewriteFtsTask({segment, {}}));
+          break;
+        }
+      }
+    }
+  }
   return tasks;
 }
 
@@ -1362,6 +1572,7 @@ Status CollectionImpl::add_column(const FieldSchema::Ptr &column_schema,
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
+  CHECK_RETURN_STATUS(check_write_state());
 
   auto field_copy =
       column_schema ? std::make_shared<FieldSchema>(*column_schema) : nullptr;
@@ -1385,6 +1596,11 @@ Status CollectionImpl::add_column(const FieldSchema::Ptr &column_schema,
   Version new_version = old_version;
 
   // add column on segment manager
+  if (version_manager_->uses_commit_record()) {
+    return commit_column_change(new_schema, [&](Segment *segment) {
+      return segment->add_column(field_copy, expression, options);
+    });
+  }
   s = segment_manager_->add_column(field_copy, expression,
                                    options.concurrency_);
   CHECK_RETURN_STATUS(s);
@@ -1417,6 +1633,7 @@ Status CollectionImpl::drop_column(const std::string &column_name) {
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
+  CHECK_RETURN_STATUS(check_write_state());
 
   // validate
   auto s = validate(column_name, nullptr, "", "", ColumnOp::DROP);
@@ -1439,6 +1656,11 @@ Status CollectionImpl::drop_column(const std::string &column_name) {
   Version new_version = old_version;
 
   // drop column on segment manager
+  if (version_manager_->uses_commit_record()) {
+    return commit_column_change(new_schema, [&](Segment *segment) {
+      return segment->drop_column(column_name);
+    });
+  }
   s = segment_manager_->drop_column(column_name);
   CHECK_RETURN_STATUS(s);
 
@@ -1473,6 +1695,7 @@ Status CollectionImpl::alter_column(const std::string &column_name,
 
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);
+  CHECK_RETURN_STATUS(check_write_state());
 
   auto field_copy = new_column_schema
                         ? std::make_shared<FieldSchema>(*new_column_schema)
@@ -1503,6 +1726,11 @@ Status CollectionImpl::alter_column(const std::string &column_name,
   Version new_version = old_version;
 
   // alter column on segment manager
+  if (version_manager_->uses_commit_record()) {
+    return commit_column_change(new_schema, [&](Segment *segment) {
+      return segment->alter_column(column_name, field_copy, options);
+    });
+  }
   s = segment_manager_->alter_column(column_name, field_copy,
                                      options.concurrency_);
   CHECK_RETURN_STATUS(s);
@@ -1598,6 +1826,7 @@ Result<WriteResults> CollectionImpl::write_impl(std::vector<Doc> &docs,
 
   // TODO: The granularity of the write_lock is too coarse.
   std::lock_guard write_lock(write_mtx_);
+  CHECK_RETURN_STATUS_EXPECTED(check_write_state());
 
   WriteResults results;
   // validate write batch size
@@ -1639,6 +1868,36 @@ bool CollectionImpl::need_switch_to_new_segment() const {
   return writing_segment_->doc_count() >= schema_->max_doc_count_per_segment();
 }
 
+Status CollectionImpl::commit_column_change(
+    const CollectionSchema::Ptr &new_schema,
+    const std::function<Status(Segment *)> &change) {
+  const auto old_version = version_manager_->get_current_version();
+  Version candidate = old_version;
+  std::vector<Segment::PreparedColumnChange> prepared;
+  for (const auto &source : segment_manager_->get_segments()) {
+    auto copy = source->prepare_column_change(allocate_segment_id(), change);
+    if (!copy) {
+      return copy.error();
+    }
+    auto status = candidate.remove_persisted_segment_meta(source->id());
+    CHECK_RETURN_STATUS(status);
+    status = candidate.add_persisted_segment_meta(copy->segment->meta());
+    CHECK_RETURN_STATUS(status);
+    prepared.push_back(std::move(*copy));
+  }
+  candidate.set_schema(*new_schema);
+  auto old_writer = writing_segment_;
+  auto status = commit_schema_change_with_new_writing_segment(
+      new_schema, old_writer, old_version, &candidate,
+      old_writer->meta()->min_doc_id());
+  if (status.ok() || version_manager_->requires_recovery()) {
+    for (const auto &copy : prepared) {
+      copy.files->preserve();
+    }
+  }
+  return status;
+}
+
 Status CollectionImpl::commit_schema_change_with_new_writing_segment(
     const CollectionSchema::Ptr &new_schema,
     const Segment::Ptr &old_writing_segment, const Version &old_version,
@@ -1658,22 +1917,76 @@ Status CollectionImpl::commit_schema_change_with_new_writing_segment(
   new_version->reset_writing_segment_meta(new_writing_segment.value()->meta());
   new_version->set_next_segment_id(segment_id_allocator_.load());
 
-  auto s = version_manager_->apply(*new_version);
-  if (!s.ok()) {
-    new_writing_segment.value()->destroy();
-    return s;
+  auto discard = [&](const Status &status) {
+    if (!version_manager_->requires_recovery()) {
+      (void)new_writing_segment.value()->destroy();
+    }
+    return status;
+  };
+  bool durable = old_version.requires_commit_record() ||
+                 version_manager_->uses_commit_record();
+  const auto metas = new_version->persisted_segment_metas();
+  for (const auto &meta : metas) {
+    for (const auto &block : meta->persisted_blocks()) {
+      durable = durable || block.fts_base_.has_value();
+    }
   }
-
-  s = version_manager_->flush();
+  std::unique_ptr<SegmentManager::PreparedUpdate> publication;
+  if (durable) {
+    auto s = old_writing_segment->checkpoint_for_fts();
+    if (!s.ok()) {
+      return discard(s);
+    }
+    for (const auto &source : segment_manager_->get_segments()) {
+      s = source->checkpoint_for_fts();
+      if (!s.ok()) {
+        return discard(s);
+      }
+    }
+    s = new_writing_segment.value()->checkpoint_for_fts();
+    if (!s.ok()) {
+      return discard(s);
+    }
+    std::vector<Segment::Ptr> replacements;
+    for (const auto &meta : metas) {
+      auto opened = Segment::Open(path_, *new_schema, *meta, id_map_,
+                                  delete_store_, version_manager_,
+                                  SegmentOptions{true, options_.enable_mmap_});
+      if (!opened) {
+        return discard(opened.error());
+      }
+      s = (*opened)->checkpoint_for_fts();
+      if (!s.ok()) {
+        return discard(s);
+      }
+      replacements.push_back(std::move(*opened));
+    }
+    std::vector<SegmentID> removals;
+    for (const auto &old : old_version.persisted_segment_metas()) {
+      if (std::none_of(metas.begin(), metas.end(), [&](const auto &meta) {
+            return meta->id() == old->id();
+          })) {
+        removals.push_back(old->id());
+      }
+    }
+    auto prepared = segment_manager_->prepare_update(replacements, removals);
+    if (!prepared) {
+      return discard(prepared.error());
+    }
+    publication = std::move(*prepared);
+  }
+  auto s = version_manager_->checkpoint(*new_version);
   if (!s.ok()) {
-    new_writing_segment.value()->destroy();
-    auto rollback_status = version_manager_->apply(old_version);
-    CHECK_RETURN_STATUS(rollback_status);
-    return s;
+    // An uncertain authority may reference both the new writer and private
+    // field generations. The caller preserves those field owners as well.
+    return discard(s);
   }
 
   schema_ = new_schema;
   writing_segment_ = new_writing_segment.value();
+  if (publication) {
+    segment_manager_->publish_update(std::move(publication));
+  }
   s = old_writing_segment->destroy();
   if (!s.ok()) {
     LOG_WARN("Failed to retire old writing segment: %s", s.message().c_str());
@@ -1684,8 +1997,28 @@ Status CollectionImpl::commit_schema_change_with_new_writing_segment(
 
 Status CollectionImpl::switch_to_new_segment_for_writing(
     const CollectionSchema::Ptr &schema) {
+  CHECK_RETURN_STATUS(check_write_state());
   if (writing_segment_->doc_count() == 0) {
     return writing_segment_->flush();
+  }
+
+  if (version_manager_->uses_commit_record() ||
+      (FtsIndexer::kCustomWritesEnabled && schema_->has_fts_field())) {
+    return segment_manager_->switch_fts_writer(
+        &writing_segment_, version_manager_,
+        [&](uint64_t min_doc_id) -> Result<SegmentManager::FtsSuccessor> {
+          auto next = Segment::CreateAndOpen(
+              path_, schema == nullptr ? *schema_ : *schema,
+              allocate_segment_id(), min_doc_id, id_map_, delete_store_,
+              version_manager_,
+              SegmentOptions{false, options_.enable_mmap_,
+                             options_.max_buffer_size_});
+          if (!next) {
+            return tl::make_unexpected(next.error());
+          }
+          return SegmentManager::FtsSuccessor{*next,
+                                              segment_id_allocator_.load()};
+        });
   }
 
   auto s = writing_segment_->dump();
@@ -1734,6 +2067,7 @@ Result<WriteResults> CollectionImpl::delete_(
 
   // TODO: The granularity of the write_lock is too coarse.
   std::lock_guard write_lock(write_mtx_);
+  CHECK_RETURN_STATUS_EXPECTED(check_write_state());
   WriteResults results;
   for (auto &&pk : pks) {
     Status s = writing_segment_->Delete(pk);
@@ -1772,6 +2106,7 @@ Status CollectionImpl::delete_by_filter(const std::string &filter) {
 
   // TODO: The granularity of the write_lock is too coarse.
   std::lock_guard write_lock(write_mtx_);
+  CHECK_RETURN_STATUS(check_write_state());
   for (auto &doc : ret.value()) {
     Status s = writing_segment_->Delete(doc->doc_id());
     if (!s.ok()) {
@@ -2338,6 +2673,14 @@ Status CollectionImpl::recovery() {
   writing_segment_ = writing_segment.value();
   segment_id_allocator_.store(v.next_segment_id());
 
+  if (!options_.read_only_) {
+    auto cleanup = version_manager_->reclaim_unreferenced_files();
+    if (!cleanup.ok()) {
+      LOG_WARN("Recovery deferred unreferenced FTS files: %s",
+               cleanup.message().c_str());
+    }
+  }
+
   // recover id map & delete store
   return Status::OK();
 }
@@ -2417,7 +2760,8 @@ void CollectionImpl::cleanup_orphan_segment_dirs(const Version &version) {
   std::filesystem::directory_iterator end;
   while (!ec && it != end) {
     std::error_code entry_ec;
-    if (it->is_directory(entry_ec) && !entry_ec) {
+    const auto entry_status = it->symlink_status(entry_ec);
+    if (!entry_ec && std::filesystem::is_directory(entry_status)) {
       const std::string name =
           ailego::FileHelper::PathToUtf8(it->path().filename());
 
@@ -2444,18 +2788,11 @@ void CollectionImpl::cleanup_orphan_segment_dirs(const Version &version) {
 
   for (const auto &name : orphan_names) {
     auto orphan_path = ailego::FileHelper::PathJoin(path_, name);
-    if (FileHelper::RemoveDirectory(orphan_path)) {
-      LOG_WARN(
-          "Recovery removed orphan segment directory not referenced by "
-          "manifest: path=%s",
-          orphan_path.c_str());
-    } else {
-      const auto error = ailego::FileHelper::GetLastErrorString();
-      LOG_WARN(
-          "Recovery failed to remove orphan segment directory not referenced "
-          "by manifest: path=%s, error=%s",
-          orphan_path.c_str(), error.c_str());
-    }
+    auto owner =
+        version_manager_->fts_retirement()->track(orphan_path, true, true);
+    owner->retire();
+    LOG_WARN("Recovery retired unreferenced segment directory: path=%s",
+             orphan_path.c_str());
   }
 }
 

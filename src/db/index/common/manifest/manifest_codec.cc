@@ -13,12 +13,14 @@
 // limitations under the License.
 
 #include "db/index/common/manifest_codec.h"
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
+#include "db/index/column/fts_column/fts_format.h"
 #include "db/index/common/manifest/pb_wire.h"
 #include "db/index/common/manifest_enum.h"
 #include "db/index/common/type_helper.h"
@@ -136,6 +138,7 @@ constexpr uint32_t kMinDocId = 3;
 constexpr uint32_t kMaxDocId = 4;
 constexpr uint32_t kDocCount = 5;
 constexpr uint32_t kColumns = 6;
+constexpr uint32_t kFtsBase = 7;
 }  // namespace f_block
 namespace f_segment {
 constexpr uint32_t kSegmentId = 1;
@@ -153,6 +156,92 @@ constexpr uint32_t kIdMapPathSuffix = 6;
 constexpr uint32_t kDeleteSnapshotPathSuffix = 7;
 constexpr uint32_t kNextSegmentId = 8;
 }  // namespace f_manifest
+
+// The first byte is an illegal protobuf tag, including for historical
+// decoders that ignore unknown fields. Never emit an ungated custom base.
+constexpr char kFtsManifestMagic[] = "\0ZVEC_FTS_MANIFEST_V1\0";
+constexpr std::string_view kFtsManifestPrefix(kFtsManifestMagic,
+                                              sizeof(kFtsManifestMagic) - 1);
+
+Status ValidateFtsBase(const BlockMeta &block) {
+  if (!block.fts_base_) {
+    return Status::OK();
+  }
+  const auto &base = *block.fts_base_;
+  if (base.format_version != 1 || base.minimum_reader_version != 1 ||
+      base.required_features != 0) {
+    return Status::NotSupported("Unsupported FTS base descriptor");
+  }
+  if (block.type() != BlockType::FTS_INDEX || base.generation == 0 ||
+      base.row_count > UINT32_MAX || base.row_count != block.doc_count() ||
+      base.base_id == std::array<uint8_t, 16>{} ||
+      base.metadata_digest == std::array<uint8_t, 32>{}) {
+    return Status::InternalError(
+        "Invalid FTS base identity or document domain");
+  }
+  return Status::OK();
+}
+
+Status ValidateFtsBases(const ManifestData &data, bool *has_custom) {
+  *has_custom = false;
+  auto check_segment = [&](const SegmentMeta::Ptr &segment) -> Status {
+    if (!segment) {
+      return Status::OK();
+    }
+    for (const auto &block : segment->persisted_blocks()) {
+      auto status = ValidateFtsBase(block);
+      if (!status.ok()) {
+        return status;
+      }
+      *has_custom |= block.fts_base_.has_value();
+    }
+    if (segment->has_writing_forward_block() &&
+        segment->writing_forward_block()->fts_base_) {
+      return Status::InternalError("FTS base on a writing forward block");
+    }
+    return Status::OK();
+  };
+  for (const auto &segment : data.persisted_segment_metas) {
+    auto status = check_segment(segment);
+    if (!status.ok()) {
+      return status;
+    }
+  }
+  return check_segment(data.writing_segment_meta);
+}
+
+std::string EncodeFtsBase(const FtsBaseDescriptor &base) {
+  std::string bytes;
+  fts::format::AppendU32(base.format_version, &bytes);
+  fts::format::AppendU32(base.minimum_reader_version, &bytes);
+  fts::format::AppendU64(base.required_features, &bytes);
+  fts::format::AppendU64(base.generation, &bytes);
+  fts::format::AppendU64(base.row_count, &bytes);
+  bytes.append(reinterpret_cast<const char *>(base.base_id.data()),
+               base.base_id.size());
+  bytes.append(reinterpret_cast<const char *>(base.metadata_digest.data()),
+               base.metadata_digest.size());
+  return bytes;
+}
+
+bool DecodeFtsBase(std::string_view bytes, FtsBaseDescriptor *base) {
+  // Fixed v1 record within a length-delimited field. Future optional resource
+  // entries use separate block fields, not trailing bytes in this record.
+  if (bytes.size() != 80) {
+    return false;
+  }
+  fts::format::Decoder decoder(bytes);
+  base->format_version = decoder.u32();
+  base->minimum_reader_version = decoder.u32();
+  base->required_features = decoder.u64();
+  base->generation = decoder.u64();
+  base->row_count = decoder.u64();
+  auto id = decoder.take(base->base_id.size());
+  std::copy(id.begin(), id.end(), base->base_id.begin());
+  auto digest = decoder.take(base->metadata_digest.size());
+  std::copy(digest.begin(), digest.end(), base->metadata_digest.begin());
+  return decoder.done();
+}
 
 //! Mirror of proto BaseIndexParams, shared by all vector index params.
 struct BaseParams {
@@ -878,9 +967,18 @@ void ManifestCodec::EncodeBlockMeta(const BlockMeta &meta, std::string *out) {
   for (const auto &column : meta.columns()) {
     w.add_string(f_block::kColumns, column);
   }
+  if (meta.fts_base_) {
+    w.put_message(f_block::kFtsBase, EncodeFtsBase(*meta.fts_base_));
+  }
 }
 
-BlockMeta::Ptr ManifestCodec::DecodeBlockMeta(std::string_view buf) {
+BlockMeta::Ptr ManifestCodec::DecodeBlockMeta(std::string_view buf,
+                                              Status *error) {
+  Status local_error;
+  if (!error) {
+    error = &local_error;
+  }
+  *error = Status::OK();
   auto meta = std::make_shared<BlockMeta>();
   Reader r(buf);
   while (r.next()) {
@@ -904,11 +1002,24 @@ BlockMeta::Ptr ManifestCodec::DecodeBlockMeta(std::string_view buf) {
       case f_block::kColumns:
         meta->add_column(r.string_value());
         break;
+      case f_block::kFtsBase:
+        if (r.wire_type() != pbwire::kLenDelim || meta->fts_base_) {
+          *error = Status::InternalError("Malformed or duplicate FTS base");
+          return nullptr;
+        }
+        meta->fts_base_.emplace();
+        if (!DecodeFtsBase(r.bytes(), &*meta->fts_base_)) {
+          *error = Status::InternalError("Malformed FTS base descriptor");
+          return nullptr;
+        }
+        break;
       default:
         break;
     }
   }
-  return meta;
+  *error = r.ok() ? ValidateFtsBase(*meta)
+                  : Status::InternalError("Malformed block metadata");
+  return error->ok() ? meta : nullptr;
 }
 
 void ManifestCodec::EncodeSegmentMeta(const SegmentMeta &meta,
@@ -930,7 +1041,13 @@ void ManifestCodec::EncodeSegmentMeta(const SegmentMeta &meta,
   }
 }
 
-SegmentMeta::Ptr ManifestCodec::DecodeSegmentMeta(std::string_view buf) {
+SegmentMeta::Ptr ManifestCodec::DecodeSegmentMeta(std::string_view buf,
+                                                  Status *error) {
+  Status local_error;
+  if (!error) {
+    error = &local_error;
+  }
+  *error = Status::OK();
   auto meta = std::make_shared<SegmentMeta>(0);
   Reader r(buf);
   while (r.next()) {
@@ -938,12 +1055,22 @@ SegmentMeta::Ptr ManifestCodec::DecodeSegmentMeta(std::string_view buf) {
       case f_segment::kSegmentId:
         meta->set_id(r.uint32_value());
         break;
-      case f_segment::kPersistedBlocks:
-        meta->add_persisted_block(*DecodeBlockMeta(r.bytes()));
+      case f_segment::kPersistedBlocks: {
+        auto block = DecodeBlockMeta(r.bytes(), error);
+        if (!block) {
+          return nullptr;
+        }
+        meta->add_persisted_block(*block);
         break;
-      case f_segment::kWritingForwardBlock:
-        meta->set_writing_forward_block(*DecodeBlockMeta(r.bytes()));
+      }
+      case f_segment::kWritingForwardBlock: {
+        auto block = DecodeBlockMeta(r.bytes(), error);
+        if (!block) {
+          return nullptr;
+        }
+        meta->set_writing_forward_block(*block);
         break;
+      }
       case f_segment::kIndexedVectorFields:
         meta->add_indexed_vector_field(r.string_value());
         break;
@@ -951,11 +1078,21 @@ SegmentMeta::Ptr ManifestCodec::DecodeSegmentMeta(std::string_view buf) {
         break;
     }
   }
+  if (!r.ok()) {
+    *error = Status::InternalError("Malformed segment metadata");
+    return nullptr;
+  }
   return meta;
 }
 
 Status ManifestCodec::Encode(const ManifestData &data, std::string *out) {
-  Writer w(out);
+  bool custom = false;
+  auto status = ValidateFtsBases(data, &custom);
+  if (!status.ok()) {
+    return status;
+  }
+  std::string encoded;
+  Writer w(&encoded);
   w.put_varint(f_manifest::kVersion, data.version);
   if (data.schema) {
     std::string payload;
@@ -980,10 +1117,53 @@ Status ManifestCodec::Encode(const ManifestData &data, std::string *out) {
   w.put_varint(f_manifest::kDeleteSnapshotPathSuffix,
                data.delete_snapshot_path_suffix);
   w.put_varint(f_manifest::kNextSegmentId, data.next_segment_id);
+  if (custom || data.requires_commit_record) {
+    fts::format::Sha256 hash;
+    status = hash.update(encoded);
+    if (!status.ok()) {
+      return status;
+    }
+    out->append(kFtsManifestPrefix);
+    fts::format::AppendU64(encoded.size(), out);
+    const auto digest = hash.digest();
+    out->append(reinterpret_cast<const char *>(digest.data()), digest.size());
+  }
+  out->append(encoded);
   return Status::OK();
 }
 
 Status ManifestCodec::Decode(std::string_view buf, ManifestData *data) {
+  bool gated = !buf.empty() && buf.front() == '\0';
+  if (gated) {
+    if (buf.substr(0, kFtsManifestPrefix.size()) != kFtsManifestPrefix) {
+      return Status::NotSupported("Unsupported manifest envelope");
+    }
+    fts::format::Decoder decoder(buf.substr(kFtsManifestPrefix.size()));
+    uint64_t length = decoder.u64();
+    auto digest = decoder.take(32);
+    auto payload = decoder.take(length);
+    if (!decoder.done()) {
+      return Status::InternalError("Truncated manifest envelope");
+    }
+    fts::format::Sha256 hash;
+    auto status = hash.update(payload);
+    if (!status.ok()) {
+      return status;
+    }
+    auto expected = hash.digest();
+    if (digest !=
+        std::string_view(reinterpret_cast<const char *>(expected.data()),
+                         expected.size())) {
+      return Status::InternalError("Manifest checksum mismatch");
+    }
+    buf = payload;
+  }
+  // Decode into a candidate so failures cannot publish partial metadata.
+  ManifestData candidate;
+  candidate.requires_commit_record = gated;
+  ManifestData *destination = data;
+  data = &candidate;
+  Status status;
   Reader r(buf);
   while (r.next()) {
     switch (r.field()) {
@@ -996,11 +1176,19 @@ Status ManifestCodec::Decode(std::string_view buf, ManifestData *data) {
       case f_manifest::kEnableMmap:
         data->enable_mmap = r.bool_value();
         break;
-      case f_manifest::kPersistedSegmentMetas:
-        data->persisted_segment_metas.push_back(DecodeSegmentMeta(r.bytes()));
+      case f_manifest::kPersistedSegmentMetas: {
+        auto segment = DecodeSegmentMeta(r.bytes(), &status);
+        if (!segment) {
+          return status;
+        }
+        data->persisted_segment_metas.push_back(std::move(segment));
         break;
+      }
       case f_manifest::kWritingSegmentMeta:
-        data->writing_segment_meta = DecodeSegmentMeta(r.bytes());
+        data->writing_segment_meta = DecodeSegmentMeta(r.bytes(), &status);
+        if (!data->writing_segment_meta) {
+          return status;
+        }
         break;
       case f_manifest::kIdMapPathSuffix:
         data->id_map_path_suffix = r.uint32_value();
@@ -1018,6 +1206,14 @@ Status ManifestCodec::Decode(std::string_view buf, ManifestData *data) {
   if (!r.ok()) {
     return Status::InternalError("Malformed manifest data");
   }
+  bool custom = false;
+  status = ValidateFtsBases(*data, &custom);
+  if (!status.ok()) {
+    return status;
+  }
+  if (custom && !gated) {
+    return Status::NotSupported("FTS base requires a gated manifest");
+  }
   if (!data->schema) {
     // An absent schema means the file is not a valid manifest; the protobuf
     // parser accepted it but downstream code always expects a schema.
@@ -1026,6 +1222,7 @@ Status ManifestCodec::Decode(std::string_view buf, ManifestData *data) {
     data->schema = std::make_shared<CollectionSchema>();
     data->schema->set_max_doc_count_per_segment(0);
   }
+  *destination = std::move(candidate);
   return Status::OK();
 }
 

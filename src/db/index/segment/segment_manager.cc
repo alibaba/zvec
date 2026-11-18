@@ -16,12 +16,97 @@
 #include "db/index/segment/segment_manager.h"
 #include <algorithm>
 #include <future>
+#include <set>
 #include <thread>
 #include <vector>
 #include <zvec/db/status.h>
 #include "db/common/typedef.h"
 
 namespace zvec {
+
+Status SegmentManager::switch_fts_writer(
+    Segment::Ptr *writing, const VersionManager::Ptr &versions,
+    const PrepareFtsSuccessor &prepare_successor,
+    const DurableFile::Hook &hook) {
+  if (!writing || !*writing || !versions || !prepare_successor) {
+    return Status::InvalidArgument("Missing FTS switch resource");
+  }
+  if (versions->requires_recovery()) {
+    return Status::FailedPrecondition("Uncertain manifest; reopen required");
+  }
+  // Allocate the new manager contents before the durable commit. Collection
+  // write/schema exclusion keeps this snapshot current until publication.
+  decltype(segments_map_) prepared_segments;
+  {
+    std::shared_lock lock(mutex_);
+    prepared_segments = segments_map_;
+  }
+  if (prepared_segments.count((*writing)->id()) != 0) {
+    return Status::FailedPrecondition("Writing segment is already persisted");
+  }
+  // The first authority record also references older, legacy segments. Make
+  // those files durable before upgrading the collection's commit protocol.
+  for (const auto &entry : prepared_segments) {
+    CHECK_RETURN_STATUS(entry.second->checkpoint_for_fts());
+  }
+  auto prepared = (*writing)->prepare_fts_seal(hook);
+  if (!prepared) {
+    return prepared.error();
+  }
+  if (prepared->metadata->max_doc_id() == UINT64_MAX) {
+    return Status{StatusCode::RESOURCE_EXHAUSTED, "Document ID exhausted"};
+  }
+  prepared_segments.emplace((*writing)->id(), *writing);
+  auto successor = prepare_successor(prepared->metadata->max_doc_id() + 1);
+  if (!successor) {
+    return successor.error();
+  }
+  auto next = std::move(successor->segment);
+  if (!next || next == *writing || prepared_segments.count(next->id()) != 0 ||
+      next->doc_count_snapshot() != 0 ||
+      successor->next_segment_id <= next->id()) {
+    return Status::InvalidArgument("Invalid private FTS successor");
+  }
+  auto discard_successor = [&]() {
+    auto status = next->destroy();
+    if (!status.ok()) {
+      LOG_WARN("Failed to discard FTS successor: %s", status.message().c_str());
+    }
+  };
+  auto status = next->checkpoint_for_fts();
+  if (!status.ok()) {
+    discard_successor();
+    return status;
+  }
+  auto candidate = versions->get_current_version();
+  status = candidate.add_persisted_segment_meta(prepared->metadata);
+  if (!status.ok()) {
+    discard_successor();
+    return status;
+  }
+  candidate.reset_writing_segment_meta(next->meta());
+  candidate.set_next_segment_id(successor->next_segment_id);
+  status = versions->commit(candidate, hook);
+  if (!status.ok()) {
+    if (versions->requires_recovery()) {
+      // Recovery may select this candidate: retain both generations and the
+      // empty successor, with the existing writer frozen by VersionManager.
+      if (prepared->indexer) {
+        prepared->indexer->preserve_files();
+      }
+    } else {
+      discard_successor();
+    }
+    return status;
+  }
+  (*writing)->publish_fts_seal(std::move(*prepared));
+  {
+    std::unique_lock lock(mutex_);
+    segments_map_.swap(prepared_segments);
+  }
+  writing->swap(next);
+  return Status::OK();
+}
 
 Status SegmentManager::add_segment(Segment::Ptr segment) {
   if (!segment) {
@@ -31,6 +116,51 @@ Status SegmentManager::add_segment(Segment::Ptr segment) {
   std::unique_lock<std::shared_mutex> lock(mutex_);
   segments_map_[segment->id()] = segment;
   return Status::OK();
+}
+
+Result<std::unique_ptr<SegmentManager::PreparedUpdate>>
+SegmentManager::prepare_update(const std::vector<Segment::Ptr> &additions,
+                               const std::vector<SegmentID> &removals) const {
+  auto prepared = std::make_unique<PreparedUpdate>();
+  {
+    std::shared_lock lock(mutex_);
+    prepared->segments_ = segments_map_;
+  }
+  for (auto id : removals) {
+    auto found = prepared->segments_.find(id);
+    if (found == prepared->segments_.end()) {
+      return tl::make_unexpected(Status::NotFound("Missing retired segment"));
+    }
+    prepared->retired_.push_back(found->second);
+    prepared->segments_.erase(found);
+  }
+  std::set<SegmentID> added;
+  for (const auto &segment : additions) {
+    if (!segment || !added.insert(segment->id()).second ||
+        std::find(removals.begin(), removals.end(), segment->id()) !=
+            removals.end()) {
+      return tl::make_unexpected(
+          Status::InvalidArgument("Invalid segment update"));
+    }
+    prepared->segments_[segment->id()] = segment;
+  }
+  return prepared;
+}
+
+void SegmentManager::publish_update(std::unique_ptr<PreparedUpdate> update) {
+  {
+    std::unique_lock lock(mutex_);
+    segments_map_.swap(update->segments_);
+  }
+  for (const auto &segment : update->retired_) {
+    auto status = segment->destroy();
+    if (!status.ok()) {
+      // The committed map remains authoritative; failed cleanup never rolls
+      // it back. The segment owner retains the directory until its last user.
+      LOG_WARN("Failed to retire committed segment: %s",
+               status.message().c_str());
+    }
+  }
 }
 
 Status SegmentManager::remove_segment(SegmentID segment_id) {

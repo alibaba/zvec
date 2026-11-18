@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "fts_indexer.h"
+#include <filesystem>
 #include <zvec/ailego/logger/logger.h>
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
@@ -25,10 +26,14 @@ FtsIndexer::~FtsIndexer() {
   close();
 }
 
-FtsIndexer::Ptr FtsIndexer::CreateAndOpen(const std::string &working_dir,
-                                          const FieldSchemaPtrList &fts_fields,
-                                          bool create, bool read_only) {
+FtsIndexer::Ptr FtsIndexer::CreateAndOpen(
+    const std::string &working_dir, const FieldSchemaPtrList &fts_fields,
+    bool create, bool read_only,
+    const fts::FtsRetirementQueue::Pointer &retirement) {
   auto indexer = std::make_shared<FtsIndexer>(working_dir);
+  const auto queue =
+      retirement ? retirement : fts::FtsRetirementQueue::Create();
+  indexer->file_owner_ = queue->track(working_dir, true, false);
   auto s = indexer->open(fts_fields, create, read_only);
   if (!s.ok()) {
     return nullptr;
@@ -64,7 +69,16 @@ Status FtsIndexer::open(const FieldSchemaPtrList &fts_fields, bool create,
   }
   cf_names.push_back(kFtsStatCfName);
 
-  fts_ctx_ = std::make_shared<RocksdbContext>();
+  // Readers pin the context. Only the last generation owner may close it.
+  fts_ctx_ = std::shared_ptr<RocksdbContext>(
+      new RocksdbContext, [owner = file_owner_](RocksdbContext *context) {
+        auto status = context->close();
+        if (!status.ok()) {
+          LOG_ERROR("FTS generation close failed: %s",
+                    status.message().c_str());
+        }
+        delete context;
+      });
   Status s;
 
   if (create) {
@@ -95,8 +109,9 @@ Status FtsIndexer::open(const FieldSchemaPtrList &fts_fields, bool create,
     auto *doc_len_cf = fts_ctx_->get_cf(name + kFtsDocLenSuffix);
 
     auto indexer = std::make_shared<fts::FtsColumnIndexer>();
-    auto ret = indexer->open(field, fts_ctx_.get(), postings_cf, positions_cf,
-                             term_freq_cf, max_tf_cf, doc_len_cf, stat_cf);
+    auto ret =
+        indexer->open(field, fts_ctx_.get(), postings_cf, positions_cf,
+                      term_freq_cf, max_tf_cf, doc_len_cf, stat_cf, fts_ctx_);
     if (!ret.has_value()) {
       LOG_ERROR("FtsIndexer: FtsColumnIndexer::open failed for field[%s]: %s",
                 name.c_str(), ret.error().message().c_str());
@@ -119,6 +134,16 @@ fts::FtsColumnIndexerPtr FtsIndexer::get(const std::string &field_name) const {
   return it != indexers_.end() ? it->second : nullptr;
 }
 
+Status FtsIndexer::recover_statistics(uint64_t row_count) {
+  for (const auto &entry : indexers_) {
+    auto recovered = entry.second->recover_statistics(row_count);
+    if (!recovered) {
+      return recovered.error();
+    }
+  }
+  return Status::OK();
+}
+
 Status FtsIndexer::flush() {
   for (const auto &[name, indexer] : indexers_) {
     auto ret = indexer->flush();
@@ -137,16 +162,57 @@ Status FtsIndexer::flush() {
 }
 
 Status FtsIndexer::close() {
-  indexers_.clear();
-  if (fts_ctx_) {
-    auto s = fts_ctx_->close();
-    fts_ctx_.reset();
-    return s;
+  if (fts_ctx_ && !fts_ctx_->read_only()) {
+    auto status = fts_ctx_->flush();
+    if (!status.ok()) {
+      return status;
+    }
   }
+  indexers_.clear();
+  fts_ctx_.reset();
+  container_.reset();
+  file_owner_.reset();
+  custom_block_.reset();
   return Status::OK();
 }
 
 Status FtsIndexer::create_snapshot(const std::string &snapshot_path) {
+  if (custom_block_ && container_) {
+    const auto directory = ailego::FileHelper::PathFromUtf8(snapshot_path);
+    std::error_code error;
+    if (!std::filesystem::create_directory(directory, error)) {
+      return Status{StatusCode::UNAVAILABLE,
+                    "Cannot create private FTS snapshot directory"};
+    }
+    auto candidate =
+        fts::FtsRetirementQueue::Create()->track(snapshot_path, true, true);
+    const auto source = ailego::FileHelper::PathFromUtf8(working_dir_);
+    const auto destination = directory / source.filename();
+    // The indexer pins the immutable source throughout copying and syncing.
+    // No hard-link to a mutable RocksDB file is introduced on this path.
+    if (!std::filesystem::copy_file(
+            source, destination, std::filesystem::copy_options::none, error)) {
+      return Status{StatusCode::UNAVAILABLE,
+                    "Cannot copy immutable FTS snapshot"};
+    }
+    auto status = DurableFile::Sync(destination.u8string());
+    if (status.ok()) {
+      status = DurableFile::SyncDirectory(snapshot_path);
+    }
+    if (status.ok()) {
+      status = DurableFile::SyncDirectory(
+          directory.has_parent_path() ? directory.parent_path().u8string()
+                                      : ".");
+    }
+    if (status.ok()) {
+      candidate->preserve();
+    }
+    return status;
+  }
+  if (!fts_ctx_) {
+    return Status::FailedPrecondition(
+        "FTS snapshot requires a manifest file list");
+  }
   if (fts_ctx_ && !fts_ctx_->read_only()) {
     auto s = flush();
     if (!s.ok()) {
@@ -163,6 +229,10 @@ Status FtsIndexer::create_snapshot(const std::string &snapshot_path) {
 }
 
 Status FtsIndexer::create_field_indexer(const FieldSchema &field) {
+  if (!fts_ctx_) {
+    return Status::FailedPrecondition(
+        "FTS field creation requires a new generation");
+  }
   if (field.index_type() != IndexType::FTS) {
     return Status::InvalidArgument(
         "FtsIndexer::create_field_indexer: not FTS field");
@@ -205,7 +275,7 @@ Status FtsIndexer::create_field_indexer(const FieldSchema &field) {
   auto indexer = std::make_shared<fts::FtsColumnIndexer>();
   auto ret =
       indexer->open(field_schema, fts_ctx_.get(), postings_cf, positions_cf,
-                    term_freq_cf, max_tf_cf, doc_len_cf, stat_cf);
+                    term_freq_cf, max_tf_cf, doc_len_cf, stat_cf, fts_ctx_);
   if (!ret.has_value()) {
     LOG_ERROR(
         "FtsIndexer::create_field_indexer: FtsColumnIndexer::open failed: %s",
@@ -219,6 +289,10 @@ Status FtsIndexer::create_field_indexer(const FieldSchema &field) {
 }
 
 Status FtsIndexer::remove_field_indexer(const std::string &field_name) {
+  if (!fts_ctx_) {
+    return Status::FailedPrecondition(
+        "FTS field removal requires a new generation");
+  }
   auto it = indexers_.find(field_name);
   if (it != indexers_.end()) {
     indexers_.erase(it);
@@ -273,6 +347,9 @@ Status FtsIndexer::insert(const std::string &field_name, uint32_t seg_doc_id,
 }
 
 Status FtsIndexer::seal(const std::string &field_name) {
+  if (custom_block_) {
+    return has_field(field_name) ? Status::OK() : Status::NotFound(field_name);
+  }
   auto it = indexers_.find(field_name);
   if (it == indexers_.end()) {
     return Status::NotFound("FtsIndexer::seal: field not found: ", field_name);
@@ -304,6 +381,9 @@ Status FtsIndexer::seal(const std::string &field_name) {
 }
 
 Status FtsIndexer::seal_all() {
+  if (custom_block_) {
+    return Status::OK();
+  }
   // Flush all indexers first.
   for (const auto &[name, indexer] : indexers_) {
     auto ret = indexer->flush();

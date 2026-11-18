@@ -97,6 +97,43 @@ class MemStoreTest : public testing::Test {
   std::shared_ptr<MemForwardStore> store_;
 };
 
+// A failed checkpoint must retain its buffers and propagate the I/O error.
+TEST_F(MemStoreTest, ClosePropagatesFlushAndFooterFailures) {
+  class FailingWriter : public ChunkedFileWriter {
+   public:
+    explicit FailingWriter(bool fail_write)
+        : ChunkedFileWriter(nullptr), fail_write_(fail_write) {}
+    arrow::Status write(const arrow::RecordBatch &) override {
+      return result();
+    }
+    arrow::Status write(const arrow::Table &) override {
+      return result();
+    }
+    arrow::Status close() override {
+      return fail_write_ ? arrow::Status::OK()
+                         : arrow::Status::IOError("injected footer failure");
+    }
+
+   private:
+    arrow::Status result() const {
+      return fail_write_ ? arrow::Status::IOError("injected write failure")
+                         : arrow::Status::OK();
+    }
+    bool fail_write_;
+  };
+  ASSERT_TRUE(store_->writer_->close().ok());
+  for (bool fail_write : {true, false}) {
+    store_->writer_ = std::make_unique<FailingWriter>(fail_write);
+    if (fail_write) {
+      auto doc = CreateDoc(0);
+      ASSERT_TRUE(store_->insert(doc).ok());
+    }
+    EXPECT_FALSE(store_->close().ok());
+    EXPECT_NE(nullptr, store_->writer_);
+    EXPECT_FALSE(store_->batches_.empty());
+  }
+}
+
 // Test constructor
 TEST_F(MemStoreTest, ConstructorTest) {
   auto schema = GetCollectionSchema();

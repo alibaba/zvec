@@ -24,6 +24,7 @@
 #include <zvec/db/status.h>
 #include "db/common/constants.h"
 #include "db/common/typedef.h"
+#include "iterator/fts_batch_disjunction_iterator.h"
 #include "iterator/fts_candidate_iterator.h"
 #include "iterator/fts_conjunction_iterator.h"
 #include "iterator/fts_disjunction_iterator.h"
@@ -34,6 +35,58 @@
 #include "fts_utils.h"
 
 namespace zvec::fts {
+namespace {
+
+struct QueryBudget {
+  size_t nodes{0};
+  size_t terms{0};
+  size_t bytes{0};
+
+  Status term(std::string_view value) {
+    if (++terms > 1024 || value.size() > 1024 * 1024 - bytes) {
+      return {StatusCode::RESOURCE_EXHAUSTED, "FTS query term budget exceeded"};
+    }
+    bytes += value.size();
+    return {};
+  }
+
+  Status check(const FtsAstNode &node, size_t depth = 0) {
+    if (++nodes > 4096 || depth > 128) {
+      return {StatusCode::RESOURCE_EXHAUSTED, "FTS query tree budget exceeded"};
+    }
+    if (!std::isfinite(node.boost) || node.boost < 0) {
+      return Status::InvalidArgument("Invalid FTS scoring weight");
+    }
+    if (node.type() == FtsNodeType::TERM) {
+      return term(static_cast<const TermNode &>(node).term);
+    }
+    if (node.type() == FtsNodeType::PHRASE) {
+      for (const auto &value : static_cast<const PhraseNode &>(node).terms) {
+        auto status = term(value);
+        if (!status.ok()) {
+          return status;
+        }
+      }
+    }
+    if (node.type() == FtsNodeType::AND || node.type() == FtsNodeType::OR) {
+      const auto &children = node.type() == FtsNodeType::AND
+                                 ? static_cast<const AndNode &>(node).children
+                                 : static_cast<const OrNode &>(node).children;
+      for (const auto &child : children) {
+        if (!child) {
+          return Status::InvalidArgument("Null FTS query child");
+        }
+        auto status = check(*child, depth + 1);
+        if (!status.ok()) {
+          return status;
+        }
+      }
+    }
+    return {};
+  }
+};
+
+}  // namespace
 
 // ============================================================
 // Lifecycle
@@ -57,7 +110,8 @@ Result<void> FtsColumnIndexer::open_reader(
     rocksdb::ColumnFamilyHandle *term_freq_cf,
     rocksdb::ColumnFamilyHandle *max_tf_cf,
     rocksdb::ColumnFamilyHandle *doc_len_cf,
-    rocksdb::ColumnFamilyHandle *stat_cf, BM25Params bm25_params) {
+    rocksdb::ColumnFamilyHandle *stat_cf, BM25Params bm25_params,
+    std::shared_ptr<RocksdbContext> context_owner) {
   if (opened_.load()) {
     return tl::make_unexpected(Status::InternalError(
         "FtsColumnIndexer already opened. field=", field_name));
@@ -65,6 +119,7 @@ Result<void> FtsColumnIndexer::open_reader(
 
   field_name_ = field_name;
   ctx_ = ctx;
+  context_owner_ = std::move(context_owner);
   postings_cf_ = postings_cf;
   positions_cf_ = positions_cf;
   term_freq_cf_ = term_freq_cf;
@@ -92,6 +147,16 @@ Result<void> FtsColumnIndexer::open_reader(
   total_docs_.store(stats.total_docs, std::memory_order_release);
   total_tokens_.store(stats.total_tokens, std::memory_order_release);
 
+  auto reader =
+      LegacyFtsReader::Create({ctx_, context_owner_, postings_cf, positions_cf,
+                               term_freq_cf, max_tf_cf, doc_len_cf},
+                              scorer_);
+  if (!reader) {
+    return tl::make_unexpected(reader.error());
+  }
+  legacy_reader_ = std::move(*reader);
+  reader_ = legacy_reader_;
+
   opened_.store(true);
   return {};
 }
@@ -100,14 +165,15 @@ Result<void> FtsColumnIndexer::open_reader(
 // Initialization — read+write (mutable)
 // ============================================================
 
-Result<void> FtsColumnIndexer::open(FieldSchema::Ptr field_meta,
-                                    RocksdbContext *ctx,
-                                    rocksdb::ColumnFamilyHandle *postings_cf,
-                                    rocksdb::ColumnFamilyHandle *positions_cf,
-                                    rocksdb::ColumnFamilyHandle *term_freq_cf,
-                                    rocksdb::ColumnFamilyHandle *max_tf_cf,
-                                    rocksdb::ColumnFamilyHandle *doc_len_cf,
-                                    rocksdb::ColumnFamilyHandle *stat_cf) {
+Result<void> FtsColumnIndexer::open(
+    FieldSchema::Ptr field_meta, RocksdbContext *ctx,
+    rocksdb::ColumnFamilyHandle *postings_cf,
+    rocksdb::ColumnFamilyHandle *positions_cf,
+    rocksdb::ColumnFamilyHandle *term_freq_cf,
+    rocksdb::ColumnFamilyHandle *max_tf_cf,
+    rocksdb::ColumnFamilyHandle *doc_len_cf,
+    rocksdb::ColumnFamilyHandle *stat_cf,
+    std::shared_ptr<RocksdbContext> context_owner) {
   if (!field_meta || !ctx) {
     return tl::make_unexpected(
         Status::InvalidArgument("FtsColumnIndexer: null field_meta or ctx"));
@@ -135,12 +201,31 @@ Result<void> FtsColumnIndexer::open(FieldSchema::Ptr field_meta,
   fts_params_ = fts_param;
 
   return open_reader(field_meta_->name(), ctx, postings_cf, positions_cf,
-                     term_freq_cf, max_tf_cf, doc_len_cf, stat_cf);
+                     term_freq_cf, max_tf_cf, doc_len_cf, stat_cf, {},
+                     std::move(context_owner));
 }
 
 // ============================================================
 // Initialization — read-only (immutable / standalone)
 // ============================================================
+
+Result<void> FtsColumnIndexer::open_reader(FtsFieldReader::Pointer field) {
+  if (opened_.load() || !field) {
+    return tl::make_unexpected(
+        Status::InvalidArgument("Invalid FTS reader open"));
+  }
+  auto reader = OpenCustomFtsReader(field);
+  if (!reader) {
+    return tl::make_unexpected(reader.error());
+  }
+  reader_ = std::move(*reader);
+  field_name_ = field->metadata().name;
+  scorer_ = reader_->scorer();
+  total_docs_.store(field->metadata().scoring_document_count);
+  total_tokens_.store(field->metadata().total_tokens);
+  opened_.store(true);
+  return {};
+}
 
 // ============================================================
 // Close
@@ -161,6 +246,9 @@ Result<void> FtsColumnIndexer::close() {
   doc_len_cf_.store(nullptr, std::memory_order_release);
   stat_cf_ = nullptr;
   scorer_.reset();
+  reader_.reset();
+  legacy_reader_.reset();
+  context_owner_.reset();
 
   opened_.store(false);
   return {};
@@ -192,7 +280,26 @@ Result<std::vector<FtsResult>> FtsColumnIndexer::search(
         field_name_));
   }
 
-  auto iter_result = build_iterator(ast);
+  QueryBudget budget;
+  if (auto status = budget.check(ast); !status.ok()) {
+    return tl::make_unexpected(status);
+  }
+  bool batch_or = reader_->supports_batches() && !query_params.filter &&
+                  !query_params.candidate_ids && ast.type() == FtsNodeType::OR;
+  if (batch_or) {
+    const auto &children = static_cast<const OrNode &>(ast).children;
+    batch_or = children.size() > 1;
+    for (const auto &child : children) {
+      if (child->type() != FtsNodeType::TERM || child->must ||
+          child->must_not || child->should) {
+        batch_or = false;
+        break;
+      }
+    }
+  }
+  auto iter_result =
+      batch_or ? build_batch_or_iterator(static_cast<const OrNode &>(ast))
+               : build_iterator(ast);
   if (!iter_result.has_value()) {
     LOG_ERROR("FtsColumnIndexer::search: build_iterator failed. field[%s] %s",
               field_name_.c_str(), iter_result.error().message().c_str());
@@ -254,6 +361,9 @@ Result<std::vector<FtsResult>> FtsColumnIndexer::search(
         filter_ptr ? root_iter->next_doc(filter_ptr) : root_iter->next_doc();
   }
 
+  if (auto status = root_iter->status(); !status.ok()) {
+    return tl::make_unexpected(status);
+  }
   std::vector<FtsResult> results(min_heap.size());
   for (auto it = results.rbegin(); it != results.rend(); ++it) {
     *it = min_heap.top();
@@ -269,8 +379,8 @@ Result<std::vector<FtsResult>> FtsColumnIndexer::search(
 
 void FtsColumnIndexer::reset_side_cfs() {
   cf_dropped_.store(true);
-  while (cf_counter_.load() > 0) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  if (legacy_reader_) {
+    legacy_reader_->reset_side_cfs();
   }
   term_freq_cf_.store(nullptr, std::memory_order_release);
   max_tf_cf_.store(nullptr, std::memory_order_release);
@@ -302,95 +412,26 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_iterator(
   }
 }
 
-Result<DocIteratorPtr> FtsColumnIndexer::create_term_iterator_from_raw(
-    const std::string &term, rocksdb::PinnableSlice raw_data,
-    float boost) const {
-  if (BitPackedPostingList::is_bitpacked_format(raw_data.data(),
-                                                raw_data.size())) {
-    auto iter = std::make_unique<TermDocIterator>(term, std::move(raw_data),
-                                                  scorer_, boost);
-    if (iter->cost() == 0) {
-      return DocIteratorPtr{nullptr};
-    }
-    return iter;
+Result<DocIteratorPtr> FtsColumnIndexer::create_term_iterator(
+    FtsReadTerm::Ptr term, float boost) const {
+  if (!term) {
+    return DocIteratorPtr{};
   }
-
-  roaring_bitmap_t *bitmap = roaring_bitmap_portable_deserialize_safe(
-      raw_data.data(), raw_data.size());
-  if (!bitmap) {
-    return tl::make_unexpected(Status::InternalError(
-        "FtsColumnIndexer: failed to deserialize roaring bitmap. field=",
-        field_name_, " term=", term));
+  auto posting = term->postings();
+  if (!posting) {
+    return tl::make_unexpected(posting.error());
   }
-
-  const uint64_t df = roaring_bitmap_get_cardinality(bitmap);
-  if (df == 0) {
-    roaring_bitmap_free(bitmap);
-    return nullptr;
-  }
-
-  ++cf_counter_;
-  auto *term_freq_cf = term_freq_cf_.load(std::memory_order_acquire);
-  auto *doc_len_cf = doc_len_cf_.load(std::memory_order_acquire);
-  auto *max_tf_cf = max_tf_cf_.load(std::memory_order_acquire);
-  auto *cf_counter = &cf_counter_;
-  if (cf_dropped_) {
-    term_freq_cf = nullptr;
-    doc_len_cf = nullptr;
-    cf_counter = nullptr;
-    max_tf_cf = nullptr;
-    --cf_counter_;
-  }
-
-  // WAND upper bound.  When max_tf_cf is available we compute the tight
-  // score(df, max_tf, min_dl).  Otherwise fall back to the formula-derived
-  // bound idf*(k1+1), which is still a valid upper bound yet much tighter
-  // than +inf, so WAND pruning remains effective.
-  float max_score_val = scorer_->max_score_bound(df);
-  if (max_tf_cf) {
-    WandOptimizer wand;
-    if (wand.open(scorer_, ctx_, max_tf_cf, 0) == 0) {
-      uint32_t max_tf = wand.read_max_tf(term);
-      uint32_t min_dl = min_doc_len_.load(std::memory_order_relaxed);
-      if (min_dl == std::numeric_limits<uint32_t>::max()) {
-        min_dl = 1;
-      }
-      max_score_val = scorer_->score(df, max_tf, min_dl);
-    }
-  }
-
-  return std::make_unique<TermDocIterator>(term, bitmap, df, scorer_,
-                                           max_score_val, ctx_, term_freq_cf,
-                                           doc_len_cf, cf_counter, boost);
+  return std::make_unique<TermDocIterator>(std::move(term), std::move(*posting),
+                                           scorer_, boost);
 }
 
 Result<DocIteratorPtr> FtsColumnIndexer::build_term_iterator(
     const TermNode &term_node) const {
-  const std::string &term = term_node.term;
-
-  rocksdb::PinnableSlice raw_data;
-  auto s = ctx_->db_->Get(ctx_->read_opts_, postings_cf_, term, &raw_data);
-  if (!s.ok() || raw_data.empty()) {
-    return DocIteratorPtr{nullptr};
+  auto found = reader_->lookup(term_node.term);
+  if (!found) {
+    return tl::make_unexpected(found.error());
   }
-
-  return create_term_iterator_from_raw(term, std::move(raw_data),
-                                       term_node.boost);
-}
-
-std::vector<rocksdb::PinnableSlice> FtsColumnIndexer::batch_get_postings(
-    const std::vector<rocksdb::Slice> &terms) const {
-  std::vector<rocksdb::PinnableSlice> raw_postings(terms.size());
-  if (terms.empty()) {
-    return raw_postings;
-  }
-
-  std::vector<rocksdb::ColumnFamilyHandle *> cfs(terms.size(), postings_cf_);
-  std::vector<rocksdb::Status> statuses(terms.size());
-  ctx_->db_->MultiGet(ctx_->read_opts_, terms.size(), cfs.data(), terms.data(),
-                      raw_postings.data(), statuses.data());
-  // Ignore failed lookups as callers can check via empty()
-  return raw_postings;
+  return create_term_iterator(std::move(*found), term_node.boost);
 }
 
 Result<DocIteratorPtr> FtsColumnIndexer::build_phrase_iterator(
@@ -400,12 +441,15 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_phrase_iterator(
   }
 
   const std::vector<std::string> &terms = phrase_node.terms;
-  std::vector<rocksdb::Slice> term_slices;
+  std::vector<std::string_view> term_slices;
   term_slices.reserve(terms.size());
   for (const auto &t : terms) {
     term_slices.emplace_back(t);
   }
-  auto raw_postings = batch_get_postings(term_slices);
+  auto handles = reader_->lookup_many(term_slices);
+  if (!handles) {
+    return tl::make_unexpected(handles.error());
+  }
 
   std::vector<DocIteratorPtr> term_iterators;
   term_iterators.reserve(terms.size());
@@ -415,11 +459,10 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_phrase_iterator(
   // internal contributions, so multiplying each contribution by boost yields
   // boost * (sum) = boost-applied-once at the phrase level.
   for (size_t i = 0; i < terms.size(); ++i) {
-    if (raw_postings[i].empty()) {
+    if (!(*handles)[i]) {
       return DocIteratorPtr{nullptr};
     }
-    auto iter_result = create_term_iterator_from_raw(
-        terms[i], std::move(raw_postings[i]), phrase_node.boost);
+    auto iter_result = create_term_iterator((*handles)[i], phrase_node.boost);
     if (!iter_result.has_value()) {
       return iter_result;
     }
@@ -436,8 +479,8 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_phrase_iterator(
   auto conjunction = std::make_unique<ConjunctionIterator>(
       std::move(term_iterators), std::vector<DocIteratorPtr>{});
 
-  return std::make_unique<PhraseDocIterator>(std::move(conjunction), terms,
-                                             ctx_, positions_cf_);
+  return std::make_unique<PhraseDocIterator>(std::move(conjunction),
+                                             std::move(*handles), reader_);
 }
 
 Result<DocIteratorPtr> FtsColumnIndexer::build_and_iterator(
@@ -446,7 +489,7 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_and_iterator(
     return DocIteratorPtr{nullptr};
   }
 
-  std::vector<rocksdb::Slice> term_key_slices;
+  std::vector<std::string_view> term_key_slices;
   std::vector<size_t> term_child_indices;
   term_key_slices.reserve(and_node.children.size());
   term_child_indices.reserve(and_node.children.size());
@@ -459,7 +502,10 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_and_iterator(
     }
   }
 
-  auto term_raw_postings = batch_get_postings(term_key_slices);
+  auto handles = reader_->lookup_many(term_key_slices);
+  if (!handles) {
+    return tl::make_unexpected(handles.error());
+  }
 
   std::vector<DocIteratorPtr> must_iterators;
   std::vector<DocIteratorPtr> must_not_iterators;
@@ -474,11 +520,11 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_and_iterator(
     DocIteratorPtr iter;
     if (batched_cursor < term_child_indices.size() &&
         term_child_indices[batched_cursor] == i) {
-      rocksdb::PinnableSlice &raw = term_raw_postings[batched_cursor];
+      auto &term = (*handles)[batched_cursor];
       const auto &term_node = static_cast<const TermNode &>(*child);
-      if (!raw.empty()) {
-        auto iter_result = create_term_iterator_from_raw(
-            term_node.term, std::move(raw), term_node.boost);
+      if (term) {
+        auto iter_result =
+            create_term_iterator(std::move(term), term_node.boost);
         if (!iter_result.has_value()) {
           return iter_result;
         }
@@ -523,13 +569,34 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_and_iterator(
                                                std::move(should_iterators));
 }
 
+Result<DocIteratorPtr> FtsColumnIndexer::build_batch_or_iterator(
+    const OrNode &or_node) const {
+  std::vector<std::string_view> keys;
+  keys.reserve(or_node.children.size());
+  for (const auto &child : or_node.children) {
+    keys.push_back(static_cast<const TermNode &>(*child).term);
+  }
+  auto handles = reader_->lookup_many(keys);
+  if (!handles) {
+    return tl::make_unexpected(handles.error());
+  }
+  std::vector<std::pair<FtsReadTerm::Ptr, float>> terms;
+  terms.reserve(handles->size());
+  for (size_t i = 0; i < handles->size(); ++i) {
+    if ((*handles)[i]) {
+      terms.emplace_back(std::move((*handles)[i]), or_node.children[i]->boost);
+    }
+  }
+  return CreateBatchDisjunction(std::move(terms), scorer_);
+}
+
 Result<DocIteratorPtr> FtsColumnIndexer::build_or_iterator(
     const OrNode &or_node) const {
   if (or_node.children.empty()) {
     return DocIteratorPtr{nullptr};
   }
 
-  std::vector<rocksdb::Slice> term_key_slices;
+  std::vector<std::string_view> term_key_slices;
   std::vector<size_t> term_child_indices;
   term_key_slices.reserve(or_node.children.size());
   term_child_indices.reserve(or_node.children.size());
@@ -542,7 +609,10 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_or_iterator(
     }
   }
 
-  auto term_raw_postings = batch_get_postings(term_key_slices);
+  auto handles = reader_->lookup_many(term_key_slices);
+  if (!handles) {
+    return tl::make_unexpected(handles.error());
+  }
 
   // Invariant: the AST rewriter (fts::simplify) lifts both must_not and must
   // children out of OrNode into a wrapping AndNode before we get here, so the
@@ -566,11 +636,11 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_or_iterator(
     DocIteratorPtr iter;
     if (batched_cursor < term_child_indices.size() &&
         term_child_indices[batched_cursor] == i) {
-      rocksdb::PinnableSlice &raw = term_raw_postings[batched_cursor];
+      auto &term = (*handles)[batched_cursor];
       const auto &term_node = static_cast<const TermNode &>(*child);
-      if (!raw.empty()) {
-        auto iter_result = create_term_iterator_from_raw(
-            term_node.term, std::move(raw), term_node.boost);
+      if (term) {
+        auto iter_result =
+            create_term_iterator(std::move(term), term_node.boost);
         if (!iter_result.has_value()) {
           return iter_result;
         }
@@ -596,7 +666,14 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_or_iterator(
   if (positive_iterators.size() == 1) {
     return std::move(positive_iterators[0]);
   }
-  return std::make_unique<DisjunctionIterator>(std::move(positive_iterators));
+  auto iterator =
+      std::make_unique<DisjunctionIterator>(std::move(positive_iterators));
+  // OR prefetches its first posting during construction. Surface that error
+  // before an enclosing empty AND or candidate set can discard this tree.
+  if (auto status = iterator->status(); !status.ok()) {
+    return tl::make_unexpected(status);
+  }
+  return iterator;
 }
 
 // ============================================================
@@ -687,15 +764,46 @@ Result<void> FtsColumnIndexer::insert(uint64_t seg_doc_id,
     scorer_->update_stats(new_total_docs, new_total_tokens);
   }
 
-  // CAS-update min_doc_len_ only when this document has tokens (doc_len > 0).
-  if (doc_len > 0) {
-    uint32_t cur = min_doc_len_.load(std::memory_order_relaxed);
-    while (doc_len < cur && !min_doc_len_.compare_exchange_weak(
-                                cur, doc_len, std::memory_order_relaxed)) {
-    }
-  }
+  // The legacy adapter owns the minimum positive length used for its bound.
+  legacy_reader_->observe_length(doc_len);
 
   return {};
+}
+
+Result<void> FtsColumnIndexer::recover_statistics(uint64_t row_count) {
+  auto *lengths = doc_len_cf_.load(std::memory_order_acquire);
+  if (!ctx_ || !lengths || !legacy_reader_ || row_count > UINT32_MAX) {
+    return tl::make_unexpected(Status::FailedPrecondition(
+        "FTS recovery requires mutable exact lengths"));
+  }
+  uint64_t documents = 0, tokens = 0;
+  std::unique_ptr<rocksdb::Iterator> iterator(
+      ctx_->db_->NewIterator(ctx_->read_opts_, lengths));
+  for (iterator->SeekToFirst(); iterator->Valid(); iterator->Next()) {
+    if (iterator->key().size() != sizeof(uint32_t) ||
+        iterator->value().size() != sizeof(uint32_t)) {
+      return tl::make_unexpected(
+          Status::InternalError("Invalid mutable FTS length during recovery"));
+    }
+    uint32_t row, length;
+    std::memcpy(&row, iterator->key().data(), sizeof(row));
+    std::memcpy(&length, iterator->value().data(), sizeof(length));
+    if (row >= row_count) {
+      return tl::make_unexpected(Status::InternalError(
+          "Mutable FTS recovery row outside forward domain"));
+    }
+    ++documents;
+    tokens += length;  // At most UINT32_MAX rows of uint32 lengths.
+    legacy_reader_->observe_length(length);
+  }
+  if (!iterator->status().ok()) {
+    return tl::make_unexpected(Status::InternalError(
+        "FTS length recovery failed: ", iterator->status().ToString()));
+  }
+  total_docs_.store(documents, std::memory_order_release);
+  total_tokens_.store(tokens, std::memory_order_release);
+  scorer_->update_stats(documents, tokens);
+  return flush();
 }
 
 Result<void> FtsColumnIndexer::flush() {

@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -109,6 +110,16 @@ class Segment {
                               const AlterColumnOptions &options) = 0;
 
   virtual Status drop_column(const std::string &column_name) = 0;
+
+  struct PreparedColumnChange {
+    Ptr segment;
+    fts::FtsFileOwner::Pointer files;
+  };
+
+  // Run legacy numeric-column mutation only on a private, durable segment.
+  // The caller preserves files after commit (also on uncertain publication).
+  virtual Result<PreparedColumnChange> prepare_column_change(
+      SegmentID target, const std::function<Status(Segment *)> &change) = 0;
 
   virtual Status create_all_vector_indexes(
       int concurrency, SegmentMeta::Ptr *new_segment_meta,
@@ -240,6 +251,25 @@ class Segment {
 
   virtual Status dump() = 0;
 
+  // Full checkpoint for a writing segment; file durability only for an
+  // immutable source. The caller excludes collection writes and schema edits.
+  virtual Status checkpoint_for_fts() = 0;
+
+  struct PreparedFtsSeal {
+    SegmentMeta::Ptr metadata;
+    // Null after the collection has dropped its last FTS index; explicit
+    // authority still requires durable switching for its remaining stores.
+    FtsIndexer::Ptr indexer;
+  };
+
+  // The collection holds write/schema exclusion across preparation, version
+  // commit and publication. A failed/uncommitted candidate leaves the mutable
+  // FTS source intact. Preserve its files when a commit result is uncertain.
+  virtual Result<PreparedFtsSeal> prepare_fts_seal(
+      const DurableFile::Hook &hook = {}) = 0;
+  // Only after a successful durable version commit; consumes prepared state.
+  virtual void publish_fts_seal(PreparedFtsSeal prepared) = 0;
+
   // Drops the writing forward block under the exclusive segment lock. Callers
   // must use this instead of meta()->remove_writing_forward_block(): readers
   // copy that block out of the meta, so an unlocked reset can free it mid-copy.
@@ -247,6 +277,20 @@ class Segment {
   virtual void remove_writing_forward_block() = 0;
 
   virtual Status destroy() = 0;
+
+  // Caller pins this immutable segment and excludes schema changes. Legacy
+  // presence is recovered from forward scan order without re-tokenization.
+  virtual Result<fts::FtsFieldSource::Ptr> open_fts_source(
+      const std::string &field_name) const = 0;
+
+  // Pure format conversion: no purge, row remapping or statistics change.
+  virtual Result<PreparedFtsSeal> prepare_fts_rewrite(
+      const DurableFile::Hook &hook = {}) = 0;
+
+  // Schema and generation resources are allocated before the version commit.
+  // A null indexer represents dropping the final FTS field.
+  virtual void publish_fts_index(CollectionSchema::Ptr schema,
+                                 PreparedFtsSeal prepared) = 0;
 };
 
 }  // namespace zvec
