@@ -71,7 +71,8 @@ class FtsMutableSnapshotTest : public testing::Test {
     std::remove("mutable_retry.zfts");
   }
   Result<format::FieldMetadata> write(const FtsMutableSnapshot &snapshot,
-                                      const std::string &path) {
+                                      const std::string &path,
+                                      uint64_t rows = 260) {
     auto dumper = core::IndexFactory::CreateDumper("FileDumper");
     if (dumper->create(path) != 0) {
       return tl::make_unexpected(Status::InternalError("Test create failed"));
@@ -92,7 +93,7 @@ class FtsMutableSnapshotTest : public testing::Test {
     format::Metadata metadata;
     metadata.base_id[0] = 3;
     metadata.base_generation = 1;
-    metadata.row_count = 260;
+    metadata.row_count = rows;
     metadata.fields.push_back(*field);
     auto status = (*container)->finish(metadata);
     if (!status.ok()) {
@@ -104,6 +105,47 @@ class FtsMutableSnapshotTest : public testing::Test {
   std::shared_ptr<RocksdbContext> context_;
   std::unique_ptr<FtsColumnIndexer> indexer_;
 };
+
+TEST_F(FtsMutableSnapshotTest, ReordersMultipleDocumentBatchesWithGaps) {
+  constexpr uint32_t rows = 131075;
+  rocksdb::WriteBatch batch;
+  uint64_t present = 5;
+  for (uint32_t row = 260; row < rows; ++row) {
+    if (row % 257 == 1) {
+      continue;
+    }
+    std::string key(sizeof(row), '\0');
+    std::memcpy(key.data(), &row, sizeof(row));
+    batch.Put(context_->get_cf("text$DOC_LEN"), key,
+              std::string(sizeof(uint32_t), '\0'));
+    ++present;
+  }
+  batch.Put(context_->get_cf(kFtsStatCfName), make_total_docs_key("text"),
+            encode_uint64_value(present));
+  ASSERT_TRUE(context_->db_->Write(context_->write_opts_, &batch).ok());
+  auto snapshot = FtsMutableSnapshot::Capture(context_, rows);
+  ASSERT_TRUE(snapshot);
+  auto written = write(**snapshot, "mutable_custom.zfts", rows);
+  ASSERT_TRUE(written) << written.error();
+  EXPECT_EQ(present, written->present_count);
+  EXPECT_EQ(present, written->scoring_document_count);
+  EXPECT_EQ(9u, written->total_tokens);
+  for (bool mmap : {false, true}) {
+    auto file = FtsContainerReader::Open("mutable_custom.zfts", mmap);
+    ASSERT_TRUE(file);
+    auto reader = FtsFieldReader::Open(*file, 0);
+    ASSERT_TRUE(reader);
+    ASSERT_TRUE((*reader)->verify().ok());
+    for (uint32_t row = 260; row < rows; ++row) {
+      auto document = (*reader)->document(row);
+      ASSERT_TRUE(document);
+      ASSERT_EQ(row % 257 != 1, document->present) << row;
+      ASSERT_EQ(0u, document->length) << row;
+    }
+    EXPECT_EQ(3u, (*reader)->document(0)->length);
+    EXPECT_EQ(2u, (*reader)->document(256)->length);
+  }
+}
 
 TEST_F(FtsMutableSnapshotTest,
        DirectConversionPreservesSnapshotAndBinaryTerms) {
@@ -160,6 +202,34 @@ TEST_F(FtsMutableSnapshotTest,
   ASSERT_TRUE(latest) << latest.error();
   EXPECT_EQ(6u, latest->scoring_document_count);
   EXPECT_EQ(11u, latest->total_tokens);
+}
+
+TEST_F(FtsMutableSnapshotTest,
+       MissingPositionsFailAtMiddleAndEndAndAllowRetry) {
+  auto *positions = context_->get_cf("text$POSITIONS");
+  for (const char *term : {"alpha", "beta"}) {
+    const auto key = make_doc_term_key(term, 259);
+    std::string original;
+    ASSERT_TRUE(
+        context_->db_->Get(context_->read_opts_, positions, key, &original)
+            .ok());
+    ASSERT_TRUE(
+        context_->db_->Delete(context_->write_opts_, positions, key).ok());
+    auto snapshot = FtsMutableSnapshot::Capture(context_, 260);
+    ASSERT_TRUE(snapshot);
+    auto failed = write(**snapshot, "mutable_custom.zfts");
+    ASSERT_FALSE(failed);
+    EXPECT_EQ(StatusCode::INTERNAL_ERROR, failed.error().code());
+    ASSERT_TRUE(
+        context_->db_->Put(context_->write_opts_, positions, key, original)
+            .ok());
+    // Restoring the source cannot change a pinned read view; a fresh capture
+    // can retry without losing the mutable source or its auxiliary CFs.
+    EXPECT_FALSE(write(**snapshot, "mutable_custom.zfts"));
+    auto retry = FtsMutableSnapshot::Capture(context_, 260);
+    ASSERT_TRUE(retry);
+    EXPECT_TRUE(write(**retry, "mutable_retry.zfts"));
+  }
 }
 
 TEST_F(FtsMutableSnapshotTest, MalformedPositionFailsWithoutChangingSource) {

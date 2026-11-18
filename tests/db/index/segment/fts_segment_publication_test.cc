@@ -213,6 +213,7 @@ TEST_P(FtsSegmentPublicationTest, MixedCompactionMatchesForwardWithGlobalGaps) {
   ASSERT_TRUE(status.ok()) << status.message();
   auto &compacted = std::get<CompactTask>(task->task_info());
   ASSERT_NE(nullptr, compacted.output_segment_meta_);
+  EXPECT_TRUE(task->requires_commit_record());
   ASSERT_TRUE(
       FileHelper::MoveDirectory(FileHelper::MakeTempSegmentPath(path_, 77),
                                 FileHelper::MakeSegmentPath(path_, 88)));
@@ -268,6 +269,12 @@ TEST_P(FtsSegmentPublicationTest, CollectionOptimizeCommitsCustomReplacement) {
   insert("c", "gamma");
   insert("d", "alpha beta");
   ASSERT_TRUE(switch_writer().ok());
+  // Each immutable source has a bounded head reservation. The planner must
+  // split this group before the reducer's aggregate workspace is exceeded.
+  for (int i = 0; i < 127; ++i) {
+    insert("extra-" + std::to_string(i), "beta");
+    ASSERT_TRUE(switch_writer().ok());
+  }
   segment_.reset();
   manager.reset();
   ids_.reset();
@@ -276,24 +283,28 @@ TEST_P(FtsSegmentPublicationTest, CollectionOptimizeCommitsCustomReplacement) {
   auto collection = Collection::Open(path_, CollectionOptions{});
   ASSERT_TRUE(collection.has_value()) << collection.error().message();
   SearchQuery query;
-  query.topk_ = 10;
+  query.topk_ = 200;
   query.target_.field_name_ = "text";
   FtsClause clause;
   clause.query_string_ = "beta";
   query.target_.clause_ = clause;
   auto before = (*collection)->query(query);
   ASSERT_TRUE(before.has_value()) << before.error().message();
-  ASSERT_EQ(3, before->size());
+  ASSERT_EQ(130, before->size());
   auto status = (*collection)->optimize();
   ASSERT_TRUE(status.ok()) << status.message();
   auto after = (*collection)->query(query);
   ASSERT_TRUE(after.has_value()) << after.error().message();
-  ASSERT_EQ(3, after->size());
+  ASSERT_EQ(130, after->size());
   std::set<std::string> pks;
   for (const auto &doc : *after) {
     pks.insert(doc->pk());
   }
-  EXPECT_EQ((std::set<std::string>{"a", "b", "d"}), pks);
+  std::set<std::string> expected{"a", "b", "d"};
+  for (int i = 0; i < 127; ++i) {
+    expected.insert("extra-" + std::to_string(i));
+  }
+  EXPECT_EQ(expected, pks);
   ASSERT_TRUE((*collection)->close().ok());
   collection->reset();
   auto reopened = Collection::Open(path_, CollectionOptions{});
@@ -306,6 +317,153 @@ TEST_P(FtsSegmentPublicationTest, CollectionOptimizeCommitsCustomReplacement) {
     EXPECT_EQ((*after)[i]->score(), (*again)[i]->score());
   }
   ASSERT_TRUE((*reopened)->close().ok());
+}
+
+TEST_P(FtsSegmentPublicationTest, VectorReplacementWaitsForOldSegment) {
+  CollectionSchema schema = schema_;
+  schema.add_field(std::make_shared<FieldSchema>(
+      "vector", DataType::VECTOR_FP32, 4, false,
+      std::make_shared<HnswIndexParams>(MetricType::L2)));
+  schema.add_field(std::make_shared<FieldSchema>(
+      "unchanged", DataType::VECTOR_FP32, 4, false,
+      std::make_shared<FlatIndexParams>(MetricType::L2)));
+  auto created = Segment::CreateAndOpen(
+      path_, schema, 2, 200, ids_, deletes_, versions_,
+      SegmentOptions{false, GetParam(), 64 * 1024 * 1024});
+  ASSERT_TRUE(created.has_value()) << created.error().message();
+  auto old = std::move(*created);
+  Doc doc;
+  doc.set_pk("vector-row");
+  doc.set("text", std::string("beta"));
+  doc.set<std::vector<float>>("vector", std::vector<float>(4, 1.0f));
+  doc.set<std::vector<float>>("unchanged", std::vector<float>(4, 2.0f));
+  ASSERT_TRUE(old->insert(doc).ok());
+  auto sealed = old->prepare_fts_seal();
+  ASSERT_TRUE(sealed.has_value()) << sealed.error().message();
+  auto version = versions_->get_current_version();
+  version.set_schema(schema);
+  ASSERT_TRUE(version.add_persisted_segment_meta(sealed->metadata).ok());
+  ASSERT_TRUE(versions_->commit(version).ok());
+  old->publish_fts_seal(std::move(*sealed));
+  auto reader =
+      Segment::Open(path_, schema, *old->meta(), ids_, deletes_, versions_,
+                    SegmentOptions{true, GetParam(), 64 * 1024 * 1024});
+  ASSERT_TRUE(reader.has_value()) << reader.error().message();
+  SegmentManager manager;
+  ASSERT_TRUE(manager.add_segment(old).ok());
+  const auto old_path =
+      old->get_vector_indexer("vector").front()->index_file_path();
+  const auto unchanged_path =
+      old->get_vector_indexer("unchanged").front()->index_file_path();
+  auto task = SegmentTask::CreateCreateVectorIndexTask({old, "", nullptr, 1});
+  ASSERT_TRUE(SegmentHelper::Execute(task).ok());
+  auto &built = std::get<CreateVectorIndexTask>(task->task_info());
+  auto replacement = Segment::Open(
+      path_, schema, *built.output_segment_meta_, ids_, deletes_, versions_,
+      SegmentOptions{true, GetParam(), 64 * 1024 * 1024});
+  ASSERT_TRUE(replacement.has_value()) << replacement.error().message();
+  const auto new_path =
+      (*replacement)->get_vector_indexer("vector").front()->index_file_path();
+  ASSERT_NE(old_path, new_path);
+  {
+    auto abandoned = manager.prepare_update({*replacement}, {});
+    ASSERT_TRUE(abandoned.has_value());
+  }
+  EXPECT_TRUE(std::filesystem::exists(old_path));
+  auto publication = manager.prepare_update({*replacement}, {});
+  ASSERT_TRUE(publication.has_value());
+  version = versions_->get_current_version();
+  ASSERT_TRUE(
+      version.update_persisted_segment_meta(built.output_segment_meta_).ok());
+  ASSERT_TRUE(versions_->checkpoint(version).ok());
+  manager.publish_update(std::move(*publication));
+  task.reset();
+  EXPECT_TRUE(std::filesystem::exists(old_path));
+  ASSERT_NE(nullptr, old->fetch(200));
+  old.reset();
+  EXPECT_TRUE(std::filesystem::exists(old_path));
+  ASSERT_NE(nullptr, (*reader)->fetch(200));
+  reader->reset();
+  EXPECT_FALSE(std::filesystem::exists(old_path));
+  EXPECT_TRUE(std::filesystem::exists(new_path));
+  EXPECT_TRUE(std::filesystem::exists(unchanged_path));
+  auto found = (*replacement)->fts_search("text", fts::TermNode("beta"), {});
+  ASSERT_TRUE(found.has_value());
+  EXPECT_EQ(1, found->size());
+}
+
+TEST_P(FtsSegmentPublicationTest,
+       FailedVectorCommitDiscardsCandidateAndUncertainCommitPreservesIt) {
+  CollectionSchema schema = schema_;
+  schema.add_field(std::make_shared<FieldSchema>(
+      "vector", DataType::VECTOR_FP32, 4, false,
+      std::make_shared<HnswIndexParams>(MetricType::L2)));
+  auto created = Segment::CreateAndOpen(
+      path_, schema, 2, 200, ids_, deletes_, versions_,
+      SegmentOptions{false, GetParam(), 64 * 1024 * 1024});
+  ASSERT_TRUE(created);
+  auto source = *created;
+  Doc doc;
+  doc.set_pk("vector-candidate");
+  doc.set("text", std::string("beta"));
+  doc.set<std::vector<float>>("vector", std::vector<float>(4, 1.0f));
+  ASSERT_TRUE(source->insert(doc).ok());
+  auto sealed = source->prepare_fts_seal();
+  ASSERT_TRUE(sealed);
+  auto version = versions_->get_current_version();
+  version.set_schema(schema);
+  ASSERT_TRUE(version.add_persisted_segment_meta(sealed->metadata).ok());
+  ASSERT_TRUE(versions_->commit(version).ok());
+  source->publish_fts_seal(std::move(*sealed));
+  const auto old_path =
+      source->get_vector_indexer("vector").front()->index_file_path();
+  for (bool uncertain : {false, true}) {
+    auto task = SegmentTask::CreateCreateVectorIndexTask(
+        {source, "", nullptr, 1, versions_->fts_retirement()});
+    ASSERT_TRUE(SegmentHelper::Execute(task).ok());
+    auto &built = std::get<CreateVectorIndexTask>(task->task_info());
+    auto candidate = Segment::Open(
+        path_, schema, *built.output_segment_meta_, ids_, deletes_, versions_,
+        SegmentOptions{true, GetParam(), 64 * 1024 * 1024});
+    ASSERT_TRUE(candidate);
+    const auto new_path =
+        (*candidate)->get_vector_indexer("vector").front()->index_file_path();
+    ASSERT_NE(old_path, new_path);
+    version = versions_->get_current_version();
+    ASSERT_TRUE(
+        version.update_persisted_segment_meta(built.output_segment_meta_).ok());
+    auto status = versions_->checkpoint(
+        version, [&](auto stage, const std::string &path) {
+          if (path == path_ + "/manifest.current" &&
+              stage == (uncertain ? DurableFile::Stage::kDirectorySync
+                                  : DurableFile::Stage::kWrite)) {
+            return Status::InternalError("injected vector commit failure");
+          }
+          return Status::OK();
+        });
+    ASSERT_FALSE(status.ok());
+    ASSERT_EQ(uncertain, versions_->requires_recovery());
+    if (uncertain) {
+      built.preserve_files();
+    }
+    task.reset();
+    // Preopened candidate readers must pin the file until they are discarded.
+    EXPECT_TRUE(std::filesystem::exists(new_path));
+    candidate->reset();
+    EXPECT_EQ(uncertain, std::filesystem::exists(new_path));
+    EXPECT_TRUE(std::filesystem::exists(old_path));
+    ASSERT_NE(nullptr, source->fetch(200));
+    if (uncertain) {
+      auto recovered = VersionManager::Recovery(path_);
+      ASSERT_TRUE(recovered);
+      auto reopened = Segment::Open(
+          path_, schema, *version.persisted_segment_metas().back(), ids_,
+          deletes_, *recovered,
+          SegmentOptions{true, GetParam(), 64 * 1024 * 1024});
+      ASSERT_TRUE(reopened) << reopened.error().message();
+      EXPECT_NE(nullptr, (*reopened)->fetch(200));
+    }
+  }
 }
 
 TEST_P(FtsSegmentPublicationTest, MultiFieldDdlKeepsOtherFieldAndOldReader) {

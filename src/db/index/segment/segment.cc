@@ -224,6 +224,9 @@ class SegmentImpl : public Segment,
       const std::unordered_map<std::string, VectorColumnIndexer::Ptr>
           &quant_vector_indexers) override;
 
+  Result<std::vector<fts::FtsFileOwner::Pointer>> prepare_vector_retirement(
+      const SegmentMeta &replacement) override;
+
   bool vector_index_ready(const std::string &column,
                           const IndexParams::Ptr &index_params) const override;
 
@@ -439,6 +442,10 @@ class SegmentImpl : public Segment,
   bool has_fts_{false};
 
   // vector index (uses block-local doc ID, each indexer starts from 0)
+  // Destroy native handles before releasing these pins. Reopened segments
+  // share pins for unchanged files across successive same-ID replacements.
+  std::unordered_map<std::string, fts::FtsFileOwner::Pointer>
+      vector_file_owners_;
   std::unordered_map<std::string, VectorColumnIndexer::Ptr>
       memory_vector_indexers_;
 
@@ -1627,6 +1634,12 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
     const std::string &index_file_path, const FieldSchema &field,
     const std::vector<VectorColumnIndexer::Ptr> &source_indexers,
     int concurrency) {
+  // Before a task can own its output, a failed open/merge/flush must remove
+  // this private file after the indexer releases its handles.
+  auto file = version_manager_ ? version_manager_->fts_retirement()->track(
+                                     index_file_path, false, true)
+                               : fts::FtsRetirementQueue::Create()->track(
+                                     index_file_path, false, true);
   VectorColumnIndexer::Ptr vector_indexer =
       std::make_shared<VectorColumnIndexer>(index_file_path, field);
 
@@ -1648,6 +1661,7 @@ Result<VectorColumnIndexer::Ptr> SegmentImpl::merge_vector_indexer(
   s = vector_indexer->flush();
   CHECK_RETURN_STATUS_EXPECTED(s);
 
+  file->preserve();
   return vector_indexer;
 }
 
@@ -1910,6 +1924,47 @@ Status SegmentImpl::drop_vector_index(
   *segment_meta = new_segment_meta;
 
   return Status::OK();
+}
+
+Result<std::vector<fts::FtsFileOwner::Pointer>>
+SegmentImpl::prepare_vector_retirement(const SegmentMeta &replacement) {
+  std::unique_lock lock(seg_mtx_);
+  if (replacement.id() != id() || !version_manager_) {
+    return tl::make_unexpected(
+        Status::InvalidArgument("Invalid vector retirement replacement"));
+  }
+  std::vector<fts::FtsFileOwner::Pointer> retired;
+  for (const auto &block : segment_meta_->persisted_blocks()) {
+    if (block.type() != BlockType::VECTOR_INDEX &&
+        block.type() != BlockType::VECTOR_INDEX_QUANTIZE) {
+      continue;
+    }
+    if (block.columns().size() != 1) {
+      return tl::make_unexpected(
+          Status::InternalError("Invalid vector block columns"));
+    }
+    const auto path = block.type() == BlockType::VECTOR_INDEX
+                          ? FileHelper::MakeVectorIndexPath(
+                                seg_path_, block.columns()[0], block.id())
+                          : FileHelper::MakeQuantizeVectorIndexPath(
+                                seg_path_, block.columns()[0], block.id());
+    auto &owner = vector_file_owners_[path];
+    if (!owner) {
+      // A segment sealed in this process may not have reopened its vector
+      // blocks. Pin those files here as well, including unchanged blocks.
+      owner = version_manager_->fts_retirement()->track(path, false, false);
+    }
+    const auto &blocks = replacement.persisted_blocks();
+    const bool retained =
+        std::any_of(blocks.begin(), blocks.end(), [&](const BlockMeta &next) {
+          return next.type() == block.type() && next.id() == block.id() &&
+                 next.columns() == block.columns();
+        });
+    if (!retained) {
+      retired.push_back(owner);
+    }
+  }
+  return retired;
 }
 
 Status SegmentImpl::reload_vector_index(
@@ -4686,6 +4741,10 @@ Status SegmentImpl::load_vector_index_blocks() {
 
       auto vector_indexer =
           std::make_shared<VectorColumnIndexer>(index_path, new_field_params);
+      if (version_manager_) {
+        vector_file_owners_[index_path] =
+            version_manager_->fts_retirement()->track(index_path, false, false);
+      }
       auto s = vector_indexer->open(vector_column_params::ReadOptions{
           options_.enable_mmap_, false, true});
       CHECK_RETURN_STATUS(s);

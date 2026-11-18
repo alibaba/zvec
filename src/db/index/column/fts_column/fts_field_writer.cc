@@ -60,6 +60,10 @@ FtsFieldWriter::FtsFieldWriter(uint64_t rows, format::FieldMetadata metadata,
   metadata_.scoring_identity = FtsScoringIdentity(params);
   metadata_.bound_statistics_identity = FtsBoundStatisticsIdentity(
       params, metadata_.scoring_document_count, metadata_.total_tokens);
+  document_blocks_.resize(
+      std::min<uint64_t>(kDocumentCacheBlocks,
+                         (rows * kDocumentRowBytes + kDocumentBlockBytes - 1) /
+                             kDocumentBlockBytes));
 }
 
 Result<std::unique_ptr<FtsFieldWriter>> FtsFieldWriter::Create(
@@ -97,8 +101,7 @@ Result<std::unique_ptr<FtsFieldWriter>> FtsFieldWriter::Create(
 Status FtsFieldWriter::append_row(bool present, uint32_t length) {
   std::string bytes;
   format::AppendU32(length, &bytes);
-  format::AppendU32(present ? 1 : 0, &bytes);
-  format::AppendU64(0, &bytes);
+  format::AppendU32(present ? 0 : UINT32_MAX, &bytes);
   auto status = documents_->append(bytes);
   if (status.ok()) {
     ++next_row_;
@@ -218,6 +221,41 @@ Status FtsFieldWriter::flush_first() {
   return store_raw(first_);
 }
 
+Status FtsFieldWriter::flush_document_block(DocumentBlock &block) {
+  if (block.dirty) {
+    auto status = documents_->overwrite(block.start, block.bytes);
+    if (!status.ok()) {
+      return status;
+    }
+    block.dirty = false;
+  }
+  return Status::OK();
+}
+
+Result<FtsFieldWriter::DocumentBlock *> FtsFieldWriter::load_document_block(
+    uint32_t doc) {
+  const uint64_t ordinal =
+      uint64_t{doc} * kDocumentRowBytes / kDocumentBlockBytes;
+  const uint64_t start = ordinal * kDocumentBlockBytes;
+  auto &block = document_blocks_[ordinal % document_blocks_.size()];
+  if (start == block.start) {
+    return &block;
+  }
+  auto status = flush_document_block(block);
+  if (!status.ok()) {
+    return tl::make_unexpected(status);
+  }
+  auto bytes = documents_->read(
+      start,
+      std::min<uint64_t>(kDocumentBlockBytes, documents_->size() - start));
+  if (!bytes) {
+    return tl::make_unexpected(bytes.error());
+  }
+  block.bytes = std::move(*bytes);
+  block.start = start;
+  return &block;
+}
+
 Status FtsFieldWriter::add_posting(uint32_t doc, uint32_t tf,
                                    const FtsPositionSource &source) {
   if (!status_.ok()) {
@@ -227,16 +265,15 @@ Status FtsFieldWriter::add_posting(uint32_t doc, uint32_t tf,
       (df_ != 0 && doc <= last_doc_)) {
     return Invalid();
   }
-  auto row = documents_->read(static_cast<uint64_t>(doc) * 16, 16);
-  if (!row) {
-    return status_ = row.error();
+  auto block = load_document_block(doc);
+  if (!block) {
+    return status_ = block.error();
   }
-  format::Decoder decoder(*row);
-  const uint32_t length = decoder.u32();
-  const uint32_t present = decoder.u32();
-  const uint64_t accumulated = decoder.u64();
-  if (!decoder.done() || present != 1 ||
-      !format::ValidRange(accumulated, tf, length)) {
+  const size_t offset = uint64_t{doc} * kDocumentRowBytes - (*block)->start;
+  format::Decoder decoder(
+      std::string_view((*block)->bytes).substr(offset, kDocumentRowBytes));
+  FtsBuildDocumentState document{decoder.u32(), decoder.u32()};
+  if (!decoder.done() || !document.add_tf(tf)) {
     return status_ = Invalid();
   }
   if (df_ == 1) {
@@ -245,7 +282,7 @@ Status FtsFieldWriter::add_posting(uint32_t doc, uint32_t tf,
       return status_;
     }
   }
-  RawPosting posting{doc, tf, length, {}};
+  RawPosting posting{doc, tf, document.length, {}};
   if (df_ == 0 && tf == 1) {
     auto value = source();
     if (!value) {
@@ -279,13 +316,12 @@ Status FtsFieldWriter::add_posting(uint32_t doc, uint32_t tf,
     return status_;
   }
   std::string total;
-  format::AppendU64(accumulated + tf, &total);
-  status_ = documents_->overwrite(static_cast<uint64_t>(doc) * 16 + 8, total);
-  if (status_.ok()) {
-    ++df_;
-    tf_ += tf;
-    last_doc_ = doc;
-  }
+  format::AppendU32(document.accumulated, &total);
+  (*block)->bytes.replace(offset + 4, total.size(), total);
+  (*block)->dirty = true;
+  ++df_;
+  tf_ += tf;
+  last_doc_ = doc;
   return status_;
 }
 
@@ -412,20 +448,28 @@ Result<format::FieldMetadata> FtsFieldWriter::finish(
       !documents_finished_) {
     return tl::make_unexpected(Invalid());
   }
+  for (auto &block : document_blocks_) {
+    status_ = flush_document_block(block);
+    if (!status_.ok()) {
+      return tl::make_unexpected(status_);
+    }
+  }
   for (uint64_t row = 0; row < rows_;) {
     format::DocLengthBlock block;
     block.count = static_cast<uint32_t>(std::min<uint64_t>(128, rows_ - row));
-    auto bytes = documents_->read(row * 16, block.count * 16);
+    auto bytes = documents_->read(row * kDocumentRowBytes,
+                                  block.count * kDocumentRowBytes);
     if (!bytes) {
       return tl::make_unexpected(status_ = bytes.error());
     }
     format::Decoder decoder(*bytes);
     for (uint32_t i = 0; i < block.count; ++i) {
-      block.lengths[i] = decoder.u32();
-      block.present[i] = decoder.u32() == 1;
-      if (decoder.u64() != block.lengths[i]) {
+      FtsBuildDocumentState document{decoder.u32(), decoder.u32()};
+      if (!document.complete()) {
         return tl::make_unexpected(status_ = Invalid());
       }
+      block.lengths[i] = document.length;
+      block.present[i] = document.present();
     }
     auto encoded = format::EncodeDocLengths(block);
     if (!encoded) {

@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <type_traits>
 #include <roaring.hh>
 #include <arrow/compute/api_vector.h>
 #include <arrow/type_fwd.h>
@@ -45,6 +46,27 @@
 #include "zvec/core/framework/index_reformer.h"
 
 namespace zvec {
+
+bool SegmentTask::requires_commit_record() const {
+  return std::visit(
+      [](const auto &task) {
+        using Task = std::decay_t<decltype(task)>;
+        if constexpr (std::is_same_v<Task, RewriteFtsTask>) {
+          return true;
+        } else {
+          if (task.output_segment_meta_) {
+            for (const auto &block :
+                 task.output_segment_meta_->persisted_blocks()) {
+              if (block.fts_base_) {
+                return true;
+              }
+            }
+          }
+          return false;
+        }
+      },
+      task_info_);
+}
 
 Status SegmentHelper::Execute(SegmentTask::Ptr &task) {
   auto &task_info = task->task_info();
@@ -1183,16 +1205,29 @@ Status SegmentHelper::ReduceFts(const CollectionSchema::Ptr &schema,
 
 Status SegmentHelper::ExecuteCreateVectorIndexTask(
     CreateVectorIndexTask &task) {
+  Status status;
   if (task.column_to_build_vector_index_ == "") {
-    return task.input_segment_->create_all_vector_indexes(
+    status = task.input_segment_->create_all_vector_indexes(
         task.concurrency_, &task.output_segment_meta_,
         &task.output_vector_indexers_, &task.output_quant_vector_indexers_);
   } else {
-    return task.input_segment_->create_vector_index(
+    status = task.input_segment_->create_vector_index(
         task.column_to_build_vector_index_, task.index_params_,
         task.concurrency_, &task.output_segment_meta_,
         &task.output_vector_indexers_, &task.output_quant_vector_indexers_);
   }
+  // Also own completed fields when a later field fails. Reopened candidates
+  // share these pins; only a successful or uncertain commit preserves files.
+  if (task.retirement_) {
+    for (const auto *indexers :
+         {&task.output_vector_indexers_, &task.output_quant_vector_indexers_}) {
+      for (const auto &entry : *indexers) {
+        task.output_file_owners_.push_back(task.retirement_->track(
+            entry.second->index_file_path(), false, true));
+      }
+    }
+  }
+  return status;
 }
 
 Status SegmentHelper::ExecuteCreateScalarIndexTask(

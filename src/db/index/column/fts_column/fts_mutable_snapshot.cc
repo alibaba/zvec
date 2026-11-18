@@ -15,6 +15,8 @@
 #include "fts_mutable_snapshot.h"
 #include <algorithm>
 #include <cstring>
+#include <utility>
+#include <vector>
 #include "db/common/constants.h"
 #include "fts_utils.h"
 
@@ -56,9 +58,37 @@ Result<uint64_t> ReadStat(RocksdbContext *context,
   return decode_uint64_value(bytes.data());
 }
 
-// Native-endian legacy row keys are not in numerical order. Stage five bytes
-// per row on disk, then stream them in row order; never allocate a row-sized
-// array. Presence remains independent of the exact uint32 length.
+using DocumentBatch = std::vector<std::pair<uint32_t, uint32_t>>;
+
+Status WriteDocumentBatch(DocumentBatch *batch, FtsSpool *spool) {
+  std::sort(batch->begin(), batch->end());
+  std::string bytes;
+  bytes.reserve(std::min<size_t>(batch->size(), 13107) * 5);
+  for (size_t begin = 0; begin < batch->size();) {
+    const uint32_t first = (*batch)[begin].first;
+    bytes.clear();
+    size_t end = begin;
+    do {
+      bytes.push_back('\1');
+      format::AppendU32((*batch)[end].second, &bytes);
+      ++end;
+    } while (end < batch->size() && bytes.size() < 65535 &&
+             (*batch)[end].first == uint64_t{first} + end - begin);
+    auto status = spool->overwrite(uint64_t{first} * 5, bytes);
+    if (!status.ok()) {
+      return status;
+    }
+    begin = end;
+  }
+  batch->clear();
+  return Status::OK();
+}
+
+// Native-endian legacy row keys are not in numerical order. Sort bounded
+// batches to coalesce adjacent five-byte writes, then stream the disk table
+// in row order; never allocate a row-sized array. Presence remains independent
+// of the exact uint32 length. Scratch is at most 512 KiB of records plus a
+// 64 KiB write buffer and is released before creating the field writer.
 Result<std::unique_ptr<FtsSpool>> ReadDocuments(
     RocksdbContext *context, const rocksdb::ReadOptions &options,
     rocksdb::ColumnFamilyHandle *cf, uint64_t rows, uint64_t *present) {
@@ -77,6 +107,9 @@ Result<std::unique_ptr<FtsSpool>> ReadDocuments(
   }
   std::unique_ptr<rocksdb::Iterator> iterator(
       context->db_->NewIterator(options, cf));
+  constexpr size_t kBatchRows = 65536;
+  DocumentBatch batch;
+  batch.reserve(kBatchRows);
   *present = 0;
   for (iterator->SeekToFirst(); iterator->Valid(); iterator->Next()) {
     if (iterator->key().size() != 4 || iterator->value().size() != 4) {
@@ -88,15 +121,20 @@ Result<std::unique_ptr<FtsSpool>> ReadDocuments(
     if (row >= rows) {
       return tl::make_unexpected(Corrupt());
     }
-    std::string bytes(1, '\1');
-    format::AppendU32(length, &bytes);
-    auto status = (*spool)->overwrite(uint64_t{row} * 5, bytes);
-    if (!status.ok()) {
-      return tl::make_unexpected(status);
+    batch.emplace_back(row, length);
+    if (batch.size() == kBatchRows) {
+      auto status = WriteDocumentBatch(&batch, spool->get());
+      if (!status.ok()) {
+        return tl::make_unexpected(status);
+      }
     }
     ++*present;
   }
   auto status = ReadStatus(iterator->status());
+  if (!status.ok()) {
+    return tl::make_unexpected(status);
+  }
+  status = WriteDocumentBatch(&batch, spool->get());
   if (!status.ok()) {
     return tl::make_unexpected(status);
   }
@@ -122,18 +160,27 @@ Status WriteDocuments(FtsSpool *spool, uint64_t rows, FtsFieldWriter *writer) {
   return WriterStatus(writer->finish_documents());
 }
 
-Status WritePosting(RocksdbContext *context,
-                    const rocksdb::ReadOptions &options,
-                    rocksdb::ColumnFamilyHandle *positions,
-                    const rocksdb::Slice &key, uint32_t row, uint32_t tf,
-                    FtsFieldWriter *writer) {
-  rocksdb::PinnableSlice value;
-  auto status = ReadStatus(context->db_->Get(options, positions, key, &value));
+Status WritePosting(rocksdb::Iterator *positions, const rocksdb::Slice &key,
+                    uint32_t row, uint32_t tf, FtsFieldWriter *writer) {
+  auto status = ReadStatus(positions->status());
   if (!status.ok()) {
     return status;
   }
-  // Legacy Get may materialize a value internally. Limit retained input here;
-  // decoded positions themselves are consumed one at a time by the writer.
+  // Usually the next TF key is also the next positions key. Binary terms can
+  // interleave or require a backward seek; always match the complete key.
+  if (!positions->Valid() || positions->key() != key) {
+    positions->Seek(key);
+  }
+  if (!positions->Valid()) {
+    status = ReadStatus(positions->status());
+    return status.ok() ? Corrupt() : status;
+  }
+  if (positions->key() != key) {
+    return Corrupt();
+  }
+  const auto value = positions->value();
+  // The legacy iterator may materialize a value internally. Limit retained
+  // input here; decoded positions are consumed one at a time by the writer.
   if (value.size() > 64 * 1024 * 1024) {
     return {StatusCode::RESOURCE_EXHAUSTED,
             "Mutable FTS position value exceeds workspace"};
@@ -152,6 +199,10 @@ Status WritePosting(RocksdbContext *context,
         previous += static_cast<uint32_t>(delta);
         return std::optional<uint32_t>{previous};
       });
+  if (status.ok()) {
+    positions->Next();
+    status = ReadStatus(positions->status());
+  }
   return WriterStatus(status);
 }
 
@@ -164,6 +215,8 @@ Status WriteTerms(RocksdbContext *context, const rocksdb::ReadOptions &options,
       context->db_->NewIterator(options, terms));
   std::unique_ptr<rocksdb::Iterator> postings(
       context->db_->NewIterator(options, frequencies));
+  std::unique_ptr<rocksdb::Iterator> position_values(
+      context->db_->NewIterator(options, positions));
   for (dictionary->SeekToFirst(); dictionary->Valid(); dictionary->Next()) {
     if (dictionary->key().size() > 1024 * 1024) {
       return {StatusCode::RESOURCE_EXHAUSTED,
@@ -204,8 +257,8 @@ Status WriteTerms(RocksdbContext *context, const rocksdb::ReadOptions &options,
       }
       const uint32_t row =
           decode_uint32_big_endian(postings->key().data() + prefix.size());
-      status = WritePosting(context, options, positions, postings->key(), row,
-                            tf, writer);
+      status =
+          WritePosting(position_values.get(), postings->key(), row, tf, writer);
       if (!status.ok()) {
         return status;
       }

@@ -54,6 +54,7 @@ class SegmentManager {
     friend class SegmentManager;
     std::unordered_map<SegmentID, Segment::Ptr> segments_;
     std::vector<Segment::Ptr> retired_;
+    std::vector<fts::FtsFileOwner::Pointer> retired_files_;
   };
 
   // Collection write/schema exclusion spans preparation through publication.

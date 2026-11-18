@@ -482,16 +482,33 @@ Result<FtsPostingBatch> FtsPostingCursor::next_batch() {
   }
   const uint32_t start = within_;
   const uint64_t rows = owner_->container_->metadata().row_count;
-  for (uint32_t i = start; i < block_.count; ++i) {
-    auto length = ReadLength(lengths_.get(), block_.docs[i], rows,
-                             &length_block_, &length_block_ordinal_);
-    if (!length) {
-      return tl::make_unexpected(status_ = length.error());
+  uint32_t i = start;
+  while (i < block_.count) {
+    if (block_.docs[i] >= rows) {
+      return tl::make_unexpected(
+          status_ = Status::InvalidArgument("FTS row is outside segment"));
     }
-    if (!length->present || block_.tfs[i] > length->length) {
-      return tl::make_unexpected(status_ = Corrupt());
+    const uint64_t ordinal = block_.docs[i] / 128;
+    // Sorted posting IDs let us consume this validated length view before
+    // loading another block, which may replace the reader's borrowed bytes.
+    if (length_block_ordinal_ != ordinal) {
+      status_ = LoadLengthBlock(lengths_.get(), ordinal, rows, &length_block_,
+                                &length_block_ordinal_);
+      if (!status_.ok()) {
+        return tl::make_unexpected(status_);
+      }
     }
-    batch_lengths_[i - start] = length->length;
+    do {
+      auto length = length_block_.at(block_.docs[i] % 128);
+      if (!length) {
+        return tl::make_unexpected(status_ = length.error());
+      }
+      if (!length->present || block_.tfs[i] > length->length) {
+        return tl::make_unexpected(status_ = Corrupt());
+      }
+      batch_lengths_[i - start] = length->length;
+      ++i;
+    } while (i < block_.count && block_.docs[i] / 128 == ordinal);
   }
   within_ = block_.count - 1;
   return FtsPostingBatch{block_.count - start, block_.docs.data() + start,

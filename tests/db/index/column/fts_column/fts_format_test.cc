@@ -65,6 +65,12 @@ TEST(FtsFormatTest, IntegersHaveCanonicalLittleEndianEncoding) {
   Decoder maximum(bytes);
   EXPECT_EQ(maximum.varint(), UINT64_MAX);
   EXPECT_TRUE(maximum.done());
+  bytes = "prefix";
+  AppendU32(0, &bytes);
+  AppendU64(0, &bytes);
+  AppendU32(UINT32_MAX, &bytes);
+  AppendU64(UINT64_MAX, &bytes);
+  EXPECT_EQ(bytes, "prefix" + std::string(12, '\0') + std::string(12, '\xff'));
 }
 
 TEST(FtsFormatTest, RejectsOverflowTruncationAndNoncanonicalVarints) {

@@ -148,6 +148,11 @@ class Segment {
       const std::unordered_map<std::string, VectorColumnIndexer::Ptr>
           &quant_vector_indexers = {}) = 0;
 
+  // Prepare preserved file pins for a same-directory replacement. The caller
+  // retires the returned owners only after the replacement is committed.
+  virtual Result<std::vector<fts::FtsFileOwner::Pointer>>
+  prepare_vector_retirement(const SegmentMeta &replacement) = 0;
+
   virtual bool vector_index_ready(
       const std::string &column,
       const IndexParams::Ptr &index_params) const = 0;

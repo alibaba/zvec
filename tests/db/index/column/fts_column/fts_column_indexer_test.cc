@@ -2199,6 +2199,115 @@ INSTANTIATE_TEST_SUITE_P(SealPaths, FtsSealRecoveryDeathTest,
 
 namespace zvec {
 namespace {
+struct CloseCalls {
+  size_t flushes{0};
+  size_t closes{0};
+  bool fail_close{false};
+  bool fail_flush{false};
+};
+
+class ObserveCloseDB : public rocksdb::StackableDB {
+ public:
+  ObserveCloseDB(rocksdb::DB *db, std::shared_ptr<CloseCalls> calls)
+      : rocksdb::StackableDB(db), calls_(std::move(calls)) {}
+
+  rocksdb::Status Close() override {
+    ++calls_->closes;
+    if (calls_->fail_close) {
+      calls_->fail_close = false;
+      return rocksdb::Status::IOError("injected close failure");
+    }
+    return rocksdb::StackableDB::Close();
+  }
+
+  rocksdb::Status Flush(const rocksdb::FlushOptions &options,
+                        rocksdb::ColumnFamilyHandle *cf) override {
+    ++calls_->flushes;
+    if (calls_->fail_flush) {
+      calls_->fail_flush = false;
+      return rocksdb::Status::IOError("injected close flush failure");
+    }
+    return rocksdb::StackableDB::Flush(options, cf);
+  }
+
+ private:
+  std::shared_ptr<CloseCalls> calls_;
+};
+
+class FtsCloseTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    FileHelper::RemoveDirectory(path_);
+    auto field = make_test_field_meta(
+        "text", std::make_shared<zvec::FtsIndexParams>("whitespace"));
+    indexer_ = FtsIndexer::CreateAndOpen(path_, {field}, true);
+    ASSERT_NE(indexer_, nullptr);
+    ASSERT_TRUE(indexer_->insert("text", 0, "alpha").ok());
+    ASSERT_TRUE(indexer_->flush().ok());
+    auto *ctx = indexer_->get("text")->ctx();
+    flushes_per_pass_ = ctx->cf_handles_.size() + 1;
+    ctx->db_.reset(new ObserveCloseDB(ctx->db_.release(), calls_));
+  }
+
+  void TearDown() override {
+    indexer_.reset();
+    FileHelper::RemoveDirectory(path_);
+  }
+
+  std::string path_{"./test_fts_close"};
+  FtsIndexer::Ptr indexer_;
+  std::shared_ptr<CloseCalls> calls_{std::make_shared<CloseCalls>()};
+  size_t flushes_per_pass_{0};
+};
+
+TEST_F(FtsCloseTest, UnpinnedCloseFlushesOnce) {
+  ASSERT_TRUE(indexer_->close().ok());
+  EXPECT_EQ(flushes_per_pass_, calls_->flushes);
+  EXPECT_EQ(1u, calls_->closes);
+  EXPECT_TRUE(indexer_->close().ok());
+  EXPECT_EQ(1u, calls_->closes);
+}
+
+TEST_F(FtsCloseTest, CloseFailureIsReturnedAndRetryable) {
+  calls_->fail_close = true;
+  ASSERT_FALSE(indexer_->close().ok());
+  EXPECT_EQ(1u, calls_->closes);
+  EXPECT_TRUE(indexer_->close().ok());
+  EXPECT_EQ(2u, calls_->closes);
+}
+
+TEST_F(FtsCloseTest, FlushFailureIsReturnedAndRetryable) {
+  calls_->fail_flush = true;
+  ASSERT_FALSE(indexer_->close().ok());
+  EXPECT_EQ(0u, calls_->closes);
+  EXPECT_TRUE(indexer_->close().ok());
+  EXPECT_EQ(1u, calls_->closes);
+}
+
+TEST_F(FtsCloseTest, PinnedReaderRemainsUsableUntilReleased) {
+  auto reader = indexer_->get("text");
+  ASSERT_TRUE(indexer_->close().ok());
+  EXPECT_EQ(0u, calls_->closes);
+  fts::TermNode query("alpha");
+  auto result = reader->search(query, {});
+  ASSERT_TRUE(result);
+  ASSERT_EQ(1u, result->size());
+  EXPECT_EQ(0u, result->front().doc_id);
+  // A retained mutable column can still write, so its eventual release must
+  // flush again instead of assuming the earlier close covered later writes.
+  ASSERT_TRUE(reader->insert(1, "alpha"));
+  ASSERT_TRUE(reader->flush());
+  reader.reset();
+  EXPECT_EQ(1u, calls_->closes);
+  auto field = make_test_field_meta(
+      "text", std::make_shared<zvec::FtsIndexParams>("whitespace"));
+  auto reopened = FtsIndexer::CreateAndOpen(path_, {field}, false);
+  ASSERT_NE(nullptr, reopened);
+  result = reopened->get("text")->search(query, {});
+  ASSERT_TRUE(result);
+  EXPECT_EQ(2u, result->size());
+}
+
 class FailDropDB : public rocksdb::StackableDB {
  public:
   FailDropDB(rocksdb::DB *db, int fail_at)

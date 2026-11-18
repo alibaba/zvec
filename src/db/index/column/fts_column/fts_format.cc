@@ -40,15 +40,19 @@ constexpr uint32_t kRoundConstants[] = {
 }  // namespace
 
 void AppendU32(uint32_t value, std::string *out) {
-  for (size_t i = 0; i < 4; ++i) {
-    out->push_back(static_cast<char>(value >> (8 * i)));
+  char bytes[4];
+  for (size_t i = 0; i < sizeof(bytes); ++i) {
+    bytes[i] = static_cast<char>(value >> (8 * i));
   }
+  out->append(bytes, sizeof(bytes));
 }
 
 void AppendU64(uint64_t value, std::string *out) {
-  for (size_t i = 0; i < 8; ++i) {
-    out->push_back(static_cast<char>(value >> (8 * i)));
+  char bytes[8];
+  for (size_t i = 0; i < sizeof(bytes); ++i) {
+    bytes[i] = static_cast<char>(value >> (8 * i));
   }
+  out->append(bytes, sizeof(bytes));
 }
 
 void AppendVarint(uint64_t value, std::string *out) {

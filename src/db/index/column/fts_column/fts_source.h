@@ -20,6 +20,18 @@ namespace zvec::fts {
 
 class FtsColumnIndexer;
 
+// Shared by source validation and compaction planning. Planning uses the
+// sealed format's upper bound; an opened legacy source can reserve less.
+constexpr uint64_t kFtsLegacyValueBudget = 8 * 1024 * 1024;
+constexpr uint64_t kFtsLegacyKeyBudget = 1024 * 1024;
+constexpr uint64_t kFtsLegacyCursorWorkspace = 64 * 1024;
+constexpr uint64_t kFtsCustomTermWorkspace = 1024 * 1024;
+constexpr uint64_t FtsSourceWorkspaceBound(bool custom) {
+  return custom ? kFtsCustomTermWorkspace
+                : kFtsLegacyCursorWorkspace + 2 * kFtsLegacyValueBudget +
+                      4 * kFtsLegacyKeyBudget;
+}
+
 // Merge/rewrite-facing seam: no RocksDB keys, encoded posting values, or
 // container sections escape to the reducer. A term pins its source generation.
 struct FtsSourceTerm {
@@ -61,7 +73,8 @@ class FtsFieldSource {
 using FtsPresenceSource = std::function<Result<std::optional<bool>>()>;
 Result<FtsFieldSource::Ptr> OpenLegacyFtsFieldSource(
     std::shared_ptr<FtsColumnIndexer> field, uint64_t rows,
-    const FtsPresenceSource &presence, size_t value_budget = 8 * 1024 * 1024);
+    const FtsPresenceSource &presence,
+    size_t value_budget = kFtsLegacyValueBudget);
 Result<FtsFieldSource::Ptr> OpenCustomFtsFieldSource(
     FtsFieldReader::Pointer field);
 

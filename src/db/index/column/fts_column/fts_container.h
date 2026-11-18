@@ -76,7 +76,12 @@ class FtsReadRange {
   FtsReadRange &operator=(FtsReadRange &&other) noexcept;
   FtsReadRange(const FtsReadRange &) = delete;
   FtsReadRange &operator=(const FtsReadRange &) = delete;
-  std::string_view view() const;
+  std::string_view view() const {
+    if (length_ == 0) {
+      return {};
+    }
+    return {static_cast<const char *>(block_.data()), length_};
+  }
 
  private:
   friend class FtsContainerReader;
@@ -124,6 +129,7 @@ class FtsContainerReader
   }
 
  private:
+  friend class FtsSectionReader;
   struct Lease;
   FtsContainerReader() = default;
   Result<std::shared_ptr<Lease>> reserve(size_t bytes);
@@ -141,6 +147,7 @@ class FtsContainerReader
   std::atomic<uint64_t> range_reads_{0};
   std::atomic<uint64_t> verified_pages_{0};
   std::atomic<uint64_t> hashed_bytes_{0};
+  bool buffer_pool_{false};
 };
 
 }  // namespace zvec::fts

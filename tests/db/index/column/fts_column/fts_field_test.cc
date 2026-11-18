@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "db/index/column/fts_column/fts_field.h"
+#include <algorithm>
 #include <atomic>
 #include <cfenv>
 #include <chrono>
@@ -607,6 +608,39 @@ TEST_F(FtsFieldTest, BatchQueriesPropagateLateLengthErrors) {
   }
 }
 
+TEST_F(FtsFieldTest, PostingBatchesValidateMissingRowsInEachLengthBlock) {
+  for (bool matching_row : {false, true}) {
+    build({{"a", 129, 1}});
+    rewrite("field.0.doclen", [&](std::string *bytes) {
+      const size_t block = 4 + 16 + 128 * 4;
+      if (matching_row) {
+        // Row 128 becomes a well-formed missing row referenced by a posting.
+        (*bytes)[block + 4] &= static_cast<char>(~1u);
+        bytes->replace(block + 4 + 16, 4, 4, '\0');
+      } else {
+        // Row 255 is absent and not referenced by a posting. Its nonzero
+        // length must still fail validation of the complete second block.
+        (*bytes)[block + 4 + 16 + 127 * 4] = 1;
+      }
+    });
+    for (bool mmap : {false, true}) {
+      auto file = FtsContainerReader::Open(path_, mmap);
+      ASSERT_TRUE(file);
+      auto field = FtsFieldReader::Open(*file, 0);
+      ASSERT_TRUE(field);
+      auto term = (*field)->lookup("a");
+      ASSERT_TRUE(term);
+      auto cursor = (*field)->postings(*term);
+      ASSERT_TRUE(cursor);
+      EXPECT_EQ(StatusCode::INTERNAL_ERROR,
+                (*cursor)->next_batch().error().code());
+      EXPECT_EQ(StatusCode::INTERNAL_ERROR, (*cursor)->next().error().code());
+      EXPECT_EQ(StatusCode::INTERNAL_ERROR,
+                (*cursor)->next_batch().error().code());
+    }
+  }
+}
+
 TEST_F(FtsFieldTest, DocLengthViewsSurviveIndependentCursorPageChanges) {
   build({{"a", 2048, 2}, {"b", 65, 3}}, 1, 4097);
   for (bool mmap : {false, true}) {
@@ -1057,6 +1091,154 @@ TEST_F(FtsFieldTest, PositionSubblockBoundaryAndMalformedDirectory) {
     auto reader = FtsFieldReader::Open(*file, 0);
     ASSERT_TRUE(reader);
     EXPECT_EQ((*reader)->verify().code(), StatusCode::INTERNAL_ERROR);
+  }
+}
+
+TEST_F(FtsFieldTest, DocumentTotalsSurvivePageChangesAndTermRestarts) {
+  constexpr uint32_t rows = 2097153;
+  const std::array<uint32_t, 6> docs{0, 511, 512, 1048575, 1048576, rows - 1};
+  // Revisit dirty pages in a later term, including an exact boundary and a
+  // one-row tail. Missing and present-empty rows must retain their identity.
+  // Rows 0, 1048576 and 2097152 collide with either a 4 or 8 MiB cache,
+  // forcing writeback and reload while another dirty page remains resident
+  // until finish().
+  for (int invalid : {0, 1, 2}) {
+    auto dumper = core::IndexFactory::CreateDumper("FileDumper");
+    ASSERT_EQ(0, dumper->create(path_));
+    auto container = FtsContainerWriter::Create(dumper);
+    ASSERT_TRUE(container);
+    format::FieldMetadata field;
+    field.id[0] = 1;
+    field.incarnation[0] = 2;
+    field.name = "text";
+    field.present_count = field.scoring_document_count = rows - 1;
+    field.total_tokens = docs.size() * 2;
+    auto writer = FtsFieldWriter::Create(rows, field);
+    ASSERT_TRUE(writer);
+    for (uint32_t row = 0; row < rows; ++row) {
+      const bool populated =
+          std::find(docs.begin(), docs.end(), row) != docs.end();
+      ASSERT_TRUE(
+          (*writer)->add_document(row, row != 2, populated ? 2 : 0).ok());
+    }
+    ASSERT_TRUE((*writer)->finish_documents().ok());
+    for (const auto *term : {"a", "b"}) {
+      ASSERT_TRUE((*writer)->begin_term(term).ok());
+      for (uint32_t doc : docs) {
+        if (invalid == 1 && term[0] == 'b' && doc == docs.back()) {
+          continue;
+        }
+        const uint32_t tf = invalid == 2 && term[0] == 'b' ? 2 : 1;
+        uint32_t emitted = 0;
+        auto status = (*writer)->add_posting(
+            doc, tf, [&]() -> Result<std::optional<uint32_t>> {
+              if (emitted == tf) {
+                return std::optional<uint32_t>{};
+              }
+              return std::optional<uint32_t>{emitted++};
+            });
+        if (invalid == 2 && term[0] == 'b') {
+          EXPECT_EQ(StatusCode::INVALID_ARGUMENT, status.code());
+          break;
+        }
+        ASSERT_TRUE(status.ok());
+      }
+      auto status = (*writer)->end_term();
+      if (invalid == 2 && term[0] == 'b') {
+        EXPECT_EQ(StatusCode::INVALID_ARGUMENT, status.code());
+      } else {
+        ASSERT_TRUE(status.ok());
+      }
+    }
+    auto completed = (*writer)->finish(container->get(), 0);
+    if (invalid != 0) {
+      ASSERT_FALSE(completed);
+      EXPECT_EQ(StatusCode::INVALID_ARGUMENT, completed.error().code());
+      continue;
+    }
+    ASSERT_TRUE(completed);
+    format::Metadata metadata;
+    metadata.base_id[0] = 1;
+    metadata.base_generation = 1;
+    metadata.row_count = rows;
+    metadata.fields.push_back(*completed);
+    ASSERT_TRUE((*container)->finish(metadata).ok());
+    for (bool mmap : {false, true}) {
+      auto file = FtsContainerReader::Open(path_, mmap);
+      ASSERT_TRUE(file);
+      auto reader = FtsFieldReader::Open(*file, 0);
+      ASSERT_TRUE(reader);
+      ASSERT_TRUE((*reader)->verify().ok());
+      for (uint32_t doc : docs) {
+        auto length = (*reader)->document(doc);
+        ASSERT_TRUE(length);
+        EXPECT_TRUE(length->present);
+        EXPECT_EQ(2u, length->length);
+      }
+      auto missing = (*reader)->document(2);
+      auto empty = (*reader)->document(3);
+      ASSERT_TRUE(missing);
+      ASSERT_TRUE(empty);
+      EXPECT_FALSE(missing->present);
+      EXPECT_TRUE(empty->present);
+      EXPECT_EQ(0u, empty->length);
+    }
+  }
+}
+
+TEST(FtsFieldWriterTest, DocumentStateKeepsPresenceAndFullUint32Range) {
+  FtsBuildDocumentState missing{0, UINT32_MAX};
+  EXPECT_FALSE(missing.present());
+  EXPECT_TRUE(missing.complete());
+  EXPECT_FALSE(missing.add_tf(1));
+  EXPECT_EQ(UINT32_MAX, missing.accumulated);
+
+  FtsBuildDocumentState empty{0, 0};
+  EXPECT_TRUE(empty.present());
+  EXPECT_TRUE(empty.complete());
+  EXPECT_FALSE(empty.add_tf(1));
+
+  FtsBuildDocumentState maximum{UINT32_MAX, 0};
+  EXPECT_TRUE(maximum.present());
+  EXPECT_FALSE(maximum.complete());
+  ASSERT_TRUE(maximum.add_tf(UINT32_MAX - 1));
+  EXPECT_FALSE(maximum.complete());
+  EXPECT_FALSE(maximum.add_tf(2));
+  EXPECT_EQ(UINT32_MAX - 1, maximum.accumulated);
+  ASSERT_TRUE(maximum.add_tf(1));
+  EXPECT_TRUE(maximum.present());
+  EXPECT_TRUE(maximum.complete());
+  EXPECT_FALSE(maximum.add_tf(1));
+  EXPECT_EQ(UINT32_MAX, maximum.accumulated);
+
+  FtsBuildDocumentState inconsistent{0, 1};
+  EXPECT_FALSE(inconsistent.complete());
+}
+
+TEST(FtsFieldWriterTest, MaximumLengthAndTokenTotalAreNotTruncated) {
+  for (uint32_t length : {UINT32_MAX - 1, UINT32_MAX}) {
+    format::FieldMetadata field;
+    field.present_count = field.scoring_document_count = 2;
+    field.total_tokens = uint64_t{length} * 2;
+    auto writer = FtsFieldWriter::Create(2, field);
+    ASSERT_TRUE(writer);
+    ASSERT_TRUE((*writer)->add_document(0, true, length).ok());
+    ASSERT_TRUE((*writer)->add_document(1, true, length).ok());
+    ASSERT_TRUE((*writer)->finish_documents().ok());
+    ASSERT_TRUE((*writer)->begin_term("a").ok());
+    bool called = false;
+    // A source error stops immediately after the real row decoding and TF
+    // check; no billions-of-positions fixture is needed for this boundary.
+    auto status = (*writer)->add_posting(
+        0, UINT32_MAX, [&]() -> Result<std::optional<uint32_t>> {
+          called = true;
+          return tl::make_unexpected(
+              Status{StatusCode::UNAVAILABLE, "injected source failure"});
+        });
+    EXPECT_EQ(length == UINT32_MAX, called);
+    EXPECT_EQ(length == UINT32_MAX ? StatusCode::UNAVAILABLE
+                                   : StatusCode::INVALID_ARGUMENT,
+              status.code());
   }
 }
 

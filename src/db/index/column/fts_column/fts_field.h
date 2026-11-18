@@ -15,6 +15,7 @@
 #pragma once
 
 #include <limits>
+#include <vector>
 #include "bm25_scorer.h"
 #include "fts_dictionary.h"
 #include "fts_positions.h"
@@ -24,6 +25,27 @@ namespace zvec::fts {
 struct FtsDocumentLength {
   bool present{false};
   uint32_t length{0};
+};
+
+// Private build-table state, serialized as two uint32 words. Only (0, MAX)
+// means missing; (MAX, MAX) is a complete, present document of maximum length.
+struct FtsBuildDocumentState {
+  uint32_t length;
+  uint32_t accumulated;
+
+  bool present() const {
+    return length != 0 || accumulated != UINT32_MAX;
+  }
+  bool complete() const {
+    return !present() || accumulated == length;
+  }
+  bool add_tf(uint32_t tf) {
+    if (tf == 0 || !format::ValidRange(accumulated, tf, length)) {
+      return false;
+    }
+    accumulated += tf;  // Checked against the full uint32 length above.
+    return true;
+  }
 };
 
 struct FtsPosting {
@@ -78,9 +100,19 @@ class FtsFieldWriter {
     uint32_t doc{0}, tf{0}, length{0};
     format::ByteRange positions;
   };
+  struct DocumentBlock {
+    std::string bytes;
+    uint64_t start{UINT64_MAX};
+    bool dirty{false};
+  };
+  static constexpr uint64_t kDocumentRowBytes = 8;
+  static constexpr uint64_t kDocumentBlockBytes = 4096;
+  static constexpr uint64_t kDocumentCacheBlocks = 1024;
   FtsFieldWriter(uint64_t rows, format::FieldMetadata metadata,
                  BM25Params params);
   Status append_row(bool present, uint32_t length);
+  Result<DocumentBlock *> load_document_block(uint32_t doc);
+  Status flush_document_block(DocumentBlock &block);
   Status store_raw(const RawPosting &posting);
   Status flush_first();
   uint64_t rows_;
@@ -89,6 +121,11 @@ class FtsFieldWriter {
   std::unique_ptr<FtsSpool> documents_, raw_, postings_, skips_, lengths_;
   std::unique_ptr<FtsDictionaryWriter> dictionary_;
   std::unique_ptr<FtsPositionsWriter> positions_;
+  // Up to 4 MiB of lazy writable pages, plus bounded slot metadata. The 8-byte
+  // rows retain the document coverage of the former 16-byte / 8 MiB table.
+  // Direct mapping keeps lookup constant-time and writeback at 4 KiB
+  // granularity.
+  std::vector<DocumentBlock> document_blocks_;
   uint64_t next_row_{0}, present_{0}, tokens_{0};
   bool documents_finished_{false}, in_term_{false}, finished_{false};
   std::string term_;

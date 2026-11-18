@@ -51,6 +51,7 @@ struct Input {
   FtsSourceTerms::Ptr terms;
   std::optional<FtsSourceTerm> head;
 };
+static_assert(sizeof(Input) <= FtsMergeBudget::kInputBytes);
 
 Status Advance(Input *input) {
   // Release the previous value before reading the next one. Legacy adapters
@@ -138,26 +139,27 @@ Result<format::FieldMetadata> MergeFtsField(
   }
   // In addition to these heads, one legacy position value (at most 64 MiB)
   // may be retained while copying a posting. Custom positions remain paged.
-  uint64_t workspace = 128 * 1024 * 1024;
-  if (inputs.size() > 64) {
-    return tl::make_unexpected(
-        Status{StatusCode::RESOURCE_EXHAUSTED, "Too many FTS merge inputs"});
-  }
-  std::vector<Input> cursors;
-  cursors.reserve(inputs.size());
+  FtsMergeBudget budget;
   uint64_t rows = 0;
   for (const auto &source : inputs) {
     if (!source ||
         !format::ValidRange(rows, source->statistics().rows, UINT32_MAX)) {
       return tl::make_unexpected(Status::InvalidArgument("Invalid FTS rows"));
     }
-    if (source->term_workspace_limit() > workspace) {
+    // Include each cursor even for an empty source, and check the complete
+    // reservation before allocating the cursor array or opening any heads.
+    if (!budget.add(source->term_workspace_limit())) {
       return tl::make_unexpected(Status{StatusCode::RESOURCE_EXHAUSTED,
                                         "FTS merge workspace exceeded"});
     }
-    workspace -= source->term_workspace_limit();
-    cursors.push_back({source, rows, {}, {}});
     rows += source->statistics().rows;
+  }
+  std::vector<Input> cursors;
+  cursors.reserve(inputs.size());
+  uint64_t offset = 0;
+  for (const auto &source : inputs) {
+    cursors.push_back({source, offset, {}, {}});
+    offset += source->statistics().rows;
   }
   if (!deletions.isEmpty() && deletions.maximum() >= rows) {
     return tl::make_unexpected(

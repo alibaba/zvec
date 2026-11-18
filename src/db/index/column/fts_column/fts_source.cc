@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "fts_source.h"
+#include <algorithm>
 #include "db/index/common/manifest_codec.h"
 #include "posting/bitpacked_posting_list.h"
 #include "fts_column_indexer.h"
@@ -45,11 +46,15 @@ class LegacyTerms final : public FtsSourceTerms {
  public:
   explicit LegacyTerms(std::shared_ptr<const LegacyFieldSource> source);
   Result<std::optional<FtsSourceTerm>> next() override;
+  uint64_t workspace_limit() const {
+    return workspace_limit_;
+  }
 
  private:
   std::shared_ptr<const LegacyFieldSource> source_;
   std::unique_ptr<rocksdb::Iterator> iterator_;
   bool started_{false};
+  uint64_t workspace_limit_{kFtsLegacyCursorWorkspace};
   Status status_;
 };
 
@@ -64,8 +69,7 @@ class LegacyFieldSource final
     return metadata_;
   }
   uint64_t term_workspace_limit() const override {
-    // Iterator + pinned posting value, and bounded retained/copy keys.
-    return 2 * value_budget_ + 4 * 1024 * 1024;
+    return term_workspace_limit_;
   }
   Result<FtsDocumentLength> document(uint32_t row) override {
     if (row >= statistics_.rows) {
@@ -112,12 +116,9 @@ class LegacyFieldSource final
     if (end->has_value()) {
       return Corrupt();
     }
-    auto cursor = terms();
-    if (!cursor) {
-      return cursor.error();
-    }
+    LegacyTerms cursor(shared_from_this());
     for (;;) {
-      auto term = (*cursor)->next();
+      auto term = cursor.next();
       if (!term) {
         return term.error();
       }
@@ -168,6 +169,10 @@ class LegacyFieldSource final
         }
       }
     }
+    // The sealed source cannot change. Reuse the validation pass to bound
+    // its actual largest retained head, rather than charging every source
+    // the maximum permitted value/key sizes even for a few tiny postings.
+    term_workspace_limit_ = cursor.workspace_limit();
     uint64_t tokens = 0;
     for (uint64_t row = 0; row < statistics_.rows; ++row) {
       auto bytes = documents_->read(row * kRowBytes, kRowBytes);
@@ -191,6 +196,7 @@ class LegacyFieldSource final
   FtsSourceStatistics statistics_;
   format::FieldMetadata metadata_;
   size_t value_budget_{0};
+  uint64_t term_workspace_limit_{kFtsLegacyCursorWorkspace};
   std::unique_ptr<FtsSpool> documents_;
 };
 
@@ -218,7 +224,7 @@ Result<std::optional<FtsSourceTerm>> LegacyTerms::next() {
   }
   // RocksDB may materialize a large value internally before this check. Limit
   // retained key/value work here, as for the existing legacy query adapter.
-  if (iterator_->key().size() > 1024 * 1024 ||
+  if (iterator_->key().size() > kFtsLegacyKeyBudget ||
       iterator_->value().size() > source_->value_budget_) {
     status_ = {StatusCode::RESOURCE_EXHAUSTED,
                "Legacy FTS source workspace exceeded"};
@@ -228,6 +234,11 @@ Result<std::optional<FtsSourceTerm>> LegacyTerms::next() {
                                                  iterator_->value().size())) {
     return tl::make_unexpected(status_ = Corrupt());
   }
+  // Iterator + pinned posting value, retained/copy keys, and cursor state.
+  workspace_limit_ =
+      std::max(workspace_limit_, kFtsLegacyCursorWorkspace +
+                                     2 * iterator_->value().size() +
+                                     4 * iterator_->key().size());
   auto key = std::make_shared<const std::string>(iterator_->key().ToString());
   auto reader = source_->reader_->lookup(*key);
   if (!reader || !*reader) {
@@ -297,7 +308,7 @@ class CustomFieldSource final : public FtsFieldSource {
     return field_->metadata();
   }
   uint64_t term_workspace_limit() const override {
-    return 1024 * 1024;
+    return kFtsCustomTermWorkspace;
   }
   Result<FtsDocumentLength> document(uint32_t row) override {
     return field_->document(row);

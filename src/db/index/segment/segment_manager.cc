@@ -142,6 +142,16 @@ SegmentManager::prepare_update(const std::vector<Segment::Ptr> &additions,
       return tl::make_unexpected(
           Status::InvalidArgument("Invalid segment update"));
     }
+    auto previous = prepared->segments_.find(segment->id());
+    if (previous != prepared->segments_.end() && previous->second != segment) {
+      auto files =
+          previous->second->prepare_vector_retirement(*segment->meta());
+      if (!files) {
+        return tl::make_unexpected(files.error());
+      }
+      prepared->retired_files_.insert(prepared->retired_files_.end(),
+                                      files->begin(), files->end());
+    }
     prepared->segments_[segment->id()] = segment;
   }
   return prepared;
@@ -160,6 +170,9 @@ void SegmentManager::publish_update(std::unique_ptr<PreparedUpdate> update) {
       LOG_WARN("Failed to retire committed segment: %s",
                status.message().c_str());
     }
+  }
+  for (const auto &file : update->retired_files_) {
+    file->retire();
   }
 }
 

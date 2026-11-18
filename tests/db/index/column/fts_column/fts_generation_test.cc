@@ -345,6 +345,72 @@ TEST_F(FtsGenerationTest, MixedMergeUsesForwardRowRankAndPhysicalScoringCount) {
   }
 }
 
+TEST_F(FtsGenerationTest, ManySmallSourcesFitTheMergeWorkspace) {
+  auto custom = source_->prepare_custom(target(), fields_,
+                                        fts::FtsRetirementQueue::Create());
+  ASSERT_TRUE(custom.has_value()) << custom.error().message();
+  auto immutable = (*custom)->open_source("title", 3);
+  ASSERT_TRUE(immutable.has_value());
+  ASSERT_TRUE(source_->seal_all().ok());
+  uint32_t row = 0;
+  auto legacy = fts::OpenLegacyFtsFieldSource(
+      source_->get("title"), 3, [&]() -> Result<std::optional<bool>> {
+        if (row == 3) {
+          return std::optional<bool>{};
+        }
+        return std::optional<bool>{row++ != 1};
+      });
+  ASSERT_TRUE(legacy.has_value());
+  for (size_t count : {8u, 65u, 129u}) {
+    SCOPED_TRACE(count);
+    std::vector<fts::FtsFieldSource::Ptr> inputs(
+        count, count == 8 ? *legacy : *immutable);
+    inputs.front() = *immutable;
+    const auto path = path_ + "/many-" + std::to_string(count) + ".zfts";
+    auto dumper = core::IndexFactory::CreateDumper("FileDumper");
+    ASSERT_EQ(0, dumper->create(path));
+    auto writer = fts::FtsContainerWriter::Create(dumper);
+    ASSERT_TRUE(writer.has_value());
+    auto merged =
+        fts::MergeFtsField(inputs, {}, fts::FtsMergePolicy::kCompact,
+                           (*immutable)->metadata(), writer->get(), 0);
+    if (count == 129) {
+      ASSERT_FALSE(merged.has_value());
+      EXPECT_EQ(StatusCode::RESOURCE_EXHAUSTED, merged.error().code());
+      continue;
+    }
+    ASSERT_TRUE(merged.has_value()) << merged.error().message();
+    EXPECT_EQ(count * 3, merged->scoring_document_count);
+    EXPECT_EQ(count * 2, merged->present_count);
+    EXPECT_EQ(count * 4, merged->total_tokens);
+    fts::format::Metadata metadata;
+    metadata.base_id[0] = 42;
+    metadata.base_generation = 1;
+    metadata.row_count = count * 3;
+    metadata.fields.push_back(*merged);
+    ASSERT_TRUE((*writer)->finish(metadata).ok());
+    auto file = fts::FtsContainerReader::Open(path, true);
+    ASSERT_TRUE(file.has_value());
+    auto field = fts::FtsFieldReader::Open(*file, 0);
+    ASSERT_TRUE(field.has_value());
+    ASSERT_TRUE((*field)->verify().ok());
+    auto beta = (*field)->lookup("beta");
+    ASSERT_TRUE(beta.has_value());
+    auto postings = (*field)->postings(*beta);
+    ASSERT_TRUE(postings.has_value());
+    for (uint32_t segment = 0; segment < count; ++segment) {
+      for (uint32_t local : {0u, 2u}) {
+        auto doc = (*postings)->next();
+        ASSERT_TRUE(doc && doc->has_value());
+        EXPECT_EQ(segment * 3 + local, (**doc).doc);
+      }
+    }
+    auto end = (*postings)->next();
+    ASSERT_TRUE(end.has_value());
+    EXPECT_FALSE(end->has_value());
+  }
+}
+
 TEST_F(FtsGenerationTest,
        LegacySourceRejectsMissingPresenceAndWorkspaceOverflow) {
   ASSERT_TRUE(source_->seal_all().ok());

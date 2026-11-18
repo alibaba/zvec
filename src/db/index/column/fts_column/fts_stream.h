@@ -32,17 +32,20 @@ class FtsSpool {
   Status append(std::string_view bytes);
   Status overwrite(uint64_t offset, std::string_view bytes);
   Result<std::string> read(uint64_t offset, size_t length);
-  Status copy_to(FtsContainerWriter *container, const std::string &section);
+  Status copy_to(FtsContainerWriter *container, const std::string &section,
+                 std::string_view header = {});
 
  private:
   explicit FtsSpool(std::FILE *file) : file_(file) {}
-  Status seek(uint64_t offset);
+  Status seek(uint64_t offset, bool writing);
   std::FILE *file_;
   uint64_t size_{0};
+  uint64_t position_{0};
+  bool writing_{true};
   Status status_;
 };
 
-// Cursor-local verified page reuse. Views survive until the next read on this
+// Cursor-local read-window reuse. Views survive until the next read on this
 // object. The cache owns the generation and its charged range lease. Different
 // cursors never share mutable state, but can share backend pages.
 class FtsSectionReader {
@@ -52,15 +55,30 @@ class FtsSectionReader {
   uint64_t size() const {
     return size_;
   }
-  Result<std::string_view> read(uint64_t offset, size_t length);
+  Result<std::string_view> read(uint64_t offset, size_t length) {
+    const auto view = cache_.view();
+    // A retained window has already been bounded by the section. Keep hits
+    // independent of backend alignment and range allocation, while preserving
+    // the per-request limit even when an aligned window is larger than it.
+    if (length != 0 && length <= 65536 && offset >= cache_start_) {
+      const uint64_t relative = offset - cache_start_;
+      if (relative <= view.size() && length <= view.size() - relative) {
+        return view.substr(static_cast<size_t>(relative), length);
+      }
+    }
+    return refill(offset, length);
+  }
 
  private:
   FtsSectionReader() = default;
+  Result<std::string_view> refill(uint64_t offset, size_t length);
   FtsContainerReader::Pointer owner_;
   std::string name_;
   uint64_t size_{0};
   uint64_t cache_start_{0};
   FtsReadRange cache_;
+  uint64_t window_granule_{0};
+  uint64_t section_page_offset_{0};
 };
 
 }  // namespace zvec::fts

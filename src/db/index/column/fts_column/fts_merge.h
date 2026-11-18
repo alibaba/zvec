@@ -21,6 +21,25 @@ namespace zvec::fts {
 
 enum class FtsMergePolicy { kCompact, kRewrite };
 
+// One budget for the planner and reducer. Source caches and the single active
+// legacy position value are separate; the per-input charge covers cursor
+// bookkeeping even when a source has no terms.
+class FtsMergeBudget {
+ public:
+  static constexpr uint64_t kInputBytes = 512;
+  bool add(uint64_t source_workspace) {
+    if (remaining_ < kInputBytes ||
+        source_workspace > remaining_ - kInputBytes) {
+      return false;
+    }
+    remaining_ -= source_workspace + kInputBytes;
+    return true;
+  }
+
+ private:
+  uint64_t remaining_{128 * 1024 * 1024};
+};
+
 // Inputs follow the forward scan order. Deletions use that concatenated row
 // domain; no global DocID arithmetic or full remap array is involved. Rewrite
 // accepts one input and no purge, preserving its scoring N and row IDs.

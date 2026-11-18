@@ -14,7 +14,7 @@
 
 #include "fts_dictionary.h"
 #include <algorithm>
-#include <limits>
+#include "fts_stream.h"
 
 namespace zvec::fts {
 namespace {
@@ -27,10 +27,6 @@ constexpr std::string_view kIndexMagic = "ZVFTDI01";
 
 Status Corrupt() {
   return Status::InternalError("Malformed FTS dictionary directory/reference");
-}
-
-Status IoError() {
-  return {StatusCode::UNAVAILABLE, "FTS dictionary spool I/O failed"};
 }
 
 Status Exhausted() {
@@ -54,91 +50,17 @@ Result<uint64_t> SectionLength(const FtsContainerReader &container,
 
 }  // namespace
 
-struct FtsDictionaryWriter::Spool {
-  std::FILE *file{std::tmpfile()};
-  uint64_t length{0};
-  ~Spool() {
-    if (file) {
-      std::fclose(file);
-    }
-  }
-  Status seek(uint64_t offset) {
-#ifdef _WIN32
-    if (offset > INT64_MAX) {
-      return Exhausted();
-    }
-    const int result = _fseeki64(file, static_cast<int64_t>(offset), SEEK_SET);
-#else
-    if (offset > static_cast<uint64_t>(std::numeric_limits<off_t>::max())) {
-      return Exhausted();
-    }
-    const int result = fseeko(file, static_cast<off_t>(offset), SEEK_SET);
-#endif
-    return result == 0 ? Status::OK() : IoError();
-  }
-  Status append(std::string_view bytes) {
-#ifdef _WIN32
-    constexpr uint64_t limit = INT64_MAX;
-#else
-    constexpr uint64_t limit = std::numeric_limits<off_t>::max();
-#endif
-    if (bytes.size() > limit - length) {
-      return Exhausted();
-    }
-    auto status = seek(length);
-    if (!status.ok()) {
-      return status;
-    }
-    if (std::fwrite(bytes.data(), 1, bytes.size(), file) != bytes.size()) {
-      return IoError();
-    }
-    length += bytes.size();
-    return Status::OK();
-  }
-  Result<std::string> read(uint64_t offset, size_t size) {
-    if (size > kChunk || !format::ValidRange(offset, size, length)) {
-      return tl::make_unexpected(Corrupt());
-    }
-    auto status = seek(offset);
-    if (!status.ok()) {
-      return tl::make_unexpected(status);
-    }
-    std::string bytes(size, '\0');
-    if (std::fread(bytes.data(), 1, size, file) != size) {
-      return tl::make_unexpected(IoError());
-    }
-    return bytes;
-  }
-  Status copy(FtsContainerWriter *writer, const std::string &name,
-              std::string_view header = {}) {
-    auto status = writer->begin_section(name);
-    if (!status.ok()) {
-      return status;
-    }
-    status = writer->append(header);
-    for (uint64_t offset = 0; status.ok() && offset < length;) {
-      const auto n =
-          static_cast<size_t>(std::min<uint64_t>(kChunk, length - offset));
-      auto bytes = read(offset, n);
-      if (!bytes) {
-        return bytes.error();
-      }
-      status = writer->append(*bytes);
-      offset += n;
-    }
-    return status.ok() ? writer->end_section() : status;
-  }
-};
-
-FtsDictionaryWriter::FtsDictionaryWriter()
-    : terms_(new Spool), index_(new Spool), metadata_(new Spool) {}
+FtsDictionaryWriter::FtsDictionaryWriter() = default;
 FtsDictionaryWriter::~FtsDictionaryWriter() = default;
 
 Result<std::unique_ptr<FtsDictionaryWriter>> FtsDictionaryWriter::Create() {
   std::unique_ptr<FtsDictionaryWriter> writer(new FtsDictionaryWriter);
-  if (!writer->terms_->file || !writer->index_->file ||
-      !writer->metadata_->file) {
-    return tl::make_unexpected(IoError());
+  for (auto *section : {&writer->terms_, &writer->index_, &writer->metadata_}) {
+    auto spool = FtsSpool::Create();
+    if (!spool) {
+      return tl::make_unexpected(spool.error());
+    }
+    *section = std::move(*spool);
   }
   return writer;
 }
@@ -178,7 +100,7 @@ Status FtsDictionaryWriter::write_block(const format::DictionaryBlock &block) {
   format::AppendU32(
       block.oversized ? 1 : static_cast<uint32_t>(block.terms.size()), &index);
   format::AppendU32(0, &index);
-  format::AppendU64(terms_->length, &index);
+  format::AppendU64(terms_->size(), &index);
   format::AppendU64(encoded->size(), &index);
   auto status = terms_->append(*encoded);
   if (status.ok()) {
@@ -238,7 +160,7 @@ Status FtsDictionaryWriter::add(std::string_view term,
       return status_;
     }
     singleton.terms.clear();
-    singleton.oversized = format::ByteRange{terms_->length, term.size()};
+    singleton.oversized = format::ByteRange{terms_->size(), term.size()};
     status_ = terms_->append(term);
     if (status_.ok()) {
       status_ = write_block(singleton);
@@ -343,7 +265,7 @@ Status FtsDictionaryWriter::add(uint64_t length, const FtsTermSource &source,
   }
   format::DictionaryBlock singleton;
   singleton.first_ordinal = count_;
-  singleton.oversized = format::ByteRange{terms_->length, length};
+  singleton.oversized = format::ByteRange{terms_->size(), length};
   status_ = fingerprint_.begin_term(length);
   for (uint64_t offset = 0; status_.ok() && offset < length;) {
     const size_t count = std::min<uint64_t>(kChunk, length - offset);
@@ -389,7 +311,7 @@ Result<FtsDictionarySummary> FtsDictionaryWriter::finish(
   // Only one fixed-size record is resident while building the hierarchy.
   uint64_t level_offset = 0, level_count = blocks_;
   while (status_.ok() && level_count > kIndexPageRecords) {
-    const uint64_t next_offset = index_->length;
+    const uint64_t next_offset = index_->size();
     for (uint64_t i = 0; status_.ok() && i < level_count;
          i += kIndexPageRecords) {
       auto bytes = index_->read(level_offset + i * kIndexRecord, kIndexRecord);
@@ -409,13 +331,13 @@ Result<FtsDictionarySummary> FtsDictionaryWriter::finish(
   format::AppendU64(count_, &header);
   const auto prefix = "field." + std::to_string(field_ordinal) + ".";
   if (status_.ok()) {
-    status_ = terms_->copy(container, prefix + "terms");
+    status_ = terms_->copy_to(container, prefix + "terms");
   }
   if (status_.ok()) {
-    status_ = index_->copy(container, prefix + "term_index", header);
+    status_ = index_->copy_to(container, prefix + "term_index", header);
   }
   if (status_.ok()) {
-    status_ = metadata_->copy(container, prefix + "term_meta");
+    status_ = metadata_->copy_to(container, prefix + "term_meta");
   }
   if (!status_.ok()) {
     return tl::make_unexpected(status_);

@@ -72,10 +72,12 @@ Status FtsIndexer::open(const FieldSchemaPtrList &fts_fields, bool create,
   // Readers pin the context. Only the last generation owner may close it.
   fts_ctx_ = std::shared_ptr<RocksdbContext>(
       new RocksdbContext, [owner = file_owner_](RocksdbContext *context) {
-        auto status = context->close();
-        if (!status.ok()) {
-          LOG_ERROR("FTS generation close failed: %s",
-                    status.message().c_str());
+        if (context->db_) {
+          auto status = context->close();
+          if (!status.ok()) {
+            LOG_ERROR("FTS generation close failed: %s",
+                      status.message().c_str());
+          }
         }
         delete context;
       });
@@ -162,13 +164,19 @@ Status FtsIndexer::flush() {
 }
 
 Status FtsIndexer::close() {
-  if (fts_ctx_ && !fts_ctx_->read_only()) {
-    auto status = fts_ctx_->flush();
+  // Drop our columns before checking for external readers/snapshots. Closing
+  // an unpinned database here propagates its error and flushes only once.
+  // On failure retain the context so the caller can retry close().
+  indexers_.clear();
+  if (fts_ctx_) {
+    auto status =
+        fts_ctx_.use_count() == 1
+            ? fts_ctx_->close()
+            : (fts_ctx_->read_only() ? Status::OK() : fts_ctx_->flush());
     if (!status.ok()) {
       return status;
     }
   }
-  indexers_.clear();
   fts_ctx_.reset();
   container_.reset();
   file_owner_.reset();

@@ -463,6 +463,11 @@ class MockSegment : public Segment {
     return Status::OK();
   }
 
+  Result<std::vector<fts::FtsFileOwner::Pointer>> prepare_vector_retirement(
+      const SegmentMeta &) override {
+    return std::vector<fts::FtsFileOwner::Pointer>{};
+  }
+
   Status reload_vector_index(
       const CollectionSchema &schema, const SegmentMeta::Ptr &segment_meta,
       const std::unordered_map<std::string, VectorColumnIndexer::Ptr>

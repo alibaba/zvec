@@ -429,13 +429,6 @@ void FtsReadRange::swap(FtsReadRange &other) noexcept {
   swap(length_, other.length_);
 }
 
-std::string_view FtsReadRange::view() const {
-  if (length_ == 0) {
-    return {};
-  }
-  return {static_cast<const char *>(block_.data()), length_};
-}
-
 Result<std::shared_ptr<FtsContainerReader::Lease>> FtsContainerReader::reserve(
     size_t bytes) {
   size_t current = reserved_.load(std::memory_order_relaxed);
@@ -458,6 +451,7 @@ Result<FtsContainerReader::Pointer> FtsContainerReader::Open(
   Pointer reader(new FtsContainerReader());
   reader->file_owner_ = std::move(file_owner);
   reader->budget_ = read_budget;
+  reader->buffer_pool_ = !enable_mmap;
   reader->storage_ = core::IndexFactory::CreateStorage(
       enable_mmap ? "MMapFileReadStorage" : "BufferReadStorage");
   if (!reader->storage_) {
@@ -586,15 +580,31 @@ Result<FtsReadRange> FtsContainerReader::read(const std::string &section_name,
   if (length == 0) {
     return range;
   }
-  const uint64_t first = offset / metadata_.layout_granule;
-  const uint64_t last = (offset + length - 1) / metadata_.layout_granule;
+  range.segment_ = storage_->get(section_name);
+  if (!range.segment_) {
+    return tl::make_unexpected(Corrupt());
+  }
   // Retain the conservative range allowance for native page alignment and
   // buffer-mode bypass scratch. Explicit verification also reads a checksum
   // page within this allowance; normal queries only pin the requested data.
   const size_t page =
       std::max<size_t>(metadata_.layout_granule, ailego::kVectorPageSize);
   const size_t overhead = 4 * std::max(page, kChecksumPage);
-  const uint64_t scratch = first == last ? 0 : length;
+  uint64_t scratch;
+  if (buffer_pool_) {
+    // A native-page window can span several checksum chunks while remaining
+    // a single pinned backend page. Only physical page crossings need a copy.
+    uint64_t within = range.segment_->data_offset() % ailego::kVectorPageSize +
+                      offset % ailego::kVectorPageSize;
+    if (within >= ailego::kVectorPageSize) {
+      within -= ailego::kVectorPageSize;
+    }
+    scratch = length <= ailego::kVectorPageSize - within ? 0 : length;
+  } else {
+    const uint64_t first = offset / metadata_.layout_granule;
+    const uint64_t last = (offset + length - 1) / metadata_.layout_granule;
+    scratch = first == last ? 0 : length;
+  }
   if (scratch > std::numeric_limits<size_t>::max() - overhead) {
     return tl::make_unexpected(Exhausted());
   }
@@ -603,10 +613,6 @@ Result<FtsReadRange> FtsContainerReader::read(const std::string &section_name,
     return tl::make_unexpected(lease.error());
   }
   range.lease_ = std::move(*lease);
-  range.segment_ = storage_->get(section_name);
-  if (!range.segment_) {
-    return tl::make_unexpected(Corrupt());
-  }
   range.length_ = static_cast<size_t>(length);
   range_reads_.fetch_add(1, std::memory_order_relaxed);
   if (range.segment_->read(static_cast<size_t>(offset), range.block_,

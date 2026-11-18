@@ -23,9 +23,43 @@
 #include "db/index/column/fts_column/fts_field.h"
 #include "db/index/column/fts_column/fts_file_lifetime.h"
 #include "db/index/column/fts_column/fts_positions.h"
+#include "db/index/column/fts_column/fts_stream.h"
 
 namespace zvec::fts {
 namespace {
+
+TEST(FtsSpoolTest, PreservesBytesAcrossSequentialAndMixedIo) {
+  auto spool = FtsSpool::Create();
+  ASSERT_TRUE(spool.has_value());
+  std::string expected;
+  for (size_t i = 0; i < 3000; ++i) {
+    const auto bytes = std::to_string(i) + '\0';
+    ASSERT_TRUE((*spool)->append(bytes).ok());
+    expected += bytes;
+  }
+  auto prefix = (*spool)->read(0, 4096);
+  ASSERT_TRUE(prefix.has_value());
+  EXPECT_EQ(expected.substr(0, 4096), *prefix);
+  // Read-to-write at exactly the current offset still needs a stdio barrier.
+  ASSERT_TRUE((*spool)->overwrite(4096, "changed").ok());
+  expected.replace(4096, 7, "changed");
+  auto next = (*spool)->read(4103, 33);
+  ASSERT_TRUE(next.has_value());
+  EXPECT_EQ(expected.substr(4103, 33), *next);
+  auto suffix = (*spool)->read(4136, expected.size() - 4136);
+  ASSERT_TRUE(suffix.has_value());
+  EXPECT_EQ(expected.substr(4136), *suffix);
+  ASSERT_TRUE((*spool)->append("tail").ok());
+  expected += "tail";
+  auto all = (*spool)->read(0, expected.size());
+  ASSERT_TRUE(all.has_value());
+  EXPECT_EQ(expected, *all);
+  EXPECT_EQ(expected.size(), (*spool)->size());
+  EXPECT_FALSE((*spool)->overwrite(expected.size(), "outside").ok());
+  auto unchanged = (*spool)->read(0, expected.size());
+  ASSERT_TRUE(unchanged.has_value());
+  EXPECT_EQ(expected, *unchanged);
+}
 
 class ShortWriteDumper : public core::IndexDumper {
  public:
@@ -264,6 +298,76 @@ TEST_F(FtsContainerTest, RangeKeepsGenerationAliveAfterReaderRelease) {
     ASSERT_TRUE(range);
     reader.reset();
     EXPECT_EQ(range->view(), std::string_view(payload_).substr(27, 13));
+  }
+}
+
+TEST_F(FtsContainerTest, SectionWindowsReuseNativePagesAcrossChecksumChunks) {
+  auto storage = core::IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_NE(storage, nullptr);
+  ASSERT_EQ(0, storage->init({}));
+  ASSERT_EQ(0, storage->open(path_, false));
+  const auto section = storage->get("field.0.postings");
+  ASSERT_NE(section, nullptr);
+  const uint64_t physical = section->data_offset();
+  const uint64_t page = ailego::kVectorPageSize;
+  // Find a checksum boundary whose adjacent bytes occupy the same native
+  // page. Buffer reads must retain one window, including bypass-only pools;
+  // mmap retains its existing checksum-chunk window boundaries.
+  uint64_t boundary = 1024;
+  while ((physical + boundary - 1) / page != (physical + boundary) / page) {
+    boundary += 1024;
+  }
+  ASSERT_LT(boundary, payload_.size());
+  for (size_t budget : {size_t{0}, size_t{16 * 1024 * 1024}}) {
+    ASSERT_EQ(0, ailego::MemoryLimitPool::get_instance().init(budget));
+    for (bool mmap : {false, true}) {
+      auto owner = FtsContainerReader::Open(path_, mmap);
+      ASSERT_TRUE(owner);
+      auto reader = FtsSectionReader::Open(*owner, "field.0.postings");
+      ASSERT_TRUE(reader);
+      const auto before = (*owner)->read_stats().range_reads;
+      for (uint64_t offset : {boundary - 1, boundary}) {
+        auto bytes = (*reader)->read(offset, 1);
+        ASSERT_TRUE(bytes);
+        EXPECT_EQ(payload_.substr(offset, 1), *bytes);
+      }
+      EXPECT_EQ(before + (mmap ? 2 : 1), (*owner)->read_stats().range_reads);
+      // Also exercise a native-page crossing, the maximum request, and the
+      // unaligned final window without reading outside the section.
+      const uint64_t crossing = 2 * page - physical % page - 1;
+      for (const auto &range :
+           {format::ByteRange{crossing, 2}, format::ByteRange{0, 65536},
+            format::ByteRange{payload_.size() - 3, 3}}) {
+        auto bytes = (*reader)->read(range.offset, range.length);
+        ASSERT_TRUE(bytes);
+        EXPECT_EQ(payload_.substr(range.offset, range.length), *bytes);
+        if (range.length == 65536) {
+          // Buffer alignment may retain more than the request limit. A hit
+          // must still reject an oversized request without discarding its view.
+          const auto reads = (*owner)->read_stats().range_reads;
+          auto oversized = (*reader)->read(0, 65537);
+          ASSERT_FALSE(oversized);
+          EXPECT_EQ(StatusCode::RESOURCE_EXHAUSTED, oversized.error().code());
+          auto cached = (*reader)->read(1, 31);
+          ASSERT_TRUE(cached);
+          EXPECT_EQ(payload_.substr(1, 31), *cached);
+          EXPECT_EQ(reads, (*owner)->read_stats().range_reads);
+        }
+      }
+      EXPECT_TRUE((*reader)->read(payload_.size(), 0)->empty());
+      EXPECT_FALSE((*reader)->read(payload_.size(), 1));
+      EXPECT_FALSE((*reader)->read(UINT64_MAX, 1));
+      // One native window fits the ordinary one-page range allowance, even
+      // when it contains multiple wire-format checksum chunks.
+      const size_t charge = 4 * std::max<size_t>(page, 4128);
+      auto bounded = FtsContainerReader::Open(path_, mmap, charge);
+      ASSERT_TRUE(bounded);
+      auto window = FtsSectionReader::Open(*bounded, "field.0.postings");
+      ASSERT_TRUE(window);
+      auto bytes = (*window)->read(boundary, 1);
+      ASSERT_TRUE(bytes);
+      EXPECT_EQ(payload_.substr(boundary, 1), *bytes);
+    }
   }
 }
 

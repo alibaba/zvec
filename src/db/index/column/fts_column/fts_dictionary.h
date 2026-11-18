@@ -19,6 +19,8 @@
 
 namespace zvec::fts {
 
+class FtsSpool;
+
 // Immutable random-access term bytes. Requests are at most one dictionary
 // block; the source must return exactly the requested number of bytes.
 using FtsTermSource =
@@ -46,12 +48,11 @@ class FtsDictionaryWriter {
                                       uint32_t field_ordinal);
 
  private:
-  struct Spool;
   FtsDictionaryWriter();
   Status flush_block();
   Status write_block(const format::DictionaryBlock &block);
   Result<int> compare_previous(std::string_view term);
-  std::unique_ptr<Spool> terms_, index_, metadata_;
+  std::unique_ptr<FtsSpool> terms_, index_, metadata_;
   format::DictionaryBlock pending_;
   std::string previous_;
   std::optional<format::ByteRange> previous_large_;

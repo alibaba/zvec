@@ -48,6 +48,7 @@
 #include "db/common/typedef.h"
 #include "db/common/utils.h"
 #include "db/doc_iterator_internal.h"
+#include "db/index/column/fts_column/fts_merge.h"
 #include "db/index/column/vector_column/engine_helper.hpp"
 #include "db/index/common/delete_store.h"
 #include "db/index/common/id_map.h"
@@ -750,6 +751,14 @@ Status CollectionImpl::create_index(const std::string &column_name,
   s = commit_schema_change_with_new_writing_segment(
       new_schema, old_writing_segment, old_version, &new_version,
       writing_min_doc_id);
+  if (s.ok() || version_manager_->requires_recovery()) {
+    for (const auto &task : tasks) {
+      if (const auto *vector =
+              std::get_if<CreateVectorIndexTask>(&task->task_info())) {
+        vector->preserve_files();
+      }
+    }
+  }
   if (!s.ok() && version_manager_->requires_recovery()) {
     for (const auto &task : tasks) {
       if (const auto *fts =
@@ -804,7 +813,10 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_create_vector_index_task(
   for (auto &segment : segments) {
     if (!segment->vector_index_ready(column, index_params)) {
       tasks.push_back(SegmentTask::CreateCreateVectorIndexTask(
-          CreateVectorIndexTask{segment, column, index_params, concurrency}));
+          CreateVectorIndexTask{segment, column, index_params, concurrency,
+                                version_manager_->uses_commit_record()
+                                    ? version_manager_->fts_retirement()
+                                    : nullptr}));
     }
   }
   return tasks;
@@ -1113,8 +1125,7 @@ Status CollectionImpl::optimize(const OptimizeOptions &options) {
 
     bool custom_commit = version_manager_->uses_commit_record();
     for (const auto &task : tasks) {
-      custom_commit = custom_commit ||
-                      std::holds_alternative<RewriteFtsTask>(task->task_info());
+      custom_commit = custom_commit || task->requires_commit_record();
     }
     if (custom_commit) {
       return commit_custom_optimize(tasks, opened_segments);
@@ -1293,6 +1304,14 @@ Status CollectionImpl::commit_custom_optimize(
   }
   candidate.set_next_segment_id(segment_id_allocator_.load());
   status = version_manager_->checkpoint(candidate);
+  if (status.ok() || version_manager_->requires_recovery()) {
+    for (const auto &task : tasks) {
+      if (const auto *vector =
+              std::get_if<CreateVectorIndexTask>(&task->task_info())) {
+        vector->preserve_files();
+      }
+    }
+  }
   if (!status.ok()) {
     if (version_manager_->requires_recovery()) {
       for (const auto &task : tasks) {
@@ -1322,9 +1341,13 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
 
   size_t current_physical_doc_count = 0;
   size_t current_live_doc_count = 0;
+  bool custom_fts = FtsIndexer::kCustomWritesEnabled && schema->has_fts_field();
   for (auto &segment : segments) {
     current_physical_doc_count += segment->doc_count();
     current_live_doc_count += segment->doc_count(filter);
+    for (const auto &block : segment->meta()->persisted_blocks()) {
+      custom_fts = custom_fts || block.fts_base_.has_value();
+    }
   }
   const bool purge_deleted_docs =
       current_live_doc_count <
@@ -1333,19 +1356,30 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
   auto max_doc_count_per_segment = schema->max_doc_count_per_segment();
 
   std::vector<Segment::Ptr> current_group;
+  fts::FtsMergeBudget fts_budget;
   current_physical_doc_count = 0;
   current_live_doc_count = 0;
 
   for (const auto &seg : segments) {
     const auto seg_physical_doc_count = seg->doc_count();
     const auto seg_live_doc_count = seg->doc_count(filter);
+    uint64_t source_workspace = 0;
+    if (custom_fts) {
+      const auto &blocks = seg->meta()->persisted_blocks();
+      const bool legacy =
+          std::any_of(blocks.begin(), blocks.end(), [](const BlockMeta &block) {
+            return block.type() == BlockType::FTS_INDEX && !block.fts_base_;
+          });
+      source_workspace = fts::FtsSourceWorkspaceBound(!legacy);
+    }
+    const bool workspace_full = custom_fts && !fts_budget.add(source_workspace);
 
     if (!current_group.empty()) {
       SegmentTask::Ptr task;
       bool skip_task{false};
       if (purge_deleted_docs) {
-        if (current_live_doc_count + seg_live_doc_count >
-            max_doc_count_per_segment) {
+        if (workspace_full || current_live_doc_count + seg_live_doc_count >
+                                  max_doc_count_per_segment) {
           // Compaction physically removes deleted rows.
           task = SegmentTask::CreateCompactTask(
               CompactTask{path_, schema, current_group,
@@ -1353,12 +1387,16 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
                           !options_.enable_mmap_, concurrency});
         }
       } else {
-        if (current_physical_doc_count + seg_physical_doc_count >
-            max_doc_count_per_segment) {
+        if (workspace_full ||
+            current_physical_doc_count + seg_physical_doc_count >
+                max_doc_count_per_segment) {
           if (current_group.size() == 1) {
             task =
                 SegmentTask::CreateCreateVectorIndexTask(CreateVectorIndexTask{
-                    current_group[0], "", nullptr, concurrency});
+                    current_group[0], "", nullptr, concurrency,
+                    (custom_fts || version_manager_->uses_commit_record())
+                        ? version_manager_->fts_retirement()
+                        : nullptr});
             skip_task = current_group[0]->all_vector_index_ready();
           } else {
             // Merge segments while preserving deleted rows.
@@ -1372,6 +1410,12 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
 
       if (task) {
         current_group.clear();
+        fts_budget = {};
+        if (custom_fts) {
+          // A single source's validated format bound always fits. The source
+          // that ended the previous group starts this fresh reservation.
+          (void)fts_budget.add(source_workspace);
+        }
         current_physical_doc_count = 0;
         current_live_doc_count = 0;
         if (!skip_task) {
@@ -1388,8 +1432,11 @@ std::vector<SegmentTask::Ptr> CollectionImpl::build_compact_task(
   if (current_group.size() > 0) {
     SegmentTask::Ptr task;
     if (current_group.size() == 1 && !purge_deleted_docs) {
-      task = SegmentTask::CreateCreateVectorIndexTask(
-          CreateVectorIndexTask{current_group[0], "", nullptr, concurrency});
+      task = SegmentTask::CreateCreateVectorIndexTask(CreateVectorIndexTask{
+          current_group[0], "", nullptr, concurrency,
+          (custom_fts || version_manager_->uses_commit_record())
+              ? version_manager_->fts_retirement()
+              : nullptr});
     } else {
       task = SegmentTask::CreateCompactTask(CompactTask{
           path_, schema, current_group, allocate_segment_id_for_tmp_segment(),

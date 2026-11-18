@@ -52,14 +52,14 @@ Result<format::ByteRange> FtsPositionsWriter::append_document(
         Status::InvalidArgument("Invalid FTS position input/state"));
   }
   const uint64_t start = data_->size();
-  const uint64_t blocks = (static_cast<uint64_t>(tf) + 127) / 128;
-  std::string header;
-  format::AppendU32(1, &header);
-  format::AppendU32(tf, &header);
-  format::AppendU64(index_->size(), &header);
-  format::AppendU64(blocks * kRecordBytes, &header);
-  format::AppendU64(0, &header);
   if (tf > 128) {
+    const uint64_t blocks = (static_cast<uint64_t>(tf) + 127) / 128;
+    std::string header;
+    format::AppendU32(1, &header);
+    format::AppendU32(tf, &header);
+    format::AppendU64(index_->size(), &header);
+    format::AppendU64(blocks * kRecordBytes, &header);
+    format::AppendU64(0, &header);
     status_ = data_->append(header);
   }
   uint32_t previous = 0;
@@ -84,15 +84,16 @@ Result<format::ByteRange> FtsPositionsWriter::append_document(
     if (!encoded) {
       return tl::make_unexpected(status_ = encoded.error());
     }
-    std::string record;
-    format::AppendU32(block.values[0], &record);
-    format::AppendU32(block.values[block.count - 1], &record);
-    format::AppendU32(block.count, &record);
-    format::AppendU32(0, &record);
-    format::AppendU64(data_->size(), &record);
-    format::AppendU64(encoded->size(), &record);
+    const uint64_t block_start = data_->size();
     status_ = data_->append(*encoded);
     if (status_.ok() && tf > 128) {
+      std::string record;
+      format::AppendU32(block.values[0], &record);
+      format::AppendU32(block.values[block.count - 1], &record);
+      format::AppendU32(block.count, &record);
+      format::AppendU32(0, &record);
+      format::AppendU64(block_start, &record);
+      format::AppendU64(encoded->size(), &record);
       status_ = index_->append(record);
     }
     emitted += block.count;
