@@ -201,10 +201,10 @@ void VamanaContext::topk_to_result(uint32_t idx) {
     if (fetch_vector_) {
       IndexStorage::MemoryBlock block;
       entity_->get_vector(id, block);
-      results_[idx].emplace_back(entity_->get_key(id), score, id,
+      results_[idx].emplace_back(entity_->key_of_existing_node(id), score, id,
                                  std::move(block));
     } else {
-      results_[idx].emplace_back(entity_->get_key(id), score, id);
+      results_[idx].emplace_back(entity_->key_of_existing_node(id), score, id);
     }
   });
 }
@@ -217,12 +217,13 @@ void VamanaContext::topk_to_keys(std::vector<uint64_t> &keys,
     scores->clear();
     scores->reserve(keys.capacity());
     collect_search_result([&](node_id_t id, dist_t score) {
-      keys.push_back(entity_->get_key(id));
+      keys.push_back(entity_->key_of_existing_node(id));
       scores->push_back(score);
     });
   } else {
-    collect_search_result(
-        [&](node_id_t id, dist_t) { keys.push_back(entity_->get_key(id)); });
+    collect_search_result([&](node_id_t id, dist_t) {
+      keys.push_back(entity_->key_of_existing_node(id));
+    });
   }
 }
 
@@ -240,7 +241,7 @@ void VamanaContext::fill_random_to_topk_full() {
     while (static_cast<size_t>(heap.size()) < capacity && doc_cnt > 0 &&
            attempts < max_attempts) {
       node_id_t random_id = rng() % doc_cnt;
-      if (entity_->get_key(random_id) != kInvalidKey) {
+      if (entity_->contains_node(random_id)) {
         dist_t random_dist = dc_.dist(random_id);
         SearchHeap::emplace(heap, random_id, random_dist);
       }

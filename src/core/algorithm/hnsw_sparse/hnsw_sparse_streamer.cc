@@ -65,6 +65,7 @@ int HnswSparseStreamer::init(const IndexMeta &imeta,
   params.get(PARAM_HNSW_SPARSE_STREAMER_CHECK_CRC_ENABLE, &check_crc_enabled_);
 
   params.get(PARAM_HNSW_SPARSE_STREAMER_CHUNK_SIZE, &chunk_size_);
+  params.get(PARAM_HNSW_SPARSE_STREAMER_USE_ID_MAP, &use_id_map_);
   params.get(PARAM_HNSW_SPARSE_STREAMER_FILTER_SAME_KEY, &filter_same_key_);
   params.get(PARAM_HNSW_SPARSE_STREAMER_GET_VECTOR_ENABLE,
              &get_vector_enabled_);
@@ -177,6 +178,7 @@ int HnswSparseStreamer::init(const IndexMeta &imeta,
   entity_.set_chunk_size(chunk_size_);
   entity_.set_filter_same_key(filter_same_key_);
   entity_.set_get_vector(get_vector_enabled_);
+  entity_.set_use_id_map(use_id_map_);
   entity_.set_min_neighbor_cnt(min_neighbor_cnt_);
 
   entity_.set_sparse_meta_size(HnswSparseEntity::kSparseMetaSize);
@@ -436,6 +438,8 @@ int HnswSparseStreamer::add_with_id_impl(uint32_t id,
                                          const void *sparse_query,
                                          const IndexQueryMeta &qmeta,
                                          Context::Pointer &context) {
+  if (id == UINT32_MAX) return IndexError_InvalidArgument;
+
   int ret = check_params(qmeta);
   if (ailego_unlikely(ret != 0)) {
     return ret;
@@ -523,6 +527,13 @@ int HnswSparseStreamer::add_impl(uint64_t pkey, const uint32_t sparse_count,
                                  const void *sparse_query,
                                  const IndexQueryMeta &qmeta,
                                  Context::Pointer &context) {
+  if (pkey == UINT64_MAX) return IndexError_InvalidArgument;
+  if (!use_id_map_) {
+    if (pkey >= UINT32_MAX) return IndexError_InvalidArgument;
+    return add_with_id_impl(static_cast<uint32_t>(pkey), sparse_count,
+                            sparse_indices, sparse_query, qmeta, context);
+  }
+
   int ret = check_params(qmeta);
   if (ailego_unlikely(ret != 0)) {
     return ret;
@@ -955,6 +966,16 @@ void HnswSparseStreamer::print_debug_info() {
   }
 
   // entity_.print_key_map();
+}
+
+
+int HnswSparseStreamer::reserve_slots(uint32_t count) {
+  if (state_ != STATE_OPENED) return IndexError_NoReady;
+  if (!shared_mutex_.try_lock_shared()) return IndexError_Unsupported;
+  AILEGO_DEFER([&]() { shared_mutex_.unlock_shared(); });
+  if (count <= entity_.doc_cnt()) return 0;
+  if (count > docs_hard_limit_) return IndexError_IndexFull;
+  return entity_.add_vector_with_id(0, count - 1, {}, 0, true);
 }
 
 INDEX_FACTORY_REGISTER_STREAMER(HnswSparseStreamer);

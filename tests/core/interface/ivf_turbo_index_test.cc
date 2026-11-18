@@ -421,7 +421,13 @@ TEST(IVFTurboCompatibility, ReopensLegacyInt8AndMergesWithTurbo) {
   filter.set(
       [removed_key = removed_key](uint64_t key) { return key == removed_key; });
   ASSERT_EQ(0, target->merge({legacy, turbo}, filter));
-  EXPECT_EQ(count * 2 - 1, target->get_doc_count());
+  // The second source reserves its leading count empty slots during merge.
+  EXPECT_EQ(count * 3 - 1, target->get_slot_count());
+  EXPECT_EQ(count * 2 - 1, target->get_vector_count());
+  VectorDataBuffer hole;
+  EXPECT_NE(0, target->fetch(count - 1, &hole));
+  EXPECT_NE(0, target->fetch(count * 2 - 2, &hole));
+  EXPECT_EQ(0, target->fetch(count * 2 - 1, &hole));
   SearchResult merged_result;
   ASSERT_EQ(
       0, target->search(

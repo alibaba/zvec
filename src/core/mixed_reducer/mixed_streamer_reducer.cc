@@ -98,6 +98,7 @@ int MixedStreamerReducer::cleanup() {
   streamers_.clear();
   source_streamers_reformers_.clear();
   merged_holder_.reset();
+  output_base_ = 0;
   if (target_streamer_) {
     target_streamer_->cleanup();
   }
@@ -213,6 +214,7 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
     return IndexError_Uninitialized;
   }
 
+
   ailego::ElapsedTime timer;
 
   if (target_builder_ != nullptr) {
@@ -239,15 +241,15 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
   // TODO: use id instead of key
   // When merging into a non-empty target (e.g. reusing one input as base),
   // append new docs after the existing ones instead of overwriting from 0.
-  uint32_t id_offset = 0;
+  uint64_t id_offset = 0;
   uint32_t next_id = 0;
   if (target_builder_ == nullptr) {
     if (is_sparse_) {
       auto provider = target_streamer_->create_sparse_provider();
-      if (provider) next_id = provider->count();
+      if (provider) next_id = provider->slot_count();
     } else {
       auto provider = target_streamer_->create_provider();
-      if (provider) next_id = provider->count();
+      if (provider) next_id = provider->slot_count();
     }
   }
 
@@ -260,7 +262,7 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
     for (size_t i = 0; i < streamers_.size(); i++) {
       // due to filter, producing can't be parallel
       read_results[i] = read_sparse_vec(i, filter, id_offset, &next_id);
-      id_offset += streamers_[i]->create_sparse_provider()->count();
+      id_offset += streamers_[i]->create_sparse_provider()->slot_count();
     }
 
     sparse_mt_list_.done();
@@ -282,7 +284,7 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
       if (read_results[i] != 0) {
         break;
       }
-      id_offset += provider->count();
+      id_offset += provider->slot_count();
     }
 
     mt_list_.done();
@@ -306,6 +308,15 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
     return IndexError_Runtime;
   }
 
+  if (enable_pk_rewrite_) {
+    const size_t slots =
+        is_sparse_ ? target_streamer_->create_sparse_provider()->slot_count()
+                   : target_streamer_->create_provider()->slot_count();
+    if (slots < next_id) {
+      const int ret = target_streamer_->reserve_slots(next_id);
+      if (ret != 0) return ret;
+    }
+  }
   stats_.set_reduced_costtime(timer.seconds());
   state_ = STATE_REDUCE;
 
@@ -344,7 +355,7 @@ int MixedStreamerReducer::dump(const IndexDumper::Pointer &dumper) {
 int MixedStreamerReducer::read_vec(size_t source_streamer_index,
                                    const IndexProvider::Pointer &provider,
                                    const IndexFilter &filter,
-                                   const uint32_t id_offset,
+                                   const uint64_t id_offset,
                                    uint32_t *next_id) {
   const auto &streamer = streamers_[source_streamer_index];
   const auto &reformer = source_streamers_reformers_[source_streamer_index];
@@ -388,13 +399,14 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     LOG_ERROR("Source provider is null, index=%zu", source_streamer_index);
     return IndexError_Runtime;
   }
-  IndexProvider::Iterator::Pointer iterator = provider->create_iterator();
+  IndexProvider::Iterator::Pointer iterator = provider->create_slot_iterator();
   if (!iterator) {
     LOG_ERROR("Failed to create source provider iterator, index=%zu",
               source_streamer_index);
     return IndexError_Runtime;
   }
 
+  size_t ordinal = 0;
   while (iterator->is_valid()) {
     if (iterator->status() != 0) {
       return iterator->status();
@@ -407,8 +419,20 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     if (iterator->status() != 0) {
       return iterator->status();
     }
-    if (filter(key + (uint64_t)id_offset)) {
+    const auto document_id = key == UINT64_MAX ? ordinal : key;
+    if (document_id > UINT64_MAX - id_offset) return IndexError_Overflow;
+    const bool excluded =
+        merged_holder_ ? !merged_holder_->keep(source_streamer_index, ordinal)
+                       : filter(document_id + id_offset);
+    ++ordinal;
+    if (excluded) {
       (*stats_.mutable_filtered_count())++;
+      iterator->next();
+      continue;
+    }
+    if (*next_id == UINT32_MAX) return IndexError_Overflow;
+    const uint32_t output_id = (*next_id)++;
+    if (key == UINT64_MAX) {
       iterator->next();
       continue;
     }
@@ -464,14 +488,15 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
 
     // TODO: use id instead of key
     if (!mt_list_.produce(
-            VectorItem((*next_id)++, std::move(bytes), needs_convert))) {
+            VectorItem(output_id, std::move(bytes), needs_convert))) {
       LOG_ERROR("Produce vector to queue failed. key[%lu]",
                 (size_t)iterator->key());
       return IndexError_Runtime;
     }
     iterator->next();
   }
-  return iterator->status();
+  if (iterator->status() != 0) return iterator->status();
+  return ordinal == provider->slot_count() ? 0 : IndexError_Mismatch;
 }
 
 void MixedStreamerReducer::add_vec(int *result) {
@@ -604,7 +629,7 @@ void MixedStreamerReducer::add_sparse_vec(int *result) {
 
 int MixedStreamerReducer::read_sparse_vec(size_t source_streamer_index,
                                           const IndexFilter &filter,
-                                          const uint32_t id_offset,
+                                          const uint64_t id_offset,
                                           uint32_t *next_id) {
   const auto &streamer = streamers_[source_streamer_index];
   const auto &reformer = source_streamers_reformers_[source_streamer_index];
@@ -613,16 +638,31 @@ int MixedStreamerReducer::read_sparse_vec(size_t source_streamer_index,
 
   IndexStreamer::SparseProvider::Pointer provider =
       streamer->create_sparse_provider();
+  if (!provider) return IndexError_Runtime;
   IndexStreamer::SparseProvider::Iterator::Pointer iterator =
-      provider->create_iterator();
+      provider->create_slot_iterator();
+  if (!iterator) return IndexError_Runtime;
 
+  size_t ordinal = 0;
   while (iterator->is_valid()) {
+    if (iterator->status() != 0) return iterator->status();
     if (stop_flag_ != nullptr && stop_flag_->load(std::memory_order_relaxed)) {
       LOG_DEBUG("read_sparse_vec cancelled.");
       return 0;
     }
-    if (filter(iterator->key() + (uint64_t)id_offset)) {
+    const auto key = iterator->key();
+    if (iterator->status() != 0) return iterator->status();
+    const auto document_id = key == UINT64_MAX ? ordinal : key;
+    if (document_id > UINT64_MAX - id_offset) return IndexError_Overflow;
+    ++ordinal;
+    if (filter(document_id + id_offset)) {
       (*stats_.mutable_filtered_count())++;
+      iterator->next();
+      continue;
+    }
+    if (*next_id == UINT32_MAX) return IndexError_Overflow;
+    const uint32_t output_id = (*next_id)++;
+    if (key == UINT64_MAX) {
       iterator->next();
       continue;
     }
@@ -655,16 +695,16 @@ int MixedStreamerReducer::read_sparse_vec(size_t source_streamer_index,
            sparse_indices.size() * sizeof(uint32_t));
 
     // TODO: use id instead of key
-    if (!sparse_mt_list_.produce(SparseVectorItem((*next_id)++,
-                                                  std::move(sparse_indices),
-                                                  std::move(sparse_values)))) {
+    if (!sparse_mt_list_.produce(SparseVectorItem(
+            output_id, std::move(sparse_indices), std::move(sparse_values)))) {
       LOG_ERROR("Produce vector to queue failed. key[%lu]",
                 (size_t)iterator->key());
       return IndexError_Runtime;
     }
     iterator->next();
   }
-  return 0;
+  if (iterator->status() != 0) return iterator->status();
+  return ordinal == provider->slot_count() ? 0 : IndexError_Mismatch;
 }
 
 int MixedStreamerReducer::reduce_with_builder(const IndexFilter &filter) {
@@ -695,9 +735,13 @@ int MixedStreamerReducer::reduce_with_builder(const IndexFilter &filter) {
     sources.emplace_back(std::move(source));
   }
 
-  auto holder = std::make_shared<MergedProviderIndexHolder>(
-      original_query_meta_, std::move(sources));
-  int ret = holder->init(filter, stop_flag_);
+  auto holder = merged_holder_;
+  int ret = 0;
+  if (!holder) {
+    holder = std::make_shared<MergedProviderIndexHolder>(
+        original_query_meta_, std::move(sources), output_base_);
+    ret = holder->init(filter, stop_flag_);
+  }
   if (ret != 0) {
     LOG_ERROR("Failed to initialize merged provider holder, ret=%d", ret);
     return ret;
@@ -734,12 +778,14 @@ int MixedStreamerReducer::reduce_with_builder(const IndexFilter &filter) {
       return ret;
     }
   }
+  target_holder->set_slot_count(holder->slot_count());
   return this->index_build(std::move(target_holder));
 }
 
 int MixedStreamerReducer::index_build(IndexHolder::Pointer target_holder) {
   auto threads =
       std::make_shared<BorrowedSingleQueueIndexThreads>(*thread_pool_);
+  const auto slot_count = target_holder->slot_count();
   if (target_builder_converter_) {
     int ret = core::IndexConverter::TrainAndTransform(target_builder_converter_,
                                                       target_holder, threads);
@@ -755,6 +801,7 @@ int MixedStreamerReducer::index_build(IndexHolder::Pointer target_holder) {
       return core::IndexError_Runtime;
     }
   }
+  target_holder->set_slot_count(slot_count);
   int ret = target_builder_->train(threads, target_holder);
   if (merged_holder_ && merged_holder_->status() != 0) {
     return merged_holder_->status();

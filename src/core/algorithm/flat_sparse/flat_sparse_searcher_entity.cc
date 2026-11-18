@@ -230,14 +230,24 @@ node_id_t FlatSparseSearcherEntity::get_id(uint64_t key) const {
 }
 
 uint64_t FlatSparseSearcherEntity::get_key(node_id_t id) const {
-  IndexStorage::MemoryBlock key;
-  if (ailego_unlikely(
-          keys_chunk_->read(id * sizeof(uint64_t), key, sizeof(uint64_t)) !=
-          sizeof(uint64_t))) {
+  uint64_t key = kInvalidKey;
+  read_key(id, &key);
+  return key;
+}
+
+int FlatSparseSearcherEntity::read_key(node_id_t id, uint64_t *key) const {
+  *key = kInvalidKey;
+  if (id >= doc_cnt()) return IndexError_OutOfRange;
+  IndexStorage::MemoryBlock block;
+  if (!keys_chunk_ ||
+      keys_chunk_->read(static_cast<size_t>(id) * sizeof(uint64_t), block,
+                        sizeof(uint64_t)) != sizeof(uint64_t) ||
+      !block.data()) {
     LOG_ERROR("Read key from segment failed");
-    return kInvalidKey;
+    return IndexError_ReadData;
   }
-  return *(reinterpret_cast<const uint64_t *>(key.data()));
+  *key = *reinterpret_cast<const uint64_t *>(block.data());
+  return 0;
 }
 
 }  // namespace core

@@ -50,6 +50,7 @@ class HnswSparseSearcherEntity : public HnswSparseEntity {
 
   //! Get primary key of the node id
   key_t get_key(node_id_t id) const override;
+  int read_key(node_id_t id, key_t *key) const override;
 
   //! Get vector local id by key
   node_id_t get_id(key_t key) const;

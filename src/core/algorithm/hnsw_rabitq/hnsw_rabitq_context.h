@@ -174,10 +174,11 @@ class HnswRabitqContext : public IndexContext {
       if (fetch_vector_) {
         IndexStorage::MemoryBlock block;
         entity_->get_vector(id, block);
-        results_[idx].emplace_back(entity_->get_key(id), score.est_dist, id,
-                                   std::move(block));
+        results_[idx].emplace_back(entity_->key_of_existing_node(id),
+                                   score.est_dist, id, std::move(block));
       } else {
-        results_[idx].emplace_back(entity_->get_key(id), score.est_dist, id);
+        results_[idx].emplace_back(entity_->key_of_existing_node(id),
+                                   score.est_dist, id);
       }
     }
 
@@ -241,10 +242,11 @@ class HnswRabitqContext : public IndexContext {
 
           entity_->get_vector(id, block);
           group_results_[idx][i].mutable_docs()->emplace_back(
-              entity_->get_key(id), score.est_dist, id, std::move(block));
+              entity_->key_of_existing_node(id), score.est_dist, id,
+              std::move(block));
         } else {
           group_results_[idx][i].mutable_docs()->emplace_back(
-              entity_->get_key(id), score.est_dist, id);
+              entity_->key_of_existing_node(id), score.est_dist, id);
         }
       }
     }
