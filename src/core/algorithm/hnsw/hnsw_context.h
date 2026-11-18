@@ -189,12 +189,13 @@ class HnswContext : public IndexContext {
       scores->clear();
       scores->reserve(keys.capacity());
       collect_search_result([&](node_id_t id, dist_t score) {
-        keys.push_back(entity_->get_key(id));
+        keys.push_back(entity_->key_of_existing_node(id));
         scores->push_back(score);
       });
     } else {
-      collect_search_result(
-          [&](node_id_t id, dist_t) { keys.push_back(entity_->get_key(id)); });
+      collect_search_result([&](node_id_t id, dist_t) {
+        keys.push_back(entity_->key_of_existing_node(id));
+      });
     }
   }
 
@@ -218,9 +219,11 @@ class HnswContext : public IndexContext {
       if (fetch_vector_) {
         IndexStorage::MemoryBlock block;
         entity_->get_vector(id, block);
-        results_[idx].emplace_back(entity_->get_key(id), score, id, block);
+        results_[idx].emplace_back(entity_->key_of_existing_node(id), score, id,
+                                   block);
       } else {
-        results_[idx].emplace_back(entity_->get_key(id), score, id);
+        results_[idx].emplace_back(entity_->key_of_existing_node(id), score,
+                                   id);
       }
     });
   }
@@ -297,10 +300,10 @@ class HnswContext : public IndexContext {
           IndexStorage::MemoryBlock block;
           entity_->get_vector(id, block);
           group_results_[idx][i].mutable_docs()->emplace_back(
-              entity_->get_key(id), score, id, block);
+              entity_->key_of_existing_node(id), score, id, block);
         } else {
           group_results_[idx][i].mutable_docs()->emplace_back(
-              entity_->get_key(id), score, id);
+              entity_->key_of_existing_node(id), score, id);
         }
       }
     }

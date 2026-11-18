@@ -614,7 +614,7 @@ TEST_F(SegmentHelperTest, QuantizedIvfClosesRawFlatBeforeBuildingIndex) {
         std::make_shared<FlatIndexParams>(MetricType::L2));
     VectorColumnIndexer raw(raw_path, *raw_field);
     ASSERT_TRUE(raw.open({true, false, true}).ok());
-    EXPECT_EQ(raw.doc_count(), 64);
+    EXPECT_EQ(raw.row_count(), 64);
     for (uint32_t id : {0U, 31U, 32U, 63U}) {
       auto fetched = raw.fetch(id);
       ASSERT_TRUE(fetched.has_value());
@@ -632,7 +632,7 @@ TEST_F(SegmentHelperTest, QuantizedIvfClosesRawFlatBeforeBuildingIndex) {
       ASSERT_EQ(blocks.size(), 2);
       VectorColumnIndexer quantized(quantized_path, *field);
       ASSERT_TRUE(quantized.open({true, false, true}).ok());
-      EXPECT_EQ(quantized.doc_count(), 64);
+      EXPECT_EQ(quantized.row_count(), 64);
       EXPECT_TRUE(quantized.close().ok());
     }
   }

@@ -472,7 +472,7 @@ CombinedVectorColumnIndexer::fetch(uint32_t segment_doc_id) const {
   if (target_block_doc_id == -1) {
     LOG_ERROR("Can't find block for doc_id[%u]", segment_doc_id);
     return tl::make_unexpected(
-        Status::NotFound("Can't find block for doc_id:", segment_doc_id));
+        Status::InternalError("Can't find block for doc_id:", segment_doc_id));
   }
 
   auto indexer = indexers_[target_block_idx];

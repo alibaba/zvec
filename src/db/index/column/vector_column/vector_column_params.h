@@ -15,6 +15,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <variant>
 #include <vector>
 #include <zvec/ailego/container/params.h>
@@ -67,6 +68,8 @@ struct ReadOptions {
   bool use_mmap{true};
   bool create_new{false};
   bool read_only{false};
+  std::optional<uint32_t> row_count{};
+  bool require_validity{false};
 };
 
 struct MergeOptions {

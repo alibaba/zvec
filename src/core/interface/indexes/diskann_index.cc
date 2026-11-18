@@ -209,6 +209,16 @@ int DiskAnnIndex::add(const VectorData &vector, uint32_t doc_id) {
     LOG_ERROR("this diskann index is trained or has a pending build");
     return core::IndexError_Runtime;
   }
+  if (std::holds_alternative<NullVector>(vector.vector)) {
+    if (!is_open_ || is_read_only_) return core::IndexError_NoReady;
+    if (doc_id == UINT32_MAX) return core::IndexError_InvalidArgument;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (doc_id < doc_cache_.size()) return core::IndexError_InvalidArgument;
+    doc_cache_.resize(doc_id + 1, {kInvalidKey, {}});
+    return 0;
+  }
+  if (!is_open_ || is_read_only_ || doc_id == UINT32_MAX)
+    return core::IndexError_InvalidArgument;
   if (!std::holds_alternative<DenseVector>(vector.vector)) {
     LOG_ERROR("Invalid vector data");
     return core::IndexError_Runtime;
@@ -310,7 +320,10 @@ int DiskAnnIndex::dump_and_open() {
 int DiskAnnIndex::_dense_fetch(const uint32_t doc_id,
                                VectorDataBuffer *vector_data_buffer) {
   if (is_trained_) {
-    return Index::_dense_fetch(doc_id, vector_data_buffer);
+    core::IndexStorage::MemoryBlock block;
+    int ret = streamer_->get_vector_by_key(doc_id, block);
+    if (ret != 0) return ret;
+    return _decode_dense_vector(block.data(), vector_data_buffer);
   } else {
     std::lock_guard<std::mutex> lock(mutex_);
     if (doc_id >= doc_cache_.size()) return core::IndexError_OutOfRange;
@@ -369,6 +382,11 @@ int DiskAnnIndex::merge(const std::vector<Index::Pointer> &indexes,
                         const MergeOptions &options) {
   if (indexes.empty()) return 0;
   if (is_trained_) return core::IndexError_Unsupported;
+  if (std::any_of(doc_cache_.begin(), doc_cache_.end(),
+                  [](const auto &doc) { return doc.first != kInvalidKey; })) {
+    LOG_ERROR("Cannot merge into a builder with pending vectors");
+    return core::IndexError_Unsupported;
+  }
   int ret = reset_builder();
   if (ret != 0) return ret;
   build_stage_ = BuildStage::kCollecting;

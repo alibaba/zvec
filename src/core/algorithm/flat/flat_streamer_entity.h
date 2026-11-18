@@ -116,8 +116,9 @@ class FlatStreamerEntity {
   //! Clone the entity
   virtual FlatStreamerEntity::Pointer clone() const;
 
-  //! Retrieve the total vectors in the index
-  size_t vector_count() const {
+  //! Physical addressable slots, including NULL gaps (gap-in-place layout).
+  //! This is an ID bound, not the count of real vectors; use count() for that.
+  size_t slot_count() const {
     return meta_.header.total_vector_count;
   }
 
@@ -156,11 +157,17 @@ class FlatStreamerEntity {
   virtual int get_vector_by_key(const uint64_t key,
                                 IndexStorage::MemoryBlock &block) const;
 
+  const void *get_vector_by_position(uint32_t id) const;
+
+  int get_vector_by_position(uint32_t id,
+                             IndexStorage::MemoryBlock &block) const;
+
   int get_vectors_by_key(const uint64_t *keys, uint32_t count,
                          std::vector<IndexStorage::MemoryBlock> &blocks) const;
 
   //! Create a new iterator
-  IndexProvider::Iterator::Pointer creater_iterator() const;
+  IndexProvider::Iterator::Pointer creater_iterator(
+      bool include_empty = false) const;
 
 
   //! Set params
@@ -226,6 +233,10 @@ class FlatStreamerEntity {
   //! Set the turbo quantizer
   void set_quantizer(const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) {
     quantizer_ = quantizer;
+  }
+
+  bool contains_node(uint32_t id) const {
+    return key(id) != kInvalidKey;
   }
 
   //! Read a key without conflating a missing slot with a storage read error.
@@ -297,9 +308,6 @@ class FlatStreamerEntity {
     return batch_query_preprocess_;
   }
 
-  int get_vector_by_position(uint32_t id,
-                             IndexStorage::MemoryBlock &block) const;
-
   int get_key_by_position(uint32_t id, uint64_t *key) const;
 
   size_t id_key_count() const {
@@ -326,8 +334,12 @@ class FlatStreamerEntity {
   class Iterator : public IndexProvider::Iterator {
    public:
     //! Constructor
-    Iterator(const FlatStreamerEntity::Pointer &entity) : entity_(entity) {
+    Iterator(const FlatStreamerEntity::Pointer &entity, bool include_empty)
+        : entity_(entity), include_empty_(include_empty) {
       this->read_next_block();
+      if (!include_empty_ && is_valid_ &&
+          (key() == kInvalidKey || deleted_->test(block_vector_index_)))
+        next();
     }
     //! Retrieve pointer of data
     const void *data() const override {
@@ -338,16 +350,24 @@ class FlatStreamerEntity {
     bool is_valid() const override {
       return is_valid_;
     }
+    int status() const override {
+      return status_;
+    }
     //! Retrieve primary key
     uint64_t key() const override {
-      return keys_[block_vector_index_];
+      return deleted_->test(block_vector_index_) ? kInvalidKey
+                                                 : keys_[block_vector_index_];
     }
     //! Next iterator
     void next() override {
-      if (++block_vector_index_ == block_vector_count_) {
-        ++block_index_;
-        this->read_next_block();
-      }
+      if (!is_valid_) return;
+      do {
+        if (++block_vector_index_ == block_vector_count_) {
+          ++block_index_;
+          this->read_next_block();
+        }
+      } while (!include_empty_ && is_valid_ &&
+               (key() == kInvalidKey || deleted_->test(block_vector_index_)));
     }
 
    private:
@@ -360,11 +380,14 @@ class FlatStreamerEntity {
     IndexStorage::MemoryBlock block_;
     const void *data_{nullptr};
     const uint64_t *keys_{nullptr};
+    const DeletionMap *deleted_{nullptr};
     uint32_t segment_id_{1u};  // The first segment is header info
     uint32_t block_index_{0u};
     uint32_t block_vector_index_{0u};
     uint32_t block_vector_count_{0u};
+    int status_{0};
     bool is_valid_{true};
+    bool include_empty_{false};
   };
 
   //! Retrive storage segment by index
@@ -402,8 +425,6 @@ class FlatStreamerEntity {
   int load_linear_meta(IndexStorage::Pointer storage);
 
   //! Load keys to keys map
-  int load_segment_keys_to_map(BlockLocation block);
-
   //! Load keys to keys map
   int load_segment_keys_to_vector();
 

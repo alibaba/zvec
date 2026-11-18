@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #pragma once
+#include <shared_mutex>
 #include <string>
 #include <utility>
 #include <variant>
+#include <roaring.hh>
 #include <ailego/parallel/lock.h>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/ailego/utility/string_helper.h>
@@ -76,6 +78,16 @@ class VectorColumnIndexer {
   //! Insert vector
   Status insert(const vector_column_params::VectorData &vector_data,
                 uint32_t doc_id);
+  Status insert_null(uint32_t doc_id);
+
+  // Vector keys preserve logical document IDs, including gaps for NULL rows.
+  uint32_t row_count() const {
+    return has_null_bitmap() ? row_count_
+                             : (index ? index->get_doc_count() : 0);
+  }
+  bool has_null_bitmap() const {
+    return field_schema_.nullable();
+  }
   // TODO: batch insert
 
   virtual Result<IndexResults::Ptr> search(
@@ -97,9 +109,8 @@ class VectorColumnIndexer {
   // Result<VectorDataset> BatchFetch(const std::vector<uint32_t> &doc_ids)
   // const;
 
-  core::IndexProvider::Pointer create_index_provider() const {
-    return index->create_index_provider();
-  }
+  // Training view: omit NULL slots while preserving document keys.
+  core::IndexProvider::Pointer create_index_provider() const;
 
  public:
   std::string index_file_path() const {
@@ -108,13 +119,6 @@ class VectorColumnIndexer {
 
   const FieldSchema &field_schema() const {
     return field_schema_;
-  }
-
-  size_t doc_count() const {
-    if (index == nullptr) {
-      return -1;
-    }
-    return index->get_doc_count();
   }
 
   //! Debug-only accessor for the underlying core_interface Index.
@@ -128,13 +132,22 @@ class VectorColumnIndexer {
   VectorColumnIndexer() = default;
 
  private:
+  Status load_nulls(const vector_column_params::ReadOptions &options);
+  Status flush_nulls();
+  Status ensure_empty_index();
+  Status recreate_empty_index(bool use_empty_flat);
+  bool has_vector(uint32_t row) const;
+  bool all_null() const {
+    return !legacy_without_validity_ && null_rows_.cardinality() == row_count_;
+  }
   // protected:
   //  virtual bool init_proxima_params() = 0;
 
   // proxima or other engine index param like VSAGE
   // build proxima index
   Status create_proxima_index(
-      const vector_column_params::ReadOptions &read_options);
+      const vector_column_params::ReadOptions &read_options,
+      bool use_empty_flat);
 
  protected:
   friend ProximaEngineHelper;
@@ -146,6 +159,17 @@ class VectorColumnIndexer {
   std::string engine_name_ = "proxima";
   bool is_sparse_{false};  // TODO: eliminate the dynamic flag and make it
                            // static/template/seperate class
+  mutable std::shared_mutex nulls_mutex_;
+  roaring::Roaring null_rows_;
+  uint32_t row_count_{0};
+  bool nulls_dirty_{false};
+  bool read_only_{false};
+  bool use_mmap_{true};
+  bool empty_flat_index_{false};
+  // Legacy block opened without a NULL bitmap: nullness is unknown, so every
+  // stored slot is treated as present and the column is never degraded to an
+  // empty Flat backing.
+  bool legacy_without_validity_{false};
 };
 
 

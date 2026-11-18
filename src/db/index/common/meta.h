@@ -92,6 +92,12 @@ class BlockMeta {
   void set_doc_count(uint32_t doc_count) {
     doc_count_ = doc_count;
   }
+  bool vector_validity() const {
+    return vector_validity_;
+  }
+  void set_vector_validity(bool value) {
+    vector_validity_ = value;
+  }
 
   const std::vector<std::string> &columns() const {
     return columns_;
@@ -120,7 +126,8 @@ class BlockMeta {
     return id_ == other.id_ && type_ == other.type_ &&
            min_doc_id_ == other.min_doc_id_ &&
            max_doc_id_ == other.max_doc_id_ && columns_ == other.columns_ &&
-           doc_count_ == other.doc_count_;
+           doc_count_ == other.doc_count_ &&
+           vector_validity_ == other.vector_validity_;
   }
 
   std::string to_string() const {
@@ -173,6 +180,7 @@ class BlockMeta {
   uint64_t max_doc_id_{0};
   uint32_t doc_count_{0};
   std::vector<std::string> columns_{};
+  bool vector_validity_{false};
 };
 
 class SegmentMeta {

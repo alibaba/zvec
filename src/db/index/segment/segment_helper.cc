@@ -678,6 +678,7 @@ Status SegmentHelper::ReduceVectorIndex(
       new_block_meta.set_min_doc_id(min_doc_id);
       new_block_meta.set_max_doc_id(max_doc_id);
       new_block_meta.set_doc_count(doc_count);
+      new_block_meta.set_vector_validity(field->nullable());
 
       output_block_metas->push_back(new_block_meta);
     } else {
@@ -723,6 +724,7 @@ Status SegmentHelper::ReduceVectorIndex(
       new_block_meta.set_min_doc_id(min_doc_id);
       new_block_meta.set_max_doc_id(max_doc_id);
       new_block_meta.set_doc_count(doc_count);
+      new_block_meta.set_vector_validity(field->nullable());
       output_block_metas->push_back(new_block_meta);
 
       // create quantize index
@@ -756,6 +758,7 @@ Status SegmentHelper::ReduceVectorIndex(
       new_block_meta.set_min_doc_id(min_doc_id);
       new_block_meta.set_max_doc_id(max_doc_id);
       new_block_meta.set_doc_count(doc_count);
+      new_block_meta.set_vector_validity(field->nullable());
       output_block_metas->push_back(new_block_meta);
     }
   }
@@ -772,7 +775,7 @@ namespace {
 bool CanReuseFirstIndexer(const std::vector<VectorColumnIndexer::Ptr> &indexers,
                           const FieldSchema &output_field,
                           const IndexFilter::Ptr &filter) {
-  if (filter != nullptr || indexers.empty()) {
+  if (output_field.nullable() || filter != nullptr || indexers.empty()) {
     return false;
   }
   if (output_field.index_type() != IndexType::HNSW &&
@@ -895,6 +898,14 @@ Status SegmentHelper::PrepareQuantizeField(
   if (raw_vector_provider == nullptr) {
     return Status::InvalidArgument(
         "raw_vector_provider is required for RABITQ training");
+  }
+  if (field.nullable() && raw_vector_provider->count() == 0) {
+    // No training set exists for an all-NULL column. Persist an empty Flat
+    // backing; its validity metadata selects the same backing on reopen.
+    field_clone->set_index_params(
+        std::make_shared<FlatIndexParams>(vector_index_params->metric_type()));
+    *out_field = field_clone;
+    return Status::OK();
   }
 
   auto rabitq_params = std::dynamic_pointer_cast<HnswRabitqIndexParams>(

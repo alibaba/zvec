@@ -83,6 +83,15 @@ class DiskAnnIndexProvider : public IndexProvider {
     return IndexProvider::Iterator::Pointer(iterator.release());
   }
 
+  IndexProvider::Iterator::Pointer create_slot_iterator() override {
+    auto iter =
+        std::make_unique<Iterator>(meta_, measure_, entity_, indexer_, true);
+    return iter->ready() ? std::move(iter) : nullptr;
+  }
+  size_t slot_count() const override {
+    return entity_->slot_count();
+  }
+
   bool ready() const {
     return measure_ && entity_ && indexer_ && result_buffer_owner_;
   }
@@ -169,12 +178,13 @@ class DiskAnnIndexProvider : public IndexProvider {
    public:
     Iterator(const IndexMeta &meta, const IndexMetric::Pointer &measure,
              const DiskAnnEntity::Pointer &entity,
-             const DiskAnnIndexer::Pointer &indexer)
+             const DiskAnnIndexer::Pointer &indexer, bool include_empty = false)
         : meta_(meta),
           measure_(measure),
           entity_(entity),
           indexer_(indexer),
-          cur_id_(0U) {
+          cur_id_(0U),
+          include_empty_(include_empty) {
       cur_id_ = next_valid_id(0U);
     }
 
@@ -196,7 +206,9 @@ class DiskAnnIndexProvider : public IndexProvider {
         if (!context_) {
           return nullptr;
         }
-        if (indexer_->get_vector(cur_id_, context_, vector_buffer_) != 0) {
+        if (indexer_->get_vector(
+                include_empty_ ? entity_->slot_to_id(cur_id_) : cur_id_,
+                context_, vector_buffer_) != 0) {
           return nullptr;
         }
         data_loaded_ = true;
@@ -205,11 +217,13 @@ class DiskAnnIndexProvider : public IndexProvider {
     }
 
     bool is_valid() const override {
-      return cur_id_ < static_cast<diskann_id_t>(entity_->doc_cnt());
+      return cur_id_ <
+             (include_empty_ ? entity_->slot_count() : entity_->doc_cnt());
     }
 
     uint64_t key() const override {
-      return static_cast<uint64_t>(entity_->get_key(cur_id_));
+      const auto id = include_empty_ ? entity_->slot_to_id(cur_id_) : cur_id_;
+      return id == kInvalidId ? kInvalidKey : entity_->get_key(id);
     }
 
     void next() override {
@@ -223,6 +237,7 @@ class DiskAnnIndexProvider : public IndexProvider {
 
     //! Skip ids that map to ``kInvalidKey`` (deleted / never populated slots).
     diskann_id_t next_valid_id(diskann_id_t start_id) const {
+      if (include_empty_) return start_id;
       const auto total = static_cast<diskann_id_t>(entity_->doc_cnt());
       for (diskann_id_t i = start_id; i < total; ++i) {
         if (entity_->get_key(i) != kInvalidKey) {
@@ -240,6 +255,7 @@ class DiskAnnIndexProvider : public IndexProvider {
     mutable std::string vector_buffer_;
     mutable bool data_loaded_{false};
     diskann_id_t cur_id_;
+    bool include_empty_{false};
   };
 
   IndexMeta meta_;
