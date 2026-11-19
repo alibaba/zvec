@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "jieba_tokenizer.h"
+#include <utf8proc.h>
 #include <cstdlib>
 #include <fstream>
 #include <zvec/ailego/logger/logger.h>
@@ -180,6 +181,29 @@ void JiebaTokenizer::reset() {
   initialized_ = false;
 }
 
+static bool is_whitespace_only(const std::string &word) {
+  const auto *it = reinterpret_cast<const utf8proc_uint8_t *>(word.data());
+  const auto *end = it + word.size();
+  while (it < end) {
+    utf8proc_int32_t cp;
+    const auto bytes = utf8proc_iterate(it, end - it, &cp);
+    if (bytes <= 0) {
+      return false;
+    }
+    // Unicode White_Space consists of separators plus TAB..CR and NEL.
+    const auto category = utf8proc_category(cp);
+    const bool separator = category == UTF8PROC_CATEGORY_ZS ||
+                           category == UTF8PROC_CATEGORY_ZL ||
+                           category == UTF8PROC_CATEGORY_ZP;
+    const bool whitespace_control = (cp >= '\t' && cp <= '\r') || cp == 0x85;
+    if (!separator && !whitespace_control) {
+      return false;
+    }
+    it += bytes;
+  }
+  return true;
+}
+
 std::vector<Token> JiebaTokenizer::tokenize(const std::string &text) const {
   std::vector<Token> tokens;
   if (!initialized_ || text.empty()) {
@@ -208,7 +232,7 @@ std::vector<Token> JiebaTokenizer::tokenize(const std::string &text) const {
   // which breaks PhraseDocIterator's strict anchor+1 adjacency check.
   uint32_t seq = 0;
   for (const auto &word : words) {
-    if (word.word.empty()) {
+    if (is_whitespace_only(word.word)) {
       continue;
     }
     Token token;

@@ -147,6 +147,36 @@ TEST_F(FtsQueryTest, NGramTokenizerEndToEnd) {
   ASSERT_EQ(query_result.value().size(), 1u);
 }
 
+TEST_F(FtsQueryTest, JiebaMatchStringIgnoresWhitespace) {
+  auto schema = CreateFtsSchema();
+  schema->get_field("content")->set_index_params(FtsIndexParams("jieba"));
+  auto result = Collection::CreateAndOpen(kTestPath, *schema, {});
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  auto col = result.value();
+  std::vector<Doc> docs{MakeDoc(0, "intro", "hello world")};
+  auto inserted = col->insert(docs);
+  ASSERT_TRUE(inserted.has_value()) << inserted.error().message();
+  ASSERT_EQ(inserted->size(), 1u);
+  ASSERT_TRUE(inserted->front().ok()) << inserted->front();
+
+  SearchQuery query;
+  query.target_.field_name_ = "content";
+  query.topk_ = 10;
+  FtsClause fts;
+  fts.match_string_ = "xyzzy plugh";
+  query.target_.clause_ = fts;
+  auto hits = col->query(query);
+  ASSERT_TRUE(hits.has_value()) << hits.error().message();
+  EXPECT_TRUE(hits.value().empty());
+
+  fts.match_string_ = "hello plugh";
+  query.target_.clause_ = fts;
+  hits = col->query(query);
+  ASSERT_TRUE(hits.has_value()) << hits.error().message();
+  ASSERT_EQ(hits.value().size(), 1u);
+  EXPECT_EQ(hits.value()[0]->pk(), "pk_0");
+}
+
 TEST_F(FtsQueryTest, NGramConfigErrorIsReturnedByCreateCollection) {
   auto schema = CreateNGramFtsSchema();
   auto field = schema->get_field("content");
