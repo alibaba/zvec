@@ -405,7 +405,8 @@ TEST_P(IVFLegacyMatrixTest, JointKernelDispatchPreservesMetricAndTail) {
       return
           [](const void *, const void *, size_t, float *out) { *out = 123.0f; };
     }
-    MatrixDistance distance_matrix(size_t m, size_t) const override {
+    MatrixDistance distance_matrix(size_t m, size_t n) const override {
+      EXPECT_EQ(1u, n);
       return [m](const void *, const void *, size_t, float *out) {
         std::fill_n(out, m, 123.0f);
       };

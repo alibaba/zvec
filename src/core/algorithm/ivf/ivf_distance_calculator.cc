@@ -29,7 +29,7 @@ IVFDistanceCalculator::IVFDistanceCalculator(const IndexMeta &meta,
     return;
   }
   row_distance_ = metric->distance();
-  distance_xx1 = metric->distance_matrix(block_vec_cnt, 1);
+  column_single_distance_ = metric->distance_matrix(block_vec_cnt, 1);
   if (column_major_order_ && meta.extra_meta_size() == 0 &&
       (meta.data_type() == IndexMeta::DT_FP32 ||
        meta.data_type() == IndexMeta::DT_FP16) &&
@@ -45,17 +45,9 @@ IVFDistanceCalculator::IVFDistanceCalculator(const IndexMeta &meta,
           provider->interleaved_many_distance(block_vec_cnt);
     }
   }
-  distances_.resize(33);
-  for (size_t b = 32; b != 0; b /= 2) {
-    distances_[b] = metric->distance_matrix(block_vec_cnt, b);
-  }
 }
 
-IVFDistanceCalculator::~IVFDistanceCalculator() {
-  row_distance_ = nullptr;
-  distance_xx1 = nullptr;
-  distances_.clear();
-}
+IVFDistanceCalculator::~IVFDistanceCalculator() = default;
 
 }  // namespace core
 }  // namespace zvec
