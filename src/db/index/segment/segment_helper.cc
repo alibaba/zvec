@@ -732,17 +732,22 @@ Status SegmentHelper::ReduceVectorIndex(
           output_segment_path, field->name(), vector_quan_block_id);
 
       // Per-record quantizers can concatenate the payloads produced during
-      // insert. Quantizers requiring full-dataset training must consume the
-      // raw Flat sources and train again for the merged segment.
-      auto quant_merge_sources =
-          segment_detail::CanReuseInsertTimeQuantizedVectors(
-              *vector_index_params)
-              ? collect_merge_indexers(&Segment::get_quant_vector_indexer)
-              : collect_merge_indexers(&Segment::get_vector_indexer);
-
-      s = MergeWithOptionalReuse(vector_quan_index_path, *field_for_quantize,
-                                 quant_merge_sources, filter, concurrency,
-                                 nullptr);
+      // insert, as long as every segment encoded them with the same state.
+      // Quantizers requiring full-dataset training must consume the raw Flat
+      // sources and train again for the merged segment.
+      const auto raw_merge_sources =
+          collect_merge_indexers(&Segment::get_vector_indexer);
+      if (segment_detail::CanReuseInsertTimeQuantizedVectors(
+              vector_index_params->quantize_type())) {
+        s = MergeWithOptionalReuse(
+            vector_quan_index_path, *field_for_quantize,
+            collect_merge_indexers(&Segment::get_quant_vector_indexer), filter,
+            concurrency, nullptr, &raw_merge_sources);
+      } else {
+        s = MergeWithOptionalReuse(vector_quan_index_path, *field_for_quantize,
+                                   raw_merge_sources, filter, concurrency,
+                                   nullptr);
+      }
       CHECK_RETURN_STATUS(s);
 
       if (vector_indexer != nullptr) {
@@ -809,7 +814,8 @@ Status SegmentHelper::MergeWithOptionalReuse(
     const std::string &output_index_path, const FieldSchema &index_field,
     std::vector<VectorColumnIndexer::Ptr> source_indexers,
     const IndexFilter::Ptr &filter, int concurrency,
-    VectorColumnIndexer::Ptr *merged_indexer) {
+    VectorColumnIndexer::Ptr *merged_indexer,
+    const std::vector<VectorColumnIndexer::Ptr> *raw_source_indexers) {
   vector_column_params::MergeOptions merge_options;
   if (concurrency == 0) {
     merge_options.pool = GlobalResource::Instance().optimize_thread_pool();
@@ -823,7 +829,10 @@ Status SegmentHelper::MergeWithOptionalReuse(
   bool reused_base_index = false;
   Status s;
 
-  if (CanReuseFirstIndexer(source_indexers, index_field, filter)) {
+  // The copied base keeps the first indexer's encoding state, so the remaining
+  // indexers must share it for their records to be appended as they are.
+  if (CanReuseFirstIndexer(source_indexers, index_field, filter) &&
+      source_indexers.front()->shares_encoding_state(source_indexers)) {
     const auto &first_indexer = source_indexers.front();
     LOG_INFO(
         "Reusing first indexer as merge base. "
@@ -850,6 +859,15 @@ Status SegmentHelper::MergeWithOptionalReuse(
   if (!reused_base_index) {
     s = vector_indexer->open(vector_column_params::ReadOptions{true, true});
     CHECK_RETURN_STATUS(s);
+
+    if (raw_source_indexers != nullptr &&
+        !vector_indexer->shares_encoding_state(source_indexers)) {
+      LOG_INFO(
+          "Quantized sources cannot be taken over as they are; rebuilding "
+          "from raw vectors. field[%s] dst[%s]",
+          index_field.name().c_str(), output_index_path.c_str());
+      source_indexers = *raw_source_indexers;
+    }
 
     s = vector_indexer->merge(source_indexers, filter, merge_options);
     CHECK_RETURN_STATUS(s);

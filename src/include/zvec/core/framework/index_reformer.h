@@ -80,6 +80,14 @@ class IndexReformer : public IndexModule {
     return false;
   }
 
+  //! Whether records converted by `other` are valid for this reformer, so
+  //! that a merge may copy them between the two indexes without re-encoding.
+  //! Callers compare the reformer names first. Reformers that encode with
+  //! per-index state beyond their name (e.g. a rotation) must override this.
+  virtual bool is_compatible(const IndexReformer & /*other*/) const {
+    return true;
+  }
+
   virtual int revert(const void * /*in*/, const IndexQueryMeta & /*qmeta*/,
                      std::string * /*out*/) const {
     return IndexError_NotImplemented;

@@ -309,7 +309,21 @@ class CosineReformer : public IndexReformer {
     return 0;
   }
 
+  //! Records are portable only between reformers that rotate identically.
+  bool is_compatible(const IndexReformer &other) const override {
+    const auto *peer = dynamic_cast<const CosineReformer *>(&other);
+    return peer != nullptr && original_type_ == peer->original_type_ &&
+           dst_type_ == peer->dst_type_ &&
+           raw_fp16_storage_ == peer->raw_fp16_storage_ &&
+           Rotator::same_rotation(rotation(), peer->rotation());
+  }
+
  private:
+  //! The rotation applied to every record, if any
+  std::shared_ptr<Rotator> rotation() const {
+    return enable_rotate_ ? rotator_ : nullptr;
+  }
+
   template <typename T>
   void denormalize(const T *in, T *out, const IndexQueryMeta &qmeta,
                    float norm) const {

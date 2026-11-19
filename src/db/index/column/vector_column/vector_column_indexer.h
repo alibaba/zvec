@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #pragma once
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <variant>
@@ -71,6 +72,19 @@ class VectorColumnIndexer {
                const vector_column_params::MergeOptions &merge_options = {});
   // TODO: should we use this function? or a Reducer?
   //  TODO: sstatic reduce, optimize; iterator/scan
+
+  // Whether every indexer in `indexers` shares this indexer's encoding state,
+  // so that merge() never has to decode and re-encode quantized records. See
+  // core_interface::Index::shares_encoding_state.
+  bool shares_encoding_state(
+      const std::vector<VectorColumnIndexer::Ptr> &indexers) const {
+    return index != nullptr &&
+           std::all_of(indexers.begin(), indexers.end(),
+                       [&](const VectorColumnIndexer::Ptr &indexer) {
+                         return indexer->index != nullptr &&
+                                index->shares_encoding_state(*indexer->index);
+                       });
+  }
 
 
   //! Insert vector

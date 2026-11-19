@@ -1610,6 +1610,21 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
   return 0;
 }
 
+bool Index::shares_encoding_state(const Index &source) const {
+  if (reformer_ == nullptr || source.reformer_ == nullptr ||
+      streamer_ == nullptr || source.streamer_ == nullptr) {
+    return true;
+  }
+  // Different encodings never share records; merge() converts between them.
+  if (streamer_->meta().reformer_name() !=
+      source.streamer_->meta().reformer_name()) {
+    return true;
+  }
+  // A builder-backed index loads its state once it is built. Until then it
+  // shares a rotation with no source, and merge() decodes every record.
+  return reformer_->is_compatible(*source.reformer_);
+}
+
 int Index::_get_coarse_search_topk(
     const BaseIndexQueryParam::Pointer &search_param) {
   float scale_factor = search_param->refiner_param->scale_factor_;
