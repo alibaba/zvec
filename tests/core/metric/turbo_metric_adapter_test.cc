@@ -33,6 +33,35 @@ double Fp32SumRelativeError(size_t dim) {
 }
 }  // namespace
 
+TEST(TurboMetricAdapter, Int8RecordMatrixPreservesCancellation) {
+  constexpr size_t dim = 6144, bytes = dim + 20;
+  std::vector<int8_t> row(bytes), query(bytes), matrix(2 * bytes);
+  int32_t sum = 0;
+  for (size_t i = 0; i < dim; ++i) {
+    row[i] = i >= 2048 && i < 4096 ? int(i % 4 == 0) : (i % 2 ? 127 : -127);
+    query[i] = i >= 4096 ? -row[i] : row[i];
+    sum += row[i];
+  }
+  const float tail[] = {1.0f, 0.0f, float(sum), float(4096 * 127 * 127 + 512)};
+  for (auto *v : {row.data(), query.data()}) {
+    std::memcpy(v + dim, tail, sizeof(tail));
+    std::memcpy(v + dim + sizeof(tail), &sum, sizeof(sum));
+  }
+  for (size_t d = 0; d < bytes; d += 4)
+    for (size_t i = 0; i < 2; ++i)
+      std::memcpy(matrix.data() + 2 * d + i * 4, row.data() + d, 4);
+  ailego::Params params;
+  params.set(QUANTIZED_INTEGER_METRIC_ORIGIN_METRIC_NAME, "InnerProduct");
+  auto metric = IndexFactory::CreateMetric("QuantizedInteger");
+  ASSERT_TRUE(metric);
+  ASSERT_EQ(0, metric->init(IndexMeta(IndexMeta::DT_INT8, bytes), params));
+  float single, results[2];
+  metric->distance()(row.data(), query.data(), bytes, &single);
+  metric->distance_matrix(2, 1)(matrix.data(), query.data(), bytes, results);
+  EXPECT_EQ(-512.0f, single);
+  for (float score : results) EXPECT_EQ(single, score);
+}
+
 TEST(TurboMetricAdapter, Int4RecordMatricesPreserveStoredMoments) {
   for (size_t dim : {8U, 16U, 128U, 512U}) {
     for (size_t rows : {2U, 32U}) {

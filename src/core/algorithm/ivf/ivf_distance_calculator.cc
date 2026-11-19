@@ -39,7 +39,11 @@ IVFDistanceCalculator::IVFDistanceCalculator(const IndexMeta &meta,
     // Ask the metric for its own kernel: identical functions can have
     // different addresses in independently linked libraries. Custom metrics
     // retain their original path unless they explicitly provide a kernel.
-    column_many_distance_ = metric->interleaved_many_distance(block_vec_cnt);
+    if (auto *provider =
+            dynamic_cast<const InterleavedDistanceProvider *>(metric.get())) {
+      column_many_distance_ =
+          provider->interleaved_many_distance(block_vec_cnt);
+    }
   }
   distances_.resize(33);
   for (size_t b = 32; b != 0; b /= 2) {

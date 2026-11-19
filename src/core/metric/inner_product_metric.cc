@@ -20,7 +20,8 @@
 namespace zvec {
 namespace core {
 
-class InnerProductMetric : public IndexMetric {
+class InnerProductMetric : public IndexMetric,
+                           public InterleavedDistanceProvider {
  public:
   //! Initialize Metric
   int init(const IndexMeta &meta, const ailego::Params &index_params) override {

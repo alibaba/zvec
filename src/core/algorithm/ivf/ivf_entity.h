@@ -399,6 +399,8 @@ class IVFEntity {
 
   int load_quantizer(const IndexStorage::Pointer &container);
 
+  size_t posting_read_size(size_t offset, size_t blocks, size_t items) const;
+
   //! Unlike fetch, distance evaluation must not read retained original vectors.
   int read_posting_vector(size_t id, IndexStorage::MemoryBlock &block) const;
 

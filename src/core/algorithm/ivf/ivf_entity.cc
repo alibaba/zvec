@@ -695,6 +695,22 @@ int IVFEntity::load_header(const IndexStorage::Pointer &container) {
   return 0;
 }
 
+size_t IVFEntity::posting_read_size(size_t offset, size_t blocks,
+                                    size_t items) const {
+  const size_t full = blocks - 1;
+  const size_t prefix_vectors = full * header_.block_vector_count;
+  if (items <= prefix_vectors || offset >= header_.inverted_body_size) return 0;
+  const size_t tail_bytes = (items - prefix_vectors) * meta_.element_size();
+  const size_t prefix_bytes = full * header_.block_size;
+  const size_t remaining = header_.inverted_body_size - offset;
+  if (remaining < prefix_bytes + tail_bytes) return 0;
+  // Plain tails have only live rows and alignment padding. Packed tails
+  // occupy an entire block even when they contain just one row.
+  const size_t tail =
+      packed_quantizer_ ? header_.block_size : ailego_align(tail_bytes, 32);
+  return std::min(prefix_bytes + tail, remaining);
+}
+
 int IVFEntity::load_quantizer(const IndexStorage::Pointer &container) {
   if (meta_.quantizer_name().empty() ||
       meta_.major_order() != IndexMeta::MajorOrder::MO_ROW ||
@@ -953,19 +969,8 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
     //! Read vectors after keys. A resident scatter read pins no pages while a
     //! second segment is faulted into a small buffer pool.
     const size_t off = list_meta->offset + i * block_size;
-    if (items <= (blocks - 1) * block_vecs) {
-      return IndexError_InvalidFormat;
-    }
-    // Plain tails contain only live vectors and 32-byte padding. Avoid
-    // faulting pages of the next list; packed codes persist a full block.
-    const size_t tail_vectors = items - (blocks - 1) * block_vecs;
-    const size_t serialized_bytes =
-        (blocks - 1) * block_size +
-        (packed_quantizer_ ? block_size
-                           : ailego_align(tail_vectors * element_size, 32));
-    const size_t size =
-        std::min(serialized_bytes,
-                 static_cast<size_t>(header_.inverted_body_size - off));
+    const size_t size = posting_read_size(off, blocks, items);
+    if (!size) return IndexError_InvalidFormat;
     auto &scatter_data = scatter_data_;
     auto release_scatter =
         ailego::ScopeGuard::Make([&] { scatter_data.reset(); });
@@ -1096,19 +1101,8 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
 
     //! Read vectors after keys so scatter-page pins cover computation only.
     const size_t off = list_meta->offset + i * block_size;
-    if (items <= (blocks - 1) * block_vecs) {
-      return IndexError_InvalidFormat;
-    }
-    // Plain tails contain only live vectors and 32-byte padding. Avoid
-    // faulting pages of the next list; packed codes persist a full block.
-    const size_t tail_vectors = items - (blocks - 1) * block_vecs;
-    const size_t serialized_bytes =
-        (blocks - 1) * block_size +
-        (packed_quantizer_ ? block_size
-                           : ailego_align(tail_vectors * element_size, 32));
-    const size_t size =
-        std::min(serialized_bytes,
-                 static_cast<size_t>(header_.inverted_body_size - off));
+    const size_t size = posting_read_size(off, blocks, items);
+    if (!size) return IndexError_InvalidFormat;
     auto &scatter_data = scatter_data_;
     auto release_scatter =
         ailego::ScopeGuard::Make([&] { scatter_data.reset(); });
@@ -1234,9 +1228,8 @@ int IVFEntity::search_many(
     if (!keys) return IndexError_ReadData;
     // Keep the existing key-before-vector pin lifetime for paged storage.
     const size_t off = list_meta->offset + i * block_size;
-    const size_t size =
-        std::min(blocks * block_size,
-                 static_cast<size_t>(header_.inverted_body_size - off));
+    const size_t size = posting_read_size(off, blocks, items);
+    if (!size) return IndexError_InvalidFormat;
     IndexStorage::Segment::ScatterBlock data;
     IndexStorage::MemoryBlock column_data;
     if (row_major ? inverted_->read_scatter(off, data, size) != size

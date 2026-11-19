@@ -24,6 +24,27 @@
 namespace zvec {
 namespace core {
 
+namespace {
+// Interleaved INT8 records store four codes per word. Keep the dot in
+// integer arithmetic until the affine correction, just like the pair kernel.
+void record_int8_dots(const void *rows, const void *queries, size_t m, size_t n,
+                      size_t dim, float *out) {
+  const auto *matrix = static_cast<const int8_t *>(rows);
+  const auto *query = static_cast<const int8_t *>(queries);
+  for (size_t j = 0; j < n; ++j) {
+    int64_t sums[32]{};
+    for (size_t d = 0; d < dim; d += 4) {
+      const auto *q = query + d * n + 4 * j;
+      for (size_t i = 0; i < m; ++i) {
+        const auto *v = matrix + d * m + 4 * i;
+        sums[i] += v[0] * q[0] + v[1] * q[1] + v[2] * q[2] + v[3] * q[3];
+      }
+    }
+    for (size_t i = 0; i < m; ++i) out[j * m + i] = -float(sums[i]);
+  }
+}
+}  // namespace
+
 /*! Index Metric for quantized integer by IntegerStreamingConverter
  */
 class QuantizedIntegerMetric : public IndexMetric {
@@ -180,7 +201,12 @@ class QuantizedIntegerMetric : public IndexMetric {
       };
       std::array<std::array<float, 4>, 32> metadata;
       for (size_t i = 0; i < m; ++i) metadata[i] = tail(rows, m, i);
-      dot(rows, queries, original_dim, out);
+      // Up to 1024 INT8 terms all integer partial sums fit exactly in FP32.
+      if (!int4 && original_dim > 1024) {
+        record_int8_dots(rows, queries, m, n, original_dim, out);
+      } else {
+        dot(rows, queries, original_dim, out);
+      }
       for (size_t j = 0; j < n; ++j) {
         const auto q = tail(queries, n, j);
         for (size_t i = 0; i < m; ++i) {

@@ -14,6 +14,7 @@
 #include <gtest/gtest.h>
 #include <zvec/ailego/io/file.h>
 #include <zvec/core/framework/index_framework.h>
+#include <zvec/core/framework/index_segment_storage.h>
 #include "metric/metric_params.h"
 #include "ivf_batch_test_helper.h"
 #include "ivf_centroid_index.h"
@@ -295,6 +296,53 @@ TEST_P(IVFLegacyMatrixTest, ColumnBatchPreservesScanOrderAndLimits) {
       }
     }
   }
+}
+
+TEST_P(IVFLegacyMatrixTest, BatchReadsOnlyTheFirstListTail) {
+  ASSERT_NO_FATAL_FAILURE(write_index(768, {1, 32}));
+  class FirstListSegment : public IndexSegmentStorage::Segment {
+   public:
+    using IndexSegmentStorage::Segment::Segment;
+    size_t read(size_t off, IndexStorage::MemoryBlock &block,
+                size_t len) override {
+      if (off > data_size() || len > data_size() - off) return 0;
+      return Segment::read(off, block, len);
+    }
+  };
+  class TailEntity : public IVFEntity {
+   public:
+    void restrict_to_first_list(size_t bytes) {
+      inverted_ = std::make_shared<FirstListSegment>(inverted_, 0, bytes, 0, 0);
+    }
+  } entity;
+  auto storage = open_storage("FileReadStorage");
+  ASSERT_TRUE(storage);
+  ASSERT_EQ(0, entity.load(storage));
+  entity.restrict_to_first_list(meta_.element_size());
+  IndexQueryMeta qmeta(meta_.data_type(), meta_.dimension());
+  auto a = entity.column_query(queries_[0].data(), qmeta);
+  auto b = entity.column_query(queries_[1].data(), qmeta);
+  IndexDocumentHeap ha(1), hb(1);
+  IndexContext::Stats sa, sb;
+  uint32_t scanned = 0;
+  ASSERT_EQ(
+      0, entity.search_many(0, {&a, &b}, {}, {&ha, &hb}, {&sa, &sb}, &scanned));
+  EXPECT_EQ(1u, scanned);
+  ASSERT_EQ(1u, ha.size());
+  ASSERT_EQ(1u, hb.size());
+  EXPECT_EQ(0u, ha[0].key());
+  EXPECT_EQ(0u, hb[0].key());
+}
+
+TEST(IVFBatchHeap, AllocateOnlyForAcceptedCandidates) {
+  IndexDocumentHeap heap;
+  heap.limit_on_demand(100000);
+  heap.set_threshold(0.0f);
+  heap.emplace(1, 1.0f);
+  EXPECT_EQ(0u, heap.container().capacity());
+  heap.emplace(2, -1.0f);
+  ASSERT_EQ(1u, heap.size());
+  EXPECT_LT(heap.container().capacity(), heap.limit());
 }
 
 TEST_P(IVFLegacyMatrixTest, JointKernelDispatchPreservesMetricAndTail) {

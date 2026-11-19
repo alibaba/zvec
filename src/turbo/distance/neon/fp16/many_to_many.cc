@@ -54,6 +54,18 @@ void tile(const void *const *vectors, const void *const *queries, size_t dim,
       hi[1][i] = vfmaq_f32(hi[1][i], xhi, q1hi);
     }
   }
+  // Match the four-lane remainder before the single-query horizontal sum.
+  if (dim - d >= 4) {
+    const auto qa = vcvt_f32_f16(vld1_f16(q0 + d));
+    const auto qb = vcvt_f32_f16(vld1_f16(q1 + d));
+    for (size_t i = 0; i < Rows; ++i) {
+      const auto x = vcvt_f32_f16(
+          vld1_f16(static_cast<const float16_t *>(vectors[i]) + d));
+      lo[0][i] = vfmaq_f32(lo[0][i], x, qa);
+      lo[1][i] = vfmaq_f32(lo[1][i], x, qb);
+    }
+    d += 4;
+  }
   for (size_t j = 0; j < 2; ++j) {
     const auto *q = static_cast<const ailego::Float16 *>(queries[j]);
     for (size_t i = 0; i < Rows; ++i) {
