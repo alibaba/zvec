@@ -89,8 +89,74 @@ Status IDMap::flush() {
     LOG_INFO("Flushed IDMap[%s]", working_dir_.c_str());
   } else {
     LOG_ERROR("Failed to flush IDMap[%s]", working_dir_.c_str());
+    return s;
   }
-  return s;
+  // The data is durable already; a failed merge is retried on the next flush
+  merge_small_files(kFlushCompactMinFiles, true);
+  return Status::OK();
+}
+
+
+Status IDMap::compact() {
+  if (!opened_) {
+    return Status::InternalError();
+  }
+  return merge_small_files(2, false);
+}
+
+
+// Ascending keys make every flushed SST a trivial move that leveled compaction
+// never merges with its neighbours. Walk each level from its largest key down
+// and merge runs of adjacent small files. With size_ratio, a run takes in an
+// older file only while it is no bigger than the newer ones combined, so a
+// byte is rewritten O(log(small / flush size)) times. Full-size files are
+// never touched.
+Status IDMap::merge_small_files(size_t min_files, bool size_ratio) {
+  std::lock_guard<std::mutex> lock(rocksdb_context_.mutex_);
+  auto *db = rocksdb_context_.db_.get();
+  rocksdb::ColumnFamilyMetaData meta;
+  db->GetColumnFamilyMetaData(&meta);
+  const uint64_t small = db->GetOptions().target_file_size_base / 4;
+
+  // kForceOptimized: the files sit in the bottommost level, which the default
+  // kIfHaveCompactionFilter skips.
+  rocksdb::CompactRangeOptions opts;
+  opts.bottommost_level_compaction =
+      rocksdb::BottommostLevelCompaction::kForceOptimized;
+
+  for (const auto &level : meta.levels) {
+    if (level.level == 0) {
+      continue;  // L0 files overlap; RocksDB compacts them on its own
+    }
+    const auto &files = level.files;  // sorted by key for levels > 0
+    for (size_t end = files.size(); end > 0;) {
+      if (files[end - 1].size >= small) {
+        --end;
+        continue;
+      }
+      size_t begin = end - 1;
+      uint64_t run_size = files[begin].size;
+      while (begin > 0 && files[begin - 1].size < small &&
+             (!size_ratio || files[begin - 1].size <= run_size)) {
+        run_size += files[--begin].size;
+      }
+      if (end - begin >= min_files) {
+        rocksdb::Slice first(files[begin].smallestkey);
+        rocksdb::Slice last(files[end - 1].largestkey);
+        auto s = db->CompactRange(opts, &first, &last);
+        if (!s.ok()) {
+          LOG_ERROR("Failed to compact IDMap[%s], code[%d], reason[%s]",
+                    working_dir_.c_str(), s.code(), s.ToString().c_str());
+          return Status::InternalError();
+        }
+        LOG_INFO("Compacted %zu SSTs (%zu bytes) at L%d of IDMap[%s]",
+                 end - begin, (size_t)run_size, level.level,
+                 working_dir_.c_str());
+      }
+      end = begin;
+    }
+  }
+  return Status::OK();
 }
 
 
