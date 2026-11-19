@@ -226,6 +226,30 @@ if(ZVEC_TOPK_TARGET_X86)
         PROPERTIES COMPILE_FLAGS "${_TURBO_INTERLEAVED_AVX512_FLAGS}")
 endif()
 
+# The generic matrix kernel is compiled for the project's baseline. Enabling
+# a wider ISA in these two files must not silently fuse a multiply and add
+# that the baseline rounds separately. With an FMA baseline, inherit its FP
+# contraction policy for the equivalent multiply/add expressions.
+if(ZVEC_TOPK_TARGET_X86)
+    unset(ZVEC_MATRIX_BASELINE_HAS_FMA CACHE)
+    check_cxx_source_compiles([=[
+        #if !defined(__FMA__) && !(defined(_MSC_VER) && defined(__AVX2__))
+        #error Baseline has no FMA
+        #endif
+        int main() { return 0; }
+    ]=] ZVEC_MATRIX_BASELINE_HAS_FMA)
+    if(NOT ZVEC_MATRIX_BASELINE_HAS_FMA)
+        if(MSVC)
+            set(_matrix_contract_flag "/fp:strict")
+        else()
+            set(_matrix_contract_flag "-ffp-contract=off")
+        endif()
+        set_property(SOURCE distance/avx2/interleaved_many_to_many.cc
+                            distance/avx512/interleaved_many_to_many.cc
+                     APPEND PROPERTY COMPILE_OPTIONS ${_matrix_contract_flag})
+    endif()
+endif()
+
 # The joint interleaved kernel uses baseline AArch64 NEON and FP32 arithmetic,
 # including FP16-to-FP32 conversion; it does not require FEAT_FP16 arithmetic.
 # Keep this translation unit at the ISA promised by its runtime dispatch gate.

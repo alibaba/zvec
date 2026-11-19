@@ -21,7 +21,7 @@
 #include <vector>
 #include <zvec/ailego/utility/type_helper.h>
 #include <zvec/turbo/turbo.h>
-#include "common/fp16_matrix_tile.h"
+#include "common/interleaved_matrix.h"
 
 #if defined(AILEGO_ARM64_GNU_LIKE)
 #include "neon/fp16/inner_product.h"

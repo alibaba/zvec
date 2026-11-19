@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "avx2/interleaved_many_to_many.h"
-#include "common/fp16_matrix_tile.h"
+#include "common/interleaved_matrix.h"
 #include <cstring>
 #include <type_traits>
 #include <zvec/ailego/utility/float_helper.h>
@@ -68,13 +68,14 @@ inline __m256 broadcast_query(const T *p) {
   }
 }
 
-template <MetricType Metric>
+template <typename T, MetricType Metric>
 inline __m256 accumulate(__m256 sum, __m256 x, __m256 q) {
-  if constexpr (Metric == MetricType::kInnerProduct) {
+  if constexpr (std::is_same_v<T, ailego::Float16> &&
+                Metric == MetricType::kInnerProduct) {
+    // Every finite FP16 product is exact in FP32, including before addition.
     return _mm256_fnmadd_ps(x, q, sum);
   } else {
-    const auto delta = _mm256_sub_ps(x, q);
-    return _mm256_fmadd_ps(delta, delta, sum);
+    return accumulate_matrix_lanes<Metric>(sum, x, q);
   }
 }
 
@@ -97,8 +98,8 @@ void accumulate_tile(const T *matrix, const T *q0, const T *q1, size_t dim,
     if constexpr (Pair) qb = broadcast_query(q1 + d);
     for (size_t c = 0; c < Chunks; ++c) {
       const auto x = load_candidates<T, Rows>(matrix + d * Rows + c * 8);
-      a[c] = accumulate<Metric>(a[c], x, qa);
-      if constexpr (Pair) b[c] = accumulate<Metric>(b[c], x, qb);
+      a[c] = accumulate<T, Metric>(a[c], x, qa);
+      if constexpr (Pair) b[c] = accumulate<T, Metric>(b[c], x, qb);
     }
   }
   for (size_t c = 0; c < Chunks; ++c) {
@@ -111,9 +112,8 @@ template <typename T, size_t Rows, MetricType Metric, bool Pair>
 void tile(const T *matrix, const T *q0, const T *q1, size_t dim, float *out0,
           float *out1) {
   constexpr auto compute = accumulate_tile<T, Rows, Metric, Pair>;
-  if constexpr (std::is_same_v<T, ailego::Float16> &&
-                Metric == MetricType::kInnerProduct) {
-    fp16_ip_tiles<Rows, Pair>(compute, matrix, q0, q1, dim, out0, out1);
+  if constexpr (std::is_same_v<T, ailego::Float16>) {
+    fp16_matrix_tiles<Rows, Pair>(compute, matrix, q0, q1, dim, out0, out1);
   } else {
     compute(matrix, q0, q1, dim, out0, out1);
   }

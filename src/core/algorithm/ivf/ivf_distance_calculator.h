@@ -40,12 +40,12 @@ class IVFDistanceCalculator {
 
   void column_queries_distance(const void *const *queries, size_t n,
                                const void *features, size_t count, float *out) {
-    if (column_many_distance_ && count == block_vec_cnt_ && n > 1) {
-      column_many_distance_(features, queries, n, dimension_, out);
+    if (column_major_order_ && count == block_vec_cnt_) {
+      full_column_distance(queries, n, features, out);
     } else {
       for (size_t q = 0; q < n; ++q) {
-        query_features_distance(queries[q], features, count,
-                                out + q * block_vec_cnt_);
+        row_major_distance(queries[q], features, count,
+                           out + q * block_vec_cnt_);
       }
     }
   }
@@ -83,6 +83,18 @@ class IVFDistanceCalculator {
                                       float *distances);
 
  protected:
+  void full_column_distance(const void *const *queries, size_t n,
+                            const void *features, float *out) {
+    if (n && column_many_distance_) {
+      column_many_distance_(features, queries, n, dimension_, out);
+    } else {
+      for (size_t q = 0; q < n; ++q) {
+        column_single_distance_(features, queries[q], dimension_,
+                                out + q * block_vec_cnt_);
+      }
+    }
+  }
+
   //! Row Major Distances -> Online
   inline void row_major_distance(const void *query, const void *feature,
                                  size_t fnum, float *out);
@@ -103,15 +115,8 @@ void IVFDistanceCalculator::query_features_distance(const void *query,
                                                     const void *feature,
                                                     size_t fnum,
                                                     float *distances) {
-  if (column_major_order_) {
-    if (fnum == block_vec_cnt_) {
-      column_single_distance_(feature, query, dimension_, distances);
-    } else {
-      this->row_major_distance(query, feature, fnum, distances);
-    }
-  } else {
-    this->row_major_distance(query, feature, fnum, distances);
-  }
+  const bool full_column = column_major_order_ && fnum == block_vec_cnt_;
+  query_features_distance(query, feature, full_column, fnum, distances);
 }
 
 void IVFDistanceCalculator::query_features_distance(const void *query,
@@ -121,7 +126,7 @@ void IVFDistanceCalculator::query_features_distance(const void *query,
                                                     float *distances) {
   if (column_major) {
     ailego_assert_with(fnum == block_vec_cnt_, "Invalid Block");
-    column_single_distance_(feature, query, dimension_, distances);
+    full_column_distance(&query, 1, feature, distances);
   } else {
     this->row_major_distance(query, feature, fnum, distances);
   }

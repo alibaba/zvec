@@ -417,6 +417,29 @@ TEST_P(IVFLegacyMatrixTest, JointKernelDispatchPreservesMetricAndTail) {
   custom.column_queries_distance(queries.data(), queries.size(), nullptr, 32,
                                  out.data());
   for (float score : out) EXPECT_EQ(123.0f, score);
+
+  class JointMetric : public CustomMetric, public InterleavedDistanceProvider {
+   public:
+    turbo::InterleavedManyToManyDistanceFunc interleaved_many_distance(
+        size_t rows) const override {
+      return [rows](const void *, const void *const *queries, size_t n,
+                    size_t, float *out) {
+        ASSERT_EQ(1u, n);
+        ASSERT_NE(nullptr, queries[0]);
+        std::fill_n(out, rows, 456.0f);
+      };
+    }
+  };
+  IVFDistanceCalculator joint(meta_, std::make_shared<JointMetric>(), 32);
+  const bool eligible = meta_.data_type() == IndexMeta::DT_FP32 ||
+                        meta_.data_type() == IndexMeta::DT_FP16;
+  const std::vector<float> expected(32, eligible ? 456.0f : 123.0f);
+  std::vector<float> scores(32);
+  joint.query_features_distance(queries[0], nullptr, 32, scores.data());
+  EXPECT_EQ(expected, scores);
+  scores.assign(32, 0.0f);
+  joint.column_queries_distance(queries.data(), 1, nullptr, 32, scores.data());
+  EXPECT_EQ(expected, scores);
 }
 
 TEST_P(IVFLegacyMatrixTest,
