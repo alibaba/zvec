@@ -71,7 +71,7 @@ arrow::Result<ForwardColumn::Ptr> ForwardColumn::Make(
   }
   ARROW_RETURN_NOT_OK(data->Validate());
 
-  auto column = std::shared_ptr<ForwardColumn>(new ForwardColumn);
+  auto column = std::make_shared<ForwardColumn>(ForwardReadFactoryKey{});
   column->layout_ = LayoutOf(*field->type(), &column->byte_width_);
   column->arrays_.reserve(data->num_chunks());
   column->ends_.reserve(data->num_chunks());
@@ -137,7 +137,7 @@ arrow::Result<ForwardColumn::Ptr> ForwardColumn::Make(
 
 ForwardColumn::Ptr ForwardColumn::MakeRowId(std::shared_ptr<arrow::Field> field,
                                             int64_t length) {
-  auto column = std::shared_ptr<ForwardColumn>(new ForwardColumn);
+  auto column = std::make_shared<ForwardColumn>(ForwardReadFactoryKey{});
   column->field_ = std::move(field);
   column->length_ = length;
   column->layout_ = Layout::kRowId;
@@ -215,8 +215,8 @@ ForwardReadView::Ptr ForwardReadView::Compose(
       return nullptr;
     }
   }
-  return Ptr(
-      new ForwardReadView(std::move(schema), num_rows, std::move(columns)));
+  return std::make_shared<const ForwardReadView>(
+      ForwardReadFactoryKey{}, std::move(schema), num_rows, std::move(columns));
 }
 
 }  // namespace zvec

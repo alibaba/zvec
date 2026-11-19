@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 #include <arrow/array.h>
 #include <arrow/chunked_array.h>
@@ -33,6 +34,13 @@ namespace test {
 class ForwardFilterReadTest;
 }
 
+// Keep construction restricted to the factories when using std::make_shared.
+class ForwardReadFactoryKey {
+  friend class ForwardColumn;
+  friend class ForwardReadView;
+  explicit ForwardReadFactoryKey() = default;
+};
+
 // One immutable, zero-copy forward column in segment-local row order. A
 // sealed segment builds each filtered column once and shares it with every
 // query until DDL, reload or close releases it. The column holds no segment
@@ -42,6 +50,8 @@ class ForwardFilterReadTest;
 class ForwardColumn final {
  public:
   using Ptr = std::shared_ptr<const ForwardColumn>;
+
+  explicit ForwardColumn(ForwardReadFactoryKey) {}
 
   // How compiled evaluators may read Span buffers.
   enum class Layout {
@@ -123,8 +133,6 @@ class ForwardColumn final {
                                  int64_t length);
   static Ptr MakeRowId(std::shared_ptr<arrow::Field> field, int64_t length);
 
-  ForwardColumn() = default;
-
   std::shared_ptr<arrow::Field> field_;
   std::shared_ptr<arrow::ChunkedArray> data_;
   int64_t length_{0};
@@ -142,6 +150,12 @@ class ForwardReadView final {
  public:
   using Ptr = std::shared_ptr<const ForwardReadView>;
   using RowLocation = ForwardColumn::Location;
+
+  ForwardReadView(ForwardReadFactoryKey, std::shared_ptr<arrow::Schema> schema,
+                  int64_t num_rows, std::vector<ForwardColumn::Ptr> columns)
+      : schema_(std::move(schema)),
+        num_rows_(num_rows),
+        columns_(std::move(columns)) {}
 
   const std::shared_ptr<arrow::Schema> &schema() const {
     return schema_;
@@ -178,12 +192,6 @@ class ForwardReadView final {
   static Ptr Make(std::shared_ptr<arrow::Table> table);
   static Ptr Compose(std::shared_ptr<arrow::Schema> schema, int64_t num_rows,
                      std::vector<ForwardColumn::Ptr> columns);
-
-  ForwardReadView(std::shared_ptr<arrow::Schema> schema, int64_t num_rows,
-                  std::vector<ForwardColumn::Ptr> columns)
-      : schema_(std::move(schema)),
-        num_rows_(num_rows),
-        columns_(std::move(columns)) {}
 
   const std::shared_ptr<arrow::Schema> schema_;
   const int64_t num_rows_;
