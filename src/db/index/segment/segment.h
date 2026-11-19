@@ -65,9 +65,9 @@ class Segment {
   // cannot prove buffer ownership return a null view (locked fetch). The
   // segment implementation uses owning views only for sealed IPC segments;
   // writing segments (even immediately after flush) and Parquet keep
-  // per-candidate locked fetch. A sealed segment builds each requested column
-  // once and shares it with every later projection until DDL, reload or
-  // close; composing a view for already-built columns copies no data.
+  // per-candidate locked fetch. Open and seal prepare immutable columns; DDL
+  // and reload replace them under the segment lock. Query projections share
+  // the published columns and keep their buffers alive independently.
   // `with_deletion` also requests deletion_filter.
   // Callers keep this decision fixed and enforce num_rows only for an owning
   // view. Locked fetch reads live rows, including appends after preparation,
@@ -247,12 +247,13 @@ class Segment {
   // ---- Persistence and lifecycle -----------------------------------------
   virtual Status flush() = 0;
 
-  virtual Status dump() = 0;
+  // A rollover may resume a successful dump whose writing block is still
+  // waiting for publication. Ordinary callers reject a duplicate dump.
+  virtual Status dump(bool allow_already_dumped = false) = 0;
 
-  // Drops the writing forward block under the exclusive segment lock. Callers
-  // must use this instead of meta()->remove_writing_forward_block(): readers
-  // copy that block out of the meta, so an unlocked reset can free it mid-copy.
-  virtual void remove_writing_forward_block() = 0;
+  // Publishes the prepared read state and removes the writing block together
+  // under the exclusive segment lock. On failure the writing block remains.
+  virtual Status remove_writing_forward_block() = 0;
 
   virtual Status destroy() = 0;
 };

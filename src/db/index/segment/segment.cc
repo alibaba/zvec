@@ -241,9 +241,9 @@ class SegmentImpl : public Segment,
                           const SegmentMeta::Ptr &segment_meta,
                           const FtsIndexer::Ptr &new_fts_indexer) override;
 
-  Status dump() override;
+  Status dump(bool allow_already_dumped) override;
 
-  void remove_writing_forward_block() override;
+  Status remove_writing_forward_block() override;
 
   Status flush() override;
 
@@ -375,18 +375,8 @@ class SegmentImpl : public Segment,
   const std::vector<uint64_t> *get_fetch_perf_chunk_offsets(
       const std::vector<std::string> &columns) const;
 
-  void fresh_persist_chunked_array();
-
-  // Caller holds seg_mtx_ exclusively. Only DDL/reload/close change a sealed
-  // segment's columns; ordinary writes target the writing segment, and
-  // deletions are evaluated separately. Release the catalog immediately: no
-  // later capture can match the old generation, and the collection's schema
-  // lock has drained every query that could still use it, so it would only
-  // pin retired stores (and files about to be removed) until the next capture.
-  void invalidate_forward_view_unsafe() {
-    ++forward_view_generation_;
-    forward_columns_.reset();
-  }
+  // Called before Open publishes the segment or under exclusive seg_mtx_.
+  Status refresh_persisted_read_state(bool sealing = false);
 
  private:
   // scalar forward (uses segment-local doc ID)
@@ -460,27 +450,29 @@ class SegmentImpl : public Segment,
   // helpers and the memory-component rebuild assume the caller holds it.
   mutable std::shared_mutex seg_mtx_;
 
-  // Sealed-IPC columns already built for forward filters, keyed by column
-  // name. Each column is built once per generation and shared by every query
-  // projection; a published catalog is immutable and is extended by
-  // copy-on-write. seg_mtx_ protects the pointer and the generation: readers
-  // copy the pointer under the shared lock, publishers replace it and
-  // invalidations release it under the exclusive lock.
-  using ForwardColumnCatalog =
-      std::unordered_map<std::string, ForwardColumn::Ptr>;
-  uint64_t forward_view_generation_{0};
-  std::shared_ptr<const ForwardColumnCatalog> forward_columns_;
-
-  bool need_destroyed_{false};
-
-  // For performance tuning
   static constexpr size_t INVALID_CHUNK_LAYOUT_ID =
       std::numeric_limits<size_t>::max();
-  std::vector<std::shared_ptr<arrow::ChunkedArray>> persist_chunk_arrays_;
-  std::unordered_map<std::string, int> col_idx_map_;
-  std::vector<std::vector<uint64_t>> chunk_layout_offsets_;
-  std::vector<size_t> persist_chunk_layout_ids_;
-  bool all_columns_same_chunk_layout_{false};
+
+  // Published as one snapshot. Sealed projections and read-only batch fetch
+  // share the same ChunkedArrays, including independently chunked DDL columns.
+  struct PersistedReadState {
+    struct Column {
+      std::shared_ptr<arrow::ChunkedArray> data;
+      arrow::Result<ForwardColumn::Ptr> forward{ForwardColumn::Ptr{}};
+      size_t fetch_layout{INVALID_CHUNK_LAYOUT_ID};
+    };
+
+    int64_t num_rows{0};
+    bool sealed{false};
+    arrow::Result<IndexFilter::Ptr> deletion_filter{IndexFilter::Ptr{}};
+    std::unordered_map<std::string, Column> columns;
+    // Read-only batch fetch can locate all selected columns with one layout.
+    std::vector<std::vector<uint64_t>> fetch_offsets;
+    bool common_fetch_layout{false};
+  };
+
+  std::shared_ptr<const PersistedReadState> persisted_read_state_;
+  bool need_destroyed_{false};
 
   // Inner classes
   class CombinedRecordBatchReader;
@@ -578,7 +570,8 @@ Status SegmentImpl::Open(const SegmentOptions &options) {
 
   fresh_persist_block_offset();
 
-  fresh_persist_chunked_array();
+  s = refresh_persisted_read_state();
+  CHECK_RETURN_STATUS(s);
 
   // All persisted doc IDs must be loaded before checking identity.
   if (options_.read_only_) {
@@ -630,7 +623,7 @@ Status SegmentImpl::close() {
   // Exclusive: flush() below rewrites the stores readers read; destroy()
   // reaches here without the lock.
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
-  invalidate_forward_view_unsafe();
+  persisted_read_state_.reset();
   flush_unsafe();
   if (invert_indexers_) {
     invert_indexers_.reset();
@@ -1871,10 +1864,12 @@ Status SegmentImpl::reload_vector_index(
     const std::unordered_map<std::string, VectorColumnIndexer::Ptr>
         &quant_vector_indexers) {
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
-  invalidate_forward_view_unsafe();
+  persisted_read_state_.reset();
   collection_schema_ = std::make_shared<CollectionSchema>(schema);
   segment_meta_ = new_segment_meta;
   fresh_persist_block_offset();
+  auto read_status = refresh_persisted_read_state();
+  CHECK_RETURN_STATUS(read_status);
 
   auto vector_fields = schema.vector_fields();
 
@@ -2153,9 +2148,12 @@ Status SegmentImpl::reload_scalar_index(
     const CollectionSchema &schema, const SegmentMeta::Ptr &segment_meta,
     const InvertedIndexer::Ptr &scalar_indexer) {
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
-  invalidate_forward_view_unsafe();
+  persisted_read_state_.reset();
   collection_schema_ = std::make_shared<CollectionSchema>(schema);
   segment_meta_ = segment_meta;
+  fresh_persist_block_offset();
+  auto read_status = refresh_persisted_read_state();
+  CHECK_RETURN_STATUS(read_status);
 
   if (invert_indexers_ == scalar_indexer) {
     return Status::OK();
@@ -2170,7 +2168,6 @@ Status SegmentImpl::reload_scalar_index(
     return Status::OK();
   }
 
-  fresh_persist_block_offset();
 
   if (invert_indexers_) {
     auto old_dir = invert_indexers_->working_dir();
@@ -2183,13 +2180,18 @@ Status SegmentImpl::reload_scalar_index(
   return Status::OK();
 }
 
-Status SegmentImpl::dump() {
+Status SegmentImpl::dump(bool allow_already_dumped) {
   // Exclusive: flush() below resets memory_store_ and rewrites persist_stores_,
   // the block metadata and the indexer maps. Lock order matches Insert (the
   // caller already holds the collection's exclusive write_mtx_).
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
 
   if (sealed_) {
+    // A rollover can retry after dumping but before publishing the segment.
+    if (allow_already_dumped && segment_meta_->has_writing_forward_block() &&
+        !memory_store_) {
+      return Status::OK();
+    }
     return Status::NotSupported("Segment has been dumped.");
   }
   auto s = flush_unsafe();
@@ -2208,11 +2210,18 @@ Status SegmentImpl::dump() {
   return Status::OK();
 }
 
-void SegmentImpl::remove_writing_forward_block() {
+Status SegmentImpl::remove_writing_forward_block() {
   // Exclusive: dump() has already released seg_mtx_ by the time the collection
   // seals the switched-out segment.
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
+  if (!segment_meta_->has_writing_forward_block()) return Status::OK();
+  if (memory_store_) {
+    return Status::InvalidArgument("Cannot seal a segment with a memory store");
+  }
+  auto status = refresh_persisted_read_state(/*sealing=*/true);
+  CHECK_RETURN_STATUS(status);
   segment_meta_->remove_writing_forward_block();
+  return Status::OK();
 }
 
 Status SegmentImpl::flush() {
@@ -2388,7 +2397,7 @@ TablePtr SegmentImpl::fetch_perf(
       chunk_arrays[i] = nullptr;
       continue;
     }
-    chunk_arrays[i] = persist_chunk_arrays_[col_idx_map_.at(columns[i])];
+    chunk_arrays[i] = persisted_read_state_->columns.at(columns[i]).data;
   }
 
   std::vector<std::shared_ptr<arrow::Array>> result_arrays(columns.size());
@@ -2457,42 +2466,28 @@ TablePtr SegmentImpl::fetch_perf(
 
 const std::vector<uint64_t> *SegmentImpl::get_fetch_perf_chunk_offsets(
     const std::vector<std::string> &columns) const {
-  size_t common_layout_id = INVALID_CHUNK_LAYOUT_ID;
-
-  for (const auto &column : columns) {
-    if (column == LOCAL_ROW_ID) {
-      continue;
-    }
-
-    auto col_idx_it = col_idx_map_.find(column);
-    if (col_idx_it == col_idx_map_.end()) {
-      return nullptr;
-    }
-    const auto col_idx = static_cast<size_t>(col_idx_it->second);
-    if (col_idx >= persist_chunk_layout_ids_.size()) {
-      return nullptr;
-    }
-
-    const auto layout_id = persist_chunk_layout_ids_[col_idx];
-    if (layout_id == INVALID_CHUNK_LAYOUT_ID ||
-        layout_id >= chunk_layout_offsets_.size()) {
-      return nullptr;
-    }
-
-    if (common_layout_id == INVALID_CHUNK_LAYOUT_ID) {
-      common_layout_id = layout_id;
-      continue;
-    }
-
-    if (layout_id != common_layout_id) {
-      return nullptr;
-    }
-  }
-
-  if (common_layout_id == INVALID_CHUNK_LAYOUT_ID) {
+  if (!persisted_read_state_ || persisted_read_state_->fetch_offsets.empty()) {
     return nullptr;
   }
-  return &chunk_layout_offsets_[common_layout_id];
+  const auto &state = *persisted_read_state_;
+  if (state.common_fetch_layout) return &state.fetch_offsets.front();
+  size_t common_layout = INVALID_CHUNK_LAYOUT_ID;
+  for (const auto &name : columns) {
+    if (name == LOCAL_ROW_ID) continue;
+    const auto it = state.columns.find(name);
+    if (it == state.columns.end() ||
+        it->second.fetch_layout == INVALID_CHUNK_LAYOUT_ID) {
+      return nullptr;
+    }
+    if (common_layout != INVALID_CHUNK_LAYOUT_ID &&
+        common_layout != it->second.fetch_layout) {
+      return nullptr;
+    }
+    common_layout = it->second.fetch_layout;
+  }
+  return common_layout == INVALID_CHUNK_LAYOUT_ID
+             ? nullptr
+             : &state.fetch_offsets[common_layout];
 }
 
 TablePtr SegmentImpl::fetch_normal(
@@ -2753,11 +2748,6 @@ TablePtr SegmentImpl::fetch_unsafe(
     return nullptr;
   }
 
-  if (all_columns_same_chunk_layout_) {
-    return fetch_perf(columns, result_schema, segment_doc_ids,
-                      chunk_layout_offsets_.front());
-  }
-
   const auto *chunk_offsets = get_fetch_perf_chunk_offsets(columns);
   if (chunk_offsets != nullptr) {
     return fetch_perf(columns, result_schema, segment_doc_ids, *chunk_offsets);
@@ -2804,211 +2794,66 @@ class SealedDeletionFilter final : public IndexFilter {
 
 arrow::Result<Segment::ForwardReadState> SegmentImpl::prepare_forward_read(
     const std::vector<std::string> &columns, bool with_deletion) try {
-  // A physical column this capture needs (projected, or GLOBAL_DOC_ID for the
-  // deletion check) that the catalog does not yet hold, with the
-  // already-loaded IPC tables containing it in segment row order.
-  struct Pending {
-    std::string name;
-    std::shared_ptr<arrow::Field> field;
-    std::vector<std::pair<TablePtr, int64_t>> blocks;  // (table, doc count)
-    ForwardColumn::Ptr built;
-  };
-  SegmentID segment_id;
-  uint64_t generation;
-  int64_t rows;
-  arrow::FieldVector fields;
-  std::shared_ptr<const ForwardColumnCatalog> catalog;
-  std::shared_ptr<const DeleteStore> delete_store;
-  std::vector<Pending> pending;
-  auto make_field = [&](const std::string &name)
-      -> arrow::Result<std::shared_ptr<arrow::Field>> {
-    if (name == GLOBAL_DOC_ID || name == LOCAL_ROW_ID) {
-      return arrow::field(name, arrow::uint64(), false);
-    }
-    if (name == USER_ID) return arrow::field(name, arrow::utf8(), false);
-    const auto *field = collection_schema_->get_field(name);
-    if (!field) return arrow::Status::Invalid("Unknown forward column: ", name);
-    std::shared_ptr<arrow::Field> converted;
-    ARROW_RETURN_NOT_OK(ConvertFieldSchemaToArrowField(field, &converted));
-    return converted;
-  };
+  std::shared_ptr<const PersistedReadState> state;
   {
-    // Capture eligibility, schema, row boundary and the catalog together.
-    // Only sealed IPC retains immutable tables; mutable and Parquet data are
-    // never snapshotted.
     std::shared_lock<std::shared_mutex> lock(seg_mtx_);
-    segment_id = segment_meta_->id();
-    generation = forward_view_generation_;
-    rows = static_cast<int64_t>(doc_ids_.size());
-    for (const auto &name : columns) {
-      ARROW_ASSIGN_OR_RAISE(auto field, make_field(name));
-      fields.push_back(std::move(field));
-    }
-    const auto &blocks = get_persist_block_metas(BlockType::SCALAR);
-    if (blocks.size() != persist_stores_.size() ||
-        (rows > 0 && blocks.empty() && !memory_store_)) {
-      return arrow::Status::Invalid("Forward stores are closed or incomplete");
-    }
-    // A flush can leave an empty writing block with no memory store. It is
-    // still a writing segment, not eligible for the sealed IPC fast path.
-    // This decision and the row boundary share the same synchronization as
-    // capture; no unlocked lifecycle check or retry-on-error fallback exists.
-    // Eligibility is decided before the catalog is consulted.
-    const bool eligible = !segment_meta_->has_writing_forward_block() &&
-                          !memory_store_ && options_.enable_mmap_;
-    if (!eligible) {
-      return ForwardReadState{arrow::schema(std::move(fields)),
-                              static_cast<uint64_t>(rows), nullptr, nullptr};
-    }
-    catalog = forward_columns_;
-    delete_store = delete_store_;
-    auto want =
-        [&](const std::string &name,
-            const std::shared_ptr<arrow::Field> &field) -> arrow::Status {
-      if (name == LOCAL_ROW_ID) return arrow::Status::OK();  // Virtual.
-      if (catalog) {
-        const auto found = catalog->find(name);
-        // Same generation implies the same schema; the type and length
-        // checks are a cheap guard against a missed invalidation.
-        if (found != catalog->end() &&
-            found->second->type()->Equals(*field->type()) &&
-            found->second->length() == rows) {
-          return arrow::Status::OK();
+    state = persisted_read_state_;
+    if (!state || !state->sealed) {
+      const auto &blocks = get_persist_block_metas(BlockType::SCALAR);
+      const auto rows = doc_ids_.size();
+      if (blocks.size() != persist_stores_.size() ||
+          (rows && blocks.empty() && !memory_store_) ||
+          (options_.enable_mmap_ &&
+           !segment_meta_->has_writing_forward_block() && !memory_store_)) {
+        return arrow::Status::Invalid(
+            "Forward stores are closed or incomplete");
+      }
+      arrow::FieldVector fields;
+      for (const auto &name : columns) {
+        if (name == LOCAL_ROW_ID || name == GLOBAL_DOC_ID) {
+          fields.push_back(arrow::field(name, arrow::uint64(), false));
+        } else if (name == USER_ID) {
+          fields.push_back(arrow::field(name, arrow::utf8(), false));
+        } else {
+          const auto *field = collection_schema_->get_field(name);
+          if (!field)
+            return arrow::Status::Invalid("Unknown forward column: ", name);
+          std::shared_ptr<arrow::Field> converted;
+          ARROW_RETURN_NOT_OK(
+              ConvertFieldSchemaToArrowField(field, &converted));
+          fields.push_back(std::move(converted));
         }
       }
-      if (std::any_of(pending.begin(), pending.end(),
-                      [&](const Pending &p) { return p.name == name; })) {
-        return arrow::Status::OK();
-      }
-      Pending column{name, field, {}, nullptr};
-      for (size_t b = 0; b < blocks.size(); ++b) {
-        if (!blocks[b].contain_column(name)) continue;
-        auto store =
-            std::dynamic_pointer_cast<MmapForwardStore>(persist_stores_[b]);
-        auto table = store ? store->get_table() : nullptr;
-        if (!table) {
-          return arrow::Status::Invalid("Sealed IPC table is unavailable");
-        }
-        column.blocks.emplace_back(std::move(table),
-                                   static_cast<int64_t>(blocks[b].doc_count_));
-      }
-      pending.push_back(std::move(column));
-      return arrow::Status::OK();
-    };
-    for (size_t i = 0; i < columns.size(); ++i) {
-      ARROW_RETURN_NOT_OK(want(columns[i], fields[i]));
-    }
-    if (with_deletion && delete_store) {
-      ARROW_ASSIGN_OR_RAISE(auto field, make_field(GLOBAL_DOC_ID));
-      ARROW_RETURN_NOT_OK(want(GLOBAL_DOC_ID, field));
+      return ForwardReadState{arrow::schema(std::move(fields)), rows, nullptr,
+                              nullptr};
     }
   }
 
-  if (!pending.empty()) {
-    // Retained IPC arrays own their buffers even if the segment is retired
-    // here. Build the missing columns outside seg_mtx_: zero-copy chunk lists
-    // and raw spans only, with no store access, copying or decoding.
-    LOG_DEBUG("Forward filter capture: segment[%d] rows[%zu] columns[%zu]",
-              segment_id, static_cast<size_t>(rows), pending.size());
-    for (auto &column : pending) {
-      arrow::ArrayVector chunks;
-      for (const auto &[table, expected_rows] : column.blocks) {
-        if (table->num_rows() != expected_rows) {
-          return arrow::Status::Invalid("Incomplete forward-store snapshot");
-        }
-        const auto array = table->GetColumnByName(column.name);
-        if (!array) {
-          return arrow::Status::Invalid("Unknown forward column: ",
-                                        column.name);
-        }
-        chunks.insert(chunks.end(), array->chunks().begin(),
-                      array->chunks().end());
-      }
-      ARROW_ASSIGN_OR_RAISE(
-          column.built,
-          ForwardColumn::Make(column.field,
-                              std::make_shared<arrow::ChunkedArray>(
-                                  std::move(chunks), column.field->type()),
-                              rows));
-    }
-    std::shared_ptr<const ForwardColumnCatalog> replaced, published;
-    {
-      std::lock_guard<std::shared_mutex> lock(seg_mtx_);
-      // Compare and publish in the same critical section as invalidation. A
-      // DDL/reload/close during construction must never publish old columns;
-      // this query may still use them, but the next query rebuilds.
-      if (generation == forward_view_generation_) {
-        std::shared_ptr<ForwardColumnCatalog> next;
-        for (const auto &column : pending) {
-          if (forward_columns_) {
-            const auto it = forward_columns_->find(column.name);
-            if (it != forward_columns_->end() &&
-                it->second->type()->Equals(*column.built->type()) &&
-                it->second->length() == rows) {
-              continue;  // A concurrent capture already published this column.
-            }
-          }
-          // Copy only if a column still needs publishing. Concurrent captures
-          // whose columns are all available reuse the catalog unchanged.
-          if (!next) {
-            next =
-                forward_columns_
-                    ? std::make_shared<ForwardColumnCatalog>(*forward_columns_)
-                    : std::make_shared<ForwardColumnCatalog>();
-          }
-          next->insert_or_assign(column.name, column.built);
-        }
-        if (next) {
-          replaced = std::move(forward_columns_);
-          forward_columns_ = std::move(next);
-        }
-        published = forward_columns_;
-      }
-    }
-    // Share concurrent winners and release duplicate columns and old catalogs
-    // outside seg_mtx_. The retained publication survives later invalidation.
-    if (published) {
-      for (auto &column : pending) {
-        column.built = published->at(column.name);
-      }
-      catalog = std::move(published);
-    }
-    replaced.reset();
-  }
-
-  auto column_of = [&](const std::string &name) -> ForwardColumn::Ptr {
-    const auto built =
-        std::find_if(pending.begin(), pending.end(),
-                     [&](const Pending &p) { return p.name == name; });
-    return built != pending.end() ? built->built : catalog->at(name);
-  };
+  // Once captured, projecting columns is independent of DDL and retirement.
+  LOG_DEBUG("Forward read captured: rows[%zu] columns[%zu]",
+            static_cast<size_t>(state->num_rows), columns.size());
+  arrow::FieldVector fields;
   std::vector<ForwardColumn::Ptr> selected;
+  fields.reserve(columns.size());
   selected.reserve(columns.size());
-  for (size_t i = 0; i < columns.size(); ++i) {
-    selected.push_back(columns[i] == LOCAL_ROW_ID
-                           ? ForwardColumn::MakeRowId(fields[i], rows)
-                           : column_of(columns[i]));
+  for (const auto &name : columns) {
+    const auto it = state->columns.find(name);
+    if (it == state->columns.end()) {
+      return arrow::Status::Invalid("Unknown forward column: ", name);
+    }
+    ARROW_ASSIGN_OR_RAISE(auto column, it->second.forward);
+    fields.push_back(column->field());
+    selected.push_back(std::move(column));
   }
   IndexFilter::Ptr deletion_filter;
-  if (with_deletion && delete_store) {
-    auto doc_ids = column_of(GLOBAL_DOC_ID);
-    if (SealedDeletionFilter::Supports(*doc_ids)) {
-      deletion_filter = std::make_shared<SealedDeletionFilter>(
-          std::move(doc_ids), std::move(delete_store));
-    }
+  if (with_deletion) {
+    ARROW_ASSIGN_OR_RAISE(deletion_filter, state->deletion_filter);
   }
-  auto view = ForwardReadView::Compose(arrow::schema(std::move(fields)), rows,
-                                       std::move(selected));
+  auto view = ForwardReadView::Compose(arrow::schema(std::move(fields)),
+                                       state->num_rows, std::move(selected));
   if (!view) return arrow::Status::Invalid("Invalid forward read view");
-  catalog.reset();
-  // Log outside seg_mtx_. In particular, a query that retains this view must
-  // not prevent retirement of its stores.
-  LOG_DEBUG(
-      "Forward read prepared: segment[%d] rows[%zu] columns[%zu] built[%zu] "
-      "deletion[%d]",
-      segment_id, static_cast<size_t>(rows), columns.size(), pending.size(),
-      deletion_filter != nullptr);
-  return ForwardReadState{view->schema(), static_cast<uint64_t>(rows),
+  return ForwardReadState{view->schema(),
+                          static_cast<uint64_t>(state->num_rows),
                           std::move(view), std::move(deletion_filter)};
 } catch (const std::bad_alloc &) {
   return arrow::Status::OutOfMemory("Capture forward read view");
@@ -3564,7 +3409,7 @@ Status SegmentImpl::add_column(FieldSchema::Ptr column_schema,
 
   std::unique_lock<std::shared_mutex> lock(seg_mtx_);
   // create and append persist scalar indexer
-  invalidate_forward_view_unsafe();
+  persisted_read_state_.reset();
   for (auto &block : new_blocks) {
     auto forward_path = FileHelper::MakeForwardBlockPath(
         path_, segment_meta_->id(), block.id_, !options_.enable_mmap_);
@@ -3587,9 +3432,7 @@ Status SegmentImpl::add_column(FieldSchema::Ptr column_schema,
 
   fresh_persist_block_offset();
 
-  fresh_persist_chunked_array();
-
-  return Status::OK();
+  return refresh_persisted_read_state();
 }
 
 
@@ -3735,7 +3578,7 @@ Status SegmentImpl::alter_column(const std::string &column_name,
 
   std::unique_lock<std::shared_mutex> lock(seg_mtx_);
   // update old block, remove column
-  invalidate_forward_view_unsafe();
+  persisted_read_state_.reset();
   std::vector<BlockMeta> &persisted_blocks = segment_meta_->persisted_blocks();
   std::vector<int> will_del_block_idx;
   for (size_t idx = 0; idx < persisted_blocks.size(); idx++) {
@@ -3818,9 +3661,7 @@ Status SegmentImpl::alter_column(const std::string &column_name,
 
   fresh_persist_block_offset();
 
-  fresh_persist_chunked_array();
-
-  return Status::OK();
+  return refresh_persisted_read_state();
 }
 
 Status SegmentImpl::drop_column(const std::string &column_name) {
@@ -3831,7 +3672,7 @@ Status SegmentImpl::drop_column(const std::string &column_name) {
 
   std::unique_lock<std::shared_mutex> lock(seg_mtx_);
   // update old block, remove column
-  invalidate_forward_view_unsafe();
+  persisted_read_state_.reset();
   std::vector<BlockMeta> &persisted_blocks = segment_meta_->persisted_blocks();
   std::vector<int> will_del_block_idx;
   for (size_t idx = 0; idx < persisted_blocks.size(); idx++) {
@@ -3918,9 +3759,7 @@ Status SegmentImpl::drop_column(const std::string &column_name) {
 
   fresh_persist_block_offset();
 
-  fresh_persist_chunked_array();
-
-  return Status::OK();
+  return refresh_persisted_read_state();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////
@@ -4009,94 +3848,102 @@ void SegmentImpl::fresh_persist_block_offset() {
   calculate_block_offsets();
 }
 
-void SegmentImpl::fresh_persist_chunked_array() {
-  if (options_.enable_mmap_ && options_.read_only_) {
-    persist_chunk_arrays_.clear();
-    col_idx_map_.clear();
-    chunk_layout_offsets_.clear();
-    persist_chunk_layout_ids_.clear();
-    all_columns_same_chunk_layout_ = false;
+Status SegmentImpl::refresh_persisted_read_state(bool sealing) try {
+  const bool sealed = !memory_store_ &&
+                      (sealing || !segment_meta_->has_writing_forward_block());
+  if (!options_.enable_mmap_ || (!sealed && !options_.read_only_)) {
+    persisted_read_state_.reset();
+    return Status::OK();
+  }
 
-    std::vector<std::vector<std::shared_ptr<arrow::ChunkedArray>>> chunk_arrays;
-    auto fields = collection_schema_->forward_field_names();
-    fields.insert(fields.begin(), USER_ID);
-    fields.insert(fields.begin(), GLOBAL_DOC_ID);
-    chunk_arrays.resize(fields.size());
-    persist_chunk_arrays_.resize(fields.size());
-    persist_chunk_layout_ids_.resize(fields.size(), INVALID_CHUNK_LAYOUT_ID);
-
-    for (size_t i = 0; i < fields.size(); ++i) {
-      col_idx_map_[fields[i]] = i;
+  const auto &blocks = get_persist_block_metas(BlockType::SCALAR);
+  if (blocks.size() != persist_stores_.size() ||
+      (sealed && blocks.empty() && !doc_ids_.empty())) {
+    return Status::InternalError("Incomplete IPC forward stores");
+  }
+  arrow::FieldVector fields;
+  auto status =
+      ConvertCollectionSchemaToArrowFields(collection_schema_, &fields);
+  if (!status.ok()) return Status::InvalidArgument(status.ToString());
+  auto schema = arrow::schema(fields);
+  std::vector<arrow::ArrayVector> chunks(fields.size());
+  std::vector<arrow::Status> errors(fields.size());
+  for (size_t b = 0; b < blocks.size(); ++b) {
+    const auto table = persist_stores_[b]->get_table();
+    if (!table ||
+        table->num_rows() != static_cast<int64_t>(blocks[b].doc_count_)) {
+      return Status::InternalError("Incomplete IPC forward block ",
+                                   blocks[b].id());
     }
-
-    auto &block_metas = get_persist_block_metas(BlockType::SCALAR);
-    if (block_metas.empty()) {
-      return;
-    }
-
-    for (size_t i = 0; i < block_metas.size(); ++i) {
-      auto &block_meta = block_metas[i];
-      const auto table = persist_stores_[i]->get_table();
-      for (size_t j = 0; j < fields.size(); ++j) {
-        if (block_meta.contain_column(fields[j])) {
-          auto chunked_array = table->GetColumnByName(fields[j]);
-          if (chunked_array) {
-            chunk_arrays[j].push_back(chunked_array);
-          }
-        }
-      }
-    }
-
-    std::map<std::vector<uint64_t>, size_t> chunk_layout_ids;
-    for (size_t i = 0; i < fields.size(); ++i) {
-      std::vector<std::shared_ptr<arrow::Array>> all_chunks;
-      for (const auto &arr : chunk_arrays[i]) {
-        for (int j = 0; j < arr->num_chunks(); ++j) {
-          all_chunks.push_back(arr->chunk(j));
-        }
-      }
-      persist_chunk_arrays_[i] =
-          std::make_shared<arrow::ChunkedArray>(all_chunks);
-
-      const auto &chunk_array = persist_chunk_arrays_[i];
-      if (chunk_array->num_chunks() == 0 ||
-          static_cast<uint64_t>(chunk_array->length()) !=
-              segment_meta_->doc_count()) {
+    // DDL can replace a column with separate blocks. Only the names still
+    // owned by this block contribute chunks, in segment row order.
+    for (const auto &name : blocks[b].columns()) {
+      const int index = schema->GetFieldIndex(name);
+      if (index < 0) continue;
+      const auto array = table->GetColumnByName(name);
+      if (!array || !array->type()->Equals(*fields[index]->type())) {
+        errors[index] = arrow::Status::Invalid(
+            "Missing or mistyped forward column: ", name);
         continue;
       }
-
-      std::vector<uint64_t> chunk_offsets;
-      chunk_offsets.reserve(chunk_array->num_chunks() + 1);
-      chunk_offsets.push_back(0);
-      for (int chunk_idx = 0; chunk_idx < chunk_array->num_chunks();
-           ++chunk_idx) {
-        chunk_offsets.push_back(
-            chunk_offsets.back() +
-            static_cast<uint64_t>(chunk_array->chunk(chunk_idx)->length()));
-      }
-
-      const auto layout_id = chunk_layout_offsets_.size();
-      auto [layout_it, inserted] =
-          chunk_layout_ids.emplace(chunk_offsets, layout_id);
-      if (inserted) {
-        chunk_layout_offsets_.push_back(std::move(chunk_offsets));
-      }
-      persist_chunk_layout_ids_[i] = layout_it->second;
+      auto &parts = chunks[index];
+      parts.insert(parts.end(), array->chunks().begin(), array->chunks().end());
     }
-
-    all_columns_same_chunk_layout_ =
-        !persist_chunk_layout_ids_.empty() &&
-        persist_chunk_layout_ids_.front() != INVALID_CHUNK_LAYOUT_ID &&
-        std::all_of(
-            persist_chunk_layout_ids_.begin(), persist_chunk_layout_ids_.end(),
-            [first_layout_id = persist_chunk_layout_ids_.front()](
-                size_t layout_id) { return layout_id == first_layout_id; });
-
-    LOG_INFO(
-        "fresh_persist_chunked_array persist_chunk_arrays[%zu] "
-        "chunk_layouts[%zu]",
-        persist_chunk_arrays_.size(), chunk_layout_offsets_.size());
   }
+
+  auto next = std::make_shared<PersistedReadState>();
+  next->sealed = sealed;
+  next->num_rows = static_cast<int64_t>(doc_ids_.size());
+  std::map<std::vector<uint64_t>, size_t> layouts;
+  size_t fetchable = 0;
+  for (size_t i = 0; i < fields.size(); ++i) {
+    auto &column = next->columns[fields[i]->name()];
+    if (!errors[i].ok()) {
+      column.forward = errors[i];
+      continue;
+    }
+    column.data = std::make_shared<arrow::ChunkedArray>(std::move(chunks[i]),
+                                                        fields[i]->type());
+    if (sealed) {
+      // Keep field errors local to projections that actually request them.
+      column.forward =
+          ForwardColumn::Make(fields[i], column.data, next->num_rows);
+    }
+    if (!options_.read_only_ || !column.forward.ok() ||
+        column.data->num_chunks() == 0 ||
+        static_cast<uint64_t>(column.data->length()) !=
+            segment_meta_->doc_count()) {
+      continue;
+    }
+    std::vector<uint64_t> offsets{0};
+    offsets.reserve(column.data->num_chunks() + 1);
+    for (const auto &chunk : column.data->chunks()) {
+      offsets.push_back(offsets.back() + chunk->length());
+    }
+    auto [it, inserted] = layouts.emplace(offsets, layouts.size());
+    if (inserted) next->fetch_offsets.push_back(std::move(offsets));
+    column.fetch_layout = it->second;
+    ++fetchable;
+  }
+  next->common_fetch_layout = fetchable == fields.size() && layouts.size() == 1;
+  if (sealed) {
+    next->columns[LOCAL_ROW_ID].forward = ForwardColumn::MakeRowId(
+        arrow::field(LOCAL_ROW_ID, arrow::uint64(), false), next->num_rows);
+    if (delete_store_) {
+      const auto &ids = next->columns.at(GLOBAL_DOC_ID).forward;
+      if (!ids.ok()) {
+        next->deletion_filter = ids.status();
+      } else if (SealedDeletionFilter::Supports(**ids)) {
+        next->deletion_filter =
+            std::make_shared<SealedDeletionFilter>(*ids, delete_store_);
+      }
+    }
+  }
+  persisted_read_state_ = std::move(next);
+  return Status::OK();
+} catch (const std::exception &error) {
+  return Status::InternalError("Prepare persisted forward columns: ",
+                               error.what());
 }
 
 void SegmentImpl::calculate_block_offsets() {
@@ -5248,9 +5095,12 @@ Status SegmentImpl::reload_fts_index(const CollectionSchema &schema,
                                      const SegmentMeta::Ptr &segment_meta,
                                      const FtsIndexer::Ptr &new_fts_indexer) {
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
-  invalidate_forward_view_unsafe();
+  persisted_read_state_.reset();
   collection_schema_ = std::make_shared<CollectionSchema>(schema);
   segment_meta_ = segment_meta;
+  fresh_persist_block_offset();
+  auto read_status = refresh_persisted_read_state();
+  CHECK_RETURN_STATUS(read_status);
 
   if (fts_indexer_) {
     auto old_dir = fts_indexer_->working_dir();
@@ -5261,7 +5111,6 @@ Status SegmentImpl::reload_fts_index(const CollectionSchema &schema,
   }
 
   has_fts_ = (fts_indexer_ != nullptr);
-  fresh_persist_block_offset();
 
   return Status::OK();
 }

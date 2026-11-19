@@ -1688,10 +1688,7 @@ Status CollectionImpl::switch_to_new_segment_for_writing(
     return writing_segment_->flush();
   }
 
-  auto s = writing_segment_->dump();
-  CHECK_RETURN_STATUS(s);
-
-  s = segment_manager_->add_segment(writing_segment_);
+  auto s = writing_segment_->dump(/*allow_already_dumped=*/true);
   CHECK_RETURN_STATUS(s);
 
   // when create new segment, segment meta should create a first new block
@@ -1707,7 +1704,10 @@ Status CollectionImpl::switch_to_new_segment_for_writing(
 
   Version version = version_manager_->get_current_version();
   auto writing_segment_meta = writing_segment_->meta();
-  writing_segment_->remove_writing_forward_block();
+  s = writing_segment_->remove_writing_forward_block();
+  CHECK_RETURN_STATUS(s);
+  s = segment_manager_->add_segment(writing_segment_);
+  CHECK_RETURN_STATUS(s);
   s = version.add_persisted_segment_meta(writing_segment_meta);
   CHECK_RETURN_STATUS(s);
 

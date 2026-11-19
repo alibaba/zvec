@@ -571,11 +571,13 @@ class MockSegment : public Segment {
     return Status::OK();
   }
 
-  Status dump() override {
+  Status dump(bool /*allow_already_dumped*/ = false) override {
     return Status::OK();
   }
 
-  void remove_writing_forward_block() override {}
+  Status remove_writing_forward_block() override {
+    return Status::OK();
+  }
 
   Status destroy() override {
     return Status::OK();

@@ -42,7 +42,7 @@ class ForwardReadFactoryKey {
 };
 
 // One immutable, zero-copy forward column in segment-local row order. A
-// sealed segment builds each filtered column once and shares it with every
+// sealed segment prepares its columns at open/seal and shares them with every
 // query until DDL, reload or close releases it. The column holds no segment
 // metadata, locks, deletion state or evaluator/compiler state, and its
 // backing buffers must never be mutated. Only storage with proven buffer

@@ -45,7 +45,7 @@ class CaptureBarrier final : public ailego::Logger {
     return 0;
   }
   void log(int, const char *, int, const char *format, va_list) override {
-    if (!std::strstr(format, "Forward filter capture:")) return;
+    if (!std::strstr(format, "Forward read captured:")) return;
     std::unique_lock<std::mutex> lock(mutex_);
     ++entered_;
     cv_.notify_all();
@@ -144,7 +144,7 @@ class ForwardFilterReadTest : public testing::TestWithParam<bool> {
   void reopen_persisted(bool dump = true) {
     if (dump) {
       ASSERT_TRUE(segment_->dump().ok());
-      segment_->remove_writing_forward_block();
+      ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
     }
     auto meta = *segment_->meta();
     segment_.reset();
@@ -317,7 +317,7 @@ TEST_P(IpcForwardFilterReadTest, ColumnsAreSharedAcrossProjections) {
   auto constant = capture({});
   ASSERT_NE(constant, nullptr);
   EXPECT_EQ(constant->num_columns(), 0);
-  // A failed capture neither publishes nor drops existing columns.
+  // A failed projection leaves published columns available.
   EXPECT_FALSE(segment_->prepare_forward_read({"i32", "missing"}, false).ok());
   EXPECT_EQ(capture({"i32"})->column(0), i32.lock());
   EXPECT_EQ(second->read_row(2)->ToString(), expected->ToString());
@@ -332,6 +332,7 @@ TEST_P(IpcForwardFilterReadTest, RowIdIsVirtualAndCopiesNoData) {
   EXPECT_EQ(arrow::default_memory_pool()->bytes_allocated(), bytes);
   EXPECT_EQ(view->column(0)->layout(), ForwardColumn::Layout::kRowId);
   EXPECT_EQ(view->column(0)->data(), nullptr);
+  EXPECT_EQ(capture({LOCAL_ROW_ID})->column(0), view->column(0));
   EXPECT_FALSE(view->locate(0, 5).has_value());
   for (uint64_t row : {0u, 5u, 23u}) {
     auto batch = view->read_row(row);
@@ -376,7 +377,46 @@ TEST_P(IpcForwardFilterReadTest, RawSpansMatchArrowValues) {
   }
 }
 
-TEST_P(IpcForwardFilterReadTest, ConcurrentColdCapturesPublishOneColumnSet) {
+TEST_P(IpcForwardFilterReadTest, OpenRejectsAnIncompletePersistedBlock) {
+  ASSERT_NO_FATAL_FAILURE(create(24));
+  ASSERT_TRUE(segment_->dump().ok());
+  ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
+  auto meta = *segment_->meta();
+  auto &blocks = meta.persisted_blocks();
+  const auto block = std::find_if(
+      blocks.begin(), blocks.end(),
+      [](const BlockMeta &b) { return b.type() == BlockType::SCALAR; });
+  ASSERT_NE(block, blocks.end());
+  block->set_doc_count(block->doc_count() + 1);
+  segment_.reset();
+  auto options = options_;
+  options.read_only_ = true;
+  auto opened = Segment::Open(path_, *schema_, meta, id_map_, deletes_,
+                              versions_, options);
+  ASSERT_FALSE(opened.has_value());
+  EXPECT_NE(opened.error().message().find("Incomplete IPC forward block"),
+            std::string::npos);
+}
+
+TEST_P(IpcForwardFilterReadTest,
+       InvalidColumnDoesNotBlockIndependentProjections) {
+  ASSERT_NO_FATAL_FAILURE(create(24));
+  ASSERT_TRUE(segment_->dump().ok());
+  ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
+  // Reopen an INT32 column with incompatible schema metadata.
+  ASSERT_TRUE(schema_
+                  ->alter_field("i32", std::make_shared<FieldSchema>(
+                                           "i32", DataType::INT64, true))
+                  .ok());
+  ASSERT_NO_FATAL_FAILURE(reopen_persisted(false));
+  EXPECT_FALSE(segment_->prepare_forward_read({"i32"}, false).ok());
+  auto view = capture({"text", GLOBAL_DOC_ID});
+  ASSERT_NE(view, nullptr);
+  EXPECT_EQ(view->read_row(2)->values[1].scalar_as<arrow::UInt64Scalar>().value,
+            10002u);
+}
+
+TEST_P(IpcForwardFilterReadTest, ConcurrentProjectionsSharePublishedColumns) {
   ASSERT_NO_FATAL_FAILURE(create());
   ASSERT_NO_FATAL_FAILURE(reopen_persisted());
   auto existing = capture({"u64"});
@@ -394,8 +434,7 @@ TEST_P(IpcForwardFilterReadTest, ConcurrentColdCapturesPublishOneColumnSet) {
                                             false);
     }));
   }
-  // All readers capture missing columns before any can publish. Their
-  // overlapping projections exercise both extending and reusing the catalog.
+  // Pause all readers after capturing the state, before projecting columns.
   EXPECT_TRUE(barrier->wait_entered(kReaders));
   barrier->release();
   std::vector<arrow::Result<Segment::ForwardReadState>> states;
@@ -404,8 +443,7 @@ TEST_P(IpcForwardFilterReadTest, ConcurrentColdCapturesPublishOneColumnSet) {
   }
   ailego::LoggerBroker::Register(previous);
   ailego::LoggerBroker::SetLevel(ailego::Logger::LEVEL_WARN);
-  // Concurrent cold builders may duplicate work, but every query ends up
-  // sharing the one published column, as does every later query.
+  // Every projection, including the first, uses the columns published at open.
   auto later = capture({"i32", "text", "i64"});
   ASSERT_NE(later, nullptr);
   EXPECT_EQ(capture({"u64"})->column(0), existing->column(0));
@@ -446,7 +484,7 @@ TEST_P(IpcForwardFilterReadTest, DdlReleasesColumnsAndRetainsOldReaders) {
   EXPECT_EQ(first->read_row(2)->values[0].scalar_as<arrow::Int32Scalar>().value,
             2);
   first.reset();
-  // The segment released the stale column at the DDL, not at the next capture.
+  // DDL replaced the segment's state before the next capture.
   EXPECT_TRUE(weak.expired());
   auto replacement = capture({"i32"});
   ASSERT_NE(replacement, nullptr);
@@ -456,7 +494,7 @@ TEST_P(IpcForwardFilterReadTest, DdlReleasesColumnsAndRetainsOldReaders) {
       2);
   EXPECT_EQ(capture({"i32"})->column(0), replacement->column(0));
 
-  // Dropping the column removes its single-column block file. No catalog
+  // Dropping the column removes its single-column block file. No segment
   // entry may keep that file mapped; only this explicit reader does.
   auto dropped = std::weak_ptr<const ForwardColumn>(replacement->column(0));
   auto text = std::weak_ptr<const ForwardColumn>(capture({"text"})->column(0));
@@ -480,7 +518,7 @@ TEST_P(IpcForwardFilterReadTest, DdlReleasesColumnsAndRetainsOldReaders) {
   EXPECT_TRUE(dropped.expired());
 }
 
-TEST_P(IpcForwardFilterReadTest, EveryInvalidationReleasesColumnsImmediately) {
+TEST_P(IpcForwardFilterReadTest, LifecycleChangesReplacePublishedColumns) {
   ASSERT_NO_FATAL_FAILURE(create(24));
   ASSERT_NO_FATAL_FAILURE(reopen_persisted());
   const std::unordered_map<std::string, VectorColumnIndexer::Ptr> none;
@@ -519,7 +557,7 @@ TEST_P(IpcForwardFilterReadTest, EveryInvalidationReleasesColumnsImmediately) {
     ASSERT_FALSE(weak.expired());  // Only the segment's catalog holds it.
     auto status = invalidate();
     ASSERT_TRUE(status.ok()) << status.message();
-    // Released by the invalidation itself, not left for the next capture.
+    // The writer replaced the state before returning.
     EXPECT_TRUE(weak.expired());
     auto view = capture({"i32"});
     ASSERT_NE(view, nullptr);
@@ -529,7 +567,7 @@ TEST_P(IpcForwardFilterReadTest, EveryInvalidationReleasesColumnsImmediately) {
 }
 
 TEST_P(IpcForwardFilterReadTest,
-       DdlDuringConstructionCannotPublishStaleColumn) {
+       DdlBetweenCaptureAndProjectionKeepsCapturedSchema) {
   ASSERT_NO_FATAL_FAILURE(create(24));
   ASSERT_NO_FATAL_FAILURE(reopen_persisted());
   auto barrier = std::make_shared<CaptureBarrier>();
@@ -557,7 +595,7 @@ TEST_P(IpcForwardFilterReadTest,
   EXPECT_EQ(old->view->schema()->field(0)->type()->id(), arrow::Type::INT32);
   auto weak = std::weak_ptr<const ForwardColumn>(old->view->column(0));
   old->view.reset();
-  EXPECT_TRUE(weak.expired());  // The stale construction was not published.
+  EXPECT_TRUE(weak.expired());  // Only the overlapping query retained it.
   auto current = capture({"i32"});
   ASSERT_NE(current, nullptr);
   EXPECT_EQ(current->schema()->field(0)->type()->id(), arrow::Type::INT64);
@@ -605,11 +643,22 @@ TEST_P(ForwardFilterReadTest, HybridEligibilityAcrossFlushSealAndReopen) {
   verify(false);  // No live tail, but the writing block can grow again.
   ASSERT_TRUE(segment_->dump().ok());
   verify(false);  // Publication has not yet removed the writing block.
-  segment_->remove_writing_forward_block();
+  ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
   verify(GetParam());
   ASSERT_NO_FATAL_FAILURE(reopen_persisted(false));
   verify(GetParam());  // Reopened segments do not rely on an in-memory flag.
   EXPECT_FALSE(segment_->prepare_forward_read({"missing"}, false).ok());
+}
+
+TEST_P(ForwardFilterReadTest, SealingRequiresAFlushedWritingStore) {
+  ASSERT_NO_FATAL_FAILURE(create(24));
+  EXPECT_FALSE(segment_->remove_writing_forward_block().ok());
+  EXPECT_TRUE(segment_->meta()->has_writing_forward_block());
+  EXPECT_EQ(capture({"i32"}), nullptr);
+  ASSERT_TRUE(segment_->dump().ok());
+  ASSERT_TRUE(segment_->dump(/*allow_already_dumped=*/true).ok());
+  ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
+  EXPECT_EQ(capture({"i32"}) != nullptr, GetParam());
 }
 
 TEST_P(ForwardFilterReadTest, LockedDecisionSurvivesSealingAndReadsLive) {
@@ -625,7 +674,7 @@ TEST_P(ForwardFilterReadTest, LockedDecisionSurvivesSealingAndReadsLive) {
   ASSERT_TRUE(segment_->insert(added).ok());
   ASSERT_TRUE(segment_->flush().ok());
   ASSERT_TRUE(segment_->dump().ok());
-  segment_->remove_writing_forward_block();
+  ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
   EXPECT_FALSE(uses_view(*candidate));
   EXPECT_FALSE(candidate->is_filtered(2));
   EXPECT_TRUE(candidate->is_filtered(1));
@@ -778,7 +827,7 @@ TEST_P(ForwardFilterReadTest,
       ASSERT_TRUE(segment->insert(doc).ok());
     }
     ASSERT_TRUE(segment->dump().ok());
-    segment->remove_writing_forward_block();
+    ASSERT_TRUE(segment->remove_writing_forward_block().ok());
     segments.push_back(std::move(segment));
   }
   using Views = std::vector<ForwardReadView::Ptr>;
@@ -950,7 +999,7 @@ TEST_P(ForwardFilterReadTest, ArrowPredicateParityAndGlobalIdDeletes) {
 TEST_P(ForwardFilterReadTest, IndependentColumnChunkBoundaries) {
   ASSERT_NO_FATAL_FAILURE(create());
   ASSERT_TRUE(segment_->dump().ok());
-  segment_->remove_writing_forward_block();
+  ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
   auto meta = *segment_->meta();
   segment_.reset();
   // A separately persisted column has different record-batch/row-group
@@ -1205,7 +1254,7 @@ TEST_P(ForwardFilterReadTest, SealedDeletionMatchesSegmentFilter) {
   // First the dumped segment object a writable collection keeps using, then
   // the same data reopened from disk.
   ASSERT_TRUE(segment_->dump().ok());
-  segment_->remove_writing_forward_block();
+  ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
   uint64_t next_delete = 10003;
   for (bool reopened : {false, true}) {
     SCOPED_TRACE(reopened ? "reopened" : "dumped");
@@ -1223,6 +1272,8 @@ TEST_P(ForwardFilterReadTest, SealedDeletionMatchesSegmentFilter) {
     auto state = segment_->prepare_forward_read({}, true);
     ASSERT_TRUE(state.ok());
     EXPECT_EQ(state->deletion_filter != nullptr, GetParam());
+    EXPECT_EQ(state->deletion_filter,
+              segment_->prepare_forward_read({}, true)->deletion_filter);
     EXPECT_EQ(segment_->prepare_forward_read({}, false)->deletion_filter,
               nullptr);  // Only built on request.
     auto expect_parity = [&] {
