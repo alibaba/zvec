@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cmath>
 #include "norm_matrix.h"
 
 namespace zvec {
@@ -105,6 +106,23 @@ struct Normalizer<ailego::Float16> {
   //! Normalize a vector (L2)
   static inline void L2(ValueType *arr, size_t dim, float *norm) {
     Norm2Matrix<ValueType, 1>::Compute(arr, dim, norm);
+    // Native FP16 norm accumulation can overflow (or underflow) even when
+    // every input is finite. Preserve the normal fast path, but never turn
+    // finite vectors into zero * infinity when cosine storage is reverted.
+    if (!std::isfinite(*norm) || *norm == 0.0f) {
+      double squares = 0;
+      for (size_t i = 0; i < dim; ++i) {
+        const double value = static_cast<float>(arr[i]);
+        squares += value * value;
+      }
+      *norm = static_cast<float>(std::sqrt(squares));
+      if (std::isfinite(*norm) && *norm > 0.0f) {
+        for (size_t i = 0; i < dim; ++i) {
+          arr[i] = static_cast<float>(arr[i]) / *norm;
+        }
+      }
+      return;
+    }
     if (*norm > 0.0f) {
       Compute(arr, dim, *norm);
     }

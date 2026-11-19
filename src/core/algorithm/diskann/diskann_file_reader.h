@@ -17,6 +17,7 @@
 
 #include <fcntl.h>
 #include <array>
+#include <atomic>
 
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <ailego/io/iouring_loader.h>  // raw-syscall io_uring wrapper (IoUringRing)
@@ -49,6 +50,10 @@
 #include <zvec/ailego/io/io_backend.h>
 #include <zvec/core/framework/index_context.h>
 #include "diskann_util.h"
+#if defined(__APPLE__)
+#include "diskann_read_cache.h"
+#include "diskann_read_executor.h"
+#endif
 
 namespace zvec {
 namespace ailego {
@@ -102,6 +107,12 @@ struct AlignedRead {
   uint64_t offset;
   uint64_t len;
   void *buf;
+#if defined(__APPLE__)
+  // Optional enclosing disk transfer. The logical request above remains the
+  // cache key/payload; its destination must be the matching subrange here.
+  uint64_t enclosing_offset{0}, enclosing_len{0};
+  void *enclosing_buf{nullptr};
+#endif
 
   AlignedRead() : offset(0), len(0), buf(nullptr) {}
 
@@ -164,6 +175,15 @@ class AlignedFileReader {
 class LinuxAlignedFileReader : public AlignedFileReader {
  private:
   int file_desc;
+#if defined(__APPLE__)
+  std::unique_ptr<DiskAnnReadCache> read_cache_;
+  std::unique_ptr<DiskAnnReadExecutor> read_executor_;
+  bool profile_reads_{false};
+  std::atomic<uint64_t> profile_batches_{0}, profile_requests_{0},
+      profile_requested_bytes_{0}, profile_misses_{0}, profile_read_bytes_{0},
+      profile_syscalls_{0}, profile_read_ns_{0}, profile_batch_ns_{0};
+  int read_cached(const AlignedRead &req);
+#endif
 
  public:
   LinuxAlignedFileReader();
@@ -178,6 +198,25 @@ class LinuxAlignedFileReader : public AlignedFileReader {
   // the same file object even if fname is atomically replaced.
   int open_from_handle(const std::string &fname, int source_fd);
   void close() override;
+#if defined(__APPLE__)
+  // Configure only while no operations are active; open/close discard cached
+  // data so sectors can never leak across different file identities.
+  int configure_read_cache(
+      size_t budget_bytes,
+      size_t record_bytes = DiskAnnReadCache::kSectorBytes);
+  int configure_read_workers(size_t workers);
+  size_t read_workers() const {
+    return read_executor_ ? read_executor_->workers() : 1;
+  }
+  // Copy a cached node without scheduling I/O; callers may expand it before
+  // choosing the rest of the disk frontier. No cache-owned pointer escapes.
+  bool try_read_cached(const AlignedRead &req) {
+    return read_cache_ && read_cache_->try_read(req.offset, req.len, req.buf);
+  }
+  size_t read_cache_bytes() const {
+    return read_cache_ ? read_cache_->allocated_bytes() : 0;
+  }
+#endif
 
   int read(std::vector<AlignedRead> &read_reqs, IOContext &ctx,
            bool async = false) override;

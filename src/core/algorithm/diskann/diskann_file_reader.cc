@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -298,12 +299,14 @@ int destroy_io_ctx(IOContext &ctx) {
 }
 
 #if !defined(_WIN32) && !defined(_WIN64)
-static int execute_one_pread(int fd, const AlignedRead &req) {
+static int execute_one_pread(int fd, const AlignedRead &req,
+                             std::atomic<uint64_t> *syscall_count = nullptr) {
   auto *buf = static_cast<uint8_t *>(req.buf);
   uint64_t offset = req.offset;
   uint64_t remaining = req.len;
 
   while (remaining > 0) {
+    if (syscall_count) syscall_count->fetch_add(1, std::memory_order_relaxed);
     ssize_t bytes_read =
         ::pread(fd, buf, static_cast<size_t>(remaining), offset);
     if (bytes_read > 0) {
@@ -534,10 +537,7 @@ LinuxAlignedFileReader::LinuxAlignedFileReader() {
 }
 
 LinuxAlignedFileReader::~LinuxAlignedFileReader() {
-  if (file_desc >= 0) {
-    ::close(file_desc);
-    file_desc = -1;
-  }
+  close();
 }
 
 static int duplicate_file_descriptor(int source_fd) {
@@ -645,6 +645,7 @@ static void configure_macos_reader(int file_desc, const std::string &fname) {
 #endif
 
 void LinuxAlignedFileReader::open(const std::string &fname) {
+  close();
   int flags = O_RDONLY;
 
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -742,11 +743,92 @@ int LinuxAlignedFileReader::open_from_handle(const std::string &fname,
 }
 
 void LinuxAlignedFileReader::close() {
+#if defined(__APPLE__)
+  // Join workers before releasing the cache and stable file descriptor.
+  read_executor_.reset();
+  if (profile_reads_ && profile_batches_) {
+    std::fprintf(stderr,
+                 "DISKANN_READ_PROFILE {\"batches\":%llu,\"requests\":%llu,"
+                 "\"requested_bytes\":%llu,\"miss_reads\":%llu,"
+                 "\"read_bytes\":%llu,\"pread_syscalls\":%llu,"
+                 "\"read_ns\":%llu,\"batch_ns\":%llu}\n",
+                 (unsigned long long)profile_batches_.load(),
+                 (unsigned long long)profile_requests_.load(),
+                 (unsigned long long)profile_requested_bytes_.load(),
+                 (unsigned long long)profile_misses_.load(),
+                 (unsigned long long)profile_read_bytes_.load(),
+                 (unsigned long long)profile_syscalls_.load(),
+                 (unsigned long long)profile_read_ns_.load(),
+                 (unsigned long long)profile_batch_ns_.load());
+  }
+  profile_reads_ = false;
+  profile_batches_ = profile_requests_ = profile_requested_bytes_ = 0;
+  profile_misses_ = profile_read_bytes_ = profile_syscalls_ = 0;
+  profile_read_ns_ = profile_batch_ns_ = 0;
+  read_cache_.reset();
+#endif
   if (file_desc >= 0) {
     ::close(file_desc);
     file_desc = -1;
   }
 }
+
+#if defined(__APPLE__)
+int LinuxAlignedFileReader::configure_read_cache(size_t budget_bytes,
+                                                 size_t record_bytes) {
+  if (!record_bytes) return IndexError_InvalidArgument;
+  try {
+    std::unique_ptr<DiskAnnReadCache> next;
+    if (budget_bytes)
+      next.reset(new DiskAnnReadCache(budget_bytes, record_bytes));
+    read_cache_ = std::move(next);
+    const char *profile = std::getenv("ZVEC_DISKANN_PROFILE_READS");
+    profile_reads_ = profile && std::strcmp(profile, "1") == 0;
+    return 0;
+  } catch (const std::bad_alloc &) {
+    return IndexError_NoMemory;
+  }
+}
+
+int LinuxAlignedFileReader::read_cached(const AlignedRead &req) {
+  const auto read_one = [this, &req](uint64_t offset, size_t len, void *buf) {
+    const AlignedRead transfer =
+        req.enclosing_len ? AlignedRead(req.enclosing_offset, req.enclosing_len,
+                                        req.enclosing_buf)
+                          : AlignedRead(offset, len, buf);
+    if (!profile_reads_) return execute_one_pread(file_desc, transfer);
+    const auto begin = std::chrono::steady_clock::now();
+    int ret = execute_one_pread(file_desc, transfer, &profile_syscalls_);
+    profile_read_ns_.fetch_add(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - begin)
+            .count(),
+        std::memory_order_relaxed);
+    profile_misses_.fetch_add(1, std::memory_order_relaxed);
+    if (!ret)
+      profile_read_bytes_.fetch_add(transfer.len, std::memory_order_relaxed);
+    return ret;
+  };
+  if (read_cache_)
+    return read_cache_->read(req.offset, req.len, req.buf, read_one);
+  return read_one(req.offset, req.len, req.buf);
+}
+
+int LinuxAlignedFileReader::configure_read_workers(size_t workers) {
+  if (workers < 1 || workers > 32) return IndexError_InvalidArgument;
+  try {
+    std::unique_ptr<DiskAnnReadExecutor> next;
+    if (workers > 1) next.reset(new DiskAnnReadExecutor(workers));
+    read_executor_ = std::move(next);
+    return 0;
+  } catch (const std::bad_alloc &) {
+    return IndexError_NoMemory;
+  } catch (const std::system_error &e) {
+    LOG_ERROR("DiskAnn read worker creation failed: %s", e.what());
+    return IndexError_Runtime;
+  }
+}
+#endif
 
 int LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
                                  IOContext &ctx, bool async) {
@@ -759,6 +841,83 @@ int LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     return IndexError_Runtime;
   }
 
+#if defined(__APPLE__)
+  if (read_cache_ || read_executor_ || profile_reads_ ||
+      std::any_of(
+          read_reqs.begin(), read_reqs.end(),
+          [](const AlignedRead &req) { return req.enclosing_len != 0; })) {
+    const auto begin = profile_reads_ ? std::chrono::steady_clock::now()
+                                      : std::chrono::steady_clock::time_point{};
+    bool parallel = read_executor_ && read_reqs.size() > 1;
+    // Preserve the serial API's behavior for overlapping destination buffers.
+    // A conservative bounding interval avoids quadratic overlap checks.
+    uintptr_t begin_buffer = UINTPTR_MAX, end_buffer = 0;
+    for (const auto &req : read_reqs) {
+      if (req.enclosing_len) {
+        const uintptr_t logical = reinterpret_cast<uintptr_t>(req.buf);
+        const uintptr_t physical =
+            reinterpret_cast<uintptr_t>(req.enclosing_buf);
+        if (req.offset < req.enclosing_offset || req.len > req.enclosing_len ||
+            req.offset - req.enclosing_offset > req.enclosing_len - req.len ||
+            logical < physical ||
+            logical - physical != req.offset - req.enclosing_offset)
+          return IndexError_InvalidArgument;
+      }
+      const uintptr_t begin = reinterpret_cast<uintptr_t>(
+          req.enclosing_len ? req.enclosing_buf : req.buf);
+      const uint64_t length = req.enclosing_len ? req.enclosing_len : req.len;
+      if (length > UINTPTR_MAX - begin) {
+        parallel = false;
+        break;
+      }
+      const uintptr_t end = begin + length;
+      if (begin < end_buffer && end > begin_buffer) parallel = false;
+      begin_buffer = std::min(begin_buffer, begin);
+      end_buffer = std::max(end_buffer, end);
+    }
+    if (parallel) {
+      std::vector<size_t> misses;
+      misses.reserve(read_reqs.size());
+      for (size_t i = 0; i < read_reqs.size(); ++i) {
+        const auto &req = read_reqs[i];
+        if (!read_cache_ ||
+            !read_cache_->try_read(req.offset, req.len, req.buf))
+          misses.push_back(i);
+      }
+      // Misses retain submission order; hits cannot contribute an I/O error.
+      std::vector<int> errors(misses.size(), 0);
+      const auto read_miss = [&](size_t position) {
+        errors[position] = read_cached(read_reqs[misses[position]]);
+      };
+      if (misses.size() == 1) {
+        read_miss(0);
+      } else if (!misses.empty()) {
+        read_executor_->run(misses.size(), read_miss);
+      }
+      // All requests have completed, including after an error. Return the
+      // first error in submission order, without leaving pending writes.
+      for (int ret : errors)
+        if (ret != 0) return ret;
+    } else {
+      for (const auto &req : read_reqs) {
+        int ret = read_cached(req);
+        if (ret != 0) return ret;
+      }
+    }
+    if (profile_reads_) {
+      profile_batches_.fetch_add(1, std::memory_order_relaxed);
+      profile_requests_.fetch_add(read_reqs.size(), std::memory_order_relaxed);
+      for (const auto &req : read_reqs)
+        profile_requested_bytes_.fetch_add(req.len, std::memory_order_relaxed);
+      profile_batch_ns_.fetch_add(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - begin)
+              .count(),
+          std::memory_order_relaxed);
+    }
+    return 0;
+  }
+#endif
   int ret = execute_io(ctx, this->file_desc, read_reqs);
 
   return ret;

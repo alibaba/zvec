@@ -14,7 +14,9 @@
 #pragma once
 
 #include <iostream>
+#include <list>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -47,7 +49,10 @@ class MmapForwardStore : public BaseForwardStore {
 
   /// Constructor that initializes the store with a file URI
   /// \param uri The URI of the file to be accessed
-  MmapForwardStore(const std::string &uri);
+  // A nonzero budget selects buffered, on-demand IPC batches instead of a
+  // permanently mapped table. The budget covers retained batch buffers;
+  // active reads/results and reader metadata are additional memory.
+  MmapForwardStore(const std::string &uri, size_t ipc_cache_bytes = 0);
   virtual ~MmapForwardStore() = default;
 
   Status open() override;
@@ -160,6 +165,45 @@ class MmapForwardStore : public BaseForwardStore {
                          int *target_chunk_index, int64_t *offset_in_chunk);
 
  private:
+  arrow::Result<std::shared_ptr<arrow::RecordBatch>> read_cached_batch(
+      int index);
+  TablePtr fetch_buffered_ipc(const std::vector<std::string> &columns,
+                              const std::vector<int> &indices);
+  arrow::Status read_cached_bytes(int64_t offset, int64_t size, void *out);
+  arrow::Result<std::shared_ptr<arrow::Scalar>> read_paged_scalar(int batch,
+                                                                  int column,
+                                                                  int64_t row);
+
+  struct FileBuffer {
+    int64_t offset{-1};
+    int64_t size{0};
+  };
+  struct PagedColumn {
+    int64_t array_offset{0};
+    std::vector<FileBuffer> buffers;
+  };
+  std::vector<std::vector<PagedColumn>> paged_columns_;
+  bool paged_ipc_{false};
+  struct CachedPage {
+    std::shared_ptr<arrow::Buffer> data;
+    std::list<int64_t>::iterator lru;
+  };
+  std::list<int64_t> page_lru_;
+  std::unordered_map<int64_t, CachedPage> pages_;
+  static constexpr int64_t kPageBytes = 4096;
+  static constexpr size_t kPageCharge = kPageBytes + 128;
+
+  struct CachedBatch {
+    std::shared_ptr<arrow::RecordBatch> batch;
+    size_t bytes;
+    std::list<int>::iterator lru;
+  };
+  size_t ipc_cache_budget_{0};
+  size_t ipc_cache_bytes_{0};
+  std::mutex ipc_cache_mutex_;
+  std::list<int> ipc_lru_;
+  std::unordered_map<int, CachedBatch> ipc_cache_;
+
   /// Format of the file being accessed
   FileFormat format_;
 

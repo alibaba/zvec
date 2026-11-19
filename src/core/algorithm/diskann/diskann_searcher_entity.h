@@ -93,6 +93,10 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
   std::shared_ptr<const std::string> pq_codes_;
   std::shared_ptr<const std::string> key_buffer_;
   std::shared_ptr<const std::string> key_mapping_buffer_;
+  // Lossless compact forms, enabled only after validating every stored value.
+  bool sequential_keys_{false};
+  bool identity_mapping_{false};
+  diskann_key_t first_key_{0};
   std::vector<diskann_id_t> entrypoints_;
 };
 
