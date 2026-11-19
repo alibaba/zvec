@@ -45,3 +45,26 @@ TEST(BitsetHelper, Benchmark) {
   printf("* Cardinality (us): \t%zu\n", (size_t)elapsed_time.micro_seconds());
   printf("* Result: \t%zu\n", total);
 }
+
+TEST(BitsetHelper, SafeClearAndOperations) {
+  // Test clear on default-constructed (null) bitset - should not crash or call memset(nullptr)
+  ailego::BitsetHelper bitset;
+  bitset.clear();
+
+  // Test mount, operations and clear
+  uint32_t buf[4] = {0};
+  bitset.mount(buf, sizeof(buf));
+  bitset.set(10);
+  EXPECT_TRUE(bitset.test(10));
+  EXPECT_FALSE(bitset.test(11));
+
+  bitset.clear();
+  EXPECT_FALSE(bitset.test(10));
+  for (size_t i = 0; i < 4; ++i) {
+    EXPECT_EQ(0u, buf[i]);
+  }
+
+  // Test clear after umount - should not crash
+  bitset.umount();
+  bitset.clear();
+}
