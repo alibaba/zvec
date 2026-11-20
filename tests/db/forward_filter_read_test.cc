@@ -144,7 +144,7 @@ class ForwardFilterReadTest : public testing::TestWithParam<bool> {
   void reopen_persisted(bool dump = true) {
     if (dump) {
       ASSERT_TRUE(segment_->dump().ok());
-      ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
+      segment_->remove_writing_forward_block();
     }
     auto meta = *segment_->meta();
     segment_.reset();
@@ -380,7 +380,7 @@ TEST_P(IpcForwardFilterReadTest, RawSpansMatchArrowValues) {
 TEST_P(IpcForwardFilterReadTest, IncompleteBlockFallsBackToLockedFetch) {
   ASSERT_NO_FATAL_FAILURE(create(24));
   ASSERT_TRUE(segment_->dump().ok());
-  ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
+  segment_->remove_writing_forward_block();
   auto good = std::make_shared<SegmentMeta>(*segment_->meta());
   auto bad = std::make_shared<SegmentMeta>(*good);
   auto &blocks = bad->persisted_blocks();
@@ -448,7 +448,7 @@ TEST_P(IpcForwardFilterReadTest,
        InvalidColumnDoesNotBlockIndependentProjections) {
   ASSERT_NO_FATAL_FAILURE(create(24));
   ASSERT_TRUE(segment_->dump().ok());
-  ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
+  segment_->remove_writing_forward_block();
   // Reopen an INT32 column with incompatible schema metadata.
   ASSERT_TRUE(schema_
                   ->alter_field("i32", std::make_shared<FieldSchema>(
@@ -689,27 +689,26 @@ TEST_P(ForwardFilterReadTest, HybridEligibilityAcrossFlushSealAndReopen) {
   verify(false);  // No live tail, but the writing block can grow again.
   ASSERT_TRUE(segment_->dump().ok());
   verify(false);  // Publication has not yet removed the writing block.
-  ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
+  segment_->remove_writing_forward_block();
   verify(GetParam());
   ASSERT_NO_FATAL_FAILURE(reopen_persisted(false));
   verify(GetParam());  // Reopened segments do not rely on an in-memory flag.
   EXPECT_FALSE(segment_->prepare_forward_read({"missing"}, false).ok());
 }
 
-TEST_P(ForwardFilterReadTest, SealingRequiresAFlushedWritingStore) {
+TEST_P(ForwardFilterReadTest, SealingPublishesOwningViews) {
   ASSERT_NO_FATAL_FAILURE(create(24));
-  EXPECT_FALSE(segment_->remove_writing_forward_block().ok());
-  EXPECT_TRUE(segment_->meta()->has_writing_forward_block());
   EXPECT_EQ(capture({"i32"}), nullptr);
   ASSERT_TRUE(segment_->dump().ok());
-  EXPECT_FALSE(segment_->dump().ok());
-  ASSERT_TRUE(segment_->resume_dump().ok());
-  ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
-  EXPECT_EQ(capture({"i32"}) != nullptr, GetParam());
-  // A rollover retry after sealing resumes without re-dumping or re-sealing.
-  ASSERT_TRUE(segment_->resume_dump().ok());
-  ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
-  EXPECT_EQ(capture({"i32"}) != nullptr, GetParam());
+  EXPECT_EQ(capture({"i32"}), nullptr);  // The writing block still exists.
+  segment_->remove_writing_forward_block();
+  EXPECT_FALSE(segment_->meta()->has_writing_forward_block());
+  auto view = capture({"i32"});
+  EXPECT_EQ(view != nullptr, GetParam());
+  if (view) {
+    EXPECT_EQ(
+        view->read_row(2)->values[0].scalar_as<arrow::Int32Scalar>().value, 2);
+  }
 }
 
 TEST_P(ForwardFilterReadTest, LockedDecisionSurvivesSealingAndReadsLive) {
@@ -725,7 +724,7 @@ TEST_P(ForwardFilterReadTest, LockedDecisionSurvivesSealingAndReadsLive) {
   ASSERT_TRUE(segment_->insert(added).ok());
   ASSERT_TRUE(segment_->flush().ok());
   ASSERT_TRUE(segment_->dump().ok());
-  ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
+  segment_->remove_writing_forward_block();
   EXPECT_FALSE(uses_view(*candidate));
   EXPECT_FALSE(candidate->is_filtered(2));
   EXPECT_TRUE(candidate->is_filtered(1));
@@ -878,7 +877,7 @@ TEST_P(ForwardFilterReadTest,
       ASSERT_TRUE(segment->insert(doc).ok());
     }
     ASSERT_TRUE(segment->dump().ok());
-    ASSERT_TRUE(segment->remove_writing_forward_block().ok());
+    segment->remove_writing_forward_block();
     segments.push_back(std::move(segment));
   }
   using Views = std::vector<ForwardReadView::Ptr>;
@@ -1050,7 +1049,7 @@ TEST_P(ForwardFilterReadTest, ArrowPredicateParityAndGlobalIdDeletes) {
 TEST_P(ForwardFilterReadTest, IndependentColumnChunkBoundaries) {
   ASSERT_NO_FATAL_FAILURE(create());
   ASSERT_TRUE(segment_->dump().ok());
-  ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
+  segment_->remove_writing_forward_block();
   auto meta = *segment_->meta();
   segment_.reset();
   // A separately persisted column has different record-batch/row-group
@@ -1305,7 +1304,7 @@ TEST_P(ForwardFilterReadTest, SealedDeletionMatchesSegmentFilter) {
   // First the dumped segment object a writable collection keeps using, then
   // the same data reopened from disk.
   ASSERT_TRUE(segment_->dump().ok());
-  ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
+  segment_->remove_writing_forward_block();
   uint64_t next_delete = 10003;
   for (bool reopened : {false, true}) {
     SCOPED_TRACE(reopened ? "reopened" : "dumped");

@@ -46,34 +46,23 @@ class Segment {
  public:
   using Ptr = std::shared_ptr<Segment>;
 
-  // A query-local access decision, not itself an immutable data view. A null
-  // view explicitly selects locked Segment::fetch; it never denotes a failed
-  // capture. Schema, row boundary and eligibility are captured together.
+  // How one query reads forward columns. A null view selects locked
+  // Segment::fetch. Schema and row count are captured together with it.
   struct ForwardReadState {
     std::shared_ptr<arrow::Schema> schema;
     uint64_t num_rows{0};
     ForwardReadView::Ptr view;
-    // Sealed IPC only, when requested: the deletion check for this segment,
-    // mapping local rows to global doc IDs through the immutable, owned
-    // GLOBAL_DOC_ID column instead of a locked segment lookup. Same results
-    // as get_filter(); the delete bitmap keeps its own synchronization, so
-    // deletes made during the query stay visible. Null selects get_filter().
+    // Sealed IPC only, when requested: same results as get_filter() without a
+    // per-candidate segment lock. The delete bitmap is still read live.
+    // Null selects get_filter().
     IndexFilter::Ptr deletion_filter;
   };
 
-  // Captures how a query reads `columns` per candidate. Implementations that
-  // cannot prove buffer ownership return a null view (locked fetch). The
-  // segment implementation uses owning views only for sealed IPC segments;
-  // writing segments (even immediately after flush) and Parquet keep
-  // per-candidate locked fetch. Open and seal prepare immutable columns; DDL
-  // and reload replace them under the segment lock, on success or failure.
-  // If preparation fails, the segment falls back to locked fetch. Query
-  // projections share the published columns and keep their buffers alive
-  // independently.
+  // Captures how a query reads `columns` per candidate. Sealed IPC segments
+  // return an owning view over columns prepared at open/seal/DDL; writing,
+  // Parquet and segments whose preparation failed return a null view (locked
+  // fetch, which reads live rows and must be protected from close/DDL).
   // `with_deletion` also requests deletion_filter.
-  // Callers keep this decision fixed and enforce num_rows only for an owning
-  // view. Locked fetch reads live rows, including appends after preparation,
-  // and must be protected from close/DDL; an owning view needs no such guard.
   virtual arrow::Result<ForwardReadState> prepare_forward_read(
       const std::vector<std::string> &columns, bool with_deletion) = 0;
 
@@ -249,18 +238,13 @@ class Segment {
   // ---- Persistence and lifecycle -----------------------------------------
   virtual Status flush() = 0;
 
-  // Rejects a segment that has already been dumped.
   virtual Status dump() = 0;
 
-  // Like dump(), but succeeds if a previous dump already completed. A
-  // rollover uses it to retry after a failure later in the switch.
-  virtual Status resume_dump() = 0;
-
-  // Prepares the sealed read state and removes the writing block together
-  // under the exclusive segment lock. Idempotent once the block is removed.
-  // If the read state cannot be prepared, the segment is still sealed and
-  // serves forward reads through locked fetch.
-  virtual Status remove_writing_forward_block() = 0;
+  // Drops the writing forward block under the exclusive segment lock. Callers
+  // must use this instead of meta()->remove_writing_forward_block(): readers
+  // copy that block out of the meta, so an unlocked reset can free it mid-copy.
+  // Also prepares the sealed read state.
+  virtual void remove_writing_forward_block() = 0;
 
   virtual Status destroy() = 0;
 };

@@ -244,9 +244,7 @@ class SegmentImpl : public Segment,
 
   Status dump() override;
 
-  Status resume_dump() override;
-
-  Status remove_writing_forward_block() override;
+  void remove_writing_forward_block() override;
 
   Status flush() override;
 
@@ -378,16 +376,22 @@ class SegmentImpl : public Segment,
   const std::vector<uint64_t> *get_fetch_perf_chunk_offsets(
       const std::vector<std::string> &columns) const;
 
-  // Called before Open publishes the segment or under exclusive seg_mtx_.
-  Status refresh_persisted_read_state(bool sealing = false);
+  // Arrow fields of locked fetch for `columns`. Caller holds seg_mtx_.
+  arrow::Result<arrow::FieldVector> forward_fields_unsafe(
+      const std::vector<std::string> &columns) const;
 
-  // Replaces the read state and never fails: if preparation fails, the
-  // segment keeps no state and serves forward reads through locked fetch.
-  // Same locking requirements as refresh_persisted_read_state().
-  void publish_persisted_read_state(bool sealing = false);
+  struct PersistedReadState;
+  using PersistedReadStatePtr = std::shared_ptr<const PersistedReadState>;
 
-  // Caller holds seg_mtx_ exclusively.
-  Status dump_unsafe(bool resume);
+  // Builds the read state from the current schema, meta and stores. Returns
+  // null when the segment does not use one (no mmap, or a writing segment
+  // that is not read-only).
+  Result<PersistedReadStatePtr> build_persisted_read_state() const;
+
+  // Replaces the read state; never fails. A failed build leaves no state, so
+  // forward reads use locked fetch. Called before Open publishes the segment
+  // or under exclusive seg_mtx_.
+  void publish_persisted_read_state();
 
  private:
   // scalar forward (uses segment-local doc ID)
@@ -474,7 +478,9 @@ class SegmentImpl : public Segment,
     };
 
     int64_t num_rows{0};
-    bool sealed{false};
+    // Sealed IPC: projections get owning views. Otherwise (a read-only
+    // segment that still has a writing block) only batch fetch uses the state.
+    bool owning_views{false};
     arrow::Result<IndexFilter::Ptr> deletion_filter{IndexFilter::Ptr{}};
     std::unordered_map<std::string, Column> columns;
     // Read-only batch fetch can locate all selected columns with one layout.
@@ -483,7 +489,7 @@ class SegmentImpl : public Segment,
   };
 
   // Null when preparation is disabled or failed, or after close.
-  std::shared_ptr<const PersistedReadState> persisted_read_state_;
+  PersistedReadStatePtr persisted_read_state_;
   // Set by close() under seg_mtx_. A missing read state alone does not mean
   // the segment is closed.
   bool closed_{false};
@@ -2201,19 +2207,8 @@ Status SegmentImpl::dump() {
   // the block metadata and the indexer maps. Lock order matches Insert (the
   // caller already holds the collection's exclusive write_mtx_).
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
-  return dump_unsafe(/*resume=*/false);
-}
 
-Status SegmentImpl::resume_dump() {
-  std::lock_guard<std::shared_mutex> lock(seg_mtx_);
-  return dump_unsafe(/*resume=*/true);
-}
-
-Status SegmentImpl::dump_unsafe(bool resume) {
   if (sealed_) {
-    // A rollover can retry after dumping, whether or not it already removed
-    // the writing block. A memory store means rows arrived after the dump.
-    if (resume && !memory_store_) return Status::OK();
     return Status::NotSupported("Segment has been dumped.");
   }
   auto s = flush_unsafe();
@@ -2232,19 +2227,13 @@ Status SegmentImpl::dump_unsafe(bool resume) {
   return Status::OK();
 }
 
-Status SegmentImpl::remove_writing_forward_block() {
+void SegmentImpl::remove_writing_forward_block() {
   // Exclusive: dump() has already released seg_mtx_ by the time the collection
-  // seals the switched-out segment.
+  // seals the switched-out segment. Queries cannot observe the segment
+  // between the two steps below.
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
-  if (!segment_meta_->has_writing_forward_block()) return Status::OK();
-  if (memory_store_) {
-    return Status::InvalidArgument("Cannot seal a segment with a memory store");
-  }
-  // Prepare before removing the block so that no query observes a sealed
-  // segment without its state. A failed preparation does not block sealing.
-  publish_persisted_read_state(/*sealing=*/true);
   segment_meta_->remove_writing_forward_block();
-  return Status::OK();
+  publish_persisted_read_state();
 }
 
 Status SegmentImpl::flush() {
@@ -2724,6 +2713,27 @@ TablePtr SegmentImpl::fetch(const std::vector<std::string> &columns,
   return fetch_unsafe(columns, segment_doc_ids);
 }
 
+arrow::Result<arrow::FieldVector> SegmentImpl::forward_fields_unsafe(
+    const std::vector<std::string> &columns) const {
+  arrow::FieldVector fields;
+  fields.reserve(columns.size());
+  for (const auto &col : columns) {
+    if (col == LOCAL_ROW_ID || col == GLOBAL_DOC_ID) {
+      fields.push_back(arrow::field(col, arrow::uint64()));
+    } else if (col == USER_ID) {
+      fields.push_back(arrow::field(col, arrow::utf8()));
+    } else {
+      const auto *field = collection_schema_->get_field(col);
+      if (!field)
+        return arrow::Status::Invalid("Unknown forward column: ", col);
+      std::shared_ptr<arrow::Field> converted;
+      ARROW_RETURN_NOT_OK(ConvertFieldSchemaToArrowField(field, &converted));
+      fields.push_back(std::move(converted));
+    }
+  }
+  return fields;
+}
+
 TablePtr SegmentImpl::fetch_unsafe(
     const std::vector<std::string> &columns,
     const std::vector<int> &segment_doc_ids) const {
@@ -2731,30 +2741,13 @@ TablePtr SegmentImpl::fetch_unsafe(
     return nullptr;
   }
 
-  // Build result schema
-  std::vector<std::shared_ptr<arrow::Field>> fields;
-
-  for (size_t i = 0; i < columns.size(); ++i) {
-    const auto &col = columns[i];
-    if (col == LOCAL_ROW_ID) {
-      fields.push_back(arrow::field(LOCAL_ROW_ID, arrow::uint64()));
-    } else if (col == GLOBAL_DOC_ID) {
-      fields.push_back(arrow::field(GLOBAL_DOC_ID, arrow::uint64()));
-    } else if (col == USER_ID) {
-      fields.push_back(arrow::field(USER_ID, arrow::utf8()));
-    } else {
-      auto *field = collection_schema_->get_field(col);
-      std::shared_ptr<arrow::Field> arrow_field;
-      auto status = ConvertFieldSchemaToArrowField(field, &arrow_field);
-      if (!status.ok()) {
-        LOG_ERROR("Convert field schema failed: %s",
-                  field->to_string().c_str());
-        return nullptr;
-      }
-      fields.push_back(std::move(arrow_field));
-    }
+  auto converted = forward_fields_unsafe(columns);
+  if (!converted.ok()) {
+    LOG_ERROR("Convert field schema failed: %s",
+              converted.status().ToString().c_str());
+    return nullptr;
   }
-
+  const auto fields = converted.MoveValueUnsafe();
   auto result_schema = std::make_shared<arrow::Schema>(fields);
 
   // Early return for empty segment doc IDs.
@@ -2817,14 +2810,13 @@ class SealedDeletionFilter final : public IndexFilter {
 
 arrow::Result<Segment::ForwardReadState> SegmentImpl::prepare_forward_read(
     const std::vector<std::string> &columns, bool with_deletion) try {
-  std::shared_ptr<const PersistedReadState> state;
+  PersistedReadStatePtr state;
   {
     std::shared_lock<std::shared_mutex> lock(seg_mtx_);
     state = persisted_read_state_;
-    if (!state || !state->sealed) {
-      // Writing segments, Parquet and sealed IPC segments whose read state
-      // could not be prepared all use locked fetch. Only a closed segment
-      // or a store/meta mismatch is an error.
+    if (!state || !state->owning_views) {
+      // Locked fetch: writing segments, Parquet, and sealed IPC segments
+      // whose read state could not be prepared.
       const auto &blocks = get_persist_block_metas(BlockType::SCALAR);
       const auto rows = doc_ids_.size();
       if (closed_ || blocks.size() != persist_stores_.size() ||
@@ -2832,22 +2824,8 @@ arrow::Result<Segment::ForwardReadState> SegmentImpl::prepare_forward_read(
         return arrow::Status::Invalid(
             "Forward stores are closed or incomplete");
       }
-      arrow::FieldVector fields;
-      for (const auto &name : columns) {
-        if (name == LOCAL_ROW_ID || name == GLOBAL_DOC_ID) {
-          fields.push_back(arrow::field(name, arrow::uint64(), false));
-        } else if (name == USER_ID) {
-          fields.push_back(arrow::field(name, arrow::utf8(), false));
-        } else {
-          const auto *field = collection_schema_->get_field(name);
-          if (!field)
-            return arrow::Status::Invalid("Unknown forward column: ", name);
-          std::shared_ptr<arrow::Field> converted;
-          ARROW_RETURN_NOT_OK(
-              ConvertFieldSchemaToArrowField(field, &converted));
-          fields.push_back(std::move(converted));
-        }
-      }
+      // Same schema as the locked fetch that will serve the candidates.
+      ARROW_ASSIGN_OR_RAISE(auto fields, forward_fields_unsafe(columns));
       return ForwardReadState{arrow::schema(std::move(fields)), rows, nullptr,
                               nullptr};
     }
@@ -3890,23 +3868,26 @@ void SegmentImpl::fresh_persist_block_offset() {
   calculate_block_offsets();
 }
 
-Status SegmentImpl::refresh_persisted_read_state(bool sealing) try {
-  const bool sealed = !memory_store_ &&
-                      (sealing || !segment_meta_->has_writing_forward_block());
+Result<SegmentImpl::PersistedReadStatePtr>
+SegmentImpl::build_persisted_read_state() const {
+  const bool sealed =
+      !memory_store_ && !segment_meta_->has_writing_forward_block();
   if (!options_.enable_mmap_ || (!sealed && !options_.read_only_)) {
-    persisted_read_state_.reset();
-    return Status::OK();
+    return PersistedReadStatePtr{};
   }
 
   const auto &blocks = get_persist_block_metas(BlockType::SCALAR);
   if (blocks.size() != persist_stores_.size() ||
       (sealed && blocks.empty() && !doc_ids_.empty())) {
-    return Status::InternalError("Incomplete IPC forward stores");
+    return tl::make_unexpected(
+        Status::InternalError("Incomplete IPC forward stores"));
   }
   arrow::FieldVector fields;
   auto status =
       ConvertCollectionSchemaToArrowFields(collection_schema_, &fields);
-  if (!status.ok()) return Status::InvalidArgument(status.ToString());
+  if (!status.ok()) {
+    return tl::make_unexpected(Status::InvalidArgument(status.ToString()));
+  }
   auto schema = arrow::schema(fields);
   std::vector<arrow::ArrayVector> chunks(fields.size());
   std::vector<arrow::Status> errors(fields.size());
@@ -3914,8 +3895,8 @@ Status SegmentImpl::refresh_persisted_read_state(bool sealing) try {
     const auto table = persist_stores_[b]->get_table();
     if (!table ||
         table->num_rows() != static_cast<int64_t>(blocks[b].doc_count_)) {
-      return Status::InternalError("Incomplete IPC forward block ",
-                                   blocks[b].id());
+      return tl::make_unexpected(Status::InternalError(
+          "Incomplete IPC forward block ", blocks[b].id()));
     }
     // DDL can replace a column with separate blocks. Only the names still
     // owned by this block contribute chunks, in segment row order.
@@ -3934,7 +3915,7 @@ Status SegmentImpl::refresh_persisted_read_state(bool sealing) try {
   }
 
   auto next = std::make_shared<PersistedReadState>();
-  next->sealed = sealed;
+  next->owning_views = sealed;
   next->num_rows = static_cast<int64_t>(doc_ids_.size());
   std::map<std::vector<uint64_t>, size_t> layouts;
   size_t fetchable = 0;
@@ -3981,34 +3962,37 @@ Status SegmentImpl::refresh_persisted_read_state(bool sealing) try {
       }
     }
   }
-  persisted_read_state_ = std::move(next);
-  return Status::OK();
-} catch (const std::exception &error) {
-  return Status::InternalError("Prepare persisted forward columns: ",
-                               error.what());
+  return PersistedReadStatePtr{std::move(next)};
 }
 
-void SegmentImpl::publish_persisted_read_state(bool sealing) {
-  // Drop the old state first so its buffers are never published with a
-  // schema or block layout they no longer match.
+void SegmentImpl::publish_persisted_read_state() {
+  // Release the old state before building so its buffers never outlive the
+  // schema and blocks they describe.
   persisted_read_state_.reset();
   const ailego::ElapsedTime elapsed;
-  auto status = refresh_persisted_read_state(sealing);
-  if (!status.ok()) {
-    persisted_read_state_.reset();
+  Result<PersistedReadStatePtr> built;
+  // This runs from DDL scope guards, so it must not throw. Arrow and the
+  // standard library can still throw std::bad_alloc.
+  try {
+    built = build_persisted_read_state();
+  } catch (const std::exception &error) {
+    built = tl::make_unexpected(Status::InternalError(error.what()));
+  }
+  if (!built.has_value()) {
     LOG_WARN(
         "Persisted forward read state unavailable for segment[%d], using "
         "locked fetch: %s",
-        id(), status.message().c_str());
+        id(), built.error().message().c_str());
     return;
   }
+  persisted_read_state_ = std::move(built.value());
   if (persisted_read_state_) {
     LOG_INFO(
         "Prepared persisted forward read state: segment[%d] columns[%zu] "
-        "rows[%lld] sealed[%d] cost[%llu us]",
+        "rows[%lld] owning_views[%d] cost[%llu us]",
         id(), persisted_read_state_->columns.size(),
         static_cast<long long>(persisted_read_state_->num_rows),
-        persisted_read_state_->sealed,
+        persisted_read_state_->owning_views,
         static_cast<unsigned long long>(elapsed.micro_seconds()));
   }
 }

@@ -1688,8 +1688,10 @@ Status CollectionImpl::switch_to_new_segment_for_writing(
     return writing_segment_->flush();
   }
 
-  // A previous attempt may have failed after dumping; resume it.
-  auto s = writing_segment_->resume_dump();
+  auto s = writing_segment_->dump();
+  CHECK_RETURN_STATUS(s);
+
+  s = segment_manager_->add_segment(writing_segment_);
   CHECK_RETURN_STATUS(s);
 
   // when create new segment, segment meta should create a first new block
@@ -1702,29 +1704,12 @@ Status CollectionImpl::switch_to_new_segment_for_writing(
   if (!new_segment) {
     return new_segment.error();
   }
-  // Until the version names the new segment, it is unreferenced. Destroy it
-  // on failure so a retry does not leak its directory.
-  auto fail = [&](const Status &status) {
-    auto destroyed = new_segment.value()->destroy();
-    if (!destroyed.ok()) {
-      LOG_WARN("Failed to discard new writing segment[%d]: %s",
-               new_segment.value()->id(), destroyed.message().c_str());
-    }
-    return status;
-  };
 
   Version version = version_manager_->get_current_version();
   auto writing_segment_meta = writing_segment_->meta();
-  // `version` is a local copy. Validate it before changing the segment so
-  // that a rejected meta leaves the old writing segment untouched.
+  writing_segment_->remove_writing_forward_block();
   s = version.add_persisted_segment_meta(writing_segment_meta);
-  if (!s.ok()) return fail(s);
-  // Idempotent, so a retry after a later failure is safe.
-  s = writing_segment_->remove_writing_forward_block();
-  if (!s.ok()) return fail(s);
-  // Replaces any entry with the same ID, so a retry is safe.
-  s = segment_manager_->add_segment(writing_segment_);
-  if (!s.ok()) return fail(s);
+  CHECK_RETURN_STATUS(s);
 
   writing_segment_ = new_segment.value();
   version.reset_writing_segment_meta(writing_segment_->meta());
