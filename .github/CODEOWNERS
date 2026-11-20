@@ -8,6 +8,9 @@
 /.github/               @Cuiyus
 /python/                @Cuiyus
 
+# benchmarks
+/benchmarks/            @JalinWang
+
 # cmake, examples, scripts
 /cmake/                 @egolearner
 /examples/              @egolearner
@@ -25,9 +28,6 @@
 /src/ailego/            @iaojnh
 /tests/ailego           @iaojnh
 /tests/core             @iaojnh
-
-# tools
-/tools/                 @JalinWang
 
 # src/binding
 /src/binding/           @Cuiyus

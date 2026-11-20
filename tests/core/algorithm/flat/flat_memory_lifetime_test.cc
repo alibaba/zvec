@@ -18,6 +18,7 @@
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_framework.h>
 #include "tests/test_util.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 using namespace zvec::core;
 using namespace zvec::ailego;
@@ -50,7 +51,7 @@ class FlatMemoryLifetimeTest
 
   void SetUp() override {
     zvec::test_util::RemoveTestPath("flat_memory_lifetime_test");
-    MemoryLimitPool::get_instance().init(64UL * 1024 * 1024);
+    ::zvec::ailego::PoolPayloadBudget::get_instance().init(64UL * 1024 * 1024);
     auto holder =
         std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(kDimension);
     for (size_t id = 0; id < kCount; ++id) {

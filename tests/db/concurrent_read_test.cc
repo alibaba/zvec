@@ -26,6 +26,7 @@
 #include <zvec/ailego/utility/file_helper.h>
 #include "index/utils/utils.h"
 #include "zvec/db/collection.h"
+#include "../ailego/buffer/pool_payload_budget.h"
 
 namespace zvec {
 namespace test {
@@ -92,8 +93,8 @@ void Note(ReaderResult *r, const std::string &msg) {
 class ConcurrentReadTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    zvec::ailego::MemoryLimitPool::get_instance().init(4 * 1024ll * 1024ll *
-                                                       1024ll);
+    ::zvec::ailego::PoolPayloadBudget::get_instance().init(4 * 1024ll * 1024ll *
+                                                           1024ll);
     ailego::FileHelper::RemoveDirectory(kPath);
   }
   void TearDown() override {

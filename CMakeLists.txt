@@ -134,7 +134,7 @@ option(BUILD_ZVEC_CORE_SHARED "Build all-in-one zvec-core shared library libzvec
 
 option(BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" OFF)
 option(BUILD_C_BINDINGS "Build C bindings" ON)
-option(BUILD_TOOLS "Build tools" ON)
+option(BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(BUILD_CPP_EXAMPLES "Build C++ examples" OFF)
 
 message(STATUS "BUILD_ZVEC_SHARED:${BUILD_ZVEC_SHARED}")
@@ -142,7 +142,7 @@ message(STATUS "BUILD_ZVEC_AILEGO_SHARED:${BUILD_ZVEC_AILEGO_SHARED}")
 message(STATUS "BUILD_ZVEC_CORE_SHARED:${BUILD_ZVEC_CORE_SHARED}")
 message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
 message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
-message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
+message(STATUS "BUILD_BENCHMARKS:${BUILD_BENCHMARKS}")
 message(STATUS "BUILD_CPP_EXAMPLES:${BUILD_CPP_EXAMPLES}")
 
 # RaBitQ support:
@@ -262,8 +262,8 @@ cc_directories(tests)
 
 add_custom_target(clang_tidy_deps DEPENDS ARROW.BUILD glog gflags Lz4.BUILD)
 
-if(BUILD_TOOLS)
-    cc_directories(tools)
+if(BUILD_BENCHMARKS)
+    cc_directories(benchmarks)
 endif()
 
 set(CPACK_PACKAGE_VERSION ${ZVEC_VERSION_NUMBER})
