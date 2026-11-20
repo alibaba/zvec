@@ -13,6 +13,7 @@
 // limitations under the License.
 #include "ivf_distance_calculator.h"
 #include <iostream>
+#include "ivf_params.h"
 
 namespace zvec {
 namespace core {
@@ -33,8 +34,8 @@ IVFDistanceCalculator::IVFDistanceCalculator(const IndexMeta &meta,
   if (column_major_order_ && meta.extra_meta_size() == 0 &&
       (meta.data_type() == IndexMeta::DT_FP32 ||
        meta.data_type() == IndexMeta::DT_FP16) &&
-      (meta.metric_name() == "InnerProduct" ||
-       meta.metric_name() == "SquaredEuclidean") &&
+      (meta.metric_name() == kIPMetricName ||
+       meta.metric_name() == kL2MetricName) &&
       metric->is_matched(meta)) {
     // Ask the metric for its own kernel: identical functions can have
     // different addresses in independently linked libraries. Custom metrics
