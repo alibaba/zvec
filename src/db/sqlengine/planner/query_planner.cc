@@ -536,25 +536,11 @@ DocFilter::Ptr QueryPlanner::build_doc_filter(
     const Segment::Ptr &seg, const QueryInfo::Ptr &query_info,
     std::unique_ptr<arrow::compute::Expression> &forward_filter,
     bool single_stage_search) {
-  std::unique_ptr<ac::Declaration> forward_filter_plan;
-  // if single stage search is not enabled, first run acero plan to get
-  // forward bitmap, then filter during search. otherwise, filter forward
-  // during search.
-  if (forward_filter && !single_stage_search) {
-    ac::RecordBatchReaderSourceNodeOptions source_options{
-        seg->scan(query_info->get_forward_filter_field_names())};
-    forward_filter_plan.reset(new ac::Declaration{ac::Declaration::Sequence({
-        {"record_batch_reader_source", std::move(source_options)},
-        {
-            "project",
-            ac::ProjectNodeOptions{{std::move(*forward_filter)},
-                                   {kFieldIsValid}},
-        },
-    })});
-    forward_filter.reset();
+  std::unique_ptr<cp::Expression> bitmap_filter;
+  if (!single_stage_search) {
+    bitmap_filter = std::move(forward_filter);
   }
-  return std::make_shared<DocFilter>(seg, query_info,
-                                     std::move(forward_filter_plan),
+  return std::make_shared<DocFilter>(seg, query_info, std::move(bitmap_filter),
                                      std::move(forward_filter));
 }
 

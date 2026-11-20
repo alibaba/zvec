@@ -19,8 +19,6 @@
 
 namespace zvec::sqlengine {
 
-static const constexpr char *kFieldIsValid = "_zvec_is_valid";
-
 static const inline std::string kCheckNotFiltered = "check_not_filtered";
 static const inline std::string kFetchVector = "fetch_vector";
 static const inline std::string kFetchSparseVector = "fetch_sparse_vector";

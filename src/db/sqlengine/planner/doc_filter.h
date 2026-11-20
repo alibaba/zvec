@@ -15,8 +15,8 @@
 #pragma once
 
 #include <memory>
-#include <arrow/acero/api.h>
 #include <arrow/chunked_array.h>
+#include <arrow/compute/expression.h>
 #include <zvec/db/status.h>
 #include "db/index/column/inverted_column/inverted_search_result.h"
 #include "db/index/common/index_filter.h"
@@ -31,13 +31,13 @@ class DocFilter : public IndexFilter {
   using Ptr = std::shared_ptr<DocFilter>;
 
   DocFilter(Segment::Ptr segment, QueryInfo::Ptr query_info,
-            std::unique_ptr<arrow::acero::Declaration> forward_plan,
+            std::unique_ptr<arrow::compute::Expression> bitmap_filter,
             std::unique_ptr<arrow::compute::Expression> forward_filter)
       : segment_(std::move(segment)),
         query_info_(std::move(query_info)),
         delete_filter_(segment_->get_filter()),
         invert_cond_(query_info_->invert_cond()),
-        forward_plan_(std::move(forward_plan)),
+        bitmap_filter_(std::move(bitmap_filter)),
         forward_filter_expr_(std::move(forward_filter)) {}
 
   Status compute_filter();
@@ -55,6 +55,7 @@ class DocFilter : public IndexFilter {
  private:
   friend class zvec::test::ForwardFilterReadTest;
 
+  arrow::Result<std::shared_ptr<arrow::ChunkedArray>> build_forward_bitmap() const;
   std::optional<bool> get_forward_bit(uint64_t id) const;
   std::optional<bool> is_matched_by_forward_filter(uint64_t id) const;
 
@@ -63,8 +64,8 @@ class DocFilter : public IndexFilter {
   QueryInfo::Ptr query_info_;
   IndexFilter::Ptr delete_filter_;
   QueryNode::Ptr invert_cond_;
-  // either forward_plan_ or forward_expr_ is set
-  std::unique_ptr<arrow::acero::Declaration> forward_plan_;
+  // The planner selects either a full bitmap or per-candidate evaluation.
+  std::unique_ptr<arrow::compute::Expression> bitmap_filter_;
   std::unique_ptr<arrow::compute::Expression> forward_filter_expr_;
 
   InvertedSearchResult::Ptr invert_result_;

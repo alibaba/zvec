@@ -37,19 +37,14 @@ Status DocFilter::compute_filter() {
     invert_filter_ = invert_result_->make_filter();
   }
 
-  if (forward_plan_) {
-    auto forward_result = arrow::acero::DeclarationToTable(*forward_plan_);
-    if (!forward_result.ok()) {
+  if (bitmap_filter_) {
+    forward_bitmap_.reset();
+    auto bitmap = build_forward_bitmap();
+    if (!bitmap.ok()) {
       return Status::InternalError("Execute filter bitmap failed: ",
-                                   forward_result.status().ToString());
+                                   bitmap.status().ToString());
     }
-    // has only one column with boolean type
-    auto &forward_table = forward_result.ValueUnsafe();
-    if (forward_table->num_columns() != 1 ||
-        forward_table->column(0)->type() != arrow::boolean()) {
-      return Status::InternalError("Filter bitmap is not boolean type");
-    }
-    forward_bitmap_ = forward_table->column(0);
+    forward_bitmap_ = std::move(bitmap).ValueUnsafe();
   }
 
   // A sealed IPC segment also supplies a lock-free deletion check. Only a
@@ -97,7 +92,7 @@ Status DocFilter::compute_filter() {
 }
 
 bool DocFilter::empty() const {
-  return !(delete_filter_ || invert_filter_ || forward_plan_ ||
+  return !(delete_filter_ || invert_filter_ || bitmap_filter_ ||
            forward_filter_expr_);
 }
 
