@@ -43,6 +43,10 @@ class StandardTokenizer : public Tokenizer {
     return "standard";
   }
 
+  // Share Unicode CJK classification with composite tokenizers so adjacent
+  // ASCII identifiers remain separate from Han, kana, and Hangul text.
+  static bool is_cjk(uint32_t codepoint);
+
  private:
   // Word tokens with more codepoints than this value are split.
   uint32_t max_token_length_{255};
