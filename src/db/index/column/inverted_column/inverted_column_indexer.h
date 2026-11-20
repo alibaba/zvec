@@ -200,6 +200,23 @@ class InvertedColumnIndexer {
 
 
   /*!
+   * \brief First step of seal(): serialize special values and generate
+   *        statistical indexes, without marking the index sealed
+   * \return Status indicating success or failure of the operation
+   */
+  Status prepare_seal();
+
+
+  /*!
+   * \brief Last step of seal(): mark the index sealed. Call it only after
+   *        prepare_seal() succeeded and its data was flushed: the indexes
+   *        write without a WAL.
+   * \return Status indicating success or failure of the operation
+   */
+  Status mark_sealed();
+
+
+  /*!
    * \brief Check if the index is sealed
    * \return True if the index is sealed, false otherwise
    */
