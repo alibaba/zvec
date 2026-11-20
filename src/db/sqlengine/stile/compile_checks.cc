@@ -9,7 +9,14 @@
 #include <arrow/compute/api.h>
 #include <arrow/compute/function.h>
 #include <arrow/compute/registry.h>
+#include <arrow/util/config.h>
 #include "db/sqlengine/stile/validation.h"
+
+// 绑定内核与 LIKE 初始化依赖 Arrow 21 的语义；升级时必须重新验证适配。
+#if ARROW_VERSION_MAJOR != 21
+#error \
+    "Revalidate the vendored Stile adapter before changing Arrow major version."
+#endif
 
 namespace zvec::stile {
 namespace {

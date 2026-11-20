@@ -46,12 +46,19 @@ class ForwardAccessProbe final : public ailego::Logger {
     const std::string message(text);
     if (message.find("Forward filter view:") != std::string::npos) {
       ++views;
-    } else if (message.find("Forward filter locked fetch:") !=
-               std::string::npos) {
-      ++locked;
-    } else {
       return;
     }
+    if (message.find("Forward filter locked fetch:") != std::string::npos) {
+      ++locked;
+      return;
+    }
+    if (message.find("Forward filter evaluator:") == std::string::npos) return;
+    if (message.find("backend[stile]") != std::string::npos) {
+      ++stile;
+    } else if (message.find("backend[arrow]") != std::string::npos) {
+      ++arrow;
+    }
+    // 生命周期测试必须停在编译完成之后，确保真正持有已编译的谓词。
     std::unique_lock<std::mutex> lock(mutex);
     entered = true;
     cv.notify_all();
@@ -69,7 +76,7 @@ class ForwardAccessProbe final : public ailego::Logger {
   int prepared() const {
     return locked.load() + views.load();
   }
-  std::atomic<int> locked{0}, views{0};
+  std::atomic<int> locked{0}, views{0}, stile{0}, arrow{0};
   std::mutex mutex;
   std::condition_variable cv;
   bool entered{false}, block{false};
@@ -110,6 +117,9 @@ class ForwardFilterCollectionTest : public testing::TestWithParam<bool> {
         std::make_shared<InvertIndexParams>(false)));
     schema.add_field(std::make_shared<FieldSchema>(
         "text", DataType::STRING, false, std::make_shared<FtsIndexParams>()));
+    schema.add_field(std::make_shared<FieldSchema>(
+        "label", DataType::STRING, false,
+        std::make_shared<InvertIndexParams>(true)));
     schema.add_field(std::make_shared<FieldSchema>(
         "vec", DataType::VECTOR_FP32, 4, false,
         std::make_shared<HnswIndexParams>(MetricType::L2, 8, 100)));
@@ -154,6 +164,7 @@ class ForwardFilterCollectionTest : public testing::TestWithParam<bool> {
     value.set<int32_t>("inverted", i);
     value.set<int32_t>("bucket", i % 4);
     value.set<std::string>("text", "common document");
+    value.set<std::string>("label", "common document");
     value.set<std::vector<float>>("vec", {static_cast<float>(i), 1, 2, 3});
     return value;
   }
@@ -176,11 +187,12 @@ class ForwardFilterCollectionTest : public testing::TestWithParam<bool> {
     auto opened = Collection::Open(path_, CollectionOptions{true, GetParam()});
     ASSERT_TRUE(opened.has_value()) << opened.error().message();
     collection_ = opened.value();
-    probe_->locked = 0;
-    probe_->views = 0;
+    reset_probe();
   }
   void expect_sealed_access() const {
     EXPECT_GT(probe_->prepared(), 0);
+    EXPECT_EQ(probe_->stile.load(), probe_->views.load());
+    EXPECT_EQ(probe_->arrow.load(), probe_->locked.load());
     if (GetParam()) {
       EXPECT_GT(probe_->views.load(), 0);
       EXPECT_EQ(probe_->locked.load(), 0);
@@ -192,9 +204,11 @@ class ForwardFilterCollectionTest : public testing::TestWithParam<bool> {
   void reset_probe() {
     probe_->locked = 0;
     probe_->views = 0;
+    probe_->stile = 0;
+    probe_->arrow = 0;
   }
   std::set<std::string> keys(const Result<DocPtrList> &result) {
-    EXPECT_TRUE(result.has_value());
+    EXPECT_TRUE(result.has_value()) << (result ? "" : result.error().message());
     std::set<std::string> out;
     if (result)
       for (const auto &doc : result.value()) out.insert(doc->pk());
@@ -221,8 +235,11 @@ TEST_P(ForwardFilterCollectionTest,
   fts.target_.field_name_ = "text";
   fts.target_.clause_ = FtsClause{"common", ""};
   fts.target_.query_params_.reset();
+  const int before_fts = probe_->prepared();
   const auto fts_baseline = keys(collection_->query(fts));
   ASSERT_EQ(fts_baseline.size(), 45u);
+  EXPECT_GT(probe_->prepared(), before_fts);
+  expect_sealed_access();
   const auto unfiltered = keys(collection_->query(query("")));
   reopen();
   EXPECT_EQ(keys(collection_->query(forward)), baseline);
@@ -248,6 +265,61 @@ TEST_P(ForwardFilterCollectionTest,
       EXPECT_NE(item->pk(), "pk_61");
     }
   }
+}
+
+TEST_P(ForwardFilterCollectionTest, OptimizerBackendSelection) {
+  ASSERT_NO_FATAL_FAILURE(create(10000));
+  ASSERT_TRUE(collection_->optimize().ok());
+  ASSERT_NO_FATAL_FAILURE(reopen());
+  const std::set<std::string> expected{"pk_56", "pk_57", "pk_58", "pk_59",
+                                       "pk_62", "pk_63", "pk_64", "pk_65"};
+  EXPECT_EQ(keys(collection_->query(query("value > 48 AND value < 90"))),
+            expected);
+  expect_sealed_access();
+  reset_probe();
+  EXPECT_EQ(keys(collection_->query(
+                query("value > 48 AND label >= 'comm' AND label < 'd'"))),
+            expected);
+  expect_sealed_access();
+  // 相同结果不代表相同执行路径：非 single-stage 查询仍使用原有后端。
+  for (const auto *condition :
+       {"bitmap > 48", "value > 48 AND label LIKE 'comm_n%'",
+        "value IN (56,57,58,59,62,63,64,65)"}) {
+    SCOPED_TRACE(condition);
+    reset_probe();
+    EXPECT_EQ(keys(collection_->query(query(condition))), expected);
+    EXPECT_EQ(probe_->prepared(), 0);
+    EXPECT_EQ(probe_->stile.load(), 0);
+    EXPECT_EQ(probe_->arrow.load(), 0);
+  }
+  reset_probe();
+  EXPECT_EQ(keys(collection_->query(query("value = 59"))),
+            (std::set<std::string>{"pk_59"}));
+  EXPECT_EQ(probe_->prepared(), 0);
+}
+
+TEST_P(ForwardFilterCollectionTest, CandidateIdsInLaterSegments) {
+  ASSERT_NO_FATAL_FAILURE(create());
+  ASSERT_TRUE(collection_->optimize().ok());
+  ASSERT_NO_FATAL_FAILURE(reopen());
+  auto request = query("value > -101 AND value < -99");
+  const std::vector<float> vector{1500.25f, 1, 2, 3};
+  request.target_.set_vector(
+      std::string(reinterpret_cast<const char *>(vector.data()),
+                  vector.size() * sizeof(float)));
+  const std::set<std::string> expected{"pk_1497", "pk_1498", "pk_1499",
+                                       "pk_1500", "pk_1501", "pk_1502",
+                                       "pk_1503", "pk_1504"};
+  EXPECT_EQ(keys(collection_->query(request)), expected);
+  expect_sealed_access();
+  // 重复并发查询同时覆盖独立编译、segment fanout 和确定的结果集合。
+  std::vector<std::future<std::set<std::string>>> readers;
+  for (int i = 0; i < 4; ++i) {
+    readers.push_back(std::async(
+        std::launch::async, [&] { return keys(collection_->query(request)); }));
+  }
+  for (auto &reader : readers) EXPECT_EQ(reader.get(), expected);
+  expect_sealed_access();
 }
 
 TEST_P(ForwardFilterCollectionTest, MultiQueryGroupByAndErrors) {

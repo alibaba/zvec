@@ -137,6 +137,9 @@ Status DocFilter::compute_filter() {
     }
     *forward_filter_expr_ = std::move(bound);
     forward_prepared_ = true;
+    // 只在准备完成后记录后端，便于验证实际计划且不增加候选热路径开销。
+    LOG_DEBUG("Forward filter evaluator: segment[%d] backend[%s]",
+              segment_->id(), stile_predicate_ ? "stile" : "arrow");
   } else if (with_deletion) {
     // Without a forward predicate the capture is only an optimization: on
     // any failure keep the segment's filter, which gives the same results.
