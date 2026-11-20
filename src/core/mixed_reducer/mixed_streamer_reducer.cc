@@ -507,15 +507,28 @@ void MixedStreamerReducer::add_vec(int *result) {
       // the target layout. A target without quantizer or reformer stores
       // the original format directly, so no encoding is needed.
       if (target_streamer_quantizer_ != nullptr) {
-        new_vector.resize(
-            target_streamer_quantizer_->quantized_datapoint_vector_length());
-        target_streamer_quantizer_->quantize_data(vector, new_vector.data());
+        IndexQueryMeta quantized_meta;
+        if (target_streamer_quantizer_->requires_original_vectors()) {
+          if (target_streamer_quantizer_->quantize_datapoint(
+                  vector, original_query_meta_, &new_vector, &quantized_meta) !=
+              0) {
+            LOG_ERROR("Failed to quantize vector. pkey[%zu]",
+                      (size_t)vector_item.pkey_);
+            *result = IndexError_Runtime;
+            return;
+          }
+        } else {
+          new_vector.resize(
+              target_streamer_quantizer_->quantized_datapoint_vector_length());
+          target_streamer_quantizer_->quantize_data(vector, new_vector.data());
+          quantized_meta.set_meta(
+              target_streamer_query_meta.data_type(),
+              target_streamer_query_meta.dimension(),
+              static_cast<uint32_t>(target_streamer_quantizer_->type()),
+              target_streamer_query_meta.extra_meta_size());
+        }
         vector = new_vector.data();
-        add_meta.set_meta(
-            target_streamer_query_meta.data_type(),
-            target_streamer_query_meta.dimension(),
-            static_cast<uint32_t>(target_streamer_quantizer_->type()),
-            target_streamer_query_meta.extra_meta_size());
+        add_meta = quantized_meta;
       } else if (target_streamer_reformer_ != nullptr) {
         IndexQueryMeta new_meta;
         if (target_streamer_reformer_->convert(vector, original_query_meta_,

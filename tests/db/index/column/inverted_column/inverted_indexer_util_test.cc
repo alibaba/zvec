@@ -13,6 +13,7 @@
 // limitations under the License.
 
 
+#include <fstream>
 #include <gtest/gtest.h>
 #include "tests/test_util.h"
 #define private public
@@ -71,6 +72,42 @@ class InvertedIndexTest : public testing::Test {
 
 InvertedIndexer::Ptr InvertedIndexTest::indexer_{nullptr};
 IndexParams::Ptr InvertedIndexTest::params_{nullptr};
+
+
+TEST(InvertedIndexerOpenTest, PreservesRocksdbFailureDetails) {
+  const std::string path = "./inverted_indexer_open_status_dir";
+  zvec::test_util::RemoveTestPath(path);
+  Status status = Status::InternalError("stale error");
+  auto indexer = InvertedIndexer::CreateAndOpen(collection_name, path, true, {},
+                                                false, &status);
+  ASSERT_NE(indexer, nullptr);
+  ASSERT_TRUE(status.ok()) << status.message();
+  indexer.reset();
+
+  indexer = InvertedIndexer::CreateAndOpen(collection_name, path, false, {},
+                                           true, &status);
+  ASSERT_NE(indexer, nullptr);
+  ASSERT_TRUE(status.ok()) << status.message();
+  indexer.reset();
+
+  // An invalid CURRENT must reach the caller as a RocksDB error, not just
+  // a null indexer. Use a closed database so this also works on Windows.
+  {
+    std::ofstream current(path + "/CURRENT", std::ios::trunc);
+    ASSERT_TRUE(current.is_open());
+    current << "MANIFEST-999999\n";
+    current.close();
+    ASSERT_TRUE(current.good());
+  }
+  indexer = InvertedIndexer::CreateAndOpen(collection_name, path, false, {},
+                                           true, &status);
+  EXPECT_EQ(indexer, nullptr);
+  EXPECT_FALSE(status.ok());
+  EXPECT_NE(status.message().find("Failed to list RocksDB column families"),
+            std::string::npos);
+  EXPECT_NE(status.message().find("MANIFEST-999999"), std::string::npos);
+  zvec::test_util::RemoveTestPath(path);
+}
 
 
 TEST_F(InvertedIndexTest, COLLECTION_NAME) {

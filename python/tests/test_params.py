@@ -209,6 +209,23 @@ class TestFlatIndexParam:
 # Ivf Index Param Test Case
 # ----------------------------
 class TestIVFIndexParam:
+    def test_rabitq_round_trip(self):
+        import pickle
+
+        param = IVFIndexParam(
+            metric_type=MetricType.COSINE,
+            n_list=32,
+            n_iters=7,
+            quantize_type=QuantizeType.RABITQ,
+            total_bits=9,
+            sample_count=1024,
+        )
+        restored = pickle.loads(pickle.dumps(param))
+        assert restored.to_dict() == param.to_dict()
+        assert restored.type == IndexType.IVF
+        assert restored.total_bits == 9
+        assert restored.sample_count == 1024
+
     def test_default(self):
         param = IVFIndexParam()
         assert param.metric_type == MetricType.IP
@@ -637,6 +654,41 @@ class TestVectorQueryDeprecated:
 
 
 class TestQuantizerParam:
+    @pytest.mark.parametrize(
+        "args, kwargs",
+        [
+            ((False, 4, 4), {"enable_rotate": False, "num_chunk": 4, "num_bits": 4}),
+            (
+                (True, 4, 4, True, 2, 3),
+                {
+                    "enable_rotate": True,
+                    "num_chunk": 4,
+                    "num_bits": 4,
+                    "fast_scan": True,
+                    "opq_iter": 2,
+                    "opq_pq_iter": 3,
+                },
+            ),
+        ],
+    )
+    def test_pq_positional_compatibility(self, args, kwargs):
+        qp = QuantizerParam(*args)
+        assert qp == QuantizerParam(**kwargs)
+        assert qp.total_bits == 7
+        assert qp.num_clusters == 16
+        assert pickle.loads(pickle.dumps(qp)) == qp
+
+    def test_rabitq_keyword_parameters(self):
+        qp = QuantizerParam(total_bits=3, num_clusters=4, sample_count=128, n_iters=6)
+        assert (qp.total_bits, qp.num_clusters, qp.sample_count, qp.n_iters) == (
+            3,
+            4,
+            128,
+            6,
+        )
+        assert (qp.num_chunk, qp.num_bits, qp.fast_scan) == (8, 8, False)
+        assert pickle.loads(pickle.dumps(qp)) == qp
+
     def test_default(self):
         qp = QuantizerParam()
         assert qp.enable_rotate is False
