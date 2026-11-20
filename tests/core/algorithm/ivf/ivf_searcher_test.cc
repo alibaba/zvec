@@ -4579,7 +4579,7 @@ TEST_P(IVFTurboTest, ManyDistanceAcrossStoragePages) {
       type != turbo::QuantizeType::kFp32) {
     GTEST_SKIP() << "This path supports row-major FP16/FP32 postings only";
   }
-  auto &pool = MemoryLimitPool::get_instance();
+  auto &pool = PoolPayloadBudget::get_instance();
   const auto capacity = pool.capacity();
   ASSERT_EQ(0u, pool.used());
   ASSERT_EQ(0, pool.init(8 * 1024 * 1024));
