@@ -24,6 +24,7 @@
 #include "zvec/ailego/utility/float_helper.h"
 #include "zvec/db/doc.h"
 #include "zvec/db/index_params.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic push
@@ -2230,7 +2231,8 @@ TEST(VectorColumnIndexerTest, Failure) {
 
   // Test case 10: use_mmap = false
   {
-    zvec::ailego::MemoryLimitPool::get_instance().init(10 * 1024UL * 1024UL);
+    ::zvec::ailego::PoolPayloadBudget::get_instance().init(10 * 1024UL *
+                                                           1024UL);
     auto indexer = std::make_shared<VectorColumnIndexer>(
         index_file_path,
         FieldSchema("test", DataType::VECTOR_FP32, 3, false,

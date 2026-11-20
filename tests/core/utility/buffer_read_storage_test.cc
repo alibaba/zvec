@@ -25,6 +25,7 @@
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include "utility/utility_params.h"
+#include "../../ailego/buffer/pool_payload_budget.h"
 
 using namespace zvec;
 using namespace zvec::core;
@@ -36,7 +37,7 @@ constexpr size_t kPoolSize = 16UL * 1024UL * 1024UL;
 class BufferReadStorageTest : public testing::Test {
  protected:
   void SetUp() override {
-    ailego::MemoryLimitPool::get_instance().init(kPoolSize);
+    ::zvec::ailego::PoolPayloadBudget::get_instance().init(kPoolSize);
 
     auto dumper = IndexFactory::CreateDumper("FileDumper");
     ASSERT_NE(dumper, nullptr);
@@ -79,7 +80,7 @@ TEST_F(BufferReadStorageTest, NoneDefersPagePopulationUntilFirstRead) {
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
 
-  auto &pool = ailego::MemoryLimitPool::get_instance();
+  auto &pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   EXPECT_EQ(0u, pool.stats().page_used);
   ASSERT_NE(nullptr, storage->vec_buffer_pool());
   EXPECT_TRUE(storage->vec_buffer_pool()->cache_enabled());
@@ -98,7 +99,8 @@ TEST_F(BufferReadStorageTest, SequentialPreservesExistingWarmupBehavior) {
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
 
-  EXPECT_GT(ailego::MemoryLimitPool::get_instance().stats().page_used, 0u);
+  EXPECT_GT(::zvec::ailego::PoolPayloadBudget::get_instance().stats().page_used,
+            0u);
 
   auto segment = storage->get("payload");
   ASSERT_NE(segment, nullptr);
@@ -160,12 +162,15 @@ TEST_F(BufferReadStorageTest, RejectsUnknownWarmupMode) {
 
 TEST_F(BufferReadStorageTest, PoolSmallerThanOnePageFallsBackToBypass) {
   const size_t kTooSmall = ailego::kVectorPageSize - 1;
-  ASSERT_EQ(0, ailego::MemoryLimitPool::get_instance().init(kTooSmall));
+  ASSERT_EQ(0,
+            ::zvec::ailego::PoolPayloadBudget::get_instance().init(kTooSmall));
 
   auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
-  EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().stats().metadata_used);
+  EXPECT_EQ(
+      0u,
+      ::zvec::ailego::PoolPayloadBudget::get_instance().stats().metadata_used);
   ASSERT_NE(nullptr, storage->vec_buffer_pool());
   EXPECT_FALSE(storage->vec_buffer_pool()->cache_enabled());
   EXPECT_GE(storage->vec_buffer_pool()->file_descriptor(), 0);
@@ -175,17 +180,20 @@ TEST_F(BufferReadStorageTest, PoolSmallerThanOnePageFallsBackToBypass) {
   std::string actual(payload_.size(), '\0');
   ASSERT_EQ(actual.size(), segment->fetch(0, actual.data(), actual.size()));
   EXPECT_EQ(payload_, actual);
-  EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().stats().page_used);
+  EXPECT_EQ(
+      0u, ::zvec::ailego::PoolPayloadBudget::get_instance().stats().page_used);
 }
 
 TEST_F(BufferReadStorageTest, PoolWithoutRoomForMetadataFallsBackToBypass) {
-  ASSERT_EQ(
-      0, ailego::MemoryLimitPool::get_instance().init(ailego::kVectorPageSize));
+  ASSERT_EQ(0, ::zvec::ailego::PoolPayloadBudget::get_instance().init(
+                   ailego::kVectorPageSize));
 
   auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
-  EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().stats().metadata_used);
+  EXPECT_EQ(
+      0u,
+      ::zvec::ailego::PoolPayloadBudget::get_instance().stats().metadata_used);
   ASSERT_NE(nullptr, storage->vec_buffer_pool());
   EXPECT_FALSE(storage->vec_buffer_pool()->cache_enabled());
   EXPECT_GE(storage->vec_buffer_pool()->file_descriptor(), 0);
@@ -196,7 +204,8 @@ TEST_F(BufferReadStorageTest, PoolWithoutRoomForMetadataFallsBackToBypass) {
   ASSERT_EQ(64u, segment->read(0, block, 64));
   EXPECT_EQ(0, std::memcmp(payload_.data(), block.data(), 64));
   EXPECT_EQ(IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH, block.type_);
-  EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().stats().page_used);
+  EXPECT_EQ(
+      0u, ::zvec::ailego::PoolPayloadBudget::get_instance().stats().page_used);
 }
 
 TEST_F(BufferReadStorageTest, CachePressureFallsBackToOwnedRead) {
@@ -206,7 +215,7 @@ TEST_F(BufferReadStorageTest, CachePressureFallsBackToOwnedRead) {
   auto segment = storage->get("payload");
   ASSERT_NE(segment, nullptr);
 
-  auto &pool = ailego::MemoryLimitPool::get_instance();
+  auto &pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   const size_t external_charge = pool.available();
   ASSERT_GT(external_charge, 0u);
   ASSERT_TRUE(pool.try_charge_external(external_charge));
@@ -240,7 +249,8 @@ TEST_F(BufferReadStorageTest, MemoryBlockKeepsPoolAliveAfterStorageClose) {
   block.reset();
   EXPECT_EQ(0, std::memcmp(payload_.data(), copy.data(), 64));
   copy.reset();
-  EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().stats().page_used);
+  EXPECT_EQ(
+      0u, ::zvec::ailego::PoolPayloadBudget::get_instance().stats().page_used);
 }
 
 TEST_F(BufferReadStorageTest, BorrowedReadAvoidsOwningHandleOnResidentPage) {
@@ -272,7 +282,7 @@ TEST_F(BufferReadStorageTest, MemoryBlockPinsUntilReset) {
   ASSERT_EQ(64u, segment->read(0, data, 64));
   ASSERT_NE(data.data(), nullptr);
   EXPECT_EQ(0, std::memcmp(payload_.data(), data.data(), 64));
-  auto &pool = ailego::MemoryLimitPool::get_instance();
+  auto &pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   const size_t external_charge = pool.available();
   ASSERT_GT(external_charge, 0u);
   ASSERT_TRUE(pool.try_charge_external(external_charge));

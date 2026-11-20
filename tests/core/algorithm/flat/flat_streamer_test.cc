@@ -35,6 +35,7 @@
 #include "algorithm/flat/flat_streamer_context.h"
 #include "algorithm/flat/flat_utility.h"
 #include "tests/test_util.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic push
@@ -495,7 +496,7 @@ TEST_F(FlatStreamerTest, CandidateSearchKeepsMetricBatchAndReusesScratch) {
 }
 
 TEST_F(FlatStreamerTest, KeyLookupPreservesStatusAfterReopen) {
-  MemoryLimitPool::get_instance().init(64UL * 1024 * 1024);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(64UL * 1024 * 1024);
   for (const char *backend : {"MMapFileStorage", "BufferStorage"}) {
     for (bool use_id_map : {false, true}) {
       SCOPED_TRACE(backend);
@@ -1464,7 +1465,7 @@ TEST_F(FlatStreamerTest, TestConcurrentAddAndSearch) {
 }
 
 TEST_F(FlatStreamerTest, TestConcurrentSegmentGrowthAndFetch) {
-  MemoryLimitPool::get_instance().init(64 * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(64 * 1024UL * 1024UL);
   for (const char *storage_name : {"MMapFileStorage", "BufferStorage"}) {
     SCOPED_TRACE(storage_name);
     auto storage = IndexFactory::CreateStorage(storage_name);
