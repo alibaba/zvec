@@ -160,15 +160,22 @@ class ForwardFilterReadTest : public testing::TestWithParam<bool> {
     return filter.forward_view_ != nullptr;
   }
 
+  static bool uses_stile(const sqlengine::DocFilter &filter) {
+    return filter.stile_predicate_ != nullptr;
+  }
+
   static bool uses_sealed_deletion(const sqlengine::DocFilter &filter) {
     return filter.sealed_deletion_ != nullptr;
   }
 
   std::unique_ptr<sqlengine::DocFilter> filter(
       const std::vector<std::string> &columns, cp::Expression expression) {
+    static const FieldSchema kLocalRowId(LOCAL_ROW_ID, DataType::UINT64);
     auto info = std::make_shared<sqlengine::QueryInfo>();
     for (const auto &column : columns) {
-      info->add_forward_filter_schema_ptr(column, schema_->get_field(column));
+      const auto *field =
+          column == LOCAL_ROW_ID ? &kLocalRowId : schema_->get_field(column);
+      info->add_forward_filter_schema_ptr(column, field);
     }
     return std::make_unique<sqlengine::DocFilter>(
         segment_, info, nullptr, std::make_unique<cp::Expression>(expression));
@@ -770,9 +777,11 @@ TEST_P(ForwardFilterReadTest, FailedReprepareClearsPreviousReadState) {
   auto candidate = filter({"i32"}, cp::literal(true));
   ASSERT_TRUE(candidate->compute_filter().ok());
   EXPECT_EQ(uses_view(*candidate), GetParam());
+  EXPECT_EQ(uses_stile(*candidate), GetParam());
   ASSERT_TRUE(segment_->destroy().ok());
   EXPECT_FALSE(candidate->compute_filter().ok());
   EXPECT_FALSE(uses_view(*candidate));
+  EXPECT_FALSE(uses_stile(*candidate));
   EXPECT_TRUE(candidate->is_filtered(2));
 }
 
@@ -997,6 +1006,11 @@ TEST_P(ForwardFilterReadTest, ArrowPredicateParityAndGlobalIdDeletes) {
   ASSERT_TRUE(members.Finish(&member_array).ok());
   auto in = cp::call("is_in", {cp::field_ref("i32")},
                      cp::SetLookupOptions(member_array));
+  const auto arrow_only = cp::call("is_finite", {cp::field_ref("f32")});
+  const auto suffix_like = cp::call("match_like", {cp::field_ref("text")},
+                                    cp::MatchSubstringOptions("%10"));
+  const auto regex_like = cp::call("match_like", {cp::field_ref("text")},
+                                   cp::MatchSubstringOptions("value_1%"));
   const std::vector<cp::Expression> expressions = {
       in,
       cp::call("invert", {in}),
@@ -1017,12 +1031,22 @@ TEST_P(ForwardFilterReadTest, ArrowPredicateParityAndGlobalIdDeletes) {
                         cp::literal(int64_t{0})}),
       cp::call("and_kleene", {cp::call("less", {cp::field_ref("i32"),
                                                 cp::literal(int32_t{0})}),
-                              cp::call("invert", {cp::field_ref("flag")})})};
+                              cp::call("invert", {cp::field_ref("flag")})}),
+      arrow_only,
+      suffix_like,
+      regex_like};
   for (const auto &expr : expressions) {
     SCOPED_TRACE(expr.ToString());
     auto candidate = filter(columns, expr);
     auto status = candidate->compute_filter();
     ASSERT_TRUE(status.ok()) << status.message();
+    if (expr.Equals(arrow_only) || expr.Equals(regex_like)) {
+      EXPECT_EQ(uses_view(*candidate), GetParam());
+      EXPECT_FALSE(uses_stile(*candidate));
+    }
+    if (expr.Equals(suffix_like)) {
+      EXPECT_EQ(uses_stile(*candidate), GetParam());
+    }
     auto bound =
         expr.Bind(*segment_->fetch(columns, std::vector<int>{})->schema());
     ASSERT_TRUE(bound.ok());
@@ -1044,6 +1068,26 @@ TEST_P(ForwardFilterReadTest, ArrowPredicateParityAndGlobalIdDeletes) {
   EXPECT_TRUE(negative->is_filtered(2));
   EXPECT_TRUE(negative->is_filtered(0));
   EXPECT_TRUE(negative->is_filtered(7));
+}
+
+TEST_P(IpcForwardFilterReadTest, OversizedSetUsesArrow) {
+  ASSERT_NO_FATAL_FAILURE(create(24));
+  ASSERT_NO_FATAL_FAILURE(reopen_persisted());
+  arrow::Int32Builder builder;
+  // Stile bounds the set cardinality before deduplication.
+  ASSERT_TRUE(builder.AppendValues(std::vector<int32_t>(65537, 2)).ok());
+  std::shared_ptr<arrow::Array> members;
+  ASSERT_TRUE(builder.Finish(&members).ok());
+  auto expression =
+      cp::call("is_in", {cp::field_ref("i32")}, cp::SetLookupOptions(members));
+  auto candidate = filter({"i32"}, std::move(expression));
+  auto status = candidate->compute_filter();
+  ASSERT_TRUE(status.ok()) << status.message();
+  EXPECT_TRUE(uses_view(*candidate));
+  EXPECT_FALSE(uses_stile(*candidate));
+  EXPECT_FALSE(candidate->is_filtered(2));
+  EXPECT_TRUE(candidate->is_filtered(4));
+  EXPECT_TRUE(candidate->is_filtered(0));
 }
 
 TEST_P(ForwardFilterReadTest, IndependentColumnChunkBoundaries) {
@@ -1093,7 +1137,7 @@ TEST_P(ForwardFilterReadTest, IndependentColumnChunkBoundaries) {
                               versions_, options);
   ASSERT_TRUE(opened.has_value()) << opened.error().message();
   segment_ = opened.value();
-  const std::vector<std::string> columns{"other", "i32", "text"};
+  const std::vector<std::string> columns{"other", "i32", "text", LOCAL_ROW_ID};
   auto view = capture(columns);
   ASSERT_EQ(view != nullptr, GetParam());
   if (view) {
@@ -1103,6 +1147,19 @@ TEST_P(ForwardFilterReadTest, IndependentColumnChunkBoundaries) {
     // Irregular added-column batches need a search; no stride shortcut.
     EXPECT_EQ(view->column(0)->stride(), 0);
   }
+  constexpr int kMinOther = 10;
+  constexpr int kRowLimit = 2048;
+  auto other = cp::call(
+      "greater", {cp::field_ref("other"), cp::literal(int32_t{kMinOther})});
+  auto i32 = cp::call("less", {cp::field_ref("i32"), cp::literal(int32_t{0})});
+  auto row_id = cp::call(
+      "less", {cp::field_ref(LOCAL_ROW_ID), cp::literal(uint64_t{kRowLimit})});
+  auto candidate = filter(
+      columns,
+      cp::call("and_kleene", {cp::call("and_kleene", {other, i32}), row_id}));
+  auto status = candidate->compute_filter();
+  ASSERT_TRUE(status.ok()) << status.message();
+  EXPECT_EQ(uses_stile(*candidate), GetParam());
   for (int row = 0; row < 2053; ++row) {
     auto a = segment_->fetch(columns, row);
     ASSERT_NE(a, nullptr);
@@ -1121,6 +1178,9 @@ TEST_P(ForwardFilterReadTest, IndependentColumnChunkBoundaries) {
     const auto &value = a->values[0].scalar_as<arrow::Int32Scalar>();
     EXPECT_EQ(value.is_valid, row % 13 != 0);
     if (value.is_valid) EXPECT_EQ(value.value, row);
+    const bool matches = row > kMinOther && row < kRowLimit && row % 2 != 0 &&
+                         row % 11 != 0 && row % 13 != 0;
+    EXPECT_EQ(candidate->is_filtered(row), !matches) << row;
   }
 }
 
@@ -1289,6 +1349,7 @@ TEST_P(ForwardFilterReadTest, LiteralPredicatesAreEvaluatedOnBothPaths) {
     ASSERT_TRUE(never->compute_filter().ok());
     ASSERT_TRUE(always->compute_filter().ok());
     EXPECT_EQ(uses_view(*always), sealed && GetParam());
+    EXPECT_EQ(uses_stile(*always), sealed && GetParam());
     for (uint64_t row = 0; row < 24; ++row) {
       EXPECT_TRUE(never->is_filtered(row)) << row;
       EXPECT_FALSE(always->is_filtered(row)) << row;

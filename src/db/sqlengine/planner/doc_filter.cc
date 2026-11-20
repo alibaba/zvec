@@ -13,16 +13,51 @@
 // limitations under the License.
 
 #include "db/sqlengine/planner/doc_filter.h"
+#include <new>
 #include <optional>
+#include <vector>
 #include <arrow/acero/exec_plan.h>
 #include <arrow/table.h>
 #include <zvec/ailego/logger/logger.h>
 #include "db/sqlengine/planner/invert_search.h"
 
 namespace zvec::sqlengine {
+namespace {
+
+arrow::Result<std::unique_ptr<stile::Predicate>> CompileForwardPredicate(
+    const arrow::compute::Expression &bound, const ForwardReadView &view) try {
+  std::vector<stile::ColumnIndex::Ptr> columns;
+  columns.reserve(view.num_columns());
+  for (int i = 0; i < view.num_columns(); ++i) {
+    const auto &column = view.column(i);
+    ARROW_ASSIGN_OR_RAISE(
+        auto index,
+        column->layout() == ForwardColumn::Layout::kRowId
+            ? stile::ColumnIndex::MakeRowNumberChecked(column->field(),
+                                                       column->length())
+            : stile::ColumnIndex::Make(column->field(), column->data()));
+    columns.push_back(std::move(index));
+  }
+  ARROW_ASSIGN_OR_RAISE(auto table,
+                        stile::TableIndex::Make(view.schema(), view.num_rows(),
+                                                std::move(columns)));
+  auto predicate = stile::Predicate::Compile(bound, std::move(table));
+  // Stile's compilation budgets bound this optimization. Larger queries
+  // can still be evaluated by the existing Arrow path.
+  if (predicate.status().IsNotImplemented() ||
+      predicate.status().IsCapacityError()) {
+    return nullptr;
+  }
+  return predicate;
+} catch (const std::bad_alloc &) {
+  return arrow::Status::OutOfMemory("Prepare Stile forward predicate");
+}
+
+}  // namespace
 
 Status DocFilter::compute_filter() {
   forward_prepared_ = false;
+  stile_predicate_.reset();
   forward_view_.reset();
   forward_rows_ = 0;
   sealed_deletion_.reset();
@@ -78,12 +113,29 @@ Status DocFilter::compute_filter() {
       LOG_DEBUG("Forward filter locked fetch: segment[%d] rows[%zu]",
                 segment_->id(), static_cast<size_t>(forward_rows_));
     }
+    auto init_status = stile::Initialize();
+    if (!init_status.ok()) {
+      return Status::InternalError("Initialize forward evaluator failed: ",
+                                   init_status.ToString());
+    }
     auto bind_res = forward_filter_expr_->Bind(*schema);
     if (!bind_res.ok()) {
-      return Status::InternalError("Bind forward filter expression failed",
+      return Status::InternalError("Bind forward filter expression failed: ",
                                    bind_res.status().ToString());
     }
-    *forward_filter_expr_ = bind_res.MoveValueUnsafe();
+    auto bound = bind_res.MoveValueUnsafe();
+    if (!bound.type() || bound.type()->id() != arrow::Type::BOOL) {
+      return Status::InternalError("Forward filter expression is not boolean");
+    }
+    if (forward_view_) {
+      auto compiled = CompileForwardPredicate(bound, *forward_view_);
+      if (!compiled.ok()) {
+        return Status::InternalError("Compile forward filter failed: ",
+                                     compiled.status().ToString());
+      }
+      stile_predicate_ = compiled.MoveValueUnsafe();
+    }
+    *forward_filter_expr_ = std::move(bound);
     forward_prepared_ = true;
   } else if (with_deletion) {
     // Without a forward predicate the capture is only an optimization: on
@@ -175,6 +227,9 @@ std::optional<std::vector<uint64_t>> DocFilter::get_bf_by_keys_and_update(
 }
 
 std::optional<bool> DocFilter::is_matched_by_forward_filter(uint64_t id) const {
+  if (stile_predicate_) {
+    return stile_predicate_->matches(static_cast<int64_t>(id));
+  }
   ExecBatchPtr exec_batch;
   if (forward_view_) {
     exec_batch = forward_view_->read_row(id);
@@ -205,6 +260,5 @@ std::optional<bool> DocFilter::is_matched_by_forward_filter(uint64_t id) const {
             datum.type()->ToString().c_str());
   return std::nullopt;
 }
-
 
 }  // namespace zvec::sqlengine

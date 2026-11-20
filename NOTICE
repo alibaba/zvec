@@ -10,6 +10,24 @@ Third-Party Components
 ================================================================================
 
 --------------------------------------------------------------------------------
+Stile
+--------------------------------------------------------------------------------
+Project: Stile v0.1.0
+Homepage: https://github.com/luoxiaojian/stile
+License:  Apache License, Version 2.0
+Used in:  src/db/sqlengine/stile/
+
+Copyright 2026 The Stile Authors
+
+The LIKE pattern classification in src/db/sqlengine/stile/like.cc derives
+from Apache Arrow 21.0.0 (cpp/src/arrow/compute/kernels/scalar_string_ascii.cc).
+
+Apache Arrow
+Copyright 2016-2024 The Apache Software Foundation
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+
+--------------------------------------------------------------------------------
 Unicode Character Database
 --------------------------------------------------------------------------------
 Project: Unicode Character Database

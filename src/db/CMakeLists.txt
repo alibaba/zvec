@@ -55,3 +55,9 @@ cc_library(
     utf8proc
   VERSION "${PROXIMA_ZVEC_VERSION}"
 )
+
+# Keep predicate comparisons precise in both the packed and standalone builds.
+set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/sqlengine/stile/predicate.cc"
+  TARGET_DIRECTORY zvec zvec_sqlengine APPEND PROPERTY COMPILE_OPTIONS
+  "$<$<CXX_COMPILER_ID:Clang,AppleClang>:-ffp-model=precise>"
+)
