@@ -724,46 +724,29 @@ int FlatStreamer<BATCH_SIZE>::search_by_p_keys_fast(
 template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::group_by_search_impl(
     const void *query, const IndexQueryMeta &qmeta, uint32_t count,
-    Context::Pointer &context) const {
+    Context::Pointer &context,
+    const std::vector<std::vector<uint64_t>> *p_keys) const {
   if (use_external_vector_) return IndexError_Unsupported;
-  FlatStreamerContext<BATCH_SIZE> *bf_context =
-      dynamic_cast<FlatStreamerContext<BATCH_SIZE> *>(context.get());
-  if (!bf_context) {
-    LOG_ERROR("Invalid brute-force streamer context");
+  auto *ctx = dynamic_cast<FlatStreamerContext<BATCH_SIZE> *>(context.get());
+  if (!ctx) return IndexError_InvalidArgument;
+  if (!ctx->group_by().is_valid() || ctx->group_topk() == 0) {
     return IndexError_InvalidArgument;
   }
 
-  bf_context->resize_group_results(count);
-  if (!bf_context->group_by().is_valid()) {
-    LOG_ERROR("Invalid group-by function");
-    return IndexError_InvalidArgument;
-  }
-
-  std::function<std::string(uint64_t)> group_by = [&](uint64_t key) {
-    return bf_context->group_by()(key);
+  ctx->reset_results(count);
+  ctx->resize_group_results(count);
+  const FlatStreamerEntity::MatchCallback collect = [ctx](uint64_t key,
+                                                          float distance) {
+    ctx->collect_group_match(key, distance);
   };
-
-  auto iterator = entity_->creater_iterator();
-
   for (size_t q = 0; q < count; ++q) {
-    bf_context->group_topk_heaps().clear();
-    for (node_id_t id = 0; id < entity_->vector_count(); ++id) {
-      uint64_t key = entity_->key(id);
-      if (!bf_context->filter().is_valid() || !bf_context->filter()(key)) {
-        dist_t dist = 0;
-        IndexStorage::MemoryBlock block;
-        if (entity_->get_vector_by_key(key, block) != 0) continue;
-        entity_->row_major_distance(query, block.data(), 1, &dist);
-
-        std::string group_id = group_by(key);
-        auto &topk_heap = bf_context->group_topk_heaps()[group_id];
-        if (topk_heap.empty()) {
-          topk_heap.limit(bf_context->group_topk());
-        }
-        topk_heap.emplace(key, dist);
-      }
-    }
-    bf_context->topk_to_group_result(q);
+    ctx->group_topk_heaps().clear();
+    int ret = entity_->scan_matches(
+        query, ctx->filter(), collect, ctx->mutable_stats(q),
+        ctx->search_scratch(), BATCH_SIZE, p_keys ? &(*p_keys)[q] : nullptr);
+    if (ret != 0) return ret;
+    ret = ctx->topk_to_group_result(q);
+    if (ret != 0) return ret;
     query = static_cast<const char *>(query) + qmeta.element_size();
   }
   return 0;
@@ -774,49 +757,8 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_p_keys_impl(
     const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
     const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
-  if (use_external_vector_) return IndexError_Unsupported;
   if (count == 0 || count > p_keys.size()) return IndexError_InvalidArgument;
-  FlatStreamerContext<BATCH_SIZE> *bf_context =
-      dynamic_cast<FlatStreamerContext<BATCH_SIZE> *>(context.get());
-  if (!bf_context) {
-    LOG_ERROR("Invalid brute-force streamer context");
-    return IndexError_InvalidArgument;
-  }
-
-  bf_context->resize_group_results(count);
-  if (!bf_context->group_by().is_valid()) {
-    LOG_ERROR("Invalid group-by function");
-    return IndexError_InvalidArgument;
-  }
-
-  std::function<std::string(uint64_t)> group_by = [&](uint64_t key) {
-    return bf_context->group_by()(key);
-  };
-
-  auto iterator = entity_->creater_iterator();
-
-  for (size_t q = 0; q < count; ++q) {
-    bf_context->group_topk_heaps().clear();
-    for (node_id_t idx = 0; idx < p_keys[q].size(); ++idx) {
-      uint64_t key = p_keys[q][idx];
-      if (!bf_context->filter().is_valid() || !bf_context->filter()(key)) {
-        dist_t dist = 0;
-        IndexStorage::MemoryBlock block;
-        if (entity_->get_vector_by_key(key, block) != 0) continue;
-        entity_->row_major_distance(query, block.data(), 1, &dist);
-
-        std::string group_id = group_by(key);
-        auto &topk_heap = bf_context->group_topk_heaps()[group_id];
-        if (topk_heap.empty()) {
-          topk_heap.limit(bf_context->group_topk());
-        }
-        topk_heap.emplace(key, dist);
-      }
-    }
-    bf_context->topk_to_group_result(q);
-    query = static_cast<const char *>(query) + qmeta.element_size();
-  }
-  return 0;
+  return group_by_search_impl(query, qmeta, count, context, &p_keys);
 }
 
 // The direct operation is not virtual on the streamer.
