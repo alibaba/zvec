@@ -212,6 +212,21 @@ TEST_F(JiebaEmbeddedTokenizerTest, AllModesMatchExternalDictionaryAndModel) {
   }
 }
 
+TEST_F(JiebaEmbeddedTokenizerTest, SkipsWhitespaceInEveryCutMode) {
+  const std::string whitespace = " \t\r\n\v\f\u0085\u00a0\u2028\u2029\u3000";
+  const std::string text = " A" + whitespace + "B! ";
+  const auto b_offset = static_cast<uint32_t>(text.find('B'));
+  for (const std::string mode : {"search", "mix", "full", "hmm"}) {
+    SCOPED_TRACE(mode);
+    JiebaTokenizer tokenizer;
+    ASSERT_TRUE(tokenizer.init(make_config(mode)).ok());
+    EXPECT_TRUE(tokenizer.tokenize(whitespace).empty());
+    expect_same_tokens(
+        tokenizer.tokenize(text),
+        {{"A", 1, 0}, {"B", b_offset, 1}, {"!", b_offset + 1, 2}});
+  }
+}
+
 TEST_F(JiebaEmbeddedTokenizerTest,
        UserDictionariesAreIsolatedBetweenInstances) {
   const std::string first_word = "星河咕噜引擎";
