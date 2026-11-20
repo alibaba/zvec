@@ -16,11 +16,11 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
-#include <map>
 #include <memory>
 #include <string>
 #include <vector>
 #include <gtest/gtest.h>
+#include "ivf_test_segment_storage.h"
 
 using namespace zvec::core;
 
@@ -103,44 +103,6 @@ class TestSegment : public IndexStorage::Segment {
   mutable size_t fetch_calls_{0};
 };
 
-class MappingStorage : public IndexStorage {
- public:
-  int init(const zvec::ailego::Params &) override {
-    return 0;
-  }
-  int cleanup() override {
-    return 0;
-  }
-  int open(const std::string &, bool) override {
-    return 0;
-  }
-  int flush() override {
-    return 0;
-  }
-  int close() override {
-    return 0;
-  }
-  int append(const std::string &, size_t) override {
-    return IndexError_NotImplemented;
-  }
-  void refresh(uint64_t) override {}
-  uint64_t check_point() const override {
-    return 0;
-  }
-  Segment::Pointer get(const std::string &id, int = -1) override {
-    const auto it = segments.find(id);
-    return it == segments.end() ? nullptr : it->second;
-  }
-  bool has(const std::string &id) const override {
-    return segments.find(id) != segments.end();
-  }
-  uint32_t magic() const override {
-    return 0;
-  }
-
-  std::map<std::string, Segment::Pointer> segments;
-};
-
 struct MappingProvider {
   explicit MappingProvider(bool column_major = false)
       : mapping(std::make_shared<TestSegment<uint32_t>>(kVectorCount)),
@@ -148,7 +110,7 @@ struct MappingProvider {
     // IVFEntity contains a header with a flexible array member, so MSVC
     // cannot use it as a base class. Load a real entity through its public
     // storage interface instead of subclassing it to populate its fields.
-    auto storage = std::make_shared<MappingStorage>();
+    auto storage = std::make_shared<test::TestSegmentStorage>();
     IndexMeta meta(IndexMeta::DataType::DT_FP32, kDimension);
     std::string serialized_meta;
     meta.serialize(&serialized_meta);

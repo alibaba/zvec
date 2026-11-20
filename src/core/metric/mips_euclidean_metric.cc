@@ -27,49 +27,80 @@ using MatrixNorm = void (*)(const void *, size_t, float *);
 using NormAndDot = void (*)(const void *, const void *, size_t, float *,
                             float *, float *);
 
-template <typename T, size_t Rows>
-void ComputeNormAndDot(const void *m, const void *q, size_t dim, float *out,
-                       float *row_norms, float *query_norm) {
-  if constexpr (std::is_same_v<T, float>) {
-    const auto *matrix = static_cast<const float *>(m);
-    const auto *query = static_cast<const float *>(q);
-    float dots[Rows]{}, norms[Rows]{}, qnorm = 0;
-    for (size_t d = 0; d < dim; ++d) {
-      const float value = query[d];
-      qnorm += value * value;
-      for (size_t i = 0; i < Rows; ++i) {
-        const float element = matrix[d * Rows + i];
-        dots[i] += element * value;
-        norms[i] += element * element;
-      }
+// Gather four rows together so adjacent values from the interleaved input
+// can be loaded together. Handle the two-row shape with the same loop.
+template <typename T, size_t Tile>
+void GatherRows(const T *src, size_t rows, size_t dim, T *dst) {
+  for (size_t i = 0; i < rows; i += Tile) {
+    size_t d = 0;
+    for (; d + 4 <= dim; d += 4) {
+      T tile[4][Tile];
+      for (size_t j = 0; j < 4; ++j)
+        std::copy_n(src + (d + j) * rows + i, Tile, tile[j]);
+      for (size_t k = 0; k < Tile; ++k)
+        for (size_t j = 0; j < 4; ++j) dst[(i + k) * dim + d + j] = tile[j][k];
     }
-    for (size_t i = 0; i < Rows; ++i) {
-      out[i] = -dots[i];
-      row_norms[i] = norms[i];
+    for (; d < dim; ++d) {
+      for (size_t k = 0; k < Tile; ++k)
+        dst[(i + k) * dim + d] = src[d * rows + i + k];
     }
-    *query_norm = qnorm;
-  } else {
-    turbo::InterleavedDistanceMatrix<int8_t, Rows,
-                                     turbo::MetricType::kInnerProduct>::
-        template ComputeSingleColumn<true>(static_cast<const int8_t *>(m),
-                                           static_cast<const int8_t *>(q), dim,
-                                           out, 1, row_norms, query_norm);
   }
 }
 
 template <typename T>
+void FloatMipsTerms(const void *rows, const void *queries, size_t m, size_t n,
+                    size_t dim, const turbo::DistanceFunc &pair,
+                    MatrixNorm norm, float *out, float *row_norms,
+                    float *query_norms) {
+  // Reuse the pair kernels' reduction order for both dot products and norms.
+  // A different reduction can change a threshold hit after cancellation.
+  std::vector<T> buffer(std::max<size_t>(1, (m + (n == 1 ? 0 : n)) * dim));
+  auto gather = [dim](const void *src, size_t count, T *dst) {
+    if (count == 2)
+      GatherRows<T, 2>(static_cast<const T *>(src), count, dim, dst);
+    else
+      GatherRows<T, 4>(static_cast<const T *>(src), count, dim, dst);
+  };
+  gather(rows, m, buffer.data());
+  const T *q = dim ? static_cast<const T *>(queries) : buffer.data();
+  if (n > 1) {
+    T *data = buffer.data() + m * dim;
+    gather(queries, n, data);
+    q = data;
+  }
+  if (norm) {
+    for (size_t i = 0; i < m; ++i)
+      norm(buffer.data() + i * dim, dim, row_norms + i);
+  }
+  for (size_t j = 0; j < n; ++j) {
+    if (norm) norm(q + j * dim, dim, query_norms + j);
+    for (size_t i = 0; i < m; ++i)
+      pair(buffer.data() + i * dim, q + j * dim, dim, out + j * m + i);
+  }
+}
+
+template <size_t Rows>
+void ComputeNormAndDot(const void *m, const void *q, size_t dim, float *out,
+                       float *row_norms, float *query_norm) {
+  turbo::InterleavedDistanceMatrix<int8_t, Rows,
+                                   turbo::MetricType::kInnerProduct>::
+      template ComputeSingleColumn<true>(static_cast<const int8_t *>(m),
+                                         static_cast<const int8_t *>(q), dim,
+                                         out, 1, row_norms, query_norm);
+}
+
 NormAndDot SelectNormAndDot(size_t rows) {
   switch (rows) {
     case 2:
-      return ComputeNormAndDot<T, 2>;
+      return ComputeNormAndDot<2>;
     case 4:
-      return ComputeNormAndDot<T, 4>;
+      return ComputeNormAndDot<4>;
     case 8:
-      return ComputeNormAndDot<T, 8>;
+      return ComputeNormAndDot<8>;
     case 16:
-      return ComputeNormAndDot<T, 16>;
+      return ComputeNormAndDot<16>;
     case 32:
-      return ComputeNormAndDot<T, 32>;
+      return ComputeNormAndDot<32>;
     default:
       return nullptr;
   }
@@ -77,8 +108,16 @@ NormAndDot SelectNormAndDot(size_t rows) {
 
 template <typename T, size_t Rows>
 void InterleavedNorm(const void *data, size_t dim, float *out) {
-  turbo::InterleavedDistanceMatrix<T, Rows, turbo::MetricType::kInnerProduct>::
-      SquaredNorms(static_cast<const T *>(data), dim, out);
+  using Matrix =
+      turbo::InterleavedDistanceMatrix<T, Rows,
+                                       turbo::MetricType::kInnerProduct>;
+  if constexpr (std::is_same_v<T, int8_t>) {
+    int64_t norms[Rows];
+    Matrix::SquaredNorms(static_cast<const T *>(data), dim, norms);
+    std::copy_n(norms, Rows, out);
+  } else {
+    Matrix::SquaredNorms(static_cast<const T *>(data), dim, out);
+  }
 }
 
 template <typename T>
@@ -103,10 +142,6 @@ MatrixNorm SelectMatrixNorm(size_t rows) {
 
 MatrixNorm SelectMatrixNorm(IndexMeta::DataType type, size_t rows) {
   switch (type) {
-    case IndexMeta::DT_FP32:
-      return SelectMatrixNorm<float>(rows);
-    case IndexMeta::DT_FP16:
-      return SelectMatrixNorm<ailego::Float16>(rows);
     case IndexMeta::DT_INT8:
       return SelectMatrixNorm<int8_t>(rows);
     case IndexMeta::DT_INT4:
@@ -183,8 +218,7 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
         break;
 
       case IndexMeta::DataType::DT_INT8:
-        squared_norm2_handle_ = reinterpret_cast<SquaredNorm2Handle>(
-            turbo::SquaredNorm2Matrix<int8_t, 1>::Compute);
+        squared_norm2_handle_ = InterleavedNorm<int8_t, 1>;
         break;
 
       case IndexMeta::DataType::DT_INT4:
@@ -334,17 +368,29 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
     if (m == 1 && n == 1) return distance();
     const auto type = TurboDataType(data_type_);
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || \
-    defined(_M_IX86)
-    // The contiguous FP16 kernels avoid scalar software conversions for both
-    // norms and dot products; their throughput repays the layout conversion.
-    if (data_type_ == IndexMeta::DT_FP16)
-      return turbo::MakeDistanceMatrix(distance(), m, n, type);
-#endif
     auto l2 =
         turbo::MakeRawDistanceMatrix<turbo::MetricType::kSquaredEuclidean>(
             m, n, type);
-    if (!l2 || injection_ == Injection::kIdentity) return l2;
+    if (!l2) return {};
+    auto float_terms = data_type_ == IndexMeta::DT_FP32 ? FloatMipsTerms<float>
+                       : data_type_ == IndexMeta::DT_FP16
+                           ? FloatMipsTerms<ailego::Float16>
+                           : nullptr;
+    const bool identity = injection_ == Injection::kIdentity;
+    if (identity && !float_terms) return l2;
+    const auto norm = squared_norm2_handle_;
+    const auto metric = identity || injection_ == Injection::kRepeatedQuadratic
+                            ? turbo::MetricType::kSquaredEuclidean
+                            : turbo::MetricType::kInnerProduct;
+    const auto pair = float_terms ? RawKernels(metric, data_type_).dist
+                                  : turbo::DistanceFunc{};
+    if (identity) {
+      return
+          [=](const void *rows, const void *queries, size_t dim, float *out) {
+            float_terms(rows, queries, m, n, dim, pair, nullptr, out, nullptr,
+                        nullptr);
+          };
+    }
     auto ip = turbo::MakeRawDistanceMatrix<turbo::MetricType::kInnerProduct>(
         m, n, type);
     const auto row_norm = SelectMatrixNorm(data_type_, m);
@@ -354,18 +400,15 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
     const auto repeats = m_value_;
     auto fused = data_type_ == IndexMeta::DT_INT8 && n == 1 &&
                          injection != Injection::kRepeatedQuadratic
-                     ? SelectNormAndDot<int8_t>(m)
+                     ? SelectNormAndDot(m)
                      : nullptr;
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || \
-    defined(_M_IX86)
-    if (data_type_ == IndexMeta::DT_FP32 && n == 1 &&
-        injection != Injection::kRepeatedQuadratic)
-      fused = SelectNormAndDot<float>(m);
-#endif
     return [=](const void *rows, const void *queries, size_t dim, float *out) {
-      // Reuse each norm for all pairs, without transposing or allocating.
+      // Reuse each norm for all pairs.
       float row_norms[32], query_norms[32];
-      if (fused) {
+      if (float_terms) {
+        float_terms(rows, queries, m, n, dim, pair, norm, out, row_norms,
+                    query_norms);
+      } else if (fused) {
         fused(rows, queries, dim, out, row_norms, query_norms);
       } else {
         row_norm(rows, dim, row_norms);

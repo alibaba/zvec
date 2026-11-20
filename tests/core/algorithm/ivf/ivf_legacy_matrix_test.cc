@@ -21,6 +21,7 @@
 #include "ivf_dumper.h"
 #include "ivf_entity.h"
 #include "ivf_searcher.h"
+#include "ivf_test_segment_storage.h"
 
 namespace zvec::core {
 namespace {
@@ -302,23 +303,31 @@ TEST_P(IVFLegacyMatrixTest, BatchReadsOnlyTheFirstListTail) {
   ASSERT_NO_FATAL_FAILURE(write_index(768, {1, 32}));
   class FirstListSegment : public IndexSegmentStorage::Segment {
    public:
-    using IndexSegmentStorage::Segment::Segment;
+    FirstListSegment(const IndexStorage::Segment::Pointer &body, size_t limit)
+        : Segment(body, 0, body->data_size(), body->padding_size(),
+                  body->data_crc()),
+          limit_(limit) {}
+
     size_t read(size_t off, IndexStorage::MemoryBlock &block,
                 size_t len) override {
-      if (off > data_size() || len > data_size() - off) return 0;
+      if (off > limit_ || len > limit_ - off) return 0;
       return Segment::read(off, block, len);
     }
+
+   private:
+    size_t limit_;
   };
-  class TailEntity : public IVFEntity {
-   public:
-    void restrict_to_first_list(size_t bytes) {
-      inverted_ = std::make_shared<FirstListSegment>(inverted_, 0, bytes, 0, 0);
-    }
-  } entity;
-  auto storage = open_storage("FileReadStorage");
-  ASSERT_TRUE(storage);
+  auto file = open_storage("FileReadStorage");
+  ASSERT_TRUE(file);
+  auto storage = std::make_shared<test::TestSegmentStorage>();
+  storage->segments = file->get_all();
+  auto &body = storage->segments[IVF_INVERTED_BODY_SEG_ID];
+  ASSERT_TRUE(body);
+  ASSERT_GT(body->data_size(), meta_.element_size());
+  // Advertise the full persisted body, but reject reads into the second list.
+  body = std::make_shared<FirstListSegment>(body, meta_.element_size());
+  IVFEntity entity;
   ASSERT_EQ(0, entity.load(storage));
-  entity.restrict_to_first_list(meta_.element_size());
   IndexQueryMeta qmeta(meta_.data_type(), meta_.dimension());
   auto a = entity.column_query(queries_[0].data(), qmeta);
   auto b = entity.column_query(queries_[1].data(), qmeta);

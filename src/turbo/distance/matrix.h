@@ -242,6 +242,40 @@ struct InterleavedDistanceMatrix {
     }
   }
 
+  template <typename Sum, bool WithNorms>
+  static void Int8DotProducts(const int8_t *m, const int8_t *q, size_t dim,
+                              size_t query_stride, float *out, float *row_norms,
+                              float *query_norm) {
+    Sum dots[Rows]{}, norms[Rows]{}, qnorm = 0;
+    size_t d = 0;
+    for (; d + 4 <= dim; d += 4) {
+      const auto *query = q + d * query_stride;
+      const int q0 = query[0], q1 = query[1], q2 = query[2], q3 = query[3];
+      if constexpr (WithNorms) qnorm += q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3;
+      for (size_t i = 0; i < Rows; ++i) {
+        const auto *r = m + d * Rows + i * 4;
+        dots[i] += r[0] * q0 + r[1] * q1 + r[2] * q2 + r[3] * q3;
+        if constexpr (WithNorms)
+          norms[i] += r[0] * r[0] + r[1] * r[1] + r[2] * r[2] + r[3] * r[3];
+      }
+    }
+    for (; d < dim; ++d) {
+      const size_t word = d / 4 * 4;
+      const int query = q[word * query_stride + d % 4];
+      if constexpr (WithNorms) qnorm += query * query;
+      for (size_t i = 0; i < Rows; ++i) {
+        const int r = m[word * Rows + i * 4 + d % 4];
+        dots[i] += r * query;
+        if constexpr (WithNorms) norms[i] += r * r;
+      }
+    }
+    for (size_t i = 0; i < Rows; ++i) out[i] = -float(dots[i]);
+    if constexpr (WithNorms) {
+      std::copy_n(norms, Rows, row_norms);
+      *query_norm = float(qnorm);
+    }
+  }
+
   // Reuse a query component (or packed word) across the whole block. A
   // strided query also serves one column of a many-to-many matrix. Keep
   // integer products in word-sized groups before converting to FP32.
@@ -253,18 +287,6 @@ struct InterleavedDistanceMatrix {
     static_assert(kOptimizedSingleColumn, "Unsupported single-column kernel");
     static_assert(!WithNorms || (std::is_same_v<T, int8_t> &&
                                  Metric == MetricType::kInnerProduct));
-    float *dot_result = out, *norm_result = row_norms;
-    float *query_norm_result = query_norm;
-    float dots[Rows], norms[Rows], qnorm;
-    if constexpr (WithNorms) {
-      // Disjoint local accumulators let the compiler vectorize dot products
-      // and norms together without testing whether output pointers alias.
-      out = dots;
-      row_norms = norms;
-      query_norm = &qnorm;
-      std::fill_n(row_norms, Rows, 0.0f);
-      *query_norm = 0.0f;
-    }
     if constexpr (std::is_same_v<T, ailego::Float16>) {
       if (dim == 0) {
         for (size_t i = 0; i < Rows; ++i) out[i] = 0;
@@ -299,64 +321,45 @@ struct InterleavedDistanceMatrix {
         Int8SquaredDistances(m, q, dim, query_stride, sums);
         std::copy_n(sums, Rows, out);
       }
+    } else if constexpr (std::is_same_v<T, int8_t>) {
+      // Every product has magnitude <= 128^2, including squared norms.
+      if (dim <= std::numeric_limits<int32_t>::max() / (128 * 128))
+        Int8DotProducts<int32_t, WithNorms>(m, q, dim, query_stride, out,
+                                            row_norms, query_norm);
+      else
+        Int8DotProducts<int64_t, WithNorms>(m, q, dim, query_stride, out,
+                                            row_norms, query_norm);
     } else {
-      for (size_t i = 0; i < Rows; ++i) out[i] = 0;
+      std::fill_n(out, Rows, 0.0f);
       size_t d = 0;
-      if constexpr (std::is_same_v<T, int8_t>) {
-        for (; d + 4 <= dim; d += 4) {
-          const auto *query = q + d * query_stride;
-          const int q0 = query[0], q1 = query[1], q2 = query[2], q3 = query[3];
-          if constexpr (WithNorms)
-            *query_norm += float(q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3);
-          const auto *block = m + d * Rows;
-          for (size_t i = 0; i < Rows; ++i) {
-            const auto *row = block + i * 4;
-            if constexpr (WithNorms)
-              row_norms[i] += float(row[0] * row[0] + row[1] * row[1] +
-                                    row[2] * row[2] + row[3] * row[3]);
-            const int dot =
-                row[0] * q0 + row[1] * q1 + row[2] * q2 + row[3] * q3;
-            if constexpr (WithNorms)
-              out[i] += float(dot);
-            else
-              out[i] -= float(dot);
-          }
-        }
-      } else {
-        const auto &distance_table = PackedDistances();
-        for (; d + 8 <= dim; d += 8) {
-          uint32_t query;
-          std::memcpy(&query, q + d / 2 * query_stride, sizeof(query));
-          // The pair table is symmetric, so index it by the query nibble
-          // first and resolve those eight rows once per word position.
-          decltype(distance_table.data()) query_rows[8];
+      const auto &distance_table = PackedDistances();
+      for (; d + 8 <= dim; d += 8) {
+        uint32_t query;
+        std::memcpy(&query, q + d / 2 * query_stride, sizeof(query));
+        // The pair table is symmetric, so index it by the query nibble
+        // first and resolve those eight rows once per word position.
+        decltype(distance_table.data()) query_rows[8];
+        for (size_t s = 0; s < 8; ++s)
+          query_rows[s] =
+              distance_table.data() + ((query >> (4 * s)) & 15) * 16;
+        const auto *block = m + d / 2 * Rows;
+        for (size_t i = 0; i < Rows; ++i) {
+          uint32_t word;
+          std::memcpy(&word, block + i * 4, sizeof(word));
+          int sum = 0;
           for (size_t s = 0; s < 8; ++s)
-            query_rows[s] =
-                distance_table.data() + ((query >> (4 * s)) & 15) * 16;
-          const auto *block = m + d / 2 * Rows;
-          for (size_t i = 0; i < Rows; ++i) {
-            uint32_t word;
-            std::memcpy(&word, block + i * 4, sizeof(word));
-            int sum = 0;
-            for (size_t s = 0; s < 8; ++s)
-              sum += query_rows[s][(word >> (4 * s)) & 15];
-            out[i] += float(sum);
-          }
+            sum += query_rows[s][(word >> (4 * s)) & 15];
+          out[i] += float(sum);
         }
       }
       // Matrices pad a final partial word; the single query need not be
       // padded. Read only its valid bytes/nibbles and ignore matrix padding.
       for (; d < dim; ++d) {
         const float query = Value(q, d, 0, query_stride);
-        if constexpr (WithNorms) *query_norm += query * query;
         for (size_t i = 0; i < Rows; ++i) {
           const float value = Value(m, d, i, Rows);
-          if constexpr (WithNorms) row_norms[i] += value * value;
           if constexpr (Metric == MetricType::kInnerProduct) {
-            if constexpr (WithNorms)
-              out[i] += value * query;
-            else
-              out[i] -= value * query;
+            out[i] -= value * query;
           } else {
             const float delta = value - query;
             out[i] += delta * delta;
@@ -364,16 +367,12 @@ struct InterleavedDistanceMatrix {
         }
       }
     }
-    if constexpr (WithNorms) {
-      for (size_t i = 0; i < Rows; ++i) dot_result[i] = -dots[i];
-      std::copy_n(norms, Rows, norm_result);
-      *query_norm_result = qnorm;
-    }
   }
 
   // Use the same accumulation order as the matrix inner product, including
   // packed-word groups. This keeps a vector's self MIPS distance at zero.
-  static void SquaredNorms(const T *data, size_t dim, float *out) {
+  template <typename Sum>
+  static void SquaredNorms(const T *data, size_t dim, Sum *out) {
     std::fill_n(out, Rows, 0.0f);
     size_t d = 0;
     if constexpr (std::is_same_v<T, int8_t> || std::is_same_v<T, uint8_t>) {
@@ -398,14 +397,14 @@ struct InterleavedDistanceMatrix {
             sum = squares[word[0]] + squares[word[1]] + squares[word[2]] +
                   squares[word[3]];
           }
-          out[i] -= float(sum);
+          out[i] -= Sum(sum);
         }
       }
     }
     for (; d < dim; ++d) {
       for (size_t i = 0; i < Rows; ++i) {
         const auto value = Value(data, d, i, Rows);
-        out[i] -= value * value;
+        out[i] -= Sum(value * value);
       }
     }
     for (size_t i = 0; i < Rows; ++i) out[i] = -out[i];

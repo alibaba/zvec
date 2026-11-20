@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/utility/type_helper.h>
@@ -193,7 +194,10 @@ TEST(TurboMetricAdapter, InterleavedMatricesKeepQueryMajorOutput) {
 TEST(TurboMetricAdapter, MipsMatricesMatchPairsAcrossLayouts) {
   for (auto type : {IndexMeta::DT_FP32, IndexMeta::DT_FP16, IndexMeta::DT_INT8,
                     IndexMeta::DT_INT4}) {
-    for (size_t dim : {8U, 128U}) {
+    const bool floating =
+        type == IndexMeta::DT_FP32 || type == IndexMeta::DT_FP16;
+    for (size_t dim : {8U, 11U, 128U}) {
+      if (dim == 11 && !floating) continue;
       const IndexMeta meta(type, dim);
       const size_t bytes = meta.element_size();
       const size_t unit = type == IndexMeta::DT_FP16 ? 2 : 4;
@@ -254,8 +258,12 @@ TEST(TurboMetricAdapter, MipsMatricesMatchPairsAcrossLayouts) {
                 float expected;
                 pair(rows.data() + i * bytes, queries.data() + j * bytes, dim,
                      &expected);
-                EXPECT_NEAR(expected, output[j * m + i],
-                            1e-5f * std::max(1.0f, std::abs(expected)));
+                if (floating) {
+                  EXPECT_EQ(expected, output[j * m + i]);
+                } else {
+                  EXPECT_NEAR(expected, output[j * m + i],
+                              1e-5f * std::max(1.0f, std::abs(expected)));
+                }
               }
             }
           }
@@ -289,6 +297,69 @@ TEST(TurboMetricAdapter, Int8MipsIdentityKeepsThresholdAcrossLayouts) {
   EXPECT_EQ(pair, scores[0]);
   EXPECT_GT(scores[0], threshold);
   EXPECT_EQ(0.0f, scores[1]);
+}
+
+namespace {
+template <typename T>
+void CheckMipsCancellation(IndexMeta::DataType type, size_t dim, size_t prefix,
+                           int magnitude, size_t unit) {
+  std::vector<T> row(dim), query(dim);
+  for (size_t d = 0; d < prefix; ++d) {
+    row[d] = query[d] = row[dim - prefix + d] = T(magnitude);
+    query[dim - prefix + d] = T(-magnitude);
+  }
+  for (size_t k = 0; k < 8; ++k)
+    row[prefix + k * unit] = query[prefix + k * unit] = T(1);
+
+  // The second row is the first query, so the 2x2 tile also checks self scores.
+  const size_t padded = (dim + unit - 1) / unit * unit;
+  std::vector<T> rows(2 * padded), queries(2 * padded);
+  for (size_t d = 0; d < dim; ++d) {
+    const size_t offset = d / unit * 2 * unit + d % unit;
+    rows[offset] = queries[offset + unit] = row[d];
+    rows[offset + unit] = queries[offset] = query[d];
+  }
+
+  for (const std::string name : {"MipsSquaredEuclidean", "InnerProduct"}) {
+    if (name == "InnerProduct" && type != IndexMeta::DT_INT8) continue;
+    SCOPED_TRACE(testing::Message() << name << " type=" << int(type));
+    auto metric = IndexFactory::CreateMetric(name);
+    ASSERT_TRUE(metric);
+    ASSERT_EQ(0, metric->init(IndexMeta(type, dim), ailego::Params()));
+    const auto pair = metric->distance();
+    const T *candidates[] = {row.data(), query.data()};
+    const T *probes[] = {query.data(), row.data()};
+    for (size_t n : {1u, 2u}) {
+      auto matrix = metric->distance_matrix(2, n);
+      ASSERT_TRUE(matrix);
+      float scores[4];
+      matrix(rows.data(), n == 1 ? query.data() : queries.data(), dim, scores);
+      for (size_t j = 0; j < n; ++j) {
+        for (size_t i = 0; i < 2; ++i) {
+          float expected;
+          pair(candidates[i], probes[j], dim, &expected);
+          EXPECT_EQ(expected, scores[j * 2 + i]);
+          if (type == IndexMeta::DT_INT8 && i == j && name == "InnerProduct")
+            EXPECT_EQ(-8.0f, expected);
+          if (type == IndexMeta::DT_INT8 && i != j &&
+              name == "MipsSquaredEuclidean")
+            EXPECT_EQ(0.0f, expected);
+          const float threshold = std::nextafter(2.0f, 0.0f);
+          EXPECT_EQ(expected <= threshold, scores[j * 2 + i] <= threshold);
+        }
+      }
+    }
+  }
+}
+}  // namespace
+
+TEST(TurboMetricAdapter, CancellationPreservesMipsMatrixScores) {
+  CheckMipsCancellation<int8_t>(IndexMeta::DT_INT8, 2176, 1056, 127, 4);
+  CheckMipsCancellation<int8_t>(IndexMeta::DT_INT8, 2179, 1056, 127, 4);
+  // Squared norms exceed INT32_MAX, including for a single contiguous row.
+  CheckMipsCancellation<int8_t>(IndexMeta::DT_INT8, 140035, 70000, 127, 4);
+  CheckMipsCancellation<float>(IndexMeta::DT_FP32, 10, 1, 4096, 1);
+  CheckMipsCancellation<ailego::Float16>(IndexMeta::DT_FP16, 10, 1, 4096, 1);
 }
 
 TEST(TurboMetricAdapter, MipsInjectionsKeepTheirDistanceSemantics) {
