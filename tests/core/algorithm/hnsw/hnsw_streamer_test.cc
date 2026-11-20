@@ -16,6 +16,7 @@
 #include <sys/types.h>
 #include <atomic>
 #include <cstdlib>
+#include "../../../ailego/buffer/pool_payload_budget.h"
 #ifndef _MSC_VER
 #include <fcntl.h>
 #include <unistd.h>
@@ -5121,7 +5122,8 @@ TEST_F(HnswStreamerTest, TestTurboInt8QuantizerDistance) {
 }
 
 TEST_F(HnswStreamerTest, PqPersistenceAndIncrementalBuild) {
-  ASSERT_EQ(0, MemoryLimitPool::get_instance().init(256UL * 1024UL * 1024UL));
+  ASSERT_EQ(0, ::zvec::ailego::PoolPayloadBudget::get_instance().init(
+                   256UL * 1024UL * 1024UL));
   auto holder = std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(dim);
   std::mt19937 rng(42);
   std::uniform_real_distribution<float> dist(-1, 1);

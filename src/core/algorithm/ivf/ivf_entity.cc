@@ -16,6 +16,7 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <ailego/pattern/scope_guard.h>
 #include <core/quantizer/distance_quantizer.h>
 #include <core/quantizer/quantizer_params.h>
 #include <turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h>
@@ -90,6 +91,17 @@ class ScatterCursor {
   size_t span_index_{0};
   size_t span_offset_{0};
 };
+
+//! Hint mapped posting rows without allocating or copying an execution buffer.
+void prefetch_posting_block(const uint8_t *data, size_t size) {
+  for (size_t offset = 0; offset < size; offset += AILEGO_CACHE_LINE_SIZE) {
+#if defined(__GNUC__) || defined(__clang__)
+    __builtin_prefetch(data + offset, 0, 2);
+#else
+    ailego_prefetch(data + offset);
+#endif
+  }
+}
 
 //! Calculate a row-major IVF block directly from its resident page spans.
 //! Only a vector split by a page boundary is copied into scratch.
@@ -620,7 +632,7 @@ int IVFEntity::load_header(const IndexStorage::Pointer &container) {
 
   distance_quantizer_.reset();
   packed_quantizer_ = nullptr;
-  packed_query_.clear();
+  packed_query_ = {};
   const auto &attributes = meta_.attributes();
   if (attributes.has(IVF_TURBO_FORMAT_VERSION_ATTRIBUTE)) {
     uint32_t version = 0;
@@ -751,7 +763,7 @@ int IVFEntity::load_quantizer(const IndexStorage::Pointer &container) {
     return IndexError_InvalidFormat;
   }
   quantizer_ = std::move(quantizer);
-  packed_query_.clear();
+  packed_query_ = {};
   query_distance_ = turbo::DistanceImpl{};
   calculator_ = std::make_shared<IVFDistanceCalculator>(
       meta_, nullptr, header_.block_vector_count);
@@ -770,8 +782,10 @@ int IVFEntity::bind_query(const void *query, const IndexQueryMeta &qmeta) {
     return 0;
   }
   query_distance_ = turbo::DistanceImpl{};
-  packed_query_.clear();
-  std::string encoded;
+  packed_query_ = {};
+  query_encoding_.reserve(quantizer_->quantized_query_vector_length());
+  auto &encoded = query_encoding_;
+  encoded.clear();
   IndexQueryMeta encoded_meta;
   int ret = quantizer_->quantize(query, qmeta, &encoded, &encoded_meta);
   ivf_check_with_msg(ret, "Failed to encode Turbo IVF query");
@@ -780,7 +794,7 @@ int IVFEntity::bind_query(const void *query, const IndexQueryMeta &qmeta) {
     return IndexError_InvalidArgument;
   }
   if (packed_quantizer_) {
-    packed_query_ = std::move(encoded);
+    packed_query_ = std::string_view(encoded.data(), encoded.size());
     return 0;
   }
   query_distance_ = quantizer_->distance(encoded.data(), encoded_meta);
@@ -949,7 +963,8 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
 
   IndexStorage::MemoryBlock data;
   const size_t block_vecs = header_.block_vector_count;
-  std::vector<float> distances(block_vecs);
+  scatter_distances_.resize(block_vecs);
+  auto &distances = scatter_distances_;
   const size_t batch_size = kBatchBlocks;
   const size_t block_size = header_.block_size;
   const size_t element_size = meta_.element_size();
@@ -977,10 +992,22 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
     //! Read vectors after keys. A resident scatter read pins no pages while a
     //! second segment is faulted into a small buffer pool.
     const size_t off = list_meta->offset + i * block_size;
+    if (items <= (blocks - 1) * block_vecs) {
+      return IndexError_InvalidFormat;
+    }
+    // Plain tails contain only live vectors and 32-byte padding. Avoid
+    // faulting pages of the next list; packed codes persist a full block.
+    const size_t tail_vectors = items - (blocks - 1) * block_vecs;
+    const size_t serialized_bytes =
+        (blocks - 1) * block_size +
+        (packed_quantizer_ ? block_size
+                           : ailego_align(tail_vectors * element_size, 32));
     const size_t size =
-        std::min(blocks * block_size,
+        std::min(serialized_bytes,
                  static_cast<size_t>(header_.inverted_body_size - off));
-    IndexStorage::Segment::ScatterBlock scatter_data;
+    auto &scatter_data = scatter_data_;
+    auto release_scatter =
+        ailego::ScopeGuard::Make([&] { scatter_data.reset(); });
     if (row_major) {
       if (inverted_->read_scatter(off, scatter_data, size) != size) {
         LOG_ERROR("Failed to scatter-read block, off=%zu, size=%zu", off, size);
@@ -1027,6 +1054,11 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
       }
 
       if (row_major) {
+        if (!packed_quantizer_ && scatter_data.spans.size() == 1 &&
+            inverted_->base_data()) {
+          prefetch_posting_block(scatter_data.spans[0].data + block_offset,
+                                 serialized_size);
+        }
         if (!calculate_row_major_block(&scatter_cursor, distance, vecs_count,
                                        element_size, serialized_size,
                                        scatter_vector_.data(), distances.data(),
@@ -1082,7 +1114,8 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
 
   IndexStorage::MemoryBlock data;
   const size_t block_vecs = header_.block_vector_count;
-  std::vector<float> distances(block_vecs);
+  scatter_distances_.resize(block_vecs);
+  auto &distances = scatter_distances_;
   const size_t batch_size = kBatchBlocks;
   const size_t block_size = header_.block_size;
   const size_t element_size = meta_.element_size();
@@ -1109,10 +1142,22 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
 
     //! Read vectors after keys so scatter-page pins cover computation only.
     const size_t off = list_meta->offset + i * block_size;
+    if (items <= (blocks - 1) * block_vecs) {
+      return IndexError_InvalidFormat;
+    }
+    // Plain tails contain only live vectors and 32-byte padding. Avoid
+    // faulting pages of the next list; packed codes persist a full block.
+    const size_t tail_vectors = items - (blocks - 1) * block_vecs;
+    const size_t serialized_bytes =
+        (blocks - 1) * block_size +
+        (packed_quantizer_ ? block_size
+                           : ailego_align(tail_vectors * element_size, 32));
     const size_t size =
-        std::min(blocks * block_size,
+        std::min(serialized_bytes,
                  static_cast<size_t>(header_.inverted_body_size - off));
-    IndexStorage::Segment::ScatterBlock scatter_data;
+    auto &scatter_data = scatter_data_;
+    auto release_scatter =
+        ailego::ScopeGuard::Make([&] { scatter_data.reset(); });
     if (row_major) {
       if (inverted_->read_scatter(off, scatter_data, size) != size) {
         LOG_ERROR("Failed to scatter-read block, off=%zu, size=%zu", off, size);
@@ -1137,6 +1182,11 @@ int IVFEntity::search(size_t inverted_list_id, const void *query,
       }
       const size_t serialized_size = std::min(block_size, size - block_offset);
       if (row_major) {
+        if (!packed_quantizer_ && scatter_data.spans.size() == 1 &&
+            inverted_->base_data()) {
+          prefetch_posting_block(scatter_data.spans[0].data + block_offset,
+                                 serialized_size);
+        }
         if (!calculate_row_major_block(&scatter_cursor, distance, vecs_count,
                                        element_size, serialized_size,
                                        scatter_vector_.data(), distances.data(),
@@ -1381,7 +1431,8 @@ int IVFEntity::search_by_keys(const std::vector<uint64_t> &keys,
   if (!query_distance_.valid() && packed_query_.empty()) {
     return IndexError_InvalidArgument;
   }
-  std::vector<float> distances(header_.block_vector_count);
+  scatter_distances_.resize(header_.block_vector_count);
+  auto &distances = scatter_distances_;
   // Consecutive candidates in the same packed block reuse its distance scan.
   uint64_t cached_block = std::numeric_limits<uint64_t>::max();
   for (uint64_t key : keys) {
@@ -1727,7 +1778,7 @@ IVFEntity::Pointer IVFEntity::clone(const IVFEntity::Pointer &entity) const {
   if (scan_blocks_ && !entity->scan_blocks_) return nullptr;
   entity->scan_list_offsets_ = scan_list_offsets_;
   entity->packed_quantizer_ = packed_quantizer_;
-  entity->packed_query_.clear();
+  entity->packed_query_ = {};
   entity->header_ = this->header_;
   entity->container_ = this->container_;
 

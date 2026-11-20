@@ -10,6 +10,7 @@
 #include <zvec/core/framework/index_factory.h>
 #include "ivf_dumper.h"
 #include "ivf_entity.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 namespace zvec::core {
 namespace {
@@ -96,8 +97,8 @@ void WriteIndex(const std::string &path, size_t block_size, bool packed,
 }
 
 TEST(IVFBlockScan, StorageFallbackFiltersGroupsAndQueryIsolation) {
-  ASSERT_EQ(0, ailego::MemoryLimitPool::get_instance().init(
-                   ailego::VecBufferPool::metadata_bytes_for_page_count(1) +
+  ASSERT_EQ(0, ailego::PoolPayloadBudget::get_instance().init(
+                   ailego::PoolPayloadBudget::storage_metadata_bytes(1) +
                    8 * ailego::kVectorPageSize));
   for (size_t block_size : {size_t(1), size_t(8), size_t(32)}) {
     for (bool packed : {false, true}) {

@@ -256,6 +256,19 @@ ailego::JsonObject FlatIndexParam::serialize_to_json_object(
   return json_obj;
 }
 
+ailego::JsonObject IVFIndexParam::serialize_to_json_object(
+    bool omit_empty_value) const {
+  auto json_obj = BaseIndexParam::serialize_to_json_object(omit_empty_value);
+  json_obj.set("nlist", ailego::JsonValue(nlist));
+  json_obj.set("niters", ailego::JsonValue(niters));
+  if (!omit_empty_value || use_soar) {
+    json_obj.set("use_soar", ailego::JsonValue(use_soar));
+  }
+  json_obj.set("total_bits", ailego::JsonValue(total_bits));
+  json_obj.set("sample_count", ailego::JsonValue(sample_count));
+  return json_obj;
+}
+
 ailego::JsonObject HNSWIndexParam::serialize_to_json_object(
     bool omit_empty_value) const {
   auto json_obj = BaseIndexParam::serialize_to_json_object(omit_empty_value);
@@ -323,6 +336,40 @@ bool FlatIndexParam::deserialize_from_json_object(
   return true;
 }
 
+bool IVFIndexParam::deserialize_from_json_object(
+    const ailego::JsonObject &json_obj) {
+  if (!BaseIndexParam::deserialize_from_json_object(json_obj)) {
+    return false;
+  }
+
+  if (index_type != IndexType::kIVF) {
+    LOG_ERROR("index_type is not kIVF");
+    return false;
+  }
+
+  DESERIALIZE_VALUE_FIELD(json_obj, nlist);
+  DESERIALIZE_VALUE_FIELD(json_obj, niters);
+  DESERIALIZE_VALUE_FIELD(json_obj, use_soar);
+
+  DESERIALIZE_VALUE_FIELD(json_obj, total_bits);
+  DESERIALIZE_VALUE_FIELD(json_obj, sample_count);
+  // Older IVF callers put RaBitQ settings on the index parameter itself.
+  // Keep those records equivalent when the base parser creates a typed param.
+  auto *rabitq = dynamic_cast<RabitqQuantizerParam *>(quantizer_param.get());
+  ailego::JsonValue encoded;
+  if (rabitq && json_obj.get("quantizer_param", &encoded) &&
+      encoded.is_object() && !encoded.as_object().has("total_bits")) {
+    rabitq->total_bits = total_bits;
+    rabitq->num_clusters = nlist;
+    rabitq->sample_count = sample_count;
+    rabitq->niters = niters;
+    if (total_bits < 1 || total_bits > 9 || nlist < 1 || nlist > 65536 ||
+        sample_count < 0 || niters < 1)
+      return false;
+  }
+  return true;
+}
+
 bool HNSWIndexParam::deserialize_from_json_object(
     const ailego::JsonObject &json_obj) {
   if (!BaseIndexParam::deserialize_from_json_object(json_obj)) {
@@ -371,44 +418,6 @@ ailego::JsonObject HNSWRabitqIndexParam::serialize_to_json_object(
   if (!omit_empty_value || sample_count != 0) {
     json_obj.set("sample_count", ailego::JsonValue(sample_count));
   }
-  return json_obj;
-}
-
-bool IVFIndexParam::deserialize_from_json_object(
-    const ailego::JsonObject &json_obj) {
-  if (!BaseIndexParam::deserialize_from_json_object(json_obj) ||
-      index_type != IndexType::kIVF)
-    return false;
-  DESERIALIZE_VALUE_FIELD(json_obj, nlist);
-  DESERIALIZE_VALUE_FIELD(json_obj, niters);
-  DESERIALIZE_VALUE_FIELD(json_obj, use_soar);
-  DESERIALIZE_VALUE_FIELD(json_obj, total_bits);
-  DESERIALIZE_VALUE_FIELD(json_obj, sample_count);
-  // Older IVF callers put RaBitQ settings on the index parameter itself.
-  // Keep those records equivalent when the base parser creates a typed param.
-  auto *rabitq = dynamic_cast<RabitqQuantizerParam *>(quantizer_param.get());
-  ailego::JsonValue encoded;
-  if (rabitq && json_obj.get("quantizer_param", &encoded) &&
-      encoded.is_object() && !encoded.as_object().has("total_bits")) {
-    rabitq->total_bits = total_bits;
-    rabitq->num_clusters = nlist;
-    rabitq->sample_count = sample_count;
-    rabitq->niters = niters;
-    if (total_bits < 1 || total_bits > 9 || nlist < 1 || nlist > 65536 ||
-        sample_count < 0 || niters < 1)
-      return false;
-  }
-  return true;
-}
-
-ailego::JsonObject IVFIndexParam::serialize_to_json_object(
-    bool omit_empty_value) const {
-  auto json_obj = BaseIndexParam::serialize_to_json_object(omit_empty_value);
-  json_obj.set("nlist", ailego::JsonValue(nlist));
-  json_obj.set("niters", ailego::JsonValue(niters));
-  json_obj.set("use_soar", ailego::JsonValue(use_soar));
-  json_obj.set("total_bits", ailego::JsonValue(total_bits));
-  json_obj.set("sample_count", ailego::JsonValue(sample_count));
   return json_obj;
 }
 

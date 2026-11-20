@@ -441,6 +441,9 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
     LOG_ERROR("Input holder doesn't match index meta while building index");
     return IndexError_Mismatch;
   }
+  if (holder->count() > std::numeric_limits<uint32_t>::max()) {
+    return IndexError_Mismatch;
+  }
   if (!threads) {
     threads = std::make_shared<SingleQueueIndexThreads>(thread_count_, false);
     if (!threads) {
@@ -476,7 +479,20 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
 
   IndexHolder::Pointer converted_holder = source_holder_;
   if (!source_holder_) {
-    holder_ = std::make_shared<RandomAccessIndexHolder>(meta_);
+    std::shared_ptr<const void> lifetime;
+    auto *stable = dynamic_cast<StableVectorHolder *>(holder.get());
+    int ret = stable ? stable->retain_stable_data(&lifetime)
+                     : IndexError_NotImplemented;
+    if (ret == 0) {
+      if (!lifetime) return IndexError_Runtime;
+      LOG_INFO(
+          "Using stable source vectors for IVF: count=%zu, saved_bytes=%zu",
+          holder->count(), holder->count() * meta_.element_size());
+    } else if (ret != IndexError_NotImplemented) {
+      return ret;
+    }
+    holder_ =
+        std::make_shared<RandomAccessIndexHolder>(meta_, std::move(lifetime));
     if (!holder_) {
       return IndexError_NoMemory;
     }
@@ -488,6 +504,8 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
       return IndexError_NoMemory;
     }
     for (; iter->is_valid(); iter->next()) {
+      if (iter->status() != 0) return iter->status();
+      if (holder_->count() >= holder->count()) return IndexError_Mismatch;
       const uint64_t key = iter->key();
       if (iter->status() != 0) {
         return iter->status();
@@ -504,6 +522,7 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
     if (iter->status() != 0) {
       return iter->status();
     }
+    if (holder_->count() != holder->count()) return IndexError_Mismatch;
     converted_holder = holder_;
   }
 

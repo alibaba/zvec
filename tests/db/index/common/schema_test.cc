@@ -383,15 +383,9 @@ TEST(FieldSchemaTest, UniformQuantizationRejectsDiskAnnIndexes) {
     FieldSchema field("disk_vector", DataType::VECTOR_FP32, 32, false, params);
     auto status = field.validate();
     EXPECT_FALSE(status.ok());
-#if DISKANN_SUPPORTED
     EXPECT_EQ(status.code(), StatusCode::INVALID_ARGUMENT);
     EXPECT_NE(status.message().find("not supported with DISKANN"),
               std::string::npos);
-#else
-    EXPECT_NE(
-        status.message().find("DiskAnn is not supported on this platform"),
-        std::string::npos);
-#endif
   }
 }
 
@@ -1125,7 +1119,7 @@ TEST(FieldSchemaTest, HnswRabitqIndexValidation_Dimension) {
     auto status = field.validate();
     EXPECT_FALSE(status.ok())
         << "Dimension 63 should not be supported with HNSW_RABITQ";
-    EXPECT_NE(status.message().find("RabitQ index only support dimension in"),
+    EXPECT_NE(status.message().find("RabitQ requires dimension in"),
               std::string::npos)
         << "Error message should mention dimension range, got: "
         << status.message();
@@ -1151,7 +1145,7 @@ TEST(FieldSchemaTest, HnswRabitqIndexValidation_Dimension) {
     auto status = field.validate();
     EXPECT_FALSE(status.ok())
         << "Dimension 4096 should not be supported with HNSW_RABITQ";
-    EXPECT_NE(status.message().find("RabitQ index only support dimension in"),
+    EXPECT_NE(status.message().find("RabitQ requires dimension in"),
               std::string::npos)
         << "Error message should mention dimension range, got: "
         << status.message();
@@ -1278,11 +1272,13 @@ TEST(FieldSchemaTest, IvfIndexSupportsRabitqQuantization) {
                                                  QuantizeType::RABITQ);
   FieldSchema field("vector_field", DataType::VECTOR_FP32, 128, false, params);
   EXPECT_TRUE(field.validate().ok());
+  EXPECT_TRUE(params->validate().ok());
   const auto validate_params = [&]() {
     field.set_index_params(params);
     return field.validate();
   };
   params->set_total_bits(0);
+  EXPECT_FALSE(params->validate().ok());
   EXPECT_FALSE(validate_params().ok());
   params->set_total_bits(10);
   EXPECT_FALSE(validate_params().ok());
@@ -1311,7 +1307,7 @@ TEST(FieldSchemaTest, IvfRabitqIndexValidationDimensionAndDataTypes) {
     auto status = field.validate();
     EXPECT_FALSE(status.ok())
         << "Dimension 63 should not be supported with IVF_RABITQ";
-    EXPECT_NE(status.message().find("RabitQ index only support dimension in"),
+    EXPECT_NE(status.message().find("RabitQ requires dimension in"),
               std::string::npos)
         << "Error message should mention dimension range, got: "
         << status.message();
@@ -1336,7 +1332,7 @@ TEST(FieldSchemaTest, IvfRabitqIndexValidationDimensionAndDataTypes) {
     auto status = field.validate();
     EXPECT_FALSE(status.ok())
         << "Dimension 4096 should not be supported with IVF_RABITQ";
-    EXPECT_NE(status.message().find("RabitQ index only support dimension in"),
+    EXPECT_NE(status.message().find("RabitQ requires dimension in"),
               std::string::npos)
         << "Error message should mention dimension range, got: "
         << status.message();
@@ -1349,9 +1345,8 @@ TEST(FieldSchemaTest, IvfRabitqIndexValidationDimensionAndDataTypes) {
                       index_params);
     auto status = field.validate();
     EXPECT_FALSE(status.ok()) << "FP16 should not be supported with IVF_RABITQ";
-    EXPECT_NE(
-        status.message().find("RabitQ index only support FP32 data types"),
-        std::string::npos)
+    EXPECT_NE(status.message().find("RabitQ requires VECTOR_FP32 data_type"),
+              std::string::npos)
         << "Error message should mention FP32 support only, got: "
         << status.message();
   }
@@ -1387,9 +1382,8 @@ TEST(FieldSchemaTest, HnswRabitqIndexValidation_UnsupportedDataTypes) {
     auto status = field.validate();
     EXPECT_FALSE(status.ok())
         << "FP16 should not be supported with HNSW_RABITQ";
-    EXPECT_NE(
-        status.message().find("RabitQ index only support FP32 data types"),
-        std::string::npos)
+    EXPECT_NE(status.message().find("RabitQ requires VECTOR_FP32 data_type"),
+              std::string::npos)
         << "Error message should mention FP32 support only, got: "
         << status.message();
   }
@@ -1403,9 +1397,8 @@ TEST(FieldSchemaTest, HnswRabitqIndexValidation_UnsupportedDataTypes) {
     auto status = field.validate();
     EXPECT_FALSE(status.ok())
         << "INT8 should not be supported with HNSW_RABITQ";
-    EXPECT_NE(
-        status.message().find("RabitQ index only support FP32 data types"),
-        std::string::npos)
+    EXPECT_NE(status.message().find("RabitQ requires VECTOR_FP32 data_type"),
+              std::string::npos)
         << "Error message should mention FP32 support only, got: "
         << status.message();
   }
@@ -1431,7 +1424,7 @@ TEST(FieldSchemaTest, HnswRabitqIndexValidation_UnsupportedDataTypes) {
     EXPECT_FALSE(status.ok())
         << "Sparse vector should not be supported with HNSW_RABITQ";
     EXPECT_NE(
-        status.message().find("sparse_vector's index_params only support"),
+        status.message().find("sparse vectors support FLAT/HNSW index_type"),
         std::string::npos)
         << "Error message should mention sparse vector index support, got: "
         << status.message();

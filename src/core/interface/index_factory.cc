@@ -195,9 +195,7 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
     }
     index_type = IndexType::kHNSW;
   } else if constexpr (std::is_same_v<QueryParamType, IVFQueryParam>) {
-    if (!omit_empty_value || param.nprobe != 0) {
-      json_obj.set("nprobe", ailego::JsonValue(param.nprobe));
-    }
+    json_obj.set("nprobe", ailego::JsonValue(param.nprobe));
     json_obj.set("rabitq_pruning", ailego::JsonValue(param.rabitq_pruning));
     json_obj.set("rabitq_reuse_coarse_dot",
                  ailego::JsonValue(param.rabitq_reuse_coarse_dot));
@@ -212,9 +210,7 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
     }
     index_type = IndexType::kHNSWRabitq;
   } else if constexpr (std::is_same_v<QueryParamType, IVFRabitqQueryParam>) {
-    if (!omit_empty_value || param.nprobe != 0) {
-      json_obj.set("nprobe", ailego::JsonValue(param.nprobe));
-    }
+    json_obj.set("nprobe", ailego::JsonValue(param.nprobe));
     index_type = IndexType::kIVFRabitq;
   } else if constexpr (std::is_same_v<QueryParamType, VamanaQueryParam>) {
     if (!omit_empty_value || param.ef_search != 0) {

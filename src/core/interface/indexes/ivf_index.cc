@@ -526,7 +526,10 @@ int IVFIndex::_prepare_for_search(
   const auto &ivf_search_param =
       std::dynamic_pointer_cast<IVFQueryParam>(search_param);
 
-  if (!ivf_search_param) return core::IndexError_InvalidArgument;
+  if (!ivf_search_param) {
+    LOG_ERROR("Invalid search param type, expected IVFQueryParam");
+    return core::IndexError_InvalidArgument;
+  }
   // Pruning controls the base scan; dot reuse also supports the kFlat refiner.
   const bool disable_pruning = !ivf_search_param->rabitq_pruning;
   const bool reuse = ivf_search_param->rabitq_reuse_coarse_dot;
@@ -577,12 +580,16 @@ int IVFIndex::_prepare_for_search(
   context->set_topk(ivf_search_param->topk);
   context->set_fetch_vector(ivf_search_param->fetch_vector);
   if (ivf_search_param->filter && ivf_search_param->filter->is_valid()) {
-    context->set_filter(std::move(*ivf_search_param->filter));
+    context->set_filter(*ivf_search_param->filter);
   } else {
     context->reset_filter();
   }
   if (ivf_search_param->radius > 0.0f) {
-    context->set_threshold(ivf_search_param->radius);
+    float threshold = ivf_search_param->radius;
+    if (metric_ && metric_->support_normalize()) {
+      metric_->denormalize(&threshold);
+    }
+    context->set_threshold(threshold);
   } else {
     context->reset_threshold();
   }

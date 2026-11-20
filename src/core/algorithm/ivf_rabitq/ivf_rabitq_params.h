@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 namespace zvec {
@@ -39,8 +40,6 @@ inline const std::string IVF_RABITQ_MAPPING_SEG_ID{"ivf_rabitq.mapping"};
 inline const std::string IVF_RABITQ_CENTROID_SEG_ID{"ivf_rabitq.centroid"};
 
 // Defaults
-constexpr uint32_t kDefaultIvfRabitqNlist = 1024;
-constexpr uint32_t kDefaultIvfRabitqNprobe = 10;
 constexpr float kDefaultIvfRabitqScanRatio = 0.1f;
 constexpr uint32_t kDefaultIvfRabitqBruteForceThreshold = 1000;
 

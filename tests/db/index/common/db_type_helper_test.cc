@@ -301,7 +301,7 @@ TEST(MetricTypeCodeBookTest, CppToStringConversion) {
   EXPECT_EQ(MetricTypeCodeBook::AsString(MetricType::IP), "IP");
   EXPECT_EQ(MetricTypeCodeBook::AsString(MetricType::L2), "L2");
   EXPECT_EQ(MetricTypeCodeBook::AsString(MetricType::COSINE), "COSINE");
-  EXPECT_EQ(MetricTypeCodeBook::AsString(MetricType::MIPSL2), "UNDEFINED");
+  EXPECT_EQ(MetricTypeCodeBook::AsString(MetricType::MIPSL2), "MIPSL2");
   EXPECT_EQ(MetricTypeCodeBook::AsString(MetricType::UNDEFINED), "UNDEFINED");
   EXPECT_EQ(MetricTypeCodeBook::AsString(static_cast<MetricType>(999)),
             "UNDEFINED");

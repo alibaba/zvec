@@ -14,14 +14,15 @@
 #pragma once
 
 #include <algorithm>
+#include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_holder.h>
+#include "stable_vector_holder.h"
 
 namespace zvec {
 namespace core {
 
-// A bounded view, preserving the source's iteration order and pointer lifetime.
-// Training must copy each selected vector before advancing its iterator.
-class PrefixIndexHolder : public IndexHolder {
+// A bounded view, preserving the source's iteration order and capabilities.
+class PrefixIndexHolder : public IndexHolder, public StableVectorHolder {
  public:
   PrefixIndexHolder(IndexHolder::Pointer source, size_t limit, IndexMeta meta)
       : source_(std::move(source)),
@@ -44,6 +45,13 @@ class PrefixIndexHolder : public IndexHolder {
     return source_->multipass();
   }
 
+  int retain_stable_data(std::shared_ptr<const void> *lifetime) override {
+    if (!lifetime) return IndexError_InvalidArgument;
+    auto *stable = dynamic_cast<StableVectorHolder *>(source_.get());
+    return stable ? stable->retain_stable_data(lifetime)
+                  : IndexError_NotImplemented;
+  }
+
   IndexHolder::Iterator::Pointer create_iterator() override {
     auto iter = source_->create_iterator();
     if (!iter) return nullptr;
@@ -63,6 +71,9 @@ class PrefixIndexHolder : public IndexHolder {
     }
     bool is_valid() const override {
       return remaining_ && iter_->is_valid();
+    }
+    int status() const override {
+      return iter_->status();
     }
     uint64_t key() const override {
       return iter_->key();

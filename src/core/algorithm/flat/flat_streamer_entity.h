@@ -27,6 +27,7 @@
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
+#include <zvec/turbo/batch_topk.h>
 #include "flat_index_format.h"
 #include "flat_utility.h"
 
@@ -41,6 +42,7 @@ struct FlatSearchScratch {
   std::vector<float> distances{};
   std::vector<uint8_t> query_buffer{};
   std::vector<uint8_t> key_presence{};
+  turbo::BatchTopK batch_topk;
 };
 
 /*! Flat Streamer Entity
@@ -226,12 +228,26 @@ class FlatStreamerEntity {
     quantizer_ = quantizer;
   }
 
-  inline uint64_t key(uint32_t id) const {
-    if (id < id_key_vector_.size()) {
-      return id_key_vector_[id];
-    } else {
-      return kInvalidKey;
+  //! Read a key without conflating a missing slot with a storage read error.
+  //! A valid positional hole returns success with kInvalidKey.
+  inline int get_key(uint32_t id, uint64_t *out) const {
+    if (!out) {
+      return -1;
     }
+    if (!use_key_info_map_) {
+      // Positional indexes do not rebuild the key cache on open.
+      return get_key_by_position(id, out);
+    }
+    if (id >= id_key_vector_.size()) {
+      return -1;
+    }
+    *out = id_key_vector_[id];
+    return 0;
+  }
+
+  inline uint64_t key(uint32_t id) const {
+    uint64_t out = kInvalidKey;
+    return get_key(id, &out) == 0 ? out : kInvalidKey;
   }
 
   inline void row_major_distance(const void *query, const void *feature,
@@ -300,6 +316,11 @@ class FlatStreamerEntity {
   FlatStreamerEntity &operator=(const FlatStreamerEntity &) = delete;
 
  private:
+  int search_batch_rows(const void *query, const IndexFilter &filter,
+                        uint32_t *scan_count, IndexDocumentHeap *heap,
+                        IndexContext::Stats *context_stats,
+                        FlatSearchScratch *scratch, size_t batch_size) const;
+
   /*! Iterator of all the linear list
    */
   class Iterator : public IndexProvider::Iterator {

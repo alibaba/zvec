@@ -56,6 +56,14 @@ class ChunkBroker {
 
   int flush(uint64_t checkpoint);
 
+  int dump_meta(const IndexDumper::Pointer &dumper, size_t node_chunks,
+                size_t node_chunk_size, size_t max_index_size) const;
+
+  static inline const std::string make_segment_id(int type, uint64_t seq_id) {
+    return "HnswT" + ailego::StringHelper::ToString(type) + "S" +
+           ailego::StringHelper::ToString(seq_id);
+  }
+
   //! alloc a new chunk with size, not thread-safe
   std::pair<int, Chunk::Pointer> alloc_chunk(int type, uint64_t seq_id,
                                              size_t size);
@@ -131,11 +139,6 @@ class ChunkBroker {
 
   //! Load index from storage
   int load_storage(uint32_t &chunk_size);
-
-  static inline const std::string make_segment_id(int type, uint64_t seq_id) {
-    return "HnswT" + ailego::StringHelper::ToString(type) + "S" +
-           ailego::StringHelper::ToString(seq_id);
-  }
 
  private:
   IndexStreamer::Stats &stats_;

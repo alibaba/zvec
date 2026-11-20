@@ -334,13 +334,11 @@ static ailego_force_inline void ailego_prefetch_lines(const void *ptr,
   _aligned_malloc((size_t)(SIZE), (ALIGN))
 #define ailego_aligned_free _aligned_free
 #else  // !_MSC_VER
-#if defined(_ISOC11_SOURCE)
-#define ailego_aligned_malloc(SIZE, ALIGN) \
-  aligned_alloc((ALIGN), (size_t)(SIZE))
-#else  // !_ISOC11_SOURCE
+// Callers may request any payload size. C11 aligned_alloc requires SIZE to
+// be a multiple of ALIGN; posix_memalign preserves the same alignment without
+// imposing that extra size constraint (including under sanitizers).
 #define ailego_aligned_malloc(SIZE, ALIGN) \
   ailego_posix_malloc((size_t)(SIZE), (ALIGN))
-#endif  // _ISOC11_SOURCE
 #define ailego_aligned_free free
 #endif  // _MSC_VER
 
