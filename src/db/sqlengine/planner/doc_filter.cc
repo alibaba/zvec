@@ -14,8 +14,7 @@
 
 #include "db/sqlengine/planner/doc_filter.h"
 #include <optional>
-#include <arrow/acero/exec_plan.h>
-#include <arrow/table.h>
+#include <arrow/array.h>
 #include <zvec/ailego/logger/logger.h>
 #include "db/sqlengine/planner/invert_search.h"
 

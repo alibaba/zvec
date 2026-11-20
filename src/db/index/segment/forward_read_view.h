@@ -32,7 +32,8 @@ namespace zvec {
 class SegmentImpl;
 namespace test {
 class ForwardFilterReadTest;
-}
+class ForwardBitmapTest;
+}  // namespace test
 
 // Keep construction restricted to the factories when using std::make_shared.
 class ForwardReadFactoryKey {
@@ -185,6 +186,7 @@ class ForwardReadView final {
  private:
   friend class SegmentImpl;
   friend class test::ForwardFilterReadTest;
+  friend class test::ForwardBitmapTest;
 
   // Wraps every column of a validated, caller-owned table. The caller must
   // guarantee buffer ownership; used by tests to build views from arbitrary

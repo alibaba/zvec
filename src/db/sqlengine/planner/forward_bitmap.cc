@@ -49,9 +49,14 @@ arrow::Status AppendPredicateResult(const cp::Expression &predicate,
 
 arrow::Result<std::shared_ptr<arrow::ChunkedArray>>
 DocFilter::build_forward_bitmap() const {
+  const auto error = [&](const char *stage, const arrow::Status &status) {
+    return status.WithMessage("Forward bitmap ", stage, " failed: segment[",
+                              segment_->id(), "] ", status.message());
+  };
   const auto &fields = query_info_->get_forward_filter_field_names();
-  ARROW_ASSIGN_OR_RAISE(auto state,
-                        segment_->prepare_forward_read(fields, false));
+  auto prepared = segment_->prepare_forward_read(fields, false);
+  if (!prepared.ok()) return error("prepare", prepared.status());
+  auto state = std::move(prepared).ValueUnsafe();
   std::vector<arrow::Datum> columns;
   if (state.view) {
     columns.reserve(fields.size());
@@ -66,22 +71,32 @@ DocFilter::build_forward_bitmap() const {
   RecordBatchReaderPtr reader;
   if (columns.size() != fields.size()) {
     reader = segment_->scan(fields);
-    if (!reader) return arrow::Status::Invalid("Missing forward filter scan");
+    if (!reader) {
+      return error("scan",
+                   arrow::Status::Invalid("Missing forward filter scan"));
+    }
     // An empty scanner has no schema. Bind against the captured projection.
     if (auto scan_schema = reader->schema()) {
       schema = std::move(scan_schema);
     } else if (state.num_rows != 0) {
-      return arrow::Status::Invalid("Missing forward filter scan schema");
+      return error(
+          "scan", arrow::Status::Invalid("Missing forward filter scan schema"));
     }
   }
+  // 默认 executor 为空，标量表达式在当前查询线程同步执行。
+  // Arrow 21 尚未使用 use_threads 开关；不能仅依赖该开关保证不调度线程池。
   cp::ExecContext context;
   context.set_use_threads(false);
-  ARROW_ASSIGN_OR_RAISE(auto bound, bitmap_filter_->Bind(*schema, &context));
+  auto binding = bitmap_filter_->Bind(*schema, &context);
+  if (!binding.ok()) return error("bind", binding.status());
   // The scanner and the view both supply unconditional batches.
-  ARROW_ASSIGN_OR_RAISE(
-      bound, cp::SimplifyWithGuarantee(std::move(bound), cp::literal(true)));
+  auto simplified = cp::SimplifyWithGuarantee(std::move(binding).ValueUnsafe(),
+                                              cp::literal(true));
+  if (!simplified.ok()) return error("simplify", simplified.status());
+  auto bound = std::move(simplified).ValueUnsafe();
   if (bound.type()->id() != arrow::Type::BOOL) {
-    return arrow::Status::TypeError("Expected a boolean forward predicate");
+    return error("bind", arrow::Status::TypeError(
+                             "Expected a boolean forward predicate"));
   }
 
   arrow::ArrayVector parts;
@@ -103,13 +118,17 @@ DocFilter::build_forward_bitmap() const {
   };
   if (reader) {
     for (;;) {
-      ARROW_ASSIGN_OR_RAISE(auto batch, reader->Next());
+      auto next = reader->Next();
+      if (!next.ok()) return error("scan", next.status());
+      auto batch = std::move(next).ValueUnsafe();
       if (!batch) break;
-      ARROW_RETURN_NOT_OK(evaluate(cp::ExecBatch(*batch)));
+      auto status = evaluate(cp::ExecBatch(*batch));
+      if (!status.ok()) return error("evaluate", status);
     }
   } else {
-    ARROW_RETURN_NOT_OK(evaluate(cp::ExecBatch(
-        std::move(columns), static_cast<int64_t>(state.num_rows))));
+    auto status = evaluate(cp::ExecBatch(std::move(columns),
+                                         static_cast<int64_t>(state.num_rows)));
+    if (!status.ok()) return error("evaluate", status);
   }
 
   return std::make_shared<arrow::ChunkedArray>(std::move(parts),

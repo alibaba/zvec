@@ -54,8 +54,10 @@ class DocFilter : public IndexFilter {
 
  private:
   friend class zvec::test::ForwardFilterReadTest;
+  friend class zvec::test::ForwardBitmapTest;
 
-  arrow::Result<std::shared_ptr<arrow::ChunkedArray>> build_forward_bitmap() const;
+  arrow::Result<std::shared_ptr<arrow::ChunkedArray>> build_forward_bitmap()
+      const;
   std::optional<bool> get_forward_bit(uint64_t id) const;
   std::optional<bool> is_matched_by_forward_filter(uint64_t id) const;
 

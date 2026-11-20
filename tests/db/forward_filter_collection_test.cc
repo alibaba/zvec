@@ -397,6 +397,47 @@ TEST_P(ForwardFilterCollectionTest, AppendAfterPreparationIsEvaluatedLive) {
   EXPECT_EQ(probe_->views.load(), 0);
 }
 
+TEST_P(ForwardFilterCollectionTest, ConcurrentBitmapQueriesAcrossStoragePaths) {
+  ASSERT_NO_FATAL_FAILURE(create());
+  auto vector_query = query("bitmap > 48");
+  auto fts_query = vector_query;
+  fts_query.topk_ = 96;
+  fts_query.target_.field_name_ = "text";
+  fts_query.target_.clause_ = FtsClause{"common", ""};
+  fts_query.target_.query_params_.reset();
+  auto forward_fts = fts_query;
+  forward_fts.filter_ = "value > 48";
+  const auto expected_vector = keys(collection_->query(query()));
+  const auto expected_fts = keys(collection_->query(forward_fts));
+  ASSERT_EQ(expected_vector.size(), 8u);
+  ASSERT_EQ(expected_fts.size(), 45u);
+  for (int phase = 0; phase < 4; ++phase) {
+    SCOPED_TRACE(phase);
+    if (phase == 1) ASSERT_TRUE(collection_->flush().ok());
+    if (phase == 2) ASSERT_TRUE(collection_->optimize().ok());
+    if (phase == 3) ASSERT_NO_FATAL_FAILURE(reopen());
+    std::atomic<bool> start{false};
+    std::vector<std::future<bool>> readers;
+    for (int reader = 0; reader < 4; ++reader) {
+      readers.push_back(std::async(std::launch::async, [&] {
+        while (!start.load()) std::this_thread::yield();
+        for (int repeat = 0; repeat < 6; ++repeat) {
+          // 每个调用持有独立表达式、执行上下文和 bitmap。
+          auto vector_result = collection_->query(vector_query);
+          auto fts_result = collection_->query(fts_query);
+          if (!vector_result || !fts_result ||
+              keys(vector_result) != expected_vector ||
+              keys(fts_result) != expected_fts)
+            return false;
+        }
+        return true;
+      }));
+    }
+    start = true;
+    for (auto &reader : readers) EXPECT_TRUE(reader.get());
+  }
+}
+
 INSTANTIATE_TEST_SUITE_P(PersistedStores, ForwardFilterCollectionTest,
                          testing::Bool());
 }  // namespace zvec::test
