@@ -377,12 +377,13 @@ TEST_P(IpcForwardFilterReadTest, RawSpansMatchArrowValues) {
   }
 }
 
-TEST_P(IpcForwardFilterReadTest, OpenRejectsAnIncompletePersistedBlock) {
+TEST_P(IpcForwardFilterReadTest, IncompleteBlockFallsBackToLockedFetch) {
   ASSERT_NO_FATAL_FAILURE(create(24));
   ASSERT_TRUE(segment_->dump().ok());
   ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
-  auto meta = *segment_->meta();
-  auto &blocks = meta.persisted_blocks();
+  auto good = std::make_shared<SegmentMeta>(*segment_->meta());
+  auto bad = std::make_shared<SegmentMeta>(*good);
+  auto &blocks = bad->persisted_blocks();
   const auto block = std::find_if(
       blocks.begin(), blocks.end(),
       [](const BlockMeta &b) { return b.type() == BlockType::SCALAR; });
@@ -391,11 +392,56 @@ TEST_P(IpcForwardFilterReadTest, OpenRejectsAnIncompletePersistedBlock) {
   segment_.reset();
   auto options = options_;
   options.read_only_ = true;
-  auto opened = Segment::Open(path_, *schema_, meta, id_map_, deletes_,
+  // The read state is an optimization; it never makes a segment unopenable.
+  auto opened = Segment::Open(path_, *schema_, *bad, id_map_, deletes_,
                               versions_, options);
-  ASSERT_FALSE(opened.has_value());
-  EXPECT_NE(opened.error().message().find("Incomplete IPC forward block"),
-            std::string::npos);
+  ASSERT_TRUE(opened.has_value()) << opened.error().message();
+  segment_ = opened.value();
+  auto state = segment_->prepare_forward_read({"i32"}, false);
+  ASSERT_TRUE(state.ok()) << state.status().ToString();
+  EXPECT_EQ(state->view, nullptr);
+
+  // A reload whose state cannot be prepared still succeeds, and a later
+  // reload with consistent metadata restores the sealed view.
+  const std::unordered_map<std::string, VectorColumnIndexer::Ptr> none;
+  ASSERT_TRUE(segment_->reload_vector_index(*schema_, good, none, none).ok());
+  EXPECT_NE(capture({"i32"}), nullptr);
+  ASSERT_TRUE(segment_->reload_scalar_index(*schema_, bad, nullptr).ok());
+  state = segment_->prepare_forward_read({"i32"}, false);
+  ASSERT_TRUE(state.ok()) << state.status().ToString();
+  EXPECT_EQ(state->view, nullptr);
+  ASSERT_TRUE(segment_->reload_fts_index(*schema_, good, nullptr).ok());
+  EXPECT_NE(capture({"i32"}), nullptr);
+}
+
+TEST_P(IpcForwardFilterReadTest, FailedDdlKeepsThePublishedState) {
+#ifdef _WIN32
+  GTEST_SKIP() << "Windows cannot remove a mapped block file";
+#endif
+  ASSERT_NO_FATAL_FAILURE(create(24));
+  ASSERT_NO_FATAL_FAILURE(reopen_persisted());
+  ASSERT_TRUE(segment_
+                  ->add_column(std::make_shared<FieldSchema>(
+                                   "extra", DataType::INT32, true),
+                               "7", AddColumnOptions())
+                  .ok());
+  // Make drop_column fail after it has started changing the segment: the
+  // single-column block file of "extra" can no longer be removed.
+  const auto &blocks = segment_->meta()->persisted_blocks();
+  const auto block =
+      std::find_if(blocks.begin(), blocks.end(), [](const BlockMeta &b) {
+        return b.type() == BlockType::SCALAR && b.columns().size() == 1 &&
+               b.columns()[0] == "extra";
+      });
+  ASSERT_NE(block, blocks.end());
+  ASSERT_TRUE(FileHelper::RemoveFile(
+      FileHelper::MakeForwardBlockPath(path_, segment_->id(), block->id())));
+  EXPECT_FALSE(segment_->drop_column("extra").ok());
+  // Columns unaffected by the failed DDL keep the sealed fast path.
+  auto view = capture({"i32"});
+  ASSERT_NE(view, nullptr);
+  EXPECT_EQ(view->read_row(2)->values[0].scalar_as<arrow::Int32Scalar>().value,
+            2);
 }
 
 TEST_P(IpcForwardFilterReadTest,
@@ -656,7 +702,12 @@ TEST_P(ForwardFilterReadTest, SealingRequiresAFlushedWritingStore) {
   EXPECT_TRUE(segment_->meta()->has_writing_forward_block());
   EXPECT_EQ(capture({"i32"}), nullptr);
   ASSERT_TRUE(segment_->dump().ok());
-  ASSERT_TRUE(segment_->dump(/*allow_already_dumped=*/true).ok());
+  EXPECT_FALSE(segment_->dump().ok());
+  ASSERT_TRUE(segment_->resume_dump().ok());
+  ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
+  EXPECT_EQ(capture({"i32"}) != nullptr, GetParam());
+  // A rollover retry after sealing resumes without re-dumping or re-sealing.
+  ASSERT_TRUE(segment_->resume_dump().ok());
   ASSERT_TRUE(segment_->remove_writing_forward_block().ok());
   EXPECT_EQ(capture({"i32"}) != nullptr, GetParam());
 }

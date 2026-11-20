@@ -31,6 +31,7 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/ailego/parallel/thread_queue.h>
+#include <zvec/ailego/utility/time_helper.h>
 #include <zvec/db/config.h>
 #include <zvec/db/doc.h>
 #include <zvec/db/index_params.h>
@@ -241,7 +242,9 @@ class SegmentImpl : public Segment,
                           const SegmentMeta::Ptr &segment_meta,
                           const FtsIndexer::Ptr &new_fts_indexer) override;
 
-  Status dump(bool allow_already_dumped) override;
+  Status dump() override;
+
+  Status resume_dump() override;
 
   Status remove_writing_forward_block() override;
 
@@ -378,6 +381,14 @@ class SegmentImpl : public Segment,
   // Called before Open publishes the segment or under exclusive seg_mtx_.
   Status refresh_persisted_read_state(bool sealing = false);
 
+  // Replaces the read state and never fails: if preparation fails, the
+  // segment keeps no state and serves forward reads through locked fetch.
+  // Same locking requirements as refresh_persisted_read_state().
+  void publish_persisted_read_state(bool sealing = false);
+
+  // Caller holds seg_mtx_ exclusively.
+  Status dump_unsafe(bool resume);
+
  private:
   // scalar forward (uses segment-local doc ID)
   MemForwardStore::Ptr memory_store_;
@@ -471,7 +482,11 @@ class SegmentImpl : public Segment,
     bool common_fetch_layout{false};
   };
 
+  // Null when preparation is disabled or failed, or after close.
   std::shared_ptr<const PersistedReadState> persisted_read_state_;
+  // Set by close() under seg_mtx_. A missing read state alone does not mean
+  // the segment is closed.
+  bool closed_{false};
   bool need_destroyed_{false};
 
   // Inner classes
@@ -570,8 +585,9 @@ Status SegmentImpl::Open(const SegmentOptions &options) {
 
   fresh_persist_block_offset();
 
-  s = refresh_persisted_read_state();
-  CHECK_RETURN_STATUS(s);
+  // The read state is an optimization. Failing to prepare it must not make
+  // the segment unopenable; queries use locked fetch instead.
+  publish_persisted_read_state();
 
   // All persisted doc IDs must be loaded before checking identity.
   if (options_.read_only_) {
@@ -623,6 +639,7 @@ Status SegmentImpl::close() {
   // Exclusive: flush() below rewrites the stores readers read; destroy()
   // reaches here without the lock.
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
+  closed_ = true;
   persisted_read_state_.reset();
   flush_unsafe();
   if (invert_indexers_) {
@@ -1864,12 +1881,11 @@ Status SegmentImpl::reload_vector_index(
     const std::unordered_map<std::string, VectorColumnIndexer::Ptr>
         &quant_vector_indexers) {
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
-  persisted_read_state_.reset();
   collection_schema_ = std::make_shared<CollectionSchema>(schema);
   segment_meta_ = new_segment_meta;
   fresh_persist_block_offset();
-  auto read_status = refresh_persisted_read_state();
-  CHECK_RETURN_STATUS(read_status);
+  // Never aborts the reload: the indexers below must still be installed.
+  publish_persisted_read_state();
 
   auto vector_fields = schema.vector_fields();
 
@@ -2148,12 +2164,12 @@ Status SegmentImpl::reload_scalar_index(
     const CollectionSchema &schema, const SegmentMeta::Ptr &segment_meta,
     const InvertedIndexer::Ptr &scalar_indexer) {
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
-  persisted_read_state_.reset();
   collection_schema_ = std::make_shared<CollectionSchema>(schema);
   segment_meta_ = segment_meta;
+  // Block offsets must match the new meta on every return below.
   fresh_persist_block_offset();
-  auto read_status = refresh_persisted_read_state();
-  CHECK_RETURN_STATUS(read_status);
+  // Never aborts the reload: the indexer below must still be installed.
+  publish_persisted_read_state();
 
   if (invert_indexers_ == scalar_indexer) {
     return Status::OK();
@@ -2180,18 +2196,24 @@ Status SegmentImpl::reload_scalar_index(
   return Status::OK();
 }
 
-Status SegmentImpl::dump(bool allow_already_dumped) {
+Status SegmentImpl::dump() {
   // Exclusive: flush() below resets memory_store_ and rewrites persist_stores_,
   // the block metadata and the indexer maps. Lock order matches Insert (the
   // caller already holds the collection's exclusive write_mtx_).
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
+  return dump_unsafe(/*resume=*/false);
+}
 
+Status SegmentImpl::resume_dump() {
+  std::lock_guard<std::shared_mutex> lock(seg_mtx_);
+  return dump_unsafe(/*resume=*/true);
+}
+
+Status SegmentImpl::dump_unsafe(bool resume) {
   if (sealed_) {
-    // A rollover can retry after dumping but before publishing the segment.
-    if (allow_already_dumped && segment_meta_->has_writing_forward_block() &&
-        !memory_store_) {
-      return Status::OK();
-    }
+    // A rollover can retry after dumping, whether or not it already removed
+    // the writing block. A memory store means rows arrived after the dump.
+    if (resume && !memory_store_) return Status::OK();
     return Status::NotSupported("Segment has been dumped.");
   }
   auto s = flush_unsafe();
@@ -2218,8 +2240,9 @@ Status SegmentImpl::remove_writing_forward_block() {
   if (memory_store_) {
     return Status::InvalidArgument("Cannot seal a segment with a memory store");
   }
-  auto status = refresh_persisted_read_state(/*sealing=*/true);
-  CHECK_RETURN_STATUS(status);
+  // Prepare before removing the block so that no query observes a sealed
+  // segment without its state. A failed preparation does not block sealing.
+  publish_persisted_read_state(/*sealing=*/true);
   segment_meta_->remove_writing_forward_block();
   return Status::OK();
 }
@@ -2799,12 +2822,13 @@ arrow::Result<Segment::ForwardReadState> SegmentImpl::prepare_forward_read(
     std::shared_lock<std::shared_mutex> lock(seg_mtx_);
     state = persisted_read_state_;
     if (!state || !state->sealed) {
+      // Writing segments, Parquet and sealed IPC segments whose read state
+      // could not be prepared all use locked fetch. Only a closed segment
+      // or a store/meta mismatch is an error.
       const auto &blocks = get_persist_block_metas(BlockType::SCALAR);
       const auto rows = doc_ids_.size();
-      if (blocks.size() != persist_stores_.size() ||
-          (rows && blocks.empty() && !memory_store_) ||
-          (options_.enable_mmap_ &&
-           !segment_meta_->has_writing_forward_block() && !memory_store_)) {
+      if (closed_ || blocks.size() != persist_stores_.size() ||
+          (rows && blocks.empty() && !memory_store_)) {
         return arrow::Status::Invalid(
             "Forward stores are closed or incomplete");
       }
@@ -3408,8 +3432,16 @@ Status SegmentImpl::add_column(FieldSchema::Ptr column_schema,
   }
 
   std::unique_lock<std::shared_mutex> lock(seg_mtx_);
-  // create and append persist scalar indexer
+  // Release the mapped columns before files are removed. On every return,
+  // including failures, recompute block offsets from the meta and republish,
+  // so a failed DDL cannot leave the segment without a state. The guard is
+  // destroyed before the lock.
   persisted_read_state_.reset();
+  AILEGO_DEFER([this]() {
+    fresh_persist_block_offset();
+    publish_persisted_read_state();
+  });
+  // create and append persist scalar indexer
   for (auto &block : new_blocks) {
     auto forward_path = FileHelper::MakeForwardBlockPath(
         path_, segment_meta_->id(), block.id_, !options_.enable_mmap_);
@@ -3430,9 +3462,7 @@ Status SegmentImpl::add_column(FieldSchema::Ptr column_schema,
   auto s = collection_schema_->add_field(column_schema);
   CHECK_RETURN_STATUS(s);
 
-  fresh_persist_block_offset();
-
-  return refresh_persisted_read_state();
+  return Status::OK();
 }
 
 
@@ -3577,8 +3607,16 @@ Status SegmentImpl::alter_column(const std::string &column_name,
   }
 
   std::unique_lock<std::shared_mutex> lock(seg_mtx_);
-  // update old block, remove column
+  // Release the mapped columns before files are removed. On every return,
+  // including failures, recompute block offsets from the meta and republish,
+  // so a failed DDL cannot leave the segment without a state. The guard is
+  // destroyed before the lock.
   persisted_read_state_.reset();
+  AILEGO_DEFER([this]() {
+    fresh_persist_block_offset();
+    publish_persisted_read_state();
+  });
+  // update old block, remove column
   std::vector<BlockMeta> &persisted_blocks = segment_meta_->persisted_blocks();
   std::vector<int> will_del_block_idx;
   for (size_t idx = 0; idx < persisted_blocks.size(); idx++) {
@@ -3659,9 +3697,7 @@ Status SegmentImpl::alter_column(const std::string &column_name,
       collection_schema_->alter_field(column_name, new_column_schema);
   CHECK_RETURN_STATUS(alter_status);
 
-  fresh_persist_block_offset();
-
-  return refresh_persisted_read_state();
+  return Status::OK();
 }
 
 Status SegmentImpl::drop_column(const std::string &column_name) {
@@ -3671,8 +3707,16 @@ Status SegmentImpl::drop_column(const std::string &column_name) {
   }
 
   std::unique_lock<std::shared_mutex> lock(seg_mtx_);
-  // update old block, remove column
+  // Release the mapped columns before files are removed. On every return,
+  // including failures, recompute block offsets from the meta and republish,
+  // so a failed DDL cannot leave the segment without a state. The guard is
+  // destroyed before the lock.
   persisted_read_state_.reset();
+  AILEGO_DEFER([this]() {
+    fresh_persist_block_offset();
+    publish_persisted_read_state();
+  });
+  // update old block, remove column
   std::vector<BlockMeta> &persisted_blocks = segment_meta_->persisted_blocks();
   std::vector<int> will_del_block_idx;
   for (size_t idx = 0; idx < persisted_blocks.size(); idx++) {
@@ -3757,9 +3801,7 @@ Status SegmentImpl::drop_column(const std::string &column_name) {
   auto alter_status = collection_schema_->drop_field(column_name);
   CHECK_RETURN_STATUS(alter_status);
 
-  fresh_persist_block_offset();
-
-  return refresh_persisted_read_state();
+  return Status::OK();
 }
 
 ////////////////////////////////////////////////////////////////////////////////////
@@ -3944,6 +3986,31 @@ Status SegmentImpl::refresh_persisted_read_state(bool sealing) try {
 } catch (const std::exception &error) {
   return Status::InternalError("Prepare persisted forward columns: ",
                                error.what());
+}
+
+void SegmentImpl::publish_persisted_read_state(bool sealing) {
+  // Drop the old state first so its buffers are never published with a
+  // schema or block layout they no longer match.
+  persisted_read_state_.reset();
+  const ailego::ElapsedTime elapsed;
+  auto status = refresh_persisted_read_state(sealing);
+  if (!status.ok()) {
+    persisted_read_state_.reset();
+    LOG_WARN(
+        "Persisted forward read state unavailable for segment[%d], using "
+        "locked fetch: %s",
+        id(), status.message().c_str());
+    return;
+  }
+  if (persisted_read_state_) {
+    LOG_INFO(
+        "Prepared persisted forward read state: segment[%d] columns[%zu] "
+        "rows[%lld] sealed[%d] cost[%llu us]",
+        id(), persisted_read_state_->columns.size(),
+        static_cast<long long>(persisted_read_state_->num_rows),
+        persisted_read_state_->sealed,
+        static_cast<unsigned long long>(elapsed.micro_seconds()));
+  }
 }
 
 void SegmentImpl::calculate_block_offsets() {
@@ -5095,12 +5162,11 @@ Status SegmentImpl::reload_fts_index(const CollectionSchema &schema,
                                      const SegmentMeta::Ptr &segment_meta,
                                      const FtsIndexer::Ptr &new_fts_indexer) {
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
-  persisted_read_state_.reset();
   collection_schema_ = std::make_shared<CollectionSchema>(schema);
   segment_meta_ = segment_meta;
   fresh_persist_block_offset();
-  auto read_status = refresh_persisted_read_state();
-  CHECK_RETURN_STATUS(read_status);
+  // Never aborts the reload: the indexer below must still be installed.
+  publish_persisted_read_state();
 
   if (fts_indexer_) {
     auto old_dir = fts_indexer_->working_dir();

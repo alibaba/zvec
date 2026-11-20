@@ -571,7 +571,11 @@ class MockSegment : public Segment {
     return Status::OK();
   }
 
-  Status dump(bool /*allow_already_dumped*/ = false) override {
+  Status dump() override {
+    return Status::OK();
+  }
+
+  Status resume_dump() override {
     return Status::OK();
   }
 

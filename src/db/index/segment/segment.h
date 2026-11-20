@@ -66,8 +66,10 @@ class Segment {
   // segment implementation uses owning views only for sealed IPC segments;
   // writing segments (even immediately after flush) and Parquet keep
   // per-candidate locked fetch. Open and seal prepare immutable columns; DDL
-  // and reload replace them under the segment lock. Query projections share
-  // the published columns and keep their buffers alive independently.
+  // and reload replace them under the segment lock, on success or failure.
+  // If preparation fails, the segment falls back to locked fetch. Query
+  // projections share the published columns and keep their buffers alive
+  // independently.
   // `with_deletion` also requests deletion_filter.
   // Callers keep this decision fixed and enforce num_rows only for an owning
   // view. Locked fetch reads live rows, including appends after preparation,
@@ -247,12 +249,17 @@ class Segment {
   // ---- Persistence and lifecycle -----------------------------------------
   virtual Status flush() = 0;
 
-  // A rollover may resume a successful dump whose writing block is still
-  // waiting for publication. Ordinary callers reject a duplicate dump.
-  virtual Status dump(bool allow_already_dumped = false) = 0;
+  // Rejects a segment that has already been dumped.
+  virtual Status dump() = 0;
 
-  // Publishes the prepared read state and removes the writing block together
-  // under the exclusive segment lock. On failure the writing block remains.
+  // Like dump(), but succeeds if a previous dump already completed. A
+  // rollover uses it to retry after a failure later in the switch.
+  virtual Status resume_dump() = 0;
+
+  // Prepares the sealed read state and removes the writing block together
+  // under the exclusive segment lock. Idempotent once the block is removed.
+  // If the read state cannot be prepared, the segment is still sealed and
+  // serves forward reads through locked fetch.
   virtual Status remove_writing_forward_block() = 0;
 
   virtual Status destroy() = 0;
