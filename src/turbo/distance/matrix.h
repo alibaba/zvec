@@ -218,6 +218,30 @@ struct InterleavedDistanceMatrix {
     std::copy_n(sums, Rows * Columns, out);
   }
 
+  template <typename Sum>
+  static void Int8SquaredDistances(const int8_t *m, const int8_t *q, size_t dim,
+                                   size_t query_stride, Sum *sums) {
+    std::fill_n(sums, Rows, Sum{0});
+    size_t d = 0;
+    for (; d + 4 <= dim; d += 4) {
+      const auto *query = q + d * query_stride;
+      for (size_t i = 0; i < Rows; ++i) {
+        const auto *row = m + d * Rows + i * 4;
+        const int d0 = row[0] - query[0], d1 = row[1] - query[1];
+        const int d2 = row[2] - query[2], d3 = row[3] - query[3];
+        sums[i] += d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3;
+      }
+    }
+    for (; d < dim; ++d) {
+      const size_t word = d / 4 * 4;
+      const int query = q[word * query_stride + d % 4];
+      for (size_t i = 0; i < Rows; ++i) {
+        const int delta = m[word * Rows + i * 4 + d % 4] - query;
+        sums[i] += delta * delta;
+      }
+    }
+  }
+
   // Reuse a query component (or packed word) across the whole block. A
   // strided query also serves one column of a many-to-many matrix. Keep
   // integer products in word-sized groups before converting to FP32.
@@ -263,6 +287,18 @@ struct InterleavedDistanceMatrix {
         }
         m += Rows;
       }
+    } else if constexpr (std::is_same_v<T, int8_t> &&
+                         Metric == MetricType::kSquaredEuclidean) {
+      // Beyond this bound a small squared difference can disappear when
+      // added to an FP32 partial sum. Round only the final integer total.
+      constexpr size_t max_exact_dim = (1u << 24) / (255 * 255);
+      if (dim <= max_exact_dim) {
+        Int8SquaredDistances(m, q, dim, query_stride, out);
+      } else {
+        int64_t sums[Rows];
+        Int8SquaredDistances(m, q, dim, query_stride, sums);
+        std::copy_n(sums, Rows, out);
+      }
     } else {
       for (size_t i = 0; i < Rows; ++i) out[i] = 0;
       size_t d = 0;
@@ -278,18 +314,12 @@ struct InterleavedDistanceMatrix {
             if constexpr (WithNorms)
               row_norms[i] += float(row[0] * row[0] + row[1] * row[1] +
                                     row[2] * row[2] + row[3] * row[3]);
-            if constexpr (Metric == MetricType::kInnerProduct) {
-              const int dot =
-                  row[0] * q0 + row[1] * q1 + row[2] * q2 + row[3] * q3;
-              if constexpr (WithNorms)
-                out[i] += float(dot);
-              else
-                out[i] -= float(dot);
-            } else {
-              const int d0 = row[0] - q0, d1 = row[1] - q1;
-              const int d2 = row[2] - q2, d3 = row[3] - q3;
-              out[i] += float(d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3);
-            }
+            const int dot =
+                row[0] * q0 + row[1] * q1 + row[2] * q2 + row[3] * q3;
+            if constexpr (WithNorms)
+              out[i] += float(dot);
+            else
+              out[i] -= float(dot);
           }
         }
       } else {
@@ -395,10 +425,8 @@ struct InterleavedDistanceMatrix {
       if (dim > 0) {
         for (size_t i = 0; i < Rows; ++i) {
           const T value = m[i];
-          float *r = out + i;
           for (size_t j = 0; j < Columns; ++j) {
-            *r = -float(value * q[j]);
-            r += Rows;
+            out[j * Rows + i] = -float(value * q[j]);
           }
         }
         m += Rows;
@@ -407,10 +435,8 @@ struct InterleavedDistanceMatrix {
       for (size_t d = 1; Columns == 1 ? q != q_end : d < dim; ++d) {
         for (size_t i = 0; i < Rows; ++i) {
           const T value = m[i];
-          float *r = out + i;
           for (size_t j = 0; j < Columns; ++j) {
-            *r -= value * q[j];
-            r += Rows;
+            out[j * Rows + i] -= value * q[j];
           }
         }
         m += Rows;

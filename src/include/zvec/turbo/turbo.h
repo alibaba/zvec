@@ -236,8 +236,9 @@ ZVEC_TURBO_API ManyToManyDistanceFunc get_many_to_many_distance_func(
 // Raw element-interleaved candidates: vectors[d * rows + i]. Queries remain
 // contiguous; results are query-major, out[q * rows + i]. No preprocessing or
 // metadata is added. rows is fixed by the returned function (2/4/8/16/32).
-// Supports FP32/FP16 IP/L2 on ARM64 GNU/Clang NEON or AVX2 + FMA
-// (FP16 additionally requires F16C). Unsupported
+// Supports FP32/FP16 IP/L2 on ARM64 GNU/Clang NEON, AVX2 + FMA, and AVX512F.
+// FP16 on x86 also requires F16C. For FP16 IP, kAuto skips AVX512; callers
+// can request AVX512 explicitly. Unsupported
 // shapes/types/metrics and unavailable or unimplemented explicit ISAs return
 // empty; kAuto selects only a compiled kernel supported by the current CPU.
 // n == 0 is a no-op even with null pointers; otherwise out holds rows*n floats

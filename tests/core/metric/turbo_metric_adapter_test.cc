@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -262,6 +263,32 @@ TEST(TurboMetricAdapter, MipsMatricesMatchPairsAcrossLayouts) {
       }
     }
   }
+}
+
+TEST(TurboMetricAdapter, Int8MipsIdentityKeepsThresholdAcrossLayouts) {
+  constexpr size_t dim = 1032;
+  constexpr float threshold = 16777216.0f;
+  ailego::Params params;
+  params.set(MIPS_EUCLIDEAN_METRIC_INJECTION_TYPE, 3);  // Identity
+  auto metric = IndexFactory::CreateMetric("MipsSquaredEuclidean");
+  ASSERT_TRUE(metric);
+  ASSERT_EQ(0, metric->init(IndexMeta(IndexMeta::DT_INT8, dim), params));
+
+  // The first 1024 squares sum to 2^24. Each of the next two words adds 1.
+  std::vector<int8_t> row(dim), query(dim), rows(2 * dim);
+  std::fill_n(row.begin(), 1024, -128);
+  row[1024] = row[1028] = 1;
+  for (size_t d = 0; d < dim; ++d) rows[d / 4 * 8 + d % 4] = row[d];
+
+  float pair, scores[2];
+  metric->distance()(row.data(), query.data(), dim, &pair);
+  auto matrix = metric->distance_matrix(2, 1);
+  ASSERT_TRUE(matrix);
+  matrix(rows.data(), query.data(), dim, scores);
+  EXPECT_EQ(threshold + 2, pair);
+  EXPECT_EQ(pair, scores[0]);
+  EXPECT_GT(scores[0], threshold);
+  EXPECT_EQ(0.0f, scores[1]);
 }
 
 TEST(TurboMetricAdapter, MipsInjectionsKeepTheirDistanceSemantics) {
