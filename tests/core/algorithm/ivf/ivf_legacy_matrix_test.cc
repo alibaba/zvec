@@ -422,8 +422,8 @@ TEST_P(IVFLegacyMatrixTest, JointKernelDispatchPreservesMetricAndTail) {
    public:
     turbo::InterleavedManyToManyDistanceFunc interleaved_many_distance(
         size_t rows) const override {
-      return [rows](const void *, const void *const *queries, size_t n,
-                    size_t, float *out) {
+      return [rows](const void *, const void *const *queries, size_t n, size_t,
+                    float *out) {
         ASSERT_EQ(1u, n);
         ASSERT_NE(nullptr, queries[0]);
         std::fill_n(out, rows, 456.0f);

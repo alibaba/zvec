@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "avx2/interleaved_many_to_many.h"
-#include "common/interleaved_matrix.h"
 #include <cstring>
 #include <type_traits>
 #include <zvec/ailego/utility/float_helper.h>
 #include "common/fp16_common.h"
+#include "common/interleaved_matrix.h"
 #if ZVEC_TURBO_FP16_AVX2 && (defined(__FMA__) || defined(_MSC_VER))
 #include <immintrin.h>
 #define ZVEC_INTERLEAVED_AVX2 1

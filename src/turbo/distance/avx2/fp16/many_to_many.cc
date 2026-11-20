@@ -48,8 +48,10 @@ void tile(const void *const *vectors, const void *const *queries, size_t dim,
     a10 = _mm256_fmadd_ps(x0, y1, a10);
     a11 = _mm256_fmadd_ps(x1, y1, a11);
   }
-  float s00 = HorizontalAdd_FP32_V256(a00), s01 = HorizontalAdd_FP32_V256(a01);
-  float s10 = HorizontalAdd_FP32_V256(a10), s11 = HorizontalAdd_FP32_V256(a11);
+  float s00 = horizontal_add_fp32_v256(a00),
+        s01 = horizontal_add_fp32_v256(a01);
+  float s10 = horizontal_add_fp32_v256(a10),
+        s11 = horizontal_add_fp32_v256(a11);
   for (; d < dim; ++d) {
     const float x0 = float(m0[d]), x1 = float(m1[d]);
     const float y0 = float(q0[d]), y1 = float(q1[d]);
