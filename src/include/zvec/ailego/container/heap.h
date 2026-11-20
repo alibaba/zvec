@@ -220,6 +220,9 @@ class Heap : private TBase {
   void limit_on_demand(size_t max) {
     assert(TBase::empty());
     limit_ = std::max<size_t>(max, 1u);
+    // Small limits still allocate once up front: growing from empty
+    // reallocates on almost every push, which dominates dense batch scans.
+    if (limit_ <= 16) TBase::reserve(limit_);
   }
 
   //! Unlimit the size of heap

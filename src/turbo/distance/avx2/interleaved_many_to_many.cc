@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "avx2/interleaved_many_to_many.h"
+#include <algorithm>
 #include <cstring>
 #include <type_traits>
 #include <zvec/ailego/utility/float_helper.h>
@@ -87,6 +88,19 @@ inline void store_distances(float *out, __m256 sum) {
     _mm256_maskstore_ps(out, lane_mask<Rows>(), sum);
 }
 
+// Add one tile's partial sums to the running output. Lane-for-lane the same
+// float additions as the scalar accumulation it replaces.
+template <size_t Rows>
+inline void fold_distances(float *out, __m256 partial) {
+  if constexpr (Rows >= 8) {
+    _mm256_storeu_ps(out, _mm256_add_ps(_mm256_loadu_ps(out), partial));
+  } else {
+    const auto mask = lane_mask<Rows>();
+    _mm256_maskstore_ps(out, mask,
+                        _mm256_add_ps(_mm256_maskload_ps(out, mask), partial));
+  }
+}
+
 template <typename T, size_t Rows, MetricType Metric, bool Pair>
 void accumulate_tile(const T *matrix, const T *q0, const T *q1, size_t dim,
                      float *out0, float *out1) {
@@ -108,14 +122,53 @@ void accumulate_tile(const T *matrix, const T *q0, const T *q1, size_t dim,
   }
 }
 
+// FP16 joint distances must reset their partial sums every
+// kFp16MatrixTile dimensions so they stay bitwise identical to the
+// single-column path. Fold each tile's partials straight into the outputs;
+// the shared stack-tile round trip dominated batched pair calls.
+template <size_t Rows, MetricType Metric, bool Pair>
+void accumulate_tile_fp16(const ailego::Float16 *matrix,
+                          const ailego::Float16 *q0, const ailego::Float16 *q1,
+                          size_t dim, float *out0, float *out1) {
+  using T = ailego::Float16;
+  constexpr size_t Chunks = (Rows + 7) / 8;
+  size_t base = 0;
+  do {
+    const size_t limit = std::min(base + kFp16MatrixTile, dim);
+    __m256 a[Chunks]{}, b[Chunks]{};
+    for (size_t d = base; d < limit; ++d) {
+      const auto qa = broadcast_query<T>(q0 + d);
+      __m256 qb{};
+      if constexpr (Pair) qb = broadcast_query<T>(q1 + d);
+      for (size_t c = 0; c < Chunks; ++c) {
+        const auto x = load_candidates<T, Rows>(matrix + d * Rows + c * 8);
+        a[c] = accumulate<T, Metric>(a[c], x, qa);
+        if constexpr (Pair) b[c] = accumulate<T, Metric>(b[c], x, qb);
+      }
+    }
+    for (size_t c = 0; c < Chunks; ++c) {
+      if (base == 0)
+        store_distances<Rows>(out0 + c * 8, a[c]);
+      else
+        fold_distances<Rows>(out0 + c * 8, a[c]);
+      if constexpr (Pair) {
+        if (base == 0)
+          store_distances<Rows>(out1 + c * 8, b[c]);
+        else
+          fold_distances<Rows>(out1 + c * 8, b[c]);
+      }
+    }
+    base += kFp16MatrixTile;
+  } while (base < dim);
+}
+
 template <typename T, size_t Rows, MetricType Metric, bool Pair>
 void tile(const T *matrix, const T *q0, const T *q1, size_t dim, float *out0,
           float *out1) {
-  constexpr auto compute = accumulate_tile<T, Rows, Metric, Pair>;
   if constexpr (std::is_same_v<T, ailego::Float16>) {
-    fp16_matrix_tiles<Rows, Pair>(compute, matrix, q0, q1, dim, out0, out1);
+    accumulate_tile_fp16<Rows, Metric, Pair>(matrix, q0, q1, dim, out0, out1);
   } else {
-    compute(matrix, q0, q1, dim, out0, out1);
+    accumulate_tile<T, Rows, Metric, Pair>(matrix, q0, q1, dim, out0, out1);
   }
 }
 
