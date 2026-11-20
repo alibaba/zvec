@@ -1,6 +1,5 @@
-// Copyright 2026 The Stile Authors
+// Copyright 2025-present the zvec project
 // SPDX-License-Identifier: Apache-2.0
-// Adapted from Stile v0.1.0 for zvec.
 
 // Value sets for IN and list membership: dense indices of distinct members.
 #pragma once

@@ -10,29 +10,12 @@ Third-Party Components
 ================================================================================
 
 --------------------------------------------------------------------------------
-Stile
+Apache Arrow
 --------------------------------------------------------------------------------
-Project: Stile v0.1.0
-Homepage: https://github.com/luoxiaojian/stile
+Project: Apache Arrow
+Homepage: https://arrow.apache.org/
 License:  Apache License, Version 2.0
-Used in:  src/db/sqlengine/stile/
-Source:   v0.1.0, commit 28438186578aeb37e4bd9585d8a8c60e0551d50c
-
-源码映射与本地适配：
-- include/stile/{functions,predicate,table_index}.h 及 src/ 中的实现和内部头文件
-  平铺到上述目录；namespace 改为 zvec::stile，include 路径及方法名按项目适配。
-- 不引入上游的构建系统、聚合头文件、生成版本头文件或额外 Arrow/RE2 依赖。
-- LIKE 仅适配 Arrow 的大小写敏感前缀、后缀、子串快速路径；其余模式
-  （包括无通配符的精确模式）整表达式回退 Arrow。zvec 未注册 list membership
-  descriptor。batch API 保留用于上游同步，但候选链路只调用 matches()。
-- 当前适配限定 Arrow 21；升级 Arrow 或 Stile 时需重新核对 kernel 身份、
-  options、数值转换和三值逻辑，并运行 stile_predicate_test、
-  forward_filter_read_test 和 forward_filter_collection_test。
-- 仅 sealed IPC 的 single-stage 候选过滤尝试 Stile。表达式不支持或超过预算
-  时整表达式回退 Arrow，其他准备/编译错误传播给查询。writing、Parquet、
-  bitmap 及倒排执行路径不扩大启用范围；具体 SQL 可达性仍由优化器决定。
-
-Copyright 2026 The Stile Authors
+Used in:  src/db/sqlengine/stile/like.cc
 
 The LIKE pattern classification in src/db/sqlengine/stile/like.cc derives
 from Apache Arrow 21.0.0 (cpp/src/arrow/compute/kernels/scalar_string_ascii.cc).

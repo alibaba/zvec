@@ -1,6 +1,5 @@
-// Copyright 2026 The Stile Authors
+// Copyright 2025-present the zvec project
 // SPDX-License-Identifier: Apache-2.0
-// Adapted from Stile v0.1.0 for zvec.
 
 // Typed per-row access to ColumnIndex data. Every accessor has `Value`,
 // `Literal` (how a comparison literal is stored), `valid(row)`,

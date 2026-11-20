@@ -1,6 +1,5 @@
-// Copyright 2026 The Stile Authors
+// Copyright 2025-present the zvec project
 // SPDX-License-Identifier: Apache-2.0
-// Adapted from Stile v0.1.0 for zvec.
 
 // Evaluation nodes. Each reproduces one Arrow function on a single row and
 // returns its truth in the two-bit encoding of detail::Tf.

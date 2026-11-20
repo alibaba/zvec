@@ -1,6 +1,5 @@
-// Copyright 2026 The Stile Authors
+// Copyright 2025-present the zvec project
 // SPDX-License-Identifier: Apache-2.0
-// Adapted from Stile v0.1.0 for zvec.
 //
 // The LIKE classification patterns are derived from
 // Apache Arrow 21 (cpp/src/arrow/compute/kernels/scalar_string_ascii.cc),

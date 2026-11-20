@@ -1,6 +1,5 @@
-// Copyright 2026 The Stile Authors
+// Copyright 2025-present the zvec project
 // SPDX-License-Identifier: Apache-2.0
-// Adapted from Stile v0.1.0 for zvec.
 
 #include "db/sqlengine/stile/compile_checks.h"
 #include <limits>
@@ -14,8 +13,7 @@
 
 // 绑定内核与 LIKE 初始化依赖 Arrow 21 的语义；升级时必须重新验证适配。
 #if ARROW_VERSION_MAJOR != 21
-#error \
-    "Revalidate the vendored Stile adapter before changing Arrow major version."
+#error "升级 Arrow 主版本前，必须重新验证 Stile 模块的语义兼容性。"
 #endif
 
 namespace zvec::stile {
