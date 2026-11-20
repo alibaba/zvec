@@ -357,7 +357,9 @@ int IVFSearcher::search_many(const void *query, const IndexQueryMeta &qmeta,
         }
         queries.push_back(entity->query_distance());
       }
-      heaps.emplace_back(ctx->topk(), ctx->threshold());
+      auto &heap = heaps.emplace_back();
+      heap.limit_on_demand(ctx->topk());
+      heap.set_threshold(ctx->threshold());
     }
 
     std::vector<size_t> next(n, 0), scanned(n, 0);

@@ -25,7 +25,7 @@ namespace turbo {
 
 using namespace zvec::core;
 
-class Fp16Quantizer : public Quantizer {
+class Fp16Quantizer : public Quantizer, public ManyDistanceProvider {
  public:
   Fp16Quantizer() : Quantizer(QuantizeType::kFp16) {}
 

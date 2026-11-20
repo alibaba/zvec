@@ -22,7 +22,8 @@
 namespace zvec {
 namespace core {
 
-class SquaredEuclideanMetric : public IndexMetric {
+class SquaredEuclideanMetric : public IndexMetric,
+                               public InterleavedDistanceProvider {
  public:
   //! Initialize Metric
   int init(const IndexMeta &meta, const ailego::Params &index_params) override {

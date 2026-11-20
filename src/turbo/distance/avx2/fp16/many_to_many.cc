@@ -16,6 +16,7 @@
 #include <zvec/ailego/utility/float_helper.h>
 #include "avx2/fp16/cosine.h"
 #include "avx2/fp16/inner_product.h"
+#include "avx2/fp16/inner_product_common.h"
 #include "common/fp16_common.h"
 #if ZVEC_TURBO_FP16_AVX2
 #include <immintrin.h>
@@ -26,13 +27,6 @@ namespace {
 #if ZVEC_TURBO_FP16_AVX2
 inline __m256 load_fp16(const ailego::Float16 *p) {
   return _mm256_cvtph_ps(_mm_loadu_si128(reinterpret_cast<const __m128i *>(p)));
-}
-
-inline float reduce_sum(__m256 v) {
-  __m128 sum =
-      _mm_add_ps(_mm256_castps256_ps128(v), _mm256_extractf128_ps(v, 1));
-  sum = _mm_hadd_ps(sum, sum);
-  return _mm_cvtss_f32(_mm_hadd_ps(sum, sum));
 }
 
 // A 2x2 tile reuses both converted candidate and query blocks. Accumulate in
@@ -54,8 +48,8 @@ void tile(const void *const *vectors, const void *const *queries, size_t dim,
     a10 = _mm256_fmadd_ps(x0, y1, a10);
     a11 = _mm256_fmadd_ps(x1, y1, a11);
   }
-  float s00 = reduce_sum(a00), s01 = reduce_sum(a01);
-  float s10 = reduce_sum(a10), s11 = reduce_sum(a11);
+  float s00 = HorizontalAdd_FP32_V256(a00), s01 = HorizontalAdd_FP32_V256(a01);
+  float s10 = HorizontalAdd_FP32_V256(a10), s11 = HorizontalAdd_FP32_V256(a11);
   for (; d < dim; ++d) {
     const float x0 = float(m0[d]), x1 = float(m1[d]);
     const float y0 = float(q0[d]), y1 = float(q1[d]);

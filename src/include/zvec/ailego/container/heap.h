@@ -15,6 +15,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cassert>
 #include <functional>
 #include <limits>
 #include <utility>
@@ -213,6 +214,12 @@ class Heap : private TBase {
   void limit(size_t max) {
     limit_ = std::max<size_t>(max, 1u);
     TBase::reserve(limit_);
+  }
+
+  //! Set the logical limit on an empty heap; allocate only as items arrive.
+  void limit_on_demand(size_t max) {
+    assert(TBase::empty());
+    limit_ = std::max<size_t>(max, 1u);
   }
 
   //! Unlimit the size of heap

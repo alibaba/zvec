@@ -21,6 +21,7 @@
 #include <vector>
 #include <zvec/ailego/utility/type_helper.h>
 #include <zvec/turbo/turbo.h>
+#include "common/interleaved_matrix.h"
 
 #if defined(AILEGO_ARM64_GNU_LIKE)
 #include "neon/fp16/inner_product.h"
@@ -461,7 +462,7 @@ struct InterleavedDistanceMatrix {
       // Scalar Float16 conversion uses a software lookup on x86. Convert the
       // interleaved buffers in bounded stack tiles with the SIMD converter,
       // then reuse the FP32 kernel without a transpose or heap allocation.
-      constexpr size_t tile = 64;
+      constexpr size_t tile = kFp16MatrixTile;
       float matrix[Rows * tile], query[Columns * tile];
       float partial[Rows * Columns];
       for (size_t d = 0; d < dim; d += tile) {

@@ -23,6 +23,13 @@
 namespace zvec {
 namespace core {
 
+// Optional interface kept separate from the IndexMetric plugin ABI.
+struct InterleavedDistanceProvider {
+  virtual ~InterleavedDistanceProvider() = default;
+  virtual turbo::InterleavedManyToManyDistanceFunc interleaved_many_distance(
+      size_t rows) const = 0;
+};
+
 /*! Index Metric
  */
 struct IndexMetric : public IndexModule {
@@ -98,13 +105,6 @@ struct IndexMetric : public IndexModule {
   //! Retrieve distance function for index features
   virtual MatrixDistance distance_matrix(size_t /*m*/, size_t /*n*/) const {
     return nullptr;
-  }
-
-  //! Optional joint kernel matching this metric's distance_matrix semantics.
-  //! Candidates are interleaved; query vectors remain contiguous.
-  virtual turbo::InterleavedManyToManyDistanceFunc interleaved_many_distance(
-      size_t /*rows*/) const {
-    return {};
   }
 
   //! Retrieve params of Metric

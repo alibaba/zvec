@@ -119,6 +119,38 @@ void CheckFp16(CpuArchType arch) {
   }
 }
 
+TEST(ManyToManyDistance, Fp16BatchingPreservesThresholdHits) {
+  bool exercised = false;
+  for (auto arch : {CpuArchType::kAVX2, CpuArchType::kNEON}) {
+    auto many = get_many_to_many_distance_func(
+        MetricType::kInnerProduct, DataType::kFp16, QuantizeType::kRaw, arch);
+    if (!many) continue;
+    auto batch = get_batch_distance_func(
+        MetricType::kInnerProduct, DataType::kFp16, QuantizeType::kRaw, arch);
+    ASSERT_TRUE(batch);
+    exercised = true;
+    const bool neon = arch == CpuArchType::kNEON;
+    const size_t dim = neon ? 12 : 8;
+    std::vector<ailego::Float16> a(dim), b(dim);
+    const size_t pos = neon ? 8 : 0;
+    a[pos] = b[pos] = 4096.0f;
+    a[pos + 1] = 4096.0f;
+    b[pos + 1] = -4096.0f;
+    a[neon ? 1 : 4] = b[neon ? 1 : 4] = 1.0f;
+    const void *rows[] = {a.data(), a.data()};
+    const void *queries[] = {b.data(), b.data()};
+    float single[2], joint[4];
+    batch(rows, b.data(), 2, dim, single, nullptr);
+    many(rows, queries, 2, 2, dim, joint, nullptr);
+    for (size_t i = 0; i < 4; ++i) {
+      EXPECT_EQ(-1.0f, single[i % 2]);
+      EXPECT_EQ(single[i % 2], joint[i]);
+      EXPECT_LE(joint[i], -0.5f);
+    }
+  }
+  if (!exercised) GTEST_SKIP() << "Requires an AVX2 or NEON FP16 kernel";
+}
+
 TEST(ManyToManyDistance, Fp16Scalar) {
   CheckFp16(CpuArchType::kScalar);
 }

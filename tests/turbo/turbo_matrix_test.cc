@@ -334,6 +334,37 @@ TEST(TurboMatrix, InterleavedDispatchHonorsArchitectureAndLayout) {
   }
 }
 
+TEST(TurboMatrix, X86InterleavedFp16IpPreservesSingleQueryReduction) {
+  using namespace turbo;
+  constexpr size_t Rows = 32, Dim = 66;
+  std::vector<ailego::Float16> matrix(Rows * Dim), query(Dim);
+  for (size_t i = 0; i < Rows; ++i) {
+    matrix[i] = 1.0f;
+    matrix[64 * Rows + i] = matrix[65 * Rows + i] = 4096.0f;
+  }
+  query[0] = 1.0f;
+  query[64] = 4096.0f;
+  query[65] = -4096.0f;
+  const void *queries[] = {query.data(), query.data()};
+  bool exercised = false;
+  for (auto arch : {CpuArchType::kAVX2, CpuArchType::kAVX512}) {
+    auto joint = get_interleaved_many_to_many_distance_func(
+        MetricType::kInnerProduct, DataType::kFp16, Rows, arch);
+    if (!joint) continue;
+    exercised = true;
+    float single[Rows], output[Rows * 2];
+    auto one = MakeRawDistanceMatrix<MetricType::kInnerProduct>(
+        Rows, 1, DataType::kFp16);
+    one(matrix.data(), query.data(), Dim, single);
+    joint(matrix.data(), queries, 2, Dim, output);
+    for (size_t i = 0; i < Rows * 2; ++i) {
+      EXPECT_EQ(-1.0f, single[i % Rows]);
+      EXPECT_EQ(single[i % Rows], output[i]);
+    }
+  }
+  if (!exercised) GTEST_SKIP() << "Requires an x86 FP16 matrix kernel";
+}
+
 TEST(TurboMatrix, Avx512Fp16IpAutoUsesAvx2) {
   using namespace turbo;
   const auto metric = MetricType::kInnerProduct;
