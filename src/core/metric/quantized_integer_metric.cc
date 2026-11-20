@@ -11,7 +11,9 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <array>
 #include <cstring>
+#include <vector>
 #include <turbo/norm/norm2_matrix.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
@@ -21,6 +23,27 @@
 
 namespace zvec {
 namespace core {
+
+namespace {
+// Interleaved INT8 records store four codes per word. Keep the dot in
+// integer arithmetic until the affine correction, just like the pair kernel.
+void record_int8_dots(const void *rows, const void *queries, size_t m, size_t n,
+                      size_t dim, float *out) {
+  const auto *matrix = static_cast<const int8_t *>(rows);
+  const auto *query = static_cast<const int8_t *>(queries);
+  for (size_t j = 0; j < n; ++j) {
+    int64_t sums[32]{};
+    for (size_t d = 0; d < dim; d += 4) {
+      const auto *q = query + d * n + 4 * j;
+      for (size_t i = 0; i < m; ++i) {
+        const auto *v = matrix + d * m + 4 * i;
+        sums[i] += v[0] * q[0] + v[1] * q[1] + v[2] * q[2] + v[3] * q[3];
+      }
+    }
+    for (size_t i = 0; i < m; ++i) out[j * m + i] = -float(sums[i]);
+  }
+}
+}  // namespace
 
 /*! Index Metric for quantized integer by IntegerStreamingConverter
  */
@@ -110,8 +133,105 @@ class QuantizedIntegerMetric : public IndexMetric {
 
   //! Retrieve matrix distance function for index features
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
-    return turbo::MakeDistanceMatrix(distance(), m, n,
-                                     TurboDataType(meta_.data_type()));
+    const auto type = TurboDataType(meta_.data_type());
+    auto fallback = turbo::MakeDistanceMatrix(distance(), m, n, type);
+    if (!fallback || m == 1) return fallback;
+    // For multiple INT4 queries, transpose once and reuse the contiguous
+    // SIMD pair kernel. Its throughput outweighs the transpose overhead.
+    if (meta_.data_type() == IndexMeta::DT_INT4 && n > 1) return fallback;
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || \
+    defined(_M_IX86)
+    if (meta_.data_type() == IndexMeta::DT_INT4 && n == 1 &&
+        (origin_metric_type_ == MetricType::kSquaredEuclidean ||
+         origin_metric_type_ == MetricType::kInnerProduct)) {
+      auto batch = record_kernels().batch;
+      if (batch) {
+        // Reuse the query and its metadata across the block. The batch kernel
+        // preserves stored record moments, and needs one indirect call rather
+        // than m pair calls. A single query already has contiguous layout.
+        return [batch, fallback, m](const void *rows, const void *query,
+                                    size_t dim, float *out) {
+          if (dim <= 32 || dim % 8 != 0) {
+            fallback(rows, query, dim, out);
+            return;
+          }
+          const size_t words = dim / 8;
+          std::vector<uint32_t> matrix(words * m);
+          const void *vectors[32];
+          for (size_t i = 0; i < m; ++i) {
+            vectors[i] = matrix.data() + i * words;
+            for (size_t d = 0; d < words; ++d)
+              std::memcpy(matrix.data() + i * words + d,
+                          static_cast<const char *>(rows) + (d * m + i) * 4, 4);
+          }
+          batch(vectors, query, m, dim, out, nullptr);
+        };
+      }
+    }
+    // On x86 the contiguous SIMD kernels also win for single-query INT4
+    // records and multi-query INT8 records, including the transpose cost.
+    if (meta_.data_type() == IndexMeta::DT_INT4 ||
+        (meta_.data_type() == IndexMeta::DT_INT8 && n > 1))
+      return fallback;
+#endif
+    auto dot = turbo::MakeRawDistanceMatrix<turbo::MetricType::kInnerProduct>(
+        m, n, type);
+    const bool int4 = meta_.data_type() == IndexMeta::DT_INT4;
+    const auto origin = origin_metric_type_;
+    const size_t extra =
+        origin == MetricType::kCosine ? (int4 ? 40 : 24) : (int4 ? 32 : 20);
+    return [=](const void *rows, const void *queries, size_t dim, float *out) {
+      if (dim <= extra || (dim - extra) % (int4 ? 8 : 4)) {
+        fallback(rows, queries, dim, out);
+        return;
+      }
+      const size_t original_dim = dim - extra;
+      const size_t tail_word = original_dim / (int4 ? 8 : 4);
+      // The affine metadata follows the codes in the same word-interleaved
+      // layout. Preserve the stored moments: older writers recorded moments
+      // before rounding, so recomputing them from the codes changes scores.
+      auto tail = [=](const void *data, size_t count, size_t row) {
+        std::array<float, 4> values;
+        for (size_t k = 0; k < values.size(); ++k)
+          std::memcpy(&values[k],
+                      static_cast<const char *>(data) +
+                          ((tail_word + k) * count + row) * 4,
+                      4);
+        return values;
+      };
+      std::array<std::array<float, 4>, 32> metadata;
+      for (size_t i = 0; i < m; ++i) metadata[i] = tail(rows, m, i);
+      // Up to 1024 INT8 terms all integer partial sums fit exactly in FP32.
+      if (!int4 && original_dim > 1024) {
+        record_int8_dots(rows, queries, m, n, original_dim, out);
+      } else {
+        dot(rows, queries, original_dim, out);
+      }
+      for (size_t j = 0; j < n; ++j) {
+        const auto q = tail(queries, n, j);
+        for (size_t i = 0; i < m; ++i) {
+          const auto &a = metadata[i];
+          const float ip = -out[j * m + i];
+          if (origin == MetricType::kSquaredEuclidean) {
+            const float bias = a[1] - q[1];
+            out[j * m + i] = a[0] * a[0] * a[3] + q[0] * q[0] * q[3] -
+                             2 * a[0] * q[0] * ip + bias * bias * original_dim +
+                             2 * bias * (a[2] * a[0] - q[0] * q[2]);
+          } else {
+            float score = -(a[0] * q[0] * ip + a[1] * q[0] * q[2] +
+                            q[1] * a[0] * a[2] + original_dim * q[1] * a[1]);
+            if (origin == MetricType::kMipsSquaredEuclidean) {
+              const float u2 = a[0] * a[0] * a[3] + 2 * a[0] * a[1] * a[2] +
+                               original_dim * a[1] * a[1];
+              const float v2 = q[0] * q[0] * q[3] + 2 * q[0] * q[1] * q[2] +
+                               original_dim * q[1] * q[1];
+              score = 2.0f + 2.0f * score / std::max(u2, v2);
+            }
+            out[j * m + i] = score;
+          }
+        }
+      }
+    };
   }
 
   //! Retrieve distance function for query

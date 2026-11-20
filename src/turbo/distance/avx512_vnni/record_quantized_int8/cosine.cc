@@ -18,6 +18,7 @@
 
 #include "avx512_vnni/record_quantized_int8/cosine.h"
 #include "avx512_vnni/record_quantized_int8/common.h"
+#include "common/record_metadata.h"
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
 #include <immintrin.h>
 #endif
@@ -51,10 +52,10 @@ void cosine_int8_distance(const void *a, const void *b, size_t dim,
   // the record-quantized inner-product distance).
   internal::ip_int8_avx512_vnni(a, b, original_dim, distance);
 
-  const float *a_tail = reinterpret_cast<const float *>(
-      reinterpret_cast<const int8_t *>(a) + original_dim);
-  const float *b_tail = reinterpret_cast<const float *>(
-      reinterpret_cast<const int8_t *>(b) + original_dim);
+  const record::Metadata a_tail(reinterpret_cast<const int8_t *>(a) +
+                                original_dim);
+  const record::Metadata b_tail(reinterpret_cast<const int8_t *>(b) +
+                                original_dim);
 
   float ma = a_tail[0];
   float mb = a_tail[1];
@@ -92,15 +93,15 @@ void cosine_int8_batch_distance(const void *const *vectors, const void *query,
   internal::ip_int8_batch_avx512_vnni(vectors, query, n, original_dim,
                                       distances);
 
-  const float *q_tail = reinterpret_cast<const float *>(
-      reinterpret_cast<const int8_t *>(query) + original_dim);
+  const record::Metadata q_tail(reinterpret_cast<const int8_t *>(query) +
+                                original_dim);
   float qa = q_tail[0];
   float qb = q_tail[1];
   float qs = q_tail[2];
 
   for (size_t i = 0; i < n; ++i) {
-    const float *m_tail = reinterpret_cast<const float *>(
-        reinterpret_cast<const int8_t *>(vectors[i]) + original_dim);
+    const record::Metadata m_tail(reinterpret_cast<const int8_t *>(vectors[i]) +
+                                  original_dim);
     float ma = m_tail[0];
     float mb = m_tail[1];
     float ms = m_tail[2];
@@ -109,7 +110,7 @@ void cosine_int8_batch_distance(const void *const *vectors, const void *query,
     //         = sum((int8_query[i] + 128) * int8_data[i])
     //         = true_ip + 128 * sum(int8_data[i])
     // int8_sum is stored as the 5th int-sized field after the 4 floats.
-    int int8_sum = reinterpret_cast<const int *>(m_tail)[4];
+    int int8_sum = m_tail.code_sum();
     float &result = distances[i];
     result -= 128.0f * static_cast<float>(int8_sum);
 

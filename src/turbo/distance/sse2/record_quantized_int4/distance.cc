@@ -14,6 +14,7 @@
 
 #include "sse2/record_quantized_int4/distance.h"
 #include <cstdint>
+#include "common/record_metadata.h"
 #include "sse2/simd.h"
 #if ZVEC_TURBO_SSE2
 #include <array>
@@ -158,10 +159,8 @@ void inner_product_int4_distance_sse2(const void *a, const void *b, size_t dim,
   const float raw_ip =
       raw_inner_product(static_cast<const uint8_t *>(a),
                         static_cast<const uint8_t *>(b), original_dim);
-  const auto *a_tail = reinterpret_cast<const float *>(
-      static_cast<const uint8_t *>(a) + tail_offset);
-  const auto *b_tail = reinterpret_cast<const float *>(
-      static_cast<const uint8_t *>(b) + tail_offset);
+  const record::Metadata a_tail(static_cast<const uint8_t *>(a) + tail_offset);
+  const record::Metadata b_tail(static_cast<const uint8_t *>(b) + tail_offset);
   *distance =
       -(a_tail[0] * b_tail[0] * raw_ip + a_tail[1] * b_tail[0] * b_tail[2] +
         b_tail[1] * a_tail[0] * a_tail[2] +
@@ -188,11 +187,11 @@ void inner_product_int4_batch_distance_sse2(const void *const *vectors,
   const size_t tail_offset = original_dim >> 1;
   raw_inner_product_batch(vectors, static_cast<const uint8_t *>(query), n,
                           original_dim, distances);
-  const auto *q_tail = reinterpret_cast<const float *>(
-      static_cast<const uint8_t *>(query) + tail_offset);
+  const record::Metadata q_tail(static_cast<const uint8_t *>(query) +
+                                tail_offset);
   for (size_t i = 0; i < n; ++i) {
-    const auto *m_tail = reinterpret_cast<const float *>(
-        static_cast<const uint8_t *>(vectors[i]) + tail_offset);
+    const record::Metadata m_tail(static_cast<const uint8_t *>(vectors[i]) +
+                                  tail_offset);
     distances[i] = -(m_tail[0] * q_tail[0] * distances[i] +
                      m_tail[1] * q_tail[0] * q_tail[2] +
                      q_tail[1] * m_tail[0] * m_tail[2] +
@@ -219,10 +218,8 @@ void squared_euclidean_int4_distance_sse2(const void *a, const void *b,
   const float raw_ip =
       raw_inner_product(static_cast<const uint8_t *>(a),
                         static_cast<const uint8_t *>(b), original_dim);
-  const auto *a_tail = reinterpret_cast<const float *>(
-      static_cast<const uint8_t *>(a) + tail_offset);
-  const auto *b_tail = reinterpret_cast<const float *>(
-      static_cast<const uint8_t *>(b) + tail_offset);
+  const record::Metadata a_tail(static_cast<const uint8_t *>(a) + tail_offset);
+  const record::Metadata b_tail(static_cast<const uint8_t *>(b) + tail_offset);
   const float sum = b_tail[0] * b_tail[2];
   const float sum2 = b_tail[0] * b_tail[0] * b_tail[3];
   *distance = a_tail[0] * a_tail[0] * a_tail[3] + sum2 -
@@ -252,13 +249,13 @@ void squared_euclidean_int4_batch_distance_sse2(const void *const *vectors,
   const size_t tail_offset = original_dim >> 1;
   raw_inner_product_batch(vectors, static_cast<const uint8_t *>(query), n,
                           original_dim, distances);
-  const auto *q_tail = reinterpret_cast<const float *>(
-      static_cast<const uint8_t *>(query) + tail_offset);
+  const record::Metadata q_tail(static_cast<const uint8_t *>(query) +
+                                tail_offset);
   const float sum = q_tail[0] * q_tail[2];
   const float sum2 = q_tail[0] * q_tail[0] * q_tail[3];
   for (size_t i = 0; i < n; ++i) {
-    const auto *m_tail = reinterpret_cast<const float *>(
-        static_cast<const uint8_t *>(vectors[i]) + tail_offset);
+    const record::Metadata m_tail(static_cast<const uint8_t *>(vectors[i]) +
+                                  tail_offset);
     distances[i] =
         m_tail[0] * m_tail[0] * m_tail[3] + sum2 -
         2.0f * m_tail[0] * q_tail[0] * distances[i] +
@@ -287,10 +284,8 @@ void cosine_int4_distance_sse2(const void *a, const void *b, size_t dim,
   const float raw_ip =
       raw_inner_product(static_cast<const uint8_t *>(a),
                         static_cast<const uint8_t *>(b), original_dim);
-  const auto *a_tail = reinterpret_cast<const float *>(
-      static_cast<const uint8_t *>(a) + tail_offset);
-  const auto *b_tail = reinterpret_cast<const float *>(
-      static_cast<const uint8_t *>(b) + tail_offset);
+  const record::Metadata a_tail(static_cast<const uint8_t *>(a) + tail_offset);
+  const record::Metadata b_tail(static_cast<const uint8_t *>(b) + tail_offset);
   *distance =
       -(a_tail[0] * b_tail[0] * raw_ip + a_tail[1] * b_tail[0] * b_tail[2] +
         b_tail[1] * a_tail[0] * a_tail[2] +
@@ -316,11 +311,11 @@ void cosine_int4_batch_distance_sse2(const void *const *vectors,
   const size_t tail_offset = original_dim >> 1;
   raw_inner_product_batch(vectors, static_cast<const uint8_t *>(query), n,
                           original_dim, distances);
-  const auto *q_tail = reinterpret_cast<const float *>(
-      static_cast<const uint8_t *>(query) + tail_offset);
+  const record::Metadata q_tail(static_cast<const uint8_t *>(query) +
+                                tail_offset);
   for (size_t i = 0; i < n; ++i) {
-    const auto *m_tail = reinterpret_cast<const float *>(
-        static_cast<const uint8_t *>(vectors[i]) + tail_offset);
+    const record::Metadata m_tail(static_cast<const uint8_t *>(vectors[i]) +
+                                  tail_offset);
     distances[i] = -(m_tail[0] * q_tail[0] * distances[i] +
                      m_tail[1] * q_tail[0] * q_tail[2] +
                      q_tail[1] * m_tail[0] * m_tail[2] +

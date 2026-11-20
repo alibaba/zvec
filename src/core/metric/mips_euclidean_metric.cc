@@ -22,6 +22,135 @@
 
 namespace zvec {
 namespace core {
+namespace {
+using MatrixNorm = void (*)(const void *, size_t, float *);
+using NormAndDot = void (*)(const void *, const void *, size_t, float *,
+                            float *, float *);
+
+// Gather four rows together so adjacent values from the interleaved input
+// can be loaded together. Handle the two-row shape with the same loop.
+template <typename T, size_t Tile>
+void GatherRows(const T *src, size_t rows, size_t dim, T *dst) {
+  for (size_t i = 0; i < rows; i += Tile) {
+    size_t d = 0;
+    for (; d + 4 <= dim; d += 4) {
+      T tile[4][Tile];
+      for (size_t j = 0; j < 4; ++j)
+        std::copy_n(src + (d + j) * rows + i, Tile, tile[j]);
+      for (size_t k = 0; k < Tile; ++k)
+        for (size_t j = 0; j < 4; ++j) dst[(i + k) * dim + d + j] = tile[j][k];
+    }
+    for (; d < dim; ++d) {
+      for (size_t k = 0; k < Tile; ++k)
+        dst[(i + k) * dim + d] = src[d * rows + i + k];
+    }
+  }
+}
+
+template <typename T>
+void FloatMipsTerms(const void *rows, const void *queries, size_t m, size_t n,
+                    size_t dim, const turbo::DistanceFunc &pair,
+                    MatrixNorm norm, float *out, float *row_norms,
+                    float *query_norms) {
+  // Reuse the pair kernels' reduction order for both dot products and norms.
+  // A different reduction can change a threshold hit after cancellation.
+  std::vector<T> buffer(std::max<size_t>(1, (m + (n == 1 ? 0 : n)) * dim));
+  auto gather = [dim](const void *src, size_t count, T *dst) {
+    if (count == 2)
+      GatherRows<T, 2>(static_cast<const T *>(src), count, dim, dst);
+    else
+      GatherRows<T, 4>(static_cast<const T *>(src), count, dim, dst);
+  };
+  gather(rows, m, buffer.data());
+  const T *q = dim ? static_cast<const T *>(queries) : buffer.data();
+  if (n > 1) {
+    T *data = buffer.data() + m * dim;
+    gather(queries, n, data);
+    q = data;
+  }
+  if (norm) {
+    for (size_t i = 0; i < m; ++i)
+      norm(buffer.data() + i * dim, dim, row_norms + i);
+  }
+  for (size_t j = 0; j < n; ++j) {
+    if (norm) norm(q + j * dim, dim, query_norms + j);
+    for (size_t i = 0; i < m; ++i)
+      pair(buffer.data() + i * dim, q + j * dim, dim, out + j * m + i);
+  }
+}
+
+template <size_t Rows>
+void ComputeNormAndDot(const void *m, const void *q, size_t dim, float *out,
+                       float *row_norms, float *query_norm) {
+  turbo::InterleavedDistanceMatrix<int8_t, Rows,
+                                   turbo::MetricType::kInnerProduct>::
+      template ComputeSingleColumn<true>(static_cast<const int8_t *>(m),
+                                         static_cast<const int8_t *>(q), dim,
+                                         out, 1, row_norms, query_norm);
+}
+
+NormAndDot SelectNormAndDot(size_t rows) {
+  switch (rows) {
+    case 2:
+      return ComputeNormAndDot<2>;
+    case 4:
+      return ComputeNormAndDot<4>;
+    case 8:
+      return ComputeNormAndDot<8>;
+    case 16:
+      return ComputeNormAndDot<16>;
+    case 32:
+      return ComputeNormAndDot<32>;
+    default:
+      return nullptr;
+  }
+}
+
+template <typename T, size_t Rows>
+void InterleavedNorm(const void *data, size_t dim, float *out) {
+  using Matrix =
+      turbo::InterleavedDistanceMatrix<T, Rows,
+                                       turbo::MetricType::kInnerProduct>;
+  if constexpr (std::is_same_v<T, int8_t>) {
+    int64_t norms[Rows];
+    Matrix::SquaredNorms(static_cast<const T *>(data), dim, norms);
+    std::copy_n(norms, Rows, out);
+  } else {
+    Matrix::SquaredNorms(static_cast<const T *>(data), dim, out);
+  }
+}
+
+template <typename T>
+MatrixNorm SelectMatrixNorm(size_t rows) {
+  switch (rows) {
+    case 1:
+      return InterleavedNorm<T, 1>;
+    case 2:
+      return InterleavedNorm<T, 2>;
+    case 4:
+      return InterleavedNorm<T, 4>;
+    case 8:
+      return InterleavedNorm<T, 8>;
+    case 16:
+      return InterleavedNorm<T, 16>;
+    case 32:
+      return InterleavedNorm<T, 32>;
+    default:
+      return nullptr;
+  }
+}
+
+MatrixNorm SelectMatrixNorm(IndexMeta::DataType type, size_t rows) {
+  switch (type) {
+    case IndexMeta::DT_INT8:
+      return SelectMatrixNorm<int8_t>(rows);
+    case IndexMeta::DT_INT4:
+      return SelectMatrixNorm<uint8_t>(rows);
+    default:
+      return nullptr;
+  }
+}
+}  // namespace
 
 /*! Mips Squared Euclidean Metric
  */
@@ -89,8 +218,7 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
         break;
 
       case IndexMeta::DataType::DT_INT8:
-        squared_norm2_handle_ = reinterpret_cast<SquaredNorm2Handle>(
-            turbo::SquaredNorm2Matrix<int8_t, 1>::Compute);
+        squared_norm2_handle_ = InterleavedNorm<int8_t, 1>;
         break;
 
       case IndexMeta::DataType::DT_INT4:
@@ -238,8 +366,85 @@ class MipsSquaredEuclideanMetric : public IndexMetric {
 
   //! Retrieve matrix distance function for index features
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
-    return turbo::MakeDistanceMatrix(distance(), m, n,
-                                     TurboDataType(data_type_));
+    if (m == 1 && n == 1) return distance();
+    const auto type = TurboDataType(data_type_);
+    auto l2 =
+        turbo::MakeRawDistanceMatrix<turbo::MetricType::kSquaredEuclidean>(
+            m, n, type);
+    if (!l2) return {};
+    auto float_terms = data_type_ == IndexMeta::DT_FP32 ? FloatMipsTerms<float>
+                       : data_type_ == IndexMeta::DT_FP16
+                           ? FloatMipsTerms<ailego::Float16>
+                           : nullptr;
+    const bool identity = injection_ == Injection::kIdentity;
+    if (identity && !float_terms) return l2;
+    const auto norm = squared_norm2_handle_;
+    const auto metric = identity || injection_ == Injection::kRepeatedQuadratic
+                            ? turbo::MetricType::kSquaredEuclidean
+                            : turbo::MetricType::kInnerProduct;
+    const auto pair = float_terms ? RawKernels(metric, data_type_).dist
+                                  : turbo::DistanceFunc{};
+    if (identity) {
+      return
+          [=](const void *rows, const void *queries, size_t dim, float *out) {
+            float_terms(rows, queries, m, n, dim, pair, nullptr, out, nullptr,
+                        nullptr);
+          };
+    }
+    auto ip = turbo::MakeRawDistanceMatrix<turbo::MetricType::kInnerProduct>(
+        m, n, type);
+    const auto row_norm = SelectMatrixNorm(data_type_, m);
+    const auto query_norm = SelectMatrixNorm(data_type_, n);
+    const auto injection = injection_;
+    const auto state = training_state_;
+    const auto repeats = m_value_;
+    auto fused = data_type_ == IndexMeta::DT_INT8 && n == 1 &&
+                         injection != Injection::kRepeatedQuadratic
+                     ? SelectNormAndDot(m)
+                     : nullptr;
+    return [=](const void *rows, const void *queries, size_t dim, float *out) {
+      // Reuse each norm for all pairs.
+      float row_norms[32], query_norms[32];
+      if (float_terms) {
+        float_terms(rows, queries, m, n, dim, pair, norm, out, row_norms,
+                    query_norms);
+      } else if (fused) {
+        fused(rows, queries, dim, out, row_norms, query_norms);
+      } else {
+        row_norm(rows, dim, row_norms);
+        query_norm(queries, dim, query_norms);
+        if (injection == Injection::kRepeatedQuadratic)
+          l2(rows, queries, dim, out);
+        else
+          ip(rows, queries, dim, out);
+      }
+      const float eta = state->eta.load(std::memory_order_relaxed);
+      for (size_t j = 0; j < n; ++j) {
+        for (size_t i = 0; i < m; ++i) {
+          float u2 = row_norms[i], v2 = query_norms[j];
+          float &score = out[j * m + i];
+          if (injection == Injection::kRepeatedQuadratic) {
+            score *= eta;
+            u2 *= eta;
+            v2 *= eta;
+            for (size_t k = 0; k < repeats; ++k) {
+              score += (u2 - v2) * (u2 - v2);
+              u2 *= u2;
+              v2 *= v2;
+            }
+          } else if (injection == Injection::kLocalizedSpherical ||
+                     eta == 0.0f) {
+            score = static_cast<float>(2.0 + 2.0 * score / std::max(u2, v2));
+          } else {
+            const double product =
+                (1.0 - double(eta) * u2) * (1.0 - double(eta) * v2);
+            score = static_cast<float>(
+                2.0 * (1.0 + double(eta) * score -
+                       (product > 0.0 ? std::sqrt(product) : 0.0)));
+          }
+        }
+      }
+    };
   }
 
   //! Normalize result
