@@ -396,6 +396,11 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
   static size_t metadata_bytes_for_entries(size_t entry_num);
 
  private:
+  friend class VecBufferPool;
+
+  bool can_discard_tail(size_t new_entry_num) const;
+  void discard_unused_tail(size_t new_entry_num);
+
   // Release/acquire publication makes initialized segment slots visible.
   std::atomic<size_t> entry_num_{0};
   std::atomic<size_t> segment_count_{0};
@@ -705,6 +710,10 @@ class ZVEC_AILEGO_API VecBufferPool {
 
   //! Extend the backing file and page table to `new_size`.
   bool extend_file(size_t new_size);
+
+  //! Shorten the file and discard unused page entries beyond `new_size`.
+  //! The caller must keep the removed range inaccessible to page users.
+  bool truncate_unused_tail(size_t new_size);
 
   bool writable() const {
     return writable_;

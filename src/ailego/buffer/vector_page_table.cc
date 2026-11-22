@@ -80,6 +80,14 @@ const size_t kVectorPageSize = MemoryHelper::PageSize();
 
 namespace {
 constexpr size_t kBlockingAioBatchSize = VecBufferPool::kWritebackBatchPages;
+
+bool ResizeBackingFile(int fd, size_t size) {
+#if defined(_MSC_VER)
+  return _chsize_s(fd, static_cast<int64_t>(size)) == 0;
+#else
+  return ::ftruncate(fd, static_cast<off_t>(size)) == 0;
+#endif
+}
 }
 
 VecBufferPool::~VecBufferPool() {
@@ -367,47 +375,50 @@ bool VectorPageTable::extend(size_t new_entry_num) {
 }
 
 bool VectorPageTable::rollback_extend(size_t old_entry_num) {
+  if (!can_discard_tail(old_entry_num)) return false;
+  discard_unused_tail(old_entry_num);
+  return true;
+}
+
+bool VectorPageTable::can_discard_tail(size_t new_entry_num) const {
   const size_t current_entry_num = entry_num_.load(std::memory_order_relaxed);
-  if (old_entry_num > current_entry_num) {
-    return false;
-  }
-  if (old_entry_num == current_entry_num) {
-    return true;
-  }
-  for (size_t i = old_entry_num; i < current_entry_num; ++i) {
+  if (new_entry_num > current_entry_num) return false;
+  for (size_t i = new_entry_num; i < current_entry_num; ++i) {
     if (entry_at(i).buffer.load(std::memory_order_relaxed) != nullptr ||
         entry_at(i).ref_count.load(std::memory_order_relaxed) !=
-            std::numeric_limits<int>::min() ||
+            kUnloadedRefCount ||
         metadata_entry_at(i).ever_loaded.load(std::memory_order_relaxed)) {
       LOG_ERROR(
-          "VectorPageTable::rollback_extend: new entry %zu is already in "
-          "use; refusing rollback",
+          "Cannot discard page table entry %zu after it has been used",
           i);
       return false;
     }
   }
+  return true;
+}
 
-  const size_t old_segment_count =
-      old_entry_num == 0 ? 0 : (old_entry_num - 1) / kSegmentSize + 1;
+void VectorPageTable::discard_unused_tail(size_t new_entry_num) {
+  if (new_entry_num == entry_num_.load(std::memory_order_relaxed)) return;
+  const size_t kept_segment_count =
+      new_entry_num == 0 ? 0 : (new_entry_num - 1) / kSegmentSize + 1;
   const size_t current_segment_count =
       segment_count_.load(std::memory_order_relaxed);
-  entry_num_.store(old_entry_num, std::memory_order_release);
-  segment_count_.store(old_segment_count, std::memory_order_release);
-  for (size_t s = old_segment_count; s < current_segment_count; ++s) {
+  entry_num_.store(new_entry_num, std::memory_order_release);
+  segment_count_.store(kept_segment_count, std::memory_order_release);
+  for (size_t s = kept_segment_count; s < current_segment_count; ++s) {
     delete[] segments_[s];
     segments_[s] = nullptr;
     delete[] metadata_segments_[s];
     metadata_segments_[s] = nullptr;
   }
   size_t released_charge =
-      (current_segment_count - old_segment_count) * kSegmentMetadataBytes;
-  if (old_segment_count == 0) {
+      (current_segment_count - kept_segment_count) * kSegmentMetadataBytes;
+  if (kept_segment_count == 0) {
     segments_.reset();
     metadata_segments_.reset();
     released_charge += kSegmentDirectoryBytes;
   }
   MemoryLimitPool::get_instance().release_metadata(released_charge);
-  return true;
 }
 
 char *VectorPageTable::acquire_block(block_id_t block_id, bool record_reuse) {
@@ -2120,9 +2131,8 @@ bool VecBufferPool::extend_file(size_t new_size) {
     return false;
   }
 
-#if defined(_MSC_VER)
-  if (_chsize_s(fd_, static_cast<int64_t>(new_size)) != 0) {
-    LOG_ERROR("extend_file _chsize_s failed: file[%s], new_size[%zu]",
+  if (!ResizeBackingFile(fd_, new_size)) {
+    LOG_ERROR("extend_file failed: file[%s], new_size[%zu]",
               file_name_.c_str(), new_size);
     if (!page_table_.rollback_extend(old_entry_num)) {
       LOG_ERROR("extend_file: failed to roll back page table for file[%s]",
@@ -2130,18 +2140,27 @@ bool VecBufferPool::extend_file(size_t new_size) {
     }
     return false;
   }
-#else
-  if (::ftruncate(fd_, static_cast<off_t>(new_size)) != 0) {
-    LOG_ERROR("extend_file ftruncate failed: file[%s], new_size[%zu]",
-              file_name_.c_str(), new_size);
-    if (!page_table_.rollback_extend(old_entry_num)) {
-      LOG_ERROR("extend_file: failed to roll back page table for file[%s]",
-                file_name_.c_str());
-    }
-    return false;
-  }
-#endif
   file_size_ = new_size;
+  return true;
+}
+
+bool VecBufferPool::truncate_unused_tail(size_t new_size) {
+  if (!writable_ || new_size > file_size_) return false;
+  if (new_size == file_size_) return true;
+
+  std::lock_guard<std::mutex> lock(writeback_flush_mutex_);
+  const size_t new_entry_num =
+      new_size == 0 ? 0 : (new_size - 1) / kVectorPageSize + 1;
+  const bool discard_pages = new_entry_num < page_table_.entry_num();
+  if (discard_pages && !page_table_.can_discard_tail(new_entry_num)) return false;
+  if (!ResizeBackingFile(fd_, new_size)) {
+    LOG_ERROR("truncate_unused_tail failed: file[%s], new_size[%zu]",
+              file_name_.c_str(), new_size);
+    return false;
+  }
+  if (discard_pages) page_table_.discard_unused_tail(new_entry_num);
+  file_size_ = new_size;
+  if (new_size < initial_file_size_) initial_file_size_ = new_size;
   return true;
 }
 
