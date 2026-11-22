@@ -1551,6 +1551,18 @@ class BufferStorage : public IndexStorage {
 
     size_t id_size = id.length() + 1;
     size_t need_size = sizeof(IndexFormat::SegmentMeta) + id_size;
+
+    // Prepare the node and any bucket growth before updating the directory.
+    const size_t next_segment_count = segments_.size() + 1;
+    if (segments_.empty() ||
+        next_segment_count >
+            segments_.bucket_count() * segments_.max_load_factor()) {
+      segments_.reserve(std::max(size_t{8}, next_segment_count * 2));
+    }
+    decltype(segments_) pending;
+    pending.emplace(id, IndexMapping::SegmentInfo{});
+    auto pending_node = pending.extract(pending.begin());
+
     MetaChain *chain = &meta_chains_.back();
     IndexFormat::MetaHeader *header = chain->header.get();
     char *meta_buf = chain->segment_meta.get();
@@ -1747,12 +1759,12 @@ class BufferStorage : public IndexStorage {
       meta_chains_[meta_chains_.size() - 2].footer = linked_footer;
     }
 
-    // Publish the segment after its on-disk directory is reachable.
+    // Register the already allocated node after the directory is reachable.
     try {
-      auto ins = segments_.emplace(
-          id, IndexMapping::SegmentInfo{IndexMapping::Segment{new_seg},
-                                        chain->header_start_offset, header});
-      if (!ins.second) {
+      pending_node.mapped() = IndexMapping::SegmentInfo{
+          IndexMapping::Segment{new_seg}, chain->header_start_offset, header};
+      auto ins = segments_.insert(std::move(pending_node));
+      if (!ins.inserted) {
         // Defensive: the exclusive latch should make this unreachable.
         LOG_ERROR(
             "append_segment: duplicate id appeared after commit, file[%s], "

@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <new>
 #include <string>
@@ -58,6 +59,37 @@ void InjectAllocationFailure(size_t bytes, size_t &target) {
 void FreeAligned(void *ptr) noexcept {
   ailego_aligned_free(ptr);
 }
+#if defined(__linux__) && !defined(__ANDROID__)
+struct FooterPublicationProbe {
+  off_t offset;
+  std::function<void()> inspect;
+  bool reject_next_allocation{false};
+  bool written{false};
+  bool allocation_attempted{false};
+};
+thread_local FooterPublicationProbe *footer_publication = nullptr;
+
+void RejectProbedAllocation() {
+  if (footer_publication && (footer_publication->written ||
+                             footer_publication->reject_next_allocation)) {
+    auto *probe = footer_publication;
+    footer_publication = nullptr;
+    probe->allocation_attempted = true;
+    probe->inspect();
+    throw std::bad_alloc();
+  }
+}
+
+class ScopedFooterPublicationProbe {
+ public:
+  explicit ScopedFooterPublicationProbe(FooterPublicationProbe &probe) {
+    footer_publication = &probe;
+  }
+  ~ScopedFooterPublicationProbe() {
+    footer_publication = nullptr;
+  }
+};
+#endif
 }  // namespace
 
 // This test has its own executable, so the allocation fault is isolated from
@@ -73,7 +105,24 @@ void operator delete[](void *ptr, size_t) noexcept {
   ::operator delete(ptr);
 }
 
+#if defined(__linux__) && !defined(__ANDROID__)
+void *operator new(size_t bytes) {
+  RejectProbedAllocation();
+  if (void *ptr = std::malloc(std::max(size_t{1}, bytes))) return ptr;
+  throw std::bad_alloc();
+}
+void operator delete(void *ptr) noexcept {
+  FreeAligned(ptr);
+}
+void operator delete(void *ptr, size_t) noexcept {
+  FreeAligned(ptr);
+}
+#endif
+
 void *operator new(size_t bytes, std::align_val_t alignment) {
+#if defined(__linux__) && !defined(__ANDROID__)
+  RejectProbedAllocation();
+#endif
   InjectAllocationFailure(bytes, fail_aligned_size);
   if (void *ptr = ailego_aligned_malloc(std::max(size_t{1}, bytes),
                                         static_cast<size_t>(alignment))) {
@@ -103,16 +152,24 @@ extern "C" ssize_t pwrite(int fd, const void *buffer, size_t count,
   static const auto write_at =
       reinterpret_cast<decltype(&::pwrite)>(::dlsym(RTLD_NEXT, "pwrite"));
   if (!write_at) std::abort();
-  if (offset == footer_offset_for_short_write && count == sizeof(MetaFooter)) {
+  const bool watching_publication =
+      footer_publication && offset == footer_publication->offset;
+  if (count == sizeof(MetaFooter) &&
+      (offset == footer_offset_for_short_write || watching_publication)) {
     uint64_t next_offset;
     std::memcpy(&next_offset,
                 static_cast<const char *>(buffer) +
                     offsetof(MetaFooter, next_meta_header_offset),
                 sizeof(next_offset));
     if (next_offset != 0) {
-      footer_offset_for_short_write = -1;
-      footer_bytes_written = write_at(fd, buffer, kShortFooterBytes, offset);
-      return footer_bytes_written;
+      if (offset == footer_offset_for_short_write) {
+        footer_offset_for_short_write = -1;
+        footer_bytes_written = write_at(fd, buffer, kShortFooterBytes, offset);
+        return footer_bytes_written;
+      }
+      const ssize_t written = write_at(fd, buffer, count, offset);
+      footer_publication->written = written == static_cast<ssize_t>(count);
+      return written;
     }
   }
   return write_at(fd, buffer, count, offset);
@@ -221,7 +278,10 @@ class BufferStorageDirectorySplitTest : public testing::Test {
     ASSERT_TRUE(ReadRootDirectory(path_, &disk));
     EXPECT_EQ(0u, disk.footer.next_meta_header_offset);
     EXPECT_FALSE(writer_->has(failed_name));
+    ASSERT_NO_FATAL_FAILURE(VerifyReader(failed_name, false));
+  }
 
+  void VerifyReader(const std::string &name, bool visible) {
     auto reader = IndexFactory::CreateStorage("BufferStorage");
     ASSERT_NE(nullptr, reader);
     ASSERT_EQ(0, reader->init(zvec::ailego::Params{}));
@@ -231,7 +291,7 @@ class BufferStorageDirectorySplitTest : public testing::Test {
     std::array<char, kOldData.size()> data{};
     ASSERT_EQ(data.size(), old->fetch(0, data.data(), data.size()));
     EXPECT_EQ(kOldData, data);
-    EXPECT_FALSE(reader->has(failed_name));
+    EXPECT_EQ(visible, reader->has(name));
     old.reset();
     EXPECT_EQ(0, reader->close());
   }
@@ -278,6 +338,47 @@ TEST_F(BufferStorageDirectorySplitTest, ShortFooterWriteKeepsOldDirectory) {
   ASSERT_EQ(IndexError_WriteData, status);
   ASSERT_NO_FATAL_FAILURE(VerifyRetry(name));
 }
+
+TEST_F(BufferStorageDirectorySplitTest, PublishingSplitNeedsNoMoreAllocations) {
+  ASSERT_NO_FATAL_FAILURE(FillFirstChain());
+  Directory disk{};
+  ASSERT_TRUE(ReadRootDirectory(path_, &disk));
+
+  const std::string name = "published_segment";
+  FooterPublicationProbe probe{disk.footer_offset,
+                               [&] { VerifyReader(name, false); }};
+  int status;
+  {
+    ScopedFooterPublicationProbe watch(probe);
+    status = writer_->append(name, kPage);
+  }
+  ASSERT_TRUE(probe.written);
+  EXPECT_FALSE(probe.allocation_attempted);
+  ASSERT_EQ(0, status);
+  ASSERT_NO_FATAL_FAILURE(VerifyReader(name, true));
+}
+
+TEST_F(BufferStorageDirectorySplitTest, FailedMapAllocationKeepsOldDirectory) {
+  ASSERT_NO_FATAL_FAILURE(FillFirstChain());
+  Directory disk{};
+  ASSERT_TRUE(ReadRootDirectory(path_, &disk));
+
+  const std::string name = "retry_map_allocation";
+  FooterPublicationProbe probe{disk.footer_offset,
+                               [&] { VerifyReader(name, false); }};
+  // The directory is clean and the first allocation is for the pending map.
+  probe.reject_next_allocation = true;
+  int status;
+  {
+    ScopedFooterPublicationProbe watch(probe);
+    status = writer_->append(name, kPage);
+  }
+  EXPECT_TRUE(probe.allocation_attempted);
+  EXPECT_FALSE(probe.written);
+  ASSERT_EQ(IndexError_NoMemory, status);
+  ASSERT_NO_FATAL_FAILURE(VerifyRetry(name));
+}
+
 #endif
 
 TEST_F(BufferStorageDirectorySplitTest, HnswBrokerCanRetryAndReopenChunk) {
