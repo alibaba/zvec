@@ -1512,7 +1512,7 @@ class BufferStorage : public IndexStorage {
   }
 
   //! Append a segment into storage.
-  int append_segment(const std::string &id, size_t size) {
+  int append_segment(const std::string &id, size_t size) try {
     // Persist pending metadata before re-hashing it.
     this->flush_index();
 
@@ -1594,14 +1594,7 @@ class BufferStorage : public IndexStorage {
           ailego::Crc32c::Hash(new_meta_buf.get(), new_segments_meta_size, 0u);
       IndexFormat::UpdateMetaFooter(&new_footer, 0);
 
-      try {
-        meta_chains_.reserve(meta_chains_.size() + 1);
-      } catch (const std::bad_alloc &) {
-        LOG_ERROR(
-            "append_segment: reserve for chain-split commit failed, file[%s]",
-            file_name_.c_str());
-        return IndexError_Runtime;
-      }
+      meta_chains_.reserve(meta_chains_.size() + 1);
 
       // Extend the file and write the new chain's header and initial footer.
       if (!buffer_pool_->extend_file(new_chain_start + new_meta_total)) {
@@ -1780,6 +1773,8 @@ class BufferStorage : public IndexStorage {
     }
     // extend_file() already grew the page table in place.
     return 0;
+  } catch (const std::bad_alloc &) {
+    return IndexError_NoMemory;
   }
 
  private:
