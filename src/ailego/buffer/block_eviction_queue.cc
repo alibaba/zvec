@@ -2608,17 +2608,21 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
       std::lock_guard<std::mutex> lock(process_reclaimer_mutex_);
       has_reclaimer = static_cast<bool>(process_reclaimer_);
     }
-    const size_t fixed = fixed_used();
-    const size_t capacity = pool_size_.load(std::memory_order_relaxed);
-    if ((fixed > capacity || request.native_bytes > capacity - fixed) &&
-        !has_reclaimer)
-      break;
-
     // Observe increases relative to this failed attempt, rather than testing
     // an already-true capacity hint. Reuse can be denied with zero new bytes;
     // it still needs a paced retry after maintenance publishes a new proof.
     const size_t native_room = native_available();
     const size_t rss_room = process_rss_.available();
+    const size_t fixed = fixed_used();
+    const size_t capacity = pool_size_.load(std::memory_order_relaxed);
+    // Live external owners can release their allocation and its associated
+    // metadata even if no cache reclaimer is registered.
+    const bool can_wait_for_external =
+        request.native_bytes != 0 && external_used() > evictable_cache_used();
+    if ((fixed > capacity || request.native_bytes > capacity - fixed) &&
+        !has_reclaimer && !can_wait_for_external)
+      break;
+
     capacity_waits_.fetch_add(1, std::memory_order_relaxed);
     {
       std::unique_lock<std::mutex> lock(capacity_mutex_);
@@ -2632,10 +2636,12 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
         capacity_wait_timeouts_.fetch_add(1, std::memory_order_relaxed);
     }
     if (admit()) return true;
-    // Empty queues are conclusive only when no pending proof or registered
-    // process-cache reclaimer can restore admission. All three mandatory
-    // entry points use the same recovery rule and the same deadline.
-    if (!process_rss_.has_resident_uncertainty() && !has_reclaimer) {
+    // A partial release can be followed by another one. Continue only while
+    // native room is increasing, a reclaimer exists, or RSS/queues may help.
+    const bool external_progress =
+        can_wait_for_external && native_available() > native_room;
+    if (!process_rss_.has_resident_uncertainty() && !has_reclaimer &&
+        !external_progress) {
       const auto queues = BlockEvictionQueue::get_instance().stats();
       if (std::all_of(queues.approximate_queue_sizes.begin(),
                       queues.approximate_queue_sizes.end(),

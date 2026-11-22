@@ -298,6 +298,70 @@ TEST_F(CacheMappingRssTest,
   EXPECT_TRUE(buffer.try_resize(2 * page));
 }
 
+TEST_F(CacheMappingRssTest, RequiredWorkspaceWaitsForStagedOwnerReleases) {
+  using namespace std::chrono_literals;
+  BudgetedMappedBuffer first, second, required;
+  ASSERT_EQ(0, first.resize(4 * kMiB));
+  ASSERT_EQ(0, second.resize(4 * kMiB));
+  std::memset(first.data(), 17, first.size());
+  std::memset(second.data(), 29, second.size());
+  const size_t page = pool_.page_buffer_size();
+  const size_t request = pool_.available() / page * page + 6 * kMiB;
+  ASSERT_LT(request, pool_.capacity());
+
+  const auto initial_waits = pool_.stats().capacity_waits;
+  auto pending =
+      std::async(std::launch::async, [&] { return required.resize(request); });
+  auto finish = ScopeGuard::Make([&] {
+    first.clear();
+    second.clear();
+    if (pending.valid()) pending.wait();
+  });
+  const auto entered_wait_after = [&](uint64_t previous) {
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (pool_.stats().capacity_waits <= previous &&
+           pending.wait_for(1ms) != std::future_status::ready &&
+           std::chrono::steady_clock::now() < deadline) {
+    }
+    return pool_.stats().capacity_waits > previous &&
+           pending.wait_for(0ms) != std::future_status::ready;
+  };
+  ASSERT_TRUE(entered_wait_after(initial_waits));
+  const auto first_wait = pool_.stats().capacity_waits;
+  first.clear();
+  ASSERT_LT(pool_.available(), request);
+  ASSERT_TRUE(entered_wait_after(first_wait));
+
+  second.clear();
+  ASSERT_EQ(std::future_status::ready, pending.wait_for(2s));
+  ASSERT_EQ(0, pending.get());
+  ASSERT_EQ(request, required.size());
+  required.data()[0] = 73;
+  EXPECT_EQ(73, required.data()[0]);
+}
+
+TEST_F(CacheMappingRssTest, RequiredWorkspaceRejectsAndCanRetryAfterRelease) {
+  const size_t page = pool_.page_buffer_size();
+  BudgetedMappedBuffer owner, required;
+  ASSERT_EQ(0, owner.resize(4 * kMiB));
+  std::memset(owner.data(), 17, owner.size());
+  const size_t request = pool_.available() / page * page + 2 * kMiB;
+  ASSERT_LT(request, pool_.capacity());
+  const size_t charged = pool_.external_used();
+  EXPECT_NE(0, required.resize(request));
+  EXPECT_EQ(nullptr, required.data());
+  EXPECT_EQ(charged, pool_.external_used());
+  EXPECT_EQ(17, owner.data()[0]);
+
+  const auto waits = pool_.stats().capacity_waits;
+  EXPECT_NE(0, required.resize(pool_.capacity() + page));
+  EXPECT_EQ(waits, pool_.stats().capacity_waits);
+  EXPECT_EQ(charged, pool_.external_used());
+  owner.clear();
+  ASSERT_EQ(0, required.resize(request));
+  EXPECT_EQ(request, required.size());
+}
+
 TEST_F(CacheMappingRssTest, BatchPagesLeaveRoomForNewSlabHeaders) {
   const size_t page = MemoryLimitPool::page_buffer_size();
   const size_t slots = MemoryLimitPool::slab_size() / page - 1;
