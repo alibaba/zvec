@@ -310,13 +310,18 @@ class BufferStorageDirectorySplitTest : public testing::Test {
     ASSERT_TRUE(file.truncate(file.size() + page_size_));
   }
 
-  void CreateLegacySegmentWithReservedTail() {
+  void CreateLegacySegmentWithReservedTail(bool write_reserved_bytes = false) {
     ASSERT_NO_FATAL_FAILURE(CreateLegacyTail());
     auto mmap = IndexFactory::CreateStorage("MMapFileStorage");
     ASSERT_NE(nullptr, mmap);
     ASSERT_EQ(0, mmap->init(zvec::ailego::Params{}));
     ASSERT_EQ(0, mmap->open(path_, false));
     ASSERT_EQ(0, mmap->append(kLegacySegment, 2 * page_size_));
+    if (write_reserved_bytes) {
+      auto segment = mmap->get(kLegacySegment);
+      ASSERT_NE(nullptr, segment);
+      ASSERT_EQ(1u, segment->write(page_size_, "X", 1));
+    }
     ASSERT_EQ(0, mmap->flush());
     ASSERT_EQ(0, mmap->close());
 
@@ -370,6 +375,32 @@ class BufferStorageDirectorySplitTest : public testing::Test {
         ASSERT_EQ(1u, appended->fetch(0, &appended_value, 1));
         EXPECT_EQ('X', legacy_value);
         EXPECT_EQ('Y', appended_value);
+      }
+      ASSERT_EQ(0, reader->close());
+    }
+  }
+
+  void VerifyLegacyBytesInMMapReaders(const std::string &empty_segment = {}) {
+    for (const char *type : {"MMapFileStorage", "MMapFileReadStorage"}) {
+      SCOPED_TRACE(type);
+      auto reader = IndexFactory::CreateStorage(type);
+      ASSERT_NE(nullptr, reader);
+      ASSERT_EQ(0, reader->init(zvec::ailego::Params{}));
+      const int status = reader->open(path_, false);
+      EXPECT_EQ(0, status);
+      if (status != 0) continue;
+      if (!empty_segment.empty()) {
+        auto appended = reader->get(empty_segment);
+        ASSERT_NE(nullptr, appended);
+        EXPECT_EQ(0u, appended->data_size());
+      }
+      {
+        auto legacy = reader->get(kLegacySegment);
+        ASSERT_NE(nullptr, legacy);
+        EXPECT_EQ(page_size_ + 1, legacy->data_size());
+        char value{};
+        ASSERT_EQ(1u, legacy->fetch(page_size_, &value, 1));
+        EXPECT_EQ('X', value);
       }
       ASSERT_EQ(0, reader->close());
     }
@@ -540,19 +571,34 @@ TEST_F(BufferStorageDirectorySplitTest, FlushCoversWritesIntoLegacyCapacity) {
   }
   ASSERT_EQ(0, writer_->flush());
   ASSERT_EQ(0, writer_->close());
+  ASSERT_NO_FATAL_FAILURE(VerifyLegacyBytesInMMapReaders());
+}
 
-  auto reader = IndexFactory::CreateStorage("MMapFileStorage");
-  ASSERT_NE(nullptr, reader);
-  ASSERT_EQ(0, reader->init(zvec::ailego::Params{}));
-  ASSERT_EQ(0, reader->open(path_, false));
-  {
-    auto segment = reader->get(kLegacySegment);
-    ASSERT_NE(nullptr, segment);
-    char value{};
-    ASSERT_EQ(1u, segment->fetch(page_size_, &value, 1));
-    EXPECT_EQ('X', value);
-  }
-  ASSERT_EQ(0, reader->close());
+TEST_F(BufferStorageDirectorySplitTest, FlushRepairsLegacyFooterWithoutWrites) {
+  ASSERT_NO_FATAL_FAILURE(
+      CreateLegacySegmentWithReservedTail(/*write_reserved_bytes=*/true));
+  ASSERT_EQ(0, writer_->open(path_, IndexStorage::OpenOptions{false, false}));
+  ASSERT_EQ(0, writer_->flush());
+  ASSERT_NO_FATAL_FAILURE(VerifyLegacyBytesInMMapReaders());
+  ASSERT_EQ(0, writer_->close());
+}
+
+TEST_F(BufferStorageDirectorySplitTest, SplitPersistsLegacyFooterRepair) {
+  ASSERT_NO_FATAL_FAILURE(
+      CreateLegacySegmentWithReservedTail(/*write_reserved_bytes=*/true));
+  Directory root{};
+  ASSERT_TRUE(ReadDirectory(path_, &root));
+  ASSERT_GT(root.free_bytes, sizeof(IndexFormat::SegmentMeta));
+  const std::string name(root.free_bytes - sizeof(IndexFormat::SegmentMeta),
+                         'x');
+
+  ASSERT_EQ(0, writer_->open(path_, IndexStorage::OpenOptions{false, false}));
+  ASSERT_EQ(0, writer_->append(name, page_size_));
+  ASSERT_EQ(0, writer_->flush());
+  ASSERT_EQ(0, writer_->close());
+  ASSERT_TRUE(ReadDirectory(path_, &root));
+  EXPECT_NE(0u, root.footer.next_meta_header_offset);
+  ASSERT_NO_FATAL_FAILURE(VerifyLegacyBytesInMMapReaders(name));
 }
 
 TEST_F(BufferStorageDirectorySplitTest, FailedSplitCanRetrySameSegment) {

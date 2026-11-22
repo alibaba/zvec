@@ -1077,6 +1077,15 @@ class BufferStorage : public IndexStorage {
       this->close_index(false);
       return IndexError_NoMemory;
     }
+    // A legacy footer can understate the allocation even when no segment
+    // has been modified since open. Schedule the repair on normal writeback.
+    if (writable &&
+        std::any_of(meta_chains_.begin(), meta_chains_.end(),
+                    [](const auto &chain) {
+                      return chain.needs_footer_extent_repair();
+                    })) {
+      set_as_dirty();
+    }
     {
       std::lock_guard<std::mutex> lock(checkpoint_mutex_);
       const uint64_t checkpoint = meta_chains_.back().footer.check_point;
@@ -1497,7 +1506,7 @@ class BufferStorage : public IndexStorage {
     for (size_t ci = 0; ci < meta_chains_.size(); ++ci) {
       MetaChain &mchain = meta_chains_[ci];
       const char *seg_buf = mchain.segment_meta.get();
-      if (mchain.segment_extent > mchain.footer.content_size) {
+      if (mchain.needs_footer_extent_repair()) {
         mchain.footer.content_size = mchain.allocated_content_size();
         mchain.footer.content_padding_size = 0;
         mchain.footer.total_size =
@@ -1936,6 +1945,10 @@ class BufferStorage : public IndexStorage {
 
     uint64_t segment_meta_file_offset() const {
       return footer_file_offset() - footer.segments_meta_size;
+    }
+
+    bool needs_footer_extent_repair() const {
+      return segment_extent > footer.content_size;
     }
 
     uint64_t allocated_content_size() const {
