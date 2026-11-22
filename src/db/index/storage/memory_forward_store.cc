@@ -225,44 +225,30 @@ bool MemForwardStore::locate_single_source(const std::vector<int> &indices,
 arrow::Result<TablePtr> MemForwardStore::apply_row_and_column_selection(
     const TablePtr &table, const std::vector<int> &indices,
     const std::vector<std::string> &columns) {
-  std::shared_ptr<arrow::Table> filtered_table = table;
-  if (!indices.empty()) {
-    // Filter rows by indices if provided
-    std::shared_ptr<arrow::Array> index_array;
-    arrow::Int32Builder builder;
-    ARROW_RETURN_NOT_OK(builder.AppendValues(indices));
-    ARROW_RETURN_NOT_OK(builder.Finish(&index_array));
-
-    arrow::Datum input_datum(table);
-    arrow::Datum index_datum(index_array);
-
-    arrow::compute::ExecContext ctx;
-    arrow::Datum result_datum;
-    ARROW_ASSIGN_OR_RAISE(
-        result_datum,
-        arrow::compute::Take(input_datum, index_datum,
-                             arrow::compute::TakeOptions::Defaults(), &ctx));
-    filtered_table = result_datum.table();
-  }
-
-  std::shared_ptr<arrow::Table> selected_table = filtered_table;
-  if (!columns.empty()) {
-    // Select only specified columns
-    std::vector<int> column_indices;
-    for (const auto &column_name : columns) {
-      if (column_name == LOCAL_ROW_ID) continue;
-      int index = filtered_table->schema()->GetFieldIndex(column_name);
-      if (index != -1) {
-        column_indices.push_back(index);
-      }
-    }
-
-    if (!column_indices.empty()) {
-      ARROW_ASSIGN_OR_RAISE(selected_table,
-                            filtered_table->SelectColumns(column_indices));
+  // Take may concatenate chunks. Project first so it only copies requested
+  // columns while the query holds the collection read lock.
+  TablePtr selected_table = table;
+  std::vector<int> column_indices;
+  for (const auto &column_name : columns) {
+    if (column_name == LOCAL_ROW_ID) continue;
+    int index = table->schema()->GetFieldIndex(column_name);
+    if (index != -1) {
+      column_indices.push_back(index);
     }
   }
-  return selected_table;
+  if (!column_indices.empty()) {
+    ARROW_ASSIGN_OR_RAISE(selected_table, table->SelectColumns(column_indices));
+  }
+  if (indices.empty()) {
+    return selected_table;
+  }
+
+  arrow::Int32Builder builder;
+  ARROW_RETURN_NOT_OK(builder.AppendValues(indices));
+  ARROW_ASSIGN_OR_RAISE(auto index_array, builder.Finish());
+  ARROW_ASSIGN_OR_RAISE(auto result,
+                        arrow::compute::Take(selected_table, index_array));
+  return result.table();
 }
 
 arrow::Result<TablePtr> MemForwardStore::convert_to_table(
