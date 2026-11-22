@@ -648,7 +648,22 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   struct QueueResidentMapping;
   static ProcessRssBudget::ResidentSample read_slab_resident_sample();
   static ProcessRssBudget::ResidentSample read_background_resident_sample();
-  enum class Backing { kLive, kPending, kPlan };
+  enum class Backing { kLive, kPending, kPlan, kUnmapped };
+  struct AdmissionDenials {
+    std::optional<uint64_t> used;
+    std::optional<uint64_t> committed;
+    std::optional<uint64_t> rss;
+
+    void remember_first(const AdmissionDenials &latest) {
+      if (!used) used = latest.used;
+      if (!committed) committed = latest.committed;
+      if (!rss) rss = latest.rss;
+    }
+  };
+  struct PageAllocation {
+    char *buffer;
+    bool attempted_backing;
+  };
 
   MemoryLimitPool() = default;
   ~MemoryLimitPool();
@@ -659,15 +674,25 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   void register_queue_mapping(QueueResidentMapping *mapping, void *data,
                               size_t bytes);
   bool unmap_queue_mapping(QueueResidentMapping *mapping);
-  bool try_reserve_used(size_t bytes);
+  bool try_reserve_native(size_t bytes, std::atomic<size_t> &counter,
+                          const std::atomic<uint64_t> &generation,
+                          std::optional<uint64_t> *denied_at);
+  size_t release_native(size_t bytes, std::atomic<size_t> &counter,
+                        std::atomic<uint64_t> &generation);
+  bool try_reserve_used(size_t bytes,
+                        std::optional<uint64_t> *denied_at = nullptr);
   bool try_reserve_page_used(size_t bytes, bool required = false);
   bool try_reserve_committed(size_t bytes, Backing backing = Backing::kLive,
-                             size_t materialization = 0);
-  void release_native_used(size_t bytes, bool track_recovery = true);
+                             size_t materialization = 0,
+                             AdmissionDenials *denials = nullptr);
+  void release_native_used(size_t bytes);
+  void cancel_buffer_reservation(size_t bytes, bool attempted_backing);
+  void notify_capacity_release(bool wake_all = false);
   size_t release_committed(size_t bytes, Backing backing = Backing::kLive,
                            ProcessRssBudget::MappingProjection projection = {});
   bool try_reserve_allocation(size_t bytes, Backing backing = Backing::kLive,
-                              size_t materialization = 0);
+                              size_t materialization = 0,
+                              AdmissionDenials *denials = nullptr);
   // Admission keeps three independent quantities:
   //   new live/pending backing: native = bytes, RSS = bytes + copy exposure;
   //   prepaid native plan:     native = bytes, RSS = 0;
@@ -703,7 +728,8 @@ class ZVEC_AILEGO_API MemoryLimitPool {
                                   Backing backing = Backing::kLive,
                                   size_t materialization = 0);
   bool try_charge_fixed_once(size_t bytes, std::atomic<size_t> *counter,
-                             Backing backing, size_t materialization);
+                             Backing backing, size_t materialization,
+                             AdmissionDenials *denials);
   bool try_charge_locked(size_t bytes, std::atomic<size_t> *counter,
                          Backing backing);
   void release_fixed(size_t bytes, std::atomic<size_t> *counter,
@@ -713,7 +739,7 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   char *pop_free_buffer(size_t start_shard);
   char *pop_reusable_buffer(size_t start_shard, size_t bytes);
   void push_free_buffer(char *buffer, size_t shard);
-  char *acquire_slab_buffer(size_t *reserved_pages = nullptr);
+  PageAllocation acquire_slab_buffer(size_t *reserved_pages = nullptr);
   bool reclaim_slab_buffer(char *buffer);
   bool release_all_slabs_locked();
   size_t trim_free_buffers(size_t bytes_needed);
@@ -785,19 +811,25 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   std::atomic<size_t> used_size_{0};
   // Includes free-list buffers so all consumers share the same hard cap.
   std::atomic<size_t> committed_size_{0};
+  // Order a first native denial with a matching refund. No allocation, RSS
+  // sampling, or eviction callback runs under this mutex.
+  std::mutex native_recovery_mutex_;
   std::atomic<uint64_t> used_release_generation_{0};
   std::atomic<uint64_t> committed_release_generation_{0};
-  ProcessRssBudget process_rss_;
+  // Native growth reserves page headroom. RSS-only waiters still signal
+  // maintenance and pressure-sensitive caches.
+  std::atomic<size_t> native_waiting_bytes_{0};
+  std::atomic<size_t> mandatory_waiters_{0};
+  std::mutex capacity_mutex_;
+  std::condition_variable capacity_cv_;
+  ProcessRssBudget process_rss_{
+      {capacity_mutex_, capacity_cv_, mandatory_waiters_}};
   std::mutex process_reclaimer_mutex_;
   std::shared_ptr<const std::function<void()>> process_reclaimer_;
   std::atomic<size_t> external_used_size_{0};
   std::atomic<size_t> evictable_cache_size_{0};
   std::atomic<size_t> cache_reclaim_requested_{0};
   std::atomic<size_t> metadata_used_size_{0};
-  // Logical priority only: reserve actual native growth for mandatory work,
-  // while RSS-only/proof waiters merely signal maintenance and optional caches.
-  std::atomic<size_t> native_waiting_bytes_{0};
-  std::atomic<size_t> mandatory_waiters_{0};
 
   // Serialize queue allocation with budget adoption/reinitialization. These
   // hooks never acquire lifecycle_mutex_ or call an eviction/reclaim path.
@@ -856,9 +888,6 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   std::atomic<uint64_t> high_watermark_hits_{0};
   std::atomic<uint64_t> capacity_waits_{0};
   std::atomic<uint64_t> capacity_wait_timeouts_{0};
-
-  std::mutex capacity_mutex_;
-  std::condition_variable capacity_cv_;
 
   std::thread bg_thread_;
   std::mutex bg_identity_mutex_;

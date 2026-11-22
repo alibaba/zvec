@@ -7,10 +7,12 @@
 #include <bitset>
 #include <cassert>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <mutex>
+#include <optional>
 
 namespace zvec::ailego {
 
@@ -25,6 +27,17 @@ class ProcessRssBudget {
 
  public:
   using Reader = size_t (*)();
+  // Predicates under this mutex must read the ledger's atomic state only.
+  struct RecoveryWaiters {
+    std::mutex &mutex;
+    std::condition_variable &condition;
+    const std::atomic<size_t> &required;
+  };
+
+  ProcessRssBudget() = default;
+  explicit ProcessRssBudget(RecoveryWaiters waiters)
+      : recovery_waiters_(waiters) {}
+
   struct ResidentSample {
     size_t rss{0};
     // A lower bound in mappings still charged to this ledger. Exclude
@@ -190,7 +203,7 @@ class ProcessRssBudget {
       sampled_at_ = {};
     }
     external_pressure_ = level;
-    update_available();
+    update_available(BudgetUpdate::kObservation);
   }
 
   static size_t headroom(size_t limit) {
@@ -237,6 +250,7 @@ class ProcessRssBudget {
     invalidate_resident_samples();
     resident_retired_bytes_ = 0;
     recovery_sample_pending_ = false;
+    discarded_since_sample_ = false;
     rss_sample_failures_ = native_sample_failures_ = 0;
     limit_.store(limit, std::memory_order_relaxed);
     pressure_.store(false, std::memory_order_relaxed);
@@ -250,7 +264,7 @@ class ProcessRssBudget {
         estimate_ = {};
         native_estimate_ = {};
       }
-      update_available();
+      update_available(BudgetUpdate::kRelease);
     }
     return true;
   }
@@ -264,26 +278,37 @@ class ProcessRssBudget {
 
   // A growing allowance can materialize more than the new lifetime charge
   // when it also consumes some previously reserved capacity.
-  bool try_acquire(size_t bytes, size_t materialization) {
-    return try_charge(bytes, backing_, materialization);
+  bool try_acquire(size_t bytes, size_t materialization,
+                   std::optional<uint64_t> *denied_at = nullptr) {
+    return try_charge(bytes, backing_, materialization, false, denied_at);
   }
 
   // Admit a planning allowance and its in-flight copy as one operation.
   // Without an owner identity, the copy cannot spend another allowance's
   // untouched backing. Refusal must leave both charges unchanged.
-  bool try_acquire_with_pending_copy(size_t bytes, size_t materialization) {
-    return try_charge(bytes, backing_, materialization, true);
+  bool try_acquire_with_pending_copy(
+      size_t bytes, size_t materialization,
+      std::optional<uint64_t> *denied_at = nullptr) {
+    return try_charge(bytes, backing_, materialization, true, denied_at);
   }
 
   // Reserve for an OS allocation that has yet to return. Samples cannot
   // assign these bytes to resident backing before the allocation succeeds.
-  bool try_reserve(size_t bytes) {
-    return try_charge(bytes, pending_allocations_);
+  bool try_reserve(size_t bytes, std::optional<uint64_t> *denied_at = nullptr) {
+    return try_charge(bytes, pending_allocations_, 0, false, denied_at);
   }
 
   MaterializationStamp finish_reservation(size_t bytes, bool allocated) {
     std::lock_guard<std::mutex> lock(mutex_);
     return finish_reservation_locked(bytes, allocated);
+  }
+
+  // A partial admission never exposed backing to the OS or a resident scan.
+  void cancel_unattempted_reservation(size_t bytes) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    assert(bytes <= pending_allocations_);
+    pending_allocations_ -= bytes;
+    update_available();
   }
 
   template <size_t PageCount>
@@ -308,7 +333,8 @@ class ProcessRssBudget {
   }
 
   void release(size_t bytes) {
-    release_unmapped(bytes, {});
+    std::lock_guard<std::mutex> lock(mutex_);
+    release_mapping_locked(bytes, {}, /*discarded=*/false);
   }
 
   void release_heap(size_t bytes, HeapProjection projection) {
@@ -330,7 +356,7 @@ class ProcessRssBudget {
     estimate_.release(bytes - rss_unsampled, backing_);
     if (bytes != rss_unsampled) ++resident_generation_;
     native_estimate_.release(bytes - native_unsampled, backing_);
-    update_available(/*track_release=*/true);
+    update_available(BudgetUpdate::kRelease);
   }
 
   // A stamp is valid only after successful unmapping. A partial release
@@ -341,14 +367,14 @@ class ProcessRssBudget {
 
   void release_projected_mapping(size_t bytes, MappingProjection projection) {
     std::lock_guard<std::mutex> lock(mutex_);
-    release_projected_mapping_locked(bytes, projection);
+    release_mapping_locked(bytes, projection, /*discarded=*/true);
   }
 
   template <size_t PageCount>
   void release_reusable_page(size_t bytes, ReusablePages<PageCount> &pages,
                              size_t slot) {
     std::lock_guard<std::mutex> lock(mutex_);
-    release_projected_mapping_locked(bytes, pages.take(slot, bytes));
+    release_mapping_locked(bytes, pages.take(slot, bytes), /*discarded=*/true);
   }
 
   void refresh(bool force = false) {
@@ -439,10 +465,11 @@ class ProcessRssBudget {
 
   // Reuses of already-charged backing share the measured headroom until
   // the corresponding reader supplies its next successful observation.
-  bool try_materialize(size_t bytes) {
+  bool try_materialize(size_t bytes,
+                       std::optional<uint64_t> *denied_at = nullptr) {
     std::lock_guard<std::mutex> lock(mutex_);
     refresh_for_materialization_locked(bytes);
-    if (!materialization_allowed_locked(bytes)) return false;
+    if (!materialization_allowed_locked(bytes)) return deny_locked(denied_at);
     if (limit() && bytes) {
       remember_materialization(bytes);
       update_available();
@@ -452,9 +479,11 @@ class ProcessRssBudget {
 
   // A live reusable mapping's full future fault cost is already charged as
   // backing. Unlike a separate heap copy, reuse creates no extra storage.
-  bool try_materialize_reusable(size_t bytes, MaterializationStamp &stamp) {
+  bool try_materialize_reusable(size_t bytes, MaterializationStamp &stamp,
+                                std::optional<uint64_t> *denied_at = nullptr) {
     std::lock_guard<std::mutex> lock(mutex_);
-    return try_materialize_reusable_locked(bytes, stamp);
+    if (try_materialize_reusable_locked(bytes, stamp)) return true;
+    return deny_locked(denied_at, /*include_reuse=*/true);
   }
 
   template <size_t PageCount>
@@ -495,7 +524,8 @@ class ProcessRssBudget {
     assert(bytes <= pending_materializations_);
     pending_materializations_ -= bytes;
     if (mapped) remember_materialization(bytes);
-    update_available();
+    update_available(mapped ? BudgetUpdate::kAccounting
+                            : BudgetUpdate::kRelease);
     if (!mapped || !limit()) return {};
     return {rss_epoch_, native_reader_ ? native_epoch_ : 0};
   }
@@ -504,7 +534,14 @@ class ProcessRssBudget {
   void release_materialization(size_t bytes, MaterializationStamp stamp) {
     std::lock_guard<std::mutex> lock(mutex_);
     refund_materialization(bytes, stamp);
-    update_available(/*track_release=*/true);
+    // A prior sample can include a prepaid mapping even though the mapping
+    // has no current projection to refund. The successful unmap is the
+    // recovery event, regardless of whether a raw observation raced ahead.
+    const bool discarded_sampled_backing =
+        bytes &&
+        note_sampled_discard_locked(stamp.rss_epoch != rss_epoch_,
+                                    stamp.native_epoch != native_epoch_);
+    update_available(BudgetUpdate::kRelease, discarded_sampled_backing);
   }
 
   size_t limit() const {
@@ -516,8 +553,12 @@ class ProcessRssBudget {
   size_t available() const {
     return available_.load(std::memory_order_relaxed);
   }
-  uint64_t recovery_generation() const {
-    return recovery_generation_.load(std::memory_order_acquire);
+  uint64_t recovery_generation(bool include_reuse = false) const {
+    const auto growth = recovery_generation_.load(std::memory_order_acquire);
+    return include_reuse
+               ? growth +
+                     reuse_recovery_generation_.load(std::memory_order_acquire)
+               : growth;
   }
   size_t rss() const {
     return rss_.load(std::memory_order_relaxed);
@@ -537,6 +578,8 @@ class ProcessRssBudget {
   }
 
  private:
+  enum class BudgetUpdate { kAccounting, kObservation, kRelease };
+
   MaterializationStamp finish_reservation_locked(size_t bytes, bool allocated) {
     assert(bytes <= pending_allocations_);
     pending_allocations_ -= bytes;
@@ -553,13 +596,14 @@ class ProcessRssBudget {
     } else {
       remember_resident_retirement(bytes);
     }
-    update_available();
+    update_available(allocated ? BudgetUpdate::kAccounting
+                               : BudgetUpdate::kRelease);
     if (!allocated || !limit()) return {};
     return {rss_epoch_, native_reader_ ? native_epoch_ : 0};
   }
 
-  void release_projected_mapping_locked(size_t bytes,
-                                        const MappingProjection &projection) {
+  void release_mapping_locked(size_t bytes, const MappingProjection &projection,
+                              bool discarded) {
     const auto rss = projection.rss.for_epoch(rss_epoch_);
     const auto native = projection.native.for_epoch(native_epoch_);
     assert(rss.unsampled <= rss.bytes && rss.bytes <= bytes);
@@ -573,12 +617,21 @@ class ProcessRssBudget {
     retire_new_backing(bytes, projection.native.epoch, native.unsampled,
                        native_new_backing_);
     remember_resident_retirement(bytes);
-    // Only backing that could have contributed to a successful RSS sample
-    // can explain a later RSS decrease.
     estimate_.release(bytes - rss.unsampled, backing_);
     if (bytes != rss.unsampled) ++resident_generation_;
     native_estimate_.release(bytes - native.unsampled, backing_);
-    update_available(/*track_release=*/true);
+    const bool discarded_sampled_backing =
+        discarded && note_sampled_discard_locked(bytes != rss.unsampled,
+                                                 bytes != native.unsampled);
+    update_available(BudgetUpdate::kRelease, discarded_sampled_backing);
+  }
+
+  bool note_sampled_discard_locked(bool possibly_sampled_rss,
+                                   bool possibly_sampled_native) {
+    const bool discarded_sampled_backing =
+        possibly_sampled_rss || (native_reader_ && possibly_sampled_native);
+    discarded_since_sample_ |= discarded_sampled_backing;
+    return discarded_sampled_backing;
   }
 
   bool try_materialize_reusable_locked(size_t /*bytes*/,
@@ -587,6 +640,10 @@ class ProcessRssBudget {
     // Do not advance the birth stamp: only a real OS allocation is absent
     // from an older observation. The complete mapping stays in backing_,
     // including its cold pages, so an in-place refault needs no copy debit.
+    if (materialization_allowed_locked(0, 0, /*allow_at_limit=*/true))
+      return true;
+    if (!discarded_since_sample_) return false;
+    refresh_after_denial_locked();
     return materialization_allowed_locked(0, 0, /*allow_at_limit=*/true);
   }
 
@@ -673,8 +730,15 @@ class ProcessRssBudget {
     return true;
   }
 
-  bool try_charge(size_t bytes, size_t &counter, size_t materialization = 0,
-                  bool pending_copy = false) {
+  bool deny_locked(std::optional<uint64_t> *denied_at,
+                   bool include_reuse = false) const {
+    if (denied_at && !*denied_at)
+      *denied_at = recovery_generation(include_reuse);
+    return false;
+  }
+
+  bool try_charge(size_t bytes, size_t &counter, size_t materialization,
+                  bool pending_copy, std::optional<uint64_t> *denied_at) {
     std::lock_guard<std::mutex> lock(mutex_);
     refresh_locked(false);
     const size_t required = add_saturated(bytes, materialization);
@@ -682,7 +746,7 @@ class ProcessRssBudget {
         (materialization && !materialization_allowed_locked(materialization)))
       refresh_after_denial_locked();
     if (materialization && !materialization_allowed_locked(materialization))
-      return false;
+      return deny_locked(denied_at);
     const size_t ledger_available =
         std::numeric_limits<size_t>::max() - backing_ - pending_allocations_;
     if (required > available_.load(std::memory_order_relaxed) ||
@@ -690,7 +754,7 @@ class ProcessRssBudget {
         (pending_copy && materialization > std::numeric_limits<size_t>::max() -
                                                pending_materializations_)) {
       if (limit()) pressure_.store(true, std::memory_order_relaxed);
-      return false;
+      return deny_locked(denied_at);
     }
     counter += bytes;
     if (&counter == &backing_) {
@@ -717,15 +781,18 @@ class ProcessRssBudget {
     // Pending allocations/copies remain charged across this observation.
     // Failed readers keep their sampling backoff, and host critical pressure
     // cannot be relaxed by an RSS observation.
-    if (active_resident_scan_ &&
+    // A real discard can leave the cached sample charging bytes that were
+    // already unmapped. Allow one fresh observation when that sample would
+    // otherwise deny admission, even within the normal observation window.
+    if (!discarded_since_sample_ && active_resident_scan_ &&
         std::chrono::steady_clock::now() - resident_scan_started_ <
             kResidentScanWindow)
       return;
     if (!rss_sample_failures_ && !native_sample_failures_ &&
         external_pressure_ != PressureLevel::kCritical &&
-        !(has_resident_uncertainty() &&
-          std::chrono::steady_clock::now() - sampled_at_ <
-              std::chrono::milliseconds(20)))
+        (discarded_since_sample_ || !has_resident_uncertainty() ||
+         std::chrono::steady_clock::now() - sampled_at_ >=
+             std::chrono::milliseconds(20)))
       refresh_locked(true);
   }
 
@@ -766,7 +833,8 @@ class ProcessRssBudget {
       // Throttle unsuccessful reads too, so an OS sampling error does not
       // put a system call on every admission attempt.
       sampled_at_ = now;
-      update_available();
+      update_available(sampled_native ? BudgetUpdate::kObservation
+                                      : BudgetUpdate::kAccounting);
     }
   }
 
@@ -797,17 +865,13 @@ class ProcessRssBudget {
     // The provider already excludes permanent native owners. Deducting their
     // unrelated quota again would erase valid registered-mapping residency.
     active_resident_scan_ = 0;
+    discarded_since_sample_ = false;
     if (limit()) estimate_.observe(rss, backing_, owned_resident);
     rss_materialized_ = 0;
     rss_new_backing_ = 0;
     ++rss_epoch_;
     rss_.store(rss, std::memory_order_relaxed);
-    const size_t old_available = available();
-    update_available();
-    // Sampling noise above the cap cannot keep an otherwise stalled request
-    // alive. A sample must actually make some headroom usable.
-    if (available() > old_available)
-      recovery_generation_.fetch_add(1, std::memory_order_release);
+    update_available(BudgetUpdate::kObservation);
     sampled_at_ = std::chrono::steady_clock::now();
   }
 
@@ -857,7 +921,8 @@ class ProcessRssBudget {
         add_saturated(pending_materializations_, pending_allocations_));
   }
 
-  void update_available(bool track_release = false) {
+  void update_available(BudgetUpdate update = BudgetUpdate::kAccounting,
+                        bool discarded_sampled_backing = false) {
     const size_t cap = limit();
     const size_t measured = add_saturated(
         add_saturated(rss(), rss_materialized_), pending_materializations_);
@@ -875,14 +940,22 @@ class ProcessRssBudget {
       available = std::min(available, limit - std::min(limit, native_usage));
       overage = std::max(overage, native_usage - std::min(native_usage, limit));
     }
-    if (admission_paused()) {
+    const bool paused = admission_paused();
+    if (paused) {
       available = 0;
       overage = std::numeric_limits<size_t>::max();
     }
-    // Compare one ledger update while holding its lock. Recovery can be
-    // partial even when projected usage remains over the cap.
+    // A successful OS discard can retire backing even when the old
+    // observation still counts its RSS and cached headroom has not increased.
     const bool recovered =
-        track_release && (available > this->available() || overage < overage_);
+        (update != BudgetUpdate::kAccounting &&
+         available > this->available()) ||
+        (update == BudgetUpdate::kRelease &&
+         (overage < overage_ || (cap && !paused && discarded_sampled_backing)));
+    // An observation with zero free bytes can still restore reuse when the
+    // process is now exactly at the limit. It cannot unblock growth.
+    const bool reusable =
+        update == BudgetUpdate::kObservation && overage_ != 0 && overage == 0;
     overage_ = overage;
     const size_t margin = headroom(cap);
     const bool pressure = external_pressure_ != PressureLevel::kNormal ||
@@ -902,9 +975,22 @@ class ProcessRssBudget {
     resident_confirmation_.store(
         pressure && external_pressure_ == PressureLevel::kNormal && uncertain,
         std::memory_order_relaxed);
-    if (recovered) recovery_generation_.fetch_add(1, std::memory_order_release);
+    if (recovered || reusable) record_recovery_locked(/*reuse_only=*/!recovered);
   }
 
+  void record_recovery_locked(bool reuse_only = false) {
+    auto &generation =
+        reuse_only ? reuse_recovery_generation_ : recovery_generation_;
+    generation.fetch_add(1, std::memory_order_release);
+    if (recovery_waiters_) {
+      // Interlock with a waiter entering sleep after testing the generation.
+      std::lock_guard<std::mutex> lock(recovery_waiters_->mutex);
+      if (recovery_waiters_->required.load(std::memory_order_relaxed) != 0)
+        recovery_waiters_->condition.notify_all();
+    }
+  }
+
+  const std::optional<RecoveryWaiters> recovery_waiters_;
   std::mutex mutex_;
   Reader reader_{nullptr};
   ResidentReader resident_reader_{nullptr};
@@ -920,6 +1006,7 @@ class ProcessRssBudget {
   size_t native_limit_{0};
   PressureLevel external_pressure_{PressureLevel::kNormal};
   bool recovery_sample_pending_{false};
+  bool discarded_since_sample_{false};
   uint8_t rss_sample_failures_{0};
   uint8_t native_sample_failures_{0};
   std::chrono::steady_clock::time_point sampled_at_{};
@@ -927,6 +1014,7 @@ class ProcessRssBudget {
   std::atomic<size_t> available_{std::numeric_limits<size_t>::max()};
   size_t overage_{0};
   std::atomic<uint64_t> recovery_generation_{0};
+  std::atomic<uint64_t> reuse_recovery_generation_{0};
   std::atomic<size_t> rss_{0};
   std::atomic<bool> pressure_{false};
   size_t rss_materialized_{0};
