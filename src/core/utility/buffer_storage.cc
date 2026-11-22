@@ -1543,16 +1543,14 @@ class BufferStorage : public IndexStorage {
     size_t id_size = id.length() + 1;
     size_t need_size = sizeof(IndexFormat::SegmentMeta) + id_size;
 
-    // Prepare the node and any bucket growth before updating the directory.
-    const size_t next_segment_count = segments_.size() + 1;
-    if (segments_.empty() ||
-        next_segment_count >
-            segments_.bucket_count() * segments_.max_load_factor()) {
-      segments_.reserve(std::max(size_t{8}, next_segment_count * 2));
-    }
-    decltype(segments_) pending;
-    pending.emplace(id, IndexMapping::SegmentInfo{});
-    auto pending_node = pending.extract(pending.begin());
+    // Insert into the real directory map before any metadata is published.
+    // The exclusive latch keeps the pending entry private until commit.
+    auto pending = segments_.try_emplace(id, IndexMapping::SegmentInfo{});
+    if (!pending.second) return IndexError_Duplicate;
+    bool committed = false;
+    AILEGO_DEFER([&]() {
+      if (!committed) segments_.erase(pending.first);
+    });
 
     MetaChain *chain = &meta_chains_.back();
     IndexFormat::MetaHeader *header = chain->header.get();
@@ -1638,7 +1636,6 @@ class BufferStorage : public IndexStorage {
         return false;
       }
     };
-    bool committed = false;
     AILEGO_DEFER([&]() {
       if (committed || !chain_split) return;
       if (link_attempted &&
@@ -1742,26 +1739,8 @@ class BufferStorage : public IndexStorage {
       meta_chains_[meta_chains_.size() - 2].footer = linked_footer;
     }
 
-    // Register the already allocated node after the directory is reachable.
-    try {
-      pending_node.mapped() = IndexMapping::SegmentInfo{
-          IndexMapping::Segment{new_seg}, chain->header_start_offset, header};
-      auto ins = segments_.insert(std::move(pending_node));
-      if (!ins.inserted) {
-        // Defensive: the exclusive latch should make this unreachable.
-        LOG_ERROR(
-            "append_segment: duplicate id appeared after commit, file[%s], "
-            "id[%s]",
-            file_name_.c_str(), id.c_str());
-        return IndexError_Duplicate;
-      }
-    } catch (const std::bad_alloc &) {
-      LOG_ERROR(
-          "append_segment: in-memory commit OOM, rolling back, file[%s], "
-          "id[%s]",
-          file_name_.c_str(), id.c_str());
-      return IndexError_Runtime;
-    }
+    pending.first->second = IndexMapping::SegmentInfo{
+        IndexMapping::Segment{new_seg}, chain->header_start_offset, header};
     committed = true;
     return 0;
   } catch (const std::bad_alloc &) {

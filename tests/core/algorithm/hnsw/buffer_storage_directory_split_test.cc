@@ -154,6 +154,7 @@ struct ShortFooterWrite {
 thread_local ShortFooterWrite *short_footer_write = nullptr;
 thread_local off_t rejected_metadata_offset = -1;
 thread_local size_t rejected_metadata_writes = 0;
+thread_local bool reject_only_one_metadata_write = false;
 }  // namespace
 
 // Write a real prefix of the old footer, including the new chain link. This
@@ -165,6 +166,7 @@ extern "C" ssize_t pwrite(int fd, const void *buffer, size_t count,
   if (!write_at) std::abort();
   if (offset == rejected_metadata_offset) {
     ++rejected_metadata_writes;
+    if (reject_only_one_metadata_write) rejected_metadata_offset = -1;
     errno = EIO;
     return -1;
   }
@@ -417,6 +419,36 @@ TEST_F(BufferStorageDirectorySplitTest, AppendValidationPrecedesWriteback) {
   EXPECT_EQ(0u, disk.footer.next_meta_header_offset);
 
   ASSERT_EQ(0, writer_->append(name, page_size_));
+  ASSERT_EQ(0, writer_->close());
+  ASSERT_NO_FATAL_FAILURE(VerifyReader(name, true));
+}
+
+TEST_F(BufferStorageDirectorySplitTest, InPlaceAppendFailureRemovesMapping) {
+  old_name_ = "old_segment";
+  ASSERT_EQ(0, writer_->append(old_name_, page_size_));
+  ASSERT_NO_FATAL_FAILURE(WriteOldSegment());
+  ASSERT_EQ(0, writer_->flush());
+  Directory disk{};
+  ASSERT_TRUE(ReadRootDirectory(path_, &disk));
+  const std::string name = "retry_in_place";
+  ASSERT_GT(disk.free_bytes,
+            sizeof(IndexFormat::SegmentMeta) + name.size() + 1);
+
+  rejected_metadata_offset =
+      disk.footer_offset - disk.footer.segments_meta_size;
+  reject_only_one_metadata_write = true;
+  const int status = writer_->append(name, page_size_);
+  reject_only_one_metadata_write = false;
+  rejected_metadata_offset = -1;
+  ASSERT_EQ(IndexError_WriteData, status);
+  ASSERT_NO_FATAL_FAILURE(VerifyOldDirectory(name));
+
+  // BP owns the key in directory metadata, independent of the caller's ID.
+  auto caller_name = name;
+  ASSERT_EQ(0, writer_->append(caller_name, page_size_));
+  std::fill(caller_name.begin(), caller_name.end(), 'x');
+  EXPECT_TRUE(writer_->has(name));
+  EXPECT_FALSE(writer_->has(caller_name));
   ASSERT_EQ(0, writer_->close());
   ASSERT_NO_FATAL_FAILURE(VerifyReader(name, true));
 }
