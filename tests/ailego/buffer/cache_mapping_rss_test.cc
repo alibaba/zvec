@@ -95,6 +95,10 @@ struct MemoryLimitPoolTestPeer {
   static size_t page_limit(MemoryLimitPool &pool) {
     return pool.page_admission_limit();
   }
+  static bool unmap_workspace(MemoryLimitPool &pool,
+                              MemoryLimitPool::WorkspaceBuffer *buffer) {
+    return pool.unmap_cache_mapping(buffer);
+  }
   static void notify(MemoryLimitPool &pool) {
     pool.capacity_cv_.notify_all();
   }
@@ -146,6 +150,17 @@ class CacheMappingRssTest : public testing::Test {
   using Buffer = std::unique_ptr<MemoryLimitPool::CacheBuffer, Deleter>;
   Buffer acquire(size_t bytes = kMiB) {
     return Buffer(pool_.try_acquire_cache_buffer(bytes));
+  }
+  template <typename T>
+  bool EnteredWaitAfter(uint64_t previous, std::future<T> &pending) {
+    using namespace std::chrono_literals;
+    const auto deadline = std::chrono::steady_clock::now() + 2s;
+    while (pool_.stats().capacity_waits <= previous &&
+           pending.wait_for(1ms) != std::future_status::ready &&
+           std::chrono::steady_clock::now() < deadline) {
+    }
+    return pool_.stats().capacity_waits > previous &&
+           pending.wait_for(0ms) != std::future_status::ready;
   }
   MemoryLimitPool &pool_ = MemoryLimitPool::get_instance();
 };
@@ -317,20 +332,11 @@ TEST_F(CacheMappingRssTest, RequiredWorkspaceWaitsForStagedOwnerReleases) {
     second.clear();
     if (pending.valid()) pending.wait();
   });
-  const auto entered_wait_after = [&](uint64_t previous) {
-    const auto deadline = std::chrono::steady_clock::now() + 2s;
-    while (pool_.stats().capacity_waits <= previous &&
-           pending.wait_for(1ms) != std::future_status::ready &&
-           std::chrono::steady_clock::now() < deadline) {
-    }
-    return pool_.stats().capacity_waits > previous &&
-           pending.wait_for(0ms) != std::future_status::ready;
-  };
-  ASSERT_TRUE(entered_wait_after(initial_waits));
+  ASSERT_TRUE(EnteredWaitAfter(initial_waits, pending));
   const auto first_wait = pool_.stats().capacity_waits;
   first.clear();
   ASSERT_LT(pool_.available(), request);
-  ASSERT_TRUE(entered_wait_after(first_wait));
+  ASSERT_TRUE(EnteredWaitAfter(first_wait, pending));
 
   second.clear();
   ASSERT_EQ(std::future_status::ready, pending.wait_for(2s));
@@ -338,6 +344,64 @@ TEST_F(CacheMappingRssTest, RequiredWorkspaceWaitsForStagedOwnerReleases) {
   ASSERT_EQ(request, required.size());
   required.data()[0] = 73;
   EXPECT_EQ(73, required.data()[0]);
+}
+
+TEST_F(CacheMappingRssTest, RequiredAllocationWaitsForLastWorkspaceDescriptor) {
+  using namespace std::chrono_literals;
+  const size_t available = pool_.available();
+  const size_t descriptor_bytes = sizeof(MemoryLimitPool::WorkspaceBuffer);
+  BudgetedAllocator<char> allocator;
+  const size_t overhead =
+      std::numeric_limits<size_t>::max() - allocator.max_size();
+  ASSERT_GT(available, overhead);
+  const size_t request = available - overhead;
+
+  auto *owner = pool_.try_acquire_workspace_buffer(4 * kMiB, true);
+  ASSERT_NE(nullptr, owner);
+  std::memset(owner->data, 17, owner->bytes);
+  bool unmapped = false;
+  std::future<bool> pending;
+  const auto release_owner = [&] {
+    if (!owner) return;
+    if (unmapped) {
+      delete owner;
+      pool_.release_metadata(descriptor_bytes);
+    } else {
+      EXPECT_TRUE(pool_.release_workspace_buffer(owner));
+    }
+    owner = nullptr;
+  };
+  auto finish = ScopeGuard::Make([&] {
+    release_owner();
+    if (pending.valid()) pending.wait();
+  });
+  const auto initial_waits = pool_.stats().capacity_waits;
+  pending = std::async(std::launch::async, [&] {
+    try {
+      auto *bytes = allocator.allocate(request);
+      bytes[0] = 73;
+      allocator.deallocate(bytes, request);
+      return true;
+    } catch (const std::bad_alloc &) {
+      return false;
+    }
+  });
+  ASSERT_TRUE(EnteredWaitAfter(initial_waits, pending));
+  const auto first_wait = pool_.stats().capacity_waits;
+
+  // Pause the normal workspace release between the mapping and descriptor
+  // refunds so the waiter must observe the partial release by itself.
+  ASSERT_TRUE(MemoryLimitPoolTestPeer::unmap_workspace(pool_, owner));
+  unmapped = true;
+  pool_.release_unmapped_external(owner->bytes, owner->stamp);
+  EXPECT_EQ(0u, pool_.external_used());
+  ASSERT_EQ(available - descriptor_bytes, pool_.available());
+  ASSERT_TRUE(EnteredWaitAfter(first_wait, pending));
+
+  release_owner();
+  ASSERT_EQ(std::future_status::ready, pending.wait_for(2s));
+  EXPECT_TRUE(pending.get());
+  EXPECT_EQ(available, pool_.available());
 }
 
 TEST_F(CacheMappingRssTest, RequiredWorkspaceRejectsAndCanRetryAfterRelease) {

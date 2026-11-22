@@ -2577,6 +2577,7 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
   // Close the race between the first denial and publishing priority.
   if (wait && admit()) return true;
   size_t previous_shortfall = std::numeric_limits<size_t>::max();
+  bool external_progress = false;
   while (Clock::now() < deadline) {
     const size_t shortfall = admission_shortfall(request);
     // Retry inline only after useful reclamation. A failed combined RSS gate
@@ -2617,8 +2618,11 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
     const size_t capacity = pool_size_.load(std::memory_order_relaxed);
     // Live external owners can release their allocation and its associated
     // metadata even if no cache reclaimer is registered.
+    // Preserve observed progress when the last owner returns payload before
+    // its descriptor. One more observation can see the remaining release.
     const bool can_wait_for_external =
-        request.native_bytes != 0 && external_used() > evictable_cache_used();
+        request.native_bytes != 0 &&
+        (external_progress || external_used() > evictable_cache_used());
     if ((fixed > capacity || request.native_bytes > capacity - fixed) &&
         !has_reclaimer && !can_wait_for_external)
       break;
@@ -2638,7 +2642,7 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
     if (admit()) return true;
     // A partial release can be followed by another one. Continue only while
     // native room is increasing, a reclaimer exists, or RSS/queues may help.
-    const bool external_progress =
+    external_progress =
         can_wait_for_external && native_available() > native_room;
     if (!process_rss_.has_resident_uncertainty() && !has_reclaimer &&
         !external_progress) {
