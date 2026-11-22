@@ -287,8 +287,7 @@ void *MemoryLimitPool::allocate_queue_memory(size_t bytes) {
                    queue_allocated_size_.load(std::memory_order_relaxed)) {
       return false;
     }
-    if (charged && try_reserve_allocation(size, Backing::kPending) !=
-                       AdmissionResult::kAdmitted)
+    if (charged && !try_reserve_allocation(size, Backing::kPending))
       return false;
     if (charged) {
       metadata_used_size_.fetch_add(size, std::memory_order_relaxed);
@@ -1073,11 +1072,9 @@ bool MemoryLimitPool::try_materialize_retained_block(void *data,
                                                   kRetainedBlockHeaderBytes);
   const size_t bytes = block->bytes();
   const auto admit = [&] {
-    return process_rss_.try_materialize_reusable(bytes, block->projection)
-               ? AdmissionResult::kAdmitted
-               : AdmissionResult::kDenied;
+    return process_rss_.try_materialize_reusable(bytes, block->projection);
   };
-  if (!required) return admit() == AdmissionResult::kAdmitted;
+  if (!required) return admit();
   // The caller pins the chunk, but must not hold its allocator mutex while
   // maintenance proves residency or invokes a reclaimer that can use it.
   std::shared_lock<std::shared_mutex> lifecycle_lock(lifecycle_mutex_);
@@ -1564,8 +1561,8 @@ bool MemoryLimitPool::try_reserve_page_used(size_t bytes, bool required) {
   return false;
 }
 
-MemoryLimitPool::AdmissionResult MemoryLimitPool::try_reserve_committed(
-    size_t bytes, Backing backing, size_t materialization) {
+bool MemoryLimitPool::try_reserve_committed(size_t bytes, Backing backing,
+                                            size_t materialization) {
   const size_t capacity = pool_size_.load(std::memory_order_relaxed);
   size_t committed = committed_size_.load(std::memory_order_relaxed);
   while (committed <= capacity && bytes <= capacity - committed) {
@@ -1583,12 +1580,12 @@ MemoryLimitPool::AdmissionResult MemoryLimitPool::try_reserve_committed(
       if (!admitted) {
         committed_size_.fetch_sub(bytes, std::memory_order_relaxed);
         bg_cv_.notify_one();
-        return AdmissionResult::kDenied;
+        return false;
       }
-      return AdmissionResult::kAdmitted;
+      return true;
     }
   }
-  return AdmissionResult::kNativeShortfall;
+  return false;
 }
 
 size_t MemoryLimitPool::release_committed(
@@ -1605,18 +1602,18 @@ size_t MemoryLimitPool::release_committed(
   return previous;
 }
 
-MemoryLimitPool::AdmissionResult MemoryLimitPool::try_reserve_allocation(
-    size_t bytes, Backing backing, size_t materialization) {
+bool MemoryLimitPool::try_reserve_allocation(size_t bytes, Backing backing,
+                                             size_t materialization) {
   // Pages reserve logical slots before acquiring backing. Checking only
   // committed capacity here would spend those pending slots a second time.
   // Keep both counters individually bounded without holding a lock across
   // allocation, eviction, or writeback callbacks.
-  if (!try_reserve_used(bytes)) return AdmissionResult::kNativeShortfall;
-  const auto result = try_reserve_committed(bytes, backing, materialization);
-  if (result != AdmissionResult::kAdmitted) {
+  if (!try_reserve_used(bytes)) return false;
+  if (!try_reserve_committed(bytes, backing, materialization)) {
     release_buffer(nullptr, bytes);
+    return false;
   }
-  return result;
+  return true;
 }
 
 bool MemoryLimitPool::is_cacheable_buffer_size(size_t buffer_size) {
@@ -1705,8 +1702,7 @@ char *MemoryLimitPool::acquire_slab_buffer(size_t *reserved_pages) {
     if (!reserved_pages || *reserved_pages <= 1) return nullptr;
     --*reserved_pages;
   }
-  if (try_reserve_committed(page_size, Backing::kPending) !=
-      AdmissionResult::kAdmitted) {
+  if (!try_reserve_committed(page_size, Backing::kPending)) {
     release_buffer(nullptr, page_size);
     return nullptr;
   }
@@ -2271,13 +2267,11 @@ bool MemoryLimitPool::try_acquire_buffer(size_t buffer_size, char *&buffer,
     }
   }
 
-  if (try_reserve_committed(buffer_size, Backing::kPending) !=
-      AdmissionResult::kAdmitted) {
+  if (!try_reserve_committed(buffer_size, Backing::kPending)) {
     // This is primarily useful for a non-cacheable size. For the normal page
     // size, all currently visible free buffers were already checked above.
     trim_free_buffers(buffer_size);
-    if (try_reserve_committed(buffer_size, Backing::kPending) !=
-        AdmissionResult::kAdmitted) {
+    if (!try_reserve_committed(buffer_size, Backing::kPending)) {
       release_buffer(nullptr, buffer_size);
       high_watermark_hits_.fetch_add(1, std::memory_order_relaxed);
       return false;
@@ -2373,11 +2367,9 @@ bool MemoryLimitPool::try_charge_process_backing(size_t bytes,
     return false;
   const size_t required = bytes + materialization;
   const auto admit = [&] {
-    const bool acquired = pending_copy
-                              ? process_rss_.try_acquire_with_pending_copy(
-                                    bytes, materialization)
-                              : process_rss_.try_acquire(bytes, materialization);
-    return acquired ? AdmissionResult::kAdmitted : AdmissionResult::kDenied;
+    return pending_copy ? process_rss_.try_acquire_with_pending_copy(
+                              bytes, materialization)
+                        : process_rss_.try_acquire(bytes, materialization);
   };
   return try_admit({0, required}, admit, true);
 }
@@ -2412,11 +2404,10 @@ bool MemoryLimitPool::try_charge_locked(size_t bytes,
                                         std::atomic<size_t> *counter,
                                         Backing backing) {
   if (!bytes) return true;
-  if (try_reserve_allocation(bytes, backing) != AdmissionResult::kAdmitted) {
+  if (!try_reserve_allocation(bytes, backing)) {
     // Discard only idle backing; never call an eviction owner under its lock.
     trim_free_buffers(bytes);
-    if (try_reserve_allocation(bytes, backing) != AdmissionResult::kAdmitted)
-      return false;
+    if (!try_reserve_allocation(bytes, backing)) return false;
   }
   counter->fetch_add(bytes, std::memory_order_relaxed);
   bg_cv_.notify_one();
@@ -2460,8 +2451,7 @@ bool MemoryLimitPool::PendingAllocation::reserve(size_t bytes) {
       const size_t limit = pool_.high_watermark();
       if (pool_.mandatory_waiters_.load(std::memory_order_relaxed) == 0 &&
           used <= limit && bytes <= limit - used &&
-          pool_.try_reserve_allocation(bytes, Backing::kPending) ==
-              AdmissionResult::kAdmitted) {
+          pool_.try_reserve_allocation(bytes, Backing::kPending)) {
         counter_->fetch_add(bytes, std::memory_order_relaxed);
         pool_.evictable_cache_size_.fetch_add(bytes, std::memory_order_relaxed);
         reserved = true;
@@ -2487,23 +2477,22 @@ bool MemoryLimitPool::PendingAllocation::reserve_with_metadata(
       pool_.process_rss_.refresh();
       if (pool_.process_rss_.pressure() ||
           pool_.mandatory_waiters_.load(std::memory_order_relaxed) != 0)
-        return AdmissionResult::kDenied;
+        return false;
     }
-    const auto result = pool_.try_reserve_allocation(total, Backing::kPending);
-    if (result != AdmissionResult::kAdmitted) return result;
+    if (!pool_.try_reserve_allocation(total, Backing::kPending)) return false;
     // Reserve native/RSS backing once, but publish each owner's own charge.
     // Descriptor metadata must not count as external page-admission credit.
     metadata.counter_->fetch_add(metadata_bytes, std::memory_order_relaxed);
     counter_->fetch_add(bytes, std::memory_order_relaxed);
     pool_.bg_cv_.notify_one();
-    return AdmissionResult::kAdmitted;
+    return true;
   };
   if (kind_ == Kind::kWorkspace) {
     if (!pool_.try_admit({total, total}, admit, true)) return false;
-  } else if (admit() != AdmissionResult::kAdmitted) {
+  } else if (!admit()) {
     // Match locked/optional admission: trim idle backing without owner calls.
     pool_.trim_free_buffers(total);
-    if (admit() != AdmissionResult::kAdmitted) return false;
+    if (!admit()) return false;
   }
   bytes_ = bytes;
   metadata.bytes_ = metadata_bytes;
@@ -2552,27 +2541,19 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
   using std::chrono::milliseconds;
   // One deadline covers inline retries and sleeps. Ready hints and spurious
   // notifications cannot turn a bounded wait into unbounded retry work.
-  auto result = admit();
-  if (result == AdmissionResult::kAdmitted) return true;
+  if (admit()) return true;
   const auto deadline = Clock::now() + std::chrono::seconds(5);
-  bool saw_native_shortfall = result == AdmissionResult::kNativeShortfall;
-  const auto retry = [&] {
-    result = admit();
-    saw_native_shortfall |= result == AdmissionResult::kNativeShortfall;
-    return result == AdmissionResult::kAdmitted;
-  };
   // Maintenance can release idle backing and prove residency itself, but
   // cannot wait for its own worker or recursively invoke eviction owners.
   const bool maintenance = refresh_residency_on_background_thread();
   if (maintenance) {
     wait = false;
-    if (retry()) return true;
+    if (admit()) return true;
   }
   const auto impossible = [&] {
     const size_t capacity = pool_size_.load(std::memory_order_relaxed);
-    const size_t rss_limit = process_rss_.limit();
     return request.native_bytes > capacity ||
-           (rss_limit && request.rss_bytes > rss_limit);
+           (process_rss_.limit() && request.rss_bytes > process_rss_.limit());
   };
   if (impossible()) return false;
 
@@ -2594,7 +2575,7 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
     capacity_cv_.notify_all();
   });
   // Close the race between the first denial and publishing priority.
-  if (wait && retry()) return true;
+  if (wait && admit()) return true;
   size_t previous_shortfall = std::numeric_limits<size_t>::max();
   while (Clock::now() < deadline) {
     const size_t shortfall = admission_shortfall(request);
@@ -2607,7 +2588,7 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
         // Discarding backing takes a raw observation. Restore its ownership
         // proof here instead of making maintenance wait for its next round.
         if (maintenance) refresh_residency_on_background_thread();
-        if (retry()) return true;
+        if (admit()) return true;
         continue;
       }
       if (!maintenance &&
@@ -2617,21 +2598,27 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
         // headroom before judging progress, including with RSS disabled.
         trim_free_buffers(shortfall);
         if (process_rss_.limit()) process_rss_.refresh(true);
-        if (retry()) return true;
+        if (admit()) return true;
         continue;
       }
     }
     if (!wait || impossible()) break;
+    bool has_reclaimer;
+    {
+      std::lock_guard<std::mutex> lock(process_reclaimer_mutex_);
+      has_reclaimer = static_cast<bool>(process_reclaimer_);
+    }
+    const size_t fixed = fixed_used();
+    const size_t capacity = pool_size_.load(std::memory_order_relaxed);
+    if ((fixed > capacity || request.native_bytes > capacity - fixed) &&
+        !has_reclaimer)
+      break;
+
     // Observe increases relative to this failed attempt, rather than testing
     // an already-true capacity hint. Reuse can be denied with zero new bytes;
     // it still needs a paced retry after maintenance publishes a new proof.
     const size_t native_room = native_available();
     const size_t rss_room = process_rss_.available();
-    // Capacity may have been returned before the wait snapshots were taken.
-    if (result == AdmissionResult::kNativeShortfall &&
-        request.native_bytes <= native_room && request.rss_bytes <= rss_room &&
-        retry())
-      return true;
     capacity_waits_.fetch_add(1, std::memory_order_relaxed);
     {
       std::unique_lock<std::mutex> lock(capacity_mutex_);
@@ -2644,23 +2631,16 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
       if (!progress)
         capacity_wait_timeouts_.fetch_add(1, std::memory_order_relaxed);
     }
-    if (retry()) return true;
-    // Native owners can release capacity independently of the eviction queues.
-    // Use the full wait window after observing a native shortfall, including
-    // when the native and RSS charges are refunded at different times.
-    if (!saw_native_shortfall && !process_rss_.has_resident_uncertainty()) {
-      bool has_reclaimer;
-      {
-        std::lock_guard<std::mutex> lock(process_reclaimer_mutex_);
-        has_reclaimer = static_cast<bool>(process_reclaimer_);
-      }
-      if (!has_reclaimer) {
-        const auto queues = BlockEvictionQueue::get_instance().stats();
-        if (std::all_of(queues.approximate_queue_sizes.begin(),
-                        queues.approximate_queue_sizes.end(),
-                        [](size_t depth) { return depth == 0; }))
-          break;
-      }
+    if (admit()) return true;
+    // Empty queues are conclusive only when no pending proof or registered
+    // process-cache reclaimer can restore admission. All three mandatory
+    // entry points use the same recovery rule and the same deadline.
+    if (!process_rss_.has_resident_uncertainty() && !has_reclaimer) {
+      const auto queues = BlockEvictionQueue::get_instance().stats();
+      if (std::all_of(queues.approximate_queue_sizes.begin(),
+                      queues.approximate_queue_sizes.end(),
+                      [](size_t depth) { return depth == 0; }))
+        break;
     }
     previous_shortfall = std::numeric_limits<size_t>::max();
     bg_cv_.notify_one();
@@ -2701,16 +2681,13 @@ bool MemoryLimitPool::try_charge_fixed(size_t bytes,
       false);
 }
 
-MemoryLimitPool::AdmissionResult MemoryLimitPool::try_charge_fixed_once(
-    size_t bytes, std::atomic<size_t> *counter, Backing backing,
-    size_t materialization) {
-  if (bytes == 0) {
-    const bool admitted =
-        !materialization || process_rss_.try_materialize(materialization);
-    return admitted ? AdmissionResult::kAdmitted : AdmissionResult::kDenied;
-  }
-  const auto result = try_reserve_allocation(bytes, backing, materialization);
-  if (result != AdmissionResult::kAdmitted) return result;
+bool MemoryLimitPool::try_charge_fixed_once(size_t bytes,
+                                            std::atomic<size_t> *counter,
+                                            Backing backing,
+                                            size_t materialization) {
+  if (bytes == 0)
+    return !materialization || process_rss_.try_materialize(materialization);
+  if (!try_reserve_allocation(bytes, backing, materialization)) return false;
   counter->fetch_add(bytes, std::memory_order_relaxed);
   // Tiny successful reservations do not need a maintenance wakeup while
   // there is ample headroom; denial and wait paths always request it.
@@ -2719,7 +2696,7 @@ MemoryLimitPool::AdmissionResult MemoryLimitPool::try_charge_fixed_once(
     bg_charge_notifications_.fetch_add(1, std::memory_order_relaxed);
     bg_cv_.notify_one();
   }
-  return AdmissionResult::kAdmitted;
+  return true;
 }
 
 void MemoryLimitPool::release_buffer(char *buffer, const size_t buffer_size) {
@@ -2945,12 +2922,10 @@ MemoryLimitPool::CacheBuffer *MemoryLimitPool::try_acquire_cache_buffer(
     return nullptr;
   }
   process_rss_.finish_reservation(sizeof(CacheBuffer), true);
-  if (try_reserve_committed(bytes, Backing::kPending) !=
-      AdmissionResult::kAdmitted) {
+  if (!try_reserve_committed(bytes, Backing::kPending)) {
     // Optional admission may discard idle backing, never a pinned owner.
     trim_free_buffers(bytes);
-    if (try_reserve_committed(bytes, Backing::kPending) !=
-        AdmissionResult::kAdmitted) {
+    if (!try_reserve_committed(bytes, Backing::kPending)) {
       delete buffer;
       release_metadata(sizeof(CacheBuffer));
       release_buffer(nullptr, bytes);
@@ -3127,11 +3102,9 @@ size_t MemoryLimitPool::batch_acquire_buffers(size_t buffer_size, char **out,
   }
 
   while (acquired < actual_count) {
-    if (try_reserve_committed(buffer_size, Backing::kPending) !=
-        AdmissionResult::kAdmitted) {
+    if (!try_reserve_committed(buffer_size, Backing::kPending)) {
       trim_free_buffers(buffer_size);
-      if (try_reserve_committed(buffer_size, Backing::kPending) !=
-          AdmissionResult::kAdmitted) {
+      if (!try_reserve_committed(buffer_size, Backing::kPending)) {
         break;
       }
     }
