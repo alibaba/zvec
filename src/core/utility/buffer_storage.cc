@@ -1456,8 +1456,7 @@ class BufferStorage : public IndexStorage {
   }
 
   //! PRECONDITION: caller holds AllShardsExclusiveLatch.  Used by
-  //! flush_index() (acquires the latch) and close_index() (must flush
-  //! and tear down under one continuous latch hold).
+  //! explicit flush, directory splits and close.
   int flush_index_locked() try {
     // No-op on never-opened / already-closed storage: close_index()
     // unconditionally calls us during teardown.
@@ -1477,17 +1476,17 @@ class BufferStorage : public IndexStorage {
       index_dirty_.store(false, std::memory_order_relaxed);
       return 0;
     }
-    uint64_t tail_checkpoint;
+    uint64_t checkpoint;
     {
       std::lock_guard<std::mutex> lock(checkpoint_mutex_);
       if (!index_dirty_.exchange(false, std::memory_order_relaxed)) return 0;
-      tail_checkpoint = std::exchange(pending_checkpoint_, 0);
+      checkpoint = std::exchange(pending_checkpoint_, 0);
     }
     bool persisted = false;
     AILEGO_DEFER([&]() {
       if (persisted) return;
       std::lock_guard<std::mutex> lock(checkpoint_mutex_);
-      if (pending_checkpoint_ == 0) pending_checkpoint_ = tail_checkpoint;
+      if (pending_checkpoint_ == 0) pending_checkpoint_ = checkpoint;
       set_as_dirty();
     });
     // Flush dirty data blocks first.
@@ -1495,12 +1494,6 @@ class BufferStorage : public IndexStorage {
       LOG_ERROR("flush_all data blocks failed: file[%s]", file_name_.c_str());
       return IndexError_WriteData;
     }
-    // A refresh applies to the directory chains that existed at the time.
-    // A split saves their pending checkpoint and starts a new tail at zero.
-    const uint64_t checkpoint =
-        tail_checkpoint != 0 ? tail_checkpoint : split_checkpoint_;
-    const size_t checkpoint_chains =
-        tail_checkpoint != 0 ? meta_chains_.size() : split_checkpoint_chains_;
     for (size_t ci = 0; ci < meta_chains_.size(); ++ci) {
       MetaChain &mchain = meta_chains_[ci];
       const char *seg_buf = mchain.segment_meta.get();
@@ -1529,7 +1522,7 @@ class BufferStorage : public IndexStorage {
       mchain.append_meta_needs_write = false;
       auto footer = mchain.footer;
       const bool changes_checkpoint =
-          ci < checkpoint_chains && checkpoint != footer.check_point;
+          checkpoint != 0 && checkpoint != footer.check_point;
       if (changes_checkpoint) {
         IndexFormat::UpdateMetaFooter(&footer, checkpoint);
       }
@@ -1553,8 +1546,6 @@ class BufferStorage : public IndexStorage {
       footer_written = true;
       mchain.footer = footer;
     }
-    split_checkpoint_ = 0;
-    split_checkpoint_chains_ = 0;
     persisted = true;
     return 0;
   } catch (const std::bad_alloc &) {
@@ -1579,8 +1570,6 @@ class BufferStorage : public IndexStorage {
     cache_enabled_ = false;
     accept_checkpoint_requests_ = false;
     pending_checkpoint_ = 0;
-    split_checkpoint_ = 0;
-    split_checkpoint_chains_ = 0;
     visible_checkpoint_.store(0, std::memory_order_release);
     index_dirty_.store(false, std::memory_order_relaxed);
     corrupted_.store(false, std::memory_order_relaxed);
@@ -1692,6 +1681,11 @@ class BufferStorage : public IndexStorage {
       new_footer.segments_meta_size = new_segments_meta_size;
       new_footer.total_size = new_meta_total;
       meta_chains_.reserve(meta_chains_.size() + 1);
+
+      // A reader can follow the new link as soon as it is written. Persist
+      // the existing chains and their checkpoint before exposing that link.
+      const int status = flush_index_locked();
+      if (status != 0) return status;
 
       // Extend the file and write the new chain's header.
       if (!buffer_pool_->extend_file(new_chain_start + new_meta_total)) {
@@ -1826,16 +1820,6 @@ class BufferStorage : public IndexStorage {
     // Link the chain only after the new segment's metadata and footer exist.
     if (chain_split) {
       auto &old_chain = meta_chains_[meta_chains_.size() - 2];
-      // A failed metadata flush may have left this table partially written.
-      // Its snapshot is safe to publish because data writeback already ran.
-      if (old_chain.append_meta_needs_write &&
-          buffer_pool_handle_->write_meta(
-              old_chain.segment_meta_file_offset(),
-              old_chain.footer.segments_meta_size, old_chain.append_meta.get()) !=
-              0) {
-        return IndexError_WriteData;
-      }
-      old_chain.append_meta_needs_write = false;
       auto linked_footer = old_chain.footer;
       linked_footer.next_meta_header_offset = chain->header_start_offset;
       IndexFormat::UpdateMetaFooter(&linked_footer, 0);
@@ -1861,11 +1845,9 @@ class BufferStorage : public IndexStorage {
         IndexMapping::Segment{live_seg}, chain->header_start_offset, header};
     if (chain_split) {
       std::lock_guard<std::mutex> lock(checkpoint_mutex_);
-      if (pending_checkpoint_ != 0) {
-        split_checkpoint_ = std::exchange(pending_checkpoint_, 0);
-        split_checkpoint_chains_ = meta_chains_.size() - 1;
-      }
-      visible_checkpoint_.store(0, std::memory_order_release);
+      // A refresh received after the split's writeback snapshot stays
+      // pending for the newly active tail.
+      visible_checkpoint_.store(pending_checkpoint_, std::memory_order_release);
     }
     committed = true;
     return 0;
@@ -1886,9 +1868,6 @@ class BufferStorage : public IndexStorage {
   bool accept_checkpoint_requests_{false};
   uint64_t pending_checkpoint_{0};
   std::atomic<uint64_t> visible_checkpoint_{0};
-  // The last request saved by a split, guarded by the mapping latches.
-  uint64_t split_checkpoint_{0};
-  size_t split_checkpoint_chains_{0};
   // Raised after an unrecoverable rollback; blocks writes until close.
   std::atomic<bool> corrupted_{false};
 

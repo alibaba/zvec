@@ -403,11 +403,7 @@ class BufferStorageDirectorySplitTest : public testing::Test {
     EXPECT_EQ(expected, data);
   }
 
-  void AppendAndVerifyReopen(const std::string &name, uint64_t checkpoint) {
-    const bool was_dirty = writer_->is_dirty();
-    ASSERT_EQ(0, writer_->append(name, page_size_));
-    EXPECT_EQ(checkpoint, writer_->check_point());
-    EXPECT_EQ(was_dirty, writer_->is_dirty());
+  void WriteAndVerifyReopen(const std::string &name, uint64_t checkpoint) {
     {
       auto segment = writer_->get(name);
       ASSERT_NE(nullptr, segment);
@@ -468,14 +464,35 @@ class BufferStorageDirectorySplitTest : public testing::Test {
 TEST_F(BufferStorageDirectorySplitTest, InPlaceAppendReopensAfterFlush) {
   ASSERT_NO_FATAL_FAILURE(AppendOldSegment());
   writer_->refresh(kCheckpoint);
-  ASSERT_NO_FATAL_FAILURE(AppendAndVerifyReopen("new_in_place", kCheckpoint));
+  const std::string name = "new_in_place";
+  ASSERT_EQ(0, writer_->append(name, page_size_));
+  EXPECT_EQ(kCheckpoint, writer_->check_point());
+  EXPECT_TRUE(writer_->is_dirty());
+  ASSERT_NO_FATAL_FAILURE(WriteAndVerifyReopen(name, kCheckpoint));
 }
 
-TEST_F(BufferStorageDirectorySplitTest, SplitReopensAfterFlush) {
+TEST_F(BufferStorageDirectorySplitTest, SplitPublishesOldChainBeforeExplicitFlush) {
   ASSERT_NO_FATAL_FAILURE(FillDirectory());
   ASSERT_NO_FATAL_FAILURE(WriteOldSegment());
   writer_->refresh(kCheckpoint);
-  ASSERT_NO_FATAL_FAILURE(AppendAndVerifyReopen("new_split", 0));
+  const std::string name = "new_split";
+  ASSERT_EQ(0, writer_->append(name, page_size_));
+  EXPECT_EQ(0u, writer_->check_point());
+
+  auto reader = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, reader);
+  ASSERT_EQ(0, reader->init(zvec::ailego::Params{}));
+  ASSERT_EQ(0, reader->open(path_, false));
+  EXPECT_TRUE(reader->has(name));
+  // The storage accessor reports the new tail's checkpoint.
+  EXPECT_EQ(0u, reader->check_point());
+  Directory old_chain{};
+  ASSERT_TRUE(ReadDirectory(path_, &old_chain));
+  EXPECT_EQ(kCheckpoint, old_chain.footer.check_point);
+  ASSERT_NO_FATAL_FAILURE(VerifySegment(*reader, old_name_, kOldData));
+  ASSERT_EQ(0, reader->close());
+
+  ASSERT_NO_FATAL_FAILURE(WriteAndVerifyReopen(name, 0));
 }
 
 TEST_F(BufferStorageDirectorySplitTest, SplitStartsNewCheckpointAfterPriorFlush) {
@@ -483,7 +500,10 @@ TEST_F(BufferStorageDirectorySplitTest, SplitStartsNewCheckpointAfterPriorFlush)
   writer_->refresh(kCheckpoint);
   ASSERT_EQ(0, writer_->flush());
   ASSERT_EQ(kCheckpoint, writer_->check_point());
-  ASSERT_NO_FATAL_FAILURE(AppendAndVerifyReopen("new_split", 0));
+  const std::string name = "new_split";
+  ASSERT_EQ(0, writer_->append(name, page_size_));
+  EXPECT_EQ(0u, writer_->check_point());
+  ASSERT_NO_FATAL_FAILURE(WriteAndVerifyReopen(name, 0));
 }
 
 TEST_F(BufferStorageDirectorySplitTest, MMapAppendCanContinueLegacyTail) {
@@ -660,7 +680,7 @@ TEST_F(BufferStorageDirectorySplitTest, MMapAppendAfterFailedSplit) {
   ASSERT_NO_FATAL_FAILURE(VerifyMMapCanContinue("mmap_segment"));
 }
 
-TEST_F(BufferStorageDirectorySplitTest, FailedMetadataFlushCanRetryWithSplit) {
+TEST_F(BufferStorageDirectorySplitTest, OldMetadataWritebackFailurePreventsSplit) {
   ASSERT_NO_FATAL_FAILURE(FillDirectory());
   writer_->refresh(kCheckpoint);
   ASSERT_EQ(0, writer_->flush());
@@ -668,20 +688,43 @@ TEST_F(BufferStorageDirectorySplitTest, FailedMetadataFlushCanRetryWithSplit) {
   ASSERT_TRUE(ReadDirectory(path_, &disk));
   ASSERT_NO_FATAL_FAILURE(WriteOldSegment());
   writer_->refresh(kCheckpoint + 1);
+  const std::string name = "new_split";
   {
     ScopedWriteFailure fault(disk.segment_meta_offset());
-    ASSERT_EQ(IndexError_WriteData, writer_->flush());
+    ASSERT_EQ(IndexError_WriteData, writer_->append(name, page_size_));
     EXPECT_TRUE(fault.hit);
   }
   EXPECT_TRUE(writer_->is_dirty());
   EXPECT_EQ(kCheckpoint + 1, writer_->check_point());
-  ASSERT_NO_FATAL_FAILURE(VerifyRetry("new_split"));
+  ASSERT_NO_FATAL_FAILURE(VerifyRetry(name));
   EXPECT_EQ(0u, writer_->check_point());
-  EXPECT_TRUE(writer_->is_dirty());
-  ASSERT_EQ(0, writer_->flush());
-  EXPECT_EQ(0u, writer_->check_point());
+  EXPECT_FALSE(writer_->is_dirty());
   ASSERT_TRUE(ReadDirectory(path_, &disk));
   EXPECT_EQ(kCheckpoint + 1, disk.footer.check_point);
+}
+
+TEST_F(BufferStorageDirectorySplitTest, RefreshDuringSplitWritebackStaysPending) {
+  ASSERT_NO_FATAL_FAILURE(FillDirectory());
+  ASSERT_NO_FATAL_FAILURE(WriteOldSegment());
+  Directory root{};
+  ASSERT_TRUE(ReadDirectory(path_, &root));
+  writer_->refresh(kCheckpoint);
+  RefreshOnWrite refresh{static_cast<off_t>(root.footer_offset), *writer_,
+                         kCheckpoint + 1};
+  refresh_on_write = &refresh;
+  const int status = writer_->append("new_split", page_size_);
+  refresh_on_write = nullptr;
+  ASSERT_EQ(0, status);
+  ASSERT_TRUE(refresh.hit);
+  EXPECT_EQ(kCheckpoint + 1, writer_->check_point());
+  EXPECT_TRUE(writer_->is_dirty());
+  ASSERT_TRUE(ReadDirectory(path_, &root));
+  EXPECT_EQ(kCheckpoint, root.footer.check_point);
+
+  ASSERT_EQ(0, writer_->flush());
+  ASSERT_EQ(0, writer_->close());
+  ASSERT_EQ(0, writer_->open(path_, false));
+  EXPECT_EQ(kCheckpoint + 1, writer_->check_point());
 }
 
 TEST_F(BufferStorageDirectorySplitTest, RefreshDuringFlushStaysVisible) {
