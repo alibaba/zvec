@@ -88,7 +88,7 @@ bool ResizeBackingFile(int fd, size_t size) {
   return ::ftruncate(fd, static_cast<off_t>(size)) == 0;
 #endif
 }
-}
+}  // namespace
 
 VecBufferPool::~VecBufferPool() {
   // Retire and wait for in-flight eviction callbacks before teardown. A
@@ -395,9 +395,8 @@ bool VectorPageTable::can_discard_tail(size_t new_entry_num) const {
         entry_at(i).ref_count.load(std::memory_order_relaxed) !=
             kUnloadedRefCount ||
         metadata_entry_at(i).ever_loaded.load(std::memory_order_relaxed)) {
-      LOG_ERROR(
-          "Cannot discard page table entry %zu after it has been used",
-          i);
+      LOG_ERROR("Cannot discard page table entry %zu after it has been used",
+                i);
       return false;
     }
   }
@@ -2135,7 +2134,7 @@ bool VecBufferPool::extend_file(size_t new_size) {
   const size_t old_entry_num = page_table_.entry_num();
   if (new_entry_num > old_entry_num &&
       !page_table_.extend_with_retained_metadata(new_entry_num,
-                                                writable_metadata_bytes())) {
+                                                 writable_metadata_bytes())) {
     LOG_ERROR(
         "extend_file: page_table_.extend(%zu) failed before resizing "
         "file=%s to %zu bytes",
@@ -2144,8 +2143,8 @@ bool VecBufferPool::extend_file(size_t new_size) {
   }
 
   if (!ResizeBackingFile(fd_, new_size)) {
-    LOG_ERROR("extend_file failed: file[%s], new_size[%zu]",
-              file_name_.c_str(), new_size);
+    LOG_ERROR("extend_file failed: file[%s], new_size[%zu]", file_name_.c_str(),
+              new_size);
     if (!page_table_.rollback_extend(old_entry_num)) {
       LOG_ERROR("extend_file: failed to roll back page table for file[%s]",
                 file_name_.c_str());
@@ -2164,7 +2163,8 @@ bool VecBufferPool::truncate_unused_tail(size_t new_size) {
   const size_t new_entry_num =
       new_size == 0 ? 0 : (new_size - 1) / kVectorPageSize + 1;
   const bool discard_pages = new_entry_num < page_table_.entry_num();
-  if (discard_pages && !page_table_.can_discard_tail(new_entry_num)) return false;
+  if (discard_pages && !page_table_.can_discard_tail(new_entry_num))
+    return false;
   if (!ResizeBackingFile(fd_, new_size)) {
     LOG_ERROR("truncate_unused_tail failed: file[%s], new_size[%zu]",
               file_name_.c_str(), new_size);

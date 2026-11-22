@@ -205,7 +205,8 @@ class ZVEC_AILEGO_API BlockEvictionQueue {
   struct ProcessQueueTraits : EvictionQueueTraits {
     static void *malloc_lifetime(size_t bytes);
   };
-  using ProcessQueue = moodycamel::ConcurrentQueue<BlockType, ProcessQueueTraits>;
+  using ProcessQueue =
+      moodycamel::ConcurrentQueue<BlockType, ProcessQueueTraits>;
   bool dequeue_priority(size_t priority, BlockType &item);
 
   bool evict_single_block(
@@ -244,8 +245,7 @@ class ZVEC_AILEGO_API BlockEvictionQueue {
   std::mutex cleanup_mutex_;
   uint64_t cleanup_generation_seen_{0};
   bool cleanup_in_progress_{false};
-  std::array<ProcessQueue::producer_scan_token_t, kQueueCount>
-      cleanup_scans_{};
+  std::array<ProcessQueue::producer_scan_token_t, kQueueCount> cleanup_scans_{};
   size_t cleanup_next_queue_{0};
 };
 

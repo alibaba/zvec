@@ -1083,11 +1083,10 @@ class BufferStorage : public IndexStorage {
     }
     // A legacy footer can understate the allocation even when no segment
     // has been modified since open. Schedule the repair on normal writeback.
-    if (writable &&
-        std::any_of(meta_chains_.begin(), meta_chains_.end(),
-                    [](const auto &chain) {
-                      return chain.needs_footer_extent_repair();
-                    })) {
+    if (writable && std::any_of(meta_chains_.begin(), meta_chains_.end(),
+                                [](const auto &chain) {
+                                  return chain.needs_footer_extent_repair();
+                                })) {
       set_as_dirty();
     }
     {
@@ -1242,15 +1241,13 @@ class BufferStorage : public IndexStorage {
       if ((int32_t)chain_header->meta_footer_offset < 0) {
         return IndexError_Unsupported;
       }
-      const uint64_t footer_end =
-          uint64_t{chain_header->meta_footer_offset} +
-          sizeof(IndexFormat::MetaFooter);
+      const uint64_t footer_end = uint64_t{chain_header->meta_footer_offset} +
+                                  sizeof(IndexFormat::MetaFooter);
       if (footer_end > file_size - header_start_offset) {
         LOG_ERROR("ParseToMapping: invalid meta_footer_offset=%" PRIu32
                   " (header=%" PRIu64 ", file_size=%zu), file[%s]",
                   chain_header->meta_footer_offset, header_start_offset,
-                  buffer_pool_->file_size(),
-                  file_name_.c_str());
+                  buffer_pool_->file_size(), file_name_.c_str());
         return IndexError_InvalidValue;
       }
       const uint64_t footer_offset =
@@ -1291,10 +1288,9 @@ class BufferStorage : public IndexStorage {
       uint32_t segment_ids_offset = footer.segments_meta_size;
       uint64_t segment_extent = 0;
       std::unique_ptr<char[]> segment_buffer;
-      ret =
-          parse_segment(segment_start_offset, header_start_offset, chain_header,
-                        footer, chain_size - content_offset, segment_ids_offset,
-                        segment_extent, segment_buffer);
+      ret = parse_segment(segment_start_offset, header_start_offset,
+                          chain_header, footer, chain_size - content_offset,
+                          segment_ids_offset, segment_extent, segment_buffer);
       if (ret != 0) {
         LOG_ERROR("Failed to parse segment, errno %d, %s", ret,
                   IndexError::What(ret));
@@ -1544,9 +1540,8 @@ class BufferStorage : public IndexStorage {
       bool footer_written = false;
       AILEGO_DEFER([&]() {
         if (changes_checkpoint && !footer_written) {
-          restore_metadata(
-              mchain.footer_file_offset(), sizeof(mchain.footer),
-              reinterpret_cast<const char *>(&mchain.footer));
+          restore_metadata(mchain.footer_file_offset(), sizeof(mchain.footer),
+                           reinterpret_cast<const char *>(&mchain.footer));
         }
       });
       if (buffer_pool_handle_->write_meta(
@@ -1667,7 +1662,8 @@ class BufferStorage : public IndexStorage {
 
     // Step 1: prepare an unlinked directory chain when the current one is full.
     if (sizeof(IndexFormat::SegmentMeta) * chain->footer.segment_count +
-            need_size > chain->segment_ids_offset) {
+            need_size >
+        chain->segment_ids_offset) {
       size_t new_chain_start = chain->allocated_file_end();
       if (new_chain_start >
           std::numeric_limits<size_t>::max() - (page_size - 1)) {
@@ -1685,14 +1681,15 @@ class BufferStorage : public IndexStorage {
       const uint32_t new_segments_meta_size = static_cast<uint32_t>(
           root_header.meta_footer_offset - sizeof(IndexFormat::MetaHeader));
       if (need_size > new_segments_meta_size ||
-          new_meta_total > std::numeric_limits<size_t>::max() - new_chain_start) {
+          new_meta_total >
+              std::numeric_limits<size_t>::max() - new_chain_start) {
         return IndexError_InvalidLength;
       }
 
       auto new_header = std::make_unique<IndexFormat::MetaHeader>();
-      IndexFormat::SetupMetaHeader(
-          new_header.get(), root_header.meta_footer_offset,
-          root_header.content_offset);
+      IndexFormat::SetupMetaHeader(new_header.get(),
+                                   root_header.meta_footer_offset,
+                                   root_header.content_offset);
 
       auto new_meta_buf = std::make_unique<char[]>(new_segments_meta_size);
       auto new_append_meta = std::make_unique<char[]>(new_segments_meta_size);
@@ -1718,10 +1715,9 @@ class BufferStorage : public IndexStorage {
               reinterpret_cast<const char *>(new_header.get())) != 0) {
         return IndexError_WriteData;
       }
-      meta_chains_.push_back(MetaChain{std::move(new_header),
-                                       std::move(new_meta_buf), new_chain_start,
-                                       new_segments_meta_size, 0, new_footer,
-                                       std::move(new_append_meta)});
+      meta_chains_.push_back(MetaChain{
+          std::move(new_header), std::move(new_meta_buf), new_chain_start,
+          new_segments_meta_size, 0, new_footer, std::move(new_append_meta)});
 
       chain = &meta_chains_.back();
       chain_split = true;
@@ -1815,15 +1811,15 @@ class BufferStorage : public IndexStorage {
     // belong to explicit writeback, unless a failed flush left a partial table.
     bool meta_written;
     if (write_full_table) {
-      meta_written = buffer_pool_handle_->write_meta(
-                         meta_file_offset, footer.segments_meta_size,
-                         meta_buf) == 0;
+      meta_written =
+          buffer_pool_handle_->write_meta(
+              meta_file_offset, footer.segments_meta_size, meta_buf) == 0;
     } else {
-      meta_written = buffer_pool_handle_->write_meta(
-                         entry_file_offset, sizeof(*new_seg),
-                         meta_buf + meta_entry_off) == 0 &&
-                     buffer_pool_handle_->write_meta(
-                         id_file_offset, id_size, meta_buf + new_ids_off) == 0;
+      meta_written =
+          buffer_pool_handle_->write_meta(entry_file_offset, sizeof(*new_seg),
+                                          meta_buf + meta_entry_off) == 0 &&
+          buffer_pool_handle_->write_meta(id_file_offset, id_size,
+                                          meta_buf + new_ids_off) == 0;
     }
     if (!meta_written) {
       LOG_ERROR("append_segment: write segment_meta failed, file[%s]",

@@ -3906,10 +3906,10 @@ class ConcurrentQueue {
       }
     }
 
-    return add_producer(
-        isExplicit
-            ? static_cast<ProducerBase *>(create_producer<ExplicitProducer>(this))
-            : create_producer<ImplicitProducer>(this));
+    return add_producer(isExplicit
+                            ? static_cast<ProducerBase *>(
+                                  create_producer<ExplicitProducer>(this))
+                            : create_producer<ImplicitProducer>(this));
   }
 
   ProducerBase *add_producer(ProducerBase *producer) {
@@ -4163,10 +4163,10 @@ class ConcurrentQueue {
           while (newCount >= (newCapacity >> 1)) {
             newCapacity <<= 1;
           }
-          auto raw = static_cast<char *>(allocate_lifetime(
-              sizeof(ImplicitProducerHash) +
-              std::alignment_of<ImplicitProducerKVP>::value - 1 +
-              sizeof(ImplicitProducerKVP) * newCapacity));
+          auto raw = static_cast<char *>(
+              allocate_lifetime(sizeof(ImplicitProducerHash) +
+                                std::alignment_of<ImplicitProducerKVP>::value -
+                                1 + sizeof(ImplicitProducerKVP) * newCapacity));
           if (raw == nullptr) {
             // Allocation failed
             implicitProducerHashCount.fetch_sub(1, std::memory_order_relaxed);

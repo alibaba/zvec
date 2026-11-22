@@ -252,7 +252,8 @@ BlockEvictionQueue::BlockEvictionQueue() {
   // during construction. They stay mapped for the lifetime of this instance.
   auto *previous =
       std::exchange(initial_queue_backing, &initial_backing_bytes_);
-  auto restore = ScopeGuard::Make([previous] { initial_queue_backing = previous; });
+  auto restore =
+      ScopeGuard::Make([previous] { initial_queue_backing = previous; });
   for (size_t i = 0; i < kQueueCount; ++i) {
     evict_queues_.emplace_back(kEvictQueueCapacity);
   }
@@ -2587,7 +2588,8 @@ size_t MemoryLimitPool::native_allocation_limit(
 }
 
 bool MemoryLimitPool::can_fit_metadata(size_t bytes, size_t retained) const {
-  const size_t limit = std::min(native_allocation_limit(), rss_allocation_limit());
+  const size_t limit =
+      std::min(native_allocation_limit(), rss_allocation_limit());
   return retained <= limit && bytes <= limit - retained;
 }
 
