@@ -143,8 +143,7 @@ class ScopedWriteFailure {
   bool hit{false};
 };
 
-// Write a real prefix of the old footer, including the new chain link. Each
-// fault is armed for one write.
+// Write a real prefix of the footer. Each fault is armed for one write.
 ssize_t InjectPwrite(decltype(&::pwrite) write_at, int fd, const void *buffer,
                      size_t count, off_t offset) {
   if (write_failure && offset == write_failure->offset) {
@@ -155,19 +154,12 @@ ssize_t InjectPwrite(decltype(&::pwrite) write_at, int fd, const void *buffer,
   }
   if (count == sizeof(MetaFooter) && short_footer_write &&
       offset == short_footer_write->offset) {
-    uint64_t next_offset;
-    std::memcpy(&next_offset,
-                static_cast<const char *>(buffer) +
-                    offsetof(MetaFooter, next_meta_header_offset),
-                sizeof(next_offset));
-    if (next_offset != 0) {
-      auto *fault = short_footer_write;
-      short_footer_write = nullptr;
-      fault->written = write_at(fd, buffer, fault->prefix, offset);
-      // A logger's allocation failure can escape from the I/O error path.
-      if (fault->throw_after_write) throw std::bad_alloc();
-      return fault->written;
-    }
+    auto *fault = short_footer_write;
+    short_footer_write = nullptr;
+    fault->written = write_at(fd, buffer, fault->prefix, offset);
+    // A logger's allocation failure can escape from the I/O error path.
+    if (fault->throw_after_write) throw std::bad_alloc();
+    return fault->written;
   }
   return write_at(fd, buffer, count, offset);
 }
@@ -189,26 +181,29 @@ using namespace zvec::core;
 constexpr uint32_t kDirectoryCapacity = 256;
 constexpr size_t kMetaOverhead =
     sizeof(IndexFormat::MetaHeader) + sizeof(IndexFormat::MetaFooter);
+constexpr uint64_t kCheckpoint = 73;
 constexpr std::array<char, 5> kOldData = {'v', 'a', 'l', 'u', 'e'};
 constexpr std::array<char, 5> kNewData = {'c', 'h', 'u', 'n', 'k'};
 
 struct Directory {
   IndexFormat::MetaFooter footer{};
-  uint32_t footer_offset{};
+  uint64_t footer_offset{};
   size_t free_bytes{};
   uint64_t last_segment_offset{};
 
-  uint32_t segment_meta_offset() const {
+  uint64_t segment_meta_offset() const {
     return footer_offset - footer.segments_meta_size;
   }
 };
 
-bool ReadRootDirectory(const std::string &path, Directory *directory) {
+bool ReadDirectory(const std::string &path, Directory *directory,
+                   uint64_t chain_offset = 0) {
   std::ifstream in(path, std::ios::binary);
-  IndexFormat::MetaHeader root{};
-  if (!in.read(reinterpret_cast<char *>(&root), sizeof(root))) return false;
-  directory->footer_offset = root.meta_footer_offset;
-  in.seekg(root.meta_footer_offset);
+  IndexFormat::MetaHeader header{};
+  in.seekg(chain_offset);
+  if (!in.read(reinterpret_cast<char *>(&header), sizeof(header))) return false;
+  directory->footer_offset = chain_offset + header.meta_footer_offset;
+  in.seekg(directory->footer_offset);
   auto &footer = directory->footer;
   if (!in.read(reinterpret_cast<char *>(&footer), sizeof(footer))) return false;
   in.seekg(directory->segment_meta_offset());
@@ -219,7 +214,8 @@ bool ReadRootDirectory(const std::string &path, Directory *directory) {
       return false;
     first_name =
         std::min(first_name, static_cast<size_t>(segment.segment_id_offset));
-    directory->last_segment_offset = root.content_offset + segment.data_index;
+    directory->last_segment_offset =
+        chain_offset + header.content_offset + segment.data_index;
   }
   directory->free_bytes =
       first_name - footer.segment_count * sizeof(IndexFormat::SegmentMeta);
@@ -291,7 +287,7 @@ class BufferStorageDirectorySplitTest : public testing::Test {
   void FillDirectory() {
     ASSERT_EQ(0, writer_->flush());
     Directory before{};
-    ASSERT_TRUE(ReadRootDirectory(path_, &before));
+    ASSERT_TRUE(ReadDirectory(path_, &before));
     ASSERT_EQ(0u, before.footer.next_meta_header_offset);
     ASSERT_GT(before.free_bytes, sizeof(IndexFormat::SegmentMeta) + 1);
     old_name_.assign(before.free_bytes - sizeof(IndexFormat::SegmentMeta) - 1,
@@ -317,10 +313,11 @@ class BufferStorageDirectorySplitTest : public testing::Test {
   }
 
   void AppendAndVerifyReopen(const std::string &name) {
-    constexpr uint64_t kCheckpoint = 73;
-    writer_->refresh(kCheckpoint);
+    const uint64_t committed = writer_->check_point();
+    const bool was_dirty = writer_->is_dirty();
     ASSERT_EQ(0, writer_->append(name, page_size_));
-    EXPECT_TRUE(writer_->is_dirty());
+    EXPECT_EQ(committed, writer_->check_point());
+    EXPECT_EQ(was_dirty, writer_->is_dirty());
     {
       auto segment = writer_->get(name);
       ASSERT_NE(nullptr, segment);
@@ -358,12 +355,22 @@ class BufferStorageDirectorySplitTest : public testing::Test {
 
 TEST_F(BufferStorageDirectorySplitTest, InPlaceAppendReopensAfterFlush) {
   ASSERT_NO_FATAL_FAILURE(AppendOldSegment());
+  writer_->refresh(kCheckpoint);
   ASSERT_NO_FATAL_FAILURE(AppendAndVerifyReopen("new_in_place"));
 }
 
 TEST_F(BufferStorageDirectorySplitTest, SplitReopensAfterFlush) {
   ASSERT_NO_FATAL_FAILURE(FillDirectory());
   ASSERT_NO_FATAL_FAILURE(WriteOldSegment());
+  writer_->refresh(kCheckpoint);
+  ASSERT_NO_FATAL_FAILURE(AppendAndVerifyReopen("new_split"));
+}
+
+TEST_F(BufferStorageDirectorySplitTest, SplitPreservesCommittedCheckpoint) {
+  ASSERT_NO_FATAL_FAILURE(FillFirstChain());
+  writer_->refresh(kCheckpoint);
+  ASSERT_EQ(0, writer_->flush());
+  ASSERT_EQ(kCheckpoint, writer_->check_point());
   ASSERT_NO_FATAL_FAILURE(AppendAndVerifyReopen("new_split"));
 }
 
@@ -384,7 +391,7 @@ TEST_F(BufferStorageDirectorySplitTest,
   ASSERT_NO_FATAL_FAILURE(AppendOldSegment());
   ASSERT_EQ(0, writer_->flush());
   Directory disk{};
-  ASSERT_TRUE(ReadRootDirectory(path_, &disk));
+  ASSERT_TRUE(ReadDirectory(path_, &disk));
   const std::string name = "new_in_place";
   ASSERT_GE(disk.free_bytes, sizeof(IndexFormat::SegmentMeta) + name.size() + 1);
   {
@@ -416,7 +423,7 @@ TEST_F(BufferStorageDirectorySplitTest,
   ASSERT_NO_FATAL_FAILURE(AppendOldSegment());
   ASSERT_EQ(0, writer_->flush());
   Directory disk{};
-  ASSERT_TRUE(ReadRootDirectory(path_, &disk));
+  ASSERT_TRUE(ReadDirectory(path_, &disk));
   const std::string name = "new_in_place";
   ASSERT_GE(disk.free_bytes, sizeof(IndexFormat::SegmentMeta) + name.size() + 1);
 
@@ -442,7 +449,7 @@ TEST_F(BufferStorageDirectorySplitTest, InPlaceAppendFailureRemovesMapping) {
   ASSERT_NO_FATAL_FAILURE(AppendOldSegment());
   ASSERT_EQ(0, writer_->flush());
   Directory disk{};
-  ASSERT_TRUE(ReadRootDirectory(path_, &disk));
+  ASSERT_TRUE(ReadDirectory(path_, &disk));
   const std::string name = "retry_in_place";
   ASSERT_GT(disk.free_bytes,
             sizeof(IndexFormat::SegmentMeta) + name.size() + 1);
@@ -459,28 +466,84 @@ TEST_F(BufferStorageDirectorySplitTest, InPlaceAppendFailureRemovesMapping) {
 
 TEST_F(BufferStorageDirectorySplitTest, FailedMetadataFlushCanRetryWithSplit) {
   ASSERT_NO_FATAL_FAILURE(FillDirectory());
+  writer_->refresh(kCheckpoint);
   ASSERT_EQ(0, writer_->flush());
   Directory disk{};
-  ASSERT_TRUE(ReadRootDirectory(path_, &disk));
+  ASSERT_TRUE(ReadDirectory(path_, &disk));
   ASSERT_NO_FATAL_FAILURE(WriteOldSegment());
+  writer_->refresh(kCheckpoint + 1);
   {
     ScopedWriteFailure fault(disk.segment_meta_offset());
     ASSERT_EQ(IndexError_WriteData, writer_->flush());
     EXPECT_TRUE(fault.hit);
   }
   EXPECT_TRUE(writer_->is_dirty());
+  EXPECT_EQ(kCheckpoint, writer_->check_point());
   ASSERT_NO_FATAL_FAILURE(VerifyRetry("new_split"));
+  EXPECT_EQ(kCheckpoint, writer_->check_point());
   EXPECT_TRUE(writer_->is_dirty());
   ASSERT_EQ(0, writer_->flush());
+  EXPECT_EQ(kCheckpoint + 1, writer_->check_point());
+}
+
+TEST_F(BufferStorageDirectorySplitTest, ShortCheckpointWritePreservesCommit) {
+  ASSERT_NO_FATAL_FAILURE(FillFirstChain());
+  writer_->refresh(kCheckpoint);
+  ASSERT_EQ(0, writer_->flush());
+  ASSERT_EQ(0, writer_->append("new_chain", page_size_));
+  Directory root{}, tail{};
+  ASSERT_TRUE(ReadDirectory(path_, &root));
+  const uint64_t tail_offset = root.footer.next_meta_header_offset;
+  ASSERT_NE(0u, tail_offset);
+  ASSERT_TRUE(ReadDirectory(path_, &tail, tail_offset));
+  writer_->refresh(kCheckpoint + 1);
+
+  // All checkpoint bytes and their CRC reach disk despite the short write.
+  ShortFooterWrite fault{static_cast<off_t>(tail.footer_offset),
+                        kShortFooterBytes};
+  short_footer_write = &fault;
+  const int status = writer_->flush();
+  short_footer_write = nullptr;
+  ASSERT_EQ(static_cast<ssize_t>(kShortFooterBytes), fault.written);
+  ASSERT_EQ(IndexError_WriteData, status);
+  EXPECT_EQ(kCheckpoint, writer_->check_point());
+  EXPECT_TRUE(writer_->is_dirty());
+  ASSERT_TRUE(ReadDirectory(path_, &root));
+  ASSERT_TRUE(ReadDirectory(path_, &tail, tail_offset));
+  EXPECT_EQ(kCheckpoint, root.footer.check_point);
+  EXPECT_EQ(kCheckpoint, tail.footer.check_point);
+
+  ASSERT_EQ(0, writer_->flush());
+  EXPECT_EQ(kCheckpoint + 1, writer_->check_point());
+}
+
+TEST_F(BufferStorageDirectorySplitTest, CloseCanRetryCheckpointWriteback) {
+  ASSERT_NO_FATAL_FAILURE(AppendOldSegment());
+  writer_->refresh(kCheckpoint);
+  ASSERT_EQ(0, writer_->flush());
+  Directory disk{};
+  ASSERT_TRUE(ReadDirectory(path_, &disk));
+  writer_->refresh(kCheckpoint + 1);
+  {
+    ScopedWriteFailure fault(disk.footer_offset);
+    ASSERT_EQ(IndexError_WriteData, writer_->close());
+    EXPECT_TRUE(fault.hit);
+  }
+  EXPECT_EQ(kCheckpoint, writer_->check_point());
+  EXPECT_TRUE(writer_->is_dirty());
+  ASSERT_EQ(0, writer_->close());
+  ASSERT_EQ(0, writer_->open(path_, false));
+  EXPECT_EQ(kCheckpoint + 1, writer_->check_point());
 }
 
 TEST_F(BufferStorageDirectorySplitTest, ShortFooterWriteCanRetrySplit) {
   ASSERT_NO_FATAL_FAILURE(FillFirstChain());
   Directory disk{};
-  ASSERT_TRUE(ReadRootDirectory(path_, &disk));
+  ASSERT_TRUE(ReadDirectory(path_, &disk));
 
   const std::string name = "retry_after_short_write";
-  ShortFooterWrite fault{disk.footer_offset, kShortFooterBytes};
+  ShortFooterWrite fault{static_cast<off_t>(disk.footer_offset),
+                        kShortFooterBytes};
   short_footer_write = &fault;
   const int status = writer_->append(name, page_size_);
   short_footer_write = nullptr;
@@ -493,11 +556,11 @@ TEST_F(BufferStorageDirectorySplitTest,
        ShortFooterWriteRollsBackIfWriteThrows) {
   ASSERT_NO_FATAL_FAILURE(FillFirstChain());
   Directory disk{};
-  ASSERT_TRUE(ReadRootDirectory(path_, &disk));
+  ASSERT_TRUE(ReadDirectory(path_, &disk));
 
   const std::string name = "retry_short_write_exception";
   constexpr size_t kPrefix = 64;
-  ShortFooterWrite fault{disk.footer_offset, kPrefix, true};
+  ShortFooterWrite fault{static_cast<off_t>(disk.footer_offset), kPrefix, true};
   short_footer_write = &fault;
   const int status = writer_->append(name, page_size_);
   short_footer_write = nullptr;
@@ -567,12 +630,15 @@ TEST_F(BufferStorageDirectorySplitTest, HnswBrokerReopensChunkAfterFlush) {
   ASSERT_NE(nullptr, chunk);
   ASSERT_EQ(kOldData.size(), chunk->write(0, kOldData.data(), kOldData.size()));
   chunk.reset();
-  ASSERT_EQ(0, writer_->flush());
+  ASSERT_EQ(0, broker.flush(kCheckpoint));
+  ASSERT_EQ(0, broker.flush(0));
+  EXPECT_EQ(kCheckpoint, stats.check_point());
   ASSERT_EQ(0, broker.close());
   ASSERT_EQ(0, writer_->close());
 
   ASSERT_EQ(0, writer_->open(path_, IndexStorage::OpenOptions{false, false}));
   ASSERT_EQ(0, broker.open(writer_, chunk_size, false));
+  EXPECT_EQ(kCheckpoint, stats.check_point());
   ASSERT_EQ(1u, broker.get_chunk_cnt(kType));
   auto reopened = broker.get_chunk(kType, 0);
   ASSERT_NE(nullptr, reopened);

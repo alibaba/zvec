@@ -152,12 +152,13 @@ int HnswRabitqChunkBroker::flush(uint64_t checkpoint) {
       chunk_meta_segment_->write(0UL, &chunk_meta_, sizeof(HnswChunkMeta));
   if (ailego_unlikely(size != sizeof(HnswChunkMeta))) {
     LOG_ERROR("Storage write data failed, wsize=%zu", size);
+    return IndexError_WriteData;
   }
 
   stg_->refresh(checkpoint);
   int ret = stg_->flush();
   if (ret == 0) {
-    (*stats_.mutable_check_point()) = checkpoint;
+    stats_.set_check_point(stg_->check_point());
   } else {
     LOG_ERROR("Storage flush failed for %s", IndexError::What(ret));
   }

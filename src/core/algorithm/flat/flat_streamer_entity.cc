@@ -308,9 +308,7 @@ int FlatStreamerEntity::flush(uint64_t checkpoint) {
     LOG_ERROR("Failed to refresh storage for %s", IndexError::What(ret));
     return ret;
   }
-  if (checkpoint != 0) {
-    stats_.set_check_point(checkpoint);
-  }
+  stats_.set_check_point(storage_->check_point());
 
   return 0;
 }
