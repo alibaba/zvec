@@ -2609,7 +2609,7 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
   // One deadline covers inline retries and sleeps. Ready hints and spurious
   // notifications cannot turn a bounded wait into unbounded retry work.
   if (admit()) return true;
-  const auto deadline = Clock::now() + std::chrono::seconds(5);
+  const auto deadline = Clock::now() + std::chrono::seconds(wait ? 1 : 5);
   // Maintenance can release idle backing and prove residency itself, but
   // cannot wait for its own worker or recursively invoke eviction owners.
   const bool maintenance = refresh_residency_on_background_thread();
@@ -2640,6 +2640,25 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
     mandatory_waiters_.fetch_sub(1, std::memory_order_relaxed);
     capacity_cv_.notify_all();
   });
+  // Compare only headroom this request can use. A zero-growth reuse still
+  // needs RSS confirmation. A native-only plan does not consume RSS.
+  const auto room_for_request = [&] {
+    const size_t native = request.native_bytes ? std::min(request.native_bytes,
+                                                          native_available())
+                                               : 0;
+    const size_t rss =
+        request.rss_bytes
+            ? std::min(request.rss_bytes, process_rss_.available())
+            : (request.native_bytes ? 0 : process_rss_.available());
+    return AdmissionRequest{native, rss};
+  };
+  const auto more_room = [](AdmissionRequest current, AdmissionRequest before) {
+    return current.native_bytes > before.native_bytes ||
+           current.rss_bytes > before.rss_bytes;
+  };
+  const auto initial_room = wait ? room_for_request() : AdmissionRequest{};
+  bool made_progress = false;
+
   // Close the race between the first denial and publishing priority.
   if (wait && admit()) return true;
   size_t previous_shortfall = std::numeric_limits<size_t>::max();
@@ -2683,25 +2702,26 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
     // Observe increases relative to this failed attempt, rather than testing
     // an already-true capacity hint. Reuse can be denied with zero new bytes;
     // it still needs a paced retry after maintenance publishes a new proof.
-    const size_t native_room = native_available();
-    const size_t rss_room = process_rss_.available();
+    const auto room = room_for_request();
+    made_progress = made_progress || more_room(room, initial_room);
     capacity_waits_.fetch_add(1, std::memory_order_relaxed);
     {
       std::unique_lock<std::mutex> lock(capacity_mutex_);
       const bool progress = capacity_cv_.wait_until(
           lock, std::min(deadline, Clock::now() + milliseconds(100)),
-          [this, native_room, rss_room, request] {
-            return (request.native_bytes && native_available() > native_room) ||
-                   process_rss_.available() > rss_room;
+          [&more_room, &room_for_request, room] {
+            return more_room(room_for_request(), room);
           });
       if (!progress)
         capacity_wait_timeouts_.fetch_add(1, std::memory_order_relaxed);
     }
     if (admit()) return true;
-    // Empty queues are conclusive only when no pending proof or registered
-    // process-cache reclaimer can restore admission. All three mandatory
-    // entry points use the same recovery rule and the same deadline.
-    if (!process_rss_.has_resident_uncertainty() && !has_reclaimer) {
+    // A release can fill part of the gap before a subsequent owner returns
+    // the rest. Keep the original deadline once the request has seen progress.
+    made_progress =
+        made_progress || more_room(room_for_request(), initial_room);
+    if (!made_progress && !process_rss_.has_resident_uncertainty() &&
+        !has_reclaimer) {
       const auto queues = BlockEvictionQueue::get_instance().stats();
       if (std::all_of(queues.approximate_queue_sizes.begin(),
                       queues.approximate_queue_sizes.end(),

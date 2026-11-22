@@ -78,6 +78,15 @@ struct MemoryLimitPoolTestPeer {
   static bool fixed_rss_limit(MemoryLimitPool &pool, size_t limit) {
     return pool.process_rss_.configure(limit, +[] { return size_t{64} << 20; });
   }
+  static bool fixed_rss_limit_without_overlap(MemoryLimitPool &pool,
+                                              size_t limit) {
+    return pool.process_rss_.configure(
+        limit, +[] { return size_t{64} << 20; },
+        +[](ProcessRssBudget::NativeSample *sample) {
+          *sample = {size_t{1} << 20, size_t{256} << 20};
+          return true;
+        });
+  }
   static size_t rss_room(MemoryLimitPool &pool) {
     return pool.process_rss_.available();
   }
@@ -230,6 +239,53 @@ TEST_F(CacheMappingRssTest, WorkspaceAdmissionIncludesDescriptor) {
               pool_.metadata_used());
     EXPECT_EQ(1u, MemoryLimitPoolTestPeer::mappings(pool_));
   }
+}
+
+TEST_F(CacheMappingRssTest, RequiredMappedWorkspaceWaitsForStagedRssRelease) {
+  using namespace std::chrono_literals;
+  BudgetedMappedBuffer first, second, required;
+  ASSERT_EQ(0, first.resize(4 * kMiB));
+  ASSERT_EQ(0, second.resize(4 * kMiB));
+  ASSERT_EQ(0, required.resize(kMiB));
+  required.data()[0] = 73;
+  ASSERT_TRUE(MemoryLimitPoolTestPeer::fixed_rss_limit_without_overlap(
+      pool_, 64 * kMiB + pool_.committed() + 24 * kMiB));
+  auto restore =
+      ScopeGuard::Make([&] { pool_.configure_process_rss_limit(0); });
+  const size_t request = MemoryLimitPoolTestPeer::rss_room(pool_) + 6 * kMiB;
+  ASSERT_LT(request, pool_.available());
+
+  // With no release, rejection preserves the old mapping and its charge.
+  const size_t used = pool_.used();
+  EXPECT_NE(0, required.resize(request));
+  ASSERT_EQ(kMiB, required.size());
+  EXPECT_EQ(73, required.data()[0]);
+  EXPECT_EQ(used, pool_.used());
+
+  const auto waits = pool_.stats().capacity_waits;
+  auto pending =
+      std::async(std::launch::async, [&] { return required.resize(request); });
+  auto finish = ScopeGuard::Make([&] {
+    first.clear();
+    second.clear();
+    if (pending.valid()) pending.wait();
+  });
+  const auto stop = std::chrono::steady_clock::now() + 500ms;
+  while (pool_.stats().capacity_waits == waits &&
+         pending.wait_for(1ms) != std::future_status::ready &&
+         std::chrono::steady_clock::now() < stop) {
+  }
+  ASSERT_GT(pool_.stats().capacity_waits, waits);
+  first.clear();
+  ASSERT_LT(MemoryLimitPoolTestPeer::rss_room(pool_), request);
+  EXPECT_EQ(std::future_status::timeout, pending.wait_for(250ms));
+
+  second.clear();
+  ASSERT_EQ(std::future_status::ready, pending.wait_for(1s));
+  ASSERT_EQ(0, pending.get());
+  EXPECT_EQ(request, required.size());
+  EXPECT_EQ(0u, MemoryLimitPoolTestPeer::waiters(pool_));
+  EXPECT_EQ(0u, MemoryLimitPoolTestPeer::native_waiting(pool_));
 }
 
 TEST_F(CacheMappingRssTest, WorkspaceMappingFailureRollsBackAdmission) {
@@ -1094,10 +1150,10 @@ TEST_F(CacheMappingRssTest, DeniedAdmissionPacesRetriesAndHonorsDeadline) {
   const auto start = std::chrono::steady_clock::now();
   EXPECT_FALSE(pool_.try_charge_metadata(12 * kMiB, 12 * kMiB));
   const auto elapsed = std::chrono::steady_clock::now() - start;
-  EXPECT_GE(elapsed, std::chrono::seconds(4));
-  EXPECT_LT(elapsed, std::chrono::seconds(7));
-  EXPECT_GE(pool_.stats().capacity_waits - waits, 40u);
-  EXPECT_LE(pool_.stats().capacity_waits - waits, 60u);
+  EXPECT_GE(elapsed, std::chrono::milliseconds(900));
+  EXPECT_LT(elapsed, std::chrono::seconds(2));
+  EXPECT_GE(pool_.stats().capacity_waits - waits, 9u);
+  EXPECT_LE(pool_.stats().capacity_waits - waits, 15u);
   EXPECT_EQ(used, pool_.used());
   EXPECT_EQ(committed, pool_.committed());
   EXPECT_EQ(0u, MemoryLimitPoolTestPeer::waiters(pool_));
