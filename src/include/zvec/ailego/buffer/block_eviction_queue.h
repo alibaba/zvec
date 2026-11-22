@@ -381,7 +381,8 @@ class ZVEC_AILEGO_API MemoryLimitPool {
       kMetadata,
       kLockedMetadata,
       kLockedExternal,
-      // Optional, globally evictable backing. Admission never walks owners.
+      // Optional heap cache backing. A reservation and its committed bytes
+      // may release capacity independently of the eviction queue.
       kEvictableCache,
     };
 
@@ -559,7 +560,8 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   }
   // Subset of external_used(), excluded from non-evictable watermarks.
   size_t evictable_cache_used() const {
-    return evictable_cache_size_.load(std::memory_order_relaxed);
+    return evictable_mapping_size_.load(std::memory_order_relaxed) +
+           evictable_heap_cache_size_.load(std::memory_order_relaxed);
   }
 
   size_t metadata_used() const {
@@ -695,6 +697,7 @@ class ZVEC_AILEGO_API MemoryLimitPool {
                              Backing backing, size_t materialization);
   bool try_charge_locked(size_t bytes, std::atomic<size_t> *counter,
                          Backing backing);
+  void release_heap_cache_charge(size_t bytes);
   void release_fixed(size_t bytes, std::atomic<size_t> *counter,
                      Backing backing = Backing::kLive,
                      ProcessRssBudget::MappingProjection projection = {});
@@ -778,7 +781,10 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   std::mutex process_reclaimer_mutex_;
   std::shared_ptr<const std::function<void()>> process_reclaimer_;
   std::atomic<size_t> external_used_size_{0};
-  std::atomic<size_t> evictable_cache_size_{0};
+  std::atomic<size_t> evictable_mapping_size_{0};
+  // Includes optional builds before publication and retired heap caches
+  // whose last reader has not yet returned their memory to the pool.
+  std::atomic<size_t> evictable_heap_cache_size_{0};
   std::atomic<size_t> cache_reclaim_requested_{0};
   std::atomic<size_t> metadata_used_size_{0};
   // Logical priority only: reserve actual native growth for mandatory work,

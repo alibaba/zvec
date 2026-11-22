@@ -2425,9 +2425,9 @@ MemoryLimitPool::PendingAllocation::PendingAllocation(MemoryLimitPool &pool,
                    : &pool.external_used_size_) {}
 
 MemoryLimitPool::PendingAllocation::~PendingAllocation() {
-  if (bytes_ && kind_ == Kind::kEvictableCache)
-    pool_.evictable_cache_size_.fetch_sub(bytes_, std::memory_order_relaxed);
-  if (bytes_) pool_.release_fixed(bytes_, counter_, Backing::kPending);
+  if (!bytes_) return;
+  pool_.release_fixed(bytes_, counter_, Backing::kPending);
+  if (kind_ == Kind::kEvictableCache) pool_.release_heap_cache_charge(bytes_);
 }
 
 bool MemoryLimitPool::PendingAllocation::reserve(size_t bytes) {
@@ -2454,8 +2454,9 @@ bool MemoryLimitPool::PendingAllocation::reserve(size_t bytes) {
       if (pool_.mandatory_waiters_.load(std::memory_order_relaxed) == 0 &&
           used <= limit && bytes <= limit - used &&
           pool_.try_reserve_allocation(bytes, Backing::kOptionalPending)) {
+        pool_.evictable_heap_cache_size_.fetch_add(bytes,
+                                                   std::memory_order_relaxed);
         counter_->fetch_add(bytes, std::memory_order_relaxed);
-        pool_.evictable_cache_size_.fetch_add(bytes, std::memory_order_relaxed);
         reserved = true;
       }
       break;
@@ -2634,15 +2635,22 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
         capacity_wait_timeouts_.fetch_add(1, std::memory_order_relaxed);
     }
     if (admit()) return true;
-    // Empty queues are conclusive only when no pending proof or registered
-    // process-cache reclaimer can restore admission. All three mandatory
-    // entry points use the same recovery rule and the same deadline.
+    // A heap cache may be building or waiting for its last reader with no
+    // queue entry. Keep waiting only if returning that capacity can cover the
+    // shortage, or another existing source of reclaim can restore admission.
     if (!process_rss_.has_resident_uncertainty() && !has_reclaimer) {
       const auto queues = BlockEvictionQueue::get_instance().stats();
       if (std::all_of(queues.approximate_queue_sizes.begin(),
                       queues.approximate_queue_sizes.end(),
-                      [](size_t depth) { return depth == 0; }))
-        break;
+                      [](size_t depth) { return depth == 0; })) {
+        const size_t heap_cache =
+            evictable_heap_cache_size_.load(std::memory_order_relaxed);
+        const size_t remaining = admission_shortfall(request);
+        if (!remaining || remaining > heap_cache) {
+          if (admit()) return true;
+          break;
+        }
+      }
     }
     previous_shortfall = std::numeric_limits<size_t>::max();
     bg_cv_.notify_one();
@@ -2783,12 +2791,16 @@ void MemoryLimitPool::release_heap_external(
 
 void MemoryLimitPool::release_heap_cache(
     size_t bytes, ProcessRssBudget::MaterializationStamp stamp) {
-  const size_t previous =
-      evictable_cache_size_.fetch_sub(bytes, std::memory_order_relaxed);
-  assert(previous >= bytes);
-  (void)previous;
   release_heap_external(bytes,
                         ProcessRssBudget::HeapProjection::Full(bytes, stamp));
+  release_heap_cache_charge(bytes);
+}
+
+void MemoryLimitPool::release_heap_cache_charge(size_t bytes) {
+  const size_t previous =
+      evictable_heap_cache_size_.fetch_sub(bytes, std::memory_order_relaxed);
+  assert(previous >= bytes);
+  (void)previous;
 }
 
 void MemoryLimitPool::release_unmapped_external(
@@ -2800,7 +2812,7 @@ void MemoryLimitPool::release_unmapped_external(
 void MemoryLimitPool::release_unmapped_cache(
     size_t bytes, ProcessRssBudget::MaterializationStamp stamp) {
   const size_t previous =
-      evictable_cache_size_.fetch_sub(bytes, std::memory_order_relaxed);
+      evictable_mapping_size_.fetch_sub(bytes, std::memory_order_relaxed);
   assert(previous >= bytes);
   (void)previous;
   release_unmapped_external(bytes, stamp);
@@ -2914,7 +2926,7 @@ MemoryLimitPool::CacheBuffer *MemoryLimitPool::try_acquire_cache_buffer(
       buffer->next = nullptr;
       cache_idle_bytes_.fetch_sub(bytes, std::memory_order_relaxed);
       external_used_size_.fetch_add(bytes, std::memory_order_relaxed);
-      evictable_cache_size_.fetch_add(bytes, std::memory_order_relaxed);
+      evictable_mapping_size_.fetch_add(bytes, std::memory_order_relaxed);
       metadata_used_size_.fetch_add(sizeof(CacheBuffer),
                                     std::memory_order_relaxed);
       return buffer;
@@ -2959,7 +2971,7 @@ MemoryLimitPool::CacheBuffer *MemoryLimitPool::try_acquire_cache_buffer(
   // must not provide overlap credit for another, possibly untouched owner.
   register_cache_mapping(buffer);
   external_used_size_.fetch_add(bytes, std::memory_order_relaxed);
-  evictable_cache_size_.fetch_add(bytes, std::memory_order_relaxed);
+  evictable_mapping_size_.fetch_add(bytes, std::memory_order_relaxed);
   return buffer;
 }
 
@@ -2994,7 +3006,7 @@ void MemoryLimitPool::release_cache_buffer(CacheBuffer *buffer) {
       bin.head = buffer;
       cache_idle_bytes_.fetch_add(bytes, std::memory_order_relaxed);
     }
-    evictable_cache_size_.fetch_sub(bytes, std::memory_order_relaxed);
+    evictable_mapping_size_.fetch_sub(bytes, std::memory_order_relaxed);
     external_used_size_.fetch_sub(bytes, std::memory_order_relaxed);
     metadata_used_size_.fetch_sub(sizeof(CacheBuffer),
                                   std::memory_order_relaxed);

@@ -87,20 +87,14 @@ size_t InvertedRangeCacheSlot::eviction_bytes(ailego::eviction_key_t) const {
 }
 
 bool InvertedRangeCacheSlot::evict_block(ailego::eviction_key_t) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (!cache_) return false;
-
-  if (cache_.use_count() == 1) {
-    cache_.reset();
-    return true;
+  std::shared_ptr<const InvertedRangeCache> retired;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // Existing queries own the snapshot. Removing the slot's reference
+    // stops new pins and lets the last reader return the charge directly.
+    retired = std::move(cache_);
   }
-  auto &queue = ailego::BlockEvictionQueue::get_instance();
-  if (!queue.add_single_block({0, generation_, this},
-                              ailego::BlockEvictionQueue::kProbationPriority)) {
-    // Keep existing readers safe and let the last pin release the charge.
-    cache_.reset();
-  }
-  return false;
+  return retired.use_count() == 1;
 }
 
 void InvertedRangeCacheSlot::eviction_requeue_failed(

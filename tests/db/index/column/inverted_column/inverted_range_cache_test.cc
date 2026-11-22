@@ -15,11 +15,14 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <random>
 #include <string>
@@ -27,6 +30,7 @@
 #include <type_traits>
 #include <vector>
 #include <gtest/gtest.h>
+#include <rocksdb/utilities/stackable_db.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
 #include "db/index/column/inverted_column/inverted_column_indexer.h"
 #include "db/index/column/inverted_column/inverted_rocksdb_merger.h"
@@ -72,6 +76,54 @@ bool Matches(const T &value, const T &bound, CompareOp op) {
     default:
       return false;
   }
+}
+
+class PausedRangeRead : public rocksdb::StackableDB {
+ public:
+  using StackableDB::StackableDB;
+
+  rocksdb::Iterator *NewIterator(const rocksdb::ReadOptions &options,
+                                 rocksdb::ColumnFamilyHandle *family) override {
+    if (!options.fill_cache && family->GetName() == "value$RANGES") {
+      std::unique_lock<std::mutex> lock(mutex_);
+      reading_ = true;
+      condition_.notify_all();
+      condition_.wait(lock, [&] { return released_; });
+    }
+    return StackableDB::NewIterator(options, family);
+  }
+
+  bool wait_for_read() {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return condition_.wait_for(lock, std::chrono::seconds(2),
+                               [&] { return reading_; });
+  }
+
+  void release_read() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    released_ = true;
+    condition_.notify_all();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable condition_;
+  bool reading_{false};
+  bool released_{false};
+};
+
+// Keeping the owner blocked across a timed retry distinguishes transient
+// capacity from a permanently exhausted pool with an empty eviction queue.
+bool WaitForNextCapacityRetry(const ailego::MemoryLimitPool &pool,
+                              uint64_t initial_waits,
+                              const std::atomic<bool> &done) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!done.load() && std::chrono::steady_clock::now() < deadline) {
+    if (pool.stats().capacity_waits >= initial_waits + 2) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return false;
 }
 
 class InvertedRangeCacheTest : public testing::Test {
@@ -729,18 +781,79 @@ TEST_F(InvertedRangeCacheTest, RequiredWorkspaceCanReclaimRangeCache) {
 
   auto &queue = ailego::BlockEvictionQueue::get_instance();
   queue.reclaim_for_allocation(bytes);
-  EXPECT_EQ(column_->range_cache(), pin);
+  EXPECT_EQ(column_->range_cache(), nullptr);
   EXPECT_EQ(pool.external_used(), initial_external_bytes_ + bytes);
   check_numeric(values, {-3000, 0, 1000});
-  pin.reset();
 
-  ASSERT_TRUE(pool.try_charge_workspace(workspace));
-  pool.release_external(workspace);
+  std::atomic<bool> done{false};
+  bool admitted = false;
+  const auto initial_waits = pool.stats().capacity_waits;
+  std::thread waiter([&] {
+    admitted = pool.try_charge_workspace(workspace);
+    if (admitted) pool.release_external(workspace);
+    done.store(true);
+  });
+  const bool waited = WaitForNextCapacityRetry(pool, initial_waits, done);
+  pin.reset();
+  waiter.join();
+  EXPECT_TRUE(waited);
+  EXPECT_TRUE(admitted);
   EXPECT_EQ(pool.external_used(), initial_external_bytes_);
   EXPECT_EQ(column_->range_cache(), nullptr);
   EXPECT_FALSE(
       column_->explain_range(RawInt32(0), CompareOp::LT).cached_metadata);
   check_numeric(values, {-3000, 0, 1000});
+}
+
+TEST_F(InvertedRangeCacheTest, RequiredWorkspaceWaitsForCacheBuildToYield) {
+  RangePrefixCacheOptions disabled;
+  disabled.max_bytes = 0;
+  create_writer(disabled);
+  const auto values = RandomValues(12000, false);
+  insert(values);
+  ASSERT_TRUE(column_->seal().ok());
+  reopen(disabled);
+
+  auto &pool = ailego::MemoryLimitPool::get_instance();
+  constexpr size_t spare = 8ULL << 20;
+  const size_t room = pool.capacity() - pool.committed();
+  ASSERT_GT(room, spare);
+  const size_t workspace = room - spare;
+  ASSERT_TRUE(pool.try_charge_workspace(workspace));
+  pool.release_external(workspace);
+
+  auto paused = std::make_unique<PausedRangeRead>(context_.db_.release());
+  auto *gate = paused.get();
+  context_.db_ = std::move(paused);
+  InvertedColumnIndexer::Ptr opened;
+  std::thread builder([&] {
+    opened = InvertedColumnIndexer::CreateAndOpen("range_cache_test", field_,
+                                                  context_, true);
+  });
+  if (!gate->wait_for_read()) {
+    gate->release_read();
+    builder.join();
+    FAIL() << "optional cache build did not reach the paused range read";
+  }
+
+  std::atomic<bool> done{false};
+  bool admitted = false;
+  const auto initial_waits = pool.stats().capacity_waits;
+  std::thread waiter([&] {
+    admitted = pool.try_charge_workspace(workspace);
+    if (admitted) pool.release_external(workspace);
+    done.store(true);
+  });
+  const bool waited = WaitForNextCapacityRetry(pool, initial_waits, done);
+  gate->release_read();
+  waiter.join();
+  builder.join();
+
+  EXPECT_TRUE(waited);
+  EXPECT_TRUE(admitted);
+  ASSERT_NE(opened, nullptr);
+  EXPECT_EQ(opened->range_cache(), nullptr);
+  EXPECT_EQ(pool.external_used(), initial_external_bytes_);
 }
 
 TEST_F(InvertedRangeCacheTest, EmptyIndexUsesExistingSearchPath) {
