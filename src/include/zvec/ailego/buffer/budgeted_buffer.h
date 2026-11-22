@@ -24,9 +24,11 @@ inline void ReserveStringCapacity(std::string &value, MemoryReservation &memory,
                                   size_t bytes) {
   if (bytes <= value.capacity()) return;
   if (bytes >= SIZE_MAX / 2) throw std::bad_alloc();
+  const size_t charge = (bytes + 1) * 2;
+  memory.require_replacement_capacity(charge);
   MemoryReservation replacement_memory;
   std::string replacement;
-  replacement_memory.add_for_allocation((bytes + 1) * 2,
+  replacement_memory.add_for_allocation(charge,
                                         [&] { replacement.reserve(bytes); });
   replacement.assign(value);
   const size_t actual = replacement.capacity() + 1;
@@ -44,9 +46,11 @@ inline void ReserveVectorCapacity(std::vector<T> &value,
                                   MemoryReservation &memory, size_t count) {
   if (count <= value.capacity()) return;
   if (count > SIZE_MAX / sizeof(T)) throw std::bad_alloc();
+  const size_t charge = count * sizeof(T);
+  memory.require_replacement_capacity(charge);
   MemoryReservation replacement_memory;
   std::vector<T> replacement;
-  replacement_memory.add_for_allocation(count * sizeof(T),
+  replacement_memory.add_for_allocation(charge,
                                         [&] { replacement.reserve(count); });
   const size_t actual = replacement.capacity() * sizeof(T);
   if (actual > replacement_memory.bytes())
@@ -142,14 +146,19 @@ class BudgetedAlignedBuffer {
     BudgetedAlignedBuffer replacement;
     if (bytes) {
       auto &pool = MemoryLimitPool::get_instance();
+      const size_t held = retained_base_
+                              ? MemoryLimitPool::retained_block_size(
+                                    size_ + alignment_padding(alignment_))
+                              : memory_.bytes();
       if (bytes >= kRetainedThreshold && pool.capacity()) {
         // Retained blocks provide 64-byte alignment. Larger alignments need
         // room for an interior pointer; release the original base below.
-        const size_t padding =
-            alignment > MemoryLimitPool::kRetainedBlockHeaderBytes
-                ? alignment - 1
-                : 0;
+        const size_t padding = alignment_padding(alignment);
         if (bytes > std::numeric_limits<size_t>::max() - padding)
+          throw std::bad_alloc();
+        const size_t charge =
+            MemoryLimitPool::retained_block_size(bytes + padding);
+        if (!charge || (held && charge > pool.native_allocation_limit(held)))
           throw std::bad_alloc();
         replacement.retained_base_ =
             pool.acquire_retained_block(bytes + padding);
@@ -159,6 +168,8 @@ class BudgetedAlignedBuffer {
         replacement.data_ = reinterpret_cast<void *>(
             (address + alignment - 1) & ~(uintptr_t{alignment} - 1));
       } else {
+        if (held && bytes > pool.native_allocation_limit(held))
+          throw std::bad_alloc();
         replacement.memory_.add_for_allocation(bytes, [&] {
           replacement.data_ =
               ::operator new(bytes, std::align_val_t{alignment});
@@ -189,6 +200,11 @@ class BudgetedAlignedBuffer {
   }
 
  private:
+  static size_t alignment_padding(size_t alignment) {
+    return alignment > MemoryLimitPool::kRetainedBlockHeaderBytes
+               ? alignment - 1
+               : 0;
+  }
   MemoryReservation memory_;
   void *data_{nullptr};
   void *retained_base_{nullptr};

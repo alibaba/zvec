@@ -201,6 +201,11 @@ class ZVEC_AILEGO_API BlockEvictionQueue {
   }
 
  private:
+  friend class MemoryLimitPool;
+  struct ProcessQueueTraits : EvictionQueueTraits {
+    static void *malloc_lifetime(size_t bytes);
+  };
+  using ProcessQueue = moodycamel::ConcurrentQueue<BlockType, ProcessQueueTraits>;
   bool dequeue_priority(size_t priority, BlockType &item);
 
   bool evict_single_block(
@@ -217,18 +222,15 @@ class ZVEC_AILEGO_API BlockEvictionQueue {
   size_t batch_recycle_impl(size_t count, size_t scan_count, bool age_protected,
                             size_t bytes = 0);
 
-  BlockEvictionQueue() {
-    for (size_t i = 0; i < kQueueCount; ++i) {
-      evict_queues_.push_back(ConcurrentQueue(kEvictQueueCapacity));
-    }
-  }
+  BlockEvictionQueue();
 
   // Foreground one-page reclaim should not pay for protected aging. Larger
   // reclaim batches inspect the protected queue at most once.
   static constexpr size_t kEvictQueueCapacity = 512 * 200;
   static constexpr size_t kProtectedAgingMinBatch = 8;
   static constexpr size_t kProtectedDominanceRatio = 3;
-  std::vector<ConcurrentQueue> evict_queues_;
+  std::vector<ProcessQueue> evict_queues_;
+  size_t initial_backing_bytes_{0};
   std::unordered_set<EvictableBlockOwner *> valid_owners_;
   std::shared_mutex valid_owners_mutex_;
   std::atomic<version_t> version_sequence_{1};
@@ -242,7 +244,7 @@ class ZVEC_AILEGO_API BlockEvictionQueue {
   std::mutex cleanup_mutex_;
   uint64_t cleanup_generation_seen_{0};
   bool cleanup_in_progress_{false};
-  std::array<ConcurrentQueue::producer_scan_token_t, kQueueCount>
+  std::array<ProcessQueue::producer_scan_token_t, kQueueCount>
       cleanup_scans_{};
   size_t cleanup_next_queue_{0};
 };
@@ -581,6 +583,13 @@ class ZVEC_AILEGO_API MemoryLimitPool {
     return pool_size_.load(std::memory_order_relaxed);
   }
 
+  // Upper bound after lifetime charges and backing pinned by this operation.
+  // A generic external reservation may itself contain a permanent allowance.
+  size_t native_allocation_limit(size_t retained = 0,
+                                 bool retained_may_be_permanent = false) const;
+  // Metadata spends both budgets, including the backing this owner must keep.
+  bool can_fit_metadata(size_t bytes, size_t retained = 0) const;
+
   //! Whether init() published a capacity, including zero.
   bool initialized() const {
     return initialized_.load(std::memory_order_acquire);
@@ -627,6 +636,7 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   void log_stats() const;
 
  private:
+  friend class BlockEvictionQueue;
   friend struct EvictionQueueTraits;
   friend struct MemoryLimitPoolTestPeer;
   friend struct QueueResidentSampleTestPeer;
@@ -644,7 +654,7 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   ~MemoryLimitPool();
 
   bool drain_free_list();
-  void *allocate_queue_memory(size_t bytes);
+  void *allocate_queue_memory(size_t bytes, bool lifetime = false);
   void free_queue_memory(void *ptr);
   void register_queue_mapping(QueueResidentMapping *mapping, void *data,
                               size_t bytes);
@@ -672,6 +682,8 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   };
   size_t native_available() const;
   size_t admission_shortfall(AdmissionRequest request) const;
+  size_t queue_lifetime_bytes() const;
+  size_t rss_allocation_limit() const;
   template <typename Admit>
   bool try_admit(AdmissionRequest request, Admit &&admit, bool wait);
   size_t page_admission_limit() const {
@@ -788,6 +800,7 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   // hooks never acquire lifecycle_mutex_ or call an eviction/reclaim path.
   std::mutex queue_memory_mutex_;
   std::atomic<size_t> queue_allocated_size_{0};
+  std::atomic<size_t> queue_runtime_lifetime_size_{0};
   std::atomic<size_t> queue_charged_size_{0};
   // All charged queue mappings, including full small-allocation slabs.
   // Protected by queue_memory_mutex_; nodes live in their own mapping.

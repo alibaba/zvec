@@ -398,6 +398,8 @@ class ZVEC_AILEGO_API VectorPageTable : public EvictableBlockOwner {
  private:
   friend class VecBufferPool;
 
+  bool extend_with_retained_metadata(size_t new_entry_num,
+                                     size_t retained_metadata);
   bool can_discard_tail(size_t new_entry_num) const;
   void discard_unused_tail(size_t new_entry_num);
 
@@ -841,6 +843,10 @@ class ZVEC_AILEGO_API VecBufferPool {
   // Serialize writable in-place payload access. Single-flight owns loading.
   size_t block_mutex_metadata_bytes() const {
     return block_mutex_count_ * sizeof(std::shared_mutex);
+  }
+  size_t writable_metadata_bytes() const {
+    return block_mutex_metadata_bytes() + writeback_staging_size_ +
+           writeback_io_staging_charge_;
   }
   std::unique_ptr<std::shared_mutex[]> block_mutexes_{};
   size_t block_mutex_count_{0};

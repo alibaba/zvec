@@ -66,6 +66,15 @@ class BudgetedMappedBuffer {
       if (!replacement.mapped_size_) return -1;
       auto &pool = MemoryLimitPool::get_instance();
       if (pool.capacity()) {
+        if (mapping_) {
+          constexpr size_t descriptor =
+              sizeof(MemoryLimitPool::WorkspaceBuffer);
+          const size_t limit =
+              pool.native_allocation_limit(mapping_->bytes + descriptor);
+          if (limit < descriptor ||
+              replacement.mapped_size_ > limit - descriptor)
+            return -1;
+        }
         replacement.mapping_ = pool.try_acquire_workspace_buffer(
             replacement.mapped_size_, required);
         if (!replacement.mapping_) return -1;

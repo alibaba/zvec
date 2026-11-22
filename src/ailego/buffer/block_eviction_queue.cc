@@ -20,6 +20,8 @@
 #include <cstdlib>
 #include <limits>
 #include <new>
+#include <optional>
+#include <utility>
 #include <ailego/pattern/scope_guard.h>
 #include <ailego/utility/memory_helper.h>
 #include <ailego/utility/mobile_memory.h>
@@ -65,6 +67,7 @@ constexpr size_t kMaxSlabDataPages = kSlabBytes / kMinimumPageBytes - 1;
 constexpr size_t kQueueSmallBytes = 4096;
 constexpr size_t kQueueSlabBytes = 64UL << 10;
 constexpr size_t kQueueAlignment = alignof(std::max_align_t);
+thread_local size_t *initial_queue_backing = nullptr;
 
 static_assert(kQueueSmallBytes % kQueueAlignment == 0,
               "queue size classes must preserve maximum alignment");
@@ -228,6 +231,7 @@ struct MemoryLimitPool::QueueMemorySlab {
   size_t live_slots{0};
   QueueAllocationHeader *free_head{nullptr};
   ProcessRssBudget::MappingProjection projection{};
+  bool has_lifetime_slot{false};
 };
 
 void *EvictionQueueTraits::malloc(size_t bytes) {
@@ -236,6 +240,22 @@ void *EvictionQueueTraits::malloc(size_t bytes) {
 
 void EvictionQueueTraits::free(void *ptr) {
   MemoryLimitPool::get_instance().free_queue_memory(ptr);
+}
+
+void *BlockEvictionQueue::ProcessQueueTraits::malloc_lifetime(size_t bytes) {
+  // Process-wide queues keep their producers and indexes until process exit.
+  return MemoryLimitPool::get_instance().allocate_queue_memory(bytes, true);
+}
+
+BlockEvictionQueue::BlockEvictionQueue() {
+  // Only the queues' initial block pools are allocated through the traits
+  // during construction. They stay mapped for the lifetime of this instance.
+  auto *previous =
+      std::exchange(initial_queue_backing, &initial_backing_bytes_);
+  auto restore = ScopeGuard::Make([previous] { initial_queue_backing = previous; });
+  for (size_t i = 0; i < kQueueCount; ++i) {
+    evict_queues_.emplace_back(kEvictQueueCapacity);
+  }
 }
 
 void MemoryLimitPool::register_queue_mapping(QueueResidentMapping *mapping,
@@ -272,7 +292,7 @@ bool MemoryLimitPool::unmap_queue_mapping(QueueResidentMapping *mapping) {
   return true;
 }
 
-void *MemoryLimitPool::allocate_queue_memory(size_t bytes) {
+void *MemoryLimitPool::allocate_queue_memory(size_t bytes, bool lifetime) {
   if (bytes > std::numeric_limits<size_t>::max() -
                   sizeof(QueueAllocationHeader) - (kQueueAlignment - 1)) {
     return nullptr;
@@ -363,6 +383,11 @@ void *MemoryLimitPool::allocate_queue_memory(size_t bytes) {
     header->bytes = total;
     header->owner = slab;
     ++slab->live_slots;
+    if (lifetime && !slab->has_lifetime_slot) {
+      slab->has_lifetime_slot = true;
+      queue_runtime_lifetime_size_.fetch_add(slab->mapping_bytes,
+                                             std::memory_order_relaxed);
+    }
     if (!slab->has_space()) slab->unlink(queue_small_slabs_[index]);
     return header + 1;
   }
@@ -388,6 +413,11 @@ void *MemoryLimitPool::allocate_queue_memory(size_t bytes) {
   header->bytes = region_bytes;
   header->owner = nullptr;
   queue_allocated_size_.fetch_add(region_bytes, std::memory_order_relaxed);
+  if (initial_queue_backing) *initial_queue_backing += region_bytes;
+  if (lifetime) {
+    queue_runtime_lifetime_size_.fetch_add(region_bytes,
+                                           std::memory_order_relaxed);
+  }
   return header + 1;
 }
 
@@ -1165,7 +1195,7 @@ bool BlockEvictionQueue::dequeue_priority(size_t priority, BlockType &item) {
   // Tokenless dequeue can repeatedly choose the reclaiming thread's own
   // requeued pinned page and starve older producer streams forever. Consumer
   // tokens rotate across producers without allocating on the pressure path.
-  thread_local std::array<std::optional<ConcurrentQueue::consumer_token_t>,
+  thread_local std::array<std::optional<ProcessQueue::consumer_token_t>,
                           kQueueCount>
       consumers;
   if (!consumers[priority])
@@ -2473,12 +2503,6 @@ bool MemoryLimitPool::PendingAllocation::reserve_with_metadata(
   const size_t total = bytes + metadata_bytes;
   std::shared_lock<std::shared_mutex> lifecycle_lock(pool_.lifecycle_mutex_);
   const auto admit = [&] {
-    if (kind_ == Kind::kLockedExternal) {
-      pool_.process_rss_.refresh();
-      if (pool_.process_rss_.pressure() ||
-          pool_.mandatory_waiters_.load(std::memory_order_relaxed) != 0)
-        return false;
-    }
     if (!pool_.try_reserve_allocation(total, Backing::kPending)) return false;
     // Reserve native/RSS backing once, but publish each owner's own charge.
     // Descriptor metadata must not count as external page-admission credit.
@@ -2489,10 +2513,18 @@ bool MemoryLimitPool::PendingAllocation::reserve_with_metadata(
   };
   if (kind_ == Kind::kWorkspace) {
     if (!pool_.try_admit({total, total}, admit, true)) return false;
-  } else if (!admit()) {
-    // Match locked/optional admission: trim idle backing without owner calls.
-    pool_.trim_free_buffers(total);
-    if (!admit()) return false;
+  } else {
+    const auto try_optional = [&] {
+      pool_.process_rss_.refresh();
+      return !pool_.process_rss_.pressure() &&
+             pool_.mandatory_waiters_.load(std::memory_order_relaxed) == 0 &&
+             admit();
+    };
+    if (!try_optional()) {
+      // Match locked/optional admission: trim idle backing without owner calls.
+      pool_.trim_free_buffers(total);
+      if (!try_optional()) return false;
+    }
   }
   bytes_ = bytes;
   metadata.bytes_ = metadata_bytes;
@@ -2526,6 +2558,39 @@ size_t MemoryLimitPool::native_available() const {
   return reserved < capacity ? capacity - reserved : 0;
 }
 
+size_t MemoryLimitPool::queue_lifetime_bytes() const {
+  if (capacity() == 0) return 0;
+  return BlockEvictionQueue::get_instance().initial_backing_bytes_ +
+         queue_runtime_lifetime_size_.load(std::memory_order_relaxed);
+}
+
+size_t MemoryLimitPool::rss_allocation_limit() const {
+  const size_t limit = process_rss_.limit();
+  if (!limit) return std::numeric_limits<size_t>::max();
+  // Resident overlap can credit a measured sample, but the queue's backing
+  // remains in the ledger even if every other owner releases its memory.
+  const size_t queue_bytes = queue_lifetime_bytes();
+  return limit - std::min(limit, queue_bytes);
+}
+
+size_t MemoryLimitPool::native_allocation_limit(
+    size_t retained, bool retained_may_be_permanent) const {
+  const size_t capacity = this->capacity();
+  if (capacity == 0) return 0;
+  const size_t queue_bytes = queue_lifetime_bytes();
+  const size_t permanent = process_rss_.permanent_backing();
+  if (retained_may_be_permanent) retained -= std::min(retained, permanent);
+  const size_t after_queues = capacity - std::min(capacity, queue_bytes);
+  const size_t after_permanent =
+      after_queues - std::min(after_queues, permanent);
+  return after_permanent - std::min(after_permanent, retained);
+}
+
+bool MemoryLimitPool::can_fit_metadata(size_t bytes, size_t retained) const {
+  const size_t limit = std::min(native_allocation_limit(), rss_allocation_limit());
+  return retained <= limit && bytes <= limit - retained;
+}
+
 size_t MemoryLimitPool::admission_shortfall(AdmissionRequest request) const {
   const size_t native_room = native_available();
   const size_t rss_room = process_rss_.available();
@@ -2551,9 +2616,8 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
     if (admit()) return true;
   }
   const auto impossible = [&] {
-    const size_t capacity = pool_size_.load(std::memory_order_relaxed);
-    return request.native_bytes > capacity ||
-           (process_rss_.limit() && request.rss_bytes > process_rss_.limit());
+    return request.native_bytes > native_allocation_limit() ||
+           request.rss_bytes > rss_allocation_limit();
   };
   if (impossible()) return false;
 

@@ -104,9 +104,7 @@ VecBufferPool::~VecBufferPool() {
   // paths have drained.
   log_stats();
   page_table_.force_evict_all_loaded();
-  const size_t writable_metadata_bytes = block_mutex_metadata_bytes() +
-                                         writeback_staging_size_ +
-                                         writeback_io_staging_charge_;
+  const size_t metadata_charge = writable_metadata_bytes();
   block_mutexes_.reset();
   if (writeback_staging_ != nullptr) {
     ailego_free(writeback_staging_);
@@ -115,7 +113,7 @@ VecBufferPool::~VecBufferPool() {
 #if defined(__linux__) && !defined(__ANDROID__)
   writeback_io_uring_.reset();
 #endif
-  MemoryLimitPool::get_instance().release_metadata(writable_metadata_bytes);
+  MemoryLimitPool::get_instance().release_metadata(metadata_charge);
   block_mutex_count_ = 0;
   writeback_staging_size_ = 0;
   writeback_io_staging_charge_ = 0;
@@ -290,6 +288,11 @@ bool VectorPageTable::init(size_t entry_num) {
 }
 
 bool VectorPageTable::extend(size_t new_entry_num) {
+  return extend_with_retained_metadata(new_entry_num, 0);
+}
+
+bool VectorPageTable::extend_with_retained_metadata(size_t new_entry_num,
+                                                    size_t retained_metadata) {
   // The caller serializes page-table extension.
   if (new_entry_num <= entry_num_.load(std::memory_order_relaxed)) {
     return true;
@@ -318,7 +321,11 @@ bool VectorPageTable::extend(size_t new_entry_num) {
   }
   const size_t added_charge = added_segments * kSegmentMetadataBytes +
                               (needs_directory ? kSegmentDirectoryBytes : 0);
-  if (!MemoryLimitPool::get_instance().try_charge_metadata(added_charge)) {
+  auto &pool = MemoryLimitPool::get_instance();
+  if (added_charge &&
+      (!pool.can_fit_metadata(metadata_bytes_for_entries(new_entry_num),
+                              retained_metadata) ||
+       !pool.try_charge_metadata(added_charge))) {
     LOG_ERROR(
         "VectorPageTable::extend: shared memory budget cannot reserve %zu "
         "additional metadata bytes (old_entries=%zu, new_entries=%zu)",
@@ -1138,9 +1145,12 @@ int VecBufferPool::init() {
 #endif
   const size_t writable_metadata_charge =
       mutex_charge + staging_charge + io_staging_charge;
+  auto &memory_pool = MemoryLimitPool::get_instance();
   if (writable_metadata_charge != 0 &&
-      !MemoryLimitPool::get_instance().try_charge_metadata(
-          writable_metadata_charge)) {
+      (!memory_pool.can_fit_metadata(
+           VectorPageTable::metadata_bytes_for_entries(block_num),
+           writable_metadata_charge) ||
+       !memory_pool.try_charge_metadata(writable_metadata_charge))) {
     LOG_ERROR(
         "VecBufferPool::init: shared memory budget cannot reserve %zu bytes "
         "for %zu page-lock stripes and writeback staging (file=%s)",
@@ -2123,7 +2133,9 @@ bool VecBufferPool::extend_file(size_t new_size) {
     return false;
   }
   const size_t old_entry_num = page_table_.entry_num();
-  if (new_entry_num > old_entry_num && !page_table_.extend(new_entry_num)) {
+  if (new_entry_num > old_entry_num &&
+      !page_table_.extend_with_retained_metadata(new_entry_num,
+                                                writable_metadata_bytes())) {
     LOG_ERROR(
         "extend_file: page_table_.extend(%zu) failed before resizing "
         "file=%s to %zu bytes",
