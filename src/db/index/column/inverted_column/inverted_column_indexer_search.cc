@@ -248,11 +248,14 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_lt_raw(
     std::optional<std::string> point_seek_start_pos;
     // 1. Merge ranges where the end boundary is less than the search term
     while (iter_range->Valid()) {
-      char *range_begin, *range_end;
+      const char *range_begin, *range_end;
       size_t range_begin_key_size, range_end_key_size;
-      InvertedIndexCodec::decode_range_key(
-          iter_range->key().data(), iter_range->key().size(), &range_begin,
-          &range_begin_key_size, &range_end, &range_end_key_size);
+      if (!InvertedIndexCodec::decode_range_key(
+              iter_range->key().data(), iter_range->key().size(), &range_begin,
+              &range_begin_key_size, &range_end, &range_end_key_size)) {
+        s = Status::InternalError("Invalid range key");
+        return tl::make_unexpected(s);
+      }
       lt = cmp_lt(range_end, range_end_key_size, term.data(), term.length(),
                   include_eq);
       if (!lt) {
@@ -345,19 +348,26 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_gt_raw(
     // 1. Seek to the first range entry that is greater than the search term
     iter_range->Seek(term);
     if (iter_range->Valid()) {
-      char *range_begin, *range_end;
+      const char *range_begin, *range_end;
       size_t range_begin_key_size, range_end_key_size;
-      InvertedIndexCodec::decode_range_key(
-          iter_range->key().data(), iter_range->key().size(), &range_begin,
-          &range_begin_key_size, &range_end, &range_end_key_size);
+      if (!InvertedIndexCodec::decode_range_key(
+              iter_range->key().data(), iter_range->key().size(), &range_begin,
+              &range_begin_key_size, &range_end, &range_end_key_size)) {
+        s = Status::InternalError("Invalid range key");
+        return tl::make_unexpected(s);
+      }
       int ret =
           cmp(range_begin, range_begin_key_size, term.data(), term.size());
       if (ret == 0 && !include_eq) {
         iter_range->Next();
         if (iter_range->Valid()) {
-          InvertedIndexCodec::decode_range_key(
-              iter_range->key().data(), iter_range->key().size(), &range_begin,
-              &range_begin_key_size, &range_end, &range_end_key_size);
+          if (!InvertedIndexCodec::decode_range_key(
+                  iter_range->key().data(), iter_range->key().size(),
+                  &range_begin, &range_begin_key_size, &range_end,
+                  &range_end_key_size)) {
+            s = Status::InternalError("Invalid range key");
+            return tl::make_unexpected(s);
+          }
           point_seek_end_pos.emplace(range_begin, range_begin_key_size);
         }
       } else {

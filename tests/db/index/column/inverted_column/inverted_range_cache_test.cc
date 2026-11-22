@@ -178,7 +178,7 @@ class InvertedRangeCacheTest : public testing::Test {
                                 6000,
                                 20000,
                                 std::numeric_limits<int32_t>::max()};
-    if (const auto *cache = column_->range_cache()) {
+    if (auto cache = column_->range_cache()) {
       for (const auto &prefix : cache->prefixes) {
         const int32_t end =
             DecodeInt32(cache->buckets[prefix.end_bucket - 1].end);
@@ -248,7 +248,7 @@ class InvertedRangeCacheTest : public testing::Test {
                              : column_->insert_null(id).ok());
     }
     ASSERT_TRUE(column_->seal().ok());
-    const auto *cache = column_->range_cache();
+    auto cache = column_->range_cache();
     ASSERT_NE(cache, nullptr);
     ASSERT_FALSE(cache->prefixes.empty());
     // Query actual checkpoint values as well as the nearest representable
@@ -320,7 +320,7 @@ class InvertedRangeCacheTest : public testing::Test {
 
   std::vector<std::string> cache_contents() const {
     std::vector<std::string> result;
-    if (const auto *cache = column_->range_cache()) {
+    if (auto cache = column_->range_cache()) {
       for (const auto &prefix : cache->prefixes) {
         std::string encoded(
             roaring_bitmap_portable_size_in_bytes(prefix.bitmap.get()), '\0');
@@ -358,7 +358,7 @@ TEST_F(InvertedRangeCacheTest, FreshSealAndReopenPreserveRangeSemantics) {
   const auto values = RandomValues(12000, true);
   insert(values);
   ASSERT_TRUE(column_->seal().ok());
-  const auto *cache = column_->range_cache();
+  auto cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
   ASSERT_GE(cache->prefixes.size(), 9);
   ASSERT_LE(cache->prefixes.size(), 32);
@@ -390,6 +390,7 @@ TEST_F(InvertedRangeCacheTest, FreshSealAndReopenPreserveRangeSemantics) {
   check_numeric(values, bounds);
   const auto original_range_rows = range_rows();
   const auto contents = cache_contents();
+  cache.reset();
   reopen();
   ASSERT_NE(column_->range_cache(), nullptr);
   check_numeric(values, bounds);
@@ -427,12 +428,13 @@ TEST_F(InvertedRangeCacheTest, OptionalRefinementStopsAtBudgetWithoutLosingCache
   const auto values = RandomValues(40000, false);
   insert(values);
   ASSERT_TRUE(column_->seal().ok());
-  const auto *cache = column_->range_cache();
+  auto cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
   ASSERT_GT(cache->prefixes.size(), 9);
   const auto full_count = cache->prefixes.size();
   RangePrefixCacheOptions limited;
   limited.max_bytes = cache->stats.accounted_bytes - 1;
+  cache.reset();
   reopen(limited);
   cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
@@ -447,7 +449,7 @@ TEST_F(InvertedRangeCacheTest, AdditionalCheckpointsServePreviouslyUnseenBounds)
   const auto values = RandomValues(40000, false);
   insert(values);
   ASSERT_TRUE(column_->seal().ok());
-  const auto *cache = column_->range_cache();
+  auto cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
   ASSERT_GT(cache->prefixes.size(), 9);
   std::vector<size_t> original;
@@ -507,7 +509,8 @@ TEST_F(InvertedRangeCacheTest, OrderedPrefixesUseRunContainers) {
   ASSERT_NE(column_->range_cache(), nullptr);
   ASSERT_GE(column_->range_cache()->prefixes.size(), 9);
   ASSERT_LE(column_->range_cache()->prefixes.size(), 32);
-  for (const auto &prefix : column_->range_cache()->prefixes) {
+  const auto cache = column_->range_cache();
+  for (const auto &prefix : cache->prefixes) {
     roaring_statistics_t stats{};
     roaring_bitmap_statistics(prefix.bitmap.get(), &stats);
     // Every prefix is one contiguous interval inside a single high16 block.
@@ -548,7 +551,7 @@ TEST_F(InvertedRangeCacheTest, BoundaryTermsKeepLegacyPhysicalScanDirection) {
   }
   insert(values);
   ASSERT_TRUE(column_->seal().ok());
-  const auto *cache = column_->range_cache();
+  auto cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
 
   RangePrefixCacheOptions disabled;
@@ -711,6 +714,35 @@ TEST_F(InvertedRangeCacheTest,
   EXPECT_NE(column_->range_cache(), nullptr);
 }
 
+TEST_F(InvertedRangeCacheTest, RequiredWorkspaceCanReclaimRangeCache) {
+  create_writer();
+  const auto values = RandomValues(12000, false);
+  insert(values);
+  ASSERT_TRUE(column_->seal().ok());
+
+  auto pin = column_->range_cache();
+  ASSERT_NE(pin, nullptr);
+  auto &pool = ailego::MemoryLimitPool::get_instance();
+  const size_t bytes = pin->stats.accounted_bytes;
+  EXPECT_GE(pool.evictable_cache_used(), bytes);
+  const size_t workspace = pool.capacity() - pool.committed() + bytes / 2;
+
+  auto &queue = ailego::BlockEvictionQueue::get_instance();
+  queue.reclaim_for_allocation(bytes);
+  EXPECT_EQ(column_->range_cache(), pin);
+  EXPECT_EQ(pool.external_used(), initial_external_bytes_ + bytes);
+  check_numeric(values, {-3000, 0, 1000});
+  pin.reset();
+
+  ASSERT_TRUE(pool.try_charge_workspace(workspace));
+  pool.release_external(workspace);
+  EXPECT_EQ(pool.external_used(), initial_external_bytes_);
+  EXPECT_EQ(column_->range_cache(), nullptr);
+  EXPECT_FALSE(
+      column_->explain_range(RawInt32(0), CompareOp::LT).cached_metadata);
+  check_numeric(values, {-3000, 0, 1000});
+}
+
 TEST_F(InvertedRangeCacheTest, EmptyIndexUsesExistingSearchPath) {
   create_writer();
   ASSERT_TRUE(column_->seal().ok());
@@ -734,11 +766,11 @@ TEST_F(InvertedRangeCacheTest, ScratchAdmissionUsesOccupiedPostingBlocks) {
   InvertedRangeCache::BitmapPtr nulls(roaring_bitmap_create());
   ASSERT_NE(nulls, nullptr);
   roaring_bitmap_add_range(nulls.get(), values.size(), uint64_t{max_id} + 1);
-  constexpr size_t budget = 16ULL << 20;
+  constexpr size_t budget = 1ULL << 20;
   auto *ranges = context_.get_cf(field_.name() + INVERT_SUFFIX_RANGES);
   auto &pool = ailego::MemoryLimitPool::get_instance();
   // Leave enough room to decode the short postings, but too little to merge.
-  constexpr size_t scan_budget = budget + (128ULL << 10);
+  constexpr size_t scan_budget = budget + (256ULL << 10);
   ASSERT_GT(pool.capacity() - pool.committed(), scan_budget);
   const size_t reservation = pool.capacity() - pool.committed() - scan_budget;
   ASSERT_TRUE(pool.try_charge_external(reservation));
@@ -905,9 +937,9 @@ TEST_F(InvertedRangeCacheTest, VariableLengthStringAndEmbeddedZeroBoundaries) {
                                   "b",
                                   std::string("a\0", 2),
                                   std::string("a\0", 2) + "3000"};
-  for (const auto &prefix : column_->range_cache()->prefixes) {
-    const auto &end =
-        column_->range_cache()->buckets[prefix.end_bucket - 1].end;
+  const auto cache = column_->range_cache();
+  for (const auto &prefix : cache->prefixes) {
+    const auto &end = cache->buckets[prefix.end_bucket - 1].end;
     bounds.push_back(end);
     bounds.push_back(end + std::string(1, '\0'));
   }
@@ -961,9 +993,9 @@ TEST_F(InvertedRangeCacheTest, BinaryStringsPreserveUnsignedLexicalOrder) {
                                   std::string(1, static_cast<char>(0x7f)),
                                   std::string(1, static_cast<char>(0x80)),
                                   std::string(1, static_cast<char>(0xff))};
-  for (const auto &prefix : column_->range_cache()->prefixes) {
-    const auto &end =
-        column_->range_cache()->buckets[prefix.end_bucket - 1].end;
+  const auto cache = column_->range_cache();
+  for (const auto &prefix : cache->prefixes) {
+    const auto &end = cache->buckets[prefix.end_bucket - 1].end;
     bounds.push_back(end);
     bounds.push_back(end + std::string(1, '\0'));
     bounds.push_back(end.substr(0, end.size() - 1));

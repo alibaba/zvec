@@ -281,6 +281,24 @@ class ProcessRssBudget {
     return try_charge(bytes, pending_allocations_);
   }
 
+  // Declining optional backing must not put unrelated consumers under RSS
+  // pressure. Check headroom and reserve against one observation.
+  bool try_reserve_optional(size_t bytes) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    refresh_locked(false);
+    const size_t remaining = available_.load(std::memory_order_relaxed);
+    const size_t cap = limit();
+    if (pressure() || bytes > remaining ||
+        (cap && remaining - bytes <= headroom(cap)) ||
+        bytes > std::numeric_limits<size_t>::max() - backing_ -
+                    pending_allocations_) {
+      return false;
+    }
+    pending_allocations_ += bytes;
+    update_available();
+    return true;
+  }
+
   MaterializationStamp finish_reservation(size_t bytes, bool allocated) {
     std::lock_guard<std::mutex> lock(mutex_);
     return finish_reservation_locked(bytes, allocated);

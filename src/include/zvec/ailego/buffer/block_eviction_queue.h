@@ -381,7 +381,7 @@ class ZVEC_AILEGO_API MemoryLimitPool {
       kMetadata,
       kLockedMetadata,
       kLockedExternal,
-      // Optional, globally evictable mappings. Admission never walks owners.
+      // Optional, globally evictable backing. Admission never walks owners.
       kEvictableCache,
     };
 
@@ -426,6 +426,8 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   void release_external(const size_t buffer_size);
   void release_heap_external(size_t bytes,
                              ProcessRssBudget::HeapProjection projection);
+  void release_heap_cache(size_t bytes,
+                          ProcessRssBudget::MaterializationStamp stamp);
   void release_unmapped_external(size_t bytes,
                                  ProcessRssBudget::MaterializationStamp stamp);
   void release_unmapped_cache(size_t bytes,
@@ -638,7 +640,7 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   struct QueueResidentMapping;
   static ProcessRssBudget::ResidentSample read_slab_resident_sample();
   static ProcessRssBudget::ResidentSample read_background_resident_sample();
-  enum class Backing { kLive, kPending, kPlan };
+  enum class Backing { kLive, kPending, kOptionalPending, kPlan };
 
   MemoryLimitPool() = default;
   ~MemoryLimitPool();

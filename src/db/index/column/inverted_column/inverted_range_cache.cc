@@ -7,10 +7,8 @@
 #include <algorithm>
 #include <bitset>
 #include <chrono>
-#include <cstring>
 #include <limits>
-#include <new>
-#include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <optional>
 #include "inverted_codec.h"
 
 namespace zvec {
@@ -44,8 +42,72 @@ size_t bitmap_bytes(const roaring_bitmap_t *bitmap) {
 InvertedRangeCache::~InvertedRangeCache() {
   std::vector<Prefix>().swap(prefixes);
   std::vector<Bucket>().swap(buckets);
-  if (charged_bytes_) {
-    ailego::MemoryLimitPool::get_instance().release_external(charged_bytes_);
+  if (stats.accounted_bytes) {
+    ailego::MemoryLimitPool::get_instance().release_heap_cache(
+        stats.accounted_bytes, charge_stamp_);
+  }
+}
+
+InvertedRangeCacheSlot::~InvertedRangeCacheSlot() {
+  if (generation_) {
+    ailego::BlockEvictionQueue::get_instance().set_invalid(this);
+  }
+}
+
+void InvertedRangeCacheSlot::publish(
+    std::unique_ptr<InvertedRangeCache> cache) {
+  if (!cache) return;
+
+  std::shared_ptr<const InvertedRangeCache> published(std::move(cache));
+  auto &queue = ailego::BlockEvictionQueue::get_instance();
+  queue.set_valid(this);
+  std::lock_guard<std::mutex> lock(mutex_);
+  generation_ = queue.next_version();
+  cache_ = std::move(published);
+  if (!queue.add_single_block({0, generation_, this},
+                              ailego::BlockEvictionQueue::kProbationPriority)) {
+    cache_.reset();
+  }
+}
+
+std::shared_ptr<const InvertedRangeCache> InvertedRangeCacheSlot::pin() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return cache_;
+}
+
+bool InvertedRangeCacheSlot::is_dead_block(ailego::eviction_key_t,
+                                           ailego::version_t version) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return !cache_ || generation_ != version;
+}
+
+size_t InvertedRangeCacheSlot::eviction_bytes(ailego::eviction_key_t) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return cache_ ? cache_->stats.accounted_bytes : 0;
+}
+
+bool InvertedRangeCacheSlot::evict_block(ailego::eviction_key_t) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!cache_) return false;
+
+  if (cache_.use_count() == 1) {
+    cache_.reset();
+    return true;
+  }
+  auto &queue = ailego::BlockEvictionQueue::get_instance();
+  if (!queue.add_single_block({0, generation_, this},
+                              ailego::BlockEvictionQueue::kProbationPriority)) {
+    // Keep existing readers safe and let the last pin release the charge.
+    cache_.reset();
+  }
+  return false;
+}
+
+void InvertedRangeCacheSlot::eviction_requeue_failed(
+    ailego::eviction_key_t, ailego::version_t version) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (generation_ == version) {
+    cache_.reset();
   }
 }
 
@@ -62,30 +124,35 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
       (null_count && roaring_bitmap_maximum(null_bitmap) > max_id)) {
     return nullptr;
   }
-  const auto start = std::chrono::steady_clock::now();
-  auto cache = std::unique_ptr<InvertedRangeCache>(new InvertedRangeCache());
   auto &pool = ailego::MemoryLimitPool::get_instance();
+  using PendingAllocation = ailego::MemoryLimitPool::PendingAllocation;
+  constexpr auto kind = PendingAllocation::Kind::kEvictableCache;
+  PendingAllocation budget(pool, kind);
+  if (!pool.can_reuse_cache_backing() || !budget.reserve(max_bytes)) {
+    return nullptr;
+  }
+  std::optional<PendingAllocation> scratch_budget;
+  size_t peak_reservation = max_bytes;
   const auto reserve_scratch = [&](uint64_t scratch) {
-    if (scratch > std::numeric_limits<size_t>::max() - max_bytes) {
+    if (scratch > std::numeric_limits<size_t>::max() - max_bytes ||
+        !pool.can_reuse_cache_backing()) {
       return false;
     }
-    const size_t reservation = max_bytes + static_cast<size_t>(scratch);
-    if (reservation > cache->charged_bytes_) {
-      if (!pool.try_charge_external(reservation - cache->charged_bytes_)) {
-        return false;
-      }
-    } else if (reservation < cache->charged_bytes_) {
-      pool.release_external(cache->charged_bytes_ - reservation);
+    // Resize only between postings or build phases, with no live scratch.
+    scratch_budget.emplace(pool, kind);
+    if (!scratch_budget->reserve(static_cast<size_t>(scratch))) {
+      return false;
     }
-    cache->charged_bytes_ = reservation;
-    cache->stats.build_reservation_bytes =
-        std::max(cache->stats.build_reservation_bytes, reservation);
+    peak_reservation =
+        std::max(peak_reservation, max_bytes + static_cast<size_t>(scratch));
     return true;
   };
   std::bitset<kRoaringBlockCount> occupied_blocks;
   if (!reserve_scratch(sizeof(occupied_blocks))) {
     return nullptr;
   }
+  const auto start = std::chrono::steady_clock::now();
+  auto cache = std::unique_ptr<InvertedRangeCache>(new InvertedRangeCache());
 
   rocksdb::ReadOptions read_options = context.read_opts_;
   read_options.fill_cache = false;
@@ -96,6 +163,7 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
   size_t max_posting_blocks = 0;
   size_t max_decode_scratch = 0;
   for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
+    if (!pool.can_reuse_cache_backing()) return nullptr;
     const size_t metadata = sizeof(*cache) + text_bytes +
                             cache->buckets.capacity() * sizeof(Bucket);
     if (iter->key().size() > max_bytes / 4 ||
@@ -103,19 +171,12 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
       return nullptr;
     }
     const auto key = iter->key();
-    if (key.size() < 9) {
-      return nullptr;
-    }
-    uint64_t encoded_begin_size = 0;
-    std::memcpy(&encoded_begin_size, key.data() + key.size() - 8, 8);
-    if (encoded_begin_size > key.size() - 9 ||
-        key[encoded_begin_size] != '\0') {
-      return nullptr;
-    }
-    char *begin = nullptr, *end = nullptr;
+    const char *begin = nullptr, *end = nullptr;
     size_t begin_size = 0, end_size = 0;
-    InvertedIndexCodec::decode_range_key(iter->key().data(), iter->key().size(),
-                                         &begin, &begin_size, &end, &end_size);
+    if (!InvertedIndexCodec::decode_range_key(key.data(), key.size(), &begin,
+                                              &begin_size, &end, &end_size)) {
+      return nullptr;
+    }
     if (InvertedIndexCodec::CMP(begin, begin_size, end, end_size) > 0 ||
         (!cache->buckets.empty() &&
          InvertedIndexCodec::CMP(cache->buckets.back().end.data(),
@@ -181,14 +242,17 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
     return nullptr;
   }
 
-  // Reserve for the rolling bitmap and a checkpoint copy using only high
-  // keys observed in the decoded postings. merge_or uses a frozen view of
-  // the source payload, so it needs only per-container metadata for the input.
-  // Allow an additional block for a container conversion during OR or shrink.
+  // Reserve for the rolling bitmap, a checkpoint copy and a container
+  // conversion. Only platforms supporting frozen postings avoid a decode
+  // buffer for the source bitmap.
   const uint64_t block_bytes = 2ULL * kRoaringBlockCount + kContainerOverhead;
+  const uint64_t source_scratch =
+      InvertedIndexCodec::kFrozenPostings
+          ? kContainerOverhead * (max_posting_blocks + 3) +
+                sizeof(occupied_blocks)
+          : max_decode_scratch;
   const uint64_t merge_scratch =
-      (2 * occupied_blocks.count() + 1) * block_bytes +
-      kContainerOverhead * (max_posting_blocks + 3) + sizeof(occupied_blocks);
+      (2 * occupied_blocks.count() + 1) * block_bytes + source_scratch;
   if (!reserve_scratch(merge_scratch)) {
     return nullptr;
   }
@@ -202,6 +266,7 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
   size_t bucket_index = 0;
   unsigned decile = 1;
   for (iter->SeekToFirst(); iter->Valid(); iter->Next(), ++bucket_index) {
+    if (!pool.can_reuse_cache_backing()) return nullptr;
     if (bucket_index >= cache->buckets.size() ||
         iter->key() != cache->buckets[bucket_index].key) {
       return nullptr;
@@ -297,6 +362,7 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
       }
       iter->Seek(cache->buckets[begin].key);
       for (size_t i = begin; i < end; ++i, iter->Next()) {
+        if (!pool.can_reuse_cache_backing()) return nullptr;
         if (!iter->Valid() || iter->key() != cache->buckets[i].key)
           return nullptr;
         const auto value = iter->value();
@@ -339,10 +405,11 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
     }
   }
   iter.reset();
+  if (!pool.can_reuse_cache_backing()) return nullptr;
+  cache->stats.build_reservation_bytes = peak_reservation;
   cache->stats.source_bytes = 2 * total_bytes + extra_source_bytes;
   cache->stats.accounted_bytes = bitmap_charge + metadata_bytes(*cache);
-  pool.release_external(cache->charged_bytes_ - cache->stats.accounted_bytes);
-  cache->charged_bytes_ = cache->stats.accounted_bytes;
+  cache->charge_stamp_ = budget.commit(cache->stats.accounted_bytes);
   cache->stats.build_ms = std::chrono::duration<double, std::milli>(
                               std::chrono::steady_clock::now() - start)
                               .count();

@@ -38,6 +38,26 @@ bool ReadNative(ProcessRssBudget::NativeSample *sample) {
   return true;
 }
 
+TEST(ProcessRssBudgetTest, OptionalReservationLeavesRequiredHeadroom) {
+  ProcessRssBudget budget;
+  sampled_rss = 116 * kMiB;
+  ASSERT_TRUE(budget.configure(128 * kMiB, ReadRss));
+  ASSERT_EQ(budget.available(), 12 * kMiB);
+  ASSERT_FALSE(budget.pressure());
+
+  EXPECT_FALSE(budget.try_reserve_optional(16 * kMiB));
+  EXPECT_FALSE(budget.try_reserve_optional(5 * kMiB));
+  EXPECT_FALSE(budget.pressure());
+  EXPECT_EQ(budget.available(), 12 * kMiB);
+
+  ASSERT_TRUE(budget.try_reserve_optional(2 * kMiB));
+  EXPECT_FALSE(budget.pressure());
+  EXPECT_EQ(budget.available(), 10 * kMiB);
+  budget.finish_reservation(2 * kMiB, false);
+  EXPECT_EQ(budget.available(), 12 * kMiB);
+  EXPECT_FALSE(budget.pressure());
+}
+
 TEST(ProcessRssBudgetTest, NativeFootprintTracksUntouchedBackingAcrossSamples) {
   ProcessRssBudget budget;
   sampled_rss = 32 * kMiB;

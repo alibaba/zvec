@@ -7,9 +7,11 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <roaring/roaring.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include "db/common/rocksdb_context.h"
 
 namespace zvec {
@@ -36,6 +38,7 @@ struct RangeQueryPlan {
   size_t boundary_bucket{SIZE_MAX};
   bool left_inclusive{false};
   bool flip{false};
+  bool cached_metadata{false};
   uint64_t residual_bytes{0};
   uint64_t residual_cardinality{0};
   uint64_t estimated_work{0};
@@ -92,7 +95,29 @@ class InvertedRangeCache {
 
  private:
   InvertedRangeCache() = default;
-  size_t charged_bytes_{0};
+  ailego::ProcessRssBudget::MaterializationStamp charge_stamp_{};
+};
+
+// The indexer publishes at most once. A reader holds a snapshot through both
+// planning and execution; reclamation can free the cache after the last pin.
+class InvertedRangeCacheSlot final : private ailego::EvictableBlockOwner {
+ public:
+  ~InvertedRangeCacheSlot() override;
+
+  void publish(std::unique_ptr<InvertedRangeCache> cache);
+  std::shared_ptr<const InvertedRangeCache> pin() const;
+
+ private:
+  bool is_dead_block(ailego::eviction_key_t key,
+                     ailego::version_t version) override;
+  bool evict_block(ailego::eviction_key_t key) override;
+  size_t eviction_bytes(ailego::eviction_key_t key) const override;
+  void eviction_requeue_failed(ailego::eviction_key_t key,
+                               ailego::version_t version) override;
+
+  mutable std::mutex mutex_;
+  std::shared_ptr<const InvertedRangeCache> cache_;
+  ailego::version_t generation_{0};
 };
 
 }  // namespace zvec

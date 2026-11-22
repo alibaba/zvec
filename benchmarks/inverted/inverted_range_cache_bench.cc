@@ -437,7 +437,7 @@ struct BitmapStats {
 };
 
 std::string cache_json(const zvec::InvertedColumnIndexer &indexer) {
-  const auto *cache = indexer.range_cache();
+  const auto cache = indexer.range_cache();
   if (!cache) return "null";
   BitmapStats total;
   for (const auto &prefix : cache->prefixes) total.add(prefix.bitmap.get());
@@ -477,7 +477,7 @@ std::string cache_json(const zvec::InvertedColumnIndexer &indexer) {
 std::vector<int32_t> cache_boundaries(
     const zvec::InvertedColumnIndexer &indexer) {
   std::vector<int32_t> values;
-  if (const auto *cache = indexer.range_cache()) {
+  if (const auto cache = indexer.range_cache()) {
     for (const auto &prefix : cache->prefixes) {
       values.push_back(
           decode_int32_key(cache->buckets[prefix.end_bucket - 1].end));
@@ -505,7 +505,7 @@ const char *path_name(zvec::RangeQueryPath path) {
 std::string plan_json(const zvec::InvertedColumnIndexer &indexer,
                       const Query &query) {
   const auto plan = indexer.explain_range(value_bytes(query.value), query.op);
-  const bool metadata_available = indexer.range_cache() != nullptr;
+  const bool metadata_available = plan.cached_metadata;
   std::ostringstream out;
   out << "{\"path\":" << json_string(path_name(plan.path))
       << ",\"metadata_available\":" << (metadata_available ? "true" : "false")

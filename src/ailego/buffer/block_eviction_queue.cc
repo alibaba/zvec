@@ -1572,6 +1572,8 @@ bool MemoryLimitPool::try_reserve_committed(size_t bytes, Backing backing,
       bool admitted;
       if (backing == Backing::kPending) {
         admitted = process_rss_.try_reserve(bytes);
+      } else if (backing == Backing::kOptionalPending) {
+        admitted = process_rss_.try_reserve_optional(bytes);
       } else if (backing == Backing::kPlan) {
         admitted = true;
       } else {
@@ -1594,7 +1596,7 @@ size_t MemoryLimitPool::release_committed(
   const size_t previous =
       committed_size_.fetch_sub(bytes, std::memory_order_relaxed);
   assert(previous >= bytes);
-  if (backing == Backing::kPending) {
+  if (backing == Backing::kPending || backing == Backing::kOptionalPending) {
     process_rss_.finish_reservation(bytes, false);
   } else if (backing != Backing::kPlan) {
     process_rss_.release_projected_mapping(bytes, projection);
@@ -2451,7 +2453,7 @@ bool MemoryLimitPool::PendingAllocation::reserve(size_t bytes) {
       const size_t limit = pool_.high_watermark();
       if (pool_.mandatory_waiters_.load(std::memory_order_relaxed) == 0 &&
           used <= limit && bytes <= limit - used &&
-          pool_.try_reserve_allocation(bytes, Backing::kPending)) {
+          pool_.try_reserve_allocation(bytes, Backing::kOptionalPending)) {
         counter_->fetch_add(bytes, std::memory_order_relaxed);
         pool_.evictable_cache_size_.fetch_add(bytes, std::memory_order_relaxed);
         reserved = true;
@@ -2777,6 +2779,16 @@ void MemoryLimitPool::release_heap_external(
   process_rss_.release_heap(bytes, projection);
   { std::lock_guard<std::mutex> lock(capacity_mutex_); }
   capacity_cv_.notify_all();
+}
+
+void MemoryLimitPool::release_heap_cache(
+    size_t bytes, ProcessRssBudget::MaterializationStamp stamp) {
+  const size_t previous =
+      evictable_cache_size_.fetch_sub(bytes, std::memory_order_relaxed);
+  assert(previous >= bytes);
+  (void)previous;
+  release_heap_external(bytes,
+                        ProcessRssBudget::HeapProjection::Full(bytes, stamp));
 }
 
 void MemoryLimitPool::release_unmapped_external(

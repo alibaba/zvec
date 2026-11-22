@@ -16,6 +16,7 @@
 #pragma once
 
 
+#include <cstring>
 #include <string>
 #include <roaring/roaring.h>
 #include <zvec/ailego/logger/logger.h>
@@ -136,18 +137,43 @@ class InvertedIndexCodec {
 
   // Format of range key:
   // [range_begin_key][separator_byte][range_end_key][range_begin_key_size]
-  static void decode_range_key(const char *range_key_ptr, size_t range_key_size,
-                               char **range_begin_pos,
-                               size_t *range_begin_key_size,
-                               char **range_end_pos,
-                               size_t *range_end_key_size) {
-    *range_begin_key_size =
-        *(uint64_t *)(range_key_ptr + (range_key_size - sizeof(uint64_t)));
-    *range_begin_pos = (char *)range_key_ptr;
+  static bool decode_range_key(const char *range_key, size_t range_key_size,
+                               const char **begin, size_t *begin_size,
+                               const char **end, size_t *end_size) {
+    if (range_key_size < sizeof(uint64_t) + 1) return false;
 
-    *range_end_key_size =
-        range_key_size - sizeof(uint64_t) - (*range_begin_key_size) - 1;
-    *range_end_pos = (char *)(range_key_ptr + (*range_begin_key_size) + 1);
+    const size_t key_bytes = range_key_size - sizeof(uint64_t);
+    uint64_t encoded_begin_size;
+    std::memcpy(&encoded_begin_size, range_key + key_bytes,
+                sizeof(encoded_begin_size));
+    if (encoded_begin_size >= key_bytes ||
+        range_key[encoded_begin_size] != '\0') {
+      return false;
+    }
+
+    *begin = range_key;
+    *begin_size = static_cast<size_t>(encoded_begin_size);
+    *end = range_key + *begin_size + 1;
+    *end_size = key_bytes - *begin_size - 1;
+    return true;
+  }
+
+
+  // The portable format does not guarantee payload alignment. Keep the
+  // zero-copy path on architectures that tolerate unaligned loads.
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || \
+    defined(_M_IX86) || defined(__aarch64__) || defined(_M_ARM64)
+  static constexpr bool kFrozenPostings = true;
+#else
+  static constexpr bool kFrozenPostings = false;
+#endif
+
+  static roaring_bitmap_t *load_posting_bitmap(const char *data, size_t size) {
+    if (size <= 1) return nullptr;
+    if constexpr (kFrozenPostings) {
+      return roaring_bitmap_portable_deserialize_frozen(data + 1);
+    }
+    return roaring_bitmap_portable_deserialize_safe(data + 1, size - 1);
   }
 
 
@@ -230,9 +256,8 @@ class InvertedIndexCodec {
       LOG_ERROR("Failed to create bitmap");
       return Status::InternalError();
     }
-    for (size_t i = 1; i < size; i += sizeof(uint32_t)) {
-      roaring_bitmap_add(*bitmap,
-                         *reinterpret_cast<const uint32_t *>(data + i));
+    for (size_t i = 0; i < header; ++i) {
+      roaring_bitmap_add(*bitmap, read_doc_id(data + 1, i));
     }
     return Status::OK();
   }
@@ -252,7 +277,7 @@ class InvertedIndexCodec {
     }
 
     if (header == 0) {  // This is a bitmap
-      auto bitmap_other = roaring_bitmap_portable_deserialize_frozen(data + 1);
+      auto bitmap_other = load_posting_bitmap(data, size);
       if (!bitmap_other) {
         LOG_ERROR("Failed to deserialize bitmap");
         return Status::InternalError();
@@ -271,9 +296,8 @@ class InvertedIndexCodec {
       LOG_ERROR("Failed to deserialize docid_list");
       return Status::InternalError();
     }
-    auto doc_list = reinterpret_cast<const uint32_t *>(data + 1);
     for (size_t i = 0; i < header; ++i) {
-      roaring_bitmap_add(bitmap, doc_list[i]);
+      roaring_bitmap_add(bitmap, read_doc_id(data + 1, i));
     }
     return Status::OK();
   }
@@ -293,7 +317,7 @@ class InvertedIndexCodec {
     }
 
     if (header == 0) {  // This is a bitmap
-      auto bitmap_other = roaring_bitmap_portable_deserialize_frozen(data + 1);
+      auto bitmap_other = load_posting_bitmap(data, size);
       if (!bitmap_other) {
         LOG_ERROR("Failed to deserialize bitmap");
         return Status::InternalError();
@@ -308,15 +332,16 @@ class InvertedIndexCodec {
       LOG_ERROR("Failed to deserialize docid_list");
       return Status::InternalError();
     }
-    auto doc_list = reinterpret_cast<const uint32_t *>(data + 1);
     uint32_t tmp = 0;
     for (size_t i = 0; i < header; ++i) {
-      tmp |= roaring_bitmap_contains(bitmap, doc_list[i]) << i;
+      if (roaring_bitmap_contains(bitmap, read_doc_id(data + 1, i))) {
+        tmp |= uint32_t{1} << i;
+      }
     }
     roaring_bitmap_clear(bitmap);
     for (size_t i = 0; i < header; ++i) {
-      if (tmp & (1 << i)) {
-        roaring_bitmap_add(bitmap, doc_list[i]);
+      if (tmp & (uint32_t{1} << i)) {
+        roaring_bitmap_add(bitmap, read_doc_id(data + 1, i));
       }
     }
     return Status::OK();
@@ -324,6 +349,12 @@ class InvertedIndexCodec {
 
 
  private:
+  static uint32_t read_doc_id(const char *data, size_t index) {
+    uint32_t doc_id;
+    std::memcpy(&doc_id, data + index * sizeof(doc_id), sizeof(doc_id));
+    return doc_id;
+  }
+
   static void convert_to_big_endian(char *in, size_t size) {
     static const bool isBigEndianSystem = []() {
       int i = 0x1243;

@@ -84,8 +84,8 @@ class InvertedColumnIndexer {
 
 
  public:
-  const InvertedRangeCache *range_cache() const {
-    return range_cache_.get();
+  std::shared_ptr<const InvertedRangeCache> range_cache() const {
+    return range_cache_.pin();
   }
 
   RangeQueryPlan explain_range(const std::string &value, CompareOp op) const;
@@ -250,10 +250,12 @@ class InvertedColumnIndexer {
   void build_range_cache();
 
   RangeQueryPlan plan_range(const std::string &term, bool query_left,
-                            bool include_eq) const;
+                            bool include_eq,
+                            const InvertedRangeCache *cache) const;
 
   Result<roaring_bitmap_t *> execute_range_plan(
-      const std::string &term, const RangeQueryPlan &plan) const;
+      const std::string &term, const RangeQueryPlan &plan,
+      const InvertedRangeCache *cache) const;
 
   Result<roaring_bitmap_t *> get_bitmap_lt_raw(const std::string &term,
                                                bool include_eq) const;
@@ -452,7 +454,7 @@ class InvertedColumnIndexer {
   ConcurrentRoaringBitmap32 null_bitmap_{};
   SegmentDocRangeStat::Ptr doc_range_stat_{nullptr};
   RangePrefixCacheOptions range_cache_options_{};
-  std::unique_ptr<InvertedRangeCache> range_cache_;
+  InvertedRangeCacheSlot range_cache_;
 };
 
 

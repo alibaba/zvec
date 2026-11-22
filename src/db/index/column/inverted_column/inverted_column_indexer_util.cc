@@ -26,15 +26,14 @@ InvertedColumnIndexer::~InvertedColumnIndexer() {
 
 
 void InvertedColumnIndexer::build_range_cache() {
-  range_cache_.reset();
   if (!sealed_ || !enable_range_optimization_ || !cf_ranges_ ||
       range_cache_options_.max_bytes == 0) {
     return;
   }
   try {
-    range_cache_ = InvertedRangeCache::Build(ctx_, cf_ranges_, max_id_.load(),
-                                             null_bitmap_.bitmap(),
-                                             range_cache_options_.max_bytes);
+    range_cache_.publish(InvertedRangeCache::Build(
+        ctx_, cf_ranges_, max_id_.load(), null_bitmap_.bitmap(),
+        range_cache_options_.max_bytes));
   } catch (const std::bad_alloc &) {
     LOG_WARN("Skipping range prefix cache for %s: insufficient memory",
              id().c_str());

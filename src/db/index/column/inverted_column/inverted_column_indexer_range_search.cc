@@ -30,10 +30,8 @@ Status subtract_posting(const rocksdb::Slice &value, roaring_bitmap_t *result) {
   }
   const auto header = static_cast<unsigned char>(value[0]);
   if (header == 0) {
-    // The iterator keeps the serialized value alive for this operation. Match
-    // merge_or's read-only portable view instead of copying every source.
     InvertedRangeCache::BitmapPtr bitmap(
-        roaring_bitmap_portable_deserialize_frozen(value.data() + 1));
+        InvertedIndexCodec::load_posting_bitmap(value.data(), value.size()));
     if (!bitmap) {
       return Status::InternalError();
     }
@@ -56,28 +54,29 @@ Status subtract_posting(const rocksdb::Slice &value, roaring_bitmap_t *result) {
 
 RangeQueryPlan InvertedColumnIndexer::explain_range(const std::string &value,
                                                     CompareOp op) const {
+  const auto cache = range_cache();
   switch (op) {
     case CompareOp::LT:
-      return plan_range(encode(value), true, false);
+      return plan_range(encode(value), true, false, cache.get());
     case CompareOp::LE:
-      return plan_range(encode(value), true, true);
+      return plan_range(encode(value), true, true, cache.get());
     case CompareOp::GT:
-      return plan_range(encode(value), false, false);
+      return plan_range(encode(value), false, false, cache.get());
     case CompareOp::GE:
-      return plan_range(encode(value), false, true);
+      return plan_range(encode(value), false, true, cache.get());
     default:
       return {};
   }
 }
 
-RangeQueryPlan InvertedColumnIndexer::plan_range(const std::string &term,
-                                                 bool query_left,
-                                                 bool include_eq) const {
+RangeQueryPlan InvertedColumnIndexer::plan_range(
+    const std::string &term, bool query_left, bool include_eq,
+    const InvertedRangeCache *cache) const {
   RangeQueryPlan plan;
   // Every candidate builds either L or its complement R. GT is the complement
   // of LE, and GE is the complement of LT, including at a repeated value.
   plan.left_inclusive = query_left ? include_eq : !include_eq;
-  if (!range_cache_ || range_cache_->prefixes.empty()) {
+  if (!cache) {
     const bool complement = range_covers_most_values(
         term, query_left ? CompareOp::LT : CompareOp::GT);
     const bool build_left = query_left != complement;
@@ -87,8 +86,7 @@ RangeQueryPlan InvertedColumnIndexer::plan_range(const std::string &term,
     return plan;
   }
 
-  const auto &cache = *range_cache_;
-  const auto &buckets = cache.buckets;
+  const auto &buckets = cache->buckets;
   const auto matches_left = [&](const std::string &value) {
     return cmp_lt(value.data(), value.size(), term.data(), term.size(),
                   plan.left_inclusive);
@@ -149,12 +147,13 @@ RangeQueryPlan InvertedColumnIndexer::plan_range(const std::string &term,
     candidate.boundary_bucket = boundary;
     candidate.left_inclusive = plan.left_inclusive;
     candidate.flip = flip;
+    candidate.cached_metadata = true;
     candidate.residual_bytes = sum_bytes(begin, end) + boundary_bytes;
     candidate.residual_cardinality =
         sum_cardinality(begin, end) + boundary_cardinality;
     candidate.estimated_work = candidate.residual_bytes;
     if (prefix_index != SIZE_MAX) {
-      candidate.estimated_work += cache.prefixes[prefix_index].copy_bytes;
+      candidate.estimated_work += cache->prefixes[prefix_index].copy_bytes;
     }
     if (flip) {
       candidate.estimated_work += flip_bytes;
@@ -191,8 +190,8 @@ RangeQueryPlan InvertedColumnIndexer::plan_range(const std::string &term,
 
   // The prefix set is bounded. Considering all eligible prefixes also
   // accounts for a farther but substantially smaller run-compressed prefix.
-  for (size_t i = 0; i < cache.prefixes.size(); ++i) {
-    const size_t end = cache.prefixes[i].end_bucket;
+  for (size_t i = 0; i < cache->prefixes.size(); ++i) {
+    const size_t end = cache->prefixes[i].end_bucket;
     if (end <= left_end) {
       consider(
           make_plan(RangeQueryPath::PrefixAdd, end, left_end, i, !query_left));
@@ -204,8 +203,8 @@ RangeQueryPlan InvertedColumnIndexer::plan_range(const std::string &term,
   // a conservative near-tie guard, not a bound on actual term-iteration time.
   const uint64_t best_non_subtract_work = plan.estimated_work;
   if (range_cache_options_.allow_subtraction) {
-    for (size_t i = 0; i < cache.prefixes.size(); ++i) {
-      const size_t end = cache.prefixes[i].end_bucket;
+    for (size_t i = 0; i < cache->prefixes.size(); ++i) {
+      const size_t end = cache->prefixes[i].end_bucket;
       if (end >= right_begin) {
         auto candidate = make_plan(RangeQueryPath::PrefixSubtract, right_begin,
                                    end, i, !query_left);
@@ -221,8 +220,9 @@ RangeQueryPlan InvertedColumnIndexer::plan_range(const std::string &term,
 }
 
 Result<roaring_bitmap_t *> InvertedColumnIndexer::execute_range_plan(
-    const std::string &term, const RangeQueryPlan &plan) const {
-  if (!range_cache_ || range_cache_->prefixes.empty()) {
+    const std::string &term, const RangeQueryPlan &plan,
+    const InvertedRangeCache *cache) const {
+  if (!cache) {
     auto result = plan.path == RangeQueryPath::ScanLeft
                       ? get_bitmap_lt_raw(term, plan.left_inclusive)
                       : get_bitmap_gt_raw(term, !plan.left_inclusive);
@@ -232,13 +232,12 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::execute_range_plan(
     return result;
   }
 
-  const auto &cache = *range_cache_;
   const bool subtract = plan.path == RangeQueryPath::PrefixSubtract;
   InvertedRangeCache::BitmapPtr bitmap(
       plan.prefix_index == SIZE_MAX
           ? roaring_bitmap_create()
           : roaring_bitmap_copy(
-                cache.prefixes[plan.prefix_index].bitmap.get()));
+                cache->prefixes[plan.prefix_index].bitmap.get()));
   if (!bitmap) {
     return tl::make_unexpected(Status::InternalError());
   }
@@ -255,9 +254,9 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::execute_range_plan(
   if (plan.range_begin < plan.range_end) {
     std::unique_ptr<rocksdb::Iterator> ranges(
         ctx_.db_->NewIterator(ctx_.read_opts_, cf_ranges_));
-    ranges->Seek(cache.buckets[plan.range_begin].key);
+    ranges->Seek(cache->buckets[plan.range_begin].key);
     for (size_t i = plan.range_begin; i < plan.range_end; ++i) {
-      if (!ranges->Valid() || ranges->key() != cache.buckets[i].key) {
+      if (!ranges->Valid() || ranges->key() != cache->buckets[i].key) {
         return tl::make_unexpected(Status::InternalError());
       }
       auto status = merge(ranges->value());
@@ -272,7 +271,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::execute_range_plan(
   }
 
   if (plan.boundary_bucket != SIZE_MAX) {
-    const auto &bucket = cache.buckets[plan.boundary_bucket];
+    const auto &bucket = cache->buckets[plan.boundary_bucket];
     const bool boundary_left = plan.path == RangeQueryPath::ScanLeft ||
                                plan.path == RangeQueryPath::PrefixAdd;
     std::unique_ptr<rocksdb::Iterator> terms(
@@ -320,7 +319,9 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_lt(
   if (field_.element_data_type() == DataType::BOOL) {
     return tl::make_unexpected(Status::InternalError());
   }
-  return execute_range_plan(term, plan_range(term, true, include_eq));
+  const auto cache = range_cache();
+  const auto plan = plan_range(term, true, include_eq, cache.get());
+  return execute_range_plan(term, plan, cache.get());
 }
 
 Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_gt(
@@ -328,7 +329,9 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_gt(
   if (field_.element_data_type() == DataType::BOOL) {
     return tl::make_unexpected(Status::InternalError());
   }
-  return execute_range_plan(term, plan_range(term, false, include_eq));
+  const auto cache = range_cache();
+  const auto plan = plan_range(term, false, include_eq, cache.get());
+  return execute_range_plan(term, plan, cache.get());
 }
 
 }  // namespace zvec
