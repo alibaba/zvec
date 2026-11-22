@@ -1052,6 +1052,39 @@ class BufferStorage : public IndexStorage {
       this->close_index(false);
       return ret;
     }
+    // Older writers could leave extra bytes after a successfully rolled-back
+    // append. Trim them before opening a writable cache for this file.
+    const auto &tail = meta_chains_.back();
+    const auto &footer = tail.footer;
+    const uint64_t content_offset = tail.header->content_offset;
+    const uint64_t physical_tail_size =
+        buffer_pool_->file_size() - tail.header_start_offset;
+    const bool has_unused_tail =
+        footer.total_size < physical_tail_size &&
+        content_offset >= tail.header->meta_footer_offset + sizeof(footer) &&
+        content_offset <= footer.total_size &&
+        footer.content_size <= footer.total_size - content_offset &&
+        footer.content_padding_size ==
+            footer.total_size - content_offset - footer.content_size;
+    if (writable && has_unused_tail) {
+      const uint64_t used_end = tail.header_start_offset + footer.total_size;
+      const bool all_chains_fit =
+          std::all_of(meta_chains_.begin(), meta_chains_.end(),
+                      [used_end](const auto &chain) {
+                        const uint64_t extent =
+                            used_end - chain.header_start_offset;
+                        const uint64_t offset = chain.header->content_offset;
+                        return chain.footer.total_size <= extent &&
+                               offset <= extent &&
+                               chain.footer.content_size <= extent - offset &&
+                               chain.footer.content_padding_size <=
+                                   extent - offset - chain.footer.content_size;
+                      });
+      if (all_chains_fit && !buffer_pool_->truncate_unused_tail(used_end)) {
+        this->close_index(false);
+        return IndexError_TruncateFile;
+      }
+    }
     const size_t file_size = buffer_pool_->file_size();
     const size_t page_count =
         file_size == 0 ? 0 : (file_size - 1) / ailego::kVectorPageSize + 1;
@@ -1307,7 +1340,7 @@ class BufferStorage : public IndexStorage {
     this->refresh_index(chkp);
   }
 
-  //! Retrieve check point of storage
+  //! Retrieve the logical checkpoint of the current tail.
   uint64_t check_point() const override {
     return visible_checkpoint_.load(std::memory_order_acquire);
   }
@@ -1409,6 +1442,7 @@ class BufferStorage : public IndexStorage {
     if (!accept_checkpoint_requests_) return;
     if (chkp != 0) {
       pending_checkpoint_ = chkp;
+      visible_checkpoint_.store(chkp, std::memory_order_release);
     }
     set_as_dirty();
   }
@@ -1517,8 +1551,6 @@ class BufferStorage : public IndexStorage {
     }
     split_checkpoint_ = 0;
     split_checkpoint_chains_ = 0;
-    visible_checkpoint_.store(meta_chains_.back().footer.check_point,
-                              std::memory_order_release);
     persisted = true;
     return 0;
   } catch (const std::bad_alloc &) {
@@ -1602,8 +1634,22 @@ class BufferStorage : public IndexStorage {
     auto pending = segments_.try_emplace(id, IndexMapping::SegmentInfo{});
     if (!pending.second) return IndexError_Duplicate;
     bool committed = false;
+    const size_t original_file_size = buffer_pool_->file_size();
     AILEGO_DEFER([&]() {
-      if (!committed) segments_.erase(pending.first);
+      if (committed) return;
+      segments_.erase(pending.first);
+      // The directory rollback guards run first. Keep the grown bytes if
+      // restoring the directory failed and they may still be referenced.
+      if (corrupted_.load(std::memory_order_acquire) ||
+          original_file_size == buffer_pool_->file_size()) {
+        return;
+      }
+      try {
+        if (buffer_pool_->truncate_unused_tail(original_file_size)) return;
+      } catch (...) {
+        // Rollback may already be running during exception handling.
+      }
+      corrupted_.store(true, std::memory_order_release);
     });
 
     MetaChain *chain = &meta_chains_.back();
@@ -1802,20 +1848,13 @@ class BufferStorage : public IndexStorage {
     chain->append_meta_needs_write = false;
     pending.first->second = IndexMapping::SegmentInfo{
         IndexMapping::Segment{live_seg}, chain->header_start_offset, header};
-    {
+    if (chain_split) {
       std::lock_guard<std::mutex> lock(checkpoint_mutex_);
-      if (chain_split) {
-        if (pending_checkpoint_ != 0) {
-          split_checkpoint_ = std::exchange(pending_checkpoint_, 0);
-          split_checkpoint_chains_ = meta_chains_.size() - 1;
-        }
-        visible_checkpoint_.store(0, std::memory_order_release);
-      } else if (pending_checkpoint_ != 0) {
-        // Match a successful in-place append's checkpoint visibility while
-        // leaving the writeback to flush().
-        visible_checkpoint_.store(pending_checkpoint_,
-                                  std::memory_order_release);
+      if (pending_checkpoint_ != 0) {
+        split_checkpoint_ = std::exchange(pending_checkpoint_, 0);
+        split_checkpoint_chains_ = meta_chains_.size() - 1;
       }
+      visible_checkpoint_.store(0, std::memory_order_release);
     }
     committed = true;
     return 0;

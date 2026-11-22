@@ -981,7 +981,10 @@ TEST_F(BufferStorageWriteTest, RefreshCheckpoint) {
 
   storage->refresh(42);
   EXPECT_TRUE(storage->is_dirty());
-  EXPECT_EQ(0u, storage->check_point());
+  EXPECT_EQ(42u, storage->check_point());
+  EXPECT_EQ(IndexError_Duplicate, storage->append("seg1", 4096));
+  EXPECT_TRUE(storage->is_dirty());
+  EXPECT_EQ(42u, storage->check_point());
   ASSERT_EQ(0, storage->flush());
   EXPECT_EQ(42u, storage->check_point());
 

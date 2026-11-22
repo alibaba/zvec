@@ -328,8 +328,11 @@ int IndexMapping::append(const std::string &id, size_t size) {
   footer_->segments_meta_crc =
       ailego::Crc32c::Hash(segment_start_, footer_->segments_meta_size, 0);
   footer_->segment_count += 1;
-  footer_->content_size += size;
-  footer_->total_size += size;
+  // The physical file may include unused bytes beyond the old content.
+  // Declare the end of the segment at the same offset used to allocate it.
+  footer_->content_size = segment->data_index + size;
+  footer_->content_padding_size = 0;
+  footer_->total_size = index_size_ - current_header_start_offset_;
   IndexFormat::UpdateMetaFooter(footer_, 0);
   segments_.emplace(
       id, SegmentInfo{Segment{segment}, current_header_start_offset_, header_});
