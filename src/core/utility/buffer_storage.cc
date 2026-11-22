@@ -1613,7 +1613,7 @@ class BufferStorage : public IndexStorage {
                 file_name_.c_str());
       return IndexError_Runtime;
     }
-    if (size == 0) {
+    if (size == 0 || id.find('\0') != std::string::npos) {
       return IndexError_InvalidArgument;
     }
     if (segments_.find(id) != segments_.end()) {
@@ -1665,15 +1665,27 @@ class BufferStorage : public IndexStorage {
     if (sizeof(IndexFormat::SegmentMeta) * chain->footer.segment_count +
             need_size > chain->segment_ids_offset) {
       size_t new_chain_start = chain->allocated_file_end();
+      if (new_chain_start >
+          std::numeric_limits<size_t>::max() - (page_size - 1)) {
+        return IndexError_InvalidLength;
+      }
       new_chain_start =
           (new_chain_start + page_size - 1) / page_size * page_size;
-      size_t new_meta_total =
-          (segment_meta_capacity_ + sizeof(IndexFormat::MetaHeader) +
+      const uint64_t new_meta_total =
+          (uint64_t{segment_meta_capacity_} + sizeof(IndexFormat::MetaHeader) +
            sizeof(IndexFormat::MetaFooter) + page_size - 1) /
           page_size * page_size;
+      if (new_meta_total - sizeof(IndexFormat::MetaFooter) >
+          static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
+        return IndexError_InvalidLength;
+      }
       uint32_t new_segments_meta_size = static_cast<uint32_t>(
           new_meta_total - sizeof(IndexFormat::MetaHeader) -
           sizeof(IndexFormat::MetaFooter));
+      if (need_size > new_segments_meta_size ||
+          new_meta_total > std::numeric_limits<size_t>::max() - new_chain_start) {
+        return IndexError_InvalidLength;
+      }
 
       auto new_header = std::make_unique<IndexFormat::MetaHeader>();
       IndexFormat::SetupMetaHeader(
