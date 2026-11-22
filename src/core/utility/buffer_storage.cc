@@ -1052,38 +1052,13 @@ class BufferStorage : public IndexStorage {
       this->close_index(false);
       return ret;
     }
-    // Older writers could leave extra bytes after a successfully rolled-back
-    // append. Trim them before opening a writable cache for this file.
-    const auto &tail = meta_chains_.back();
-    const auto &footer = tail.footer;
-    const uint64_t content_offset = tail.header->content_offset;
-    const uint64_t physical_tail_size =
-        buffer_pool_->file_size() - tail.header_start_offset;
-    const bool has_unused_tail =
-        footer.total_size < physical_tail_size &&
-        content_offset >= tail.header->meta_footer_offset + sizeof(footer) &&
-        content_offset <= footer.total_size &&
-        footer.content_size <= footer.total_size - content_offset &&
-        footer.content_padding_size ==
-            footer.total_size - content_offset - footer.content_size;
-    if (writable && has_unused_tail) {
-      const uint64_t used_end = tail.header_start_offset + footer.total_size;
-      const bool all_chains_fit =
-          std::all_of(meta_chains_.begin(), meta_chains_.end(),
-                      [used_end](const auto &chain) {
-                        const uint64_t extent =
-                            used_end - chain.header_start_offset;
-                        const uint64_t offset = chain.header->content_offset;
-                        return chain.footer.total_size <= extent &&
-                               offset <= extent &&
-                               chain.footer.content_size <= extent - offset &&
-                               chain.footer.content_padding_size <=
-                                   extent - offset - chain.footer.content_size;
-                      });
-      if (all_chains_fit && !buffer_pool_->truncate_unused_tail(used_end)) {
-        this->close_index(false);
-        return IndexError_TruncateFile;
-      }
+    // Parsing bounds every non-tail chain by the start of the following
+    // chain. Only bytes past the tail's allocation can be discarded.
+    const uint64_t used_end = meta_chains_.back().allocated_file_end();
+    if (writable && used_end < buffer_pool_->file_size() &&
+        !buffer_pool_->truncate_unused_tail(used_end)) {
+      this->close_index(false);
+      return IndexError_TruncateFile;
     }
     const size_t file_size = buffer_pool_->file_size();
     const size_t page_count =
@@ -1161,7 +1136,9 @@ class BufferStorage : public IndexStorage {
   int parse_segment(size_t offset, uint64_t header_start_offset,
                     IndexFormat::MetaHeader *chain_header,
                     const IndexFormat::MetaFooter &footer,
+                    uint64_t available_content,
                     uint32_t &out_segment_ids_offset,
+                    uint64_t &out_segment_extent,
                     std::unique_ptr<char[]> &segment_buffer) {
     segment_buffer = std::make_unique<char[]>(footer.segments_meta_size);
     if (buffer_pool_handle_->get_meta(offset, footer.segments_meta_size,
@@ -1187,12 +1164,17 @@ class BufferStorage : public IndexStorage {
       if (iter->segment_id_offset >= footer.segments_meta_size) {
         return IndexError_InvalidValue;
       }
-      if (iter->data_index > footer.content_size) {
-        return IndexError_InvalidValue;
-      }
-      if (iter->data_index + iter->data_size > footer.content_size) {
+      // Older mmap writers could leave the footer short of the actual
+      // allocation. Validate the full reserved capacity against the file.
+      if (iter->data_index > available_content ||
+          iter->data_size > available_content - iter->data_index ||
+          iter->padding_size >
+              available_content - iter->data_index - iter->data_size) {
         return IndexError_InvalidLength;
       }
+      out_segment_extent =
+          std::max(out_segment_extent,
+                   iter->data_index + iter->data_size + iter->padding_size);
 
       if (iter->segment_id_offset < segment_ids_offset) {
         segment_ids_offset = iter->segment_id_offset;
@@ -1219,6 +1201,7 @@ class BufferStorage : public IndexStorage {
   }
 
   int parse_to_mapping() {
+    const uint64_t file_size = buffer_pool_->file_size();
     uint64_t header_start_offset = 0;
     while (true) {
       int ret;
@@ -1246,18 +1229,19 @@ class BufferStorage : public IndexStorage {
       if ((int32_t)chain_header->meta_footer_offset < 0) {
         return IndexError_Unsupported;
       }
-      uint64_t footer_offset =
-          chain_header->meta_footer_offset + header_start_offset;
-      // Reject uint64 wrap-around and offsets past file_size.
-      if (footer_offset < header_start_offset ||
-          footer_offset + sizeof(IndexFormat::MetaFooter) >
-              buffer_pool_->file_size()) {
-        LOG_ERROR("ParseToMapping: invalid footer_offset=%" PRIu64
+      const uint64_t footer_end =
+          uint64_t{chain_header->meta_footer_offset} +
+          sizeof(IndexFormat::MetaFooter);
+      if (footer_end > file_size - header_start_offset) {
+        LOG_ERROR("ParseToMapping: invalid meta_footer_offset=%" PRIu32
                   " (header=%" PRIu64 ", file_size=%zu), file[%s]",
-                  footer_offset, header_start_offset, buffer_pool_->file_size(),
+                  chain_header->meta_footer_offset, header_start_offset,
+                  buffer_pool_->file_size(),
                   file_name_.c_str());
         return IndexError_InvalidValue;
       }
+      const uint64_t footer_offset =
+          header_start_offset + chain_header->meta_footer_offset;
       IndexFormat::MetaFooter footer{};
       ret = parse_footer(footer_offset, &footer);
       if (ret != 0) {
@@ -1266,14 +1250,38 @@ class BufferStorage : public IndexStorage {
         return ret;
       }
 
+      const uint64_t next_off = footer.next_meta_header_offset;
+      if (next_off != 0 &&
+          (next_off <= header_start_offset ||
+           next_off > file_size - sizeof(IndexFormat::MetaHeader))) {
+        LOG_ERROR("ParseToMapping: invalid next_meta_header_offset=%" PRIu64
+                  " (current=%" PRIu64 ", file_size=%zu), file[%s]",
+                  next_off, header_start_offset, buffer_pool_->file_size(),
+                  file_name_.c_str());
+        return IndexError_InvalidValue;
+      }
+      const uint64_t chain_size =
+          (next_off == 0 ? file_size : next_off) - header_start_offset;
+      const uint64_t content_offset = chain_header->content_offset;
+      if (footer.segments_meta_size > chain_header->meta_footer_offset ||
+          content_offset < footer_end || content_offset > chain_size ||
+          footer.total_size > chain_size ||
+          footer.content_size > chain_size - content_offset ||
+          footer.content_padding_size >
+              chain_size - content_offset - footer.content_size) {
+        return IndexError_InvalidLength;
+      }
+
       // Unpack segment table
       const uint64_t segment_start_offset =
           footer_offset - footer.segments_meta_size;
       uint32_t segment_ids_offset = footer.segments_meta_size;
+      uint64_t segment_extent = 0;
       std::unique_ptr<char[]> segment_buffer;
       ret =
           parse_segment(segment_start_offset, header_start_offset, chain_header,
-                        footer, segment_ids_offset, segment_buffer);
+                        footer, chain_size - content_offset, segment_ids_offset,
+                        segment_extent, segment_buffer);
       if (ret != 0) {
         LOG_ERROR("Failed to parse segment, errno %d, %s", ret,
                   IndexError::What(ret));
@@ -1282,9 +1290,10 @@ class BufferStorage : public IndexStorage {
 
       // Own all state referenced by this metadata chain in one object.
       meta_chains_.push_back({std::move(header), std::move(segment_buffer),
-                              header_start_offset, segment_ids_offset, footer});
+                              header_start_offset, segment_ids_offset,
+                              segment_extent, footer});
 
-      if (footer.next_meta_header_offset == 0) {
+      if (next_off == 0) {
         if (buffer_pool_->writable()) {
           auto &last = meta_chains_.back();
           last.append_meta =
@@ -1293,17 +1302,6 @@ class BufferStorage : public IndexStorage {
                       footer.segments_meta_size);
         }
         break;
-      }
-      // Reject invalid links before following the metadata chain.
-      const uint64_t next_off = footer.next_meta_header_offset;
-      if (next_off <= header_start_offset ||
-          next_off + sizeof(IndexFormat::MetaHeader) >
-              buffer_pool_->file_size()) {
-        LOG_ERROR("ParseToMapping: invalid next_meta_header_offset=%" PRIu64
-                  " (current=%" PRIu64 ", file_size=%zu), file[%s]",
-                  next_off, header_start_offset, buffer_pool_->file_size(),
-                  file_name_.c_str());
-        return IndexError_InvalidValue;
       }
       // Bound corrupted metadata chains.
       constexpr size_t kMaxChains = 1024;
@@ -1506,6 +1504,12 @@ class BufferStorage : public IndexStorage {
     for (size_t ci = 0; ci < meta_chains_.size(); ++ci) {
       MetaChain &mchain = meta_chains_[ci];
       const char *seg_buf = mchain.segment_meta.get();
+      if (mchain.segment_extent > mchain.footer.content_size) {
+        mchain.footer.content_size = mchain.allocated_content_size();
+        mchain.footer.content_padding_size = 0;
+        mchain.footer.total_size =
+            mchain.header->content_offset + mchain.footer.content_size;
+      }
       mchain.footer.segments_meta_crc =
           ailego::Crc32c::Hash(seg_buf, mchain.footer.segments_meta_size, 0u);
       IndexFormat::UpdateMetaFooter(&mchain.footer, 0);
@@ -1624,6 +1628,9 @@ class BufferStorage : public IndexStorage {
 
     // Page-aligned padded size; matches IndexMapping::CalcPageAlignedSize().
     const size_t page_size = ailego::kVectorPageSize;
+    if (size > std::numeric_limits<size_t>::max() - (page_size - 1)) {
+      return IndexError_InvalidLength;
+    }
     const size_t padded_size = (size + page_size - 1) / page_size * page_size;
 
     size_t id_size = id.length() + 1;
@@ -1659,7 +1666,7 @@ class BufferStorage : public IndexStorage {
     // Step 1: prepare an unlinked directory chain when the current one is full.
     if (sizeof(IndexFormat::SegmentMeta) * chain->footer.segment_count +
             need_size > chain->segment_ids_offset) {
-      size_t new_chain_start = buffer_pool_->file_size();
+      size_t new_chain_start = chain->allocated_file_end();
       new_chain_start =
           (new_chain_start + page_size - 1) / page_size * page_size;
       size_t new_meta_total =
@@ -1698,7 +1705,7 @@ class BufferStorage : public IndexStorage {
       }
       meta_chains_.push_back(MetaChain{std::move(new_header),
                                        std::move(new_meta_buf), new_chain_start,
-                                       new_segments_meta_size, new_footer,
+                                       new_segments_meta_size, 0, new_footer,
                                        std::move(new_append_meta)});
 
       chain = &meta_chains_.back();
@@ -1722,9 +1729,11 @@ class BufferStorage : public IndexStorage {
     auto *header = chain->header.get();
     char *meta_buf = chain->append_meta.get();
     char *live_meta = chain->segment_meta.get();
-    uint64_t new_data_index = footer.content_size;
-    uint64_t new_seg_abs_offset =
-        chain->header_start_offset + header->content_offset + new_data_index;
+    const uint64_t new_data_index = chain->allocated_content_size();
+    const uint64_t new_seg_abs_offset = chain->allocated_file_end();
+    if (padded_size > std::numeric_limits<size_t>::max() - new_seg_abs_offset) {
+      return IndexError_InvalidLength;
+    }
     uint64_t new_file_size = new_seg_abs_offset + padded_size;
     if (new_file_size > buffer_pool_->file_size()) {
       if (!buffer_pool_->extend_file(new_file_size)) {
@@ -1780,8 +1789,9 @@ class BufferStorage : public IndexStorage {
     std::memcpy(meta_buf + new_ids_off, id.c_str(), id_size);
 
     footer.segment_count += 1;
-    footer.content_size += padded_size;
-    footer.total_size += padded_size;
+    footer.content_size = new_data_index + padded_size;
+    footer.content_padding_size = 0;
+    footer.total_size = header->content_offset + footer.content_size;
     footer.segments_meta_crc =
         ailego::Crc32c::Hash(meta_buf, footer.segments_meta_size, 0u);
     IndexFormat::UpdateMetaFooter(&footer, 0);
@@ -1845,6 +1855,7 @@ class BufferStorage : public IndexStorage {
     std::memcpy(live_meta + new_ids_off, id.c_str(), id_size);
     chain->footer = footer;
     chain->segment_ids_offset = new_ids_off;
+    chain->segment_extent = footer.content_size;
     chain->append_meta_needs_write = false;
     pending.first->second = IndexMapping::SegmentInfo{
         IndexMapping::Segment{live_seg}, chain->header_start_offset, header};
@@ -1931,6 +1942,8 @@ class BufferStorage : public IndexStorage {
     uint64_t header_start_offset;
     // Lowest ID-string offset; detects metadata exhaustion.
     uint32_t segment_ids_offset;
+    // Furthest end of any segment's full capacity, relative to content.
+    uint64_t segment_extent;
     // Authoritative in-memory footer for this chain.
     IndexFormat::MetaFooter footer;
     // Only the last writable chain needs a table that append can publish
@@ -1944,6 +1957,19 @@ class BufferStorage : public IndexStorage {
 
     uint64_t segment_meta_file_offset() const {
       return footer_file_offset() - footer.segments_meta_size;
+    }
+
+    uint64_t allocated_content_size() const {
+      const uint64_t declared_extent =
+          std::max(footer.total_size, header->content_offset) -
+          header->content_offset;
+      return std::max({segment_extent, declared_extent,
+                       footer.content_size + footer.content_padding_size});
+    }
+
+    uint64_t allocated_file_end() const {
+      return header_start_offset + header->content_offset +
+             allocated_content_size();
     }
   };
   std::vector<MetaChain> meta_chains_{};

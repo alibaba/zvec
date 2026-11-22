@@ -199,6 +199,8 @@ constexpr size_t kMetaOverhead =
 constexpr uint64_t kCheckpoint = 73;
 constexpr std::array<char, 5> kOldData = {'v', 'a', 'l', 'u', 'e'};
 constexpr std::array<char, 5> kNewData = {'c', 'h', 'u', 'n', 'k'};
+constexpr char kLegacySegment[] = "legacy_segment";
+constexpr char kAppendedSegment[] = "appended_segment";
 
 struct Directory {
   IndexFormat::MetaFooter footer{};
@@ -306,6 +308,71 @@ class BufferStorageDirectorySplitTest : public testing::Test {
     zvec::ailego::File file;
     ASSERT_TRUE(file.open(path_.c_str(), false, false));
     ASSERT_TRUE(file.truncate(file.size() + page_size_));
+  }
+
+  void CreateLegacySegmentWithReservedTail() {
+    ASSERT_NO_FATAL_FAILURE(CreateLegacyTail());
+    auto mmap = IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, mmap);
+    ASSERT_EQ(0, mmap->init(zvec::ailego::Params{}));
+    ASSERT_EQ(0, mmap->open(path_, false));
+    ASSERT_EQ(0, mmap->append(kLegacySegment, 2 * page_size_));
+    ASSERT_EQ(0, mmap->flush());
+    ASSERT_EQ(0, mmap->close());
+
+    // Reproduce the old mmap footer, which counted the newly allocated
+    // capacity but omitted the gap before it. The segment table is unchanged.
+    Directory directory{};
+    ASSERT_TRUE(ReadDirectory(path_, &directory));
+    ASSERT_GE(directory.footer.content_size, page_size_);
+    ASSERT_GE(directory.footer.total_size, page_size_);
+    directory.footer.content_size -= page_size_;
+    directory.footer.total_size -= page_size_;
+    IndexFormat::UpdateMetaFooter(&directory.footer, 0);
+    zvec::ailego::File file;
+    ASSERT_TRUE(file.open(path_.c_str(), false, false));
+    ASSERT_EQ(sizeof(directory.footer),
+              file.write(directory.footer_offset, &directory.footer,
+                         sizeof(directory.footer)));
+  }
+
+  void VerifyLegacyContinuation(const char *backend) {
+    auto storage = IndexFactory::CreateStorage(backend);
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(zvec::ailego::Params{}));
+    ASSERT_EQ(0, storage->open(path_, true));
+    ASSERT_EQ(0, storage->append(kAppendedSegment, page_size_));
+    {
+      auto legacy = storage->get(kLegacySegment);
+      auto appended = storage->get(kAppendedSegment);
+      ASSERT_NE(nullptr, legacy);
+      ASSERT_NE(nullptr, appended);
+      ASSERT_EQ(2 * page_size_, legacy->capacity());
+      ASSERT_EQ(1u, legacy->write(page_size_, "X", 1));
+      ASSERT_EQ(1u, appended->write(0, "Y", 1));
+    }
+    ASSERT_EQ(0, storage->flush());
+    ASSERT_EQ(0, storage->close());
+
+    for (const char *reader_type : {"BufferStorage", "MMapFileStorage"}) {
+      SCOPED_TRACE(reader_type);
+      auto reader = IndexFactory::CreateStorage(reader_type);
+      ASSERT_NE(nullptr, reader);
+      ASSERT_EQ(0, reader->init(zvec::ailego::Params{}));
+      ASSERT_EQ(0, reader->open(path_, false));
+      {
+        auto legacy = reader->get(kLegacySegment);
+        auto appended = reader->get(kAppendedSegment);
+        ASSERT_NE(nullptr, legacy);
+        ASSERT_NE(nullptr, appended);
+        char legacy_value{}, appended_value{};
+        ASSERT_EQ(1u, legacy->fetch(page_size_, &legacy_value, 1));
+        ASSERT_EQ(1u, appended->fetch(0, &appended_value, 1));
+        EXPECT_EQ('X', legacy_value);
+        EXPECT_EQ('Y', appended_value);
+      }
+      ASSERT_EQ(0, reader->close());
+    }
   }
 
   void FillDirectory() {
@@ -429,6 +496,43 @@ TEST_F(BufferStorageDirectorySplitTest, WritableBufferOpenTrimsLegacyTail) {
   ASSERT_EQ(0, writer_->open(path_, IndexStorage::OpenOptions{false, false}));
   ASSERT_EQ(0, writer_->close());
   ASSERT_NO_FATAL_FAILURE(VerifyMMapCanContinue("mmap_segment"));
+}
+
+TEST_F(BufferStorageDirectorySplitTest, WritableBufferOpenKeepsLegacyCapacity) {
+  ASSERT_NO_FATAL_FAILURE(CreateLegacySegmentWithReservedTail());
+  ASSERT_EQ(0, writer_->open(path_, IndexStorage::OpenOptions{false, false}));
+  ASSERT_EQ(0, writer_->close());
+  ASSERT_NO_FATAL_FAILURE(VerifyLegacyContinuation("MMapFileStorage"));
+}
+
+TEST_F(BufferStorageDirectorySplitTest, BufferAppendStartsAfterLegacyCapacity) {
+  ASSERT_NO_FATAL_FAILURE(CreateLegacySegmentWithReservedTail());
+  ASSERT_NO_FATAL_FAILURE(VerifyLegacyContinuation("BufferStorage"));
+}
+
+TEST_F(BufferStorageDirectorySplitTest, FlushCoversWritesIntoLegacyCapacity) {
+  ASSERT_NO_FATAL_FAILURE(CreateLegacySegmentWithReservedTail());
+  ASSERT_EQ(0, writer_->open(path_, IndexStorage::OpenOptions{false, false}));
+  {
+    auto segment = writer_->get(kLegacySegment);
+    ASSERT_NE(nullptr, segment);
+    ASSERT_EQ(1u, segment->write(page_size_, "X", 1));
+  }
+  ASSERT_EQ(0, writer_->flush());
+  ASSERT_EQ(0, writer_->close());
+
+  auto reader = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, reader);
+  ASSERT_EQ(0, reader->init(zvec::ailego::Params{}));
+  ASSERT_EQ(0, reader->open(path_, false));
+  {
+    auto segment = reader->get(kLegacySegment);
+    ASSERT_NE(nullptr, segment);
+    char value{};
+    ASSERT_EQ(1u, segment->fetch(page_size_, &value, 1));
+    EXPECT_EQ('X', value);
+  }
+  ASSERT_EQ(0, reader->close());
 }
 
 TEST_F(BufferStorageDirectorySplitTest, FailedSplitCanRetrySameSegment) {
