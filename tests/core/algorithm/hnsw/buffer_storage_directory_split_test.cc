@@ -145,8 +145,13 @@ void operator delete(void *ptr, size_t, std::align_val_t) noexcept {
 namespace {
 using MetaFooter = zvec::core::IndexFormat::MetaFooter;
 constexpr size_t kShortFooterBytes = offsetof(MetaFooter, total_size);
-thread_local off_t footer_offset_for_short_write = -1;
-thread_local ssize_t footer_bytes_written = -1;
+struct ShortFooterWrite {
+  off_t offset;
+  size_t prefix;
+  bool throw_after_write{false};
+  ssize_t written{-1};
+};
+thread_local ShortFooterWrite *short_footer_write = nullptr;
 thread_local off_t rejected_metadata_offset = -1;
 thread_local size_t rejected_metadata_writes = 0;
 }  // namespace
@@ -165,18 +170,24 @@ extern "C" ssize_t pwrite(int fd, const void *buffer, size_t count,
   }
   const bool watching_publication =
       footer_publication && offset == footer_publication->offset;
+  const bool injecting_short_write =
+      short_footer_write && offset == short_footer_write->offset;
   if (count == sizeof(MetaFooter) &&
-      (offset == footer_offset_for_short_write || watching_publication)) {
+      (injecting_short_write || watching_publication)) {
     uint64_t next_offset;
     std::memcpy(&next_offset,
                 static_cast<const char *>(buffer) +
                     offsetof(MetaFooter, next_meta_header_offset),
                 sizeof(next_offset));
     if (next_offset != 0) {
-      if (offset == footer_offset_for_short_write) {
-        footer_offset_for_short_write = -1;
-        footer_bytes_written = write_at(fd, buffer, kShortFooterBytes, offset);
-        return footer_bytes_written;
+      if (injecting_short_write) {
+        auto *fault = short_footer_write;
+        short_footer_write = nullptr;
+        fault->written = write_at(fd, buffer, fault->prefix, offset);
+        // Simulate write_meta throwing after the partial write. A logger's
+        // allocation failure can escape from that path.
+        if (fault->throw_after_write) throw std::bad_alloc();
+        return fault->written;
       }
       const ssize_t written = write_at(fd, buffer, count, offset);
       footer_publication->written = written == static_cast<ssize_t>(count);
@@ -416,13 +427,31 @@ TEST_F(BufferStorageDirectorySplitTest, ShortFooterWriteKeepsOldDirectory) {
   ASSERT_TRUE(ReadRootDirectory(path_, &disk));
 
   const std::string name = "retry_after_short_write";
-  footer_bytes_written = -1;
-  footer_offset_for_short_write = disk.footer_offset;
+  ShortFooterWrite fault{disk.footer_offset, kShortFooterBytes};
+  short_footer_write = &fault;
   const int status = writer_->append(name, page_size_);
-  footer_offset_for_short_write = -1;
-  ASSERT_EQ(static_cast<ssize_t>(kShortFooterBytes), footer_bytes_written);
+  short_footer_write = nullptr;
+  ASSERT_EQ(static_cast<ssize_t>(kShortFooterBytes), fault.written);
   ASSERT_EQ(IndexError_WriteData, status);
   ASSERT_NO_FATAL_FAILURE(VerifyRetry(name));
+}
+
+TEST_F(BufferStorageDirectorySplitTest,
+       ShortFooterWriteRollsBackIfWriteThrows) {
+  ASSERT_NO_FATAL_FAILURE(FillFirstChain());
+  Directory disk{};
+  ASSERT_TRUE(ReadRootDirectory(path_, &disk));
+
+  const std::string name = "retry_short_write_exception";
+  constexpr size_t kPrefix = 64;
+  ShortFooterWrite fault{disk.footer_offset, kPrefix, true};
+  short_footer_write = &fault;
+  const int status = writer_->append(name, page_size_);
+  short_footer_write = nullptr;
+  ASSERT_EQ(static_cast<ssize_t>(kPrefix), fault.written);
+  ASSERT_EQ(IndexError_NoMemory, status);
+  ASSERT_NO_FATAL_FAILURE(VerifyRetry(name));
+  ASSERT_NO_FATAL_FAILURE(VerifyReader(name, true));
 }
 
 TEST_F(BufferStorageDirectorySplitTest, PublishingSplitNeedsNoMoreAllocations) {

@@ -1628,25 +1628,28 @@ class BufferStorage : public IndexStorage {
       chain_split = true;
     }
 
-    auto rollback_chain_split = [&]() {
-      if (chain_split) {
-        // Unlink the new chain before dropping its in-memory state.
-        if (link_attempted &&
-            buffer_pool_handle_->write_meta(
-                old_footer_file_offset, sizeof(footer_before_split),
-                reinterpret_cast<const char *>(&footer_before_split)) != 0) {
-          LOG_ERROR(
-              "append_segment: chain-split rollback write of old footer "
-              "FAILED, "
-              "file[%s] is now in an inconsistent state -- marking storage "
-              "as corrupted; further writes will be rejected.",
-              file_name_.c_str());
-          corrupted_.store(true, std::memory_order_release);
-        }
-        meta_chains_.pop_back();
-        meta_chains_.back().footer = footer_before_split;
+    // Rollback must survive exceptions from the I/O path, including logging
+    // after a short write. An unsuccessful repair makes the directory unsafe.
+    auto restore_metadata = [&](size_t offset, size_t size,
+                                const char *data) noexcept {
+      try {
+        return buffer_pool_handle_->write_meta(offset, size, data) == 0;
+      } catch (...) {
+        return false;
       }
     };
+    bool committed = false;
+    AILEGO_DEFER([&]() {
+      if (committed || !chain_split) return;
+      if (link_attempted &&
+          !restore_metadata(
+              old_footer_file_offset, sizeof(footer_before_split),
+              reinterpret_cast<const char *>(&footer_before_split))) {
+        corrupted_.store(true, std::memory_order_release);
+      }
+      meta_chains_.pop_back();
+      meta_chains_.back().footer = footer_before_split;
+    });
 
     // Step 2: append the segment metadata and persist the last chain.
     uint64_t new_data_index = footer->content_size;
@@ -1655,7 +1658,6 @@ class BufferStorage : public IndexStorage {
     uint64_t new_file_size = new_seg_abs_offset + padded_size;
     if (new_file_size > buffer_pool_->file_size()) {
       if (!buffer_pool_->extend_file(new_file_size)) {
-        rollback_chain_split();
         return IndexError_Runtime;
       }
     }
@@ -1671,6 +1673,27 @@ class BufferStorage : public IndexStorage {
     std::memcpy(saved_meta_entry, meta_buf + meta_entry_off,
                 sizeof(IndexFormat::SegmentMeta));
     std::memcpy(saved_id_bytes.get(), meta_buf + new_ids_off, id_size);
+
+    // A split can discard the staged chain. In-place appends restore both
+    // the original directory bytes and the in-memory metadata.
+    AILEGO_DEFER([&]() {
+      if (committed || chain_split) return;
+      std::memcpy(meta_buf + meta_entry_off, saved_meta_entry,
+                  sizeof(IndexFormat::SegmentMeta));
+      std::memcpy(meta_buf + new_ids_off, saved_id_bytes.get(), id_size);
+      *footer = saved_footer;
+      chain->segment_ids_offset = saved_segment_ids_offset;
+
+      const bool meta_restored =
+          restore_metadata(chain->segment_meta_file_offset(),
+                           footer->segments_meta_size, meta_buf);
+      const bool footer_restored =
+          restore_metadata(chain->footer_file_offset(), sizeof(*footer),
+                           reinterpret_cast<const char *>(footer));
+      if (!meta_restored || !footer_restored) {
+        corrupted_.store(true, std::memory_order_release);
+      }
+    });
 
     chain->segment_ids_offset -= static_cast<uint32_t>(id_size);
     IndexFormat::SegmentMeta *new_seg =
@@ -1690,39 +1713,11 @@ class BufferStorage : public IndexStorage {
         ailego::Crc32c::Hash(meta_buf, footer->segments_meta_size, 0u);
     IndexFormat::UpdateMetaFooter(footer, 0);
 
-    // Restore memory and disk together; a failed restore marks the file bad.
-    auto rollback_step2 = [&]() {
-      if (chain_split) return;  // Rollback discards the entire staged chain.
-      std::memcpy(meta_buf + meta_entry_off, saved_meta_entry,
-                  sizeof(IndexFormat::SegmentMeta));
-      std::memcpy(meta_buf + new_ids_off, saved_id_bytes.get(), id_size);
-      *footer = saved_footer;
-      chain->segment_ids_offset = saved_segment_ids_offset;
-
-      const int rc_meta =
-          buffer_pool_handle_->write_meta(chain->segment_meta_file_offset(),
-                                          footer->segments_meta_size, meta_buf);
-      const int rc_footer = buffer_pool_handle_->write_meta(
-          chain->footer_file_offset(), sizeof(*footer),
-          reinterpret_cast<const char *>(footer));
-      if (rc_meta != 0 || rc_footer != 0) {
-        LOG_ERROR(
-            "append_segment: rollback_step2 disk rewrite FAILED "
-            "(rc_meta=%d, rc_footer=%d), file[%s] is now in an "
-            "inconsistent state -- marking storage as corrupted; further "
-            "writes will be rejected.",
-            rc_meta, rc_footer, file_name_.c_str());
-        corrupted_.store(true, std::memory_order_release);
-      }
-    };
-
     if (buffer_pool_handle_->write_meta(chain->segment_meta_file_offset(),
                                         footer->segments_meta_size,
                                         meta_buf) != 0) {
       LOG_ERROR("append_segment: write segment_meta failed, file[%s]",
                 file_name_.c_str());
-      rollback_step2();
-      rollback_chain_split();
       return IndexError_WriteData;
     }
     if (buffer_pool_handle_->write_meta(
@@ -1730,8 +1725,6 @@ class BufferStorage : public IndexStorage {
             reinterpret_cast<const char *>(footer)) != 0) {
       LOG_ERROR("append_segment: write footer failed, file[%s]",
                 file_name_.c_str());
-      rollback_step2();
-      rollback_chain_split();
       return IndexError_WriteData;
     }
 
@@ -1744,7 +1737,6 @@ class BufferStorage : public IndexStorage {
       if (buffer_pool_handle_->write_meta(
               old_footer_file_offset, sizeof(linked_footer),
               reinterpret_cast<const char *>(&linked_footer)) != 0) {
-        rollback_chain_split();
         return IndexError_WriteData;
       }
       meta_chains_[meta_chains_.size() - 2].footer = linked_footer;
@@ -1761,8 +1753,6 @@ class BufferStorage : public IndexStorage {
             "append_segment: duplicate id appeared after commit, file[%s], "
             "id[%s]",
             file_name_.c_str(), id.c_str());
-        rollback_step2();
-        rollback_chain_split();
         return IndexError_Duplicate;
       }
     } catch (const std::bad_alloc &) {
@@ -1770,11 +1760,9 @@ class BufferStorage : public IndexStorage {
           "append_segment: in-memory commit OOM, rolling back, file[%s], "
           "id[%s]",
           file_name_.c_str(), id.c_str());
-      rollback_step2();
-      rollback_chain_split();
       return IndexError_Runtime;
     }
-    // extend_file() already grew the page table in place.
+    committed = true;
     return 0;
   } catch (const std::bad_alloc &) {
     return IndexError_NoMemory;
