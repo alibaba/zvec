@@ -24,6 +24,7 @@
 #include <stdexcept>
 #include <thread>
 #include <vector>
+#include <ailego/pattern/defer.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/file.h>
 #include <zvec/core/framework/index_error.h>
@@ -1439,24 +1440,16 @@ class BufferStorage : public IndexStorage {
       // Another thread already claimed it.
       return 0;
     }
-    // Snapshot after claiming dirty so newer checkpoints survive the final CAS.
+    // A return or exception before persistence completes leaves this dirty
+    // generation pending. A successful flush never clears a newer generation.
+    bool persisted = false;
+    AILEGO_DEFER([&]() {
+      if (!persisted) index_dirty_.store(true, std::memory_order_relaxed);
+    });
     const uint64_t consumed_chkp =
         pending_check_point_.load(std::memory_order_relaxed);
-    // Restore on failure without overwriting a newer checkpoint.
-    auto restore_chkp_on_failure = [this, consumed_chkp]() {
-      if (consumed_chkp == 0) return;
-      uint64_t cur = pending_check_point_.load(std::memory_order_relaxed);
-      while (consumed_chkp > cur) {
-        if (pending_check_point_.compare_exchange_weak(
-                cur, consumed_chkp, std::memory_order_relaxed)) {
-          break;
-        }
-      }
-    };
     // Flush dirty data blocks first.
     if (buffer_pool_handle_->flush_all() != 0) {
-      index_dirty_.store(true, std::memory_order_relaxed);
-      restore_chkp_on_failure();
       LOG_ERROR("flush_all data blocks failed: file[%s]", file_name_.c_str());
       return IndexError_WriteData;
     }
@@ -1472,8 +1465,6 @@ class BufferStorage : public IndexStorage {
                                           seg_buf) != 0) {
         LOG_ERROR("Failed to write segment meta: file[%s], chain[%zu]",
                   file_name_.c_str(), ci);
-        index_dirty_.store(true, std::memory_order_relaxed);
-        restore_chkp_on_failure();
         return IndexError_WriteData;
       }
       if (buffer_pool_handle_->write_meta(
@@ -1481,8 +1472,6 @@ class BufferStorage : public IndexStorage {
               reinterpret_cast<const char *>(&mchain.footer)) != 0) {
         LOG_ERROR("Failed to write footer: file[%s], chain[%zu]",
                   file_name_.c_str(), ci);
-        index_dirty_.store(true, std::memory_order_relaxed);
-        restore_chkp_on_failure();
         return IndexError_WriteData;
       }
     }
@@ -1490,6 +1479,7 @@ class BufferStorage : public IndexStorage {
     uint64_t expected_chkp = consumed_chkp;
     pending_check_point_.compare_exchange_strong(expected_chkp, 0,
                                                  std::memory_order_relaxed);
+    persisted = true;
     return 0;
   }
 
@@ -1513,10 +1503,10 @@ class BufferStorage : public IndexStorage {
 
   //! Append a segment into storage.
   int append_segment(const std::string &id, size_t size) try {
-    // Persist pending metadata before re-hashing it.
-    this->flush_index();
-
     AllShardsExclusiveLatch latch(mapping_shards_);
+    // Persist dirty data and metadata before preparing a directory update.
+    const int flush_ret = flush_index_locked();
+    if (flush_ret != 0) return flush_ret;
 
     if (!buffer_pool_ || !buffer_pool_handle_) {
       LOG_ERROR("append_segment: pool not ready, file[%s]", file_name_.c_str());
