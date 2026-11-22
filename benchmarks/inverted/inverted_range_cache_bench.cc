@@ -33,6 +33,7 @@
 #include <vector>
 #ifdef __APPLE__
 #include <mach/mach.h>
+#include <pthread.h>
 #include <malloc/malloc.h>
 #endif
 #include <zvec/ailego/buffer/block_eviction_queue.h>
@@ -62,10 +63,25 @@ double elapsed_ms(Clock::time_point begin, Clock::time_point end) {
 }
 
 double thread_cpu_ms() {
+#ifdef __APPLE__
+  thread_basic_info_data_t info{};
+  mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+  const auto thread = pthread_mach_thread_np(pthread_self());
+  require(thread_info(thread, THREAD_BASIC_INFO,
+                      reinterpret_cast<thread_info_t>(&info),
+                      &count) == KERN_SUCCESS,
+          "thread_info failed");
+  const auto to_ms = [](const time_value_t &time) {
+    return static_cast<double>(time.seconds) * 1000.0 +
+           time.microseconds / 1000.0;
+  };
+  return to_ms(info.user_time) + to_ms(info.system_time);
+#else
   timespec ts{};
   require(clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) == 0,
           "clock_gettime failed");
   return static_cast<double>(ts.tv_sec) * 1000.0 + ts.tv_nsec / 1e6;
+#endif
 }
 
 std::string json_string(const std::string &value) {
