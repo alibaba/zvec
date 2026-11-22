@@ -1675,17 +1675,15 @@ class BufferStorage : public IndexStorage {
       }
       new_chain_start =
           (new_chain_start + page_size - 1) / page_size * page_size;
-      const uint64_t new_meta_total =
-          (uint64_t{segment_meta_capacity_} + sizeof(IndexFormat::MetaHeader) +
-           sizeof(IndexFormat::MetaFooter) + page_size - 1) /
-          page_size * page_size;
-      if (new_meta_total - sizeof(IndexFormat::MetaFooter) >
-          static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
+      // Existing mmap readers use the root directory's mapping size for
+      // every link. The initialization parameter only sizes a new file.
+      const auto &root_header = *meta_chains_.front().header;
+      const size_t new_meta_total = root_header.content_offset;
+      if (root_header.meta_footer_offset < sizeof(IndexFormat::MetaHeader)) {
         return IndexError_InvalidLength;
       }
-      uint32_t new_segments_meta_size = static_cast<uint32_t>(
-          new_meta_total - sizeof(IndexFormat::MetaHeader) -
-          sizeof(IndexFormat::MetaFooter));
+      const uint32_t new_segments_meta_size = static_cast<uint32_t>(
+          root_header.meta_footer_offset - sizeof(IndexFormat::MetaHeader));
       if (need_size > new_segments_meta_size ||
           new_meta_total > std::numeric_limits<size_t>::max() - new_chain_start) {
         return IndexError_InvalidLength;
@@ -1693,10 +1691,8 @@ class BufferStorage : public IndexStorage {
 
       auto new_header = std::make_unique<IndexFormat::MetaHeader>();
       IndexFormat::SetupMetaHeader(
-          new_header.get(),
-          static_cast<uint32_t>(new_meta_total -
-                                sizeof(IndexFormat::MetaFooter)),
-          static_cast<uint32_t>(new_meta_total));
+          new_header.get(), root_header.meta_footer_offset,
+          root_header.content_offset);
 
       auto new_meta_buf = std::make_unique<char[]>(new_segments_meta_size);
       auto new_append_meta = std::make_unique<char[]>(new_segments_meta_size);
