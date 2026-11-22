@@ -1559,8 +1559,10 @@ class BufferStorage : public IndexStorage {
     const auto footer_before_split = *footer;
     const uint64_t old_footer_file_offset = chain->footer_file_offset();
     bool chain_split = false;
+    bool link_attempted = false;
+    std::unique_ptr<char[]> saved_id_bytes(new char[id_size]);
 
-    // Step 1: split a full metadata chain.
+    // Step 1: prepare an unlinked directory chain when the current one is full.
     if (sizeof(IndexFormat::SegmentMeta) * footer->segment_count + need_size >
         chain->segment_ids_offset) {
       size_t new_chain_start = buffer_pool_->file_size();
@@ -1573,41 +1575,6 @@ class BufferStorage : public IndexStorage {
       uint32_t new_segments_meta_size = static_cast<uint32_t>(
           new_meta_total - sizeof(IndexFormat::MetaHeader) -
           sizeof(IndexFormat::MetaFooter));
-
-      // Stage the linked old footer without mutating the chain yet.
-      IndexFormat::MetaFooter linked_footer = footer_before_split;
-      linked_footer.next_meta_header_offset = new_chain_start;
-      IndexFormat::UpdateMetaFooter(&linked_footer, 0);
-
-      if (buffer_pool_handle_->write_meta(
-              chain->footer_file_offset(), sizeof(linked_footer),
-              reinterpret_cast<const char *>(&linked_footer)) != 0) {
-        LOG_ERROR("append_segment: write old footer failed, file[%s]",
-                  file_name_.c_str());
-        return IndexError_WriteData;
-      }
-
-      // Restore the old link after a failed split; reject writes if rollback
-      // also fails.
-      auto undo_old_footer = [this, chain, &footer_before_split]() {
-        if (buffer_pool_handle_->write_meta(
-                chain->footer_file_offset(), sizeof(footer_before_split),
-                reinterpret_cast<const char *>(&footer_before_split)) != 0) {
-          LOG_ERROR(
-              "append_segment: rollback write of old footer FAILED, file[%s] "
-              "is now in an inconsistent state -- marking storage as "
-              "corrupted; further writes will be rejected.",
-              file_name_.c_str());
-          corrupted_.store(true, std::memory_order_release);
-        }
-      };
-
-      // Extend the file and write the new chain's header + (zero) footer.
-      // The segment_meta region is zero-filled by ftruncate.
-      if (!buffer_pool_->extend_file(new_chain_start + new_meta_total)) {
-        undo_old_footer();
-        return IndexError_Runtime;
-      }
 
       auto new_header = std::make_unique<IndexFormat::MetaHeader>();
       IndexFormat::SetupMetaHeader(
@@ -1627,10 +1594,23 @@ class BufferStorage : public IndexStorage {
           ailego::Crc32c::Hash(new_meta_buf.get(), new_segments_meta_size, 0u);
       IndexFormat::UpdateMetaFooter(&new_footer, 0);
 
+      try {
+        meta_chains_.reserve(meta_chains_.size() + 1);
+      } catch (const std::bad_alloc &) {
+        LOG_ERROR(
+            "append_segment: reserve for chain-split commit failed, file[%s]",
+            file_name_.c_str());
+        return IndexError_Runtime;
+      }
+
+      // Extend the file and write the new chain's header and initial footer.
+      if (!buffer_pool_->extend_file(new_chain_start + new_meta_total)) {
+        return IndexError_Runtime;
+      }
+
       if (buffer_pool_handle_->write_meta(
               new_chain_start, sizeof(IndexFormat::MetaHeader),
               reinterpret_cast<const char *>(new_header.get())) != 0) {
-        undo_old_footer();
         return IndexError_WriteData;
       }
       uint64_t new_footer_file_offset =
@@ -1638,22 +1618,9 @@ class BufferStorage : public IndexStorage {
       if (buffer_pool_handle_->write_meta(
               new_footer_file_offset, sizeof(new_footer),
               reinterpret_cast<const char *>(&new_footer)) != 0) {
-        undo_old_footer();
         return IndexError_WriteData;
       }
 
-      // Reserve before committing the split so pointer updates cannot fail.
-      try {
-        meta_chains_.reserve(meta_chains_.size() + 1);
-      } catch (const std::bad_alloc &) {
-        LOG_ERROR(
-            "append_segment: reserve for chain-split commit failed, file[%s]",
-            file_name_.c_str());
-        undo_old_footer();
-        return IndexError_Runtime;
-      }
-      chain = &meta_chains_.back();
-      chain->footer = linked_footer;  // old chain keeps linked footer
       meta_chains_.push_back(MetaChain{std::move(new_header),
                                        std::move(new_meta_buf), new_chain_start,
                                        new_segments_meta_size, new_footer});
@@ -1668,7 +1635,8 @@ class BufferStorage : public IndexStorage {
     auto rollback_chain_split = [&]() {
       if (chain_split) {
         // Unlink the new chain before dropping its in-memory state.
-        if (buffer_pool_handle_->write_meta(
+        if (link_attempted &&
+            buffer_pool_handle_->write_meta(
                 old_footer_file_offset, sizeof(footer_before_split),
                 reinterpret_cast<const char *>(&footer_before_split)) != 0) {
           LOG_ERROR(
@@ -1681,7 +1649,6 @@ class BufferStorage : public IndexStorage {
         }
         meta_chains_.pop_back();
         meta_chains_.back().footer = footer_before_split;
-        // The unreachable file tail is reusable; shrinking is unnecessary.
       }
     };
 
@@ -1707,7 +1674,6 @@ class BufferStorage : public IndexStorage {
     char saved_meta_entry[sizeof(IndexFormat::SegmentMeta)];
     std::memcpy(saved_meta_entry, meta_buf + meta_entry_off,
                 sizeof(IndexFormat::SegmentMeta));
-    std::unique_ptr<char[]> saved_id_bytes(new char[id_size]);
     std::memcpy(saved_id_bytes.get(), meta_buf + new_ids_off, id_size);
 
     chain->segment_ids_offset -= static_cast<uint32_t>(id_size);
@@ -1730,6 +1696,7 @@ class BufferStorage : public IndexStorage {
 
     // Restore memory and disk together; a failed restore marks the file bad.
     auto rollback_step2 = [&]() {
+      if (chain_split) return;  // Rollback discards the entire staged chain.
       std::memcpy(meta_buf + meta_entry_off, saved_meta_entry,
                   sizeof(IndexFormat::SegmentMeta));
       std::memcpy(meta_buf + new_ids_off, saved_id_bytes.get(), id_size);
@@ -1772,7 +1739,22 @@ class BufferStorage : public IndexStorage {
       return IndexError_WriteData;
     }
 
-    // Publish the segment only after its metadata is durable.
+    // Link the chain only after the new segment's metadata and footer exist.
+    if (chain_split) {
+      auto linked_footer = footer_before_split;
+      linked_footer.next_meta_header_offset = chain->header_start_offset;
+      IndexFormat::UpdateMetaFooter(&linked_footer, 0);
+      link_attempted = true;
+      if (buffer_pool_handle_->write_meta(
+              old_footer_file_offset, sizeof(linked_footer),
+              reinterpret_cast<const char *>(&linked_footer)) != 0) {
+        rollback_chain_split();
+        return IndexError_WriteData;
+      }
+      meta_chains_[meta_chains_.size() - 2].footer = linked_footer;
+    }
+
+    // Publish the segment after its on-disk directory is reachable.
     try {
       auto ins = segments_.emplace(
           id, IndexMapping::SegmentInfo{IndexMapping::Segment{new_seg},
