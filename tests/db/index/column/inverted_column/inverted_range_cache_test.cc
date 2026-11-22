@@ -721,6 +721,43 @@ TEST_F(InvertedRangeCacheTest, EmptyIndexUsesExistingSearchPath) {
   check_numeric({}, {-1, 0, 1});
 }
 
+TEST_F(InvertedRangeCacheTest, ScratchAdmissionUsesOccupiedPostingBlocks) {
+  RangePrefixCacheOptions disabled;
+  disabled.max_bytes = 0;
+  create_writer(disabled);
+  const auto values = RandomValues(12000, false);
+  insert(values);
+  ASSERT_TRUE(column_->seal().ok());
+
+  // All non-NULL IDs occupy one Roaring block in a much larger domain.
+  constexpr uint32_t max_id = (1U << 30) - 1;
+  InvertedRangeCache::BitmapPtr nulls(roaring_bitmap_create());
+  ASSERT_NE(nulls, nullptr);
+  roaring_bitmap_add_range(nulls.get(), values.size(), uint64_t{max_id} + 1);
+  constexpr size_t budget = 16ULL << 20;
+  auto *ranges = context_.get_cf(field_.name() + INVERT_SUFFIX_RANGES);
+  auto &pool = ailego::MemoryLimitPool::get_instance();
+  // Leave enough room to decode the short postings, but too little to merge.
+  constexpr size_t scan_budget = budget + (128ULL << 10);
+  ASSERT_GT(pool.capacity() - pool.committed(), scan_budget);
+  const size_t reservation = pool.capacity() - pool.committed() - scan_budget;
+  ASSERT_TRUE(pool.try_charge_external(reservation));
+  auto rejected =
+      InvertedRangeCache::Build(context_, ranges, max_id, nulls.get(), budget);
+  EXPECT_EQ(pool.external_used(), initial_external_bytes_ + reservation);
+  pool.release_external(reservation);
+  ASSERT_EQ(rejected, nullptr);
+
+  auto cache =
+      InvertedRangeCache::Build(context_, ranges, max_id, nulls.get(), budget);
+  ASSERT_NE(cache, nullptr);
+  EXPECT_EQ(cache->total_cardinality, values.size());
+  EXPECT_LE(cache->stats.accounted_bytes, budget);
+  EXPECT_LT(cache->stats.build_reservation_bytes, budget + (1ULL << 20));
+  EXPECT_EQ(pool.external_used(),
+            initial_external_bytes_ + cache->stats.accounted_bytes);
+}
+
 TEST_F(InvertedRangeCacheTest, NullOnlyFieldNeverMatchesRangeQueries) {
   create_writer();
   const std::vector<std::optional<int32_t>> values(12000);

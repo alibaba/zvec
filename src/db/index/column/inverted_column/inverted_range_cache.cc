@@ -5,6 +5,7 @@
 
 #include "inverted_range_cache.h"
 #include <algorithm>
+#include <bitset>
 #include <chrono>
 #include <cstring>
 #include <limits>
@@ -14,6 +15,9 @@
 
 namespace zvec {
 namespace {
+
+constexpr size_t kRoaringBlockCount = 1U << 16;
+constexpr size_t kContainerOverhead = 256;
 
 size_t metadata_bytes(const InvertedRangeCache &cache) {
   size_t bytes = sizeof(cache) +
@@ -32,7 +36,7 @@ size_t bitmap_bytes(const roaring_bitmap_t *bitmap) {
   // their payload; the per-container allowance covers heads, pointer/key/type
   // arrays and allocator rounding without depending on a platform allocator.
   return roaring_bitmap_portable_size_in_bytes(bitmap) + sizeof(*bitmap) +
-         256ULL * bitmap->high_low_container.size;
+         kContainerOverhead * bitmap->high_low_container.size;
 }
 
 }  // namespace
@@ -60,21 +64,28 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
   }
   const auto start = std::chrono::steady_clock::now();
   auto cache = std::unique_ptr<InvertedRangeCache>(new InvertedRangeCache());
-  const uint64_t blocks = (static_cast<uint64_t>(max_id) >> 16) + 1;
-  // Bound the rolling bitmap, one decoded input and one snapshot/conversion.
-  // Even an unoptimized array/run container cannot exceed 65536 uint16 slots
-  // (or 32768 start/length pairs). This is logical admission, not allocation.
-  const uint64_t scratch = 3 * (blocks * (131072 + 256) + 256);
-  if (scratch > std::numeric_limits<size_t>::max() - max_bytes) {
-    return nullptr;
-  }
-  const size_t reservation = max_bytes + static_cast<size_t>(scratch);
   auto &pool = ailego::MemoryLimitPool::get_instance();
-  if (!pool.try_charge_external(reservation)) {
+  const auto reserve_scratch = [&](uint64_t scratch) {
+    if (scratch > std::numeric_limits<size_t>::max() - max_bytes) {
+      return false;
+    }
+    const size_t reservation = max_bytes + static_cast<size_t>(scratch);
+    if (reservation > cache->charged_bytes_) {
+      if (!pool.try_charge_external(reservation - cache->charged_bytes_)) {
+        return false;
+      }
+    } else if (reservation < cache->charged_bytes_) {
+      pool.release_external(cache->charged_bytes_ - reservation);
+    }
+    cache->charged_bytes_ = reservation;
+    cache->stats.build_reservation_bytes =
+        std::max(cache->stats.build_reservation_bytes, reservation);
+    return true;
+  };
+  std::bitset<kRoaringBlockCount> occupied_blocks;
+  if (!reserve_scratch(sizeof(occupied_blocks))) {
     return nullptr;
   }
-  cache->charged_bytes_ = reservation;
-  cache->stats.build_reservation_bytes = reservation;
 
   rocksdb::ReadOptions read_options = context.read_opts_;
   read_options.fill_cache = false;
@@ -82,6 +93,8 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
       context.db_->NewIterator(read_options, ranges));
   uint64_t total_bytes = 0;
   size_t text_bytes = 0;
+  size_t max_posting_blocks = 0;
+  size_t max_decode_scratch = 0;
   for (iter->SeekToFirst(); iter->Valid(); iter->Next()) {
     const size_t metadata = sizeof(*cache) + text_bytes +
                             cache->buckets.capacity() * sizeof(Bucket);
@@ -113,20 +126,41 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
       // contract.
       return nullptr;
     }
+    const auto value = iter->value();
+    // Safe decoding copies the payload. A portable bitmap has at least four
+    // header bytes per container; an encoded ID list has four bytes per ID.
+    const size_t decode_overhead =
+        kContainerOverhead *
+            (1 + std::min(kRoaringBlockCount, value.size() / 4)) +
+        sizeof(occupied_blocks);
+    if (value.size() > std::numeric_limits<size_t>::max() - decode_overhead) {
+      return nullptr;
+    }
+    const size_t decode_scratch = value.size() + decode_overhead;
+    if (decode_scratch > max_decode_scratch) {
+      if (!reserve_scratch(decode_scratch)) return nullptr;
+      max_decode_scratch = decode_scratch;
+    }
     roaring_bitmap_t *raw = nullptr;
-    auto status = InvertedIndexCodec::Deserialize(iter->value().data(),
-                                                  iter->value().size(), &raw);
+    auto status =
+        InvertedIndexCodec::Deserialize(value.data(), value.size(), &raw);
     BitmapPtr bitmap(raw);
     if (!status.ok() || !bitmap) {
       LOG_WARN("Skipping range prefix cache: failed to decode range");
       return nullptr;
     }
     const auto cardinality = roaring_bitmap_get_cardinality(bitmap.get());
+    const auto &containers = bitmap->high_low_container;
+    for (int32_t i = 0; i < containers.size; ++i) {
+      occupied_blocks.set(containers.keys[i]);
+    }
+    max_posting_blocks =
+        std::max(max_posting_blocks, static_cast<size_t>(containers.size));
     cache->total_cardinality += cardinality;
-    total_bytes += iter->value().size();
+    total_bytes += value.size();
     cache->buckets.push_back(
         {iter->key().ToString(), std::string(begin, begin_size),
-         std::string(end, end_size), cardinality, iter->value().size(),
+         std::string(end, end_size), cardinality, value.size(),
          cache->total_cardinality, total_bytes});
     const auto &added = cache->buckets.back();
     text_bytes += added.key.capacity() + added.begin.capacity() +
@@ -144,6 +178,18 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
     // The planner may introduce a complement that the original query did not
     // use. Its [0,max_id] domain must contain only indexed or NULL documents;
     // otherwise flipping a bitmap would manufacture matches for missing IDs.
+    return nullptr;
+  }
+
+  // Reserve for the rolling bitmap and a checkpoint copy using only high
+  // keys observed in the decoded postings. merge_or uses a frozen view of
+  // the source payload, so it needs only per-container metadata for the input.
+  // Allow an additional block for a container conversion during OR or shrink.
+  const uint64_t block_bytes = 2ULL * kRoaringBlockCount + kContainerOverhead;
+  const uint64_t merge_scratch =
+      (2 * occupied_blocks.count() + 1) * block_bytes +
+      kContainerOverhead * (max_posting_blocks + 3) + sizeof(occupied_blocks);
+  if (!reserve_scratch(merge_scratch)) {
     return nullptr;
   }
 
@@ -295,7 +341,7 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
   iter.reset();
   cache->stats.source_bytes = 2 * total_bytes + extra_source_bytes;
   cache->stats.accounted_bytes = bitmap_charge + metadata_bytes(*cache);
-  pool.release_external(reservation - cache->stats.accounted_bytes);
+  pool.release_external(cache->charged_bytes_ - cache->stats.accounted_bytes);
   cache->charged_bytes_ = cache->stats.accounted_bytes;
   cache->stats.build_ms = std::chrono::duration<double, std::milli>(
                               std::chrono::steady_clock::now() - start)
