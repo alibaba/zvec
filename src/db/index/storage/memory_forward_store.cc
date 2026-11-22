@@ -232,9 +232,11 @@ arrow::Result<TablePtr> MemForwardStore::apply_row_and_column_selection(
   for (const auto &column_name : columns) {
     if (column_name == LOCAL_ROW_ID) continue;
     int index = table->schema()->GetFieldIndex(column_name);
-    if (index != -1) {
-      column_indices.push_back(index);
+    if (index == -1) {
+      return arrow::Status::Invalid("Missing or ambiguous column '",
+                                    column_name, "' in forward store table");
     }
+    column_indices.push_back(index);
   }
   if (!column_indices.empty()) {
     ARROW_ASSIGN_OR_RAISE(selected_table, table->SelectColumns(column_indices));

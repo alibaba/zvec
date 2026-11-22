@@ -264,6 +264,15 @@ TEST_F(MemStoreTest, ConvertToTableWithColumnFiltering) {
   EXPECT_EQ(table->num_columns(), 2);
 }
 
+TEST_F(MemStoreTest, ConvertToTableReportsMissingColumn) {
+  ASSERT_TRUE(store_->insert(CreateDoc(0)).ok());
+
+  auto result = store_->convert_to_table({"id", "missing_column"}, {0});
+  ASSERT_TRUE(result.status().IsInvalid()) << result.status();
+  EXPECT_NE(result.status().message().find("missing_column"),
+            std::string::npos);
+}
+
 // Test convertToTable with index filtering
 TEST_F(MemStoreTest, ConvertToTableWithIndexFiltering) {
   // Insert multiple documents
