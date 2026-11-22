@@ -128,6 +128,32 @@ TEST(ProcessRssBudgetTest, ConcurrentAdmissionsShareUnmaterializedHeadroom) {
   EXPECT_EQ(100 * kMiB, budget.available());
 }
 
+TEST(ProcessRssBudgetTest, RecoveryTracksOverageWithoutCountingRollbacks) {
+  ProcessRssBudget budget;
+  sampled_rss = 64 * kMiB;
+  ASSERT_TRUE(budget.configure(128 * kMiB, ReadRss));
+  const auto generation = budget.recovery_generation();
+
+  ASSERT_TRUE(budget.try_reserve(8 * kMiB));
+  budget.finish_reservation(8 * kMiB, false);
+  ASSERT_TRUE(budget.try_reserve_materialization(8 * kMiB));
+  budget.finish_materialization(8 * kMiB, false);
+  budget.refresh(true);
+  EXPECT_EQ(generation, budget.recovery_generation());
+
+  budget.account(96 * kMiB);
+  ASSERT_EQ(0u, budget.available());
+  sampled_rss = 60 * kMiB;
+  budget.refresh(true);
+  EXPECT_EQ(0u, budget.available());
+  EXPECT_EQ(generation, budget.recovery_generation());
+
+  budget.release(8 * kMiB);
+  EXPECT_EQ(0u, budget.available());
+  EXPECT_NE(generation, budget.recovery_generation());
+  budget.release(88 * kMiB);
+}
+
 TEST(ProcessRssBudgetTest, UntouchedBackingSurvivesSampleAndOldHeapRetirement) {
   for (const bool use_native_sample : {false, true}) {
     SCOPED_TRACE(use_native_sample);

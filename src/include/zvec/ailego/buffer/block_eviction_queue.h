@@ -663,6 +663,7 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   bool try_reserve_page_used(size_t bytes, bool required = false);
   bool try_reserve_committed(size_t bytes, Backing backing = Backing::kLive,
                              size_t materialization = 0);
+  void release_native_used(size_t bytes, bool track_recovery = true);
   size_t release_committed(size_t bytes, Backing backing = Backing::kLive,
                            ProcessRssBudget::MappingProjection projection = {});
   bool try_reserve_allocation(size_t bytes, Backing backing = Backing::kLive,
@@ -784,6 +785,8 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   std::atomic<size_t> used_size_{0};
   // Includes free-list buffers so all consumers share the same hard cap.
   std::atomic<size_t> committed_size_{0};
+  std::atomic<uint64_t> used_release_generation_{0};
+  std::atomic<uint64_t> committed_release_generation_{0};
   ProcessRssBudget process_rss_;
   std::mutex process_reclaimer_mutex_;
   std::shared_ptr<const std::function<void()>> process_reclaimer_;

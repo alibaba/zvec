@@ -330,7 +330,7 @@ class ProcessRssBudget {
     estimate_.release(bytes - rss_unsampled, backing_);
     if (bytes != rss_unsampled) ++resident_generation_;
     native_estimate_.release(bytes - native_unsampled, backing_);
-    update_available();
+    update_available(/*track_release=*/true);
   }
 
   // A stamp is valid only after successful unmapping. A partial release
@@ -504,7 +504,7 @@ class ProcessRssBudget {
   void release_materialization(size_t bytes, MaterializationStamp stamp) {
     std::lock_guard<std::mutex> lock(mutex_);
     refund_materialization(bytes, stamp);
-    update_available();
+    update_available(/*track_release=*/true);
   }
 
   size_t limit() const {
@@ -515,6 +515,9 @@ class ProcessRssBudget {
   }
   size_t available() const {
     return available_.load(std::memory_order_relaxed);
+  }
+  uint64_t recovery_generation() const {
+    return recovery_generation_.load(std::memory_order_acquire);
   }
   size_t rss() const {
     return rss_.load(std::memory_order_relaxed);
@@ -575,7 +578,7 @@ class ProcessRssBudget {
     estimate_.release(bytes - rss.unsampled, backing_);
     if (bytes != rss.unsampled) ++resident_generation_;
     native_estimate_.release(bytes - native.unsampled, backing_);
-    update_available();
+    update_available(/*track_release=*/true);
   }
 
   bool try_materialize_reusable_locked(size_t /*bytes*/,
@@ -799,7 +802,12 @@ class ProcessRssBudget {
     rss_new_backing_ = 0;
     ++rss_epoch_;
     rss_.store(rss, std::memory_order_relaxed);
+    const size_t old_available = available();
     update_available();
+    // Sampling noise above the cap cannot keep an otherwise stalled request
+    // alive. A sample must actually make some headroom usable.
+    if (available() > old_available)
+      recovery_generation_.fetch_add(1, std::memory_order_release);
     sampled_at_ = std::chrono::steady_clock::now();
   }
 
@@ -849,7 +857,7 @@ class ProcessRssBudget {
         add_saturated(pending_materializations_, pending_allocations_));
   }
 
-  void update_available() {
+  void update_available(bool track_release = false) {
     const size_t cap = limit();
     const size_t measured = add_saturated(
         add_saturated(rss(), rss_materialized_), pending_materializations_);
@@ -857,18 +865,25 @@ class ProcessRssBudget {
         projected_usage(estimate_, rss_materialized_, rss_new_backing_);
     size_t available = cap ? (usage < cap ? cap - usage : 0)
                            : std::numeric_limits<size_t>::max();
+    size_t overage = cap ? usage - std::min(usage, cap) : 0;
     if (cap && native_reader_) {
       const size_t native_cap = std::min(cap, native_limit_);
       const size_t native_usage = projected_usage(
           native_estimate_, native_materialized_, native_new_backing_);
-      const size_t remaining =
-          native_usage < native_cap ? native_cap - native_usage : 0;
       // Keep a reserve below the OS application limit even for mandatory work.
-      const size_t reserve = headroom(native_cap);
-      available =
-          std::min(available, remaining > reserve ? remaining - reserve : 0);
+      const size_t limit = native_cap - headroom(native_cap);
+      available = std::min(available, limit - std::min(limit, native_usage));
+      overage = std::max(overage, native_usage - std::min(native_usage, limit));
     }
-    if (admission_paused()) available = 0;
+    if (admission_paused()) {
+      available = 0;
+      overage = std::numeric_limits<size_t>::max();
+    }
+    // Compare one ledger update while holding its lock. Recovery can be
+    // partial even when projected usage remains over the cap.
+    const bool recovered =
+        track_release && (available > this->available() || overage < overage_);
+    overage_ = overage;
     const size_t margin = headroom(cap);
     const bool pressure = external_pressure_ != PressureLevel::kNormal ||
                           (cap && (pressure_.load(std::memory_order_relaxed)
@@ -887,6 +902,7 @@ class ProcessRssBudget {
     resident_confirmation_.store(
         pressure && external_pressure_ == PressureLevel::kNormal && uncertain,
         std::memory_order_relaxed);
+    if (recovered) recovery_generation_.fetch_add(1, std::memory_order_release);
   }
 
   std::mutex mutex_;
@@ -909,6 +925,8 @@ class ProcessRssBudget {
   std::chrono::steady_clock::time_point sampled_at_{};
   std::atomic<size_t> limit_{0};
   std::atomic<size_t> available_{std::numeric_limits<size_t>::max()};
+  size_t overage_{0};
+  std::atomic<uint64_t> recovery_generation_{0};
   std::atomic<size_t> rss_{0};
   std::atomic<bool> pressure_{false};
   size_t rss_materialized_{0};
