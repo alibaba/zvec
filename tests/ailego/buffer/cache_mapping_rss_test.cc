@@ -337,6 +337,7 @@ TEST_F(CacheMappingRssTest, RequiredWorkspaceWaitsForStagedOwnerReleases) {
   first.clear();
   ASSERT_LT(pool_.available(), request);
   ASSERT_TRUE(EnteredWaitAfter(first_wait, pending));
+  ASSERT_EQ(std::future_status::timeout, pending.wait_for(250ms));
 
   second.clear();
   ASSERT_EQ(std::future_status::ready, pending.wait_for(2s));
@@ -356,52 +357,60 @@ TEST_F(CacheMappingRssTest, RequiredAllocationWaitsForLastWorkspaceDescriptor) {
   ASSERT_GT(available, overhead);
   const size_t request = available - overhead;
 
-  auto *owner = pool_.try_acquire_workspace_buffer(4 * kMiB, true);
-  ASSERT_NE(nullptr, owner);
-  std::memset(owner->data, 17, owner->bytes);
-  bool unmapped = false;
-  std::future<bool> pending;
-  const auto release_owner = [&] {
-    if (!owner) return;
-    if (unmapped) {
-      delete owner;
-      pool_.release_metadata(descriptor_bytes);
-    } else {
-      EXPECT_TRUE(pool_.release_workspace_buffer(owner));
+  for (const bool release_before_request : {false, true}) {
+    SCOPED_TRACE(testing::Message()
+                 << "release_before_request=" << release_before_request);
+    auto *owner = pool_.try_acquire_workspace_buffer(4 * kMiB, true);
+    ASSERT_NE(nullptr, owner);
+    bool unmapped = false;
+    std::future<bool> pending;
+    const auto release_owner = [&] {
+      if (!owner) return;
+      if (unmapped) {
+        delete owner;
+        pool_.release_metadata(descriptor_bytes);
+      } else {
+        EXPECT_TRUE(pool_.release_workspace_buffer(owner));
+      }
+      owner = nullptr;
+    };
+    auto finish = ScopeGuard::Make([&] {
+      release_owner();
+      if (pending.valid()) pending.wait();
+    });
+    // Pause workspace release between the mapping and descriptor refunds.
+    const auto release_payload = [&] {
+      ASSERT_TRUE(MemoryLimitPoolTestPeer::unmap_workspace(pool_, owner));
+      unmapped = true;
+      pool_.release_unmapped_external(owner->bytes, owner->stamp);
+      EXPECT_EQ(0u, pool_.external_used());
+      EXPECT_EQ(available - descriptor_bytes, pool_.available());
+    };
+    if (release_before_request) {
+      ASSERT_NO_FATAL_FAILURE(release_payload());
     }
-    owner = nullptr;
-  };
-  auto finish = ScopeGuard::Make([&] {
+    const auto initial_waits = pool_.stats().capacity_waits;
+    pending = std::async(std::launch::async, [&] {
+      try {
+        auto *bytes = allocator.allocate(request);
+        bytes[0] = 73;
+        allocator.deallocate(bytes, request);
+        return true;
+      } catch (const std::bad_alloc &) {
+        return false;
+      }
+    });
+    ASSERT_TRUE(EnteredWaitAfter(initial_waits, pending));
+    if (!release_before_request) {
+      ASSERT_NO_FATAL_FAILURE(release_payload());
+    }
+    ASSERT_EQ(std::future_status::timeout, pending.wait_for(250ms));
+
     release_owner();
-    if (pending.valid()) pending.wait();
-  });
-  const auto initial_waits = pool_.stats().capacity_waits;
-  pending = std::async(std::launch::async, [&] {
-    try {
-      auto *bytes = allocator.allocate(request);
-      bytes[0] = 73;
-      allocator.deallocate(bytes, request);
-      return true;
-    } catch (const std::bad_alloc &) {
-      return false;
-    }
-  });
-  ASSERT_TRUE(EnteredWaitAfter(initial_waits, pending));
-  const auto first_wait = pool_.stats().capacity_waits;
-
-  // Pause the normal workspace release between the mapping and descriptor
-  // refunds so the waiter must observe the partial release by itself.
-  ASSERT_TRUE(MemoryLimitPoolTestPeer::unmap_workspace(pool_, owner));
-  unmapped = true;
-  pool_.release_unmapped_external(owner->bytes, owner->stamp);
-  EXPECT_EQ(0u, pool_.external_used());
-  ASSERT_EQ(available - descriptor_bytes, pool_.available());
-  ASSERT_TRUE(EnteredWaitAfter(first_wait, pending));
-
-  release_owner();
-  ASSERT_EQ(std::future_status::ready, pending.wait_for(2s));
-  EXPECT_TRUE(pending.get());
-  EXPECT_EQ(available, pool_.available());
+    ASSERT_EQ(std::future_status::ready, pending.wait_for(2s));
+    EXPECT_TRUE(pending.get());
+    EXPECT_EQ(available, pool_.available());
+  }
 }
 
 TEST_F(CacheMappingRssTest, RequiredWorkspaceRejectsAndCanRetryAfterRelease) {
@@ -412,7 +421,16 @@ TEST_F(CacheMappingRssTest, RequiredWorkspaceRejectsAndCanRetryAfterRelease) {
   const size_t request = pool_.available() / page * page + 2 * kMiB;
   ASSERT_LT(request, pool_.capacity());
   const size_t charged = pool_.external_used();
+  const auto initial_waits = pool_.stats().capacity_waits;
+  EXPECT_FALSE(required.try_resize(request));
+  EXPECT_EQ(initial_waits, pool_.stats().capacity_waits);
+  const auto start = std::chrono::steady_clock::now();
   EXPECT_NE(0, required.resize(request));
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  EXPECT_GE(elapsed, std::chrono::seconds(4));
+  EXPECT_LT(elapsed, std::chrono::seconds(7));
+  EXPECT_EQ(0u, MemoryLimitPoolTestPeer::waiters(pool_));
+  EXPECT_EQ(0u, MemoryLimitPoolTestPeer::native_waiting(pool_));
   EXPECT_EQ(nullptr, required.data());
   EXPECT_EQ(charged, pool_.external_used());
   EXPECT_EQ(17, owner.data()[0]);
@@ -424,6 +442,50 @@ TEST_F(CacheMappingRssTest, RequiredWorkspaceRejectsAndCanRetryAfterRelease) {
   owner.clear();
   ASSERT_EQ(0, required.resize(request));
   EXPECT_EQ(request, required.size());
+}
+
+TEST_F(CacheMappingRssTest, RequiredWaitSurvivesSeparateNativeAndRssReleases) {
+  using namespace std::chrono_literals;
+  const size_t request = pool_.available();
+  const size_t rss_charge = pool_.page_buffer_size();
+  ASSERT_TRUE(MemoryLimitPoolTestPeer::fixed_rss_limit(
+      pool_, 64 * kMiB + pool_.committed() + request));
+  bool native_reserved = false;
+  bool rss_reserved = false;
+  std::future<bool> pending;
+  const auto release_native = [&] {
+    if (native_reserved) pool_.release_workspace_plan(1);
+    native_reserved = false;
+  };
+  const auto release_rss = [&] {
+    if (rss_reserved) pool_.release_process_backing(rss_charge);
+    rss_reserved = false;
+  };
+  auto finish = ScopeGuard::Make([&] {
+    release_native();
+    release_rss();
+    if (pending.valid()) pending.wait();
+  });
+  ASSERT_TRUE(pool_.try_charge_workspace_plan(1));
+  native_reserved = true;
+  ASSERT_TRUE(pool_.try_charge_process_backing(rss_charge, 0, false));
+  rss_reserved = true;
+  ASSERT_EQ(request - 1, pool_.available());
+  ASSERT_EQ(request - rss_charge, MemoryLimitPoolTestPeer::rss_room(pool_));
+  const auto initial_waits = pool_.stats().capacity_waits;
+  pending = std::async(std::launch::async, [&] {
+    const bool admitted = pool_.try_charge_metadata(request);
+    if (admitted) pool_.release_metadata(request);
+    return admitted;
+  });
+  ASSERT_TRUE(EnteredWaitAfter(initial_waits, pending));
+  release_native();
+  ASSERT_EQ(std::future_status::timeout, pending.wait_for(250ms));
+
+  release_rss();
+  ASSERT_EQ(std::future_status::ready, pending.wait_for(2s));
+  EXPECT_TRUE(pending.get());
+  EXPECT_EQ(request, pool_.available());
 }
 
 TEST_F(CacheMappingRssTest, BatchPagesLeaveRoomForNewSlabHeaders) {
@@ -916,15 +978,12 @@ TEST_F(CacheMappingRssTest, AdmissionRequirementBoundaryMatrix) {
       {"empty", 0, 0, 0, 0},
       {"copy short", 0, 8 * kMiB, 0, 8 * kMiB - 1},
       {"copy exact", 0, 8 * kMiB, 0, 8 * kMiB},
-      {"native short", 4096, 0, 4095, 4096},
       {"backing RSS short", 4096, 0, 4096, 4095},
       {"backing exact", 4096, 0, 4096, 4096},
       {"components fit but sum does not", 4096, 8 * kMiB, 4096, 8 * kMiB},
       {"small growth exact", 4096, 8 * kMiB, 4096, 8 * kMiB + 4096},
       {"equal components short", 8 * kMiB, 8 * kMiB, 8 * kMiB, 16 * kMiB - 1},
       {"equal components exact", 8 * kMiB, 8 * kMiB, 8 * kMiB, 16 * kMiB},
-      {"large growth native short", 16 * kMiB, 8 * kMiB, 16 * kMiB - 1,
-       24 * kMiB},
       {"large growth exact", 16 * kMiB, 8 * kMiB, 16 * kMiB, 24 * kMiB},
   };
   for (const auto &test : cases) {

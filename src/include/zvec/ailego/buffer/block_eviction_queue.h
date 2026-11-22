@@ -351,7 +351,7 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   bool try_charge_external(const size_t buffer_size);
 
   //! Reserve mandatory non-evictable workspace capacity. Unlike optional cache
-  //! admission, wait for progressing page reclamation with a finite bound.
+  //! admission, allow time for reclamation or concurrent capacity releases.
   //! Successful reservations must be paired with release_external().
   bool try_charge_workspace(const size_t buffer_size);
   // Also debit the full expected RSS increase when it differs from the
@@ -639,6 +639,7 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   static ProcessRssBudget::ResidentSample read_slab_resident_sample();
   static ProcessRssBudget::ResidentSample read_background_resident_sample();
   enum class Backing { kLive, kPending, kPlan };
+  enum class AdmissionResult { kAdmitted, kNativeShortfall, kDenied };
 
   MemoryLimitPool() = default;
   ~MemoryLimitPool();
@@ -651,12 +652,12 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   bool unmap_queue_mapping(QueueResidentMapping *mapping);
   bool try_reserve_used(size_t bytes);
   bool try_reserve_page_used(size_t bytes, bool required = false);
-  bool try_reserve_committed(size_t bytes, Backing backing = Backing::kLive,
-                             size_t materialization = 0);
+  AdmissionResult try_reserve_committed(size_t bytes, Backing backing,
+                                        size_t materialization = 0);
   size_t release_committed(size_t bytes, Backing backing = Backing::kLive,
                            ProcessRssBudget::MappingProjection projection = {});
-  bool try_reserve_allocation(size_t bytes, Backing backing = Backing::kLive,
-                              size_t materialization = 0);
+  AdmissionResult try_reserve_allocation(size_t bytes, Backing backing,
+                                         size_t materialization = 0);
   // Admission keeps three independent quantities:
   //   new live/pending backing: native = bytes, RSS = bytes + copy exposure;
   //   prepaid native plan:     native = bytes, RSS = 0;
@@ -689,8 +690,10 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   bool try_charge_fixed_with_wait(size_t bytes, std::atomic<size_t> *counter,
                                   Backing backing = Backing::kLive,
                                   size_t materialization = 0);
-  bool try_charge_fixed_once(size_t bytes, std::atomic<size_t> *counter,
-                             Backing backing, size_t materialization);
+  AdmissionResult try_charge_fixed_once(size_t bytes,
+                                         std::atomic<size_t> *counter,
+                                         Backing backing,
+                                         size_t materialization);
   bool try_charge_locked(size_t bytes, std::atomic<size_t> *counter,
                          Backing backing);
   void release_fixed(size_t bytes, std::atomic<size_t> *counter,
