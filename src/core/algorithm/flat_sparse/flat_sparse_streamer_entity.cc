@@ -331,7 +331,9 @@ int FlatSparseStreamerEntity::flush(uint64_t checkpoint) {
     LOG_ERROR("Failed to flush storage for %s", IndexError::What(ret));
     return ret;
   }
-  stats_.set_check_point(storage_->check_point());
+  if (checkpoint != 0) {
+    stats_.set_check_point(checkpoint);
+  }
 
   return 0;
 }

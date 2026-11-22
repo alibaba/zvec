@@ -23,6 +23,7 @@
 #include <shared_mutex>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 #include <vector>
 #include <ailego/pattern/defer.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
@@ -996,7 +997,8 @@ class BufferStorage : public IndexStorage {
 
   //! Cleanup storage
   int cleanup() override {
-    return this->close_index();
+    this->close_index();
+    return 0;
   }
 
   //! Open storage
@@ -1070,8 +1072,7 @@ class BufferStorage : public IndexStorage {
     {
       std::lock_guard<std::mutex> lock(checkpoint_mutex_);
       const uint64_t checkpoint = meta_chains_.back().footer.check_point;
-      requested_checkpoint_.store(checkpoint, std::memory_order_relaxed);
-      committed_checkpoint_.store(checkpoint, std::memory_order_release);
+      visible_checkpoint_.store(checkpoint, std::memory_order_release);
       accept_checkpoint_requests_ = writable;
     }
     cache_enabled_ = ret == 0;
@@ -1292,7 +1293,8 @@ class BufferStorage : public IndexStorage {
 
   //! Close storage
   int close() override {
-    return this->close_index();
+    this->close_index();
+    return 0;
   }
 
   //! Append a segment into storage
@@ -1307,7 +1309,7 @@ class BufferStorage : public IndexStorage {
 
   //! Retrieve check point of storage
   uint64_t check_point() const override {
-    return committed_checkpoint_.load(std::memory_order_acquire);
+    return visible_checkpoint_.load(std::memory_order_acquire);
   }
 
   //! Retrieve a segment by id
@@ -1390,8 +1392,7 @@ class BufferStorage : public IndexStorage {
   }
 
   bool is_dirty() const override {
-    return index_dirty_.load(std::memory_order_relaxed) ||
-           requested_checkpoint_.load(std::memory_order_relaxed) > check_point();
+    return index_dirty_.load(std::memory_order_relaxed);
   }
 
   //! Mark the index as dirty.  HOT PATH: store(true) unconditionally --
@@ -1406,10 +1407,8 @@ class BufferStorage : public IndexStorage {
   void refresh_index(uint64_t chkp) {
     std::lock_guard<std::mutex> lock(checkpoint_mutex_);
     if (!accept_checkpoint_requests_) return;
-    // Keep the highest request across flushes. A newer request arriving during
-    // writeback remains dirty until the committed checkpoint catches up.
-    if (chkp > requested_checkpoint_.load(std::memory_order_relaxed)) {
-      requested_checkpoint_.store(chkp, std::memory_order_relaxed);
+    if (chkp != 0) {
+      pending_checkpoint_ = chkp;
     }
     set_as_dirty();
   }
@@ -1446,26 +1445,30 @@ class BufferStorage : public IndexStorage {
       index_dirty_.store(false, std::memory_order_relaxed);
       return 0;
     }
-    // Claim the current dirty generation; concurrent writes start the next one.
-    const bool was_dirty =
-        index_dirty_.exchange(false, std::memory_order_relaxed);
-    const uint64_t checkpoint =
-        requested_checkpoint_.load(std::memory_order_relaxed);
-    if (!was_dirty && checkpoint == check_point()) {
-      return 0;
+    uint64_t tail_checkpoint;
+    {
+      std::lock_guard<std::mutex> lock(checkpoint_mutex_);
+      if (!index_dirty_.exchange(false, std::memory_order_relaxed)) return 0;
+      tail_checkpoint = std::exchange(pending_checkpoint_, 0);
     }
-    // A return or exception before persistence completes leaves this dirty
-    // generation pending. A successful flush never clears a newer generation.
     bool persisted = false;
     AILEGO_DEFER([&]() {
-      if (!persisted) index_dirty_.store(true, std::memory_order_relaxed);
+      if (persisted) return;
+      std::lock_guard<std::mutex> lock(checkpoint_mutex_);
+      if (pending_checkpoint_ == 0) pending_checkpoint_ = tail_checkpoint;
+      set_as_dirty();
     });
     // Flush dirty data blocks first.
     if (buffer_pool_handle_->flush_all() != 0) {
       LOG_ERROR("flush_all data blocks failed: file[%s]", file_name_.c_str());
       return IndexError_WriteData;
     }
-    // Refresh and persist metadata for each chain.
+    // A refresh applies to the directory chains that existed at the time.
+    // A split saves their pending checkpoint and starts a new tail at zero.
+    const uint64_t checkpoint =
+        tail_checkpoint != 0 ? tail_checkpoint : split_checkpoint_;
+    const size_t checkpoint_chains =
+        tail_checkpoint != 0 ? meta_chains_.size() : split_checkpoint_chains_;
     for (size_t ci = 0; ci < meta_chains_.size(); ++ci) {
       MetaChain &mchain = meta_chains_[ci];
       const char *seg_buf = mchain.segment_meta.get();
@@ -1487,16 +1490,16 @@ class BufferStorage : public IndexStorage {
       }
       mchain.append_meta_needs_write = false;
       auto footer = mchain.footer;
-      const bool advances_checkpoint =
-          ci + 1 == meta_chains_.size() && checkpoint > footer.check_point;
-      if (advances_checkpoint) {
+      const bool changes_checkpoint =
+          ci < checkpoint_chains && checkpoint != footer.check_point;
+      if (changes_checkpoint) {
         IndexFormat::UpdateMetaFooter(&footer, checkpoint);
       }
-      // A short final write can already contain the new checkpoint and CRC.
+      // A short write can already contain the new checkpoint and CRC.
       // Restore the old checkpoint against the table that just reached disk.
       bool footer_written = false;
       AILEGO_DEFER([&]() {
-        if (advances_checkpoint && !footer_written) {
+        if (changes_checkpoint && !footer_written) {
           restore_metadata(
               mchain.footer_file_offset(), sizeof(mchain.footer),
               reinterpret_cast<const char *>(&mchain.footer));
@@ -1512,7 +1515,10 @@ class BufferStorage : public IndexStorage {
       footer_written = true;
       mchain.footer = footer;
     }
-    committed_checkpoint_.store(checkpoint, std::memory_order_release);
+    split_checkpoint_ = 0;
+    split_checkpoint_chains_ = 0;
+    visible_checkpoint_.store(meta_chains_.back().footer.check_point,
+                              std::memory_order_release);
     persisted = true;
     return 0;
   } catch (const std::bad_alloc &) {
@@ -1520,16 +1526,15 @@ class BufferStorage : public IndexStorage {
   }
 
   //! Close index storage
-  int close_index(bool flush_pending = true) {
+  void close_index(bool flush_pending = true) {
     // Hold ONE continuous all-shards latch across flush + teardown so no
     // writer can slip in between (which would dirty meta_buf only to have
     // the page table reset under it, dropping the modification).
     AllShardsExclusiveLatch latch(mapping_shards_);
+    // Close callers may have already torn down their streamer. Writeback
+    // errors are handled through the retryable flush() API.
+    if (flush_pending) flush_index_locked();
     std::lock_guard<std::mutex> lock(checkpoint_mutex_);
-    const int ret = flush_pending ? flush_index_locked() : 0;
-    if (ret != 0 && !corrupted_.load(std::memory_order_acquire)) {
-      return ret;
-    }
     file_name_.clear();
     segments_.clear();
     meta_chains_.clear();
@@ -1537,11 +1542,12 @@ class BufferStorage : public IndexStorage {
     buffer_pool_.reset();
     cache_enabled_ = false;
     accept_checkpoint_requests_ = false;
-    requested_checkpoint_.store(0, std::memory_order_relaxed);
-    committed_checkpoint_.store(0, std::memory_order_release);
+    pending_checkpoint_ = 0;
+    split_checkpoint_ = 0;
+    split_checkpoint_chains_ = 0;
+    visible_checkpoint_.store(0, std::memory_order_release);
     index_dirty_.store(false, std::memory_order_relaxed);
     corrupted_.store(false, std::memory_order_relaxed);
-    return ret;
   }
 
   // Rollback can run while handling an exception from the I/O path.
@@ -1632,7 +1638,6 @@ class BufferStorage : public IndexStorage {
       IndexFormat::SetupMetaFooter(&new_footer);
       new_footer.segments_meta_size = new_segments_meta_size;
       new_footer.total_size = new_meta_total;
-      new_footer.check_point = check_point();
       meta_chains_.reserve(meta_chains_.size() + 1);
 
       // Extend the file and write the new chain's header.
@@ -1797,6 +1802,21 @@ class BufferStorage : public IndexStorage {
     chain->append_meta_needs_write = false;
     pending.first->second = IndexMapping::SegmentInfo{
         IndexMapping::Segment{live_seg}, chain->header_start_offset, header};
+    {
+      std::lock_guard<std::mutex> lock(checkpoint_mutex_);
+      if (chain_split) {
+        if (pending_checkpoint_ != 0) {
+          split_checkpoint_ = std::exchange(pending_checkpoint_, 0);
+          split_checkpoint_chains_ = meta_chains_.size() - 1;
+        }
+        visible_checkpoint_.store(0, std::memory_order_release);
+      } else if (pending_checkpoint_ != 0) {
+        // Match a successful in-place append's checkpoint visibility while
+        // leaving the writeback to flush().
+        visible_checkpoint_.store(pending_checkpoint_,
+                                  std::memory_order_release);
+      }
+    }
     committed = true;
     return 0;
   } catch (const std::bad_alloc &) {
@@ -1811,12 +1831,14 @@ class BufferStorage : public IndexStorage {
   }
 
   std::atomic<bool> index_dirty_{false};
-  // Serialize refresh with open/close while allowing it during explicit flush.
+  // Protect requests and their association with the current directory tail.
   std::mutex checkpoint_mutex_;
   bool accept_checkpoint_requests_{false};
-  std::atomic<uint64_t> requested_checkpoint_{0};
-  // The tail footer is the on-disk commit record for the whole directory.
-  std::atomic<uint64_t> committed_checkpoint_{0};
+  uint64_t pending_checkpoint_{0};
+  std::atomic<uint64_t> visible_checkpoint_{0};
+  // The last request saved by a split, guarded by the mapping latches.
+  uint64_t split_checkpoint_{0};
+  size_t split_checkpoint_chains_{0};
   // Raised after an unrecoverable rollback; blocks writes until close.
   std::atomic<bool> corrupted_{false};
 

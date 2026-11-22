@@ -991,48 +991,44 @@ TEST_F(BufferStorageWriteTest, RefreshCheckpoint) {
 
   storage->refresh(50);
   ASSERT_EQ(0, storage->flush());
-  EXPECT_EQ(100u, storage->check_point());
+  EXPECT_EQ(50u, storage->check_point());
   ASSERT_EQ(0, storage->close());
   storage->refresh(200);
   EXPECT_FALSE(storage->is_dirty());
 
   storage = open_writable();
   ASSERT_NE(nullptr, storage);
-  EXPECT_EQ(100u, storage->check_point());
+  EXPECT_EQ(50u, storage->check_point());
   storage->refresh(90);
+  storage->refresh(40);
   ASSERT_EQ(0, storage->flush());
-  EXPECT_EQ(100u, storage->check_point());
+  EXPECT_EQ(40u, storage->check_point());
   ASSERT_EQ(0, storage->close());
 }
 
-TEST_F(BufferStorageWriteTest, ConcurrentRefreshAndFlushKeepsHighestCheckpoint) {
+TEST_F(BufferStorageWriteTest, ConcurrentRefreshAndFlushKeepsFinalRequest) {
   auto storage = open_writable();
   ASSERT_NE(nullptr, storage);
-  constexpr uint64_t kHighest = 128;
+  constexpr uint64_t kFinalCheckpoint = 7;
   std::atomic<bool> done{false};
   std::thread refresher([&]() {
-    for (uint64_t checkpoint = 1; checkpoint <= kHighest; ++checkpoint) {
+    for (uint64_t checkpoint = 1; checkpoint <= 128; ++checkpoint) {
       storage->refresh(checkpoint);
       std::this_thread::yield();
       storage->refresh(1);
     }
+    storage->refresh(kFinalCheckpoint);
     done.store(true, std::memory_order_release);
   });
 
   int status;
-  uint64_t last = 0;
-  bool regressed = false;
   do {
     status = storage->flush();
-    const auto checkpoint = storage->check_point();
-    regressed |= checkpoint < last;
-    last = checkpoint;
   } while (status == 0 && !done.load(std::memory_order_acquire));
   refresher.join();
   ASSERT_EQ(0, status);
-  EXPECT_FALSE(regressed);
   ASSERT_EQ(0, storage->flush());
-  EXPECT_EQ(kHighest, storage->check_point());
+  EXPECT_EQ(kFinalCheckpoint, storage->check_point());
   EXPECT_FALSE(storage->is_dirty());
   ASSERT_EQ(0, storage->close());
 }
