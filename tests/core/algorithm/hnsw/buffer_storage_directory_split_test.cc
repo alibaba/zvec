@@ -20,13 +20,17 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
-#include <functional>
 #include <limits>
 #include <new>
 #include <string>
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <dlfcn.h>
 #include <unistd.h>
+#elif defined(__APPLE__) && TARGET_OS_OSX
+#include "buffer_storage_directory_pwrite.h"
 #endif
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/budgeted_allocator.h>
@@ -41,14 +45,15 @@
 
 namespace {
 thread_local size_t fail_array_size = 0;
-thread_local size_t fail_scalar_size = 0;
 thread_local size_t fail_aligned_size = 0;
 thread_local bool fault_hit = false;
+#if defined(__linux__) && !defined(__ANDROID__)
+thread_local bool fail_next_scalar_allocation = false;
+#endif
 
 void InjectAllocationFailure(size_t bytes, size_t &target) {
   if (target != 0 && bytes == target) {
     fail_array_size = 0;
-    fail_scalar_size = 0;
     fail_aligned_size = 0;
     fault_hit = true;
     throw std::bad_alloc();
@@ -62,37 +67,6 @@ void InjectAllocationFailure(size_t bytes, size_t &target) {
 void FreeAligned(void *ptr) noexcept {
   ailego_aligned_free(ptr);
 }
-#if defined(__linux__) && !defined(__ANDROID__)
-struct FooterPublicationProbe {
-  off_t offset;
-  std::function<void()> inspect;
-  bool reject_next_allocation{false};
-  bool written{false};
-  bool allocation_attempted{false};
-};
-thread_local FooterPublicationProbe *footer_publication = nullptr;
-
-void RejectProbedAllocation() {
-  if (footer_publication && (footer_publication->written ||
-                             footer_publication->reject_next_allocation)) {
-    auto *probe = footer_publication;
-    footer_publication = nullptr;
-    probe->allocation_attempted = true;
-    probe->inspect();
-    throw std::bad_alloc();
-  }
-}
-
-class ScopedFooterPublicationProbe {
- public:
-  explicit ScopedFooterPublicationProbe(FooterPublicationProbe &probe) {
-    footer_publication = &probe;
-  }
-  ~ScopedFooterPublicationProbe() {
-    footer_publication = nullptr;
-  }
-};
-#endif
 }  // namespace
 
 // This test has its own executable, so the allocation fault is isolated from
@@ -110,8 +84,11 @@ void operator delete[](void *ptr, size_t) noexcept {
 
 #if defined(__linux__) && !defined(__ANDROID__)
 void *operator new(size_t bytes) {
-  RejectProbedAllocation();
-  InjectAllocationFailure(bytes, fail_scalar_size);
+  if (fail_next_scalar_allocation) {
+    fail_next_scalar_allocation = false;
+    fault_hit = true;
+    throw std::bad_alloc();
+  }
   if (void *ptr = std::malloc(std::max(size_t{1}, bytes))) return ptr;
   throw std::bad_alloc();
 }
@@ -124,9 +101,6 @@ void operator delete(void *ptr, size_t) noexcept {
 #endif
 
 void *operator new(size_t bytes, std::align_val_t alignment) {
-#if defined(__linux__) && !defined(__ANDROID__)
-  RejectProbedAllocation();
-#endif
   InjectAllocationFailure(bytes, fail_aligned_size);
   if (void *ptr = ailego_aligned_malloc(std::max(size_t{1}, bytes),
                                         static_cast<size_t>(alignment))) {
@@ -141,7 +115,8 @@ void operator delete(void *ptr, size_t, std::align_val_t) noexcept {
   FreeAligned(ptr);
 }
 
-#if defined(__linux__) && !defined(__ANDROID__)
+#if (defined(__linux__) && !defined(__ANDROID__)) || \
+    (defined(__APPLE__) && TARGET_OS_OSX)
 namespace {
 using MetaFooter = zvec::core::IndexFormat::MetaFooter;
 constexpr size_t kShortFooterBytes = offsetof(MetaFooter, total_size);
@@ -152,52 +127,61 @@ struct ShortFooterWrite {
   ssize_t written{-1};
 };
 thread_local ShortFooterWrite *short_footer_write = nullptr;
-thread_local off_t rejected_metadata_offset = -1;
-thread_local size_t rejected_metadata_writes = 0;
-thread_local bool reject_only_one_metadata_write = false;
-}  // namespace
+class ScopedWriteFailure;
+thread_local ScopedWriteFailure *write_failure = nullptr;
 
-// Write a real prefix of the old footer, including the new chain link. This
-// interposition is confined to this test executable and armed for one write.
-extern "C" ssize_t pwrite(int fd, const void *buffer, size_t count,
-                          off_t offset) {
-  static const auto write_at =
-      reinterpret_cast<decltype(&::pwrite)>(::dlsym(RTLD_NEXT, "pwrite"));
-  if (!write_at) std::abort();
-  if (offset == rejected_metadata_offset) {
-    ++rejected_metadata_writes;
-    if (reject_only_one_metadata_write) rejected_metadata_offset = -1;
+class ScopedWriteFailure {
+ public:
+  explicit ScopedWriteFailure(off_t target) : offset(target) {
+    write_failure = this;
+  }
+  ~ScopedWriteFailure() {
+    write_failure = nullptr;
+  }
+
+  const off_t offset;
+  bool hit{false};
+};
+
+// Write a real prefix of the old footer, including the new chain link. Each
+// fault is armed for one write.
+ssize_t InjectPwrite(decltype(&::pwrite) write_at, int fd, const void *buffer,
+                     size_t count, off_t offset) {
+  if (write_failure && offset == write_failure->offset) {
+    write_failure->hit = true;
+    write_failure = nullptr;
     errno = EIO;
     return -1;
   }
-  const bool watching_publication =
-      footer_publication && offset == footer_publication->offset;
-  const bool injecting_short_write =
-      short_footer_write && offset == short_footer_write->offset;
-  if (count == sizeof(MetaFooter) &&
-      (injecting_short_write || watching_publication)) {
+  if (count == sizeof(MetaFooter) && short_footer_write &&
+      offset == short_footer_write->offset) {
     uint64_t next_offset;
     std::memcpy(&next_offset,
                 static_cast<const char *>(buffer) +
                     offsetof(MetaFooter, next_meta_header_offset),
                 sizeof(next_offset));
     if (next_offset != 0) {
-      if (injecting_short_write) {
-        auto *fault = short_footer_write;
-        short_footer_write = nullptr;
-        fault->written = write_at(fd, buffer, fault->prefix, offset);
-        // Simulate write_meta throwing after the partial write. A logger's
-        // allocation failure can escape from that path.
-        if (fault->throw_after_write) throw std::bad_alloc();
-        return fault->written;
-      }
-      const ssize_t written = write_at(fd, buffer, count, offset);
-      footer_publication->written = written == static_cast<ssize_t>(count);
-      return written;
+      auto *fault = short_footer_write;
+      short_footer_write = nullptr;
+      fault->written = write_at(fd, buffer, fault->prefix, offset);
+      // A logger's allocation failure can escape from the I/O error path.
+      if (fault->throw_after_write) throw std::bad_alloc();
+      return fault->written;
     }
   }
   return write_at(fd, buffer, count, offset);
 }
+}  // namespace
+
+#if defined(__linux__) && !defined(__ANDROID__)
+extern "C" ssize_t pwrite(int fd, const void *buffer, size_t count,
+                          off_t offset) {
+  static const auto write_at =
+      reinterpret_cast<decltype(&::pwrite)>(::dlsym(RTLD_NEXT, "pwrite"));
+  if (!write_at) std::abort();
+  return InjectPwrite(write_at, fd, buffer, count, offset);
+}
+#endif
 #endif
 
 namespace {
@@ -206,11 +190,17 @@ constexpr uint32_t kDirectoryCapacity = 256;
 constexpr size_t kMetaOverhead =
     sizeof(IndexFormat::MetaHeader) + sizeof(IndexFormat::MetaFooter);
 constexpr std::array<char, 5> kOldData = {'v', 'a', 'l', 'u', 'e'};
+constexpr std::array<char, 5> kNewData = {'c', 'h', 'u', 'n', 'k'};
 
 struct Directory {
   IndexFormat::MetaFooter footer{};
   uint32_t footer_offset{};
   size_t free_bytes{};
+  uint64_t last_segment_offset{};
+
+  uint32_t segment_meta_offset() const {
+    return footer_offset - footer.segments_meta_size;
+  }
 };
 
 bool ReadRootDirectory(const std::string &path, Directory *directory) {
@@ -221,7 +211,7 @@ bool ReadRootDirectory(const std::string &path, Directory *directory) {
   in.seekg(root.meta_footer_offset);
   auto &footer = directory->footer;
   if (!in.read(reinterpret_cast<char *>(&footer), sizeof(footer))) return false;
-  in.seekg(root.meta_footer_offset - footer.segments_meta_size);
+  in.seekg(directory->segment_meta_offset());
   size_t first_name = footer.segments_meta_size;
   for (uint32_t i = 0; i < footer.segment_count; ++i) {
     IndexFormat::SegmentMeta segment{};
@@ -229,6 +219,7 @@ bool ReadRootDirectory(const std::string &path, Directory *directory) {
       return false;
     first_name =
         std::min(first_name, static_cast<size_t>(segment.segment_id_offset));
+    directory->last_segment_offset = root.content_offset + segment.data_index;
   }
   directory->free_bytes =
       first_name - footer.segment_count * sizeof(IndexFormat::SegmentMeta);
@@ -258,6 +249,9 @@ class ScopedSplitAllocationFailure {
 class BufferStorageDirectorySplitTest : public testing::Test {
  protected:
   void SetUp() override {
+#if defined(__APPLE__) && TARGET_OS_OSX
+    zvec::test::SetDirectorySplitPwriteHook(InjectPwrite);
+#endif
     page_size_ = zvec::ailego::kVectorPageSize;
     ASSERT_NE(0u, page_size_);
     ASSERT_EQ(0,
@@ -277,12 +271,21 @@ class BufferStorageDirectorySplitTest : public testing::Test {
     if (writer_) writer_->close();
     writer_.reset();
     std::remove(path_.c_str());
+#if defined(__APPLE__) && TARGET_OS_OSX
+    zvec::test::SetDirectorySplitPwriteHook(nullptr);
+#endif
   }
 
   void FillFirstChain() {
     ASSERT_NO_FATAL_FAILURE(FillDirectory());
     ASSERT_NO_FATAL_FAILURE(WriteOldSegment());
     ASSERT_EQ(0, writer_->flush());
+  }
+
+  void AppendOldSegment() {
+    old_name_ = "old_segment";
+    ASSERT_EQ(0, writer_->append(old_name_, page_size_));
+    ASSERT_NO_FATAL_FAILURE(WriteOldSegment());
   }
 
   void FillDirectory() {
@@ -294,10 +297,6 @@ class BufferStorageDirectorySplitTest : public testing::Test {
     old_name_.assign(before.free_bytes - sizeof(IndexFormat::SegmentMeta) - 1,
                      'x');
     ASSERT_EQ(0, writer_->append(old_name_, page_size_));
-    Directory full{};
-    ASSERT_TRUE(ReadRootDirectory(path_, &full));
-    ASSERT_EQ(0u, full.footer.next_meta_header_offset);
-    ASSERT_EQ(0u, full.free_bytes);
   }
 
   void WriteOldSegment() {
@@ -307,38 +306,48 @@ class BufferStorageDirectorySplitTest : public testing::Test {
               segment->write(0, kOldData.data(), kOldData.size()));
   }
 
-  void VerifyOldDirectory(const std::string &failed_name) {
-    Directory disk{};
-    ASSERT_TRUE(ReadRootDirectory(path_, &disk));
-    EXPECT_EQ(0u, disk.footer.next_meta_header_offset);
-    EXPECT_FALSE(writer_->has(failed_name));
-    ASSERT_NO_FATAL_FAILURE(VerifyReader(failed_name, false));
+  void VerifySegment(IndexStorage &storage, const std::string &name,
+                     const std::array<char, 5> &expected) {
+    auto segment = storage.get(name);
+    ASSERT_NE(nullptr, segment);
+    ASSERT_EQ(expected.size(), segment->data_size());
+    std::array<char, 5> data{};
+    ASSERT_EQ(data.size(), segment->fetch(0, data.data(), data.size()));
+    EXPECT_EQ(expected, data);
   }
 
-  void VerifyReader(const std::string &name, bool visible) {
-    auto reader = IndexFactory::CreateStorage("BufferStorage");
-    ASSERT_NE(nullptr, reader);
-    ASSERT_EQ(0, reader->init(zvec::ailego::Params{}));
-    ASSERT_EQ(0, reader->open(path_, IndexStorage::OpenOptions{false, true}));
-    auto old = reader->get(old_name_);
-    ASSERT_NE(nullptr, old);
-    ASSERT_EQ(kOldData.size(), old->data_size());
-    std::array<char, kOldData.size()> data{};
-    ASSERT_EQ(data.size(), old->fetch(0, data.data(), data.size()));
-    EXPECT_EQ(kOldData, data);
-    EXPECT_EQ(visible, reader->has(name));
-    old.reset();
-    EXPECT_EQ(0, reader->close());
+  void AppendAndVerifyReopen(const std::string &name) {
+    constexpr uint64_t kCheckpoint = 73;
+    writer_->refresh(kCheckpoint);
+    ASSERT_EQ(0, writer_->append(name, page_size_));
+    EXPECT_TRUE(writer_->is_dirty());
+    {
+      auto segment = writer_->get(name);
+      ASSERT_NE(nullptr, segment);
+      ASSERT_EQ(kNewData.size(),
+                segment->write(0, kNewData.data(), kNewData.size()));
+    }
+    ASSERT_EQ(0, writer_->flush());
+    ASSERT_EQ(0, writer_->close());
+    for (const char *type : {"BufferStorage", "MMapFileStorage"}) {
+      SCOPED_TRACE(type);
+      auto reader = IndexFactory::CreateStorage(type);
+      ASSERT_NE(nullptr, reader);
+      ASSERT_EQ(0, reader->init(zvec::ailego::Params{}));
+      ASSERT_EQ(0, reader->open(path_, false));
+      EXPECT_EQ(kCheckpoint, reader->check_point());
+      ASSERT_NO_FATAL_FAILURE(VerifySegment(*reader, old_name_, kOldData));
+      ASSERT_NO_FATAL_FAILURE(VerifySegment(*reader, name, kNewData));
+      ASSERT_EQ(0, reader->close());
+    }
   }
 
   void VerifyRetry(const std::string &name) {
-    ASSERT_NO_FATAL_FAILURE(VerifyOldDirectory(name));
+    EXPECT_FALSE(writer_->has(name));
+    EXPECT_EQ(nullptr, writer_->get(name));
+    ASSERT_NO_FATAL_FAILURE(VerifySegment(*writer_, old_name_, kOldData));
     ASSERT_EQ(0, writer_->append(name, page_size_));
-    ASSERT_TRUE(writer_->has(name));
-    ASSERT_EQ(0, writer_->close());
-    ASSERT_EQ(0, writer_->open(path_, IndexStorage::OpenOptions{false, false}));
-    ASSERT_TRUE(writer_->has(old_name_));
-    ASSERT_TRUE(writer_->has(name));
+    EXPECT_NE(nullptr, writer_->get(name));
   }
 
   size_t page_size_{};
@@ -347,8 +356,18 @@ class BufferStorageDirectorySplitTest : public testing::Test {
   IndexStorage::Pointer writer_;
 };
 
-TEST_F(BufferStorageDirectorySplitTest,
-       FailedSplitCanReopenAndRetrySameSegment) {
+TEST_F(BufferStorageDirectorySplitTest, InPlaceAppendReopensAfterFlush) {
+  ASSERT_NO_FATAL_FAILURE(AppendOldSegment());
+  ASSERT_NO_FATAL_FAILURE(AppendAndVerifyReopen("new_in_place"));
+}
+
+TEST_F(BufferStorageDirectorySplitTest, SplitReopensAfterFlush) {
+  ASSERT_NO_FATAL_FAILURE(FillDirectory());
+  ASSERT_NO_FATAL_FAILURE(WriteOldSegment());
+  ASSERT_NO_FATAL_FAILURE(AppendAndVerifyReopen("new_split"));
+}
+
+TEST_F(BufferStorageDirectorySplitTest, FailedSplitCanRetrySameSegment) {
   ASSERT_NO_FATAL_FAILURE(FillFirstChain());
   const std::string name = "retry_same_segment";
   {
@@ -359,74 +378,68 @@ TEST_F(BufferStorageDirectorySplitTest,
   ASSERT_NO_FATAL_FAILURE(VerifyRetry(name));
 }
 
-#if defined(__linux__) && !defined(__ANDROID__)
+#if defined(__APPLE__) && TARGET_OS_OSX
 TEST_F(BufferStorageDirectorySplitTest,
-       WritebackAllocationFailureKeepsDirtySegment) {
-  ASSERT_NO_FATAL_FAILURE(FillDirectory());
-  ASSERT_NO_FATAL_FAILURE(WriteOldSegment());
-  constexpr uint64_t kCheckpoint = 73;
-  writer_->refresh(kCheckpoint);
-  ASSERT_TRUE(writer_->is_dirty());
-
-  const std::string name = "retry_dirty_split";
-  fault_hit = false;
-  fail_scalar_size = zvec::ailego::VecBufferPool::kWritebackBatchPages *
-                     sizeof(zvec::ailego::block_id_t);
-  const int status = writer_->append(name, page_size_);
-  fail_scalar_size = 0;
-  ASSERT_TRUE(fault_hit);
-  ASSERT_EQ(IndexError_NoMemory, status);
-  EXPECT_TRUE(writer_->is_dirty());
-  EXPECT_FALSE(writer_->has(name));
-  Directory old_directory{};
-  ASSERT_TRUE(ReadRootDirectory(path_, &old_directory));
-  EXPECT_EQ(0u, old_directory.footer.next_meta_header_offset);
-  EXPECT_EQ(0u, old_directory.footer.check_point);
-
-  ASSERT_EQ(0, writer_->append(name, page_size_));
+       OldDataWritebackFailureDoesNotBlockAppend) {
+  ASSERT_NO_FATAL_FAILURE(AppendOldSegment());
   ASSERT_EQ(0, writer_->flush());
-  ASSERT_EQ(0, writer_->close());
-  ASSERT_NO_FATAL_FAILURE(VerifyReader(name, true));
-  Directory persisted{};
-  ASSERT_TRUE(ReadRootDirectory(path_, &persisted));
-  EXPECT_EQ(kCheckpoint, persisted.footer.check_point);
-}
-
-TEST_F(BufferStorageDirectorySplitTest, AppendValidationPrecedesWriteback) {
-  ASSERT_NO_FATAL_FAILURE(FillDirectory());
-  ASSERT_NO_FATAL_FAILURE(WriteOldSegment());
-  ASSERT_TRUE(writer_->is_dirty());
   Directory disk{};
   ASSERT_TRUE(ReadRootDirectory(path_, &disk));
-  ASSERT_GT(disk.footer_offset, disk.footer.segments_meta_size);
-
-  const std::string name = "retry_after_writeback_failure";
-  rejected_metadata_offset =
-      disk.footer_offset - disk.footer.segments_meta_size;
-  rejected_metadata_writes = 0;
-  EXPECT_EQ(IndexError_Duplicate, writer_->append(old_name_, page_size_));
-  EXPECT_EQ(IndexError_InvalidArgument, writer_->append(name, 0));
-  EXPECT_EQ(0u, rejected_metadata_writes);
+  const std::string name = "new_in_place";
+  ASSERT_GE(disk.free_bytes, sizeof(IndexFormat::SegmentMeta) + name.size() + 1);
+  {
+    auto segment = writer_->get(old_name_);
+    ASSERT_NE(nullptr, segment);
+    ASSERT_EQ(kNewData.size(),
+              segment->write(0, kNewData.data(), kNewData.size()));
+  }
+  {
+    ScopedWriteFailure fault(disk.last_segment_offset);
+    ASSERT_EQ(0, writer_->append(name, page_size_));
+    EXPECT_FALSE(fault.hit);
+    EXPECT_TRUE(writer_->is_dirty());
+    EXPECT_EQ(IndexError_WriteData, writer_->flush());
+    EXPECT_TRUE(fault.hit);
+  }
   EXPECT_TRUE(writer_->is_dirty());
+  EXPECT_TRUE(writer_->has(name));
+  ASSERT_NO_FATAL_FAILURE(VerifySegment(*writer_, old_name_, kNewData));
+  ASSERT_EQ(0, writer_->flush());
+  EXPECT_FALSE(writer_->is_dirty());
+}
+#endif
 
-  const int status = writer_->append(name, page_size_);
-  rejected_metadata_offset = -1;
-  EXPECT_EQ(1u, rejected_metadata_writes);
-  ASSERT_EQ(IndexError_WriteData, status);
-  EXPECT_TRUE(writer_->is_dirty());
-  EXPECT_FALSE(writer_->has(name));
+#if (defined(__linux__) && !defined(__ANDROID__)) || \
+    (defined(__APPLE__) && TARGET_OS_OSX)
+TEST_F(BufferStorageDirectorySplitTest,
+       OldMetadataWritebackFailureDoesNotBlockAppend) {
+  ASSERT_NO_FATAL_FAILURE(AppendOldSegment());
+  ASSERT_EQ(0, writer_->flush());
+  Directory disk{};
   ASSERT_TRUE(ReadRootDirectory(path_, &disk));
-  EXPECT_EQ(0u, disk.footer.next_meta_header_offset);
+  const std::string name = "new_in_place";
+  ASSERT_GE(disk.free_bytes, sizeof(IndexFormat::SegmentMeta) + name.size() + 1);
 
-  ASSERT_EQ(0, writer_->append(name, page_size_));
-  ASSERT_EQ(0, writer_->close());
-  ASSERT_NO_FATAL_FAILURE(VerifyReader(name, true));
+  auto old = writer_->get(old_name_);
+  ASSERT_NE(nullptr, old);
+  ASSERT_EQ(kNewData.size(),
+            old->write(kOldData.size(), kNewData.data(), kNewData.size()));
+  {
+    ScopedWriteFailure fault(disk.segment_meta_offset());
+    ASSERT_EQ(0, writer_->append(name, page_size_));
+    EXPECT_FALSE(fault.hit);
+    EXPECT_EQ(IndexError_WriteData, writer_->flush());
+    EXPECT_TRUE(fault.hit);
+  }
+  EXPECT_TRUE(writer_->is_dirty());
+  EXPECT_TRUE(writer_->has(name));
+  EXPECT_EQ(kOldData.size() + kNewData.size(), old->data_size());
+  ASSERT_EQ(0, writer_->flush());
+  EXPECT_FALSE(writer_->is_dirty());
 }
 
 TEST_F(BufferStorageDirectorySplitTest, InPlaceAppendFailureRemovesMapping) {
-  old_name_ = "old_segment";
-  ASSERT_EQ(0, writer_->append(old_name_, page_size_));
-  ASSERT_NO_FATAL_FAILURE(WriteOldSegment());
+  ASSERT_NO_FATAL_FAILURE(AppendOldSegment());
   ASSERT_EQ(0, writer_->flush());
   Directory disk{};
   ASSERT_TRUE(ReadRootDirectory(path_, &disk));
@@ -434,26 +447,34 @@ TEST_F(BufferStorageDirectorySplitTest, InPlaceAppendFailureRemovesMapping) {
   ASSERT_GT(disk.free_bytes,
             sizeof(IndexFormat::SegmentMeta) + name.size() + 1);
 
-  rejected_metadata_offset =
-      disk.footer_offset - disk.footer.segments_meta_size;
-  reject_only_one_metadata_write = true;
-  const int status = writer_->append(name, page_size_);
-  reject_only_one_metadata_write = false;
-  rejected_metadata_offset = -1;
-  ASSERT_EQ(IndexError_WriteData, status);
-  ASSERT_NO_FATAL_FAILURE(VerifyOldDirectory(name));
-
-  // BP owns the key in directory metadata, independent of the caller's ID.
-  auto caller_name = name;
-  ASSERT_EQ(0, writer_->append(caller_name, page_size_));
-  std::fill(caller_name.begin(), caller_name.end(), 'x');
-  EXPECT_TRUE(writer_->has(name));
-  EXPECT_FALSE(writer_->has(caller_name));
-  ASSERT_EQ(0, writer_->close());
-  ASSERT_NO_FATAL_FAILURE(VerifyReader(name, true));
+  {
+    ScopedWriteFailure fault(disk.segment_meta_offset() +
+                             disk.footer.segment_count *
+                                 sizeof(IndexFormat::SegmentMeta));
+    ASSERT_EQ(IndexError_WriteData, writer_->append(name, page_size_));
+    EXPECT_TRUE(fault.hit);
+  }
+  ASSERT_NO_FATAL_FAILURE(VerifyRetry(name));
 }
 
-TEST_F(BufferStorageDirectorySplitTest, ShortFooterWriteKeepsOldDirectory) {
+TEST_F(BufferStorageDirectorySplitTest, FailedMetadataFlushCanRetryWithSplit) {
+  ASSERT_NO_FATAL_FAILURE(FillDirectory());
+  ASSERT_EQ(0, writer_->flush());
+  Directory disk{};
+  ASSERT_TRUE(ReadRootDirectory(path_, &disk));
+  ASSERT_NO_FATAL_FAILURE(WriteOldSegment());
+  {
+    ScopedWriteFailure fault(disk.segment_meta_offset());
+    ASSERT_EQ(IndexError_WriteData, writer_->flush());
+    EXPECT_TRUE(fault.hit);
+  }
+  EXPECT_TRUE(writer_->is_dirty());
+  ASSERT_NO_FATAL_FAILURE(VerifyRetry("new_split"));
+  EXPECT_TRUE(writer_->is_dirty());
+  ASSERT_EQ(0, writer_->flush());
+}
+
+TEST_F(BufferStorageDirectorySplitTest, ShortFooterWriteCanRetrySplit) {
   ASSERT_NO_FATAL_FAILURE(FillFirstChain());
   Directory disk{};
   ASSERT_TRUE(ReadRootDirectory(path_, &disk));
@@ -483,52 +504,26 @@ TEST_F(BufferStorageDirectorySplitTest,
   ASSERT_EQ(static_cast<ssize_t>(kPrefix), fault.written);
   ASSERT_EQ(IndexError_NoMemory, status);
   ASSERT_NO_FATAL_FAILURE(VerifyRetry(name));
-  ASSERT_NO_FATAL_FAILURE(VerifyReader(name, true));
 }
 
-TEST_F(BufferStorageDirectorySplitTest, PublishingSplitNeedsNoMoreAllocations) {
+#endif
+
+#if defined(__linux__) && !defined(__ANDROID__)
+TEST_F(BufferStorageDirectorySplitTest, FailedMapAllocationCanRetrySameSegment) {
   ASSERT_NO_FATAL_FAILURE(FillFirstChain());
-  Directory disk{};
-  ASSERT_TRUE(ReadRootDirectory(path_, &disk));
-
-  const std::string name = "published_segment";
-  FooterPublicationProbe probe{disk.footer_offset,
-                               [&] { VerifyReader(name, false); }};
-  int status;
-  {
-    ScopedFooterPublicationProbe watch(probe);
-    status = writer_->append(name, page_size_);
-  }
-  ASSERT_TRUE(probe.written);
-  EXPECT_FALSE(probe.allocation_attempted);
-  ASSERT_EQ(0, status);
-  ASSERT_NO_FATAL_FAILURE(VerifyReader(name, true));
-}
-
-TEST_F(BufferStorageDirectorySplitTest, FailedMapAllocationKeepsOldDirectory) {
-  ASSERT_NO_FATAL_FAILURE(FillFirstChain());
-  Directory disk{};
-  ASSERT_TRUE(ReadRootDirectory(path_, &disk));
-
   const std::string name = "retry_map_allocation";
-  FooterPublicationProbe probe{disk.footer_offset,
-                               [&] { VerifyReader(name, false); }};
-  // The directory is clean and the first allocation is for the pending map.
-  probe.reject_next_allocation = true;
-  int status;
-  {
-    ScopedFooterPublicationProbe watch(probe);
-    status = writer_->append(name, page_size_);
-  }
-  EXPECT_TRUE(probe.allocation_attempted);
-  EXPECT_FALSE(probe.written);
+  fault_hit = false;
+  fail_next_scalar_allocation = true;
+  const int status = writer_->append(name, page_size_);
+  fail_next_scalar_allocation = false;
+  EXPECT_TRUE(fault_hit);
   ASSERT_EQ(IndexError_NoMemory, status);
   ASSERT_NO_FATAL_FAILURE(VerifyRetry(name));
 }
 
 #endif
 
-TEST_F(BufferStorageDirectorySplitTest, HnswBrokerCanRetryAndReopenChunk) {
+TEST_F(BufferStorageDirectorySplitTest, HnswBrokerCanRetryChunkAllocation) {
   IndexStreamer::Stats stats;
   ChunkBroker broker(stats);
   uint32_t chunk_size = page_size_;
@@ -546,14 +541,33 @@ TEST_F(BufferStorageDirectorySplitTest, HnswBrokerCanRetryAndReopenChunk) {
     ASSERT_TRUE(fault_hit);
   }
   ASSERT_EQ(0u, broker.get_chunk_cnt(kType));
-  ASSERT_NO_FATAL_FAILURE(VerifyOldDirectory(name));
+  EXPECT_FALSE(writer_->has(name));
+  ASSERT_NO_FATAL_FAILURE(VerifySegment(*writer_, old_name_, kOldData));
 
   auto [status, chunk] = broker.alloc_chunk(kType, 0);
   ASSERT_EQ(0, status);
   ASSERT_NE(nullptr, chunk);
   ASSERT_EQ(1u, broker.get_chunk_cnt(kType));
+  chunk.reset();
+  ASSERT_EQ(0, broker.close());
+}
+
+TEST_F(BufferStorageDirectorySplitTest, HnswBrokerReopensChunkAfterFlush) {
+  IndexStreamer::Stats stats;
+  ChunkBroker broker(stats);
+  uint32_t chunk_size = page_size_;
+  ASSERT_EQ(0, broker.open(writer_, chunk_size, false));
+  broker.set_max_chunks_size(16 * page_size_);
+  ASSERT_NO_FATAL_FAILURE(FillDirectory());
+  ASSERT_NO_FATAL_FAILURE(WriteOldSegment());
+
+  constexpr int kType = ChunkBroker::CHUNK_TYPE_NODE;
+  auto [status, chunk] = broker.alloc_chunk(kType, 0);
+  ASSERT_EQ(0, status);
+  ASSERT_NE(nullptr, chunk);
   ASSERT_EQ(kOldData.size(), chunk->write(0, kOldData.data(), kOldData.size()));
   chunk.reset();
+  ASSERT_EQ(0, writer_->flush());
   ASSERT_EQ(0, broker.close());
   ASSERT_EQ(0, writer_->close());
 

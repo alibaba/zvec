@@ -1041,7 +1041,12 @@ class BufferStorage : public IndexStorage {
                 error.what());
       return IndexError_OpenFile;
     }
-    int ret = parse_to_mapping();
+    int ret;
+    try {
+      ret = parse_to_mapping();
+    } catch (const std::bad_alloc &) {
+      ret = IndexError_NoMemory;
+    }
     if (ret != 0) {
       this->close_index();
       return ret;
@@ -1240,6 +1245,13 @@ class BufferStorage : public IndexStorage {
                               header_start_offset, segment_ids_offset, footer});
 
       if (footer.next_meta_header_offset == 0) {
+        if (buffer_pool_->writable()) {
+          auto &last = meta_chains_.back();
+          last.append_meta =
+              std::make_unique<char[]>(footer.segments_meta_size);
+          std::memcpy(last.append_meta.get(), last.segment_meta.get(),
+                      footer.segments_meta_size);
+        }
         break;
       }
       // Reject invalid links before following the metadata chain.
@@ -1460,6 +1472,12 @@ class BufferStorage : public IndexStorage {
       mchain.footer.segments_meta_crc =
           ailego::Crc32c::Hash(seg_buf, mchain.footer.segments_meta_size, 0u);
       IndexFormat::UpdateMetaFooter(&mchain.footer, consumed_chkp);
+      if (mchain.append_meta) {
+        // The page writeback succeeded, so this table is now safe to publish.
+        std::memcpy(mchain.append_meta.get(), seg_buf,
+                    mchain.footer.segments_meta_size);
+        mchain.append_meta_needs_write = true;
+      }
       if (buffer_pool_handle_->write_meta(mchain.segment_meta_file_offset(),
                                           mchain.footer.segments_meta_size,
                                           seg_buf) != 0) {
@@ -1467,6 +1485,7 @@ class BufferStorage : public IndexStorage {
                   file_name_.c_str(), ci);
         return IndexError_WriteData;
       }
+      mchain.append_meta_needs_write = false;
       if (buffer_pool_handle_->write_meta(
               mchain.footer_file_offset(), sizeof(mchain.footer),
               reinterpret_cast<const char *>(&mchain.footer)) != 0) {
@@ -1532,10 +1551,6 @@ class BufferStorage : public IndexStorage {
       return IndexError_Runtime;
     }
 
-    // Persist dirty data and metadata before preparing a directory update.
-    const int flush_ret = flush_index_locked();
-    if (flush_ret != 0) return flush_ret;
-
     // Page-aligned padded size; matches IndexMapping::CalcPageAlignedSize().
     const size_t page_size = ailego::kVectorPageSize;
     const size_t padded_size = (size + page_size - 1) / page_size * page_size;
@@ -1553,19 +1568,12 @@ class BufferStorage : public IndexStorage {
     });
 
     MetaChain *chain = &meta_chains_.back();
-    IndexFormat::MetaHeader *header = chain->header.get();
-    char *meta_buf = chain->segment_meta.get();
-    IndexFormat::MetaFooter *footer = &chain->footer;
-
-    const auto footer_before_split = *footer;
-    const uint64_t old_footer_file_offset = chain->footer_file_offset();
     bool chain_split = false;
     bool link_attempted = false;
-    std::unique_ptr<char[]> saved_id_bytes(new char[id_size]);
 
     // Step 1: prepare an unlinked directory chain when the current one is full.
-    if (sizeof(IndexFormat::SegmentMeta) * footer->segment_count + need_size >
-        chain->segment_ids_offset) {
+    if (sizeof(IndexFormat::SegmentMeta) * chain->footer.segment_count +
+            need_size > chain->segment_ids_offset) {
       size_t new_chain_start = buffer_pool_->file_size();
       new_chain_start =
           (new_chain_start + page_size - 1) / page_size * page_size;
@@ -1585,19 +1593,15 @@ class BufferStorage : public IndexStorage {
           static_cast<uint32_t>(new_meta_total));
 
       auto new_meta_buf = std::make_unique<char[]>(new_segments_meta_size);
-      std::memset(new_meta_buf.get(), 0, new_segments_meta_size);
+      auto new_append_meta = std::make_unique<char[]>(new_segments_meta_size);
 
       IndexFormat::MetaFooter new_footer;
       IndexFormat::SetupMetaFooter(&new_footer);
       new_footer.segments_meta_size = new_segments_meta_size;
       new_footer.total_size = new_meta_total;
-      new_footer.segments_meta_crc =
-          ailego::Crc32c::Hash(new_meta_buf.get(), new_segments_meta_size, 0u);
-      IndexFormat::UpdateMetaFooter(&new_footer, 0);
-
       meta_chains_.reserve(meta_chains_.size() + 1);
 
-      // Extend the file and write the new chain's header and initial footer.
+      // Extend the file and write the new chain's header.
       if (!buffer_pool_->extend_file(new_chain_start + new_meta_total)) {
         return IndexError_Runtime;
       }
@@ -1607,22 +1611,12 @@ class BufferStorage : public IndexStorage {
               reinterpret_cast<const char *>(new_header.get())) != 0) {
         return IndexError_WriteData;
       }
-      uint64_t new_footer_file_offset =
-          new_chain_start + new_header->meta_footer_offset;
-      if (buffer_pool_handle_->write_meta(
-              new_footer_file_offset, sizeof(new_footer),
-              reinterpret_cast<const char *>(&new_footer)) != 0) {
-        return IndexError_WriteData;
-      }
-
       meta_chains_.push_back(MetaChain{std::move(new_header),
                                        std::move(new_meta_buf), new_chain_start,
-                                       new_segments_meta_size, new_footer});
+                                       new_segments_meta_size, new_footer,
+                                       std::move(new_append_meta)});
 
       chain = &meta_chains_.back();
-      header = chain->header.get();
-      meta_buf = chain->segment_meta.get();
-      footer = &chain->footer;
       chain_split = true;
     }
 
@@ -1638,18 +1632,22 @@ class BufferStorage : public IndexStorage {
     };
     AILEGO_DEFER([&]() {
       if (committed || !chain_split) return;
+      meta_chains_.pop_back();
+      const auto &old_chain = meta_chains_.back();
       if (link_attempted &&
           !restore_metadata(
-              old_footer_file_offset, sizeof(footer_before_split),
-              reinterpret_cast<const char *>(&footer_before_split))) {
+              old_chain.footer_file_offset(), sizeof(old_chain.footer),
+              reinterpret_cast<const char *>(&old_chain.footer))) {
         corrupted_.store(true, std::memory_order_release);
       }
-      meta_chains_.pop_back();
-      meta_chains_.back().footer = footer_before_split;
     });
 
     // Step 2: append the segment metadata and persist the last chain.
-    uint64_t new_data_index = footer->content_size;
+    auto footer = chain->footer;
+    auto *header = chain->header.get();
+    char *meta_buf = chain->append_meta.get();
+    char *live_meta = chain->segment_meta.get();
+    uint64_t new_data_index = footer.content_size;
     uint64_t new_seg_abs_offset =
         chain->header_start_offset + header->content_offset + new_data_index;
     uint64_t new_file_size = new_seg_abs_offset + padded_size;
@@ -1659,67 +1657,82 @@ class BufferStorage : public IndexStorage {
       }
     }
 
-    // Snapshot every overwritten metadata region for rollback.
-    const auto saved_footer = *footer;
-    const auto saved_segment_ids_offset = chain->segment_ids_offset;
     const size_t meta_entry_off =
-        sizeof(IndexFormat::SegmentMeta) * footer->segment_count;
+        sizeof(IndexFormat::SegmentMeta) * footer.segment_count;
     const uint32_t new_ids_off =
         chain->segment_ids_offset - static_cast<uint32_t>(id_size);
-    char saved_meta_entry[sizeof(IndexFormat::SegmentMeta)];
-    std::memcpy(saved_meta_entry, meta_buf + meta_entry_off,
-                sizeof(IndexFormat::SegmentMeta));
-    std::memcpy(saved_id_bytes.get(), meta_buf + new_ids_off, id_size);
+    const uint64_t meta_file_offset = chain->segment_meta_file_offset();
+    const uint64_t entry_file_offset = meta_file_offset + meta_entry_off;
+    const uint64_t id_file_offset = meta_file_offset + new_ids_off;
+    const bool write_full_table = chain_split || chain->append_meta_needs_write;
 
-    // A split can discard the staged chain. In-place appends restore both
-    // the original directory bytes and the in-memory metadata.
+    // The unused regions match in both tables. Leave the live table intact
+    // until publication succeeds so it can also supply the rollback bytes.
     AILEGO_DEFER([&]() {
       if (committed || chain_split) return;
-      std::memcpy(meta_buf + meta_entry_off, saved_meta_entry,
+      std::memcpy(meta_buf + meta_entry_off, live_meta + meta_entry_off,
                   sizeof(IndexFormat::SegmentMeta));
-      std::memcpy(meta_buf + new_ids_off, saved_id_bytes.get(), id_size);
-      *footer = saved_footer;
-      chain->segment_ids_offset = saved_segment_ids_offset;
+      std::memcpy(meta_buf + new_ids_off, live_meta + new_ids_off, id_size);
 
-      const bool meta_restored =
-          restore_metadata(chain->segment_meta_file_offset(),
-                           footer->segments_meta_size, meta_buf);
+      bool meta_restored;
+      if (write_full_table) {
+        meta_restored = restore_metadata(meta_file_offset,
+                                         footer.segments_meta_size, meta_buf);
+      } else {
+        const bool entry_restored = restore_metadata(
+            entry_file_offset, sizeof(IndexFormat::SegmentMeta),
+            meta_buf + meta_entry_off);
+        const bool id_restored =
+            restore_metadata(id_file_offset, id_size, meta_buf + new_ids_off);
+        meta_restored = entry_restored && id_restored;
+      }
       const bool footer_restored =
-          restore_metadata(chain->footer_file_offset(), sizeof(*footer),
-                           reinterpret_cast<const char *>(footer));
+          restore_metadata(chain->footer_file_offset(), sizeof(chain->footer),
+                           reinterpret_cast<const char *>(&chain->footer));
       if (!meta_restored || !footer_restored) {
         corrupted_.store(true, std::memory_order_release);
       }
+      chain->append_meta_needs_write = !meta_restored;
     });
 
-    chain->segment_ids_offset -= static_cast<uint32_t>(id_size);
-    IndexFormat::SegmentMeta *new_seg =
-        reinterpret_cast<IndexFormat::SegmentMeta *>(meta_buf) +
-        footer->segment_count;
-    new_seg->segment_id_offset = chain->segment_ids_offset;
+    auto *new_seg =
+        reinterpret_cast<IndexFormat::SegmentMeta *>(meta_buf + meta_entry_off);
+    new_seg->segment_id_offset = new_ids_off;
     new_seg->data_index = new_data_index;
     new_seg->data_size = 0;
     new_seg->data_crc = 0;
     new_seg->padding_size = padded_size;
-    std::memcpy(meta_buf + chain->segment_ids_offset, id.c_str(), id_size);
+    std::memcpy(meta_buf + new_ids_off, id.c_str(), id_size);
 
-    footer->segment_count += 1;
-    footer->content_size += padded_size;
-    footer->total_size += padded_size;
-    footer->segments_meta_crc =
-        ailego::Crc32c::Hash(meta_buf, footer->segments_meta_size, 0u);
-    IndexFormat::UpdateMetaFooter(footer, 0);
+    footer.segment_count += 1;
+    footer.content_size += padded_size;
+    footer.total_size += padded_size;
+    footer.segments_meta_crc =
+        ailego::Crc32c::Hash(meta_buf, footer.segments_meta_size, 0u);
+    IndexFormat::UpdateMetaFooter(&footer, 0);
 
-    if (buffer_pool_handle_->write_meta(chain->segment_meta_file_offset(),
-                                        footer->segments_meta_size,
-                                        meta_buf) != 0) {
+    // In-place appends only write the new record and name. The other records
+    // belong to explicit writeback, unless a failed flush left a partial table.
+    bool meta_written;
+    if (write_full_table) {
+      meta_written = buffer_pool_handle_->write_meta(
+                         meta_file_offset, footer.segments_meta_size,
+                         meta_buf) == 0;
+    } else {
+      meta_written = buffer_pool_handle_->write_meta(
+                         entry_file_offset, sizeof(*new_seg),
+                         meta_buf + meta_entry_off) == 0 &&
+                     buffer_pool_handle_->write_meta(
+                         id_file_offset, id_size, meta_buf + new_ids_off) == 0;
+    }
+    if (!meta_written) {
       LOG_ERROR("append_segment: write segment_meta failed, file[%s]",
                 file_name_.c_str());
       return IndexError_WriteData;
     }
     if (buffer_pool_handle_->write_meta(
-            chain->footer_file_offset(), sizeof(*footer),
-            reinterpret_cast<const char *>(footer)) != 0) {
+            chain->footer_file_offset(), sizeof(footer),
+            reinterpret_cast<const char *>(&footer)) != 0) {
       LOG_ERROR("append_segment: write footer failed, file[%s]",
                 file_name_.c_str());
       return IndexError_WriteData;
@@ -1727,20 +1740,39 @@ class BufferStorage : public IndexStorage {
 
     // Link the chain only after the new segment's metadata and footer exist.
     if (chain_split) {
-      auto linked_footer = footer_before_split;
+      auto &old_chain = meta_chains_[meta_chains_.size() - 2];
+      // A failed metadata flush may have left this table partially written.
+      // Its snapshot is safe to publish because data writeback already ran.
+      if (old_chain.append_meta_needs_write &&
+          buffer_pool_handle_->write_meta(
+              old_chain.segment_meta_file_offset(),
+              old_chain.footer.segments_meta_size, old_chain.append_meta.get()) !=
+              0) {
+        return IndexError_WriteData;
+      }
+      old_chain.append_meta_needs_write = false;
+      auto linked_footer = old_chain.footer;
       linked_footer.next_meta_header_offset = chain->header_start_offset;
       IndexFormat::UpdateMetaFooter(&linked_footer, 0);
       link_attempted = true;
       if (buffer_pool_handle_->write_meta(
-              old_footer_file_offset, sizeof(linked_footer),
+              old_chain.footer_file_offset(), sizeof(linked_footer),
               reinterpret_cast<const char *>(&linked_footer)) != 0) {
         return IndexError_WriteData;
       }
-      meta_chains_[meta_chains_.size() - 2].footer = linked_footer;
+      old_chain.footer = linked_footer;
+      old_chain.append_meta.reset();
     }
 
+    auto *live_seg = reinterpret_cast<IndexFormat::SegmentMeta *>(
+        live_meta + meta_entry_off);
+    std::memcpy(live_seg, new_seg, sizeof(*live_seg));
+    std::memcpy(live_meta + new_ids_off, id.c_str(), id_size);
+    chain->footer = footer;
+    chain->segment_ids_offset = new_ids_off;
+    chain->append_meta_needs_write = false;
     pending.first->second = IndexMapping::SegmentInfo{
-        IndexMapping::Segment{new_seg}, chain->header_start_offset, header};
+        IndexMapping::Segment{live_seg}, chain->header_start_offset, header};
     committed = true;
     return 0;
   } catch (const std::bad_alloc &) {
@@ -1811,6 +1843,10 @@ class BufferStorage : public IndexStorage {
     uint32_t segment_ids_offset;
     // Authoritative in-memory footer for this chain.
     IndexFormat::MetaFooter footer;
+    // Only the last writable chain needs a table that append can publish
+    // without exposing segment metadata whose data pages are still dirty.
+    std::unique_ptr<char[]> append_meta{};
+    bool append_meta_needs_write{false};
 
     uint64_t footer_file_offset() const {
       return header_start_offset + header->meta_footer_offset;
