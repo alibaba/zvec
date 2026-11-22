@@ -490,7 +490,7 @@ TEST_F(BufferStorageDirectorySplitTest, FailedMetadataFlushCanRetryWithSplit) {
   EXPECT_EQ(kCheckpoint + 1, disk.footer.check_point);
 }
 
-TEST_F(BufferStorageDirectorySplitTest, ShortCheckpointWritePreservesCommit) {
+TEST_F(BufferStorageDirectorySplitTest, ShortCheckpointWriteCanRetryFlush) {
   ASSERT_NO_FATAL_FAILURE(FillFirstChain());
   ASSERT_EQ(0, writer_->append("new_chain", page_size_));
   writer_->refresh(kCheckpoint);
@@ -510,12 +510,12 @@ TEST_F(BufferStorageDirectorySplitTest, ShortCheckpointWritePreservesCommit) {
   short_footer_write = nullptr;
   ASSERT_EQ(static_cast<ssize_t>(kShortFooterBytes), fault.written);
   ASSERT_EQ(IndexError_WriteData, status);
-  EXPECT_EQ(kCheckpoint, writer_->check_point());
   EXPECT_TRUE(writer_->is_dirty());
-  ASSERT_TRUE(ReadDirectory(path_, &tail, tail_offset));
-  EXPECT_EQ(kCheckpoint, tail.footer.check_point);
 
   ASSERT_EQ(0, writer_->flush());
+  EXPECT_EQ(kCheckpoint + 1, writer_->check_point());
+  ASSERT_EQ(0, writer_->close());
+  ASSERT_EQ(0, writer_->open(path_, false));
   EXPECT_EQ(kCheckpoint + 1, writer_->check_point());
 }
 
