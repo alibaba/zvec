@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -146,6 +147,8 @@ using MetaFooter = zvec::core::IndexFormat::MetaFooter;
 constexpr size_t kShortFooterBytes = offsetof(MetaFooter, total_size);
 thread_local off_t footer_offset_for_short_write = -1;
 thread_local ssize_t footer_bytes_written = -1;
+thread_local off_t rejected_metadata_offset = -1;
+thread_local size_t rejected_metadata_writes = 0;
 }  // namespace
 
 // Write a real prefix of the old footer, including the new chain link. This
@@ -155,6 +158,11 @@ extern "C" ssize_t pwrite(int fd, const void *buffer, size_t count,
   static const auto write_at =
       reinterpret_cast<decltype(&::pwrite)>(::dlsym(RTLD_NEXT, "pwrite"));
   if (!write_at) std::abort();
+  if (offset == rejected_metadata_offset) {
+    ++rejected_metadata_writes;
+    errno = EIO;
+    return -1;
+  }
   const bool watching_publication =
       footer_publication && offset == footer_publication->offset;
   if (count == sizeof(MetaFooter) &&
@@ -369,6 +377,37 @@ TEST_F(BufferStorageDirectorySplitTest,
   Directory persisted{};
   ASSERT_TRUE(ReadRootDirectory(path_, &persisted));
   EXPECT_EQ(kCheckpoint, persisted.footer.check_point);
+}
+
+TEST_F(BufferStorageDirectorySplitTest, AppendValidationPrecedesWriteback) {
+  ASSERT_NO_FATAL_FAILURE(FillDirectory());
+  ASSERT_NO_FATAL_FAILURE(WriteOldSegment());
+  ASSERT_TRUE(writer_->is_dirty());
+  Directory disk{};
+  ASSERT_TRUE(ReadRootDirectory(path_, &disk));
+  ASSERT_GT(disk.footer_offset, disk.footer.segments_meta_size);
+
+  const std::string name = "retry_after_writeback_failure";
+  rejected_metadata_offset =
+      disk.footer_offset - disk.footer.segments_meta_size;
+  rejected_metadata_writes = 0;
+  EXPECT_EQ(IndexError_Duplicate, writer_->append(old_name_, page_size_));
+  EXPECT_EQ(IndexError_InvalidArgument, writer_->append(name, 0));
+  EXPECT_EQ(0u, rejected_metadata_writes);
+  EXPECT_TRUE(writer_->is_dirty());
+
+  const int status = writer_->append(name, page_size_);
+  rejected_metadata_offset = -1;
+  EXPECT_EQ(1u, rejected_metadata_writes);
+  ASSERT_EQ(IndexError_WriteData, status);
+  EXPECT_TRUE(writer_->is_dirty());
+  EXPECT_FALSE(writer_->has(name));
+  ASSERT_TRUE(ReadRootDirectory(path_, &disk));
+  EXPECT_EQ(0u, disk.footer.next_meta_header_offset);
+
+  ASSERT_EQ(0, writer_->append(name, page_size_));
+  ASSERT_EQ(0, writer_->close());
+  ASSERT_NO_FATAL_FAILURE(VerifyReader(name, true));
 }
 
 TEST_F(BufferStorageDirectorySplitTest, ShortFooterWriteKeepsOldDirectory) {
