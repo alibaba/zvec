@@ -253,6 +253,51 @@ TEST_F(BufferStorageWriteTest, FailedFileCapturePreservesPublishedState) {
   EXPECT_EQ(0, storage->close());
 }
 
+TEST_F(BufferStorageWriteTest, OpenAnotherFileRequiresClose) {
+  const char original = 'A';
+  const char other = 'B';
+  const std::string other_path = file_path_ + ".other";
+  ailego::File::Delete(other_path);
+  AILEGO_DEFER([&]() { ailego::File::Delete(other_path); });
+  {
+    auto writer = open_writable();
+    ASSERT_NE(nullptr, writer);
+    ASSERT_EQ(0, writer->append("original", 4096));
+    auto segment = writer->get("original");
+    ASSERT_NE(nullptr, segment);
+    ASSERT_EQ(1u, segment->write(0, &original, 1));
+    segment.reset();
+    ASSERT_EQ(0, writer->flush());
+    ASSERT_EQ(0, writer->close());
+    ASSERT_EQ(0, writer->open(other_path, true));
+    ASSERT_EQ(0, writer->append("other", 4096));
+    segment = writer->get("other");
+    ASSERT_NE(nullptr, segment);
+    ASSERT_EQ(1u, segment->write(0, &other, 1));
+    segment.reset();
+    ASSERT_EQ(0, writer->flush());
+    ASSERT_EQ(0, writer->close());
+  }
+
+  auto storage = open_read_only();
+  ASSERT_NE(nullptr, storage);
+  EXPECT_EQ(IndexError_OpenFile, storage->open(other_path, false));
+  EXPECT_EQ(file_path_, storage->file_path());
+  EXPECT_FALSE(storage->has("other"));
+  {
+    auto segment = storage->get("original");
+    ASSERT_NE(nullptr, segment);
+    char value{};
+    ASSERT_EQ(1u, segment->fetch(0, &value, 1));
+    EXPECT_EQ(original, value);
+  }
+  ASSERT_EQ(0, storage->close());
+  ASSERT_EQ(0, storage->open(other_path, false));
+  EXPECT_FALSE(storage->has("original"));
+  EXPECT_TRUE(storage->has("other"));
+  ASSERT_EQ(0, storage->close());
+}
+
 // ===== Basic Write Tests =====
 
 // Test: Create new index via BufferStorage, append segment, write data, read

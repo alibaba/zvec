@@ -464,6 +464,17 @@ class BufferStorageDirectorySplitTest : public testing::Test {
     ASSERT_NO_FATAL_FAILURE(VerifyReopenedSegments(name, 0));
   }
 
+  IndexStorage::Pointer OpenCopyOnWriteMMap() {
+    auto mmap = IndexFactory::CreateStorage("MMapFileStorage");
+    zvec::ailego::Params params;
+    params.set(MMAPFILE_STORAGE_COPY_ON_WRITE, true);
+    params.set(MMAPFILE_STORAGE_FORCE_FLUSH, true);
+    if (!mmap || mmap->init(params) != 0 || mmap->open(path_, false) != 0) {
+      return nullptr;
+    }
+    return mmap;
+  }
+
   void VerifyReopenedSegments(const std::string &name, uint64_t checkpoint) {
     for (const char *type : {"BufferStorage", "MMapFileStorage"}) {
       SCOPED_TRACE(type);
@@ -718,6 +729,54 @@ TEST_F(BufferStorageDirectorySplitTest,
 
 #if (defined(__linux__) && !defined(__ANDROID__)) || \
     (defined(__APPLE__) && TARGET_OS_OSX)
+TEST_F(BufferStorageDirectorySplitTest, MMapMetadataFlushCanRetry) {
+  ASSERT_NO_FATAL_FAILURE(AppendOldSegment());
+  ASSERT_EQ(0, writer_->flush());
+  ASSERT_EQ(0, writer_->close());
+  auto mmap = OpenCopyOnWriteMMap();
+  ASSERT_NE(nullptr, mmap);
+  mmap->refresh(kCheckpoint);
+  {
+    ScopedWriteFailure fault(0);
+    ASSERT_EQ(IndexError_WriteData, mmap->flush());
+    EXPECT_TRUE(fault.hit);
+  }
+  EXPECT_TRUE(mmap->is_dirty());
+  ASSERT_EQ(0, mmap->flush());
+  ASSERT_EQ(0, mmap->close());
+  ASSERT_EQ(0, writer_->open(path_, false));
+  EXPECT_EQ(kCheckpoint, writer_->check_point());
+}
+
+TEST_F(BufferStorageDirectorySplitTest, MMapPropagatesSplitWritebackFailure) {
+  ASSERT_NO_FATAL_FAILURE(FillFirstChain());
+  Directory root{};
+  ASSERT_TRUE(ReadDirectory(path_, &root));
+  ASSERT_EQ(0, writer_->close());
+  auto mmap = OpenCopyOnWriteMMap();
+  ASSERT_NE(nullptr, mmap);
+  {
+    auto old = mmap->get(old_name_);
+    ASSERT_NE(nullptr, old);
+    ASSERT_EQ(kNewData.size(),
+              old->write(0, kNewData.data(), kNewData.size()));
+  }
+
+  const std::string name = "mmap_split";
+  {
+    ScopedWriteFailure fault(root.last_segment_offset);
+    ASSERT_EQ(IndexError_WriteData, mmap->append(name, page_size_));
+    EXPECT_TRUE(fault.hit);
+  }
+  EXPECT_FALSE(mmap->has(name));
+  ASSERT_EQ(0, mmap->append(name, page_size_));
+  ASSERT_EQ(0, mmap->flush());
+  ASSERT_EQ(0, mmap->close());
+  ASSERT_EQ(0, writer_->open(path_, false));
+  EXPECT_TRUE(writer_->has(name));
+  ASSERT_NO_FATAL_FAILURE(VerifySegment(*writer_, old_name_, kNewData));
+}
+
 TEST_F(BufferStorageDirectorySplitTest,
        OldMetadataWritebackFailureDoesNotBlockAppend) {
   ASSERT_NO_FATAL_FAILURE(AppendOldSegment());

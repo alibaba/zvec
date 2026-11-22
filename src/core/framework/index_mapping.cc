@@ -334,20 +334,24 @@ int IndexMapping::append(const std::string &id, size_t size) {
       return IndexError_InvalidLength;
     }
     LOG_DEBUG("segment meta section expanded: %s", path_.c_str());
-    footer_->next_meta_header_offset = index_size_;
+    auto *old_footer = footer_;
+    // The old directory must remain independently readable if writeback
+    // fails before the new chain exists.
     refresh(0);
-    flush();
-    // mmap file storage write() will update segment's meta
-    // ailego::File::MemoryUnmap(header_, header_->content_offset);
-    header_ = nullptr;
-    footer_ = nullptr;
+    const int flush_status = flush();
+    if (flush_status != 0) return flush_status;
 
+    const auto old_header_offset = current_header_start_offset_;
     current_header_start_offset_ = index_size_;
     const int ret =
         huge_page_ ? init_hugepage_meta_section() : init_meta_section();
     if (ret != 0) {
+      current_header_start_offset_ = old_header_offset;
       return ret;
     }
+    old_footer->next_meta_header_offset = current_header_start_offset_;
+    IndexFormat::UpdateMetaFooter(old_footer, 0);
+    header_dirty_ = true;
   }
 
   if (!copy_on_write_ && !file_.truncate(index_size_ + size)) {
@@ -501,7 +505,6 @@ int IndexMapping::flush() {
     return 0;
   }
 
-  header_dirty_ = false;
   if (full_mode_ && copy_on_write_) {
     for (auto item : header_addr_map_) {
       auto header_start_offset = item.first;
@@ -520,6 +523,7 @@ int IndexMapping::flush() {
       ailego::File::MemoryFlush(header, header->content_offset);
     }
   }
+  header_dirty_ = false;
   return 0;
 }
 

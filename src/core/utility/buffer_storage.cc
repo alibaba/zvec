@@ -1010,6 +1010,11 @@ class BufferStorage : public IndexStorage {
 
   int open_with_options(const std::string &path,
                         const OpenOptions &options) override {
+    if (buffer_pool_) {
+      LOG_ERROR("Close BufferStorage before opening another file: file[%s]",
+                file_name_.c_str());
+      return IndexError_OpenFile;
+    }
     const bool writable = !options.read_only;
     if (!ailego::File::IsExist(path) && options.create_if_missing) {
       size_t last_slash = path.rfind('/');
@@ -1025,8 +1030,7 @@ class BufferStorage : public IndexStorage {
     }
 
     try {
-      // Capture both owners before replacing the published state. In
-      // particular, a failed reopen must not change existing segments' pool.
+      // Capture both owners before publishing the open state.
       auto candidate_pool =
           std::make_shared<ailego::VecBufferPool>(path, writable);
       auto candidate_handle =
