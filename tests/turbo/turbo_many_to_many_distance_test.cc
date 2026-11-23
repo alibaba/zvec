@@ -132,11 +132,16 @@ TEST(ManyToManyDistance, Fp16BatchingPreservesThresholdHits) {
     const bool neon = arch == CpuArchType::kNEON;
     const size_t dim = neon ? 12 : 8;
     std::vector<ailego::Float16> a(dim), b(dim);
-    const size_t pos = neon ? 8 : 0;
-    a[pos] = b[pos] = 4096.0f;
-    a[pos + 1] = 4096.0f;
-    b[pos + 1] = -4096.0f;
-    a[neon ? 1 : 4] = b[neon ? 1 : 4] = 1.0f;
+    a[0] = b[0] = 4096.0f;
+    a[1] = 4096.0f;
+    b[1] = -4096.0f;
+    a[4] = b[4] = 1.0f;
+    if (neon) {
+      // The portable sum keeps the unit in 1 - 2^24 + 2^24. The NEON
+      // tile must cancel lanes 0 and 1 with the tail before reducing.
+      a[8] = a[9] = b[9] = 4096.0f;
+      b[8] = -4096.0f;
+    }
     const void *rows[] = {a.data(), a.data()};
     const void *queries[] = {b.data(), b.data()};
     float single[2], joint[4];
