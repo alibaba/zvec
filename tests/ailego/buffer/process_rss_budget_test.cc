@@ -251,7 +251,8 @@ TEST(ProcessRssBudgetTest, PartialRecoveryTracksBothProcessConstraints) {
           128 * kMiB};
       ASSERT_TRUE(budget.configure(100 * kMiB, ReadRss, ReadNative));
       std::optional<ProcessRssBudget::Denial> denied;
-      ASSERT_FALSE(budget.try_reserve(8 * kMiB, &denied));
+      ProcessRssBudget::RecoveryWatch watch(budget, 8 * kMiB);
+      ASSERT_FALSE(budget.try_reserve(8 * kMiB, &denied, &watch));
       ASSERT_TRUE(denied);
       const auto room = budget.available();
 
@@ -262,7 +263,7 @@ TEST(ProcessRssBudgetTest, PartialRecoveryTracksBothProcessConstraints) {
       budget.refresh(true);
       EXPECT_EQ(room, budget.available());
       EXPECT_EQ(denied->recovery, budget.recovery_generation());
-      EXPECT_TRUE(budget.reader_progress_since(*denied));
+      EXPECT_TRUE(watch.progressed());
     }
   }
 }
@@ -274,13 +275,41 @@ TEST(ProcessRssBudgetTest, UnconstrainedReaderDoesNotRecordDenialProgress) {
   native_sample = {91 * kMiB, 128 * kMiB};
   ASSERT_TRUE(budget.configure(100 * kMiB, ReadRss, ReadNative));
   std::optional<ProcessRssBudget::Denial> denied;
-  ASSERT_FALSE(budget.try_reserve(8 * kMiB, &denied));
+  ProcessRssBudget::RecoveryWatch watch(budget, 8 * kMiB);
+  ASSERT_FALSE(budget.try_reserve(8 * kMiB, &denied, &watch));
   ASSERT_TRUE(denied);
   sampled_rss = 64 * kMiB;
   budget.refresh(true);
   EXPECT_EQ(1 * kMiB, budget.available());
   EXPECT_EQ(denied->recovery, budget.recovery_generation());
-  EXPECT_FALSE(budget.reader_progress_since(*denied));
+  EXPECT_FALSE(watch.progressed());
+}
+
+TEST(ProcessRssBudgetTest, OptionalGrowthDoesNotInterruptOwnershipScan) {
+  constexpr size_t request = 8 * kMiB;
+  for (bool materialization : {false, true}) {
+    SCOPED_TRACE(materialization);
+    ProcessRssBudget budget;
+    budget.account(32 * kMiB);
+    sampled_rss = 80 * kMiB;
+    sampled_owned_resident = 0;
+    ASSERT_TRUE(budget.configure(100 * kMiB, ReadRss, nullptr, 0, ReadResident));
+    const auto scan = budget.begin_resident_sample();
+    ASSERT_NE(0u, scan.configuration);
+    budget.release_unmapped(4 * kMiB, {});
+    sampled_rss = 60 * kMiB;
+    EXPECT_FALSE(materialization ? budget.try_reserve_materialization(request)
+                                 : budget.try_reserve(request));
+    EXPECT_EQ(80 * kMiB, budget.rss());
+    ASSERT_TRUE(budget.publish_resident_sample(scan, {60 * kMiB, 0}));
+    ASSERT_TRUE(materialization ? budget.try_reserve_materialization(request)
+                                : budget.try_reserve(request));
+    if (materialization)
+      budget.finish_materialization(request, false);
+    else
+      budget.finish_reservation(request, false);
+    budget.release(28 * kMiB);
+  }
 }
 
 TEST(ProcessRssBudgetTest, ReaderResumesWhileRoomStillRequiresARelease) {

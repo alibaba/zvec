@@ -35,14 +35,53 @@ class ProcessRssBudget {
   };
 
   struct Denial {
-    uint64_t recovery;
-    std::optional<uint64_t> rss_progress;
-    std::optional<uint64_t> native_progress;
+    uint64_t recovery{0};
+    bool rss_blocked{false};
+    bool native_blocked{false};
+    bool policy_blocked{false};
 
-    void remember_first_constraints(const Denial &latest) {
-      if (!rss_progress) rss_progress = latest.rss_progress;
-      if (!native_progress) native_progress = latest.native_progress;
+    bool blocked() const {
+      return rss_blocked || native_blocked || policy_blocked;
     }
+  };
+
+  // Registered without allocating. The caller owns the watch through its
+  // entire admission attempt.
+  class RecoveryWatch {
+    friend class ProcessRssBudget;
+
+   public:
+    RecoveryWatch(ProcessRssBudget &budget, size_t required_room)
+        : budget_(budget), required_room_(required_room) {}
+    RecoveryWatch(const RecoveryWatch &) = delete;
+    RecoveryWatch &operator=(const RecoveryWatch &) = delete;
+    ~RecoveryWatch() {
+      if (registered_) budget_.unregister_watch(*this);
+    }
+
+    bool progressed() const {
+      return progressed_.load(std::memory_order_acquire);
+    }
+
+    template <typename Check>
+    bool check_native_gate(Check &&check) {
+      if (!required_room_) return check();
+      // Linearize a native refusal with RSS publication, without waiting
+      // for an RSS reader that may already be collecting its next sample.
+      std::lock_guard<std::mutex> lock(budget_.watch_mutex_);
+      if (check()) return true;
+      budget_.watch_denial_locked(
+          *this, budget_.snapshot_denial_locked(required_room_, false));
+      return false;
+    }
+
+   private:
+    ProcessRssBudget &budget_;
+    const size_t required_room_;
+    RecoveryWatch *next_{nullptr};
+    Denial denial_{};
+    std::atomic<bool> progressed_{false};
+    bool registered_{false};
   };
 
   ProcessRssBudget() = default;
@@ -290,23 +329,26 @@ class ProcessRssBudget {
   // A growing allowance can materialize more than the new lifetime charge
   // when it also consumes some previously reserved capacity.
   bool try_acquire(size_t bytes, size_t materialization,
-                   std::optional<Denial> *denied_at = nullptr) {
-    return try_charge(bytes, backing_, materialization, false, denied_at);
+                   std::optional<Denial> *denied_at = nullptr,
+                   RecoveryWatch *watch = nullptr) {
+    return try_charge(bytes, backing_, materialization, false, denied_at,
+                      watch);
   }
 
   // Admit a planning allowance and its in-flight copy as one operation.
   // Without an owner identity, the copy cannot spend another allowance's
   // untouched backing. Refusal must leave both charges unchanged.
-  bool try_acquire_with_pending_copy(
-      size_t bytes, size_t materialization,
-      std::optional<Denial> *denied_at = nullptr) {
-    return try_charge(bytes, backing_, materialization, true, denied_at);
+  bool try_acquire_with_pending_copy(size_t bytes, size_t materialization,
+                                     std::optional<Denial> *denied_at = nullptr,
+                                     RecoveryWatch *watch = nullptr) {
+    return try_charge(bytes, backing_, materialization, true, denied_at, watch);
   }
 
   // Reserve for an OS allocation that has yet to return. Samples cannot
   // assign these bytes to resident backing before the allocation succeeds.
-  bool try_reserve(size_t bytes, std::optional<Denial> *denied_at = nullptr) {
-    return try_charge(bytes, pending_allocations_, 0, false, denied_at);
+  bool try_reserve(size_t bytes, std::optional<Denial> *denied_at = nullptr,
+                   RecoveryWatch *watch = nullptr) {
+    return try_charge(bytes, pending_allocations_, 0, false, denied_at, watch);
   }
 
   MaterializationStamp finish_reservation(size_t bytes, bool allocated) {
@@ -482,12 +524,12 @@ class ProcessRssBudget {
 
   // Reuses of already-charged backing share the measured headroom until
   // the corresponding reader supplies its next successful observation.
-  bool try_materialize(size_t bytes,
-                       std::optional<Denial> *denied_at = nullptr) {
+  bool try_materialize(size_t bytes, std::optional<Denial> *denied_at = nullptr,
+                       RecoveryWatch *watch = nullptr) {
     std::lock_guard<std::mutex> lock(mutex_);
-    refresh_for_materialization_locked(bytes);
+    refresh_for_materialization_locked(bytes, watch != nullptr);
     if (!materialization_allowed_locked(bytes))
-      return deny_locked(denied_at, std::max(bytes, size_t{1}));
+      return deny_locked(denied_at, watch, std::max(bytes, size_t{1}));
     if (limit() && bytes) {
       remember_materialization(bytes);
       update_available();
@@ -498,10 +540,12 @@ class ProcessRssBudget {
   // A live reusable mapping's full future fault cost is already charged as
   // backing. Unlike a separate heap copy, reuse creates no extra storage.
   bool try_materialize_reusable(size_t bytes, MaterializationStamp &stamp,
-                                std::optional<Denial> *denied_at = nullptr) {
+                                std::optional<Denial> *denied_at = nullptr,
+                                RecoveryWatch *watch = nullptr) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (try_materialize_reusable_locked(bytes, stamp)) return true;
-    return deny_locked(denied_at, 0, /*include_reuse=*/true);
+    if (try_materialize_reusable_locked(bytes, stamp, watch != nullptr))
+      return true;
+    return deny_locked(denied_at, watch, 0, /*include_reuse=*/true);
   }
 
   template <size_t PageCount>
@@ -555,11 +599,10 @@ class ProcessRssBudget {
     // A prior sample can include a prepaid mapping even though the mapping
     // has no current projection to refund. The successful unmap is the
     // recovery event, regardless of whether a raw observation raced ahead.
-    const bool discarded_sampled_backing =
-        bytes &&
-        note_sampled_discard_locked(stamp.rss_epoch != rss_epoch_,
-                                    stamp.native_epoch != native_epoch_);
-    update_available(BudgetUpdate::kRelease, discarded_sampled_backing);
+    const auto discarded = note_sampled_discard_locked(
+        bytes && stamp.rss_epoch != rss_epoch_,
+        bytes && stamp.native_epoch != native_epoch_);
+    update_available(BudgetUpdate::kRelease, discarded);
   }
 
   size_t limit() const {
@@ -578,13 +621,21 @@ class ProcessRssBudget {
                      reuse_recovery_generation_.load(std::memory_order_acquire)
                : growth;
   }
-  bool reader_progress_since(const Denial &denial) const {
-    return (denial.rss_progress &&
-            rss_progress_generation_.load(std::memory_order_acquire) !=
-                *denial.rss_progress) ||
-           (denial.native_progress &&
-            native_progress_generation_.load(std::memory_order_acquire) !=
-                *denial.native_progress);
+  // An earlier native gate can fail before this reader gets an admission
+  // attempt. Observe its independent constraint without charging the request.
+  Denial observe_denial(size_t required_room, RecoveryWatch &watch) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // An earlier native denial makes any independent blocked RSS gate
+    // relevant, including progress during the observation below.
+    {
+      std::lock_guard<std::mutex> publication_lock(watch_mutex_);
+      watch_denial_locked(watch, snapshot_denial_locked(required_room, false));
+    }
+    refresh_locked(false);
+    const auto denial = snapshot_denial_locked(required_room, false);
+    std::lock_guard<std::mutex> publication_lock(watch_mutex_);
+    watch_denial_locked(watch, denial);
+    return denial;
   }
   size_t rss() const {
     return rss_.load(std::memory_order_relaxed);
@@ -664,30 +715,31 @@ class ProcessRssBudget {
     estimate_.release(bytes - rss.unsampled, backing_);
     if (bytes != rss.unsampled) ++resident_generation_;
     native_estimate_.release(bytes - native.unsampled, backing_);
-    const bool discarded_sampled_backing =
-        discarded && note_sampled_discard_locked(bytes != rss.unsampled,
-                                                 bytes != native.unsampled);
-    update_available(BudgetUpdate::kRelease, discarded_sampled_backing);
+    const auto sampled =
+        note_sampled_discard_locked(discarded && bytes != rss.unsampled,
+                                    discarded && bytes != native.unsampled);
+    update_available(BudgetUpdate::kRelease, sampled);
   }
 
   bool note_sampled_discard_locked(bool possibly_sampled_rss,
                                    bool possibly_sampled_native) {
-    const bool discarded_sampled_backing =
+    const bool sampled =
         possibly_sampled_rss || (native_reader_ && possibly_sampled_native);
-    discarded_since_sample_ |= discarded_sampled_backing;
-    return discarded_sampled_backing;
+    discarded_since_sample_ |= sampled;
+    return sampled;
   }
 
   bool try_materialize_reusable_locked(size_t /*bytes*/,
-                                       MaterializationStamp & /*stamp*/) {
+                                       MaterializationStamp & /*stamp*/,
+                                       bool refresh_after_discard = false) {
     refresh_locked(false);
     // Do not advance the birth stamp: only a real OS allocation is absent
     // from an older observation. The complete mapping stays in backing_,
     // including its cold pages, so an in-place refault needs no copy debit.
     if (materialization_allowed_locked(0, 0, /*allow_at_limit=*/true))
       return true;
-    if (!discarded_since_sample_) return false;
-    refresh_after_denial_locked(0);
+    if (!refresh_after_discard || !discarded_since_sample_) return false;
+    refresh_after_denial_locked(0, /*refresh_after_discard=*/true);
     return materialization_allowed_locked(0, 0, /*allow_at_limit=*/true);
   }
 
@@ -774,33 +826,55 @@ class ProcessRssBudget {
     return true;
   }
 
-  bool deny_locked(std::optional<Denial> *denied_at, size_t required_room,
-                   bool include_reuse = false) const {
-    if (denied_at && !*denied_at) {
-      Denial denial{recovery_generation(include_reuse), {}, {}};
-      if (!admission_paused()) {
-        if (rss_margin_.denies(required_room))
-          denial.rss_progress =
-              rss_progress_generation_.load(std::memory_order_relaxed);
-        if (native_margin_.denies(required_room))
-          denial.native_progress =
-              native_progress_generation_.load(std::memory_order_relaxed);
+  Denial snapshot_denial_locked(size_t required_room,
+                                bool include_reuse) const {
+    // Policy and reader deficits can recover in either order.
+    return {recovery_generation(include_reuse),
+            rss_margin_.denies(required_room),
+            native_margin_.denies(required_room), was_paused_};
+  }
+
+  void watch_denial_locked(RecoveryWatch &watch, Denial denial) {
+    if (!watch.registered_) {
+      if (!denial.blocked()) return;
+      watch.next_ = watches_;
+      watches_ = &watch;
+      watch.registered_ = true;
+    }
+    watch.denial_ = denial;
+  }
+
+  void unregister_watch(RecoveryWatch &watch) {
+    std::lock_guard<std::mutex> lock(watch_mutex_);
+    auto **link = &watches_;
+    while (*link != &watch) link = &(*link)->next_;
+    *link = watch.next_;
+  }
+
+  bool deny_locked(std::optional<Denial> *denied_at, RecoveryWatch *watch,
+                   size_t required_room, bool include_reuse = false) {
+    if (denied_at || watch) {
+      const auto denial = snapshot_denial_locked(required_room, include_reuse);
+      if (watch) {
+        std::lock_guard<std::mutex> publication_lock(watch_mutex_);
+        watch_denial_locked(*watch, denial);
       }
-      *denied_at = denial;
+      if (denied_at && !*denied_at) *denied_at = denial;
     }
     return false;
   }
 
   bool try_charge(size_t bytes, size_t &counter, size_t materialization,
-                  bool pending_copy, std::optional<Denial> *denied_at) {
+                  bool pending_copy, std::optional<Denial> *denied_at,
+                  RecoveryWatch *watch) {
     std::lock_guard<std::mutex> lock(mutex_);
     refresh_locked(false);
     const size_t required = add_saturated(bytes, materialization);
     if (required > available_.load(std::memory_order_relaxed) ||
         (materialization && !materialization_allowed_locked(materialization)))
-      refresh_after_denial_locked(required);
+      refresh_after_denial_locked(required, watch != nullptr);
     if (materialization && !materialization_allowed_locked(materialization))
-      return deny_locked(denied_at, required);
+      return deny_locked(denied_at, watch, required);
     const size_t ledger_available =
         std::numeric_limits<size_t>::max() - backing_ - pending_allocations_;
     if (required > available_.load(std::memory_order_relaxed) ||
@@ -808,7 +882,7 @@ class ProcessRssBudget {
         (pending_copy && materialization > std::numeric_limits<size_t>::max() -
                                                pending_materializations_)) {
       if (limit()) pressure_.store(true, std::memory_order_relaxed);
-      return deny_locked(denied_at, required);
+      return deny_locked(denied_at, watch, required);
     }
     counter += bytes;
     if (&counter == &backing_) {
@@ -823,25 +897,30 @@ class ProcessRssBudget {
     return true;
   }
 
-  void refresh_for_materialization_locked(size_t bytes) {
+  void refresh_for_materialization_locked(size_t bytes,
+                                          bool refresh_after_discard = false) {
     refresh_locked(false);
     if (!materialization_allowed_locked(bytes))
-      refresh_after_denial_locked(std::max(bytes, size_t{1}));
+      refresh_after_denial_locked(std::max(bytes, size_t{1}),
+                                  refresh_after_discard);
   }
 
-  void refresh_after_denial_locked(size_t required_room) {
+  void refresh_after_denial_locked(size_t required_room,
+                                   bool refresh_after_discard) {
     // A caller can free a rejected input or completed result and retry within
     // the normal sampling interval. Before denying that retry, observe its
     // current RSS instead of retaining a transient peak or copy projection.
     // Pending allocations/copies remain charged across this observation.
     // Failed readers keep their sampling backoff, and host critical pressure
     // cannot be relaxed by an RSS observation.
-    if (!discarded_since_sample_ &&
+    const bool resample_discard =
+        refresh_after_discard && discarded_since_sample_;
+    if (!resample_discard &&
         resident_scan_in_progress(std::chrono::steady_clock::now()))
       return;
     if (!rss_sample_failures_ && !native_sample_failures_ &&
         external_pressure_ != PressureLevel::kCritical &&
-        (discarded_since_sample_ || !has_resident_uncertainty() ||
+        (resample_discard || !has_resident_uncertainty() ||
          std::chrono::steady_clock::now() - sampled_at_ >=
              std::chrono::milliseconds(20)))
       refresh_locked(true, required_room);
@@ -879,6 +958,7 @@ class ProcessRssBudget {
           add_saturated(pending_allocations_, pending_materializations_));
       const bool fits = usage <= limit() && *required_room <= limit() - usage;
       if (!fits && estimate_.covers_raw_observation(rss)) {
+        observe_raw_rss_locked(rss);
         discarded_since_sample_ = false;
         return;
       }
@@ -931,7 +1011,28 @@ class ProcessRssBudget {
     native_limit_ = add_saturated(native.footprint, native.available);
   }
 
+  void observe_raw_rss_locked(size_t rss) {
+    const size_t previous_rss = observed_rss_;
+    observed_rss_ = rss;
+    if (rss >= previous_rss || !limit()) return;
+    const size_t pending =
+        add_saturated(pending_allocations_, pending_materializations_);
+    const auto before =
+        ReaderMargin::FromUsage(limit(), add_saturated(previous_rss, pending));
+    const auto after =
+        ReaderMargin::FromUsage(limit(), add_saturated(rss, pending));
+    // Ownership credit can expire even while the underlying measurement
+    // improves. Pending reservations remain charged across both observations.
+    if (!after.improved_from(before)) return;
+    std::lock_guard<std::mutex> publication_lock(watch_mutex_);
+    for (auto *watch = watches_; watch; watch = watch->next_) {
+      if (watch->denial_.rss_blocked && before.denies(watch->required_room_))
+        watch->progressed_.store(true, std::memory_order_release);
+    }
+  }
+
   void publish(size_t rss, size_t owned_resident = 0) {
+    observe_raw_rss_locked(rss);
     // The provider already excludes permanent native owners. Deducting their
     // unrelated quota again would erase valid registered-mapping residency.
     active_resident_scan_ = 0;
@@ -997,7 +1098,7 @@ class ProcessRssBudget {
   }
 
   void update_available(BudgetUpdate update = BudgetUpdate::kAccounting,
-                        bool discarded_sampled_backing = false) {
+                        bool discarded = false) {
     const size_t cap = limit();
     const size_t measured = add_saturated(
         add_saturated(rss(), rss_materialized_), pending_materializations_);
@@ -1025,25 +1126,45 @@ class ProcessRssBudget {
     // A successful read can reopen a paused gate even while its measured
     // usage still needs another release.
     const bool resumed = !paused && was_paused_;
-    const bool recovered =
-        resumed ||
-        (update != BudgetUpdate::kAccounting &&
-         available > this->available()) ||
-        (update == BudgetUpdate::kRelease && !paused &&
-         (overage < previous_overage || (cap && discarded_sampled_backing)));
+    const bool recovered = resumed ||
+                           (update != BudgetUpdate::kAccounting &&
+                            available > this->available()) ||
+                           (update == BudgetUpdate::kRelease && !paused &&
+                            (overage < previous_overage || (cap && discarded)));
     // An observation with zero free bytes can still restore reuse when the
     // process is now exactly at the limit. It cannot unblock growth.
     const bool reusable = update == BudgetUpdate::kObservation && !paused &&
                           previous_overage != 0 && overage == 0;
     // One reader can recover while the other still limits the combined room.
     // Only requests actually denied by that reader count this as progress.
-    const bool record_progress =
-        update != BudgetUpdate::kAccounting && !paused && !was_paused_;
-    const bool rss_improved = rss_margin.improved_from(rss_margin_);
-    const bool native_improved = native_margin.improved_from(native_margin_);
-    rss_margin_ = rss_margin;
-    native_margin_ = native_margin;
-    was_paused_ = paused;
+    const bool record_progress = update != BudgetUpdate::kAccounting;
+    // An old mapping can be cold. A discard wakes a retry, but a reader
+    // must show a gain before we credit progress from a sampled discard.
+    const bool rss_improved =
+        record_progress && rss_margin.improved_from(rss_margin_);
+    const bool native_improved =
+        record_progress && native_margin.improved_from(native_margin_);
+    // Qualify recovery against the margin immediately before the event,
+    // since a prior accounting rollback may already have made the gate pass.
+    {
+      // End the publication section before waking capacity waiters. Native
+      // admission can take capacity_mutex_ under this publication lock.
+      std::lock_guard<std::mutex> publication_lock(watch_mutex_);
+      if (rss_improved || native_improved || resumed) {
+        for (auto *watch = watches_; watch; watch = watch->next_) {
+          const auto &denial = watch->denial_;
+          if ((rss_improved && denial.rss_blocked &&
+               rss_margin_.denies(watch->required_room_)) ||
+              (native_improved && denial.native_blocked &&
+               native_margin_.denies(watch->required_room_)) ||
+              (resumed && denial.policy_blocked))
+            watch->progressed_.store(true, std::memory_order_release);
+        }
+      }
+      rss_margin_ = rss_margin;
+      native_margin_ = native_margin;
+      was_paused_ = paused;
+    }
     const size_t margin = headroom(cap);
     const bool pressure = external_pressure_ != PressureLevel::kNormal ||
                           (cap && (pressure_.load(std::memory_order_relaxed)
@@ -1062,10 +1183,6 @@ class ProcessRssBudget {
     resident_confirmation_.store(
         pressure && external_pressure_ == PressureLevel::kNormal && uncertain,
         std::memory_order_relaxed);
-    if (record_progress && rss_improved)
-      rss_progress_generation_.fetch_add(1, std::memory_order_release);
-    if (record_progress && native_improved)
-      native_progress_generation_.fetch_add(1, std::memory_order_release);
     if (recovered || reusable)
       record_recovery_locked(/*reuse_only=*/!recovered);
   }
@@ -1106,11 +1223,14 @@ class ProcessRssBudget {
   std::atomic<size_t> available_{std::numeric_limits<size_t>::max()};
   ReaderMargin rss_margin_;
   ReaderMargin native_margin_;
+  size_t observed_rss_{0};  // Guarded by mutex_.
   bool was_paused_{false};
   std::atomic<uint64_t> recovery_generation_{0};
   std::atomic<uint64_t> reuse_recovery_generation_{0};
-  std::atomic<uint64_t> rss_progress_generation_{0};
-  std::atomic<uint64_t> native_progress_generation_{0};
+  // Guards published reader margins and the watch list. Sensor callbacks
+  // run under mutex_ alone. Capacity notification follows publication.
+  std::mutex watch_mutex_;
+  RecoveryWatch *watches_{nullptr};
   std::atomic<size_t> rss_{0};
   std::atomic<bool> pressure_{false};
   size_t rss_materialized_{0};

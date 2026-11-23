@@ -236,6 +236,7 @@ class ZVEC_AILEGO_API BlockEvictionQueue {
   std::shared_mutex valid_owners_mutex_;
   std::atomic<version_t> version_sequence_{1};
   std::array<std::atomic<size_t>, kQueueCount> approximate_queue_sizes_{};
+  std::atomic<size_t> active_reclaim_passes_{0};
   std::atomic<uint64_t> protected_aging_dequeues_{0};
   std::atomic<uint64_t> cleanup_generation_{0};
   std::atomic<uint64_t> dead_entries_cleaned_{0};
@@ -649,18 +650,37 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   static ProcessRssBudget::ResidentSample read_slab_resident_sample();
   static ProcessRssBudget::ResidentSample read_background_resident_sample();
   enum class Backing { kLive, kPending, kPlan, kUnmapped };
-  struct AdmissionDenials {
-    std::optional<uint64_t> used;
-    std::optional<uint64_t> committed;
-    std::optional<ProcessRssBudget::Denial> rss;
+  enum class NativeGate { kUsed, kCommitted };
+  struct NativeDenial {
+    std::optional<uint64_t> latest;
+    bool blocked{false};
 
-    void remember_first(const AdmissionDenials &latest) {
-      if (!used) used = latest.used;
-      if (!committed) committed = latest.committed;
-      if (!rss)
-        rss = latest.rss;
-      else if (latest.rss)
-        rss->remember_first_constraints(*latest.rss);
+    void record(uint64_t generation) {
+      blocked = true;
+      latest = generation;
+    }
+    bool changed_since_attempt(uint64_t generation) const {
+      return latest && *latest != generation;
+    }
+  };
+  struct AdmissionDenials {
+    AdmissionDenials(size_t native_bytes, size_t rss_bytes,
+                     ProcessRssBudget &rss_budget)
+        : native_bytes(native_bytes), rss_watch(rss_budget, rss_bytes) {}
+
+    const size_t native_bytes;
+    NativeDenial used;
+    NativeDenial committed;
+    AdmissionDenials *next_native_waiter{nullptr};
+    bool native_registered{false};
+    std::atomic<bool> native_progress{false};
+    std::optional<ProcessRssBudget::Denial> rss;
+    ProcessRssBudget::RecoveryWatch rss_watch;
+
+    void reset_attempt() {
+      used.latest.reset();
+      committed.latest.reset();
+      rss.reset();
     }
   };
   struct PageAllocation {
@@ -677,20 +697,18 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   void register_queue_mapping(QueueResidentMapping *mapping, void *data,
                               size_t bytes);
   bool unmap_queue_mapping(QueueResidentMapping *mapping);
-  bool try_reserve_native(size_t bytes, std::atomic<size_t> &counter,
-                          const std::atomic<uint64_t> &generation,
-                          std::optional<uint64_t> *denied_at);
+  bool try_reserve_native(size_t bytes, NativeGate gate,
+                          AdmissionDenials *denials);
   size_t release_native(size_t bytes, std::atomic<size_t> &counter,
                         std::atomic<uint64_t> &generation);
-  static size_t release_native_locked(size_t bytes,
-                                      std::atomic<size_t> &counter,
-                                      std::atomic<uint64_t> &generation);
-  bool try_reserve_used(size_t bytes,
-                        std::optional<uint64_t> *denied_at = nullptr);
+  size_t release_native_locked(size_t bytes, std::atomic<size_t> &counter,
+                               std::atomic<uint64_t> &generation);
+  bool try_reserve_used(size_t bytes, AdmissionDenials *denials = nullptr);
   bool try_reserve_page_used(size_t bytes, bool required = false);
   bool try_reserve_committed(size_t bytes, Backing backing = Backing::kLive,
                              size_t materialization = 0,
                              AdmissionDenials *denials = nullptr);
+  void unregister_native_waiter(AdmissionDenials &denials);
   void release_native_used(size_t bytes);
   void cancel_buffer_reservation(size_t bytes, bool attempted_backing);
   bool publish_capacity_release(bool wake_all, size_t released_used);
@@ -752,7 +770,8 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   bool release_all_slabs_locked();
   size_t trim_free_buffers(size_t bytes_needed);
   bool trim_idle_buffers();
-  bool reclaim_process_cache();
+  template <typename Observe>
+  void reclaim_process_cache(Observe &&observe);
   size_t trim_retained_blocks(size_t bytes_needed);
   size_t trim_cache_buffers(size_t bytes_needed);
   void register_cache_mapping(CacheBuffer *buffer);
@@ -828,10 +847,12 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   std::atomic<size_t> mandatory_waiters_{0};
   std::mutex capacity_mutex_;
   std::condition_variable capacity_cv_;
+  AdmissionDenials *native_waiters_{nullptr};  // Guarded by capacity_mutex_.
   ProcessRssBudget process_rss_{
       {capacity_mutex_, capacity_cv_, mandatory_waiters_}};
   std::mutex process_reclaimer_mutex_;
   std::shared_ptr<const std::function<void()>> process_reclaimer_;
+  bool process_reclaimer_running_{false};
   std::atomic<size_t> external_used_size_{0};
   std::atomic<size_t> evictable_cache_size_{0};
   std::atomic<size_t> cache_reclaim_requested_{0};

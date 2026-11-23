@@ -1104,7 +1104,8 @@ bool MemoryLimitPool::try_materialize_retained_block(void *data,
   const size_t bytes = block->bytes();
   const auto admit = [&](AdmissionDenials *denials) {
     return process_rss_.try_materialize_reusable(
-        bytes, block->projection, denials ? &denials->rss : nullptr);
+        bytes, block->projection, denials ? &denials->rss : nullptr,
+        denials ? &denials->rss_watch : nullptr);
   };
   if (!required) return admit(nullptr);
   // The caller pins the chunk, but must not hold its allocator mutex while
@@ -1203,7 +1204,8 @@ bool BlockEvictionQueue::dequeue_priority(size_t priority, BlockType &item) {
     consumers[priority].emplace(evict_queues_[priority]);
   if (!evict_queues_[priority].try_dequeue(*consumers[priority], item))
     return false;
-  approximate_queue_sizes_[priority].fetch_sub(1, std::memory_order_relaxed);
+  // Publish the dequeue after the reclaim pass has registered itself.
+  approximate_queue_sizes_[priority].fetch_sub(1, std::memory_order_release);
   return true;
 }
 
@@ -1282,6 +1284,10 @@ bool BlockEvictionQueue::evict_block(
 }
 
 void BlockEvictionQueue::recycle() {
+  active_reclaim_passes_.fetch_add(1, std::memory_order_relaxed);
+  auto finish = ScopeGuard::Make([this] {
+    active_reclaim_passes_.fetch_sub(1, std::memory_order_release);
+  });
   BlockType item;
   // A foreground page fault must not scan the whole global queue while its
   // page remains in kLoadingRefCount. Try a small CLOCK sample and let the
@@ -1371,6 +1377,10 @@ size_t BlockEvictionQueue::reclaim_for_allocation(size_t bytes) {
 size_t BlockEvictionQueue::batch_recycle_impl(size_t count, size_t scan_count,
                                               bool age_protected,
                                               size_t bytes) {
+  active_reclaim_passes_.fetch_add(1, std::memory_order_relaxed);
+  auto finish = ScopeGuard::Make([this] {
+    active_reclaim_passes_.fetch_sub(1, std::memory_order_release);
+  });
   auto &pool = MemoryLimitPool::get_instance();
   const size_t before = pool.used();
   // Small foreground reservations preserve the existing cost preference.
@@ -1564,38 +1574,59 @@ size_t MemoryLimitPool::pick_shard() {
   return idx % kNumFreeShards;
 }
 
-bool MemoryLimitPool::try_reserve_native(
-    size_t bytes, std::atomic<size_t> &counter,
-    const std::atomic<uint64_t> &generation,
-    std::optional<uint64_t> *denied_at) {
+bool MemoryLimitPool::try_reserve_native(size_t bytes, NativeGate gate,
+                                         AdmissionDenials *denials) {
+  const bool check_used = gate == NativeGate::kUsed;
+  auto &counter = check_used ? used_size_ : committed_size_;
+  const auto &generation =
+      check_used ? used_release_generation_ : committed_release_generation_;
   const size_t capacity = pool_size_.load(std::memory_order_relaxed);
-  const auto fits = [=](size_t used) {
+  const auto fits = [&](size_t used) {
     return used <= capacity && bytes <= capacity - used;
   };
-  size_t used = counter.load(std::memory_order_relaxed);
-  for (;;) {
+  const auto reserve = [&] {
+    size_t used = counter.load(std::memory_order_relaxed);
     while (fits(used)) {
       if (counter.compare_exchange_weak(used, used + bytes,
                                         std::memory_order_relaxed))
         return true;
     }
-    if (!denied_at || *denied_at) return false;
-    // Recheck at the same synchronization point as tracked refunds. A return
-    // before this denial belongs to its baseline, even if the request started
-    // earlier at a different budget gate.
+    return false;
+  };
+
+  if (!denials) return reserve();
+  auto &denial = check_used ? denials->used : denials->committed;
+  if (!denial.blocked && reserve()) return true;
+  return denials->rss_watch.check_native_gate([&] {
     std::lock_guard<std::mutex> lock(capacity_mutex_);
-    used = counter.load(std::memory_order_relaxed);
-    if (!fits(used)) {
-      *denied_at = generation.load(std::memory_order_relaxed);
-      return false;
+    if (reserve()) {
+      denial.blocked = false;
+      return true;
     }
-  }
+    if (!denials->native_registered) {
+      denials->next_native_waiter = native_waiters_;
+      native_waiters_ = denials;
+      denials->native_registered = true;
+    }
+    denial.record(generation.load(std::memory_order_relaxed));
+    if (check_used) {
+      // A live owner and idle backing can block both gates independently.
+      // Snapshot the second gate before inline reclamation can trim that
+      // backing.
+      const auto committed_generation =
+          committed_release_generation_.load(std::memory_order_relaxed);
+      if (fits(committed_size_.load(std::memory_order_relaxed)))
+        denials->committed.blocked = false;
+      else
+        denials->committed.record(committed_generation);
+    }
+    return false;
+  });
 }
 
 bool MemoryLimitPool::try_reserve_used(size_t bytes,
-                                       std::optional<uint64_t> *denied_at) {
-  return try_reserve_native(bytes, used_size_, used_release_generation_,
-                            denied_at);
+                                       AdmissionDenials *denials) {
+  return try_reserve_native(bytes, NativeGate::kUsed, denials);
 }
 
 bool MemoryLimitPool::try_reserve_page_used(size_t bytes, bool required) {
@@ -1616,15 +1647,15 @@ bool MemoryLimitPool::try_reserve_page_used(size_t bytes, bool required) {
 bool MemoryLimitPool::try_reserve_committed(size_t bytes, Backing backing,
                                             size_t materialization,
                                             AdmissionDenials *denials) {
-  if (!try_reserve_native(bytes, committed_size_, committed_release_generation_,
-                          denials ? &denials->committed : nullptr))
-    return false;
+  if (!try_reserve_native(bytes, NativeGate::kCommitted, denials)) return false;
   if (backing == Backing::kPlan) return true;
   auto *rss_denied_at = denials ? &denials->rss : nullptr;
+  auto *rss_watch = denials ? &denials->rss_watch : nullptr;
   const bool admitted =
       backing == Backing::kPending
-          ? process_rss_.try_reserve(bytes, rss_denied_at)
-          : process_rss_.try_acquire(bytes, materialization, rss_denied_at);
+          ? process_rss_.try_reserve(bytes, rss_denied_at, rss_watch)
+          : process_rss_.try_acquire(bytes, materialization, rss_denied_at,
+                                     rss_watch);
   if (!admitted) {
     committed_size_.fetch_sub(bytes, std::memory_order_relaxed);
     bg_cv_.notify_one();
@@ -1645,10 +1676,28 @@ size_t MemoryLimitPool::release_native_locked(
   const size_t previous = counter.fetch_sub(bytes, std::memory_order_relaxed);
   assert(previous >= bytes);
   if (bytes) {
+    if (native_waiters_) {
+      const size_t capacity = pool_size_.load(std::memory_order_relaxed);
+      const size_t room = capacity - std::min(capacity, previous);
+      const bool released_used = &counter == &used_size_;
+      for (auto *waiter = native_waiters_; waiter;
+           waiter = waiter->next_native_waiter) {
+        const auto &denial = released_used ? waiter->used : waiter->committed;
+        if (denial.blocked && waiter->native_bytes > room)
+          waiter->native_progress.store(true, std::memory_order_release);
+      }
+    }
     generation.store(generation.load(std::memory_order_relaxed) + 1,
                      std::memory_order_release);
   }
   return previous;
+}
+
+void MemoryLimitPool::unregister_native_waiter(AdmissionDenials &denials) {
+  std::lock_guard<std::mutex> lock(capacity_mutex_);
+  auto **link = &native_waiters_;
+  while (*link != &denials) link = &(*link)->next_native_waiter;
+  *link = denials.next_native_waiter;
 }
 
 void MemoryLimitPool::release_native_used(size_t bytes) {
@@ -1677,8 +1726,7 @@ bool MemoryLimitPool::try_reserve_allocation(size_t bytes, Backing backing,
   // committed capacity here would spend those pending slots a second time.
   // Keep both counters individually bounded without holding a lock across
   // allocation, eviction, or writeback callbacks.
-  if (!try_reserve_used(bytes, denials ? &denials->used : nullptr))
-    return false;
+  if (!try_reserve_used(bytes, denials)) return false;
   if (!try_reserve_committed(bytes, backing, materialization, denials)) {
     release_buffer(nullptr, bytes);
     return false;
@@ -1955,18 +2003,28 @@ void MemoryLimitPool::set_process_rss_reclaimer(
   process_reclaimer_ = std::move(callback);
 }
 
-bool MemoryLimitPool::reclaim_process_cache() {
+template <typename Observe>
+void MemoryLimitPool::reclaim_process_cache(Observe &&observe) {
   std::shared_ptr<const std::function<void()>> callback;
   {
     std::lock_guard<std::mutex> lock(process_reclaimer_mutex_);
     callback = process_reclaimer_;
+    if (callback) process_reclaimer_running_ = true;
   }
   // Copying this owner allocates nothing on the pressure path. It shares the
   // same pool across DSOs, and no pool lock is held while calling another
   // cache.
-  if (!callback) return false;
+  if (!callback) return;
+  auto finish = ScopeGuard::Make([this, &callback] {
+    callback.reset();
+    std::lock_guard<std::mutex> lock(process_reclaimer_mutex_);
+    process_reclaimer_running_ = false;
+  });
   (*callback)();
-  return true;
+  // Unregistration can leave the copied callback holding the final owner.
+  // Destroy it before observing the memory released by this reclaim pass.
+  callback.reset();
+  observe();
 }
 
 int MemoryLimitPool::init(size_t pool_size) {
@@ -2204,13 +2262,13 @@ void MemoryLimitPool::background_evict_loop() {
         now - last_process_reclaim >= milliseconds(20)) {
       // RocksDB has a separate cache budget. Retire its unpinned entries too,
       // including when vector pages cannot make further reclamation progress.
-      if (reclaim_process_cache()) {
+      reclaim_process_cache([&] {
         process_rss_.refresh(true);
 #if (defined(__linux__) && !defined(__ANDROID__)) || \
     (defined(__APPLE__) && TARGET_OS_OSX)
         refresh_owned_sample();
 #endif
-      }
+      });
       last_process_reclaim = now;
     }
     // Flush/compaction can retire many owners without reaching a watermark.
@@ -2437,10 +2495,11 @@ bool MemoryLimitPool::try_charge_process_backing(size_t bytes,
   const size_t required = bytes + materialization;
   const auto admit = [&](AdmissionDenials *denials) {
     auto *denied_at = denials ? &denials->rss : nullptr;
-    return pending_copy
-               ? process_rss_.try_acquire_with_pending_copy(
-                     bytes, materialization, denied_at)
-               : process_rss_.try_acquire(bytes, materialization, denied_at);
+    auto *watch = denials ? &denials->rss_watch : nullptr;
+    return pending_copy ? process_rss_.try_acquire_with_pending_copy(
+                              bytes, materialization, denied_at, watch)
+                        : process_rss_.try_acquire(bytes, materialization,
+                                                   denied_at, watch);
   };
   return try_admit({0, required}, admit, true);
 }
@@ -2648,12 +2707,26 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
   using Clock = std::chrono::steady_clock;
   using std::chrono::milliseconds;
   const bool reuse = request.native_bytes == 0 && request.rss_bytes == 0;
-  AdmissionDenials first_denials, denials;
+  const bool required = wait;
+  AdmissionDenials denials(request.native_bytes, request.rss_bytes,
+                           process_rss_);
+  auto unregister_native = ScopeGuard::Make([&] {
+    if (denials.native_registered) unregister_native_waiter(denials);
+  });
+  const auto impossible = [&] {
+    return request.native_bytes > native_allocation_limit() ||
+           request.rss_bytes > rss_allocation_limit();
+  };
   const auto try_once = [&] {
-    denials = {};
+    denials.reset_attempt();
     const bool admitted = admit(wait ? &denials : nullptr);
-    if (wait && !admitted) first_denials.remember_first(denials);
-    return admitted;
+    if (admitted || !wait) return admitted;
+    if (!denials.rss && request.rss_bytes && !impossible()) {
+      const auto rss =
+          process_rss_.observe_denial(request.rss_bytes, denials.rss_watch);
+      if (rss.blocked()) denials.rss = rss;
+    }
+    return false;
   };
   // The deadline bounds waiting and starting another reclaim pass. A
   // synchronous reclaim already in progress can finish after the deadline.
@@ -2669,10 +2742,6 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
     wait = false;
     if (try_once()) return true;
   }
-  const auto impossible = [&] {
-    return request.native_bytes > native_allocation_limit() ||
-           request.rss_bytes > rss_allocation_limit();
-  };
   if (impossible()) return false;
 
   if (wait) {
@@ -2704,23 +2773,21 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
             : (request.native_bytes ? 0 : process_rss_.available());
     return AdmissionRequest{native, rss};
   };
-  const auto made_progress = [&](const AdmissionDenials &since) {
-    return (since.used && used_release_generation_.load(
-                              std::memory_order_acquire) != *since.used) ||
-           (since.committed &&
-            committed_release_generation_.load(std::memory_order_acquire) !=
-                *since.committed) ||
-           (since.rss &&
-            process_rss_.recovery_generation(reuse) != since.rss->recovery);
-  };
+  const auto rss_recovered =
+      [&](const std::optional<ProcessRssBudget::Denial> &denial) {
+        return denial &&
+               process_rss_.recovery_generation(reuse) != denial->recovery;
+      };
   const auto has_recovery_progress = [&] {
-    return made_progress(first_denials) ||
-           (first_denials.rss &&
-            process_rss_.reader_progress_since(*first_denials.rss));
+    return denials.native_progress.load(std::memory_order_acquire) ||
+           denials.rss_watch.progressed();
   };
   const auto refresh_after_reclaim = [&] {
-    if (request.rss_bytes != 0 || reuse)
+    if (!request.rss_bytes && !reuse) return;
+    if (required)
       process_rss_.refresh_after_reclaim(request.rss_bytes);
+    else
+      process_rss_.refresh(true);
   };
 
   // Close the race between the first denial and publishing priority.
@@ -2764,45 +2831,59 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
     // sample, even if the cached headroom has not increased yet.
     const auto room = room_for_request();
     capacity_waits_.fetch_add(1, std::memory_order_relaxed);
-    bool progress;
     {
       std::unique_lock<std::mutex> lock(capacity_mutex_);
-      progress = capacity_cv_.wait_until(
-          lock, std::min(deadline, Clock::now() + milliseconds(100)), [&] {
-            if (made_progress(denials)) return true;
+      const auto now = Clock::now();
+      const auto poll_until =
+          now < first_wait_end ? first_wait_end : now + milliseconds(100);
+      const bool progress =
+          capacity_cv_.wait_until(lock, std::min(deadline, poll_until), [&] {
+            if (denials.used.changed_since_attempt(
+                    used_release_generation_.load(std::memory_order_acquire)) ||
+                denials.committed.changed_since_attempt(
+                    committed_release_generation_.load(
+                        std::memory_order_acquire)) ||
+                rss_recovered(denials.rss))
+              return true;
             const auto current = room_for_request();
-            return denials.rss ? current.rss_bytes > room.rss_bytes
-                               : current.native_bytes > room.native_bytes;
+            return (denials.rss && current.rss_bytes > room.rss_bytes) ||
+                   ((denials.used.latest || denials.committed.latest) &&
+                    current.native_bytes > room.native_bytes);
           });
       if (!progress)
         capacity_wait_timeouts_.fetch_add(1, std::memory_order_relaxed);
     }
-    // A refund can satisfy the wait before the caller can run again.
-    // Recheck it once even if reacquiring the mutex crossed the deadline.
-    if ((progress || Clock::now() < deadline) && try_once()) return true;
+    // The final timed wait can end before an unannounced RSS drop has been
+    // sampled. Retry once after every wake without starting another wait.
+    if (try_once()) return true;
     if (Clock::now() >= deadline) break;
     // A release can fill part of the gap before a subsequent owner returns
     // the rest. Keep the original deadline once the request has seen progress.
     if (Clock::now() >= first_wait_end && !has_recovery_progress()) {
       bool exhausted = false;
-      if (!denials.rss) {
+      if (denials.used.latest || denials.committed.latest) {
         const size_t fixed = fixed_used();
         const size_t capacity = pool_size_.load(std::memory_order_relaxed);
         exhausted = fixed > capacity || request.native_bytes > capacity - fixed;
       }
       const bool waiting_for_rss_proof =
           denials.rss && process_rss_.has_resident_uncertainty();
+      const auto &queue = BlockEvictionQueue::get_instance();
       if (!exhausted && !waiting_for_rss_proof) {
-        const auto queues = BlockEvictionQueue::get_instance().stats();
-        exhausted = std::all_of(queues.approximate_queue_sizes.begin(),
-                                queues.approximate_queue_sizes.end(),
-                                [](size_t depth) { return depth == 0; });
+        exhausted = std::all_of(
+            queue.approximate_queue_sizes_.begin(),
+            queue.approximate_queue_sizes_.end(), [](const auto &depth) {
+              return depth.load(std::memory_order_acquire) == 0;
+            });
       }
       if (exhausted) {
         std::lock_guard<std::mutex> lock(process_reclaimer_mutex_);
-        // An eviction can refund budget as it removes the last queue entry.
-        // Decide using the generations after observing the recovery sources.
-        if (!process_reclaimer_ && !has_recovery_progress()) break;
+        // Queue depth falls before a dirty page is written back. The active
+        // reclaim pass can still return capacity after its last dequeue.
+        if (!process_reclaimer_ && !process_reclaimer_running_ &&
+            queue.active_reclaim_passes_.load(std::memory_order_acquire) == 0 &&
+            !has_recovery_progress())
+          break;
       }
     }
     previous_shortfall = std::numeric_limits<size_t>::max();
@@ -2853,8 +2934,9 @@ bool MemoryLimitPool::try_charge_fixed_once(size_t bytes,
                                             AdmissionDenials *denials) {
   if (bytes == 0)
     return !materialization ||
-           process_rss_.try_materialize(materialization,
-                                        denials ? &denials->rss : nullptr);
+           process_rss_.try_materialize(
+               materialization, denials ? &denials->rss : nullptr,
+               denials ? &denials->rss_watch : nullptr);
   if (!try_reserve_allocation(bytes, backing, materialization, denials))
     return false;
   counter->fetch_add(bytes, std::memory_order_relaxed);
