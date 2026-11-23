@@ -159,20 +159,10 @@ class InvertedIndexCodec {
   }
 
 
-  // The portable format does not guarantee payload alignment. Keep the
-  // zero-copy path on architectures that tolerate unaligned loads.
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || \
-    defined(_M_IX86) || defined(__aarch64__) || defined(_M_ARM64)
-  static constexpr bool kFrozenPostings = true;
-#else
-  static constexpr bool kFrozenPostings = false;
-#endif
-
+  // A frozen view over the portable format can expose unaligned payload and
+  // container storage to Roaring's bitmap operations.
   static roaring_bitmap_t *load_posting_bitmap(const char *data, size_t size) {
     if (size <= 1) return nullptr;
-    if constexpr (kFrozenPostings) {
-      return roaring_bitmap_portable_deserialize_frozen(data + 1);
-    }
     return roaring_bitmap_portable_deserialize_safe(data + 1, size - 1);
   }
 
@@ -237,7 +227,7 @@ class InvertedIndexCodec {
     }
 
     if (header == 0) {  // This is a bitmap
-      *bitmap = roaring_bitmap_portable_deserialize_safe(data + 1, size - 1);
+      *bitmap = load_posting_bitmap(data, size);
       if (*bitmap) {
         return Status::OK();
       } else {
