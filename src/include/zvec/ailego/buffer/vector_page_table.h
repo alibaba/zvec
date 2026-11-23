@@ -700,6 +700,10 @@ class ZVEC_AILEGO_API VecBufferPool {
   //! Returns 0 on success, -1 on failure (e.g. read-only pool or I/O error).
   int write_range(size_t file_offset, size_t length, const char *src);
 
+  //! Report the prefix copied into the cache, including on a failed write.
+  int write_range(size_t file_offset, size_t length, const char *src,
+                  size_t *written);
+
   //! Apply ordered fragments that all lie in one page under one pin/latch.
   int write_fragments(const VecBufferWriteFragment *fragments, size_t count);
 
@@ -903,6 +907,9 @@ class ZVEC_AILEGO_API VecBufferPoolHandle {
   int get_meta(size_t offset, size_t length, char *buffer);
 
   int write_range(size_t file_offset, size_t len, const char *src);
+
+  int write_range(size_t file_offset, size_t len, const char *src,
+                  size_t *written);
 
   int write_fragments(const VecBufferWriteFragment *fragments, size_t count);
 

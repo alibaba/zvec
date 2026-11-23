@@ -5,8 +5,13 @@
 #include <unistd.h>
 
 namespace zvec::test {
-using DirectorySplitPwriteHook =
-    ssize_t (*)(decltype(&::pwrite), int, const void *, size_t, off_t);
+using DirectorySplitPwriteHook = ssize_t (*)(decltype(&::pwrite), int,
+                                             const void *, size_t, off_t);
 
 void SetDirectorySplitPwriteHook(DirectorySplitPwriteHook hook);
+
+using DirectorySplitPreadHook = ssize_t (*)(decltype(&::pread), int, void *,
+                                            size_t, off_t);
+
+void SetDirectorySplitPreadHook(DirectorySplitPreadHook hook);
 }  // namespace zvec::test

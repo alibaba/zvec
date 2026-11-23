@@ -1935,6 +1935,12 @@ bool VecBufferPool::read_range_bypass(size_t file_offset, size_t length,
 
 int VecBufferPool::write_range(size_t file_offset, size_t length,
                                const char *src) {
+  return write_range(file_offset, length, src, nullptr);
+}
+
+int VecBufferPool::write_range(size_t file_offset, size_t length,
+                               const char *src, size_t *written) try {
+  if (written != nullptr) *written = 0;
   if (!writable_) {
     LOG_ERROR("write_range called on read-only pool: file[%s]",
               file_name_.c_str());
@@ -1970,11 +1976,14 @@ int VecBufferPool::write_range(size_t file_offset, size_t length,
     size_t chunk = std::min(kVectorPageSize - intra_offset, remaining);
     std::memcpy(page + intra_offset, src + src_cursor, chunk);
     page_table_.mark_dirty(pg);
-    page_table_.release_block(pg);
     src_cursor += chunk;
     remaining -= chunk;
+    if (written != nullptr) *written = src_cursor;
+    page_table_.release_block(pg);
   }
   return 0;
+} catch (const std::bad_alloc &) {
+  return -1;
 }
 
 int VecBufferPool::write_fragments(const VecBufferWriteFragment *fragments,
@@ -2427,6 +2436,11 @@ int VecBufferPoolHandle::get_meta(size_t offset, size_t length, char *buffer) {
 int VecBufferPoolHandle::write_range(size_t file_offset, size_t len,
                                      const char *src) {
   return pool_.write_range(file_offset, len, src);
+}
+
+int VecBufferPoolHandle::write_range(size_t file_offset, size_t len,
+                                     const char *src, size_t *written) {
+  return pool_.write_range(file_offset, len, src, written);
 }
 
 int VecBufferPoolHandle::write_fragments(
