@@ -13,13 +13,19 @@
 // limitations under the License.
 
 #include <array>
+#include <cstdint>
 #include <cstring>
 #include <future>
 #include <limits>
+#include <memory>
+#include <numeric>
 #include <random>
+#include <string>
+#include <utility>
 #include <vector>
 #include <arrow/api.h>
 #include <arrow/compute/api.h>
+#include <arrow/testing/gtest_util.h>
 #include <gtest/gtest.h>
 #include "db/sqlengine/stile/predicate.h"
 
@@ -158,12 +164,130 @@ class StilePredicateTest : public testing::Test {
     expect_batch_parity(**compiled, arrow_results);
   }
 
+  void expect_set_parity(const std::shared_ptr<arrow::Array> &input,
+                         const std::shared_ptr<arrow::Array> &members) {
+    table_ =
+        arrow::Table::Make(arrow::schema({arrow::field("v", input->type())}),
+                           arrow::ArrayVector{input});
+    const auto split = members->length() / 2;
+    auto chunks = std::make_shared<arrow::ChunkedArray>(arrow::ArrayVector{
+        members->Slice(0, split), members->Slice(0, 0), members->Slice(split)});
+    for (const auto &set : {arrow::Datum(members), arrow::Datum(chunks)}) {
+      for (auto mode : {cp::SetLookupOptions::MATCH, cp::SetLookupOptions::SKIP,
+                        cp::SetLookupOptions::EMIT_NULL,
+                        cp::SetLookupOptions::INCONCLUSIVE}) {
+        auto in = cp::call("is_in", {cp::field_ref("v")},
+                           cp::SetLookupOptions(set, mode));
+        ASSERT_NO_FATAL_FAILURE(expect_parity(in));
+        ASSERT_NO_FATAL_FAILURE(expect_parity(cp::not_(in)));
+      }
+    }
+  }
+
   std::shared_ptr<arrow::Table> table_;
 };
 
 TEST_F(StilePredicateTest, EmptyTableRejectsEveryCandidate) {
   table_ = table_->Slice(0, 0);
   expect_parity(cp::literal(true));
+}
+
+TEST_F(StilePredicateTest, LocatesRowsInRegularAndIrregularSlicedChunks) {
+  struct Layout {
+    int stride;
+    std::vector<int> lengths;
+  };
+  // In the irregular layout, several short chunks fall in the same bucket.
+  for (const auto &layout :
+       std::vector<Layout>{{63, {63, 63, 7}},
+                           {64, {64, 64, 7}},
+                           {0, {1, 1, 2, 1, 82, 1, 1, 1}}}) {
+    SCOPED_TRACE(layout.stride);
+    const int rows =
+        std::accumulate(layout.lengths.begin(), layout.lengths.end(), 0);
+    arrow::Int32Builder builder;
+    // Skip the first value so the slices have nonzero offsets.
+    for (int i = 0; i <= rows; ++i) {
+      ASSERT_OK(i % 19 == 0 ? builder.AppendNull() : builder.Append(i - 1));
+    }
+    ASSERT_OK_AND_ASSIGN(auto data, builder.Finish());
+    arrow::ArrayVector slices;
+    int offset = 1;
+    for (const int length : layout.lengths) {
+      slices.push_back(data->Slice(offset, 0));
+      slices.push_back(data->Slice(offset, length));
+      offset += length;
+    }
+    auto chunks = std::make_shared<arrow::ChunkedArray>(std::move(slices));
+    table_ = arrow::Table::Make(
+        arrow::schema({arrow::field("v", data->type())}), {chunks});
+    ASSERT_OK_AND_ASSIGN(auto index, TableIndex::Make(table_, true));
+    const auto &column = *index->column(0);
+    ASSERT_EQ(column.stride(), layout.stride);
+    int row = 0;
+    for (size_t chunk = 0; chunk < layout.lengths.size(); ++chunk) {
+      EXPECT_EQ(column.chunk_begin(chunk), row);
+      ASSERT_NO_FATAL_FAILURE(
+          expect_parity(cp::equal(cp::field_ref("v"), cp::literal(row))));
+      for (int i = 0; i < layout.lengths[chunk]; ++i, ++row) {
+        int64_t local = -1;
+        EXPECT_EQ(column.locate(row, &local), chunk) << row;
+        EXPECT_EQ(local, i) << row;
+      }
+    }
+  }
+}
+
+TEST_F(StilePredicateTest, LiteralOnLeftAndFusedRangeEndpointsMatchArrow) {
+  const auto field = cp::field_ref("i");
+  for (const auto *op : {"equal", "not_equal", "less", "less_equal", "greater",
+                         "greater_equal"}) {
+    ASSERT_NO_FATAL_FAILURE(
+        expect_parity(cp::call(op, {cp::literal(int32_t{1}), field})));
+  }
+  stile::CompileOptions unfused;
+  unfused.max_fusion_pairs = 0;
+  for (const auto *lower : {"less", "less_equal"}) {
+    for (const auto *upper : {"greater", "greater_equal"}) {
+      for (const auto *op : {"and", "and_kleene"}) {
+        auto range =
+            cp::call(op, {cp::call(lower, {cp::literal(int32_t{-1}), field}),
+                          cp::call(upper, {cp::literal(int32_t{1}), field})});
+        ASSERT_NO_FATAL_FAILURE(expect_parity(range));
+        ASSERT_NO_FATAL_FAILURE(expect_parity(range, unfused));
+      }
+    }
+  }
+}
+
+TEST_F(StilePredicateTest, DenseSparseAndEmptyIntegerSetsMatchArrow) {
+  arrow::Int32Builder numbers;
+  ASSERT_OK(numbers.AppendValues({-1, 0, 1, 62, 63, 64, 65, 66, 126, 127, 128,
+                                  std::numeric_limits<int32_t>::max()}));
+  ASSERT_OK(numbers.AppendNull());
+  ASSERT_OK_AND_ASSIGN(auto input, numbers.Finish());
+  // Exercise both sides of the 64-bit bitmap boundaries and the out-of-range
+  // sentinel.
+  ASSERT_OK(numbers.AppendValues({0, 63, 64, 65, 127, 127}));
+  ASSERT_OK(numbers.AppendNull());
+  ASSERT_OK_AND_ASSIGN(auto dense, numbers.Finish());
+  ASSERT_NO_FATAL_FAILURE(expect_set_parity(input, dense));
+  ASSERT_NO_FATAL_FAILURE(expect_set_parity(input, dense->Slice(0, 0)));
+  ASSERT_OK(numbers.AppendValues({0, std::numeric_limits<int32_t>::max()}));
+  ASSERT_OK_AND_ASSIGN(auto sparse, numbers.Finish());
+  ASSERT_NO_FATAL_FAILURE(expect_set_parity(input, sparse));
+}
+
+TEST_F(StilePredicateTest, StringSetsPreserveEmbeddedNulAndEmptyValues) {
+  const std::string embedded("a\0b", 3);
+  arrow::StringBuilder words;
+  ASSERT_OK(words.AppendValues({"", "a", embedded, "ab", "last"}));
+  ASSERT_OK(words.AppendNull());
+  ASSERT_OK_AND_ASSIGN(auto input, words.Finish());
+  ASSERT_OK(words.AppendValues({"", embedded, embedded}));
+  ASSERT_OK(words.AppendNull());
+  ASSERT_OK_AND_ASSIGN(auto members, words.Finish());
+  ASSERT_NO_FATAL_FAILURE(expect_set_parity(input, members));
 }
 
 TEST_F(StilePredicateTest, SeededThreeValuedDifferential) {
@@ -218,6 +342,10 @@ TEST_F(StilePredicateTest, NanSignedZeroAndSetNullModes) {
   table_ =
       arrow::Table::Make(arrow::schema({arrow::field("d", arrow::float64())}),
                          arrow::ArrayVector{*values});
+  for (bool nan_is_null : {false, true}) {
+    ASSERT_NO_FATAL_FAILURE(
+        expect_parity(cp::is_null(cp::field_ref("d"), nan_is_null)));
+  }
   for (double value : {-0.0, 0.0, nan_payload}) {
     for (const auto *op : {"equal", "not_equal", "less", "less_equal",
                            "greater", "greater_equal"}) {
@@ -269,6 +397,62 @@ TEST_F(StilePredicateTest, LosslessCastsAndStringPatterns) {
   }
 }
 
+TEST_F(StilePredicateTest, CastsRespectUnsignedAndFloatingPointLimits) {
+  arrow::UInt32Builder values;
+  ASSERT_OK(values.AppendValues(
+      {0, 1u << 24, (1u << 24) + 1, std::numeric_limits<uint32_t>::max()}));
+  ASSERT_OK(values.AppendNull());
+  ASSERT_OK_AND_ASSIGN(auto array, values.Finish());
+  table_ = arrow::Table::Make(arrow::schema({arrow::field("u", array->type())}),
+                              arrow::ArrayVector{array});
+  auto cast = [](const std::shared_ptr<arrow::DataType> &target) {
+    return cp::call("cast", {cp::field_ref("u")},
+                    cp::CastOptions::Safe(target));
+  };
+  ASSERT_NO_FATAL_FAILURE(expect_parity(
+      cp::greater(cast(arrow::int64()), cp::literal(int64_t{2147483647}))));
+  ASSERT_NO_FATAL_FAILURE(expect_parity(
+      cp::greater(cast(arrow::float64()), cp::literal(16777216.0))));
+  ASSERT_OK_AND_ASSIGN(auto index, TableIndex::Make(table_));
+  for (const auto &expr :
+       {cp::greater(cast(arrow::int32()), cp::literal(int32_t{0})),
+        cp::greater(cast(arrow::float32()), cp::literal(16777216.0f))}) {
+    ASSERT_OK_AND_ASSIGN(auto bound, expr.Bind(*table_->schema()));
+    EXPECT_TRUE(Predicate::Compile(bound, index).status().IsNotImplemented())
+        << expr.ToString();
+  }
+}
+
+TEST_F(StilePredicateTest, Utf8LikeFastPathsAndEscapes) {
+  const std::string cjk = "\xe4\xb8\xad";
+  const std::string emoji = "\xf0\x9f\x8c\x8d";
+  arrow::StringBuilder text;
+  ASSERT_OK(text.AppendValues(
+      {"", cjk, cjk + "x", "x" + cjk, "x" + emoji + "y", R"(a\b)", "ab%"}));
+  ASSERT_OK(text.AppendNull());
+  ASSERT_OK_AND_ASSIGN(auto values, text.Finish());
+  for (const auto &type : {arrow::utf8(), arrow::large_utf8()}) {
+    ASSERT_OK_AND_ASSIGN(auto array, cp::Cast(values, type));
+    table_ = arrow::Table::Make(arrow::schema({arrow::field("s", type)}),
+                                arrow::ArrayVector{array.make_array()});
+    for (const std::string &pattern : std::vector<std::string>{
+             cjk + "%", "%" + cjk, "%" + emoji + "%", "%%", R"(%a\b%)"}) {
+      ASSERT_NO_FATAL_FAILURE(
+          expect_parity(cp::call("match_like", {cp::field_ref("s")},
+                                 cp::MatchSubstringOptions(pattern))));
+    }
+    ASSERT_OK_AND_ASSIGN(auto index, TableIndex::Make(table_));
+    for (const auto &options : {cp::MatchSubstringOptions(R"(ab\%)"),
+                                cp::MatchSubstringOptions("a_c"),
+                                cp::MatchSubstringOptions("x%", true)}) {
+      auto expr = cp::call("match_like", {cp::field_ref("s")}, options);
+      ASSERT_OK_AND_ASSIGN(auto bound, expr.Bind(*table_->schema()));
+      EXPECT_TRUE(Predicate::Compile(bound, index).status().IsNotImplemented())
+          << expr.ToString();
+    }
+  }
+}
+
 TEST_F(StilePredicateTest, BudgetErrorsRemainDistinctFromInvalidInput) {
   auto index = TableIndex::Make(table_);
   ASSERT_TRUE(index.ok());
@@ -295,6 +479,67 @@ TEST_F(StilePredicateTest, BudgetErrorsRemainDistinctFromInvalidInput) {
   options.max_depth = -1;
   EXPECT_TRUE(Predicate::Compile(*bound, *index, options).status().IsInvalid());
   EXPECT_TRUE(Predicate::Compile(*bound, *index).ok());
+}
+
+TEST_F(StilePredicateTest, SetAndLiteralBudgetsAreCumulative) {
+  arrow::Int32Builder builder;
+  ASSERT_OK(builder.AppendValues({1, 1, 2}));
+  ASSERT_OK_AND_ASSIGN(auto members, builder.Finish());
+  auto chunks = std::make_shared<arrow::ChunkedArray>(arrow::ArrayVector{
+      members->Slice(0, 2), members->Slice(0, 0), members->Slice(2)});
+  const auto in =
+      cp::call("is_in", {cp::field_ref("i")}, cp::SetLookupOptions(chunks));
+  const auto like = cp::call("match_like", {cp::field_ref("s")},
+                             cp::MatchSubstringOptions("a%"));
+  ASSERT_OK_AND_ASSIGN(auto index, TableIndex::Make(table_));
+  auto check_limit = [&](const cp::Expression &expr,
+                         size_t stile::CompileOptions::*budget,
+                         size_t required) {
+    SCOPED_TRACE(expr.ToString());
+    ASSERT_OK_AND_ASSIGN(auto bound, expr.Bind(*table_->schema()));
+    stile::CompileOptions options;
+    options.*budget = required;
+    ASSERT_OK(Predicate::Compile(bound, index, options).status());
+    options.*budget = required - 1;
+    EXPECT_TRUE(
+        Predicate::Compile(bound, index, options).status().IsCapacityError());
+  };
+  const auto twice = cp::or_(in, in);
+  check_limit(twice, &stile::CompileOptions::max_set_values, 6);
+  check_limit(twice, &stile::CompileOptions::max_set_chunks, 6);
+  check_limit(cp::or_(like, like), &stile::CompileOptions::max_literal_bytes,
+              4);
+
+  // An unsupported sibling cannot hide a hard budget failure.
+  const auto unsupported = cp::call("is_finite", {cp::field_ref("d")});
+  for (const auto &expr :
+       {cp::or_(unsupported, in), cp::or_(in, unsupported)}) {
+    ASSERT_OK_AND_ASSIGN(auto bound, expr.Bind(*table_->schema()));
+    stile::CompileOptions options;
+    options.max_set_chunks = 2;
+    EXPECT_TRUE(
+        Predicate::Compile(bound, index, options).status().IsCapacityError());
+    options.max_set_chunks = 3;
+    EXPECT_TRUE(
+        Predicate::Compile(bound, index, options).status().IsNotImplemented());
+  }
+}
+
+TEST_F(StilePredicateTest, SoftAndHardDepthLimitsAreDistinct) {
+  ASSERT_OK_AND_ASSIGN(auto index, TableIndex::Make(table_));
+  auto compile_at_depth = [&](int depth, int max_depth) -> arrow::Status {
+    auto expression = cp::field_ref("b");
+    for (int i = 0; i < depth; ++i)
+      expression = cp::not_(std::move(expression));
+    ARROW_ASSIGN_OR_RAISE(auto bound, expression.Bind(*table_->schema()));
+    stile::CompileOptions options;
+    options.max_depth = max_depth;
+    return Predicate::Compile(bound, index, options).status();
+  };
+  ASSERT_OK(compile_at_depth(3, 3));
+  EXPECT_TRUE(compile_at_depth(4, 3).IsNotImplemented());
+  ASSERT_OK(compile_at_depth(256, 300));
+  EXPECT_TRUE(compile_at_depth(257, 300).IsCapacityError());
 }
 
 TEST_F(StilePredicateTest,

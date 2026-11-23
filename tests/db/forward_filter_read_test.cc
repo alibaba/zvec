@@ -1054,13 +1054,10 @@ TEST_P(ForwardFilterReadTest, ArrowPredicateParityAndGlobalIdDeletes) {
     auto candidate = filter(columns, expr);
     auto status = candidate->compute_filter();
     ASSERT_TRUE(status.ok()) << status.message();
-    if (expr.Equals(arrow_only) || expr.Equals(regex_like)) {
-      EXPECT_EQ(uses_view(*candidate), GetParam());
-      EXPECT_FALSE(uses_stile(*candidate));
-    }
-    if (expr.Equals(suffix_like)) {
-      EXPECT_EQ(uses_stile(*candidate), GetParam());
-    }
+    const bool arrow_fallback =
+        expr.Equals(arrow_only) || expr.Equals(regex_like);
+    EXPECT_EQ(uses_view(*candidate), GetParam());
+    EXPECT_EQ(uses_stile(*candidate), GetParam() && !arrow_fallback);
     auto bound =
         expr.Bind(*segment_->fetch(columns, std::vector<int>{})->schema());
     ASSERT_TRUE(bound.ok());
