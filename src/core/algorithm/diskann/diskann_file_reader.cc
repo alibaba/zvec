@@ -15,6 +15,7 @@
 #include "diskann_file_reader.h"
 #include <algorithm>
 #include <atomic>
+#include <bitset>
 #include <cerrno>
 #include <cstdio>
 #include <cstdlib>
@@ -26,6 +27,7 @@
 #include <thread>
 #include <utility>
 #include <ailego/io/io_backend_def.h>
+#include <ailego/pattern/scope_guard.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/io_backend.h>
 #include <zvec/ailego/logger/logger.h>
@@ -248,19 +250,24 @@ int setup_io_ctx(IOContext &ctx) {
   }
 
   // Priority 1: io_uring (raw kernel syscalls — zero dependency).
-  if (selected == ailego::IOBackendType::kIoUring &&
-      ctx->ring.setup(MAX_EVENTS)) {
-    log_diskann_io_backend(ctx->type);
-    return 0;
+  if (selected == ailego::IOBackendType::kIoUring) {
+    const auto setup = ctx->ring.setup_with_status(MAX_EVENTS);
+    if (setup != ailego::IoUringRing::SetupResult::kUnavailable) {
+      if (setup == ailego::IoUringRing::SetupResult::kNoMemory)
+        ctx->type = ailego::IOBackendType::kPread;
+      log_diskann_io_backend(ctx->type);
+      return 0;
+    }
   }
 
   // Priority 2: libaio (dlopen — soft dependency).
   if (selected != ailego::IOBackendType::kPread &&
-      LibAioLoader::Instance().load() &&
-      LibAioLoader::Instance().is_available()) {
-    int ret = LibAioLoader::Instance().io_setup(MAX_EVENTS, &ctx->aio_ctx);
-    if (ret == 0) {
+      LibAioLoader::Instance().load()) {
+    const int ret = LibAioLoader::Instance().setup_budgeted(
+        MAX_EVENTS, ctx->aio_ctx, ctx->aio_memory);
+    if (ret == 0 || ctx->aio_ctx) {
       ctx->type = ailego::IOBackendType::kLibAio;
+      ctx->aio_quarantined = ret != 0;
       log_diskann_io_backend(ctx->type);
       return 0;
     }
@@ -280,21 +287,25 @@ int destroy_io_ctx(IOContext &ctx) {
     return 0;
   }
 
+  int status = 0;
 #if defined(_WIN32) || defined(_WIN64)
   close_windows_io_handles(ctx);
 #elif defined(__linux__) && !defined(__ANDROID__)
   if (ctx->type == ailego::IOBackendType::kIoUring) {
     ctx->ring.teardown();
-  } else if (ctx->type == ailego::IOBackendType::kLibAio &&
-             LibAioLoader::Instance().is_available()) {
-    LibAioLoader::Instance().io_destroy(ctx->aio_ctx);
+  } else if (ctx->aio_ctx &&
+             LibAioLoader::Instance().destroy_budgeted(ctx->aio_ctx,
+                                                       ctx->aio_memory) != 0) {
+    // Keep the buffer and its charge if the kernel still owns it.
+    (void)ctx->aio_staging.release();
+    status = IndexError_Runtime;
   }
   // IoUringRing destructor also calls teardown() — idempotent and safe.
 #endif
 
   delete ctx;
   ctx = nullptr;
-  return 0;
+  return status;
 }
 
 #if !defined(_WIN32) && !defined(_WIN64)
@@ -341,155 +352,182 @@ static int execute_io_pread(int fd, std::vector<AlignedRead> &read_reqs) {
 }
 
 #if defined(__linux__) && !defined(__ANDROID__)
-// io_getevents() should only fail permanently for an invalid context or
-// invalid arguments. If that happens after submission, io_destroy() is the
-// only safe way to quiesce the context before synchronous I/O touches the same
-// destination buffers. Recreate the context so later reads can still use AIO.
-static bool reset_aio_context(io_context_t &ctx) {
-  auto &loader = LibAioLoader::Instance();
-  int ret;
-  do {
-    ret = loader.io_destroy(ctx);
-  } while (ret == -EINTR);
+// AIO never receives a caller-owned address. If cancelling a batch fails,
+// retain its staging in the context and fall back to pread for later reads.
+static void finish_libaio_reads(IoBackend &ctx) {
+  ctx.aio_active = false;
+  ctx.aio_batch = nullptr;
+  if (!ctx.aio_quarantined) ctx.aio_staging.reset();
+}
 
+static bool reset_aio_context(IoBackend &ctx) noexcept {
+  auto &loader = LibAioLoader::Instance();
+  int ret = loader.destroy_budgeted(ctx.aio_ctx, ctx.aio_memory);
+  ctx.aio_quarantined = ret != 0;
+  finish_libaio_reads(ctx);
   if (ret != 0) {
-    LOG_ERROR("io_destroy failed while draining AIO; returned: %d, %s", ret,
-              ::strerror(-ret));
     return false;
   }
 
-  ctx = nullptr;
-  io_context_t replacement = nullptr;
-  ret = loader.io_setup(MAX_EVENTS, &replacement);
-  if (ret != 0) {
-    LOG_ERROR(
-        "io_setup failed while recreating an AIO context; returned: %d, %s. "
-        "this context will use pread",
-        ret, ::strerror(-ret));
-    return true;
-  }
-  ctx = replacement;
+  ret = loader.setup_budgeted(MAX_EVENTS, ctx.aio_ctx, ctx.aio_memory);
+  ctx.aio_quarantined = ret != 0 && ctx.aio_ctx != nullptr;
   return true;
 }
 
-int execute_io_libaio(io_context_t &ctx, int fd,
-                      std::vector<AlignedRead> &read_reqs, uint64_t n_retries) {
-  uint64_t iters = DiskAnnUtil::div_round_up(read_reqs.size(), MAX_EVENTS);
+static bool prepare_libaio_staging(IoBackend &ctx, const AlignedRead *reads,
+                                   size_t count) try {
+  using Buffer = ailego::BudgetedMappedBuffer;
+  auto &pool = ailego::MemoryLimitPool::get_instance();
+  if (pool.process_rss_limit() &&
+      (!pool.capacity() || pool.under_process_rss_pressure()))
+    return false;
+  size_t bytes = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if (!reads[i].buf || !reads[i].len ||
+        reads[i].len > (std::numeric_limits<size_t>::max)())
+      return false;
+    const size_t slot = Buffer::mapping_size(static_cast<size_t>(reads[i].len));
+    if (!slot || slot > (std::numeric_limits<size_t>::max)() - bytes)
+      return false;
+    bytes += slot;
+  }
+  if (!ctx.aio_staging) ctx.aio_staging = std::make_unique<Buffer>();
+  return ctx.aio_staging->size() >= bytes || ctx.aio_staging->try_resize(bytes);
+} catch (const std::bad_alloc &) {
+  return false;
+}
 
-  for (uint64_t iter = 0; iter < iters; iter++) {
-    uint64_t n_ops = std::min((uint64_t)read_reqs.size() - (iter * MAX_EVENTS),
-                              (uint64_t)MAX_EVENTS);
+static void prepare_libaio_request(IoBackend &ctx, struct iocb *cb, int fd,
+                                   const AlignedRead &read, size_t &offset) {
+  io_prep_pread(cb, fd, ctx.aio_staging->data() + offset, read.len, read.offset);
+  offset += ailego::BudgetedMappedBuffer::mapping_size(read.len);
+}
 
-    std::vector<iocb_t *> cbs(n_ops, nullptr);
-    std::vector<io_event_t> evts(n_ops);
-    std::vector<struct iocb> cb(n_ops);
-    for (uint64_t j = 0; j < n_ops; j++) {
-      io_prep_pread(cb.data() + j, fd, read_reqs[j + iter * MAX_EVENTS].buf,
-                    read_reqs[j + iter * MAX_EVENTS].len,
-                    read_reqs[j + iter * MAX_EVENTS].offset);
-    }
 
-    for (uint64_t i = 0; i < n_ops; i++) {
-      cbs[i] = cb.data() + i;
-    }
+static void init_aio_batch(PendingBatch &batch, const AlignedRead *reads,
+                           size_t count, IoBackend &ctx, int fd) {
+  batch.cbs.resize(count);
+  batch.cb_ptrs.resize(count);
+  batch.events.resize(count);
+  batch.destinations.resize(count);
+  size_t offset = 0;
+  for (size_t i = 0; i < count; ++i) {
+    auto &cb = batch.cbs[i];
+    prepare_libaio_request(ctx, &cb, fd, reads[i], offset);
+    cb.data = reinterpret_cast<void *>(i);
+    batch.cb_ptrs[i] = &cb;
+    batch.destinations[i] = reads[i].buf;
+  }
+}
 
-    size_t n_tries = 0;
-    size_t submitted = 0;
-    bool submission_ok = true;
-
-    // Phase 1: accumulate partial submissions. A positive return value means
-    // that exactly that prefix is now in flight and must never be submitted
-    // again.
-    while (submitted < n_ops) {
-      size_t remaining = n_ops - submitted;
-      int ret = LibAioLoader::Instance().io_submit(ctx, (int64_t)remaining,
-                                                   cbs.data() + submitted);
-      if (ret > 0 && static_cast<size_t>(ret) <= remaining) {
-        submitted += static_cast<size_t>(ret);
-        n_tries = 0;
-        continue;
-      }
-      if ((ret == -EAGAIN || ret == -EINTR) && n_tries < n_retries) {
-        n_tries++;
-        continue;
-      }
-      LOG_WARN(
-          "io_submit stopped after %zu/%lu requests; returned: %d. "
-          "falling back to pread after draining submitted AIO",
-          submitted, (unsigned long)n_ops, ret);
-      submission_ok = false;
+// Returns the submitted prefix, or -1 if the kernel's reply is inconsistent.
+static int submit_aio_batch(IoBackend &ctx, PendingBatch &batch,
+                            size_t retries) {
+  const size_t count = batch.cbs.size();
+  size_t submitted = 0;
+  size_t attempts = 0;
+  while (submitted < count) {
+    const size_t remaining = count - submitted;
+    const int ret = LibAioLoader::Instance().io_submit(
+        ctx.aio_ctx, remaining, batch.cb_ptrs.data() + submitted);
+    if (ret > 0) {
+      if (static_cast<size_t>(ret) > remaining) return -1;
+      submitted += ret;
+      attempts = 0;
+    } else if ((ret != -EINTR && ret != -EAGAIN) || attempts++ >= retries) {
       break;
     }
+  }
+  return static_cast<int>(submitted);
+}
 
-    // Phase 2: accumulate completions for every request that was actually
-    // submitted. Partial completion is normal and must not trigger fallback:
-    // the remaining requests can still write into the caller's buffers.
-    size_t completed = 0;
-    while (completed < submitted) {
-      size_t remaining = submitted - completed;
-      int ret = LibAioLoader::Instance().io_getevents(
-          ctx, (int64_t)remaining, (int64_t)remaining, evts.data() + completed,
-          nullptr);
-      if (ret > 0 && static_cast<size_t>(ret) <= remaining) {
-        completed += static_cast<size_t>(ret);
-        continue;
-      }
-      if (ret == -EINTR) {
-        // Once requests are in flight, EINTR cannot safely turn into pread
-        // regardless of the caller's submission retry budget.
-        continue;
-      }
+static int reap_aio_events(IoBackend &ctx, size_t minimum, size_t maximum,
+                          io_event_t *events) {
+  int ret;
+  do {
+    ret = LibAioLoader::Instance().io_getevents(ctx.aio_ctx, minimum, maximum,
+                                               events, nullptr);
+  } while (ret == -EINTR);
+  return ret > 0 && static_cast<size_t>(ret) <= maximum ? ret : -1;
+}
 
-      LOG_ERROR(
-          "io_getevents failed after %zu/%zu completions; returned: %d, %s. "
-          "resetting the AIO context before falling back to pread",
-          completed, submitted, ret,
-          ret < 0 ? ::strerror(-ret) : "invalid completion count");
-      if (!reset_aio_context(ctx)) {
-        // Do not run pread unless io_destroy confirmed that no request can
-        // still write into these buffers.
-        return IndexError_Runtime;
-      }
+static size_t event_index(const PendingBatch &batch, const io_event_t &event,
+                          size_t submitted) {
+  const size_t index = reinterpret_cast<uintptr_t>(event.data);
+  return index < submitted && event.obj == &batch.cbs[index] ? index
+                                                             : submitted;
+}
+
+// Count only distinct completions of the submitted prefix. Until then the
+// kernel might still use any staging address from that prefix.
+static bool drain_aio_batch(IoBackend &ctx, PendingBatch &batch,
+                            size_t submitted) {
+  std::bitset<MAX_EVENTS> reaped;
+  size_t completed = 0;
+  while (completed < submitted) {
+    const size_t remaining = submitted - completed;
+    const int ret =
+        reap_aio_events(ctx, remaining, remaining, batch.events.data() + completed);
+    if (ret < 0) return false;
+    for (int i = 0; i < ret; ++i) {
+      const size_t index =
+          event_index(batch, batch.events[completed + i], submitted);
+      if (index == submitted || reaped[index]) return false;
+      reaped.set(index);
+    }
+    completed += ret;
+  }
+  return true;
+}
+
+int execute_io_libaio(IoBackend &ctx, int fd,
+                      std::vector<AlignedRead> &read_reqs, uint64_t n_retries) {
+  if (ctx.aio_active) return IndexError_InvalidArgument;
+  if (!ctx.aio_ctx || ctx.aio_quarantined)
+    return execute_io_pread(fd, read_reqs);
+
+  PendingBatch batch;
+  auto release = ailego::ScopeGuard::Make([&] {
+    if (ctx.aio_active) reset_aio_context(ctx);
+    finish_libaio_reads(ctx);
+  });
+  for (size_t start = 0; start < read_reqs.size(); start += MAX_EVENTS) {
+    const size_t count = std::min<size_t>(read_reqs.size() - start, MAX_EVENTS);
+    const auto *reads = read_reqs.data() + start;
+    if (!prepare_libaio_staging(ctx, reads, count)) {
+      finish_libaio_reads(ctx);
+      return execute_io_pread(fd, read_reqs);
+    }
+    try {
+      init_aio_batch(batch, reads, count, ctx, fd);
+    } catch (const std::bad_alloc &) {
+      finish_libaio_reads(ctx);
       return execute_io_pread(fd, read_reqs);
     }
 
-    // Phase 3: verify every harvested event. Completion order is unspecified,
-    // so use io_event::obj instead of assuming it matches request order.
-    bool all_ok = true;
-    std::vector<bool> seen(submitted, false);
-    for (size_t i = 0; i < completed; i++) {
-      auto cb_it = std::find(cbs.begin(), cbs.begin() + submitted, evts[i].obj);
-      if (cb_it == cbs.begin() + submitted) {
-        LOG_WARN("aio completion %zu referenced an unknown request", i);
-        all_ok = false;
-        continue;
-      }
-
-      size_t request_index = static_cast<size_t>(cb_it - cbs.begin());
-      const AlignedRead &req = read_reqs[request_index + iter * MAX_EVENTS];
-      int64_t result = static_cast<int64_t>(evts[i].res);
-      int64_t result2 = static_cast<int64_t>(evts[i].res2);
-      if (seen[request_index] || result != static_cast<int64_t>(req.len) ||
-          result2 != 0) {
-        LOG_WARN(
-            "aio request %zu failed: res=%ld, res2=%ld, expected=%lu, "
-            "offset=%lu",
-            request_index, (long)result, (long)result2, (unsigned long)req.len,
-            (unsigned long)req.offset);
-        all_ok = false;
-      }
-      seen[request_index] = true;
-    }
-
-    if (!submission_ok || !all_ok) {
-      // All submitted requests have been harvested at this point. It is now
-      // safe for synchronous reads to reuse their destination buffers.
+    ctx.aio_active = true;
+    const int submitted = submit_aio_batch(ctx, batch, n_retries);
+    if (submitted < 0 || !drain_aio_batch(ctx, batch, submitted)) {
+      if (!reset_aio_context(ctx)) return IndexError_Runtime;
       return execute_io_pread(fd, read_reqs);
+    }
+    ctx.aio_active = false;
+    bool complete = static_cast<size_t>(submitted) == count;
+    for (size_t i = 0; complete && i < count; ++i) {
+      const auto &event = batch.events[i];
+      complete = event.res == event.obj->u.c.nbytes && event.res2 == 0;
+    }
+    if (!complete) {
+      finish_libaio_reads(ctx);
+      return execute_io_pread(fd, read_reqs);
+    }
+    for (size_t i = 0; i < count; ++i) {
+      std::memcpy(reads[i].buf, batch.cbs[i].u.c.buf, reads[i].len);
     }
   }
-
   return 0;
 }
+
 #endif
 
 int execute_io(IOContext ctx, int fd, std::vector<AlignedRead> &read_reqs,
@@ -513,7 +551,7 @@ int execute_io(IOContext ctx, int fd, std::vector<AlignedRead> &read_reqs,
   }
 
   if (ctx->type == ailego::IOBackendType::kLibAio) {
-    return execute_io_libaio(ctx->aio_ctx, fd, read_reqs, n_retries);
+    return execute_io_libaio(*ctx, fd, read_reqs, n_retries);
   }
 
   // NONE backend — synchronous pread.
@@ -1089,230 +1127,129 @@ void BufferPoolAlignedFileReader::release_io_ctx(IOContext &ctx) {
 }
 
 #if !defined(_WIN32) && !defined(_WIN64)
+void LinuxAlignedFileReader::release_io_ctx(IOContext &ctx) {
+#if defined(__linux__) && !defined(__ANDROID__)
+  if (ctx && ctx->aio_active) reset_aio_context(*ctx);
+#else
+  (void)ctx;
+#endif
+}
+
 #if defined(__linux__) && !defined(__ANDROID__)
 int LinuxAlignedFileReader::submit(PendingBatch &batch,
                                    std::vector<AlignedRead> &read_reqs,
                                    IOContext &ctx) {
+  if (ctx && ctx->aio_active) return IndexError_InvalidArgument;
   batch.n_submitted = 0;
   batch.n_reaped = 0;
   batch.used_pread = false;
-  batch.cbs.clear();
-  batch.cb_ptrs.clear();
+  if (file_desc == -1) return IndexError_Runtime;
+  if (read_reqs.empty()) return 0;
+  if (read_reqs.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
+    return IndexError_InvalidArgument;
 
-  if (this->file_desc == -1) {
-    LOG_ERROR("submit: invalid file descriptor");
-    return IndexError_Runtime;
-  }
-
-  if (read_reqs.empty()) {
-    return 0;
-  }
-
-  // If this context has no async I/O backend (null context or explicit pread
-  // backend), use synchronous pread.
-  if (ctx == nullptr || ctx->type == ailego::IOBackendType::kPread) {
-    int pread_ret = execute_io_pread(this->file_desc, read_reqs);
-    if (pread_ret != 0) {
-      return pread_ret;
+  const auto read_synchronously = [&] {
+    const int ret = execute_io_pread(file_desc, read_reqs);
+    if (ret == 0) {
+      batch.used_pread = true;
+      batch.n_submitted = static_cast<uint32_t>(read_reqs.size());
     }
-    batch.used_pread = true;
-    batch.n_submitted = (uint32_t)read_reqs.size();
-    return 0;
-  }
+    return ret;
+  };
+  if (!ctx || ctx->type == ailego::IOBackendType::kPread)
+    return read_synchronously();
 
-  // io_uring only offers a synchronous batched execute(): the reads are
-  // already copied into the caller's buffers when it returns, so report the
-  // batch as complete the same way the pread path does.
+  // The existing io_uring path completes all operations before returning.
   if (ctx->type == ailego::IOBackendType::kIoUring) {
-    int ring_ret = ctx->ring.execute(this->file_desc, read_reqs);
-    if (ring_ret != 0) {
-      // The kernel only ever writes into the ring-owned staging pool, so a
-      // pread fallback cannot race with requests still in flight.
-      LOG_WARN("submit: io_uring execute failed; falling back to pread");
-      int pread_ret = execute_io_pread(this->file_desc, read_reqs);
-      if (pread_ret != 0) {
-        return pread_ret;
-      }
-    }
+    if (ctx->ring.execute(file_desc, read_reqs) != 0) return read_synchronously();
     batch.used_pread = true;
-    batch.n_submitted = (uint32_t)read_reqs.size();
+    batch.n_submitted = static_cast<uint32_t>(read_reqs.size());
     return 0;
   }
+  if (!ctx->aio_ctx || ctx->aio_quarantined || read_reqs.size() > MAX_EVENTS)
+    return read_synchronously();
 
-  uint32_t n_ops = (uint32_t)read_reqs.size();
-  batch.cbs.resize(n_ops);
-  batch.cb_ptrs.resize(n_ops);
-
-  for (uint32_t j = 0; j < n_ops; j++) {
-    io_prep_pread(&batch.cbs[j], this->file_desc, read_reqs[j].buf,
-                  read_reqs[j].len, read_reqs[j].offset);
-    batch.cbs[j].data = (void *)(uintptr_t)j;
-    batch.cb_ptrs[j] = &batch.cbs[j];
+  const size_t count = read_reqs.size();
+  if (!prepare_libaio_staging(*ctx, read_reqs.data(), count)) {
+    finish_libaio_reads(*ctx);
+    return read_synchronously();
+  }
+  try {
+    init_aio_batch(batch, read_reqs.data(), count, *ctx, file_desc);
+  } catch (const std::bad_alloc &) {
+    finish_libaio_reads(*ctx);
+    return read_synchronously();
   }
 
-  int ret = LibAioLoader::Instance().io_submit(ctx->aio_ctx, (int64_t)n_ops,
-                                               batch.cb_ptrs.data());
-  if (ret == (int)n_ops) {
-    batch.n_submitted = n_ops;
+  ctx->aio_active = true;
+  ctx->aio_batch = &batch;
+  auto cancel = ailego::ScopeGuard::Make([&] {
+    if (ctx->aio_active && !batch.n_submitted) reset_aio_context(*ctx);
+  });
+  const int submitted = submit_aio_batch(*ctx, batch, 8);
+  if (submitted == static_cast<int>(count)) {
+    batch.n_submitted = static_cast<uint32_t>(count);
     return 0;
   }
-
-  // Partial submission: a positive return value means exactly that prefix is
-  // now in flight and must never be submitted again. Keep submitting the
-  // remainder; -EAGAIN/-EINTR are transient and worth a bounded retry.
-  constexpr size_t kMaxSubmitRetries = 8;
-  uint32_t submitted = (ret > 0 && ret < (int)n_ops) ? (uint32_t)ret : 0;
-  size_t n_tries = 0;
-  bool submission_ok = (submitted > 0) || ret == -EAGAIN || ret == -EINTR;
-  while (submission_ok && submitted < n_ops) {
-    uint32_t remaining = n_ops - submitted;
-    ret = LibAioLoader::Instance().io_submit(ctx->aio_ctx, (int64_t)remaining,
-                                             batch.cb_ptrs.data() + submitted);
-    if (ret > 0 && (uint32_t)ret <= remaining) {
-      submitted += (uint32_t)ret;
-      n_tries = 0;
-      continue;
-    }
-    if ((ret == -EAGAIN || ret == -EINTR) && n_tries < kMaxSubmitRetries) {
-      n_tries++;
-      continue;
-    }
-    submission_ok = false;
+  if (submitted < 0 || !drain_aio_batch(*ctx, batch, submitted)) {
+    if (!reset_aio_context(*ctx)) return IndexError_Runtime;
+  } else {
+    finish_libaio_reads(*ctx);
   }
-
-  if (submission_ok) {
-    batch.n_submitted = n_ops;
-    return 0;
-  }
-
-  LOG_WARN(
-      "submit: io_submit stopped after %u/%u requests; returned: %d. "
-      "falling back to pread after draining submitted AIO",
-      submitted, n_ops, ret);
-
-  // Drain every request already in flight before any synchronous read can
-  // reuse its destination buffer, and before batch.cbs may be reused; the
-  // kernel keeps writing through those iocbs until their events are reaped.
-  std::vector<io_event_t> evts(submitted);
-  uint32_t drained = 0;
-  while (drained < submitted) {
-    uint32_t remaining = submitted - drained;
-    ret = LibAioLoader::Instance().io_getevents(
-        ctx->aio_ctx, (int64_t)remaining, (int64_t)remaining,
-        evts.data() + drained, nullptr);
-    if (ret > 0 && (uint32_t)ret <= remaining) {
-      drained += (uint32_t)ret;
-      continue;
-    }
-    if (ret == -EINTR) {
-      continue;
-    }
-    LOG_ERROR(
-        "submit: io_getevents failed while draining %u in-flight requests; "
-        "returned: %d. resetting the AIO context before falling back to pread",
-        submitted, ret);
-    if (!reset_aio_context(ctx->aio_ctx)) {
-      // Do not run pread unless io_destroy confirmed that no request can
-      // still write into these buffers.
-      return IndexError_Runtime;
-    }
-    break;
-  }
-
-  int pread_ret = execute_io_pread(this->file_desc, read_reqs);
-  if (pread_ret != 0) {
-    return pread_ret;
-  }
-  batch.used_pread = true;
-  batch.n_submitted = n_ops;
-  return 0;
-}
-
-// Quiesce any requests of the batch still in flight before reporting an
-// error, so the kernel cannot keep writing into the caller's buffers or
-// leave stale completion events for the next batch on this context.
-static void quiesce_batch(PendingBatch &batch, IOContext &ctx) {
-  // Only the libaio path leaves requests in flight: pread and io_uring
-  // batches are complete before submit() returns (used_pread == true).
-  if (batch.n_reaped < batch.n_submitted && !batch.used_pread) {
-    if (reset_aio_context(ctx->aio_ctx)) {
-      batch.n_reaped = batch.n_submitted;
-    }
-  }
+  return read_synchronously();
 }
 
 int LinuxAlignedFileReader::get_completed(
     PendingBatch &batch, IOContext &ctx, int min_completed,
     std::vector<uint32_t> &completed_indices) {
   completed_indices.clear();
+  if (batch.n_reaped >= batch.n_submitted) return 0;
+  if (!batch.used_pread &&
+      (!ctx || !ctx->aio_active || ctx->aio_batch != &batch))
+    return IndexError_InvalidArgument;
 
-  if (batch.n_reaped >= batch.n_submitted) {
-    return 0;
+  bool success = false;
+  auto cancel = ailego::ScopeGuard::Make([&] {
+    if (!success && !batch.used_pread) {
+      reset_aio_context(*ctx);
+      batch.n_reaped = batch.n_submitted;
+      completed_indices.clear();
+    }
+  });
+  const uint32_t remaining = batch.n_submitted - batch.n_reaped;
+  try {
+    completed_indices.reserve(remaining);
+  } catch (const std::bad_alloc &) {
+    return IndexError_NoMemory;
   }
-
   if (batch.used_pread) {
-    for (uint32_t i = batch.n_reaped; i < batch.n_submitted; i++) {
-      completed_indices.push_back(i);
-    }
-    batch.n_reaped = batch.n_submitted;
-    return (int)completed_indices.size();
+    while (batch.n_reaped < batch.n_submitted)
+      completed_indices.push_back(batch.n_reaped++);
+    return static_cast<int>(completed_indices.size());
   }
 
-  uint32_t n_remaining = batch.n_submitted - batch.n_reaped;
-  int min_req = std::min((int)n_remaining, min_completed);
-  if (min_req < 1) min_req = 1;
-
-  std::vector<io_event_t> evts(n_remaining);
-  int ret;
-  do {
-    // Once requests are in flight, EINTR must be retried: returning here
-    // would leave them unquiesced, free to overwrite the caller's buffers
-    // or leak completion events into the next batch.
-    ret = LibAioLoader::Instance().io_getevents(ctx->aio_ctx, (int64_t)min_req,
-                                                (int64_t)n_remaining,
-                                                evts.data(), nullptr);
-  } while (ret == -EINTR);
-  if (ret < 0) {
-    LOG_ERROR("get_completed: io_getevents failed, ret=%d, %s", ret,
-              ::strerror(-ret));
-    quiesce_batch(batch, ctx);
-    return IndexError_Runtime;
-  }
-
-  for (int i = 0; i < ret; i++) {
-    uint32_t idx = (uint32_t)(uintptr_t)evts[i].data;
-    if (idx >= batch.n_submitted) {
-      LOG_ERROR("get_completed: completion referenced an unknown request %u",
-                idx);
-      batch.n_reaped += (uint32_t)ret;
-      quiesce_batch(batch, ctx);
+  const size_t minimum = std::max(1, std::min<int>(remaining, min_completed));
+  const int ret = reap_aio_events(*ctx, minimum, remaining, batch.events.data());
+  if (ret < 0) return IndexError_Runtime;
+  for (int i = 0; i < ret; ++i) {
+    const auto &event = batch.events[i];
+    const size_t index = event_index(batch, event, batch.n_submitted);
+    if (index == batch.n_submitted || !batch.destinations[index])
       return IndexError_Runtime;
+    const auto &request = batch.cbs[index].u.c;
+    void *destination = batch.destinations[index];
+    if (event.res == request.nbytes && event.res2 == 0) {
+      std::memcpy(destination, request.buf, request.nbytes);
+    } else {
+      const AlignedRead retry(request.offset, request.nbytes, destination);
+      if (execute_one_pread(file_desc, retry) != 0) return IndexError_Runtime;
     }
-    int64_t res = (int64_t)evts[i].res;
-    int64_t res2 = (int64_t)evts[i].res2;
-    int64_t expected = (int64_t)batch.cbs[idx].u.c.nbytes;
-    if (res != expected || res2 != 0) {
-      // The async read failed, so the destination buffer content is
-      // undefined. Degrade to a synchronous pread for this request before
-      // handing the buffer to the caller.
-      LOG_WARN(
-          "get_completed: read %u failed: res=%ld, res2=%ld, expected=%ld; "
-          "retrying with pread",
-          idx, (long)res, (long)res2, (long)expected);
-      AlignedRead retry_read(static_cast<uint64_t>(batch.cbs[idx].u.c.offset),
-                             static_cast<uint64_t>(batch.cbs[idx].u.c.nbytes),
-                             batch.cbs[idx].u.c.buf);
-      if (execute_one_pread(this->file_desc, retry_read) != 0) {
-        LOG_ERROR("get_completed: pread retry for read %u failed", idx);
-        batch.n_reaped += (uint32_t)ret;
-        quiesce_batch(batch, ctx);
-        return IndexError_Runtime;
-      }
-    }
-    completed_indices.push_back(idx);
+    batch.destinations[index] = nullptr;
+    completed_indices.push_back(static_cast<uint32_t>(index));
   }
-
-  batch.n_reaped += (uint32_t)ret;
+  batch.n_reaped += ret;
+  if (batch.n_reaped == batch.n_submitted) finish_libaio_reads(*ctx);
+  success = true;
   return ret;
 }
 #else

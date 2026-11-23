@@ -879,6 +879,11 @@ class ZVEC_AILEGO_API VecBufferPool {
     return writeback_error_.load(std::memory_order_acquire);
   }
 
+  static constexpr int kWritebackQuarantined = -1;
+  bool writeback_quarantined() const {
+    return writeback_error() == kWritebackQuarantined;
+  }
+
   int fd_;       // page-data channel: O_DIRECT or F_NOCACHE when supported
   int meta_fd_;  // metadata channel: always buffered IO
   size_t file_size_;
