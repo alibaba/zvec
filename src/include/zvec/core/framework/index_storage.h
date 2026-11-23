@@ -142,14 +142,16 @@ class IndexStorage : public IndexModule {
       return mb;
     }
 
-    //! Keep a shared backing allocation alive while this slice or any copy
-    //! exists. Copies alias the slice without allocating per-result buffers.
+    //! Keep a shared backing allocation alive while a slice is in use.
+    //! Owned snapshots can retain the existing deep-copy behavior.
     static MemoryBlock MakeSharedView(void *data,
-                                      const std::shared_ptr<void> &owner) {
+                                      const std::shared_ptr<void> &owner,
+                                      bool deep_copy = false) {
       MemoryBlock mb;
       mb.type_ = MemoryBlockType::MBT_SHARED_SCRATCH;
       mb.data_ = data;
       mb.scratch_owner_ = owner;
+      mb.scratch_deep_copy_ = deep_copy;
       return mb;
     }
 

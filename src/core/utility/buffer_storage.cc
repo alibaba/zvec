@@ -1175,7 +1175,7 @@ class BufferStorage : public IndexStorage {
       auto owner = std::allocate_shared<ailego::BudgetedAlignedBuffer>(
           ailego::BudgetedAllocator<ailego::BudgetedAlignedBuffer>{}, bytes,
           alignment);
-      return MemoryBlock::MakeSharedView(owner->data(), owner);
+      return MemoryBlock::MakeSharedView(owner->data(), owner, /*deep_copy=*/true);
     }
 
     size_t read_memory_block(size_t abs_offset, MemoryBlock &data, size_t len,

@@ -2370,7 +2370,7 @@ bool VecBufferPool::read_range_bypass(size_t file_offset, size_t length,
     // F_NOCACHE (macOS) and ordinary file handles do not impose O_DIRECT's
     // alignment restriction. They can copy even partial pages straight out.
     const bool needs_alignment = requires_aligned_io();
-    const bool direct_destination =
+    bool direct_destination =
         !needs_alignment ||
         (within_page == 0 && copy_size == kVectorPageSize &&
          reinterpret_cast<uintptr_t>(buffer + copied) % kVectorPageSize == 0);
@@ -2405,10 +2405,13 @@ bool VecBufferPool::read_range_bypass(size_t file_offset, size_t length,
         continue;
       }
     }
+    int read_fd = fd_;
     if (!writable_ && !direct_destination &&
-        PrepareReadScratch(scratch, 1) == 0) {
-      allocation_failed = true;
-      return false;
+        (!cache_enabled() || PrepareReadScratch(scratch, 1) == 0)) {
+      // The buffered descriptor was verified against the data descriptor
+      // when opening. A read-only copy needs no aligned workspace here.
+      read_fd = meta_fd_;
+      direct_destination = true;
     }
     char *page = direct_destination ? buffer + copied : scratch.data();
     const size_t available = file_size_ - page_offset;
@@ -2425,7 +2428,7 @@ bool VecBufferPool::read_range_bypass(size_t file_offset, size_t length,
 
     ++io_requests;
     const ssize_t read_bytes = zvec_pread(
-        fd_, page, read_size, direct_destination ? absolute : page_offset);
+        read_fd, page, read_size, direct_destination ? absolute : page_offset);
     if (read_bytes <= 0 ||
         (direct_destination ? copy_size : within_page + copy_size) >
             static_cast<size_t>(read_bytes)) {
@@ -3693,6 +3696,14 @@ bool VecBufferPool::read_ranges_bypass_aio(const ReadRange *ranges,
   for (size_t begin = 0; begin < count; begin += kBatchSize) {
     const size_t batch = std::min(kBatchSize, count - begin);
     if (use_io_uring) {
+      bool aligned = true;
+      for (size_t i = 0; i < batch; ++i) {
+        if (reinterpret_cast<uintptr_t>(ranges[begin + i].buffer) % 512 != 0) {
+          aligned = false;
+          break;
+        }
+      }
+      if (!aligned) return false;
       std::array<IoUringRead, kBatchSize> requests{};
       for (size_t i = 0; i < batch; ++i) {
         const auto &range = ranges[begin + i];

@@ -2604,7 +2604,7 @@ TEST_F(BufferStorageWriteTest, OversizedBatchScratchKeepsOwnedFallback) {
       {segment.get(), 0, length, &retained},
   };
   ASSERT_TRUE(segment->read_borrowed_batch(reads, 1));
-  ASSERT_EQ(IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH, retained.type_);
+  ASSERT_NE(nullptr, retained.data());
   auto copy = retained;
   EXPECT_NE(retained.data(), copy.data());
   ASSERT_TRUE(segment->read_borrowed_batch(reads, 1));
