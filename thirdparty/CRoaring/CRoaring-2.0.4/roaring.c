@@ -10538,16 +10538,16 @@ void array_container_offset(const array_container_t *c,
 int array_container_shrink_to_fit(array_container_t *src) {
     if (src->cardinality == src->capacity) return 0;  // nothing to do
     int savings = src->capacity - src->cardinality;
-    if (src->cardinality == 0) {
-        roaring_free(src->array);
-        src->array = NULL;
-    } else {
-        uint16_t *smaller = (uint16_t *)roaring_realloc(
-            src->array, src->cardinality * sizeof(uint16_t));
-        if (!smaller) return -1;
-        src->array = smaller;
-    }
     src->capacity = src->cardinality;
+    if( src->capacity == 0) { // we do not want to rely on realloc for zero allocs
+      roaring_free(src->array);
+      src->array = NULL;
+    } else {
+      uint16_t *oldarray = src->array;
+      src->array =
+        (uint16_t *)roaring_realloc(oldarray, src->capacity * sizeof(uint16_t));
+      if (src->array == NULL) roaring_free(oldarray);  // should never happen?
+    }
     return savings;
 }
 
@@ -12712,10 +12712,6 @@ container_t *convert_run_to_efficient_container(
     if (card <= DEFAULT_MAX_SIZE) {
         // to array
         array_container_t *answer = array_container_create_given_capacity(card);
-        if (!answer) {
-            *typecode_after = RUN_CONTAINER_TYPE;
-            return c;
-        }
         answer->cardinality = 0;
         for (int rlepos = 0; rlepos < c->n_runs; ++rlepos) {
             int run_start = c->runs[rlepos].value;
@@ -12731,10 +12727,6 @@ container_t *convert_run_to_efficient_container(
 
     // else to bitset
     bitset_container_t *answer = bitset_container_create();
-    if (!answer) {
-        *typecode_after = RUN_CONTAINER_TYPE;
-        return c;
-    }
 
     for (int rlepos = 0; rlepos < c->n_runs; ++rlepos) {
         int start = c->runs[rlepos].value;
@@ -12790,10 +12782,6 @@ container_t *convert_run_optimize(
         }
         // else convert array to run container
         run_container_t *answer = run_container_create_given_capacity(n_runs);
-        if (!answer) {
-            *typecode_after = ARRAY_CONTAINER_TYPE;
-            return c;
-        }
         int prev = -2;
         int run_start = -1;
 
@@ -12832,10 +12820,6 @@ container_t *convert_run_optimize(
         // BitmapContainer bc, int nbrRuns))
         assert(n_runs > 0);  // no empty bitmaps
         run_container_t *answer = run_container_create_given_capacity(n_runs);
-        if (!answer) {
-            *typecode_after = BITSET_CONTAINER_TYPE;
-            return c;
-        }
 
         int long_ctr = 0;
         uint64_t cur_word = c_qua_bitset->words[0];
@@ -15226,16 +15210,10 @@ run_container_t *run_container_create_given_capacity(int32_t size) {
 int run_container_shrink_to_fit(run_container_t *src) {
     if (src->n_runs == src->capacity) return 0;  // nothing to do
     int savings = src->capacity - src->n_runs;
-    if (src->n_runs == 0) {
-        roaring_free(src->runs);
-        src->runs = NULL;
-    } else {
-        rle16_t *smaller = (rle16_t *)roaring_realloc(
-            src->runs, src->n_runs * sizeof(rle16_t));
-        if (!smaller) return -1;
-        src->runs = smaller;
-    }
     src->capacity = src->n_runs;
+    rle16_t *oldruns = src->runs;
+    src->runs = (rle16_t *)roaring_realloc(oldruns, src->capacity * sizeof(rle16_t));
+    if (src->runs == NULL) roaring_free(oldruns);  // should never happen?
     return savings;
 }
 /* Create a new run container. Return NULL in case of failure. */
@@ -17962,30 +17940,16 @@ bool roaring_bitmap_run_optimize(roaring_bitmap_t *r) {
     return answer;
 }
 
-static bool bitmap_shrink_to_fit(roaring_bitmap_t *r, size_t *savings) {
+size_t roaring_bitmap_shrink_to_fit(roaring_bitmap_t *r) {
+    size_t answer = 0;
     for (int i = 0; i < r->high_low_container.size; i++) {
         uint8_t type_original;
         container_t *c = ra_get_container_at_index(&r->high_low_container, i,
                                                    &type_original);
-        const int saved = container_shrink_to_fit(c, type_original);
-        if (saved < 0) return false;
-        *savings += saved;
+        answer += container_shrink_to_fit(c, type_original);
     }
-    const int saved = ra_shrink_to_fit(&r->high_low_container);
-    if (saved < 0) return false;
-    *savings += saved;
-    return true;
-}
-
-size_t roaring_bitmap_shrink_to_fit(roaring_bitmap_t *r) {
-    size_t savings = 0;
-    bitmap_shrink_to_fit(r, &savings);
-    return savings;
-}
-
-bool roaring_bitmap_try_shrink_to_fit(roaring_bitmap_t *r) {
-    size_t savings = 0;
-    return bitmap_shrink_to_fit(r, &savings);
+    answer += ra_shrink_to_fit(&r->high_low_container);
+    return answer;
 }
 
 /**
@@ -20190,11 +20154,10 @@ bool ra_init_with_capacity(roaring_array_t *new_ra, uint32_t cap) {
 }
 
 int ra_shrink_to_fit(roaring_array_t *ra) {
-    if (ra->allocation_size == ra->size) return 0;
     int savings = (ra->allocation_size - ra->size) *
                   (sizeof(uint16_t) + sizeof(container_t *) + sizeof(uint8_t));
     if (!realloc_array(ra, ra->size)) {
-      return -1;
+      return 0;
     }
     ra->allocation_size = ra->size;
     return savings;

@@ -68,6 +68,8 @@ class InvertedRangeCache {
   struct Prefix {
     // Exclusive end in buckets; the exact value boundary is buckets[end-1].end.
     size_t end_bucket{0};
+    // Owns the backing bytes for the read-only bitmap view.
+    std::unique_ptr<char[]> storage;
     std::unique_ptr<const roaring_bitmap_t, BitmapDeleter> bitmap;
     uint64_t cardinality{0};
     uint64_t copy_bytes{0};

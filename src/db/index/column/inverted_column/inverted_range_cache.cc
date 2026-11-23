@@ -8,6 +8,7 @@
 #include <bitset>
 #include <chrono>
 #include <limits>
+#include <new>
 #include <optional>
 #include "inverted_codec.h"
 
@@ -16,6 +17,7 @@ namespace {
 
 constexpr size_t kRoaringBlockCount = 1U << 16;
 constexpr size_t kContainerOverhead = 256;
+constexpr size_t kFrozenBitmapAlignment = 32;
 
 size_t metadata_bytes(const InvertedRangeCache &cache) {
   size_t bytes = sizeof(cache) +
@@ -29,12 +31,26 @@ size_t metadata_bytes(const InvertedRangeCache &cache) {
   return bytes;
 }
 
-size_t bitmap_bytes(const roaring_bitmap_t *bitmap) {
-  // Arrays and runs are shrunk before publication. Portable bytes account for
-  // their payload; the per-container allowance covers heads, pointer/key/type
-  // arrays and allocator rounding without depending on a platform allocator.
-  return roaring_bitmap_portable_size_in_bytes(bitmap) + sizeof(*bitmap) +
+size_t bitmap_bytes(const roaring_bitmap_t *bitmap, size_t frozen_size) {
+  // Frozen storage packs the bitmap payload. The allowance covers the view's
+  // container descriptors, pointers and allocator rounding.
+  return frozen_size + kFrozenBitmapAlignment - 1 + sizeof(*bitmap) +
          kContainerOverhead * bitmap->high_low_container.size;
+}
+
+bool freeze_prefix(const roaring_bitmap_t *bitmap, size_t frozen_size,
+                   InvertedRangeCache::Prefix &prefix) {
+  size_t space = frozen_size + kFrozenBitmapAlignment - 1;
+  prefix.storage.reset(new (std::nothrow) char[space]);
+  if (!prefix.storage) return false;
+  void *buffer = prefix.storage.get();
+  auto *data = static_cast<char *>(
+      std::align(kFrozenBitmapAlignment, frozen_size, buffer, space));
+  if (!data) return false;
+  roaring_bitmap_frozen_serialize(bitmap, data);
+  prefix.bitmap.reset(roaring_bitmap_frozen_view(data, frozen_size));
+  prefix.copy_bytes = roaring_bitmap_portable_size_in_bytes(bitmap);
+  return prefix.bitmap != nullptr;
 }
 
 }  // namespace
@@ -306,15 +322,17 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
         return nullptr;
       }
       roaring_bitmap_run_optimize(prefix.get());
-      if (!roaring_bitmap_try_shrink_to_fit(prefix.get())) return nullptr;
-      bitmap_charge += bitmap_bytes(prefix.get());
+      const size_t frozen_size =
+          roaring_bitmap_frozen_size_in_bytes(prefix.get());
+      bitmap_charge += bitmap_bytes(prefix.get(), frozen_size);
       if (bitmap_charge + metadata_bytes(*cache) > max_bytes) {
         return nullptr;
       }
-      const auto copy_bytes =
-          roaring_bitmap_portable_size_in_bytes(prefix.get());
-      cache->prefixes.push_back(
-          {bucket_index + 1, std::move(prefix), cardinality, copy_bytes});
+      Prefix entry;
+      entry.end_bucket = bucket_index + 1;
+      entry.cardinality = cardinality;
+      if (!freeze_prefix(prefix.get(), frozen_size, entry)) return nullptr;
+      cache->prefixes.push_back(std::move(entry));
     }
   }
   if (!iter->status().ok() || bucket_index != cache->buckets.size() ||
@@ -389,8 +407,9 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
               cache->buckets[end - 1].cumulative_cardinality)
         return nullptr;
       roaring_bitmap_run_optimize(prefix.get());
-      if (!roaring_bitmap_try_shrink_to_fit(prefix.get())) return nullptr;
-      const size_t charge = bitmap_bytes(prefix.get());
+      const size_t frozen_size =
+          roaring_bitmap_frozen_size_in_bytes(prefix.get());
+      const size_t charge = bitmap_bytes(prefix.get(), frozen_size);
       const size_t growth =
           cache->prefixes.capacity() < max_prefixes
               ? (max_prefixes - cache->prefixes.capacity()) * sizeof(Prefix)
@@ -402,18 +421,20 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
         full = true;
         break;
       }
+      Prefix entry;
+      entry.end_bucket = end;
+      entry.cardinality = cache->buckets[end - 1].cumulative_cardinality;
+      if (!freeze_prefix(prefix.get(), frozen_size, entry)) {
+        full = true;
+        break;
+      }
       if (growth) cache->prefixes.reserve(max_prefixes);
       position =
           std::lower_bound(cache->prefixes.begin(), cache->prefixes.end(), end,
                            [](const Prefix &entry, size_t boundary) {
                              return entry.end_bucket < boundary;
                            });
-      const auto copy_bytes =
-          roaring_bitmap_portable_size_in_bytes(prefix.get());
-      cache->prefixes.insert(
-          position,
-          {end, std::move(prefix),
-           cache->buckets[end - 1].cumulative_cardinality, copy_bytes});
+      cache->prefixes.insert(position, std::move(entry));
       bitmap_charge += charge;
     }
   }
