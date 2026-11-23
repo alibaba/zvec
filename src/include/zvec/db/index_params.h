@@ -251,8 +251,8 @@ class ZVEC_API QuantizerParam {
   bool fast_scan_{core_interface::kDefaultPqFastScan};
   uint32_t opq_iter_{core_interface::kDefaultOpqNumIterations};
   uint32_t opq_pq_iter_{core_interface::kDefaultOpqPqNumIterations};
-  // Used by standard HNSW/IVF/DiskANN with RABITQ; IVF's top-level bits and
-  // sample count remain authoritative for compatibility with its existing API.
+  // Canonical RaBitQ settings for standard HNSW/IVF/DiskANN indexes.
+  // IVF partition training is configured separately by n_list/n_iters.
   int total_bits_{7};
   int num_clusters_{16};
   int sample_count_{0};
