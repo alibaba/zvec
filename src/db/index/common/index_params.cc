@@ -176,14 +176,16 @@ Status IVFIndexParams::validate() const {
     return s;
   }
   if (quantize_type_ == QuantizeType::RABITQ) {
-    if (n_list_ <= 0 || n_iters_ <= 0 || total_bits_ < 1 || total_bits_ > 9 ||
-        sample_count_ < 0 || use_soar_ || quantizer_param_.enable_rotate()) {
+    if (n_list_ <= 0 || n_iters_ <= 0 || quantizer_param_.total_bits() < 1 ||
+        quantizer_param_.total_bits() > 9 ||
+        quantizer_param_.sample_count() < 0 || use_soar_ ||
+        quantizer_param_.enable_rotate()) {
       return Status::InvalidArgument(
           "Invalid IVF RABITQ parameters: n_list/n_iters must be positive, "
           "total_bits in [1, 9], sample_count >= 0; SOAR and "
           "enable_rotate are unsupported");
     }
-    return validate_rabitq_params(metric_type_, total_bits_);
+    return validate_rabitq_params(metric_type_, quantizer_param_.total_bits());
   }
   return Status::OK();
 }

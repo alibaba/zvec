@@ -754,8 +754,6 @@ class IVFIndexParam(VectorIndexParam):
         use_soar: bool = False,
         quantize_type: zvec._zvec.typing.QuantizeType = ...,
         quantizer_param: QuantizerParam = ...,
-        total_bits: typing.SupportsInt = 7,
-        sample_count: typing.SupportsInt = 0,
     ) -> None:
         """
         Constructs an IVFIndexParam instance.
@@ -797,11 +795,6 @@ class IVFIndexParam(VectorIndexParam):
         """
         bool: Whether SOAR optimization is enabled.
         """
-
-    @property
-    def total_bits(self) -> int: ...
-    @property
-    def sample_count(self) -> int: ...
 
 class IVFQueryParam(QueryParam):
     """

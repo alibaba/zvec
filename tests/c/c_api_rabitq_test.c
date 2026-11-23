@@ -58,6 +58,18 @@ static void test_params(void) {
       OK(zvec_index_params_get_rabitq_quantizer_params(p, &bits, NULL, &samples,
                                                        NULL));
       CHECK(bits == 9 && samples == 64);
+      int clusters, iterations, partition_iterations;
+      bool soar;
+      OK(zvec_index_params_set_ivf_params(p, 8, 10, false));
+      OK(zvec_index_params_get_rabitq_quantizer_params(p, &bits, &clusters,
+                                                       &samples, &iterations));
+      CHECK(bits == 9 && samples == 64 && clusters == 4 && iterations == 6);
+      OK(zvec_index_params_set_rabitq_quantizer_params(p, 3, 5, 24, 7));
+      OK(zvec_index_params_get_ivf_rabitq_params(p, &nlist, &bits, &samples));
+      CHECK(nlist == 8 && bits == 3 && samples == 24);
+      OK(zvec_index_params_get_ivf_params(p, &nlist, &partition_iterations,
+                                          &soar));
+      CHECK(nlist == 8 && partition_iterations == 10 && !soar);
     }
     zvec_index_params_destroy(p);
   }

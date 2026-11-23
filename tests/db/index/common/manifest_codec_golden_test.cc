@@ -344,8 +344,9 @@ void ExpectRichSchemaFields(const CollectionSchema &schema,
   EXPECT_EQ(ivf->metric_type(), MetricType::COSINE);
   EXPECT_EQ(ivf->n_list(), 512);
   EXPECT_EQ(ivf->n_iters(), 12);
-  EXPECT_EQ(ivf->total_bits(), core_interface::kDefaultRabitqTotalBits);
-  EXPECT_EQ(ivf->sample_count(), 0);
+  EXPECT_EQ(ivf->quantizer_param().total_bits(),
+            core_interface::kDefaultRabitqTotalBits);
+  EXPECT_EQ(ivf->quantizer_param().sample_count(), 0);
   EXPECT_TRUE(ivf->use_soar());
   EXPECT_EQ(ivf->quantize_type(), QuantizeType::INT4);
   EXPECT_TRUE(ivf->quantizer_param().enable_rotate());
@@ -1150,7 +1151,7 @@ TEST(ManifestCodecGolden, WireReaderRejectsGroups) {
 
 TEST(ManifestCodecGolden, IvfRabitqQuantizationRoundTrip) {
   IVFIndexParams params(MetricType::COSINE, 32, 7, false, QuantizeType::RABITQ,
-                        {}, 9, 1234);
+                        QuantizerParam(false, 9, 4, 1234, 6));
   std::string encoded;
   ManifestCodec::EncodeIndexParams(&params, &encoded);
   auto decoded = std::dynamic_pointer_cast<IVFIndexParams>(
@@ -1158,17 +1159,57 @@ TEST(ManifestCodecGolden, IvfRabitqQuantizationRoundTrip) {
   ASSERT_NE(nullptr, decoded);
   EXPECT_EQ(IndexType::IVF, decoded->type());
   EXPECT_EQ(params, *decoded);
-  EXPECT_EQ(9, decoded->total_bits());
-  EXPECT_EQ(1234, decoded->sample_count());
+  EXPECT_EQ(9, decoded->quantizer_param().total_bits());
+  EXPECT_EQ(1234, decoded->quantizer_param().sample_count());
   EXPECT_EQ(params, *params.clone());
+}
+
+TEST(ManifestCodecRabitqTest, MigratesLegacyIvfEffectiveQuantizerSettings) {
+  // Build the old wire shape directly: nested bits/samples used to be ignored.
+  for (bool explicit_outer : {false, true}) {
+    SCOPED_TRACE(explicit_outer);
+    std::string quantizer, base, ivf, encoded;
+    pbwire::Writer qw(&quantizer);
+    qw.put_varint(2, 3);   // nested bits
+    qw.put_varint(3, 5);   // model centroids
+    qw.put_varint(4, 24);  // nested samples
+    qw.put_varint(5, 6);   // model iterations
+    pbwire::Writer bw(&base);
+    bw.put_varint(1, static_cast<uint64_t>(MetricType::L2));
+    bw.put_varint(2, static_cast<uint64_t>(QuantizeType::RABITQ));
+    bw.put_message(4, quantizer);
+    pbwire::Writer iw(&ivf);
+    iw.put_message(1, base);
+    iw.put_varint(2, 8);   // IVF lists
+    iw.put_varint(3, 10);  // IVF iterations
+    if (explicit_outer) {
+      iw.put_varint(5, 9);
+      iw.put_varint(6, 128);
+    }
+    pbwire::Writer(&encoded).put_message(4, ivf);
+    auto decoded = std::dynamic_pointer_cast<IVFIndexParams>(
+        ManifestCodec::DecodeIndexParams(encoded));
+    ASSERT_NE(nullptr, decoded);
+    EXPECT_EQ(8, decoded->n_list());
+    EXPECT_EQ(10, decoded->n_iters());
+    const auto &q = decoded->quantizer_param();
+    EXPECT_EQ(explicit_outer ? 9 : 7, q.total_bits());
+    EXPECT_EQ(explicit_outer ? 128 : 0, q.sample_count());
+    EXPECT_EQ(5, q.num_clusters());
+    EXPECT_EQ(6, q.n_iters());
+    std::string canonical;
+    ManifestCodec::EncodeIndexParams(decoded.get(), &canonical);
+    auto reopened = ManifestCodec::DecodeIndexParams(canonical);
+    ASSERT_NE(nullptr, reopened);
+    EXPECT_EQ(*decoded, *reopened);
+  }
 }
 
 TEST(ManifestCodecRabitqTest, QuantizerSettingsRoundTrip) {
   using namespace zvec;
   QuantizerParam q(false, 3, 4, 24, 6);
   HnswIndexParams hnsw(MetricType::L2, 16, 100, QuantizeType::RABITQ, false, q);
-  IVFIndexParams ivf(MetricType::L2, 8, 10, false, QuantizeType::RABITQ, q, 3,
-                     24);
+  IVFIndexParams ivf(MetricType::L2, 8, 10, false, QuantizeType::RABITQ, q);
   DiskAnnIndexParams diskann(MetricType::L2, 16, 100, 0, QuantizeType::RABITQ,
                              q);
   for (const IndexParams *params :

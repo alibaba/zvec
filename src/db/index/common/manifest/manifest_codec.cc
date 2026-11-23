@@ -509,14 +509,19 @@ void EncodeIvf(const IVFIndexParams *params, std::string *out) {
   w.put_varint(f_ivf::kNList, static_cast<uint64_t>(params->n_list()));
   w.put_varint(f_ivf::kNIters, static_cast<uint64_t>(params->n_iters()));
   w.put_bool(f_ivf::kUseSoar, params->use_soar());
-  // Omit defaults so existing IVF manifests retain their wire representation.
-  if (params->total_bits() != core_interface::kDefaultRabitqTotalBits) {
+  // Mirror canonical RaBitQ settings for older readers, retaining the legacy
+  // field numbers and default omission. There is no second in-memory source.
+  if (params->quantize_type() == QuantizeType::RABITQ &&
+      params->quantizer_param().total_bits() !=
+          core_interface::kDefaultRabitqTotalBits) {
     w.put_varint(f_ivf::kTotalBits,
-                 static_cast<uint64_t>(params->total_bits()));
+                 static_cast<uint64_t>(params->quantizer_param().total_bits()));
   }
-  if (params->sample_count() != 0) {
-    w.put_varint(f_ivf::kSampleCount,
-                 static_cast<uint64_t>(params->sample_count()));
+  if (params->quantize_type() == QuantizeType::RABITQ &&
+      params->quantizer_param().sample_count() != 0) {
+    w.put_varint(
+        f_ivf::kSampleCount,
+        static_cast<uint64_t>(params->quantizer_param().sample_count()));
   }
 }
 
@@ -552,9 +557,15 @@ IVFIndexParams::OPtr DecodeIvf(std::string_view buf) {
         break;
     }
   }
-  return std::make_shared<IVFIndexParams>(
-      base.metric_type, n_list, n_iters, use_soar, base.quantize_type,
-      base.quantizer_param, total_bits, sample_count);
+  if (base.quantize_type == QuantizeType::RABITQ) {
+    // Old builds used the outer values even if the nested values differed.
+    // Missing fields meant 7 bits / automatic sampling in those builds.
+    base.quantizer_param.set_total_bits(total_bits);
+    base.quantizer_param.set_sample_count(sample_count);
+  }
+  return std::make_shared<IVFIndexParams>(base.metric_type, n_list, n_iters,
+                                          use_soar, base.quantize_type,
+                                          base.quantizer_param);
 }
 
 void EncodeDiskAnn(const DiskAnnIndexParams *params, std::string *out) {

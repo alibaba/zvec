@@ -456,8 +456,8 @@ Parameters for quantizer configuration.
 Encapsulates quantization-related settings such as enable_rotate.
 For RABITQ, the keyword-only parameters total_bits (1-9), num_clusters,
 sample_count (0 uses all vectors), and n_iters configure training.
-IVFIndexParam.total_bits/sample_count override
-these two quantizer settings; num_clusters is independent of IVF n_list.
+For IVF, num_clusters/n_iters train the quantizer independently of the outer
+n_list/n_iters used to partition inverted lists.
 For HNSW/IVF PQ, configure subquantizers, code width, FastScan and learned OPQ.
 Quantizer settings must be valid even when PQ or rotation is disabled.
 
@@ -1291,11 +1291,10 @@ Examples:
   ivf_params
       .def(py::init([](MetricType metric_type, int n_list, int n_iters,
                        bool use_soar, QuantizeType quantize_type,
-                       QuantizerParam quantizer_param, int total_bits,
-                       int sample_count) {
+                       QuantizerParam quantizer_param) {
              return std::make_shared<IVFIndexParams>(
                  metric_type, n_list, n_iters, use_soar, quantize_type,
-                 quantizer_param, total_bits, sample_count);
+                 quantizer_param);
            }),
            py::arg("metric_type") = MetricType::IP,
            py::arg("n_list") = ivf_defaults.n_list(),
@@ -1303,8 +1302,6 @@ Examples:
            py::arg("use_soar") = ivf_defaults.use_soar(),
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("quantizer_param") = QuantizerParam(),
-           py::arg("total_bits") = core_interface::kDefaultRabitqTotalBits,
-           py::arg("sample_count") = 0,
            R"pbdoc(
 Constructs an IVFIndexParam instance.
 
@@ -1317,13 +1314,9 @@ Args:
     use_soar (bool, optional): Enable SOAR optimization. Defaults to False.
     quantize_type (QuantizeType, optional): Vector quantization type.
         Defaults to QuantizeType.UNDEFINED.
-    total_bits (int, optional): RaBitQ bits per dimension, from 1 to 9.
-    sample_count (int, optional): RaBitQ training sample count; 0 selects automatically.
     quantizer_param (QuantizerParam, optional): Quantizer configuration.
         Defaults to QuantizerParam().
 )pbdoc")
-      .def_property_readonly("total_bits", &IVFIndexParams::total_bits)
-      .def_property_readonly("sample_count", &IVFIndexParams::sample_count)
       .def_property_readonly("n_list", &IVFIndexParams::n_list,
                              "int: Number of inverted lists.")
       .def_property_readonly(
@@ -1337,8 +1330,6 @@ Args:
             py::dict dict;
             dict["type"] = index_type_to_string(self.type());
             dict["metric_type"] = metric_type_to_string(self.metric_type());
-            dict["total_bits"] = self.total_bits();
-            dict["sample_count"] = self.sample_count();
             dict["n_list"] = self.n_list();
             dict["n_iters"] = self.n_iters();
             dict["use_soar"] = self.use_soar();
@@ -1349,30 +1340,26 @@ Args:
             return dict;
           },
           "Convert to dictionary with all fields")
-      .def(
-          "__repr__",
-          [](const IVFIndexParams &self) {
-            return "{"
-                   "\"metric_type\":" +
-                   metric_type_to_string(self.metric_type()) +
-                   ", \"total_bits\":" + std::to_string(self.total_bits()) +
-                   ", \"sample_count\":" + std::to_string(self.sample_count()) +
-                   ", \"n_list\":" + std::to_string(self.n_list()) +
-                   ", \"n_iters\":" + std::to_string(self.n_iters()) +
-                   ", \"use_soar\":" + std::to_string(self.use_soar()) +
-                   ", \"quantize_type\":" +
-                   quantize_type_to_string(self.quantize_type()) +
-                   ", \"quantizer_param\":" +
-                   py::str(py::cast(self.quantizer_param()))
-                       .cast<std::string>() +
-                   "}";
-          })
+      .def("__repr__",
+           [](const IVFIndexParams &self) {
+             return "{"
+                    "\"metric_type\":" +
+                    metric_type_to_string(self.metric_type()) +
+                    ", \"n_list\":" + std::to_string(self.n_list()) +
+                    ", \"n_iters\":" + std::to_string(self.n_iters()) +
+                    ", \"use_soar\":" + std::to_string(self.use_soar()) +
+                    ", \"quantize_type\":" +
+                    quantize_type_to_string(self.quantize_type()) +
+                    ", \"quantizer_param\":" +
+                    py::str(py::cast(self.quantizer_param()))
+                        .cast<std::string>() +
+                    "}";
+           })
       .def(py::pickle(
           [](const IVFIndexParams &self) {
             return py::make_tuple(self.metric_type(), self.n_list(),
                                   self.n_iters(), self.use_soar(),
-                                  self.quantize_type(), self.quantizer_param(),
-                                  self.total_bits(), self.sample_count());
+                                  self.quantize_type(), self.quantizer_param());
           },
           [](py::tuple t) {
             if (t.size() != 5 && t.size() != 6 && t.size() != 7 &&
@@ -1383,12 +1370,16 @@ Args:
                 : t.size() >= 6 && py::isinstance<QuantizerParam>(t[5])
                     ? t[5].cast<QuantizerParam>()
                     : QuantizerParam(t.size() >= 6 ? t[5].cast<bool>() : false);
+            // Eight-field pickles used outer bits/samples as authoritative,
+            // even when a QuantizerParam was also present. Normalize once.
+            if (t.size() == 8 &&
+                t[4].cast<QuantizeType>() == QuantizeType::RABITQ) {
+              qp.set_total_bits(t[6].cast<int>());
+              qp.set_sample_count(t[7].cast<int>());
+            }
             return std::make_shared<IVFIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
-                t[3].cast<bool>(), t[4].cast<QuantizeType>(), qp,
-                t.size() == 8 ? t[6].cast<int>()
-                              : core_interface::kDefaultRabitqTotalBits,
-                t.size() == 8 ? t[7].cast<int>() : 0);
+                t[3].cast<bool>(), t[4].cast<QuantizeType>(), qp);
           }));
 
   // DiskAnnIndexParams

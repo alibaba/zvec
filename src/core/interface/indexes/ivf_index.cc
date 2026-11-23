@@ -46,15 +46,7 @@ int IVFIndex::create_and_init_converter_reformer(
     if (ivf.nlist <= 0 || ivf.niters <= 0 || ivf.use_soar)
       return core::IndexError_InvalidArgument;
     const auto *typed = dynamic_cast<const RabitqQuantizerParam *>(&param);
-    RabitqQuantizerParam config;
-    if (typed) {
-      config = *typed;
-    } else {
-      config.total_bits = ivf.total_bits;
-      config.sample_count = ivf.sample_count;
-      config.num_clusters = ivf.nlist;
-      config.niters = ivf.niters;
-    }
+    const RabitqQuantizerParam config = typed ? *typed : RabitqQuantizerParam{};
     ivf_quantizer_ = core::IndexFactory::CreateQuantizer("RabitqQuantizer");
     if (!ivf_quantizer_) return core::IndexError_NoExist;
     const auto params = config.to_params();

@@ -1904,10 +1904,6 @@ zvec_error_code_t zvec_index_params_set_rabitq_quantizer_params(
   }
   p->set_quantizer_param(zvec::QuantizerParam(p->enable_rotate(), total_bits,
                                             num_clusters, sample_count, n_iters));
-  if (auto *ivf = dynamic_cast<zvec::IVFIndexParams *>(p)) {
-    ivf->set_total_bits(total_bits);
-    ivf->set_sample_count(sample_count);
-  }
   return ZVEC_OK;
 }
 
@@ -1924,9 +1920,8 @@ zvec_error_code_t zvec_index_params_get_rabitq_quantizer_params(
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   const auto &q = p->quantizer_param();
-  const auto *ivf = dynamic_cast<const zvec::IVFIndexParams *>(p);
-  if (total_bits) *total_bits = ivf ? ivf->total_bits() : q.total_bits();
-  if (sample_count) *sample_count = ivf ? ivf->sample_count() : q.sample_count();
+  if (total_bits) *total_bits = q.total_bits();
+  if (sample_count) *sample_count = q.sample_count();
   if (num_clusters) *num_clusters = q.num_clusters();
   if (n_iters) *n_iters = q.n_iters();
   return ZVEC_OK;
@@ -1951,8 +1946,10 @@ zvec_error_code_t zvec_index_params_set_ivf_rabitq_params(
   auto *ivf = dynamic_cast<zvec::IVFIndexParams *>(cpp_params);
   if (ivf && ivf->quantize_type() == zvec::QuantizeType::RABITQ && total_bits > 0) {
     ivf->set_n_list(nlist);
-    ivf->set_total_bits(total_bits);
-    ivf->set_sample_count(sample_count);
+    auto q = ivf->quantizer_param();
+    q.set_total_bits(total_bits);
+    q.set_sample_count(sample_count);
+    ivf->set_quantizer_param(q);
     return ZVEC_OK;
   }
   SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
@@ -1973,8 +1970,8 @@ zvec_error_code_t zvec_index_params_get_ivf_rabitq_params(
   } else if (auto *ivf = dynamic_cast<const zvec::IVFIndexParams *>(cpp_params);
              ivf && ivf->quantize_type() == zvec::QuantizeType::RABITQ) {
     nlist = ivf->n_list();
-    total_bits = ivf->total_bits();
-    sample_count = ivf->sample_count();
+    total_bits = ivf->quantizer_param().total_bits();
+    sample_count = ivf->quantizer_param().sample_count();
   } else {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
                    "Expected IVF_RABITQ or IVF with RABITQ quantization");

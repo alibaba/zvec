@@ -17,15 +17,17 @@ namespace zvec::core_interface {
 namespace {
 
 IVFIndexParam::Pointer RabitqParam(MetricType metric, int bits = 7) {
+  RabitqQuantizerParam quantizer(bits);
+  quantizer.num_clusters = 4;
+  quantizer.sample_count = 80;
+  quantizer.niters = 3;
   return IVFIndexParamBuilder()
       .with_dimension(128)
       .with_metric_type(metric)
       .with_data_type(DataType::DT_FP32)
       .with_n_list(4)
       .with_n_iters(3)
-      .with_total_bits(bits)
-      .with_sample_count(80)
-      .with_quantizer_param(QuantizerParam(QuantizerType::kRabitq))
+      .with_quantizer_param(quantizer)
       .build();
 }
 
@@ -38,8 +40,6 @@ TEST(IVFRabitqIntegration, ParamsRoundTrip) {
   EXPECT_EQ(QuantizerType::kRabitq, decoded->quantizer_param->type);
   EXPECT_EQ(4, decoded->nlist);
   EXPECT_EQ(3, decoded->niters);
-  EXPECT_EQ(9, decoded->total_bits);
-  EXPECT_EQ(80, decoded->sample_count);
   auto typed =
       std::dynamic_pointer_cast<RabitqQuantizerParam>(decoded->quantizer_param);
   ASSERT_NE(nullptr, typed);
@@ -56,8 +56,10 @@ TEST(IVFRabitqIntegration, TypedParametersOverrideLegacyFields) {
   quantizer.niters = 6;
   auto param = RabitqParam(MetricType::kL2sq, 9);
   param->quantizer_param = quantizer.clone();
+  auto json = param->serialize_to_json();
+  json.insert(1, "\"total_bits\":9,\"sample_count\":80,");
   auto decoded = std::dynamic_pointer_cast<IVFIndexParam>(
-      IndexFactory::DeserializeIndexParamFromJson(param->serialize_to_json()));
+      IndexFactory::DeserializeIndexParamFromJson(json));
   ASSERT_NE(nullptr, decoded);
   auto typed =
       std::dynamic_pointer_cast<RabitqQuantizerParam>(decoded->quantizer_param);
@@ -65,11 +67,48 @@ TEST(IVFRabitqIntegration, TypedParametersOverrideLegacyFields) {
   EXPECT_EQ(quantizer.serialize_to_json(), typed->serialize_to_json());
 }
 
+TEST(IVFRabitqIntegration, MigratesLegacyJsonWithoutDuplicatingNewParameters) {
+  auto param = RabitqParam(MetricType::kL2sq);
+  param->quantizer_param =
+      std::make_shared<QuantizerParam>(QuantizerType::kRabitq);
+  const auto current = param->serialize_to_json();
+  // A generic default quantizer no longer borrows IVF partition parameters.
+  auto defaults = std::dynamic_pointer_cast<IVFIndexParam>(
+      IndexFactory::DeserializeIndexParamFromJson(current));
+  ASSERT_NE(nullptr, defaults);
+  auto q = std::dynamic_pointer_cast<RabitqQuantizerParam>(
+      defaults->quantizer_param);
+  ASSERT_NE(nullptr, q);
+  EXPECT_EQ(16, q->num_clusters);
+  EXPECT_EQ(20, q->niters);
+  auto legacy = current;
+  legacy.insert(1, "\"total_bits\":5,\"sample_count\":24,");
+  auto migrated = std::dynamic_pointer_cast<IVFIndexParam>(
+      IndexFactory::DeserializeIndexParamFromJson(legacy));
+  ASSERT_NE(nullptr, migrated);
+  q = std::dynamic_pointer_cast<RabitqQuantizerParam>(
+      migrated->quantizer_param);
+  ASSERT_NE(nullptr, q);
+  EXPECT_EQ(5, q->total_bits);
+  EXPECT_EQ(24, q->sample_count);
+  EXPECT_EQ(4, q->num_clusters);
+  EXPECT_EQ(3, q->niters);
+  const auto canonical = migrated->serialize_to_json();
+  auto pos = canonical.find("\"total_bits\"");
+  ASSERT_NE(std::string::npos, pos);
+  EXPECT_EQ(std::string::npos, canonical.find("\"total_bits\"", pos + 1));
+  auto reopened = IndexFactory::DeserializeIndexParamFromJson(canonical);
+  ASSERT_NE(nullptr, reopened);
+  EXPECT_EQ(canonical, reopened->serialize_to_json());
+}
+
 TEST(IVFRabitqIntegration, RejectsInvalidNestedAndLegacyJson) {
   auto param = RabitqParam(MetricType::kL2sq);
-  param->total_bits = 10;
-  EXPECT_EQ(nullptr, IndexFactory::DeserializeIndexParamFromJson(
-                         param->serialize_to_json()));
+  param->quantizer_param =
+      std::make_shared<QuantizerParam>(QuantizerType::kRabitq);
+  auto legacy = param->serialize_to_json();
+  legacy.insert(1, "\"total_bits\":10,\"sample_count\":80,");
+  EXPECT_EQ(nullptr, IndexFactory::DeserializeIndexParamFromJson(legacy));
   RabitqQuantizerParam invalid(7);
   invalid.niters = 0;
   param->quantizer_param = invalid.clone();

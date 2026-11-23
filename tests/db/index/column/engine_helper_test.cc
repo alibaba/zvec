@@ -184,7 +184,7 @@ TEST(EngineHelperTest, IVFRabitqQuantizerParameters) {
         FieldSchema field("vector", DataType::VECTOR_FP32, 128, false,
                           std::make_shared<IVFIndexParams>(
                               MetricType::L2, 4, 3, false, QuantizeType::RABITQ,
-                              QuantizerParam(rotate), bits, samples));
+                              QuantizerParam(rotate, bits, 5, samples, 6)));
         auto result = ProximaEngineHelper::convert_to_engine_index_param(field);
         ASSERT_TRUE(result) << result.error().message();
         auto ivf = std::dynamic_pointer_cast<core_interface::IVFIndexParam>(
@@ -198,8 +198,8 @@ TEST(EngineHelperTest, IVFRabitqQuantizerParameters) {
         EXPECT_EQ(quantizer->sample_count, samples);
         EXPECT_EQ(quantizer->enable_rotate, rotate);
         // Quantizer training stays independent of IVF partition training.
-        EXPECT_EQ(quantizer->num_clusters, 16);
-        EXPECT_EQ(quantizer->niters, 20);
+        EXPECT_EQ(quantizer->num_clusters, 5);
+        EXPECT_EQ(quantizer->niters, 6);
         EXPECT_EQ(ivf->nlist, 4);
         EXPECT_EQ(ivf->niters, 3);
       }

@@ -37,8 +37,6 @@ def make_params(kind, metric, bits):
         n_list=8,
         n_iters=10,
         quantize_type=zvec.QuantizeType.RABITQ,
-        total_bits=bits,
-        sample_count=128,
         quantizer_param=q,
     )
 
@@ -122,7 +120,9 @@ def test_turbo_rabitq_collection(tmp_path, kind, bits, metric):
         assert actual.quantize_type == zvec.QuantizeType.RABITQ
         assert actual.quantizer_param == params.quantizer_param
         if kind == "ivf":
-            assert actual.total_bits == bits and actual.sample_count == 128
+            assert actual.n_list == 8 and actual.n_iters == 10
+            assert actual.quantizer_param.total_bits == bits
+            assert actual.quantizer_param.sample_count == 128
 
     try:
         assert all(s.ok() for s in coll.insert(docs(0, 256)))
@@ -223,11 +223,11 @@ def test_legacy_rabitq_parameter_state(kind):
         )
     restored = cls.__new__(cls)
     restored.__setstate__(state)
-    assert restored.quantizer_param.total_bits == 7
+    assert restored.quantizer_param.total_bits == (3 if kind == "ivf" else 7)
     assert restored.quantizer_param.num_clusters == 16
     assert restored.quantizer_param.n_iters == 20
     if kind == "ivf":
-        assert restored.total_bits == 3 and restored.sample_count == 128
+        assert restored.quantizer_param.sample_count == 128
     if kind == "diskann":
         restored = cls.__new__(cls)
         restored.__setstate__(state[:5])
@@ -272,3 +272,30 @@ def test_ivf_rabitq_rejects_additional_rotation(tmp_path):
     )
     with pytest.raises(Exception, match="RABITQ"):
         zvec.create_and_open(path=str(tmp_path / "invalid"), schema=schema)
+
+
+@pytest.mark.parametrize("field", ["total_bits", "sample_count"])
+def test_ivf_rejects_duplicate_quantizer_arguments(field):
+    with pytest.raises(TypeError):
+        zvec.IVFIndexParam(
+            quantize_type=zvec.QuantizeType.RABITQ,
+            quantizer_param=zvec.QuantizerParam(total_bits=3, sample_count=128),
+            **{field: 9},
+        )
+
+
+@pytest.mark.parametrize("bits,samples", [(7, 0), (9, 128)])
+def test_ivf_migrates_legacy_pickle_effective_values(bits, samples):
+    q = zvec.QuantizerParam(total_bits=3, num_clusters=5, sample_count=24, n_iters=6)
+    restored = zvec.IVFIndexParam.__new__(zvec.IVFIndexParam)
+    restored.__setstate__(
+        (zvec.MetricType.L2, 8, 10, False, zvec.QuantizeType.RABITQ, q, bits, samples)
+    )
+    actual = restored.quantizer_param
+    assert (actual.total_bits, actual.sample_count) == (bits, samples)
+    assert (actual.num_clusters, actual.n_iters) == (5, 6)
+    assert (restored.n_list, restored.n_iters) == (8, 10)
+    assert "total_bits" not in restored.to_dict()
+    assert "sample_count" not in restored.to_dict()
+    assert len(restored.__getstate__()) == 6
+    assert pickle.loads(pickle.dumps(restored)).to_dict() == restored.to_dict()

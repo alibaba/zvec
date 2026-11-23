@@ -217,14 +217,15 @@ class TestIVFIndexParam:
             n_list=32,
             n_iters=7,
             quantize_type=QuantizeType.RABITQ,
-            total_bits=9,
-            sample_count=1024,
+            quantizer_param=QuantizerParam(
+                total_bits=9, sample_count=1024, num_clusters=4, n_iters=6
+            ),
         )
         restored = pickle.loads(pickle.dumps(param))
         assert restored.to_dict() == param.to_dict()
         assert restored.type == IndexType.IVF
-        assert restored.total_bits == 9
-        assert restored.sample_count == 1024
+        assert restored.quantizer_param.total_bits == 9
+        assert restored.quantizer_param.sample_count == 1024
 
     def test_default(self):
         param = IVFIndexParam()

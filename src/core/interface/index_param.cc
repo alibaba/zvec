@@ -264,8 +264,6 @@ ailego::JsonObject IVFIndexParam::serialize_to_json_object(
   if (!omit_empty_value || use_soar) {
     json_obj.set("use_soar", ailego::JsonValue(use_soar));
   }
-  json_obj.set("total_bits", ailego::JsonValue(total_bits));
-  json_obj.set("sample_count", ailego::JsonValue(sample_count));
   return json_obj;
 }
 
@@ -351,14 +349,17 @@ bool IVFIndexParam::deserialize_from_json_object(
   DESERIALIZE_VALUE_FIELD(json_obj, niters);
   DESERIALIZE_VALUE_FIELD(json_obj, use_soar);
 
+  int total_bits = kDefaultRabitqTotalBits;
+  int sample_count = 0;
   DESERIALIZE_VALUE_FIELD(json_obj, total_bits);
   DESERIALIZE_VALUE_FIELD(json_obj, sample_count);
   // Older IVF callers put RaBitQ settings on the index parameter itself.
   // Keep those records equivalent when the base parser creates a typed param.
   auto *rabitq = dynamic_cast<RabitqQuantizerParam *>(quantizer_param.get());
   ailego::JsonValue encoded;
-  if (rabitq && json_obj.get("quantizer_param", &encoded) &&
-      encoded.is_object() && !encoded.as_object().has("total_bits")) {
+  if (rabitq && (json_obj.has("total_bits") || json_obj.has("sample_count")) &&
+      json_obj.get("quantizer_param", &encoded) && encoded.is_object() &&
+      !encoded.as_object().has("total_bits")) {
     rabitq->total_bits = total_bits;
     rabitq->num_clusters = nlist;
     rabitq->sample_count = sample_count;

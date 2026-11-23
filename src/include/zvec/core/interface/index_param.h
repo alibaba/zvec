@@ -414,9 +414,6 @@ struct ZVEC_CORE_API IVFIndexParam : public BaseIndexParam {
   using Pointer = std::shared_ptr<IVFIndexParam>;
   int nlist = kDefaultIvfNumLists;
   int niters = kDefaultIvfNumIterations;
-  // Used when quantizer_param->type == kRabitq.
-  int total_bits = kDefaultRabitqTotalBits;
-  int sample_count = 0;
   std::shared_ptr<BaseIndexParam> l1_index = nullptr;
   std::shared_ptr<BaseIndexParam> l2_index = nullptr;
   bool use_soar = kDefaultIvfUseSoar;

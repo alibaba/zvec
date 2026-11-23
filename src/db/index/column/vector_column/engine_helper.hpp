@@ -725,20 +725,6 @@ class ProximaEngineHelper {
         index_param_builder->with_n_list(db_index_params->n_list());
         index_param_builder->with_n_iters(db_index_params->n_iters());
         index_param_builder->with_use_soar(db_index_params->use_soar());
-        index_param_builder->with_total_bits(db_index_params->total_bits());
-        index_param_builder->with_sample_count(db_index_params->sample_count());
-        if (db_index_params->quantize_type() == QuantizeType::RABITQ) {
-          // Typed quantizer parameters take precedence over the IVF fields.
-          core_interface::RabitqQuantizerParam quantizer(
-              db_index_params->total_bits());
-          quantizer.sample_count = db_index_params->sample_count();
-          quantizer.num_clusters =
-              db_index_params->quantizer_param().num_clusters();
-          quantizer.niters = db_index_params->quantizer_param().n_iters();
-          quantizer.enable_rotate = db_index_params->enable_rotate();
-          index_param_builder->with_quantizer_param(quantizer);
-        }
-
         return index_param_builder->build();
       }
 
