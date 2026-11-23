@@ -251,10 +251,10 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
     }
     cache->total_cardinality += cardinality;
     total_bytes += value.size();
-    cache->buckets.push_back(
-        {key.ToString(), std::string(begin, begin_size),
-         std::string(end, end_size), cardinality, value.size(),
-         cache->total_cardinality, total_bytes});
+    cache->buckets.push_back({key.ToString(), std::string(begin, begin_size),
+                              std::string(end, end_size), cardinality,
+                              value.size(), cache->total_cardinality,
+                              total_bytes});
     const auto &added = cache->buckets.back();
     text_bytes += added.key.capacity() + added.begin.capacity() +
                   added.end.capacity() + 3;
