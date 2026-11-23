@@ -302,14 +302,14 @@ TEST(TurboMetricAdapter, Int8MipsIdentityKeepsThresholdAcrossLayouts) {
 namespace {
 template <typename T>
 void CheckMipsCancellation(IndexMeta::DataType type, size_t dim, size_t prefix,
-                           int magnitude, size_t unit) {
+                           float magnitude, size_t unit) {
   std::vector<T> row(dim), query(dim);
   for (size_t d = 0; d < prefix; ++d) {
     row[d] = query[d] = row[dim - prefix + d] = T(magnitude);
     query[dim - prefix + d] = T(-magnitude);
   }
   for (size_t k = 0; k < 8; ++k)
-    row[prefix + k * unit] = query[prefix + k * unit] = T(1);
+    row[prefix + k * unit] = query[prefix + k * unit] = T(1.0f);
 
   // The second row is the first query, so the 2x2 tile also checks self scores.
   const size_t padded = (dim + unit - 1) / unit * unit;
