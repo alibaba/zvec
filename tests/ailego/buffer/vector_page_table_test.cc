@@ -917,6 +917,22 @@ TEST_F(BufferPoolTest, DirtyFlushFailureKeepsPageResident) {
   EXPECT_FALSE(table.is_block_dirty(/*block_id=*/0));
 }
 
+TEST_F(BufferPoolTest, WritablePoolCanFlushWithoutOptionalIoUringStaging) {
+  init_vec_pool(/*capacity_pages=*/1, /*file_pages=*/1, /*writable=*/true);
+  const auto path = new_file(1);
+  VecBufferPool pool(path, /*writable=*/true);
+  ASSERT_EQ(0, pool.init());
+  EXPECT_EQ(0u, pool.stats().writeback_io_staging_bytes);
+
+  const char value = 'A';
+  ASSERT_EQ(0, pool.write_range(0, 1, &value));
+  ASSERT_EQ(0, pool.flush_all());
+  std::unique_ptr<FILE, decltype(&std::fclose)> file(
+      std::fopen(path.c_str(), "rb"), &std::fclose);
+  ASSERT_NE(nullptr, file);
+  EXPECT_EQ(value, std::fgetc(file.get()));
+}
+
 TEST_F(BufferPoolTest, ConcurrentWritablePressureUsesBackgroundWriteback) {
   constexpr size_t kFilePages = 64;
   constexpr size_t kThreadCount = 8;
@@ -924,7 +940,9 @@ TEST_F(BufferPoolTest, ConcurrentWritablePressureUsesBackgroundWriteback) {
   // at once. The file is still much larger than the pool, so the test retains
   // sustained writeback pressure without depending on scheduler fairness.
   constexpr size_t kCapacityPages = kThreadCount * 2;
-  init_vec_pool(kCapacityPages, kFilePages, /*writable=*/true);
+  ASSERT_EQ(0, PoolPayloadBudget::get_instance().init(
+                   (kCapacityPages + 1) * kVectorPageSize +
+                   PoolPayloadBudget::storage_metadata_bytes(kFilePages)));
   // BufferStorage creates a small metadata-only file and grows it as segments
   // are appended. Exercise that path instead of opening a pre-sized file.
   std::string file = new_file(/*num_pages=*/1);
@@ -1133,12 +1151,6 @@ TEST_F(BufferPoolTest, FixedMetadataStaysCompactAndReadOnlyAvoidsPageLocks) {
   size_t expected_writable_bytes =
       VecBufferPool::kMutexBucketCount * sizeof(std::shared_mutex) +
       VecBufferPool::kWritebackBatchPages * kVectorPageSize;
-#if defined(__linux__)
-  if (current_io_backend_type() == IOBackendType::kIoUring) {
-    expected_writable_bytes +=
-        VecBufferPool::kWritebackBatchPages * kVectorPageSize;
-  }
-#endif
   EXPECT_EQ(expected_writable_bytes, writable_bytes -
                 VectorPageTable::metadata_bytes_for_entries(kOneSegmentPages));
 
@@ -2385,6 +2397,7 @@ namespace {
 struct BatchReadAioState {
   bool partial_submit{false};
   bool fail_wait{false};
+  bool duplicate_completion{false};
   std::function<void()> before_completion;
   std::array<struct iocb *, 2> submitted{};
   size_t accepted{0};
@@ -2405,12 +2418,13 @@ int BatchReadGetEvents(io_context_t, long, long, struct io_event *events,
   auto &state = *batch_read_aio;
   // Allocation shortage and partial submission have both cancelled page 1
   // before reaching this point. Hold this batch until a new loader owns it.
-  state.before_completion();
+  if (state.before_completion) state.before_completion();
   if (state.fail_wait) return -EIO;
   for (size_t i = 0; i < state.accepted; ++i) {
-    const auto *request = state.submitted[i];
+    auto *request = state.submitted[state.duplicate_completion ? 0 : i];
     events[i] = {};
     events[i].data = request->data;
+    events[i].obj = request;
     events[i].res = ::pread(request->aio_fildes, request->u.c.buf,
                             request->u.c.nbytes, request->u.c.offset);
   }
@@ -2522,6 +2536,37 @@ TEST_F(BufferPoolTest, AioWaitFailureDoesNotCancelReplacementLoad) {
   QueueResidentSampleTestPeer::stop_background();
   ExpectFailedBatchPreservesNewLoader(pool, /*partial_submit=*/true,
                                       /*fail_wait=*/true);
+}
+
+TEST_F(BufferPoolTest, AioDuplicateCompletionDoesNotPublishOrPoisonRetry) {
+  auto &loader = LibAioLoader::Instance();
+  if (!loader.load()) GTEST_SKIP() << "libaio is unavailable";
+  init_vec_pool(/*capacity_pages=*/16, /*file_pages=*/2);
+  VecBufferPool pool(new_file(2), /*writable=*/false);
+  ASSERT_EQ(0, pool.init());
+  QueueResidentSampleTestPeer::stop_background();
+
+  BatchReadAioState state;
+  state.duplicate_completion = true;
+  const auto original_submit = loader.io_submit;
+  const auto original_getevents = loader.io_getevents;
+  loader.io_submit = BatchReadSubmit;
+  loader.io_getevents = BatchReadGetEvents;
+  std::thread batch([&] {
+    batch_read_aio = &state;
+    const std::array<block_id_t, 2> pages{{0, 1}};
+    EXPECT_FALSE(VecBufferPoolAioTestPeer::load(pool, pages.data(), pages.size()));
+    EXPECT_FALSE(pool.is_page_resident(0));
+    EXPECT_FALSE(pool.is_page_resident(1));
+    state.duplicate_completion = false;
+    EXPECT_TRUE(VecBufferPoolAioTestPeer::load(pool, pages.data(), pages.size()));
+    EXPECT_TRUE(pool.is_page_resident(0));
+    EXPECT_TRUE(pool.is_page_resident(1));
+    batch_read_aio = nullptr;
+  });
+  batch.join();
+  loader.io_submit = original_submit;
+  loader.io_getevents = original_getevents;
 }
 #endif
 
