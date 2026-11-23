@@ -1,6 +1,8 @@
 // Copyright 2025-present the zvec project
 // SPDX-License-Identifier: Apache-2.0
 
+#if defined(__linux__) && !defined(__ANDROID__)
+
 #include <unistd.h>
 #include <algorithm>
 #include <array>
@@ -204,3 +206,5 @@ TEST_F(BypassAioTest, DuplicateCompletionDoesNotReleaseKernelDestinations) {
 }
 }  // namespace
 }  // namespace zvec::ailego
+
+#endif  // defined(__linux__) && !defined(__ANDROID__)
