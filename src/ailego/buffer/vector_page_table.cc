@@ -1358,6 +1358,36 @@ void VecBufferPool::writeback_loop() {
   }
 }
 
+char *VecBufferPool::acquire_writeback_block(block_id_t page_id, bool *failed) {
+  *failed = false;
+  char *buffer = page_table_.acquire_block(page_id, /*record_reuse=*/false);
+  if (buffer != nullptr || !page_table_.is_block_dirty(page_id)) {
+    return buffer;
+  }
+  // A dirty page that cannot be pinned is usually mid-eviction: the evictor
+  // is about to flush it directly or queue it for this pool's writeback
+  // worker. Wait out the transition instead of skipping the page and letting
+  // flush_all() report its dirty data as persisted.
+  if (page_table_.wait_for_block_transition(page_id)) {
+    buffer = page_table_.acquire_block(page_id, /*record_reuse=*/false);
+  }
+  if (buffer != nullptr || !page_table_.is_block_dirty(page_id)) {
+    return buffer;
+  }
+  // Still dirty but not pinnable (e.g. evicted without a successful
+  // writeback, or a stuck transition). Surface the failure rather than
+  // publishing metadata on top of stale pages.
+  *failed = true;
+  writeback_failures_.fetch_add(1, std::memory_order_relaxed);
+  int expected = 0;
+  (void)writeback_error_.compare_exchange_strong(
+      expected, EIO, std::memory_order_release, std::memory_order_relaxed);
+  LOG_ERROR(
+      "VecBufferPool writeback cannot pin dirty page: file[%s], page[%zu]",
+      file_name_.c_str(), static_cast<size_t>(page_id));
+  return nullptr;
+}
+
 bool VecBufferPool::flush_writeback_batch(std::vector<block_id_t> &page_ids,
                                           char *staging) {
   if (page_ids.empty()) {
@@ -1399,8 +1429,13 @@ bool VecBufferPool::flush_writeback_batch(std::vector<block_id_t> &page_ids,
           break;
         }
 
-        char *buffer = page_table_.acquire_block(page_id,
-                                                 /*record_reuse=*/false);
+        bool acquire_failed = false;
+        char *buffer = acquire_writeback_block(page_id, &acquire_failed);
+        if (acquire_failed) {
+          all_ok = false;
+          ++pos;
+          continue;
+        }
         if (buffer == nullptr) {
           ++pos;
           continue;
@@ -1502,14 +1537,20 @@ bool VecBufferPool::flush_writeback_batch(std::vector<block_id_t> &page_ids,
   while (pos < page_ids.size()) {
     const block_id_t run_start = page_ids[pos];
     size_t run_count = 0;
+    bool skip_failed_page = false;
     while (pos + run_count < page_ids.size() && run_count < run_limit &&
            page_ids[pos + run_count] == run_start + run_count) {
       const block_id_t page_id = page_ids[pos + run_count];
       if (!page_table_.is_block_dirty(page_id)) {
         break;
       }
-      char *buffer = page_table_.acquire_block(page_id,
-                                               /*record_reuse=*/false);
+      bool acquire_failed = false;
+      char *buffer = acquire_writeback_block(page_id, &acquire_failed);
+      if (acquire_failed) {
+        all_ok = false;
+        skip_failed_page = true;
+        break;
+      }
       if (buffer == nullptr) {
         break;
       }
@@ -1568,6 +1609,10 @@ bool VecBufferPool::flush_writeback_batch(std::vector<block_id_t> &page_ids,
       page_table_.release_block(run_start + i);
     }
     pos += staging != nullptr ? run_count : submitted_pages;
+    // The failed page was already accounted; never retry it in a tight loop.
+    if (skip_failed_page) {
+      ++pos;
+    }
   }
   return all_ok;
 }
@@ -2122,13 +2167,20 @@ bool VecBufferPool::extend_file(size_t new_size) {
   if (new_size <= file_size_) {
     return true;
   }
-  // O_DIRECT requires page-aligned backing-file growth.
+  // O_DIRECT requires page-aligned backing-file growth. An index written
+  // with a smaller format page size (e.g. 4 KiB) only aligns its allocation
+  // requests to that format, so round up to this host's page size instead of
+  // rejecting a valid append or directory split.
   if (new_size % kVectorPageSize != 0) {
-    LOG_ERROR(
-        "extend_file target must be page-aligned: file[%s], new_size[%zu], "
-        "page_size[%zu]",
-        file_name_.c_str(), new_size, kVectorPageSize);
-    return false;
+    if (new_size > std::numeric_limits<size_t>::max() - (kVectorPageSize - 1)) {
+      LOG_ERROR(
+          "extend_file target overflows page alignment: file[%s], "
+          "new_size[%zu], page_size[%zu]",
+          file_name_.c_str(), new_size, kVectorPageSize);
+      return false;
+    }
+    new_size =
+        (new_size + kVectorPageSize - 1) / kVectorPageSize * kVectorPageSize;
   }
   // Validate page-table capacity before changing the file.
   const size_t new_entry_num = (new_size - 1) / kVectorPageSize + 1;

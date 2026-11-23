@@ -1696,6 +1696,11 @@ class BufferStorage : public IndexStorage {
 
       auto new_meta_buf = std::make_unique<char[]>(new_segments_meta_size);
       auto new_append_meta = std::make_unique<char[]>(new_segments_meta_size);
+      // Keep the unused table region deterministic and free of heap garbage:
+      // the split path writes the whole table to disk, and rollback assumes
+      // both copies share identical unused bytes.
+      std::memset(new_meta_buf.get(), 0, new_segments_meta_size);
+      std::memset(new_append_meta.get(), 0, new_segments_meta_size);
 
       IndexFormat::MetaFooter new_footer;
       IndexFormat::SetupMetaFooter(&new_footer);

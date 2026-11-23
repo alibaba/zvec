@@ -714,7 +714,9 @@ class ZVEC_AILEGO_API VecBufferPool {
   //! repeatedly; no-op in read-only mode.
   int flush_all();
 
-  //! Extend the backing file and page table to `new_size`.
+  //! Extend the backing file and page table to at least `new_size`, rounding
+  //! the physical size up to the host page size. Callers only need to align
+  //! their requests to the index format's own page size.
   bool extend_file(size_t new_size);
 
   //! Shorten the file and discard unused page entries beyond `new_size`.
@@ -797,6 +799,11 @@ class ZVEC_AILEGO_API VecBufferPool {
   void drain_writeback();
   void writeback_loop();
   bool flush_writeback_batch(std::vector<block_id_t> &page_ids, char *staging);
+  // Pin a dirty page for writeback. Waits out an in-flight load/eviction so a
+  // flush never mistakes a temporarily unavailable dirty page for a persisted
+  // one. Returns nullptr for clean pages; sets *failed when the page is still
+  // dirty but cannot be pinned after the transition settles.
+  char *acquire_writeback_block(block_id_t page_id, bool *failed);
   int writeback_error() const {
     return writeback_error_.load(std::memory_order_acquire);
   }

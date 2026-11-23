@@ -1092,6 +1092,56 @@ TEST_F(BufferPoolTest, FailedFileExtendDoesNotGrowBackingFile) {
   std::fclose(backing);
 }
 
+TEST_F(BufferPoolTest, ExtendFileRoundsUpToHostPageSize) {
+  init_vec_pool(/*capacity_pages=*/2, /*file_pages=*/2, /*writable=*/true);
+  std::string file = new_file(/*num_pages=*/1);
+  VecBufferPool pool(file, /*writable=*/true);
+  ASSERT_EQ(0, pool.init());
+
+  // An index written with a smaller format page size (e.g. 4 KiB) requests
+  // growth that is not aligned to this host's page size. Appends and
+  // directory splits on such files must still succeed.
+  ASSERT_TRUE(pool.extend_file(kVectorPageSize + 1));
+  EXPECT_EQ(2 * kVectorPageSize, pool.file_size());
+
+  std::vector<char> payload(kVectorPageSize, static_cast<char>(0x5a));
+  EXPECT_EQ(0,
+            pool.write_range(kVectorPageSize, kVectorPageSize, payload.data()));
+  EXPECT_EQ(0, pool.flush_all());
+}
+
+TEST_F(BufferPoolTest, FlushAllDoesNotSkipDirtyPageInTransition) {
+  init_vec_pool(/*capacity_pages=*/2, /*file_pages=*/1, /*writable=*/true);
+  std::string file = new_file(/*num_pages=*/1);
+  VecBufferPool pool(file, /*writable=*/true);
+  ASSERT_EQ(0, pool.init());
+
+  // Simulate a dirty page whose acquisition is blocked by an in-flight
+  // transition: flush must not mistake it for an already persisted page.
+  ASSERT_EQ(VectorPageTable::LoadClaimResult::kClaimed,
+            pool.page_table_.try_claim_block_load(/*block_id=*/0));
+  pool.page_table_.mark_dirty(/*block_id=*/0);
+
+  std::atomic<bool> done{false};
+  std::atomic<int> rc{0};
+  std::thread flusher([&] {
+    rc.store(pool.flush_all(), std::memory_order_release);
+    done.store(true, std::memory_order_release);
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  // Before the fix, flush_all skipped the dirty page and returned 0 at once.
+  EXPECT_FALSE(done.load(std::memory_order_acquire));
+
+  // Settle the transition without publishing a clean page. The page is still
+  // dirty and unpinnable, so the flush must fail loudly instead of reporting
+  // success with stale bytes on disk.
+  ASSERT_TRUE(pool.page_table_.cancel_block_load(/*block_id=*/0));
+  flusher.join();
+  EXPECT_TRUE(done.load(std::memory_order_acquire));
+  EXPECT_NE(0, rc.load(std::memory_order_acquire));
+  pool.page_table_.clear_dirty(/*block_id=*/0);
+}
+
 TEST_F(BufferPoolTest, ExternalReservationSharesThePageBudget) {
   auto &memory_pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   init_page_pool(/*capacity_pages=*/4);
