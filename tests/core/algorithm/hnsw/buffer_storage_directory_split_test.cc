@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <sys/stat.h>
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -172,6 +173,19 @@ thread_local size_t short_data_prefix = 0;
 thread_local bool short_data_hit = false;
 // Throw a C++ exception from an ordinary data-page writeback.
 thread_local off_t throw_data_offset = -1;
+// Fail the same offset repeatedly (e.g. a link write and its rollback).
+thread_local off_t repeated_fail_offset = -1;
+thread_local int repeated_fail_remaining = 0;
+
+// Pause one data write so a same-stripe writer can queue behind it.
+struct PausedDataWrite {
+  std::mutex mutex;
+  std::condition_variable cv;
+  size_t offset{0};
+  bool reached{false};
+  bool resume{false};
+};
+thread_local PausedDataWrite *paused_data_write = nullptr;
 
 // Write a real prefix of the footer. Each fault is armed for one write.
 ssize_t InjectPwrite(decltype(&::pwrite) write_at, int fd, const void *buffer,
@@ -216,6 +230,19 @@ ssize_t InjectPwrite(decltype(&::pwrite) write_at, int fd, const void *buffer,
   if (offset == throw_data_offset) {
     throw_data_offset = -1;
     throw std::bad_alloc();
+  }
+  if (offset == repeated_fail_offset && repeated_fail_remaining > 0) {
+    if (--repeated_fail_remaining == 0) repeated_fail_offset = -1;
+    errno = EIO;
+    return -1;
+  }
+  if (paused_data_write &&
+      offset == static_cast<off_t>(paused_data_write->offset)) {
+    auto &pause = *paused_data_write;
+    std::unique_lock<std::mutex> lock(pause.mutex);
+    pause.reached = true;
+    pause.cv.notify_all();
+    pause.cv.wait(lock, [&] { return pause.resume; });
   }
   return write_at(fd, buffer, count, offset);
 }
@@ -1181,6 +1208,229 @@ TEST_F(BufferStorageDirectorySplitTest,
   ASSERT_NO_FATAL_FAILURE(verify_segment(*reader, name_a, kOldData));
   ASSERT_NO_FATAL_FAILURE(verify_segment(*reader, name_b, kNewData));
   ASSERT_EQ(0, reader->close());
+}
+
+TEST_F(BufferStorageDirectorySplitTest, PartialWriteKeepsRecordCursor) {
+  const std::string name = "record";
+  ASSERT_EQ(0, writer_->append(name, 2 * page_size_));
+  auto segment = writer_->get(name);
+  ASSERT_NE(nullptr, segment);
+  std::vector<char> prefix(page_size_ - 2, 'a');
+  ASSERT_EQ(prefix.size(), segment->write(0, prefix.data(), prefix.size()));
+  const size_t cursor = segment->data_size();
+
+  // The next record crosses into a page whose load fails. Only its prefix
+  // reaches the cache; the record cursor must not advance.
+  std::vector<char> record(16, 'b');
+  failed_read_hit = false;
+  failed_read_offset = static_cast<off_t>(segment->data_offset() + page_size_);
+  const size_t written = segment->write(cursor, record.data(), record.size());
+  failed_read_offset = -1;
+  ASSERT_TRUE(failed_read_hit);
+  EXPECT_LT(written, record.size());
+  EXPECT_EQ(cursor, segment->data_size());
+
+  // The retry starts at the unchanged cursor and publishes the whole record.
+  ASSERT_EQ(record.size(),
+            segment->write(cursor, record.data(), record.size()));
+  EXPECT_EQ(cursor + record.size(), segment->data_size());
+  std::vector<char> actual(record.size(), '\0');
+  ASSERT_EQ(record.size(),
+            segment->fetch(cursor, actual.data(), actual.size()));
+  EXPECT_EQ(record, actual);
+}
+
+TEST_F(BufferStorageDirectorySplitTest, SharedTailPageWritebackKeepsFileSize) {
+  if (page_size_ <= 4096) {
+    GTEST_SKIP() << "requires a host page larger than the 4 KiB layout";
+  }
+  ASSERT_EQ(0, writer_->close());
+  ASSERT_NO_FATAL_FAILURE(CreateFormatPageLayoutIndex(path_, 4096));
+  ASSERT_EQ(0, writer_->open(path_, IndexStorage::OpenOptions{false, false}));
+  auto version = writer_->get(INDEX_VERSION_SEGMENT_NAME);
+  ASSERT_NE(nullptr, version);
+  ASSERT_EQ(kNewData.size(),
+            version->write(0, kNewData.data(), kNewData.size()));
+  ASSERT_EQ(0, writer_->vec_buffer_pool()->flush_all());
+  struct stat info {};
+  ASSERT_EQ(0, ::stat(path_.c_str(), &info));
+  EXPECT_EQ(8192, info.st_size);
+  EXPECT_EQ(8192u, writer_->vec_buffer_pool()->file_size());
+  ASSERT_EQ(0, writer_->close());
+}
+
+TEST_F(BufferStorageDirectorySplitTest,
+       OrdinaryTailPageWritebackKeepsFileSize) {
+  if (page_size_ <= 4096) {
+    GTEST_SKIP() << "requires a host page larger than the 4 KiB layout";
+  }
+  ASSERT_EQ(0, writer_->close());
+  ASSERT_NO_FATAL_FAILURE(CreateFormatPageLayoutIndex(path_, 4096));
+  ASSERT_EQ(0, writer_->open(path_, IndexStorage::OpenOptions{false, false}));
+  ASSERT_EQ(0, writer_->append("filler", page_size_));
+  ASSERT_EQ(0, writer_->close());
+  // Reopening truncates the unused aligned tail to the format's real end.
+  ASSERT_EQ(0, writer_->open(path_, IndexStorage::OpenOptions{false, false}));
+  auto filler = writer_->get("filler");
+  ASSERT_NE(nullptr, filler);
+  ASSERT_EQ(kOldData.size(),
+            filler->write(0, kOldData.data(), kOldData.size()));
+  ASSERT_EQ(0, writer_->vec_buffer_pool()->flush_all());
+  struct stat info {};
+  ASSERT_EQ(0, ::stat(path_.c_str(), &info));
+  EXPECT_EQ(24576, info.st_size);
+  EXPECT_EQ(24576u, writer_->vec_buffer_pool()->file_size());
+  ASSERT_EQ(0, writer_->close());
+}
+
+TEST_F(BufferStorageDirectorySplitTest,
+       FooterShortWriteRestoresOldCheckpointAfterRetry) {
+  ASSERT_NO_FATAL_FAILURE(append_old_segment());
+  writer_->refresh(kCheckpoint);
+  Directory root{};
+  ASSERT_TRUE(ReadDirectory(path_, &root));
+  // The first write persists only a prefix (which still covers the new
+  // checkpoint). The first restore fails; the retry succeeds.
+  ShortFooterWrite fault{static_cast<off_t>(root.footer_offset),
+                         kShortFooterBytes};
+  short_footer_write = &fault;
+  ScopedWriteFailure restore_fault(root.footer_offset);
+  const int status = writer_->flush();
+  short_footer_write = nullptr;
+  ASSERT_EQ(IndexError_WriteData, status);
+  ASSERT_TRUE(restore_fault.hit);
+
+  // The restored old footer keeps the previous checkpoint readable.
+  auto reader = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, reader);
+  ASSERT_EQ(0, reader->init(zvec::ailego::Params{}));
+  ASSERT_EQ(0, reader->open(path_, false));
+  EXPECT_EQ(0u, reader->check_point());
+  ASSERT_EQ(0, reader->close());
+
+  writer_->refresh(kCheckpoint + 1);
+  ASSERT_EQ(0, writer_->flush());
+  ASSERT_EQ(kCheckpoint + 1, writer_->check_point());
+  ASSERT_EQ(0, writer_->close());
+}
+
+TEST_F(BufferStorageDirectorySplitTest,
+       FooterShortWriteAndFailedRestoreMarksIncomplete) {
+  ASSERT_NO_FATAL_FAILURE(append_old_segment());
+  writer_->refresh(kCheckpoint);
+  Directory root{};
+  ASSERT_TRUE(ReadDirectory(path_, &root));
+  ShortFooterWrite fault{static_cast<off_t>(root.footer_offset),
+                         kShortFooterBytes};
+  short_footer_write = &fault;
+  // Both restore attempts fail: the outcome is reported as incomplete and a
+  // later writeback reconciles the footer instead of hiding the split state.
+  repeated_fail_offset = static_cast<off_t>(root.footer_offset);
+  repeated_fail_remaining = 2;
+  const int status = writer_->flush();
+  short_footer_write = nullptr;
+  repeated_fail_offset = -1;
+  ASSERT_EQ(IndexError_WriteData, status);
+  EXPECT_TRUE(writer_->is_dirty());
+  ASSERT_EQ(0, writer_->flush());
+  EXPECT_EQ(kCheckpoint, writer_->check_point());
+  ASSERT_EQ(0, writer_->close());
+  auto reader = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, reader);
+  ASSERT_EQ(0, reader->init(zvec::ailego::Params{}));
+  ASSERT_EQ(0, reader->open(path_, false));
+  EXPECT_EQ(kCheckpoint, reader->check_point());
+  ASSERT_EQ(0, reader->close());
+}
+
+TEST_F(BufferStorageDirectorySplitTest,
+       FailedLinkAndRollbackReclaimsGrownTail) {
+  ASSERT_NO_FATAL_FAILURE(fill_first_chain());
+  Directory root{};
+  ASSERT_TRUE(ReadDirectory(path_, &root));
+  struct stat before {};
+  ASSERT_EQ(0, ::stat(path_.c_str(), &before));
+  const auto original_eof = before.st_size;
+  const std::string name = "new_split";
+  // Both the link write and the rollback restore fail.
+  repeated_fail_offset = static_cast<off_t>(root.footer_offset);
+  repeated_fail_remaining = 2;
+  ASSERT_EQ(IndexError_WriteData, writer_->append(name, page_size_));
+  repeated_fail_offset = -1;
+  EXPECT_TRUE(writer_->is_dirty());
+  // The repaired link lets a successful flush reclaim the grown tail.
+  ASSERT_EQ(0, writer_->flush());
+  struct stat after {};
+  ASSERT_EQ(0, ::stat(path_.c_str(), &after));
+  EXPECT_EQ(original_eof, after.st_size);
+  // The same segment can be appended again afterwards.
+  ASSERT_EQ(0, writer_->append(name, page_size_));
+  ASSERT_EQ(0, writer_->close());
+}
+
+TEST_F(BufferStorageDirectorySplitTest, RollbackBookkeepingDoesNotAllocate) {
+  // Grow the rollback reserve once on a fallible path, then force an
+  // allocation failure: the rollback's push_back must not allocate.
+  ASSERT_EQ(0, writer_->append("warm", page_size_));
+  ASSERT_NO_FATAL_FAILURE(fill_first_chain());
+  Directory root{};
+  ASSERT_TRUE(ReadDirectory(path_, &root));
+  const std::string name = "new_split";
+  fail_array_size = sizeof(size_t);
+  repeated_fail_offset = static_cast<off_t>(root.footer_offset);
+  repeated_fail_remaining = 2;
+  ASSERT_EQ(IndexError_WriteData, writer_->append(name, page_size_));
+  repeated_fail_offset = -1;
+  fail_array_size = 0;
+  ASSERT_EQ(0, writer_->flush());
+  ASSERT_EQ(0, writer_->close());
+}
+
+TEST_F(BufferStorageDirectorySplitTest, WritebackRunReleasesLatchBetweenRuns) {
+  auto &pool = *writer_->vec_buffer_pool();
+  const size_t page_a = 1;
+  const size_t page_b = page_a + zvec::ailego::VecBufferPool::kMutexBucketCount;
+  ASSERT_TRUE(pool.extend_file((page_b + 1) * page_size_));
+  // Two non-contiguous dirty pages map to the same stripe.
+  ASSERT_EQ(0, pool.write_range(page_a * page_size_, 5, "aaaaa"));
+  ASSERT_EQ(0, pool.write_range(page_b * page_size_, 5, "bbbbb"));
+
+  PausedDataWrite pause;
+  pause.offset = page_a * page_size_;
+  paused_data_write = &pause;
+  std::atomic<bool> flush_done{false};
+  std::thread flusher([&] {
+#if defined(__APPLE__) && TARGET_OS_OSX
+    zvec::test::SetDirectorySplitPwriteHook(InjectPwrite);
+#endif
+    paused_data_write = &pause;
+    EXPECT_EQ(0, pool.flush_all());
+    flush_done.store(true, std::memory_order_release);
+  });
+  {
+    std::unique_lock<std::mutex> lock(pause.mutex);
+    ASSERT_TRUE(pause.cv.wait_for(lock, std::chrono::seconds(5),
+                                  [&] { return pause.reached; }));
+  }
+  // A writer on the same stripe now queues for the exclusive latch.
+  std::atomic<bool> write_done{false};
+  std::thread writer([&] {
+    EXPECT_EQ(0, pool.write_range(page_b * page_size_, 5, "ccccc"));
+    write_done.store(true, std::memory_order_release);
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  {
+    std::lock_guard<std::mutex> lock(pause.mutex);
+    pause.resume = true;
+    pause.cv.notify_all();
+  }
+  paused_data_write = nullptr;
+  // The first run must release its latch before the next run re-acquires
+  // the same stripe, otherwise flusher and writer deadlock each other.
+  flusher.join();
+  writer.join();
+  EXPECT_TRUE(flush_done.load(std::memory_order_acquire));
+  EXPECT_TRUE(write_done.load(std::memory_order_acquire));
 }
 
 #endif

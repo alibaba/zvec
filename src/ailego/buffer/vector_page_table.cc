@@ -1446,7 +1446,10 @@ bool VecBufferPool::page_overlaps_metadata(size_t offset) const {
 
 int VecBufferPool::writeback_page(size_t offset, size_t length,
                                   const char *buffer) {
-  const size_t end = offset + length;
+  // Never grow the physical file past its recorded size: an index written
+  // with a smaller format page size ends inside the final host page, and a
+  // full-page writeback must not push the physical EOF beyond it.
+  const size_t end = std::min(offset + length, file_size_);
   const auto write = [&](int fd, size_t begin, size_t limit) {
     if (begin >= limit) return 0;
     const size_t size = limit - begin;
@@ -1589,6 +1592,9 @@ bool VecBufferPool::flush_whole_pages(const block_id_t *page_ids, size_t count,
         locks[selected] =
             std::shared_lock<std::shared_mutex>(block_mutexes_[stripe]);
         if (!page_table_.is_block_dirty(page_id)) {
+          // Release this latch immediately: keeping it while re-acquiring
+          // the same stripe can deadlock with a waiting writer.
+          locks[selected].unlock();
           ++pos;
           continue;
         }
@@ -1605,8 +1611,12 @@ bool VecBufferPool::flush_whole_pages(const block_id_t *page_ids, size_t count,
 
       std::array<IoUringWrite, kBlockingAioBatchSize> requests{};
       for (size_t i = 0; i < selected; ++i) {
+        // A format page smaller than the host page ends inside the last
+        // host page: cap the writeback at the recorded file size.
+        const size_t write_size = std::min(
+            kVectorPageSize, file_size_ - selected_pages[i] * kVectorPageSize);
         requests[i] = IoUringWrite(selected_pages[i] * kVectorPageSize,
-                                   kVectorPageSize, buffers[i]);
+                                   write_size, buffers[i]);
       }
 
       writeback_batches_.fetch_add(1, std::memory_order_relaxed);
@@ -1625,10 +1635,12 @@ bool VecBufferPool::flush_whole_pages(const block_id_t *page_ids, size_t count,
         bool page_ok = aio_ok;
         if (!page_ok) {
           errno = 0;
-          const ssize_t written =
-              zvec_pwrite(fd_, buffers[i], kVectorPageSize,
-                          selected_pages[i] * kVectorPageSize);
-          page_ok = written == static_cast<ssize_t>(kVectorPageSize);
+          const size_t write_size =
+              std::min(kVectorPageSize,
+                       file_size_ - selected_pages[i] * kVectorPageSize);
+          const ssize_t written = zvec_pwrite(
+              fd_, buffers[i], write_size, selected_pages[i] * kVectorPageSize);
+          page_ok = written == static_cast<ssize_t>(write_size);
           if (!page_ok) {
             const int error = errno != 0 ? errno : EIO;
             if (batch_error == 0) {
@@ -1670,12 +1682,16 @@ bool VecBufferPool::flush_whole_pages(const block_id_t *page_ids, size_t count,
       std::max<size_t>(1, std::min(kBlockingAioBatchSize, block_mutex_count_));
   const size_t run_limit = staging != nullptr ? max_run : 1;
   std::array<char *, kBlockingAioBatchSize> buffers{};
-  std::array<std::shared_lock<std::shared_mutex>, kBlockingAioBatchSize> locks;
 
   size_t pos = 0;
   while (pos < count) {
     const block_id_t run_start = page_ids[pos];
     size_t run_count = 0;
+    // Page latches and pins are scoped to each run: holding a shared latch
+    // into the next run can deadlock with a writer waiting for the same
+    // stripe's exclusive latch.
+    std::array<std::shared_lock<std::shared_mutex>, kBlockingAioBatchSize>
+        locks;
     WritebackPins pins(page_table_);
     bool skip_failed_page = false;
     while (pos + run_count < count && run_count < run_limit &&
@@ -1719,7 +1735,12 @@ bool VecBufferPool::flush_whole_pages(const block_id_t *page_ids, size_t count,
     // Without staging, resident pages are not contiguous; preserve correctness
     // by submitting one page at a time.
     const size_t submitted_pages = staging != nullptr ? run_count : 1;
-    const size_t submitted_size = submitted_pages * kVectorPageSize;
+    // A format page smaller than the host page ends inside the last host
+    // page: cap the writeback at the recorded file size instead of growing
+    // the physical EOF past it.
+    const size_t submitted_size =
+        std::min(submitted_pages * kVectorPageSize,
+                 file_size_ - run_start * kVectorPageSize);
     writeback_batches_.fetch_add(1, std::memory_order_relaxed);
     const ssize_t written = zvec_pwrite(fd_, write_buffer, submitted_size,
                                         run_start * kVectorPageSize);
@@ -1777,6 +1798,18 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry,
       }
       continue;
     }
+
+    // Ownership transfers to publish_claimed_block only on success. Any
+    // exception or early return otherwise releases the buffer and the load
+    // claim, so the next reader never waits on an abandoned Loading state.
+    bool publish_called = false;
+    auto load_cleanup = ScopeGuard::Make([&] {
+      if (publish_called) return;
+      if (buffer != nullptr) {
+        MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
+      }
+      (void)page_table_.cancel_block_load(page_id);
+    });
 
     bool found = MemoryLimitPool::get_instance().try_acquire_buffer(
         kVectorPageSize, buffer);
@@ -1852,7 +1885,6 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry,
             static_cast<unsigned long long>(page_stats.evict),
             static_cast<unsigned long long>(page_stats.second_chance));
       }
-      (void)page_table_.cancel_block_load(page_id);
       return nullptr;
     }
 
@@ -1885,13 +1917,11 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry,
               "Buffer pool failed to read file at offset: file[%s], "
               "page_id[%zu], offset[%zu], expected[%zu], got[%zd]",
               file_name_.c_str(), page_id, page_offset, read_len, read_bytes);
-          MemoryLimitPool::get_instance().release_buffer(buffer,
-                                                         kVectorPageSize);
-          (void)page_table_.cancel_block_load(page_id);
           return nullptr;
         }
       }
     }
+    publish_called = true;
     return page_table_.publish_claimed_block(page_id, buffer, page_offset);
   }
 }
@@ -2093,15 +2123,17 @@ bool VecBufferPool::read_range_bypass(size_t file_offset, size_t length,
       }
     }
     const size_t available = file_size_ - page_offset;
+    // Cancel this iteration's load claim (if any) on every exit, including
+    // an exception from the read below.
+    auto claim_cleanup = ScopeGuard::Make([&] {
+      if (claimed) (void)page_table_.cancel_block_load(page_id);
+    });
     const size_t read_size = direct_io_enabled_
                                  ? kVectorPageSize
                                  : std::min(kVectorPageSize, available);
 
     ++io_requests;
     const ssize_t read_bytes = zvec_pread(fd_, page, read_size, page_offset);
-    if (claimed) {
-      (void)page_table_.cancel_block_load(page_id);
-    }
     if (read_bytes <= 0 ||
         within_page + copy_size > static_cast<size_t>(read_bytes)) {
       ok = false;
@@ -3012,6 +3044,15 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
     }
     if (load_count == 0) continue;
 
+    // Any claim not published by the end of this batch is cancelled here,
+    // covering exceptions from allocation, submission and result handling.
+    std::array<bool, kBlockingAioBatchSize> published{};
+    auto claim_cleanup = ScopeGuard::Make([&] {
+      for (size_t i = 0; i < load_count; ++i) {
+        if (!published[i]) (void)page_table_.cancel_block_load(load_pages[i]);
+      }
+    });
+
     std::array<char *, kBlockingAioBatchSize> buffers{};
     size_t allocated = MemoryLimitPool::get_instance().batch_acquire_buffers(
         kVectorPageSize, buffers.data(), load_count);
@@ -3190,6 +3231,7 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
       char *installed = page_table_.publish_claimed_block(
           pid, buffers[i], pid * kVectorPageSize);
       if (installed != nullptr) {
+        published[i] = true;
         page_table_.release_block(pid);
       } else {
         batch_ok = false;

@@ -20,6 +20,7 @@
 #include <limits>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <shared_mutex>
 #include <stdexcept>
 #include <thread>
@@ -711,7 +712,11 @@ class BufferStorage : public IndexStorage {
           abs_offset, len, static_cast<const char *>(data), &written);
       if (written == 0 && len != 0) return 0;
       const uint64_t write_end = offset + written;
-      if (write_end > bs_load_acquire(&meta->data_size)) {
+      // Commit the record cursor only when the whole record was written.
+      // A partial write leaves data_size unchanged so a retry starts at the
+      // same cursor; the already-written prefix stays invisible to readers
+      // until it is rewritten and published by a complete write.
+      if (written == len && write_end > bs_load_acquire(&meta->data_size)) {
         std::lock_guard<std::mutex> meta_latch(state_->metadata_mutex);
         uint64_t cur = bs_load_relaxed(&meta->data_size);
         if (write_end > cur) {
@@ -1530,9 +1535,21 @@ class BufferStorage : public IndexStorage {
       // Restore the old checkpoint against the table that just reached disk.
       bool footer_written = false;
       AILEGO_DEFER([&]() {
-        if (changes_checkpoint && !footer_written) {
-          restore_metadata(mchain.footer_file_offset(), sizeof(mchain.footer),
-                           reinterpret_cast<const char *>(&mchain.footer));
+        if (!changes_checkpoint || footer_written) return;
+        // Retry the restore once with the retained old footer. If the disk
+        // still rejects it, the checkpoint outcome is uncertain and must be
+        // reported instead of silently dropping the restore result.
+        if (!restore_metadata(mchain.footer_file_offset(),
+                              sizeof(mchain.footer),
+                              reinterpret_cast<const char *>(&mchain.footer)) &&
+            !restore_metadata(mchain.footer_file_offset(),
+                              sizeof(mchain.footer),
+                              reinterpret_cast<const char *>(&mchain.footer))) {
+          LOG_ERROR(
+              "flush_index: cannot restore footer after a short write; "
+              "checkpoint commit outcome is uncertain: file[%s], chain[%zu]",
+              file_name_.c_str(), ci);
+          schedule_metadata_writeback();
         }
       });
       if (buffer_pool_handle_->write_meta(
@@ -1552,6 +1569,18 @@ class BufferStorage : public IndexStorage {
       buffer_pool_->unregister_metadata_range(start);
     }
     stale_metadata_ranges_.clear();
+    // A rolled-back split can now return the grown tail and its page-table
+    // entries. Reclaim only unused pages; keeping the bytes is a valid
+    // fallback when a page is already resident.
+    if (pending_tail_truncation_) {
+      if (!buffer_pool_->truncate_unused_tail(*pending_tail_truncation_)) {
+        LOG_WARN(
+            "flush_index: cannot truncate rolled-back tail yet: file[%s], "
+            "target_eof[%zu]",
+            file_name_.c_str(), *pending_tail_truncation_);
+      }
+      pending_tail_truncation_.reset();
+    }
     persisted = true;
     return 0;
   } catch (const std::bad_alloc &) {
@@ -1589,6 +1618,7 @@ class BufferStorage : public IndexStorage {
     index_dirty_.store(false, std::memory_order_relaxed);
     metadata_writeback_incomplete_ = false;
     stale_metadata_ranges_.clear();
+    pending_tail_truncation_.reset();
     corrupted_.store(false, std::memory_order_relaxed);
     return status;
   }
@@ -1655,6 +1685,9 @@ class BufferStorage : public IndexStorage {
     if (!pending.second) return IndexError_Duplicate;
     bool committed = false;
     size_t unpublished_directory_start = 0;
+    // Preallocate the rollback bookkeeping on the fallible path: a
+    // push_back during exception unwinding must never allocate and throw.
+    stale_metadata_ranges_.reserve(stale_metadata_ranges_.size() + 1);
     const size_t original_file_size = buffer_pool_->file_size();
     AILEGO_DEFER([&]() {
       if (committed) return;
@@ -1766,6 +1799,9 @@ class BufferStorage : public IndexStorage {
     AILEGO_DEFER([&]() {
       if (committed || !chain_split) return;
       meta_chains_.pop_back();
+      // Once the old chain's link is repaired, the grown tail beyond the
+      // original EOF and its page-table entries can be reclaimed.
+      pending_tail_truncation_ = original_file_size;
       const auto &old_chain = meta_chains_.back();
       if (link_attempted &&
           !restore_metadata(
@@ -1927,6 +1963,9 @@ class BufferStorage : public IndexStorage {
   // Ranges kept alive by a failed link rollback; cleared after the next
   // successful metadata writeback. Same latch discipline as above.
   std::vector<size_t> stale_metadata_ranges_{};
+  // Original EOF recorded by a rolled-back split, reclaimed after the old
+  // chain's link is repaired. Optional keeps the record allocation-free.
+  std::optional<size_t> pending_tail_truncation_{};
   // A failed file-growth rollback blocks further writes.
   std::atomic<bool> corrupted_{false};
 
