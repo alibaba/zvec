@@ -280,7 +280,7 @@ TEST_F(StilePredicateTest, DenseSparseAndEmptyIntegerSetsMatchArrow) {
 }
 
 TEST_F(StilePredicateTest, CollidingIntegerSetsRespectProbeBudget) {
-  // 乘法哈希的逆元构造合法但落入同一桶的 uint64 值。
+  // The multiplicative hash inverse produces valid uint64 keys in one bucket.
   constexpr uint64_t inverse = UINT64_C(0xf1de83e19937733d);
   static_assert(inverse * UINT64_C(0x9e3779b97f4a7c15) == 1);
   arrow::UInt64Builder builder;
@@ -305,7 +305,8 @@ TEST_F(StilePredicateTest, CollidingIntegerSetsRespectProbeBudget) {
 
 TEST(StileKeyIndexTest, CollisionLimitPreservesHitsDuplicatesAndWraparound) {
   constexpr uint64_t inverse = UINT64_C(0xf1de83e19937733d);
-  // 128 个键分配 512 个桶；从末桶开始也必须正确处理环绕。
+  // Capacity for 128 keys allocates 512 buckets. Starting at the last bucket
+  // must handle wraparound correctly.
   for (uint64_t home : {uint64_t{0}, uint64_t{511}}) {
     stile::internal::KeyIndex index(128);
     const uint64_t base = home << 55;
@@ -327,7 +328,8 @@ TEST(StileKeyIndexTest, LongContiguousClusterPreservesDistinctHomeBuckets) {
   constexpr uint64_t inverse = UINT64_C(0xf1de83e19937733d);
   stile::internal::KeyIndex index(128);
   std::vector<uint64_t> keys;
-  // 连续占用 127 个桶，但每个键距自己的起始桶不超过 63。
+  // Occupy 127 consecutive buckets, but keep each key within 63 slots of
+  // its own home bucket.
   for (uint64_t home = 0; home < 64; ++home) {
     for (uint64_t ordinal = 0; ordinal < (home == 63 ? 1u : 2u); ++ordinal) {
       const auto key = ((home << 55) + ordinal) * inverse;
@@ -520,7 +522,8 @@ TEST_F(StilePredicateTest, Utf8LikeFastPathsAndEscapes) {
 }
 
 TEST_F(StilePredicateTest, LongLikeSubstringsFallBackButAnchorsStaySupported) {
-  // 按字节限制子串搜索；覆盖边界、重复前缀、NUL 和多字节 UTF-8。
+  // Bound substring search by byte length. Cover the limit, repeated prefixes,
+  // embedded NULs, and multibyte UTF-8.
   const std::string cjk = "\xe4\xb8\xad";
   const std::vector<std::string> literals{
       std::string(64, 'a'),

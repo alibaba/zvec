@@ -59,7 +59,8 @@ class KeyIndex {
       }
       if (slot.key == key) return slot.index;
     }
-    // 基数预算无法限制碰撞链；由 Compile 转成 CapacityError 后整体回退。
+    // Cardinality budgets do not bound collision chains. Compile converts this
+    // to CapacityError so the caller can fall back for the entire predicate.
     throw std::length_error("set hash probe budget exceeded");
   }
   // Builds the bitmap when the key range is small; call after inserting.
@@ -91,7 +92,8 @@ class KeyIndex {
       const Slot &slot = slots_[i];
       if (slot.index < 0 || slot.key == key) return slot.index;
     }
-    // 所有已插入键都在此范围内，即使连续占用的桶更多也可以安全结束。
+    // Every inserted key is within this probe bound of its home bucket, even
+    // when the contiguous cluster of occupied buckets is longer.
     return -1;
   }
   int32_t size() const {

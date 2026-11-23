@@ -1164,7 +1164,8 @@ TEST_P(ForwardFilterReadTest, CollidingSetsFallBackToArrow) {
   for (uint64_t row = 0; row < 24; ++row)
     EXPECT_EQ(candidate->is_filtered(row), row != 0 && row != 2) << row;
 
-  // 探测超限只回退当前谓词，不影响同一列后续查询的编译。
+  // Exceeding the probe budget only falls back for this predicate; later
+  // queries on the same column can still compile.
   replace_expression(*candidate, cp::equal(cp::field_ref(LOCAL_ROW_ID),
                                            cp::literal(uint64_t{2})));
   ASSERT_TRUE(candidate->compute_filter().ok());
@@ -1190,7 +1191,8 @@ TEST_P(ForwardFilterReadTest, LongLikeSubstringFallsBackAndRecovers) {
       cp::call("match_like", {cp::field_ref("text")},
                cp::MatchSubstringOptions("%" + literal + "%"));
   auto candidate = filter({"text"}, expression);
-  // 同时检查直接回退、NOT 的 NULL 语义和整棵布尔表达式回退。
+  // Cover direct fallback, NULL semantics under NOT, and fallback for the
+  // entire boolean expression.
   for (const auto &expr :
        {expression, cp::not_(expression),
         cp::and_(cp::is_valid(cp::field_ref("text")), expression)}) {
