@@ -243,10 +243,12 @@ TEST(RabitqQuantizer, TrainedCentroidZeroResidualAndStateValidation) {
   std::string state;
   ASSERT_EQ(0, q.serialize(&state));
   std::string invalid = state;
-  // An old single-stage layout must never be interpreted as split codes.
-  const uint32_t old_format = 7;
-  std::memcpy(invalid.data() + sizeof(QuantizerSerHeader), &old_format, 4);
-  EXPECT_NE(0, q.deserialize(invalid));
+  // Neither the old single-stage layout nor the removed scalar split layout
+  // can be interpreted as the supported rabitqlib representation.
+  for (uint32_t old_format : {7u, 0x52425132u}) {
+    std::memcpy(invalid.data() + sizeof(QuantizerSerHeader), &old_format, 4);
+    EXPECT_NE(0, q.deserialize(invalid));
+  }
   invalid = state;
   const float nan = std::numeric_limits<float>::quiet_NaN();
   std::memcpy(invalid.data() + invalid.size() - sizeof(float), &nan,
@@ -353,7 +355,15 @@ TEST(RabitqQuantizer, MatchesDedicatedRabitqEstimator) {
 void CheckCandidateEstimates(const BlockScanner &scanner, const void *block,
                              size_t count) {
   DistanceEstimate reference[32];
-  ASSERT_EQ(0, scanner.estimate(block, count, reference));
+  // Use this kernel's own unpruned scores for exact threshold checks. An
+  // AVX2-baseline build can dispatch to an FMA epilogue at runtime, so a scalar
+  // estimate may round differently at a tie. Both are checked against the
+  // dedicated estimator below using bounds on intermediate roundoff.
+  uint32_t all = 0;
+  ASSERT_EQ(0, scanner.estimate_candidates(
+                   block, count, std::numeric_limits<float>::infinity(),
+                   reference, &all));
+  ASSERT_EQ(static_cast<uint32_t>((uint64_t(1) << count) - 1), all);
   for (float threshold :
        {std::numeric_limits<float>::infinity(),
         -std::numeric_limits<float>::infinity(),
@@ -462,6 +472,12 @@ TEST(RabitqQuantizer, PackedScanMatchesDedicatedBatchEstimator) {
           turbo::DistanceEstimate estimates[32];
           ASSERT_EQ(0, scanner->estimate(packed.data(), count, estimates));
           CheckCandidateEstimates(*scanner, packed.data(), count);
+          DistanceEstimate selected[32];
+          uint32_t candidates = 0;
+          ASSERT_EQ(0, scanner->estimate_candidates(
+                           packed.data(), count,
+                           std::numeric_limits<float>::infinity(), selected,
+                           &candidates));
           for (size_t i = 0; i < count; ++i) {
             // FMA and separate multiply/add round differently. IP can cancel
             // large intermediate terms to almost zero, so bound roundoff by
@@ -473,6 +489,7 @@ TEST(RabitqQuantizer, PackedScanMatchesDedicatedBatchEstimator) {
                 roundoff * std::max(1.0f, std::abs(dot[i] - lut_offset) +
                                               std::abs(lut_offset));
             EXPECT_NEAR(dot[i], estimates[i].coarse_dot, dot_tolerance);
+            EXPECT_NEAR(dot[i], selected[i].coarse_dot, dot_tolerance);
             const float correction_error =
                 roundoff * std::abs(reference_query.g_add());
             EXPECT_NEAR(scalars[4], reference_query.g_add(), correction_error);
@@ -491,6 +508,16 @@ TEST(RabitqQuantizer, PackedScanMatchesDedicatedBatchEstimator) {
             EXPECT_NEAR(
                 (bits == 1 ? expected[i] : lower[i]) - (ip ? 1 : 0),
                 estimates[i].lower_bound,
+                tolerance +
+                    (bits == 1
+                         ? 0.0f
+                         : roundoff * std::abs(batch.f_error()[i] *
+                                               reference_query.g_error())));
+            EXPECT_NEAR(expected[i] - (ip ? 1 : 0), selected[i].distance,
+                        tolerance);
+            EXPECT_NEAR(
+                (bits == 1 ? expected[i] : lower[i]) - (ip ? 1 : 0),
+                selected[i].lower_bound,
                 tolerance +
                     (bits == 1
                          ? 0.0f
@@ -596,6 +623,12 @@ TEST(RabitqQuantizer, PackedScanUsesEachRowsModelCentroid) {
       DistanceEstimate estimates[32];
       ASSERT_EQ(0, scanner->estimate(block.data(), count, estimates));
       CheckCandidateEstimates(*scanner, block.data(), count);
+      DistanceEstimate selected[32];
+      uint32_t selected_mask = 0;
+      ASSERT_EQ(0,
+                scanner->estimate_candidates(
+                    block.data(), count, std::numeric_limits<float>::infinity(),
+                    selected, &selected_mask));
       const auto *scalars = reinterpret_cast<const float *>(
           encoded.data() + padded * sizeof(float) + padded / 2);
       const auto library_metric = std::strcmp(metric, "SquaredEuclidean") == 0
@@ -636,6 +669,7 @@ TEST(RabitqQuantizer, PackedScanUsesEachRowsModelCentroid) {
               roundoff * std::max(1.0f, std::abs(dot[i] - lut_offset) +
                                             std::abs(lut_offset));
           EXPECT_NEAR(dot[i], estimates[i].coarse_dot, dot_tolerance);
+          EXPECT_NEAR(dot[i], selected[i].coarse_dot, dot_tolerance);
           const float correction_error =
               roundoff * std::abs(reference_query.g_add());
           EXPECT_NEAR(scalars[4 + c], reference_query.g_add(),
@@ -653,6 +687,11 @@ TEST(RabitqQuantizer, PackedScanUsesEachRowsModelCentroid) {
           EXPECT_NEAR(expected[i] - offset, estimates[i].distance, tolerance);
           EXPECT_NEAR(
               lower[i] - offset, estimates[i].lower_bound,
+              tolerance + roundoff * std::abs(batch.f_error()[i] *
+                                              reference_query.g_error()));
+          EXPECT_NEAR(expected[i] - offset, selected[i].distance, tolerance);
+          EXPECT_NEAR(
+              lower[i] - offset, selected[i].lower_bound,
               tolerance + roundoff * std::abs(batch.f_error()[i] *
                                               reference_query.g_error()));
           EXPECT_FLOAT_EQ(quantizer.calc_distance_dp_query(row, encoded.data()),

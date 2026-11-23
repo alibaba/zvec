@@ -495,7 +495,8 @@ int HnswStreamer::open_quantizer(const IndexStorage::Pointer &storage,
   }
   std::string state;
   int ret = quantizer_->serialize(&state);
-  if (ret != 0 || state.empty()) return ret;
+  if (ret != 0) return ret;
+  if (state.empty()) return IndexError_InvalidFormat;
   const std::string segment_id = "hnsw.quantizer";
   if (create) {
     ret = storage->append(segment_id, state.size());

@@ -94,6 +94,15 @@ if(NOT RABITQ_SUPPORTED)
   list(FILTER ALL_SRCS EXCLUDE REGEX ".*/quantizer/rabitq_quantizer/.*")
 endif()
 
+# Keep pruning available on AVX2-baseline builds. Use the same target flags
+# and runtime CPU/OS guard as rabitqlib; the top-level gate probes these flags.
+if(RABITQ_SUPPORTED AND RABITQ_TARGET_PROCESSOR MATCHES "^(x86_64|amd64)$")
+  set_property(SOURCE quantizer/rabitq_quantizer/rabitq_scan_avx512.cc
+    APPEND PROPERTY COMPILE_OPTIONS ${RABITQ_AVX512_FLAGS})
+  set_property(SOURCE quantizer/rabitq_quantizer/rabitq_quantizer.cc
+    APPEND PROPERTY COMPILE_DEFINITIONS ZVEC_RABITQ_HAVE_AVX512=1)
+endif()
+
 # Set per-file compile flags for SIMD sources.
 # set_source_files_properties is directory-scoped, so it must be called in the
 # same directory that adds the sources to a target (i.e. here, not in a

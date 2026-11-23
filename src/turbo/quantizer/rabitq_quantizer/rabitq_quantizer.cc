@@ -10,22 +10,21 @@
 // limitations under the License.
 
 #include "rabitq_quantizer.h"
+#if defined(ZVEC_RABITQ_HAVE_AVX512)
+#include <rabitqlib/utils/cpu_features.hpp>
+#include "rabitq_scan_internal.h"
+#endif
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
-#if defined(__AVX512F__)
-#include <immintrin.h>
-#endif
 #include <rabitqlib/core/detail/rabitq_impl.hpp>
-#if RABITQ_SUPPORTED
 #include <rabitqlib/fastscan/data_layout.hpp>
 #include <rabitqlib/fastscan/highacc_fastscan.hpp>
 #include <rabitqlib/fastscan/query.hpp>
 #include <rabitqlib/utils/space.hpp>
 #include <rabitqlib/utils/warmup_space.hpp>
-#endif
 #include <zvec/core/framework/index_cluster.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_features.h>
@@ -34,16 +33,11 @@
 namespace zvec::turbo {
 namespace {
 // Version the record/query layout independently of the common quantizer header.
-#if RABITQ_SUPPORTED
 // Bumped from 0x52425132: records and query blobs now follow rabitqlib's
 // BinDataMap/ExDataMap layout so the dispatched SIMD estimators can consume
 // them in place. Indexes written with the scalar layout must be rebuilt.
 constexpr uint32_t kSplitFormat = 0x52425133;
 constexpr size_t kBinPrefix = 8;  // u32 cluster + u32 zero pad for alignment
-#else
-constexpr uint32_t kSplitFormat = 0x52425132;
-constexpr size_t kRecordHeader = 9 * sizeof(float);
-#endif
 uint32_t ReadUint(const void *data, size_t offset = 0) {
   uint32_t value;
   std::memcpy(&value, static_cast<const char *>(data) + offset, sizeof(value));
@@ -103,11 +97,9 @@ int RabitqQuantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   query_rescale_ =
       rabitqlib::quant::rabitq_impl::ex_bits::get_const_scaling_factors(
           padded_dim_, 3);
-#if RABITQ_SUPPORTED
   if (bits_ > 1)
     ex_ipfunc_ =
         rabitqlib::select_excode_ipfunc(static_cast<size_t>(bits_ - 1));
-#endif
   meta_ = meta;
   // DT_BINARY rounds to whole 32-bit words. Describe our exact byte layout
   // with DT_UINT8 instead; original dimension is owned by the quantizer.
@@ -230,7 +222,6 @@ uint32_t RabitqQuantizer::nearest_centroid(const std::vector<float> &x) const {
   return best;
 }
 
-#if RABITQ_SUPPORTED
 void RabitqQuantizer::quantize_data(const void *input, void *output) const {
   std::vector<float> rotated;
   const float original_norm = rotate(input, &rotated);
@@ -291,67 +282,7 @@ void RabitqQuantizer::quantize_data(const void *input, void *output) const {
   const float tail[] = {original_norm, static_cast<float>(dot / code_norm2)};
   std::memcpy(ex_data + ex_bytes + 8, tail, sizeof(tail));
 }
-#else
-void RabitqQuantizer::quantize_data(const void *input, void *output) const {
-  std::vector<float> rotated;
-  const float original_norm = rotate(input, &rotated);
-  const uint32_t cluster = nearest_centroid(rotated);
-  const float *centroid = centroids_.data() + cluster * padded_dim_;
-  std::vector<int> binary(padded_dim_);
-  std::vector<uint8_t> extra(padded_dim_, 0);
-  const auto metric = metric_ == MetricType::kSquaredEuclidean
-                          ? rabitqlib::METRIC_L2
-                          : rabitqlib::METRIC_IP;
-  float bin_add, bin_scale, bin_error;
-  rabitqlib::quant::rabitq_impl::one_bit::one_bit_code_with_factor(
-      rotated.data(), centroid, padded_dim_, binary.data(), bin_add, bin_scale,
-      bin_error, metric);
-  double norm2 = 0;
-  for (int i = 0; i < padded_dim_; ++i) {
-    const double r = rotated[i] - centroid[i];
-    norm2 += r * r;
-  }
-  // The upstream formula is undefined for a zero residual and can round
-  // slightly negative inside sqrt. Both mean a zero error radius here.
-  if (!std::isfinite(bin_error)) bin_error = 0;
-  float full_add = bin_add, full_scale = bin_scale, full_error;
-  if (bits_ > 1 && norm2 > 0) {
-    rabitqlib::quant::rabitq_impl::ex_bits::ex_bits_code_with_factor(
-        rotated.data(), centroid, padded_dim_, bits_ - 1, extra.data(),
-        full_add, full_scale, full_error, metric, rescale_);
-  }
-  double code_norm2 = 0, dot = 0;
-  const float midpoint = ((1u << bits_) - 1) * 0.5f;
-  std::memset(output, 0, quantized_datapoint_vector_length());
-  auto *signs = static_cast<uint8_t *>(output) + kRecordHeader;
-  auto *packed = signs + padded_dim_ / 8;
-  for (int i = 0; i < padded_dim_; ++i) {
-    signs[i / 8] |= binary[i] << (i % 8);
-    if (bits_ > 1) {
-      const size_t pos = static_cast<size_t>(i) * (bits_ - 1);
-      const unsigned shift = pos % 8;
-      packed[pos / 8] |= extra[i] << shift;
-      if (shift + bits_ - 1 > 8) packed[pos / 8 + 1] |= extra[i] >> (8 - shift);
-    }
-    const float code = (binary[i] << (bits_ - 1)) + extra[i] - midpoint;
-    dot += (rotated[i] - centroid[i]) * static_cast<double>(code);
-    code_norm2 += static_cast<double>(code) * code;
-  }
-  const float factors[] = {original_norm,
-                           static_cast<float>(norm2),
-                           static_cast<float>(dot / code_norm2),
-                           bin_add,
-                           bin_scale,
-                           bin_error,
-                           full_add,
-                           full_scale};
-  std::memcpy(output, &cluster, sizeof(cluster));
-  std::memcpy(static_cast<char *>(output) + sizeof(cluster), factors,
-              sizeof(factors));
-}
-#endif
 
-#if RABITQ_SUPPORTED
 void RabitqQuantizer::quantize_query(const void *input, void *output) const {
   std::vector<float> rotated;
   rotate(input, &rotated);
@@ -401,64 +332,7 @@ void RabitqQuantizer::quantize_query(const void *input, void *output) const {
     g_error[c] = static_cast<float>(std::sqrt(distance));
   }
 }
-#else
-void RabitqQuantizer::quantize_query(const void *input, void *output) const {
-  std::vector<float> rotated;
-  rotate(input, &rotated);
-  std::vector<float> values(quantized_query_vector_length() / sizeof(float), 0);
-  std::copy(rotated.begin(), rotated.end(), values.begin());
-  std::vector<float> zero(padded_dim_, 0);
-  std::vector<uint8_t> codes(padded_dim_, 0);
-  double norm2 = 0;
-  for (float v : rotated) norm2 += static_cast<double>(v) * v;
-  float delta = 0, vl = 0;
-  if (norm2 > 0) {
-    rabitqlib::quant::rabitq_impl::total_bits::rabitq_scalar_impl(
-        rotated.data(), zero.data(), padded_dim_, 4, codes.data(), delta, vl,
-        query_rescale_);
-  }
-  // Scalar equivalent of SplitSingleQuery's 4-bit warmup. Keep the FP32
-  // rotated query separately for full estimates and the original sum
-  // correction.
-  for (int i = 0; i < padded_dim_; ++i) {
-    values[padded_dim_ + i] = codes[i] * delta + vl;
-    values[2 * padded_dim_] += rotated[i];
-  }
-  for (size_t c = 0; c < centroids_.size() / padded_dim_; ++c) {
-    double distance = 0, dot = 0;
-    for (int i = 0; i < padded_dim_; ++i) {
-      const double center = centroids_[c * padded_dim_ + i];
-      distance += (rotated[i] - center) * (rotated[i] - center);
-      dot += rotated[i] * center;
-    }
-    values[2 * padded_dim_ + 1 + c] =
-        metric_ == MetricType::kSquaredEuclidean ? distance : -dot;
-    values[2 * padded_dim_ + 1 + num_clusters_ + c] = std::sqrt(distance);
-  }
-  std::memcpy(output, values.data(), quantized_query_vector_length());
-}
-#endif
 
-#if !RABITQ_SUPPORTED
-unsigned RabitqQuantizer::sign(const void *data, int i) const {
-  const auto *packed = static_cast<const uint8_t *>(data) + kRecordHeader;
-  return (packed[i / 8] >> (i % 8)) & 1;
-}
-
-unsigned RabitqQuantizer::code(const void *data, int i) const {
-  if (bits_ == 1) return sign(data, i);
-  const auto *packed =
-      static_cast<const uint8_t *>(data) + kRecordHeader + padded_dim_ / 8;
-  const size_t pos = static_cast<size_t>(i) * (bits_ - 1);
-  const unsigned shift = pos % 8;
-  unsigned value = packed[pos / 8] >> shift;
-  if (shift + bits_ - 1 > 8)
-    value |= static_cast<unsigned>(packed[pos / 8 + 1]) << (8 - shift);
-  return (sign(data, i) << (bits_ - 1)) | (value & ((1u << (bits_ - 1)) - 1));
-}
-#endif
-
-#if RABITQ_SUPPORTED
 float RabitqQuantizer::estimate(const void *dp, const void *q, bool full,
                                 float *lower) const {
   const uint32_t cluster = ReadUint(dp);
@@ -510,36 +384,6 @@ float RabitqQuantizer::estimate(const void *dp, const void *q, bool full,
   }
   return score;
 }
-#else
-float RabitqQuantizer::estimate(const void *dp, const void *q, bool full,
-                                float *lower) const {
-  const uint32_t cluster = ReadUint(dp);
-  if (cluster >= centroids_.size() / padded_dim_) {
-    *lower = std::numeric_limits<float>::infinity();
-    return *lower;
-  }
-  double dot = 0;
-  for (int i = 0; i < padded_dim_; ++i) {
-    dot += (full ? code(dp, i) : sign(dp, i)) *
-           static_cast<double>(
-               ReadFloat(q, (full ? i : padded_dim_ + i) * sizeof(float)));
-  }
-  dot -= (full ? ((1u << bits_) - 1) * 0.5f : 0.5f) *
-         ReadFloat(q, 2 * padded_dim_ * sizeof(float));
-  const float g_add =
-      ReadFloat(q, (2 * padded_dim_ + 1 + cluster) * sizeof(float));
-  const float g_error = ReadFloat(
-      q, (2 * padded_dim_ + 1 + num_clusters_ + cluster) * sizeof(float));
-  const float add = ReadFloat(dp, (full ? 7 : 4) * sizeof(float));
-  const float scale = ReadFloat(dp, (full ? 8 : 5) * sizeof(float));
-  // Library IP estimators use 1-IP. Turbo's internal IP space uses -IP.
-  const float score = add + g_add + scale * dot -
-                      (metric_ == MetricType::kInnerProduct ? 1 : 0);
-  *lower = score - ReadFloat(dp, 6 * sizeof(float)) * g_error /
-                       (full ? (1u << (bits_ - 1)) : 1);
-  return score;
-}
-#endif
 
 DistanceEstimate RabitqQuantizer::estimate_distance_dp_query(
     const void *dp, const void *q) const {
@@ -613,7 +457,6 @@ int RabitqQuantizer::quantize_datapoint(const void *data,
   return 0;
 }
 
-#if RABITQ_SUPPORTED
 int RabitqQuantizer::dequantize(const void *data, const IndexQueryMeta &meta,
                                 std::string *out) const {
   if (!data || !out ||
@@ -657,27 +500,6 @@ int RabitqQuantizer::dequantize(const void *data, const IndexQueryMeta &meta,
   out->assign(reinterpret_cast<const char *>(raw.data()), dim_ * sizeof(float));
   return 0;
 }
-#else
-int RabitqQuantizer::dequantize(const void *data, const IndexQueryMeta &meta,
-                                std::string *out) const {
-  if (!data || !out ||
-      meta.element_size() != quantized_datapoint_vector_length())
-    return kErrInvalidArgument;
-  const uint32_t cluster = ReadUint(data);
-  if (cluster >= centroids_.size() / padded_dim_) return kErrInvalidArgument;
-  std::vector<float> rotated(padded_dim_), raw(padded_dim_);
-  const float midpoint = ((1u << bits_) - 1) * 0.5f;
-  const float scale = ReadFloat(data, 3 * sizeof(float));
-  for (int i = 0; i < padded_dim_; ++i)
-    rotated[i] = centroids_[cluster * padded_dim_ + i] +
-                 scale * (code(data, i) - midpoint);
-  rotator_->apply_inverse(rotated.data(), raw.data());
-  if (metric_ == MetricType::kCosine)
-    for (float &v : raw) v *= ReadFloat(data, sizeof(float));
-  out->assign(reinterpret_cast<const char *>(raw.data()), dim_ * sizeof(float));
-  return 0;
-}
-#endif
 
 DistanceImpl RabitqQuantizer::distance(const void *query,
                                        const IndexQueryMeta &meta) const {
@@ -706,17 +528,12 @@ DistanceImpl RabitqQuantizer::distance(const void *query,
 // Auxiliary v1 layout: 32 cluster IDs followed by rabitqlib BatchDataMap.
 // Rows may belong to different model centroids even within one IVF list.
 size_t RabitqQuantizer::scan_block_size() const {
-#if RABITQ_SUPPORTED
   return 32 * sizeof(uint32_t) +
          rabitqlib::BatchDataMap<float>::data_bytes(padded_dim_);
-#else
-  return 0;
-#endif
 }
 
 int RabitqQuantizer::pack_scan_block(const void *rows, size_t count,
                                      size_t stride, void *output) const {
-#if RABITQ_SUPPORTED
   if (!rows || !output || !count || count > 32 ||
       stride < quantized_datapoint_vector_length())
     return kErrInvalidArgument;
@@ -745,16 +562,8 @@ int RabitqQuantizer::pack_scan_block(const void *rows, size_t count,
   rabitqlib::fastscan::pack_codes(padded_dim_, codes.data(), count,
                                   batch.bin_code());
   return 0;
-#else
-  (void)rows;
-  (void)count;
-  (void)stride;
-  (void)output;
-  return kErrUnsupported;
-#endif
 }
 
-#if RABITQ_SUPPORTED
 namespace {
 class RabitqBlockScanner final : public BlockScanner {
  public:
@@ -817,70 +626,18 @@ class RabitqBlockScanner final : public BlockScanner {
                           DistanceEstimate *out,
                           uint32_t *candidates) const override {
     if (!block || !out || !candidates || count > 32) return kErrInvalidArgument;
-#if defined(__AVX512F__)
-    if (count == 32) {
-      *candidates = 0;
+#if defined(ZVEC_RABITQ_HAVE_AVX512)
+    if (use_avx512_ && count == 32) {
       const auto *bytes = static_cast<const char *>(block);
-      const auto limit = _mm512_set1_epi32(static_cast<int>(clusters_));
-      const __m512i ids[2] = {
-          _mm512_loadu_si512(bytes),
-          _mm512_loadu_si512(bytes + 16 * sizeof(uint32_t))};
-      // Validate every active model ID, including lanes that pruning rejects.
-      if (_mm512_cmp_epu32_mask(ids[0], limit, _MM_CMPINT_NLT) ||
-          _mm512_cmp_epu32_mask(ids[1], limit, _MM_CMPINT_NLT))
-        return kErrInvalidArgument;
       rabitqlib::ConstBatchDataMap<float> batch(bytes + 32 * sizeof(uint32_t),
                                                 dim_);
       alignas(64) std::array<int32_t, 32> sums;
       accumulate(batch.bin_code(), sums.data());
       const auto *scalars = reinterpret_cast<const float *>(
           distance_.query_storage().data() + dim_ * sizeof(float) + dim_ / 2);
-      const float *g_add = scalars + 4;
-      const float *g_error = g_add + clusters_;
-      const __m512 delta = _mm512_set1_ps(query_.delta());
-      const __m512 sum_vl = _mm512_set1_ps(query_.sum_vl_lut());
-      const __m512 k1 = _mm512_set1_ps(query_.k1xsumq());
-      const __m512 threshold = _mm512_set1_ps(worst);
-      // 0.7 exposes packed factor views instead of float pointers. SIMD loads
-      // can still read the serialized bytes directly using its layout offsets.
-      using Offsets = rabitqlib::detail::BatchCodeOffsets<float>;
-      const char *factors = bytes + 32 * sizeof(uint32_t);
-      for (size_t half = 0; half < 2; ++half) {
-        const size_t first = half * 16;
-        const __m512 dot = _mm512_fmadd_ps(
-            delta, _mm512_cvtepi32_ps(_mm512_load_si512(sums.data() + first)),
-            sum_vl);
-        const __m512 add = _mm512_i32gather_ps(ids[half], g_add, 4);
-        __m512 score = _mm512_fmadd_ps(
-            _mm512_loadu_ps(factors + Offsets::rescale(dim_) +
-                            first * sizeof(float)),
-            _mm512_add_ps(dot, k1),
-            _mm512_add_ps(_mm512_loadu_ps(factors + Offsets::add(dim_) +
-                                          first * sizeof(float)),
-                          add));
-        if (ip_) score = _mm512_sub_ps(score, _mm512_set1_ps(1));
-        const __m512 lower =
-            bits_ == 1 ? score
-                       : _mm512_fnmadd_ps(
-                             _mm512_loadu_ps(factors + Offsets::error(dim_) +
-                                             first * sizeof(float)),
-                             _mm512_i32gather_ps(ids[half], g_error, 4), score);
-        uint32_t mask = _mm512_cmp_ps_mask(lower, threshold, _CMP_NGT_UQ);
-        *candidates |= mask << first;
-        if (!mask) continue;
-        // Most blocks have no candidates. Avoid writing 32 AoS estimates and
-        // gathering their bounds back just to discover an empty mask.
-        alignas(64) float scores[16], bounds[16], dots[16];
-        _mm512_store_ps(scores, score);
-        _mm512_store_ps(bounds, lower);
-        _mm512_store_ps(dots, dot);
-        while (mask) {
-          const size_t lane = ailego_ctz32(mask);
-          mask &= mask - 1;
-          out[first + lane] = {scores[lane], bounds[lane], dots[lane]};
-        }
-      }
-      return 0;
+      return rabitq_internal::PruneBlockAvx512(
+          block, dim_, clusters_, bits_, ip_, scalars, query_, sums.data(),
+          worst, out, candidates);
     }
 #endif
     return BlockScanner::estimate_candidates(block, count, worst, out,
@@ -929,6 +686,11 @@ class RabitqBlockScanner final : public BlockScanner {
     }
   }
 
+#if defined(ZVEC_RABITQ_HAVE_AVX512)
+  // Includes OS register-state support; resolve once per query, never per
+  // block.
+  const bool use_avx512_{rabitqlib::cpu::has_avx512_core()};
+#endif
   bool reuse_coarse_dot_{false};
   DistanceImpl distance_;
   size_t dim_, clusters_;
@@ -938,11 +700,9 @@ class RabitqBlockScanner final : public BlockScanner {
   rabitqlib::SplitBatchQuery<float> query_;
 };
 }  // namespace
-#endif
 
 std::unique_ptr<BlockScanner> RabitqQuantizer::block_scanner(
     const DistanceImpl &distance) const {
-#if RABITQ_SUPPORTED
   if (!distance.valid() ||
       distance.query_storage().size() != quantized_query_vector_length())
     return nullptr;
@@ -955,10 +715,6 @@ std::unique_ptr<BlockScanner> RabitqQuantizer::block_scanner(
   return std::make_unique<RabitqBlockScanner>(
       distance, padded_dim_, num_clusters_, bits_,
       metric_ == MetricType::kInnerProduct, ex_ipfunc_);
-#else
-  (void)distance;
-  return nullptr;
-#endif
 }
 
 int RabitqQuantizer::serialize(std::string *out) const {

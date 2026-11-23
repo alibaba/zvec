@@ -2411,6 +2411,49 @@ TEST(HnswTurboRabitq, RejectsUnsupportedPlatform) {
             zvec::core::IndexFactory::CreateQuantizer("RabitqQuantizer"));
 }
 #endif  // RABITQ_SUPPORTED
+TEST(HnswQuantizerTest, RejectsEmptyRequiredModelAndPropagatesSerializeErrors) {
+  using namespace zvec;
+  class EmptyModelQuantizer : public turbo::Fp32Quantizer {
+   public:
+    bool requires_original_vectors() const override {
+      return true;
+    }
+    int serialize(std::string *out) const override {
+      out->clear();
+      return result;
+    }
+    int result{0};
+  };
+  const std::string path = "hnsw_empty_quantizer_model.index";
+  for (int result : {0, int(core::IndexError_WriteData)}) {
+    SCOPED_TRACE(result);
+    test_util::RemoveTestFiles(path);
+    core::IndexMeta meta(core::IndexMeta::DT_FP32, kDimension);
+    meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+    auto quantizer = std::make_shared<EmptyModelQuantizer>();
+    ASSERT_EQ(0, quantizer->init(meta, ailego::Params()));
+    quantizer->result = result;
+    auto seed = IndexFactory::CreateAndInitIndex(
+        *MakeParam(MetricType::kL2sq, QuantizerType::kNone));
+    ASSERT_NE(nullptr, seed);
+    core::IndexStreamer::Pointer streamer =
+        std::make_shared<core::HnswStreamer>();
+    ASSERT_EQ(0, streamer->init(
+                     meta, seed->index_searcher()->meta().streamer_params(),
+                     quantizer));
+    auto storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(ailego::Params()));
+    ASSERT_EQ(0, storage->open(path, true));
+    EXPECT_EQ(result ? result : core::IndexError_InvalidFormat,
+              streamer->open(storage));
+    EXPECT_EQ(nullptr, storage->get("hnsw.quantizer"));
+    streamer.reset();
+    ASSERT_EQ(0, storage->close());
+  }
+  test_util::RemoveTestFiles(path);
+}
+
 TEST(HnswPqIndexTest, ReadOnlyOpenSkipsBuildPreparation) {
   using namespace zvec;
   class CountingQuantizer : public turbo::Fp32Quantizer {
