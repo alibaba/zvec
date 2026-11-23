@@ -170,6 +170,8 @@ class ScopedWriteFailure {
 thread_local off_t short_data_offset = -1;
 thread_local size_t short_data_prefix = 0;
 thread_local bool short_data_hit = false;
+// Throw a C++ exception from an ordinary data-page writeback.
+thread_local off_t throw_data_offset = -1;
 
 // Write a real prefix of the footer. Each fault is armed for one write.
 ssize_t InjectPwrite(decltype(&::pwrite) write_at, int fd, const void *buffer,
@@ -210,6 +212,10 @@ ssize_t InjectPwrite(decltype(&::pwrite) write_at, int fd, const void *buffer,
     // Persist only the prefix so the first range succeeds and the second
     // range reports a short write.
     return write_at(fd, buffer, prefix, offset);
+  }
+  if (offset == throw_data_offset) {
+    throw_data_offset = -1;
+    throw std::bad_alloc();
   }
   return write_at(fd, buffer, count, offset);
 }
@@ -1140,6 +1146,41 @@ TEST_F(BufferStorageDirectorySplitTest,
   ASSERT_EQ(0, reader->close());
   Directory tail{};
   EXPECT_TRUE(ReadDirectory(path_, &tail, tail_offset));
+}
+
+TEST_F(BufferStorageDirectorySplitTest,
+       DataWritebackExceptionReleasesPagePins) {
+  const std::string name_a = "seg_a";
+  const std::string name_b = "seg_b";
+  ASSERT_EQ(0, writer_->append(name_a, page_size_));
+  ASSERT_EQ(0, writer_->append(name_b, page_size_));
+  auto seg_a = writer_->get(name_a);
+  auto seg_b = writer_->get(name_b);
+  ASSERT_NE(nullptr, seg_a);
+  ASSERT_NE(nullptr, seg_b);
+  ASSERT_EQ(kOldData.size(), seg_a->write(0, kOldData.data(), kOldData.size()));
+  ASSERT_EQ(kNewData.size(), seg_b->write(0, kNewData.data(), kNewData.size()));
+  auto &pool = *writer_->vec_buffer_pool();
+  const size_t page_a = seg_a->data_offset() / page_size_;
+  const size_t page_b = seg_b->data_offset() / page_size_;
+
+  // An exception escaping the ordinary run's pwrite must still release every
+  // pin the run acquired; otherwise close() trips the residency assert.
+  throw_data_offset = static_cast<off_t>(seg_a->data_offset());
+  EXPECT_THROW(pool.flush_all(), std::bad_alloc);
+  EXPECT_TRUE(pool.page_table_.is_released(page_a)) << "page pin leaked";
+  EXPECT_TRUE(pool.page_table_.is_released(page_b)) << "page pin leaked";
+
+  // The dirty pages survive and the retry persists them.
+  ASSERT_EQ(0, pool.flush_all());
+  ASSERT_EQ(0, writer_->close());
+  auto reader = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, reader);
+  ASSERT_EQ(0, reader->init(zvec::ailego::Params{}));
+  ASSERT_EQ(0, reader->open(path_, false));
+  ASSERT_NO_FATAL_FAILURE(verify_segment(*reader, name_a, kOldData));
+  ASSERT_NO_FATAL_FAILURE(verify_segment(*reader, name_b, kNewData));
+  ASSERT_EQ(0, reader->close());
 }
 
 #endif

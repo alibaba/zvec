@@ -90,6 +90,34 @@ bool ResizeBackingFile(int fd, size_t size) {
   return ::ftruncate(fd, static_cast<off_t>(size)) == 0;
 #endif
 }
+
+// Owns every pin acquired for one writeback run. Releasing a batch manually
+// after the write leaves any pin acquired before an exception unreleased,
+// which trips force_evict_all_loaded()'s is_released() assert at close.
+class WritebackPins {
+ public:
+  explicit WritebackPins(VectorPageTable &table) : table_(table) {}
+  WritebackPins(const WritebackPins &) = delete;
+  WritebackPins &operator=(const WritebackPins &) = delete;
+  ~WritebackPins() {
+    for (size_t i = 0; i < count_; ++i) {
+      table_.release_block(pages_[i]);
+    }
+  }
+
+  void add(block_id_t page_id) {
+    assert(count_ < pages_.size());
+    pages_[count_++] = page_id;
+  }
+  size_t size() const {
+    return count_;
+  }
+
+ private:
+  VectorPageTable &table_;
+  std::array<block_id_t, kBlockingAioBatchSize> pages_{};
+  size_t count_{0};
+};
 }  // namespace
 
 VecBufferPool::~VecBufferPool() {
@@ -1520,8 +1548,10 @@ bool VecBufferPool::flush_whole_pages(const block_id_t *page_ids, size_t count,
       std::array<std::shared_lock<std::shared_mutex>, kBlockingAioBatchSize>
           locks;
       size_t selected = 0;
+      WritebackPins pins(page_table_);
 
-      while (pos < count && selected < kBlockingAioBatchSize) {
+      while (pos < count && selected < kBlockingAioBatchSize &&
+             pins.size() < kBlockingAioBatchSize) {
         const block_id_t page_id = page_ids[pos];
         if (!page_table_.is_block_dirty(page_id)) {
           ++pos;
@@ -1553,11 +1583,12 @@ bool VecBufferPool::flush_whole_pages(const block_id_t *page_ids, size_t count,
           ++pos;
           continue;
         }
+        // Own the pin immediately so an exception anywhere in this batch
+        // cannot leak it. Clean pages are released by the same guard.
+        pins.add(page_id);
         locks[selected] =
             std::shared_lock<std::shared_mutex>(block_mutexes_[stripe]);
         if (!page_table_.is_block_dirty(page_id)) {
-          locks[selected].unlock();
-          page_table_.release_block(page_id);
           ++pos;
           continue;
         }
@@ -1629,11 +1660,6 @@ bool VecBufferPool::flush_whole_pages(const block_id_t *page_ids, size_t count,
             std::memory_order_release, std::memory_order_relaxed);
         all_ok = false;
       }
-
-      for (size_t i = 0; i < selected; ++i) {
-        locks[i].unlock();
-        page_table_.release_block(selected_pages[i]);
-      }
     }
     return all_ok;
   }
@@ -1650,6 +1676,7 @@ bool VecBufferPool::flush_whole_pages(const block_id_t *page_ids, size_t count,
   while (pos < count) {
     const block_id_t run_start = page_ids[pos];
     size_t run_count = 0;
+    WritebackPins pins(page_table_);
     bool skip_failed_page = false;
     while (pos + run_count < count && run_count < run_limit &&
            page_ids[pos + run_count] == run_start + run_count) {
@@ -1667,11 +1694,12 @@ bool VecBufferPool::flush_whole_pages(const block_id_t *page_ids, size_t count,
       if (buffer == nullptr) {
         break;
       }
+      // Own the pin immediately so an exception anywhere in this run cannot
+      // leak it. Clean pages are released by the same guard.
+      pins.add(page_id);
       locks[run_count] = std::shared_lock<std::shared_mutex>(
           block_mutexes_[page_id % block_mutex_count_]);
       if (!page_table_.is_block_dirty(page_id)) {
-        locks[run_count].unlock();
-        page_table_.release_block(page_id);
         break;
       }
       buffers[run_count] = buffer;
@@ -1717,10 +1745,6 @@ bool VecBufferPool::flush_whole_pages(const block_id_t *page_ids, size_t count,
       all_ok = false;
     }
 
-    for (size_t i = 0; i < run_count; ++i) {
-      locks[i].unlock();
-      page_table_.release_block(run_start + i);
-    }
     pos += staging != nullptr ? run_count : submitted_pages;
     // The failed page was already accounted; never retry it in a tight loop.
     if (skip_failed_page) {
