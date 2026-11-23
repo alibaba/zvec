@@ -1,6 +1,7 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 
-# Add repository
-cc_directory(core)
-cc_directory(db)
+# Benchmark suites
+cc_directory(fts)
+cc_directory(inverted)
+cc_directory(vector)

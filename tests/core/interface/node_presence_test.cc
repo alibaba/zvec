@@ -22,6 +22,7 @@
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
 #include "algorithm/hnsw/hnsw_params.h"
+#include "../../ailego/buffer/pool_payload_budget.h"
 
 namespace zvec::core_interface {
 namespace {
@@ -31,7 +32,8 @@ using Mode = std::tuple<int, bool, bool, bool>;
 class NodePresenceTest : public testing::TestWithParam<Mode> {
  protected:
   void SetUp() override {
-    ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll * 1024ll);
+    ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024ll * 1024ll *
+                                                           1024ll);
     std::filesystem::remove_all(path_);
     std::filesystem::create_directory(path_);
   }
@@ -427,7 +429,8 @@ class SparseNodePresenceTest
     : public testing::TestWithParam<std::tuple<bool, bool, bool>> {
  protected:
   void SetUp() override {
-    ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll * 1024ll);
+    ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024ll * 1024ll *
+                                                           1024ll);
     std::filesystem::remove_all(path_);
     std::filesystem::create_directory(path_);
   }
@@ -676,7 +679,8 @@ INSTANTIATE_TEST_SUITE_P(StorageAndMapping, SparseNodePresenceTest,
                                           testing::Bool()));
 
 TEST(PhysicalSlotsTest, BuilderTrainingPersistsEmptySlots) {
-  ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll * 1024ll);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024ll * 1024ll *
+                                                         1024ll);
   std::vector<BaseIndexParam::Pointer> params{
       IVFIndexParamBuilder()
           .with_dimension(64)
@@ -857,7 +861,8 @@ TEST(PhysicalSlotsTest, BuilderTrainingPersistsEmptySlots) {
 }
 
 TEST(PhysicalSlotsTest, NullTailPersistsWithoutWrapperMetadata) {
-  ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll * 1024ll);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024ll * 1024ll *
+                                                         1024ll);
   const std::string path = "test_physical_null_tail";
   auto param = FlatIndexParamBuilder()
                    .with_dimension(kDimension)

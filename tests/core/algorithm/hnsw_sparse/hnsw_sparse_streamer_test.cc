@@ -29,6 +29,7 @@
 #include <zvec/ailego/container/vector.h>
 #include "tests/test_util.h"
 #include "utility/sparse_utility.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic push
@@ -103,7 +104,7 @@ void HnswSparseStreamerTest::TearDown() {
 }
 
 TEST_F(HnswSparseStreamerTest, StaleNullReservationPreservesExistingSlots) {
-  MemoryLimitPool::get_instance().init(64UL * 1024 * 1024);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(64UL * 1024 * 1024);
   for (const char *backend : {"MMapFileStorage", "BufferStorage"}) {
     SCOPED_TRACE(backend);
     auto storage = IndexFactory::CreateStorage(backend);

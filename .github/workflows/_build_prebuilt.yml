@@ -170,7 +170,7 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$ZVEC_INSTALL_DIR" \
-            -DBUILD_TOOLS=OFF \
+            -DBUILD_BENCHMARKS=OFF \
             -DBUILD_PYTHON_BINDINGS=OFF \
             -DBUILD_C_BINDINGS=ON \
             -DBUILD_ZVEC_SHARED=ON \
@@ -305,7 +305,7 @@ jobs:
           docker exec "$MUSL_CONTAINER" cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/work/install \
-            -DBUILD_TOOLS=OFF \
+            -DBUILD_BENCHMARKS=OFF \
             -DBUILD_PYTHON_BINDINGS=OFF \
             -DBUILD_C_BINDINGS=ON \
             -DBUILD_ZVEC_SHARED=ON \
@@ -425,7 +425,7 @@ jobs:
             -DANDROID_STL=c++_static \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$ZVEC_INSTALL_DIR" \
-            -DBUILD_TOOLS=OFF \
+            -DBUILD_BENCHMARKS=OFF \
             -DBUILD_PYTHON_BINDINGS=OFF \
             -DBUILD_C_BINDINGS=ON \
             -DBUILD_ZVEC_SHARED=ON \
@@ -560,7 +560,7 @@ jobs:
               -DCMAKE_OSX_SYSROOT="$(xcrun --sdk "$sdk" --show-sdk-path)" \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/install_${slice}" \
-              -DBUILD_TOOLS=OFF \
+              -DBUILD_BENCHMARKS=OFF \
               -DBUILD_PYTHON_BINDINGS=OFF \
               -DBUILD_C_BINDINGS=ON \
               -DBUILD_ZVEC_SHARED=ON \

@@ -21,6 +21,7 @@
 #include "utility/stable_vector_holder.h"
 #include "diskann_builder.h"
 #include "diskann_builder_entity.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 namespace zvec::core {
 namespace {
@@ -159,7 +160,7 @@ TEST_F(DiskAnnMmapViewTest, MergeUsesExistingIteratorAndRetainsAllSources) {
 }
 
 TEST_F(DiskAnnMmapViewTest, MixedStorageFallsBackWithoutChangingLifetime) {
-  ailego::MemoryLimitPool::get_instance().init(64 * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(64 * 1024UL * 1024UL);
   auto a = source("mmap", "MMapFileStorage");
   auto b = source("buffer", "BufferStorage");
   auto holder = std::make_shared<MergedProviderIndexHolder>(
@@ -198,7 +199,7 @@ TEST_F(DiskAnnMmapViewTest, CancellationDoesNotChangeLifetime) {
 }
 
 TEST_F(DiskAnnMmapViewTest, BuilderCopiesMixedStorageForGraphAndDumps) {
-  ailego::MemoryLimitPool::get_instance().init(64 * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(64 * 1024UL * 1024UL);
   auto a = source("a", "MMapFileStorage");
   auto b = source("b", "BufferStorage", 100);
   auto holder = std::make_shared<MergedProviderIndexHolder>(

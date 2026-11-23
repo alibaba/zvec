@@ -96,7 +96,7 @@ jobs:
           $env:CMAKE_BUILD_PARALLEL_LEVEL = "$env:NPROC"
           python -m pip install -v . `
             --no-build-isolation `
-            --config-settings='cmake.define.BUILD_TOOLS=ON' `
+            --config-settings='cmake.define.BUILD_BENCHMARKS=ON' `
             --config-settings='cmake.define.ENABLE_WERROR=ON' `
             --config-settings='cmake.define.CMAKE_C_COMPILER_LAUNCHER=sccache' `
             --config-settings='cmake.define.CMAKE_CXX_COMPILER_LAUNCHER=sccache'

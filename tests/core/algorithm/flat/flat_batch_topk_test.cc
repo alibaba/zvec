@@ -25,6 +25,7 @@
 #include "flat/flat_utility.h"
 #include "quantizer/distance_quantizer.h"
 #include "tests/test_util.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 using namespace zvec;
 using namespace zvec::core;
@@ -105,7 +106,7 @@ template <IndexMeta::DataType Type, typename T>
 void CheckStatic() {
   Cleanup cleanup{"flat_batch_topk_static"};
   test_util::RemoveTestPath(cleanup.path);
-  ailego::MemoryLimitPool::get_instance().init(64UL * 1024 * 1024);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(64UL * 1024 * 1024);
   auto data = Data<T>();
   IndexMeta meta(Type, kDimension);
   meta.set_metric("SquaredEuclidean", 0, ailego::Params());
@@ -208,7 +209,7 @@ void CheckStreamer() {
   constexpr uint32_t kQueryCount = 3;
   Cleanup cleanup{"flat_batch_topk_streamer"};
   test_util::RemoveTestPath(cleanup.path);
-  ailego::MemoryLimitPool::get_instance().init(64UL * 1024 * 1024);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(64UL * 1024 * 1024);
   const auto data = Data<T>();
   IndexMeta meta(Type, kDimension);
   meta.set_metric("SquaredEuclidean", 0, ailego::Params());
@@ -345,7 +346,7 @@ TEST(FlatBatchTopK, StaticMultiQueryPreprocessingAndExtraValues) {
   constexpr size_t kEncodedDimension = kDimension + sizeof(uint32_t);
   Cleanup cleanup{"flat_batch_topk_static_preprocess"};
   test_util::RemoveTestPath(cleanup.path);
-  ailego::MemoryLimitPool::get_instance().init(64UL * 1024 * 1024);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(64UL * 1024 * 1024);
   ailego::Params metric_params;
   metric_params.set("proxima.uniform_uint8.metric.origin_metric_name",
                     std::string("SquaredEuclidean"));

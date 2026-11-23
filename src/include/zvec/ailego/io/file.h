@@ -174,6 +174,8 @@ class ZVEC_AILEGO_API File {
 
   //! Unmap a mapping region
   static void MemoryUnmap(void *addr, size_t len);
+  // Report success before callers refund mapped-backing RSS ownership.
+  static bool TryMemoryUnmap(void *addr, size_t len);
 
   //! Synchronize a memory map
   static bool MemoryFlush(void *addr, size_t len);

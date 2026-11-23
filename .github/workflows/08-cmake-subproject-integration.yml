@@ -65,7 +65,7 @@ jobs:
             -DUSE_OSS_MIRROR=ON
             -DCMAKE_C_COMPILER_LAUNCHER=ccache
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-            -DBUILD_TOOLS=OFF
+            -DBUILD_BENCHMARKS=OFF
             -DBUILD_C_BINDINGS=OFF
             -DBUILD_PYTHON_BINDINGS=OFF
           )

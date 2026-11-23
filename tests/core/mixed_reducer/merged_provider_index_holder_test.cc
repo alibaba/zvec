@@ -27,6 +27,7 @@
 #include <zvec/core/framework/index_factory.h>
 #include "mixed_reducer/mixed_reducer_params.h"
 #include "mixed_reducer/mixed_streamer_reducer.h"
+#include "../../ailego/buffer/pool_payload_budget.h"
 
 namespace zvec {
 namespace core {
@@ -1187,9 +1188,11 @@ TEST(MergedProviderIndexHolderTest, OrdinalReadsReleaseBlocksBeforeNextRead) {
 TEST(MergedProviderIndexHolderTest, OrdinalReadsDoNotAccumulatePagePins) {
   struct RestorePoolBudget {
     ~RestorePoolBudget() {
-      EXPECT_EQ(0, ailego::MemoryLimitPool::get_instance().init(capacity));
+      EXPECT_EQ(
+          0, ::zvec::ailego::PoolPayloadBudget::get_instance().init(capacity));
     }
-    const size_t capacity{ailego::MemoryLimitPool::get_instance().capacity()};
+    const size_t capacity{
+        ::zvec::ailego::PoolPayloadBudget::get_instance().capacity()};
   } restore_budget;
   struct BackingFile {
     ~BackingFile() {
@@ -1199,7 +1202,7 @@ TEST(MergedProviderIndexHolderTest, OrdinalReadsDoNotAccumulatePagePins) {
   } backing;
   constexpr size_t kPageCount = 2;
   ASSERT_EQ(
-      0, ailego::MemoryLimitPool::get_instance().init(
+      0, ::zvec::ailego::PoolPayloadBudget::get_instance().init(
              kPageCount * ailego::kVectorPageSize +
              ailego::VecBufferPool::metadata_bytes_for_page_count(kPageCount)));
   {

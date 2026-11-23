@@ -28,6 +28,7 @@
 #include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/db/collection.h>
 #include <zvec/db/index_params.h>
+#include "../ailego/buffer/pool_payload_budget.h"
 
 using namespace zvec;
 
@@ -48,7 +49,7 @@ size_t QueryCount(const Collection::Ptr &collection,
 }  // namespace
 
 TEST(FloatRangeFilter, ForwardScanKeepsExactBound) {
-  ailego::MemoryLimitPool::get_instance().init(256 * 1024 * 1024);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(256 * 1024 * 1024);
   const std::string path = "./collection_float_range_filter_dir";
   std::filesystem::remove_all(path);
 

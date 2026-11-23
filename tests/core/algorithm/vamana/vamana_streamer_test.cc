@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include "vamana_context.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 #ifndef _MSC_VER
 #include <fcntl.h>
 #include <unistd.h>
@@ -448,7 +449,7 @@ TEST_F(VamanaStreamerTest, TestAddVector) {
 }
 
 TEST_F(VamanaStreamerTest, BufferStorageResultsRetainIndependentVectors) {
-  ailego::MemoryLimitPool::get_instance().init(64UL * 1024 * 1024);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(64UL * 1024 * 1024);
   auto streamer = create_vamana_streamer();
   ASSERT_NE(nullptr, streamer);
   auto storage = IndexFactory::CreateStorage("BufferStorage");

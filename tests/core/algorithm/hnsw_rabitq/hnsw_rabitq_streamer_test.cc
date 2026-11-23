@@ -24,6 +24,7 @@
 #include "hnsw_rabitq_streamer.h"
 #include "rabitq_converter.h"
 #include "rabitq_reformer.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 using namespace std;
 using namespace zvec::ailego;
@@ -647,7 +648,8 @@ TEST_F(HnswRabitqStreamerTest, TestDimensions) {
 }
 
 TEST_F(HnswRabitqStreamerTest, NullSlotsPersistWithoutBuildingGraphNodes) {
-  ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll * 1024ll);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024ll * 1024ll *
+                                                         1024ll);
   auto holder = make_shared<MultiPassIndexProvider<IndexMeta::DT_FP32>>(dim);
   for (uint32_t id = 0; id < 64; ++id) {
     NumericalVector<float> value(dim);
