@@ -1173,6 +1173,54 @@ TEST_P(ForwardFilterReadTest, CollidingSetsFallBackToArrow) {
   EXPECT_FALSE(candidate->is_filtered(2));
 }
 
+TEST_P(ForwardFilterReadTest, LongLikeSubstringFallsBackAndRecovers) {
+  ASSERT_NO_FATAL_FAILURE(create(0));
+  const std::string literal = std::string(32, 'a') + "b" + std::string(32, 'a');
+  const std::vector<std::string> texts{literal, "x" + literal + "y",
+                                       std::string(1024, 'a'), ""};
+  for (size_t row = 0; row < texts.size(); ++row) {
+    auto doc = TestHelper::CreateDoc(row, *schema_);
+    doc.set<std::string>("text", texts[row]);
+    ASSERT_TRUE(segment_->insert(doc).ok());
+  }
+  auto null_doc = TestHelper::CreateDocNull(texts.size(), *schema_);
+  ASSERT_TRUE(segment_->insert(null_doc).ok());
+  ASSERT_NO_FATAL_FAILURE(reopen_persisted());
+  const auto expression =
+      cp::call("match_like", {cp::field_ref("text")},
+               cp::MatchSubstringOptions("%" + literal + "%"));
+  auto candidate = filter({"text"}, expression);
+  // 同时检查直接回退、NOT 的 NULL 语义和整棵布尔表达式回退。
+  for (const auto &expr :
+       {expression, cp::not_(expression),
+        cp::and_(cp::is_valid(cp::field_ref("text")), expression)}) {
+    replace_expression(*candidate, expr);
+    auto status = candidate->compute_filter();
+    ASSERT_TRUE(status.ok()) << status.message();
+    EXPECT_EQ(uses_view(*candidate), GetParam());
+    EXPECT_FALSE(uses_stile(*candidate));
+    auto bound =
+        expr.Bind(*segment_->fetch({"text"}, std::vector<int>{})->schema());
+    ASSERT_TRUE(bound.ok());
+    for (size_t row = 0; row <= texts.size(); ++row) {
+      auto batch = segment_->fetch({"text"}, static_cast<int>(row));
+      ASSERT_NE(batch, nullptr);
+      auto result = cp::ExecuteScalarExpression(*bound, *batch);
+      ASSERT_TRUE(result.ok());
+      const auto &value = result->scalar_as<arrow::BooleanScalar>();
+      EXPECT_EQ(candidate->is_filtered(row), !value.is_valid || !value.value)
+          << row;
+    }
+    EXPECT_TRUE(candidate->is_filtered(texts.size()));
+  }
+  replace_expression(*candidate, cp::call("match_like", {cp::field_ref("text")},
+                                          cp::MatchSubstringOptions("%b%")));
+  ASSERT_TRUE(candidate->compute_filter().ok());
+  EXPECT_EQ(uses_stile(*candidate), GetParam());
+  for (size_t row = 0; row <= texts.size(); ++row)
+    EXPECT_EQ(candidate->is_filtered(row), row >= 2) << row;
+}
+
 TEST_P(IpcForwardFilterReadTest, ConcurrentPredicatesShareStileColumns) {
   ASSERT_NO_FATAL_FAILURE(create(24));
   ASSERT_NO_FATAL_FAILURE(reopen_persisted());

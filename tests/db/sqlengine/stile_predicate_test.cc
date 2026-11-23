@@ -519,6 +519,60 @@ TEST_F(StilePredicateTest, Utf8LikeFastPathsAndEscapes) {
   }
 }
 
+TEST_F(StilePredicateTest, LongLikeSubstringsFallBackButAnchorsStaySupported) {
+  // 按字节限制子串搜索；覆盖边界、重复前缀、NUL 和多字节 UTF-8。
+  const std::string cjk = "\xe4\xb8\xad";
+  const std::vector<std::string> literals{
+      std::string(64, 'a'),
+      std::string(65, 'a'),
+      std::string(32, 'a') + "b" + std::string(32, 'a'),
+      std::string(32, 'a') + '\0' + std::string(32, 'a'),
+      std::string(62, 'a') + cjk,
+      std::string(2048, 'a') + "b" + std::string(2048, 'a')};
+  for (const auto &literal : literals) {
+    SCOPED_TRACE(literal.size());
+    arrow::StringBuilder builder;
+    ASSERT_OK(builder.AppendValues({literal, "x" + literal + "y", literal + "y",
+                                    "x" + literal,
+                                    std::string(literal.size() * 2, 'a'), ""}));
+    ASSERT_OK(builder.AppendNull());
+    ASSERT_OK_AND_ASSIGN(auto values, builder.Finish());
+    for (const auto &type : {arrow::utf8(), arrow::large_utf8(),
+                             arrow::binary(), arrow::large_binary()}) {
+      SCOPED_TRACE(type->ToString());
+      ASSERT_OK_AND_ASSIGN(auto array, cp::Cast(values, type));
+      table_ = arrow::Table::Make(arrow::schema({arrow::field("s", type)}),
+                                  arrow::ArrayVector{array.make_array()});
+      for (const auto &pattern : {literal + "%", "%" + literal}) {
+        ASSERT_NO_FATAL_FAILURE(
+            expect_parity(cp::call("match_like", {cp::field_ref("s")},
+                                   cp::MatchSubstringOptions(pattern))));
+      }
+      auto expression =
+          cp::call("match_like", {cp::field_ref("s")},
+                   cp::MatchSubstringOptions("%" + literal + "%"));
+      if (literal.size() <= 64) {
+        ASSERT_NO_FATAL_FAILURE(expect_parity(expression));
+        continue;
+      }
+      ASSERT_OK_AND_ASSIGN(auto index, TableIndex::Make(table_));
+      ASSERT_OK_AND_ASSIGN(auto bound, expression.Bind(*table_->schema()));
+      auto compiled = Predicate::Compile(bound, index);
+      EXPECT_TRUE(compiled.status().IsNotImplemented())
+          << compiled.status().ToString();
+      ASSERT_OK_AND_ASSIGN(
+          auto result, cp::ExecuteScalarExpression(
+                           bound, cp::ExecBatch({array}, values->length())));
+      const auto matches =
+          std::static_pointer_cast<arrow::BooleanArray>(result.make_array());
+      for (int row = 0; row < 4; ++row) EXPECT_TRUE(matches->Value(row));
+      EXPECT_EQ(matches->Value(4), literal == std::string(literal.size(), 'a'));
+      EXPECT_FALSE(matches->Value(5));
+      EXPECT_TRUE(matches->IsNull(6));
+    }
+  }
+}
+
 TEST_F(StilePredicateTest, BudgetErrorsRemainDistinctFromInvalidInput) {
   auto index = TableIndex::Make(table_);
   ASSERT_TRUE(index.ok());

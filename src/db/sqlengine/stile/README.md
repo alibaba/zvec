@@ -72,7 +72,7 @@ int main() {
 支持的主要子集包括 boolean 字段/常量、比较、`and` / `or`、`and_kleene` / `or_kleene`、`invert`、空值检查、`is_in`，以及可证明无损的数值转换。支持情况还取决于绑定后的类型、kernel、options 和数据布局，不能仅凭函数名判断。
 
 - 普通布尔逻辑与 Kleene 逻辑保持 Arrow 各自的三值语义；不能互相替换。
-- LIKE 仅使用 Arrow 的大小写敏感前缀、后缀、子串快速路径，例如 `abc%`、`%abc`、`%abc%`。无通配符精确模式、`_` 通配符和忽略大小写等其余模式返回 `NotImplemented`。
+- LIKE 仅使用 Arrow 的大小写敏感前缀、后缀、子串快速路径，例如 `abc%`、`%abc`、`%abc%`。子串字面量超过 64 字节时返回 `NotImplemented`，交给 Arrow 的线性匹配，避免重复前缀造成二次复杂度；该限制不适用于前缀和后缀。无通配符精确模式、`_` 通配符和忽略大小写等其余模式返回 `NotImplemented`。
 - `FunctionRegistry` 可为自定义 Arrow 函数提供 list membership 描述。当前 `DocFilter` 未注册这些描述，不能据此认为 SQL `CONTAIN_*` 已走 Stile。
 - `NotImplemented` 表示无法使用当前求值子集；`CapacityError` 表示编译超过硬预算。生产接入对这两类编译状态使用**整表达式 Arrow 回退**，不混合执行部分子树。
 - 初始化、schema/数据校验、绑定及其他编译错误必须按调用链传播，不能一概当作正常回退。`DocFilter` 还会在编译前拒绝非 boolean 根节点。

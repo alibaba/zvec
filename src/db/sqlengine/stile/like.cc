@@ -88,6 +88,13 @@ arrow::Result<LikeMatcher> LikeMatcher::Make(
   std::string literal;
   if (!options.ignore_case) {
     if (auto kind = Classify(options.pattern, is_utf8, &literal)) {
+      // find 最坏会对每个候选起点比较整个子串。限制模式长度，
+      // 长模式交给 Arrow 的线性 KMP；前缀和后缀仅比较一次，无需限制。
+      constexpr size_t kMaxSubstringBytes = 64;
+      if (*kind == Kind::kSubstring && literal.size() > kMaxSubstringBytes) {
+        return arrow::Status::NotImplemented(
+            "LIKE substring exceeds fast-path limit");
+      }
       return LikeMatcher(*kind, std::move(literal));
     }
   }
