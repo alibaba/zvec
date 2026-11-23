@@ -213,6 +213,8 @@ int VamanaStreamerEntity::add_vector_with_id(node_id_t id, const void *vec) {
   key_t key = vec ? id : kInvalidKey;
 
   std::lock_guard<std::mutex> lock(mutex_);
+  // NULL reservations must not change slots filled by another writer.
+  if (!vec && id < doc_cnt()) return 0;
 
   auto func_get_node_chunk_and_offset = [&](node_id_t node_id) -> int {
     uint32_t chunk_idx = node_id >> node_index_mask_bits_;

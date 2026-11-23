@@ -837,6 +837,7 @@ template int FlatStreamer<32>::search_by_p_keys_fast(
 template <size_t BATCH_SIZE>
 int FlatStreamer<BATCH_SIZE>::reserve_slots(uint32_t count) {
   if (state_ != STATE_OPENED) return IndexError_NoReady;
+  if (use_external_vector_) return IndexError_Unsupported;
   READ_LOCK_GUARD_DEFER(dump_mutex_, dump_lock);
   if (!dump_lock.try_lock()) return IndexError_Unsupported;
   if (count <= entity_->slot_count()) return 0;

@@ -80,6 +80,9 @@ TEST_F(HnswRabitqStreamerTest, TestFirstUpperNeighbor) {
   node_id_t id = kInvalidNodeId;
   ASSERT_EQ(0, entity.add_vector(1, 0, vector.data(), &id));
   ASSERT_EQ(0U, id);
+  ASSERT_EQ(0, entity.add_vector_with_id(0, 0, nullptr));
+  EXPECT_EQ(1U, entity.slot_count());
+  EXPECT_EQ(0U, entity.get_key(0));
   ASSERT_EQ(0, entity.close());
 }
 

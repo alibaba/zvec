@@ -22,10 +22,13 @@
 #include <algorithm/flat_sparse/flat_sparse_utility.h>
 #include <gtest/gtest.h>
 #include <turbo/norm/norm2_matrix.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
+#include "algorithm/flat_sparse/flat_sparse_streamer_entity.h"
 #include "tests/test_util.h"
+#include "utility/sparse_utility.h"
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -117,6 +120,40 @@ class GuardedQueryBuffer {
 };
 
 }  // namespace
+
+TEST_F(FlatSparseStreamerTest, StaleNullReservationPreservesExistingSlots) {
+  MemoryLimitPool::get_instance().init(64UL * 1024 * 1024);
+  for (const char *backend : {"MMapFileStorage", "BufferStorage"}) {
+    SCOPED_TRACE(backend);
+    auto storage = IndexFactory::CreateStorage(backend);
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(Params()));
+    ASSERT_EQ(0, storage->open(dir_ + backend, true));
+    IndexStreamer::Stats stats;
+    FlatSparseStreamerEntity entity(stats);
+    entity.set_use_id_map(false);
+    ASSERT_EQ(0, entity.open(storage, *index_meta_ptr_));
+    uint32_t sparse_index = 3;
+    float value = 2.0f;
+    std::string vector;
+    SparseUtility::TransSparseFormat(1, &sparse_index, &value, sizeof(float),
+                                     vector);
+    for (uint32_t id : {9U, 20U}) {
+      ASSERT_EQ(0, entity.add_vector_with_id(id, vector, 1));
+    }
+    ASSERT_EQ(0, entity.add_vector_with_id(9, {}, 0, true));
+    ASSERT_EQ(0, entity.add_vector_with_id(5, {}, 0, true));
+    EXPECT_EQ(21U, entity.slot_count());
+    for (uint32_t id : {9U, 20U}) {
+      EXPECT_EQ(id, entity.get_key(id));
+      const void *stored = entity.get_sparse_vector(id);
+      ASSERT_NE(nullptr, stored);
+      EXPECT_EQ(0, std::memcmp(stored, vector.data(), vector.size()));
+    }
+    ASSERT_EQ(0, entity.close());
+    ASSERT_EQ(0, storage->close());
+  }
+}
 
 TEST_F(FlatSparseStreamerTest, Fp16QueryDoesNotReadPastBuffer) {
   auto storage = IndexFactory::CreateStorage("MMapFileStorage");

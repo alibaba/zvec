@@ -1287,6 +1287,9 @@ TEST_F(VamanaStreamerTest, TestContiguousPackedGraphTracksNeighborUpdates) {
   entity.set_max_occlusion_size(VamanaEntity::kDefaultMaxOcclusionSize);
   ASSERT_EQ(0, entity.init(kCount));
   ASSERT_EQ(0, entity.open(storage, 0, false));
+  ASSERT_EQ(0, entity.add_vector_with_id(1, nullptr));
+  EXPECT_EQ(kCount, entity.slot_count());
+  EXPECT_EQ(1U, entity.get_key(1));
   ASSERT_EQ(0, entity.build_contiguous_memory());
 
   const std::vector<std::pair<node_id_t, dist_t>> replacement = {{1U, 1.0F},

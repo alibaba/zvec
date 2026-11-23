@@ -1622,7 +1622,8 @@ int FlatStreamerEntity::add_vector_with_id(const uint32_t id, const void *query,
     return IndexError_Mismatch;
   }
 
-
+  // NULL reservations must not change slots filled by another writer.
+  if (!query && id < slot_count()) return 0;
   const uint64_t written_key = query ? id : kInvalidKey;
   std::vector<char> empty;
   if (!query) {

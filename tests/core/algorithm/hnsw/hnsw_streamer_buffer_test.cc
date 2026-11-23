@@ -90,6 +90,10 @@ TEST_F(HnswStreamerTest, LegacyReadsReleaseStorageBeforeThreadExit) {
     ASSERT_EQ(id, inserted);
   }
 
+  ASSERT_EQ(0, entity->add_vector_with_id(0, 1, nullptr));
+  EXPECT_EQ(3U, entity->slot_count());
+  EXPECT_EQ(101U, entity->get_key(1));
+
   // Both legacy adapters used to retain owning MemoryBlocks in TLS. Exercise
   // both on this still-running thread, including the resident-page path.
   const auto *single = static_cast<const float *>(entity->get_vector(1));

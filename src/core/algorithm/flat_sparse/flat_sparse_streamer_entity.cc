@@ -719,6 +719,8 @@ int FlatSparseStreamerEntity::add_vector_with_id(
 
   std::lock_guard<std::mutex> lock(mutex_);
 
+  // NULL reservations must not change slots filled by another writer.
+  if (is_null && id < doc_cnt()) return 0;
   if (id >= doc_cnt()) {
     for (auto i = doc_cnt(); i <= id; i++) {
       node_id_t local_id = doc_cnt();

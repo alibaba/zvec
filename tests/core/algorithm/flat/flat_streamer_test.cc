@@ -1537,6 +1537,9 @@ TEST_F(FlatStreamerTest, TestConcurrentSegmentGrowthAndFetch) {
     done.store(true);
     for (auto &reader : readers) EXPECT_TRUE(reader.get());
     ASSERT_EQ(count - 1, published.load());
+    // A reservation can reach the entity after its boundary slot was filled.
+    ASSERT_EQ(0, entity.add_vector_with_id(123, nullptr, dim * sizeof(float)));
+    EXPECT_EQ(count, entity.slot_count());
     ASSERT_TRUE(
         storage->has(StringHelper::Concat(FLAT_SEGMENT_FEATURES_SEG_ID, 8)));
 

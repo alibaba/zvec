@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <atomic>
+#include <cstring>
 #ifndef _MSC_VER
 #include <fcntl.h>
 #include <unistd.h>
@@ -24,8 +25,10 @@
 #include <memory>
 #include <gtest/gtest.h>
 #include <turbo/norm/norm_matrix.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/ailego/container/vector.h>
 #include "tests/test_util.h"
+#include "utility/sparse_utility.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic push
@@ -97,6 +100,48 @@ void HnswSparseStreamerTest::SetUp() {
 
 void HnswSparseStreamerTest::TearDown() {
   zvec::test_util::RemoveTestPath(dir_);
+}
+
+TEST_F(HnswSparseStreamerTest, StaleNullReservationPreservesExistingSlots) {
+  MemoryLimitPool::get_instance().init(64UL * 1024 * 1024);
+  for (const char *backend : {"MMapFileStorage", "BufferStorage"}) {
+    SCOPED_TRACE(backend);
+    auto storage = IndexFactory::CreateStorage(backend);
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(Params()));
+    ASSERT_EQ(0, storage->open(dir_ + backend, true));
+    IndexStreamer::Stats stats;
+    HnswSparseStreamerEntity entity(stats);
+    entity.set_scaling_factor(16);
+    entity.set_l0_neighbor_cnt(8);
+    entity.set_upper_neighbor_cnt(8);
+    entity.set_sparse_meta_size(HnswSparseEntity::kSparseMetaSize);
+    entity.set_sparse_unit_size(sizeof(float));
+    entity.set_use_id_map(false);
+    entity.set_chunk_size(4096);
+    ASSERT_EQ(0, entity.init(8UL * 1024 * 1024, 64));
+    ASSERT_EQ(0, entity.open(storage, false));
+    uint32_t sparse_index = 3;
+    float value = 2.0f;
+    std::string vector;
+    SparseUtility::TransSparseFormat(1, &sparse_index, &value, sizeof(float),
+                                     vector);
+    for (uint32_t id : {9U, 20U}) {
+      ASSERT_EQ(0, entity.add_vector_with_id(0, id, vector, 1));
+    }
+    // Resume a reserve_slots(10) that checked the range before those writes.
+    ASSERT_EQ(0, entity.add_vector_with_id(0, 9, {}, 0, true));
+    ASSERT_EQ(0, entity.add_vector_with_id(0, 5, {}, 0, true));
+    ASSERT_EQ(21U, entity.slot_count());
+    for (uint32_t id : {9U, 20U}) {
+      EXPECT_EQ(id, entity.get_key(id));
+      const void *stored = entity.get_sparse_data(id);
+      ASSERT_NE(nullptr, stored);
+      EXPECT_EQ(0, std::memcmp(stored, vector.data(), vector.size()));
+    }
+    ASSERT_EQ(0, entity.close());
+    ASSERT_EQ(0, storage->close());
+  }
 }
 
 TEST_F(HnswSparseStreamerTest, TestGeneral) {

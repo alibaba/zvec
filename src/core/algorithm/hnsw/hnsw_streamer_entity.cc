@@ -866,6 +866,8 @@ int HnswStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
   key_t key = vec ? id : kInvalidKey;
 
   std::lock_guard<std::mutex> lock(mutex_);
+  // NULL reservations must not change slots filled by another writer.
+  if (!vec && id < doc_cnt()) return 0;
 
   // duplicate check
   if (ailego_unlikely(vec && filter_same_key_ &&
