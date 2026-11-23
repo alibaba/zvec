@@ -3044,12 +3044,18 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
     }
     if (load_count == 0) continue;
 
-    // Any claim not published by the end of this batch is cancelled here,
-    // covering exceptions from allocation, submission and result handling.
-    std::array<bool, kBlockingAioBatchSize> published{};
+    // Track ownership, not residency: an explicitly cancelled claim may
+    // already belong to another loader when this batch leaves scope.
+    std::array<bool, kBlockingAioBatchSize> owned_claims{};
+    std::fill_n(owned_claims.begin(), load_count, true);
+    auto cancel_claim = [&](size_t i) {
+      assert(owned_claims[i]);
+      owned_claims[i] = false;
+      return page_table_.cancel_block_load(load_pages[i]);
+    };
     auto claim_cleanup = ScopeGuard::Make([&] {
       for (size_t i = 0; i < load_count; ++i) {
-        if (!published[i]) (void)page_table_.cancel_block_load(load_pages[i]);
+        if (owned_claims[i]) (void)cancel_claim(i);
       }
     });
 
@@ -3075,7 +3081,7 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
     }
     bool batch_ok = allocated == load_count;
     for (size_t i = allocated; i < load_count; ++i) {
-      if (!page_table_.cancel_block_load(load_pages[i])) {
+      if (!cancel_claim(i)) {
         LOG_ERROR(
             "VecBufferPool::load_pages_aio: failed to cancel unallocated "
             "load claim for page=%zu",
@@ -3093,7 +3099,7 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
           }
           buffers[i] = nullptr;
         }
-        if (!page_table_.cancel_block_load(load_pages[i])) {
+        if (!cancel_claim(i)) {
           LOG_ERROR(
               "VecBufferPool::load_pages_aio: failed to abandon load claim "
               "for page=%zu",
@@ -3150,7 +3156,7 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
         MemoryLimitPool::get_instance().release_buffer(buffers[i],
                                                        kVectorPageSize);
         buffers[i] = nullptr;
-        if (!page_table_.cancel_block_load(load_pages[i])) {
+        if (!cancel_claim(i)) {
           LOG_ERROR(
               "VecBufferPool::load_pages_aio: failed to cancel unsubmitted "
               "load claim for page=%zu",
@@ -3216,7 +3222,7 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
         MemoryLimitPool::get_instance().release_buffer(buffers[i],
                                                        kVectorPageSize);
         buffers[i] = nullptr;
-        if (!page_table_.cancel_block_load(load_pages[i])) {
+        if (!cancel_claim(i)) {
           LOG_ERROR(
               "VecBufferPool::load_pages_aio: failed to cancel failed load "
               "claim for page=%zu",
@@ -3230,8 +3236,10 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
       page_table_.promote_evict_priority(pid, priority);
       char *installed = page_table_.publish_claimed_block(
           pid, buffers[i], pid * kVectorPageSize);
+      // Publication consumes the claim even if it rejects the buffer. It
+      // must never leave cleanup responsible for a later loader's claim.
+      owned_claims[i] = false;
       if (installed != nullptr) {
-        published[i] = true;
         page_table_.release_block(pid);
       } else {
         batch_ok = false;

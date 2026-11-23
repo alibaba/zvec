@@ -795,6 +795,7 @@ class ZVEC_AILEGO_API VecBufferPool {
 
  private:
   friend class VecBufferPoolHandle;
+  friend struct VecBufferPoolAioTestPeer;
   void prefetch_pages_sync(block_id_t first_page, size_t page_count,
                            uint8_t priority);
   bool load_pages_aio(const block_id_t *page_ids, size_t count,
