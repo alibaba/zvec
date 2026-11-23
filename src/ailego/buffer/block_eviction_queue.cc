@@ -1533,17 +1533,23 @@ size_t MemoryLimitPool::pick_shard() {
   return idx % kNumFreeShards;
 }
 
-bool MemoryLimitPool::try_reserve_used(size_t bytes) {
-  const size_t capacity = pool_size_.load(std::memory_order_relaxed);
+bool MemoryLimitPool::try_reserve_used(size_t bytes, bool optional_cache) {
   size_t used = used_size_.load(std::memory_order_relaxed);
-  while (used <= capacity && bytes <= capacity - used) {
+  for (;;) {
+    const size_t limit = optional_cache
+                             ? high_watermark()
+                             : pool_size_.load(std::memory_order_relaxed);
+    if (used > limit || bytes > limit - used ||
+        (optional_cache &&
+         mandatory_waiters_.load(std::memory_order_relaxed) != 0)) {
+      return false;
+    }
     if (used_size_.compare_exchange_weak(used, used + bytes,
                                          std::memory_order_relaxed,
                                          std::memory_order_relaxed)) {
       return true;
     }
   }
-  return false;
 }
 
 bool MemoryLimitPool::try_reserve_page_used(size_t bytes, bool required) {
@@ -1610,7 +1616,8 @@ bool MemoryLimitPool::try_reserve_allocation(size_t bytes, Backing backing,
   // committed capacity here would spend those pending slots a second time.
   // Keep both counters individually bounded without holding a lock across
   // allocation, eviction, or writeback callbacks.
-  if (!try_reserve_used(bytes)) return false;
+  if (!try_reserve_used(bytes, backing == Backing::kOptionalPending))
+    return false;
   if (!try_reserve_committed(bytes, backing, materialization)) {
     release_buffer(nullptr, bytes);
     return false;
@@ -2426,6 +2433,13 @@ MemoryLimitPool::PendingAllocation::PendingAllocation(MemoryLimitPool &pool,
 
 MemoryLimitPool::PendingAllocation::~PendingAllocation() {
   if (!bytes_) return;
+  if (heap_materialized_) {
+    // Keep the upper bound on unsampled heap growth until RSS can observe the
+    // allocator's retained memory. A failed sample leaves the debit in place.
+    const auto stamp = pool_.process_rss_.finish_reservation(bytes_, true);
+    pool_.release_heap_cache(bytes_, stamp, /*refresh_rss=*/true);
+    return;
+  }
   pool_.release_fixed(bytes_, counter_, Backing::kPending);
   if (kind_ == Kind::kEvictableCache) pool_.release_heap_cache_charge(bytes_);
 }
@@ -2449,11 +2463,7 @@ bool MemoryLimitPool::PendingAllocation::reserve(size_t bytes) {
       reserved = pool_.try_charge_locked(bytes, counter_, Backing::kPending);
       break;
     case Kind::kEvictableCache: {
-      const size_t used = pool_.used();
-      const size_t limit = pool_.high_watermark();
-      if (pool_.mandatory_waiters_.load(std::memory_order_relaxed) == 0 &&
-          used <= limit && bytes <= limit - used &&
-          pool_.try_reserve_allocation(bytes, Backing::kOptionalPending)) {
+      if (pool_.try_reserve_allocation(bytes, Backing::kOptionalPending)) {
         pool_.evictable_heap_cache_size_.fetch_add(bytes,
                                                    std::memory_order_relaxed);
         counter_->fetch_add(bytes, std::memory_order_relaxed);
@@ -2504,6 +2514,9 @@ bool MemoryLimitPool::PendingAllocation::reserve_with_metadata(
 
 ProcessRssBudget::MaterializationStamp
 MemoryLimitPool::PendingAllocation::commit(size_t bytes) {
+  // Actual retained bytes transfer to the owner. The unused portion of the
+  // reservation can be canceled without leaving another heap debit behind.
+  heap_materialized_ = false;
   return commit_mapping(bytes);
 }
 
@@ -2790,10 +2803,20 @@ void MemoryLimitPool::release_heap_external(
 }
 
 void MemoryLimitPool::release_heap_cache(
-    size_t bytes, ProcessRssBudget::MaterializationStamp stamp) {
+    size_t bytes, ProcessRssBudget::MaterializationStamp stamp,
+    bool refresh_rss) {
   release_heap_external(bytes,
                         ProcessRssBudget::HeapProjection::Full(bytes, stamp));
+  // A waiter can still get RSS headroom from this release. Keep the heap
+  // charge visible until the new observation has been published.
+  if (refresh_rss) process_rss_.refresh(true);
   release_heap_cache_charge(bytes);
+  if (refresh_rss) {
+    {
+      std::lock_guard<std::mutex> lock(capacity_mutex_);
+    }
+    capacity_cv_.notify_all();
+  }
 }
 
 void MemoryLimitPool::release_heap_cache_charge(size_t bytes) {

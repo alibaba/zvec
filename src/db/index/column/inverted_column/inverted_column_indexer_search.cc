@@ -244,7 +244,10 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_lt_raw(
   bool lt;  // True if the current range or term is "less than" the search term
 
   // Process pre-aggregated range entries and merge matching bitmaps
-  if (iter_range && iter_range->Valid()) {
+  if (iter_range) {
+    const bool variable_range_keys =
+        field_.element_data_type() == DataType::STRING;
+    const bool has_ranges = iter_range->Valid();
     std::optional<std::string> point_seek_start_pos;
     // 1. Merge ranges where the end boundary is less than the search term
     while (iter_range->Valid()) {
@@ -259,8 +262,16 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_lt_raw(
       lt = cmp_lt(range_end, range_end_key_size, term.data(), term.length(),
                   include_eq);
       if (!lt) {
-        point_seek_start_pos.emplace(range_begin, range_begin_key_size);
-        break;
+        const std::string_view begin(range_begin, range_begin_key_size);
+        if (!point_seek_start_pos ||
+            begin < std::string_view(*point_seek_start_pos)) {
+          point_seek_start_pos.emplace(begin);
+        }
+        // For variable-width values the separator can also occur inside a
+        // term. RocksDB's composite-key order need not follow bucket order.
+        if (!variable_range_keys) break;
+        iter_range->Next();
+        continue;
       }
       s = InvertedIndexCodec::merge_or(
           iter_range->value().data(), iter_range->value().size(), true, bitmap);
@@ -269,6 +280,10 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_lt_raw(
         return tl::make_unexpected(s);
       }
       iter_range->Next();
+    }
+    if (!iter_range->status().ok()) {
+      s = Status::InternalError("Failed to read range index");
+      return tl::make_unexpected(s);
     }
     // 2. Change the start position of the point iterator
     if (point_seek_start_pos) {
@@ -282,7 +297,7 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_lt_raw(
         s = Status::InternalError();
         return tl::make_unexpected(s);
       }
-    } else {
+    } else if (has_ranges) {
       iter_point->SeekToLast();
     }
   }
@@ -301,6 +316,10 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_lt_raw(
       return tl::make_unexpected(s);
     }
     iter_point->Next();
+  }
+  if (!iter_point->status().ok()) {
+    s = Status::InternalError("Failed to read term index");
+    return tl::make_unexpected(s);
   }
 
   roaring_bitmap_repair_after_lazy(bitmap);
@@ -345,9 +364,10 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_gt_raw(
 
   // Process pre-aggregated range entries and merge matching bitmaps
   if (iter_range) {
-    // 1. Seek to the first range entry that is greater than the search term
+    // A composite key sorts at or after its begin term. Seek cannot skip a
+    // qualifying bucket, but can return a bucket whose begin is too small.
     iter_range->Seek(term);
-    if (iter_range->Valid()) {
+    while (iter_range->Valid()) {
       const char *range_begin, *range_end;
       size_t range_begin_key_size, range_end_key_size;
       if (!InvertedIndexCodec::decode_range_key(
@@ -356,33 +376,26 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_gt_raw(
         s = Status::InternalError("Invalid range key");
         return tl::make_unexpected(s);
       }
-      int ret =
-          cmp(range_begin, range_begin_key_size, term.data(), term.size());
-      if (ret == 0 && !include_eq) {
-        iter_range->Next();
-        if (iter_range->Valid()) {
-          if (!InvertedIndexCodec::decode_range_key(
-                  iter_range->key().data(), iter_range->key().size(),
-                  &range_begin, &range_begin_key_size, &range_end,
-                  &range_end_key_size)) {
-            s = Status::InternalError("Invalid range key");
-            return tl::make_unexpected(s);
-          }
-          point_seek_end_pos.emplace(range_begin, range_begin_key_size);
+      if (cmp_lt(term.data(), term.size(), range_begin, range_begin_key_size,
+                 include_eq)) {
+        const std::string_view begin(range_begin, range_begin_key_size);
+        if (!point_seek_end_pos ||
+            begin < std::string_view(*point_seek_end_pos)) {
+          point_seek_end_pos.emplace(begin);
         }
-      } else {
-        point_seek_end_pos.emplace(range_begin, range_begin_key_size);
-      }
-    }
-    // 2. Merge ranges where the begin boundary is greater than the search term
-    while (iter_range->Valid()) {
-      s = InvertedIndexCodec::merge_or(
-          iter_range->value().data(), iter_range->value().size(), true, bitmap);
-      if (!s.ok()) {
-        LOG_ERROR("Failed to merge range bitmap from %s", id().c_str());
-        return tl::make_unexpected(s);
+        s = InvertedIndexCodec::merge_or(iter_range->value().data(),
+                                         iter_range->value().size(), true,
+                                         bitmap);
+        if (!s.ok()) {
+          LOG_ERROR("Failed to merge range bitmap from %s", id().c_str());
+          return tl::make_unexpected(s);
+        }
       }
       iter_range->Next();
+    }
+    if (!iter_range->status().ok()) {
+      s = Status::InternalError("Failed to read range index");
+      return tl::make_unexpected(s);
     }
   }
 
@@ -406,6 +419,10 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_gt_raw(
       return tl::make_unexpected(s);
     }
     iter_point->Next();
+  }
+  if (!iter_point->status().ok()) {
+    s = Status::InternalError("Failed to read term index");
+    return tl::make_unexpected(s);
   }
 
   roaring_bitmap_repair_after_lazy(bitmap);
@@ -949,7 +966,10 @@ bool InvertedColumnIndexer::range_covers_most_values(const std::string &term,
   uint64_t total_cnt{0}, matching_cnt{0};
   if (auto s = estimate_range_ratio(term, op, &total_cnt, &matching_cnt);
       s.ok()) {
-    return (total_cnt != 0) &&
+    const uint64_t domain = static_cast<uint64_t>(max_id_.load()) + 1;
+    const uint64_t null_count = null_bitmap_.cardinality();
+    return total_cnt > 0 && null_count <= domain &&
+           total_cnt == domain - null_count &&
            ((1.0f * matching_cnt / total_cnt) > HIGH_SELECTIVITY_THRESHOLD);
 
   } else {
@@ -966,7 +986,8 @@ roaring_bitmap_t *InvertedColumnIndexer::flip_bitmap(
   } else {
     roaring_bitmap_or_inplace(ret, null_bitmap_.bitmap());
   }
-  roaring_bitmap_flip_inplace(ret, 0, max_id_ + 1);
+  roaring_bitmap_flip_inplace(ret, 0,
+                              static_cast<uint64_t>(max_id_.load()) + 1);
   return ret;
 }
 

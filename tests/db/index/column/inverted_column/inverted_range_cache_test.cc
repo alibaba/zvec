@@ -1144,6 +1144,43 @@ TEST_F(InvertedRangeCacheTest, BinaryStringsPreserveUnsignedLexicalOrder) {
   }
 }
 
+TEST_F(InvertedRangeCacheTest, BinaryStringRangeResultsSurviveEviction) {
+  create_writer({}, DataType::STRING);
+  std::vector<std::string> values;
+  for (int i = 1000; i < 2000; ++i) {
+    values.push_back("A" + std::to_string(i));
+  }
+  values.emplace_back("a");
+  values.emplace_back("b");
+  for (int i = 1000; i < 1998; ++i) {
+    values.push_back("c" + std::to_string(i));
+  }
+  for (uint32_t id = 0; id < values.size(); ++id) {
+    ASSERT_TRUE(column_->insert(id, values[id]).ok());
+  }
+  ASSERT_TRUE(column_->seal().ok());
+  ASSERT_NE(column_->range_cache(), nullptr);
+
+  // The [a,b] bucket's encoded key starts with "a\0b", so seeking in the
+  // range CF alone does not prove the bucket begins at or after "a\0".
+  const std::string bound("a\0", 2);
+  auto check = [&] {
+    for (const auto op : kRangeOperations) {
+      auto result = column_->search(bound, op);
+      ASSERT_NE(result, nullptr);
+      for (uint32_t id = 0; id < values.size(); ++id) {
+        ASSERT_EQ(result->contains(id), Matches(values[id], bound, op))
+            << "doc ID " << id << ", op=" << static_cast<int>(op);
+      }
+    }
+  };
+  check();
+  auto &queue = ailego::BlockEvictionQueue::get_instance();
+  queue.reclaim_for_allocation(column_->range_cache()->stats.accounted_bytes);
+  ASSERT_EQ(column_->range_cache(), nullptr);
+  check();
+}
+
 TEST_F(InvertedRangeCacheTest, SparseDocumentIdsDoNotCreatePhantomMatches) {
   create_writer();
   const auto values = RandomValues(24000, false);
@@ -1154,22 +1191,21 @@ TEST_F(InvertedRangeCacheTest, SparseDocumentIdsDoNotCreatePhantomMatches) {
   }
   ASSERT_TRUE(column_->seal().ok());
 
-  constexpr int32_t bound = 0;
-  size_t expected_count = 0;
-  for (const auto &value : values) {
-    expected_count += *value > bound;
-  }
-  auto check_result = [&](const InvertedColumnIndexer::Ptr &indexer) {
+  auto check_result = [&](const InvertedColumnIndexer::Ptr &indexer,
+                          int32_t bound) {
     const auto plan = indexer->explain_range(RawInt32(bound), CompareOp::GT);
+    EXPECT_FALSE(plan.flip);
     SCOPED_TRACE(testing::Message() << "path=" << static_cast<int>(plan.path)
                                     << ", flip=" << plan.flip);
     auto result = indexer->search(RawInt32(bound), CompareOp::GT);
     ASSERT_NE(result, nullptr);
-    EXPECT_EQ(result->count(), expected_count);
+    size_t expected_count = 0;
     for (uint32_t id = 0; id < 2 * values.size(); ++id) {
       const bool expected = id % 2 == 0 && *values[id / 2] > bound;
       ASSERT_EQ(result->contains(id), expected) << "doc ID " << id;
+      expected_count += expected;
     }
+    EXPECT_EQ(result->count(), expected_count);
   };
 
   RangePrefixCacheOptions disabled;
@@ -1177,14 +1213,14 @@ TEST_F(InvertedRangeCacheTest, SparseDocumentIdsDoNotCreatePhantomMatches) {
   auto legacy = InvertedColumnIndexer::CreateAndOpen("range_cache_test", field_,
                                                      context_, true, disabled);
   ASSERT_NE(legacy, nullptr);
-  EXPECT_FALSE(legacy->explain_range(RawInt32(bound), CompareOp::GT).flip);
-  check_result(legacy);
+  check_result(legacy, 0);
+  check_result(legacy, -10000);
   legacy.reset();
 
   // Correctness is required whether the cache is admitted or safely skipped.
-  check_result(column_);
+  check_result(column_, -10000);
   reopen();
-  check_result(column_);
+  check_result(column_, -10000);
 }
 
 }  // namespace

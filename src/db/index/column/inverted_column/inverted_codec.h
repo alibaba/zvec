@@ -159,11 +159,19 @@ class InvertedIndexCodec {
   }
 
 
-  // A frozen view over the portable format can expose unaligned payload and
-  // container storage to Roaring's bitmap operations.
-  static roaring_bitmap_t *load_posting_bitmap(const char *data, size_t size) {
+  enum class PostingAccess { kLegacy, kOwned };
+
+  // A frozen view over the portable format can expose unaligned storage to
+  // bitmap operations. Range prefixes require owned, validated containers.
+  static roaring_bitmap_t *load_checked_posting_bitmap(const char *data,
+                                                       size_t size) {
     if (size <= 1) return nullptr;
-    return roaring_bitmap_portable_deserialize_safe(data + 1, size - 1);
+    auto *bitmap = roaring_bitmap_portable_deserialize_safe(data + 1, size - 1);
+    if (bitmap && !roaring_bitmap_internal_validate(bitmap, nullptr)) {
+      roaring_bitmap_free(bitmap);
+      return nullptr;
+    }
+    return bitmap;
   }
 
 
@@ -227,7 +235,7 @@ class InvertedIndexCodec {
     }
 
     if (header == 0) {  // This is a bitmap
-      *bitmap = load_posting_bitmap(data, size);
+      *bitmap = roaring_bitmap_portable_deserialize_safe(data + 1, size - 1);
       if (*bitmap) {
         return Status::OK();
       } else {
@@ -254,7 +262,8 @@ class InvertedIndexCodec {
 
 
   static Status merge_or(const char *data, size_t size, bool lazy,
-                         roaring_bitmap_t *bitmap) {
+                         roaring_bitmap_t *bitmap,
+                         PostingAccess access = PostingAccess::kLegacy) {
     if (!data || size == 0) {
       LOG_ERROR("Input data is invalid");
       return Status::InvalidArgument();
@@ -267,7 +276,9 @@ class InvertedIndexCodec {
     }
 
     if (header == 0) {  // This is a bitmap
-      auto bitmap_other = load_posting_bitmap(data, size);
+      auto bitmap_other = access == PostingAccess::kOwned
+                              ? load_checked_posting_bitmap(data, size)
+                              : load_legacy_posting_bitmap(data, size);
       if (!bitmap_other) {
         LOG_ERROR("Failed to deserialize bitmap");
         return Status::InternalError();
@@ -307,7 +318,7 @@ class InvertedIndexCodec {
     }
 
     if (header == 0) {  // This is a bitmap
-      auto bitmap_other = load_posting_bitmap(data, size);
+      auto bitmap_other = load_legacy_posting_bitmap(data, size);
       if (!bitmap_other) {
         LOG_ERROR("Failed to deserialize bitmap");
         return Status::InternalError();
@@ -339,6 +350,17 @@ class InvertedIndexCodec {
 
 
  private:
+  static roaring_bitmap_t *load_legacy_posting_bitmap(const char *data,
+                                                      size_t size) {
+    if (size <= 1) return nullptr;
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || \
+    defined(_M_IX86) || defined(__aarch64__) || defined(_M_ARM64)
+    return roaring_bitmap_portable_deserialize_frozen(data + 1);
+#else
+    return roaring_bitmap_portable_deserialize_safe(data + 1, size - 1);
+#endif
+  }
+
   static uint32_t read_doc_id(const char *data, size_t index) {
     uint32_t doc_id;
     std::memcpy(&doc_id, data + index * sizeof(doc_id), sizeof(doc_id));

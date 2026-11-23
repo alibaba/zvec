@@ -153,6 +153,7 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
     return true;
   };
   const auto start = std::chrono::steady_clock::now();
+  budget.mark_heap_materialized();
   auto cache = std::unique_ptr<InvertedRangeCache>(new InvertedRangeCache());
 
   rocksdb::ReadOptions read_options = context.read_opts_;
@@ -202,6 +203,7 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
         return nullptr;
       }
       cache->buckets.reserve(next_capacity);
+      if (capacity) scratch_budget->mark_heap_materialized();
     }
     const auto value = iter->value();
     // Safe decoding copies the payload. A portable bitmap has at least four
@@ -217,10 +219,12 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
     if (!grow_scan_scratch(decode_scratch)) return nullptr;
     max_decode_scratch = std::max(max_decode_scratch, decode_scratch);
     roaring_bitmap_t *raw = nullptr;
+    scratch_budget->mark_heap_materialized();
     auto status =
         InvertedIndexCodec::Deserialize(value.data(), value.size(), &raw);
     BitmapPtr bitmap(raw);
-    if (!status.ok() || !bitmap) {
+    if (!status.ok() || !bitmap ||
+        !roaring_bitmap_internal_validate(bitmap.get(), nullptr)) {
       LOG_WARN("Skipping range prefix cache: failed to decode range");
       return nullptr;
     }
@@ -262,6 +266,7 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
   if (!reserve_scratch(merge_scratch)) {
     return nullptr;
   }
+  scratch_budget->mark_heap_materialized();
 
   cache->prefixes.reserve(9);
   BitmapPtr cumulative(roaring_bitmap_create());
@@ -278,7 +283,8 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
       return nullptr;
     }
     auto status = InvertedIndexCodec::merge_or(
-        iter->value().data(), iter->value().size(), false, cumulative.get());
+        iter->value().data(), iter->value().size(), false, cumulative.get(),
+        InvertedIndexCodec::PostingAccess::kOwned);
     if (!status.ok()) {
       return nullptr;
     }
@@ -300,7 +306,7 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
         return nullptr;
       }
       roaring_bitmap_run_optimize(prefix.get());
-      roaring_bitmap_shrink_to_fit(prefix.get());
+      if (!roaring_bitmap_try_shrink_to_fit(prefix.get())) return nullptr;
       bitmap_charge += bitmap_bytes(prefix.get());
       if (bitmap_charge + metadata_bytes(*cache) > max_bytes) {
         return nullptr;
@@ -372,8 +378,9 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
         if (!iter->Valid() || iter->key() != cache->buckets[i].key)
           return nullptr;
         const auto value = iter->value();
-        auto status = InvertedIndexCodec::merge_or(value.data(), value.size(),
-                                                   false, prefix.get());
+        auto status = InvertedIndexCodec::merge_or(
+            value.data(), value.size(), false, prefix.get(),
+            InvertedIndexCodec::PostingAccess::kOwned);
         if (!status.ok()) return nullptr;
         extra_source_bytes += value.size();
       }
@@ -382,7 +389,7 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
               cache->buckets[end - 1].cumulative_cardinality)
         return nullptr;
       roaring_bitmap_run_optimize(prefix.get());
-      roaring_bitmap_shrink_to_fit(prefix.get());
+      if (!roaring_bitmap_try_shrink_to_fit(prefix.get())) return nullptr;
       const size_t charge = bitmap_bytes(prefix.get());
       const size_t growth =
           cache->prefixes.capacity() < max_prefixes

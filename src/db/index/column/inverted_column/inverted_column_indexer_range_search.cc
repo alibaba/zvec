@@ -31,7 +31,8 @@ Status subtract_posting(const rocksdb::Slice &value, roaring_bitmap_t *result) {
   const auto header = static_cast<unsigned char>(value[0]);
   if (header == 0) {
     InvertedRangeCache::BitmapPtr bitmap(
-        InvertedIndexCodec::load_posting_bitmap(value.data(), value.size()));
+        InvertedIndexCodec::load_checked_posting_bitmap(value.data(),
+                                                        value.size()));
     if (!bitmap) {
       return Status::InternalError();
     }
@@ -247,8 +248,9 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::execute_range_plan(
       return subtract_posting(value, bitmap.get());
     }
     needs_repair = true;
-    return InvertedIndexCodec::merge_or(value.data(), value.size(), true,
-                                        bitmap.get());
+    return InvertedIndexCodec::merge_or(
+        value.data(), value.size(), true, bitmap.get(),
+        InvertedIndexCodec::PostingAccess::kOwned);
   };
 
   if (plan.range_begin < plan.range_end) {

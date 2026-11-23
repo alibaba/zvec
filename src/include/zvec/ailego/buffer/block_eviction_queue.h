@@ -391,6 +391,12 @@ class ZVEC_AILEGO_API MemoryLimitPool {
     PendingAllocation &operator=(const PendingAllocation &) = delete;
     ~PendingAllocation();
     bool reserve(size_t bytes);
+    // Mark an optional reservation before it may grow the heap. The
+    // destructor retains its RSS debit until a fresh sample can observe it.
+    void mark_heap_materialized() {
+      assert(kind_ == Kind::kEvictableCache);
+      heap_materialized_ = true;
+    }
     ProcessRssBudget::MaterializationStamp commit() {
       return commit(bytes_);
     }
@@ -408,6 +414,7 @@ class ZVEC_AILEGO_API MemoryLimitPool {
     const Kind kind_;
     std::atomic<size_t> *const counter_;
     size_t bytes_{0};
+    bool heap_materialized_{false};
   };
 
   //! Non-spillable, reusable backing blocks, independent of VectorPageTable.
@@ -428,7 +435,8 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   void release_heap_external(size_t bytes,
                              ProcessRssBudget::HeapProjection projection);
   void release_heap_cache(size_t bytes,
-                          ProcessRssBudget::MaterializationStamp stamp);
+                          ProcessRssBudget::MaterializationStamp stamp,
+                          bool refresh_rss = false);
   void release_unmapped_external(size_t bytes,
                                  ProcessRssBudget::MaterializationStamp stamp);
   void release_unmapped_cache(size_t bytes,
@@ -653,7 +661,7 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   void register_queue_mapping(QueueResidentMapping *mapping, void *data,
                               size_t bytes);
   bool unmap_queue_mapping(QueueResidentMapping *mapping);
-  bool try_reserve_used(size_t bytes);
+  bool try_reserve_used(size_t bytes, bool optional_cache = false);
   bool try_reserve_page_used(size_t bytes, bool required = false);
   bool try_reserve_committed(size_t bytes, Backing backing = Backing::kLive,
                              size_t materialization = 0);

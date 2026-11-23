@@ -49,7 +49,7 @@ struct RangeQueryPlan {
 class InvertedRangeCache {
  public:
   struct BitmapDeleter {
-    void operator()(roaring_bitmap_t *bitmap) const {
+    void operator()(const roaring_bitmap_t *bitmap) const {
       roaring_bitmap_free(bitmap);
     }
   };
@@ -68,7 +68,7 @@ class InvertedRangeCache {
   struct Prefix {
     // Exclusive end in buckets; the exact value boundary is buckets[end-1].end.
     size_t end_bucket{0};
-    BitmapPtr bitmap;
+    std::unique_ptr<const roaring_bitmap_t, BitmapDeleter> bitmap;
     uint64_t cardinality{0};
     uint64_t copy_bytes{0};
   };
