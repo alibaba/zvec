@@ -83,6 +83,7 @@ class BufferStorageWriteTest : public ::testing::Test {
   }
 
   void check_shared_cache_reserve(size_t capacity);
+  void check_resident_batch_budget(bool mixed);
 
   std::string file_path_;
 };
@@ -1730,6 +1731,124 @@ TEST_F(BufferStorageWriteTest, ImmutableBatchReadUsesWritableCache) {
   blocks[0].reset();
   blocks[1].reset();
   EXPECT_EQ(0, storage->close());
+}
+
+void BufferStorageWriteTest::check_resident_batch_budget(bool mixed) {
+  constexpr size_t kCount = 65;
+  const size_t page = ailego::kVectorPageSize;
+  const size_t length = std::min<size_t>(8192, page);
+  std::vector<char> payload((kCount + 2) * page);
+  for (size_t i = 0; i < payload.size(); ++i)
+    payload[i] = static_cast<char>((i / page * 31 + i) % 251);
+  {
+    auto storage = open_writable();
+    ASSERT_TRUE(storage);
+    ASSERT_EQ(0, storage->append("seg", payload.size()));
+    auto segment = storage->get("seg");
+    ASSERT_TRUE(segment);
+    ASSERT_EQ(payload.size(), segment->write(0, payload.data(), payload.size()));
+    ASSERT_EQ(0, storage->close());
+  }
+
+  // HNSW prune uses the writable immutable entry; read-only callers use the
+  // ordinary batch entry. Neither should require a full-batch copy buffer.
+  for (bool writable : {false, true}) {
+    SCOPED_TRACE(writable);
+    auto storage = writable ? open_writable() : open_read_only();
+    ASSERT_TRUE(storage);
+    auto segment = storage->get("seg");
+    ASSERT_TRUE(segment);
+    const size_t first = (page - segment->data_offset() % page) % page;
+    std::vector<IndexStorage::MemoryBlock> pins(kCount + 1), blocks(kCount);
+    std::vector<IndexStorage::Segment::BorrowedRead> reads;
+    for (size_t i = 0; i < pins.size(); ++i) {
+      ASSERT_EQ(length, segment->read_borrowed_immutable(
+                            first + i * page, pins[i], length));
+      ASSERT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, pins[i].type_);
+      if (i < kCount)
+        reads.emplace_back(segment.get(), first + i * page, length, &blocks[i]);
+    }
+    if (mixed) {
+      reads.back().offset += page - 64;
+      reads.back().length = 128;
+    }
+    auto read_batch = [&](IndexStorage::Segment::BorrowedRead *requests,
+                          size_t count) {
+      return writable
+                 ? segment->read_borrowed_batch_immutable(requests, count)
+                 : segment->read_borrowed_batch(requests, count);
+    };
+    auto &memory = ailego::PoolPayloadBudget::get_instance();
+    constexpr size_t kSlack = 64UL << 10;
+    ASSERT_GT(memory.available(), kSlack);
+    const size_t pressure = memory.available() - kSlack;
+    ASSERT_TRUE(memory.try_charge_external(pressure));
+    AILEGO_DEFER([&] { memory.release_external(pressure); });
+
+    // Establish that the same reads fit scalar and in small batches first.
+    for (const auto &request : reads) {
+      IndexStorage::MemoryBlock scalar;
+      ASSERT_EQ(request.length, segment->read_borrowed_immutable(
+                                    request.offset, scalar, request.length));
+    }
+    for (size_t begin = 0; begin < kCount; begin += 32)
+      ASSERT_TRUE(read_batch(reads.data() + begin,
+                             std::min<size_t>(32, kCount - begin)));
+    const size_t before = memory.available();
+    for (size_t count : {size_t{33}, size_t{64}, kCount}) {
+      if (mixed && count != kCount) continue;
+      ASSERT_TRUE(read_batch(reads.data(), count))
+          << "count=" << count << " error=" << segment->read_error();
+      for (size_t i = 0; i < count; ++i) {
+        ASSERT_NE(nullptr, blocks[i].data());
+        EXPECT_EQ(0, std::memcmp(payload.data() + reads[i].offset,
+                                 blocks[i].data(), reads[i].length));
+      }
+    }
+    if (!mixed) {
+      EXPECT_EQ(before, memory.available());
+      // Repeated output handles may alias across the 32-request boundary.
+      IndexStorage::MemoryBlock alias;
+      auto aliased = reads;
+      for (auto &request : aliased) request.block = &alias;
+      ASSERT_TRUE(read_batch(aliased.data(), aliased.size()));
+      EXPECT_EQ(0, std::memcmp(payload.data() + reads.back().offset,
+                               alias.data(), reads.back().length));
+      alias.reset();
+    }
+    {
+      const size_t remaining = memory.available();
+      ASSERT_TRUE(memory.try_charge_external(remaining));
+      AILEGO_DEFER([&] { memory.release_external(remaining); });
+      if (mixed) {
+        // Real output allocation failure must still report NoMemory and
+        // release all earlier scalar results after the optional retry.
+        reads.back().offset = first + page - 64;
+        reads.back().length = page;
+        EXPECT_FALSE(read_batch(reads.data(), reads.size()));
+        EXPECT_EQ(IndexError_NoMemory, segment->read_error());
+        for (const auto &block : blocks) EXPECT_EQ(nullptr, block.data());
+      } else {
+        // Fully resident results need no budget for descriptors or an arena.
+        EXPECT_TRUE(read_batch(reads.data(), reads.size()));
+      }
+    }
+    // A late invalid request must release any results produced by earlier
+    // resident chunks before falling back to the general validation path.
+    reads.back().offset = segment->data_size() + 1;
+    EXPECT_FALSE(read_batch(reads.data(), reads.size()));
+    for (const auto &block : blocks) EXPECT_EQ(nullptr, block.data());
+    pins.clear();
+    ASSERT_EQ(0, storage->close());
+  }
+}
+
+TEST_F(BufferStorageWriteTest, ResidentBatchOver32NeedsNoScratchBudget) {
+  check_resident_batch_budget(false);
+}
+
+TEST_F(BufferStorageWriteTest, MixedBatchFallsBackWhenOptionalArenaDoesNotFit) {
+  check_resident_batch_budget(true);
 }
 
 TEST_F(BufferStorageWriteTest, ReadOnlyBatchFallsBackWhenPinsExceedBudget) {

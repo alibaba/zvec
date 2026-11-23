@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <cinttypes>
 #include <cstring>
 #include <limits>
@@ -281,12 +282,25 @@ class BufferStorage : public IndexStorage {
       return read_borrowed_batch_impl(reads, count, /*immutable=*/true);
     }
 
+    static constexpr size_t kResidentBatch = 32;
+
     bool try_read_resident_immutable(BorrowedRead *reads, size_t count) {
-      // The common DiskANN batch fits in bounded stack scratch. Retain the
-      // unique source pins until every output has acquired its own pin, so
-      // duplicate pages and aliased output blocks remain safe.
-      static constexpr size_t kResidentBatch = 32;
-      if (count > kResidentBatch) return false;
+      // Keep scratch bounded without imposing a limit on resident requests.
+      // If a later chunk misses, the caller resets every earlier result before
+      // entering the general path, including aliased output handles.
+      for (size_t begin = 0; begin < count;) {
+        const size_t chunk = std::min(kResidentBatch, count - begin);
+        if (!try_read_resident_immutable_chunk(reads + begin, chunk))
+          return false;
+        begin += chunk;
+      }
+      return true;
+    }
+
+    bool try_read_resident_immutable_chunk(BorrowedRead *reads, size_t count) {
+      // Retain source pins until each output owns its pin. An output reset
+      // must not invalidate a source used by another request in this chunk.
+      assert(count <= kResidentBatch);
       std::array<ailego::block_id_t, kResidentBatch> ids;
       std::array<char *, kResidentBatch> pages;
       std::array<size_t, kResidentBatch> indices, offsets;
@@ -520,6 +534,11 @@ class BufferStorage : public IndexStorage {
       // Reserve bounded fallback space before pinning pages. Otherwise a
       // large batch can pin the entire budget and prevent its own fallback.
       if (copy_upper_bound && copy_upper_bound <= kMaxArenaBytes) {
+        // This worst-case arena is optional. Avoid waiting/reclaiming for an
+        // obviously oversized reservation when scalar pins/copies may fit.
+        auto &memory = ailego::MemoryLimitPool::get_instance();
+        if (memory.capacity() && copy_upper_bound > memory.available())
+          throw std::bad_alloc();
         scratch.arena = std::allocate_shared<BatchArena>(
             ailego::BudgetedAllocator<BatchArena>{}, copy_upper_bound,
             kArenaAlign);
@@ -826,18 +845,25 @@ class BufferStorage : public IndexStorage {
       release_pages();
       return true;
     } catch (const std::bad_alloc &) {
-      buffer_storage_read_error = IndexError_NoMemory;
       for (size_t i = 0; reads && i < count; ++i) {
         if (reads[i].block) reads[i].block->reset();
       }
-      if (!immutable && owner_->buffer_pool_ != nullptr &&
-          owner_->buffer_pool_->writable()) {
-        // Batch descriptors are optional. Their pins and allocations have
-        // already unwound, so retain the original scalar snapshot fallback.
-        buffer_storage_read_error = IndexError_ReadData;
-        return IndexStorage::Segment::read_borrowed_batch(reads, count);
+      // Batch descriptors and the worst-case arena are optional for every
+      // entry, including immutable and read-only reads. Their pins and scratch
+      // have unwound before retrying the scalar implementation.
+      buffer_storage_read_error = IndexError_ReadData;
+      try {
+        return immutable
+                   ? IndexStorage::Segment::read_borrowed_batch_immutable(reads,
+                                                                          count)
+                   : IndexStorage::Segment::read_borrowed_batch(reads, count);
+      } catch (const std::bad_alloc &) {
+        for (size_t i = 0; reads && i < count; ++i) {
+          if (reads[i].block) reads[i].block->reset();
+        }
+        buffer_storage_read_error = IndexError_NoMemory;
+        return false;
       }
-      return false;
     }
 
     int write_error() const override {
