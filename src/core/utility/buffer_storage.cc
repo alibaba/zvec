@@ -1570,14 +1570,20 @@ class BufferStorage : public IndexStorage {
     }
     stale_metadata_ranges_.clear();
     // A rolled-back split can now return the grown tail and its page-table
-    // entries. Reclaim only unused pages; keeping the bytes is a valid
-    // fallback when a page is already resident.
+    // entries, but never below the live directory's allocated end: a later
+    // committed append must not be cut by a stale truncation record.
     if (pending_tail_truncation_) {
-      if (!buffer_pool_->truncate_unused_tail(*pending_tail_truncation_)) {
+      size_t allocated_end = 0;
+      for (const auto &chain : meta_chains_) {
+        allocated_end =
+            std::max<uint64_t>(allocated_end, chain.allocated_file_end());
+      }
+      const size_t target = std::max(*pending_tail_truncation_, allocated_end);
+      if (!buffer_pool_->truncate_unused_tail(target)) {
         LOG_WARN(
             "flush_index: cannot truncate rolled-back tail yet: file[%s], "
             "target_eof[%zu]",
-            file_name_.c_str(), *pending_tail_truncation_);
+            file_name_.c_str(), target);
       }
       pending_tail_truncation_.reset();
     }
@@ -1679,16 +1685,20 @@ class BufferStorage : public IndexStorage {
     size_t id_size = id.length() + 1;
     size_t need_size = sizeof(IndexFormat::SegmentMeta) + id_size;
 
+    // Allocate rollback bookkeeping on the fallible path BEFORE inserting
+    // the pending entry: an allocation failure must not leave an entry
+    // behind. A later push_back during unwinding must never allocate.
+    stale_metadata_ranges_.reserve(stale_metadata_ranges_.size() + 1);
+
     // Insert into the real directory map before any metadata is published.
     // The exclusive latch keeps the pending entry private until commit.
     auto pending = segments_.try_emplace(id);
     if (!pending.second) return IndexError_Duplicate;
     bool committed = false;
     size_t unpublished_directory_start = 0;
-    // Preallocate the rollback bookkeeping on the fallible path: a
-    // push_back during exception unwinding must never allocate and throw.
-    stale_metadata_ranges_.reserve(stale_metadata_ranges_.size() + 1);
     const size_t original_file_size = buffer_pool_->file_size();
+    // Establish the rollback guard before any fallible operation: an
+    // allocation failure must never leave a pending segment in the map.
     AILEGO_DEFER([&]() {
       if (committed) return;
       segments_.erase(pending.first);
@@ -1702,13 +1712,17 @@ class BufferStorage : public IndexStorage {
         return;
       }
       try {
-        if (buffer_pool_->truncate_unused_tail(original_file_size)) return;
+        if (buffer_pool_->truncate_unused_tail(original_file_size)) {
+          // The immediate reclaim already returned the tail; the deferred
+          // record must not fire again after a later committed split.
+          pending_tail_truncation_.reset();
+          return;
+        }
       } catch (...) {
         // Rollback may already be running during exception handling.
       }
       corrupted_.store(true, std::memory_order_release);
     });
-
     MetaChain *chain = &meta_chains_.back();
     bool chain_split = false;
     bool link_attempted = false;
@@ -1937,6 +1951,9 @@ class BufferStorage : public IndexStorage {
       // pending for the newly active tail.
       visible_checkpoint_.store(pending_checkpoint_, std::memory_order_release);
     }
+    // A committed append makes any earlier rollback's tail record
+    // obsolete: truncating now would cut the freshly committed chain.
+    pending_tail_truncation_.reset();
     committed = true;
     return 0;
   } catch (const std::bad_alloc &) {

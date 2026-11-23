@@ -53,7 +53,8 @@ namespace {
 thread_local size_t fail_array_size = 0;
 thread_local size_t fail_aligned_size = 0;
 thread_local bool fault_hit = false;
-#if defined(__linux__) && !defined(__ANDROID__)
+#if (defined(__linux__) && !defined(__ANDROID__)) || \
+    (defined(__APPLE__) && TARGET_OS_OSX)
 thread_local bool fail_next_scalar_allocation = false;
 #endif
 
@@ -88,7 +89,8 @@ void operator delete[](void *ptr, size_t) noexcept {
   ::operator delete(ptr);
 }
 
-#if defined(__linux__) && !defined(__ANDROID__)
+#if (defined(__linux__) && !defined(__ANDROID__)) || \
+    (defined(__APPLE__) && TARGET_OS_OSX)
 void *operator new(size_t bytes) {
   if (fail_next_scalar_allocation) {
     fail_next_scalar_allocation = false;
@@ -1217,6 +1219,12 @@ TEST_F(BufferStorageDirectorySplitTest, PartialWriteKeepsRecordCursor) {
   ASSERT_NE(nullptr, segment);
   std::vector<char> prefix(page_size_ - 2, 'a');
   ASSERT_EQ(prefix.size(), segment->write(0, prefix.data(), prefix.size()));
+  // Reopen writably so the second page is loaded by a real pread instead of
+  // the new-page zero-fill path (which would skip the injected read fault).
+  ASSERT_EQ(0, writer_->close());
+  ASSERT_EQ(0, writer_->open(path_, IndexStorage::OpenOptions{false, false}));
+  segment = writer_->get(name);
+  ASSERT_NE(nullptr, segment);
   const size_t cursor = segment->data_size();
 
   // The next record crosses into a page whose load fails. Only its prefix
@@ -1431,6 +1439,58 @@ TEST_F(BufferStorageDirectorySplitTest, WritebackRunReleasesLatchBetweenRuns) {
   writer.join();
   EXPECT_TRUE(flush_done.load(std::memory_order_acquire));
   EXPECT_TRUE(write_done.load(std::memory_order_acquire));
+}
+
+TEST_F(BufferStorageDirectorySplitTest,
+       FailedLinkRollbackThenSuccessfulRetryKeepsCommittedTail) {
+  ASSERT_NO_FATAL_FAILURE(fill_first_chain());
+  Directory root{};
+  ASSERT_TRUE(ReadDirectory(path_, &root));
+  const std::string name = "new_split";
+  // Only the link write fails; the rollback restore succeeds.
+  repeated_fail_offset = static_cast<off_t>(root.footer_offset);
+  repeated_fail_remaining = 1;
+  ASSERT_EQ(IndexError_WriteData, writer_->append(name, page_size_));
+  repeated_fail_offset = -1;
+  // A committed retry makes that record obsolete: a later flush must not
+  // truncate the freshly committed chain.
+  ASSERT_EQ(0, writer_->append(name, page_size_));
+  struct stat committed {};
+  ASSERT_EQ(0, ::stat(path_.c_str(), &committed));
+  // Do NOT write segment data: the new chain's page stays unloaded, so the
+  // stale truncation record can actually discard it if left uncleared.
+  writer_->refresh(0);
+  ASSERT_EQ(0, writer_->flush());
+  struct stat after {};
+  ASSERT_EQ(0, ::stat(path_.c_str(), &after));
+  EXPECT_EQ(committed.st_size, after.st_size);
+  ASSERT_EQ(0, writer_->close());
+  auto reader = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, reader);
+  ASSERT_EQ(0, reader->init(zvec::ailego::Params{}));
+  ASSERT_EQ(0, reader->open(path_, false));
+  EXPECT_TRUE(reader->has(name));
+  ASSERT_EQ(0, reader->close());
+}
+
+TEST_F(BufferStorageDirectorySplitTest,
+       AppendAllocationFailureLeavesNoPendingSegment) {
+  const std::string name = "pending_segment";
+  // Fail the rollback reserve's scalar allocation: the pending entry must
+  // still be rolled back, not left visible in the directory map.
+  fail_next_scalar_allocation = true;
+  EXPECT_EQ(IndexError_NoMemory, writer_->append(name, page_size_));
+  fail_next_scalar_allocation = false;
+  EXPECT_FALSE(writer_->has(name));
+  EXPECT_EQ(nullptr, writer_->get(name));
+  // The same name can be appended again (no Duplicate, no dangling meta).
+  ASSERT_EQ(0, writer_->append(name, page_size_));
+  EXPECT_TRUE(writer_->has(name));
+  auto segment = writer_->get(name);
+  ASSERT_NE(nullptr, segment);
+  ASSERT_EQ(kNewData.size(),
+            segment->write(0, kNewData.data(), kNewData.size()));
+  ASSERT_EQ(0, writer_->close());
 }
 
 #endif
