@@ -431,8 +431,8 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
       if (growth) cache->prefixes.reserve(max_prefixes);
       position =
           std::lower_bound(cache->prefixes.begin(), cache->prefixes.end(), end,
-                           [](const Prefix &entry, size_t boundary) {
-                             return entry.end_bucket < boundary;
+                           [](const Prefix &checkpoint, size_t boundary) {
+                             return checkpoint.end_bucket < boundary;
                            });
       cache->prefixes.insert(position, std::move(entry));
       bitmap_charge += charge;
