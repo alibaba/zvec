@@ -24,18 +24,22 @@
 namespace zvec::sqlengine {
 namespace {
 
+arrow::Result<stile::ColumnIndex::Ptr> MakeStileColumnIndex(
+    const ForwardColumn &column) {
+  if (column.layout() == ForwardColumn::Layout::kRowId) {
+    return stile::ColumnIndex::MakeRowNumberChecked(column.field(),
+                                                    column.length());
+  }
+  return stile::ColumnIndex::Make(column.field(), column.data());
+}
+
 arrow::Result<std::unique_ptr<stile::Predicate>> CompileForwardPredicate(
     const arrow::compute::Expression &bound, const ForwardReadView &view) try {
   std::vector<stile::ColumnIndex::Ptr> columns;
   columns.reserve(view.num_columns());
   for (int i = 0; i < view.num_columns(); ++i) {
-    const auto &column = view.column(i);
-    ARROW_ASSIGN_OR_RAISE(
-        auto index,
-        column->layout() == ForwardColumn::Layout::kRowId
-            ? stile::ColumnIndex::MakeRowNumberChecked(column->field(),
-                                                       column->length())
-            : stile::ColumnIndex::Make(column->field(), column->data()));
+    ARROW_ASSIGN_OR_RAISE(auto index, view.column(i)->get_or_make_stile_index(
+                                          MakeStileColumnIndex));
     columns.push_back(std::move(index));
   }
   ARROW_ASSIGN_OR_RAISE(auto table,

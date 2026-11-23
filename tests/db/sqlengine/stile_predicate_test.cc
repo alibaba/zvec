@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <array>
 #include <cstring>
 #include <future>
 #include <limits>
@@ -28,6 +29,54 @@ namespace cp = arrow::compute;
 using stile::Predicate;
 using stile::TableIndex;
 using stile::Truth;
+
+void expect_batch_parity(const Predicate &predicate,
+                         const std::vector<Truth> &expected) {
+  predicate.evaluate_many(nullptr, 0, nullptr);
+  EXPECT_EQ(predicate.match_many(nullptr, 0, nullptr), 0u);
+
+  std::array<int64_t, 65> rows{};
+  auto check_matches = [&](size_t count) {
+    std::array<bool, 65> matches{};
+    const auto matched =
+        predicate.match_many(rows.data(), count, matches.data());
+    size_t expected_count = 0;
+    for (size_t i = 0; i < count; ++i) {
+      const auto row = rows[i];
+      const bool match = row >= 0 && row < predicate.num_rows() &&
+                         expected[row] == Truth::kTrue;
+      EXPECT_EQ(matches[i], match) << "count=" << count << " i=" << i;
+      expected_count += match;
+    }
+    EXPECT_EQ(matched, expected_count) << "count=" << count;
+  };
+
+  // Exercise a partial block, a full block, and a tail after two full blocks.
+  constexpr size_t counts[]{1, 31, 32, 33, 64, 65};
+  if (!expected.empty()) {
+    for (size_t i = 0; i < rows.size(); ++i) {
+      rows[i] = static_cast<int64_t>((i * 17) % expected.size());
+    }
+    rows[3] = rows[2];
+    rows[32] = rows[31];
+    std::array<Truth, 65> values{};
+    for (const auto count : counts) {
+      predicate.evaluate_many(rows.data(), count, values.data());
+      for (size_t i = 0; i < count; ++i) {
+        EXPECT_EQ(values[i], expected[rows[i]])
+            << "count=" << count << " i=" << i;
+      }
+      check_matches(count);
+    }
+  }
+
+  // Only match_many accepts out-of-range rows. Mix them with valid rows on
+  // either side of a block boundary and check the returned count as well.
+  rows[0] = -1;
+  rows[31] = predicate.num_rows();
+  rows[32] = std::numeric_limits<int64_t>::max();
+  check_matches(rows.size());
+}
 
 class StilePredicateTest : public testing::Test {
  protected:
@@ -84,6 +133,7 @@ class StilePredicateTest : public testing::Test {
     ASSERT_TRUE(bound.ok()) << bound.status().ToString();
     auto compiled = Predicate::Compile(*bound, *index, options);
     ASSERT_TRUE(compiled.ok()) << compiled.status().ToString();
+    std::vector<Truth> arrow_results;
     for (int64_t row = 0; row < table_->num_rows(); ++row) {
       std::vector<arrow::Datum> scalars;
       for (const auto &column : table_->columns()) {
@@ -98,16 +148,23 @@ class StilePredicateTest : public testing::Test {
       const auto expected = !value.is_valid ? Truth::kNull
                             : value.value   ? Truth::kTrue
                                             : Truth::kFalse;
+      arrow_results.push_back(expected);
       EXPECT_EQ((*compiled)->evaluate(row), expected) << row;
       EXPECT_EQ((*compiled)->matches(row), expected == Truth::kTrue) << row;
     }
     EXPECT_FALSE((*compiled)->matches(-1));
     EXPECT_FALSE((*compiled)->matches(table_->num_rows()));
     EXPECT_FALSE((*compiled)->matches(std::numeric_limits<int64_t>::max()));
+    expect_batch_parity(**compiled, arrow_results);
   }
 
   std::shared_ptr<arrow::Table> table_;
 };
+
+TEST_F(StilePredicateTest, EmptyTableRejectsEveryCandidate) {
+  table_ = table_->Slice(0, 0);
+  expect_parity(cp::literal(true));
+}
 
 TEST_F(StilePredicateTest, SeededThreeValuedDifferential) {
   const std::vector<cp::Expression> leaves{

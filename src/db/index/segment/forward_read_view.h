@@ -14,9 +14,11 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -30,6 +32,9 @@
 namespace zvec {
 
 class SegmentImpl;
+namespace stile {
+class ColumnIndex;
+}
 namespace test {
 class ForwardFilterReadTest;
 }
@@ -43,10 +48,9 @@ class ForwardReadFactoryKey {
 
 // One immutable, zero-copy forward column in segment-local row order. A
 // sealed segment prepares its columns at open/seal and shares them with every
-// query until DDL, reload or close releases it. The column holds no segment
-// metadata, locks, deletion state or evaluator/compiler state, and its
-// backing buffers must never be mutated. Only storage with proven buffer
-// ownership may create one; a shared ChunkedArray alone is not that proof.
+// query until the segment releases its snapshot on DDL, reload or close.
+// Readers retain the original buffers and any lazily built chunk index.
+// Only storage that can guarantee immutable, owned buffers may create one.
 class ForwardColumn final {
  public:
   using Ptr = std::shared_ptr<const ForwardColumn>;
@@ -119,6 +123,12 @@ class ForwardColumn final {
 
   std::optional<Location> locate(uint64_t row) const;
 
+  using StileIndex = std::shared_ptr<const stile::ColumnIndex>;
+  // The evaluator supplies the builder, so storage can retain the index
+  // without linking to Stile. Later queries may retry a failed build.
+  arrow::Result<StileIndex> get_or_make_stile_index(
+      arrow::Result<StileIndex> (*build)(const ForwardColumn &)) const;
+
   // Arrow compatibility adapter for the interpreted evaluator.
   arrow::Result<std::shared_ptr<arrow::Scalar>> scalar(uint64_t row) const;
 
@@ -142,6 +152,9 @@ class ForwardColumn final {
   std::vector<const arrow::Array *> arrays_;
   std::vector<int64_t> ends_;
   int64_t stride_{0};
+  mutable std::mutex stile_index_mutex_;
+  mutable std::atomic<bool> stile_index_ready_{false};
+  mutable StileIndex stile_index_;
 };
 
 // A query's projection: shared columns arranged in the query's column order.

@@ -164,6 +164,13 @@ class ForwardFilterReadTest : public testing::TestWithParam<bool> {
     return filter.stile_predicate_ != nullptr;
   }
 
+  static stile::ColumnIndex::Ptr stile_column(
+      const sqlengine::DocFilter &filter, const std::string &name) {
+    const auto &table = filter.stile_predicate_->table();
+    const auto index = table->schema()->GetFieldIndex(name);
+    return index < 0 ? nullptr : table->column(index);
+  }
+
   static void replace_expression(sqlengine::DocFilter &filter,
                                  cp::Expression expression) {
     filter.forward_filter_expr_ =
@@ -1140,6 +1147,64 @@ TEST_P(ForwardFilterReadTest, PartialSupportFallsBackAsAWhole) {
   EXPECT_FALSE(candidate->is_filtered(2));
 }
 
+TEST_P(IpcForwardFilterReadTest, ConcurrentPredicatesShareStileColumns) {
+  ASSERT_NO_FATAL_FAILURE(create(24));
+  ASSERT_NO_FATAL_FAILURE(reopen_persisted());
+  auto view = capture({"i32"});
+  ASSERT_NE(view, nullptr);
+  // A failed first attempt must leave this column available for the next query.
+  auto failed = view->column(0)->get_or_make_stile_index(
+      [](const ForwardColumn &) -> arrow::Result<stile::ColumnIndex::Ptr> {
+        return arrow::Status::OutOfMemory("injected failure");
+      });
+  ASSERT_TRUE(failed.status().IsOutOfMemory());
+
+  constexpr size_t kReaders = 8;
+  const std::vector<std::string> columns{"i32", LOCAL_ROW_ID};
+  std::vector<std::unique_ptr<sqlengine::DocFilter>> candidates;
+  for (size_t i = 0; i < kReaders; ++i) {
+    candidates.push_back(filter(
+        columns,
+        cp::call(
+            "and_kleene",
+            {cp::is_valid(cp::field_ref("i32")),
+             cp::call("equal", {cp::field_ref(LOCAL_ROW_ID),
+                                cp::literal(static_cast<uint64_t>(i + 1))})})));
+  }
+  std::promise<void> start;
+  auto gate = start.get_future().share();
+  std::vector<std::future<Status>> pending;
+  for (const auto &candidate : candidates) {
+    pending.push_back(
+        std::async(std::launch::async, [gate, filter = candidate.get()] {
+          gate.wait();
+          return filter->compute_filter();
+        }));
+  }
+  start.set_value();
+  for (size_t i = 0; i < kReaders; ++i) {
+    const auto status = pending[i].get();
+    ASSERT_TRUE(status.ok()) << status.message();
+    ASSERT_TRUE(uses_stile(*candidates[i]));
+    for (const auto &name : columns) {
+      const auto first = stile_column(*candidates.front(), name);
+      ASSERT_NE(first, nullptr);
+      EXPECT_EQ(stile_column(*candidates[i], name), first);
+    }
+    EXPECT_FALSE(candidates[i]->is_filtered(i + 1));
+    EXPECT_TRUE(candidates[i]->is_filtered(i + 2));
+  }
+  // A later projection reuses the index even after all predicates are gone.
+  std::weak_ptr<const stile::ColumnIndex> first =
+      stile_column(*candidates.front(), "i32");
+  candidates.clear();
+  auto later = filter({"i32"}, cp::is_valid(cp::field_ref("i32")));
+  ASSERT_TRUE(later->compute_filter().ok());
+  ASSERT_TRUE(uses_stile(*later));
+  ASSERT_FALSE(first.expired());
+  EXPECT_EQ(stile_column(*later, "i32"), first.lock());
+}
+
 TEST_P(IpcForwardFilterReadTest, CompiledPredicateSurvivesRetirementAndDdl) {
   ASSERT_NO_FATAL_FAILURE(create(97));
   ASSERT_NO_FATAL_FAILURE(reopen_persisted());
@@ -1148,12 +1213,27 @@ TEST_P(IpcForwardFilterReadTest, CompiledPredicateSurvivesRetirementAndDdl) {
              cp::call("less", {cp::field_ref("i32"), cp::literal(int32_t{0})}));
   ASSERT_TRUE(candidate->compute_filter().ok());
   ASSERT_TRUE(uses_stile(*candidate));
+  std::weak_ptr<const stile::ColumnIndex> old_index =
+      stile_column(*candidate, "i32");
+  ASSERT_FALSE(old_index.expired());
   ASSERT_TRUE(segment_
                   ->alter_column("i32",
                                  std::make_shared<FieldSchema>(
                                      "i32", DataType::INT64, true),
                                  AlterColumnOptions())
                   .ok());
+  auto replacement =
+      filter({"i32"},
+             cp::call("less", {cp::field_ref("i32"), cp::literal(int64_t{0})}));
+  ASSERT_TRUE(replacement->compute_filter().ok());
+  ASSERT_TRUE(uses_stile(*replacement));
+  const auto new_index = stile_column(*replacement, "i32");
+  ASSERT_NE(new_index, nullptr);
+  EXPECT_NE(new_index, old_index.lock());
+  EXPECT_EQ(new_index->type()->id(), arrow::Type::INT64);
+  EXPECT_EQ(old_index.lock()->type()->id(), arrow::Type::INT32);
+  EXPECT_FALSE(replacement->is_filtered(1));
+  EXPECT_TRUE(replacement->is_filtered(2));
   ASSERT_TRUE(segment_->destroy().ok());
   // Concurrent readers reuse the prepared predicate and its original INT32
   // buffers after the segment is destroyed.
@@ -1170,6 +1250,8 @@ TEST_P(IpcForwardFilterReadTest, CompiledPredicateSurvivesRetirementAndDdl) {
     }));
   }
   for (auto &reader : readers) EXPECT_TRUE(reader.get());
+  candidate.reset();
+  EXPECT_TRUE(old_index.expired());
 }
 
 TEST_P(IpcForwardFilterReadTest, OversizedSetUsesArrow) {

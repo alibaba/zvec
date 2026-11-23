@@ -144,6 +144,19 @@ ForwardColumn::Ptr ForwardColumn::MakeRowId(std::shared_ptr<arrow::Field> field,
   return column;
 }
 
+arrow::Result<ForwardColumn::StileIndex> ForwardColumn::get_or_make_stile_index(
+    arrow::Result<StileIndex> (*build)(const ForwardColumn &)) const {
+  if (!stile_index_ready_.load(std::memory_order_acquire)) {
+    std::lock_guard<std::mutex> lock(stile_index_mutex_);
+    if (!stile_index_) {
+      ARROW_ASSIGN_OR_RAISE(stile_index_, build(*this));
+      // The index is never replaced, so subsequent readers need no mutex.
+      stile_index_ready_.store(true, std::memory_order_release);
+    }
+  }
+  return stile_index_;
+}
+
 std::optional<ForwardColumn::Location> ForwardColumn::locate(
     uint64_t row) const {
   if (row >= static_cast<uint64_t>(length_) || ends_.empty()) {

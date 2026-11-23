@@ -106,7 +106,7 @@ int main() {
 
 1. 查询规划器决定是否形成 single-stage 的 per-candidate forward 表达式。
 2. `DocFilter::compute_filter()` 捕获 forward 读取状态，初始化模块、绑定表达式并检查根类型。
-3. 对 sealed IPC 提供的 owning `ForwardReadView` 构造列索引和谓词；只有整棵表达式编译成功才使用 Stile。
+3. 对 sealed IPC 的 `ForwardReadView`，每个列快照在首次使用时构建 `ColumnIndex`，后续查询共享。每个查询按投影组合列索引，并在整棵谓词编译成功后使用 Stile。DDL 发布新的列快照时，已准备的谓词仍持有原索引。
 4. 候选过滤调用 `matches()`；删除、倒排等其他过滤仍由 `DocFilter` 组合处理。
 
 writing/memory、Parquet 等没有 owning view 的路径继续使用 locked fetch；不支持的 sealed IPC 表达式继续从 view 读取并交给 Arrow。bitmap 与倒排执行路径保持原有行为。优化器是否选择 single-stage 与表达式本身是否可编译是两回事，例如 LIKE、IN、EQ 等不能仅凭解释器能力推断其普通 SQL 执行路径。
