@@ -1142,6 +1142,92 @@ TEST_F(BufferPoolTest, FlushAllDoesNotSkipDirtyPageInTransition) {
   pool.page_table_.clear_dirty(/*block_id=*/0);
 }
 
+TEST_F(BufferPoolTest, SharedPageFirstLoadPreservesDirectory) {
+  init_vec_pool(/*capacity_pages=*/2, /*file_pages=*/2, /*writable=*/true);
+  std::string file = new_file(/*num_pages=*/1);
+  VecBufferPool pool(file, /*writable=*/true);
+  ASSERT_EQ(0, pool.init());
+  ASSERT_TRUE(pool.extend_file(2 * kVectorPageSize));
+  // A 4 KiB directory shares the second host page with its first segment.
+  pool.register_metadata_range(kVectorPageSize, 4096);
+  std::vector<char> header(64);
+  for (size_t i = 0; i < header.size(); ++i) {
+    header[i] = static_cast<char>(i + 1);
+  }
+  ASSERT_EQ(0, pool.write_meta(kVectorPageSize, header.size(), header.data()));
+  // The first segment write must load the directory from disk instead of
+  // zero-filling the newly extended page.
+  ASSERT_EQ(0, pool.write_range(kVectorPageSize + 4096, 5, "chunk"));
+  ASSERT_EQ(0, pool.flush_all());
+
+  std::vector<char> on_disk(kVectorPageSize);
+  FILE *input = std::fopen(file.c_str(), "rb");
+  ASSERT_NE(nullptr, input);
+  ASSERT_EQ(0, std::fseek(input, static_cast<long>(kVectorPageSize), SEEK_SET));
+  ASSERT_EQ(kVectorPageSize,
+            std::fread(on_disk.data(), 1, on_disk.size(), input));
+  std::fclose(input);
+  EXPECT_EQ(0, std::memcmp(on_disk.data(), header.data(), header.size()));
+  EXPECT_EQ(0, std::memcmp(on_disk.data() + 4096, "chunk", 5));
+}
+
+TEST_F(BufferPoolTest, SharedPageWritebackSkipsStaleDirectory) {
+  init_vec_pool(/*capacity_pages=*/2, /*file_pages=*/1, /*writable=*/true);
+  std::string file = new_file(/*num_pages=*/1);
+  VecBufferPool pool(file, /*writable=*/true);
+  ASSERT_EQ(0, pool.init());
+  // A 4 KiB root directory shares page 0 with segment data.
+  pool.register_metadata_range(0, 4096);
+  const std::vector<char> old_header(64, 'o');
+  const std::vector<char> new_header(64, 'n');
+  ASSERT_EQ(0, pool.write_meta(0, old_header.size(), old_header.data()));
+  // Cache the page with the old directory and dirty its data bytes.
+  ASSERT_EQ(0, pool.write_range(8192, 5, "chunk"));
+  // An in-place append publishes a new directory through write_meta().
+  ASSERT_EQ(0, pool.write_meta(0, new_header.size(), new_header.data()));
+  // Data writeback must not flush the stale cached directory back.
+  ASSERT_EQ(0, pool.flush_all());
+
+  std::vector<char> on_disk(kVectorPageSize);
+  FILE *input = std::fopen(file.c_str(), "rb");
+  ASSERT_NE(nullptr, input);
+  ASSERT_EQ(kVectorPageSize,
+            std::fread(on_disk.data(), 1, on_disk.size(), input));
+  std::fclose(input);
+  EXPECT_EQ(0,
+            std::memcmp(on_disk.data(), new_header.data(), new_header.size()));
+  EXPECT_EQ(0, std::memcmp(on_disk.data() + 8192, "chunk", 5));
+}
+
+TEST_F(BufferPoolTest, MixedBatchFlushesOrdinaryAndSharedPages) {
+  init_vec_pool(/*capacity_pages=*/4, /*file_pages=*/3, /*writable=*/true);
+  std::string file = new_file(/*num_pages=*/1);
+  VecBufferPool pool(file, /*writable=*/true);
+  ASSERT_EQ(0, pool.init());
+  ASSERT_TRUE(pool.extend_file(3 * kVectorPageSize));
+  pool.register_metadata_range(kVectorPageSize, 4096);
+  const std::vector<char> header(64, 'h');
+  ASSERT_EQ(0, pool.write_meta(kVectorPageSize, header.size(), header.data()));
+  // Ordinary pages around one directory-sharing page, all dirty in one batch.
+  ASSERT_EQ(0, pool.write_range(0, 5, "page0"));
+  ASSERT_EQ(0, pool.write_range(kVectorPageSize + 4096, 5, "chunk"));
+  ASSERT_EQ(0, pool.write_range(2 * kVectorPageSize, 5, "page2"));
+  ASSERT_EQ(0, pool.flush_all());
+
+  std::vector<char> on_disk(3 * kVectorPageSize);
+  FILE *input = std::fopen(file.c_str(), "rb");
+  ASSERT_NE(nullptr, input);
+  ASSERT_EQ(on_disk.size(),
+            std::fread(on_disk.data(), 1, on_disk.size(), input));
+  std::fclose(input);
+  EXPECT_EQ(0, std::memcmp(on_disk.data(), "page0", 5));
+  EXPECT_EQ(0, std::memcmp(on_disk.data() + kVectorPageSize, header.data(),
+                           header.size()));
+  EXPECT_EQ(0,
+            std::memcmp(on_disk.data() + kVectorPageSize + 4096, "chunk", 5));
+  EXPECT_EQ(0, std::memcmp(on_disk.data() + 2 * kVectorPageSize, "page2", 5));
+}
+
 TEST_F(BufferPoolTest, ExternalReservationSharesThePageBudget) {
   auto &memory_pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   init_page_pool(/*capacity_pages=*/4);

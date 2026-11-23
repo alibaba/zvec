@@ -19,7 +19,9 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <iterator>
 #include <thread>
+#include <ailego/pattern/scope_guard.h>
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/logger/logger.h>
@@ -1077,19 +1079,9 @@ int VecBufferPool::init() {
   if (writable_) {
     // Configure the potentially allocating callback before reserving metadata.
     try {
-      int fd = fd_;
       page_table_.set_flush_callback(
-          [fd, &fn = file_name_](block_id_t /*block_id*/, char *buf, size_t sz,
-                                 size_t off) -> int {
-            ssize_t w = zvec_pwrite(fd, buf, sz, off);
-            if (w != static_cast<ssize_t>(sz)) {
-              LOG_ERROR(
-                  "Buffer pool flush failed: file[%s], offset[%zu], "
-                  "expected[%zu], got[%zd]",
-                  fn.c_str(), off, sz, w);
-              return -1;
-            }
-            return 0;
+          [this](block_id_t /*block_id*/, char *buf, size_t sz, size_t off) {
+            return writeback_page(off, sz, buf);
           });
       page_table_.set_writeback_callback(
           [this](block_id_t block_id) { return enqueue_writeback(block_id); });
@@ -1388,19 +1380,140 @@ char *VecBufferPool::acquire_writeback_block(block_id_t page_id, bool *failed) {
   return nullptr;
 }
 
-bool VecBufferPool::flush_writeback_batch(std::vector<block_id_t> &page_ids,
-                                          char *staging) {
-  if (page_ids.empty()) {
+void VecBufferPool::register_metadata_range(size_t offset, size_t length) {
+  assert(length > 0 && offset <= file_size_ && length <= file_size_ - offset);
+  const size_t end = offset + length;
+  if (offset % kVectorPageSize == 0 && end % kVectorPageSize == 0) {
+    return;
+  }
+  std::unique_lock<std::shared_mutex> lock(metadata_ranges_mutex_);
+  metadata_ranges_.emplace(offset, end);
+  has_unaligned_metadata_.store(true, std::memory_order_release);
+}
+
+void VecBufferPool::unregister_metadata_range(size_t offset) {
+  if (!has_unaligned_metadata_.load(std::memory_order_acquire)) return;
+  std::unique_lock<std::shared_mutex> lock(metadata_ranges_mutex_);
+  metadata_ranges_.erase(offset);
+  has_unaligned_metadata_.store(!metadata_ranges_.empty(),
+                                std::memory_order_release);
+}
+
+std::map<size_t, size_t>::const_iterator VecBufferPool::first_metadata_range(
+    size_t offset) const {
+  auto range = metadata_ranges_.upper_bound(offset);
+  if (range != metadata_ranges_.begin() && std::prev(range)->second > offset) {
+    --range;
+  }
+  return range;
+}
+
+bool VecBufferPool::page_overlaps_metadata(size_t offset) const {
+  if (!has_unaligned_metadata_.load(std::memory_order_acquire)) return false;
+  std::shared_lock<std::shared_mutex> lock(metadata_ranges_mutex_);
+  const auto range = first_metadata_range(offset);
+  return range != metadata_ranges_.end() &&
+         range->first < offset + kVectorPageSize;
+}
+
+int VecBufferPool::writeback_page(size_t offset, size_t length,
+                                  const char *buffer) {
+  const size_t end = offset + length;
+  const auto write = [&](int fd, size_t begin, size_t limit) {
+    if (begin >= limit) return 0;
+    const size_t size = limit - begin;
+    errno = 0;
+    const ssize_t written =
+        zvec_pwrite(fd, buffer + (begin - offset), size, begin);
+    if (written == static_cast<ssize_t>(size)) return 0;
+    const int error = errno != 0 ? errno : EIO;
+    LOG_ERROR(
+        "Buffer pool flush failed: file[%s], offset[%zu], expected[%zu], "
+        "got[%zd], errno[%d]",
+        file_name_.c_str(), begin, size, written, error);
+    return error;
+  };
+
+  if (has_unaligned_metadata_.load(std::memory_order_acquire)) {
+    std::shared_lock<std::shared_mutex> lock(metadata_ranges_mutex_);
+    auto range = first_metadata_range(offset);
+    if (range != metadata_ranges_.end() && range->first < end) {
+      // Directory bytes are published by write_meta(). A cached copy may
+      // precede a directory update. Only the gaps belong to data writeback.
+      size_t begin = offset;
+      for (; range != metadata_ranges_.end() && range->first < end; ++range) {
+        if (const int error = write(meta_fd_, begin, range->first)) {
+          return error;
+        }
+        begin = range->second;
+      }
+      return write(meta_fd_, begin, end);
+    }
+  }
+  return write(fd_, offset, end);
+}
+
+bool VecBufferPool::flush_shared_page(block_id_t page_id) {
+  bool acquire_failed = false;
+  const char *buffer = acquire_writeback_block(page_id, &acquire_failed);
+  if (!buffer) return !acquire_failed;
+
+  auto release = ScopeGuard::Make([&] { page_table_.release_block(page_id); });
+  std::shared_lock<std::shared_mutex> lock(
+      block_mutexes_[page_id % block_mutex_count_]);
+  if (!page_table_.is_block_dirty(page_id)) return true;
+
+  writeback_batches_.fetch_add(1, std::memory_order_relaxed);
+  const int error =
+      writeback_page(page_id * kVectorPageSize, kVectorPageSize, buffer);
+  if (error == 0) {
+    page_table_.clear_dirty(page_id);
+    page_table_.record_dirty_flush(1);
+    writeback_pages_.fetch_add(1, std::memory_order_relaxed);
     return true;
   }
+  writeback_failures_.fetch_add(1, std::memory_order_relaxed);
+  int expected = 0;
+  (void)writeback_error_.compare_exchange_strong(
+      expected, error, std::memory_order_release, std::memory_order_relaxed);
+  return false;
+}
+
+bool VecBufferPool::flush_writeback_batch(std::vector<block_id_t> &page_ids,
+                                          char *staging) {
   std::sort(page_ids.begin(), page_ids.end());
   page_ids.erase(std::unique(page_ids.begin(), page_ids.end()), page_ids.end());
 
+  if (!has_unaligned_metadata_.load(std::memory_order_acquire)) {
+    return flush_whole_pages(page_ids.data(), page_ids.size(), staging);
+  }
+  // Keep shared pages out of both contiguous pwrite runs and io_uring batches.
+  bool all_ok = true;
+  size_t first = 0;
+  for (size_t i = 0; i < page_ids.size(); ++i) {
+    if (!page_overlaps_metadata(page_ids[i] * kVectorPageSize)) continue;
+    if (i != first &&
+        !flush_whole_pages(page_ids.data() + first, i - first, staging)) {
+      all_ok = false;
+    }
+    if (!flush_shared_page(page_ids[i])) all_ok = false;
+    first = i + 1;
+  }
+  if (first != page_ids.size() &&
+      !flush_whole_pages(page_ids.data() + first, page_ids.size() - first,
+                         staging)) {
+    all_ok = false;
+  }
+  return all_ok;
+}
+
+bool VecBufferPool::flush_whole_pages(const block_id_t *page_ids, size_t count,
+                                      char *staging) {
 #if defined(__linux__) && !defined(__ANDROID__)
   if (writeback_io_uring_ && writeback_io_uring_->is_valid()) {
     bool all_ok = true;
     size_t pos = 0;
-    while (pos < page_ids.size()) {
+    while (pos < count) {
       std::array<block_id_t, kBlockingAioBatchSize> selected_pages{};
       std::array<char *, kBlockingAioBatchSize> buffers{};
       std::array<size_t, kBlockingAioBatchSize> locked_stripes{};
@@ -1408,7 +1521,7 @@ bool VecBufferPool::flush_writeback_batch(std::vector<block_id_t> &page_ids,
           locks;
       size_t selected = 0;
 
-      while (pos < page_ids.size() && selected < kBlockingAioBatchSize) {
+      while (pos < count && selected < kBlockingAioBatchSize) {
         const block_id_t page_id = page_ids[pos];
         if (!page_table_.is_block_dirty(page_id)) {
           ++pos;
@@ -1534,11 +1647,11 @@ bool VecBufferPool::flush_writeback_batch(std::vector<block_id_t> &page_ids,
   std::array<std::shared_lock<std::shared_mutex>, kBlockingAioBatchSize> locks;
 
   size_t pos = 0;
-  while (pos < page_ids.size()) {
+  while (pos < count) {
     const block_id_t run_start = page_ids[pos];
     size_t run_count = 0;
     bool skip_failed_page = false;
-    while (pos + run_count < page_ids.size() && run_count < run_limit &&
+    while (pos + run_count < count && run_count < run_limit &&
            page_ids[pos + run_count] == run_start + run_count) {
       const block_id_t page_id = page_ids[pos + run_count];
       if (!page_table_.is_block_dirty(page_id)) {
@@ -1722,9 +1835,11 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry,
     const size_t page_offset = page_id * kVectorPageSize;
     // Count one miss per page for which this thread won the load claim.
     miss_count_.fetch_add(1, std::memory_order_relaxed);
-    // Newly extended pages start zeroed; reload evicted pages from disk.
+    // Newly extended data pages start zeroed. Shared pages can already
+    // contain a directory, and evicted pages can contain persisted data.
     if (writable_ && page_offset >= initial_file_size_ &&
-        !page_table_.is_ever_loaded(page_id)) {
+        !page_table_.is_ever_loaded(page_id) &&
+        !page_overlaps_metadata(page_offset)) {
       std::memset(buffer, 0, kVectorPageSize);
     } else {
       // Accept and zero-pad an unaligned final page.

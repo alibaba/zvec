@@ -44,6 +44,7 @@
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_format.h>
+#include <zvec/core/framework/index_version.h>
 #include "utility/utility_params.h"
 #include "../../../ailego/buffer/pool_payload_budget.h"
 
@@ -165,6 +166,11 @@ class ScopedWriteFailure {
   bool hit{false};
 };
 
+// A short write on the second data range of a directory-sharing page.
+thread_local off_t short_data_offset = -1;
+thread_local size_t short_data_prefix = 0;
+thread_local bool short_data_hit = false;
+
 // Write a real prefix of the footer. Each fault is armed for one write.
 ssize_t InjectPwrite(decltype(&::pwrite) write_at, int fd, const void *buffer,
                      size_t count, off_t offset) {
@@ -196,6 +202,14 @@ ssize_t InjectPwrite(decltype(&::pwrite) write_at, int fd, const void *buffer,
     write_failure = nullptr;
     errno = EIO;
     return -1;
+  }
+  if (offset == short_data_offset && count > short_data_prefix) {
+    const size_t prefix = short_data_prefix;
+    short_data_offset = -1;
+    short_data_hit = true;
+    // Persist only the prefix so the first range succeeds and the second
+    // range reports a short write.
+    return write_at(fd, buffer, prefix, offset);
   }
   return write_at(fd, buffer, count, offset);
 }
@@ -932,6 +946,200 @@ TEST_F(BufferStorageDirectorySplitTest,
   ASSERT_EQ(static_cast<ssize_t>(kPrefix), fault.written);
   ASSERT_EQ(IndexError_NoMemory, status);
   ASSERT_NO_FATAL_FAILURE(verify_retry(name));
+}
+
+// Build an index whose directory uses a 4 KiB format page on purpose. Hosts
+// with a larger page size then share cache pages between the directory and
+// segment data.
+void CreateFormatPageLayoutIndex(const std::string &path,
+                                 uint32_t format_page) {
+  const uint32_t content_offset = format_page;
+  const uint32_t meta_footer_offset =
+      content_offset - sizeof(IndexFormat::MetaFooter);
+  const uint32_t segments_meta_size =
+      meta_footer_offset - sizeof(IndexFormat::MetaHeader);
+  IndexFormat::MetaHeader header{};
+  IndexFormat::SetupMetaHeader(&header, meta_footer_offset, content_offset);
+
+  const std::string details = IndexVersion::Details();
+  const std::string version_name = INDEX_VERSION_SEGMENT_NAME;
+  // Match the writer's layout: meta records grow from the front, segment
+  // names grow down from the end, and the gap is free directory space.
+  std::vector<char> table(segments_meta_size, 0);
+  auto *version = reinterpret_cast<IndexFormat::SegmentMeta *>(table.data());
+  version->segment_id_offset =
+      segments_meta_size - static_cast<uint32_t>(version_name.size() + 1);
+  version->data_index = 0;
+  version->data_size = details.size();
+  version->padding_size = format_page - details.size();
+  version->data_crc =
+      zvec::ailego::Crc32c::Hash(details.data(), details.size(), 0);
+  std::memcpy(table.data() + version->segment_id_offset, version_name.c_str(),
+              version_name.size() + 1);
+
+  IndexFormat::MetaFooter footer{};
+  IndexFormat::SetupMetaFooter(&footer);
+  footer.segment_count = 1;
+  footer.segments_meta_size = segments_meta_size;
+  footer.content_size = format_page;
+  footer.total_size = content_offset + format_page;
+  footer.segments_meta_crc =
+      zvec::ailego::Crc32c::Hash(table.data(), segments_meta_size, 0);
+  IndexFormat::UpdateMetaFooter(&footer, 0);
+
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  ASSERT_TRUE(out);
+  out.write(reinterpret_cast<const char *>(&header), sizeof(header));
+  out.write(reinterpret_cast<const char *>(table.data()), segments_meta_size);
+  out.write(reinterpret_cast<const char *>(&footer), sizeof(footer));
+  out.seekp(content_offset);
+  out.write(details.data(), details.size());
+  out.seekp(footer.total_size - 1);
+  out.put('\0');
+  ASSERT_TRUE(out);
+}
+
+TEST_F(BufferStorageDirectorySplitTest, SplitOnLegacyFormatPageKeepsDirectory) {
+  if (page_size_ <= 4096) {
+    GTEST_SKIP() << "requires a host page larger than the 4 KiB layout";
+  }
+  ASSERT_EQ(0, writer_->close());
+  ASSERT_NO_FATAL_FAILURE(CreateFormatPageLayoutIndex(path_, 4096));
+  ASSERT_EQ(0, writer_->open(path_, IndexStorage::OpenOptions{false, false}));
+
+  ASSERT_EQ(0, writer_->append("filler", page_size_));
+  Directory root{};
+  ASSERT_TRUE(ReadDirectory(path_, &root));
+  std::string padding_name(
+      root.free_bytes - sizeof(IndexFormat::SegmentMeta) - 1, 'x');
+  ASSERT_EQ(0, writer_->append(padding_name, page_size_));
+  // This append splits the directory onto a fresh chain.
+  const std::string name = "new_segment";
+  ASSERT_EQ(0, writer_->append(name, page_size_));
+  ASSERT_TRUE(ReadDirectory(path_, &root));
+  const uint64_t tail_offset = root.footer.next_meta_header_offset;
+  ASSERT_NE(0u, tail_offset);
+
+  auto segment = writer_->get(name);
+  ASSERT_NE(nullptr, segment);
+  ASSERT_EQ(kNewData.size(),
+            segment->write(0, kNewData.data(), kNewData.size()));
+  // The first segment write must not zero the new chain's header, and the
+  // data writeback must leave every directory byte untouched.
+  ASSERT_EQ(0, writer_->vec_buffer_pool()->flush_all());
+  ASSERT_EQ(0, writer_->close());
+
+  auto reader = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, reader);
+  ASSERT_EQ(0, reader->init(zvec::ailego::Params{}));
+  ASSERT_EQ(0, reader->open(path_, false));
+  ASSERT_NO_FATAL_FAILURE(verify_segment(*reader, name, kNewData));
+  ASSERT_EQ(0, reader->close());
+  Directory tail{};
+  EXPECT_TRUE(ReadDirectory(path_, &tail, tail_offset));
+}
+
+TEST_F(BufferStorageDirectorySplitTest,
+       InPlaceAppendAfterDataWritebackKeepsNewSegment) {
+  if (page_size_ <= 4096) {
+    GTEST_SKIP() << "requires a host page larger than the 4 KiB layout";
+  }
+  ASSERT_EQ(0, writer_->close());
+  ASSERT_NO_FATAL_FAILURE(CreateFormatPageLayoutIndex(path_, 4096));
+  ASSERT_EQ(0, writer_->open(path_, IndexStorage::OpenOptions{false, false}));
+
+  const std::string old_name = "old_segment";
+  ASSERT_EQ(0, writer_->append(old_name, page_size_));
+  auto old = writer_->get(old_name);
+  ASSERT_NE(nullptr, old);
+  // Cache the directory page and dirty the old segment's data bytes.
+  ASSERT_EQ(kOldData.size(), old->write(0, kOldData.data(), kOldData.size()));
+
+  const std::string name = "new_in_place";
+  ASSERT_EQ(0, writer_->append(name, page_size_));
+  // A pure data writeback must not flush the stale cached directory back.
+  ASSERT_EQ(0, writer_->vec_buffer_pool()->flush_all());
+
+  // Before close, the on-disk table is exactly what append published. The
+  // new segment must still be visible after the pure data writeback.
+  {
+    auto reader = IndexFactory::CreateStorage("BufferStorage");
+    ASSERT_NE(nullptr, reader);
+    ASSERT_EQ(0, reader->init(zvec::ailego::Params{}));
+    ASSERT_EQ(0, reader->open(path_, false));
+    EXPECT_TRUE(reader->has(name));
+    ASSERT_EQ(0, reader->close());
+  }
+  // close() publishes the data sizes as well; verify the payload then.
+  ASSERT_EQ(0, writer_->close());
+  auto reader = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, reader);
+  ASSERT_EQ(0, reader->init(zvec::ailego::Params{}));
+  ASSERT_EQ(0, reader->open(path_, false));
+  EXPECT_TRUE(reader->has(name));
+  ASSERT_NO_FATAL_FAILURE(verify_segment(*reader, old_name, kOldData));
+  ASSERT_EQ(0, reader->close());
+}
+
+TEST_F(BufferStorageDirectorySplitTest,
+       SharedPageShortSecondRangeKeepsDirtyForRetry) {
+  if (page_size_ <= 4096) {
+    GTEST_SKIP() << "requires a host page larger than the 4 KiB layout";
+  }
+  ASSERT_EQ(0, writer_->close());
+  ASSERT_NO_FATAL_FAILURE(CreateFormatPageLayoutIndex(path_, 4096));
+  ASSERT_EQ(0, writer_->open(path_, IndexStorage::OpenOptions{false, false}));
+
+  ASSERT_EQ(0, writer_->append("filler", page_size_));
+  Directory root{};
+  ASSERT_TRUE(ReadDirectory(path_, &root));
+  std::string padding_name(
+      root.free_bytes - sizeof(IndexFormat::SegmentMeta) - 1, 'x');
+  ASSERT_EQ(0, writer_->append(padding_name, page_size_));
+  const std::string name = "new_segment";
+  ASSERT_EQ(0, writer_->append(name, page_size_));
+  ASSERT_TRUE(ReadDirectory(path_, &root));
+  const uint64_t tail_offset = root.footer.next_meta_header_offset;
+  ASSERT_NE(0u, tail_offset);
+  const size_t data_offset = tail_offset + 4096;
+
+  auto filler = writer_->get("filler");
+  ASSERT_NE(nullptr, filler);
+  // Page 0 shares the root directory; filler data on a directory-free page.
+  ASSERT_EQ(kOldData.size(),
+            filler->write(0, kOldData.data(), kOldData.size()));
+  ASSERT_EQ(kNewData.size(),
+            filler->write(8192, kNewData.data(), kNewData.size()));
+  auto segment = writer_->get(name);
+  ASSERT_NE(nullptr, segment);
+  ASSERT_EQ(kNewData.size(),
+            segment->write(0, kNewData.data(), kNewData.size()));
+
+  // The second data range of the split chain's shared page is short-written.
+  short_data_hit = false;
+  short_data_prefix = 4096;
+  short_data_offset = static_cast<off_t>(data_offset);
+  EXPECT_NE(0, writer_->vec_buffer_pool()->flush_all());
+  short_data_offset = -1;
+  EXPECT_TRUE(short_data_hit);
+  EXPECT_TRUE(writer_->is_dirty());
+
+  // The retry persists both ranges; every directory and payload is intact.
+  ASSERT_EQ(0, writer_->vec_buffer_pool()->flush_all());
+  ASSERT_EQ(0, writer_->close());
+  auto reader = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, reader);
+  ASSERT_EQ(0, reader->init(zvec::ailego::Params{}));
+  ASSERT_EQ(0, reader->open(path_, false));
+  ASSERT_NO_FATAL_FAILURE(verify_segment(*reader, name, kNewData));
+  auto reopened = reader->get("filler");
+  ASSERT_NE(nullptr, reopened);
+  std::array<char, 5> data{};
+  ASSERT_EQ(data.size(), reopened->fetch(8192, data.data(), data.size()));
+  EXPECT_EQ(kNewData, data);
+  ASSERT_EQ(0, reader->close());
+  Directory tail{};
+  EXPECT_TRUE(ReadDirectory(path_, &tail, tail_offset));
 }
 
 #endif

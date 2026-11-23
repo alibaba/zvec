@@ -24,6 +24,7 @@
 #include <deque>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <shared_mutex>
@@ -710,6 +711,11 @@ class ZVEC_AILEGO_API VecBufferPool {
   //! Write metadata without cache admission.
   int write_meta(size_t offset, size_t length, const char *buffer);
 
+  //! Exclude an unaligned directory from data writeback. Register before
+  //! exposing its data pages, and remove only an unpublished directory.
+  void register_metadata_range(size_t offset, size_t length);
+  void unregister_metadata_range(size_t offset);
+
   //! Iterate all entries and persist any dirty blocks to disk. Safe to call
   //! repeatedly; no-op in read-only mode.
   int flush_all();
@@ -799,6 +805,14 @@ class ZVEC_AILEGO_API VecBufferPool {
   void drain_writeback();
   void writeback_loop();
   bool flush_writeback_batch(std::vector<block_id_t> &page_ids, char *staging);
+  bool flush_whole_pages(const block_id_t *page_ids, size_t count,
+                         char *staging);
+  bool flush_shared_page(block_id_t page_id);
+  int writeback_page(size_t offset, size_t length, const char *buffer);
+  bool page_overlaps_metadata(size_t offset) const;
+  // Caller holds metadata_ranges_mutex_.
+  std::map<size_t, size_t>::const_iterator first_metadata_range(
+      size_t offset) const;
   // Pin a dirty page for writeback. Waits out an in-flight load/eviction so a
   // flush never mistakes a temporarily unavailable dirty page for a persisted
   // one. Returns nullptr for clean pages; sets *failed when the page is still
@@ -811,9 +825,8 @@ class ZVEC_AILEGO_API VecBufferPool {
   int fd_;       // page-data channel: O_DIRECT or F_NOCACHE when supported
   int meta_fd_;  // metadata channel: always buffered IO
   size_t file_size_;
-  size_t initial_file_size_;  // file size at open time; pages beyond this
-                              // are created by extend_file and can skip
-                              // pread on first load (content is zeros).
+  size_t initial_file_size_;  // Newly extended pages without metadata can
+                              // skip pread on first load (content is zeros).
   std::string file_name_;
   bool writable_{false};
   bool direct_io_enabled_{false};
@@ -861,6 +874,11 @@ class ZVEC_AILEGO_API VecBufferPool {
   }
   std::unique_ptr<std::shared_mutex[]> block_mutexes_{};
   size_t block_mutex_count_{0};
+
+  // Page-aligned directories cannot share a page with segment data.
+  std::atomic<bool> has_unaligned_metadata_{false};
+  mutable std::shared_mutex metadata_ranges_mutex_;
+  std::map<size_t, size_t> metadata_ranges_;
 
   std::thread writeback_thread_{};
   char *writeback_staging_{nullptr};

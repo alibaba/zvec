@@ -1041,6 +1041,12 @@ class BufferStorage : public IndexStorage {
     int ret;
     try {
       ret = parse_to_mapping();
+      if (ret == 0 && writable) {
+        for (const auto &chain : meta_chains_) {
+          buffer_pool_->register_metadata_range(chain.header_start_offset,
+                                                chain.header->content_offset);
+        }
+      }
     } catch (const std::bad_alloc &) {
       ret = IndexError_NoMemory;
     }
@@ -1540,6 +1546,12 @@ class BufferStorage : public IndexStorage {
       mchain.footer = footer;
     }
     metadata_writeback_incomplete_ = false;
+    // Every on-disk link now matches the live chains. Ranges retained by a
+    // failed link rollback are unreachable and can be dropped safely.
+    for (const size_t start : stale_metadata_ranges_) {
+      buffer_pool_->unregister_metadata_range(start);
+    }
+    stale_metadata_ranges_.clear();
     persisted = true;
     return 0;
   } catch (const std::bad_alloc &) {
@@ -1576,6 +1588,7 @@ class BufferStorage : public IndexStorage {
     visible_checkpoint_.store(0, std::memory_order_release);
     index_dirty_.store(false, std::memory_order_relaxed);
     metadata_writeback_incomplete_ = false;
+    stale_metadata_ranges_.clear();
     corrupted_.store(false, std::memory_order_relaxed);
     return status;
   }
@@ -1641,10 +1654,14 @@ class BufferStorage : public IndexStorage {
     auto pending = segments_.try_emplace(id);
     if (!pending.second) return IndexError_Duplicate;
     bool committed = false;
+    size_t unpublished_directory_start = 0;
     const size_t original_file_size = buffer_pool_->file_size();
     AILEGO_DEFER([&]() {
       if (committed) return;
       segments_.erase(pending.first);
+      if (unpublished_directory_start != 0) {
+        buffer_pool_->unregister_metadata_range(unpublished_directory_start);
+      }
       // The directory rollback guards run first. Keep the grown bytes if
       // restoring the directory failed and they may still be referenced.
       if (metadata_writeback_incomplete_ ||
@@ -1719,6 +1736,14 @@ class BufferStorage : public IndexStorage {
       if (!buffer_pool_->extend_file(new_chain_start + new_meta_total)) {
         return IndexError_Runtime;
       }
+      buffer_pool_->register_metadata_range(new_chain_start, new_meta_total);
+      unpublished_directory_start = new_chain_start;
+      // A retry after a failed link rollback revives this range: it belongs
+      // to the live chain again, not to the deferred cleanup list.
+      stale_metadata_ranges_.erase(
+          std::remove(stale_metadata_ranges_.begin(),
+                      stale_metadata_ranges_.end(), new_chain_start),
+          stale_metadata_ranges_.end());
 
       if (buffer_pool_handle_->write_meta(
               new_chain_start, sizeof(IndexFormat::MetaHeader),
@@ -1746,6 +1771,10 @@ class BufferStorage : public IndexStorage {
           !restore_metadata(
               old_chain.footer_file_offset(), sizeof(old_chain.footer),
               reinterpret_cast<const char *>(&old_chain.footer))) {
+        // The on-disk link may still reference the new chain. Keep its range
+        // protected until a successful writeback unlinks it, then clean up.
+        stale_metadata_ranges_.push_back(unpublished_directory_start);
+        unpublished_directory_start = 0;
         schedule_metadata_writeback();
       }
     });
@@ -1895,6 +1924,9 @@ class BufferStorage : public IndexStorage {
   // Set after page writeback until every metadata table and footer is written.
   // Accessed only under AllShardsExclusiveLatch.
   bool metadata_writeback_incomplete_{false};
+  // Ranges kept alive by a failed link rollback; cleared after the next
+  // successful metadata writeback. Same latch discipline as above.
+  std::vector<size_t> stale_metadata_ranges_{};
   // A failed file-growth rollback blocks further writes.
   std::atomic<bool> corrupted_{false};
 
