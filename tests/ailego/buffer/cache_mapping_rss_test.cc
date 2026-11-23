@@ -334,14 +334,20 @@ TEST_F(CacheMappingRssTest, RequiredMappedWorkspaceWaitsForStagedRssRelease) {
     const size_t request = initial_room + 6 * kMiB;
     ASSERT_LT(request, pool_.available());
 
-    // With only rollback notifications, rejection keeps the original mapping.
+    // With only rollback notifications and no reclaimable owners, reject
+    // during the initial wait instead of using the full recovery window.
     const size_t used = pool_.used();
+    const size_t committed = pool_.committed();
     const size_t before = pool_.stats().capacity_waits;
-    EXPECT_NE(0, required.resize(request));
+    const auto start = std::chrono::steady_clock::now();
+    const int result = required.resize(request);
+    EXPECT_LT(std::chrono::steady_clock::now() - start, 500ms);
+    ASSERT_NE(0, result);
     EXPECT_EQ(before + 1, pool_.stats().capacity_waits);
     ASSERT_EQ(kMiB, required.size());
     EXPECT_EQ(73, required.data()[0]);
     EXPECT_EQ(used, pool_.used());
+    EXPECT_EQ(committed, pool_.committed());
 
     auto setup_gate = Peer::hold_background_identity(pool_);
     std::promise<void> first_sample;
