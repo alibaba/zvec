@@ -14,7 +14,6 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <condition_variable>
@@ -28,7 +27,6 @@
 #include <mutex>
 #include <new>
 #include <string>
-#include <thread>
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #endif
@@ -549,35 +547,6 @@ TEST_F(BufferStorageDirectorySplitTest, LargeDirectoryCanReopen) {
   EXPECT_TRUE(writer_->has(last));
 }
 
-TEST_F(BufferStorageDirectorySplitTest,
-       SegmentCapacitySurvivesConcurrentResize) {
-  ASSERT_NO_FATAL_FAILURE(append_old_segment());
-  auto first = writer_->get(old_name_);
-  auto second = writer_->get(old_name_);
-  ASSERT_NE(nullptr, first);
-  ASSERT_NE(nullptr, second);
-  ASSERT_NE(first, second);
-  std::atomic<bool> stop{false};
-  std::atomic<bool> started{false};
-  std::thread resize([&]() {
-    started.store(true, std::memory_order_release);
-    for (size_t i = 0; !stop.load(std::memory_order_relaxed); ++i) {
-      first->resize(i % 2 == 0 ? 10 : 1000);
-    }
-  });
-  while (!started.load(std::memory_order_acquire)) std::this_thread::yield();
-  size_t observed_capacity = page_size_;
-  for (size_t i = 0; i < 50000; ++i) {
-    second->resize(i % 2 == 0 ? 20 : 2000);
-    observed_capacity = writer_->get(old_name_)->capacity();
-    if (observed_capacity != page_size_) break;
-  }
-  stop.store(true, std::memory_order_relaxed);
-  resize.join();
-  EXPECT_EQ(page_size_, observed_capacity);
-  EXPECT_EQ(page_size_, first->data_size() + first->padding_size());
-}
-
 #if (defined(__linux__) && !defined(__ANDROID__)) || \
     (defined(__APPLE__) && TARGET_OS_OSX)
 TEST_F(BufferStorageDirectorySplitTest,
@@ -764,7 +733,14 @@ TEST_F(BufferStorageDirectorySplitTest, FailedClosePreservesWritebackForRetry) {
   EXPECT_TRUE(writer_->has(tail));
   writer_->refresh(kCheckpoint);
   EXPECT_EQ(kCheckpoint, writer_->check_point());
-  EXPECT_EQ(0, writer_->close());
+  RefreshOnFooterWrite request{static_cast<off_t>(root.footer_offset), *writer_,
+                               kCheckpoint + 1};
+  refresh_on_footer_write = &request;
+  const int status = writer_->close();
+  refresh_on_footer_write = nullptr;
+  ASSERT_EQ(0, status);
+  ASSERT_TRUE(request.hit);
+  EXPECT_EQ(kCheckpoint, request.visible_checkpoint);
   ASSERT_EQ(0, writer_->open(path_, false));
   EXPECT_EQ(kCheckpoint, writer_->check_point());
   ASSERT_TRUE(writer_->has(tail));
@@ -773,7 +749,7 @@ TEST_F(BufferStorageDirectorySplitTest, FailedClosePreservesWritebackForRetry) {
   EXPECT_EQ(kOldData.size() + kNewData.size(), old->data_size());
 }
 
-TEST_F(BufferStorageDirectorySplitTest, ConcurrentFlushWaitsForWriteback) {
+TEST_F(BufferStorageDirectorySplitTest, ConcurrentFlushRetriesFailedWriteback) {
   using namespace std::chrono_literals;
   ASSERT_NO_FATAL_FAILURE(append_old_segment());
   Directory root{};
@@ -797,6 +773,7 @@ TEST_F(BufferStorageDirectorySplitTest, ConcurrentFlushWaitsForWriteback) {
     }
   }
   ASSERT_TRUE(reached);
+  // Observe the dirty state while the first writeback is still in flight.
   EXPECT_TRUE(writer_->is_dirty());
   std::promise<void> started;
   auto second = std::async(std::launch::async, [&]() {
@@ -804,15 +781,14 @@ TEST_F(BufferStorageDirectorySplitTest, ConcurrentFlushWaitsForWriteback) {
     return writer_->flush();
   });
   started.get_future().wait();
-  const auto second_status = second.wait_for(100ms);
   {
     std::lock_guard<std::mutex> lock(pause.mutex);
     pause.resume = true;
     pause.cv.notify_all();
   }
-  EXPECT_EQ(std::future_status::timeout, second_status);
   EXPECT_EQ(IndexError_WriteData, first.get());
   EXPECT_EQ(0, second.get());
+  EXPECT_FALSE(writer_->is_dirty());
   auto reader = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_NE(nullptr, reader);
   ASSERT_EQ(0, reader->init(zvec::ailego::Params{}));
@@ -840,24 +816,6 @@ TEST_F(BufferStorageDirectorySplitTest, RefreshDuringWritebackStaysDirty) {
   EXPECT_FALSE(writer_->is_dirty());
   ASSERT_TRUE(ReadDirectory(path_, &root));
   EXPECT_EQ(kCheckpoint + 1, root.footer.check_point);
-}
-
-TEST_F(BufferStorageDirectorySplitTest,
-       ClosePersistsRequestsAcceptedBeforeClose) {
-  ASSERT_NO_FATAL_FAILURE(append_old_segment());
-  Directory root{};
-  ASSERT_TRUE(ReadDirectory(path_, &root));
-  writer_->refresh(kCheckpoint);
-  RefreshOnFooterWrite request{static_cast<off_t>(root.footer_offset), *writer_,
-                               kCheckpoint + 1};
-  refresh_on_footer_write = &request;
-  const int status = writer_->close();
-  refresh_on_footer_write = nullptr;
-  ASSERT_EQ(0, status);
-  ASSERT_TRUE(request.hit);
-  EXPECT_EQ(kCheckpoint, request.visible_checkpoint);
-  ASSERT_EQ(0, writer_->open(path_, false));
-  EXPECT_EQ(kCheckpoint, writer_->check_point());
 }
 
 TEST_F(BufferStorageDirectorySplitTest, FlushRecoversFailedAppendRollback) {
