@@ -199,6 +199,66 @@ if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
     )
 endif()
 
+# Use the compiler-target probe, including macOS cross builds. The joint
+# AVX2 TU must not inherit extra ISA features from a host CPU model flag.
+if(ZVEC_TOPK_TARGET_X86)
+    if(MSVC)
+        set(_TURBO_INTERLEAVED_AVX2_FLAGS "/arch:AVX2")
+    elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(_TURBO_INTERLEAVED_AVX2_FLAGS "-march=x86-64 -mavx2 -mfma -mf16c")
+    else()
+        set(_TURBO_INTERLEAVED_AVX2_FLAGS "-march=i686 -mavx2 -mfma -mf16c")
+    endif()
+    set_source_files_properties(distance/avx2/interleaved_many_to_many.cc
+        PROPERTIES COMPILE_FLAGS "${_TURBO_INTERLEAVED_AVX2_FLAGS}")
+endif()
+
+# AVX512 joint kernels need AVX512F and FP16 conversion, not BW/DQ/VL/VNNI.
+if(ZVEC_TOPK_TARGET_X86)
+    if(MSVC)
+        set(_TURBO_INTERLEAVED_AVX512_FLAGS "/arch:AVX512")
+    elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(_TURBO_INTERLEAVED_AVX512_FLAGS "-march=x86-64 -mavx512f -mf16c")
+    else()
+        set(_TURBO_INTERLEAVED_AVX512_FLAGS "-march=i686 -mavx512f -mf16c")
+    endif()
+    set_source_files_properties(distance/avx512/interleaved_many_to_many.cc
+        PROPERTIES COMPILE_FLAGS "${_TURBO_INTERLEAVED_AVX512_FLAGS}")
+endif()
+
+# The generic matrix kernel is compiled for the project's baseline. Enabling
+# a wider ISA in these two files must not silently fuse a multiply and add
+# that the baseline rounds separately. With an FMA baseline, inherit its FP
+# contraction policy for the equivalent multiply/add expressions.
+if(ZVEC_TOPK_TARGET_X86)
+    unset(ZVEC_MATRIX_BASELINE_HAS_FMA CACHE)
+    check_cxx_source_compiles([=[
+        #if !defined(__FMA__) && !(defined(_MSC_VER) && defined(__AVX2__))
+        #error Baseline has no FMA
+        #endif
+        int main() { return 0; }
+    ]=] ZVEC_MATRIX_BASELINE_HAS_FMA)
+    if(NOT ZVEC_MATRIX_BASELINE_HAS_FMA)
+        if(MSVC)
+            set(_matrix_contract_flag "/fp:strict")
+        else()
+            set(_matrix_contract_flag "-ffp-contract=off")
+        endif()
+        set_property(SOURCE distance/avx2/interleaved_many_to_many.cc
+                            distance/avx512/interleaved_many_to_many.cc
+                     APPEND PROPERTY COMPILE_OPTIONS ${_matrix_contract_flag})
+    endif()
+endif()
+
+# The joint interleaved kernel uses baseline AArch64 NEON and FP32 arithmetic,
+# including FP16-to-FP32 conversion; it does not require FEAT_FP16 arithmetic.
+# Keep this translation unit at the ISA promised by its runtime dispatch gate.
+if(NOT MSVC AND _TURBO_TARGET_ARCH STREQUAL "arm64" AND
+   (NOT CMAKE_OSX_ARCHITECTURES OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64"))
+    set_source_files_properties(distance/neon/interleaved_many_to_many.cc
+        PROPERTIES COMPILE_FLAGS "-march=armv8-a")
+endif()
+
 set(ZVEC_TURBO_DEFS)
 if(ZVEC_ON_MUSL)
   list(APPEND ZVEC_TURBO_DEFS ZVEC_ON_MUSL)

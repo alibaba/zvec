@@ -50,16 +50,19 @@ int Fp16Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
       (metric_name == "SquaredEuclidean" &&
        params.get_as_bool("fp32_accumulation")) ||
       (storage_data_type_ == IndexMeta::DT_FP16 && metric_name == "Cosine");
-  auto kernels = get_distance_kernels(
-      metric_from_name(metric_name), DataType::kFp16,
-      raw_arithmetic ? QuantizeType::kRaw : QuantizeType::kFp16,
-      CpuArchType::kAuto);
+  const auto quantize_type =
+      raw_arithmetic ? QuantizeType::kRaw : QuantizeType::kFp16;
+  auto kernels =
+      get_distance_kernels(metric_from_name(metric_name), DataType::kFp16,
+                           quantize_type, CpuArchType::kAuto);
   if (!kernels.dist || !kernels.batch) {
     LOG_ERROR("Unsupported metric %s for FP16 quantizer", metric_name.c_str());
     return kErrUnsupported;
   }
   dp_query_func_ = std::move(kernels.dist);
   dp_query_batch_func_ = std::move(kernels.batch);
+  dp_query_many_func_ = get_many_to_many_distance_func(
+      metric_from_name(metric_name), DataType::kFp16, quantize_type);
 
   return 0;
 }
