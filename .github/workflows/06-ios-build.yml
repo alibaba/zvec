@@ -38,8 +38,15 @@ jobs:
           key: ios-${{ matrix.platform }}
           max-size: 150M
 
+      - name: Pin CMake
+        run: |
+          python3 -m venv "$RUNNER_TEMP/cmake-venv"
+          "$RUNNER_TEMP/cmake-venv/bin/python" -m pip install cmake==3.30.0
+          echo "$RUNNER_TEMP/cmake-venv/bin" >> "$GITHUB_PATH"
+
       - name: Configure and Build
         run: |
+          cmake --version
           git submodule foreach --recursive 'git stash --include-untracked' || true
 
           SDK_PATH=$(xcrun --sdk ${{ matrix.sdk }} --show-sdk-path)
