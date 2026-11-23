@@ -293,9 +293,8 @@ int destroy_io_ctx(IOContext &ctx) {
 #elif defined(__linux__) && !defined(__ANDROID__)
   if (ctx->type == ailego::IOBackendType::kIoUring) {
     ctx->ring.teardown();
-  } else if (ctx->aio_ctx &&
-             LibAioLoader::Instance().destroy_budgeted(ctx->aio_ctx,
-                                                       ctx->aio_memory) != 0) {
+  } else if (ctx->aio_ctx && LibAioLoader::Instance().destroy_budgeted(
+                                 ctx->aio_ctx, ctx->aio_memory) != 0) {
     // Keep the buffer and its charge if the kernel still owns it.
     (void)ctx->aio_staging.release();
     status = IndexError_Runtime;
@@ -399,7 +398,8 @@ static bool prepare_libaio_staging(IoBackend &ctx, const AlignedRead *reads,
 
 static void prepare_libaio_request(IoBackend &ctx, struct iocb *cb, int fd,
                                    const AlignedRead &read, size_t &offset) {
-  io_prep_pread(cb, fd, ctx.aio_staging->data() + offset, read.len, read.offset);
+  io_prep_pread(cb, fd, ctx.aio_staging->data() + offset, read.len,
+                read.offset);
   offset += ailego::BudgetedMappedBuffer::mapping_size(read.len);
 }
 
@@ -442,11 +442,11 @@ static int submit_aio_batch(IoBackend &ctx, PendingBatch &batch,
 }
 
 static int reap_aio_events(IoBackend &ctx, size_t minimum, size_t maximum,
-                          io_event_t *events) {
+                           io_event_t *events) {
   int ret;
   do {
     ret = LibAioLoader::Instance().io_getevents(ctx.aio_ctx, minimum, maximum,
-                                               events, nullptr);
+                                                events, nullptr);
   } while (ret == -EINTR);
   return ret > 0 && static_cast<size_t>(ret) <= maximum ? ret : -1;
 }
@@ -466,8 +466,8 @@ static bool drain_aio_batch(IoBackend &ctx, PendingBatch &batch,
   size_t completed = 0;
   while (completed < submitted) {
     const size_t remaining = submitted - completed;
-    const int ret =
-        reap_aio_events(ctx, remaining, remaining, batch.events.data() + completed);
+    const int ret = reap_aio_events(ctx, remaining, remaining,
+                                    batch.events.data() + completed);
     if (ret < 0) return false;
     for (int i = 0; i < ret; ++i) {
       const size_t index =
@@ -1161,7 +1161,8 @@ int LinuxAlignedFileReader::submit(PendingBatch &batch,
 
   // The existing io_uring path completes all operations before returning.
   if (ctx->type == ailego::IOBackendType::kIoUring) {
-    if (ctx->ring.execute(file_desc, read_reqs) != 0) return read_synchronously();
+    if (ctx->ring.execute(file_desc, read_reqs) != 0)
+      return read_synchronously();
     batch.used_pread = true;
     batch.n_submitted = static_cast<uint32_t>(read_reqs.size());
     return 0;
@@ -1229,7 +1230,8 @@ int LinuxAlignedFileReader::get_completed(
   }
 
   const size_t minimum = std::max(1, std::min<int>(remaining, min_completed));
-  const int ret = reap_aio_events(*ctx, minimum, remaining, batch.events.data());
+  const int ret =
+      reap_aio_events(*ctx, minimum, remaining, batch.events.data());
   if (ret < 0) return IndexError_Runtime;
   for (int i = 0; i < ret; ++i) {
     const auto &event = batch.events[i];

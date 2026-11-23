@@ -296,9 +296,8 @@ bool IoUringRing::ensure_staging(size_t bytes) {
           ? pool.finish_materialization(bytes, ptr != nullptr)
           : ProcessRssBudget::MaterializationStamp{};
   const auto process_projection =
-      process_backing
-          ? pool.finish_process_backing(bytes, ptr != nullptr)
-          : ProcessRssBudget::MaterializationStamp{};
+      process_backing ? pool.finish_process_backing(bytes, ptr != nullptr)
+                      : ProcessRssBudget::MaterializationStamp{};
   if (!ptr) {
     LOG_WARN("io_uring staging mapping failed; size=%zu", bytes);
     return false;
@@ -315,8 +314,8 @@ bool IoUringRing::ensure_staging(size_t bytes) {
     return false;
   }
   staging_projection_ = prepaid_staging_bytes_ ? prepaid_projection
-                        : process_backing ? process_projection
-                                          : pending.commit_mapping();
+                        : process_backing      ? process_projection
+                                               : pending.commit_mapping();
   staging_ = static_cast<char *>(ptr);
   staging_size_ = bytes;
   staging_charge_ = charge;
@@ -439,8 +438,8 @@ int IoUringRing::execute_impl(int fd, const IoUringRead *read_reqs,
             return false;
           } else {
             seen[req_idx - batch_start] = true;
-            const uint64_t offset =
-                is_write ? write_reqs[req_idx].offset : read_reqs[req_idx].offset;
+            const uint64_t offset = is_write ? write_reqs[req_idx].offset
+                                             : read_reqs[req_idx].offset;
             const uint64_t len =
                 is_write ? write_reqs[req_idx].len : read_reqs[req_idx].len;
             const uint64_t expected_len =

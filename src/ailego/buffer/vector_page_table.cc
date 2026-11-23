@@ -1693,7 +1693,8 @@ bool VecBufferPool::flush_whole_pages(const block_id_t *page_ids, size_t count,
       const int result =
           writeback_io_uring_->execute_writes(fd_, requests.data(), selected);
       if (result == IoUringRing::kQuarantined) {
-        writeback_error_.store(kWritebackQuarantined, std::memory_order_release);
+        writeback_error_.store(kWritebackQuarantined,
+                               std::memory_order_release);
         writeback_failures_.fetch_add(selected, std::memory_order_relaxed);
         return false;
       }
@@ -2584,7 +2585,7 @@ bool VecBufferPoolHandle::read_range(size_t file_offset, size_t len,
 
   auto &budget = MemoryLimitPool::get_instance();
   const bool oversized_scan = budget.page_admission_reserve() != 0 &&
-                               pool_.file_size_ > budget.capacity();
+                              pool_.file_size_ > budget.capacity();
   static constexpr size_t kMaxRunPages = 1024;
 
   for (size_t pg = first_page; pg <= last_page; ++pg) {
@@ -3316,7 +3317,7 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
 
       std::array<struct io_event, kBlockingAioBatchSize> events{};
       const bool drained = drain_blocking_aio(cbs.data(), buffers.data(),
-                                                accepted, events.data());
+                                              accepted, events.data());
       in_flight = false;
       if (!drained) {
         abandon_claims(accepted);
