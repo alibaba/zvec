@@ -482,9 +482,16 @@ int HnswStreamer::open_quantizer(const IndexStorage::Pointer &storage,
   // Train once from the original provider before storing any encoded records.
   // Reopen always restores the saved model, even when a provider is attached.
   if (create && quantizer_->requires_original_vectors() &&
-      quantizer_->require_train() && provider_ && provider_->count() != 0) {
+      quantizer_->require_train()) {
+    if (!provider_ || provider_->count() == 0) {
+      LOG_ERROR(
+          "Training this quantizer requires a non-empty original-vector "
+          "provider before creating HNSW");
+      return IndexError_NoReady;
+    }
     const int ret = quantizer_->train(provider_);
     if (ret != 0) return ret;
+    if (quantizer_->require_train()) return IndexError_NoReady;
   }
   std::string state;
   int ret = quantizer_->serialize(&state);
@@ -510,7 +517,15 @@ int HnswStreamer::open_quantizer(const IndexStorage::Pointer &storage,
   if (segment->read(0, block, size) != size) return IndexError_ReadData;
   if (ailego::Crc32c::Hash(block.data(), size, 0) != segment->data_crc())
     return IndexError_InvalidChecksum;
-  return quantizer_->deserialize(block.data(), size);
+  ret = quantizer_->deserialize(block.data(), size);
+  if (ret != 0) return ret;
+  if (quantizer_->require_train()) {
+    LOG_ERROR(
+        "Persisted HNSW quantizer is untrained; rebuild from original "
+        "vectors");
+    return IndexError_NoReady;
+  }
+  return 0;
 }
 
 int HnswStreamer::open(IndexStorage::Pointer stg) {

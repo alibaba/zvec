@@ -1215,6 +1215,7 @@ TEST(FieldSchemaTest, GraphRabitqAcceptsDefaultReferenceStorage) {
       for (int bits : {1, 3, 9}) {
         SCOPED_TRACE(bits);
         params->set_quantizer_param(QuantizerParam(false, bits, 4, 128, 6));
+        EXPECT_TRUE(params->validate().ok());
         FieldSchema field("vector", DataType::VECTOR_FP32, 128, false, params);
         const auto status = field.validate();
         EXPECT_TRUE(status.ok()) << status.message();
@@ -1250,6 +1251,29 @@ TEST(FieldSchemaTest, GraphRabitqRejectsInvalidQuantizerSettings) {
     FieldSchema field("vector", DataType::VECTOR_FP32, 128, false, params);
     EXPECT_TRUE(field.validate().ok());
   }
+}
+
+TEST(FieldSchemaTest, RabitqZeroBitDefaultIsOnlyForDedicatedIndexes) {
+  for (auto type : {IndexType::HNSW, IndexType::DISKANN}) {
+    SCOPED_TRACE(static_cast<int>(type));
+    std::shared_ptr<VectorIndexParams> params;
+    if (type == IndexType::HNSW)
+      params = std::make_shared<HnswIndexParams>(MetricType::L2);
+    else
+      params = std::make_shared<DiskAnnIndexParams>(MetricType::L2);
+    params->set_quantize_type(QuantizeType::RABITQ);
+    for (int bits : {-1, 0, 10}) {
+      SCOPED_TRACE(bits);
+      params->set_quantizer_param(QuantizerParam(false, bits, 4, 128, 6));
+      EXPECT_EQ(StatusCode::INVALID_ARGUMENT, params->validate().code());
+    }
+  }
+  HnswRabitqIndexParams hnsw(MetricType::L2);
+  hnsw.set_total_bits(0);
+  EXPECT_TRUE(hnsw.validate().ok());
+  IvfRabitqIndexParams ivf(MetricType::L2);
+  ivf.set_total_bits(0);
+  EXPECT_TRUE(ivf.validate().ok());
 }
 
 TEST(FieldSchemaTest, HnswRabitqRequiresFp32ReferenceStorage) {

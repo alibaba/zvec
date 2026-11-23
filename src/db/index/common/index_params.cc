@@ -136,6 +136,13 @@ Status VectorIndexParams::validate() const {
   }
   if (quantize_type_ == QuantizeType::RABITQ &&
       (type_ == IndexType::HNSW || type_ == IndexType::DISKANN)) {
+    // Only dedicated RaBitQ indexes normalize zero to the default bit width.
+    if (quantizer_param_.total_bits() < 1 ||
+        quantizer_param_.total_bits() > 9) {
+      return Status::InvalidArgument(
+          "RABITQ total_bits must be in [1, 9]; got ",
+          quantizer_param_.total_bits());
+    }
     return validate_rabitq_params(metric_type_, quantizer_param_.total_bits());
   }
   return Status::OK();

@@ -232,7 +232,10 @@ core::IndexContext::Pointer &Index::acquire_context() {
 }
 
 int Index::train() {
-  if (pending_quantizer_training_) return core::IndexError_NoReady;
+  if (pending_quantizer_training_ ||
+      (turbo_quantizer_ && turbo_quantizer_->requires_original_vectors() &&
+       turbo_quantizer_->require_train()))
+    return core::IndexError_NoReady;
   is_trained_ = true;
   return 0;
 }
