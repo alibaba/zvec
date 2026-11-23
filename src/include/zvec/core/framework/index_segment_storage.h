@@ -87,6 +87,20 @@ class IndexSegmentStorage : public IndexStorage {
       return parent_->fetch(data_offset_ + offset, buf, len);
     }
 
+    int read_error() const override {
+      return parent_->read_error();
+    }
+
+    size_t read_scatter(size_t offset, ScatterBlock &data,
+                        size_t len) override {
+      if (offset > region_size_) {
+        data.reset();
+        return 0;
+      }
+      return parent_->read_scatter(data_offset_ + offset, data,
+                                   std::min(len, region_size_ - offset));
+    }
+
     //! Read data from segment
     size_t read(size_t offset, MemoryBlock &data, size_t len) override {
       return parent_->read(data_offset_ + offset, data, len);
@@ -159,28 +173,34 @@ class IndexSegmentStorage : public IndexStorage {
   }
 
   //! Load the current segment, ignore path
-  int open(const std::string &, bool) override {
+  int open(const std::string &, bool) override try {
     if (!parent_) {
       LOG_ERROR("Failed to load an empty segment");
       return IndexError_NoReady;
     }
 
-    MemoryBlock block;
-    auto read_data = [this, &block](size_t offset, const void **data,
-                                    size_t len) {
-      size_t size = this->parent_->read(offset, block, len);
-      *data = block.data();
+    IndexStorage::MemoryBlock metadata;
+    int read_error = IndexError_ReadData;
+    auto read_data = [this, &metadata, &read_error](
+                         size_t offset, const void **data, size_t len) {
+      metadata.reset();
+      const auto size = parent_->read(offset, metadata, len);
+      if (size < len) read_error = parent_->read_error();
+      *data = metadata.data();
       return size;
     };
 
     IndexUnpacker unpacker;
     if (!unpacker.unpack(read_data, parent_->data_size(), false)) {
+      if (read_error == IndexError_NoMemory) return read_error;
       LOG_ERROR("Failed to unpack segment data");
       return IndexError_UnpackIndex;
     }
     segments_ = std::move(*unpacker.mutable_segments());
     magic_ = unpacker.magic();
     return 0;
+  } catch (const std::bad_alloc &) {
+    return IndexError_NoMemory;
   }
 
   //! Retrieve a segment by id
@@ -243,7 +263,7 @@ class IndexSegmentStorage : public IndexStorage {
 
  private:
   uint32_t magic_{0};
-  std::map<std::string, IndexUnpacker::SegmentMeta> segments_{};
+  IndexUnpacker::SegmentMap segments_{};
   IndexStorage::Segment::Pointer parent_{};
 };
 

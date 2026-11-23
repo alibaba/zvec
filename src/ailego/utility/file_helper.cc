@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -38,8 +40,13 @@
 #if defined(__FreeBSD__)
 #include <sys/sysctl.h>
 #endif
+#include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#if defined(__linux__)
+#include <linux/fs.h>
+#include <sys/syscall.h>
+#endif
 #endif
 
 namespace fs = std::filesystem;
@@ -339,6 +346,94 @@ bool FileHelper::RenameFile(const char *oldpath, const char *newpath) {
 
 bool FileHelper::MakePath(const char *path) {
   return MakePathImpl(PathFromUtf8(path));
+}
+
+StagedPath::~StagedPath() {
+  if (directory_.empty()) return;
+  try {
+    FileHelper::RemoveDirectory(directory_.c_str());
+  } catch (...) {
+    // This path is private. Cleanup failure cannot remove a published file.
+  }
+}
+
+bool StagedPath::supported() {
+#if defined(_WIN32) || defined(_WIN64) || defined(__APPLE__) || \
+    (defined(__linux__) && defined(SYS_renameat2) &&            \
+     defined(RENAME_NOREPLACE))
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool StagedPath::prepare(const std::string &destination) {
+  ClearFsError();
+  if (!directory_.empty() || !supported()) return false;
+  std::error_code absolute_error;
+  auto target = fs::absolute(FileHelper::PathFromUtf8(destination), absolute_error);
+  if (absolute_error) {
+    SetFsError(absolute_error);
+    return false;
+  }
+  while (target.has_relative_path() &&
+         (!target.has_filename() || target.filename() == ".")) {
+    target = target.parent_path();
+  }
+  if (!target.has_filename() || target.filename() == "..") {
+    SetFsError(std::make_error_code(std::errc::invalid_argument));
+    return false;
+  }
+  auto parent = target.parent_path();
+  if (parent.empty()) parent = ".";
+  if (!MakePathImpl(parent)) return false;
+  destination_ = FileHelper::PathToUtf8(target);
+  static std::atomic<uint64_t> sequence{0};
+  const auto stamp =
+      std::chrono::steady_clock::now().time_since_epoch().count();
+  for (unsigned attempt = 0; attempt != 64; ++attempt) {
+    const auto unique = sequence.fetch_add(1, std::memory_order_relaxed);
+    auto directory = parent / (".zvec-create-" + std::to_string(stamp) + "-" +
+                               std::to_string(unique));
+    auto private_directory = FileHelper::PathToUtf8(directory);
+    auto private_path = FileHelper::PathToUtf8(directory / "data");
+#if defined(_WIN32) || defined(_WIN64)
+    std::error_code error;
+    const bool created = fs::create_directory(directory, error);
+    if (!created && error && error != std::errc::file_exists) {
+      SetFsError(error);
+      return false;
+    }
+#else
+    const bool created = ::mkdir(directory.c_str(), S_IRWXU) == 0;
+    if (!created && errno != EEXIST) return false;
+#endif
+    if (created) {
+      directory_.swap(private_directory);
+      path_.swap(private_path);
+      return true;
+    }
+  }
+  SetFsError(std::make_error_code(std::errc::file_exists));
+  return false;
+}
+
+bool StagedPath::publish() {
+  ClearFsError();
+  if (path_.empty()) return false;
+#if defined(_WIN32) || defined(_WIN64)
+  const auto source = FileHelper::PathFromUtf8(path_);
+  const auto target = FileHelper::PathFromUtf8(destination_);
+  return ::MoveFileExW(source.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH);
+#elif defined(__APPLE__)
+  return ::renamex_np(path_.c_str(), destination_.c_str(), RENAME_EXCL) == 0;
+#elif defined(__linux__) && defined(SYS_renameat2) && defined(RENAME_NOREPLACE)
+  return ::syscall(SYS_renameat2, AT_FDCWD, path_.c_str(), AT_FDCWD,
+                   destination_.c_str(), RENAME_NOREPLACE) == 0;
+#else
+  SetFsError(std::make_error_code(std::errc::operation_not_supported));
+  return false;
+#endif
 }
 
 bool FileHelper::RemoveDirectory(const char *path) {
