@@ -2163,6 +2163,103 @@ TEST_F(BufferStorageWriteTest, CR_ConcurrentSamePageReadSeesWholeWrite) {
   EXPECT_EQ(0, storage->close());
 }
 
+TEST_F(BufferStorageWriteTest, ConcurrentMutableBatchSeesWholePageWrite) {
+  auto storage = open_writable();
+  ASSERT_TRUE(storage);
+  const size_t page_size = ailego::kVectorPageSize;
+  ASSERT_EQ(0, storage->append("seg", 3 * page_size));
+  auto segment = storage->get("seg");
+  ASSERT_TRUE(segment);
+  ASSERT_TRUE(storage->vec_buffer_pool()->cache_enabled());
+
+  const size_t length = page_size / 2;
+  const size_t offset =
+      (page_size - segment->data_offset() % page_size) % page_size +
+      page_size - length;
+  const std::vector<char> pattern_a(length, '\x55');
+  const std::vector<char> pattern_b(length, '\x2a');
+  const std::string next_page(128, 't');
+  ASSERT_EQ(length, segment->write(offset, pattern_a.data(), length));
+  ASSERT_EQ(next_page.size(),
+            segment->write(offset + length, next_page.data(), next_page.size()));
+
+  std::atomic<bool> start{false};
+  std::atomic<bool> stop{false};
+  std::atomic<size_t> writes{0};
+  std::atomic<size_t> write_failures{0};
+  std::thread writer([&] {
+    while (!start.load(std::memory_order_acquire)) std::this_thread::yield();
+    for (size_t i = 0; !stop.load(std::memory_order_acquire); ++i) {
+      const auto &pattern = (i & 1U) == 0 ? pattern_b : pattern_a;
+      // All three write APIs protect a same-page update with the page latch.
+      bool ok;
+      if (i % 3 == 0) {
+        ok = segment->write(offset, pattern.data(), length) == length;
+      } else {
+        const IndexStorage::SegmentData fragments[] = {
+            {offset, length / 2, pattern.data()},
+            {offset + length / 2, length / 2, pattern.data() + length / 2},
+        };
+        if (i % 3 == 1) {
+          ok = segment->write_batch(fragments, 2);
+        } else {
+          std::unique_ptr<IndexStorage::Segment::PreparedWrite> prepared;
+          ok = segment->prepare_write_batch(fragments, 2, &prepared) == 0 &&
+               prepared != nullptr;
+          if (ok) prepared->commit();
+        }
+      }
+      if (!ok) {
+        write_failures.fetch_add(1, std::memory_order_relaxed);
+        break;
+      }
+      writes.fetch_add(1, std::memory_order_release);
+    }
+  });
+
+  start.store(true, std::memory_order_release);
+  while (writes.load(std::memory_order_acquire) < 3 &&
+         write_failures.load(std::memory_order_relaxed) == 0)
+    std::this_thread::yield();
+  size_t read_failures = 0;
+  size_t torn_snapshots = 0;
+  size_t inconsistent_fragments = 0;
+  for (size_t i = 0; i < 20000; ++i) {
+    IndexStorage::MemoryBlock blocks[4];
+    // Overlapping requests share a resident page and must be scattered while
+    // holding one read latch. The writer must not interleave their copies.
+    IndexStorage::Segment::BorrowedRead reads[] = {
+        {segment.get(), offset, length, &blocks[0]},
+        {segment.get(), offset + 64, 128, &blocks[1]},
+        {segment.get(), offset, length, &blocks[2]},
+        {segment.get(), offset, length + next_page.size(), &blocks[3]},
+    };
+    if (!segment->read_borrowed_batch(reads, 4)) {
+      ++read_failures;
+      break;
+    }
+    if (std::memcmp(blocks[0].data(), pattern_a.data(), length) != 0 &&
+        std::memcmp(blocks[0].data(), pattern_b.data(), length) != 0)
+      ++torn_snapshots;
+    if (std::memcmp(blocks[0].data(), blocks[2].data(), length) != 0 ||
+        std::memcmp(static_cast<const char *>(blocks[0].data()) + 64,
+                    blocks[1].data(), 128) != 0 ||
+        std::memcmp(blocks[0].data(), blocks[3].data(), length) != 0 ||
+        std::memcmp(static_cast<const char *>(blocks[3].data()) + length,
+                    next_page.data(), next_page.size()) != 0)
+      ++inconsistent_fragments;
+    if (torn_snapshots) break;
+  }
+  stop.store(true, std::memory_order_release);
+  writer.join();
+  EXPECT_GE(writes.load(std::memory_order_relaxed), 3U);
+  EXPECT_EQ(0U, write_failures.load(std::memory_order_relaxed));
+  EXPECT_EQ(0U, read_failures);
+  EXPECT_EQ(0U, torn_snapshots);
+  EXPECT_EQ(0U, inconsistent_fragments);
+  EXPECT_EQ(0, storage->close());
+}
+
 TEST_F(BufferStorageWriteTest, CR_MemoryBlockOutlivesReadOnlyStorage) {
   const std::string expected = "lifetime";
   {

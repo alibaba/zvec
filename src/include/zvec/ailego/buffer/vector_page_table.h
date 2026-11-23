@@ -1099,6 +1099,16 @@ class ZVEC_AILEGO_API VecBufferPoolHandle {
 
   void release_pages(const block_id_t *page_ids, size_t count);
 
+  // Synchronize a payload copy with writers without acquiring another pin.
+  // The caller must keep the page pinned until the returned lock is released.
+  // Read-only pools need no payload latch and return an empty lock.
+  std::shared_lock<std::shared_mutex> lock_pinned_page_for_read(
+      block_id_t page_id) const {
+    if (!pool_.writable_) return {};
+    return std::shared_lock<std::shared_mutex>(
+        pool_.block_mutexes_[page_id % pool_.block_mutex_count_]);
+  }
+
   bool read_range(size_t file_offset, size_t len, char *out);
   bool read_range(size_t file_offset, size_t len, char *out,
                   bool &allocation_failed);

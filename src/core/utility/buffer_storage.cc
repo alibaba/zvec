@@ -781,6 +781,16 @@ class BufferStorage : public IndexStorage {
                                                       range_count))
           return fail();
         for (size_t group = 0; group < groups; ++group) {
+          const size_t unique_index =
+              scratch.page_uses[starts[group]].unique_index;
+          std::shared_lock<std::shared_mutex> page_lock;
+          if (mutable_snapshot && scratch.pages[unique_index] != nullptr) {
+            // Pins prevent eviction, not writes. Hold the writer's page latch
+            // through every copy from this resident page. Bypass sources are
+            // already synchronized snapshots owned by this operation.
+            page_lock = owner_->buffer_pool_handle_->lock_pinned_page_for_read(
+                scratch.unique_page_ids[unique_index]);
+          }
           for (size_t i = starts[group]; i < ends[group]; ++i) {
             const PageUse &use = scratch.page_uses[i];
             BatchState &state = scratch.states[use.state_index];
