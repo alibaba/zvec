@@ -1150,7 +1150,7 @@ void MemoryLimitPool::release_retained_block(void *data) {
     // Publish idle backing or finish unmapping before init() sees no owners.
     release_native_used(bytes);
   }
-  notify_capacity_release(/*wake_all=*/true);
+  capacity_cv_.notify_all();
 }
 
 size_t MemoryLimitPool::trim_retained_blocks(size_t bytes_needed) {
@@ -1583,7 +1583,7 @@ bool MemoryLimitPool::try_reserve_native(
     // Recheck at the same synchronization point as tracked refunds. A return
     // before this denial belongs to its baseline, even if the request started
     // earlier at a different budget gate.
-    std::lock_guard<std::mutex> lock(native_recovery_mutex_);
+    std::lock_guard<std::mutex> lock(capacity_mutex_);
     used = counter.load(std::memory_order_relaxed);
     if (!fits(used)) {
       *denied_at = generation.load(std::memory_order_relaxed);
@@ -1635,10 +1635,19 @@ bool MemoryLimitPool::try_reserve_committed(size_t bytes, Backing backing,
 size_t MemoryLimitPool::release_native(size_t bytes,
                                        std::atomic<size_t> &counter,
                                        std::atomic<uint64_t> &generation) {
-  std::lock_guard<std::mutex> lock(native_recovery_mutex_);
+  std::lock_guard<std::mutex> lock(capacity_mutex_);
+  return release_native_locked(bytes, counter, generation);
+}
+
+size_t MemoryLimitPool::release_native_locked(
+    size_t bytes, std::atomic<size_t> &counter,
+    std::atomic<uint64_t> &generation) {
   const size_t previous = counter.fetch_sub(bytes, std::memory_order_relaxed);
   assert(previous >= bytes);
-  if (bytes) generation.fetch_add(1, std::memory_order_release);
+  if (bytes) {
+    generation.store(generation.load(std::memory_order_relaxed) + 1,
+                     std::memory_order_release);
+  }
   return previous;
 }
 
@@ -2646,8 +2655,8 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
     if (wait && !admitted) first_denials.remember_first(denials);
     return admitted;
   };
-  // One deadline covers inline retries and sleeps. Ready hints and spurious
-  // notifications cannot turn a bounded wait into unbounded retry work.
+  // The deadline bounds waiting and starting another reclaim pass. A
+  // synchronous reclaim already in progress can finish after the deadline.
   if (try_once()) return true;
   const auto denied_at = Clock::now();
   const auto first_wait_end = denied_at + milliseconds(100);
@@ -2658,7 +2667,7 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
   const bool maintenance = refresh_residency_on_background_thread();
   if (maintenance) {
     wait = false;
-    if (retry()) return true;
+    if (try_once()) return true;
   }
   const auto impossible = [&] {
     return request.native_bytes > native_allocation_limit() ||
@@ -2701,7 +2710,17 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
            (since.committed &&
             committed_release_generation_.load(std::memory_order_acquire) !=
                 *since.committed) ||
-           (since.rss && process_rss_.recovery_generation(reuse) != *since.rss);
+           (since.rss &&
+            process_rss_.recovery_generation(reuse) != since.rss->recovery);
+  };
+  const auto has_recovery_progress = [&] {
+    return made_progress(first_denials) ||
+           (first_denials.rss &&
+            process_rss_.reader_progress_since(*first_denials.rss));
+  };
+  const auto refresh_after_reclaim = [&] {
+    if (request.rss_bytes != 0 || reuse)
+      process_rss_.refresh_after_reclaim(request.rss_bytes);
   };
 
   // Close the race between the first denial and publishing priority.
@@ -2714,32 +2733,41 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
     if (shortfall && shortfall < previous_shortfall) {
       previous_shortfall = shortfall;
       if (trim_free_buffers(shortfall) != 0) {
-        process_rss_.refresh(true);
-        // Discarding backing takes a raw observation. Restore its ownership
-        // proof here instead of making maintenance wait for its next round.
+        refresh_after_reclaim();
+        // Maintenance can confirm residency without waiting for another pass.
         if (maintenance) refresh_residency_on_background_thread();
-        if (retry()) return true;
+        if (try_once()) return true;
         continue;
       }
-      if (!maintenance &&
+      if (!maintenance && Clock::now() < deadline &&
           BlockEvictionQueue::get_instance().reclaim_for_allocation(
               shortfall)) {
-        // Eviction frees logical slots first. Turn idle pages into backing
-        // headroom before judging progress, including with RSS disabled.
-        trim_free_buffers(shortfall);
-        if (process_rss_.limit()) process_rss_.refresh(true);
-        if (retry()) return true;
+        refresh_after_reclaim();
+        // Finish the started pass by returning backing for any remaining
+        // deficit. If capacity is already sufficient, skip idle trimming.
+        const size_t remaining = admission_shortfall(request);
+        if (remaining && trim_free_buffers(remaining) != 0)
+          refresh_after_reclaim();
+        if (try_once()) return true;
         continue;
       }
+      if (Clock::now() >= deadline) {
+        // A pass can report no reclamation while another owner refunds bytes.
+        // Check the budget once before returning without starting more work.
+        refresh_after_reclaim();
+        if (try_once()) return true;
+        break;
+      }
     }
-    if (!wait || impossible()) break;
+    if (!wait || Clock::now() >= deadline || impossible()) break;
     // Recovery at the gate that just refused admission can require a new
     // sample, even if the cached headroom has not increased yet.
     const auto room = room_for_request();
     capacity_waits_.fetch_add(1, std::memory_order_relaxed);
+    bool progress;
     {
       std::unique_lock<std::mutex> lock(capacity_mutex_);
-      const bool progress = capacity_cv_.wait_until(
+      progress = capacity_cv_.wait_until(
           lock, std::min(deadline, Clock::now() + milliseconds(100)), [&] {
             if (made_progress(denials)) return true;
             const auto current = room_for_request();
@@ -2749,11 +2777,13 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
       if (!progress)
         capacity_wait_timeouts_.fetch_add(1, std::memory_order_relaxed);
     }
+    // A refund can satisfy the wait before the caller can run again.
+    // Recheck it once even if reacquiring the mutex crossed the deadline.
+    if ((progress || Clock::now() < deadline) && try_once()) return true;
     if (Clock::now() >= deadline) break;
-    if (retry()) return true;
     // A release can fill part of the gap before a subsequent owner returns
     // the rest. Keep the original deadline once the request has seen progress.
-    if (Clock::now() >= first_wait_end && !made_progress(first_denials)) {
+    if (Clock::now() >= first_wait_end && !has_recovery_progress()) {
       bool exhausted = false;
       if (!denials.rss) {
         const size_t fixed = fixed_used();
@@ -2772,7 +2802,7 @@ bool MemoryLimitPool::try_admit(AdmissionRequest request, Admit &&admit,
         std::lock_guard<std::mutex> lock(process_reclaimer_mutex_);
         // An eviction can refund budget as it removes the last queue entry.
         // Decide using the generations after observing the recovery sources.
-        if (!process_reclaimer_ && !made_progress(first_denials)) break;
+        if (!process_reclaimer_ && !has_recovery_progress()) break;
       }
     }
     previous_shortfall = std::numeric_limits<size_t>::max();
@@ -2852,8 +2882,7 @@ void MemoryLimitPool::release_buffer(char *buffer, const size_t buffer_size) {
     size_t committed_prev = release_committed(buffer_size);
     (void)committed_prev;
     assert(committed_prev >= buffer_size);
-    release_native_used(buffer_size);
-    notify_capacity_release();
+    notify_capacity_release(/*wake_all=*/false, buffer_size);
     return;
   }
   // Owner retirement can return hundreds of MiB before the paced background
@@ -2883,8 +2912,7 @@ void MemoryLimitPool::release_buffer(char *buffer, const size_t buffer_size) {
     push_free_buffer(buffer, pick_shard());
   }
   // Publish reusable backing or physically discard it before releasing used.
-  release_native_used(buffer_size);
-  notify_capacity_release(released_retained != 0);
+  notify_capacity_release(released_retained != 0, buffer_size);
 }
 
 void MemoryLimitPool::cancel_buffer_reservation(size_t bytes,
@@ -2899,18 +2927,25 @@ void MemoryLimitPool::cancel_buffer_reservation(size_t bytes,
     return;
   }
   release_committed(bytes, Backing::kPending);
-  release_native_used(bytes);
-  notify_capacity_release();
+  notify_capacity_release(/*wake_all=*/false, bytes);
 }
 
-void MemoryLimitPool::notify_capacity_release(bool wake_all) {
-  {
-    std::lock_guard<std::mutex> lock(capacity_mutex_);
-    // The same CV serves different admission gates. An unrelated waiter
-    // must not consume the only notification while a required call waits.
-    wake_all =
-        wake_all || mandatory_waiters_.load(std::memory_order_relaxed) != 0;
-  }
+void MemoryLimitPool::notify_capacity_release(bool wake_all,
+                                              size_t released_used) {
+  wake_capacity_waiters(publish_capacity_release(wake_all, released_used));
+}
+
+bool MemoryLimitPool::publish_capacity_release(bool wake_all,
+                                               size_t released_used) {
+  std::lock_guard<std::mutex> lock(capacity_mutex_);
+  if (released_used != 0)
+    release_native_locked(released_used, used_size_, used_release_generation_);
+  // The same CV serves different admission gates. An unrelated waiter
+  // must not consume the only notification while a required call waits.
+  return wake_all || mandatory_waiters_.load(std::memory_order_relaxed) != 0;
+}
+
+void MemoryLimitPool::wake_capacity_waiters(bool wake_all) {
   if (wake_all) {
     capacity_cv_.notify_all();
   } else {
@@ -3109,6 +3144,7 @@ MemoryLimitPool::CacheBuffer *MemoryLimitPool::try_acquire_cache_buffer(
 void MemoryLimitPool::release_cache_buffer(CacheBuffer *buffer) {
   if (!buffer) return;
   const size_t bytes = buffer->bytes;
+  bool wake_all;
   {
     std::lock_guard<std::mutex> return_lock(cache_return_mutex_);
     const size_t committed = committed_size_.load(std::memory_order_relaxed);
@@ -3141,10 +3177,11 @@ void MemoryLimitPool::release_cache_buffer(CacheBuffer *buffer) {
     external_used_size_.fetch_sub(bytes, std::memory_order_relaxed);
     metadata_used_size_.fetch_sub(sizeof(CacheBuffer),
                                   std::memory_order_relaxed);
-    release_native_used(bytes + sizeof(CacheBuffer));
+    wake_all = publish_capacity_release(/*wake_all=*/false,
+                                        bytes + sizeof(CacheBuffer));
   }
   // Keep allocator-return locks out of the capacity-waiter notification path.
-  notify_capacity_release();
+  wake_capacity_waiters(wake_all);
   bg_cv_.notify_one();
 }
 

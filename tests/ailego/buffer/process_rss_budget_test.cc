@@ -137,9 +137,10 @@ TEST(ProcessRssBudgetTest, RecoveryTracksPendingRefundsAndActualDenial) {
   const auto generation = budget.recovery_generation();
 
   ASSERT_TRUE(budget.try_reserve(8 * kMiB));
-  std::optional<uint64_t> denied_at;
+  std::optional<ProcessRssBudget::Denial> denied_at;
   EXPECT_FALSE(budget.try_reserve(60 * kMiB, &denied_at));
-  ASSERT_EQ(generation, denied_at);
+  ASSERT_TRUE(denied_at);
+  EXPECT_EQ(generation, denied_at->recovery);
   EXPECT_EQ(generation, budget.recovery_generation());
   budget.finish_reservation(8 * kMiB, false);
   EXPECT_EQ(generation + 1, budget.recovery_generation());
@@ -155,7 +156,7 @@ TEST(ProcessRssBudgetTest, RecoveryTracksPendingRefundsAndActualDenial) {
   EXPECT_EQ(0u, budget.available());
   EXPECT_EQ(generation + 2, budget.recovery_generation());
   EXPECT_FALSE(budget.try_reserve(1, &denied_at));
-  EXPECT_EQ(generation, denied_at);
+  EXPECT_EQ(generation, denied_at->recovery);
 
   budget.release(8 * kMiB);
   EXPECT_EQ(0u, budget.available());
@@ -181,9 +182,7 @@ TEST(ProcessRssBudgetTest, RecoveryNotifiesAfterPublishingUsableBudget) {
         lock, 2s, [&] { return budget.recovery_generation() != generation; });
   });
   ASSERT_EQ(std::future_status::ready, entered.wait_for(1s));
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-  }
+  { std::lock_guard<std::mutex> lock(mutex); }
   sampled_rss = 92 * kMiB;
   budget.refresh(true);
   ASSERT_EQ(std::future_status::ready, waiting.wait_for(500ms));
@@ -198,7 +197,7 @@ TEST(ProcessRssBudgetTest, ExactLimitObservationRestoresReuseOnly) {
   sampled_owned_resident = 8 * kMiB;
   ASSERT_TRUE(budget.configure(96 * kMiB, ReadRss, nullptr, 0, ReadResident));
   ProcessRssBudget::MaterializationStamp stamp;
-  std::optional<uint64_t> reuse_denied;
+  std::optional<ProcessRssBudget::Denial> reuse_denied;
   ASSERT_FALSE(budget.try_materialize_reusable(8 * kMiB, stamp, &reuse_denied));
   ASSERT_TRUE(reuse_denied);
   const auto growth_generation = budget.recovery_generation();
@@ -206,7 +205,7 @@ TEST(ProcessRssBudgetTest, ExactLimitObservationRestoresReuseOnly) {
   budget.refresh(true);
   EXPECT_EQ(0u, budget.available());
   EXPECT_EQ(growth_generation, budget.recovery_generation());
-  EXPECT_EQ(*reuse_denied + 1,
+  EXPECT_EQ(reuse_denied->recovery + 1,
             budget.recovery_generation(/*include_reuse=*/true));
   EXPECT_TRUE(budget.try_materialize_reusable(8 * kMiB, stamp));
   EXPECT_FALSE(budget.try_reserve(1));
@@ -238,29 +237,92 @@ TEST(ProcessRssBudgetTest, NativeObservationCanRecoverDuringRssReadFailure) {
   }
 }
 
+TEST(ProcessRssBudgetTest, PartialRecoveryTracksBothProcessConstraints) {
+  for (bool rss_first : {false, true}) {
+    for (bool over_cap : {false, true}) {
+      SCOPED_TRACE(rss_first);
+      SCOPED_TRACE(over_cap);
+      ProcessRssBudget budget;
+      sampled_rss =
+          (over_cap ? (rss_first ? 120 : 160) : (rss_first ? 96 : 99)) * kMiB;
+      native_sample_valid = true;
+      native_sample = {
+          (over_cap ? (rss_first ? 160 : 120) : (rss_first ? 91 : 88)) * kMiB,
+          128 * kMiB};
+      ASSERT_TRUE(budget.configure(100 * kMiB, ReadRss, ReadNative));
+      std::optional<ProcessRssBudget::Denial> denied;
+      ASSERT_FALSE(budget.try_reserve(8 * kMiB, &denied));
+      ASSERT_TRUE(denied);
+      const auto room = budget.available();
+
+      if (rss_first)
+        sampled_rss = 80 * kMiB;
+      else
+        native_sample.footprint = 80 * kMiB;
+      budget.refresh(true);
+      EXPECT_EQ(room, budget.available());
+      EXPECT_EQ(denied->recovery, budget.recovery_generation());
+      EXPECT_TRUE(budget.reader_progress_since(*denied));
+    }
+  }
+}
+
+TEST(ProcessRssBudgetTest, UnconstrainedReaderDoesNotRecordDenialProgress) {
+  ProcessRssBudget budget;
+  sampled_rss = 80 * kMiB;
+  native_sample_valid = true;
+  native_sample = {91 * kMiB, 128 * kMiB};
+  ASSERT_TRUE(budget.configure(100 * kMiB, ReadRss, ReadNative));
+  std::optional<ProcessRssBudget::Denial> denied;
+  ASSERT_FALSE(budget.try_reserve(8 * kMiB, &denied));
+  ASSERT_TRUE(denied);
+  sampled_rss = 64 * kMiB;
+  budget.refresh(true);
+  EXPECT_EQ(1 * kMiB, budget.available());
+  EXPECT_EQ(denied->recovery, budget.recovery_generation());
+  EXPECT_FALSE(budget.reader_progress_since(*denied));
+}
+
+TEST(ProcessRssBudgetTest, ReaderResumesWhileRoomStillRequiresARelease) {
+  ProcessRssBudget budget;
+  sampled_rss = 120 * kMiB;
+  ASSERT_TRUE(budget.configure(100 * kMiB, ReadRss));
+  sampled_rss = 0;
+  for (int failure = 0; failure < 3; ++failure) budget.refresh(true);
+  std::optional<ProcessRssBudget::Denial> denied;
+  ASSERT_FALSE(budget.try_reserve(8 * kMiB, &denied));
+  ASSERT_TRUE(denied);
+
+  sampled_rss = 110 * kMiB;
+  budget.refresh(true);
+  EXPECT_EQ(0u, budget.available());
+  EXPECT_NE(denied->recovery, budget.recovery_generation());
+  EXPECT_FALSE(budget.try_reserve(8 * kMiB));
+}
+
 TEST(ProcessRssBudgetTest, PhysicalDiscardRetiresCreditBeforeNextSample) {
   ProcessRssBudget budget;
   budget.account(8 * kMiB);
   sampled_rss = 100 * kMiB;
   sampled_owned_resident = 8 * kMiB;
   ASSERT_TRUE(budget.configure(96 * kMiB, ReadRss, nullptr, 0, ReadResident));
-  std::optional<uint64_t> denied_at;
+  std::optional<ProcessRssBudget::Denial> denied_at;
   ASSERT_FALSE(budget.try_reserve(kMiB, &denied_at));
   ASSERT_TRUE(denied_at);
 
   budget.release_unmapped(4 * kMiB, {});
   EXPECT_EQ(0u, budget.available());
-  EXPECT_EQ(*denied_at + 1, budget.recovery_generation());
+  EXPECT_EQ(denied_at->recovery + 1, budget.recovery_generation());
   sampled_rss = 98 * kMiB;
   sampled_owned_resident = 0;
   budget.refresh(true);
   EXPECT_EQ(0u, budget.available());
-  EXPECT_EQ(*denied_at + 1, budget.recovery_generation());
+  EXPECT_EQ(denied_at->recovery + 1, budget.recovery_generation());
 
   sampled_owned_resident = 4 * kMiB;
   budget.refresh(true);
   EXPECT_EQ(0u, budget.available());
-  EXPECT_EQ(*denied_at + 1, budget.recovery_generation());
+  EXPECT_EQ(denied_at->recovery + 1, budget.recovery_generation());
 
   budget.release_unmapped(4 * kMiB, {});
   sampled_rss = 94 * kMiB;
@@ -289,6 +351,60 @@ TEST(ProcessRssBudgetTest, EarlierUnstampedUnmapStillRecordsRecovery) {
   budget.finish_reservation(16 * kMiB, false);
   budget.release_unmapped(8 * kMiB, younger);
   budget.release(12 * kMiB);
+}
+
+TEST(ProcessRssBudgetTest, RestrictiveObservationReplacesInFlightScan) {
+  ProcessRssBudget budget;
+  budget.account(8 * kMiB);
+  sampled_rss = 80 * kMiB;
+  sampled_owned_resident = 0;
+  ASSERT_TRUE(budget.configure(96 * kMiB, ReadRss, nullptr, 0, ReadResident));
+  const auto scan = budget.begin_resident_sample();
+  ASSERT_NE(0u, scan.configuration);
+  budget.release_unmapped(4 * kMiB, {});
+  ASSERT_GT(budget.available(), 4 * kMiB);
+
+  sampled_rss = 100 * kMiB;
+  budget.refresh_after_reclaim(16 * kMiB);
+  EXPECT_EQ(100 * kMiB, budget.rss());
+  EXPECT_EQ(0u, budget.available());
+  EXPECT_FALSE(budget.try_reserve(4 * kMiB));
+  EXPECT_FALSE(budget.publish_resident_sample(scan, {80 * kMiB, 8 * kMiB}));
+}
+
+TEST(ProcessRssBudgetTest, CompletedHeapReclaimCanRefreshDuringOwnershipScan) {
+  ProcessRssBudget budget;
+  budget.account(8 * kMiB);
+  sampled_rss = 120 * kMiB;
+  sampled_owned_resident = 0;
+  ASSERT_TRUE(budget.configure(100 * kMiB, ReadRss, nullptr, 0, ReadResident));
+  ASSERT_NE(0u, budget.begin_resident_sample().configuration);
+  budget.release(8 * kMiB);
+  sampled_rss = 60 * kMiB;
+  budget.refresh_after_reclaim(20 * kMiB);
+  EXPECT_EQ(40 * kMiB, budget.available());
+  EXPECT_TRUE(budget.try_reserve(20 * kMiB));
+}
+
+TEST(ProcessRssBudgetTest, RecoveryObservationSurvivesProjectionRefund) {
+  ProcessRssBudget budget;
+  budget.account(8 * kMiB);
+  sampled_rss = 60 * kMiB;
+  sampled_owned_resident = 0;
+  ASSERT_TRUE(budget.configure(100 * kMiB, ReadRss, nullptr, 0, ReadResident));
+  ASSERT_TRUE(budget.try_reserve_materialization(24 * kMiB));
+  const auto pending = budget.finish_materialization(24 * kMiB, true);
+  ASSERT_NE(0u, budget.begin_resident_sample().configuration);
+  budget.release_unmapped(4 * kMiB, {});
+
+  // The old projection temporarily exceeds the new raw estimate. Retiring
+  // that projection must not make the older, lower RSS sample spendable.
+  sampled_rss = 82 * kMiB;
+  budget.refresh_after_reclaim(16 * kMiB);
+  budget.release_materialization(24 * kMiB, pending);
+  EXPECT_EQ(82 * kMiB, budget.rss());
+  EXPECT_EQ(14 * kMiB, budget.available());
+  EXPECT_FALSE(budget.try_reserve(20 * kMiB));
 }
 
 TEST(ProcessRssBudgetTest, AccountingOnlyReleaseDoesNotConfirmDiscard) {

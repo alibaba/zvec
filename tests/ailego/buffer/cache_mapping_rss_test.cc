@@ -780,6 +780,57 @@ TEST_F(CacheMappingRssTest, UnmappingCreditedBackingWakesRssWaiter) {
             pool_.stats().capacity_wait_timeouts);
 }
 
+TEST_F(CacheMappingRssTest, DeniedRecoveryObservationPreservesOwnershipScan) {
+  using Peer = MemoryLimitPoolTestPeer;
+  BudgetedMappedBuffer remaining, released;
+  ASSERT_EQ(0, remaining.resize(32 * kMiB));
+  ASSERT_EQ(0, released.resize(4 * kMiB));
+  auto restore =
+      ScopeGuard::Make([&] { pool_.configure_process_rss_limit(0); });
+  Peer::next_rss = 80 * kMiB;
+  Peer::next_owned_rss = 0;
+  ASSERT_TRUE(Peer::rss_limit_with_observed_backing(pool_, 96 * kMiB));
+  const auto scan = Peer::begin_sample(pool_);
+  ASSERT_NE(0u, scan.configuration);
+
+  released.clear();
+  Peer::next_rss = 76 * kMiB;
+  // The raw sample still cannot admit 4 MiB. The in-flight scan can, even
+  // after discounting the retired mapping and the difference in RSS.
+  const bool reserved = pool_.try_reserve_process_backing(4 * kMiB);
+  if (reserved) pool_.finish_process_backing(4 * kMiB, false);
+  EXPECT_FALSE(reserved);
+  ASSERT_TRUE(Peer::publish_sample(pool_, scan, {80 * kMiB, 36 * kMiB}));
+  BudgetedMappedBuffer workspace;
+  EXPECT_EQ(0, workspace.resize(4 * kMiB));
+}
+
+TEST_F(CacheMappingRssTest, RequiredBudgetWaitsThroughObservedRssOverage) {
+  using namespace std::chrono_literals;
+  using Peer = MemoryLimitPoolTestPeer;
+  Peer::next_rss = 120 * kMiB;
+  Peer::next_owned_rss = 0;
+  ASSERT_TRUE(Peer::rss_limit_with_observed_backing(pool_, 100 * kMiB));
+  auto restore =
+      ScopeGuard::Make([&] { pool_.configure_process_rss_limit(0); });
+  const auto waits = pool_.stats().capacity_waits;
+  auto waiting = std::async(std::launch::async, [&] {
+    if (!pool_.try_charge_process_backing(8 * kMiB, 0, false)) return false;
+    pool_.release_process_backing(8 * kMiB);
+    return true;
+  });
+  ASSERT_TRUE(wait_for_admission_attempts(waits + 1, waiting));
+
+  Peer::next_rss = 110 * kMiB;
+  Peer::refresh_rss(pool_);
+  EXPECT_EQ(0u, Peer::rss_room(pool_));
+  ASSERT_TRUE(wait_for_admission_attempts(waits + 2, waiting));
+  Peer::next_rss = 80 * kMiB;
+  Peer::refresh_rss(pool_);
+  ASSERT_EQ(std::future_status::ready, waiting.wait_for(1s));
+  EXPECT_TRUE(waiting.get());
+}
+
 TEST_F(CacheMappingRssTest, UnmappingOlderBackingWakesRequiredReuse) {
   using namespace std::chrono_literals;
   using Peer = MemoryLimitPoolTestPeer;
@@ -1744,6 +1795,34 @@ TEST_F(CacheMappingRssTest, RssWaitersPreservePrepaidNativePageCapacity) {
                 pending.wait_for(std::chrono::seconds(2)));
     }
   }
+}
+
+TEST_F(CacheMappingRssTest, CompletedWritebackCanAdmitAfterWaitDeadline) {
+  using namespace std::chrono_literals;
+  size_t writes = 0;
+  VectorPageTable table;
+  ASSERT_TRUE(table.init(1));
+  const size_t page = MemoryLimitPool::page_buffer_size();
+  char *buffer = nullptr;
+  ASSERT_TRUE(pool_.try_acquire_buffer(page, buffer));
+  ASSERT_EQ(buffer, table.set_block_acquired(0, buffer, 0));
+  table.mark_dirty(0);
+  table.release_block(0);
+  ASSERT_GT(pool_.available(), page);
+  const size_t plan = pool_.available() - page;
+  ASSERT_TRUE(pool_.try_charge_workspace_plan(plan));
+  auto refund = ScopeGuard::Make([&] { pool_.release_workspace_plan(plan); });
+  table.set_flush_callback([&](auto, auto, auto, auto) {
+    ++writes;
+    std::this_thread::sleep_for(5100ms);
+    return 0;
+  });
+
+  BudgetedMappedBuffer workspace;
+  EXPECT_EQ(0, workspace.resize(page));
+  EXPECT_EQ(1u, writes);
+  EXPECT_EQ(0u, MemoryLimitPoolTestPeer::waiters(pool_));
+  EXPECT_EQ(0u, MemoryLimitPoolTestPeer::native_waiting(pool_));
 }
 
 TEST_F(CacheMappingRssTest, DeniedAdmissionPacesRetriesAndHonorsDeadline) {

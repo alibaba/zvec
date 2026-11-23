@@ -652,12 +652,15 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   struct AdmissionDenials {
     std::optional<uint64_t> used;
     std::optional<uint64_t> committed;
-    std::optional<uint64_t> rss;
+    std::optional<ProcessRssBudget::Denial> rss;
 
     void remember_first(const AdmissionDenials &latest) {
       if (!used) used = latest.used;
       if (!committed) committed = latest.committed;
-      if (!rss) rss = latest.rss;
+      if (!rss)
+        rss = latest.rss;
+      else if (latest.rss)
+        rss->remember_first_constraints(*latest.rss);
     }
   };
   struct PageAllocation {
@@ -679,6 +682,9 @@ class ZVEC_AILEGO_API MemoryLimitPool {
                           std::optional<uint64_t> *denied_at);
   size_t release_native(size_t bytes, std::atomic<size_t> &counter,
                         std::atomic<uint64_t> &generation);
+  static size_t release_native_locked(size_t bytes,
+                                      std::atomic<size_t> &counter,
+                                      std::atomic<uint64_t> &generation);
   bool try_reserve_used(size_t bytes,
                         std::optional<uint64_t> *denied_at = nullptr);
   bool try_reserve_page_used(size_t bytes, bool required = false);
@@ -687,7 +693,9 @@ class ZVEC_AILEGO_API MemoryLimitPool {
                              AdmissionDenials *denials = nullptr);
   void release_native_used(size_t bytes);
   void cancel_buffer_reservation(size_t bytes, bool attempted_backing);
-  void notify_capacity_release(bool wake_all = false);
+  bool publish_capacity_release(bool wake_all, size_t released_used);
+  void wake_capacity_waiters(bool wake_all);
+  void notify_capacity_release(bool wake_all = false, size_t released_used = 0);
   size_t release_committed(size_t bytes, Backing backing = Backing::kLive,
                            ProcessRssBudget::MappingProjection projection = {});
   bool try_reserve_allocation(size_t bytes, Backing backing = Backing::kLive,
@@ -811,9 +819,7 @@ class ZVEC_AILEGO_API MemoryLimitPool {
   std::atomic<size_t> used_size_{0};
   // Includes free-list buffers so all consumers share the same hard cap.
   std::atomic<size_t> committed_size_{0};
-  // Order a first native denial with a matching refund. No allocation, RSS
-  // sampling, or eviction callback runs under this mutex.
-  std::mutex native_recovery_mutex_;
+  // Ordered with native denial snapshots by capacity_mutex_.
   std::atomic<uint64_t> used_release_generation_{0};
   std::atomic<uint64_t> committed_release_generation_{0};
   // Native growth reserves page headroom. RSS-only waiters still signal
