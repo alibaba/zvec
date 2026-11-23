@@ -49,7 +49,8 @@ class KeyIndex {
   }
   int32_t insert(uint64_t key) {
     dense_.clear();
-    for (size_t i = home(key);; i = (i + 1) & (slots_.size() - 1)) {
+    for (size_t i = home(key), probes = 0; probes < kMaxProbes;
+         i = (i + 1) & (slots_.size() - 1), ++probes) {
       Slot &slot = slots_[i];
       if (slot.index < 0) {
         slot = Slot{key, size_++};
@@ -58,6 +59,8 @@ class KeyIndex {
       }
       if (slot.key == key) return slot.index;
     }
+    // 基数预算无法限制碰撞链；由 Compile 转成 CapacityError 后整体回退。
+    throw std::length_error("set hash probe budget exceeded");
   }
   // Builds the bitmap when the key range is small; call after inserting.
   void finish() {
@@ -83,16 +86,20 @@ class KeyIndex {
     return find(key) >= 0;
   }
   int32_t find(uint64_t key) const {
-    for (size_t i = home(key);; i = (i + 1) & (slots_.size() - 1)) {
+    for (size_t i = home(key), probes = 0; probes < kMaxProbes;
+         i = (i + 1) & (slots_.size() - 1), ++probes) {
       const Slot &slot = slots_[i];
       if (slot.index < 0 || slot.key == key) return slot.index;
     }
+    // 所有已插入键都在此范围内，即使连续占用的桶更多也可以安全结束。
+    return -1;
   }
   int32_t size() const {
     return size_;
   }
 
  private:
+  static constexpr size_t kMaxProbes = 64;
   struct Slot {
     uint64_t key;
     int32_t index;

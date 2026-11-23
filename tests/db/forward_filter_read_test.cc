@@ -1144,6 +1144,35 @@ TEST_P(ForwardFilterReadTest, PartialSupportFallsBackAsAWhole) {
   EXPECT_FALSE(candidate->is_filtered(2));
 }
 
+TEST_P(ForwardFilterReadTest, CollidingSetsFallBackToArrow) {
+  ASSERT_NO_FATAL_FAILURE(create(24));
+  ASSERT_NO_FATAL_FAILURE(reopen_persisted());
+  constexpr uint64_t inverse = UINT64_C(0xf1de83e19937733d);
+  arrow::UInt64Builder builder;
+  for (uint64_t i = 0; i < 65; ++i)
+    ASSERT_TRUE(builder.Append(i * inverse).ok());
+  ASSERT_TRUE(builder.Append(2).ok());
+  auto members = builder.Finish();
+  ASSERT_TRUE(members.ok());
+  const auto expression = cp::call("is_in", {cp::field_ref(LOCAL_ROW_ID)},
+                                   cp::SetLookupOptions(*members));
+  auto candidate = filter({LOCAL_ROW_ID}, expression);
+  auto status = candidate->compute_filter();
+  ASSERT_TRUE(status.ok()) << status.message();
+  EXPECT_EQ(uses_view(*candidate), GetParam());
+  EXPECT_FALSE(uses_stile(*candidate));
+  for (uint64_t row = 0; row < 24; ++row)
+    EXPECT_EQ(candidate->is_filtered(row), row != 0 && row != 2) << row;
+
+  // 探测超限只回退当前谓词，不影响同一列后续查询的编译。
+  replace_expression(*candidate, cp::equal(cp::field_ref(LOCAL_ROW_ID),
+                                           cp::literal(uint64_t{2})));
+  ASSERT_TRUE(candidate->compute_filter().ok());
+  EXPECT_EQ(uses_stile(*candidate), GetParam());
+  EXPECT_TRUE(candidate->is_filtered(0));
+  EXPECT_FALSE(candidate->is_filtered(2));
+}
+
 TEST_P(IpcForwardFilterReadTest, ConcurrentPredicatesShareStileColumns) {
   ASSERT_NO_FATAL_FAILURE(create(24));
   ASSERT_NO_FATAL_FAILURE(reopen_persisted());

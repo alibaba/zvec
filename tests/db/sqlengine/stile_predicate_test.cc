@@ -28,6 +28,7 @@
 #include <arrow/testing/gtest_util.h>
 #include <gtest/gtest.h>
 #include "db/sqlengine/stile/predicate.h"
+#include "db/sqlengine/stile/value_index.h"
 
 namespace zvec::test {
 namespace {
@@ -276,6 +277,71 @@ TEST_F(StilePredicateTest, DenseSparseAndEmptyIntegerSetsMatchArrow) {
   ASSERT_OK(numbers.AppendValues({0, std::numeric_limits<int32_t>::max()}));
   ASSERT_OK_AND_ASSIGN(auto sparse, numbers.Finish());
   ASSERT_NO_FATAL_FAILURE(expect_set_parity(input, sparse));
+}
+
+TEST_F(StilePredicateTest, CollidingIntegerSetsRespectProbeBudget) {
+  // 乘法哈希的逆元构造合法但落入同一桶的 uint64 值。
+  constexpr uint64_t inverse = UINT64_C(0xf1de83e19937733d);
+  static_assert(inverse * UINT64_C(0x9e3779b97f4a7c15) == 1);
+  arrow::UInt64Builder builder;
+  for (uint64_t i = 0; i < 65; ++i) ASSERT_OK(builder.Append(i * inverse));
+  ASSERT_OK_AND_ASSIGN(auto values, builder.Finish());
+  ASSERT_OK(builder.Append(0));
+  ASSERT_OK(builder.Append(inverse));
+  ASSERT_OK(builder.Append(64 * inverse));
+  ASSERT_OK(builder.AppendNull());
+  ASSERT_OK_AND_ASSIGN(auto input, builder.Finish());
+  ASSERT_NO_FATAL_FAILURE(expect_set_parity(input, values->Slice(0, 64)));
+
+  ASSERT_OK_AND_ASSIGN(auto index, TableIndex::Make(table_));
+  const auto expression =
+      cp::call("is_in", {cp::field_ref("v")}, cp::SetLookupOptions(values));
+  ASSERT_OK_AND_ASSIGN(auto bound, expression.Bind(*table_->schema()));
+  const auto compiled = Predicate::Compile(bound, index);
+  ASSERT_TRUE(compiled.status().IsCapacityError())
+      << compiled.status().ToString();
+  EXPECT_NE(compiled.status().message().find("probe"), std::string::npos);
+}
+
+TEST(StileKeyIndexTest, CollisionLimitPreservesHitsDuplicatesAndWraparound) {
+  constexpr uint64_t inverse = UINT64_C(0xf1de83e19937733d);
+  // 128 个键分配 512 个桶；从末桶开始也必须正确处理环绕。
+  for (uint64_t home : {uint64_t{0}, uint64_t{511}}) {
+    stile::internal::KeyIndex index(128);
+    const uint64_t base = home << 55;
+    for (uint64_t i = 0; i < 64; ++i)
+      EXPECT_EQ(index.insert((base + i) * inverse), static_cast<int32_t>(i));
+    for (uint64_t i = 0; i < 64; ++i) {
+      const auto key = (base + i) * inverse;
+      EXPECT_EQ(index.find(key), static_cast<int32_t>(i));
+      EXPECT_EQ(index.insert(key), static_cast<int32_t>(i));
+    }
+    index.finish();
+    EXPECT_EQ(index.size(), 64);
+    EXPECT_FALSE(index.contains((base + 64) * inverse));
+    EXPECT_THROW(index.insert((base + 64) * inverse), std::length_error);
+  }
+}
+
+TEST(StileKeyIndexTest, LongContiguousClusterPreservesDistinctHomeBuckets) {
+  constexpr uint64_t inverse = UINT64_C(0xf1de83e19937733d);
+  stile::internal::KeyIndex index(128);
+  std::vector<uint64_t> keys;
+  // 连续占用 127 个桶，但每个键距自己的起始桶不超过 63。
+  for (uint64_t home = 0; home < 64; ++home) {
+    for (uint64_t ordinal = 0; ordinal < (home == 63 ? 1u : 2u); ++ordinal) {
+      const auto key = ((home << 55) + ordinal) * inverse;
+      EXPECT_EQ(index.insert(key), static_cast<int32_t>(keys.size()));
+      keys.push_back(key);
+    }
+  }
+  index.finish();
+  for (size_t i = 0; i < keys.size(); ++i) {
+    EXPECT_EQ(index.find(keys[i]), static_cast<int32_t>(i));
+    EXPECT_TRUE(index.contains(keys[i]));
+  }
+  EXPECT_EQ(index.find(2 * inverse), -1);
+  EXPECT_FALSE(index.contains(2 * inverse));
 }
 
 TEST_F(StilePredicateTest, StringSetsPreserveEmbeddedNulAndEmptyValues) {
