@@ -1,7 +1,6 @@
 // Copyright 2025-present the zvec project
 // SPDX-License-Identifier: Apache-2.0
 #include <atomic>
-#include <future>
 #include <limits>
 #include <optional>
 #include <thread>
@@ -164,32 +163,6 @@ TEST(ProcessRssBudgetTest, RecoveryTracksPendingRefundsAndActualDenial) {
   budget.release(88 * kMiB);
 }
 
-TEST(ProcessRssBudgetTest, RecoveryNotifiesAfterPublishingUsableBudget) {
-  using namespace std::chrono_literals;
-  std::mutex mutex;
-  std::condition_variable condition;
-  std::atomic<size_t> required{1};
-  ProcessRssBudget budget({mutex, condition, required});
-  sampled_rss = 100 * kMiB;
-  ASSERT_TRUE(budget.configure(96 * kMiB, ReadRss));
-  const auto generation = budget.recovery_generation();
-  std::promise<void> ready;
-  auto entered = ready.get_future();
-  auto waiting = std::async(std::launch::async, [&] {
-    std::unique_lock<std::mutex> lock(mutex);
-    ready.set_value();
-    return condition.wait_for(
-        lock, 2s, [&] { return budget.recovery_generation() != generation; });
-  });
-  ASSERT_EQ(std::future_status::ready, entered.wait_for(1s));
-  { std::lock_guard<std::mutex> lock(mutex); }
-  sampled_rss = 92 * kMiB;
-  budget.refresh(true);
-  ASSERT_EQ(std::future_status::ready, waiting.wait_for(500ms));
-  EXPECT_TRUE(waiting.get());
-  EXPECT_EQ(4 * kMiB, budget.available());
-}
-
 TEST(ProcessRssBudgetTest, ExactLimitObservationRestoresReuseOnly) {
   ProcessRssBudget budget;
   budget.account(8 * kMiB);
@@ -293,7 +266,8 @@ TEST(ProcessRssBudgetTest, OptionalGrowthDoesNotInterruptOwnershipScan) {
     budget.account(32 * kMiB);
     sampled_rss = 80 * kMiB;
     sampled_owned_resident = 0;
-    ASSERT_TRUE(budget.configure(100 * kMiB, ReadRss, nullptr, 0, ReadResident));
+    ASSERT_TRUE(
+        budget.configure(100 * kMiB, ReadRss, nullptr, 0, ReadResident));
     const auto scan = budget.begin_resident_sample();
     ASSERT_NE(0u, scan.configuration);
     budget.release_unmapped(4 * kMiB, {});

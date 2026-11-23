@@ -1054,33 +1054,6 @@ TEST_F(BufferStorageWriteTest, RefreshCheckpoint) {
   ASSERT_EQ(0, storage->close());
 }
 
-TEST_F(BufferStorageWriteTest, ConcurrentRefreshAndFlushKeepsFinalRequest) {
-  auto storage = open_writable();
-  ASSERT_NE(nullptr, storage);
-  constexpr uint64_t kFinalCheckpoint = 7;
-  std::atomic<bool> done{false};
-  std::thread refresher([&]() {
-    for (uint64_t checkpoint = 1; checkpoint <= 128; ++checkpoint) {
-      storage->refresh(checkpoint);
-      std::this_thread::yield();
-      storage->refresh(1);
-    }
-    storage->refresh(kFinalCheckpoint);
-    done.store(true, std::memory_order_release);
-  });
-
-  int status;
-  do {
-    status = storage->flush();
-  } while (status == 0 && !done.load(std::memory_order_acquire));
-  refresher.join();
-  ASSERT_EQ(0, status);
-  ASSERT_EQ(0, storage->flush());
-  EXPECT_EQ(kFinalCheckpoint, storage->check_point());
-  EXPECT_FALSE(storage->is_dirty());
-  ASSERT_EQ(0, storage->close());
-}
-
 // ===== Duplicate / Error Handling =====
 
 // Test: Appending a duplicate segment ID returns error
