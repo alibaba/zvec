@@ -1155,7 +1155,8 @@ TEST_P(IpcForwardFilterReadTest, CompiledPredicateSurvivesRetirementAndDdl) {
                                  AlterColumnOptions())
                   .ok());
   ASSERT_TRUE(segment_->destroy().ok());
-  // 不重新准备：已有谓词必须继续读取旧 INT32 缓冲区，并允许并发执行。
+  // Concurrent readers reuse the prepared predicate and its original INT32
+  // buffers after the segment is destroyed.
   std::vector<std::future<bool>> readers;
   for (int reader = 0; reader < 4; ++reader) {
     readers.push_back(std::async(std::launch::async, [&] {

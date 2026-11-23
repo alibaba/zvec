@@ -18,9 +18,10 @@ namespace zvec::stile {
 
 // One column of an Arrow table, indexed for point access.
 //
-// The index borrows the column's buffers through `data()` (never copying
-// values) and resolves a row to its chunk in constant time for any chunk
-// layout. It is immutable and safe to share across threads and predicates.
+// The index retains the column's buffers through `data()`. Regular chunk
+// layouts use direct lookup. Irregular layouts use a bucket to narrow the
+// search and may need a binary search within that bucket. The index is
+// immutable and safe to share across threads and predicates.
 class ColumnIndex final {
  public:
   using Ptr = std::shared_ptr<const ColumnIndex>;

@@ -150,8 +150,8 @@ arrow::Result<ColumnIndex::Ptr> ColumnIndex::Make(
     column->local_mask_ = column->stride_ - 1;
   }
   if (column->stride_ == 0 && !ends.empty()) {
-    // Buckets no wider than the average chunk keep the table within twice
-    // the chunk count, and each bucket overlaps only a few chunks.
+    // Use the largest power of two no greater than the average chunk length
+    // so the number of buckets grows in proportion to the number of chunks.
     const int64_t average =
         std::max<int64_t>(1, length / static_cast<int64_t>(ends.size()));
     while ((int64_t{1} << column->bucket_shift_) <= average / 2) {

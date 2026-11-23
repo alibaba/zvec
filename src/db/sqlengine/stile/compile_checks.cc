@@ -11,9 +11,9 @@
 #include <arrow/util/config.h>
 #include "db/sqlengine/stile/validation.h"
 
-// 绑定内核与 LIKE 初始化依赖 Arrow 21 的语义；升级时必须重新验证适配。
+// Kernel identity checks and LIKE initialization rely on Arrow 21 semantics.
 #if ARROW_VERSION_MAJOR != 21
-#error "升级 Arrow 主版本前，必须重新验证 Stile 模块的语义兼容性。"
+#error "Verify Stile's compatibility before changing the Arrow 21 requirement."
 #endif
 
 namespace zvec::stile {

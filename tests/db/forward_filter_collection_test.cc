@@ -58,7 +58,8 @@ class ForwardAccessProbe final : public ailego::Logger {
     } else if (message.find("backend[arrow]") != std::string::npos) {
       ++arrow;
     }
-    // 生命周期测试必须停在编译完成之后，确保真正持有已编译的谓词。
+    // Pause after preparation so lifetime tests exercise the predicate the
+    // query will actually use.
     std::unique_lock<std::mutex> lock(mutex);
     entered = true;
     cv.notify_all();
@@ -281,7 +282,7 @@ TEST_P(ForwardFilterCollectionTest, OptimizerBackendSelection) {
                 query("value > 48 AND label >= 'comm' AND label < 'd'"))),
             expected);
   expect_sealed_access();
-  // 相同结果不代表相同执行路径：非 single-stage 查询仍使用原有后端。
+  // These plans return the same keys without preparing a per-candidate filter.
   for (const auto *condition :
        {"bitmap > 48", "value > 48 AND label LIKE 'comm_n%'",
         "value IN (56,57,58,59,62,63,64,65)"}) {
@@ -312,7 +313,8 @@ TEST_P(ForwardFilterCollectionTest, CandidateIdsInLaterSegments) {
                                        "pk_1503", "pk_1504"};
   EXPECT_EQ(keys(collection_->query(request)), expected);
   expect_sealed_access();
-  // 重复并发查询同时覆盖独立编译、segment fanout 和确定的结果集合。
+  // Concurrent queries compile their own predicates and must return the same
+  // keys across segments.
   std::vector<std::future<std::set<std::string>>> readers;
   for (int i = 0; i < 4; ++i) {
     readers.push_back(std::async(

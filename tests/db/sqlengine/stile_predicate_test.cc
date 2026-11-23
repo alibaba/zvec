@@ -57,7 +57,8 @@ class StilePredicateTest : public testing::Test {
     }
     std::vector<std::shared_ptr<arrow::ChunkedArray>> columns;
     for (size_t c = 0; c < arrays.size(); ++c) {
-      // 非零 offset、空 chunk 及各列不同的分块，避免只验证连续数组。
+      // Exercise nonzero slice offsets, empty chunks, and different chunk
+      // boundaries across columns.
       auto sliced = arrays[c]->Slice(1, 65);
       const int split = 2 + static_cast<int>(c) * 7;
       columns.push_back(
@@ -130,7 +131,7 @@ TEST_F(StilePredicateTest, SeededThreeValuedDifferential) {
     }
     ASSERT_NO_FATAL_FAILURE(expect_parity(expression));
   }
-  // 融合优化开启与关闭时都必须保持相同语义。
+  // Both fused and unfused range comparisons must agree with Arrow.
   auto range = cp::call(
       "and_kleene",
       {cp::call("greater_equal",
