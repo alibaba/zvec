@@ -1,7 +1,8 @@
-"""Refine scale configuration and backward-compatible serialization."""
+"""Refinement configuration, validation and backward-compatible serialization."""
 
 import pickle
 import platform
+import re
 import sys
 
 import numpy as np
@@ -67,6 +68,174 @@ def test_existing_positional_extra_params_still_work(param_type):
     param = param_type(64, 0.0, False, True, {"prefetch_offset": 12}, scale_factor=2.8)
     assert param.prefetch_offset == 12
     assert param.scale_factor == pytest.approx(2.8)
+
+
+@pytest.mark.parametrize("index_kind", ["hnsw", "ivf", "diskann"])
+@pytest.mark.parametrize(
+    "quantize_type",
+    [zvec.QuantizeType.UNDEFINED, zvec.QuantizeType.FP16],
+    ids=["unquantized", "fp16"],
+)
+def test_refinement_requires_quantization_through_lifecycle(
+    tmp_path, request, index_kind, quantize_type
+):
+    if index_kind == "diskann":
+        request.getfixturevalue("require_diskann")
+    settings = dict(metric_type=zvec.MetricType.L2, quantize_type=quantize_type)
+    if index_kind == "hnsw":
+        index = zvec.HnswIndexParam(m=8, ef_construction=32, **settings)
+        query_type = zvec.HnswQueryParam
+    elif index_kind == "ivf":
+        index = zvec.IVFIndexParam(n_list=2, n_iters=2, **settings)
+        query_type = zvec.IVFQueryParam
+    else:
+        index = zvec.DiskAnnIndexParam(
+            max_degree=8, list_size=32, pq_chunk_num=0, **settings
+        )
+        query_type = zvec.DiskAnnQueryParam
+    schema = zvec.CollectionSchema(
+        name="refinement_validation",
+        vectors=[
+            zvec.VectorSchema(
+                "vector", zvec.DataType.VECTOR_FP32, 16, index_param=index
+            )
+        ],
+    )
+    vectors = np.random.default_rng(849).random((32, 16), dtype=np.float32)
+    # Lifecycle validation requires an exact hit, not approximate graph recall.
+    query_options = {"is_linear": True} if index_kind == "diskann" else {}
+    plain = zvec.Query("vector", vector=vectors[0], param=query_type(**query_options))
+    refined = zvec.Query(
+        "vector",
+        vector=vectors[0],
+        param=query_type(is_using_refiner=True, **query_options),
+    )
+    error = re.escape(
+        "Invalid query for field[vector]: refinement is not supported "
+        f"for this {index_kind.upper()} index configuration"
+    )
+
+    def check_queries(collection, empty=False):
+        expected_ids = [] if empty else ["0"]
+        assert len(collection.query(plain, topk=1)) == len(expected_ids)
+        if quantize_type == zvec.QuantizeType.UNDEFINED:
+            with pytest.raises(ValueError, match=error):
+                collection.query(refined, topk=1)
+        else:
+            assert [hit.id for hit in collection.query(refined, topk=1)] == expected_ids
+            if index_kind == "diskann" and not empty:
+                # Keep the approximate path covered without requiring a global
+                # nearest neighbor that may be absent from the coarse results.
+                coarse = collection.query(
+                    zvec.Query(
+                        "vector", vector=vectors[0], param=zvec.DiskAnnQueryParam()
+                    ),
+                    topk=10,
+                )
+                assert coarse
+                coarse_ids = np.array([int(hit.id) for hit in coarse])
+                distances = np.square(vectors[coarse_ids] - vectors[0]).sum(axis=1)
+                order = np.lexsort((coarse_ids, distances))
+                hits = collection.query(
+                    zvec.Query(
+                        "vector",
+                        vector=vectors[0],
+                        param=zvec.DiskAnnQueryParam(
+                            is_using_refiner=True, scale_factor=10.0
+                        ),
+                    ),
+                    topk=1,
+                )
+                assert [hit.id for hit in hits] == [str(coarse_ids[order[0]])]
+                assert hits[0].score == pytest.approx(
+                    float(distances[order[0]]), rel=2e-5, abs=2e-5
+                )
+
+    path = str(tmp_path / "index")
+    writer = zvec.create_and_open(path, schema)
+    try:
+        check_queries(writer, empty=True)
+        assert all(
+            status.ok()
+            for status in writer.insert(
+                [
+                    zvec.Doc(id=str(i), vectors={"vector": vector.tolist()})
+                    for i, vector in enumerate(vectors)
+                ]
+            )
+        )
+        assert writer.stats.index_completeness["vector"] == 0
+        check_queries(writer)
+        writer.optimize()
+        assert writer.stats.index_completeness["vector"] == 1
+        check_queries(writer)
+    finally:
+        writer.close()
+
+    reader = zvec.open(path, zvec.CollectionOption(read_only=True))
+    try:
+        check_queries(reader)
+        ids = reader.query_internal_ids(plain, topk=1)
+        assert reader.resolve_internal_ids(ids) == [
+            hit.id for hit in reader.query(plain, topk=1)
+        ]
+        if quantize_type == zvec.QuantizeType.UNDEFINED:
+            with pytest.raises(ValueError, match=error):
+                reader.query_internal_ids(refined, topk=1)
+        else:
+            ids = reader.query_internal_ids(refined, topk=1)
+            assert reader.resolve_internal_ids(ids) == ["0"]
+    finally:
+        reader.close()
+
+
+@pytest.mark.parametrize("entry_point", ["multi", "group_by"])
+def test_query_entries_validate_refinement_target(tmp_path, entry_point):
+    schema = zvec.CollectionSchema(
+        name="empty_refinement_validation",
+        fields=[zvec.FieldSchema("bucket", zvec.DataType.INT32)],
+        vectors=[
+            zvec.VectorSchema(
+                "vector",
+                zvec.DataType.VECTOR_FP32,
+                16,
+                index_param=zvec.HnswIndexParam(),
+            )
+        ],
+    )
+    plain = zvec.Query("vector", vector=[0.0] * 16, param=zvec.HnswQueryParam())
+    refined = zvec.Query(
+        "vector",
+        vector=[0.0] * 16,
+        param=zvec.HnswQueryParam(is_using_refiner=True),
+    )
+    collection = zvec.create_and_open(str(tmp_path / "index"), schema)
+    try:
+
+        def search(query):
+            if entry_point == "multi":
+                # The built-in reranker sends both targets to native MultiQuery.
+                return collection.query(
+                    [plain, query], topk=1, reranker=zvec.RrfReRanker()
+                )
+            return collection.group_by_query(query, "bucket", 1, 1)
+
+        error = re.escape(
+            "Invalid query for field[vector]: refinement is not supported "
+            "for this HNSW index configuration"
+        )
+        for populated in (False, True):
+            if populated:
+                assert collection.insert(
+                    zvec.Doc(
+                        id="0", fields={"bucket": 0}, vectors={"vector": [0.0] * 16}
+                    )
+                ).ok()
+            assert len(search(plain)) == (1 if populated else 0)
+            with pytest.raises(ValueError, match=error):
+                search(refined)
+    finally:
+        collection.close()
 
 
 @pytest.mark.parametrize(

@@ -27,6 +27,7 @@
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
 #include "tests/test_util.h"
+#include "../../ailego/buffer/pool_payload_budget.h"
 
 using namespace zvec::core_interface;
 
@@ -43,7 +44,7 @@ struct CloseTestCase {
 class ReadOnlyCloseTest : public testing::TestWithParam<CloseTestCase> {
  protected:
   void SetUp() override {
-    ASSERT_EQ(0, zvec::ailego::MemoryLimitPool::get_instance().init(
+    ASSERT_EQ(0, ::zvec::ailego::PoolPayloadBudget::get_instance().init(
                      256UL * 1024 * 1024));
     path_ = std::string("readonly_close_") + GetParam().name + ".index";
     zvec::test_util::RemoveTestFiles(path_);
@@ -287,8 +288,8 @@ std::vector<BaseIndexParam::Pointer> OfflineIndexParams() {
 }
 
 TEST(ReadOnlyOfflineIndexTest, CannotCreateOrMergeIntoReadOnlyStorage) {
-  ASSERT_EQ(0, zvec::ailego::MemoryLimitPool::get_instance().init(256UL * 1024 *
-                                                                  1024));
+  ASSERT_EQ(0, ::zvec::ailego::PoolPayloadBudget::get_instance().init(
+                   256UL * 1024 * 1024));
   const auto params = OfflineIndexParams();
   for (const auto &param : params) {
     for (auto storage : {StorageOptions::StorageType::kMMAP,
@@ -388,7 +389,7 @@ class ReadOnlyOfflineMutationTest
     : public testing::TestWithParam<OfflineMutationCase> {
  protected:
   void SetUp() override {
-    ASSERT_EQ(0, zvec::ailego::MemoryLimitPool::get_instance().init(
+    ASSERT_EQ(0, ::zvec::ailego::PoolPayloadBudget::get_instance().init(
                      256UL * 1024 * 1024));
     path_ = "readonly_offline_mutation_" + GetParam().name + ".index";
     zvec::test_util::RemoveTestFiles(path_);

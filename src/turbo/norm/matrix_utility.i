@@ -78,17 +78,17 @@ static inline int64_t HorizontalAdd_INT64_V128(__m128i v) {
 #endif  // __SSE2__
 
 #if defined(__SSSE3__)
-static const __m128i POPCNT_LOOKUP_SSE =
-    _mm_setr_epi8(0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4);
-
 static inline __m128i VerticalPopCount_INT8_V128(__m128i v) {
 #if defined(__AVX512VL__) && defined(__AVX512BITALG__)
   return _mm_popcnt_epi8(v);
 #else
+  // Intrinsics must execute inside the selected kernel, never at DLL startup.
+  const __m128i lookup =
+      _mm_setr_epi8(0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4);
   const __m128i low_mask = _mm_set1_epi8(0x0f);
-  __m128i lo = _mm_shuffle_epi8(POPCNT_LOOKUP_SSE, _mm_and_si128(v, low_mask));
-  __m128i hi = _mm_shuffle_epi8(POPCNT_LOOKUP_SSE,
-                                _mm_and_si128(_mm_srli_epi32(v, 4), low_mask));
+  __m128i lo = _mm_shuffle_epi8(lookup, _mm_and_si128(v, low_mask));
+  __m128i hi =
+      _mm_shuffle_epi8(lookup, _mm_and_si128(_mm_srli_epi32(v, 4), low_mask));
   return _mm_add_epi8(lo, hi);
 #endif  // __AVX512VL__ && __AVX512BITALG__
 }
@@ -155,11 +155,13 @@ static inline float HorizontalAdd_FP32_V256(__m256 v) {
 
 #if defined(__AVX2__)
 #define POPCNT_MASK1_INT8_AVX _mm256_set1_epi8(0x0f)
-#define POPCNT_MASK1_INT16_AVX  _mm256_set1_epi16(1)
+#define POPCNT_MASK1_INT16_AVX _mm256_set1_epi16(1)
 #define POPCNT_MASK2_INT16_AVX _mm256_set1_epi16(0xff)
 #define POPCNT_MASK1_INT32_AVX _mm256_set1_epi32(0xff)
 #define POPCNT_ZERO_AVX _mm256_setzero_si256()
-#define POPCNT_LOOKUP_AVX _mm256_setr_epi8(0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4)
+#define POPCNT_LOOKUP_AVX                                                      \
+  _mm256_setr_epi8(0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4, 0, 1, 1, 2, \
+                   1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4)
 
 static inline __m256i VerticalPopCount_INT8_V256(__m256i v) {
 #if defined(__AVX512VL__) && defined(__AVX512BITALG__)
@@ -263,6 +265,6 @@ static inline float HorizontalAdd_FP16_V512(__m512h v) {
 }
 #endif  // __AVX512FP16__
 
-} // namespace turbo
-} // namespace zvec
+}  // namespace turbo
+}  // namespace zvec
 // NOLINTEND(readability-identifier-naming)
