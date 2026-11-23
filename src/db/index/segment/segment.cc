@@ -51,6 +51,7 @@
 #include "db/index/column/vector_column/vector_column_indexer.h"
 #include "db/index/column/vector_column/vector_column_params.h"
 #include "db/index/common/doc_field_converter.h"
+#include "db/index/common/doc_wire.h"
 #include "db/index/common/index_filter.h"
 #include "db/index/common/meta.h"
 #include "db/index/segment/segment_helper.h"
@@ -4531,12 +4532,43 @@ Status SegmentImpl::recover() {
 
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
 
+  // Replay updates the persistent primary-key map. Verify framing and
+  // document boundaries before applying any operation to it.
+  uint64_t valid_records = 0;
   while (true) {
-    std::string buf = recover_wal_file->next();
-    if (buf.empty()) {
+    auto record = recover_wal_file->next_checked();
+    if (!record) {
+      return Status::InternalError("Failed to read WAL ", wal_file_path,
+                                   " at record ", valid_records + 1, ": ",
+                                   record.error().message());
+    }
+    if (record->state == WalReadResult::State::kTruncatedTail) {
+      auto status = recover_wal_file->discard_truncated_tail();
+      CHECK_RETURN_STATUS(status);
       break;
     }
+    if (record->state == WalReadResult::State::kEnd) {
+      break;
+    }
+    if (!is_valid_serialized_doc(record->data)) {
+      return Status::InternalError("Failed to deserialize WAL record ",
+                                   valid_records + 1, " in ", wal_file_path);
+    }
+    ++valid_records;
+  }
+  if (recover_wal_file->prepare_for_read() != 0) {
+    return Status::InternalError("Failed to rewind WAL for replay: ",
+                                 wal_file_path);
+  }
+  while (total_recovered_doc_count < valid_records) {
     total_recovered_doc_count++;
+    auto record = recover_wal_file->next_checked();
+    if (!record || record->state != WalReadResult::State::kRecord) {
+      return Status::InternalError("Failed to reread WAL record ",
+                                   total_recovered_doc_count, " in ",
+                                   wal_file_path);
+    }
+    const auto &buf = record->data;
     auto doc = Doc::deserialize(reinterpret_cast<const uint8_t *>(buf.data()),
                                 buf.size());
     if (doc == nullptr) {
@@ -4544,7 +4576,9 @@ Status SegmentImpl::recover() {
           "WAL record recovery failed: path[%s], segment[%d], record[%zu], "
           "reason[deserialization failed]",
           wal_file_path.c_str(), id(), (size_t)total_recovered_doc_count);
-      continue;
+      return Status::InternalError("Failed to deserialize WAL record ",
+                                   total_recovered_doc_count, " in ",
+                                   wal_file_path);
     }
 
     Status status;

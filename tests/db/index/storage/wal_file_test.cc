@@ -12,19 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifdef _MSC_VER
-#define _ALLOW_KEYWORD_MACROS
-#endif
-#define private public
-#define protected public
 #include "db/index/storage/wal/wal_file.h"
-#undef private
-#undef protected
-
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <gtest/gtest.h>
@@ -32,6 +25,7 @@
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include "db/common/file_helper.h"
+#include "db/index/storage/wal/local_wal_file.h"
 #include "tests/test_util.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
@@ -99,6 +93,57 @@ TEST_F(WalFileTest, ReadOnlyCannotCreateWal) {
   options.read_only = true;
   EXPECT_NE(0, wal->open(options));
   EXPECT_FALSE(FileHelper::FileExists(path));
+}
+
+TEST_F(WalFileTest, AppendRejectsUnreadableSizesAndRoundTripsLimit) {
+  constexpr size_t limit = 4 * 1024 * 1024;
+  auto wal = WalFile::Create("./data.wal.sizes");
+  ASSERT_EQ(0, wal->open(WalOptions{0, true}));
+  EXPECT_NE(0, wal->append(""));
+  EXPECT_NE(0, wal->append(std::string(limit + 1, 'x')));
+  ASSERT_EQ(0, wal->append(std::string(limit, 'a')));
+  ASSERT_EQ(0, wal->prepare_for_read());
+  EXPECT_TRUE(wal->next() == std::string(limit, 'a'));
+  EXPECT_TRUE(wal->next().empty());
+}
+
+TEST_F(WalFileTest, AppendReportsAutomaticFlushFailure) {
+  class FailingFlushWal : public LocalWalFile {
+   public:
+    using LocalWalFile::LocalWalFile;
+    int flush() override {
+      return -1;
+    }
+  } wal("./data.wal.flush_error");
+  ASSERT_EQ(0, wal.open(WalOptions{2, true}));
+  EXPECT_EQ(0, wal.append("one"));
+  EXPECT_NE(0, wal.append("two"));
+}
+
+TEST_F(WalFileTest, RepairsIncompleteLengthChecksumAndPayload) {
+  const std::string path = "./data.wal.short_tail";
+  auto wal = WalFile::Create(path);
+  ASSERT_EQ(0, wal->open(WalOptions{0, true}));
+  ASSERT_EQ(0, wal->append("prefix"));
+  const auto prefix_size = std::filesystem::file_size(path);
+  for (size_t kept : {1, 4, 7, 8, 9}) {
+    SCOPED_TRACE(kept);
+    ASSERT_EQ(0, wal->append("tail"));
+    ASSERT_EQ(0, wal->close());
+    std::filesystem::resize_file(path, prefix_size + kept);
+    ASSERT_EQ(0, wal->open(WalOptions{}));
+    ASSERT_EQ(0, wal->prepare_for_read());
+    ASSERT_EQ("prefix", wal->next());
+    auto tail = wal->next_checked();
+    ASSERT_TRUE(tail.has_value());
+    ASSERT_EQ(WalReadResult::State::kTruncatedTail, tail->state);
+    EXPECT_NE(0, wal->append("premature"));
+    ASSERT_TRUE(wal->discard_truncated_tail().ok());
+    EXPECT_EQ(prefix_size, std::filesystem::file_size(path));
+    auto end = wal->next_checked();
+    ASSERT_TRUE(end.has_value());
+    EXPECT_EQ(WalReadResult::State::kEnd, end->state);
+  }
 }
 
 TEST_F(WalFileTest, TestGeneral) {

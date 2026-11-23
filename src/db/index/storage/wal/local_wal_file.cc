@@ -22,18 +22,27 @@
 #include "db/common/file_helper.h"
 #include "db/common/typedef.h"
 
-#define MAX_RECORD_SIZE 4194304  // 4Mb
-
 namespace zvec {
+
+namespace {
+constexpr size_t kMaxRecordSize = 4 * 1024 * 1024;
+}  // namespace
 
 int LocalWalFile::append(std::string &&data) {
   CHECK_STATUS(read_only_, false);
+  if (data.empty() || data.size() > kMaxRecordSize) {
+    return -1;
+  }
   WalRecord record;
   record.length_ = data.size();
   record.crc_ = ailego::Crc32c::Hash(
       reinterpret_cast<const void *>(data.data()), record.length_, 0);
   record.content_ = std::forward<std::string>(data);
 
+  std::lock_guard<std::mutex> lock(file_mutex_);
+  if (truncated_at_) {
+    return -1;
+  }
   if (write_record(record) < 0) {
     WLOG_ERROR("Wal write record error. record.length_[%zu]",
                (size_t)record.length_);
@@ -41,9 +50,10 @@ int LocalWalFile::append(std::string &&data) {
   }
   // if max_docs_wal_flush_ is 0, no need flush
   if (max_docs_wal_flush_ != 0 && docs_count_ >= max_docs_wal_flush_) {
-    if (!file_.flush()) {
+    if (flush() != 0) {
       WLOG_ERROR("Wal flush error. docs_count_[%zu] max_docs_wal_flush_[%zu]",
                  (size_t)docs_count_, (size_t)max_docs_wal_flush_);
+      return -1;
     }
     docs_count_ = 0;
   }
@@ -51,21 +61,12 @@ int LocalWalFile::append(std::string &&data) {
 }
 
 std::string LocalWalFile::next() {
-  WalRecord record;
-  if (read_record(record) > 0) {
-    uint32_t tmp_crc = ailego::Crc32c::Hash(
-        reinterpret_cast<const void *>(record.content_.data()), record.length_,
-        0);
-    if (tmp_crc == record.crc_) {
-      return std::move(record.content_);
-    } else {
-      WLOG_ERROR(
-          "Wal next error. record.length_[%zu] crc_[%zu] != tmp_crc[%zu]",
-          (size_t)record.length_, (size_t)record.crc_, (size_t)tmp_crc);
-    }
+  auto result = next_checked();
+  if (!result) {
+    WLOG_ERROR("Wal read failed: %s", result.error().message().c_str());
+    return {};
   }
-  // end of file or read error
-  return std::string();
+  return std::move(result->data);
 }
 
 int LocalWalFile::open(const WalOptions &wal_option) {
@@ -107,10 +108,15 @@ int LocalWalFile::open(const WalOptions &wal_option) {
     }
 
     // Appends start at the end; prepare_for_read() rewinds readers.
-    file_.seek(0, ailego::File::Origin::End);
+    if (!file_.seek(0, ailego::File::Origin::End)) {
+      file_.close();
+      return -1;
+    }
   }
 
   max_docs_wal_flush_ = wal_option.max_docs_wal_flush;
+  docs_count_ = 0;
+  truncated_at_.reset();
   read_only_ = wal_option.read_only;
   opened_ = true;
 
@@ -150,6 +156,7 @@ int LocalWalFile::flush() {
 
 int LocalWalFile::prepare_for_read() {
   CHECK_STATUS(opened_, true);
+  truncated_at_.reset();
   if (!file_.seek(0, ailego::File::Origin::Begin)) {
     return -1;
   }
@@ -172,7 +179,6 @@ int LocalWalFile::write_record(WalRecord &record) {
   int write_size = 0;
   int ret = -1;
 
-  std::lock_guard<std::mutex> lock(file_mutex_);
   do {
     write_size = file_.write((const void *)&record.length_, LENGTH_SIZE);
     if (write_size != LENGTH_SIZE) {
@@ -202,54 +208,65 @@ int LocalWalFile::write_record(WalRecord &record) {
   return ret;
 }
 
-//! Return 1 if success or 0 if eof or -1 if read error
-int LocalWalFile::read_record(WalRecord &record) {
-  CHECK_STATUS(opened_, true);
+Result<WalReadResult> LocalWalFile::next_checked() {
+  using State = WalReadResult::State;
+  if (!opened_) {
+    return tl::make_unexpected(Status::FailedPrecondition("WAL is closed"));
+  }
+  if (truncated_at_) {
+    return WalReadResult{State::kTruncatedTail, {}};
+  }
+  const auto offset = file_.offset();
+  const auto size = file_.size();
+  if (offset < 0 || static_cast<size_t>(offset) > size) {
+    return tl::make_unexpected(Status::InternalError("Invalid WAL offset"));
+  }
+  const size_t remaining = size - static_cast<size_t>(offset);
+  if (remaining == 0) {
+    return WalReadResult{State::kEnd, {}};
+  }
+  auto truncated = [&]() {
+    truncated_at_ = static_cast<size_t>(offset);
+    return WalReadResult{State::kTruncatedTail, {}};
+  };
 
-  int read_size = 0;
-  std::string err_msg;
-  int ret = -1;
+  // The legacy header stores the native-endian length and CRC, in that order.
+  uint32_t header[2];
+  if (remaining < sizeof(header)) {
+    return truncated();
+  }
+  if (file_.read(header, sizeof(header)) != sizeof(header)) {
+    return tl::make_unexpected(Status::InternalError("Short WAL header read"));
+  }
+  const auto length = header[0];
+  if (length == 0 || length > kMaxRecordSize) {
+    return tl::make_unexpected(
+        Status::InternalError("Invalid WAL record length"));
+  }
+  if (length > remaining - sizeof(header)) {
+    return truncated();
+  }
+  std::string data(length, '\0');
+  if (file_.read(data.data(), length) != length) {
+    return tl::make_unexpected(Status::InternalError("Short WAL record read"));
+  }
+  if (ailego::Crc32c::Hash(data.data(), length, 0) != header[1]) {
+    return tl::make_unexpected(
+        Status::InternalError("WAL record checksum mismatch"));
+  }
+  return WalReadResult{State::kRecord, std::move(data)};
+}
 
-  do {
-    read_size =
-        file_.read(reinterpret_cast<void *>(&record.length_), LENGTH_SIZE);
-    if (read_size == 0) {
-      ret = 0;
-      WLOG_INFO("Wal read finished. end of file");
-      break;
-    }
-
-    if (read_size != LENGTH_SIZE) {
-      WLOG_ERROR("Wal read error. record.length_ error read_size[%d]",
-                 read_size);
-      break;
-    }
-
-    read_size = file_.read(reinterpret_cast<void *>(&record.crc_), CRC_SIZE);
-    if (read_size != CRC_SIZE) {
-      WLOG_ERROR("Wal read error. record.crc_ error read_size[%d]", read_size);
-      break;
-    }
-
-    // resize may crash if record.length_ very large
-    if (record.length_ <= 0 || record.length_ > MAX_RECORD_SIZE) {
-      WLOG_ERROR("Wal read error. record.length_ value error read_size[%d]",
-                 read_size);
-      break;
-    }
-
-    record.content_.resize(record.length_);
-    read_size = file_.read((void *)const_cast<char *>(record.content_.data()),
-                           record.length_);
-    if (read_size != (int)record.length_) {
-      WLOG_ERROR("Wal read error. record.content_ error read_size[%d]",
-                 read_size);
-      break;
-    }
-    ret = 1;  // read one record success
-  } while (false);
-
-  return ret;
+Status LocalWalFile::discard_truncated_tail() {
+  if (!opened_ || read_only_ || !truncated_at_) {
+    return Status::FailedPrecondition("No writable truncated WAL tail");
+  }
+  if (!file_.truncate(*truncated_at_) || !file_.flush() ||
+      !file_.seek(0, ailego::File::Origin::End)) {
+    return Status::InternalError("Cannot repair truncated WAL tail");
+  }
+  truncated_at_.reset();
+  return Status::OK();
 }
 
 };  // namespace zvec
