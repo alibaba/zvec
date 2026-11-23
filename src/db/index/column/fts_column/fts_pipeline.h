@@ -17,14 +17,14 @@
 #include <memory>
 #include <zvec/db/index_params.h>
 #include <zvec/db/status.h>
+#include "tokenizer/tokenizer_factory.h"
 
 namespace zvec {
 
-namespace fts {
-class TokenizerPipeline;
-}  // namespace fts
-
 namespace detail {
+
+Result<fts::PreparedTokenizerPipeline> PrepareFtsPipeline(
+    FtsIndexParams &params);
 
 // Internal entry to lazily acquire (and cache, per FtsIndexParams instance)
 // the tokenizer pipeline.  Thread-safe; same params instance returns the

@@ -24,6 +24,7 @@
 #include <vector>
 #include <gtest/gtest.h>
 #include "db/index/column/fts_column/tokenizer/jieba_embedded_dict.h"
+#include "db/index/column/fts_column/tokenizer/tokenizer_factory.h"
 
 namespace {
 
@@ -181,6 +182,51 @@ TEST_F(JiebaEmbeddedTokenizerTest, DefaultWorksWithoutExternalDictDir) {
     EXPECT_EQ(tokens[i].position, i);
   }
   EXPECT_TRUE(tokenizer.tokenize("").empty());
+}
+
+TEST_F(JiebaEmbeddedTokenizerTest, PrepareDefersEmbeddedDictionary) {
+  zvec::fts::FtsIndexParams params;
+  params.tokenizer_name = "jieba";
+  auto prepared = zvec::fts::TokenizerFactory::prepare(params);
+  ASSERT_TRUE(prepared.has_value());
+  EXPECT_EQ(prepared->wait_for(std::chrono::seconds(0)),
+            std::future_status::deferred);
+
+  // A later environment change must not redirect the prepared tokenizer.
+  ASSERT_EQ(set_dict_env((temp_dir_ / "missing").string().c_str()), 0);
+  std::vector<std::thread> threads;
+  for (int i = 0; i < 8; ++i) {
+    threads.emplace_back([&]() {
+      const auto &pipeline = prepared->get();
+      ASSERT_TRUE(pipeline.has_value());
+      EXPECT_TRUE(contains_token((*pipeline)->process("中文分词技术"), "分词"));
+    });
+  }
+  for (auto &thread : threads) {
+    thread.join();
+  }
+  EXPECT_EQ(prepared->wait_for(std::chrono::seconds(0)),
+            std::future_status::ready);
+}
+
+TEST_F(JiebaEmbeddedTokenizerTest, PrepareBindsExternalDictionaryImmediately) {
+  zvec::fts::FtsIndexParams params;
+  params.tokenizer_name = "jieba";
+  params.extra_params = R"({"cut_mode":"full"})";
+  ASSERT_EQ(set_dict_env(temp_dir_.string().c_str()), 0);
+  EXPECT_FALSE(zvec::fts::TokenizerFactory::prepare(params).has_value());
+
+  const std::string word = "星河咕噜引擎";
+  const auto path = write_user_dict("jieba.dict.utf8", word);
+  auto prepared = zvec::fts::TokenizerFactory::prepare(params);
+  ASSERT_TRUE(prepared.has_value());
+  std::error_code error;
+  ASSERT_TRUE(std::filesystem::remove(path, error)) << error.message();
+  const auto &pipeline = prepared->get();
+  ASSERT_TRUE(pipeline.has_value());
+  const auto tokens = (*pipeline)->process(word);
+  ASSERT_EQ(tokens.size(), 1u);
+  EXPECT_EQ(tokens.front().text, word);
 }
 
 TEST_F(JiebaEmbeddedTokenizerTest, AllModesMatchExternalDictionaryAndModel) {

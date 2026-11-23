@@ -73,6 +73,18 @@ Result<EmbeddedJiebaDict> get_embedded_jieba_dict() {
   return dict;
 }
 
+Result<std::shared_ptr<const cppjieba::DictTrie>> get_embedded_jieba_trie() {
+  using Trie = std::shared_ptr<const cppjieba::DictTrie>;
+  static const Result<Trie> trie = []() -> Result<Trie> {
+    auto dict = get_embedded_jieba_dict();
+    if (!dict) {
+      return tl::make_unexpected(dict.error());
+    }
+    return std::make_shared<const cppjieba::DictTrie>(**dict);
+  }();
+  return trie;
+}
+
 Result<EmbeddedJiebaHmmModel> get_embedded_jieba_hmm_model() {
   static const Result<EmbeddedJiebaHmmModel> model =
       []() -> Result<EmbeddedJiebaHmmModel> {

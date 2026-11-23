@@ -28,6 +28,8 @@ using EmbeddedJiebaHmmModel = std::shared_ptr<const cppjieba::HMMModel>;
 // Lazily decompress and parse each default resource once. The returned data
 // is immutable and shared; the decompressed text is released after parsing.
 Result<EmbeddedJiebaDict> get_embedded_jieba_dict();
+// Tokenizers without user words can also share the completed read-only trie.
+Result<std::shared_ptr<const cppjieba::DictTrie>> get_embedded_jieba_trie();
 Result<EmbeddedJiebaHmmModel> get_embedded_jieba_hmm_model();
 
 }  // namespace zvec::fts

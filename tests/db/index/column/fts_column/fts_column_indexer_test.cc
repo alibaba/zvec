@@ -29,6 +29,7 @@
 // FtsQueryParams defined below
 #include "db/index/column/fts_column/fts_ast_rewriter.h"
 #include "db/index/column/fts_column/fts_indexer.h"
+#include "db/index/column/fts_column/fts_pipeline.h"
 #include "db/index/column/fts_column/fts_rocksdb_merge.h"
 #include "db/index/column/fts_column/parser/fts_query_parser.h"
 #include "db/index/column/fts_column/posting/bitpacked_posting_list.h"
@@ -836,7 +837,13 @@ TEST_F(FtsColumnIndexerTest, OpenWithJiebaTokenizerSucceedsWithoutDictDir) {
                   .open(field_meta, &db_, postings_cf_, positions_cf_,
                         term_freq_cf_, max_tf_cf_, doc_len_cf_, stat_cf_)
                   .has_value());
+  auto prepared = zvec::detail::PrepareFtsPipeline(*fts_params);
+  ASSERT_TRUE(prepared.has_value());
+  EXPECT_EQ(prepared->wait_for(std::chrono::seconds(0)),
+            std::future_status::deferred);
   ASSERT_TRUE(indexer.insert(0, "中文分词技术").has_value());
+  EXPECT_EQ(prepared->wait_for(std::chrono::seconds(0)),
+            std::future_status::ready);
   ASSERT_TRUE(indexer.flush().has_value());
   std::vector<FtsResult> results;
   ASSERT_TRUE(search_ok(indexer, "中文", 10, &results, pipeline.value()));

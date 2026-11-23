@@ -207,7 +207,7 @@ class FtsColumnIndexer {
 
   // --- Tokenizer (write path only) ---
   FieldSchema::Ptr field_meta_{};
-  TokenizerPipelinePtr tokenizer_pipeline_{nullptr};
+  PreparedTokenizerPipeline tokenizer_pipeline_;
   std::shared_ptr<zvec::FtsIndexParams> fts_params_;
 
   // --- Reader state ---

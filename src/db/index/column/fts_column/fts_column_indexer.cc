@@ -123,7 +123,7 @@ Result<void> FtsColumnIndexer::open(FieldSchema::Ptr field_meta,
         field_meta->name()));
   }
 
-  auto pipeline_result = zvec::detail::AcquireFtsPipeline(*fts_param);
+  auto pipeline_result = zvec::detail::PrepareFtsPipeline(*fts_param);
   if (!pipeline_result.has_value()) {
     return tl::make_unexpected(Status::InternalError(
         "FtsColumnIndexer: failed to create tokenizer pipeline. field=",
@@ -153,7 +153,7 @@ Result<void> FtsColumnIndexer::close() {
   }
 
   ctx_ = nullptr;
-  tokenizer_pipeline_.reset();
+  tokenizer_pipeline_ = {};
   postings_cf_ = nullptr;
   positions_cf_ = nullptr;
   term_freq_cf_.store(nullptr, std::memory_order_release);
@@ -607,7 +607,7 @@ Result<void> FtsColumnIndexer::insert(uint64_t seg_doc_id,
                                       const std::string &text) {
   // safe access check
 
-  if (!tokenizer_pipeline_ || !ctx_) {
+  if (!tokenizer_pipeline_.valid() || !ctx_) {
     return tl::make_unexpected(Status::InternalError(
         "FtsColumnIndexer::insert: not opened. field=", field_name_));
   }
@@ -618,7 +618,11 @@ Result<void> FtsColumnIndexer::insert(uint64_t seg_doc_id,
   }
 
   // Tokenize
-  std::vector<Token> tokens = tokenizer_pipeline_->process(text);
+  const auto &pipeline = tokenizer_pipeline_.get();
+  if (!pipeline) {
+    return tl::make_unexpected(pipeline.error());
+  }
+  std::vector<Token> tokens = (*pipeline)->process(text);
   const uint32_t doc_len = static_cast<uint32_t>(tokens.size());
 
   // Aggregate position lists by term
