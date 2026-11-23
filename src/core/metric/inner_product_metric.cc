@@ -20,7 +20,8 @@
 namespace zvec {
 namespace core {
 
-class InnerProductMetric : public IndexMetric {
+class InnerProductMetric : public IndexMetric,
+                           public InterleavedDistanceProvider {
  public:
   //! Initialize Metric
   int init(const IndexMeta &meta, const ailego::Params &index_params) override {
@@ -81,6 +82,12 @@ class InnerProductMetric : public IndexMetric {
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
     return turbo::MakeRawDistanceMatrix<turbo::MetricType::kInnerProduct>(
         m, n, TurboDataType(data_type_));
+  }
+
+  turbo::InterleavedManyToManyDistanceFunc interleaved_many_distance(
+      size_t rows) const override {
+    return turbo::get_interleaved_many_to_many_distance_func(
+        turbo::MetricType::kInnerProduct, TurboDataType(data_type_), rows);
   }
 
   //! Retrieve distance function for query

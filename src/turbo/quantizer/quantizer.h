@@ -118,6 +118,12 @@ class BlockScanner {
   }
 };
 
+// Optional interface for quantizers that can score multiple bound queries.
+struct ManyDistanceProvider {
+  virtual ~ManyDistanceProvider() = default;
+  virtual ManyToManyDistanceFunc many_distance() const = 0;
+};
+
 class Quantizer {
  public:
   typedef std::shared_ptr<Quantizer> Pointer;
@@ -296,6 +302,14 @@ class Quantizer {
   virtual std::unique_ptr<BlockScanner> block_scanner(
       const DistanceImpl &) const {
     return nullptr;
+  }
+
+  //! Optional many-to-many kernel for the same encoded layout and arithmetic
+  //! as distance(). Keep the dispatch with the quantizer: function addresses
+  //! cannot identify a kernel family across independently linked libraries.
+  ManyToManyDistanceFunc many_distance() const {
+    const auto *provider = dynamic_cast<const ManyDistanceProvider *>(this);
+    return provider ? provider->many_distance() : ManyToManyDistanceFunc{};
   }
 
   //! Convert an internal distance into the caller-facing score in place

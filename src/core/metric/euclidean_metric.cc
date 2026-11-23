@@ -22,7 +22,8 @@
 namespace zvec {
 namespace core {
 
-class SquaredEuclideanMetric : public IndexMetric {
+class SquaredEuclideanMetric : public IndexMetric,
+                               public InterleavedDistanceProvider {
  public:
   //! Initialize Metric
   int init(const IndexMeta &meta, const ailego::Params &index_params) override {
@@ -78,6 +79,12 @@ class SquaredEuclideanMetric : public IndexMetric {
     if (data_type_ == IndexMeta::DT_UINT8 && (m != 1 || n != 1)) return nullptr;
     return turbo::MakeRawDistanceMatrix<turbo::MetricType::kSquaredEuclidean>(
         m, n, TurboDataType(data_type_));
+  }
+
+  turbo::InterleavedManyToManyDistanceFunc interleaved_many_distance(
+      size_t rows) const override {
+    return turbo::get_interleaved_many_to_many_distance_func(
+        turbo::MetricType::kSquaredEuclidean, TurboDataType(data_type_), rows);
   }
 
   //! Retrieve distance function for query
