@@ -78,8 +78,6 @@ int MaterializeMergedInput(const MergedProviderIndexHolder::Pointer &source,
 }  // namespace
 
 int MixedStreamerReducer::init(const ailego::Params &params) {
-  enable_pk_rewrite_ =
-      params.get_as_bool(PARAM_MIXED_STREAMER_REDUCER_ENABLE_PK_REWRITE);
   params.get(PARAM_MIXED_STREAMER_REDUCER_NUM_OF_ADD_THREADS,
              &num_of_add_threads_);
   if (num_of_add_threads_ <= 0) {
@@ -308,14 +306,20 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
     return IndexError_Runtime;
   }
 
-  if (enable_pk_rewrite_) {
-    const size_t slots =
-        is_sparse_ ? target_streamer_->create_sparse_provider()->slot_count()
-                   : target_streamer_->create_provider()->slot_count();
-    if (slots < next_id) {
-      const int ret = target_streamer_->reserve_slots(next_id);
-      if (ret != 0) return ret;
-    }
+  // A NULL tail has no add() call to grow the target's slot range.
+  size_t slots = 0;
+  if (is_sparse_) {
+    auto provider = target_streamer_->create_sparse_provider();
+    if (!provider) return IndexError_Runtime;
+    slots = provider->slot_count();
+  } else {
+    auto provider = target_streamer_->create_provider();
+    if (!provider) return IndexError_Runtime;
+    slots = provider->slot_count();
+  }
+  if (slots < next_id) {
+    const int ret = target_streamer_->reserve_slots(next_id);
+    if (ret != 0) return ret;
   }
   stats_.set_reduced_costtime(timer.seconds());
   state_ = STATE_REDUCE;

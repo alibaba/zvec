@@ -22,6 +22,8 @@
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
 #include "algorithm/hnsw/hnsw_params.h"
+#include "mixed_reducer/mixed_reducer_params.h"
+#include "mixed_reducer/mixed_streamer_reducer.h"
 #include "../../ailego/buffer/pool_payload_budget.h"
 
 namespace zvec::core_interface {
@@ -677,6 +679,86 @@ TEST_P(SparseNodePresenceTest, AllNullMergeSurvivesReopenAndFill) {
 INSTANTIATE_TEST_SUITE_P(StorageAndMapping, SparseNodePresenceTest,
                          testing::Combine(testing::Bool(), testing::Bool(),
                                           testing::Bool()));
+
+TEST(PhysicalSlotsTest, StreamerMergePreservesNullTailsWithDefaultOptions) {
+  const std::string path = "test_default_streamer_merge_slots";
+  for (bool sparse : {false, true}) {
+    for (bool all_null : {false, true}) {
+      for (bool append : {false, true}) {
+        SCOPED_TRACE(sparse);
+        SCOPED_TRACE(all_null);
+        SCOPED_TRACE(append);
+        std::filesystem::remove_all(path);
+        std::filesystem::create_directory(path);
+        auto param = FlatIndexParamBuilder()
+                         .with_dimension(sparse ? 0 : kDimension)
+                         .with_is_sparse(sparse)
+                         .with_data_type(DataType::DT_FP32)
+                         .with_metric_type(sparse ? MetricType::kInnerProduct
+                                                  : MetricType::kL2sq)
+                         .build();
+        auto source = IndexFactory::CreateAndInitIndex(*param);
+        auto target = IndexFactory::CreateAndInitIndex(*param);
+        ASSERT_NE(nullptr, source);
+        ASSERT_NE(nullptr, target);
+        ASSERT_EQ(0, source->open(path + "/source",
+                                  {StorageOptions::StorageType::kMMAP, true}));
+        ASSERT_EQ(0, target->open(path + "/target",
+                                  {StorageOptions::StorageType::kMMAP, true}));
+        std::vector<float> dense(kDimension, 2.0f);
+        uint32_t sparse_index = 3;
+        float sparse_value = 2.0f;
+        VectorData value =
+            sparse ? VectorData{SparseVector{1, &sparse_index, &sparse_value}}
+                   : VectorData{DenseVector{dense.data()}};
+        if (append) {
+          ASSERT_EQ(0, target->add(value, 0));
+        }
+        if (!all_null) {
+          ASSERT_EQ(0, source->add(value, 0));
+        }
+        ASSERT_EQ(0, source->add({NullVector{}}, 4));
+        ailego::ThreadPool pool(1, false);
+        core::MixedStreamerReducer reducer;
+        ailego::Params options;
+        options.set(core::PARAM_MIXED_STREAMER_REDUCER_NUM_OF_ADD_THREADS, 1);
+        ASSERT_EQ(0, reducer.init(options));
+        reducer.set_thread_pool(&pool);
+        auto meta =
+            sparse ? core::IndexQueryMeta(core::IndexMeta::MT_SPARSE,
+                                          core::IndexMeta::DT_FP32)
+                   : core::IndexQueryMeta(core::IndexMeta::DT_FP32, kDimension);
+        ASSERT_EQ(
+            0, reducer.set_target_streamer_wiht_info(
+                   nullptr, target->index_searcher(), nullptr, nullptr, meta));
+        ASSERT_EQ(0, reducer.feed_streamer_with_reformer(
+                         source->index_searcher(), nullptr));
+        ASSERT_EQ(0, reducer.reduce({}));
+        const uint32_t slots = (append ? 1 : 0) + 5;
+        const uint32_t vectors = (append ? 1 : 0) + (all_null ? 0 : 1);
+        EXPECT_EQ(slots, target->get_slot_count());
+        EXPECT_EQ(vectors, target->get_vector_count());
+        ASSERT_EQ(0, source->close());
+        ASSERT_EQ(0, target->close());
+        target = IndexFactory::CreateAndInitIndex(*param);
+        ASSERT_EQ(0, target->open(path + "/target",
+                                  {StorageOptions::StorageType::kMMAP, false}));
+        EXPECT_EQ(slots, target->get_slot_count());
+        EXPECT_EQ(vectors, target->get_vector_count());
+        VectorDataBuffer fetched;
+        for (uint32_t id = 0; id < slots; ++id) {
+          if (id < vectors) {
+            EXPECT_EQ(0, target->fetch(id, &fetched));
+          } else {
+            EXPECT_NE(0, target->fetch(id, &fetched));
+          }
+        }
+        ASSERT_EQ(0, target->close());
+        std::filesystem::remove_all(path);
+      }
+    }
+  }
+}
 
 TEST(PhysicalSlotsTest, BuilderTrainingPersistsEmptySlots) {
   ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024ll * 1024ll *

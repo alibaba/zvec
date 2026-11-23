@@ -95,7 +95,6 @@ class MixedStreamerReducer : public IndexStreamerReducer {
   };
 
   uint32_t output_base_{0};
-  bool enable_pk_rewrite_{false};
   bool is_sparse_{false};
 
   Stats stats_{};

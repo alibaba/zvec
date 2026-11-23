@@ -506,6 +506,26 @@ TEST(MergedProviderIndexHolderTest, OrdinalKeyPassPreservesIteratorReadError) {
   }
 }
 
+TEST(MergedProviderIndexHolderTest,
+     StreamerMergeRejectsUnavailableTargetProvider) {
+  auto source = MakeStreamer({{UINT64_MAX, 0.0F}});
+  auto target = std::make_shared<TestStreamer>(
+      [](size_t) { return IndexProvider::Pointer{}; },
+      std::make_shared<ProviderLifetimeStats>());
+  ailego::ThreadPool pool(1, false);
+  MixedStreamerReducer reducer;
+  ailego::Params params;
+  params.set(PARAM_MIXED_STREAMER_REDUCER_NUM_OF_ADD_THREADS, 1);
+  ASSERT_EQ(0, reducer.init(params));
+  reducer.set_thread_pool(&pool);
+  ASSERT_EQ(0, reducer.set_target_streamer_wiht_info(
+                   nullptr, target, nullptr, nullptr,
+                   IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension)));
+  ASSERT_EQ(0, reducer.feed_streamer_with_reformer(source, nullptr));
+  EXPECT_EQ(IndexError_Runtime, reducer.reduce({}));
+  EXPECT_EQ(IndexError_NoReady, reducer.dump(nullptr));
+}
+
 TEST(MergedProviderIndexHolderTest, StreamerMergePreservesIteratorReadError) {
   for (auto operation :
        {IteratorFailureOperation::kValidity, IteratorFailureOperation::kKey,
