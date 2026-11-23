@@ -134,14 +134,3 @@ ctest --test-dir build -R '^(stile_predicate_test|forward_filter_read_test|forwa
 ```
 
 新增求值能力应同时补充 Arrow 差分测试和回退测试；改变生产启用范围还需覆盖 Collection 的后端选择、并发与生命周期测试。
-
-性能工具位于 [`benchmarks/filter`](../../../../benchmarks/filter)。配置 `BUILD_BENCHMARKS=ON` 后构建 `candidate_filter_bench`，使用同一数据目录分别运行待比较版本：
-
-```sh
-cmake --build build --target candidate_filter_bench
-./build/bin/candidate_filter_bench prepare ./candidate_filter_bench_data 32768
-./build/bin/candidate_filter_bench run ./candidate_filter_bench_data 32768 150 4
-./build/bin/candidate_filter_bench run ./candidate_filter_bench_data 32768 150 4 bitmap
-```
-
-`prepare` 只创建新目录；`run` 只读查询并验证精确结果，包含正常查询准备/编译成本。P50/P95/P99 只统计查询本体，QPS 的壁钟时间还包含结果校验及线程结果收集。该 FLAT 基准是有界验证，不代表所有 ANN、数据规模或查询分布的性能。
