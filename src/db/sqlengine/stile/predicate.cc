@@ -557,6 +557,7 @@ static_assert(kBlock <= detail::Node::kMaxBatch);
 
 void Predicate::eval_block(const int64_t *rows, size_t count, bool checked,
                            detail::Tf *out) const {
+  if (count == 0) return;
   if (checked && num_rows_ == 0) {
     std::fill(out, out + count, detail::kTfNull);
     return;
