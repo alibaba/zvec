@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <atomic>
+#include <cstring>
 #ifndef _MSC_VER
 #include <fcntl.h>
 #include <unistd.h>
@@ -24,8 +25,11 @@
 #include <memory>
 #include <gtest/gtest.h>
 #include <turbo/norm/norm_matrix.h>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/ailego/container/vector.h>
 #include "tests/test_util.h"
+#include "utility/sparse_utility.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic push
@@ -97,6 +101,48 @@ void HnswSparseStreamerTest::SetUp() {
 
 void HnswSparseStreamerTest::TearDown() {
   zvec::test_util::RemoveTestPath(dir_);
+}
+
+TEST_F(HnswSparseStreamerTest, StaleNullReservationPreservesExistingSlots) {
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(64UL * 1024 * 1024);
+  for (const char *backend : {"MMapFileStorage", "BufferStorage"}) {
+    SCOPED_TRACE(backend);
+    auto storage = IndexFactory::CreateStorage(backend);
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(Params()));
+    ASSERT_EQ(0, storage->open(dir_ + backend, true));
+    IndexStreamer::Stats stats;
+    HnswSparseStreamerEntity entity(stats);
+    entity.set_scaling_factor(16);
+    entity.set_l0_neighbor_cnt(8);
+    entity.set_upper_neighbor_cnt(8);
+    entity.set_sparse_meta_size(HnswSparseEntity::kSparseMetaSize);
+    entity.set_sparse_unit_size(sizeof(float));
+    entity.set_use_id_map(false);
+    entity.set_chunk_size(4096);
+    ASSERT_EQ(0, entity.init(8UL * 1024 * 1024, 64));
+    ASSERT_EQ(0, entity.open(storage, false));
+    uint32_t sparse_index = 3;
+    float value = 2.0f;
+    std::string vector;
+    SparseUtility::TransSparseFormat(1, &sparse_index, &value, sizeof(float),
+                                     vector);
+    for (uint32_t id : {9U, 20U}) {
+      ASSERT_EQ(0, entity.add_vector_with_id(0, id, vector, 1));
+    }
+    // Resume a reserve_slots(10) that checked the range before those writes.
+    ASSERT_EQ(0, entity.add_vector_with_id(0, 9, {}, 0, true));
+    ASSERT_EQ(0, entity.add_vector_with_id(0, 5, {}, 0, true));
+    ASSERT_EQ(21U, entity.slot_count());
+    for (uint32_t id : {9U, 20U}) {
+      EXPECT_EQ(id, entity.get_key(id));
+      const void *stored = entity.get_sparse_data(id);
+      ASSERT_NE(nullptr, stored);
+      EXPECT_EQ(0, std::memcmp(stored, vector.data(), vector.size()));
+    }
+    ASSERT_EQ(0, entity.close());
+    ASSERT_EQ(0, storage->close());
+  }
 }
 
 TEST_F(HnswSparseStreamerTest, TestGeneral) {
@@ -1111,6 +1157,67 @@ TEST_F(HnswSparseStreamerTest, TestBfThreshold) {
   ASSERT_EQ(0, streamer1->search_impl(sparse_dim_count, sparse_indices.data(),
                                       sparse_velues.data(), qmeta, ctx1));
   LOG_DEBUG("%s", ctx1->debug_string().c_str());
+}
+
+TEST_F(HnswSparseStreamerTest, SearcherSkipsSentinelCandidatesBeforeCallbacks) {
+  auto streamer = IndexFactory::CreateStreamer("HnswSparseStreamer");
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, streamer);
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "SentinelSource", true));
+  ASSERT_EQ(0, streamer->init(*index_meta_ptr_, Params()));
+  ASSERT_EQ(0, streamer->open(storage));
+  auto writer = streamer->create_context();
+  const IndexQueryMeta qmeta(IndexMeta::MT_SPARSE, IndexMeta::DT_FP32);
+  const uint32_t dimension = 17;
+  const float value = 1;
+  for (uint64_t key : {10, 20}) {
+    ASSERT_EQ(0, streamer->add_impl(key, 1, &dimension, &value, qmeta, writer));
+  }
+  const auto path = dir_ + "SentinelSearcher";
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_EQ(0, dumper->create(path));
+  ASSERT_EQ(0, streamer->dump(dumper));
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, dumper->close());
+
+  auto searcher = IndexFactory::CreateSearcher("HnswSparseSearcher");
+  auto reader = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_NE(nullptr, searcher);
+  ASSERT_EQ(0, reader->open(path, false));
+  ASSERT_EQ(0, searcher->init(Params()));
+  ASSERT_EQ(0, searcher->load(reader, IndexMetric::Pointer()));
+  const std::vector<std::vector<uint64_t>> keys{{10, kInvalidKey, 20, 999}};
+  for (bool grouped : {false, true}) {
+    SCOPED_TRACE(grouped);
+    auto context = searcher->create_context();
+    context->set_topk(2);
+    context->set_filter([](uint64_t key) {
+      EXPECT_NE(kInvalidKey, key);
+      return false;
+    });
+    if (grouped) {
+      context->set_group_params(2, 1);
+      context->set_group_by([](uint64_t key) {
+        EXPECT_TRUE(key == 10 || key == 20);
+        return std::to_string(key);
+      });
+    }
+    ASSERT_EQ(0, searcher->search_bf_by_p_keys_impl(1, &dimension, &value, keys,
+                                                    qmeta, context));
+    if (grouped) {
+      ASSERT_EQ(2U, context->group_result().size());
+      for (const auto &group : context->group_result()) {
+        ASSERT_EQ(1U, group.docs().size());
+        EXPECT_EQ(std::to_string(group.docs()[0].key()), group.group_id());
+      }
+    } else {
+      ASSERT_EQ(2U, context->result().size());
+      for (const auto &doc : context->result())
+        EXPECT_TRUE(doc.key() == 10 || doc.key() == 20);
+    }
+  }
 }
 
 TEST_F(HnswSparseStreamerTest, TestFilter) {

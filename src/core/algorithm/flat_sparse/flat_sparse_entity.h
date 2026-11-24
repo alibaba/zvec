@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <unordered_map>
 #include <zvec/core/framework/index_framework.h>
 #include "flat_sparse_index_format.h"
@@ -64,9 +65,10 @@ class FlatSparseEntity {
                     const std::vector<uint64_t> &p_keys,
                     const IndexFilter &filter, IndexDocumentHeap *heap) const {
     for (auto p_key : p_keys) {
+      if (p_key == kInvalidKey) continue;
       if (!filter.is_valid() || !filter(p_key)) {
         auto node_id = get_id(p_key);
-        if (node_id != kInvalidNodeId) {
+        if (contains_node(node_id)) {
           float dist = get_search_distance(sparse_vector, node_id);
           heap->emplace(p_key, dist);
         }
@@ -83,10 +85,7 @@ class FlatSparseEntity {
       std::unordered_map<std::string, IndexDocumentHeap> *heap) const {
     for (node_id_t i = 0; i < doc_cnt(); i++) {
       uint64_t key = get_key(i);
-      if (ailego_unlikely(key == kInvalidKey)) {
-        LOG_ERROR("The key of node_id[%u] not found in keys map", i);
-        return IndexError_Runtime;
-      }
+      if (ailego_unlikely(key == kInvalidKey)) continue;
       if (!filter.is_valid() || !filter(key)) {
         float dist = get_search_distance(sparse_vector, i);
 
@@ -110,9 +109,10 @@ class FlatSparseEntity {
       const std::function<std::string(uint64_t)> &group_by_func, uint32_t topk,
       std::unordered_map<std::string, IndexDocumentHeap> *heap) const {
     for (auto p_key : p_keys) {
+      if (p_key == kInvalidKey) continue;
       if (!filter.is_valid() || !filter(p_key)) {
         auto node_id = get_id(p_key);
-        if (node_id != kInvalidNodeId) {
+        if (contains_node(node_id)) {
           float dist = get_search_distance(sparse_vector, node_id);
 
           std::string group_id = group_by_func(p_key);
@@ -172,6 +172,7 @@ class FlatSparseEntity {
 
   int get_sparse_vector(node_id_t id,
                         IndexStorage::MemoryBlock &sparse_vector_block) const {
+    if (!contains_node(id)) return IndexError_NoExist;
     uint32_t sparse_vector_len;
     return get_sparse_vector_ptr_by_id(id, sparse_vector_block,
                                        &sparse_vector_len);
@@ -180,7 +181,7 @@ class FlatSparseEntity {
   int get_sparse_vector_ptr_by_key(uint64_t key, const void **sparse_vector_ptr,
                                    uint32_t *sparse_vector_len_ptr) const {
     auto node_id = get_id(key);
-    if (node_id == kInvalidNodeId) {
+    if (!contains_node(node_id)) {
       return IndexError_NoExist;
     }
 
@@ -192,7 +193,7 @@ class FlatSparseEntity {
       const uint64_t key, IndexStorage::MemoryBlock &sparse_vector_block,
       uint32_t *sparse_vector_len_ptr) const {
     auto node_id = get_id(key);
-    if (node_id == kInvalidNodeId) {
+    if (!contains_node(node_id)) {
       return IndexError_NoExist;
     }
 
@@ -205,11 +206,7 @@ class FlatSparseEntity {
     node_id_t doc_total_cnt = doc_cnt();
     for (node_id_t node_id = 0; node_id < doc_total_cnt; ++node_id) {
       uint64_t key = get_key(node_id);
-      if (key == kInvalidKey) {
-        return {kInvalidKey};
-      } else {
-        keys.push_back(key);
-      }
+      if (key != kInvalidKey) keys.push_back(key);
     }
 
     return keys;
@@ -219,11 +216,34 @@ class FlatSparseEntity {
  public:
   virtual uint32_t doc_cnt() const = 0;
 
+  //! Physical addressable slots, including NULL gaps (gap-in-place layout).
+  size_t slot_count() const {
+    return doc_cnt();
+  }
+
   virtual uint32_t total_sparse_count() const = 0;
 
   virtual node_id_t get_id(uint64_t key) const = 0;
 
   virtual uint64_t get_key(node_id_t id) const = 0;
+
+  virtual int read_key(node_id_t id, uint64_t *key) const {
+    *key = kInvalidKey;
+    if (id >= doc_cnt()) return IndexError_OutOfRange;
+    *key = get_key(id);
+    return 0;
+  }
+
+
+  // In-memory revision shared with clones; independent of optional key mapping.
+  uint64_t key_revision() const {
+    return key_revision_->load(std::memory_order_acquire);
+  }
+
+  bool contains_node(node_id_t id) const {
+    return id < doc_cnt() && get_key(id) != kInvalidKey;
+  }
+
 
   virtual int get_sparse_vector_ptr_by_id(
       node_id_t id, const void **sparse_vector,
@@ -240,6 +260,10 @@ class FlatSparseEntity {
   virtual float get_search_distance(const std::string &vector,
                                     node_id_t target_node_id) const = 0;
   virtual size_t sparse_unit_size() const = 0;
+
+ protected:
+  std::shared_ptr<std::atomic<uint64_t>> key_revision_{
+      std::make_shared<std::atomic<uint64_t>>(0)};
 };
 
 }  // namespace core

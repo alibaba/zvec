@@ -60,7 +60,8 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
   int dump_dummy_segment(const IndexDumper::Pointer &dumper) const;
   int dump_pq_meta_segment(const IndexDumper::Pointer &dumper) const;
   int dump_pq_data_segment(const IndexDumper::Pointer &dumper) const;
-  int dump_key_mapping_segment(const IndexDumper::Pointer &dumper) const;
+  int dump_key_mapping_segment(const IndexDumper::Pointer &dumper,
+                               size_t slot_count) const;
   int dump_entrypoint_segment(const IndexDumper::Pointer &dumper) const;
   int dump_key_segment(const IndexDumper::Pointer &dumper) const;
 

@@ -112,6 +112,8 @@ class HnswSparseStreamer : public IndexStreamer {
   int open(IndexStorage::Pointer stg) override;
 
   //! Close file
+  int reserve_slots(uint32_t count) override;
+
   int close() override;
 
   //! flush file
@@ -216,6 +218,7 @@ class HnswSparseStreamer : public IndexStreamer {
   bool check_crc_enabled_{false};
   bool filter_same_key_{false};
   bool get_vector_enabled_{false};
+  bool use_id_map_{true};
   bool force_padding_topk_enabled_{false};
 
   //! avoid add vector while dumping index

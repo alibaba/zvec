@@ -13,6 +13,8 @@
 // limitations under the License.
 #pragma once
 
+#include "utility/entity_vector_iterator.h"
+#include "utility/live_vector_count.h"
 #include "zvec/core/framework/index_provider.h"
 #include "zvec/core/framework/index_searcher.h"
 #include "zvec/core/framework/index_streamer.h"
@@ -38,9 +40,17 @@ class HnswRabitqIndexProvider : public IndexProvider {
                                                           Iterator(entity_));
   }
 
+  IndexProvider::Iterator::Pointer create_slot_iterator() override {
+    return std::make_unique<Iterator>(entity_, true);
+  }
+
   //! Retrieve count of vectors
   size_t count() const override {
-    return entity_->doc_cnt();
+    return vector_count_.get(*entity_);
+  }
+
+  size_t slot_count() const override {
+    return entity_->slot_count();
   }
 
   //! Retrieve dimension of vector
@@ -75,58 +85,10 @@ class HnswRabitqIndexProvider : public IndexProvider {
   }
 
  private:
-  class Iterator : public IndexProvider::Iterator {
-   public:
-    Iterator(const HnswRabitqEntity::Pointer &entity)
-        : entity_(entity), cur_id_(0U) {}
-
-    //! Retrieve pointer of data
-    //! NOTICE: the vec feature will be changed after iterating to next, so
-    //! the caller need to keep a copy of it before iterator to next vector
-    const void *data() const override {
-      return entity_->get_vector(cur_id_, block_) == 0 ? block_.data()
-                                                       : nullptr;
-    }
-
-    //! Test if the iterator is valid
-    bool is_valid() const override {
-      return cur_id_ < entity_->doc_cnt();
-    }
-
-    //! Retrieve primary key
-    uint64_t key() const override {
-      return entity_->get_key(cur_id_);
-    }
-
-    //! Next iterator
-    void next() override {
-      // cur_id_ += 1;
-      cur_id_ = get_next_valid_id(cur_id_ + 1);
-    }
-
-    //! Reset the iterator
-    void reset() {
-      cur_id_ = get_next_valid_id(0);
-    }
-
-   private:
-    node_id_t get_next_valid_id(node_id_t start_id) {
-      for (node_id_t i = start_id; i < entity_->doc_cnt(); i++) {
-        if (entity_->get_key(i) != kInvalidNodeId) {
-          cur_id_ = i;
-          return i;
-        }
-      }
-      return kInvalidNodeId;
-    }
-
-   private:
-    const HnswRabitqEntity::Pointer entity_;
-    node_id_t cur_id_;
-    mutable IndexStorage::MemoryBlock block_;
-  };
+  using Iterator = EntityVectorIterator<HnswRabitqEntity>;
 
  private:
+  mutable LiveVectorCount vector_count_;
   const IndexMeta &meta_;
   const HnswRabitqEntity::Pointer entity_;
   const std::string owner_class_;

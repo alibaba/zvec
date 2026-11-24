@@ -13,6 +13,9 @@
 // limitations under the License.
 #pragma once
 
+#include <zvec/core/framework/index_provider.h>
+#include "utility/live_vector_count.h"
+#include "utility/sparse_utility.h"
 #include "hnsw_sparse_entity.h"
 
 namespace zvec {
@@ -36,8 +39,16 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
   }
 
   //! Retrieve count of vectors
+  IndexSparseProvider::Iterator::Pointer create_slot_iterator() override {
+    return std::make_unique<Iterator>(entity_, true);
+  }
+
   size_t count() const override {
-    return entity_->doc_cnt();
+    return vector_count_.get(*entity_);
+  }
+
+  size_t slot_count() const override {
+    return entity_->slot_count();
   }
 
   size_t total_sparse_count() const override {
@@ -65,100 +76,82 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
  private:
   class Iterator : public IndexSparseProvider::Iterator {
    public:
-    Iterator(const HnswSparseEntity::Pointer &entity)
-        : entity_(entity), cur_id_(0U), valid_(false) {
-      const void *sparse_data = entity_->get_sparse_data(cur_id_);
-      if (sparse_data != nullptr) {
-        valid_ = true;
-
-        sparse_indices_buffer_.clear();
-        sparse_data_buffer_.clear();
-
-        SparseUtility::ReverseSparseFormat(
-            sparse_data, &sparse_count_, &sparse_indices_buffer_,
-            &sparse_data_buffer_, entity_->sparse_unit_size());
-      }
+    Iterator(const HnswSparseEntity::Pointer &entity,
+             bool include_empty = false)
+        : include_empty_(include_empty), entity_(entity) {
+      seek(0);
     }
 
-    //! Retrieve sparse count
     uint32_t sparse_count() const override {
       return sparse_count_;
     }
 
-    //! Retrieve sparse indices
     const uint32_t *sparse_indices() const override {
       return reinterpret_cast<const uint32_t *>(sparse_indices_buffer_.data());
     }
 
-    //! Retrieve sparse data
     const void *sparse_data() const override {
-      return reinterpret_cast<const void *>(sparse_data_buffer_.data());
+      return sparse_data_buffer_.data();
     }
 
-    //! Test if the iterator is valid
     bool is_valid() const override {
-      return cur_id_ < entity_->doc_cnt() && valid_;
+      return status_ == 0 && cur_id_ < entity_->slot_count();
     }
 
-    //! Retrieve primary key
+    int status() const override {
+      return status_;
+    }
+
     uint64_t key() const override {
-      return entity_->get_key(cur_id_);
+      return key_;
     }
 
-    //! Next iterator
     void next() override {
-      cur_id_ = get_next_valid_id(cur_id_ + 1);
-
-      if (cur_id_ < entity_->doc_cnt()) {
-        const void *sparse_data = entity_->get_sparse_data(cur_id_);
-        if (sparse_data != nullptr) {
-          valid_ = true;
-
-          sparse_indices_buffer_.clear();
-          sparse_data_buffer_.clear();
-
-          SparseUtility::ReverseSparseFormat(
-              sparse_data, &sparse_count_, &sparse_indices_buffer_,
-              &sparse_data_buffer_, entity_->sparse_unit_size());
-        } else {
-          valid_ = false;
-        }
-      }
+      if (is_valid()) seek(cur_id_ + 1);
     }
 
-    //! Reset the iterator
     void reset() {
-      cur_id_ = get_next_valid_id(0);
-      const void *sparse_data = entity_->get_sparse_data(cur_id_);
-      if (sparse_data != nullptr) {
-        valid_ = true;
-
-        SparseUtility::ReverseSparseFormat(
-            sparse_data, &sparse_count_, &sparse_indices_buffer_,
-            &sparse_data_buffer_, entity_->sparse_unit_size());
-      }
+      status_ = 0;
+      seek(0);
     }
 
    private:
-    node_id_t get_next_valid_id(node_id_t start_id) {
-      for (node_id_t i = start_id; i < entity_->doc_cnt(); i++) {
-        if (entity_->get_key(i) != kInvalidNodeId) {
-          return i;
+    void seek(node_id_t start_id) {
+      sparse_count_ = 0;
+      sparse_indices_buffer_.clear();
+      sparse_data_buffer_.clear();
+      key_ = kInvalidKey;
+      for (cur_id_ = start_id; cur_id_ < entity_->slot_count(); ++cur_id_) {
+        status_ = entity_->read_key(cur_id_, &key_);
+        if (status_ != 0) return;
+        if (key_ == kInvalidKey) {
+          if (include_empty_) return;
+          continue;
         }
+        const void *data = entity_->get_sparse_data(cur_id_);
+        if (!data) {
+          status_ = IndexError_ReadData;
+          return;
+        }
+        SparseUtility::ReverseSparseFormat(
+            data, &sparse_count_, &sparse_indices_buffer_, &sparse_data_buffer_,
+            entity_->sparse_unit_size());
+        return;
       }
-      return kInvalidNodeId;
     }
 
-   private:
+    bool include_empty_{false};
     const HnswSparseEntity::Pointer entity_;
-    node_id_t cur_id_;
+    node_id_t cur_id_{0};
+    uint64_t key_{kInvalidKey};
+    int status_{0};
     uint32_t sparse_count_{0};
     std::string sparse_indices_buffer_;
     std::string sparse_data_buffer_;
-    bool valid_{false};
   };
 
  private:
+  mutable LiveVectorCount vector_count_;
   const IndexMeta &meta_;
   const HnswSparseEntity::Pointer entity_;
   const std::string owner_class_;

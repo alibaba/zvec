@@ -14,6 +14,7 @@
 #pragma once
 
 #include <string.h>
+#include <atomic>
 #include <functional>
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/container/heap.h>
@@ -142,6 +143,11 @@ class VamanaEntity {
   inline node_id_t doc_cnt() const {
     return header_.graph.doc_count;
   }
+
+  //! Physical addressable slots, including NULL gaps (gap-in-place layout).
+  size_t slot_count() const {
+    return doc_cnt();
+  }
   inline float alpha() const {
     return header_.graph.alpha;
   }
@@ -233,6 +239,31 @@ class VamanaEntity {
 
   // Pure virtual interface
   virtual key_t get_key(node_id_t id) const = 0;
+
+  // Unlike get_key(), a failed read must not be mistaken for an empty slot.
+  virtual int read_key(node_id_t id, key_t *key) const {
+    *key = kInvalidKey;
+    if (id >= doc_cnt()) return IndexError_OutOfRange;
+    *key = get_key(id);
+    return 0;
+  }
+
+
+  // In-memory revision shared with clones; independent of optional key mapping.
+  uint64_t key_revision() const {
+    return key_revision_->load(std::memory_order_acquire);
+  }
+
+  // Existence is independent of external-key mapping.
+  bool contains_node(node_id_t id) const {
+    return id < doc_cnt() && get_key(id) != kInvalidKey;
+  }
+
+  // Graph traversal may use this after establishing that the node exists.
+  virtual key_t key_of_existing_node(node_id_t id) const {
+    return get_key(id);
+  }
+
   virtual const void *get_vector(node_id_t id) const = 0;
   virtual const void *get_extra_values(node_id_t id) const = 0;
   virtual int get_vector(const node_id_t id,
@@ -377,6 +408,8 @@ class VamanaEntity {
   // Runtime-only layout metadata supplied by the query metric. The persisted
   // vector_size remains the complete encoded record size for compatibility.
   size_t extra_values_size_{0};
+  std::shared_ptr<std::atomic<uint64_t>> key_revision_{
+      std::make_shared<std::atomic<uint64_t>>(0)};
 };
 
 }  // namespace core

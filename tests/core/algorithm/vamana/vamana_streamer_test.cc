@@ -1288,6 +1288,9 @@ TEST_F(VamanaStreamerTest, TestContiguousPackedGraphTracksNeighborUpdates) {
   entity.set_max_occlusion_size(VamanaEntity::kDefaultMaxOcclusionSize);
   ASSERT_EQ(0, entity.init(kCount));
   ASSERT_EQ(0, entity.open(storage, 0, false));
+  ASSERT_EQ(0, entity.add_vector_with_id(1, nullptr));
+  EXPECT_EQ(kCount, entity.slot_count());
+  EXPECT_EQ(1U, entity.get_key(1));
   ASSERT_EQ(0, entity.build_contiguous_memory());
 
   const std::vector<std::pair<node_id_t, dist_t>> replacement = {{1U, 1.0F},
@@ -1655,10 +1658,13 @@ TEST_F(VamanaStreamerTest, TestBruteForceByPrimaryKeysHonorsFilter) {
   other.fill(1.0f);
   ASSERT_EQ(0, streamer->add_impl(10, query.data(), meta, context));
   ASSERT_EQ(0, streamer->add_impl(20, other.data(), meta, context));
-  const std::vector<std::vector<uint64_t>> keys{{10, 20, 999}};
+  const std::vector<std::vector<uint64_t>> keys{{10, 20, 999, kInvalidKey}};
 
   // A primary-key restriction does not replace the deletion/filter callback.
-  context->set_filter([](uint64_t key) { return key == 10; });
+  context->set_filter([](uint64_t key) {
+    EXPECT_NE(kInvalidKey, key);
+    return key == 10;
+  });
   ASSERT_EQ(
       0, streamer->search_bf_by_p_keys_impl(query.data(), keys, meta, context));
   ASSERT_EQ(1U, context->result().size());
@@ -1675,6 +1681,30 @@ TEST_F(VamanaStreamerTest, TestBruteForceByPrimaryKeysHonorsFilter) {
       0, streamer->search_bf_by_p_keys_impl(query.data(), keys, meta, context));
   ASSERT_EQ(2U, context->result().size());
   EXPECT_EQ(10U, context->result()[0].key());
+
+  std::vector<float> queries(2 * kDim, 0);
+  const std::vector<std::vector<uint64_t>> batch_keys{{10, kInvalidKey},
+                                                      {20, kInvalidKey}};
+  context->set_filter([](uint64_t key) {
+    EXPECT_NE(kInvalidKey, key);
+    return false;
+  });
+  ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(queries.data(), batch_keys,
+                                                  meta, 2, context));
+  for (size_t q = 0; q < 2; ++q) {
+    ASSERT_EQ(1U, context->result(q).size());
+    EXPECT_EQ(q == 0 ? 10U : 20U, context->result(q)[0].key());
+  }
+  EXPECT_EQ(IndexError_InvalidArgument,
+            streamer->search_bf_by_p_keys_impl(queries.data(), batch_keys, meta,
+                                               3, context));
+  EXPECT_EQ(
+      IndexError_InvalidArgument,
+      streamer->search_bf_by_p_keys_impl(queries.data(), {}, meta, 0, context));
+  ASSERT_EQ(0, streamer->search_bf_by_p_keys_impl(
+                   queries.data(), {{}, {kInvalidKey}}, meta, 2, context));
+  EXPECT_TRUE(context->result(0).empty());
+  EXPECT_TRUE(context->result(1).empty());
 }
 
 TEST_F(VamanaStreamerTest, TestAsymmetricQueryMetric) {

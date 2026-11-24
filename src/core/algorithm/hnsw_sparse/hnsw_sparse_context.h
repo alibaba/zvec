@@ -188,10 +188,11 @@ class HnswSparseContext : public IndexContext {
                                              entity_->sparse_unit_size());
         }
 
-        results_[idx].emplace_back(entity_->get_key(id), score, id,
+        results_[idx].emplace_back(entity_->key_of_existing_node(id), score, id,
                                    std::move(meta_block), sparse_doc);
       } else {
-        results_[idx].emplace_back(entity_->get_key(id), score, id);
+        results_[idx].emplace_back(entity_->key_of_existing_node(id), score,
+                                   id);
       }
     }
 
@@ -262,11 +263,11 @@ class HnswSparseContext : public IndexContext {
                                                entity_->sparse_unit_size());
           }
           group_results_[idx][i].mutable_docs()->emplace_back(
-              entity_->get_key(id), score, id, std::move(meta_block),
-              sparse_doc);
+              entity_->key_of_existing_node(id), score, id,
+              std::move(meta_block), sparse_doc);
         } else {
           group_results_[idx][i].mutable_docs()->emplace_back(
-              entity_->get_key(id), score, id);
+              entity_->key_of_existing_node(id), score, id);
         }
       }
     }

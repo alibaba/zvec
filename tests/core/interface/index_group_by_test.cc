@@ -56,6 +56,7 @@ std::shared_ptr<std::vector<uint64_t>> AllPks() {
   for (uint32_t i = 0; i < kNumDocs; ++i) {
     pks->push_back(i);
   }
+  pks->push_back(UINT64_MAX);
   return pks;
 }
 
@@ -294,6 +295,11 @@ class GroupByInterfaceTest : public ::testing::Test {
 
     auto query_param = test_case.query_param->clone();
     AttachGroupBy(query_param);
+    query_param->filter = std::make_shared<IndexFilter>();
+    query_param->filter->set([](uint64_t key) {
+      EXPECT_NE(UINT64_MAX, key);
+      return false;
+    });
     if (test_case.with_refiner) {
       query_param->refiner_param = std::make_shared<RefinerParam>();
       query_param->refiner_param->scale_factor_ = 1.0f;
@@ -516,6 +522,83 @@ TEST_F(GroupByInterfaceTest, FlatAfterReopen) {
         run_reopened_flat(
             {"flat_reopened", param, FlatQuery(/*fetch_vector=*/true)},
             storage);
+      }
+    }
+  }
+}
+
+TEST_F(GroupByInterfaceTest, FlatNullsNeverReachCallbacksAfterReopen) {
+  ASSERT_EQ(0, ::zvec::ailego::PoolPayloadBudget::get_instance().init(
+                   256UL * 1024 * 1024));
+  const std::string path = "test_groupby_flat_nulls";
+  for (bool contiguous : {false, true}) {
+    for (bool mapped : {false, true}) {
+      for (auto storage : {StorageOptions::StorageType::kMMAP,
+                           StorageOptions::StorageType::kBufferPool}) {
+        SCOPED_TRACE(testing::Message()
+                     << "contiguous=" << contiguous << " mapped=" << mapped
+                     << " storage=" << static_cast<int>(storage));
+        auto param = FlatIndexParamBuilder()
+                         .with_metric_type(MetricType::kInnerProduct)
+                         .with_data_type(DataType::DT_FP32)
+                         .with_dimension(kDimension)
+                         .with_use_id_map(mapped)
+                         .with_use_contiguous_memory(contiguous)
+                         .build();
+        zvec::test_util::RemoveTestFiles(path + "*");
+        auto index = IndexFactory::CreateAndInitIndex(*param);
+        ASSERT_NE(nullptr, index);
+        ASSERT_EQ(0, index->open(path, {storage, true}));
+        const float live0[] = {1, 0, 0, 0};
+        const float live2[] = {3, 0, 0, 0};
+        ASSERT_EQ(0, index->add({DenseVector{live0}}, 0));
+        ASSERT_EQ(0, index->add({NullVector{}}, 1));
+        ASSERT_EQ(0, index->add({DenseVector{live2}}, 2));
+        ASSERT_EQ(0, index->add({NullVector{}}, 3));
+        ASSERT_EQ(0, index->close());
+        for (bool read_only : {true, false}) {
+          SCOPED_TRACE(read_only);
+          index = IndexFactory::CreateAndInitIndex(*param);
+          ASSERT_EQ(0, index->open(path, {storage, false, read_only}));
+          EXPECT_EQ(4U, index->get_slot_count());
+          EXPECT_EQ(2U, index->get_vector_count());
+          for (bool by_keys : {false, true}) {
+            SCOPED_TRACE(by_keys);
+            std::vector<uint64_t> filtered, grouped;
+            auto query = FlatQuery();
+            AttachGroupBy(query);
+            query->filter = std::make_shared<IndexFilter>();
+            query->filter->set([&](uint64_t key) {
+              filtered.push_back(key);
+              return false;
+            });
+            query->group_by_param->group_by = [&](uint64_t key) {
+              grouped.push_back(key);
+              return std::to_string(key);
+            };
+            if (by_keys) {
+              query->bf_pks = std::make_shared<std::vector<uint64_t>>(
+                  std::initializer_list<uint64_t>{0, UINT64_MAX, 2});
+            }
+            SearchResult result;
+            ASSERT_EQ(0, index->search({DenseVector{live0}}, query, &result));
+            EXPECT_EQ((std::vector<uint64_t>{0, 2}), filtered);
+            EXPECT_EQ((std::vector<uint64_t>{0, 2}), grouped);
+            EXPECT_TRUE(result.doc_list_.empty());
+            ASSERT_EQ(2U, result.group_doc_list_.size());
+            std::set<uint64_t> keys;
+            for (const auto &group : result.group_doc_list_) {
+              ASSERT_EQ(1U, group.docs().size());
+              const auto &doc = group.docs()[0];
+              EXPECT_EQ(std::to_string(doc.key()), group.group_id());
+              EXPECT_EQ(doc.key() == 0 ? 1.0f : 3.0f, doc.score());
+              keys.insert(doc.key());
+            }
+            EXPECT_EQ((std::set<uint64_t>{0, 2}), keys);
+          }
+          ASSERT_EQ(0, index->close());
+        }
+        zvec::test_util::RemoveTestFiles(path + "*");
       }
     }
   }

@@ -309,6 +309,33 @@ class InspectableFlatIndex : public FlatIndex {
   using Index::init;
 };
 
+TEST_F(ExternalFlatTest, NullReservationsAreRejectedWithoutChangingKeys) {
+  for (bool mapped : {false, true}) {
+    SCOPED_TRACE(mapped);
+    auto index = open_index(Param(true, MetricType::kL2sq, mapped),
+                            test_path(std::to_string(mapped)));
+    ASSERT_NE(nullptr, index);
+    for (uint32_t count : {0U, 1U}) {
+      if (count != 0) {
+        BatchSource source(1);
+        ASSERT_NO_FATAL_FAILURE(add_vectors(index.get(), source));
+      }
+      EXPECT_EQ(core::IndexError_Unsupported, index->add({NullVector{}}, 5));
+      EXPECT_EQ(core::IndexError_Unsupported,
+                index->index_searcher()->reserve_slots(6));
+      EXPECT_EQ(count, index->get_slot_count());
+      EXPECT_EQ(count, index->get_vector_count());
+    }
+    BatchSource source(1);
+    auto query = FlatQueryParamBuilder().with_topk(1).build();
+    SearchResult result;
+    ASSERT_EQ(0, index->search_with_source(Vector(source.rows.at(3)), query,
+                                           source, &result));
+    ASSERT_EQ(1U, result.doc_list_.size());
+    EXPECT_EQ(3U, result.doc_list_[0].key());
+  }
+}
+
 TEST_F(ExternalFlatTest, RegistrationDoesNotCopyVectorPayload) {
   BatchSource source(3);
   auto index = std::make_shared<InspectableFlatIndex>();

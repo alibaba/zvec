@@ -33,6 +33,10 @@ class RabitqConverter;
  */
 class IvfRabitqBuilder : public IndexBuilder {
  public:
+  size_t slot_count() const override {
+    return mapping_buf_.size();
+  }
+
   IvfRabitqBuilder();
   ~IvfRabitqBuilder() override;
 

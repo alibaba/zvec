@@ -182,7 +182,9 @@ void HnswSparseAlgorithm::search_neighbors(level_t level,
   CandidateHeap &candidates = ctx->candidates();
   std::function<bool(node_id_t)> filter = [](node_id_t) { return false; };
   if (ctx->filter().is_valid()) {
-    filter = [&](node_id_t id) { return ctx->filter()(entity.get_key(id)); };
+    filter = [&](node_id_t id) {
+      return ctx->filter()(entity.key_of_existing_node(id));
+    };
   }
 
   candidates.clear();
@@ -288,7 +290,7 @@ void HnswSparseAlgorithm::expand_neighbors_by_group(
 
   const auto &entity = ctx->get_entity();
   std::function<std::string(node_id_t)> group_by = [&](node_id_t id) {
-    return ctx->group_by()(entity.get_key(id));
+    return ctx->group_by()(entity.key_of_existing_node(id));
   };
 
   // devide into groups
@@ -314,7 +316,9 @@ void HnswSparseAlgorithm::expand_neighbors_by_group(
 
     std::function<bool(node_id_t)> filter = [](node_id_t) { return false; };
     if (ctx->filter().is_valid()) {
-      filter = [&](node_id_t id) { return ctx->filter()(entity.get_key(id)); };
+      filter = [&](node_id_t id) {
+        return ctx->filter()(entity.key_of_existing_node(id));
+      };
     }
 
     // refill to get enough groups

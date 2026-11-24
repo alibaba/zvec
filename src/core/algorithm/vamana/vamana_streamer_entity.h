@@ -24,6 +24,7 @@
 #include <zvec/core/framework/index_framework.h>
 #include "algorithm/hnsw/hnsw_chunk.h"
 #include "algorithm/hnsw/hnsw_entity.h"  // MmapMemoryBlock, BufferPoolMemoryBlock, NeighborsT
+#include "utility/node_key_map.h"
 #include "vamana_entity.h"
 #include "vamana_params.h"
 
@@ -46,6 +47,8 @@ class VamanaStreamerEntity : public VamanaEntity {
   int cleanup() override;
   const VamanaEntity::Pointer clone() const override;
   key_t get_key(node_id_t id) const override;
+  int read_key(node_id_t id, key_t *key) const override;
+  virtual key_t read_stored_key(node_id_t id) const;
   const void *get_vector(node_id_t id) const override;
   const void *get_extra_values(node_id_t id) const override;
   int get_vector(const node_id_t id,
@@ -88,7 +91,15 @@ class VamanaStreamerEntity : public VamanaEntity {
   }
 
   void set_use_key_info_map(bool use_id_map) {
-    use_key_info_map_ = use_id_map;
+    key_map_.set_enabled(use_id_map);
+  }
+
+  key_t key_of_existing_node(node_id_t id) const override {
+    return key_map_.enabled() ? read_stored_key(id) : id;
+  }
+
+  key_t key_of_existing_node_typed(node_id_t id) const {
+    return key_map_.enabled() ? read_stored_key(id) : id;
   }
 
  public:
@@ -134,15 +145,19 @@ class VamanaStreamerEntity : public VamanaEntity {
     get_vector_enabled_ = val;
   }
 
-  inline node_id_t get_id(key_t key) const {
-    if (use_key_info_map_) {
-      keys_map_lock_->lock_shared();
-      auto it = keys_map_->find(key);
-      node_id_t id = it == keys_map_->end() ? kInvalidNodeId : it->second;
-      keys_map_lock_->unlock_shared();
-      return id;
+  node_id_t find_node(key_t key) const {
+    if (key == kInvalidKey) return kInvalidNodeId;
+    if (key_map_.enabled()) {
+      const auto id = key_map_.find(key);
+      return id < doc_cnt() && get_key(id) == key ? id : kInvalidNodeId;
     }
-    return key;
+    if (key >= doc_cnt()) return kInvalidNodeId;
+    const auto id = static_cast<node_id_t>(key);
+    return id < doc_cnt() && get_key(id) == key ? id : kInvalidNodeId;
+  }
+
+  inline node_id_t get_id(key_t key) const {
+    return find_node(key);
   }
 
   // --- Typed access methods for hot-path optimization ---
@@ -184,9 +199,7 @@ class VamanaStreamerEntity : public VamanaEntity {
   //! Clone constructor, used by clone method in subclasses
   VamanaStreamerEntity(IndexStreamer::Stats &stats, const VamanaHeader &hd,
                        size_t chunk_size, uint32_t node_index_mask_bits,
-                       bool get_vector_enabled, bool use_key_info_map,
-                       std::shared_ptr<ailego::SharedMutex> &keys_map_lock,
-                       const HashMapPointer<key_t, node_id_t> &keys_map,
+                       bool get_vector_enabled, const NodeKeyMap &key_map,
                        std::vector<Chunk::Pointer> &&node_chunks,
                        const ChunkBroker::Pointer &broker)
       : stats_(stats),
@@ -195,9 +208,7 @@ class VamanaStreamerEntity : public VamanaEntity {
         node_cnt_per_chunk_(1UL << node_index_mask_bits_),
         node_index_mask_(node_cnt_per_chunk_ - 1),
         get_vector_enabled_(get_vector_enabled),
-        use_key_info_map_(use_key_info_map),
-        keys_map_lock_(keys_map_lock),
-        keys_map_(keys_map),
+        key_map_(key_map),
         broker_(broker),
         node_chunks_(std::move(node_chunks)) {
     *mutable_header() = hd;
@@ -328,10 +339,8 @@ class VamanaStreamerEntity : public VamanaEntity {
   uint32_t node_index_mask_{0U};
   uint32_t neighbor_size_{0U};
   bool get_vector_enabled_{false};
-  bool use_key_info_map_{true};
 
-  mutable std::shared_ptr<ailego::SharedMutex> keys_map_lock_;
-  HashMapPointer<key_t, node_id_t> keys_map_;
+  NodeKeyMap key_map_;
 
   ChunkBroker::Pointer broker_;
 
@@ -429,7 +438,6 @@ inline int VamanaStreamerEntity::get_vector_typed<BufferPoolMemoryBlock>(
 template <>
 inline key_t VamanaStreamerEntity::get_key_typed<MmapMemoryBlock>(
     node_id_t id) const {
-  if (!use_key_info_map_) return id;
   auto loc = get_key_chunk_loc(id);
   ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
   IndexStorage::MemoryBlock ptr;
@@ -444,7 +452,6 @@ inline key_t VamanaStreamerEntity::get_key_typed<MmapMemoryBlock>(
 template <>
 inline key_t VamanaStreamerEntity::get_key_typed<BufferPoolMemoryBlock>(
     node_id_t id) const {
-  if (!use_key_info_map_) return id;
   auto loc = get_key_chunk_loc(id);
   ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
   IndexStorage::MemoryBlock key_block;
@@ -499,7 +506,6 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
   }
 
   ailego_force_inline key_t get_key_typed(node_id_t id) const {
-    if (!use_key_info_map_) return id;
     uint32_t chunk_idx = id >> node_index_mask_bits_;
     uint32_t offset = (id & node_index_mask_) * node_size() + vector_size();
     const char *base = get_node_chunk_base(chunk_idx);
@@ -644,11 +650,13 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
     return VamanaMmapStreamerEntity::add_vector_with_id(id, vec);
   }
 
-  key_t get_key(node_id_t id) const override {
+  int read_key(node_id_t id, key_t *key) const override {
+    *key = kInvalidKey;
     if (ailego_likely(graph_base_ != nullptr && id < graph_capacity_)) {
-      return use_key_info_map_ ? packed_key(id) : id;
+      *key = packed_key(id);
+      return 0;
     }
-    return VamanaMmapStreamerEntity::get_key(id);
+    return VamanaMmapStreamerEntity::read_key(id, key);
   }
 
   const Neighbors get_neighbors(node_id_t id) const override {
@@ -689,7 +697,7 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
 
   ailego_force_inline key_t get_key_typed(node_id_t id) const {
     if (ailego_likely(graph_base_ != nullptr && id < graph_capacity_)) {
-      return use_key_info_map_ ? packed_key(id) : id;
+      return packed_key(id);
     }
     return VamanaMmapStreamerEntity::get_key_typed(id);
   }

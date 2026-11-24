@@ -24,6 +24,7 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 #include <ailego/utility/math_helper.h>
 #include <ailego/utility/memory_helper.h>
@@ -580,8 +581,12 @@ TEST_F(FlatStreamerTest, ContiguousBuildDistinguishesKeyReadErrorsFromHoles) {
     SCOPED_TRACE(bytes);
     ASSERT_EQ(key_offset + bytes, segment->resize(key_offset + bytes));
     IndexStorage::MemoryBlock block;
-    ASSERT_EQ(0, entity.FlatStreamerEntity::get_vector_by_key(0, block));
+    ASSERT_EQ(dim * sizeof(float),
+              segment->read(0, block, dim * sizeof(float)));
     ASSERT_NE(nullptr, block.data());
+    EXPECT_EQ(IndexError_ReadData, entity.get_vector_by_position(2, block));
+    EXPECT_EQ(IndexError_ReadData,
+              entity.FlatStreamerEntity::get_vector_by_key(2, block));
     EXPECT_NE(0, entity.get_key(0, &key));
     EXPECT_EQ(kInvalidKey, entity.key(0));
     EXPECT_EQ(IndexError_ReadData, entity.build_contiguous_memory());
@@ -1466,16 +1471,23 @@ TEST_F(FlatStreamerTest, TestConcurrentAddAndSearch) {
 
 TEST_F(FlatStreamerTest, TestConcurrentSegmentGrowthAndFetch) {
   ::zvec::ailego::PoolPayloadBudget::get_instance().init(64 * 1024UL * 1024UL);
-  for (const char *storage_name : {"MMapFileStorage", "BufferStorage"}) {
+  for (const auto &[storage_name, use_id_map] :
+       {std::make_pair("MMapFileStorage", false),
+        std::make_pair("MMapFileStorage", true),
+        std::make_pair("BufferStorage", false),
+        std::make_pair("BufferStorage", true)}) {
     SCOPED_TRACE(storage_name);
+    SCOPED_TRACE(use_id_map);
     auto storage = IndexFactory::CreateStorage(storage_name);
     ASSERT_NE(nullptr, storage);
     ASSERT_EQ(0, storage->init(Params()));
-    ASSERT_EQ(0, storage->open(dir_ + storage_name, true));
+    ASSERT_EQ(0, storage->open(dir_ + storage_name + std::to_string(use_id_map),
+                               true));
 
     IndexStreamer::Stats stats;
     FlatStreamerEntity entity(stats);
     *entity.mutable_meta() = *index_meta_ptr_;
+    entity.set_use_key_info_map(use_id_map);
     entity.set_block_vector_count(32);
     entity.set_linear_list_count(1);
     // Force repeated cache reallocations with a small dataset.
@@ -1499,9 +1511,10 @@ TEST_F(FlatStreamerTest, TestConcurrentSegmentGrowthAndFetch) {
           // Read an old segment and a newly published one during growth.
           for (uint32_t key : {0U, newest}) {
             IndexStorage::MemoryBlock block;
-            if (entity.get_vector_by_key(key, block) != 0 || !block.data()) {
-              return false;
-            }
+            const int ret = rounds % 2 == 0
+                                ? entity.get_vector_by_key(key, block)
+                                : entity.get_vector_by_position(key, block);
+            if (ret != 0 || !block.data()) return false;
             const auto *data = static_cast<const float *>(block.data());
             for (size_t d = 0; d < dim; ++d) {
               if (data[d] != static_cast<float>(key)) return false;
@@ -1525,6 +1538,9 @@ TEST_F(FlatStreamerTest, TestConcurrentSegmentGrowthAndFetch) {
     done.store(true);
     for (auto &reader : readers) EXPECT_TRUE(reader.get());
     ASSERT_EQ(count - 1, published.load());
+    // A reservation can reach the entity after its boundary slot was filled.
+    ASSERT_EQ(0, entity.add_vector_with_id(123, nullptr, dim * sizeof(float)));
+    EXPECT_EQ(count, entity.slot_count());
     ASSERT_TRUE(
         storage->has(StringHelper::Concat(FLAT_SEGMENT_FEATURES_SEG_ID, 8)));
 

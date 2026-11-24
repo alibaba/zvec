@@ -24,6 +24,7 @@
 #include "hnsw_rabitq_streamer.h"
 #include "rabitq_converter.h"
 #include "rabitq_reformer.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 using namespace std;
 using namespace zvec::ailego;
@@ -80,6 +81,9 @@ TEST_F(HnswRabitqStreamerTest, TestFirstUpperNeighbor) {
   node_id_t id = kInvalidNodeId;
   ASSERT_EQ(0, entity.add_vector(1, 0, vector.data(), &id));
   ASSERT_EQ(0U, id);
+  ASSERT_EQ(0, entity.add_vector_with_id(0, 0, nullptr));
+  EXPECT_EQ(1U, entity.slot_count());
+  EXPECT_EQ(0U, entity.get_key(0));
   ASSERT_EQ(0, entity.close());
 }
 
@@ -189,6 +193,18 @@ TEST_F(HnswRabitqStreamerTest, TestLinearSearch) {
               streamer->add_impl(it->key(), it->data(), query_meta, context));
   }
 
+  ASSERT_EQ(0, streamer->reserve_slots(doc_cnt + 1));
+  auto provider = streamer->create_provider();
+  ASSERT_NE(nullptr, provider);
+  EXPECT_EQ(doc_cnt, provider->count());
+  NumericalVector<float> extra(dim, static_cast<float>(doc_cnt));
+  ASSERT_TRUE(holder->emplace(doc_cnt, extra));
+  IndexQueryMeta extra_meta(IndexMeta::DT_FP32, dim);
+  ASSERT_EQ(0, streamer->add_with_id_impl(doc_cnt, extra.data(), extra_meta,
+                                          context));
+  EXPECT_EQ(doc_cnt + 1, provider->count());
+  EXPECT_EQ(doc_cnt + 1, provider->count());
+
   // Test linear search with exact match
   size_t topk = 3;
   IndexQueryMeta query_meta(IndexMeta::DataType::DT_FP32, dim);
@@ -204,6 +220,17 @@ TEST_F(HnswRabitqStreamerTest, TestLinearSearch) {
     auto &result1 = context->result();
     ASSERT_EQ(1UL, result1.size());
     ASSERT_EQ(i, result1[0].key());
+
+    context->set_filter([](uint64_t key) {
+      EXPECT_NE(kInvalidKey, key);
+      return false;
+    });
+    ASSERT_EQ(0,
+              streamer->search_bf_by_p_keys_impl(
+                  query_vec.data(), {{i, kInvalidKey}}, query_meta, context));
+    ASSERT_EQ(1UL, context->result().size());
+    EXPECT_EQ(i, context->result()[0].key());
+    context->reset_filter();
 
     // Test with slight offset
     for (size_t j = 0; j < dim; ++j) {
@@ -640,6 +667,77 @@ TEST_F(HnswRabitqStreamerTest, TestDimensions) {
     ASSERT_EQ(0, streamer->flush(0UL)) << "flush failed, dim=" << test_dim;
 
     std::cout << "Dimension " << test_dim << " passed" << std::endl;
+  }
+}
+
+TEST_F(HnswRabitqStreamerTest, NullSlotsPersistWithoutBuildingGraphNodes) {
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024ll * 1024ll *
+                                                         1024ll);
+  auto holder = make_shared<MultiPassIndexProvider<IndexMeta::DT_FP32>>(dim);
+  for (uint32_t id = 0; id < 64; ++id) {
+    NumericalVector<float> value(dim);
+    for (size_t d = 0; d < dim; ++d) value[d] = (id + d + 1) / 100.0f;
+    ASSERT_TRUE(holder->emplace(id, value));
+  }
+  RabitqConverter converter;
+  ASSERT_EQ(0, converter.init(*index_meta_ptr_, {}));
+  ASSERT_EQ(0, converter.train(holder));
+  IndexReformer::Pointer encoded_reformer;
+  ASSERT_EQ(0, converter.to_reformer(&encoded_reformer));
+  auto reformer = dynamic_pointer_cast<RabitqReformer>(encoded_reformer);
+  for (const char *storage_name : {"MMapFileStorage", "BufferStorage"}) {
+    for (bool mapped : {false, true}) {
+      SCOPED_TRACE(storage_name);
+      SCOPED_TRACE(mapped);
+      ailego::Params params;
+      params.set("proxima.hnsw_rabitq.general.dimension", dim);
+      params.set("proxima.hnsw_rabitq.streamer.use_id_map", mapped);
+      auto storage = IndexFactory::CreateStorage(storage_name);
+      ASSERT_EQ(0, storage->init({}));
+      ASSERT_EQ(0, storage->open(
+                       dir_ + "/nulls_" + storage_name + std::to_string(mapped),
+                       true));
+      IndexStreamer::Pointer streamer =
+          make_shared<HnswRabitqStreamer>(holder, reformer);
+      ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
+      ASSERT_EQ(0, streamer->open(storage));
+      ASSERT_EQ(0, streamer->reserve_slots(8194));
+      EXPECT_EQ(8194U, streamer->create_provider()->slot_count());
+      EXPECT_EQ(0U, streamer->create_provider()->count());
+      ASSERT_EQ(0, streamer->flush(0));
+      ASSERT_EQ(0, storage->flush());
+      ASSERT_EQ(0, streamer->close());
+      streamer = make_shared<HnswRabitqStreamer>(holder);
+      ASSERT_EQ(0, streamer->init(*index_meta_ptr_, params));
+      ASSERT_EQ(0, streamer->open(storage));
+      auto provider = streamer->create_provider();
+      auto slots = provider->create_slot_iterator();
+      size_t count = 0;
+      for (; slots->is_valid(); slots->next(), ++count)
+        EXPECT_EQ(UINT64_MAX, slots->key());
+      EXPECT_EQ(8194U, count);
+      slots.reset();
+      provider.reset();
+      auto context = streamer->create_context();
+      context->set_topk(1);
+      IndexQueryMeta meta(IndexMeta::DT_FP32, dim);
+      ASSERT_EQ(0,
+                streamer->search_impl(holder->get_vector(2), meta, 1, context));
+      EXPECT_TRUE(context->result(0).empty());
+      ASSERT_EQ(0, streamer->add_with_id_impl(2, holder->get_vector(2), meta,
+                                              context));
+      EXPECT_EQ(8194U, streamer->create_provider()->slot_count());
+      EXPECT_EQ(1U, streamer->create_provider()->count());
+      ASSERT_EQ(0,
+                streamer->search_impl(holder->get_vector(2), meta, 1, context));
+      ASSERT_EQ(1U, context->result(0).size());
+      EXPECT_EQ(2U, context->result(0)[0].key());
+      context.reset();
+      ASSERT_EQ(0, streamer->flush(0));
+      ASSERT_EQ(0, streamer->close());
+      streamer.reset();
+      ASSERT_EQ(0, storage->close());
+    }
   }
 }
 

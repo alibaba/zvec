@@ -1331,6 +1331,8 @@ int FlatSearcherContext<BATCH_SIZE>::search_bf_by_p_keys_impl(
       this->group_topk_heaps().clear();
       for (size_t idx = 0; idx < p_keys[q].size(); ++idx) {
         uint64_t pk = p_keys[q][idx];
+        const node_id_t id = owner_->get_id(pk);
+        if (pk == kInvalidKey || id == kInvalidNodeId) continue;
         if (!this->filter().is_valid() || !this->filter()(pk)) {
           dist_t dist = 0;
           if (quantizer_) {
@@ -1346,7 +1348,7 @@ int FlatSearcherContext<BATCH_SIZE>::search_bf_by_p_keys_impl(
           if (topk_heap.empty()) {
             topk_heap.limit(this->group_topk());
           }
-          topk_heap.emplace(owner_->get_id(pk), dist);
+          topk_heap.emplace(id, dist);
         }
       }
       int ret = this->topk_to_group_result(q);
@@ -1363,6 +1365,8 @@ int FlatSearcherContext<BATCH_SIZE>::search_bf_by_p_keys_impl(
     for (size_t q = 0; q < count; ++q) {
       for (size_t idx = 0; idx < p_keys[q].size(); ++idx) {
         uint64_t pk = p_keys[q][idx];
+        const node_id_t id = owner_->get_id(pk);
+        if (pk == kInvalidKey || id == kInvalidNodeId) continue;
         if (!this->filter().is_valid() || !this->filter()(pk)) {
           dist_t dist = 0;
           if (quantizer_) {
@@ -1372,7 +1376,7 @@ int FlatSearcherContext<BATCH_SIZE>::search_bf_by_p_keys_impl(
             owner_->distance_matrix().template distance<1>(
                 query, provider->get_vector(pk), provider->dimension(), &dist);
           }
-          result_heaps_[q].emplace(pk, dist, owner_->get_id(pk));
+          result_heaps_[q].emplace(pk, dist, id);
         }
       }
       query = static_cast<const char *>(query) + qmeta.element_size();

@@ -312,7 +312,11 @@ int DiskAnnSearcherEntity::load_key_mapping_segment() {
     return IndexError_InvalidFormat;
   }
 
-  size_t key_mapping_data_len = doc_cnt() * sizeof(diskann_id_t);
+  size_t key_mapping_data_len = key_mapping_segment_->data_size();
+  if (key_mapping_data_len < doc_cnt() * sizeof(diskann_id_t) ||
+      key_mapping_data_len % sizeof(diskann_id_t) != 0 ||
+      key_mapping_data_len / sizeof(diskann_id_t) > UINT32_MAX)
+    return IndexError_InvalidFormat;
 
   IndexStorage::MemoryBlock data;
   if (key_mapping_segment_->read(0, data, key_mapping_data_len) !=
@@ -331,11 +335,24 @@ int DiskAnnSearcherEntity::load_key_mapping_segment() {
     return IndexError_NoMemory;
   }
 
+  if (slot_count() > doc_cnt()) {
+    size_t values = 0;
+    for (size_t slot = 0; slot < slot_count(); ++slot) {
+      diskann_id_t id;
+      memcpy(&id, key_mapping_buffer_->data() + slot * sizeof(id), sizeof(id));
+      if (id == kInvalidId) continue;
+      if (id >= doc_cnt() || get_key(id) != slot)
+        return IndexError_InvalidFormat;
+      ++values;
+    }
+    if (values != doc_cnt()) return IndexError_InvalidFormat;
+  }
   return 0;
 }
 
 //! Get vector local id by key
 diskann_id_t DiskAnnSearcherEntity::get_id(diskann_key_t key) const {
+  if (slot_count() > doc_cnt()) return slot_to_id(key);
   const diskann_id_t *key_mapping_data_ptr =
       reinterpret_cast<const diskann_id_t *>(key_mapping_buffer_->data());
 

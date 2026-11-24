@@ -263,6 +263,8 @@ void CheckStreamer() {
       ASSERT_EQ(0, streamer->close());
       ASSERT_EQ(0, streamer->open(storage));
       context = streamer->create_context();
+      EXPECT_EQ(kCount, flat->entity().slot_count());
+      EXPECT_EQ(kCount - 3, streamer->create_provider()->count());
       auto *flat_context =
           dynamic_cast<FlatStreamerContext<32> *>(context.get());
       ASSERT_NE(nullptr, flat_context);
@@ -302,12 +304,12 @@ void CheckStreamer() {
           for (size_t q = 0; q < kQueryCount; ++q) {
             Check(context->result(q), data, data.data() + q * kDimension, topk,
                   40.0f, excluded, true);
-            // Contiguous reconstruction omits the two deleted rows entirely.
+            // Contiguous reconstruction preserves empty and deleted slots.
             // The retained legacy K>=N unfiltered path computes clean blocks
             // before discarding invalid keys; preserve that existing counter.
             const bool legacy_invalid =
                 !contiguous && topk >= kCount && mode == 0;
-            EXPECT_EQ(excluded.size() - (contiguous ? 2 : 0) - legacy_invalid,
+            EXPECT_EQ(excluded.size() - legacy_invalid,
                       flat_context->mutable_stats(q)->filtered_count());
             EXPECT_EQ(kCount - excluded.size() + legacy_invalid,
                       flat_context->mutable_stats(q)->dist_calced_count());

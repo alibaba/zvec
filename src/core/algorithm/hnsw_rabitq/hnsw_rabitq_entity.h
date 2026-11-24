@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <atomic>
 #include <string>
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/container/heap.h>
@@ -272,6 +273,11 @@ class HnswRabitqEntity {
     return header_.graph.doc_count;
   }
 
+  //! Physical addressable slots, including NULL gaps (gap-in-place layout).
+  size_t slot_count() const {
+    return doc_cnt();
+  }
+
   //! Get hnsw graph scaling params
   inline size_t scaling_factor() const {
     return header_.hnsw.scaling_factor;
@@ -448,6 +454,31 @@ class HnswRabitqEntity {
   //! Get primary key of the node id
   virtual key_t get_key(node_id_t id) const = 0;
 
+  // Unlike get_key(), a failed read must not be mistaken for an empty slot.
+  virtual int read_key(node_id_t id, key_t *key) const {
+    *key = kInvalidKey;
+    if (id >= doc_cnt()) return IndexError_OutOfRange;
+    *key = get_key(id);
+    return 0;
+  }
+
+
+  // In-memory revision shared with clones; independent of optional key mapping.
+  uint64_t key_revision() const {
+    return key_revision_->load(std::memory_order_acquire);
+  }
+
+  // Existence is independent of external-key mapping.
+  bool contains_node(node_id_t id) const {
+    return id < doc_cnt() && get_key(id) != kInvalidKey;
+  }
+
+  // Graph traversal may use this after establishing that the node exists.
+  virtual key_t key_of_existing_node(node_id_t id) const {
+    return get_key(id);
+  }
+
+
   //! Get vector feature data by key
   virtual const void *get_vector(node_id_t id) const = 0;
 
@@ -607,6 +638,8 @@ class HnswRabitqEntity {
 
  protected:
   HNSWHeader header_{};
+  std::shared_ptr<std::atomic<uint64_t>> key_revision_{
+      std::make_shared<std::atomic<uint64_t>>(0)};
 };
 
 }  // namespace core

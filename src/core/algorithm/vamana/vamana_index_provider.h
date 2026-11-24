@@ -16,6 +16,8 @@
 #include <zvec/core/framework/index_provider.h>
 #include <zvec/core/framework/index_searcher.h>
 #include <zvec/core/framework/index_streamer.h>
+#include "utility/entity_vector_iterator.h"
+#include "utility/live_vector_count.h"
 #include "vamana_entity.h"
 
 namespace zvec {
@@ -37,8 +39,16 @@ class VamanaIndexProvider : public IndexProvider {
                                                       Iterator(entity_));
   }
 
+  IndexProvider::Iterator::Pointer create_slot_iterator() override {
+    return std::make_unique<Iterator>(entity_, true);
+  }
+
   size_t count() const override {
-    return entity_->doc_cnt();
+    return vector_count_.get(*entity_);
+  }
+
+  size_t slot_count() const override {
+    return entity_->slot_count();
   }
 
   size_t dimension() const override {
@@ -67,49 +77,9 @@ class VamanaIndexProvider : public IndexProvider {
   }
 
  private:
-  class Iterator : public IndexProvider::Iterator {
-   public:
-    Iterator(const VamanaEntity::Pointer &entity)
-        : entity_(entity), cur_id_(0U) {
-      cur_id_ = get_next_valid_id(0);
-    }
+  using Iterator = EntityVectorIterator<VamanaEntity>;
 
-    const void *data() const override {
-      return entity_->get_vector(cur_id_, block_) == 0 ? block_.data()
-                                                       : nullptr;
-    }
-
-    bool is_valid() const override {
-      return cur_id_ < entity_->doc_cnt();
-    }
-
-    uint64_t key() const override {
-      return entity_->get_key(cur_id_);
-    }
-
-    void next() override {
-      cur_id_ = get_next_valid_id(cur_id_ + 1);
-    }
-
-    void reset() {
-      cur_id_ = get_next_valid_id(0);
-    }
-
-   private:
-    node_id_t get_next_valid_id(node_id_t start_id) {
-      for (node_id_t i = start_id; i < entity_->doc_cnt(); i++) {
-        if (entity_->get_key(i) != kInvalidNodeId) {
-          return i;
-        }
-      }
-      return kInvalidNodeId;
-    }
-
-    const VamanaEntity::Pointer entity_;
-    node_id_t cur_id_;
-    mutable IndexStorage::MemoryBlock block_;
-  };
-
+  mutable LiveVectorCount vector_count_;
   const IndexMeta &meta_;
   const VamanaEntity::Pointer entity_;
   const std::string owner_class_;

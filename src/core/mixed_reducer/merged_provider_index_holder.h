@@ -61,12 +61,14 @@ class MergedProviderIndexHolder final : public IndexHolder,
   };
 
   MergedProviderIndexHolder(IndexQueryMeta output_meta,
-                            std::vector<Source> sources);
+                            std::vector<Source> sources,
+                            uint32_t output_base = 0);
 
   //! Scan source keys once, cache the filter decisions and calculate count.
   int init(const IndexFilter &filter, std::atomic<bool> *stop_flag = nullptr);
 
   size_t count() const override;
+  bool keep(size_t source_index, size_t ordinal) const;
   size_t dimension() const override;
   IndexMeta::DataType data_type() const override;
   size_t element_size() const override;
@@ -88,13 +90,13 @@ class MergedProviderIndexHolder final : public IndexHolder,
   class OrdinalReader;
 
   IndexProvider::Pointer acquire_provider(size_t source_index,
-                                          bool validate_planned_count);
-  bool keep(size_t source_index, size_t ordinal) const;
+                                          bool validate_planned_slots);
   bool canceled() const;
   void set_status(int status);
 
   IndexQueryMeta output_meta_{};
   std::vector<Source> sources_{};
+  uint32_t output_base_{0};
   size_t count_{0};
   size_t filtered_count_{0};
   bool has_filter_{false};

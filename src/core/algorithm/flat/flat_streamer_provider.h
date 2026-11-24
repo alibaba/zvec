@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include "utility/live_vector_count.h"
 #include "utility/stable_vector_holder.h"
 #include "flat_distance_matrix.h"
 #include "flat_searcher.h"
@@ -32,7 +33,6 @@ class FlatStreamerProvider : public IndexProvider, public StableVectorHolder {
   //! Constructor
   FlatStreamerProvider(const FlatStreamer<BATCH_SIZE> *owner) {
     feature_size_ = owner->meta().element_size();
-    total_vector_count_ = owner->entity().vector_count();
     owner_ = owner;
     block_buffer_.resize(BATCH_SIZE * feature_size_);
   }
@@ -42,13 +42,21 @@ class FlatStreamerProvider : public IndexProvider, public StableVectorHolder {
     return owner_->entity().creater_iterator();
   }
 
+  IndexProvider::Iterator::Pointer create_slot_iterator() override {
+    return owner_->entity().creater_iterator(true);
+  }
+
   int retain_stable_data(std::shared_ptr<const void> *lifetime) override {
     return owner_->entity().retain_stable_data(lifetime);
   }
 
   //! Retrieve count of vectors
   size_t count() const override {
-    return total_vector_count_;
+    return vector_count_.get(owner_->entity());
+  }
+
+  size_t slot_count() const override {
+    return owner_->entity().slot_count();
   }
 
   //! Retrieve dimension of vector
@@ -103,7 +111,7 @@ class FlatStreamerProvider : public IndexProvider, public StableVectorHolder {
   const FlatStreamer<BATCH_SIZE> *owner_{nullptr};
   IndexStorage::Segment::Pointer features_segment_{};
   uint32_t feature_size_{0};
-  uint32_t total_vector_count_{0};
+  mutable LiveVectorCount vector_count_;
   mutable std::vector<uint8_t> block_buffer_{};
 };
 
