@@ -46,6 +46,7 @@
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_format.h>
 #include <zvec/core/framework/index_version.h>
+#include "algorithm/hnsw/hnsw_chunk.h"
 #include "utility/utility_params.h"
 #include "../../../ailego/buffer/pool_payload_budget.h"
 
@@ -55,7 +56,7 @@ thread_local size_t fail_aligned_size = 0;
 thread_local bool fault_hit = false;
 #if (defined(__linux__) && !defined(__ANDROID__)) || \
     (defined(__APPLE__) && TARGET_OS_OSX)
-thread_local bool fail_next_scalar_allocation = false;
+thread_local bool fail_next_allocation = false;
 #endif
 
 void InjectAllocationFailure(size_t bytes, size_t &target) {
@@ -92,8 +93,8 @@ void operator delete[](void *ptr, size_t) noexcept {
 #if (defined(__linux__) && !defined(__ANDROID__)) || \
     (defined(__APPLE__) && TARGET_OS_OSX)
 void *operator new(size_t bytes) {
-  if (fail_next_scalar_allocation) {
-    fail_next_scalar_allocation = false;
+  if (fail_next_allocation) {
+    fail_next_allocation = false;
     fault_hit = true;
     throw std::bad_alloc();
   }
@@ -109,6 +110,14 @@ void operator delete(void *ptr, size_t) noexcept {
 #endif
 
 void *operator new(size_t bytes, std::align_val_t alignment) {
+#if (defined(__linux__) && !defined(__ANDROID__)) || \
+    (defined(__APPLE__) && TARGET_OS_OSX)
+  if (fail_next_allocation) {
+    fail_next_allocation = false;
+    fault_hit = true;
+    throw std::bad_alloc();
+  }
+#endif
   InjectAllocationFailure(bytes, fail_aligned_size);
   if (void *ptr = ailego_aligned_malloc(std::max(size_t{1}, bytes),
                                         static_cast<size_t>(alignment))) {
@@ -1384,12 +1393,17 @@ TEST_F(BufferStorageDirectorySplitTest, RollbackBookkeepingDoesNotAllocate) {
   Directory root{};
   ASSERT_TRUE(ReadDirectory(path_, &root));
   const std::string name = "new_split";
-  fail_array_size = sizeof(size_t);
+  const zvec::ailego::BudgetedAllocator<size_t> allocator;
+  const size_t max_slots = std::numeric_limits<size_t>::max() / sizeof(size_t);
+  const size_t allocator_overhead = (max_slots - allocator.max_size()) * sizeof(size_t);
+  fault_hit = false;
+  fail_aligned_size = sizeof(size_t) + allocator_overhead;
   repeated_fail_offset = static_cast<off_t>(root.footer_offset);
   repeated_fail_remaining = 2;
   ASSERT_EQ(IndexError_WriteData, writer_->append(name, page_size_));
   repeated_fail_offset = -1;
-  fail_array_size = 0;
+  fail_aligned_size = 0;
+  EXPECT_FALSE(fault_hit);
   ASSERT_EQ(0, writer_->flush());
   ASSERT_EQ(0, writer_->close());
 }
@@ -1476,11 +1490,12 @@ TEST_F(BufferStorageDirectorySplitTest,
 TEST_F(BufferStorageDirectorySplitTest,
        AppendAllocationFailureLeavesNoPendingSegment) {
   const std::string name = "pending_segment";
-  // Fail the rollback reserve's scalar allocation: the pending entry must
-  // still be rolled back, not left visible in the directory map.
-  fail_next_scalar_allocation = true;
+  // Fail allocation of the rollback reserve before publishing the segment.
+  fault_hit = false;
+  fail_next_allocation = true;
   EXPECT_EQ(IndexError_NoMemory, writer_->append(name, page_size_));
-  fail_next_scalar_allocation = false;
+  fail_next_allocation = false;
+  EXPECT_TRUE(fault_hit);
   EXPECT_FALSE(writer_->has(name));
   EXPECT_EQ(nullptr, writer_->get(name));
   // The same name can be appended again (no Duplicate, no dangling meta).
@@ -1501,12 +1516,72 @@ TEST_F(BufferStorageDirectorySplitTest,
   ASSERT_NO_FATAL_FAILURE(fill_first_chain());
   const std::string name = "retry_map_allocation";
   fault_hit = false;
-  fail_next_scalar_allocation = true;
+  fail_next_allocation = true;
   const int status = writer_->append(name, page_size_);
-  fail_next_scalar_allocation = false;
+  fail_next_allocation = false;
   EXPECT_TRUE(fault_hit);
   ASSERT_EQ(IndexError_NoMemory, status);
   ASSERT_NO_FATAL_FAILURE(verify_retry(name));
+}
+
+TEST_F(BufferStorageDirectorySplitTest, HnswBrokerCanRetryChunkAllocation) {
+  IndexStreamer::Stats stats;
+  ChunkBroker broker(stats);
+  uint32_t chunk_size = page_size_;
+  ASSERT_EQ(0, broker.open(writer_, chunk_size, false));
+  broker.set_max_chunks_size(16 * page_size_);
+  ASSERT_NO_FATAL_FAILURE(fill_first_chain());
+
+  constexpr int kType = ChunkBroker::CHUNK_TYPE_NODE;
+  const auto name = ChunkBroker::make_segment_id(kType, 0);
+  {
+    ScopedSplitAllocationFailure fault(page_size_);
+    auto [status, chunk] = broker.alloc_chunk(kType, 0);
+    ASSERT_EQ(IndexError_NoMemory, status);
+    ASSERT_EQ(nullptr, chunk);
+    ASSERT_TRUE(fault_hit);
+  }
+  ASSERT_EQ(0u, broker.get_chunk_cnt(kType));
+  EXPECT_FALSE(writer_->has(name));
+  ASSERT_NO_FATAL_FAILURE(verify_segment(*writer_, old_name_, kOldData));
+
+  auto [status, chunk] = broker.alloc_chunk(kType, 0);
+  ASSERT_EQ(0, status);
+  ASSERT_NE(nullptr, chunk);
+  ASSERT_EQ(1u, broker.get_chunk_cnt(kType));
+  chunk.reset();
+  ASSERT_EQ(0, broker.close());
+}
+
+TEST_F(BufferStorageDirectorySplitTest, HnswBrokerReopensChunkAfterFlush) {
+  IndexStreamer::Stats stats;
+  ChunkBroker broker(stats);
+  uint32_t chunk_size = page_size_;
+  ASSERT_EQ(0, broker.open(writer_, chunk_size, false));
+  broker.set_max_chunks_size(16 * page_size_);
+  ASSERT_NO_FATAL_FAILURE(fill_directory());
+  ASSERT_NO_FATAL_FAILURE(write_old_segment());
+
+  constexpr int kType = ChunkBroker::CHUNK_TYPE_NODE;
+  auto [status, chunk] = broker.alloc_chunk(kType, 0);
+  ASSERT_EQ(0, status);
+  ASSERT_NE(nullptr, chunk);
+  ASSERT_EQ(kOldData.size(), chunk->write(0, kOldData.data(), kOldData.size()));
+  chunk.reset();
+  ASSERT_EQ(0, writer_->flush());
+  ASSERT_EQ(0, broker.close());
+  ASSERT_EQ(0, writer_->close());
+
+  ASSERT_EQ(0, writer_->open(path_, IndexStorage::OpenOptions{false, false}));
+  ASSERT_EQ(0, broker.open(writer_, chunk_size, false));
+  ASSERT_EQ(1u, broker.get_chunk_cnt(kType));
+  auto reopened = broker.get_chunk(kType, 0);
+  ASSERT_NE(nullptr, reopened);
+  std::array<char, kOldData.size()> data{};
+  ASSERT_EQ(data.size(), reopened->fetch(0, data.data(), data.size()));
+  EXPECT_EQ(kOldData, data);
+  reopened.reset();
+  ASSERT_EQ(0, broker.close());
 }
 
 #endif

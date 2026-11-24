@@ -28,6 +28,17 @@ class ZVEC_AILEGO_API File {
   //! Native Handle in OS
   typedef FileHelper::NativeHandle NativeHandle;
 
+  struct Identity {
+    uint64_t volume{0};
+    uint64_t file{0};
+    bool valid{false};
+
+    bool operator==(const Identity &other) const {
+      return valid && other.valid && volume == other.volume &&
+             file == other.file;
+    }
+  };
+
   //! Invalid Handle
   static constexpr NativeHandle InvalidHandle = (NativeHandle)(-1);
 
@@ -84,8 +95,19 @@ class ZVEC_AILEGO_API File {
     return native_handle_;
   }
 
+  Identity identity() const {
+    return Identify(native_handle_);
+  }
+
+  static Identity Identify(NativeHandle handle);
+  static Identity IdentifyPath(const std::string &path);
+  static bool DeleteIfSame(const std::string &path, const Identity &identity);
+
   //! Create a local file
   bool create(const char *path, size_t size, bool direct);
+
+  //! Create an empty file only when the path is unused.
+  bool create_exclusive(const char *path);
 
   //! Open a local file
   bool open(const char *path, bool rdonly, bool direct);

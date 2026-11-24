@@ -19,6 +19,9 @@ namespace zvec::ailego {
 class BudgetedMappedBuffer {
  public:
   BudgetedMappedBuffer() = default;
+  explicit BudgetedMappedBuffer(size_t bytes) {
+    resize_or_throw(bytes);
+  }
   BudgetedMappedBuffer(const BudgetedMappedBuffer &) = delete;
   BudgetedMappedBuffer &operator=(const BudgetedMappedBuffer &) = delete;
   BudgetedMappedBuffer(BudgetedMappedBuffer &&rhs) noexcept {
@@ -50,6 +53,10 @@ class BudgetedMappedBuffer {
   // Return 0 on success, -1 on invalid size or allocation/admission failure.
   [[nodiscard]] int resize(size_t bytes) {
     return resize_impl(bytes, true);
+  }
+
+  void resize_or_throw(size_t bytes) {
+    if (resize(bytes) != 0) throw std::bad_alloc();
   }
 
   // Optional read-ahead must neither wait for nor evict mandatory consumers.
