@@ -86,9 +86,9 @@ Result<PreparedTokenizerPipeline> TokenizerFactory::prepare(
   if (jieba && !jieba->is_valid()) {
     return std::async(std::launch::deferred,
                       [jieba, pipeline]() -> Result<TokenizerPipelinePtr> {
-                        auto status = jieba->load_resources({}, {});
-                        if (!status.ok()) {
-                          return tl::make_unexpected(std::move(status));
+                        auto load_status = jieba->load_resources({}, {});
+                        if (!load_status.ok()) {
+                          return tl::make_unexpected(std::move(load_status));
                         }
                         return pipeline;
                       })
