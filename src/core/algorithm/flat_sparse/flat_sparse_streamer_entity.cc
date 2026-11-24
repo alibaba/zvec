@@ -17,6 +17,7 @@
 #include <memory>
 #include <numeric>
 #include <utility>
+#include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/logger/logger.h>
@@ -539,6 +540,7 @@ FlatSparseStreamerEntity::Pointer FlatSparseStreamerEntity::clone() const {
   auto entity = new (std::nothrow)
       FlatSparseStreamerEntity(stats_, meta_, streamer_meta_, key_map_,
                                sparse_data_chunks_, sparse_offset_chunks_);
+  if (entity) entity->key_revision_ = key_revision_;
   return FlatSparseStreamerEntity::Pointer(entity);
 }
 
@@ -558,6 +560,8 @@ int FlatSparseStreamerEntity::add(uint64_t key,
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+  AILEGO_DEFER(
+      [&]() { key_revision_->fetch_add(1, std::memory_order_release); });
   node_id_t local_id = doc_cnt();
 
   if (ailego_unlikely(local_id >= max_doc_cnt_)) {
@@ -718,6 +722,8 @@ int FlatSparseStreamerEntity::add_vector_with_id(
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+  AILEGO_DEFER(
+      [&]() { key_revision_->fetch_add(1, std::memory_order_release); });
 
   // NULL reservations must not change slots filled by another writer.
   if (is_null && id < doc_cnt()) return 0;

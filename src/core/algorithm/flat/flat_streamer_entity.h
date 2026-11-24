@@ -235,6 +235,11 @@ class FlatStreamerEntity {
     quantizer_ = quantizer;
   }
 
+  // In-memory revision shared with clones; independent of optional key mapping.
+  uint64_t key_revision() const {
+    return key_revision_->load(std::memory_order_acquire);
+  }
+
   bool contains_node(uint32_t id) const {
     return key(id) != kInvalidKey;
   }
@@ -590,6 +595,8 @@ class FlatStreamerEntity {
   std::vector<VectorLocation> withid_key_info_map_{};
   std::vector<uint32_t> withid_key_map_{};
   std::vector<uint64_t> id_key_vector_{};
+  std::shared_ptr<std::atomic<uint64_t>> key_revision_{
+      std::make_shared<std::atomic<uint64_t>>(0)};
   bool filter_same_key_{false};
   // Linear metadata only needs rewriting after creation or vector writes.
   bool meta_dirty_{false};

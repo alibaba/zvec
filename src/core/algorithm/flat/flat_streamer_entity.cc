@@ -14,6 +14,7 @@
 
 #include "flat_streamer_entity.h"
 #include <cstdint>
+#include <ailego/pattern/defer.h>
 #include <zvec/core/framework/index_error.h>
 #include "utility/legacy_read_buffer.h"
 #include "flat_utility.h"
@@ -318,6 +319,8 @@ int FlatStreamerEntity::flush(uint64_t checkpoint) {
 
 int FlatStreamerEntity::add(uint64_t key, const void *vec, size_t size) {
   std::lock_guard<std::mutex> lock(mutex_);
+  AILEGO_DEFER(
+      [&]() { key_revision_->fetch_add(1, std::memory_order_release); });
   if (filter_same_key_) {
     key_info_map_lock_->lock_shared();
     if (key_info_map_.find(key) != key_info_map_.end()) {
@@ -693,6 +696,7 @@ FlatStreamerEntity::Pointer FlatStreamerEntity::clone() const {
   entity->filter_same_key_ = this->filter_same_key_;
   entity->vec_unit_size_ = this->vec_unit_size_;
   entity->vec_cols_ = this->vec_cols_;
+  if (entity) entity->key_revision_ = key_revision_;
   return FlatStreamerEntity::Pointer(entity);
 }
 
@@ -1608,6 +1612,8 @@ int FlatStreamerEntity::add_vector_with_id(const uint32_t id, const void *query,
     return ret == IndexError_Duplicate ? 0 : ret;
   }
   std::lock_guard<std::mutex> lock(mutex_);
+  AILEGO_DEFER(
+      [&]() { key_revision_->fetch_add(1, std::memory_order_release); });
   // if (filter_same_key_) {
   //   key_info_map_lock_->lock_shared();
   //   if (key_info_map_.find(id) != key_info_map_.end()) {

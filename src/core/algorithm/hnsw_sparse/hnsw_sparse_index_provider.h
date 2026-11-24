@@ -13,8 +13,8 @@
 // limitations under the License.
 #pragma once
 
-#include <mutex>
 #include <zvec/core/framework/index_provider.h>
+#include "utility/live_vector_count.h"
 #include "utility/sparse_utility.h"
 #include "hnsw_sparse_entity.h"
 
@@ -44,11 +44,7 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
   }
 
   size_t count() const override {
-    std::call_once(count_once_, [&] {
-      for (uint32_t id = 0; id < entity_->slot_count(); ++id)
-        if (entity_->contains_node(id)) ++vector_count_;
-    });
-    return vector_count_;
+    return vector_count_.get(*entity_);
   }
 
   size_t slot_count() const override {
@@ -155,8 +151,7 @@ class HnswSparseIndexProvider : public IndexSparseProvider {
   };
 
  private:
-  mutable std::once_flag count_once_;
-  mutable size_t vector_count_{0};
+  mutable LiveVectorCount vector_count_;
   const IndexMeta &meta_;
   const HnswSparseEntity::Pointer entity_;
   const std::string owner_class_;

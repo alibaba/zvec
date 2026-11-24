@@ -159,6 +159,30 @@ class NodePresenceTest : public testing::TestWithParam<Mode> {
   Index::Pointer index_;
 };
 
+TEST_P(NodePresenceTest, ProviderCountTracksFilledGaps) {
+  open(true);
+  insert(2);
+  auto provider = index_->create_index_provider();
+  ASSERT_NE(nullptr, provider);
+  EXPECT_EQ(1U, provider->count());
+  for (uint32_t id : {1U, 0U}) {
+    insert(id);
+    EXPECT_EQ(3U - id, provider->count());
+    EXPECT_EQ(3U, provider->slot_count());
+    EXPECT_EQ(3U - id, provider->count());
+  }
+  insert(5);
+  size_t iterated = 0;
+  auto iter = provider->create_iterator();
+  for (; iter->is_valid(); iter->next()) ++iterated;
+  EXPECT_EQ(0, iter->status());
+  EXPECT_EQ(iterated, provider->count());
+  EXPECT_EQ(iterated, provider->count());
+  iter.reset();
+  provider.reset();
+  ASSERT_EQ(0, index_->close());
+}
+
 TEST_P(NodePresenceTest, GapsAreAbsentWithEitherKeyMappingMode) {
   open(true);
   insert(2);
@@ -550,6 +574,32 @@ class SparseNodePresenceTest
   std::string path_ = "test_sparse_node_presence";
   Index::Pointer index_;
 };
+
+TEST_P(SparseNodePresenceTest, ProviderCountTracksFilledGaps) {
+  open(true);
+  uint32_t dimension = 17;
+  float value = 1;
+  ASSERT_EQ(0, index_->add({SparseVector{1, &dimension, &value}}, 2));
+  auto provider = index_->index_searcher()->create_sparse_provider();
+  ASSERT_NE(nullptr, provider);
+  EXPECT_EQ(1U, provider->count());
+  ASSERT_EQ(0, index_->add({SparseVector{1, &dimension, &value}}, 1));
+  EXPECT_EQ(2U, provider->count());
+  // A zero-length sparse value still fills a slot.
+  ASSERT_EQ(0, index_->add({SparseVector{0, nullptr, nullptr}}, 0));
+  EXPECT_EQ(3U, provider->count());
+  EXPECT_EQ(3U, provider->count());
+  ASSERT_EQ(0, index_->add({SparseVector{1, &dimension, &value}}, 5));
+  size_t iterated = 0;
+  auto iter = provider->create_iterator();
+  for (; iter->is_valid(); iter->next()) ++iterated;
+  EXPECT_EQ(0, iter->status());
+  EXPECT_EQ(iterated, provider->count());
+  EXPECT_EQ(iterated, provider->count());
+  iter.reset();
+  provider.reset();
+  ASSERT_EQ(0, index_->close());
+}
 
 TEST_P(SparseNodePresenceTest, GapsAreAbsentWithEitherMapping) {
   open(true);

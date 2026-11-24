@@ -193,6 +193,18 @@ TEST_F(HnswRabitqStreamerTest, TestLinearSearch) {
               streamer->add_impl(it->key(), it->data(), query_meta, context));
   }
 
+  ASSERT_EQ(0, streamer->reserve_slots(doc_cnt + 1));
+  auto provider = streamer->create_provider();
+  ASSERT_NE(nullptr, provider);
+  EXPECT_EQ(doc_cnt, provider->count());
+  NumericalVector<float> extra(dim, static_cast<float>(doc_cnt));
+  ASSERT_TRUE(holder->emplace(doc_cnt, extra));
+  IndexQueryMeta extra_meta(IndexMeta::DT_FP32, dim);
+  ASSERT_EQ(0, streamer->add_with_id_impl(doc_cnt, extra.data(), extra_meta,
+                                          context));
+  EXPECT_EQ(doc_cnt + 1, provider->count());
+  EXPECT_EQ(doc_cnt + 1, provider->count());
+
   // Test linear search with exact match
   size_t topk = 3;
   IndexQueryMeta query_meta(IndexMeta::DataType::DT_FP32, dim);

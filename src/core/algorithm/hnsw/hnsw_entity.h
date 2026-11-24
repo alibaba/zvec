@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <atomic>
 #include <cstring>
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/container/heap.h>
@@ -465,6 +466,11 @@ class HnswEntity {
   }
 
 
+  // In-memory revision shared with clones; independent of optional key mapping.
+  uint64_t key_revision() const {
+    return key_revision_->load(std::memory_order_acquire);
+  }
+
   // Existence is independent of external-key mapping.
   bool contains_node(node_id_t id) const {
     return id < doc_cnt() && get_key(id) != kInvalidKey;
@@ -626,6 +632,8 @@ class HnswEntity {
 
  protected:
   HNSWHeader header_{};
+  std::shared_ptr<std::atomic<uint64_t>> key_revision_{
+      std::make_shared<std::atomic<uint64_t>>(0)};
 };
 
 }  // namespace core

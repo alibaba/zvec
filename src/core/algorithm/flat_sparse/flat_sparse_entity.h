@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <unordered_map>
 #include <zvec/core/framework/index_framework.h>
 #include "flat_sparse_index_format.h"
@@ -234,6 +235,11 @@ class FlatSparseEntity {
   }
 
 
+  // In-memory revision shared with clones; independent of optional key mapping.
+  uint64_t key_revision() const {
+    return key_revision_->load(std::memory_order_acquire);
+  }
+
   bool contains_node(node_id_t id) const {
     return id < doc_cnt() && get_key(id) != kInvalidKey;
   }
@@ -254,6 +260,10 @@ class FlatSparseEntity {
   virtual float get_search_distance(const std::string &vector,
                                     node_id_t target_node_id) const = 0;
   virtual size_t sparse_unit_size() const = 0;
+
+ protected:
+  std::shared_ptr<std::atomic<uint64_t>> key_revision_{
+      std::make_shared<std::atomic<uint64_t>>(0)};
 };
 
 }  // namespace core

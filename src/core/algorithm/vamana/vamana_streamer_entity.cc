@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "vamana_streamer_entity.h"
+#include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/hash/crc32c.h>
 #include <zvec/core/framework/index_stats.h>
@@ -147,6 +148,8 @@ int VamanaStreamerEntity::add_vector(key_t key, const void *vec,
   size_t chunk_offset = static_cast<size_t>(-1);
 
   std::lock_guard<std::mutex> lock(mutex_);
+  AILEGO_DEFER(
+      [&]() { key_revision_->fetch_add(1, std::memory_order_release); });
 
   node_id_t local_id = static_cast<node_id_t>(doc_cnt());
   uint32_t chunk_index = node_chunks_.size() - 1U;
@@ -213,6 +216,8 @@ int VamanaStreamerEntity::add_vector_with_id(node_id_t id, const void *vec) {
   key_t key = vec ? id : kInvalidKey;
 
   std::lock_guard<std::mutex> lock(mutex_);
+  AILEGO_DEFER(
+      [&]() { key_revision_->fetch_add(1, std::memory_order_release); });
   // NULL reservations must not change slots filled by another writer.
   if (!vec && id < doc_cnt()) return 0;
 
@@ -511,6 +516,7 @@ const VamanaEntity::Pointer VamanaStreamerEntity::clone() const {
   } else {
     entity->set_extra_values_size(extra_values_size());
   }
+  if (entity) entity->key_revision_ = key_revision_;
   return VamanaEntity::Pointer(entity);
 }
 
@@ -533,6 +539,7 @@ const VamanaEntity::Pointer VamanaMmapStreamerEntity::clone() const {
   } else {
     entity->set_extra_values_size(extra_values_size());
   }
+  if (entity) entity->key_revision_ = key_revision_;
   return VamanaEntity::Pointer(entity);
 }
 
@@ -568,6 +575,7 @@ const VamanaEntity::Pointer VamanaContiguousStreamerEntity::clone() const {
   entity->extra_values_base_ = extra_values_base_;
   entity->extra_values_stride_ = extra_values_stride_;
 
+  if (entity) entity->key_revision_ = key_revision_;
   return VamanaEntity::Pointer(entity);
 }
 

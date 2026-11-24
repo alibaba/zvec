@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "hnsw_streamer_entity.h"
+#include <ailego/pattern/defer.h>
 #if defined(__linux__) || defined(__APPLE__)
 #include <sys/mman.h>
 #endif
@@ -798,6 +799,8 @@ int HnswStreamerEntity::add_vector(level_t level, key_t key, const void *vec,
   size_t chunk_offset = static_cast<size_t>(-1);
 
   std::lock_guard<std::mutex> lock(mutex_);
+  AILEGO_DEFER(
+      [&]() { key_revision_->fetch_add(1, std::memory_order_release); });
   // duplicate check
   if (ailego_unlikely(filter_same_key_ && get_id(key) != kInvalidNodeId)) {
     LOG_WARN("Try to add duplicate key, ignore it");
@@ -866,6 +869,8 @@ int HnswStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
   key_t key = vec ? id : kInvalidKey;
 
   std::lock_guard<std::mutex> lock(mutex_);
+  AILEGO_DEFER(
+      [&]() { key_revision_->fetch_add(1, std::memory_order_release); });
   // NULL reservations must not change slots filled by another writer.
   if (!vec && id < doc_cnt()) return 0;
 
@@ -997,6 +1002,7 @@ const HnswEntity::Pointer HnswStreamerEntity::clone() const {
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("HnswStreamerEntity new failed");
   }
+  if (entity) entity->key_revision_ = key_revision_;
   return HnswEntity::Pointer(entity);
 }
 
@@ -1030,6 +1036,7 @@ const HnswEntity::Pointer HnswMmapStreamerEntity::clone() const {
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("HnswMmapStreamerEntity new failed");
   }
+  if (entity) entity->key_revision_ = key_revision_;
   return HnswEntity::Pointer(entity);
 }
 
@@ -1063,6 +1070,7 @@ const HnswEntity::Pointer HnswBufferPoolStreamerEntity::clone() const {
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("HnswBufferPoolStreamerEntity new failed");
   }
+  if (entity) entity->key_revision_ = key_revision_;
   return HnswEntity::Pointer(entity);
 }
 
@@ -1108,6 +1116,7 @@ const HnswEntity::Pointer HnswContiguousStreamerEntity::clone() const {
   entity->upper_neighbor_base_ = upper_neighbor_base_;
   entity->upper_chunk_offsets_ = upper_chunk_offsets_;
 
+  if (entity) entity->key_revision_ = key_revision_;
   return HnswEntity::Pointer(entity);
 }
 
@@ -1143,6 +1152,7 @@ const HnswEntity::Pointer HnswExternalStreamerEntity::clone() const {
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("HnswExternalStreamerEntity new failed");
   }
+  if (entity) entity->key_revision_ = key_revision_;
   return HnswEntity::Pointer(entity);
 }
 

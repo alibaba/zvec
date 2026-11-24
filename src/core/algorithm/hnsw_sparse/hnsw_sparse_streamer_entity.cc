@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <iostream>
+#include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
 #include "utility/legacy_read_buffer.h"
 #include "utility/sparse_utility.h"
@@ -613,6 +614,8 @@ int HnswSparseStreamerEntity::add_vector(level_t level, key_t key,
   size_t sparse_chunk_offset = static_cast<size_t>(-1);
 
   std::lock_guard<std::mutex> lock(mutex_);
+  AILEGO_DEFER(
+      [&]() { key_revision_->fetch_add(1, std::memory_order_release); });
   // duplicate check
   if (ailego_unlikely(filter_same_key_ && get_id(key) != kInvalidNodeId)) {
     LOG_WARN("Try to add duplicate key, ignore it");
@@ -762,6 +765,8 @@ int HnswSparseStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
 
 
   std::lock_guard<std::mutex> lock(mutex_);
+  AILEGO_DEFER(
+      [&]() { key_revision_->fetch_add(1, std::memory_order_release); });
 
   // NULL reservations must not change slots filled by another writer.
   if (is_null && id < doc_cnt()) return 0;
@@ -973,6 +978,7 @@ const HnswSparseEntity::Pointer HnswSparseStreamerEntity::clone() const {
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("HnswSparseStreamerEntity new failed");
   }
+  if (entity) entity->key_revision_ = key_revision_;
   return HnswSparseEntity::Pointer(entity);
 }
 

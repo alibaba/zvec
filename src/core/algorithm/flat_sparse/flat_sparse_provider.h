@@ -14,11 +14,11 @@
 
 #pragma once
 
-#include <mutex>
 #include <string>
 #include <utility/sparse_utility.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/core/framework/index_meta.h>
+#include "utility/live_vector_count.h"
 #include "flat_sparse_streamer_entity.h"
 
 namespace zvec {
@@ -47,11 +47,7 @@ class FlatSparseIndexProvider : public IndexSparseProvider {
   }
 
   size_t count() const override {
-    std::call_once(count_once_, [&] {
-      for (uint32_t id = 0; id < entity_->slot_count(); ++id)
-        if (entity_->contains_node(id)) ++vector_count_;
-    });
-    return vector_count_;
+    return vector_count_.get(*entity_);
   }
 
   size_t slot_count() const override {
@@ -173,8 +169,7 @@ class FlatSparseIndexProvider : public IndexSparseProvider {
   };
 
  private:
-  mutable std::once_flag count_once_;
-  mutable size_t vector_count_{0};
+  mutable LiveVectorCount vector_count_;
   const std::shared_ptr<FlatSparseEntityType> entity_{nullptr};
   const IndexMeta &meta_;
   const std::string owner_class_;

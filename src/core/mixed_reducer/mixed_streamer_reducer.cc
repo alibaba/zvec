@@ -259,8 +259,15 @@ int MixedStreamerReducer::reduce(const IndexFilter &filter) {
 
     for (size_t i = 0; i < streamers_.size(); i++) {
       // due to filter, producing can't be parallel
-      read_results[i] = read_sparse_vec(i, filter, id_offset, &next_id);
-      id_offset += streamers_[i]->create_sparse_provider()->slot_count();
+      auto provider = streamers_[i]->create_sparse_provider();
+      if (!provider) {
+        read_results[i] = IndexError_Runtime;
+        break;
+      }
+      read_results[i] =
+          read_sparse_vec(i, provider, filter, id_offset, &next_id);
+      if (read_results[i] != 0) break;
+      id_offset += provider->slot_count();
     }
 
     sparse_mt_list_.done();
@@ -631,17 +638,14 @@ void MixedStreamerReducer::add_sparse_vec(int *result) {
 }
 
 
-int MixedStreamerReducer::read_sparse_vec(size_t source_streamer_index,
-                                          const IndexFilter &filter,
-                                          const uint64_t id_offset,
-                                          uint32_t *next_id) {
+int MixedStreamerReducer::read_sparse_vec(
+    size_t source_streamer_index, const IndexSparseProvider::Pointer &provider,
+    const IndexFilter &filter, const uint64_t id_offset, uint32_t *next_id) {
   const auto &streamer = streamers_[source_streamer_index];
   const auto &reformer = source_streamers_reformers_[source_streamer_index];
   const bool need_revert =
       !is_target_and_source_same_reformer_ && reformer != nullptr;
 
-  IndexStreamer::SparseProvider::Pointer provider =
-      streamer->create_sparse_provider();
   if (!provider) return IndexError_Runtime;
   IndexStreamer::SparseProvider::Iterator::Pointer iterator =
       provider->create_slot_iterator();

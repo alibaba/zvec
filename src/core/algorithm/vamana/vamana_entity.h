@@ -14,6 +14,7 @@
 #pragma once
 
 #include <string.h>
+#include <atomic>
 #include <functional>
 #include <ailego/utility/memory_helper.h>
 #include <zvec/ailego/container/heap.h>
@@ -248,6 +249,11 @@ class VamanaEntity {
   }
 
 
+  // In-memory revision shared with clones; independent of optional key mapping.
+  uint64_t key_revision() const {
+    return key_revision_->load(std::memory_order_acquire);
+  }
+
   // Existence is independent of external-key mapping.
   bool contains_node(node_id_t id) const {
     return id < doc_cnt() && get_key(id) != kInvalidKey;
@@ -402,6 +408,8 @@ class VamanaEntity {
   // Runtime-only layout metadata supplied by the query metric. The persisted
   // vector_size remains the complete encoded record size for compatibility.
   size_t extra_values_size_{0};
+  std::shared_ptr<std::atomic<uint64_t>> key_revision_{
+      std::make_shared<std::atomic<uint64_t>>(0)};
 };
 
 }  // namespace core

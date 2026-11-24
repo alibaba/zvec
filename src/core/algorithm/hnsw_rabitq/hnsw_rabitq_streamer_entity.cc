@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "hnsw_rabitq_streamer_entity.h"
+#include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
 #include "utility/legacy_read_buffer.h"
 
@@ -500,6 +501,8 @@ int HnswRabitqStreamerEntity::add_vector(level_t level, key_t key,
   size_t chunk_offset = -1UL;
 
   std::lock_guard<std::mutex> lock(mutex_);
+  AILEGO_DEFER(
+      [&]() { key_revision_->fetch_add(1, std::memory_order_release); });
   // duplicate check
   if (ailego_unlikely(filter_same_key_ && get_id(key) != kInvalidNodeId)) {
     LOG_WARN("Try to add duplicate key, ignore it");
@@ -568,6 +571,8 @@ int HnswRabitqStreamerEntity::add_vector_with_id(level_t level, node_id_t id,
   key_t key = vec ? id : kInvalidKey;
 
   std::lock_guard<std::mutex> lock(mutex_);
+  AILEGO_DEFER(
+      [&]() { key_revision_->fetch_add(1, std::memory_order_release); });
   // NULL reservations must not change slots filled by another writer.
   if (!vec && id < doc_cnt()) return 0;
 
@@ -700,6 +705,7 @@ const HnswRabitqEntity::Pointer HnswRabitqStreamerEntity::clone() const {
   if (ailego_unlikely(!entity)) {
     LOG_ERROR("HnswRabitqStreamerEntity new failed");
   }
+  if (entity) entity->key_revision_ = key_revision_;
   return HnswRabitqEntity::Pointer(entity);
 }
 
