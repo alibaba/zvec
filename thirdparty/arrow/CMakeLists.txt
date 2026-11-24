@@ -152,6 +152,7 @@ elseif(IOS)
                 LOG_OUTPUT_ON_FAILURE ON
         )
 elseif (MSVC)
+    list(APPEND CONFIGURE_ENV_LIST "CMAKE_GENERATOR=${CMAKE_GENERATOR}")
     if(ZVEC_USE_STATIC_CRT)
         set(_ARROW_CRT_FLAG "/MT")
         set(_ARROW_MSVC_RUNTIME "MultiThreaded$<$<CONFIG:Debug>:Debug>")

@@ -28,6 +28,7 @@
 #include <arrow/array.h>
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
+#include <arrow/memory_pool.h>
 #include <arrow/result.h>
 #include <arrow/table.h>
 #include <gtest/gtest.h>
@@ -263,6 +264,15 @@ TEST_F(MemStoreTest, ConvertToTableWithColumnFiltering) {
   EXPECT_EQ(table->num_columns(), 2);
 }
 
+TEST_F(MemStoreTest, ConvertToTableReportsMissingColumn) {
+  ASSERT_TRUE(store_->insert(CreateDoc(0)).ok());
+
+  auto result = store_->convert_to_table({"id", "missing_column"}, {0});
+  ASSERT_TRUE(result.status().IsInvalid()) << result.status();
+  EXPECT_NE(result.status().message().find("missing_column"),
+            std::string::npos);
+}
+
 // Test convertToTable with index filtering
 TEST_F(MemStoreTest, ConvertToTableWithIndexFiltering) {
   // Insert multiple documents
@@ -280,6 +290,33 @@ TEST_F(MemStoreTest, ConvertToTableWithIndexFiltering) {
 
   auto table = result.ValueOrDie();
   EXPECT_EQ(table->num_rows(), 3);  // Only selected rows
+}
+
+TEST_F(MemStoreTest, FetchPrimaryKeysSkipsUnrequestedText) {
+  constexpr int64_t kTextBytes = 256 * 1024;
+  auto doc = CreateDoc(0);
+  doc.set<std::string>("name", std::string(kTextBytes, 'x'));
+  ASSERT_TRUE(store_->insert(doc).ok());
+  ASSERT_TRUE(store_->flush().ok());
+  ASSERT_TRUE(store_->insert(CreateDoc(1)).ok());
+
+  // Fetch across a stored batch and the pending row, in hit order.
+  const std::vector<int> rows{1, 0, 0};
+  auto *pool = arrow::default_memory_pool();
+  const auto before = pool->total_bytes_allocated();
+  auto table = store_->fetch({USER_ID}, rows);
+  const auto allocated = pool->total_bytes_allocated() - before;
+  // Copying even one unrequested text value would exceed this budget.
+  RecordProperty("fetch_allocated_bytes", std::to_string(allocated));
+  EXPECT_LT(allocated, kTextBytes);
+
+  ASSERT_NE(table, nullptr);
+  ASSERT_EQ(table->ColumnNames(), std::vector<std::string>{USER_ID});
+  ASSERT_EQ(table->num_rows(), rows.size());
+  for (size_t i = 0; i < rows.size(); ++i) {
+    EXPECT_EQ(table->column(0)->GetScalar(i).ValueOrDie()->ToString(),
+              "pk_" + std::to_string(rows[i]));
+  }
 }
 
 // Test fetch method

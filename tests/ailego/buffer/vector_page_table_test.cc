@@ -441,6 +441,8 @@ TEST_F(BufferPoolTest, ShortReadDoesNotEvictHotPageOnFirstTouch) {
   constexpr size_t kCapacity = 256UL * 1024UL * 1024UL;
   auto &memory_pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   ASSERT_EQ(0, memory_pool.init(kCapacity));
+  // Isolate foreground admission from independent background eviction.
+  QueueResidentSampleTestPeer::stop_background();
   std::string file = new_file(kFilePages);
 
   size_t charged_metadata = 0;
