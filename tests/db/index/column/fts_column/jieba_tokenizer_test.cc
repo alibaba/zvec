@@ -184,6 +184,30 @@ TEST_F(JiebaEmbeddedTokenizerTest, DefaultWorksWithoutExternalDictDir) {
   EXPECT_TRUE(tokenizer.tokenize("").empty());
 }
 
+TEST_F(JiebaEmbeddedTokenizerTest, EmbeddedEntriesMatchCppjiebaTextLoader) {
+  std::ifstream input;
+  cppjieba::OpenInputFile(input, kDictDir + "/jieba.dict.utf8");
+  ASSERT_TRUE(input.good());
+  const auto reference = cppjieba::DictTrie::LoadDict(input);
+  const auto embedded = zvec::fts::get_embedded_jieba_dict();
+  ASSERT_TRUE(embedded.has_value());
+  const auto &actual = **embedded;
+  EXPECT_EQ(actual.freq_sum, reference.freq_sum);
+  EXPECT_DOUBLE_EQ(actual.min_weight, reference.min_weight);
+  EXPECT_DOUBLE_EQ(actual.median_weight, reference.median_weight);
+  EXPECT_DOUBLE_EQ(actual.max_weight, reference.max_weight);
+  ASSERT_EQ(actual.node_infos->size(), reference.node_infos->size());
+  for (size_t i = 0; i < reference.node_infos->size(); ++i) {
+    const auto &entry = (*actual.node_infos)[i];
+    const auto &expected = (*reference.node_infos)[i];
+    ASSERT_TRUE(std::equal(entry.word.begin(), entry.word.end(),
+                           expected.word.begin(), expected.word.end()))
+        << i;
+    ASSERT_EQ(entry.tag, expected.tag) << i;
+    ASSERT_DOUBLE_EQ(entry.weight, expected.weight) << i;
+  }
+}
+
 TEST_F(JiebaEmbeddedTokenizerTest, PrepareDefersEmbeddedDictionary) {
   zvec::fts::FtsIndexParams params;
   params.tokenizer_name = "jieba";
