@@ -228,14 +228,13 @@ class SegmentMeta {
   }
 
   void remove_vector_persisted_block(const std::string &column) {
-    auto end = std::remove_if(
-        persisted_blocks_.begin(), persisted_blocks_.end(),
-        [&](const BlockMeta &block) {
-          return block.contain_column(column) &&
-                 (block.type() == BlockType::VECTOR_INDEX ||
-                  block.type() == BlockType::VECTOR_INDEX_QUANTIZE);
-        });
-    persisted_blocks_.erase(end, persisted_blocks_.end());
+    std::vector<BlockMeta> new_persisted_blocks;
+    for (auto &b : persisted_blocks_) {
+      if (!b.contain_column(column)) {
+        new_persisted_blocks.push_back(b);
+      }
+    }
+    persisted_blocks_ = new_persisted_blocks;
   }
 
   void remove_scalar_index_block() {

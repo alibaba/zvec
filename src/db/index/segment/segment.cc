@@ -1860,7 +1860,6 @@ Status SegmentImpl::drop_vector_index(
   CHECK_RETURN_STATUS(s);
 
   (*vector_indexers)[column] = new_vector_indexer;
-  // reload_vector_index() retires both sets of source files.
   new_segment_meta->remove_vector_persisted_block(column);
 
   BlockMeta block;
