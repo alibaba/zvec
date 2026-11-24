@@ -27,6 +27,7 @@
 #include <variant>
 #include <vector>
 #include <ailego/io/file_lock.h>
+#include <arrow/api.h>
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/pattern/expected.hpp>
@@ -170,6 +171,9 @@ class CollectionImpl : public Collection {
   Result<DocPtrList> query_unsafe(const SearchQuery &query) const;
 
   Result<DocPtrList> query_unsafe(const MultiQuery &query) const;
+
+  Result<InternalIdsQueryResult> query_internal_ids_unsafe(
+      const SearchQuery &query, bool return_scores) const;
 
   Result<InternalIdsQueryResult> query_internal_ids_fallback(
       const SearchQuery &query, bool return_scores) const;
@@ -1864,7 +1868,11 @@ Result<InternalIdsQueryResult> CollectionImpl::query_internal_ids(
     return tl::make_unexpected(Status::InvalidArgument(
         "query_internal_ids does not support result-field materialization"));
   }
+  return query_internal_ids_unsafe(query, return_scores);
+}
 
+Result<InternalIdsQueryResult> CollectionImpl::query_internal_ids_unsafe(
+    const SearchQuery &query, bool return_scores) const {
   const auto &field_name = query.target_.field_name_;
   const auto field = query_internal_ids_fields_.find(field_name);
   if (!query.filter_.empty() || field == query_internal_ids_fields_.end()) {
@@ -2053,6 +2061,60 @@ Result<DocPtrList> CollectionImpl::query_unsafe(
   bool need_sanitize = false;
   auto s = query.validate(field_schema, &need_sanitize);
   CHECK_RETURN_STATUS_EXPECTED(s);
+
+  // The immutable single-block dense route already implements search,
+  // refinement and score normalization. Reuse it for ordinary Query when no
+  // fields/vectors are requested, then materialize the public document result
+  // in one batch. Every other request retains the general engine below.
+  const bool no_fields = query.output_fields_.has_value()
+                             ? query.output_fields_->empty()
+                             : schema_->forward_fields().empty();
+  if (options_.read_only_ && !need_sanitize && query.filter_.empty() &&
+      !query.include_vector_ && no_fields && field_schema &&
+      field_schema->is_dense_vector() &&
+      (field_schema->index_type() == IndexType::HNSW ||
+       field_schema->index_type() == IndexType::VAMANA)) {
+    const auto it = query_internal_ids_fields_.find(field_name);
+    const bool refine = query.target_.query_params_ &&
+                        query.target_.query_params_->is_using_refiner();
+    if (it != query_internal_ids_fields_.end() && it->second.primary &&
+        (!refine || it->second.reference)) {
+      auto result = query_internal_ids_unsafe(query, true);
+      if (!result) return tl::make_unexpected(result.error());
+      std::vector<int> rows;
+      rows.reserve(result->ids.size());
+      for (const auto id : result->ids) {
+        if (id == -1) break;
+        if (id < 0 || id > std::numeric_limits<int>::max()) {
+          return tl::make_unexpected(
+              Status::InternalError("Invalid dense query row ID"));
+        }
+        rows.push_back(static_cast<int>(id));
+      }
+      DocPtrList docs;
+      if (rows.empty()) return docs;
+      auto table = read_only_segments_[0]->fetch({USER_ID}, rows);
+      if (!table || table->num_rows() != static_cast<int64_t>(rows.size())) {
+        return tl::make_unexpected(
+            Status::InternalError("Failed to fetch dense query primary keys"));
+      }
+      docs.reserve(rows.size());
+      size_t offset = 0;
+      for (const auto &chunk : table->column(0)->chunks()) {
+        const auto &keys = static_cast<const arrow::StringArray &>(*chunk);
+        for (int64_t i = 0; i < keys.length(); ++i, ++offset) {
+          auto doc = std::make_shared<Doc>();
+          doc->set_pk(keys.GetString(i));
+          doc->set_score(result->scores[offset]);
+          if (query.include_doc_id_) {
+            doc->set_doc_id(static_cast<uint64_t>(result->ids[offset]));
+          }
+          docs.push_back(std::move(doc));
+        }
+      }
+      return docs;
+    }
+  }
 
   auto segments = get_all_segments();
   if (segments.empty()) {
