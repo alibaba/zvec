@@ -147,6 +147,8 @@ class DiskAnnStreamer : public IndexStreamer {
   void print_debug_info() override;
 
  private:
+  void reset_loaded_index();
+
   template <typename T, typename LabelT = uint32_t>
   int search_disk_index(const std::string &query_file,
                         const uint32_t num_nodes_to_cache,

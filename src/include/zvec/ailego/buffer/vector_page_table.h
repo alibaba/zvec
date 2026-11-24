@@ -1067,6 +1067,7 @@ class ZVEC_AILEGO_API VecBufferPool {
   ProcessRssBudget::MaterializationStamp writeback_staging_projection_{};
   size_t writeback_io_staging_charge_{0};
 #if defined(__linux__) && !defined(__ANDROID__)
+  friend class VecBufferPoolWritebackTestAccess;
   std::unique_ptr<IoUringRing> writeback_io_uring_{};
 #endif
   std::mutex writeback_mutex_{};

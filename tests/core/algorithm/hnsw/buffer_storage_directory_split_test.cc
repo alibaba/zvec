@@ -50,6 +50,21 @@
 #include "utility/utility_params.h"
 #include "../../../ailego/buffer/pool_payload_budget.h"
 
+#if defined(__linux__) && !defined(__ANDROID__)
+#include "ailego/io/iouring_loader.h"
+
+namespace zvec::ailego {
+class VecBufferPoolWritebackTestAccess {
+ public:
+  static void ForceSynchronousWriteback(VecBufferPool &pool) {
+    // The ring owns and refunds its prepaid staging reservation.
+    pool.writeback_io_uring_.reset();
+    pool.writeback_io_staging_charge_ = 0;
+  }
+};
+}  // namespace zvec::ailego
+#endif
+
 namespace {
 thread_local size_t fail_array_size = 0;
 thread_local size_t fail_aligned_size = 0;
@@ -1199,6 +1214,10 @@ TEST_F(BufferStorageDirectorySplitTest,
   ASSERT_EQ(kOldData.size(), seg_a->write(0, kOldData.data(), kOldData.size()));
   ASSERT_EQ(kNewData.size(), seg_b->write(0, kNewData.data(), kNewData.size()));
   auto &pool = *writer_->vec_buffer_pool();
+#if defined(__linux__) && !defined(__ANDROID__)
+  zvec::ailego::VecBufferPoolWritebackTestAccess::ForceSynchronousWriteback(
+      pool);
+#endif
   const size_t page_a = seg_a->data_offset() / page_size_;
   const size_t page_b = seg_b->data_offset() / page_size_;
 
@@ -1395,7 +1414,8 @@ TEST_F(BufferStorageDirectorySplitTest, RollbackBookkeepingDoesNotAllocate) {
   const std::string name = "new_split";
   const zvec::ailego::BudgetedAllocator<size_t> allocator;
   const size_t max_slots = std::numeric_limits<size_t>::max() / sizeof(size_t);
-  const size_t allocator_overhead = (max_slots - allocator.max_size()) * sizeof(size_t);
+  const size_t allocator_overhead =
+      (max_slots - allocator.max_size()) * sizeof(size_t);
   fault_hit = false;
   fail_aligned_size = sizeof(size_t) + allocator_overhead;
   repeated_fail_offset = static_cast<off_t>(root.footer_offset);
@@ -1410,6 +1430,10 @@ TEST_F(BufferStorageDirectorySplitTest, RollbackBookkeepingDoesNotAllocate) {
 
 TEST_F(BufferStorageDirectorySplitTest, WritebackRunReleasesLatchBetweenRuns) {
   auto &pool = *writer_->vec_buffer_pool();
+#if defined(__linux__) && !defined(__ANDROID__)
+  zvec::ailego::VecBufferPoolWritebackTestAccess::ForceSynchronousWriteback(
+      pool);
+#endif
   const size_t page_a = 1;
   const size_t page_b = page_a + zvec::ailego::VecBufferPool::kMutexBucketCount;
   ASSERT_TRUE(pool.extend_file((page_b + 1) * page_size_));
@@ -1419,7 +1443,6 @@ TEST_F(BufferStorageDirectorySplitTest, WritebackRunReleasesLatchBetweenRuns) {
 
   PausedDataWrite pause;
   pause.offset = page_a * page_size_;
-  paused_data_write = &pause;
   std::atomic<bool> flush_done{false};
   std::thread flusher([&] {
 #if defined(__APPLE__) && TARGET_OS_OSX
@@ -1431,8 +1454,13 @@ TEST_F(BufferStorageDirectorySplitTest, WritebackRunReleasesLatchBetweenRuns) {
   });
   {
     std::unique_lock<std::mutex> lock(pause.mutex);
-    ASSERT_TRUE(pause.cv.wait_for(lock, std::chrono::seconds(5),
-                                  [&] { return pause.reached; }));
+    if (!pause.cv.wait_for(lock, std::chrono::seconds(5),
+                           [&] { return pause.reached; })) {
+      pause.resume = true;
+      lock.unlock();
+      flusher.join();
+      FAIL() << "synchronous writeback did not reach the pwrite hook";
+    }
   }
   // A writer on the same stripe now queues for the exclusive latch.
   std::atomic<bool> write_done{false};
@@ -1446,7 +1474,6 @@ TEST_F(BufferStorageDirectorySplitTest, WritebackRunReleasesLatchBetweenRuns) {
     pause.resume = true;
     pause.cv.notify_all();
   }
-  paused_data_write = nullptr;
   // The first run must release its latch before the next run re-acquires
   // the same stripe, otherwise flusher and writer deadlock each other.
   flusher.join();
