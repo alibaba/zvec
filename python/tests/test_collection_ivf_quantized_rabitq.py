@@ -34,8 +34,7 @@ def test_ivf_rabitq_optimize_reopen_and_filter(tmp_path, metric, integrated):
             n_list=16,
             n_iters=20,
             quantize_type=zvec.QuantizeType.RABITQ,
-            total_bits=7,
-            sample_count=512,
+            quantizer_param=zvec.QuantizerParam(total_bits=7, sample_count=512),
         )
         if integrated
         else zvec.IvfRabitqIndexParam(
@@ -135,8 +134,9 @@ def test_ivf_rabitq_optimize_reopen_and_filter(tmp_path, metric, integrated):
             zvec.IndexType.IVF if integrated else zvec.IndexType.IVF_RABITQ
         )
         assert params.quantize_type == zvec.QuantizeType.RABITQ
-        assert params.total_bits == 7
-        assert params.sample_count == 512
+        quantizer_params = params.quantizer_param if integrated else params
+        assert quantizer_params.total_bits == 7
+        assert quantizer_params.sample_count == 512
         after = coll.query(queries=query, topk=5)
         assert [doc.id for doc in after] == [doc.id for doc in before]
         check_group_and_refiner()
