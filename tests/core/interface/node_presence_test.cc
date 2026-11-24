@@ -132,6 +132,11 @@ class NodePresenceTest : public testing::TestWithParam<Mode> {
     }
     std::vector<float> query(kDimension, 0);
     auto params = query_param();
+    params->filter = std::make_shared<IndexFilter>();
+    params->filter->set([](uint64_t key) {
+      EXPECT_NE(UINT64_MAX, key);
+      return false;
+    });
     params->bf_pks =
         std::make_shared<std::vector<uint64_t>>(std::initializer_list<uint64_t>{
             0, 1, 2, 3, 4, 5, 6, 7, UINT64_MAX, (uint64_t{1} << 32) + 2});
@@ -510,6 +515,11 @@ class SparseNodePresenceTest
     params->topk = 10;
     uint32_t dimension = 17;
     float value = 1;
+    params->filter = std::make_shared<IndexFilter>();
+    params->filter->set([](uint64_t key) {
+      EXPECT_NE(UINT64_MAX, key);
+      return false;
+    });
     auto candidates =
         std::make_shared<std::vector<uint64_t>>(std::initializer_list<uint64_t>{
             0, 1, 3, 4, 6, UINT64_MAX, (uint64_t{1} << 32) + 2});
@@ -854,6 +864,29 @@ TEST(PhysicalSlotsTest, BuilderTrainingPersistsEmptySlots) {
         }
         EXPECT_NE(0, index->fetch(0, &value));
         EXPECT_NE(0, index->fetch(39, &value));
+
+        BaseIndexQueryParam::Pointer query;
+        if (param->index_type == IndexType::kIVF)
+          query = std::make_shared<IVFQueryParam>();
+        else if (param->index_type == IndexType::kIVFRabitq)
+          query = std::make_shared<IVFRabitqQueryParam>();
+        else
+          query = std::make_shared<DiskAnnQueryParam>();
+        query->topk = 10;
+        query->bf_pks = std::make_shared<std::vector<uint64_t>>(
+            std::initializer_list<uint64_t>{2, UINT64_MAX, 32});
+        query->filter = std::make_shared<IndexFilter>();
+        query->filter->set([](uint64_t key) {
+          EXPECT_NE(UINT64_MAX, key);
+          return false;
+        });
+        std::vector<float> query_vector(64, 1);
+        SearchResult result;
+        ASSERT_EQ(0, index->search({DenseVector{query_vector.data()}}, query,
+                                   &result));
+        std::set<uint64_t> found;
+        for (const auto &doc : result.doc_list_) found.insert(doc.key());
+        EXPECT_EQ((std::set<uint64_t>{2, 32}), found);
 
         if (param->index_type != IndexType::kIVFRabitq) {
           const auto extra_path = path + "_extra";

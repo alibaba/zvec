@@ -543,6 +543,58 @@ TEST_F(FlatBuilderTest, ThresholdBackendRebinding) {
   EXPECT_FLOAT_EQ(std::numeric_limits<float>::max(), context.threshold());
 }
 
+TEST_F(FlatBuilderTest, MissingCandidatesNeverReachCallbacks) {
+  constexpr size_t dimension = 2;
+  const uint64_t high_key = (uint64_t{1} << 40) + 7;
+  IndexMeta meta(IndexMeta::DT_FP32, dimension);
+  meta.set_metric("SquaredEuclidean", 0, Params());
+  for (auto order : {IndexMeta::MO_ROW, IndexMeta::MO_COLUMN}) {
+    SCOPED_TRACE(static_cast<int>(order));
+    meta.set_major_order(order);
+    auto holder =
+        std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(dimension);
+    NumericalVector<float> vector(dimension, 0.0f);
+    ASSERT_TRUE(holder->emplace(high_key, vector));
+    ASSERT_TRUE(holder->emplace(3, vector));
+    const auto path = dir_ + "MissingCandidates";
+    BuildIndex(meta, holder, path);
+    IndexSearcher::Pointer searcher;
+    LoadIndex(path, searcher);
+    ASSERT_NE(nullptr, searcher);
+    const IndexQueryMeta qmeta(IndexMeta::DT_FP32, dimension);
+    const std::vector<std::vector<uint64_t>> keys{
+        {high_key, UINT64_MAX, 999, 3}};
+    for (bool grouped : {false, true}) {
+      auto context = searcher->create_context();
+      context->set_topk(10);
+      context->set_filter([&](uint64_t key) {
+        EXPECT_TRUE(key == high_key || key == 3) << key;
+        return false;
+      });
+      if (grouped) {
+        context->set_group_params(2, 1);
+        context->set_group_by([&](uint64_t key) {
+          EXPECT_TRUE(key == high_key || key == 3) << key;
+          return std::to_string(key);
+        });
+      }
+      ASSERT_EQ(0, searcher->search_bf_by_p_keys_impl(vector.data(), keys,
+                                                      qmeta, context));
+      if (grouped) {
+        ASSERT_EQ(2U, context->group_result().size());
+        for (const auto &group : context->group_result()) {
+          ASSERT_EQ(1U, group.docs().size());
+          EXPECT_EQ(std::to_string(group.docs()[0].key()), group.group_id());
+        }
+      } else {
+        ASSERT_EQ(2U, context->result().size());
+        for (const auto &doc : context->result())
+          EXPECT_TRUE(doc.key() == high_key || doc.key() == 3);
+      }
+    }
+  }
+}
+
 TEST_F(FlatBuilderTest, RadiusAcrossFlatBackendsAndQueryModes) {
   constexpr size_t dimension = 32;
   const std::vector<float> values{1.0f, 0.5f, 0.25f, -0.25f, -0.5f, -1.0f};

@@ -1159,6 +1159,67 @@ TEST_F(HnswSparseStreamerTest, TestBfThreshold) {
   LOG_DEBUG("%s", ctx1->debug_string().c_str());
 }
 
+TEST_F(HnswSparseStreamerTest, SearcherSkipsSentinelCandidatesBeforeCallbacks) {
+  auto streamer = IndexFactory::CreateStreamer("HnswSparseStreamer");
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, streamer);
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "SentinelSource", true));
+  ASSERT_EQ(0, streamer->init(*index_meta_ptr_, Params()));
+  ASSERT_EQ(0, streamer->open(storage));
+  auto writer = streamer->create_context();
+  const IndexQueryMeta qmeta(IndexMeta::MT_SPARSE, IndexMeta::DT_FP32);
+  const uint32_t dimension = 17;
+  const float value = 1;
+  for (uint64_t key : {10, 20}) {
+    ASSERT_EQ(0, streamer->add_impl(key, 1, &dimension, &value, qmeta, writer));
+  }
+  const auto path = dir_ + "SentinelSearcher";
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_EQ(0, dumper->create(path));
+  ASSERT_EQ(0, streamer->dump(dumper));
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, dumper->close());
+
+  auto searcher = IndexFactory::CreateSearcher("HnswSparseSearcher");
+  auto reader = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_NE(nullptr, searcher);
+  ASSERT_EQ(0, reader->open(path, false));
+  ASSERT_EQ(0, searcher->init(Params()));
+  ASSERT_EQ(0, searcher->load(reader, IndexMetric::Pointer()));
+  const std::vector<std::vector<uint64_t>> keys{{10, kInvalidKey, 20, 999}};
+  for (bool grouped : {false, true}) {
+    SCOPED_TRACE(grouped);
+    auto context = searcher->create_context();
+    context->set_topk(2);
+    context->set_filter([](uint64_t key) {
+      EXPECT_NE(kInvalidKey, key);
+      return false;
+    });
+    if (grouped) {
+      context->set_group_params(2, 1);
+      context->set_group_by([](uint64_t key) {
+        EXPECT_TRUE(key == 10 || key == 20);
+        return std::to_string(key);
+      });
+    }
+    ASSERT_EQ(0, searcher->search_bf_by_p_keys_impl(1, &dimension, &value, keys,
+                                                    qmeta, context));
+    if (grouped) {
+      ASSERT_EQ(2U, context->group_result().size());
+      for (const auto &group : context->group_result()) {
+        ASSERT_EQ(1U, group.docs().size());
+        EXPECT_EQ(std::to_string(group.docs()[0].key()), group.group_id());
+      }
+    } else {
+      ASSERT_EQ(2U, context->result().size());
+      for (const auto &doc : context->result())
+        EXPECT_TRUE(doc.key() == 10 || doc.key() == 20);
+    }
+  }
+}
+
 TEST_F(HnswSparseStreamerTest, TestFilter) {
   IndexStreamer::Pointer streamer =
       IndexFactory::CreateStreamer("HnswSparseStreamer");

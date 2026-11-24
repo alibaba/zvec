@@ -892,6 +892,7 @@ int HnswSparseStreamer::search_bf_by_p_keys_impl(
 
       for (size_t idx = 0; idx < p_keys[q].size(); ++idx) {
         uint64_t pk = p_keys[q][idx];
+        if (pk == kInvalidKey) continue;
         if (!ctx->filter().is_valid() || !ctx->filter()(pk)) {
           node_id_t id = entity_.get_id(pk);
           if (id != kInvalidNodeId) {
@@ -927,6 +928,7 @@ int HnswSparseStreamer::search_bf_by_p_keys_impl(
       topk.clear();
       for (size_t idx = 0; idx < p_keys[q].size(); ++idx) {
         key_t pk = p_keys[q][idx];
+        if (pk == kInvalidKey) continue;
         if (!filter.is_valid() || !filter(pk)) {
           node_id_t id = entity_.get_id(pk);
           if (id != kInvalidNodeId) {

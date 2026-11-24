@@ -901,6 +901,7 @@ int VamanaStreamer::search_bf_by_p_keys_impl(
     const void *query, const std::vector<std::vector<uint64_t>> &p_keys,
     const IndexQueryMeta &qmeta, uint32_t count,
     Context::Pointer &context) const {
+  if (count == 0 || p_keys.size() != count) return IndexError_InvalidArgument;
   int ret = check_params(query, qmeta);
   if (ailego_unlikely(ret != 0)) return ret;
 
@@ -925,14 +926,13 @@ int VamanaStreamer::search_bf_by_p_keys_impl(
   for (size_t q = 0; q < count; ++q) {
     ctx->reset_query(query);
     topk.clear();
-    for (const auto &keys : p_keys) {
-      for (auto key : keys) {
-        if (filter.is_valid() && filter(key)) continue;
-        node_id_t id = entity_->get_id(key);
-        if (id == kInvalidNodeId) continue;
-        dist_t dist = ctx->dist_calculator().batch_dist(id);
-        topk.emplace(id, dist);
-      }
+    for (auto key : p_keys[q]) {
+      if (key == kInvalidKey) continue;
+      if (filter.is_valid() && filter(key)) continue;
+      node_id_t id = entity_->get_id(key);
+      if (id == kInvalidNodeId) continue;
+      dist_t dist = ctx->dist_calculator().batch_dist(id);
+      topk.emplace(id, dist);
     }
     ctx->topk_to_result(q);
     query = static_cast<const char *>(query) + qmeta.element_size();

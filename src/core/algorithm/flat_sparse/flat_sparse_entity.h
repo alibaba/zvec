@@ -64,6 +64,7 @@ class FlatSparseEntity {
                     const std::vector<uint64_t> &p_keys,
                     const IndexFilter &filter, IndexDocumentHeap *heap) const {
     for (auto p_key : p_keys) {
+      if (p_key == kInvalidKey) continue;
       if (!filter.is_valid() || !filter(p_key)) {
         auto node_id = get_id(p_key);
         if (contains_node(node_id)) {
@@ -107,6 +108,7 @@ class FlatSparseEntity {
       const std::function<std::string(uint64_t)> &group_by_func, uint32_t topk,
       std::unordered_map<std::string, IndexDocumentHeap> *heap) const {
     for (auto p_key : p_keys) {
+      if (p_key == kInvalidKey) continue;
       if (!filter.is_valid() || !filter(p_key)) {
         auto node_id = get_id(p_key);
         if (contains_node(node_id)) {

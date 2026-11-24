@@ -132,6 +132,7 @@ int FlatContiguousStreamerEntity::evaluate_distances(
 
   if (p_keys) {
     for (uint64_t key : *p_keys) {
+      if (key == kInvalidKey) continue;
       if (filter.is_valid() && filter(key)) {
         continue;
       }
@@ -573,6 +574,7 @@ int FlatStreamerEntity::search_by_p_keys(const void *query,
                                          size_t /*batch_size*/) const {
   if (use_external_vector_) return IndexError_Unsupported;
   for (uint64_t key : p_keys) {
+    if (key == kInvalidKey) continue;
     if (filter.is_valid() && filter(key)) {
       continue;
     }

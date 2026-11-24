@@ -969,7 +969,8 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
   size_t idx = 0;
   while (idx < keys.size()) {
     while (frontier.size() < beam_width_) {
-      if (!ctx->filter().is_valid() || !ctx->filter()(keys[idx])) {
+      if (keys[idx] != kInvalidKey &&
+          (!ctx->filter().is_valid() || !ctx->filter()(keys[idx]))) {
         diskann_id_t id = get_id(keys[idx]);
         if (id == kInvalidId) {
           ++idx;

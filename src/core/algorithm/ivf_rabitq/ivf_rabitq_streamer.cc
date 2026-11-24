@@ -547,6 +547,7 @@ int IvfRabitqStreamer::search_bf_by_p_keys_impl(
 
     std::map<uint32_t, std::vector<uint32_t>> cluster_ids;
     for (uint64_t key : p_keys[q]) {
+      if (key == std::numeric_limits<uint64_t>::max()) continue;
       if (filter.is_valid() && filter(key)) {
         continue;
       }

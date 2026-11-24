@@ -749,12 +749,11 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_impl(
     return bf_context->group_by()(key);
   };
 
-  auto iterator = entity_->creater_iterator();
-
   for (size_t q = 0; q < count; ++q) {
     bf_context->group_topk_heaps().clear();
     for (node_id_t id = 0; id < entity_->slot_count(); ++id) {
       uint64_t key = entity_->key(id);
+      if (key == kInvalidKey) continue;
       if (!bf_context->filter().is_valid() || !bf_context->filter()(key)) {
         dist_t dist = 0;
         IndexStorage::MemoryBlock block;
@@ -799,12 +798,11 @@ int FlatStreamer<BATCH_SIZE>::group_by_search_p_keys_impl(
     return bf_context->group_by()(key);
   };
 
-  auto iterator = entity_->creater_iterator();
-
   for (size_t q = 0; q < count; ++q) {
     bf_context->group_topk_heaps().clear();
     for (node_id_t idx = 0; idx < p_keys[q].size(); ++idx) {
       uint64_t key = p_keys[q][idx];
+      if (key == kInvalidKey) continue;
       if (!bf_context->filter().is_valid() || !bf_context->filter()(key)) {
         dist_t dist = 0;
         IndexStorage::MemoryBlock block;

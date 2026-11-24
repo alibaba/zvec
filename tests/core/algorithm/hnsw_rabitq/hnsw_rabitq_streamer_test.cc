@@ -209,6 +209,17 @@ TEST_F(HnswRabitqStreamerTest, TestLinearSearch) {
     ASSERT_EQ(1UL, result1.size());
     ASSERT_EQ(i, result1[0].key());
 
+    context->set_filter([](uint64_t key) {
+      EXPECT_NE(kInvalidKey, key);
+      return false;
+    });
+    ASSERT_EQ(0,
+              streamer->search_bf_by_p_keys_impl(
+                  query_vec.data(), {{i, kInvalidKey}}, query_meta, context));
+    ASSERT_EQ(1UL, context->result().size());
+    EXPECT_EQ(i, context->result()[0].key());
+    context->reset_filter();
+
     // Test with slight offset
     for (size_t j = 0; j < dim; ++j) {
       query_vec[j] = static_cast<float>(i) + 0.1f;
