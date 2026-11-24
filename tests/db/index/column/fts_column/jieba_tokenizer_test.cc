@@ -133,6 +133,7 @@ TEST_F(JiebaEmbeddedTokenizerTest,
        ConcurrentFirstInitializationSharesDefaults) {
   constexpr size_t kThreadCount = 8;
   std::vector<EmbeddedJiebaDict> dictionaries(kThreadCount);
+  std::vector<std::shared_ptr<const cppjieba::DictTrie>> tries(kThreadCount);
   std::vector<EmbeddedJiebaHmmModel> models(kThreadCount);
   std::atomic<size_t> ready{0};
   std::atomic<bool> start{false};
@@ -144,11 +145,13 @@ TEST_F(JiebaEmbeddedTokenizerTest,
         std::this_thread::yield();
       }
       auto dict = zvec::fts::get_embedded_jieba_dict();
+      auto trie = zvec::fts::get_embedded_jieba_trie();
       auto model = zvec::fts::get_embedded_jieba_hmm_model();
-      if (!dict.has_value() || !model.has_value()) {
+      if (!dict || !trie || !model) {
         return;
       }
       dictionaries[i] = dict.value();
+      tries[i] = trie.value();
       models[i] = model.value();
     });
   }
@@ -161,9 +164,11 @@ TEST_F(JiebaEmbeddedTokenizerTest,
   }
 
   ASSERT_NE(dictionaries[0], nullptr);
+  ASSERT_NE(tries[0], nullptr);
   ASSERT_NE(models[0], nullptr);
   for (size_t i = 0; i < kThreadCount; ++i) {
     EXPECT_EQ(dictionaries[i].get(), dictionaries[0].get());
+    EXPECT_EQ(tries[i].get(), tries[0].get());
     EXPECT_EQ(models[i].get(), models[0].get());
   }
 }
@@ -205,6 +210,46 @@ TEST_F(JiebaEmbeddedTokenizerTest, EmbeddedEntriesMatchCppjiebaTextLoader) {
         << i;
     ASSERT_EQ(entry.tag, expected.tag) << i;
     ASSERT_DOUBLE_EQ(entry.weight, expected.weight) << i;
+  }
+}
+
+TEST_F(JiebaEmbeddedTokenizerTest, PackedTrieMatchesCppjiebaLookup) {
+  const auto dict = zvec::fts::get_embedded_jieba_dict();
+  const auto packed = zvec::fts::get_embedded_jieba_trie();
+  ASSERT_TRUE(dict && packed);
+  const cppjieba::DictTrie reference(**dict);
+
+  // Both tries refer to the same DictUnits, including the winning entry for
+  // duplicate words. Compare every terminal and every intermediate prefix.
+  cppjieba::RuneStrArray runes;
+  for (const auto &unit : *(*dict)->node_infos) {
+    runes.clear();
+    for (auto rune : unit.word) {
+      runes.emplace_back(rune, 0, 0);
+      ASSERT_EQ((*packed)->Find(runes.begin(), runes.end()),
+                reference.Find(runes.begin(), runes.end()));
+    }
+  }
+
+  for (const std::string text :
+       {"", "南京市长江大桥abc，𠀀", "中华人民共和国"}) {
+    ASSERT_TRUE(cppjieba::DecodeUTF8RunesInString(text, runes));
+    ASSERT_EQ((*packed)->Find(runes.begin(), runes.end()),
+              reference.Find(runes.begin(), runes.end()));
+    for (size_t limit : {0, 1, 2, 3, 512}) {
+      std::vector<cppjieba::Dag> actual, expected;
+      (*packed)->Find(runes.begin(), runes.end(), actual, limit);
+      reference.Find(runes.begin(), runes.end(), expected, limit);
+      ASSERT_EQ(actual.size(), expected.size());
+      for (size_t i = 0; i < expected.size(); ++i) {
+        EXPECT_EQ(actual[i].runestr.rune, expected[i].runestr.rune);
+        EXPECT_EQ(actual[i].runestr.offset, expected[i].runestr.offset);
+        ASSERT_EQ(actual[i].nexts.size(), expected[i].nexts.size());
+        for (size_t j = 0; j < expected[i].nexts.size(); ++j) {
+          ASSERT_EQ(actual[i].nexts[j], expected[i].nexts[j]);
+        }
+      }
+    }
   }
 }
 

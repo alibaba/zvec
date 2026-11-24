@@ -29,6 +29,7 @@ import argparse
 import ctypes
 import ctypes.util
 import hashlib
+import itertools
 import logging
 import struct
 from pathlib import Path
@@ -91,9 +92,12 @@ def compile_dictionary(source: bytes) -> tuple[bytes, str]:
     words = bytearray()
     tags = bytearray()
     counts = []
+    spellings = []
     for line in source.splitlines():
         word, count, tag = line.split()
-        runes = word.decode("utf-8").encode("utf-32-le")
+        spelling = word.decode("utf-8")
+        spellings.append(spelling)
+        runes = spelling.encode("utf-32-le")
         frequency = int(count)
         if not (0 < frequency <= 0xFFFFFFFF):
             raise ValueError(f"invalid dictionary frequency: {count!r}")
@@ -118,7 +122,43 @@ def compile_dictionary(source: bytes) -> tuple[bytes, str]:
         f"constexpr unsigned kJiebaMedianFrequency = {counts[len(counts) // 2]};\n"
         f"constexpr unsigned kJiebaMaxFrequency = {counts[-1]};\n"
     )
+    metadata += trie_layout(spellings)
     return b"".join((word_lengths, tag_lengths, frequencies, words, tags)), metadata
+
+
+def trie_layout(words: list[str]) -> str:
+    """Locate each trie level and encode lexical order as runs of source rows."""
+    level_sizes = [0] * max(map(len, words))
+    ranges = []
+    previous = ""
+    # Stable order preserves cppjieba's last-entry-wins rule for duplicates.
+    for row in sorted(range(len(words)), key=words.__getitem__):
+        word = words[row]
+        shared = 0
+        limit = min(len(word), len(previous))
+        while shared < limit and word[shared] == previous[shared]:
+            shared += 1
+        for depth in range(shared, len(word)):
+            level_sizes[depth] += 1
+        if ranges and ranges[-1][1] == row:
+            ranges[-1][1] += 1
+        else:
+            ranges.append([row, row + 1])
+        previous = word
+
+    # Node zero is the root.
+    offsets = list(itertools.accumulate(level_sizes, initial=1))
+    if offsets[-1] > 0xFFFFFFFF or len(words) > 0xFFFFFFFF:
+        raise ValueError("embedded trie indices must fit in uint32")
+    level_offsets = ", ".join(map(str, offsets))
+    row_ranges = "".join(f"    {{{start}, {end}}},\n" for start, end in ranges)
+    root_size = max(ord(word[0]) for word in words) + 1
+    return (
+        f"constexpr std::array<uint32_t, {len(offsets)}> kJiebaLevelOffsets = "
+        f"{{{level_offsets}}};\n"
+        f"constexpr uint32_t kJiebaSortedRowRanges[][2] = {{\n{row_ranges}}};\n"
+        f"constexpr std::size_t kJiebaRootSize = {root_size};\n"
+    )
 
 
 def write_include(

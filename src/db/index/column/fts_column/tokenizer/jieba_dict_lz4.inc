@@ -154081,4 +154081,20 @@ constexpr double kJiebaFrequencySum = 60101954.0;
 constexpr unsigned kJiebaMinFrequency = 2;
 constexpr unsigned kJiebaMedianFrequency = 3;
 constexpr unsigned kJiebaMaxFrequency = 883634;
+constexpr std::array<uint32_t, 17> kJiebaLevelOffsets = {1, 11753, 189928, 395257, 484259, 490797, 494124, 495895, 496796, 497328, 497637, 497798, 497884, 497940, 497970, 497985, 497991};
+constexpr uint32_t kJiebaSortedRowRanges[][2] = {
+    {0, 2},
+    {3, 4},
+    {5, 7},
+    {2, 3},
+    {4, 5},
+    {7, 18655},
+    {18656, 18697},
+    {18655, 18656},
+    {18697, 341144},
+    {341145, 341198},
+    {341144, 341145},
+    {341198, 348982},
+};
+constexpr std::size_t kJiebaRootSize = 40867;
 // clang-format on

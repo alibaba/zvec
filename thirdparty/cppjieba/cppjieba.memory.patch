@@ -1,8 +1,8 @@
 diff --git a/include/cppjieba/DictTrie.hpp b/include/cppjieba/DictTrie.hpp
-index e3e1a7e4..3e36c3c2 100644
+index e3e1a7e4..ad718ab5 100644
 --- a/include/cppjieba/DictTrie.hpp
 +++ b/include/cppjieba/DictTrie.hpp
-@@ -7,6 +7,7 @@
+@@ -7,12 +7,14 @@
  #include <cstdlib>
  #include <cmath>
  #include <deque>
@@ -10,7 +10,14 @@ index e3e1a7e4..3e36c3c2 100644
  #include <memory>
  #include <mutex>
  #include <set>
-@@ -34,10 +35,26 @@ class DictTrie {
+ #include <string>
+ #include <unordered_map>
+ #include <unordered_set>
++#include <utility>
+ #include "limonp/StringUtil.hpp"
+ #include "limonp/Logging.hpp"
+ #include "UnicodeFile.hpp"
+@@ -34,10 +36,42 @@ class DictTrie {
      WordWeightMax,
    }; // enum UserWordWeightOption
 
@@ -21,6 +28,22 @@ index e3e1a7e4..3e36c3c2 100644
 +    double max_weight;
 +    double median_weight;
 +  };
++
++  class ReadOnlyTrie {
++   public:
++    typedef RuneStrArray::const_iterator Iterator;
++    virtual ~ReadOnlyTrie() = default;
++    virtual const DictUnit* Find(Iterator begin, Iterator end) const = 0;
++    virtual void Find(Iterator begin, Iterator end, std::vector<Dag>& dags,
++                      size_t max_word_len) const = 0;
++  };
++
++  // Keep the backing dictionary alive for the lifetime of the lookup.
++  // Returning a const owner keeps the mutable dictionary API out of this path.
++  static std::shared_ptr<const DictTrie> CreateReadOnly(
++      const DictCacheEntry& cache, std::unique_ptr<const ReadOnlyTrie> lookup) {
++    return std::shared_ptr<const DictTrie>(new const DictTrie(std::move(lookup), cache));
++  }
 +
    DictTrie(const std::string& dict_path, const std::string& user_dict_paths = "", UserWordWeightOption user_word_weight_opt = WordWeightMedian) {
      Init(dict_path, user_dict_paths, user_word_weight_opt);
@@ -37,7 +60,28 @@ index e3e1a7e4..3e36c3c2 100644
    ~DictTrie() {
      delete trie_;
    }
-@@ -168,16 +185,12 @@ class DictTrie {
+@@ -73,6 +107,9 @@ class DictTrie {
+   }
+
+   const DictUnit* Find(RuneStrArray::const_iterator begin, RuneStrArray::const_iterator end) const {
++    if (read_only_trie_) {
++      return read_only_trie_->Find(begin, end);
++    }
+     return trie_->Find(begin, end);
+   }
+
+@@ -80,6 +117,10 @@ class DictTrie {
+         RuneStrArray::const_iterator end,
+         std::vector<struct Dag>&res,
+         size_t max_word_len = MAX_WORD_LENGTH) const {
++    if (read_only_trie_) {
++      read_only_trie_->Find(begin, end, res, max_word_len);
++      return;
++    }
+     trie_->Find(begin, end, res, max_word_len);
+   }
+
+@@ -168,16 +209,16 @@ class DictTrie {
 
 
   private:
@@ -48,6 +92,10 @@ index e3e1a7e4..3e36c3c2 100644
 -    double max_weight;
 -    double median_weight;
 -  };
++  DictTrie(std::unique_ptr<const ReadOnlyTrie> lookup, const DictCacheEntry& cache)
++    : trie_(NULL), read_only_trie_(std::move(lookup)) {
++    Init(cache, "", WordWeightMedian);
++  }
 
    void Init(const std::string& dict_path, const std::string& user_dict_paths, UserWordWeightOption user_word_weight_opt) {
 -    const DictCacheEntry& cache = GetDictCache(dict_path);
@@ -58,7 +106,17 @@ index e3e1a7e4..3e36c3c2 100644
      base_static_node_infos_ = cache.node_infos;
      freq_sum_ = cache.freq_sum;
      min_weight_ = cache.min_weight;
-@@ -236,14 +249,18 @@ class DictTrie {
+@@ -195,6 +236,9 @@ class DictTrie {
+         break;
+     }
+
++    if (read_only_trie_) {
++      return;
++    }
+     if (user_dict_paths.size()) {
+       LoadUserDict(user_dict_paths);
+     }
+@@ -236,14 +280,18 @@ class DictTrie {
    }
 
    static DictCacheEntry BuildDictCacheEntry(const std::string& filePath) {
@@ -80,6 +138,14 @@ index e3e1a7e4..3e36c3c2 100644
        limonp::Split(line, buf, " ");
        XCHECK(buf.size() == DICT_COLUMN_NUM) << "split result illegal, line:" << line;
        DictUnit node_info;
+@@ -309,6 +357,7 @@ class DictTrie {
+   std::vector<DictUnit> static_node_infos_;
+   std::deque<DictUnit> active_node_infos_; // must not be std::vector
+   Trie * trie_;
++  std::unique_ptr<const ReadOnlyTrie> read_only_trie_;
+
+   double freq_sum_;
+   double min_weight_;
 diff --git a/include/cppjieba/HMMModel.hpp b/include/cppjieba/HMMModel.hpp
 index 11524957..e181241d 100644
 --- a/include/cppjieba/HMMModel.hpp

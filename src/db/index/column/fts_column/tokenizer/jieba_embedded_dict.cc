@@ -14,6 +14,8 @@
 
 #include "jieba_embedded_dict.h"
 #include <lz4.h>
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -67,13 +69,130 @@ uint32_t read_u32(const unsigned char *p) {
   return read_u16(p) | (read_u16(p + 2) << 16);
 }
 
+class EmbeddedTrie final : public cppjieba::DictTrie::ReadOnlyTrie {
+ public:
+  explicit EmbeddedTrie(const std::vector<cppjieba::DictUnit> &entries)
+      : entries_(entries) {}
+
+  Status build() {
+    static_assert(kJiebaRootSize <= 0x110000);
+    auto next = kJiebaLevelOffsets;
+    nodes_.resize(static_cast<size_t>(next.back()) + 1);
+    nodes_.front().first_child = 1;
+    nodes_.back().first_child = next.back();
+
+    const cppjieba::Unicode empty;
+    const auto *previous = &empty;
+    for (const auto &[first, end] : kJiebaSortedRowRanges) {
+      if (end > entries_.size()) {
+        return Status::InternalError("Invalid embedded Jieba row range");
+      }
+      for (uint32_t row = first; row < end; ++row) {
+        const auto &word = entries_[row].word;
+        if (word.empty() || word.size() >= next.size()) {
+          return Status::InternalError("Invalid embedded Jieba word length");
+        }
+        const auto mismatch = std::mismatch(word.begin(), word.end(),
+                                            previous->begin(), previous->end());
+        // In lexical order only the suffix introduces new nodes. Each level
+        // has its own cursor, so siblings land together in rune order.
+        for (size_t depth = mismatch.first - word.begin(); depth < word.size();
+             ++depth) {
+          if (next[depth] == kJiebaLevelOffsets[depth + 1]) {
+            return Status::InternalError("Invalid embedded Jieba trie level");
+          }
+          nodes_[next[depth]++] = {next[depth + 1], word[depth], 0};
+        }
+        nodes_[next[word.size() - 1] - 1].entry = row + 1;
+        previous = &word;
+      }
+    }
+    if (!std::equal(next.begin(), next.end() - 1,
+                    kJiebaLevelOffsets.begin() + 1)) {
+      return Status::InternalError("Incomplete embedded Jieba trie");
+    }
+
+    // Most lookups start a new word. Index the root's wide fanout directly.
+    roots_.resize(kJiebaRootSize);
+    for (uint32_t i = 1; i < nodes_[1].first_child; ++i) {
+      if (nodes_[i].rune >= roots_.size()) {
+        return Status::InternalError("Invalid embedded Jieba trie root");
+      }
+      roots_[nodes_[i].rune] = i;
+    }
+    return Status::OK();
+  }
+
+  const cppjieba::DictUnit *Find(Iterator begin, Iterator end) const override {
+    if (begin == end) {
+      return nullptr;
+    }
+    uint32_t node = root_child(begin->rune);
+    for (++begin; node && begin != end; ++begin) {
+      node = child(node, begin->rune);
+    }
+    return entry(node);
+  }
+
+  void Find(Iterator begin, Iterator end, std::vector<cppjieba::Dag> &dags,
+            size_t max_word_len) const override {
+    const size_t size = end - begin;
+    dags.resize(size);
+    for (size_t i = 0; i < size; ++i) {
+      auto &dag = dags[i];
+      dag.runestr = begin[i];
+      uint32_t node = root_child(begin[i].rune);
+      // cppjieba always emits the single-rune edge, including unknown words.
+      dag.nexts.push_back(std::make_pair(i, entry(node)));
+      for (size_t j = i + 1; node && j < size && j - i < max_word_len; ++j) {
+        node = child(node, begin[j].rune);
+        if (const auto *word = entry(node)) {
+          dag.nexts.push_back(std::make_pair(j, word));
+        }
+      }
+    }
+  }
+
+ private:
+  struct Node {
+    uint32_t first_child;
+    uint32_t rune;
+    uint32_t entry;
+  };
+
+  uint32_t root_child(uint32_t rune) const {
+    return rune < roots_.size() ? roots_[rune] : 0;
+  }
+
+  uint32_t child(uint32_t node, uint32_t rune) const {
+    const auto begin = nodes_.begin() + nodes_[node].first_child;
+    const auto end = nodes_.begin() + nodes_[node + 1].first_child;
+    const auto it = std::lower_bound(
+        begin, end, rune,
+        [](const Node &n, uint32_t key) { return n.rune < key; });
+    return it != end && it->rune == rune
+               ? static_cast<uint32_t>(it - nodes_.begin())
+               : 0;
+  }
+
+  const cppjieba::DictUnit *entry(uint32_t node) const {
+    const uint32_t row = nodes_[node].entry;
+    return row ? &entries_[row - 1] : nullptr;
+  }
+
+  // DictTrie owns the dictionary entries and the lookup together.
+  const std::vector<cppjieba::DictUnit> &entries_;
+  std::vector<Node> nodes_;
+  std::vector<uint32_t> roots_;
+};
+
 Result<EmbeddedJiebaDict> load_compiled_dictionary() {
   auto data = decompress(kJiebaDictLz4, kJiebaDictLz4OriginalSize);
   if (!data) {
     return tl::make_unexpected(data.error());
   }
   // The generator writes columns without padding, independent of the target
-  // ABI. Only DictUnit and the trie need to be materialized at first use.
+  // ABI. DictUnit is materialized once for both dictionary lookup paths.
   static_assert(kJiebaWordCount * 8ULL + kJiebaRuneCount * 4ULL <=
                 kJiebaDictLz4OriginalSize);
   const auto *word_lengths =
@@ -132,7 +251,12 @@ Result<std::shared_ptr<const cppjieba::DictTrie>> get_embedded_jieba_trie() {
     if (!dict) {
       return tl::make_unexpected(dict.error());
     }
-    return std::make_shared<const cppjieba::DictTrie>(**dict);
+    auto lookup = std::make_unique<EmbeddedTrie>(*(*dict)->node_infos);
+    auto status = lookup->build();
+    if (!status.ok()) {
+      return tl::make_unexpected(status);
+    }
+    return cppjieba::DictTrie::CreateReadOnly(**dict, std::move(lookup));
   }();
   return trie;
 }
