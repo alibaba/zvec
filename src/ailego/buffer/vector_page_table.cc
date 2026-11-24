@@ -1594,8 +1594,8 @@ void VecBufferPool::unregister_metadata_range(size_t offset) {
                                 std::memory_order_release);
 }
 
-VecBufferPool::MetadataRanges::const_iterator VecBufferPool::first_metadata_range(
-    size_t offset) const {
+VecBufferPool::MetadataRanges::const_iterator
+VecBufferPool::first_metadata_range(size_t offset) const {
   auto range = metadata_ranges_.upper_bound(offset);
   if (range != metadata_ranges_.begin() && std::prev(range)->second > offset) {
     --range;
@@ -2527,7 +2527,7 @@ int VecBufferPool::write_range(size_t file_offset, size_t length,
 }
 
 int VecBufferPool::write_range(size_t file_offset, size_t length,
-                              const char *src, size_t *written) {
+                               const char *src, size_t *written) {
   return write_range_status(file_offset, length, src, written) ==
                  PageWriteStatus::kOk
              ? 0
@@ -2535,9 +2535,9 @@ int VecBufferPool::write_range(size_t file_offset, size_t length,
 }
 
 PageWriteStatus VecBufferPool::write_range_status(size_t file_offset,
-                                                 size_t length,
-                                                 const char *src,
-                                                 size_t *written) try {
+                                                  size_t length,
+                                                  const char *src,
+                                                  size_t *written) try {
   if (written != nullptr) *written = 0;
   if (writeback_quarantined()) return PageWriteStatus::kError;
   if (!writable_) {
@@ -3220,13 +3220,15 @@ int VecBufferPoolHandle::write_range(size_t file_offset, size_t len,
   return pool_.write_range(file_offset, len, src);
 }
 
-PageWriteStatus VecBufferPoolHandle::write_range_status(
-    size_t file_offset, size_t len, const char *src, size_t *written) {
+PageWriteStatus VecBufferPoolHandle::write_range_status(size_t file_offset,
+                                                        size_t len,
+                                                        const char *src,
+                                                        size_t *written) {
   return pool_.write_range_status(file_offset, len, src, written);
 }
 
 int VecBufferPoolHandle::write_range(size_t file_offset, size_t len,
-                                   const char *src, size_t *written) {
+                                     const char *src, size_t *written) {
   return pool_.write_range(file_offset, len, src, written);
 }
 

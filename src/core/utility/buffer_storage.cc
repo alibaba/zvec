@@ -1211,7 +1211,8 @@ class BufferStorage : public IndexStorage {
       auto owner = std::allocate_shared<ailego::BudgetedAlignedBuffer>(
           ailego::BudgetedAllocator<ailego::BudgetedAlignedBuffer>{}, bytes,
           alignment);
-      return MemoryBlock::MakeSharedView(owner->data(), owner, /*deep_copy=*/true);
+      return MemoryBlock::MakeSharedView(owner->data(), owner,
+                                         /*deep_copy=*/true);
     }
 
     size_t read_memory_block(size_t abs_offset, MemoryBlock &data, size_t len,
@@ -1398,7 +1399,8 @@ class BufferStorage : public IndexStorage {
     {
       std::scoped_lock checkpoint_lock(checkpoint_mutex_,
                                        candidate.checkpoint_mutex_);
-      std::swap(accept_checkpoint_requests_, candidate.accept_checkpoint_requests_);
+      std::swap(accept_checkpoint_requests_,
+                candidate.accept_checkpoint_requests_);
       std::swap(pending_checkpoint_, candidate.pending_checkpoint_);
       std::swap(refreshed_during_writeback_,
                 candidate.refreshed_during_writeback_);
@@ -1407,7 +1409,8 @@ class BufferStorage : public IndexStorage {
       visible_checkpoint_.store(
           candidate.visible_checkpoint_.load(std::memory_order_acquire),
           std::memory_order_release);
-      candidate.visible_checkpoint_.store(previous_visible, std::memory_order_release);
+      candidate.visible_checkpoint_.store(previous_visible,
+                                          std::memory_order_release);
       const bool previous_dirty = index_dirty_.load(std::memory_order_relaxed);
       index_dirty_.store(candidate.index_dirty_.load(std::memory_order_relaxed),
                          std::memory_order_relaxed);
@@ -2572,10 +2575,12 @@ class BufferStorage : public IndexStorage {
   // buffer manager
   std::string file_name_;
   std::unique_ptr<ailego::StagedPath> staged_file_;
-  using SegmentMap = std::unordered_map<
-      std::string_view, SegmentState, std::hash<std::string_view>,
-      std::equal_to<std::string_view>,
-      ailego::BudgetedAllocator<std::pair<const std::string_view, SegmentState>>>;
+  using SegmentMap =
+      std::unordered_map<std::string_view, SegmentState,
+                         std::hash<std::string_view>,
+                         std::equal_to<std::string_view>,
+                         ailego::BudgetedAllocator<
+                             std::pair<const std::string_view, SegmentState>>>;
   ailego::LazyMap<SegmentMap> segments_;
   std::shared_ptr<DirectoryGeneration> directory_generation_;
 

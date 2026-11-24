@@ -937,7 +937,8 @@ class ZVEC_AILEGO_API VecBufferPool {
   char *acquire_buffer(block_id_t page_id, int retry, bool record_reuse,
                        bool *allocation_failed);
   PageWriteStatus write_range_status(size_t file_offset, size_t length,
-                                     const char *src, size_t *written = nullptr);
+                                     const char *src,
+                                     size_t *written = nullptr);
   PageWriteStatus write_fragments_status(
       const VecBufferWriteFragment *fragments, size_t count);
   struct WriteFragmentLayout {
@@ -976,8 +977,7 @@ class ZVEC_AILEGO_API VecBufferPool {
   using MetadataRanges =
       std::map<size_t, size_t, std::less<size_t>,
                BudgetedAllocator<std::pair<const size_t, size_t>>>;
-  MetadataRanges::const_iterator first_metadata_range(
-      size_t offset) const;
+  MetadataRanges::const_iterator first_metadata_range(size_t offset) const;
   // Pin a dirty page for writeback. Waits out an in-flight load/eviction so a
   // flush never mistakes a temporarily unavailable dirty page for a persisted
   // one. Returns nullptr for clean pages; sets *failed when the page is still
@@ -1129,7 +1129,8 @@ class ZVEC_AILEGO_API VecBufferPoolHandle {
 
   int write_range(size_t file_offset, size_t len, const char *src);
   PageWriteStatus write_range_status(size_t file_offset, size_t len,
-                                     const char *src, size_t *written = nullptr);
+                                     const char *src,
+                                     size_t *written = nullptr);
 
   int write_range(size_t file_offset, size_t len, const char *src,
                   size_t *written);
