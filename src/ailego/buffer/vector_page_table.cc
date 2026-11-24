@@ -4079,7 +4079,7 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
 
       std::array<struct io_event, kBlockingAioBatchSize> events{};
       const bool drained = drain_blocking_aio(cbs.data(), buffers.data(),
-                                                accepted, events.data());
+                                              accepted, events.data());
       in_flight = false;
       if (!drained) {
         abandon_claims(accepted);
