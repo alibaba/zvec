@@ -18,6 +18,7 @@
 
 #include "avx512_vnni/record_quantized_int8/squared_euclidean.h"
 #include "avx512_vnni/record_quantized_int8/common.h"
+#include "common/record_metadata.h"
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(__AVX512F__))
 #include <immintrin.h>
 #endif
@@ -150,14 +151,14 @@ static ailego_force_inline void finish_distance_batch4(
     const void *const *vectors, size_t original_dim,
     const float *inner_products, float query_scale, float query_bias,
     float query_sum, float query_sum_squared, float *distances) {
-  const float *tail0 = reinterpret_cast<const float *>(
-      reinterpret_cast<const int8_t *>(vectors[0]) + original_dim);
-  const float *tail1 = reinterpret_cast<const float *>(
-      reinterpret_cast<const int8_t *>(vectors[1]) + original_dim);
-  const float *tail2 = reinterpret_cast<const float *>(
-      reinterpret_cast<const int8_t *>(vectors[2]) + original_dim);
-  const float *tail3 = reinterpret_cast<const float *>(
-      reinterpret_cast<const int8_t *>(vectors[3]) + original_dim);
+  const record::Metadata tail0(reinterpret_cast<const int8_t *>(vectors[0]) +
+                               original_dim);
+  const record::Metadata tail1(reinterpret_cast<const int8_t *>(vectors[1]) +
+                               original_dim);
+  const record::Metadata tail2(reinterpret_cast<const int8_t *>(vectors[2]) +
+                               original_dim);
+  const record::Metadata tail3(reinterpret_cast<const int8_t *>(vectors[3]) +
+                               original_dim);
 
   const __m128 record_scale =
       _mm_set_ps(tail3[0], tail2[0], tail1[0], tail0[0]);
@@ -165,11 +166,8 @@ static ailego_force_inline void finish_distance_batch4(
   const __m128 record_sum = _mm_set_ps(tail3[2], tail2[2], tail1[2], tail0[2]);
   const __m128 record_sum_squared =
       _mm_set_ps(tail3[3], tail2[3], tail1[3], tail0[3]);
-  const __m128i code_sums =
-      _mm_set_epi32(reinterpret_cast<const int *>(tail3)[4],
-                    reinterpret_cast<const int *>(tail2)[4],
-                    reinterpret_cast<const int *>(tail1)[4],
-                    reinterpret_cast<const int *>(tail0)[4]);
+  const __m128i code_sums = _mm_set_epi32(tail3.code_sum(), tail2.code_sum(),
+                                          tail1.code_sum(), tail0.code_sum());
   const __m128 inner_product =
       _mm_sub_ps(_mm_loadu_ps(inner_products),
                  _mm_mul_ps(_mm_cvtepi32_ps(code_sums), _mm_set1_ps(128.0f)));
@@ -203,11 +201,11 @@ void squared_euclidean_int8_distance(const void *a, const void *b, size_t dim,
   if (original_dim <= 0) {
     return;
   }
-  const float *a_tail = reinterpret_cast<const float *>(
-      reinterpret_cast<const int8_t *>(a) + original_dim);
-  const float *b_tail = reinterpret_cast<const float *>(
-      reinterpret_cast<const int8_t *>(b) + original_dim);
-  const int b_int8_sum = reinterpret_cast<const int *>(b_tail)[4];
+  const record::Metadata a_tail(reinterpret_cast<const int8_t *>(a) +
+                                original_dim);
+  const record::Metadata b_tail(reinterpret_cast<const int8_t *>(b) +
+                                original_dim);
+  const int b_int8_sum = b_tail.code_sum();
   *distance = stored_pair_inner_product(reinterpret_cast<const int8_t *>(a),
                                         reinterpret_cast<const int8_t *>(b),
                                         original_dim, b_int8_sum);
@@ -250,8 +248,8 @@ void squared_euclidean_int8_batch_distance(
   float *dist_ptr = distances;
   const int8_t *const *data_ptrs_ptr =
       reinterpret_cast<const int8_t *const *>(vectors);
-  const float *q_tail = reinterpret_cast<const float *>(
-      reinterpret_cast<const int8_t *>(query) + original_dim);
+  const record::Metadata q_tail(reinterpret_cast<const int8_t *>(query) +
+                                original_dim);
   float q_a = q_tail[0];
   float q_b = q_tail[1];
   float q_s = q_tail[2];
@@ -288,13 +286,13 @@ void squared_euclidean_int8_batch_distance(
     internal::ip_int8_batch_avx512_vnni_impl<batch_size>(
         query, &vectors[i], prefetch_ptrs, original_dim, ip_dists.data());
     for (size_t j = 0; j < batch_size; ++j) {
-      const float *m_tail = reinterpret_cast<const float *>(
+      const record::Metadata m_tail(
           reinterpret_cast<const int8_t *>(data_ptrs_ptr[j]) + original_dim);
       float m_a = m_tail[0];
       float m_b = m_tail[1];
       float m_s = m_tail[2];
       float m_s2 = m_tail[3];
-      int int8_sum = reinterpret_cast<const int *>(m_tail)[4];
+      int int8_sum = m_tail.code_sum();
       float result = ip_dists[j];
       result -= 128.0f * static_cast<float>(int8_sum);
       result = m_a * m_a * m_s2 + sum2 - 2 * m_a * q_a * result +
@@ -310,13 +308,13 @@ void squared_euclidean_int8_batch_distance(
     float ip_dist;
     internal::ip_int8_batch_avx512_vnni_impl<1>(
         query, &vectors[i], prefetch_ptrs, original_dim, &ip_dist);
-    const float *m_tail = reinterpret_cast<const float *>(
+    const record::Metadata m_tail(
         reinterpret_cast<const int8_t *>(data_ptrs_ptr[0]) + original_dim);
     float m_a = m_tail[0];
     float m_b = m_tail[1];
     float m_s = m_tail[2];
     float m_s2 = m_tail[3];
-    int int8_sum = reinterpret_cast<const int *>(m_tail)[4];
+    int int8_sum = m_tail.code_sum();
     float result = ip_dist;
     result -= 128.0f * static_cast<float>(int8_sum);
     result = m_a * m_a * m_s2 + sum2 - 2 * m_a * q_a * result +

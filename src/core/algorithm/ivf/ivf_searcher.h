@@ -122,6 +122,10 @@ class IVFSearcher : public IndexSearcher {
   }
 
  private:
+  int search_many(const void *query, const IndexQueryMeta &qmeta,
+                  uint32_t count, IVFSearcherContext *ctx, bool brute_force,
+                  bool *handled) const;
+
   int search_bf(const void *query, const IndexQueryMeta &qmeta, uint32_t count,
                 Context::Pointer &context,
                 const std::vector<std::vector<uint64_t>> *p_keys) const;

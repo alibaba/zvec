@@ -84,24 +84,35 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # falls back to synchronous pread. None of these paths requires a separate
     # DiskAnn runtime library.
 elseif (APPLE)
-    target_link_libraries(_zvec PRIVATE
-            -Wl,-force_load,$<TARGET_FILE:core_knn_flat_static>
-            -Wl,-force_load,$<TARGET_FILE:core_knn_flat_sparse_static>
-            -Wl,-force_load,$<TARGET_FILE:core_knn_hnsw_static>
-            -Wl,-force_load,$<TARGET_FILE:core_knn_hnsw_rabitq_static>
-            -Wl,-force_load,$<TARGET_FILE:core_knn_ivf_rabitq_static>
-            -Wl,-force_load,$<TARGET_FILE:core_knn_hnsw_sparse_static>
-            -Wl,-force_load,$<TARGET_FILE:core_knn_ivf_static>
-            -Wl,-force_load,$<TARGET_FILE:core_knn_vamana_static>
-            -Wl,-force_load,$<TARGET_FILE:core_knn_cluster_static>
-            -Wl,-force_load,$<TARGET_FILE:core_knn_diskann_static>
-            -Wl,-force_load,$<TARGET_FILE:core_mix_reducer_static>
-            -Wl,-force_load,$<TARGET_FILE:core_metric_static>
-            -Wl,-force_load,$<TARGET_FILE:core_utility_static>
-            -Wl,-force_load,$<TARGET_FILE:core_quantizer_static>
-            -Wl,-force_load,$<TARGET_FILE:zvec_turbo>
-            zvec
+    set(_zvec_whole_archive_libs
+            core_knn_flat_static
+            core_knn_flat_sparse_static
+            core_knn_hnsw_static
+            core_knn_hnsw_rabitq_static
+            core_knn_ivf_rabitq_static
+            core_knn_hnsw_sparse_static
+            core_knn_ivf_static
+            core_knn_vamana_static
+            core_knn_cluster_static
+            core_knn_diskann_static
+            core_mix_reducer_static
+            core_metric_static
+            core_utility_static
+            core_quantizer_static
+            zvec_turbo
     )
+    # Track build order and archive changes without propagating the static
+    # targets' link interfaces, which include internal dylibs absent from wheels.
+    add_dependencies(_zvec ${_zvec_whole_archive_libs})
+    target_link_libraries(_zvec PRIVATE zvec)
+    foreach(_lib ${_zvec_whole_archive_libs})
+        target_link_options(_zvec PRIVATE
+                "-Wl,-force_load,$<TARGET_FILE:${_lib}>"
+        )
+        set_property(TARGET _zvec APPEND PROPERTY LINK_DEPENDS
+                "$<TARGET_FILE:${_lib}>"
+        )
+    endforeach()
     target_link_libraries(_zvec PRIVATE
             -Wl,-exported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/exports.mac
     )
