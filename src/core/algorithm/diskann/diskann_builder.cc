@@ -28,7 +28,6 @@
 #include <zvec/core/interface/index_factory.h>
 #include "algorithm/cluster/vector_mean.h"
 #include "utility/owned_vector_holder.h"
-#include "utility/prefix_index_holder.h"
 #include "utility/stable_vector_holder.h"
 #include "diskann_context.h"
 #include "diskann_params.h"
@@ -328,11 +327,7 @@ int DiskAnnBuilder::train_quantized_data() {
 
   ailego::ElapsedTime timer;
 
-  // Keep the legacy prefix and sample order without materializing a second
-  // training holder. The quantizer copies only its selected training rows.
-  IndexHolder::Pointer training_holder = std::make_shared<PrefixIndexHolder>(
-      holder_, max_train_sample_count_, build_meta_);
-  int ret = candidate_quantizer_.get()->train(std::move(training_holder));
+  int ret = candidate_quantizer_.train(holder_, max_train_sample_count_);
   if (ret != 0) {
     LOG_ERROR("Candidate quantizer train failed, ret=%d", ret);
     return ret;

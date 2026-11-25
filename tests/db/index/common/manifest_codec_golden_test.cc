@@ -1151,7 +1151,7 @@ TEST(ManifestCodecGolden, WireReaderRejectsGroups) {
 
 TEST(ManifestCodecGolden, IvfRabitqQuantizationRoundTrip) {
   IVFIndexParams params(MetricType::COSINE, 32, 7, false, QuantizeType::RABITQ,
-                        QuantizerParam(false, 9, 4, 1234, 6));
+                        QuantizerParam::ForRabitq(false, 9, 4, 1234, 6));
   std::string encoded;
   ManifestCodec::EncodeIndexParams(&params, &encoded);
   auto decoded = std::dynamic_pointer_cast<IVFIndexParams>(
@@ -1207,7 +1207,7 @@ TEST(ManifestCodecRabitqTest, MigratesLegacyIvfEffectiveQuantizerSettings) {
 
 TEST(ManifestCodecRabitqTest, QuantizerSettingsRoundTrip) {
   using namespace zvec;
-  QuantizerParam q(false, 3, 4, 24, 6);
+  auto q = QuantizerParam::ForRabitq(false, 3, 4, 24, 6);
   HnswIndexParams hnsw(MetricType::L2, 16, 100, QuantizeType::RABITQ, false, q);
   IVFIndexParams ivf(MetricType::L2, 8, 10, false, QuantizeType::RABITQ, q);
   DiskAnnIndexParams diskann(MetricType::L2, 16, 100, 0, QuantizeType::RABITQ,
@@ -1251,9 +1251,10 @@ TEST(ManifestCodecTest, QuantizerFieldsBeforeTypePreserveBothFormats) {
   // These overlapping tags predate the merge: RaBitQ interprets them as
   // bits/clusters/samples/iterations, PQ as chunks/bits/fast-scan/OPQ.
   for (const auto type : {QuantizeType::RABITQ, QuantizeType::PQ}) {
-    const QuantizerParam qp = type == QuantizeType::RABITQ
-                                  ? QuantizerParam(false, 3, 4, 24, 6)
-                                  : QuantizerParam(false, 4, 4, true, 0, 0);
+    const QuantizerParam qp =
+        type == QuantizeType::RABITQ
+            ? QuantizerParam::ForRabitq(false, 3, 4, 24, 6)
+            : QuantizerParam(false, 4, 4, true, 0, 0);
     IVFIndexParams params(MetricType::L2, 8, 10, false, type, qp);
     std::string encoded;
     ManifestCodec::EncodeIndexParams(&params, &encoded);

@@ -132,6 +132,30 @@ TEST(DiskAnnLegacyPq, BuildAdapterPreservesPqBehavior) {
   }
 }
 
+#if RABITQ_SUPPORTED
+TEST(DiskAnnQuantizerTest, RabitqTrainsBeyondPqPrefix) {
+  constexpr size_t dim = 64;
+  auto holder = std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(dim);
+  ailego::NumericalVector<float> row(dim);
+  for (size_t i = 0; i < 4; ++i) {
+    std::fill(row.begin(), row.end(), static_cast<float>(i));
+    ASSERT_TRUE(holder->emplace(i, row));
+  }
+  IndexMeta meta = make_meta(dim);
+  meta.set_quantizer("RabitqQuantizer", 0, ailego::Params{});
+  DiskAnnQuantizer adapter;
+  ASSERT_EQ(0, adapter.init(&meta, {}));
+  ASSERT_EQ(0, adapter.prepare(4, false, 0, 1));
+  ASSERT_EQ(0, adapter.train(holder, 1));
+  // Each of the four training rows becomes a centroid, including the last.
+  std::vector<uint8_t> code(adapter.code_size());
+  adapter.get()->quantize_data(row.data(), code.data());
+  uint32_t centroid = 0;
+  std::memcpy(&centroid, code.data(), sizeof(centroid));
+  EXPECT_EQ(3u, centroid);
+}
+#endif
+
 TEST(DiskAnnLegacyPq, BuildAdapterValidatesSelectionAndChunks) {
   IndexMeta meta = make_meta(17);
   DiskAnnQuantizer adapter;

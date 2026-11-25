@@ -82,6 +82,15 @@ Status VectorIndexParams::validate() const {
   if (auto s = quantizer_param_.validate(); !s.ok()) {
     return s;
   }
+  if (quantize_type_ == QuantizeType::RABITQ &&
+      (type_ == IndexType::IVF || type_ == IndexType::HNSW ||
+       type_ == IndexType::DISKANN) &&
+      !core_interface::IsValidRabitqClusterCount(
+          quantizer_param_.num_clusters())) {
+    return Status::InvalidArgument(
+        "RABITQ num_clusters must be in [1, 65536]; got ",
+        quantizer_param_.num_clusters());
+  }
   const auto storage_type = flat_data_type();
   if (storage_type != DataType::UNDEFINED &&
       storage_type != DataType::VECTOR_FP32 &&

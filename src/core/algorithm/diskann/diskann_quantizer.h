@@ -9,6 +9,7 @@
 #include <vector>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_factory.h>
+#include "utility/prefix_index_holder.h"
 #include "diskann_params.h"
 #include "diskann_util.h"
 
@@ -88,6 +89,17 @@ class DiskAnnQuantizer {
     if (has_budget && bytes > budget_bytes / count) return IndexError_NoMemory;
     code_size_ = static_cast<uint32_t>(bytes);
     return 0;
+  }
+
+  int train(const IndexHolder::Pointer &holder, size_t pq_sample_limit) {
+    if (!quantizer_ || !holder) return IndexError_NoReady;
+    // PQ trains on its historical prefix. RaBitQ samples the full input.
+    // Both need the candidate layout (Cosine excludes the stored norm).
+    const size_t limit = quantizer_->type() == turbo::QuantizeType::kPQ
+                             ? pq_sample_limit
+                             : holder->count();
+    return quantizer_->train(
+        std::make_shared<PrefixIndexHolder>(holder, limit, meta_));
   }
 
   const turbo::Quantizer::Pointer &get() const {

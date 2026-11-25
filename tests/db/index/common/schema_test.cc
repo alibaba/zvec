@@ -1201,6 +1201,23 @@ TEST(FieldSchemaTest, IvfRabitqIndexValidationMetricTypes) {
   }
 }
 
+TEST(FieldSchemaTest, IntegratedRabitqClusterCountBounds) {
+  for (const std::shared_ptr<VectorIndexParams> &params :
+       std::vector<std::shared_ptr<VectorIndexParams>>{
+           std::make_shared<HnswIndexParams>(MetricType::L2),
+           std::make_shared<IVFIndexParams>(MetricType::L2),
+           std::make_shared<DiskAnnIndexParams>(MetricType::L2)}) {
+    params->set_quantize_type(QuantizeType::RABITQ);
+    for (int clusters : {65536, 65537}) {
+      params->set_quantizer_param(
+          QuantizerParam::ForRabitq(false, 7, clusters, 0));
+      FieldSchema field("vector", DataType::VECTOR_FP32, 128, false, params);
+      EXPECT_EQ(clusters == 65536, params->validate().ok());
+      EXPECT_EQ(clusters == 65536, field.validate().ok());
+    }
+  }
+}
+
 TEST(FieldSchemaTest, GraphRabitqAcceptsDefaultReferenceStorage) {
   for (auto metric : {MetricType::L2, MetricType::IP, MetricType::COSINE}) {
     SCOPED_TRACE(static_cast<int>(metric));
@@ -1214,7 +1231,8 @@ TEST(FieldSchemaTest, GraphRabitqAcceptsDefaultReferenceStorage) {
       params->set_quantize_type(QuantizeType::RABITQ);
       for (int bits : {1, 3, 9}) {
         SCOPED_TRACE(bits);
-        params->set_quantizer_param(QuantizerParam(false, bits, 4, 128, 6));
+        params->set_quantizer_param(
+            QuantizerParam::ForRabitq(false, bits, 4, 128, 6));
         EXPECT_TRUE(params->validate().ok());
         FieldSchema field("vector", DataType::VECTOR_FP32, 128, false, params);
         const auto status = field.validate();
@@ -1237,17 +1255,17 @@ TEST(FieldSchemaTest, GraphRabitqRejectsInvalidQuantizerSettings) {
     else
       params = std::make_shared<DiskAnnIndexParams>(MetricType::L2);
     params->set_quantize_type(QuantizeType::RABITQ);
-    for (const auto &q : {QuantizerParam(false, 0, 4, 128, 6),
-                          QuantizerParam(false, 10, 4, 128, 6),
-                          QuantizerParam(false, 3, 4, -1, 6),
-                          QuantizerParam(false, 3, 0, 128, 6),
-                          QuantizerParam(false, 3, 4, 128, 0),
-                          QuantizerParam(true, 3, 4, 128, 6)}) {
+    for (const auto &q : {QuantizerParam::ForRabitq(false, 0, 4, 128, 6),
+                          QuantizerParam::ForRabitq(false, 10, 4, 128, 6),
+                          QuantizerParam::ForRabitq(false, 3, 4, -1, 6),
+                          QuantizerParam::ForRabitq(false, 3, 0, 128, 6),
+                          QuantizerParam::ForRabitq(false, 3, 4, 128, 0),
+                          QuantizerParam::ForRabitq(true, 3, 4, 128, 6)}) {
       params->set_quantizer_param(q);
       FieldSchema field("vector", DataType::VECTOR_FP32, 128, false, params);
       EXPECT_EQ(field.validate().code(), StatusCode::INVALID_ARGUMENT);
     }
-    params->set_quantizer_param(QuantizerParam(false, 3, 4, 0, 6));
+    params->set_quantizer_param(QuantizerParam::ForRabitq(false, 3, 4, 0, 6));
     FieldSchema field("vector", DataType::VECTOR_FP32, 128, false, params);
     EXPECT_TRUE(field.validate().ok());
   }
@@ -1264,7 +1282,8 @@ TEST(FieldSchemaTest, RabitqZeroBitDefaultIsOnlyForDedicatedIndexes) {
     params->set_quantize_type(QuantizeType::RABITQ);
     for (int bits : {-1, 0, 10}) {
       SCOPED_TRACE(bits);
-      params->set_quantizer_param(QuantizerParam(false, bits, 4, 128, 6));
+      params->set_quantizer_param(
+          QuantizerParam::ForRabitq(false, bits, 4, 128, 6));
       EXPECT_EQ(StatusCode::INVALID_ARGUMENT, params->validate().code());
     }
   }
@@ -1279,7 +1298,7 @@ TEST(FieldSchemaTest, RabitqZeroBitDefaultIsOnlyForDedicatedIndexes) {
 TEST(FieldSchemaTest, HnswRabitqRequiresFp32ReferenceStorage) {
   auto params = std::make_shared<HnswIndexParams>(MetricType::L2);
   params->set_quantize_type(QuantizeType::RABITQ);
-  params->set_quantizer_param(QuantizerParam(false, 3, 4, 128, 6));
+  params->set_quantizer_param(QuantizerParam::ForRabitq(false, 3, 4, 128, 6));
   for (auto storage : {DataType::UNDEFINED, DataType::VECTOR_FP32,
                        DataType::VECTOR_FP16, DataType::VECTOR_UINT8}) {
     SCOPED_TRACE(static_cast<int>(storage));

@@ -454,7 +454,7 @@ Args:
 Parameters for quantizer configuration.
 
 Encapsulates quantization-related settings such as enable_rotate.
-For RABITQ, the keyword-only parameters total_bits (1-9), num_clusters,
+For RABITQ, the keyword-only parameters total_bits (1-9), num_clusters (1-65536),
 sample_count (0 uses all vectors), and n_iters configure training.
 For IVF, num_clusters/n_iters train the quantizer independently of the outer
 n_list/n_iters used to partition inverted lists.
@@ -484,8 +484,9 @@ Examples:
       .def(py::init([](bool rotate, int chunks, int pq_bits, bool fast_scan,
                        uint32_t opq_iter, uint32_t opq_pq_iter, int bits,
                        int clusters, int samples, int iters) {
-             auto q = std::make_shared<QuantizerParam>(rotate, bits, clusters,
-                                                       samples, iters);
+             auto q =
+                 std::make_shared<QuantizerParam>(QuantizerParam::ForRabitq(
+                     rotate, bits, clusters, samples, iters));
              q->set_num_chunk(chunks);
              q->set_num_bits(pq_bits);
              q->set_fast_scan(fast_scan);
@@ -566,11 +567,11 @@ Examples:
                   t[3].cast<bool>(), t[4].cast<uint32_t>(),
                   t[5].cast<uint32_t>());
             }
-            auto q = std::make_shared<QuantizerParam>(
+            auto q = std::make_shared<QuantizerParam>(QuantizerParam::ForRabitq(
                 t[0].cast<bool>(), t.size() >= 5 ? t[1].cast<int>() : 7,
                 t.size() >= 5 ? t[2].cast<int>() : 16,
                 t.size() >= 5 ? t[3].cast<int>() : 0,
-                t.size() >= 5 ? t[4].cast<int>() : 20);
+                t.size() >= 5 ? t[4].cast<int>() : 20));
             if (t.size() == 10) {
               q->set_num_chunk(t[5].cast<int>());
               q->set_num_bits(t[6].cast<int>());

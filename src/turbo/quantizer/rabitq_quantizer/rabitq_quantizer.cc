@@ -29,6 +29,7 @@
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_features.h>
 #include <zvec/core/framework/index_threads.h>
+#include <zvec/core/interface/constants.h>
 
 namespace zvec::turbo {
 namespace {
@@ -65,8 +66,8 @@ int RabitqQuantizer::init(const IndexMeta &meta, const ailego::Params &params) {
       (params.has(RABITQ_SAMPLE_COUNT) &&
        !params.get(RABITQ_SAMPLE_COUNT, &samples)) ||
       (params.has(RABITQ_NITERS) && !params.get(RABITQ_NITERS, &niters)) ||
-      clusters < 1 || clusters > 65536 || samples < 0 || niters <= 0 ||
-      niters > std::numeric_limits<int>::max())
+      !core_interface::IsValidRabitqClusterCount(clusters) || samples < 0 ||
+      niters <= 0 || niters > std::numeric_limits<int>::max())
     return kErrInvalidArgument;
   const auto metric = metric_from_name(meta.metric_name());
   if (meta.data_type() != IndexMeta::DT_FP32 || meta.dimension() < 2 ||
@@ -147,10 +148,11 @@ int RabitqQuantizer::train(IndexHolder::Pointer holder) {
   auto it = holder->create_iterator();
   if (!it) return kErrInvalidArgument;
   for (; it->is_valid(); it->next()) {
-    if (!it->data() || !FiniteInput(it->data(), dim_))
-      return kErrInvalidArgument;
+    const void *data = it->data();
+    if (const int ret = it->status(); ret != 0) return ret;
+    if (!data || !FiniteInput(data, dim_)) return kErrInvalidArgument;
     std::vector<float> value(dim_);
-    std::memcpy(value.data(), it->data(), dim_ * sizeof(float));
+    std::memcpy(value.data(), data, dim_ * sizeof(float));
     if (metric_ == MetricType::kCosine) {
       double norm2 = 0;
       for (float v : value) norm2 += static_cast<double>(v) * v;
@@ -159,6 +161,7 @@ int RabitqQuantizer::train(IndexHolder::Pointer holder) {
     }
     samples->emplace(value.data());
   }
+  if (const int ret = it->status(); ret != 0) return ret;
   if (samples->count() == 0) return kErrInvalidArgument;
   std::vector<float> centroids;
   auto append = [&](const void *value) {
@@ -472,7 +475,6 @@ int RabitqQuantizer::dequantize(const void *data, const IndexQueryMeta &meta,
   const float scale = ReadFloat(ex_data, ex_bytes + 12);
   std::vector<float> rotated(padded_dim_), raw(padded_dim_);
   const float midpoint = ((1u << bits_) - 1) * 0.5f;
-  const auto *words = reinterpret_cast<const uint64_t *>(bin_data);
   std::vector<uint8_t> extra(padded_dim_, 0);
   if (bits_ > 1) {
     // rabitqlib ships no unpacker for its SIMD packing patterns; recover the
@@ -488,11 +490,15 @@ int RabitqQuantizer::dequantize(const void *data, const IndexQueryMeta &meta,
     }
   }
   const float *centroid = centroids_.data() + cluster * padded_dim_;
-  for (int i = 0; i < padded_dim_; ++i) {
-    const unsigned sign =
-        static_cast<unsigned>((words[i / 64] >> (63 - i % 64)) & 1);
-    rotated[i] =
-        centroid[i] + scale * (((sign << (bits_ - 1)) | extra[i]) - midpoint);
+  for (int base = 0; base < padded_dim_; base += 64) {
+    uint64_t word;
+    std::memcpy(&word, bin_data + base / 8, sizeof(word));
+    for (int bit = 0; bit < 64; ++bit) {
+      const auto sign = static_cast<unsigned>((word >> (63 - bit)) & 1);
+      const int i = base + bit;
+      rotated[i] =
+          centroid[i] + scale * (((sign << (bits_ - 1)) | extra[i]) - midpoint);
+    }
   }
   rotator_->apply_inverse(rotated.data(), raw.data());
   if (metric_ == MetricType::kCosine)

@@ -364,7 +364,7 @@ bool IVFIndexParam::deserialize_from_json_object(
     rabitq->num_clusters = nlist;
     rabitq->sample_count = sample_count;
     rabitq->niters = niters;
-    if (total_bits < 1 || total_bits > 9 || nlist < 1 || nlist > 65536 ||
+    if (total_bits < 1 || total_bits > 9 || !IsValidRabitqClusterCount(nlist) ||
         sample_count < 0 || niters < 1)
       return false;
   }
@@ -593,8 +593,9 @@ bool RabitqQuantizerParam::deserialize_from_json_object(
   DESERIALIZE_VALUE_FIELD(json_obj, num_clusters);
   DESERIALIZE_VALUE_FIELD(json_obj, sample_count);
   DESERIALIZE_VALUE_FIELD(json_obj, niters);
-  return total_bits >= 1 && total_bits <= 9 && num_clusters >= 1 &&
-         num_clusters <= 65536 && sample_count >= 0 && niters > 0;
+  return total_bits >= 1 && total_bits <= 9 &&
+         IsValidRabitqClusterCount(num_clusters) && sample_count >= 0 &&
+         niters > 0;
 }
 
 bool PqQuantizerParam::deserialize_from_json_object(

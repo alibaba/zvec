@@ -17,6 +17,48 @@
 namespace zvec::turbo {
 namespace {
 
+// The first row is readable, then advancing reports an I/O failure.
+class InterruptedTrainingHolder
+    : public MultiPassIndexHolder<IndexMeta::DT_FP32> {
+ public:
+  InterruptedTrainingHolder() : MultiPassIndexHolder(64) {}
+  size_t count() const override {
+    return 2;
+  }
+  IndexHolder::Iterator::Pointer create_iterator() override {
+    struct Iterator : IndexHolder::Iterator {
+      float row[64]{};
+      bool valid{true};
+      const void *data() const override {
+        return row;
+      }
+      bool is_valid() const override {
+        return valid;
+      }
+      uint64_t key() const override {
+        return 0;
+      }
+      void next() override {
+        valid = false;
+      }
+      int status() const override {
+        return valid ? 0 : core::IndexError_ReadData;
+      }
+    };
+    return std::make_unique<Iterator>();
+  }
+};
+
+TEST(RabitqQuantizer, TrainingPropagatesIteratorFailure) {
+  RabitqQuantizer q;
+  IndexMeta meta(IndexMeta::DT_FP32, 64);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params{});
+  ASSERT_EQ(0, q.init(meta, {}));
+  EXPECT_EQ(core::IndexError_ReadData,
+            q.train(std::make_shared<InterruptedTrainingHolder>()));
+  EXPECT_TRUE(q.require_train());
+}
+
 TEST(RabitqQuantizer, RejectsContiguousTrainingWithoutChangingModel) {
   RabitqQuantizer quantizer;
   IndexMeta meta(IndexMeta::DT_FP32, 64);
@@ -132,7 +174,11 @@ TEST(RabitqQuantizer, BitsMetricsAsymmetricEncodingAndPersistence) {
       }
       EXPECT_NEAR(l2 ? query_norm2 : (cosine ? 1 : 0), batch[1], 1e-3f);
       std::string reconstructed;
-      ASSERT_EQ(0, quantizer->dequantize(dp.data(), dp_meta, &reconstructed));
+      // The second compact row begins four bytes off an eight-byte boundary.
+      std::vector<uint64_t> rows((2 * dp.size() + 7) / 8);
+      char *second = reinterpret_cast<char *>(rows.data()) + dp.size();
+      std::memcpy(second, dp.data(), dp.size());
+      ASSERT_EQ(0, quantizer->dequantize(second, dp_meta, &reconstructed));
       double error2 = 0;
       for (int i = 0; i < dim; ++i) {
         float v;

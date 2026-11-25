@@ -16,7 +16,6 @@
 #include <memory>
 #include <sstream>
 #include <string>
-#include <type_traits>
 #include <vector>
 #include <zvec/core/interface/constants.h>
 #include <zvec/db/status.h>
@@ -146,18 +145,16 @@ class ZVEC_API QuantizerParam {
         fast_scan_(fast_scan),
         opq_iter_(opq_iter),
         opq_pq_iter_(opq_pq_iter) {}
-  // Preserve the RaBitQ overload; a boolean fourth argument selects PQ.
-  template <typename SampleCount,
-            std::enable_if_t<std::is_integral_v<SampleCount> &&
-                                 !std::is_same_v<SampleCount, bool>,
-                             int> = 0>
-  QuantizerParam(bool enable_rotate, int total_bits, int num_clusters,
-                 SampleCount sample_count, int n_iters = 20)
-      : enable_rotate_(enable_rotate),
-        total_bits_(total_bits),
-        num_clusters_(num_clusters),
-        sample_count_(sample_count),
-        n_iters_(n_iters) {}
+  static QuantizerParam ForRabitq(bool enable_rotate, int total_bits,
+                                  int num_clusters, int sample_count,
+                                  int n_iters = 20) {
+    QuantizerParam q(enable_rotate);
+    q.total_bits_ = total_bits;
+    q.num_clusters_ = num_clusters;
+    q.sample_count_ = sample_count;
+    q.n_iters_ = n_iters;
+    return q;
+  }
 
   int total_bits() const {
     return total_bits_;

@@ -81,7 +81,7 @@ TEST(EngineHelperTest, HnswRabitqBuildsFromReopenedCosineFlat) {
     test_util::RemoveTestFiles(graph_path);
     auto params = std::make_shared<HnswIndexParams>(
         MetricType::COSINE, 16, 100, QuantizeType::RABITQ, false,
-        QuantizerParam(false, bits, 4, 128, 6));
+        QuantizerParam::ForRabitq(false, bits, 4, 128, 6));
     params->set_raw_vector_provider(stored);
     FieldSchema field("vector", DataType::VECTOR_FP32, dim, false, params);
     auto converted = ProximaEngineHelper::convert_to_engine_index_param(field);
@@ -152,7 +152,8 @@ TEST(EngineHelperTest, HnswRabitqBuildsFromReopenedCosineFlat) {
 TEST(EngineHelperTest, RabitqTemporaryFlatUsesRawVectors) {
   for (auto metric : {MetricType::L2, MetricType::IP, MetricType::COSINE}) {
     auto params = MakeDefaultQuantVectorIndexParams(
-        metric, QuantizeType::RABITQ, QuantizerParam(false, 7, 4, 128, 6));
+        metric, QuantizeType::RABITQ,
+        QuantizerParam::ForRabitq(false, 7, 4, 128, 6));
     EXPECT_EQ(params.quantize_type(), QuantizeType::UNDEFINED);
     EXPECT_EQ(params.metric_type(), metric);
     FieldSchema field("vector", DataType::VECTOR_FP32, 128, false,
@@ -181,10 +182,11 @@ TEST(EngineHelperTest, IVFRabitqQuantizerParameters) {
       for (bool rotate : {false, true}) {
         SCOPED_TRACE(::testing::Message() << "bits=" << bits << " samples="
                                           << samples << " rotate=" << rotate);
-        FieldSchema field("vector", DataType::VECTOR_FP32, 128, false,
-                          std::make_shared<IVFIndexParams>(
-                              MetricType::L2, 4, 3, false, QuantizeType::RABITQ,
-                              QuantizerParam(rotate, bits, 5, samples, 6)));
+        FieldSchema field(
+            "vector", DataType::VECTOR_FP32, 128, false,
+            std::make_shared<IVFIndexParams>(
+                MetricType::L2, 4, 3, false, QuantizeType::RABITQ,
+                QuantizerParam::ForRabitq(rotate, bits, 5, samples, 6)));
         auto result = ProximaEngineHelper::convert_to_engine_index_param(field);
         ASSERT_TRUE(result) << result.error().message();
         auto ivf = std::dynamic_pointer_cast<core_interface::IVFIndexParam>(
@@ -210,7 +212,7 @@ TEST(EngineHelperTest, IVFRabitqQuantizerParameters) {
 TEST(EngineHelperTest, HnswRabitqQuantizerParameters) {
   auto params = std::make_shared<HnswIndexParams>(
       MetricType::L2, 16, 100, QuantizeType::RABITQ, false,
-      QuantizerParam(false, 3, 4, 24, 6));
+      QuantizerParam::ForRabitq(false, 3, 4, 24, 6));
   FieldSchema field("vector", DataType::VECTOR_FP32, 128, false, params);
   auto result = ProximaEngineHelper::convert_to_engine_index_param(field);
   ASSERT_TRUE(result);
@@ -243,7 +245,7 @@ TEST(EngineHelperTest, HnswRabitqQuantizerParameters) {
 TEST(EngineHelperTest, DiskAnnRabitqQuantizerParameters) {
   auto params = std::make_shared<DiskAnnIndexParams>(
       MetricType::COSINE, 16, 100, 0, QuantizeType::RABITQ,
-      QuantizerParam(false, 9, 4, 24, 6));
+      QuantizerParam::ForRabitq(false, 9, 4, 24, 6));
   FieldSchema field("vector", DataType::VECTOR_FP32, 128, false, params);
   auto result = ProximaEngineHelper::convert_to_engine_index_param(field);
   ASSERT_TRUE(result);

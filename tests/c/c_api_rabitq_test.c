@@ -35,13 +35,12 @@ static void test_params(void) {
     CHECK(zvec_index_params_set_rabitq_quantizer_params(p, 3, 4, 128, 6) ==
           ZVEC_ERROR_INVALID_ARGUMENT);
     OK(zvec_index_params_set_quantize_type(p, ZVEC_QUANTIZE_TYPE_RABITQ));
+    OK(zvec_index_params_set_rabitq_quantizer_params(p, 3, 65536, 128, 6));
     OK(zvec_index_params_set_rabitq_quantizer_params(p, 3, 4, 128, 6));
     check_settings(p, 3);
-    const int invalid[][4] = {{0, 4, 128, 6},
-                              {10, 4, 128, 6},
-                              {3, 0, 128, 6},
-                              {3, 4, -1, 6},
-                              {3, 4, 128, 0}};
+    const int invalid[][4] = {{0, 4, 128, 6}, {10, 4, 128, 6},
+                              {3, 0, 128, 6}, {3, 65537, 128, 6},
+                              {3, 4, -1, 6},  {3, 4, 128, 0}};
     for (size_t j = 0; j < sizeof(invalid) / sizeof(invalid[0]); ++j) {
       CHECK(zvec_index_params_set_rabitq_quantizer_params(
                 p, invalid[j][0], invalid[j][1], invalid[j][2],

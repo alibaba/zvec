@@ -1886,7 +1886,7 @@ zvec_error_code_t zvec_index_params_get_ivf_params(const zvec_index_params_t *pa
   return ZVEC_OK;
 }
 
-// Shared Turbo RaBitQ settings for the ordinary HNSW and IVF indexes.
+// Shared Turbo RaBitQ settings for HNSW, IVF and DiskANN.
 zvec_error_code_t zvec_index_params_set_rabitq_quantizer_params(
     zvec_index_params_t *params, int total_bits, int num_clusters,
     int sample_count, int n_iters) {
@@ -1896,14 +1896,16 @@ zvec_error_code_t zvec_index_params_set_rabitq_quantizer_params(
              p->type() != zvec::IndexType::IVF &&
              p->type() != zvec::IndexType::DISKANN) ||
       p->quantize_type() != zvec::QuantizeType::RABITQ ||
-      total_bits < 1 || total_bits > 9 || num_clusters <= 0 ||
+      total_bits < 1 || total_bits > 9 ||
+      !zvec::core_interface::IsValidRabitqClusterCount(num_clusters) ||
       sample_count < 0 || n_iters <= 0) {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-        "Expected HNSW/IVF/DISKANN with RABITQ, total_bits in [1, 9], positive num_clusters/n_iters, nonnegative sample_count");
+                   "Expected HNSW/IVF/DISKANN with RABITQ, total_bits in [1, 9], "
+                   "num_clusters in [1, 65536], positive n_iters, nonnegative sample_count");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-  p->set_quantizer_param(zvec::QuantizerParam(p->enable_rotate(), total_bits,
-                                            num_clusters, sample_count, n_iters));
+  p->set_quantizer_param(zvec::QuantizerParam::ForRabitq(
+      p->enable_rotate(), total_bits, num_clusters, sample_count, n_iters));
   return ZVEC_OK;
 }
 
