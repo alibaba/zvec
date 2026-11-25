@@ -339,30 +339,23 @@ def test_hnsw_pq_rejects_invalid_configuration(tmp_path, kwargs, error):
         coll.close()
 
 
-@pytest.mark.parametrize(
-    "state,expected",
-    [
-        (
-            (False, 3, 4, 128, 6),
-            {"total_bits": 3, "num_clusters": 4, "sample_count": 128, "n_iters": 6},
-        ),
-        (
-            (True, 4, 4, True, 2, 3),
-            {
-                "num_chunk": 4,
-                "num_bits": 4,
-                "fast_scan": True,
-                "opq_iter": 2,
-                "opq_pq_iter": 3,
-            },
-        ),
-    ],
-)
-def test_quantizer_pickle_before_pq_rabitq_merge(state, expected):
+def test_quantizer_pickle_rejects_unreleased_five_field_state():
     qp = zvec.QuantizerParam.__new__(zvec.QuantizerParam)
-    qp.__setstate__(state)
-    for name, value in expected.items():
-        assert getattr(qp, name) == value
+    with pytest.raises(RuntimeError, match="Invalid state for QuantizerParam"):
+        qp.__setstate__((False, 3, 4, 128, 6))
+
+
+def test_legacy_pq_quantizer_pickle_round_trip():
+    qp = zvec.QuantizerParam.__new__(zvec.QuantizerParam)
+    qp.__setstate__((True, 4, 4, True, 2, 3))
+    assert qp == zvec.QuantizerParam(
+        enable_rotate=True,
+        num_chunk=4,
+        num_bits=4,
+        fast_scan=True,
+        opq_iter=2,
+        opq_pq_iter=3,
+    )
     assert pickle.loads(pickle.dumps(qp)) == qp
     for kind in ("ivf", "hnsw"):
         param = index_param(kind, quantizer_param=qp)
