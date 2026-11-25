@@ -96,14 +96,10 @@ Status CopyPostings(Input &input, const roaring::Roaring &deletions,
       continue;
     }
     auto payload = (*postings)->payload();
-    auto document = input.source->document(*doc);
-    if (!payload || !document) {
-      return !payload ? payload.error() : document.error();
+    if (!payload) {
+      return payload.error();
     }
-    if (!document->present || document->length != payload->length) {
-      return Corrupt();
-    }
-    auto positions = input.head->reader->positions(*doc);
+    auto positions = (*postings)->current_positions(*input.head->reader, *doc);
     if (!positions) {
       return positions.error();
     }
@@ -116,8 +112,9 @@ Status CopyPostings(Input &input, const roaring::Roaring &deletions,
     }
     const auto target =
         static_cast<uint32_t>(scan_row - deletions.rank(scan_row));
-    auto status = writer->add_posting(target, payload->tf,
-                                      [&]() { return (*positions)->next(); });
+    auto status = writer->add_posting(
+        target, payload->tf, [&]() { return (*positions)->next(); },
+        payload->length);
     if (!status.ok()) {
       return status;
     }
@@ -143,6 +140,7 @@ Result<format::FieldMetadata> MergeFtsField(
   uint64_t rows = 0;
   for (const auto &source : inputs) {
     if (!source ||
+        source->statistics().scoring_documents > source->statistics().rows ||
         !format::ValidRange(rows, source->statistics().rows, UINT32_MAX)) {
       return tl::make_unexpected(Status::InvalidArgument("Invalid FTS rows"));
     }

@@ -90,6 +90,10 @@ TEST_P(FtsSegmentPublicationTest,
   auto committed_meta = prepared->metadata;
   segment_->publish_fts_seal(std::move(*prepared));
   EXPECT_FALSE(segment_->meta()->writing_forward_block().has_value());
+  auto forward = segment_->prepare_forward_read({"text"}, false);
+  ASSERT_TRUE(forward.ok()) << forward.status().ToString();
+  EXPECT_EQ(forward->num_rows, 2u);
+  EXPECT_EQ(static_cast<bool>(forward->view), GetParam());
   EXPECT_NE(old_reader, segment_->get_fts_indexer("text"));
   EXPECT_TRUE(std::filesystem::exists(old_path));
   auto old_result = old_reader->search(fts::TermNode("beta"), {});

@@ -163,6 +163,10 @@ constexpr char kFtsManifestMagic[] = "\0ZVEC_FTS_MANIFEST_V1\0";
 constexpr std::string_view kFtsManifestPrefix(kFtsManifestMagic,
                                               sizeof(kFtsManifestMagic) - 1);
 
+constexpr char kBootstrapManifestMagic[] = "\0ZVEC_FTS_MANIFEST_V2\0";
+constexpr std::string_view kBootstrapManifestPrefix(
+    kBootstrapManifestMagic, sizeof(kBootstrapManifestMagic) - 1);
+
 Status ValidateFtsBase(const BlockMeta &block) {
   if (!block.fts_base_) {
     return Status::OK();
@@ -208,6 +212,21 @@ Status ValidateFtsBases(const ManifestData &data, bool *has_custom) {
     }
   }
   return check_segment(data.writing_segment_meta);
+}
+
+Status WrapManifest(std::string_view prefix, std::string_view payload,
+                    std::string *out) {
+  fts::format::Sha256 hash;
+  auto status = hash.update(payload);
+  if (!status.ok()) {
+    return status;
+  }
+  out->append(prefix);
+  fts::format::AppendU64(payload.size(), out);
+  const auto digest = hash.digest();
+  out->append(reinterpret_cast<const char *>(digest.data()), digest.size());
+  out->append(payload);
+  return Status::OK();
 }
 
 std::string EncodeFtsBase(const FtsBaseDescriptor &base) {
@@ -1118,24 +1137,35 @@ Status ManifestCodec::Encode(const ManifestData &data, std::string *out) {
                data.delete_snapshot_path_suffix);
   w.put_varint(f_manifest::kNextSegmentId, data.next_segment_id);
   if (custom || data.requires_commit_record) {
-    fts::format::Sha256 hash;
-    status = hash.update(encoded);
-    if (!status.ok()) {
-      return status;
-    }
-    out->append(kFtsManifestPrefix);
-    fts::format::AppendU64(encoded.size(), out);
-    const auto digest = hash.digest();
-    out->append(reinterpret_cast<const char *>(digest.data()), digest.size());
+    return WrapManifest(kFtsManifestPrefix, encoded, out);
   }
   out->append(encoded);
   return Status::OK();
 }
 
+Result<std::string> ManifestCodec::GateLegacyBaseline(std::string_view bytes) {
+  ManifestData legacy;
+  if (bytes.empty() || bytes.front() == '\0' || !Decode(bytes, &legacy).ok()) {
+    return tl::make_unexpected(
+        Status::FailedPrecondition("Bootstrap requires a legacy checkpoint"));
+  }
+  std::string payload(1, '\1');
+  payload.append(bytes);
+  std::string out;
+  auto status = WrapManifest(kBootstrapManifestPrefix, payload, &out);
+  if (!status.ok()) {
+    return tl::make_unexpected(status);
+  }
+  return out;
+}
+
 Status ManifestCodec::Decode(std::string_view buf, ManifestData *data) {
   bool gated = !buf.empty() && buf.front() == '\0';
+  const bool baseline = buf.substr(0, kBootstrapManifestPrefix.size()) ==
+                        kBootstrapManifestPrefix;
   if (gated) {
-    if (buf.substr(0, kFtsManifestPrefix.size()) != kFtsManifestPrefix) {
+    if (!baseline &&
+        buf.substr(0, kFtsManifestPrefix.size()) != kFtsManifestPrefix) {
       return Status::NotSupported("Unsupported manifest envelope");
     }
     fts::format::Decoder decoder(buf.substr(kFtsManifestPrefix.size()));
@@ -1157,10 +1187,17 @@ Status ManifestCodec::Decode(std::string_view buf, ManifestData *data) {
       return Status::InternalError("Manifest checksum mismatch");
     }
     buf = payload;
+    if (baseline) {
+      if (buf.empty() || buf.front() != '\1') {
+        return Status::NotSupported("Unsupported FTS manifest role");
+      }
+      buf.remove_prefix(1);
+    }
   }
   // Decode into a candidate so failures cannot publish partial metadata.
   ManifestData candidate;
   candidate.requires_commit_record = gated;
+  candidate.bootstrap_baseline = baseline;
   ManifestData *destination = data;
   data = &candidate;
   Status status;
@@ -1210,6 +1247,9 @@ Status ManifestCodec::Decode(std::string_view buf, ManifestData *data) {
   status = ValidateFtsBases(*data, &custom);
   if (!status.ok()) {
     return status;
+  }
+  if (baseline && custom) {
+    return Status::NotSupported("Bootstrap manifest requires a legacy source");
   }
   if (custom && !gated) {
     return Status::NotSupported("FTS base requires a gated manifest");

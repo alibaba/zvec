@@ -104,6 +104,9 @@ class FtsContainerReader
   static Result<Pointer> Open(const std::string &path, bool enable_mmap,
                               size_t read_budget = 1024 * 1024,
                               std::shared_ptr<void> file_owner = {});
+  bool paged_queries() const {
+    return buffer_pool_;
+  }
   const format::Metadata &metadata() const {
     return metadata_;
   }

@@ -14,6 +14,7 @@
 
 #include "fts_dictionary.h"
 #include <algorithm>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include "fts_stream.h"
 
 namespace zvec::fts {
@@ -24,6 +25,17 @@ constexpr size_t kIndexRecord = 32;
 constexpr size_t kIndexPageRecords = 128;
 constexpr size_t kChunk = format::kDictionaryBlockBytes;
 constexpr std::string_view kIndexMagic = "ZVFTDI01";
+
+// Unsigned, big-endian and zero-padded. Unequal prefixes order the full byte
+// strings. Equal prefixes (including trailing NULs) need an exact comparison.
+uint64_t FencePrefix(std::string_view term) {
+  uint64_t value = 0;
+  for (size_t i = 0; i < std::min(sizeof(value), term.size()); ++i) {
+    value |= static_cast<uint64_t>(static_cast<uint8_t>(term[i]))
+             << (56 - 8 * i);
+  }
+  return value;
+}
 
 Status Corrupt() {
   return Status::InternalError("Malformed FTS dictionary directory/reference");
@@ -357,6 +369,13 @@ struct FtsDictionaryReader::IndexPage {
   FtsReadRange bytes;
 };
 
+FtsDictionaryReader::~FtsDictionaryReader() {
+  if (fence_bytes_) {
+    fence_prefixes_.reset();
+    ailego::MemoryLimitPool::get_instance().release_metadata(fence_bytes_);
+  }
+}
+
 Result<FtsDictionaryReader::Pointer> FtsDictionaryReader::Open(
     FtsContainerReader::Pointer container, uint32_t field_ordinal) {
   if (!container || field_ordinal >= container->metadata().fields.size()) {
@@ -417,6 +436,32 @@ Result<FtsDictionaryReader::Pointer> FtsDictionaryReader::Open(
   }
   if (*index != kIndexHeader + reader->index_records_ * kIndexRecord) {
     return tl::make_unexpected(Corrupt());
+  }
+  if (reader->container_->paged_queries() && reader->blocks_ > 1) {
+    // Learn separators from real lookups. Bound even very large dictionaries
+    // by sampling every power-of-two stride. Charge the same pool as pages.
+    auto &pool = ailego::MemoryLimitPool::get_instance();
+    using Slot = std::atomic<uint64_t>;
+    const size_t limit = std::min<size_t>(65536, pool.capacity() / 64);
+    if (limit >= sizeof(Slot)) {
+      uint64_t slots = reader->blocks_;
+      while (slots > limit / sizeof(Slot)) {
+        slots = (slots + 1) / 2;
+        reader->fence_stride_ *= 2;
+      }
+      const size_t bytes = static_cast<size_t>(slots) * sizeof(Slot);
+      if (pool.try_charge_metadata(bytes)) {
+        reader->fence_prefixes_.reset(new (std::nothrow) Slot[slots]);
+        if (reader->fence_prefixes_) {
+          for (size_t i = 0; i < slots; ++i) {
+            std::atomic_init(&reader->fence_prefixes_[i], uint64_t{0});
+          }
+          reader->fence_bytes_ = bytes;
+        } else {
+          pool.release_metadata(bytes);
+        }
+      }
+    }
   }
   return reader;
 }
@@ -621,6 +666,57 @@ Result<int> FtsDictionaryReader::compare(const FtsDictionaryEntry &left,
              : (left.term_size() > right.term_size() ? 1 : 0);
 }
 
+Result<std::optional<FtsDictionaryEntry>> FtsDictionaryReader::next(
+    Scan *scan) {
+  if (scan->remaining_ == 0) {
+    if (scan->leaf_ == blocks_) {
+      if (scan->ordinal_ != count_) {
+        return tl::make_unexpected(Corrupt());
+      }
+      return std::optional<FtsDictionaryEntry>{};
+    }
+    scan->term_meta_ = {};
+    scan->block_ = {};
+    IndexPage directory;
+    auto leaf = record(scan->leaf_, &directory);
+    if (!leaf || leaf->first != scan->ordinal_) {
+      return tl::make_unexpected(leaf ? Corrupt() : leaf.error());
+    }
+    auto decoded = block(*leaf);
+    if (!decoded) {
+      return tl::make_unexpected(decoded.error());
+    }
+    auto bytes = container_->read(prefix_ + "term_meta",
+                                  leaf->first * format::kTermMetadataBytes,
+                                  leaf->count * format::kTermMetadataBytes);
+    if (!bytes) {
+      return tl::make_unexpected(bytes.error());
+    }
+    scan->term_meta_ = std::move(*bytes);
+    scan->block_ = std::move(*decoded);
+    scan->remaining_ = leaf->count;
+    ++scan->leaf_;
+  }
+  const size_t index = scan->ordinal_ - scan->block_.first_ordinal;
+  auto result = entry(scan->block_, index, false);
+  if (!result) {
+    return tl::make_unexpected(result.error());
+  }
+  auto metadata = format::DecodeTermMetadata(scan->term_meta_.view().substr(
+      index * format::kTermMetadataBytes, format::kTermMetadataBytes));
+  if (!metadata) {
+    return tl::make_unexpected(metadata.error());
+  }
+  auto status = validate_metadata(*metadata);
+  if (!status.ok()) {
+    return tl::make_unexpected(status);
+  }
+  result->metadata_ = *metadata;
+  ++scan->ordinal_;
+  --scan->remaining_;
+  return std::optional<FtsDictionaryEntry>{std::move(*result)};
+}
+
 Result<FtsDictionaryEntry> FtsDictionaryReader::at(uint64_t ordinal) {
   if (ordinal >= count_) {
     return tl::make_unexpected(NotFound());
@@ -662,28 +758,52 @@ Result<FtsDictionaryEntry> FtsDictionaryReader::at(uint64_t ordinal) {
   return entry(*decoded, static_cast<size_t>(ordinal - found->first), true);
 }
 
+Result<int> FtsDictionaryReader::compare_fence(size_t level, uint64_t index,
+                                               IndexPage *page,
+                                               std::string_view term,
+                                               uint64_t prefix) {
+  const uint64_t leaf = index * levels_[level].stride;
+  std::atomic<uint64_t> *slot = nullptr;
+  if (fence_prefixes_ && leaf % fence_stride_ == 0) {
+    slot = &fence_prefixes_[leaf / fence_stride_];
+    const uint64_t cached = slot->load(std::memory_order_relaxed);
+    if (cached != 0 && cached != prefix) {
+      return cached < prefix ? -1 : 1;
+    }
+  }
+  auto found = fence(level, index, page);
+  if (!found) {
+    return tl::make_unexpected(found.error());
+  }
+  auto decoded = block(*found);
+  if (!decoded) {
+    return tl::make_unexpected(decoded.error());
+  }
+  if (!decoded->oversized) {
+    const auto &key = decoded->terms.front();
+    if (slot) {
+      slot->store(FencePrefix(key), std::memory_order_relaxed);
+    }
+    return format::CompareTerms(key, term);
+  }
+  auto first = entry(*decoded, 0, false);
+  return compare(*first, term);
+}
+
 Result<FtsDictionaryEntry> FtsDictionaryReader::seek_ge(std::string_view term) {
   if (blocks_ == 0) {
     return tl::make_unexpected(NotFound());
   }
   IndexPage page;
   uint64_t selected = 0;
+  const uint64_t prefix = FencePrefix(term);
   for (size_t level = levels_.size(); level-- > 0;) {
     const uint64_t start = selected * kIndexPageRecords;
     uint64_t lo = start;
     uint64_t hi = std::min(start + kIndexPageRecords, levels_[level].count);
     while (lo < hi) {
       const uint64_t mid = lo + (hi - lo) / 2;
-      auto found = fence(level, mid, &page);
-      if (!found) {
-        return tl::make_unexpected(found.error());
-      }
-      auto decoded = block(*found);
-      if (!decoded) {
-        return tl::make_unexpected(decoded.error());
-      }
-      auto first = entry(*decoded, 0, false);
-      auto compared = compare(*first, term);
+      auto compared = compare_fence(level, mid, &page, term, prefix);
       if (!compared) {
         return tl::make_unexpected(compared.error());
       }

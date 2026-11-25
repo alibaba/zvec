@@ -256,5 +256,43 @@ TEST(VersionPublicationTest, BootstrapUncertaintyKeepsRecoverableSource) {
   EXPECT_TRUE(FileHelper::RemoveDirectory(path));
 }
 
+TEST(VersionPublicationTest, BootstrapGatePrecedesAuthorityAndEveryCandidate) {
+  const std::string path = "version_gate_order.fixture";
+  for (const std::string file :
+       {"manifest.0", "manifest.current", "manifest.1"}) {
+    for (const auto stage :
+         {DurableFile::Stage::kWrite, DurableFile::Stage::kFileSync,
+          DurableFile::Stage::kRename, DurableFile::Stage::kDirectorySync}) {
+      FileHelper::RemoveDirectory(path);
+      ASSERT_TRUE(FileHelper::CreateDirectory(path));
+      Version initial;
+      initial.set_schema(CollectionSchema("legacy"));
+      auto manager = VersionManager::Create(path, initial);
+      ASSERT_TRUE(manager.has_value());
+      ASSERT_TRUE((*manager)->flush().ok());
+      Version candidate = initial.clone();
+      candidate.set_schema(CollectionSchema("candidate"));
+      auto fail = [&](auto point, const auto &target) {
+        return point == stage && target == path + "/" + file
+                   ? Status::InternalError("injected")
+                   : Status::OK();
+      };
+      EXPECT_FALSE((*manager)->commit(candidate, fail).ok());
+      auto restored = VersionManager::Recovery(path);
+      ASSERT_TRUE(restored.has_value()) << restored.error().message();
+      auto source = (*restored)->get_current_version();
+      EXPECT_EQ("legacy", source.schema().name());
+      const bool gated =
+          file != "manifest.0" || stage == DurableFile::Stage::kDirectorySync;
+      EXPECT_EQ(gated, source.requires_commit_record());
+      ASSERT_TRUE((*restored)->commit(candidate).ok());
+      auto done = VersionManager::Recovery(path);
+      ASSERT_TRUE(done.has_value());
+      EXPECT_EQ("candidate", (*done)->get_current_version().schema().name());
+      EXPECT_TRUE(FileHelper::RemoveDirectory(path));
+    }
+  }
+}
+
 }  // namespace
 }  // namespace zvec

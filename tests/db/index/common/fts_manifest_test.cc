@@ -164,7 +164,7 @@ TEST(FtsManifestTest, VersionLoadPreservesUnsupportedFormatError) {
   const std::string path = "unsupported_manifest.fixture";
   ailego::File file;
   ASSERT_TRUE(file.create(path, 0));
-  const std::string bytes("\0ZVEC_FTS_MANIFEST_V2\0", 22);
+  const std::string bytes("\0ZVEC_FTS_MANIFEST_V3\0", 22);
   ASSERT_EQ(bytes.size(), file.write(bytes.data(), bytes.size()));
   file.close();
   Version version;

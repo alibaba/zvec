@@ -50,6 +50,8 @@ bool Contains(format::ByteRange outer, format::ByteRange inner) {
 Status LoadLengthBlock(FtsSectionReader *reader, uint64_t ordinal,
                        uint64_t rows, format::DocLengthBlockView *block,
                        uint64_t *loaded) {
+  // A refill can drop the previous borrowed bytes even when it fails.
+  *loaded = UINT64_MAX;
   const auto count =
       static_cast<uint32_t>(std::min<uint64_t>(128, rows - ordinal * 128));
   auto bytes = reader->read(ordinal * kFullLengthBlockBytes,
@@ -155,6 +157,21 @@ Result<FtsDocumentLength> FtsFieldReader::document(uint32_t row) {
   uint64_t loaded = UINT64_MAX;
   return ReadLength(lengths->get(), row, container_->metadata().row_count,
                     &block, &loaded);
+}
+
+Result<std::unique_ptr<FtsDocumentReader>> FtsFieldReader::documents() {
+  auto lengths = FtsSectionReader::Open(container_, prefix_ + "doclen");
+  if (!lengths) {
+    return tl::make_unexpected(lengths.error());
+  }
+  auto reader = std::make_unique<FtsDocumentReader>();
+  reader->rows_ = row_count();
+  reader->lengths_ = std::move(*lengths);
+  return reader;
+}
+
+Result<FtsDocumentLength> FtsDocumentReader::at(uint32_t row) {
+  return ReadLength(lengths_.get(), row, rows_, &block_, &loaded_);
 }
 
 float FtsFieldReader::score(uint64_t df, uint32_t tf, uint32_t length,
@@ -577,6 +594,33 @@ Result<std::unique_ptr<FtsPositionCursor>> FtsPostingCursor::positions() {
   auto range = position_range();
   if (!range) {
     return tl::make_unexpected(status_ = range.error());
+  }
+  if (block_.tfs[within_] == 1) {
+    // Merge visits consecutive documents in the same position section. Keep
+    // one read window on the posting cursor and return an independent value.
+    if (range->length < 5 || range->length > 9) {
+      return tl::make_unexpected(status_ = Corrupt());
+    }
+    if (!single_positions_) {
+      auto section = FtsSectionReader::Open(
+          owner_->container_,
+          "field." + std::to_string(owner_->field_) + ".positions");
+      if (!section) {
+        return tl::make_unexpected(status_ = section.error());
+      }
+      single_positions_ = std::move(*section);
+    }
+    auto bytes = single_positions_->read(range->offset,
+                                         static_cast<size_t>(range->length));
+    if (!bytes) {
+      return tl::make_unexpected(status_ = bytes.error());
+    }
+    auto positions = format::DecodePositions(*bytes);
+    if (!positions || positions->count != 1) {
+      return tl::make_unexpected(status_ =
+                                     positions ? Corrupt() : positions.error());
+    }
+    return FtsPositionCursor::Inline(owner_->container_, positions->values[0]);
   }
   auto cursor = FtsPositionCursor::Open(owner_->container_, owner_->field_,
                                         *range, block_.tfs[within_]);

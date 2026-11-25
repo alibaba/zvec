@@ -18,6 +18,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 #include <zvec/db/schema.h>
@@ -179,11 +180,13 @@ class Version {
 
  private:
   friend class VersionManager;
+  static Status Decode(std::string_view bytes, Version *version);
   // Metadata snapshots pin the numbered manifest and deletion snapshot.
   // Native index/query owners pin their data files independently.
   std::shared_ptr<fts::FtsFileOwner> manifest_owner_;
   std::shared_ptr<fts::FtsFileOwner> delete_owner_;
   bool requires_commit_record_{false};
+  bool bootstrap_baseline_{false};
   CollectionSchema::Ptr schema_;
   bool enable_mmap_{false};
 
@@ -243,9 +246,10 @@ class VersionManager {
   // A rename whose directory sync failed may already be authoritative.
   // Callers must retain all files and refuse dependent writes until reopen.
   bool requires_recovery() const;
+  void mark_requires_recovery();
   bool uses_commit_record() const {
     std::lock_guard lock(mtx_);
-    return explicit_authority_;
+    return explicit_authority_ || current_version_.bootstrap_baseline_;
   }
 
   const std::shared_ptr<fts::FtsRetirementQueue> &fts_retirement() const {

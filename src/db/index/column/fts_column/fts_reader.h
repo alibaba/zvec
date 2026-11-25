@@ -36,6 +36,8 @@ class FtsReadPosition {
   virtual Result<std::optional<uint32_t>> seek_ge(uint32_t target) = 0;
 };
 
+class FtsReadTerm;
+
 class FtsReadPosting {
  public:
   using Ptr = std::unique_ptr<FtsReadPosting>;
@@ -44,6 +46,10 @@ class FtsReadPosting {
   virtual Result<uint32_t> next() = 0;
   virtual Result<uint32_t> advance(uint32_t target) = 0;
   virtual Result<FtsReadPayload> payload() = 0;
+  // Merge has already located doc on this cursor. Storage adapters can reuse
+  // its decoded block to open positions without seeking the term again.
+  virtual Result<FtsReadPosition::Ptr> current_positions(
+      const FtsReadTerm &term, uint32_t doc);
   // Consume postings strictly after the current position, leaving the cursor
   // at the last returned posting. The borrowed view has cursor-local lifetime.
   virtual Result<FtsPostingBatch> next_batch() {

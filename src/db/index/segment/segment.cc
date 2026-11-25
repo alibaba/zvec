@@ -312,6 +312,7 @@ class SegmentImpl : public Segment,
   Status close();
   // Caller holds seg_mtx_ exclusively (insert, dump, close, or public flush).
   Status flush_unsafe();
+  void install_fts_index_unsafe(FtsIndexer::Ptr indexer);
   Result<PreparedFtsSeal> prepare_fts_fields(
       const CollectionSchema &schema, const std::string &rebuild_column = {});
   Result<fts::FtsFieldSource::Ptr> build_fts_field(
@@ -496,6 +497,9 @@ class SegmentImpl : public Segment,
 
   // WAL
   WalFilePtr wal_file_{nullptr};
+  // Destruction is also used to release partially opened segments. Only a
+  // fully initialized writer may checkpoint on close.
+  bool checkpoint_on_close_{false};
 
   bool sealed_{false};
 
@@ -646,6 +650,7 @@ Status SegmentImpl::Open(const SegmentOptions &options) {
     }
   }
 
+  checkpoint_on_close_ = !options_.read_only_;
   return Status::OK();
 }
 
@@ -678,6 +683,7 @@ Status SegmentImpl::create(const SegmentOptions &options, uint64_t min_doc_id) {
 
   doc_id_allocator_.store(min_doc_id);
 
+  checkpoint_on_close_ = true;
   return Status::OK();
 }
 
@@ -687,7 +693,12 @@ Status SegmentImpl::close() {
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
   closed_ = true;
   persisted_read_state_.reset();
-  flush_unsafe();
+  Status result = Status::OK();
+  if (checkpoint_on_close_ &&
+      !(version_manager_ && version_manager_->requires_recovery())) {
+    result = flush_unsafe();
+  }
+  checkpoint_on_close_ = false;
   if (invert_indexers_) {
     invert_indexers_.reset();
   }
@@ -723,7 +734,7 @@ Status SegmentImpl::close() {
     wal_file_.reset();
   }
 
-  return Status::OK();
+  return result;
 }
 
 SegmentID SegmentImpl::id() const {
@@ -5689,23 +5700,30 @@ Status SegmentImpl::drop_fts_index(const std::string &column,
 Status SegmentImpl::reload_fts_index(const CollectionSchema &schema,
                                      const SegmentMeta::Ptr &segment_meta,
                                      const FtsIndexer::Ptr &new_fts_indexer) {
-  publish_fts_index(std::make_shared<CollectionSchema>(schema),
-                    {segment_meta, new_fts_indexer});
+  std::lock_guard lock(seg_mtx_);
+  collection_schema_ = std::make_shared<CollectionSchema>(schema);
+  segment_meta_ = segment_meta;
+  fresh_persist_block_offset();
+  install_fts_index_unsafe(new_fts_indexer);
   return Status::OK();
 }
 
 void SegmentImpl::publish_fts_index(CollectionSchema::Ptr schema,
                                     PreparedFtsSeal prepared) {
   std::lock_guard lock(seg_mtx_);
-  if (prepared.indexer) {
-    prepared.indexer->preserve_files();
-  }
-  auto retired = std::move(fts_indexer_);
   collection_schema_ = std::move(schema);
   segment_meta_ = std::move(prepared.metadata);
-  fts_indexer_ = std::move(prepared.indexer);
-  has_fts_ = fts_indexer_ != nullptr;
   // Only FTS blocks change; forward/vector row-offset caches stay valid.
+  install_fts_index_unsafe(std::move(prepared.indexer));
+}
+
+void SegmentImpl::install_fts_index_unsafe(FtsIndexer::Ptr indexer) {
+  if (indexer) {
+    indexer->preserve_files();
+  }
+  auto retired = std::move(fts_indexer_);
+  fts_indexer_ = std::move(indexer);
+  has_fts_ = fts_indexer_ != nullptr;
   publish_persisted_read_state();
   if (retired && retired != fts_indexer_) {
     retired->retire_files();

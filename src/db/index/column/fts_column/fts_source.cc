@@ -14,6 +14,7 @@
 
 #include "fts_source.h"
 #include <algorithm>
+#include <mutex>
 #include "db/index/common/manifest_codec.h"
 #include "posting/bitpacked_posting_list.h"
 #include "fts_column_indexer.h"
@@ -266,37 +267,38 @@ class CustomTerms final : public FtsSourceTerms {
     if (!status_.ok()) {
       return tl::make_unexpected(status_);
     }
-    if (ordinal_ == field_->metadata().term_count) {
-      return std::optional<FtsSourceTerm>{};
-    }
-    auto entry = field_->term_at(ordinal_);
+    auto entry = field_->next_term(&scan_);
     if (!entry) {
       return tl::make_unexpected(status_ = entry.error());
     }
-    auto reader = OpenCustomFtsTerm(field_, *entry);
+    if (!entry->has_value()) {
+      return std::optional<FtsSourceTerm>{};
+    }
+    auto reader = OpenCustomFtsTerm(field_, **entry);
     if (!reader) {
       return tl::make_unexpected(status_ = reader.error());
     }
     FtsSourceTerm term;
-    term.length = entry->term_size();
+    term.length = (**entry).term_size();
     term.reader = std::move(*reader);
-    term.bytes = [key = std::move(*entry)](uint64_t offset, size_t length) {
+    term.bytes = [key = std::move(**entry)](uint64_t offset, size_t length) {
       return key.read_term(offset, length);
     };
-    ++ordinal_;
     return std::optional<FtsSourceTerm>{std::move(term)};
   }
 
  private:
   FtsFieldReader::Pointer field_;
-  uint64_t ordinal_{0};
+  FtsDictionaryReader::Scan scan_;
   Status status_;
 };
 
 class CustomFieldSource final : public FtsFieldSource {
  public:
-  explicit CustomFieldSource(FtsFieldReader::Pointer field)
+  CustomFieldSource(FtsFieldReader::Pointer field,
+                    std::unique_ptr<FtsDocumentReader> documents)
       : field_(std::move(field)),
+        documents_(std::move(documents)),
         statistics_{
             field_->row_count(), field_->metadata().scoring_document_count,
             field_->metadata().total_tokens, field_->metadata().present_count} {
@@ -311,7 +313,8 @@ class CustomFieldSource final : public FtsFieldSource {
     return kFtsCustomTermWorkspace;
   }
   Result<FtsDocumentLength> document(uint32_t row) override {
-    return field_->document(row);
+    std::lock_guard lock(document_mutex_);
+    return documents_->at(row);
   }
   Result<FtsSourceTerms::Ptr> terms() const override {
     return std::make_unique<CustomTerms>(field_);
@@ -319,6 +322,8 @@ class CustomFieldSource final : public FtsFieldSource {
 
  private:
   FtsFieldReader::Pointer field_;
+  std::unique_ptr<FtsDocumentReader> documents_;
+  std::mutex document_mutex_;
   FtsSourceStatistics statistics_;
 };
 
@@ -371,7 +376,12 @@ Result<FtsFieldSource::Ptr> OpenCustomFtsFieldSource(
     return tl::make_unexpected(
         Status::InvalidArgument("Missing custom FTS source"));
   }
-  return std::make_shared<CustomFieldSource>(std::move(field));
+  auto documents = field->documents();
+  if (!documents) {
+    return tl::make_unexpected(documents.error());
+  }
+  return std::make_shared<CustomFieldSource>(std::move(field),
+                                             std::move(*documents));
 }
 
 }  // namespace zvec::fts

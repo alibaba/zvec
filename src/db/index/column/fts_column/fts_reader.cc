@@ -52,6 +52,14 @@ class CustomPosting final : public FtsReadPosting {
   Result<Bound> bound(uint32_t target, float boost) override {
     return cursor_->bound(target, boost);
   }
+  Result<FtsReadPosition::Ptr> current_positions(const FtsReadTerm &,
+                                                 uint32_t) override {
+    auto positions = cursor_->positions();
+    if (!positions) {
+      return tl::make_unexpected(positions.error());
+    }
+    return std::make_unique<CustomPosition>(std::move(*positions));
+  }
   Result<FtsPostingBatch> next_batch() override {
     auto batch = cursor_->next_batch();
     if (batch && batch->count != 0) {
@@ -148,6 +156,11 @@ class CustomReader final : public FtsSegmentReader {
 };
 
 }  // namespace
+
+Result<FtsReadPosition::Ptr> FtsReadPosting::current_positions(
+    const FtsReadTerm &term, uint32_t doc) {
+  return term.positions(doc);
+}
 
 Result<std::vector<FtsReadTerm::Ptr>> FtsSegmentReader::lookup_many(
     const std::vector<std::string_view> &terms) const {

@@ -157,23 +157,30 @@ Status Version::Load(const std::string &path, Version *version) {
     return encoded.error();
   }
 
-  ManifestData manifest;
-  auto status = ManifestCodec::Decode(*encoded, &manifest);
+  auto status = Decode(*encoded, version);
   if (!status.ok()) {
     LOG_ERROR("Failed to parse manifest from file: %s", path.c_str());
-    return status;
   }
+  return status;
+}
+
+Status Version::Decode(std::string_view bytes, Version *version) {
+  ManifestData manifest;
+  auto status = ManifestCodec::Decode(bytes, &manifest);
+  CHECK_RETURN_STATUS(status);
 
   Version candidate;
   Version *destination = version;
   version = &candidate;
   version->requires_commit_record_ = manifest.requires_commit_record;
+  version->bootstrap_baseline_ = manifest.bootstrap_baseline;
   version->set_schema(*manifest.schema);
 
   version->set_enable_mmap(manifest.enable_mmap);
 
   for (auto &meta : manifest.persisted_segment_metas) {
-    version->add_persisted_segment_meta(meta);
+    status = version->add_persisted_segment_meta(meta);
+    CHECK_RETURN_STATUS(status);
   }
 
   if (manifest.writing_segment_meta) {
@@ -312,7 +319,7 @@ Result<VersionManager::Ptr> VersionManager::Recovery(const std::string &path) {
           Status::InternalError("Committed manifest checksum mismatch"));
     }
     Version version;
-    auto status = Version::Load(manifest_path, &version);
+    auto status = Version::Decode(*manifest, &version);
     CHECK_RETURN_STATUS_EXPECTED(status);
     auto manager =
         Ptr(new VersionManager(path, version, uint64_t(record->id) + 1));
@@ -360,7 +367,7 @@ Result<VersionManager::Ptr> VersionManager::Recovery(const std::string &path) {
   Version version;
   auto s = Version::Load(version_path, &version);
   CHECK_RETURN_STATUS_EXPECTED(s);
-  if (version.requires_commit_record()) {
+  if (version.requires_commit_record() && !version.bootstrap_baseline_) {
     return tl::make_unexpected(Status::FailedPrecondition(
         "Gated manifest has no authoritative commit record"));
   }
@@ -425,7 +432,10 @@ Status VersionManager::apply(const Version &version) {
     return Status::FailedPrecondition(
         "Uncertain manifest commit; reopen required");
   }
-  current_version_ = version.clone();
+  auto prepared = version.clone();
+  prepared.bootstrap_baseline_ = current_version_.bootstrap_baseline_;
+  prepared.requires_commit_record_ |= current_version_.requires_commit_record_;
+  current_version_ = std::move(prepared);
   return Status::OK();
 }
 
@@ -498,7 +508,7 @@ Status VersionManager::checkpoint_locked(const Version &candidate,
     return Status::FailedPrecondition(
         "Uncertain manifest commit; reopen required");
   }
-  if (explicit_authority_) {
+  if (explicit_authority_ || current_version_.bootstrap_baseline_) {
     return commit_locked(candidate, hook);
   }
   Version prepared = candidate.clone();
@@ -530,6 +540,11 @@ bool VersionManager::requires_recovery() const {
   return requires_recovery_;
 }
 
+void VersionManager::mark_requires_recovery() {
+  std::lock_guard lock(mtx_);
+  requires_recovery_ = true;
+}
+
 Status VersionManager::commit(const Version &candidate,
                               const DurableFile::Hook &hook) {
   std::lock_guard lock(mtx_);
@@ -550,6 +565,7 @@ Status VersionManager::commit_locked(const Version &candidate,
   // durable authority. Only infallible moves/scalar stores follow the commit.
   Version prepared = candidate.clone();
   prepared.requires_commit_record_ = true;
+  prepared.bootstrap_baseline_ = false;
   auto encoded = EncodeVersion(prepared, true);
   if (!encoded) {
     return encoded.error();
@@ -565,15 +581,34 @@ Status VersionManager::commit_locked(const Version &candidate,
   pin_publication(&prepared, *id);
 
   if (!explicit_authority_) {
-    // Bootstrap authority to the complete legacy checkpoint BEFORE creating
-    // any numbered candidate. A crash can then select only the old checkpoint
-    // or a fully committed new version, even when a candidate has a higher ID.
-    auto baseline = ReadBytes(
-        FileHelper::MakeFilePath(path_, FileID::MANIFEST_FILE, *committed_id_),
-        kManifestLimit);
+    // Gate the numbered source before installing authority. Otherwise a
+    // pre-authority binary can still modify that source after a failed upgrade.
+    const auto source_path =
+        FileHelper::MakeFilePath(path_, FileID::MANIFEST_FILE, *committed_id_);
+    auto baseline = ReadBytes(source_path, kManifestLimit);
     if (!baseline) {
       return baseline.error();
     }
+    ManifestData source;
+    auto status = ManifestCodec::Decode(*baseline, &source);
+    CHECK_RETURN_STATUS(status);
+    if (!source.bootstrap_baseline) {
+      baseline = ManifestCodec::GateLegacyBaseline(*baseline);
+      if (!baseline) {
+        return baseline.error();
+      }
+      if (baseline->size() > kManifestLimit) {
+        return {StatusCode::RESOURCE_EXHAUSTED,
+                "Bootstrap exceeds manifest budget"};
+      }
+      auto gated = DurableFile::Replace(source_path, *baseline, hook);
+      if (!gated.status.ok()) {
+        requires_recovery_ = gated.renamed;
+        return gated.status;
+      }
+    }
+    current_version_.requires_commit_record_ = true;
+    current_version_.bootstrap_baseline_ = true;
     const auto old_record = EncodeCommit(*committed_id_, *baseline);
     auto outcome = DurableFile::Replace(authority_path, old_record, hook);
     if (!outcome.status.ok()) {

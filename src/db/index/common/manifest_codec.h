@@ -44,6 +44,9 @@ struct ManifestData {
   // Once explicit commit records are in use, keep the old-reader gate even
   // if a later DDL removes the last custom FTS base.
   bool requires_commit_record{false};
+  // A crash after gating the legacy numbered checkpoint but before installing
+  // manifest.current leaves this one recoverable kind of gated manifest.
+  bool bootstrap_baseline{false};
   CollectionSchema::Ptr schema;
   bool enable_mmap{false};
   std::vector<SegmentMeta::Ptr> persisted_segment_metas;
@@ -60,6 +63,10 @@ struct ManifestCodec {
 
   //! Parses a manifest. Returns an error for malformed input.
   static Status Decode(std::string_view buf, ManifestData *data);
+
+  // Wrap the exact bytes of a committed legacy checkpoint, preserving unknown
+  // protobuf fields. Only the bootstrap path may assign the baseline role.
+  static Result<std::string> GateLegacyBaseline(std::string_view bytes);
 
   // The helpers below are exposed for unit testing so that each message can
   // be checked against the format independently.

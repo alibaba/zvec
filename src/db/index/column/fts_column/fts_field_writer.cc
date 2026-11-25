@@ -191,14 +191,18 @@ Status FtsFieldWriter::begin_term(uint64_t length, FtsTermSource source) {
 }
 
 Status FtsFieldWriter::store_raw(const RawPosting &posting) {
-  std::string bytes;
-  format::AppendU32(posting.doc, &bytes);
-  format::AppendU32(posting.tf, &bytes);
-  format::AppendU32(posting.length, &bytes);
-  format::AppendU32(0, &bytes);
-  format::AppendU64(posting.positions.offset, &bytes);
-  format::AppendU64(posting.positions.length, &bytes);
-  return raw_->append(bytes);
+  static_assert(std::is_trivially_copyable_v<RawPosting>);
+  if (raw_count_ == raw_block_.size()) {
+    auto status =
+        raw_->append({reinterpret_cast<const char *>(raw_block_.data()),
+                      sizeof(raw_block_)});
+    if (!status.ok()) {
+      return status;
+    }
+    raw_count_ = 0;
+  }
+  raw_block_[raw_count_++] = posting;
+  return Status::OK();
 }
 
 Status FtsFieldWriter::flush_first() {
@@ -257,7 +261,8 @@ Result<FtsFieldWriter::DocumentBlock *> FtsFieldWriter::load_document_block(
 }
 
 Status FtsFieldWriter::add_posting(uint32_t doc, uint32_t tf,
-                                   const FtsPositionSource &source) {
+                                   const FtsPositionSource &source,
+                                   std::optional<uint32_t> expected_length) {
   if (!status_.ok()) {
     return status_;
   }
@@ -273,7 +278,9 @@ Status FtsFieldWriter::add_posting(uint32_t doc, uint32_t tf,
   format::Decoder decoder(
       std::string_view((*block)->bytes).substr(offset, kDocumentRowBytes));
   FtsBuildDocumentState document{decoder.u32(), decoder.u32()};
-  if (!decoder.done() || !document.add_tf(tf)) {
+  if (!decoder.done() ||
+      (expected_length && *expected_length != document.length) ||
+      !document.add_tf(tf)) {
     return status_ = Invalid();
   }
   if (df_ == 1) {
@@ -282,7 +289,7 @@ Status FtsFieldWriter::add_posting(uint32_t doc, uint32_t tf,
       return status_;
     }
   }
-  RawPosting posting{doc, tf, document.length, {}};
+  RawPosting posting{doc, tf, document.length, 0, {}};
   if (df_ == 0 && tf == 1) {
     auto value = source();
     if (!value) {
@@ -315,9 +322,10 @@ Status FtsFieldWriter::add_posting(uint32_t doc, uint32_t tf,
   if (!status_.ok()) {
     return status_;
   }
-  std::string total;
-  format::AppendU32(document.accumulated, &total);
-  (*block)->bytes.replace(offset + 4, total.size(), total);
+  for (size_t i = 0; i < sizeof(uint32_t); ++i) {
+    (*block)->bytes[offset + 4 + i] =
+        static_cast<char>(document.accumulated >> (8 * i));
+  }
   (*block)->dirty = true;
   ++df_;
   tf_ += tf;
@@ -356,22 +364,29 @@ Status FtsFieldWriter::end_term() {
     for (uint64_t done = 0; done < df_;) {
       format::PostingBlock block;
       block.count = static_cast<uint32_t>(std::min<uint64_t>(128, df_ - done));
-      auto bytes = raw_->read(raw_start_ + done * 32, block.count * 32);
-      if (!bytes) {
-        return status_ = bytes.error();
+      // Staged blocks and the in-memory tail belong to this process and use
+      // the same native layout. Index sections below use the portable codec.
+      std::array<RawPosting, format::kBlockDocs> staged;
+      const RawPosting *raw = raw_block_.data();
+      if (done < df_ - raw_count_) {
+        auto bytes = raw_->read(raw_start_ + done * sizeof(RawPosting),
+                                block.count * sizeof(RawPosting));
+        if (!bytes) {
+          return status_ = bytes.error();
+        }
+        std::memcpy(staged.data(), bytes->data(), bytes->size());
+        raw = staged.data();
       }
-      format::Decoder raw(*bytes);
       format::PositionIndexBlock positions;
       positions.count = block.count;
       float bound = 0;
       uint64_t end = 0;
       for (uint32_t i = 0; i < block.count; ++i) {
-        block.docs[i] = raw.u32();
-        block.tfs[i] = raw.u32();
-        const uint32_t length = raw.u32();
-        (void)raw.u32();
-        const uint64_t offset = raw.u64();
-        positions.lengths[i] = raw.u64();
+        block.docs[i] = raw[i].doc;
+        block.tfs[i] = raw[i].tf;
+        const uint32_t length = raw[i].length;
+        const uint64_t offset = raw[i].positions.offset;
+        positions.lengths[i] = raw[i].positions.length;
         if (i == 0) {
           positions.positions.offset = offset;
         } else if (end != offset) {
@@ -383,9 +398,6 @@ Status FtsFieldWriter::end_term() {
           return status_ = Invalid();
         }
         bound = std::max(bound, score);
-      }
-      if (!raw.done()) {
-        return status_ = Invalid();
       }
       positions.positions.length = end - positions.positions.offset;
       term.positions.length = end - term.positions.offset;
@@ -432,6 +444,7 @@ Status FtsFieldWriter::end_term() {
   status_ = term_source_ ? dictionary_->add(term_size_, term_source_, term)
                          : dictionary_->add(term_, term);
   if (status_.ok()) {
+    raw_count_ = 0;
     in_term_ = false;
     term_.clear();
     term_source_ = {};

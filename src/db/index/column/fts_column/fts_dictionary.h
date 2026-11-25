@@ -92,17 +92,29 @@ class FtsDictionaryEntry {
   format::TermMetadata metadata_;
 };
 
-// Immutable paged ordinal/sparse directory. Lookup binary-searches disk records
-// and retains only the current index page and dictionary block. EOF and absent
-// terms return NOT_FOUND; corruption, I/O and budget errors stay
-// distinguishable.
+// Immutable paged ordinal/sparse directory. Buffer-pool lookups can retain
+// sampled fence prefixes, charged to the pool; full blocks are read on demand.
+// EOF and absent terms return NOT_FOUND; corruption, I/O and budget errors
+// stay distinguishable.
 class FtsDictionaryReader
     : public std::enable_shared_from_this<FtsDictionaryReader> {
  public:
   using Pointer = std::shared_ptr<FtsDictionaryReader>;
+  ~FtsDictionaryReader();
   static Result<Pointer> Open(FtsContainerReader::Pointer container,
                               uint32_t field_ordinal);
   Result<FtsDictionaryEntry> at(uint64_t ordinal);
+  // A merge scans the leaf directory in order. Retain one decoded leaf and
+  // its contiguous metadata range across terms, including oversized entries.
+  class Scan {
+   private:
+    friend class FtsDictionaryReader;
+    uint64_t leaf_{0}, ordinal_{0};
+    uint32_t remaining_{0};
+    format::DictionaryBlock block_;
+    FtsReadRange term_meta_;
+  };
+  Result<std::optional<FtsDictionaryEntry>> next(Scan *scan);
   Result<FtsDictionaryEntry> seek(std::string_view term);
   Result<FtsDictionaryEntry> seek_ge(std::string_view term);
   // Streamed publication validation: ordering, directory coverage, row/range
@@ -121,6 +133,8 @@ class FtsDictionaryReader
   FtsDictionaryReader() = default;
   Result<Record> record(uint64_t block, IndexPage *page);
   Result<Record> fence(size_t level, uint64_t index, IndexPage *page);
+  Result<int> compare_fence(size_t level, uint64_t index, IndexPage *page,
+                            std::string_view term, uint64_t prefix);
   Result<Record> read_record(uint64_t location, uint64_t block,
                              IndexPage *page);
   Result<format::DictionaryBlock> block(const Record &record);
@@ -139,6 +153,9 @@ class FtsDictionaryReader
   std::vector<Level> levels_;
   uint64_t count_{0};
   uint64_t terms_length_{0};
+  std::unique_ptr<std::atomic<uint64_t>[]> fence_prefixes_;
+  size_t fence_bytes_{0};
+  uint64_t fence_stride_{1};
 };
 
 }  // namespace zvec::fts

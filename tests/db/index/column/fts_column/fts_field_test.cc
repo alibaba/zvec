@@ -146,6 +146,42 @@ class FtsFieldTest : public testing::Test {
   std::vector<uint32_t> lengths_;
 };
 
+TEST_F(FtsFieldTest, BufferDictionaryReusesFencesAndResolvesEqualPrefixes) {
+  std::vector<TermInput> terms;
+  for (int i = 0; i < 1024; ++i) {
+    // Eight equal leading bytes across multiple adjacent dictionary blocks.
+    terms.push_back({"abcdefgh" + std::to_string(10000 + i), 1, 1});
+  }
+  for (int i = 0; i < 1024; ++i) {
+    terms.push_back({std::to_string(20000 + i), 1, 1});
+  }
+  terms.push_back({std::string("a\0", 2), 1, 1});
+  terms.push_back({"中文", 1, 1});
+  std::sort(terms.begin(), terms.end(),
+            [](const auto &a, const auto &b) { return a.text < b.text; });
+  build(terms);
+  auto file = FtsContainerReader::Open(path_, false);
+  ASSERT_TRUE(file);
+  const auto &pool = ailego::MemoryLimitPool::get_instance();
+  const auto before_field = pool.metadata_used();
+  auto field = FtsFieldReader::Open(*file, 0);
+  ASSERT_TRUE(field);
+  EXPECT_GT(pool.metadata_used(), before_field);
+  auto before = (*file)->read_stats().range_reads;
+  ASSERT_TRUE((*field)->lookup("20257"));
+  auto first = (*file)->read_stats().range_reads;
+  ASSERT_TRUE((*field)->lookup("20257"));
+  EXPECT_LT((*file)->read_stats().range_reads - first, first - before);
+  for (size_t i = 0; i < terms.size(); ++i) {
+    auto found = (*field)->lookup(terms[i].text);
+    ASSERT_TRUE(found);
+    EXPECT_EQ(i, found->ordinal());
+  }
+  EXPECT_FALSE((*field)->lookup("abcdefgh10999a"));
+  field->reset();
+  EXPECT_EQ(pool.metadata_used(), before_field);
+}
+
 TEST_F(FtsFieldTest, StreamsOversizedTermWithoutMaterializingItsKey) {
   const uint64_t length = 2 * 1024 * 1024 + 17;
   size_t largest_request = 0;

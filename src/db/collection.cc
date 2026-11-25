@@ -444,7 +444,14 @@ Status CollectionImpl::open(const CollectionOptions &options) {
     s = create();
   }
 
-  if (s.ok() && options_.read_only_) {
+  if (!s.ok()) {
+    if (version_manager_) {
+      // Release partially opened segments without publishing their state.
+      version_manager_->mark_requires_recovery();
+    }
+    return s;
+  }
+  if (options_.read_only_) {
     prepare_query_internal_ids();
   }
 
@@ -588,6 +595,7 @@ Result<CollectionStats> CollectionImpl::stats() const {
   // reads writing_segment_ and doc_count() below iterates doc_ids_, both
   // of which Insert mutates under the exclusive write_mtx_.
   std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
+  CHECK_RETURN_STATUS_EXPECTED(check_write_state());
 
   auto segments = get_all_segments_unsafe();
 
@@ -2142,8 +2150,9 @@ Status CollectionImpl::delete_by_filter(const std::string &filter) {
   // collection state: hold write_mtx_ shared across the scan to exclude
   // concurrent write batches. Plain queries tolerate a mid-write view and skip
   // this; delete needs the stronger guarantee.
-  auto ret = [&]() {
+  auto ret = [&]() -> Result<DocPtrList> {
     std::shared_lock<std::shared_mutex> write_lock(write_mtx_);
+    CHECK_RETURN_STATUS_EXPECTED(check_write_state());
     return sql_engine_->execute(schema_, std::move(query),
                                 get_all_segments_unsafe());
   }();
@@ -2426,6 +2435,8 @@ CollectionImpl::query_result_snapshot_impl(const Query &query) const {
 
 Result<DocPtrList> CollectionImpl::query_unsafe(
     const SearchQuery &query) const {
+  std::shared_lock write_lock(write_mtx_);
+  CHECK_RETURN_STATUS_EXPECTED(check_write_state());
   // When field_name_ is set, use get_field to retrieve the schema uniformly.
   // validate checks that the field type matches the query type
   // (FTS query requires an FTS field, vector query requires a vector field).
@@ -2436,7 +2447,8 @@ Result<DocPtrList> CollectionImpl::query_unsafe(
   auto s = query.validate(field_schema, &need_sanitize);
   CHECK_RETURN_STATUS_EXPECTED(s);
 
-  auto segments = get_all_segments();
+  auto segments = get_all_segments_unsafe();
+  write_lock.unlock();
   if (segments.empty()) {
     return DocPtrList();
   }
@@ -2453,6 +2465,8 @@ Result<DocPtrList> CollectionImpl::query_unsafe(
 }
 
 Result<DocPtrList> CollectionImpl::query_unsafe(const MultiQuery &query) const {
+  std::shared_lock write_lock(write_mtx_);
+  CHECK_RETURN_STATUS_EXPECTED(check_write_state());
   if (query.queries.size() < 2) {
     return tl::make_unexpected(Status::InvalidArgument(
         "Invalid query: MultiQuery requires at least 2 sub-queries, got ",
@@ -2499,7 +2513,8 @@ Result<DocPtrList> CollectionImpl::query_unsafe(const MultiQuery &query) const {
     field_schemas.push_back(std::move(field_ptr));
   }
 
-  auto segments = get_all_segments();
+  auto segments = get_all_segments_unsafe();
+  write_lock.unlock();
   if (segments.empty()) {
     return DocPtrList();
   }
@@ -2562,7 +2577,10 @@ Result<GroupResults> CollectionImpl::group_by_query(
   auto s = query.target_.validate(field_schema, &need_sanitize);
   CHECK_RETURN_STATUS_EXPECTED(s);
 
-  auto segments = get_all_segments();
+  std::shared_lock write_lock(write_mtx_);
+  CHECK_RETURN_STATUS_EXPECTED(check_write_state());
+  auto segments = get_all_segments_unsafe();
+  write_lock.unlock();
   if (segments.empty()) {
     return GroupResults();
   }
@@ -2587,7 +2605,10 @@ Result<DocPtrMap> CollectionImpl::fetch(
   CHECK_DESTROY_RETURN_STATUS_EXPECTED(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS_EXPECTED(closed_, false);
 
-  auto segments = get_all_segments();
+  std::shared_lock write_lock(write_mtx_);
+  CHECK_RETURN_STATUS_EXPECTED(check_write_state());
+  auto segments = get_all_segments_unsafe();
+  write_lock.unlock();
 
   DocPtrMap results;
 
@@ -2686,13 +2707,6 @@ Status CollectionImpl::recovery() {
 
   auto segment_metas = v.persisted_segment_metas();
 
-  // Remove crash-leftover segment dirs before opening segments; safe
-  // under the exclusive file lock held above. Read-only opens hold only
-  // a shared lock and must not modify the collection.
-  if (!options_.read_only_) {
-    cleanup_orphan_segment_dirs(v);
-  }
-
   SegmentOptions seg_options;
   seg_options.read_only_ = true;
   seg_options.enable_mmap_ = options_.enable_mmap_;
@@ -2721,6 +2735,9 @@ Status CollectionImpl::recovery() {
   segment_id_allocator_.store(v.next_segment_id());
 
   if (!options_.read_only_) {
+    // Reclaim crash leftovers only after every committed segment and its WAL
+    // have opened successfully, while still holding the exclusive file lock.
+    cleanup_orphan_segment_dirs(v);
     auto cleanup = version_manager_->reclaim_unreferenced_files();
     if (!cleanup.ok()) {
       LOG_WARN("Recovery deferred unreferenced FTS files: %s",
@@ -3112,6 +3129,7 @@ Result<std::unique_ptr<DocIterator::Impl>> CollectionImpl::prepare_iterate(
   {
     std::lock_guard<std::shared_mutex> write_lock(write_mtx_);
 
+    CHECK_RETURN_STATUS_EXPECTED(check_write_state());
     if (options_.read_only_) {
       // No flushing on read-only collections; include the writing segment
       // (SegmentImpl::scan reads its in-memory block), which is stable since

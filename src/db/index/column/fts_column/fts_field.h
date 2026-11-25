@@ -27,6 +27,19 @@ struct FtsDocumentLength {
   uint32_t length{0};
 };
 
+// Independent lookup workspace for a source scan or merge. The decoded
+// block borrows its bytes from this cursor's pinned section window.
+class FtsDocumentReader {
+ public:
+  Result<FtsDocumentLength> at(uint32_t row);
+
+ private:
+  friend class FtsFieldReader;
+  std::unique_ptr<FtsSectionReader> lengths_;
+  uint64_t rows_{0}, loaded_{UINT64_MAX};
+  format::DocLengthBlockView block_;
+};
+
 // Private build-table state, serialized as two uint32 words. Only (0, MAX)
 // means missing; (MAX, MAX) is a complete, present document of maximum length.
 struct FtsBuildDocumentState {
@@ -90,7 +103,8 @@ class FtsFieldWriter {
   // merges can copy arbitrarily long terms with bounded requests/workspace.
   Status begin_term(uint64_t length, FtsTermSource source);
   Status add_posting(uint32_t doc, uint32_t tf,
-                     const FtsPositionSource &positions);
+                     const FtsPositionSource &positions,
+                     std::optional<uint32_t> expected_length = std::nullopt);
   Status end_term();
   Result<format::FieldMetadata> finish(FtsContainerWriter *container,
                                        uint32_t field_ordinal);
@@ -98,6 +112,7 @@ class FtsFieldWriter {
  private:
   struct RawPosting {
     uint32_t doc{0}, tf{0}, length{0};
+    uint32_t reserved{0};
     format::ByteRange positions;
   };
   struct DocumentBlock {
@@ -134,6 +149,10 @@ class FtsFieldWriter {
   uint64_t df_{0}, tf_{0}, raw_start_{0};
   uint32_t last_doc_{0}, first_position_{0};
   RawPosting first_;
+  // Private native scratch, never persisted as part of an index. Keep the
+  // final block in memory so short terms need no raw spool write/read/seek.
+  std::array<RawPosting, format::kBlockDocs> raw_block_{};
+  size_t raw_count_{0};
   bool first_deferred_{false};
   Status status_;
 };
@@ -161,7 +180,7 @@ class FtsPostingCursor {
   std::shared_ptr<FtsFieldReader> owner_;
   FtsDictionaryEntry term_;
   std::unique_ptr<FtsSectionReader> postings_, skips_, lengths_,
-      position_index_;
+      position_index_, single_positions_;
   format::PostingBlock block_;
   std::array<uint32_t, FtsPostingBatch::kCapacity> batch_lengths_{};
   format::PostingSkip skip_;
@@ -184,9 +203,14 @@ class FtsFieldReader : public std::enable_shared_from_this<FtsFieldReader> {
                               uint32_t field_ordinal, BM25Params params = {});
   Result<FtsDictionaryEntry> lookup(std::string_view term);
   Result<FtsDictionaryEntry> term_at(uint64_t ordinal);
+  Result<std::optional<FtsDictionaryEntry>> next_term(
+      FtsDictionaryReader::Scan *scan) {
+    return dictionary_->next(scan);
+  }
   Result<std::unique_ptr<FtsPostingCursor>> postings(
       const FtsDictionaryEntry &term);
   Result<FtsDocumentLength> document(uint32_t row);
+  Result<std::unique_ptr<FtsDocumentReader>> documents();
   const format::FieldMetadata &metadata() const;
   uint64_t row_count() const {
     return container_->metadata().row_count;
