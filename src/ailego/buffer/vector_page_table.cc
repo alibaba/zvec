@@ -1574,30 +1574,40 @@ void VecBufferPool::register_metadata_range(size_t offset, size_t length) {
   }
   {
     std::shared_lock<std::shared_mutex> lock(metadata_ranges_mutex_);
-    if (metadata_ranges_.find(offset) != metadata_ranges_.end()) return;
+    if (metadata_ranges_ &&
+        metadata_ranges_->find(offset) != metadata_ranges_->end()) {
+      return;
+    }
   }
   // Budget admission can reclaim pages and enter writeback. Allocate the
-  // node before taking the lock that writeback uses to read the directory.
-  MetadataRanges pending;
-  auto entry = pending.emplace(offset, end);
-  auto node = pending.extract(entry.first);
+  // map and node before taking the lock that writeback uses to read them.
+  auto pending = std::make_unique<MetadataRanges>();
+  const auto entry = pending->emplace(offset, end);
   std::unique_lock<std::shared_mutex> lock(metadata_ranges_mutex_);
-  metadata_ranges_.insert(std::move(node));
-  has_unaligned_metadata_.store(true, std::memory_order_release);
+  if (metadata_ranges_) {
+    metadata_ranges_->insert(pending->extract(entry.first));
+  } else {
+    metadata_ranges_ = std::move(pending);
+    has_unaligned_metadata_.store(true, std::memory_order_release);
+  }
 }
 
 void VecBufferPool::unregister_metadata_range(size_t offset) {
   if (!has_unaligned_metadata_.load(std::memory_order_acquire)) return;
   std::unique_lock<std::shared_mutex> lock(metadata_ranges_mutex_);
-  metadata_ranges_.erase(offset);
-  has_unaligned_metadata_.store(!metadata_ranges_.empty(),
-                                std::memory_order_release);
+  if (!metadata_ranges_) return;
+  metadata_ranges_->erase(offset);
+  if (metadata_ranges_->empty()) {
+    metadata_ranges_.reset();
+    has_unaligned_metadata_.store(false, std::memory_order_release);
+  }
 }
 
 VecBufferPool::MetadataRanges::const_iterator
-VecBufferPool::first_metadata_range(size_t offset) const {
-  auto range = metadata_ranges_.upper_bound(offset);
-  if (range != metadata_ranges_.begin() && std::prev(range)->second > offset) {
+VecBufferPool::first_metadata_range(const MetadataRanges &ranges,
+                                    size_t offset) {
+  auto range = ranges.upper_bound(offset);
+  if (range != ranges.begin() && std::prev(range)->second > offset) {
     --range;
   }
   return range;
@@ -1606,9 +1616,10 @@ VecBufferPool::first_metadata_range(size_t offset) const {
 bool VecBufferPool::page_overlaps_metadata(size_t offset) const {
   if (!has_unaligned_metadata_.load(std::memory_order_acquire)) return false;
   std::shared_lock<std::shared_mutex> lock(metadata_ranges_mutex_);
-  const auto range = first_metadata_range(offset);
-  return range != metadata_ranges_.end() &&
-         range->first < offset + kVectorPageSize;
+  if (!metadata_ranges_) return false;
+  const auto &ranges = *metadata_ranges_;
+  const auto range = first_metadata_range(ranges, offset);
+  return range != ranges.end() && range->first < offset + kVectorPageSize;
 }
 
 int VecBufferPool::writeback_page(size_t offset, size_t length,
@@ -1635,18 +1646,21 @@ int VecBufferPool::writeback_page(size_t offset, size_t length,
 
   if (has_unaligned_metadata_.load(std::memory_order_acquire)) {
     std::shared_lock<std::shared_mutex> lock(metadata_ranges_mutex_);
-    auto range = first_metadata_range(offset);
-    if (range != metadata_ranges_.end() && range->first < end) {
-      // Directory bytes are published by write_meta(). A cached copy may
-      // precede a directory update. Only the gaps belong to data writeback.
-      size_t begin = offset;
-      for (; range != metadata_ranges_.end() && range->first < end; ++range) {
-        if (const int error = write(meta_fd_, begin, range->first)) {
-          return error;
+    if (metadata_ranges_) {
+      const auto &ranges = *metadata_ranges_;
+      auto range = first_metadata_range(ranges, offset);
+      if (range != ranges.end() && range->first < end) {
+        // Directory bytes are published by write_meta(). A cached copy may
+        // precede a directory update. Only the gaps belong to data writeback.
+        size_t begin = offset;
+        for (; range != ranges.end() && range->first < end; ++range) {
+          if (const int error = write(meta_fd_, begin, range->first)) {
+            return error;
+          }
+          begin = range->second;
         }
-        begin = range->second;
+        return write(meta_fd_, begin, end);
       }
-      return write(meta_fd_, begin, end);
     }
   }
   return write(fd_, offset, end);

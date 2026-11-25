@@ -973,11 +973,11 @@ class ZVEC_AILEGO_API VecBufferPool {
   bool flush_shared_page(block_id_t page_id);
   int writeback_page(size_t offset, size_t length, const char *buffer);
   bool page_overlaps_metadata(size_t offset) const;
-  // Caller holds metadata_ranges_mutex_.
   using MetadataRanges =
       std::map<size_t, size_t, std::less<size_t>,
                BudgetedAllocator<std::pair<const size_t, size_t>>>;
-  MetadataRanges::const_iterator first_metadata_range(size_t offset) const;
+  static MetadataRanges::const_iterator first_metadata_range(
+      const MetadataRanges &ranges, size_t offset);
   // Pin a dirty page for writeback. Waits out an in-flight load/eviction so a
   // flush never mistakes a temporarily unavailable dirty page for a persisted
   // one. Returns nullptr for clean pages; sets *failed when the page is still
@@ -1058,7 +1058,8 @@ class ZVEC_AILEGO_API VecBufferPool {
   // Page-aligned directories cannot share a page with segment data.
   std::atomic<bool> has_unaligned_metadata_{false};
   mutable std::shared_mutex metadata_ranges_mutex_;
-  MetadataRanges metadata_ranges_;
+  // MSVC allocates a sentinel even for an empty map.
+  std::unique_ptr<MetadataRanges> metadata_ranges_;
 
   std::thread writeback_thread_{};
   // Anonymous page mapping: unmap before refunding its metadata reservation.

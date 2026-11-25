@@ -1388,6 +1388,33 @@ TEST_F(BufferPoolTest, FlushAllDoesNotSkipDirtyPageInTransition) {
   pool.page_table_.clear_dirty(/*block_id=*/0);
 }
 
+TEST_F(BufferPoolTest, MetadataRangesChargeOnlyWhileRegistered) {
+  init_vec_pool(/*capacity_pages=*/2, /*file_pages=*/2, /*writable=*/true);
+  const auto &budget = PoolPayloadBudget::get_instance();
+  const size_t baseline = budget.external_used();
+  VecBufferPool pool(new_file(2), /*writable=*/true);
+  ASSERT_EQ(0, pool.init());
+  EXPECT_EQ(baseline, budget.external_used());
+
+  pool.register_metadata_range(0, kVectorPageSize);
+  EXPECT_EQ(baseline, budget.external_used());
+
+  const size_t directory_size = kVectorPageSize / 4;
+  pool.register_metadata_range(0, directory_size);
+  const size_t one_range = budget.external_used();
+  EXPECT_GT(one_range, baseline);
+  pool.register_metadata_range(kVectorPageSize, directory_size);
+  const size_t two_ranges = budget.external_used();
+  EXPECT_GT(two_ranges, one_range);
+  pool.register_metadata_range(kVectorPageSize, directory_size);
+  EXPECT_EQ(two_ranges, budget.external_used());
+
+  pool.unregister_metadata_range(0);
+  EXPECT_EQ(one_range, budget.external_used());
+  pool.unregister_metadata_range(kVectorPageSize);
+  EXPECT_EQ(baseline, budget.external_used());
+}
+
 TEST_F(BufferPoolTest, SharedPageFirstLoadPreservesDirectory) {
   init_vec_pool(/*capacity_pages=*/2, /*file_pages=*/2, /*writable=*/true);
   std::string file = new_file(/*num_pages=*/1);
