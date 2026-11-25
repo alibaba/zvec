@@ -128,6 +128,11 @@ int DiskAnnStreamer::open(IndexStorage::Pointer storage) {
     stats_.clear();
   }
 
+  bool loaded = false;
+  AILEGO_DEFER([&] {
+    if (!loaded) reset_loaded_index();
+  });
+
   auto start_time = ailego::Monotime::MilliSeconds();
 
   int ret = IndexHelper::DeserializeFromStorage(storage.get(), &meta_);
@@ -193,13 +198,17 @@ int DiskAnnStreamer::open(IndexStorage::Pointer storage) {
   magic_ = IndexContext::GenerateMagic();
 
   LOG_INFO("DiskAnnStreamer::load Done");
-
+  loaded = true;
   return 0;
 }
 
 int DiskAnnStreamer::unload() {
   LOG_INFO("DiskAnnStreamer unload index");
+  reset_loaded_index();
+  return 0;
+}
 
+void DiskAnnStreamer::reset_loaded_index() {
   const State next_state = state_ == STATE_INIT ? STATE_INIT : STATE_INITED;
   {
     std::lock_guard<std::mutex> lock(fetch_mutex_);
@@ -213,8 +222,6 @@ int DiskAnnStreamer::unload() {
   }
 
   state_ = next_state;
-
-  return 0;
 }
 
 int DiskAnnStreamer::update_context(DiskAnnContext *ctx) const {
