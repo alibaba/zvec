@@ -86,7 +86,7 @@ class ScatterCursor {
     }
   }
 
-  const std::vector<IndexStorage::Segment::ReadSpan> &spans_;
+  const IndexStorage::Segment::ScatterBlock::Spans &spans_;
   size_t span_index_{0};
   size_t span_offset_{0};
 };

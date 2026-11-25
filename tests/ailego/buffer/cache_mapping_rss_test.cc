@@ -1,6 +1,7 @@
 // Copyright 2025-present the zvec project
 // SPDX-License-Identifier: Apache-2.0
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -8,6 +9,7 @@
 #include <future>
 #include <memory>
 #include <thread>
+#include <utility>
 #include <vector>
 #include <ailego/pattern/scope_guard.h>
 #include <ailego/utility/memory_helper.h>
@@ -17,6 +19,7 @@
 #include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/ailego/buffer/budgeted_mapped_buffer.h>
 #include <zvec/ailego/buffer/retained_block_allocator.h>
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/file.h>
 
 #if defined(__APPLE__)
@@ -27,6 +30,12 @@
 #endif
 
 namespace zvec::ailego {
+struct ProcessRssBudgetTestPeer {
+  static void make_rss_refresh_due(ProcessRssBudget &budget) {
+    std::lock_guard<std::mutex> lock(budget.mutex_);
+    budget.sampled_at_ -= std::chrono::seconds(1);
+  }
+};
 struct MemoryLimitPoolTestPeer {
   static void stop_background(MemoryLimitPool &pool) {
     pool.stop_background_evictor();
@@ -74,8 +83,25 @@ struct MemoryLimitPoolTestPeer {
                              ProcessRssBudget::ResidentSample sample) {
     return pool.process_rss_.publish_resident_sample(token, sample);
   }
+  static bool configure_rss_reader(MemoryLimitPool &pool, size_t limit,
+                                   ProcessRssBudget::Reader reader) {
+    return pool.process_rss_.configure(limit, reader);
+  }
+  static void make_rss_refresh_due(MemoryLimitPool &pool) {
+    ProcessRssBudgetTestPeer::make_rss_refresh_due(pool.process_rss_);
+  }
   static bool fixed_rss_limit(MemoryLimitPool &pool, size_t limit) {
-    return pool.process_rss_.configure(limit, +[] { return size_t{64} << 20; });
+    return configure_rss_reader(pool, limit, +[] { return size_t{64} << 20; });
+  }
+  static inline std::atomic<size_t> next_rss{size_t{64} << 20};
+  static inline std::atomic<size_t> next_owned_rss{0};
+  static bool rss_limit_with_observed_backing(MemoryLimitPool &pool,
+                                              size_t limit) {
+    return pool.process_rss_.configure(
+        limit, +[] { return next_rss.load(); }, nullptr, 0,
+        +[]() -> ProcessRssBudget::ResidentSample {
+          return {next_rss.load(), next_owned_rss.load()};
+        });
   }
   static size_t rss_room(MemoryLimitPool &pool) {
     return pool.process_rss_.available();
@@ -94,6 +120,9 @@ struct MemoryLimitPoolTestPeer {
   }
   static size_t page_limit(MemoryLimitPool &pool) {
     return pool.page_admission_limit();
+  }
+  static size_t runtime_queue_lifetime(MemoryLimitPool &pool) {
+    return pool.queue_runtime_lifetime_size_.load(std::memory_order_relaxed);
   }
   static void notify(MemoryLimitPool &pool) {
     pool.capacity_cv_.notify_all();
@@ -228,6 +257,71 @@ TEST_F(CacheMappingRssTest, WorkspaceAdmissionIncludesDescriptor) {
   }
 }
 
+TEST_F(CacheMappingRssTest, DeniedRecoveryObservationPreservesOwnershipScan) {
+  using Peer = MemoryLimitPoolTestPeer;
+  BudgetedMappedBuffer remaining, released;
+  ASSERT_EQ(0, remaining.resize(32 * kMiB));
+  ASSERT_EQ(0, released.resize(4 * kMiB));
+  auto restore =
+      ScopeGuard::Make([&] { pool_.configure_process_rss_limit(0); });
+  Peer::next_rss = 80 * kMiB;
+  Peer::next_owned_rss = 0;
+  ASSERT_TRUE(Peer::rss_limit_with_observed_backing(pool_, 96 * kMiB));
+  const auto scan = Peer::begin_sample(pool_);
+  ASSERT_NE(0u, scan.configuration);
+
+  released.clear();
+  Peer::next_rss = 76 * kMiB;
+  // The raw sample still cannot admit 4 MiB. The in-flight scan can, even
+  // after discounting the retired mapping and the difference in RSS.
+  const bool reserved = pool_.try_reserve_process_backing(4 * kMiB);
+  if (reserved) pool_.finish_process_backing(4 * kMiB, false);
+  EXPECT_FALSE(reserved);
+  ASSERT_TRUE(Peer::publish_sample(pool_, scan, {80 * kMiB, 36 * kMiB}));
+  BudgetedMappedBuffer workspace;
+  EXPECT_EQ(0, workspace.resize(4 * kMiB));
+}
+
+TEST_F(CacheMappingRssTest, OptionalTrimPublishesRoomForSmallerRequest) {
+  using Peer = MemoryLimitPoolTestPeer;
+  auto idle = acquire();
+  ASSERT_NE(nullptr, idle);
+  idle.reset();
+  const auto committed = pool_.committed();
+  ASSERT_GE(committed - pool_.used(), kMiB);
+  Peer::next_rss = 100 * kMiB;
+  Peer::next_owned_rss = 0;
+  ASSERT_TRUE(Peer::rss_limit_with_observed_backing(
+      pool_, 100 * kMiB + committed + 4 * kMiB));
+  auto restore =
+      ScopeGuard::Make([&] { pool_.configure_process_rss_limit(0); });
+  ASSERT_NE(0u, Peer::begin_sample(pool_).configuration);
+
+  Peer::next_rss = 96 * kMiB;
+  const bool large = pool_.try_charge_external(16 * kMiB);
+  if (large) pool_.release_external(16 * kMiB);
+  EXPECT_FALSE(large);
+  EXPECT_LE(pool_.committed(), committed - kMiB);
+  EXPECT_EQ(96 * kMiB, pool_.process_rss());
+  const bool small = pool_.try_charge_external(8 * kMiB);
+  if (small) pool_.release_external(8 * kMiB);
+  EXPECT_TRUE(small);
+}
+
+TEST_F(CacheMappingRssTest, ImpossibleNativeRequestDoesNotSampleRss) {
+  using Peer = MemoryLimitPoolTestPeer;
+  static std::atomic<size_t> samples;
+  samples = 0;
+  ASSERT_TRUE(Peer::configure_rss_reader(
+      pool_, 192 * kMiB, +[] {
+        samples.fetch_add(1);
+        return 64 * kMiB;
+      }));
+  Peer::make_rss_refresh_due(pool_);
+  EXPECT_FALSE(pool_.try_charge_workspace(pool_.capacity() + kMiB));
+  EXPECT_EQ(1u, samples.load());
+}
+
 TEST_F(CacheMappingRssTest, WorkspaceMappingFailureRollsBackAdmission) {
   ASSERT_EQ(0, pool_.init(SIZE_MAX));
   MemoryLimitPoolTestPeer::stop_background(pool_);
@@ -296,6 +390,122 @@ TEST_F(CacheMappingRssTest,
   required.clear();
   EXPECT_EQ(0u, MemoryLimitPoolTestPeer::waiters(pool_));
   EXPECT_TRUE(buffer.try_resize(2 * page));
+}
+
+TEST_F(CacheMappingRssTest, RequiredAdmissionSkipsWaitForInitialQueueBacking) {
+  ASSERT_GT(pool_.queue_metadata_used(), kMiB);
+  // An installed reclaimer would otherwise let admission enter its wait loop.
+  pool_.set_process_rss_reclaimer([] {});
+  const auto waits = pool_.stats().capacity_waits;
+  EXPECT_FALSE(pool_.try_charge_workspace_plan(pool_.capacity() - kMiB));
+  EXPECT_EQ(waits, pool_.stats().capacity_waits);
+}
+
+TEST_F(CacheMappingRssTest, RequiredAdmissionSkipsWaitForRuntimeQueueBacking) {
+  auto &queue = BlockEvictionQueue::get_instance();
+  ASSERT_TRUE(
+      queue.add_single_block({}, BlockEvictionQueue::kProbationPriority));
+  BlockEvictionQueue::BlockType discarded;
+  ASSERT_FALSE(queue.evict_block(discarded));
+  ASSERT_GT(MemoryLimitPoolTestPeer::runtime_queue_lifetime(pool_), 0u);
+
+  const size_t limit = pool_.native_allocation_limit();
+  pool_.set_process_rss_reclaimer([] {});
+  const auto waits = pool_.stats().capacity_waits;
+  EXPECT_FALSE(pool_.try_charge_workspace_plan(limit + 1));
+  EXPECT_EQ(waits, pool_.stats().capacity_waits);
+  {
+    BlockEvictionQueue::ConcurrentQueue temporary(4096);
+    ASSERT_TRUE(temporary.enqueue({}));
+    EXPECT_EQ(limit, pool_.native_allocation_limit());
+  }
+  EXPECT_EQ(limit, pool_.native_allocation_limit());
+}
+
+TEST_F(CacheMappingRssTest, ImpossibleRssRequestSkipsNativeWait) {
+  constexpr size_t request = 64 * kMiB;
+  const size_t queue_bytes = pool_.capacity() - pool_.native_allocation_limit();
+  ASSERT_TRUE(MemoryLimitPoolTestPeer::fixed_rss_limit(
+      pool_, queue_bytes + request - 1));
+  ASSERT_TRUE(pool_.try_charge_workspace_plan(request));
+  auto release =
+      ScopeGuard::Make([&] { pool_.release_workspace_plan(request); });
+  ASSERT_LT(pool_.available(), request);
+  pool_.set_process_rss_reclaimer([] {});
+  const auto waits = pool_.stats().capacity_waits;
+  EXPECT_FALSE(pool_.try_charge_metadata(request));
+  EXPECT_EQ(waits, pool_.stats().capacity_waits);
+  EXPECT_EQ(0u, MemoryLimitPoolTestPeer::waiters(pool_));
+}
+
+TEST_F(CacheMappingRssTest, PageTableGrowthChecksExistingMetadata) {
+  VectorPageTable table;
+  constexpr size_t initial = 2000000;
+  constexpr size_t target = 4000000;
+  const size_t initial_bytes =
+      VectorPageTable::metadata_bytes_for_entries(initial);
+  const size_t target_bytes =
+      VectorPageTable::metadata_bytes_for_entries(target);
+  ASSERT_LT(target_bytes - initial_bytes, pool_.available());
+  ASSERT_GT(target_bytes, pool_.available());
+  ASSERT_TRUE(table.init(initial));
+  pool_.set_process_rss_reclaimer([] {});
+  const auto waits = pool_.stats().capacity_waits;
+  EXPECT_FALSE(table.extend(target));
+  EXPECT_EQ(initial, table.entry_num());
+  EXPECT_EQ(waits, pool_.stats().capacity_waits);
+}
+
+TEST_F(CacheMappingRssTest, RequiredGrowthSkipsWaitForItsOwnBacking) {
+  pool_.set_process_rss_reclaimer([] {});
+  const auto waits = pool_.stats().capacity_waits;
+  const size_t available = pool_.available();
+  constexpr size_t existing = 32 * kMiB;
+  constexpr size_t replacement = 104 * kMiB;
+  ASSERT_LT(replacement, available);
+  {
+    BudgetedMappedBuffer buffer;
+    ASSERT_EQ(0, buffer.resize(existing));
+    buffer.data()[0] = 41;
+    EXPECT_NE(0, buffer.resize(replacement));
+    EXPECT_EQ(existing, buffer.size());
+    EXPECT_EQ(41, buffer.data()[0]);
+  }
+  {
+    BudgetedAlignedBuffer buffer(existing, 128);
+    auto *data = static_cast<char *>(buffer.data());
+    data[0] = 42;
+    EXPECT_THROW(buffer.resize(replacement, 128), std::bad_alloc);
+    EXPECT_EQ(data, buffer.data());
+    EXPECT_EQ(42, static_cast<char *>(buffer.data())[0]);
+  }
+  {
+    MemoryReservation reservation;
+    reservation.add(existing);
+    EXPECT_THROW(reservation.add(replacement), std::bad_alloc);
+    EXPECT_EQ(existing, reservation.bytes());
+  }
+  {
+    MemoryReservation reservation;
+    std::vector<char> values;
+    ReserveVectorCapacity(values, reservation, existing);
+    values.push_back(43);
+    EXPECT_THROW(ReserveVectorCapacity(values, reservation, replacement),
+                 std::bad_alloc);
+    ASSERT_EQ(1u, values.size());
+    EXPECT_EQ(43, values[0]);
+  }
+  {
+    MemoryReservation reservation;
+    std::string value;
+    ReserveStringCapacity(value, reservation, existing);
+    value = "existing";
+    EXPECT_THROW(ReserveStringCapacity(value, reservation, replacement / 2),
+                 std::bad_alloc);
+    EXPECT_EQ("existing", value);
+  }
+  EXPECT_EQ(available, pool_.available());
+  EXPECT_EQ(waits, pool_.stats().capacity_waits);
 }
 
 TEST_F(CacheMappingRssTest, BatchPagesLeaveRoomForNewSlabHeaders) {
@@ -1232,6 +1442,8 @@ TEST_F(CacheMappingRssTest, PermanentBackingRejectsResetAndRepeatedExclusion) {
               }()),
               testing::ExitedWithCode(0), "");
 }
+
+
 #endif
 
 #if (defined(__linux__) && !defined(__ANDROID__)) || \

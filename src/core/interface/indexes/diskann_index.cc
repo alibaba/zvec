@@ -136,22 +136,24 @@ int DiskAnnIndex::create_and_init_streamer(const BaseIndexParam &param) {
 }
 
 int DiskAnnIndex::open(const std::string &file_path,
-                       StorageOptions storage_options) {
+                       StorageOptions storage_options) try {
   if (storage_options.read_only && storage_options.create_new) {
     LOG_ERROR("Cannot create storage for a read-only index");
     return core::IndexError_Runtime;
   }
+  if (is_open_) return core::IndexError_NoReady;
+  core::IndexStorage::Pointer storage;
   ailego::Params storage_params;
   file_path_ = file_path;
   is_read_only_ = storage_options.read_only;
   switch (storage_options.type) {
     case StorageOptions::StorageType::kMMAP: {
-      storage_ = core::IndexFactory::CreateStorage("FileReadStorage");
-      if (storage_ == nullptr) {
+      storage = core::IndexFactory::CreateStorage("FileReadStorage");
+      if (storage == nullptr) {
         LOG_ERROR("Failed to create FileReadStorage");
         return core::IndexError_Runtime;
       }
-      int ret = storage_->init(storage_params);
+      int ret = storage->init(storage_params);
       if (ret != 0) {
         LOG_ERROR("Failed to init FileReadStorage, path: %s, err: %s",
                   file_path_.c_str(), core::IndexError::What(ret));
@@ -162,12 +164,12 @@ int DiskAnnIndex::open(const std::string &file_path,
     case StorageOptions::StorageType::kBufferPool: {
       storage_params.set(core::BUFFER_READ_STORAGE_WARMUP_MODE,
                          core::BUFFER_READ_STORAGE_WARMUP_NONE);
-      storage_ = core::IndexFactory::CreateStorage("BufferReadStorage");
-      if (storage_ == nullptr) {
+      storage = core::IndexFactory::CreateStorage("BufferReadStorage");
+      if (storage == nullptr) {
         LOG_ERROR("Failed to create BufferReadStorage");
         return core::IndexError_Runtime;
       }
-      int ret = storage_->init(storage_params);
+      int ret = storage->init(storage_params);
       if (ret != 0) {
         LOG_ERROR("Failed to init BufferReadStorage, path: %s, err: %s",
                   file_path_.c_str(), core::IndexError::What(ret));
@@ -182,20 +184,25 @@ int DiskAnnIndex::open(const std::string &file_path,
   }
 
   if (!storage_options.create_new) {
-    int ret = storage_->open(file_path_, false);
+    int ret = storage->open(file_path_, false);
     if (ret != 0) {
       LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path_.c_str(),
                 core::IndexError::What(ret));
-      return core::IndexError_Runtime;
+      return ret == core::IndexError_NoMemory ? ret : core::IndexError_Runtime;
     }
-    if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
+    if (!streamer_) return core::IndexError_Runtime;
+    ret = streamer_->open(storage);
+    if (ret != 0) {
       LOG_ERROR("Failed to open streamer, path: %s", file_path_.c_str());
-      return core::IndexError_Runtime;
+      return ret == core::IndexError_NoMemory ? ret : core::IndexError_Runtime;
     }
     is_trained_ = true;
   }
+  storage_ = std::move(storage);
   is_open_ = true;
   return 0;
+} catch (const std::bad_alloc &) {
+  return core::IndexError_NoMemory;
 }
 
 int DiskAnnIndex::generate_holder() {

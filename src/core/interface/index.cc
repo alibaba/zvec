@@ -538,9 +538,14 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
     return core::IndexError_Runtime;
   }
   ailego::Params storage_params;
-  // storage_params.set("proxima.mmap_file.storage.memory_warmup", true);
-  // storage_params.set("proxima.mmap_file.storage.segment_meta_capacity",
-  // 1024);
+  if (storage_options.create_new &&
+      storage_options.type == StorageOptions::StorageType::kMMAP &&
+      param_.index_type == IndexType::kFlat) {
+    // Flat indexes only need a small initial directory. DB segments can keep
+    // many Flat blocks open, and each padded directory counts against the
+    // shared memory budget. The directory can still grow through splits.
+    storage_params.set(core::MMAPFILE_STORAGE_SEGMENT_META_CAPACITY, 4096u);
+  }
 
   storage_params.set(core::MMAPFILE_STORAGE_COPY_ON_WRITE,
                      storage_options.copy_on_write);

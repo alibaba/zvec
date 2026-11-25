@@ -19,6 +19,9 @@ namespace zvec::ailego {
 class BudgetedMappedBuffer {
  public:
   BudgetedMappedBuffer() = default;
+  explicit BudgetedMappedBuffer(size_t bytes) {
+    resize_or_throw(bytes);
+  }
   BudgetedMappedBuffer(const BudgetedMappedBuffer &) = delete;
   BudgetedMappedBuffer &operator=(const BudgetedMappedBuffer &) = delete;
   BudgetedMappedBuffer(BudgetedMappedBuffer &&rhs) noexcept {
@@ -52,6 +55,10 @@ class BudgetedMappedBuffer {
     return resize_impl(bytes, true);
   }
 
+  void resize_or_throw(size_t bytes) {
+    if (resize(bytes) != 0) throw std::bad_alloc();
+  }
+
   // Optional read-ahead must neither wait for nor evict mandatory consumers.
   [[nodiscard]] bool try_resize(size_t bytes) {
     return resize_impl(bytes, false) == 0;
@@ -66,6 +73,15 @@ class BudgetedMappedBuffer {
       if (!replacement.mapped_size_) return -1;
       auto &pool = MemoryLimitPool::get_instance();
       if (pool.capacity()) {
+        if (mapping_) {
+          constexpr size_t descriptor =
+              sizeof(MemoryLimitPool::WorkspaceBuffer);
+          const size_t limit =
+              pool.native_allocation_limit(mapping_->bytes + descriptor);
+          if (limit < descriptor ||
+              replacement.mapped_size_ > limit - descriptor)
+            return -1;
+        }
         replacement.mapping_ = pool.try_acquire_workspace_buffer(
             replacement.mapped_size_, required);
         if (!replacement.mapping_) return -1;

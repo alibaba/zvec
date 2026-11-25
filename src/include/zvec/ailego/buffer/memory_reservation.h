@@ -15,6 +15,7 @@ class MemoryReservation {
  public:
   MemoryReservation() = default;
   MemoryReservation(const MemoryReservation &rhs) {
+    rhs.require_replacement_capacity(rhs.bytes_);
     add(rhs.bytes_);
   }
   MemoryReservation(MemoryReservation &&rhs) noexcept
@@ -36,6 +37,7 @@ class MemoryReservation {
     if (!bytes && !materialization) return;
     auto &pool = MemoryLimitPool::get_instance();
     if (!pool.capacity()) return;
+    require_replacement_capacity(bytes);
     if (bytes > std::numeric_limits<size_t>::max() - bytes_ ||
         !pool.try_charge_workspace(bytes, materialization))
       throw std::bad_alloc();
@@ -53,6 +55,7 @@ class MemoryReservation {
   void add_for_allocation(size_t bytes, Allocate allocate) {
     auto &pool = MemoryLimitPool::get_instance();
     const size_t charge = pool.capacity() ? bytes : 0;
+    require_replacement_capacity(charge);
     using Pending = MemoryLimitPool::PendingAllocation;
     Pending pending(pool, Pending::Kind::kWorkspace);
     if (charge > std::numeric_limits<size_t>::max() - bytes_ ||
@@ -82,6 +85,14 @@ class MemoryReservation {
   }
   size_t bytes() const {
     return bytes_;
+  }
+
+  // The existing reservation stays charged while its replacement is admitted.
+  void require_replacement_capacity(size_t bytes) const {
+    if (bytes && bytes_ &&
+        bytes > MemoryLimitPool::get_instance().native_allocation_limit(
+                    bytes_, /*retained_may_be_permanent=*/true))
+      throw std::bad_alloc();
   }
 
   MemoryReservation take(size_t bytes) noexcept {

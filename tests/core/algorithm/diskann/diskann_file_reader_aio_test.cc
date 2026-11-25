@@ -28,11 +28,12 @@
 #include <cstring>
 #include <limits>
 #include <vector>
+#include <ailego/pattern/scope_guard.h>
 #include <gtest/gtest.h>
 
 namespace zvec {
 namespace core {
-int execute_io_libaio(io_context_t &ctx, int fd,
+int execute_io_libaio(IoBackend &ctx, int fd,
                       std::vector<AlignedRead> &read_reqs,
                       uint64_t n_retries = 0);
 }  // namespace core
@@ -52,6 +53,8 @@ struct FakeAioState {
   std::vector<long> submit_sizes;
   std::vector<long> completion_sizes;
   std::vector<struct iocb *> submitted;
+  std::vector<void *> kernel_buffers;
+  int destroy_result = -EIO;
   size_t submit_call = 0;
   size_t completion_call = 0;
   size_t completed = 0;
@@ -77,13 +80,14 @@ int fake_io_submit(io_context_t, long nr, struct iocb *ios[]) {
 
   for (int i = 0; i < ret; ++i) {
     g_fake_aio->submitted.push_back(ios[i]);
+    g_fake_aio->kernel_buffers.push_back(ios[i]->u.c.buf);
   }
   return ret;
 }
 
 int fake_io_getevents(io_context_t, long min_nr, long nr,
                       struct io_event *events, struct timespec *) {
-  if (g_fake_aio == nullptr || min_nr != nr ||
+  if (g_fake_aio == nullptr || min_nr > nr ||
       g_fake_aio->completion_call >= g_fake_aio->completion_results.size()) {
     return -EINVAL;
   }
@@ -112,20 +116,27 @@ int fake_io_getevents(io_context_t, long min_nr, long nr,
   return ret;
 }
 
+int fake_io_destroy(io_context_t) {
+  return g_fake_aio->destroy_result;
+}
+
 class FakeAioGuard {
  public:
   explicit FakeAioGuard(FakeAioState *state)
       : loader_(LibAioLoader::Instance()),
         original_submit_(loader_.io_submit),
-        original_getevents_(loader_.io_getevents) {
+        original_getevents_(loader_.io_getevents),
+        original_destroy_(loader_.io_destroy) {
     g_fake_aio = state;
     loader_.io_submit = fake_io_submit;
     loader_.io_getevents = fake_io_getevents;
+    loader_.io_destroy = fake_io_destroy;
   }
 
   ~FakeAioGuard() {
     loader_.io_submit = original_submit_;
     loader_.io_getevents = original_getevents_;
+    loader_.io_destroy = original_destroy_;
     g_fake_aio = nullptr;
   }
 
@@ -133,6 +144,7 @@ class FakeAioGuard {
   LibAioLoader &loader_;
   aio_submit_fn original_submit_;
   aio_getevents_fn original_getevents_;
+  aio_destroy_fn original_destroy_;
 };
 
 class TemporaryFile {
@@ -199,7 +211,8 @@ TEST(DiskAnnLinuxAioTest, AccumulatesPartialSubmissionsAndCompletions) {
   state.submit_results = {2, 2};
   state.completion_results = {1, 2, 1};
   FakeAioGuard guard(&state);
-  io_context_t ctx = reinterpret_cast<io_context_t>(static_cast<uintptr_t>(1));
+  IoBackend ctx;
+  ctx.aio_ctx = reinterpret_cast<io_context_t>(static_cast<uintptr_t>(1));
 
   // An invalid fd makes any accidental pread fallback fail the test.
   EXPECT_EQ(execute_io_libaio(ctx, -1, requests), 0);
@@ -383,7 +396,7 @@ TEST(DiskAnnBufferPoolFileReaderTest, RejectsNonPageAlignedRequests) {
   std::free(output);
 }
 
-#endif  // __linux__
+
 
 TEST(DiskAnnLinuxAioTest, DrainsPartialSubmissionBeforePreadFallback) {
   TemporaryFile file;
@@ -400,7 +413,8 @@ TEST(DiskAnnLinuxAioTest, DrainsPartialSubmissionBeforePreadFallback) {
   state.submit_results = {2, -EAGAIN};
   state.completion_results = {1, 1};
   FakeAioGuard guard(&state);
-  io_context_t ctx = reinterpret_cast<io_context_t>(static_cast<uintptr_t>(1));
+  IoBackend ctx;
+  ctx.aio_ctx = reinterpret_cast<io_context_t>(static_cast<uintptr_t>(1));
 
   EXPECT_EQ(execute_io_libaio(ctx, file.fd(), requests), 0);
   EXPECT_EQ(state.submit_sizes, (std::vector<long>{4, 2}));
@@ -427,7 +441,8 @@ TEST(DiskAnnLinuxAioTest, DrainsAllCompletionsBeforePreadFallback) {
   state.completion_results = {1, 1, 2};
   state.short_completion = 0;
   FakeAioGuard guard(&state);
-  io_context_t ctx = reinterpret_cast<io_context_t>(static_cast<uintptr_t>(1));
+  IoBackend ctx;
+  ctx.aio_ctx = reinterpret_cast<io_context_t>(static_cast<uintptr_t>(1));
 
   EXPECT_EQ(execute_io_libaio(ctx, file.fd(), requests), 0);
   EXPECT_EQ(state.completion_sizes, (std::vector<long>{4, 3, 2}));
@@ -436,3 +451,87 @@ TEST(DiskAnnLinuxAioTest, DrainsAllCompletionsBeforePreadFallback) {
 
   std::free(output);
 }
+
+TEST(DiskAnnLinuxAioTest, FailedCancellationRetainsOnlyKernelStaging) {
+  TemporaryFile file;
+  ASSERT_GE(file.fd(), 0);
+  const auto source = make_source();
+  ASSERT_EQ(::pwrite(file.fd(), source.data(), source.size(), 0),
+            static_cast<ssize_t>(source.size()));
+  std::unique_ptr<void, decltype(&std::free)> output(
+      allocate_aligned(source.size()), &std::free);
+  ASSERT_NE(output, nullptr);
+  std::memset(output.get(), 0, source.size());
+  auto requests = make_requests(output.get());
+  FakeAioState state;
+  state.submit_results = {4};
+  state.completion_results = {-EIO};
+  FakeAioGuard guard(&state);
+  LinuxAlignedFileReader reader(::dup(file.fd()));
+  IOContext ctx = new IoBackend();
+  ctx->type = ailego::IOBackendType::kLibAio;
+  ctx->aio_ctx = reinterpret_cast<io_context_t>(static_cast<uintptr_t>(1));
+
+  PendingBatch batch;
+  ASSERT_EQ(0, reader.submit(batch, requests, ctx));
+  ASSERT_NE(nullptr, ctx->aio_staging);
+  std::vector<uint32_t> completed;
+  EXPECT_EQ(IndexError_Runtime, reader.get_completed(batch, ctx, 1, completed));
+  EXPECT_TRUE(completed.empty());
+  EXPECT_TRUE(ctx->aio_quarantined);
+  ASSERT_NE(nullptr, ctx->aio_staging);
+  ASSERT_EQ(kBlockCount, state.kernel_buffers.size());
+  for (size_t i = 0; i < kBlockCount; ++i) {
+    EXPECT_NE(requests[i].buf, state.kernel_buffers[i]);
+    std::memset(state.kernel_buffers[i], 0xa5, kBlockSize);
+  }
+  EXPECT_EQ(0, reader.submit(batch, requests, ctx));
+  EXPECT_TRUE(batch.used_pread);
+  EXPECT_EQ(0, std::memcmp(output.get(), source.data(), source.size()));
+  EXPECT_EQ(1u, state.submit_call);
+  state.destroy_result = 0;
+  EXPECT_EQ(0, destroy_io_ctx(ctx));
+}
+
+TEST(DiskAnnLinuxAioTest, RealAioRingAndStagingReturnTheirBudget) {
+  auto &loader = LibAioLoader::Instance();
+  if (!loader.load()) GTEST_SKIP() << "libaio is unavailable";
+  auto &pool = ailego::PoolPayloadBudget::get_instance();
+  ASSERT_EQ(0, pool.init(4 * 1024 * 1024));
+  const auto reset = ailego::ScopeGuard::Make([&] { EXPECT_EQ(0, pool.init(0)); });
+  auto context = std::make_unique<IoBackend>();
+  context->type = ailego::IOBackendType::kLibAio;
+  ASSERT_EQ(0, loader.setup_budgeted(16, context->aio_ctx, context->aio_memory));
+  EXPECT_GE(context->aio_memory.bytes, pool.page_buffer_size());
+
+  TemporaryFile file;
+  ASSERT_GE(file.fd(), 0);
+  const auto source = make_source();
+  ASSERT_EQ(::pwrite(file.fd(), source.data(), source.size(), 0),
+            static_cast<ssize_t>(source.size()));
+  std::unique_ptr<void, decltype(&std::free)> output(
+      allocate_aligned(source.size()), &std::free);
+  ASSERT_NE(output, nullptr);
+  auto requests = make_requests(output.get());
+  LinuxAlignedFileReader reader(::dup(file.fd()));
+  const size_t external_before = pool.external_used();
+  auto *ctx = context.get();
+  {
+    PendingBatch batch;
+    ASSERT_EQ(0, reader.submit(batch, requests, ctx));
+    ASSERT_FALSE(batch.used_pread);
+    const size_t in_flight = pool.external_used();
+    EXPECT_GT(in_flight, external_before);
+    std::vector<uint32_t> completed;
+    const int result = reader.get_completed(batch, ctx, kBlockCount, completed);
+    EXPECT_EQ(static_cast<int>(kBlockCount), result);
+    EXPECT_LT(pool.external_used(), in_flight);
+  }
+  EXPECT_EQ(external_before, pool.external_used());
+  EXPECT_EQ(0, std::memcmp(output.get(), source.data(), source.size()));
+  EXPECT_EQ(0, loader.destroy_budgeted(ctx->aio_ctx, ctx->aio_memory));
+  EXPECT_EQ(nullptr, ctx->aio_ctx);
+  EXPECT_EQ(0u, ctx->aio_memory.bytes);
+}
+
+#endif  // __linux__
