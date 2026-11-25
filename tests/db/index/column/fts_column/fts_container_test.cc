@@ -302,13 +302,16 @@ TEST_F(FtsContainerTest, RangeKeepsGenerationAliveAfterReaderRelease) {
 }
 
 TEST_F(FtsContainerTest, SectionWindowsReuseNativePagesAcrossChecksumChunks) {
-  auto storage = core::IndexFactory::CreateStorage("MMapFileReadStorage");
-  ASSERT_NE(storage, nullptr);
-  ASSERT_EQ(0, storage->init({}));
-  ASSERT_EQ(0, storage->open(path_, false));
-  const auto section = storage->get("field.0.postings");
-  ASSERT_NE(section, nullptr);
-  const uint64_t physical = section->data_offset();
+  uint64_t physical;
+  {
+    auto storage = core::IndexFactory::CreateStorage("MMapFileReadStorage");
+    ASSERT_NE(storage, nullptr);
+    ASSERT_EQ(0, storage->init({}));
+    ASSERT_EQ(0, storage->open(path_, false));
+    const auto section = storage->get("field.0.postings");
+    ASSERT_NE(section, nullptr);
+    physical = section->data_offset();
+  }
   const uint64_t page = ailego::kVectorPageSize;
   // Find a checksum boundary whose adjacent bytes occupy the same native
   // page. Buffer reads must retain one window, including bypass-only pools;
@@ -404,11 +407,12 @@ TEST_F(FtsContainerTest, PayloadChecksumIsOnlyCheckedExplicitly) {
 
 TEST_F(FtsContainerTest, RangeReadsSkipHashingAndPreserveOwnedLifetimes) {
   for (bool mmap : {false, true}) {
+    const auto &pool = ailego::MemoryLimitPool::get_instance();
+    const auto initial_external = pool.external_used();
     auto opened = FtsContainerReader::Open(path_, mmap);
     ASSERT_TRUE(opened);
     auto reader = std::move(*opened);
-    const auto initial_external =
-        ailego::MemoryLimitPool::get_instance().external_used();
+    const auto reader_external = pool.external_used();
     auto retained = reader->read("field.0.postings", 17, 20);
     ASSERT_TRUE(retained);
     const auto before = reader->read_stats();
@@ -427,14 +431,12 @@ TEST_F(FtsContainerTest, RangeReadsSkipHashingAndPreserveOwnedLifetimes) {
     EXPECT_EQ(0u, reader->read_stats().hashed_bytes);
     // Mmap ranges pin the native mapping without separate checksum copies.
     if (mmap) {
-      EXPECT_EQ(initial_external,
-                ailego::MemoryLimitPool::get_instance().external_used());
+      EXPECT_EQ(reader_external, pool.external_used());
     }
     reader.reset();
     EXPECT_EQ(std::string_view(payload_).substr(17, 20), retained->view());
     retained = FtsReadRange{};
-    EXPECT_EQ(initial_external,
-              ailego::MemoryLimitPool::get_instance().external_used());
+    EXPECT_EQ(initial_external, pool.external_used());
   }
 }
 
