@@ -34,9 +34,6 @@
 namespace zvec::turbo {
 namespace {
 // Version the record/query layout independently of the common quantizer header.
-// Bumped from 0x52425132: records and query blobs now follow rabitqlib's
-// BinDataMap/ExDataMap layout so the dispatched SIMD estimators can consume
-// them in place. Indexes written with the scalar layout must be rebuilt.
 constexpr uint32_t kSplitFormat = 0x52425133;
 constexpr size_t kBinPrefix = 8;  // u32 cluster + u32 zero pad for alignment
 uint32_t ReadUint(const void *data, size_t offset = 0) {

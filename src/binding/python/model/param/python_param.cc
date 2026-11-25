@@ -770,9 +770,8 @@ Examples:
             if (t.size() < 5 || t.size() > 9)
               throw std::runtime_error("Invalid state for HnswIndexParams");
             QuantizerParam qp =
-                t.size() == 9 ? t[8].cast<QuantizerParam>()
-                : t.size() >= 6 && py::isinstance<QuantizerParam>(t[5])
-                    ? t[5].cast<QuantizerParam>()
+                t.size() == 9
+                    ? t[8].cast<QuantizerParam>()
                     : QuantizerParam(t.size() >= 6 ? t[5].cast<bool>() : false);
             return std::make_shared<HnswIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
