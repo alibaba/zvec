@@ -52,6 +52,14 @@ struct ResultDoc {
   std::string reverted_sparse_values;
 };
 
+void SortResults(std::vector<ResultDoc> &docs, MetricType metric_type) {
+  std::sort(docs.begin(), docs.end(),
+            [metric_type](const ResultDoc &lhs, const ResultDoc &rhs) {
+              return IsBetterScore(metric_type, lhs.doc.score(),
+                                   rhs.doc.score());
+            });
+}
+
 class VectorResultAccumulator {
  public:
   // Collect plain topk results from each block after translating block-local
@@ -84,11 +92,7 @@ class VectorResultAccumulator {
     // rank all docs globally, keep topk, then split ResultDoc back into the
     // doc list and optional reverted payload lists expected by
     // VectorIndexResults.
-    std::sort(docs_.begin(), docs_.end(),
-              [metric_type](const ResultDoc &lhs, const ResultDoc &rhs) {
-                return IsBetterScore(metric_type, lhs.doc.score(),
-                                     rhs.doc.score());
-              });
+    SortResults(docs_, metric_type);
     if (docs_.size() > topk) {
       docs_.resize(topk);
     }
@@ -412,6 +416,37 @@ Result<IndexResults::Ptr> CombinedVectorColumnIndexer::search(
   }
   return vector_results.finish(field_schema_.is_sparse_vector(), metric_type_,
                                query_params.topk);
+}
+
+void CombinedVectorColumnIndexer::sort_query_results(MetricType metric_type,
+                                                     int64_t *ids,
+                                                     float *scores,
+                                                     size_t size) {
+  size_t count = 0;
+  bool needs_sort = false;
+  for (; count < size && ids[count] != -1; ++count) {
+    if (count > 0 &&
+        !IsBetterScore(metric_type, scores[count - 1], scores[count])) {
+      needs_sort = true;
+    }
+  }
+  if (!needs_sort) return;
+
+  // Use the same element type and sort as the general route. Sorting compact
+  // ID/score pairs can permute ties differently with some standard libraries.
+  std::vector<ResultDoc> docs;
+  docs.reserve(count);
+  for (size_t i = 0; i < count; ++i) {
+    docs.push_back(
+        {core::IndexDocument(static_cast<uint64_t>(ids[i]), scores[i]),
+         {},
+         {}});
+  }
+  SortResults(docs, metric_type);
+  for (size_t i = 0; i < count; ++i) {
+    ids[i] = static_cast<int64_t>(docs[i].doc.key());
+    scores[i] = docs[i].doc.score();
+  }
 }
 
 Status CombinedVectorColumnIndexer::search_internal_ids(
