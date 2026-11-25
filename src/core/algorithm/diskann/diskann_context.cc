@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "diskann_context.h"
+#include "diskann_result_payloads.h"
 #include <chrono>
 #include <new>
 #include "diskann_params.h"
@@ -28,6 +29,94 @@ DiskAnnContext::DiskAnnContext(const IndexMeta &meta,
     : IndexContext(measure),
       dc_(entity.get(), meta, measure, data_quantizer),
       entity_{entity} {}
+
+void DiskAnnContext::prepare_vector_candidates() {
+  // Prepay at most one sector of small result vectors. Under RSS pressure,
+  // or if the batch does not fit, allocate each slot only when needed.
+  const size_t bytes_per_slot = size_t{element_size_} + 1;
+  const size_t count =
+      std::min<size_t>(topk_, DiskAnnUtil::kSectorSize / bytes_per_slot);
+  auto &pool = ailego::MemoryLimitPool::get_instance();
+  if (count < 2 || element_size_ <= std::string{}.capacity() ||
+      pool.under_process_rss_pressure())
+    return;
+
+  const size_t maximum = 2 * count * bytes_per_slot;
+  if (!pool.try_reserve_process_backing(maximum)) return;
+  size_t bytes = 0;
+  try {
+    candidate_vectors_.resize(count);
+    for (auto &candidate : candidate_vectors_) {
+      candidate.bytes.resize(element_size_);
+      const size_t allocated = candidate.bytes.capacity() + 1;
+      if (allocated > maximum - bytes) throw std::bad_alloc();
+      bytes += allocated;
+    }
+  } catch (const std::bad_alloc &) {
+    candidate_vectors_.clear();
+    pool.finish_process_backing(maximum, false);
+    return;
+  }
+  const auto stamp = pool.finish_reserved_process_backing(maximum, bytes);
+  for (auto &candidate : candidate_vectors_) {
+    candidate.memory.adopt(candidate.bytes.capacity() + 1, stamp);
+  }
+}
+
+void DiskAnnContext::emplace_vector_candidate(diskann_id_t id, float score,
+                                              const void *src) {
+  if (topk_heap_.full() && !(score < topk_heap_.front().second.dist_)) return;
+  diskann_id_t slot = topk_heap_.full() ? topk_heap_.front().second.vector_slot_
+                                      : kInvalidId;
+  if (slot == kInvalidId) {
+    if (candidate_vectors_.empty()) prepare_vector_candidates();
+    slot = candidate_slots_used_;
+    if (slot == candidate_vectors_.size()) {
+      auto &candidate = candidate_vectors_.emplace_back();
+      candidate.memory.resize(candidate.bytes, element_size_);
+    }
+    ++candidate_slots_used_;
+  }
+  std::memcpy(candidate_vectors_[slot].bytes.data(), src, element_size_);
+  topk_heap_.emplace(id, VectorInfo(score, slot));
+}
+
+void DiskAnnContext::topk_to_result(uint32_t idx) {
+  using Builder = TopkResultBuilder<DiskAnnContext, TopkHeap>;
+  if (!use_vector_candidates()) {
+    Builder::topk_to_result(idx);
+    return;
+  }
+  auto release = ailego::ScopeGuard::Make([&] { release_candidates(); });
+  candidate_vectors_.resize(candidate_slots_used_);
+  Builder::topk_to_single_result(idx, [&](IndexDocumentList &docs,
+                                          TopkHeap &heap, uint32_t size) {
+    uint32_t accepted = 0;
+    while (accepted < size && !(heap[accepted].second.dist_ > threshold()))
+      ++accepted;
+    DiskAnnResultPayloads batch(accepted);
+    IndexDocumentList result;
+    result.reserve(accepted);
+    for (uint32_t i = 0; i < accepted; ++i) {
+      const auto &entry = heap[i];
+      diskann_key_t key;
+      const int ret = entity_->read_key(entry.first, &key);
+      if (ret != 0) {
+        set_error_code(ret);
+        return;
+      }
+      auto &candidate = candidate_vectors_[entry.second.vector_slot_];
+      auto payload = std::allocate_shared<std::string>(
+          DiskAnnResultPayloads::Allocator<std::string>{},
+          std::move(candidate.bytes));
+      batch.attach_vector(std::move(candidate.memory));
+      result.emplace_back(key, entry.second.dist_, entry.first,
+                          std::move(payload));
+    }
+    batch.commit();
+    docs.swap(result);
+  });
+}
 
 DiskAnnContext::Pointer DiskAnnContext::create_fetch_context(
     const IndexMeta &meta, const IndexMetric::Pointer &measure,

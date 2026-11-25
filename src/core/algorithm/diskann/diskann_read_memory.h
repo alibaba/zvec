@@ -29,6 +29,23 @@ class DiskAnnReadReservation {
       ailego::MemoryLimitPool::get_instance().release_heap_process_backing(
           bytes_, stamp_);
   }
+  void adopt(size_t bytes,
+             ailego::ProcessRssBudget::MaterializationStamp stamp) noexcept {
+    ailego_assert(bytes_ == 0);
+    bytes_ = bytes;
+    stamp_ = stamp;
+  }
+
+  void release_with(size_t bytes,
+                    ailego::ProcessRssBudget::MaterializationStamp stamp) {
+    using Projection = ailego::ProcessRssBudget::HeapProjection;
+    auto projection = Projection::Full(bytes_, stamp_);
+    projection.append(Projection::Full(bytes, stamp));
+    ailego::MemoryLimitPool::get_instance()
+        .release_projected_heap_process_backing(
+            std::exchange(bytes_, 0) + bytes, projection);
+  }
+
   template <typename T>
   T *create() {
     T *value;
@@ -86,8 +103,7 @@ class DiskAnnReadReservation {
       throw;
     }
     bytes_ = actual;
-    stamp_ = pool.finish_process_backing(actual, true);
-    if (maximum > actual) pool.finish_process_backing(maximum - actual, false);
+    stamp_ = pool.finish_reserved_process_backing(maximum, actual);
   }
 
   void swap(DiskAnnReadReservation &other) noexcept {

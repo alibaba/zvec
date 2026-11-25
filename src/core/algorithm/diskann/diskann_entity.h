@@ -30,9 +30,11 @@ constexpr diskann_key_t kInvalidKey = static_cast<diskann_key_t>(-1);
 
 struct VectorInfo {
   float dist_;
+  diskann_id_t vector_slot_{kInvalidId};
   std::string vec_;
 
   VectorInfo() = default;
+  VectorInfo(float dist, diskann_id_t slot) : dist_{dist}, vector_slot_{slot} {}
   VectorInfo(float dist, const std::string &vec) : dist_{dist}, vec_{vec} {}
   VectorInfo(float dist, std::string &&vec)
       : dist_{dist}, vec_{std::move(vec)} {}

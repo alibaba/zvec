@@ -782,8 +782,10 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
   topk_heap.clear();
   auto &group_topk_heaps = ctx->group_topk_heaps();
   group_topk_heaps.clear();
-  auto emplace_candidate = [&](diskann_id_t id, VectorInfo info) -> int {
+  auto emplace_candidate = [&](diskann_id_t id, float score,
+                               const void *vector) -> int {
     if (ctx->group_by_search() && ctx->group_by().is_valid()) {
+      VectorInfo info(score, make_vector_copy(vector));
       diskann_key_t key;
       const int status = entity_->read_key(id, &key);
       if (status != 0) return status;
@@ -795,7 +797,7 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
       }
       group_topk_heap.emplace(id, std::move(info));
     } else {
-      topk_heap.emplace(id, std::move(info));
+      this->emplace_candidate(ctx, topk_heap, id, score, vector);
     }
     return 0;
   };
@@ -901,8 +903,7 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
       float cur_expanded_dist = dc.dist(aligned_query_raw, node_fp_coords_copy);
 
       const int status = emplace_candidate(
-          std::get<0>(cached_neighbor),
-          VectorInfo(cur_expanded_dist, make_vector_copy(node_fp_coords_copy)));
+          std::get<0>(cached_neighbor), cur_expanded_dist, node_fp_coords_copy);
       if (status != 0) return status;
     }
 
@@ -917,8 +918,7 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
       float cur_expanded_dist = dc.dist(aligned_query_raw, data_buf);
 
       const int status = emplace_candidate(
-          frontier_neighbor.first,
-          VectorInfo(cur_expanded_dist, make_vector_copy(data_buf)));
+          frontier_neighbor.first, cur_expanded_dist, data_buf);
       if (status != 0) return status;
 
       stats.cpu_us += cpu_timer.micro_seconds();
@@ -945,8 +945,10 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
   topk_heap.clear();
   auto &group_topk_heaps = ctx->group_topk_heaps();
   group_topk_heaps.clear();
-  auto emplace_candidate = [&](diskann_id_t id, VectorInfo info) -> int {
+  auto emplace_candidate = [&](diskann_id_t id, float score,
+                               const void *vector) -> int {
     if (ctx->group_by_search() && ctx->group_by().is_valid()) {
+      VectorInfo info(score, make_vector_copy(vector));
       diskann_key_t key;
       const int status = entity_->read_key(id, &key);
       if (status != 0) return status;
@@ -958,7 +960,7 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
       }
       group_topk_heap.emplace(id, std::move(info));
     } else {
-      topk_heap.emplace(id, std::move(info));
+      this->emplace_candidate(ctx, topk_heap, id, score, vector);
     }
     return 0;
   };
@@ -1072,8 +1074,7 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
       float cur_expanded_dist = dc.dist(aligned_query_raw, node_fp_coords_copy);
 
       const int status = emplace_candidate(
-          std::get<0>(cached_neighbor),
-          VectorInfo(cur_expanded_dist, make_vector_copy(node_fp_coords_copy)));
+          std::get<0>(cached_neighbor), cur_expanded_dist, node_fp_coords_copy);
       if (status != 0) return status;
     }
 
@@ -1088,8 +1089,7 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
       float cur_expanded_dist = dc.dist(aligned_query_raw, data_buf);
 
       const int status = emplace_candidate(
-          frontier_neighbor.first,
-          VectorInfo(cur_expanded_dist, make_vector_copy(data_buf)));
+          frontier_neighbor.first, cur_expanded_dist, data_buf);
       if (status != 0) return status;
 
       stats.cpu_us += cpu_timer.micro_seconds();
@@ -1438,9 +1438,8 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
           is_filtered(ctx, std::get<0>(cached_neighbor), &filtered);
       if (filter_status != 0) return filter_status;
       if (!filtered) {
-        topk_heap.emplace(std::get<0>(cached_neighbor),
-                          VectorInfo(cur_expanded_dist,
-                                     make_vector_copy(node_fp_coords_copy)));
+        emplace_candidate(ctx, topk_heap, std::get<0>(cached_neighbor),
+                          cur_expanded_dist, node_fp_coords_copy);
       }
 
       uint32_t neighbor_num = std::get<1>(cached_neighbor);
@@ -1490,9 +1489,8 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
               is_filtered(ctx, frontier_neighbor.first, &filtered);
           if (filter_status != 0) return filter_status;
           if (!filtered) {
-            topk_heap.emplace(frontier_neighbor.first,
-                              VectorInfo(cur_expanded_dist,
-                                         make_vector_copy(node_fp_coords)));
+            emplace_candidate(ctx, topk_heap, frontier_neighbor.first,
+                              cur_expanded_dist, node_fp_coords);
           }
 
           diskann_id_t *node_neighbors =

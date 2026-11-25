@@ -111,6 +111,24 @@ TEST(ProcessRssBudgetTest, CriticalRecoveryRequiresBothConfiguredSamples) {
   budget.release(kMiB);
 }
 
+TEST(ProcessRssBudgetTest, SettlingReservationPublishesUnusedHeadroom) {
+  ProcessRssBudget budget;
+  sampled_rss = 32 * kMiB;
+  ASSERT_TRUE(budget.configure(128 * kMiB, ReadRss));
+  ASSERT_TRUE(budget.try_reserve(80 * kMiB));
+  ProcessRssBudget::RecoveryWatch watch(budget, 24 * kMiB);
+  ASSERT_FALSE(budget.try_reserve(24 * kMiB, nullptr, &watch));
+  EXPECT_FALSE(watch.progressed());
+
+  const auto stamp = budget.finish_reserved_backing(80 * kMiB, 48 * kMiB);
+  EXPECT_TRUE(watch.progressed());
+  EXPECT_EQ(48 * kMiB, budget.available());
+  ASSERT_TRUE(budget.try_reserve(24 * kMiB));
+  budget.finish_reservation(24 * kMiB, false);
+  budget.release_heap(
+      48 * kMiB, ProcessRssBudget::HeapProjection::Full(48 * kMiB, stamp));
+}
+
 TEST(ProcessRssBudgetTest, ConcurrentAdmissionsShareUnmaterializedHeadroom) {
   ProcessRssBudget budget;
   sampled_rss = 600 * kMiB;

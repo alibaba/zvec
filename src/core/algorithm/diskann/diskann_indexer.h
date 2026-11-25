@@ -73,6 +73,15 @@ class DiskAnnIndexer {
     return std::string(static_cast<const char *>(src), meta_.element_size());
   }
 
+  void emplace_candidate(DiskAnnContext *ctx, TopkHeap &heap, diskann_id_t id,
+                         float score, const void *src) const {
+    if (ctx->use_vector_candidates()) {
+      ctx->emplace_vector_candidate(id, score, src);
+    } else {
+      heap.emplace(id, VectorInfo(score, make_vector_copy(src)));
+    }
+  }
+
   std::vector<bool> read_nodes(
       const std::vector<diskann_id_t> &node_ids,
       std::vector<void *> &coord_buffers,

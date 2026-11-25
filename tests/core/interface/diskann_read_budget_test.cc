@@ -147,27 +147,34 @@ TEST_P(DiskAnnReadBudgetTest, SameThreadSwitchRssRefusalAndRetry) {
   ASSERT_EQ(0, second->open(second_path, {GetParam(), false, true}));
 
   auto query = std::make_shared<DiskAnnQueryParam>();
-  query->topk = 1;
+  query->topk = 2;
   query->list_size = 48;
+  query->fetch_vector = true;
   const VectorData first_input{DenseVector{first_rows.data() + kDimension}};
   const VectorData second_input{DenseVector{second_rows.data() + 2 * kDimension}};
 
   SearchResult result;
   ASSERT_EQ(0, second->search(second_input, query, &result));
-  ASSERT_EQ(1u, result.doc_list_.size());
+  ASSERT_EQ(2u, result.doc_list_.size());
   const auto second_key = result.doc_list_.front().key();
   ASSERT_EQ(0, first->search(first_input, query, &result));
-  ASSERT_EQ(1u, result.doc_list_.size());
+  ASSERT_EQ(2u, result.doc_list_.size());
   const auto first_key = result.doc_list_.front().key();
+  auto saved = result.doc_list_.front();
+  core::IndexDocument assigned;
+  assigned = saved;
+  const auto *vector_data = saved.vector_string().data();
+  EXPECT_EQ(vector_data, result.doc_list_.front().vector_string().data());
+  const auto saved_bytes = saved.vector_string();
   ASSERT_TRUE(rss.configure_process_rss_limit(1));
   ASSERT_GT(rss.process_rss(), rss.process_rss_limit());
 
   EXPECT_EQ(core::IndexError_NoMemory,
             second->search(second_input, query, &result));
-  ASSERT_EQ(1u, result.doc_list_.size());
+  ASSERT_EQ(2u, result.doc_list_.size());
   EXPECT_EQ(first_key, result.doc_list_.front().key());
-  std::array<int64_t, 1> ids{-42};
-  std::array<float, 1> scores{-42.0f};
+  std::array<int64_t, 2> ids{-42, -42};
+  std::array<float, 2> scores{-42.0f, -42.0f};
   EXPECT_EQ(core::IndexError_NoMemory,
             second->search_internal_ids(second_input, query, ids.data(), scores.data()));
   EXPECT_EQ(-42, ids.front());
@@ -177,8 +184,14 @@ TEST_P(DiskAnnReadBudgetTest, SameThreadSwitchRssRefusalAndRetry) {
 
   ASSERT_TRUE(rss.configure_process_rss_limit(kHighRss));
   ASSERT_EQ(0, second->search(second_input, query, &result));
-  ASSERT_EQ(1u, result.doc_list_.size());
+  ASSERT_EQ(2u, result.doc_list_.size());
   EXPECT_EQ(second_key, result.doc_list_.front().key());
+  EXPECT_EQ(vector_data, saved.vector_string().data());
+  EXPECT_EQ(saved_bytes, saved.vector_string());
+  EXPECT_EQ(vector_data, assigned.vector_string().data());
+  assigned = core::IndexDocument{7, 0.0f, 0, std::string("standalone")};
+  EXPECT_EQ("standalone", assigned.vector_string());
+  EXPECT_EQ(vector_data, saved.vector_string().data());
   ASSERT_EQ(0, second->search_internal_ids(second_input, query, ids.data(),
                                             scores.data()));
   EXPECT_EQ(static_cast<int64_t>(second_key), ids.front());
@@ -199,7 +212,7 @@ TEST_P(DiskAnnReadBudgetTest, SameThreadSwitchRssRefusalAndRetry) {
   ASSERT_TRUE(rss.configure_process_rss_limit(kHighRss));
   ASSERT_EQ(0, second->open(second_path, {GetParam(), false, true}));
   ASSERT_EQ(0, second->search(second_input, query, &result));
-  ASSERT_EQ(1u, result.doc_list_.size());
+  ASSERT_EQ(2u, result.doc_list_.size());
   EXPECT_EQ(second_key, result.doc_list_.front().key());
   ASSERT_EQ(0, second->close());
   ASSERT_EQ(0, first->close());

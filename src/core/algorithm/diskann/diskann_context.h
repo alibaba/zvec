@@ -230,7 +230,13 @@ class DiskAnnContext : public IndexContext,
     error_code_ = status;
   }
 
-  inline void clear() {
+  inline void clear(bool discard_slots = false) {
+    release_candidates();
+    if (candidate_vectors_.capacity() &&
+        (discard_slots || candidate_vectors_.capacity() / 2 > topk_ ||
+         ailego::MemoryLimitPool::get_instance().under_process_rss_pressure())) {
+      decltype(candidate_vectors_){}.swap(candidate_vectors_);
+    }
     for (auto &it : results_) {
       it.clear();
     }
@@ -325,10 +331,18 @@ class DiskAnnContext : public IndexContext,
     group_topk_heaps_.clear();
   }
 
-  // topk_to_result / topk_to_single_result / topk_to_group_result are provided
-  // by TopkResultBuilder via the hooks below (result_score,
-  // emplace_result_doc).
-  using TopkResultBuilder<DiskAnnContext, TopkHeap>::topk_to_result;
+  bool use_vector_candidates() const {
+    return fetch_vector_ && !group_by_search();
+  }
+
+  void topk_to_result(uint32_t idx);
+  void emplace_vector_candidate(diskann_id_t id, float score, const void *src);
+  void release_candidates() {
+    if (candidate_vectors_.empty()) return;
+    topk_heap_.clear();
+    candidate_vectors_.clear();
+    candidate_slots_used_ = 0;
+  }
 
   void set_to_result(uint32_t idx, const std::vector<diskann_id_t> &result_ids,
                      const std::vector<float> &result_dists) {
@@ -344,6 +358,8 @@ class DiskAnnContext : public IndexContext,
   }
 
  private:
+  void prepare_vector_candidates();
+
   //! Hooks required by TopkResultBuilder.
   std::vector<IndexDocumentList> &mutable_results() {
     return results_;
@@ -390,6 +406,12 @@ class DiskAnnContext : public IndexContext,
   uint32_t element_rotated_size_{0};
   uint32_t list_size_{0};
 
+  struct VectorCandidate {
+    DiskAnnReadReservation memory;
+    std::string bytes;
+  };
+  DiskAnnReadVector<VectorCandidate> candidate_vectors_;
+  diskann_id_t candidate_slots_used_{0};
   TopkHeap topk_heap_{};
 
   uint32_t group_topk_{0};
