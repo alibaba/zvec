@@ -338,37 +338,36 @@ void fast_greedy_search(const EntityType &entity, HeapType &pool,
       }
     }
 
-    const uint32_t po =
-        std::min(static_cast<uint32_t>(neighbors.size()), prefetch_offset);
     uint32_t unvisited_count = 0;
-    uint32_t i = 0;
-
-    for (; i < po; ++i) {
-      node_id_t node = neighbors[i];
-      if (visit.visited(node)) continue;
-      visit.set_visited(node);
-      const void *vec_ptr = entity.get_vector_ptr(node);
-      ailego_prefetch_lines(vec_ptr, prefetch_lines);
-      neighbor_ids[unvisited_count] = node;
-      neighbor_vecs[unvisited_count] = vec_ptr;
-      if constexpr (HasExtraValues) {
-        extra_values[unvisited_count] =
-            entity.get_extra_values_ptr(node, vec_ptr);
+    // Compact IDs before resolving vector addresses. This keeps the random
+    // visited checks independent of vector-layout checks and pointer stores.
+    for (uint32_t i = 0; i < neighbors.size(); ++i) {
+      const node_id_t node = neighbors[i];
+      if constexpr (std::is_same_v<Visit, VisitFilterView<VisitBitMap>>) {
+        // Setting an existing bitmap bit is idempotent. The scratch write is
+        // always in bounds: unvisited_count <= i < neighbors.size(). Avoid a
+        // data-dependent branch without changing candidate order or dedup.
+        const bool seen = visit.visited(node);
+        visit.set_visited(node);
+        neighbor_ids[unvisited_count] = node;
+        unvisited_count += !seen;
+      } else {
+        // Other filter types retain their original check-before-set contract;
+        // only the exact bitmap uses unconditional stores here.
+        if (visit.visited(node)) continue;
+        visit.set_visited(node);
+        neighbor_ids[unvisited_count++] = node;
       }
-      unvisited_count++;
     }
-    for (; i < neighbors.size(); ++i) {
-      node_id_t node = neighbors[i];
-      if (visit.visited(node)) continue;
-      visit.set_visited(node);
+    const uint32_t po = std::min(unvisited_count, prefetch_offset);
+    for (uint32_t i = 0; i < unvisited_count; ++i) {
+      const node_id_t node = neighbor_ids[i];
       const void *vec_ptr = entity.get_vector_ptr(node);
-      neighbor_ids[unvisited_count] = node;
-      neighbor_vecs[unvisited_count] = vec_ptr;
+      if (i < po) ailego_prefetch_lines(vec_ptr, prefetch_lines);
+      neighbor_vecs[i] = vec_ptr;
       if constexpr (HasExtraValues) {
-        extra_values[unvisited_count] =
-            entity.get_extra_values_ptr(node, vec_ptr);
+        extra_values[i] = entity.get_extra_values_ptr(node, vec_ptr);
       }
-      unvisited_count++;
     }
 
     if (unvisited_count == 0) continue;
