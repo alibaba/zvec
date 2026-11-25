@@ -108,6 +108,22 @@ class TestVectorSchema:
         assert field.index_param.m == 15
         assert field.index_param.ef_construction == 300
 
+    def test_dimension_none(self):
+        # `dimension` is documented as optional and None-able for sparse
+        # vectors, so normalize it like index_param=None is normalized.
+        field = VectorSchema(
+            "sparse", data_type=DataType.SPARSE_VECTOR_FP32, dimension=None
+        )
+        assert field.name == "sparse"
+        assert field.data_type == DataType.SPARSE_VECTOR_FP32
+        assert field.dimension == 0
+
+    def test_dimension_invalid(self):
+        with pytest.raises(ValueError, match="dimension must be >= 0"):
+            VectorSchema("vector", data_type=DataType.VECTOR_FP32, dimension=-1)
+        with pytest.raises(ValueError, match="dimension must be >= 0"):
+            VectorSchema("vector", data_type=DataType.VECTOR_FP32, dimension="128")
+
     def test_readonly(self):
         field = VectorSchema(
             name="vector",
