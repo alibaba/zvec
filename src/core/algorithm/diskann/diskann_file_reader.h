@@ -49,6 +49,7 @@
 #include <vector>
 #include <zvec/ailego/io/io_backend.h>
 #include <zvec/core/framework/index_context.h>
+#include "diskann_read_memory.h"
 #include "diskann_util.h"
 
 namespace zvec {
@@ -72,6 +73,7 @@ namespace core {
 struct PendingBatch;
 
 struct IoBackend {
+  DiskAnnReadReservation memory;
   ailego::IOBackendType type{ailego::IOBackendType::kPread};
 
 #if defined(__linux__) && !defined(__ANDROID__)

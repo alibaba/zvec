@@ -36,6 +36,12 @@ class IndexStreamer : public IndexRunner {
   //! Destructor
   ~IndexStreamer() override = default;
 
+  //! Report a failed query context admission with its original status.
+  virtual int create_context_with_status(Context::Pointer &context) const {
+    context = create_context();
+    return context ? 0 : IndexError_Runtime;
+  }
+
   //! Initialize the streamer
   virtual int init(const IndexMeta & /*meta*/,
                    const ailego::Params & /*params*/) {

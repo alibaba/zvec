@@ -240,11 +240,9 @@ int DiskAnnStreamer::ensure_compatible_context(ContextPointer &context,
     return 0;
   }
 
-  auto replacement = create_context();
-  if (!replacement) {
-    LOG_ERROR("Failed to recreate context for current streamer");
-    return IndexError_Runtime;
-  }
+  Context::Pointer replacement;
+  const int ret = create_context_with_status(replacement);
+  if (ret != 0) return ret;
   auto *replacement_ctx = dynamic_cast<DiskAnnContext *>(replacement.get());
   if (!replacement_ctx) {
     LOG_ERROR("Failed to cast recreated DiskAnn context");
@@ -464,7 +462,7 @@ const void *DiskAnnStreamer::get_vector_by_id(uint32_t /*id*/) const {
 }
 
 int DiskAnnStreamer::get_vector_by_id(const uint32_t id,
-                                      IndexStorage::MemoryBlock &block) const {
+                                      IndexStorage::MemoryBlock &block) const try {
   if (state_ != STATE_LOADED) {
     LOG_ERROR("Open DiskAnnStreamer before fetching vectors");
     return IndexError_NoReady;
@@ -477,12 +475,10 @@ int DiskAnnStreamer::get_vector_by_id(const uint32_t id,
   std::lock_guard<std::mutex> lock(fetch_mutex_);
   if (!fetch_ctx_) {
     const DiskAnnEntity::Pointer fetch_entity = entity_.clone();
-    fetch_ctx_ =
-        DiskAnnContext::create_fetch_context(meta_, measure_, fetch_entity);
-    if (!fetch_ctx_) {
-      LOG_ERROR("Failed to create fetch context for get_vector_by_id");
-      return IndexError_Runtime;
-    }
+    int status = 0;
+    fetch_ctx_ = DiskAnnContext::create_fetch_context(
+        meta_, measure_, fetch_entity, &status);
+    if (!fetch_ctx_) return status;
   }
 
   int ret = diskann_indexer_->get_vector(id, fetch_ctx_, fetch_vector_buffer_);
@@ -491,15 +487,13 @@ int DiskAnnStreamer::get_vector_by_id(const uint32_t id,
     return ret;
   }
 
-  void *owned = ailego_malloc(fetch_vector_buffer_.size());
-  if (!owned) {
-    LOG_ERROR("Failed to allocate fetched vector buffer");
-    return IndexError_NoMemory;
-  }
-  std::memcpy(owned, fetch_vector_buffer_.data(), fetch_vector_buffer_.size());
-  block =
-      IndexStorage::MemoryBlock::MakeOwned(owned, fetch_vector_buffer_.size());
+  auto owned = std::make_shared<ailego::BudgetedAlignedBuffer>();
+  owned->resize_process_rss(fetch_vector_buffer_.size(), alignof(void *));
+  std::memcpy(owned->data(), fetch_vector_buffer_.data(), fetch_vector_buffer_.size());
+  block = IndexStorage::MemoryBlock::MakeSharedView(owned->data(), owned);
   return 0;
+} catch (const std::bad_alloc &) {
+  return IndexError_NoMemory;
 }
 
 IndexSearcher::Provider::Pointer DiskAnnStreamer::create_provider() const {
@@ -523,36 +517,37 @@ IndexSearcher::Provider::Pointer DiskAnnStreamer::create_provider() const {
 }
 
 IndexSearcher::Context::Pointer DiskAnnStreamer::create_context() const {
+  Context::Pointer context;
+  create_context_with_status(context);
+  return context;
+}
+
+int DiskAnnStreamer::create_context_with_status(Context::Pointer &context) const try {
   if (state_ != STATE_LOADED) {
     LOG_ERROR("Open DiskAnnStreamer before creating a context");
-    return Context::Pointer();
+    return IndexError_NoReady;
   }
   const DiskAnnEntity::Pointer search_ctx_entity = entity_.clone();
   if (!search_ctx_entity) {
     LOG_ERROR("Failed to create search context entity");
-    return Context::Pointer();
+    return IndexError_Runtime;
   }
 
-  DiskAnnContext *ctx = new (std::nothrow)
-      DiskAnnContext(meta_, measure_, search_ctx_entity, data_quantizer_);
-  if (ctx == nullptr) {
-    LOG_ERROR("Failed to allocate DiskAnn Context");
-    return Context::Pointer();
-  }
-  if (ailego_unlikely(ctx->init(
-          DiskAnnContext::kSearcherContext, search_ctx_entity->max_degree(),
-          search_ctx_entity->pq_chunk_num(), meta_.element_size(),
-          diskann_indexer_->requires_io_context())) != 0) {
-    LOG_ERROR("Init DiskAnn Context failed");
-    delete ctx;
-
-    return Context::Pointer();
-  }
+  auto ctx = std::make_unique<DiskAnnContext>(
+      meta_, measure_, search_ctx_entity, data_quantizer_);
+  const int status = ctx->init(
+      DiskAnnContext::kSearcherContext, search_ctx_entity->max_degree(),
+      search_ctx_entity->pq_chunk_num(), meta_.element_size(),
+      diskann_indexer_->requires_io_context());
+  if (status != 0) return status;
 
   ctx->set_list_size(list_size_);
   ctx->set_magic(magic_);
 
-  return Context::Pointer(ctx);
+  context = std::move(ctx);
+  return 0;
+} catch (const std::bad_alloc &) {
+  return IndexError_NoMemory;
 }
 
 INDEX_FACTORY_REGISTER_STREAMER(DiskAnnStreamer);

@@ -224,11 +224,9 @@ int DiskAnnSearcher::ensure_compatible_context(ContextPointer &context,
     return 0;
   }
 
-  auto replacement = create_context();
-  if (!replacement) {
-    LOG_ERROR("Failed to recreate context for current searcher");
-    return IndexError_Runtime;
-  }
+  Context::Pointer replacement;
+  const int ret = create_search_context(replacement);
+  if (ret != 0) return ret;
   auto *replacement_ctx = dynamic_cast<DiskAnnContext *>(replacement.get());
   if (!replacement_ctx) {
     LOG_ERROR("Failed to cast recreated DiskAnn context");
@@ -441,36 +439,37 @@ int DiskAnnSearcher::get_vector(uint64_t key, Context::Pointer &context,
 }
 
 IndexSearcher::Context::Pointer DiskAnnSearcher::create_context() const {
+  Context::Pointer context;
+  create_search_context(context);
+  return context;
+}
+
+int DiskAnnSearcher::create_search_context(Context::Pointer &context) const try {
   if (state_ != STATE_LOADED) {
     LOG_ERROR("Load DiskAnnSearcher before creating a context");
-    return Context::Pointer();
+    return IndexError_NoReady;
   }
   const DiskAnnEntity::Pointer search_ctx_entity = entity_.clone();
   if (!search_ctx_entity) {
     LOG_ERROR("Failed to create search context entity");
-    return Context::Pointer();
+    return IndexError_Runtime;
   }
 
-  DiskAnnContext *ctx = new (std::nothrow)
-      DiskAnnContext(meta_, measure_, search_ctx_entity, data_quantizer_);
-  if (ctx == nullptr) {
-    LOG_ERROR("Failed to allocate DiskAnn Context");
-    return Context::Pointer();
-  }
-  if (ailego_unlikely(ctx->init(
-          DiskAnnContext::kSearcherContext, search_ctx_entity->max_degree(),
-          search_ctx_entity->pq_chunk_num(), meta_.element_size(),
-          diskann_indexer_->requires_io_context())) != 0) {
-    LOG_ERROR("Init DiskAnn Context failed");
-    delete ctx;
-
-    return Context::Pointer();
-  }
+  auto ctx = std::make_unique<DiskAnnContext>(
+      meta_, measure_, search_ctx_entity, data_quantizer_);
+  const int status = ctx->init(
+      DiskAnnContext::kSearcherContext, search_ctx_entity->max_degree(),
+      search_ctx_entity->pq_chunk_num(), meta_.element_size(),
+      diskann_indexer_->requires_io_context());
+  if (status != 0) return status;
 
   ctx->set_list_size(list_size_);
   ctx->set_magic(magic_);
 
-  return Context::Pointer(ctx);
+  context = std::move(ctx);
+  return 0;
+} catch (const std::bad_alloc &) {
+  return IndexError_NoMemory;
 }
 
 INDEX_FACTORY_REGISTER_SEARCHER(DiskAnnSearcher);

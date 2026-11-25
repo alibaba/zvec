@@ -142,12 +142,18 @@ int DiskAnnIndex::open(const std::string &file_path,
     return core::IndexError_Runtime;
   }
   if (is_open_) return core::IndexError_NoReady;
+  if (storage_ && streamer_) {
+    const auto &meta = converter_ ? converter_->meta() : proxima_index_meta_;
+    const int ret = streamer_->init(meta, proxima_index_params_);
+    if (ret != 0) return ret;
+  }
   core::IndexStorage::Pointer storage;
   ailego::Params storage_params;
   file_path_ = file_path;
   is_read_only_ = storage_options.read_only;
   switch (storage_options.type) {
     case StorageOptions::StorageType::kMMAP: {
+      storage_params.set(core::FILE_READ_STORAGE_PROCESS_RSS_SCRATCH, true);
       storage = core::IndexFactory::CreateStorage("FileReadStorage");
       if (storage == nullptr) {
         LOG_ERROR("Failed to create FileReadStorage");
@@ -164,6 +170,7 @@ int DiskAnnIndex::open(const std::string &file_path,
     case StorageOptions::StorageType::kBufferPool: {
       storage_params.set(core::BUFFER_READ_STORAGE_WARMUP_MODE,
                          core::BUFFER_READ_STORAGE_WARMUP_NONE);
+      storage_params.set(core::BUFFER_READ_STORAGE_PROCESS_RSS_SCRATCH, true);
       storage = core::IndexFactory::CreateStorage("BufferReadStorage");
       if (storage == nullptr) {
         LOG_ERROR("Failed to create BufferReadStorage");
@@ -315,7 +322,7 @@ int DiskAnnIndex::dump_and_open() {
 }
 
 int DiskAnnIndex::_dense_fetch(const uint32_t doc_id,
-                               VectorDataBuffer *vector_data_buffer) {
+                               VectorDataBuffer *vector_data_buffer) try {
   if (is_trained_) {
     return Index::_dense_fetch(doc_id, vector_data_buffer);
   } else {
@@ -329,6 +336,8 @@ int DiskAnnIndex::_dense_fetch(const uint32_t doc_id,
     vector_data_buffer->vector_buffer = std::move(dense_vector_buffer);
     return 0;
   }
+} catch (const std::bad_alloc &) {
+  return core::IndexError_NoMemory;
 }
 
 int DiskAnnIndex::_prepare_for_search(

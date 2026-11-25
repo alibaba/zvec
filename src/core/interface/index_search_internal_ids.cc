@@ -46,7 +46,7 @@ void CopySearchResult(const SearchResult &result, size_t topk,
 
 int Index::search_internal_ids(const VectorData &vector_data,
                                const BaseIndexQueryParam::Pointer &search_param,
-                               int64_t *output_ids, float *output_scores) {
+                               int64_t *output_ids, float *output_scores) try {
   if (!output_ids || !search_param || search_param->topk == 0) {
     return core::IndexError_InvalidArgument;
   }
@@ -78,8 +78,9 @@ int Index::search_internal_ids(const VectorData &vector_data,
     LOG_ERROR("Failed to train index");
     return core::IndexError_Runtime;
   }
-  auto &context = acquire_context();
-  if (!context) return core::IndexError_Runtime;
+  QueryContext acquired(*this);
+  auto &context = acquired.get();
+  if (acquired.status() != 0 || !context) return acquired.status();
 
   int ret = _prepare_for_search(vector_data, search_param, context);
   std::string transformed_query;
@@ -123,7 +124,11 @@ int Index::search_internal_ids(const VectorData &vector_data,
     }
   }
   context->reset();
+  acquired.keep_on_success(ret);
   return ret;
+} catch (const std::bad_alloc &) {
+  if (!diskann_contexts_) throw;
+  return core::IndexError_NoMemory;
 }
 
 int Index::_search_refine_internal_ids(
@@ -154,8 +159,9 @@ int Index::_search_refine_internal_ids(
       (!reference->is_trained_ && reference->train() != 0)) {
     return core::IndexError_Runtime;
   }
-  auto &context = acquire_context();
-  if (!context) return core::IndexError_Runtime;
+  QueryContext acquired(*this);
+  auto &context = acquired.get();
+  if (acquired.status() != 0 || !context) return acquired.status();
   int ret = _prepare_for_search(vector_data, search_param, context);
   if (ret != 0) {
     context->reset();
@@ -223,6 +229,7 @@ int Index::_search_refine_internal_ids(
     }
   }
   context->reset();
+  acquired.keep_on_success(ret);
   return ret;
 }
 

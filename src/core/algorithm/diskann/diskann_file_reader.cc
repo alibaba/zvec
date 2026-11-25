@@ -232,12 +232,16 @@ static void close_windows_io_handles(IOContext ctx) {
 #endif
 
 int setup_io_ctx(IOContext &ctx) {
-  auto selected = ailego::IOBackend::Instance().available();
-  ctx = new (std::nothrow) IoBackend();
-  if (ctx == nullptr) {
+  const auto selected = ailego::IOBackend::Instance().available();
+  DiskAnnReadReservation memory;
+  try {
+    ctx = memory.create<IoBackend>();
+  } catch (const std::bad_alloc &) {
+    ctx = nullptr;
     LOG_ERROR("Failed to allocate DiskAnn I/O context");
     return IndexError_NoMemory;
   }
+  ctx->memory = std::move(memory);
   ctx->type = selected;
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -302,6 +306,7 @@ int destroy_io_ctx(IOContext &ctx) {
   // IoUringRing destructor also calls teardown() — idempotent and safe.
 #endif
 
+  auto memory = std::move(ctx->memory);
   delete ctx;
   ctx = nullptr;
   return status;
@@ -891,8 +896,9 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     // one page exceeds its budget. Keep batched direct I/O in this case and
     // never enter page-cache operations that require initialized entries.
     if (!pool_->cache_enabled()) {
-      if (ctx == nullptr && setup_io_ctx(ctx) != 0) {
-        return IndexError_Runtime;
+      if (ctx == nullptr) {
+        const int status = setup_io_ctx(ctx);
+        if (status != 0) return status;
       }
       const int ret = bypass_reader_.read(read_reqs, ctx);
       if (ret == 0) {
@@ -1058,8 +1064,9 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     flush_bypass_run();
 
     if (!bypass_requests.empty()) {
-      if (ctx == nullptr && setup_io_ctx(ctx) != 0) {
-        return IndexError_Runtime;
+      if (ctx == nullptr) {
+        const int status = setup_io_ctx(ctx);
+        if (status != 0) return status;
       }
       const int read_ret = bypass_reader_.read(bypass_requests, ctx);
       if (read_ret != 0) {

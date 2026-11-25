@@ -31,6 +31,10 @@ namespace core {
 
 namespace {
 
+int map_read_error(int status) {
+  return status == IndexError_NoMemory ? status : IndexError_Runtime;
+}
+
 // DiskAnnContext instances are pooled above the indexer and can therefore
 // outlive the reader that prepared their lazy Windows file handle. Keep that
 // handle across all I/O batches in one logical operation, then release it on
@@ -790,7 +794,6 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
 
   void *data_buf = reinterpret_cast<void *>(ctx->coord_buffer());
 
-  uint8_t *sector_buffer = reinterpret_cast<uint8_t *>(ctx->sector_buffer());
 
   const uint64_t sector_num_per_node =
       node_per_sector_ > 0
@@ -801,16 +804,16 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
   ailego::ElapsedTime query_timer;
   ailego::ElapsedTime cpu_timer;
 
-  std::vector<diskann_id_t> frontier;
+  DiskAnnReadVector<diskann_id_t> frontier;
   frontier.reserve(2 * beam_width_);
 
-  std::vector<std::pair<diskann_id_t, uint8_t *>> frontier_neighbors;
+  DiskAnnReadVector<std::pair<diskann_id_t, uint8_t *>> frontier_neighbors;
   frontier_neighbors.reserve(2 * beam_width_);
 
   std::vector<AlignedRead> frontier_read_reqs;
   frontier_read_reqs.reserve(2 * beam_width_);
 
-  std::vector<std::tuple<diskann_id_t, uint32_t, diskann_id_t *>>
+  DiskAnnReadVector<std::tuple<diskann_id_t, uint32_t, diskann_id_t *>>
       cached_neighbors;
   cached_neighbors.reserve(2 * beam_width_);
 
@@ -837,6 +840,10 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
     }
 
     if (!frontier.empty()) {
+      const int reserve = ctx->ensure_sector_buffer(
+          frontier.size() * sector_num_per_node);
+      if (reserve != 0) return reserve;
+      auto *sector_buffer = static_cast<uint8_t *>(ctx->sector_buffer());
       for (uint64_t i = 0; i < frontier.size(); i++) {
         diskann_id_t cur_id = frontier[i];
 
@@ -868,7 +875,7 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
       if (read_ret != 0) {
         LOG_ERROR("linear_search: reader_->read failed, ret=%d", read_ret);
         ctx->set_error(true);
-        return IndexError_Runtime;
+        return map_read_error(read_ret);
       }
     }
 
@@ -940,7 +947,6 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
 
   void *data_buf = reinterpret_cast<void *>(ctx->coord_buffer());
 
-  uint8_t *sector_buffer = reinterpret_cast<uint8_t *>(ctx->sector_buffer());
 
   const uint64_t sector_num_per_node =
       node_per_sector_ > 0
@@ -951,16 +957,16 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
   ailego::ElapsedTime io_timer;
   ailego::ElapsedTime cpu_timer;
 
-  std::vector<diskann_id_t> frontier;
+  DiskAnnReadVector<diskann_id_t> frontier;
   frontier.reserve(2 * beam_width_);
 
-  std::vector<std::pair<uint32_t, uint8_t *>> frontier_neighbors;
+  DiskAnnReadVector<std::pair<uint32_t, uint8_t *>> frontier_neighbors;
   frontier_neighbors.reserve(2 * beam_width_);
 
   std::vector<AlignedRead> frontier_read_reqs;
   frontier_read_reqs.reserve(2 * beam_width_);
 
-  std::vector<std::tuple<diskann_id_t, uint32_t, diskann_id_t *>>
+  DiskAnnReadVector<std::tuple<diskann_id_t, uint32_t, diskann_id_t *>>
       cached_neighbors;
   cached_neighbors.reserve(2 * beam_width_);
 
@@ -996,6 +1002,10 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
     }
 
     if (!frontier.empty()) {
+      const int reserve = ctx->ensure_sector_buffer(
+          frontier.size() * sector_num_per_node);
+      if (reserve != 0) return reserve;
+      auto *sector_buffer = static_cast<uint8_t *>(ctx->sector_buffer());
       for (uint64_t i = 0; i < frontier.size(); i++) {
         diskann_id_t cur_id = frontier[i];
 
@@ -1027,7 +1037,7 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
       if (read_ret != 0) {
         LOG_ERROR("keys_search: reader_->read failed, ret=%d", read_ret);
         ctx->set_error(true);
-        return IndexError_Runtime;
+        return map_read_error(read_ret);
       }
     }
 
@@ -1072,7 +1082,7 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
 }
 
 int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
-                               std::string &vector) {
+                               std::string &vector) try {
   DiskAnnContext *ctx = dynamic_cast<DiskAnnContext *>(context.get());
   if (ctx == nullptr) {
     LOG_ERROR("get_vector: invalid DiskAnn context");
@@ -1089,8 +1099,6 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
       *reader_, io_ctx,
       ctx->context_type() == DiskAnnContext::kSearcherContext);
 
-  uint8_t *sector_buffer = reinterpret_cast<uint8_t *>(ctx->sector_buffer());
-
   const uint64_t sector_num_per_node =
       node_per_sector_ > 0
           ? 1
@@ -1101,8 +1109,8 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
       node_per_sector_ == 0
           ? 0
           : static_cast<size_t>(id % node_per_sector_) * max_node_size_;
-  if (sector_num_per_node == 0 || sector_buffer == nullptr ||
-      sector_read_size > ctx->sector_buffer_size() ||
+  if (sector_num_per_node == 0 ||
+      sector_num_per_node > DiskAnnUtil::kMaxSectorReadNum ||
       node_offset > sector_read_size ||
       meta_.element_size() > sector_read_size - node_offset) {
     LOG_ERROR(
@@ -1139,6 +1147,9 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
 
     return 0;
   } else {
+    const int reserve = ctx->ensure_sector_buffer(sector_num_per_node);
+    if (reserve != 0) return reserve;
+    auto *sector_buffer = static_cast<uint8_t *>(ctx->sector_buffer());
     std::pair<diskann_id_t, uint8_t *> frontier_neighbor;
     frontier_neighbor.first = id;
     frontier_neighbor.second = sector_buffer;
@@ -1161,7 +1172,7 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
     if (read_ret != 0) {
       LOG_ERROR("get_vector: reader_->read failed, ret=%d", read_ret);
       ctx->set_error(true);
-      return IndexError_Runtime;
+      return map_read_error(read_ret);
     }
 
     uint8_t *node_disk_buf = frontier_neighbor.second + node_offset;
@@ -1175,6 +1186,8 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
   }
 
   return 0;
+} catch (const std::bad_alloc &) {
+  return IndexError_NoMemory;
 }
 
 int DiskAnnIndexer::knn_search(DiskAnnContext *ctx) {
@@ -1234,7 +1247,6 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
 
   IOContext &io_ctx = ctx->io_ctx();
 
-  uint8_t *sector_buffer = reinterpret_cast<uint8_t *>(ctx->sector_buffer());
 
   const uint64_t sector_num_per_node =
       node_per_sector_ > 0
@@ -1281,16 +1293,16 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
   uint32_t effective_beam_width = std::min(
       std::max(8u, std::min(ctx->list_size() / 5, 32u)), max_beam_width);
 
-  std::vector<diskann_id_t> frontier;
+  DiskAnnReadVector<diskann_id_t> frontier;
   frontier.reserve(2 * effective_beam_width);
 
-  std::vector<std::pair<diskann_id_t, uint8_t *>> frontier_neighbors;
+  DiskAnnReadVector<std::pair<diskann_id_t, uint8_t *>> frontier_neighbors;
   frontier_neighbors.reserve(2 * effective_beam_width);
 
   std::vector<AlignedRead> frontier_read_reqs;
   frontier_read_reqs.reserve(2 * effective_beam_width);
 
-  std::vector<std::tuple<diskann_id_t, uint32_t, diskann_id_t *>>
+  DiskAnnReadVector<std::tuple<diskann_id_t, uint32_t, diskann_id_t *>>
       cached_neighbors;
   cached_neighbors.reserve(2 * effective_beam_width);
 
@@ -1322,6 +1334,10 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
     }
 
     if (!frontier.empty()) {
+      const int reserve = ctx->ensure_sector_buffer(
+          frontier.size() * sector_num_per_node);
+      if (reserve != 0) return reserve;
+      auto *sector_buffer = static_cast<uint8_t *>(ctx->sector_buffer());
       stats.hop_num++;
 
       for (uint64_t i = 0; i < frontier.size(); i++) {
@@ -1355,7 +1371,7 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
       if (submit_ret != 0) {
         LOG_ERROR("cached_beam_search: submit failed, ret=%d", submit_ret);
         ctx->set_error(true);
-        return IndexError_Runtime;
+        return map_read_error(submit_ret);
       }
     }
 
@@ -1403,7 +1419,7 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
         if (n < 0) {
           LOG_ERROR("cached_beam_search: get_completed failed, ret=%d", n);
           ctx->set_error(true);
-          return IndexError_Runtime;
+          return map_read_error(n);
         }
 
         for (uint32_t idx : completed) {
@@ -1519,7 +1535,7 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
     IOContext &io_ctx = ctx->io_ctx();
 
     void *data_buf = reinterpret_cast<void *>(ctx->coord_buffer());
-    uint8_t *sector_buffer = reinterpret_cast<uint8_t *>(ctx->sector_buffer());
+
 
     const uint64_t sector_num_per_node =
         node_per_sector_ > 0 ? 1
@@ -1531,13 +1547,13 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
 
     uint32_t num_ios = 0;
 
-    std::vector<diskann_id_t> frontier;
+    DiskAnnReadVector<diskann_id_t> frontier;
     frontier.reserve(2 * beam_width_);
-    std::vector<std::pair<diskann_id_t, uint8_t *>> frontier_neighbors;
+    DiskAnnReadVector<std::pair<diskann_id_t, uint8_t *>> frontier_neighbors;
     frontier_neighbors.reserve(2 * beam_width_);
     std::vector<AlignedRead> frontier_read_reqs;
     frontier_read_reqs.reserve(2 * beam_width_);
-    std::vector<std::tuple<diskann_id_t, uint32_t, diskann_id_t *>>
+    DiskAnnReadVector<std::tuple<diskann_id_t, uint32_t, diskann_id_t *>>
         cached_neighbors;
     cached_neighbors.reserve(2 * beam_width_);
 
@@ -1567,6 +1583,10 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
       }
 
       if (!frontier.empty()) {
+        const int reserve = ctx->ensure_sector_buffer(
+            frontier.size() * sector_num_per_node);
+        if (reserve != 0) return reserve;
+        auto *sector_buffer = static_cast<uint8_t *>(ctx->sector_buffer());
         stats.hop_num++;
 
         for (uint64_t i = 0; i < frontier.size(); i++) {
@@ -1602,7 +1622,7 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
           LOG_ERROR("cached_beam_search_by_group: reader_->read failed, ret=%d",
                     read_ret);
           ctx->set_error(true);
-          return IndexError_Runtime;
+          return map_read_error(read_ret);
         }
       }
 

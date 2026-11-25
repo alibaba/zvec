@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/core/framework/index_context.h>
 #include "utility/topk_result_builder.h"
 #include "diskann_dist_calculator.h"
@@ -62,7 +63,8 @@ class DiskAnnContext : public IndexContext,
   //! Create a lightweight context for reading vectors by id.
   static Pointer create_fetch_context(const IndexMeta &meta,
                                       const IndexMetric::Pointer &measure,
-                                      const DiskAnnEntity::Pointer &entity);
+                                      const DiskAnnEntity::Pointer &entity,
+                                      int *status = nullptr);
 
  public:
   //! Init
@@ -186,12 +188,14 @@ class DiskAnnContext : public IndexContext,
     return coord_buffer_;
   }
 
+  int ensure_sector_buffer(size_t sectors);
+
   inline void *sector_buffer() {
-    return sector_buffer_;
+    return sector_buffer_.data();
   }
 
   inline size_t sector_buffer_size() const {
-    return sector_buffer_size_;
+    return sector_buffer_.size();
   }
 
   inline IOContext &io_ctx() {
@@ -384,8 +388,8 @@ class DiskAnnContext : public IndexContext,
   void *query_{nullptr};
   void *query_rotated_{nullptr};
   void *coord_buffer_{nullptr};
-  void *sector_buffer_{nullptr};
-  size_t sector_buffer_size_{0};
+  ailego::BudgetedAlignedBuffer query_workspace_;
+  ailego::BudgetedAlignedBuffer sector_buffer_;
 
   std::vector<IndexDocumentList> results_{};
   std::vector<IndexGroupDocumentList> group_results_{};

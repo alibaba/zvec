@@ -334,6 +334,12 @@ class ZVEC_AILEGO_API MemoryLimitPool {
     process_rss_.release(bytes);
     capacity_cv_.notify_all();
   }
+  void release_heap_process_backing(
+      size_t bytes, ProcessRssBudget::MaterializationStamp stamp) {
+    process_rss_.release_heap(
+        bytes, ProcessRssBudget::HeapProjection::Full(bytes, stamp));
+    capacity_cv_.notify_all();
+  }
   void release_unmapped_process_backing(
       size_t bytes, ProcessRssBudget::MaterializationStamp stamp) {
     process_rss_.release_unmapped(bytes, stamp);

@@ -137,15 +137,47 @@ class BudgetedAlignedBuffer {
       MemoryLimitPool::get_instance().release_retained_block(retained_base_);
     } else if (data_) {
       ::operator delete(data_, std::align_val_t{alignment_});
+      if (process_only_) {
+        MemoryLimitPool::get_instance().release_heap_process_backing(size_,
+                                                                    stamp_);
+      }
     }
   }
   void resize(size_t bytes, size_t alignment) {
-    if (bytes == size_ && alignment == alignment_) return;
+    resize_with_budget(bytes, alignment, false);
+  }
+
+  // File-backed readers may share the process limit with a separately
+  // sized page cache. Their private scratch does not occupy cache slots.
+  void resize_process_rss(size_t bytes, size_t alignment) {
+    resize_with_budget(bytes, alignment, true);
+  }
+
+ private:
+  void resize_with_budget(size_t bytes, size_t alignment, bool process_only) {
+    if (bytes == size_ && alignment == alignment_ &&
+        process_only_ == process_only)
+      return;
     if (alignment < alignof(void *) || (alignment & (alignment - 1)))
       throw std::bad_alloc();
     BudgetedAlignedBuffer replacement;
+    replacement.process_only_ = process_only;
     if (bytes) {
       auto &pool = MemoryLimitPool::get_instance();
+      if (process_only) {
+        if (!pool.try_reserve_process_backing(bytes)) throw std::bad_alloc();
+        try {
+          replacement.data_ = ::operator new(bytes, std::align_val_t{alignment});
+        } catch (...) {
+          pool.finish_process_backing(bytes, false);
+          throw;
+        }
+        replacement.stamp_ = pool.finish_process_backing(bytes, true);
+        replacement.size_ = bytes;
+        replacement.alignment_ = alignment;
+        swap(replacement);
+        return;
+      }
       const size_t held = retained_base_
                               ? MemoryLimitPool::retained_block_size(
                                     size_ + alignment_padding(alignment_))
@@ -180,6 +212,7 @@ class BudgetedAlignedBuffer {
     }
     swap(replacement);
   }
+ public:
   void resize_array(size_t count, size_t width, size_t alignment) {
     if (width && count > std::numeric_limits<size_t>::max() / width)
       throw std::bad_alloc();
@@ -197,6 +230,8 @@ class BudgetedAlignedBuffer {
     std::swap(retained_base_, rhs.retained_base_);
     std::swap(size_, rhs.size_);
     std::swap(alignment_, rhs.alignment_);
+    std::swap(process_only_, rhs.process_only_);
+    std::swap(stamp_, rhs.stamp_);
   }
 
  private:
@@ -209,6 +244,8 @@ class BudgetedAlignedBuffer {
   void *data_{nullptr};
   void *retained_base_{nullptr};
   size_t size_{0};
+  bool process_only_{false};
+  ProcessRssBudget::MaterializationStamp stamp_{};
   size_t alignment_{alignof(void *)};
 };
 }  // namespace zvec::ailego

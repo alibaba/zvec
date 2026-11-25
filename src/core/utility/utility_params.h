@@ -33,6 +33,8 @@ inline const std::string FILE_READ_STORAGE_ALONE_FILE_HANDLE =
     "proxima.file.read_storage.alone_file_handle";
 inline const std::string FILE_READ_STORAGE_MEMORY_LOCKED =
     "proxima.file.read_storage.memory_locked";
+inline const std::string FILE_READ_STORAGE_PROCESS_RSS_SCRATCH =
+    "proxima.file.read.storage.process_rss_scratch";
 inline const std::string FILE_READ_STORAGE_MEMORY_WARMUP =
     "proxima.file.read_storage.memory_warmup";
 inline const std::string FILE_READ_STORAGE_MEMORY_SHARED =
@@ -67,6 +69,10 @@ inline const std::string BUFFER_READ_STORAGE_HEADER_OFFSET =
     "proxima.buffer.read_storage.header_offset";
 inline const std::string BUFFER_READ_STORAGE_FOOTER_OFFSET =
     "proxima.buffer.read_storage.footer_offset";
+// Readers with separately owned workspaces charge mandatory read copies to
+// the process RSS limit, leaving the native pool for cache admission.
+inline const std::string BUFFER_READ_STORAGE_PROCESS_RSS_SCRATCH =
+    "proxima.buffer.read.storage.process_rss_scratch";
 inline const std::string BUFFER_READ_STORAGE_WARMUP_MODE =
     "proxima.buffer.read_storage.warmup_mode";
 inline const std::string BUFFER_READ_STORAGE_WARMUP_NONE = "none";
