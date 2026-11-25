@@ -558,27 +558,24 @@ Examples:
                                   self.opq_iter(), self.opq_pq_iter());
           },
           [](py::tuple t) {
-            if (t.size() != 1 && t.size() != 5 && t.size() != 6 &&
-                t.size() != 10)
-              throw std::runtime_error("Invalid state for QuantizerParam");
+            if (t.size() == 1)
+              return std::make_shared<QuantizerParam>(t[0].cast<bool>());
             if (t.size() == 6) {
               return std::make_shared<QuantizerParam>(
                   t[0].cast<bool>(), t[1].cast<int>(), t[2].cast<int>(),
                   t[3].cast<bool>(), t[4].cast<uint32_t>(),
                   t[5].cast<uint32_t>());
             }
+            if (t.size() != 10)
+              throw std::runtime_error("Invalid state for QuantizerParam");
             auto q = std::make_shared<QuantizerParam>(QuantizerParam::ForRabitq(
-                t[0].cast<bool>(), t.size() >= 5 ? t[1].cast<int>() : 7,
-                t.size() >= 5 ? t[2].cast<int>() : 16,
-                t.size() >= 5 ? t[3].cast<int>() : 0,
-                t.size() >= 5 ? t[4].cast<int>() : 20));
-            if (t.size() == 10) {
-              q->set_num_chunk(t[5].cast<int>());
-              q->set_num_bits(t[6].cast<int>());
-              q->set_fast_scan(t[7].cast<bool>());
-              q->set_opq_iter(t[8].cast<uint32_t>());
-              q->set_opq_pq_iter(t[9].cast<uint32_t>());
-            }
+                t[0].cast<bool>(), t[1].cast<int>(), t[2].cast<int>(),
+                t[3].cast<int>(), t[4].cast<int>()));
+            q->set_num_chunk(t[5].cast<int>());
+            q->set_num_bits(t[6].cast<int>());
+            q->set_fast_scan(t[7].cast<bool>());
+            q->set_opq_iter(t[8].cast<uint32_t>());
+            q->set_opq_pq_iter(t[9].cast<uint32_t>());
             return q;
           }));
 
@@ -1363,20 +1360,16 @@ Args:
                                   self.quantize_type(), self.quantizer_param());
           },
           [](py::tuple t) {
-            if (t.size() != 5 && t.size() != 6 && t.size() != 7 &&
-                t.size() != 8)
+            if (t.size() < 5 || t.size() > 7)
               throw std::runtime_error("Invalid state for IVFIndexParams");
-            QuantizerParam qp =
-                t.size() == 7 ? t[6].cast<QuantizerParam>()
-                : t.size() >= 6 && py::isinstance<QuantizerParam>(t[5])
-                    ? t[5].cast<QuantizerParam>()
-                    : QuantizerParam(t.size() >= 6 ? t[5].cast<bool>() : false);
-            // Eight-field pickles used outer bits/samples as authoritative,
-            // even when a QuantizerParam was also present. Normalize once.
-            if (t.size() == 8 &&
-                t[4].cast<QuantizeType>() == QuantizeType::RABITQ) {
-              qp.set_total_bits(t[6].cast<int>());
-              qp.set_sample_count(t[7].cast<int>());
+            QuantizerParam qp;
+            if (t.size() == 7) {
+              qp = t[6].cast<QuantizerParam>();
+            } else if (t.size() == 6) {
+              // Older six-field states stored enable_rotate at this position.
+              qp = py::isinstance<QuantizerParam>(t[5])
+                       ? t[5].cast<QuantizerParam>()
+                       : QuantizerParam(t[5].cast<bool>());
             }
             return std::make_shared<IVFIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),

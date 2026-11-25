@@ -191,7 +191,7 @@ def test_graph_rabitq_rejects_invalid_settings(tmp_path, settings, kind):
         zvec.create_and_open(path=str(tmp_path / "invalid"), schema=schema)
 
 
-@pytest.mark.parametrize("kind", ["hnsw", "ivf", "diskann"])
+@pytest.mark.parametrize("kind", ["hnsw", "diskann"])
 def test_legacy_rabitq_parameter_state(kind):
     """Previously pickled indexes stored only enable_rotate at position 5."""
     if kind == "hnsw":
@@ -206,28 +206,14 @@ def test_legacy_rabitq_parameter_state(kind):
             False,
             zvec.DataType.VECTOR_FP32,
         )
-    elif kind == "diskann":
+    else:
         cls = zvec.DiskAnnIndexParam
         state = (zvec.MetricType.L2, 16, 100, 0, zvec.QuantizeType.RABITQ, False)
-    else:
-        cls = zvec.IVFIndexParam
-        state = (
-            zvec.MetricType.L2,
-            8,
-            10,
-            False,
-            zvec.QuantizeType.RABITQ,
-            False,
-            3,
-            128,
-        )
     restored = cls.__new__(cls)
     restored.__setstate__(state)
-    assert restored.quantizer_param.total_bits == (3 if kind == "ivf" else 7)
+    assert restored.quantizer_param.total_bits == 7
     assert restored.quantizer_param.num_clusters == 16
     assert restored.quantizer_param.n_iters == 20
-    if kind == "ivf":
-        assert restored.quantizer_param.sample_count == 128
     if kind == "diskann":
         restored = cls.__new__(cls)
         restored.__setstate__(state[:5])
@@ -282,20 +268,3 @@ def test_ivf_rejects_duplicate_quantizer_arguments(field):
             quantizer_param=zvec.QuantizerParam(total_bits=3, sample_count=128),
             **{field: 9},
         )
-
-
-@pytest.mark.parametrize("bits,samples", [(7, 0), (9, 128)])
-def test_ivf_migrates_legacy_pickle_effective_values(bits, samples):
-    q = zvec.QuantizerParam(total_bits=3, num_clusters=5, sample_count=24, n_iters=6)
-    restored = zvec.IVFIndexParam.__new__(zvec.IVFIndexParam)
-    restored.__setstate__(
-        (zvec.MetricType.L2, 8, 10, False, zvec.QuantizeType.RABITQ, q, bits, samples)
-    )
-    actual = restored.quantizer_param
-    assert (actual.total_bits, actual.sample_count) == (bits, samples)
-    assert (actual.num_clusters, actual.n_iters) == (5, 6)
-    assert (restored.n_list, restored.n_iters) == (8, 10)
-    assert "total_bits" not in restored.to_dict()
-    assert "sample_count" not in restored.to_dict()
-    assert len(restored.__getstate__()) == 6
-    assert pickle.loads(pickle.dumps(restored)).to_dict() == restored.to_dict()

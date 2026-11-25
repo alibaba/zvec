@@ -69,6 +69,15 @@ def test_legacy_quantizer_and_ivf_pickle():
         assert param.quantizer_param.enable_rotate == (len(state) == 6)
         assert param.quantizer_param.num_bits == 8
 
+    # Upstream PQ pickles nested a six-field quantizer in a seven-field IVF.
+    qp = zvec.QuantizerParam.__new__(zvec.QuantizerParam)
+    qp.__setstate__((True, 16, 4, True, 9, 2))
+    param = zvec.IVFIndexParam.__new__(zvec.IVFIndexParam)
+    param.__setstate__(
+        (zvec.MetricType.L2, 4, 3, False, zvec.QuantizeType.PQ, True, qp)
+    )
+    assert param.quantizer_param == zvec.QuantizerParam(True, 16, 4, True, 9, 2)
+
 
 @pytest.mark.parametrize(
     "kind,bits,fast_scan",
