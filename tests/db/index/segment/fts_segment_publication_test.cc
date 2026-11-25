@@ -1345,6 +1345,7 @@ class FtsCheckpointRecoveryDeathTest : public testing::TestWithParam<bool> {
     FileHelper::RemoveDirectory(path_);
   }
   void check_replayed_upserts(bool fail_manifest);
+  void check_full_block_upsert(bool flush);
   std::string path_{"fts_checkpoint_crash.fixture"};
   CollectionSchema schema_{"fts"};
 };
@@ -1443,6 +1444,72 @@ void FtsCheckpointRecoveryDeathTest::check_replayed_upserts(
   EXPECT_EQ(5, field->total_tokens());
   auto prepared = (*segment)->prepare_fts_seal();
   ASSERT_TRUE(prepared.has_value()) << prepared.error().message();
+}
+
+void FtsCheckpointRecoveryDeathTest::check_full_block_upsert(bool flush) {
+  ASSERT_EQ(0, ailego::MemoryLimitPool::get_instance().init(64u << 20));
+  testing::FLAGS_gtest_death_test_style = "threadsafe";
+  CollectionOptions options;
+  options.enable_mmap_ = GetParam();
+  options.max_buffer_size_ = 1024;
+  auto matches = [](Collection &collection, const char *term, size_t count) {
+    SearchQuery query;
+    query.target_.field_name_ = "text";
+    FtsClause clause;
+    clause.query_string_ = term;
+    query.target_.clause_ = clause;
+    query.topk_ = 10;
+    auto hits = collection.query(query);
+    return hits && hits->size() == count &&
+           (!count || hits->front()->pk_ref() == "key");
+  };
+  auto write = [&] {
+    auto collection = Collection::CreateAndOpen(path_, schema_, options);
+    if (!collection) {
+      return 1;
+    }
+    std::vector<Doc> batch(1);
+    auto &doc = batch.front();
+    doc.set_pk("key");
+    doc.set("text", std::string("old ") + std::string(2048, 'x'));
+    auto result = (*collection)->upsert(batch);
+    if (!result || !result->front().ok()) {
+      return 2;
+    }
+    doc.set("text", std::string("replacement"));
+    result = (*collection)->upsert(batch);
+    if (!result || !result->front().ok() ||
+        !matches(**collection, "replacement", 1)) {
+      return 3;
+    }
+    if (!flush) {
+      std::_Exit(0);
+    }
+    return (*collection)->flush().ok() && (*collection)->close().ok() ? 0 : 4;
+  };
+  if (flush) {
+    ASSERT_EQ(0, write());
+  } else {
+    ASSERT_EXIT(std::_Exit(write()), testing::ExitedWithCode(0), "");
+  }
+  auto reopened = Collection::Open(path_, options);
+  ASSERT_TRUE(reopened) << reopened.error().message();
+  EXPECT_TRUE(matches(**reopened, "old", 0));
+  EXPECT_TRUE(matches(**reopened, "replacement", 1));
+  auto docs = (*reopened)->fetch({"key"});
+  ASSERT_TRUE(docs && docs->at("key"));
+  EXPECT_EQ("replacement", docs->at("key")->get_ref<std::string>("text"));
+  ASSERT_TRUE((*reopened)->close().ok());
+}
+
+TEST_P(FtsCheckpointRecoveryDeathTest,
+       FullBlockUpsertSurvivesReopenAfterCrash) {
+  check_full_block_upsert(false);
+}
+
+TEST_P(FtsCheckpointRecoveryDeathTest,
+       FullBlockUpsertSurvivesReopenAfterFlush) {
+  check_full_block_upsert(true);
 }
 
 TEST_P(FtsCheckpointRecoveryDeathTest,

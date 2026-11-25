@@ -1835,7 +1835,7 @@ static double index_milliseconds(std::chrono::steady_clock::time_point start) {
 
 static void index_report_resources() {
 #if defined(__APPLE__) || defined(__linux__)
-  struct rusage usage{};
+  struct rusage usage {};
   if (getrusage(RUSAGE_SELF, &usage) == 0) {
     uint64_t bytes = usage.ru_maxrss;
 #if defined(__linux__)

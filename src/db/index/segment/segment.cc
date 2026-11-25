@@ -1021,11 +1021,6 @@ Status SegmentImpl::internal_insert(Doc &doc) {
   uint64_t g_doc_id = doc_id_allocator_.fetch_add(1);
   doc.set_doc_id(g_doc_id);
 
-  if (ready_for_dump_block()) {
-    auto s = flush_unsafe();
-    CHECK_RETURN_STATUS(s);
-  }
-
   // init writing memory components
   if (!memory_store_) {
     auto s = init_memory_components();
@@ -5164,6 +5159,11 @@ Status SegmentImpl::append_wal(const Doc &doc) {
   }
   if (finishing_memory_block_) {
     auto status = flush_checkpoint(true);
+    CHECK_RETURN_STATUS(status);
+  } else if (doc.get_operator() != Operator::DELETE && ready_for_dump_block()) {
+    // The old checkpoint may retire its WAL. Log the new row only after
+    // rollover and before applying any deletion of its predecessor.
+    auto status = flush_unsafe();
     CHECK_RETURN_STATUS(status);
   }
   std::vector<uint8_t> buf = doc.serialize();
