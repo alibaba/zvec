@@ -331,6 +331,7 @@ class CollectionImpl : public Collection {
     // single-segment/block collections with identity document IDs.
     const VectorColumnIndexer *primary{nullptr};
     const VectorColumnIndexer *reference{nullptr};
+    bool can_reuse_for_query{false};
   };
 
   // Prepared during open and immutable until close. Queries hold
@@ -1822,6 +1823,10 @@ void CollectionImpl::prepare_query_internal_ids() {
       if (primary) {
         resolved.primary = primary;
         resolved.reference = reference;
+        // PQ coarse ranking and tie ordering differ between the direct and
+        // general routes. Ordinary Query must keep its existing behavior.
+        resolved.can_reuse_for_query =
+            index_params && index_params->quantize_type() != QuantizeType::PQ;
       }
     }
     query_internal_ids_fields_.emplace(field->name(), std::move(resolved));
@@ -2077,7 +2082,8 @@ Result<DocPtrList> CollectionImpl::query_unsafe(
     const auto it = query_internal_ids_fields_.find(field_name);
     const bool refine = query.target_.query_params_ &&
                         query.target_.query_params_->is_using_refiner();
-    if (it != query_internal_ids_fields_.end() && it->second.primary &&
+    if (it != query_internal_ids_fields_.end() &&
+        it->second.can_reuse_for_query && it->second.primary &&
         (!refine || it->second.reference)) {
       auto result = query_internal_ids_unsafe(query, true);
       if (!result) return tl::make_unexpected(result.error());

@@ -112,6 +112,10 @@ def test_readonly_query_matches_general_engine(tmp_path, algorithm, metric, quan
         for doc in docs:
             i = int(doc.id.removeprefix("business-"))
             assert doc.field("number") == i
-            np.testing.assert_allclose(doc.vector("vector"), vectors[i])
+            # Cosine storage can normalize and reconstruct FP32 vectors. Allow
+            # that round trip's rounding error on both x86 and ARM.
+            np.testing.assert_allclose(
+                doc.vector("vector"), vectors[i], rtol=1e-6, atol=1e-7
+            )
     finally:
         reader.close()
