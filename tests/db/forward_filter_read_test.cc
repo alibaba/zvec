@@ -174,6 +174,25 @@ class ForwardFilterReadTest : public testing::TestWithParam<bool> {
         segment_, info, nullptr, std::make_unique<cp::Expression>(expression));
   }
 
+  std::unique_ptr<sqlengine::DocFilter> bitmap_filter(
+      const std::vector<std::string> &columns, cp::Expression expression) {
+    auto info = std::make_shared<sqlengine::QueryInfo>();
+    for (const auto &column : columns) {
+      // 虚拟行号的投影只需要名字，借用已有标量字段满足分析元数据契约。
+      const auto *field = schema_->get_field(column);
+      info->add_forward_filter_schema_ptr(
+          column, field ? field : schema_->get_field("i32"));
+    }
+    return std::make_unique<sqlengine::DocFilter>(
+        segment_, info, std::make_unique<cp::Expression>(std::move(expression)),
+        nullptr);
+  }
+
+  static std::shared_ptr<arrow::ChunkedArray> bitmap(
+      const sqlengine::DocFilter &filter) {
+    return filter.forward_bitmap_;
+  }
+
   static ForwardReadView::Ptr make_owned_view(TablePtr table) {
     return ForwardReadView::Make(std::move(table));
   }
@@ -400,6 +419,17 @@ TEST_P(IpcForwardFilterReadTest, IncompleteBlockFallsBackToLockedFetch) {
   auto state = segment_->prepare_forward_read({"i32"}, false);
   ASSERT_TRUE(state.ok()) << state.status().ToString();
   EXPECT_EQ(state->view, nullptr);
+
+  auto bitmap_candidate = bitmap_filter(
+      {"i32"},
+      cp::call("less", {cp::field_ref("i32"), cp::literal(int32_t{0})}));
+  auto bitmap_status = bitmap_candidate->compute_filter();
+  ASSERT_TRUE(bitmap_status.ok()) << bitmap_status.message();
+  ASSERT_EQ(bitmap(*bitmap_candidate)->length(), 24);
+  for (int row = 0; row < 24; ++row) {
+    EXPECT_EQ(bitmap_candidate->is_filtered(row),
+              row % 11 == 0 || row % 2 == 0);
+  }
 
   // A reload whose state cannot be prepared still succeeds, and a later
   // reload with consistent metadata restores the sealed view.
@@ -1061,30 +1091,48 @@ TEST_P(ForwardFilterReadTest, IndependentColumnChunkBoundaries) {
   std::shared_ptr<arrow::Array> array;
   ASSERT_TRUE(builder.Finish(&array).ok());
   auto arrow_schema = arrow::schema({arrow::field("other", arrow::int32())});
-  const auto file =
-      FileHelper::MakeForwardBlockPath(path_, 0, 100000, !GetParam());
-  auto output = arrow::io::FileOutputStream::Open(file).ValueOrDie();
-  if (GetParam()) {
-    auto writer = arrow::ipc::MakeFileWriter(output, arrow_schema).ValueOrDie();
-    int row = 0;
-    while (row < 2053) {
-      int size = std::min(row % 2 ? 101 : 7, 2053 - row);
-      auto batch = arrow::RecordBatch::Make(arrow_schema, size,
-                                            {array->Slice(row, size)});
-      ASSERT_TRUE(writer->WriteRecordBatch(*batch).ok());
-      row += size;
+  // 与 DDL 的 WriteColumnInBlocks 一致：列文件的逻辑 doc ID 范围对齐，
+  // 但文件内的 record-batch/row-group 边界独立，供 scanner 横向合并。
+  const auto blocks = meta.persisted_blocks();
+  uint32_t block_id = 100000;
+  int offset = 0;
+  for (const auto &block : blocks) {
+    if (block.type() != BlockType::SCALAR || !block.contain_column("i32"))
+      continue;
+    const int count = static_cast<int>(block.doc_count());
+    const auto file =
+        FileHelper::MakeForwardBlockPath(path_, 0, block_id, !GetParam());
+    auto output = arrow::io::FileOutputStream::Open(file).ValueOrDie();
+    if (GetParam()) {
+      auto writer =
+          arrow::ipc::MakeFileWriter(output, arrow_schema).ValueOrDie();
+      int row = 0;
+      while (row < count) {
+        int size = std::min(row % 2 ? 101 : 7, count - row);
+        auto batch = arrow::RecordBatch::Make(
+            arrow_schema, size, {array->Slice(offset + row, size)});
+        ASSERT_TRUE(writer->WriteRecordBatch(*batch).ok());
+        row += size;
+      }
+      ASSERT_TRUE(writer->Close().ok());
+    } else {
+      auto table = arrow::Table::Make(
+          arrow_schema,
+          {std::make_shared<arrow::ChunkedArray>(array->Slice(offset, count))});
+      ASSERT_TRUE(parquet::arrow::WriteTable(
+                      *table, arrow::default_memory_pool(), output, 101)
+                      .ok());
     }
-    ASSERT_TRUE(writer->Close().ok());
-  } else {
-    auto table = arrow::Table::Make(
-        arrow_schema, {std::make_shared<arrow::ChunkedArray>(array)});
-    ASSERT_TRUE(parquet::arrow::WriteTable(*table, arrow::default_memory_pool(),
-                                           output, 101)
-                    .ok());
+    ASSERT_TRUE(output->Close().ok());
+    meta.add_persisted_block({block_id++,
+                              BlockType::SCALAR,
+                              block.min_doc_id(),
+                              block.max_doc_id(),
+                              block.doc_count(),
+                              {"other"}});
+    offset += count;
   }
-  ASSERT_TRUE(output->Close().ok());
-  meta.add_persisted_block(
-      {100000, BlockType::SCALAR, 10000, 12052, 2053, {"other"}});
+  ASSERT_EQ(offset, 2053);
   schema_->add_field(
       std::make_shared<FieldSchema>("other", DataType::INT32, true));
   auto options = options_;
@@ -1121,6 +1169,21 @@ TEST_P(ForwardFilterReadTest, IndependentColumnChunkBoundaries) {
     const auto &value = a->values[0].scalar_as<arrow::Int32Scalar>();
     EXPECT_EQ(value.is_valid, row % 13 != 0);
     if (value.is_valid) EXPECT_EQ(value.value, row);
+  }
+  auto candidate = bitmap_filter(
+      columns,
+      cp::call(
+          "and_kleene",
+          {cp::call("greater",
+                    {cp::field_ref("other"), cp::literal(int32_t{100})}),
+           cp::call("less", {cp::field_ref("i32"), cp::literal(int32_t{0})})}));
+  auto status = candidate->compute_filter();
+  ASSERT_TRUE(status.ok()) << status.message();
+  ASSERT_EQ(bitmap(*candidate)->length(), 2053);
+  for (int row = 0; row < 2053; ++row) {
+    EXPECT_EQ(candidate->is_filtered(row),
+              row <= 100 || row % 13 == 0 || row % 11 == 0 || row % 2 == 0)
+        << row;
   }
 }
 
@@ -1377,6 +1440,108 @@ TEST_P(ForwardFilterReadTest, BindFailureAndUnfilteredDeletionRemainUnchanged) {
   ASSERT_TRUE(unfiltered.compute_filter().ok());
   EXPECT_FALSE(unfiltered.is_filtered(1));
   EXPECT_TRUE(unfiltered.is_filtered(7));
+}
+
+TEST_P(ForwardFilterReadTest, BitmapAcrossMemoryFlushSealAndReopen) {
+  options_.max_buffer_size_ = 16 * 1024 * 1024;
+  ASSERT_NO_FATAL_FAILURE(create(257));
+  ASSERT_TRUE(segment_->Delete(uint64_t{10015}).ok());
+  const auto expression =
+      cp::call("less", {cp::field_ref("i32"), cp::literal(int32_t{0})});
+  for (int phase = 0; phase < 4; ++phase) {
+    SCOPED_TRACE(phase);
+    if (phase == 1) ASSERT_TRUE(segment_->flush().ok());
+    if (phase == 2) {
+      ASSERT_TRUE(segment_->dump().ok());
+      segment_->remove_writing_forward_block();
+    }
+    if (phase == 3) ASSERT_NO_FATAL_FAILURE(reopen_persisted(false));
+    auto state = segment_->prepare_forward_read({"i32"}, false);
+    ASSERT_TRUE(state.ok());
+    ASSERT_EQ(state->view != nullptr, phase >= 2 && GetParam());
+    auto candidate = bitmap_filter({"i32"}, expression);
+    auto status = candidate->compute_filter();
+    ASSERT_TRUE(status.ok()) << status.message();
+    ASSERT_EQ(bitmap(*candidate)->length(), 257);
+    for (int row = 0; row < 257; ++row) {
+      EXPECT_EQ(candidate->is_filtered(row),
+                row % 11 == 0 || row % 2 == 0 || row == 15)
+          << row;
+    }
+  }
+  // 已构造的 bitmap 不替代 live 删除掩码，也不压缩物理行号。
+  auto candidate = bitmap_filter({"i32"}, expression);
+  ASSERT_TRUE(candidate->compute_filter().ok());
+  EXPECT_FALSE(candidate->is_filtered(17));
+  deletes_->mark_deleted(10017);
+  EXPECT_TRUE(candidate->is_filtered(17));
+  EXPECT_FALSE(candidate->is_filtered(19));
+}
+
+TEST_P(ForwardFilterReadTest, BitmapVirtualRowIdsAndMultipleBlocks) {
+  ASSERT_NO_FATAL_FAILURE(create());
+  ASSERT_TRUE(segment_->Delete(uint64_t{10015}).ok());
+  ASSERT_NO_FATAL_FAILURE(reopen_persisted());
+  ASSERT_GT(segment_->meta()->persisted_blocks().size(), 1u);
+  const std::vector<std::string> columns{"i32", LOCAL_ROW_ID, GLOBAL_DOC_ID};
+  auto state = segment_->prepare_forward_read(columns, false);
+  ASSERT_TRUE(state.ok());
+  ASSERT_EQ(state->view != nullptr, GetParam());
+  if (state->view) {
+    ASSERT_EQ(state->view->column(1)->data(), nullptr);
+  }
+  auto candidate = bitmap_filter(
+      columns,
+      cp::call(
+          "and_kleene",
+          {cp::call("greater_equal",
+                    {cp::field_ref(LOCAL_ROW_ID), cp::literal(uint64_t{13})}),
+           cp::call("and_kleene",
+                    {cp::call("less",
+                              {cp::field_ref("i32"), cp::literal(int32_t{0})}),
+                     cp::call("equal",
+                              {cp::field_ref(GLOBAL_DOC_ID),
+                               cp::call("add",
+                                        {cp::field_ref(LOCAL_ROW_ID),
+                                         cp::literal(uint64_t{10000})})})})}));
+  auto status = candidate->compute_filter();
+  ASSERT_TRUE(status.ok()) << status.message();
+  ASSERT_EQ(bitmap(*candidate)->length(), 2053);
+  for (int row = 0; row < 2053; ++row) {
+    EXPECT_EQ(candidate->is_filtered(row),
+              row < 13 || row % 11 == 0 || row % 2 == 0 || row == 15)
+        << row;
+  }
+}
+
+TEST_P(IpcForwardFilterReadTest, BitmapRetainsCapturedBuffersAcrossRetirement) {
+  ASSERT_NO_FATAL_FAILURE(create(24));
+  ASSERT_NO_FATAL_FAILURE(reopen_persisted());
+  auto candidate = bitmap_filter({"flag"}, cp::field_ref("flag"));
+  std::vector<bool> expected;
+  for (int row = 0; row < 24; ++row) {
+    auto batch = segment_->fetch({"flag"}, row);
+    ASSERT_NE(batch, nullptr);
+    const auto &value = batch->values[0].scalar_as<arrow::BooleanScalar>();
+    expected.push_back(!value.is_valid || !value.value);
+  }
+  auto barrier = std::make_shared<CaptureBarrier>();
+  auto previous = ailego::LoggerBroker::Register(barrier);
+  ailego::LoggerBroker::SetLevel(ailego::Logger::LEVEL_DEBUG);
+  auto pending = std::async(std::launch::async,
+                            [&] { return candidate->compute_filter(); });
+  EXPECT_TRUE(barrier->wait_entered());
+  auto retired = segment_->destroy();
+  barrier->release();
+  auto status = pending.get();
+  ailego::LoggerBroker::Register(previous);
+  ailego::LoggerBroker::SetLevel(ailego::Logger::LEVEL_WARN);
+  ASSERT_TRUE(retired.ok()) << retired.message();
+  ASSERT_TRUE(status.ok()) << status.message();
+  ASSERT_EQ(bitmap(*candidate)->length(), 24);
+  for (int row = 0; row < 24; ++row) {
+    EXPECT_EQ(candidate->is_filtered(row), expected[row]);
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(PersistedStores, ForwardFilterReadTest,
