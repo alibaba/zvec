@@ -13,6 +13,7 @@
 // limitations under the License.
 
 
+#include <new>
 #include <ailego/pattern/defer.h>
 #include "inverted_column_indexer.h"
 
@@ -22,6 +23,19 @@ namespace zvec {
 
 InvertedColumnIndexer::~InvertedColumnIndexer() {
   LOG_INFO("Closed %s", id().c_str());
+}
+
+
+void InvertedColumnIndexer::build_range_cache() {
+  range_cache_.reset();
+  if (!sealed_ || !enable_range_optimization_ || !cf_ranges_) return;
+  try {
+    range_cache_ = InvertedRangeCache::Build(
+        ctx_, cf_ranges_, cf_terms_, max_id_.load(), null_bitmap_.bitmap());
+  } catch (const std::bad_alloc &) {
+    LOG_WARN("Skipping range prefixes for %s: insufficient memory",
+             id().c_str());
+  }
 }
 
 
@@ -124,6 +138,7 @@ Status InvertedColumnIndexer::open() {
     return Status::InternalError();
   }
 
+  build_range_cache();
   LOG_INFO("Opened %s", id().c_str());
   return Status::OK();
 }
@@ -163,6 +178,7 @@ Status InvertedColumnIndexer::drop_storage() {
     }
   }
   if (enable_range_optimization_) {
+    range_cache_.reset();
     if (s = ctx_.drop_cf(cf_name_ranges()); !s.ok()) {
       return s;
     }

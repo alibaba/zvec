@@ -22,6 +22,7 @@
 #include "db/common/rocksdb_context.h"
 #include "inverted_codec.h"
 #include "inverted_doc_range.h"
+#include "inverted_range_cache.h"
 #include "inverted_search_result.h"
 
 
@@ -80,6 +81,13 @@ class InvertedColumnIndexer {
 
 
  public:
+  // Read-only diagnostics for sealed scalar range acceleration.
+  const InvertedRangeCache *range_cache() const {
+    return range_cache_.get();
+  }
+
+  RangeQueryPlan explain_range(const std::string &value, CompareOp op) const;
+
   /*!
    * \brief Search for documents matching the given value and operation
    * \param value The value to compare against (e.g., "5", "10")
@@ -237,6 +245,22 @@ class InvertedColumnIndexer {
 
   Status open();
 
+  void build_range_cache();
+
+  RangeQueryPlan plan_range(const std::string &term, bool query_left,
+                            bool include_eq) const;
+  Result<roaring_bitmap_t *> search_range(const std::string &term,
+                                          bool query_left,
+                                          bool include_eq) const;
+  Result<roaring_bitmap_t *> execute_range_plan(
+      const std::string &term, const RangeQueryPlan &plan) const;
+  InvertedRangeCache::BitmapPtr try_subtract_boundary(
+      const std::string &term, const RangeQueryPlan &plan) const;
+  Result<roaring_bitmap_t *> get_bitmap_lt_raw(const std::string &term,
+                                               bool include_eq) const;
+  Result<roaring_bitmap_t *> get_bitmap_gt_raw(const std::string &term,
+                                               bool include_eq) const;
+
   inline std::string encode(const std::string &term) const {
     return InvertedIndexCodec::Encode(term, field_.element_data_type());
   }
@@ -303,10 +327,9 @@ class InvertedColumnIndexer {
                                      uint64_t *total_count,
                                      uint64_t *matching_count) const;
 
-  inline bool range_covers_most_values(const std::string &term,
-                                       CompareOp op) const;
+  bool range_covers_most_values(const std::string &term, CompareOp op) const;
 
-  inline roaring_bitmap_t *flip_bitmap(roaring_bitmap_t *bitmap) const;
+  roaring_bitmap_t *flip_bitmap(roaring_bitmap_t *bitmap) const;
 
   Result<roaring_bitmap_t *> get_bitmap_eq(const std::string &term) const;
 
@@ -429,6 +452,7 @@ class InvertedColumnIndexer {
   std::atomic<uint32_t> max_id_{0};
   ConcurrentRoaringBitmap32 null_bitmap_{};
   SegmentDocRangeStat::Ptr doc_range_stat_{nullptr};
+  std::unique_ptr<InvertedRangeCache> range_cache_;
 };
 
 
