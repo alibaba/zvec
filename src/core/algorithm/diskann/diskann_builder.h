@@ -64,7 +64,7 @@ class DiskAnnBuilder : public IndexBuilder {
   int do_norm(const void *data_ptr, std::string *norm_data);
 
  private:
-  int train_quantized_data();
+  int train_quantized_data(IndexThreads::Pointer threads);
   int generate_quantized_data(IndexThreads::Pointer threads);
 
   void encode_pq_batch(const uint8_t *block_data, uint64_t block_start_id,

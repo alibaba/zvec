@@ -129,6 +129,38 @@ TEST(DiskAnnRabitq, BuildAdapterPreservesFixedPrecisionAndSettings) {
   EXPECT_EQ(stride, inherited.code_size());
 }
 
+TEST(DiskAnnRabitq, MergeWithSingleWorkerPool) {
+  constexpr size_t dim = 64;
+  const std::string source_path = "diskann_single_worker.flat";
+  const std::string target_path = "diskann_single_worker.index";
+  test_util::RemoveTestFiles(source_path);
+  test_util::RemoveTestFiles(target_path);
+  auto source =
+      IndexFactory::CreateAndInitIndex(*FlatIndexParamBuilder()
+                                            .with_dimension(dim)
+                                            .with_metric_type(MetricType::kL2sq)
+                                            .with_data_type(DataType::DT_FP32)
+                                            .build());
+  SmallDiskAnn diskann;
+  Index &target = diskann;
+  ASSERT_TRUE(source);
+  ASSERT_EQ(0, diskann.initialize(*Parameters(MetricType::kL2sq, 7, dim)));
+  const StorageOptions create{StorageOptions::StorageType::kMMAP, true};
+  ASSERT_EQ(0, source->open(source_path, create));
+  ASSERT_EQ(0, target.open(target_path, create));
+  for (uint32_t id = 0; id < 64; ++id) {
+    std::vector<float> v(dim, static_cast<float>(id));
+    ASSERT_EQ(0, source->add(VectorData{DenseVector{v.data()}}, id));
+  }
+  ailego::ThreadPool pool(1, false);
+  ASSERT_EQ(0, target.merge({source}, {}, {1, &pool}));
+  EXPECT_EQ(64u, target.get_doc_count());
+  ASSERT_EQ(0, source->close());
+  ASSERT_EQ(0, target.close());
+  test_util::RemoveTestFiles(source_path);
+  test_util::RemoveTestFiles(target_path);
+}
+
 TEST(DiskAnnRabitq, BuildFilterFetchAndReopenWithDefaultParameters) {
   constexpr uint32_t count = 96;
   constexpr size_t dim = 129;

@@ -322,12 +322,13 @@ int DiskAnnBuilder::prune_internal(IndexThreads::Pointer threads) {
   return 0;
 }
 
-int DiskAnnBuilder::train_quantized_data() {
+int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer threads) {
   LOG_INFO("Starting Train: Code Bytes: %u", code_size_);
 
   ailego::ElapsedTime timer;
 
-  int ret = candidate_quantizer_.train(holder_, max_train_sample_count_);
+  int ret = candidate_quantizer_.train(holder_, max_train_sample_count_,
+                                       std::move(threads));
   if (ret != 0) {
     LOG_ERROR("Candidate quantizer train failed, ret=%d", ret);
     return ret;
@@ -591,7 +592,7 @@ int DiskAnnBuilder::train(IndexThreads::Pointer threads,
   if (ret != 0) return ret;
   code_size_ = candidate_quantizer_.code_size();
 
-  ret = train_quantized_data();
+  ret = train_quantized_data(std::move(threads));
   if (ailego_unlikely(ret != 0)) {
     return ret;
   }

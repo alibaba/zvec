@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <zvec/ailego/container/params.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/framework/index_meta.h>
@@ -24,6 +25,9 @@
 #include "distance.h"
 
 namespace zvec {
+namespace core {
+class IndexThreads;
+}
 namespace turbo {
 
 using namespace zvec::core;
@@ -169,6 +173,12 @@ class Quantizer {
   //! of worker threads. Default falls back to the sequential train.
   virtual int train(IndexHolder::Pointer holder, int /*thread_count*/) {
     return train(holder);
+  }
+
+  //! Train using the caller's worker pool when the implementation supports it.
+  virtual int train(IndexHolder::Pointer holder,
+                    std::shared_ptr<IndexThreads>) {
+    return train(std::move(holder));
   }
 
   //! Prepare derived state for graph construction before concurrent inserts.

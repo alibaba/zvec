@@ -1919,23 +1919,31 @@ TEST_P(HnswLegacyReopenTest, LegacyFp32LayoutReopenFallsBack) {
     return;
   }
 
-  auto index = IndexFactory::CreateAndInitIndex(
-      *MakeParam(MetricType::kL2sq, QuantizerType::kNone));
-  ASSERT_NE(nullptr, index);
-  ASSERT_EQ(0, index->open(path, GetParam()));
-  EXPECT_TRUE(index->index_searcher()->meta().quantizer_name().empty());
-  auto rows = SearchRows(index.get(), vectors[37], true);
-  ASSERT_EQ(kTopK, rows.size());
-  EXPECT_EQ(37U, rows[0].first);
+  const QuantizerType original_configs[] = {
+      QuantizerType::kNone,
+#if RABITQ_SUPPORTED
+      QuantizerType::kRabitq,
+#endif
+  };
+  for (auto type : original_configs) {
+    auto index =
+        IndexFactory::CreateAndInitIndex(*MakeParam(MetricType::kL2sq, type));
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(0, index->open(path, GetParam()));
+    EXPECT_TRUE(index->index_searcher()->meta().quantizer_name().empty());
+    auto rows = SearchRows(index.get(), vectors[37], true);
+    ASSERT_EQ(kTopK, rows.size());
+    EXPECT_EQ(37U, rows[0].first);
 
-  VectorDataBuffer fetched;
-  ASSERT_EQ(0, index->fetch(37, &fetched));
-  const auto *fetched_vector = reinterpret_cast<const float *>(
-      std::get<DenseVectorBuffer>(fetched.vector_buffer).data.data());
-  for (uint32_t i = 0; i < kDimension; ++i) {
-    EXPECT_FLOAT_EQ(vectors[37][i], fetched_vector[i]);
+    VectorDataBuffer fetched;
+    ASSERT_EQ(0, index->fetch(37, &fetched));
+    const auto *fetched_vector = reinterpret_cast<const float *>(
+        std::get<DenseVectorBuffer>(fetched.vector_buffer).data.data());
+    for (uint32_t i = 0; i < kDimension; ++i) {
+      EXPECT_FLOAT_EQ(vectors[37][i], fetched_vector[i]);
+    }
+    ASSERT_EQ(0, index->close());
   }
-  ASSERT_EQ(0, index->close());
   zvec::test_util::RemoveTestFiles(path);
 }
 
@@ -2090,7 +2098,141 @@ INSTANTIATE_TEST_SUITE_P(AddApis, HnswExternalCoreCompatibilityTest,
 }  // namespace core
 }  // namespace zvec
 
+namespace zvec::core {
+namespace {
+class CountingPersistedQuantizer : public turbo::Fp32Quantizer {
+ public:
+  bool requires_original_vectors() const override {
+    return true;
+  }
+  int serialize(std::string *out) const override {
+    ++writes;
+    *out = "model";
+    return 0;
+  }
+  int deserialize(const void *data, size_t size) override {
+    ++reads;
+    return size == 5 && std::memcmp(data, "model", 5) == 0
+               ? 0
+               : IndexError_InvalidFormat;
+  }
+  static inline int reads = 0;
+  static inline int writes = 0;
+};
+INDEX_FACTORY_REGISTER_QUANTIZER(CountingPersistedQuantizer);
+}  // namespace
+}  // namespace zvec::core
+
+TEST(HnswModelPersistence, ReadOnlyReopenReadsModelOnce) {
+  namespace core = zvec::core;
+  using Model = core::CountingPersistedQuantizer;
+  const std::string path = "hnsw_count_model_reads.index";
+  zvec::test_util::RemoveTestFiles(path);
+  auto quantizer =
+      core::IndexFactory::CreateQuantizer("CountingPersistedQuantizer");
+  ASSERT_TRUE(quantizer);
+  core::IndexMeta meta(core::IndexMeta::DT_FP32, kDimension);
+  meta.set_metric("SquaredEuclidean", 0, zvec::ailego::Params{});
+  ASSERT_EQ(0, quantizer->init(meta, {}));
+  meta.set_quantizer("CountingPersistedQuantizer", 0, zvec::ailego::Params{});
+  auto streamer = core::IndexFactory::CreateStreamer("HnswStreamer");
+  auto storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_TRUE(streamer && storage);
+  ASSERT_EQ(0, streamer->init(meta, {}, quantizer));
+  ASSERT_EQ(0, storage->init({}));
+  ASSERT_EQ(0, storage->open(path, true));
+  ASSERT_EQ(0, streamer->open(storage));
+  ASSERT_EQ(0, streamer->flush(0));
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, storage->close());
+
+  Model::reads = Model::writes = 0;
+  auto index = IndexFactory::CreateAndInitIndex(
+      *MakeParam(MetricType::kL2sq, QuantizerType::kNone));
+  ASSERT_TRUE(index);
+  ASSERT_EQ(
+      0, index->open(path, {StorageOptions::StorageType::kMMAP, false, true}));
+  ASSERT_EQ(0, index->close());
+  EXPECT_EQ(1, Model::reads);
+  EXPECT_EQ(0, Model::writes);
+  zvec::test_util::RemoveTestFiles(path);
+}
+
 #if RABITQ_SUPPORTED
+TEST(HnswTurboRabitq, MergeEncodesOriginalVectorsWithDestinationModel) {
+  using Provider =
+      zvec::core::MultiPassIndexProvider<zvec::core::IndexMeta::DT_FP32>;
+  const auto vectors = RandomVectors(2);
+  auto params_for = [&](const std::vector<std::vector<float>> &originals) {
+    auto param = MakeParam(MetricType::kL2sq, QuantizerType::kRabitq);
+    auto model = std::make_shared<RabitqQuantizerParam>(7);
+    model->num_clusters = originals.size();
+    param->quantizer_param = model;
+    auto provider = std::make_shared<Provider>(kDimension);
+    for (const auto &v : originals) {
+      zvec::ailego::NumericalVector<float> row(kDimension);
+      std::copy(v.begin(), v.end(), row.begin());
+      EXPECT_TRUE(provider->emplace(provider->count(), row));
+    }
+    param->provider = provider;
+    param->provider_meta =
+        zvec::core::IndexMeta(zvec::core::IndexMeta::DT_FP32, kDimension);
+    return param;
+  };
+  const StorageOptions create{StorageOptions::StorageType::kMMAP, true};
+  std::vector<Index::Pointer> sources;
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    auto path = "rabitq_merge_source_" + std::to_string(i) + ".index";
+    zvec::test_util::RemoveTestFiles(path);
+    auto source = IndexFactory::CreateAndInitIndex(*params_for({vectors[i]}));
+    ASSERT_TRUE(source);
+    ASSERT_EQ(0, source->open(path, create));
+    AddVectors(source.get(), {vectors[i]});
+    sources.push_back(source);
+  }
+  const std::string target_path = "rabitq_merge_target.index";
+  const std::string direct_path = "rabitq_merge_direct.index";
+  zvec::test_util::RemoveTestFiles(target_path);
+  zvec::test_util::RemoveTestFiles(direct_path);
+  auto params = params_for(vectors);
+  auto target = IndexFactory::CreateAndInitIndex(*params);
+  auto direct = IndexFactory::CreateAndInitIndex(*params);
+  ASSERT_TRUE(target && direct);
+  ASSERT_EQ(0, target->open(target_path, create));
+  ASSERT_EQ(0, direct->open(direct_path, create));
+  AddVectors(direct.get(), vectors);
+  ASSERT_EQ(0, target->merge(sources, {}));
+  const auto compare = [&] {
+    for (size_t i = 0; i < vectors.size(); ++i) {
+      auto expected = SearchRows(direct.get(), vectors[i], false);
+      auto actual = SearchRows(target.get(), vectors[i], false);
+      ASSERT_EQ(2u, expected.size());
+      ASSERT_EQ(2u, actual.size());
+      EXPECT_EQ(i, actual.front().first);
+      for (size_t n = 0; n < actual.size(); ++n) {
+        EXPECT_EQ(expected[n].first, actual[n].first);
+        EXPECT_NEAR(expected[n].second, actual[n].second, 1e-4f);
+      }
+    }
+  };
+  ASSERT_NO_FATAL_FAILURE(compare());
+  ASSERT_EQ(0, target->close());
+  params->provider.reset();
+  target = IndexFactory::CreateAndInitIndex(*params);
+  ASSERT_TRUE(target);
+  ASSERT_EQ(0, target->open(target_path, {create.type, false, true}));
+  ASSERT_NO_FATAL_FAILURE(compare());
+  ASSERT_EQ(0, target->close());
+  ASSERT_EQ(0, direct->close());
+  for (size_t i = 0; i < sources.size(); ++i) {
+    ASSERT_EQ(0, sources[i]->close());
+    zvec::test_util::RemoveTestFiles("rabitq_merge_source_" +
+                                     std::to_string(i) + ".index");
+  }
+  zvec::test_util::RemoveTestFiles(target_path);
+  zvec::test_util::RemoveTestFiles(direct_path);
+}
+
 TEST(HnswTurboRabitq, MergesReopenedFlatUsingDatapointEncoding) {
   for (auto metric :
        {MetricType::kL2sq, MetricType::kCosine, MetricType::kInnerProduct}) {
@@ -2269,8 +2411,10 @@ TEST(HnswTurboRabitq, RejectsCorruptOrUntrainedPersistedModel) {
     ASSERT_EQ(0, storage->close());
     auto reopened = IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, reopened);
-    EXPECT_NE(
-        0, reopened->open(path, {StorageOptions::StorageType::kMMAP, false}));
+    EXPECT_EQ(untrained ? zvec::core::IndexError_NoReady
+                        : zvec::core::IndexError_InvalidChecksum,
+              reopened->open(
+                  path, {StorageOptions::StorageType::kMMAP, false, true}));
     reopened.reset();
     zvec::test_util::RemoveTestFiles(path);
   }

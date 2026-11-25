@@ -126,7 +126,8 @@ float RabitqQuantizer::rotate(const void *input,
   return norm;
 }
 
-int RabitqQuantizer::train(IndexHolder::Pointer holder) {
+int RabitqQuantizer::train(IndexHolder::Pointer holder,
+                           IndexThreads::Pointer threads) {
   if (!rotator_ || !require_train() || !holder || holder->count() == 0 ||
       holder->data_type() != IndexMeta::DT_FP32 ||
       holder->dimension() != static_cast<size_t>(dim_) ||
@@ -193,8 +194,7 @@ int RabitqQuantizer::train(IndexHolder::Pointer holder) {
     if (ret != 0) return ret;
     cluster->suggest(num_clusters_);
     IndexCluster::CentroidList centers;
-    ret = cluster->cluster(std::make_shared<SingleQueueIndexThreads>(0, false),
-                           centers);
+    ret = cluster->cluster(std::move(threads), centers);
     if (ret != 0) return ret;
     if (centers.empty() || centers.size() > num_clusters_) return kErrRuntime;
     for (const auto &center : centers) append(center.feature());

@@ -179,19 +179,20 @@ int HNSWIndex::merge(const std::vector<Index::Pointer> &indexes,
   return ret;
 }
 
-int HNSWIndex::prepare_streamer_open(const StorageOptions &options) {
+int HNSWIndex::open_streamer(const StorageOptions &options) {
   if (options.create_new) {
-    return 0;
+    return Index::open_streamer(options);
   }
   core::IndexMeta persisted_meta;
   if (core::IndexHelper::DeserializeFromStorage(storage_.get(),
                                                 &persisted_meta) != 0) {
-    return pending_quantizer_training_ ? core::IndexError_InvalidFormat : 0;
+    return pending_quantizer_training_ ? core::IndexError_InvalidFormat
+                                       : Index::open_streamer(options);
   }
   if (persisted_meta.quantizer_name().empty()) {
     if (pending_quantizer_training_) return core::IndexError_InvalidFormat;
     if (!turbo_quantizer_) {
-      return 0;
+      return Index::open_streamer(options);
     }
     // Reuse normal initialization for old indexes, without selecting Turbo
     // again.
@@ -202,7 +203,9 @@ int HNSWIndex::prepare_streamer_open(const StorageOptions &options) {
     metric_.reset();
     proxima_index_meta_.clear();
     use_legacy_pipeline_ = true;
-    return Index::init(param_);
+    int ret = Index::init(param_);
+    use_legacy_pipeline_ = false;
+    return ret != 0 ? ret : Index::open_streamer(options);
   }
   // The persisted descriptor decides the search pipeline, including when a
   // caller reopens an index with a different quantizer configuration: a
@@ -213,6 +216,7 @@ int HNSWIndex::prepare_streamer_open(const StorageOptions &options) {
     const core::IndexMeta &config_meta = turbo_quantizer_->meta();
     matches_config =
         !turbo_quantizer_->require_train() &&
+        !turbo_quantizer_->requires_original_vectors() &&
         proxima_index_meta_.quantizer_name() ==
             persisted_meta.quantizer_name() &&
         config_meta.data_type() == persisted_meta.data_type() &&
@@ -220,43 +224,29 @@ int HNSWIndex::prepare_streamer_open(const StorageOptions &options) {
         config_meta.element_size() == persisted_meta.element_size();
   }
   if (matches_config) {
-    return 0;
+    return Index::open_streamer(options);
   }
 
-  std::shared_ptr<zvec::turbo::Quantizer> restored;
-  int ret =
-      core::HnswStreamer::RestoreQuantizer(storage_, persisted_meta, &restored);
-  if (ret != 0) {
-    LOG_ERROR("Failed to restore turbo quantizer %s, ret=%d",
-              persisted_meta.quantizer_name().c_str(), ret);
-    return ret;
-  }
-  if (!restored) {
-    LOG_ERROR("Restored turbo quantizer %s is null",
-              persisted_meta.quantizer_name().c_str());
-    return core::IndexError_Runtime;
-  }
-
+  // Open restores the model once, after validating the persisted layout.
   pending_quantizer_training_ = false;
-  turbo_quantizer_ = restored;
+  turbo_quantizer_.reset();
   converter_.reset();
   reformer_.reset();
   metric_.reset();
   proxima_index_meta_ = persisted_meta;
+  auto hnsw = std::dynamic_pointer_cast<core::HnswStreamer>(streamer_);
+  if (!hnsw) return core::IndexError_Mismatch;
+  int ret = streamer_->init(proxima_index_meta_, proxima_index_params_);
+  if (ret != 0) return ret;
+  ret = streamer_->open(storage_, options.read_only);
+  if (ret != 0) return ret;
+  turbo_quantizer_ = hnsw->quantizer();
+  if (!turbo_quantizer_) return core::IndexError_InvalidFormat;
   streamer_vector_meta_.set_meta(
       persisted_meta.data_type(), persisted_meta.dimension(),
       static_cast<uint32_t>(turbo_quantizer_->type()),
       persisted_meta.extra_meta_size());
   streamer_vector_meta_.set_meta_type(persisted_meta.meta_type());
-  LOG_INFO("Restored turbo quantizer %s from the persisted index meta",
-           persisted_meta.quantizer_name().c_str());
-  ret = streamer_->init(proxima_index_meta_, proxima_index_params_,
-                        turbo_quantizer_);
-  if (ret != 0) {
-    LOG_ERROR("Failed to re-init streamer with restored turbo quantizer %s",
-              persisted_meta.quantizer_name().c_str());
-    return ret;
-  }
   return 0;
 }
 
@@ -320,7 +310,7 @@ int HNSWIndex::create_and_init_converter_reformer(
     streamer_vector_meta_.set_meta_type(proxima_index_meta_.meta_type());
     return core::IndexError_Success;
   }
-  if (quantizer_param.type == QuantizerType::kRabitq) {
+  if (!use_legacy_pipeline_ && quantizer_param.type == QuantizerType::kRabitq) {
     LOG_ERROR(
         "RaBitQ HNSW requires dense FP32 vectors, an L2/IP/Cosine metric, and "
         "in-index storage");

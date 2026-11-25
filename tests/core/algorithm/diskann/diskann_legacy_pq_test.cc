@@ -133,6 +133,58 @@ TEST(DiskAnnLegacyPq, BuildAdapterPreservesPqBehavior) {
 }
 
 #if RABITQ_SUPPORTED
+TEST(DiskAnnQuantizerTest, RabitqClusteringUsesCallerWorker) {
+  class ObservedPool : public SingleQueueIndexThreads {
+   public:
+    ObservedPool() : SingleQueueIndexThreads(1, false) {}
+    class Group : public IndexThreads::TaskGroup {
+     public:
+      explicit Group(ObservedPool &pool)
+          : pool_(pool), inner_(pool.SingleQueueIndexThreads::make_group()) {}
+      void submit(ailego::ClosureHandler &&task) override {
+        inner_->submit(
+            ailego::Closure::New(this, &Group::run, std::move(task)));
+      }
+      bool is_finished() const override {
+        return inner_->is_finished();
+      }
+      void wait_finish() override {
+        inner_->wait_finish();
+      }
+
+     private:
+      void run(ailego::ClosureHandler task) {
+        EXPECT_EQ(0, pool_.indexof_this());
+        ++pool_.observations;
+        task->run();
+      }
+      ObservedPool &pool_;
+      IndexThreads::TaskGroup::Pointer inner_;
+    };
+    IndexThreads::TaskGroup::Pointer make_group() override {
+      return std::make_shared<Group>(*this);
+    }
+    std::atomic<size_t> observations{0};
+  };
+  constexpr size_t dim = 64;
+  auto holder = std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(dim);
+  ailego::NumericalVector<float> row(dim);
+  for (size_t i = 0; i < 64; ++i) {
+    std::fill(row.begin(), row.end(), static_cast<float>(i));
+    ASSERT_TRUE(holder->emplace(i, row));
+  }
+  auto pool = std::make_shared<ObservedPool>();
+  IndexMeta meta = make_meta(dim);
+  meta.set_quantizer("RabitqQuantizer", 0, ailego::Params{});
+  auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+  ASSERT_TRUE(builder);
+  ailego::Params settings;
+  settings.set(PARAM_DISKANN_BUILDER_THREAD_COUNT, 4U);
+  ASSERT_EQ(0, builder->init(meta, settings));
+  ASSERT_EQ(0, builder->train(pool, holder));
+  EXPECT_GT(pool->observations.load(), 0u);
+}
+
 TEST(DiskAnnQuantizerTest, RabitqTrainsBeyondPqPrefix) {
   constexpr size_t dim = 64;
   auto holder = std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(dim);

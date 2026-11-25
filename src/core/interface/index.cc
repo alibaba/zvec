@@ -554,6 +554,13 @@ int Index::init(const BaseIndexParam &param) {
 }
 
 
+int Index::open_streamer(const StorageOptions &options) {
+  if (pending_quantizer_training_) return 0;
+  return streamer_ && streamer_->open(storage_, options.read_only) == 0
+             ? 0
+             : core::IndexError_Runtime;
+}
+
 int Index::open(const std::string &file_path, StorageOptions storage_options) {
   if (storage_options.read_only && storage_options.create_new) {
     LOG_ERROR("Cannot create storage for a read-only index");
@@ -628,11 +635,11 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
   if (ret != 0) {
     return ret;
   }
-  if (!pending_quantizer_training_ &&
-      (streamer_ == nullptr ||
-       streamer_->open(storage_, storage_options.read_only) != 0)) {
-    LOG_ERROR("Failed to open streamer, path: %s", file_path.c_str());
-    return core::IndexError_Runtime;
+  ret = open_streamer(storage_options);
+  if (ret != 0) {
+    LOG_ERROR("Failed to open streamer, path: %s, ret=%d", file_path.c_str(),
+              ret);
+    return ret;
   }
 
   // If a converter exists but reformer was not created during init() because

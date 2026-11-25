@@ -9,6 +9,7 @@
 #include <vector>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_factory.h>
+#include <zvec/core/framework/index_threads.h>
 #include "utility/prefix_index_holder.h"
 #include "diskann_params.h"
 #include "diskann_util.h"
@@ -61,6 +62,7 @@ class DiskAnnQuantizer {
   int prepare(size_t count, bool has_budget, size_t budget_bytes,
               uint32_t thread_count) {
     if (count == 0) return IndexError_InvalidLength;
+    training_threads_ = std::max(1U, thread_count);
     if (name_ == "PqInt8Quantizer") {
       uint32_t chunks = max_pq_chunks_;
       if (chunks == 0 || chunks == std::numeric_limits<uint32_t>::max())
@@ -74,7 +76,7 @@ class DiskAnnQuantizer {
       if (chunks == 0 || chunks > meta_.dimension())
         return IndexError_InvalidArgument;
       settings_.set("num_chunk", chunks);
-      settings_.set("thread_count", std::max(1U, thread_count));
+      settings_.set("thread_count", training_threads_);
       settings_.set("use_zero_mean", false);
       // Graph construction uses raw vectors; ADC does not need the SDC table.
       settings_.set("precompute_sdc", false);
@@ -91,15 +93,24 @@ class DiskAnnQuantizer {
     return 0;
   }
 
-  int train(const IndexHolder::Pointer &holder, size_t pq_sample_limit) {
+  int train(const IndexHolder::Pointer &holder, size_t pq_sample_limit,
+            IndexThreads::Pointer threads = nullptr) {
     if (!quantizer_ || !holder) return IndexError_NoReady;
     // PQ trains on its historical prefix. RaBitQ samples the full input.
     // Both need the candidate layout (Cosine excludes the stored norm).
-    const size_t limit = quantizer_->type() == turbo::QuantizeType::kPQ
-                             ? pq_sample_limit
-                             : holder->count();
+    if (quantizer_->type() == turbo::QuantizeType::kPQ) {
+      return quantizer_->train(
+          std::make_shared<PrefixIndexHolder>(holder, pq_sample_limit, meta_));
+    }
+    // A worker cannot wait for tasks it queued on its own single-worker pool.
+    if (!threads || threads->count() == 0 ||
+        threads->count() > training_threads_ || threads->indexof_this() >= 0) {
+      threads =
+          std::make_shared<SingleQueueIndexThreads>(training_threads_, false);
+    }
     return quantizer_->train(
-        std::make_shared<PrefixIndexHolder>(holder, limit, meta_));
+        std::make_shared<PrefixIndexHolder>(holder, holder->count(), meta_),
+        std::move(threads));
   }
 
   const turbo::Quantizer::Pointer &get() const {
@@ -336,6 +347,7 @@ class DiskAnnQuantizer {
   IndexMeta meta_;
   uint32_t max_pq_chunks_{std::numeric_limits<uint32_t>::max()};
   uint32_t code_size_{0};
+  uint32_t training_threads_{1};
   turbo::Quantizer::Pointer quantizer_;
 };
 

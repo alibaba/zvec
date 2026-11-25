@@ -372,8 +372,11 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     // original vectors), dequantize back to the original format.
     const auto &source_meta = streamer->meta();
     const auto &target_meta = target_streamer_->meta();
+    // A trained RaBitQ model still owns the rotation and centroids for its
+    // codes.
     const bool same_layout =
         target_builder_ == nullptr && !quantizer->require_train() &&
+        !quantizer->requires_original_vectors() &&
         turbo::QuantizerStorageDataTypeMatches(target_meta, source_meta) &&
         target_meta.quantizer_name() == source_meta.quantizer_name() &&
         target_meta.metric_name() == source_meta.metric_name() &&
@@ -395,6 +398,11 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     return IndexError_Runtime;
   }
 
+  const auto originals =
+      !target_builder_ && target_streamer_quantizer_ &&
+              target_streamer_quantizer_->requires_original_vectors()
+          ? target_streamer_->original_provider()
+          : nullptr;
   while (iterator->is_valid()) {
     if (iterator->status() != 0) {
       return iterator->status();
@@ -413,9 +421,16 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
       continue;
     }
 
-    const void *vector_data = iterator->data();
-    if (iterator->status() != 0) {
-      return iterator->status();
+    // The build provider is keyed by the rewritten ID, including on append.
+    IndexStorage::MemoryBlock original_block;
+    const void *vector_data;
+    if (originals) {
+      int ret = originals->get_vector(*next_id, original_block);
+      if (ret != 0) return ret;
+      vector_data = original_block.data();
+    } else {
+      vector_data = iterator->data();
+      if (iterator->status() != 0) return iterator->status();
     }
     if (!vector_data) {
       LOG_ERROR("Failed to read source vector, index=%zu key=%zu",
@@ -425,7 +440,11 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
 
     std::vector<uint8_t> bytes;
     bool needs_convert = false;
-    if (quantizer != nullptr && need_encode) {
+    if (originals) {
+      const auto *raw = static_cast<const uint8_t *>(vector_data);
+      bytes.assign(raw, raw + originals->element_size());
+      needs_convert = true;
+    } else if (quantizer != nullptr && need_encode) {
       std::string original_vector;
       if (quantizer->dequantize(vector_data, source_streamer_query_meta,
                                 &original_vector) != 0) {

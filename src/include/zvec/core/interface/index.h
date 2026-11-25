@@ -256,6 +256,7 @@ class ZVEC_CORE_API Index {
   virtual int prepare_streamer_open(const StorageOptions & /*options*/) {
     return 0;
   }
+  virtual int open_streamer(const StorageOptions &options);
 
  protected:
   bool init_context();
@@ -451,7 +452,7 @@ class ZVEC_CORE_API HNSWIndex : public Index {
       const BaseIndexQueryParam::Pointer &search_param) override;
 
  private:
-  int prepare_streamer_open(const StorageOptions &options) override;
+  int open_streamer(const StorageOptions &options) override;
 
   HNSWIndexParam param_{};
   bool use_legacy_pipeline_{false};

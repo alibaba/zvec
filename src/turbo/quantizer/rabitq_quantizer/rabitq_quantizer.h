@@ -43,7 +43,11 @@ class RabitqQuantizer final : public Quantizer {
   int train(const void *, size_t, size_t) override {
     return kErrUnsupported;
   }
-  int train(IndexHolder::Pointer holder) override;
+  int train(IndexHolder::Pointer holder) override {
+    return train(std::move(holder), nullptr);
+  }
+  int train(IndexHolder::Pointer holder,
+            std::shared_ptr<IndexThreads> threads) override;
   bool requires_original_vectors() const override {
     return true;
   }
