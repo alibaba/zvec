@@ -710,7 +710,7 @@ int IndexMapping::init_index_mapping_admitted(
     if (iter->data_index > footer_->content_size) {
       return IndexError_InvalidValue;
     }
-    if (iter->data_index + iter->data_size > footer_->content_size) {
+    if (iter->data_size > footer_->content_size - iter->data_index) {
       return IndexError_InvalidLength;
     }
 
