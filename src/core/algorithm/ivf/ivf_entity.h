@@ -13,6 +13,8 @@
 // limitations under the License.
 #pragma once
 
+#include <string_view>
+#include <turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_framework.h>
 #include "ivf_distance_calculator.h"
@@ -46,6 +48,31 @@ class IVFEntity {
   //! Prepare the posting distance once per query, after centroid selection.
   int bind_query(const void *query, const IndexQueryMeta &qmeta);
 
+  const turbo::DistanceImpl &query_distance() const {
+    return query_distance_;
+  }
+
+  //! Match the bound posting kernel without changing its layout or arithmetic.
+  turbo::ManyToManyDistanceFunc many_distance() const;
+
+  bool column_many_supported() const {
+    return !quantizer_ && calculator_ && calculator_->column_many_supported();
+  }
+
+  turbo::DistanceImpl column_query(const void *query,
+                                   const IndexQueryMeta &qmeta) const {
+    return calculator_->column_query(query, qmeta);
+  }
+
+  //! Scan one list for queries sharing the same next centroid. Column-major
+  //! blocks retain their matrix kernel and do not require a Turbo row kernel.
+  int search_many(size_t inverted_list_id,
+                  const std::vector<const turbo::DistanceImpl *> &queries,
+                  const turbo::ManyToManyDistanceFunc &distance,
+                  const std::vector<IndexDocumentHeap *> &heaps,
+                  const std::vector<IndexContext::Stats *> &stats,
+                  uint32_t *scan_count) const;
+
   const turbo::Quantizer::Pointer &quantizer() const {
     return quantizer_;
   }
@@ -66,6 +93,11 @@ class IVFEntity {
   //! search all inverted list without filter
   int search(const void *query, IndexDocumentHeap *heap,
              IndexContext::Stats *context_stats) const;
+
+  //! Score only the requested IDs in this index's posting score space.
+  int search_by_keys(const std::vector<uint64_t> &keys,
+                     const IndexFilter &filter, IndexDocumentHeap *heap,
+                     IndexContext::Stats *stats) const;
 
   //! Search only the specified primary keys, using posting-space distances.
   int search_by_p_keys(const void *query, const std::vector<uint64_t> &p_keys,
@@ -134,7 +166,8 @@ class IVFEntity {
     ailego_assert_with(*vecs_count <= header_.block_vector_count,
                        "invalid vecs");
     const size_t off = iv_meta->offset + local_block_id * header_.block_size;
-    const size_t size = *vecs_count * meta_.element_size();
+    const size_t size = packed_quantizer_ ? header_.block_size
+                                          : *vecs_count * meta_.element_size();
     if (inverted_->read(off, data, size) != size) {
       LOG_ERROR("Failed to read block off=%zu size=%zu", off, size);
       return nullptr;
@@ -366,6 +399,8 @@ class IVFEntity {
 
   int load_quantizer(const IndexStorage::Pointer &container);
 
+  size_t posting_read_size(size_t offset, size_t blocks, size_t items) const;
+
   //! Unlike fetch, distance evaluation must not read retained original vectors.
   int read_posting_vector(size_t id, IndexStorage::MemoryBlock &block) const;
 
@@ -376,7 +411,10 @@ class IVFEntity {
 
   void query_features_distance(const void *query, const void *features,
                                size_t count, float *out) const {
-    if (quantizer_) {
+    if (packed_quantizer_) {
+      packed_quantizer_->calc_distance_packed_block(features, count,
+                                                    packed_query_.data(), out);
+    } else if (quantizer_ || distance_quantizer_) {
       calculator_->query_features_distance(query_distance_, features, count,
                                            out);
     } else {
@@ -397,10 +435,18 @@ class IVFEntity {
   //! Members
   IndexMeta meta_{};
   mutable IVFReformerWrapper reformer_{};
+  mutable IndexStorage::Segment::ScatterBlock scatter_data_{};
   IVFDistanceCalculator::Pointer calculator_{};
   turbo::Quantizer::Pointer quantizer_{};
+  // Legacy rows are already encoded. This helper only supplies distance
+  // kernels; it must not change query transformation or provider decoding.
+  turbo::Quantizer::Pointer distance_quantizer_{};
   // Each context owns its entity clone and therefore its query buffer/LUT.
+  std::string query_encoding_{};
   turbo::DistanceImpl query_distance_{};
+  turbo::PackedCodeQuantizer *packed_quantizer_{nullptr};
+  // Non-owning view into query_encoding_; both belong to this context.
+  std::string_view packed_query_{};
   IndexStorage::Pointer container_{};
   IndexStorage::Segment::Pointer inverted_{};
   IndexStorage::Segment::Pointer inverted_meta_{};
@@ -412,6 +458,7 @@ class IVFEntity {
   mutable std::string vector_{};  // temporary buffer for colomn major order
   //! Temporary buffer for one row-major vector split across storage pages.
   mutable std::vector<uint8_t> scatter_vector_{};
+  mutable std::vector<float> scatter_distances_{};
   float norm_value_{0.0f};  // normalize the inverted vector to orignal score
   bool norm_value_sqrt_{false};  // does the norm value need to sqrt
   InvertedIndexHeader header_;

@@ -19,13 +19,9 @@
 #include <zvec/db/schema.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
-#include "ailego/internal/cpu_features.h"
-#include "core/algorithm/hnsw_rabitq/rabitq_params.h"
 #include "db/common/constants.h"
 #include "db/common/typedef.h"
 #include "db/common/utils.h"
-#include "db/index/column/fts_column/fts_types.h"
-#include "db/index/column/fts_column/tokenizer/tokenizer_factory.h"
 #include "db/index/common/identifier_validation.h"
 #include "db/index/common/type_helper.h"
 
@@ -35,7 +31,8 @@ std::unordered_map<DataType, std::set<QuantizeType>> quantize_type_map = {
     {DataType::VECTOR_FP32,
      {QuantizeType::FP16, QuantizeType::INT4, QuantizeType::INT8,
       QuantizeType::RABITQ, QuantizeType::UNIFORM_UINT7,
-      QuantizeType::UNIFORM_UINT8, QuantizeType::UNIFORM_UINT4}},
+      QuantizeType::UNIFORM_UINT8, QuantizeType::UNIFORM_UINT4,
+      QuantizeType::PQ}},
     // {DataType::VECTOR_FP64, {QuantizeType::FP16}},
     {DataType::SPARSE_VECTOR_FP32, {QuantizeType::FP16}},
 };
@@ -59,24 +56,11 @@ std::unordered_set<IndexType> support_dense_vector_index = {
 std::unordered_set<IndexType> support_sparse_vector_index = {IndexType::FLAT,
                                                              IndexType::HNSW};
 
-static Status validate_fts_index_params(const FieldSchema &field) {
-  auto params = std::dynamic_pointer_cast<FtsIndexParams>(field.index_params());
-  if (!params) {
-    return Status::InvalidArgument(
-        "Invalid schema: FTS index requires FtsIndexParams, but field[",
-        field.name(), "] has incompatible index params");
-  }
-
-  fts::FtsIndexParams internal_params;
-  internal_params.tokenizer_name = params->tokenizer_name();
-  internal_params.filters = params->filters();
-  internal_params.extra_params = params->extra_params();
-
-  auto pipeline = fts::TokenizerFactory::create(internal_params);
-  if (!pipeline.has_value()) {
-    return Status::InvalidArgument(
-        "Invalid schema: invalid FTS index params for field[", field.name(),
-        "]: ", pipeline.error().message());
+static Status validate_index_params(const FieldSchema &field) {
+  auto status = field.index_params()->validate();
+  if (!status.ok()) {
+    return Status(status.code(), "Invalid schema for field[" + field.name() +
+                                     "]: " + status.message());
   }
   return Status::OK();
 }
@@ -87,56 +71,59 @@ Status FieldSchema::validate() const {
   }
 
   if (data_type_ == DataType::UNDEFINED) {
-    return Status::InvalidArgument("Invalid schema: field[", name_,
-                                   "]'s data_type is not defined");
+    return Status::InvalidArgument("Invalid schema for field[", name_,
+                                   "]: data_type must not be UNDEFINED");
   }
   if (is_vector_field()) {
     auto is_sparse = is_sparse_vector();
     if (!is_sparse && (dimension_ == 0 || dimension() > kMaxDenseDimSize)) {
-      return Status::InvalidArgument("Invalid schema: field[", name_,
-                                     "]'s dimension must be in (0,20000]");
+      return Status::InvalidArgument("Invalid schema for field[", name_,
+                                     "]: dimension must be in [1, ",
+                                     kMaxDenseDimSize, "]; got ", dimension_);
     }
 
     if (!is_sparse) {
       if (support_dense_vector_type.find(data_type_) ==
           support_dense_vector_type.end()) {
         return Status::InvalidArgument(
-            "Invalid schema: dense_vector's data type only "
-            "support FP32, "
-            "but field[",
-            name_, "]'s data type is ", DataTypeCodeBook::AsString(data_type_));
+            "Invalid schema for field[", name_,
+            "]: dense vectors support VECTOR_FP32/VECTOR_FP16/VECTOR_INT8 "
+            "data_type; got ",
+            DataTypeCodeBook::AsString(data_type_));
       }
     } else {
       if (support_sparse_vector_type.find(data_type_) ==
           support_sparse_vector_type.end()) {
         return Status::InvalidArgument(
-            "Invalid schema: sparse_vector's data type only "
-            "support FP32, "
-            "but field[",
-            name_, "]'s data type is ", DataTypeCodeBook::AsString(data_type_));
+            "Invalid schema for field[", name_,
+            "]: sparse vectors support SPARSE_VECTOR_FP32/SPARSE_VECTOR_FP16 "
+            "data_type; got ",
+            DataTypeCodeBook::AsString(data_type_));
       }
     }
 
     if (index_params_) {
-      auto vector_index_params =
-          std::dynamic_pointer_cast<VectorIndexParams>(index_params_);
+      const auto *vector_index_params =
+          dynamic_cast<const VectorIndexParams *>(index_params_.get());
+      if (!vector_index_params) {
+        return Status::InvalidArgument(
+            "Invalid schema for field[", name_,
+            "]: vector fields require VectorIndexParams; got index_type=",
+            IndexTypeCodeBook::AsString(index_params_->type()));
+      }
 
       if (is_sparse) {
         if (support_sparse_vector_index.find(index_params_->type()) ==
             support_sparse_vector_index.end()) {
           return Status::InvalidArgument(
-              "Invalid schema: sparse_vector's index_params only "
-              "support FLAT|HNSW index, "
-              "but field[",
-              name_, "]'s index_type is ",
+              "Invalid schema for field[", name_,
+              "]: sparse vectors support FLAT/HNSW index_type; got ",
               IndexTypeCodeBook::AsString(index_params_->type()));
         }
         if (vector_index_params->metric_type() != MetricType::IP) {
           return Status::InvalidArgument(
-              "Invalid schema: sparse_vector's index_params only "
-              "support IP metric, but "
-              "field[",
-              name_, "]'s metric is ",
+              "Invalid schema for field[", name_,
+              "]: sparse vectors require IP metric; got ",
               MetricTypeCodeBook::AsString(vector_index_params->metric_type()));
         }
 
@@ -144,11 +131,10 @@ Status FieldSchema::validate() const {
         if (support_dense_vector_index.find(index_params_->type()) ==
             support_dense_vector_index.end()) {
           return Status::InvalidArgument(
-              "Invalid schema: dense_vector's index_params only "
-              "support FLAT|HNSW|HNSW_RABITQ|IVF|IVF_RABITQ|DISKANN|VAMANA "
-              "index, but "
-              "field[",
-              name_, "]'s index_type is ",
+              "Invalid schema for field[", name_,
+              "]: dense vectors support "
+              "FLAT/HNSW/HNSW_RABITQ/IVF/IVF_RABITQ/DISKANN/VAMANA "
+              "index_type; got ",
               IndexTypeCodeBook::AsString(index_params_->type()));
         }
       }
@@ -157,157 +143,77 @@ Status FieldSchema::validate() const {
           index_params_->type() == IndexType::IVF_RABITQ) {
         if (dimension_ < kMinRabitqDimSize || dimension_ > kMaxRabitqDimSize) {
           return Status::InvalidArgument(
-              "Invalid schema: RabitQ index only support "
-              "dimension in [",
-              kMinRabitqDimSize, ", ", kMaxRabitqDimSize, "]");
+              "Invalid schema for field[", name_,
+              "]: RabitQ requires dimension in [", kMinRabitqDimSize, ", ",
+              kMaxRabitqDimSize, "]; got ", dimension_);
         }
         if (data_type_ != DataType::VECTOR_FP32) {
           return Status::InvalidArgument(
-              "Invalid schema: RabitQ index only support FP32 "
-              "data types");
-        }
-        auto metric_type = vector_index_params->metric_type();
-        if (metric_type != MetricType::L2 && metric_type != MetricType::IP &&
-            metric_type != MetricType::COSINE) {
-          return Status::InvalidArgument(
-              "Invalid schema: RabitQ index only support "
-              "L2/IP/COSINE metric");
-        }
-#if !RABITQ_SUPPORTED
-        return Status::NotSupported(core::kRabitqUnsupportedPlatform);
-#endif
-        auto &flags = zvec::ailego::internal::CpuFeatures::static_flags_;
-        const bool supports_rabitq_avx2 = flags.AVX2 && flags.FMA;
-        const bool supports_rabitq_avx512 =
-            flags.AVX512F && flags.AVX512BW && flags.AVX512DQ;
-        if (!supports_rabitq_avx2 && !supports_rabitq_avx512 && !flags.NEON) {
-          return Status::NotSupported(
-              "RabitQ requires AVX2/FMA, AVX512F/BW/DQ, or NEON to be "
-              "supported");
+              "Invalid schema for field[", name_,
+              "]: RabitQ requires VECTOR_FP32 data_type; got ",
+              DataTypeCodeBook::AsString(data_type_));
         }
       }
 
       if (index_params_->type() == IndexType::IVF_RABITQ) {
-        auto ivf_rabitq_params =
-            std::dynamic_pointer_cast<IvfRabitqIndexParams>(index_params_);
-        if (!ivf_rabitq_params) {
-          return Status::InvalidArgument(
-              "Invalid schema: IVF_RABITQ index requires "
-              "IvfRabitqIndexParams");
-        }
-        if (ivf_rabitq_params->nlist() <= 0) {
-          return Status::InvalidArgument(
-              "Invalid schema: IVF_RABITQ nlist must be greater than "
-              "0");
-        }
-        if (ivf_rabitq_params->sample_count() < 0) {
-          return Status::InvalidArgument(
-              "Invalid schema: IVF_RABITQ sample_count must be "
-              "greater than or equal to 0");
+        if (!dynamic_cast<const IvfRabitqIndexParams *>(index_params_.get())) {
+          return Status::InvalidArgument("Invalid schema for field[", name_,
+                                         "]: IVF_RABITQ index requires "
+                                         "IvfRabitqIndexParams");
         }
       }
 
-      if (index_params_->type() == IndexType::IVF &&
-          vector_index_params->quantize_type() == QuantizeType::RABITQ) {
-        return Status::InvalidArgument(
-            "Invalid schema: IVF index does not support RABITQ "
-            "quantization; use the dedicated IVF_RABITQ index instead");
-      }
-
-      if (index_params_->type() == IndexType::DISKANN) {
-        // DiskAnn also uses the portable synchronous pread backend on 64-bit
-        // Android and iOS.
-        // The CMake variable
-        // DISKANN_SUPPORTED (defined in the top-level CMakeLists.txt) is the
-        // single source of truth for platform eligibility — it is also used by
-        // index_factory.cc to conditionally compile the DiskAnn index
-        // registration.  Using the same macro here ensures that schema
-        // validation and index registration agree on supported platforms.
-        //
-        // On Linux, DiskAnn prefers io_uring, then libaio, and falls back to
-        // synchronous pread() if neither async backend is available. On macOS,
-        // Android and iOS, DiskAnn uses synchronous pread(); Windows uses
-        // overlapped I/O.
-#if !DISKANN_SUPPORTED
-        return Status::NotSupported(
-            "DiskAnn is not supported on this platform. It is available on "
-            "Linux (x86_64/ARM64), macOS (ARM64), 64-bit Android/iOS, and "
-            "Windows (x86_64).");
-#endif
-      }
+      auto params_status = validate_index_params(*this);
+      CHECK_RETURN_STATUS(params_status);
 
       const auto flat_data_type = vector_index_params->flat_data_type();
-      if (flat_data_type != DataType::UNDEFINED) {
-        if (flat_data_type != DataType::VECTOR_FP32 &&
-            flat_data_type != DataType::VECTOR_FP16 &&
-            flat_data_type != DataType::VECTOR_UINT8) {
-          return Status::InvalidArgument(
-              "Invalid schema: field[", name_,
-              "]'s flat_data_type must be VECTOR_FP32, VECTOR_FP16, "
-              "or VECTOR_UINT8, but got ",
-              DataTypeCodeBook::AsString(flat_data_type));
-        }
-        if (is_sparse && flat_data_type != DataType::VECTOR_FP32) {
-          return Status::InvalidArgument(
-              "Invalid schema: non-FP32 flat_data_type is only "
-              "supported for dense vector fields");
-        }
-        if (!is_sparse && flat_data_type == DataType::VECTOR_UINT8 &&
-            vector_index_params->metric_type() != MetricType::L2) {
-          return Status::InvalidArgument(
-              "Invalid schema: field[", name_,
-              "] can only use VECTOR_UINT8 Flat reference storage with L2 "
-              "metric");
-        }
+      if (is_sparse && flat_data_type != DataType::UNDEFINED &&
+          flat_data_type != DataType::VECTOR_FP32) {
+        return Status::InvalidArgument(
+            "Invalid schema for field[", name_,
+            "]: sparse vectors require VECTOR_FP32 flat_data_type; got ",
+            DataTypeCodeBook::AsString(flat_data_type));
       }
 
       if (vector_index_params->quantize_type() != QuantizeType::UNDEFINED) {
         const auto quantize_type = vector_index_params->quantize_type();
-        const bool is_uniform = quantize_type == QuantizeType::UNIFORM_UINT7 ||
-                                quantize_type == QuantizeType::UNIFORM_UINT8 ||
-                                quantize_type == QuantizeType::UNIFORM_UINT4;
-        // DB Flat fields are marked indexed at creation and do not run the
-        // deferred training step required by Uniform quantizers. IVF lacks
-        // trained-parameter restoration and UniformUint8 query preprocessing.
-        // DiskANN's PQ builder cannot consume Uniform-encoded vectors.
-        if (is_uniform && (index_params_->type() == IndexType::FLAT ||
-                           index_params_->type() == IndexType::IVF ||
-                           index_params_->type() == IndexType::DISKANN)) {
-          return Status::InvalidArgument(
-              "Invalid schema: ", QuantizeTypeCodeBook::AsString(quantize_type),
-              " quantization is not supported with ",
-              IndexTypeCodeBook::AsString(index_params_->type()),
-              " index, field[", name_, "]");
-        }
-        if (is_uniform &&
-            vector_index_params->metric_type() != MetricType::L2) {
-          return Status::InvalidArgument(
-              "Invalid schema: ", QuantizeTypeCodeBook::AsString(quantize_type),
-              " quantize only supports L2 metric, but field[", name_,
-              "]'s metric is ",
-              MetricTypeCodeBook::AsString(vector_index_params->metric_type()));
+        if (quantize_type == QuantizeType::PQ) {
+          const auto &pq = vector_index_params->quantizer_param();
+          if (data_type_ != DataType::VECTOR_FP32) {
+            return Status::InvalidArgument(
+                "Invalid schema for field[", name_,
+                "]: PQ requires VECTOR_FP32 data_type; got ",
+                DataTypeCodeBook::AsString(data_type_));
+          }
+          if (static_cast<uint32_t>(pq.num_chunk()) > dimension_) {
+            return Status::InvalidArgument(
+                "Invalid schema for field[", name_,
+                "]: PQ num_chunk must not exceed dimension; got num_chunk=",
+                pq.num_chunk(), ", dimension=", dimension_);
+          }
+          if (pq.num_bits() == 4 && dimension_ % pq.num_chunk() != 0) {
+            return Status::InvalidArgument(
+                "Invalid schema for field[", name_,
+                "]: PQ4 requires dimension divisible by num_chunk; got "
+                "dimension=",
+                dimension_, ", num_chunk=", pq.num_chunk());
+          }
         }
         auto iter = quantize_type_map.find(data_type_);
         if (iter == quantize_type_map.end()) {
           return Status::InvalidArgument(
-              "Invalid schema: ", is_sparse ? "sparse_vector" : "dense_vector",
-              "'s index_params of ", DataTypeCodeBook::AsString(data_type_),
-              " do not support quantize, but field[", name_,
-              "]'s quantize_type is ",
-              QuantizeTypeCodeBook::AsString(
-                  vector_index_params->quantize_type()));
-        } else {
-          if (iter->second.find(vector_index_params->quantize_type()) ==
-              iter->second.end()) {
-            return Status::InvalidArgument(
-                "Invalid schema: ",
-                is_sparse ? "sparse_vector" : "dense_vector",
-                "'s index_params of ", DataTypeCodeBook::AsString(data_type_),
-                " support ", QuantizeTypeCodeBook::AsString(iter->second),
-                " quantize, but field[", name_, "]'s quantize_type is ",
-                QuantizeTypeCodeBook::AsString(
-                    vector_index_params->quantize_type()));
-          }
+              "Invalid schema for field[", name_,
+              "]: data_type=", DataTypeCodeBook::AsString(data_type_),
+              " does not support quantization; got quantize_type=",
+              QuantizeTypeCodeBook::AsString(quantize_type));
+        }
+        if (iter->second.find(quantize_type) == iter->second.end()) {
+          return Status::InvalidArgument(
+              "Invalid schema for field[", name_,
+              "]: data_type=", DataTypeCodeBook::AsString(data_type_),
+              " supports quantize_type in ",
+              QuantizeTypeCodeBook::AsString(iter->second), "; got ",
+              QuantizeTypeCodeBook::AsString(quantize_type));
         }
       }
       if (index_params_->type() == IndexType::IVF &&
@@ -315,17 +221,19 @@ Status FieldSchema::validate() const {
         if (data_type_ != DataType::VECTOR_FP16 &&
             data_type_ != DataType::VECTOR_FP32) {
           return Status::InvalidArgument(
-              "Invalid schema: IVF index only support FP32/FP16 data "
-              "types according to the IP metric");
+              "Invalid schema for field[", name_,
+              "]: IVF with IP metric requires VECTOR_FP32/VECTOR_FP16 "
+              "data_type; got ",
+              DataTypeCodeBook::AsString(data_type_));
         }
       }
       if (vector_index_params->metric_type() == MetricType::COSINE) {
         if (data_type_ != DataType::VECTOR_FP16 &&
             data_type_ != DataType::VECTOR_FP32) {
           return Status::InvalidArgument(
-              "Invalid schema: cosine metric only supports FP32/FP16 "
-              "data types, but field[",
-              name_, "]'s data type is ",
+              "Invalid schema for field[", name_,
+              "]: COSINE metric requires VECTOR_FP32/VECTOR_FP16 data_type; "
+              "got ",
               DataTypeCodeBook::AsString(data_type_));
         }
       }
@@ -334,21 +242,26 @@ Status FieldSchema::validate() const {
     if (index_params_) {
       if (index_params_->is_vector_index_type()) {
         return Status::InvalidArgument(
-            "Invalid schema: scalar field[", name_,
-            "] does not support vector index params, but got index_type ",
+            "Invalid schema for field[", name_,
+            "]: scalar fields do not support vector index params; got "
+            "index_type=",
             IndexTypeCodeBook::AsString(index_params_->type()));
       }
       if (index_params_->type() == IndexType::FTS &&
           data_type_ != DataType::STRING) {
-        return Status::InvalidArgument(
-            "Invalid schema: FTS index only supports STRING data type, "
-            "but field[",
-            name_, "]'s data_type is ", DataTypeCodeBook::AsString(data_type_));
+        return Status::InvalidArgument("Invalid schema for field[", name_,
+                                       "]: FTS requires STRING data_type; got ",
+                                       DataTypeCodeBook::AsString(data_type_));
       }
       if (index_params_->type() == IndexType::FTS) {
-        auto s = validate_fts_index_params(*this);
-        CHECK_RETURN_STATUS(s);
+        if (!dynamic_cast<const FtsIndexParams *>(index_params_.get())) {
+          return Status::InvalidArgument(
+              "Invalid schema for field[", name_,
+              "]: FTS index requires FtsIndexParams");
+        }
       }
+      auto params_status = validate_index_params(*this);
+      CHECK_RETURN_STATUS(params_status);
     }
   }
   return Status::OK();
@@ -411,8 +324,9 @@ Status CollectionSchema::validate() const {
   std::unordered_set<std::string> names;
   for (const auto &field : fields_) {
     if (!field) {
-      return Status::InvalidArgument(
-          "Invalid schema: field schema must not be null");
+      return Status::InvalidArgument("Invalid schema for collection[",
+                                     format_name(name_),
+                                     "]: field schema must not be null");
     }
     if (!names.insert(field->name()).second) {
       return Status::InvalidArgument("Invalid schema: duplicate field name [",
@@ -422,23 +336,27 @@ Status CollectionSchema::validate() const {
   }
   if (forward_fields().size() > kMaxScalarFieldSize) {
     return Status::InvalidArgument(
-        "Invalid schema: collection[", format_name(name_),
-        "]'s field size must <= ", kMaxScalarFieldSize);
+        "Invalid schema for collection[", format_name(name_),
+        "]: scalar field count must be <= ", kMaxScalarFieldSize, "; got ",
+        forward_fields().size());
   }
   if (max_doc_count_per_segment_ < MAX_DOC_COUNT_PER_SEGMENT_MIN_THRESHOLD) {
-    return Status::InvalidArgument(
-        "Invalid schema: max_doc_count_per_segment must >= ",
-        MAX_DOC_COUNT_PER_SEGMENT_MIN_THRESHOLD);
+    return Status::InvalidArgument("Invalid schema for collection[",
+                                   format_name(name_),
+                                   "]: max_doc_count_per_segment must be >= ",
+                                   MAX_DOC_COUNT_PER_SEGMENT_MIN_THRESHOLD,
+                                   "; got ", max_doc_count_per_segment_);
   }
   if (fields_.empty()) {
-    return Status::InvalidArgument("Invalid schema: collection[",
-                                   format_name(name_), "] has no fields");
+    return Status::InvalidArgument("Invalid schema for collection[",
+                                   format_name(name_), "]: has no fields");
   }
   auto v_fields = vector_fields();
   if (v_fields.size() > kMaxVectorFieldSize) {
     return Status::InvalidArgument(
-        "Invalid schema: collection[", format_name(name_),
-        "]'s vector field size must <= ", kMaxVectorFieldSize);
+        "Invalid schema for collection[", format_name(name_),
+        "]: vector field count must be <= ", kMaxVectorFieldSize, "; got ",
+        v_fields.size());
   }
   for (auto &field : fields_) {
     auto s = field->validate();
@@ -728,7 +646,6 @@ void CollectionSchema::set_max_doc_count_per_segment(
 
 Status CollectionSchema::add_index(const std::string &column,
                                    const IndexParams::Ptr &index_params) {
-  // Get field and set index params
   auto field = get_field(column);
   if (field) {
     field->set_index_params(index_params);
@@ -741,7 +658,6 @@ Status CollectionSchema::add_index(const std::string &column,
 }
 
 Status CollectionSchema::drop_index(const std::string &column) {
-  // Get field and clear index params
   auto field = get_field(column);
   if (field) {
     if (field->is_vector_field()) {

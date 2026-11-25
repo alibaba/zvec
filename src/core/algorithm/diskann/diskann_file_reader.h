@@ -159,7 +159,7 @@ class AlignedFileReader {
 };
 
 // POSIX reader implementation. Linux selects io_uring, libaio, or pread;
-// macOS ARM64 uses synchronous pread.
+// macOS x86_64 and ARM64 use synchronous pread.
 #if !defined(_WIN32) && !defined(_WIN64)
 class LinuxAlignedFileReader : public AlignedFileReader {
  private:

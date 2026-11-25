@@ -87,7 +87,7 @@ jobs:
           cmake -S "$SMOKE_SOURCE" -B "$SMOKE_BUILD" -G Ninja \
             -DZVEC_SOURCE_DIR="$GITHUB_WORKSPACE" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TOOLS=OFF \
+            -DBUILD_BENCHMARKS=OFF \
             -DBUILD_C_BINDINGS=OFF \
             -DBUILD_PYTHON_BINDINGS=OFF \
             -DENABLE_WERROR=ON \
@@ -103,7 +103,7 @@ jobs:
           CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
           python -m pip install -v . \
             --no-build-isolation \
-            --config-settings='cmake.define.BUILD_TOOLS=ON' \
+            --config-settings='cmake.define.BUILD_BENCHMARKS=ON' \
             --config-settings='cmake.define.ENABLE_WERROR=ON' \
             --config-settings='cmake.define.CMAKE_C_COMPILER_LAUNCHER=ccache' \
             --config-settings='cmake.define.CMAKE_CXX_COMPILER_LAUNCHER=ccache'
@@ -256,7 +256,7 @@ jobs:
             -e CMAKE_BUILD_PARALLEL_LEVEL="$NPROC" \
             "$MUSL_CONTAINER" python -m pip install -v . \
             --no-build-isolation \
-            --config-settings='cmake.define.BUILD_TOOLS=ON' \
+            --config-settings='cmake.define.BUILD_BENCHMARKS=ON' \
             --config-settings='cmake.define.ENABLE_WERROR=ON' \
             --config-settings='cmake.define.CMAKE_C_COMPILER_LAUNCHER=ccache' \
             --config-settings='cmake.define.CMAKE_CXX_COMPILER_LAUNCHER=ccache'

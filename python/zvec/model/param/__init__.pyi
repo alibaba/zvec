@@ -230,6 +230,10 @@ class DiskAnnQueryParam(QueryParam):
         type (IndexType): Always ``IndexType.DISKANN``.
         list_size (int): Beam-search candidate list size used at query time.
             Higher values improve recall but increase latency. Default is 300.
+        radius (float): Search radius for range queries. Default is 0.0 (disabled).
+        is_linear (bool): Whether to force brute-force linear search. Default is False.
+        is_using_refiner (bool): Whether to refine query results. Default is False.
+        scale_factor (float): Refine candidate multiplier. Default is 10.
 
     Examples:
         >>> params = DiskAnnQueryParam(list_size=20)
@@ -238,7 +242,15 @@ class DiskAnnQueryParam(QueryParam):
     """
 
     def __getstate__(self) -> tuple: ...
-    def __init__(self, list_size: typing.SupportsInt = 300) -> None:
+    def __init__(
+        self,
+        list_size: typing.SupportsInt = 300,
+        *,
+        radius: typing.SupportsFloat = 0.0,
+        is_linear: bool = False,
+        is_using_refiner: bool = False,
+        scale_factor: typing.SupportsFloat = 10.0,
+    ) -> None:
         """
 
         Constructs a DiskAnnQueryParam instance.
@@ -247,6 +259,11 @@ class DiskAnnQueryParam(QueryParam):
             list_size (int, optional): Beam-search candidate list size during
                 graph search. Higher values improve recall at the cost of latency.
                 Defaults to 300.
+            radius (float, optional): Search radius for range queries. Default is 0.0 (disabled).
+            is_linear (bool, optional): Force brute-force linear search. Default is False.
+            is_using_refiner (bool, optional): Refine query results. Default is False.
+            scale_factor (float, optional): Refine candidate multiplier. Default is 10.
+                Ignored when is_using_refiner is False.
         """
 
     def __repr__(self) -> str: ...
@@ -335,7 +352,7 @@ class HnswIndexParam(VectorIndexParam):
             neighbors during index construction. Larger values yield better
             graph quality at the cost of slower build time. Default is 500.
         quantize_type (QuantizeType): Optional quantization type for vector
-            compression (e.g., FP16, INT8). Default is `QuantizeType.UNDEFINED` to
+            compression (FP16, INT8, INT4, or PQ). Default is `QuantizeType.UNDEFINED` to
             disable quantization.
         use_contiguous_memory (bool): If True, the HNSW streamer allocates a
             single contiguous memory arena for all graph nodes, improving cache
@@ -346,6 +363,10 @@ class HnswIndexParam(VectorIndexParam):
         flat_data_type (DataType): Physical type stored by the refine Flat
             reference index. Defaults to ``VECTOR_FP32``; ``VECTOR_FP16`` and
             ``VECTOR_UINT8`` are also supported.
+
+    PQ learns its codebook during Collection.optimize(). Before optimization,
+    writes remain searchable through Flat. Configure PQ4/PQ8 and optional OPQ
+    with QuantizerParam; fast_scan is supported only by IVF.
 
     Examples:
         >>> from zvec.typing import MetricType, QuantizeType
@@ -500,7 +521,8 @@ class HnswRabitqIndexParam(VectorIndexParam):
     Attributes:
         metric_type (MetricType): Distance metric used for similarity computation.
             Default is ``MetricType.IP`` (inner product).
-        total_bits (int): Total bits for RabitQ quantization. Default is 7.
+        total_bits (int): Bits for RabitQ quantization, from 1 to 9.
+            Default is 7; 0 also selects the default of 7 bits.
         num_clusters (int): Number of clusters for RabitQ. Default is 16.
         m (int): Number of bi-directional links created for every new element
             during construction. Higher values improve accuracy but increase
@@ -556,7 +578,7 @@ class HnswRabitqIndexParam(VectorIndexParam):
     @property
     def total_bits(self) -> int:
         """
-        int: Total bits for RabitQ quantization.
+        int: RabitQ bits (1 to 9); 0 selects the default of 7 bits.
         """
 
     @property
@@ -652,7 +674,7 @@ class IvfRabitqIndexParam(VectorIndexParam):
     @property
     def total_bits(self) -> int:
         """
-        int: Total bits for RaBitQ quantization.
+        int: RaBitQ bits (1 to 9); 0 selects the default of 7 bits.
         """
 
     @property
@@ -702,7 +724,7 @@ class IVFIndexParam(VectorIndexParam):
         metric_type (MetricType): Distance metric used for similarity computation.
             Default is ``MetricType.IP`` (inner product).
         n_list (int): Number of clusters (inverted lists) to partition the dataset into.
-            Default is 10.
+            Default is 1024.
         n_iters (int): Number of iterations for k-means clustering during index training.
             Higher values yield more stable centroids. Default is 10.
         use_soar (bool): Whether to enable SOAR (Scalable Optimized Adaptive Routing)
@@ -727,7 +749,7 @@ class IVFIndexParam(VectorIndexParam):
     def __init__(
         self,
         metric_type: zvec._zvec.typing.MetricType = ...,
-        n_list: typing.SupportsInt = 10,
+        n_list: typing.SupportsInt = 1024,
         n_iters: typing.SupportsInt = 10,
         use_soar: bool = False,
         quantize_type: zvec._zvec.typing.QuantizeType = ...,
@@ -739,7 +761,7 @@ class IVFIndexParam(VectorIndexParam):
         Args:
             metric_type (MetricType, optional): Distance metric. Defaults to MetricType.IP.
             n_list (int, optional): Number of inverted lists (clusters).
-                Defaults to 10.
+                Defaults to 1024.
             n_iters (int, optional): Number of k-means iterations during training.
                 Defaults to 10.
             use_soar (bool, optional): Enable SOAR optimization. Defaults to False.
@@ -788,6 +810,8 @@ class IVFQueryParam(QueryParam):
             Default is 10.
         radius (float): Search radius for range queries. Default is 0.0.
         is_linear (bool): Force linear search. Default is False.
+        is_using_refiner (bool): Whether to refine candidates. Default is False.
+        scale_factor (float): Refine candidate multiplier. Default is 10.
 
     Examples:
         >>> params = IVFQueryParam(nprobe=20)
@@ -801,6 +825,9 @@ class IVFQueryParam(QueryParam):
         nprobe: typing.SupportsInt = 10,
         is_using_refiner: bool = False,
         scale_factor: typing.SupportsFloat = 10.0,
+        *,
+        radius: typing.SupportsFloat = 0.0,
+        is_linear: bool = False,
     ) -> None:
         """
         Constructs an IVFQueryParam instance.
@@ -810,6 +837,8 @@ class IVFQueryParam(QueryParam):
                 Higher values improve accuracy. Defaults to 10.
             is_using_refiner (bool, optional): Whether to refine. Default is False.
             scale_factor (float, optional): Refine candidate multiplier. Default is 10.
+            radius (float, optional): Search radius for range queries. Default is 0.0.
+            is_linear (bool, optional): Force linear search. Default is False.
         """
 
     def __repr__(self) -> str: ...
@@ -1227,7 +1256,7 @@ class InvertIndexParam(IndexParam):
     def __getstate__(self) -> tuple: ...
     def __init__(
         self,
-        enable_range_optimization: bool = False,
+        enable_range_optimization: bool = True,
         enable_extended_wildcard: bool = False,
     ) -> None:
         """
@@ -1235,7 +1264,7 @@ class InvertIndexParam(IndexParam):
 
         Args:
             enable_range_optimization (bool, optional): If True, enables range query
-                optimization for the invert index. Defaults to False.
+                optimization for the invert index. Defaults to True.
             enable_extended_wildcard (bool, optional): If True, enables extended wildcard
                 search including suffix and infix patterns. Defaults to False.
         """
@@ -1397,11 +1426,12 @@ class QuantizerParam:
 
     This class is only needed when customizing quantizer behavior (e.g., enabling
     random rotation). It can be omitted for default quantization settings.
+    Quantizer settings must be valid even when PQ or rotation is disabled.
 
     Attributes:
         enable_rotate (bool): Whether to apply random rotation before INT8/INT4
             quantization to reduce quantization error.
-            Only effective with quantize_type=INT8 or INT4. Defaults to False.
+            For PQ, enables learned OPQ. Defaults to False.
 
     Examples:
         >>> qp = QuantizerParam(enable_rotate=True)
@@ -1410,13 +1440,30 @@ class QuantizerParam:
     """
 
     def __getstate__(self) -> tuple: ...
-    def __init__(self, enable_rotate: bool = False) -> None:
+    def __init__(
+        self,
+        enable_rotate: bool = False,
+        num_chunk: int = 8,
+        num_bits: int = 8,
+        fast_scan: bool = False,
+        opq_iter: int = 5,
+        opq_pq_iter: int = 4,
+    ) -> None:
         """
         Constructs a QuantizerParam instance.
 
         Args:
+            num_chunk (int): Positive number of PQ subquantizers; default 8.
+                For PQ, must not exceed dimension. PQ4 also requires dimension
+                divisible by this value.
+            num_bits (int): PQ bits per code, 4 or 8; default 8.
+            fast_scan (bool): Packed IVF PQ4 scan; default False.
+            opq_iter (int): OPQ iterations; default 5. Must be positive even
+                when rotation is disabled.
+            opq_pq_iter (int): PQ iterations per OPQ iteration; default 4.
+                Must be positive even when rotation is disabled.
             enable_rotate (bool, optional): Whether to apply random rotation
-                before INT8/INT4 quantization. Defaults to False.
+                before INT8/INT4 quantization, or learned OPQ for PQ. Defaults to False.
         """
 
     def __repr__(self) -> str: ...
@@ -1430,8 +1477,19 @@ class QuantizerParam:
     @property
     def enable_rotate(self) -> bool:
         """
-        bool: Whether random rotation is enabled before INT8/INT4 quantization.
+        bool: Enable random rotation for INT8/INT4 or learned OPQ for PQ.
         """
+
+    @property
+    def num_chunk(self) -> int: ...
+    @property
+    def num_bits(self) -> int: ...
+    @property
+    def fast_scan(self) -> bool: ...
+    @property
+    def opq_iter(self) -> int: ...
+    @property
+    def opq_pq_iter(self) -> int: ...
 
 class VectorIndexParam(IndexParam):
     """

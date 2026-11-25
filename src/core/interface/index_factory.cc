@@ -195,9 +195,7 @@ std::string IndexFactory::QueryParamSerializeToJson(const QueryParamType &param,
     }
     index_type = IndexType::kHNSW;
   } else if constexpr (std::is_same_v<QueryParamType, IVFQueryParam>) {
-    if (!omit_empty_value || param.nprobe != 0) {
-      json_obj.set("nprobe", ailego::JsonValue(param.nprobe));
-    }
+    json_obj.set("nprobe", ailego::JsonValue(param.nprobe));
     index_type = IndexType::kIVF;
     // json_obj.set("l1QueryParam",
     // ailego::JsonValue(QueryParamSerializeToJson(param.l1QueryParam)));

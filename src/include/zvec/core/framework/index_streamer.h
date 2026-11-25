@@ -59,6 +59,12 @@ class IndexStreamer : public IndexRunner {
   //! Open a index from storage
   virtual int open(IndexStorage::Pointer stg) = 0;
 
+  //! Open with explicit access intent. Legacy streamers retain their open
+  //! behavior; implementations may skip build-only state for read-only use.
+  virtual int open(IndexStorage::Pointer stg, bool /*read_only*/) {
+    return open(stg);
+  }
+
   //! Flush index
   virtual int flush(uint64_t check_point) = 0;
 

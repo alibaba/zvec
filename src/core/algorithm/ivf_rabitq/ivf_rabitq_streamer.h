@@ -16,6 +16,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <zvec/core/interface/constants.h>
 #include "zvec/core/framework/index_streamer.h"
 #include "ivf_rabitq_params.h"
 
@@ -135,7 +136,7 @@ class IvfRabitqStreamer : public IndexStreamer {
   std::shared_ptr<IvfRabitqEntity> entity_;
 
   // Parameters
-  uint32_t nprobe_{kDefaultIvfRabitqNprobe};
+  uint32_t nprobe_{core_interface::kDefaultIvfRabitqNumProbes};
   float scan_ratio_{kDefaultIvfRabitqScanRatio};
   uint32_t brute_force_threshold_{kDefaultIvfRabitqBruteForceThreshold};
   std::string metric_name_;

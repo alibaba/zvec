@@ -11,20 +11,39 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-#include <ailego/math/euclidean_distance_matrix.h>
-#include <ailego/math/inner_product_matrix.h>
-#include <ailego/math/mips_euclidean_distance_matrix.h>
-#include <ailego/math/norm2_matrix.h>
-#include <ailego/math_batch/distance_batch.h>
+#include <array>
+#include <cstring>
+#include <vector>
+#include <turbo/norm/norm2_matrix.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/turbo/turbo.h>
 #include "metric_params.h"
-#include "quantized_integer_metric_batch.h"
-#include "quantized_integer_metric_matrix.h"
+#include "turbo_metric.h"
 
 namespace zvec {
 namespace core {
+
+namespace {
+// Interleaved INT8 records store four codes per word. Keep the dot in
+// integer arithmetic until the affine correction, just like the pair kernel.
+void record_int8_dots(const void *rows, const void *queries, size_t m, size_t n,
+                      size_t dim, float *out) {
+  const auto *matrix = static_cast<const int8_t *>(rows);
+  const auto *query = static_cast<const int8_t *>(queries);
+  for (size_t j = 0; j < n; ++j) {
+    int64_t sums[32]{};
+    for (size_t d = 0; d < dim; d += 4) {
+      const auto *q = query + d * n + 4 * j;
+      for (size_t i = 0; i < m; ++i) {
+        const auto *v = matrix + d * m + 4 * i;
+        sums[i] += v[0] * q[0] + v[1] * q[1] + v[2] * q[2] + v[3] * q[3];
+      }
+    }
+    for (size_t i = 0; i < m; ++i) out[j * m + i] = -float(sums[i]);
+  }
+}
+}  // namespace
 
 /*! Index Metric for quantized integer by IntegerStreamingConverter
  */
@@ -88,149 +107,139 @@ class QuantizedIntegerMetric : public IndexMetric {
 
   //! Retrieve distance function for query
   MatrixDistance distance() const override {
-    return distance_matrix(1, 1);
+    auto kernels = record_kernels();
+    if (origin_metric_type_ != MetricType::kMipsSquaredEuclidean)
+      return kernels.dist;
+    const auto ip = kernels.dist;
+    if (!ip) return nullptr;
+    const bool int4 = meta_.data_type() == IndexMeta::DT_INT4;
+    return [ip, int4](const void *m, const void *q, size_t dim, float *out) {
+      const size_t original_dim = dim - (int4 ? 32 : 20);
+      const size_t tail_offset = int4 ? original_dim / 2 : original_dim;
+      auto squared_norm = [=](const void *record) {
+        // Legacy records store moments of the unrounded affine codes. A
+        // self inner product of packed codes does not reproduce their norm.
+        float tail[4];
+        std::memcpy(tail, static_cast<const uint8_t *>(record) + tail_offset,
+                    sizeof(tail));
+        const float a = tail[0], b = tail[1], sum = tail[2], sum2 = tail[3];
+        return a * a * sum2 + 2 * a * b * sum + original_dim * b * b;
+      };
+      const float u2 = squared_norm(m), v2 = squared_norm(q);
+      ip(m, q, dim, out);
+      *out = 2.0f + 2.0f * *out / std::max(u2, v2);
+    };
   }
 
   //! Retrieve matrix distance function for index features
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
-    switch (origin_metric_type_) {
-      case MetricType::kSquaredEuclidean:
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
-          auto turbo_ret = turbo::get_distance_func(
-              turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
-              turbo::QuantizeType::kRecord, turbo::CpuArchType::kAVX512VNNI);
-          if (turbo_ret && m == 1 && n == 1) {
-            return turbo_ret;
+    const auto type = TurboDataType(meta_.data_type());
+    auto fallback = turbo::MakeDistanceMatrix(distance(), m, n, type);
+    if (!fallback || m == 1) return fallback;
+    // For multiple INT4 queries, transpose once and reuse the contiguous
+    // SIMD pair kernel. Its throughput outweighs the transpose overhead.
+    if (meta_.data_type() == IndexMeta::DT_INT4 && n > 1) return fallback;
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || \
+    defined(_M_IX86)
+    if (meta_.data_type() == IndexMeta::DT_INT4 && n == 1 &&
+        (origin_metric_type_ == MetricType::kSquaredEuclidean ||
+         origin_metric_type_ == MetricType::kInnerProduct)) {
+      auto batch = record_kernels().batch;
+      if (batch) {
+        // Reuse the query and its metadata across the block. The batch kernel
+        // preserves stored record moments, and needs one indirect call rather
+        // than m pair calls. A single query already has contiguous layout.
+        return [batch, fallback, m](const void *rows, const void *query,
+                                    size_t dim, float *out) {
+          if (dim <= 32 || dim % 8 != 0) {
+            fallback(rows, query, dim, out);
+            return;
           }
-          return DistanceMatrixCompute<SquaredEuclidean, int8_t>(m, n);
-        }
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT4) {
-          return DistanceMatrixCompute<SquaredEuclidean, uint8_t>(m, n);
-        }
-        break;
-
-      case MetricType::kInnerProduct:
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
-          return DistanceMatrixCompute<MinusInnerProduct, int8_t>(m, n);
-        }
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT4) {
-          return DistanceMatrixCompute<MinusInnerProduct, uint8_t>(m, n);
-        }
-        break;
-
-      case MetricType::kMipsSquaredEuclidean:
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
-          return DistanceMatrixCompute<MipsSquaredEuclidean, int8_t>(m, n);
-        }
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT4) {
-          return DistanceMatrixCompute<MipsSquaredEuclidean, uint8_t>(m, n);
-        }
-        break;
-
-      case MetricType::kNormalizedCosine:
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
-          return DistanceMatrixCompute<MinusInnerProduct, int8_t>(m, n);
-        }
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT4) {
-          return DistanceMatrixCompute<MinusInnerProduct, uint8_t>(m, n);
-        }
-        break;
-      case MetricType::kCosine:
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
-          auto turbo_ret = turbo::get_distance_func(
-              turbo::MetricType::kCosine, turbo::DataType::kInt8,
-              turbo::QuantizeType::kRecord, turbo::CpuArchType::kAVX512VNNI);
-          if (turbo_ret && m == 1 && n == 1) {
-            return turbo_ret;
+          const size_t words = dim / 8;
+          std::vector<uint32_t> matrix(words * m);
+          const void *vectors[32];
+          for (size_t i = 0; i < m; ++i) {
+            vectors[i] = matrix.data() + i * words;
+            for (size_t d = 0; d < words; ++d)
+              std::memcpy(matrix.data() + i * words + d,
+                          static_cast<const char *>(rows) + (d * m + i) * 4, 4);
           }
-          return DistanceMatrixCompute<CosineMinusInnerProduct, int8_t>(m, n);
-        }
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT4) {
-          return DistanceMatrixCompute<CosineMinusInnerProduct, uint8_t>(m, n);
-        }
-        break;
+          batch(vectors, query, m, dim, out, nullptr);
+        };
+      }
     }
-    return nullptr;
+    // On x86 the contiguous SIMD kernels also win for single-query INT4
+    // records and multi-query INT8 records, including the transpose cost.
+    if (meta_.data_type() == IndexMeta::DT_INT4 ||
+        (meta_.data_type() == IndexMeta::DT_INT8 && n > 1))
+      return fallback;
+#endif
+    auto dot = turbo::MakeRawDistanceMatrix<turbo::MetricType::kInnerProduct>(
+        m, n, type);
+    const bool int4 = meta_.data_type() == IndexMeta::DT_INT4;
+    const auto origin = origin_metric_type_;
+    const size_t extra =
+        origin == MetricType::kCosine ? (int4 ? 40 : 24) : (int4 ? 32 : 20);
+    return [=](const void *rows, const void *queries, size_t dim, float *out) {
+      if (dim <= extra || (dim - extra) % (int4 ? 8 : 4)) {
+        fallback(rows, queries, dim, out);
+        return;
+      }
+      const size_t original_dim = dim - extra;
+      const size_t tail_word = original_dim / (int4 ? 8 : 4);
+      // The affine metadata follows the codes in the same word-interleaved
+      // layout. Preserve the stored moments: older writers recorded moments
+      // before rounding, so recomputing them from the codes changes scores.
+      auto tail = [=](const void *data, size_t count, size_t row) {
+        std::array<float, 4> values;
+        for (size_t k = 0; k < values.size(); ++k)
+          std::memcpy(&values[k],
+                      static_cast<const char *>(data) +
+                          ((tail_word + k) * count + row) * 4,
+                      4);
+        return values;
+      };
+      std::array<std::array<float, 4>, 32> metadata;
+      for (size_t i = 0; i < m; ++i) metadata[i] = tail(rows, m, i);
+      // Up to 1024 INT8 terms all integer partial sums fit exactly in FP32.
+      if (!int4 && original_dim > 1024) {
+        record_int8_dots(rows, queries, m, n, original_dim, out);
+      } else {
+        dot(rows, queries, original_dim, out);
+      }
+      for (size_t j = 0; j < n; ++j) {
+        const auto q = tail(queries, n, j);
+        for (size_t i = 0; i < m; ++i) {
+          const auto &a = metadata[i];
+          const float ip = -out[j * m + i];
+          if (origin == MetricType::kSquaredEuclidean) {
+            const float bias = a[1] - q[1];
+            out[j * m + i] = a[0] * a[0] * a[3] + q[0] * q[0] * q[3] -
+                             2 * a[0] * q[0] * ip + bias * bias * original_dim +
+                             2 * bias * (a[2] * a[0] - q[0] * q[2]);
+          } else {
+            float score = -(a[0] * q[0] * ip + a[1] * q[0] * q[2] +
+                            q[1] * a[0] * a[2] + original_dim * q[1] * a[1]);
+            if (origin == MetricType::kMipsSquaredEuclidean) {
+              const float u2 = a[0] * a[0] * a[3] + 2 * a[0] * a[1] * a[2] +
+                               original_dim * a[1] * a[1];
+              const float v2 = q[0] * q[0] * q[3] + 2 * q[0] * q[1] * q[2] +
+                               original_dim * q[1] * q[1];
+              score = 2.0f + 2.0f * score / std::max(u2, v2);
+            }
+            out[j * m + i] = score;
+          }
+        }
+      }
+    };
   }
 
   //! Retrieve distance function for query
   MatrixBatchDistance batch_distance() const override {
-    switch (origin_metric_type_) {
-      case MetricType::kSquaredEuclidean:
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
-          auto turbo_ret = turbo::get_batch_distance_func(
-              turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
-              turbo::QuantizeType::kRecord, turbo::CpuArchType::kAVX512VNNI);
-          if (turbo_ret) {
-            return turbo_ret;
-          }
-          return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-              BaseDistanceBatchWithScoreUnquantized<SquaredEuclidean, int8_t,
-                                                    12, 2>::ComputeBatch);
-        }
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT4) {
-          return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-              BaseDistanceBatchWithScoreUnquantized<SquaredEuclidean, uint8_t,
-                                                    12, 2>::ComputeBatch);
-        }
-        break;
-
-      case MetricType::kInnerProduct:
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
-          return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-              BaseDistanceBatchWithScoreUnquantized<MinusInnerProduct, int8_t,
-                                                    12, 2>::ComputeBatch);
-        }
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT4) {
-          return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-              BaseDistanceBatchWithScoreUnquantized<MinusInnerProduct, uint8_t,
-                                                    12, 2>::ComputeBatch);
-        }
-        break;
-      case MetricType::kMipsSquaredEuclidean:
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
-          return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-              BaseDistanceBatchWithScoreUnquantized<
-                  MipsSquaredEuclidean, int8_t, 12, 2>::ComputeBatch);
-        }
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT4) {
-          return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-              BaseDistanceBatchWithScoreUnquantized<
-                  MipsSquaredEuclidean, uint8_t, 12, 2>::ComputeBatch);
-        }
-        break;
-      case MetricType::kNormalizedCosine:
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
-          return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-              BaseDistanceBatchWithScoreUnquantized<MinusInnerProduct, int8_t,
-                                                    12, 2>::ComputeBatch);
-        }
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT4) {
-          return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-              BaseDistanceBatchWithScoreUnquantized<MinusInnerProduct, uint8_t,
-                                                    12, 2>::ComputeBatch);
-        }
-        break;
-      case MetricType::kCosine:
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT8) {
-          auto turbo_ret = turbo::get_batch_distance_func(
-              turbo::MetricType::kCosine, turbo::DataType::kInt8,
-              turbo::QuantizeType::kRecord, turbo::CpuArchType::kAVX512VNNI);
-          if (turbo_ret) {
-            return turbo_ret;
-          }
-          return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-              BaseDistanceBatchWithScoreUnquantized<
-                  CosineMinusInnerProduct, int8_t, 12, 2>::ComputeBatch);
-        }
-        if (meta_.data_type() == IndexMeta::DataType::DT_INT4) {
-          return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-              BaseDistanceBatchWithScoreUnquantized<
-                  CosineMinusInnerProduct, uint8_t, 12, 2>::ComputeBatch);
-        }
-        break;
+    if (origin_metric_type_ == MetricType::kMipsSquaredEuclidean) {
+      return BatchFromDistance(distance());
     }
-    return nullptr;
+    return record_kernels().batch;
   }
 
   //! Retrieve params of Metric
@@ -257,6 +266,15 @@ class QuantizedIntegerMetric : public IndexMetric {
       *score = 1.0f + *score;
     } else if (origin_metric_type_ == MetricType::kCosine) {
       *score = 1.0f + *score;
+    }
+  }
+
+  void denormalize(float *score) const override {
+    if (origin_metric_type_ == MetricType::kInnerProduct) {
+      *score = -(*score);
+    } else if (origin_metric_type_ == MetricType::kNormalizedCosine ||
+               origin_metric_type_ == MetricType::kCosine) {
+      *score -= 1.0f;
     }
   }
 
@@ -296,60 +314,20 @@ class QuantizedIntegerMetric : public IndexMetric {
   }
 
   DistanceBatchQueryPreprocessFunc get_query_preprocess_func() const override {
-    if (origin_metric_type_ == MetricType::kCosine &&
-        meta_.data_type() == IndexMeta::DataType::DT_INT8) {
-      auto turbo_ret = turbo::get_query_preprocess_func(
-          turbo::MetricType::kCosine, turbo::DataType::kInt8,
-          turbo::QuantizeType::kRecord, turbo::CpuArchType::kAVX512VNNI);
-      if (turbo_ret) {
-        return turbo_ret;
-      }
-      return CosineMinusInnerProductDistanceBatchWithScoreUnquantized<
-          int8_t, 1, 1>::GetQueryPreprocessFunc();
-    } else if (origin_metric_type_ == MetricType::kSquaredEuclidean &&
-               meta_.data_type() == IndexMeta::DataType::DT_INT8) {
-      auto turbo_ret = turbo::get_query_preprocess_func(
-          turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
-          turbo::QuantizeType::kRecord, turbo::CpuArchType::kAVX512VNNI);
-      if (turbo_ret) {
-        return turbo_ret;
-      }
-      return SquaredEuclideanDistanceBatchWithScoreUnquantized<
-          int8_t, 1, 1>::GetQueryPreprocessFunc();
-    }
-    return nullptr;
+    return record_kernels().preprocess;
   }
 
 
  private:
-  //! Returns m x n distance matrix compute function.
-  template <template <typename, size_t, size_t> class DistanceMatrix,
-            typename T>
-  static MatrixDistanceHandle DistanceMatrixCompute(size_t m, size_t n) {
-    static void (*distance_table[6][6])(const T *, const T *, size_t,
-                                        float *) = {
-        {DistanceMatrix<T, 1, 1>::Compute, nullptr, nullptr, nullptr, nullptr,
-         nullptr},
-        {DistanceMatrix<T, 2, 1>::Compute, DistanceMatrix<T, 2, 2>::Compute,
-         nullptr, nullptr, nullptr, nullptr},
-        {DistanceMatrix<T, 4, 1>::Compute, DistanceMatrix<T, 4, 2>::Compute,
-         DistanceMatrix<T, 4, 4>::Compute, nullptr, nullptr, nullptr},
-        {DistanceMatrix<T, 8, 1>::Compute, DistanceMatrix<T, 8, 2>::Compute,
-         DistanceMatrix<T, 8, 4>::Compute, DistanceMatrix<T, 8, 8>::Compute,
-         nullptr, nullptr},
-        {DistanceMatrix<T, 16, 1>::Compute, DistanceMatrix<T, 16, 2>::Compute,
-         DistanceMatrix<T, 16, 4>::Compute, DistanceMatrix<T, 16, 8>::Compute,
-         DistanceMatrix<T, 16, 16>::Compute, nullptr},
-        {DistanceMatrix<T, 32, 1>::Compute, DistanceMatrix<T, 32, 2>::Compute,
-         DistanceMatrix<T, 32, 4>::Compute, DistanceMatrix<T, 32, 8>::Compute,
-         DistanceMatrix<T, 32, 16>::Compute,
-         DistanceMatrix<T, 32, 32>::Compute}};
-    if (m > 32 || n > 32 || ailego_popcount(m) != 1 ||
-        ailego_popcount(n) != 1) {
-      return nullptr;
+  turbo::DistanceKernels record_kernels() const {
+    auto metric = turbo::MetricType::kInnerProduct;
+    if (origin_metric_type_ == MetricType::kSquaredEuclidean) {
+      metric = turbo::MetricType::kSquaredEuclidean;
+    } else if (origin_metric_type_ == MetricType::kCosine) {
+      metric = turbo::MetricType::kCosine;
     }
-    return reinterpret_cast<MatrixDistanceHandle>(
-        distance_table[ailego_ctz(m)][ailego_ctz(n)]);
+    return turbo::get_distance_kernels(metric, TurboDataType(meta_.data_type()),
+                                       turbo::QuantizeType::kRecord);
   }
 
   enum struct MetricType {

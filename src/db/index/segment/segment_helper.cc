@@ -736,7 +736,7 @@ Status SegmentHelper::ReduceVectorIndex(
       // raw Flat sources and train again for the merged segment.
       auto quant_merge_sources =
           segment_detail::CanReuseInsertTimeQuantizedVectors(
-              vector_index_params->quantize_type())
+              *vector_index_params)
               ? collect_merge_indexers(&Segment::get_quant_vector_indexer)
               : collect_merge_indexers(&Segment::get_vector_indexer);
 
@@ -791,6 +791,15 @@ bool CanReuseFirstIndexer(const std::vector<VectorColumnIndexer::Ptr> &indexers,
         std::dynamic_pointer_cast<VectorIndexParams>(f.index_params());
     return params ? params->quantize_type() : QuantizeType::UNDEFINED;
   };
+  if (quantize_type_of(output_field) == QuantizeType::PQ) {
+    const auto &first =
+        static_cast<const VectorIndexParams &>(*first_field.index_params());
+    const auto &output =
+        static_cast<const VectorIndexParams &>(*output_field.index_params());
+    if (first.metric_type() != output.metric_type() ||
+        first.quantizer_param() != output.quantizer_param())
+      return false;
+  }
   return quantize_type_of(first_field) == quantize_type_of(output_field);
 }
 

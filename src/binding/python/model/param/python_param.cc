@@ -15,7 +15,6 @@
 #include "python_param.h"
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
-#include <zvec/core/interface/constants.h>
 #include <zvec/db/index_params.h>
 #include <zvec/db/query.h>
 #include "python_doc.h"
@@ -60,10 +59,23 @@ static std::string metric_type_to_string(const MetricType type) {
   }
 }
 
+static py::dict quantizer_param_to_dict(const QuantizerParam &params) {
+  py::dict result;
+  result["enable_rotate"] = params.enable_rotate();
+  result["num_chunk"] = params.num_chunk();
+  result["num_bits"] = params.num_bits();
+  result["fast_scan"] = params.fast_scan();
+  result["opq_iter"] = params.opq_iter();
+  result["opq_pq_iter"] = params.opq_pq_iter();
+  return result;
+}
+
 static std::string quantize_type_to_string(const QuantizeType type) {
   switch (type) {
     case QuantizeType::UNDEFINED:
       return "UNDEFINED";
+    case QuantizeType::PQ:
+      return "PQ";
     case QuantizeType::INT8:
       return "INT8";
     case QuantizeType::INT4:
@@ -152,6 +164,15 @@ void ZVecPyParams::Initialize(pybind11::module_ &parent) {
 }
 
 void ZVecPyParams::bind_index_params(pybind11::module_ &m) {
+  const InvertIndexParams invert_defaults;
+  const QuantizerParam quantizer_defaults;
+  const HnswIndexParams hnsw_defaults(MetricType::IP);
+  const HnswRabitqIndexParams hnsw_rabitq_defaults(MetricType::IP);
+  const IvfRabitqIndexParams ivf_rabitq_defaults(MetricType::IP);
+  const VamanaIndexParams vamana_defaults(MetricType::IP);
+  const IVFIndexParams ivf_defaults(MetricType::IP);
+  const DiskAnnIndexParams diskann_defaults(MetricType::IP);
+
   // binding base index params
   py::class_<IndexParams, std::shared_ptr<IndexParams>> index_params(
       m, "IndexParam", R"pbdoc(
@@ -218,14 +239,17 @@ Examples:
     {'enable_range_optimization': True, 'enable_extended_wildcard': False}
 )pbdoc");
   invert_params
-      .def(py::init<bool, bool>(), py::arg("enable_range_optimization") = false,
-           py::arg("enable_extended_wildcard") = false,
+      .def(py::init<bool, bool>(),
+           py::arg("enable_range_optimization") =
+               invert_defaults.enable_range_optimization(),
+           py::arg("enable_extended_wildcard") =
+               invert_defaults.enable_extended_wildcard(),
            R"pbdoc(
 Constructs an InvertIndexParam instance.
 
 Args:
     enable_range_optimization (bool, optional): If True, enables range query
-        optimization for the invert index. Defaults to False.
+        optimization for the invert index. Defaults to True.
     enable_extended_wildcard (bool, optional): If True, enables extended wildcard
         search including suffix and infix patterns. Defaults to False.
 )pbdoc")
@@ -425,39 +449,64 @@ Args:
       m, "QuantizerParam", R"pbdoc(
 Parameters for quantizer configuration.
 
-Encapsulates quantization-related settings such as enable_rotate.
-Designed for future extensibility.
+For HNSW/IVF PQ, configure subquantizers, code width, FastScan and learned OPQ.
+Quantizer settings must be valid even when PQ or rotation is disabled.
 
 Attributes:
     enable_rotate (bool): Whether to apply random rotation before INT8/INT4
         quantization to reduce quantization error.
-        Only effective with quantize_type=INT8 or INT4. Defaults to False.
+        With quantize_type=PQ, enables learned OPQ. Defaults to False.
+    num_chunk (int): Positive number of PQ subquantizers; default 8.
+        For PQ, must not exceed dimension. PQ4 also requires dimension
+        divisible by this value.
+    num_bits (int): Bits per PQ code, 4 or 8; default 8.
+    fast_scan (bool): Enable packed IVF PQ4 scans; default False.
+    opq_iter (int): OPQ training iterations; default 5. Must be positive even
+        when rotation is disabled.
+    opq_pq_iter (int): PQ iterations per OPQ iteration; default 4.
+        Must be positive even when rotation is disabled.
 
 Examples:
     >>> qp = QuantizerParam(enable_rotate=True)
     >>> print(qp.enable_rotate)
     True
 )pbdoc");
-  quantizer_param.def(py::init<bool>(), py::arg("enable_rotate") = false)
+  quantizer_param
+      .def(py::init<bool, int, int, bool, uint32_t, uint32_t>(),
+           py::arg("enable_rotate") = quantizer_defaults.enable_rotate(),
+           py::arg("num_chunk") = quantizer_defaults.num_chunk(),
+           py::arg("num_bits") = quantizer_defaults.num_bits(),
+           py::arg("fast_scan") = quantizer_defaults.fast_scan(),
+           py::arg("opq_iter") = quantizer_defaults.opq_iter(),
+           py::arg("opq_pq_iter") = quantizer_defaults.opq_pq_iter())
+      .def_property_readonly("num_chunk", &QuantizerParam::num_chunk)
+      .def_property_readonly("num_bits", &QuantizerParam::num_bits)
+      .def_property_readonly("fast_scan", &QuantizerParam::fast_scan)
+      .def_property_readonly("opq_iter", &QuantizerParam::opq_iter)
+      .def_property_readonly("opq_pq_iter", &QuantizerParam::opq_pq_iter)
       .def_property_readonly(
           "enable_rotate",
           [](const QuantizerParam &self) -> bool {
             return self.enable_rotate();
           },
-          "bool: Whether random rotation is enabled before INT8/INT4 "
-          "quantization.")
+          "bool: Enable random rotation for scalar quantizers or learned OPQ "
+          "for PQ.")
       .def(
           "to_dict",
           [](const QuantizerParam &self) -> py::dict {
-            py::dict dict;
-            dict["enable_rotate"] = self.enable_rotate();
-            return dict;
+            return quantizer_param_to_dict(self);
           },
           "Convert to dictionary with all fields")
       .def("__repr__",
            [](const QuantizerParam &self) -> std::string {
              return "{\"enable_rotate\":" +
-                    std::string(self.enable_rotate() ? "true" : "false") + "}";
+                    std::string(self.enable_rotate() ? "true" : "false") +
+                    ", \"num_chunk\":" + std::to_string(self.num_chunk()) +
+                    ", \"num_bits\":" + std::to_string(self.num_bits()) +
+                    ", \"fast_scan\":" + std::to_string(self.fast_scan()) +
+                    ", \"opq_iter\":" + std::to_string(self.opq_iter()) +
+                    ", \"opq_pq_iter\":" + std::to_string(self.opq_pq_iter()) +
+                    "}";
            })
       .def(
           "__eq__",
@@ -468,12 +517,19 @@ Examples:
           py::is_operator())
       .def(py::pickle(
           [](const QuantizerParam &self) {
-            return py::make_tuple(self.enable_rotate());
+            return py::make_tuple(self.enable_rotate(), self.num_chunk(),
+                                  self.num_bits(), self.fast_scan(),
+                                  self.opq_iter(), self.opq_pq_iter());
           },
           [](py::tuple t) {
-            if (t.size() != 1)
+            if (t.size() != 1 && t.size() != 6)
               throw std::runtime_error("Invalid state for QuantizerParam");
-            return std::make_shared<QuantizerParam>(t[0].cast<bool>());
+            if (t.size() == 1)
+              return std::make_shared<QuantizerParam>(t[0].cast<bool>());
+            return std::make_shared<QuantizerParam>(
+                t[0].cast<bool>(), t[1].cast<int>(), t[2].cast<int>(),
+                t[3].cast<bool>(), t[4].cast<uint32_t>(),
+                t[5].cast<uint32_t>());
           }));
 
   // binding base vector index params
@@ -516,9 +572,8 @@ Attributes:
             dict["metric_type"] = metric_type_to_string(self.metric_type());
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
-            py::dict qp_dict;
-            qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
-            dict["quantizer_param"] = qp_dict;
+            dict["quantizer_param"] =
+                quantizer_param_to_dict(self.quantizer_param());
             return dict;
           },
           "Convert to dictionary with all fields")
@@ -553,13 +608,17 @@ Attributes:
         neighbors during index construction. Larger values yield better
         graph quality at the cost of slower build time. Default is 500.
     quantize_type (QuantizeType): Optional quantization type for vector
-        compression (e.g., FP16, INT8). Default is `QuantizeType.UNDEFINED` to
+        compression (FP16, INT8, INT4, or PQ). Default is `QuantizeType.UNDEFINED` to
         disable quantization.
     use_flat_contiguous_memory (bool): Whether the Flat reference index used
         for refine should use contiguous vector memory.
     flat_data_type (DataType): Physical data type stored by the Flat reference
         index. Defaults to ``VECTOR_FP32``; ``VECTOR_FP16`` and
         ``VECTOR_UINT8`` are also supported.
+
+PQ learns its codebook during Collection.optimize(). Before optimization,
+writes remain searchable through Flat. Configure PQ4/PQ8 and optional OPQ
+with QuantizerParam; fast_scan is supported only by IVF.
 
 Examples:
     >>> from zvec.typing import MetricType, QuantizeType
@@ -585,9 +644,8 @@ Examples:
                  use_flat_contiguous_memory, flat_data_type);
            }),
            py::arg("metric_type") = MetricType::IP,
-           py::arg("m") = core_interface::kDefaultHnswNeighborCnt,
-           py::arg("ef_construction") =
-               core_interface::kDefaultHnswEfConstruction,
+           py::arg("m") = hnsw_defaults.m(),
+           py::arg("ef_construction") = hnsw_defaults.ef_construction(),
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("use_contiguous_memory") = false,
            py::arg("quantizer_param") = QuantizerParam(),
@@ -626,45 +684,48 @@ Examples:
             dict["use_flat_contiguous_memory"] =
                 self.use_flat_contiguous_memory();
             dict["flat_data_type"] = data_type_to_string(self.flat_data_type());
-            py::dict qp_dict;
-            qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
-            dict["quantizer_param"] = qp_dict;
+            dict["quantizer_param"] =
+                quantizer_param_to_dict(self.quantizer_param());
             return dict;
           },
           "Convert to dictionary with all fields")
-      .def(
-          "__repr__",
-          [](const HnswIndexParams &self) -> std::string {
-            return "{"
-                   "\"metric_type\":" +
-                   metric_type_to_string(self.metric_type()) +
-                   ", \"m\":" + std::to_string(self.m()) +
-                   ", \"ef_construction\":" +
-                   std::to_string(self.ef_construction()) +
-                   ", \"quantize_type\":" +
-                   quantize_type_to_string(self.quantize_type()) +
-                   ", \"use_contiguous_memory\":" +
-                   (self.use_contiguous_memory() ? "true" : "false") +
-                   ", \"use_flat_contiguous_memory\":" +
-                   (self.use_flat_contiguous_memory() ? "true" : "false") +
-                   ", \"flat_data_type\":\"" +
-                   data_type_to_string(self.flat_data_type()) + "\"" +
-                   ", \"quantizer_param\":{" + "\"enable_rotate\":" +
-                   (self.quantizer_param().enable_rotate() ? "true" : "false") +
-                   "}}";
-          })
+      .def("__repr__",
+           [](const HnswIndexParams &self) -> std::string {
+             return "{"
+                    "\"metric_type\":" +
+                    metric_type_to_string(self.metric_type()) +
+                    ", \"m\":" + std::to_string(self.m()) +
+                    ", \"ef_construction\":" +
+                    std::to_string(self.ef_construction()) +
+                    ", \"quantize_type\":" +
+                    quantize_type_to_string(self.quantize_type()) +
+                    ", \"use_contiguous_memory\":" +
+                    (self.use_contiguous_memory() ? "true" : "false") +
+                    ", \"use_flat_contiguous_memory\":" +
+                    (self.use_flat_contiguous_memory() ? "true" : "false") +
+                    ", \"flat_data_type\":\"" +
+                    data_type_to_string(self.flat_data_type()) + "\"" +
+                    ", \"quantizer_param\":" +
+                    py::str(py::cast(self.quantizer_param()))
+                        .cast<std::string>() +
+                    "}";
+           })
       .def(py::pickle(
           [](const HnswIndexParams &self) {
             return py::make_tuple(
                 self.metric_type(), self.m(), self.ef_construction(),
                 self.quantize_type(), self.use_contiguous_memory(),
                 self.quantizer_param().enable_rotate(),
-                self.use_flat_contiguous_memory(), self.flat_data_type());
+                self.use_flat_contiguous_memory(), self.flat_data_type(),
+                self.quantizer_param());
           },
           [](py::tuple t) {
-            if (t.size() < 5 || t.size() > 8)
+            if (t.size() < 5 || t.size() > 9)
               throw std::runtime_error("Invalid state for HnswIndexParams");
-            QuantizerParam qp(t.size() >= 6 ? t[5].cast<bool>() : false);
+            QuantizerParam qp =
+                t.size() == 9
+                    ? t[8].cast<QuantizerParam>()
+                    : QuantizerParam(t.size() >= 6 ? t[5].cast<bool>() : false);
             return std::make_shared<HnswIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<QuantizeType>(), t[4].cast<bool>(), qp,
@@ -684,6 +745,8 @@ quantization method that provides high compression with minimal accuracy loss.
 Attributes:
     metric_type (MetricType): Distance metric used for similarity computation.
         Default is ``MetricType.IP`` (inner product).
+    total_bits (int): Bits for RabitQ quantization, from 1 to 9.
+        Default is 7; 0 also selects the default of 7 bits.
     m (int): Number of bi-directional links created for every new element
         during construction. Higher values improve accuracy but increase
         memory usage and construction time. Default is 50.
@@ -704,19 +767,19 @@ Examples:
   hnsw_rabitq_params
       .def(py::init<MetricType, int, int, int, int, int>(),
            py::arg("metric_type") = MetricType::IP,
-           py::arg("total_bits") = core_interface::kDefaultRabitqTotalBits,
-           py::arg("num_clusters") = core_interface::kDefaultRabitqNumClusters,
-           py::arg("m") = core_interface::kDefaultHnswNeighborCnt,
-           py::arg("ef_construction") =
-               core_interface::kDefaultHnswEfConstruction,
-           py::arg("sample_count") = 0)
+           py::arg("total_bits") = hnsw_rabitq_defaults.total_bits(),
+           py::arg("num_clusters") = hnsw_rabitq_defaults.num_clusters(),
+           py::arg("m") = hnsw_rabitq_defaults.m(),
+           py::arg("ef_construction") = hnsw_rabitq_defaults.ef_construction(),
+           py::arg("sample_count") = hnsw_rabitq_defaults.sample_count())
       .def_property_readonly("m", &HnswRabitqIndexParams::m,
                              "int: Maximum number of neighbors per node.")
       .def_property_readonly(
           "ef_construction", &HnswRabitqIndexParams::ef_construction,
           "int: Candidate list size during index construction.")
-      .def_property_readonly("total_bits", &HnswRabitqIndexParams::total_bits,
-                             "int: Total bits for RabitQ quantization.")
+      .def_property_readonly(
+          "total_bits", &HnswRabitqIndexParams::total_bits,
+          "int: RabitQ bits (1 to 9); 0 selects the default of 7 bits.")
       .def_property_readonly("num_clusters",
                              &HnswRabitqIndexParams::num_clusters,
                              "int: Number of clusters for RabitQ.")
@@ -784,7 +847,8 @@ Attributes:
     metric_type (MetricType): Distance metric used for similarity computation.
         Default is ``MetricType.IP`` (inner product).
     nlist (int): Number of IVF cluster centers. Default is 1024.
-    total_bits (int): Total bits for RaBitQ quantization. Default is 7.
+    total_bits (int): Bits for RaBitQ quantization, from 1 to 9.
+        Default is 7; 0 also selects the default of 7 bits.
     sample_count (int): Sample count for training. 0 means use all vectors.
 
 Examples:
@@ -801,13 +865,14 @@ Examples:
   ivf_rabitq_params
       .def(py::init<MetricType, int, int, int>(),
            py::arg("metric_type") = MetricType::IP,
-           py::arg("nlist") = core_interface::kDefaultIvfRabitqNlist,
-           py::arg("total_bits") = core_interface::kDefaultRabitqTotalBits,
-           py::arg("sample_count") = 0)
+           py::arg("nlist") = ivf_rabitq_defaults.nlist(),
+           py::arg("total_bits") = ivf_rabitq_defaults.total_bits(),
+           py::arg("sample_count") = ivf_rabitq_defaults.sample_count())
       .def_property_readonly("nlist", &IvfRabitqIndexParams::nlist,
                              "int: Number of IVF cluster centers.")
-      .def_property_readonly("total_bits", &IvfRabitqIndexParams::total_bits,
-                             "int: Total bits for RaBitQ quantization.")
+      .def_property_readonly(
+          "total_bits", &IvfRabitqIndexParams::total_bits,
+          "int: RaBitQ bits (1 to 9); 0 selects the default of 7 bits.")
       .def_property_readonly("sample_count",
                              &IvfRabitqIndexParams::sample_count,
                              "int: Sample count for RaBitQ training.")
@@ -924,17 +989,15 @@ Examples:
                      use_flat_contiguous_memory, flat_data_type);
                }),
            py::arg("metric_type") = MetricType::IP,
-           py::arg("max_degree") = core_interface::kDefaultVamanaMaxDegree,
-           py::arg("search_list_size") =
-               core_interface::kDefaultVamanaSearchListSize,
-           py::arg("alpha") = core_interface::kDefaultVamanaAlpha,
-           py::arg("saturate_graph") =
-               core_interface::kDefaultVamanaSaturateGraph,
+           py::arg("max_degree") = vamana_defaults.max_degree(),
+           py::arg("search_list_size") = vamana_defaults.search_list_size(),
+           py::arg("alpha") = vamana_defaults.alpha(),
+           py::arg("saturate_graph") = vamana_defaults.saturate_graph(),
            py::arg("use_contiguous_memory") = false,
            py::arg("use_id_map") = false,
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("quantizer_param") = QuantizerParam(),
-           py::arg("two_pass_build") = true,
+           py::arg("two_pass_build") = vamana_defaults.two_pass_build(),
            py::arg("use_flat_contiguous_memory") = false,
            py::arg("flat_data_type") = DataType::VECTOR_FP32)
       .def_property_readonly(
@@ -988,9 +1051,8 @@ Examples:
             dict["flat_data_type"] = data_type_to_string(self.flat_data_type());
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
-            py::dict qp_dict;
-            qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
-            dict["quantizer_param"] = qp_dict;
+            dict["quantizer_param"] =
+                quantizer_param_to_dict(self.quantizer_param());
             return dict;
           },
           "Convert to dictionary with all fields")
@@ -1109,9 +1171,8 @@ Args:
             dict["metric_type"] = metric_type_to_string(self.metric_type());
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
-            py::dict qp_dict;
-            qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
-            dict["quantizer_param"] = qp_dict;
+            dict["quantizer_param"] =
+                quantizer_param_to_dict(self.quantizer_param());
             dict["use_contiguous_memory"] = self.use_contiguous_memory();
             return dict;
           },
@@ -1157,7 +1218,7 @@ Attributes:
     metric_type (MetricType): Distance metric used for similarity computation.
         Default is ``MetricType.IP`` (inner product).
     n_list (int): Number of clusters (inverted lists) to partition the dataset into.
-        Default is 10.
+        Default is 1024.
     n_iters (int): Number of iterations for k-means clustering during index training.
         Higher values yield more stable centroids. Default is 10.
     use_soar (bool): Whether to enable SOAR (Scalable Optimized Adaptive Routing)
@@ -1185,8 +1246,10 @@ Examples:
                  metric_type, n_list, n_iters, use_soar, quantize_type,
                  quantizer_param);
            }),
-           py::arg("metric_type") = MetricType::IP, py::arg("n_list") = 10,
-           py::arg("n_iters") = 10, py::arg("use_soar") = false,
+           py::arg("metric_type") = MetricType::IP,
+           py::arg("n_list") = ivf_defaults.n_list(),
+           py::arg("n_iters") = ivf_defaults.n_iters(),
+           py::arg("use_soar") = ivf_defaults.use_soar(),
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("quantizer_param") = QuantizerParam(),
            R"pbdoc(
@@ -1195,7 +1258,7 @@ Constructs an IVFIndexParam instance.
 Args:
     metric_type (MetricType, optional): Distance metric. Defaults to MetricType.IP.
     n_list (int, optional): Number of inverted lists (clusters).
-        Defaults to 10.
+        Defaults to 1024.
     n_iters (int, optional): Number of k-means iterations during training.
         Defaults to 10.
     use_soar (bool, optional): Enable SOAR optimization. Defaults to False.
@@ -1222,38 +1285,40 @@ Args:
             dict["use_soar"] = self.use_soar();
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
-            py::dict qp_dict;
-            qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
-            dict["quantizer_param"] = qp_dict;
+            dict["quantizer_param"] =
+                quantizer_param_to_dict(self.quantizer_param());
             return dict;
           },
           "Convert to dictionary with all fields")
-      .def(
-          "__repr__",
-          [](const IVFIndexParams &self) {
-            return "{"
-                   "\"metric_type\":" +
-                   metric_type_to_string(self.metric_type()) +
-                   ", \"n_list\":" + std::to_string(self.n_list()) +
-                   ", \"n_iters\":" + std::to_string(self.n_iters()) +
-                   ", \"use_soar\":" + std::to_string(self.use_soar()) +
-                   ", \"quantize_type\":" +
-                   quantize_type_to_string(self.quantize_type()) +
-                   ", \"quantizer_param\":{" + "\"enable_rotate\":" +
-                   (self.quantizer_param().enable_rotate() ? "true" : "false") +
-                   "}}";
-          })
+      .def("__repr__",
+           [](const IVFIndexParams &self) {
+             return "{"
+                    "\"metric_type\":" +
+                    metric_type_to_string(self.metric_type()) +
+                    ", \"n_list\":" + std::to_string(self.n_list()) +
+                    ", \"n_iters\":" + std::to_string(self.n_iters()) +
+                    ", \"use_soar\":" + std::to_string(self.use_soar()) +
+                    ", \"quantize_type\":" +
+                    quantize_type_to_string(self.quantize_type()) +
+                    ", \"quantizer_param\":" +
+                    py::str(py::cast(self.quantizer_param()))
+                        .cast<std::string>() +
+                    "}";
+           })
       .def(py::pickle(
           [](const IVFIndexParams &self) {
-            return py::make_tuple(self.metric_type(), self.n_list(),
-                                  self.n_iters(), self.use_soar(),
-                                  self.quantize_type(),
-                                  self.quantizer_param().enable_rotate());
+            return py::make_tuple(
+                self.metric_type(), self.n_list(), self.n_iters(),
+                self.use_soar(), self.quantize_type(),
+                self.quantizer_param().enable_rotate(), self.quantizer_param());
           },
           [](py::tuple t) {
-            if (t.size() != 5 && t.size() != 6)
+            if (t.size() != 5 && t.size() != 6 && t.size() != 7)
               throw std::runtime_error("Invalid state for IVFIndexParams");
-            QuantizerParam qp(t.size() >= 6 ? t[5].cast<bool>() : false);
+            QuantizerParam qp =
+                t.size() == 7
+                    ? t[6].cast<QuantizerParam>()
+                    : QuantizerParam(t.size() >= 6 ? t[5].cast<bool>() : false);
             return std::make_shared<IVFIndexParams>(
                 t[0].cast<MetricType>(), t[1].cast<int>(), t[2].cast<int>(),
                 t[3].cast<bool>(), t[4].cast<QuantizeType>(), qp);
@@ -1303,8 +1368,10 @@ Examples:
                  metric_type, max_degree, list_size, pq_chunk_num,
                  quantize_type, quantizer_param);
            }),
-           py::arg("metric_type") = MetricType::IP, py::arg("max_degree") = 100,
-           py::arg("list_size") = 50, py::arg("pq_chunk_num") = 0,
+           py::arg("metric_type") = MetricType::IP,
+           py::arg("max_degree") = diskann_defaults.max_degree(),
+           py::arg("list_size") = diskann_defaults.list_size(),
+           py::arg("pq_chunk_num") = diskann_defaults.pq_chunk_num(),
            py::arg("quantize_type") = QuantizeType::UNDEFINED,
            py::arg("quantizer_param") = QuantizerParam(),
            R"pbdoc(
@@ -1345,9 +1412,8 @@ Args:
             dict["pq_chunk_num"] = self.pq_chunk_num();
             dict["quantize_type"] =
                 quantize_type_to_string(self.quantize_type());
-            py::dict qp_dict;
-            qp_dict["enable_rotate"] = self.quantizer_param().enable_rotate();
-            dict["quantizer_param"] = qp_dict;
+            dict["quantizer_param"] =
+                quantizer_param_to_dict(self.quantizer_param());
             return dict;
           },
           "Convert to dictionary with all fields")
@@ -1384,6 +1450,13 @@ Args:
 }
 
 void ZVecPyParams::bind_query_params(py::module_ &m) {
+  const HnswQueryParams hnsw_defaults;
+  const IVFQueryParams ivf_defaults;
+  const HnswRabitqQueryParams hnsw_rabitq_defaults;
+  const IvfRabitqQueryParams ivf_rabitq_defaults;
+  const DiskAnnQueryParams diskann_defaults;
+  const VamanaQueryParams vamana_defaults;
+
   // binding base query params
   py::class_<QueryParams, std::shared_ptr<QueryParams>> query_params(
       m, "QueryParam", R"pbdoc(
@@ -1479,16 +1552,18 @@ Examples:
              }
              return obj;
            }),
-           py::arg("ef") = core_interface::kDefaultHnswEfSearch,
-           py::arg("radius") = 0.0f, py::arg("is_linear") = false,
+           py::arg("ef") = hnsw_defaults.ef(),
+           py::arg("radius") = hnsw_defaults.radius(),
+           py::arg("is_linear") = hnsw_defaults.is_linear(),
            py::arg("is_using_refiner") = false,
-           py::arg("extra_params") = py::dict(), py::arg("scale_factor") = 0.0f,
+           py::arg("extra_params") = py::dict(),
+           py::arg("scale_factor") = hnsw_defaults.scale_factor(),
            R"pbdoc(
 Constructs an HnswQueryParam instance.
 
 Args:
     ef (int, optional): Search-time candidate list size.
-        Higher values improve accuracy. Defaults to 100.
+        Higher values improve accuracy. Defaults to 300.
     radius (float, optional): Search radius for range queries. Default is 0.0.
     is_linear (bool, optional): Force linear search. Default is False.
     is_using_refiner (bool, optional): Whether to use refiner for the query. Default is False.
@@ -1584,8 +1659,19 @@ Examples:
     20
 )pbdoc");
   ivf_params
-      .def(py::init<int, bool, float>(), py::arg("nprobe") = 10,
-           py::arg("is_using_refiner") = false, py::arg("scale_factor") = 10.0f,
+      .def(py::init([](int nprobe, bool is_using_refiner, float scale_factor,
+                       float radius, bool is_linear) {
+             auto obj = std::make_shared<IVFQueryParams>(
+                 nprobe, is_using_refiner, scale_factor);
+             obj->set_radius(radius);
+             obj->set_is_linear(is_linear);
+             return obj;
+           }),
+           py::arg("nprobe") = ivf_defaults.nprobe(),
+           py::arg("is_using_refiner") = ivf_defaults.is_using_refiner(),
+           py::arg("scale_factor") = ivf_defaults.scale_factor(), py::kw_only(),
+           py::arg("radius") = ivf_defaults.radius(),
+           py::arg("is_linear") = ivf_defaults.is_linear(),
            R"pbdoc(
 Constructs an IVFQueryParam instance.
 
@@ -1594,6 +1680,8 @@ Args:
         Higher values improve accuracy. Defaults to 10.
     is_using_refiner (bool, optional): Whether to refine candidates. Default is False.
     scale_factor (float, optional): Refine candidate multiplier. Default is 10.
+    radius (float, optional): Search radius for range queries. Default is 0.0.
+    is_linear (bool, optional): Force linear search. Default is False.
 )pbdoc")
       .def_property_readonly(
           "nprobe",
@@ -1605,6 +1693,8 @@ Args:
                     "\"type\":" +
                     index_type_to_string(self.type()) +
                     ", \"nprobe\":" + std::to_string(self.nprobe()) +
+                    ", \"radius\":" + std::to_string(self.radius()) +
+                    ", \"is_linear\":" + std::to_string(self.is_linear()) +
                     ", \"is_using_refiner\":" +
                     std::to_string(self.is_using_refiner()) +
                     ", \"scale_factor\":" +
@@ -1657,9 +1747,11 @@ Examples:
 )pbdoc");
   hnsw_rabitq_query_params
       .def(py::init<int, float, bool, bool, float>(),
-           py::arg("ef") = core_interface::kDefaultHnswEfSearch,
-           py::arg("radius") = 0.0f, py::arg("is_linear") = false,
-           py::arg("is_using_refiner") = false, py::arg("scale_factor") = 0.0f,
+           py::arg("ef") = hnsw_rabitq_defaults.ef(),
+           py::arg("radius") = hnsw_rabitq_defaults.radius(),
+           py::arg("is_linear") = hnsw_rabitq_defaults.is_linear(),
+           py::arg("is_using_refiner") = false,
+           py::arg("scale_factor") = hnsw_rabitq_defaults.scale_factor(),
            R"pbdoc(
 Constructs an HnswRabitqQueryParam instance.
 
@@ -1732,9 +1824,11 @@ Examples:
 )pbdoc");
   ivf_rabitq_query_params
       .def(py::init<int, float, bool, bool, float>(),
-           py::arg("nprobe") = core_interface::kDefaultIvfRabitqNprobe,
-           py::arg("radius") = 0.0f, py::arg("is_linear") = false,
-           py::arg("is_using_refiner") = false, py::arg("scale_factor") = 10.0f,
+           py::arg("nprobe") = ivf_rabitq_defaults.nprobe(),
+           py::arg("radius") = ivf_rabitq_defaults.radius(),
+           py::arg("is_linear") = ivf_rabitq_defaults.is_linear(),
+           py::arg("is_using_refiner") = false,
+           py::arg("scale_factor") = ivf_rabitq_defaults.scale_factor(),
            R"pbdoc(
 Constructs an IvfRabitqQueryParam instance.
 
@@ -1800,7 +1894,11 @@ Query parameters for DiskAnn index.
 Attributes:
     type (IndexType): Always ``IndexType.DISKANN``.
     list_size (int): Beam-search candidate list size used at query time.
-        Higher values improve recall but increase latency. Default is 10.
+        Higher values improve recall but increase latency. Default is 300.
+    radius (float): Search radius for range queries. Default is 0.0 (disabled).
+    is_linear (bool): Whether to force brute-force linear search. Default is False.
+    is_using_refiner (bool): Whether to refine query results. Default is False.
+    scale_factor (float): Refine candidate multiplier. Default is 10.
 
 Examples:
     >>> params = DiskAnnQueryParam(list_size=20)
@@ -1808,13 +1906,32 @@ Examples:
     20
 )pbdoc");
   diskann_params
-      .def(py::init<int>(), py::arg("list_size") = 300, R"pbdoc(
-Constructs an DiskAnnQueryParams instance.
+      .def(py::init([](int list_size, float radius, bool is_linear,
+                       bool is_using_refiner, float scale_factor) {
+             auto obj = std::make_shared<DiskAnnQueryParams>(list_size);
+             obj->set_radius(radius);
+             obj->set_is_linear(is_linear);
+             obj->set_is_using_refiner(is_using_refiner);
+             obj->set_scale_factor(scale_factor);
+             return obj;
+           }),
+           py::arg("list_size") = diskann_defaults.list_size(), py::kw_only(),
+           py::arg("radius") = diskann_defaults.radius(),
+           py::arg("is_linear") = diskann_defaults.is_linear(),
+           py::arg("is_using_refiner") = diskann_defaults.is_using_refiner(),
+           py::arg("scale_factor") = diskann_defaults.scale_factor(),
+           R"pbdoc(
+Constructs a DiskAnnQueryParam instance.
 
 Args:
     list_size (int, optional): Beam-search candidate list size during
         graph search. Higher values improve recall at the cost of latency.
         Defaults to 300.
+    radius (float, optional): Search radius for range queries. Default is 0.0 (disabled).
+    is_linear (bool, optional): Force brute-force linear search. Default is False.
+    is_using_refiner (bool, optional): Refine query results. Default is False.
+    scale_factor (float, optional): Refine candidate multiplier. Default is 10.
+        Ignored when is_using_refiner is False.
 )pbdoc")
       .def_property_readonly(
           "list_size",
@@ -1827,16 +1944,34 @@ Args:
              return "{"
                     "\"type\":" +
                     index_type_to_string(self.type()) +
-                    ", \"list_size\":" + std::to_string(self.list_size()) + "}";
+                    ", \"list_size\":" + std::to_string(self.list_size()) +
+                    ", \"radius\":" + std::to_string(self.radius()) +
+                    ", \"is_linear\":" + std::to_string(self.is_linear()) +
+                    ", \"is_using_refiner\":" +
+                    std::to_string(self.is_using_refiner()) +
+                    ", \"scale_factor\":" +
+                    std::to_string(self.scale_factor()) + "}";
            })
       .def(py::pickle(
           [](const DiskAnnQueryParams &self) {
-            return py::make_tuple(self.list_size());
+            return py::make_tuple(self.list_size(), self.radius(),
+                                  self.is_linear(), self.is_using_refiner(),
+                                  self.scale_factor());
           },
           [](py::tuple t) {
-            if (t.size() != 1)
+            if (t.size() != 1 && t.size() != 2 && t.size() != 5)
               throw std::runtime_error("Invalid state for DiskAnnQueryParams");
-            return std::make_shared<DiskAnnQueryParams>(t[0].cast<int>());
+            auto obj = std::make_shared<DiskAnnQueryParams>(t[0].cast<int>());
+            if (t.size() == 5) {
+              obj->set_radius(t[1].cast<float>());
+              obj->set_is_linear(t[2].cast<bool>());
+              obj->set_is_using_refiner(t[3].cast<bool>());
+              obj->set_scale_factor(t[4].cast<float>());
+            } else {
+              // The single-field state predates the index-specific scale.
+              obj->set_scale_factor(t.size() == 1 ? 0.0f : t[1].cast<float>());
+            }
+            return obj;
           }));
 
   // binding vamana query params
@@ -1881,10 +2016,12 @@ Examples:
              }
              return obj;
            }),
-           py::arg("ef_search") = core_interface::kDefaultVamanaEfSearch,
-           py::arg("radius") = 0.0f, py::arg("is_linear") = false,
+           py::arg("ef_search") = vamana_defaults.ef_search(),
+           py::arg("radius") = vamana_defaults.radius(),
+           py::arg("is_linear") = vamana_defaults.is_linear(),
            py::arg("is_using_refiner") = false,
-           py::arg("extra_params") = py::dict(), py::arg("scale_factor") = 0.0f,
+           py::arg("extra_params") = py::dict(),
+           py::arg("scale_factor") = vamana_defaults.scale_factor(),
            R"pbdoc(
 Constructs a VamanaQueryParam instance.
 

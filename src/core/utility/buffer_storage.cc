@@ -1001,7 +1001,15 @@ class BufferStorage : public IndexStorage {
 
   //! Open storage
   int open(const std::string &path, bool create_if_missing) override {
-    if (!ailego::File::IsExist(path) && create_if_missing) {
+    // Preserve the access mode of callers using the legacy boolean API.
+    return open_with_options(
+        path, OpenOptions{create_if_missing, /*read_only=*/!create_if_missing});
+  }
+
+  int open_with_options(const std::string &path,
+                        const OpenOptions &options) override {
+    const bool writable = !options.read_only;
+    if (!ailego::File::IsExist(path) && options.create_if_missing) {
       size_t last_slash = path.rfind('/');
       if (last_slash != std::string::npos) {
         ailego::File::MakePath(path.substr(0, last_slash));
@@ -1017,9 +1025,8 @@ class BufferStorage : public IndexStorage {
     try {
       // Capture both owners before replacing the published state. In
       // particular, a failed reopen must not change existing segments' pool.
-      // create_if_missing also indicates write intent, like MMapFileStorage.
-      auto candidate_pool = std::make_shared<ailego::VecBufferPool>(
-          path, /*writable=*/create_if_missing);
+      auto candidate_pool =
+          std::make_shared<ailego::VecBufferPool>(path, writable);
       auto candidate_handle =
           std::make_shared<ailego::VecBufferPoolHandle>(candidate_pool);
       file_name_ = path;
@@ -1042,8 +1049,8 @@ class BufferStorage : public IndexStorage {
     const size_t page_count =
         file_size == 0 ? 0 : (file_size - 1) / ailego::kVectorPageSize + 1;
     const size_t metadata_bytes =
-        ailego::VecBufferPool::metadata_bytes_for_page_count(
-            page_count, /*writable=*/create_if_missing);
+        ailego::VecBufferPool::metadata_bytes_for_page_count(page_count,
+                                                             writable);
     const size_t available =
         ailego::MemoryLimitPool::get_instance().available();
     const bool cache_can_fit =
@@ -1051,7 +1058,7 @@ class BufferStorage : public IndexStorage {
         metadata_bytes <= available &&
         ailego::kVectorPageSize <= available - metadata_bytes;
     ret = cache_can_fit ? buffer_pool_->init() : -1;
-    if (ret != 0 && create_if_missing) {
+    if (ret != 0 && writable) {
       this->close_index();
       return IndexError_NoMemory;
     }
@@ -1063,8 +1070,7 @@ class BufferStorage : public IndexStorage {
           path.c_str(), available, metadata_bytes, ailego::kVectorPageSize);
     }
     LOG_INFO("BufferStorage opened: file=%s, writable=%d, segment_count=%zu",
-             file_name_.c_str(), static_cast<int>(create_if_missing),
-             segments_.size());
+             file_name_.c_str(), static_cast<int>(writable), segments_.size());
     return 0;
   }
 

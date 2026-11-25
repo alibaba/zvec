@@ -120,6 +120,11 @@ Result<DocPtrList> rerank(const RerankParams &params,
         using T = std::decay_t<decltype(p)>;
 
         if constexpr (std::is_same_v<T, RrfParams>) {
+          if (p.rank_constant < 0) {
+            return tl::make_unexpected(Status::InvalidArgument(
+                "RrfParams: rank_constant must be non-negative, got ",
+                p.rank_constant));
+          }
           auto score_fn = [&p](double /*score*/, int rank,
                                size_t /*field_idx*/) -> Result<double> {
             return 1.0 / (static_cast<double>(p.rank_constant) +

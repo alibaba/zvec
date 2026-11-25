@@ -72,8 +72,9 @@ class IVFSearcherContext : public IndexSearcher::Context {
                      std::round(entity_->inverted_list_count() * scan_ratio_)),
                  1u);
 
-    uint32_t nprobe = 0;
-    params.get(PARAM_IVF_SEARCHER_NPROBE, &nprobe);
+    requested_nprobe_ = 0;
+    params.get(PARAM_IVF_SEARCHER_NPROBE, &requested_nprobe_);
+    uint32_t nprobe = requested_nprobe_;
     if (nprobe > 0) {
       nprobe = std::min(nprobe,
                         static_cast<uint32_t>(entity_->inverted_list_count()));
@@ -166,7 +167,11 @@ class IVFSearcherContext : public IndexSearcher::Context {
                      const ailego::Params &params, uint32_t magic_num) {
     entity_ = new_entity;
     centroid_searcher_ctx_ = std::move(centroid_ctx);
-    int ret = this->update(params);
+    // Public indexes share a per-thread context. Preserve the request made
+    // before rebinding, and clamp it against the new entity's list count.
+    ailego::Params rebound_params = params;
+    rebound_params.set(PARAM_IVF_SEARCHER_NPROBE, requested_nprobe_);
+    int ret = this->update(rebound_params);
     ivf_check_error_code(ret);
 
     magic_ = magic_num;
@@ -190,21 +195,25 @@ class IVFSearcherContext : public IndexSearcher::Context {
   }
 
   void topk_to_result(uint32_t idx) {
-    if (ailego_unlikely(result_heap_.size() == 0)) {
+    topk_to_result(idx, result_heap_);
+  }
+
+  void topk_to_result(uint32_t idx, IndexDocumentHeap &heap) {
+    if (ailego_unlikely(heap.size() == 0)) {
       return;
     }
 
     ailego_assert_with(idx < results_.size(), "invalid idx");
-    int size = std::min(topk_, static_cast<uint32_t>(result_heap_.size()));
-    result_heap_.sort();
+    int size = std::min(topk_, static_cast<uint32_t>(heap.size()));
+    heap.sort();
     results_[idx].clear();
     for (int i = 0; i < size; ++i) {
-      auto score = result_heap_[i].score();
+      auto score = heap[i].score();
       if (score > this->threshold()) {
         break;
       }
 
-      key_t key = result_heap_[i].key();
+      key_t key = heap[i].key();
       if (fetch_vector_) {
         IndexStorage::MemoryBlock block;
         entity_->get_vector_by_key(key, block);
@@ -230,6 +239,7 @@ class IVFSearcherContext : public IndexSearcher::Context {
   bool fetch_vector_{false};
   uint32_t topk_{0};
   uint32_t magic_{0};
+  uint32_t requested_nprobe_{0};
   float scan_ratio_{kDefaultScanRatio};
   uint32_t max_scan_count_{0};
   uint32_t bruteforce_threshold_{kDefaultBfThreshold};

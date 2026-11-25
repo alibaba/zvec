@@ -142,7 +142,8 @@ Examples:
       .value("RABITQ", QuantizeType::RABITQ)
       .value("UNIFORM_UINT7", QuantizeType::UNIFORM_UINT7)
       .value("UNIFORM_UINT8", QuantizeType::UNIFORM_UINT8)
-      .value("UNIFORM_UINT4", QuantizeType::UNIFORM_UINT4);
+      .value("UNIFORM_UINT4", QuantizeType::UNIFORM_UINT4)
+      .value("PQ", QuantizeType::PQ);
 }
 
 void ZVecPyTyping::bind_io_backend_types(py::module_ &m) {

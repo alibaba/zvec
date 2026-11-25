@@ -22,8 +22,8 @@
 #include <future>
 #include <iostream>
 #include <memory>
-#include <ailego/math/norm_matrix.h>
 #include <gtest/gtest.h>
+#include <turbo/norm/norm_matrix.h>
 #include <zvec/ailego/container/vector.h>
 #include "tests/test_util.h"
 
@@ -76,8 +76,8 @@ void HnswSparseStreamerTest::generate_sparse_data(
     }
 
     float norm;
-    ailego::Norm2Matrix<float, 1>::Compute(sparse_vec.data(), sparse_dim_count,
-                                           &norm);
+    turbo::Norm2Matrix<float, 1>::Compute(sparse_vec.data(), sparse_dim_count,
+                                          &norm);
     for (size_t j = 0; j < sparse_dim_count; ++j) {
       sparse_vec[j] = sparse_vec[j] / norm;
     }

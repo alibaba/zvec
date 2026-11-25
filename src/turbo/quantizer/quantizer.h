@@ -79,6 +79,12 @@ struct QuantizerSerHeader {
 static_assert(sizeof(QuantizerSerHeader) == 24,
               "QuantizerSerHeader must be 24 bytes");
 
+// Optional interface for quantizers that can score multiple bound queries.
+struct ManyDistanceProvider {
+  virtual ~ManyDistanceProvider() = default;
+  virtual ManyToManyDistanceFunc many_distance() const = 0;
+};
+
 class Quantizer {
  public:
   typedef std::shared_ptr<Quantizer> Pointer;
@@ -121,6 +127,11 @@ class Quantizer {
     return train(holder);
   }
 
+  //! Prepare derived state for graph construction before concurrent inserts.
+  virtual int prepare_build() {
+    return 0;
+  }
+
   //! Byte length of a quantized datapoint vector
   virtual size_t quantized_datapoint_vector_length() const = 0;
 
@@ -157,6 +168,13 @@ class Quantizer {
 
   //! Distance between two quantized datapoints
   virtual float calc_distance_dp_dp(const void *dp1, const void *dp2) const = 0;
+
+  //! Batched distance between quantized datapoints and a quantized datapoint.
+  //! The default implementation loops over calc_distance_dp_dp. Overrides
+  //! must preserve those distance semantics. A nonpositive count is a no-op.
+  virtual void calc_distance_dp_dp_batch(const void *const *dp_list, int dp_num,
+                                         const void *dp,
+                                         float *dist_list) const;
 
   //! Distance between an input datapoint and an already-quantized query.
   //!
@@ -200,6 +218,14 @@ class Quantizer {
   virtual DistanceImpl distance(const void * /*query*/,
                                 const IndexQueryMeta & /*qmeta*/) const {
     return DistanceImpl{};
+  }
+
+  //! Optional many-to-many kernel for the same encoded layout and arithmetic
+  //! as distance(). Keep the dispatch with the quantizer: function addresses
+  //! cannot identify a kernel family across independently linked libraries.
+  ManyToManyDistanceFunc many_distance() const {
+    const auto *provider = dynamic_cast<const ManyDistanceProvider *>(this);
+    return provider ? provider->many_distance() : ManyToManyDistanceFunc{};
   }
 
   //! Convert an internal distance into the caller-facing score in place

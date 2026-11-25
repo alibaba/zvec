@@ -22,7 +22,6 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-
 #include <zvec/db/collection.h>
 #include <zvec/db/doc.h>
 
@@ -154,7 +153,6 @@ inline Doc CreateTestDoc(uint64_t doc_id, int version) {
 
   return doc;
 }
-
 
 
 /**

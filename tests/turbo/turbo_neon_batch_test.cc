@@ -105,13 +105,14 @@ TEST(NeonBatch, PlainFp16PreservesFp32Arithmetic) {
   for (size_t dim : {1, 3, 4, 7, 8, 9, 31, 32, 33, 4097}) {
     std::vector<uint16_t> high(dim, ailego::FloatHelper::ToFP16(256.0f));
     std::vector<uint16_t> zero(dim, 0);
-    const void *rows[] = {high.data(), high.data(), high.data(), high.data(),
-                          high.data()};
-    float out[5];
-    batches[0](rows, zero.data(), 5, dim, out, nullptr);
-    for (float value : out) EXPECT_FLOAT_EQ(float(dim) * 65536.0f, value);
-    batches[1](rows, high.data(), 5, dim, out, nullptr);
-    for (float value : out) EXPECT_FLOAT_EQ(-float(dim) * 65536.0f, value);
+    for (size_t n : {5, 8, 9}) {
+      std::vector<const void *> rows(n, high.data());
+      std::vector<float> out(n);
+      batches[0](rows.data(), zero.data(), n, dim, out.data(), nullptr);
+      for (float value : out) EXPECT_FLOAT_EQ(float(dim) * 65536.0f, value);
+      batches[1](rows.data(), high.data(), n, dim, out.data(), nullptr);
+      for (float value : out) EXPECT_FLOAT_EQ(-float(dim) * 65536.0f, value);
+    }
   }
 }
 

@@ -30,13 +30,16 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
   }
   spin_lock_.unlock();
 
+  // Search and pruning may allocate while a new top level is being built.
+  // Release the promotion lock on exceptions as well as on normal returns.
+  std::unique_lock<std::mutex> level_lock(mutex_, std::defer_lock);
   if (ailego_unlikely(level > cur_max_level)) {
-    mutex_.lock();
+    level_lock.lock();
     // re-check max level
     cur_max_level = entity_.cur_max_level();
     entry_point = entity_.entry_point();
     if (level <= cur_max_level) {
-      mutex_.unlock();
+      level_lock.unlock();
     }
   }
 
@@ -62,7 +65,6 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
     spin_lock_.lock();
     entity_.update_ep_and_level(id, level);
     spin_lock_.unlock();
-    mutex_.unlock();
   }
 
   return 0;
@@ -80,8 +82,10 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
   }
 
   dist_t dist = ctx->dist_calculator().dist(entry_point);
+  if (ailego_unlikely(ctx->error())) return IndexError_Runtime;
   for (level_t cur_level = max_level; cur_level >= 1; --cur_level) {
     select_entry_point(cur_level, &entry_point, &dist, ctx);
+    if (ailego_unlikely(ctx->error())) return IndexError_Runtime;
   }
 
   const uint32_t capacity = std::max(ctx->topk(), ctx->ef());
@@ -94,11 +98,12 @@ int HnswAlgorithm<EntityType>::search(HnswContext *ctx) const {
     search_neighbors(0, &entry_point, &dist, topk, ctx);
   }
 
+  if (ailego_unlikely(ctx->error())) return IndexError_Runtime;
   if (ctx->group_by_search()) {
     expand_neighbors_by_group(ctx);
   }
 
-  return 0;
+  return ctx->error() ? IndexError_Runtime : 0;
 }
 
 template <typename EntityType>
@@ -110,12 +115,24 @@ void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
   HnswDistCalculator &dc = ctx->dist_calculator();
   const bool use_provider = dc.has_provider();
   const bool has_extra_values = ctx->has_extra_values();
+  std::vector<node_id_t> neighbor_ids;
   while (true) {
-    const auto neighbors = entity.get_neighbors_typed(level, *entry_point);
+    {
+      // Construction can update this list while another worker traverses it.
+      // Snapshot IDs under the same lock used by the writer, then compute
+      // distances without holding a node lock.
+      std::lock_guard<std::mutex> node_lock(
+          lock_pool_[*entry_point & kLockMask]);
+      const auto neighbors = entity.get_neighbors_typed(level, *entry_point);
+      neighbor_ids.clear();
+      if (neighbors.size() != 0) {
+        neighbor_ids.assign(neighbors.data, neighbors.data + neighbors.size());
+      }
+    }
     if (ailego_unlikely(ctx->debugging())) {
       (*ctx->mutable_stats_get_neighbors())++;
     }
-    uint32_t size = neighbors.size();
+    uint32_t size = neighbor_ids.size();
     if (size == 0) {
       break;
     }
@@ -124,9 +141,10 @@ void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
     std::vector<IndexStorage::MemoryBlock> provider_vec_blocks;
     int ret;
     if (ailego_unlikely(use_provider)) {
-      ret = dc.get_vector(&neighbors[0], size, provider_vec_blocks);
+      ret = dc.get_vector(neighbor_ids.data(), size, provider_vec_blocks);
     } else {
-      ret = entity.get_vector_typed(&neighbors[0], size, neighbor_vec_blocks);
+      ret = entity.get_vector_typed(neighbor_ids.data(), size,
+                                    neighbor_vec_blocks);
     }
     if (ailego_unlikely(ctx->debugging())) {
       (*ctx->mutable_stats_get_vector())++;
@@ -159,12 +177,13 @@ void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
 
     dc.batch_dist(neighbor_vecs.data(), size, dists.data(),
                   has_extra_values ? neighbor_extra_values.data() : nullptr);
+    if (ailego_unlikely(dc.error())) return;
 
     for (uint32_t i = 0; i < size; ++i) {
       dist_t cur_dist = dists[i];
 
       if (cur_dist < *dist) {
-        *entry_point = neighbors[i];
+        *entry_point = neighbor_ids[i];
         *dist = cur_dist;
         find_closer = true;
       }
@@ -188,7 +207,10 @@ void HnswAlgorithm<EntityType>::add_neighbors(node_id_t id, level_t level,
 
   HnswDistCalculator &dc = ctx->dist_calculator();
 
-  update_neighbors(dc, id, level, topk_heap, ctx);
+  {
+    std::lock_guard<std::mutex> node_lock(lock_pool_[id & kLockMask]);
+    update_neighbors(dc, id, level, topk_heap, ctx);
+  }
 
   // reverse update neighbors
   for (size_t i = 0; i < topk_heap.size(); ++i) {
@@ -262,7 +284,9 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
       if (visit.visited(node)) continue;
       visit.set_visited(node);
       const void *vec_ptr = entity.get_vector_ptr(node);
-      ailego_prefetch_lines(vec_ptr, prefetch_lines);
+      if (ailego_likely(vec_ptr != nullptr)) {
+        ailego_prefetch_lines(vec_ptr, prefetch_lines);
+      }
       neighbor_ids[unvisited_count] = node;
       neighbor_vecs[unvisited_count] = vec_ptr;
       if (has_extra_values) {
@@ -288,6 +312,7 @@ void fast_search_neighbors(const EntityType &entity, HeapType &pool,
     if (unvisited_count == 0) continue;
     dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data(),
                   has_extra_values ? neighbor_extra_values.data() : nullptr);
+    if (ailego_unlikely(dc.error())) return;
 
     pool.push_block(dists.data(), neighbor_ids.data(),
                     static_cast<int32_t>(unvisited_count));
@@ -360,11 +385,14 @@ void fast_search_neighbors_buffer(const EntityType &entity, HeapType &pool,
     }
     const uint32_t po = std::min(prefetch_offset, unvisited_count);
     for (uint32_t i = 0; i < po; ++i) {
-      ailego_prefetch_lines(neighbor_vecs[i], prefetch_lines);
+      if (ailego_likely(neighbor_vecs[i] != nullptr)) {
+        ailego_prefetch_lines(neighbor_vecs[i], prefetch_lines);
+      }
     }
 
     dc.batch_dist(neighbor_vecs.data(), unvisited_count, dists.data(),
                   has_extra_values ? neighbor_extra_values.data() : nullptr);
+    if (ailego_unlikely(dc.error())) return;
     pool.push_block(dists.data(), neighbor_ids.data(),
                     static_cast<int32_t>(unvisited_count));
   }
@@ -381,7 +409,8 @@ template <typename EntityType, typename MemBlockType, typename FilterFn>
 void dual_heap_search_neighbors(const EntityType &entity, level_t level,
                                 node_id_t *entry_point, dist_t *dist,
                                 TopkHeap &topk, HnswContext *ctx,
-                                HnswDistCalculator &dc, FilterFn &&filter) {
+                                HnswDistCalculator &dc, FilterFn &&filter,
+                                std::mutex *node_locks, uint32_t lock_mask) {
   const uint32_t prefetch_offset = ctx->po();
   const size_t vector_lines = ailego_cache_line_count(entity.vector_size());
   const uint32_t prefetch_lines =
@@ -424,34 +453,37 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
     }
 
     candidates.pop();
-    const auto neighbors = entity.get_neighbors_typed(level, main_node);
-    ailego_prefetch(neighbors.data);
-    if (ailego_unlikely(ctx->debugging())) {
-      (*ctx->mutable_stats_get_neighbors())++;
-    }
-
-    if (neighbors.size() > buf_capacity) {
-      buf_capacity = neighbors.size();
-      neighbor_ids.resize(buf_capacity);
-      neighbor_vec_blocks.resize(buf_capacity);
-      dists.resize(buf_capacity);
-      neighbor_vecs.resize(buf_capacity);
-      if (has_extra_values) {
-        neighbor_extra_values.resize(buf_capacity);
-      }
-    }
-
     uint32_t size = 0;
-    for (uint32_t i = 0; i < neighbors.size(); ++i) {
-      node_id_t node = neighbors[i];
-      if (visit.visited(node)) {
-        if (ailego_unlikely(ctx->debugging())) {
-          (*ctx->mutable_stats_visit_dup_cnt())++;
-        }
-        continue;
+    {
+      std::lock_guard<std::mutex> node_lock(node_locks[main_node & lock_mask]);
+      const auto neighbors = entity.get_neighbors_typed(level, main_node);
+      ailego_prefetch(neighbors.data);
+      if (ailego_unlikely(ctx->debugging())) {
+        (*ctx->mutable_stats_get_neighbors())++;
       }
-      visit.set_visited(node);
-      neighbor_ids[size++] = node;
+
+      if (neighbors.size() > buf_capacity) {
+        buf_capacity = neighbors.size();
+        neighbor_ids.resize(buf_capacity);
+        neighbor_vec_blocks.resize(buf_capacity);
+        dists.resize(buf_capacity);
+        neighbor_vecs.resize(buf_capacity);
+        if (has_extra_values) {
+          neighbor_extra_values.resize(buf_capacity);
+        }
+      }
+
+      for (uint32_t i = 0; i < neighbors.size(); ++i) {
+        node_id_t node = neighbors[i];
+        if (visit.visited(node)) {
+          if (ailego_unlikely(ctx->debugging())) {
+            (*ctx->mutable_stats_visit_dup_cnt())++;
+          }
+          continue;
+        }
+        visit.set_visited(node);
+        neighbor_ids[size++] = node;
+      }
     }
     if (size == 0) {
       continue;
@@ -491,11 +523,14 @@ void dual_heap_search_neighbors(const EntityType &entity, level_t level,
 
     // do prefetch
     for (uint32_t i = 0; i < std::min(prefetch_offset, size); ++i) {
-      ailego_prefetch_lines(neighbor_vecs[i], prefetch_lines);
+      if (ailego_likely(neighbor_vecs[i] != nullptr)) {
+        ailego_prefetch_lines(neighbor_vecs[i], prefetch_lines);
+      }
     }
 
     dc.batch_dist(neighbor_vecs.data(), size, dists.data(),
                   has_extra_values ? neighbor_extra_values.data() : nullptr);
+    if (ailego_unlikely(dc.error())) return;
 
     for (uint32_t i = 0; i < size; ++i) {
       node_id_t node = neighbor_ids[i];
@@ -531,7 +566,7 @@ void HnswAlgorithm<EntityType>::search_neighbors(level_t level,
   auto run_with_filter = [&](auto &&filter) {
     dual_heap_search_neighbors<EntityType, MemBlockType>(
         entity, level, entry_point, dist, topk, ctx, dc,
-        std::forward<decltype(filter)>(filter));
+        std::forward<decltype(filter)>(filter), lock_pool_.data(), kLockMask);
   };
 
   if (ctx->filter().is_valid()) {
@@ -675,6 +710,7 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
       }
       dc.batch_dist(neighbor_vecs.data(), size, dists.data(),
                     has_extra_values ? neighbor_extra_values.data() : nullptr);
+      if (ailego_unlikely(dc.error())) return;
 
       for (uint32_t i = 0; i < size; ++i) {
         node_id_t node = neighbor_ids[i];

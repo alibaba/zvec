@@ -31,6 +31,7 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/ailego/parallel/thread_queue.h>
+#include <zvec/ailego/utility/time_helper.h>
 #include <zvec/db/config.h>
 #include <zvec/db/doc.h>
 #include <zvec/db/index_params.h>
@@ -255,6 +256,9 @@ class SegmentImpl : public Segment,
   ExecBatchPtr fetch(const std::vector<std::string> &columns,
                      int segment_doc_id) const override;
 
+  arrow::Result<ForwardReadState> prepare_forward_read(
+      const std::vector<std::string> &columns, bool with_deletion) override;
+
   bool has_identity_doc_ids() const override {
     return has_identity_doc_ids_;
   }
@@ -281,6 +285,8 @@ class SegmentImpl : public Segment,
 
  private:
   Status close();
+  // Caller holds seg_mtx_ exclusively (insert, dump, close, or public flush).
+  Status flush_unsafe();
   Status cleanup();
   bool ready_for_dump_block();
 
@@ -370,7 +376,22 @@ class SegmentImpl : public Segment,
   const std::vector<uint64_t> *get_fetch_perf_chunk_offsets(
       const std::vector<std::string> &columns) const;
 
-  void fresh_persist_chunked_array();
+  // Arrow fields of locked fetch for `columns`. Caller holds seg_mtx_.
+  arrow::Result<arrow::FieldVector> forward_fields_unsafe(
+      const std::vector<std::string> &columns) const;
+
+  struct PersistedReadState;
+  using PersistedReadStatePtr = std::shared_ptr<const PersistedReadState>;
+
+  // Builds the read state from the current schema, meta and stores. Returns
+  // null when the segment does not use one (no mmap, or a writing segment
+  // that is not read-only).
+  Result<PersistedReadStatePtr> build_persisted_read_state() const;
+
+  // Replaces the read state; never fails. A failed build leaves no state, so
+  // forward reads use locked fetch. Called before Open publishes the segment
+  // or under exclusive seg_mtx_.
+  void publish_persisted_read_state();
 
  private:
   // scalar forward (uses segment-local doc ID)
@@ -444,16 +465,35 @@ class SegmentImpl : public Segment,
   // helpers and the memory-component rebuild assume the caller holds it.
   mutable std::shared_mutex seg_mtx_;
 
-  bool need_destroyed_{false};
-
-  // For performance tuning
   static constexpr size_t INVALID_CHUNK_LAYOUT_ID =
       std::numeric_limits<size_t>::max();
-  std::vector<std::shared_ptr<arrow::ChunkedArray>> persist_chunk_arrays_;
-  std::unordered_map<std::string, int> col_idx_map_;
-  std::vector<std::vector<uint64_t>> chunk_layout_offsets_;
-  std::vector<size_t> persist_chunk_layout_ids_;
-  bool all_columns_same_chunk_layout_{false};
+
+  // Published as one snapshot. Sealed projections and read-only batch fetch
+  // share the same ChunkedArrays, including independently chunked DDL columns.
+  struct PersistedReadState {
+    struct Column {
+      std::shared_ptr<arrow::ChunkedArray> data;
+      arrow::Result<ForwardColumn::Ptr> forward{ForwardColumn::Ptr{}};
+      size_t fetch_layout{INVALID_CHUNK_LAYOUT_ID};
+    };
+
+    int64_t num_rows{0};
+    // Sealed IPC: projections get owning views. Otherwise (a read-only
+    // segment that still has a writing block) only batch fetch uses the state.
+    bool owning_views{false};
+    arrow::Result<IndexFilter::Ptr> deletion_filter{IndexFilter::Ptr{}};
+    std::unordered_map<std::string, Column> columns;
+    // Read-only batch fetch can locate all selected columns with one layout.
+    std::vector<std::vector<uint64_t>> fetch_offsets;
+    bool common_fetch_layout{false};
+  };
+
+  // Null when preparation is disabled or failed, or after close.
+  PersistedReadStatePtr persisted_read_state_;
+  // Set by close() under seg_mtx_. A missing read state alone does not mean
+  // the segment is closed.
+  bool closed_{false};
+  bool need_destroyed_{false};
 
   // Inner classes
   class CombinedRecordBatchReader;
@@ -551,7 +591,9 @@ Status SegmentImpl::Open(const SegmentOptions &options) {
 
   fresh_persist_block_offset();
 
-  fresh_persist_chunked_array();
+  // The read state is an optimization. Failing to prepare it must not make
+  // the segment unopenable; queries use locked fetch instead.
+  publish_persisted_read_state();
 
   // All persisted doc IDs must be loaded before checking identity.
   if (options_.read_only_) {
@@ -603,7 +645,9 @@ Status SegmentImpl::close() {
   // Exclusive: flush() below rewrites the stores readers read; destroy()
   // reaches here without the lock.
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
-  flush();
+  closed_ = true;
+  persisted_read_state_.reset();
+  flush_unsafe();
   if (invert_indexers_) {
     invert_indexers_.reset();
   }
@@ -860,7 +904,8 @@ Status SegmentImpl::insert_vector_indexer(Doc &doc) {
                  vector_index_params->quantize_type() !=
                      QuantizeType::UNIFORM_UINT8 &&
                  vector_index_params->quantize_type() !=
-                     QuantizeType::UNIFORM_UINT4) {
+                     QuantizeType::UNIFORM_UINT4 &&
+                 vector_index_params->quantize_type() != QuantizeType::PQ) {
         LOG_ERROR("quant vector indexer not found for field %s",
                   field->name().c_str());
         return Status::InternalError(
@@ -925,7 +970,7 @@ Status SegmentImpl::internal_insert(Doc &doc) {
   doc.set_doc_id(g_doc_id);
 
   if (ready_for_dump_block()) {
-    auto s = flush();
+    auto s = flush_unsafe();
     CHECK_RETURN_STATUS(s);
   }
 
@@ -1736,7 +1781,7 @@ Status SegmentImpl::create_vector_index(
     // training continue to consume the raw Flat sources.
     const auto *quantize_sources = &vector_indexers_[column];
     if (segment_detail::CanReuseInsertTimeQuantizedVectors(
-            vector_index_params->quantize_type())) {
+            *vector_index_params)) {
       auto quant_iter = quant_vector_indexers_.find(column);
       if (quant_iter != quant_vector_indexers_.end() &&
           !quant_iter->second.empty() &&
@@ -1841,9 +1886,12 @@ Status SegmentImpl::reload_vector_index(
         &vector_indexers,
     const std::unordered_map<std::string, VectorColumnIndexer::Ptr>
         &quant_vector_indexers) {
+  std::lock_guard<std::shared_mutex> lock(seg_mtx_);
   collection_schema_ = std::make_shared<CollectionSchema>(schema);
   segment_meta_ = new_segment_meta;
   fresh_persist_block_offset();
+  // Never aborts the reload: the indexers below must still be installed.
+  publish_persisted_read_state();
 
   auto vector_fields = schema.vector_fields();
 
@@ -2121,8 +2169,13 @@ Status SegmentImpl::drop_scalar_index(const std::vector<std::string> &columns,
 Status SegmentImpl::reload_scalar_index(
     const CollectionSchema &schema, const SegmentMeta::Ptr &segment_meta,
     const InvertedIndexer::Ptr &scalar_indexer) {
+  std::lock_guard<std::shared_mutex> lock(seg_mtx_);
   collection_schema_ = std::make_shared<CollectionSchema>(schema);
   segment_meta_ = segment_meta;
+  // Block offsets must match the new meta on every return below.
+  fresh_persist_block_offset();
+  // Never aborts the reload: the indexer below must still be installed.
+  publish_persisted_read_state();
 
   if (invert_indexers_ == scalar_indexer) {
     return Status::OK();
@@ -2137,7 +2190,6 @@ Status SegmentImpl::reload_scalar_index(
     return Status::OK();
   }
 
-  fresh_persist_block_offset();
 
   if (invert_indexers_) {
     auto old_dir = invert_indexers_->working_dir();
@@ -2159,7 +2211,7 @@ Status SegmentImpl::dump() {
   if (sealed_) {
     return Status::NotSupported("Segment has been dumped.");
   }
-  auto s = flush();
+  auto s = flush_unsafe();
   CHECK_RETURN_STATUS(s);
 
   if (invert_indexers_) {
@@ -2177,15 +2229,19 @@ Status SegmentImpl::dump() {
 
 void SegmentImpl::remove_writing_forward_block() {
   // Exclusive: dump() has already released seg_mtx_ by the time the collection
-  // seals the switched-out segment.
+  // seals the switched-out segment. Queries cannot observe the segment
+  // between the two steps below.
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
   segment_meta_->remove_writing_forward_block();
+  publish_persisted_read_state();
 }
 
 Status SegmentImpl::flush() {
-  // Requires seg_mtx_ (Insert's buffer-full path, dump, close) or the
-  // collection's exclusive schema lock (CollectionImpl::flush): finish_/
-  // init_memory_components() below do not lock.
+  std::lock_guard<std::shared_mutex> lock(seg_mtx_);
+  return flush_unsafe();
+}
+
+Status SegmentImpl::flush_unsafe() {
   CHECK_SEGMENT_READONLY_RETURN_STATUS;
 
   if (wal_file_ == nullptr || !wal_file_->has_record()) {
@@ -2353,7 +2409,7 @@ TablePtr SegmentImpl::fetch_perf(
       chunk_arrays[i] = nullptr;
       continue;
     }
-    chunk_arrays[i] = persist_chunk_arrays_[col_idx_map_.at(columns[i])];
+    chunk_arrays[i] = persisted_read_state_->columns.at(columns[i]).data;
   }
 
   std::vector<std::shared_ptr<arrow::Array>> result_arrays(columns.size());
@@ -2422,42 +2478,28 @@ TablePtr SegmentImpl::fetch_perf(
 
 const std::vector<uint64_t> *SegmentImpl::get_fetch_perf_chunk_offsets(
     const std::vector<std::string> &columns) const {
-  size_t common_layout_id = INVALID_CHUNK_LAYOUT_ID;
-
-  for (const auto &column : columns) {
-    if (column == LOCAL_ROW_ID) {
-      continue;
-    }
-
-    auto col_idx_it = col_idx_map_.find(column);
-    if (col_idx_it == col_idx_map_.end()) {
-      return nullptr;
-    }
-    const auto col_idx = static_cast<size_t>(col_idx_it->second);
-    if (col_idx >= persist_chunk_layout_ids_.size()) {
-      return nullptr;
-    }
-
-    const auto layout_id = persist_chunk_layout_ids_[col_idx];
-    if (layout_id == INVALID_CHUNK_LAYOUT_ID ||
-        layout_id >= chunk_layout_offsets_.size()) {
-      return nullptr;
-    }
-
-    if (common_layout_id == INVALID_CHUNK_LAYOUT_ID) {
-      common_layout_id = layout_id;
-      continue;
-    }
-
-    if (layout_id != common_layout_id) {
-      return nullptr;
-    }
-  }
-
-  if (common_layout_id == INVALID_CHUNK_LAYOUT_ID) {
+  if (!persisted_read_state_ || persisted_read_state_->fetch_offsets.empty()) {
     return nullptr;
   }
-  return &chunk_layout_offsets_[common_layout_id];
+  const auto &state = *persisted_read_state_;
+  if (state.common_fetch_layout) return &state.fetch_offsets.front();
+  size_t common_layout = INVALID_CHUNK_LAYOUT_ID;
+  for (const auto &name : columns) {
+    if (name == LOCAL_ROW_ID) continue;
+    const auto it = state.columns.find(name);
+    if (it == state.columns.end() ||
+        it->second.fetch_layout == INVALID_CHUNK_LAYOUT_ID) {
+      return nullptr;
+    }
+    if (common_layout != INVALID_CHUNK_LAYOUT_ID &&
+        common_layout != it->second.fetch_layout) {
+      return nullptr;
+    }
+    common_layout = it->second.fetch_layout;
+  }
+  return common_layout == INVALID_CHUNK_LAYOUT_ID
+             ? nullptr
+             : &state.fetch_offsets[common_layout];
 }
 
 TablePtr SegmentImpl::fetch_normal(
@@ -2671,6 +2713,27 @@ TablePtr SegmentImpl::fetch(const std::vector<std::string> &columns,
   return fetch_unsafe(columns, segment_doc_ids);
 }
 
+arrow::Result<arrow::FieldVector> SegmentImpl::forward_fields_unsafe(
+    const std::vector<std::string> &columns) const {
+  arrow::FieldVector fields;
+  fields.reserve(columns.size());
+  for (const auto &col : columns) {
+    if (col == LOCAL_ROW_ID || col == GLOBAL_DOC_ID) {
+      fields.push_back(arrow::field(col, arrow::uint64()));
+    } else if (col == USER_ID) {
+      fields.push_back(arrow::field(col, arrow::utf8()));
+    } else {
+      const auto *field = collection_schema_->get_field(col);
+      if (!field)
+        return arrow::Status::Invalid("Unknown forward column: ", col);
+      std::shared_ptr<arrow::Field> converted;
+      ARROW_RETURN_NOT_OK(ConvertFieldSchemaToArrowField(field, &converted));
+      fields.push_back(std::move(converted));
+    }
+  }
+  return fields;
+}
+
 TablePtr SegmentImpl::fetch_unsafe(
     const std::vector<std::string> &columns,
     const std::vector<int> &segment_doc_ids) const {
@@ -2678,30 +2741,13 @@ TablePtr SegmentImpl::fetch_unsafe(
     return nullptr;
   }
 
-  // Build result schema
-  std::vector<std::shared_ptr<arrow::Field>> fields;
-
-  for (size_t i = 0; i < columns.size(); ++i) {
-    const auto &col = columns[i];
-    if (col == LOCAL_ROW_ID) {
-      fields.push_back(arrow::field(LOCAL_ROW_ID, arrow::uint64()));
-    } else if (col == GLOBAL_DOC_ID) {
-      fields.push_back(arrow::field(GLOBAL_DOC_ID, arrow::uint64()));
-    } else if (col == USER_ID) {
-      fields.push_back(arrow::field(USER_ID, arrow::utf8()));
-    } else {
-      auto *field = collection_schema_->get_field(col);
-      std::shared_ptr<arrow::Field> arrow_field;
-      auto status = ConvertFieldSchemaToArrowField(field, &arrow_field);
-      if (!status.ok()) {
-        LOG_ERROR("Convert field schema failed: %s",
-                  field->to_string().c_str());
-        return nullptr;
-      }
-      fields.push_back(std::move(arrow_field));
-    }
+  auto converted = forward_fields_unsafe(columns);
+  if (!converted.ok()) {
+    LOG_ERROR("Convert field schema failed: %s",
+              converted.status().ToString().c_str());
+    return nullptr;
   }
-
+  const auto fields = converted.MoveValueUnsafe();
   auto result_schema = std::make_shared<arrow::Schema>(fields);
 
   // Early return for empty segment doc IDs.
@@ -2718,16 +2764,103 @@ TablePtr SegmentImpl::fetch_unsafe(
     return nullptr;
   }
 
-  if (all_columns_same_chunk_layout_) {
-    return fetch_perf(columns, result_schema, segment_doc_ids,
-                      chunk_layout_offsets_.front());
-  }
-
   const auto *chunk_offsets = get_fetch_perf_chunk_offsets(columns);
   if (chunk_offsets != nullptr) {
     return fetch_perf(columns, result_schema, segment_doc_ids, *chunk_offsets);
   }
   return fetch_normal(columns, result_schema, segment_doc_ids);
+}
+
+namespace {
+
+// Deletion check for a sealed IPC segment. It maps a segment-local row to its
+// global doc ID through the immutable, owned GLOBAL_DOC_ID column, so a
+// candidate takes neither the segment lock nor a segment reference. The
+// delete bitmap is still consulted live, so deletes made during the query
+// remain visible exactly as with the segment's own filter.
+class SealedDeletionFilter final : public IndexFilter {
+ public:
+  SealedDeletionFilter(ForwardColumn::Ptr doc_ids,
+                       std::shared_ptr<const DeleteStore> delete_store)
+      : doc_ids_(std::move(doc_ids)), delete_store_(std::move(delete_store)) {}
+
+  // Requires a fixed-width uint64 column with one raw span per chunk.
+  static bool Supports(const ForwardColumn &doc_ids) {
+    return doc_ids.layout() == ForwardColumn::Layout::kFixedWidth &&
+           doc_ids.type()->id() == arrow::Type::UINT64 &&
+           doc_ids.spans().size() == doc_ids.arrays().size();
+  }
+
+  bool is_filtered(uint64_t id) const override {
+    const auto location = doc_ids_->locate(id);
+    // An unknown row is not filtered, as with the segment's own filter.
+    if (!location) return false;
+    const auto &span = doc_ids_->spans()[location->chunk_index];
+    const auto doc_id = reinterpret_cast<const uint64_t *>(
+        span.values)[span.offset + location->offset];
+    return delete_store_->is_deleted(doc_id);
+  }
+
+ private:
+  const ForwardColumn::Ptr doc_ids_;
+  const std::shared_ptr<const DeleteStore> delete_store_;
+};
+
+}  // namespace
+
+arrow::Result<Segment::ForwardReadState> SegmentImpl::prepare_forward_read(
+    const std::vector<std::string> &columns, bool with_deletion) try {
+  PersistedReadStatePtr state;
+  {
+    std::shared_lock<std::shared_mutex> lock(seg_mtx_);
+    state = persisted_read_state_;
+    if (!state || !state->owning_views) {
+      // Locked fetch: writing segments, Parquet, and sealed IPC segments
+      // whose read state could not be prepared.
+      const auto &blocks = get_persist_block_metas(BlockType::SCALAR);
+      const auto rows = doc_ids_.size();
+      if (closed_ || blocks.size() != persist_stores_.size() ||
+          (rows && blocks.empty() && !memory_store_)) {
+        return arrow::Status::Invalid(
+            "Forward stores are closed or incomplete");
+      }
+      // Same schema as the locked fetch that will serve the candidates.
+      ARROW_ASSIGN_OR_RAISE(auto fields, forward_fields_unsafe(columns));
+      return ForwardReadState{arrow::schema(std::move(fields)), rows, nullptr,
+                              nullptr};
+    }
+  }
+
+  // Once captured, projecting columns is independent of DDL and retirement.
+  LOG_DEBUG("Forward read captured: rows[%zu] columns[%zu]",
+            static_cast<size_t>(state->num_rows), columns.size());
+  arrow::FieldVector fields;
+  std::vector<ForwardColumn::Ptr> selected;
+  fields.reserve(columns.size());
+  selected.reserve(columns.size());
+  for (const auto &name : columns) {
+    const auto it = state->columns.find(name);
+    if (it == state->columns.end()) {
+      return arrow::Status::Invalid("Unknown forward column: ", name);
+    }
+    ARROW_ASSIGN_OR_RAISE(auto column, it->second.forward);
+    fields.push_back(column->field());
+    selected.push_back(std::move(column));
+  }
+  IndexFilter::Ptr deletion_filter;
+  if (with_deletion) {
+    ARROW_ASSIGN_OR_RAISE(deletion_filter, state->deletion_filter);
+  }
+  auto view = ForwardReadView::Compose(arrow::schema(std::move(fields)),
+                                       state->num_rows, std::move(selected));
+  if (!view) return arrow::Status::Invalid("Invalid forward read view");
+  return ForwardReadState{view->schema(),
+                          static_cast<uint64_t>(state->num_rows),
+                          std::move(view), std::move(deletion_filter)};
+} catch (const std::bad_alloc &) {
+  return arrow::Status::OutOfMemory("Capture forward read view");
+} catch (const std::exception &error) {
+  return arrow::Status::IOError("Capture forward read view: ", error.what());
 }
 
 ExecBatchPtr SegmentImpl::fetch(const std::vector<std::string> &columns,
@@ -3277,6 +3410,15 @@ Status SegmentImpl::add_column(FieldSchema::Ptr column_schema,
   }
 
   std::unique_lock<std::shared_mutex> lock(seg_mtx_);
+  // Release the mapped columns before files are removed. On every return,
+  // including failures, recompute block offsets from the meta and republish,
+  // so a failed DDL cannot leave the segment without a state. The guard is
+  // destroyed before the lock.
+  persisted_read_state_.reset();
+  AILEGO_DEFER([this]() {
+    fresh_persist_block_offset();
+    publish_persisted_read_state();
+  });
   // create and append persist scalar indexer
   for (auto &block : new_blocks) {
     auto forward_path = FileHelper::MakeForwardBlockPath(
@@ -3297,10 +3439,6 @@ Status SegmentImpl::add_column(FieldSchema::Ptr column_schema,
   // collection_schema append new field
   auto s = collection_schema_->add_field(column_schema);
   CHECK_RETURN_STATUS(s);
-
-  fresh_persist_block_offset();
-
-  fresh_persist_chunked_array();
 
   return Status::OK();
 }
@@ -3447,6 +3585,15 @@ Status SegmentImpl::alter_column(const std::string &column_name,
   }
 
   std::unique_lock<std::shared_mutex> lock(seg_mtx_);
+  // Release the mapped columns before files are removed. On every return,
+  // including failures, recompute block offsets from the meta and republish,
+  // so a failed DDL cannot leave the segment without a state. The guard is
+  // destroyed before the lock.
+  persisted_read_state_.reset();
+  AILEGO_DEFER([this]() {
+    fresh_persist_block_offset();
+    publish_persisted_read_state();
+  });
   // update old block, remove column
   std::vector<BlockMeta> &persisted_blocks = segment_meta_->persisted_blocks();
   std::vector<int> will_del_block_idx;
@@ -3528,10 +3675,6 @@ Status SegmentImpl::alter_column(const std::string &column_name,
       collection_schema_->alter_field(column_name, new_column_schema);
   CHECK_RETURN_STATUS(alter_status);
 
-  fresh_persist_block_offset();
-
-  fresh_persist_chunked_array();
-
   return Status::OK();
 }
 
@@ -3542,6 +3685,15 @@ Status SegmentImpl::drop_column(const std::string &column_name) {
   }
 
   std::unique_lock<std::shared_mutex> lock(seg_mtx_);
+  // Release the mapped columns before files are removed. On every return,
+  // including failures, recompute block offsets from the meta and republish,
+  // so a failed DDL cannot leave the segment without a state. The guard is
+  // destroyed before the lock.
+  persisted_read_state_.reset();
+  AILEGO_DEFER([this]() {
+    fresh_persist_block_offset();
+    publish_persisted_read_state();
+  });
   // update old block, remove column
   std::vector<BlockMeta> &persisted_blocks = segment_meta_->persisted_blocks();
   std::vector<int> will_del_block_idx;
@@ -3626,10 +3778,6 @@ Status SegmentImpl::drop_column(const std::string &column_name) {
   // collection_schema append new field
   auto alter_status = collection_schema_->drop_field(column_name);
   CHECK_RETURN_STATUS(alter_status);
-
-  fresh_persist_block_offset();
-
-  fresh_persist_chunked_array();
 
   return Status::OK();
 }
@@ -3720,93 +3868,132 @@ void SegmentImpl::fresh_persist_block_offset() {
   calculate_block_offsets();
 }
 
-void SegmentImpl::fresh_persist_chunked_array() {
-  if (options_.enable_mmap_ && options_.read_only_) {
-    persist_chunk_arrays_.clear();
-    col_idx_map_.clear();
-    chunk_layout_offsets_.clear();
-    persist_chunk_layout_ids_.clear();
-    all_columns_same_chunk_layout_ = false;
+Result<SegmentImpl::PersistedReadStatePtr>
+SegmentImpl::build_persisted_read_state() const {
+  const bool sealed =
+      !memory_store_ && !segment_meta_->has_writing_forward_block();
+  if (!options_.enable_mmap_ || (!sealed && !options_.read_only_)) {
+    return PersistedReadStatePtr{};
+  }
 
-    std::vector<std::vector<std::shared_ptr<arrow::ChunkedArray>>> chunk_arrays;
-    auto fields = collection_schema_->forward_field_names();
-    fields.insert(fields.begin(), USER_ID);
-    fields.insert(fields.begin(), GLOBAL_DOC_ID);
-    chunk_arrays.resize(fields.size());
-    persist_chunk_arrays_.resize(fields.size());
-    persist_chunk_layout_ids_.resize(fields.size(), INVALID_CHUNK_LAYOUT_ID);
-
-    for (size_t i = 0; i < fields.size(); ++i) {
-      col_idx_map_[fields[i]] = i;
+  const auto &blocks = get_persist_block_metas(BlockType::SCALAR);
+  if (blocks.size() != persist_stores_.size() ||
+      (sealed && blocks.empty() && !doc_ids_.empty())) {
+    return tl::make_unexpected(
+        Status::InternalError("Incomplete IPC forward stores"));
+  }
+  arrow::FieldVector fields;
+  auto status =
+      ConvertCollectionSchemaToArrowFields(collection_schema_, &fields);
+  if (!status.ok()) {
+    return tl::make_unexpected(Status::InvalidArgument(status.ToString()));
+  }
+  auto schema = arrow::schema(fields);
+  std::vector<arrow::ArrayVector> chunks(fields.size());
+  std::vector<arrow::Status> errors(fields.size());
+  for (size_t b = 0; b < blocks.size(); ++b) {
+    const auto table = persist_stores_[b]->get_table();
+    if (!table ||
+        table->num_rows() != static_cast<int64_t>(blocks[b].doc_count_)) {
+      return tl::make_unexpected(Status::InternalError(
+          "Incomplete IPC forward block ", blocks[b].id()));
     }
-
-    auto &block_metas = get_persist_block_metas(BlockType::SCALAR);
-    if (block_metas.empty()) {
-      return;
-    }
-
-    for (size_t i = 0; i < block_metas.size(); ++i) {
-      auto &block_meta = block_metas[i];
-      const auto table = persist_stores_[i]->get_table();
-      for (size_t j = 0; j < fields.size(); ++j) {
-        if (block_meta.contain_column(fields[j])) {
-          auto chunked_array = table->GetColumnByName(fields[j]);
-          if (chunked_array) {
-            chunk_arrays[j].push_back(chunked_array);
-          }
-        }
-      }
-    }
-
-    std::map<std::vector<uint64_t>, size_t> chunk_layout_ids;
-    for (size_t i = 0; i < fields.size(); ++i) {
-      std::vector<std::shared_ptr<arrow::Array>> all_chunks;
-      for (const auto &arr : chunk_arrays[i]) {
-        for (int j = 0; j < arr->num_chunks(); ++j) {
-          all_chunks.push_back(arr->chunk(j));
-        }
-      }
-      persist_chunk_arrays_[i] =
-          std::make_shared<arrow::ChunkedArray>(all_chunks);
-
-      const auto &chunk_array = persist_chunk_arrays_[i];
-      if (chunk_array->num_chunks() == 0 ||
-          static_cast<uint64_t>(chunk_array->length()) !=
-              segment_meta_->doc_count()) {
+    // DDL can replace a column with separate blocks. Only the names still
+    // owned by this block contribute chunks, in segment row order.
+    for (const auto &name : blocks[b].columns()) {
+      const int index = schema->GetFieldIndex(name);
+      if (index < 0) continue;
+      const auto array = table->GetColumnByName(name);
+      if (!array || !array->type()->Equals(*fields[index]->type())) {
+        errors[index] = arrow::Status::Invalid(
+            "Missing or mistyped forward column: ", name);
         continue;
       }
-
-      std::vector<uint64_t> chunk_offsets;
-      chunk_offsets.reserve(chunk_array->num_chunks() + 1);
-      chunk_offsets.push_back(0);
-      for (int chunk_idx = 0; chunk_idx < chunk_array->num_chunks();
-           ++chunk_idx) {
-        chunk_offsets.push_back(
-            chunk_offsets.back() +
-            static_cast<uint64_t>(chunk_array->chunk(chunk_idx)->length()));
-      }
-
-      const auto layout_id = chunk_layout_offsets_.size();
-      auto [layout_it, inserted] =
-          chunk_layout_ids.emplace(chunk_offsets, layout_id);
-      if (inserted) {
-        chunk_layout_offsets_.push_back(std::move(chunk_offsets));
-      }
-      persist_chunk_layout_ids_[i] = layout_it->second;
+      auto &parts = chunks[index];
+      parts.insert(parts.end(), array->chunks().begin(), array->chunks().end());
     }
+  }
 
-    all_columns_same_chunk_layout_ =
-        !persist_chunk_layout_ids_.empty() &&
-        persist_chunk_layout_ids_.front() != INVALID_CHUNK_LAYOUT_ID &&
-        std::all_of(
-            persist_chunk_layout_ids_.begin(), persist_chunk_layout_ids_.end(),
-            [first_layout_id = persist_chunk_layout_ids_.front()](
-                size_t layout_id) { return layout_id == first_layout_id; });
+  auto next = std::make_shared<PersistedReadState>();
+  next->owning_views = sealed;
+  next->num_rows = static_cast<int64_t>(doc_ids_.size());
+  std::map<std::vector<uint64_t>, size_t> layouts;
+  size_t fetchable = 0;
+  for (size_t i = 0; i < fields.size(); ++i) {
+    auto &column = next->columns[fields[i]->name()];
+    if (!errors[i].ok()) {
+      column.forward = errors[i];
+      continue;
+    }
+    column.data = std::make_shared<arrow::ChunkedArray>(std::move(chunks[i]),
+                                                        fields[i]->type());
+    if (sealed) {
+      // Keep field errors local to projections that actually request them.
+      column.forward =
+          ForwardColumn::Make(fields[i], column.data, next->num_rows);
+    }
+    if (!options_.read_only_ || !column.forward.ok() ||
+        column.data->num_chunks() == 0 ||
+        static_cast<uint64_t>(column.data->length()) !=
+            segment_meta_->doc_count()) {
+      continue;
+    }
+    std::vector<uint64_t> offsets{0};
+    offsets.reserve(column.data->num_chunks() + 1);
+    for (const auto &chunk : column.data->chunks()) {
+      offsets.push_back(offsets.back() + chunk->length());
+    }
+    auto [it, inserted] = layouts.emplace(offsets, layouts.size());
+    if (inserted) next->fetch_offsets.push_back(std::move(offsets));
+    column.fetch_layout = it->second;
+    ++fetchable;
+  }
+  next->common_fetch_layout = fetchable == fields.size() && layouts.size() == 1;
+  if (sealed) {
+    next->columns[LOCAL_ROW_ID].forward = ForwardColumn::MakeRowId(
+        arrow::field(LOCAL_ROW_ID, arrow::uint64(), false), next->num_rows);
+    if (delete_store_) {
+      const auto &ids = next->columns.at(GLOBAL_DOC_ID).forward;
+      if (!ids.ok()) {
+        next->deletion_filter = ids.status();
+      } else if (SealedDeletionFilter::Supports(**ids)) {
+        next->deletion_filter =
+            std::make_shared<SealedDeletionFilter>(*ids, delete_store_);
+      }
+    }
+  }
+  return PersistedReadStatePtr{std::move(next)};
+}
 
+void SegmentImpl::publish_persisted_read_state() {
+  // Release the old state before building so its buffers never outlive the
+  // schema and blocks they describe.
+  persisted_read_state_.reset();
+  const ailego::ElapsedTime elapsed;
+  Result<PersistedReadStatePtr> built;
+  // This runs from DDL scope guards, so it must not throw. Arrow and the
+  // standard library can still throw std::bad_alloc.
+  try {
+    built = build_persisted_read_state();
+  } catch (const std::exception &error) {
+    built = tl::make_unexpected(Status::InternalError(error.what()));
+  }
+  if (!built.has_value()) {
+    LOG_WARN(
+        "Persisted forward read state unavailable for segment[%d], using "
+        "locked fetch: %s",
+        id(), built.error().message().c_str());
+    return;
+  }
+  persisted_read_state_ = std::move(built.value());
+  if (persisted_read_state_) {
     LOG_INFO(
-        "fresh_persist_chunked_array persist_chunk_arrays[%zu] "
-        "chunk_layouts[%zu]",
-        persist_chunk_arrays_.size(), chunk_layout_offsets_.size());
+        "Prepared persisted forward read state: segment[%d] columns[%zu] "
+        "rows[%lld] owning_views[%d] cost[%llu us]",
+        id(), persisted_read_state_->columns.size(),
+        static_cast<long long>(persisted_read_state_->num_rows),
+        persisted_read_state_->owning_views,
+        static_cast<unsigned long long>(elapsed.micro_seconds()));
   }
 }
 
@@ -4257,11 +4444,12 @@ Status SegmentImpl::init_memory_components() {
       }
       memory_vector_indexers_.insert({field->name(), vector_indexer});
 
-      // Uniform quantizers need the full dataset to train their scale/bias.
+      // Uniform and PQ quantizers require dataset-level training.
       // Until optimize creates that index, retain only the raw writer Flat.
       if (index_params->quantize_type() == QuantizeType::UNIFORM_UINT7 ||
           index_params->quantize_type() == QuantizeType::UNIFORM_UINT8 ||
-          index_params->quantize_type() == QuantizeType::UNIFORM_UINT4) {
+          index_params->quantize_type() == QuantizeType::UNIFORM_UINT4 ||
+          index_params->quantize_type() == QuantizeType::PQ) {
         continue;
       }
 
@@ -4478,8 +4666,8 @@ Status SegmentImpl::append_wal(const Doc &doc) {
 }
 
 Status SegmentImpl::finish_memory_components() {
-  // Caller holds seg_mtx_ exclusively, or the collection's exclusive schema
-  // lock (via CollectionImpl::flush()).
+  // Caller holds seg_mtx_ exclusively (flush_unsafe(), reached from the
+  // public flush(), insert, dump and close).
 
   auto block = segment_meta_->writing_forward_block().value();
 
@@ -4957,8 +5145,12 @@ Status SegmentImpl::drop_fts_index(const std::string &column,
 Status SegmentImpl::reload_fts_index(const CollectionSchema &schema,
                                      const SegmentMeta::Ptr &segment_meta,
                                      const FtsIndexer::Ptr &new_fts_indexer) {
+  std::lock_guard<std::shared_mutex> lock(seg_mtx_);
   collection_schema_ = std::make_shared<CollectionSchema>(schema);
   segment_meta_ = segment_meta;
+  fresh_persist_block_offset();
+  // Never aborts the reload: the indexer below must still be installed.
+  publish_persisted_read_state();
 
   if (fts_indexer_) {
     auto old_dir = fts_indexer_->working_dir();
@@ -4969,7 +5161,6 @@ Status SegmentImpl::reload_fts_index(const CollectionSchema &schema,
   }
 
   has_fts_ = (fts_indexer_ != nullptr);
-  fresh_persist_block_offset();
 
   return Status::OK();
 }
