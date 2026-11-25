@@ -44,16 +44,11 @@ inline DataType FlatStorageDataTypeForField(DataType field_data_type,
 // These quantizers encode each record independently and therefore produce a
 // valid quantized index during insert, before optimize sees the full dataset.
 //
-// Rotated INT8/INT4 records are the exception: every index draws its own
-// random rotation, and the merge copies records whose reformer names match
-// without re-encoding them. Copying them into a new index would pair them with
-// a different rotation, so they are rebuilt from the raw Flat sources.
-inline bool CanReuseInsertTimeQuantizedVectors(
-    const VectorIndexParams &params) {
-  if (params.quantizer_param().enable_rotate()) {
-    return false;
-  }
-  const QuantizeType quantize_type = params.quantize_type();
+// The records are still bound to the encoding state of the index that holds
+// them, such as the rotation of a rotated INT8/INT4 quantizer. Merges take
+// them over only into a target that shares that state; see
+// VectorColumnIndexer::shares_encoding_state.
+inline bool CanReuseInsertTimeQuantizedVectors(QuantizeType quantize_type) {
   return quantize_type == QuantizeType::FP16 ||
          quantize_type == QuantizeType::INT8 ||
          quantize_type == QuantizeType::INT4;
@@ -295,11 +290,19 @@ class SegmentHelper {
   // output path and opened in-place as the merge base. If `merged_indexer` is
   // non-null, it receives the opened indexer (caller owns Close()); otherwise
   // the indexer is closed before returning.
+  //
+  // `raw_source_indexers`, if non-null, hold the original vectors of the same
+  // documents as the quantized `source_indexers`. They are merged instead when
+  // the output cannot take over the encoded records of every source as-is
+  // (see VectorColumnIndexer::shares_encoding_state), so that no record is
+  // decoded and quantized a second time.
   static Status MergeWithOptionalReuse(
       const std::string &output_index_path, const FieldSchema &index_field,
       std::vector<VectorColumnIndexer::Ptr> source_indexers,
       const IndexFilter::Ptr &filter, int concurrency,
-      VectorColumnIndexer::Ptr *merged_indexer);
+      VectorColumnIndexer::Ptr *merged_indexer,
+      const std::vector<VectorColumnIndexer::Ptr> *raw_source_indexers =
+          nullptr);
 
   // Returns a FieldSchema clone whose index_params is ready for building the
   // quantize indexer.

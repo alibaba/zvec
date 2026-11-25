@@ -492,6 +492,15 @@ class IntegerStreamingReformer : public IndexReformer {
     return true;
   }
 
+  //! Records are portable only between reformers that rotate identically.
+  bool is_compatible(const IndexReformer &other) const override {
+    const auto *peer = dynamic_cast<const IntegerStreamingReformer *>(&other);
+    return peer != nullptr && data_type_ == peer->data_type_ &&
+           enable_normalize_ == peer->enable_normalize_ &&
+           is_euclidean_ == peer->is_euclidean_ &&
+           Rotator::same_rotation(rotation(), peer->rotation());
+  }
+
   int revert(const void *in, const IndexQueryMeta &qmeta,
              std::string *out) const override {
     if (enable_normalize_) {
@@ -512,6 +521,11 @@ class IntegerStreamingReformer : public IndexReformer {
     }
 
     return 0;
+  }
+
+  //! The rotation applied to every record, if any
+  std::shared_ptr<Rotator> rotation() const {
+    return enable_rotate_ ? rotator_ : nullptr;
   }
 
   //! Members

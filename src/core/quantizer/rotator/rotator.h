@@ -48,6 +48,13 @@ class MatrixRotator;
  * dimension.  MatrixRotator (O(d^2)) is retained for future use.
  *
  * Rotation preserves dimension: output size == input size (no padding).
+ *
+ * A rotation is part of the encoding of every record quantized after it, so
+ * records are only portable between indexes that hold the same rotation.
+ * create() therefore derives the rotation from a fixed seed: all indexes of
+ * one dimension share it and can exchange encoded records as-is. Indexes
+ * written before the seed was fixed hold a random rotation each; equals()
+ * tells them apart.
  */
 class Rotator {
  public:
@@ -55,13 +62,25 @@ class Rotator {
 
   // Static factories ---------------------------------------------------------
 
-  //! Create and initialize a new rotator.
+  //! Seed of the rotation that create() draws by default.
+  static constexpr uint32_t kDefaultSeed = 0x5a766563;  // "Zvec"
+
+  //! Create and initialize a new rotator with the default seed, so that it
+  //! equals every other default rotator of the same type and dimension.
   //! @param out         on success, stores the rotator; on failure, nullptr
   //! @param dimension   vector dimension (input and output size)
   //! @param rotator_type rotation algorithm (default: FhtKac)
   //! @return 0 on success, error code on failure
   static int create(std::shared_ptr<Rotator> *out, size_t dimension,
                     RotatorType rotator_type = RotatorType::FhtKac);
+
+  //! Create and initialize a new rotator from an explicit seed.
+  static int create(std::shared_ptr<Rotator> *out, size_t dimension,
+                    RotatorType rotator_type, uint32_t seed);
+
+  //! Test hook: replace the seed used by create() from now on. Lets tests
+  //! reproduce indexes written when every rotator drew a random rotation.
+  static void set_default_seed_for_testing(uint32_t seed);
 
   //! Open a rotator from an IndexStorage segment (self-describing, no init
   //! needed).  Parses header to get type/dimension, then reconstructs the
@@ -91,6 +110,16 @@ class Rotator {
   virtual RotatorType rotator_type() const = 0;
 
   // Non-virtual public methods ----------------------------------------------
+
+  //! Whether both rotators apply the same rotation, i.e. records rotated by
+  //! one are valid for the other.
+  bool equals(const Rotator &other) const;
+
+  //! equals() for optional rotators: two absent rotations are the same.
+  static bool same_rotation(const std::shared_ptr<Rotator> &lhs,
+                            const std::shared_ptr<Rotator> &rhs) {
+    return lhs && rhs ? lhs->equals(*rhs) : !lhs && !rhs;
+  }
 
   //! Rotate a single vector into a managed buffer
   std::vector<float> rotate(const float *in) const;
@@ -125,9 +154,10 @@ class Rotator {
  protected:
   // Protected virtuals — implemented by derived classes ---------------------
 
-  //! Initialize the rotator's internal state for the given dimension.
+  //! Initialize the rotator's internal state for the given dimension. The
+  //! rotation must be a pure function of (dim, seed).
   //! @return 0 on success, error code on failure
-  virtual int init_impl(size_t dim) = 0;
+  virtual int init_impl(size_t dim, uint32_t seed) = 0;
 
   //! Return the serialized blob size (without header)
   virtual size_t blob_bytes() const = 0;

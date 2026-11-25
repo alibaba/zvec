@@ -50,16 +50,16 @@ void FhtRotator::init_context(size_t dim) {
   kernels_ = turbo::get_rotator_kernels(turbo::RotateType::kFht);
 }
 
-int FhtRotator::init_impl(size_t dim) {
+int FhtRotator::init_impl(size_t dim, uint32_t seed) {
   if (dim == 0) {
     return IndexError_InvalidArgument;
   }
   init_context(dim);
-  std::random_device rd;
-  std::mt19937 gen(rd());
-  std::uniform_int_distribution<int> dist(0, 255);
+  // Take the engine output directly: unlike the standard distributions, it is
+  // identical on every platform, so the same seed yields the same flips.
+  std::mt19937 gen(seed);
   for (size_t i = 0; i < blob_bytes(); ++i) {
-    context_->flip[i] = static_cast<uint8_t>(dist(gen));
+    context_->flip[i] = static_cast<uint8_t>(gen() & 0xFF);
   }
   return 0;
 }

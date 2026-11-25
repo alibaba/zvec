@@ -134,6 +134,16 @@ class ZVEC_CORE_API Index {
                     const MergeOptions &options = {});
   // TODO: static reduce
 
+  // Returns false if `source` uses the same encoding as this index but holds
+  // different per-index state, e.g. another rotation of a rotated INT8/INT4
+  // quantizer. merge() cannot copy the records of such a source: it decodes
+  // and re-encodes them, which is lossy for a quantized source. A caller that
+  // also holds the original vectors should merge those instead.
+  //
+  // Returns true otherwise, including for sources of another encoding, which
+  // merge() converts as before.
+  bool shares_encoding_state(const Index &source) const;
+
   virtual int add(const VectorData &vector, uint32_t doc_id);
 
   virtual int fetch(const uint32_t doc_id,
