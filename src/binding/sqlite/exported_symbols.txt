@@ -1,0 +1,1 @@
+_sqlite3_zvec_init

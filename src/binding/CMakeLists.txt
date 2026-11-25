@@ -9,3 +9,7 @@ endif()
 if(BUILD_PYTHON_BINDINGS)
     cc_directory(python)
 endif()
+# Must come after c: the extension links the zvec_c_api target.
+if(BUILD_SQLITE_BINDINGS)
+    cc_directory(sqlite)
+endif()
