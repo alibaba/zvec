@@ -173,7 +173,8 @@ class CollectionImpl : public Collection {
   Result<DocPtrList> query_unsafe(const MultiQuery &query) const;
 
   Result<InternalIdsQueryResult> query_internal_ids_unsafe(
-      const SearchQuery &query, bool return_scores) const;
+      const SearchQuery &query, bool return_scores,
+      bool preserve_refine_order = false) const;
 
   Result<InternalIdsQueryResult> query_internal_ids_fallback(
       const SearchQuery &query, bool return_scores) const;
@@ -1874,7 +1875,8 @@ Result<InternalIdsQueryResult> CollectionImpl::query_internal_ids(
 }
 
 Result<InternalIdsQueryResult> CollectionImpl::query_internal_ids_unsafe(
-    const SearchQuery &query, bool return_scores) const {
+    const SearchQuery &query, bool return_scores,
+    bool preserve_refine_order) const {
   const auto &field_name = query.target_.field_name_;
   const auto field = query_internal_ids_fields_.find(field_name);
   if (!query.filter_.empty() || field == query_internal_ids_fields_.end()) {
@@ -1910,7 +1912,8 @@ Result<InternalIdsQueryResult> CollectionImpl::query_internal_ids_unsafe(
         *field->second.primary, vector, query_params,
         static_cast<uint32_t>(topk), nullptr,
         refine ? field->second.reference : nullptr, out.ids.data(),
-        out.scores.empty() ? nullptr : out.scores.data());
+        out.scores.empty() ? nullptr : out.scores.data(),
+        preserve_refine_order);
     CHECK_RETURN_STATUS_EXPECTED(status);
     return out;
   }
@@ -2081,7 +2084,7 @@ Result<DocPtrList> CollectionImpl::query_unsafe(
                         query.target_.query_params_->is_using_refiner();
     if (it != query_internal_ids_fields_.end() && it->second.primary &&
         (!refine || it->second.reference)) {
-      auto result = query_internal_ids_unsafe(query, true);
+      auto result = query_internal_ids_unsafe(query, true, true);
       if (!result) return tl::make_unexpected(result.error());
       CombinedVectorColumnIndexer::sort_query_results(
           it->second.metric_type, result->ids.data(), result->scores.data(),

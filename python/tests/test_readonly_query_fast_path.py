@@ -218,3 +218,75 @@ def test_readonly_pq_query_matches_general_with_ties(tmp_path, bits, rotate, met
                 assert np.all(np.isnan(scores[len(expected) :]))
     finally:
         reader.close()
+
+
+def test_readonly_uint8_refiner_preserves_tied_cutoffs(tmp_path):
+    rng = np.random.default_rng(20261125)
+    vectors = rng.integers(0, 8, size=(1100, 128)).astype(np.float32)
+    queries = rng.integers(0, 8, size=(32, 128)).astype(np.float32)
+    schema = zvec.CollectionSchema(
+        "uint8_refiner_ties",
+        fields=[zvec.FieldSchema("number", zvec.DataType.INT64)],
+        vectors=[
+            zvec.VectorSchema(
+                "vector",
+                zvec.DataType.VECTOR_FP32,
+                128,
+                index_param=zvec.VamanaIndexParam(
+                    metric_type=zvec.MetricType.L2,
+                    quantize_type=zvec.QuantizeType.UNIFORM_UINT4,
+                    flat_data_type=zvec.DataType.VECTOR_UINT8,
+                    use_flat_contiguous_memory=True,
+                    use_contiguous_memory=True,
+                    max_degree=16,
+                    search_list_size=64,
+                ),
+            )
+        ],
+    )
+    path = str(tmp_path / "index")
+    writer = zvec.create_and_open(path, schema)
+    try:
+        for start in range(0, len(vectors), 200):
+            assert all(
+                status.ok()
+                for status in writer.insert(
+                    [
+                        zvec.Doc(
+                            id=str(i),
+                            vectors={"vector": vectors[i]},
+                            fields={"number": i},
+                        )
+                        for i in range(start, min(start + 200, len(vectors)))
+                    ]
+                )
+            )
+        writer.optimize()
+    finally:
+        writer.close()
+    reader = zvec.open(path, zvec.CollectionOption(read_only=True, enable_mmap=True))
+    saw_ties = False
+    try:
+        for topk in (1, 5, 10, 40):
+            for vector in queries:
+                query = zvec.Query(
+                    "vector",
+                    vector=vector,
+                    param=zvec.VamanaQueryParam(
+                        ef_search=64, is_using_refiner=True, scale_factor=1.7
+                    ),
+                )
+                # Compare routes on the same read-only storage layout. A writer
+                # may choose a different member of a tied group after reopen.
+                expected = reader.query(query, topk=topk, output_fields=["number"])
+                docs = reader.query(query, topk=topk, output_fields=[])
+                assert [(d.id, d.score) for d in docs] == [
+                    (d.id, d.score) for d in expected
+                ]
+                saw_ties |= any(
+                    expected[i].score == expected[i - 1].score
+                    for i in range(1, len(expected))
+                )
+    finally:
+        reader.close()
+    assert saw_ties
