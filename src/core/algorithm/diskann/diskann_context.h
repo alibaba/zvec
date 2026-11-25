@@ -215,11 +215,19 @@ class DiskAnnContext : public IndexContext,
   }
 
   inline bool error() const {
-    return has_error_;
+    return error_code_ != 0;
   }
 
   inline void set_error(bool err) {
-    has_error_ = err;
+    error_code_ = err ? IndexError_Runtime : 0;
+  }
+
+  int error_code() const {
+    return error_code_;
+  }
+
+  void set_error_code(int status) {
+    error_code_ = status;
   }
 
   inline void clear() {
@@ -234,7 +242,7 @@ class DiskAnnContext : public IndexContext,
     expanded_nodes_.clear();
     visit_filter_.clear();
     group_topk_heaps_.clear();
-    has_error_ = false;
+    error_code_ = 0;
   }
 
   //! Preserve query-time options when replacing an incompatible pooled
@@ -351,10 +359,16 @@ class DiskAnnContext : public IndexContext,
 
   void emplace_result_doc(IndexDocumentList &docs, diskann_id_t id, float score,
                           const VectorInfo &info) {
+    diskann_key_t key;
+    const int status = entity_->read_key(id, &key);
+    if (status != 0) {
+      set_error_code(status);
+      return;
+    }
     if (fetch_vector_) {
-      docs.emplace_back(entity_->get_key(id), score, id, info.vec_);
+      docs.emplace_back(key, score, id, info.vec_);
     } else {
-      docs.emplace_back(entity_->get_key(id), score, id);
+      docs.emplace_back(key, score, id);
     }
   }
 
@@ -395,7 +409,7 @@ class DiskAnnContext : public IndexContext,
   std::vector<IndexGroupDocumentList> group_results_{};
 
   bool fetch_vector_{false};
-  bool has_error_{false};
+  int error_code_{0};
 
   NeighborPriorityQueue best_list_nodes_;
   std::vector<Neighbor> expanded_nodes_;

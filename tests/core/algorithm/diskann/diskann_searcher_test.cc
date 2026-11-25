@@ -331,11 +331,11 @@ TEST_F(DiskAnnSearcherTest, TestGeneral) {
 
     // The indexer now receives an externally built quantizer, exactly like the
     // searcher does; the layout checks below still run before it is used.
-    std::string quantizer_meta_buffer;
+    DiskAnnSearcherEntity::QuantizerMetaBuffer quantizer_meta_buffer;
     ASSERT_EQ(0, malformed_entity.read_pq_quantizer_meta_buffer(
                      &quantizer_meta_buffer));
     auto pq_quantizer = DiskAnnUtil::create_quantizer_from_meta_buffer(
-        quantizer_meta_buffer, *_index_meta_ptr,
+        quantizer_meta_buffer.bytes, *_index_meta_ptr,
         static_cast<uint32_t>(malformed_entity.pq_chunk_num()),
         malformed_entity.legacy_pq_layout());
     ASSERT_NE(pq_quantizer, nullptr);

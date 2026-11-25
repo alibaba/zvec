@@ -626,7 +626,8 @@ class BufferReadStorage : public IndexStorage {
     params.get(BUFFER_READ_STORAGE_WARMUP_MODE, &warmup_mode_);
     params.get(BUFFER_READ_STORAGE_PROCESS_RSS_SCRATCH, &process_rss_scratch_);
     if (warmup_mode_ != BUFFER_READ_STORAGE_WARMUP_NONE &&
-        warmup_mode_ != BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL) {
+        warmup_mode_ != BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL &&
+        warmup_mode_ != BUFFER_READ_STORAGE_WARMUP_AUTO) {
       LOG_ERROR("Invalid BufferReadStorage warmup mode: %s",
                 warmup_mode_.c_str());
       return IndexError_InvalidArgument;
@@ -835,6 +836,10 @@ class BufferReadStorage : public IndexStorage {
 
   std::shared_ptr<ailego::VecBufferPool> vec_buffer_pool() const override {
     return buffer_pool_;
+  }
+
+  bool automatic_warmup_enabled() const override {
+    return warmup_mode_ == BUFFER_READ_STORAGE_WARMUP_AUTO;
   }
 
   //! Path of the opened index file (diagnostics / backend consistency).

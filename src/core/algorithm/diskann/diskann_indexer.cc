@@ -23,6 +23,7 @@
 #include <tuple>
 #include <unordered_set>
 #include <vector>
+#include <ailego/pattern/scope_guard.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/file.h>
 
@@ -122,6 +123,7 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
   }
 
   auto pool = storage->vec_buffer_pool();
+  buffer_backed_ = pool != nullptr;
   auto cached_file = storage->file();
 #if defined(_WIN32) || defined(_WIN64)
   // Windows DiskAnn must be able to close the single buffered handle before
@@ -159,6 +161,7 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
   // The clone shares the PQ code buffer with the loaded entity, so the codes
   // stay alive for as long as this indexer holds its own entity.
   quant_codes_ = entity.pq_codes();
+  paged_quant_codes_ = entity.paged_pq_codes();
 
   index_segment_offset_ = vector_segment->data_offset();
 
@@ -601,6 +604,10 @@ int DiskAnnIndexer::load_cache_list(CacheLoadState &state) {
 }
 
 int DiskAnnIndexer::configure_cache(uint32_t cache_node_num) {
+  if (buffer_backed_) {
+    reset_cache_storage();
+    return 0;
+  }
   cache_node_num = effective_cache_node_count(cache_node_num);
   if (cache_node_num == 0) {
     reset_cache_storage();
@@ -775,10 +782,13 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
   topk_heap.clear();
   auto &group_topk_heaps = ctx->group_topk_heaps();
   group_topk_heaps.clear();
-  auto emplace_candidate = [&](diskann_id_t id, VectorInfo info) {
+  auto emplace_candidate = [&](diskann_id_t id, VectorInfo info) -> int {
     if (ctx->group_by_search() && ctx->group_by().is_valid()) {
+      diskann_key_t key;
+      const int status = entity_->read_key(id, &key);
+      if (status != 0) return status;
       topk_heap.emplace(id, info);
-      std::string group_id = ctx->group_by()(get_key(id));
+      std::string group_id = ctx->group_by()(key);
       auto &group_topk_heap = group_topk_heaps[group_id];
       if (group_topk_heap.empty()) {
         group_topk_heap.limit(ctx->group_topk());
@@ -787,6 +797,7 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
     } else {
       topk_heap.emplace(id, std::move(info));
     }
+    return 0;
   };
 
   IOContext &io_ctx = ctx->io_ctx();
@@ -810,8 +821,9 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
   DiskAnnReadVector<std::pair<diskann_id_t, uint8_t *>> frontier_neighbors;
   frontier_neighbors.reserve(2 * beam_width_);
 
+  DiskAnnReadReservation request_memory;
   std::vector<AlignedRead> frontier_read_reqs;
-  frontier_read_reqs.reserve(2 * beam_width_);
+  request_memory.reserve(frontier_read_reqs, 2 * beam_width_);
 
   DiskAnnReadVector<std::tuple<diskann_id_t, uint32_t, diskann_id_t *>>
       cached_neighbors;
@@ -822,7 +834,10 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
   diskann_id_t id = 0;
   while (id < doc_cnt_) {
     while (frontier.size() < beam_width_) {
-      if (!ctx->filter().is_valid() || !ctx->filter()(get_key(id))) {
+      bool filtered;
+      const int status = is_filtered(ctx, id, &filtered);
+      if (status != 0) return status;
+      if (!filtered) {
         auto iter = neighbor_cache_.find(id);
         if (iter != neighbor_cache_.end()) {
           cached_neighbors.push_back(
@@ -885,9 +900,10 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
 
       float cur_expanded_dist = dc.dist(aligned_query_raw, node_fp_coords_copy);
 
-      emplace_candidate(
+      const int status = emplace_candidate(
           std::get<0>(cached_neighbor),
           VectorInfo(cur_expanded_dist, make_vector_copy(node_fp_coords_copy)));
+      if (status != 0) return status;
     }
 
     for (auto &frontier_neighbor : frontier_neighbors) {
@@ -900,9 +916,10 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
 
       float cur_expanded_dist = dc.dist(aligned_query_raw, data_buf);
 
-      emplace_candidate(
+      const int status = emplace_candidate(
           frontier_neighbor.first,
           VectorInfo(cur_expanded_dist, make_vector_copy(data_buf)));
+      if (status != 0) return status;
 
       stats.cpu_us += cpu_timer.micro_seconds();
     }
@@ -928,10 +945,13 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
   topk_heap.clear();
   auto &group_topk_heaps = ctx->group_topk_heaps();
   group_topk_heaps.clear();
-  auto emplace_candidate = [&](diskann_id_t id, VectorInfo info) {
+  auto emplace_candidate = [&](diskann_id_t id, VectorInfo info) -> int {
     if (ctx->group_by_search() && ctx->group_by().is_valid()) {
+      diskann_key_t key;
+      const int status = entity_->read_key(id, &key);
+      if (status != 0) return status;
       topk_heap.emplace(id, info);
-      std::string group_id = ctx->group_by()(get_key(id));
+      std::string group_id = ctx->group_by()(key);
       auto &group_topk_heap = group_topk_heaps[group_id];
       if (group_topk_heap.empty()) {
         group_topk_heap.limit(ctx->group_topk());
@@ -940,6 +960,7 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
     } else {
       topk_heap.emplace(id, std::move(info));
     }
+    return 0;
   };
 
   IOContext &io_ctx = ctx->io_ctx();
@@ -963,8 +984,9 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
   DiskAnnReadVector<std::pair<uint32_t, uint8_t *>> frontier_neighbors;
   frontier_neighbors.reserve(2 * beam_width_);
 
+  DiskAnnReadReservation request_memory;
   std::vector<AlignedRead> frontier_read_reqs;
-  frontier_read_reqs.reserve(2 * beam_width_);
+  request_memory.reserve(frontier_read_reqs, 2 * beam_width_);
 
   DiskAnnReadVector<std::tuple<diskann_id_t, uint32_t, diskann_id_t *>>
       cached_neighbors;
@@ -976,7 +998,9 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
   while (idx < keys.size()) {
     while (frontier.size() < beam_width_) {
       if (!ctx->filter().is_valid() || !ctx->filter()(keys[idx])) {
-        diskann_id_t id = get_id(keys[idx]);
+        diskann_id_t id;
+        const int status = find_id(keys[idx], &id);
+        if (status != 0) return status;
         if (id == kInvalidId) {
           ++idx;
           if (idx >= keys.size()) {
@@ -1047,9 +1071,10 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
 
       float cur_expanded_dist = dc.dist(aligned_query_raw, node_fp_coords_copy);
 
-      emplace_candidate(
+      const int status = emplace_candidate(
           std::get<0>(cached_neighbor),
           VectorInfo(cur_expanded_dist, make_vector_copy(node_fp_coords_copy)));
+      if (status != 0) return status;
     }
 
     for (auto &frontier_neighbor : frontier_neighbors) {
@@ -1062,9 +1087,10 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
 
       float cur_expanded_dist = dc.dist(aligned_query_raw, data_buf);
 
-      emplace_candidate(
+      const int status = emplace_candidate(
           frontier_neighbor.first,
           VectorInfo(cur_expanded_dist, make_vector_copy(data_buf)));
+      if (status != 0) return status;
 
       stats.cpu_us += cpu_timer.micro_seconds();
     }
@@ -1131,8 +1157,9 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
   std::vector<std::pair<diskann_id_t, uint8_t *>> frontier_neighbors;
   frontier_neighbors.reserve(2 * beam_width_);
 
+  DiskAnnReadReservation request_memory;
   std::vector<AlignedRead> frontier_read_reqs;
-  frontier_read_reqs.reserve(2 * beam_width_);
+  request_memory.reserve(frontier_read_reqs, 2 * beam_width_);
 
   std::vector<std::tuple<diskann_id_t, uint32_t, diskann_id_t *>>
       cached_neighbors;
@@ -1253,8 +1280,11 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
           ? 1
           : DiskAnnUtil::div_round_up(max_node_size_, DiskAnnUtil::kSectorSize);
 
-  dc.bind_quantizer(quantizer_.get(), quant_codes_, quant_code_size_);
-  dc.quantize_query(ctx->query_rotated());
+  dc.bind_quantizer(quantizer_.get(), quant_codes_, quant_code_size_,
+                    paged_quant_codes_,
+                    storage_ ? storage_->vec_buffer_pool().get() : nullptr);
+  const int quantize_status = dc.quantize_query(ctx->query_rotated());
+  if (quantize_status != 0) return quantize_status;
 
   ailego::ElapsedTime query_timer;
   ailego::ElapsedTime io_timer;
@@ -1278,7 +1308,8 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
   }
 
   float dist;
-  dc.quantized_dist(&best_medoid, 1, &dist);
+  const int medoid_status = dc.quantized_dist(&best_medoid, 1, &dist);
+  if (medoid_status != 0) return medoid_status;
   candidates.insert(Neighbor(best_medoid, dist));
   visit_filter.set_visited(best_medoid);
 
@@ -1299,14 +1330,24 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
   DiskAnnReadVector<std::pair<diskann_id_t, uint8_t *>> frontier_neighbors;
   frontier_neighbors.reserve(2 * effective_beam_width);
 
+  DiskAnnReadReservation request_memory;
   std::vector<AlignedRead> frontier_read_reqs;
-  frontier_read_reqs.reserve(2 * effective_beam_width);
+  request_memory.reserve(frontier_read_reqs, 2 * effective_beam_width);
 
   DiskAnnReadVector<std::tuple<diskann_id_t, uint32_t, diskann_id_t *>>
       cached_neighbors;
   cached_neighbors.reserve(2 * effective_beam_width);
 
+  DiskAnnReadReservation completion_memory;
+  std::vector<uint32_t> completed;
+  completion_memory.reserve(completed, effective_beam_width);
   PendingBatch pending;
+  auto cancel_inflight = ailego::ScopeGuard::Make([&] {
+    if (pending.has_async_requests()) reader_->release_io_ctx(io_ctx);
+  });
+
+  DiskAnnReadVector<diskann_id_t> unvisited;
+  DiskAnnReadVector<float> distances;
 
   while (candidates.has_unexpanded_node() && num_ios < io_limit_) {
     frontier.clear();
@@ -1320,7 +1361,11 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
     while (candidates.has_unexpanded_node() &&
            frontier.size() < effective_beam_width &&
            num_seen < effective_beam_width) {
-      auto neighbor = candidates.closest_unexpanded();
+      bool filtered;
+      const int status =
+          is_filtered(ctx, candidates.peek_closest_unexpanded().id, &filtered);
+      if (status != 0) return status;
+      auto neighbor = candidates.closest_unexpanded(!filtered);
       num_seen++;
 
       auto iter = neighbor_cache_.find(neighbor.id);
@@ -1366,7 +1411,14 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
       }
 
       io_timer.reset();
-      int submit_ret = reader_->submit(pending, frontier_read_reqs, io_ctx);
+      const bool resident =
+          buffer_backed_ &&
+          static_cast<BufferPoolAlignedFileReader *>(reader_.get())
+              ->try_submit_cached_nodes(pending, frontier_read_reqs, io_ctx,
+                                        frontier.data(), max_node_size_,
+                                        node_per_sector_);
+      const int submit_ret =
+          resident ? 0 : reader_->submit(pending, frontier_read_reqs, io_ctx);
       stats.io_us += io_timer.micro_seconds();
       if (submit_ret != 0) {
         LOG_ERROR("cached_beam_search: submit failed, ret=%d", submit_ret);
@@ -1381,8 +1433,11 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
 
       float cur_expanded_dist = dc.dist(ctx->query(), node_fp_coords_copy);
 
-      if (!ctx->filter().is_valid() ||
-          !ctx->filter()(get_key(std::get<0>(cached_neighbor)))) {
+      bool filtered;
+      const int filter_status =
+          is_filtered(ctx, std::get<0>(cached_neighbor), &filtered);
+      if (filter_status != 0) return filter_status;
+      if (!filtered) {
         topk_heap.emplace(std::get<0>(cached_neighbor),
                           VectorInfo(cur_expanded_dist,
                                      make_vector_copy(node_fp_coords_copy)));
@@ -1393,24 +1448,18 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
 
       cpu_timer.reset();
 
-      std::vector<float> distances(neighbor_num);
-      dc.quantized_dist(node_neighbors, neighbor_num, distances.data());
-
-      stats.dist_num += neighbor_num;
+      const int status = dc.quantized_dist_unvisited(
+          node_neighbors, neighbor_num, visit_filter, unvisited, distances);
+      if (status != 0) return status;
+      stats.dist_num += unvisited.size();
       stats.cpu_us += cpu_timer.micro_seconds();
 
-      for (uint64_t m = 0; m < neighbor_num; ++m) {
-        diskann_id_t id = node_neighbors[m];
-        if (!visit_filter.visited(id)) {
-          visit_filter.set_visited(id);
-          Neighbor nn(id, distances[m]);
-          candidates.insert(nn);
-        }
+      for (size_t m = 0; m < unvisited.size(); ++m) {
+        candidates.insert(Neighbor(unvisited[m], distances[m]));
       }
     }
 
     if (!frontier.empty()) {
-      std::vector<uint32_t> completed;
       while (pending.n_reaped < pending.n_submitted) {
         completed.clear();
         io_timer.reset();
@@ -1430,13 +1479,17 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
           uint32_t *node_buf = DiskAnnUtil::offset_to_node_neighbor(
               node_disk_buf, meta_.element_size());
           uint32_t neighbor_num = *node_buf;
+          if (neighbor_num > max_degree_) return IndexError_InvalidFormat;
 
           void *node_fp_coords = node_disk_buf;
 
           float cur_expanded_dist = dc.dist(ctx->query(), node_fp_coords);
 
-          if (!ctx->filter().is_valid() ||
-              !ctx->filter()(get_key(frontier_neighbor.first))) {
+          bool filtered;
+          const int filter_status =
+              is_filtered(ctx, frontier_neighbor.first, &filtered);
+          if (filter_status != 0) return filter_status;
+          if (!filtered) {
             topk_heap.emplace(frontier_neighbor.first,
                               VectorInfo(cur_expanded_dist,
                                          make_vector_copy(node_fp_coords)));
@@ -1446,21 +1499,15 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
               reinterpret_cast<diskann_id_t *>(node_buf + 1);
 
           cpu_timer.reset();
-          std::vector<float> distances(neighbor_num);
-          dc.quantized_dist(node_neighbors, neighbor_num, distances.data());
-
-          stats.dist_num += neighbor_num;
+          const int status = dc.quantized_dist_unvisited(
+              node_neighbors, neighbor_num, visit_filter, unvisited, distances);
+          if (status != 0) return status;
+          stats.dist_num += unvisited.size();
           stats.cpu_us += cpu_timer.micro_seconds();
 
           cpu_timer.reset();
-          for (uint64_t m = 0; m < neighbor_num; ++m) {
-            diskann_id_t id = node_neighbors[m];
-            if (!visit_filter.visited(id)) {
-              visit_filter.set_visited(id);
-              stats.dist_num++;
-              Neighbor nn(id, distances[m]);
-              candidates.insert(nn);
-            }
+          for (size_t m = 0; m < unvisited.size(); ++m) {
+            candidates.insert(Neighbor(unvisited[m], distances[m]));
           }
 
           stats.cpu_us += cpu_timer.micro_seconds();
@@ -1489,7 +1536,13 @@ void DiskAnnIndexer::populate_group_topk_heaps(DiskAnnContext *ctx) {
   for (uint32_t i = 0; i < topk_heap.size(); ++i) {
     diskann_id_t id = topk_heap[i].first;
     const auto &info = topk_heap[i].second;
-    std::string group_id = ctx->group_by()(get_key(id));
+    diskann_key_t key;
+    const int status = entity_->read_key(id, &key);
+    if (status != 0) {
+      ctx->set_error_code(status);
+      return;
+    }
+    std::string group_id = ctx->group_by()(key);
 
     auto &group_topk_heap = group_topk_heaps[group_id];
     if (group_topk_heap.empty()) {
@@ -1499,7 +1552,7 @@ void DiskAnnIndexer::populate_group_topk_heaps(DiskAnnContext *ctx) {
   }
 }
 
-int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
+int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) try {
   if (!ctx->group_by().is_valid()) {
     ctx->group_topk_heaps().clear();
     return 0;
@@ -1509,6 +1562,7 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
   auto &topk_heap = ctx->topk_heap();
   auto &visit_filter = ctx->visit_filter();
   populate_group_topk_heaps(ctx);
+  if (ctx->error()) return ctx->error_code();
   auto &group_topk_heaps = ctx->group_topk_heaps();
 
   // stage 2, expand to reach group num as possible
@@ -1542,8 +1596,11 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
                              : DiskAnnUtil::div_round_up(
                                    max_node_size_, DiskAnnUtil::kSectorSize);
 
-    dc.bind_quantizer(quantizer_.get(), quant_codes_, quant_code_size_);
-    dc.quantize_query(ctx->query_rotated());
+    dc.bind_quantizer(quantizer_.get(), quant_codes_, quant_code_size_,
+                    paged_quant_codes_,
+                    storage_ ? storage_->vec_buffer_pool().get() : nullptr);
+    const int quantize_status = dc.quantize_query(ctx->query_rotated());
+    if (quantize_status != 0) return quantize_status;
 
     uint32_t num_ios = 0;
 
@@ -1551,8 +1608,9 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
     frontier.reserve(2 * beam_width_);
     DiskAnnReadVector<std::pair<diskann_id_t, uint8_t *>> frontier_neighbors;
     frontier_neighbors.reserve(2 * beam_width_);
+    DiskAnnReadReservation request_memory;
     std::vector<AlignedRead> frontier_read_reqs;
-    frontier_read_reqs.reserve(2 * beam_width_);
+    request_memory.reserve(frontier_read_reqs, 2 * beam_width_);
     DiskAnnReadVector<std::tuple<diskann_id_t, uint32_t, diskann_id_t *>>
         cached_neighbors;
     cached_neighbors.reserve(2 * beam_width_);
@@ -1633,10 +1691,12 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
 
         float cur_expanded_dist = dc.dist(ctx->query(), node_fp_coords_copy);
 
-        if (!ctx->filter().is_valid() ||
-            !ctx->filter()(get_key(std::get<0>(cached_neighbor)))) {
-          std::string group_id =
-              ctx->group_by()(get_key(std::get<0>(cached_neighbor)));
+        diskann_key_t key;
+        const int key_status =
+            entity_->read_key(std::get<0>(cached_neighbor), &key);
+        if (key_status != 0) return key_status;
+        if (!ctx->filter().is_valid() || !ctx->filter()(key)) {
+          std::string group_id = ctx->group_by()(key);
 
           auto &group_topk_heap = group_topk_heaps[group_id];
           if (group_topk_heap.empty()) {
@@ -1658,8 +1718,10 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
 
         cpu_timer.reset();
 
-        std::vector<float> distances(neighbor_num);
-        dc.quantized_dist(node_neighbors, neighbor_num, distances.data());
+        DiskAnnReadVector<float> distances(neighbor_num);
+        const int status =
+            dc.quantized_dist(node_neighbors, neighbor_num, distances.data());
+        if (status != 0) return status;
 
         stats.dist_num += neighbor_num;
         stats.cpu_us += cpu_timer.micro_seconds();
@@ -1680,16 +1742,18 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
         uint32_t *node_buf = DiskAnnUtil::offset_to_node_neighbor(
             node_disk_buf, meta_.element_size());
         uint32_t neighbor_num = *node_buf;
+        if (neighbor_num > max_degree_) return IndexError_InvalidFormat;
 
         void *node_fp_coords = node_disk_buf;
         memcpy(data_buf, node_fp_coords, disk_bytes_per_point_);
 
         float cur_expanded_dist = dc.dist(ctx->query(), data_buf);
 
-        if (!ctx->filter().is_valid() ||
-            !ctx->filter()(get_key(frontier_neighbor.first))) {
-          std::string group_id =
-              ctx->group_by()(get_key(frontier_neighbor.first));
+        diskann_key_t key;
+        const int key_status = entity_->read_key(frontier_neighbor.first, &key);
+        if (key_status != 0) return key_status;
+        if (!ctx->filter().is_valid() || !ctx->filter()(key)) {
+          std::string group_id = ctx->group_by()(key);
 
           auto &group_topk_heap = group_topk_heaps[group_id];
           if (group_topk_heap.empty()) {
@@ -1707,10 +1771,12 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
 
         cpu_timer.reset();
 
-        std::vector<float> distances(neighbor_num);
+        DiskAnnReadVector<float> distances(neighbor_num);
         diskann_id_t *node_neighbors =
             reinterpret_cast<diskann_id_t *>(node_buf + 1);
-        dc.quantized_dist(node_neighbors, neighbor_num, distances.data());
+        const int status =
+            dc.quantized_dist(node_neighbors, neighbor_num, distances.data());
+        if (status != 0) return status;
 
         stats.dist_num += neighbor_num;
         stats.cpu_us += cpu_timer.micro_seconds();
@@ -1733,6 +1799,8 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
   }
 
   return 0;
+} catch (const std::bad_alloc &) {
+  return IndexError_NoMemory;
 }
 
 }  // namespace core

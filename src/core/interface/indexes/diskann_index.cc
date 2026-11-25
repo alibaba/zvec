@@ -169,7 +169,7 @@ int DiskAnnIndex::open(const std::string &file_path,
     }
     case StorageOptions::StorageType::kBufferPool: {
       storage_params.set(core::BUFFER_READ_STORAGE_WARMUP_MODE,
-                         core::BUFFER_READ_STORAGE_WARMUP_NONE);
+                         core::BUFFER_READ_STORAGE_WARMUP_AUTO);
       storage_params.set(core::BUFFER_READ_STORAGE_PROCESS_RSS_SCRATCH, true);
       storage = core::IndexFactory::CreateStorage("BufferReadStorage");
       if (storage == nullptr) {

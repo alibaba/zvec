@@ -4,6 +4,7 @@
 
 #include <limits>
 #include <new>
+#include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -36,6 +37,39 @@ class DiskAnnReadReservation {
       return sizeof(T);
     });
     return value;
+  }
+
+  void resize(std::string &value, size_t size) {
+    if (size <= value.capacity()) {
+      value.resize(size);
+      return;
+    }
+    if (size >= (std::numeric_limits<size_t>::max)() / 2)
+      throw std::bad_alloc();
+    DiskAnnReadReservation replacement_charge;
+    std::string replacement;
+    replacement_charge.allocate(2 * (size + 1), [&] {
+      replacement.resize(size);
+      return replacement.capacity() + 1;
+    });
+    value.swap(replacement);
+    swap(replacement_charge);
+  }
+
+  template <typename T>
+  void reserve(std::vector<T> &value, size_t count) {
+    if (count <= value.capacity()) return;
+    constexpr auto max_count = (std::numeric_limits<size_t>::max)() / sizeof(T);
+    if (count > max_count) throw std::bad_alloc();
+    DiskAnnReadReservation replacement_charge;
+    std::vector<T> replacement;
+    replacement_charge.allocate(count * sizeof(T), [&] {
+      replacement.reserve(count);
+      return replacement.capacity() * sizeof(T);
+    });
+    replacement.assign(value.begin(), value.end());
+    value.swap(replacement);
+    swap(replacement_charge);
   }
 
  private:

@@ -64,6 +64,9 @@ class DiskAnnIndexer {
 
   diskann_key_t get_key(diskann_id_t id) const;
   diskann_id_t get_id(diskann_key_t key) const;
+  int find_id(diskann_key_t key, diskann_id_t *id) const {
+    return entity_->find_id(key, id);
+  }
 
   //! Copy element_size() bytes from src into a new vector value string
   std::string make_vector_copy(const void *src) const {
@@ -100,6 +103,16 @@ class DiskAnnIndexer {
 
   DiskAnnEntity::Pointer entity_{};
   IndexStorage::Pointer storage_{};
+  bool buffer_backed_{false};
+
+  int is_filtered(DiskAnnContext *ctx, diskann_id_t id, bool *filtered) const {
+    *filtered = false;
+    if (!ctx->filter().is_valid()) return 0;
+    diskann_key_t key;
+    const int status = entity_->read_key(id, &key);
+    if (status == 0) *filtered = ctx->filter()(key);
+    return status;
+  }
 
   IndexMeta meta_;
 
@@ -121,6 +134,7 @@ class DiskAnnIndexer {
 
   turbo::Quantizer::Pointer quantizer_;
   const uint8_t *quant_codes_{nullptr};
+  IndexStorage::Segment::Pointer paged_quant_codes_;
 
   IOContext init_ctx_{};
 

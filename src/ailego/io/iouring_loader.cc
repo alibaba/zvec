@@ -26,6 +26,7 @@
 #include <ailego/io/iouring_loader.h>
 #include <ailego/pattern/scope_guard.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/ailego/buffer/budgeted_mapped_buffer.h>
 #include <zvec/ailego/logger/logger.h>
 
@@ -36,12 +37,177 @@ namespace ailego {
 // returning EAGAIN/EBUSY (100 us sleep per retry, about one second total).
 static constexpr size_t kIoUringDrainRetries = 10000;
 
+struct IoUringRing::AsyncReads {
+  MemoryReservation memory;
+  struct Slot {
+    IoUringRead request;
+    size_t offset;
+    bool seen{false};
+  };
+  BudgetedVector<Slot> slots;
+  size_t submitted{0};
+  size_t completed{0};
+};
+
 IoUringRing::IoUringRing() = default;
 
 int IoUringRing::enter(unsigned submit, unsigned minimum, unsigned flags) {
   if (enter_override_) return enter_override_(ring_fd_, submit, minimum, flags);
   return static_cast<int>(syscall(__NR_io_uring_enter, ring_fd_, submit,
                                   minimum, flags, nullptr, size_t{0}));
+}
+
+bool IoUringRing::has_pending_reads() const {
+  return async_reads_ != nullptr;
+}
+
+int IoUringRing::submit_reads(int fd, const IoUringRead *reads, size_t count) {
+  if (async_reads_ || !is_valid() || !reads || count == 0 ||
+      count > std::min<size_t>(sq_entries_, kIoUringMaxBatch))
+    return -1;
+  try {
+    MemoryReservation memory;
+    memory.add(sizeof(AsyncReads));
+    auto state = std::make_unique<AsyncReads>();
+    state->memory.swap(memory);
+    state->slots.reserve(count);
+    size_t bytes = 0;
+    for (size_t i = 0; i < count; ++i) {
+      const auto &read = reads[i];
+      if (!read.buf || !read.len || read.offset % 512 || read.len % 512 ||
+          reinterpret_cast<uintptr_t>(read.buf) % 512 ||
+          read.len > std::numeric_limits<uint32_t>::max() ||
+          read.expected_len > read.len)
+        return -1;
+      const size_t size =
+          (read.len + kIoUringStagingAlign - 1) & ~(kIoUringStagingAlign - 1);
+      if (bytes > SIZE_MAX - size) return -1;
+      state->slots.push_back({read, bytes, false});
+      bytes += size;
+    }
+    if (!ensure_staging(bytes)) return -1;
+    const unsigned tail = __atomic_load_n(sq_tail_, __ATOMIC_ACQUIRE);
+    const unsigned mask = *sq_ring_mask_;
+    for (size_t i = 0; i < count; ++i) {
+      auto *sqe = &sqes_[sq_array_[(tail + i) & mask]];
+      io_uring_prep_read(sqe, fd, staging_ + state->slots[i].offset,
+                         static_cast<uint32_t>(reads[i].len), reads[i].offset);
+      sqe->user_data = i;
+    }
+    async_reads_ = std::move(state);
+    __atomic_store_n(sq_tail_, tail + static_cast<unsigned>(count),
+                     __ATOMIC_RELEASE);
+    size_t retries = 0;
+    while (async_reads_->submitted < count) {
+      const unsigned remaining = count - async_reads_->submitted;
+      const int ret = enter(remaining, 0, 0);
+      if (ret > 0 && static_cast<unsigned>(ret) <= remaining) {
+        async_reads_->submitted += ret;
+        retries = 0;
+        continue;
+      }
+      if ((ret == 0 || errno == EINTR || errno == EAGAIN || errno == EBUSY) &&
+          retries++ < 8)
+        continue;
+      // Remove the unsubmitted suffix before retiring accepted requests.
+      __atomic_store_n(sq_tail_, tail + async_reads_->submitted,
+                       __ATOMIC_RELEASE);
+      if (ret > 0) {
+        abandon_staging();
+        async_reads_.reset();
+        teardown();
+      } else {
+        cancel_reads();
+      }
+      return -1;
+    }
+    return 0;
+  } catch (const std::bad_alloc &) {
+    return -1;
+  }
+}
+
+int IoUringRing::reap_reads(size_t minimum, uint32_t *indices, size_t capacity,
+                            bool deliver) {
+  if (!async_reads_ || (capacity && !indices)) return -1;
+  auto &state = *async_reads_;
+  minimum = std::min({minimum, capacity, state.submitted - state.completed});
+  size_t count = 0;
+  for (;;) {
+    unsigned head = __atomic_load_n(cq_head_, __ATOMIC_ACQUIRE);
+    const unsigned tail = __atomic_load_n(cq_tail_, __ATOMIC_ACQUIRE);
+    while (head != tail && count < capacity) {
+      const auto event = cqes_[head & *cq_ring_mask_];
+      const size_t id = event.user_data;
+      if (id >= state.submitted || state.slots[id].seen) {
+        abandon_staging();
+        async_reads_.reset();
+        teardown();
+        return -1;
+      }
+      auto &slot = state.slots[id];
+      slot.seen = true;
+      ++state.completed;
+      ++head;
+      __atomic_store_n(cq_head_, head, __ATOMIC_RELEASE);
+      const auto &request = slot.request;
+      const size_t expected =
+          request.expected_len ? request.expected_len : request.len;
+      if (deliver &&
+          (event.res < 0 || static_cast<size_t>(event.res) != expected)) {
+        cancel_reads();
+        return -1;
+      }
+      if (deliver) {
+        std::memcpy(request.buf, staging_ + slot.offset, expected);
+        if (expected < request.len)
+          std::memset(static_cast<char *>(request.buf) + expected, 0,
+                      request.len - expected);
+      }
+      indices[count++] = id;
+    }
+    if (state.completed == state.submitted) {
+      async_reads_.reset();
+      release_staging();
+      return static_cast<int>(count);
+    }
+    if (count >= minimum) return static_cast<int>(count);
+    const int ret = enter(0, 1, IORING_ENTER_GETEVENTS);
+    if (ret >= 0 || errno == EINTR) continue;
+    return -1;
+  }
+}
+
+int IoUringRing::get_completed_reads(size_t minimum, uint32_t *indices,
+                                     size_t capacity) {
+  const int ret = reap_reads(minimum, indices, capacity, true);
+  if (ret < 0) cancel_reads();
+  return ret;
+}
+
+void IoUringRing::cancel_reads() {
+  if (!async_reads_) return;
+  // Never touch caller destinations during cancellation. A caller may already
+  // have unwound its result buffers before releasing this context.
+  std::array<uint32_t, kIoUringMaxBatch> discarded{};
+  size_t retries = 0;
+  while (async_reads_) {
+    if (async_reads_->completed == async_reads_->submitted) {
+      async_reads_.reset();
+      release_staging();
+      break;
+    }
+    if (reap_reads(1, discarded.data(), discarded.size(), false) >= 0) continue;
+    if (!async_reads_) break;
+    if ((errno == EAGAIN || errno == EBUSY) &&
+        retries++ < kIoUringDrainRetries) {
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+      continue;
+    }
+    abandon_staging();
+    async_reads_.reset();
+    teardown();
+  }
 }
 
 IoUringRing::~IoUringRing() {
@@ -220,6 +386,7 @@ IoUringRing::SetupResult IoUringRing::map_control_regions(
 }
 
 void IoUringRing::teardown() {
+  cancel_reads();
   const auto release_region = [](void *region, size_t size,
                                  ProcessRssBudget::MaterializationStamp stamp) {
     if (!region) return;
@@ -257,6 +424,7 @@ void IoUringRing::teardown() {
 }
 
 bool IoUringRing::ensure_staging(size_t bytes) {
+  if (async_reads_) return false;
   const size_t mapped_bytes = BudgetedMappedBuffer::mapping_size(bytes);
   if (bytes != 0 && mapped_bytes == 0) return false;
   bytes = mapped_bytes;
@@ -323,6 +491,7 @@ bool IoUringRing::ensure_staging(size_t bytes) {
 }
 
 int IoUringRing::execute(int fd, const IoUringRead *read_reqs, size_t count) {
+  if (async_reads_) return -1;
   // Reuse across batches of this blocking call, not across a TLS ring's
   // lifetime. execute_impl drains or quarantines all outstanding I/O first.
   auto release = ScopeGuard::Make([&] { release_staging(); });
@@ -337,7 +506,7 @@ int IoUringRing::execute_writes(int fd, const IoUringWrite *write_reqs,
 int IoUringRing::execute_impl(int fd, const IoUringRead *read_reqs,
                               const IoUringWrite *write_reqs, size_t count) {
   const bool is_write = write_reqs != nullptr;
-  if (!is_valid() ||
+  if (async_reads_ || !is_valid() ||
       (count != 0 && ((read_reqs == nullptr) == (write_reqs == nullptr)))) {
     return -1;
   }

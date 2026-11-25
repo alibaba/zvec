@@ -138,14 +138,14 @@ int DiskAnnSearcher::load(IndexStorage::Pointer storage,
   // only owns the bytes and the indexer receives the ready-to-use quantizer.
   // The implementation is resolved from the meta buffer header, so any
   // supported quantize type (PQ today, others later) plugs in transparently.
-  std::string quantizer_meta_buffer;
+  DiskAnnSearcherEntity::QuantizerMetaBuffer quantizer_meta_buffer;
   ret = entity_.read_pq_quantizer_meta_buffer(&quantizer_meta_buffer);
   if (ret != 0) {
     LOG_ERROR("Read quantizer meta buffer failed, ret=%d", ret);
     return ret;
   }
   auto quantizer = DiskAnnUtil::create_quantizer_from_meta_buffer(
-      quantizer_meta_buffer, meta_,
+      quantizer_meta_buffer.bytes, meta_,
       static_cast<uint32_t>(entity_.pq_chunk_num()),
       entity_.legacy_pq_layout());
   if (!quantizer) {
@@ -182,6 +182,7 @@ int DiskAnnSearcher::load(IndexStorage::Pointer storage,
     }
   }
 
+  entity_.prepare_pq();
   stats_.set_loaded_costtime(ailego::Monotime::MilliSeconds() - start_time);
   stats_.set_loaded_count(entity_.doc_cnt());
   state_ = STATE_LOADED;
@@ -282,10 +283,11 @@ int DiskAnnSearcher::search_impl(const void *query, const IndexQueryMeta &qmeta,
     }
 
     if (ailego_unlikely(ctx->error())) {
-      return IndexError_Runtime;
+      return ctx->error_code();
     }
 
     ctx->topk_to_result(i);
+    if (ctx->error()) return ctx->error_code();
 
     query = static_cast<const char *>(query) + qmeta.element_size();
   }
@@ -337,12 +339,13 @@ int DiskAnnSearcher::search_bf_impl(const void *query,
     }
 
     ctx->topk_to_result(i);
+    if (ctx->error()) return ctx->error_code();
 
     query = static_cast<const char *>(query) + qmeta.element_size();
   }
 
   if (ailego_unlikely(ctx->error())) {
-    return IndexError_Runtime;
+    return ctx->error_code();
   }
 
   return 0;
@@ -398,12 +401,13 @@ int DiskAnnSearcher::search_bf_by_p_keys_impl(
     }
 
     ctx->topk_to_result(i);
+    if (ctx->error()) return ctx->error_code();
 
     query = static_cast<const char *>(query) + qmeta.element_size();
   }
 
   if (ailego_unlikely(ctx->error())) {
-    return IndexError_Runtime;
+    return ctx->error_code();
   }
 
   return 0;
@@ -430,7 +434,9 @@ int DiskAnnSearcher::get_vector(uint64_t key, Context::Pointer &context,
     return ret;
   }
 
-  diskann_id_t id = diskann_indexer_->get_id(key);
+  diskann_id_t id;
+  ret = diskann_indexer_->find_id(key, &id);
+  if (ret != 0) return ret;
   if (id == kInvalidId) {
     LOG_ERROR("Vector key does not exist: %lu", (unsigned long)key);
     return IndexError_NoExist;

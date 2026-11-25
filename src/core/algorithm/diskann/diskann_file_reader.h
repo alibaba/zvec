@@ -47,6 +47,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/ailego/io/io_backend.h>
 #include <zvec/core/framework/index_context.h>
 #include "diskann_read_memory.h"
@@ -71,6 +72,7 @@ namespace core {
 // one context from consuming another context's completions.
 // IOContext is a pointer to IoBackend; nullptr means uninitialised.
 struct PendingBatch;
+struct BufferReadBatch;
 
 struct IoBackend {
   DiskAnnReadReservation memory;
@@ -84,6 +86,7 @@ struct IoBackend {
   const PendingBatch *aio_batch{nullptr};
   bool aio_active{false};
   bool aio_quarantined{false};
+  const PendingBatch *ring_batch{nullptr};
 #elif defined(_WIN32) || defined(_WIN64)
   std::array<OVERLAPPED, MAX_IO_DEPTH> reqs{};
   std::array<uint8_t, MAX_IO_DEPTH> active_requests{};
@@ -91,6 +94,7 @@ struct IoBackend {
   HANDLE completion_port{nullptr};
   std::wstring file_path;
   uint64_t file_identity{0};
+  const PendingBatch *iocp_batch{nullptr};
   uint32_t outstanding_count{0};
   uint64_t generation{0};
 #endif
@@ -128,19 +132,24 @@ struct AlignedRead {
 #endif
 
 struct PendingBatch {
+  std::shared_ptr<BufferReadBatch> buffer;
 #if defined(__linux__) && !defined(__ANDROID__)
-  std::vector<struct iocb> cbs;
-  std::vector<struct iocb *> cb_ptrs;
-  std::vector<struct io_event> events;
-  std::vector<void *> destinations;
+  ailego::BudgetedVector<struct iocb> cbs;
+  ailego::BudgetedVector<struct iocb *> cb_ptrs;
+  ailego::BudgetedVector<struct io_event> events;
+  ailego::BudgetedVector<void *> destinations;
 #elif defined(_WIN32) || defined(_WIN64)
-  std::vector<uint64_t> expected_lengths;
-  std::vector<uint8_t> completed;
+  std::array<uint64_t, MAX_IO_DEPTH> expected_lengths;
+  std::array<uint8_t, MAX_IO_DEPTH> completed;
   uint64_t generation{0};
 #endif
   uint32_t n_submitted{0};
   uint32_t n_reaped{0};
   bool used_pread{false};
+
+  bool has_async_requests() const {
+    return !used_pread && n_reaped < n_submitted;
+  }
 };
 
 class AlignedFileReader {
@@ -258,6 +267,13 @@ class BufferPoolAlignedFileReader : public AlignedFileReader {
            bool async = false) override;
   int submit(PendingBatch &batch, std::vector<AlignedRead> &read_reqs,
              IOContext &ctx) override;
+  // Copy only each requested node into its original sector-buffer position.
+  // Returns false without writing destinations when any source is not resident;
+  // the caller must then submit the complete sector reads normally.
+  bool try_submit_cached_nodes(PendingBatch &batch,
+                               const std::vector<AlignedRead> &read_reqs,
+                               IOContext &ctx, const uint32_t *node_ids,
+                               size_t node_size, size_t nodes_per_sector);
   int get_completed(PendingBatch &batch, IOContext &ctx, int min_completed,
                     std::vector<uint32_t> &completed_indices) override;
   void release_io_ctx(IOContext &ctx) override;

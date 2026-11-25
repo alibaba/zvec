@@ -121,6 +121,11 @@ TEST_P(DiskAnnReadBudgetTest, SearchAndFetchWith4095ByteCache) {
     EXPECT_EQ(expected, result.doc_list_.front().vector_string());
     EXPECT_EQ(0u, pool.stats().page_used);
   }
+  query->is_linear = false;
+  query->bf_pks = std::make_shared<std::vector<uint64_t>>(1, 7);
+  ASSERT_EQ(0, index->search(input, query, &result));
+  ASSERT_EQ(1u, result.doc_list_.size());
+  EXPECT_EQ(7u, result.doc_list_.front().key());
   ASSERT_EQ(0, index->close());
 }
 

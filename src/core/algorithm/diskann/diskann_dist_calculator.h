@@ -20,7 +20,11 @@
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_meta.h>
+#include <ailego/pattern/scope_guard.h>
 #include "diskann_entity.h"
+#include "diskann_pq_read_batch.h"
+#include "diskann_resident_pq_batch.h"
+#include "diskann_visit_filter.h"
 
 namespace zvec {
 namespace core {
@@ -118,27 +122,73 @@ class DistCalculator {
     return dist(vec);
   }
 
-  inline void bind_quantizer(const turbo::Quantizer *quantizer,
-                             const uint8_t *codes, uint32_t code_size) {
+  void bind_quantizer(const turbo::Quantizer *quantizer, const uint8_t *codes,
+                      uint32_t code_size,
+                      IndexStorage::Segment::Pointer paged_codes,
+                      ailego::VecBufferPool *pool) {
     quantizer_ = quantizer;
     quant_codes_ = codes;
     quant_code_size_ = code_size;
+    paged_codes_ = std::move(paged_codes);
+    pq_pool_ = pool;
   }
 
-  void quantize_query(const void *query_rotated) {
+  int quantize_query(const void *query_rotated) try {
     quant_query_scratch_.resize(quantizer_->quantized_query_vector_length());
     quantizer_->quantize_query(query_rotated, quant_query_scratch_.data());
     quant_dist_impl_ =
         quantizer_->distance(quant_query_scratch_.data(), IndexQueryMeta());
+    return 0;
+  } catch (const std::bad_alloc &) {
+    return IndexError_NoMemory;
   }
 
-  void quantized_dist(const diskann_id_t *ids, uint32_t n, float *dists) {
+  int quantized_dist(const diskann_id_t *ids, uint32_t n, float *dists) try {
+    if (n == 0) return 0;
+    auto release = ailego::ScopeGuard::Make([&] {
+      resident_pq_batch_.release();
+      quant_code_blocks_.clear();
+    });
     quant_dp_list_.resize(n);
     for (uint32_t i = 0; i < n; ++i) {
-      quant_dp_list_[i] =
-          quant_codes_ + static_cast<size_t>(ids[i]) * quant_code_size_;
+      if (ids[i] >= entity_->doc_cnt()) return IndexError_InvalidFormat;
+      if (!paged_codes_) {
+        if (!quant_codes_) return IndexError_NoReady;
+        quant_dp_list_[i] =
+            quant_codes_ + static_cast<size_t>(ids[i]) * quant_code_size_;
+      }
+    }
+    if (paged_codes_ &&
+        !(pq_pool_ && pq_pool_->cache_enabled() &&
+          resident_pq_batch_.read(*pq_pool_, *paged_codes_, ids, n,
+                                  quant_code_size_, quant_dp_list_, true))) {
+      const int status =
+          ReadPagedQuantizedCodes(*paged_codes_, ids, n, quant_code_size_,
+                                  quant_code_blocks_, quant_dp_list_);
+      if (status != 0) return status;
     }
     quant_dist_impl_.batch(quant_dp_list_.data(), n, dists);
+    return 0;
+  } catch (const std::bad_alloc &) {
+    return IndexError_NoMemory;
+  }
+
+  int quantized_dist_unvisited(const diskann_id_t *ids, uint32_t n,
+                               VisitFilter &visited,
+                               DiskAnnReadVector<diskann_id_t> &unvisited,
+                               DiskAnnReadVector<float> &distances) try {
+    unvisited.clear();
+    for (uint32_t i = 0; i < n; ++i) {
+      if (ids[i] >= entity_->doc_cnt()) return IndexError_InvalidFormat;
+      if (!visited.visited(ids[i])) {
+        visited.set_visited(ids[i]);
+        unvisited.push_back(ids[i]);
+      }
+    }
+    distances.resize(unvisited.size());
+    return quantized_dist(unvisited.data(), unvisited.size(), distances.data());
+  } catch (const std::bad_alloc &) {
+    return IndexError_NoMemory;
   }
 
   inline void clear() {
@@ -246,8 +296,12 @@ class DistCalculator {
 
   turbo::DistanceImpl quant_dist_impl_{};
 
-  std::vector<const void *> quant_dp_list_;
-  std::vector<uint8_t> quant_query_scratch_;
+  DiskAnnReadVector<const void *> quant_dp_list_;
+  DiskAnnReadVector<uint8_t> quant_query_scratch_;
+  DiskAnnReadVector<IndexStorage::MemoryBlock> quant_code_blocks_;
+  IndexStorage::Segment::Pointer paged_codes_;
+  ailego::VecBufferPool *pq_pool_{nullptr};
+  ResidentPqBatch resident_pq_batch_;
 };
 
 }  // namespace core

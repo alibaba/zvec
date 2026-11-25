@@ -76,6 +76,7 @@ inline const std::string BUFFER_READ_STORAGE_PROCESS_RSS_SCRATCH =
 inline const std::string BUFFER_READ_STORAGE_WARMUP_MODE =
     "proxima.buffer.read_storage.warmup_mode";
 inline const std::string BUFFER_READ_STORAGE_WARMUP_NONE = "none";
+inline const std::string BUFFER_READ_STORAGE_WARMUP_AUTO = "auto";
 inline const std::string BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL = "sequential";
 
 //! MMapFileStorage
