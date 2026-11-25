@@ -42,7 +42,7 @@ class LegacyFtsReader final
   Result<std::vector<FtsReadTerm::Ptr>> lookup_many(
       const std::vector<std::string_view> &terms) const override;
   Result<std::vector<FtsReadPosition::Ptr>> positions(
-      const std::vector<FtsReadTerm::Ptr> &terms, uint32_t doc) const override;
+      const std::vector<FtsPhraseTerm> &terms, uint32_t doc) const override;
   void observe_length(uint32_t length);
   // Stops admitting side-CF users and drains existing term handles before
   // callers drop the CFs. New Roaring handles retain the legacy null-CF mode.

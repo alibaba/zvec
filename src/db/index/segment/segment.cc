@@ -360,7 +360,8 @@ class SegmentImpl : public Segment,
   Status insert_vector_indexer(Doc &doc);
   Status internal_insert(Doc &doc);
   Status internal_update(Doc &doc);
-  Status internal_upsert(Doc &doc);
+  Status retire_legacy_upsert_rows(const std::unordered_set<std::string> &keys,
+                                   uint64_t first_replayed_id);
   Status internal_delete(const Doc &doc);
 
   Status recover();
@@ -1067,15 +1068,6 @@ Status SegmentImpl::internal_update(Doc &doc) {
   return internal_insert(doc);
 }
 
-Status SegmentImpl::internal_upsert(Doc &doc) {
-  uint64_t g_doc_id;
-  bool exist = id_map_->has(doc.pk_ref(), &g_doc_id);
-  if (exist) {
-    delete_store_->mark_deleted(g_doc_id);
-  }
-  return internal_insert(doc);
-}
-
 Status SegmentImpl::internal_delete(const Doc &doc) {
   delete_store_->mark_deleted(doc.doc_id());
   id_map_->remove(doc.pk_ref());
@@ -1120,13 +1112,21 @@ Status SegmentImpl::update(Doc &doc) {
 Status SegmentImpl::upsert(Doc &doc) {
   std::lock_guard lock(seg_mtx_);
 
+  // Resolve the predecessor before appending. IDMap may be ahead of the WAL
+  // checkpoint when we reopen, so replay cannot resolve it a second time.
+  auto previous = id_map_->lookup(doc.pk_ref());
+  if (!previous) {
+    return previous.error();
+  }
+  const bool replacing = *previous != INVALID_DOC_ID;
+  if (replacing) {
+    doc.set_doc_id(*previous);
+  }
+  doc.set_operator(replacing ? Operator::UPDATE : Operator::INSERT);
+  auto status = append_wal(doc);
   doc.set_operator(Operator::UPSERT);
-
-  // append WAL
-  auto s = append_wal(doc);
-  CHECK_RETURN_STATUS(s);
-
-  return internal_upsert(doc);
+  CHECK_RETURN_STATUS(status);
+  return replacing ? internal_update(doc) : internal_insert(doc);
 }
 
 Status SegmentImpl::Delete(const std::string &pk) {
@@ -2450,14 +2450,8 @@ Result<Segment::PreparedFtsSeal> SegmentImpl::prepare_fts_rewrite(
   if (!status.ok()) {
     return tl::make_unexpected(status);
   }
-  std::vector<std::vector<fts::FtsFieldSource::Ptr>> sources;
   std::vector<std::string> columns;
   for (const auto &field : fields) {
-    auto source = open_fts_source(field->name());
-    if (!source) {
-      return tl::make_unexpected(source.error());
-    }
-    sources.push_back({std::move(*source)});
     columns.push_back(field->name());
   }
   if (rows > UINT32_MAX) {
@@ -2468,8 +2462,12 @@ Result<Segment::PreparedFtsSeal> SegmentImpl::prepare_fts_rewrite(
                   metadata->min_doc_id(),      metadata->max_doc_id(),
                   static_cast<uint32_t>(rows), columns};
   auto prepared = FtsIndexer::PrepareMerged(
-      {seg_path_, id(), block, options_.enable_mmap_}, fields, sources, {},
-      fts::FtsMergePolicy::kRewrite, version_manager_->fts_retirement(), hook);
+      {seg_path_, id(), block, options_.enable_mmap_}, fields, 1,
+      [&](size_t, const FieldSchema::Ptr &field) {
+        return open_fts_source(field->name());
+      },
+      {}, fts::FtsMergePolicy::kRewrite, version_manager_->fts_retirement(),
+      hook);
   if (!prepared) {
     return tl::make_unexpected(prepared.error());
   }
@@ -3624,22 +3622,16 @@ Result<Segment::PreparedColumnChange> SegmentImpl::prepare_column_change(
     if (block.type() != BlockType::FTS_INDEX) {
       continue;
     }
-    std::vector<std::vector<fts::FtsFieldSource::Ptr>> sources;
     const auto fields = collection_schema_->fts_fields();
-    for (const auto &field : fields) {
-      auto source = open_fts_source(field->name());
-      if (!source) {
-        return tl::make_unexpected(source.error());
-      }
-      sources.push_back({std::move(*source)});
-    }
     auto copied_block = block;
     copied_block.fts_base_.reset();
     copied_block.set_doc_count(doc_ids_.size());
     auto prepared = FtsIndexer::PrepareMerged(
-        {destination, target, copied_block, options_.enable_mmap_}, fields,
-        sources, {}, fts::FtsMergePolicy::kRewrite,
-        version_manager_->fts_retirement());
+        {destination, target, copied_block, options_.enable_mmap_}, fields, 1,
+        [&](size_t, const FieldSchema::Ptr &field) {
+          return open_fts_source(field->name());
+        },
+        {}, fts::FtsMergePolicy::kRewrite, version_manager_->fts_retirement());
     if (!prepared) {
       return tl::make_unexpected(prepared.error());
     }
@@ -3654,7 +3646,8 @@ Result<Segment::PreparedColumnChange> SegmentImpl::prepare_column_change(
   CHECK_RETURN_STATUS_EXPECTED(status);
   status = change(candidate.get());
   CHECK_RETURN_STATUS_EXPECTED(status);
-  if (candidate->invert_indexers_) {
+  if (candidate->invert_indexers_ &&
+      !candidate->invert_indexers_->read_only()) {
     status = candidate->invert_indexers_->flush();
     CHECK_RETURN_STATUS_EXPECTED(status);
   }
@@ -4921,9 +4914,64 @@ Status SegmentImpl::init_memory_components() {
   return Status::OK();
 }
 
+// Historical UPSERT records omitted the predecessor. When IDMap has already
+// advanced or lost the key, every committed row for that key predates its
+// replacement. Read just the two identity columns once for all such keys.
+Status SegmentImpl::retire_legacy_upsert_rows(
+    const std::unordered_set<std::string> &keys, uint64_t first_replayed_id) {
+  auto segments =
+      version_manager_->get_current_version().persisted_segment_metas();
+  segments.push_back(segment_meta_);
+  for (const auto &segment : segments) {
+    for (const auto &block : segment->persisted_blocks()) {
+      if (block.type() != BlockType::SCALAR || !block.contain_column(USER_ID)) {
+        continue;
+      }
+      const auto path = FileHelper::MakeForwardBlockPath(
+          path_, segment->id(), block.id(), !options_.enable_mmap_);
+      BaseForwardStore::Ptr store;
+      if (options_.enable_mmap_) {
+        store = std::make_shared<MmapForwardStore>(path);
+      } else {
+        store = std::make_shared<BufferPoolForwardStore>(path);
+      }
+      auto status = store->open();
+      CHECK_RETURN_STATUS(status);
+      auto reader = store->scan({USER_ID, GLOBAL_DOC_ID});
+      if (!reader) {
+        return Status::InternalError("Cannot scan committed WAL predecessors");
+      }
+      for (;;) {
+        auto next = reader->Next();
+        if (!next.ok()) {
+          return Status::InternalError(next.status().ToString());
+        }
+        if (!*next) {
+          break;
+        }
+        const auto pks = std::dynamic_pointer_cast<arrow::StringArray>(
+            (*next)->GetColumnByName(USER_ID));
+        const auto ids = std::dynamic_pointer_cast<arrow::UInt64Array>(
+            (*next)->GetColumnByName(GLOBAL_DOC_ID));
+        if (!pks || !ids) {
+          return Status::InternalError(
+              "Invalid committed WAL identity columns");
+        }
+        for (int64_t row = 0; row < pks->length(); ++row) {
+          if (ids->Value(row) < first_replayed_id &&
+              keys.count(pks->GetString(row))) {
+            delete_store_->mark_deleted(ids->Value(row));
+          }
+        }
+      }
+    }
+  }
+  return Status::OK();
+}
+
 Status SegmentImpl::recover() {
   // recover mem block meta
-  auto &mem_block = segment_meta_->writing_forward_block().value();
+  const auto mem_block = segment_meta_->writing_forward_block().value();
   doc_id_allocator_.store(mem_block.min_doc_id());
 
   std::string wal_file_path =
@@ -4977,6 +5025,7 @@ Status SegmentImpl::recover() {
 
   std::lock_guard<std::shared_mutex> lock(seg_mtx_);
 
+  std::unordered_set<std::string> legacy_upserts;
   while (true) {
     std::string buf = recover_wal_file->next();
     if (buf.empty()) {
@@ -5004,7 +5053,16 @@ Status SegmentImpl::recover() {
         break;
       }
       case Operator::UPSERT: {
-        status = internal_upsert(*doc);
+        auto previous = id_map_->lookup(doc->pk_ref());
+        if (!previous) {
+          return previous.error();
+        }
+        if (*previous < doc_id_allocator_.load()) {
+          delete_store_->mark_deleted(*previous);
+        } else {
+          legacy_upserts.insert(doc->pk_ref());
+        }
+        status = internal_insert(*doc);
         break;
       }
       case Operator::DELETE: {
@@ -5033,10 +5091,11 @@ Status SegmentImpl::recover() {
     recovered_doc_count[static_cast<size_t>(doc->get_operator())]++;
   }
 
-  const auto added_docs = recovered_doc_count[0] +  // INSERT
-                          recovered_doc_count[1] +  // UPSERT
-                          recovered_doc_count[2];   // UPDATE
-  mem_block.max_doc_id_ += added_docs;
+  if (!legacy_upserts.empty()) {
+    auto status =
+        retire_legacy_upsert_rows(legacy_upserts, mem_block.min_doc_id());
+    CHECK_RETURN_STATUS(status);
+  }
 
   ret = recover_wal_file->close();
   if (ret != 0) {
@@ -5465,13 +5524,7 @@ Result<std::vector<fts::FtsResult>> SegmentImpl::fts_search(
         Status::NotFound("FTS indexer not found: ", field_name));
   }
 
-  auto ret = indexer->search(ast, params);
-  if (!ret.has_value()) {
-    return tl::make_unexpected(Status::InternalError(
-        "FTS search failed: ", field_name, " ", ret.error().message()));
-  }
-
-  return std::move(ret.value());
+  return indexer->search(ast, params);
 }
 
 Status SegmentImpl::create_fts_index(const std::string &column,
@@ -5758,24 +5811,21 @@ Result<Segment::PreparedFtsSeal> SegmentImpl::prepare_fts_fields(
     return tl::make_unexpected(
         Status::InvalidArgument("FTS DDL row domain exceeds v1 limit"));
   }
-  std::vector<std::vector<fts::FtsFieldSource::Ptr>> sources;
   std::vector<std::string> columns;
   for (const auto &field : fields) {
-    auto source = field->name() == rebuild_column
-                      ? build_fts_field(field, static_cast<uint32_t>(rows))
-                      : open_fts_source(field->name());
-    if (!source) {
-      return tl::make_unexpected(source.error());
-    }
-    sources.push_back({std::move(*source)});
     columns.push_back(field->name());
   }
   BlockMeta block{allocate_block_id(),         BlockType::FTS_INDEX,
                   metadata->min_doc_id(),      metadata->max_doc_id(),
                   static_cast<uint32_t>(rows), columns};
   auto prepared = FtsIndexer::PrepareMerged(
-      {seg_path_, id(), block, options_.enable_mmap_}, fields, sources, {},
-      fts::FtsMergePolicy::kRewrite, version_manager_->fts_retirement());
+      {seg_path_, id(), block, options_.enable_mmap_}, fields, 1,
+      [&](size_t, const FieldSchema::Ptr &field) {
+        return field->name() == rebuild_column
+                   ? build_fts_field(field, static_cast<uint32_t>(rows))
+                   : open_fts_source(field->name());
+      },
+      {}, fts::FtsMergePolicy::kRewrite, version_manager_->fts_retirement());
   if (!prepared) {
     return tl::make_unexpected(prepared.error());
   }

@@ -55,6 +55,9 @@ class FtsSectionReader {
   uint64_t size() const {
     return size_;
   }
+  void release_window() {
+    cache_ = {};
+  }
   Result<std::string_view> read(uint64_t offset, size_t length) {
     const auto view = cache_.view();
     // A retained window has already been bounded by the section. Keep hits

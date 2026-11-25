@@ -49,7 +49,7 @@ class FtsReadPosting {
   // Merge has already located doc on this cursor. Storage adapters can reuse
   // its decoded block to open positions without seeking the term again.
   virtual Result<FtsReadPosition::Ptr> current_positions(
-      const FtsReadTerm &term, uint32_t doc);
+      const FtsReadTerm &term, uint32_t doc, bool retain_windows);
   // Consume postings strictly after the current position, leaving the cursor
   // at the last returned posting. The borrowed view has cursor-local lifetime.
   virtual Result<FtsPostingBatch> next_batch() {
@@ -72,6 +72,11 @@ class FtsReadTerm {
   virtual Result<FtsReadPosition::Ptr> positions(uint32_t doc) const = 0;
 };
 
+struct FtsPhraseTerm {
+  FtsReadTerm::Ptr term;
+  FtsReadPosting *posting;  // Owned by the phrase conjunction.
+};
+
 // Query-facing storage seam. Adapters own storage resources and hide CFs,
 // encoded values, ordinal lookup, range pins and position directory details.
 class FtsSegmentReader {
@@ -88,7 +93,7 @@ class FtsSegmentReader {
   virtual Result<std::vector<FtsReadTerm::Ptr>> lookup_many(
       const std::vector<std::string_view> &terms) const;
   virtual Result<std::vector<FtsReadPosition::Ptr>> positions(
-      const std::vector<FtsReadTerm::Ptr> &terms, uint32_t doc) const;
+      const std::vector<FtsPhraseTerm> &terms, uint32_t doc) const;
 };
 
 Result<FtsSegmentReader::Ptr> OpenCustomFtsReader(

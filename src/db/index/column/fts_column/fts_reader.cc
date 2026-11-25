@@ -52,9 +52,12 @@ class CustomPosting final : public FtsReadPosting {
   Result<Bound> bound(uint32_t target, float boost) override {
     return cursor_->bound(target, boost);
   }
-  Result<FtsReadPosition::Ptr> current_positions(const FtsReadTerm &,
-                                                 uint32_t) override {
+  Result<FtsReadPosition::Ptr> current_positions(const FtsReadTerm &, uint32_t,
+                                                 bool retain_windows) override {
     auto positions = cursor_->positions();
+    if (!retain_windows) {
+      cursor_->release_position_windows();
+    }
     if (!positions) {
       return tl::make_unexpected(positions.error());
     }
@@ -158,7 +161,7 @@ class CustomReader final : public FtsSegmentReader {
 }  // namespace
 
 Result<FtsReadPosition::Ptr> FtsReadPosting::current_positions(
-    const FtsReadTerm &term, uint32_t doc) {
+    const FtsReadTerm &term, uint32_t doc, bool) {
   return term.positions(doc);
 }
 
@@ -177,11 +180,12 @@ Result<std::vector<FtsReadTerm::Ptr>> FtsSegmentReader::lookup_many(
 }
 
 Result<std::vector<FtsReadPosition::Ptr>> FtsSegmentReader::positions(
-    const std::vector<FtsReadTerm::Ptr> &terms, uint32_t doc) const {
+    const std::vector<FtsPhraseTerm> &terms, uint32_t doc) const {
   std::vector<FtsReadPosition::Ptr> result;
   result.reserve(terms.size());
   for (const auto &term : terms) {
-    auto positions = term->positions(doc);
+    auto positions = term.posting->current_positions(*term.term, doc,
+                                                     /*retain_windows=*/false);
     if (!positions) {
       return tl::make_unexpected(positions.error());
     }

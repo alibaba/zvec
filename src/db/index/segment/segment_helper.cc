@@ -1072,22 +1072,17 @@ Status SegmentHelper::ReduceFts(const CollectionSchema::Ptr &schema,
     auto destination = target;
     destination.block.set_id(fts_block_id);
     std::vector<std::string> columns;
-    std::vector<std::vector<fts::FtsFieldSource::Ptr>> sources;
     for (const auto &field : fts_fields) {
       columns.push_back(field->name());
-      sources.emplace_back();
-      for (const auto &segment : input_segments) {
-        auto source = segment->open_fts_source(field->name());
-        if (!source) {
-          return source.error();
-        }
-        sources.back().push_back(std::move(*source));
-      }
     }
     destination.block.set_columns(columns);
     auto prepared = FtsIndexer::PrepareMerged(
-        destination, fts_fields, sources, delete_row_id_bitmap,
-        fts::FtsMergePolicy::kCompact, fts::FtsRetirementQueue::Create());
+        destination, fts_fields, input_segments.size(),
+        [&](size_t i, const FieldSchema::Ptr &field) {
+          return input_segments[i]->open_fts_source(field->name());
+        },
+        delete_row_id_bitmap, fts::FtsMergePolicy::kCompact,
+        fts::FtsRetirementQueue::Create());
     if (!prepared) {
       return prepared.error();
     }

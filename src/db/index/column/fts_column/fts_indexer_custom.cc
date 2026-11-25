@@ -286,51 +286,50 @@ Result<fts::FtsFieldSource::Ptr> FtsIndexer::open_source(
 
 Result<FtsIndexer::Ptr> FtsIndexer::PrepareMerged(
     const CustomTarget &target, const FieldSchemaPtrList &fields,
-    const std::vector<std::vector<fts::FtsFieldSource::Ptr>> &sources,
+    size_t segment_count, const OpenMergeSource &open_source,
     const roaring::Roaring &deletions, fts::FtsMergePolicy policy,
     const fts::FtsRetirementQueue::Pointer &retirement,
     const DurableFile::Hook &hook) {
-  auto status = ValidateFields(target, fields);
-  if (!status.ok()) {
-    return tl::make_unexpected(status);
+  if (!open_source || segment_count == 0 ||
+      (policy == fts::FtsMergePolicy::kRewrite &&
+       (segment_count != 1 || !deletions.isEmpty()))) {
+    return tl::make_unexpected(Status::InvalidArgument("Invalid FTS merge"));
   }
-  if (fields.size() != sources.size()) {
-    return tl::make_unexpected(Status::InvalidArgument("Missing FTS sources"));
-  }
-  for (size_t i = 0; i < fields.size(); ++i) {
-    uint64_t rows = 0;
-    const auto analysis = AnalysisIdentity(*fields[i]);
-    if (sources[i].empty() || sources[i].size() != sources.front().size() ||
-        (policy == fts::FtsMergePolicy::kRewrite &&
-         (sources[i].size() != 1 || !deletions.isEmpty()))) {
-      return tl::make_unexpected(
-          Status::InvalidArgument("Invalid FTS rewrite"));
-    }
-    for (size_t segment = 0; segment < sources[i].size(); ++segment) {
-      const auto &source = sources[i][segment];
-      if (!source || source->metadata().name != fields[i]->name() ||
-          source->metadata().analysis_identity != analysis ||
-          source->statistics().rows !=
-              sources.front()[segment]->statistics().rows ||
-          !fts::format::ValidRange(rows, source->statistics().rows,
-                                   UINT32_MAX)) {
-        return tl::make_unexpected(
-            Status::InvalidArgument("Incompatible FTS merge source"));
-      }
-      rows += source->statistics().rows;
-    }
-    if ((!deletions.isEmpty() && deletions.maximum() >= rows) ||
-        rows - deletions.cardinality() != target.block.doc_count()) {
-      return tl::make_unexpected(
-          Status::InvalidArgument("FTS target disagrees with forward rows"));
-    }
-  }
+  std::vector<uint64_t> segment_rows(segment_count);
   return PrepareGeneration(
       target, fields, retirement,
       [&](fts::format::FieldMetadata identity, fts::FtsContainerWriter *writer,
-          uint32_t ordinal) {
+          uint32_t ordinal) -> Result<fts::format::FieldMetadata> {
+        std::vector<fts::FtsFieldSource::Ptr> sources;
+        uint64_t rows = 0;
+        for (size_t i = 0; i < segment_count; ++i) {
+          auto source = open_source(i, fields[ordinal]);
+          if (!source) {
+            return tl::make_unexpected(source.error());
+          }
+          if (!*source || (*source)->metadata().name != identity.name ||
+              (*source)->metadata().analysis_identity !=
+                  identity.analysis_identity) {
+            return tl::make_unexpected(
+                Status::InvalidArgument("Incompatible FTS merge source"));
+          }
+          const auto count = (*source)->statistics().rows;
+          if (!fts::format::ValidRange(rows, count, UINT32_MAX) ||
+              (ordinal != 0 && count != segment_rows[i])) {
+            return tl::make_unexpected(
+                Status::InvalidArgument("Incompatible FTS source row count"));
+          }
+          segment_rows[i] = count;
+          rows += count;
+          sources.push_back(std::move(*source));
+        }
+        if ((!deletions.isEmpty() && deletions.maximum() >= rows) ||
+            rows - deletions.cardinality() != target.block.doc_count()) {
+          return tl::make_unexpected(Status::InvalidArgument(
+              "FTS target disagrees with forward rows"));
+        }
         if (policy == fts::FtsMergePolicy::kRewrite) {
-          const auto &source = sources[ordinal].front()->metadata();
+          const auto &source = sources.front()->metadata();
           // Unchanged custom fields keep their logical incarnation. A
           // legacy field has no persisted identity and gets a fresh one.
           if (source.id != Identity{}) {
@@ -338,7 +337,7 @@ Result<FtsIndexer::Ptr> FtsIndexer::PrepareMerged(
             identity.incarnation = source.incarnation;
           }
         }
-        return fts::MergeFtsField(sources[ordinal], deletions, policy,
+        return fts::MergeFtsField(sources, deletions, policy,
                                   std::move(identity), writer, ordinal);
       },
       hook);

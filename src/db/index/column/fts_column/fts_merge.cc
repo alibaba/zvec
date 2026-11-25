@@ -99,7 +99,8 @@ Status CopyPostings(Input &input, const roaring::Roaring &deletions,
     if (!payload) {
       return payload.error();
     }
-    auto positions = (*postings)->current_positions(*input.head->reader, *doc);
+    auto positions = (*postings)->current_positions(*input.head->reader, *doc,
+                                                    /*retain_windows=*/true);
     if (!positions) {
       return positions.error();
     }

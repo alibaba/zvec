@@ -80,11 +80,13 @@ class FtsIndexer {
       const std::string &field, uint64_t rows,
       const fts::FtsPresenceSource &presence = {}) const;
 
-  // sources[field][segment], with each field using identical forward order.
+  using OpenMergeSource = std::function<Result<fts::FtsFieldSource::Ptr>(
+      size_t segment, const FieldSchema::Ptr &field)>;
+  // Open sources in forward order and release them after each field.
   // Uses the same verified, durable private-generation preparation as seal.
   static Result<Ptr> PrepareMerged(
       const CustomTarget &target, const FieldSchemaPtrList &fields,
-      const std::vector<std::vector<fts::FtsFieldSource::Ptr>> &sources,
+      size_t segment_count, const OpenMergeSource &open_source,
       const roaring::Roaring &deletions, fts::FtsMergePolicy policy,
       const fts::FtsRetirementQueue::Pointer &retirement,
       const DurableFile::Hook &hook = {});

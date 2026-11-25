@@ -7767,6 +7767,72 @@ TEST_F(CollectionTest, Feature_DropFtsIndex_FailureKeepsPersistedOldSchema) {
   FileHelper::RemoveDirectory(col_path);
 }
 
+TEST_F(CollectionTest, FtsQueryReportsTermBudgetExhaustion) {
+  CollectionSchema schema{"fts_budget"};
+  schema.add_field(std::make_shared<FieldSchema>(
+      "text", DataType::STRING, false, std::make_shared<FtsIndexParams>()));
+  auto collection = Collection::CreateAndOpen(col_path, schema, options_);
+  ASSERT_TRUE(collection) << collection.error().message();
+  std::vector<Doc> docs(1);
+  docs[0].set_pk("first");
+  docs[0].set("text", std::string("word"));
+  ASSERT_TRUE((*collection)->insert(docs));
+  SearchQuery query;
+  query.topk_ = 1;
+  query.target_.field_name_ = "text";
+  FtsClause phrase;
+  phrase.query_string_ = "\"word";
+  for (size_t i = 0; i < 1024; ++i) {
+    phrase.query_string_ += " word";
+  }
+  phrase.query_string_ += '"';
+  query.target_.clause_ = phrase;
+  auto result = (*collection)->query(query);
+  ASSERT_FALSE(result);
+  EXPECT_EQ(StatusCode::RESOURCE_EXHAUSTED, result.error().code())
+      << result.error().message();
+}
+
+TEST_F(CollectionTest, FtsDdlKeepsSealedSegmentSchemasIndependent) {
+  CollectionSchema schema{"fts_ddl"};
+  schema.set_max_doc_count_per_segment(1000);
+  schema.add_field(std::make_shared<FieldSchema>("text", DataType::STRING));
+  auto collection = Collection::CreateAndOpen(col_path, schema, options_);
+  ASSERT_TRUE(collection) << collection.error().message();
+  for (int batch = 0; batch < 2; ++batch) {
+    std::vector<Doc> docs(1000);
+    for (size_t i = 0; i < docs.size(); ++i) {
+      docs[i].set_pk(std::to_string(batch * docs.size() + i));
+      docs[i].set("text", std::string("word"));
+    }
+    ASSERT_TRUE((*collection)->insert(docs));
+  }
+  ASSERT_TRUE((*collection)
+                  ->create_index("text", std::make_shared<FtsIndexParams>())
+                  .ok());
+  auto status = (*collection)
+                    ->add_column(std::make_shared<FieldSchema>(
+                                     "extra", DataType::INT32, true),
+                                 "", AddColumnOptions{1});
+  ASSERT_TRUE(status.ok()) << status.message();
+  ASSERT_TRUE((*collection)->drop_index("text").ok());
+  status = (*collection)
+               ->add_column(std::make_shared<FieldSchema>(
+                                "after_drop", DataType::INT32, true),
+                            "", AddColumnOptions{1});
+  ASSERT_TRUE(status.ok()) << status.message();
+  ASSERT_TRUE((*collection)->close().ok());
+  auto reopened = Collection::Open(col_path, options_);
+  ASSERT_TRUE(reopened) << reopened.error().message();
+  auto persisted = (*reopened)->schema();
+  ASSERT_TRUE(persisted);
+  EXPECT_TRUE(persisted->has_field("extra"));
+  EXPECT_TRUE(persisted->has_field("after_drop"));
+  auto docs = (*reopened)->fetch({"0", "1999"});
+  ASSERT_TRUE(docs) << docs.error().message();
+  EXPECT_EQ(2u, docs->size());
+}
+
 // Dynamic CreateIndex/DropIndex for FTS: create an FTS index on a STRING column
 // that already has data, verify queries hit, then drop the index and verify FTS
 // is no longer available. Also covers reopen persistence.

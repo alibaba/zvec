@@ -30,7 +30,7 @@ class PhraseDocIterator : public DocIterator {
  public:
   /*! Construct with terms in logical phrase order and their owning reader. */
   PhraseDocIterator(DocIteratorPtr conjunction,
-                    std::vector<FtsReadTerm::Ptr> terms,
+                    std::vector<FtsPhraseTerm> terms,
                     FtsSegmentReader::Ptr reader);
 
   uint32_t next_doc() override;
@@ -53,7 +53,7 @@ class PhraseDocIterator : public DocIterator {
   Result<bool> verify_phrase_positions(uint32_t doc_id) const;
 
   DocIteratorPtr conjunction_;
-  std::vector<FtsReadTerm::Ptr> terms_;
+  std::vector<FtsPhraseTerm> terms_;
   FtsSegmentReader::Ptr reader_;
   Status read_status_;
   // Cache per document: OR may call matches() from both matches() and score().

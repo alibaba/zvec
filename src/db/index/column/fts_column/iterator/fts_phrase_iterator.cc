@@ -18,7 +18,7 @@
 namespace zvec::fts {
 
 PhraseDocIterator::PhraseDocIterator(DocIteratorPtr conjunction,
-                                     std::vector<FtsReadTerm::Ptr> terms,
+                                     std::vector<FtsPhraseTerm> terms,
                                      FtsSegmentReader::Ptr reader)
     : conjunction_(std::move(conjunction)),
       terms_(std::move(terms)),

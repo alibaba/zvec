@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "id_map.h"
+#include <cstring>
 #include <zvec/ailego/logger/logger.h>
 #include "db/common/constants.h"
 
@@ -118,19 +119,27 @@ void IDMap::remove(const std::string &key) {
 
 
 bool IDMap::has(const std::string &key, uint64_t *doc_id) const {
+  auto result = lookup(key);
+  if (doc_id) {
+    *doc_id = result.value_or(INVALID_DOC_ID);
+  }
+  return result && *result != INVALID_DOC_ID;
+}
+
+
+Result<uint64_t> IDMap::lookup(const std::string &key) const {
   std::string value;
   auto s = rocksdb_context_.db_->Get(rocksdb_context_.read_opts_, key, &value);
-  if (s.ok()) {
-    if (doc_id) {
-      *doc_id = *(uint64_t *)(value.data());
-    }
-    return true;
-  } else {
-    if (doc_id) {
-      *doc_id = INVALID_DOC_ID;
-    }
-    return false;
+  if (s.IsNotFound()) {
+    return INVALID_DOC_ID;
   }
+  if (!s.ok() || value.size() != sizeof(uint64_t)) {
+    return tl::make_unexpected(
+        Status::InternalError("Invalid ID map read: ", s.ToString()));
+  }
+  uint64_t id;
+  std::memcpy(&id, value.data(), sizeof(id));
+  return id;
 }
 
 

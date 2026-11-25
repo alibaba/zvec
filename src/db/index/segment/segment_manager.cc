@@ -46,8 +46,10 @@ Status SegmentManager::switch_fts_writer(
   }
   // The first authority record also references older, legacy segments. Make
   // those files durable before upgrading the collection's commit protocol.
-  for (const auto &entry : prepared_segments) {
-    CHECK_RETURN_STATUS(entry.second->checkpoint_for_fts());
+  if (!versions->uses_commit_record()) {
+    for (const auto &entry : prepared_segments) {
+      CHECK_RETURN_STATUS(entry.second->checkpoint_for_fts());
+    }
   }
   auto prepared = (*writing)->prepare_fts_seal(hook);
   if (!prepared) {

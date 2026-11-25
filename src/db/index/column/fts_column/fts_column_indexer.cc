@@ -454,6 +454,9 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_phrase_iterator(
   std::vector<DocIteratorPtr> term_iterators;
   term_iterators.reserve(terms.size());
 
+  std::vector<FtsPhraseTerm> phrase_terms;
+  phrase_terms.reserve(terms.size());
+
   // Phrase-level boost is distributed across the internal term iterators.
   // PhraseDocIterator.score() delegates to conjunction.score() which sums the
   // internal contributions, so multiplying each contribution by boost yields
@@ -462,25 +465,21 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_phrase_iterator(
     if (!(*handles)[i]) {
       return DocIteratorPtr{nullptr};
     }
-    auto iter_result = create_term_iterator((*handles)[i], phrase_node.boost);
-    if (!iter_result.has_value()) {
-      return iter_result;
+    auto &term = (*handles)[i];
+    auto posting = term->postings();
+    if (!posting) {
+      return tl::make_unexpected(posting.error());
     }
-    if (!iter_result.value()) {
-      return DocIteratorPtr{nullptr};
-    }
-    term_iterators.push_back(std::move(iter_result.value()));
-  }
-
-  if (term_iterators.empty()) {
-    return DocIteratorPtr{nullptr};
+    phrase_terms.push_back({term, posting->get()});
+    term_iterators.push_back(std::make_unique<TermDocIterator>(
+        std::move(term), std::move(*posting), scorer_, phrase_node.boost));
   }
 
   auto conjunction = std::make_unique<ConjunctionIterator>(
       std::move(term_iterators), std::vector<DocIteratorPtr>{});
 
   return std::make_unique<PhraseDocIterator>(std::move(conjunction),
-                                             std::move(*handles), reader_);
+                                             std::move(phrase_terms), reader_);
 }
 
 Result<DocIteratorPtr> FtsColumnIndexer::build_and_iterator(

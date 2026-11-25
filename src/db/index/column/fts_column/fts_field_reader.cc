@@ -630,6 +630,15 @@ Result<std::unique_ptr<FtsPositionCursor>> FtsPostingCursor::positions() {
   return cursor;
 }
 
+void FtsPostingCursor::release_position_windows() {
+  if (position_index_) {
+    position_index_->release_window();
+  }
+  if (single_positions_) {
+    single_positions_->release_window();
+  }
+}
+
 uint32_t FtsPostingCursor::block_last_doc() const {
   return started_ && !eof_ ? skip_.last_doc : UINT32_MAX;
 }

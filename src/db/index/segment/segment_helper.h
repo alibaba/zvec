@@ -190,6 +190,7 @@ struct CreateFtsIndexTask {
   // output
   SegmentMeta::Ptr output_segment_meta_;
   FtsIndexer::Ptr output_fts_indexer_;
+  CollectionSchema::Ptr output_schema_;
 };
 
 struct DropFtsIndexTask {
@@ -202,6 +203,7 @@ struct DropFtsIndexTask {
   // output
   SegmentMeta::Ptr output_segment_meta_;
   FtsIndexer::Ptr output_fts_indexer_;
+  CollectionSchema::Ptr output_schema_;
 };
 
 // Independent from compaction/vector tasks: migrate a single sealed segment

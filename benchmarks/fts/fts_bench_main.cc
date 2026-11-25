@@ -126,6 +126,8 @@ DEFINE_string(mode, "raw",
               "'index' compares legacy/custom FTS with identical input IDs.");
 DEFINE_string(index_format, "rocksdb", "Index mode: rocksdb or custom");
 DEFINE_bool(index_mmap, false, "Custom index benchmark read mode");
+DEFINE_bool(index_phrase, false,
+            "Index search: match all query tokens as one ordered phrase");
 DEFINE_int32(index_passes, 1, "Index benchmark query passes in one process");
 DEFINE_int32(index_cache_mb, 64, "Custom buffer pool budget in MiB");
 DEFINE_string(result_file, "",
@@ -145,9 +147,17 @@ using namespace zvec::fts;
 // ---------------------------------------------------------------------------
 template <typename TokenContainer>
 static FtsAstNodePtr build_query_ast_from_tokens(
-    const TokenContainer &tokens, const std::string &default_operator) {
+    const TokenContainer &tokens, const std::string &default_operator,
+    bool phrase = false) {
   if (tokens.empty()) {
     return nullptr;
+  }
+  if (phrase) {
+    auto node = std::make_unique<zvec::fts::PhraseNode>();
+    for (const auto &token : tokens) {
+      node->terms.push_back(token.text);
+    }
+    return node;
   }
   if (default_operator == "and") {
     auto and_node = std::make_unique<AndNode>();
@@ -2175,7 +2185,8 @@ static Status index_search_or_stats(bool stats_only) {
         }
         const auto start = std::chrono::steady_clock::now();
         auto tokens = (*pipeline)->process(queries[i].match_text);
-        auto ast = build_query_ast_from_tokens(tokens, FLAGS_default_operator);
+        auto ast = build_query_ast_from_tokens(tokens, FLAGS_default_operator,
+                                               FLAGS_index_phrase);
         if (ast) {
           auto found = indexer->get(field_name)->search(*ast, params);
           if (!found) {

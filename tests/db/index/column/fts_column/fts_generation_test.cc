@@ -505,22 +505,30 @@ TEST_F(FtsGenerationTest, RewrittenGenerationPreservesFieldsAndReopens) {
   auto original = source_->prepare_custom(target(), fields_, retirement);
   ASSERT_TRUE(original.has_value());
   ASSERT_TRUE(source_->seal_all().ok());
-  std::vector<std::vector<fts::FtsFieldSource::Ptr>> sources;
-  auto title = (*original)->open_source("title", 3);
-  ASSERT_TRUE(title.has_value());
-  sources.push_back({*title});
-  uint32_t row = 0;
-  auto body =
-      source_->open_source("body", 3, [&]() -> Result<std::optional<bool>> {
-        if (row++ < 3) {
-          return std::optional<bool>{true};
-        }
-        return std::optional<bool>{};
-      });
-  ASSERT_TRUE(body.has_value());
-  sources.push_back({*body});
+  fts::format::FieldMetadata original_title;
+  std::weak_ptr<fts::FtsFieldSource> previous;
+  auto open_source = [&](size_t, const FieldSchema::Ptr &field) {
+    EXPECT_TRUE(previous.expired());
+    uint32_t row = 0;
+    auto source = field->name() == "title"
+                      ? (*original)->open_source("title", 3)
+                      : source_->open_source(
+                            "body", 3, [&]() -> Result<std::optional<bool>> {
+                              if (row++ < 3) {
+                                return std::optional<bool>{true};
+                              }
+                              return std::optional<bool>{};
+                            });
+    if (source) {
+      previous = *source;
+      if (field->name() == "title") {
+        original_title = (*source)->metadata();
+      }
+    }
+    return source;
+  };
   auto rewritten =
-      FtsIndexer::PrepareMerged(target(), fields_, sources, {},
+      FtsIndexer::PrepareMerged(target(), fields_, 1, open_source, {},
                                 fts::FtsMergePolicy::kRewrite, retirement);
   ASSERT_TRUE(rewritten.has_value()) << rewritten.error().message();
   auto reference = target();
@@ -531,9 +539,8 @@ TEST_F(FtsGenerationTest, RewrittenGenerationPreservesFieldsAndReopens) {
   ASSERT_TRUE(reopened.has_value());
   auto new_title = (*reopened)->open_source("title", 3);
   ASSERT_TRUE(new_title.has_value());
-  EXPECT_EQ((*title)->metadata().id, (*new_title)->metadata().id);
-  EXPECT_EQ((*title)->metadata().incarnation,
-            (*new_title)->metadata().incarnation);
+  EXPECT_EQ(original_title.id, (*new_title)->metadata().id);
+  EXPECT_EQ(original_title.incarnation, (*new_title)->metadata().incarnation);
   for (const auto &name : {"title", "body"}) {
     auto expected = source_->get(name)->search(fts::TermNode("beta"), {});
     auto actual = (*reopened)->get(name)->search(fts::TermNode("beta"), {});
@@ -545,7 +552,7 @@ TEST_F(FtsGenerationTest, RewrittenGenerationPreservesFieldsAndReopens) {
     }
   }
   auto mismatch = target(false, 4);
-  EXPECT_FALSE(FtsIndexer::PrepareMerged(mismatch, fields_, sources, {},
+  EXPECT_FALSE(FtsIndexer::PrepareMerged(mismatch, fields_, 1, open_source, {},
                                          fts::FtsMergePolicy::kRewrite,
                                          retirement)
                    .has_value());

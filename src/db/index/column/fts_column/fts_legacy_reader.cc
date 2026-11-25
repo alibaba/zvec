@@ -128,7 +128,7 @@ class LegacyFtsReader::Term final : public FtsReadTerm,
   Result<FtsReadPosting::Ptr> postings() const override;
   Result<FtsReadPosition::Ptr> positions(uint32_t doc) const override {
     auto result = owner_->positions(
-        {std::const_pointer_cast<Term>(shared_from_this())}, doc);
+        {{std::const_pointer_cast<Term>(shared_from_this()), nullptr}}, doc);
     if (!result) {
       return tl::make_unexpected(result.error());
     }
@@ -402,25 +402,30 @@ Result<FtsReadTerm::Ptr> LegacyFtsReader::lookup(std::string_view term) const {
 Result<std::vector<FtsReadTerm::Ptr>> LegacyFtsReader::lookup_many(
     const std::vector<std::string_view> &terms) const {
   std::vector<rocksdb::Slice> keys;
-  keys.reserve(terms.size());
+  std::unordered_map<std::string_view, size_t> seen;
+  std::vector<size_t> slots;
+  slots.reserve(terms.size());
   for (auto term : terms) {
-    keys.emplace_back(term.data(), term.size());
+    auto [slot, inserted] = seen.emplace(term, keys.size());
+    if (inserted) {
+      keys.emplace_back(term.data(), term.size());
+    }
+    slots.push_back(slot->second);
   }
-  std::vector<rocksdb::ColumnFamilyHandle *> cfs(terms.size(),
-                                                 source_.postings);
-  std::vector<rocksdb::PinnableSlice> values(terms.size());
-  std::vector<rocksdb::Status> statuses(terms.size());
-  if (!terms.empty()) {
-    source_.context->db_->MultiGet(source_.context->read_opts_, terms.size(),
+  std::vector<rocksdb::ColumnFamilyHandle *> cfs(keys.size(), source_.postings);
+  std::vector<rocksdb::PinnableSlice> values(keys.size());
+  std::vector<rocksdb::Status> statuses(keys.size());
+  if (!keys.empty()) {
+    source_.context->db_->MultiGet(source_.context->read_opts_, keys.size(),
                                    cfs.data(), keys.data(), values.data(),
                                    statuses.data());
   }
-  std::vector<FtsReadTerm::Ptr> result;
-  result.reserve(terms.size());
+  std::vector<FtsReadTerm::Ptr> unique;
+  unique.reserve(keys.size());
   size_t retained = 0;
-  for (size_t i = 0; i < terms.size(); ++i) {
+  for (size_t i = 0; i < keys.size(); ++i) {
     if (statuses[i].IsNotFound()) {
-      result.push_back(nullptr);
+      unique.push_back(nullptr);
       continue;
     }
     if (!statuses[i].ok()) {
@@ -431,18 +436,23 @@ Result<std::vector<FtsReadTerm::Ptr>> LegacyFtsReader::lookup_many(
     }
     retained += values[i].size();
     auto term =
-        decode(terms[i],
+        decode(std::string_view(keys[i].data(), keys[i].size()),
                std::make_shared<rocksdb::PinnableSlice>(std::move(values[i])));
     if (!term) {
       return tl::make_unexpected(term.error());
     }
-    result.push_back(std::move(*term));
+    unique.push_back(std::move(*term));
+  }
+  std::vector<FtsReadTerm::Ptr> result;
+  result.reserve(slots.size());
+  for (size_t slot : slots) {
+    result.push_back(unique[slot]);
   }
   return result;
 }
 
 Result<std::vector<FtsReadPosition::Ptr>> LegacyFtsReader::positions(
-    const std::vector<FtsReadTerm::Ptr> &terms, uint32_t doc) const {
+    const std::vector<FtsPhraseTerm> &terms, uint32_t doc) const {
   // Deduplicate storage reads, but preserve an independent logical cursor for
   // each repeated phrase term. Values stay pinned; decoded vectors are not
   // built.
@@ -450,7 +460,7 @@ Result<std::vector<FtsReadPosition::Ptr>> LegacyFtsReader::positions(
   std::vector<std::string> keys;
   std::vector<size_t> slots;
   for (const auto &handle : terms) {
-    auto term = std::dynamic_pointer_cast<Term>(handle);
+    auto term = std::dynamic_pointer_cast<Term>(handle.term);
     if (!term || term->owner_.get() != this) {
       return tl::make_unexpected(
           Status::InvalidArgument("Foreign FTS term handle"));

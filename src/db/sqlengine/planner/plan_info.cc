@@ -17,6 +17,7 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/pattern/expected.hpp>
 #include "db/common/error_code.h"
+#include "db/sqlengine/common/util.h"
 
 namespace zvec::sqlengine {
 
@@ -24,8 +25,8 @@ Result<std::unique_ptr<arrow::RecordBatchReader>>
 PlanInfo::execute_to_reader() {
   auto res = arrow::acero::DeclarationToReader(plan_);
   if (!res.ok()) {
-    return tl::make_unexpected(Status::InternalError(
-        "execute plan_info failed: ", res.status().ToString()));
+    return tl::make_unexpected(
+        FromArrowError(res.status(), "execute plan_info failed: "));
   }
   return res.MoveValueUnsafe();
 }

@@ -738,7 +738,7 @@ Status CollectionImpl::create_index(const std::string &column_name,
   new_version.set_schema(*new_schema);
 
   for (auto &task : tasks) {
-    auto task_info = task->task_info();
+    auto &task_info = task->task_info();
 
     if (std::holds_alternative<CreateVectorIndexTask>(task_info)) {
       auto create_index_task = std::get<CreateVectorIndexTask>(task_info);
@@ -749,7 +749,8 @@ Status CollectionImpl::create_index(const std::string &column_name,
       s = new_version.update_persisted_segment_meta(
           create_index_task.output_segment_meta_);
     } else if (std::holds_alternative<CreateFtsIndexTask>(task_info)) {
-      auto fts_task = std::get<CreateFtsIndexTask>(task_info);
+      auto &fts_task = std::get<CreateFtsIndexTask>(task_info);
+      fts_task.output_schema_ = std::make_shared<CollectionSchema>(*new_schema);
       s = new_version.update_persisted_segment_meta(
           fts_task.output_segment_meta_);
     }
@@ -781,7 +782,7 @@ Status CollectionImpl::create_index(const std::string &column_name,
 
   // 4. remove old segments or block
   for (auto &task : tasks) {
-    auto task_info = task->task_info();
+    auto &task_info = task->task_info();
 
     if (std::holds_alternative<CreateVectorIndexTask>(task_info)) {
       auto create_index_task = std::get<CreateVectorIndexTask>(task_info);
@@ -795,9 +796,9 @@ Status CollectionImpl::create_index(const std::string &column_name,
           *new_schema, create_index_task.output_segment_meta_,
           create_index_task.output_scalar_indexer_);
     } else if (std::holds_alternative<CreateFtsIndexTask>(task_info)) {
-      auto fts_task = std::get<CreateFtsIndexTask>(task_info);
+      auto &fts_task = std::get<CreateFtsIndexTask>(task_info);
       fts_task.input_segment_->publish_fts_index(
-          new_schema,
+          std::move(fts_task.output_schema_),
           {fts_task.output_segment_meta_, fts_task.output_fts_indexer_});
       s = Status::OK();
     }
@@ -940,7 +941,7 @@ Status CollectionImpl::drop_index(const std::string &column_name) {
   new_version.set_schema(*new_schema);
 
   for (auto &task : tasks) {
-    auto task_info = task->task_info();
+    auto &task_info = task->task_info();
 
     if (std::holds_alternative<DropVectorIndexTask>(task_info)) {
       auto drop_index_task = std::get<DropVectorIndexTask>(task_info);
@@ -951,7 +952,8 @@ Status CollectionImpl::drop_index(const std::string &column_name) {
       s = new_version.update_persisted_segment_meta(
           drop_index_task.output_segment_meta_);
     } else if (std::holds_alternative<DropFtsIndexTask>(task_info)) {
-      auto fts_task = std::get<DropFtsIndexTask>(task_info);
+      auto &fts_task = std::get<DropFtsIndexTask>(task_info);
+      fts_task.output_schema_ = std::make_shared<CollectionSchema>(*new_schema);
       s = new_version.update_persisted_segment_meta(
           fts_task.output_segment_meta_);
     }
@@ -974,7 +976,7 @@ Status CollectionImpl::drop_index(const std::string &column_name) {
 
   // 4. remove old segments or block
   for (auto &task : tasks) {
-    auto task_info = task->task_info();
+    auto &task_info = task->task_info();
 
     if (std::holds_alternative<DropVectorIndexTask>(task_info)) {
       auto drop_index_task = std::get<DropVectorIndexTask>(task_info);
@@ -987,9 +989,9 @@ Status CollectionImpl::drop_index(const std::string &column_name) {
           *new_schema, drop_index_task.output_segment_meta_,
           drop_index_task.output_scalar_indexer_);
     } else if (std::holds_alternative<DropFtsIndexTask>(task_info)) {
-      auto fts_task = std::get<DropFtsIndexTask>(task_info);
+      auto &fts_task = std::get<DropFtsIndexTask>(task_info);
       fts_task.input_segment_->publish_fts_index(
-          new_schema,
+          std::move(fts_task.output_schema_),
           {fts_task.output_segment_meta_, fts_task.output_fts_indexer_});
       s = Status::OK();
     }

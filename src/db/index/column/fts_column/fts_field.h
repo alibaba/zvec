@@ -166,6 +166,7 @@ class FtsPostingCursor {
   Result<FtsPostingBatch> next_batch();
   Result<uint32_t> doc_length();
   Result<std::unique_ptr<FtsPositionCursor>> positions();
+  void release_position_windows();
   uint32_t block_last_doc() const;
   float block_max_score(float boost = 1.0f) const;
   // Looks up a target block without changing document/position cursor state.

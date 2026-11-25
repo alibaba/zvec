@@ -75,6 +75,45 @@ class FtsSegmentPublicationTest : public testing::TestWithParam<bool> {
   Segment::Ptr segment_;
 };
 
+TEST_P(FtsSegmentPublicationTest, FailedCreateRemovesOnlyOwnedDirectory) {
+  auto invalid = schema_;
+  invalid.get_field("text")->set_index_params(
+      std::make_shared<FtsIndexParams>("missing-fts-tokenizer"));
+  const auto candidate = FileHelper::MakeSegmentPath(path_, 77);
+  auto failed = Segment::CreateAndOpen(
+      path_, invalid, 77, 200, ids_, deletes_, versions_,
+      SegmentOptions{false, GetParam(), 64 * 1024 * 1024});
+  EXPECT_FALSE(failed.has_value());
+  EXPECT_FALSE(std::filesystem::exists(candidate));
+  ASSERT_TRUE(std::filesystem::create_directory(candidate));
+  ASSERT_TRUE(std::filesystem::create_directory(candidate + "/keep"));
+  auto existing = Segment::CreateAndOpen(
+      path_, schema_, 77, 200, ids_, deletes_, versions_,
+      SegmentOptions{false, GetParam(), 64 * 1024 * 1024});
+  EXPECT_FALSE(existing.has_value());
+  EXPECT_TRUE(std::filesystem::exists(candidate + "/keep"));
+}
+
+#ifdef _WIN32
+TEST_P(FtsSegmentPublicationTest, UnsupportedSealPreservesReadableCheckpoint) {
+  ASSERT_TRUE(segment_->flush().ok());
+  auto checkpoint = versions_->get_current_version().writing_segment_meta();
+  ASSERT_NE(nullptr, checkpoint);
+  auto prepared = segment_->prepare_fts_seal();
+  ASSERT_FALSE(prepared);
+  EXPECT_EQ(StatusCode::NOT_SUPPORTED, prepared.error().code());
+  EXPECT_FALSE(versions_->uses_commit_record());
+  EXPECT_TRUE(segment_->meta()->has_writing_forward_block());
+  segment_.reset();
+  auto reopened =
+      Segment::Open(path_, schema_, *checkpoint, ids_, deletes_, versions_,
+                    SegmentOptions{false, GetParam(), 64 * 1024 * 1024});
+  ASSERT_TRUE(reopened) << reopened.error().message();
+  auto result = (*reopened)->fts_search("text", fts::TermNode("beta"), {});
+  ASSERT_TRUE(result) << result.error().message();
+  EXPECT_EQ(2u, result->size());
+}
+#else
 TEST_P(FtsSegmentPublicationTest,
        PrepareCommitPublishAndReopenPreserveReaders) {
   auto old_reader = segment_->get_fts_indexer("text");
@@ -723,25 +762,6 @@ TEST_P(FtsSegmentPublicationTest, CollectionDdlAndClosedBackupReopen) {
   FileHelper::RemoveDirectory(backup);
 }
 
-TEST_P(FtsSegmentPublicationTest, FailedCreateRemovesOnlyOwnedDirectory) {
-  auto invalid = schema_;
-  invalid.get_field("text")->set_index_params(
-      std::make_shared<FtsIndexParams>("missing-fts-tokenizer"));
-  const auto candidate = FileHelper::MakeSegmentPath(path_, 77);
-  auto failed = Segment::CreateAndOpen(
-      path_, invalid, 77, 200, ids_, deletes_, versions_,
-      SegmentOptions{false, GetParam(), 64 * 1024 * 1024});
-  EXPECT_FALSE(failed.has_value());
-  EXPECT_FALSE(std::filesystem::exists(candidate));
-  ASSERT_TRUE(std::filesystem::create_directory(candidate));
-  ASSERT_TRUE(std::filesystem::create_directory(candidate + "/keep"));
-  auto existing = Segment::CreateAndOpen(
-      path_, schema_, 77, 200, ids_, deletes_, versions_,
-      SegmentOptions{false, GetParam(), 64 * 1024 * 1024});
-  EXPECT_FALSE(existing.has_value());
-  EXPECT_TRUE(std::filesystem::exists(candidate + "/keep"));
-}
-
 TEST_P(FtsSegmentPublicationTest, SourceCheckpointKeepsPinnedDeleteSnapshot) {
   ASSERT_TRUE(
       deletes_->flush(FileHelper::MakeFilePath(path_, FileID::DELETE_FILE, 0))
@@ -851,6 +871,11 @@ TEST_P(FtsSegmentPublicationTest,
     EXPECT_EQ("1", (*nearest)[0]->pk());
     if (!read_only) {
       EXPECT_EQ(0, (*nearest)[0]->score());
+      auto added = (*collection)
+                       ->add_column(std::make_shared<FieldSchema>(
+                                        "plain", DataType::INT32, true),
+                                    "", AddColumnOptions{});
+      ASSERT_TRUE(added.ok()) << added.message();
       auto changed =
           (*collection)
               ->create_index("vector",
@@ -1186,9 +1211,12 @@ TEST_P(FtsSegmentPublicationTest, WalReplayRepairsInterruptedCheckpointStats) {
   WalFilePtr wal;
   ASSERT_EQ(0, WalFile::CreateAndOpen(wal_path, WalOptions{0, true}, &wal));
   Doc doc;
-  doc.set_pk("c");
+  doc.set_pk("a");
   doc.set("text", std::string("beta"));
-  doc.set_operator(Operator::INSERT);
+  // An older UPSERT WAL has no predecessor ID. Its new ID is already
+  // durable, while the authoritative deletion snapshot still retains row 100.
+  ASSERT_TRUE(ids_->upsert("a", 102).ok());
+  doc.set_operator(Operator::UPSERT);
   auto bytes = doc.serialize();
   ASSERT_EQ(0, wal->append(std::string(bytes.begin(), bytes.end())));
   ASSERT_EQ(0, wal->close());
@@ -1198,6 +1226,9 @@ TEST_P(FtsSegmentPublicationTest, WalReplayRepairsInterruptedCheckpointStats) {
                     SegmentOptions{false, GetParam(), 64 * 1024 * 1024});
   ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
   segment_ = *reopened;
+  EXPECT_TRUE(deletes_->is_deleted(100));
+  EXPECT_FALSE(deletes_->is_deleted(102));
+  ASSERT_NE(nullptr, segment_->fetch(102));
   EXPECT_EQ(3, segment_->get_fts_indexer("text")->total_docs());
   EXPECT_EQ(4, segment_->get_fts_indexer("text")->total_tokens());
   auto prepared = segment_->prepare_fts_seal();
@@ -1269,7 +1300,21 @@ TEST_P(FtsSegmentPublicationTest, SuccessorFailureAndRepeatedSwitch) {
   ASSERT_TRUE(status.ok()) << status.message();
   insert("d", "beta");
   ASSERT_TRUE(segment_->Delete("a").ok());
+  // The authority already covers this immutable file. A second switch must
+  // not reopen it for sync. Restore the name before verifying the new version.
+  const auto old = segments.get_segments().front();
+  std::string forward;
+  for (const auto &block : old->meta()->persisted_blocks()) {
+    if (block.type() == BlockType::SCALAR) {
+      forward = FileHelper::MakeForwardBlockPath(path_, old->id(), block.id(),
+                                                 !GetParam());
+      break;
+    }
+  }
+  ASSERT_FALSE(forward.empty());
+  std::filesystem::rename(forward, forward + ".held");
   status = segments.switch_fts_writer(&segment_, versions_, create);
+  std::filesystem::rename(forward + ".held", forward);
   ASSERT_TRUE(status.ok()) << status.message();
   EXPECT_EQ(2, segments.segment_count());
   EXPECT_EQ(2, segment_->id());
@@ -1282,10 +1327,12 @@ TEST_P(FtsSegmentPublicationTest, SuccessorFailureAndRepeatedSwitch) {
       2, (*recovered)->get_current_version().persisted_segment_metas().size());
 }
 
+#endif  // _WIN32
+
 INSTANTIATE_TEST_SUITE_P(BothBackends, FtsSegmentPublicationTest,
                          testing::Values(false, true));
 
-#if GTEST_HAS_DEATH_TEST
+#if GTEST_HAS_DEATH_TEST && !defined(_WIN32)
 class FtsCheckpointRecoveryDeathTest : public testing::TestWithParam<bool> {
  protected:
   void SetUp() override {
@@ -1297,12 +1344,13 @@ class FtsCheckpointRecoveryDeathTest : public testing::TestWithParam<bool> {
   void TearDown() override {
     FileHelper::RemoveDirectory(path_);
   }
+  void check_replayed_upserts(bool fail_manifest);
   std::string path_{"fts_checkpoint_crash.fixture"};
   CollectionSchema schema_{"fts"};
 };
 
-TEST_P(FtsCheckpointRecoveryDeathTest,
-       SourceCheckpointFailureReplaysWalWithExactFtsStatistics) {
+void FtsCheckpointRecoveryDeathTest::check_replayed_upserts(
+    bool fail_manifest) {
   testing::FLAGS_gtest_death_test_style = "threadsafe";
   ASSERT_EXIT(
       {
@@ -1331,17 +1379,27 @@ TEST_P(FtsCheckpointRecoveryDeathTest,
         }
         auto baseline = (*versions)->get_current_version();
         baseline.reset_writing_segment_meta((*segment)->meta());
-        if (!(*versions)->checkpoint(baseline).ok()) {
+        if (!(*versions)->checkpoint(baseline).ok() ||
+            (fail_manifest && !(*versions)->commit(baseline).ok())) {
           std::_Exit(4);
         }
-        for (const auto &pk : {"a", "b"}) {
+        for (const auto &pk : {"a", "b", "a"}) {
           Doc doc;
           doc.set_pk(pk);
           doc.set("text",
                   std::string(pk == std::string("a") ? "alpha beta" : "beta"));
-          if (!(*segment)->insert(doc).ok()) {
+          if (!(*segment)->upsert(doc).ok()) {
             std::_Exit(5);
           }
+        }
+        if (fail_manifest) {
+          const auto pending = path_ + "/manifest.current.pending";
+          if (!std::filesystem::create_directory(pending)) {
+            std::_Exit(6);
+          }
+          const auto checkpoint = (*segment)->flush();
+          std::_Exit(!checkpoint.ok() && std::filesystem::remove(pending) ? 0
+                                                                          : 7);
         }
         auto block = *(*segment)->meta()->writing_forward_block();
         auto file =
@@ -1373,10 +1431,28 @@ TEST_P(FtsCheckpointRecoveryDeathTest,
       SegmentOptions{false, GetParam(), 64 * 1024 * 1024});
   ASSERT_TRUE(segment.has_value()) << segment.error().message();
   auto field = (*segment)->get_fts_indexer("text");
-  EXPECT_EQ(2, field->total_docs());
-  EXPECT_EQ(3, field->total_tokens());
+  EXPECT_TRUE(deletes->is_deleted(100));
+  EXPECT_FALSE(deletes->is_deleted(102));
+  fts::FtsQueryParams params;
+  params.filter = (*segment)->get_filter();
+  auto hits = (*segment)->fts_search("text", fts::TermNode("beta"), params);
+  ASSERT_TRUE(hits) << hits.error().message();
+  ASSERT_EQ(2u, hits->size());
+  EXPECT_FALSE(deletes->is_deleted(101));
+  EXPECT_EQ(3, field->total_docs());
+  EXPECT_EQ(5, field->total_tokens());
   auto prepared = (*segment)->prepare_fts_seal();
   ASSERT_TRUE(prepared.has_value()) << prepared.error().message();
+}
+
+TEST_P(FtsCheckpointRecoveryDeathTest,
+       SourceCheckpointFailureReplaysWalWithExactFtsStatistics) {
+  check_replayed_upserts(false);
+}
+
+TEST_P(FtsCheckpointRecoveryDeathTest,
+       FailedAuthorityPublicationPreservesUpsertVisibility) {
+  check_replayed_upserts(true);
 }
 
 INSTANTIATE_TEST_SUITE_P(BothBackends, FtsCheckpointRecoveryDeathTest,

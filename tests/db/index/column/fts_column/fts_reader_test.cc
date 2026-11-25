@@ -137,6 +137,42 @@ class FtsReaderTest : public testing::Test {
   TokenizerPipelinePtr pipeline_;
 };
 
+TEST_F(FtsReaderTest, RepeatedPhraseTermsShareStorageAndAdvanceIndependently) {
+  auto column = legacy_->get("text");
+  // A valid 128 KiB posting fits on its own, but charging it per occurrence
+  // would exceed the 64 MiB read budget for this legal phrase.
+  roaring::Roaring bitmap;
+  for (uint32_t id = 0; id < (1u << 20); id += 2) {
+    bitmap.add(id);
+  }
+  std::string encoded(bitmap.getSizeInBytes(), '\0');
+  bitmap.write(encoded.data());
+  ASSERT_GT(encoded.size() * 512, 64u * 1024 * 1024);
+  ASSERT_TRUE(
+      column->ctx()
+          ->db_
+          ->Put(rocksdb::WriteOptions{}, column->postings_cf(), "word", encoded)
+          .ok());
+  auto reader = LegacyFtsReader::Create(
+      {column->ctx(), nullptr, column->postings_cf(), column->positions_cf()},
+      std::make_shared<BM25Scorer>());
+  ASSERT_TRUE(reader);
+  std::vector<std::string_view> phrase(513, "word");
+  phrase[1] = "missing";
+  auto terms = (*reader)->lookup_many(phrase);
+  ASSERT_TRUE(terms);
+  ASSERT_EQ(phrase.size(), terms->size());
+  ASSERT_NE(nullptr, (*terms)[0]);
+  EXPECT_EQ(nullptr, (*terms)[1]);
+  ASSERT_EQ((*terms)[0], (*terms)[2]);
+  auto first = (*terms)[0]->postings();
+  auto last = (*terms)[2]->postings();
+  ASSERT_TRUE(first && last);
+  EXPECT_EQ(0u, (*first)->next().value());
+  EXPECT_EQ(2u, (*first)->next().value());
+  EXPECT_EQ(0u, (*last)->next().value());
+}
+
 TEST_F(FtsReaderTest, DifferentialQueriesPreserveResultsScoresAndTies) {
   build();
   const std::vector<std::string> queries{"alpha",

@@ -66,6 +66,10 @@ class InvertedIndexer {
   }
 
 
+  bool read_only() const {
+    return rocksdb_context_.read_only();
+  }
+
   Status flush();
 
   Status create_snapshot(const std::string &snapshot_dir);
