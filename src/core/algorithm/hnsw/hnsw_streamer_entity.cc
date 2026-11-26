@@ -23,6 +23,26 @@
 
 namespace zvec {
 namespace core {
+namespace {
+
+int WriteNeighborFragments(Chunk *chunk,
+                           const IndexStorage::SegmentData (&writes)[2]) {
+  if (chunk->write_batch(writes, 2)) return 0;
+  const int error = chunk->write_error();
+  if (error != IndexError_NoMemory) return error;
+
+  // BufferStorage admits all batch pages before modifying any of them.
+  // Scalar writes can recycle pages between fragments and keep the count last.
+  for (const auto &fragment : writes) {
+    if (fragment.length && chunk->write(fragment.offset, fragment.data,
+                                        fragment.length) != fragment.length) {
+      return chunk->write_error();
+    }
+  }
+  return 0;
+}
+
+}  // namespace
 
 HnswStreamerEntity::HnswStreamerEntity(IndexStreamer::Stats &stats)
     : stats_(stats) {}
@@ -254,13 +274,7 @@ int HnswStreamerEntity::update_neighbors(
   writes[0] = {loc.second + sizeof(NeighborsHeader), i * sizeof(node_id_t),
                hd->neighbors};
   writes[1] = {loc.second, sizeof(hd->neighbor_cnt), &hd->neighbor_cnt};
-  if (ailego_unlikely(!loc.first->write_batch(writes, 2))) {
-    LOG_ERROR("Write neighbor list failed");
-
-    return IndexError_Runtime;
-  }
-
-  return 0;
+  return WriteNeighborFragments(loc.first, writes);
 }
 
 const Neighbors HnswStreamerEntity::get_neighbors(level_t level,
@@ -486,8 +500,8 @@ key_t HnswStreamerEntity::get_key(node_id_t id) const {
   }
 }
 
-void HnswStreamerEntity::add_neighbor(level_t level, node_id_t id,
-                                      uint32_t size, node_id_t neighbor_id) {
+int HnswStreamerEntity::add_neighbor(level_t level, node_id_t id, uint32_t size,
+                                     node_id_t neighbor_id) {
   auto loc = get_neighbor_chunk_loc(level, id);
   size_t offset =
       loc.second + sizeof(NeighborsHeader) + size * sizeof(node_id_t);
@@ -499,11 +513,7 @@ void HnswStreamerEntity::add_neighbor(level_t level, node_id_t id,
   IndexStorage::SegmentData writes[2];
   writes[0] = {offset, sizeof(neighbor_id), &neighbor_id};
   writes[1] = {loc.second, sizeof(neighbors), &neighbors};
-  if (ailego_unlikely(!loc.first->write_batch(writes, 2))) {
-    LOG_ERROR("Append neighbor failed");
-  }
-
-  return;
+  return WriteNeighborFragments(loc.first, writes);
 }
 
 int HnswStreamerEntity::init_chunks(const Chunk::Pointer &header_chunk) {

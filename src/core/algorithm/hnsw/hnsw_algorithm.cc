@@ -56,10 +56,14 @@ int HnswAlgorithm<EntityType>::add_node(node_id_t id, level_t level,
 
   // add neighbors from down level to top level, to avoid upper level visible
   // to knn_search but the under layer level not ready
+  int ret = ctx->error() ? IndexError_Runtime : 0;
   for (cur_level = 0; cur_level <= level; ++cur_level) {
-    add_neighbors(id, cur_level, ctx->level_topk(cur_level), ctx);
+    if (ret == 0) {
+      ret = add_neighbors(id, cur_level, ctx->level_topk(cur_level), ctx);
+    }
     ctx->level_topk(cur_level).clear();
   }
+  if (ret != 0) return ret;
 
   if (ailego_unlikely(level > cur_max_level)) {
     spin_lock_.lock();
@@ -198,27 +202,30 @@ void HnswAlgorithm<EntityType>::select_entry_point(level_t level,
 }
 
 template <typename EntityType>
-void HnswAlgorithm<EntityType>::add_neighbors(node_id_t id, level_t level,
-                                              TopkHeap &topk_heap,
-                                              HnswContext *ctx) {
+int HnswAlgorithm<EntityType>::add_neighbors(node_id_t id, level_t level,
+                                             TopkHeap &topk_heap,
+                                             HnswContext *ctx) {
   if (ailego_unlikely(topk_heap.size() == 0)) {
-    return;
+    return 0;
   }
 
   HnswDistCalculator &dc = ctx->dist_calculator();
 
   {
     std::lock_guard<std::mutex> node_lock(lock_pool_[id & kLockMask]);
-    update_neighbors(dc, id, level, topk_heap, ctx);
+    const int ret = update_neighbors(dc, id, level, topk_heap, ctx);
+    if (ret != 0) return ret;
   }
 
   // reverse update neighbors
   for (size_t i = 0; i < topk_heap.size(); ++i) {
-    reverse_update_neighbors(dc, topk_heap[i].first, level, id,
-                             topk_heap[i].second, ctx->update_heap(), ctx);
+    const int ret =
+        reverse_update_neighbors(dc, topk_heap[i].first, level, id,
+                                 topk_heap[i].second, ctx->update_heap(), ctx);
+    if (ret != 0) return ret;
   }
 
-  return;
+  return 0;
 }
 
 // ============================================================================
@@ -737,17 +744,16 @@ void HnswAlgorithm<EntityType>::expand_neighbors_by_group(
 }
 
 template <typename EntityType>
-void HnswAlgorithm<EntityType>::update_neighbors(HnswDistCalculator &dc,
-                                                 node_id_t id, level_t level,
-                                                 TopkHeap &topk_heap,
-                                                 HnswContext *ctx) {
+int HnswAlgorithm<EntityType>::update_neighbors(HnswDistCalculator &dc,
+                                                node_id_t id, level_t level,
+                                                TopkHeap &topk_heap,
+                                                HnswContext *ctx) {
   topk_heap.sort();
 
   uint32_t max_neighbor_cnt = entity_.neighbor_cnt(level);
   if (topk_heap.size() <= static_cast<size_t>(entity_.prune_cnt())) {
     if (topk_heap.size() <= static_cast<size_t>(max_neighbor_cnt)) {
-      entity_.update_neighbors(level, id, topk_heap.container());
-      return;
+      return entity_.update_neighbors(level, id, topk_heap.container());
     }
   }
 
@@ -774,7 +780,7 @@ void HnswAlgorithm<EntityType>::update_neighbors(HnswDistCalculator &dc,
                                                prune_ids.size(), prune_blocks);
     if (ailego_unlikely(ret != 0)) {
       dc.set_error();
-      return;
+      return IndexError_Runtime;
     }
     selected_indices.clear();
     selected_indices.reserve(max_neighbor_cnt);
@@ -849,13 +855,13 @@ void HnswAlgorithm<EntityType>::update_neighbors(HnswDistCalculator &dc,
   }
 
   topk_heap.truncate(cur_size);
-  entity_.update_neighbors(level, id, topk_heap.container());
-
-  return;
+  return dc.error()
+             ? IndexError_Runtime
+             : entity_.update_neighbors(level, id, topk_heap.container());
 }
 
 template <typename EntityType>
-void HnswAlgorithm<EntityType>::reverse_update_neighbors(
+int HnswAlgorithm<EntityType>::reverse_update_neighbors(
     HnswDistCalculator &dc, node_id_t id, level_t level, node_id_t link_id,
     dist_t dist, TopkHeap &update_heap, HnswContext *ctx) {
   const size_t max_neighbor_cnt = entity_.neighbor_cnt(level);
@@ -866,8 +872,7 @@ void HnswAlgorithm<EntityType>::reverse_update_neighbors(
   const size_t size = neighbors.size();
   ailego_assert_with(size <= max_neighbor_cnt, "invalid neighbor size");
   if (size < max_neighbor_cnt) {
-    entity_.add_neighbor(level, id, size, link_id);
-    return;
+    return entity_.add_neighbor(level, id, size, link_id);
   }
 
   if constexpr (std::is_same_v<EntityType, HnswBufferPoolStreamerEntity>) {
@@ -899,7 +904,7 @@ void HnswAlgorithm<EntityType>::reverse_update_neighbors(
                   candidate_ids.data(), candidate_ids.size(), candidate_blocks);
     if (ailego_unlikely(ret != 0)) {
       dc.set_error();
-      return;
+      return IndexError_Runtime;
     }
 
     update_heap.clear();
@@ -945,11 +950,7 @@ void HnswAlgorithm<EntityType>::reverse_update_neighbors(
     for (auto &selected : update_heap.mutable_container()) {
       selected.first = candidate_ids[selected.first];
     }
-    entity_.update_neighbors(level, id, update_heap.container());
-
-    node_lock.unlock();
-    update_heap.clear();
-    // Release BufferStorage pins before this worker consumes its next node.
+    // Release the pruning pins so the adjacency write can recycle pages.
     candidate_blocks.clear();
   } else {
     update_heap.emplace(link_id, dist);
@@ -984,11 +985,14 @@ void HnswAlgorithm<EntityType>::reverse_update_neighbors(
     }
 
     update_heap.truncate(cur_size);
-    entity_.update_neighbors(level, id, update_heap.container());
-    update_heap.clear();
   }
 
-  return;
+  const int write_status =
+      dc.error() ? IndexError_Runtime
+                 : entity_.update_neighbors(level, id, update_heap.container());
+  node_lock.unlock();
+  update_heap.clear();
+  return write_status;
 }
 
 // Explicit template instantiation

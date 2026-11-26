@@ -110,8 +110,8 @@ class HnswAlgorithm : public HnswAlgorithmBase {
                           HnswContext *ctx) const;
 
   //! update node id neighbors from topkHeap, and reverse link is also updated
-  void add_neighbors(node_id_t id, level_t level, TopkHeap &topk_heap,
-                     HnswContext *ctx);
+  int add_neighbors(node_id_t id, level_t level, TopkHeap &topk_heap,
+                    HnswContext *ctx);
 
   //! Dispatch the prepared level-0 pool and visit-filter view to the concrete
   //! mmap/contiguous or page-pinned BufferStorage search kernel.
@@ -125,15 +125,15 @@ class HnswAlgorithm : public HnswAlgorithmBase {
                         TopkHeap &topk, HnswContext *ctx) const;
 
   //! Update the node's neighbors
-  void update_neighbors(HnswDistCalculator &dc, node_id_t id, level_t level,
-                        TopkHeap &topk_heap, HnswContext *ctx);
+  int update_neighbors(HnswDistCalculator &dc, node_id_t id, level_t level,
+                       TopkHeap &topk_heap, HnswContext *ctx);
 
   //! Checking linkId could be id's new neighbor, and add as neighbor if true
   //! @dc         distance calculator
   //! @updateHeap temporary heap in updating neighbors
-  void reverse_update_neighbors(HnswDistCalculator &dc, node_id_t id,
-                                level_t level, node_id_t link_id, dist_t dist,
-                                TopkHeap &update_heap, HnswContext *ctx);
+  int reverse_update_neighbors(HnswDistCalculator &dc, node_id_t id,
+                               level_t level, node_id_t link_id, dist_t dist,
+                               TopkHeap &update_heap, HnswContext *ctx);
 
   //! expand neighbors until group nums are reached
   void expand_neighbors_by_group(HnswContext *ctx) const;

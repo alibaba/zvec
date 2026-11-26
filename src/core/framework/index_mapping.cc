@@ -382,6 +382,9 @@ int IndexMapping::append(const std::string &id, size_t size) try {
     const auto old_ids_offset = segment_ids_offset_;
     const auto old_header_offset = current_header_start_offset_;
     const auto old_size = index_size_;
+    const auto old_file_size = file_.size();
+    if (!old_file_size) return IndexError_InvalidLength;
+    const auto old_meta_capacity = seg_meta_capacity_;
     current_header_start_offset_ = old_size;
     int ret;
     try {
@@ -401,6 +404,16 @@ int IndexMapping::append(const std::string &id, size_t size) try {
       segment_ids_offset_ = old_ids_offset;
       current_header_start_offset_ = old_header_offset;
       index_size_ = old_size;
+      seg_meta_capacity_ = old_meta_capacity;
+      // The new section is still unlinked. Restore the physical EOF as well
+      // as the logical cursor, which may be ahead of EOF in copy-on-write mode.
+      const auto failed_file_size = file_.size();
+      if (!failed_file_size || (failed_file_size > old_file_size &&
+                                !file_.truncate(old_file_size))) {
+        LOG_ERROR("Failed to discard unlinked index metadata, %s",
+                  ailego::FileHelper::GetLastErrorString().c_str());
+        return IndexError_TruncateFile;
+      }
       return ret;
     }
     old_footer->next_meta_header_offset = current_header_start_offset_;

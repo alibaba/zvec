@@ -502,9 +502,9 @@ class HnswEntity {
 
   //! Append neighbor_id to node id neighbors on level, size is the current
   //! neighbors size. Notice: the caller must be ensure the neighbors not full
-  virtual void add_neighbor(level_t /*level*/, node_id_t /*id*/,
-                            uint32_t /*size*/, node_id_t /*neighbor_id*/) {
-    LOG_ERROR("Add neighbor not implemented");
+  virtual int add_neighbor(level_t /*level*/, node_id_t /*id*/,
+                           uint32_t /*size*/, node_id_t /*neighbor_id*/) {
+    return IndexError_NotImplemented;
   }
 
   //! Update entry point and max level

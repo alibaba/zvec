@@ -92,8 +92,8 @@ class HnswStreamerEntity : public HnswEntity {
 
   //! Append neighbor_id to node id neighbors on level
   //! Notice: the caller must be ensure the neighbors not full
-  void add_neighbor(level_t level, node_id_t id, uint32_t size,
-                    node_id_t neighbor_id) override;
+  int add_neighbor(level_t level, node_id_t id, uint32_t size,
+                   node_id_t neighbor_id) override;
 
   //! Dump index by dumper
   int dump(const IndexDumper::Pointer &dumper) override;

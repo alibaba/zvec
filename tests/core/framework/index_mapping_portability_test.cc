@@ -23,6 +23,30 @@
 #include <zvec/core/framework/index_mapping.h>
 #if defined(_WIN32)
 #include <Windows.h>
+#elif defined(__APPLE__)
+#include <sys/mman.h>
+#include <dlfcn.h>
+#include <cerrno>
+#endif
+
+#if defined(__APPLE__)
+namespace {
+thread_local bool fail_next_file_mapping = false;
+}  // namespace
+
+// The File implementation is linked into this test. Fail one native file
+// mapping after IndexMapping has written its new, still unlinked section.
+extern "C" void *mmap(void *addr, size_t size, int prot, int flags, int fd,
+                      off_t offset) {
+  if (fd >= 0 && fail_next_file_mapping) {
+    fail_next_file_mapping = false;
+    errno = ENOMEM;
+    return MAP_FAILED;
+  }
+  static const auto map =
+      reinterpret_cast<decltype(&mmap)>(dlsym(RTLD_NEXT, "mmap"));
+  return map(addr, size, prot, flags, fd, offset);
+}
 #endif
 
 namespace zvec {
@@ -32,17 +56,17 @@ namespace {
 
 constexpr uint64_t kOriginal = 1234567;
 
-void WriteForeignIndex(const std::string &path, size_t writer_page) {
+void WriteForeignIndex(const std::string &path, size_t writer_page,
+                       uint32_t first_id_offset = 58) {
   ailego::File file;
   ASSERT_TRUE(file.create(path, writer_page * 2));
   IndexFormat::MetaHeader header;
   IndexFormat::SetupMetaHeader(
       &header, writer_page - sizeof(IndexFormat::MetaFooter), writer_page);
   ASSERT_EQ(sizeof(header), file.write(0, &header, sizeof(header)));
-  // Leave room for one entry only, to force a new metadata section on append.
-  std::vector<char> table(64, 0);
+  std::vector<char> table(first_id_offset + sizeof("first"), 0);
   IndexFormat::SegmentMeta meta{};
-  meta.segment_id_offset = 58;
+  meta.segment_id_offset = first_id_offset;
   meta.data_size = sizeof(uint64_t);
   meta.padding_size = writer_page - meta.data_size;
   std::memcpy(table.data(), &meta, sizeof(meta));
@@ -112,6 +136,63 @@ TEST(IndexMappingPortability, ForeignPageAppendMetadataChainAndReopen) {
     ASSERT_TRUE(ailego::File::Delete(path));
   }
 }
+
+#if defined(__APPLE__)
+TEST(IndexMappingPortability, FailedMetadataMapRestoresFileBeforeReopen) {
+  constexpr size_t kWriterPage = 4096;
+  constexpr uint32_t kFirstIdOffset = 2 * sizeof(IndexFormat::SegmentMeta) + 16;
+  for (bool cow : {false, true}) {
+    SCOPED_TRACE(cow);
+    const std::string path = "index_mapping_failed_metadata_map.tmp";
+    ASSERT_NO_FATAL_FAILURE(
+        WriteForeignIndex(path, kWriterPage, kFirstIdOffset));
+    const auto cleanup = ailego::ScopeGuard::Make(
+        [&] { EXPECT_TRUE(ailego::File::Delete(path)); });
+    IndexMapping mapping;
+    ASSERT_EQ(0, mapping.open(path, cow, cow));
+
+    const std::string split_id = "segment_id_that_requires_a_metadata_split";
+    fail_next_file_mapping = true;
+    const int append_status = mapping.append(split_id, kWriterPage);
+    EXPECT_FALSE(fail_next_file_mapping);
+    fail_next_file_mapping = false;
+    EXPECT_EQ(IndexError_MMapFile, append_status);
+    EXPECT_EQ(0u, mapping.footer().next_meta_header_offset);
+    EXPECT_EQ(kWriterPage * 2, mapping.index_size());
+    EXPECT_FALSE(mapping.has(split_id));
+    mapping.close();
+
+    ailego::File file;
+    ASSERT_TRUE(file.open(path, true));
+    EXPECT_EQ(kWriterPage * 2, file.size());
+    file.close();
+
+    ASSERT_EQ(0, mapping.open(path, cow, cow));
+    // The shorter ID fits in the original directory. Any unlinked tail left
+    // on disk would shift the segment past the directory's declared content.
+    ASSERT_EQ(0, mapping.append("retry", kWriterPage));
+    ASSERT_EQ(0u, mapping.footer().next_meta_header_offset);
+    auto *retry = mapping.map("retry", false, false);
+    ASSERT_NE(nullptr, retry);
+    constexpr uint64_t kValue = 42;
+    std::memcpy(retry->data(), &kValue, sizeof(kValue));
+    retry->meta()->data_size = sizeof(kValue);
+    retry->meta()->padding_size -= sizeof(kValue);
+    retry->set_dirty();
+    mapping.refresh(1);
+    ASSERT_EQ(0, mapping.flush());
+    mapping.close();
+
+    ASSERT_EQ(0, mapping.open(path, cow, cow));
+    const auto *first = mapping.map("first", false, false);
+    retry = mapping.map("retry", false, false);
+    ASSERT_NE(nullptr, first);
+    ASSERT_NE(nullptr, retry);
+    EXPECT_EQ(kOriginal, *static_cast<const uint64_t *>(first->data()));
+    EXPECT_EQ(kValue, *static_cast<const uint64_t *>(retry->data()));
+  }
+}
+#endif
 
 TEST(IndexMappingPortability, MetadataBudgetUsesNativeMappingExtent) {
   constexpr size_t kWriterPage = 4096;
