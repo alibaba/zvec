@@ -17,6 +17,11 @@
 #define TL_EXPECTED_HPP
 
 // NOLINTBEGIN
+// Vendored third-party source (tl::expected), kept byte-for-byte as upstream
+// ships it.  Formatting it to this project's clang-format style would make
+// every future vendored update a whole-file diff, so both clang-tidy and
+// clang-format are turned off for the body below.
+// clang-format off
 
 #define TL_EXPECTED_VERSION_MAJOR 1
 #define TL_EXPECTED_VERSION_MINOR 2
@@ -2604,6 +2609,7 @@ void swap(expected<T, E> &lhs,
 }
 }  // namespace tl
 
+// clang-format on
 // NOLINTEND
 
 #endif
