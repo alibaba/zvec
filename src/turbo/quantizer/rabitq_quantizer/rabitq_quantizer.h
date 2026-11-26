@@ -111,7 +111,7 @@ class RabitqQuantizer final : public Quantizer {
 
  private:
   bool valid_input(const IndexQueryMeta &) const;
-  float rotate(const void *, std::vector<float> *) const;
+  double rotate(const void *, std::vector<float> *) const;
   uint32_t nearest_centroid(const std::vector<float> &) const;
   float estimate(const void *, const void *, bool full, float *lower) const;
   IndexMeta meta_;

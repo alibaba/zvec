@@ -1653,7 +1653,9 @@ int IVFEntity::search_by_p_keys(const void *query,
     ret = read_posting_vector(id, vector);
     ivf_check_error_code(ret);
     float distance;
-    if (quantizer_ || distance_quantizer_) {
+    if (block_scanner_) {
+      distance = block_scanner_->score_row(vector.data(), query_distance_);
+    } else if (quantizer_ || distance_quantizer_) {
       calculator_->query_features_distance(query_distance_, vector.data(), 1,
                                            &distance);
     } else {

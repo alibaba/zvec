@@ -338,6 +338,90 @@ TEST(IVFRabitqIntegration, MergeRetryTrainsOnReplacementInputs) {
   test_util::RemoveTestFiles(source_path);
 }
 
+TEST(IVFRabitqIntegration, OneBitKeyedScoresMatchListScan) {
+  constexpr size_t count = 96;
+  auto params = RabitqParam(MetricType::kL2sq, 1);
+  params->nlist = 2;
+  auto index = IndexFactory::CreateAndInitIndex(*params);
+  ASSERT_TRUE(index);
+  const std::string path = "ivf_one_bit_scores.index";
+  test_util::RemoveTestFiles(path);
+  ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+  std::mt19937 random(912);
+  std::normal_distribution<float> normal;
+  std::vector<float> vector(128);
+  auto keys = std::make_shared<std::vector<uint64_t>>();
+  for (size_t i = 0; i < count; ++i) {
+    for (auto &v : vector) v = normal(random);
+    keys->push_back(3 * i);
+    ASSERT_EQ(0,
+              index->add(VectorData{DenseVector{vector.data()}}, keys->back()));
+  }
+  ASSERT_EQ(0, index->train());
+  std::shuffle(keys->begin(), keys->end(), random);
+  for (auto &v : vector) v = normal(random);
+  auto query = IVFQueryParamBuilder().with_topk(count).with_nprobe(2).build();
+  auto input = VectorData{DenseVector{vector.data()}};
+  SearchResult all;
+  ASSERT_EQ(0, index->search(input, query, &all));
+  ASSERT_EQ(count, all.doc_list_.size());
+  const auto compare = [&](size_t expected_count) {
+    SearchResult scan, keyed;
+    query->bf_pks.reset();
+    ASSERT_EQ(0, index->search(input, query, &scan));
+    query->bf_pks = keys;
+    ASSERT_EQ(0, index->search(input, query, &keyed));
+    ASSERT_EQ(expected_count, scan.doc_list_.size());
+    ASSERT_EQ(expected_count, keyed.doc_list_.size());
+    for (size_t i = 0; i < expected_count; ++i) {
+      EXPECT_EQ(scan.doc_list_[i].key(), keyed.doc_list_[i].key());
+      EXPECT_EQ(scan.doc_list_[i].score(), keyed.doc_list_[i].score());
+    }
+  };
+  compare(count);
+  query->topk = 1;
+  compare(1);
+  query->topk = count;
+  query->radius = (all.doc_list_[47].score() + all.doc_list_[48].score()) / 2;
+  compare(48);
+  ASSERT_EQ(0, index->close());
+  test_util::RemoveTestFiles(path);
+}
+
+TEST(IVFRabitqIntegration, CosineSearchPreservesLargeFiniteDirections) {
+  const std::string path = "ivf_cosine_scale.index";
+  for (float scale : {1.f, 1e38f}) {
+    auto params = RabitqParam(MetricType::kCosine, 7);
+    params->nlist = 1;
+    auto index = IndexFactory::CreateAndInitIndex(*params);
+    ASSERT_TRUE(index);
+    test_util::RemoveTestFiles(path);
+    ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+    std::vector<float> values(params->dimension, scale);
+    ASSERT_EQ(0, index->add(VectorData{DenseVector{values.data()}}, 1));
+    std::fill(values.begin(), values.end(), -scale);
+    ASSERT_EQ(0, index->add(VectorData{DenseVector{values.data()}}, 2));
+    ASSERT_EQ(0, index->train());
+    auto params_query =
+        IVFQueryParamBuilder().with_topk(2).with_nprobe(1).build();
+    params_query->bf_pks = std::make_shared<std::vector<uint64_t>>(
+        std::initializer_list<uint64_t>{1, 2});
+    for (float query_scale : {1.f, 1e38f}) {
+      std::fill(values.begin(), values.end(), query_scale);
+      SearchResult results;
+      ASSERT_EQ(0, index->search(VectorData{DenseVector{values.data()}},
+                                 params_query, &results));
+      ASSERT_EQ(2u, results.doc_list_.size());
+      EXPECT_EQ(1u, results.doc_list_[0].key());
+      EXPECT_NEAR(0, results.doc_list_[0].score(), 1e-4);
+      EXPECT_EQ(2u, results.doc_list_[1].key());
+      EXPECT_NEAR(2, results.doc_list_[1].score(), 1e-4);
+    }
+    ASSERT_EQ(0, index->close());
+    test_util::RemoveTestFiles(path);
+  }
+}
+
 class IVFRabitqIntegrationTest
     : public testing::TestWithParam<std::tuple<MetricType, int, bool>> {};
 

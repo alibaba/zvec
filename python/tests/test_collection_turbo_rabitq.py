@@ -4,9 +4,7 @@
 
 import math
 import pickle
-import platform
 import random
-import sys
 
 import pytest
 import zvec
@@ -61,10 +59,7 @@ def test_rabitq_parameter_pickle(kind):
     }
 
 
-supported = sys.platform == "linux" and platform.machine() in ("x86_64", "AMD64")
-
-
-@pytest.mark.skipif(not supported, reason="RaBitQ integration requires Linux x86_64")
+@pytest.mark.usefixtures("require_rabitq")
 @pytest.mark.parametrize("kind", ["hnsw", "ivf", "diskann"])
 @pytest.mark.parametrize("bits", [3, 9])
 @pytest.mark.parametrize(
@@ -138,6 +133,9 @@ def test_turbo_rabitq_collection(tmp_path, kind, bits, metric):
         coll = zvec.open(path=path)
         check_settings()
         assert [d.id for d in query(17)] == [d.id for d in before]
+        assert [d.id for d in query(17, filter="ordinal >= 128")] == [
+            d.id for d in filtered
+        ]
         # Force another training/build pass with new vectors after reopen.
         assert all(s.ok() for s in coll.insert(docs(256, 320)))
         assert all(s.ok() for s in coll.delete(["17"]))
@@ -157,7 +155,7 @@ def test_turbo_rabitq_collection(tmp_path, kind, bits, metric):
         coll.close()
 
 
-@pytest.mark.skipif(not supported, reason="RaBitQ integration requires Linux x86_64")
+@pytest.mark.usefixtures("require_rabitq")
 @pytest.mark.parametrize(
     "settings",
     [
@@ -239,7 +237,7 @@ def test_rabitq_rejects_unsupported_index(tmp_path, cls):
         zvec.create_and_open(path=str(tmp_path / "invalid"), schema=schema)
 
 
-@pytest.mark.skipif(not supported, reason="RaBitQ integration requires Linux x86_64")
+@pytest.mark.usefixtures("require_rabitq")
 def test_ivf_rabitq_rejects_additional_rotation(tmp_path):
     params = zvec.IVFIndexParam(
         quantize_type=zvec.QuantizeType.RABITQ,

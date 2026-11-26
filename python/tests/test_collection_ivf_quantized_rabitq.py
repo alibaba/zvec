@@ -2,16 +2,10 @@
 # Licensed under the Apache License, Version 2.0.
 """RaBitQ through the ordinary IVF public API, including collection rebuilds."""
 
-import platform
-import sys
-
 import pytest
 import zvec
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "linux" or platform.machine() not in ("x86_64", "AMD64"),
-    reason="RaBitQ requires Linux x86_64",
-)
+pytestmark = pytest.mark.usefixtures("require_rabitq")
 
 
 @pytest.mark.parametrize(

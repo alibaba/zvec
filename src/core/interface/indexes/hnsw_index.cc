@@ -229,6 +229,10 @@ int HNSWIndex::open_streamer(const StorageOptions &options) {
     turbo_quantizer_.reset();
     return 0;
   }
+  if (persisted_meta.metric_name() !=
+      get_metric_name(param_.metric_type, is_sparse_)) {
+    return core::IndexError_Mismatch;
+  }
   const auto &params = persisted_meta.quantizer_params();
   int64_t input_dim = 0;
   int64_t input_type = IndexMeta::DT_FP32;

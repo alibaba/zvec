@@ -100,6 +100,10 @@ class BlockScanner {
   virtual bool set_reuse_coarse_dot(bool enabled) {
     return !enabled;
   }
+  // Score a single posting on a keyed IVF query using the same final estimator.
+  virtual float score_row(const void *row, const DistanceImpl &distance) const {
+    return distance(row);
+  }
   virtual int estimate(const void *block, size_t count,
                        DistanceEstimate *out) const = 0;
   virtual float refine(const void *row,

@@ -100,6 +100,65 @@ auto Parameters(MetricType metric, int bits, int dim = 129) {
       .build();
 }
 
+TEST(DiskAnnReopen, RequiresMatchingVectorLayout) {
+  const std::string path = "diskann_reopen_layout.index";
+  constexpr int dim = 32;
+  for (auto quantizer :
+       {QuantizerType::kNone, QuantizerType::kFP16, QuantizerType::kRabitq}) {
+    if (quantizer == QuantizerType::kRabitq && !RABITQ_SUPPORTED) continue;
+    SCOPED_TRACE(static_cast<int>(quantizer));
+    test_util::RemoveTestFiles(path);
+    auto params = Parameters(MetricType::kL2sq, 3, dim);
+    if (quantizer != QuantizerType::kRabitq)
+      params->quantizer_param = std::make_shared<QuantizerParam>(quantizer);
+    auto writer = std::make_shared<SmallDiskAnn>();
+    ASSERT_EQ(0, writer->initialize(*params));
+    Index::Pointer index = writer;
+    ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+    std::vector<float> row(dim);
+    for (uint32_t i = 0; i < 300; ++i) {
+      std::fill(row.begin(), row.end(), static_cast<float>(i));
+      ASSERT_EQ(0, index->add(VectorData{DenseVector{row.data()}}, i));
+    }
+    ASSERT_EQ(0, index->train());
+    ASSERT_EQ(0, index->close());
+
+    const StorageOptions read{StorageOptions::StorageType::kMMAP, false, true};
+    if (quantizer == QuantizerType::kRabitq)
+      params->quantizer_param = std::make_shared<QuantizerParam>();
+    auto wrong_dim = *params, wrong_type = *params, wrong_metric = *params;
+    wrong_dim.dimension = dim / 2;
+    // Raw FP16 and FP32 converted to FP16 have identical physical widths.
+    wrong_type.data_type = DataType::DT_FP16;
+    wrong_type.quantizer_param = std::make_shared<QuantizerParam>();
+    wrong_metric.metric_type = MetricType::kInnerProduct;
+    for (const auto *incompatible : {&wrong_dim, &wrong_type, &wrong_metric}) {
+      auto reader = IndexFactory::CreateAndInitIndex(*incompatible);
+      ASSERT_TRUE(reader);
+      ASSERT_EQ(core::IndexError_Mismatch, reader->open(path, read));
+      EXPECT_EQ(core::IndexError_Mismatch, reader->open(path, read));
+    }
+    auto reader = IndexFactory::CreateAndInitIndex(*params);
+    ASSERT_TRUE(reader);
+    ASSERT_EQ(0, reader->open(path, read));
+    VectorDataBuffer fetched;
+    ASSERT_EQ(0, reader->fetch(17, &fetched));
+    std::fill(row.begin(), row.end(), 17.f);
+    EXPECT_EQ(std::string(reinterpret_cast<const char *>(row.data()),
+                          dim * sizeof(float)),
+              std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+    auto query = std::make_shared<DiskAnnQueryParam>();
+    query->topk = 1;
+    SearchResult result;
+    ASSERT_EQ(
+        0, reader->search(VectorData{DenseVector{row.data()}}, query, &result));
+    ASSERT_EQ(1u, result.doc_list_.size());
+    EXPECT_EQ(17u, result.doc_list_.front().key());
+    ASSERT_EQ(0, reader->close());
+    test_util::RemoveTestFiles(path);
+  }
+}
+
 #if RABITQ_SUPPORTED
 TEST(DiskAnnRabitq, BuildAdapterPreservesFixedPrecisionAndSettings) {
   core::IndexMeta meta(core::IndexMeta::DT_FP32, 129);

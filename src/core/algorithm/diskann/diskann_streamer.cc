@@ -69,7 +69,7 @@ int DiskAnnStreamer::init(const IndexMeta &meta,
 
   // Commit only after every value has been validated. A failed re-init must
   // leave either the previous valid configuration or STATE_INIT untouched.
-  meta_ = meta;
+  configured_meta_ = meta;
   params_ = search_params;
   list_size_ = list_size;
   cache_nodes_num_ = cache_nodes_num;
@@ -95,6 +95,7 @@ int DiskAnnStreamer::cleanup() {
   LOG_INFO("Begin DiskAnnStreamer:cleanup");
 
   unload();
+  configured_meta_.clear();
   params_.clear();
   data_quantizer_.reset();
   list_size_ = 200;
@@ -145,6 +146,15 @@ int DiskAnnStreamer::open(IndexStorage::Pointer storage) {
   if (meta_.quantizer_name() == "RabitqQuantizer")
     return IndexError_Unsupported;
 #endif
+  // Candidate codes are selected from disk. Full vectors must match the
+  // configured query and fetch layout, including any converter's reformer.
+  if (meta_.dimension() != configured_meta_.dimension() ||
+      meta_.data_type() != configured_meta_.data_type() ||
+      meta_.element_size() != configured_meta_.element_size() ||
+      meta_.metric_name() != configured_meta_.metric_name() ||
+      meta_.reformer_name() != configured_meta_.reformer_name()) {
+    return IndexError_Mismatch;
+  }
   ret = entity_.load(meta_, storage);
   if (ret != 0) {
     LOG_INFO("Searcher Entity Load Failed");

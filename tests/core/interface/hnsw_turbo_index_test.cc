@@ -581,7 +581,19 @@ void CheckOriginalProviderUsesTurbo(
   ASSERT_EQ(0, index->close());
 
   if (quantizer == QuantizerType::kRabitq) param->provider.reset();
-  if (reopen_quantizer) param = MakeParam(metric, *reopen_quantizer);
+  if (reopen_quantizer) {
+    // A different quantizer can be restored, but scores still use the caller's
+    // metric.
+    const auto other_metric = metric == MetricType::kL2sq
+                                  ? MetricType::kInnerProduct
+                                  : MetricType::kL2sq;
+    auto mismatch = IndexFactory::CreateAndInitIndex(
+        *MakeParam(other_metric, *reopen_quantizer));
+    ASSERT_TRUE(mismatch);
+    EXPECT_EQ(zvec::core::IndexError_Mismatch,
+              mismatch->open(path, {storage_type, false, true}));
+    param = MakeParam(metric, *reopen_quantizer);
+  }
   auto reopened = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, reopened);
   ASSERT_EQ(0, reopened->open(path, {storage_type, false}));

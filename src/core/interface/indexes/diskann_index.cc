@@ -218,7 +218,9 @@ int DiskAnnIndex::open(const std::string &file_path,
     ret = streamer_->open(storage);
     if (ret != 0) {
       LOG_ERROR("Failed to open streamer, path: %s", file_path_.c_str());
-      if (ret == core::IndexError_Unsupported) return ret;
+      if (ret == core::IndexError_Unsupported ||
+          ret == core::IndexError_Mismatch)
+        return ret;
       return ret == core::IndexError_NoMemory ? ret : core::IndexError_Runtime;
     }
     is_trained_ = true;

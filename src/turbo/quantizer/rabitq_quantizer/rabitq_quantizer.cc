@@ -36,7 +36,8 @@ namespace zvec::turbo {
 namespace {
 // Version the record/query layout independently of the common quantizer header.
 constexpr uint32_t kSplitFormat = 0x52425133;
-constexpr size_t kBinPrefix = 8;  // u32 cluster + u32 zero pad for alignment
+constexpr size_t kBinPrefix =
+    8;  // u32 cluster + u32 norm exponent (normally zero)
 uint32_t ReadUint(const void *data, size_t offset = 0) {
   uint32_t value;
   std::memcpy(&value, static_cast<const char *>(data) + offset, sizeof(value));
@@ -113,13 +114,13 @@ int RabitqQuantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   return 0;
 }
 
-float RabitqQuantizer::rotate(const void *input,
-                              std::vector<float> *out) const {
+double RabitqQuantizer::rotate(const void *input,
+                               std::vector<float> *out) const {
   std::vector<float> raw(padded_dim_, 0);
   std::memcpy(raw.data(), input, dim_ * sizeof(float));
   double norm2 = 0;
   for (float v : raw) norm2 += static_cast<double>(v) * v;
-  const float norm = static_cast<float>(std::sqrt(norm2));
+  const double norm = std::sqrt(norm2);
   if (metric_ == MetricType::kCosine && norm > 0)
     for (float &v : raw) v /= norm;
   out->resize(padded_dim_);
@@ -225,7 +226,7 @@ uint32_t RabitqQuantizer::nearest_centroid(const std::vector<float> &x) const {
 
 void RabitqQuantizer::quantize_data(const void *input, void *output) const {
   std::vector<float> rotated;
-  const float original_norm = rotate(input, &rotated);
+  const double original_norm = rotate(input, &rotated);
   const uint32_t cluster = nearest_centroid(rotated);
   const float *centroid = centroids_.data() + cluster * padded_dim_;
   std::vector<int> binary(padded_dim_);
@@ -258,7 +259,7 @@ void RabitqQuantizer::quantize_data(const void *input, void *output) const {
     dot += (rotated[i] - centroid[i]) * static_cast<double>(code);
     code_norm2 += static_cast<double>(code) * code;
   }
-  // Layout: [u32 cluster][u32 pad][BinDataMap][ExDataMap][orig_norm,
+  // Layout: [u32 cluster][u32 norm exponent][BinDataMap][ExDataMap][orig_norm,
   // resid_scale]. BinDataMap/ExDataMap mirror rabitqlib's data_layout.hpp so
   // estimate() can feed records straight into the dispatched SIMD kernels.
   std::memset(output, 0, quantized_datapoint_vector_length());
@@ -280,7 +281,16 @@ void RabitqQuantizer::quantize_data(const void *input, void *output) const {
     std::memcpy(ex_data + ex_bytes, &full_add, sizeof(full_add));
     std::memcpy(ex_data + ex_bytes + 4, &full_scale, sizeof(full_scale));
   }
-  const float tail[] = {original_norm, static_cast<float>(dot / code_norm2)};
+  // Ordinary records (including older files) have a zero prefix exponent.
+  // A finite FP32 vector can have a norm outside the range of a single float.
+  int exponent = 0;
+  const float norm =
+      original_norm > std::numeric_limits<float>::max()
+          ? static_cast<float>(std::frexp(original_norm, &exponent))
+          : static_cast<float>(original_norm);
+  const uint32_t stored_exponent = exponent;
+  std::memcpy(out + sizeof(cluster), &stored_exponent, sizeof(stored_exponent));
+  const float tail[] = {norm, static_cast<float>(dot / code_norm2)};
   std::memcpy(ex_data + ex_bytes + 8, tail, sizeof(tail));
 }
 
@@ -469,7 +479,12 @@ int RabitqQuantizer::dequantize(const void *data, const IndexQueryMeta &meta,
   const char *ex_data = bin_data + padded_dim_ / 8 + 12;
   const size_t ex_bytes =
       bits_ > 1 ? static_cast<size_t>(padded_dim_) * (bits_ - 1) / 8 : 0;
-  const float orig_norm = ReadFloat(ex_data, ex_bytes + 8);
+  const uint32_t exponent = ReadUint(data, sizeof(cluster));
+  if (exponent > std::numeric_limits<double>::max_exponent)
+    return kErrInvalidArgument;
+  const double orig_norm =
+      std::ldexp(static_cast<double>(ReadFloat(ex_data, ex_bytes + 8)),
+                 static_cast<int>(exponent));
   const float scale = ReadFloat(ex_data, ex_bytes + 12);
   std::vector<float> rotated(padded_dim_), raw(padded_dim_);
   const float midpoint = ((1u << bits_) - 1) * 0.5f;
@@ -500,7 +515,10 @@ int RabitqQuantizer::dequantize(const void *data, const IndexQueryMeta &meta,
   }
   rotator_->apply_inverse(rotated.data(), raw.data());
   if (metric_ == MetricType::kCosine)
-    for (float &v : raw) v *= orig_norm;
+    for (float &v : raw) {
+      constexpr double limit = std::numeric_limits<float>::max();
+      v = static_cast<float>(std::clamp(v * orig_norm, -limit, limit));
+    }
   out->assign(reinterpret_cast<const char *>(raw.data()), dim_ * sizeof(float));
   return 0;
 }
@@ -579,10 +597,15 @@ class RabitqBlockScanner final : public BlockScanner {
         clusters_(clusters),
         bits_(bits),
         ip_(inner_product),
-        ex_ipfunc_(ex_ipfunc),
-        query_(
-            reinterpret_cast<const float *>(distance_.query_storage().data()),
-            dim, bits - 1) {}
+        ex_ipfunc_(ex_ipfunc) {
+    const auto *q =
+        reinterpret_cast<const float *>(distance_.query_storage().data());
+    std::vector<float> scratch(dim * 4);
+    std::vector<uint16_t> entries(dim * 4);
+    query_.reset(q, dim, bits - 1, scratch.data(), entries.data());
+    // Keep the LUT before the SIMD byte-plane transpose for keyed 1-bit scores.
+    if (bits == 1) row_lut_ = std::move(entries);
+  }
 
   int estimate(const void *block, size_t count,
                DistanceEstimate *out) const override {
@@ -617,9 +640,13 @@ class RabitqBlockScanner final : public BlockScanner {
     const float ip_sub = ip_ ? 1.0f : 0.0f;
     const bool one_bit = bits_ == 1;
     for (size_t i = 0; i < count; ++i) {
-      const float dot = delta * sums[i] + sum_vl_lut;
-      const float score = batch.f_add()[i] + adds[i] +
-                          batch.f_rescale()[i] * (dot + k1xsumq) - ip_sub;
+      const float dot =
+          one_bit ? std::fma(delta, static_cast<float>(sums[i]), sum_vl_lut)
+                  : delta * sums[i] + sum_vl_lut;
+      const float add = batch.f_add()[i] + adds[i];
+      const float score =
+          one_bit ? finish_one_bit_score(dot, add, batch.f_rescale()[i])
+                  : add + batch.f_rescale()[i] * (dot + k1xsumq) - ip_sub;
       out[i] = {score, one_bit ? score : score - batch.f_error()[i] * errors[i],
                 dot};
     }
@@ -646,6 +673,31 @@ class RabitqBlockScanner final : public BlockScanner {
 #endif
     return BlockScanner::estimate_candidates(block, count, worst, out,
                                              candidates);
+  }
+
+  float score_row(const void *row,
+                  const DistanceImpl &distance) const override {
+    if (bits_ != 1) return distance(row);
+    const uint32_t cluster = ReadUint(row);
+    if (cluster >= clusters_) return std::numeric_limits<float>::infinity();
+    const char *bin = static_cast<const char *>(row) + kBinPrefix;
+    const uint16_t *lut = row_lut_.data();
+    int32_t sum = 0;
+    for (size_t d = 0; d < dim_; d += 64) {
+      uint64_t word;
+      std::memcpy(&word, bin + d / 8, sizeof(word));
+      // Single-row sign codes store the first coordinate in the high bit.
+      for (int shift = 60; shift >= 0; shift -= 4, lut += 16)
+        sum += lut[(word >> shift) & 15];
+    }
+    const auto *g_add =
+        reinterpret_cast<const float *>(distance_.query_storage().data() +
+                                        dim_ * sizeof(float) + dim_ / 2) +
+        4;
+    const float dot =
+        std::fma(query_.delta(), static_cast<float>(sum), query_.sum_vl_lut());
+    return finish_one_bit_score(dot, ReadFloat(bin, dim_ / 8) + g_add[cluster],
+                                ReadFloat(bin, dim_ / 8 + 4));
   }
 
   float refine(const void *row, const DistanceEstimate &coarse) const override {
@@ -676,6 +728,10 @@ class RabitqBlockScanner final : public BlockScanner {
   }
 
  private:
+  float finish_one_bit_score(float dot, float add, float scale) const {
+    return std::fma(scale, dot + query_.k1xsumq(), add) - (ip_ ? 1.f : 0.f);
+  }
+
   void accumulate(const uint8_t *codes, int32_t *sums) const {
     // The library overwrites all 32 sums. For the common <=1024D case, write
     // straight to the final array instead of zeroing and adding a second one.
@@ -702,6 +758,7 @@ class RabitqBlockScanner final : public BlockScanner {
   bool ip_;
   float (*ex_ipfunc_)(const float *, const uint8_t *, size_t);
   rabitqlib::SplitBatchQuery<float> query_;
+  std::vector<uint16_t> row_lut_;
 };
 }  // namespace
 

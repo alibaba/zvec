@@ -86,6 +86,49 @@ TEST(RabitqQuantizer, RejectsContiguousTrainingWithoutChangingModel) {
   EXPECT_FALSE(base.require_train());
 }
 
+TEST(RabitqQuantizer, CosinePreservesDirectionAcrossLargeFiniteScales) {
+  constexpr size_t dim = 64;
+  auto q = IndexFactory::CreateQuantizer("RabitqQuantizer");
+  ASSERT_TRUE(q);
+  IndexMeta meta(IndexMeta::DT_FP32, dim);
+  meta.set_metric("Cosine", 0, ailego::Params{});
+  ailego::Params params;
+  params.set(RABITQ_TOTAL_BITS, 7);
+  params.set(RABITQ_NUM_CLUSTERS, 2);
+  ASSERT_EQ(0, q->init(meta, params));
+  auto training =
+      std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(dim);
+  ailego::NumericalVector<float> v(dim);
+  for (int i = 0; i < 2; ++i) {
+    std::fill(v.begin(), v.end(), i ? -1.f : 1.f);
+    ASSERT_TRUE(training->emplace(i, v));
+  }
+  ASSERT_EQ(0, q->train(training));
+  IndexQueryMeta raw(IndexMeta::DT_FP32, dim), code_meta, query_meta;
+  for (float query_scale : {1.f, 1e38f}) {
+    std::fill(v.begin(), v.end(), query_scale);
+    std::string query;
+    ASSERT_EQ(0, q->quantize(v.data(), raw, &query, &query_meta));
+    for (float data_scale : {1.f, 1e38f}) {
+      for (float sign : {1.f, -1.f}) {
+        std::fill(v.begin(), v.end(), sign * data_scale);
+        std::string data, decoded;
+        ASSERT_EQ(0, q->quantize_datapoint(v.data(), raw, &data, &code_meta));
+        EXPECT_NEAR(1.f - sign,
+                    q->calc_distance_dp_query(data.data(), query.data()), 1e-4);
+        ASSERT_EQ(0, q->dequantize(data.data(), code_meta, &decoded));
+        ASSERT_EQ(dim * sizeof(float), decoded.size());
+        for (size_t i = 0; i < dim; ++i) {
+          float value;
+          std::memcpy(&value, decoded.data() + i * sizeof(float),
+                      sizeof(float));
+          EXPECT_NEAR(sign, value / data_scale, 1e-4);
+        }
+      }
+    }
+  }
+}
+
 TEST(RabitqQuantizer, BitsMetricsAsymmetricEncodingAndPersistence) {
   constexpr int dim =
       73;  // non-power-of-two rotation and non-byte-aligned codes
@@ -349,7 +392,7 @@ TEST(RabitqQuantizer, MatchesDedicatedRabitqEstimator) {
       if (std::strcmp(name, "Cosine") == 0) {
         double norm2 = 0;
         for (float v : raw) norm2 += static_cast<double>(v) * v;
-        const float norm = std::sqrt(norm2);
+        const double norm = std::sqrt(norm2);
         for (float &v : raw) v /= norm;
       }
       rotation->apply(raw.data(), rotated.data());
@@ -476,7 +519,7 @@ TEST(RabitqQuantizer, PackedScanMatchesDedicatedBatchEstimator) {
           }
           quantizer.quantize_data(raw.data(), rows.data() + i * stride);
           if (std::strcmp(metric_name, "Cosine") == 0) {
-            float norm = std::sqrt(norm2);
+            const double norm = std::sqrt(norm2);
             for (float &v : raw) v /= norm;
           }
           rotation->apply(raw.data(), rotated.data() + i * dim);
@@ -525,6 +568,14 @@ TEST(RabitqQuantizer, PackedScanMatchesDedicatedBatchEstimator) {
                            std::numeric_limits<float>::infinity(), selected,
                            &candidates));
           for (size_t i = 0; i < count; ++i) {
+            if (bits == 1) {
+              const float keyed =
+                  scanner->score_row(rows.data() + i * stride, distance);
+              EXPECT_EQ(keyed, estimates[i].distance);
+              EXPECT_EQ(keyed, estimates[i].lower_bound);
+              EXPECT_EQ(keyed, selected[i].distance);
+              EXPECT_EQ(keyed, selected[i].lower_bound);
+            }
             // FMA and separate multiply/add round differently. IP can cancel
             // large intermediate terms to almost zero, so bound roundoff by
             // those terms rather than by the final distance alone.
