@@ -15,6 +15,7 @@
 #include "diskann_searcher_entity.h"
 #include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
+#include "diskann_quantizer.h"
 #include "diskann_util.h"
 
 namespace zvec {
@@ -168,14 +169,13 @@ int DiskAnnSearcherEntity::load_pq_segment() {
   offset += read_size;
 
   int ret =
-      DiskAnnUtil::normalize_pq_meta(meta_, &pq_meta_, &legacy_pq_layout_);
+      DiskAnnQuantizer::normalize_pq_meta(meta_, &pq_meta_, &legacy_pq_layout_);
   if (ret != 0) {
     return ret;
   }
 
   if (pq_meta_.chunk_num == 0 || meta_header_.doc_cnt == 0 ||
-      pq_meta_.quantizer_meta_buffer_size == 0 ||
-      pq_meta_.chunk_num > meta_.dimension()) {
+      pq_meta_.quantizer_meta_buffer_size == 0) {
     LOG_ERROR("Invalid empty DiskAnn PQ metadata");
     return IndexError_InvalidFormat;
   }
@@ -196,6 +196,8 @@ int DiskAnnSearcherEntity::load_pq_segment() {
       meta_header_.doc_cnt > pq_data_segment_->data_size() / pq_meta_.chunk_num)
     return IndexError_InvalidFormat;
   size_t code_bytes = meta_header_.doc_cnt * pq_meta_.chunk_num;
+  if (code_bytes != pq_data_segment_->data_size())
+    return IndexError_InvalidFormat;
   if (auto pool = storage_->vec_buffer_pool()) {
     pq_codes_.reset();
     if (pool->cache_enabled() && !pool->writable()) {

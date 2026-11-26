@@ -134,12 +134,18 @@ int VamanaContext::update_context(ContextType type, const IndexMeta &meta,
 int VamanaContext::update(const ailego::Params &params) {
   uint32_t ef = ef_;
   params.get(PARAM_VAMANA_STREAMER_EF, &ef);
-  ef_ = ef;
-  search_heap_.limit(std::max(topk_, ef_));
   uint32_t requested_po = requested_po_;
   uint32_t requested_pl = requested_pl_;
   params.get(PARAM_VAMANA_STREAMER_PO, &requested_po);
   params.get(PARAM_VAMANA_STREAMER_PL, &requested_pl);
+  update_query_params(ef, requested_po, requested_pl);
+  return 0;
+}
+
+void VamanaContext::update_query_params(uint32_t ef, uint32_t requested_po,
+                                        uint32_t requested_pl) {
+  ef_ = ef;
+  search_heap_.limit(std::max(topk_, ef_));
   // Compare requests, not effective values: an automatic PO may have resolved
   // to the same number as a new manual PO but must retain different semantics.
   if (!query_prefetch_ready_ || requested_po != requested_po_ ||
@@ -148,7 +154,6 @@ int VamanaContext::update(const ailego::Params &params) {
     requested_pl_ = requested_pl;
     update_query_prefetch();
   }
-  return 0;
 }
 
 void VamanaContext::update_query_prefetch() {

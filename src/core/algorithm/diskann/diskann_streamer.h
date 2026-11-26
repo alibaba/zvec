@@ -134,7 +134,7 @@ class DiskAnnStreamer : public IndexStreamer {
 
   //! Retrieve meta of index
   const IndexMeta &meta() const override {
-    return meta_;
+    return state_ == STATE_INITED ? configured_meta_ : meta_;
   }
 
   int flush(uint64_t /*check_point*/) override {
@@ -167,6 +167,7 @@ class DiskAnnStreamer : public IndexStreamer {
   enum State { STATE_INIT = 0, STATE_INITED = 1, STATE_LOADED = 2 };
 
   IndexMetric::Pointer measure_{};
+  IndexMeta configured_meta_{};
   IndexMeta meta_{};
   ailego::Params params_{};
 

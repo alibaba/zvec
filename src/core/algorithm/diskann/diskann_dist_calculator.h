@@ -124,8 +124,8 @@ class DistCalculator {
 
   void bind_quantizer(const turbo::Quantizer *quantizer, const uint8_t *codes,
                       uint32_t code_size,
-                      IndexStorage::Segment::Pointer paged_codes,
-                      ailego::VecBufferPool *pool) {
+                      IndexStorage::Segment::Pointer paged_codes = nullptr,
+                      ailego::VecBufferPool *pool = nullptr) {
     quantizer_ = quantizer;
     quant_codes_ = codes;
     quant_code_size_ = code_size;
@@ -134,11 +134,12 @@ class DistCalculator {
   }
 
   int quantize_query(const void *query_rotated) try {
+    if (!quantizer_ || !query_rotated) return IndexError_InvalidArgument;
     quant_query_scratch_.resize(quantizer_->quantized_query_vector_length());
     quantizer_->quantize_query(query_rotated, quant_query_scratch_.data());
-    quant_dist_impl_ =
-        quantizer_->distance(quant_query_scratch_.data(), IndexQueryMeta());
-    return 0;
+    quant_dist_impl_ = quantizer_->distance(quant_query_scratch_.data(),
+                                            quantizer_->quantized_query_meta());
+    return quant_dist_impl_.valid() ? 0 : IndexError_Unsupported;
   } catch (const std::bad_alloc &) {
     return IndexError_NoMemory;
   }
@@ -149,7 +150,8 @@ class DistCalculator {
         ailego::ScopeGuard::Make([&] { resident_pq_batch_.release(); });
     quant_dp_list_.resize(n);
     for (uint32_t i = 0; i < n; ++i) {
-      if (ids[i] >= entity_->doc_cnt()) return IndexError_InvalidFormat;
+      if (entity_ && ids[i] >= entity_->doc_cnt())
+        return IndexError_InvalidFormat;
       if (!paged_codes_) {
         if (!quant_codes_) return IndexError_NoReady;
         quant_dp_list_[i] =
@@ -177,7 +179,8 @@ class DistCalculator {
                                DiskAnnReadVector<float> &distances) try {
     unvisited.clear();
     for (uint32_t i = 0; i < n; ++i) {
-      if (ids[i] >= entity_->doc_cnt()) return IndexError_InvalidFormat;
+      if (entity_ && ids[i] >= entity_->doc_cnt())
+        return IndexError_InvalidFormat;
       if (!visited.visited(ids[i])) {
         visited.set_visited(ids[i]);
         unvisited.push_back(ids[i]);

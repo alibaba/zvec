@@ -215,6 +215,50 @@ TEST(HnswDistCalculatorTest, RejectsNullBatchRecordsBeforeCallingMetric) {
   EXPECT_TRUE(called);
 }
 
+TEST(HnswDistCalculatorTest, RefinementPreservesStatusAndResetsCounters) {
+  InlineVectorHnswEntity entity(std::vector<InlineVectorHnswEntity::Record>(1));
+  auto metric = CreateMetric();
+  float query = 0.0f, vector = 2.0f, lower = -1.0f;
+  HnswDistCalculator calculator(&entity, metric, 1, &query);
+  int calls = 0;
+  calculator.set_estimate_distance(
+      [&](const void *, const void *, float *score, float *bound) {
+        ++calls;
+        *score = 4.0f;
+        *bound = 3.0f;
+      });
+  calculator.estimate(nullptr, &lower);
+  EXPECT_EQ(HnswDistCalculator::Status::kMissingVector, calculator.status());
+  EXPECT_EQ(0, calls);
+
+  calculator.reset_query(nullptr);
+  calculator.estimate(&vector, &lower);
+  EXPECT_EQ(HnswDistCalculator::Status::kError, calculator.status());
+  EXPECT_EQ(0, calls);
+
+  calculator.reset_query(&query);
+  calculator.estimate(node_id_t{1});
+  EXPECT_EQ(HnswDistCalculator::Status::kError, calculator.status());
+  EXPECT_EQ(0, calls);
+
+  calculator.clear();
+  EXPECT_FLOAT_EQ(4.0f, calculator.estimate(&vector, &lower));
+  EXPECT_FLOAT_EQ(3.0f, lower);
+  EXPECT_FLOAT_EQ(4.0f, calculator.refine(&vector));
+  calculator.note_bound_pruned();
+  EXPECT_FALSE(calculator.error());
+  EXPECT_EQ(1, calls);
+  EXPECT_EQ(1U, calculator.estimate_count());
+  EXPECT_EQ(1U, calculator.refinement_count());
+  EXPECT_EQ(1U, calculator.bound_pruned_count());
+  calculator.clear();
+  EXPECT_EQ(HnswDistCalculator::Status::kOk, calculator.status());
+  EXPECT_EQ(0U, calculator.compare_cnt());
+  EXPECT_EQ(0U, calculator.estimate_count());
+  EXPECT_EQ(0U, calculator.refinement_count());
+  EXPECT_EQ(0U, calculator.bound_pruned_count());
+}
+
 TEST(HnswDistCalculatorTest, QueryDistancePreservesInternalReadErrors) {
   auto entity = std::make_shared<InlineVectorHnswEntity>(
       std::vector<InlineVectorHnswEntity::Record>(1));

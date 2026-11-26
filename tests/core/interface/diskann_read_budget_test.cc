@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -366,6 +367,47 @@ TEST_P(DiskAnnReadBudgetTest, PrimaryKeyFetchVectorFitsSmallRssBudget) {
   EXPECT_EQ(expected, result.doc_list_.front().vector_string());
   ASSERT_EQ(0, index->close());
   EXPECT_EQ(expected, result.doc_list_.front().vector_string());
+}
+
+TEST_P(DiskAnnReadBudgetTest, CosineFetchRestoresOwnedVectorPayloads) {
+  const auto path = (directory_ / "cosine_vectors.index").string();
+  const auto param = parameters(false);
+  param->metric_type = MetricType::kCosine;
+  std::vector<float> rows;
+  ASSERT_NO_FATAL_FAILURE(build_index(path, *param, &rows, 317));
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(0, index->open(path, {GetParam(), false, true}));
+  auto query = std::make_shared<DiskAnnQueryParam>();
+  query->topk = 2;
+  query->list_size = 48;
+  query->fetch_vector = true;
+  const VectorData input{DenseVector{rows.data() + 17 * kDimension}};
+  for (int mode = 0; mode < 3; ++mode) {
+    SCOPED_TRACE(mode);
+    query->is_linear = mode == 1;
+    query->bf_pks = mode == 2 ? std::make_shared<std::vector<uint64_t>>(
+                                    std::initializer_list<uint64_t>{17, 18})
+                              : nullptr;
+    SearchResult result;
+    ASSERT_EQ(0, index->search(input, query, &result));
+    ASSERT_EQ(query->topk, result.doc_list_.size());
+    ASSERT_EQ(result.doc_list_.size(), result.reverted_vector_list_.size());
+    for (size_t i = 0; i < result.doc_list_.size(); ++i) {
+      // DiskANN's result owns a string instead of borrowing a raw pointer.
+      EXPECT_EQ(nullptr, result.doc_list_[i].vector());
+      const auto id = result.doc_list_[i].key();
+      ASSERT_LT(id, kDocs);
+      const auto &bytes = result.reverted_vector_list_[i];
+      ASSERT_EQ(kDimension * sizeof(float), bytes.size());
+      for (size_t d = 0; d < kDimension; ++d) {
+        float actual;
+        std::memcpy(&actual, bytes.data() + d * sizeof(float), sizeof(float));
+        EXPECT_NEAR(rows[id * kDimension + d], actual, 1e-6F);
+      }
+    }
+  }
+  ASSERT_EQ(0, index->close());
 }
 
 TEST_P(DiskAnnReadBudgetTest, PrimaryKeySearchUsesCallerOutputBuffers) {

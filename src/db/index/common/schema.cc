@@ -112,6 +112,18 @@ Status FieldSchema::validate() const {
             IndexTypeCodeBook::AsString(index_params_->type()));
       }
 
+      if (vector_index_params &&
+          vector_index_params->quantize_type() == QuantizeType::RABITQ &&
+          index_params_->type() != IndexType::HNSW &&
+          index_params_->type() != IndexType::IVF &&
+          index_params_->type() != IndexType::DISKANN &&
+          index_params_->type() != IndexType::HNSW_RABITQ &&
+          index_params_->type() != IndexType::IVF_RABITQ) {
+        return Status::InvalidArgument(
+            "Invalid schema: RABITQ requires HNSW, IVF, DISKANN, "
+            "HNSW_RABITQ, or IVF_RABITQ");
+      }
+
       if (is_sparse) {
         if (support_sparse_vector_index.find(index_params_->type()) ==
             support_sparse_vector_index.end()) {
@@ -140,7 +152,11 @@ Status FieldSchema::validate() const {
       }
 
       if (index_params_->type() == IndexType::HNSW_RABITQ ||
-          index_params_->type() == IndexType::IVF_RABITQ) {
+          index_params_->type() == IndexType::IVF_RABITQ ||
+          ((index_params_->type() == IndexType::IVF ||
+            index_params_->type() == IndexType::HNSW ||
+            index_params_->type() == IndexType::DISKANN) &&
+           vector_index_params->quantize_type() == QuantizeType::RABITQ)) {
         if (dimension_ < kMinRabitqDimSize || dimension_ > kMaxRabitqDimSize) {
           return Status::InvalidArgument(
               "Invalid schema for field[", name_,
@@ -152,6 +168,30 @@ Status FieldSchema::validate() const {
               "Invalid schema for field[", name_,
               "]: RabitQ requires VECTOR_FP32 data_type; got ",
               DataTypeCodeBook::AsString(data_type_));
+        }
+      }
+
+      if ((index_params_->type() == IndexType::HNSW ||
+           index_params_->type() == IndexType::IVF ||
+           index_params_->type() == IndexType::DISKANN) &&
+          vector_index_params->quantize_type() == QuantizeType::RABITQ) {
+        const auto &q = vector_index_params->quantizer_param();
+        if (q.num_clusters() <= 0 || q.n_iters() <= 0 || q.enable_rotate()) {
+          return Status::InvalidArgument(
+              "Invalid RABITQ quantizer parameters: num_clusters/n_iters must "
+              "be positive; enable_rotate is unsupported");
+        }
+        // UNDEFINED keeps the field's FP32 type, already validated above.
+        // DiskANN uses this default instead of a configurable reference Flat.
+        const auto flat_data_type = vector_index_params->flat_data_type();
+        if ((index_params_->type() == IndexType::HNSW ||
+             index_params_->type() == IndexType::DISKANN) &&
+            (q.total_bits() < 1 || q.total_bits() > 9 || q.sample_count() < 0 ||
+             (flat_data_type != DataType::UNDEFINED &&
+              flat_data_type != DataType::VECTOR_FP32))) {
+          return Status::InvalidArgument(
+              "Invalid graph RABITQ parameters: total_bits in [1, 9], "
+              "sample_count >= 0; FP32 reference vectors required");
         }
       }
 
