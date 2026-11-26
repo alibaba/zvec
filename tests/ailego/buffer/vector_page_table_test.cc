@@ -2300,9 +2300,9 @@ TEST_F(BufferPoolTest, DestructionReleasesPagesDuringConcurrentEviction) {
       // Release the pins together so teardown overlaps CLOCK's second chance.
       handle.release_pages(ids.data(), kPages);
     }
-    // A CLOCK pass may spare a page. Destruction must still release its budget
-    // before returning, even if that pass overlaps the forced cleanup scan.
-    ASSERT_EQ(0u, MemoryLimitPool::get_instance().stats().used);
+    // A CLOCK pass may spare a page. Destruction must still release all page
+    // charges. Process-wide queue and slab metadata can remain allocated.
+    ASSERT_EQ(0u, MemoryLimitPool::get_instance().stats().page_used);
   }
 }
 
