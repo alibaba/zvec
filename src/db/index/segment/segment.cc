@@ -4547,6 +4547,11 @@ Status SegmentImpl::recover() {
       continue;
     }
 
+    if (fts_indexer_) {
+      auto s = fts_indexer_->prepare_write(*doc);
+      CHECK_RETURN_STATUS(s);
+    }
+
     Status status;
     switch (doc->get_operator()) {
       case Operator::INSERT: {
@@ -4644,6 +4649,10 @@ Status SegmentImpl::open_wal_file() {
 }
 
 Status SegmentImpl::append_wal(const Doc &doc) {
+  if (fts_indexer_) {
+    auto s = fts_indexer_->prepare_write(doc);
+    CHECK_RETURN_STATUS(s);
+  }
   std::vector<uint8_t> buf = doc.serialize();
 
   if (!wal_file_) {

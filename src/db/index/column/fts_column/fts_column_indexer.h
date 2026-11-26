@@ -134,6 +134,8 @@ class FtsColumnIndexer {
   // Write
   // -----------------------------------------------------------------
 
+  Result<TokenizerPipelinePtr> write_pipeline() const;
+
   /*! Insert FTS field content for a document
    *  \param seg_doc_id  Segment-local document ID
    *  \param text        UTF-8 encoded text content

@@ -603,10 +603,8 @@ Result<DocIteratorPtr> FtsColumnIndexer::build_or_iterator(
 // Write operations
 // ============================================================
 
-Result<void> FtsColumnIndexer::insert(uint64_t seg_doc_id,
-                                      const std::string &text) {
-  // safe access check
-
+Result<TokenizerPipelinePtr> FtsColumnIndexer::write_pipeline() const {
+  // Check that the indexer can still accept writes.
   if (!tokenizer_pipeline_.valid() || !ctx_) {
     return tl::make_unexpected(Status::InternalError(
         "FtsColumnIndexer::insert: not opened. field=", field_name_));
@@ -617,11 +615,16 @@ Result<void> FtsColumnIndexer::insert(uint64_t seg_doc_id,
         "FtsColumnIndexer::insert: field is sealed. field=", field_name_));
   }
 
-  // Tokenize
-  const auto &pipeline = tokenizer_pipeline_.get();
+  return tokenizer_pipeline_.get();
+}
+
+Result<void> FtsColumnIndexer::insert(uint64_t seg_doc_id,
+                                      const std::string &text) {
+  auto pipeline = write_pipeline();
   if (!pipeline) {
     return tl::make_unexpected(pipeline.error());
   }
+  // Tokenize
   std::vector<Token> tokens = (*pipeline)->process(text);
   const uint32_t doc_len = static_cast<uint32_t>(tokens.size());
 
