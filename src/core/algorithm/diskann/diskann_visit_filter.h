@@ -18,8 +18,8 @@
 #include <cstdint>
 #include <limits>
 #include <new>
-#include "diskann_read_memory.h"
 #include "utility/visit_filter.h"
+#include "diskann_read_memory.h"
 
 namespace zvec::core {
 
@@ -28,8 +28,8 @@ namespace zvec::core {
 class DiskAnnSearchVisitFilter {
  public:
   void init(uint64_t vectors) {
-    const uint64_t words = vectors / kBitsPerWord +
-                           (vectors % kBitsPerWord != 0);
+    const uint64_t words =
+        vectors / kBitsPerWord + (vectors % kBitsPerWord != 0);
     if (words > (std::numeric_limits<size_t>::max)()) throw std::bad_alloc();
 
     // Hold the partial allocation locally so a rejected second allocation
