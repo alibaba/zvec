@@ -82,7 +82,7 @@ endforeach()
 # No engine library in any form.  libzvec whole-archives all three components and
 # exports the engine API, so packaging them separately would ship two ways to
 # call one implementation and twice the ABI to keep compatible; the archives are
-# equally unc callable, because the headers that declare them are not installed.
+# equally uncallable, because the headers that declare them are not installed.
 # Shared *and* static suffixes, since neither may appear.  The names are specific
 # enough not to match the installed libzvec.a / zvec.lib.
 set(_engine_libraries)
