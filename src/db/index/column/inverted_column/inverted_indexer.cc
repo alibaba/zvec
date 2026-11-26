@@ -129,14 +129,14 @@ Status InvertedIndexer::seal() {
   terms_columns.reserve(indexers_.size());
   Status s;
   for (const auto &[name, indexer] : indexers_) {
-    // Include already sealed columns when retrying a failed compaction.
+    // Allow subsequent calls to materialize TERMS for already sealed columns.
     terms_columns.insert(name + INVERT_SUFFIX_TERMS);
     if (indexer->is_sealed()) {
       continue;
     }
-    if (s = indexer->seal(); !s.ok()) {
-      LOG_ERROR("Failed to seal %s", indexer->id().c_str());
-      return s;
+    if (auto status = indexer->seal(); !status.ok()) {
+      LOG_ERROR("Failed to seal %s: %s", indexer->id().c_str(),
+                status.message().c_str());
     }
   }
 

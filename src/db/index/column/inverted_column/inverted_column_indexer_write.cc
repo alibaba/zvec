@@ -446,6 +446,7 @@ Status InvertedColumnIndexer::seal() {
 
   std::unique_ptr<InvertedRangeCache> cache;
   std::string seal_value = "sealed";
+  size_t stored_prefixes = 0;
   if (enable_range_optimization_) {
     status = generate_statistical_indexes();
     if (!status.ok()) {
@@ -455,43 +456,53 @@ Status InvertedColumnIndexer::seal() {
     try {
       cache = InvertedRangeCache::Build(ctx_, cf_ranges_, cf_terms_,
                                         max_id_.load(), null_bitmap_->bitmap());
-      if (cache) {
-        const auto stored = cache->Store(ctx_, field_.name(), seal_value);
-        if (!stored.ok()) {
-          LOG_ERROR("Failed to store range prefixes for %s: %s", id().c_str(),
-                    stored.ToString().c_str());
-          return Status::InternalError();
-        }
-      } else {
+      if (!cache) {
         seal_value = InvertedRangeCache::kNoCacheSealValue;
+      } else if (auto stored = cache->store(ctx_, field_.name(), seal_value);
+                 stored.ok()) {
+        stored_prefixes = cache->prefixes.size();
+      } else {
+        LOG_WARN("Could not persist range prefixes for %s: %s", id().c_str(),
+                 stored.ToString().c_str());
       }
     } catch (const std::bad_alloc &) {
-      cache.reset();
-      LOG_WARN("Skipping range prefixes for %s: insufficient memory",
+      LOG_WARN("Could not prepare range prefixes for %s: insufficient memory",
                id().c_str());
     }
   }
 
-  // Publish the metadata only after every prefix record is present.
-  rocksdb::WriteBatch batch;
-  auto rs = batch.Put(key_sealed(), seal_value);
-  if (rs.ok() && enable_range_optimization_) {
-    const size_t count = cache ? cache->prefixes.size() : 0;
-    rs = InvertedRangeCache::Delete(batch, field_.name(), count);
-  }
-  if (rs.ok()) rs = ctx_.db_->Write(ctx_.write_opts_, &batch);
-  if (rs.ok()) {
-    sealed_ = true;
-    read_only_ = true;
-    range_cache_ = std::move(cache);
-    if (range_cache_) {
-      range_cache_ready_.store(true, std::memory_order_release);
-    }
-    return Status::OK();
-  } else {
+  // The legacy marker allows a reopen to rebuild the cache when storing it
+  // failed. A cache marker is written only after all its records are present.
+  auto rs = ctx_.db_->Put(ctx_.write_opts_, key_sealed(), seal_value);
+  if (!rs.ok()) {
     LOG_ERROR("Failed to seal %s", id().c_str());
     return Status::InternalError();
   }
+  sealed_ = true;
+  read_only_ = true;
+  range_cache_ = std::move(cache);
+  if (range_cache_) {
+    range_cache_ready_.store(true, std::memory_order_release);
+  }
+
+  if (enable_range_optimization_ &&
+      stored_prefixes < InvertedRangeCache::kQuantiles - 1) {
+    try {
+      rocksdb::WriteBatch batch;
+      auto cleanup =
+          InvertedRangeCache::Delete(batch, field_.name(), stored_prefixes);
+      if (cleanup.ok()) cleanup = ctx_.db_->Write(ctx_.write_opts_, &batch);
+      if (!cleanup.ok()) {
+        LOG_WARN("Could not remove unused range prefixes for %s: %s",
+                 id().c_str(), cleanup.ToString().c_str());
+      }
+    } catch (const std::bad_alloc &) {
+      LOG_WARN(
+          "Could not remove unused range prefixes for %s: insufficient memory",
+          id().c_str());
+    }
+  }
+  return Status::OK();
 }
 
 

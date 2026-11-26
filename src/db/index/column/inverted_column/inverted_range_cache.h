@@ -88,15 +88,14 @@ class InvertedRangeCache {
 
   // Store the bitmaps separately to avoid assembling a single large value.
   // The caller publishes the resulting metadata as the column's seal value.
-  rocksdb::Status Store(RocksdbContext &context, const std::string &field,
+  rocksdb::Status store(RocksdbContext &context, const std::string &field,
                         std::string &metadata) const;
   static std::unique_ptr<InvertedRangeCache> Load(
       RocksdbContext &context, const std::string &field,
       const std::string &metadata, uint32_t max_id,
       const roaring_bitmap_t *null_bitmap);
   static rocksdb::Status Delete(rocksdb::WriteBatch &batch,
-                                const std::string &field,
-                                size_t keep = 0);
+                                const std::string &field, size_t keep = 0);
 
   std::vector<Bucket> buckets;
   std::vector<Prefix> prefixes;

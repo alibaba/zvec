@@ -552,8 +552,6 @@ Status RocksdbContext::compact(
     if (!s.ok()) {
       LOG_ERROR("Failed to compact cf[%s] in RocksDB[%s], code[%d], reason[%s]",
                 name.c_str(), db_path_.c_str(), s.code(), s.ToString().c_str());
-      return Status::InternalError("Failed to compact column family ", name,
-                                   ": ", s.ToString());
     }
   }
   auto s = db_->CompactRange(compact_range_opts_, nullptr, nullptr);

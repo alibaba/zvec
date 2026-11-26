@@ -65,14 +65,23 @@ class ReadCounter : public rocksdb::StackableDB {
     return StackableDB::NewIterator(options, cf);
   }
   rocksdb::Status Put(const rocksdb::WriteOptions &options,
-                      rocksdb::ColumnFamilyHandle *cf, const rocksdb::Slice &key,
+                      rocksdb::ColumnFamilyHandle *cf,
+                      const rocksdb::Slice &key,
                       const rocksdb::Slice &value) override {
     if (key == fail_put_key) {
-      return rocksdb::Status::IOError("injected prefix write failure");
+      return rocksdb::Status::IOError("injected metadata write failure");
     }
     return StackableDB::Put(options, cf, key, value);
   }
+  rocksdb::Status Write(const rocksdb::WriteOptions &options,
+                        rocksdb::WriteBatch *batch) override {
+    if (fail_next_write.exchange(false)) {
+      return rocksdb::Status::IOError("injected write batch failure");
+    }
+    return StackableDB::Write(options, batch);
+  }
   std::string fail_put_key;
+  std::atomic<bool> fail_next_write{false};
   std::atomic<size_t> reads{0};
   std::atomic<size_t> term_gets{0};
   std::atomic<size_t> term_iters{0};
@@ -233,7 +242,7 @@ TEST_F(InvertedRangeCacheTest, InvalidPrefixFallsBackToRangeScans) {
   verify(data, {-4001, -1, 0, 1, 4001}, Raw);
 }
 
-TEST_F(InvertedRangeCacheTest, FailedPrefixWriteDoesNotPublishAndCanBeRetried) {
+TEST_F(InvertedRangeCacheTest, FailedPrefixWriteSealsAndRebuildsOnReopen) {
   create();
   auto data = values();
   {
@@ -242,14 +251,78 @@ TEST_F(InvertedRangeCacheTest, FailedPrefixWriteDoesNotPublishAndCanBeRetried) {
     writer->fail_put_key = "value$ZVEC$RANGE_PREFIX$b";
     context_.db_ = std::move(writer);
     AILEGO_DEFER([&]() { context_.db_ = std::move(original); });
+    ASSERT_TRUE(column_->seal().ok());
+  }
+
+  std::string value;
+  ASSERT_TRUE(
+      context_.db_
+          ->Get(context_.read_opts_, "value" + INVERT_KEY_SEALED, &value)
+          .ok());
+  EXPECT_EQ(value, "sealed");
+  EXPECT_TRUE(
+      context_.db_
+          ->Get(context_.read_opts_, "value$ZVEC$RANGE_PREFIX$a", &value)
+          .IsNotFound());
+  EXPECT_TRUE(column_->is_sealed());
+  ASSERT_NE(column_->range_cache(), nullptr);
+  verify(data, {-1, 0, 42, 43}, Raw);
+  reopen(/*expect_rebuild=*/true);
+  ASSERT_NE(column_->range_cache(), nullptr);
+  verify(data, {-1, 0, 42, 43}, Raw);
+}
+
+TEST_F(InvertedRangeCacheTest, FailedPrefixCleanupDoesNotPublishPartialCache) {
+  create();
+  auto data = values();
+  {
+    auto original = std::move(context_.db_);
+    auto writer = std::make_unique<ReadCounter>(original.get());
+    writer->fail_put_key = "value$ZVEC$RANGE_PREFIX$b";
+    writer->fail_next_write = true;
+    auto *probe = writer.get();
+    context_.db_ = std::move(writer);
+    AILEGO_DEFER([&]() { context_.db_ = std::move(original); });
+    ASSERT_TRUE(column_->seal().ok());
+    EXPECT_FALSE(probe->fail_next_write.load());
+  }
+
+  std::string value;
+  ASSERT_TRUE(
+      context_.db_
+          ->Get(context_.read_opts_, "value" + INVERT_KEY_SEALED, &value)
+          .ok());
+  EXPECT_EQ(value, "sealed");
+  EXPECT_TRUE(
+      context_.db_
+          ->Get(context_.read_opts_, "value$ZVEC$RANGE_PREFIX$a", &value)
+          .ok());
+  reopen(/*expect_rebuild=*/true);
+  ASSERT_NE(column_->range_cache(), nullptr);
+  verify(data, {-1, 0, 42, 43}, Raw);
+}
+
+TEST_F(InvertedRangeCacheTest, FailedSealMarkerDoesNotPublishAndCanBeRetried) {
+  create();
+  auto data = values();
+  {
+    auto original = std::move(context_.db_);
+    auto writer = std::make_unique<ReadCounter>(original.get());
+    writer->fail_put_key = "value" + INVERT_KEY_SEALED;
+    context_.db_ = std::move(writer);
+    AILEGO_DEFER([&]() { context_.db_ = std::move(original); });
     EXPECT_FALSE(column_->seal().ok());
   }
 
   std::string value;
-  EXPECT_TRUE(context_.db_->Get(context_.read_opts_, "value" + INVERT_KEY_SEALED,
-                                 &value).IsNotFound());
-  ASSERT_TRUE(context_.db_->Get(context_.read_opts_,
-                                 "value$ZVEC$RANGE_PREFIX$a", &value).ok());
+  EXPECT_TRUE(
+      context_.db_
+          ->Get(context_.read_opts_, "value" + INVERT_KEY_SEALED, &value)
+          .IsNotFound());
+  ASSERT_TRUE(
+      context_.db_
+          ->Get(context_.read_opts_, "value$ZVEC$RANGE_PREFIX$a", &value)
+          .ok());
   EXPECT_FALSE(column_->is_sealed());
   EXPECT_EQ(column_->range_cache(), nullptr);
   column_.reset();

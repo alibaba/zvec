@@ -224,9 +224,9 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Build(
   return cache;
 }
 
-rocksdb::Status InvertedRangeCache::Store(RocksdbContext &context,
-                                        const std::string &field,
-                                        std::string &metadata) const {
+rocksdb::Status InvertedRangeCache::store(RocksdbContext &context,
+                                          const std::string &field,
+                                          std::string &metadata) const {
   std::string encoded(kMetadataVersion);
   append_number(encoded, uint64_t(buckets.size()));
   for (const auto &bucket : buckets) {
@@ -307,8 +307,8 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Load(
   for (unsigned i = 0; i < prefix_count; ++i) {
     uint64_t end;
     uint32_t checkpoint_count;
-    if (!take_number(input, end) || end <= previous_end || end >= bucket_count ||
-        !take_number(input, checkpoint_count) ||
+    if (!take_number(input, end) || end <= previous_end ||
+        end >= bucket_count || !take_number(input, checkpoint_count) ||
         checkpoint_count > kMaxSuffixCheckpoints)
       return nullptr;
     previous_end = end;
@@ -328,10 +328,10 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Load(
       prefix.suffix_checkpoints.push_back({std::string(term), work});
     }
     rocksdb::PinnableSlice value;
-    const auto status = context.db_->Get(options, context.db_->DefaultColumnFamily(),
-                                         prefix_key(field, i), &value);
-    if (!status.ok() ||
-        !value.size() ||
+    const auto status =
+        context.db_->Get(options, context.db_->DefaultColumnFamily(),
+                         prefix_key(field, i), &value);
+    if (!status.ok() || !value.size() ||
         roaring_bitmap_portable_deserialize_size(value.data(), value.size()) !=
             value.size())
       return nullptr;
@@ -353,8 +353,8 @@ std::unique_ptr<InvertedRangeCache> InvertedRangeCache::Load(
 }
 
 rocksdb::Status InvertedRangeCache::Delete(rocksdb::WriteBatch &batch,
-                                         const std::string &field,
-                                         size_t keep) {
+                                           const std::string &field,
+                                           size_t keep) {
   for (size_t i = keep; i < kQuantiles - 1; ++i) {
     auto status = batch.Delete(prefix_key(field, i));
     if (!status.ok()) return status;

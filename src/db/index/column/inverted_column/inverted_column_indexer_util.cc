@@ -123,13 +123,16 @@ Status InvertedColumnIndexer::open() {
       try {
         if (value == "sealed") {
           // Legacy indexes lack prefix records, including on read-only opens.
-          range_cache_ = InvertedRangeCache::Build(
-              ctx_, cf_ranges_, cf_terms_, max_id_.load(), null_bitmap_->bitmap());
+          range_cache_ =
+              InvertedRangeCache::Build(ctx_, cf_ranges_, cf_terms_,
+                                        max_id_.load(), null_bitmap_->bitmap());
         } else {
-          range_cache_ = InvertedRangeCache::Load(
-              ctx_, field_.name(), value, max_id_.load(), null_bitmap_->bitmap());
+          range_cache_ =
+              InvertedRangeCache::Load(ctx_, field_.name(), value,
+                                       max_id_.load(), null_bitmap_->bitmap());
           if (!range_cache_) {
-            LOG_WARN("Could not load stored range prefixes for %s", id().c_str());
+            LOG_WARN("Could not load stored range prefixes for %s",
+                     id().c_str());
           }
         }
         if (range_cache_) {

@@ -109,7 +109,9 @@ struct RocksdbContext {
   Status reset_cf(const std::string &cf_name);
 
 
-  // Force bottommost compaction for the named column families.
+  // Attempt bottommost compaction for the named column families.
+  // Column-family failures are logged. The final default compaction sets the
+  // returned status.
   Status compact(
       const std::unordered_set<std::string> &force_bottommost_for = {});
 

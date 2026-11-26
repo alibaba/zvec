@@ -248,7 +248,8 @@ class InvertedColumnIndexer {
   Status open();
 
   RangeQueryPlan plan_range(const std::string &term, bool query_left,
-                            bool include_eq, const InvertedRangeCache *cache) const;
+                            bool include_eq,
+                            const InvertedRangeCache *cache) const;
   Result<roaring_bitmap_t *> search_range(const std::string &term,
                                           bool query_left,
                                           bool include_eq) const;
