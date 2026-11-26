@@ -24,9 +24,3 @@ When the run finishes, open the printed `report.md` path to see dataset statisti
 index build time and size, memory use, and query results.
 See the [example report](example-report.md) for a run with 10 million documents per workload.
 For scripted runs, add `--help` to the Python command to see the available options.
-
-## Recorded runs
-
-The [PR #938 benchmark run](results/pr938-20261126/README.md) contains baseline
-and PR reports generated through the existing report pipeline, covering all 72
-100K workloads and the original eight selected 10M workloads.
