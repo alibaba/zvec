@@ -20,6 +20,7 @@
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/turbo/turbo.h>
 #include "diskann_dist_calculator.h"
+#include "diskann_quantizer.h"
 #include "diskann_util.h"
 
 namespace zvec {
@@ -72,6 +73,163 @@ IndexMeta make_meta(size_t dim) {
 
 }  // namespace
 
+// The adapter must preserve PQ's defaults, budget clamping, metric conversion,
+// serialized model, encoded bytes and distance values.
+TEST(DiskAnnLegacyPq, BuildAdapterPreservesPqBehavior) {
+  for (const char *metric : {"SquaredEuclidean", "InnerProduct", "Cosine"}) {
+    SCOPED_TRACE(metric);
+    IndexMeta meta = make_meta(17);
+    meta.set_metric(metric, 0, ailego::Params{});
+    if (std::strcmp(metric, "Cosine") == 0)
+      meta.set_extra_meta_size(sizeof(float));
+    DiskAnnQuantizer adapter;
+    ASSERT_EQ(0, adapter.init(&meta, {}));
+    ASSERT_TRUE(meta.quantizer_name().empty());
+    ASSERT_EQ(0, adapter.prepare(100, false, 0, 1));
+    EXPECT_EQ(8u, adapter.code_size());
+    ASSERT_EQ(0, adapter.prepare(100, true, 400, 1));
+    EXPECT_EQ(4u, adapter.code_size());
+    EXPECT_NE(0, adapter.prepare(100, true, 99, 1));
+    EXPECT_NE(0, adapter.prepare(0, false, 0, 1));
+
+    IndexMeta pq_meta;
+    ASSERT_EQ(0, DiskAnnUtil::quantizer_init_meta(meta, &pq_meta));
+    ailego::Params settings;
+    settings.set("num_chunk", 4U);
+    settings.set("thread_count", 1U);
+    settings.set("use_zero_mean", false);
+    auto reference = IndexFactory::CreateQuantizer("PqInt8Quantizer");
+    ASSERT_TRUE(reference);
+    ASSERT_EQ(0, reference->init(pq_meta, settings));
+    auto pivots = make_random_pivots(17);
+    const size_t bytes = pivots.size() * sizeof(float);
+    ASSERT_EQ(0, reference->import_codebook(pivots.data(), bytes));
+    ASSERT_EQ(0, adapter.get()->import_codebook(pivots.data(), bytes));
+    std::string expected, actual;
+    ASSERT_EQ(0, reference->serialize(&expected));
+    ASSERT_EQ(0, adapter.get()->serialize(&actual));
+    EXPECT_EQ(expected, actual);
+    auto restored = DiskAnnQuantizer::create_quantizer_from_meta_buffer(
+        actual, meta, adapter.code_size(), false);
+    ASSERT_TRUE(restored);
+    std::vector<uint8_t> expected_code(4), actual_code(4);
+    std::vector<uint8_t> expected_query(
+        reference->quantized_query_vector_length());
+    std::vector<uint8_t> actual_query(
+        restored->quantized_query_vector_length());
+    reference->quantize_query(pivots.data(), expected_query.data());
+    restored->quantize_query(pivots.data(), actual_query.data());
+    EXPECT_EQ(expected_query, actual_query);
+    for (size_t row = 0; row < 32; ++row) {
+      const float *vector = pivots.data() + row * 17;
+      reference->quantize_data(vector, expected_code.data());
+      restored->quantize_data(vector, actual_code.data());
+      EXPECT_EQ(expected_code, actual_code);
+      EXPECT_FLOAT_EQ(reference->calc_distance_dp_query(expected_code.data(),
+                                                        expected_query.data()),
+                      restored->calc_distance_dp_query(actual_code.data(),
+                                                       actual_query.data()));
+    }
+  }
+}
+
+#if RABITQ_SUPPORTED
+TEST(DiskAnnQuantizerTest, RabitqClusteringUsesCallerWorker) {
+  class ObservedPool : public SingleQueueIndexThreads {
+   public:
+    ObservedPool() : SingleQueueIndexThreads(1, false) {}
+    class Group : public IndexThreads::TaskGroup {
+     public:
+      explicit Group(ObservedPool &pool)
+          : pool_(pool), inner_(pool.SingleQueueIndexThreads::make_group()) {}
+      void submit(ailego::ClosureHandler &&task) override {
+        inner_->submit(
+            ailego::Closure::New(this, &Group::run, std::move(task)));
+      }
+      bool is_finished() const override {
+        return inner_->is_finished();
+      }
+      void wait_finish() override {
+        inner_->wait_finish();
+      }
+
+     private:
+      void run(ailego::ClosureHandler task) {
+        EXPECT_EQ(0, pool_.indexof_this());
+        ++pool_.observations;
+        task->run();
+      }
+      ObservedPool &pool_;
+      IndexThreads::TaskGroup::Pointer inner_;
+    };
+    IndexThreads::TaskGroup::Pointer make_group() override {
+      return std::make_shared<Group>(*this);
+    }
+    std::atomic<size_t> observations{0};
+  };
+  constexpr size_t dim = 64;
+  auto holder = std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(dim);
+  ailego::NumericalVector<float> row(dim);
+  for (size_t i = 0; i < 64; ++i) {
+    std::fill(row.begin(), row.end(), static_cast<float>(i));
+    ASSERT_TRUE(holder->emplace(i, row));
+  }
+  auto pool = std::make_shared<ObservedPool>();
+  IndexMeta meta = make_meta(dim);
+  meta.set_quantizer("RabitqQuantizer", 0, ailego::Params{});
+  auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
+  ASSERT_TRUE(builder);
+  ailego::Params settings;
+  settings.set(PARAM_DISKANN_BUILDER_THREAD_COUNT, 4U);
+  ASSERT_EQ(0, builder->init(meta, settings));
+  ASSERT_EQ(0, builder->train(pool, holder));
+  EXPECT_GT(pool->observations.load(), 0u);
+}
+
+TEST(DiskAnnQuantizerTest, RabitqTrainsBeyondPqPrefix) {
+  constexpr size_t dim = 64;
+  auto holder = std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(dim);
+  ailego::NumericalVector<float> row(dim);
+  for (size_t i = 0; i < 4; ++i) {
+    std::fill(row.begin(), row.end(), static_cast<float>(i));
+    ASSERT_TRUE(holder->emplace(i, row));
+  }
+  IndexMeta meta = make_meta(dim);
+  meta.set_quantizer("RabitqQuantizer", 0, ailego::Params{});
+  DiskAnnQuantizer adapter;
+  ASSERT_EQ(0, adapter.init(&meta, {}));
+  ASSERT_EQ(0, adapter.prepare(4, false, 0, 1));
+  ASSERT_EQ(0, adapter.train(holder, 1));
+  // Each of the four training rows becomes a centroid, including the last.
+  std::vector<uint8_t> code(adapter.code_size());
+  adapter.get()->quantize_data(row.data(), code.data());
+  uint32_t centroid = 0;
+  std::memcpy(&centroid, code.data(), sizeof(centroid));
+  EXPECT_EQ(3u, centroid);
+}
+#endif
+
+TEST(DiskAnnLegacyPq, BuildAdapterValidatesSelectionAndChunks) {
+  IndexMeta meta = make_meta(17);
+  DiskAnnQuantizer adapter;
+  ailego::Params params;
+  params.set(PARAM_DISKANN_BUILDER_MAX_PQ_CHUNK_NUM, 18U);
+  EXPECT_NE(0, adapter.init(&meta, params));
+  params.set(PARAM_DISKANN_BUILDER_MAX_PQ_CHUNK_NUM, 0U);
+  ASSERT_EQ(0, adapter.init(&meta, params));
+  ASSERT_EQ(0, adapter.prepare(100, false, 0, 1));
+  EXPECT_EQ(8u, adapter.code_size());
+  params.set(PARAM_DISKANN_BUILDER_MAX_PQ_CHUNK_NUM, 6U);
+  params.set(PARAM_DISKANN_BUILDER_QUANTIZER_CLASS, "PqInt8Quantizer");
+  meta.set_quantizer("RabitqQuantizer", 0, ailego::Params{});
+  ASSERT_EQ(0, adapter.init(&meta, params));
+  EXPECT_TRUE(meta.quantizer_name().empty());
+  ASSERT_EQ(0, adapter.prepare(100, false, 0, 1));
+  EXPECT_EQ(6u, adapter.code_size());
+  params.set(PARAM_DISKANN_BUILDER_QUANTIZER_CLASS, "UnknownQuantizer");
+  EXPECT_EQ(IndexError_Unsupported, adapter.init(&meta, params));
+}
+
 //! The repacked codebook has to be the one the index was built with, otherwise
 //! the stored codes decode to different vectors.  Encoding through the
 //! quantizer is compared against a brute force search over the on-disk pivots.
@@ -86,7 +244,7 @@ TEST(DiskAnnLegacyPq, EncodeMatchesLegacyPivots) {
   auto payload = make_legacy_payload(pivots, mean, offsets);
 
   IndexMeta meta = make_meta(DIM);
-  auto quantizer = DiskAnnUtil::create_quantizer_from_meta_buffer(
+  auto quantizer = DiskAnnQuantizer::create_quantizer_from_meta_buffer(
       payload, meta, CHUNK_NUM, true);
   ASSERT_TRUE(quantizer);
 
@@ -146,7 +304,7 @@ TEST(DiskAnnLegacyPq, AdcDistanceMatchesReference) {
       make_legacy_payload(pivots, mean, make_uniform_offsets(DIM, CHUNK_NUM));
 
   IndexMeta meta = make_meta(DIM);
-  auto quantizer = DiskAnnUtil::create_quantizer_from_meta_buffer(
+  auto quantizer = DiskAnnQuantizer::create_quantizer_from_meta_buffer(
       payload, meta, CHUNK_NUM, true);
   ASSERT_TRUE(quantizer);
 
@@ -189,8 +347,8 @@ TEST(DiskAnnLegacyPq, RejectsNonZeroMean) {
       make_legacy_payload(pivots, mean, make_uniform_offsets(DIM, CHUNK_NUM));
 
   IndexMeta meta = make_meta(DIM);
-  EXPECT_FALSE(DiskAnnUtil::create_quantizer_from_meta_buffer(payload, meta,
-                                                              CHUNK_NUM, true));
+  EXPECT_FALSE(DiskAnnQuantizer::create_quantizer_from_meta_buffer(
+      payload, meta, CHUNK_NUM, true));
 }
 
 //! Only the legacy balanced geometry is supported; arbitrary boundaries would
@@ -206,8 +364,8 @@ TEST(DiskAnnLegacyPq, RejectsInvalidChunkOffsets) {
   auto payload = make_legacy_payload(pivots, mean, offsets);
 
   IndexMeta meta = make_meta(DIM);
-  EXPECT_FALSE(DiskAnnUtil::create_quantizer_from_meta_buffer(payload, meta,
-                                                              CHUNK_NUM, true));
+  EXPECT_FALSE(DiskAnnQuantizer::create_quantizer_from_meta_buffer(
+      payload, meta, CHUNK_NUM, true));
 }
 
 TEST(DiskAnnLegacyPq, RejectsTruncatedCodebook) {
@@ -221,8 +379,8 @@ TEST(DiskAnnLegacyPq, RejectsTruncatedCodebook) {
   payload.resize(payload.size() - sizeof(uint32_t));
 
   IndexMeta meta = make_meta(DIM);
-  EXPECT_FALSE(DiskAnnUtil::create_quantizer_from_meta_buffer(payload, meta,
-                                                              CHUNK_NUM, true));
+  EXPECT_FALSE(DiskAnnQuantizer::create_quantizer_from_meta_buffer(
+      payload, meta, CHUNK_NUM, true));
 }
 
 //! Legacy centroid values can match the quantizer magic. The enclosing header
@@ -250,10 +408,10 @@ TEST(DiskAnnLegacyPq, DetectsQuantizerHeader) {
   DiskAnnPqMeta header;
   std::memcpy(static_cast<void *>(&header), &old_header, sizeof(header));
   bool legacy = false;
-  ASSERT_EQ(0, DiskAnnUtil::normalize_pq_meta(meta, &header, &legacy));
+  ASSERT_EQ(0, DiskAnnQuantizer::normalize_pq_meta(meta, &header, &legacy));
   ASSERT_TRUE(legacy);
   ASSERT_EQ(payload.size(), header.quantizer_meta_buffer_size);
-  auto quantizer = DiskAnnUtil::create_quantizer_from_meta_buffer(
+  auto quantizer = DiskAnnQuantizer::create_quantizer_from_meta_buffer(
       payload, meta, static_cast<uint32_t>(header.chunk_num), legacy);
   ASSERT_TRUE(quantizer);
 
@@ -261,14 +419,14 @@ TEST(DiskAnnLegacyPq, DetectsQuantizerHeader) {
   header.clear();
   header.chunk_num = CHUNKS;
   header.quantizer_meta_buffer_size = payload.size();
-  ASSERT_EQ(0, DiskAnnUtil::normalize_pq_meta(meta, &header, &legacy));
+  ASSERT_EQ(0, DiskAnnQuantizer::normalize_pq_meta(meta, &header, &legacy));
   ASSERT_FALSE(legacy);
-  EXPECT_TRUE(DiskAnnUtil::create_quantizer_from_meta_buffer(payload, meta,
-                                                             CHUNKS, legacy));
+  EXPECT_TRUE(DiskAnnQuantizer::create_quantizer_from_meta_buffer(
+      payload, meta, CHUNKS, legacy));
 
   ++old_header.full_pivot_data_size;
   std::memcpy(static_cast<void *>(&header), &old_header, sizeof(header));
-  EXPECT_NE(0, DiskAnnUtil::normalize_pq_meta(meta, &header, &legacy));
+  EXPECT_NE(0, DiskAnnQuantizer::normalize_pq_meta(meta, &header, &legacy));
 }
 
 TEST(DiskAnnLegacyPqTest, CosineNavigationAndMetricOverride) {
@@ -293,8 +451,10 @@ TEST(DiskAnnLegacyPqTest, CosineNavigationAndMetricOverride) {
   const diskann_id_t ids[] = {0, 1};
   const float query[] = {1, 0};
   float distances[2];
+  EXPECT_EQ(IndexError_InvalidArgument, dc.quantize_query(query));
   dc.bind_quantizer(pq.get(), codes, 1);
-  dc.quantize_query(query);
+  EXPECT_EQ(IndexError_InvalidArgument, dc.quantize_query(nullptr));
+  ASSERT_EQ(0, dc.quantize_query(query));
   dc.quantized_dist(ids, 2, distances);
   EXPECT_NEAR(1 - 2 / std::sqrt(5.0f), distances[0], 1e-6f);
   EXPECT_NEAR(1 - 1 / std::sqrt(2.0f), distances[1], 1e-6f);
@@ -302,7 +462,7 @@ TEST(DiskAnnLegacyPqTest, CosineNavigationAndMetricOverride) {
   float inverse_norms[2];
   ASSERT_TRUE(pq->cosine_inverse_norms(codes, 2, 1, inverse_norms));
   dc.bind_quantizer(pq.get(), codes, 1, inverse_norms);
-  dc.quantize_query(query);
+  ASSERT_EQ(0, dc.quantize_query(query));
   dc.quantized_dist(ids, 2, distances);
   EXPECT_NEAR(1 - 2 / std::sqrt(5.0f), distances[0], 1e-6f);
   EXPECT_NEAR(1 - 1 / std::sqrt(2.0f), distances[1], 1e-6f);
@@ -310,13 +470,13 @@ TEST(DiskAnnLegacyPqTest, CosineNavigationAndMetricOverride) {
   ASSERT_TRUE(l2);
   ASSERT_EQ(0, l2->init(pq_meta, pq_meta.metric_params()));
   dc.update(nullptr, meta, l2);
-  dc.quantize_query(query);
+  ASSERT_EQ(0, dc.quantize_query(query));
   dc.quantized_dist(ids, 2, distances);
   EXPECT_FLOAT_EQ(2.0f, distances[0]);
   EXPECT_FLOAT_EQ(0.5f, distances[1]);
   dc.update(nullptr, meta, metric);
   dc.update_distance(l2->distance());
-  dc.quantize_query(query);
+  ASSERT_EQ(0, dc.quantize_query(query));
   dc.quantized_dist(ids, 2, distances);
   EXPECT_FLOAT_EQ(2.0f, distances[0]);
   EXPECT_FLOAT_EQ(0.5f, distances[1]);

@@ -129,21 +129,23 @@ class DistCalculator {
     quant_code_size_ = code_size;
   }
 
-  void quantize_query(const void *query_rotated) {
+  int quantize_query(const void *query_rotated) {
+    if (!quantizer_ || !query_rotated) return IndexError_InvalidArgument;
     cosine_pq_ = cosine_metric_
                      ? dynamic_cast<const turbo::PqInt8Quantizer *>(quantizer_)
                      : nullptr;
     quant_query_scratch_.resize(quantizer_->quantized_query_vector_length() *
                                 (cosine_pq_ && !inverse_norms_ ? 2 : 1));
-    if (!cosine_pq_ ||
-        !cosine_pq_->quantize_cosine_query(
+    if (cosine_pq_ &&
+        cosine_pq_->quantize_cosine_query(
             query_rotated, quant_query_scratch_.data(), !inverse_norms_)) {
-      cosine_pq_ = nullptr;
-      quantizer_->quantize_query(query_rotated, quant_query_scratch_.data());
+      return 0;
     }
-    if (!cosine_pq_)
-      quant_dist_impl_ =
-          quantizer_->distance(quant_query_scratch_.data(), IndexQueryMeta());
+    cosine_pq_ = nullptr;
+    quantizer_->quantize_query(query_rotated, quant_query_scratch_.data());
+    quant_dist_impl_ = quantizer_->distance(quant_query_scratch_.data(),
+                                            quantizer_->quantized_query_meta());
+    return quant_dist_impl_.valid() ? 0 : IndexError_Unsupported;
   }
 
   void quantized_dist(const diskann_id_t *ids, uint32_t n, float *dists) {

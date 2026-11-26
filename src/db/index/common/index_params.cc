@@ -82,6 +82,15 @@ Status VectorIndexParams::validate() const {
   if (auto s = quantizer_param_.validate(); !s.ok()) {
     return s;
   }
+  if (quantize_type_ == QuantizeType::RABITQ &&
+      (type_ == IndexType::IVF || type_ == IndexType::HNSW ||
+       type_ == IndexType::DISKANN) &&
+      !core_interface::IsValidRabitqClusterCount(
+          quantizer_param_.num_clusters())) {
+    return Status::InvalidArgument(
+        "RABITQ num_clusters must be in [1, 65536]; got ",
+        quantizer_param_.num_clusters());
+  }
   const auto storage_type = flat_data_type();
   if (storage_type != DataType::UNDEFINED &&
       storage_type != DataType::VECTOR_FP32 &&
@@ -134,6 +143,17 @@ Status VectorIndexParams::validate() const {
           MetricTypeCodeBook::AsString(metric_type_));
     }
   }
+  if (quantize_type_ == QuantizeType::RABITQ &&
+      (type_ == IndexType::HNSW || type_ == IndexType::DISKANN)) {
+    // Only dedicated RaBitQ indexes normalize zero to the default bit width.
+    if (quantizer_param_.total_bits() < 1 ||
+        quantizer_param_.total_bits() > 9) {
+      return Status::InvalidArgument(
+          "RABITQ total_bits must be in [1, 9]; got ",
+          quantizer_param_.total_bits());
+    }
+    return validate_rabitq_params(metric_type_, quantizer_param_.total_bits());
+  }
   return Status::OK();
 }
 
@@ -165,9 +185,16 @@ Status IVFIndexParams::validate() const {
     return s;
   }
   if (quantize_type_ == QuantizeType::RABITQ) {
-    return Status::InvalidArgument(
-        "IVF index does not support RABITQ quantization; use the dedicated "
-        "IVF_RABITQ index instead");
+    if (n_list_ <= 0 || n_iters_ <= 0 || quantizer_param_.total_bits() < 1 ||
+        quantizer_param_.total_bits() > 9 ||
+        quantizer_param_.sample_count() < 0 || use_soar_ ||
+        quantizer_param_.enable_rotate()) {
+      return Status::InvalidArgument(
+          "Invalid IVF RABITQ parameters: n_list/n_iters must be positive, "
+          "total_bits in [1, 9], sample_count >= 0; SOAR and "
+          "enable_rotate are unsupported");
+    }
+    return validate_rabitq_params(metric_type_, quantizer_param_.total_bits());
   }
   return Status::OK();
 }

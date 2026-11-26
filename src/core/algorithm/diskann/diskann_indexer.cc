@@ -1319,7 +1319,8 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
   if (!cosine_inverse_norms_.empty()) norms = cosine_inverse_norms_.data();
 #endif
   dc.bind_quantizer(quantizer_.get(), quant_codes_, quant_code_size_, norms);
-  dc.quantize_query(ctx->query_rotated());
+  if (const int ret = dc.quantize_query(ctx->query_rotated()); ret != 0)
+    return ret;
 
   ailego::ElapsedTime query_timer;
   ailego::ElapsedTime io_timer;
@@ -1614,7 +1615,8 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) {
                                    max_node_size_, DiskAnnUtil::kSectorSize);
 
     dc.bind_quantizer(quantizer_.get(), quant_codes_, quant_code_size_);
-    dc.quantize_query(ctx->query_rotated());
+    if (const int ret = dc.quantize_query(ctx->query_rotated()); ret != 0)
+      return ret;
 
     uint32_t num_ios = 0;
 

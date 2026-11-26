@@ -91,6 +91,9 @@ inline constexpr uint32_t kDefaultOpqNumIterations = 5;
 inline constexpr uint32_t kDefaultOpqPqNumIterations = 4;
 
 // RaBitQ.
+inline constexpr bool IsValidRabitqClusterCount(int64_t count) {
+  return count >= 1 && count <= 65536;
+}
 inline constexpr uint32_t kDefaultRabitqTotalBits = 7;
 inline constexpr uint32_t kDefaultRabitqSampleCount = 0;
 

@@ -69,6 +69,15 @@ def test_legacy_quantizer_and_ivf_pickle():
         assert param.quantizer_param.enable_rotate == (len(state) == 6)
         assert param.quantizer_param.num_bits == 8
 
+    # Upstream PQ pickles nested a six-field quantizer in a seven-field IVF.
+    qp = zvec.QuantizerParam.__new__(zvec.QuantizerParam)
+    qp.__setstate__((True, 16, 4, True, 9, 2))
+    param = zvec.IVFIndexParam.__new__(zvec.IVFIndexParam)
+    param.__setstate__(
+        (zvec.MetricType.L2, 4, 3, False, zvec.QuantizeType.PQ, True, qp)
+    )
+    assert param.quantizer_param == zvec.QuantizerParam(True, 16, 4, True, 9, 2)
+
 
 @pytest.mark.parametrize(
     "kind,bits,fast_scan",
@@ -328,6 +337,29 @@ def test_hnsw_pq_rejects_invalid_configuration(tmp_path, kwargs, error):
     with pytest.raises(ValueError, match=re.escape(error)):
         coll = zvec.create_and_open(str(tmp_path / "index"), schema)
         coll.close()
+
+
+def test_quantizer_pickle_rejects_unreleased_five_field_state():
+    qp = zvec.QuantizerParam.__new__(zvec.QuantizerParam)
+    with pytest.raises(RuntimeError, match="Invalid state for QuantizerParam"):
+        qp.__setstate__((False, 3, 4, 128, 6))
+
+
+def test_legacy_pq_quantizer_pickle_round_trip():
+    qp = zvec.QuantizerParam.__new__(zvec.QuantizerParam)
+    qp.__setstate__((True, 4, 4, True, 2, 3))
+    assert qp == zvec.QuantizerParam(
+        enable_rotate=True,
+        num_chunk=4,
+        num_bits=4,
+        fast_scan=True,
+        opq_iter=2,
+        opq_pq_iter=3,
+    )
+    assert pickle.loads(pickle.dumps(qp)) == qp
+    for kind in ("ivf", "hnsw"):
+        param = index_param(kind, quantizer_param=qp)
+        assert pickle.loads(pickle.dumps(param)).quantizer_param == qp
 
 
 def test_quantizer_validates_unused_configuration(tmp_path):

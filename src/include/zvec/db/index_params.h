@@ -128,6 +128,7 @@ class ZVEC_API InvertIndexParams : public IndexParams {
  * Quantizer parameters for vector indexes.
  * enable_rotate enables random rotation for INT4/INT8 or learned OPQ for PQ.
  * PQ fields take effect only when quantize_type is PQ.
+ * Also configures Turbo RaBitQ training for standard HNSW, IVF, and DiskANN.
  */
 class ZVEC_API QuantizerParam {
  public:
@@ -144,6 +145,41 @@ class ZVEC_API QuantizerParam {
         fast_scan_(fast_scan),
         opq_iter_(opq_iter),
         opq_pq_iter_(opq_pq_iter) {}
+  static QuantizerParam ForRabitq(bool enable_rotate, int total_bits,
+                                  int num_clusters, int sample_count,
+                                  int n_iters = 20) {
+    QuantizerParam q(enable_rotate);
+    q.total_bits_ = total_bits;
+    q.num_clusters_ = num_clusters;
+    q.sample_count_ = sample_count;
+    q.n_iters_ = n_iters;
+    return q;
+  }
+
+  int total_bits() const {
+    return total_bits_;
+  }
+  void set_total_bits(int value) {
+    total_bits_ = value;
+  }
+  int num_clusters() const {
+    return num_clusters_;
+  }
+  void set_num_clusters(int value) {
+    num_clusters_ = value;
+  }
+  int sample_count() const {
+    return sample_count_;
+  }
+  void set_sample_count(int value) {
+    sample_count_ = value;
+  }
+  int n_iters() const {
+    return n_iters_;
+  }
+  void set_n_iters(int value) {
+    n_iters_ = value;
+  }
 
   Status validate() const;
 
@@ -192,6 +228,9 @@ class ZVEC_API QuantizerParam {
 
   bool operator==(const QuantizerParam &other) const {
     return enable_rotate_ == other.enable_rotate_ &&
+           total_bits_ == other.total_bits_ &&
+           num_clusters_ == other.num_clusters_ &&
+           sample_count_ == other.sample_count_ && n_iters_ == other.n_iters_ &&
            num_chunk_ == other.num_chunk_ && num_bits_ == other.num_bits_ &&
            fast_scan_ == other.fast_scan_ && opq_iter_ == other.opq_iter_ &&
            opq_pq_iter_ == other.opq_pq_iter_;
@@ -209,6 +248,12 @@ class ZVEC_API QuantizerParam {
   bool fast_scan_{core_interface::kDefaultPqFastScan};
   uint32_t opq_iter_{core_interface::kDefaultOpqNumIterations};
   uint32_t opq_pq_iter_{core_interface::kDefaultOpqPqNumIterations};
+  // Canonical RaBitQ settings for standard HNSW/IVF/DiskANN indexes.
+  // IVF partition training is configured separately by n_list/n_iters.
+  int total_bits_{7};
+  int num_clusters_{16};
+  int sample_count_{0};
+  int n_iters_{20};
 };
 
 /*
@@ -303,10 +348,7 @@ class ZVEC_API HnswIndexParams : public VectorIndexParams {
 
  public:
   Ptr clone() const override {
-    return std::make_shared<HnswIndexParams>(
-        metric_type_, m_, ef_construction_, quantize_type_,
-        use_contiguous_memory_, quantizer_param_, use_flat_contiguous_memory_,
-        flat_data_type_);
+    return std::make_shared<HnswIndexParams>(*this);
   }
 
   std::string to_string() const override {
@@ -379,7 +421,16 @@ class ZVEC_API HnswIndexParams : public VectorIndexParams {
     return flat_data_type_;
   }
 
+  // Build-only provider: shared while training/building, never persisted.
+  const core::IndexProvider::Pointer &raw_vector_provider() const {
+    return raw_vector_provider_;
+  }
+  void set_raw_vector_provider(core::IndexProvider::Pointer provider) {
+    raw_vector_provider_ = std::move(provider);
+  }
+
  protected:
+  core::IndexProvider::Pointer raw_vector_provider_;
   int m_;
   int ef_construction_;
   // When enabled, HNSW streamer allocates a single contiguous memory arena
@@ -646,6 +697,11 @@ inline FlatIndexParams MakeDefaultVectorIndexParams(
 inline FlatIndexParams MakeDefaultQuantVectorIndexParams(
     MetricType metric_type, QuantizeType quantize_type,
     QuantizerParam quantizer_param = {}) {
+  // RaBitQ needs dataset training during optimize. Its temporary Flat stores
+  // raw vectors, including when reopening an existing unindexed block.
+  if (quantize_type == QuantizeType::RABITQ) {
+    return MakeDefaultVectorIndexParams(metric_type);
+  }
   return FlatIndexParams(metric_type, quantize_type, quantizer_param);
 }
 

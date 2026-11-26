@@ -56,6 +56,11 @@ class IndexStreamer : public IndexRunner {
     return IndexError_NotImplemented;
   }
 
+  //! Original build vectors keyed by destination ID, when supplied.
+  virtual IndexProvider::Pointer original_provider() const {
+    return nullptr;
+  }
+
   //! Open a index from storage
   virtual int open(IndexStorage::Pointer stg) = 0;
 

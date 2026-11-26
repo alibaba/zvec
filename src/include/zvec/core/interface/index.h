@@ -178,6 +178,10 @@ class ZVEC_CORE_API Index {
   }
 
  protected:
+  virtual bool supports_group_by() const {
+    return !is_group_by_unsupported_index(param_.index_type);
+  }
+
   int _sparse_fetch(const uint32_t doc_id,
                     VectorDataBuffer *vector_data_buffer);
   virtual int _dense_fetch(const uint32_t doc_id,
@@ -252,6 +256,8 @@ class ZVEC_CORE_API Index {
   virtual int prepare_streamer_open(const StorageOptions & /*options*/) {
     return 0;
   }
+  virtual int open_streamer(const StorageOptions &options);
+  int finish_streamer_open(const StorageOptions &options);
 
  protected:
   bool init_context();
@@ -356,6 +362,10 @@ class ZVEC_CORE_API IVFIndex : public Index {
   IVFIndex() = default;
 
  protected:
+  bool supports_group_by() const override {
+    return use_rabitq_;
+  }
+
   int create_and_init_converter_reformer(
       const QuantizerParam &param, const BaseIndexParam &index_param) override;
   int create_and_init_streamer(const BaseIndexParam &param) override;
@@ -384,8 +394,10 @@ class ZVEC_CORE_API IVFIndex : public Index {
   int generate_holder();
 
  private:
-  int load_streamer();
-  int restore_legacy_pipeline();
+  int load_streamer(const core::IndexStorage::Pointer &storage);
+  // Dedicated backend is used only to read existing legacy files.
+  bool legacy_rabitq_{false};
+  bool use_rabitq_{false};
 
   std::shared_ptr<zvec::turbo::Quantizer> ivf_quantizer_{};
 
@@ -440,7 +452,7 @@ class ZVEC_CORE_API HNSWIndex : public Index {
       const BaseIndexQueryParam::Pointer &search_param) override;
 
  private:
-  int prepare_streamer_open(const StorageOptions &options) override;
+  int open_streamer(const StorageOptions &options) override;
 
   HNSWIndexParam param_{};
   bool use_legacy_pipeline_{false};

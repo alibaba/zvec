@@ -1448,9 +1448,17 @@ class QuantizerParam:
         fast_scan: bool = False,
         opq_iter: int = 5,
         opq_pq_iter: int = 4,
+        *,
+        total_bits: int = 7,
+        num_clusters: int = 16,
+        sample_count: int = 0,
+        n_iters: int = 20,
     ) -> None:
         """
         Constructs a QuantizerParam instance.
+
+        PQ parameters accept positional arguments. RaBitQ training parameters
+        (total_bits, num_clusters, sample_count, n_iters) are keyword-only.
 
         Args:
             num_chunk (int): Positive number of PQ subquantizers; default 8.
@@ -1466,6 +1474,14 @@ class QuantizerParam:
                 before INT8/INT4 quantization, or learned OPQ for PQ. Defaults to False.
         """
 
+    @property
+    def total_bits(self) -> int: ...
+    @property
+    def num_clusters(self) -> int: ...
+    @property
+    def sample_count(self) -> int: ...
+    @property
+    def n_iters(self) -> int: ...
     def __repr__(self) -> str: ...
     def __setstate__(self, arg0: tuple) -> None: ...
     def __eq__(self, arg0: typing.Any) -> bool: ...
