@@ -23,8 +23,9 @@ namespace core {
 // A fixed per-reader pool for portable pread batches. No per-request tasks or
 // threads are allocated. Concurrent callers share the same workers; queued
 // batch assignments rotate. Workers claim request indices atomically, avoiding
-// a contended queue lock around every pread. run() drains the batch before returning/throwing,
-// so workers never retain caller buffers. Configure/close requires no callers.
+// a contended queue lock around every pread. run() drains the batch before
+// returning/throwing, so workers never retain caller buffers. Configure/close
+// requires no callers.
 class DiskAnnReadExecutor {
  public:
   explicit DiskAnnReadExecutor(size_t workers) : worker_count_(workers) {
@@ -114,7 +115,8 @@ class DiskAnnReadExecutor {
       lock.unlock();
       std::exception_ptr error;
       for (;;) {
-        const size_t index = batch->next.fetch_add(1, std::memory_order_relaxed);
+        const size_t index =
+            batch->next.fetch_add(1, std::memory_order_relaxed);
         if (index >= batch->count) break;
         try {
           batch->callback(index);

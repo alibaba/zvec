@@ -25,7 +25,7 @@ namespace turbo {
 
 using namespace zvec::core;
 
-class Fp32Quantizer : public Quantizer {
+class Fp32Quantizer : public Quantizer, public ManyDistanceProvider {
  public:
   Fp32Quantizer() : Quantizer(QuantizeType::kFp32) {}
 
@@ -117,6 +117,10 @@ class Fp32Quantizer : public Quantizer {
   DistanceImpl distance(const void *query,
                         const core::IndexQueryMeta &qmeta) const override;
 
+  ManyToManyDistanceFunc many_distance() const override {
+    return dp_query_many_func_;
+  }
+
   void normalize_score(float *score) const override {
     *score = -(*score);
   }
@@ -148,6 +152,7 @@ class Fp32Quantizer : public Quantizer {
   //! Cached distance dispatch (bound in init()).
   DistanceFunc dp_query_func_{};
   BatchDistanceFunc dp_query_batch_func_{};
+  ManyToManyDistanceFunc dp_query_many_func_{};
 };
 
 

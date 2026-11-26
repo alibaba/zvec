@@ -14,6 +14,7 @@
 
 #include "flat_streamer_entity.h"
 #include <cstdint>
+#include <numeric>
 #include <zvec/core/framework/index_error.h>
 #include "utility/legacy_read_buffer.h"
 #include "flat_utility.h"
@@ -141,7 +142,9 @@ int FlatContiguousStreamerEntity::evaluate_distances(
     }
   } else {
     for (size_t position = 0; position < storage.vector_count; ++position) {
-      const uint64_t vector_key = storage.position_to_key[position];
+      const uint64_t vector_key = storage.position_to_key.empty()
+                                      ? position
+                                      : storage.position_to_key[position];
       // Cache reconstruction omits deleted rows. Reject invalid keys before
       // invoking the user filter and count each remaining rejected row once.
       if (vector_key == kInvalidKey ||
@@ -883,25 +886,16 @@ int FlatContiguousStreamerEntity::build_contiguous_memory() {
       std::shared_ptr<char>(raw, ContiguousDeleter{allocation_size});
   storage->vector_stride = stride;
   storage->vector_count = count;
-  if (use_key_info_map()) {
-    storage->key_to_position.reserve(count);
-  }
-  storage->position_to_key.assign(count, static_cast<uint64_t>(kInvalidKey));
 
   for (uint32_t id = 0; id < count; ++id) {
     IndexStorage::MemoryBlock block;
     uint64_t vector_key = kInvalidKey;
-    int ret = 0;
-    if (use_key_info_map()) {
-      vector_key = key(id);
-      ret = FlatStreamerEntity::get_vector_by_key(vector_key, block);
-      if (ret == 0) {
-        storage->key_to_position[vector_key] = id;
-      }
-    } else {
-      ret = get_vector_by_position(id, block);
-      if (ret == 0) {
-        ret = get_key_by_position(id, &vector_key);
+    int ret = get_key(id, &vector_key);
+    if (ret == 0) {
+      if (use_key_info_map()) {
+        ret = FlatStreamerEntity::get_vector_by_key(vector_key, block);
+      } else {
+        ret = get_vector_by_position(id, block);
       }
     }
     if (ret != 0 || block.data() == nullptr) {
@@ -910,7 +904,22 @@ int FlatContiguousStreamerEntity::build_contiguous_memory() {
     }
     std::memcpy(raw + static_cast<size_t>(id) * stride, block.data(),
                 vector_size);
-    storage->position_to_key[id] = vector_key;
+    // An empty table encodes an identity mapping, verified while loading.
+    // Materialize the prefix only if a stored key breaks that invariant.
+    if (vector_key != id && storage->position_to_key.empty()) {
+      storage->position_to_key.resize(count);
+      std::iota(storage->position_to_key.begin(),
+                storage->position_to_key.begin() + id, uint64_t{0});
+    }
+    if (!storage->position_to_key.empty()) {
+      storage->position_to_key[id] = vector_key;
+    }
+  }
+  if (use_key_info_map() && !storage->position_to_key.empty()) {
+    storage->key_to_position.reserve(count);
+    for (uint32_t id = 0; id < count; ++id) {
+      storage->key_to_position[storage->position_to_key[id]] = id;
+    }
   }
 
   std::atomic_store_explicit(
@@ -953,6 +962,9 @@ int FlatContiguousStreamerEntity::add_vector_with_id(uint32_t id,
 
 const void *FlatContiguousStreamerEntity::get_vector_ptr_by_key(
     const ContiguousStorage &storage, uint64_t key) const {
+  if (storage.position_to_key.empty()) {
+    return key < storage.vector_count ? get_vector_ptr(storage, key) : nullptr;
+  }
   size_t position = key;
   if (use_key_info_map()) {
     auto it = storage.key_to_position.find(key);

@@ -113,7 +113,7 @@ namespace zvec::turbo::avx2 {
     }                                                                        \
   }
 
-static inline float HorizontalAdd_FP32_V256(__m256 v) {
+static inline float horizontal_add_fp32_v256(__m256 v) {
   __m256 x1 = _mm256_hadd_ps(v, v);
   __m256 x2 = _mm256_hadd_ps(x1, x1);
   __m128 x3 = _mm256_extractf128_ps(x2, 1);
@@ -177,7 +177,7 @@ static inline float HorizontalAdd_FP32_V256(__m256 v) {
     }                                                                       \
   }                                                                         \
   MATRIX_FP16_MASK_AVX(m, q, (qe - q), _MASK, ymm_sum, ACCUM_FP32_STEP_AVX) \
-  *out = _NORM(HorizontalAdd_FP32_V256(ymm_sum_0_0));
+  *out = _NORM(horizontal_add_fp32_v256(ymm_sum_0_0));
 
 // One-to-many inner product kernel: the query block is converted from FP16
 // to FP32 once per iteration and reused across all `dp_batch` vectors.
@@ -239,7 +239,7 @@ inner_product_fp16_batch_avx2_impl(
 
   float res[dp_batch];
   for (size_t i = 0; i < dp_batch; ++i) {
-    res[i] = HorizontalAdd_FP32_V256(accs[i]);
+    res[i] = horizontal_add_fp32_v256(accs[i]);
   }
 
   for (; dim < dimensionality; ++dim) {

@@ -91,8 +91,8 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   // It does not change the regular metric, codes, or serialization format.
   bool quantize_cosine_query(const void *input, void *output,
                              bool include_norms = true) const;
-  bool cosine_inverse_norms(const uint8_t *codes, size_t count,
-                            size_t stride, float *output) const;
+  bool cosine_inverse_norms(const uint8_t *codes, size_t count, size_t stride,
+                            float *output) const;
   void cosine_distance_batch(const void *const *codes, const void *query_lut,
                              size_t count, float *distances) const;
 

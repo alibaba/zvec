@@ -93,7 +93,7 @@ int VamanaIndex::_prepare_for_search(
 
   if (ailego_unlikely(!vamana_search_param)) {
     LOG_ERROR("Invalid search param type, expected VamanaQueryParam");
-    return core::IndexError_Runtime;
+    return core::IndexError_InvalidArgument;
   }
 
   if (search_param->group_by_param && search_param->group_by_param->group_by) {
@@ -111,24 +111,23 @@ int VamanaIndex::_prepare_for_search(
   context->set_topk(vamana_search_param->topk);
   context->set_fetch_vector(vamana_search_param->fetch_vector);
   if (vamana_search_param->filter && vamana_search_param->filter->is_valid()) {
-    context->set_filter(std::move(*vamana_search_param->filter));
+    context->set_filter(*vamana_search_param->filter);
   } else {
     context->reset_filter();
   }
   if (vamana_search_param->radius > 0.0f) {
     context->set_threshold(vamana_search_param->radius);
   }
-  ailego::Params params;
   const uint32_t real_search_ef =
       std::max(1u, std::min(2048u, vamana_search_param->ef_search));
-  params.set(core::PARAM_VAMANA_STREAMER_EF, real_search_ef);
   const uint32_t real_search_po =
       std::min(256u, vamana_search_param->prefetch_offset);
-  params.set(core::PARAM_VAMANA_STREAMER_PO, real_search_po);
   const uint32_t real_search_pl =
       std::min(256u, vamana_search_param->prefetch_lines);
-  params.set(core::PARAM_VAMANA_STREAMER_PL, real_search_pl);
-  context->update(params);
+  auto *vamana_context = dynamic_cast<core::VamanaContext *>(context.get());
+  if (!vamana_context) return core::IndexError_Cast;
+  vamana_context->update_query_params(real_search_ef, real_search_po,
+                                      real_search_pl);
   return 0;
 }
 

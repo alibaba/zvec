@@ -273,7 +273,8 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
     cache_bytes = std::min(cache_bytes, vector_segment_bytes);
     auto *file_reader = static_cast<LinuxAlignedFileReader *>(reader_.get());
     // Charge an optional FP32 norm table to the existing read-cache budget.
-    // Keep at least half for node payloads; large corpora fall back to fused ADC.
+    // Keep at least half for node payloads; large corpora fall back to fused
+    // ADC.
     size_t norm_bytes = 0;
     auto *pq = dynamic_cast<const turbo::PqInt8Quantizer *>(quantizer_.get());
     if (pq && meta_.metric_name() == "Cosine" && entity.doc_cnt() > 0 &&
@@ -281,7 +282,8 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
       try {
         cosine_inverse_norms_.resize(entity.doc_cnt());
         if (pq->cosine_inverse_norms(quant_codes_, entity.doc_cnt(),
-                                     entity.pq_chunk_num(), cosine_inverse_norms_.data())) {
+                                     entity.pq_chunk_num(),
+                                     cosine_inverse_norms_.data())) {
           norm_bytes = cosine_inverse_norms_.capacity() * sizeof(float);
         } else {
           std::vector<float>().swap(cosine_inverse_norms_);
@@ -291,7 +293,8 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
         return IndexError_NoMemory;
       }
     }
-    ret = file_reader->configure_read_cache(cache_bytes - norm_bytes, max_node_size_);
+    ret = file_reader->configure_read_cache(cache_bytes - norm_bytes,
+                                            max_node_size_);
     if (ret != 0) return ret;
     node_record_reads_ = true;
     size_t workers = 0;
@@ -462,10 +465,9 @@ std::vector<bool> DiskAnnIndexer::read_nodes(
   for (uint32_t i = 0; i < read_reqs.size(); i++) {
     // node_read may point req.buf at the record inside its sector. Compute
     // the offset from the sector base so packed nodes are not offset twice.
-    uint8_t *node_buf =
-        DiskAnnUtil::offset_to_node(node_per_sector_, max_node_size_,
-                                    buf + i * sector_num * DiskAnnUtil::kSectorSize,
-                                    node_ids[i]);
+    uint8_t *node_buf = DiskAnnUtil::offset_to_node(
+        node_per_sector_, max_node_size_,
+        buf + i * sector_num * DiskAnnUtil::kSectorSize, node_ids[i]);
 
     if (coord_buffers[i] != nullptr) {
       void *node_coords = node_buf;
@@ -1357,7 +1359,8 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
   // Preserve the original beam for narrow pools and other storage paths.
   uint32_t beam_divisor = 5;
 #if defined(__APPLE__) && TARGET_OS_OSX
-  if (node_record_reads_ && cached_reader && cached_reader->read_workers() >= 24)
+  if (node_record_reads_ && cached_reader &&
+      cached_reader->read_workers() >= 24)
     beam_divisor = 3;
 #endif
   uint32_t effective_beam_width =

@@ -35,6 +35,7 @@
 #include "algorithm/flat/flat_streamer_context.h"
 #include "algorithm/flat/flat_utility.h"
 #include "tests/test_util.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 #if defined(__GNUC__) || defined(__GNUG__)
 #pragma GCC diagnostic push
@@ -492,6 +493,105 @@ TEST_F(FlatStreamerTest, CandidateSearchKeepsMetricBatchAndReusesScratch) {
       ASSERT_EQ(0, streamer->close());
     }
   }
+}
+
+TEST_F(FlatStreamerTest, KeyLookupPreservesStatusAfterReopen) {
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(64UL * 1024 * 1024);
+  for (const char *backend : {"MMapFileStorage", "BufferStorage"}) {
+    for (bool use_id_map : {false, true}) {
+      SCOPED_TRACE(backend);
+      SCOPED_TRACE(use_id_map);
+      auto storage = IndexFactory::CreateStorage(backend);
+      ASSERT_NE(nullptr, storage);
+      ASSERT_EQ(0, storage->init(Params()));
+      ASSERT_EQ(
+          0, storage->open(dir_ + backend + std::to_string(use_id_map), true));
+
+      IndexStreamer::Stats stats;
+      FlatStreamerEntity entity(stats);
+      *entity.mutable_meta() = *index_meta_ptr_;
+      entity.set_use_key_info_map(use_id_map);
+      entity.set_linear_list_count(1);
+      entity.set_block_vector_count(4);
+      ASSERT_EQ(0, entity.open(storage, *index_meta_ptr_));
+      std::vector<float> vector(dim, 2.0f);
+      if (use_id_map) {
+        ASSERT_EQ(0, entity.add(42, vector.data(), dim * sizeof(float)));
+      } else {
+        ASSERT_EQ(0, entity.add_vector_with_id(2, vector.data(),
+                                               dim * sizeof(float)));
+      }
+      ASSERT_EQ(0, entity.flush(0));
+      ASSERT_EQ(0, entity.close());
+      ASSERT_EQ(0, entity.open(storage, *index_meta_ptr_));
+
+      const uint32_t id = use_id_map ? 0 : 2;
+      const uint64_t expected_key = use_id_map ? 42 : 2;
+      uint64_t key = kInvalidKey;
+      ASSERT_EQ(0, entity.get_key(id, &key));
+      EXPECT_EQ(expected_key, key);
+      EXPECT_EQ(expected_key, entity.key(id));
+      EXPECT_NE(0, entity.get_key(id, nullptr));
+      EXPECT_NE(0, entity.get_key(id + 1, &key));
+      EXPECT_EQ(kInvalidKey, entity.key(id + 1));
+      if (!use_id_map) {
+        ASSERT_EQ(0, entity.get_key(0, &key));
+        EXPECT_EQ(kInvalidKey, key);
+      }
+      ASSERT_EQ(0, entity.close());
+      ASSERT_EQ(0, storage->close());
+    }
+  }
+}
+
+TEST_F(FlatStreamerTest, ContiguousBuildDistinguishesKeyReadErrorsFromHoles) {
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "key_read_error", true));
+
+  IndexStreamer::Stats stats;
+  FlatContiguousStreamerEntity entity(stats);
+  *entity.mutable_meta() = *index_meta_ptr_;
+  entity.set_use_key_info_map(false);
+  entity.set_linear_list_count(1);
+  entity.set_block_vector_count(4);
+  ASSERT_EQ(0, entity.open(storage, *index_meta_ptr_));
+  std::vector<float> vector(dim, 2.0f);
+  ASSERT_EQ(0,
+            entity.add_vector_with_id(2, vector.data(), dim * sizeof(float)));
+  ASSERT_EQ(0, entity.flush(0));
+  ASSERT_EQ(0, entity.close());
+  ASSERT_EQ(0, entity.open(storage, *index_meta_ptr_));
+  uint64_t key = 0;
+  ASSERT_EQ(0, entity.get_key(0, &key));
+  ASSERT_EQ(kInvalidKey, key);
+  ASSERT_EQ(0, entity.build_contiguous_memory());
+  ASSERT_TRUE(entity.is_contiguous());
+
+  auto segment =
+      storage->get(StringHelper::Concat(FLAT_SEGMENT_FEATURES_SEG_ID, 1));
+  ASSERT_NE(nullptr, segment);
+  const size_t original_size = segment->data_size();
+  const size_t key_offset = entity.block_vector_count() * dim * sizeof(float);
+  // Truncate only the keys: vectors remain readable, while the first key
+  // returns either no bytes or a short read. Neither is a legitimate hole.
+  for (size_t bytes : {size_t{0}, sizeof(uint64_t) - 1}) {
+    SCOPED_TRACE(bytes);
+    ASSERT_EQ(key_offset + bytes, segment->resize(key_offset + bytes));
+    IndexStorage::MemoryBlock block;
+    ASSERT_EQ(0, entity.FlatStreamerEntity::get_vector_by_key(0, block));
+    ASSERT_NE(nullptr, block.data());
+    EXPECT_NE(0, entity.get_key(0, &key));
+    EXPECT_EQ(kInvalidKey, entity.key(0));
+    EXPECT_EQ(IndexError_ReadData, entity.build_contiguous_memory());
+    EXPECT_FALSE(entity.is_contiguous());
+  }
+  ASSERT_EQ(original_size, segment->resize(original_size));
+  EXPECT_EQ(0, entity.build_contiguous_memory());
+  EXPECT_TRUE(entity.is_contiguous());
+  ASSERT_EQ(0, entity.close());
+  ASSERT_EQ(0, storage->close());
 }
 
 TEST_F(FlatStreamerTest, TestContiguousCandidateSearchAndInsertFallback) {
@@ -1365,7 +1465,7 @@ TEST_F(FlatStreamerTest, TestConcurrentAddAndSearch) {
 }
 
 TEST_F(FlatStreamerTest, TestConcurrentSegmentGrowthAndFetch) {
-  MemoryLimitPool::get_instance().init(64 * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(64 * 1024UL * 1024UL);
   for (const char *storage_name : {"MMapFileStorage", "BufferStorage"}) {
     SCOPED_TRACE(storage_name);
     auto storage = IndexFactory::CreateStorage(storage_name);

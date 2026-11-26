@@ -14,6 +14,7 @@
 
 #include "sse2/record_quantized_int8/distance.h"
 #include <cstdint>
+#include "common/record_metadata.h"
 #include "sse2/simd.h"
 #if ZVEC_TURBO_SSE2
 #include <array>
@@ -32,6 +33,14 @@ inline void widen_int8(__m128i bytes, __m128i *low, __m128i *high) {
 }
 
 float raw_inner_product(const int8_t *a, const int8_t *b, size_t dim) {
+  // Avoid partial-load, widening, and reduction setup for tiny vectors.
+  if (dim < 8) {
+    int32_t sum = 0;
+    for (size_t i = 0; i < dim; ++i) {
+      sum += static_cast<int32_t>(a[i]) * static_cast<int32_t>(b[i]);
+    }
+    return static_cast<float>(sum);
+  }
   const __m128i ones = _mm_set1_epi16(1);
   __m128i accumulator = _mm_setzero_si128();
   size_t i = 0;
@@ -47,11 +56,30 @@ float raw_inner_product(const int8_t *a, const int8_t *b, size_t dim) {
         accumulator, _mm_madd_epi16(_mm_mullo_epi16(lhs_high, rhs_high), ones));
   }
 
-  int64_t sum = internal::horizontal_sum_i32(accumulator);
-  for (; i < dim; ++i) {
-    sum += static_cast<int32_t>(a[i]) * static_cast<int32_t>(b[i]);
+  if (i < dim) {
+    // A few scalar products are cheaper than widening another SIMD block.
+    if (dim - i < 4) {
+      int32_t tail = static_cast<int32_t>(a[i]) * static_cast<int32_t>(b[i]);
+      if (dim - i >= 2) {
+        tail += static_cast<int32_t>(a[i + 1]) * b[i + 1];
+      }
+      if (dim - i == 3) {
+        tail += static_cast<int32_t>(a[i + 2]) * b[i + 2];
+      }
+      return static_cast<float>(internal::horizontal_sum_i32(accumulator) +
+                                tail);
+    }
+    __m128i lhs_low, lhs_high, rhs_low, rhs_high;
+    widen_int8(internal::load_partial_int8(a + i, dim - i), &lhs_low,
+               &lhs_high);
+    widen_int8(internal::load_partial_int8(b + i, dim - i), &rhs_low,
+               &rhs_high);
+    accumulator = _mm_add_epi32(
+        accumulator, _mm_madd_epi16(_mm_mullo_epi16(lhs_low, rhs_low), ones));
+    accumulator = _mm_add_epi32(
+        accumulator, _mm_madd_epi16(_mm_mullo_epi16(lhs_high, rhs_high), ones));
   }
-  return static_cast<float>(sum);
+  return static_cast<float>(internal::horizontal_sum_i32(accumulator));
 }
 
 template <size_t kBatch>
@@ -89,13 +117,28 @@ void raw_inner_product_batch_impl(const int8_t *query,
     }
   }
 
-  for (size_t i = 0; i < kBatch; ++i) {
-    const auto *record = static_cast<const int8_t *>(records[i]);
-    int64_t sum = internal::horizontal_sum_i32(accumulators[i]);
-    for (size_t j = d; j < dim; ++j) {
-      sum += static_cast<int32_t>(record[j]) * static_cast<int32_t>(query[j]);
+  if (d < dim) {
+    __m128i query_low, query_high;
+    widen_int8(internal::load_partial_int8(query + d, dim - d), &query_low,
+               &query_high);
+    for (size_t i = 0; i < kBatch; ++i) {
+      if (prefetch[i]) ailego_prefetch(prefetch[i] + d);
+      const auto *record = static_cast<const int8_t *>(records[i]);
+      __m128i record_low, record_high;
+      widen_int8(internal::load_partial_int8(record + d, dim - d), &record_low,
+                 &record_high);
+      accumulators[i] = _mm_add_epi32(
+          accumulators[i],
+          _mm_madd_epi16(_mm_mullo_epi16(record_low, query_low), ones));
+      accumulators[i] = _mm_add_epi32(
+          accumulators[i],
+          _mm_madd_epi16(_mm_mullo_epi16(record_high, query_high), ones));
     }
-    results[i] = static_cast<float>(sum);
+  }
+
+  for (size_t i = 0; i < kBatch; ++i) {
+    results[i] =
+        static_cast<float>(internal::horizontal_sum_i32(accumulators[i]));
   }
 }
 
@@ -136,10 +179,8 @@ void inner_product_int8_distance_sse2(const void *a, const void *b, size_t dim,
   const float raw_ip =
       raw_inner_product(static_cast<const int8_t *>(a),
                         static_cast<const int8_t *>(b), original_dim);
-  const auto *a_tail = reinterpret_cast<const float *>(
-      static_cast<const int8_t *>(a) + original_dim);
-  const auto *b_tail = reinterpret_cast<const float *>(
-      static_cast<const int8_t *>(b) + original_dim);
+  const record::Metadata a_tail(static_cast<const int8_t *>(a) + original_dim);
+  const record::Metadata b_tail(static_cast<const int8_t *>(b) + original_dim);
   *distance =
       -(a_tail[0] * b_tail[0] * raw_ip + a_tail[1] * b_tail[0] * b_tail[2] +
         b_tail[1] * a_tail[0] * a_tail[2] +
@@ -165,11 +206,11 @@ void inner_product_int8_batch_distance_sse2(const void *const *vectors,
   const size_t original_dim = dim - kTailBytes;
   raw_inner_product_batch(vectors, static_cast<const int8_t *>(query), n,
                           original_dim, distances);
-  const auto *q_tail = reinterpret_cast<const float *>(
-      static_cast<const int8_t *>(query) + original_dim);
+  const record::Metadata q_tail(static_cast<const int8_t *>(query) +
+                                original_dim);
   for (size_t i = 0; i < n; ++i) {
-    const auto *m_tail = reinterpret_cast<const float *>(
-        static_cast<const int8_t *>(vectors[i]) + original_dim);
+    const record::Metadata m_tail(static_cast<const int8_t *>(vectors[i]) +
+                                  original_dim);
     distances[i] = -(m_tail[0] * q_tail[0] * distances[i] +
                      m_tail[1] * q_tail[0] * q_tail[2] +
                      q_tail[1] * m_tail[0] * m_tail[2] +
@@ -195,10 +236,8 @@ void squared_euclidean_int8_distance_sse2(const void *a, const void *b,
   const float raw_ip =
       raw_inner_product(static_cast<const int8_t *>(a),
                         static_cast<const int8_t *>(b), original_dim);
-  const auto *a_tail = reinterpret_cast<const float *>(
-      static_cast<const int8_t *>(a) + original_dim);
-  const auto *b_tail = reinterpret_cast<const float *>(
-      static_cast<const int8_t *>(b) + original_dim);
+  const record::Metadata a_tail(static_cast<const int8_t *>(a) + original_dim);
+  const record::Metadata b_tail(static_cast<const int8_t *>(b) + original_dim);
   const float sum = b_tail[0] * b_tail[2];
   const float sum2 = b_tail[0] * b_tail[0] * b_tail[3];
   *distance = a_tail[0] * a_tail[0] * a_tail[3] + sum2 -
@@ -227,13 +266,13 @@ void squared_euclidean_int8_batch_distance_sse2(const void *const *vectors,
   const size_t original_dim = dim - kTailBytes;
   raw_inner_product_batch(vectors, static_cast<const int8_t *>(query), n,
                           original_dim, distances);
-  const auto *q_tail = reinterpret_cast<const float *>(
-      static_cast<const int8_t *>(query) + original_dim);
+  const record::Metadata q_tail(static_cast<const int8_t *>(query) +
+                                original_dim);
   const float sum = q_tail[0] * q_tail[2];
   const float sum2 = q_tail[0] * q_tail[0] * q_tail[3];
   for (size_t i = 0; i < n; ++i) {
-    const auto *m_tail = reinterpret_cast<const float *>(
-        static_cast<const int8_t *>(vectors[i]) + original_dim);
+    const record::Metadata m_tail(static_cast<const int8_t *>(vectors[i]) +
+                                  original_dim);
     distances[i] =
         m_tail[0] * m_tail[0] * m_tail[3] + sum2 -
         2.0f * m_tail[0] * q_tail[0] * distances[i] +
@@ -261,10 +300,8 @@ void cosine_int8_distance_sse2(const void *a, const void *b, size_t dim,
   const float raw_ip =
       raw_inner_product(static_cast<const int8_t *>(a),
                         static_cast<const int8_t *>(b), original_dim);
-  const auto *a_tail = reinterpret_cast<const float *>(
-      static_cast<const int8_t *>(a) + original_dim);
-  const auto *b_tail = reinterpret_cast<const float *>(
-      static_cast<const int8_t *>(b) + original_dim);
+  const record::Metadata a_tail(static_cast<const int8_t *>(a) + original_dim);
+  const record::Metadata b_tail(static_cast<const int8_t *>(b) + original_dim);
   *distance =
       -(a_tail[0] * b_tail[0] * raw_ip + a_tail[1] * b_tail[0] * b_tail[2] +
         b_tail[1] * a_tail[0] * a_tail[2] +
@@ -289,11 +326,11 @@ void cosine_int8_batch_distance_sse2(const void *const *vectors,
   const size_t original_dim = dim - kTailBytes;
   raw_inner_product_batch(vectors, static_cast<const int8_t *>(query), n,
                           original_dim, distances);
-  const auto *q_tail = reinterpret_cast<const float *>(
-      static_cast<const int8_t *>(query) + original_dim);
+  const record::Metadata q_tail(static_cast<const int8_t *>(query) +
+                                original_dim);
   for (size_t i = 0; i < n; ++i) {
-    const auto *m_tail = reinterpret_cast<const float *>(
-        static_cast<const int8_t *>(vectors[i]) + original_dim);
+    const record::Metadata m_tail(static_cast<const int8_t *>(vectors[i]) +
+                                  original_dim);
     distances[i] = -(m_tail[0] * q_tail[0] * distances[i] +
                      m_tail[1] * q_tail[0] * q_tail[2] +
                      q_tail[1] * m_tail[0] * m_tail[2] +

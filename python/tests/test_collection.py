@@ -241,7 +241,7 @@ class TestCollectionIndexDDL:
 
         index_param = field_schema.index_param
         assert index_param.type == IndexType.INVERT
-        assert index_param.enable_range_optimization is False
+        assert index_param.enable_range_optimization is True
         assert index_param.enable_extended_wildcard is False
 
     def test_drop_index(self, test_collection: Collection):
@@ -252,7 +252,7 @@ class TestCollectionIndexDDL:
         assert field_schema.name == "name"
         index_param = field_schema.index_param
         assert index_param.type == IndexType.INVERT
-        assert index_param.enable_range_optimization is False
+        assert index_param.enable_range_optimization is True
         assert index_param.enable_extended_wildcard is False
 
         # drop
@@ -275,7 +275,7 @@ class TestCollectionIndexDDL:
 
         index_param = field_schema.index_param
         assert index_param.type == IndexType.INVERT
-        assert index_param.enable_range_optimization is False
+        assert index_param.enable_range_optimization is True
         assert index_param.enable_extended_wildcard is False
 
     def test_drop_index(self, test_collection: Collection):
@@ -286,7 +286,7 @@ class TestCollectionIndexDDL:
         assert field_schema.name == "name"
         index_param = field_schema.index_param
         assert index_param.type == IndexType.INVERT
-        assert index_param.enable_range_optimization is False
+        assert index_param.enable_range_optimization is True
         assert index_param.enable_extended_wildcard is False
 
         # drop

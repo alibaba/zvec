@@ -16,6 +16,10 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 using namespace zvec;
 using namespace zvec::ailego;
 
@@ -65,3 +69,55 @@ TEST(Logger, General) {
   LOG_ERROR("%s", "LOG_ERROR");
   LOG_FATAL("%s", "LOG_FATAL");
 }
+
+#if defined(_WIN32)
+namespace {
+
+void LogToConsole(Logger &logger, int level, const char *format, ...) {
+  va_list args;
+  va_start(args, format);
+  logger.log(level, __FILE__, __LINE__, format, args);
+  va_end(args);
+}
+
+}  // namespace
+
+TEST(Logger, FollowsRedirectedStandardHandles) {
+  auto logger = ailego::Factory<Logger>::MakeShared("ConsoleLogger");
+  ASSERT_NE(logger, nullptr);
+
+  for (int level : {Logger::LEVEL_INFO, Logger::LEVEL_WARN}) {
+    const DWORD device =
+        level <= Logger::LEVEL_INFO ? STD_OUTPUT_HANDLE : STD_ERROR_HANDLE;
+    const HANDLE original = GetStdHandle(device);
+    // Replace the process handle without touching this CRT's stdout/stderr,
+    // as happens when an embedding host redirects through a different CRT.
+    for (int redirect = 0; redirect < 2; ++redirect) {
+      HANDLE reader = nullptr;
+      HANDLE writer = nullptr;
+      ASSERT_TRUE(CreatePipe(&reader, &writer, nullptr, 0));
+      if (!SetStdHandle(device, writer)) {
+        CloseHandle(writer);
+        CloseHandle(reader);
+        FAIL() << "Failed to redirect standard handle";
+      }
+
+      LogToConsole(*logger, level, "redirected-console-message-%d", redirect);
+
+      const BOOL restored = SetStdHandle(device, original);
+      CloseHandle(writer);
+      char buffer[4096];
+      DWORD size = 0;
+      const BOOL received =
+          ReadFile(reader, buffer, sizeof(buffer), &size, nullptr);
+      CloseHandle(reader);
+      ASSERT_TRUE(restored);
+      ASSERT_TRUE(received);
+      const std::string message(buffer, size);
+      EXPECT_NE(message.find("redirected-console-message-" +
+                             std::to_string(redirect)),
+                std::string::npos);
+    }
+  }
+}
+#endif

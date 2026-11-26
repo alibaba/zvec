@@ -133,8 +133,8 @@ class ZVEC_API Collection {
   // add/alter/drop column), destroy and close return an error (only the
   // destructor path waits for open iterators), and optimize fails at its
   // start; conversely this call fails while a maintenance operation is
-  // running. Flush, writes and queries are not affected. The collection
-  // must outlive its iterators.
+  // running. Concurrent iterator creation is allowed. Flush, writes and
+  // queries are not affected. The collection must outlive its iterators.
   virtual Result<DocIterator::Ptr> create_iterator(
       const IteratorOptions &options = {}) = 0;
 

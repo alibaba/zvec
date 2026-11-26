@@ -19,6 +19,10 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/time_helper.h>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 namespace zvec {
 namespace ailego {
 
@@ -55,11 +59,27 @@ struct ConsoleLogger : public Logger {
     vsnprintf(buffer, sizeof(buffer), format, args);
     stream << buffer << '\n';
 
+#if defined(_WIN32)
+    // A host using another CRT (for example Python's fd capture) can close
+    // and replace standard handles without updating this DLL's iostreams.
+    // A cached handle may then refer to an unrelated index file. Resolve the
+    // process standard handle for each message instead of using that cache.
+    HANDLE output = GetStdHandle(level <= LEVEL_INFO ? STD_OUTPUT_HANDLE
+                                                     : STD_ERROR_HANDLE);
+    if (output == nullptr || output == INVALID_HANDLE_VALUE) {
+      return;
+    }
+    const std::string message = stream.str();
+    DWORD written = 0;
+    WriteFile(output, message.data(), static_cast<DWORD>(message.size()),
+              &written, nullptr);
+#else
     if (level <= LEVEL_INFO) {
       std::cout << stream.str() << std::flush;
     } else {
       std::cerr << stream.str() << std::flush;
     }
+#endif
   }
 };
 

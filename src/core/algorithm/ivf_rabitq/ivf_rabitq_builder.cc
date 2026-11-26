@@ -23,6 +23,7 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include <zvec/ailego/utility/time_helper.h>
+#include <zvec/core/interface/constants.h>
 #include "algorithm/hnsw_rabitq/rabitq_converter.h"
 #include "algorithm/hnsw_rabitq/rabitq_params.h"
 #include "zvec/core/framework/index_error.h"
@@ -316,7 +317,8 @@ int IvfRabitqBuilder::init(const IndexMeta &meta,
   meta_ = meta;
   params_ = params;
 
-  int configured_nlist = static_cast<int>(kDefaultIvfRabitqNlist);
+  int configured_nlist =
+      static_cast<int>(core_interface::kDefaultIvfRabitqNumLists);
   if (params.get(PARAM_IVF_RABITQ_NLIST, &configured_nlist) &&
       configured_nlist <= 0) {
     LOG_ERROR("Invalid nlist=%d, must be greater than 0", configured_nlist);
@@ -326,7 +328,7 @@ int IvfRabitqBuilder::init(const IndexMeta &meta,
 
   params.get(PARAM_RABITQ_TOTAL_BITS, &total_bits_);
   if (total_bits_ == 0) {
-    total_bits_ = kDefaultRabitqTotalBits;
+    total_bits_ = core_interface::kDefaultRabitqTotalBits;
   }
   if (total_bits_ < 1 || total_bits_ > 9) {
     LOG_ERROR("Invalid total_bits=%zu, must be in [1, 9]", (size_t)total_bits_);

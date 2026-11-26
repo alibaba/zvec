@@ -15,6 +15,7 @@
 #include "avx2/record_quantized_int4/squared_euclidean.h"
 #include <cstdint>
 #include "avx2/record_quantized_int4/common.h"
+#include "common/record_metadata.h"
 
 namespace zvec::turbo::avx2 {
 
@@ -31,10 +32,8 @@ void squared_euclidean_int4_distance_avx2(const void *a, const void *b,
       static_cast<const uint8_t *>(a), static_cast<const uint8_t *>(b),
       original_dim);
 
-  const float *a_tail = reinterpret_cast<const float *>(
-      static_cast<const uint8_t *>(a) + tail_offset);
-  const float *b_tail = reinterpret_cast<const float *>(
-      static_cast<const uint8_t *>(b) + tail_offset);
+  const record::Metadata a_tail(static_cast<const uint8_t *>(a) + tail_offset);
+  const record::Metadata b_tail(static_cast<const uint8_t *>(b) + tail_offset);
 
   const float ma = a_tail[0];
   const float mb = a_tail[1];
@@ -73,8 +72,8 @@ void squared_euclidean_int4_batch_distance_avx2(
   internal::raw_inner_product_batch(
       vectors, static_cast<const uint8_t *>(query), n, original_dim, distances);
 
-  const float *q_tail = reinterpret_cast<const float *>(
-      static_cast<const uint8_t *>(query) + tail_offset);
+  const record::Metadata q_tail(static_cast<const uint8_t *>(query) +
+                                tail_offset);
   const float qa = q_tail[0];
   const float qb = q_tail[1];
   const float qs = q_tail[2];
@@ -84,8 +83,8 @@ void squared_euclidean_int4_batch_distance_avx2(
   const float sum2 = qa * qa * qs2;
 
   for (size_t i = 0; i < n; ++i) {
-    const float *m_tail = reinterpret_cast<const float *>(
-        static_cast<const uint8_t *>(vectors[i]) + tail_offset);
+    const record::Metadata m_tail(static_cast<const uint8_t *>(vectors[i]) +
+                                  tail_offset);
     const float ma = m_tail[0];
     const float mb = m_tail[1];
     const float ms = m_tail[2];

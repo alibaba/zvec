@@ -22,6 +22,7 @@
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <ailego/io/iouring_loader.h>  // raw-syscall io_uring wrapper (IoUringRing)
 #include <ailego/io/libaio_loader.h>  // dlopen-based libaio wrapper
+#include <zvec/ailego/buffer/budgeted_mapped_buffer.h>
 #elif defined(_WIN32) || defined(_WIN64)
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -73,12 +74,19 @@ namespace core {
 // request slots in each I/O context. Keeping completion ports private prevents
 // one context from consuming another context's completions.
 // IOContext is a pointer to IoBackend; nullptr means uninitialised.
+struct PendingBatch;
+
 struct IoBackend {
   ailego::IOBackendType type{ailego::IOBackendType::kPread};
 
 #if defined(__linux__) && !defined(__ANDROID__)
   ailego::IoUringRing ring{};
   io_context_t aio_ctx{nullptr};
+  LibAioLoader::RingMemory aio_memory;
+  std::unique_ptr<ailego::BudgetedMappedBuffer> aio_staging;
+  const PendingBatch *aio_batch{nullptr};
+  bool aio_active{false};
+  bool aio_quarantined{false};
 #elif defined(_WIN32) || defined(_WIN64)
   std::array<OVERLAPPED, MAX_IO_DEPTH> reqs{};
   std::array<uint8_t, MAX_IO_DEPTH> active_requests{};
@@ -132,6 +140,8 @@ struct PendingBatch {
 #if defined(__linux__) && !defined(__ANDROID__)
   std::vector<struct iocb> cbs;
   std::vector<struct iocb *> cb_ptrs;
+  std::vector<struct io_event> events;
+  std::vector<void *> destinations;
 #elif defined(_WIN32) || defined(_WIN64)
   std::vector<uint64_t> expected_lengths;
   std::vector<uint8_t> completed;
@@ -226,7 +236,7 @@ class LinuxAlignedFileReader : public AlignedFileReader {
 
   int get_completed(PendingBatch &batch, IOContext &ctx, int min_completed,
                     std::vector<uint32_t> &completed_indices) override;
-  void release_io_ctx(IOContext & /*ctx*/) override {}
+  void release_io_ctx(IOContext &ctx) override;
 };
 #else
 class WindowsAlignedFileReader : public AlignedFileReader {

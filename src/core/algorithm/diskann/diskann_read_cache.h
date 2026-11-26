@@ -106,8 +106,7 @@ class DiskAnnReadCache {
         }
         if (set.entries[set.hand].valid && !seen && (++set.misses % 16 != 0))
           continue;
-        while (set.entries[set.hand].valid &&
-               set.entries[set.hand].chances) {
+        while (set.entries[set.hand].valid && set.entries[set.hand].chances) {
           --set.entries[set.hand].chances;
           set.hand = (set.hand + 1) % ways_;
         }

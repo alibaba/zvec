@@ -19,6 +19,7 @@
 #include <zvec/ailego/container/params.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/ailego/utility/string_helper.h>
+#include <zvec/core/interface/constants.h>
 #include "ailego/pattern/defer.h"
 #include "algorithm/hnsw_rabitq/rabitq_reformer.h"
 #include "zvec/core/framework/index_cluster.h"
@@ -59,7 +60,7 @@ int RabitqConverter::init(const IndexMeta &meta, const ailego::Params &params) {
   uint32_t total_bits = 0;
   params.get(PARAM_RABITQ_TOTAL_BITS, &total_bits);
   if (total_bits == 0) {
-    total_bits = kDefaultRabitqTotalBits;
+    total_bits = core_interface::kDefaultRabitqTotalBits;
   }
   if (total_bits < 1 || total_bits > 9) {
     LOG_ERROR("Invalid total_bits: %zu, must be in [1, 9]", (size_t)total_bits);
@@ -69,7 +70,7 @@ int RabitqConverter::init(const IndexMeta &meta, const ailego::Params &params) {
 
   params.get(PARAM_RABITQ_NUM_CLUSTERS, &num_clusters_);
   if (num_clusters_ == 0) {
-    num_clusters_ = kDefaultNumClusters;
+    num_clusters_ = core_interface::kDefaultHnswRabitqNumClusters;
   }
 
   if (ex_bits_ > 8) {

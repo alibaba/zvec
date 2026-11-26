@@ -62,13 +62,8 @@ def test_uniform_quantization_rejects_unsupported_index(
     )
     path = str(tmp_path / "collection")
     error = f"quantization is not supported with {index_name}"
-    # On platforms without DiskANN, its existing platform check runs first.
-    error_type = ValueError
-    if index_name == "DISKANN":
-        error += "|DiskAnn is not supported on this platform"
-        error_type = (ValueError, RuntimeError)
     if operation == "create":
-        with pytest.raises(error_type, match=error):
+        with pytest.raises(ValueError, match=error):
             collection = zvec.create_and_open(path=path, schema=schema)
             collection.close()
         return
@@ -90,7 +85,7 @@ def test_uniform_quantization_rejects_unsupported_index(
         before = [(hit.id, hit.score) for hit in collection.query(query, topk=5)]
         before_schema = collection.schema.vectors[0].index_param.to_dict()
 
-        with pytest.raises(error_type, match=error):
+        with pytest.raises(ValueError, match=error):
             collection.create_index("dense", unsupported_param)
 
         # Rejection must preserve the trained index, its schema and writeability.

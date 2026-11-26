@@ -135,8 +135,9 @@ class DistCalculator {
                      : nullptr;
     quant_query_scratch_.resize(quantizer_->quantized_query_vector_length() *
                                 (cosine_pq_ && !inverse_norms_ ? 2 : 1));
-    if (!cosine_pq_ || !cosine_pq_->quantize_cosine_query(
-                           query_rotated, quant_query_scratch_.data(), !inverse_norms_)) {
+    if (!cosine_pq_ ||
+        !cosine_pq_->quantize_cosine_query(
+            query_rotated, quant_query_scratch_.data(), !inverse_norms_)) {
       cosine_pq_ = nullptr;
       quantizer_->quantize_query(query_rotated, quant_query_scratch_.data());
     }
@@ -152,8 +153,8 @@ class DistCalculator {
           quant_codes_ + static_cast<size_t>(ids[i]) * quant_code_size_;
     }
     if (cosine_pq_ && inverse_norms_) {
-      cosine_pq_->calc_distance_dp_query_batch(quant_dp_list_.data(), n,
-                                                quant_query_scratch_.data(), dists);
+      cosine_pq_->calc_distance_dp_query_batch(
+          quant_dp_list_.data(), n, quant_query_scratch_.data(), dists);
       for (uint32_t i = 0; i < n; ++i)
         dists[i] = 1.0f + dists[i] * inverse_norms_[ids[i]];
     } else if (cosine_pq_) {

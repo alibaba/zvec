@@ -22,6 +22,7 @@
 #include <zvec/ailego/utility/file_helper.h>
 #include <zvec/db/collection.h>
 #include "db/common/file_helper.h"
+#include "../ailego/buffer/pool_payload_budget.h"
 
 using namespace zvec;
 
@@ -45,7 +46,8 @@ SearchQuery MakeSearchQuery(const std::string &field,
 TEST(QueryInternalIdsTest, NativeTopkMatchesQueryBounds) {
   const std::string path = "test_query_internal_ids_topk_bounds";
   FileHelper::RemoveDirectory(path);
-  ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll * 1024ll);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024ll * 1024ll *
+                                                         1024ll);
   CollectionSchema schema("fast_topk_bounds");
   schema.add_field(std::make_shared<FieldSchema>(
       "vector", DataType::VECTOR_FP32, uint32_t{8}, false,
@@ -108,7 +110,8 @@ TEST(QueryInternalIdsTest, NativeTopkMatchesQueryBounds) {
 TEST(QueryInternalIdsTest, ConcurrentFieldsFromFirstQueryThroughClose) {
   const std::string path = "test_query_internal_ids_concurrent_fields";
   FileHelper::RemoveDirectory(path);
-  ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll * 1024ll);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024ll * 1024ll *
+                                                         1024ll);
   CollectionSchema schema("query_internal_ids_fields");
   schema.add_field(std::make_shared<FieldSchema>(
       "flat", DataType::VECTOR_FP32, uint32_t{32}, false,
@@ -233,7 +236,8 @@ TEST(QueryInternalIdsTest, ConcurrentFieldsFromFirstQueryThroughClose) {
 TEST(QueryInternalIdsTest, PreservesOrdinalsAfterReopenAndCompaction) {
   const std::string path = "test_query_internal_ids_identity_doc_ids";
   FileHelper::RemoveDirectory(path);
-  ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll * 1024ll);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024ll * 1024ll *
+                                                         1024ll);
   CollectionSchema schema("query_internal_ids_identity");
   schema.add_field(std::make_shared<FieldSchema>(
       "vector", DataType::VECTOR_FP32, uint32_t{32}, false,
@@ -317,7 +321,8 @@ TEST(QueryInternalIdsTest, PreservesOrdinalsAfterReopenAndCompaction) {
 TEST(QueryInternalIdsTest, ReadsRefineParametersOnEveryCall) {
   const std::string path = "test_fast_search_refine_scale";
   FileHelper::RemoveDirectory(path);
-  ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll * 1024ll);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024ll * 1024ll *
+                                                         1024ll);
   CollectionSchema schema("fast_search");
   schema.add_field(std::make_shared<FieldSchema>(
       "vector", DataType::VECTOR_FP32, uint32_t{32}, false,

@@ -146,8 +146,6 @@ class DeleteStore : public std::enable_shared_from_this<DeleteStore> {
 
   const std::string collection_name_{};
   ConcurrentRoaringBitmap64 bitmap_{};
-  // atomic: get_filter()/empty() read it lock-free during queries while
-  // mark_deleted() writes it on the write path.
   std::atomic<bool> empty_{true};
   bool modified_since_last_flush_{false};
 };

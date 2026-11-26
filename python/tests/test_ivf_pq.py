@@ -1,6 +1,7 @@
 """Public HNSW/IVF PQ configuration, persistence and coarse/refine behavior."""
 
 import pickle
+import re
 
 import numpy as np
 import pytest
@@ -279,17 +280,37 @@ def test_hnsw_pq_incremental_writes_and_retraining(tmp_path, bits, enable_mmap):
 
 
 @pytest.mark.parametrize(
-    "kwargs",
+    "kwargs,error",
     [
-        {"fast_scan": True, "num_bits": 4},
-        {"num_chunk": 0},
-        {"num_chunk": 17},
-        {"num_bits": 6},
-        {"num_chunk": 3, "num_bits": 4},
-        {"enable_rotate": True, "opq_iter": 0},
+        (
+            {"fast_scan": True, "num_bits": 4},
+            "fast_scan requires IVF index_type; got HNSW",
+        ),
+        ({"num_chunk": 0}, "num_chunk must be greater than 0; got 0"),
+        (
+            {"num_chunk": 17},
+            "PQ num_chunk must not exceed dimension; got num_chunk=17, dimension=16",
+        ),
+        ({"num_bits": 6}, "num_bits must be 4 or 8; got 6"),
+        (
+            {"num_chunk": 3, "num_bits": 4},
+            "PQ4 requires dimension divisible by num_chunk; got dimension=16, num_chunk=3",
+        ),
+        (
+            {"enable_rotate": True, "opq_iter": 0},
+            "opq_iter must be greater than 0; got 0",
+        ),
+        (
+            {"enable_rotate": False, "opq_iter": 0},
+            "opq_iter must be greater than 0; got 0",
+        ),
+        (
+            {"enable_rotate": False, "opq_pq_iter": 0},
+            "opq_pq_iter must be greater than 0; got 0",
+        ),
     ],
 )
-def test_hnsw_pq_rejects_invalid_configuration(tmp_path, kwargs):
+def test_hnsw_pq_rejects_invalid_configuration(tmp_path, kwargs, error):
     schema = zvec.CollectionSchema(
         name="invalid_pq",
         vectors=[
@@ -304,6 +325,44 @@ def test_hnsw_pq_rejects_invalid_configuration(tmp_path, kwargs):
             )
         ],
     )
-    with pytest.raises(ValueError, match="PQ"):
+    with pytest.raises(ValueError, match=re.escape(error)):
         coll = zvec.create_and_open(str(tmp_path / "index"), schema)
         coll.close()
+
+
+def test_quantizer_validates_unused_configuration(tmp_path):
+    qp = zvec.QuantizerParam(num_chunk=0)
+    assert not qp.enable_rotate
+    # Construction and pickle remain available; validation happens on schema use.
+    qp = pickle.loads(pickle.dumps(qp))
+    schema = zvec.CollectionSchema(
+        name="invalid_unused_quantizer",
+        vectors=[
+            zvec.VectorSchema(
+                "vector",
+                zvec.DataType.VECTOR_FP32,
+                16,
+                index_param=zvec.HnswIndexParam(
+                    quantize_type=zvec.QuantizeType.UNDEFINED,
+                    quantizer_param=qp,
+                ),
+            )
+        ],
+    )
+    with pytest.raises(ValueError, match="num_chunk must be greater than 0; got 0"):
+        coll = zvec.create_and_open(str(tmp_path / "index"), schema)
+        coll.close()
+
+
+def test_default_quantizer_configuration_is_valid(tmp_path):
+    param = zvec.HnswIndexParam(quantize_type=zvec.QuantizeType.PQ)
+    schema = zvec.CollectionSchema(
+        name="default_quantizer",
+        vectors=[
+            zvec.VectorSchema(
+                "vector", zvec.DataType.VECTOR_FP32, 16, index_param=param
+            )
+        ],
+    )
+    coll = zvec.create_and_open(str(tmp_path / "index"), schema)
+    coll.close()

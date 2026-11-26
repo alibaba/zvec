@@ -23,6 +23,7 @@
 #include <gtest/gtest.h>
 #include "db/index/storage/bufferpool_forward_store.h"
 #include "utils/utils.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 using namespace zvec;
 
@@ -34,7 +35,7 @@ class BufferPoolStoreTest : public testing::Test {
       std::cout << "err: " << s.message() << std::endl;
       exit(1);
     }
-    zvec::ailego::MemoryLimitPool::get_instance().init(10 * 1024 * 1024);
+    ::zvec::ailego::PoolPayloadBudget::get_instance().init(10 * 1024 * 1024);
   }
 
   void TearDown() override {

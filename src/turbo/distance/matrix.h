@@ -13,12 +13,19 @@
 // limitations under the License.
 #pragma once
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <type_traits>
 #include <vector>
 #include <zvec/ailego/utility/type_helper.h>
 #include <zvec/turbo/turbo.h>
+#include "common/interleaved_matrix.h"
+
+#if defined(AILEGO_ARM64_GNU_LIKE)
+#include "neon/fp16/inner_product.h"
+#endif
 
 namespace zvec::turbo {
 
@@ -95,6 +102,10 @@ struct InterleavedDistanceMatrix {
   static_assert(Metric == MetricType::kSquaredEuclidean ||
                     Metric == MetricType::kInnerProduct,
                 "Unsupported raw matrix metric");
+  static constexpr bool kOptimizedSingleColumn =
+      (std::is_same_v<T, ailego::Float16> &&
+       Metric == MetricType::kSquaredEuclidean) ||
+      std::is_same_v<T, int8_t> || std::is_same_v<T, uint8_t>;
   static auto Value(const T *data, size_t d, size_t row, size_t rows) {
     if constexpr (std::is_same_v<T, uint8_t>) {
       const size_t offset = (d / 8 * rows + row) * 4 + d % 8 / 2;
@@ -102,15 +113,444 @@ struct InterleavedDistanceMatrix {
       return float(code < 8 ? code : code - 16);
     } else if constexpr (std::is_same_v<T, int8_t>) {
       return float(data[(d / 4 * rows + row) * 4 + d % 4]);
-    } else if constexpr (std::is_same_v<T, double>) {
+    } else if constexpr (std::is_same_v<T, double> ||
+                         (std::is_same_v<T, int16_t> && Rows > 2 &&
+                          Metric == MetricType::kInnerProduct)) {
       return data[d * rows + row];
     } else {
       return float(data[d * rows + row]);
     }
   }
 
-  static void Compute(const T *m, const T *q, size_t dim, size_t columns,
-                      float *out) {
+  static const auto &PackedDistances() {
+    // One entry for each pair of signed nibbles. Squared differences
+    // range from 0 to 225; negative products range from -64 to 56.
+    using Entry = std::conditional_t<Metric == MetricType::kInnerProduct,
+                                     int8_t, uint8_t>;
+    static constexpr auto distance_table = [] {
+      std::array<Entry, 256> table{};
+      for (int a = 0; a < 16; ++a) {
+        for (int b = 0; b < 16; ++b) {
+          const int lhs = a < 8 ? a : a - 16;
+          const int rhs = b < 8 ? b : b - 16;
+          if constexpr (Metric == MetricType::kInnerProduct) {
+            table[a * 16 + b] = Entry(-lhs * rhs);
+          } else {
+            table[a * 16 + b] = Entry((lhs - rhs) * (lhs - rhs));
+          }
+        }
+      }
+      return table;
+    }();
+    return distance_table;
+  }
+
+  template <size_t Columns>
+  static void ComputePackedColumns(const T *m, const T *q, size_t dim,
+                                   float *out) {
+    const auto &table = PackedDistances();
+    const T *q_end = q + dim / 2 * Columns;
+    // Keep accumulators disjoint from byte inputs so alias checks do not
+    // prevent reuse of each packed word across the query tile.
+    float sums[Rows * Columns]{};
+    if constexpr (Rows <= 4
+#if defined(__aarch64__) || defined(_M_ARM64)
+                  // Large query tiles spill their expanded nibbles to the
+                  // stack on ARM64; extracting packed words is faster.
+                  || Columns >= 16
+#endif
+    ) {
+      // Small blocks are fully unrolled; the expanded form below would spill
+      // its byte tile into stack slots and lose to the direct extraction.
+      while (q != q_end) {
+        for (size_t i = 0; i < Rows; ++i) {
+          uint32_t word;
+          std::memcpy(&word, m + i * 4, 4);
+          for (size_t j = 0; j < Columns; ++j) {
+            uint32_t query;
+            std::memcpy(&query, q + j * 4, 4);
+            int sum = 0;
+            for (size_t shift = 0; shift < 32; shift += 4)
+              sum +=
+                  table[((word >> shift) & 15) * 16 + ((query >> shift) & 15)];
+            sums[j * Rows + i] += float(sum);
+          }
+        }
+        m += Rows * 4;
+        q += Columns * 4;
+      }
+    } else {
+      while (q != q_end) {
+        // Expand the query tile once per word position and each matrix word
+        // once per row, so every pair of nibbles costs a byte load and a
+        // table load instead of re-extracting both nibbles from the packed
+        // words. Even nibbles land in bytes 0-3 and odd nibbles in bytes 4-7;
+        // the row pointers use the same order (words are little-endian, as
+        // in Value()).
+        uint8_t query_nibbles[Columns * 8];
+        for (size_t j = 0; j < Columns; ++j) {
+          uint32_t query;
+          std::memcpy(&query, q + j * 4, 4);
+          const uint32_t even = query & 0x0F0F0F0Fu;
+          const uint32_t odd = (query >> 4) & 0x0F0F0F0Fu;
+          std::memcpy(query_nibbles + j * 8, &even, 4);
+          std::memcpy(query_nibbles + j * 8 + 4, &odd, 4);
+        }
+        for (size_t i = 0; i < Rows; ++i) {
+          uint32_t word;
+          std::memcpy(&word, m + i * 4, 4);
+          decltype(table.data()) rows[8];
+          for (size_t k = 0; k < 4; ++k) {
+            rows[k] = table.data() + ((word >> (8 * k)) & 15) * 16;
+            rows[k + 4] = table.data() + ((word >> (8 * k + 4)) & 15) * 16;
+          }
+          for (size_t j = 0; j < Columns; ++j) {
+            const uint8_t *nibbles = query_nibbles + j * 8;
+            int sum = 0;
+            for (size_t s = 0; s < 8; ++s) sum += rows[s][nibbles[s]];
+            sums[j * Rows + i] += float(sum);
+          }
+        }
+        m += Rows * 4;
+        q += Columns * 4;
+      }
+    }
+    std::copy_n(sums, Rows * Columns, out);
+  }
+
+  template <typename Sum>
+  static void Int8SquaredDistances(const int8_t *m, const int8_t *q, size_t dim,
+                                   size_t query_stride, Sum *sums) {
+    std::fill_n(sums, Rows, Sum{0});
+    size_t d = 0;
+    for (; d + 4 <= dim; d += 4) {
+      const auto *query = q + d * query_stride;
+      for (size_t i = 0; i < Rows; ++i) {
+        const auto *row = m + d * Rows + i * 4;
+        const int d0 = row[0] - query[0], d1 = row[1] - query[1];
+        const int d2 = row[2] - query[2], d3 = row[3] - query[3];
+        sums[i] += d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3;
+      }
+    }
+    for (; d < dim; ++d) {
+      const size_t word = d / 4 * 4;
+      const int query = q[word * query_stride + d % 4];
+      for (size_t i = 0; i < Rows; ++i) {
+        const int delta = m[word * Rows + i * 4 + d % 4] - query;
+        sums[i] += delta * delta;
+      }
+    }
+  }
+
+  template <typename Sum, bool WithNorms>
+  static void Int8DotProducts(const int8_t *m, const int8_t *q, size_t dim,
+                              size_t query_stride, float *out, float *row_norms,
+                              float *query_norm) {
+    Sum dots[Rows]{}, norms[Rows]{}, qnorm = 0;
+    size_t d = 0;
+    for (; d + 4 <= dim; d += 4) {
+      const auto *query = q + d * query_stride;
+      const int q0 = query[0], q1 = query[1], q2 = query[2], q3 = query[3];
+      if constexpr (WithNorms) qnorm += q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3;
+      for (size_t i = 0; i < Rows; ++i) {
+        const auto *r = m + d * Rows + i * 4;
+        dots[i] += r[0] * q0 + r[1] * q1 + r[2] * q2 + r[3] * q3;
+        if constexpr (WithNorms)
+          norms[i] += r[0] * r[0] + r[1] * r[1] + r[2] * r[2] + r[3] * r[3];
+      }
+    }
+    for (; d < dim; ++d) {
+      const size_t word = d / 4 * 4;
+      const int query = q[word * query_stride + d % 4];
+      if constexpr (WithNorms) qnorm += query * query;
+      for (size_t i = 0; i < Rows; ++i) {
+        const int r = m[word * Rows + i * 4 + d % 4];
+        dots[i] += r * query;
+        if constexpr (WithNorms) norms[i] += r * r;
+      }
+    }
+    for (size_t i = 0; i < Rows; ++i) out[i] = -float(dots[i]);
+    if constexpr (WithNorms) {
+      std::copy_n(norms, Rows, row_norms);
+      *query_norm = float(qnorm);
+    }
+  }
+
+  // Reuse a query component (or packed word) across the whole block. A
+  // strided query also serves one column of a many-to-many matrix. Keep
+  // integer products in word-sized groups before converting to FP32.
+  template <bool WithNorms = false>
+  static void ComputeSingleColumn(const T *m, const T *q, size_t dim,
+                                  float *out, size_t query_stride = 1,
+                                  float *row_norms = nullptr,
+                                  float *query_norm = nullptr) {
+    static_assert(kOptimizedSingleColumn, "Unsupported single-column kernel");
+    static_assert(!WithNorms || (std::is_same_v<T, int8_t> &&
+                                 Metric == MetricType::kInnerProduct));
+    if constexpr (std::is_same_v<T, ailego::Float16>) {
+      if (dim == 0) {
+        for (size_t i = 0; i < Rows; ++i) out[i] = 0;
+        return;
+      }
+      const T *q_end = q + dim;
+      const T first = *q++;
+      for (size_t i = 0; i < Rows; ++i) {
+        const auto delta = m[i] - first;
+        out[i] = delta * delta;
+      }
+      m += Rows;
+      while (q != q_end) {
+        const T query = *q++;
+        for (size_t i = 0; i < Rows; ++i) {
+          const auto delta = m[i] - query;
+          // Match the legacy FP32 product rounding before accumulation.
+          const float squared = delta * delta;
+          out[i] += squared;
+        }
+        m += Rows;
+      }
+    } else if constexpr (std::is_same_v<T, int8_t> &&
+                         Metric == MetricType::kSquaredEuclidean) {
+      // Beyond this bound a small squared difference can disappear when
+      // added to an FP32 partial sum. Round only the final integer total.
+      constexpr size_t max_exact_dim = (1u << 24) / (255 * 255);
+      if (dim <= max_exact_dim) {
+        Int8SquaredDistances(m, q, dim, query_stride, out);
+      } else {
+        int64_t sums[Rows];
+        Int8SquaredDistances(m, q, dim, query_stride, sums);
+        std::copy_n(sums, Rows, out);
+      }
+    } else if constexpr (std::is_same_v<T, int8_t>) {
+      // Every product has magnitude <= 128^2, including squared norms.
+      if (dim <= std::numeric_limits<int32_t>::max() / (128 * 128))
+        Int8DotProducts<int32_t, WithNorms>(m, q, dim, query_stride, out,
+                                            row_norms, query_norm);
+      else
+        Int8DotProducts<int64_t, WithNorms>(m, q, dim, query_stride, out,
+                                            row_norms, query_norm);
+    } else {
+      std::fill_n(out, Rows, 0.0f);
+      size_t d = 0;
+      const auto &distance_table = PackedDistances();
+      for (; d + 8 <= dim; d += 8) {
+        uint32_t query;
+        std::memcpy(&query, q + d / 2 * query_stride, sizeof(query));
+        // The pair table is symmetric, so index it by the query nibble
+        // first and resolve those eight rows once per word position.
+        decltype(distance_table.data()) query_rows[8];
+        for (size_t s = 0; s < 8; ++s)
+          query_rows[s] =
+              distance_table.data() + ((query >> (4 * s)) & 15) * 16;
+        const auto *block = m + d / 2 * Rows;
+        for (size_t i = 0; i < Rows; ++i) {
+          uint32_t word;
+          std::memcpy(&word, block + i * 4, sizeof(word));
+          int sum = 0;
+          for (size_t s = 0; s < 8; ++s)
+            sum += query_rows[s][(word >> (4 * s)) & 15];
+          out[i] += float(sum);
+        }
+      }
+      // Matrices pad a final partial word; the single query need not be
+      // padded. Read only its valid bytes/nibbles and ignore matrix padding.
+      for (; d < dim; ++d) {
+        const float query = Value(q, d, 0, query_stride);
+        for (size_t i = 0; i < Rows; ++i) {
+          const float value = Value(m, d, i, Rows);
+          if constexpr (Metric == MetricType::kInnerProduct) {
+            out[i] -= value * query;
+          } else {
+            const float delta = value - query;
+            out[i] += delta * delta;
+          }
+        }
+      }
+    }
+  }
+
+  // Use the same accumulation order as the matrix inner product, including
+  // packed-word groups. This keeps a vector's self MIPS distance at zero.
+  template <typename Sum>
+  static void SquaredNorms(const T *data, size_t dim, Sum *out) {
+    std::fill_n(out, Rows, 0.0f);
+    size_t d = 0;
+    if constexpr (std::is_same_v<T, int8_t> || std::is_same_v<T, uint8_t>) {
+      constexpr size_t step = std::is_same_v<T, int8_t> ? 4 : 8;
+      for (; d + step <= dim; d += step) {
+        for (size_t i = 0; i < Rows; ++i) {
+          int sum = 0;
+          const auto *word = data + (d / step * Rows + i) * 4;
+          if constexpr (std::is_same_v<T, int8_t>) {
+            sum = word[0] * word[0] + word[1] * word[1] + word[2] * word[2] +
+                  word[3] * word[3];
+          } else {
+            static constexpr auto squares = [] {
+              std::array<uint8_t, 256> table{};
+              for (int v = 0; v < 256; ++v) {
+                const int lo = ((v & 15) ^ 8) - 8;
+                const int hi = ((v >> 4) ^ 8) - 8;
+                table[v] = uint8_t(lo * lo + hi * hi);
+              }
+              return table;
+            }();
+            sum = squares[word[0]] + squares[word[1]] + squares[word[2]] +
+                  squares[word[3]];
+          }
+          out[i] -= Sum(sum);
+        }
+      }
+    }
+    for (; d < dim; ++d) {
+      for (size_t i = 0; i < Rows; ++i) {
+        const auto value = Value(data, d, i, Rows);
+        out[i] -= Sum(value * value);
+      }
+    }
+    for (size_t i = 0; i < Rows; ++i) out[i] = -out[i];
+  }
+
+  // Small numeric blocks benefit from reusing each matrix value across
+  // queries. A static column count lets the compiler unroll the tiny tile.
+  template <size_t Columns>
+  static void ComputeSmall(const T *m, const T *q, size_t dim, float *out) {
+    float local[Rows * Columns];
+    float *result = out;
+    if constexpr (std::is_same_v<T, float>) out = local;
+    if constexpr (Metric == MetricType::kInnerProduct) {
+      // Keep the negative-product reduction across rows. A positive sum
+      // followed by negation can induce costly strided dimension reductions.
+      const T *q_end = q + dim * Columns;
+      if (dim > 0) {
+        for (size_t i = 0; i < Rows; ++i) {
+          const T value = m[i];
+          for (size_t j = 0; j < Columns; ++j) {
+            out[j * Rows + i] = -float(value * q[j]);
+          }
+        }
+        m += Rows;
+        q += Columns;
+      }
+      for (size_t d = 1; Columns == 1 ? q != q_end : d < dim; ++d) {
+        for (size_t i = 0; i < Rows; ++i) {
+          const T value = m[i];
+          for (size_t j = 0; j < Columns; ++j) {
+            out[j * Rows + i] -= value * q[j];
+          }
+        }
+        m += Rows;
+        q += Columns;
+      }
+      if constexpr (std::is_same_v<T, float>)
+        std::copy_n(local, Rows * Columns, result);
+      return;
+    }
+    using Arithmetic =
+        std::conditional_t<std::is_same_v<T, double>, double, float>;
+    for (size_t i = 0; i < Rows; ++i) {
+      const auto value = Value(m, 0, i, Rows);
+      for (size_t j = 0; j < Columns; ++j) {
+        const auto query = Value(q, 0, j, Columns);
+        const Arithmetic delta = Arithmetic(value) - Arithmetic(query);
+        out[j * Rows + i] = float(delta * delta);
+      }
+    }
+    m += Rows;
+    q += Columns;
+    for (size_t d = 1; d < dim; ++d) {
+      for (size_t i = 0; i < Rows; ++i) {
+        const auto value = Value(m, 0, i, Rows);
+        for (size_t j = 0; j < Columns; ++j) {
+          const auto query = Value(q, 0, j, Columns);
+          const Arithmetic delta = Arithmetic(value) - Arithmetic(query);
+          const float squared = delta * delta;
+          out[j * Rows + i] += squared;
+        }
+      }
+      m += Rows;
+      q += Columns;
+    }
+    if constexpr (std::is_same_v<T, float>)
+      std::copy_n(local, Rows * Columns, result);
+  }
+
+  template <size_t Columns>
+  static void Compute(const T *m, const T *q, size_t dim, float *out) {
+    constexpr size_t columns = Columns;
+    if (dim == 0) {
+      std::fill_n(out, Rows * columns, 0.0f);
+      return;
+    }
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || \
+    defined(_M_IX86)
+    if constexpr (std::is_same_v<T, ailego::Float16>) {
+      // Scalar Float16 conversion uses a software lookup on x86. Convert the
+      // interleaved buffers in bounded stack tiles with the SIMD converter,
+      // then reuse the FP32 kernel without a transpose or heap allocation.
+      constexpr size_t tile = kFp16MatrixTile;
+      float matrix[Rows * tile], query[Columns * tile];
+      float partial[Rows * Columns];
+      for (size_t d = 0; d < dim; d += tile) {
+        const size_t count = std::min(tile, dim - d);
+        ailego::FloatHelper::ToFP32(
+            reinterpret_cast<const uint16_t *>(m + d * Rows), Rows * count,
+            matrix);
+        ailego::FloatHelper::ToFP32(
+            reinterpret_cast<const uint16_t *>(q + d * Columns),
+            Columns * count, query);
+        InterleavedDistanceMatrix<float, Rows, Metric>::template Compute<
+            Columns>(matrix, query, count, d == 0 ? out : partial);
+        if (d != 0)
+          for (size_t i = 0; i < Rows * Columns; ++i) out[i] += partial[i];
+      }
+      return;
+    }
+#endif
+    if constexpr (std::is_same_v<T, uint8_t> && Columns > 1) {
+      // Reuse each packed matrix word across queries. Partial
+      // words retain the bounds-safe single-column implementation below.
+      if (dim % 8 == 0) return ComputePackedColumns<Columns>(m, q, dim, out);
+    }
+    if constexpr (std::is_same_v<T, int8_t> || std::is_same_v<T, uint8_t>) {
+      for (size_t j = 0; j < columns; ++j)
+        ComputeSingleColumn(m, q + j * 4, dim, out + j * Rows, columns);
+      return;
+    }
+    if constexpr (kOptimizedSingleColumn) {
+      if constexpr (Columns == 1) {
+        ComputeSingleColumn(m, q, dim, out);
+        return;
+      }
+    }
+    if constexpr (!std::is_same_v<T, int8_t> && !std::is_same_v<T, uint8_t>) {
+      // Retain query-major reductions where they already beat the legacy
+      // row/query tile; static tiling must not discard those gains.
+      constexpr bool fp16_query_major =
+          (Metric == MetricType::kSquaredEuclidean && Rows == 4 &&
+           Columns == 4) ||
+          (Metric == MetricType::kInnerProduct &&
+           ((Rows >= 8 && Columns == Rows) || (Rows == 16 && Columns == 4)));
+      constexpr bool small_tile =
+          (std::is_same_v<T, ailego::Float16> && columns > 1 && columns <= 16 &&
+           !fp16_query_major) ||
+          (std::is_same_v<T, double> && Rows <= 16 && columns <= 8) ||
+          (std::is_same_v<T, int16_t> && Rows <= 8 &&
+           !(Rows == 2 && Columns == 1) &&
+           !(Metric == MetricType::kSquaredEuclidean && Rows == 4 &&
+             Columns == 4) &&
+           !(Metric == MetricType::kInnerProduct && Rows == 8 &&
+             Columns == 8)) ||
+          (std::is_same_v<T, float> &&
+           ((Rows == 2 && columns > 1) ||
+            (Rows == 4 && Columns == 2 &&
+             Metric == MetricType::kInnerProduct) ||
+            (Rows == 16 && columns == 4) ||
+            (Rows == 16 && columns == 8 &&
+             Metric == MetricType::kInnerProduct) ||
+            (Rows == 32 && Columns == 4 &&
+             Metric == MetricType::kSquaredEuclidean)));
+      if constexpr (small_tile) return ComputeSmall<Columns>(m, q, dim, out);
+    }
     for (size_t j = 0; j < columns; ++j) {
       float sums[Rows]{};
       for (size_t d = 0; d < dim; ++d) {
@@ -118,8 +558,17 @@ struct InterleavedDistanceMatrix {
         for (size_t i = 0; i < Rows; ++i) {
           const auto value = Value(m, d, i, Rows);
           if constexpr (Metric == MetricType::kSquaredEuclidean) {
-            const auto delta = value - query;
-            sums[i] += delta * delta;
+            using Arithmetic =
+                std::conditional_t<std::is_same_v<T, double>, double, float>;
+            const Arithmetic delta = Arithmetic(value) - Arithmetic(query);
+            // Round each product to FP32 before accumulation, as in the
+            // original kernels; avoid a serial FP64 accumulator conversion.
+            if constexpr (std::is_same_v<T, double>) {
+              const float squared = delta * delta;
+              sums[i] += squared;
+            } else {
+              sums[i] += delta * delta;
+            }
           } else {
             sums[i] -= value * query;
           }
@@ -130,13 +579,32 @@ struct InterleavedDistanceMatrix {
   }
 };
 
+template <typename T, size_t Rows, MetricType Metric, size_t Columns>
+inline DistanceFunc InterleavedKernel() {
+  return [](const void *m, const void *q, size_t dim, float *out) {
+    InterleavedDistanceMatrix<T, Rows, Metric>::template Compute<Columns>(
+        static_cast<const T *>(m), static_cast<const T *>(q), dim, out);
+  };
+}
+
 template <typename T, size_t Rows, MetricType Metric>
 inline DistanceFunc InterleavedKernel(size_t columns) {
-  return [columns](const void *m, const void *q, size_t dim, float *out) {
-    InterleavedDistanceMatrix<T, Rows, Metric>::Compute(
-        static_cast<const T *>(m), static_cast<const T *>(q), dim, columns,
-        out);
-  };
+  switch (columns) {
+    case 1:
+      return InterleavedKernel<T, Rows, Metric, 1>();
+    case 2:
+      return InterleavedKernel<T, Rows, Metric, 2>();
+    case 4:
+      return InterleavedKernel<T, Rows, Metric, 4>();
+    case 8:
+      return InterleavedKernel<T, Rows, Metric, 8>();
+    case 16:
+      return InterleavedKernel<T, Rows, Metric, 16>();
+    case 32:
+      return InterleavedKernel<T, Rows, Metric, 32>();
+    default:
+      return {};
+  }
 }
 
 template <typename T, MetricType Metric>
@@ -188,12 +656,22 @@ struct DistanceMatrix {
     static_assert(
         M > 0 && M <= 32 && N > 0 && N <= M && !(M & (M - 1)) && !(N & (N - 1)),
         "Unsupported matrix shape");
+#if defined(AILEGO_ARM64_GNU_LIKE)
+    if constexpr (M == 1 && std::is_same_v<T, ailego::Float16> &&
+                  Metric == MetricType::kInnerProduct) {
+      // ARM64 uses this raw kernel without optional ISA features. Avoid the
+      // std::function dispatch overhead for a single FP16 vector pair.
+      neon::inner_product_fp16_distance(m, q, dim, out);
+      return;
+    }
+#endif
     if constexpr (M == 1) {
       static const auto distance =
           get_distance_func(Metric, MatrixDataType<T>(), QuantizeType::kRaw);
       distance(m, q, dim, out);
     } else {
-      InterleavedDistanceMatrix<T, M, Metric>::Compute(m, q, dim, N, out);
+      InterleavedDistanceMatrix<T, M, Metric>::template Compute<N>(m, q, dim,
+                                                                   out);
     }
   }
 };

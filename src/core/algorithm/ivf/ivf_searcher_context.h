@@ -195,21 +195,25 @@ class IVFSearcherContext : public IndexSearcher::Context {
   }
 
   void topk_to_result(uint32_t idx) {
-    if (ailego_unlikely(result_heap_.size() == 0)) {
+    topk_to_result(idx, result_heap_);
+  }
+
+  void topk_to_result(uint32_t idx, IndexDocumentHeap &heap) {
+    if (ailego_unlikely(heap.size() == 0)) {
       return;
     }
 
     ailego_assert_with(idx < results_.size(), "invalid idx");
-    int size = std::min(topk_, static_cast<uint32_t>(result_heap_.size()));
-    result_heap_.sort();
+    int size = std::min(topk_, static_cast<uint32_t>(heap.size()));
+    heap.sort();
     results_[idx].clear();
     for (int i = 0; i < size; ++i) {
-      auto score = result_heap_[i].score();
+      auto score = heap[i].score();
       if (score > this->threshold()) {
         break;
       }
 
-      key_t key = result_heap_[i].key();
+      key_t key = heap[i].key();
       if (fetch_vector_) {
         IndexStorage::MemoryBlock block;
         entity_->get_vector_by_key(key, block);

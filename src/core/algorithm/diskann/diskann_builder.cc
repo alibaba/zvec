@@ -265,8 +265,8 @@ int DiskAnnBuilder::calculate_entry_point() {
         const auto *vector = static_cast<const Value *>(entity_.get_vector(id));
         double distance = 0;
         for (size_t d = 0; d < dimension; ++d) {
-          const double delta = static_cast<double>(centroid[d]) -
-                               static_cast<double>(vector[d]);
+          const double delta =
+              static_cast<double>(centroid[d]) - static_cast<double>(vector[d]);
           distance += delta * delta;
         }
         if (distance < best) {

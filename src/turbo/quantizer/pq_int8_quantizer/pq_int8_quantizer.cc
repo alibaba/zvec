@@ -610,8 +610,8 @@ void PqInt8Quantizer::quantize_query(const void *input, void *output) const {
   }
 }
 
-bool PqInt8Quantizer::quantize_cosine_query(const void *input,
-                                            void *output, bool include_norms) const {
+bool PqInt8Quantizer::quantize_cosine_query(const void *input, void *output,
+                                            bool include_norms) const {
   if (!num_chunk_ || use_zero_mean_ || opq_.enabled() || !input || !output ||
       sub_centroid_norms_.size() !=
           static_cast<size_t>(num_chunk_) * kNumCentroids)
@@ -652,14 +652,15 @@ bool PqInt8Quantizer::cosine_inverse_norms(const uint8_t *codes, size_t count,
                                            size_t stride, float *output) const {
   if (!num_chunk_ || use_zero_mean_ || opq_.enabled() || !codes || !output ||
       stride < num_chunk_ ||
-      sub_centroid_norms_.size() != static_cast<size_t>(num_chunk_) * kNumCentroids)
+      sub_centroid_norms_.size() !=
+          static_cast<size_t>(num_chunk_) * kNumCentroids)
     return false;
   const void *batch[256];
   for (size_t first = 0; first < count; first += 256) {
     const size_t n = std::min<size_t>(256, count - first);
     for (size_t i = 0; i < n; ++i) batch[i] = codes + (first + i) * stride;
     batch_adc_fn_(batch, sub_centroid_norms_.data(), n, num_chunk_,
-                   output + first, nullptr);
+                  output + first, nullptr);
     for (size_t i = 0; i < n; ++i) {
       float &v = output[first + i];
       v = v > 0.0f ? 1.0f / std::sqrt(v) : 0.0f;

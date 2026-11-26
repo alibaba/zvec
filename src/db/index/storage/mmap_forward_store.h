@@ -55,6 +55,10 @@ class MmapForwardStore : public BaseForwardStore {
   MmapForwardStore(const std::string &uri, size_t ipc_cache_bytes = 0);
   virtual ~MmapForwardStore() = default;
 
+  bool uses_bounded_ipc_cache() const {
+    return ipc_cache_budget_ != 0;
+  }
+
   Status open() override;
 
   /// Fetch specific columns and row indices from the data source
